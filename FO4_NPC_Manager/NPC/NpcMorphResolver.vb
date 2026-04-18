@@ -83,10 +83,9 @@ Public Class NpcMorphResolver
             AddBodyRegionMorphs(tri, shapeName, plan)
         End If
 
-        ' 2) Face morph presets (MSDK/MSDV) - from PIRT or TriHead + Chargen.tri
+        ' 2) Face morph presets (MSDK/MSDV) - via TriHead chargen .tri + RACE MSID→MSM0/MSM1
         If _npcData.MorphValues.Count > 0 Then
             NpcPreviewLog.Log($"  [MORPH] Shape '{shapeName}' verts={shapeVertCount}: TRI={tri IsNot Nothing} TriHead={triHead IsNot Nothing}({If(triHead IsNot Nothing, CInt(triHead.NumVertices), 0)} verts, {If(triHead IsNot Nothing, triHead.Morphs.Count, 0)} morphs) MorphValues={_npcData.MorphValues.Count}")
-            If tri IsNot Nothing Then AddFaceMorphPresets(tri, shapeName, plan)
             If triHead IsNot Nothing Then AddFaceMorphPresetsFromTriHead(triHead, plan)
         End If
 
@@ -173,32 +172,6 @@ Public Class NpcMorphResolver
             Dim deltas = ConvertTriOffsetsToMorphData(morphEntry)
             If deltas.Count > 0 Then
                 plan.Channels.Add(New MorphChannel(BodyRegionMorphNames(i), weight, deltas))
-            End If
-        Next
-    End Sub
-
-    ''' <summary>
-    ''' Add face morph presets from MSDK/MSDV data.
-    ''' The keys in MorphValues are CRC32 hashes of morph names in the TRI file.
-    ''' </summary>
-    Private Sub AddFaceMorphPresets(tri As TriFile, shapeName As String, plan As MorphPlan)
-        Dim morphsForShape = tri.GetMorphsForShape(shapeName)
-        If morphsForShape.Count = 0 Then Return
-
-        ' Build hash-to-name lookup for this shape's morphs
-        For Each morphEntry In morphsForShape
-            If morphEntry.MorphType <> TriMorphType.Position Then Continue For
-            If morphEntry.Offsets.Count = 0 Then Continue For
-
-            ' Check if this morph's name hash matches any MSDK key
-            Dim nameHash = CRC32Hash(morphEntry.Name)
-            Dim weight As Single = 0
-            If Not _npcData.MorphValues.TryGetValue(nameHash, weight) Then Continue For
-            If Math.Abs(weight) < 0.001F Then Continue For
-
-            Dim deltas = ConvertTriOffsetsToMorphData(morphEntry)
-            If deltas.Count > 0 Then
-                plan.Channels.Add(New MorphChannel(morphEntry.Name, weight, deltas))
             End If
         Next
     End Sub
@@ -475,27 +448,6 @@ Public Class NpcMorphResolver
             normalized = "meshes\" & normalized
         End If
         Return normalized
-    End Function
-
-    ''' <summary>CRC32 hash of a morph name (used by FO4 MSDK keys).</summary>
-    Private Shared Function CRC32Hash(name As String) As UInteger
-        If String.IsNullOrEmpty(name) Then Return 0
-
-        Dim bytes = System.Text.Encoding.ASCII.GetBytes(name.ToLowerInvariant())
-        Dim crc As UInteger = &HFFFFFFFFUI
-
-        For Each b In bytes
-            crc = crc Xor CUInt(b)
-            For bit = 0 To 7
-                If (crc And 1UI) <> 0 Then
-                    crc = (crc >> 1) Xor &HEDB88320UI
-                Else
-                    crc >>= 1
-                End If
-            Next
-        Next
-
-        Return crc Xor &HFFFFFFFFUI
     End Function
 
 End Class
