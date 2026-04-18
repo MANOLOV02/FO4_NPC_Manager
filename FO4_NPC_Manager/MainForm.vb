@@ -22,6 +22,7 @@ Public Class MainForm
     ''' material code.</summary>
     Private Const ENABLE_TWO_STEP_SKIN_TINT As Boolean = True
 
+
     Private ReadOnly _pluginManager As New PluginManager()
     Private _allNPCs As New List(Of NPC_Data)
     Private _previewControl As PreviewControl
@@ -1232,27 +1233,6 @@ Public Class MainForm
 
         Dim useFaceGen = HasFaceGenAssets(state)
 
-        ' All diagnostic dumps removed — findings saved in memory project_morph_system.md
-        ' Next: parse HumanRaceFacialBoneRegions<Gender>.txt JSON and apply FMRS via DeltaTransform.
-
-        ' One-time probe: check whether _faceBones.nif variants exist for vanilla face parts
-        Dim _probedFaceBones As Boolean = False
-        If Not _probedFaceBones Then
-            _probedFaceBones = True
-            Dim probePaths = {
-                "meshes\actors\character\characterassets\basefemalehead_facebones.nif",
-                "meshes\actors\character\characterassets\basemalehead_facebones.nif",
-                "meshes\actors\character\characterassets\faceparts\femalemouth_facebones.nif",
-                "meshes\actors\character\characterassets\faceparts\femaleeyes_facebones.nif",
-                "meshes\actors\character\characterassets\faceparts\femalelashes_facebones.nif",
-                "meshes\actors\character\characterassets\faceparts\femaleheadrear_facebones.nif"
-            }
-            For Each p In probePaths
-                Dim exists = FilesDictionary_class.Dictionary.ContainsKey(p)
-                NpcPreviewLog.Log($"  [FACEBONES-PROBE] '{p}' exists={exists}")
-            Next
-        End If
-
         Dim previewVariant As New PreviewVariantDefinition With {
             .RootNpcFormID = state.FormID,
             .VariantId = 1,
@@ -1285,14 +1265,16 @@ Public Class MainForm
         ' lets the user compare "raw face" (no pose, no morphs) vs "with FMRS applied" live.
         Dim baseSkelResolver = New DefaultSkeletonResolver(renderData.SkeletonKey)
         Dim faceBonePose As Poses_class = Nothing
+        Dim bodyWeightData As (Wt As Single, Wm As Single, Wf As Single, GenderBlock As RACE_BoneDataGender, MrsvValues As List(Of Single)) = Nothing
         If boneMorphsEnabled Then
             faceBonePose = BuildFaceBoneTransforms(state)
+            bodyWeightData = ResolveBodyWeightData(state)
         End If
+
         Dim faceSkelBytes = TryLoadFaceSkeletonBytes(state)
         Dim skelResolver As ISkeletonResolver
-        If faceSkelBytes IsNot Nothing Then
-            ' Wrap the base resolver so the face skeleton is merged BEFORE the pose is applied.
-            skelResolver = New FaceBoneSkeletonResolver(baseSkelResolver, faceSkelBytes)
+        If faceSkelBytes IsNot Nothing OrElse bodyWeightData.GenderBlock IsNot Nothing Then
+            skelResolver = New FaceBoneSkeletonResolver(baseSkelResolver, faceSkelBytes, bodyWeightData)
         Else
             skelResolver = baseSkelResolver
         End If
@@ -1487,37 +1469,12 @@ Public Class MainForm
         Dim stat_byFlags_skipped As New Dictionary(Of UShort, Integer)
 
         NpcPreviewLog.Log($"  [FACETINT] processing {npcData.FaceTintLayers.Count} tint layers for {npcData.EditorID}")
-        NpcPreviewLog.Log($"  [FACETINT] === Pipeline coverage ===")
-        NpcPreviewLog.Log($"    TTEF bits: 0x0001=OnOffOnly, 0x0002=ChargenDetail, 0x0004=TakesSkinTone (metadata only, not used by render branch)")
-        NpcPreviewLog.Log($"    opacity = tl.Value/100 <= 0.001 -> SKIPPED entirely")
-        NpcPreviewLog.Log($"    Slot 12 SkinTone -> SKIPPED from compositor; applied by render shader's tintColor uniform (albedo *= tintColor) on face AND body meshes")
-        NpcPreviewLog.Log($"    Discr=1 Palette (non-SkinTone) -> D: srcColor=uColor from TEND RGB, coverage=layerSample.r*uOpacity*TTEC.Alpha, blendOp from TTEC")
-        NpcPreviewLog.Log($"    Discr=2 TextureSet             -> D: srcColor=layerSample.rgb, coverage=layerSample.a*uOpacity, blendOp from TTEB")
-        NpcPreviewLog.Log($"    Discr=2 TextureSet on N/S      -> hard-replace gated by TTET[0].alpha*uOpacity (absolute full-face detail)")
-        NpcPreviewLog.Log($"    NifSkope reference (sk_msn.frag): overlay(albedo, tintMask) then *= tintColor -- we approximate overlay via alpha-over in the existing preview shader and keep SkinTint uniform active.")
-        NpcPreviewLog.Log($"  [FACETINT] === Layers ===")
 
         For Each tl In npcData.FaceTintLayers
             Dim opt = race.FindTintOption(tl.Index, state.IsFemale)
-
-            ' [tl raw] — log EVERY NPC tint layer before any filter so we can audit drops.
-            ' This is the source-of-truth dump for "are all facetints applied?" — every layer
-            ' that the parser produced must show up here, then ADDED or one of the skip lines.
-            Dim rawOptName = If(opt IsNot Nothing, opt.Name, "<no-option>")
-            Dim rawOptSlot = If(opt IsNot Nothing, opt.Slot.ToString(), "?")
             Dim rawOptFlagsU = If(opt IsNot Nothing, opt.Flags, CUShort(0))
             Dim rawOptFlagsHex = If(opt IsNot Nothing, $"0x{opt.Flags:X4}", "?")
             Dim rawOptFlagsName = If(opt IsNot Nothing, FormatTintFlagsName(opt.Flags), "?")
-            Dim ttetSlots As String
-            If opt IsNot Nothing AndAlso opt.Textures IsNot Nothing Then
-                Dim s0 = If(opt.Textures.Count >= 1 AndAlso Not String.IsNullOrEmpty(opt.Textures(0)), "Y", "-")
-                Dim s1 = If(opt.Textures.Count >= 2 AndAlso Not String.IsNullOrEmpty(opt.Textures(1)), "Y", "-")
-                Dim s2 = If(opt.Textures.Count >= 3 AndAlso Not String.IsNullOrEmpty(opt.Textures(2)), "Y", "-")
-                ttetSlots = $"[D={s0} N={s1} S={s2}]"
-            Else
-                ttetSlots = "[?]"
-            End If
-            NpcPreviewLog.Log($"    [tl raw] idx={tl.Index} discr={tl.Discriminator} value={tl.Value} slot={rawOptSlot} flags={rawOptFlagsHex}({rawOptFlagsName}) ttet={ttetSlots} name='{rawOptName}'")
 
             If opt Is Nothing OrElse opt.Textures Is Nothing OrElse opt.Textures.Count = 0 Then
                 NpcPreviewLog.Log($"      -> SKIP option/textures missing")
@@ -1608,14 +1565,12 @@ Public Class MainForm
                 layerInput.G = resolved.Color.G
                 layerInput.B = resolved.Color.B
                 layerInput.BlendOp = CInt(resolved.BlendOp)
-                ' Per-preset alpha multiplies the slider value. Slider at 100% with alpha=0.5
-                ' ends up as 0.5 effective opacity so the author can keep the user-facing slider
-                ' range full while still authoring a softer preset intensity.
-                Dim sliderOpacity As Single = opacity   ' already tl.Value / 100
-                Dim effectiveOpacity As Single = sliderOpacity * resolved.Alpha
-                layerInput.Opacity = Math.Max(0.0F, Math.Min(1.0F, effectiveOpacity))
-                opacity = layerInput.Opacity   ' keep the downstream ADDED log line consistent
-                NpcPreviewLog.Log($"      -> Palette resolve: TemplateColorIndex={tl.TemplateColorIndex} tendRGB=({tl.Color.R},{tl.Color.G},{tl.Color.B}) -> effectiveRGB=({resolved.Color.R},{resolved.Color.G},{resolved.Color.B}) blendOp={resolved.BlendOp}({BlendOpName(resolved.BlendOp)}) slider={sliderOpacity:F2} * tcAlpha={resolved.Alpha:F2} = effectiveOpacity={effectiveOpacity:F2}")
+                ' The NPC's TEND.Value IS the authoritative opacity. TTEC.Alpha is a per-preset
+                ' UI property from the chargen template — it controls how prominent each preset
+                ' button's swatch appears, NOT the runtime rendering intensity. When the NPC
+                ' selects a color (even (0,0,0) for black), the slider alone determines visibility.
+                layerInput.Opacity = opacity   ' already tl.Value / 100
+                NpcPreviewLog.Log($"      -> Palette resolve: TemplateColorIndex={tl.TemplateColorIndex} tendRGB=({tl.Color.R},{tl.Color.G},{tl.Color.B}) -> effectiveRGB=({resolved.Color.R},{resolved.Color.G},{resolved.Color.B}) blendOp={resolved.BlendOp}({BlendOpName(resolved.BlendOp)}) opacity={opacity:F2}")
             ElseIf tl.Discriminator = 2 Then
                 ' TextureSet: pre-coloured RGBA. Blend op from TTEB raw bytes (parser reads as U32).
                 layerInput.Kind = FaceTintLayerKind.TextureSetDiffuse
@@ -1967,30 +1922,25 @@ Public Class MainForm
     '''               positional index into the TemplateColors array. Fallback to TTEC[0]'s
     '''               BlendOperation, or Default (0) if the Option has no TemplateColors.
     '''
-    '''   - Alpha   : TTEC[TemplateColorIndex].Alpha as a per-preset intensity multiplier
-    '''               applied on top of the slider value (tl.Value/100). Same fallback chain
-    '''               as BlendOp. When the TTEC entry has Alpha=0, the layer effectively
-    '''               switches off regardless of slider value — that's how Bethesda marks
-    '''               "this preset is an empty placeholder".</summary>
-    Private Function ResolvePaletteLayerEffective(tl As NPC_FaceTintLayerData, opt As RACE_TintTemplateOption) As (Color As Color, BlendOp As UInteger, Alpha As Single)
+    '''
+    ''' TTEC.Alpha is NOT used as a runtime opacity multiplier. It's a per-preset UI property
+    ''' from the chargen template (how prominent each preset swatch appears in the color picker).
+    ''' The NPC's TEND.Value is the sole authoritative opacity source — the slider IS the opacity.
+    ''' This was wrong before (we multiplied slider × tcAlpha, which killed layers where tcAlpha=0
+    ''' even when the NPC had a valid color+slider selection, e.g. Geneva's lipliner).</summary>
+    Private Function ResolvePaletteLayerEffective(tl As NPC_FaceTintLayerData, opt As RACE_TintTemplateOption) As (Color As Color, BlendOp As UInteger)
         Dim resolvedColor As Color = tl.Color
         Dim resolvedBlendOp As UInteger = 0UI
-        Dim resolvedAlpha As Single = 1.0F
 
         If opt IsNot Nothing AndAlso opt.TemplateColors IsNot Nothing AndAlso opt.TemplateColors.Count > 0 Then
             If tl.TemplateColorIndex >= 0 AndAlso tl.TemplateColorIndex < opt.TemplateColors.Count Then
-                Dim tc = opt.TemplateColors(tl.TemplateColorIndex)
-                resolvedBlendOp = tc.BlendOperation
-                resolvedAlpha = tc.Alpha
+                resolvedBlendOp = opt.TemplateColors(tl.TemplateColorIndex).BlendOperation
             Else
-                ' TemplateColorIndex = -1 (no preset selected) or out-of-range: fall back to
-                ' the first palette entry's blendOp as an authored default; alpha stays 1.0.
                 resolvedBlendOp = opt.TemplateColors(0).BlendOperation
-                resolvedAlpha = 1.0F
             End If
         End If
 
-        Return (resolvedColor, resolvedBlendOp, resolvedAlpha)
+        Return (resolvedColor, resolvedBlendOp)
     End Function
 
     ''' <summary>Run the compositor for one channel (Diffuse / Normal / Specular) onto the
@@ -2416,26 +2366,6 @@ Public Class MainForm
         End If
     End Function
 
-    ' ==========================================================================
-    ' FACE TINT RENDERING — TODO (not implemented)
-    '
-    ' What we know:
-    ' - RACE record has tint templates (parsed in RACE_TintTemplateGroup/Option):
-    '   slots like SkinTone(12), LipColor(7), Eyeliner(9), Dirt(20), Scars(21), etc.
-    '   Each option has: mask DDS texture path, template colors (CLFM FormIDs), blend op
-    ' - NPC record has tint layers (TETI/TEND):
-    '   Discriminator=1 (Palette) TEND is 7 bytes: Value(1) + RGB(3) + pad(3)
-    '   Discriminator=2 (TextureSet) TEND is 1 byte: Value only
-    '   Value byte / 100 = opacity (0..1). Verified empirically on vanilla NPCs.
-    ' - Mask textures are greyscale DXT1 (white=apply, black=don't). Color comes from TEND/template.
-    ' - FBO composition works: masks load, colors resolve, output texture is correct (verified via PNG dump)
-    ' - Problem: could not get the composed texture to render on the face mesh.
-    '   The shader received bComposedTint=true and the texture was bound, but no visible effect.
-    '   Likely issue: the FO4UnifiedMaterial_Class instance where ComposedTintMask_ID was set
-    '   may not be the same instance the render reads (material may get cloned/recreated during pipeline).
-    '   Needs investigation of how RenderShapes/LoadShapeSafe handles material instances.
-    ' ==========================================================================
-
     ''' <summary>Build a face morph resolver for the given NPC visual state.
     ''' Uses MSDK/MSDV morph presets from Chargen.tri (via RACE mapping) and
     ''' FMRI/FMRS face bone transforms (applied via skeleton DeltaTransform).
@@ -2460,164 +2390,10 @@ Public Class MainForm
         Dim morphPresetDefs = If(state.IsFemale, race.FemaleMorphPresets, race.MaleMorphPresets)
         Dim morphGroups = If(state.IsFemale, race.FemaleMorphGroups, race.MaleMorphGroups)
 
-        ' Build face morph name map from RACE (FMRI index ? morph name) for FMRI/FMRS
-        Dim faceMorphDefs = If(state.IsFemale, race.FemaleFaceMorphs, race.MaleFaceMorphs)
-        Dim faceMorphNameMap As New Dictionary(Of UInteger, String)
-        For Each fmd In faceMorphDefs
-            If fmd.Index <> 0UI AndAlso fmd.Name <> "" Then faceMorphNameMap(fmd.Index) = fmd.Name
-        Next
-
-        NpcPreviewLog.Log($"  [MORPH] NPC {npcData.EditorID} [{modelNpcFormID:X8}]: MorphValues={npcData.MorphValues.Count} FaceMorphs={npcData.FaceMorphs.Count} FMIN={npcData.FacialMorphIntensity:F3} RaceMorphValueDefs={morphValueDefs.Count} RacePresetDefs={morphPresetDefs.Count} RaceMorphGroups={morphGroups.Count} FaceMorphNameMap={faceMorphNameMap.Count}")
-
-        ' === Raw MSDV dump ===
-        ' For each NPC MorphValue key, annotate which RACE def (if any) it matches. Slider
-        ' defs map via Index -> MinName/MaxName (signed weight selects one). Preset defs map
-        ' via Index -> PresetName (localized display) + MorphName (Chargen.tri morph target).
-        ' For presets we ALSO resolve the owning Morph Group (region name + MPPK mask enum)
-        ' and the preset's MPPT -> TXST editor ID so we can see the per-region texture swap
-        ' that Bethesda's engine applies.
-        Dim sliderDefByIndex As New Dictionary(Of UInteger, RACE_MorphValueDef)
-        For Each d In morphValueDefs
-            sliderDefByIndex(d.Index) = d
-        Next
-        ' Map each preset to its (group, preset) pair so we can report the region context.
-        Dim presetToGroupByIndex As New Dictionary(Of UInteger, List(Of (Grp As RACE_MorphGroup, Pst As RACE_MorphPresetDef)))
-        For Each g In morphGroups
-            For Each p In g.Presets
-                Dim list As List(Of (Grp As RACE_MorphGroup, Pst As RACE_MorphPresetDef)) = Nothing
-                If Not presetToGroupByIndex.TryGetValue(p.Index, list) Then
-                    list = New List(Of (Grp As RACE_MorphGroup, Pst As RACE_MorphPresetDef))
-                    presetToGroupByIndex(p.Index) = list
-                End If
-                list.Add((g, p))
-            Next
-        Next
-        ' Pre-collect every region-mask TTET[0] path referenced by any morph group of THIS
-        ' RACE whose MPPK resolves to a slot 0..6, then load them all in one batch via the
-        ' background DDS loader. Each RACE has its own TintTemplateGroups so the mask paths
-        ' are race-specific (HumanRace, GhoulRace, SynthRace differ). Caching, if added later,
-        ' must be keyed by race+gender. This lets us report each mask's pixel format and
-        ' dimensions in the dump below without doing one-shot GL uploads.
-        Dim maskInfoByPath As New Dictionary(Of String, PreviewModel.Texture_Loaded_Class)(StringComparer.OrdinalIgnoreCase)
-        Try
-            Dim maskPathSet As New HashSet(Of String)(StringComparer.OrdinalIgnoreCase)
-            For Each g In morphGroups
-                Dim s As TintSlot
-                If Not g.TryGetMaskSlot(s) Then Continue For
-                For Each opt In race.FindTintOptionsBySlot(s, state.IsFemale)
-                    If opt.Textures Is Nothing Then Continue For
-                    For Each tx In opt.Textures
-                        If String.IsNullOrEmpty(tx) Then Continue For
-                        Dim norm = NormalizeDictionaryKeyWithTexturesPrefix(tx)
-                        If FilesDictionary_class.Dictionary.ContainsKey(norm) Then maskPathSet.Add(norm)
-                    Next
-                Next
-            Next
-            If maskPathSet.Count > 0 Then
-                Dim batch = DirectXDDSLoader.Load_And_GenerateOpenGLTextures_FromDictionary(
-                    maskPathSet.ToArray(), True, True)
-                For Each kvp In batch
-                    maskInfoByPath(kvp.Key) = kvp.Value
-                Next
-            End If
-        Catch ex As Exception
-            NpcPreviewLog.Log($"  [MORPH-RAW] mask preload error: {ex.Message}")
-        End Try
-
-        NpcPreviewLog.Log($"  [MORPH-RAW] === MSDV dump for {npcData.EditorID} ({npcData.MorphValues.Count} keys) ===")
-        For Each kvp In npcData.MorphValues
-            Dim key As UInteger = kvp.Key
-            Dim val As Single = kvp.Value
-            Dim sliderDef As RACE_MorphValueDef = Nothing
-            Dim presetPairs As List(Of (Grp As RACE_MorphGroup, Pst As RACE_MorphPresetDef)) = Nothing
-            Dim sliderMatched As Boolean = sliderDefByIndex.TryGetValue(key, sliderDef)
-            Dim presetMatched As Boolean = presetToGroupByIndex.TryGetValue(key, presetPairs)
-
-            Dim annotations As New List(Of String)
-            If sliderMatched Then
-                annotations.Add($"slider[minName='{sliderDef.MinName}', maxName='{sliderDef.MaxName}']")
-            End If
-            If presetMatched Then
-                For Each pair In presetPairs
-                    annotations.Add($"preset[group='{pair.Grp.Name}', maskEnum={pair.Grp.MaskEnum}, presetName='{pair.Pst.PresetName}', morphName='{pair.Pst.MorphName}']")
-                Next
-            End If
-            If annotations.Count = 0 Then annotations.Add("UNMATCHED (no slider def, no preset def)")
-
-            NpcPreviewLog.Log($"    [MORPH-RAW] key=0x{key:X8} value={val:F4} -> {String.Join(" | ", annotations)}")
-
-            ' For each matched preset, emit sub-lines with the resolved TXST texture paths
-            ' (TX00 diffuse, TX01 normal, TX02 wrinkles, TX07 smooth spec) and the region
-            ' mask texture path from the tint option indexed by MaskEnum.
-            If presetMatched Then
-                For Each pair In presetPairs
-                    Dim g = pair.Grp
-                    Dim p = pair.Pst
-
-                    Dim txstDesc As String = "none"
-                    Dim txstDiffuse As String = ""
-                    Dim txstNormal As String = ""
-                    Dim txstWrinkles As String = ""
-                    Dim txstSpec As String = ""
-                    If p.TextureFormID <> 0UI Then
-                        Dim txstRec = _pluginManager.GetRecord(p.TextureFormID)
-                        If txstRec IsNot Nothing AndAlso txstRec.Header.Signature = "TXST" Then
-                            Dim txst = RecordParsers.ParseTXST(txstRec, _pluginManager)
-                            txstDesc = $"{txstRec.EditorID} [{p.TextureFormID:X8}]"
-                            If txst IsNot Nothing Then
-                                txstDiffuse = txst.DiffuseTexture
-                                txstNormal = txst.NormalTexture
-                                txstWrinkles = txst.WrinklesTexture
-                                txstSpec = txst.SmoothSpecTexture
-                            End If
-                        Else
-                            txstDesc = $"[{p.TextureFormID:X8}]"
-                        End If
-                    End If
-
-                    ' Resolve MPPK enum -> TintSlot 0..6 -> all tint options of that slot.
-                    ' MPPK 1221..1227 (female) and 1171..1177 (male) are SEMANTIC region IDs,
-                    ' not array indices. Each maps by convention to TETI.Slot 0..6 (Forehead..Neck).
-                    ' The actual mask DDS lives in each option's TTET[0].
-                    Dim slot As TintSlot
-                    Dim slotResolved = g.TryGetMaskSlot(slot)
-                    NpcPreviewLog.Log($"       MPPT={txstDesc}")
-                    If txstDiffuse <> "" Then NpcPreviewLog.Log($"         TX00 D='{txstDiffuse}'")
-                    If txstNormal <> "" Then NpcPreviewLog.Log($"         TX01 N='{txstNormal}'")
-                    If txstWrinkles <> "" Then NpcPreviewLog.Log($"         TX02 W='{txstWrinkles}'")
-                    If txstSpec <> "" Then NpcPreviewLog.Log($"         TX07 S='{txstSpec}'")
-                    If Not slotResolved Then
-                        NpcPreviewLog.Log($"       mppk={g.MaskEnum} -> NO SLOT (out of male/female region range)")
-                    Else
-                        Dim slotOpts = race.FindTintOptionsBySlot(slot, state.IsFemale)
-                        NpcPreviewLog.Log($"       mppk={g.MaskEnum} -> slot={CInt(slot)} ({slot}) optionsInSlot={slotOpts.Count}")
-                        For optIdx = 0 To slotOpts.Count - 1
-                            Dim opt = slotOpts(optIdx)
-                            Dim ttetCount = If(opt.Textures Is Nothing, 0, opt.Textures.Count)
-                            NpcPreviewLog.Log($"         opt[{optIdx}] index={opt.Index} entryType={opt.EntryType} name='{opt.Name}' TTET.Count={ttetCount}")
-                            If opt.Textures IsNot Nothing Then
-                                For texIdx = 0 To opt.Textures.Count - 1
-                                    Dim texPath = opt.Textures(texIdx)
-                                    Dim normalized = NormalizeDictionaryKeyWithTexturesPrefix(texPath)
-                                    Dim exists = (texPath <> "") AndAlso FilesDictionary_class.Dictionary.ContainsKey(normalized)
-                                    Dim fmtDesc As String = ""
-                                    Dim loadedTex As PreviewModel.Texture_Loaded_Class = Nothing
-                                    If exists AndAlso maskInfoByPath.TryGetValue(normalized, loadedTex) AndAlso loadedTex IsNot Nothing AndAlso loadedTex.Loaded Then
-                                        fmtDesc = $" dxgiOrig={loadedTex.DGXFormat_Original} dxgiFinal={loadedTex.DGXFormat_Final} {loadedTex.Size.Width}x{loadedTex.Size.Height}"
-                                    End If
-                                    NpcPreviewLog.Log($"           TTET[{texIdx}]={If(exists, "OK ", "MISS")} '{texPath}'{fmtDesc}")
-                                Next
-                            End If
-                        Next
-                    End If
-                Next
-            End If
-        Next
-        NpcPreviewLog.Log($"  [MORPH-RAW] === end MSDV dump ===")
+        NpcPreviewLog.Log($"  [MORPH] NPC {npcData.EditorID} [{modelNpcFormID:X8}]: MorphValues={npcData.MorphValues.Count} FaceMorphs={npcData.FaceMorphs.Count} FMIN={npcData.FacialMorphIntensity:F3}")
 
         Return New NpcMorphResolver(
             npcData,
-            faceMorphNameMap:=faceMorphNameMap,
             morphValueDefs:=morphValueDefs,
             morphPresetDefs:=morphPresetDefs,
             meshDictKeys:=renderData.MeshDictKeys,
@@ -2710,15 +2486,12 @@ Public Class MainForm
         End Try
     End Function
 
-    ''' <summary>Build a Poses_class that carries face bone deltas from FMRI/FMRS data.
-    ''' Reads the race's FacialBoneRegions JSON file, then for each NPC FMRI entry:
-    '''   - Looks up the region by ID
-    '''   - For each bone in the region, computes a delta transform by lerping Min?Default?Max
-    '''     using the FMRS slider values (per-axis independent, clamped to [-1,+1], scaled by FMIN)
-    '''   - Converts the Transform_Class (Matrix33 rotation + Vec3 translation + scale) into a
-    '''     PoseTransformData (axis-angle via Matrix33ToBSRotation for WardrobeManager source)
-    '''   - Prepends "skin_" to the bone name to match what's in SkeletonDictionary
-    ''' Returns Nothing if no regions file found or no non-zero FMRS values.</summary>
+    ''' <summary>Build a pose of face bone deltas from the NPC's FMRI/FMRS subrecords.
+    ''' For each FMRI region, look up the region in the race's FacialBoneRegions JSON, then
+    ''' for each bone in the region compute a per-axis delta by signed-lerping FMRS sliders
+    ''' (clamped to [-1,+1]) across Minima/Default/Maxima, scaled by FMIN. Bone names are
+    ''' prefixed with "skin_" to match SkeletonDictionary. Returns Nothing if no regions
+    ''' file is found or no non-zero FMRS values contribute.</summary>
     Private Function BuildFaceBoneTransforms(state As NPCVisualState) As Poses_class
         If state Is Nothing Then Return Nothing
 
@@ -2734,20 +2507,13 @@ Public Class MainForm
         If regionsFile Is Nothing Then Return Nothing
 
         Dim result As New Dictionary(Of String, Transform_Class)(StringComparer.OrdinalIgnoreCase)
-        Dim matchedRegions As Integer = 0
-        Dim unmatchedRegions As Integer = 0
-        ' Default to 1.0 when the NPC record doesn't carry an explicit FMIN.
+        Dim boneScales As New Dictionary(Of String, System.Numerics.Vector3)(StringComparer.OrdinalIgnoreCase)
         Dim fmin = If(npcData.FacialMorphIntensity <= 0.0F, 1.0F, npcData.FacialMorphIntensity)
-        Dim maxDeltaSeen As Single = 0
 
         For Each fm In npcData.FaceMorphs
             Dim region As FacialBoneRegion = Nothing
-            If Not regionsFile.Regions.TryGetValue(fm.Index, region) Then
-                unmatchedRegions += 1
-                Continue For
-            End If
+            If Not regionsFile.Regions.TryGetValue(fm.Index, region) Then Continue For
 
-            ' Per-axis sliders. LerpFmrs() clamps to [-1,+1] internally, so we just pass raw.
             Dim px = fm.PositionX
             Dim py = fm.PositionY
             Dim pz = fm.PositionZ
@@ -2756,17 +2522,11 @@ Public Class MainForm
             Dim rz = fm.RotationZ
             Dim sc = fm.Scale
 
-            NpcPreviewLog.Log($"    [FMRS] id={fm.Index} '{region.Name}' P=({px:F3},{py:F3},{pz:F3}) R=({rx:F3},{ry:F3},{rz:F3}) S={sc:F3}")
-
             ' Skip regions with all-zero FMRS (no deformation at all)
             If Math.Abs(px) < 0.0001F AndAlso Math.Abs(py) < 0.0001F AndAlso Math.Abs(pz) < 0.0001F AndAlso
                Math.Abs(rx) < 0.0001F AndAlso Math.Abs(ry) < 0.0001F AndAlso Math.Abs(rz) < 0.0001F AndAlso
                Math.Abs(sc) < 0.0001F Then Continue For
 
-            matchedRegions += 1
-
-            ' For each bone in the region, compute the per-axis deltas via LerpFmrs (which now
-            ' returns the DELTA from default, not the lerped absolute) and post-scale by FMIN.
             For Each boneEntry In region.Bones
                 Dim targetBoneName = "skin_" & boneEntry.Bone
 
@@ -2780,26 +2540,29 @@ Public Class MainForm
                     LerpFmrs(ry, region.DefaultRotation.Y, boneEntry.MinimaRotation.Y, boneEntry.MaximaRotation.Y) * fmin,
                     LerpFmrs(rz, region.DefaultRotation.Z, boneEntry.MinimaRotation.Z, boneEntry.MaximaRotation.Z) * fmin)
 
-                ' Single scale slider drives all 3 scale axes (the JSON Min/Max have a Vec3 scale).
                 Dim deltaScale As New System.Numerics.Vector3(
-                    LerpFmrs(sc, region.DefaultScale.X, boneEntry.MinimaScale.X, boneEntry.MaximaScale.X) * fmin,
-                    LerpFmrs(sc, region.DefaultScale.Y, boneEntry.MinimaScale.Y, boneEntry.MaximaScale.Y) * fmin,
-                    LerpFmrs(sc, region.DefaultScale.Z, boneEntry.MinimaScale.Z, boneEntry.MaximaScale.Z) * fmin)
+                    LerpFmrs(sc * fmin, region.DefaultScale.X, boneEntry.MinimaScale.X, boneEntry.MaximaScale.X),
+                    LerpFmrs(sc * fmin, region.DefaultScale.Y, boneEntry.MinimaScale.Y, boneEntry.MaximaScale.Y),
+                    LerpFmrs(sc * fmin, region.DefaultScale.Z, boneEntry.MinimaScale.Z, boneEntry.MaximaScale.Z))
 
-                ' Build Transform_Class: rotation from euler degrees (JSON values are in degrees),
-                ' translation from position delta, scale '0 = no change' convention ? 1 + delta.
                 Dim rotation = Transform_Class.EulerXYZToMatrix33(deltaRot.X, deltaRot.Y, deltaRot.Z)
                 Dim xform As New Transform_Class With {
                     .Rotation = rotation,
                     .Translation = deltaPos,
-                    .Scale = 1.0F + deltaScale.X
+                    .Scale = 1.0F
                 }
+                Dim boneScaleVec = New System.Numerics.Vector3(
+                    1.0F + deltaScale.X, 1.0F + deltaScale.Y, 1.0F + deltaScale.Z)
 
-                ' Track max |delta| magnitude for diagnostic visibility
-                Dim mag = deltaPos.Length()
-                If mag > maxDeltaSeen Then maxDeltaSeen = mag
+                ' Accumulate non-uniform scale per bone (multiply across regions)
+                Dim existingScale As System.Numerics.Vector3
+                If boneScales.TryGetValue(targetBoneName, existingScale) Then
+                    boneScales(targetBoneName) = existingScale * boneScaleVec
+                Else
+                    boneScales(targetBoneName) = boneScaleVec
+                End If
 
-                ' Compose with any previous transform on the same bone (multiple regions may affect same bone)
+                ' Compose rotation+translation across regions
                 Dim existing As Transform_Class = Nothing
                 If result.TryGetValue(targetBoneName, existing) AndAlso existing IsNot Nothing Then
                     result(targetBoneName) = existing.ComposeTransforms(xform)
@@ -2809,12 +2572,7 @@ Public Class MainForm
             Next
         Next
 
-        If result.Count = 0 Then
-            NpcPreviewLog.Log($"  [FACE-BONE] no transforms built (matched regions={matchedRegions}, unmatched={unmatchedRegions}, FMIN={fmin:F3})")
-            Return Nothing
-        End If
-
-        NpcPreviewLog.Log($"  [FACE-BONE] {result.Count} bones deformed across {matchedRegions} regions (unmatched={unmatchedRegions}, FMIN={fmin:F3}, maxPosDelta={maxDeltaSeen:F3} NIF units)")
+        If result.Count = 0 Then Return Nothing
 
         ' Convert the Transform_Class deltas into a Poses_class with PoseTransformData entries.
         Dim pose As New Poses_class With {
@@ -2825,6 +2583,10 @@ Public Class MainForm
         For Each kv In result
             Dim xform = kv.Value
             Dim rotVec = Transform_Class.Matrix33ToBSRotation(xform.Rotation)
+            Dim sc As System.Numerics.Vector3
+            If Not boneScales.TryGetValue(kv.Key, sc) Then
+                sc = New System.Numerics.Vector3(1.0F, 1.0F, 1.0F)
+            End If
             pose.Transforms(kv.Key) = New PoseTransformData With {
                 .X = xform.Translation.X,
                 .Y = xform.Translation.Y,
@@ -2832,7 +2594,10 @@ Public Class MainForm
                 .Yaw = rotVec.X,
                 .Pitch = rotVec.Y,
                 .Roll = rotVec.Z,
-                .Scale = xform.Scale
+                .Scale = 1.0F,
+                .ScaleX = sc.X,
+                .ScaleY = sc.Y,
+                .ScaleZ = sc.Z
             }
         Next
 
@@ -2858,7 +2623,50 @@ Public Class MainForm
         End If
     End Function
 
-    ''' <summary>Skeleton resolver that merges the race's face skeleton NIF into the body skeleton, then
+    ''' <summary>Resolve the NPC's MWGT weights and the RACE's per-bone weight scale data for
+    ''' use by the skeleton resolver. Returns Nothing if the NPC has no MWGT or the RACE has
+    ''' no bone data for the NPC's gender.</summary>
+    Private Function ResolveBodyWeightData(state As NPCVisualState) As (Wt As Single, Wm As Single, Wf As Single, GenderBlock As RACE_BoneDataGender, MrsvValues As List(Of Single))
+        If state Is Nothing Then Return Nothing
+
+        Dim modelNpcFormID = If(state.ModelSourceFormID <> 0UI, state.ModelSourceFormID, state.FormID)
+        Dim npcData = GetParsedNpc(modelNpcFormID)
+        If npcData Is Nothing Then Return Nothing
+
+        Dim wt As Single = npcData.WeightThin
+        Dim wm As Single = npcData.WeightMuscular
+        Dim wf As Single = npcData.WeightFat
+        If wt + wm + wf < 0.001F Then Return Nothing
+
+        Dim raceRec = _pluginManager.GetRecord(state.RaceFormID)
+        If raceRec Is Nothing OrElse raceRec.Header.Signature <> "RACE" Then Return Nothing
+        Dim race = RecordParsers.ParseRACE(raceRec, _pluginManager)
+
+        Dim targetGender As UInteger = If(state.IsFemale, 1UI, 0UI)
+        For Each bd In race.BoneData
+            If bd.Gender = targetGender Then
+                If bd.Bones.Count > 0 Then Return (wt, wm, wf, bd, npcData.BodyMorphRegionValues)
+                Exit For
+            End If
+        Next
+        Return Nothing
+    End Function
+
+    ''' <summary>Apply body weight morph transforms directly to SkeletonDictionary. MUST be called
+    ''' AFTER the skeleton is fully loaded (body + face bones merged). For each bone listed in the
+    ''' RACE's Weight Scale data, blends the three archetype Vec3s by MWGT to get a per-axis
+    ''' multiplier centred at 1.0, then multiplies the bone's rest translation by (factor - 1)
+    ''' to get a translation delta.
+    '''
+    ''' The BSMS values are translation multipliers, NOT bone scale factors. Skin bones in FO4
+    ''' (Belly_skin, Chest_skin, etc.) deform the mesh by MOVING, not scaling. Multiplying the
+    ''' rest position by the archetype factor produces the correct displacement: fat pushes the
+    ''' belly outward (factor > 1), thin pulls it inward (factor < 1).
+    '''
+    ''' Sets DeltaTransform on the bone. If the bone already has a DeltaTransform (e.g. from
+    ''' the face bone pose), composes the body weight delta on top of it.</summary>
+    ''' <summary>Build per-bone non-uniform scale from MWGT+BSMS (layer 1) and MRSV+BMMP (layer 2).
+    ''' Returns a Poses_class with ScaleX/Y/Z per bone, through the unified pipeline.</summary>
     ''' <summary>Skeleton resolver that merges the race's face skeleton (skeleton_&lt;gender&gt;_faceBones.nif)
     ''' into SkeletonDictionary BEFORE the body pose is applied, so that any face bone entries in the
     ''' passed pose get their DeltaTransform set alongside the body bones.
@@ -2870,33 +2678,141 @@ Public Class MainForm
     '''   2. Merge face skeleton ? face bones added with DeltaTransform=Nothing.
     '''   3. Call Skeleton_Class.AppplyPoseToSkeleton(realPose) ? applies pose to body + face bones.
     ''' </summary>
+    ''' <summary>Walk the skeleton hierarchy from a bone upward to determine which MRSV body
+    ''' morph region (0..4) the bone belongs to. Returns -1 if no known region ancestor found.
+    ''' The mapping is based on matching ancestor bone names to the major skeleton "trunk" bones:
+    '''   HEAD → 0 (Head)
+    '''   Chest, SPINE2, Neck → 1 (Upper Torso)
+    '''   Arm (anywhere in ancestor chain) → 2 (Arms)
+    '''   SPINE1, Pelvis, Butt (anywhere in ancestor chain) → 3 (Lower Torso)
+    '''   Leg (anywhere in ancestor chain) → 4 (Legs)
+    ''' This is inferred from the skeleton hierarchy, not from any Bethesda data file.</summary>
+    Private Shared Function ResolveMrsvRegion(bone As Skeleton_Class.HierarchiBone_class) As Integer
+        Dim cur = bone
+        Dim depth = 0
+        While cur IsNot Nothing AndAlso depth < 20
+            Dim n = cur.BoneName
+            If n IsNot Nothing Then
+                Dim upper = n.ToUpperInvariant()
+                If upper.Contains("LEG") OrElse upper.Contains("LLEG") OrElse upper.Contains("RLEG") Then Return 4
+                If upper.Contains("ARM") OrElse upper.Contains("LARM") OrElse upper.Contains("RARM") Then Return 2
+                If upper.Contains("BUTT") Then Return 3
+                If upper = "HEAD" OrElse upper.StartsWith("HEAD") Then Return 0
+                If upper = "SPINE1" OrElse upper = "SPINE1_OFFSET" Then Return 3
+                If upper = "PELVIS" OrElse upper = "PELVIS_OFFSET" Then Return 3
+                If upper = "SPINE2" OrElse upper = "SPINE2_OFFSET" Then Return 1
+                If upper = "CHEST" OrElse upper = "CHEST_OFFSET" Then Return 1
+                If upper = "NECK" OrElse upper = "NECK_OFFSET" Then Return 1
+            End If
+            cur = cur.Parent
+            depth += 1
+        End While
+        Return -1
+    End Function
+
     Private Class FaceBoneSkeletonResolver
         Implements ISkeletonResolver
 
         Private ReadOnly _baseResolver As ISkeletonResolver
         Private ReadOnly _faceSkelBytes As Byte()
+        Private ReadOnly _bodyWeightData As (Wt As Single, Wm As Single, Wf As Single, GenderBlock As RACE_BoneDataGender, MrsvValues As List(Of Single))
 
-        Public Sub New(baseResolver As ISkeletonResolver, faceSkelBytes As Byte())
+        Public Sub New(baseResolver As ISkeletonResolver, faceSkelBytes As Byte(),
+                       Optional bodyWeightData As (Wt As Single, Wm As Single, Wf As Single, GenderBlock As RACE_BoneDataGender, MrsvValues As List(Of Single)) = Nothing)
             _baseResolver = baseResolver
             _faceSkelBytes = faceSkelBytes
+            _bodyWeightData = bodyWeightData
         End Sub
 
         Public Sub ResolveSkeleton(shapes As IEnumerable(Of IRenderableShape), pose As Poses_class) Implements ISkeletonResolver.ResolveSkeleton
-            ' 1. Base resolver loads body skeleton + HKX physics injection, but NO pose yet
-            '    (we'll apply the pose after merging face bones, so face entries don't get dropped).
+            ' 1. Load body skeleton
             _baseResolver.ResolveSkeleton(shapes, Nothing)
 
-            ' 2. Merge the race's face skeleton into SkeletonDictionary.
+            ' 2. Merge face skeleton
             If _faceSkelBytes IsNot Nothing Then
-                Dim added = Skeleton_Class.MergeFaceSkeleton(_faceSkelBytes)
-                NpcPreviewLog.Log($"  [FACE-SKEL-MERGE] added {added} face bones to SkeletonDictionary")
+                Skeleton_Class.MergeFaceSkeleton(_faceSkelBytes)
             End If
 
-            ' 3. Apply the full pose (body + face bone entries) now that all target bones exist.
-            If pose IsNot Nothing AndAlso pose.Source <> Poses_class.Pose_Source_Enum.None Then
-                Skeleton_Class.AppplyPoseToSkeleton(pose)
+            ' 3. Build body weight pose (needs skeleton loaded for MRSV region mapping)
+            Dim bodyPose As Poses_class = Nothing
+            If _bodyWeightData.GenderBlock IsNot Nothing Then
+                bodyPose = BuildBodyWeightPose(_bodyWeightData.Wt, _bodyWeightData.Wm, _bodyWeightData.Wf,
+                                               _bodyWeightData.GenderBlock, _bodyWeightData.MrsvValues)
             End If
+
+            ' 4. Merge face + body into one pose (AppplyPoseToSkeleton calls Reset first)
+            Dim merged As Poses_class = Nothing
+            If pose IsNot Nothing OrElse bodyPose IsNot Nothing Then
+                merged = New Poses_class With {
+                    .Name = "NPC Bone Transforms",
+                    .Source = Poses_class.Pose_Source_Enum.WardrobeManager,
+                    .Transforms = New Dictionary(Of String, PoseTransformData)
+                }
+                If pose IsNot Nothing Then
+                    For Each kv In pose.Transforms : merged.Transforms(kv.Key) = kv.Value : Next
+                End If
+                If bodyPose IsNot Nothing Then
+                    For Each kv In bodyPose.Transforms : merged.Transforms(kv.Key) = kv.Value : Next
+                End If
+            End If
+
+            ' 5. Apply once
+            If merged IsNot Nothing AndAlso merged.Source <> Poses_class.Pose_Source_Enum.None Then
+                Skeleton_Class.AppplyPoseToSkeleton(merged)
+            End If
+
         End Sub
+
+        Private Shared Function BuildBodyWeightPose(wt As Single, wm As Single, wf As Single,
+                                                     genderBlock As RACE_BoneDataGender,
+                                                     mrsvValues As List(Of Single)) As Poses_class
+            Const Eps As Single = 0.001F
+            Dim pose As New Poses_class With {
+                .Name = "MWGT Body Weight",
+                .Source = Poses_class.Pose_Source_Enum.WardrobeManager,
+                .Transforms = New Dictionary(Of String, PoseTransformData)
+            }
+            Dim affected As Integer = 0
+
+            For Each bone In genderBlock.Bones
+                Dim sy As Single = 1.0F, sz As Single = 1.0F
+
+                If bone.HasWeightScale Then
+                    sy = bone.ThinY * wt + bone.MuscularY * wm + bone.FatY * wf
+                    sz = bone.ThinZ * wt + bone.MuscularZ * wm + bone.FatZ * wf
+                End If
+
+                If bone.HasRangeModifier AndAlso mrsvValues IsNot Nothing AndAlso mrsvValues.Count >= 5 Then
+                    Dim skelBone As Skeleton_Class.HierarchiBone_class = Nothing
+                    If Skeleton_Class.SkeletonDictionary.TryGetValue(bone.BoneName, skelBone) Then
+                        Dim region = ResolveMrsvRegion(skelBone)
+                        If region >= 0 AndAlso region < mrsvValues.Count Then
+                            Dim slider = mrsvValues(region)
+                            If slider >= 0 Then
+                                sy += slider * bone.MaxY
+                                sz += slider * bone.MaxZ
+                            Else
+                                sy += (-slider) * bone.MinY
+                                sz += (-slider) * bone.MinZ
+                            End If
+                        End If
+                    End If
+                End If
+
+                If Math.Abs(sy - 1.0F) < Eps AndAlso Math.Abs(sz - 1.0F) < Eps Then Continue For
+
+                pose.Transforms(bone.BoneName) = New PoseTransformData With {
+                    .ScaleX = 1.0F,
+                    .ScaleY = sy,
+                    .ScaleZ = sz
+                }
+                affected += 1
+            Next
+
+            If affected = 0 Then Return Nothing
+            NpcPreviewLog.Log($"  [BODY-WEIGHT] MWGT=({wt:F3},{wm:F3},{wf:F3}) {affected} bones (of {genderBlock.Bones.Count})")
+            Return pose
+        End Function
     End Class
 
     Private Sub UpdateAssetLoadProgress(info As (Stepn As String, Value As Integer, Max As Integer))
@@ -2955,16 +2871,7 @@ Public Class MainForm
         If state Is Nothing Then Return False
         Dim modelFormID = If(state.ModelSourceFormID <> 0UI, state.ModelSourceFormID, state.FormID)
         Dim path = ResolveFaceGenNifPath(modelFormID)
-        Dim found = path <> "" AndAlso FilesDictionary_class.Dictionary.ContainsKey(path)
-
-        ' Log both ACBS flag candidates and the FaceGen existence for empirical correlation
-        Dim npcData = GetParsedNpc(modelFormID)
-        Dim acbsFlags As UInteger = If(npcData IsNot Nothing, npcData.AcbsFlags, 0UI)
-        Dim tplFlags As UShort = If(npcData IsNot Nothing, npcData.TemplateFlags, CUShort(0))
-        Dim isCharGenFacePreset = (acbsFlags And &H4UI) <> 0UI
-        Dim usesTemplateTraits = (tplFlags And &H1US) <> 0US
-        NpcPreviewLog.Log($"  [FACEGEN-PROBE] NPC={state.FormID:X8} model={modelFormID:X8} ACBS={acbsFlags:X8} tplFlags={tplFlags:X4} CharGenFacePreset={isCharGenFacePreset} UsesTraitsTemplate={usesTemplateTraits} facegenExists={found}")
-        Return found
+        Return path <> "" AndAlso FilesDictionary_class.Dictionary.ContainsKey(path)
     End Function
 
     ''' <summary>Try to find a _faceBones.nif variant of the given mesh path.
@@ -3811,7 +3718,7 @@ Public Class MainForm
             End If
         End If
 
-        CollectHeadPartCandidates(state.HeadPartFormIDs, New HashSet(Of UInteger)(), candidates, order, warnings)
+        CollectHeadPartCandidates(state.HeadPartFormIDs, New HashSet(Of UInteger)(), candidates, order, warnings, useFaceGen)
 
         Return candidates
     End Function
@@ -3871,20 +3778,20 @@ Public Class MainForm
                                           visited As HashSet(Of UInteger),
                                           candidates As List(Of MeshCandidate),
                                           ByRef order As Integer,
-                                          warnings As List(Of String))
+                                          warnings As List(Of String),
+                                          Optional useFaceGen As Boolean = False)
         For Each hdptFormID In headPartFormIDs.Where(Function(id) id <> 0UI)
-            CollectHeadPartCandidate(hdptFormID, visited, candidates, order, warnings, -1)
+            CollectHeadPartCandidate(hdptFormID, visited, candidates, order, warnings, -1, useFaceGen)
         Next
     End Sub
 
-    ''' <param name="parentPartType">The parent HDPT's PartType, or -1 if this is a top-level head part.
-    ''' Extra parts inherit the parent's type for color/tint purposes (e.g. hair extras get hair color).</param>
     Private Sub CollectHeadPartCandidate(hdptFormID As UInteger,
                                          visited As HashSet(Of UInteger),
                                          candidates As List(Of MeshCandidate),
                                          ByRef order As Integer,
                                          warnings As List(Of String),
-                                         parentPartType As Integer)
+                                         parentPartType As Integer,
+                                         Optional useFaceGen As Boolean = False)
         If hdptFormID = 0UI Then Return
         If visited.Contains(hdptFormID) Then Return
         visited.Add(hdptFormID)
@@ -3903,14 +3810,17 @@ Public Class MainForm
 
         NpcPreviewLog.Log($"  [HDPT] {hdpt.EditorID} FID={hdptFormID:X8} type={hdpt.PartType} effectiveType={effectivePartType} mesh={hdpt.MeshPath} txst={hdpt.TextureSetFormID:X8} color={hdpt.ColorFormID:X8} flags={hdpt.Flags:X2} bodyTex={hdpt.UsesBodyTexture} extras={hdpt.ExtraPartFormIDs.Count} parent={parentPartType} raceTri={hdpt.RaceMorphTriPath} chargenTri={hdpt.ChargenMorphTriPath}")
         If hdpt.MeshPath <> "" Then
-            ' Redirect face-region meshes to their _faceBones.nif variant when available.
-            ' The _faceBones variants are rigged to actual face bones (Jaw, LipUpper_L, Cheek_R, etc)
-            ' instead of only body bones, enabling FMRS bone transforms to deform the mesh dynamically.
+            ' Redirect face-region meshes to their _faceBones.nif variant only for NPCs with
+            ' a custom CharGen face (useFaceGen=True). The _faceBones variants are rigged to face
+            ' bones (Jaw, LipUpper_L, Cheek_R, etc) enabling FMRS bone transforms to deform the
+            ' mesh. NPCs without FaceGen use default race face — no _faceBones redirect needed.
             Dim dictKey = NormalizeDictionaryKeyWithMeshesPrefix(hdpt.MeshPath)
-            Dim faceBonesKey = TryGetFaceBonesVariant(dictKey, effectivePartType)
-            If faceBonesKey <> "" Then
-                NpcPreviewLog.Log($"  [FACEBONES-REDIRECT] {dictKey} ? {faceBonesKey}")
-                dictKey = faceBonesKey
+            If useFaceGen Then
+                Dim faceBonesKey = TryGetFaceBonesVariant(dictKey, effectivePartType)
+                If faceBonesKey <> "" Then
+                    NpcPreviewLog.Log($"  [FACEBONES-REDIRECT] {dictKey} ? {faceBonesKey}")
+                    dictKey = faceBonesKey
+                End If
             End If
 
             candidates.Add(New MeshCandidate With {
@@ -3933,7 +3843,7 @@ Public Class MainForm
         ' Pass the effective type down so nested extras also inherit
         Dim childParentType = If(effectivePartType <> 0, effectivePartType, parentPartType)
         For Each extraPartFormID In hdpt.ExtraPartFormIDs
-            CollectHeadPartCandidate(extraPartFormID, visited, candidates, order, warnings, childParentType)
+            CollectHeadPartCandidate(extraPartFormID, visited, candidates, order, warnings, childParentType, useFaceGen)
         Next
     End Sub
 
@@ -4093,31 +4003,21 @@ Public Class MainForm
             EnsureShapeMaterialResolved(shape)
 
             Dim relatedMaterial = shape.ShapeMaterial
-            If relatedMaterial Is Nothing Then
-                NpcPreviewLog.Log($"    shape={shape.ShapeName}: NO material")
-                Continue For
-            End If
+            If relatedMaterial Is Nothing Then Continue For
 
             ApplyTextureSetOverrides(textureSet, relatedMaterial)
 
             Dim material = relatedMaterial.material
-            If material Is Nothing Then
-                NpcPreviewLog.Log($"    shape={shape.ShapeName}: material.material is Nothing")
-                Continue For
-            End If
+            If material Is Nothing Then Continue For
 
-            Dim appliedAction = "none"
-            NpcPreviewLog.Log($"      [BEFORE-OVERRIDE] g2p={material.GrayscaleToPaletteColor} g2pScale={material.GrayscaleToPaletteScale} greyscaleTex={material.GreyscaleTexture} hair={material.Hair} specEnabled={material.SpecularEnabled} smoothSpecTex={material.SmoothSpecTexture}")
             If hasHairPaletteRemap AndAlso IsHairHeadPart(candidate) AndAlso material.GrayscaleToPaletteColor Then
                 ' Material already uses grayscale-to-palette: override scale with CLFM RemappingIndex
                 material.GrayscaleToPaletteScale = hairPaletteScale
                 If hairPaletteTexture <> "" Then
                     material.GreyscaleTexture = hairPaletteTexture
                 End If
-                appliedAction = $"hairPaletteRemap(scale={hairPaletteScale})"
             ElseIf material.Hair OrElse material.GrayscaleToPaletteColor Then
                 ' Material is hair or uses grayscale-to-palette: try palette remap first, tint as fallback.
-                ' This handles typed hair parts, hairlines, and extra parts with Hair material.
                 Dim didPalette = False
                 If state IsNot Nothing AndAlso state.HairColorFormID <> 0UI Then
                     Dim clfm = ResolveColorFormData(state.HairColorFormID)
@@ -4127,41 +4027,30 @@ Public Class MainForm
                             material.GrayscaleToPaletteColor = True
                             material.GrayscaleToPaletteScale = clfm.RemappingIndex
                             material.GreyscaleTexture = palTex
-                            appliedAction = $"hairPaletteRemap(scale={clfm.RemappingIndex})"
                             didPalette = True
                         End If
                     End If
                 End If
-                ' Fallback: direct hair tint color
                 If Not didPalette Then
                     Dim effectiveHairColor = hairTintColor
                     If Not effectiveHairColor.HasValue AndAlso state IsNot Nothing Then
                         effectiveHairColor = ResolveColorFormColor(state.HairColorFormID)
                     End If
-                    If effectiveHairColor.HasValue Then
-                        material.HairTintColor = effectiveHairColor.Value
-                        appliedAction = $"hairTint({effectiveHairColor.Value})"
-                    End If
+                    If effectiveHairColor.HasValue Then material.HairTintColor = effectiveHairColor.Value
                 End If
             End If
 
-            Dim forceSkinTint = skinTintColor.HasValue AndAlso ShouldForceSkinTint(candidate, material)
-            If forceSkinTint Then
+            If skinTintColor.HasValue AndAlso ShouldForceSkinTint(candidate, material) Then
                 material.SkinTint = True
-                appliedAction &= $"+forceSkinTint"
             End If
 
             If material.SkinTint AndAlso skinTintColor.HasValue Then
                 material.SkinTintColor = skinTintColor.Value
-                appliedAction &= $"+skinTintColor({skinTintColor.Value})"
             End If
 
             If solidTintColor.HasValue AndAlso Not material.Hair AndAlso Not material.SkinTint Then
                 shape.TintColor = solidTintColor.Value
-                appliedAction &= $"+solidTint({solidTintColor.Value})"
             End If
-
-            NpcPreviewLog.Log($"    shape={shape.ShapeName}: shaderType={material.NifShaderType} matHair={material.Hair} matSkinTint={material.SkinTint} g2p={material.GrayscaleToPaletteColor} g2pScale={material.GrayscaleToPaletteScale} greyscaleTex={material.GreyscaleTexture} specEnabled={material.SpecularEnabled} specMult={material.SpecularMult} smoothness={material.Smoothness} smoothSpecTex={material.SmoothSpecTexture} fresnelPower={material.FresnelPower} envMap={material.EnvironmentMapping} envScale={material.EnvironmentMappingMaskScale} rimLight={material.RimLighting} rimPower={material.RimPower} backLight={material.BackLighting} diffuse={material.Diffuse_or_Base_Texture} normalTex={material.NormalTexture} isBGSM={material.IsBGSM} ? {appliedAction}")
         Next
     End Sub
 
@@ -4460,13 +4349,8 @@ Public Class MainForm
 
         Dim materialPath = FO4UnifiedMaterial_Class.CorrectMaterialPath(relatedMaterial.path)
         Dim hasResolvableMaterial = relatedMaterial.path <> "" AndAlso FilesDictionary_class.Dictionary.ContainsKey(materialPath)
-        If relatedMaterial.material IsNot Nothing AndAlso (relatedMaterial.path = "" OrElse hasResolvableMaterial) Then
-            NpcPreviewLog.Log($"      [EnsureMat] {shape.ShapeName}: OK (path={relatedMaterial.path} resolved={hasResolvableMaterial})")
-            Return
-        End If
+        If relatedMaterial.material IsNot Nothing AndAlso (relatedMaterial.path = "" OrElse hasResolvableMaterial) Then Return
         If shape.NifContent Is Nothing OrElse shape.NifShape Is Nothing OrElse shape.NifShader Is Nothing Then Return
-
-        NpcPreviewLog.Log($"      [EnsureMat] {shape.ShapeName}: REBUILDING from NIF shader! matWasNull={relatedMaterial.material Is Nothing} path={relatedMaterial.path} correctedPath={materialPath} inDict={hasResolvableMaterial}")
 
         Dim rebuiltMaterial As New FO4UnifiedMaterial_Class()
 

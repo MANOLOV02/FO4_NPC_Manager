@@ -4,12 +4,9 @@ Imports FO4_Base_Library
 
 ' ==========================================================================
 ' Face morph resolver for FO4 NPCs.
-' WORKING:
-'   - MSDK/MSDV morph presets → Chargen.tri vertex morphs (via RACE MorphValueDefs/MorphPresetDefs)
-' NOT IMPLEMENTED:
-'   - FMRI/FMRS face sculpting → bone transforms (needs skeleton DeltaTransform, not vertex morphs)
-'   - Body weight (MWGT) → vanilla uses hardcoded bone scaling, no TRI files exist for body
-'   - Body morph regions (MRSV) → same as above
+'   MSDK/MSDV morph presets → Chargen.tri vertex morphs (via RACE MorphValueDefs/MorphPresetDefs).
+'   FMRI/FMRS face bone sculpting is applied separately in MainForm.BuildFaceBoneTransforms
+'   via skeleton DeltaTransform — not through this resolver.
 ' ==========================================================================
 ''' <summary>
 ''' IMorphResolver implementation that applies FO4 NPC face morph data to shapes.
@@ -21,7 +18,6 @@ Public Class NpcMorphResolver
     Private ReadOnly _meshDictKeys As Dictionary(Of IRenderableShape, String)
     Private ReadOnly _shapeChargenTriPaths As Dictionary(Of IRenderableShape, String)
     Private ReadOnly _shapeRaceMorphTriPaths As Dictionary(Of IRenderableShape, String)
-    Private ReadOnly _faceMorphNameMap As Dictionary(Of UInteger, String) ' FMRI index -> morph name from RACE
     Private ReadOnly _morphValueDefs As List(Of RACE_MorphValueDef)      ' MSID -> MSM0/MSM1 from RACE
     Private ReadOnly _morphPresetDefs As List(Of RACE_MorphPresetDef)   ' MPPI -> MPPM from RACE Morph Groups
     Private ReadOnly _triCache As New Dictionary(Of String, TriFile)(StringComparer.OrdinalIgnoreCase)
@@ -43,17 +39,14 @@ Public Class NpcMorphResolver
     ''' Create a morph resolver for an NPC.
     ''' </summary>
     ''' <param name="npcData">NPC morph data (weights, face morphs, etc.)</param>
-    ''' <param name="faceMorphNameMap">FMRI index -> morph name mapping from RACE record.</param>
     ''' <param name="meshDictKeys">Optional mapping of shape reference -> mesh dictionary key path (for TRI fallback lookup).</param>
     Public Sub New(npcData As NPC_Data,
-                   Optional faceMorphNameMap As Dictionary(Of UInteger, String) = Nothing,
                    Optional morphValueDefs As List(Of RACE_MorphValueDef) = Nothing,
                    Optional morphPresetDefs As List(Of RACE_MorphPresetDef) = Nothing,
                    Optional meshDictKeys As Dictionary(Of IRenderableShape, String) = Nothing,
                    Optional shapeChargenTriPaths As Dictionary(Of IRenderableShape, String) = Nothing,
                    Optional shapeRaceMorphTriPaths As Dictionary(Of IRenderableShape, String) = Nothing)
         _npcData = npcData
-        _faceMorphNameMap = faceMorphNameMap
         _morphValueDefs = morphValueDefs
         _morphPresetDefs = morphPresetDefs
         _meshDictKeys = meshDictKeys
@@ -268,43 +261,6 @@ Public Class NpcMorphResolver
         End If
 
         NpcPreviewLog.Log($"  [MORPH-PLAN] {plan.Channels.Count} total channels for shape")
-    End Sub
-
-    ''' <summary>
-    ''' Add face sculpting morphs (FMRI/FMRS) from TriHead (Bethesda chargen format).
-    ''' Each FMRI index maps to a morph name via the RACE record.
-    ''' That name is looked up in the TriHead file.
-    ''' FMRS Position X/Y/Z values are the sculpting weights.
-    ''' </summary>
-    Private Sub AddFaceSculptingFromTriHead(triHead As TriHeadFile, plan As MorphPlan)
-        For Each faceMorph In _npcData.FaceMorphs
-            Dim morphName As String = Nothing
-            If Not _faceMorphNameMap.TryGetValue(faceMorph.Index, morphName) Then Continue For
-            If String.IsNullOrEmpty(morphName) Then Continue For
-
-            Dim triMorph = triHead.GetMorph(morphName)
-            If triMorph Is Nothing OrElse triMorph.Vertices Is Nothing OrElse triMorph.Vertices.Length = 0 Then Continue For
-
-            ' FMRS Position X/Y/Z = sculpting offset weights
-            Dim px = faceMorph.PositionX
-            Dim py = faceMorph.PositionY
-            Dim pz = faceMorph.PositionZ
-            Dim weight = CSng(Math.Sqrt(px * px + py * py + pz * pz))
-            If Math.Abs(px) >= Math.Abs(py) AndAlso Math.Abs(px) >= Math.Abs(pz) Then
-                If px < 0 Then weight = -weight
-            ElseIf Math.Abs(py) >= Math.Abs(pz) Then
-                If py < 0 Then weight = -weight
-            Else
-                If pz < 0 Then weight = -weight
-            End If
-
-            If Math.Abs(weight) < 0.001F Then Continue For
-
-            Dim deltas = ConvertTriHeadMorphToMorphData(triMorph)
-            If deltas.Count > 0 Then
-                plan.Channels.Add(New MorphChannel(morphName, weight, deltas))
-            End If
-        Next
     End Sub
 
     ''' <summary>Convert PIRT TRI morph offsets (sparse) to MorphData list.</summary>
