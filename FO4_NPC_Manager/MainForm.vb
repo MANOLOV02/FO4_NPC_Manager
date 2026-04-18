@@ -245,18 +245,13 @@ Public Class MainForm
     ''' InvalidateRender. The pipeline's needsMorphUpdate path re-runs PipelineStep_Morphs
     ''' which restarts from NifLocalVertices (raw pre-skinning) and applies the plan fresh.
     '''
-    ''' When toggling OFF we cannot just set MorphResolver=Nothing, because PipelineStep_Morphs
-    ''' early-returns in that case and the previously-applied deltas stay pegged on geom.Vertices.
-    ''' Instead we swap in a ResetMorphResolver that returns a no-op plan (one empty channel)
-    ''' — that forces ApplyMorphPlan to execute, which unconditionally writes
-    ''' geom.Vertices = NifLocalVertices.ToArray() + (no deltas) = raw.</summary>
+    ''' Toggling OFF sets MorphResolver=Nothing: per the PipelineStep_Morphs / ApplyMorphPlan
+    ''' contract, a null resolver resets geom.Vertices to NifLocalVertices (no stale deltas).</summary>
     Private Sub CheckBoxApplyVertexMorphs_CheckedChanged(sender As Object, e As EventArgs) Handles CheckBoxApplyVertexMorphs.CheckedChanged
         If _lastRenderedState Is Nothing OrElse _lastRenderData Is Nothing Then Return
-        Dim newResolver As IMorphResolver
+        Dim newResolver As IMorphResolver = Nothing
         If CheckBoxApplyVertexMorphs.Checked Then
             newResolver = BuildFaceMorphResolver(_lastRenderedState, _lastRenderData)
-        Else
-            newResolver = New ResetMorphResolver()
         End If
         Dim intent = _previewControl.Intent
         intent.MorphResolver = newResolver
@@ -264,18 +259,6 @@ Public Class MainForm
         _previewControl.InvalidateRender()
     End Sub
 
-    ''' <summary>No-op IMorphResolver used to reset geom.Vertices back to raw NifLocalVertices
-    ''' when toggling vertex morphs OFF. See CheckBoxApplyVertexMorphs_CheckedChanged for the
-    ''' reasoning (PipelineStep_Morphs early-returns on Nothing resolver, but a plan with one
-    ''' empty channel runs through ApplyMorphPlan and writes geom.Vertices = raw).</summary>
-    Private Class ResetMorphResolver
-        Implements IMorphResolver
-        Public Function ResolveMorphPlan(shape As IRenderableShape, geom As SkinnedGeometry) As MorphPlan Implements IMorphResolver.ResolveMorphPlan
-            Dim plan As New MorphPlan
-            plan.Channels.Add(New MorphChannel("__reset__", 0.0F, New List(Of MorphData)()))
-            Return plan
-        End Function
-    End Class
 
     Private Sub MainForm_Load(sender As Object, e As EventArgs) Handles MyBase.Load
         _searchDebounceTimer.Interval = 250
