@@ -89,27 +89,31 @@ Public Class NpcMorphResolver
             If triHead IsNot Nothing Then AddFaceMorphPresetsFromTriHead(triHead, plan)
         End If
 
-        ' Deduplicate channels: collapse multiple channels with the same morph name into one.
-        ' Vanilla RACE records sometimes have several MPPI keys mapping to the same MPPM name
-        ' (e.g. "DefaultFaceType0" used as the no-op preset across multiple morph groups).
-        ' Without dedup, we'd apply the same morph deltas N times, amplifying them.
-        ' We KEEP THE MAX absolute weight, which matches "select one preset per morph name".
+        ' Collapse channels with the same morph name by SUMMING their weights.
+        ' Vanilla RACE records have several MPPI keys mapping to the same MPPM name
+        ' (e.g. "DefaultFaceType0" used in groups Nose + Cheeks + Neck + Mouth). Empirical
+        ' validation against CK's FaceGen bake (2026-04-18, Alijo + Cait) showed the previous
+        ' max-abs strategy produced consistently weaker deformation than CK: the chin/jaw
+        ' verts differed by up to 1.78 units because CK applies the SUM of per-group weights.
+        ' Example:
+        '   Alijo: 4 DefaultFaceType0 with weights 0.85+0.80+0.61+0.76 → sum=3.02 (ours was 0.85)
+        '   Cait:  4 DefaultFaceType0 with weights 1.0×4 → sum=4.0 (ours was 1.0)
+        ' Since all duplicate channels point to the same TriHead morph, their deltas are
+        ' identical; we only aggregate the weight.
         If plan.Channels.Count > 1 Then
-            Dim dedupedByName As New Dictionary(Of String, MorphChannel)(StringComparer.OrdinalIgnoreCase)
+            Dim summedByName As New Dictionary(Of String, MorphChannel)(StringComparer.OrdinalIgnoreCase)
             For Each ch In plan.Channels
                 Dim existing As MorphChannel = Nothing
-                If dedupedByName.TryGetValue(ch.Name, existing) Then
-                    If Math.Abs(ch.Weight) > Math.Abs(existing.Weight) Then
-                        dedupedByName(ch.Name) = ch
-                    End If
+                If summedByName.TryGetValue(ch.Name, existing) Then
+                    existing.Weight += ch.Weight
                 Else
-                    dedupedByName(ch.Name) = ch
+                    summedByName(ch.Name) = ch
                 End If
             Next
-            If dedupedByName.Count <> plan.Channels.Count Then
-                NpcPreviewLog.Log($"  [MORPH-DEDUP] '{shapeName}': {plan.Channels.Count} → {dedupedByName.Count} channels (collapsed duplicates)")
+            If summedByName.Count <> plan.Channels.Count Then
+                NpcPreviewLog.Log($"  [MORPH-DEDUP] '{shapeName}': {plan.Channels.Count} → {summedByName.Count} channels (weights summed across duplicates)")
                 plan.Channels.Clear()
-                plan.Channels.AddRange(dedupedByName.Values)
+                plan.Channels.AddRange(summedByName.Values)
             End If
         End If
 
@@ -191,20 +195,23 @@ Public Class NpcMorphResolver
                 If Not _npcData.MorphValues.TryGetValue(mvDef.Index, weight) Then Continue For
                 If Math.Abs(weight) < 0.001F Then Continue For
 
-                Dim morphName = If(weight >= 0, mvDef.MaxName, mvDef.MinName)
+                Dim usedMax As Boolean = (weight >= 0)
+                Dim morphName = If(usedMax, mvDef.MaxName, mvDef.MinName)
+                Dim nameSrc As String = If(usedMax, "MSM1/MaxName", "MSM0/MinName")
                 Dim morphWeight = Math.Abs(weight)
                 If String.IsNullOrEmpty(morphName) Then Continue For
 
                 Dim triMorph = triHead.GetMorph(morphName)
                 If triMorph Is Nothing OrElse triMorph.Vertices Is Nothing OrElse triMorph.Vertices.Length = 0 Then
-                    NpcPreviewLog.Log($"  [MORPH-SLIDER] '{morphName}' w={morphWeight:F3} → NOT FOUND in TRI")
+                    NpcPreviewLog.Log($"  [MORPH-SLIDER] MSID=0x{mvDef.Index:X8} npcWeight={weight:+0.000;-0.000} → picked={nameSrc}='{morphName}' w={morphWeight:F3} → NOT FOUND in TRI (MSM0='{mvDef.MinName}' MSM1='{mvDef.MaxName}')")
                     Continue For
                 End If
 
                 Dim deltas = ConvertTriHeadMorphToMorphData(triMorph)
                 If deltas.Count > 0 Then
                     plan.Channels.Add(New MorphChannel(morphName, morphWeight, deltas))
-                    NpcPreviewLog.Log($"  [MORPH-SLIDER] '{morphName}' w={morphWeight:F3} → {deltas.Count} verts")
+                    Dim maxDeltaStr = DescribeMaxSignedDelta(triMorph, triHead)
+                    NpcPreviewLog.Log($"  [MORPH-SLIDER] MSID=0x{mvDef.Index:X8} npcWeight={weight:+0.000;-0.000} → picked={nameSrc}='{morphName}' w={morphWeight:F3} verts={deltas.Count} (MSM0='{mvDef.MinName}' MSM1='{mvDef.MaxName}') maxDelta={maxDeltaStr}")
                 End If
             Next
         End If
@@ -221,14 +228,15 @@ Public Class NpcMorphResolver
 
                 Dim triMorph = triHead.GetMorph(morphName)
                 If triMorph Is Nothing OrElse triMorph.Vertices Is Nothing OrElse triMorph.Vertices.Length = 0 Then
-                    NpcPreviewLog.Log($"  [MORPH-PRESET] '{morphName}' w={weight:F3} → NOT FOUND in TRI")
+                    NpcPreviewLog.Log($"  [MORPH-PRESET] MPPI=0x{mpDef.Index:X8} '{morphName}' npcWeight={weight:+0.000;-0.000} → NOT FOUND in TRI")
                     Continue For
                 End If
 
                 Dim deltas = ConvertTriHeadMorphToMorphData(triMorph)
                 If deltas.Count > 0 Then
                     plan.Channels.Add(New MorphChannel(morphName, weight, deltas))
-                    NpcPreviewLog.Log($"  [MORPH-PRESET] '{morphName}' w={weight:F3} → {deltas.Count} verts")
+                    Dim topDeltas = DescribeTopSignedDeltas(triMorph, triHead, 5)
+                    NpcPreviewLog.Log($"  [MORPH-PRESET] MPPI=0x{mpDef.Index:X8} '{morphName}' npcWeight={weight:+0.000;-0.000} verts={deltas.Count} top5=[{topDeltas}]")
                 End If
             Next
         End If
@@ -246,6 +254,41 @@ Public Class NpcMorphResolver
             })
         Next
         Return result
+    End Function
+
+    ''' <summary>Return a string listing the top-N non-zero deltas of a TriHead morph (sorted
+    ''' by magnitude descending), each with its base position and signed delta. Useful to see
+    ''' the spatial distribution of a morph: does it push a single feature or sweep the whole
+    ''' face? And in which direction.</summary>
+    Private Shared Function DescribeTopSignedDeltas(morph As TriHeadMorph, triHead As TriHeadFile, topN As Integer) As String
+        If morph Is Nothing OrElse morph.Vertices Is Nothing OrElse morph.Vertices.Length = 0 Then Return "(none)"
+        Dim entries As New List(Of (Idx As Integer, V As Vector3, MagSq As Single))
+        For i = 0 To morph.Vertices.Length - 1
+            Dim v = morph.Vertices(i)
+            Dim m = v.X * v.X + v.Y * v.Y + v.Z * v.Z
+            If m > 0.000001F Then entries.Add((i, v, m))
+        Next
+        If entries.Count = 0 Then Return "(none)"
+        entries.Sort(Function(a, b) b.MagSq.CompareTo(a.MagSq))
+        Dim count = Math.Min(topN, entries.Count)
+        Dim sb As New System.Text.StringBuilder()
+        For k = 0 To count - 1
+            Dim e = entries(k)
+            Dim baseStr As String = "base=?"
+            If triHead IsNot Nothing AndAlso triHead.BaseVertices IsNot Nothing _
+               AndAlso e.Idx < triHead.BaseVertices.Length Then
+                Dim b = triHead.BaseVertices(e.Idx)
+                baseStr = $"base=({b.X:F2},{b.Y:F2},{b.Z:F2})"
+            End If
+            If k > 0 Then sb.Append(" | ")
+            sb.Append($"idx={e.Idx} {baseStr} delta=({e.V.X:+0.000;-0.000;0.000},{e.V.Y:+0.000;-0.000;0.000},{e.V.Z:+0.000;-0.000;0.000}) mag={Math.Sqrt(e.MagSq):F3}")
+        Next
+        Return sb.ToString()
+    End Function
+
+    ''' <summary>Single-vertex wrapper for backward compatibility with the SLIDER log (shows only the peak).</summary>
+    Private Shared Function DescribeMaxSignedDelta(morph As TriHeadMorph, triHead As TriHeadFile) As String
+        Return DescribeTopSignedDeltas(morph, triHead, 1)
     End Function
 
     ''' <summary>Convert TriHead morph vertices (dense, all vertices) to MorphData list (only non-zero).</summary>
