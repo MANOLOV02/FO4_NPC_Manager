@@ -1264,9 +1264,23 @@ Public Class MainForm
         End If
 
         Dim faceSkelBytes = TryLoadFaceSkeletonBytes(state)
+
+        ' RACE.DATA.Male/Female Height = actor scale applied uniformly at bake time by CK.
+        ' HumanRace vanilla: Male=1.0, Female=0.98. Without this, our skeleton stays 2% taller
+        ' than what CK bakes into FaceGen, producing systematic Neck/HEAD chain residuals.
+        Dim raceHeight As Single = 1.0F
+        If state.RaceFormID <> 0UI Then
+            Dim raceRec = _pluginManager.GetRecord(state.RaceFormID)
+            If raceRec IsNot Nothing AndAlso raceRec.Header.Signature = "RACE" Then
+                Dim race = RecordParsers.ParseRACE(raceRec, _pluginManager)
+                raceHeight = If(state.IsFemale, race.FemaleHeight, race.MaleHeight)
+                If raceHeight <= 0 Then raceHeight = 1.0F
+            End If
+        End If
+
         Dim skelResolver As ISkeletonResolver
-        If faceSkelBytes IsNot Nothing OrElse bodyWeightData.GenderBlock IsNot Nothing Then
-            skelResolver = New FaceBoneSkeletonResolver(baseSkelResolver, faceSkelBytes, bodyWeightData)
+        If faceSkelBytes IsNot Nothing OrElse bodyWeightData.GenderBlock IsNot Nothing OrElse Math.Abs(raceHeight - 1.0F) > 0.0001F Then
+            skelResolver = New FaceBoneSkeletonResolver(baseSkelResolver, faceSkelBytes, bodyWeightData, raceHeight)
         Else
             skelResolver = baseSkelResolver
         End If
@@ -1554,14 +1568,96 @@ Public Class MainForm
             If bakeMissingInDict.Count > 0 Then NpcPreviewLog.Log($"    [FG-BONES] bake-bones NOT-in-SkeletonDict (fallback active): {String.Join(", ", bakeMissingInDict)}")
             If oursMissingInDict.Count > 0 Then NpcPreviewLog.Log($"    [FG-BONES] our-bones NOT-in-SkeletonDict: {String.Join(", ", oursMissingInDict)}")
 
-            ' ApplyPose:=True → el bake se extrae con la misma SkeletonDictionary state
-            ' que nuestro render (body-scale aplicado a body bones). Así comparamos "bake como
-            ' se ve in-game" vs "nuestro render in-game". El bake no referencia skin_bone_* face
-            ' bones (ya bakeados en vertex positions), así que FMRS NO se duplica.
-            Dim fgGeom = SkinningHelper.ExtractSkinnedGeometry(fgShape, ApplyPose:=True, singleboneskinning:=False, RecalculateNormals:=False)
+            ' Log raw skin bind transforms from bake NIF's BSSkinInstance.BoneData.
+            ' Verifies what localT actually contains for bake bones.
+            Try
+                Dim bakeBoneNodes = fgShape.ShapeBones.ToArray()
+                Dim bakeBoneTxs = fgShape.ShapeBoneTransforms.ToArray()
+                For k = 0 To bakeBoneNodes.Length - 1
+                    Dim nm = If(bakeBoneNodes(k)?.Name?.String, "")
+                    If nm = "HEAD" OrElse nm = "Neck_skin" OrElse nm = "Chest_skin" Then
+                        Dim lt = bakeBoneTxs(k)
+                        NpcPreviewLog.Log($"    [BAKE-LOCALT] bone='{nm}' Trans=({lt.Translation.X:F4},{lt.Translation.Y:F4},{lt.Translation.Z:F4}) Scale={lt.Scale:F4}")
+                        NpcPreviewLog.Log($"                  Rotation=[{lt.Rotation.M11:F4} {lt.Rotation.M12:F4} {lt.Rotation.M13:F4} | {lt.Rotation.M21:F4} {lt.Rotation.M22:F4} {lt.Rotation.M23:F4} | {lt.Rotation.M31:F4} {lt.Rotation.M32:F4} {lt.Rotation.M33:F4}]")
+                    End If
+                Next
+            Catch : End Try
+
+            ' Pose B: per-bone Delta.T tal que bone.GlobalTransform = {T=raceHeight × origGT, R=origR, S=1}.
+            ' Math (column convention, ComposeTransforms en NifRenderTransformation.vb:360):
+            '   LocaLTransform.T = Original.T + Original.R^T × (Delta.T × Original.S)
+            '   Queremos LocaLTransform.T = raceHeight × Original.T (→ cadena da raceHeight × origGT).
+            '   Delta.T = Original.R × ((raceHeight - 1) × Original.T).
+            ' Delta.R = Identity (preservar rotación original — bake's localT también preserva).
+            ' Delta.S = 1 (Scale uniforme en chain queda 1; esto es CLAVE para evitar el
+            ' double-scaling artifact del Pose A que tiene Scale=0.98 en Root).
+            Dim savedDeltas As New Dictionary(Of String, Transform_Class)(StringComparer.OrdinalIgnoreCase)
+            For Each kv In Skeleton_Class.SkeletonDictionary
+                savedDeltas(kv.Key) = kv.Value.DeltaTransform
+            Next
+
+            Dim raceHeightValue As Single = 1.0F
+            If state.RaceFormID <> 0UI Then
+                Dim rr = _pluginManager.GetRecord(state.RaceFormID)
+                If rr IsNot Nothing AndAlso rr.Header.Signature = "RACE" Then
+                    Dim r = RecordParsers.ParseRACE(rr, _pluginManager)
+                    raceHeightValue = If(state.IsFemale, r.FemaleHeight, r.MaleHeight)
+                    If raceHeightValue <= 0 Then raceHeightValue = 1.0F
+                End If
+            End If
+
+            Dim heightFactor As Single = raceHeightValue - 1.0F  ' -0.02 for female 0.98
+            Dim poseBBones As Integer = 0
+            For Each kv In Skeleton_Class.SkeletonDictionary
+                Dim bone = kv.Value
+                Dim origTransform = bone.OriginalLocaLTransform
+                If origTransform Is Nothing Then Continue For
+                Dim origT = origTransform.Translation
+                Dim origR = origTransform.Rotation
+
+                ' Delta.T = origR × (heightFactor × origT)  (standard M × v)
+                Dim rtX As Single = origR.M11 * origT.X + origR.M12 * origT.Y + origR.M13 * origT.Z
+                Dim rtY As Single = origR.M21 * origT.X + origR.M22 * origT.Y + origR.M23 * origT.Z
+                Dim rtZ As Single = origR.M31 * origT.X + origR.M32 * origT.Y + origR.M33 * origT.Z
+
+                Dim identityR As New NiflySharp.Structs.Matrix33 With {
+                    .M11 = 1, .M12 = 0, .M13 = 0,
+                    .M21 = 0, .M22 = 1, .M23 = 0,
+                    .M31 = 0, .M32 = 0, .M33 = 1
+                }
+
+                bone.DeltaTransform = New Transform_Class With {
+                    .Rotation = identityR,
+                    .Translation = New Numerics.Vector3(heightFactor * rtX, heightFactor * rtY, heightFactor * rtZ),
+                    .Scale = 1.0F
+                }
+                poseBBones += 1
+            Next
+            NpcPreviewLog.Log($"  [POSE-B] applied per-bone Delta.T (raceHeight={raceHeightValue:F4}, factor={heightFactor:F4}) to {poseBBones} bones")
+
+            Dim fgGeom As SkinnedGeometry = Nothing
+            Try
+                fgGeom = SkinningHelper.ExtractSkinnedGeometry(fgShape, ApplyPose:=True, singleboneskinning:=False, RecalculateNormals:=False)
+            Finally
+                ' Restaurar Deltas originales (Pose A + body-weight + FMRS)
+                For Each kv In Skeleton_Class.SkeletonDictionary
+                    Dim saved As Transform_Class = Nothing
+                    savedDeltas.TryGetValue(kv.Key, saved)
+                    kv.Value.DeltaTransform = saved
+                Next
+                NpcPreviewLog.Log($"  [POSE-B] restored original Deltas ({savedDeltas.Count} bones)")
+            End Try
             Dim fgWorld = SkinningHelper.GetWorldVertices(fgGeom)
 
             Dim ourGeo = ourMesh.MeshData.Meshgeometry
+            ' Diagnostic sanity check: log first vert's PerVertexSkinMatrix Z-translation component.
+            ' If scale was applied to skeleton AFTER skinning ran, this won't reflect it.
+            Try
+                If ourGeo.PerVertexSkinMatrix IsNot Nothing AndAlso ourGeo.PerVertexSkinMatrix.Length > 0 Then
+                    Dim m0 = ourGeo.PerVertexSkinMatrix(0)
+                    NpcPreviewLog.Log($"  [SKIN-CACHE-SANITY] ourGeo verts={ourGeo.Vertices.Length} PVSM[0].M={m0.M11:F4},{m0.M12:F4},{m0.M13:F4},{m0.M14:F4} | T=({m0.M41:F4},{m0.M42:F4},{m0.M43:F4})")
+                End If
+            Catch : End Try
             Dim ourWorld = SkinningHelper.GetWorldVertices(ourGeo)
 
             Dim wCount = Math.Min(fgWorld.Length, ourWorld.Length)
@@ -1673,8 +1769,237 @@ Public Class MainForm
                     Dim rmsPB As Double = Math.Sqrt(kvp.Value.SumSq / Math.Max(1, kvp.Value.N))
                     NpcPreviewLog.Log($"    primaryBone='{kvp.Key}' N={kvp.Value.N} RMS={rmsPB.ToString("F4")} maxDiff={kvp.Value.MaxMag.ToString("F4")}")
                 Next
+
+                ' Per-vertex detail for focus bones: neck/jaw/chin FMRS bones where the residual
+                ' diff is concentrated. Dump ours/bake/diff per-axis + all bone weights so we can
+                ' see if the diff is a sign flip, wrong scale, or bad bind pose.
+                ' Per-bone REST + WORLD comparison: dump for each bone referenced by the bake
+                ' its bind pose in dict Original, dict GetGlobal (post-pose), and bake NIF's own bind.
+                NpcPreviewLog.Log($"  --- BONE COMPARISON (rest=Original, world=post-pose, bake-NIF=bake's own bind) ---")
+                For Each boneName In bakeBones.OrderBy(Function(s) s)
+                    Dim dictBone As Skeleton_Class.HierarchiBone_class = Nothing
+                    Dim restTxt As String = "not-in-dict"
+                    Dim worldTxt As String = "-"
+                    If Skeleton_Class.SkeletonDictionary.TryGetValue(boneName, dictBone) Then
+                        Dim rest = dictBone.OriginalGetGlobalTransform
+                        restTxt = $"T=({rest.Translation.X:F4},{rest.Translation.Y:F4},{rest.Translation.Z:F4}) S={rest.Scale:F4}"
+                        Dim world = dictBone.GetGlobalTransform
+                        worldTxt = $"T=({world.Translation.X:F4},{world.Translation.Y:F4},{world.Translation.Z:F4}) S={world.Scale:F4}"
+                    End If
+                    Dim bakeTxt As String = "not-in-bake"
+                    For Each bn In fgShape.ShapeBones
+                        Dim bnName = If(bn?.Name?.String, "")
+                        If String.Equals(bnName, boneName, StringComparison.OrdinalIgnoreCase) Then
+                            Dim bakeGT = Transform_Class.GetGlobalTransform(bn, baked)
+                            bakeTxt = $"T=({bakeGT.Translation.X:F4},{bakeGT.Translation.Y:F4},{bakeGT.Translation.Z:F4}) S={bakeGT.Scale:F4}"
+                            Exit For
+                        End If
+                    Next
+                    NpcPreviewLog.Log($"    [BONE-COMP] '{boneName}' rest={restTxt} | world={worldTxt} | bakeNIF={bakeTxt}")
+                Next
+
+                ' Per-vertex diff — ALL verts (sorted by mag desc), no focus filter.
+                NpcPreviewLog.Log($"  --- ALL VERTEX DIFFS (sorted by magnitude desc) ---")
+                Dim vertDiffs As New List(Of (Idx As Integer, Primary As String, Mag As Single, Dx As Single, Dy As Single, Dz As Single, Ox As Single, Oy As Single, Oz As Single, Bx As Single, ByV As Single, Bz As Single, Weights As String))
+                For i = 0 To wCount - 1
+                    Dim primaryName As String = "?"
+                    Dim primaryWgt As Single = 0
+                    Dim weightsDesc As New System.Text.StringBuilder()
+                    If gpuIdx IsNot Nothing AndAlso gpuWgt IsNot Nothing Then
+                        Dim baseIdx = i * 4
+                        For w = 0 To 3
+                            If baseIdx + w < gpuWgt.Length Then
+                                Dim ww = gpuWgt(baseIdx + w)
+                                Dim bi = CInt(gpuIdx(baseIdx + w))
+                                Dim bnam = If(bi < boneNames.Count, boneNames(bi), "?")
+                                If ww > primaryWgt Then
+                                    primaryWgt = ww
+                                    primaryName = bnam
+                                End If
+                                If ww > 0.001F Then
+                                    If weightsDesc.Length > 0 Then weightsDesc.Append(", ")
+                                    weightsDesc.Append($"{bnam}:{ww:F3}")
+                                End If
+                            End If
+                        Next
+                    End If
+                    Dim ox = CSng(ourWorld(i).X), oy = CSng(ourWorld(i).Y), oz = CSng(ourWorld(i).Z)
+                    Dim bx = CSng(fgWorld(i).X), byv = CSng(fgWorld(i).Y), bz = CSng(fgWorld(i).Z)
+                    Dim dx = bx - ox, dy = byv - oy, dz = bz - oz
+                    Dim mag = CSng(Math.Sqrt(dx * dx + dy * dy + dz * dz))
+                    vertDiffs.Add((i, primaryName, mag, dx, dy, dz, ox, oy, oz, bx, byv, bz, weightsDesc.ToString()))
+                Next
+                vertDiffs.Sort(Function(a, b) b.Mag.CompareTo(a.Mag))
+                For Each v In vertDiffs
+                    NpcPreviewLog.Log($"    [FG-VERT] idx={v.Idx} primary='{v.Primary}' mag={v.Mag:F4} ours=({v.Ox:F4},{v.Oy:F4},{v.Oz:F4}) bake=({v.Bx:F4},{v.ByV:F4},{v.Bz:F4}) diff=({v.Dx:+0.000;-0.000;0.000},{v.Dy:+0.000;-0.000;0.000},{v.Dz:+0.000;-0.000;0.000}) weights=[{v.Weights}]")
+                Next
             Catch ex As Exception
                 NpcPreviewLog.Log($"  [FACEGEN-DIAG-WORLD] primary-bone log failed: {ex.Message}")
+            End Try
+
+            ' Bind pose dump for neck-chain bones: verify if our SkeletonDict's OriginalGetGlobalTransform
+            ' matches the bake NIF's GetGlobalTransform for the same named bone. If binds differ,
+            ' the verts weighted to that bone can't match even with identical skinning formula.
+            Try
+                Dim chainToCheck = {"Neck_skin", "Neck1_skin", "Neck_Low_skin", "HEAD", "Head_skin", "Chest_skin",
+                                    "skin_bone_L_Ear", "skin_bone_R_Ear", "LArm_Collarbone_skin", "RArm_Collarbone_skin",
+                                    "skin_bone_L_Eye", "skin_bone_R_Eye",
+                                    "Neck", "Chest", "SPINE2", "SPINE1", "COM", "Root"}
+                NpcPreviewLog.Log($"  --- BIND POSE DIFF (ours dict vs bake NIF per bone) ---")
+                Dim bakeBoneByName As New Dictionary(Of String, NiflySharp.Blocks.NiNode)(StringComparer.OrdinalIgnoreCase)
+                For Each bn In fgShape.ShapeBones
+                    Dim nm = If(bn?.Name?.String, "")
+                    If nm <> "" AndAlso Not bakeBoneByName.ContainsKey(nm) Then bakeBoneByName(nm) = bn
+                Next
+                ' Walk our dict's skeleton chain from HEAD up to the root (Parent=Nothing).
+                ' Shows which bone is the root (COM? BSFadeNode? Root?) so we know where to apply
+                ' race Height. Reveals also the full hierarchy length.
+                Try
+                    For Each startBoneName In {"HEAD", "Neck_skin", "Chest_skin"}
+                        Dim curr As Skeleton_Class.HierarchiBone_class = Nothing
+                        If Skeleton_Class.SkeletonDictionary.TryGetValue(startBoneName, curr) Then
+                            Dim chainDepth As Integer = 0
+                            While curr IsNot Nothing AndAlso chainDepth < 30
+                                Dim lt = curr.OriginalLocaLTransform
+                                Dim ltDesc = If(lt Is Nothing, "null",
+                                    $"LT=({lt.Translation.X:F3},{lt.Translation.Y:F3},{lt.Translation.Z:F3}) scale={lt.Scale:F4}")
+                                NpcPreviewLog.Log($"    [DICT-CHAIN-{startBoneName}] depth={chainDepth} bone='{curr.BoneName}' {ltDesc}")
+                                curr = curr.Parent
+                                chainDepth += 1
+                            End While
+                        End If
+                    Next
+                Catch ex As Exception
+                    NpcPreviewLog.Log($"    [DICT-CHAIN] walk failed: {ex.Message}")
+                End Try
+
+                ' Walk parent chain of the bakedHead NIF shape up to root: dump each NiNode's scale + translation.
+                ' If any level has scale ≠ 1.0 or a translation matching our offsets, we've found the 0.98.
+                Try
+                    Dim currNode As NiflySharp.Blocks.NiNode = baked.GetParentNode(bakedHead)
+                    Dim depth As Integer = 0
+                    While currNode IsNot Nothing AndAlso depth < 10
+                        Dim nm = If(currNode.Name?.String, "(no-name)")
+                        NpcPreviewLog.Log($"    [BAKE-CHAIN] depth={depth} node='{nm}' T=({currNode.Translation.X:F4},{currNode.Translation.Y:F4},{currNode.Translation.Z:F4}) scale={currNode.Scale:F6}")
+                        Dim nextParent As NiflySharp.Blocks.NiNode = Nothing
+                        Try : nextParent = baked.GetParentNode(currNode) : Catch : End Try
+                        If nextParent Is Nothing Then Exit While
+                        currNode = nextParent
+                        depth += 1
+                    End While
+                Catch ex As Exception
+                    NpcPreviewLog.Log($"    [BAKE-CHAIN] walk failed: {ex.Message}")
+                End Try
+
+                ' Also log the NiNode.Scale of each bone in the bake (if per-node scale != 1 we've found it).
+                For Each kv In bakeBoneByName
+                    Dim bn = kv.Value
+                    NpcPreviewLog.Log($"    [BAKE-BONE-SCALE] '{kv.Key}' nodeScale={bn.Scale:F6} nodeT=({bn.Translation.X:F4},{bn.Translation.Y:F4},{bn.Translation.Z:F4})")
+                Next
+
+                For Each boneName In chainToCheck
+                    Dim dictBone As Skeleton_Class.HierarchiBone_class = Nothing
+                    Dim hasDict = Skeleton_Class.SkeletonDictionary.TryGetValue(boneName, dictBone)
+                    Dim ourGlobalDesc As String = "not-in-dict"
+                    Dim ourLocalDesc As String = "-"
+                    Dim ourParentDesc As String = "-"
+                    If hasDict Then
+                        Dim gt = dictBone.OriginalGetGlobalTransform
+                        Dim lt = dictBone.OriginalLocaLTransform
+                        ourGlobalDesc = $"T=({gt.Translation.X:F4},{gt.Translation.Y:F4},{gt.Translation.Z:F4})"
+                        If lt IsNot Nothing Then ourLocalDesc = $"LT=({lt.Translation.X:F4},{lt.Translation.Y:F4},{lt.Translation.Z:F4})"
+                        ourParentDesc = $"parent='{If(dictBone.Parent?.BoneName, "(root)")}'"
+                    End If
+                    Dim bakeBoneNode As NiflySharp.Blocks.NiNode = Nothing
+                    Dim hasBake = bakeBoneByName.TryGetValue(boneName, bakeBoneNode)
+                    Dim bakeGlobalDesc As String = "not-in-bake"
+                    Dim bakeLocalDesc As String = "-"
+                    Dim bakeParentDesc As String = "-"
+                    If hasBake Then
+                        Dim gt = Transform_Class.GetGlobalTransform(bakeBoneNode, baked)
+                        bakeGlobalDesc = $"T=({gt.Translation.X:F4},{gt.Translation.Y:F4},{gt.Translation.Z:F4})"
+                        bakeLocalDesc = $"LT=({bakeBoneNode.Translation.X:F4},{bakeBoneNode.Translation.Y:F4},{bakeBoneNode.Translation.Z:F4})"
+                        Try
+                            Dim par = baked.GetParentNode(bakeBoneNode)
+                            bakeParentDesc = $"parent='{If(par?.Name?.String, "(root)")}'"
+                        Catch
+                            bakeParentDesc = "parent=err"
+                        End Try
+                    End If
+                    NpcPreviewLog.Log($"    [BIND-CHECK] bone='{boneName}' ours: {ourGlobalDesc} {ourLocalDesc} {ourParentDesc} | bake: {bakeGlobalDesc} {bakeLocalDesc} {bakeParentDesc}")
+                Next
+            Catch ex As Exception
+                NpcPreviewLog.Log($"  [BIND-CHECK] failed: {ex.Message}")
+            End Try
+
+            ' TriHead vs Plan coverage check: list morphs present in the .tri but NOT in headPlan.
+            ' For each missing morph, report how many verts have a non-zero delta (threshold 0.001)
+            ' and the top-3 verts with largest delta. Cross-reference with bucket 0 (no vertex morphs)
+            ' to see if applying the missing morph would fix the bucket-0 residual.
+            Try
+                Dim triHeadPath As String = If(state.IsFemale,
+                    "meshes\actors\character\characterassets\basefemaleheadchargen.tri",
+                    "meshes\actors\character\characterassets\basemaleheadchargen.tri")
+                Dim triLoc As FilesDictionary_class.File_Location = Nothing
+                If FilesDictionary_class.Dictionary.TryGetValue(triHeadPath, triLoc) Then
+                    Dim triBytes = triLoc.GetBytes()
+                    If triBytes IsNot Nothing AndAlso triBytes.Length > 0 Then
+                        Dim triH = TriHeadParser.ParseTriHeadFromBytes(triBytes)
+                        If triH IsNot Nothing Then
+                            Dim planNames As New HashSet(Of String)(StringComparer.OrdinalIgnoreCase)
+                            If headPlan IsNot Nothing AndAlso headPlan.Channels IsNot Nothing Then
+                                For Each ch In headPlan.Channels
+                                    If Not String.IsNullOrEmpty(ch.Name) Then planNames.Add(ch.Name)
+                                Next
+                            End If
+
+                            Dim bucket0 As New HashSet(Of Integer)
+                            For i = 0 To Math.Min(morphCountPerVert.Length, wCount) - 1
+                                If morphCountPerVert(i) = 0 Then bucket0.Add(i)
+                            Next
+
+                            Dim inPlanCount As Integer = 0
+                            For Each m In triH.Morphs
+                                If planNames.Contains(m.Name) Then inPlanCount += 1
+                            Next
+                            NpcPreviewLog.Log($"  [TRI-VS-PLAN] tri='{triHeadPath}' morphs={triH.Morphs.Count} inPlan={inPlanCount} missing={triH.Morphs.Count - inPlanCount}")
+                            NpcPreviewLog.Log($"  [TRI-VS-PLAN] bucket0 verts={bucket0.Count} (verts WITHOUT any morph in our plan)")
+
+                            For Each m In triH.Morphs
+                                If planNames.Contains(m.Name) Then Continue For
+                                If m.Vertices Is Nothing OrElse m.Vertices.Length = 0 Then Continue For
+                                Dim touched As Integer = 0
+                                Dim touchedInBucket0 As Integer = 0
+                                Dim top3 As New List(Of (Idx As Integer, Mag As Single))
+                                Dim morphMaxMag As Single = 0
+                                For i = 0 To m.Vertices.Length - 1
+                                    Dim d = m.Vertices(i)
+                                    Dim mag = CSng(Math.Sqrt(d.X * d.X + d.Y * d.Y + d.Z * d.Z))
+                                    If mag > 0.001F Then
+                                        touched += 1
+                                        If bucket0.Contains(i) Then touchedInBucket0 += 1
+                                        If mag > morphMaxMag Then morphMaxMag = mag
+                                        If top3.Count < 3 Then
+                                            top3.Add((i, mag))
+                                            top3.Sort(Function(a, b) b.Mag.CompareTo(a.Mag))
+                                        ElseIf mag > top3(2).Mag Then
+                                            top3(2) = (i, mag)
+                                            top3.Sort(Function(a, b) b.Mag.CompareTo(a.Mag))
+                                        End If
+                                    End If
+                                Next
+                                If touched > 0 Then
+                                    Dim top3Str = String.Join(" | ", top3.Select(Function(t) $"idx={t.Idx} mag={t.Mag:F3}"))
+                                    NpcPreviewLog.Log($"    [TRI-MISSING] morph='{m.Name}' touchesVerts={touched} ofWhichBucket0={touchedInBucket0} maxMag={morphMaxMag:F4} top3=[{top3Str}]")
+                                End If
+                            Next
+                        End If
+                    End If
+                Else
+                    NpcPreviewLog.Log($"  [TRI-VS-PLAN] could not find '{triHeadPath}' in FilesDictionary")
+                End If
+            Catch ex As Exception
+                NpcPreviewLog.Log($"  [TRI-VS-PLAN] failed: {ex.Message}")
             End Try
         Catch ex As Exception
             NpcPreviewLog.Log($"  [FACEGEN-DIAG-WORLD] world compare failed: {ex.Message}")
@@ -2977,7 +3302,7 @@ Public Class MainForm
                 For k = 0 To g.Presets.Count - 1
                     If k > 0 Then presetSummary.Append(" | ")
                     Dim p = g.Presets(k)
-                    presetSummary.Append($"MPPI=0x{p.Index:X8}→'{p.MorphName}'")
+                    presetSummary.Append($"MPPI=0x{p.Index:X8}[MPPN='{p.PresetName}']→MPPM='{p.MorphName}'")
                 Next
                 Dim slidersSummary As String = ""
                 If g.SliderIndices IsNot Nothing AndAlso g.SliderIndices.Count > 0 Then
@@ -3300,6 +3625,7 @@ Public Class MainForm
                       End Function
         NpcPreviewLog.Log($"  [RACE-NNAM] {race.EditorID} Male:   {fmtNNAM(race.MaleNeckNNAMRaw, race.MaleNeckNNAMX, race.MaleNeckNNAMY)}")
         NpcPreviewLog.Log($"  [RACE-NNAM] {race.EditorID} Female: {fmtNNAM(race.FemaleNeckNNAMRaw, race.FemaleNeckNNAMX, race.FemaleNeckNNAMY)}")
+        NpcPreviewLog.Log($"  [RACE-HEIGHT] {race.EditorID} MaleHeight={race.MaleHeight:F4} FemaleHeight={race.FemaleHeight:F4}")
 
         Dim targetGender As UInteger = If(state.IsFemale, 1UI, 0UI)
         For Each bd In race.BoneData
@@ -3363,12 +3689,15 @@ Public Class MainForm
         Private ReadOnly _baseResolver As ISkeletonResolver
         Private ReadOnly _faceSkelBytes As Byte()
         Private ReadOnly _bodyWeightData As (Wt As Single, Wm As Single, Wf As Single, GenderBlock As RACE_BoneDataGender, MrsvValues As List(Of Single), ArmaDeltas As Dictionary(Of String, System.Numerics.Vector3))
+        Private ReadOnly _raceHeight As Single
 
         Public Sub New(baseResolver As ISkeletonResolver, faceSkelBytes As Byte(),
-                       Optional bodyWeightData As (Wt As Single, Wm As Single, Wf As Single, GenderBlock As RACE_BoneDataGender, MrsvValues As List(Of Single), ArmaDeltas As Dictionary(Of String, System.Numerics.Vector3)) = Nothing)
+                       Optional bodyWeightData As (Wt As Single, Wm As Single, Wf As Single, GenderBlock As RACE_BoneDataGender, MrsvValues As List(Of Single), ArmaDeltas As Dictionary(Of String, System.Numerics.Vector3)) = Nothing,
+                       Optional raceHeight As Single = 1.0F)
             _baseResolver = baseResolver
             _faceSkelBytes = faceSkelBytes
             _bodyWeightData = bodyWeightData
+            _raceHeight = raceHeight
         End Sub
 
         Public Sub ResolveSkeleton(shapes As IEnumerable(Of IRenderableShape), pose As Poses_class) Implements ISkeletonResolver.ResolveSkeleton
@@ -3380,6 +3709,8 @@ Public Class MainForm
                 Skeleton_Class.MergeFaceSkeleton(_faceSkelBytes)
             End If
 
+            ' Height aplicado via pose Delta (NO modificamos dict). Ver paso 4 abajo.
+
             ' 3. Build body weight pose (needs skeleton loaded for MRSV region mapping)
             Dim bodyPose As Poses_class = Nothing
             If _bodyWeightData.GenderBlock IsNot Nothing Then
@@ -3388,9 +3719,12 @@ Public Class MainForm
                                                _bodyWeightData.ArmaDeltas)
             End If
 
-            ' 4. Merge face + body into one pose (AppplyPoseToSkeleton calls Reset first)
+            ' 4. Merge face + body into one pose (AppplyPoseToSkeleton calls Reset first).
+            ' Height (Male/Female Height from RACE.DATA) se agrega como Scale Delta en Root —
+            ' así el 0.98 propaga por toda la jerarquía via ComposeTransforms.
+            Dim needHeight = Math.Abs(_raceHeight - 1.0F) > 0.0001F
             Dim merged As Poses_class = Nothing
-            If pose IsNot Nothing OrElse bodyPose IsNot Nothing Then
+            If pose IsNot Nothing OrElse bodyPose IsNot Nothing OrElse needHeight Then
                 merged = New Poses_class With {
                     .Name = "NPC Bone Transforms",
                     .Source = Poses_class.Pose_Source_Enum.WardrobeManager,
@@ -3401,6 +3735,13 @@ Public Class MainForm
                 End If
                 If bodyPose IsNot Nothing Then
                     For Each kv In bodyPose.Transforms : merged.Transforms(kv.Key) = kv.Value : Next
+                End If
+                If needHeight Then
+                    merged.Transforms("Root") = New PoseTransformData With {
+                        .Scale = _raceHeight, .ScaleX = 1.0F, .ScaleY = 1.0F, .ScaleZ = 1.0F,
+                        .X = 0, .Y = 0, .Z = 0, .Pitch = 0, .Roll = 0, .Yaw = 0
+                    }
+                    NpcPreviewLog.Log($"  [RACE-HEIGHT-POSE] added Delta Scale={_raceHeight:F4} to Root bone in pose")
                 End If
             End If
 

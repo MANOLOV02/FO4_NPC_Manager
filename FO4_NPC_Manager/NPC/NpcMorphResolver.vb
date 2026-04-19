@@ -86,6 +86,12 @@ Public Class NpcMorphResolver
         ' 2) Face morph presets (MSDK/MSDV) - via TriHead chargen .tri + RACE MSID→MSM0/MSM1
         If _npcData.MorphValues.Count > 0 Then
             NpcPreviewLog.Log($"  [MORPH] Shape '{shapeName}' verts={shapeVertCount}: TRI={tri IsNot Nothing} TriHead={triHead IsNot Nothing}({If(triHead IsNot Nothing, CInt(triHead.NumVertices), 0)} verts, {If(triHead IsNot Nothing, triHead.Morphs.Count, 0)} morphs) MorphValues={_npcData.MorphValues.Count}")
+            ' Raw dump of parsed MSDK→MSDV pairs for cross-reference with xEdit.
+            Dim dumpIdx As Integer = 0
+            For Each kvp In _npcData.MorphValues
+                NpcPreviewLog.Log($"    [MSDV-RAW] #{dumpIdx} MPPI=0x{kvp.Key:X8} value={kvp.Value:F6}")
+                dumpIdx += 1
+            Next
             If triHead IsNot Nothing Then AddFaceMorphPresetsFromTriHead(triHead, plan)
         End If
 
