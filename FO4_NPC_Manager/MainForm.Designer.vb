@@ -123,16 +123,18 @@ Partial Class MainForm
         Me.ComboBoxGender = New System.Windows.Forms.ComboBox()
         Me.CheckBoxApplyBoneMorphs = New System.Windows.Forms.CheckBox()
         Me.CheckBoxApplyVertexMorphs = New System.Windows.Forms.CheckBox()
+        Me.CheckBoxApplyBodyWeight = New System.Windows.Forms.CheckBox()
         Me.PanelPreviewToolbar = New System.Windows.Forms.TableLayoutPanel()
         Me.PanelPreviewToolbar.Dock = System.Windows.Forms.DockStyle.Top
         Me.PanelPreviewToolbar.AutoSize = True
         Me.PanelPreviewToolbar.Name = "PanelPreviewToolbar"
         Me.PanelPreviewToolbar.ColumnCount = 4
-        Me.PanelPreviewToolbar.RowCount = 3
+        Me.PanelPreviewToolbar.RowCount = 4
         Me.PanelPreviewToolbar.ColumnStyles.Add(New System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.AutoSize))
         Me.PanelPreviewToolbar.ColumnStyles.Add(New System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.AutoSize))
         Me.PanelPreviewToolbar.ColumnStyles.Add(New System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 100.0!))
         Me.PanelPreviewToolbar.ColumnStyles.Add(New System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.AutoSize))
+        Me.PanelPreviewToolbar.RowStyles.Add(New System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.AutoSize))
         Me.PanelPreviewToolbar.RowStyles.Add(New System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.AutoSize))
         Me.PanelPreviewToolbar.RowStyles.Add(New System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.AutoSize))
         Me.PanelPreviewToolbar.RowStyles.Add(New System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.AutoSize))
@@ -151,6 +153,9 @@ Partial Class MainForm
         Me.PanelPreviewToolbar.Controls.Add(Me.CheckBoxApplyBoneMorphs, 0, 2)
         Me.PanelPreviewToolbar.SetColumnSpan(Me.CheckBoxApplyVertexMorphs, 2)
         Me.PanelPreviewToolbar.Controls.Add(Me.CheckBoxApplyVertexMorphs, 2, 2)
+        ' Row 3: Body weight checkbox (full width)
+        Me.PanelPreviewToolbar.SetColumnSpan(Me.CheckBoxApplyBodyWeight, 4)
+        Me.PanelPreviewToolbar.Controls.Add(Me.CheckBoxApplyBodyWeight, 0, 3)
         '
         ' CheckBoxApplyBoneMorphs
         '
@@ -167,6 +172,14 @@ Partial Class MainForm
         Me.CheckBoxApplyVertexMorphs.CheckState = System.Windows.Forms.CheckState.Checked
         Me.CheckBoxApplyVertexMorphs.Name = "CheckBoxApplyVertexMorphs"
         Me.CheckBoxApplyVertexMorphs.Text = "Vertex morphs (chargen TRI)"
+        '
+        ' CheckBoxApplyBodyWeight
+        '
+        Me.CheckBoxApplyBodyWeight.AutoSize = True
+        Me.CheckBoxApplyBodyWeight.Checked = True
+        Me.CheckBoxApplyBodyWeight.CheckState = System.Windows.Forms.CheckState.Checked
+        Me.CheckBoxApplyBodyWeight.Name = "CheckBoxApplyBodyWeight"
+        Me.CheckBoxApplyBodyWeight.Text = "Body weight morphs (MWGT/BSMS/NNAM)"
         '
         ' PanelRight
         '
@@ -334,6 +347,7 @@ Partial Class MainForm
     Friend WithEvents ComboBoxGender As System.Windows.Forms.ComboBox
     Friend WithEvents CheckBoxApplyBoneMorphs As System.Windows.Forms.CheckBox
     Friend WithEvents CheckBoxApplyVertexMorphs As System.Windows.Forms.CheckBox
+    Friend WithEvents CheckBoxApplyBodyWeight As System.Windows.Forms.CheckBox
     Friend WithEvents StatusStrip1 As System.Windows.Forms.StatusStrip
     Friend WithEvents ToolStripStatusLabel1 As System.Windows.Forms.ToolStripStatusLabel
     Friend WithEvents ToolStripProgressBar1 As System.Windows.Forms.ToolStripProgressBar

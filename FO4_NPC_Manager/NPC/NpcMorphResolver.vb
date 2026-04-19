@@ -70,10 +70,77 @@ Public Class NpcMorphResolver
         ' If counts don't match, the NIF was replaced (e.g. HiPoly Faces) and applying
         ' vanilla morph indices to a different mesh corrupts geometry. Skip in that case.
         Dim shapeVertCount = geom.NifLocalVertices.Length
+
+        ' TRI-BASE-ALIGN-PROBE 2026-04-19: compare TRI.BaseVertices[i] vs NIF.NifLocalVertices[i]
+        ' over the overlapping range [0, min(TRI, NIF)). Runs ALWAYS (match or mismatch) so we have
+        ' female-matching reference (expected max diff ≈ 0 over full range) vs male-mismatched
+        ' (diff ≈ 0 over first 1690 if extras are appended at end, or nonzero if interleaved).
+        If triHead IsNot Nothing AndAlso shapeVertCount > 0 AndAlso triHead.BaseVertices IsNot Nothing AndAlso triHead.BaseVertices.Length > 0 Then
+            Dim overlap = Math.Min(triHead.BaseVertices.Length, shapeVertCount)
+            Dim maxMag As Double = 0
+            Dim maxIdx As Integer = -1
+            Dim nearZero As Integer = 0
+            For i = 0 To overlap - 1
+                Dim t = triHead.BaseVertices(i)
+                Dim n = geom.NifLocalVertices(i)
+                Dim dx = CDbl(t.X) - n.X
+                Dim dy = CDbl(t.Y) - n.Y
+                Dim dz = CDbl(t.Z) - n.Z
+                Dim mag = Math.Sqrt(dx * dx + dy * dy + dz * dz)
+                If mag < 0.0001 Then nearZero += 1
+                If mag > maxMag Then
+                    maxMag = mag
+                    maxIdx = i
+                End If
+            Next
+            Dim pct = (100.0 * nearZero) / overlap
+            Dim kind = If(CInt(triHead.NumVertices) = shapeVertCount, "MATCH", "MISMATCH")
+            NpcPreviewLog.Log($"  [TRI-BASE-ALIGN-PROBE] '{shapeName}' {kind} triVerts={triHead.NumVertices} nifVerts={shapeVertCount} overlap={overlap} nearZero(<0.0001)={nearZero} ({pct:F1}%) maxDiff={maxMag:F4} atIdx={maxIdx}")
+            For i = 0 To Math.Min(4, overlap - 1)
+                Dim t = triHead.BaseVertices(i)
+                Dim n = geom.NifLocalVertices(i)
+                Dim dx = CDbl(t.X) - n.X
+                Dim dy = CDbl(t.Y) - n.Y
+                Dim dz = CDbl(t.Z) - n.Z
+                Dim mag = Math.Sqrt(dx * dx + dy * dy + dz * dz)
+                NpcPreviewLog.Log($"    [TRI-BASE-ALIGN-PROBE] i={i} TRI=({t.X:F4},{t.Y:F4},{t.Z:F4}) NIF=({n.X:F4},{n.Y:F4},{n.Z:F4}) |diff|={mag:F4}")
+            Next
+            If maxIdx >= 0 AndAlso maxMag > 0.0001 Then
+                Dim t = triHead.BaseVertices(maxIdx)
+                Dim n = geom.NifLocalVertices(maxIdx)
+                NpcPreviewLog.Log($"    [TRI-BASE-ALIGN-PROBE] worst match i={maxIdx} TRI=({t.X:F4},{t.Y:F4},{t.Z:F4}) NIF=({n.X:F4},{n.Y:F4},{n.Z:F4})")
+            End If
+            If shapeVertCount > overlap Then
+                NpcPreviewLog.Log($"  [TRI-BASE-ALIGN-PROBE] NIF extras (indices {overlap}..{shapeVertCount - 1}) — {shapeVertCount - overlap} verts:")
+                For i = overlap To Math.Min(shapeVertCount - 1, overlap + 9)
+                    Dim n = geom.NifLocalVertices(i)
+                    NpcPreviewLog.Log($"    [TRI-BASE-ALIGN-PROBE] extra[{i}] NIF=({n.X:F4},{n.Y:F4},{n.Z:F4})")
+                Next
+            End If
+        End If
+
+        ' Vertex count sanity check. Apply semantics: final[i] = NIF.rest[i] + Σ morph.delta[i]
+        ' (verified MorphEngine.vb:86 starts from NifLocalVertices and line 137 adds deltas by index).
+        ' MorphEngine also has a safety guard (line 134: If i >= 0 AndAlso i < count) that drops
+        ' out-of-range indices. Three cases:
+        '   A) TriHead.NumVertices == NIF verts: exact match, apply all deltas.
+        '   B) TriHead.NumVertices <  NIF verts: NIF has appended extras (vanilla male _faceBones
+        '      = 1696 verts with TRI chargen = 1690; extras are inner-mouth/jaw rigging geometry
+        '      with no morph target in any vanilla TRI). Apply the TRI's first N deltas to
+        '      indices [0, TRI.NumVertices); extras [TRI.NumVertices, NIF) stay at NIF rest.
+        '      Empirically confirmed via TRI-BASE-ALIGN-PROBE 2026-04-19 that female (count MATCH)
+        '      has maxDiff 0.72 between TRI.BaseVertices and NIF rest at some indices yet morphs
+        '      at noise floor — proves by-index alignment is the runtime truth, not by-position.
+        '   C) TriHead.NumVertices >  NIF verts: NIF was DOWNSIZED (mod replaced with fewer verts).
+        '      Log warning; MorphEngine's bounds check will drop indices ≥ NIF count. Some morph
+        '      deltas are lost but nothing corrupts.
         If triHead IsNot Nothing AndAlso shapeVertCount > 0 Then
-            If CInt(triHead.NumVertices) <> shapeVertCount Then
-                NpcPreviewLog.Log($"  [MORPH-MISMATCH] Shape '{shapeName}' has {shapeVertCount} verts but TriHead has {triHead.NumVertices} — skipping chargen morphs (NIF likely replaced by mod)")
-                triHead = Nothing
+            If CInt(triHead.NumVertices) = shapeVertCount Then
+                ' Case A — nothing to log
+            ElseIf CInt(triHead.NumVertices) < shapeVertCount Then
+                NpcPreviewLog.Log($"  [MORPH-EXTEND] Shape '{shapeName}' has {shapeVertCount} NIF verts vs {triHead.NumVertices} TRI deltas — applying to first {triHead.NumVertices} indices, extras [{triHead.NumVertices}..{shapeVertCount - 1}] stay at NIF rest (vanilla _faceBones convention)")
+            Else
+                NpcPreviewLog.Log($"  [MORPH-SHRINK] Shape '{shapeName}' has {shapeVertCount} NIF verts but {triHead.NumVertices} TRI deltas — NIF was downsized (likely mod); MorphEngine will drop indices >= {shapeVertCount}")
             End If
         End If
 
@@ -139,13 +206,18 @@ Public Class NpcMorphResolver
         '    (position/rotation/scale), not vertex morph weights.
         '    They should be applied via skeleton DeltaTransform, not via TRI vertex deltas.
 
-        ' 4) Apply Facial Morph Intensity (FMIN) as global multiplier
-        Dim fmin = _npcData.FacialMorphIntensity
-        If Math.Abs(fmin - 1.0F) > 0.001F AndAlso plan.Channels.Count > 0 Then
-            For Each ch In plan.Channels
-                ch.Weight *= fmin
-            Next
-            NpcPreviewLog.Log($"  [MORPH] Applied FMIN={fmin:F3} to {plan.Channels.Count} channels")
+        ' 4) FMIN (FacialMorphIntensity) is NOT applied to vertex morphs.
+        ' Empirical validation 2026-04-19 fixture 0x0015E922 (FMIN=2):
+        '   Harness obs direction is bake − our (NOT our − bake; see harness dx=vRaw-ourWorld).
+        '   V-only verts: obs ≈ −our_delta_Σ → bake_delta = our + obs ≈ 0. Bake has ZERO vertex
+        '   morph at these neck/collarbone-edge verts of the head mesh.
+        '   When we DO apply FMIN×weight: our_delta doubles → obs doubles → V-only RMS 0.012 → 0.026,
+        '   V+FMRS max 0.08 → 1.03. Empirically worse.
+        ' The residual 0.012 at V-only is NOT FMIN: it's our resolver applying morph deltas at
+        ' edge verts that CK's bake doesn't have. Separate bug, out of scope for FMIN semantics.
+        ' No-op for the scaling; log FMIN for visibility.
+        If Math.Abs(_npcData.FacialMorphIntensity - 1.0F) > 0.001F AndAlso plan.Channels.Count > 0 Then
+            NpcPreviewLog.Log($"  [MORPH] Vertex morphs NOT scaled by FMIN={_npcData.FacialMorphIntensity:F3} (only FMRS path applies it, validated empirically 2026-04-19)")
         End If
 
         Return plan
