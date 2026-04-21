@@ -31,7 +31,6 @@ Public Class MainForm
     Private ReadOnly _assetDictionaryLock As New Object()
     Private _previewRequestVersion As Integer = 0
     Private Shared ReadOnly _rng As New Random()
-    Private ReadOnly _variantCache As New Dictionary(Of UInteger, List(Of PreviewVariantDefinition))
     Private _npcByIdCache As New Dictionary(Of UInteger, NPC_Data)()
     Private _templateDependencyMapCache As New Dictionary(Of UInteger, List(Of TemplateDependencyEdge))()
     Private _templateRootSourceIdsCache As New List(Of UInteger)()
@@ -116,11 +115,6 @@ Public Class MainForm
         ''' Set for HDPT type=7 Meatcaps (inner-mouth geometry occluded by teeth; vanilla CK declares
         ''' them but normally not visible in static pose). Filtered out in SelectWinningCandidates.</summary>
         Public Hide As Boolean = False
-    End Class
-
-    Private Class ResolvedBranch(Of T)
-        Public SourceNpcFormID As UInteger
-        Public Value As T
     End Class
 
     Private Class PreviewVariantDefinition
@@ -350,9 +344,6 @@ Public Class MainForm
 
     Private Sub ParseAllNPCs()
         _allNPCs.Clear()
-        SyncLock _variantCache
-            _variantCache.Clear()
-        End SyncLock
 
         Dim npcRecords = _pluginManager.GetNPCs()
         For Each rec In npcRecords
@@ -963,8 +954,23 @@ Public Class MainForm
     ''' resolution.</summary>
     Private _lastRenderedState As NPCVisualState = Nothing
     Private _lastRenderData As PreviewResolutionResult = Nothing
-    ''' <summary>Outfit options for current NPC: list of (display name, list of ARMO FormIDs).</summary>
-    Private _currentOutfitOptions As New List(Of (Name As String, ArmorFormIDs As List(Of UInteger)))
+    Private Enum OutfitSlotKind
+        DefaultOutfit
+        SleepOutfit
+        NoOutfit
+    End Enum
+
+    ''' <summary>One entry of the outfit combo. With the new canonical model, entries enumerate
+    ''' <c>(branch, slot_kind)</c> — today one per (DOFT?, SOFT?) of the current base state. A
+    ''' sampled realization of ARMO FormIDs is cached per entry; Reroll re-samples via the library.</summary>
+    Private Class OutfitComboEntry
+        Public Label As String
+        Public SlotKind As OutfitSlotKind
+        Public OutfitFormID As UInteger
+        Public SampledArmorFormIDs As List(Of UInteger) = New List(Of UInteger)
+    End Class
+
+    Private _currentOutfitEntries As New List(Of OutfitComboEntry)
     Private _suppressOutfitComboEvent As Boolean = False
 
     Private Sub TreeViewNPCs_DrawNode(sender As Object, e As DrawTreeNodeEventArgs) Handles TreeViewNPCs.DrawNode
@@ -1024,15 +1030,15 @@ Public Class MainForm
 
             SetStatus($"Resolving {npc}...")
             Dim baseState As NPCVisualState = Nothing
-            Dim outfitOptions As List(Of (Name As String, ArmorFormIDs As List(Of UInteger))) = Nothing
+            Dim outfitEntries As List(Of OutfitComboEntry) = Nothing
             Await Task.Run(Sub()
                                baseState = ResolveNPCBaseState(npc)
-                               outfitOptions = ResolveOutfitOptions(baseState)
+                               outfitEntries = BuildOutfitComboEntries(baseState)
                            End Sub)
             If requestVersion <> _previewRequestVersion Then Return
 
             _currentBaseState = baseState
-            _currentOutfitOptions = If(outfitOptions, New List(Of (Name As String, ArmorFormIDs As List(Of UInteger))))
+            _currentOutfitEntries = If(outfitEntries, New List(Of OutfitComboEntry))
 
             ' Enable/disable NPC randomization controls based on whether NPC has LVLN in template chain
             Dim hasLeveledTemplates = NpcHasLeveledTemplates(npc)
@@ -1088,15 +1094,15 @@ Public Class MainForm
 
             SetStatus($"Resolving {npc} (from {lvlnData.EditorID})...")
             Dim baseState As NPCVisualState = Nothing
-            Dim outfitOptions As List(Of (Name As String, ArmorFormIDs As List(Of UInteger))) = Nothing
+            Dim outfitEntries As List(Of OutfitComboEntry) = Nothing
             Await Task.Run(Sub()
                                baseState = ResolveNPCBaseState(npc)
-                               outfitOptions = ResolveOutfitOptions(baseState)
+                               outfitEntries = BuildOutfitComboEntries(baseState)
                            End Sub)
             If requestVersion <> _previewRequestVersion Then Return
 
             _currentBaseState = baseState
-            _currentOutfitOptions = If(outfitOptions, New List(Of (Name As String, ArmorFormIDs As List(Of UInteger))))
+            _currentOutfitEntries = If(outfitEntries, New List(Of OutfitComboEntry))
 
             ' LVLN selections always allow re-randomization
             If InvokeRequired Then
@@ -1125,67 +1131,27 @@ Public Class MainForm
     End Sub
 
     Private Sub ButtonReroll_Click(sender As Object, e As EventArgs) Handles ButtonReroll.Click
-        ' Reroll variable outfit pieces only: re-resolve the CURRENT outfit option with fresh random
         If _currentBaseState Is Nothing Then Return
-        Dim idx = ComboBoxOutfit.SelectedIndex
-        If idx < 0 OrElse idx >= _currentOutfitOptions.Count Then Return
-
-        NpcPreviewLog.Log($"  [REROLL-OUTFIT] idx={idx}")
-
-        ' Re-collect armor pieces for the selected outfit variant with new random picks
-        Dim opt = _currentOutfitOptions(idx)
-        Dim rerolled = RerollCurrentOutfitOption()
-        If rerolled IsNot Nothing Then
-            _currentOutfitOptions(idx) = (opt.Name, rerolled)
-        End If
-
-        Dim requestVersion = Interlocked.Increment(_previewRequestVersion)
-        RenderOnDemandAsync(requestVersion)
-    End Sub
-
-    ''' <summary>Re-resolve armor pieces for the currently selected outfit option with fresh random.</summary>
-    Private Function RerollCurrentOutfitOption() As List(Of UInteger)
-        If _currentBaseState Is Nothing OrElse _currentBaseState.DefaultOutfitFormID = 0UI Then Return Nothing
-
-        Dim outfitRec = _pluginManager.GetRecord(_currentBaseState.DefaultOutfitFormID)
-        If outfitRec Is Nothing OrElse outfitRec.Header.Signature <> "OTFT" Then Return Nothing
-        Dim otft = RecordParsers.ParseOTFT(outfitRec, _pluginManager)
 
         Dim idx = If(ComboBoxOutfit.InvokeRequired,
                      CInt(ComboBoxOutfit.Invoke(Function() ComboBoxOutfit.SelectedIndex)),
                      ComboBoxOutfit.SelectedIndex)
+        If idx < 0 OrElse idx >= _currentOutfitEntries.Count Then Return
 
-        ' Find the LVLI variant entry for this combo index
-        Dim fixedPieces As New List(Of UInteger)
-        Dim entryIndex = 0
+        Dim entry = _currentOutfitEntries(idx)
+        If entry.SlotKind = OutfitSlotKind.NoOutfit OrElse entry.OutfitFormID = 0UI Then Return
 
-        For Each itemFormID In otft.ItemFormIDs
-            Dim itemRec = _pluginManager.GetRecord(itemFormID)
-            If itemRec Is Nothing Then Continue For
+        NpcPreviewLog.Log($"  [REROLL-OUTFIT] idx={idx} slot={entry.SlotKind} otft={entry.OutfitFormID:X8}")
 
-            Select Case itemRec.Header.Signature
-                Case "ARMO"
-                    Dim terminalID = ResolveTerminalArmorFormID(itemFormID, New HashSet(Of UInteger)(), New List(Of String))
-                    If terminalID <> 0UI Then fixedPieces.Add(terminalID)
-                Case "LVLI"
-                    Dim lvliRec = _pluginManager.GetRecord(itemFormID)
-                    If lvliRec Is Nothing OrElse lvliRec.Header.Signature <> "LVLI" Then Continue For
-                    Dim lvli = RecordParsers.ParseLVLI(lvliRec, _pluginManager)
-
-                    For Each entry In lvli.Entries
-                        If entry.FormID = 0UI Then Continue For
-                        If entryIndex = idx Then
-                            Dim result As New List(Of UInteger)(fixedPieces)
-                            CollectAllArmorFromEntry(entry.FormID, New HashSet(Of UInteger)(), result)
-                            Return result.Distinct().ToList()
-                        End If
-                        entryIndex += 1
-                    Next
-            End Select
+        Dim warnings As New List(Of String)
+        entry.SampledArmorFormIDs = OutfitResolver.SampleOutfitRealization(entry.OutfitFormID, _pluginManager, warnings)
+        For Each w In warnings
+            NpcPreviewLog.Log($"    [OTFT-WARN] {w}")
         Next
 
-        Return Nothing
-    End Function
+        Dim requestVersion = Interlocked.Increment(_previewRequestVersion)
+        RenderOnDemandAsync(requestVersion)
+    End Sub
 
     Private Sub ButtonRandomNPC_Click(sender As Object, e As EventArgs) Handles ButtonRandomNPC.Click
         Dim selectedNode = TreeViewNPCs.SelectedNode
@@ -1226,12 +1192,12 @@ Public Class MainForm
 
         _suppressOutfitComboEvent = True
         ComboBoxOutfit.Items.Clear()
-        If _currentOutfitOptions.Count = 0 Then
-            ComboBoxOutfit.Items.Add("(base body)")
+        If _currentOutfitEntries.Count = 0 Then
+            ComboBoxOutfit.Items.Add("(no outfit)")
             ComboBoxOutfit.SelectedIndex = 0
         Else
-            For Each opt In _currentOutfitOptions
-                ComboBoxOutfit.Items.Add(opt.Name)
+            For Each entry In _currentOutfitEntries
+                ComboBoxOutfit.Items.Add(entry.Label)
             Next
             ComboBoxOutfit.SelectedIndex = 0
         End If
@@ -1242,8 +1208,8 @@ Public Class MainForm
         Dim idx = If(ComboBoxOutfit.InvokeRequired,
                      CInt(ComboBoxOutfit.Invoke(Function() ComboBoxOutfit.SelectedIndex)),
                      ComboBoxOutfit.SelectedIndex)
-        If idx < 0 OrElse idx >= _currentOutfitOptions.Count Then Return New List(Of UInteger)
-        Return _currentOutfitOptions(idx).ArmorFormIDs
+        If idx < 0 OrElse idx >= _currentOutfitEntries.Count Then Return New List(Of UInteger)
+        Return _currentOutfitEntries(idx).SampledArmorFormIDs
     End Function
 
     Private Async Function RenderCurrentStateAsync(requestVersion As Integer) As Task
@@ -3069,183 +3035,43 @@ Public Class MainForm
         Return state
     End Function
 
-    ''' <summary>Resolve outfit options for the combo selector.
-    ''' Each OTFT item that is ARMO goes into every outfit as a fixed piece.
-    ''' Each OTFT item that is LVLI: its top-level entries are the outfit variants.
-    ''' Each variant collects ALL armor pieces from that LVLI entry (resolving nested LVLI depth-first, first leaf).
-    ''' Result: one combo entry per outfit variant, each containing all fixed + variant armor pieces.</summary>
-    Private Function ResolveOutfitOptions(state As NPCVisualState) As List(Of (Name As String, ArmorFormIDs As List(Of UInteger)))
-        Dim result As New List(Of (Name As String, ArmorFormIDs As List(Of UInteger)))
-        If state Is Nothing OrElse state.DefaultOutfitFormID = 0UI Then Return result
+    ''' <summary>Build the outfit combo entries for the current base state: up to two entries
+    ''' (Default + Sleep), each holding one sampled realization of ARMO FormIDs. Reroll re-samples
+    ''' a single entry via <see cref="OutfitResolver.SampleOutfitRealization"/>.</summary>
+    Private Function BuildOutfitComboEntries(state As NPCVisualState) As List(Of OutfitComboEntry)
+        Dim entries As New List(Of OutfitComboEntry)
+        If state Is Nothing Then Return entries
 
-        Dim outfitRec = _pluginManager.GetRecord(state.DefaultOutfitFormID)
-        If outfitRec Is Nothing OrElse outfitRec.Header.Signature <> "OTFT" Then Return result
+        AddOutfitEntryIfPresent(entries, state.DefaultOutfitFormID, OutfitSlotKind.DefaultOutfit, "Default")
+        AddOutfitEntryIfPresent(entries, state.SleepOutfitFormID, OutfitSlotKind.SleepOutfit, "Sleep")
 
-        Dim otft = RecordParsers.ParseOTFT(outfitRec, _pluginManager)
-        NpcPreviewLog.Log($"  [OTFT-OPTIONS] {otft.EditorID} FID={state.DefaultOutfitFormID:X8} items={otft.ItemFormIDs.Count}")
+        NpcPreviewLog.Log($"  [OTFT-COMBO] {entries.Count} entries (DOFT={state.DefaultOutfitFormID:X8} SOFT={state.SleepOutfitFormID:X8})")
+        Return entries
+    End Function
 
-        ' Separate fixed ARMO pieces from LVLI variant sources
-        Dim fixedPieces As New List(Of UInteger)
-        Dim variantSources As New List(Of UInteger) ' top-level LVLI FormIDs
+    Private Sub AddOutfitEntryIfPresent(entries As List(Of OutfitComboEntry), otftFormID As UInteger, kind As OutfitSlotKind, slotName As String)
+        If otftFormID = 0UI Then Return
 
-        For Each itemFormID In otft.ItemFormIDs
-            Dim itemRec = _pluginManager.GetRecord(itemFormID)
-            If itemRec Is Nothing Then Continue For
-
-            Select Case itemRec.Header.Signature
-                Case "ARMO"
-                    Dim terminalID = ResolveTerminalArmorFormID(itemFormID, New HashSet(Of UInteger)(), New List(Of String))
-                    If terminalID <> 0UI Then fixedPieces.Add(terminalID)
-                Case "LVLI"
-                    variantSources.Add(itemFormID)
-            End Select
-        Next
-
-        If variantSources.Count = 0 Then
-            ' No leveled items: single outfit with all fixed pieces
-            If fixedPieces.Count > 0 Then
-                result.Add((DescribeOutfitArmorSet(fixedPieces), fixedPieces))
-            End If
-            NpcPreviewLog.Log($"  [OTFT-OPTIONS] 1 fixed outfit ({fixedPieces.Count} pieces)")
-            Return result
+        Dim otftRec = _pluginManager.GetRecord(otftFormID)
+        If otftRec Is Nothing OrElse otftRec.Header.Signature <> "OTFT" Then
+            NpcPreviewLog.Log($"    [OTFT-WARN] {slotName} FID={otftFormID:X8} missing or not OTFT")
+            Return
         End If
 
-        ' For each top-level LVLI: its entries are the outfit variants.
-        ' Each variant = fixed pieces + all armor pieces collected from that LVLI entry.
-        For Each lvliFormID In variantSources
-            Dim lvliRec = _pluginManager.GetRecord(lvliFormID)
-            If lvliRec Is Nothing OrElse lvliRec.Header.Signature <> "LVLI" Then Continue For
-
-            Dim lvli = RecordParsers.ParseLVLI(lvliRec, _pluginManager)
-            NpcPreviewLog.Log($"    [LVLI] {lvli.EditorID} FID={lvliFormID:X8} entries={lvli.Entries.Count}")
-
-            For Each entry In lvli.Entries
-                If entry.FormID = 0UI Then Continue For
-                Dim entryRec = _pluginManager.GetRecord(entry.FormID)
-                If entryRec Is Nothing Then Continue For
-
-                ' Collect all armor pieces from this entry (one complete outfit variant)
-                Dim variantPieces As New List(Of UInteger)(fixedPieces)
-                CollectAllArmorFromEntry(entry.FormID, New HashSet(Of UInteger)(), variantPieces)
-
-                If variantPieces.Count > 0 Then
-                    Dim distinct = variantPieces.Distinct().ToList()
-                    Dim entryLabel = If(entryRec.EditorID <> "", entryRec.EditorID, entry.FormID.ToString("X8"))
-                    result.Add(($"{entryLabel} ({distinct.Count} pcs)", distinct))
-                    NpcPreviewLog.Log($"      variant: {entryLabel} ? {distinct.Count} pieces")
-                End If
-            Next
+        Dim warnings As New List(Of String)
+        Dim sampled = OutfitResolver.SampleOutfitRealization(otftFormID, _pluginManager, warnings)
+        For Each w In warnings
+            NpcPreviewLog.Log($"    [OTFT-WARN] {w}")
         Next
 
-        ' Deduplicate identical outfit sets
-        Dim seen As New HashSet(Of String)(StringComparer.OrdinalIgnoreCase)
-        Dim deduped As New List(Of (Name As String, ArmorFormIDs As List(Of UInteger)))
-        For Each opt In result
-            Dim key = String.Join("|", opt.ArmorFormIDs.OrderBy(Function(id) id).Select(Function(id) id.ToString("X8")))
-            If seen.Add(key) Then deduped.Add(opt)
-        Next
-
-        NpcPreviewLog.Log($"  [OTFT-OPTIONS] {deduped.Count} outfit variants resolved")
-        Return deduped
-    End Function
-
-    ''' <summary>Collect terminal ARMO FormIDs from an entry (ARMO or LVLI).
-    ''' Respects UseAll flag: if set, collects ALL entries. If not, picks one random entry.
-    ''' Recurses for nested LVLI.</summary>
-    Private Sub CollectAllArmorFromEntry(formID As UInteger, visited As HashSet(Of UInteger), result As List(Of UInteger))
-        If formID = 0UI OrElse visited.Contains(formID) Then Return
-        Dim rec = _pluginManager.GetRecord(formID)
-        If rec Is Nothing Then Return
-
-        Select Case rec.Header.Signature
-            Case "ARMO"
-                Dim terminalID = ResolveTerminalArmorFormID(formID, New HashSet(Of UInteger)(), New List(Of String))
-                If terminalID <> 0UI Then result.Add(terminalID)
-            Case "LVLI"
-                visited.Add(formID)
-                Dim lvli = RecordParsers.ParseLVLI(rec, _pluginManager)
-                Dim usableEntries = lvli.Entries.Where(Function(e) e.FormID <> 0UI).ToList()
-
-                If lvli.UseAll Then
-                    ' UseAll: include ALL entries (this is how outfit slot lists work)
-                    For Each entry In usableEntries
-                        CollectAllArmorFromEntry(entry.FormID, New HashSet(Of UInteger)(visited), result)
-                    Next
-                Else
-                    ' Pick one random entry (this is how variant selection works)
-                    If usableEntries.Count > 0 Then
-                        Dim entry = usableEntries(_rng.Next(usableEntries.Count))
-                        CollectAllArmorFromEntry(entry.FormID, New HashSet(Of UInteger)(visited), result)
-                    End If
-                End If
-                visited.Remove(formID)
-        End Select
+        Dim otftLabel = If(otftRec.EditorID <> "", otftRec.EditorID, otftFormID.ToString("X8"))
+        entries.Add(New OutfitComboEntry With {
+            .Label = $"{slotName} — {otftLabel} ({sampled.Count} pcs)",
+            .SlotKind = kind,
+            .OutfitFormID = otftFormID,
+            .SampledArmorFormIDs = sampled
+        })
     End Sub
-
-    ''' <summary>Get a random terminal ARMO from a LVLI.</summary>
-    Private Function GetRandomLVLILeafArmor(lvliFormID As UInteger, visited As HashSet(Of UInteger)) As UInteger
-        If lvliFormID = 0UI OrElse visited.Contains(lvliFormID) Then Return 0UI
-        Dim lvliRec = _pluginManager.GetRecord(lvliFormID)
-        If lvliRec Is Nothing OrElse lvliRec.Header.Signature <> "LVLI" Then Return 0UI
-
-        visited.Add(lvliFormID)
-        Dim lvli = RecordParsers.ParseLVLI(lvliRec, _pluginManager)
-        Dim usableEntries = lvli.Entries.Where(Function(e) e.FormID <> 0UI).ToList()
-        If usableEntries.Count = 0 Then Return 0UI
-
-        ' Pick random entry
-        Dim entry = usableEntries(_rng.Next(usableEntries.Count))
-        Dim entryRec = _pluginManager.GetRecord(entry.FormID)
-        If entryRec Is Nothing Then Return 0UI
-
-        Select Case entryRec.Header.Signature
-            Case "ARMO"
-                Return ResolveTerminalArmorFormID(entry.FormID, New HashSet(Of UInteger)(), New List(Of String))
-            Case "LVLI"
-                Return GetRandomLVLILeafArmor(entry.FormID, visited)
-            Case Else
-                Return 0UI
-        End Select
-    End Function
-
-
-    ''' <summary>Recursively flatten a LVLI into a list of unique terminal ARMO FormIDs (leaf armors).</summary>
-    Private Sub FlattenLVLIToArmorList(lvliFormID As UInteger, visited As HashSet(Of UInteger), result As List(Of UInteger))
-        If lvliFormID = 0UI OrElse visited.Contains(lvliFormID) Then Return
-        Dim lvliRec = _pluginManager.GetRecord(lvliFormID)
-        If lvliRec Is Nothing OrElse lvliRec.Header.Signature <> "LVLI" Then Return
-
-        visited.Add(lvliFormID)
-        Dim lvli = RecordParsers.ParseLVLI(lvliRec, _pluginManager)
-
-        For Each entry In lvli.Entries
-            If entry.FormID = 0UI Then Continue For
-            Dim entryRec = _pluginManager.GetRecord(entry.FormID)
-            If entryRec Is Nothing Then Continue For
-
-            Select Case entryRec.Header.Signature
-                Case "ARMO"
-                    Dim terminalID = ResolveTerminalArmorFormID(entry.FormID, New HashSet(Of UInteger)(), New List(Of String))
-                    If terminalID <> 0UI AndAlso Not result.Contains(terminalID) Then
-                        result.Add(terminalID)
-                    End If
-                Case "LVLI"
-                    FlattenLVLIToArmorList(entry.FormID, visited, result)
-            End Select
-        Next
-
-        visited.Remove(lvliFormID)
-    End Sub
-
-    Private Function DescribeOutfitArmorSet(armorIDs As List(Of UInteger)) As String
-        If armorIDs.Count = 0 Then Return "(base body)"
-        Dim names As New List(Of String)
-        For Each fid In armorIDs
-            Dim rec = _pluginManager.GetRecord(fid)
-            names.Add(If(rec IsNot Nothing, rec.EditorID, fid.ToString("X8")))
-        Next
-        Return String.Join(" + ", names)
-    End Function
 
     ' RenderVariantAsync and PopulateVariantNodes removed — replaced by on-demand RenderCurrentStateAsync + outfit combo.
 
@@ -4770,47 +4596,6 @@ Public Class MainForm
         SetStatus(info.Stepn)
     End Sub
 
-    Private Function GetOrResolveVariants(npc As NPC_Data) As List(Of PreviewVariantDefinition)
-        Dim cached As List(Of PreviewVariantDefinition) = Nothing
-        SyncLock _variantCache
-            If _variantCache.TryGetValue(npc.FormID, cached) Then
-                Return cached
-            End If
-        End SyncLock
-
-        Dim variants = ResolveNPCVariants(npc)
-
-        SyncLock _variantCache
-            _variantCache(npc.FormID) = variants
-        End SyncLock
-
-        Return variants
-    End Function
-
-    Private Function ResolveNPCVariants(npc As NPC_Data) As List(Of PreviewVariantDefinition)
-        Dim warnings As New List(Of String)
-        Dim visualStates = ResolveNPCVisualStates(npc, warnings)
-        Dim variants As New List(Of PreviewVariantDefinition)
-        Dim variantId As Integer = 1
-
-        For Each state In visualStates
-            For Each useFaceGen In DetermineFaceGenModes(state)
-                Dim previewVariant As New PreviewVariantDefinition With {
-                    .RootNpcFormID = npc.FormID,
-                    .VariantId = variantId,
-                    .DisplayName = BuildVariantDisplayName(variantId, state, useFaceGen),
-                    .State = state,
-                    .UseFaceGen = useFaceGen
-                }
-                previewVariant.Warnings.AddRange(warnings)
-                variants.Add(previewVariant)
-                variantId += 1
-            Next
-        Next
-
-        Return variants
-    End Function
-
     ''' <summary>Check if pre-baked FaceGen NIF exists for this NPC.
     ''' Vanilla path: meshes\actors\character\facegendata\facegeom\&lt;plugin&gt;\&lt;formid:X8&gt;.nif
     ''' For templated NPCs, uses the model source FormID (the NPC that owns the visual traits).</summary>
@@ -4850,11 +4635,6 @@ Public Class MainForm
         ' load-order byte, so we mask it out and zero-pad the local FormID to 8 hex chars.
         Dim localFormID = npcFormID And &HFFFFFFUI
         Return $"meshes\actors\character\facegendata\facegeom\{pluginName}\{localFormID:X8}.nif".ToLowerInvariant()
-    End Function
-
-    Private Iterator Function DetermineFaceGenModes(state As NPCVisualState) As IEnumerable(Of Boolean)
-        Yield False
-        If HasFaceGenAssets(state) Then Yield True
     End Function
 
     Private Function ResolvePreviewVariant(previewVariant As PreviewVariantDefinition) As PreviewResolutionResult
@@ -4919,67 +4699,6 @@ Public Class MainForm
         Return result
     End Function
 
-    Private Function ResolveNPCVisualStates(npc As NPC_Data, warnings As List(Of String)) As List(Of NPCVisualState)
-        Dim results As New List(Of NPCVisualState)
-        If npc Is Nothing Then Return results
-
-        Dim traitBranches = ResolveTraitsBranchesFromNPC(npc.FormID, New HashSet(Of UInteger)(), warnings)
-        Dim inventoryBranches = ResolveInventoryBranchesFromNPC(npc.FormID, New HashSet(Of UInteger)(), warnings)
-        Dim modelBranches = ResolveModelAnimationBranchesFromNPC(npc.FormID, New HashSet(Of UInteger)(), warnings)
-
-        If traitBranches.Count = 0 Then
-            traitBranches.Add(New ResolvedBranch(Of TraitsState) With {.SourceNpcFormID = npc.FormID, .Value = CreateOwnTraitsState(npc)})
-        End If
-        If inventoryBranches.Count = 0 Then
-            inventoryBranches.Add(New ResolvedBranch(Of InventoryState) With {.SourceNpcFormID = npc.FormID, .Value = CreateOwnInventoryState(npc)})
-        End If
-        If modelBranches.Count = 0 Then
-            modelBranches.Add(New ResolvedBranch(Of ModelAnimationState) With {.SourceNpcFormID = npc.FormID, .Value = CreateOwnModelAnimationState(npc)})
-        End If
-
-        For Each traitsBranch In traitBranches
-            For Each inventoryBranch In inventoryBranches
-                For Each modelBranch In modelBranches
-                    Dim baseState As New NPCVisualState With {
-                        .FormID = npc.FormID,
-                        .RootNpcFormID = npc.FormID,
-                        .TraitsSourceFormID = traitsBranch.SourceNpcFormID,
-                        .InventorySourceFormID = inventoryBranch.SourceNpcFormID,
-                        .ModelSourceFormID = modelBranch.SourceNpcFormID,
-                        .IsFemale = traitsBranch.Value.IsFemale,
-                        .RaceFormID = traitsBranch.Value.RaceFormID,
-                        .SkinFormID = traitsBranch.Value.SkinFormID,
-                        .DefaultOutfitFormID = inventoryBranch.Value.DefaultOutfitFormID,
-                        .SleepOutfitFormID = inventoryBranch.Value.SleepOutfitFormID,
-                        .HeadTextureFormID = modelBranch.Value.HeadTextureFormID,
-                        .HairColorFormID = modelBranch.Value.HairColorFormID,
-                        .FacialHairColorFormID = modelBranch.Value.FacialHairColorFormID,
-                        .HasTextureLighting = modelBranch.Value.HasTextureLighting,
-                        .TextureLightingColor = modelBranch.Value.TextureLightingColor,
-                        .WeightThin = traitsBranch.Value.WeightThin,
-                        .WeightMuscular = traitsBranch.Value.WeightMuscular,
-                        .WeightFat = traitsBranch.Value.WeightFat
-                    }
-
-                    baseState.HeadPartFormIDs.AddRange(modelBranch.Value.HeadPartFormIDs)
-                    ApplyRaceFallbacks(baseState)
-                    baseState.HeadPartFormIDs = baseState.HeadPartFormIDs.Where(Function(id) id <> 0UI).Distinct().ToList()
-
-                    Dim loadoutVariants = ExpandLoadoutArmorSets(baseState.DefaultOutfitFormID, New HashSet(Of UInteger)(), warnings)
-                    If loadoutVariants.Count = 0 Then loadoutVariants.Add(New List(Of UInteger))
-
-                    For Each loadoutArmorIds In loadoutVariants
-                        Dim state = CloneVisualState(baseState)
-                        state.LoadoutArmorFormIDs.AddRange(loadoutArmorIds.Where(Function(id) id <> 0UI))
-                        results.Add(state)
-                    Next
-                Next
-            Next
-        Next
-
-        Return DeduplicateVisualStates(results)
-    End Function
-
     Private Function CloneVisualState(state As NPCVisualState) As NPCVisualState
         Dim clone As New NPCVisualState With {
             .FormID = state.FormID,
@@ -5006,67 +4725,6 @@ Public Class MainForm
         clone.LoadoutArmorFormIDs.AddRange(state.LoadoutArmorFormIDs)
         clone.ObjectTemplateOMODFormIDs.AddRange(state.ObjectTemplateOMODFormIDs)
         Return clone
-    End Function
-
-    Private Function BuildVariantDisplayName(variantId As Integer, state As NPCVisualState, useFaceGen As Boolean) As String
-        Dim traitsLabel = DescribeNpc(GetParsedNpc(state.TraitsSourceFormID))
-        Dim inventoryLabel = DescribeNpc(GetParsedNpc(state.InventorySourceFormID))
-        Dim modelLabel = DescribeNpc(GetParsedNpc(state.ModelSourceFormID))
-        Dim outfitLabel = If(state.LoadoutArmorFormIDs.Count = 0, "base body", $"{state.LoadoutArmorFormIDs.Count} outfit item(s)")
-        Dim faceLabel = If(useFaceGen, "facegen", "records")
-        Return $"Variant {variantId:00} | T:{traitsLabel} | I:{inventoryLabel} | M:{modelLabel} | {outfitLabel} | {faceLabel}"
-    End Function
-    Private Function ResolveNPCPreview(npc As NPC_Data) As PreviewResolutionResult
-        Dim result As New PreviewResolutionResult()
-        Dim state = ResolveNPCVisualState(npc, result.Warnings)
-        If state Is Nothing Then Return result
-
-        result.SkeletonKey = ResolveSkeletonKey(state, result.Warnings)
-
-        Dim candidates = CollectMeshCandidates(state, result.Warnings)
-        Dim selectedCandidates = SelectWinningCandidates(candidates)
-        Dim loadedNifs As New Dictionary(Of String, Nifcontent_Class_Manolo)(StringComparer.OrdinalIgnoreCase)
-
-        For Each candidate In selectedCandidates
-            LoadNifShapes(candidate, state, loadedNifs, result)
-        Next
-
-        DeduplicateWarnings(result.Warnings)
-        Return result
-    End Function
-
-    Private Function ResolveNPCVisualState(npc As NPC_Data, warnings As List(Of String)) As NPCVisualState
-        Dim traits = ResolveTraitsStateFromNPC(npc.FormID, New HashSet(Of UInteger)(), warnings)
-        Dim inventory = ResolveInventoryStateFromNPC(npc.FormID, New HashSet(Of UInteger)(), warnings)
-        Dim model = ResolveModelAnimationStateFromNPC(npc.FormID, New HashSet(Of UInteger)(), warnings)
-
-        If traits Is Nothing Then traits = CreateOwnTraitsState(npc)
-        If inventory Is Nothing Then inventory = CreateOwnInventoryState(npc)
-        If model Is Nothing Then model = CreateOwnModelAnimationState(npc)
-
-        Dim state As New NPCVisualState With {
-            .FormID = npc.FormID,
-            .IsFemale = traits.IsFemale,
-            .RaceFormID = traits.RaceFormID,
-            .SkinFormID = traits.SkinFormID,
-            .DefaultOutfitFormID = inventory.DefaultOutfitFormID,
-            .SleepOutfitFormID = inventory.SleepOutfitFormID,
-            .HeadTextureFormID = model.HeadTextureFormID,
-            .HairColorFormID = model.HairColorFormID,
-            .FacialHairColorFormID = model.FacialHairColorFormID,
-            .HasTextureLighting = model.HasTextureLighting,
-            .TextureLightingColor = model.TextureLightingColor,
-            .WeightThin = traits.WeightThin,
-            .WeightMuscular = traits.WeightMuscular,
-            .WeightFat = traits.WeightFat
-        }
-
-        state.HeadPartFormIDs.AddRange(model.HeadPartFormIDs)
-        state.ObjectTemplateOMODFormIDs.AddRange(model.ObjectTemplateOMODFormIDs)
-        ApplyRaceFallbacks(state)
-        state.HeadPartFormIDs = state.HeadPartFormIDs.Where(Function(id) id <> 0UI).Distinct().ToList()
-
-        Return state
     End Function
 
     Private Sub ApplyRaceFallbacks(state As NPCVisualState)
@@ -5114,351 +4772,6 @@ Public Class MainForm
         Return dictionaryKey
     End Function
 
-    Private Function ResolveTraitsBranchesFromNPC(formID As UInteger, visited As HashSet(Of UInteger), warnings As List(Of String)) As List(Of ResolvedBranch(Of TraitsState))
-        Dim npc = GetParsedNpc(formID)
-        If npc Is Nothing Then Return New List(Of ResolvedBranch(Of TraitsState))
-
-        Dim ownBranch = New ResolvedBranch(Of TraitsState) With {
-            .SourceNpcFormID = formID,
-            .Value = CreateOwnTraitsState(npc)
-        }
-
-        If visited.Contains(formID) OrElse Not HasTemplateFlag(npc.TemplateFlags, NPC_TemplateCategory.Traits) Then
-            Return New List(Of ResolvedBranch(Of TraitsState)) From {ownBranch}
-        End If
-
-        visited.Add(formID)
-        Dim sourceFormID = ResolveTemplateSourceFormID(npc, NPC_TemplateCategory.Traits)
-        Dim branches = ResolveTraitsBranchesFromTemplateSource(sourceFormID, visited, warnings)
-        visited.Remove(formID)
-
-        If branches.Count = 0 Then
-            warnings.Add($"Traits template unresolved for {DescribeNpc(npc)}")
-            Return New List(Of ResolvedBranch(Of TraitsState)) From {ownBranch}
-        End If
-
-        Return DistinctBranches(branches)
-    End Function
-
-    Private Function ResolveInventoryBranchesFromNPC(formID As UInteger, visited As HashSet(Of UInteger), warnings As List(Of String)) As List(Of ResolvedBranch(Of InventoryState))
-        Dim npc = GetParsedNpc(formID)
-        If npc Is Nothing Then Return New List(Of ResolvedBranch(Of InventoryState))
-
-        Dim ownBranch = New ResolvedBranch(Of InventoryState) With {
-            .SourceNpcFormID = formID,
-            .Value = CreateOwnInventoryState(npc)
-        }
-
-        If visited.Contains(formID) OrElse Not HasTemplateFlag(npc.TemplateFlags, NPC_TemplateCategory.Inventory) Then
-            Return New List(Of ResolvedBranch(Of InventoryState)) From {ownBranch}
-        End If
-
-        visited.Add(formID)
-        Dim sourceFormID = ResolveTemplateSourceFormID(npc, NPC_TemplateCategory.Inventory)
-        Dim branches = ResolveInventoryBranchesFromTemplateSource(sourceFormID, visited, warnings)
-        visited.Remove(formID)
-
-        If branches.Count = 0 Then
-            warnings.Add($"Inventory template unresolved for {DescribeNpc(npc)}")
-            Return New List(Of ResolvedBranch(Of InventoryState)) From {ownBranch}
-        End If
-
-        Return DistinctBranches(branches)
-    End Function
-
-    Private Function ResolveModelAnimationBranchesFromNPC(formID As UInteger, visited As HashSet(Of UInteger), warnings As List(Of String)) As List(Of ResolvedBranch(Of ModelAnimationState))
-        Dim npc = GetParsedNpc(formID)
-        If npc Is Nothing Then Return New List(Of ResolvedBranch(Of ModelAnimationState))
-
-        Dim ownBranch = New ResolvedBranch(Of ModelAnimationState) With {
-            .SourceNpcFormID = formID,
-            .Value = CreateOwnModelAnimationState(npc)
-        }
-
-        If visited.Contains(formID) OrElse Not HasTemplateFlag(npc.TemplateFlags, NPC_TemplateCategory.ModelAnimation) Then
-            Return New List(Of ResolvedBranch(Of ModelAnimationState)) From {ownBranch}
-        End If
-
-        visited.Add(formID)
-        Dim sourceFormID = ResolveTemplateSourceFormID(npc, NPC_TemplateCategory.ModelAnimation)
-        Dim branches = ResolveModelAnimationBranchesFromTemplateSource(sourceFormID, visited, warnings)
-        visited.Remove(formID)
-
-        If branches.Count = 0 Then
-            warnings.Add($"Model/Animation template unresolved for {DescribeNpc(npc)}")
-            Return New List(Of ResolvedBranch(Of ModelAnimationState)) From {ownBranch}
-        End If
-
-        Return DistinctBranches(branches)
-    End Function
-
-    Private Function ResolveTraitsBranchesFromTemplateSource(sourceFormID As UInteger, visited As HashSet(Of UInteger), warnings As List(Of String)) As List(Of ResolvedBranch(Of TraitsState))
-        Dim branches As New List(Of ResolvedBranch(Of TraitsState))
-        For Each leafNpcFormID In ResolveTemplateNpcLeaves(sourceFormID, visited, warnings)
-            branches.AddRange(ResolveTraitsBranchesFromNPC(leafNpcFormID, visited, warnings))
-        Next
-        Return DistinctBranches(branches)
-    End Function
-
-    Private Function ResolveInventoryBranchesFromTemplateSource(sourceFormID As UInteger, visited As HashSet(Of UInteger), warnings As List(Of String)) As List(Of ResolvedBranch(Of InventoryState))
-        Dim branches As New List(Of ResolvedBranch(Of InventoryState))
-        For Each leafNpcFormID In ResolveTemplateNpcLeaves(sourceFormID, visited, warnings)
-            branches.AddRange(ResolveInventoryBranchesFromNPC(leafNpcFormID, visited, warnings))
-        Next
-        Return DistinctBranches(branches)
-    End Function
-
-    Private Function ResolveModelAnimationBranchesFromTemplateSource(sourceFormID As UInteger, visited As HashSet(Of UInteger), warnings As List(Of String)) As List(Of ResolvedBranch(Of ModelAnimationState))
-        Dim branches As New List(Of ResolvedBranch(Of ModelAnimationState))
-        For Each leafNpcFormID In ResolveTemplateNpcLeaves(sourceFormID, visited, warnings)
-            branches.AddRange(ResolveModelAnimationBranchesFromNPC(leafNpcFormID, visited, warnings))
-        Next
-        Return DistinctBranches(branches)
-    End Function
-
-    Private Function ResolveTemplateNpcLeaves(sourceFormID As UInteger, visited As HashSet(Of UInteger), warnings As List(Of String)) As List(Of UInteger)
-        Dim result As New List(Of UInteger)
-        If sourceFormID = 0UI Then Return result
-
-        Dim sourceRecord = _pluginManager.GetRecord(sourceFormID)
-        If sourceRecord Is Nothing Then
-            warnings.Add($"Missing template source {sourceFormID:X8}")
-            Return result
-        End If
-
-        Select Case sourceRecord.Header.Signature
-            Case "NPC_"
-                result.Add(sourceRecord.Header.FormID)
-            Case "LVLN"
-                result.AddRange(ExpandLeveledNpcLeaves(sourceRecord.Header.FormID, visited, warnings))
-            Case Else
-                warnings.Add($"Unsupported template source {sourceRecord.Header.Signature} [{sourceFormID:X8}]")
-        End Select
-
-        Return result.Distinct().ToList()
-    End Function
-
-    Private Function ExpandLeveledNpcLeaves(lvlnFormID As UInteger, visited As HashSet(Of UInteger), warnings As List(Of String)) As List(Of UInteger)
-        Dim result As New List(Of UInteger)
-        If lvlnFormID = 0UI Then Return result
-        If visited.Contains(lvlnFormID) Then Return result
-
-        Dim lvlnRec = _pluginManager.GetRecord(lvlnFormID)
-        If lvlnRec Is Nothing OrElse lvlnRec.Header.Signature <> "LVLN" Then Return result
-
-        visited.Add(lvlnFormID)
-        Dim lvln = RecordParsers.ParseLVLN(lvlnRec, _pluginManager)
-
-        For Each entry In lvln.Entries
-            If entry.FormID = 0UI Then Continue For
-            Dim entryRec = _pluginManager.GetRecord(entry.FormID)
-            If entryRec Is Nothing Then Continue For
-
-            Select Case entryRec.Header.Signature
-                Case "NPC_"
-                    result.Add(entryRec.Header.FormID)
-                Case "LVLN"
-                    result.AddRange(ExpandLeveledNpcLeaves(entryRec.Header.FormID, visited, warnings))
-            End Select
-        Next
-
-        visited.Remove(lvlnFormID)
-        Return result.Distinct().ToList()
-    End Function
-
-    Private Function ExpandLoadoutArmorSets(outfitFormID As UInteger, visited As HashSet(Of UInteger), warnings As List(Of String)) As List(Of List(Of UInteger))
-        If outfitFormID = 0UI Then
-            Return New List(Of List(Of UInteger)) From {New List(Of UInteger)}
-        End If
-
-        Dim outfitRec = _pluginManager.GetRecord(outfitFormID)
-        If outfitRec Is Nothing OrElse outfitRec.Header.Signature <> "OTFT" Then
-            warnings.Add($"Default outfit {outfitFormID:X8} is missing or not OTFT")
-            Return New List(Of List(Of UInteger)) From {New List(Of UInteger)}
-        End If
-
-        Dim otft = RecordParsers.ParseOTFT(outfitRec, _pluginManager)
-        NpcPreviewLog.Log($"  [OTFT] {otft.EditorID} FID={outfitFormID:X8} items({otft.ItemFormIDs.Count}): {String.Join(", ", otft.ItemFormIDs.Select(Function(id) id.ToString("X8")))}")
-        For Each itemFID In otft.ItemFormIDs
-            Dim itemRec = _pluginManager.GetRecord(itemFID)
-            If itemRec IsNot Nothing Then
-                NpcPreviewLog.Log($"    OTFT item {itemFID:X8} sig={itemRec.Header.Signature} edid={itemRec.EditorID}")
-            End If
-        Next
-        Dim results As New List(Of List(Of UInteger)) From {New List(Of UInteger)}
-
-        For Each itemFormID In otft.ItemFormIDs
-            Dim branches = ExpandOutfitItemToArmorSets(itemFormID, New HashSet(Of UInteger)(visited), warnings)
-            results = CrossJoinArmorSets(results, branches)
-        Next
-
-        Return DeduplicateArmorSets(results)
-    End Function
-
-    Private Function ExpandOutfitItemToArmorSets(itemFormID As UInteger, visited As HashSet(Of UInteger), warnings As List(Of String)) As List(Of List(Of UInteger))
-        If itemFormID = 0UI Then
-            Return New List(Of List(Of UInteger)) From {New List(Of UInteger)}
-        End If
-        If visited.Contains(itemFormID) Then
-            Return New List(Of List(Of UInteger)) From {New List(Of UInteger)}
-        End If
-
-        Dim rec = _pluginManager.GetRecord(itemFormID)
-        If rec Is Nothing Then
-            warnings.Add($"Missing outfit item {itemFormID:X8}")
-            Return New List(Of List(Of UInteger)) From {New List(Of UInteger)}
-        End If
-
-        Select Case rec.Header.Signature
-            Case "ARMO"
-                visited.Add(itemFormID)
-                Dim terminalArmorFormID = ResolveTerminalArmorFormID(itemFormID, New HashSet(Of UInteger)(), warnings)
-                If terminalArmorFormID = 0UI Then
-                    Return New List(Of List(Of UInteger)) From {New List(Of UInteger)}
-                End If
-                Return New List(Of List(Of UInteger)) From {New List(Of UInteger) From {terminalArmorFormID}}
-            Case "LVLI"
-                ' Pass a COPY of visited so the OTFT-level item doesn't block its own LVLI expansion,
-                ' but cycles within LVLI?LVLI chains are still caught by ExpandLeveledItemToArmorSets.
-                Return ExpandLeveledItemToArmorSets(itemFormID, New HashSet(Of UInteger)(visited), warnings)
-            Case Else
-                warnings.Add($"Unsupported outfit item {rec.Header.Signature} [{itemFormID:X8}]")
-                Return New List(Of List(Of UInteger)) From {New List(Of UInteger)}
-        End Select
-    End Function
-
-    Private Function ResolveTerminalArmorFormID(armoFormID As UInteger, visited As HashSet(Of UInteger), warnings As List(Of String)) As UInteger
-        If armoFormID = 0UI Then Return 0UI
-        If visited.Contains(armoFormID) Then Return armoFormID
-
-        Dim armoRec = _pluginManager.GetRecord(armoFormID)
-        If armoRec Is Nothing OrElse armoRec.Header.Signature <> "ARMO" Then Return 0UI
-
-        visited.Add(armoFormID)
-        Dim armo = RecordParsers.ParseARMO(armoRec, _pluginManager)
-        If armo.TemplateArmorFormID <> 0UI Then
-            Dim resolved = ResolveTerminalArmorFormID(armo.TemplateArmorFormID, visited, warnings)
-            If resolved <> 0UI Then Return resolved
-        End If
-
-        Return armoFormID
-    End Function
-
-    Private Function ExpandLeveledItemToArmorSets(lvliFormID As UInteger, visited As HashSet(Of UInteger), warnings As List(Of String)) As List(Of List(Of UInteger))
-        Dim results As New List(Of List(Of UInteger))
-        If lvliFormID = 0UI Then Return results
-        If visited.Contains(lvliFormID) Then Return results
-
-        Dim lvliRec = _pluginManager.GetRecord(lvliFormID)
-        If lvliRec Is Nothing OrElse lvliRec.Header.Signature <> "LVLI" Then Return results
-
-        visited.Add(lvliFormID)
-        Dim lvli = RecordParsers.ParseLVLI(lvliRec, _pluginManager)
-        Dim perEntryBranches As New List(Of List(Of List(Of UInteger)))
-
-        For Each entry In lvli.Entries
-            Dim options = ExpandOutfitItemToArmorSets(entry.FormID, New HashSet(Of UInteger)(visited), warnings)
-            If entry.Count > 1US AndAlso lvli.CalculateEachItemInCount Then
-                options = ExpandRepeatedArmorSets(options, CInt(entry.Count))
-            End If
-            If entry.ChanceNone > 0 Then
-                options.Add(New List(Of UInteger))
-            End If
-            perEntryBranches.Add(DeduplicateArmorSets(options))
-        Next
-
-        If lvli.UseAll Then
-            results.Add(New List(Of UInteger))
-            For Each branchSet In perEntryBranches
-                results = CrossJoinArmorSets(results, branchSet)
-            Next
-        Else
-            For Each branchSet In perEntryBranches
-                results.AddRange(branchSet)
-            Next
-        End If
-
-        If lvli.ChanceNone > 0 OrElse results.Count = 0 Then
-            results.Add(New List(Of UInteger))
-        End If
-
-        visited.Remove(lvliFormID)
-        Return DeduplicateArmorSets(results)
-    End Function
-
-    Private Function ExpandRepeatedArmorSets(options As List(Of List(Of UInteger)), repeatCount As Integer) As List(Of List(Of UInteger))
-        If repeatCount <= 1 Then Return DeduplicateArmorSets(options)
-
-        Dim results As New List(Of List(Of UInteger)) From {New List(Of UInteger)}
-        For i = 1 To repeatCount
-            results = CrossJoinArmorSets(results, options)
-        Next
-        Return DeduplicateArmorSets(results)
-    End Function
-
-    Private Function CrossJoinArmorSets(leftSets As List(Of List(Of UInteger)), rightSets As List(Of List(Of UInteger))) As List(Of List(Of UInteger))
-        Dim results As New List(Of List(Of UInteger))
-        If leftSets Is Nothing OrElse leftSets.Count = 0 Then leftSets = New List(Of List(Of UInteger)) From {New List(Of UInteger)}
-        If rightSets Is Nothing OrElse rightSets.Count = 0 Then rightSets = New List(Of List(Of UInteger)) From {New List(Of UInteger)}
-
-        For Each leftSet In leftSets
-            For Each rightSet In rightSets
-                Dim combined As New List(Of UInteger)
-                combined.AddRange(leftSet)
-                combined.AddRange(rightSet)
-                results.Add(combined.Where(Function(id) id <> 0UI).Distinct().ToList())
-            Next
-        Next
-
-        Return DeduplicateArmorSets(results)
-    End Function
-
-    Private Function DeduplicateArmorSets(sets As IEnumerable(Of List(Of UInteger))) As List(Of List(Of UInteger))
-        Dim results As New List(Of List(Of UInteger))
-        Dim seen As New HashSet(Of String)(StringComparer.OrdinalIgnoreCase)
-
-        For Each current In sets
-            Dim normalized = If(current, New List(Of UInteger)).Where(Function(id) id <> 0UI).Distinct().OrderBy(Function(id) id).ToList()
-            Dim key = String.Join("|", normalized.Select(Function(id) id.ToString("X8")))
-            If seen.Add(key) Then results.Add(normalized)
-        Next
-
-        Return results
-    End Function
-
-    Private Function DeduplicateVisualStates(states As IEnumerable(Of NPCVisualState)) As List(Of NPCVisualState)
-        Dim results As New List(Of NPCVisualState)
-        Dim seen As New HashSet(Of String)(StringComparer.OrdinalIgnoreCase)
-
-        For Each state In states
-            Dim key = String.Join("|", {
-                state.RootNpcFormID.ToString("X8"),
-                state.TraitsSourceFormID.ToString("X8"),
-                state.InventorySourceFormID.ToString("X8"),
-                state.ModelSourceFormID.ToString("X8"),
-                If(state.IsFemale, "F", "M"),
-                state.RaceFormID.ToString("X8"),
-                state.SkinFormID.ToString("X8"),
-                String.Join(",", state.HeadPartFormIDs.OrderBy(Function(id) id).Select(Function(id) id.ToString("X8"))),
-                String.Join(",", state.LoadoutArmorFormIDs.OrderBy(Function(id) id).Select(Function(id) id.ToString("X8")))
-            })
-            If seen.Add(key) Then results.Add(state)
-        Next
-
-        Return results
-    End Function
-
-    Private Function DistinctBranches(Of T)(branches As IEnumerable(Of ResolvedBranch(Of T))) As List(Of ResolvedBranch(Of T))
-        Dim results As New List(Of ResolvedBranch(Of T))
-        Dim seen As New HashSet(Of UInteger)
-
-        For Each branch In branches
-            If branch Is Nothing Then Continue For
-            If seen.Add(branch.SourceNpcFormID) Then results.Add(branch)
-        Next
-
-        Return results
-    End Function
     Private Function ResolveTraitsStateFromNPC(formID As UInteger, visited As HashSet(Of UInteger), warnings As List(Of String)) As TraitsState
         Dim npc = GetParsedNpc(formID)
         If npc Is Nothing Then Return Nothing
@@ -6797,20 +6110,6 @@ Public Class MainForm
             TreeViewRecordDetails.EndUpdate()
             TreeViewRecordDetails.ResumeLayout()
         End Try
-    End Sub
-
-    Private Sub PopulateRecordDetailsForVariant(variante As PreviewVariantDefinition)
-        If variante Is Nothing OrElse variante.State Is Nothing Then
-            PopulateRecordDetails(Nothing)
-            Return
-        End If
-
-        ' Get root NPC for base info
-        Dim npc As NPC_Data = Nothing
-        _npcByIdCache.TryGetValue(variante.RootNpcFormID, npc)
-        If npc IsNot Nothing Then
-            PopulateRecordDetails(npc)
-        End If
     End Sub
 
     ''' <summary>Follow template chain for a category and return the terminal NPC that provides the value.</summary>
