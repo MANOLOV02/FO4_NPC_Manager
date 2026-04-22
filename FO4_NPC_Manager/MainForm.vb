@@ -262,33 +262,37 @@ Public Class MainForm
         NpcPreviewLog.Log($"  [VERTEX-MORPH-TOGGLE] new resolver = {If(newResolver IsNot Nothing, "SET", "Nothing")}")
         Dim intent = _previewControl.Intent
         intent.MorphResolver = newResolver
-        intent.MarkDirty(RenderDirtyFlags.Morphs)
+        ' Granular: only this NPC's shapes need the morph plan reapplied.
+        intent.MarkDirty(RenderDirtyFlags.Morphs, _lastRenderData.Shapes)
         _previewControl.InvalidateRender()
     End Sub
 
     ''' <summary>Toggle body-weight pose (MWGT × BSMS + MRSV + ARMA). Symmetric with FMRS handler:
     ''' both call RebuildAndApplyMergedPose which rebuilds the full merged pose (race + BW + FMRS)
-    ''' from current checkbox state, swaps intent.Pose, MarkDirty(Pose). Granular — no reload.</summary>
+    ''' from current checkbox state, applies it to the NPC's SkeletonInstance, and marks Pose
+    ''' dirty restricted to this NPC's shapes. Granular — no full reload.</summary>
     Private Sub CheckBoxApplyBodyWeight_CheckedChanged(sender As Object, e As EventArgs) Handles CheckBoxApplyBodyWeight.CheckedChanged
         NpcPreviewLog.Log($"  [BODY-WEIGHT-TOGGLE] fired checked={CheckBoxApplyBodyWeight.Checked}")
         RebuildAndApplyMergedPose()
     End Sub
 
     ''' <summary>Shared path for FMRS / body-weight toggles: rebuild the merged NPC pose from
-    ''' current checkbox state and apply via intent.Pose + MarkDirty(Pose). SkeletonDictionary
-    ''' is already populated from the initial render, so BuildMergedNpcPose can parent-walk.</summary>
+    ''' current checkbox state, apply it to the per-NPC SkeletonInstance, and MarkDirty(Pose,
+    ''' shapes) so only this NPC's meshes recompute. SkeletonDictionary is already populated
+    ''' from the initial render, so BuildMergedNpcPose can parent-walk.</summary>
     Private Sub RebuildAndApplyMergedPose()
-        If _lastRenderedState Is Nothing OrElse _lastRenderData Is Nothing Then
+        If _lastRenderedState Is Nothing OrElse _lastRenderData Is Nothing OrElse _lastSkeletonInstance Is Nothing Then
             NpcPreviewLog.Log($"  [POSE-TOGGLE] ABORT — no initial render cached")
             Return
         End If
         Dim fmrsEnabled = CheckBoxApplyBoneMorphs.Checked
         Dim bwEnabled = CheckBoxApplyBodyWeight.Checked
-        Dim mergedPose = BuildMergedNpcPose(_lastRenderedState, _lastRenderData, fmrsEnabled, bwEnabled)
+        Dim mergedPose = BuildMergedNpcPose(_lastRenderedState, _lastRenderData, fmrsEnabled, bwEnabled, _lastSkeletonInstance)
         NpcPreviewLog.Log($"  [POSE-TOGGLE] rebuilt merged pose (fmrs={fmrsEnabled} bw={bwEnabled}) → {mergedPose.Transforms.Count} bones")
+        ' Apply to the per-NPC instance (state lives there) and mark only this NPC's shapes dirty.
+        _lastSkeletonInstance.ApplyPose(mergedPose)
         Dim intent = _previewControl.Intent
-        intent.Pose = mergedPose
-        intent.MarkDirty(RenderDirtyFlags.Pose)
+        intent.MarkDirty(RenderDirtyFlags.Pose, _lastRenderData.Shapes)
         _previewControl.InvalidateRender()
     End Sub
 
@@ -954,6 +958,10 @@ Public Class MainForm
     ''' resolution.</summary>
     Private _lastRenderedState As NPCVisualState = Nothing
     Private _lastRenderData As PreviewResolutionResult = Nothing
+    ''' <summary>SkeletonInstance built per NPC in <see cref="RenderCurrentStateAsync"/>; reused by
+    ''' the pose-toggle handlers and the diagnostic harness so they read from the same skeleton
+    ''' the render is using (no singleton dependency).</summary>
+    Private _lastSkeletonInstance As SkeletonInstance = Nothing
     Private Enum OutfitSlotKind
         DefaultOutfit
         SleepOutfit
@@ -1250,18 +1258,22 @@ Public Class MainForm
         Dim morphResolver = If(vertexMorphsEnabled, BuildFaceMorphResolver(state, renderData), Nothing)
 
         ' Build a pose carrying the FMRI/FMRS face bone deltas (each region's bones become
-        ' PoseTransformData entries). This pose is applied via AppplyPoseToSkeleton which sets
-        ' DeltaTransform on each bone — the same mechanism body poses use. The checkbox toggle
-        ' lets the user compare "raw face" (no pose, no morphs) vs "with FMRS applied" live.
-        Dim baseSkelResolver = New DefaultSkeletonResolver(renderData.SkeletonKey)
+        ' PoseTransformData entries). This pose is applied via SkeletonInstance.ApplyPose which
+        ' sets DeltaTransform on each bone — the same mechanism body poses use. The checkbox
+        ' toggle lets the user compare "raw face" (no pose, no morphs) vs "with FMRS applied" live.
         Dim faceSkelBytes = TryLoadFaceSkeletonBytes(state)
         Dim bodyWeightEnabled = CheckBoxApplyBodyWeight.Checked
         NpcPreviewLog.Log($"  [BODY-WEIGHT-TOGGLE] {If(bodyWeightEnabled, "ON — body-weight pose applied", "OFF — body-weight pose skipped (MWGT/BSMS/NNAM not applied)")}")
 
-        ' Prime skeleton: BuildMergedNpcPose → BuildBodyWeightPose walks the skeleton hierarchy
-        ' via ResolveMrsvRegion (needs SkeletonDictionary populated with parent links). The pipeline
-        ' will re-run PipelineStep_Skeleton later through the resolver — idempotent.
-        baseSkelResolver.ResolveSkeleton(renderData.Shapes, Nothing)
+        ' Build a per-NPC SkeletonInstance — bone multipliers (RACE.BSMS, NNAM, MWGT-derived
+        ' scales) are NPC-specific, so each NPC needs its own skeleton state to coexist with
+        ' other actors in the same scene. The instance is the source of truth for both
+        ' BuildBodyWeightPose (walks the dict) and the diagnostic harness — no singleton.
+        Dim inst As New SkeletonInstance()
+        inst.LoadFromKey(renderData.SkeletonKey)
+        ' Cloth bone injection over the per-NPC instance (same physics-bone parsing the global
+        ' singleton path used to do in PrepareSkeletonForShapes).
+        inst.PrepareForShapes(renderData.Shapes)
         ' Robot extended-skeleton merge (TO-REVIEW 2026-04-19): per user empirical call —
         ' robot race base `skeleton.nif` (e.g. Actors\Robot\CharacterAssets\skeleton.nif) is
         ' empty/minimal; actual bones live in `SkeletonRef.nif` + other sibling skeleton files in
@@ -1269,20 +1281,20 @@ Public Class MainForm
         ' merge all `skeleton*.nif` from that folder. Humanoid races have no SkeletonRef sibling
         ' → no-op. No guarantees that merging everything is the canonical solution — see
         ' project_robot_rendering_combinations.md for the pending investigation.
-        MergeRobotExtendedSkeletonsIfRobot(state)
+        MergeRobotExtendedSkeletonsIfRobot(state, inst)
         If faceSkelBytes IsNot Nothing Then
-            Skeleton_Class.MergeFaceSkeleton(faceSkelBytes)
+            inst.MergeAdditionalSkeleton(faceSkelBytes)
         End If
 
         ' Build the merged pose: race-height + body-weight + FMRS → single Poses_class.
-        ' Goes into intent.Pose. The 3 checkbox handlers below call BuildMergedNpcPose with the
-        ' current checkbox state to rebuild on toggle (granular MarkDirty(Pose), no full reload).
-        Dim mergedPose = BuildMergedNpcPose(state, renderData, boneMorphsEnabled, bodyWeightEnabled)
-        Dim skelResolver As ISkeletonResolver = New FaceBoneSkeletonResolver(baseSkelResolver, faceSkelBytes)
+        ' Apply it directly to the SkeletonInstance — pose state lives there, not in the request.
+        ' The 3 checkbox handlers below rebuild + reapply on toggle (granular MarkDirty(Pose)).
+        Dim mergedPose = BuildMergedNpcPose(state, renderData, boneMorphsEnabled, bodyWeightEnabled, inst)
+        inst.ApplyPose(mergedPose)
+        Dim skelResolver As ISkeletonResolver = New SingleInstanceSkeletonResolver(inst)
 
         Dim request As New RenderRequest With {
             .Shapes = renderData.Shapes,
-            .Pose = mergedPose,
             .SkeletonResolver = skelResolver,
             .MorphResolver = morphResolver,
             .RecalculateNormals = True,
@@ -1290,13 +1302,14 @@ Public Class MainForm
         }
         _previewControl.RenderShapes(request)
 
-        ' Cache the resolved state + render data so the morph/pose checkbox handlers can
-        ' rebuild the resolver / face bone pose on demand without re-running the full
-        ' preview resolution pipeline. See CheckBoxApplyBoneMorphs_CheckedChanged /
+        ' Cache the resolved state + render data + skeleton instance so the morph/pose checkbox
+        ' handlers can rebuild the merged pose on demand without re-running the full preview
+        ' resolution pipeline. See CheckBoxApplyBoneMorphs_CheckedChanged /
         ' CheckBoxApplyVertexMorphs_CheckedChanged below — they follow the WM granular
         ' Intent.MarkDirty(Pose)/MarkDirty(Morphs) pattern, not a full reload.
         _lastRenderedState = state
         _lastRenderData = renderData
+        _lastSkeletonInstance = inst
 
         ' After the shapes become RenderableMesh instances, compose the NPC's face tint layers
         ' into an RGBA overlay texture via FBO and assign it to the face mesh's MaterialData.
@@ -1307,7 +1320,7 @@ Public Class MainForm
         ' compare our post-morph vertices against CK's FaceGen bake on disk to find which verts
         ' differ and by how much. Only runs for those two FormIDs — silent for everyone else.
         Try
-            CompareAgainstFaceGenIfWhitelisted(state, morphResolver)
+            CompareAgainstFaceGenIfWhitelisted(state, morphResolver, inst)
         Catch ex As Exception
             NpcPreviewLog.Log($"  [FACEGEN-DIAG] exception: {ex.Message}")
         End Try
@@ -1379,7 +1392,7 @@ Public Class MainForm
     End Sub
 
 
-    Private Sub CompareAgainstFaceGenIfWhitelisted(state As NPCVisualState, morphResolver As IMorphResolver)
+    Private Sub CompareAgainstFaceGenIfWhitelisted(state As NPCVisualState, morphResolver As IMorphResolver, skeleton As SkeletonInstance)
         If state Is Nothing Then Return
         Dim modelNpcFormID = If(state.ModelSourceFormID <> 0UI, state.ModelSourceFormID, state.FormID)
         If Not _faceGenDiagWhitelist.Contains(modelNpcFormID) Then Return
@@ -1609,7 +1622,7 @@ Public Class MainForm
             Try
                 DumpIsolatedBakeHarnessCSV(state, baked, bakedHead, fgShape,
                                            ourMesh.MeshData.Meshgeometry,
-                                           ourMesh.MeshData.Shape, morphResolver)
+                                           ourMesh.MeshData.Shape, morphResolver, skeleton)
             Catch exH As Exception
                 NpcPreviewLog.Log($"  [HARNESS-RAW] top-level exception: {exH.Message}")
             End Try
@@ -1624,8 +1637,8 @@ Public Class MainForm
             Dim ourSet = New HashSet(Of String)(ourBones, StringComparer.OrdinalIgnoreCase)
             Dim onlyBake = bakeSet.Except(ourSet, StringComparer.OrdinalIgnoreCase).OrderBy(Function(s) s).ToList()
             Dim onlyOurs = ourSet.Except(bakeSet, StringComparer.OrdinalIgnoreCase).OrderBy(Function(s) s).ToList()
-            Dim bakeMissingInDict = bakeBones.Where(Function(b) Not Skeleton_Class.SkeletonDictionary.ContainsKey(b)).OrderBy(Function(s) s).ToList()
-            Dim oursMissingInDict = ourBones.Where(Function(b) Not Skeleton_Class.SkeletonDictionary.ContainsKey(b)).OrderBy(Function(s) s).ToList()
+            Dim bakeMissingInDict = bakeBones.Where(Function(b) Not skeleton.SkeletonDictionary.ContainsKey(b)).OrderBy(Function(s) s).ToList()
+            Dim oursMissingInDict = ourBones.Where(Function(b) Not skeleton.SkeletonDictionary.ContainsKey(b)).OrderBy(Function(s) s).ToList()
             NpcPreviewLog.Log($"  [FG-BONES] bake={bakeBones.Count} ours={ourBones.Count} onlyInBake={onlyBake.Count} onlyInOurs={onlyOurs.Count} bakeMissingInDict={bakeMissingInDict.Count} oursMissingInDict={oursMissingInDict.Count}")
             If onlyBake.Count > 0 Then NpcPreviewLog.Log($"    [FG-BONES] only-in-BAKE: {String.Join(", ", onlyBake)}")
             If onlyOurs.Count > 0 Then NpcPreviewLog.Log($"    [FG-BONES] only-in-OURS: {String.Join(", ", onlyOurs)}")
@@ -1652,7 +1665,7 @@ Public Class MainForm
             ' race-height (race is a runtime Delta.Scale on Root; see [RACE-HEIGHT-POSE] and the
             ' harness result where injecting Root Scale=raceHeight dropped RMS from 2.41 → 0.09).
             Dim fgGeom As SkinnedGeometry = SkinningHelper.ExtractSkinnedGeometry(
-                fgShape, ApplyPose:=True, singleboneskinning:=False, RecalculateNormals:=False)
+                fgShape, singleboneskinning:=False, RecalculateNormals:=False, skeleton:=skeleton)
             Dim fgWorld = SkinningHelper.GetWorldVertices(fgGeom)
 
             Dim ourGeo = ourMesh.MeshData.Meshgeometry
@@ -1783,10 +1796,10 @@ Public Class MainForm
                 ' its bind pose in dict Original, dict GetGlobal (post-pose), and bake NIF's own bind.
                 NpcPreviewLog.Log($"  --- BONE COMPARISON (rest=Original, world=post-pose, bake-NIF=bake's own bind) ---")
                 For Each boneName In bakeBones.OrderBy(Function(s) s)
-                    Dim dictBone As Skeleton_Class.HierarchiBone_class = Nothing
+                    Dim dictBone As HierarchiBone_class = Nothing
                     Dim restTxt As String = "not-in-dict"
                     Dim worldTxt As String = "-"
-                    If Skeleton_Class.SkeletonDictionary.TryGetValue(boneName, dictBone) Then
+                    If skeleton.SkeletonDictionary.TryGetValue(boneName, dictBone) Then
                         Dim rest = dictBone.OriginalGetGlobalTransform
                         restTxt = $"T=({rest.Translation.X:F4},{rest.Translation.Y:F4},{rest.Translation.Z:F4}) S={rest.Scale:F4}"
                         Dim world = dictBone.GetGlobalTransform
@@ -1862,8 +1875,8 @@ Public Class MainForm
                 ' race Height. Reveals also the full hierarchy length.
                 Try
                     For Each startBoneName In {"HEAD", "Neck_skin", "Chest_skin"}
-                        Dim curr As Skeleton_Class.HierarchiBone_class = Nothing
-                        If Skeleton_Class.SkeletonDictionary.TryGetValue(startBoneName, curr) Then
+                        Dim curr As HierarchiBone_class = Nothing
+                        If skeleton.SkeletonDictionary.TryGetValue(startBoneName, curr) Then
                             Dim chainDepth As Integer = 0
                             While curr IsNot Nothing AndAlso chainDepth < 30
                                 Dim lt = curr.OriginalLocaLTransform
@@ -1904,8 +1917,8 @@ Public Class MainForm
                 Next
 
                 For Each boneName In chainToCheck
-                    Dim dictBone As Skeleton_Class.HierarchiBone_class = Nothing
-                    Dim hasDict = Skeleton_Class.SkeletonDictionary.TryGetValue(boneName, dictBone)
+                    Dim dictBone As HierarchiBone_class = Nothing
+                    Dim hasDict = skeleton.SkeletonDictionary.TryGetValue(boneName, dictBone)
                     Dim ourGlobalDesc As String = "not-in-dict"
                     Dim ourLocalDesc As String = "-"
                     Dim ourParentDesc As String = "-"
@@ -3316,8 +3329,9 @@ Public Class MainForm
     ''' children. Safe to call multiple times (idempotent over already-merged names).
     ''' Follow-up: verify with a bone-diff probe whether the merge covers every bone that OMOD
     ''' meshes actually reference. See project_robot_rendering_combinations.md.</summary>
-    Private Sub MergeRobotExtendedSkeletonsIfRobot(state As NPCVisualState)
+    Private Sub MergeRobotExtendedSkeletonsIfRobot(state As NPCVisualState, targetSkeleton As SkeletonInstance)
         If state Is Nothing OrElse state.RaceFormID = 0UI Then Return
+        If targetSkeleton Is Nothing Then Return
         Dim raceRec = _pluginManager.GetRecord(state.RaceFormID)
         If raceRec Is Nothing OrElse raceRec.Header.Signature <> "RACE" Then Return
         Dim race = RecordParsers.ParseRACE(raceRec, _pluginManager)
@@ -3361,7 +3375,7 @@ Public Class MainForm
                     NpcPreviewLog.Log($"    [ROBOT-SKEL] '{key}' empty/failed to read")
                     Continue For
                 End If
-                Dim added = Skeleton_Class.MergeFaceSkeleton(bytes)
+                Dim added = targetSkeleton.MergeAdditionalSkeleton(bytes)
                 NpcPreviewLog.Log($"    [ROBOT-SKEL] '{key}' ({bytes.Length} B) → +{added} bones")
             Catch ex As Exception
                 NpcPreviewLog.Log($"    [ROBOT-SKEL] '{key}' error: {ex.Message}")
@@ -3392,7 +3406,8 @@ Public Class MainForm
                                             fgShape As IRenderableShape,
                                             ByRef ourGeo As SkinnedGeometry,
                                             ourShape As IRenderableShape,
-                                            morphResolver As IMorphResolver)
+                                            morphResolver As IMorphResolver,
+                                            skeleton As SkeletonInstance)
         Try
             NpcPreviewLog.Log($"  [HARNESS-RAW] start NPC=0x{state.FormID:X8} MWGT(thin={state.WeightThin:F3} musc={state.WeightMuscular:F3} fat={state.WeightFat:F3}) IsFemale={state.IsFemale}")
 
@@ -3670,7 +3685,7 @@ Public Class MainForm
             ' there — that's the BODY-WEIGHT signature. Without this check, body-weight bones land in
             ' OTHER-DELTA (empirical: 46 "OTHER" bones were really body-weight).
             Dim boneMorphs As New Dictionary(Of String, String)(StringComparer.OrdinalIgnoreCase)
-            For Each kv In Skeleton_Class.SkeletonDictionary
+            For Each kv In skeleton.SkeletonDictionary
                 Dim dt = kv.Value.DeltaTransform
                 If dt Is Nothing Then Continue For
                 Dim tNonZero = Math.Abs(dt.Translation.X) + Math.Abs(dt.Translation.Y) + Math.Abs(dt.Translation.Z) > 0.00001F
@@ -4220,17 +4235,6 @@ Public Class MainForm
         Return Nothing
     End Function
 
-    ''' <summary>Skeleton resolver that merges the race's face skeleton (skeleton_&lt;gender&gt;_faceBones.nif)
-    ''' into SkeletonDictionary BEFORE the body pose is applied, so that any face bone entries in the
-    ''' passed pose get their DeltaTransform set alongside the body bones.
-    '''
-    ''' Order:
-    '''   1. Call base resolver with Nothing pose ? loads body skeleton, HKX injection, but does NOT
-    '''      apply pose yet. (If we passed the real pose here, face bone entries would be skipped
-    '''      because the face bones aren't in the dict yet.)
-    '''   2. Merge face skeleton ? face bones added with DeltaTransform=Nothing.
-    '''   3. Call Skeleton_Class.AppplyPoseToSkeleton(realPose) ? applies pose to body + face bones.
-    ''' </summary>
     ''' <summary>Walk the skeleton hierarchy from a bone upward to determine which MRSV body
     ''' morph region (0..4) the bone belongs to. Returns -1 if no known region ancestor found.
     ''' The mapping is based on matching ancestor bone names to the major skeleton "trunk" bones:
@@ -4240,7 +4244,7 @@ Public Class MainForm
     '''   SPINE1, Pelvis, Butt (anywhere in ancestor chain) → 3 (Lower Torso)
     '''   Leg (anywhere in ancestor chain) → 4 (Legs)
     ''' This is inferred from the skeleton hierarchy, not from any Bethesda data file.</summary>
-    Private Shared Function ResolveMrsvRegion(bone As Skeleton_Class.HierarchiBone_class) As Integer
+    Private Shared Function ResolveMrsvRegion(bone As HierarchiBone_class) As Integer
         Dim cur = bone
         Dim depth = 0
         While cur IsNot Nothing AndAlso depth < 20
@@ -4262,37 +4266,6 @@ Public Class MainForm
         End While
         Return -1
     End Function
-
-    ''' <summary>Skeleton resolver that merges the race's face skeleton into SkeletonDictionary
-    ''' and applies whatever pose is passed. ALL pose building (FMRS + body-weight + race-height)
-    ''' happens at the caller level (via BuildMergedNpcPose) and gets merged into intent.Pose.
-    ''' The resolver is intentionally "dumb" — just a skel-loader + pose applier.</summary>
-    Private Class FaceBoneSkeletonResolver
-        Implements ISkeletonResolver
-
-        Private ReadOnly _baseResolver As ISkeletonResolver
-        Private ReadOnly _faceSkelBytes As Byte()
-
-        Public Sub New(baseResolver As ISkeletonResolver, faceSkelBytes As Byte())
-            _baseResolver = baseResolver
-            _faceSkelBytes = faceSkelBytes
-        End Sub
-
-        Public Sub ResolveSkeleton(shapes As IEnumerable(Of IRenderableShape), pose As Poses_class) Implements ISkeletonResolver.ResolveSkeleton
-            ' 1. Load body skeleton (pose=Nothing — pose application is step 3).
-            _baseResolver.ResolveSkeleton(shapes, Nothing)
-            ' 2. Merge face skeleton (adds face bones to dict with DeltaTransform=Nothing).
-            If _faceSkelBytes IsNot Nothing Then
-                Skeleton_Class.MergeFaceSkeleton(_faceSkelBytes)
-            End If
-            ' 3. Apply merged pose. AppplyPoseToSkeleton resets all DeltaTransforms to identity
-            '    first, then applies pose.Transforms. Pass even an empty Poses_class so the
-            '    reset runs and clears stale deltas from a previous render.
-            If pose IsNot Nothing Then
-                Skeleton_Class.AppplyPoseToSkeleton(pose)
-            End If
-        End Sub
-    End Class
 
     ''' <summary>Produce a pose with a single Root.Scale delta carrying the race height factor.
     ''' Empty / identity if raceHeight ≈ 1. The Scale propagates to every descendant bone via
@@ -4327,13 +4300,15 @@ Public Class MainForm
     ''' See MergePoses for overlap detection (logs a [POSE-MERGE-OVERLAP] warning if sources collide
     ''' on the same field — should never fire with current sources).
     '''
-    ''' Caller contract: Skeleton_Class.SkeletonDictionary must be populated BEFORE this is called,
-    ''' because BuildBodyWeightPose walks the skeleton hierarchy via ResolveMrsvRegion to map bones
-    ''' to MRSV regions. RenderCurrentStateAsync primes it by calling baseSkelResolver.ResolveSkeleton
-    ''' eagerly before invoking this helper.</summary>
+    ''' Caller contract: <paramref name="skeleton"/> must already be loaded + (optionally) face/robot
+    ''' merged BEFORE this is called, because BuildBodyWeightPose walks its hierarchy via
+    ''' ResolveMrsvRegion to map bones to MRSV regions. RenderCurrentStateAsync primes the
+    ''' SkeletonInstance via LoadFromKey + PrepareForShapes + MergeAdditionalSkeleton before
+    ''' invoking this helper.</summary>
     Private Function BuildMergedNpcPose(state As NPCVisualState, renderData As PreviewResolutionResult,
                                         faceMorphsEnabled As Boolean,
-                                        bodyWeightEnabled As Boolean) As Poses_class
+                                        bodyWeightEnabled As Boolean,
+                                        skeleton As SkeletonInstance) As Poses_class
         Dim racePose = BuildRaceHeightPose(GetRaceHeight(state))
 
         Dim bwPose As Poses_class = Nothing
@@ -4342,7 +4317,7 @@ Public Class MainForm
             If bwData.GenderBlock IsNot Nothing Then
                 bwPose = BuildBodyWeightPose(bwData.Wt, bwData.Wm, bwData.Wf,
                                              bwData.GenderBlock, bwData.MrsvValues, bwData.ArmaDeltas,
-                                             bwData.NnamX, bwData.NnamY)
+                                             bwData.NnamX, bwData.NnamY, skeleton)
             End If
         End If
 
@@ -4433,7 +4408,8 @@ Public Class MainForm
                                                  genderBlock As RACE_BoneDataGender,
                                                  mrsvValues As List(Of Single),
                                                  armaDeltas As Dictionary(Of String, System.Numerics.Vector3),
-                                                 nnamX As Single, nnamY As Single) As Poses_class
+                                                 nnamX As Single, nnamY As Single,
+                                                 skeleton As SkeletonInstance) As Poses_class
         Const Eps As Single = 0.001F
         Dim pose As New Poses_class With {
                 .Name = "MWGT Body Weight",
@@ -4466,9 +4442,9 @@ Public Class MainForm
         End If
 
         For Each boneName In allBoneNames
-            Dim skelBone As Skeleton_Class.HierarchiBone_class = Nothing
+            Dim skelBone As HierarchiBone_class = Nothing
             Dim restY As Single = 0.0F, restZ As Single = 0.0F
-            If Skeleton_Class.SkeletonDictionary.TryGetValue(boneName, skelBone) Then
+            If skeleton.SkeletonDictionary.TryGetValue(boneName, skelBone) Then
                 If skelBone.OriginalLocaLTransform IsNot Nothing Then
                     restY = skelBone.OriginalLocaLTransform.Translation.Y
                     restZ = skelBone.OriginalLocaLTransform.Translation.Z
