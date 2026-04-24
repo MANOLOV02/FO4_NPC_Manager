@@ -2995,12 +2995,7 @@ Public Class MainForm
 
     ''' <summary>Normalize a texture path for FilesDictionary lookup (ensures "textures\" prefix).</summary>
     Private Shared Function NormalizeDictionaryKeyWithTexturesPrefix(rawPath As String) As String
-        If String.IsNullOrWhiteSpace(rawPath) Then Return ""
-        Dim normalized = rawPath.Replace("/"c, "\"c).Trim().ToLowerInvariant()
-        If Not normalized.StartsWith("textures\") Then
-            normalized = "textures\" & normalized
-        End If
-        Return normalized
+        Return FO4UnifiedMaterial_Class.CorrectTexturePath(rawPath)
     End Function
 
     ''' <summary>Per-resolve cache of LVLN picks. When the same LVLN is encountered multiple times
