@@ -3551,38 +3551,34 @@ Public Class MainForm
             Next
 
             ' 6) Per-vertex skinning: blend precomputed by bone weights (mirrors BlendBoneMatrices semantics)
-            Dim nifVer = baked.Header.Version
-            Dim vdSSE = If(bakedHead.VertexDataSSE IsNot Nothing, bakedHead.VertexDataSSE.ToArray(), Nothing)
-            Dim vdFO4 = If(bakedHead.VertexData IsNot Nothing, bakedHead.VertexData.ToArray(), Nothing)
+            ' Read all bone influences via the shape geometry adapter (one bulk pass into flat
+            ' arrays); the previous version did N per-vertex reads against the inline BoneIndices4
+            ' / BoneWeights4 structs which VB cannot index directly.
+            Dim bakedGeom = ShapeGeometryFactory.For(bakedHead, baked)
+            Dim bakedSkin = bakedGeom.GetSkinning()
+            Dim wpvBaked = bakedSkin.WeightsPerVertex
+            Dim bakedFlatIdx = bakedSkin.BoneIndices
+            Dim bakedFlatWgt = bakedSkin.BoneWeights
             Dim verts = bakedHead.VertexPositions
             Dim vCount = verts.Count
             Dim vRaw(vCount - 1) As OpenTK.Mathematics.Vector3d
 
             For i = 0 To vCount - 1
-                Dim wts As System.Half() = Nothing
-                Dim bIdx As Byte() = Nothing
-                If nifVer.IsSSE AndAlso vdSSE IsNot Nothing AndAlso i < vdSSE.Length Then
-                    wts = vdSSE(i).BoneWeights
-                    bIdx = vdSSE(i).BoneIndices
-                ElseIf vdFO4 IsNot Nothing AndAlso i < vdFO4.Length Then
-                    wts = vdFO4(i).BoneWeights
-                    bIdx = vdFO4(i).BoneIndices
-                End If
-
                 Dim Mtot As OpenTK.Mathematics.Matrix4d = OpenTK.Mathematics.Matrix4d.Zero
                 Dim sumW As Double = 0
-                If wts IsNot Nothing AndAlso bIdx IsNot Nothing Then
-                    Dim cnt = Math.Min(wts.Length, bIdx.Length) - 1
-                    For j = 0 To cnt
-                        Dim w = CDbl(CSng(wts(j)))
+                Dim baseSlot = i * wpvBaked
+                If bakedFlatIdx IsNot Nothing AndAlso bakedFlatWgt IsNot Nothing AndAlso i < bakedSkin.VertexCount Then
+                    For j = 0 To wpvBaked - 1
+                        Dim w = CDbl(CSng(bakedFlatWgt(baseSlot + j)))
                         sumW += w
-                        Dim idx = CInt(bIdx(j))
+                        Dim idx = CInt(bakedFlatIdx(baseSlot + j))
                         If idx >= 0 AndAlso idx < nBones Then Mtot += precomputed(idx) * w
                     Next
                 End If
                 If sumW = 0 Then
                     If nBones > 0 Then
-                        Dim idx0 = If(bIdx IsNot Nothing AndAlso bIdx.Length > 0, CInt(bIdx(0)), 0)
+                        Dim idx0 = If(bakedFlatIdx IsNot Nothing AndAlso bakedFlatIdx.Length > 0 AndAlso i < bakedSkin.VertexCount,
+                                      CInt(bakedFlatIdx(baseSlot)), 0)
                         Mtot = precomputed(Math.Max(0, Math.Min(idx0, nBones - 1)))
                     End If
                 Else
