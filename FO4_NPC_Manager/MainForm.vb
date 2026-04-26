@@ -1425,32 +1425,37 @@ Public Class MainForm
         ' Find the head shape by name (not by max verts — hair shapes have more vertices).
         ' Priority: explicit BaseFemaleHead/BaseMaleHead, then anything with "Head" in the name,
         ' excluding "HeadRear", "Hair" and other non-skull parts.
-        Dim bakedShapes = baked.GetShapes().OfType(Of NiflySharp.Blocks.BSTriShape)().ToList()
+        ' Iterates over all INiShape kinds that ShapeGeometryFactory understands (BSTriShape,
+        ' BSDynamicTriShape, BSSubIndexTriShape, NiTriShape, BSMeshLODTriShape) so the harness
+        ' is not blind to non-BSTriShape FaceGen variants.
+        Dim bakedShapes = baked.NifShapes.ToList()
         If bakedShapes.Count = 0 Then
-            NpcPreviewLog.Log($"  [FACEGEN-DIAG] FaceGen NIF has no BSTriShape to compare.")
+            NpcPreviewLog.Log($"  [FACEGEN-DIAG] FaceGen NIF has no shapes to compare.")
             Return
         End If
         ' Log every shape available so we can pick manually if heuristic fails.
         For Each sh In bakedShapes
             Dim shName = If(sh.Name Is Nothing, "(unnamed)", sh.Name.String)
-            Dim vc = If(sh.VertexPositions IsNot Nothing, sh.VertexPositions.Count, 0)
-            NpcPreviewLog.Log($"  [FACEGEN-DIAG]   available shape='{shName}' verts={vc}")
+            Dim vc = ShapeGeometryFactory.[For](sh, baked).VertexCount
+            NpcPreviewLog.Log($"  [FACEGEN-DIAG]   available shape='{shName}' verts={vc} type={sh.GetType().Name}")
         Next
-        Dim bakedHead As NiflySharp.Blocks.BSTriShape = bakedShapes.FirstOrDefault(Function(s)
-                                                                                       Dim n = If(s.Name Is Nothing, "", s.Name.String)
-                                                                                       If String.IsNullOrEmpty(n) Then Return False
-                                                                                       If n.IndexOf("Hair", StringComparison.OrdinalIgnoreCase) >= 0 Then Return False
-                                                                                       If n.IndexOf("Rear", StringComparison.OrdinalIgnoreCase) >= 0 Then Return False
-                                                                                       If n.IndexOf("Lashes", StringComparison.OrdinalIgnoreCase) >= 0 Then Return False
-                                                                                       If n.IndexOf("Eyes", StringComparison.OrdinalIgnoreCase) >= 0 Then Return False
-                                                                                       If n.IndexOf("Mouth", StringComparison.OrdinalIgnoreCase) >= 0 Then Return False
-                                                                                       Return n.IndexOf("Head", StringComparison.OrdinalIgnoreCase) >= 0
-                                                                                   End Function)
+        Dim bakedHead As NiflySharp.INiShape = bakedShapes.FirstOrDefault(Function(s)
+                                                                   Dim n = If(s.Name Is Nothing, "", s.Name.String)
+                                                                   If String.IsNullOrEmpty(n) Then Return False
+                                                                   If n.IndexOf("Hair", StringComparison.OrdinalIgnoreCase) >= 0 Then Return False
+                                                                   If n.IndexOf("Rear", StringComparison.OrdinalIgnoreCase) >= 0 Then Return False
+                                                                   If n.IndexOf("Lashes", StringComparison.OrdinalIgnoreCase) >= 0 Then Return False
+                                                                   If n.IndexOf("Eyes", StringComparison.OrdinalIgnoreCase) >= 0 Then Return False
+                                                                   If n.IndexOf("Mouth", StringComparison.OrdinalIgnoreCase) >= 0 Then Return False
+                                                                   Return n.IndexOf("Head", StringComparison.OrdinalIgnoreCase) >= 0
+                                                               End Function)
         If bakedHead Is Nothing Then
             NpcPreviewLog.Log($"  [FACEGEN-DIAG] no head shape found in FaceGen NIF (tried 'Head' name filter excluding Hair/Rear/Lashes/Eyes/Mouth).")
             Return
         End If
-        Dim bakedVertCount = If(bakedHead.VertexPositions IsNot Nothing, bakedHead.VertexPositions.Count, 0)
+        Dim bakedHeadGeom = ShapeGeometryFactory.[For](bakedHead, baked)
+        Dim bakedHeadVerts = bakedHeadGeom.GetVertexPositions()
+        Dim bakedVertCount = bakedHeadVerts.Count
         Dim bakedHeadName = If(bakedHead.Name Is Nothing, "(unnamed)", bakedHead.Name.String)
         NpcPreviewLog.Log($"  [FACEGEN-DIAG] baked head shape='{bakedHeadName}' verts={bakedVertCount}")
         If bakedVertCount = 0 Then Return
@@ -1498,7 +1503,7 @@ Public Class MainForm
         ' First pass: compute mean diff (baked - ours) to detect a uniform offset.
         Dim meanDx As Double = 0, meanDy As Double = 0, meanDz As Double = 0
         For i = 0 To count - 1
-            Dim bv = bakedHead.VertexPositions(i)
+            Dim bv = bakedHeadVerts(i)
             Dim ov = ourVerts(i)
             meanDx += CDbl(bv.X) - CDbl(ov.X)
             meanDy += CDbl(bv.Y) - CDbl(ov.Y)
@@ -1514,7 +1519,7 @@ Public Class MainForm
         Dim meanOX As Double = 0, meanOY As Double = 0, meanOZ As Double = 0
         Dim meanBX As Double = 0, meanBY As Double = 0, meanBZ As Double = 0
         For i = 0 To count - 1
-            Dim bv = bakedHead.VertexPositions(i)
+            Dim bv = bakedHeadVerts(i)
             Dim ov = ourVerts(i)
             meanOX += ov.X : meanOY += ov.Y : meanOZ += ov.Z
             meanBX += bv.X : meanBY += bv.Y : meanBZ += bv.Z
@@ -1525,7 +1530,7 @@ Public Class MainForm
         Dim sumXOXB As Double = 0, sumYOYB As Double = 0, sumZOZB As Double = 0
         Dim sumXOXO As Double = 0, sumYOYO As Double = 0, sumZOZO As Double = 0
         For i = 0 To count - 1
-            Dim bv = bakedHead.VertexPositions(i)
+            Dim bv = bakedHeadVerts(i)
             Dim ov = ourVerts(i)
             Dim cox = ov.X - meanOX : Dim coy = ov.Y - meanOY : Dim coz = ov.Z - meanOZ
             Dim cbx = bv.X - meanBX : Dim cby = bv.Y - meanBY : Dim cbz = bv.Z - meanBZ
@@ -1547,7 +1552,7 @@ Public Class MainForm
         Dim sumSqResidualPerAxisFit As Double = 0
         Dim maxMag As Single = 0
         For i = 0 To count - 1
-            Dim bv = bakedHead.VertexPositions(i)
+            Dim bv = bakedHeadVerts(i)
             Dim bx = CSng(bv.X) : Dim byv = CSng(bv.Y) : Dim bz = CSng(bv.Z)
             Dim ov = ourVerts(i)
             Dim ox = CSng(ov.X) : Dim oy = CSng(ov.Y) : Dim oz = CSng(ov.Z)
@@ -3397,7 +3402,7 @@ Public Class MainForm
     ''' Part of Alijo's Neck_skin residual is expected until NNAM is implemented. See memory P2.</summary>
     Private Sub DumpIsolatedBakeHarnessCSV(state As NPCVisualState,
                                             baked As Nifcontent_Class_Manolo,
-                                            bakedHead As NiflySharp.Blocks.BSTriShape,
+                                            bakedHead As NiflySharp.INiShape,
                                             fgShape As IRenderableShape,
                                             ByRef ourGeo As SkinnedGeometry,
                                             ourShape As IRenderableShape,
@@ -3559,7 +3564,7 @@ Public Class MainForm
             Dim wpvBaked = bakedSkin.WeightsPerVertex
             Dim bakedFlatIdx = bakedSkin.BoneIndices
             Dim bakedFlatWgt = bakedSkin.BoneWeights
-            Dim verts = bakedHead.VertexPositions
+            Dim verts = bakedGeom.GetVertexPositions()
             Dim vCount = verts.Count
             Dim vRaw(vCount - 1) As OpenTK.Mathematics.Vector3d
 
