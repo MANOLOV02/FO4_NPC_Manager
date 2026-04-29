@@ -2,21 +2,13 @@
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
     <TargetFramework>net8.0-windows</TargetFramework>
-    <Platforms>x86;x64</Platforms>
+    <Platforms>x64</Platforms>
+    <PlatformTarget>x64</PlatformTarget>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
     <RootNamespace>FO4_NPC_Manager</RootNamespace>
     <StartupObject>FO4_NPC_Manager.Program</StartupObject>
     <UseWindowsForms>true</UseWindowsForms>
     <MyType>WindowsFormsWithCustomSubMain</MyType>
-  </PropertyGroup>
-
-  <PropertyGroup Condition="'$(Platform)'=='x86'">
-    <PlatformTarget>x86</PlatformTarget>
-    <RuntimeIdentifier>win-x86</RuntimeIdentifier>
-  </PropertyGroup>
-
-  <PropertyGroup Condition="'$(Platform)'=='x64'">
-    <PlatformTarget>x64</PlatformTarget>
-    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
   </PropertyGroup>
 
   <ItemGroup>

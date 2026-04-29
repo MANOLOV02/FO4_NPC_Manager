@@ -1,4 +1,5 @@
-﻿Imports System.IO
+﻿Imports System.Globalization
+Imports System.IO
 Imports System.Drawing
 Imports System.Linq
 Imports System.Threading
@@ -31,6 +32,9 @@ Public Class MainForm
     Private ReadOnly _assetDictionaryLock As New Object()
     Private _previewRequestVersion As Integer = 0
     Private Shared ReadOnly _rng As New Random()
+    ''' <summary>Counter para limitar logs de RenderScene a las primeras N invocaciones (no saturar).
+    ''' Reseteado en cada RenderCurrentStateAsync.</summary>
+    Private _renderSceneLogCount As Integer = 0
     Private _npcByIdCache As New Dictionary(Of UInteger, NPC_Data)()
     Private _templateDependencyMapCache As New Dictionary(Of UInteger, List(Of TemplateDependencyEdge))()
     Private _templateRootSourceIdsCache As New List(Of UInteger)()
@@ -131,6 +135,24 @@ Public Class MainForm
         Public DependentNpc As NPC_Data
         Public Categories As New List(Of String)
     End Class
+    ''' <summary>Categoría de un shape para los toggles diagnósticos de visibilidad. Calculada
+    ''' al cargar el shape a partir del MeshCandidate.SlotMask + Kind. Los handlers de los
+    ''' CheckBoxes setean RenderHide según esta categoría sin re-resolver candidates.</summary>
+    Public Enum ShapeRenderCategory
+        ''' <summary>Sin clasificar (head parts, accessories sin slot, etc). Siempre visible.</summary>
+        Other = 0
+        ''' <summary>Over-armor [A] puro: declara algún bit [A] (11-15) y NO toca BODY/[U].</summary>
+        ArmorOver = 1
+        ''' <summary>Underarmor: toca BODY (bit 3) o [U] (bits 6-10), cualquier kind.</summary>
+        Underarmor = 2
+        ''' <summary>Naked hands: Kind=Skin con bits hand (4/5). Underarmor de manos.</summary>
+        NakedHands = 3
+        ''' <summary>Glove de outfit: Kind=Outfit con bits hand (4/5) y sin BODY/[U].</summary>
+        GloveOutfit = 4
+        ''' <summary>Head part (Kind=HeadPart). Sin slot biped típicamente.</summary>
+        HeadPart = 5
+    End Enum
+
     Private Class PreviewResolutionResult
         Public ReadOnly Shapes As New List(Of IRenderableShape)
         Public SkeletonKey As String = ""
@@ -141,10 +163,20 @@ Public Class MainForm
         Public ReadOnly ShapeChargenTriPaths As New Dictionary(Of IRenderableShape, String)
         ''' <summary>Shape reference -> race morph TRI path (from HDPT NAM0=0/NAM1, expression file).</summary>
         Public ReadOnly ShapeRaceMorphTriPaths As New Dictionary(Of IRenderableShape, String)
-        ''' <summary>Aggregated per-bone scale deltas from ALL winning ARMAs (outfit + armor + skin).
-        ''' Each ARMA's gender-matching BSMS entries are summed here. Engine-side these add on top
-        ''' of RACE.BSMS to shape the outfit around the body; NPC_Manager consumes them in
-        ''' BuildBodyWeightPose so the rendered geometry matches in-game proportions.</summary>
+        ''' <summary>Per-shape ARMA sculpt data lookup. Key = shape reference, Value = bone-name → Vec3 delta
+        ''' (delta = sclp_absolute - 1.0). Each shape carries the sculpt of ITS ARMA owner only — there is
+        ''' no cross-ARMA aggregation. Shapes whose ARMA has no sculpt data are absent from this dictionary.
+        ''' Render-time: each shape gets a SkeletonInstance with its own sculpt applied (or none if absent),
+        ''' generic for any ARMA — no special-casing for body/outfit/gloves/etc.</summary>
+        Public ReadOnly ShapeArmaSculpt As New Dictionary(Of IRenderableShape, Dictionary(Of String, System.Numerics.Vector3))
+        ''' <summary>Per-shape ARMA owner FormID (0 if shape has no ARMA, e.g. head parts). Used to
+        ''' group shapes by sculpt source so we build one SkeletonInstance per distinct ARMA with sculpt.</summary>
+        Public ReadOnly ShapeArmaFormID As New Dictionary(Of IRenderableShape, UInteger)
+        ''' <summary>Per-shape categoría para toggles diagnósticos de visibilidad. Ver
+        ''' ApplyRenderToggleVisibility.</summary>
+        Public ReadOnly ShapeCategory As New Dictionary(Of IRenderableShape, ShapeRenderCategory)
+        ''' <summary>DEPRECATED. Used to be the cross-ARMA aggregated sculpt; now superseded by the
+        ''' per-shape mapping above. Kept as always-empty for back-compat with consumers that read it.</summary>
         Public ReadOnly ArmaBoneScaleDeltas As New Dictionary(Of String, System.Numerics.Vector3)(StringComparer.OrdinalIgnoreCase)
     End Class
     Private Class TraitsState
@@ -191,6 +223,11 @@ Public Class MainForm
         Public TextureLightingColor As Color = Color.Empty
         Public HeadPartFormIDs As New List(Of UInteger)
         Public LoadoutArmorFormIDs As New List(Of UInteger)
+        ''' <summary>Per-ARMO contextual keywords inherited from the LVLI.LLKC chain at outfit
+        ''' sample time. Used by CollectArmoCandidates to match OBTS combinations and apply
+        ''' OMOD AddonIndex Property swaps (Lite/Mid/Heavy). Empty for ARMOs that didn't pass
+        ''' through any LLKC during sampling.</summary>
+        Public LoadoutArmorContextKeywords As New Dictionary(Of UInteger, List(Of UInteger))
         Public WeightThin As Single
         Public WeightMuscular As Single
         Public WeightFat As Single
@@ -267,13 +304,61 @@ Public Class MainForm
         _previewControl.InvalidateRender()
     End Sub
 
-    ''' <summary>Toggle body-weight pose (MWGT × BSMS + MRSV + ARMA). Symmetric with FMRS handler:
-    ''' both call RebuildAndApplyMergedPose which rebuilds the full merged pose (race + BW + FMRS)
-    ''' from current checkbox state, applies it to the NPC's SkeletonInstance, and marks Pose
-    ''' dirty restricted to this NPC's shapes. Granular — no full reload.</summary>
+    ''' <summary>ARMA Bone Scale Delta application model. The xEdit field is named "Bone Scale
+    ''' <summary>ARMA Sculpt Data application formula. HARDCODED to H3 multiplicative
+    ''' (s = race_s · (1 + arma_d)) on 2026-04-27 after consolidating the slot-based per-shape
+    ''' application rule. **A REVISAR** — la fórmula matemática (cómo se combina arma_d con race_s)
+    ''' NO está confirmada experimentalmente contra CK ground truth. Es la candidata más
+    ''' conceptualmente limpia (cumple las 3 invariantes naturales: identity outfit, identity race,
+    ''' suma de volumen donde delta>0). Pero el test diferencial CK que confirme esta fórmula
+    ''' (clon ARMA con bone modificado a valor conocido) está pendiente.</summary>
+    ''' <summary>Toggle body-weight pose (MWGT × BSMS + MRSV + ARMA sculpt H3). Triggers granular
+    ''' MarkDirty(Pose) — no full reload.</summary>
     Private Sub CheckBoxApplyBodyWeight_CheckedChanged(sender As Object, e As EventArgs) Handles CheckBoxApplyBodyWeight.CheckedChanged
         NpcPreviewLog.Log($"  [BODY-WEIGHT-TOGGLE] fired checked={CheckBoxApplyBodyWeight.Checked}")
         RebuildAndApplyMergedPose()
+    End Sub
+
+    ''' <summary>Toggle ARMA sculpt (SCLP per-bone scaling). When OFF, every shape — including
+    ''' [A] over-armor consumers that would normally receive the source's SCLP — falls back to
+    ''' the base skeleton (no SCLP amplifier). Diagnostic toggle to compare A/B with vs without
+    ''' sculpt on the same NPC.</summary>
+    Private Sub CheckBoxApplySculpt_CheckedChanged(sender As Object, e As EventArgs) Handles CheckBoxApplySculpt.CheckedChanged
+        NpcPreviewLog.Log($"  [SCULPT-TOGGLE] fired checked={CheckBoxApplySculpt.Checked}")
+        RebuildAndApplyMergedPose()
+    End Sub
+
+    ''' <summary>Toggle "Render armor". OFF excluye los candidates con bits [A] (41-45) del
+    ''' render — útil para ver al NPC con underarmor + body skin sin las piezas combat encima
+    ''' y poder detectar visualmente bugs del SCLP. Requiere full re-render porque cambia el
+    ''' set de shapes cargados, no sólo poses.</summary>
+    Private Sub CheckBoxRenderArmor_CheckedChanged(sender As Object, e As EventArgs) Handles CheckBoxRenderArmor.CheckedChanged
+        NpcPreviewLog.Log($"  [RENDER-ARMOR-TOGGLE] fired checked={CheckBoxRenderArmor.Checked}")
+        ApplyRenderToggleVisibility()
+    End Sub
+
+    ''' <summary>Toggle "Render underarmor". OFF oculta los underarmors (BODY/[U]) y las naked
+    ''' hands (Skin con bits hand) via RenderHide. Independiente de "Render armor [A]" — la
+    ''' combinación armor=ON + underarmor=OFF reproduce el modo "only armor" diagnóstico.</summary>
+    Private Sub CheckBoxRenderUnderarmor_CheckedChanged(sender As Object, e As EventArgs) Handles CheckBoxRenderUnderarmor.CheckedChanged
+        NpcPreviewLog.Log($"  [RENDER-UNDERARMOR-TOGGLE] fired checked={CheckBoxRenderUnderarmor.Checked}")
+        ApplyRenderToggleVisibility()
+    End Sub
+
+
+    Private Sub TriggerFullRender()
+        If _lastRenderedState Is Nothing Then Return
+        ' Reuse the existing flow used by other CheckedChanged handlers that need a full reload.
+        ' We piggyback on the outfit selection refresh path to force the render pipeline.
+        RenderCurrentStateAsyncWrapper()
+    End Sub
+
+    Private Async Sub RenderCurrentStateAsyncWrapper()
+        Try
+            Await RenderCurrentStateAsync(System.Threading.Interlocked.Increment(_previewRequestVersion))
+        Catch ex As Exception
+            NpcPreviewLog.Log($"  [RENDER-ARMOR-TOGGLE] re-render failed: {ex.Message}")
+        End Try
     End Sub
 
     ''' <summary>Shared path for FMRS / body-weight toggles: rebuild the merged NPC pose from
@@ -287,10 +372,22 @@ Public Class MainForm
         End If
         Dim fmrsEnabled = CheckBoxApplyBoneMorphs.Checked
         Dim bwEnabled = CheckBoxApplyBodyWeight.Checked
-        Dim mergedPose = BuildMergedNpcPose(_lastRenderedState, _lastRenderData, fmrsEnabled, bwEnabled, _lastSkeletonInstance)
-        NpcPreviewLog.Log($"  [POSE-TOGGLE] rebuilt merged pose (fmrs={fmrsEnabled} bw={bwEnabled}) → {mergedPose.Transforms.Count} bones")
-        ' Apply to the per-NPC instance (state lives there) and mark only this NPC's shapes dirty.
-        _lastSkeletonInstance.ApplyPose(mergedPose)
+        Dim sculptEnabled = CheckBoxApplySculpt.Checked
+        ' Base pose (sin sculpt) → skeleton base.
+        Dim basePose = BuildMergedNpcPose(_lastRenderedState, _lastRenderData, fmrsEnabled, bwEnabled, _lastSkeletonInstance, Nothing)
+        _lastSkeletonInstance.ApplyPose(basePose)
+
+        ' Per-ARMA skeleton clones: cada uno recibe SU propio sculpt aplicado vía H3 multiplicative.
+        ' Si sculpt OFF: rebuild las per-ARMA con Nothing (idéntico al base) — el shape sigue
+        ' apuntando al per-ARMA skel pero éste pierde el SCLP, equivalente a base.
+        For Each kv In _lastSkelByArma
+            Dim armaSkel = kv.Value
+            Dim sculpt As Dictionary(Of String, System.Numerics.Vector3) = Nothing
+            If sculptEnabled Then _lastSculptByArma.TryGetValue(kv.Key, sculpt)
+            Dim poseForArma = BuildMergedNpcPose(_lastRenderedState, _lastRenderData, fmrsEnabled, bwEnabled, armaSkel, sculpt)
+            armaSkel.ApplyPose(poseForArma)
+        Next
+        NpcPreviewLog.Log($"  [POSE-TOGGLE] rebuilt merged pose (fmrs={fmrsEnabled} bw={bwEnabled} sculpt={sculptEnabled}) → base + {_lastSkelByArma.Count} per-ARMA skeletons updated")
         Dim intent = _previewControl.Intent
         intent.MarkDirty(RenderDirtyFlags.Pose, _lastRenderData.Shapes)
         _previewControl.InvalidateRender()
@@ -301,20 +398,41 @@ Public Class MainForm
         _searchDebounceTimer.Interval = 250
         Config_App.Current.Game = Config_App.Game_Enum.Fallout4
         NpcPreviewLog.Initialize()
-        InitializePreview()
         LoadDataAsync()
     End Sub
 
+    ''' <summary>PreviewControl initialization happens in Shown (not Load) — same pattern as
+    ''' WM (Wardrobe_Manager_Form.OSPManager_Form_Shown / CreatefromNif_Form.Create_from_Nif_2_Shown).
+    ''' This guarantees the Panel container has its final layout dimensions BEFORE the GL control
+    ''' is added, so the first ApplyResize calls GL.Viewport with the correct width/height and
+    ''' the projection matrix uses the right aspect ratio. Doing this in Load gives the control
+    ''' the designer-time size and the first ResetCamera computes distH/distW from a wrong aspect.</summary>
+    Private Sub MainForm_Shown(sender As Object, e As EventArgs) Handles MyBase.Shown
+        InitializePreview()
+    End Sub
+
     Private Sub InitializePreview()
-        _previewControl = New PreviewControl()
-        _previewControl.Dock = DockStyle.Fill
-        ' Remove only the LabelStatus placeholder, keep PanelPreviewToolbar
-        If LabelStatus IsNot Nothing AndAlso PanelRight.Controls.Contains(LabelStatus) Then
-            PanelRight.Controls.Remove(LabelStatus)
+        ' Wire diagnostic logger from lib's CenterCamera into our NpcPreviewLog stream so we
+        ' can see the framing math step-by-step (focus/distance/AABB/aspect).
+        PreviewControl.CenterCameraLogger = Sub(msg) NpcPreviewLog.Log("  " & msg)
+        PreviewControl.UpdateProjectionLogger = Sub(msg) NpcPreviewLog.Log("  " & msg)
+        ' RenderScene corre cada frame — para no saturar el log, sólo loguea N frames per render.
+        PreviewControl.RenderSceneLogger = Sub(msg)
+                                               If _renderSceneLogCount < 3 Then
+                                                   NpcPreviewLog.Log("  " & msg)
+                                                   _renderSceneLogCount += 1
+                                               End If
+                                           End Sub
+        ' Remove the LabelStatus placeholder from the toolbar host (sin afectar la toolbar)
+        If LabelStatus IsNot Nothing AndAlso LabelStatus.Parent IsNot Nothing Then
+            LabelStatus.Parent.Controls.Remove(LabelStatus)
         End If
-        PanelRight.Controls.Add(_previewControl)
-        ' Ensure toolbar stays on top (Dock.Top renders above Dock.Fill)
-        PanelPreviewToolbar.BringToFront()
+        ' GLControl en su panel exclusivo (PanelPreviewHost = Panel2 del SplitContainerPreview).
+        ' Dock.Fill funciona correctamente porque el container es dedicado y su tamaño ya fue
+        ' resuelto por el SplitContainer al momento de Shown. No comparte rectángulo con la toolbar.
+        _previewControl = New PreviewControl() With {.Dock = DockStyle.Fill}
+        PanelPreviewHost.Controls.Add(_previewControl)
+        _previewControl.ApplyResize(True)
     End Sub
 
     Private Async Sub LoadDataAsync()
@@ -962,6 +1080,13 @@ Public Class MainForm
     ''' the pose-toggle handlers and the diagnostic harness so they read from the same skeleton
     ''' the render is using (no singleton dependency).</summary>
     Private _lastSkeletonInstance As SkeletonInstance = Nothing
+    ''' <summary>Per-ARMA skeleton clones built during the last render. Indexed by ArmorAddonFormID.
+    ''' Persisted so the dropdown handler (RebuildAndApplyMergedPose) can reconstruct each clone's
+    ''' pose when the user changes armaModel without forcing a full re-render.</summary>
+    Private _lastSkelByArma As New Dictionary(Of UInteger, SkeletonInstance)
+    ''' <summary>Per-ARMA sculpt deltas used when building each skeleton clone in _lastSkelByArma.
+    ''' Indexed by ArmorAddonFormID. Used to re-derive the pose for each clone when armaModel changes.</summary>
+    Private _lastSculptByArma As New Dictionary(Of UInteger, Dictionary(Of String, System.Numerics.Vector3))
     Private Enum OutfitSlotKind
         DefaultOutfit
         SleepOutfit
@@ -976,6 +1101,11 @@ Public Class MainForm
         Public SlotKind As OutfitSlotKind
         Public OutfitFormID As UInteger
         Public SampledArmorFormIDs As List(Of UInteger) = New List(Of UInteger)
+        ''' <summary>Per-ARMO contextual keywords inherited from the LLKC chain at sample time.
+        ''' Key = ARMO FormID, value = list of KYWD FormIDs that the LVLI sequence accumulated
+        ''' along the path. Used by CollectArmoCandidates to match OBTS combinations and apply
+        ''' OMOD AddonIndex Property swaps (Lite/Mid/Heavy).</summary>
+        Public SampledArmorContextKeywords As New Dictionary(Of UInteger, List(Of UInteger))
     End Class
 
     Private _currentOutfitEntries As New List(Of OutfitComboEntry)
@@ -1152,7 +1282,9 @@ Public Class MainForm
         NpcPreviewLog.Log($"  [REROLL-OUTFIT] idx={idx} slot={entry.SlotKind} otft={entry.OutfitFormID:X8}")
 
         Dim warnings As New List(Of String)
-        entry.SampledArmorFormIDs = OutfitResolver.SampleOutfitRealization(entry.OutfitFormID, _pluginManager, warnings)
+        Dim picks = OutfitResolver.SampleOutfitWithKeywords(entry.OutfitFormID, _pluginManager, warnings)
+        entry.SampledArmorFormIDs = picks.Select(Function(p) p.ArmoFormID).ToList()
+        entry.SampledArmorContextKeywords = picks.ToDictionary(Function(p) p.ArmoFormID, Function(p) p.ContextKeywords)
         For Each w In warnings
             NpcPreviewLog.Log($"    [OTFT-WARN] {w}")
         Next
@@ -1220,12 +1352,26 @@ Public Class MainForm
         Return _currentOutfitEntries(idx).SampledArmorFormIDs
     End Function
 
+    Private Function GetSelectedOutfitContextKeywords() As Dictionary(Of UInteger, List(Of UInteger))
+        Dim idx = If(ComboBoxOutfit.InvokeRequired,
+                     CInt(ComboBoxOutfit.Invoke(Function() ComboBoxOutfit.SelectedIndex)),
+                     ComboBoxOutfit.SelectedIndex)
+        If idx < 0 OrElse idx >= _currentOutfitEntries.Count Then Return New Dictionary(Of UInteger, List(Of UInteger))
+        Return _currentOutfitEntries(idx).SampledArmorContextKeywords
+    End Function
+
     Private Async Function RenderCurrentStateAsync(requestVersion As Integer) As Task
         If _currentBaseState Is Nothing Then Return
+
+        ' Reset RenderScene log counter so the first ~3 frames de este render se loguean.
+        _renderSceneLogCount = 0
 
         ' Build final state with selected outfit
         Dim state = CloneVisualState(_currentBaseState)
         state.LoadoutArmorFormIDs.AddRange(GetSelectedOutfitArmorIDs())
+        For Each kvCtx In GetSelectedOutfitContextKeywords()
+            state.LoadoutArmorContextKeywords(kvCtx.Key) = kvCtx.Value
+        Next
 
         Dim useFaceGen = HasFaceGenAssets(state)
 
@@ -1263,35 +1409,113 @@ Public Class MainForm
         ' toggle lets the user compare "raw face" (no pose, no morphs) vs "with FMRS applied" live.
         Dim faceSkelBytes = TryLoadFaceSkeletonBytes(state)
         Dim bodyWeightEnabled = CheckBoxApplyBodyWeight.Checked
+        Dim sculptEnabled = CheckBoxApplySculpt.Checked
         NpcPreviewLog.Log($"  [BODY-WEIGHT-TOGGLE] {If(bodyWeightEnabled, "ON — body-weight pose applied", "OFF — body-weight pose skipped (MWGT/BSMS/NNAM not applied)")}")
+        NpcPreviewLog.Log($"  [SCULPT-TOGGLE] {If(sculptEnabled, "ON — ARMA SCLP per-bone scaling applied to [A] over-armor consumers", "OFF — ARMA SCLP suppressed; every shape on base skeleton")}")
 
-        ' Build a per-NPC SkeletonInstance — bone multipliers (RACE.BSMS, NNAM, MWGT-derived
-        ' scales) are NPC-specific, so each NPC needs its own skeleton state to coexist with
-        ' other actors in the same scene. The instance is the source of truth for both
-        ' BuildBodyWeightPose (walks the dict) and the diagnostic harness — no singleton.
-        Dim inst As New SkeletonInstance()
-        inst.LoadFromKey(renderData.SkeletonKey)
-        ' Cloth bone injection over the per-NPC instance (same physics-bone parsing the global
-        ' singleton path used to do in PrepareSkeletonForShapes).
-        inst.PrepareForShapes(renderData.Shapes)
-        ' Robot extended-skeleton merge (TO-REVIEW 2026-04-19): per user empirical call —
-        ' robot race base `skeleton.nif` (e.g. Actors\Robot\CharacterAssets\skeleton.nif) is
-        ' empty/minimal; actual bones live in `SkeletonRef.nif` + other sibling skeleton files in
-        ' the same folder. Detect "robot-mode" by presence of `<bodySkelDir>/SkeletonRef.nif` and
-        ' merge all `skeleton*.nif` from that folder. Humanoid races have no SkeletonRef sibling
-        ' → no-op. No guarantees that merging everything is the canonical solution — see
-        ' project_robot_rendering_combinations.md for the pending investigation.
-        MergeRobotExtendedSkeletonsIfRobot(state, inst)
-        If faceSkelBytes IsNot Nothing Then
-            inst.MergeAdditionalSkeleton(faceSkelBytes)
-        End If
+        ' Per-ARMA skeleton flow (refactored 2026-04-27, replaces single shared skeleton):
+        ' Each shape goes to a SkeletonInstance with its own ARMA's sculpt applied (if any), or to
+        ' the base instance (no sculpt) if its ARMA has none. Generic for ANY ARMA — body / outfit /
+        ' gloves / underarmor / etc. all follow the same rule. Multiple shapes from the same NIF
+        ' share the same skeleton (cached by ArmorAddonFormID).
+        ' Sculpt formula: H3 multiplicative (s = race_s · (1 + arma_d)) hardcoded — A REVISAR.
+        ' Closure plan P0: fórmula correcta del engine no confirmada vs CK. H3 es candidata
+        ' conceptual más limpia (cumple invariantes naturales) pero sin verificación pixel-match.
+        ' Re-introducción del dropdown experimental se descartó 2026-04-29 tras detectar que el
+        ' clip motivador era OMODs/add-ons no renderizados, no la fórmula.
+        Dim inst = BuildSkeletonInstance(state, renderData, faceSkelBytes)
+        Dim basePose = BuildMergedNpcPose(state, renderData, boneMorphsEnabled, bodyWeightEnabled,
+                                          inst, Nothing)  ' Nothing = no sculpt → base pose
+        inst.ApplyPose(basePose)
 
-        ' Build the merged pose: race-height + body-weight + FMRS → single Poses_class.
-        ' Apply it directly to the SkeletonInstance — pose state lives there, not in the request.
-        ' The 3 checkbox handlers below rebuild + reapply on toggle (granular MarkDirty(Pose)).
-        Dim mergedPose = BuildMergedNpcPose(state, renderData, boneMorphsEnabled, bodyWeightEnabled, inst)
-        inst.ApplyPose(mergedPose)
-        Dim skelResolver As ISkeletonResolver = New SingleInstanceSkeletonResolver(inst)
+        ' Diagnostic 2026-04-29: dump R_bind for ALL bones (face and body) with non-identity rotation.
+        ' Permite analizar pre vs post bind composition para FMRS pose y body weight pose.
+        ' R_bind es estático del skeleton NIF, no depende de MWGT/BW — una sola corrida basta.
+        Try
+            Dim invFmt = System.Globalization.CultureInfo.InvariantCulture
+            For Each kvBone In inst.SkeletonDictionary
+                Dim bn = kvBone.Key
+                Dim r = kvBone.Value.OriginalLocaLTransform.Rotation
+                Dim isIdent = Math.Abs(r.M11 - 1.0F) < 0.001F AndAlso Math.Abs(r.M22 - 1.0F) < 0.001F AndAlso
+                              Math.Abs(r.M33 - 1.0F) < 0.001F AndAlso Math.Abs(r.M12) < 0.001F AndAlso
+                              Math.Abs(r.M13) < 0.001F AndAlso Math.Abs(r.M21) < 0.001F AndAlso
+                              Math.Abs(r.M23) < 0.001F AndAlso Math.Abs(r.M31) < 0.001F AndAlso
+                              Math.Abs(r.M32) < 0.001F
+                If Not isIdent Then
+                    NpcPreviewLog.Log(String.Format(invFmt,
+                        "    [RBIND-DUMP] bone='{0}' M11={1:F4} M12={2:F4} M13={3:F4} M21={4:F4} M22={5:F4} M23={6:F4} M31={7:F4} M32={8:F4} M33={9:F4}",
+                        bn, r.M11, r.M12, r.M13, r.M21, r.M22, r.M23, r.M31, r.M32, r.M33))
+                End If
+            Next
+        Catch ex As Exception
+            NpcPreviewLog.Log($"    [RBIND-DUMP] failed: {ex.Message}")
+        End Try
+
+        Dim shapeToSkel As New Dictionary(Of IRenderableShape, SkeletonInstance)
+        Dim skelByArma As New Dictionary(Of UInteger, SkeletonInstance)
+        Dim sculptByArma As New Dictionary(Of UInteger, Dictionary(Of String, System.Numerics.Vector3))
+        For Each shape In renderData.Shapes
+            Dim armaFormID As UInteger = 0
+            renderData.ShapeArmaFormID.TryGetValue(shape, armaFormID)
+            Dim sculpt As Dictionary(Of String, System.Numerics.Vector3) = Nothing
+            renderData.ShapeArmaSculpt.TryGetValue(shape, sculpt)
+            If sculpt Is Nothing OrElse sculpt.Count = 0 OrElse Not bodyWeightEnabled OrElse Not sculptEnabled Then
+                ' Sin sculpt, BW disabled o sculpt-toggle OFF → skeleton base compartido.
+                shapeToSkel(shape) = inst
+                Continue For
+            End If
+            Dim armaSkel As SkeletonInstance = Nothing
+            If Not skelByArma.TryGetValue(armaFormID, armaSkel) Then
+                armaSkel = BuildSkeletonInstance(state, renderData, faceSkelBytes)
+                Dim poseForArma = BuildMergedNpcPose(state, renderData, boneMorphsEnabled, bodyWeightEnabled,
+                                                     armaSkel, sculpt)
+                armaSkel.ApplyPose(poseForArma)
+                skelByArma(armaFormID) = armaSkel
+                sculptByArma(armaFormID) = sculpt
+            End If
+            shapeToSkel(shape) = armaSkel
+        Next
+        NpcPreviewLog.Log($"  [SKEL-PER-ARMA] base + {skelByArma.Count} per-ARMA skeletons built; {shapeToSkel.Count} shape→skel mappings")
+
+        ' Diagnostic 2026-04-27: dump bone palette of each renderable shape to determine
+        ' if the gloves mesh uses _skin bones (which receive sculpt scale) or principal bones
+        ' (which don't). If gloves don't use _skin → sculpt automatically does NOT affect them.
+        ' If they DO use _skin → we have a real problem requiring skeleton dual or shape-level
+        ' filtering. Logged once per render to pinpoint affected shapes.
+        Try
+            For Each sh In renderData.Shapes
+                Dim shapeName = sh.ShapeName
+                Dim boneNames As New List(Of String)
+                Dim hasSkinBones As Boolean = False
+                Dim hasPrincipalBones As Boolean = False
+                For Each b In sh.ShapeBones
+                    Dim bn = If(b.Name?.String, "")
+                    If bn.Length = 0 Then Continue For
+                    boneNames.Add(bn)
+                    If bn.EndsWith("_skin", StringComparison.OrdinalIgnoreCase) OrElse
+                       bn.EndsWith("_Skin", StringComparison.Ordinal) Then
+                        hasSkinBones = True
+                    Else
+                        hasPrincipalBones = True
+                    End If
+                Next
+                Dim skinCount As Integer = 0
+                For Each bn In boneNames
+                    If bn.EndsWith("_skin", StringComparison.OrdinalIgnoreCase) Then skinCount += 1
+                Next
+                Dim principalCount = boneNames.Count - skinCount
+                NpcPreviewLog.Log($"  [SHAPE-BONES] shape='{shapeName}' totalBones={boneNames.Count} _skin={skinCount} principal={principalCount}")
+                ' Sample-truncated lists for spot-check.
+                Dim skinSample = boneNames.Where(Function(n) n.EndsWith("_skin", StringComparison.OrdinalIgnoreCase)).Take(8).ToArray()
+                Dim princSample = boneNames.Where(Function(n) Not n.EndsWith("_skin", StringComparison.OrdinalIgnoreCase) AndAlso Not n.EndsWith("_Skin", StringComparison.Ordinal)).Take(8).ToArray()
+                If skinSample.Length > 0 Then NpcPreviewLog.Log($"    [SHAPE-BONES] _skin sample: {String.Join(", ", skinSample)}")
+                If princSample.Length > 0 Then NpcPreviewLog.Log($"    [SHAPE-BONES] principal sample: {String.Join(", ", princSample)}")
+            Next
+        Catch ex As Exception
+            NpcPreviewLog.Log($"  [SHAPE-BONES] error: {ex.Message}")
+        End Try
+
+        Dim skelResolver As ISkeletonResolver = New MultiInstanceSkeletonResolver(shapeToSkel, inst)
 
         Dim request As New RenderRequest With {
             .Shapes = renderData.Shapes,
@@ -1300,6 +1524,13 @@ Public Class MainForm
             .RecalculateNormals = True,
             .ResetCamera = True
         }
+        ' Hide all shapes (RenderHide=True) during load + face tint composition so the user
+        ' doesn't see a flash of untinted face. The control stays Visible so GL keeps processing
+        ' texture uploads + FBO compositing (tint pipeline NEEDS the control rendering to work).
+        ' Cleared at the end of this method (or by the deferred tint timer if textures arrive late).
+        For Each sh In renderData.Shapes
+            sh.RenderHide = True
+        Next
         _previewControl.RenderShapes(request)
 
         ' Cache the resolved state + render data + skeleton instance so the morph/pose checkbox
@@ -1310,11 +1541,35 @@ Public Class MainForm
         _lastRenderedState = state
         _lastRenderData = renderData
         _lastSkeletonInstance = inst
+        _lastSkelByArma = skelByArma
+        _lastSculptByArma = sculptByArma
 
         ' After the shapes become RenderableMesh instances, compose the NPC's face tint layers
         ' into an RGBA overlay texture via FBO and assign it to the face mesh's MaterialData.
         ' This is done post-render because MaterialData only exists on a RenderableMesh.
+        ' (Shapes are still RenderHide=True at this point — tint pipeline only needs MaterialData
+        ' and texture uploads, not the visible draw of each shape.)
         ApplyFaceTintOverlay(state, renderData)
+
+        ' Reveal: clear the blanket RenderHide=True we set above, then apply diagnostic toggle
+        ' visibility on top. Done only when tint applied synchronously; if deferred, the timer
+        ' handler calls RevealAllShapes() when it succeeds OR when it gives up.
+        If _pendingTintState Is Nothing Then RevealAllShapes()
+
+        ' Force ResetCamera now that all shapes are visible (RenderHide=False) and bounds reflect
+        ' final pose. Mirror WM Editor_Form Button9_Click behavior: ResetCamera(True) → RefreshRender.
+        ' WM doesn't need this because its "render" path is contiguous; NPC_Manager has the
+        ' load-with-hidden / reveal split which runs the first ResetCamera before RenderHide flips.
+        Try
+            DumpCameraDiagnostics("PRE-RESET")
+            _previewControl.ResetCamera(Force:=True)
+            DumpCameraDiagnostics("POST-RESET")
+            _previewControl.UpdateRequired = True
+            _previewControl.RefreshRender()
+        Catch ex As Exception
+            NpcPreviewLog.Log($"  [CAMERA-RESET] post-render failed: {ex.Message}")
+        End Try
+
 
         ' DIAGNOSTIC: for a small set of ground-truth NPCs (Alijo 0018A6D1, Cait 00079249),
         ' compare our post-morph vertices against CK's FaceGen bake on disk to find which verts
@@ -1335,7 +1590,8 @@ Public Class MainForm
         &H79249UI,  ' CompanionCait — modded test NPC (musc-dominant, zero fat)
         &H19EE79UI,  ' Cientifica — fat-heavy fixture (discriminator for fat channel in body-weight model)
         &H15E922UI,  ' FMIN=2 fixture — FMIN semantics discriminator (scale vs scale+translation vs +rotation)
-        &H19FD9UI   ' FMIN=4 fixture — stronger discriminator for FMIN-on-vertex hypothesis (1/FMIN vs 1/FMIN² vs zero)
+        &H19FD9UI,  ' FMIN=4 fixture — stronger discriminator for FMIN-on-vertex hypothesis (1/FMIN vs 1/FMIN² vs zero)
+        &H2F1EUI    ' Pieper — added 2026-04-26 by user request, FaceGen 00002F1E.NIF
     }
 
     ''' <summary>BPND.PartType enum (0-25) → name mapping per wbDefinitionsFO4.pas:8079-8107.</summary>
@@ -2159,6 +2415,7 @@ Public Class MainForm
     Private Sub _pendingTintTimer_Tick(sender As Object, e As EventArgs) Handles _pendingTintTimer.Tick
         If _pendingTintState Is Nothing Then
             _pendingTintTimer.Stop()
+            RevealAllShapes()
             Return
         End If
 
@@ -2167,6 +2424,8 @@ Public Class MainForm
             NpcPreviewLog.Log($"  [FACETINT] giving up after {_pendingTintAttempts} attempts (~{_pendingTintAttempts * _pendingTintTimer.Interval}ms)")
             _pendingTintTimer.Stop()
             _pendingTintState = Nothing
+            ' Reveal aún sin tint — mejor ver "untinted face" que tener todo oculto indefinido.
+            RevealAllShapes()
             Return
         End If
 
@@ -2182,8 +2441,70 @@ Public Class MainForm
             NpcPreviewLog.Log($"  [FACETINT] applied on attempt #{_pendingTintAttempts}")
             _pendingTintTimer.Stop()
             _pendingTintState = Nothing
-            _previewControl.Invalidate()
+            RevealAllShapes()
         End If
+    End Sub
+
+    ''' <summary>Diagnóstico: dumpea bounds per-mesh + scene AABB + tamaño del control + estado
+    ''' actual de la OrbitCamera. Usado en pre/post ResetCamera para detectar si el cálculo
+    ''' del frame es coherente con la geometría visible.</summary>
+    Private Sub DumpCameraDiagnostics(label As String)
+        If _previewControl Is Nothing OrElse _previewControl.Model Is Nothing OrElse _previewControl.Model.meshes Is Nothing Then Return
+        Dim sceneMinX As Single = Single.MaxValue, sceneMinY As Single = Single.MaxValue, sceneMinZ As Single = Single.MaxValue
+        Dim sceneMaxX As Single = Single.MinValue, sceneMaxY As Single = Single.MinValue, sceneMaxZ As Single = Single.MinValue
+        Dim meshCount As Integer = 0
+        For Each mesh In _previewControl.Model.meshes
+            If mesh Is Nothing OrElse mesh.MeshData Is Nothing Then Continue For
+            Dim mn = mesh.MeshData.Meshgeometry.Minv
+            Dim mx = mesh.MeshData.Meshgeometry.Maxv
+            Dim shape = mesh.MeshData.Shape
+            Dim shapeName = If(shape IsNot Nothing, shape.ShapeName, "?")
+            Dim hide = If(shape IsNot Nothing, shape.RenderHide, False)
+            ' Log shape category + material info to diagnose if a "tall" shape is actually rendered
+            ' or invisible by material/shader properties (alpha, no-render flags).
+            Dim cat As ShapeRenderCategory = ShapeRenderCategory.Other
+            If shape IsNot Nothing AndAlso _lastRenderData IsNot Nothing Then
+                _lastRenderData.ShapeCategory.TryGetValue(shape, cat)
+            End If
+            Dim matInfo As String = ""
+            If mesh.MeshData.Material IsNot Nothing AndAlso mesh.MeshData.Material.MaterialBase IsNot Nothing Then
+                Dim mb = mesh.MeshData.Material.MaterialBase
+                matInfo = $" mat.alpha={mb.Alpha:F2} mat.shader={mb.NifShaderType}"
+            End If
+            ' Geometry stats: vertex count + triangle count. A shape with 0 vertices is invisible
+            ' but still contributes to the AABB if its Minv/Maxv were set (typically to NIF
+            ' bounding sphere). A shape with vertices but no triangles also doesn't render.
+            Dim geomInfo As String = ""
+            Dim verts = mesh.MeshData.Meshgeometry.Vertices
+            Dim tris = mesh.MeshData.Meshgeometry.Indices
+            Dim vCount = If(verts IsNot Nothing, verts.Length, 0)
+            Dim tCount = If(tris IsNot Nothing, tris.Length \ 3, 0)
+            geomInfo = $" verts={vCount} tris={tCount}"
+            NpcPreviewLog.Log($"  [{label}-BOUNDS-MESH] shape='{shapeName}' cat={cat} min=({mn.X:F2},{mn.Y:F2},{mn.Z:F2}) max=({mx.X:F2},{mx.Y:F2},{mx.Z:F2}) hide={hide}{geomInfo}{matInfo}")
+            If mn.X < sceneMinX Then sceneMinX = CSng(mn.X)
+            If mn.Y < sceneMinY Then sceneMinY = CSng(mn.Y)
+            If mn.Z < sceneMinZ Then sceneMinZ = CSng(mn.Z)
+            If mx.X > sceneMaxX Then sceneMaxX = CSng(mx.X)
+            If mx.Y > sceneMaxY Then sceneMaxY = CSng(mx.Y)
+            If mx.Z > sceneMaxZ Then sceneMaxZ = CSng(mx.Z)
+            meshCount += 1
+        Next
+        NpcPreviewLog.Log($"  [{label}-BOUNDS-SCENE] meshes={meshCount} min=({sceneMinX:F2},{sceneMinY:F2},{sceneMinZ:F2}) max=({sceneMaxX:F2},{sceneMaxY:F2},{sceneMaxZ:F2}) size=({sceneMaxX - sceneMinX:F2},{sceneMaxY - sceneMinY:F2},{sceneMaxZ - sceneMinZ:F2})")
+        NpcPreviewLog.Log($"  [{label}-PREVIEW-CTRL] width={_previewControl.Width} height={_previewControl.Height} aspect={_previewControl.Width / CSng(Math.Max(_previewControl.Height, 1)):F3}")
+        Dim cam = _previewControl.camera
+        If cam IsNot Nothing Then
+            NpcPreviewLog.Log($"  [{label}-CAMERA] focus=({cam.FocusPosition.X:F2},{cam.FocusPosition.Y:F2},{cam.FocusPosition.Z:F2}) distance={cam.distance:F2} optimal={cam.Optimaldistance:F2} min={cam.MinDistance:F2} max={cam.MaxDistance:F2}")
+        End If
+    End Sub
+
+    ''' <summary>Clear the blanket RenderHide=True set during the load+tint window, then apply
+    ''' the diagnostic toggles on top. Idempotent — safe to call repeatedly.</summary>
+    Private Sub RevealAllShapes()
+        If _lastRenderData Is Nothing OrElse _lastRenderData.Shapes Is Nothing Then Return
+        For Each sh In _lastRenderData.Shapes
+            sh.RenderHide = False
+        Next
+        ApplyRenderToggleVisibility()  ' Includes RefreshRender at the end.
     End Sub
 
     ''' <summary>Build the list of region-mask TXST swaps for an NPC. For each Morph Group
@@ -3072,17 +3393,20 @@ Public Class MainForm
         End If
 
         Dim warnings As New List(Of String)
-        Dim sampled = OutfitResolver.SampleOutfitRealization(otftFormID, _pluginManager, warnings)
+        Dim picks = OutfitResolver.SampleOutfitWithKeywords(otftFormID, _pluginManager, warnings)
         For Each w In warnings
             NpcPreviewLog.Log($"    [OTFT-WARN] {w}")
         Next
 
+        Dim sampled = picks.Select(Function(p) p.ArmoFormID).ToList()
+        Dim ctxKeywords = picks.ToDictionary(Function(p) p.ArmoFormID, Function(p) p.ContextKeywords)
         Dim otftLabel = If(otftRec.EditorID <> "", otftRec.EditorID, otftFormID.ToString("X8"))
         entries.Add(New OutfitComboEntry With {
             .Label = $"{slotName} — {otftLabel} ({sampled.Count} pcs)",
             .SlotKind = kind,
             .OutfitFormID = otftFormID,
-            .SampledArmorFormIDs = sampled
+            .SampledArmorFormIDs = sampled,
+            .SampledArmorContextKeywords = ctxKeywords
         })
     End Sub
 
@@ -3123,6 +3447,7 @@ Public Class MainForm
                 NpcPreviewLog.Log($"  {If(r.CacheHit, "CACHE", "READ ")}  {r.ArchiveName}")
             Next
         End If
+
 
         ' TRI-PROBE 2026-04-19: enumerate vanilla head TRIs to resolve the male _faceBones 1696
         ' vs chargen 1690 mismatch puzzle. Loads all known head TRI variants and logs vert count
@@ -3911,10 +4236,14 @@ Public Class MainForm
                 Next
             End If
 
-            ' 10) CSV dump alongside npc_preview.log (includes morph attribution columns)
+            ' 10) CSV dump alongside npc_preview.log (includes morph attribution columns).
+            ' Locale fix 2026-04-26: write with InvariantCulture so floats use '.' as decimal
+            ' separator (was using CurrentCulture which on ES locale produces ',' inside fields,
+            ' breaking column count for downstream parsers).
             Try
                 Dim logDir = AppDomain.CurrentDomain.BaseDirectory
                 Dim csvPath = IO.Path.Combine(logDir, $"harness_raw_{state.FormID:X8}.csv")
+                Dim inv = CultureInfo.InvariantCulture
                 Using w As New IO.StreamWriter(csvPath, False)
                     w.WriteLine("vertex_index,x_app,y_app,z_app,x_raw,y_raw,z_raw,dx,dy,dz,mag,bucket,vertex_morphs,bone_morphs,primary_bone,primary_bone_weight,mwgt_thin,mwgt_musc,mwgt_fat,race_height")
                     For i = 0 To compareCount - 1
@@ -3924,7 +4253,14 @@ Public Class MainForm
                         Dim mag = Math.Sqrt(dx * dx + dy * dy + dz * dz)
                         Dim vM = String.Join("|", vertMorphNames(i))
                         Dim bM = String.Join("|", vertBoneMorphTags(i))
-                        w.WriteLine($"{i},{ourWorld(i).X:R},{ourWorld(i).Y:R},{ourWorld(i).Z:R},{vRaw(i).X:R},{vRaw(i).Y:R},{vRaw(i).Z:R},{dx:R},{dy:R},{dz:R},{mag:R},{bucketTag(i)},{vM},{bM},{primaryBoneName(i)},{primaryBoneWeight(i):R},{state.WeightThin:R},{state.WeightMuscular:R},{state.WeightFat:R},{raceHeight:R}")
+                        w.WriteLine(String.Format(inv,
+                            "{0},{1:R},{2:R},{3:R},{4:R},{5:R},{6:R},{7:R},{8:R},{9:R},{10:R},{11},{12},{13},{14},{15:R},{16:R},{17:R},{18:R},{19:R}",
+                            i, ourWorld(i).X, ourWorld(i).Y, ourWorld(i).Z,
+                            vRaw(i).X, vRaw(i).Y, vRaw(i).Z,
+                            dx, dy, dz, mag,
+                            bucketTag(i), vM, bM, primaryBoneName(i),
+                            primaryBoneWeight(i),
+                            state.WeightThin, state.WeightMuscular, state.WeightFat, raceHeight))
                     Next
                 End Using
                 NpcPreviewLog.Log($"  [HARNESS-RAW] CSV dumped to '{csvPath}'")
@@ -4219,8 +4555,24 @@ Public Class MainForm
         End If
 
         Dim targetGender As UInteger = If(state.IsFemale, 1UI, 0UI)
+        NpcPreviewLog.Log($"  [BW-GENDER] race={race.EditorID} npcGender={If(state.IsFemale, "F", "M")} targetGenderEnum={targetGender} blocks_in_race={race.BoneData.Count} block_genders=[{String.Join(",", race.BoneData.Select(Function(b) b.Gender.ToString()))}]")
         For Each bd In race.BoneData
             If bd.Gender = targetGender Then
+                ' Dump archetype values for diagnostic bones to verify what the record actually says.
+                Dim diagBones As String() = {"LBreast_skin", "RBreast_skin", "LButtFat_skin", "RButtFat_skin",
+                                              "Belly_skin", "UpperBelly_skin", "Chest_skin", "Chest_Rear_Skin",
+                                              "LArm_ShoulderFat_skin", "LLeg_Calf_skin", "LLeg_Thigh_skin"}
+                For Each diagBone In diagBones
+                    Dim bbb = bd.Bones.FirstOrDefault(Function(x) x.BoneName.Equals(diagBone, StringComparison.OrdinalIgnoreCase))
+                    If bbb IsNot Nothing AndAlso bbb.HasWeightScale Then
+                        NpcPreviewLog.Log(String.Format(System.Globalization.CultureInfo.InvariantCulture,
+                            "    [BW-RAW-RECORD] bone='{0}' Thin=({1:F4},{2:F4},{3:F4}) Musc=({4:F4},{5:F4},{6:F4}) Fat=({7:F4},{8:F4},{9:F4})",
+                            diagBone,
+                            bbb.ThinX, bbb.ThinY, bbb.ThinZ,
+                            bbb.MuscularX, bbb.MuscularY, bbb.MuscularZ,
+                            bbb.FatX, bbb.FatY, bbb.FatZ))
+                    End If
+                Next
                 If bd.Bones.Count > 0 Then Return (wt, wm, wf, bd, npcData.BodyMorphRegionValues, armaDeltas, nnamX, nnamY)
                 Exit For
             End If
@@ -4301,19 +4653,28 @@ Public Class MainForm
     ''' ResolveMrsvRegion to map bones to MRSV regions. RenderCurrentStateAsync primes the
     ''' SkeletonInstance via LoadFromKey + PrepareForShapes + MergeAdditionalSkeleton before
     ''' invoking this helper.</summary>
+    ''' <summary>Build the merged pose. <paramref name="armaSculptOverride"/>: when supplied, REPLACES
+    ''' the per-shape ARMA sculpt that would otherwise be resolved from renderData. Pass Nothing for
+    ''' "no sculpt" (base pose used by shapes whose ARMA has no sculpt). Pass a specific dict (per ARMA)
+    ''' when building the pose for a specific armor's skeleton clone — the per-skeleton-per-ARMA flow.</summary>
     Private Function BuildMergedNpcPose(state As NPCVisualState, renderData As PreviewResolutionResult,
                                         faceMorphsEnabled As Boolean,
                                         bodyWeightEnabled As Boolean,
-                                        skeleton As SkeletonInstance) As Poses_class
+                                        skeleton As SkeletonInstance,
+                                        Optional armaSculptOverride As Dictionary(Of String, System.Numerics.Vector3) = Nothing) As Poses_class
         Dim racePose = BuildRaceHeightPose(GetRaceHeight(state))
 
         Dim bwPose As Poses_class = Nothing
         If bodyWeightEnabled Then
             Dim bwData = ResolveBodyWeightData(state, renderData)
             If bwData.GenderBlock IsNot Nothing Then
+                ' ARMA sculpt override (if provided) is the per-skeleton-per-ARMA sculpt source.
+                ' Sculpt formula hardcoded H3 multiplicative (closure plan P0 — A REVISAR).
+                Dim sculpt = If(armaSculptOverride, New Dictionary(Of String, System.Numerics.Vector3)(StringComparer.OrdinalIgnoreCase))
                 bwPose = BuildBodyWeightPose(bwData.Wt, bwData.Wm, bwData.Wf,
-                                             bwData.GenderBlock, bwData.MrsvValues, bwData.ArmaDeltas,
-                                             bwData.NnamX, bwData.NnamY, skeleton)
+                                             bwData.GenderBlock, bwData.MrsvValues, sculpt,
+                                             bwData.NnamX, bwData.NnamY,
+                                             skeleton)
             End If
         End If
 
@@ -4437,6 +4798,13 @@ Public Class MainForm
             Next
         End If
 
+        Dim inv = CultureInfo.InvariantCulture
+        NpcPreviewLog.Log(String.Format(inv,
+            "  [BW-LAYERS-HEADER] MWGT=(thin={0:F3},musc={1:F3},fat={2:F3}) NNAM=({3:F4},{4:F4}) MRSV.count={5} ARMA-deltas.count={6} formula=H3_multiplicative",
+            wt, wm, wf, nnamX, nnamY,
+            If(mrsvValues Is Nothing, 0, mrsvValues.Count),
+            If(armaDeltas Is Nothing, 0, armaDeltas.Count)))
+
         For Each boneName In allBoneNames
             Dim skelBone As HierarchiBone_class = Nothing
             Dim restY As Single = 0.0F, restZ As Single = 0.0F
@@ -4451,20 +4819,44 @@ Public Class MainForm
                 Continue For
             End If
 
+            ' Diagnostic 2026-04-26: dump bind rotation for bones with ARMA delta to determine
+            ' if frame-of-application could be the issue. (Análisis general de pre vs post bind
+            ' usa el RBIND-DUMP en MainForm post BuildSkeletonInstance, que es más amplio.)
+            If armaDeltas IsNot Nothing AndAlso armaDeltas.ContainsKey(boneName) Then
+                Dim r = skelBone.OriginalLocaLTransform.Rotation
+                Dim isIdentity = Math.Abs(r.M11 - 1.0F) < 0.001F AndAlso Math.Abs(r.M22 - 1.0F) < 0.001F AndAlso
+                                 Math.Abs(r.M33 - 1.0F) < 0.001F AndAlso Math.Abs(r.M12) < 0.001F AndAlso
+                                 Math.Abs(r.M13) < 0.001F AndAlso Math.Abs(r.M21) < 0.001F AndAlso
+                                 Math.Abs(r.M23) < 0.001F AndAlso Math.Abs(r.M31) < 0.001F AndAlso
+                                 Math.Abs(r.M32) < 0.001F
+                NpcPreviewLog.Log(String.Format(inv,
+                    "    [BW-RBIND] bone='{0}' identity={1} M11={2:F4} M12={3:F4} M13={4:F4} M21={5:F4} M22={6:F4} M23={7:F4} M31={8:F4} M32={9:F4} M33={10:F4}",
+                    boneName, isIdentity, r.M11, r.M12, r.M13, r.M21, r.M22, r.M23, r.M31, r.M32, r.M33))
+            End If
+
+            ' Per-layer detailed logging (added 2026-04-26 for Fase 2 body-morph audit).
+            ' Captures snapshots after each layer + computes the three ARMA hypotheses in
+            ' parallel without recompiling, so the user can A/B them against in-game screenshots.
+            ' All logs use InvariantCulture so float decimals use '.' regardless of OS locale.
+            Dim bone As RACE_BoneData = Nothing
+            boneLookup.TryGetValue(boneName, bone)
+
+            ' --- Layer 0: identity ---
+            Dim sx As Single = 1.0F, sy As Single = 1.0F, sz As Single = 1.0F
+
+            ' --- Layer 1: RACE.BSMS WeightScale (3 archetype interpolation) ---
             ' RACE.BSMS WeightScale = 9 floats = 3 × Vec3 (Thin, Musc, Fat) × (X, Y, Z).
             ' Parser reads all 9 (RecordParsers.vb:1216-1226). Previously only Y/Z were consumed
             ' here; X was silently discarded. Fixed 2026-04-19 per audit — ignored X caused the
             ' systematic X-dominant residual vs CK FaceGen bake at shared neck bones.
-            Dim sx As Single = 1.0F, sy As Single = 1.0F, sz As Single = 1.0F
-            Dim bone As RACE_BoneData = Nothing
-            boneLookup.TryGetValue(boneName, bone)
-
             If bone IsNot Nothing AndAlso bone.HasWeightScale Then
                 sx = bone.ThinX * wt + bone.MuscularX * wm + bone.FatX * wf
                 sy = bone.ThinY * wt + bone.MuscularY * wm + bone.FatY * wf
                 sz = bone.ThinZ * wt + bone.MuscularZ * wm + bone.FatZ * wf
             End If
+            Dim sxR As Single = sx, syR As Single = sy, szR As Single = sz   ' snapshot post-RACE
 
+            ' --- Layer 2: NNAM (multiplicative neck-fat adjust) — H-NNAM-1 ---
             ' NNAM ("Neck Fat Adjustments Scale" — RACE.NNAM inside the head block, xEdit spec
             ' wbDefinitionsFO4.pas:11639/11657). HIPÓTESIS H1 2026-04-19: multiplicative neck-fat
             ' modifier on RACE-declared weight-scale bones whose name contains "Neck"; driven
@@ -4474,20 +4866,24 @@ Public Class MainForm
             ' head-mesh neck verts via bones shared between head and body skin (Neck_skin,
             ' Neck_Low_skin, Neck1_skin). Validate with harness [BW-only] RMS Científica < 0.10
             ' before promoting out of hypothesis.
+            Dim nnamApplied As Boolean = False
             If bone IsNot Nothing AndAlso bone.HasWeightScale _
                AndAlso boneName.IndexOf("Neck", StringComparison.OrdinalIgnoreCase) >= 0 _
                AndAlso (Math.Abs(nnamX) > Single.Epsilon OrElse Math.Abs(nnamY) > Single.Epsilon) Then
-                Dim sxBefore As Single = sx
-                Dim syBefore As Single = sy
                 sx *= (1.0F + nnamX * wf)
                 sy *= (1.0F + nnamY * wf)
-                NpcPreviewLog.Log($"    [NNAM-APPLY] bone='{boneName}' fat={wf:F3} nnam=({nnamX:F4},{nnamY:F4}) sx {sxBefore:F4}→{sx:F4} sy {syBefore:F4}→{sy:F4}")
+                nnamApplied = True
             End If
+            Dim sxN As Single = sx, syN As Single = sy, szN As Single = sz   ' snapshot post-NNAM
 
+            ' --- Layer 3: MRSV (Range Modifier) — interpretación H-MRSV-2 (canal interpolado) ---
             ' BSMS RangeModifier spec has only Min/Max Y and Z (no X) — per
             ' wbDefinitionsFO4.pas:5929. MRSV does NOT contribute to X.
+            ' Hipótesis alternativa H-MRSV-1 (clamp puro) NO implementada — discriminar via
+            ' screenshot in-game con NPC que tenga MWGT con sy_raw > 1+MaxY (RACE pide más que MaxY).
             Dim region As Integer = -1
             Dim slider As Single = 0.0F
+            Dim mrsvApplied As Boolean = False
             If bone IsNot Nothing AndAlso bone.HasRangeModifier AndAlso mrsvValues IsNot Nothing AndAlso mrsvValues.Count >= 5 Then
                 region = ResolveMrsvRegion(skelBone)
                 If region >= 0 AndAlso region < mrsvValues.Count Then
@@ -4499,20 +4895,18 @@ Public Class MainForm
                         sy += (-slider) * bone.MinY
                         sz += (-slider) * bone.MinZ
                     End If
+                    mrsvApplied = True
                 End If
             End If
+            Dim sxM As Single = sx, syM As Single = sy, szM As Single = sz   ' snapshot post-MRSV (= input a ARMA)
 
-            ' TEST: ARMA as AMPLIFIER of RACE delta from identity. User observation: arms
-            ' thinner in CK (RACE shrinks arms), hips wider in CK (RACE expands butt); all
-            ' ARMA values positive. A single-sign addition/subtraction cannot explain both
-            ' directions. AMPLIFYING race's own delta does:
-            '   sy = 1 + (race_sy - 1) * (1 + arma.Y)
-            ' Properties:
-            '  - arma.Y = 0  → sy = race_sy (identity multiplier).
-            '  - race_sy = 1 → sy = 1 (no amplification when neutral).
-            '  - race shrinks + positive arma → stronger shrink (arms thinner).
-            '  - race expands + positive arma → stronger expand (butt wider).
-            ' X axis added 2026-04-19 for symmetry with RACE.BSMS's 3-axis WeightScale.
+            ' --- Layer 4: ARMA Bone Scale Delta — H3 multiplicative HARDCODED (A REVISAR) ---
+            ' Fórmula: s = race_s · (1 + arma_d). Aplicada componente a componente.
+            ' Conceptualmente la más limpia (cumple las 3 invariantes naturales) pero NO
+            ' confirmada experimentalmente vs CK ground truth. Closure plan P0.
+            ' 17 fórmulas alternativas + 2 swap conventions + worldFrame opt-in se probaron
+            ' 2026-04-29 vs Gunner — ninguna resolvió el clip motivador, que terminó siendo
+            ' por OMODs no renderizados. Dropdown experimental eliminado tras esa sesión.
             Dim armaDX As Single = 0.0F, armaDY As Single = 0.0F, armaDZ As Single = 0.0F
             If armaDeltas IsNot Nothing Then
                 Dim d As System.Numerics.Vector3
@@ -4520,10 +4914,26 @@ Public Class MainForm
                     armaDX = d.X
                     armaDY = d.Y
                     armaDZ = d.Z
-                    sx = 1.0F + (sx - 1.0F) * (1.0F + armaDX)
-                    sy = 1.0F + (sy - 1.0F) * (1.0F + armaDY)
-                    sz = 1.0F + (sz - 1.0F) * (1.0F + armaDZ)
+                    sx = sxM * (1.0F + armaDX)
+                    sy = syM * (1.0F + armaDY)
+                    sz = szM * (1.0F + armaDZ)
                 End If
+            End If
+            Dim sxA As Single = sx, syA As Single = sy, szA As Single = sz   ' snapshot post-ARMA (final)
+
+            ' Per-bone detailed log only when something happened in any layer.
+            Dim layersTouched = (bone IsNot Nothing AndAlso bone.HasWeightScale) OrElse
+                                nnamApplied OrElse mrsvApplied OrElse
+                                (Math.Abs(armaDX) > Single.Epsilon OrElse Math.Abs(armaDY) > Single.Epsilon OrElse Math.Abs(armaDZ) > Single.Epsilon)
+            If layersTouched Then
+                NpcPreviewLog.Log(String.Format(inv,
+                    "    [BW-LAYER] bone='{0}' RACE=({1:F4},{2:F4},{3:F4}) NNAM={4}->({5:F4},{6:F4},{7:F4}) MRSV(reg={8},sl={9:F3})->({10:F4},{11:F4},{12:F4}) ARMA_d=({13:F4},{14:F4},{15:F4}) FINAL=({16:F4},{17:F4},{18:F4})",
+                    boneName,
+                    sxR, syR, szR,
+                    If(nnamApplied, "Y", "N"), sxN, syN, szN,
+                    region, slider, sxM, syM, szM,
+                    armaDX, armaDY, armaDZ,
+                    sxA, syA, szA))
             End If
 
             If Math.Abs(sx - 1.0F) < Eps AndAlso Math.Abs(sy - 1.0F) < Eps AndAlso Math.Abs(sz - 1.0F) < Eps Then
@@ -4545,7 +4955,7 @@ Public Class MainForm
                              "null/empty",
                              String.Join(",", mrsvValues.Select(Function(v) v.ToString("F3"))))
         Dim armaCount = If(armaDeltas Is Nothing, 0, armaDeltas.Count)
-        NpcPreviewLog.Log($"  [BODY-WEIGHT] MWGT=({wt:F3},{wm:F3},{wf:F3}) NNAM=({nnamX:F4},{nnamY:F4}) MRSV=[{mrsvStr}] ARMA-deltas={armaCount} bones: union={allBoneNames.Count} affected={affected} skipped=[noSkel={skippedNoSkel} negScale={skippedNegligibleScale}]")
+        NpcPreviewLog.Log($"  [BODY-WEIGHT] MWGT=({wt:F3},{wm:F3},{wf:F3}) NNAM=({nnamX:F4},{nnamY:F4}) MRSV=[{mrsvStr}] ARMA-deltas={armaCount} (formula=H3_multiplicative) bones: union={allBoneNames.Count} affected={affected} skipped=[noSkel={skippedNoSkel} negScale={skippedNegligibleScale}]")
         If unmatched.Count > 0 Then
             NpcPreviewLog.Log($"    [BW-UNMATCHED-BONES] {String.Join(", ", unmatched)}")
         End If
@@ -4558,6 +4968,20 @@ Public Class MainForm
 
         If affected = 0 Then Return Nothing
         Return pose
+    End Function
+
+    ''' <summary>Builds a fresh per-NPC SkeletonInstance and applies all the merge steps that the
+    ''' multi-skeleton-per-ARMA flow needs (load + cloth-bone + robot extension + face-bone merge).
+    ''' Caller is responsible for ApplyPose afterwards. Used to build the base skeleton + one clone
+    ''' per ARMA with sculpt.</summary>
+    Private Function BuildSkeletonInstance(state As NPCVisualState, renderData As PreviewResolutionResult,
+                                           faceSkelBytes As Byte()) As SkeletonInstance
+        Dim s As New SkeletonInstance()
+        s.LoadFromKey(renderData.SkeletonKey)
+        s.PrepareForShapes(renderData.Shapes)
+        MergeRobotExtendedSkeletonsIfRobot(state, s)
+        If faceSkelBytes IsNot Nothing Then s.MergeAdditionalSkeleton(faceSkelBytes)
+        Return s
     End Function
 
     Private Sub UpdateAssetLoadProgress(info As (Stepn As String, Value As Integer, Max As Integer))
@@ -4639,29 +5063,114 @@ Public Class MainForm
             NpcPreviewLog.Log($"    WIN [{c.Kind}] type={c.HeadPartType} slot={c.SlotMask:X8} key={c.DictKey}")
         Next
 
-        ' Aggregate per-bone ARMA BSMS deltas across only the winning candidates so covered/hidden
-        ' ARMAs don't contribute. This is what BuildBodyWeightPose reads to shape the outfit.
+        ' Diagnostic toggles "Render armor" / "Render only armor" se aplican vía RenderHide en
+        ' el draw loop (sin re-resolver candidates). Cada shape se categoriza a la salida del
+        ' resolver y los handlers de los CheckBoxes setean RenderHide según categoría + estado
+        ' de los toggles. Ver ApplyRenderToggleVisibility.
+
+        ' Sculpt source identification (rule per user 2026-04-27):
+        '   - Underarmor source = ARMA con slot 33 (BODY) AND HasSculptData. Si existe, su SCLP
+        '     aplica a TODOS los over-armor shapes (excepto los con NoUnderarmorScaling=True).
+        '   - Si no hay slot-33 source: cada [U] piece (slots 36-40) provee SCLP para SU [A]
+        '     correspondiente (37→42 LArm, 38→43 RArm, 39→44 LLeg, 40→45 RLeg, 36→41 Torso).
+        '     Mapping de bit: A_bit = U_bit + 5.
+        '   - El underarmor NO se aplica a sí mismo (su mesh ni el body desnudo bajo él).
+        Const SLOT_BIT_BODY As Integer = 3
+        Const U_BIT_FIRST As Integer = 6   ' U Torso
+        Const U_BIT_LAST As Integer = 10   ' U RLeg
+        Const A_BIT_FIRST As Integer = 11  ' A Torso
+        Const A_BIT_LAST As Integer = 15   ' A RLeg
+        Dim BODY_MASK As UInteger = 1UI << SLOT_BIT_BODY
+        Dim U_MASK As UInteger = 0UI
+        For b = U_BIT_FIRST To U_BIT_LAST
+            U_MASK = U_MASK Or (1UI << b)
+        Next
+
+        Dim globalSculptSource As MeshCandidate = Nothing
+        Dim uSculptSourceByBit As New Dictionary(Of Integer, MeshCandidate)
         For Each c In selectedCandidates
-            If c.ArmaBoneScaleDeltas Is Nothing Then Continue For
-            For Each bd In c.ArmaBoneScaleDeltas
-                Dim delta = New System.Numerics.Vector3(bd.DeltaX, bd.DeltaY, bd.DeltaZ)
-                Dim existing As System.Numerics.Vector3
-                If result.ArmaBoneScaleDeltas.TryGetValue(bd.BoneName, existing) Then
-                    result.ArmaBoneScaleDeltas(bd.BoneName) = existing + delta
-                Else
-                    result.ArmaBoneScaleDeltas(bd.BoneName) = delta
+            If c.ArmaBoneScaleDeltas Is Nothing OrElse c.ArmaBoneScaleDeltas.Count = 0 Then Continue For
+            If (c.SlotMask And BODY_MASK) <> 0 Then
+                If globalSculptSource Is Nothing Then globalSculptSource = c
+            End If
+            For b = U_BIT_FIRST To U_BIT_LAST
+                If (c.SlotMask And (1UI << b)) <> 0 Then
+                    If Not uSculptSourceByBit.ContainsKey(b) Then uSculptSourceByBit(b) = c
                 End If
             Next
         Next
-        If result.ArmaBoneScaleDeltas.Count > 0 Then
-            NpcPreviewLog.Log($"  [ARMA-BSMS-AGG] {result.ArmaBoneScaleDeltas.Count} unique bones with aggregated delta (sum across winning ARMAs)")
+        If globalSculptSource IsNot Nothing Then
+            NpcPreviewLog.Log($"  [SCULPT-SOURCE] global (slot 33 BODY): ARMA {globalSculptSource.ArmorAddonFormID:X8} with {globalSculptSource.ArmaBoneScaleDeltas.Count} bone deltas")
+        ElseIf uSculptSourceByBit.Count > 0 Then
+            For Each kv In uSculptSourceByBit
+                NpcPreviewLog.Log($"  [SCULPT-SOURCE] [U] bit {kv.Key} (slot {kv.Key + 24}): ARMA {kv.Value.ArmorAddonFormID:X8} with {kv.Value.ArmaBoneScaleDeltas.Count} bone deltas")
+            Next
+        Else
+            NpcPreviewLog.Log($"  [SCULPT-SOURCE] none — no shape will receive ARMA sculpt scaling")
         End If
 
         Dim loadedNifs As New Dictionary(Of String, Nifcontent_Class_Manolo)(StringComparer.OrdinalIgnoreCase)
 
-        For Each candidate In selectedCandidates
-            LoadNifShapes(candidate, previewVariant.State, loadedNifs, result)
+        ' Compute the over-armor [A] slot mask = bits 11..15.
+        Dim A_MASK As UInteger = 0UI
+        For b = A_BIT_FIRST To A_BIT_LAST
+            A_MASK = A_MASK Or (1UI << b)
         Next
+
+        For Each candidate In selectedCandidates
+            ' SCULPT applies ONLY to over-armor [A] consumers, never to the source itself nor
+            ' to anything else. The engine's two-skeleton model:
+            '   - Skel "base" (RACE BSMS only): underarmor source, body skin, hands, head parts.
+            '   - Skel "sculpted" (RACE BSMS + SCLP amplifier): pure [A] over-armor pieces.
+            ' A candidate is a pure [A] consumer iff it declares at least one [A] bit (11-15)
+            ' AND declares neither BODY (bit 3) nor any [U] bit (6-10). Otherwise it is the
+            ' source itself (e.g. Armor_GunnerGuard_UnderArmor with slot 0xC7F8 = bits 3+7+8+14+15).
+            Dim sculptToApply As List(Of ARMA_BoneScaleDelta) = Nothing
+            Dim sourceFormID As UInteger = 0
+
+            Dim isPureOverArmor = (candidate.SlotMask And A_MASK) <> 0 AndAlso
+                                  (candidate.SlotMask And BODY_MASK) = 0 AndAlso
+                                  (candidate.SlotMask And U_MASK) = 0
+            If isPureOverArmor Then
+                ' Check NoUnderarmorScaling flag (opt-out from receiving scaling).
+                Dim noUnderArmorFlag As Boolean = False
+                If candidate.ArmorAddonFormID <> 0UI Then
+                    Dim aaRec = _pluginManager.GetRecord(candidate.ArmorAddonFormID)
+                    If aaRec IsNot Nothing AndAlso aaRec.Header.Signature = "ARMA" Then
+                        Dim aa = RecordParsers.ParseARMA(aaRec, _pluginManager)
+                        noUnderArmorFlag = aa.NoUnderarmorScaling
+                    End If
+                End If
+
+                If Not noUnderArmorFlag Then
+                    ' Precedence: [U] specific FIRST. Only if no [U] equivalent exists, fall back
+                    ' to slot 33 BODY global source. Use ONE source only (first [A] bit match).
+                    For ab = A_BIT_FIRST To A_BIT_LAST
+                        If (candidate.SlotMask And (1UI << ab)) <> 0 Then
+                            Dim ub = ab - 5
+                            Dim uSrc As MeshCandidate = Nothing
+                            If uSculptSourceByBit.TryGetValue(ub, uSrc) Then
+                                sculptToApply = uSrc.ArmaBoneScaleDeltas
+                                sourceFormID = uSrc.ArmorAddonFormID
+                                Exit For
+                            End If
+                        End If
+                    Next
+                    ' If no [U]-specific source for any covered [A] slot, fall back to slot 33.
+                    If sculptToApply Is Nothing AndAlso globalSculptSource IsNot Nothing Then
+                        sculptToApply = globalSculptSource.ArmaBoneScaleDeltas
+                        sourceFormID = globalSculptSource.ArmorAddonFormID
+                    End If
+                End If
+            End If
+            ' Else: candidate is the underarmor source itself (BODY/[U] declared) or unrelated
+            ' to the [U]→[A] system (hands, head, accessories) → renders on the base skeleton,
+            ' never sculpted.
+
+            LoadNifShapes(candidate, previewVariant.State, loadedNifs, result, sculptToApply, sourceFormID)
+        Next
+
+        NpcPreviewLog.Log($"  [ARMA-SCULPT-MAP] {result.ShapeArmaSculpt.Count}/{result.Shapes.Count} shapes will receive sculpt scaling")
 
         NpcPreviewLog.Log($"  Total shapes loaded: {result.Shapes.Count}")
         DeduplicateWarnings(result.Warnings)
@@ -4695,6 +5204,9 @@ Public Class MainForm
         }
         clone.HeadPartFormIDs.AddRange(state.HeadPartFormIDs)
         clone.LoadoutArmorFormIDs.AddRange(state.LoadoutArmorFormIDs)
+        For Each kv In state.LoadoutArmorContextKeywords
+            clone.LoadoutArmorContextKeywords(kv.Key) = New List(Of UInteger)(kv.Value)
+        Next
         clone.ObjectTemplateOMODFormIDs.AddRange(state.ObjectTemplateOMODFormIDs)
         Return clone
     End Function
@@ -5119,7 +5631,70 @@ Public Class MainForm
             NpcPreviewLog.Log($"    [ARMO-RACE-INFO] primary race={armo.RaceFormID:X8} ≠ npc race={state.RaceFormID:X8} — continuing; per-ARMA match will decide")
         End If
 
-        For Each armaFormID In armo.ArmorAddonFormIDs
+        ' Multi-addon resolution: ARMOs con varios `Models` (ej. Combat Torso = Lite/Mid/Heavy)
+        ' eligen UN addon vía la cadena: LVLI.LLKC keywords → ARMO.OBTS combination keyword match
+        ' → OMOD Property AddonIndex (idx 7 wbArmorPropertyEnum). Fallback a BaseAddonIndex (FNAM)
+        ' o índice 0 si nada matchea.
+        ' Spec: wbDefinitionsFO4.pas:6187-6192 (Models), 5867 (OBTS), 5710 (AddonIndex property),
+        ' 1192-1245 (wbOBTEAddonIndexToStr — flujo del engine).
+        ' AddonIndex resolution. El INDX en el array Models de la ARMO no es índice único —
+        ' es etiqueta de "grupo de addons que se cargan juntos". El engine resuelve UN
+        ' AddonIndex efectivo (default 0; override via OMOD AddonIndex Property cuando OBTS
+        ' combination matchea contexto de keywords) y carga TODOS los Models cuyo INDX coincide.
+        '   - Sturgess (Abbot): efectiveIdx=0, dos Models con INDX=0 (clothes+gloves) → carga ambos.
+        '   - Gunner Combat Torso: keyword Heavy → OMOD AddonIndex=2 → carga el grupo INDX=2.
+        Dim addonOrder As List(Of UInteger)
+        If armo.ArmorAddons.Count >= 1 Then
+            Dim ctxKeywords As List(Of UInteger) = Nothing
+            If state.LoadoutArmorContextKeywords IsNot Nothing Then
+                state.LoadoutArmorContextKeywords.TryGetValue(armoFormID, ctxKeywords)
+            End If
+            For Each entry In armo.ArmorAddons
+                Dim peekRec = _pluginManager.GetRecord(entry.ArmaFormID)
+                If peekRec IsNot Nothing AndAlso peekRec.Header.Signature = "ARMA" Then
+                    Dim peekArma = RecordParsers.ParseARMA(peekRec, _pluginManager)
+                    NpcPreviewLog.Log($"    [ARMO-ADDONS-AVAILABLE] {armo.EditorID} INDX={entry.AddonIndex} FID={entry.ArmaFormID:X8} editorID={peekArma.EditorID} slot={peekArma.SlotMask:X8} maleMesh={peekArma.MaleMeshPath} femaleMesh={peekArma.FemaleMeshPath}")
+                End If
+            Next
+            ' Resolve effective AddonIndex. ResolveEffectiveAddonIndex ahora devuelve Integer? —
+            ' HasValue=True cuando hay OMOD override keyword-driven; sino Nothing → usar
+            ' BaseAddonIndex (FNAM) si está, sino 0 (vanilla default).
+            Dim resolved = ResolveEffectiveAddonIndex(armo, ctxKeywords)
+            Dim effectiveIdx As Integer
+            If resolved.HasValue Then
+                effectiveIdx = resolved.Value
+            ElseIf armo.BaseAddonIndex >= 0 Then
+                effectiveIdx = armo.BaseAddonIndex
+            Else
+                effectiveIdx = 0
+            End If
+
+            ' Take ALL models whose INDX matches the effective AddonIndex (group, not single).
+            addonOrder = New List(Of UInteger)
+            For Each entry In armo.ArmorAddons
+                If CInt(entry.AddonIndex) = effectiveIdx Then
+                    addonOrder.Add(entry.ArmaFormID)
+                End If
+            Next
+            ' Defensive fallback: si el INDX resuelto no existe en los Models (datos malformados
+            ' o keyword-driven INDX que apunta a un grupo no presente), usar todas las entries
+            ' con el menor INDX disponible — no crashear ni dejar el outfit vacío.
+            If addonOrder.Count = 0 Then
+                Dim minIdx As Integer = armo.ArmorAddons.Min(Function(e) CInt(e.AddonIndex))
+                For Each entry In armo.ArmorAddons
+                    If CInt(entry.AddonIndex) = minIdx Then addonOrder.Add(entry.ArmaFormID)
+                Next
+                NpcPreviewLog.Log($"    [ARMO-ADDON-RESOLVE] {armo.EditorID}: effectiveIdx={effectiveIdx} not in Models → fallback minIdx={minIdx} ({addonOrder.Count} entries)")
+            Else
+                Dim ctxStr = If(ctxKeywords Is Nothing OrElse ctxKeywords.Count = 0, "(none)",
+                                String.Join(",", ctxKeywords.Select(Function(k) k.ToString("X8"))))
+                NpcPreviewLog.Log($"    [ARMO-ADDON-RESOLVE] {armo.EditorID}: ctxKeywords=[{ctxStr}] → effectiveIdx={effectiveIdx} → loading {addonOrder.Count} addon(s) from group")
+            End If
+        Else
+            addonOrder = armo.ArmorAddonFormIDs.ToList()
+        End If
+
+        For Each armaFormID In addonOrder
             Dim armaRec = _pluginManager.GetRecord(armaFormID)
             If armaRec Is Nothing OrElse armaRec.Header.Signature <> "ARMA" Then Continue For
 
@@ -5129,7 +5704,7 @@ Public Class MainForm
                 Continue For
             End If
             NpcPreviewLog.Log($"    [ARMA] {arma.EditorID} FID={armaFormID:X8} slot={arma.SlotMask:X8} maleMesh={arma.MaleMeshPath} femaleMesh={arma.FemaleMeshPath} maleTxst={arma.MaleSkinTextureFormID:X8} femaleTxst={arma.FemaleSkinTextureFormID:X8} maleMswp={arma.MaleMaterialSwapFormID:X8} femaleMswp={arma.FemaleMaterialSwapFormID:X8}")
-            NpcPreviewLog.Log($"      [ARMA-FLAGS] {arma.EditorID} NoUnderarmorScaling={arma.NoUnderarmorScaling} HasSculptData={arma.HasSculptData} HiRes1stPerson={arma.HiRes1stPersonOnly} MaleWSFlags=0x{arma.MaleWeightSliderFlags:X2}(enabled={(arma.MaleWeightSliderFlags And 2) <> 0}) FemaleWSFlags=0x{arma.FemaleWeightSliderFlags:X2}(enabled={(arma.FemaleWeightSliderFlags And 2) <> 0})")
+            NpcPreviewLog.Log($"      [ARMA-FLAGS] {arma.EditorID} NoUnderarmorScaling={arma.NoUnderarmorScaling} HasSculptData={arma.HasSculptData} HiRes1stPerson={arma.HiRes1stPersonOnly} MaleWSFlags=0x{arma.MaleWeightSliderFlags:X2}(enabled={(arma.MaleWeightSliderFlags And 2) <> 0}) FemaleWSFlags=0x{arma.FemaleWeightSliderFlags:X2}(enabled={(arma.FemaleWeightSliderFlags And 2) <> 0}) MalePri={arma.MalePriority} FemalePri={arma.FemalePriority}")
 
             ' Pick the gender-matching bone scale block (if any) and log + stash it on the
             ' candidate. Engine-side these per-bone Vec3 deltas are added on top of RACE.BSMS
@@ -5284,18 +5859,113 @@ Public Class MainForm
         End If
         Dim visibleCandidates = candidates.Where(Function(c) Not c.Hide).ToList()
 
-        ' First pass: resolve slotted candidates (outfit wins over skin on same slot)
-        Dim occupiedSlots As UInteger = 0UI
-        Dim slottedCandidates = visibleCandidates.Where(Function(c) c.SlotMask <> 0UI).
-            OrderByDescending(Function(c) CandidateKindRank(c.Kind)).
-            ThenByDescending(Function(c) c.Priority).
-            ThenBy(Function(c) c.Order)
+        ' First pass: resolve slotted candidates.
+        ' Per FO4 biped slot spec (wbDefinitionsFO4.pas:3745-3778): slots [U] 36-40 (bits 6-10)
+        ' and [A] 41-45 (bits 11-15) are separate layers designed to coexist — the underarmor
+        ' declares bits the over-armor pieces partially overlap.
+        '
+        ' Regla "extended underarmor" (per usuario 2026-04-29): un candidate que declara BODY
+        ' (bit 3) o algún bit [U] (6-10) Y simultáneamente algún bit [A] (11-15) es un underarmor
+        ' "extendido" cuya mesh cubre los slots [A] declarados. Su geometría incluye piernas /
+        ' brazos / torso. NO se puede coexistir con un over-armor [A] puro que reclame los mismos
+        ' bits [A] — produciría dos geometrías superpuestas (clip visible). El extended underarmor
+        ' RESERVA sus bits [A]: cualquier candidate puro [A] que declare bits ya reservados
+        ' se descarta entero.
+        '
+        ' Caso DN061_LvlGunnerBoss (Gunner): AA_DCGuard_UnderArmor declara slot mask 0xC7F8 =
+        ' BODY+[U]LArm+[U]RArm+[A]LLeg+[A]RLeg. Reserva bits 14, 15. Las combat legs (slot 0x4000
+        ' / 0x8000) declaran bits 14/15 → se descartan. Las combat torso/arm (bits 11, 12) NO
+        ' tocan los reservados → entran normalmente.
+        Const BODY_BIT As Integer = 3
+        Dim U_MASK_RES As UInteger = 0UI
+        For b = 6 To 10
+            U_MASK_RES = U_MASK_RES Or (1UI << b)
+        Next
+        Dim A_MASK_RES As UInteger = 0UI
+        For b = 11 To 15
+            A_MASK_RES = A_MASK_RES Or (1UI << b)
+        Next
+        Dim BODY_MASK_RES As UInteger = 1UI << BODY_BIT
 
-        For Each candidate In slottedCandidates
-            If (candidate.SlotMask And occupiedSlots) <> 0UI Then Continue For
-            occupiedSlots = occupiedSlots Or candidate.SlotMask
+        Dim slottedCandidates = visibleCandidates.Where(Function(c) c.SlotMask <> 0UI).ToList()
+
+        ' Pasada 1a — extended underarmors ([U]+[A] o BODY+[A] en la misma pieza).
+        ' Excepción preservada: el engine en estos casos hace que el [A] del extended underarmor
+        ' "gane" sobre cualquier over-armor puro [A] que pise sus bits — caso Bridget DCGuard
+        ' UnderArmor (slot 0xC7F8 BODY+[U]LArm+[U]RArm+[A]LLeg+[A]RLeg) descarta a las combat legs
+        ' puras (slot 0x4000/0x8000) que pisan sus bits [A] reservados. Esto NO es engine vanilla
+        ' standard — es un patrón observado en Bethesda donde la geometría del extended ya cubre
+        ' las piernas y poner un combat-leg encima causa clipping. Lo preservamos como regla
+        ' explícita per usuario 2026-04-29.
+        '
+        ' Bits cubiertos por extended underarmors quedan "blindados" para la pasada 1b: ningún
+        ' otro candidate puede desplazarlos. Esto los mantiene como ganadores aunque la pasada
+        ' 1b corra después con regla last-wins.
+        Dim extendedUnderarmors = slottedCandidates.Where(Function(c)
+                                                              Dim hasUnderlayer = (c.SlotMask And BODY_MASK_RES) <> 0UI OrElse (c.SlotMask And U_MASK_RES) <> 0UI
+                                                              Dim hasAlayer = (c.SlotMask And A_MASK_RES) <> 0UI
+                                                              Return hasUnderlayer AndAlso hasAlayer
+                                                          End Function).
+                                                       OrderBy(Function(c) c.Order).
+                                                       ToList()
+
+        Dim occupiedSlots As UInteger = 0UI
+        Dim reservedAbits As UInteger = 0UI
+        Dim shieldedSlots As UInteger = 0UI ' bits "no desplazables" por la pasada 1b
+
+        For Each candidate In extendedUnderarmors
+            Dim freeBits = candidate.SlotMask And Not occupiedSlots
+            If freeBits = 0UI Then Continue For
+            occupiedSlots = occupiedSlots Or freeBits
+            shieldedSlots = shieldedSlots Or candidate.SlotMask
+            reservedAbits = reservedAbits Or (candidate.SlotMask And A_MASK_RES)
             selected.Add(candidate)
         Next
+
+        If reservedAbits <> 0UI Then
+            NpcPreviewLog.Log($"  [EXTENDED-UNDERARMOR] reserved [A] bits: 0x{reservedAbits:X4} ({extendedUnderarmors.Count} extended underarmors)")
+        End If
+
+        ' Pasada 1b — atomic mutex por any-bit overlap, last-equipped wins.
+        ' Regla canónica del engine Bethesda confirmada en research 2026-04-29: cuando dos piezas
+        ' chocan en CUALQUIER bit del slot mask, la pieza nueva desplaza a la vieja entera (no
+        ' parcial). Cita: "if you have a vault suit equipped and equip something else that uses
+        ' the same right arm slot, the vault suit will be unequipped because the new item bumps
+        ' the previous outfit off". Implementación: recorremos en orden inverso (Order desc =
+        ' último OTFT.INAM primero) y aplicamos mutex; el primero que reclama un bit lo gana.
+        '
+        ' Skin sigue siendo mutex atómico para BODY (su geometría es el body completo, no se
+        ' fragmenta). Outfits ahora también son atómicos: si CUALQUIER bit choca con bits ya
+        ' ganados, descartado entero — no más "claim free bits".
+        Dim pass1bCandidates = slottedCandidates.Where(Function(c) Not extendedUnderarmors.Contains(c)).
+                                                  OrderByDescending(Function(c) c.Order).
+                                                  ToList()
+
+        Dim acceptedReverse As New List(Of MeshCandidate)
+        For Each candidate In pass1bCandidates
+            ' Bits [A] reservados por extended underarmors → descarte entero (excepción Bridget).
+            If (candidate.SlotMask And reservedAbits) <> 0UI Then
+                NpcPreviewLog.Log($"  [EXTENDED-UNDERARMOR-DISCARD] candidate slot=0x{candidate.SlotMask:X8} conflicts with reserved [A] bits → dropped (key={candidate.DictKey})")
+                Continue For
+            End If
+            ' Bits "shielded" por extended underarmors → tampoco desplazables.
+            If (candidate.SlotMask And shieldedSlots) <> 0UI Then
+                NpcPreviewLog.Log($"  [EXTENDED-UNDERARMOR-DISCARD] candidate slot=0x{candidate.SlotMask:X8} conflicts with shielded extended-underarmor bits → dropped (key={candidate.DictKey})")
+                Continue For
+            End If
+            ' Atomic mutex any-bit: si toca un bit ya ocupado → descartado entero.
+            If (candidate.SlotMask And occupiedSlots) <> 0UI Then
+                NpcPreviewLog.Log($"  [ATOMIC-MUTEX-DISCARD] {candidate.Kind} slot=0x{candidate.SlotMask:X8} conflicts with occupied=0x{occupiedSlots:X8} → dropped (key={candidate.DictKey})")
+                Continue For
+            End If
+            occupiedSlots = occupiedSlots Or candidate.SlotMask
+            acceptedReverse.Add(candidate)
+        Next
+
+        ' acceptedReverse está en orden inverso (último OTFT primero). Los append en `selected`
+        ' van en orden cronológico ascendente para que el render dispatch siga el Order natural.
+        acceptedReverse.Reverse()
+        selected.AddRange(acceptedReverse)
 
         ' Third pass: add slotless (head parts), hiding based on occupied biped slots.
         '
@@ -5354,6 +6024,69 @@ Public Class MainForm
         Return recordRaceFormID = npcRaceFormID
     End Function
 
+    ''' <summary>Categoriza un MeshCandidate per los toggles diagnósticos de visibilidad.
+    ''' Usa el slot mask del candidate (de BOD2/BODT) y su Kind. La categoría se mapea a
+    ''' RenderHide en ApplyRenderToggleVisibility según el estado de los CheckBoxes.</summary>
+    Private Shared Function ClassifyShapeCategory(candidate As MeshCandidate) As ShapeRenderCategory
+        If candidate.Kind = MeshCandidateKind.HeadPart Then Return ShapeRenderCategory.HeadPart
+
+        Const BODY_BIT As UInteger = 1UI << 3
+        Dim U_MASK As UInteger = 0UI
+        For b = 6 To 10 : U_MASK = U_MASK Or (1UI << b) : Next
+        Dim A_MASK As UInteger = 0UI
+        For b = 11 To 15 : A_MASK = A_MASK Or (1UI << b) : Next
+        Const HAND_MASK As UInteger = (1UI << 4) Or (1UI << 5)
+
+        Dim slot = candidate.SlotMask
+        Dim touchesBody = (slot And BODY_BIT) <> 0UI
+        Dim touchesU = (slot And U_MASK) <> 0UI
+        Dim touchesA = (slot And A_MASK) <> 0UI
+        Dim touchesHand = (slot And HAND_MASK) <> 0UI
+
+        ' Underarmor: cualquier shape (Skin/Outfit) que toque BODY o [U].
+        If touchesBody OrElse touchesU Then Return ShapeRenderCategory.Underarmor
+        ' Naked hands: Skin con bits hand y sin BODY/[U].
+        If touchesHand AndAlso candidate.Kind = MeshCandidateKind.Skin Then Return ShapeRenderCategory.NakedHands
+        ' Glove de outfit: Outfit con bits hand sin BODY/[U].
+        If touchesHand AndAlso candidate.Kind = MeshCandidateKind.Outfit Then Return ShapeRenderCategory.GloveOutfit
+        ' [A] puro: declara algún bit [A] sin BODY/[U] (ya filtrados arriba).
+        If touchesA Then Return ShapeRenderCategory.ArmorOver
+        ' Resto (helmet slots 0-2, accessories 16+, shapes sin slot, etc.).
+        Return ShapeRenderCategory.Other
+    End Function
+
+    ''' <summary>Aplica RenderHide a cada mesh según su categoría y el estado de los toggles
+    ''' independientes (CheckBoxRenderArmor, CheckBoxRenderUnderarmor). NO re-resuelve candidates
+    ''' ni recarga NIFs — sólo flip del flag y refresh GL.</summary>
+    Private Sub ApplyRenderToggleVisibility()
+        If _previewControl Is Nothing OrElse _previewControl.Model Is Nothing OrElse _lastRenderData Is Nothing Then Return
+        Dim renderArmor = CheckBoxRenderArmor.Checked
+        Dim renderUnderarmor = CheckBoxRenderUnderarmor.Checked
+
+        Dim hidden As Integer = 0
+        Dim shown As Integer = 0
+        For Each mesh In _previewControl.Model.meshes
+            If mesh Is Nothing OrElse mesh.MeshData Is Nothing OrElse mesh.MeshData.Shape Is Nothing Then Continue For
+            Dim shape = mesh.MeshData.Shape
+            Dim cat As ShapeRenderCategory = ShapeRenderCategory.Other
+            _lastRenderData.ShapeCategory.TryGetValue(shape, cat)
+
+            Dim hide As Boolean = False
+            ' Render armor OFF → hide piezas [A] over-armor.
+            If Not renderArmor AndAlso cat = ShapeRenderCategory.ArmorOver Then hide = True
+            ' Render underarmor OFF → hide BODY/[U] underarmors + naked hands (Skin con bits hand).
+            If Not renderUnderarmor AndAlso (cat = ShapeRenderCategory.Underarmor OrElse cat = ShapeRenderCategory.NakedHands) Then hide = True
+
+            shape.RenderHide = hide
+            If hide Then hidden += 1 Else shown += 1
+        Next
+        NpcPreviewLog.Log($"  [VISIBILITY] renderArmor={renderArmor} renderUnderarmor={renderUnderarmor} → shown={shown} hidden={hidden}")
+        ' RefreshRender fuerza repaint inmediato del control GL (Invalidate). InvalidateRender
+        ' va por el pipeline que requiere DirtyFlags y aquí no hay nada dirty — sólo flip de
+        ' RenderHide en shapes existentes que el shader respeta en cada frame.
+        _previewControl.RefreshRender()
+    End Sub
+
     Private Shared Function ArmorAddonMatchesRace(arma As ARMA_Data, npcRaceFormID As UInteger) As Boolean
         If npcRaceFormID = 0UI Then Return True
         If arma.RaceFormID = 0UI Then Return True
@@ -5361,7 +6094,73 @@ Public Class MainForm
         Return arma.AdditionalRaces.Contains(npcRaceFormID)
     End Function
 
-    Private Sub LoadNifShapes(candidate As MeshCandidate, state As NPCVisualState, loadedNifs As Dictionary(Of String, Nifcontent_Class_Manolo), result As PreviewResolutionResult)
+    ''' <summary>Resuelve el AddonIndex selector para una ARMO multi-addon.
+    ''' Devuelve un Integer con el INDX a forzar (e.g. Gunner Heavy = 2), o `Nothing`
+    ''' (= "cargar TODOS los addons compatibles" — comportamiento default del engine).
+    '''
+    ''' El engine vanilla carga TODAS las ARMAs del array Models filtradas por raza/género.
+    ''' La única forma de seleccionar UNA específica es vía OMOD AddonIndex Property (idx 7
+    ''' de wbArmorPropertyEnum) disparada por una OBTS combination cuya Keywords matcheen
+    ''' el contexto (LVLI.LLKC). Si NO hay tal match → cargar todos. Esto distingue:
+    '''   - Caso Sturgess/Wastelander Heavy: ARMO empaqueta torso + gloves (multi-piece set)
+    '''     sin keywords contextuales → cargar todos los addons.
+    '''   - Caso Gunner Combat Torso: keyword `if_tmp_armor_Heavy` → OBTS combo "Pesado" →
+    '''     OMOD `mod_armor_Combat_Torso_Size_C` con AddonIndex Property = 2 → cargar SOLO INDX=2.
+    '''
+    ''' BaseAddonIndex (FNAM byte 2-3) NO se usa como filtro per se — es el "default address"
+    ''' al que apunta el ARMO si nadie lo modifica, pero el engine sigue cargando los demás
+    ''' addons salvo override. Por eso lo ignoramos como selector exclusivo.
+    '''
+    ''' Spec: wbDefinitionsFO4.pas:6187-6192 (Models = INDX+MODL solamente, sin flag de exclusión),
+    ''' :1192-1245 (wbOBTEAddonIndexToStr describe override). Memoria arch_arma_sculpt_rule.md
+    ''' confirma flujo Gunner como caso single-winner via OMOD chain.</summary>
+    Private Function ResolveEffectiveAddonIndex(armo As ARMO_Data, ctxKeywords As List(Of UInteger)) As Integer?
+        ' OBTS combinations override sólo cuando hay keyword match con el contexto.
+        If ctxKeywords Is Nothing OrElse ctxKeywords.Count = 0 OrElse armo.Combinations Is Nothing Then
+            Return Nothing
+        End If
+
+        Dim effectiveIdx As Integer = -1
+        For Each combo In armo.Combinations
+            If combo.Keywords Is Nothing OrElse combo.Keywords.Count = 0 Then Continue For
+            Dim matches = False
+            For Each kw In combo.Keywords
+                If ctxKeywords.Contains(kw) Then
+                    matches = True
+                    Exit For
+                End If
+            Next
+            If Not matches Then Continue For
+
+            ' Layer 1: la OBTS combination misma puede dictar el AddonIndex via su s16
+            ' "Parent Combination Index" (wbDefinitionsFO4.pas:5874). -1 = "no override desde la
+            ' OBTS, dejar que un OMOD include lo decida". ≥0 = la combination fija el AddonIndex.
+            If combo.ParentCombinationIndex >= 0 Then
+                effectiveIdx = combo.ParentCombinationIndex
+                NpcPreviewLog.Log($"    [ARMO-ADDON-RESOLVE] OBTS combination (matched keyword) sets AddonIndex={effectiveIdx} via ParentCombinationIndex")
+            End If
+
+            ' Layer 2: cada OMOD include dentro de la combination puede sobrescribir via su
+            ' AddonIndex Property. Si hay varias, último gana (semántica SET secuencial).
+            For Each omodFid In combo.IncludeOMODFormIDs
+                Dim omodRec = _pluginManager.GetRecord(omodFid)
+                If omodRec Is Nothing OrElse omodRec.Header.Signature <> "OMOD" Then Continue For
+                Dim omod = CraftingRecordParsers.ParseOMOD(omodRec, _pluginManager)
+                Dim override_ = omod.GetAddonIndexOverride()
+                If override_ >= 0 Then
+                    effectiveIdx = override_
+                    NpcPreviewLog.Log($"    [ARMO-ADDON-RESOLVE] OMOD {omod.EditorID} (FID={omodFid:X8}) sets AddonIndex={effectiveIdx}")
+                End If
+            Next
+        Next
+
+        If effectiveIdx >= 0 Then Return effectiveIdx
+        Return Nothing
+    End Function
+
+    Private Sub LoadNifShapes(candidate As MeshCandidate, state As NPCVisualState, loadedNifs As Dictionary(Of String, Nifcontent_Class_Manolo), result As PreviewResolutionResult,
+                              Optional sculptToApply As List(Of ARMA_BoneScaleDelta) = Nothing,
+                              Optional sculptSourceFormID As UInteger = 0)
         Dim dictKey = NormalizeDictionaryKeyWithMeshesPrefix(candidate.DictKey)
         If dictKey = "" Then Return
         If loadedNifs.ContainsKey(dictKey) Then Return
@@ -5380,9 +6179,33 @@ Public Class MainForm
             Dim shapes = NifRenderableShape.FromNif(nif)
             ApplyShapeMaterialOverrides(candidate, state, shapes)
 
+            ' Convert the externally-determined sculpt-to-apply (per the slot-based rule
+            ' computed in ResolvePreviewVariant) to a Dict(boneName -> Vec3). This is NOT the
+            ' candidate's own ArmaBoneScaleDeltas — it's whatever sculpt SOURCE applies to this
+            ' candidate's shapes (could be a slot-33 BODY underarmor's SCLP, a [U] piece's SCLP
+            ' if the shape covers the matching [A] slot, or Nothing if rule says no scaling).
+            Dim armaSculptDict As Dictionary(Of String, System.Numerics.Vector3) = Nothing
+            If sculptToApply IsNot Nothing AndAlso sculptToApply.Count > 0 Then
+                armaSculptDict = New Dictionary(Of String, System.Numerics.Vector3)(StringComparer.OrdinalIgnoreCase)
+                For Each bd In sculptToApply
+                    armaSculptDict(bd.BoneName) = New System.Numerics.Vector3(bd.DeltaX, bd.DeltaY, bd.DeltaZ)
+                Next
+            End If
+
+            ' Compute render category once per candidate (igual para todos sus shapes).
+            Dim category As ShapeRenderCategory = ClassifyShapeCategory(candidate)
+
             ' Track shape -> dict key for TRI lookup, plus explicit HDPT TRI paths if present.
+            ' Also: shape -> sculpt source FormID + shape -> sculpt deltas (for per-skeleton sculpt).
+            ' ShapeArmaFormID is the FormID of the SCULPT SOURCE (not the candidate's own ARMA),
+            ' so that shapes from different candidates pointing to the same source share a skeleton.
             For Each shape In shapes
                 result.MeshDictKeys(shape) = dictKey
+                result.ShapeArmaFormID(shape) = sculptSourceFormID
+                result.ShapeCategory(shape) = category
+                If armaSculptDict IsNot Nothing Then
+                    result.ShapeArmaSculpt(shape) = armaSculptDict
+                End If
                 If candidate.Kind = MeshCandidateKind.HeadPart Then
                     If Not String.IsNullOrEmpty(candidate.ChargenMorphTriPath) Then
                         result.ShapeChargenTriPaths(shape) = candidate.ChargenMorphTriPath
