@@ -2796,7 +2796,36 @@ Public Class MainForm
 
         NpcPreviewLog.LogLazy(Function() $"  [FACETINT] processing {npcData.FaceTintLayers.Count} tint layers for {npcData.EditorID}")
 
-        For Each tl In npcData.FaceTintLayers
+        ' Composite layers in RACE-Group order (the order Options appear in the gender's
+        ' TintTemplateGroups), NOT the ESP raw TETI order on the NPC record. The engine FO4
+        ' applies tints this way at runtime — verified by diffing PiperESPM.json (LM in-game)
+        ' TintOrder against the NPC's ESP order: LM emits the RACE-Group order. SoftLight and
+        ' other non-commutative blend ops give visibly different results when the order changes,
+        ' which is what was producing the "subtle color/alpha differences" the user observed
+        ' between NPC_Manager render and LM in-game.
+        Dim raceTintRank As New Dictionary(Of UShort, Integer)
+        Dim tintGroupsForRender = If(state.IsFemale, race.FemaleTintTemplateGroups, race.MaleTintTemplateGroups)
+        Dim renderRank As Integer = 0
+        For Each grp In tintGroupsForRender
+            For Each o In grp.Options
+                If Not raceTintRank.ContainsKey(o.Index) Then
+                    raceTintRank(o.Index) = renderRank
+                    renderRank += 1
+                End If
+            Next
+        Next
+        Dim orderedLayers = npcData.FaceTintLayers.
+            Select(Function(tl, originalIdx)
+                       Dim r As Integer = Integer.MaxValue
+                       raceTintRank.TryGetValue(tl.Index, r)
+                       Return New With {.Layer = tl, .Rank = r, .Idx = originalIdx}
+                   End Function).
+            OrderBy(Function(x) x.Rank).
+            ThenBy(Function(x) x.Idx).
+            Select(Function(x) x.Layer).
+            ToList()
+
+        For Each tl In orderedLayers
             Dim opt = race.FindTintOption(tl.Index, state.IsFemale)
             Dim rawOptFlagsU = If(opt IsNot Nothing, opt.Flags, CUShort(0))
             Dim rawOptFlagsHex = If(opt IsNot Nothing, $"0x{opt.Flags:X4}", "?")
@@ -2928,11 +2957,18 @@ Public Class MainForm
                 layerInput.G = resolved.Color.G
                 layerInput.B = resolved.Color.B
                 layerInput.BlendOp = CInt(resolved.BlendOp)
-                ' Runtime opacity: NPC.Value (slider) × TTEC.Alpha when preset matched; just NPC.Value on CUSTOM.
-                Dim effectiveOpacity As Single = opacity * resolved.OpacityScale
-                layerInput.Opacity = effectiveOpacity
+                ' Runtime opacity = NPC.Value (slider %) directly. Engine FO4 renders
+                ' palette->color.bgra * (palette->percent / 100) — NO further multiplier from the
+                ' TTEC entry's Alpha field. Verified by diffing case A (Piper vanilla, no overlay,
+                ' TplIdx=0 doesn't match → tplAlpha=1.0 fallback → effOpacity=NPC.Value) vs case B
+                ' (Scara with ColorID-absolute preset, matches TTEC entry pos=12 with Alpha=0.6 →
+                ' previously got effOpacity=NPC.Value × 0.6 → lipsticks visibly washed out). The
+                ' TTEC.Alpha field is editor-side metadata (a UI slider value the author saw when
+                ' picking the preset), NOT a render multiplier. resolved.OpacityScale is still
+                ' computed for the diagnostic log below but no longer applied here.
+                layerInput.Opacity = opacity
                 Dim resolveMode As String = If(resolved.Matched, "PRESET (match TTEC.TemplateIndex)", "CUSTOM (no match — tendRGB + TTEC(1).BlendOp)")
-                NpcPreviewLog.LogLazy(Function() $"      -> Palette resolve: mode={resolveMode} TemplateColorIndex={tl.TemplateColorIndex} tendRGB=({tl.Color.R},{tl.Color.G},{tl.Color.B}) effectiveRGB=({resolved.Color.R},{resolved.Color.G},{resolved.Color.B}) blendOp={resolved.BlendOp}({BlendOpName(resolved.BlendOp)}) opt.TTEB={opt.BlendOperation}({BlendOpName(opt.BlendOperation)}) NPC.Value={opacity:F2} tplAlpha={resolved.OpacityScale:F2} effOpacity={effectiveOpacity:F2}")
+                NpcPreviewLog.LogLazy(Function() $"      -> Palette resolve: mode={resolveMode} TemplateColorIndex={tl.TemplateColorIndex} tendRGB=({tl.Color.R},{tl.Color.G},{tl.Color.B}) effectiveRGB=({resolved.Color.R},{resolved.Color.G},{resolved.Color.B}) blendOp={resolved.BlendOp}({BlendOpName(resolved.BlendOp)}) opt.TTEB={opt.BlendOperation}({BlendOpName(opt.BlendOperation)}) NPC.Value={opacity:F2} tplAlpha={resolved.OpacityScale:F2} (engine ignores tplAlpha) effOpacity={opacity:F2}")
                 If opt IsNot Nothing AndAlso opt.TemplateColors IsNot Nothing AndAlso opt.TemplateColors.Count > 0 Then
                     Dim sb As New System.Text.StringBuilder()
                     For i = 0 To opt.TemplateColors.Count - 1
@@ -3345,18 +3381,19 @@ Public Class MainForm
                         ' resolvedBlendOp stays the option-level fallback. Caller multiplies
                         ' value × 1.0 = value, so the user's chosen intensity is preserved.
                     Else
+                        ' Match found: take BlendOp + Alpha from the template entry, but KEEP
+                        ' tl.Color (TEND RGB) as the rendered color. Verified against LooksMenu
+                        ' in-game behaviour: SavePreset emits both palette->color.bgra (Color) and
+                        ' palette->colorID (ColorID); the engine renders palette->color.bgra
+                        ' directly (see OverlayInterface.cpp:208-213 setting skinTint->kTintColor
+                        ' from npc->skinColor = palette->color). Reading clfm.Color here would
+                        ' override the TEND RGB and round-trip Save→Load loses fidelity: a saved
+                        ' preset with ColorID=1157 (TTEC pos 0 for Tono de piel) would have its
+                        ' rendered color silently swapped from the authored (233,218,216) to the
+                        ' CLFM 000E6E17's (247,239,238). Verified empirically in npc_preview.log.
                         matched = True
                         resolvedBlendOp = tplCol.BlendOperation
                         opacityScale = tplCol.Alpha
-                        If tplCol.ColorFormID <> 0UI AndAlso _pluginManager IsNot Nothing Then
-                            Dim clfmRec = _pluginManager.GetRecord(tplCol.ColorFormID)
-                            If clfmRec IsNot Nothing AndAlso clfmRec.Header.Signature = "CLFM" Then
-                                Dim clfm = RecordParsers.ParseCLFM(clfmRec, _pluginManager)
-                                If clfm IsNot Nothing AndAlso clfm.HasColor Then
-                                    resolvedColor = clfm.Color
-                                End If
-                            End If
-                        End If
                     End If
                 End If
             End If
@@ -5744,7 +5781,8 @@ Public Class MainForm
         Dim own = CreateOwnTraitsState(npc)
         If visited.Contains(formID) Then Return own
 
-        NpcPreviewLog.LogLazy(Function() $"  [TRAITS-CHAIN] {npc.EditorID} [{formID:X8}] flags={npc.TemplateFlags:X4} hasTraitsFlag={HasTemplateFlag(npc.TemplateFlags, NPC_TemplateCategory.Traits)} Female={npc.IsFemale}")
+        Dim acbsOppGender As Boolean = (npc.AcbsFlags And &H80000UI) <> 0UI
+        NpcPreviewLog.LogLazy(Function() $"  [TRAITS-CHAIN] {npc.EditorID} [{formID:X8}] templateFlags={npc.TemplateFlags:X4} hasTraitsFlag={HasTemplateFlag(npc.TemplateFlags, NPC_TemplateCategory.Traits)} Female={npc.IsFemale} AcbsFlags=0x{npc.AcbsFlags:X8} OppositeGenderAnims={acbsOppGender}")
 
         If Not HasTemplateFlag(npc.TemplateFlags, NPC_TemplateCategory.Traits) Then
             NpcPreviewLog.LogLazy(Function() $"  [TRAITS-CHAIN] ? OWN traits (Female={npc.IsFemale})")
@@ -7936,16 +7974,42 @@ Public Class MainForm
         End If
         Dim gender As Byte = If(_currentBaseState.IsFemale, CByte(1), CByte(0))
 
+        ' Snapshot the overlay state *before* the dialog opens so we can roll back on Cancel.
+        ' The dialog drives a live preview via PreviewRequested on every selection change; if the
+        ' user picks Cancel we must restore whatever was applied (or unapplied) prior to opening.
+        Dim hadPriorOverlay As Boolean = _appliedPresets.TryGetValue(npcFormID, Nothing)
+        Dim priorOverlay As LooksmenuLoader.LooksmenuPreset = Nothing
+        _appliedPresets.TryGetValue(npcFormID, priorOverlay)
+
         Dim selected As LooksmenuLoader.LooksmenuPreset = Nothing
+        Dim dialogResult As DialogResult
         Using dlg As New LooksmenuLoad_Form(_pluginManager, _dataPath, gender, raceDisplay)
-            If dlg.ShowDialog(Me) <> DialogResult.OK Then Return
+            AddHandler dlg.PreviewRequested, Sub(s, preset) PreviewLooksmenuOverlay(npcFormID, npc, preset)
+            dialogResult = dlg.ShowDialog(Me)
             selected = dlg.SelectedPreset
         End Using
+
+        If dialogResult <> DialogResult.OK Then
+            ' Cancel / [X] / Esc → restore pre-dialog overlay state and re-render.
+            If hadPriorOverlay Then
+                _appliedPresets(npcFormID) = priorOverlay
+            Else
+                _appliedPresets.Remove(npcFormID)
+            End If
+            Try
+                Dim restoreVersion = Interlocked.Increment(_previewRequestVersion)
+                Await LoadNPCOnDemandAsyncFromExisting(npc, restoreVersion)
+            Catch ex As Exception
+                MessageBox.Show($"Failed to restore preview after cancel: {ex.Message}",
+                                "Load LooksMenu", MessageBoxButtons.OK, MessageBoxIcon.Error)
+            End Try
+            Return
+        End If
+
         If selected Is Nothing Then Return
 
-        Dim previousOverlay As LooksmenuLoader.LooksmenuPreset = Nothing
-        _appliedPresets.TryGetValue(npcFormID, previousOverlay)
-        _appliedPresets(npcFormID) = selected
+        ' OK path: the live preview already left `selected` applied in _appliedPresets and rendered.
+        ' Nothing to re-apply or re-render — just log the commit.
         NpcPreviewLog.LogSeparator($"LOOKSMENU OVERLAY APPLIED to {npc.EditorID} [0x{npc.FormID:X8}]")
         NpcPreviewLog.LogLazy(Function() $"  source: {IO.Path.GetFileName(selected.SourcePath)}")
         NpcPreviewLog.LogLazy(Function() $"  Gender={selected.Gender}  HeadParts={selected.HeadPartFormIDs.Count}  HairColor=0x{selected.HairColorFormID:X8}")
@@ -7975,20 +8039,32 @@ Public Class MainForm
             Next
         End If
 
+    End Sub
+
+    ''' <summary>Live-preview handler invoked by <see cref="LooksmenuLoad_Form.PreviewRequested"/>
+    ''' on every selection change. Applies (or removes) the overlay and triggers a non-blocking
+    ''' re-render. Concurrency-safe via _previewRequestVersion: rapid clicks supersede each other,
+    ''' only the latest survives.</summary>
+    Private Sub PreviewLooksmenuOverlay(npcFormID As UInteger, npc As NPC_Data, preset As LooksmenuLoader.LooksmenuPreset)
+        If preset Is Nothing Then
+            _appliedPresets.Remove(npcFormID)
+        Else
+            _appliedPresets(npcFormID) = preset
+        End If
+        Dim previewVersion = Interlocked.Increment(_previewRequestVersion)
+        ' Fire-and-forget: the Async lambda runs on the UI sync context (LoadNPCOnDemandAsyncFromExisting
+        ' already marshals back to the UI thread for the render). Errors are swallowed silently here —
+        ' the user is mid-selection and a popup would be more disruptive than a stale preview.
+        Dim _unused = PreviewLooksmenuOverlayAsync(npc, previewVersion)
+    End Sub
+
+    Private Async Function PreviewLooksmenuOverlayAsync(npc As NPC_Data, requestVersion As Integer) As Task
         Try
-            Dim requestVersion = Interlocked.Increment(_previewRequestVersion)
             Await LoadNPCOnDemandAsyncFromExisting(npc, requestVersion)
         Catch ex As Exception
-            ' Roll back the overlay if the re-render exploded.
-            If previousOverlay Is Nothing Then
-                _appliedPresets.Remove(npcFormID)
-            Else
-                _appliedPresets(npcFormID) = previousOverlay
-            End If
-            MessageBox.Show($"Failed to render preset: {ex.Message}{vbCrLf}Overlay reverted.",
-                            "Load LooksMenu", MessageBoxButtons.OK, MessageBoxIcon.Error)
+            NpcPreviewLog.LogLazy(Function() $"[PREVIEW-OVERLAY] render failed: {ex.Message}")
         End Try
-    End Sub
+    End Function
 
     ''' <summary>Same flow as <see cref="LoadNPCOnDemandAsync"/> but skipping EnsureAssetDictionary
     ''' (already mounted) — used after applying / removing an overlay to re-resolve from scratch
@@ -8233,10 +8309,15 @@ Public Class MainForm
         preset.SourcePath = $"<clipboard from {raw.EditorID}>"
         preset.Gender = If(state.IsFemale, CByte(1), CByte(0))
 
-        ' HeadParts. Use state.HeadPartFormIDs (already overlay-merged with race fallbacks via
-        ' ResolveNPCBaseState) so we capture exactly what's being rendered, not the raw record.
-        ' Filter IsExtraPart (flag 0x08) — emulates CharGenInterface.cpp:96.
-        For Each fid In state.HeadPartFormIDs
+        ' HeadParts. state.HeadPartFormIDs only carries explicit NPC.PNAM entries — slots that
+        ' the NPC didn't override (Meatcaps for most humans, Teeth/HeadRear sometimes) get filled
+        ' by MergeHeadPartsWithRaceDefaults at render time, NOT before. LooksMenu's SavePreset
+        ' (CharGenInterface.cpp:79-103) reads npc->headParts which is the post-merge runtime list,
+        ' so for the JSON to round-trip we have to call the same merger here. Then filter the
+        ' IsExtraPart (flag 0x08) entries — those are addons (lashes, hairlines, AO meshes) that
+        ' the engine regenerates from each main HDPT's HNAM extras and shouldn't be in the JSON.
+        Dim merged = MergeHeadPartsWithRaceDefaults(state)
+        For Each fid In merged
             If fid = 0UI Then Continue For
             Dim rec = _pluginManager.GetRecord(fid)
             If rec Is Nothing OrElse rec.Header.Signature <> "HDPT" Then Continue For
@@ -8261,16 +8342,103 @@ Public Class MainForm
         Next
         preset.FacialMorphIntensity = effective.FacialMorphIntensity
 
-        ' Tints — skip Value=0 entries (CharGenInterface.cpp:180-181). Order in FaceTintLayers
-        ' is already TintOrder-equivalent (parser preserves it; vanilla NPC TETI/TEND order is
-        ' canonical). Clone each so the clipboard is independent of subsequent record mutations.
-        For Each tl In effective.FaceTintLayers
-            If tl.Value <= 0 Then Continue For
-            preset.FaceTintLayers.Add(CloneFaceTint(tl))
+        ' Tints — skip Value=0 entries (CharGenInterface.cpp:180-181). Order matters: it determines
+        ' the layer composition order at render time (the ESP TETI/TEND order is the natural NPC
+        ' record order, but the engine in-game reorders tints to match the RACE's TintTemplateGroups
+        ' Options order — that's what gives non-conmutative blends like SoftLight a stable result
+        ' across LM Save / Load. Without this reorder the TintOrder array would be ESP-record-order
+        ' instead of RACE-Group-order; LM in-game writes RACE-Group-order, so to round-trip we need
+        ' to match.
+        '
+        ' Also resolve each layer's positional TemplateColorIndex (vanilla NPC TEND stores POSITION
+        ' in the RACE's TTEC array) into the absolute TemplateIndex of that color (what LooksMenu
+        ' canonically emits as ColorID). Without this conversion ColorID round-trips as 0 because
+        ' that's the position vanilla typically uses; LooksMenu in-game reports e.g. 1157/1824/1339.
+        Dim raceRec = If(state.RaceFormID <> 0UI, _pluginManager.GetRecord(state.RaceFormID), Nothing)
+        Dim race As RACE_Data = Nothing
+        If raceRec IsNot Nothing AndAlso raceRec.Header.Signature = "RACE" Then
+            race = RecordParsers.ParseRACE(raceRec, _pluginManager)
+        End If
+
+        ' Build a TETI.Index → RACE-order rank dict by walking the gender-appropriate TintGroups
+        ' Options in order of appearance. Layers whose Index isn't found in the RACE (custom mods?)
+        ' get rank Integer.MaxValue → appended at the end.
+        Dim raceTintRank As New Dictionary(Of UShort, Integer)
+        If race IsNot Nothing Then
+            Dim tintGroups = If(state.IsFemale, race.FemaleTintTemplateGroups, race.MaleTintTemplateGroups)
+            Dim rank As Integer = 0
+            For Each grp In tintGroups
+                For Each opt In grp.Options
+                    If Not raceTintRank.ContainsKey(opt.Index) Then
+                        raceTintRank(opt.Index) = rank
+                        rank += 1
+                    End If
+                Next
+            Next
+        End If
+
+        Dim layersWithRank = effective.FaceTintLayers.
+            Where(Function(tl) tl.Value > 0).
+            Select(Function(tl, originalIdx)
+                       Dim r As Integer = Integer.MaxValue
+                       raceTintRank.TryGetValue(tl.Index, r)
+                       Return New With {.Layer = tl, .Rank = r, .OriginalIdx = originalIdx}
+                   End Function).
+            OrderBy(Function(x) x.Rank).
+            ThenBy(Function(x) x.OriginalIdx).
+            ToList()
+
+        For Each entry In layersWithRank
+            Dim cloned = CloneFaceTint(entry.Layer)
+            ResolveTemplateColorIdToAbsolute(cloned, race, state.IsFemale)
+            preset.FaceTintLayers.Add(cloned)
         Next
 
         Return preset
     End Function
+
+    ''' <summary>LooksMenu's SavePreset emits ColorID as the absolute TemplateIndex of the TTEC
+    ''' entry whose CLFM RGB matches the TEND RGB (verified empirically against PiperESPM.json:
+    ''' for layer 528 the TEND RGB (88,1,55) matches TTEC pos=12 with TemplateIndex=1333 and that's
+    ''' what LM emits — NOT the positional TemplateColors[TplIdx].TemplateIndex which would give
+    ''' 1339 from pos=0).
+    '''
+    ''' Strategy here: scan TemplateColors looking for a CLFM whose color matches tl.Color, and
+    ''' write that entry's TemplateIndex into layer.TemplateColorIndex. If no CLFM matches the
+    ''' TEND RGB exactly (the user authored a custom RGB outside the palette), fall back to the
+    ''' "neutral default" entry — pos=0 of TemplateColors, whose TemplateIndex is the RACE-level
+    ''' "no template selected" marker (1824 in HumanRace, 1157 in HumanRace's "Tono de piel"
+    ''' option for the only entry where pos=0 IS a real palette color, etc.).
+    '''
+    ''' On the receiving side LM's LoadPreset uses GetColorDataByID(colorID) (CharGenInterface.cpp:511)
+    ''' which walks TemplateColors looking for the absolute ID — exact inverse of this lookup.</summary>
+    Private Sub ResolveTemplateColorIdToAbsolute(layer As NPC_FaceTintLayerData, race As RACE_Data, isFemale As Boolean)
+        If race Is Nothing OrElse layer Is Nothing OrElse layer.Discriminator <> 1US Then Return
+        Dim opt = race.FindTintOption(layer.Index, isFemale)
+        If opt Is Nothing OrElse opt.TemplateColors Is Nothing OrElse opt.TemplateColors.Count = 0 Then Return
+
+        Dim targetR As Integer = layer.Color.R
+        Dim targetG As Integer = layer.Color.G
+        Dim targetB As Integer = layer.Color.B
+
+        ' First pass: find a TTEC entry whose CLFM color matches the layer's TEND RGB.
+        For Each tplCol In opt.TemplateColors
+            If tplCol.ColorFormID = 0UI Then Continue For
+            Dim clfmRec = _pluginManager.GetRecord(tplCol.ColorFormID)
+            If clfmRec Is Nothing OrElse clfmRec.Header.Signature <> "CLFM" Then Continue For
+            Dim clfm = RecordParsers.ParseCLFM(clfmRec, _pluginManager)
+            If clfm Is Nothing OrElse Not clfm.HasColor Then Continue For
+            If clfm.Color.R = targetR AndAlso clfm.Color.G = targetG AndAlso clfm.Color.B = targetB Then
+                layer.TemplateColorIndex = CInt(tplCol.TemplateIndex)
+                Return
+            End If
+        Next
+
+        ' Fallback: no CLFM matched (custom RGB authored by the user). Use the "neutral default"
+        ' entry at pos=0 — same convention LooksMenu's GetColorDataByID falls back to when the
+        ' incoming colorID isn't a member of TemplateColors (CharGenInterface.cpp:514-517).
+        layer.TemplateColorIndex = CInt(opt.TemplateColors(0).TemplateIndex)
+    End Sub
 
     Private Sub ButtonCopyLook_Click(sender As Object, e As EventArgs) Handles ButtonCopyLook.Click
         If _currentBaseState Is Nothing Then Return

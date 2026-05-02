@@ -35,12 +35,15 @@ Public Class NpcMorphResolver
     ' Standard body weight morph names used by CBBE, vanilla, and most body mods
     Private Shared ReadOnly BodyWeightMorphNames As String() = {"WeightThin", "WeightMuscular", "WeightFat"}
 
-    ' Body morph region names (from BodySlide/CBBE TRI files, in order matching MRSV array)
-    Private Shared ReadOnly BodyRegionMorphNames As String() = {
-        "MorphRegion0", "MorphRegion1", "MorphRegion2", "MorphRegion3",
-        "MorphRegion4", "MorphRegion5", "MorphRegion6", "MorphRegion7",
-        "MorphRegion8", "MorphRegion9", "MorphRegion10", "MorphRegion11",
-        "MorphRegion12", "MorphRegion13", "MorphRegion14", "MorphRegion15"
+    ' MRSV — Body Morph Region Values. Per TES5Edit/Core/wbDefinitionsFO4.pas:10793-10799,
+    ' the subrecord is a fixed struct of 5 floats with these region labels in this order.
+    ' Same layout in FO76 (wbDefinitionsFO76.pas:13350) and SF1 (wbDefinitionsSF1.pas:13376).
+    Public Shared ReadOnly BodyRegionLabels As String() = {
+        "Head",
+        "Upper Torso",
+        "Arms",
+        "Lower Torso",
+        "Legs"
     }
 
     ''' <summary>
@@ -163,8 +166,11 @@ Public Class NpcMorphResolver
         ' 1) Body weight morphs (MWGT) - from PIRT TRI (BodySlide/CBBE)
         If tri IsNot Nothing Then
             AddBodyWeightMorphs(tri, shapeName, plan)
-            AddBodyRegionMorphs(tri, shapeName, plan)
         End If
+        ' MRSV (Body Morph Region Values) is NOT applied here. It travels through the bone-scale
+        ' pose pipeline in MainForm.BuildBodyWeightPose (Layer 3: MRSV Range Modifier), via
+        ' ResolveMrsvRegion + RACE.BSMS RangeModifier (Min/Max Y,Z). See xEdit defs:
+        ' wbDefinitionsFO4.pas:10793 (MRSV struct) and wbDefinitionsFO4.pas:5929 (BSMS RangeModifier).
 
         ' 2) Face morph presets (MSDK/MSDV) - via TriHead chargen .tri + RACE MSID→MSM0/MSM1
         If _npcData.MorphValues.Count > 0 Then
@@ -256,23 +262,11 @@ Public Class NpcMorphResolver
         Next
     End Sub
 
-    ''' <summary>Add body morph region values from MRSV data.</summary>
-    Private Sub AddBodyRegionMorphs(tri As TriFile, shapeName As String, plan As MorphPlan)
-        If _npcData.BodyMorphRegionValues.Count = 0 Then Return
-
-        For i = 0 To Math.Min(BodyRegionMorphNames.Length, _npcData.BodyMorphRegionValues.Count) - 1
-            Dim weight = _npcData.BodyMorphRegionValues(i)
-            If Math.Abs(weight) < 0.001F Then Continue For
-
-            Dim morphEntry = tri.GetMorph(shapeName, BodyRegionMorphNames(i))
-            If morphEntry Is Nothing OrElse morphEntry.Offsets.Count = 0 Then Continue For
-
-            Dim deltas = ConvertTriOffsetsToMorphData(morphEntry)
-            If deltas.Count > 0 Then
-                plan.Channels.Add(New MorphChannel(BodyRegionMorphNames(i), weight, deltas))
-            End If
-        Next
-    End Sub
+    ' AddBodyRegionMorphs removed 2026-05-02: MRSV is consumed by the bone-scale pose pipeline
+    ' (MainForm.BuildBodyWeightPose Layer 3 + ResolveMrsvRegion), not by vertex morphs against a
+    ' body .tri. The previous "MorphRegion<i>" .tri lookup was unverified guesswork and ran in
+    ' parallel to the real pipeline, risking double application when the user's installed body
+    ' .tri happened to define those names.
 
     ''' <summary>
     ''' Add face morph presets from MSDK/MSDV using TriHead (Bethesda format) + RACE Morph Values.

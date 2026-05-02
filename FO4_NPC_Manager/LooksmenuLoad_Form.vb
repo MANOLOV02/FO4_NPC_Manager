@@ -10,8 +10,12 @@ Imports FO4_Base_Library
 '''   - User types in the filter box: live-filter list by filename substring (case-insensitive).
 '''   - User selects an entry: <see cref="LabelInfo"/> shows what the preset contains
 '''     (HeadParts/morphs/tints counts) plus a warning if it has F4SE-only fields we won't apply.
-'''   - OK: <see cref="SelectedPreset"/> is the parsed object; the caller applies it.
-'''   - Cancel: caller restores its pre-dialog snapshot.
+'''     The dialog also fires <see cref="PreviewRequested"/> so the caller can apply the overlay
+'''     live to the preview. The caller is responsible for snapshotting any prior overlay before
+'''     showing the dialog and restoring it on Cancel.
+'''   - OK: <see cref="SelectedPreset"/> is the parsed object; the last-previewed overlay stays.
+'''   - Cancel: caller restores its pre-dialog snapshot (the live preview is already on the wrong
+'''     preset, so the caller must explicitly roll back).
 ''' </summary>
 Public Class LooksmenuLoad_Form
 
@@ -22,6 +26,11 @@ Public Class LooksmenuLoad_Form
 
     ''' <summary>The preset the user picked. Nothing if the dialog was cancelled.</summary>
     Public Property SelectedPreset As LooksmenuLoader.LooksmenuPreset
+
+    ''' <summary>Fired on every list selection change so the host form can apply the preset live
+    ''' as a preview. Argument is Nothing when nothing is selected. The host should snapshot any
+    ''' prior overlay state before showing the dialog so it can restore on Cancel.</summary>
+    Public Event PreviewRequested As EventHandler(Of LooksmenuLoader.LooksmenuPreset)
 
     Public Sub New(pluginManager As PluginManager,
                    dataPath As String,
@@ -93,6 +102,7 @@ Public Class LooksmenuLoad_Form
         Dim item = TryCast(ListBoxPresets.SelectedItem, PresetItem)
         ButtonOk.Enabled = item IsNot Nothing
         UpdateInfo(item?.Preset)
+        RaiseEvent PreviewRequested(Me, item?.Preset)
     End Sub
 
     Private Sub UpdateInfo(preset As LooksmenuLoader.LooksmenuPreset)

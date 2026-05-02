@@ -215,10 +215,14 @@ Public Module LooksmenuLoader
                         Dim colorEl As JsonElement
                         If entryEl.TryGetProperty("Color", colorEl) AndAlso colorEl.ValueKind = JsonValueKind.Number Then
                             Dim bgra = CUInt(colorEl.GetInt64() And &HFFFFFFFFL)
-                            ' bgra layout: bytes [B G R A] little-endian → A R G B for Color.FromArgb.
-                            Dim b = CInt((bgra >> 0) And &HFFUI)
+                            ' Despite the field name "bgra", LooksMenu stores the UInt32 with bytes
+                            ' in memory order [R, G, B, A] (verified empirically: a TEND with
+                            ' R=0xE9 G=0xDA B=0xD8 round-trips through LooksMenu in-game as
+                            ' Color=0x00D8DAE9, which packs as B<<16 | G<<8 | R, NOT the field-
+                            ' name-suggested R<<16 | G<<8 | B). So byte 0 (LSB) is R, byte 2 is B.
+                            Dim r = CInt((bgra >> 0) And &HFFUI)
                             Dim g = CInt((bgra >> 8) And &HFFUI)
-                            Dim r = CInt((bgra >> 16) And &HFFUI)
+                            Dim b = CInt((bgra >> 16) And &HFFUI)
                             Dim a = CInt((bgra >> 24) And &HFFUI)
                             layer.Color = Drawing.Color.FromArgb(a, r, g, b)
                         End If
@@ -334,16 +338,13 @@ Public Module LooksmenuLoader
             Using w As New Utf8JsonWriter(ms, writerOpts)
                 w.WriteStartObject()
 
-                ' Gender
-                w.WriteNumber("Gender", CUInt(preset.Gender))
+                ' Field order: alphabetical to match jsoncpp's StyledWriter, which sorts keys
+                ' alphabetically when serializing a Json::Value object. Verified empirically by
+                ' diffing a JSON saved by NPC_Manager against one re-written by LooksMenu in-game.
+                ' Order: Gender → HairColor → HeadParts → Morphs → Tints → TintOrder → Weight.
 
-                ' HeadParts
-                w.WriteStartArray("HeadParts")
-                For Each fid In preset.HeadPartFormIDs
-                    Dim ident = FormatFormIdentifier(fid, pluginManager)
-                    If Not String.IsNullOrEmpty(ident) Then w.WriteStringValue(ident)
-                Next
-                w.WriteEndArray()
+                ' Gender (always)
+                w.WriteNumber("Gender", CUInt(preset.Gender))
 
                 ' HairColor — only when non-zero (CharGenInterface.cpp:106-110)
                 If preset.HairColorFormID <> 0UI Then
@@ -351,20 +352,66 @@ Public Module LooksmenuLoader
                     If Not String.IsNullOrEmpty(hc) Then w.WriteString("HairColor", hc)
                 End If
 
-                ' Weight — always 3 floats (CharGenInterface.cpp:113-115). Missing slot = 0.
-                w.WriteStartArray("Weight")
-                w.WriteNumberValue(preset.WeightThin.GetValueOrDefault(0.0F))
-                w.WriteNumberValue(preset.WeightMuscular.GetValueOrDefault(0.0F))
-                w.WriteNumberValue(preset.WeightFat.GetValueOrDefault(0.0F))
+                ' HeadParts (always, even if empty array)
+                w.WriteStartArray("HeadParts")
+                For Each fid In preset.HeadPartFormIDs
+                    Dim ident = FormatFormIdentifier(fid, pluginManager)
+                    If Not String.IsNullOrEmpty(ident) Then w.WriteStringValue(ident)
+                Next
                 w.WriteEndArray()
 
                 ' Morphs container — only emit when at least one sub-field has data.
+                ' Sub-key order also alphabetical: Intensity → Presets → Regions → Values.
                 Dim hasValues = preset.BodyMorphValues.Count > 0
                 Dim hasPresets = preset.ChargenFaceMorphs.Count > 0
                 Dim hasRegions = preset.FaceBoneRegions.Count > 0
                 Dim hasIntensity = (preset.FacialMorphIntensity <> 1.0F)
                 If hasValues OrElse hasPresets OrElse hasRegions OrElse hasIntensity Then
                     w.WriteStartObject("Morphs")
+
+                    If hasIntensity Then
+                        w.WriteNumber("Intensity", preset.FacialMorphIntensity)
+                    End If
+
+                    If hasPresets Then
+                        ' Hex keys sorted alphabetically (case-insensitive). LooksMenu's jsoncpp
+                        ' sorts member names lexicographically, which for uppercase hex is the
+                        ' same as numeric sort — but we sort the strings explicitly to match.
+                        w.WriteStartObject("Presets")
+                        Dim presetKeys = preset.ChargenFaceMorphs.Keys.
+                            Select(Function(k) k.ToString("X", Globalization.CultureInfo.InvariantCulture)).
+                            OrderBy(Function(s) s, StringComparer.Ordinal).
+                            ToList()
+                        For Each keyStr In presetKeys
+                            Dim k As UInteger = UInteger.Parse(keyStr, Globalization.NumberStyles.HexNumber, Globalization.CultureInfo.InvariantCulture)
+                            w.WriteNumber(keyStr, preset.ChargenFaceMorphs(k))
+                        Next
+                        w.WriteEndObject()
+                    End If
+
+                    If hasRegions Then
+                        w.WriteStartObject("Regions")
+                        Dim regionKeys = preset.FaceBoneRegions.Keys.
+                            Select(Function(k) k.ToString("X", Globalization.CultureInfo.InvariantCulture)).
+                            OrderBy(Function(s) s, StringComparer.Ordinal).
+                            ToList()
+                        For Each keyStr In regionKeys
+                            Dim k As UInteger = UInteger.Parse(keyStr, Globalization.NumberStyles.HexNumber, Globalization.CultureInfo.InvariantCulture)
+                            Dim values = preset.FaceBoneRegions(k)
+                            w.WriteStartArray(keyStr)
+                            ' LooksMenu serializes exactly 8 floats per region (CharGenInterface.cpp:147
+                            ' `for(UInt32 f = 0; f < 8; f++)`). Pad with 0 if we have less, truncate
+                            ' the trailing scale-or-padding slot if we somehow have more (the ESP
+                            ' parser may keep an extra "Unknown" trailing byte per RecordParsers.vb:48
+                            ' "7 floats + trailing Unknown byte array").
+                            For i = 0 To 7
+                                Dim v As Single = If(i < values.Length, values(i), 0.0F)
+                                w.WriteNumberValue(v)
+                            Next
+                            w.WriteEndArray()
+                        Next
+                        w.WriteEndObject()
+                    End If
 
                     If hasValues Then
                         ' LoadPreset.Allocate(5) hardcodes the array size — pad/truncate to match.
@@ -376,69 +423,67 @@ Public Module LooksmenuLoader
                         w.WriteEndArray()
                     End If
 
-                    If hasPresets Then
-                        w.WriteStartObject("Presets")
-                        For Each kv In preset.ChargenFaceMorphs
-                            w.WriteNumber(kv.Key.ToString("X", Globalization.CultureInfo.InvariantCulture), kv.Value)
-                        Next
-                        w.WriteEndObject()
-                    End If
-
-                    If hasRegions Then
-                        w.WriteStartObject("Regions")
-                        For Each kv In preset.FaceBoneRegions
-                            w.WriteStartArray(kv.Key.ToString("X", Globalization.CultureInfo.InvariantCulture))
-                            For Each f In kv.Value
-                                w.WriteNumberValue(f)
-                            Next
-                            w.WriteEndArray()
-                        Next
-                        w.WriteEndObject()
-                    End If
-
-                    If hasIntensity Then
-                        w.WriteNumber("Intensity", preset.FacialMorphIntensity)
-                    End If
-
                     w.WriteEndObject()
                 End If
 
                 ' Tints + TintOrder. Skip Value=0 entries (CharGenInterface.cpp:180-181). Both keys
-                ' only emitted when at least one layer survives the filter. LooksMenu writes the
-                ' Tints object once at the end (line 201) but TintOrder is appended per-entry as
-                ' the loop runs (line 198). For our writer we precompute the surviving list once.
+                ' only emitted when at least one layer survives the filter. The tint dict keys are
+                ' sorted alphabetically (lexicographic on uppercase hex) to match jsoncpp's output;
+                ' TintOrder preserves the original render-order independently.
                 Dim emittedTints = preset.FaceTintLayers.Where(Function(tl) tl.Value > 0).ToList()
                 If emittedTints.Count > 0 Then
                     w.WriteStartObject("Tints")
-                    For Each tl In emittedTints
+                    Dim sortedTints = emittedTints.
+                        OrderBy(Function(tl) (CUInt(tl.Index) And &HFFFFUI).ToString("X", Globalization.CultureInfo.InvariantCulture), StringComparer.Ordinal).
+                        ToList()
+                    For Each tl In sortedTints
                         Dim keyName = (CUInt(tl.Index) And &HFFFFUI).ToString("X", Globalization.CultureInfo.InvariantCulture)
                         w.WriteStartObject(keyName)
-                        w.WriteNumber("Type", CInt(tl.Discriminator))
-                        w.WriteNumber("Percent", CInt(tl.Value))
-                        ' Palette-only color fields (CharGenInterface.cpp:191-195). Color is the
-                        ' BGRA UInt32 written as Json::Int (signed bitcast). For Discriminator=2
-                        ' (TextureSet) the engine writes neither Color nor ColorID.
+                        ' Sub-key order alphabetical: Color → ColorID → Percent → Type. Matches
+                        ' a canonical Marcy preset diff: jsoncpp orders these the same way.
+                        ' Palette-only color fields (CharGenInterface.cpp:191-195). For
+                        ' Discriminator=2 (TextureSet) the engine writes neither Color nor ColorID.
                         If tl.Discriminator = 1US Then
-                            ' Reconstruct BGRA from Color.FromArgb(A,R,G,B) → bytes [B,G,R,A] LE.
+                            ' LooksMenu's `palette->color.bgra` UInt32 has bytes in memory order
+                            ' [R, G, B, A] despite the field name (verified empirically: TEND
+                            ' raw R=0xE9 G=0xDA B=0xD8 → LM emits Color=0x00D8DAE9, which packs
+                            ' as B<<16 | G<<8 | R, NOT R<<16 | G<<8 | B). My previous shift had
+                            ' R and B swapped, producing colors with R/B mirrored vs the in-game
+                            ' palette — the rendered tint visibly differed from the original NPC.
+                            ' A is forced to 0: ESP parser sets A=255 (RecordParsers.vb:940) but
+                            ' a Color with bit 31 set serializes as negative Int32 in jsoncpp,
+                            ' and LooksMenu's asUInt() then asserts → entire Tints block is
+                            ' silently dropped via try/catch.
                             Dim bgra As UInteger =
-                                (CUInt(tl.Color.A) << 24) Or
-                                (CUInt(tl.Color.R) << 16) Or
+                                (CUInt(tl.Color.B) << 16) Or
                                 (CUInt(tl.Color.G) << 8) Or
-                                CUInt(tl.Color.B)
-                            ' Cast to signed int32 (same bit pattern) to match Json::Int output.
-                            w.WriteNumber("Color", BitConverter.ToInt32(BitConverter.GetBytes(bgra), 0))
+                                CUInt(tl.Color.R)
+                            ' Use the unsigned overload so System.Text.Json emits the value as
+                            ' a positive number (negative Int32 trips LooksMenu's asUInt assert).
+                            w.WriteNumber("Color", bgra)
                             w.WriteNumber("ColorID", tl.TemplateColorIndex)
                         End If
+                        w.WriteNumber("Percent", CInt(tl.Value))
+                        w.WriteNumber("Type", CInt(tl.Discriminator))
                         w.WriteEndObject()
                     Next
                     w.WriteEndObject()
 
+                    ' TintOrder preserves the render-order, NOT the alphabetical sort.
                     w.WriteStartArray("TintOrder")
                     For Each tl In emittedTints
                         w.WriteStringValue((CUInt(tl.Index) And &HFFFFUI).ToString("X", Globalization.CultureInfo.InvariantCulture))
                     Next
                     w.WriteEndArray()
                 End If
+
+                ' Weight — always 3 floats (CharGenInterface.cpp:113-115). Missing slot = 0.
+                ' Emitted last to preserve alphabetical key order (T < W).
+                w.WriteStartArray("Weight")
+                w.WriteNumberValue(preset.WeightThin.GetValueOrDefault(0.0F))
+                w.WriteNumberValue(preset.WeightMuscular.GetValueOrDefault(0.0F))
+                w.WriteNumberValue(preset.WeightFat.GetValueOrDefault(0.0F))
+                w.WriteEndArray()
 
                 w.WriteEndObject()
                 w.Flush()
@@ -464,7 +509,22 @@ Public Module LooksmenuLoader
             Dim depth = leading \ 2
             Dim extra = leading Mod 2
             sb.Append(New String(" "c, depth * 3 + extra))
-            sb.Append(line, leading, line.Length - leading)
+            ' StyledWriter (jsoncpp) puts a space BEFORE the colon as well as after: `"key" : value`.
+            ' Utf8JsonWriter omits the leading space. Patch the rest of the line — only the FIRST
+            ' `":` per line needs fixing (subsequent ones are inside string literals if any). We
+            ' rely on the fact that key strings written by Utf8JsonWriter never contain a literal
+            ' `":` because the writer escapes embedded quotes.
+            Dim rest = line.Substring(leading)
+            Dim colonIdx = rest.IndexOf(""":", StringComparison.Ordinal)
+            If colonIdx >= 0 Then
+                ' colonIdx points at the closing quote of the key; the colon is at colonIdx+1.
+                ' Insert a space between them.
+                sb.Append(rest, 0, colonIdx + 1)
+                sb.Append(" "c)
+                sb.Append(rest, colonIdx + 1, rest.Length - colonIdx - 1)
+            Else
+                sb.Append(rest)
+            End If
             If i < lines.Length - 1 Then sb.Append(vbLf)
         Next
         Return sb.ToString()
