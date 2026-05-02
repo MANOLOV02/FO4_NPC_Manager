@@ -1,4 +1,5 @@
 Imports System.Windows.Forms
+Imports FO4_Base_Library
 
 Module Program
     <STAThread>
@@ -11,6 +12,13 @@ Module Program
         Application.SetHighDpiMode(HighDpiMode.DpiUnaware)
         Application.EnableVisualStyles()
         Application.SetCompatibleTextRenderingDefault(False)
-        Application.Run(New MainForm())
+
+        Config_App.LoadConfig()
+        Config_App.Current.Game = Config_App.Game_Enum.Fallout4
+
+        Using preflight As New Preflight_Form()
+            If preflight.ShowDialog() <> DialogResult.OK Then Return
+            Application.Run(New MainForm(preflight.LoadedPluginManager, preflight.LoadedDataPath))
+        End Using
     End Sub
 End Module

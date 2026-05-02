@@ -24,7 +24,7 @@ Public Class MainForm
     Private Const ENABLE_TWO_STEP_SKIN_TINT As Boolean = True
 
 
-    Private ReadOnly _pluginManager As New PluginManager()
+    Private ReadOnly _pluginManager As PluginManager
     Private _allNPCs As New List(Of NPC_Data)
     Private _previewControl As PreviewControl
     Private _dataPath As String = ""
@@ -57,10 +57,34 @@ Public Class MainForm
     ' until it appears, then bake the tints once and stop the timer.
     Private WithEvents _pendingTintTimer As New System.Windows.Forms.Timer With {.Interval = 120}
     Private _pendingTintState As NPCVisualState = Nothing
+
+    ''' <summary>Process-lifetime cache of every face-tint DDS byte buffer we have ever pulled
+    ''' from the FilesDictionary. Keyed by the normalized "textures\..." path. A Nothing entry
+    ''' is a *negative* cache for paths that resolve to a missing or empty file, so we don't
+    ''' retry the same lookup on the next NPC. Reused across NPCs of the same race (region masks
+    ''' are identical) and across re-previews of the same NPC. Invalidate via
+    ''' <see cref="ClearFaceTintCaches"/> when the FilesDictionary is rebuilt.</summary>
+    Private ReadOnly _tintBytesCache As New Dictionary(Of String, Byte())(StringComparer.OrdinalIgnoreCase)
+
+    ''' <summary>Process-lifetime cache of decoded DDS → GL textures keyed by the same
+    ''' normalized path used by <see cref="_tintBytesCache"/>. Lives in the library
+    ''' (<see cref="FaceTintTextureCache"/>) because the entries hold GL texture IDs that the
+    ''' compositor would otherwise allocate-and-delete every call. Invalidate together with
+    ''' <see cref="_tintBytesCache"/> via <see cref="ClearFaceTintCaches"/>.</summary>
+    Private ReadOnly _tintGpuCache As New FaceTintTextureCache()
     Private _pendingTintAttempts As Integer = 0
     Private Const PendingTintMaxAttempts As Integer = 60   ' 60 × 120ms = ~7.2s upper bound
 
-    Private Const HeadPartFlagUseSolidTint As Byte = &H20
+    ' xEdit wbDefinitionsFO4.pas:7365-7372 mapea HDPT.DATA flags POR POSICIÓN del array
+    ' wbFlags, no por el valor en los comentarios `{0x...}`. Posiciones reales:
+    '   bit 0 (0x01) Playable, bit 1 (0x02) Male, bit 2 (0x04) Female,
+    '   bit 3 (0x08) IsExtraPart, bit 4 (0x10) UseSolidTint, bit 5 (0x20) UsesBodyTexture.
+    Private Const HeadPartFlagUseSolidTint As Byte = &H10
+    ''' <summary>Flag bit at position 3 of HDPT.DATA — "Is Extra Part". Verified against
+    ''' wbDefinitionsFO4.pas:7369 (entry 4 in the wbFlags positional array). Set on HDPTs that are
+    ''' addons referenced via another HDPT's HNAM (eyelashes, hairlines, etc.) rather than
+    ''' standalone parts. CharGenInterface.cpp:96 filters these out when serializing a preset.</summary>
+    Private Const HeadPartFlagIsExtra As Byte = &H8
     Private Const HeadPartTypeFace As Integer = 1
     Private Const HeadPartTypeEyes As Integer = 2
     Private Const HeadPartTypeHair As Integer = 3
@@ -115,10 +139,27 @@ Public Class MainForm
         ''' NPC's gender). Engine-side these are added on top of RACE.BSMS to shape the outfit
         ''' (cinched waist, wider hips, etc.). Nothing when the ARMA has no BSMS or gender mismatch.</summary>
         Public ArmaBoneScaleDeltas As List(Of ARMA_BoneScaleDelta) = Nothing
+        ''' <summary>HeadRear only (effectivePartType=9): cuando DictKey fue redirigido al variant
+        ''' *_faceBones.nif, el _faceBones vanilla trae material genérico (basehumanfemaleskin) en
+        ''' lugar del material part-específico (basehumanfemalerear). LoadNifShapes copia el material
+        ''' del .nif base a los shapes del _faceBones (matching por nombre con sufijo "_faceBones"
+        ''' removido). Sólo se popula para HeadRear; otros HeadParts mantienen sus materiales originales.</summary>
+        Public BaseDictKeyForFaceBones As String = ""
         ''' <summary>True = collect into candidates for logging/inspection but exclude from render.
         ''' Set for HDPT type=7 Meatcaps (inner-mouth geometry occluded by teeth; vanilla CK declares
         ''' them but normally not visible in static pose). Filtered out in SelectWinningCandidates.</summary>
         Public Hide As Boolean = False
+        ''' <summary>Skin candidates only (NPC_/RACE.WNAM body geometry): True cuando algún outfit
+        ''' aceptado declara bits que solapan con este Skin (BODY/hands). Usado para RenderHide=True
+        ''' por default — el outfit cubre visualmente al Skin, evita z-fighting. Se destapa cuando
+        ''' "Render underarmor" se apaga (ver ApplyRenderToggleVisibility).</summary>
+        Public IsCoveredByOutfit As Boolean = False
+        ''' <summary>HeadPart candidates only: True cuando un headwear aceptado oculta este head
+        ''' part por la occlusion matrix vanilla (Hair ocluido por HairTop/HairLong/FaceGenHead;
+        ''' FacialHair ocluido por FaceGenHead/Beard/Mouth; Eyebrows por FaceGenHead; HeadRear por
+        ''' HairTop AND (HairLong OR FaceGenHead)). Antes esto descartaba el head part entero;
+        ''' ahora se acepta con flag para que "Render headwear OFF" pueda destaparlo runtime.</summary>
+        Public IsOccludedByHeadwear As Boolean = False
     End Class
 
     Private Class PreviewVariantDefinition
@@ -139,18 +180,28 @@ Public Class MainForm
     ''' al cargar el shape a partir del MeshCandidate.SlotMask + Kind. Los handlers de los
     ''' CheckBoxes setean RenderHide según esta categoría sin re-resolver candidates.</summary>
     Public Enum ShapeRenderCategory
-        ''' <summary>Sin clasificar (head parts, accessories sin slot, etc). Siempre visible.</summary>
+        ''' <summary>Sin clasificar (accessories sin slot, etc). Siempre visible.</summary>
         Other = 0
         ''' <summary>Over-armor [A] puro: declara algún bit [A] (11-15) y NO toca BODY/[U].</summary>
         ArmorOver = 1
-        ''' <summary>Underarmor: toca BODY (bit 3) o [U] (bits 6-10), cualquier kind.</summary>
+        ''' <summary>Underarmor outfit: Kind=Outfit con BODY (bit 3) o [U] (bits 6-10). Ropa que
+        ''' va debajo del armor (AAClothesCait, fatigues, etc.). Controlado por "Render underarmor".</summary>
         Underarmor = 2
-        ''' <summary>Naked hands: Kind=Skin con bits hand (4/5). Underarmor de manos.</summary>
+        ''' <summary>Naked hands: Kind=Skin con bits hand (4/5) sin BODY. Piel de manos desnudas.
+        ''' Se oculta junto con el resto del body skin via "Render body".</summary>
         NakedHands = 3
-        ''' <summary>Glove de outfit: Kind=Outfit con bits hand (4/5) y sin BODY/[U].</summary>
+        ''' <summary>Glove de outfit: Kind=Outfit con bits hand (4/5) y sin BODY/[U]. Independiente
+        ''' del cuerpo desnudo — sigue las reglas de outfit, no se toggle como body.</summary>
         GloveOutfit = 4
-        ''' <summary>Head part (Kind=HeadPart). Sin slot biped típicamente.</summary>
+        ''' <summary>Head part (Kind=HeadPart). Forma parte del NPC desnudo — controlado por "Render body".</summary>
         HeadPart = 5
+        ''' <summary>Body skin: Kind=Skin con bit BODY (3). Cuerpo desnudo del NPC (torso+piernas+pies
+        ''' en FO4 vanilla — no hay slot feet). Controlado por "Render body".</summary>
+        BodySkin = 6
+        ''' <summary>Headwear: Kind=Outfit con bits exclusivos de cabeza/cara (HairTop/HairLong/
+        ''' FaceGenHead/Headband/Eyes/Beard/Mouth) y SIN tocar BODY/[U]/[A]/hand. Helmets, caps,
+        ''' glasses, bandanas, masks. Controlado por "Render headwear".</summary>
+        Headwear = 7
     End Enum
 
     Private Class PreviewResolutionResult
@@ -175,6 +226,17 @@ Public Class MainForm
         ''' <summary>Per-shape categoría para toggles diagnósticos de visibilidad. Ver
         ''' ApplyRenderToggleVisibility.</summary>
         Public ReadOnly ShapeCategory As New Dictionary(Of IRenderableShape, ShapeRenderCategory)
+        ''' <summary>Per-shape: True cuando el shape proviene de un Skin candidate cubierto por
+        ''' algún outfit aceptado (sus bits BODY/hand chocan con bits de outfits que ganaron).
+        ''' Usado por ApplyRenderToggleVisibility para decidir RenderHide inicial: con
+        ''' "Render underarmor" ON el Skin cubierto se oculta (el outfit lo tapa visualmente);
+        ''' con "Render underarmor" OFF el Skin cubierto se destapa.</summary>
+        Public ReadOnly ShapeCoveredByOutfit As New Dictionary(Of IRenderableShape, Boolean)
+        ''' <summary>Per-shape: True cuando el shape proviene de un HeadPart ocluido por algún
+        ''' headwear aceptado (occlusion matrix vanilla — pelo bajo casco, etc.). Usado por
+        ''' ApplyRenderToggleVisibility: con "Render headwear" ON el head part ocluido se oculta;
+        ''' OFF lo destapa para mostrar el pelo/barba/etc bajo el headwear oculto.</summary>
+        Public ReadOnly ShapeOccludedByHeadwear As New Dictionary(Of IRenderableShape, Boolean)
         ''' <summary>DEPRECATED. Used to be the cross-ARMA aggregated sculpt; now superseded by the
         ''' per-shape mapping above. Kept as always-empty for back-compat with consumers that read it.</summary>
         Public ReadOnly ArmaBoneScaleDeltas As New Dictionary(Of String, System.Numerics.Vector3)(StringComparer.OrdinalIgnoreCase)
@@ -183,9 +245,12 @@ Public Class MainForm
         Public IsFemale As Boolean
         Public RaceFormID As UInteger
         Public SkinFormID As UInteger
-        Public WeightThin As Single
-        Public WeightMuscular As Single
-        Public WeightFat As Single
+        ''' <summary>Raw NPC.MWGT slots — Nothing means the slot was the engine "Default" sentinel
+        ''' (Single.MaxValue). Only the body-weight resolver should consume these; everywhere else
+        ''' should read NPCVisualState.WeightX after ApplyRaceFallbacks materializes them.</summary>
+        Public WeightThin As Single?
+        Public WeightMuscular As Single?
+        Public WeightFat As Single?
     End Class
 
     Private Class InventoryState
@@ -263,7 +328,7 @@ Public Class MainForm
     ''' Nothing would make the resolver's "If pose IsNot Nothing" guard skip the reset
     ''' and leave the previous deltas pegged on the SkeletonDictionary.</summary>
     Private Sub CheckBoxApplyBoneMorphs_CheckedChanged(sender As Object, e As EventArgs) Handles CheckBoxApplyBoneMorphs.CheckedChanged
-        NpcPreviewLog.Log($"  [FMRS-TOGGLE] fired checked={CheckBoxApplyBoneMorphs.Checked}")
+        NpcPreviewLog.LogLazy(Function() $"  [FMRS-TOGGLE] fired checked={CheckBoxApplyBoneMorphs.Checked}")
         RebuildAndApplyMergedPose()
     End Sub
 
@@ -287,16 +352,16 @@ Public Class MainForm
     ''' Toggling OFF sets MorphResolver=Nothing: per the PipelineStep_Morphs / ApplyMorphPlan
     ''' contract, a null resolver resets geom.Vertices to NifLocalVertices (no stale deltas).</summary>
     Private Sub CheckBoxApplyVertexMorphs_CheckedChanged(sender As Object, e As EventArgs) Handles CheckBoxApplyVertexMorphs.CheckedChanged
-        NpcPreviewLog.Log($"  [VERTEX-MORPH-TOGGLE] fired checked={CheckBoxApplyVertexMorphs.Checked}")
+        NpcPreviewLog.LogLazy(Function() $"  [VERTEX-MORPH-TOGGLE] fired checked={CheckBoxApplyVertexMorphs.Checked}")
         If _lastRenderedState Is Nothing OrElse _lastRenderData Is Nothing Then
-            NpcPreviewLog.Log($"  [VERTEX-MORPH-TOGGLE] ABORT — _lastRenderedState or _lastRenderData is Nothing")
+            NpcPreviewLog.LogLazy(Function() $"  [VERTEX-MORPH-TOGGLE] ABORT — _lastRenderedState or _lastRenderData is Nothing")
             Return
         End If
         Dim newResolver As IMorphResolver = Nothing
         If CheckBoxApplyVertexMorphs.Checked Then
             newResolver = BuildFaceMorphResolver(_lastRenderedState, _lastRenderData)
         End If
-        NpcPreviewLog.Log($"  [VERTEX-MORPH-TOGGLE] new resolver = {If(newResolver IsNot Nothing, "SET", "Nothing")}")
+        NpcPreviewLog.LogLazy(Function() $"  [VERTEX-MORPH-TOGGLE] new resolver = {If(newResolver IsNot Nothing, "SET", "Nothing")}")
         Dim intent = _previewControl.Intent
         intent.MorphResolver = newResolver
         ' Granular: only this NPC's shapes need the morph plan reapplied.
@@ -315,7 +380,7 @@ Public Class MainForm
     ''' <summary>Toggle body-weight pose (MWGT × BSMS + MRSV + ARMA sculpt H3). Triggers granular
     ''' MarkDirty(Pose) — no full reload.</summary>
     Private Sub CheckBoxApplyBodyWeight_CheckedChanged(sender As Object, e As EventArgs) Handles CheckBoxApplyBodyWeight.CheckedChanged
-        NpcPreviewLog.Log($"  [BODY-WEIGHT-TOGGLE] fired checked={CheckBoxApplyBodyWeight.Checked}")
+        NpcPreviewLog.LogLazy(Function() $"  [BODY-WEIGHT-TOGGLE] fired checked={CheckBoxApplyBodyWeight.Checked}")
         RebuildAndApplyMergedPose()
     End Sub
 
@@ -324,7 +389,7 @@ Public Class MainForm
     ''' the base skeleton (no SCLP amplifier). Diagnostic toggle to compare A/B with vs without
     ''' sculpt on the same NPC.</summary>
     Private Sub CheckBoxApplySculpt_CheckedChanged(sender As Object, e As EventArgs) Handles CheckBoxApplySculpt.CheckedChanged
-        NpcPreviewLog.Log($"  [SCULPT-TOGGLE] fired checked={CheckBoxApplySculpt.Checked}")
+        NpcPreviewLog.LogLazy(Function() $"  [SCULPT-TOGGLE] fired checked={CheckBoxApplySculpt.Checked}")
         RebuildAndApplyMergedPose()
     End Sub
 
@@ -333,15 +398,33 @@ Public Class MainForm
     ''' y poder detectar visualmente bugs del SCLP. Requiere full re-render porque cambia el
     ''' set de shapes cargados, no sólo poses.</summary>
     Private Sub CheckBoxRenderArmor_CheckedChanged(sender As Object, e As EventArgs) Handles CheckBoxRenderArmor.CheckedChanged
-        NpcPreviewLog.Log($"  [RENDER-ARMOR-TOGGLE] fired checked={CheckBoxRenderArmor.Checked}")
+        NpcPreviewLog.LogLazy(Function() $"  [RENDER-ARMOR-TOGGLE] fired checked={CheckBoxRenderArmor.Checked}")
         ApplyRenderToggleVisibility()
     End Sub
 
-    ''' <summary>Toggle "Render underarmor". OFF oculta los underarmors (BODY/[U]) y las naked
-    ''' hands (Skin con bits hand) via RenderHide. Independiente de "Render armor [A]" — la
-    ''' combinación armor=ON + underarmor=OFF reproduce el modo "only armor" diagnóstico.</summary>
+    ''' <summary>Toggle "Render underarmor". OFF oculta la ropa underarmor (Outfit con BODY/[U])
+    ''' Y los gloves de outfit (Outfit con hand bits). Al ocultar la ropa, destapa automáticamente
+    ''' el body skin / naked hands subyacentes — replica el efecto in-game `unequipall`.
+    ''' Independiente de "Render armor [A]".</summary>
     Private Sub CheckBoxRenderUnderarmor_CheckedChanged(sender As Object, e As EventArgs) Handles CheckBoxRenderUnderarmor.CheckedChanged
-        NpcPreviewLog.Log($"  [RENDER-UNDERARMOR-TOGGLE] fired checked={CheckBoxRenderUnderarmor.Checked}")
+        NpcPreviewLog.LogLazy(Function() $"  [RENDER-UNDERARMOR-TOGGLE] fired checked={CheckBoxRenderUnderarmor.Checked}")
+        ApplyRenderToggleVisibility()
+    End Sub
+
+    ''' <summary>Toggle "Render body". OFF oculta el NPC desnudo: body skin (Kind=Skin con BODY,
+    ''' que en FO4 cubre torso+piernas+pies), naked hands (Skin con bits hand) y head parts.
+    ''' Deja sólo outfits/armor visibles — útil para revisar la silueta de la ropa sola.</summary>
+    Private Sub CheckBoxRenderBody_CheckedChanged(sender As Object, e As EventArgs) Handles CheckBoxRenderBody.CheckedChanged
+        NpcPreviewLog.LogLazy(Function() $"  [RENDER-BODY-TOGGLE] fired checked={CheckBoxRenderBody.Checked}")
+        ApplyRenderToggleVisibility()
+    End Sub
+
+    ''' <summary>Toggle "Render headwear". OFF oculta cualquier prenda de cabeza/cara (helmets,
+    ''' caps, glasses, bandanas, masks — Outfit con bits 30-32/46-49 puros) Y destapa los head parts
+    ''' que estaban ocluidos por la occlusion matrix vanilla (pelo bajo casco, barba bajo gas mask,
+    ''' etc.). Replica el efecto in-game de quitar el headgear.</summary>
+    Private Sub CheckBoxRenderHeadwear_CheckedChanged(sender As Object, e As EventArgs) Handles CheckBoxRenderHeadwear.CheckedChanged
+        NpcPreviewLog.LogLazy(Function() $"  [RENDER-HEADWEAR-TOGGLE] fired checked={CheckBoxRenderHeadwear.Checked}")
         ApplyRenderToggleVisibility()
     End Sub
 
@@ -357,7 +440,7 @@ Public Class MainForm
         Try
             Await RenderCurrentStateAsync(System.Threading.Interlocked.Increment(_previewRequestVersion))
         Catch ex As Exception
-            NpcPreviewLog.Log($"  [RENDER-ARMOR-TOGGLE] re-render failed: {ex.Message}")
+            NpcPreviewLog.LogLazy(Function() $"  [RENDER-ARMOR-TOGGLE] re-render failed: {ex.Message}")
         End Try
     End Sub
 
@@ -367,7 +450,7 @@ Public Class MainForm
     ''' from the initial render, so BuildMergedNpcPose can parent-walk.</summary>
     Private Sub RebuildAndApplyMergedPose()
         If _lastRenderedState Is Nothing OrElse _lastRenderData Is Nothing OrElse _lastSkeletonInstance Is Nothing Then
-            NpcPreviewLog.Log($"  [POSE-TOGGLE] ABORT — no initial render cached")
+            NpcPreviewLog.LogLazy(Function() $"  [POSE-TOGGLE] ABORT — no initial render cached")
             Return
         End If
         Dim fmrsEnabled = CheckBoxApplyBoneMorphs.Checked
@@ -376,6 +459,27 @@ Public Class MainForm
         ' Base pose (sin sculpt) → skeleton base.
         Dim basePose = BuildMergedNpcPose(_lastRenderedState, _lastRenderData, fmrsEnabled, bwEnabled, _lastSkeletonInstance, Nothing)
         _lastSkeletonInstance.ApplyPose(basePose)
+
+        ' Lazy build / refresh of per-ARMA skeletons. Necesario cuando Sclpt arranca OFF en el
+        ' render inicial (entonces _lastSkelByArma quedó vacío) y el usuario lo enciende después,
+        ' o cuando aparecen shapes con sculpt cuyo per-ARMA aún no existía. El MultiInstanceSkeletonResolver
+        ' tiene _lastShapeToSkel por referencia → mutar el dict aquí lo refleja en el siguiente Pose dirty.
+        Dim lazyBuilt As Integer = 0
+        If sculptEnabled AndAlso _lastShapeToSkel IsNot Nothing Then
+            For Each shape In _lastRenderData.Shapes
+                Dim sculpt As Dictionary(Of String, System.Numerics.Vector3) = Nothing
+                If Not _lastRenderData.ShapeArmaSculpt.TryGetValue(shape, sculpt) Then Continue For
+                If sculpt Is Nothing OrElse sculpt.Count = 0 Then Continue For
+                Dim armaFormID As UInteger = 0
+                _lastRenderData.ShapeArmaFormID.TryGetValue(shape, armaFormID)
+                If _lastSkelByArma.ContainsKey(armaFormID) Then Continue For
+                ' Build the missing per-ARMA skel.
+                Dim armaSkel = BuildSkeletonInstance(_lastRenderedState, _lastRenderData, _lastFaceSkelBytes)
+                _lastSkelByArma(armaFormID) = armaSkel
+                _lastSculptByArma(armaFormID) = sculpt
+                lazyBuilt += 1
+            Next
+        End If
 
         ' Per-ARMA skeleton clones: cada uno recibe SU propio sculpt aplicado vía H3 multiplicative.
         ' Si sculpt OFF: rebuild las per-ARMA con Nothing (idéntico al base) — el shape sigue
@@ -387,12 +491,43 @@ Public Class MainForm
             Dim poseForArma = BuildMergedNpcPose(_lastRenderedState, _lastRenderData, fmrsEnabled, bwEnabled, armaSkel, sculpt)
             armaSkel.ApplyPose(poseForArma)
         Next
-        NpcPreviewLog.Log($"  [POSE-TOGGLE] rebuilt merged pose (fmrs={fmrsEnabled} bw={bwEnabled} sculpt={sculptEnabled}) → base + {_lastSkelByArma.Count} per-ARMA skeletons updated")
+
+        ' Re-route shape→skel mappings según el toggle actual. Sclpt=ON → shapes con sculpt apuntan
+        ' a su per-ARMA skel; Sclpt=OFF → todos apuntan al base. La mutación es visible al resolver
+        ' porque éste tiene el dict por referencia.
+        If _lastShapeToSkel IsNot Nothing Then
+            For Each shape In _lastRenderData.Shapes
+                Dim sculpt As Dictionary(Of String, System.Numerics.Vector3) = Nothing
+                Dim armaFormID As UInteger = 0
+                _lastRenderData.ShapeArmaSculpt.TryGetValue(shape, sculpt)
+                _lastRenderData.ShapeArmaFormID.TryGetValue(shape, armaFormID)
+                Dim armaSkel As SkeletonInstance = Nothing
+                If sculptEnabled AndAlso sculpt IsNot Nothing AndAlso sculpt.Count > 0 _
+                   AndAlso _lastSkelByArma.TryGetValue(armaFormID, armaSkel) Then
+                    _lastShapeToSkel(shape) = armaSkel
+                Else
+                    _lastShapeToSkel(shape) = _lastSkeletonInstance
+                End If
+            Next
+        End If
+
+        NpcPreviewLog.LogLazy(Function() $"  [POSE-TOGGLE] rebuilt merged pose (fmrs={fmrsEnabled} bw={bwEnabled} sculpt={sculptEnabled}) → base + {_lastSkelByArma.Count} per-ARMA skeletons updated (lazy-built {lazyBuilt})")
         Dim intent = _previewControl.Intent
         intent.MarkDirty(RenderDirtyFlags.Pose, _lastRenderData.Shapes)
         _previewControl.InvalidateRender()
     End Sub
 
+
+    Public Sub New(pluginManager As PluginManager, dataPath As String)
+        InitializeComponent()
+        _pluginManager = pluginManager
+        _dataPath = If(dataPath, "")
+        ' Preflight_Form already filled FilesDictionary. Mark the gate as completed so the two
+        ' EnsureAssetDictionaryAsync call sites don't re-trigger Fill_DictionaryAsync (which clears
+        ' the Dictionary as its first step, so a re-trigger would wipe the work the preflight did).
+        _assetDictionaryLoadTask = Task.CompletedTask
+        ComboBoxPreviewMode.SelectedIndex = 0
+    End Sub
 
     Private Sub MainForm_Load(sender As Object, e As EventArgs) Handles MyBase.Load
         _searchDebounceTimer.Interval = 250
@@ -436,26 +571,17 @@ Public Class MainForm
     End Sub
 
     Private Async Sub LoadDataAsync()
+        ' Plugins + BA2/BSA archives were loaded by Preflight_Form before MainForm was even
+        ' constructed. _pluginManager and FilesDictionary_class are already populated. Here we
+        ' just parse the NPC records out of the loaded plugins and populate the tree.
         Try
-            SetStatus("Locating Fallout 4 Data folder...")
             ToolStripProgressBar1.Visible = False
-
-            _dataPath = FindFO4DataPath()
-            If String.IsNullOrEmpty(_dataPath) Then
-                SetStatus("Fallout 4 Data folder not found. Configure in settings.")
-                Return
-            End If
-
-            SetStatus("Loading plugins...")
-            Dim espProg = New Progress(Of String)(Sub(msg) SetStatus(msg))
-            Await Task.Run(Sub() _pluginManager.LoadAllPlugins(_dataPath, espProg))
 
             SetStatus("Parsing NPC records...")
             Await Task.Run(Sub() ParseAllNPCs())
 
             PopulateNPCTree()
 
-            ToolStripProgressBar1.Visible = False
             SetStatus($"Loaded {_directlyPlacedNPCFormIDs.Count} placed NPCs + {_finalLVLNFormIDs.Count} leveled lists from {_pluginManager.Plugins.Count} plugins")
 
         Catch ex As Exception
@@ -598,7 +724,7 @@ Public Class MainForm
             Next
         Next
 
-        NpcPreviewLog.Log($"[CLASSIFICATION] {placedNPCs.Count} placed (ACHR), {_npcsInGameWorld.Count} total in-game, {_npcsUsedAsTemplates.Count} used as templates, {_finalLVLNFormIDs.Count} final LVLNs")
+        NpcPreviewLog.LogLazy(Function() $"[CLASSIFICATION] {placedNPCs.Count} placed (ACHR), {_npcsInGameWorld.Count} total in-game, {_npcsUsedAsTemplates.Count} used as templates, {_finalLVLNFormIDs.Count} final LVLNs")
     End Sub
 
     Private Sub CollectNPCsFromLVLNRecursive(lvlnFormID As UInteger, result As HashSet(Of UInteger), visited As HashSet(Of UInteger))
@@ -1087,6 +1213,15 @@ Public Class MainForm
     ''' <summary>Per-ARMA sculpt deltas used when building each skeleton clone in _lastSkelByArma.
     ''' Indexed by ArmorAddonFormID. Used to re-derive the pose for each clone when armaModel changes.</summary>
     Private _lastSculptByArma As New Dictionary(Of UInteger, Dictionary(Of String, System.Numerics.Vector3))
+    ''' <summary>Shape→SkeletonInstance map handed to MultiInstanceSkeletonResolver. The resolver
+    ''' holds this by reference (IReadOnlyDictionary), so mutating entries here is observed by the
+    ''' render pipeline on the next Pose dirty pass — without rebuilding the resolver. Used by
+    ''' RebuildAndApplyMergedPose to lazy-build per-ARMA skels when Sclpt is toggled ON post-render.</summary>
+    Private _lastShapeToSkel As Dictionary(Of IRenderableShape, SkeletonInstance) = Nothing
+    ''' <summary>Cached face-skeleton bytes from the last render. Needed by BuildSkeletonInstance
+    ''' to rebuild per-ARMA clones when Sclpt is toggled ON post-render. Nothing if the NPC has no
+    ''' face-skel merge.</summary>
+    Private _lastFaceSkelBytes As Byte() = Nothing
     Private Enum OutfitSlotKind
         DefaultOutfit
         SleepOutfit
@@ -1178,6 +1313,22 @@ Public Class MainForm
             _currentBaseState = baseState
             _currentOutfitEntries = If(outfitEntries, New List(Of OutfitComboEntry))
 
+            ' Now that an NPC is selected and resolved, the editor actions can target it.
+            ' Paste enable is recomputed against the new state — only stays enabled if the
+            ' clipboard's source NPC matched this one's race + gender.
+            If InvokeRequired Then
+                Invoke(Sub()
+                           ButtonLoadLooksmenu.Enabled = True
+                           ButtonSaveLooksmenu.Enabled = True
+                           ButtonCopyLook.Enabled = True
+                       End Sub)
+            Else
+                ButtonLoadLooksmenu.Enabled = True
+                ButtonSaveLooksmenu.Enabled = True
+                ButtonCopyLook.Enabled = True
+            End If
+            UpdatePasteLookEnabled()
+
             ' Enable/disable NPC randomization controls based on whether NPC has LVLN in template chain
             Dim hasLeveledTemplates = NpcHasLeveledTemplates(npc)
             If InvokeRequired Then
@@ -1227,7 +1378,7 @@ Public Class MainForm
                 npc = RecordParsers.ParseNPC(npcRec, If(npcRec.SourcePluginName, ""), _pluginManager)
             End If
 
-            NpcPreviewLog.Log($"  [LVLN-SELECT] {lvlnData.EditorID} [{lvlnData.FormID:X8}] ? picked {npc.EditorID} [{npc.FormID:X8}]")
+            NpcPreviewLog.LogLazy(Function() $"  [LVLN-SELECT] {lvlnData.EditorID} [{lvlnData.FormID:X8}] ? picked {npc.EditorID} [{npc.FormID:X8}]")
             PopulateRecordDetails(npc)
 
             SetStatus($"Resolving {npc} (from {lvlnData.EditorID})...")
@@ -1241,6 +1392,22 @@ Public Class MainForm
 
             _currentBaseState = baseState
             _currentOutfitEntries = If(outfitEntries, New List(Of OutfitComboEntry))
+
+            ' Now that an NPC is selected and resolved, the editor actions can target it.
+            ' Paste enable is recomputed against the new state — only stays enabled if the
+            ' clipboard's source NPC matched this one's race + gender.
+            If InvokeRequired Then
+                Invoke(Sub()
+                           ButtonLoadLooksmenu.Enabled = True
+                           ButtonSaveLooksmenu.Enabled = True
+                           ButtonCopyLook.Enabled = True
+                       End Sub)
+            Else
+                ButtonLoadLooksmenu.Enabled = True
+                ButtonSaveLooksmenu.Enabled = True
+                ButtonCopyLook.Enabled = True
+            End If
+            UpdatePasteLookEnabled()
 
             ' LVLN selections always allow re-randomization
             If InvokeRequired Then
@@ -1279,14 +1446,14 @@ Public Class MainForm
         Dim entry = _currentOutfitEntries(idx)
         If entry.SlotKind = OutfitSlotKind.NoOutfit OrElse entry.OutfitFormID = 0UI Then Return
 
-        NpcPreviewLog.Log($"  [REROLL-OUTFIT] idx={idx} slot={entry.SlotKind} otft={entry.OutfitFormID:X8}")
+        NpcPreviewLog.LogLazy(Function() $"  [REROLL-OUTFIT] idx={idx} slot={entry.SlotKind} otft={entry.OutfitFormID:X8}")
 
         Dim warnings As New List(Of String)
         Dim picks = OutfitResolver.SampleOutfitWithKeywords(entry.OutfitFormID, _pluginManager, warnings)
         entry.SampledArmorFormIDs = picks.Select(Function(p) p.ArmoFormID).ToList()
         entry.SampledArmorContextKeywords = picks.ToDictionary(Function(p) p.ArmoFormID, Function(p) p.ContextKeywords)
         For Each w In warnings
-            NpcPreviewLog.Log($"    [OTFT-WARN] {w}")
+            NpcPreviewLog.LogLazy(Function() $"    [OTFT-WARN] {w}")
         Next
 
         Dim requestVersion = Interlocked.Increment(_previewRequestVersion)
@@ -1300,7 +1467,7 @@ Public Class MainForm
         ' If selected node is a LVLN, re-pick a random NPC from it
         Dim lvlnData = TryCast(selectedNode.Tag, LVLN_Data)
         If lvlnData IsNot Nothing Then
-            NpcPreviewLog.Log($"  [REROLL-LVLN] {lvlnData.EditorID} gender={ComboBoxGender.Text}")
+            NpcPreviewLog.LogLazy(Function() $"  [REROLL-LVLN] {lvlnData.EditorID} gender={ComboBoxGender.Text}")
             Dim requestVersion = Interlocked.Increment(_previewRequestVersion)
             LoadLVLNOnDemandAsync(lvlnData, requestVersion)
             Return
@@ -1311,7 +1478,7 @@ Public Class MainForm
         Dim npc = TryCast(selectedNode.Tag, NPC_Data)
         If npc Is Nothing Then Return
 
-        NpcPreviewLog.Log($"  [REROLL-NPC] {npc.EditorID} gender={ComboBoxGender.Text}")
+        NpcPreviewLog.LogLazy(Function() $"  [REROLL-NPC] {npc.EditorID} gender={ComboBoxGender.Text}")
         Dim requestVersion2 = Interlocked.Increment(_previewRequestVersion)
         LoadNPCOnDemandAsync(npc, requestVersion2)
     End Sub
@@ -1410,8 +1577,8 @@ Public Class MainForm
         Dim faceSkelBytes = TryLoadFaceSkeletonBytes(state)
         Dim bodyWeightEnabled = CheckBoxApplyBodyWeight.Checked
         Dim sculptEnabled = CheckBoxApplySculpt.Checked
-        NpcPreviewLog.Log($"  [BODY-WEIGHT-TOGGLE] {If(bodyWeightEnabled, "ON — body-weight pose applied", "OFF — body-weight pose skipped (MWGT/BSMS/NNAM not applied)")}")
-        NpcPreviewLog.Log($"  [SCULPT-TOGGLE] {If(sculptEnabled, "ON — ARMA SCLP per-bone scaling applied to [A] over-armor consumers", "OFF — ARMA SCLP suppressed; every shape on base skeleton")}")
+        NpcPreviewLog.LogLazy(Function() $"  [BODY-WEIGHT-TOGGLE] {If(bodyWeightEnabled, "ON — body-weight pose applied", "OFF — body-weight pose skipped (MWGT/BSMS/NNAM not applied)")}")
+        NpcPreviewLog.LogLazy(Function() $"  [SCULPT-TOGGLE] {If(sculptEnabled, "ON — ARMA SCLP per-bone scaling applied to [A] over-armor consumers", "OFF — ARMA SCLP suppressed; every shape on base skeleton")}")
 
         ' Per-ARMA skeleton flow (refactored 2026-04-27, replaces single shared skeleton):
         ' Each shape goes to a SkeletonInstance with its own ARMA's sculpt applied (if any), or to
@@ -1448,7 +1615,7 @@ Public Class MainForm
                 End If
             Next
         Catch ex As Exception
-            NpcPreviewLog.Log($"    [RBIND-DUMP] failed: {ex.Message}")
+            NpcPreviewLog.LogLazy(Function() $"    [RBIND-DUMP] failed: {ex.Message}")
         End Try
 
         Dim shapeToSkel As New Dictionary(Of IRenderableShape, SkeletonInstance)
@@ -1459,8 +1626,9 @@ Public Class MainForm
             renderData.ShapeArmaFormID.TryGetValue(shape, armaFormID)
             Dim sculpt As Dictionary(Of String, System.Numerics.Vector3) = Nothing
             renderData.ShapeArmaSculpt.TryGetValue(shape, sculpt)
-            If sculpt Is Nothing OrElse sculpt.Count = 0 OrElse Not bodyWeightEnabled OrElse Not sculptEnabled Then
-                ' Sin sculpt, BW disabled o sculpt-toggle OFF → skeleton base compartido.
+            If sculpt Is Nothing OrElse sculpt.Count = 0 OrElse Not sculptEnabled Then
+                ' Sin sculpt o sculpt-toggle OFF → skeleton base compartido. BW es independiente:
+                ' Sclpt=ON + BW=OFF construye igual el per-ARMA skel pero con sólo capa 4 ARMA.
                 shapeToSkel(shape) = inst
                 Continue For
             End If
@@ -1475,7 +1643,7 @@ Public Class MainForm
             End If
             shapeToSkel(shape) = armaSkel
         Next
-        NpcPreviewLog.Log($"  [SKEL-PER-ARMA] base + {skelByArma.Count} per-ARMA skeletons built; {shapeToSkel.Count} shape→skel mappings")
+        NpcPreviewLog.LogLazy(Function() $"  [SKEL-PER-ARMA] base + {skelByArma.Count} per-ARMA skeletons built; {shapeToSkel.Count} shape→skel mappings")
 
         ' Diagnostic 2026-04-27: dump bone palette of each renderable shape to determine
         ' if the gloves mesh uses _skin bones (which receive sculpt scale) or principal bones
@@ -1504,7 +1672,7 @@ Public Class MainForm
                     If bn.EndsWith("_skin", StringComparison.OrdinalIgnoreCase) Then skinCount += 1
                 Next
                 Dim principalCount = boneNames.Count - skinCount
-                NpcPreviewLog.Log($"  [SHAPE-BONES] shape='{shapeName}' totalBones={boneNames.Count} _skin={skinCount} principal={principalCount}")
+                NpcPreviewLog.LogLazy(Function() $"  [SHAPE-BONES] shape='{shapeName}' totalBones={boneNames.Count} _skin={skinCount} principal={principalCount}")
                 ' Sample-truncated lists for spot-check.
                 Dim skinSample = boneNames.Where(Function(n) n.EndsWith("_skin", StringComparison.OrdinalIgnoreCase)).Take(8).ToArray()
                 Dim princSample = boneNames.Where(Function(n) Not n.EndsWith("_skin", StringComparison.OrdinalIgnoreCase) AndAlso Not n.EndsWith("_Skin", StringComparison.Ordinal)).Take(8).ToArray()
@@ -1512,7 +1680,7 @@ Public Class MainForm
                 If princSample.Length > 0 Then NpcPreviewLog.Log($"    [SHAPE-BONES] principal sample: {String.Join(", ", princSample)}")
             Next
         Catch ex As Exception
-            NpcPreviewLog.Log($"  [SHAPE-BONES] error: {ex.Message}")
+            NpcPreviewLog.LogLazy(Function() $"  [SHAPE-BONES] error: {ex.Message}")
         End Try
 
         Dim skelResolver As ISkeletonResolver = New MultiInstanceSkeletonResolver(shapeToSkel, inst)
@@ -1543,6 +1711,8 @@ Public Class MainForm
         _lastSkeletonInstance = inst
         _lastSkelByArma = skelByArma
         _lastSculptByArma = sculptByArma
+        _lastShapeToSkel = shapeToSkel
+        _lastFaceSkelBytes = faceSkelBytes
 
         ' After the shapes become RenderableMesh instances, compose the NPC's face tint layers
         ' into an RGBA overlay texture via FBO and assign it to the face mesh's MaterialData.
@@ -1567,7 +1737,7 @@ Public Class MainForm
             _previewControl.UpdateRequired = True
             _previewControl.RefreshRender()
         Catch ex As Exception
-            NpcPreviewLog.Log($"  [CAMERA-RESET] post-render failed: {ex.Message}")
+            NpcPreviewLog.LogLazy(Function() $"  [CAMERA-RESET] post-render failed: {ex.Message}")
         End Try
 
 
@@ -1577,7 +1747,7 @@ Public Class MainForm
         Try
             CompareAgainstFaceGenIfWhitelisted(state, morphResolver, inst)
         Catch ex As Exception
-            NpcPreviewLog.Log($"  [FACEGEN-DIAG] exception: {ex.Message}")
+            NpcPreviewLog.LogLazy(Function() $"  [FACEGEN-DIAG] exception: {ex.Message}")
         End Try
 
         SetStatus($"Rendered {previewVariant.DisplayName} ({renderData.Shapes.Count} shapes)")
@@ -1591,7 +1761,8 @@ Public Class MainForm
         &H19EE79UI,  ' Cientifica — fat-heavy fixture (discriminator for fat channel in body-weight model)
         &H15E922UI,  ' FMIN=2 fixture — FMIN semantics discriminator (scale vs scale+translation vs +rotation)
         &H19FD9UI,  ' FMIN=4 fixture — stronger discriminator for FMIN-on-vertex hypothesis (1/FMIN vs 1/FMIN² vs zero)
-        &H2F1EUI    ' Pieper — added 2026-04-26 by user request, FaceGen 00002F1E.NIF
+        &H2F1EUI,   ' Pieper — added 2026-04-26 by user request, FaceGen 00002F1E.NIF
+        &H19FDCUI   ' MarcyLong — added to investigate "mouth pokes through lip" symptom (5x DefaultFaceType0 sum + LipFeature4)
     }
 
     ''' <summary>BPND.PartType enum (0-25) → name mapping per wbDefinitionsFO4.pas:8079-8107.</summary>
@@ -1622,28 +1793,28 @@ Public Class MainForm
             Dim race = RecordParsers.ParseRACE(raceRec, _pluginManager)
 
             If race.BodyPartDataFormID = 0UI Then
-                NpcPreviewLog.Log($"  [BPTD] RACE {race.EditorID} (0x{race.FormID:X8}) has no GNAM → no BodyPartData")
+                NpcPreviewLog.LogLazy(Function() $"  [BPTD] RACE {race.EditorID} (0x{race.FormID:X8}) has no GNAM → no BodyPartData")
                 Return
             End If
 
             Dim bptdRec = _pluginManager.GetRecord(race.BodyPartDataFormID)
             If bptdRec Is Nothing Then
-                NpcPreviewLog.Log($"  [BPTD] RACE {race.EditorID} → BPTD 0x{race.BodyPartDataFormID:X8} NOT FOUND")
+                NpcPreviewLog.LogLazy(Function() $"  [BPTD] RACE {race.EditorID} → BPTD 0x{race.BodyPartDataFormID:X8} NOT FOUND")
                 Return
             End If
             If bptdRec.Header.Signature <> "BPTD" Then
-                NpcPreviewLog.Log($"  [BPTD] FormID 0x{race.BodyPartDataFormID:X8} is not BPTD (sig={bptdRec.Header.Signature})")
+                NpcPreviewLog.LogLazy(Function() $"  [BPTD] FormID 0x{race.BodyPartDataFormID:X8} is not BPTD (sig={bptdRec.Header.Signature})")
                 Return
             End If
 
             Dim bptd = ActorRecordParsers.ParseBPTD(bptdRec, _pluginManager)
-            NpcPreviewLog.Log($"  [BPTD] RACE {race.EditorID} → BPTD {bptd.EditorID} (0x{bptd.FormID:X8}) parts={bptd.Parts.Count}")
+            NpcPreviewLog.LogLazy(Function() $"  [BPTD] RACE {race.EditorID} → BPTD {bptd.EditorID} (0x{bptd.FormID:X8}) parts={bptd.Parts.Count}")
             For Each part In bptd.Parts
                 Dim ptName = If(part.PartType < _bptdPartTypeNames.Length, _bptdPartTypeNames(part.PartType), $"Unknown({part.PartType})")
-                NpcPreviewLog.Log($"    [BPTD] part='{part.PartName}' node='{part.NodeName}' VATS='{part.VATSTarget}' type={part.PartType}/{ptName} flags=0x{part.Flags:X2} health={part.HealthPercent} toHit={part.ToHitChance} geoSegIdx={part.GeometrySegmentIndex} nonLethalDismem={part.NonLethalDismembermentChance}")
+                NpcPreviewLog.LogLazy(Function() $"    [BPTD] part='{part.PartName}' node='{part.NodeName}' VATS='{part.VATSTarget}' type={part.PartType}/{ptName} flags=0x{part.Flags:X2} health={part.HealthPercent} toHit={part.ToHitChance} geoSegIdx={part.GeometrySegmentIndex} nonLethalDismem={part.NonLethalDismembermentChance}")
             Next
         Catch ex As Exception
-            NpcPreviewLog.Log($"  [BPTD] exception: {ex.Message}")
+            NpcPreviewLog.LogLazy(Function() $"  [BPTD] exception: {ex.Message}")
         End Try
     End Sub
 
@@ -1661,12 +1832,12 @@ Public Class MainForm
 
         Dim loc As FilesDictionary_class.File_Location = Nothing
         If Not FilesDictionary_class.Dictionary.TryGetValue(faceGenPath.ToLowerInvariant(), loc) Then
-            NpcPreviewLog.Log($"  [FACEGEN-DIAG] FaceGen NIF not found via FilesDictionary: '{faceGenPath}'")
+            NpcPreviewLog.LogLazy(Function() $"  [FACEGEN-DIAG] FaceGen NIF not found via FilesDictionary: '{faceGenPath}'")
             Return
         End If
         Dim faceGenBytes = loc.GetBytes()
         If faceGenBytes Is Nothing OrElse faceGenBytes.Length = 0 Then
-            NpcPreviewLog.Log($"  [FACEGEN-DIAG] FaceGen NIF empty: '{faceGenPath}'")
+            NpcPreviewLog.LogLazy(Function() $"  [FACEGEN-DIAG] FaceGen NIF empty: '{faceGenPath}'")
             Return
         End If
 
@@ -1674,7 +1845,7 @@ Public Class MainForm
         Try
             baked.Load_Manolo(faceGenBytes)
         Catch ex As Exception
-            NpcPreviewLog.Log($"  [FACEGEN-DIAG] failed to parse FaceGen NIF: {ex.Message}")
+            NpcPreviewLog.LogLazy(Function() $"  [FACEGEN-DIAG] failed to parse FaceGen NIF: {ex.Message}")
             Return
         End Try
 
@@ -1686,34 +1857,34 @@ Public Class MainForm
         ' is not blind to non-BSTriShape FaceGen variants.
         Dim bakedShapes = baked.NifShapes.ToList()
         If bakedShapes.Count = 0 Then
-            NpcPreviewLog.Log($"  [FACEGEN-DIAG] FaceGen NIF has no shapes to compare.")
+            NpcPreviewLog.LogLazy(Function() $"  [FACEGEN-DIAG] FaceGen NIF has no shapes to compare.")
             Return
         End If
         ' Log every shape available so we can pick manually if heuristic fails.
         For Each sh In bakedShapes
             Dim shName = If(sh.Name Is Nothing, "(unnamed)", sh.Name.String)
             Dim vc = ShapeGeometryFactory.[For](sh, baked).VertexCount
-            NpcPreviewLog.Log($"  [FACEGEN-DIAG]   available shape='{shName}' verts={vc} type={sh.GetType().Name}")
+            NpcPreviewLog.LogLazy(Function() $"  [FACEGEN-DIAG]   available shape='{shName}' verts={vc} type={sh.GetType().Name}")
         Next
         Dim bakedHead As NiflySharp.INiShape = bakedShapes.FirstOrDefault(Function(s)
-                                                                   Dim n = If(s.Name Is Nothing, "", s.Name.String)
-                                                                   If String.IsNullOrEmpty(n) Then Return False
-                                                                   If n.IndexOf("Hair", StringComparison.OrdinalIgnoreCase) >= 0 Then Return False
-                                                                   If n.IndexOf("Rear", StringComparison.OrdinalIgnoreCase) >= 0 Then Return False
-                                                                   If n.IndexOf("Lashes", StringComparison.OrdinalIgnoreCase) >= 0 Then Return False
-                                                                   If n.IndexOf("Eyes", StringComparison.OrdinalIgnoreCase) >= 0 Then Return False
-                                                                   If n.IndexOf("Mouth", StringComparison.OrdinalIgnoreCase) >= 0 Then Return False
-                                                                   Return n.IndexOf("Head", StringComparison.OrdinalIgnoreCase) >= 0
-                                                               End Function)
+                                                                              Dim n = If(s.Name Is Nothing, "", s.Name.String)
+                                                                              If String.IsNullOrEmpty(n) Then Return False
+                                                                              If n.IndexOf("Hair", StringComparison.OrdinalIgnoreCase) >= 0 Then Return False
+                                                                              If n.IndexOf("Rear", StringComparison.OrdinalIgnoreCase) >= 0 Then Return False
+                                                                              If n.IndexOf("Lashes", StringComparison.OrdinalIgnoreCase) >= 0 Then Return False
+                                                                              If n.IndexOf("Eyes", StringComparison.OrdinalIgnoreCase) >= 0 Then Return False
+                                                                              If n.IndexOf("Mouth", StringComparison.OrdinalIgnoreCase) >= 0 Then Return False
+                                                                              Return n.IndexOf("Head", StringComparison.OrdinalIgnoreCase) >= 0
+                                                                          End Function)
         If bakedHead Is Nothing Then
-            NpcPreviewLog.Log($"  [FACEGEN-DIAG] no head shape found in FaceGen NIF (tried 'Head' name filter excluding Hair/Rear/Lashes/Eyes/Mouth).")
+            NpcPreviewLog.LogLazy(Function() $"  [FACEGEN-DIAG] no head shape found in FaceGen NIF (tried 'Head' name filter excluding Hair/Rear/Lashes/Eyes/Mouth).")
             Return
         End If
         Dim bakedHeadGeom = ShapeGeometryFactory.[For](bakedHead, baked)
         Dim bakedHeadVerts = bakedHeadGeom.GetVertexPositions()
         Dim bakedVertCount = bakedHeadVerts.Count
         Dim bakedHeadName = If(bakedHead.Name Is Nothing, "(unnamed)", bakedHead.Name.String)
-        NpcPreviewLog.Log($"  [FACEGEN-DIAG] baked head shape='{bakedHeadName}' verts={bakedVertCount}")
+        NpcPreviewLog.LogLazy(Function() $"  [FACEGEN-DIAG] baked head shape='{bakedHeadName}' verts={bakedVertCount}")
         If bakedVertCount = 0 Then Return
 
         ' Log the FaceGen NIF's accumulated root→shape transform.
@@ -1722,15 +1893,15 @@ Public Class MainForm
             If bakedShapeNode Is Nothing Then bakedShapeNode = baked.GetRootNode()
             If bakedShapeNode IsNot Nothing Then
                 Dim gt = Transform_Class.GetGlobalTransform(bakedShapeNode, baked)
-                NpcPreviewLog.Log($"  [FACEGEN-DIAG] baked head NIF global transform: translation=({gt.Translation.X:F4},{gt.Translation.Y:F4},{gt.Translation.Z:F4}) scale={gt.Scale:F4} rotation R11={gt.Rotation.M11:F4} R22={gt.Rotation.M22:F4} R33={gt.Rotation.M33:F4}")
+                NpcPreviewLog.LogLazy(Function() $"  [FACEGEN-DIAG] baked head NIF global transform: translation=({gt.Translation.X:F4},{gt.Translation.Y:F4},{gt.Translation.Z:F4}) scale={gt.Scale:F4} rotation R11={gt.Rotation.M11:F4} R22={gt.Rotation.M22:F4} R33={gt.Rotation.M33:F4}")
             End If
         Catch ex As Exception
-            NpcPreviewLog.Log($"  [FACEGEN-DIAG] could not read baked NIF root transform: {ex.Message}")
+            NpcPreviewLog.LogLazy(Function() $"  [FACEGEN-DIAG] could not read baked NIF root transform: {ex.Message}")
         End Try
 
 
         If _previewControl Is Nothing OrElse _previewControl.Model Is Nothing Then
-            NpcPreviewLog.Log($"  [FACEGEN-DIAG] no model loaded yet to compare against.")
+            NpcPreviewLog.LogLazy(Function() $"  [FACEGEN-DIAG] no model loaded yet to compare against.")
             Return
         End If
 
@@ -1749,7 +1920,7 @@ Public Class MainForm
             End If
         Next
         If ourMesh Is Nothing Then
-            NpcPreviewLog.Log($"  [FACEGEN-DIAG] no matching head mesh (verts={bakedVertCount}) in our model.")
+            NpcPreviewLog.LogLazy(Function() $"  [FACEGEN-DIAG] no matching head mesh (verts={bakedVertCount}) in our model.")
             Return
         End If
 
@@ -1766,7 +1937,7 @@ Public Class MainForm
             meanDz += CDbl(bv.Z) - CDbl(ov.Z)
         Next
         meanDx /= count : meanDy /= count : meanDz /= count
-        NpcPreviewLog.Log($"  [FACEGEN-DIAG] mean offset (baked-ours) = ({meanDx:F4},{meanDy:F4},{meanDz:F4})")
+        NpcPreviewLog.LogLazy(Function() $"  [FACEGEN-DIAG] mean offset (baked-ours) = ({meanDx:F4},{meanDy:F4},{meanDz:F4})")
 
         ' Per-axis linear fit: find (a, b) such that baked_axis ≈ a + b * ours_axis.
         ' Signature of a head-bone bind-pose transform (scale+translation per axis).
@@ -1799,7 +1970,7 @@ Public Class MainForm
         Dim interceptX As Double = meanBX - slopeX * meanOX
         Dim interceptY As Double = meanBY - slopeY * meanOY
         Dim interceptZ As Double = meanBZ - slopeZ * meanOZ
-        NpcPreviewLog.Log($"  [FACEGEN-DIAG] per-axis fit: X: baked = {interceptX:F4} + {slopeX:F4}*ours  Y: baked = {interceptY:F4} + {slopeY:F4}*ours  Z: baked = {interceptZ:F4} + {slopeZ:F4}*ours")
+        NpcPreviewLog.LogLazy(Function() $"  [FACEGEN-DIAG] per-axis fit: X: baked = {interceptX:F4} + {slopeX:F4}*ours  Y: baked = {interceptY:F4} + {slopeY:F4}*ours  Z: baked = {interceptZ:F4} + {slopeZ:F4}*ours")
 
 
         Dim diffs As New List(Of (Idx As Integer, Bx As Single, By As Single, Bz As Single, Ox As Single, Oy As Single, Oz As Single, Mag As Single, ResidualMag As Single))(count)
@@ -1836,7 +2007,7 @@ Public Class MainForm
         Dim rmsResidual As Double = Math.Sqrt(sumSqResidual / Math.Max(1, count))
         Dim rmsResidualPerAxisFit As Double = Math.Sqrt(sumSqResidualPerAxisFit / Math.Max(1, count))
 
-        NpcPreviewLog.Log($"  [FACEGEN-DIAG] NPC=0x{modelNpcFormID.ToString("X8")} compared {count} verts: RMS={rms.ToString("F4")} maxDiff={maxMag.ToString("F4")} RMSresidualAfterMeanSub={rmsResidual.ToString("F4")} RMSresidualAfterPerAxisFit={rmsResidualPerAxisFit.ToString("F4")}")
+        NpcPreviewLog.LogLazy(Function() $"  [FACEGEN-DIAG] NPC=0x{modelNpcFormID.ToString("X8")} compared {count} verts: RMS={rms.ToString("F4")} maxDiff={maxMag.ToString("F4")} RMSresidualAfterMeanSub={rmsResidual.ToString("F4")} RMSresidualAfterPerAxisFit={rmsResidualPerAxisFit.ToString("F4")}")
 
         ' Re-resolve the morph plan early — needed both for per-vertex morph contribution logging
         ' below AND for building a bind-pose comparison geometry in the world-space section.
@@ -1845,7 +2016,7 @@ Public Class MainForm
             Try
                 headPlan = morphResolver.ResolveMorphPlan(ourMesh.MeshData.Shape, ourMesh.MeshData.Meshgeometry)
             Catch ex As Exception
-                NpcPreviewLog.Log($"  [FACEGEN-DIAG] could not re-resolve head morph plan: {ex.Message}")
+                NpcPreviewLog.LogLazy(Function() $"  [FACEGEN-DIAG] could not re-resolve head morph plan: {ex.Message}")
             End Try
         End If
 
@@ -1885,7 +2056,7 @@ Public Class MainForm
                                            ourMesh.MeshData.Meshgeometry,
                                            ourMesh.MeshData.Shape, morphResolver, skeleton)
             Catch exH As Exception
-                NpcPreviewLog.Log($"  [HARNESS-RAW] top-level exception: {exH.Message}")
+                NpcPreviewLog.LogLazy(Function() $"  [HARNESS-RAW] top-level exception: {exH.Message}")
             End Try
 
             ' Diagnostic: verificar que los bones de AMBOS lados estén en SkeletonDictionary
@@ -1900,7 +2071,7 @@ Public Class MainForm
             Dim onlyOurs = ourSet.Except(bakeSet, StringComparer.OrdinalIgnoreCase).OrderBy(Function(s) s).ToList()
             Dim bakeMissingInDict = bakeBones.Where(Function(b) Not skeleton.SkeletonDictionary.ContainsKey(b)).OrderBy(Function(s) s).ToList()
             Dim oursMissingInDict = ourBones.Where(Function(b) Not skeleton.SkeletonDictionary.ContainsKey(b)).OrderBy(Function(s) s).ToList()
-            NpcPreviewLog.Log($"  [FG-BONES] bake={bakeBones.Count} ours={ourBones.Count} onlyInBake={onlyBake.Count} onlyInOurs={onlyOurs.Count} bakeMissingInDict={bakeMissingInDict.Count} oursMissingInDict={oursMissingInDict.Count}")
+            NpcPreviewLog.LogLazy(Function() $"  [FG-BONES] bake={bakeBones.Count} ours={ourBones.Count} onlyInBake={onlyBake.Count} onlyInOurs={onlyOurs.Count} bakeMissingInDict={bakeMissingInDict.Count} oursMissingInDict={oursMissingInDict.Count}")
             If onlyBake.Count > 0 Then NpcPreviewLog.Log($"    [FG-BONES] only-in-BAKE: {String.Join(", ", onlyBake)}")
             If onlyOurs.Count > 0 Then NpcPreviewLog.Log($"    [FG-BONES] only-in-OURS: {String.Join(", ", onlyOurs)}")
             If bakeMissingInDict.Count > 0 Then NpcPreviewLog.Log($"    [FG-BONES] bake-bones NOT-in-SkeletonDict (fallback active): {String.Join(", ", bakeMissingInDict)}")
@@ -1915,8 +2086,8 @@ Public Class MainForm
                     Dim nm = If(bakeBoneNodes(k)?.Name?.String, "")
                     If nm = "HEAD" OrElse nm = "Neck_skin" OrElse nm = "Chest_skin" Then
                         Dim lt = bakeBoneTxs(k)
-                        NpcPreviewLog.Log($"    [BAKE-LOCALT] bone='{nm}' Trans=({lt.Translation.X:F4},{lt.Translation.Y:F4},{lt.Translation.Z:F4}) Scale={lt.Scale:F4}")
-                        NpcPreviewLog.Log($"                  Rotation=[{lt.Rotation.M11:F4} {lt.Rotation.M12:F4} {lt.Rotation.M13:F4} | {lt.Rotation.M21:F4} {lt.Rotation.M22:F4} {lt.Rotation.M23:F4} | {lt.Rotation.M31:F4} {lt.Rotation.M32:F4} {lt.Rotation.M33:F4}]")
+                        NpcPreviewLog.LogLazy(Function() $"    [BAKE-LOCALT] bone='{nm}' Trans=({lt.Translation.X:F4},{lt.Translation.Y:F4},{lt.Translation.Z:F4}) Scale={lt.Scale:F4}")
+                        NpcPreviewLog.LogLazy(Function() $"                  Rotation=[{lt.Rotation.M11:F4} {lt.Rotation.M12:F4} {lt.Rotation.M13:F4} | {lt.Rotation.M21:F4} {lt.Rotation.M22:F4} {lt.Rotation.M23:F4} | {lt.Rotation.M31:F4} {lt.Rotation.M32:F4} {lt.Rotation.M33:F4}]")
                     End If
                 Next
             Catch : End Try
@@ -1935,7 +2106,7 @@ Public Class MainForm
             Try
                 If ourGeo.PerVertexSkinMatrix IsNot Nothing AndAlso ourGeo.PerVertexSkinMatrix.Length > 0 Then
                     Dim m0 = ourGeo.PerVertexSkinMatrix(0)
-                    NpcPreviewLog.Log($"  [SKIN-CACHE-SANITY] ourGeo verts={ourGeo.Vertices.Length} PVSM[0].M={m0.M11:F4},{m0.M12:F4},{m0.M13:F4},{m0.M14:F4} | T=({m0.M41:F4},{m0.M42:F4},{m0.M43:F4})")
+                    NpcPreviewLog.LogLazy(Function() $"  [SKIN-CACHE-SANITY] ourGeo verts={ourGeo.Vertices.Length} PVSM[0].M={m0.M11:F4},{m0.M12:F4},{m0.M13:F4},{m0.M14:F4} | T=({m0.M41:F4},{m0.M42:F4},{m0.M43:F4})")
                 End If
             Catch : End Try
             Dim ourWorld = SkinningHelper.GetWorldVertices(ourGeo)
@@ -1958,7 +2129,7 @@ Public Class MainForm
                 If mag >= 0.5F Then nHugeW += 1
             Next
             Dim rmsW As Double = Math.Sqrt(sumSqW / Math.Max(1, wCount))
-            NpcPreviewLog.Log($"  [FACEGEN-DIAG-WORLD] world compare (ours+FMRS vs FG bind): {wCount} verts RMS={rmsW.ToString("F4")} maxDiff={maxW.ToString("F4")} exact(<0.001)={nExactW} tiny(<0.01)={nTinyW} small(<0.1)={nSmallW} large(<0.5)={nLargeW} huge(>=0.5)={nHugeW}")
+            NpcPreviewLog.LogLazy(Function() $"  [FACEGEN-DIAG-WORLD] world compare (ours+FMRS vs FG bind): {wCount} verts RMS={rmsW.ToString("F4")} maxDiff={maxW.ToString("F4")} exact(<0.001)={nExactW} tiny(<0.01)={nTinyW} small(<0.1)={nSmallW} large(<0.5)={nLargeW} huge(>=0.5)={nHugeW}")
 
             ' Bucket by vertex morph count — the user's decomposition strategy:
             '   0 morphs: diff here reveals BONE MORPH (FMRS) pipeline bugs (since vertex morphs
@@ -1985,7 +2156,7 @@ Public Class MainForm
                 If mag > bucketMax(mc) Then bucketMax(mc) = mag
             Next
             Dim bucketKeys = bucketN.Keys.OrderBy(Function(k) k).ToList()
-            NpcPreviewLog.Log($"  [FACEGEN-DIAG-WORLD] world diff BUCKETED by vertex-morph count:")
+            NpcPreviewLog.LogLazy(Function() $"  [FACEGEN-DIAG-WORLD] world diff BUCKETED by vertex-morph count:")
             For Each k In bucketKeys
                 Dim nInBucket = bucketN(k)
                 Dim rmsBucket As Double = Math.Sqrt(bucketSumSq(k) / Math.Max(1, nInBucket))
@@ -1994,7 +2165,7 @@ Public Class MainForm
                 If k = 0 Then
                     interpretation = If(rmsBucket < 0.0005, " [FMRS OK]", " [FMRS BUG]")
                 End If
-                NpcPreviewLog.Log($"    bucket morphCount={k}: N={nInBucket} RMS={rmsBucket.ToString("F4")} maxDiff={maxBucket.ToString("F4")}{interpretation}")
+                NpcPreviewLog.LogLazy(Function() $"    bucket morphCount={k}: N={nInBucket} RMS={rmsBucket.ToString("F4")} maxDiff={maxBucket.ToString("F4")}{interpretation}")
             Next
 
             ' Group by PRIMARY bone (the bone with the largest weight per vertex).
@@ -2044,10 +2215,10 @@ Public Class MainForm
                         byPrimaryBone(primaryName) = (1, CDbl(mag) * CDbl(mag), mag)
                     End If
                 Next
-                NpcPreviewLog.Log($"  --- DIFF by PRIMARY BONE (bone with largest weight per vertex) ---")
+                NpcPreviewLog.LogLazy(Function() $"  --- DIFF by PRIMARY BONE (bone with largest weight per vertex) ---")
                 For Each kvp In byPrimaryBone.OrderByDescending(Function(x) Math.Sqrt(x.Value.SumSq / Math.Max(1, x.Value.N)))
                     Dim rmsPB As Double = Math.Sqrt(kvp.Value.SumSq / Math.Max(1, kvp.Value.N))
-                    NpcPreviewLog.Log($"    primaryBone='{kvp.Key}' N={kvp.Value.N} RMS={rmsPB.ToString("F4")} maxDiff={kvp.Value.MaxMag.ToString("F4")}")
+                    NpcPreviewLog.LogLazy(Function() $"    primaryBone='{kvp.Key}' N={kvp.Value.N} RMS={rmsPB.ToString("F4")} maxDiff={kvp.Value.MaxMag.ToString("F4")}")
                 Next
 
                 ' Per-vertex detail for focus bones: neck/jaw/chin FMRS bones where the residual
@@ -2055,7 +2226,7 @@ Public Class MainForm
                 ' see if the diff is a sign flip, wrong scale, or bad bind pose.
                 ' Per-bone REST + WORLD comparison: dump for each bone referenced by the bake
                 ' its bind pose in dict Original, dict GetGlobal (post-pose), and bake NIF's own bind.
-                NpcPreviewLog.Log($"  --- BONE COMPARISON (rest=Original, world=post-pose, bake-NIF=bake's own bind) ---")
+                NpcPreviewLog.LogLazy(Function() $"  --- BONE COMPARISON (rest=Original, world=post-pose, bake-NIF=bake's own bind) ---")
                 For Each boneName In bakeBones.OrderBy(Function(s) s)
                     Dim dictBone As HierarchiBone_class = Nothing
                     Dim restTxt As String = "not-in-dict"
@@ -2075,11 +2246,11 @@ Public Class MainForm
                             Exit For
                         End If
                     Next
-                    NpcPreviewLog.Log($"    [BONE-COMP] '{boneName}' rest={restTxt} | world={worldTxt} | bakeNIF={bakeTxt}")
+                    NpcPreviewLog.LogLazy(Function() $"    [BONE-COMP] '{boneName}' rest={restTxt} | world={worldTxt} | bakeNIF={bakeTxt}")
                 Next
 
                 ' Per-vertex diff — ALL verts (sorted by mag desc), no focus filter.
-                NpcPreviewLog.Log($"  --- ALL VERTEX DIFFS (sorted by magnitude desc) ---")
+                NpcPreviewLog.LogLazy(Function() $"  --- ALL VERTEX DIFFS (sorted by magnitude desc) ---")
                 Dim vertDiffs As New List(Of (Idx As Integer, Primary As String, Mag As Single, Dx As Single, Dy As Single, Dz As Single, Ox As Single, Oy As Single, Oz As Single, Bx As Single, ByV As Single, Bz As Single, Weights As String))
                 For i = 0 To wCount - 1
                     Dim primaryName As String = "?"
@@ -2111,10 +2282,10 @@ Public Class MainForm
                 Next
                 vertDiffs.Sort(Function(a, b) b.Mag.CompareTo(a.Mag))
                 For Each v In vertDiffs
-                    NpcPreviewLog.Log($"    [FG-VERT] idx={v.Idx} primary='{v.Primary}' mag={v.Mag:F4} ours=({v.Ox:F4},{v.Oy:F4},{v.Oz:F4}) bake=({v.Bx:F4},{v.ByV:F4},{v.Bz:F4}) diff=({v.Dx:+0.000;-0.000;0.000},{v.Dy:+0.000;-0.000;0.000},{v.Dz:+0.000;-0.000;0.000}) weights=[{v.Weights}]")
+                    NpcPreviewLog.LogLazy(Function() $"    [FG-VERT] idx={v.Idx} primary='{v.Primary}' mag={v.Mag:F4} ours=({v.Ox:F4},{v.Oy:F4},{v.Oz:F4}) bake=({v.Bx:F4},{v.ByV:F4},{v.Bz:F4}) diff=({v.Dx:+0.000;-0.000;0.000},{v.Dy:+0.000;-0.000;0.000},{v.Dz:+0.000;-0.000;0.000}) weights=[{v.Weights}]")
                 Next
             Catch ex As Exception
-                NpcPreviewLog.Log($"  [FACEGEN-DIAG-WORLD] primary-bone log failed: {ex.Message}")
+                NpcPreviewLog.LogLazy(Function() $"  [FACEGEN-DIAG-WORLD] primary-bone log failed: {ex.Message}")
             End Try
 
             ' Bind pose dump for neck-chain bones: verify if our SkeletonDict's OriginalGetGlobalTransform
@@ -2125,7 +2296,7 @@ Public Class MainForm
                                     "skin_bone_L_Ear", "skin_bone_R_Ear", "LArm_Collarbone_skin", "RArm_Collarbone_skin",
                                     "skin_bone_L_Eye", "skin_bone_R_Eye",
                                     "Neck", "Chest", "SPINE2", "SPINE1", "COM", "Root"}
-                NpcPreviewLog.Log($"  --- BIND POSE DIFF (ours dict vs bake NIF per bone) ---")
+                NpcPreviewLog.LogLazy(Function() $"  --- BIND POSE DIFF (ours dict vs bake NIF per bone) ---")
                 Dim bakeBoneByName As New Dictionary(Of String, NiflySharp.Blocks.NiNode)(StringComparer.OrdinalIgnoreCase)
                 For Each bn In fgShape.ShapeBones
                     Dim nm = If(bn?.Name?.String, "")
@@ -2143,14 +2314,14 @@ Public Class MainForm
                                 Dim lt = curr.OriginalLocaLTransform
                                 Dim ltDesc = If(lt Is Nothing, "null",
                                     $"LT=({lt.Translation.X:F3},{lt.Translation.Y:F3},{lt.Translation.Z:F3}) scale={lt.Scale:F4}")
-                                NpcPreviewLog.Log($"    [DICT-CHAIN-{startBoneName}] depth={chainDepth} bone='{curr.BoneName}' {ltDesc}")
+                                NpcPreviewLog.LogLazy(Function() $"    [DICT-CHAIN-{startBoneName}] depth={chainDepth} bone='{curr.BoneName}' {ltDesc}")
                                 curr = curr.Parent
                                 chainDepth += 1
                             End While
                         End If
                     Next
                 Catch ex As Exception
-                    NpcPreviewLog.Log($"    [DICT-CHAIN] walk failed: {ex.Message}")
+                    NpcPreviewLog.LogLazy(Function() $"    [DICT-CHAIN] walk failed: {ex.Message}")
                 End Try
 
                 ' Walk parent chain of the bakedHead NIF shape up to root: dump each NiNode's scale + translation.
@@ -2160,7 +2331,7 @@ Public Class MainForm
                     Dim depth As Integer = 0
                     While currNode IsNot Nothing AndAlso depth < 10
                         Dim nm = If(currNode.Name?.String, "(no-name)")
-                        NpcPreviewLog.Log($"    [BAKE-CHAIN] depth={depth} node='{nm}' T=({currNode.Translation.X:F4},{currNode.Translation.Y:F4},{currNode.Translation.Z:F4}) scale={currNode.Scale:F6}")
+                        NpcPreviewLog.LogLazy(Function() $"    [BAKE-CHAIN] depth={depth} node='{nm}' T=({currNode.Translation.X:F4},{currNode.Translation.Y:F4},{currNode.Translation.Z:F4}) scale={currNode.Scale:F6}")
                         Dim nextParent As NiflySharp.Blocks.NiNode = Nothing
                         Try : nextParent = baked.GetParentNode(currNode) : Catch : End Try
                         If nextParent Is Nothing Then Exit While
@@ -2168,13 +2339,13 @@ Public Class MainForm
                         depth += 1
                     End While
                 Catch ex As Exception
-                    NpcPreviewLog.Log($"    [BAKE-CHAIN] walk failed: {ex.Message}")
+                    NpcPreviewLog.LogLazy(Function() $"    [BAKE-CHAIN] walk failed: {ex.Message}")
                 End Try
 
                 ' Also log the NiNode.Scale of each bone in the bake (if per-node scale != 1 we've found it).
                 For Each kv In bakeBoneByName
                     Dim bn = kv.Value
-                    NpcPreviewLog.Log($"    [BAKE-BONE-SCALE] '{kv.Key}' nodeScale={bn.Scale:F6} nodeT=({bn.Translation.X:F4},{bn.Translation.Y:F4},{bn.Translation.Z:F4})")
+                    NpcPreviewLog.LogLazy(Function() $"    [BAKE-BONE-SCALE] '{kv.Key}' nodeScale={bn.Scale:F6} nodeT=({bn.Translation.X:F4},{bn.Translation.Y:F4},{bn.Translation.Z:F4})")
                 Next
 
                 For Each boneName In chainToCheck
@@ -2206,10 +2377,10 @@ Public Class MainForm
                             bakeParentDesc = "parent=err"
                         End Try
                     End If
-                    NpcPreviewLog.Log($"    [BIND-CHECK] bone='{boneName}' ours: {ourGlobalDesc} {ourLocalDesc} {ourParentDesc} | bake: {bakeGlobalDesc} {bakeLocalDesc} {bakeParentDesc}")
+                    NpcPreviewLog.LogLazy(Function() $"    [BIND-CHECK] bone='{boneName}' ours: {ourGlobalDesc} {ourLocalDesc} {ourParentDesc} | bake: {bakeGlobalDesc} {bakeLocalDesc} {bakeParentDesc}")
                 Next
             Catch ex As Exception
-                NpcPreviewLog.Log($"  [BIND-CHECK] failed: {ex.Message}")
+                NpcPreviewLog.LogLazy(Function() $"  [BIND-CHECK] failed: {ex.Message}")
             End Try
 
             ' TriHead vs Plan coverage check: list morphs present in the .tri but NOT in headPlan.
@@ -2242,8 +2413,8 @@ Public Class MainForm
                             For Each m In triH.Morphs
                                 If planNames.Contains(m.Name) Then inPlanCount += 1
                             Next
-                            NpcPreviewLog.Log($"  [TRI-VS-PLAN] tri='{triHeadPath}' morphs={triH.Morphs.Count} inPlan={inPlanCount} missing={triH.Morphs.Count - inPlanCount}")
-                            NpcPreviewLog.Log($"  [TRI-VS-PLAN] bucket0 verts={bucket0.Count} (verts WITHOUT any morph in our plan)")
+                            NpcPreviewLog.LogLazy(Function() $"  [TRI-VS-PLAN] tri='{triHeadPath}' morphs={triH.Morphs.Count} inPlan={inPlanCount} missing={triH.Morphs.Count - inPlanCount}")
+                            NpcPreviewLog.LogLazy(Function() $"  [TRI-VS-PLAN] bucket0 verts={bucket0.Count} (verts WITHOUT any morph in our plan)")
 
                             For Each m In triH.Morphs
                                 If planNames.Contains(m.Name) Then Continue For
@@ -2270,19 +2441,19 @@ Public Class MainForm
                                 Next
                                 If touched > 0 Then
                                     Dim top3Str = String.Join(" | ", top3.Select(Function(t) $"idx={t.Idx} mag={t.Mag:F3}"))
-                                    NpcPreviewLog.Log($"    [TRI-MISSING] morph='{m.Name}' touchesVerts={touched} ofWhichBucket0={touchedInBucket0} maxMag={morphMaxMag:F4} top3=[{top3Str}]")
+                                    NpcPreviewLog.LogLazy(Function() $"    [TRI-MISSING] morph='{m.Name}' touchesVerts={touched} ofWhichBucket0={touchedInBucket0} maxMag={morphMaxMag:F4} top3=[{top3Str}]")
                                 End If
                             Next
                         End If
                     End If
                 Else
-                    NpcPreviewLog.Log($"  [TRI-VS-PLAN] could not find '{triHeadPath}' in FilesDictionary")
+                    NpcPreviewLog.LogLazy(Function() $"  [TRI-VS-PLAN] could not find '{triHeadPath}' in FilesDictionary")
                 End If
             Catch ex As Exception
-                NpcPreviewLog.Log($"  [TRI-VS-PLAN] failed: {ex.Message}")
+                NpcPreviewLog.LogLazy(Function() $"  [TRI-VS-PLAN] failed: {ex.Message}")
             End Try
         Catch ex As Exception
-            NpcPreviewLog.Log($"  [FACEGEN-DIAG-WORLD] world compare failed: {ex.Message}")
+            NpcPreviewLog.LogLazy(Function() $"  [FACEGEN-DIAG-WORLD] world compare failed: {ex.Message}")
         End Try
 
         ' Histogram of diff magnitudes — tells us if diff is concentrated in few verts (localized
@@ -2304,7 +2475,7 @@ Public Class MainForm
             If m >= 0.3F AndAlso m < 0.5F Then nXLarge += 1
             If m >= 0.5F Then nHuge += 1
         Next
-        NpcPreviewLog.Log($"  [FACEGEN-DIAG] diff histogram: exact(<0.001)={nExact} tiny(<0.01)={nTiny} small(<0.05)={nSmall} moderate(<0.1)={nModerate} large(<0.3)={nLarge} xlarge(<0.5)={nXLarge} huge(>=0.5)={nHuge}")
+        NpcPreviewLog.LogLazy(Function() $"  [FACEGEN-DIAG] diff histogram: exact(<0.001)={nExact} tiny(<0.01)={nTiny} small(<0.05)={nSmall} moderate(<0.1)={nModerate} large(<0.3)={nLarge} xlarge(<0.5)={nXLarge} huge(>=0.5)={nHuge}")
 
         ' Access NifLocalVertices (base pre-morph) for delta logging.
         Dim baseVerts = ourMesh.MeshData.Meshgeometry.NifLocalVertices
@@ -2318,7 +2489,7 @@ Public Class MainForm
         Next
         simpleVertDiffs.Sort(Function(a, b) b.Mag.CompareTo(a.Mag))
         Dim simpleTopN = Math.Min(10, simpleVertDiffs.Count)
-        NpcPreviewLog.Log($"  [FACEGEN-DIAG] SIMPLE-VERT TOP (morphCount<=1, likely pure base/single-morph bug):")
+        NpcPreviewLog.LogLazy(Function() $"  [FACEGEN-DIAG] SIMPLE-VERT TOP (morphCount<=1, likely pure base/single-morph bug):")
         For k = 0 To simpleTopN - 1
             Dim sv = simpleVertDiffs(k)
             Dim bvBase = If(baseVerts IsNot Nothing AndAlso sv.Idx < baseVerts.Length, baseVerts(sv.Idx), New OpenTK.Mathematics.Vector3d(0, 0, 0))
@@ -2344,7 +2515,8 @@ Public Class MainForm
             Dim bakedDx = d.Bx - CSng(bvBase.X)
             Dim bakedDy = d.By - CSng(bvBase.Y)
             Dim bakedDz = d.Bz - CSng(bvBase.Z)
-            NpcPreviewLog.Log($"    [FACEGEN-DIAG] simple-top{k + 1} idx={sv.Idx} morphs={sv.MCount} diff={sv.Mag:F4} base=({bvBase.X:F3},{bvBase.Y:F3},{bvBase.Z:F3}) ourDelta=({ourDx.ToString("+0.000;-0.000;0.000")},{ourDy.ToString("+0.000;-0.000;0.000")},{ourDz.ToString("+0.000;-0.000;0.000")}) bakedDelta=({bakedDx.ToString("+0.000;-0.000;0.000")},{bakedDy.ToString("+0.000;-0.000;0.000")},{bakedDz.ToString("+0.000;-0.000;0.000")}) morph={contrib}")
+            Dim kLocal = k
+            NpcPreviewLog.LogLazy(Function() $"    [FACEGEN-DIAG] simple-top{kLocal + 1} idx={sv.Idx} morphs={sv.MCount} diff={sv.Mag:F4} base=({bvBase.X:F3},{bvBase.Y:F3},{bvBase.Z:F3}) ourDelta=({ourDx.ToString("+0.000;-0.000;0.000")},{ourDy.ToString("+0.000;-0.000;0.000")},{ourDz.ToString("+0.000;-0.000;0.000")}) bakedDelta=({bakedDx.ToString("+0.000;-0.000;0.000")},{bakedDy.ToString("+0.000;-0.000;0.000")},{bakedDz.ToString("+0.000;-0.000;0.000")}) morph={contrib}")
         Next
 
         Dim topN = Math.Min(20, diffs.Count)
@@ -2383,7 +2555,8 @@ Public Class MainForm
                 Next
                 If contributions.Count > 0 Then morphList = " morphs=[" & String.Join(" | ", contributions) & "]"
             End If
-            NpcPreviewLog.Log($"    [FACEGEN-DIAG] top{k + 1} idx={e.Idx} diff={e.Mag:F4}{deltaInfo}{morphList}")
+            Dim kLocal = k
+            NpcPreviewLog.LogLazy(Function() $"    [FACEGEN-DIAG] top{kLocal + 1} idx={e.Idx} diff={e.Mag:F4}{deltaInfo}{morphList}")
         Next
     End Sub
 
@@ -2408,7 +2581,7 @@ Public Class MainForm
             _pendingTintState = state
             _pendingTintAttempts = 0
             _pendingTintTimer.Start()
-            NpcPreviewLog.Log($"  [FACETINT] face diffuse not ready, deferred (timer started)")
+            NpcPreviewLog.LogLazy(Function() $"  [FACETINT] face diffuse not ready, deferred (timer started)")
         End If
     End Sub
 
@@ -2421,7 +2594,7 @@ Public Class MainForm
 
         _pendingTintAttempts += 1
         If _pendingTintAttempts > PendingTintMaxAttempts Then
-            NpcPreviewLog.Log($"  [FACETINT] giving up after {_pendingTintAttempts} attempts (~{_pendingTintAttempts * _pendingTintTimer.Interval}ms)")
+            NpcPreviewLog.LogLazy(Function() $"  [FACETINT] giving up after {_pendingTintAttempts} attempts (~{_pendingTintAttempts * _pendingTintTimer.Interval}ms)")
             _pendingTintTimer.Stop()
             _pendingTintState = Nothing
             ' Reveal aún sin tint — mejor ver "untinted face" que tener todo oculto indefinido.
@@ -2438,7 +2611,7 @@ Public Class MainForm
                 TryApplyFaceSkinSoftLight(_pendingTintState)
                 TryApplyBodySkinSoftLight(_pendingTintState)
             End If
-            NpcPreviewLog.Log($"  [FACETINT] applied on attempt #{_pendingTintAttempts}")
+            NpcPreviewLog.LogLazy(Function() $"  [FACETINT] applied on attempt #{_pendingTintAttempts}")
             _pendingTintTimer.Stop()
             _pendingTintState = Nothing
             RevealAllShapes()
@@ -2480,7 +2653,7 @@ Public Class MainForm
             Dim vCount = If(verts IsNot Nothing, verts.Length, 0)
             Dim tCount = If(tris IsNot Nothing, tris.Length \ 3, 0)
             geomInfo = $" verts={vCount} tris={tCount}"
-            NpcPreviewLog.Log($"  [{label}-BOUNDS-MESH] shape='{shapeName}' cat={cat} min=({mn.X:F2},{mn.Y:F2},{mn.Z:F2}) max=({mx.X:F2},{mx.Y:F2},{mx.Z:F2}) hide={hide}{geomInfo}{matInfo}")
+            NpcPreviewLog.LogLazy(Function() $"  [{label}-BOUNDS-MESH] shape='{shapeName}' cat={cat} min=({mn.X:F2},{mn.Y:F2},{mn.Z:F2}) max=({mx.X:F2},{mx.Y:F2},{mx.Z:F2}) hide={hide}{geomInfo}{matInfo}")
             If mn.X < sceneMinX Then sceneMinX = CSng(mn.X)
             If mn.Y < sceneMinY Then sceneMinY = CSng(mn.Y)
             If mn.Z < sceneMinZ Then sceneMinZ = CSng(mn.Z)
@@ -2489,11 +2662,11 @@ Public Class MainForm
             If mx.Z > sceneMaxZ Then sceneMaxZ = CSng(mx.Z)
             meshCount += 1
         Next
-        NpcPreviewLog.Log($"  [{label}-BOUNDS-SCENE] meshes={meshCount} min=({sceneMinX:F2},{sceneMinY:F2},{sceneMinZ:F2}) max=({sceneMaxX:F2},{sceneMaxY:F2},{sceneMaxZ:F2}) size=({sceneMaxX - sceneMinX:F2},{sceneMaxY - sceneMinY:F2},{sceneMaxZ - sceneMinZ:F2})")
-        NpcPreviewLog.Log($"  [{label}-PREVIEW-CTRL] width={_previewControl.Width} height={_previewControl.Height} aspect={_previewControl.Width / CSng(Math.Max(_previewControl.Height, 1)):F3}")
+        NpcPreviewLog.LogLazy(Function() $"  [{label}-BOUNDS-SCENE] meshes={meshCount} min=({sceneMinX:F2},{sceneMinY:F2},{sceneMinZ:F2}) max=({sceneMaxX:F2},{sceneMaxY:F2},{sceneMaxZ:F2}) size=({sceneMaxX - sceneMinX:F2},{sceneMaxY - sceneMinY:F2},{sceneMaxZ - sceneMinZ:F2})")
+        NpcPreviewLog.LogLazy(Function() $"  [{label}-PREVIEW-CTRL] width={_previewControl.Width} height={_previewControl.Height} aspect={_previewControl.Width / CSng(Math.Max(_previewControl.Height, 1)):F3}")
         Dim cam = _previewControl.camera
         If cam IsNot Nothing Then
-            NpcPreviewLog.Log($"  [{label}-CAMERA] focus=({cam.FocusPosition.X:F2},{cam.FocusPosition.Y:F2},{cam.FocusPosition.Z:F2}) distance={cam.distance:F2} optimal={cam.Optimaldistance:F2} min={cam.MinDistance:F2} max={cam.MaxDistance:F2}")
+            NpcPreviewLog.LogLazy(Function() $"  [{label}-CAMERA] focus=({cam.FocusPosition.X:F2},{cam.FocusPosition.Y:F2},{cam.FocusPosition.Z:F2}) distance={cam.distance:F2} optimal={cam.Optimaldistance:F2} min={cam.MinDistance:F2} max={cam.MaxDistance:F2}")
         End If
     End Sub
 
@@ -2531,8 +2704,8 @@ Public Class MainForm
             ' wbDefinitionsFO4.pas + empirical log: exactly one option per region mask slot.
             Dim maskOpt = slotOpts(0)
             If maskOpt.Textures Is Nothing OrElse maskOpt.Textures.Count = 0 Then Continue For
-            Dim maskBytes = LoadTintLayerBytes(maskOpt.Textures(0))
-            If maskBytes Is Nothing Then Continue For
+            Dim maskLoad = LoadTintLayerBytesAndKey(maskOpt.Textures(0))
+            If maskLoad.Bytes Is Nothing Then Continue For
 
             ' For each preset in this group: is the NPC currently selecting it?
             ' Two conditions: the NPC has an MSDV entry whose key == preset.Index, and the
@@ -2550,26 +2723,32 @@ Public Class MainForm
                 Dim txst = RecordParsers.ParseTXST(txstRec, _pluginManager)
                 If txst Is Nothing Then Continue For
 
-                Dim diffBytes = LoadTintLayerBytes(txst.DiffuseTexture)
-                Dim normBytes = LoadTintLayerBytes(txst.NormalTexture)
-                Dim specBytes = LoadTintLayerBytes(txst.SmoothSpecTexture)
+                Dim diffLoad = LoadTintLayerBytesAndKey(txst.DiffuseTexture)
+                Dim normLoad = LoadTintLayerBytesAndKey(txst.NormalTexture)
+                Dim specLoad = LoadTintLayerBytesAndKey(txst.SmoothSpecTexture)
 
                 ' If none of the three swap channels has bytes, the swap is a no-op — skip it.
-                If diffBytes Is Nothing AndAlso normBytes Is Nothing AndAlso specBytes Is Nothing Then
-                    NpcPreviewLog.Log($"  [REGION-SWAP] '{g.Name}/{p.PresetName}' MPPT={txstRec.EditorID}: no D/N/S bytes, skip")
+                If diffLoad.Bytes Is Nothing AndAlso normLoad.Bytes Is Nothing AndAlso specLoad.Bytes Is Nothing Then
+                    NpcPreviewLog.LogLazy(Function() $"  [REGION-SWAP] '{g.Name}/{p.PresetName}' MPPT={txstRec.EditorID}: no D/N/S bytes, skip")
                     Continue For
                 End If
 
                 Dim sw As New FaceRegionSwapInput With {
-                    .RegionMaskDdsBytes = maskBytes,
-                    .SwapDiffuseDdsBytes = diffBytes,
-                    .SwapNormalDdsBytes = normBytes,
-                    .SwapSpecularDdsBytes = specBytes,
+                    .RegionMaskDdsBytes = maskLoad.Bytes,
+                    .RegionMaskCacheKey = maskLoad.Key,
+                    .SwapDiffuseDdsBytes = diffLoad.Bytes,
+                    .SwapDiffuseCacheKey = If(diffLoad.Bytes IsNot Nothing, diffLoad.Key, Nothing),
+                    .SwapNormalDdsBytes = normLoad.Bytes,
+                    .SwapNormalCacheKey = If(normLoad.Bytes IsNot Nothing, normLoad.Key, Nothing),
+                    .SwapSpecularDdsBytes = specLoad.Bytes,
+                    .SwapSpecularCacheKey = If(specLoad.Bytes IsNot Nothing, specLoad.Key, Nothing),
                     .DebugName = $"{g.Name}/{p.PresetName}"
                 }
                 swaps.Add(sw)
-                Dim chans = If(diffBytes IsNot Nothing, "D", "-") & If(normBytes IsNot Nothing, "+N", "") & If(specBytes IsNot Nothing, "+S", "")
-                NpcPreviewLog.Log($"  [REGION-SWAP] ADDED '{g.Name}/{p.PresetName}' slot={CInt(slot)} mask='{maskOpt.Textures(0)}' MPPT={txstRec.EditorID} channels={chans}")
+                NpcPreviewLog.LogLazy(Function()
+                                          Dim chans = If(diffLoad.Bytes IsNot Nothing, "D", "-") & If(normLoad.Bytes IsNot Nothing, "+N", "") & If(specLoad.Bytes IsNot Nothing, "+S", "")
+                                          Return $"  [REGION-SWAP] ADDED '{g.Name}/{p.PresetName}' slot={CInt(slot)} mask='{maskOpt.Textures(0)}' MPPT={txstRec.EditorID} channels={chans}"
+                                      End Function)
             Next
         Next
         Return swaps
@@ -2582,7 +2761,7 @@ Public Class MainForm
         If state Is Nothing Then Return False
 
         Dim modelFormID = If(state.ModelSourceFormID <> 0UI, state.ModelSourceFormID, state.FormID)
-        Dim npcData = GetParsedNpc(modelFormID)
+        Dim npcData = ApplyPresetOverlayToNpcData(GetParsedNpc(modelFormID), state.RootNpcFormID)
         If npcData Is Nothing OrElse npcData.FaceTintLayers.Count = 0 Then Return True   ' nothing to do
 
         Dim raceRec = _pluginManager.GetRecord(state.RaceFormID)
@@ -2592,7 +2771,7 @@ Public Class MainForm
         ' Build per-region MPPT TXST swaps from the active Morph Group presets. Empty for NPCs
         ' whose chosen presets are vertex-only (no MPPT) — the typical case for non-aged NPCs.
         Dim regionSwaps = BuildFaceRegionSwaps(npcData, race, state.IsFemale)
-        NpcPreviewLog.Log($"  [REGION-SWAP] built {regionSwaps.Count} region swaps for {npcData.EditorID}")
+        NpcPreviewLog.LogLazy(Function() $"  [REGION-SWAP] built {regionSwaps.Count} region swaps for {npcData.EditorID}")
 
         ' Build full layer list (Palette + TextureSet, all blend ops). The compositor takes the
         ' face diffuse texture as the starting point and ping-pongs each layer onto a copy.
@@ -2615,7 +2794,7 @@ Public Class MainForm
         Dim stat_byFlags_added As New Dictionary(Of UShort, Integer)
         Dim stat_byFlags_skipped As New Dictionary(Of UShort, Integer)
 
-        NpcPreviewLog.Log($"  [FACETINT] processing {npcData.FaceTintLayers.Count} tint layers for {npcData.EditorID}")
+        NpcPreviewLog.LogLazy(Function() $"  [FACETINT] processing {npcData.FaceTintLayers.Count} tint layers for {npcData.EditorID}")
 
         For Each tl In npcData.FaceTintLayers
             Dim opt = race.FindTintOption(tl.Index, state.IsFemale)
@@ -2624,7 +2803,7 @@ Public Class MainForm
             Dim rawOptFlagsName = If(opt IsNot Nothing, FormatTintFlagsName(opt.Flags), "?")
 
             If opt Is Nothing OrElse opt.Textures Is Nothing OrElse opt.Textures.Count = 0 Then
-                NpcPreviewLog.Log($"      -> SKIP option/textures missing")
+                NpcPreviewLog.LogLazy(Function() $"      -> SKIP option/textures missing")
                 stat_skip_missingOption += 1
                 If Not stat_byFlags_skipped.ContainsKey(rawOptFlagsU) Then stat_byFlags_skipped(rawOptFlagsU) = 0
                 stat_byFlags_skipped(rawOptFlagsU) += 1
@@ -2645,7 +2824,7 @@ Public Class MainForm
             '   QNAM in TryApplyBodySkinSoftLight so the two meshes stay symmetric.
             If opt.Slot = CUShort(TintSlot.SkinTone) AndAlso Not ENABLE_TWO_STEP_SKIN_TINT Then
                 stat_skip_skinToneSlot += 1
-                NpcPreviewLog.Log($"      -> SKIP SkinTone slot (legacy mode: render shader handles it via tintColor uniform on both face and body) value={tl.Value}")
+                NpcPreviewLog.LogLazy(Function() $"      -> SKIP SkinTone slot (legacy mode: render shader handles it via tintColor uniform on both face and body) value={tl.Value}")
                 If Not stat_byFlags_skipped.ContainsKey(rawOptFlagsU) Then stat_byFlags_skipped(rawOptFlagsU) = 0
                 stat_byFlags_skipped(rawOptFlagsU) += 1
                 Continue For
@@ -2670,7 +2849,7 @@ Public Class MainForm
                     tplLo = $"0x{tl.RawTendBytes(5):X2}"
                     tplHi = $"0x{tl.RawTendBytes(6):X2}"
                 End If
-                NpcPreviewLog.Log($"      [TEND-RAW] disc={tl.Discriminator} optName={opt.Name} TETI.Index={tl.Index} len={tl.RawTendBytes.Length} bytes=[{hex.ToString()}] | Value=0x{tl.RawTendBytes(0):X2}({tl.Value}) R=0x{If(tl.RawTendBytes.Length >= 2, tl.RawTendBytes(1), CByte(0)):X2} G=0x{If(tl.RawTendBytes.Length >= 3, tl.RawTendBytes(2), CByte(0)):X2} B=0x{If(tl.RawTendBytes.Length >= 4, tl.RawTendBytes(3), CByte(0)):X2} Unused(b4)={unusedByte} TplLo(b5)={tplLo} TplHi(b6)={tplHi} TplIdx={tl.TemplateColorIndex}{unusedFlag}")
+                NpcPreviewLog.LogLazy(Function() $"      [TEND-RAW] disc={tl.Discriminator} optName={opt.Name} TETI.Index={tl.Index} len={tl.RawTendBytes.Length} bytes=[{hex.ToString()}] | Value=0x{tl.RawTendBytes(0):X2}({tl.Value}) R=0x{If(tl.RawTendBytes.Length >= 2, tl.RawTendBytes(1), CByte(0)):X2} G=0x{If(tl.RawTendBytes.Length >= 3, tl.RawTendBytes(2), CByte(0)):X2} B=0x{If(tl.RawTendBytes.Length >= 4, tl.RawTendBytes(3), CByte(0)):X2} Unused(b4)={unusedByte} TplLo(b5)={tplLo} TplHi(b6)={tplHi} TplIdx={tl.TemplateColorIndex}{unusedFlag}")
             End If
 
             Dim opacity As Single = CSng(tl.Value) / 100.0F
@@ -2680,30 +2859,42 @@ Public Class MainForm
                 ' WARNING: if takesSkinTone, this gate also kills N/S. Pending review:
                 ' skin-tone N/S relief is baked, may need to bypass this gate.
                 Dim warn = If(takesSkinTone, " <<< takesSkinTone -- N/S also lost here", "")
-                NpcPreviewLog.Log($"      -> SKIP value=0/low (opacity={opacity:F3}){warn}")
+                NpcPreviewLog.LogLazy(Function() $"      -> SKIP value=0/low (opacity={opacity:F3}){warn}")
                 If Not stat_byFlags_skipped.ContainsKey(rawOptFlagsU) Then stat_byFlags_skipped(rawOptFlagsU) = 0
                 stat_byFlags_skipped(rawOptFlagsU) += 1
                 Continue For
             End If
 
             ' Resolve TTET[0] (mask / diffuse). Always required.
-            Dim diffuseBytes = LoadTintLayerBytes(opt.Textures(0))
-            If diffuseBytes Is Nothing Then
-                NpcPreviewLog.Log($"      -> SKIP TTET[0] not found: '{opt.Textures(0)}'")
+            Dim diffuseLoad = LoadTintLayerBytesAndKey(opt.Textures(0))
+            If diffuseLoad.Bytes Is Nothing Then
+                NpcPreviewLog.LogLazy(Function() $"      -> SKIP TTET[0] not found: '{opt.Textures(0)}'")
                 stat_skip_missingMask += 1
                 If Not stat_byFlags_skipped.ContainsKey(rawOptFlagsU) Then stat_byFlags_skipped(rawOptFlagsU) = 0
                 stat_byFlags_skipped(rawOptFlagsU) += 1
                 Continue For
             End If
+            Dim diffuseBytes = diffuseLoad.Bytes
+            Dim diffuseKey = diffuseLoad.Key
 
             ' For TextureSet entries, also try TTET[1] (normal) and TTET[2] (specular).
             ' These are optional — many entries have empty strings, in which case the layer
             ' contributes only to the diffuse channel.
             Dim normalBytes As Byte() = Nothing
+            Dim normalKey As String = Nothing
             Dim specularBytes As Byte() = Nothing
+            Dim specularKey As String = Nothing
             If tl.Discriminator = 2 Then
-                If opt.Textures.Count >= 2 Then normalBytes = LoadTintLayerBytes(opt.Textures(1))
-                If opt.Textures.Count >= 3 Then specularBytes = LoadTintLayerBytes(opt.Textures(2))
+                If opt.Textures.Count >= 2 Then
+                    Dim n = LoadTintLayerBytesAndKey(opt.Textures(1))
+                    normalBytes = n.Bytes
+                    If normalBytes IsNot Nothing Then normalKey = n.Key
+                End If
+                If opt.Textures.Count >= 3 Then
+                    Dim s = LoadTintLayerBytesAndKey(opt.Textures(2))
+                    specularBytes = s.Bytes
+                    If specularBytes IsNot Nothing Then specularKey = s.Key
+                End If
             End If
 
             ' TTEF flags (verified from wbDefinitionsFO4.pas:3496):
@@ -2715,8 +2906,11 @@ Public Class MainForm
             '                              (Scar_d.alpha as spatial mask on Scar_n / Scar_s).
             Dim layerInput As New FaceTintLayerInput With {
                 .LayerDdsBytes = diffuseBytes,
+                .LayerCacheKey = diffuseKey,
                 .NormalDdsBytes = normalBytes,
+                .NormalCacheKey = normalKey,
                 .SpecularDdsBytes = specularBytes,
+                .SpecularCacheKey = specularKey,
                 .Opacity = opacity,
                 .TakesSkinTone = takesSkinTone,
                 .DebugName = opt.Name
@@ -2738,7 +2932,7 @@ Public Class MainForm
                 Dim effectiveOpacity As Single = opacity * resolved.OpacityScale
                 layerInput.Opacity = effectiveOpacity
                 Dim resolveMode As String = If(resolved.Matched, "PRESET (match TTEC.TemplateIndex)", "CUSTOM (no match — tendRGB + TTEC(1).BlendOp)")
-                NpcPreviewLog.Log($"      -> Palette resolve: mode={resolveMode} TemplateColorIndex={tl.TemplateColorIndex} tendRGB=({tl.Color.R},{tl.Color.G},{tl.Color.B}) effectiveRGB=({resolved.Color.R},{resolved.Color.G},{resolved.Color.B}) blendOp={resolved.BlendOp}({BlendOpName(resolved.BlendOp)}) opt.TTEB={opt.BlendOperation}({BlendOpName(opt.BlendOperation)}) NPC.Value={opacity:F2} tplAlpha={resolved.OpacityScale:F2} effOpacity={effectiveOpacity:F2}")
+                NpcPreviewLog.LogLazy(Function() $"      -> Palette resolve: mode={resolveMode} TemplateColorIndex={tl.TemplateColorIndex} tendRGB=({tl.Color.R},{tl.Color.G},{tl.Color.B}) effectiveRGB=({resolved.Color.R},{resolved.Color.G},{resolved.Color.B}) blendOp={resolved.BlendOp}({BlendOpName(resolved.BlendOp)}) opt.TTEB={opt.BlendOperation}({BlendOpName(opt.BlendOperation)}) NPC.Value={opacity:F2} tplAlpha={resolved.OpacityScale:F2} effOpacity={effectiveOpacity:F2}")
                 If opt IsNot Nothing AndAlso opt.TemplateColors IsNot Nothing AndAlso opt.TemplateColors.Count > 0 Then
                     Dim sb As New System.Text.StringBuilder()
                     For i = 0 To opt.TemplateColors.Count - 1
@@ -2756,7 +2950,7 @@ Public Class MainForm
                         If i > 0 Then sb.Append(" | ")
                         sb.Append($"[pos={i} TemplateIndex={tc.TemplateIndex} CLFM={tc.ColorFormID:X8} rgb={rgbStr} blendOp={tc.BlendOperation}]")
                     Next
-                    NpcPreviewLog.Log($"      -> TTEC list ({opt.TemplateColors.Count} entries): {sb}")
+                    NpcPreviewLog.LogLazy(Function() $"      -> TTEC list ({opt.TemplateColors.Count} entries): {sb}")
                 End If
             ElseIf tl.Discriminator = 2 Then
                 ' TextureSet: pre-coloured RGBA. TTEB (opt.BlendOperation) is almost always empty
@@ -2765,9 +2959,9 @@ Public Class MainForm
                 ' placeholder); fall back to TTEC(0), and only then to opt.BlendOperation.
                 layerInput.Kind = FaceTintLayerKind.TextureSetDiffuse
                 layerInput.BlendOp = CInt(ResolveFallbackBlendOp(opt))
-                NpcPreviewLog.Log($"      -> TextureSet resolve: blendOp={layerInput.BlendOp}({BlendOpName(CUInt(layerInput.BlendOp))}) opt.TTEB={opt.BlendOperation}({BlendOpName(opt.BlendOperation)}) TTEC.Count={If(opt.TemplateColors IsNot Nothing, opt.TemplateColors.Count, 0)} opacity={opacity:F2}")
+                NpcPreviewLog.LogLazy(Function() $"      -> TextureSet resolve: blendOp={layerInput.BlendOp}({BlendOpName(CUInt(layerInput.BlendOp))}) opt.TTEB={opt.BlendOperation}({BlendOpName(opt.BlendOperation)}) TTEC.Count={If(opt.TemplateColors IsNot Nothing, opt.TemplateColors.Count, 0)} opacity={opacity:F2}")
             Else
-                NpcPreviewLog.Log($"      -> SKIP unknown discriminator={tl.Discriminator}")
+                NpcPreviewLog.LogLazy(Function() $"      -> SKIP unknown discriminator={tl.Discriminator}")
                 stat_skip_unknownDiscriminator += 1
                 If Not stat_byFlags_skipped.ContainsKey(rawOptFlagsU) Then stat_byFlags_skipped(rawOptFlagsU) = 0
                 stat_byFlags_skipped(rawOptFlagsU) += 1
@@ -2780,7 +2974,7 @@ Public Class MainForm
             If normalBytes IsNot Nothing Then chans &= "+N"
             If specularBytes IsNot Nothing Then chans &= "+S"
             ' Note: DDS format per channel is reported by the compositor in the DRAWN logger line.
-            NpcPreviewLog.Log($"      -> ADDED slot={opt.Slot}({slotName}) kind={layerInput.Kind} blendOp={layerInput.BlendOp}({opName}) value={tl.Value} opacity={opacity:F2} flags={rawOptFlagsHex}({rawOptFlagsName}) takesSkinTone={takesSkinTone} channels={chans}")
+            NpcPreviewLog.LogLazy(Function() $"      -> ADDED slot={opt.Slot}({slotName}) kind={layerInput.Kind} blendOp={layerInput.BlendOp}({opName}) value={tl.Value} opacity={opacity:F2} flags={rawOptFlagsHex}({rawOptFlagsName}) takesSkinTone={takesSkinTone} channels={chans}")
             layerInputs.Add(layerInput)
 
             ' Stats tracking.
@@ -2795,21 +2989,21 @@ Public Class MainForm
         Next
 
         ' === Summary ===
-        NpcPreviewLog.Log($"  [FACETINT] === Summary for {npcData.EditorID} ===")
-        NpcPreviewLog.Log($"    Total NPC layers: {npcData.FaceTintLayers.Count}")
-        NpcPreviewLog.Log($"    ADDED: {layerInputs.Count} ({stat_added_palette} Palette + {stat_added_textureSet} TextureSet, {stat_added_takesSkinTone} takesSkinTone)")
-        NpcPreviewLog.Log($"    SKIPPED: skinToneSlot={stat_skip_skinToneSlot} zeroOpacity={stat_skip_zeroOpacity} (of which takesSkinTone={stat_skip_zeroOpacity_takesSkinTone}) missingOption={stat_skip_missingOption} missingMask={stat_skip_missingMask} unknownDiscr={stat_skip_unknownDiscriminator}")
+        NpcPreviewLog.LogLazy(Function() $"  [FACETINT] === Summary for {npcData.EditorID} ===")
+        NpcPreviewLog.LogLazy(Function() $"    Total NPC layers: {npcData.FaceTintLayers.Count}")
+        NpcPreviewLog.LogLazy(Function() $"    ADDED: {layerInputs.Count} ({stat_added_palette} Palette + {stat_added_textureSet} TextureSet, {stat_added_takesSkinTone} takesSkinTone)")
+        NpcPreviewLog.LogLazy(Function() $"    SKIPPED: skinToneSlot={stat_skip_skinToneSlot} zeroOpacity={stat_skip_zeroOpacity} (of which takesSkinTone={stat_skip_zeroOpacity_takesSkinTone}) missingOption={stat_skip_missingOption} missingMask={stat_skip_missingMask} unknownDiscr={stat_skip_unknownDiscriminator}")
         Dim allFlagKeys As New SortedSet(Of UShort)
         For Each k In stat_byFlags_added.Keys : allFlagKeys.Add(k) : Next
         For Each k In stat_byFlags_skipped.Keys : allFlagKeys.Add(k) : Next
         For Each fk In allFlagKeys
             Dim a As Integer = 0 : stat_byFlags_added.TryGetValue(fk, a)
             Dim s As Integer = 0 : stat_byFlags_skipped.TryGetValue(fk, s)
-            NpcPreviewLog.Log($"    flags 0x{fk:X4} ({FormatTintFlagsName(fk)}): ADDED={a} SKIPPED={s}")
+            NpcPreviewLog.LogLazy(Function() $"    flags 0x{fk:X4} ({FormatTintFlagsName(fk)}): ADDED={a} SKIPPED={s}")
         Next
 
         If layerInputs.Count = 0 Then
-            NpcPreviewLog.Log($"  [FACETINT] no valid layers for {npcData.EditorID}")
+            NpcPreviewLog.LogLazy(Function() $"  [FACETINT] no valid layers for {npcData.EditorID}")
             Return True   ' no work to do; don't keep retrying
         End If
 
@@ -2848,7 +3042,7 @@ Public Class MainForm
             Dim diffuseEntry As PreviewModel.Texture_Loaded_Class = Nothing
             If Not model.Textures_Dictionary.TryGetValue(diffusePath, diffuseEntry) _
                OrElse diffuseEntry Is Nothing OrElse Not diffuseEntry.Loaded OrElse diffuseEntry.Texture_ID = 0 Then
-                NpcPreviewLog.Log($"  [FACETINT] face diffuse '{diffusePath}' not in cache yet")
+                NpcPreviewLog.LogLazy(Function() $"  [FACETINT] face diffuse '{diffusePath}' not in cache yet")
                 faceMeshFoundButTextureNotReady = True
                 Continue For
             End If
@@ -2856,7 +3050,7 @@ Public Class MainForm
             Dim w = diffuseEntry.Size.Width
             Dim h = diffuseEntry.Size.Height
             If w <= 0 OrElse h <= 0 Then
-                NpcPreviewLog.Log($"  [FACETINT] face diffuse '{diffusePath}' has invalid size {w}x{h}, skip")
+                NpcPreviewLog.LogLazy(Function() $"  [FACETINT] face diffuse '{diffusePath}' has invalid size {w}x{h}, skip")
                 Continue For
             End If
 
@@ -2895,7 +3089,7 @@ Public Class MainForm
         ' If we composed at least one, success. Otherwise nothing matched — give up (no retry).
         If composedAny Then Return True
         If faceMeshFoundButTextureNotReady Then Return False
-        NpcPreviewLog.Log($"  [FACETINT] no face mesh (NifShaderType=FaceTint) found in model")
+        NpcPreviewLog.LogLazy(Function() $"  [FACETINT] no face mesh (NifShaderType=FaceTint) found in model")
         Return True
     End Function
 
@@ -2935,12 +3129,12 @@ Public Class MainForm
     Private Sub TryApplyFaceSkinSoftLight(state As NPCVisualState)
         If state Is Nothing Then Return
         If Not state.HasTextureLighting Then
-            NpcPreviewLog.Log($"  [FACESKIN] no QNAM (HasTextureLighting=False), skip")
+            NpcPreviewLog.LogLazy(Function() $"  [FACESKIN] no QNAM (HasTextureLighting=False), skip")
             Return
         End If
 
         Dim modelFormID = If(state.ModelSourceFormID <> 0UI, state.ModelSourceFormID, state.FormID)
-        Dim npcData = GetParsedNpc(modelFormID)
+        Dim npcData = ApplyPresetOverlayToNpcData(GetParsedNpc(modelFormID), state.RootNpcFormID)
         Dim raceRec = _pluginManager.GetRecord(state.RaceFormID)
         Dim race As RACE_Data = Nothing
         If raceRec IsNot Nothing AndAlso raceRec.Header.Signature = "RACE" Then
@@ -2950,7 +3144,7 @@ Public Class MainForm
         ' If the NPC has a slot 12 layer, the face compositor already applied SoftLight via
         ' the Palette path (when ENABLE_TWO_STEP_SKIN_TINT is True). Don't double-apply.
         If NpcHasSkinToneLayer(npcData, race, state.IsFemale) Then
-            NpcPreviewLog.Log($"  [FACESKIN] NPC has slot 12 layer, compositor handled it; skip face fallback")
+            NpcPreviewLog.LogLazy(Function() $"  [FACESKIN] NPC has slot 12 layer, compositor handled it; skip face fallback")
             Return
         End If
 
@@ -2982,22 +3176,22 @@ Public Class MainForm
             Dim entry As PreviewModel.Texture_Loaded_Class = Nothing
             If Not model.Textures_Dictionary.TryGetValue(diffusePath, entry) _
                OrElse entry Is Nothing OrElse Not entry.Loaded OrElse entry.Texture_ID = 0 Then
-                NpcPreviewLog.Log($"  [FACESKIN] '{diffusePath}' not in cache, skip")
+                NpcPreviewLog.LogLazy(Function() $"  [FACESKIN] '{diffusePath}' not in cache, skip")
                 Continue For
             End If
 
             Dim w = entry.Size.Width, h = entry.Size.Height
             If w <= 0 OrElse h <= 0 Then
-                NpcPreviewLog.Log($"  [FACESKIN] '{diffusePath}' invalid size {w}x{h}, skip")
+                NpcPreviewLog.LogLazy(Function() $"  [FACESKIN] '{diffusePath}' invalid size {w}x{h}, skip")
                 Continue For
             End If
 
-            NpcPreviewLog.Log($"  [FACESKIN] applying softlight(QNAM) onto '{diffusePath}' ({w}x{h}), originalTexID={entry.Texture_ID}, qnam=({qnam.R},{qnam.G},{qnam.B})")
+            NpcPreviewLog.LogLazy(Function() $"  [FACESKIN] applying softlight(QNAM) onto '{diffusePath}' ({w}x{h}), originalTexID={entry.Texture_ID}, qnam=({qnam.R},{qnam.G},{qnam.B})")
             Dim faceLogger As Action(Of String) = Sub(msg) NpcPreviewLog.Log($"  [FACESKIN]{msg}")
             Dim newTexId = FaceTintCompositor.ApplyUniformBlendOntoFaceTexture(
                 entry.Texture_ID, w, h, qR, qG, qB, SoftLightOp, logger:=faceLogger)
             If newTexId = 0 OrElse newTexId = entry.Texture_ID Then
-                NpcPreviewLog.Log($"  [FACESKIN] returned 0 / no-op")
+                NpcPreviewLog.LogLazy(Function() $"  [FACESKIN] returned 0 / no-op")
                 Continue For
             End If
 
@@ -3005,10 +3199,10 @@ Public Class MainForm
             entry.Texture_ID = newTexId
             Try : OpenTK.Graphics.OpenGL4.GL.DeleteTexture(oldId) : Catch : End Try
             affected += 1
-            NpcPreviewLog.Log($"  [FACESKIN] replaced cache entry: oldTexID={oldId} -> newTexID={newTexId}")
+            NpcPreviewLog.LogLazy(Function() $"  [FACESKIN] replaced cache entry: oldTexID={oldId} -> newTexID={newTexId}")
         Next
 
-        NpcPreviewLog.Log($"  [FACESKIN] done — {affected} face diffuse(s) updated")
+        NpcPreviewLog.LogLazy(Function() $"  [FACESKIN] done — {affected} face diffuse(s) updated")
     End Sub
 
     ''' <summary>Two-step skin tint experiment — body side. Applies a one-shot SoftLight pass
@@ -3028,7 +3222,7 @@ Public Class MainForm
     Private Sub TryApplyBodySkinSoftLight(state As NPCVisualState)
         If state Is Nothing Then Return
         If Not state.HasTextureLighting Then
-            NpcPreviewLog.Log($"  [BODYSKIN] no QNAM (HasTextureLighting=False), skip")
+            NpcPreviewLog.LogLazy(Function() $"  [BODYSKIN] no QNAM (HasTextureLighting=False), skip")
             Return
         End If
 
@@ -3065,22 +3259,22 @@ Public Class MainForm
             Dim entry As PreviewModel.Texture_Loaded_Class = Nothing
             If Not model.Textures_Dictionary.TryGetValue(diffusePath, entry) _
                OrElse entry Is Nothing OrElse Not entry.Loaded OrElse entry.Texture_ID = 0 Then
-                NpcPreviewLog.Log($"  [BODYSKIN] '{diffusePath}' not in cache, skip")
+                NpcPreviewLog.LogLazy(Function() $"  [BODYSKIN] '{diffusePath}' not in cache, skip")
                 Continue For
             End If
 
             Dim w = entry.Size.Width, h = entry.Size.Height
             If w <= 0 OrElse h <= 0 Then
-                NpcPreviewLog.Log($"  [BODYSKIN] '{diffusePath}' invalid size {w}x{h}, skip")
+                NpcPreviewLog.LogLazy(Function() $"  [BODYSKIN] '{diffusePath}' invalid size {w}x{h}, skip")
                 Continue For
             End If
 
-            NpcPreviewLog.Log($"  [BODYSKIN] applying softlight(QNAM) onto '{diffusePath}' ({w}x{h}), originalTexID={entry.Texture_ID}, qnam=({qnam.R},{qnam.G},{qnam.B})")
+            NpcPreviewLog.LogLazy(Function() $"  [BODYSKIN] applying softlight(QNAM) onto '{diffusePath}' ({w}x{h}), originalTexID={entry.Texture_ID}, qnam=({qnam.R},{qnam.G},{qnam.B})")
             Dim bodyLogger As Action(Of String) = Sub(msg) NpcPreviewLog.Log($"  [BODYSKIN]{msg}")
             Dim newTexId = FaceTintCompositor.ApplyUniformBlendOntoFaceTexture(
                 entry.Texture_ID, w, h, qR, qG, qB, SoftLightOp, logger:=bodyLogger)
             If newTexId = 0 OrElse newTexId = entry.Texture_ID Then
-                NpcPreviewLog.Log($"  [BODYSKIN] returned 0 / no-op")
+                NpcPreviewLog.LogLazy(Function() $"  [BODYSKIN] returned 0 / no-op")
                 Continue For
             End If
 
@@ -3088,10 +3282,10 @@ Public Class MainForm
             entry.Texture_ID = newTexId
             Try : OpenTK.Graphics.OpenGL4.GL.DeleteTexture(oldId) : Catch : End Try
             affected += 1
-            NpcPreviewLog.Log($"  [BODYSKIN] replaced cache entry: oldTexID={oldId} -> newTexID={newTexId}")
+            NpcPreviewLog.LogLazy(Function() $"  [BODYSKIN] replaced cache entry: oldTexID={oldId} -> newTexID={newTexId}")
         Next
 
-        NpcPreviewLog.Log($"  [BODYSKIN] done — {affected} body diffuse(s) updated")
+        NpcPreviewLog.LogLazy(Function() $"  [BODYSKIN] done — {affected} body diffuse(s) updated")
     End Sub
 
     ''' <summary>Resolve a Palette face tint layer's effective colour and blend operation.
@@ -3140,15 +3334,27 @@ Public Class MainForm
                 Dim tplCol As RACE_TintTemplateColor = opt.TemplateColors.FirstOrDefault(
                     Function(t) t.TemplateIndex = needle)
                 If tplCol IsNot Nothing Then
-                    matched = True
-                    resolvedBlendOp = tplCol.BlendOperation
-                    opacityScale = tplCol.Alpha
-                    If tplCol.ColorFormID <> 0UI AndAlso _pluginManager IsNot Nothing Then
-                        Dim clfmRec = _pluginManager.GetRecord(tplCol.ColorFormID)
-                        If clfmRec IsNot Nothing AndAlso clfmRec.Header.Signature = "CLFM" Then
-                            Dim clfm = RecordParsers.ParseCLFM(clfmRec, _pluginManager)
-                            If clfm IsNot Nothing AndAlso clfm.HasColor Then
-                                resolvedColor = clfm.Color
+                    ' "Default neutral" placeholder entries (pos=0 in most TTECs) have Alpha=0 and
+                    ' point to the neutral CLFM 001ABFD5 with rgb=(0,0,0). LooksMenu presets persist
+                    ' that TemplateIndex when the user picked the "no template" slot but still
+                    ' authored a custom RGB in TEND. Treating it as a real match would multiply
+                    ' opacity by 0 and force black — invisible result. Skip the match in that case
+                    ' so we fall back to TEND RGB + value (same path as TemplateColorIndex < 0).
+                    If tplCol.Alpha <= 0.0F Then
+                        ' matched stays False, resolvedColor stays tl.Color, opacityScale stays 1.0,
+                        ' resolvedBlendOp stays the option-level fallback. Caller multiplies
+                        ' value × 1.0 = value, so the user's chosen intensity is preserved.
+                    Else
+                        matched = True
+                        resolvedBlendOp = tplCol.BlendOperation
+                        opacityScale = tplCol.Alpha
+                        If tplCol.ColorFormID <> 0UI AndAlso _pluginManager IsNot Nothing Then
+                            Dim clfmRec = _pluginManager.GetRecord(tplCol.ColorFormID)
+                            If clfmRec IsNot Nothing AndAlso clfmRec.Header.Signature = "CLFM" Then
+                                Dim clfm = RecordParsers.ParseCLFM(clfmRec, _pluginManager)
+                                If clfm IsNot Nothing AndAlso clfm.HasColor Then
+                                    resolvedColor = clfm.Color
+                                End If
                             End If
                         End If
                     End If
@@ -3174,12 +3380,12 @@ Public Class MainForm
         Dim entry = knownEntry
         If entry Is Nothing Then
             If Not model.Textures_Dictionary.TryGetValue(texPath, entry) Then
-                NpcPreviewLog.Log($"  [FACETINT/{channel}] '{texPath}' not in cache, skip")
+                NpcPreviewLog.LogLazy(Function() $"  [FACETINT/{channel}] '{texPath}' not in cache, skip")
                 Return
             End If
         End If
         If entry Is Nothing OrElse Not entry.Loaded OrElse entry.Texture_ID = 0 Then
-            NpcPreviewLog.Log($"  [FACETINT/{channel}] '{texPath}' not loaded, skip")
+            NpcPreviewLog.LogLazy(Function() $"  [FACETINT/{channel}] '{texPath}' not loaded, skip")
             Return
         End If
 
@@ -3195,15 +3401,15 @@ Public Class MainForm
             End If
         Next
         If Not hasContribution Then
-            NpcPreviewLog.Log($"  [FACETINT/{channel}] no layer contributes, skip")
+            NpcPreviewLog.LogLazy(Function() $"  [FACETINT/{channel}] no layer contributes, skip")
             Return
         End If
 
-        NpcPreviewLog.Log($"  [FACETINT/{channel}] composing onto '{texPath}' ({width}x{height}), originalTexID={entry.Texture_ID}")
+        NpcPreviewLog.LogLazy(Function() $"  [FACETINT/{channel}] composing onto '{texPath}' ({width}x{height}), originalTexID={entry.Texture_ID}")
         Dim channelLogger As Action(Of String) = Sub(msg) NpcPreviewLog.Log($"  [FACETINT/{channel}]{msg}")
-        Dim newTexId As Integer = FaceTintCompositor.ComposeOntoFaceTexture(entry.Texture_ID, width, height, layers, channel, logger:=channelLogger)
+        Dim newTexId As Integer = FaceTintCompositor.ComposeOntoFaceTexture(entry.Texture_ID, width, height, layers, channel, logger:=channelLogger, cache:=_tintGpuCache)
         If newTexId = 0 OrElse newTexId = entry.Texture_ID Then
-            NpcPreviewLog.Log($"  [FACETINT/{channel}] compose returned 0 / no-op")
+            NpcPreviewLog.LogLazy(Function() $"  [FACETINT/{channel}] compose returned 0 / no-op")
             Return
         End If
 
@@ -3211,7 +3417,7 @@ Public Class MainForm
         entry.Texture_ID = newTexId
         Try : OpenTK.Graphics.OpenGL4.GL.DeleteTexture(oldId) : Catch : End Try
         composedAny = True
-        NpcPreviewLog.Log($"  [FACETINT/{channel}] replaced cache entry: oldTexID={oldId} ? newTexID={newTexId}")
+        NpcPreviewLog.LogLazy(Function() $"  [FACETINT/{channel}] replaced cache entry: oldTexID={oldId} ? newTexID={newTexId}")
     End Sub
 
     ''' <summary>Run the region-swap pre-pass for one channel onto the face mesh's texture for
@@ -3230,12 +3436,12 @@ Public Class MainForm
         Dim entry = knownEntry
         If entry Is Nothing Then
             If Not model.Textures_Dictionary.TryGetValue(texPath, entry) Then
-                NpcPreviewLog.Log($"  [REGION-SWAP/{channel}] '{texPath}' not in cache, skip")
+                NpcPreviewLog.LogLazy(Function() $"  [REGION-SWAP/{channel}] '{texPath}' not in cache, skip")
                 Return
             End If
         End If
         If entry Is Nothing OrElse Not entry.Loaded OrElse entry.Texture_ID = 0 Then
-            NpcPreviewLog.Log($"  [REGION-SWAP/{channel}] '{texPath}' not loaded, skip")
+            NpcPreviewLog.LogLazy(Function() $"  [REGION-SWAP/{channel}] '{texPath}' not loaded, skip")
             Return
         End If
 
@@ -3250,39 +3456,81 @@ Public Class MainForm
             End If
         Next
         If Not hasContribution Then
-            NpcPreviewLog.Log($"  [REGION-SWAP/{channel}] no swap contributes, skip")
+            NpcPreviewLog.LogLazy(Function() $"  [REGION-SWAP/{channel}] no swap contributes, skip")
             Return
         End If
 
-        NpcPreviewLog.Log($"  [REGION-SWAP/{channel}] applying onto '{texPath}' ({width}x{height}), originalTexID={entry.Texture_ID}")
+        NpcPreviewLog.LogLazy(Function() $"  [REGION-SWAP/{channel}] applying onto '{texPath}' ({width}x{height}), originalTexID={entry.Texture_ID}")
         Dim channelLogger As Action(Of String) = Sub(msg) NpcPreviewLog.Log($"  [REGION-SWAP/{channel}]{msg}")
-        Dim newTexId As Integer = FaceTintCompositor.ApplyRegionSwapsOntoFaceTexture(entry.Texture_ID, width, height, swaps, channel, logger:=channelLogger)
+        Dim newTexId As Integer = FaceTintCompositor.ApplyRegionSwapsOntoFaceTexture(entry.Texture_ID, width, height, swaps, channel, logger:=channelLogger, cache:=_tintGpuCache)
         If newTexId = 0 OrElse newTexId = entry.Texture_ID Then
-            NpcPreviewLog.Log($"  [REGION-SWAP/{channel}] returned 0 / no-op")
+            NpcPreviewLog.LogLazy(Function() $"  [REGION-SWAP/{channel}] returned 0 / no-op")
             Return
         End If
 
         Dim oldId = entry.Texture_ID
         entry.Texture_ID = newTexId
         Try : OpenTK.Graphics.OpenGL4.GL.DeleteTexture(oldId) : Catch : End Try
-        NpcPreviewLog.Log($"  [REGION-SWAP/{channel}] replaced cache entry: oldTexID={oldId} -> newTexID={newTexId}")
+        NpcPreviewLog.LogLazy(Function() $"  [REGION-SWAP/{channel}] replaced cache entry: oldTexID={oldId} -> newTexID={newTexId}")
     End Sub
 
     ''' <summary>Resolve a tint layer texture path to its raw DDS bytes via FilesDictionary.
     ''' Returns Nothing on empty path, missing entry, or read failure.</summary>
+    ''' <summary>Resolve a tint texture path to its raw DDS bytes, with a process-lifetime cache.
+    ''' The first call for a given normalized path hits the FilesDictionary (which decompresses
+    ''' from BA2 / loose); subsequent calls return the cached buffer. Negative results (missing
+    ''' or unreadable files) are also cached so we don't re-attempt the lookup on every NPC.
+    ''' Cache is invalidated explicitly via <see cref="ClearFaceTintCaches"/> when the dictionary
+    ''' is rebuilt — there is no implicit invalidation, the buffer is whatever was on disk at the
+    ''' time of the first read.</summary>
     Private Function LoadTintLayerBytes(rawPath As String) As Byte()
         If String.IsNullOrEmpty(rawPath) Then Return Nothing
         Dim normalized = NormalizeDictionaryKeyWithTexturesPrefix(rawPath)
-        Dim loc As FilesDictionary_class.File_Location = Nothing
-        If Not FilesDictionary_class.Dictionary.TryGetValue(normalized, loc) Then Return Nothing
-        Try
-            Dim bytes = loc.GetBytes()
-            If bytes Is Nothing OrElse bytes.Length = 0 Then Return Nothing
-            Return bytes
-        Catch
-            Return Nothing
-        End Try
+        Return LoadTintLayerBytesByKey(normalized)
     End Function
+
+    ''' <summary>Two-output variant: returns the bytes AND the normalized cache key so the
+    ''' caller can hand the key to the GPU cache (FaceTintTextureCache) for decode reuse.
+    ''' Returns (Nothing, "") when rawPath is empty or unresolvable.</summary>
+    Private Function LoadTintLayerBytesAndKey(rawPath As String) As (Bytes As Byte(), Key As String)
+        If String.IsNullOrEmpty(rawPath) Then Return (Nothing, "")
+        Dim normalized = NormalizeDictionaryKeyWithTexturesPrefix(rawPath)
+        Dim bytes = LoadTintLayerBytesByKey(normalized)
+        ' Even on a negative cache hit we still return the key, but typed callers only attach
+        ' the key when bytes are present (the compositor needs both to do anything useful).
+        Return (bytes, normalized)
+    End Function
+
+    ''' <summary>Cached lookup keyed by the already-normalized dictionary key. Same key is
+    ''' used as the GPU cache key in <see cref="_tintGpuCache"/>, so the byte cache and the
+    ''' GL-texture cache stay paired entry-for-entry.</summary>
+    Private Function LoadTintLayerBytesByKey(normalizedKey As String) As Byte()
+        If String.IsNullOrEmpty(normalizedKey) Then Return Nothing
+        Dim cached As Byte() = Nothing
+        If _tintBytesCache.TryGetValue(normalizedKey, cached) Then Return cached  ' may be Nothing (negative cache)
+
+        Dim result As Byte() = Nothing
+        Dim loc As FilesDictionary_class.File_Location = Nothing
+        If FilesDictionary_class.Dictionary.TryGetValue(normalizedKey, loc) Then
+            Try
+                Dim bytes = loc.GetBytes()
+                If bytes IsNot Nothing AndAlso bytes.Length > 0 Then result = bytes
+            Catch
+                result = Nothing
+            End Try
+        End If
+
+        _tintBytesCache(normalizedKey) = result  ' positive or negative — both prevent re-lookup
+        Return result
+    End Function
+
+    ''' <summary>Drop every cached face-tint byte buffer and decoded GL texture. Call this
+    ''' when the FilesDictionary is rebuilt (BA2 mount/unmount, plugin reload) so a stale
+    ''' BA2 read cannot leak into a new asset set.</summary>
+    Private Sub ClearFaceTintCaches()
+        _tintBytesCache.Clear()
+        _tintGpuCache.Clear()
+    End Sub
 
     Private Shared Function TintSlotName(slot As UShort) As String
         Static names As String() = {
@@ -3355,16 +3603,47 @@ Public Class MainForm
             .HairColorFormID = model.HairColorFormID,
             .FacialHairColorFormID = model.FacialHairColorFormID,
             .HasTextureLighting = model.HasTextureLighting,
-            .TextureLightingColor = model.TextureLightingColor,
-            .WeightThin = traits.WeightThin,
-            .WeightMuscular = traits.WeightMuscular,
-            .WeightFat = traits.WeightFat
+            .TextureLightingColor = model.TextureLightingColor
         }
 
         state.HeadPartFormIDs.AddRange(model.HeadPartFormIDs)
         state.ObjectTemplateOMODFormIDs.AddRange(model.ObjectTemplateOMODFormIDs)
-        ApplyRaceFallbacks(state)
+        ApplyRaceFallbacks(state, traits)
         state.HeadPartFormIDs = state.HeadPartFormIDs.Where(Function(id) id <> 0UI).Distinct().ToList()
+
+        ' Apply per-NPC LooksMenu overlay (if any) AFTER the template chain + race fallbacks ran.
+        ' This is what makes the preset visible in the preview: HeadParts / HairColor / Weight in
+        ' the state would otherwise come from the model/traits template source. The morph and tint
+        ' overlays live in ApplyPresetOverlayToNpcData (consumed by BuildFaceMorphResolver and
+        ' TryApplyFaceTints) — same mechanism, different access point.
+        Dim overlayPreset As LooksmenuLoader.LooksmenuPreset = Nothing
+        If _appliedPresets.TryGetValue(state.RootNpcFormID, overlayPreset) Then
+            If overlayPreset.HeadPartFormIDs.Count > 0 Then
+                state.HeadPartFormIDs = overlayPreset.HeadPartFormIDs.Where(Function(id) id <> 0UI).Distinct().ToList()
+            End If
+            If overlayPreset.HairColorFormID <> 0UI Then
+                state.HairColorFormID = overlayPreset.HairColorFormID
+            End If
+            If overlayPreset.WeightThin.HasValue Then state.WeightThin = overlayPreset.WeightThin.Value
+            If overlayPreset.WeightMuscular.HasValue Then state.WeightMuscular = overlayPreset.WeightMuscular.Value
+            If overlayPreset.WeightFat.HasValue Then state.WeightFat = overlayPreset.WeightFat.Value
+
+            ' Body/face skin-tone parity. The face compositor consumes overlay tint layers via
+            ' ApplyPresetOverlayToNpcData, so the face picks up the preset's skin tone. The body
+            ' compositor (TryApplyBodySkinSoftLight) reads state.TextureLightingColor — which
+            ' otherwise stays the original NPC's QNAM and produces a face/body tone mismatch.
+            ' Derive an effective TextureLightingColor from the preset's slot 12 SkinTone tint
+            ' (resolved via ResolveNpcSkinToneColor: same CLFM/TEND lookup the face compositor
+            ' uses) so both meshes composite against the same colour. LooksMenu in-game gets
+            ' parity for free because the engine reads from the actor's tint array, which the
+            ' preset just rewrote — we have to re-derive it manually because QNAM is a vanilla
+            ' record-level field that LooksMenu doesn't serialize.
+            Dim presetSkin = ResolveNpcSkinToneColor(state)
+            If presetSkin.HasValue Then
+                state.HasTextureLighting = True
+                state.TextureLightingColor = presetSkin.Value
+            End If
+        End If
 
         Return state
     End Function
@@ -3379,7 +3658,7 @@ Public Class MainForm
         AddOutfitEntryIfPresent(entries, state.DefaultOutfitFormID, OutfitSlotKind.DefaultOutfit, "Default")
         AddOutfitEntryIfPresent(entries, state.SleepOutfitFormID, OutfitSlotKind.SleepOutfit, "Sleep")
 
-        NpcPreviewLog.Log($"  [OTFT-COMBO] {entries.Count} entries (DOFT={state.DefaultOutfitFormID:X8} SOFT={state.SleepOutfitFormID:X8})")
+        NpcPreviewLog.LogLazy(Function() $"  [OTFT-COMBO] {entries.Count} entries (DOFT={state.DefaultOutfitFormID:X8} SOFT={state.SleepOutfitFormID:X8})")
         Return entries
     End Function
 
@@ -3388,14 +3667,14 @@ Public Class MainForm
 
         Dim otftRec = _pluginManager.GetRecord(otftFormID)
         If otftRec Is Nothing OrElse otftRec.Header.Signature <> "OTFT" Then
-            NpcPreviewLog.Log($"    [OTFT-WARN] {slotName} FID={otftFormID:X8} missing or not OTFT")
+            NpcPreviewLog.LogLazy(Function() $"    [OTFT-WARN] {slotName} FID={otftFormID:X8} missing or not OTFT")
             Return
         End If
 
         Dim warnings As New List(Of String)
         Dim picks = OutfitResolver.SampleOutfitWithKeywords(otftFormID, _pluginManager, warnings)
         For Each w In warnings
-            NpcPreviewLog.Log($"    [OTFT-WARN] {w}")
+            NpcPreviewLog.LogLazy(Function() $"    [OTFT-WARN] {w}")
         Next
 
         Dim sampled = picks.Select(Function(p) p.ArmoFormID).ToList()
@@ -3427,6 +3706,11 @@ Public Class MainForm
                 )
 
                 FilesDictionary_class.CacheDirectory = Application.StartupPath
+                ' .ssf (Segment Sub-File) maps BSSubIndexTriShape SubSegment BoneIDs to symbolic
+                ' gore-zone names for FO4 actor meshes. .sclp (ARMA Sculpt) carries per-bone
+                ' translation/scale deltas referenced by ARMA records. Both are NPC-rendering
+                ' specific so they're registered here, not in the shared library default set.
+                FilesDictionary_class.RegisterExtensions(".ssf", ".sclp")
                 _assetDictionaryLoadTask = FilesDictionary_class.Fill_DictionaryAsync(_dataPath, progress)
             End If
 
@@ -3444,7 +3728,7 @@ Public Class MainForm
             Dim misses As Integer = scanReport.Count - hits
             NpcPreviewLog.LogSeparator($"FilesDictionary scan: {hits} cache hits, {misses} fresh reads")
             For Each r In scanReport
-                NpcPreviewLog.Log($"  {If(r.CacheHit, "CACHE", "READ ")}  {r.ArchiveName}")
+                NpcPreviewLog.LogLazy(Function() $"  {If(r.CacheHit, "CACHE", "READ ")}  {r.ArchiveName}")
             Next
         End If
 
@@ -3464,19 +3748,19 @@ Public Class MainForm
         For Each probePath In triProbePaths
             Dim loc As FilesDictionary_class.File_Location = Nothing
             If Not FilesDictionary_class.Dictionary.TryGetValue(probePath, loc) Then
-                NpcPreviewLog.Log($"  [TRI-PROBE] '{probePath}': NOT in FilesDictionary")
+                NpcPreviewLog.LogLazy(Function() $"  [TRI-PROBE] '{probePath}': NOT in FilesDictionary")
                 Continue For
             End If
             Try
                 Dim bytes = loc.GetBytes()
                 If bytes Is Nothing OrElse bytes.Length < 64 Then
-                    NpcPreviewLog.Log($"  [TRI-PROBE] '{probePath}': empty/short bytes ({If(bytes Is Nothing, 0, bytes.Length)} B)")
+                    NpcPreviewLog.LogLazy(Function() $"  [TRI-PROBE] '{probePath}': empty/short bytes ({If(bytes Is Nothing, 0, bytes.Length)} B)")
                     Continue For
                 End If
                 ' Verify FRTRI003 magic
                 Dim magic = System.Text.Encoding.ASCII.GetString(bytes, 0, 8)
                 If Not magic.StartsWith("FRTRI") Then
-                    NpcPreviewLog.Log($"  [TRI-PROBE] '{probePath}': NOT FRTRI (magic='{magic}', first bytes: {BitConverter.ToString(bytes, 0, 16)})")
+                    NpcPreviewLog.LogLazy(Function() $"  [TRI-PROBE] '{probePath}': NOT FRTRI (magic='{magic}', first bytes: {BitConverter.ToString(bytes, 0, 16)})")
                     Continue For
                 End If
                 ' Read 14 uint32 header fields at offset 8 to expose EVERYTHING (incl. numModifiers, numModVertices, unknowns)
@@ -3487,21 +3771,110 @@ Public Class MainForm
                 Dim numVertices = h(0), numTriangles = h(1), numQuads = h(2), unk2 = h(3), unk3 = h(4)
                 Dim numUV = h(5), flags = h(6), numMorphs = h(7), numModifiers = h(8), numModVertices = h(9)
                 Dim unk7 = h(10), unk8 = h(11), unk9 = h(12), unk10 = h(13)
-                NpcPreviewLog.Log($"  [TRI-PROBE] '{probePath}' magic='{magic}' bytes={bytes.Length}")
-                NpcPreviewLog.Log($"    header: numVerts={numVertices} numTri={numTriangles} numQuads={numQuads} numUV={numUV} flags=0x{flags:X8} numMorphs={numMorphs} numModifiers={numModifiers} numModVerts={numModVertices}")
-                NpcPreviewLog.Log($"    unknowns: u2={unk2} u3={unk3} u7={unk7} u8={unk8} u9={unk9} u10={unk10}")
+                NpcPreviewLog.LogLazy(Function() $"  [TRI-PROBE] '{probePath}' magic='{magic}' bytes={bytes.Length}")
+                NpcPreviewLog.LogLazy(Function() $"    header: numVerts={numVertices} numTri={numTriangles} numQuads={numQuads} numUV={numUV} flags=0x{flags:X8} numMorphs={numMorphs} numModifiers={numModifiers} numModVerts={numModVertices}")
+                NpcPreviewLog.LogLazy(Function() $"    unknowns: u2={unk2} u3={unk3} u7={unk7} u8={unk8} u9={unk9} u10={unk10}")
                 ' Now parse via library for morph names (splits regular vs mod)
                 Dim head = TriHeadParser.ParseTriHeadFromBytes(bytes)
                 If head IsNot Nothing Then
                     Dim regularNames = head.Morphs.Where(Function(m) Not m.IsModMorph).Select(Function(m) m.Name).ToList()
                     Dim modNames = head.Morphs.Where(Function(m) m.IsModMorph).Select(Function(m) m.Name).ToList()
-                    NpcPreviewLog.Log($"    regular morphs ({regularNames.Count}): [{String.Join(", ", regularNames)}]")
+                    NpcPreviewLog.LogLazy(Function() $"    regular morphs ({regularNames.Count}): [{String.Join(", ", regularNames)}]")
                     If modNames.Count > 0 Then
-                        NpcPreviewLog.Log($"    mod-morphs ({modNames.Count}): [{String.Join(", ", modNames)}]")
+                        NpcPreviewLog.LogLazy(Function() $"    mod-morphs ({modNames.Count}): [{String.Join(", ", modNames)}]")
                     End If
                 End If
             Catch ex As Exception
-                NpcPreviewLog.Log($"  [TRI-PROBE] '{probePath}': error — {ex.Message}")
+                NpcPreviewLog.LogLazy(Function() $"  [TRI-PROBE] '{probePath}': error — {ex.Message}")
+            End Try
+        Next
+
+        ' MOUTH-NIF-PROBE: enumerate shapes (name + vert count) inside FemaleMouth.nif and its
+        ' _faceBones variant so we know exactly what geometry the engine puts where.
+        NpcPreviewLog.LogSeparator("MOUTH-NIF-PROBE: shape names and vert counts inside FemaleMouth NIFs")
+        Dim mouthNifPaths = {
+            "meshes\actors\character\characterassets\faceparts\femalemouth.nif",
+            "meshes\actors\character\characterassets\faceparts\femalemouth_facebones.nif",
+            "meshes\actors\character\characterassets\faceparts\femalemouthshadow.nif",
+            "meshes\actors\character\characterassets\faceparts\femalemouthshadow_facebones.nif"
+        }
+        For Each np In mouthNifPaths
+            Dim loc As FilesDictionary_class.File_Location = Nothing
+            If Not FilesDictionary_class.Dictionary.TryGetValue(np, loc) Then
+                NpcPreviewLog.LogLazy(Function() $"  [MOUTH-NIF-PROBE] '{np}': NOT in FilesDictionary")
+                Continue For
+            End If
+            Try
+                Dim nifBytes = loc.GetBytes()
+                If nifBytes Is Nothing OrElse nifBytes.Length = 0 Then
+                    NpcPreviewLog.LogLazy(Function() $"  [MOUTH-NIF-PROBE] '{np}': empty bytes")
+                    Continue For
+                End If
+                Dim nif As New Nifcontent_Class_Manolo()
+                nif.Load_Manolo(nifBytes)
+                Dim shapes = nif.GetShapes()
+                NpcPreviewLog.LogLazy(Function() $"  [MOUTH-NIF-PROBE] '{np}' shapes={shapes.Count}")
+                For Each sh In shapes
+                    Dim shName = If(sh.Name IsNot Nothing, sh.Name.String, "<unnamed>")
+                    Dim vCount As Integer = 0
+                    Dim shKind As String = sh.GetType().Name
+                    If ShapeGeometryFactory.IsSupported(sh) Then
+                        Try
+                            Dim geom = ShapeGeometryFactory.For(sh, nif)
+                            vCount = geom.VertexCount
+                        Catch
+                        End Try
+                    End If
+                    NpcPreviewLog.LogLazy(Function() $"    shape='{shName}' kind={shKind} verts={vCount}")
+                Next
+            Catch ex As Exception
+                NpcPreviewLog.LogLazy(Function() $"  [MOUTH-NIF-PROBE] '{np}' EXCEPTION {ex.GetType().Name}: {ex.Message}")
+            End Try
+        Next
+
+        ' MOUTH-CHARGEN-PROBE: confirmed via .idx.bin scan that vanilla Meshes.ba2 ships
+        ' MouthHumanChargen.tri + MouthShadowChargen.tri. The HDPT FemaleMouthHumanoidDefault
+        ' does NOT declare them — only NAM0=1 → FemaleMouth.tri. Probe these two paths to see
+        ' what sculpting morphs they contain (LipFeature*?) so we can decide if the mouth
+        ' shape needs a per-shape chargen-tri override.
+        NpcPreviewLog.LogSeparator("MOUTH-CHARGEN-PROBE: vanilla mouth chargen TRIs not referenced by any HDPT")
+        Dim mouthChargenPaths = {
+            "meshes\actors\character\characterassets\faceparts\mouthhumanchargen.tri",
+            "meshes\actors\character\characterassets\faceparts\mouthshadowchargen.tri",
+            "meshes\actors\character\characterassets\faceparts\femalemouth.tri",
+            "meshes\actors\character\characterassets\faceparts\femalemouthshadow.tri",
+            "meshes\actors\character\characterassets\faceparts\mouthhuman.tri",
+            "meshes\actors\character\characterassets\faceparts\mouthshadow.tri"
+        }
+        For Each p In mouthChargenPaths
+            Dim loc As FilesDictionary_class.File_Location = Nothing
+            If Not FilesDictionary_class.Dictionary.TryGetValue(p, loc) Then
+                NpcPreviewLog.LogLazy(Function() $"  [MOUTH-CHARGEN-PROBE] '{p}': NOT in FilesDictionary")
+                Continue For
+            End If
+            Try
+                Dim bytes = loc.GetBytes()
+                If bytes Is Nothing OrElse bytes.Length < 16 Then
+                    NpcPreviewLog.LogLazy(Function() $"  [MOUTH-CHARGEN-PROBE] '{p}': empty/short ({If(bytes Is Nothing, 0, bytes.Length)} B)")
+                    Continue For
+                End If
+                Dim magic = System.Text.Encoding.ASCII.GetString(bytes, 0, 8)
+                If magic.StartsWith("FRTRI") Then
+                    Dim head = TriHeadParser.ParseTriHeadFromBytes(bytes)
+                    If head IsNot Nothing Then
+                        Dim regularNames = head.Morphs.Where(Function(m) Not m.IsModMorph).Select(Function(m) m.Name).ToList()
+                        Dim modNames = head.Morphs.Where(Function(m) m.IsModMorph).Select(Function(m) m.Name).ToList()
+                        NpcPreviewLog.LogLazy(Function() $"  [MOUTH-CHARGEN-PROBE] '{p}' FRTRI verts={head.NumVertices} regular={regularNames.Count} mod={modNames.Count}")
+                        If regularNames.Count > 0 Then NpcPreviewLog.LogLazy(Function() $"    regular: [{String.Join(", ", regularNames)}]")
+                        If modNames.Count > 0 Then NpcPreviewLog.LogLazy(Function() $"    mod: [{String.Join(", ", modNames)}]")
+                    Else
+                        NpcPreviewLog.LogLazy(Function() $"  [MOUTH-CHARGEN-PROBE] '{p}' FRTRI parse=Nothing bytes={bytes.Length}")
+                    End If
+                Else
+                    NpcPreviewLog.LogLazy(Function() $"  [MOUTH-CHARGEN-PROBE] '{p}' magic='{magic}' bytes={bytes.Length}")
+                End If
+            Catch ex As Exception
+                NpcPreviewLog.LogLazy(Function() $"  [MOUTH-CHARGEN-PROBE] '{p}': error — {ex.Message}")
             End Try
         Next
 
@@ -3521,7 +3894,7 @@ Public Class MainForm
 
         ' Get the full NPC_Data for the model source (the NPC whose face we're rendering)
         Dim modelNpcFormID = If(state.ModelSourceFormID <> 0UI, state.ModelSourceFormID, state.FormID)
-        Dim npcData = GetParsedNpc(modelNpcFormID)
+        Dim npcData = ApplyPresetOverlayToNpcData(GetParsedNpc(modelNpcFormID), state.RootNpcFormID)
         If npcData Is Nothing Then Return Nothing
 
         ' No morph data at all? Skip
@@ -3536,7 +3909,7 @@ Public Class MainForm
         Dim morphPresetDefs = If(state.IsFemale, race.FemaleMorphPresets, race.MaleMorphPresets)
         Dim morphGroups = If(state.IsFemale, race.FemaleMorphGroups, race.MaleMorphGroups)
 
-        NpcPreviewLog.Log($"  [MORPH] NPC {npcData.EditorID} [{modelNpcFormID:X8}]: MorphValues={npcData.MorphValues.Count} FaceMorphs={npcData.FaceMorphs.Count} FMIN={npcData.FacialMorphIntensity:F3} Template=0x{npcData.TemplateFormID:X8} TemplateFlags=0x{npcData.TemplateFlags:X4}")
+        NpcPreviewLog.LogLazy(Function() $"  [MORPH] NPC {npcData.EditorID} [{modelNpcFormID:X8}]: MorphValues={npcData.MorphValues.Count} FaceMorphs={npcData.FaceMorphs.Count} FMIN={npcData.FacialMorphIntensity:F3} Template=0x{npcData.TemplateFormID:X8} TemplateFlags=0x{npcData.TemplateFlags:X4}")
 
         ' Dump raw MSDK/MSDV table from this NPC (to see what keys+weights the record really has).
         ' Cross-reference each key against RACE.MSID (sliders) / MPPI (presets) / MPGS (group sliders)
@@ -3551,7 +3924,7 @@ Public Class MainForm
                 If Not presetIndexMap.ContainsKey(mp.Index) Then presetIndexMap(mp.Index) = mp.MorphName
             Next
         End If
-        NpcPreviewLog.Log($"  [MORPH-RAW] NPC MSDK/MSDV table ({npcData.MorphValues.Count} entries):")
+        NpcPreviewLog.LogLazy(Function() $"  [MORPH-RAW] NPC MSDK/MSDV table ({npcData.MorphValues.Count} entries):")
         For Each kvp In npcData.MorphValues
             Dim key = kvp.Key
             Dim value = kvp.Value
@@ -3564,13 +3937,13 @@ Public Class MainForm
             Else
                 classification = "??? (not found in RACE MSID/MPPI for this gender)"
             End If
-            NpcPreviewLog.Log($"    key=0x{key:X8} weight={value:+0.0000;-0.0000;0.0000} → {classification}")
+            NpcPreviewLog.LogLazy(Function() $"    key=0x{key:X8} weight={value:+0.0000;-0.0000;0.0000} → {classification}")
         Next
 
         ' Dump RACE morph structure for this gender: how many groups, and within each group how
         ' many presets and what morph name they point to. Shows whether the 4x DefaultFaceType0
         ' belongs to 4 distinct groups (as hypothesized) or something else.
-        NpcPreviewLog.Log($"  [MORPH-RAW] RACE MorphGroups for {(If(state.IsFemale, "Female", "Male"))} ({If(morphGroups IsNot Nothing, morphGroups.Count, 0)} groups):")
+        NpcPreviewLog.LogLazy(Function() $"  [MORPH-RAW] RACE MorphGroups for {(If(state.IsFemale, "Female", "Male"))} ({If(morphGroups IsNot Nothing, morphGroups.Count, 0)} groups):")
         If morphGroups IsNot Nothing Then
             For Each g In morphGroups
                 Dim presetSummary As New System.Text.StringBuilder()
@@ -3584,12 +3957,15 @@ Public Class MainForm
                     Dim sliderKeys = String.Join(",", g.SliderIndices.Select(Function(k) $"0x{k:X8}"))
                     slidersSummary = $" MPGS=[{sliderKeys}]"
                 End If
-                NpcPreviewLog.Log($"    group='{g.Name}' mask=0x{g.MaskEnum:X4} presets={g.Presets.Count}: [{presetSummary}]{slidersSummary}")
+                NpcPreviewLog.LogLazy(Function() $"    group='{g.Name}' mask=0x{g.MaskEnum:X4} presets={g.Presets.Count}: [{presetSummary}]{slidersSummary}")
             Next
         End If
 
         Return New NpcMorphResolver(
             npcData,
+            bodyWeightThin:=state.WeightThin,
+            bodyWeightMuscular:=state.WeightMuscular,
+            bodyWeightFat:=state.WeightFat,
             morphValueDefs:=morphValueDefs,
             morphPresetDefs:=morphPresetDefs,
             meshDictKeys:=renderData.MeshDictKeys,
@@ -3631,16 +4007,16 @@ Public Class MainForm
                 Try
                     Dim bytes = loc.GetBytes()
                     If bytes IsNot Nothing AndAlso bytes.Length > 0 Then
-                        NpcPreviewLog.Log($"  [FACE-SKEL] loaded '{normalized}' ({bytes.Length} bytes) for race {race.EditorID}")
+                        NpcPreviewLog.LogLazy(Function() $"  [FACE-SKEL] loaded '{normalized}' ({bytes.Length} bytes) for race {race.EditorID}")
                         Return bytes
                     End If
                 Catch ex As Exception
-                    NpcPreviewLog.Log($"  [FACE-SKEL] error reading '{normalized}': {ex.Message}")
+                    NpcPreviewLog.LogLazy(Function() $"  [FACE-SKEL] error reading '{normalized}': {ex.Message}")
                 End Try
             End If
         Next
 
-        NpcPreviewLog.Log($"  [FACE-SKEL] no face skeleton found for race {race.EditorID} (body skel='{bodySkel}')")
+        NpcPreviewLog.LogLazy(Function() $"  [FACE-SKEL] no face skeleton found for race {race.EditorID} (body skel='{bodySkel}')")
         Return Nothing
     End Function
 
@@ -3690,20 +4066,20 @@ Public Class MainForm
             matches.Add(key)
         Next
 
-        NpcPreviewLog.Log($"  [ROBOT-SKEL] race {race.EditorID} robot-mode (SkeletonRef found). Merging {matches.Count} sibling skeleton files from '{folder}':")
+        NpcPreviewLog.LogLazy(Function() $"  [ROBOT-SKEL] race {race.EditorID} robot-mode (SkeletonRef found). Merging {matches.Count} sibling skeleton files from '{folder}':")
         For Each key In matches
             Dim loc As FilesDictionary_class.File_Location = Nothing
             If Not FilesDictionary_class.Dictionary.TryGetValue(key, loc) Then Continue For
             Try
                 Dim bytes = loc.GetBytes()
                 If bytes Is Nothing OrElse bytes.Length = 0 Then
-                    NpcPreviewLog.Log($"    [ROBOT-SKEL] '{key}' empty/failed to read")
+                    NpcPreviewLog.LogLazy(Function() $"    [ROBOT-SKEL] '{key}' empty/failed to read")
                     Continue For
                 End If
                 Dim added = targetSkeleton.MergeAdditionalSkeleton(bytes)
-                NpcPreviewLog.Log($"    [ROBOT-SKEL] '{key}' ({bytes.Length} B) → +{added} bones")
+                NpcPreviewLog.LogLazy(Function() $"    [ROBOT-SKEL] '{key}' ({bytes.Length} B) → +{added} bones")
             Catch ex As Exception
-                NpcPreviewLog.Log($"    [ROBOT-SKEL] '{key}' error: {ex.Message}")
+                NpcPreviewLog.LogLazy(Function() $"    [ROBOT-SKEL] '{key}' error: {ex.Message}")
             End Try
         Next
     End Sub
@@ -3734,7 +4110,7 @@ Public Class MainForm
                                             morphResolver As IMorphResolver,
                                             skeleton As SkeletonInstance)
         Try
-            NpcPreviewLog.Log($"  [HARNESS-RAW] start NPC=0x{state.FormID:X8} MWGT(thin={state.WeightThin:F3} musc={state.WeightMuscular:F3} fat={state.WeightFat:F3}) IsFemale={state.IsFemale}")
+            NpcPreviewLog.LogLazy(Function() $"  [HARNESS-RAW] start NPC=0x{state.FormID:X8} MWGT(thin={state.WeightThin:F3} musc={state.WeightMuscular:F3} fat={state.WeightFat:F3}) IsFemale={state.IsFemale}")
 
             ' 0) Race height. At render the app applies it as DeltaTransform.Scale on the Root bone
             ' (MainForm.vb near [RACE-HEIGHT-POSE]); CK does NOT bake it into FaceGen. Without
@@ -3753,7 +4129,7 @@ Public Class MainForm
                     If raceHeight <= 0 Then raceHeight = 1.0F
                 End If
             End If
-            NpcPreviewLog.Log($"  [HARNESS-RAW] raceHeight={raceHeight:F4}")
+            NpcPreviewLog.LogLazy(Function() $"  [HARNESS-RAW] raceHeight={raceHeight:F4}")
 
             ' 1) Fresh body skeleton from disk — resolve path from RACE.ANAM (same source the app's normal
             ' path uses; see ResolveSkeletonDictionaryKey around MainForm.vb:4488 for the canonical pattern).
@@ -3777,25 +4153,25 @@ Public Class MainForm
                         If bytes IsNot Nothing AndAlso bytes.Length > 0 Then
                             skelBody = New Nifcontent_Class_Manolo()
                             skelBody.Load_Manolo(bytes)
-                            NpcPreviewLog.Log($"  [HARNESS-RAW] body skel fresh via FilesDictionary '{bodyDictKey}' ({bytes.Length} B)")
+                            NpcPreviewLog.LogLazy(Function() $"  [HARNESS-RAW] body skel fresh via FilesDictionary '{bodyDictKey}' ({bytes.Length} B)")
                             If Math.Abs(raceHeight - 1.0F) > 0.0001F Then
                                 Dim rootB = skelBody.GetRootNode()
                                 If rootB IsNot Nothing Then
                                     Dim before = rootB.Scale
                                     rootB.Scale = rootB.Scale * raceHeight
-                                    NpcPreviewLog.Log($"  [HARNESS-RAW] body skel root '{If(rootB.Name?.String, "")}' Scale {before:F4} → {rootB.Scale:F4}")
+                                    NpcPreviewLog.LogLazy(Function() $"  [HARNESS-RAW] body skel root '{If(rootB.Name?.String, "")}' Scale {before:F4} → {rootB.Scale:F4}")
                                 End If
                             End If
                         End If
                     Catch exB As Exception
-                        NpcPreviewLog.Log($"  [HARNESS-RAW] body skel load failed for '{bodyDictKey}': {exB.Message}")
+                        NpcPreviewLog.LogLazy(Function() $"  [HARNESS-RAW] body skel load failed for '{bodyDictKey}': {exB.Message}")
                     End Try
                 Else
-                    NpcPreviewLog.Log($"  [HARNESS-RAW] body skel dictKey '{bodyDictKey}' not in FilesDictionary")
+                    NpcPreviewLog.LogLazy(Function() $"  [HARNESS-RAW] body skel dictKey '{bodyDictKey}' not in FilesDictionary")
                 End If
             End If
             If skelBody Is Nothing Then
-                NpcPreviewLog.Log($"  [HARNESS-RAW] abort — could not load body skeleton (race-derived key='{bodyDictKey}')")
+                NpcPreviewLog.LogLazy(Function() $"  [HARNESS-RAW] abort — could not load body skeleton (race-derived key='{bodyDictKey}')")
                 Return
             End If
 
@@ -3806,27 +4182,27 @@ Public Class MainForm
                 If faceBytes IsNot Nothing AndAlso faceBytes.Length > 0 Then
                     skelFace = New Nifcontent_Class_Manolo()
                     skelFace.Load_Manolo(faceBytes)
-                    NpcPreviewLog.Log($"  [HARNESS-RAW] face skel fresh ({faceBytes.Length} B)")
+                    NpcPreviewLog.LogLazy(Function() $"  [HARNESS-RAW] face skel fresh ({faceBytes.Length} B)")
                     If Math.Abs(raceHeight - 1.0F) > 0.0001F Then
                         Dim rootF = skelFace.GetRootNode()
                         If rootF IsNot Nothing Then
                             Dim beforeF = rootF.Scale
                             rootF.Scale = rootF.Scale * raceHeight
-                            NpcPreviewLog.Log($"  [HARNESS-RAW] face skel root '{If(rootF.Name?.String, "")}' Scale {beforeF:F4} → {rootF.Scale:F4}")
+                            NpcPreviewLog.LogLazy(Function() $"  [HARNESS-RAW] face skel root '{If(rootF.Name?.String, "")}' Scale {beforeF:F4} → {rootF.Scale:F4}")
                         End If
                     End If
                 Else
-                    NpcPreviewLog.Log($"  [HARNESS-RAW] face skel not available — continuing with body-only lookup")
+                    NpcPreviewLog.LogLazy(Function() $"  [HARNESS-RAW] face skel not available — continuing with body-only lookup")
                 End If
             Catch exF As Exception
-                NpcPreviewLog.Log($"  [HARNESS-RAW] face skel load failed: {exF.Message}")
+                NpcPreviewLog.LogLazy(Function() $"  [HARNESS-RAW] face skel load failed: {exF.Message}")
             End Try
 
             ' 3) Build per-bone matsBind using fresh bindT (face wins over body; bake hierarchy is final fallback)
             Dim bakeBones = fgShape.ShapeBones.ToArray()
             Dim bakeLocalTs = fgShape.ShapeBoneTransforms.ToArray()
             If bakeBones.Length <> bakeLocalTs.Length Then
-                NpcPreviewLog.Log($"  [HARNESS-RAW] abort — bake bones/transforms length mismatch {bakeBones.Length} vs {bakeLocalTs.Length}")
+                NpcPreviewLog.LogLazy(Function() $"  [HARNESS-RAW] abort — bake bones/transforms length mismatch {bakeBones.Length} vs {bakeLocalTs.Length}")
                 Return
             End If
             Dim nBones = bakeBones.Length
@@ -3865,7 +4241,7 @@ Public Class MainForm
 
                 matsBind(k) = bindT.ComposeTransforms(bakeLocalTs(k)).ToMatrix4d()
             Next
-            NpcPreviewLog.Log($"  [HARNESS-RAW] bone resolution: face={srcFace} body={srcBody} bake-fallback={srcBake} missing={srcMissing} total={nBones}")
+            NpcPreviewLog.LogLazy(Function() $"  [HARNESS-RAW] bone resolution: face={srcFace} body={srcBody} bake-fallback={srcBake} missing={srcMissing} total={nBones}")
 
             ' 4) Shape global transform (typically Identity for FaceGen bakes; log for verification)
             Dim shapeNode = TryCast(baked.GetParentNode(bakedHead), NiflySharp.Blocks.NiNode)
@@ -3929,11 +4305,12 @@ Public Class MainForm
             Dim bakeShapeName = If(bakedHead?.Name?.String, "(null)")
             Dim ourShapeName = If(ourShape?.NifShape?.Name?.String, "(null)")
             Dim ourLocalCount = If(ourGeo.NifLocalVertices IsNot Nothing, ourGeo.NifLocalVertices.Length, -1)
-            NpcPreviewLog.Log($"  [HARNESS-VCOUNT] bake shape='{bakeShapeName}' verts={vCount} | render shape='{ourShapeName}' NifLocal={ourLocalCount} world={ourWorld.Length} | compare={compareCount} | match={(vCount = ourWorld.Length)}")
+            NpcPreviewLog.LogLazy(Function() $"  [HARNESS-VCOUNT] bake shape='{bakeShapeName}' verts={vCount} | render shape='{ourShapeName}' NifLocal={ourLocalCount} world={ourWorld.Length} | compare={compareCount} | match={(vCount = ourWorld.Length)}")
 
             ' 8) Sanity: log first 5 raw/app pairs BEFORE subtraction (catches unit/axis mismatch)
             For i = 0 To Math.Min(4, compareCount - 1)
-                NpcPreviewLog.Log($"    [HARNESS-RAW] vert[{i}] raw=({vRaw(i).X:F4},{vRaw(i).Y:F4},{vRaw(i).Z:F4}) app=({ourWorld(i).X:F4},{ourWorld(i).Y:F4},{ourWorld(i).Z:F4})")
+                Dim iLocal = i
+                NpcPreviewLog.LogLazy(Function() $"    [HARNESS-RAW] vert[{iLocal}] raw=({vRaw(iLocal).X:F4},{vRaw(iLocal).Y:F4},{vRaw(iLocal).Z:F4}) app=({ourWorld(iLocal).X:F4},{ourWorld(iLocal).Y:F4},{ourWorld(iLocal).Z:F4})")
             Next
 
             ' 9) Diffs, RMS, max, top-10
@@ -3950,11 +4327,12 @@ Public Class MainForm
                 diffs.Add((i, mag))
             Next
             Dim rms = Math.Sqrt(sumSq / Math.Max(1, compareCount))
-            NpcPreviewLog.Log($"  [HARNESS-RAW] {compareCount} verts RMS={rms:F4} max={maxMag:F4}")
+            NpcPreviewLog.LogLazy(Function() $"  [HARNESS-RAW] {compareCount} verts RMS={rms:F4} max={maxMag:F4}")
 
             diffs.Sort(Function(a, b) b.Mag.CompareTo(a.Mag))
             For i = 0 To Math.Min(9, diffs.Count - 1)
-                NpcPreviewLog.Log($"    [HARNESS-RAW] top[{i}] idx={diffs(i).Idx} mag={diffs(i).Mag:F4}")
+                Dim iLocal = i
+                NpcPreviewLog.LogLazy(Function() $"    [HARNESS-RAW] top[{iLocal}] idx={diffs(iLocal).Idx} mag={diffs(iLocal).Mag:F4}")
             Next
 
             ' 9.5) Morph attribution per vertex — morph-driven scope, not vertex-driven lookup.
@@ -3974,10 +4352,10 @@ Public Class MainForm
                     Dim plan = morphResolver.ResolveMorphPlan(ourShape, ourGeo)
                     morphPlan = plan
                     If plan IsNot Nothing AndAlso plan.Channels IsNot Nothing Then
-                        NpcPreviewLog.Log($"  [HARNESS-ATTR] vertex morph channels: {plan.Channels.Count}")
+                        NpcPreviewLog.LogLazy(Function() $"  [HARNESS-ATTR] vertex morph channels: {plan.Channels.Count}")
                         For Each ch In plan.Channels
                             Dim n = If(ch.Deltas IsNot Nothing, ch.Deltas.Count, 0)
-                            NpcPreviewLog.Log($"    [HARNESS-ATTR] channel '{ch.Name}' weight={ch.Weight:F3} touches={n} verts")
+                            NpcPreviewLog.LogLazy(Function() $"    [HARNESS-ATTR] channel '{ch.Name}' weight={ch.Weight:F3} touches={n} verts")
                             If ch.Deltas Is Nothing Then Continue For
                             For Each d In ch.Deltas
                                 Dim vi As Integer = CInt(d.index)
@@ -3985,13 +4363,13 @@ Public Class MainForm
                             Next
                         Next
                     Else
-                        NpcPreviewLog.Log($"  [HARNESS-ATTR] morphResolver returned null/empty plan")
+                        NpcPreviewLog.LogLazy(Function() $"  [HARNESS-ATTR] morphResolver returned null/empty plan")
                     End If
                 Catch exP As Exception
-                    NpcPreviewLog.Log($"  [HARNESS-ATTR] ResolveMorphPlan exception: {exP.Message}")
+                    NpcPreviewLog.LogLazy(Function() $"  [HARNESS-ATTR] ResolveMorphPlan exception: {exP.Message}")
                 End Try
             Else
-                NpcPreviewLog.Log($"  [HARNESS-ATTR] morphResolver=Nothing (vertex morphs checkbox OFF)")
+                NpcPreviewLog.LogLazy(Function() $"  [HARNESS-ATTR] morphResolver=Nothing (vertex morphs checkbox OFF)")
             End If
 
             ' Non-identity bone deltas → morph tag per bone.
@@ -4045,7 +4423,7 @@ Public Class MainForm
                     Case Else : cntOther += 1
                 End Select
             Next
-            NpcPreviewLog.Log($"  [HARNESS-ATTR] bones with non-identity DeltaTransform: {boneMorphs.Count} (FMRS={cntFMRS} BODY-WEIGHT={cntBody} RACE-ROOT={cntRoot} OTHER={cntOther})")
+            NpcPreviewLog.LogLazy(Function() $"  [HARNESS-ATTR] bones with non-identity DeltaTransform: {boneMorphs.Count} (FMRS={cntFMRS} BODY-WEIGHT={cntBody} RACE-ROOT={cntRoot} OTHER={cntOther})")
 
             ' Per-vertex bone attribution via GPUBoneIndices/Weights (flat arrays, 4 bones per vert).
             ' Also track primary_bone = the bone with the maximum skin weight for this vertex;
@@ -4140,14 +4518,14 @@ Public Class MainForm
                 bucketSumSq(bk) += mg * mg
                 If mg > bucketMax(bk) Then bucketMax(bk) = mg
             Next
-            NpcPreviewLog.Log($"  [HARNESS-ATTR] bucket RMS by morph type (N-none MUST be ≈0 or unaccounted source):")
+            NpcPreviewLog.LogLazy(Function() $"  [HARNESS-ATTR] bucket RMS by morph type (N-none MUST be ≈0 or unaccounted source):")
             For Each k In bucketKeys
                 Dim n = bucketN(k)
                 If n = 0 Then
-                    NpcPreviewLog.Log($"    [{k}] N=0")
+                    NpcPreviewLog.LogLazy(Function() $"    [{k}] N=0")
                 Else
                     Dim bRms = Math.Sqrt(bucketSumSq(k) / n)
-                    NpcPreviewLog.Log($"    [{k}] N={n} RMS={bRms:F4} max={bucketMax(k):F4}")
+                    NpcPreviewLog.LogLazy(Function() $"    [{k}] N={n} RMS={bRms:F4} max={bucketMax(k):F4}")
                 End If
             Next
             ' Log any OTHER-DELTA verts separately if they exist (classifier leftover = regression canary).
@@ -4156,12 +4534,13 @@ Public Class MainForm
             Next
             If nOther > 0 Then NpcPreviewLog.Log($"  [HARNESS-ATTR] WARN: {nOther} verts touch bones tagged OTHER-DELTA — classifier did not cover some delta type")
 
-            NpcPreviewLog.Log($"  [HARNESS-ATTR] top-10 with morph attribution:")
+            NpcPreviewLog.LogLazy(Function() $"  [HARNESS-ATTR] top-10 with morph attribution:")
             For i = 0 To Math.Min(9, diffs.Count - 1)
+                Dim iLocal = i
                 Dim vi = diffs(i).Idx
                 Dim vM = If(vertMorphNames(vi).Count > 0, String.Join("|", vertMorphNames(vi)), "(none)")
                 Dim bM = If(vertBoneMorphTags(vi).Count > 0, String.Join("|", vertBoneMorphTags(vi)), "(none)")
-                NpcPreviewLog.Log($"    top[{i}] idx={vi} mag={diffs(i).Mag:F4} bucket={bucketTag(vi)} V=[{vM}] B=[{bM}]")
+                NpcPreviewLog.LogLazy(Function() $"    top[{iLocal}] idx={vi} mag={diffs(iLocal).Mag:F4} bucket={bucketTag(vi)} V=[{vM}] B=[{bM}]")
             Next
 
             ' V-only delta breakdown: for each V-only vert, dump the per-channel delta contribution
@@ -4174,7 +4553,7 @@ Public Class MainForm
                 For i = 0 To compareCount - 1 : If bucketTag(i) = "V-only" Then vOnlyCount += 1
                 Next
                 If vOnlyCount > 0 Then
-                    NpcPreviewLog.Log($"  [V-ONLY-DELTA-DIAG] {vOnlyCount} V-only verts — per-channel delta breakdown:")
+                    NpcPreviewLog.LogLazy(Function() $"  [V-ONLY-DELTA-DIAG] {vOnlyCount} V-only verts — per-channel delta breakdown:")
                     For i = 0 To compareCount - 1
                         If bucketTag(i) <> "V-only" Then Continue For
                         Dim dx = vRaw(i).X - ourWorld(i).X
@@ -4197,9 +4576,10 @@ Public Class MainForm
                             Next
                         Next
                         Dim sumMag = Math.Sqrt(sumX * sumX + sumY * sumY + sumZ * sumZ)
-                        NpcPreviewLog.Log($"    [V-ONLY-DELTA-DIAG] idx={i} obs_diff=({dx:+0.0000;-0.0000;0.0000},{dy:+0.0000;-0.0000;0.0000},{dz:+0.0000;-0.0000;0.0000}) |obs|={obsMag:F4} | Σweighted_delta=({sumX:+0.0000;-0.0000;0.0000},{sumY:+0.0000;-0.0000;0.0000},{sumZ:+0.0000;-0.0000;0.0000}) |Σ|={sumMag:F4}")
+                        Dim iLocal = i
+                        NpcPreviewLog.LogLazy(Function() $"    [V-ONLY-DELTA-DIAG] idx={iLocal} obs_diff=({dx:+0.0000;-0.0000;0.0000},{dy:+0.0000;-0.0000;0.0000},{dz:+0.0000;-0.0000;0.0000}) |obs|={obsMag:F4} | Σweighted_delta=({sumX:+0.0000;-0.0000;0.0000},{sumY:+0.0000;-0.0000;0.0000},{sumZ:+0.0000;-0.0000;0.0000}) |Σ|={sumMag:F4}")
                         For Each c In contribs
-                            NpcPreviewLog.Log($"      [V-ONLY-DELTA-DIAG] {c}")
+                            NpcPreviewLog.LogLazy(Function() $"      [V-ONLY-DELTA-DIAG] {c}")
                         Next
                     Next
                 End If
@@ -4224,15 +4604,15 @@ Public Class MainForm
                 clusterDiffs.Add((i, mg, dx, dy, dz, primaryBoneName(i), primaryBoneWeight(i)))
             Next
             clusterDiffs.Sort(Function(a, b) b.Mag.CompareTo(a.Mag))
-            NpcPreviewLog.Log($"  [NECK-CLUSTER] mwgt(thin={state.WeightThin:F3} musc={state.WeightMuscular:F3} fat={state.WeightFat:F3}) raceHeight={raceHeight:F4} verts_in_cluster={clusterDiffs.Count}")
+            NpcPreviewLog.LogLazy(Function() $"  [NECK-CLUSTER] mwgt(thin={state.WeightThin:F3} musc={state.WeightMuscular:F3} fat={state.WeightFat:F3}) raceHeight={raceHeight:F4} verts_in_cluster={clusterDiffs.Count}")
             If clusterDiffs.Count > 0 Then
                 Dim clusterSumSq As Double = 0
                 For Each cd In clusterDiffs : clusterSumSq += cd.Mag * cd.Mag : Next
                 Dim clusterRms = Math.Sqrt(clusterSumSq / clusterDiffs.Count)
-                NpcPreviewLog.Log($"  [NECK-CLUSTER] cluster RMS={clusterRms:F4} max={clusterDiffs(0).Mag:F4}. Top-20 diffs:")
+                NpcPreviewLog.LogLazy(Function() $"  [NECK-CLUSTER] cluster RMS={clusterRms:F4} max={clusterDiffs(0).Mag:F4}. Top-20 diffs:")
                 For i = 0 To Math.Min(19, clusterDiffs.Count - 1)
                     Dim cd = clusterDiffs(i)
-                    NpcPreviewLog.Log($"    idx={cd.Idx} primary={cd.Bone}(w={cd.W:F2}) mag={cd.Mag:F4} diff=({cd.Dx:+0.0000;-0.0000;0.0000},{cd.Dy:+0.0000;-0.0000;0.0000},{cd.Dz:+0.0000;-0.0000;0.0000})")
+                    NpcPreviewLog.LogLazy(Function() $"    idx={cd.Idx} primary={cd.Bone}(w={cd.W:F2}) mag={cd.Mag:F4} diff=({cd.Dx:+0.0000;-0.0000;0.0000},{cd.Dy:+0.0000;-0.0000;0.0000},{cd.Dz:+0.0000;-0.0000;0.0000})")
                 Next
             End If
 
@@ -4263,13 +4643,13 @@ Public Class MainForm
                             state.WeightThin, state.WeightMuscular, state.WeightFat, raceHeight))
                     Next
                 End Using
-                NpcPreviewLog.Log($"  [HARNESS-RAW] CSV dumped to '{csvPath}'")
+                NpcPreviewLog.LogLazy(Function() $"  [HARNESS-RAW] CSV dumped to '{csvPath}'")
             Catch exC As Exception
-                NpcPreviewLog.Log($"  [HARNESS-RAW] CSV dump failed: {exC.Message}")
+                NpcPreviewLog.LogLazy(Function() $"  [HARNESS-RAW] CSV dump failed: {exC.Message}")
             End Try
 
         Catch ex As Exception
-            NpcPreviewLog.Log($"  [HARNESS-RAW] exception: {ex.Message}")
+            NpcPreviewLog.LogLazy(Function() $"  [HARNESS-RAW] exception: {ex.Message}")
         End Try
     End Sub
 
@@ -4291,7 +4671,7 @@ Public Class MainForm
         Dim dataPath = $"meshes\actors\character\characterassets\{race.EditorID}FacialBoneRegions{genderKey}.txt".ToLowerInvariant()
         Dim loc As FilesDictionary_class.File_Location = Nothing
         If Not FilesDictionary_class.Dictionary.TryGetValue(dataPath, loc) Then
-            NpcPreviewLog.Log($"  [FBR] no regions file for {race.EditorID}/{genderKey}: '{dataPath}'")
+            NpcPreviewLog.LogLazy(Function() $"  [FBR] no regions file for {race.EditorID}/{genderKey}: '{dataPath}'")
             _facialBoneRegionsCache(cacheKey) = Nothing
             Return Nothing
         End If
@@ -4301,11 +4681,11 @@ Public Class MainForm
             Dim parsed = FacialBoneRegionsFile.ParseFromBytes(bytes)
             _facialBoneRegionsCache(cacheKey) = parsed
             If parsed Is Nothing Then
-                NpcPreviewLog.Log($"  [FBR] parse failed for '{dataPath}'")
+                NpcPreviewLog.LogLazy(Function() $"  [FBR] parse failed for '{dataPath}'")
             End If
             Return parsed
         Catch ex As Exception
-            NpcPreviewLog.Log($"  [FBR] error loading '{dataPath}': {ex.Message}")
+            NpcPreviewLog.LogLazy(Function() $"  [FBR] error loading '{dataPath}': {ex.Message}")
             _facialBoneRegionsCache(cacheKey) = Nothing
             Return Nothing
         End Try
@@ -4321,7 +4701,7 @@ Public Class MainForm
         If state Is Nothing Then Return Nothing
 
         Dim modelNpcFormID = If(state.ModelSourceFormID <> 0UI, state.ModelSourceFormID, state.FormID)
-        Dim npcData = GetParsedNpc(modelNpcFormID)
+        Dim npcData = ApplyPresetOverlayToNpcData(GetParsedNpc(modelNpcFormID), state.RootNpcFormID)
         If npcData Is Nothing OrElse npcData.FaceMorphs.Count = 0 Then Return Nothing
 
         Dim raceRec = _pluginManager.GetRecord(state.RaceFormID)
@@ -4342,23 +4722,23 @@ Public Class MainForm
         Dim npcIndices = npcData.FaceMorphs.Select(Function(f) f.Index).OrderBy(Function(i) i).ToList()
         Dim missingInNpc = raceRegionIndices.Except(npcIndices).ToList()
         Dim extraInNpc = npcIndices.Except(raceRegionIndices).ToList()
-        NpcPreviewLog.Log($"  [FMRS-RAW] RACE regions={raceRegionIndices.Count} NPC FaceMorphs={npcIndices.Count} missing-in-NPC={missingInNpc.Count} extra-in-NPC={extraInNpc.Count} fmin={fmin:F3}")
+        NpcPreviewLog.LogLazy(Function() $"  [FMRS-RAW] RACE regions={raceRegionIndices.Count} NPC FaceMorphs={npcIndices.Count} missing-in-NPC={missingInNpc.Count} extra-in-NPC={extraInNpc.Count} fmin={fmin:F3}")
         If missingInNpc.Count > 0 Then
             Dim missingDetail = String.Join(", ", missingInNpc.Take(10).Select(Function(i)
                                                                                    Dim r As FacialBoneRegion = Nothing
                                                                                    regionsFile.Regions.TryGetValue(i, r)
                                                                                    Return $"{i}('{If(r IsNot Nothing, r.Name, "?")}')"
                                                                                End Function))
-            NpcPreviewLog.Log($"  [FMRS-RAW] regions-in-RACE-not-in-NPC (first 10): {missingDetail}")
+            NpcPreviewLog.LogLazy(Function() $"  [FMRS-RAW] regions-in-RACE-not-in-NPC (first 10): {missingDetail}")
         End If
         If extraInNpc.Count > 0 Then
-            NpcPreviewLog.Log($"  [FMRS-RAW] indices-in-NPC-not-in-RACE (first 10): {String.Join(", ", extraInNpc.Take(10))}")
+            NpcPreviewLog.LogLazy(Function() $"  [FMRS-RAW] indices-in-NPC-not-in-RACE (first 10): {String.Join(", ", extraInNpc.Take(10))}")
         End If
 
         For Each fm In npcData.FaceMorphs
             Dim region As FacialBoneRegion = Nothing
             If Not regionsFile.Regions.TryGetValue(fm.Index, region) Then
-                NpcPreviewLog.Log($"  [FMRS-RAW] FMRI={fm.Index} → NOT FOUND in RACE regions JSON")
+                NpcPreviewLog.LogLazy(Function() $"  [FMRS-RAW] FMRI={fm.Index} → NOT FOUND in RACE regions JSON")
                 Continue For
             End If
 
@@ -4374,7 +4754,7 @@ Public Class MainForm
                                      Math.Abs(rx) < 0.0001F AndAlso Math.Abs(ry) < 0.0001F AndAlso Math.Abs(rz) < 0.0001F AndAlso
                                      Math.Abs(sc) < 0.0001F)
             Dim nonZeroMark As String = If(isZero, " (all-zero, will skip)", "")
-            NpcPreviewLog.Log($"  [FMRS-RAW] FMRI={fm.Index} region='{region.Name}' bones={region.Bones.Count} sliders: pos=({px:+0.000;-0.000;0.000},{py:+0.000;-0.000;0.000},{pz:+0.000;-0.000;0.000}) rot=({rx:+0.000;-0.000;0.000},{ry:+0.000;-0.000;0.000},{rz:+0.000;-0.000;0.000}) scale={sc:+0.000;-0.000;0.000}{nonZeroMark}")
+            NpcPreviewLog.LogLazy(Function() $"  [FMRS-RAW] FMRI={fm.Index} region='{region.Name}' bones={region.Bones.Count} sliders: pos=({px:+0.000;-0.000;0.000},{py:+0.000;-0.000;0.000},{pz:+0.000;-0.000;0.000}) rot=({rx:+0.000;-0.000;0.000},{ry:+0.000;-0.000;0.000},{rz:+0.000;-0.000;0.000}) scale={sc:+0.000;-0.000;0.000}{nonZeroMark}")
 
             ' Skip regions with all-zero FMRS (no deformation at all)
             If Math.Abs(px) < 0.0001F AndAlso Math.Abs(py) < 0.0001F AndAlso Math.Abs(pz) < 0.0001F AndAlso
@@ -4450,7 +4830,7 @@ Public Class MainForm
                                             OrElse Math.Abs(deltaRot.X) > 0.0001F OrElse Math.Abs(deltaRot.Y) > 0.0001F OrElse Math.Abs(deltaRot.Z) > 0.0001F _
                                             OrElse Math.Abs(deltaScale.X) > 0.0001F OrElse Math.Abs(deltaScale.Y) > 0.0001F OrElse Math.Abs(deltaScale.Z) > 0.0001F)
                 If isAnyNonZero Then
-                    NpcPreviewLog.Log($"    [FMRS-BONE] region='{region.Name}' bone='{targetBoneName}' deltaPos=({deltaPos.X:+0.000;-0.000;0.000},{deltaPos.Y:+0.000;-0.000;0.000},{deltaPos.Z:+0.000;-0.000;0.000}) deltaRot=({deltaRot.X:+0.000;-0.000;0.000},{deltaRot.Y:+0.000;-0.000;0.000},{deltaRot.Z:+0.000;-0.000;0.000}) deltaScale=({deltaScale.X:+0.000;-0.000;0.000},{deltaScale.Y:+0.000;-0.000;0.000},{deltaScale.Z:+0.000;-0.000;0.000})")
+                    NpcPreviewLog.LogLazy(Function() $"    [FMRS-BONE] region='{region.Name}' bone='{targetBoneName}' deltaPos=({deltaPos.X:+0.000;-0.000;0.000},{deltaPos.Y:+0.000;-0.000;0.000},{deltaPos.Z:+0.000;-0.000;0.000}) deltaRot=({deltaRot.X:+0.000;-0.000;0.000},{deltaRot.Y:+0.000;-0.000;0.000},{deltaRot.Z:+0.000;-0.000;0.000}) deltaScale=({deltaScale.X:+0.000;-0.000;0.000},{deltaScale.Y:+0.000;-0.000;0.000},{deltaScale.Z:+0.000;-0.000;0.000})")
                 End If
             Next
         Next
@@ -4513,12 +4893,16 @@ Public Class MainForm
         If state Is Nothing Then Return Nothing
 
         Dim modelNpcFormID = If(state.ModelSourceFormID <> 0UI, state.ModelSourceFormID, state.FormID)
-        Dim npcData = GetParsedNpc(modelNpcFormID)
+        Dim npcData = ApplyPresetOverlayToNpcData(GetParsedNpc(modelNpcFormID), state.RootNpcFormID)
         If npcData Is Nothing Then Return Nothing
 
-        Dim wt As Single = npcData.WeightThin
-        Dim wm As Single = npcData.WeightMuscular
-        Dim wf As Single = npcData.WeightFat
+        ' Use state.WeightX (resolved by ApplyRaceFallbacks) — these are post-sentinel-substitution
+        ' floats. Reading npcData.WeightX directly here would propagate the Single.MaxValue sentinel
+        ' for NPCs whose MWGT carries "Default" slots, which then explodes the body-weight bone
+        ' scales to infinity downstream.
+        Dim wt As Single = state.WeightThin
+        Dim wm As Single = state.WeightMuscular
+        Dim wf As Single = state.WeightFat
         Dim armaDeltas = If(renderData IsNot Nothing, renderData.ArmaBoneScaleDeltas, Nothing)
         Dim hasMwgt = (wt + wm + wf) >= 0.001F
         Dim hasArmaDeltas = (armaDeltas IsNot Nothing AndAlso armaDeltas.Count > 0)
@@ -4530,7 +4914,7 @@ Public Class MainForm
 
         ' Log the FaceGen clamps for reference. TBD whether they apply to body BSMS output
         ' or only to face slider*FMIN. Not applying any clamp formula without spec.
-        NpcPreviewLog.Log($"  [RACE-CLAMPS] {race.EditorID} PNAM(Main)={race.FaceGenMainClamp:F3} UNAM(Face)={race.FaceGenFaceClamp:F3}")
+        NpcPreviewLog.LogLazy(Function() $"  [RACE-CLAMPS] {race.EditorID} PNAM(Main)={race.FaceGenMainClamp:F3} UNAM(Face)={race.FaceGenFaceClamp:F3}")
 
         ' Log NNAM raw (both genders) — "Neck Fat Adjustments Scale" per xEdit, 4 unknown bytes + X + Y.
         ' Hypothesis: the 4 bytes may be (thin, musc, fat, pad) weights. Interpretation pending.
@@ -4538,9 +4922,9 @@ Public Class MainForm
                           If raw Is Nothing Then Return "none"
                           Return $"bytes=[{raw(0):X2} {raw(1):X2} {raw(2):X2} {raw(3):X2}] (dec={raw(0)},{raw(1)},{raw(2)},{raw(3)}) X={xv:F4} Y={yv:F4}"
                       End Function
-        NpcPreviewLog.Log($"  [RACE-NNAM] {race.EditorID} Male:   {fmtNNAM(race.MaleNeckNNAMRaw, race.MaleNeckNNAMX, race.MaleNeckNNAMY)}")
-        NpcPreviewLog.Log($"  [RACE-NNAM] {race.EditorID} Female: {fmtNNAM(race.FemaleNeckNNAMRaw, race.FemaleNeckNNAMX, race.FemaleNeckNNAMY)}")
-        NpcPreviewLog.Log($"  [RACE-HEIGHT] {race.EditorID} MaleHeight={race.MaleHeight:F4} FemaleHeight={race.FemaleHeight:F4}")
+        NpcPreviewLog.LogLazy(Function() $"  [RACE-NNAM] {race.EditorID} Male:   {fmtNNAM(race.MaleNeckNNAMRaw, race.MaleNeckNNAMX, race.MaleNeckNNAMY)}")
+        NpcPreviewLog.LogLazy(Function() $"  [RACE-NNAM] {race.EditorID} Female: {fmtNNAM(race.FemaleNeckNNAMRaw, race.FemaleNeckNNAMX, race.FemaleNeckNNAMY)}")
+        NpcPreviewLog.LogLazy(Function() $"  [RACE-HEIGHT] {race.EditorID} MaleHeight={race.MaleHeight:F4} FemaleHeight={race.FemaleHeight:F4}")
 
         ' Gender-resolved NNAM ("Neck Fat Adjustments Scale" — xEdit wbDefinitionsFO4.pas:11639/11657).
         ' Consumed by BuildBodyWeightPose as HIPÓTESIS H1 (multiplicative neck-fat modifier).
@@ -4549,13 +4933,13 @@ Public Class MainForm
         Dim nnamX As Single = If(state.IsFemale, race.FemaleNeckNNAMX, race.MaleNeckNNAMX)
         Dim nnamY As Single = If(state.IsFemale, race.FemaleNeckNNAMY, race.MaleNeckNNAMY)
         Dim nnamRaw = If(state.IsFemale, race.FemaleNeckNNAMRaw, race.MaleNeckNNAMRaw)
-        NpcPreviewLog.Log($"  [NNAM-RESOLVED] race={race.EditorID} gender={If(state.IsFemale, "F", "M")} X={nnamX:F4} Y={nnamY:F4} fat={wf:F3}")
+        NpcPreviewLog.LogLazy(Function() $"  [NNAM-RESOLVED] race={race.EditorID} gender={If(state.IsFemale, "F", "M")} X={nnamX:F4} Y={nnamY:F4} fat={wf:F3}")
         If nnamRaw IsNot Nothing AndAlso (nnamRaw(0) <> 0 OrElse nnamRaw(1) <> 0 OrElse nnamRaw(2) <> 0 OrElse nnamRaw(3) <> 0) Then
-            NpcPreviewLog.Log($"  [NNAM-WARN] Unknown prefix bytes are non-zero on {race.EditorID} gender={If(state.IsFemale, "F", "M")} bytes=[{nnamRaw(0):X2} {nnamRaw(1):X2} {nnamRaw(2):X2} {nnamRaw(3):X2}] — semantics unresolved, H1 ignores them")
+            NpcPreviewLog.LogLazy(Function() $"  [NNAM-WARN] Unknown prefix bytes are non-zero on {race.EditorID} gender={If(state.IsFemale, "F", "M")} bytes=[{nnamRaw(0):X2} {nnamRaw(1):X2} {nnamRaw(2):X2} {nnamRaw(3):X2}] — semantics unresolved, H1 ignores them")
         End If
 
         Dim targetGender As UInteger = If(state.IsFemale, 1UI, 0UI)
-        NpcPreviewLog.Log($"  [BW-GENDER] race={race.EditorID} npcGender={If(state.IsFemale, "F", "M")} targetGenderEnum={targetGender} blocks_in_race={race.BoneData.Count} block_genders=[{String.Join(",", race.BoneData.Select(Function(b) b.Gender.ToString()))}]")
+        NpcPreviewLog.LogLazy(Function() $"  [BW-GENDER] race={race.EditorID} npcGender={If(state.IsFemale, "F", "M")} targetGenderEnum={targetGender} blocks_in_race={race.BoneData.Count} block_genders=[{String.Join(",", race.BoneData.Select(Function(b) b.Gender.ToString()))}]")
         For Each bd In race.BoneData
             If bd.Gender = targetGender Then
                 ' Dump archetype values for diagnostic bones to verify what the record actually says.
@@ -4651,8 +5035,8 @@ Public Class MainForm
     ''' Caller contract: <paramref name="skeleton"/> must already be loaded + (optionally) face/robot
     ''' merged BEFORE this is called, because BuildBodyWeightPose walks its hierarchy via
     ''' ResolveMrsvRegion to map bones to MRSV regions. RenderCurrentStateAsync primes the
-    ''' SkeletonInstance via LoadFromKey + PrepareForShapes + MergeAdditionalSkeleton before
-    ''' invoking this helper.</summary>
+    ''' SkeletonInstance via LoadFromKey + MergeRobotExtension + MergeAdditionalSkeleton(face) +
+    ''' PrepareForShapes (cloth-inject — corre al final para ver el skeleton completo).</summary>
     ''' <summary>Build the merged pose. <paramref name="armaSculptOverride"/>: when supplied, REPLACES
     ''' the per-shape ARMA sculpt that would otherwise be resolved from renderData. Pass Nothing for
     ''' "no sculpt" (base pose used by shapes whose ARMA has no sculpt). Pass a specific dict (per ARMA)
@@ -4665,16 +5049,20 @@ Public Class MainForm
         Dim racePose = BuildRaceHeightPose(GetRaceHeight(state))
 
         Dim bwPose As Poses_class = Nothing
-        If bodyWeightEnabled Then
+        Dim hasSculpt = (armaSculptOverride IsNot Nothing AndAlso armaSculptOverride.Count > 0)
+        If bodyWeightEnabled OrElse hasSculpt Then
             Dim bwData = ResolveBodyWeightData(state, renderData)
             If bwData.GenderBlock IsNot Nothing Then
                 ' ARMA sculpt override (if provided) is the per-skeleton-per-ARMA sculpt source.
                 ' Sculpt formula hardcoded H3 multiplicative (closure plan P0 — A REVISAR).
                 Dim sculpt = If(armaSculptOverride, New Dictionary(Of String, System.Numerics.Vector3)(StringComparer.OrdinalIgnoreCase))
+                ' Sclpt y BW son toggles independientes. weightLayersEnabled=bodyWeightEnabled
+                ' gobierna las layers RACE.BSMS / NNAM / MRSV (1-3); la layer ARMA (4) se aplica
+                ' siempre que haya deltas. BW=OFF + Sclpt=ON → sólo capa 4 (s = 1·(1+arma_d)).
                 bwPose = BuildBodyWeightPose(bwData.Wt, bwData.Wm, bwData.Wf,
                                              bwData.GenderBlock, bwData.MrsvValues, sculpt,
                                              bwData.NnamX, bwData.NnamY,
-                                             skeleton)
+                                             skeleton, bodyWeightEnabled)
             End If
         End If
 
@@ -4747,7 +5135,7 @@ Public Class MainForm
                         existing.ScaleZ = newPose.ScaleZ
                     End If
                     If conflicts.Count > 0 Then
-                        NpcPreviewLog.Log($"  [POSE-MERGE-OVERLAP] bone='{bone}' fields={String.Join(",", conflicts)} (last-wins — race/BW/FMRS should be disjoint)")
+                        NpcPreviewLog.LogLazy(Function() $"  [POSE-MERGE-OVERLAP] bone='{bone}' fields={String.Join(",", conflicts)} (last-wins — race/BW/FMRS should be disjoint)")
                     End If
                     merged.Transforms(bone) = existing
                 Else
@@ -4766,7 +5154,8 @@ Public Class MainForm
                                                  mrsvValues As List(Of Single),
                                                  armaDeltas As Dictionary(Of String, System.Numerics.Vector3),
                                                  nnamX As Single, nnamY As Single,
-                                                 skeleton As SkeletonInstance) As Poses_class
+                                                 skeleton As SkeletonInstance,
+                                                 weightLayersEnabled As Boolean) As Poses_class
         Const Eps As Single = 0.001F
         Dim pose As New Poses_class With {
                 .Name = "MWGT Body Weight",
@@ -4800,10 +5189,11 @@ Public Class MainForm
 
         Dim inv = CultureInfo.InvariantCulture
         NpcPreviewLog.Log(String.Format(inv,
-            "  [BW-LAYERS-HEADER] MWGT=(thin={0:F3},musc={1:F3},fat={2:F3}) NNAM=({3:F4},{4:F4}) MRSV.count={5} ARMA-deltas.count={6} formula=H3_multiplicative",
+            "  [BW-LAYERS-HEADER] weightLayers={7} MWGT=(thin={0:F3},musc={1:F3},fat={2:F3}) NNAM=({3:F4},{4:F4}) MRSV.count={5} ARMA-deltas.count={6} formula=H3_multiplicative",
             wt, wm, wf, nnamX, nnamY,
             If(mrsvValues Is Nothing, 0, mrsvValues.Count),
-            If(armaDeltas Is Nothing, 0, armaDeltas.Count)))
+            If(armaDeltas Is Nothing, 0, armaDeltas.Count),
+            weightLayersEnabled))
 
         For Each boneName In allBoneNames
             Dim skelBone As HierarchiBone_class = Nothing
@@ -4849,7 +5239,7 @@ Public Class MainForm
             ' Parser reads all 9 (RecordParsers.vb:1216-1226). Previously only Y/Z were consumed
             ' here; X was silently discarded. Fixed 2026-04-19 per audit — ignored X caused the
             ' systematic X-dominant residual vs CK FaceGen bake at shared neck bones.
-            If bone IsNot Nothing AndAlso bone.HasWeightScale Then
+            If weightLayersEnabled AndAlso bone IsNot Nothing AndAlso bone.HasWeightScale Then
                 sx = bone.ThinX * wt + bone.MuscularX * wm + bone.FatX * wf
                 sy = bone.ThinY * wt + bone.MuscularY * wm + bone.FatY * wf
                 sz = bone.ThinZ * wt + bone.MuscularZ * wm + bone.FatZ * wf
@@ -4867,7 +5257,7 @@ Public Class MainForm
             ' Neck_Low_skin, Neck1_skin). Validate with harness [BW-only] RMS Científica < 0.10
             ' before promoting out of hypothesis.
             Dim nnamApplied As Boolean = False
-            If bone IsNot Nothing AndAlso bone.HasWeightScale _
+            If weightLayersEnabled AndAlso bone IsNot Nothing AndAlso bone.HasWeightScale _
                AndAlso boneName.IndexOf("Neck", StringComparison.OrdinalIgnoreCase) >= 0 _
                AndAlso (Math.Abs(nnamX) > Single.Epsilon OrElse Math.Abs(nnamY) > Single.Epsilon) Then
                 sx *= (1.0F + nnamX * wf)
@@ -4884,7 +5274,7 @@ Public Class MainForm
             Dim region As Integer = -1
             Dim slider As Single = 0.0F
             Dim mrsvApplied As Boolean = False
-            If bone IsNot Nothing AndAlso bone.HasRangeModifier AndAlso mrsvValues IsNot Nothing AndAlso mrsvValues.Count >= 5 Then
+            If weightLayersEnabled AndAlso bone IsNot Nothing AndAlso bone.HasRangeModifier AndAlso mrsvValues IsNot Nothing AndAlso mrsvValues.Count >= 5 Then
                 region = ResolveMrsvRegion(skelBone)
                 If region >= 0 AndAlso region < mrsvValues.Count Then
                     slider = mrsvValues(region)
@@ -4955,14 +5345,14 @@ Public Class MainForm
                              "null/empty",
                              String.Join(",", mrsvValues.Select(Function(v) v.ToString("F3"))))
         Dim armaCount = If(armaDeltas Is Nothing, 0, armaDeltas.Count)
-        NpcPreviewLog.Log($"  [BODY-WEIGHT] MWGT=({wt:F3},{wm:F3},{wf:F3}) NNAM=({nnamX:F4},{nnamY:F4}) MRSV=[{mrsvStr}] ARMA-deltas={armaCount} (formula=H3_multiplicative) bones: union={allBoneNames.Count} affected={affected} skipped=[noSkel={skippedNoSkel} negScale={skippedNegligibleScale}]")
+        NpcPreviewLog.LogLazy(Function() $"  [BODY-WEIGHT] MWGT=({wt:F3},{wm:F3},{wf:F3}) NNAM=({nnamX:F4},{nnamY:F4}) MRSV=[{mrsvStr}] ARMA-deltas={armaCount} (formula=H3_multiplicative) bones: union={allBoneNames.Count} affected={affected} skipped=[noSkel={skippedNoSkel} negScale={skippedNegligibleScale}]")
         If unmatched.Count > 0 Then
-            NpcPreviewLog.Log($"    [BW-UNMATCHED-BONES] {String.Join(", ", unmatched)}")
+            NpcPreviewLog.LogLazy(Function() $"    [BW-UNMATCHED-BONES] {String.Join(", ", unmatched)}")
         End If
 
         If diag.Count > 0 Then
             For Each r In diag.OrderBy(Function(x) x.Name)
-                NpcPreviewLog.Log($"    [BW-BONE] {r.Name} sx={r.Sx:F4} sy={r.Sy:F4} sz={r.Sz:F4} restY={r.RestY:F3} restZ={r.RestZ:F3} region={r.Region} slider={r.Slider:F3} armaDX={r.ArmaDX:F4} armaDY={r.ArmaDY:F4} armaDZ={r.ArmaDZ:F4}")
+                NpcPreviewLog.LogLazy(Function() $"    [BW-BONE] {r.Name} sx={r.Sx:F4} sy={r.Sy:F4} sz={r.Sz:F4} restY={r.RestY:F3} restZ={r.RestZ:F3} region={r.Region} slider={r.Slider:F3} armaDX={r.ArmaDX:F4} armaDY={r.ArmaDY:F4} armaDZ={r.ArmaDZ:F4}")
             Next
         End If
 
@@ -4977,10 +5367,18 @@ Public Class MainForm
     Private Function BuildSkeletonInstance(state As NPCVisualState, renderData As PreviewResolutionResult,
                                            faceSkelBytes As Byte()) As SkeletonInstance
         Dim s As New SkeletonInstance()
+        ' Orden de construcción: cargar body → mergear robot extension → mergear face bones →
+        ' RECIÉN AHÍ PrepareForShapes (cloth-bone injection). InjectMissingBonesIntoLiveSkeleton
+        ' compara los bones del shape contra SkeletonDictionary; si lo llamábamos antes del face/
+        ' robot merge, los bones que viven en esos skeletons aparecían como "missing" y el inject
+        ' los buscaba en el cloth skeleton del NIF — no estaban ahí tampoco → fallo silencioso
+        ' (Debugger.Break en SkeletonClothOverlayHelper:96, sin log en release). Con el orden
+        ' corregido, el SkeletonDictionary contiene body+robot+face antes del inject; sólo los
+        ' bones de cloth-physics genuinos quedan como missing y se inyectan correctamente.
         s.LoadFromKey(renderData.SkeletonKey)
-        s.PrepareForShapes(renderData.Shapes)
         MergeRobotExtendedSkeletonsIfRobot(state, s)
         If faceSkelBytes IsNot Nothing Then s.MergeAdditionalSkeleton(faceSkelBytes)
+        s.PrepareForShapes(renderData.Shapes)
         Return s
     End Function
 
@@ -5039,28 +5437,28 @@ Public Class MainForm
         Dim state = previewVariant.State
 
         NpcPreviewLog.LogSeparator($"RESOLVE PREVIEW: {previewVariant.DisplayName}")
-        NpcPreviewLog.Log($"  FormID={state.FormID:X8} Female={state.IsFemale} Race={state.RaceFormID:X8}")
-        NpcPreviewLog.Log($"  SkinFormID={state.SkinFormID:X8} OutfitFormID={state.DefaultOutfitFormID:X8}")
-        NpcPreviewLog.Log($"  HeadTexture={state.HeadTextureFormID:X8} HairColor={state.HairColorFormID:X8} FacialHairColor={state.FacialHairColorFormID:X8}")
-        NpcPreviewLog.Log($"  HasTextureLighting={state.HasTextureLighting} TextureLightingColor={state.TextureLightingColor}")
-        NpcPreviewLog.Log($"  HeadParts({state.HeadPartFormIDs.Count}): {String.Join(", ", state.HeadPartFormIDs.Select(Function(id) id.ToString("X8")))}")
-        NpcPreviewLog.Log($"  LoadoutArmor({state.LoadoutArmorFormIDs.Count}): {String.Join(", ", state.LoadoutArmorFormIDs.Select(Function(id) id.ToString("X8")))}")
-        NpcPreviewLog.Log($"  PreviewMode={CurrentPreviewMode}")
+        NpcPreviewLog.LogLazy(Function() $"  FormID={state.FormID:X8} Female={state.IsFemale} Race={state.RaceFormID:X8}")
+        NpcPreviewLog.LogLazy(Function() $"  SkinFormID={state.SkinFormID:X8} OutfitFormID={state.DefaultOutfitFormID:X8}")
+        NpcPreviewLog.LogLazy(Function() $"  HeadTexture={state.HeadTextureFormID:X8} HairColor={state.HairColorFormID:X8} FacialHairColor={state.FacialHairColorFormID:X8}")
+        NpcPreviewLog.LogLazy(Function() $"  HasTextureLighting={state.HasTextureLighting} TextureLightingColor={state.TextureLightingColor}")
+        NpcPreviewLog.LogLazy(Function() $"  HeadParts({state.HeadPartFormIDs.Count}): {String.Join(", ", state.HeadPartFormIDs.Select(Function(id) id.ToString("X8")))}")
+        NpcPreviewLog.LogLazy(Function() $"  LoadoutArmor({state.LoadoutArmorFormIDs.Count}): {String.Join(", ", state.LoadoutArmorFormIDs.Select(Function(id) id.ToString("X8")))}")
+        NpcPreviewLog.LogLazy(Function() $"  PreviewMode={CurrentPreviewMode}")
 
         result.Warnings.AddRange(previewVariant.Warnings)
         result.SkeletonKey = ResolveSkeletonKey(previewVariant.State, result.Warnings)
-        NpcPreviewLog.Log($"  Skeleton={result.SkeletonKey}")
+        NpcPreviewLog.LogLazy(Function() $"  Skeleton={result.SkeletonKey}")
 
         Dim candidates = CollectMeshCandidates(previewVariant.State, result.Warnings, previewVariant.UseFaceGen)
-        NpcPreviewLog.Log($"  Candidates collected: {candidates.Count}")
+        NpcPreviewLog.LogLazy(Function() $"  Candidates collected: {candidates.Count}")
         For Each c In candidates
-            NpcPreviewLog.Log($"    [{c.Kind}] type={c.HeadPartType} slot={c.SlotMask:X8} pri={c.Priority} txst={c.TextureSetFormID:X8} mswp={c.MaterialSwapFormID:X8} solidTint={c.UseSolidTint} bodyTex={c.UsesBodyTexture} colorFID={c.HeadPartColorFormID:X8} key={c.DictKey}")
+            NpcPreviewLog.LogLazy(Function() $"    [{c.Kind}] type={c.HeadPartType} slot={c.SlotMask:X8} pri={c.Priority} txst={c.TextureSetFormID:X8} mswp={c.MaterialSwapFormID:X8} solidTint={c.UseSolidTint} bodyTex={c.UsesBodyTexture} colorFID={c.HeadPartColorFormID:X8} key={c.DictKey}")
         Next
 
         Dim selectedCandidates = SelectWinningCandidates(candidates)
-        NpcPreviewLog.Log($"  Selected winners: {selectedCandidates.Count}")
+        NpcPreviewLog.LogLazy(Function() $"  Selected winners: {selectedCandidates.Count}")
         For Each c In selectedCandidates
-            NpcPreviewLog.Log($"    WIN [{c.Kind}] type={c.HeadPartType} slot={c.SlotMask:X8} key={c.DictKey}")
+            NpcPreviewLog.LogLazy(Function() $"    WIN [{c.Kind}] type={c.HeadPartType} slot={c.SlotMask:X8} key={c.DictKey}")
         Next
 
         ' Diagnostic toggles "Render armor" / "Render only armor" se aplican vía RenderHide en
@@ -5100,13 +5498,13 @@ Public Class MainForm
             Next
         Next
         If globalSculptSource IsNot Nothing Then
-            NpcPreviewLog.Log($"  [SCULPT-SOURCE] global (slot 33 BODY): ARMA {globalSculptSource.ArmorAddonFormID:X8} with {globalSculptSource.ArmaBoneScaleDeltas.Count} bone deltas")
+            NpcPreviewLog.LogLazy(Function() $"  [SCULPT-SOURCE] global (slot 33 BODY): ARMA {globalSculptSource.ArmorAddonFormID:X8} with {globalSculptSource.ArmaBoneScaleDeltas.Count} bone deltas")
         ElseIf uSculptSourceByBit.Count > 0 Then
             For Each kv In uSculptSourceByBit
-                NpcPreviewLog.Log($"  [SCULPT-SOURCE] [U] bit {kv.Key} (slot {kv.Key + 24}): ARMA {kv.Value.ArmorAddonFormID:X8} with {kv.Value.ArmaBoneScaleDeltas.Count} bone deltas")
+                NpcPreviewLog.LogLazy(Function() $"  [SCULPT-SOURCE] [U] bit {kv.Key} (slot {kv.Key + 24}): ARMA {kv.Value.ArmorAddonFormID:X8} with {kv.Value.ArmaBoneScaleDeltas.Count} bone deltas")
             Next
         Else
-            NpcPreviewLog.Log($"  [SCULPT-SOURCE] none — no shape will receive ARMA sculpt scaling")
+            NpcPreviewLog.LogLazy(Function() $"  [SCULPT-SOURCE] none — no shape will receive ARMA sculpt scaling")
         End If
 
         Dim loadedNifs As New Dictionary(Of String, Nifcontent_Class_Manolo)(StringComparer.OrdinalIgnoreCase)
@@ -5170,12 +5568,12 @@ Public Class MainForm
             LoadNifShapes(candidate, previewVariant.State, loadedNifs, result, sculptToApply, sourceFormID)
         Next
 
-        NpcPreviewLog.Log($"  [ARMA-SCULPT-MAP] {result.ShapeArmaSculpt.Count}/{result.Shapes.Count} shapes will receive sculpt scaling")
+        NpcPreviewLog.LogLazy(Function() $"  [ARMA-SCULPT-MAP] {result.ShapeArmaSculpt.Count}/{result.Shapes.Count} shapes will receive sculpt scaling")
 
-        NpcPreviewLog.Log($"  Total shapes loaded: {result.Shapes.Count}")
+        NpcPreviewLog.LogLazy(Function() $"  Total shapes loaded: {result.Shapes.Count}")
         DeduplicateWarnings(result.Warnings)
         For Each w In result.Warnings
-            NpcPreviewLog.Log($"  WARNING: {w}")
+            NpcPreviewLog.LogLazy(Function() $"  WARNING: {w}")
         Next
         Return result
     End Function
@@ -5211,13 +5609,28 @@ Public Class MainForm
         Return clone
     End Function
 
-    Private Sub ApplyRaceFallbacks(state As NPCVisualState)
+    Private Sub ApplyRaceFallbacks(state As NPCVisualState, traits As TraitsState)
         If state Is Nothing OrElse state.RaceFormID = 0UI Then Return
 
         Dim raceRec = _pluginManager.GetRecord(state.RaceFormID)
-        If raceRec Is Nothing OrElse raceRec.Header.Signature <> "RACE" Then Return
+        If raceRec Is Nothing OrElse raceRec.Header.Signature <> "RACE" Then
+            ' No RACE record: all-Default MWGT can't be resolved → leave 0; explicit values pass through.
+            state.WeightThin = traits.WeightThin.GetValueOrDefault(0.0F)
+            state.WeightMuscular = traits.WeightMuscular.GetValueOrDefault(0.0F)
+            state.WeightFat = traits.WeightFat.GetValueOrDefault(0.0F)
+            Return
+        End If
 
         Dim race = RecordParsers.ParseRACE(raceRec, _pluginManager)
+
+        ' Materialize NPC.MWGT into final 3 floats. Substitution rule lives in ResolveBodyWeights.
+        ' Done before the head/skin fallbacks so callers reading state.WeightX downstream always
+        ' see resolved values.
+        Dim resolvedWeights = ResolveBodyWeights(traits, race, state.IsFemale)
+        state.WeightThin = resolvedWeights.Thin
+        state.WeightMuscular = resolvedWeights.Muscular
+        state.WeightFat = resolvedWeights.Fat
+
         If state.SkinFormID = 0UI Then
             state.SkinFormID = race.SkinFormID
         End If
@@ -5238,6 +5651,74 @@ Public Class MainForm
             End If
         End If
     End Sub
+
+    ''' <summary>Materialize NPC.MWGT into 3 concrete floats, applying the engine's "Default"
+    ''' sentinel substitution rule. Each NPC.MWGT slot may come as Nothing (the parser flagged
+    ''' it as Single.MaxValue, the wire encoding of "field not assigned" — see
+    ''' RecordParsers.ReadOptionalFloat). Substitution rule:
+    '''   • 0 Defaults → return as-is, do NOT renormalize (respect the record's data even if
+    '''     it doesn't sum to 1).
+    '''   • 1 Default  → fill the missing slot with clamp(1 - sum(other 2), 0, +∞). The two
+    '''     explicit values stay untouched. Result sums to 1 unless the two explicit values
+    '''     exceeded 1 (in which case the missing slot is 0 and the sum stays > 1).
+    '''   • 2 Defaults → fill the missing slots from RACE.{Male|Female}DefaultWeight{X}, then
+    '''     renormalize the 3 to sum=1 (skip if total is 0).
+    '''   • 3 Defaults → use RACE.{Male|Female}DefaultWeight{X} verbatim; do NOT renormalize.
+    ''' RACE defaults are read per-gender. If RACE doesn't carry the field (record &lt; v109),
+    ''' fallback is 0.
+    ''' Logs the raw → resolved transition when any substitution happened, for audit.</summary>
+    Private Shared Function ResolveBodyWeights(traits As TraitsState, race As RACE_Data, isFemale As Boolean) As (Thin As Single, Muscular As Single, Fat As Single)
+        Dim rawT = traits.WeightThin
+        Dim rawM = traits.WeightMuscular
+        Dim rawF = traits.WeightFat
+        Dim defaultCount = 0
+        If Not rawT.HasValue Then defaultCount += 1
+        If Not rawM.HasValue Then defaultCount += 1
+        If Not rawF.HasValue Then defaultCount += 1
+
+        Dim resT As Single, resM As Single, resF As Single
+
+        Select Case defaultCount
+            Case 0
+                resT = rawT.Value
+                resM = rawM.Value
+                resF = rawF.Value
+            Case 1
+                Dim a As Single, b As Single
+                If Not rawT.HasValue Then
+                    a = rawM.Value : b = rawF.Value
+                    resT = Math.Max(0.0F, 1.0F - a - b) : resM = a : resF = b
+                ElseIf Not rawM.HasValue Then
+                    a = rawT.Value : b = rawF.Value
+                    resT = a : resM = Math.Max(0.0F, 1.0F - a - b) : resF = b
+                Else
+                    a = rawT.Value : b = rawM.Value
+                    resT = a : resM = b : resF = Math.Max(0.0F, 1.0F - a - b)
+                End If
+            Case 2
+                Dim raceT = If(isFemale, race.FemaleDefaultWeightThin, race.MaleDefaultWeightThin).GetValueOrDefault(0.0F)
+                Dim raceM = If(isFemale, race.FemaleDefaultWeightMuscular, race.MaleDefaultWeightMuscular).GetValueOrDefault(0.0F)
+                Dim raceF = If(isFemale, race.FemaleDefaultWeightFat, race.MaleDefaultWeightFat).GetValueOrDefault(0.0F)
+                resT = If(rawT.HasValue, rawT.Value, raceT)
+                resM = If(rawM.HasValue, rawM.Value, raceM)
+                resF = If(rawF.HasValue, rawF.Value, raceF)
+                Dim sum = resT + resM + resF
+                If sum > 0.0F Then
+                    resT /= sum : resM /= sum : resF /= sum
+                End If
+            Case Else  ' 3
+                resT = If(isFemale, race.FemaleDefaultWeightThin, race.MaleDefaultWeightThin).GetValueOrDefault(0.0F)
+                resM = If(isFemale, race.FemaleDefaultWeightMuscular, race.MaleDefaultWeightMuscular).GetValueOrDefault(0.0F)
+                resF = If(isFemale, race.FemaleDefaultWeightFat, race.MaleDefaultWeightFat).GetValueOrDefault(0.0F)
+        End Select
+
+        If defaultCount > 0 Then
+            Dim rawStr = $"({(If(rawT.HasValue, rawT.Value.ToString("F3"), "Default"))},{(If(rawM.HasValue, rawM.Value.ToString("F3"), "Default"))},{(If(rawF.HasValue, rawF.Value.ToString("F3"), "Default"))})"
+            NpcPreviewLog.LogLazy(Function() $"  [MWGT-RESOLVE] raw={rawStr} defaults={defaultCount} gender={(If(isFemale, "F", "M"))} → resolved=({resT:F3},{resM:F3},{resF:F3})")
+        End If
+
+        Return (resT, resM, resF)
+    End Function
 
     Private Function ResolveSkeletonKey(state As NPCVisualState, warnings As List(Of String)) As String
         If state Is Nothing OrElse state.RaceFormID = 0UI Then Return ""
@@ -5263,17 +5744,17 @@ Public Class MainForm
         Dim own = CreateOwnTraitsState(npc)
         If visited.Contains(formID) Then Return own
 
-        NpcPreviewLog.Log($"  [TRAITS-CHAIN] {npc.EditorID} [{formID:X8}] flags={npc.TemplateFlags:X4} hasTraitsFlag={HasTemplateFlag(npc.TemplateFlags, NPC_TemplateCategory.Traits)} Female={npc.IsFemale}")
+        NpcPreviewLog.LogLazy(Function() $"  [TRAITS-CHAIN] {npc.EditorID} [{formID:X8}] flags={npc.TemplateFlags:X4} hasTraitsFlag={HasTemplateFlag(npc.TemplateFlags, NPC_TemplateCategory.Traits)} Female={npc.IsFemale}")
 
         If Not HasTemplateFlag(npc.TemplateFlags, NPC_TemplateCategory.Traits) Then
-            NpcPreviewLog.Log($"  [TRAITS-CHAIN] ? OWN traits (Female={npc.IsFemale})")
+            NpcPreviewLog.LogLazy(Function() $"  [TRAITS-CHAIN] ? OWN traits (Female={npc.IsFemale})")
             Return own
         End If
 
         visited.Add(formID)
         Dim sourceFormID = ResolveTemplateSourceFormID(npc, NPC_TemplateCategory.Traits)
         Dim sourceRec = _pluginManager.GetRecord(sourceFormID)
-        NpcPreviewLog.Log($"  [TRAITS-CHAIN] ? source {sourceFormID:X8} sig={sourceRec?.Header.Signature} edid={sourceRec?.EditorID}")
+        NpcPreviewLog.LogLazy(Function() $"  [TRAITS-CHAIN] ? source {sourceFormID:X8} sig={sourceRec?.Header.Signature} edid={sourceRec?.EditorID}")
 
         Dim resolved = ResolveTraitsStateFromTemplateSource(sourceFormID, visited, warnings)
         visited.Remove(formID)
@@ -5419,7 +5900,7 @@ Public Class MainForm
         End If
 
         Dim picked = weightedLeaves(_rng.Next(weightedLeaves.Count))
-        NpcPreviewLog.Log($"  [LVLN] {lvln.EditorID} [{lvlnFormID:X8}] picked {picked:X8} from {weightedLeaves.Count} weighted entries (gender={genderFilter})")
+        NpcPreviewLog.LogLazy(Function() $"  [LVLN] {lvln.EditorID} [{lvlnFormID:X8}] picked {picked:X8} from {weightedLeaves.Count} weighted entries (gender={genderFilter})")
         Return picked
     End Function
 
@@ -5432,7 +5913,7 @@ Public Class MainForm
         If _lvlnPickCache IsNot Nothing Then
             Dim cached As UInteger = 0UI
             If _lvlnPickCache.TryGetValue(lvlnFormID, cached) Then
-                NpcPreviewLog.Log($"  [LVLN] {lvlnRec.EditorID} [{lvlnFormID:X8}] ? cached pick {cached:X8}")
+                NpcPreviewLog.LogLazy(Function() $"  [LVLN] {lvlnRec.EditorID} [{lvlnFormID:X8}] ? cached pick {cached:X8}")
                 Return cached
             End If
         End If
@@ -5445,7 +5926,7 @@ Public Class MainForm
         End If
 
         If _lvlnPickCache IsNot Nothing Then _lvlnPickCache(lvlnFormID) = picked
-        NpcPreviewLog.Log($"  [LVLN-TMPL] {lvlnRec.EditorID} [{lvlnFormID:X8}] resolved to {picked:X8}")
+        NpcPreviewLog.LogLazy(Function() $"  [LVLN-TMPL] {lvlnRec.EditorID} [{lvlnFormID:X8}] resolved to {picked:X8}")
         Return picked
     End Function
 
@@ -5463,7 +5944,7 @@ Public Class MainForm
             ' Use pre-resolved LoadoutArmorFormIDs (already expanded from LVLI).
             ' These are the final ARMO FormIDs for this specific variant.
             If state.LoadoutArmorFormIDs.Count > 0 Then
-                NpcPreviewLog.Log($"  [OUTFIT] Using resolved LoadoutArmorFormIDs({state.LoadoutArmorFormIDs.Count}): {String.Join(", ", state.LoadoutArmorFormIDs.Select(Function(id) id.ToString("X8")))}")
+                NpcPreviewLog.LogLazy(Function() $"  [OUTFIT] Using resolved LoadoutArmorFormIDs({state.LoadoutArmorFormIDs.Count}): {String.Join(", ", state.LoadoutArmorFormIDs.Select(Function(id) id.ToString("X8")))}")
                 For Each armoFormID In state.LoadoutArmorFormIDs
                     CollectArmoCandidates(armoFormID, state, MeshCandidateKind.Outfit, candidates, order, warnings)
                 Next
@@ -5474,7 +5955,7 @@ Public Class MainForm
                     warnings.Add($"Default outfit {state.DefaultOutfitFormID:X8} is missing or not OTFT")
                 Else
                     Dim outfit = RecordParsers.ParseOTFT(outfitRec, _pluginManager)
-                    NpcPreviewLog.Log($"  [OUTFIT] Fallback OTFT read: {outfit.EditorID} items({outfit.ItemFormIDs.Count})")
+                    NpcPreviewLog.LogLazy(Function() $"  [OUTFIT] Fallback OTFT read: {outfit.EditorID} items({outfit.ItemFormIDs.Count})")
                     For Each itemFormID In outfit.ItemFormIDs
                         CollectArmoCandidates(itemFormID, state, MeshCandidateKind.Outfit, candidates, order, warnings)
                     Next
@@ -5491,21 +5972,21 @@ Public Class MainForm
         ' (captured at CraftingRecords.OMOD_Data.ModelPath). Emit one Skin-kind candidate per OMOD that
         ' has a non-empty ModelPath. Spec: project_robot_rendering_combinations.md (memory).
         If state.ObjectTemplateOMODFormIDs IsNot Nothing AndAlso state.ObjectTemplateOMODFormIDs.Count > 0 Then
-            NpcPreviewLog.Log($"  [ROBOT-PARTS] NPC has {state.ObjectTemplateOMODFormIDs.Count} OMOD includes in ObjectTemplate combination #0")
+            NpcPreviewLog.LogLazy(Function() $"  [ROBOT-PARTS] NPC has {state.ObjectTemplateOMODFormIDs.Count} OMOD includes in ObjectTemplate combination #0")
             For Each omodFID In state.ObjectTemplateOMODFormIDs
                 If omodFID = 0UI Then Continue For
                 Dim omodRec = _pluginManager.GetRecord(omodFID)
                 If omodRec Is Nothing OrElse omodRec.Header.Signature <> "OMOD" Then
-                    NpcPreviewLog.Log($"    [ROBOT-PARTS] {omodFID:X8} → OMOD NOT FOUND")
+                    NpcPreviewLog.LogLazy(Function() $"    [ROBOT-PARTS] {omodFID:X8} → OMOD NOT FOUND")
                     Continue For
                 End If
                 Dim omod = CraftingRecordParsers.ParseOMOD(omodRec, _pluginManager)
                 If String.IsNullOrEmpty(omod.ModelPath) Then
-                    NpcPreviewLog.Log($"    [ROBOT-PARTS] {omodFID:X8} '{omod.EditorID}' → empty ModelPath, skipped")
+                    NpcPreviewLog.LogLazy(Function() $"    [ROBOT-PARTS] {omodFID:X8} '{omod.EditorID}' → empty ModelPath, skipped")
                     Continue For
                 End If
                 Dim dictKey = NormalizeDictionaryKeyWithMeshesPrefix(omod.ModelPath)
-                NpcPreviewLog.Log($"    [ROBOT-PARTS] {omodFID:X8} '{omod.EditorID}' → mesh='{dictKey}'")
+                NpcPreviewLog.LogLazy(Function() $"    [ROBOT-PARTS] {omodFID:X8} '{omod.EditorID}' → mesh='{dictKey}'")
                 candidates.Add(New MeshCandidate With {
                     .DictKey = dictKey,
                     .SlotMask = 0UI,
@@ -5591,18 +6072,19 @@ Public Class MainForm
             Dim prov As String = Nothing
             If provenanceByType.TryGetValue(t, prov) Then
                 Dim from = If(prov.StartsWith("NPC:"), "NPC", "RACE-DEFAULT")
-                NpcPreviewLog.Log($"    [HEADPARTS-MERGE] type={t}/{typeNames(t)}: from={from} {prov.Substring(prov.IndexOf(":"c) + 1)}")
+                Dim tLocal = t
+                NpcPreviewLog.LogLazy(Function() $"    [HEADPARTS-MERGE] type={tLocal}/{typeNames(tLocal)}: from={from} {prov.Substring(prov.IndexOf(":"c) + 1)}")
             End If
         Next
         If freestandingMisc.Count > 0 Then
-            NpcPreviewLog.Log($"    [HEADPARTS-MERGE] freestanding-misc (type=0): {freestandingMisc.Count} entries [{String.Join(", ", miscProvenance)}]")
+            NpcPreviewLog.LogLazy(Function() $"    [HEADPARTS-MERGE] freestanding-misc (type=0): {freestandingMisc.Count} entries [{String.Join(", ", miscProvenance)}]")
         End If
         Dim missedTypes = New List(Of String)
         For t = 1 To 9
             If Not provenanceByType.ContainsKey(t) Then missedTypes.Add(typeNames(t))
         Next
         If missedTypes.Count > 0 Then
-            NpcPreviewLog.Log($"    [HEADPARTS-MERGE] no-data-for-types: {String.Join(", ", missedTypes)} (neither RACE nor NPC declared; slot left empty)")
+            NpcPreviewLog.LogLazy(Function() $"    [HEADPARTS-MERGE] no-data-for-types: {String.Join(", ", missedTypes)} (neither RACE nor NPC declared; slot left empty)")
         End If
 
         Return finalList
@@ -5618,9 +6100,9 @@ Public Class MainForm
         If armoRec Is Nothing OrElse armoRec.Header.Signature <> "ARMO" Then Return
 
         Dim armo = RecordParsers.ParseARMO(armoRec, _pluginManager)
-        NpcPreviewLog.Log($"  [ARMO] {armo.EditorID} FID={armoFormID:X8} kind={kind} race={armo.RaceFormID:X8} slot={armo.SlotMask:X8} addons={armo.ArmorAddonFormIDs.Count} tnam={armo.TemplateArmorFormID:X8}")
+        NpcPreviewLog.LogLazy(Function() $"  [ARMO] {armo.EditorID} FID={armoFormID:X8} kind={kind} race={armo.RaceFormID:X8} slot={armo.SlotMask:X8} addons={armo.ArmorAddonFormIDs.Count} tnam={armo.TemplateArmorFormID:X8}")
         If armo.MaleWorldModelPath <> "" OrElse armo.FemaleWorldModelPath <> "" Then
-            NpcPreviewLog.Log($"    [ARMO-WORLDMODEL] male='{armo.MaleWorldModelPath}' female='{armo.FemaleWorldModelPath}'")
+            NpcPreviewLog.LogLazy(Function() $"    [ARMO-WORLDMODEL] male='{armo.MaleWorldModelPath}' female='{armo.FemaleWorldModelPath}'")
         End If
         ' NO early-out on ARMO.RaceFormID: vanilla convention is each ARMA declares its own
         ' race compatibility via RNAM + AdditionalRaces (MODL entries). An ARMO with
@@ -5628,7 +6110,7 @@ Public Class MainForm
         ' AdditionalRaces. The per-ARMA check (ArmorAddonMatchesRace) handles this correctly.
         ' Log the ARMO race only for visibility; don't reject based on it.
         If armo.RaceFormID <> 0UI AndAlso armo.RaceFormID <> state.RaceFormID Then
-            NpcPreviewLog.Log($"    [ARMO-RACE-INFO] primary race={armo.RaceFormID:X8} ≠ npc race={state.RaceFormID:X8} — continuing; per-ARMA match will decide")
+            NpcPreviewLog.LogLazy(Function() $"    [ARMO-RACE-INFO] primary race={armo.RaceFormID:X8} ≠ npc race={state.RaceFormID:X8} — continuing; per-ARMA match will decide")
         End If
 
         ' Multi-addon resolution: ARMOs con varios `Models` (ej. Combat Torso = Lite/Mid/Heavy)
@@ -5653,7 +6135,7 @@ Public Class MainForm
                 Dim peekRec = _pluginManager.GetRecord(entry.ArmaFormID)
                 If peekRec IsNot Nothing AndAlso peekRec.Header.Signature = "ARMA" Then
                     Dim peekArma = RecordParsers.ParseARMA(peekRec, _pluginManager)
-                    NpcPreviewLog.Log($"    [ARMO-ADDONS-AVAILABLE] {armo.EditorID} INDX={entry.AddonIndex} FID={entry.ArmaFormID:X8} editorID={peekArma.EditorID} slot={peekArma.SlotMask:X8} maleMesh={peekArma.MaleMeshPath} femaleMesh={peekArma.FemaleMeshPath}")
+                    NpcPreviewLog.LogLazy(Function() $"    [ARMO-ADDONS-AVAILABLE] {armo.EditorID} INDX={entry.AddonIndex} FID={entry.ArmaFormID:X8} editorID={peekArma.EditorID} slot={peekArma.SlotMask:X8} maleMesh={peekArma.MaleMeshPath} femaleMesh={peekArma.FemaleMeshPath}")
                 End If
             Next
             ' Resolve effective AddonIndex. ResolveEffectiveAddonIndex ahora devuelve Integer? —
@@ -5684,11 +6166,11 @@ Public Class MainForm
                 For Each entry In armo.ArmorAddons
                     If CInt(entry.AddonIndex) = minIdx Then addonOrder.Add(entry.ArmaFormID)
                 Next
-                NpcPreviewLog.Log($"    [ARMO-ADDON-RESOLVE] {armo.EditorID}: effectiveIdx={effectiveIdx} not in Models → fallback minIdx={minIdx} ({addonOrder.Count} entries)")
+                NpcPreviewLog.LogLazy(Function() $"    [ARMO-ADDON-RESOLVE] {armo.EditorID}: effectiveIdx={effectiveIdx} not in Models → fallback minIdx={minIdx} ({addonOrder.Count} entries)")
             Else
                 Dim ctxStr = If(ctxKeywords Is Nothing OrElse ctxKeywords.Count = 0, "(none)",
                                 String.Join(",", ctxKeywords.Select(Function(k) k.ToString("X8"))))
-                NpcPreviewLog.Log($"    [ARMO-ADDON-RESOLVE] {armo.EditorID}: ctxKeywords=[{ctxStr}] → effectiveIdx={effectiveIdx} → loading {addonOrder.Count} addon(s) from group")
+                NpcPreviewLog.LogLazy(Function() $"    [ARMO-ADDON-RESOLVE] {armo.EditorID}: ctxKeywords=[{ctxStr}] → effectiveIdx={effectiveIdx} → loading {addonOrder.Count} addon(s) from group")
             End If
         Else
             addonOrder = armo.ArmorAddonFormIDs.ToList()
@@ -5700,11 +6182,11 @@ Public Class MainForm
 
             Dim arma = RecordParsers.ParseARMA(armaRec, _pluginManager)
             If Not ArmorAddonMatchesRace(arma, state.RaceFormID) Then
-                NpcPreviewLog.Log($"    [ARMA] {arma.EditorID} FID={armaFormID:X8} SKIPPED: race mismatch")
+                NpcPreviewLog.LogLazy(Function() $"    [ARMA] {arma.EditorID} FID={armaFormID:X8} SKIPPED: race mismatch")
                 Continue For
             End If
-            NpcPreviewLog.Log($"    [ARMA] {arma.EditorID} FID={armaFormID:X8} slot={arma.SlotMask:X8} maleMesh={arma.MaleMeshPath} femaleMesh={arma.FemaleMeshPath} maleTxst={arma.MaleSkinTextureFormID:X8} femaleTxst={arma.FemaleSkinTextureFormID:X8} maleMswp={arma.MaleMaterialSwapFormID:X8} femaleMswp={arma.FemaleMaterialSwapFormID:X8}")
-            NpcPreviewLog.Log($"      [ARMA-FLAGS] {arma.EditorID} NoUnderarmorScaling={arma.NoUnderarmorScaling} HasSculptData={arma.HasSculptData} HiRes1stPerson={arma.HiRes1stPersonOnly} MaleWSFlags=0x{arma.MaleWeightSliderFlags:X2}(enabled={(arma.MaleWeightSliderFlags And 2) <> 0}) FemaleWSFlags=0x{arma.FemaleWeightSliderFlags:X2}(enabled={(arma.FemaleWeightSliderFlags And 2) <> 0}) MalePri={arma.MalePriority} FemalePri={arma.FemalePriority}")
+            NpcPreviewLog.LogLazy(Function() $"    [ARMA] {arma.EditorID} FID={armaFormID:X8} slot={arma.SlotMask:X8} maleMesh={arma.MaleMeshPath} femaleMesh={arma.FemaleMeshPath} maleTxst={arma.MaleSkinTextureFormID:X8} femaleTxst={arma.FemaleSkinTextureFormID:X8} maleMswp={arma.MaleMaterialSwapFormID:X8} femaleMswp={arma.FemaleMaterialSwapFormID:X8}")
+            NpcPreviewLog.LogLazy(Function() $"      [ARMA-FLAGS] {arma.EditorID} NoUnderarmorScaling={arma.NoUnderarmorScaling} HasSculptData={arma.HasSculptData} HiRes1stPerson={arma.HiRes1stPersonOnly} MaleWSFlags=0x{arma.MaleWeightSliderFlags:X2}(enabled={(arma.MaleWeightSliderFlags And 2) <> 0}) FemaleWSFlags=0x{arma.FemaleWeightSliderFlags:X2}(enabled={(arma.FemaleWeightSliderFlags And 2) <> 0}) MalePri={arma.MalePriority} FemalePri={arma.FemalePriority}")
 
             ' Pick the gender-matching bone scale block (if any) and log + stash it on the
             ' candidate. Engine-side these per-bone Vec3 deltas are added on top of RACE.BSMS
@@ -5715,10 +6197,10 @@ Public Class MainForm
                 If bsg.Gender <> targetGender Then Continue For
                 If bsg.Bones.Count = 0 Then Continue For
                 genderBoneScale = bsg.Bones
-                NpcPreviewLog.Log($"      [ARMA-BSMS] {arma.EditorID} gender={bsg.Gender} {bsg.Bones.Count} bone-deltas:")
+                NpcPreviewLog.LogLazy(Function() $"      [ARMA-BSMS] {arma.EditorID} gender={bsg.Gender} {bsg.Bones.Count} bone-deltas:")
                 For Each bd In bsg.Bones
                     Dim mag = Math.Sqrt(bd.DeltaX * bd.DeltaX + bd.DeltaY * bd.DeltaY + bd.DeltaZ * bd.DeltaZ)
-                    NpcPreviewLog.Log($"        {bd.BoneName} = ({bd.DeltaX:F4}, {bd.DeltaY:F4}, {bd.DeltaZ:F4}) |mag|={mag:F4}")
+                    NpcPreviewLog.LogLazy(Function() $"        {bd.BoneName} = ({bd.DeltaX:F4}, {bd.DeltaY:F4}, {bd.DeltaZ:F4}) |mag|={mag:F4}")
                 Next
                 Exit For
             Next
@@ -5734,11 +6216,11 @@ Public Class MainForm
                 meshPath = If(state.IsFemale, armo.FemaleWorldModelPath, armo.MaleWorldModelPath)
                 If meshPath = "" Then meshPath = If(armo.MaleWorldModelPath <> "", armo.MaleWorldModelPath, armo.FemaleWorldModelPath)
                 If meshPath <> "" Then
-                    NpcPreviewLog.Log($"      [ARMA→ARMO-FALLBACK] {arma.EditorID}: ARMA meshes empty, using ARMO.WorldModel '{meshPath}'")
+                    NpcPreviewLog.LogLazy(Function() $"      [ARMA→ARMO-FALLBACK] {arma.EditorID}: ARMA meshes empty, using ARMO.WorldModel '{meshPath}'")
                 End If
             End If
             If meshPath = "" Then
-                NpcPreviewLog.Log($"      [ARMA-NO-MESH] {arma.EditorID}: neither ARMA.MOD2/3 nor ARMO.MOD2/4 had a path — likely robot using NPC_.ObjectTemplate/OMOD pipeline (see project_robot_rendering_combinations.md)")
+                NpcPreviewLog.LogLazy(Function() $"      [ARMA-NO-MESH] {arma.EditorID}: neither ARMA.MOD2/3 nor ARMO.MOD2/4 had a path — likely robot using NPC_.ObjectTemplate/OMOD pipeline (see project_robot_rendering_combinations.md)")
                 Continue For
             End If
 
@@ -5797,23 +6279,66 @@ Public Class MainForm
             effectivePartType = parentPartType
         End If
 
-        NpcPreviewLog.Log($"  [HDPT] {hdpt.EditorID} FID={hdptFormID:X8} type={hdpt.PartType} effectiveType={effectivePartType} mesh={hdpt.MeshPath} txst={hdpt.TextureSetFormID:X8} color={hdpt.ColorFormID:X8} flags={hdpt.Flags:X2} bodyTex={hdpt.UsesBodyTexture} extras={hdpt.ExtraPartFormIDs.Count} parent={parentPartType} raceTri={hdpt.RaceMorphTriPath} chargenTri={hdpt.ChargenMorphTriPath}")
+        NpcPreviewLog.LogLazy(Function() $"  [HDPT] {hdpt.EditorID} FID={hdptFormID:X8} type={hdpt.PartType} effectiveType={effectivePartType} mesh={hdpt.MeshPath} txst={hdpt.TextureSetFormID:X8} color={hdpt.ColorFormID:X8} flags={hdpt.Flags:X2} bodyTex={hdpt.UsesBodyTexture} extras={hdpt.ExtraPartFormIDs.Count} parent={parentPartType} raceTri={hdpt.RaceMorphTriPath} chargenTri={hdpt.ChargenMorphTriPath} tri(NAM0=1)={hdpt.TriPath}")
+
+        ' DIAGNOSTIC: load and dump every TRI declared by this HDPT (NAM0=0/1/2) so we can
+        ' compare what each slot actually contains. Read-only — does NOT participate in the
+        ' morph application pipeline; it only writes morph names to the log so we can decide
+        ' the correct semantic for NAM0=1. Wrap in try-catch and the IsEnabled gate so a
+        ' disabled run pays nothing.
+        If NpcPreviewLog.Enabled Then
+            For Each pair In New(Tag As String, Path As String)() {
+                ("NAM0=0/RaceMorph", hdpt.RaceMorphTriPath),
+                ("NAM0=1/Tri", hdpt.TriPath),
+                ("NAM0=2/Chargen", hdpt.ChargenMorphTriPath)
+            }
+                If String.IsNullOrEmpty(pair.Path) Then Continue For
+                Try
+                    Dim normPath = NormalizeDictionaryKeyWithMeshesPrefix(pair.Path)
+                    Dim loc As FilesDictionary_class.File_Location = Nothing
+                    If Not FilesDictionary_class.Dictionary.TryGetValue(normPath, loc) Then
+                        NpcPreviewLog.LogLazy(Function() $"    [HDPT-TRI-DUMP] {pair.Tag}: '{normPath}' NotFound in FilesDictionary")
+                        Continue For
+                    End If
+                    Dim bytes = loc.GetBytes()
+                    If bytes Is Nothing OrElse bytes.Length < 8 Then
+                        NpcPreviewLog.LogLazy(Function() $"    [HDPT-TRI-DUMP] {pair.Tag}: '{normPath}' empty/too small ({If(bytes Is Nothing, 0, bytes.Length)} bytes)")
+                        Continue For
+                    End If
+                    Dim head = TriHeadParser.ParseTriHeadFromBytes(bytes)
+                    If head Is Nothing Then
+                        NpcPreviewLog.LogLazy(Function() $"    [HDPT-TRI-DUMP] {pair.Tag}: '{normPath}' ParseTriHeadFromBytes returned Nothing ({bytes.Length} bytes)")
+                        Continue For
+                    End If
+                    Dim morphNames = head.Morphs.Select(Function(m) m.Name).ToList()
+                    NpcPreviewLog.LogLazy(Function() $"    [HDPT-TRI-DUMP] {pair.Tag}: '{normPath}' verts={head.NumVertices} morphs={morphNames.Count} names=[{String.Join(", ", morphNames)}]")
+                Catch ex As Exception
+                    NpcPreviewLog.LogLazy(Function() $"    [HDPT-TRI-DUMP] {pair.Tag}: '{pair.Path}' EXCEPTION {ex.GetType().Name}: {ex.Message}")
+                End Try
+            Next
+        End If
         If hdpt.MeshPath <> "" Then
             ' Redirect face-region meshes to their _faceBones.nif variant only for NPCs with
             ' a custom CharGen face (useFaceGen=True). The _faceBones variants are rigged to face
             ' bones (Jaw, LipUpper_L, Cheek_R, etc) enabling FMRS bone transforms to deform the
             ' mesh. NPCs without FaceGen use default race face — no _faceBones redirect needed.
             Dim dictKey = NormalizeDictionaryKeyWithMeshesPrefix(hdpt.MeshPath)
+            Dim baseDictKeyForFaceBones As String = ""
             If useFaceGen Then
                 Dim faceBonesKey = TryGetFaceBonesVariant(dictKey, effectivePartType)
                 If faceBonesKey <> "" Then
-                    NpcPreviewLog.Log($"  [FACEBONES-REDIRECT] {dictKey} ? {faceBonesKey}")
+                    NpcPreviewLog.LogLazy(Function() $"  [FACEBONES-REDIRECT] {dictKey} ? {faceBonesKey}")
+                    ' Solo HeadRear necesita copia de material desde el .nif base (el _faceBones
+                    ' vanilla trae basehumanfemaleskin genérico en lugar de basehumanfemalerear).
+                    ' Otros types usan el material del _faceBones tal cual.
+                    If effectivePartType = 9 Then baseDictKeyForFaceBones = dictKey
                     dictKey = faceBonesKey
                 End If
             End If
 
             candidates.Add(New MeshCandidate With {
                 .DictKey = dictKey,
+                .BaseDictKeyForFaceBones = baseDictKeyForFaceBones,
                 .SlotMask = 0UI,
                 .Priority = 0,
                 .Kind = MeshCandidateKind.HeadPart,
@@ -5845,8 +6370,15 @@ Public Class MainForm
     Private Const SlotBitHairTop As UInteger = &H1UI         ' Slot 30 - Hair Top      (sombreros, gorros, cualquier headwear)
     Private Const SlotBitHairLong As UInteger = &H2UI        ' Slot 31 - Hair Long     (cascos que cubren el largo del pelo)
     Private Const SlotBitFaceGenHead As UInteger = &H4UI     ' Slot 32 - FaceGen Head  (casco integral / vault helmet — cubre LA CARA entera)
+    Private Const SlotBitHeadband As UInteger = &H10000UI    ' Slot 46 - Headband      (bandana / hairband forehead, no cubre cara)
+    Private Const SlotBitEyes As UInteger = &H20000UI        ' Slot 47 - Eyes          (glasses, goggles)
     Private Const SlotBitBeard As UInteger = &H40000UI       ' Slot 48 - Beard         (algo equipable que pisa la zona barba)
     Private Const SlotBitMouth As UInteger = &H80000UI       ' Slot 49 - Mouth         (bandana, máscara quirúrgica, gas mask boca)
+    ''' <summary>Máscara unificada de bits "headwear": cualquier prenda de cabeza/cara. Usada por
+    ''' ClassifyShapeCategory para categoría Headwear y por ApplyRenderToggleVisibility para el
+    ''' toggle "Render headwear". Slots 30-32 (HairTop/HairLong/FaceGenHead) + 46-49 (Headband/Eyes/Beard/Mouth).</summary>
+    Private Const HEADWEAR_MASK As UInteger = SlotBitHairTop Or SlotBitHairLong Or SlotBitFaceGenHead Or
+                                              SlotBitHeadband Or SlotBitEyes Or SlotBitBeard Or SlotBitMouth
 
     Private Function SelectWinningCandidates(candidates As List(Of MeshCandidate)) As List(Of MeshCandidate)
         Dim selected As New List(Of MeshCandidate)
@@ -5855,7 +6387,7 @@ Public Class MainForm
         ' They stay in the `candidates` list for logging/inspection but never reach the render dispatch.
         Dim hiddenCandidates = candidates.Where(Function(c) c.Hide).ToList()
         If hiddenCandidates.Count > 0 Then
-            NpcPreviewLog.Log($"  [CANDIDATE-HIDDEN] {hiddenCandidates.Count} candidates excluded from render (Hide=true): {String.Join(", ", hiddenCandidates.Select(Function(c) $"type={c.HeadPartType} key={c.DictKey}"))}")
+            NpcPreviewLog.LogLazy(Function() $"  [CANDIDATE-HIDDEN] {hiddenCandidates.Count} candidates excluded from render (Hide=true): {String.Join(", ", hiddenCandidates.Select(Function(c) $"type={c.HeadPartType} key={c.DictKey}"))}")
         End If
         Dim visibleCandidates = candidates.Where(Function(c) Not c.Hide).ToList()
 
@@ -5887,7 +6419,26 @@ Public Class MainForm
         Next
         Dim BODY_MASK_RES As UInteger = 1UI << BODY_BIT
 
-        Dim slottedCandidates = visibleCandidates.Where(Function(c) c.SlotMask <> 0UI).ToList()
+        ' Skin candidates (NPC_.WNAM / RACE.WNAM via state.SkinFormID) representan la base body
+        ' geometry del NPC — NO son piezas equipables que compitan por slots con outfits/armor.
+        ' xEdit wbDefinitionsFO4.pas:10705 + 11434 confirman que NPC_.WNAM y RACE.WNAM son slots
+        ' dedicados ("Skin" ARMO), distintos del inventory de outfits. Cita engine doc Steam/Nexus
+        ' habla de "vault suit + something else" — outfit vs outfit, nunca outfit vs body skin.
+        ' Conceptualmente: un actor SIEMPRE tiene body mesh; un outfit lo CUBRE visualmente, no
+        ' lo desequipa. `unequipall` deja al NPC en NakedTorso/NakedHands, no invisible.
+        ' Por lo tanto: Skin candidates bypasean la slot conflict resolution. Siempre se aceptan
+        ' enteros, y NO contribuyen a occupiedSlots/shieldedSlots/reservedAbits — quedan fuera
+        ' del torneo. El toggle "Render body" + "Render underarmor" decide visibilidad post-hoc.
+        Dim skinCandidates = visibleCandidates.Where(Function(c) c.Kind = MeshCandidateKind.Skin).ToList()
+        Dim nonSkinCandidates = visibleCandidates.Where(Function(c) c.Kind <> MeshCandidateKind.Skin).ToList()
+        For Each skinC In skinCandidates
+            selected.Add(skinC)
+        Next
+        If skinCandidates.Count > 0 Then
+            NpcPreviewLog.LogLazy(Function() $"  [SKIN-PASS] {skinCandidates.Count} skin candidates accepted (base body geometry — bypass slot conflict): {String.Join(", ", skinCandidates.Select(Function(c) $"slot=0x{c.SlotMask:X8} key={c.DictKey}"))}")
+        End If
+
+        Dim slottedCandidates = nonSkinCandidates.Where(Function(c) c.SlotMask <> 0UI).ToList()
 
         ' Pasada 1a — extended underarmors ([U]+[A] o BODY+[A] en la misma pieza).
         ' Excepción preservada: el engine en estos casos hace que el [A] del extended underarmor
@@ -5923,7 +6474,7 @@ Public Class MainForm
         Next
 
         If reservedAbits <> 0UI Then
-            NpcPreviewLog.Log($"  [EXTENDED-UNDERARMOR] reserved [A] bits: 0x{reservedAbits:X4} ({extendedUnderarmors.Count} extended underarmors)")
+            NpcPreviewLog.LogLazy(Function() $"  [EXTENDED-UNDERARMOR] reserved [A] bits: 0x{reservedAbits:X4} ({extendedUnderarmors.Count} extended underarmors)")
         End If
 
         ' Pasada 1b — atomic mutex por any-bit overlap, last-equipped wins.
@@ -5945,17 +6496,17 @@ Public Class MainForm
         For Each candidate In pass1bCandidates
             ' Bits [A] reservados por extended underarmors → descarte entero (excepción Bridget).
             If (candidate.SlotMask And reservedAbits) <> 0UI Then
-                NpcPreviewLog.Log($"  [EXTENDED-UNDERARMOR-DISCARD] candidate slot=0x{candidate.SlotMask:X8} conflicts with reserved [A] bits → dropped (key={candidate.DictKey})")
+                NpcPreviewLog.LogLazy(Function() $"  [EXTENDED-UNDERARMOR-DISCARD] candidate slot=0x{candidate.SlotMask:X8} conflicts with reserved [A] bits → dropped (key={candidate.DictKey})")
                 Continue For
             End If
             ' Bits "shielded" por extended underarmors → tampoco desplazables.
             If (candidate.SlotMask And shieldedSlots) <> 0UI Then
-                NpcPreviewLog.Log($"  [EXTENDED-UNDERARMOR-DISCARD] candidate slot=0x{candidate.SlotMask:X8} conflicts with shielded extended-underarmor bits → dropped (key={candidate.DictKey})")
+                NpcPreviewLog.LogLazy(Function() $"  [EXTENDED-UNDERARMOR-DISCARD] candidate slot=0x{candidate.SlotMask:X8} conflicts with shielded extended-underarmor bits → dropped (key={candidate.DictKey})")
                 Continue For
             End If
             ' Atomic mutex any-bit: si toca un bit ya ocupado → descartado entero.
             If (candidate.SlotMask And occupiedSlots) <> 0UI Then
-                NpcPreviewLog.Log($"  [ATOMIC-MUTEX-DISCARD] {candidate.Kind} slot=0x{candidate.SlotMask:X8} conflicts with occupied=0x{occupiedSlots:X8} → dropped (key={candidate.DictKey})")
+                NpcPreviewLog.LogLazy(Function() $"  [ATOMIC-MUTEX-DISCARD] {candidate.Kind} slot=0x{candidate.SlotMask:X8} conflicts with occupied=0x{occupiedSlots:X8} → dropped (key={candidate.DictKey})")
                 Continue For
             End If
             occupiedSlots = occupiedSlots Or candidate.SlotMask
@@ -5982,27 +6533,51 @@ Public Class MainForm
         '   3 Hair          : hidden by HairTop or HairLong or FaceGenHead   (any headwear)
         '   4 FacialHair    : hidden by FaceGenHead or Beard or Mouth        (covers the beard region)
         '   6 Eyebrows      : hidden by FaceGenHead only                     (full helmet covers brows)
-        '   9 HeadRear      : hidden by HairTop AND (HairLong or FaceGenHead) (full hood wrap)
+        '   9 HeadRear      : NUNCA se oculta. Es geometría base del cráneo (back of head) que el
+        '                     engine renderiza siempre. La regla previa "HairTop AND HairLong" era
+        '                     una invención mía sin fuente, hacía desaparecer el back of head en
+        '                     NPCs con casco normal (combat helmet, baseball cap). Removida.
         Dim hasHairTop As Boolean = (occupiedSlots And SlotBitHairTop) <> 0UI
         Dim hasHairLong As Boolean = (occupiedSlots And SlotBitHairLong) <> 0UI
         Dim hasFaceGenHead As Boolean = (occupiedSlots And SlotBitFaceGenHead) <> 0UI
         Dim hasBeard As Boolean = (occupiedSlots And SlotBitBeard) <> 0UI
         Dim hasMouth As Boolean = (occupiedSlots And SlotBitMouth) <> 0UI
 
+        ' Pasada 2 — slotless. HeadParts ocluidos por headwear aceptado se MARCAN con flag
+        ' IsOccludedByHeadwear pero NO se descartan: ApplyRenderToggleVisibility decide hide en
+        ' runtime. Cuando "Render headwear" se apaga el head part ocluido se destapa para mostrar
+        ' el pelo/barba/etc bajo el casco oculto. Antes hacía Continue For (descarte estructural)
+        ' que impedía destapar runtime — mismo patrón que el Skin (ver pasada 0).
         For Each slotlessCandidate In visibleCandidates.Where(Function(c) c.SlotMask = 0UI).OrderBy(Function(c) c.Order)
             If slotlessCandidate.Kind = MeshCandidateKind.HeadPart Then
+                Dim occluded As Boolean = False
                 Select Case slotlessCandidate.HeadPartType
                     Case HeadPartTypeHair
-                        If hasHairTop OrElse hasHairLong OrElse hasFaceGenHead Then Continue For
+                        occluded = hasHairTop OrElse hasHairLong OrElse hasFaceGenHead
                     Case HeadPartTypeFacialHair
-                        If hasFaceGenHead OrElse hasBeard OrElse hasMouth Then Continue For
+                        occluded = hasFaceGenHead OrElse hasBeard OrElse hasMouth
                     Case 6 ' Eyebrows
-                        If hasFaceGenHead Then Continue For
-                    Case 9 ' Head Rear
-                        If hasHairTop AndAlso (hasHairLong OrElse hasFaceGenHead) Then Continue For
+                        occluded = hasFaceGenHead
+                        ' Type 9 HeadRear: nunca se ocluye por headwear (es base skull geometry).
                 End Select
+                If occluded Then
+                    slotlessCandidate.IsOccludedByHeadwear = True
+                    NpcPreviewLog.LogLazy(Function() $"  [HEADPART-OCCLUDED] type={slotlessCandidate.HeadPartType} key={slotlessCandidate.DictKey} occluded by headwear bits 0x{occupiedSlots:X8} → RenderHide=True default (destapable via Render headwear OFF)")
+                End If
             End If
             selected.Add(slotlessCandidate)
+        Next
+
+        ' Marcar Skin candidates cuya geometría queda cubierta por algún outfit aceptado.
+        ' occupiedSlots acumuló los bits de outfits + extended-underarmors (los Skin se aceptaron
+        ' al principio sin contribuir a occupiedSlots). Si la SlotMask del Skin intersecta esos
+        ' bits, el outfit lo tapa visualmente → RenderHide=True por default; cuando el usuario
+        ' apaga "Render underarmor" se destapa para mostrar el body desnudo abajo.
+        For Each skinC In skinCandidates
+            If (skinC.SlotMask And occupiedSlots) <> 0UI Then
+                skinC.IsCoveredByOutfit = True
+                NpcPreviewLog.LogLazy(Function() $"  [SKIN-COVERED] slot=0x{skinC.SlotMask:X8} covered by outfit bits 0x{occupiedSlots:X8} → RenderHide=True default (key={skinC.DictKey})")
+            End If
         Next
 
         Return selected.OrderBy(Function(c) c.Order).ToList()
@@ -6042,16 +6617,26 @@ Public Class MainForm
         Dim touchesU = (slot And U_MASK) <> 0UI
         Dim touchesA = (slot And A_MASK) <> 0UI
         Dim touchesHand = (slot And HAND_MASK) <> 0UI
+        Dim touchesHeadwear = (slot And HEADWEAR_MASK) <> 0UI
+        Dim touchesBodyParts = touchesBody OrElse touchesU OrElse touchesA OrElse touchesHand
 
-        ' Underarmor: cualquier shape (Skin/Outfit) que toque BODY o [U].
-        If touchesBody OrElse touchesU Then Return ShapeRenderCategory.Underarmor
-        ' Naked hands: Skin con bits hand y sin BODY/[U].
+        ' Headwear: Kind=Outfit con bits exclusivos cabeza/cara (HairTop/HairLong/FaceGenHead/
+        ' Headband/Eyes/Beard/Mouth) y SIN tocar bits del cuerpo. Si toca bits cuerpo + cabeza
+        ' (raro, ej. casco-cuello combinado) gana la categoría de cuerpo — el toggle headwear no
+        ' debería desaparecer una pieza que también cubre torso. Evaluar antes que las otras
+        ' porque las otras no chequean bits 16-19 que algunos headwear (Headband) usan en exclusiva.
+        If touchesHeadwear AndAlso Not touchesBodyParts AndAlso candidate.Kind = MeshCandidateKind.Outfit Then Return ShapeRenderCategory.Headwear
+        ' Body skin desnudo: Kind=Skin con BODY (cubre torso+piernas+pies en FO4 — no hay slot feet).
+        If touchesBody AndAlso candidate.Kind = MeshCandidateKind.Skin Then Return ShapeRenderCategory.BodySkin
+        ' Naked hands: Skin con bits hand y sin BODY.
         If touchesHand AndAlso candidate.Kind = MeshCandidateKind.Skin Then Return ShapeRenderCategory.NakedHands
+        ' Underarmor outfit: Kind=Outfit con BODY o [U] (AAClothesCait, fatigues, etc.).
+        If (touchesBody OrElse touchesU) AndAlso candidate.Kind = MeshCandidateKind.Outfit Then Return ShapeRenderCategory.Underarmor
         ' Glove de outfit: Outfit con bits hand sin BODY/[U].
         If touchesHand AndAlso candidate.Kind = MeshCandidateKind.Outfit Then Return ShapeRenderCategory.GloveOutfit
-        ' [A] puro: declara algún bit [A] sin BODY/[U] (ya filtrados arriba).
+        ' [A] puro: declara algún bit [A] sin BODY/[U].
         If touchesA Then Return ShapeRenderCategory.ArmorOver
-        ' Resto (helmet slots 0-2, accessories 16+, shapes sin slot, etc.).
+        ' Resto (accessories 16+ raros, shapes sin slot, etc.).
         Return ShapeRenderCategory.Other
     End Function
 
@@ -6062,6 +6647,8 @@ Public Class MainForm
         If _previewControl Is Nothing OrElse _previewControl.Model Is Nothing OrElse _lastRenderData Is Nothing Then Return
         Dim renderArmor = CheckBoxRenderArmor.Checked
         Dim renderUnderarmor = CheckBoxRenderUnderarmor.Checked
+        Dim renderBody = CheckBoxRenderBody.Checked
+        Dim renderHeadwear = CheckBoxRenderHeadwear.Checked
 
         Dim hidden As Integer = 0
         Dim shown As Integer = 0
@@ -6070,17 +6657,38 @@ Public Class MainForm
             Dim shape = mesh.MeshData.Shape
             Dim cat As ShapeRenderCategory = ShapeRenderCategory.Other
             _lastRenderData.ShapeCategory.TryGetValue(shape, cat)
+            Dim covered As Boolean = False
+            _lastRenderData.ShapeCoveredByOutfit.TryGetValue(shape, covered)
+            Dim occludedByHeadwear As Boolean = False
+            _lastRenderData.ShapeOccludedByHeadwear.TryGetValue(shape, occludedByHeadwear)
 
             Dim hide As Boolean = False
             ' Render armor OFF → hide piezas [A] over-armor.
             If Not renderArmor AndAlso cat = ShapeRenderCategory.ArmorOver Then hide = True
-            ' Render underarmor OFF → hide BODY/[U] underarmors + naked hands (Skin con bits hand).
-            If Not renderUnderarmor AndAlso (cat = ShapeRenderCategory.Underarmor OrElse cat = ShapeRenderCategory.NakedHands) Then hide = True
+            ' Render underarmor OFF → hide ropa que cubre body/hands desnudos: Underarmor (Outfit
+            ' con BODY/[U]) + GloveOutfit (Outfit con hand bits). Apagar estos destapa el Skin
+            ' subyacente, replicando el efecto in-game `unequipall`.
+            If Not renderUnderarmor AndAlso (cat = ShapeRenderCategory.Underarmor OrElse cat = ShapeRenderCategory.GloveOutfit) Then hide = True
+            ' Render body OFF → hide cuerpo desnudo del NPC: body skin + naked hands + head parts.
+            ' Aplica independientemente de si el Skin está cubierto o no (cat captura BodySkin sin
+            ' necesidad de mirar `covered`).
+            If Not renderBody AndAlso (cat = ShapeRenderCategory.BodySkin OrElse cat = ShapeRenderCategory.NakedHands OrElse cat = ShapeRenderCategory.HeadPart) Then hide = True
+            ' Render headwear OFF → hide cualquier headwear (Outfit con bits cabeza/cara puros).
+            If Not renderHeadwear AndAlso cat = ShapeRenderCategory.Headwear Then hide = True
+            ' Skin cubierto por outfit + Render underarmor ON → hide (el outfit lo tapa visualmente,
+            ' evita z-fighting). Cuando Render underarmor=OFF el outfit se oculta arriba y el Skin
+            ' subyacente queda visible (no se aplica este hide). Solo afecta a Skin candidates
+            ' (BodySkin/NakedHands); las otras categorías no setean ShapeCoveredByOutfit.
+            If covered AndAlso renderUnderarmor AndAlso (cat = ShapeRenderCategory.BodySkin OrElse cat = ShapeRenderCategory.NakedHands) Then hide = True
+            ' HeadPart ocluido por headwear + Render headwear ON → hide (replica occlusion matrix
+            ' vanilla pelo-bajo-casco, etc). Render headwear=OFF destapa el head part para mostrar
+            ' lo que estaba debajo del casco/glasses/etc.
+            If occludedByHeadwear AndAlso renderHeadwear AndAlso cat = ShapeRenderCategory.HeadPart Then hide = True
 
             shape.RenderHide = hide
             If hide Then hidden += 1 Else shown += 1
         Next
-        NpcPreviewLog.Log($"  [VISIBILITY] renderArmor={renderArmor} renderUnderarmor={renderUnderarmor} → shown={shown} hidden={hidden}")
+        NpcPreviewLog.LogLazy(Function() $"  [VISIBILITY] renderArmor={renderArmor} renderUnderarmor={renderUnderarmor} renderBody={renderBody} renderHeadwear={renderHeadwear} → shown={shown} hidden={hidden}")
         ' RefreshRender fuerza repaint inmediato del control GL (Invalidate). InvalidateRender
         ' va por el pipeline que requiere DirtyFlags y aquí no hay nada dirty — sólo flip de
         ' RenderHide en shapes existentes que el shader respeta en cada frame.
@@ -6137,7 +6745,7 @@ Public Class MainForm
             ' OBTS, dejar que un OMOD include lo decida". ≥0 = la combination fija el AddonIndex.
             If combo.ParentCombinationIndex >= 0 Then
                 effectiveIdx = combo.ParentCombinationIndex
-                NpcPreviewLog.Log($"    [ARMO-ADDON-RESOLVE] OBTS combination (matched keyword) sets AddonIndex={effectiveIdx} via ParentCombinationIndex")
+                NpcPreviewLog.LogLazy(Function() $"    [ARMO-ADDON-RESOLVE] OBTS combination (matched keyword) sets AddonIndex={effectiveIdx} via ParentCombinationIndex")
             End If
 
             ' Layer 2: cada OMOD include dentro de la combination puede sobrescribir via su
@@ -6149,7 +6757,7 @@ Public Class MainForm
                 Dim override_ = omod.GetAddonIndexOverride()
                 If override_ >= 0 Then
                     effectiveIdx = override_
-                    NpcPreviewLog.Log($"    [ARMO-ADDON-RESOLVE] OMOD {omod.EditorID} (FID={omodFid:X8}) sets AddonIndex={effectiveIdx}")
+                    NpcPreviewLog.LogLazy(Function() $"    [ARMO-ADDON-RESOLVE] OMOD {omod.EditorID} (FID={omodFid:X8}) sets AddonIndex={effectiveIdx}")
                 End If
             Next
         Next
@@ -6177,6 +6785,11 @@ Public Class MainForm
             loadedNifs(dictKey) = nif
 
             Dim shapes = NifRenderableShape.FromNif(nif)
+
+            ' Sólo HeadRear: copia material part-específico desde el .nif base a los shapes del
+            ' _faceBones (que vanilla autoreó con material genérico basehumanfemaleskin).
+            CopyBaseMaterialsToFaceBonesShapes(candidate, shapes)
+
             ApplyShapeMaterialOverrides(candidate, state, shapes)
 
             ' Convert the externally-determined sculpt-to-apply (per the slot-based rule
@@ -6203,6 +6816,8 @@ Public Class MainForm
                 result.MeshDictKeys(shape) = dictKey
                 result.ShapeArmaFormID(shape) = sculptSourceFormID
                 result.ShapeCategory(shape) = category
+                result.ShapeCoveredByOutfit(shape) = candidate.IsCoveredByOutfit
+                result.ShapeOccludedByHeadwear(shape) = candidate.IsOccludedByHeadwear
                 If armaSculptDict IsNot Nothing Then
                     result.ShapeArmaSculpt(shape) = armaSculptDict
                 End If
@@ -6218,18 +6833,90 @@ Public Class MainForm
 
             result.Shapes.AddRange(shapes)
         Catch ex As Exception
-            NpcPreviewLog.Log($"[NIF] FAILED to load {dictKey}: {ex.Message}")
+            NpcPreviewLog.LogLazy(Function() $"[NIF] FAILED to load {dictKey}: {ex.Message}")
         End Try
     End Sub
+
+    ''' <summary>HeadRear-only: cuando el HDPT fue redirigido a su variant *_faceBones.nif (rigging
+    ''' facial para FMRS), los shapes del _faceBones traen material genérico (basehumanfemaleskin)
+    ''' en lugar del material part-específico del .nif base (basehumanfemalerear). Replicamos el
+    ''' comportamiento del engine: rigging del _faceBones + material del base. Match per-shape por
+    ''' nombre con sufijo "_faceBones" removido (case-insensitive). Sólo aplica si
+    ''' candidate.BaseDictKeyForFaceBones está poblado (= HeadRear con redirect).</summary>
+    Private Sub CopyBaseMaterialsToFaceBonesShapes(candidate As MeshCandidate, shapes As IEnumerable(Of IRenderableShape))
+        If candidate Is Nothing OrElse shapes Is Nothing Then Return
+        If String.IsNullOrEmpty(candidate.BaseDictKeyForFaceBones) Then Return
+
+        Dim baseKey = candidate.BaseDictKeyForFaceBones
+        Dim baseLoc As FilesDictionary_class.File_Location = Nothing
+        If Not FilesDictionary_class.Dictionary.TryGetValue(baseKey, baseLoc) Then
+            NpcPreviewLog.LogLazy(Function() $"  [FACEBONES-MAT-COPY] base NIF '{baseKey}' not in FilesDictionary, skip")
+            Return
+        End If
+
+        Dim baseBytes = baseLoc.GetBytes()
+        If baseBytes Is Nothing OrElse baseBytes.Length = 0 Then
+            NpcPreviewLog.LogLazy(Function() $"  [FACEBONES-MAT-COPY] base NIF '{baseKey}' empty, skip")
+            Return
+        End If
+
+        Dim baseNif As Nifcontent_Class_Manolo
+        Try
+            baseNif = New Nifcontent_Class_Manolo()
+            baseNif.Load_Manolo(baseBytes)
+        Catch ex As Exception
+            NpcPreviewLog.LogLazy(Function() $"  [FACEBONES-MAT-COPY] failed to load base NIF '{baseKey}': {ex.Message}")
+            Return
+        End Try
+
+        ' Index base materials by stripped name (sin "_faceBones") para hacer match con los
+        ' shapes del _faceBones que sí tienen el sufijo. Case-insensitive.
+        Dim baseByStripped As New Dictionary(Of String, Nifcontent_Class_Manolo.RelatedMaterial_Class)(StringComparer.OrdinalIgnoreCase)
+        For Each kv In baseNif.BaseMaterials
+            baseByStripped(StripFaceBonesSuffix(kv.Key)) = kv.Value
+        Next
+
+        Dim copied As Integer = 0
+        Dim missed As Integer = 0
+        For Each shape In shapes
+            Dim shapeName = shape.ShapeName
+            If String.IsNullOrEmpty(shapeName) Then Continue For
+            Dim stripped = StripFaceBonesSuffix(shapeName)
+            Dim baseMat As Nifcontent_Class_Manolo.RelatedMaterial_Class = Nothing
+            If baseByStripped.TryGetValue(stripped, baseMat) AndAlso baseMat IsNot Nothing Then
+                Dim relMat = shape.ShapeMaterial
+                If relMat IsNot Nothing Then
+                    relMat.material = baseMat.material
+                    relMat.path = baseMat.path
+                    copied += 1
+                    NpcPreviewLog.LogLazy(Function() $"  [FACEBONES-MAT-COPY] shape='{shapeName}' ← base material '{baseMat.path}' (stripped='{stripped}')")
+                End If
+            Else
+                missed += 1
+            End If
+        Next
+        NpcPreviewLog.LogLazy(Function() $"  [FACEBONES-MAT-COPY] base='{baseKey}' shapes-matched={copied} missed={missed}")
+    End Sub
+
+    ''' <summary>Quita el sufijo "_faceBones" (case-insensitive) del nombre del shape para hacer
+    ''' match con el shape correspondiente en el NIF base. Preserva ":N" (subindex de BSSubIndexTriShape).
+    ''' Ej: "BaseFemaleHeadRear_faceBones:0" → "BaseFemaleHeadRear:0".</summary>
+    Private Shared Function StripFaceBonesSuffix(name As String) As String
+        If String.IsNullOrEmpty(name) Then Return name
+        Const Suffix As String = "_faceBones"
+        Dim idx = name.IndexOf(Suffix, StringComparison.OrdinalIgnoreCase)
+        If idx < 0 Then Return name
+        Return name.Substring(0, idx) & name.Substring(idx + Suffix.Length)
+    End Function
 
     Private Sub ApplyShapeMaterialOverrides(candidate As MeshCandidate, state As NPCVisualState, shapes As IEnumerable(Of IRenderableShape))
         If shapes Is Nothing Then Return
 
-        NpcPreviewLog.Log($"  [MAT-OVERRIDE] kind={candidate?.Kind} headPartType={candidate?.HeadPartType} key={candidate?.DictKey}")
+        NpcPreviewLog.LogLazy(Function() $"  [MAT-OVERRIDE] kind={candidate?.Kind} headPartType={candidate?.HeadPartType} key={candidate?.DictKey}")
 
         ' Apply Material Swap (MSWP) first - replaces entire materials before other overrides
         If candidate IsNot Nothing AndAlso candidate.MaterialSwapFormID <> 0UI Then
-            NpcPreviewLog.Log($"    MSWP={candidate.MaterialSwapFormID:X8}")
+            NpcPreviewLog.LogLazy(Function() $"    MSWP={candidate.MaterialSwapFormID:X8}")
             ApplyMaterialSwap(candidate.MaterialSwapFormID, shapes)
         End If
 
@@ -6241,9 +6928,22 @@ Public Class MainForm
         Dim hairPaletteScale As Single = 0.0F
         Dim hasHairPaletteRemap = TryResolveHairPaletteRemap(candidate, state, hairPaletteTexture, hairPaletteScale)
 
-        NpcPreviewLog.Log($"    solidTint={solidTintColor} hairTint={hairTintColor} skinTint={skinTintColor}")
-        NpcPreviewLog.Log($"    textureSet={If(textureSet IsNot Nothing, textureSet.EditorID, "none")} txstFID={If(textureSet IsNot Nothing, textureSet.FormID.ToString("X8"), "0")}")
-        NpcPreviewLog.Log($"    hairPaletteRemap={hasHairPaletteRemap} paletteTexture={hairPaletteTexture} paletteScale={hairPaletteScale}")
+        ' Skin substitution per-shape para Outfit: el engine vanilla sustituye la diffuse de shapes
+        ' con shader SkinTint dentro de un outfit (escote, brazos expuestos) por la del actor's body
+        ' skin (race-specific). Sólo aplica a Outfit. HeadParts usan TXST propio del HDPT (o FaceTint
+        ' shader para Face). Skin candidates conservan TXST nativo via ARMA.
+        Dim actorBodySkinTxst As TXST_Data = Nothing
+        If candidate IsNot Nothing AndAlso candidate.Kind = MeshCandidateKind.Outfit Then
+            Dim region = ResolveSkinRegionForOutfit(candidate)
+            actorBodySkinTxst = ResolveActorSkinTextureSet(state, region)
+        End If
+
+        NpcPreviewLog.LogLazy(Function() $"    solidTint={solidTintColor} hairTint={hairTintColor} skinTint={skinTintColor}")
+        NpcPreviewLog.LogLazy(Function() $"    textureSet={If(textureSet IsNot Nothing, textureSet.EditorID, "none")} txstFID={If(textureSet IsNot Nothing, textureSet.FormID.ToString("X8"), "0")}")
+        NpcPreviewLog.LogLazy(Function() $"    hairPaletteRemap={hasHairPaletteRemap} paletteTexture={hairPaletteTexture} paletteScale={hairPaletteScale}")
+        If actorBodySkinTxst IsNot Nothing Then
+            NpcPreviewLog.LogLazy(Function() $"    actorBodySkinTxst={actorBodySkinTxst.EditorID} txstFID={actorBodySkinTxst.FormID:X8} (per-shape texture sub for SkinTint shapes)")
+        End If
 
         For Each shape In shapes
             EnsureShapeMaterialResolved(shape)
@@ -6255,6 +6955,32 @@ Public Class MainForm
 
             Dim material = relatedMaterial.material
             If material Is Nothing Then Continue For
+
+            ' Shape con piel expuesta (shader=SkinTint): sustituir SÓLO sus texturas (diffuse +
+            ' normal + spec) por las del body skin del actor (race-specific). Material params
+            ' (specular, smoothness, subsurface, etc.) NO se tocan — vienen del NIF original.
+            ' Decisión per-shape via material.NifShaderType porque un mismo .nif suele tener shapes
+            ' mixtos. El render lee el path desde relatedMaterial.material (Render.vb:1362).
+            If actorBodySkinTxst IsNot Nothing AndAlso material.NifShaderType = NiflySharp.Enums.BSLightingShaderType.SkinTint Then
+                Dim diffuseBefore = material.Diffuse_or_Base_Texture
+                NpcPreviewLog.LogLazy(Function() $"    [SKIN-TINT-SUB] shape='{shape.ShapeName}' shader=SkinTint pre-diffuse='{diffuseBefore}'")
+                NpcPreviewLog.LogLazy(Function() $"      pre-params: specMult={material.SpecularMult} smooth={material.Smoothness} sub={material.SubsurfaceLighting} subRoll={material.SubsurfaceLightingRolloff} back={material.BackLighting}/{material.BackLightPower} rim={material.RimLighting}/{material.RimPower}")
+                NpcPreviewLog.LogLazy(Function() $"      TXST {actorBodySkinTxst.FormID:X8} mnam='{actorBodySkinTxst.MaterialPath}' TX00='{actorBodySkinTxst.DiffuseTexture}' TX01='{actorBodySkinTxst.NormalTexture}' TX07='{actorBodySkinTxst.SmoothSpecTexture}'")
+                ' Si el TXST trae MaterialPath (MNAM .bgsm), las texturas viven dentro del BGSM —
+                ' cargar el BGSM para extraer sus paths. NO copiamos otros params del BGSM (sólo
+                ' las texturas), preservando los params del material original del shape.
+                If actorBodySkinTxst.MaterialPath <> "" Then
+                    Dim bgsmMaterial = TryLoadMaterialFromDictionary(actorBodySkinTxst.MaterialPath, material)
+                    If bgsmMaterial IsNot Nothing Then
+                        If bgsmMaterial.Diffuse_or_Base_Texture <> "" Then material.Diffuse_or_Base_Texture = bgsmMaterial.Diffuse_or_Base_Texture
+                        If bgsmMaterial.NormalTexture <> "" Then material.NormalTexture = bgsmMaterial.NormalTexture
+                        If bgsmMaterial.SmoothSpecTexture <> "" Then material.SmoothSpecTexture = bgsmMaterial.SmoothSpecTexture
+                        NpcPreviewLog.LogLazy(Function() $"      via BGSM '{actorBodySkinTxst.MaterialPath}': diffuse='{bgsmMaterial.Diffuse_or_Base_Texture}' normal='{bgsmMaterial.NormalTexture}' spec='{bgsmMaterial.SmoothSpecTexture}'")
+                    End If
+                End If
+                ApplyTextureSetToMaterial(material, actorBodySkinTxst)
+                NpcPreviewLog.LogLazy(Function() $"      post-diffuse='{material.Diffuse_or_Base_Texture}' (subbed via TXST {actorBodySkinTxst.FormID:X8})")
+            End If
 
             If hasHairPaletteRemap AndAlso IsHairHeadPart(candidate) AndAlso material.GrayscaleToPaletteColor Then
                 ' Material already uses grayscale-to-palette: override scale with CLFM RemappingIndex
@@ -6300,6 +7026,84 @@ Public Class MainForm
         Next
     End Sub
 
+    ''' <summary>Resuelve el TXST del body skin del actor (NPC.WNAM o RACE.WNAM via state.SkinFormID),
+    ''' diferenciando por región: BODY (torso/legs) o HAND. El engine in-game sustituye la diffuse
+    ''' texture de los shapes con BSLightingShaderType.SkinTint por la del actor — esto permite a
+    ''' un mismo .nif outfit (autoreado con texturas embebidas humanas) verse correcto sobre ghoul,
+    ''' synth, super mutant, etc. La sustitución debe usar la textura body (NakedTorso ARMA) para
+    ''' shapes con piel del torso/brazos/legs y la hand (NakedHands ARMA) para shapes en gloves
+    ''' con piel expuesta de manos.
+    ''' Retorna Nothing si state.SkinFormID no resuelve a un ARMO con ARMA gender-correct válida.</summary>
+    Private Function ResolveActorSkinTextureSet(state As NPCVisualState, region As SkinRegion) As TXST_Data
+        If state Is Nothing OrElse state.SkinFormID = 0UI Then Return Nothing
+
+        Dim armoRec = _pluginManager.GetRecord(state.SkinFormID)
+        If armoRec Is Nothing OrElse armoRec.Header.Signature <> "ARMO" Then Return Nothing
+
+        Dim armo = RecordParsers.ParseARMO(armoRec, _pluginManager)
+        If armo Is Nothing Then Return Nothing
+
+        Const BODY_BIT As UInteger = 1UI << 3
+        Const HAND_MASK As UInteger = (1UI << 4) Or (1UI << 5)
+
+        ' Iterar las ARMAs del Skin ARMO; elegir la que cubra la región pedida.
+        For Each entry In armo.ArmorAddons
+            Dim armaRec = _pluginManager.GetRecord(entry.ArmaFormID)
+            If armaRec Is Nothing OrElse armaRec.Header.Signature <> "ARMA" Then Continue For
+
+            Dim arma = RecordParsers.ParseARMA(armaRec, _pluginManager)
+            Dim armaSlot = arma.SlotMask
+
+            Dim matches As Boolean = False
+            Select Case region
+                Case SkinRegion.Body
+                    matches = (armaSlot And BODY_BIT) <> 0UI
+                Case SkinRegion.Hand
+                    matches = (armaSlot And HAND_MASK) <> 0UI AndAlso (armaSlot And BODY_BIT) = 0UI
+            End Select
+            If Not matches Then Continue For
+
+            Dim txstFID = If(state.IsFemale,
+                             If(arma.FemaleSkinTextureFormID <> 0UI, arma.FemaleSkinTextureFormID, arma.MaleSkinTextureFormID),
+                             If(arma.MaleSkinTextureFormID <> 0UI, arma.MaleSkinTextureFormID, arma.FemaleSkinTextureFormID))
+            If txstFID = 0UI Then Continue For
+
+            Dim txstRec = _pluginManager.GetRecord(txstFID)
+            If txstRec Is Nothing OrElse txstRec.Header.Signature <> "TXST" Then Continue For
+
+            Return RecordParsers.ParseTXST(txstRec, _pluginManager)
+        Next
+
+        Return Nothing
+    End Function
+
+    Private Enum SkinRegion
+        Body = 0
+        Hand = 1
+    End Enum
+
+    ''' <summary>Decide qué región de skin (Body vs Hand) corresponde a un Outfit candidate según
+    ''' su SlotMask. Outfits tipo "MOutfit/FOutfit" (cubren BODY+[U]) → Body; gloves outfits (sólo
+    ''' bits hand sin BODY/[U]) → Hand. Para [A] over-armor con piel expuesta (raro), el slot
+    ''' indica qué cubre — si toca BODY/[U] usar Body; si sólo [A]/hand → Hand.</summary>
+    Private Shared Function ResolveSkinRegionForOutfit(candidate As MeshCandidate) As SkinRegion
+        If candidate Is Nothing Then Return SkinRegion.Body
+        Const BODY_BIT As UInteger = 1UI << 3
+        Const HAND_MASK As UInteger = (1UI << 4) Or (1UI << 5)
+        Dim U_MASK As UInteger = 0UI
+        For b = 6 To 10 : U_MASK = U_MASK Or (1UI << b) : Next
+
+        Dim slot = candidate.SlotMask
+        Dim touchesBodyOrU = (slot And BODY_BIT) <> 0UI OrElse (slot And U_MASK) <> 0UI
+        Dim touchesHand = (slot And HAND_MASK) <> 0UI
+
+        ' Body/[U] tiene precedencia sobre hand: outfits tipo "all-in-one" con BODY+hands
+        ' (ej. AAClothesCait slot 33+34+35) usan body skin para la zona de torso/brazos.
+        If touchesBodyOrU Then Return SkinRegion.Body
+        If touchesHand Then Return SkinRegion.Hand
+        Return SkinRegion.Body  ' default seguro: si no toca nada conocido (raro), body.
+    End Function
+
     Private Shared Function ShouldForceSkinTint(candidate As MeshCandidate, material As FO4UnifiedMaterial_Class) As Boolean
         If candidate Is Nothing OrElse material Is Nothing Then Return False
         If Not material.IsBGSM() Then Return False
@@ -6325,6 +7129,26 @@ Public Class MainForm
     End Function
 
     Private Function ResolveTextureSet(candidate As MeshCandidate, state As NPCVisualState) As TXST_Data
+        ' Regla canónica HeadPart TXST resolution (per HDPT.DATA flags spec
+        ' wbDefinitionsFO4.pas:7365-7372):
+        '   A) sin TNAM, sin UsesBodyTexture → Nothing (deja lo embebido del NIF).
+        '   B) con TNAM, sin UsesBodyTexture → usa TNAM (lo que el HDPT trae).
+        '   C) UsesBodyTexture=True → body TXST del actor (state.SkinFormID → NakedTorso ARMA →
+        '      Male/FemaleTxst gender-correct). La cadena SkinFormID es race-specific, así un mismo
+        '      HDPT compartido entre razas (RNAM=FLST con Human+Ghoul, ej. FemaleHeadHumanRearTEMP)
+        '      renderiza con texturas distintas según la raza del NPC.
+        ' Caso particular Face (type=1): si A) y type=Face, fallback a state.HeadTextureFormID
+        ' (NPC.HeadTexture). Esto preserva el comportamiento previo para faces sin TNAM.
+        ' Esta regla aplica SÓLO a HeadPart. Skin/Outfit candidates conservan su propio flujo.
+        If candidate IsNot Nothing AndAlso candidate.Kind = MeshCandidateKind.HeadPart Then
+            ' Caso C: UsesBodyTexture=True gana sobre TNAM.
+            If candidate.UsesBodyTexture AndAlso state IsNot Nothing Then
+                Dim bodyTxst = ResolveActorSkinTextureSet(state, SkinRegion.Body)
+                If bodyTxst IsNot Nothing Then Return bodyTxst
+                ' Fallthrough si el actor no tiene body skin resuelto (raro): seguir con TNAM/Face.
+            End If
+        End If
+
         Dim textureSetFormID As UInteger = 0UI
 
         If candidate IsNot Nothing Then
@@ -6373,7 +7197,7 @@ Public Class MainForm
             material.Deserialize(correctedPath, materialType)
             Return material
         Catch ex As Exception
-            NpcPreviewLog.Log($"[MAT] FAILED to load {correctedPath}: {ex.Message}")
+            NpcPreviewLog.LogLazy(Function() $"[MAT] FAILED to load {correctedPath}: {ex.Message}")
             Return Nothing
         End Try
     End Function
@@ -6550,7 +7374,7 @@ Public Class MainForm
     Private Function ResolveNpcSkinToneColor(state As NPCVisualState) As Nullable(Of Color)
         If state Is Nothing Then Return Nothing
         Dim modelNpcFormID = If(state.ModelSourceFormID <> 0UI, state.ModelSourceFormID, state.FormID)
-        Dim npcData = GetParsedNpc(modelNpcFormID)
+        Dim npcData = ApplyPresetOverlayToNpcData(GetParsedNpc(modelNpcFormID), state.RootNpcFormID)
         If npcData Is Nothing OrElse npcData.FaceTintLayers.Count = 0 Then Return Nothing
 
         Dim raceRec = _pluginManager.GetRecord(state.RaceFormID)
@@ -6719,36 +7543,6 @@ Public Class MainForm
         ToolStripStatusLabel1.Text = text
     End Sub
 
-    Private Shared Function FindFO4DataPath() As String
-        If Config_App.Current.DataPath <> "" AndAlso Directory.Exists(Config_App.Current.DataPath) Then
-            Return Config_App.Current.DataPath
-        End If
-
-        Dim steamPaths = {
-            "C:\Program Files (x86)\Steam\steamapps\common\Fallout 4\Data",
-            "C:\Program Files\Steam\steamapps\common\Fallout 4\Data",
-            "D:\SteamLibrary\steamapps\common\Fallout 4\Data",
-            "E:\SteamLibrary\steamapps\common\Fallout 4\Data"
-        }
-        For Each p In steamPaths
-            If Directory.Exists(p) Then Return p
-        Next
-
-        Try
-            Dim key = Microsoft.Win32.Registry.LocalMachine.OpenSubKey("SOFTWARE\WOW6432Node\Bethesda Softworks\Fallout4")
-            If key IsNot Nothing Then
-                Dim installPath = TryCast(key.GetValue("Installed Path"), String)
-                If installPath IsNot Nothing Then
-                    Dim dataPath = Path.Combine(installPath, "Data")
-                    If Directory.Exists(dataPath) Then Return dataPath
-                End If
-            End If
-        Catch
-        End Try
-
-        Return ""
-    End Function
-
 #Region "Record Details Panel"
 
     ''' <summary>
@@ -6811,7 +7605,8 @@ Public Class MainForm
             AddNode(traitsNode, $"Race: {DescribeFormID(traitsNpc.RaceFormID)}")
             ExpandRaceDetails(traitsNode, traitsNpc.RaceFormID, traitsNpc.IsFemale)
             If traitsNpc.SkinFormID <> 0UI Then AddNode(traitsNode, $"Skin Armor: {DescribeFormID(traitsNpc.SkinFormID)}")
-            AddNode(traitsNode, $"Weight: Thin={traitsNpc.WeightThin:F2}  Muscular={traitsNpc.WeightMuscular:F2}  Fat={traitsNpc.WeightFat:F2}")
+            Dim fmtMwgt = Function(v As Single?) If(v.HasValue, v.Value.ToString("F2"), "Default")
+            AddNode(traitsNode, $"Weight: Thin={fmtMwgt(traitsNpc.WeightThin)}  Muscular={fmtMwgt(traitsNpc.WeightMuscular)}  Fat={fmtMwgt(traitsNpc.WeightFat)}")
             If traitsNpc.BodyMorphRegionValues.Count > 0 Then
                 Dim morphNode = AddNode(traitsNode, $"Body Morph Regions ({traitsNpc.BodyMorphRegionValues.Count} values)")
                 For i = 0 To traitsNpc.BodyMorphRegionValues.Count - 1
@@ -7100,6 +7895,492 @@ Public Class MainForm
             _previewControl.Dispose()
         End If
     End Sub
+
+    Private Sub PanelNpcList_Paint(sender As Object, e As PaintEventArgs) Handles PanelNpcList.Paint
+
+    End Sub
+
+#Region "Editor actions — Load LooksMenu"
+
+    ''' <summary>Per-NPC overlay applied on top of the resolver chain. Keyed by the FormID of the
+    ''' NPC the user selected (NOT the model/traits template source — we do NOT mutate templates,
+    ''' so other NPCs that share the same template stay untouched). The resolver consults this
+    ''' dict at the points where it would otherwise read from the NPC_Data and prefers preset
+    ''' values when present.</summary>
+    Private ReadOnly _appliedPresets As New Dictionary(Of UInteger, LooksmenuLoader.LooksmenuPreset)
+
+    ''' <summary>Open the LooksMenu preset picker for the currently selected NPC. On OK records
+    ''' the preset as a per-NPC overlay and re-renders. The underlying NPC_Data records are NOT
+    ''' mutated — see <see cref="_appliedPresets"/>.</summary>
+    Private Async Sub ButtonLoadLooksmenu_Click(sender As Object, e As EventArgs) Handles ButtonLoadLooksmenu.Click
+        If _currentBaseState Is Nothing Then Return
+
+        Dim npcFormID = _currentBaseState.RootNpcFormID
+        Dim npc As NPC_Data = Nothing
+        If Not _npcByIdCache.TryGetValue(npcFormID, npc) OrElse npc Is Nothing Then
+            MessageBox.Show("Could not find NPC record in cache.", "Load LooksMenu",
+                            MessageBoxButtons.OK, MessageBoxIcon.Error)
+            Return
+        End If
+
+        ' Resolve race for the header label only — LooksMenu presets live in a single flat folder
+        ' and don't carry race info (CharGenInterface.cpp:90 saves Gender, not Race; LoadPreset
+        ' applies to whatever the current actor's race is). The display name is purely informational.
+        Dim raceDisplay As String = $"0x{_currentBaseState.RaceFormID:X8}"
+        Dim raceRec = _pluginManager.GetRecord(_currentBaseState.RaceFormID)
+        If raceRec IsNot Nothing Then
+            Dim race = RecordParsers.ParseRACE(raceRec, _pluginManager)
+            If race IsNot Nothing AndAlso Not String.IsNullOrEmpty(race.EditorID) Then
+                raceDisplay = race.EditorID
+            End If
+        End If
+        Dim gender As Byte = If(_currentBaseState.IsFemale, CByte(1), CByte(0))
+
+        Dim selected As LooksmenuLoader.LooksmenuPreset = Nothing
+        Using dlg As New LooksmenuLoad_Form(_pluginManager, _dataPath, gender, raceDisplay)
+            If dlg.ShowDialog(Me) <> DialogResult.OK Then Return
+            selected = dlg.SelectedPreset
+        End Using
+        If selected Is Nothing Then Return
+
+        Dim previousOverlay As LooksmenuLoader.LooksmenuPreset = Nothing
+        _appliedPresets.TryGetValue(npcFormID, previousOverlay)
+        _appliedPresets(npcFormID) = selected
+        NpcPreviewLog.LogSeparator($"LOOKSMENU OVERLAY APPLIED to {npc.EditorID} [0x{npc.FormID:X8}]")
+        NpcPreviewLog.LogLazy(Function() $"  source: {IO.Path.GetFileName(selected.SourcePath)}")
+        NpcPreviewLog.LogLazy(Function() $"  Gender={selected.Gender}  HeadParts={selected.HeadPartFormIDs.Count}  HairColor=0x{selected.HairColorFormID:X8}")
+        NpcPreviewLog.LogLazy(Function() $"  Weight: thin={If(selected.WeightThin.HasValue, selected.WeightThin.Value.ToString("F3"), "—")} musc={If(selected.WeightMuscular.HasValue, selected.WeightMuscular.Value.ToString("F3"), "—")} fat={If(selected.WeightFat.HasValue, selected.WeightFat.Value.ToString("F3"), "—")}")
+        NpcPreviewLog.LogLazy(Function() $"  ChargenFaceMorphs={selected.ChargenFaceMorphs.Count}  BodyMorphValues={selected.BodyMorphValues.Count}  FaceBoneRegions={selected.FaceBoneRegions.Count}  FMIN={selected.FacialMorphIntensity:F3}")
+        NpcPreviewLog.LogLazy(Function() $"  FaceTintLayers={selected.FaceTintLayers.Count}")
+        NpcPreviewLog.LogLazy(Function() $"  Unsupported (skipped): Overlays={selected.UnsupportedCounts.Overlays}  BodyMorphSliders={selected.UnsupportedCounts.BodyMorphSliders}  SkinOverride={selected.UnsupportedCounts.HasSkinOverride}")
+
+        ' Per-HeadPart breakdown so we can spot when the preset actually declared Eyes/Hair but the
+        ' merger discarded them (meaning we're losing them somewhere) vs. when the JSON simply
+        ' didn't have those types (so the merger fell back to RACE defaults — expected).
+        Dim hpTypeNames = New String() {"Misc", "Face", "Eyes", "Hair", "FacialHair", "Scar", "Eyebrows", "Meatcaps", "Teeth", "HeadRear"}
+        For Each fid In selected.HeadPartFormIDs
+            Dim rec = _pluginManager.GetRecord(fid)
+            If rec Is Nothing OrElse rec.Header.Signature <> "HDPT" Then
+                NpcPreviewLog.LogLazy(Function() $"    HeadPart 0x{fid:X8} → record not found or not HDPT")
+                Continue For
+            End If
+            Dim hd = RecordParsers.ParseHDPT(rec, _pluginManager)
+            Dim typeLabel = If(hd.PartType >= 0 AndAlso hd.PartType < hpTypeNames.Length, hpTypeNames(hd.PartType), $"type={hd.PartType}")
+            NpcPreviewLog.LogLazy(Function() $"    HeadPart 0x{fid:X8} type={hd.PartType}/{typeLabel} edid={hd.EditorID}")
+        Next
+        If selected.UnresolvedHeadParts.Count > 0 Then
+            NpcPreviewLog.LogLazy(Function() $"  ⚠ UNRESOLVED HeadParts ({selected.UnresolvedHeadParts.Count}) — plugins not in active load order:")
+            For Each raw In selected.UnresolvedHeadParts
+                NpcPreviewLog.LogLazy(Function() $"      {raw}")
+            Next
+        End If
+
+        Try
+            Dim requestVersion = Interlocked.Increment(_previewRequestVersion)
+            Await LoadNPCOnDemandAsyncFromExisting(npc, requestVersion)
+        Catch ex As Exception
+            ' Roll back the overlay if the re-render exploded.
+            If previousOverlay Is Nothing Then
+                _appliedPresets.Remove(npcFormID)
+            Else
+                _appliedPresets(npcFormID) = previousOverlay
+            End If
+            MessageBox.Show($"Failed to render preset: {ex.Message}{vbCrLf}Overlay reverted.",
+                            "Load LooksMenu", MessageBoxButtons.OK, MessageBoxIcon.Error)
+        End Try
+    End Sub
+
+    ''' <summary>Same flow as <see cref="LoadNPCOnDemandAsync"/> but skipping EnsureAssetDictionary
+    ''' (already mounted) — used after applying / removing an overlay to re-resolve from scratch
+    ''' so the resolver picks up the updated overlay state.</summary>
+    Private Async Function LoadNPCOnDemandAsyncFromExisting(npc As NPC_Data, requestVersion As Integer) As Task
+        Dim baseState As NPCVisualState = Nothing
+        Dim outfitEntries As List(Of OutfitComboEntry) = Nothing
+        Await Task.Run(Sub()
+                           baseState = ResolveNPCBaseState(npc)
+                           outfitEntries = BuildOutfitComboEntries(baseState)
+                       End Sub)
+        If requestVersion <> _previewRequestVersion Then Return
+
+        _currentBaseState = baseState
+        _currentOutfitEntries = If(outfitEntries, New List(Of OutfitComboEntry))
+
+        ' Recompute Paste enable now that the target NPC may have changed race/gender.
+        UpdatePasteLookEnabled()
+
+        ' Refresh the right-side record details panel so weights / morphs / tints reflect the
+        ' overlay-applied state instead of the raw record. ApplyPresetOverlayToNpcData returns
+        ' the raw NPC_Data when there's no overlay registered, so this is also a no-op for the
+        ' non-overlay path. Header fields (FormID/EditorID/Plugin) are preserved by the shallow
+        ' copy so the panel still identifies the record correctly.
+        Dim modelFormID = If(baseState.ModelSourceFormID <> 0UI, baseState.ModelSourceFormID, baseState.FormID)
+        Dim effective = ApplyPresetOverlayToNpcData(GetParsedNpc(modelFormID), baseState.RootNpcFormID)
+        PopulateRecordDetails(If(effective, npc))
+
+        PopulateOutfitCombo()
+        Await RenderCurrentStateAsync(requestVersion)
+    End Function
+
+    ''' <summary>If an overlay is registered for <paramref name="selectedNpcFormID"/>, return a
+    ''' shallow copy of <paramref name="raw"/> with the preset's morph/face-tint fields swapped
+    ''' in. The overlay is keyed by the NPC the user selected, NOT by the model template source —
+    ''' so a preset on Piper does not bleed into other NPCs that share Piper's template chain.
+    ''' Returns <paramref name="raw"/> unchanged when there's no overlay.
+    '''
+    ''' Per-field semantics replicate the engine's LoadPreset (CharGenInterface.cpp:259-628):
+    '''   • HeadParts (line 308-321 + 323-342): the engine WIPES the actor's HeadParts list and
+    '''     repopulates with the race chargen defaults FIRST, then iterates JSON HeadParts and
+    '''     applies each via ChangeHeadPart. We follow the same shape — start from race defaults,
+    '''     then merge preset entries in (the downstream MergeHeadPartsWithRaceDefaults handles
+    '''     the per-PartType "preset wins, race fills gaps" logic). For NPC_Manager preview the
+    '''     "race defaults" must come from the RACE record because the raw NPC_Data carries its
+    '''     own PNAM list which is exactly what the preset is replacing.
+    '''   • HairColor (line 344-359): if the JSON identifier doesn't resolve, GetFormFromIdentifier
+    '''     returns nullptr and the if(form) guard skips assignment → preserves the actor's value.
+    '''     We replicate: preset.HairColorFormID == 0 means "not in JSON, preserve raw".
+    '''   • Weight (line 466-475): the engine assigns root["Weight"][i].asFloat() unconditionally;
+    '''     a missing field becomes 0.0. Our parser leaves WeightX as Single?=Nothing when absent,
+    '''     and we preserve raw weights in that case (more useful for Paste between NPCs than
+    '''     reproducing the engine's "missing = zero" quirk that breaks body weight visually).
+    '''   • Morphs.Values / Presets / Regions (line 363-450): the engine only clears + repopulates
+    '''     when members.size() > 0. Empty/missing dicts/arrays preserve the actor's values.
+    '''   • Morphs.Intensity (line 452-464): the engine ALWAYS calls SetFacialBoneMorphIntensity,
+    '''     using 1.0 when missing. Our parser already defaults to 1.0F at parse time, so we
+    '''     always overwrite — semantically equivalent.
+    '''   • Tints (line 477-556): the engine ClearCharacterTints unconditionally when there's a
+    '''     non-empty Tints dict; if the JSON has Tints with 0 members it still allocates the
+    '''     array but doesn't push anything. We mirror: presence of preset means we replace the
+    '''     tint list (even with empty); absence means preserve raw. The parser doesn't currently
+    '''     distinguish "JSON had Tints:{}" from "no Tints key" but BuildPresetFromState only
+    '''     populates FaceTintLayers when there are layers to capture, so empty == absent here.
+    ''' </summary>
+    Private Function ApplyPresetOverlayToNpcData(raw As NPC_Data, selectedNpcFormID As UInteger) As NPC_Data
+        If raw Is Nothing Then Return raw
+        Dim preset As LooksmenuLoader.LooksmenuPreset = Nothing
+        If Not _appliedPresets.TryGetValue(selectedNpcFormID, preset) Then Return raw
+
+        ' Shallow copy of NPC_Data with the preset-touched fields replaced. The base record stays
+        ' immutable; downstream code that reads other fields (RaceFormID, TemplateFormID, etc) sees
+        ' the same values it would have without the overlay.
+        Dim shadow As New NPC_Data()
+        shadow.FormID = raw.FormID
+        shadow.EditorID = raw.EditorID
+        shadow.FullName = raw.FullName
+        shadow.RaceFormID = raw.RaceFormID
+        shadow.SkinFormID = raw.SkinFormID
+        shadow.IsFemale = raw.IsFemale
+        shadow.DefaultOutfitFormID = raw.DefaultOutfitFormID
+        shadow.SleepOutfitFormID = raw.SleepOutfitFormID
+        shadow.HeadTextureFormID = raw.HeadTextureFormID
+        shadow.FacialHairColorFormID = raw.FacialHairColorFormID
+        shadow.HasTextureLighting = raw.HasTextureLighting
+        shadow.TextureLightingColor = raw.TextureLightingColor
+        shadow.TemplateFormID = raw.TemplateFormID
+        shadow.TemplateFlags = raw.TemplateFlags
+        shadow.AcbsFlags = raw.AcbsFlags
+        shadow.PluginName = raw.PluginName
+        shadow.TemplateActorFormIDs = raw.TemplateActorFormIDs
+        shadow.ObjectTemplateOMODFormIDs.AddRange(raw.ObjectTemplateOMODFormIDs)
+
+        ' HeadParts: replicate engine wipe + race defaults + preset overrides (CharGenInterface.cpp:308-342).
+        ' Step 1: seed from race chargen defaults for this gender. Step 2: append preset's main
+        ' HDPTs. The downstream MergeHeadPartsWithRaceDefaults (called during render) will
+        ' deduplicate per-PartType with "NPC override wins" semantics — same effect as the engine
+        ' iterating ChangeHeadPart over the preset list.
+        Dim raceRec = If(raw.RaceFormID <> 0UI, _pluginManager.GetRecord(raw.RaceFormID), Nothing)
+        If raceRec IsNot Nothing AndAlso raceRec.Header.Signature = "RACE" Then
+            Dim race = RecordParsers.ParseRACE(raceRec, _pluginManager)
+            Dim raceDefaults = If(raw.IsFemale, race.FemaleHeadPartFormIDs, race.MaleHeadPartFormIDs)
+            If raceDefaults IsNot Nothing Then shadow.HeadPartFormIDs.AddRange(raceDefaults)
+        End If
+        shadow.HeadPartFormIDs.AddRange(preset.HeadPartFormIDs)
+
+        ' HairColor: preset 0 means "not in JSON, preserve" (engine behaviour: nullptr form skips).
+        shadow.HairColorFormID = If(preset.HairColorFormID <> 0UI, preset.HairColorFormID, raw.HairColorFormID)
+
+        ' Weight: preserve raw when preset doesn't carry a value. Single?=Nothing is "absent".
+        shadow.WeightThin = If(preset.WeightThin.HasValue, preset.WeightThin, raw.WeightThin)
+        shadow.WeightMuscular = If(preset.WeightMuscular.HasValue, preset.WeightMuscular, raw.WeightMuscular)
+        shadow.WeightFat = If(preset.WeightFat.HasValue, preset.WeightFat, raw.WeightFat)
+
+        ' Morphs.Presets (MSDK/MSDV chargen vertex morphs). Empty preset dict = "JSON had no
+        ' Presets key OR an empty one" → preserve raw. Engine: members.size()==0 skips clear+add.
+        If preset.ChargenFaceMorphs.Count > 0 Then
+            For Each kv In preset.ChargenFaceMorphs
+                shadow.MorphValues(kv.Key) = kv.Value
+            Next
+        Else
+            For Each kv In raw.MorphValues
+                shadow.MorphValues(kv.Key) = kv.Value
+            Next
+        End If
+
+        ' Morphs.Values (MRSV body region morphs). Same preserve-on-empty rule as Presets.
+        If preset.BodyMorphValues.Count > 0 Then
+            shadow.BodyMorphRegionValues.AddRange(preset.BodyMorphValues)
+        Else
+            shadow.BodyMorphRegionValues.AddRange(raw.BodyMorphRegionValues)
+        End If
+
+        ' Morphs.Regions (FMRI/FMRS face bone regions). Same preserve-on-empty rule.
+        If preset.FaceBoneRegions.Count > 0 Then
+            For Each kv In preset.FaceBoneRegions
+                Dim fm As New NPC_FaceMorphData With {.Index = kv.Key}
+                fm.Values.AddRange(kv.Value)
+                shadow.FaceMorphs.Add(fm)
+            Next
+        Else
+            For Each fm In raw.FaceMorphs
+                Dim copy As New NPC_FaceMorphData With {.Index = fm.Index}
+                copy.Values.AddRange(fm.Values)
+                shadow.FaceMorphs.Add(copy)
+            Next
+        End If
+
+        ' FacialMorphIntensity: always overwrite. The parser fills 1.0F when the JSON omits it,
+        ' which mirrors what the engine does (LoadPreset:452-458 calls SetFacialBoneMorphIntensity
+        ' with 1.0 when "Intensity" is absent — never preserves the previous value).
+        shadow.FacialMorphIntensity = preset.FacialMorphIntensity
+
+        ' Tints: present preset wins (replace fully); empty/no preset preserves raw.
+        If preset.FaceTintLayers.Count > 0 Then
+            For Each tl In preset.FaceTintLayers
+                shadow.FaceTintLayers.Add(CloneFaceTint(tl))
+            Next
+        Else
+            For Each tl In raw.FaceTintLayers
+                shadow.FaceTintLayers.Add(CloneFaceTint(tl))
+            Next
+        End If
+
+        Return shadow
+    End Function
+
+    Private Function CloneFaceTint(tl As NPC_FaceTintLayerData) As NPC_FaceTintLayerData
+        Return New NPC_FaceTintLayerData With {
+            .Discriminator = tl.Discriminator,
+            .Index = tl.Index,
+            .Value = tl.Value,
+            .Color = tl.Color,
+            .TemplateColorIndex = tl.TemplateColorIndex,
+            .RawTetiBytes = If(tl.RawTetiBytes Is Nothing, Nothing, CType(tl.RawTetiBytes.Clone(), Byte())),
+            .RawTendBytes = If(tl.RawTendBytes Is Nothing, Nothing, CType(tl.RawTendBytes.Clone(), Byte()))
+        }
+    End Function
+
+    ''' <summary>In-memory clipboard for Copy Look / Paste Look. Lives at process scope so the
+    ''' user can copy from one NPC and paste onto another (which is the whole point of testing
+    ''' the overlay path round-trip with no JSON file involved).</summary>
+    Private _clipboardPreset As LooksmenuLoader.LooksmenuPreset = Nothing
+
+    ''' <summary>Source race FormID of the NPC the clipboard was copied from. Stored separately
+    ''' from <see cref="_clipboardPreset"/> because the LooksMenu schema doesn't carry race
+    ''' (CharGenInterface.cpp:90 only writes Gender). Used by <see cref="IsClipboardCompatibleWithCurrentNpc"/>
+    ''' to gate Paste so the user can only paste between NPCs of the same race + gender — outside
+    ''' that boundary the HDPTs (gender-specific) and morph hashes (race-specific) don't translate
+    ''' and the result is visually broken.</summary>
+    Private _clipboardSourceRaceFormID As UInteger = 0UI
+
+    ''' <summary>Currently-selected NPC matches the clipboard's source NPC by race AND gender.
+    ''' Returns False when there's no clipboard yet, no NPC selected, or either dimension differs.</summary>
+    Private Function IsClipboardCompatibleWithCurrentNpc() As Boolean
+        If _clipboardPreset Is Nothing Then Return False
+        If _currentBaseState Is Nothing Then Return False
+        If _currentBaseState.RaceFormID <> _clipboardSourceRaceFormID Then Return False
+        Dim targetGender As Byte = If(_currentBaseState.IsFemale, CByte(1), CByte(0))
+        If _clipboardPreset.Gender <> targetGender Then Return False
+        Return True
+    End Function
+
+    ''' <summary>Re-evaluate the Paste button's enable state. Call after Copy completes (clipboard
+    ''' just changed) and after every NPC selection change (target just changed). Marshals to UI
+    ''' thread when needed.</summary>
+    Private Sub UpdatePasteLookEnabled()
+        Dim shouldEnable = IsClipboardCompatibleWithCurrentNpc()
+        If InvokeRequired Then
+            Invoke(Sub() ButtonPasteLook.Enabled = shouldEnable)
+        Else
+            ButtonPasteLook.Enabled = shouldEnable
+        End If
+    End Sub
+
+    ''' <summary>Build a LooksmenuPreset that captures what's currently being rendered for the
+    ''' selected NPC. Reads from the same effective NPC_Data the renderer consumes (template
+    ''' source + applied overlay if any), and replicates the LooksMenu Save schema on the way out
+    ''' so Paste can route through the exact same ApplyPresetOverlayToNpcData path that Load
+    ''' Looksmenu uses — no parallel codepath, no schema drift between Save and Load.
+    '''
+    ''' Schema fidelity to CharGenInterface.cpp SavePreset:
+    '''   - HeadParts: filters out IsExtraPart (flag 0x08), matching CharGenInterface.cpp:96.
+    '''     This is safe because NPC_Manager's CollectHeadPartCandidate (line ~6326) recursively
+    '''     expands each main HDPT's HNAM extras at render time — same as the engine does. So
+    '''     the extras (lashes/AO/wet/hairlines) come back automatically when Paste applies the
+    '''     main HDPTs from the preset. Verified empirically in npc_preview.log: TEOBAIO eye
+    '''     HDPT with extras=3 loaded all 3 extras after preset apply.
+    '''   - Tints: skips Value=0 entries (CharGenInterface.cpp:180-181 does the same).
+    '''   - Morphs.Intensity: written even when 1.0 (we don't asymmetrically skip on Save the way
+    '''     LooksMenu does, because preserving "explicit 1.0" matches what LoadPreset interprets).
+    ''' </summary>
+    Private Function BuildPresetFromState(state As NPCVisualState) As LooksmenuLoader.LooksmenuPreset
+        If state Is Nothing Then Return Nothing
+        Dim modelFormID = If(state.ModelSourceFormID <> 0UI, state.ModelSourceFormID, state.FormID)
+        Dim raw = GetParsedNpc(modelFormID)
+        If raw Is Nothing Then Return Nothing
+        ' Capture rendered state — overlay-on-top-of-template, just like the renderer reads it.
+        Dim effective = ApplyPresetOverlayToNpcData(raw, state.RootNpcFormID)
+
+        Dim preset As New LooksmenuLoader.LooksmenuPreset
+        preset.SourcePath = $"<clipboard from {raw.EditorID}>"
+        preset.Gender = If(state.IsFemale, CByte(1), CByte(0))
+
+        ' HeadParts. Use state.HeadPartFormIDs (already overlay-merged with race fallbacks via
+        ' ResolveNPCBaseState) so we capture exactly what's being rendered, not the raw record.
+        ' Filter IsExtraPart (flag 0x08) — emulates CharGenInterface.cpp:96.
+        For Each fid In state.HeadPartFormIDs
+            If fid = 0UI Then Continue For
+            Dim rec = _pluginManager.GetRecord(fid)
+            If rec Is Nothing OrElse rec.Header.Signature <> "HDPT" Then Continue For
+            Dim hd = RecordParsers.ParseHDPT(rec, _pluginManager)
+            If (hd.Flags And HeadPartFlagIsExtra) <> 0 Then Continue For
+            preset.HeadPartFormIDs.Add(fid)
+        Next
+
+        preset.HairColorFormID = state.HairColorFormID
+        preset.WeightThin = state.WeightThin
+        preset.WeightMuscular = state.WeightMuscular
+        preset.WeightFat = state.WeightFat
+
+        ' Morphs (chargen face vertex via MSDK/MSDV, body region via MRSV, face bones via FMRI/FMRS,
+        ' intensity via FMIN). All come from the effective record so overlay values win.
+        For Each kv In effective.MorphValues
+            preset.ChargenFaceMorphs(kv.Key) = kv.Value
+        Next
+        preset.BodyMorphValues.AddRange(effective.BodyMorphRegionValues)
+        For Each fm In effective.FaceMorphs
+            preset.FaceBoneRegions(fm.Index) = fm.Values.ToArray()
+        Next
+        preset.FacialMorphIntensity = effective.FacialMorphIntensity
+
+        ' Tints — skip Value=0 entries (CharGenInterface.cpp:180-181). Order in FaceTintLayers
+        ' is already TintOrder-equivalent (parser preserves it; vanilla NPC TETI/TEND order is
+        ' canonical). Clone each so the clipboard is independent of subsequent record mutations.
+        For Each tl In effective.FaceTintLayers
+            If tl.Value <= 0 Then Continue For
+            preset.FaceTintLayers.Add(CloneFaceTint(tl))
+        Next
+
+        Return preset
+    End Function
+
+    Private Sub ButtonCopyLook_Click(sender As Object, e As EventArgs) Handles ButtonCopyLook.Click
+        If _currentBaseState Is Nothing Then Return
+        Dim built = BuildPresetFromState(_currentBaseState)
+        If built Is Nothing Then
+            MessageBox.Show("Could not capture the current NPC state.", "Copy Look",
+                            MessageBoxButtons.OK, MessageBoxIcon.Warning)
+            Return
+        End If
+        _clipboardPreset = built
+        _clipboardSourceRaceFormID = _currentBaseState.RaceFormID
+        UpdatePasteLookEnabled()
+
+        NpcPreviewLog.LogSeparator($"COPY LOOK from {_currentBaseState.RootNpcFormID:X8}")
+        NpcPreviewLog.LogLazy(Function() $"  source race=0x{_clipboardSourceRaceFormID:X8}  gender={If(built.Gender = 1, "Female", "Male")}")
+        NpcPreviewLog.LogLazy(Function() $"  HeadParts={built.HeadPartFormIDs.Count} (after IsExtraPart filter)  HairColor=0x{built.HairColorFormID:X8}")
+        NpcPreviewLog.LogLazy(Function() $"  Weight: thin={If(built.WeightThin.HasValue, built.WeightThin.Value.ToString("F3"), "—")} musc={If(built.WeightMuscular.HasValue, built.WeightMuscular.Value.ToString("F3"), "—")} fat={If(built.WeightFat.HasValue, built.WeightFat.Value.ToString("F3"), "—")}")
+        NpcPreviewLog.LogLazy(Function() $"  ChargenFaceMorphs={built.ChargenFaceMorphs.Count}  BodyMorphValues={built.BodyMorphValues.Count}  FaceBoneRegions={built.FaceBoneRegions.Count}  FMIN={built.FacialMorphIntensity:F3}")
+        NpcPreviewLog.LogLazy(Function() $"  FaceTintLayers={built.FaceTintLayers.Count} (after Value=0 filter)")
+    End Sub
+
+    Private Async Sub ButtonPasteLook_Click(sender As Object, e As EventArgs) Handles ButtonPasteLook.Click
+        ' Double-check — the button should already be disabled when this isn't true (the enable
+        ' state is recomputed on every NPC selection and on Copy), but the click handler must
+        ' refuse anyway in case anything bypasses the gating.
+        If Not IsClipboardCompatibleWithCurrentNpc() Then Return
+
+        Dim npcFormID = _currentBaseState.RootNpcFormID
+        Dim npc As NPC_Data = Nothing
+        If Not _npcByIdCache.TryGetValue(npcFormID, npc) OrElse npc Is Nothing Then
+            MessageBox.Show("Could not find NPC record in cache.", "Paste Look",
+                            MessageBoxButtons.OK, MessageBoxIcon.Error)
+            Return
+        End If
+
+        Dim previousOverlay As LooksmenuLoader.LooksmenuPreset = Nothing
+        _appliedPresets.TryGetValue(npcFormID, previousOverlay)
+        _appliedPresets(npcFormID) = _clipboardPreset
+        NpcPreviewLog.LogSeparator($"PASTE LOOK to {npc.EditorID} [0x{npc.FormID:X8}]")
+
+        Try
+            Dim requestVersion = Interlocked.Increment(_previewRequestVersion)
+            Await LoadNPCOnDemandAsyncFromExisting(npc, requestVersion)
+        Catch ex As Exception
+            If previousOverlay Is Nothing Then
+                _appliedPresets.Remove(npcFormID)
+            Else
+                _appliedPresets(npcFormID) = previousOverlay
+            End If
+            MessageBox.Show($"Failed to render pasted look: {ex.Message}{vbCrLf}Overlay reverted.",
+                            "Paste Look", MessageBoxButtons.OK, MessageBoxIcon.Error)
+        End Try
+    End Sub
+
+    ''' <summary>Capture the current rendered state into a LooksMenu preset and save it to a JSON
+    ''' file. Default location is Data\F4SE\Plugins\F4EE\Presets\ — the same folder
+    ''' Load LooksMenu reads from. Default filename is the NPC's EditorID.</summary>
+    Private Sub ButtonSaveLooksmenu_Click(sender As Object, e As EventArgs) Handles ButtonSaveLooksmenu.Click
+        If _currentBaseState Is Nothing Then Return
+
+        Dim npcFormID = _currentBaseState.RootNpcFormID
+        Dim npc As NPC_Data = Nothing
+        If Not _npcByIdCache.TryGetValue(npcFormID, npc) OrElse npc Is Nothing Then
+            MessageBox.Show("Could not find NPC record in cache.", "Save LooksMenu",
+                            MessageBoxButtons.OK, MessageBoxIcon.Error)
+            Return
+        End If
+
+        Dim preset = BuildPresetFromState(_currentBaseState)
+        If preset Is Nothing Then
+            MessageBox.Show("Could not capture the current NPC state.", "Save LooksMenu",
+                            MessageBoxButtons.OK, MessageBoxIcon.Warning)
+            Return
+        End If
+
+        Dim defaultDir = IO.Path.Combine(_dataPath, "F4SE", "Plugins", "F4EE", "Presets")
+        Try
+            If Not IO.Directory.Exists(defaultDir) Then IO.Directory.CreateDirectory(defaultDir)
+        Catch
+            ' Fall back to the data root if we can't create the default folder.
+            defaultDir = _dataPath
+        End Try
+
+        Dim defaultName = If(String.IsNullOrEmpty(npc.EditorID), $"NPC_{npc.FormID:X8}", npc.EditorID) & ".json"
+
+        Using dlg As New SaveFileDialog()
+            dlg.Title = "Save LooksMenu Preset"
+            dlg.Filter = "LooksMenu preset (*.json)|*.json"
+            dlg.InitialDirectory = defaultDir
+            dlg.FileName = defaultName
+            dlg.OverwritePrompt = True
+            dlg.AddExtension = True
+            dlg.DefaultExt = "json"
+            If dlg.ShowDialog(Me) <> DialogResult.OK Then Return
+
+            Try
+                Dim json = LooksmenuLoader.SerializePreset(preset, _pluginManager)
+                IO.File.WriteAllText(dlg.FileName, json, New System.Text.UTF8Encoding(False))
+                NpcPreviewLog.LogSeparator($"SAVE LOOKSMENU from {npc.EditorID} [0x{npc.FormID:X8}]")
+                NpcPreviewLog.LogLazy(Function() $"  written to: {dlg.FileName}")
+                NpcPreviewLog.LogLazy(Function() $"  HeadParts={preset.HeadPartFormIDs.Count}  HairColor=0x{preset.HairColorFormID:X8}  Tints={preset.FaceTintLayers.Count}")
+            Catch ex As Exception
+                MessageBox.Show($"Failed to write preset: {ex.Message}", "Save LooksMenu",
+                                MessageBoxButtons.OK, MessageBoxIcon.Error)
+            End Try
+        End Using
+    End Sub
+
+#End Region
+
 End Class
 
 
