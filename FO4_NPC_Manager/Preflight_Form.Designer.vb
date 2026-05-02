@@ -1,4 +1,4 @@
-<Global.Microsoft.VisualBasic.CompilerServices.DesignerGenerated()>
+﻿<Global.Microsoft.VisualBasic.CompilerServices.DesignerGenerated()>
 Partial Class Preflight_Form
     Inherits System.Windows.Forms.Form
 
@@ -143,6 +143,9 @@ Partial Class Preflight_Form
         ' Preflight_Form
         '
         AcceptButton = ButtonOk
+        AutoScaleDimensions = New SizeF(7F, 15F)
+        AutoScaleMode = AutoScaleMode.Font
+        AutoScroll = True
         CancelButton = ButtonCancel
         ClientSize = New Drawing.Size(748, 595)
         Controls.Add(ProgressBarLoad)

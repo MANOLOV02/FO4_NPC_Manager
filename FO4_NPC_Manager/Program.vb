@@ -1,14 +1,16 @@
-Imports System.Windows.Forms
+﻿Imports System.Windows.Forms
 Imports FO4_Base_Library
 
 Module Program
     <STAThread>
     Sub Main()
-        ' Match WM (Wardrobe_Manager Application.Designer.vb:31): HighDpiMode = DpiUnaware.
-        ' Default en .NET 8 es SystemAware/PerMonitorV2, que hace que el framebuffer del
-        ' GLControl no coincida con el Width/Height reportado al CenterCamera/UpdateProjection
-        ' cuando Windows está en escalado >100%, generando frame visualmente desbalanceado.
-        ' DpiUnaware desactiva el escalado y deja Width/Height en píxeles físicos directos.
+        ' HighDpiMode = DpiUnaware: Windows hace bitmap-scaling de la ventana
+        ' al DPI del monitor. UI luce algo blurry a >100% pero el LAYOUT es
+        ' idéntico a cualquier DPI — fonts/controles no se reescalan, así
+        ' las proporciones del header vs preview no cambian. Para usar
+        ' PerMonitorV2 hay que primero hacer que el GLControl cree
+        ' backbuffer en pixels físicos (no soportado en la versión actual
+        ' de OpenTK).
         Application.SetHighDpiMode(HighDpiMode.DpiUnaware)
         Application.EnableVisualStyles()
         Application.SetCompatibleTextRenderingDefault(False)

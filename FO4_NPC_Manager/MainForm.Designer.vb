@@ -743,9 +743,11 @@ Partial Class MainForm
         ' 
         AutoScaleDimensions = New SizeF(7F, 15F)
         AutoScaleMode = AutoScaleMode.Font
+        AutoScroll = True
         ClientSize = New Size(1904, 1041)
         Controls.Add(SplitContainer1)
         Controls.Add(StatusStrip1)
+        MinimumSize = New Size(1024, 720)
         Name = "MainForm"
         StartPosition = FormStartPosition.CenterScreen
         Text = "FO4 NPC Manager"
