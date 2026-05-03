@@ -50,6 +50,13 @@ Public Module LooksmenuLoader
         ''' callers that need byte-perfect round-trip must re-emit them from the parsed fields.</summary>
         Public FaceTintLayers As New List(Of NPC_FaceTintLayerData)
 
+        ''' <summary>BodySlide vertex morph sliders ("BodyMorphs" in JSON). Dict keyed by slider
+        ''' name (e.g. "BigBelly", "ChubbyButt"); the resolver looks each name up in the PIRT .tri
+        ''' of every shape and applies wherever defined. Empty = no overlay; the NPC's body renders
+        ''' with no BodySlide morphs. Schema: F4SEPlugins-master/f4ee/CharGenInterface.cpp:204-215
+        ''' (Save) and 560-570 (Load). NOT a vanilla record — lives only in the JSON.</summary>
+        Public BodyMorphSliders As New Dictionary(Of String, Single)(StringComparer.OrdinalIgnoreCase)
+
         ''' <summary>Counts of F4SE-only fields the preset contains. Non-zero = the preset has
         ''' content the editor will not apply (Overlays/BodyMorphs sliders/Skin override).</summary>
         Public UnsupportedCounts As New UnsupportedFieldCounts
@@ -236,21 +243,41 @@ Public Module LooksmenuLoader
                 Next
             End If
 
-            ' F4SE-only fields: count and skip. See project_npc_looksmenu_pending.md.
+            ' F4SE-only fields: Overlays / Skin still unsupported. See project_npc_looksmenu_pending.md.
             Dim ovEl As JsonElement
             If root.TryGetProperty("Overlays", ovEl) AndAlso ovEl.ValueKind = JsonValueKind.Array Then
                 preset.UnsupportedCounts.Overlays = ovEl.GetArrayLength()
-            End If
-            Dim bmEl As JsonElement
-            If root.TryGetProperty("BodyMorphs", bmEl) AndAlso bmEl.ValueKind = JsonValueKind.Object Then
-                Dim n = 0
-                For Each prop In bmEl.EnumerateObject() : n += 1 : Next
-                preset.UnsupportedCounts.BodyMorphSliders = n
             End If
             Dim skEl As JsonElement
             If root.TryGetProperty("Skin", skEl) AndAlso skEl.ValueKind = JsonValueKind.String Then
                 preset.UnsupportedCounts.HasSkinOverride = Not String.IsNullOrEmpty(skEl.GetString())
             End If
+
+            ' BodyMorphs: BodySlide vertex sliders. Canonical LooksMenu field — see
+            ' CharGenInterface.cpp:560-570 for the engine semantics:
+            '   • Key present (even empty {}) → wipe existing morphs, then apply each member.
+            '   • Key absent                  → preserve current actor state.
+            ' We replicate that:
+            '   • Key present → fill BodyMorphSliders (caller's overlay-apply will replace any
+            '                  prior sliders on the NPC).
+            '   • Key absent  → leave BodyMorphSliders empty; ApplyPresetOverlayToNpcData treats
+            '                  that as "no BodyMorphs override" and the NPC keeps whatever sliders
+            '                  it had before this preset was applied.
+            Dim bmEl As JsonElement
+            If root.TryGetProperty("BodyMorphs", bmEl) AndAlso bmEl.ValueKind = JsonValueKind.Object Then
+                For Each prop In bmEl.EnumerateObject()
+                    If prop.Value.ValueKind = JsonValueKind.Number Then
+                        preset.BodyMorphSliders(prop.Name) = prop.Value.GetSingle()
+                    End If
+                Next
+                preset.UnsupportedCounts.BodyMorphSliders = preset.BodyMorphSliders.Count
+            End If
+
+            ' Note on MRSV: the canonical LooksMenu field is Morphs.Values (a 5-element float array
+            ' per CharGenInterface.cpp LoadPreset.Allocate(5)). That field is already parsed into
+            ' BodyMorphValues above in the Morphs section. We do NOT introduce a separate "MRSV"
+            ' top-level key — it would duplicate the canonical channel and break round-trip
+            ' compatibility with LooksMenu in-game.
 
             Return preset
         End Using
@@ -341,7 +368,26 @@ Public Module LooksmenuLoader
                 ' Field order: alphabetical to match jsoncpp's StyledWriter, which sorts keys
                 ' alphabetically when serializing a Json::Value object. Verified empirically by
                 ' diffing a JSON saved by NPC_Manager against one re-written by LooksMenu in-game.
-                ' Order: Gender → HairColor → HeadParts → Morphs → Tints → TintOrder → Weight.
+                ' Canonical order: BodyMorphs → Gender → HairColor → HeadParts → Morphs → Tints
+                ' → TintOrder → Weight.
+
+                ' BodyMorphs — canonical LooksMenu BodySlide slider dict. Engine convention
+                ' (CharGenInterface.cpp:204-215): the key is emitted iff `morphMap` exists for the
+                ' actor; if the actor has no BodyMorphs registered the key is OMITTED entirely.
+                ' On Load (CharGenInterface.cpp:560-570) presence of the key — even empty — wipes
+                ' the actor's morphs (RemoveMorphsByKeyword) before applying members. Absence
+                ' preserves the in-game actor state.
+                ' We match the same convention: emit only when non-empty. Saving a NPC with an
+                ' empty slider dict therefore behaves like "no BodyMorphs declared" rather than
+                ' "wipe", which is the safer round-trip semantics for an editor.
+                If preset.BodyMorphSliders IsNot Nothing AndAlso preset.BodyMorphSliders.Count > 0 Then
+                    w.WriteStartObject("BodyMorphs")
+                    Dim bmKeys = preset.BodyMorphSliders.Keys.OrderBy(Function(k) k, StringComparer.Ordinal).ToList()
+                    For Each k In bmKeys
+                        w.WriteNumber(k, preset.BodyMorphSliders(k))
+                    Next
+                    w.WriteEndObject()
+                End If
 
                 ' Gender (always)
                 w.WriteNumber("Gender", CUInt(preset.Gender))
@@ -359,6 +405,9 @@ Public Module LooksmenuLoader
                     If Not String.IsNullOrEmpty(ident) Then w.WriteStringValue(ident)
                 Next
                 w.WriteEndArray()
+
+                ' MRSV travels through the canonical Morphs.Values channel (positional 5-float
+                ' array per CharGenInterface.cpp LoadPreset.Allocate(5)). No separate top-level key.
 
                 ' Morphs container — only emit when at least one sub-field has data.
                 ' Sub-key order also alphabetical: Intensity → Presets → Regions → Values.

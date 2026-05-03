@@ -20,6 +20,7 @@ Partial Class LooksmenuLoad_Form
         TextBoxFilter = New TextBox()
         ListBoxPresets = New ListBox()
         LabelInfo = New Label()
+        CheckBoxApplyBodySliders = New CheckBox()
         ButtonOk = New Button()
         ButtonCancel = New Button()
         SuspendLayout()
@@ -70,6 +71,16 @@ Partial Class LooksmenuLoad_Form
         LabelInfo.TabIndex = 4
         LabelInfo.Text = ""
         '
+        ' CheckBoxApplyBodySliders — anchored bottom-left next to the action buttons.
+        '
+        CheckBoxApplyBodySliders.Anchor = AnchorStyles.Bottom Or AnchorStyles.Left
+        CheckBoxApplyBodySliders.AutoSize = True
+        CheckBoxApplyBodySliders.Location = New Drawing.Point(12, 419)
+        CheckBoxApplyBodySliders.Name = "CheckBoxApplyBodySliders"
+        CheckBoxApplyBodySliders.Text = "Apply BodySlide sliders"
+        CheckBoxApplyBodySliders.TabIndex = 5
+        CheckBoxApplyBodySliders.UseVisualStyleBackColor = True
+        '
         ' ButtonOk
         '
         ButtonOk.Anchor = AnchorStyles.Bottom Or AnchorStyles.Right
@@ -77,7 +88,7 @@ Partial Class LooksmenuLoad_Form
         ButtonOk.Location = New Drawing.Point(388, 415)
         ButtonOk.Name = "ButtonOk"
         ButtonOk.Size = New Drawing.Size(90, 28)
-        ButtonOk.TabIndex = 5
+        ButtonOk.TabIndex = 6
         ButtonOk.Text = "OK"
         ButtonOk.UseVisualStyleBackColor = True
         '
@@ -88,7 +99,7 @@ Partial Class LooksmenuLoad_Form
         ButtonCancel.Location = New Drawing.Point(484, 415)
         ButtonCancel.Name = "ButtonCancel"
         ButtonCancel.Size = New Drawing.Size(90, 28)
-        ButtonCancel.TabIndex = 6
+        ButtonCancel.TabIndex = 7
         ButtonCancel.Text = "Cancel"
         ButtonCancel.UseVisualStyleBackColor = True
         '
@@ -102,6 +113,7 @@ Partial Class LooksmenuLoad_Form
         ClientSize = New Drawing.Size(584, 455)
         Controls.Add(ButtonCancel)
         Controls.Add(ButtonOk)
+        Controls.Add(CheckBoxApplyBodySliders)
         Controls.Add(LabelInfo)
         Controls.Add(ListBoxPresets)
         Controls.Add(TextBoxFilter)
@@ -120,6 +132,7 @@ Partial Class LooksmenuLoad_Form
     Friend WithEvents TextBoxFilter As TextBox
     Friend WithEvents ListBoxPresets As ListBox
     Friend WithEvents LabelInfo As Label
+    Friend WithEvents CheckBoxApplyBodySliders As CheckBox
     Friend WithEvents ButtonOk As Button
     Friend WithEvents ButtonCancel As Button
 End Class

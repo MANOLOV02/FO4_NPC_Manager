@@ -27,15 +27,36 @@ Public Class LooksmenuLoad_Form
     ''' <summary>The preset the user picked. Nothing if the dialog was cancelled.</summary>
     Public Property SelectedPreset As LooksmenuLoader.LooksmenuPreset
 
-    ''' <summary>Fired on every list selection change so the host form can apply the preset live
-    ''' as a preview. Argument is Nothing when nothing is selected. The host should snapshot any
-    ''' prior overlay state before showing the dialog so it can restore on Cancel.</summary>
-    Public Event PreviewRequested As EventHandler(Of LooksmenuLoader.LooksmenuPreset)
+    ''' <summary>True if the user wants the preset's BodySlide sliders applied to the NPC. Default
+    ''' = whether the NPC's NIF root carries BODYTRI extra-data (so we'd actually be able to apply
+    ''' them in-game). User can override by clicking the checkbox.</summary>
+    Public ReadOnly Property ApplyBodySliders As Boolean
+        Get
+            Return CheckBoxApplyBodySliders.Checked
+        End Get
+    End Property
+
+    ''' <summary>Fired on every list selection change OR checkbox toggle so the host form can apply
+    ''' the preset live as a preview. The bool is the current ApplyBodySliders state — host should
+    ''' strip BodyMorphSliders from the overlay when False. Preset is Nothing when nothing is
+    ''' selected. The host should snapshot any prior overlay state before showing the dialog so it
+    ''' can restore on Cancel.</summary>
+    Public Event PreviewRequested As EventHandler(Of PreviewRequestArgs)
+
+    Public Class PreviewRequestArgs
+        Public ReadOnly Preset As LooksmenuLoader.LooksmenuPreset
+        Public ReadOnly ApplyBodySliders As Boolean
+        Public Sub New(p As LooksmenuLoader.LooksmenuPreset, applyBody As Boolean)
+            Preset = p
+            ApplyBodySliders = applyBody
+        End Sub
+    End Class
 
     Public Sub New(pluginManager As PluginManager,
                    dataPath As String,
                    gender As Byte,
-                   raceDisplayName As String)
+                   raceDisplayName As String,
+                   npcHasBodyTri As Boolean)
         InitializeComponent()
         _pluginManager = pluginManager
         _dataPath = dataPath
@@ -46,6 +67,11 @@ Public Class LooksmenuLoad_Form
         ' is the only field LooksMenu actually filters on (CharGenInterface.cpp:301).
         LabelHeader.Text = $"Target NPC race: {raceDisplayName}  •  Gender: {If(gender = 1, "Female", "Male")}" & vbCrLf &
                            "Listing all presets from Data\F4SE\Plugins\F4EE\Presets\ (filtered by gender)."
+
+        ' Default the checkbox to whether the NPC's NIF can actually consume BodySlide sliders.
+        ' If there's no BODYTRI on the root NiNode the engine wouldn't apply them in-game either,
+        ' so we default to unchecked — but leave the choice to the user.
+        CheckBoxApplyBodySliders.Checked = npcHasBodyTri
     End Sub
 
     Private Sub LooksmenuLoad_Form_Load(sender As Object, e As EventArgs) Handles MyBase.Load
@@ -102,7 +128,19 @@ Public Class LooksmenuLoad_Form
         Dim item = TryCast(ListBoxPresets.SelectedItem, PresetItem)
         ButtonOk.Enabled = item IsNot Nothing
         UpdateInfo(item?.Preset)
-        RaiseEvent PreviewRequested(Me, item?.Preset)
+        RaisePreview(item?.Preset)
+    End Sub
+
+    ''' <summary>Toggling the checkbox needs to re-fire the preview so the host can rebuild the
+    ''' overlay (with or without BodyMorphSliders) and re-render — without this the checkbox
+    ''' wouldn't have visible effect until OK.</summary>
+    Private Sub CheckBoxApplyBodySliders_CheckedChanged(sender As Object, e As EventArgs) Handles CheckBoxApplyBodySliders.CheckedChanged
+        Dim item = TryCast(ListBoxPresets.SelectedItem, PresetItem)
+        RaisePreview(item?.Preset)
+    End Sub
+
+    Private Sub RaisePreview(preset As LooksmenuLoader.LooksmenuPreset)
+        RaiseEvent PreviewRequested(Me, New PreviewRequestArgs(preset, CheckBoxApplyBodySliders.Checked))
     End Sub
 
     Private Sub UpdateInfo(preset As LooksmenuLoader.LooksmenuPreset)
@@ -116,17 +154,15 @@ Public Class LooksmenuLoad_Form
 
         Dim hasUnsupported =
             preset.UnsupportedCounts.Overlays > 0 OrElse
-            preset.UnsupportedCounts.BodyMorphSliders > 0 OrElse
             preset.UnsupportedCounts.HasSkinOverride
 
         Dim summary = $"HeadParts: {preset.HeadPartFormIDs.Count}  •  Tints: {preset.FaceTintLayers.Count}  •  " &
                       $"Face morphs: {preset.ChargenFaceMorphs.Count}  •  Body regions: {preset.BodyMorphValues.Count}  •  " &
-                      $"Face bone regions: {preset.FaceBoneRegions.Count}"
+                      $"Face bone regions: {preset.FaceBoneRegions.Count}  •  BodySlide: {preset.BodyMorphSliders.Count}"
 
         If hasUnsupported Then
             Dim warnings As New List(Of String)
             If preset.UnsupportedCounts.Overlays > 0 Then warnings.Add($"{preset.UnsupportedCounts.Overlays} overlays")
-            If preset.UnsupportedCounts.BodyMorphSliders > 0 Then warnings.Add($"{preset.UnsupportedCounts.BodyMorphSliders} body morph sliders")
             If preset.UnsupportedCounts.HasSkinOverride Then warnings.Add("skin override")
             LabelInfo.Text = summary & vbCrLf & "Note: F4SE-only fields will be skipped (" & String.Join(", ", warnings) & ")."
             LabelInfo.ForeColor = Drawing.Color.DarkGoldenrod

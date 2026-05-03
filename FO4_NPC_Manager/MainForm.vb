@@ -359,7 +359,7 @@ Public Class MainForm
         End If
         Dim newResolver As IMorphResolver = Nothing
         If CheckBoxApplyVertexMorphs.Checked Then
-            newResolver = BuildFaceMorphResolver(_lastRenderedState, _lastRenderData)
+            newResolver = BuildCompositeMorphResolver(_lastRenderedState, _lastRenderData)
         End If
         NpcPreviewLog.LogLazy(Function() $"  [VERTEX-MORPH-TOGGLE] new resolver = {If(newResolver IsNot Nothing, "SET", "Nothing")}")
         Dim intent = _previewControl.Intent
@@ -382,6 +382,24 @@ Public Class MainForm
     Private Sub CheckBoxApplyBodyWeight_CheckedChanged(sender As Object, e As EventArgs) Handles CheckBoxApplyBodyWeight.CheckedChanged
         NpcPreviewLog.LogLazy(Function() $"  [BODY-WEIGHT-TOGGLE] fired checked={CheckBoxApplyBodyWeight.Checked}")
         RebuildAndApplyMergedPose()
+    End Sub
+
+    ''' <summary>Toggle BodySlide vertex morphs (BODYTRI .tri + slider dict). Same granular path
+    ''' as CheckBoxApplyVertexMorphs: rebuild MorphResolver via BuildCompositeMorphResolver
+    ''' (which now sees the toggle via BuildBodyMorphResolver) + MarkDirty(Morphs) + Invalidate.
+    ''' Off = engine reads NifLocalVertices unmorphed for the body shape; face FRTRI003 morphs
+    ''' still apply (separate resolver in the composite).</summary>
+    Private Sub CheckBoxBodyTri_CheckedChanged(sender As Object, e As EventArgs) Handles CheckBoxBodyTri.CheckedChanged
+        NpcPreviewLog.LogLazy(Function() $"  [BODY-TRI-TOGGLE] fired checked={CheckBoxBodyTri.Checked}")
+        If _lastRenderedState Is Nothing OrElse _lastRenderData Is Nothing Then Return
+        Dim newResolver As IMorphResolver = Nothing
+        If CheckBoxApplyVertexMorphs.Checked Then
+            newResolver = BuildCompositeMorphResolver(_lastRenderedState, _lastRenderData)
+        End If
+        Dim intent = _previewControl.Intent
+        intent.MorphResolver = newResolver
+        intent.MarkDirty(RenderDirtyFlags.Morphs, _lastRenderData.Shapes)
+        _previewControl.InvalidateRender()
     End Sub
 
     ''' <summary>Toggle ARMA sculpt (SCLP per-bone scaling). When OFF, every shape — including
@@ -1328,6 +1346,8 @@ Public Class MainForm
                 ButtonCopyLook.Enabled = True
             End If
             UpdatePasteLookEnabled()
+            ' ButtonEditBody.Enabled is decided after render in UpdateEditBodyEnabled when we
+            ' know whether the race's RACE.BSMS / body .tri actually carry editable channels.
 
             ' Enable/disable NPC randomization controls based on whether NPC has LVLN in template chain
             Dim hasLeveledTemplates = NpcHasLeveledTemplates(npc)
@@ -1408,6 +1428,8 @@ Public Class MainForm
                 ButtonCopyLook.Enabled = True
             End If
             UpdatePasteLookEnabled()
+            ' ButtonEditBody.Enabled is decided after render in UpdateEditBodyEnabled when we
+            ' know whether the race's RACE.BSMS / body .tri actually carry editable channels.
 
             ' LVLN selections always allow re-randomization
             If InvokeRequired Then
@@ -1568,7 +1590,7 @@ Public Class MainForm
         ' (WM pattern from WM_RenderExtensions.vb), NOT a full reload via RenderShapes(request).
         Dim vertexMorphsEnabled = CheckBoxApplyVertexMorphs.Checked
         Dim boneMorphsEnabled = CheckBoxApplyBoneMorphs.Checked
-        Dim morphResolver = If(vertexMorphsEnabled, BuildFaceMorphResolver(state, renderData), Nothing)
+        Dim morphResolver = If(vertexMorphsEnabled, BuildCompositeMorphResolver(state, renderData), Nothing)
 
         ' Build a pose carrying the FMRI/FMRS face bone deltas (each region's bones become
         ' PoseTransformData entries). This pose is applied via SkeletonInstance.ApplyPose which
@@ -1713,6 +1735,11 @@ Public Class MainForm
         _lastSculptByArma = sculptByArma
         _lastShapeToSkel = shapeToSkel
         _lastFaceSkelBytes = faceSkelBytes
+
+        ' Gate the Edit Body button on whether this race + body actually has any editable channels.
+        ' Some races (Ghoul, PowerArmorRace, custom robots) declare no BSMS WeightScale or Range
+        ' Modifier and have no body PIRT .tri — opening the editor would show three empty panels.
+        UpdateEditBodyEnabled()
 
         ' After the shapes become RenderableMesh instances, compose the NPC's face tint layers
         ' into an RGBA overlay texture via FBO and assign it to the face mesh's MaterialData.
@@ -4000,14 +4027,49 @@ Public Class MainForm
 
         Return New NpcMorphResolver(
             npcData,
-            bodyWeightThin:=state.WeightThin,
-            bodyWeightMuscular:=state.WeightMuscular,
-            bodyWeightFat:=state.WeightFat,
             morphValueDefs:=morphValueDefs,
             morphPresetDefs:=morphPresetDefs,
             meshDictKeys:=renderData.MeshDictKeys,
             shapeChargenTriPaths:=renderData.ShapeChargenTriPaths,
             shapeRaceMorphTriPaths:=renderData.ShapeRaceMorphTriPaths)
+    End Function
+
+    ''' <summary>Returns the effective BodySlide slider dict for an NPC: the overlay preset's
+    ''' BodyMorphSliders if one is applied, otherwise an empty dict (vanilla NPCs have no record-
+    ''' level BodyMorphs — F4SE-only field).</summary>
+    Private Function GetEffectiveBodyMorphSliders(rootNpcFormID As UInteger) As Dictionary(Of String, Single)
+        Dim preset As LooksmenuLoader.LooksmenuPreset = Nothing
+        If _appliedPresets.TryGetValue(rootNpcFormID, preset) AndAlso preset.BodyMorphSliders IsNot Nothing Then
+            Return preset.BodyMorphSliders
+        End If
+        Return New Dictionary(Of String, Single)(StringComparer.OrdinalIgnoreCase)
+    End Function
+
+    ''' <summary>Build a BodySlide vertex morph resolver for the NPC's effective slider state.
+    ''' Returns Nothing when CheckBoxBodyTri is unchecked, when no sliders are active, or when
+    ''' there are no shapes — lets MultiMorphResolver short-circuit.
+    ''' The CheckBoxBodyTri toggle gates the entire BodySlide vertex-morph layer (BODYTRI .tri
+    ''' lookup + slider apply). Unchecked = render exactly as if the JSON had no BodyMorphs key
+    ''' for this NPC.</summary>
+    Private Function BuildBodyMorphResolver(state As NPCVisualState, renderData As PreviewResolutionResult) As IMorphResolver
+        If state Is Nothing OrElse renderData Is Nothing Then Return Nothing
+        If Not CheckBoxBodyTri.Checked Then Return Nothing
+        Dim sliders = GetEffectiveBodyMorphSliders(state.RootNpcFormID)
+        If sliders Is Nothing OrElse sliders.Count = 0 Then Return Nothing
+        Return New BodySlideMorphResolver(sliders, renderData.MeshDictKeys)
+    End Function
+
+    ''' <summary>Compose face + body morph resolvers. Vanilla face FRTRI003 morphs and BodySlide
+    ''' PIRT morphs travel through the same MorphPlan but never collide: each shape's resolver
+    ''' lookup is keyed on its own .tri (face on FRTRI003, body on PIRT). MultiMorphResolver
+    ''' merges channel lists; ApplyMorphPlan iterates them all per-shape uniformly.</summary>
+    Private Function BuildCompositeMorphResolver(state As NPCVisualState, renderData As PreviewResolutionResult) As IMorphResolver
+        Dim face = BuildFaceMorphResolver(state, renderData)
+        Dim body = BuildBodyMorphResolver(state, renderData)
+        If face Is Nothing AndAlso body Is Nothing Then Return Nothing
+        If face IsNot Nothing AndAlso body Is Nothing Then Return face
+        If body IsNot Nothing AndAlso face Is Nothing Then Return body
+        Return New MultiMorphResolver(face, body)
     End Function
 
     ''' <summary>Load the bytes of the race-specific face skeleton file.
@@ -7981,12 +8043,20 @@ Public Class MainForm
         Dim priorOverlay As LooksmenuLoader.LooksmenuPreset = Nothing
         _appliedPresets.TryGetValue(npcFormID, priorOverlay)
 
+        ' Determine whether the NPC's body NIF has BODYTRI extra-data on its root, so the dialog
+        ' can default the "Apply BodySlide sliders" checkbox sensibly. If no shape carries
+        ' BODYTRI, the engine wouldn't apply BodyMorphs in-game either — so default unchecked.
+        ' User can override.
+        Dim npcHasBodyTri = NpcHasAnyBodyTri()
+
         Dim selected As LooksmenuLoader.LooksmenuPreset = Nothing
+        Dim applyBody As Boolean = npcHasBodyTri
         Dim dialogResult As DialogResult
-        Using dlg As New LooksmenuLoad_Form(_pluginManager, _dataPath, gender, raceDisplay)
-            AddHandler dlg.PreviewRequested, Sub(s, preset) PreviewLooksmenuOverlay(npcFormID, npc, preset)
+        Using dlg As New LooksmenuLoad_Form(_pluginManager, _dataPath, gender, raceDisplay, npcHasBodyTri)
+            AddHandler dlg.PreviewRequested, Sub(s, args) PreviewLooksmenuOverlay(npcFormID, npc, args.Preset, args.ApplyBodySliders)
             dialogResult = dlg.ShowDialog(Me)
             selected = dlg.SelectedPreset
+            applyBody = dlg.ApplyBodySliders
         End Using
 
         If dialogResult <> DialogResult.OK Then
@@ -8012,11 +8082,12 @@ Public Class MainForm
         ' Nothing to re-apply or re-render — just log the commit.
         NpcPreviewLog.LogSeparator($"LOOKSMENU OVERLAY APPLIED to {npc.EditorID} [0x{npc.FormID:X8}]")
         NpcPreviewLog.LogLazy(Function() $"  source: {IO.Path.GetFileName(selected.SourcePath)}")
+        NpcPreviewLog.LogLazy(Function() $"  Apply BodySlide sliders: {applyBody} (NPC has BODYTRI: {npcHasBodyTri})")
         NpcPreviewLog.LogLazy(Function() $"  Gender={selected.Gender}  HeadParts={selected.HeadPartFormIDs.Count}  HairColor=0x{selected.HairColorFormID:X8}")
         NpcPreviewLog.LogLazy(Function() $"  Weight: thin={If(selected.WeightThin.HasValue, selected.WeightThin.Value.ToString("F3"), "—")} musc={If(selected.WeightMuscular.HasValue, selected.WeightMuscular.Value.ToString("F3"), "—")} fat={If(selected.WeightFat.HasValue, selected.WeightFat.Value.ToString("F3"), "—")}")
-        NpcPreviewLog.LogLazy(Function() $"  ChargenFaceMorphs={selected.ChargenFaceMorphs.Count}  BodyMorphValues={selected.BodyMorphValues.Count}  FaceBoneRegions={selected.FaceBoneRegions.Count}  FMIN={selected.FacialMorphIntensity:F3}")
-        NpcPreviewLog.LogLazy(Function() $"  FaceTintLayers={selected.FaceTintLayers.Count}")
-        NpcPreviewLog.LogLazy(Function() $"  Unsupported (skipped): Overlays={selected.UnsupportedCounts.Overlays}  BodyMorphSliders={selected.UnsupportedCounts.BodyMorphSliders}  SkinOverride={selected.UnsupportedCounts.HasSkinOverride}")
+        NpcPreviewLog.LogLazy(Function() $"  ChargenFaceMorphs={selected.ChargenFaceMorphs.Count}  BodyMorphValues(MRSV)={selected.BodyMorphValues.Count}  FaceBoneRegions={selected.FaceBoneRegions.Count}  FMIN={selected.FacialMorphIntensity:F3}")
+        NpcPreviewLog.LogLazy(Function() $"  BodyMorphSliders(BodySlide)={selected.BodyMorphSliders.Count}  FaceTintLayers={selected.FaceTintLayers.Count}")
+        NpcPreviewLog.LogLazy(Function() $"  Unsupported (skipped): Overlays={selected.UnsupportedCounts.Overlays}  SkinOverride={selected.UnsupportedCounts.HasSkinOverride}")
 
         ' Per-HeadPart breakdown so we can spot when the preset actually declared Eyes/Hair but the
         ' merger discarded them (meaning we're losing them somewhere) vs. when the JSON simply
@@ -8045,11 +8116,16 @@ Public Class MainForm
     ''' on every selection change. Applies (or removes) the overlay and triggers a non-blocking
     ''' re-render. Concurrency-safe via _previewRequestVersion: rapid clicks supersede each other,
     ''' only the latest survives.</summary>
-    Private Sub PreviewLooksmenuOverlay(npcFormID As UInteger, npc As NPC_Data, preset As LooksmenuLoader.LooksmenuPreset)
+    Private Sub PreviewLooksmenuOverlay(npcFormID As UInteger, npc As NPC_Data, preset As LooksmenuLoader.LooksmenuPreset, applyBodySliders As Boolean)
         If preset Is Nothing Then
             _appliedPresets.Remove(npcFormID)
         Else
-            _appliedPresets(npcFormID) = preset
+            ' Respect the dialog's "Apply BodySlide sliders" checkbox: when unchecked, strip the
+            ' dict before stamping the overlay so the resolver never sees them. We clone the
+            ' preset so the dialog's parsed object stays intact (in case the user toggles the
+            ' checkbox back on without re-selecting).
+            Dim toApply = If(applyBodySliders, preset, ClonePresetWithoutBodySliders(preset))
+            _appliedPresets(npcFormID) = toApply
         End If
         Dim previewVersion = Interlocked.Increment(_previewRequestVersion)
         ' Fire-and-forget: the Async lambda runs on the UI sync context (LoadNPCOnDemandAsyncFromExisting
@@ -8057,6 +8133,45 @@ Public Class MainForm
         ' the user is mid-selection and a popup would be more disruptive than a stale preview.
         Dim _unused = PreviewLooksmenuOverlayAsync(npc, previewVersion)
     End Sub
+
+    ''' <summary>Shallow-clone a preset and zero out BodyMorphSliders. All other fields share
+    ''' references with the original — that's fine because the overlay only mutates these
+    ''' fields when the user runs Edit Body, and Edit Body itself takes a deep snapshot before
+    ''' mutating.</summary>
+    Private Shared Function ClonePresetWithoutBodySliders(p As LooksmenuLoader.LooksmenuPreset) As LooksmenuLoader.LooksmenuPreset
+        Dim c As New LooksmenuLoader.LooksmenuPreset()
+        c.SourcePath = p.SourcePath
+        c.Gender = p.Gender
+        c.HeadPartFormIDs.AddRange(p.HeadPartFormIDs)
+        c.UnresolvedHeadParts.AddRange(p.UnresolvedHeadParts)
+        c.HairColorFormID = p.HairColorFormID
+        c.WeightThin = p.WeightThin
+        c.WeightMuscular = p.WeightMuscular
+        c.WeightFat = p.WeightFat
+        For Each kv In p.ChargenFaceMorphs : c.ChargenFaceMorphs(kv.Key) = kv.Value : Next
+        c.BodyMorphValues.AddRange(p.BodyMorphValues)
+        For Each kv In p.FaceBoneRegions : c.FaceBoneRegions(kv.Key) = kv.Value : Next
+        c.FacialMorphIntensity = p.FacialMorphIntensity
+        c.FaceTintLayers.AddRange(p.FaceTintLayers)
+        ' BodyMorphSliders intentionally left empty — the toggle is OFF.
+        c.UnsupportedCounts.Overlays = p.UnsupportedCounts.Overlays
+        c.UnsupportedCounts.BodyMorphSliders = p.UnsupportedCounts.BodyMorphSliders
+        c.UnsupportedCounts.HasSkinOverride = p.UnsupportedCounts.HasSkinOverride
+        Return c
+    End Function
+
+    ''' <summary>True if any shape of the currently rendered NPC carries BODYTRI extra-data on
+    ''' its NIF root. Used to default the "Apply BodySlide sliders" checkbox in the Load
+    ''' LooksMenu dialog.</summary>
+    Private Function NpcHasAnyBodyTri() As Boolean
+        If _lastRenderData Is Nothing OrElse _lastRenderData.Shapes Is Nothing Then Return False
+        For Each shape In _lastRenderData.Shapes
+            Dim meshKey As String = Nothing
+            If _lastRenderData.MeshDictKeys IsNot Nothing Then _lastRenderData.MeshDictKeys.TryGetValue(shape, meshKey)
+            If BodySlideTriResolver.ResolveAndLoad(shape, meshKey) IsNot Nothing Then Return True
+        Next
+        Return False
+    End Function
 
     Private Async Function PreviewLooksmenuOverlayAsync(npc As NPC_Data, requestVersion As Integer) As Task
         Try
@@ -8342,6 +8457,17 @@ Public Class MainForm
         Next
         preset.FacialMorphIntensity = effective.FacialMorphIntensity
 
+        ' BodySlide vertex sliders: F4SE-only, no record-level source. Pulled directly from the
+        ' overlay preset for this NPC because ApplyPresetOverlayToNpcData doesn't touch them
+        ' (NPC_Data has no BodyMorphs field). Without this copy Save LooksMenu would drop every
+        ' BodySlide slider the user dialed in via the Edit Body form.
+        Dim overlay As LooksmenuLoader.LooksmenuPreset = Nothing
+        If _appliedPresets.TryGetValue(state.RootNpcFormID, overlay) AndAlso overlay IsNot Nothing Then
+            For Each kv In overlay.BodyMorphSliders
+                preset.BodyMorphSliders(kv.Key) = kv.Value
+            Next
+        End If
+
         ' Tints — skip Value=0 entries (CharGenInterface.cpp:180-181). Order matters: it determines
         ' the layer composition order at render time (the ESP TETI/TEND order is the natural NPC
         ' record order, but the engine in-game reorders tints to match the RACE's TintTemplateGroups
@@ -8438,6 +8564,165 @@ Public Class MainForm
         ' entry at pos=0 — same convention LooksMenu's GetColorDataByID falls back to when the
         ' incoming colorID isn't a member of TemplateColors (CharGenInterface.cpp:514-517).
         layer.TemplateColorIndex = CInt(opt.TemplateColors(0).TemplateIndex)
+    End Sub
+
+    ''' <summary>Compute body-edit availability against the currently rendered NPC and update
+    ''' the toolbar button accordingly. Disables the button entirely when no section has any
+    ''' editable channel; otherwise the form opens with only the applicable sections visible.</summary>
+    Private Sub UpdateEditBodyEnabled()
+        Dim avail = ComputeBodyEditAvailability(_lastRenderedState, _lastRenderData)
+        Dim shouldEnable = avail.AnythingAvailable
+        If InvokeRequired Then
+            Invoke(Sub() ButtonEditBody.Enabled = shouldEnable)
+        Else
+            ButtonEditBody.Enabled = shouldEnable
+        End If
+    End Sub
+
+    ''' <summary>What the body editor can offer for this NPC, given the RACE record and the
+    ''' loaded body shapes. Each section is gated independently: a race like Ghoul or
+    ''' PowerArmorRace may declare no BSMS WeightScale / RangeModifier on any bone, in which
+    ''' case the corresponding section has no engine effect and is hidden.
+    '''
+    ''' • HasMwgt — at least one BSMS WeightScale entry on a gender-matched bone (HasWeightScale).
+    ''' • HasMrsv — at least one BSMS RangeModifier entry on a gender-matched bone
+    '''   (HasRangeModifier). Per wbDefinitionsFO4.pas:5929 RangeModifier is only Y/Z; absence
+    '''   means MRSV does nothing for that race.
+    ''' • BodySlideSliders — the union of PIRT .tri morph names across all body shapes, after
+    '''   excluding the WeightThin/Muscular/Fat reserved names. Empty = no body .tri loaded.</summary>
+    Private Structure BodyEditAvailability
+        Public HasMwgt As Boolean
+        Public HasMrsv As Boolean
+        Public BodySlideSliders As List(Of String)
+        Public ReadOnly Property AnythingAvailable As Boolean
+            Get
+                Return HasMwgt OrElse HasMrsv OrElse (BodySlideSliders IsNot Nothing AndAlso BodySlideSliders.Count > 0)
+            End Get
+        End Property
+    End Structure
+
+    ''' <summary>Compute body-edit availability for the currently rendered NPC. RACE BSMS flags
+    ''' come from the gender-matching BoneData block (or any block, falling back if the gendered
+    ''' one is empty). BodySlide sliders come from BodySlideTriResolver enumerating across the
+    ''' loaded shapes' PIRT .tri files.</summary>
+    Private Function ComputeBodyEditAvailability(state As NPCVisualState, renderData As PreviewResolutionResult) As BodyEditAvailability
+        Dim avail As New BodyEditAvailability With {.BodySlideSliders = New List(Of String)}
+        If state Is Nothing Then Return avail
+
+        ' RACE BSMS scan — match by gender first, fall back to any block (some races only declare
+        ' one block shared between genders).
+        Dim raceRec = If(state.RaceFormID <> 0UI, _pluginManager.GetRecord(state.RaceFormID), Nothing)
+        If raceRec IsNot Nothing AndAlso raceRec.Header.Signature = "RACE" Then
+            Dim race = RecordParsers.ParseRACE(raceRec, _pluginManager)
+            Dim targetGender As UInteger = If(state.IsFemale, 1UI, 0UI)
+            Dim chosen As RACE_BoneDataGender = race.BoneData.FirstOrDefault(Function(bd) bd.Gender = targetGender)
+            If chosen Is Nothing OrElse chosen.Bones.Count = 0 Then
+                chosen = race.BoneData.FirstOrDefault(Function(bd) bd.Bones.Count > 0)
+            End If
+            If chosen IsNot Nothing Then
+                For Each bone In chosen.Bones
+                    If bone.HasWeightScale Then avail.HasMwgt = True
+                    If bone.HasRangeModifier Then avail.HasMrsv = True
+                    If avail.HasMwgt AndAlso avail.HasMrsv Then Exit For
+                Next
+            End If
+        End If
+
+        If renderData IsNot Nothing AndAlso renderData.Shapes IsNot Nothing Then
+            avail.BodySlideSliders = BodySlideTriResolver.EnumerateSliderNames(
+                renderData.Shapes, renderData.MeshDictKeys)
+        End If
+
+        Return avail
+    End Function
+
+    ''' <summary>Open the body editor for the currently selected NPC. Modal — live edits flow
+    ''' through the LooksMenu overlay (_appliedPresets) and a granular repaint callback. OK
+    ''' commits the live state; Cancel restores the snapshot the form took at open time.
+    ''' Sections are pre-gated against RACE BSMS and the loaded body .tri.</summary>
+    Private Sub ButtonEditBody_Click(sender As Object, e As EventArgs) Handles ButtonEditBody.Click
+        If _lastRenderedState Is Nothing OrElse _lastRenderData Is Nothing Then Return
+
+        Dim avail = ComputeBodyEditAvailability(_lastRenderedState, _lastRenderData)
+        NpcPreviewLog.LogSeparator($"EDIT BODY {_lastRenderedState.RootNpcFormID:X8}")
+        NpcPreviewLog.LogLazy(Function() $"  availability: MWGT={avail.HasMwgt} MRSV={avail.HasMrsv} BodySlide={avail.BodySlideSliders.Count}")
+        If Not avail.AnythingAvailable Then
+            ' Should never happen if ButtonEditBody.Enabled gating is correct, but guard anyway.
+            MessageBox.Show("This race has no MWGT/MRSV/BodySlide channels available.",
+                            "Edit Body", MessageBoxButtons.OK, MessageBoxIcon.Information)
+            Return
+        End If
+
+        ' Capture the NPC's current effective values so the editor can seed its sliders rather
+        ' than showing zeros for a freshly-loaded NPC. We pull from state.WeightX (already
+        ' resolved through ApplyRaceFallbacks + overlay) and from the post-overlay NPC_Data
+        ' for MRSV.
+        Dim modelNpcFormID = If(_lastRenderedState.ModelSourceFormID <> 0UI, _lastRenderedState.ModelSourceFormID, _lastRenderedState.FormID)
+        Dim effectiveNpc = ApplyPresetOverlayToNpcData(GetParsedNpc(modelNpcFormID), _lastRenderedState.RootNpcFormID)
+        Dim initial As New EditBody_Form.InitialValues With {
+            .Thin = _lastRenderedState.WeightThin,
+            .Muscular = _lastRenderedState.WeightMuscular,
+            .Fat = _lastRenderedState.WeightFat
+        }
+        If effectiveNpc IsNot Nothing AndAlso effectiveNpc.BodyMorphRegionValues IsNot Nothing Then
+            For i = 0 To 4
+                If i < effectiveNpc.BodyMorphRegionValues.Count Then
+                    initial.Mrsv(i) = effectiveNpc.BodyMorphRegionValues(i)
+                End If
+            Next
+        End If
+        ' BodySlide sliders that the overlay (or a previously loaded preset) already carries —
+        ' open at those values; otherwise zero. There is no record-level source for these.
+        Dim existingPreset As LooksmenuLoader.LooksmenuPreset = Nothing
+        If _appliedPresets.TryGetValue(_lastRenderedState.RootNpcFormID, existingPreset) AndAlso existingPreset IsNot Nothing Then
+            For Each kv In existingPreset.BodyMorphSliders
+                initial.BodySlide(kv.Key) = kv.Value
+            Next
+        End If
+
+        Dim refresh As Action = Sub() RefreshBodyEditOverlay()
+        ' MWGT sync: there are TWO state caches that read NPC weights — _lastRenderedState (used
+        ' by BuildBodyWeightPose for the live preview) and _currentBaseState (used by
+        ' BuildPresetFromState when Save LooksMenu / Copy Look fires). Both must be kept in
+        ' lockstep with the editor or the saved JSON will carry the pre-edit weights.
+        Dim onMwgtChanged As Action(Of Single, Single, Single) =
+            Sub(t, m, f)
+                If _lastRenderedState IsNot Nothing Then
+                    _lastRenderedState.WeightThin = t
+                    _lastRenderedState.WeightMuscular = m
+                    _lastRenderedState.WeightFat = f
+                End If
+                If _currentBaseState IsNot Nothing Then
+                    _currentBaseState.WeightThin = t
+                    _currentBaseState.WeightMuscular = m
+                    _currentBaseState.WeightFat = f
+                End If
+            End Sub
+
+        Using dlg As New EditBody_Form(_lastRenderedState.RootNpcFormID,
+                                       _appliedPresets,
+                                       avail.HasMwgt, avail.HasMrsv,
+                                       avail.BodySlideSliders,
+                                       initial,
+                                       refresh,
+                                       onMwgtChanged)
+            dlg.ShowDialog(Me)
+        End Using
+    End Sub
+
+    ''' <summary>Granular repaint after a live body-edit slider tweak. MWGT and MRSV affect the
+    ''' bone-scale pose (BuildBodyWeightPose), so we need a Pose dirty pass; BodySlide sliders
+    ''' affect the vertex morph plan, so we also rebuild the MorphResolver and mark Morphs dirty.
+    ''' Both flags can be set on the same intent — the pipeline will run the relevant steps.</summary>
+    Private Sub RefreshBodyEditOverlay()
+        If _lastRenderedState Is Nothing OrElse _lastRenderData Is Nothing Then Return
+        Dim intent = _previewControl.Intent
+        intent.MorphResolver = BuildCompositeMorphResolver(_lastRenderedState, _lastRenderData)
+        intent.MarkDirty(RenderDirtyFlags.Morphs Or RenderDirtyFlags.Pose, _lastRenderData.Shapes)
+        ' Body-weight pose depends on the overlay's WeightThin/Muscular/Fat — rebuild it too so
+        ' MWGT live edits flow into the bone scaling, not just the JSON.
+        RebuildAndApplyMergedPose()
+        _previewControl.InvalidateRender()
     End Sub
 
     Private Sub ButtonCopyLook_Click(sender As Object, e As EventArgs) Handles ButtonCopyLook.Click

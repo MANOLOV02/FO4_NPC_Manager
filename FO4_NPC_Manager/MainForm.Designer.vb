@@ -43,6 +43,7 @@ Partial Class MainForm
         SeparatorActions3 = New Label()
         ButtonSavePlugin = New Button()
         PanelPreviewToolbar = New TableLayoutPanel()
+        CheckBoxBodyTri = New CheckBox()
         LabelPreviewMode = New Label()
         ComboBoxPreviewMode = New ComboBox()
         ComboBoxGender = New ComboBox()
@@ -52,7 +53,6 @@ Partial Class MainForm
         CheckBoxApplyBoneMorphs = New CheckBox()
         CheckBoxApplyVertexMorphs = New CheckBox()
         CheckBoxApplyBodyWeight = New CheckBox()
-        CheckBoxApplySculpt = New CheckBox()
         LabelRenders = New Label()
         CheckBoxRenderBody = New CheckBox()
         CheckBoxRenderUnderarmor = New CheckBox()
@@ -60,6 +60,7 @@ Partial Class MainForm
         CheckBoxRenderHeadwear = New CheckBox()
         ButtonRandomNPC = New Button()
         ButtonReroll = New Button()
+        CheckBoxApplySculpt = New CheckBox()
         LabelStatus = New Label()
         PanelPreviewHost = New Panel()
         StatusStrip1 = New StatusStrip()
@@ -463,13 +464,15 @@ Partial Class MainForm
         ' 
         PanelPreviewToolbar.AutoSize = True
         PanelPreviewToolbar.AutoSizeMode = AutoSizeMode.GrowAndShrink
-        PanelPreviewToolbar.ColumnCount = 6
+        PanelPreviewToolbar.ColumnCount = 7
         PanelPreviewToolbar.ColumnStyles.Add(New ColumnStyle(SizeType.Absolute, 70F))
-        PanelPreviewToolbar.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 25F))
-        PanelPreviewToolbar.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 25F))
-        PanelPreviewToolbar.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 25F))
-        PanelPreviewToolbar.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 25F))
+        PanelPreviewToolbar.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 20F))
+        PanelPreviewToolbar.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 20F))
+        PanelPreviewToolbar.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 20F))
+        PanelPreviewToolbar.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 20F))
+        PanelPreviewToolbar.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 20F))
         PanelPreviewToolbar.ColumnStyles.Add(New ColumnStyle(SizeType.Absolute, 30F))
+        PanelPreviewToolbar.Controls.Add(CheckBoxBodyTri, 4, 2)
         PanelPreviewToolbar.Controls.Add(LabelPreviewMode, 0, 0)
         PanelPreviewToolbar.Controls.Add(ComboBoxPreviewMode, 1, 0)
         PanelPreviewToolbar.Controls.Add(ComboBoxGender, 2, 0)
@@ -479,14 +482,14 @@ Partial Class MainForm
         PanelPreviewToolbar.Controls.Add(CheckBoxApplyBoneMorphs, 1, 2)
         PanelPreviewToolbar.Controls.Add(CheckBoxApplyVertexMorphs, 2, 2)
         PanelPreviewToolbar.Controls.Add(CheckBoxApplyBodyWeight, 3, 2)
-        PanelPreviewToolbar.Controls.Add(CheckBoxApplySculpt, 4, 2)
         PanelPreviewToolbar.Controls.Add(LabelRenders, 0, 3)
         PanelPreviewToolbar.Controls.Add(CheckBoxRenderBody, 1, 3)
         PanelPreviewToolbar.Controls.Add(CheckBoxRenderUnderarmor, 2, 3)
         PanelPreviewToolbar.Controls.Add(CheckBoxRenderArmor, 3, 3)
         PanelPreviewToolbar.Controls.Add(CheckBoxRenderHeadwear, 4, 3)
-        PanelPreviewToolbar.Controls.Add(ButtonRandomNPC, 5, 0)
-        PanelPreviewToolbar.Controls.Add(ButtonReroll, 5, 1)
+        PanelPreviewToolbar.Controls.Add(ButtonRandomNPC, 6, 0)
+        PanelPreviewToolbar.Controls.Add(ButtonReroll, 6, 1)
+        PanelPreviewToolbar.Controls.Add(CheckBoxApplySculpt, 5, 2)
         PanelPreviewToolbar.Dock = DockStyle.Top
         PanelPreviewToolbar.Location = New Point(8, 6)
         PanelPreviewToolbar.Name = "PanelPreviewToolbar"
@@ -497,6 +500,18 @@ Partial Class MainForm
         PanelPreviewToolbar.RowStyles.Add(New RowStyle())
         PanelPreviewToolbar.Size = New Size(1184, 102)
         PanelPreviewToolbar.TabIndex = 0
+        ' 
+        ' CheckBoxBodyTri
+        ' 
+        CheckBoxBodyTri.AutoSize = True
+        CheckBoxBodyTri.Checked = True
+        CheckBoxBodyTri.CheckState = CheckState.Checked
+        CheckBoxBodyTri.Location = New Point(720, 61)
+        CheckBoxBodyTri.Margin = New Padding(2, 1, 8, 1)
+        CheckBoxBodyTri.Name = "CheckBoxBodyTri"
+        CheckBoxBodyTri.Size = New Size(114, 19)
+        CheckBoxBodyTri.TabIndex = 17
+        CheckBoxBodyTri.Text = "Body Sliders (Tri)"
         ' 
         ' LabelPreviewMode
         ' 
@@ -517,19 +532,19 @@ Partial Class MainForm
         ComboBoxPreviewMode.Location = New Point(72, 2)
         ComboBoxPreviewMode.Margin = New Padding(2, 2, 4, 2)
         ComboBoxPreviewMode.Name = "ComboBoxPreviewMode"
-        ComboBoxPreviewMode.Size = New Size(265, 23)
+        ComboBoxPreviewMode.Size = New Size(210, 23)
         ComboBoxPreviewMode.TabIndex = 1
         ' 
         ' ComboBoxGender
         ' 
-        PanelPreviewToolbar.SetColumnSpan(ComboBoxGender, 3)
+        PanelPreviewToolbar.SetColumnSpan(ComboBoxGender, 4)
         ComboBoxGender.Dock = DockStyle.Fill
         ComboBoxGender.DropDownStyle = ComboBoxStyle.DropDownList
         ComboBoxGender.Items.AddRange(New Object() {"Random", "Male", "Female"})
-        ComboBoxGender.Location = New Point(343, 2)
+        ComboBoxGender.Location = New Point(288, 2)
         ComboBoxGender.Margin = New Padding(2, 2, 4, 2)
         ComboBoxGender.Name = "ComboBoxGender"
-        ComboBoxGender.Size = New Size(807, 23)
+        ComboBoxGender.Size = New Size(858, 23)
         ComboBoxGender.TabIndex = 2
         ' 
         ' LabelOutfit
@@ -545,13 +560,13 @@ Partial Class MainForm
         ' 
         ' ComboBoxOutfit
         ' 
-        PanelPreviewToolbar.SetColumnSpan(ComboBoxOutfit, 4)
+        PanelPreviewToolbar.SetColumnSpan(ComboBoxOutfit, 5)
         ComboBoxOutfit.Dock = DockStyle.Fill
         ComboBoxOutfit.DropDownStyle = ComboBoxStyle.DropDownList
         ComboBoxOutfit.Location = New Point(72, 32)
         ComboBoxOutfit.Margin = New Padding(2, 2, 4, 2)
         ComboBoxOutfit.Name = "ComboBoxOutfit"
-        ComboBoxOutfit.Size = New Size(1078, 23)
+        ComboBoxOutfit.Size = New Size(1074, 23)
         ComboBoxOutfit.TabIndex = 5
         ' 
         ' LabelMorphs
@@ -582,7 +597,7 @@ Partial Class MainForm
         CheckBoxApplyVertexMorphs.AutoSize = True
         CheckBoxApplyVertexMorphs.Checked = True
         CheckBoxApplyVertexMorphs.CheckState = CheckState.Checked
-        CheckBoxApplyVertexMorphs.Location = New Point(343, 61)
+        CheckBoxApplyVertexMorphs.Location = New Point(288, 61)
         CheckBoxApplyVertexMorphs.Margin = New Padding(2, 1, 8, 1)
         CheckBoxApplyVertexMorphs.Name = "CheckBoxApplyVertexMorphs"
         CheckBoxApplyVertexMorphs.Size = New Size(129, 19)
@@ -594,24 +609,12 @@ Partial Class MainForm
         CheckBoxApplyBodyWeight.AutoSize = True
         CheckBoxApplyBodyWeight.Checked = True
         CheckBoxApplyBodyWeight.CheckState = CheckState.Checked
-        CheckBoxApplyBodyWeight.Location = New Point(614, 61)
+        CheckBoxApplyBodyWeight.Location = New Point(504, 61)
         CheckBoxApplyBodyWeight.Margin = New Padding(2, 1, 8, 1)
         CheckBoxApplyBodyWeight.Name = "CheckBoxApplyBodyWeight"
         CheckBoxApplyBodyWeight.Size = New Size(140, 19)
         CheckBoxApplyBodyWeight.TabIndex = 9
         CheckBoxApplyBodyWeight.Text = "Body weight (MWGT)"
-        ' 
-        ' CheckBoxApplySculpt
-        ' 
-        CheckBoxApplySculpt.AutoSize = True
-        CheckBoxApplySculpt.Checked = True
-        CheckBoxApplySculpt.CheckState = CheckState.Checked
-        CheckBoxApplySculpt.Location = New Point(885, 61)
-        CheckBoxApplySculpt.Margin = New Padding(2, 1, 8, 1)
-        CheckBoxApplySculpt.Name = "CheckBoxApplySculpt"
-        CheckBoxApplySculpt.Size = New Size(134, 19)
-        CheckBoxApplySculpt.TabIndex = 10
-        CheckBoxApplySculpt.Text = "Sculpt (ARMA SCLP)"
         ' 
         ' LabelRenders
         ' 
@@ -641,7 +644,7 @@ Partial Class MainForm
         CheckBoxRenderUnderarmor.AutoSize = True
         CheckBoxRenderUnderarmor.Checked = True
         CheckBoxRenderUnderarmor.CheckState = CheckState.Checked
-        CheckBoxRenderUnderarmor.Location = New Point(343, 82)
+        CheckBoxRenderUnderarmor.Location = New Point(288, 82)
         CheckBoxRenderUnderarmor.Margin = New Padding(2, 1, 8, 1)
         CheckBoxRenderUnderarmor.Name = "CheckBoxRenderUnderarmor"
         CheckBoxRenderUnderarmor.Size = New Size(129, 19)
@@ -653,7 +656,7 @@ Partial Class MainForm
         CheckBoxRenderArmor.AutoSize = True
         CheckBoxRenderArmor.Checked = True
         CheckBoxRenderArmor.CheckState = CheckState.Checked
-        CheckBoxRenderArmor.Location = New Point(614, 82)
+        CheckBoxRenderArmor.Location = New Point(504, 82)
         CheckBoxRenderArmor.Margin = New Padding(2, 1, 8, 1)
         CheckBoxRenderArmor.Name = "CheckBoxRenderArmor"
         CheckBoxRenderArmor.Size = New Size(98, 19)
@@ -665,7 +668,7 @@ Partial Class MainForm
         CheckBoxRenderHeadwear.AutoSize = True
         CheckBoxRenderHeadwear.Checked = True
         CheckBoxRenderHeadwear.CheckState = CheckState.Checked
-        CheckBoxRenderHeadwear.Location = New Point(885, 82)
+        CheckBoxRenderHeadwear.Location = New Point(720, 82)
         CheckBoxRenderHeadwear.Margin = New Padding(2, 1, 8, 1)
         CheckBoxRenderHeadwear.Name = "CheckBoxRenderHeadwear"
         CheckBoxRenderHeadwear.Size = New Size(117, 19)
@@ -695,6 +698,18 @@ Partial Class MainForm
         ButtonReroll.Size = New Size(26, 26)
         ButtonReroll.TabIndex = 6
         ButtonReroll.Text = "↻"
+        ' 
+        ' CheckBoxApplySculpt
+        ' 
+        CheckBoxApplySculpt.AutoSize = True
+        CheckBoxApplySculpt.Checked = True
+        CheckBoxApplySculpt.CheckState = CheckState.Checked
+        CheckBoxApplySculpt.Location = New Point(936, 61)
+        CheckBoxApplySculpt.Margin = New Padding(2, 1, 8, 1)
+        CheckBoxApplySculpt.Name = "CheckBoxApplySculpt"
+        CheckBoxApplySculpt.Size = New Size(134, 19)
+        CheckBoxApplySculpt.TabIndex = 10
+        CheckBoxApplySculpt.Text = "Sculpt (ARMA SCLP)"
         ' 
         ' LabelStatus
         ' 
@@ -833,4 +848,5 @@ Partial Class MainForm
     Friend WithEvents ToolStripStatusLabel1 As System.Windows.Forms.ToolStripStatusLabel
     Friend WithEvents ToolStripProgressBar1 As System.Windows.Forms.ToolStripProgressBar
     Friend WithEvents SplitContainer2 As SplitContainer
+    Friend WithEvents CheckBoxBodyTri As CheckBox
 End Class
