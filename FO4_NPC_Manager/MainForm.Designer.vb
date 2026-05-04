@@ -43,6 +43,7 @@ Partial Class MainForm
         SeparatorActions3 = New Label()
         ButtonSavePlugin = New Button()
         PanelPreviewToolbar = New TableLayoutPanel()
+        CheckBoxRenderGore = New CheckBox()
         CheckBoxBodyTri = New CheckBox()
         LabelPreviewMode = New Label()
         ComboBoxPreviewMode = New ComboBox()
@@ -472,6 +473,7 @@ Partial Class MainForm
         PanelPreviewToolbar.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 20F))
         PanelPreviewToolbar.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 20F))
         PanelPreviewToolbar.ColumnStyles.Add(New ColumnStyle(SizeType.Absolute, 30F))
+        PanelPreviewToolbar.Controls.Add(CheckBoxRenderGore, 5, 3)
         PanelPreviewToolbar.Controls.Add(CheckBoxBodyTri, 4, 2)
         PanelPreviewToolbar.Controls.Add(LabelPreviewMode, 0, 0)
         PanelPreviewToolbar.Controls.Add(ComboBoxPreviewMode, 1, 0)
@@ -500,6 +502,18 @@ Partial Class MainForm
         PanelPreviewToolbar.RowStyles.Add(New RowStyle())
         PanelPreviewToolbar.Size = New Size(1184, 102)
         PanelPreviewToolbar.TabIndex = 0
+        ' 
+        ' CheckBoxRenderGore
+        ' 
+        CheckBoxRenderGore.AutoSize = True
+        CheckBoxRenderGore.Checked = True
+        CheckBoxRenderGore.CheckState = CheckState.Checked
+        CheckBoxRenderGore.Location = New Point(936, 82)
+        CheckBoxRenderGore.Margin = New Padding(2, 1, 8, 1)
+        CheckBoxRenderGore.Name = "CheckBoxRenderGore"
+        CheckBoxRenderGore.Size = New Size(90, 19)
+        CheckBoxRenderGore.TabIndex = 19
+        CheckBoxRenderGore.Text = "Render gore"
         ' 
         ' CheckBoxBodyTri
         ' 
@@ -849,4 +863,5 @@ Partial Class MainForm
     Friend WithEvents ToolStripProgressBar1 As System.Windows.Forms.ToolStripProgressBar
     Friend WithEvents SplitContainer2 As SplitContainer
     Friend WithEvents CheckBoxBodyTri As CheckBox
+    Friend WithEvents CheckBoxRenderGore As CheckBox
 End Class

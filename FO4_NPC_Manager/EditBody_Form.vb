@@ -159,6 +159,10 @@ Public Class EditBody_Form
         c.UnsupportedCounts.Overlays = p.UnsupportedCounts.Overlays
         c.UnsupportedCounts.BodyMorphSliders = p.UnsupportedCounts.BodyMorphSliders
         c.UnsupportedCounts.HasSkinOverride = p.UnsupportedCounts.HasSkinOverride
+        ' Carry editor-only overrides through the snapshot so that an EditFace edit followed by
+        ' an EditBody Cancel doesn't reset face-side overrides the user kept.
+        c.IsCharGenFacePreset = p.IsCharGenFacePreset
+        c.SkinFormIDOverride = p.SkinFormIDOverride
         Return c
     End Function
 

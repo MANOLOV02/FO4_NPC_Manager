@@ -60,6 +60,19 @@ Public Module LooksmenuLoader
         ''' <summary>Counts of F4SE-only fields the preset contains. Non-zero = the preset has
         ''' content the editor will not apply (Overlays/BodyMorphs sliders/Skin override).</summary>
         Public UnsupportedCounts As New UnsupportedFieldCounts
+
+        ''' <summary>Editor-only override of NPC.ACBS bit 2 ("Is CharGen Face Preset"). Lives in
+        ''' the in-memory overlay so the user can flip the flag in Edit Face and have it persisted
+        ''' to ESP later (Save ESP/ESM is the consumer; out of scope for the LM JSON, which doesn't
+        ''' carry this field). Nothing = preserve raw NPC.AcbsFlags; True/False = override the bit.
+        ''' NOT serialized to LooksMenu JSON — see project_facegen_ischargenpreset_flag.md memory.</summary>
+        Public IsCharGenFacePreset As Boolean?
+
+        ''' <summary>Editor-only override of NPC.WNAM (vanilla Skin → ARMO FormID). Distinct from
+        ''' the LooksMenu JSON `Skin` field which is F4SE-only and remains deferred (see
+        ''' project_npc_looksmenu_pending §3). Nothing = preserve raw NPC.SkinFormID; 0 = clear
+        ''' (engine falls back to RACE.SkinFormID); other = ARMO FormID. NOT serialized to LM JSON.</summary>
+        Public SkinFormIDOverride As UInteger?
     End Class
 
     Public Class UnsupportedFieldCounts
@@ -211,7 +224,14 @@ Public Module LooksmenuLoader
 
                     Dim pctEl As JsonElement
                     If entryEl.TryGetProperty("Percent", pctEl) AndAlso pctEl.ValueKind = JsonValueKind.Number Then
-                        layer.Value = CByte(Math.Min(255, Math.Max(0, pctEl.GetInt32())))
+                        ' "Percent" is 0..100 per LooksMenu schema (the field name says it explicitly,
+                        ' and CharGenInterface.cpp:180-181 only emits entries with Value>0 — it never
+                        ' generates >100). NPC_FaceTintLayerData.Value is Integer (RecordParsers.vb:27).
+                        ' The previous clamp to 255 + cast to Byte was wrong on both axes: it allowed
+                        ' an out-of-spec range (101..255) to slip through, and the Byte round-trip
+                        ' silently corrupted any future expansion of the field. Clamp to the documented
+                        ' range and store as Integer.
+                        layer.Value = Math.Min(100, Math.Max(0, pctEl.GetInt32()))
                     End If
 
                     ' Palette-only: Type=1 (BGSCharacterTint::Entry::kTypePalette in f4se).
