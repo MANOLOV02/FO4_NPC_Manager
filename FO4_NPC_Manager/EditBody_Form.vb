@@ -30,14 +30,19 @@ Public Class EditBody_Form
     Private ReadOnly _priorMwgt As (Thin As Single, Muscular As Single, Fat As Single)
 
     ' Per-MRSV slot labels + UI references. Populated in CreateMrsvRows.
-    Private _mrsvBars(4) As TrackBar
-    Private _mrsvLabels(4) As Label
+    Private _mrsvBars(4) As FO4_Base_Library.TinySliderTextBox
     Private _suspendEvents As Boolean
 
     ' Per-BodySlide-slider UI references. Key = sliderName (case-insensitive).
-    Private ReadOnly _bodySlideBars As New Dictionary(Of String, TrackBar)(StringComparer.OrdinalIgnoreCase)
-    Private ReadOnly _bodySlideLabels As New Dictionary(Of String, Label)(StringComparer.OrdinalIgnoreCase)
+    Private ReadOnly _bodySlideBars As New Dictionary(Of String, FO4_Base_Library.TinySliderTextBox)(StringComparer.OrdinalIgnoreCase)
     Private ReadOnly _bodySlideRows As New Dictionary(Of String, Control)(StringComparer.OrdinalIgnoreCase)
+
+    ' Slider drag throttle: model writes happen synchronously inside On...Changed (so Save/OK
+    ' captures fresh state) but the costly _refresh callback is deferred. Same pattern as
+    ' Editor_Form.vb (WM): timer fires after the user pauses; DragEnded forces an immediate flush
+    ' so releasing the mouse always shows the final preview without waiting for the timer tick.
+    Private WithEvents _refreshTimer As New Timer() With {.Interval = 500, .Enabled = False}
+    Private _pendingRefresh As Boolean = False
 
     ''' <summary>Initial values seeded from the live NPC (post-overlay-applied). Used to
     ''' populate sliders the very first time the editor opens against an NPC that has no
@@ -185,29 +190,24 @@ Public Class EditBody_Form
                 .TextAlign = ContentAlignment.MiddleLeft,
                 .Anchor = AnchorStyles.Left Or AnchorStyles.Right
             }
-            Dim bar As New TrackBar() With {
-                .Minimum = -100,
-                .Maximum = 100,
-                .TickFrequency = 25,
-                .TickStyle = TickStyle.None,
-                .AutoSize = False,
-                .Height = 22,
-                .Value = 0,
+            Dim bar As New FO4_Base_Library.TinySliderTextBox() With {
+                .Minimum = -1R,
+                .Maximum = 1R,
+                .DisplayFormat = "0.00%",
+                .InputScale = 0.01R,
+                .SmallChange = 0.01R,
+                .LargeChange = 0.1R,
+                .FillMode = FO4_Base_Library.TinySliderFillMode.Center,
+                .Height = 28,
+                .Value = 0R,
                 .Dock = DockStyle.Fill,
                 .Margin = New Padding(2)
             }
-            Dim lblValue As New Label() With {
-                .Text = "0.00",
-                .AutoSize = True,
-                .MinimumSize = New Size(50, 0),
-                .TextAlign = ContentAlignment.MiddleRight
-            }
             AddHandler bar.ValueChanged, Sub(s, e) OnMrsvChanged(idx)
+            AddHandler bar.DragEnded, AddressOf OnSliderDragEnded
             MrsvLayout.Controls.Add(lblText, 0, idx)
             MrsvLayout.Controls.Add(bar, 1, idx)
-            MrsvLayout.Controls.Add(lblValue, 2, idx)
             _mrsvBars(idx) = bar
-            _mrsvLabels(idx) = lblValue
         Next
     End Sub
 
@@ -218,7 +218,6 @@ Public Class EditBody_Form
         Try
             BodySlidePanel.Controls.Clear()
             _bodySlideBars.Clear()
-            _bodySlideLabels.Clear()
             _bodySlideRows.Clear()
             If _availableSliders.Count = 0 Then
                 Dim empty As New Label() With {
@@ -234,7 +233,7 @@ Public Class EditBody_Form
             ButtonResetSection.Enabled = True
             For Each sliderName In _availableSliders
                 Dim row As New TableLayoutPanel() With {
-                    .ColumnCount = 3,
+                    .ColumnCount = 2,
                     .RowCount = 1,
                     .AutoSize = True,
                     .AutoSizeMode = AutoSizeMode.GrowAndShrink,
@@ -243,7 +242,6 @@ Public Class EditBody_Form
                 }
                 row.ColumnStyles.Add(New ColumnStyle(SizeType.Absolute, 180))
                 row.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100.0F))
-                row.ColumnStyles.Add(New ColumnStyle(SizeType.Absolute, 60))
                 row.RowStyles.Add(New RowStyle(SizeType.AutoSize))
 
                 Dim lbl As New Label() With {
@@ -253,33 +251,26 @@ Public Class EditBody_Form
                     .TextAlign = ContentAlignment.MiddleLeft,
                     .Anchor = AnchorStyles.Left Or AnchorStyles.Right
                 }
-                Dim bar As New TrackBar() With {
-                    .Minimum = 0,
-                    .Maximum = 100,
-                    .TickFrequency = 10,
-                    .TickStyle = TickStyle.None,
-                    .AutoSize = False,
-                    .Height = 22,
-                    .Value = 0,
+                Dim bar As New FO4_Base_Library.TinySliderTextBox() With {
+                    .Minimum = 0R,
+                    .Maximum = 100R,
+                    .AllowExtremeValues = True,
+                    .DisplayFormat = "0\%",
+                    .SmallChange = 1R,
+                    .LargeChange = 10R,
+                    .Height = 28,
+                    .Value = 0R,
                     .Dock = DockStyle.Fill,
                     .Margin = New Padding(2)
                 }
-                Dim val As New Label() With {
-                    .Text = "0.00",
-                    .AutoSize = False,
-                    .Width = 60,
-                    .TextAlign = ContentAlignment.MiddleRight,
-                    .Anchor = AnchorStyles.Left Or AnchorStyles.Right
-                }
                 Dim capturedName = sliderName
                 AddHandler bar.ValueChanged, Sub(s, e) OnBodySlideChanged(capturedName)
+                AddHandler bar.DragEnded, AddressOf OnSliderDragEnded
                 row.Controls.Add(lbl, 0, 0)
                 row.Controls.Add(bar, 1, 0)
-                row.Controls.Add(val, 2, 0)
 
                 BodySlidePanel.Controls.Add(row)
                 _bodySlideBars(sliderName) = bar
-                _bodySlideLabels(sliderName) = val
                 _bodySlideRows(sliderName) = row
             Next
         Finally
@@ -302,32 +293,22 @@ Public Class EditBody_Form
             UpdateLabel(LabelThinValue, WeightTriangle.Thin)
             UpdateLabel(LabelMuscularValue, WeightTriangle.Muscular)
             UpdateLabel(LabelFatValue, WeightTriangle.Fat)
-            ' MRSV — preset.BodyMorphValues already mirrors NPC.MRSV (5 floats).
+            ' MRSV — preset.BodyMorphValues already mirrors NPC.MRSV (5 floats in [-1..+1]).
             For i = 0 To 4
                 Dim v As Single = If(i < p.BodyMorphValues.Count, p.BodyMorphValues(i), 0.0F)
-                _mrsvBars(i).Value = ToTrackInt(v, -100, 100)
-                UpdateLabel(_mrsvLabels(i), v)
+                _mrsvBars(i).Value = v
             Next
-            ' BodySlide
+            ' BodySlide — model stores 0..1 fractional; slider works in 0..100 scale (BodySlide canon).
             For Each kv In p.BodyMorphSliders
-                Dim bar As TrackBar = Nothing
-                Dim lbl As Label = Nothing
-                If _bodySlideBars.TryGetValue(kv.Key, bar) AndAlso _bodySlideLabels.TryGetValue(kv.Key, lbl) Then
-                    bar.Value = ToTrackInt(kv.Value, 0, 100)
-                    UpdateLabel(lbl, kv.Value)
+                Dim bar As FO4_Base_Library.TinySliderTextBox = Nothing
+                If _bodySlideBars.TryGetValue(kv.Key, bar) Then
+                    bar.Value = kv.Value * 100.0R
                 End If
             Next
         Finally
             _suspendEvents = False
         End Try
     End Sub
-
-    Private Shared Function ToTrackInt(value As Single, lo As Integer, hi As Integer) As Integer
-        Dim scaled = CInt(Math.Round(value * 100.0F))
-        If scaled < lo Then Return lo
-        If scaled > hi Then Return hi
-        Return scaled
-    End Function
 
     Private Shared Sub UpdateLabel(lbl As Label, value As Single)
         lbl.Text = value.ToString("F2", CultureInfo.InvariantCulture)
@@ -353,31 +334,53 @@ Public Class EditBody_Form
 
     Private Sub OnMrsvChanged(idx As Integer)
         If _suspendEvents Then Return
-        Dim v As Single = _mrsvBars(idx).Value / 100.0F
+        Dim v As Single = CSng(_mrsvBars(idx).Value)
         Dim p = Preset
         ' Ensure BodyMorphValues has 5 slots — overlay-apply expects positional MRSV.
         While p.BodyMorphValues.Count < 5
             p.BodyMorphValues.Add(0.0F)
         End While
         p.BodyMorphValues(idx) = v
-        UpdateLabel(_mrsvLabels(idx), v)
-        _refresh?.Invoke()
+        ScheduleRefresh()
     End Sub
 
     Private Sub OnBodySlideChanged(sliderName As String)
         If _suspendEvents Then Return
-        Dim bar As TrackBar = Nothing
+        Dim bar As FO4_Base_Library.TinySliderTextBox = Nothing
         If Not _bodySlideBars.TryGetValue(sliderName, bar) Then Return
-        Dim v As Single = bar.Value / 100.0F
+        Dim v As Single = CSng(bar.Value / 100.0R)
         Dim p = Preset
         If Math.Abs(v) < 0.001F Then
             p.BodyMorphSliders.Remove(sliderName)
         Else
             p.BodyMorphSliders(sliderName) = v
         End If
-        Dim lbl As Label = Nothing
-        If _bodySlideLabels.TryGetValue(sliderName, lbl) Then UpdateLabel(lbl, v)
-        _refresh?.Invoke()
+        ScheduleRefresh()
+    End Sub
+
+    ''' <summary>Mark a refresh as pending and start the throttle timer if it isn't already
+    ''' running. The model is already written; this only defers the costly _refresh callback.</summary>
+    Private Sub ScheduleRefresh()
+        _pendingRefresh = True
+        If Not _refreshTimer.Enabled Then _refreshTimer.Start()
+    End Sub
+
+    ''' <summary>Force-flush any pending refresh immediately. Bound to every slider's DragEnded
+    ''' so releasing the mouse shows the final preview without waiting for the timer tick.</summary>
+    Private Sub FlushRefresh()
+        If _pendingRefresh Then
+            _pendingRefresh = False
+            _refresh?.Invoke()
+        End If
+        _refreshTimer.Stop()
+    End Sub
+
+    Private Sub RefreshTimer_Tick(sender As Object, e As EventArgs) Handles _refreshTimer.Tick
+        FlushRefresh()
+    End Sub
+
+    Private Sub OnSliderDragEnded(sender As Object, e As EventArgs)
+        FlushRefresh()
     End Sub
 
     Private Sub OnBodySlideFilterChanged(sender As Object, e As EventArgs)
@@ -400,10 +403,7 @@ Public Class EditBody_Form
         _suspendEvents = True
         Try
             For Each kv In _bodySlideBars
-                kv.Value.Value = 0
-            Next
-            For Each kv In _bodySlideLabels
-                UpdateLabel(kv.Value, 0.0F)
+                kv.Value.Value = 0R
             Next
         Finally
             _suspendEvents = False
@@ -430,5 +430,14 @@ Public Class EditBody_Form
         _refresh?.Invoke()
         DialogResult = DialogResult.Cancel
         Close()
+    End Sub
+
+    Protected Overrides Sub OnFormClosed(e As FormClosedEventArgs)
+        ' Flush any in-flight throttled refresh so OK doesn't leave a deferred render hanging,
+        ' then stop the timer so its tick doesn't fire on a disposed form.
+        FlushRefresh()
+        _refreshTimer.Stop()
+        _refreshTimer.Dispose()
+        MyBase.OnFormClosed(e)
     End Sub
 End Class

@@ -60,6 +60,8 @@ Partial Class EditFace_Form
         TintsButtonRow = New FlowLayoutPanel()
         ButtonAddTint = New Button()
         ButtonRemoveTint = New Button()
+        ButtonRemoveZeroedTints = New Button()
+        TextBoxTintFilter = New TextBox()
         PanelTintDetail = New GroupBox()
         TintDetailLayout = New TableLayoutPanel()
         LabelTintLayerCaption = New Label()
@@ -69,8 +71,7 @@ Partial Class EditFace_Form
         ButtonTintCustomRGB = New Button()
         PanelTintColorSwatch = New Panel()
         LabelTintPercentCaption = New Label()
-        TrackBarTintPercent = New TrackBar()
-        LabelTintPercentValue = New Label()
+        TrackBarTintPercent = New FO4_Base_Library.TinySliderTextBox()
         TabPageVertex = New TabPage()
         VertexMorphsPanel = New Panel()
         TabPageBoneRegions = New TabPage()
@@ -79,8 +80,7 @@ Partial Class EditFace_Form
         GroupBoxFmin = New GroupBox()
         FminLayout = New TableLayoutPanel()
         LabelFminCaption = New Label()
-        TrackBarFmin = New TrackBar()
-        LabelFminValue = New Label()
+        TrackBarFmin = New FO4_Base_Library.TinySliderTextBox()
         BottomLayout = New FlowLayoutPanel()
         ButtonOk = New Button()
         ButtonCancel = New Button()
@@ -101,13 +101,11 @@ Partial Class EditFace_Form
         TintsButtonRow.SuspendLayout()
         PanelTintDetail.SuspendLayout()
         TintDetailLayout.SuspendLayout()
-        CType(TrackBarTintPercent, ComponentModel.ISupportInitialize).BeginInit()
         TabPageVertex.SuspendLayout()
         TabPageBoneRegions.SuspendLayout()
         BoneRegionsRoot.SuspendLayout()
         GroupBoxFmin.SuspendLayout()
         FminLayout.SuspendLayout()
-        CType(TrackBarFmin, ComponentModel.ISupportInitialize).BeginInit()
         BottomLayout.SuspendLayout()
         SuspendLayout()
         ' 
@@ -480,14 +478,16 @@ Partial Class EditFace_Form
         ' 
         TintsLayout.ColumnCount = 1
         TintsLayout.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100.0F))
-        TintsLayout.Controls.Add(ListViewTints, 0, 0)
-        TintsLayout.Controls.Add(TintsButtonRow, 0, 1)
-        TintsLayout.Controls.Add(PanelTintDetail, 0, 2)
+        TintsLayout.Controls.Add(TextBoxTintFilter, 0, 0)
+        TintsLayout.Controls.Add(ListViewTints, 0, 1)
+        TintsLayout.Controls.Add(TintsButtonRow, 0, 2)
+        TintsLayout.Controls.Add(PanelTintDetail, 0, 3)
         TintsLayout.Dock = DockStyle.Fill
         TintsLayout.Location = New Point(6, 6)
         TintsLayout.Name = "TintsLayout"
         TintsLayout.Padding = New Padding(4)
-        TintsLayout.RowCount = 3
+        TintsLayout.RowCount = 4
+        TintsLayout.RowStyles.Add(New RowStyle())
         TintsLayout.RowStyles.Add(New RowStyle(SizeType.Percent, 100.0F))
         TintsLayout.RowStyles.Add(New RowStyle())
         TintsLayout.RowStyles.Add(New RowStyle())
@@ -538,6 +538,7 @@ Partial Class EditFace_Form
         TintsButtonRow.AutoSizeMode = AutoSizeMode.GrowAndShrink
         TintsButtonRow.Controls.Add(ButtonAddTint)
         TintsButtonRow.Controls.Add(ButtonRemoveTint)
+        TintsButtonRow.Controls.Add(ButtonRemoveZeroedTints)
         TintsButtonRow.Dock = DockStyle.Fill
         TintsButtonRow.Location = New Point(7, 415)
         TintsButtonRow.Name = "TintsButtonRow"
@@ -561,6 +562,21 @@ Partial Class EditFace_Form
         ButtonRemoveTint.Size = New Size(75, 25)
         ButtonRemoveTint.TabIndex = 1
         ButtonRemoveTint.Text = "Remove"
+        '
+        ' ButtonRemoveZeroedTints
+        '
+        ButtonRemoveZeroedTints.AutoSize = True
+        ButtonRemoveZeroedTints.AutoSizeMode = AutoSizeMode.GrowAndShrink
+        ButtonRemoveZeroedTints.Name = "ButtonRemoveZeroedTints"
+        ButtonRemoveZeroedTints.TabIndex = 2
+        ButtonRemoveZeroedTints.Text = "Remove all zeroed"
+        '
+        ' TextBoxTintFilter
+        '
+        TextBoxTintFilter.Dock = DockStyle.Fill
+        TextBoxTintFilter.Margin = New Padding(3)
+        TextBoxTintFilter.Name = "TextBoxTintFilter"
+        TextBoxTintFilter.PlaceholderText = "Filter by group or layer name…"
         ' 
         ' PanelTintDetail
         ' 
@@ -591,7 +607,6 @@ Partial Class EditFace_Form
         TintDetailLayout.Controls.Add(PanelTintColorSwatch, 1, 2)
         TintDetailLayout.Controls.Add(LabelTintPercentCaption, 0, 3)
         TintDetailLayout.Controls.Add(TrackBarTintPercent, 1, 3)
-        TintDetailLayout.Controls.Add(LabelTintPercentValue, 2, 3)
         TintDetailLayout.Dock = DockStyle.Fill
         TintDetailLayout.Location = New Point(3, 19)
         TintDetailLayout.Name = "TintDetailLayout"
@@ -676,27 +691,19 @@ Partial Class EditFace_Form
         ' 
         ' TrackBarTintPercent
         ' 
-        TrackBarTintPercent.AutoSize = False
         TrackBarTintPercent.Dock = DockStyle.Fill
         TrackBarTintPercent.Location = New Point(68, 99)
-        TrackBarTintPercent.Maximum = 100
+        TrackBarTintPercent.Minimum = 0R
+        TrackBarTintPercent.Maximum = 100R
+        TrackBarTintPercent.AllowExtremeValues = True
+        TrackBarTintPercent.DisplayFormat = "0\%"
+        TrackBarTintPercent.SmallChange = 1R
+        TrackBarTintPercent.LargeChange = 10R
         TrackBarTintPercent.Name = "TrackBarTintPercent"
         TrackBarTintPercent.Size = New Size(781, 30)
         TrackBarTintPercent.TabIndex = 7
-        TrackBarTintPercent.TickFrequency = 10
-        TrackBarTintPercent.TickStyle = TickStyle.None
         ' 
-        ' LabelTintPercentValue
-        ' 
-        LabelTintPercentValue.AutoSize = True
-        LabelTintPercentValue.Location = New Point(855, 96)
-        LabelTintPercentValue.MinimumSize = New Size(40, 0)
-        LabelTintPercentValue.Name = "LabelTintPercentValue"
-        LabelTintPercentValue.Size = New Size(40, 15)
-        LabelTintPercentValue.TabIndex = 8
-        LabelTintPercentValue.Text = "0"
-        LabelTintPercentValue.TextAlign = ContentAlignment.MiddleRight
-        ' 
+        '
         ' TabPageVertex
         ' 
         TabPageVertex.Controls.Add(VertexMorphsPanel)
@@ -771,7 +778,6 @@ Partial Class EditFace_Form
         FminLayout.ColumnStyles.Add(New ColumnStyle())
         FminLayout.Controls.Add(LabelFminCaption, 0, 0)
         FminLayout.Controls.Add(TrackBarFmin, 1, 0)
-        FminLayout.Controls.Add(LabelFminValue, 2, 0)
         FminLayout.Dock = DockStyle.Fill
         FminLayout.Location = New Point(3, 19)
         FminLayout.Name = "FminLayout"
@@ -793,27 +799,19 @@ Partial Class EditFace_Form
         ' 
         ' TrackBarFmin
         ' 
-        TrackBarFmin.AutoSize = False
         TrackBarFmin.Dock = DockStyle.Fill
         TrackBarFmin.Location = New Point(97, 7)
-        TrackBarFmin.Maximum = 400
+        TrackBarFmin.Minimum = 0R
+        TrackBarFmin.Maximum = 4R
+        TrackBarFmin.DisplayFormat = "0.00%"
+        TrackBarFmin.InputScale = 0.01R
+        TrackBarFmin.SmallChange = 0.01R
+        TrackBarFmin.LargeChange = 0.25R
         TrackBarFmin.Name = "TrackBarFmin"
         TrackBarFmin.Size = New Size(806, 24)
         TrackBarFmin.TabIndex = 1
-        TrackBarFmin.TickFrequency = 25
-        TrackBarFmin.TickStyle = TickStyle.None
         ' 
-        ' LabelFminValue
-        ' 
-        LabelFminValue.AutoSize = True
-        LabelFminValue.Location = New Point(909, 4)
-        LabelFminValue.MinimumSize = New Size(50, 0)
-        LabelFminValue.Name = "LabelFminValue"
-        LabelFminValue.Size = New Size(50, 15)
-        LabelFminValue.TabIndex = 2
-        LabelFminValue.Text = "1.00"
-        LabelFminValue.TextAlign = ContentAlignment.MiddleRight
-        ' 
+        '
         ' BottomLayout
         ' 
         BottomLayout.AutoSize = True
@@ -889,7 +887,6 @@ Partial Class EditFace_Form
         PanelTintDetail.PerformLayout()
         TintDetailLayout.ResumeLayout(False)
         TintDetailLayout.PerformLayout()
-        CType(TrackBarTintPercent, ComponentModel.ISupportInitialize).EndInit()
         TabPageVertex.ResumeLayout(False)
         TabPageBoneRegions.ResumeLayout(False)
         BoneRegionsRoot.ResumeLayout(False)
@@ -898,7 +895,6 @@ Partial Class EditFace_Form
         GroupBoxFmin.PerformLayout()
         FminLayout.ResumeLayout(False)
         FminLayout.PerformLayout()
-        CType(TrackBarFmin, ComponentModel.ISupportInitialize).EndInit()
         BottomLayout.ResumeLayout(False)
         ResumeLayout(False)
     End Sub
@@ -959,6 +955,8 @@ Partial Class EditFace_Form
     Friend WithEvents TintsButtonRow As System.Windows.Forms.FlowLayoutPanel
     Friend WithEvents ButtonAddTint As System.Windows.Forms.Button
     Friend WithEvents ButtonRemoveTint As System.Windows.Forms.Button
+    Friend WithEvents ButtonRemoveZeroedTints As System.Windows.Forms.Button
+    Friend WithEvents TextBoxTintFilter As System.Windows.Forms.TextBox
 
     Friend WithEvents PanelTintDetail As System.Windows.Forms.GroupBox
     Friend WithEvents TintDetailLayout As System.Windows.Forms.TableLayoutPanel
@@ -969,8 +967,7 @@ Partial Class EditFace_Form
     Friend WithEvents PanelTintColorSwatch As System.Windows.Forms.Panel
     Friend WithEvents ButtonTintCustomRGB As System.Windows.Forms.Button
     Friend WithEvents LabelTintPercentCaption As System.Windows.Forms.Label
-    Friend WithEvents TrackBarTintPercent As System.Windows.Forms.TrackBar
-    Friend WithEvents LabelTintPercentValue As System.Windows.Forms.Label
+    Friend WithEvents TrackBarTintPercent As FO4_Base_Library.TinySliderTextBox
 
     Friend WithEvents VertexMorphsPanel As System.Windows.Forms.Panel
 
@@ -980,6 +977,5 @@ Partial Class EditFace_Form
     Friend WithEvents GroupBoxFmin As System.Windows.Forms.GroupBox
     Friend WithEvents FminLayout As System.Windows.Forms.TableLayoutPanel
     Friend WithEvents LabelFminCaption As System.Windows.Forms.Label
-    Friend WithEvents TrackBarFmin As System.Windows.Forms.TrackBar
-    Friend WithEvents LabelFminValue As System.Windows.Forms.Label
+    Friend WithEvents TrackBarFmin As FO4_Base_Library.TinySliderTextBox
 End Class

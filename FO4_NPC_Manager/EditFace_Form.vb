@@ -56,6 +56,14 @@ Public Class EditFace_Form
     Private ReadOnly _refresh As Action(Of FaceRefreshScope)
     Private ReadOnly _formatNpcRef As Func(Of UInteger, String)
 
+    ' Slider drag throttle: model writes happen synchronously inside On...Changed (so OK captures
+    ' fresh state) but the costly _refresh callback is deferred. Each slider emits a different
+    ' FaceRefreshScope (Tint→TexturesOnly, FMIN/Region→Pose, Bidi/PresetIntensity→Morphs); the
+    ' flush emits one invocation per distinct scope requested during the window. Same shape as
+    ' Editor_Form.vb (WM): timer fires after a pause; DragEnded forces immediate flush.
+    Private WithEvents _refreshTimer As New Timer() With {.Interval = 500, .Enabled = False}
+    Private ReadOnly _pendingScopes As New HashSet(Of FaceRefreshScope)
+
     ' Snapshot for Cancel rollback (the overlay BEFORE we touched it — Nothing if there was
     ' nothing) and for Reset (the post-seed preset, which always carries the original NPC values
     ' even when there was no prior overlay).
@@ -72,8 +80,7 @@ Public Class EditFace_Form
     ' (bidirectional, one per group-attached MorphValue key). Keys not referenced by any group
     ' MPGS go to a synthetic "Other Sliders" section at the end if any exist.
     Private ReadOnly _groupSections As New List(Of MorphGroupSection)
-    Private ReadOnly _bidiBars As New Dictionary(Of UInteger, TrackBar)
-    Private ReadOnly _bidiLabels As New Dictionary(Of UInteger, Label)
+    Private ReadOnly _bidiBars As New Dictionary(Of UInteger, FO4_Base_Library.TinySliderTextBox)
     Private ReadOnly _bidiKeyToGroup As New Dictionary(Of UInteger, MorphGroupSection)
     Private ReadOnly _presetKeyToGroup As New Dictionary(Of UInteger, MorphGroupSection)
 
@@ -81,8 +88,7 @@ Public Class EditFace_Form
     ' Scale). We index by (regionId, componentIdx 0..6) so OnRegionSliderChanged can route the
     ' value back into preset.FaceBoneRegions[regionId][componentIdx]. Built once in
     ' BuildBoneRegionsUI from the JSON FacialBoneRegions list of the active race+gender.
-    Private ReadOnly _regionBars As New Dictionary(Of UInteger, TrackBar())
-    Private ReadOnly _regionLabels As New Dictionary(Of UInteger, Label())
+    Private ReadOnly _regionBars As New Dictionary(Of UInteger, FO4_Base_Library.TinySliderTextBox())
 
     ' Currently selected tint, for routing slider events.
     Private _currentTintIndex As Integer = -1
@@ -122,8 +128,8 @@ Public Class EditFace_Form
     End Enum
 
     ''' <summary>One UI section per RACE MorphGroup. Mirrors CK chargen layout: preset ListBox
-    ''' (one selection per group, "(none)" entry at top) + intensity TrackBar [0..1] for the
-    ''' chosen preset, plus one bidirectional [-1..+1] TrackBar per MPGS key (group-attached
+    ''' (one selection per group, "(none)" entry at top) + intensity slider [0..1] for the
+    ''' chosen preset, plus one bidirectional [-1..+1] slider per MPGS key (group-attached
     ''' slider). The synthetic "Other" section uses GroupName="" and Presets=Nothing to flag
     ''' it as a slider-only bucket for MorphValue keys not referenced by any MorphGroup.</summary>
     Private Class MorphGroupSection
@@ -132,8 +138,7 @@ Public Class EditFace_Form
         Public BidiKeys As New List(Of UInteger)         ' MPGS keys; resolved to MorphValueDef for MSM0/MSM1
         ' Live UI controls (set during build).
         Public PresetListBox As ListBox
-        Public PresetIntensityBar As TrackBar
-        Public PresetIntensityLabel As Label
+        Public PresetIntensityBar As FO4_Base_Library.TinySliderTextBox
     End Class
 
     Public Sub New(rootNpcFormID As UInteger,
@@ -508,8 +513,7 @@ Public Class EditFace_Form
             If rawNpc IsNot Nothing AndAlso Math.Abs(p.FacialMorphIntensity - 1.0F) < 0.0001F Then
                 p.FacialMorphIntensity = If(rawNpc.FacialMorphIntensity > 0.0F, rawNpc.FacialMorphIntensity, 1.0F)
             End If
-            TrackBarFmin.Value = ClampInt(CInt(Math.Round(p.FacialMorphIntensity * 100.0F)), TrackBarFmin.Minimum, TrackBarFmin.Maximum)
-            UpdateLabel(LabelFminValue, p.FacialMorphIntensity)
+            TrackBarFmin.Value = p.FacialMorphIntensity
         Finally
             _suspendEvents = False
         End Try
@@ -553,14 +557,18 @@ Public Class EditFace_Form
 
         AddHandler ButtonAddTint.Click, AddressOf OnAddTint
         AddHandler ButtonRemoveTint.Click, AddressOf OnRemoveTint
+        AddHandler ButtonRemoveZeroedTints.Click, AddressOf OnRemoveZeroedTints
+        AddHandler TextBoxTintFilter.TextChanged, AddressOf OnTintFilterChanged
         AddHandler ListViewTints.SelectedIndexChanged, AddressOf OnTintSelectionChanged
         AddHandler ComboBoxTintPalette.SelectedIndexChanged, AddressOf OnTintPaletteChanged
         AddHandler ButtonTintCustomRGB.Click, AddressOf OnTintCustomRGB
         AddHandler TrackBarTintPercent.ValueChanged, AddressOf OnTintPercentChanged
+        AddHandler TrackBarTintPercent.DragEnded, AddressOf OnSliderDragEnded
 
         ' Bone region slider handlers are wired per-control inside BuildBoneRegionsUI.
 
         AddHandler TrackBarFmin.ValueChanged, AddressOf OnFminChanged
+        AddHandler TrackBarFmin.DragEnded, AddressOf OnSliderDragEnded
     End Sub
 
     ' =====================================================================
@@ -572,14 +580,49 @@ Public Class EditFace_Form
     ' ResolveNPCBaseState consumes preset.HeadPartFormIDs at MainForm:3841-3842.
     ' =====================================================================
 
+    ''' <summary>Tag payload for ListViewHeadParts rows. IsRaceDefault=True means the entry comes
+    ''' from RACE.{Male,Female}HeadParts (gender-specific) because the NPC override has no entry of
+    ''' that PartType. The render's MergeHeadPartsWithRaceDefaults (MainForm.vb:6582) does the same
+    ''' merge — the editor mirrors it so the user sees what the render will draw, not just the raw
+    ''' NPC override list. Race defaults are read-only here: removing them requires a different
+    ''' mechanism (explicit "no part" override) which the model doesn't currently support.</summary>
+    Private Class HeadPartRowTag
+        Public FormID As UInteger
+        Public IsRaceDefault As Boolean
+    End Class
+
     Private Sub RefreshHeadPartsList()
         ListViewHeadParts.BeginUpdate()
         Try
             ListViewHeadParts.Items.Clear()
             Dim p = Preset
+
+            ' NPC overrides first — exactly as the user declared them.
             For Each fid In p.HeadPartFormIDs
-                ListViewHeadParts.Items.Add(BuildHeadPartRow(fid))
+                ListViewHeadParts.Items.Add(BuildHeadPartRow(fid, isRaceDefault:=False))
             Next
+
+            ' Compute which non-Misc PartTypes the NPC has already overridden, then add RACE
+            ' defaults for any PartType (1..9) the NPC didn't claim. This mirrors the render's
+            ' "NPC override wins per-type, RACE default fills the gap" rule (MainForm.vb:6573-6575).
+            Dim overriddenTypes As New HashSet(Of Integer)
+            For Each fid In p.HeadPartFormIDs
+                Dim hd As HDPT_Data = Nothing
+                If _allHeadPartsByFid.TryGetValue(fid, hd) AndAlso hd.PartType <> HdptTypeMisc Then
+                    overriddenTypes.Add(hd.PartType)
+                End If
+            Next
+
+            Dim raceDefaults = If(_isFemale, _race?.FemaleHeadPartFormIDs, _race?.MaleHeadPartFormIDs)
+            If raceDefaults IsNot Nothing Then
+                For Each fid In raceDefaults
+                    Dim hd As HDPT_Data = Nothing
+                    If Not _allHeadPartsByFid.TryGetValue(fid, hd) Then Continue For
+                    If hd.PartType = HdptTypeMisc Then Continue For
+                    If overriddenTypes.Contains(hd.PartType) Then Continue For
+                    ListViewHeadParts.Items.Add(BuildHeadPartRow(fid, isRaceDefault:=True))
+                Next
+            End If
         Finally
             ListViewHeadParts.EndUpdate()
         End Try
@@ -588,8 +631,10 @@ Public Class EditFace_Form
     ''' <summary>Build a 5-column ListViewItem for a head-part FormID. Columns mirror the picker
     ''' layout (Type / Editor ID / Name / Plugin / FormID) so the eye doesn't have to translate
     ''' between the two views. Unresolved FormIDs (e.g. plugin missing) still get a row showing
-    ''' the FormID so the user can see what's broken instead of getting a silent gap.</summary>
-    Private Function BuildHeadPartRow(fid As UInteger) As ListViewItem
+    ''' the FormID so the user can see what's broken instead of getting a silent gap. Race-default
+    ''' rows are rendered in gray and tagged so OnRemoveHeadPart can refuse to mutate them.</summary>
+    Private Function BuildHeadPartRow(fid As UInteger, isRaceDefault As Boolean) As ListViewItem
+        Dim tag As New HeadPartRowTag With {.FormID = fid, .IsRaceDefault = isRaceDefault}
         Dim hd As HDPT_Data = Nothing
         Dim hex = fid.ToString("X8")
         If Not _allHeadPartsByFid.TryGetValue(fid, hd) Then
@@ -598,18 +643,22 @@ Public Class EditFace_Form
             missing.SubItems.Add("")
             missing.SubItems.Add("")
             missing.SubItems.Add(hex)
-            missing.Tag = fid
+            missing.Tag = tag
+            If isRaceDefault Then missing.ForeColor = SystemColors.GrayText
             Return missing
         End If
         Dim plugin As String = ""
         Dim rec = _pluginManager.GetRecord(fid)
         If rec IsNot Nothing AndAlso Not String.IsNullOrWhiteSpace(rec.SourcePluginName) Then plugin = rec.SourcePluginName
-        Dim row As New ListViewItem(HdptTypeName(hd.PartType))
+        Dim typeText = HdptTypeName(hd.PartType)
+        If isRaceDefault Then typeText &= " (RACE)"
+        Dim row As New ListViewItem(typeText)
         row.SubItems.Add(If(hd.EditorID, ""))
         row.SubItems.Add(If(hd.FullName, ""))
         row.SubItems.Add(plugin)
         row.SubItems.Add(hex)
-        row.Tag = fid
+        row.Tag = tag
+        If isRaceDefault Then row.ForeColor = SystemColors.GrayText
         Return row
     End Function
 
@@ -682,11 +731,14 @@ Public Class EditFace_Form
 
     Private Sub OnRemoveHeadPart(sender As Object, e As EventArgs)
         If ListViewHeadParts.SelectedItems.Count = 0 Then Return
-        Dim tag = ListViewHeadParts.SelectedItems(0).Tag
-        If tag Is Nothing OrElse Not (TypeOf tag Is UInteger) Then Return
-        Dim fid = CUInt(tag)
+        Dim tag = TryCast(ListViewHeadParts.SelectedItems(0).Tag, HeadPartRowTag)
+        If tag Is Nothing Then Return
+        ' Race defaults are read-only — they come from RACE.{Male,Female}HeadParts and aren't
+        ' part of NPC.HeadPartFormIDs. The user can override them via Add (which will replace
+        ' the default in the merge) but can't outright "remove" them from this view.
+        If tag.IsRaceDefault Then Return
         Dim p = Preset
-        Dim idx = p.HeadPartFormIDs.IndexOf(fid)
+        Dim idx = p.HeadPartFormIDs.IndexOf(tag.FormID)
         If idx < 0 Then Return
         p.HeadPartFormIDs.RemoveAt(idx)
         RefreshHeadPartsList()
@@ -896,6 +948,11 @@ Public Class EditFace_Form
         Try
             ListViewTints.Items.Clear()
             Dim p = Preset
+            ' Apply filter (group / layer name / slot, case-insensitive substring). Empty string
+            ' disables the filter and shows everything. Filtering happens at row-build time so the
+            ' Tag still maps cleanly to the original index in p.FaceTintLayers — selecting a
+            ' filtered row goes through the same OnTintSelectionChanged / OnRemoveTint code path.
+            Dim filter As String = TextBoxTintFilter.Text.Trim()
             ' Display in RACE-Group order (the same order the compositor uses), tied-broken by
             ' the layer's original position in p.FaceTintLayers so two layers with the same
             ' Index keep a stable relative order. The Tag still points at the original index in
@@ -912,9 +969,18 @@ Public Class EditFace_Form
                 ToList()
             For Each entry In ordered
                 Dim tl = entry.Layer
-                Dim row As New ListViewItem(DescribeTintGroup(tl))
-                row.SubItems.Add(DescribeTintSlot(tl))
-                row.SubItems.Add(DescribeTintLayer(tl))
+                Dim grp = DescribeTintGroup(tl)
+                Dim slot = DescribeTintSlot(tl)
+                Dim layerName = DescribeTintLayer(tl)
+                If filter.Length > 0 _
+                   AndAlso grp.IndexOf(filter, StringComparison.OrdinalIgnoreCase) < 0 _
+                   AndAlso slot.IndexOf(filter, StringComparison.OrdinalIgnoreCase) < 0 _
+                   AndAlso layerName.IndexOf(filter, StringComparison.OrdinalIgnoreCase) < 0 Then
+                    Continue For
+                End If
+                Dim row As New ListViewItem(grp)
+                row.SubItems.Add(slot)
+                row.SubItems.Add(layerName)
                 row.SubItems.Add(DescribeTintColor(tl))
                 row.SubItems.Add(tl.Value.ToString(CultureInfo.InvariantCulture))
                 row.Tag = entry.OriginalIdx
@@ -977,7 +1043,6 @@ Public Class EditFace_Form
                 ButtonTintCustomRGB.Enabled = False
                 TrackBarTintPercent.Enabled = False
                 PanelTintColorSwatch.BackColor = SystemColors.Control
-                LabelTintPercentValue.Text = "—"
                 Return
             End If
             Dim tl = p.FaceTintLayers(_currentTintIndex)
@@ -1040,8 +1105,7 @@ Public Class EditFace_Form
             PanelTintColorSwatch.BackColor = If(isPalette, tl.Color, SystemColors.Control)
 
             TrackBarTintPercent.Enabled = True
-            TrackBarTintPercent.Value = ClampInt(tl.Value, 0, 100)
-            LabelTintPercentValue.Text = tl.Value.ToString(CultureInfo.InvariantCulture)
+            TrackBarTintPercent.Value = tl.Value
         Finally
             _suspendEvents = False
         End Try
@@ -1101,10 +1165,9 @@ Public Class EditFace_Form
         Dim p = Preset
         If _currentTintIndex < 0 OrElse _currentTintIndex >= p.FaceTintLayers.Count Then Return
         Dim tl = p.FaceTintLayers(_currentTintIndex)
-        tl.Value = TrackBarTintPercent.Value
-        LabelTintPercentValue.Text = tl.Value.ToString(CultureInfo.InvariantCulture)
+        tl.Value = CInt(Math.Round(TrackBarTintPercent.Value))
         UpdateTintRowDisplay(_currentTintIndex)
-        _refresh?.Invoke(FaceRefreshScope.TexturesOnly)
+        ScheduleRefresh(FaceRefreshScope.TexturesOnly)
     End Sub
 
     Private Sub UpdateTintRowDisplay(idx As Integer)
@@ -1220,6 +1283,26 @@ Public Class EditFace_Form
         _refresh?.Invoke(FaceRefreshScope.TexturesOnly)
     End Sub
 
+    ''' <summary>Drop every tint layer with Value &lt;= 0. Save LM already filters these at
+    ''' write time (LooksmenuLoader.vb:502) so they never round-trip; this lets the user trim
+    ''' them ahead of time so the editor list is uncluttered. Idempotent — running twice does
+    ''' nothing the second time.</summary>
+    Private Sub OnRemoveZeroedTints(sender As Object, e As EventArgs)
+        Dim p = Preset
+        Dim removed As Integer = p.FaceTintLayers.RemoveAll(Function(tl) tl.Value <= 0)
+        If removed = 0 Then Return
+        _currentTintIndex = -1
+        RefreshTintsList()
+        _refresh?.Invoke(FaceRefreshScope.TexturesOnly)
+    End Sub
+
+    Private Sub OnTintFilterChanged(sender As Object, e As EventArgs)
+        ' Re-render the list with the new substring filter. _currentTintIndex still points at
+        ' the model layer, but the row may no longer be in the visible set — guard
+        ' OnTintSelectionChanged so it tolerates a missing row.
+        RefreshTintsList()
+    End Sub
+
     ' Layer reorder buttons removed: composition order is determined entirely by the RACE
     ' TintTemplateGroups Options order, both at render time (MainForm.vb:3014) and when the
     ' preset is saved to JSON (MainForm.vb:8952). User-driven Up/Down would have no effect on
@@ -1248,11 +1331,9 @@ Public Class EditFace_Form
         Try
             VertexMorphsPanel.Controls.Clear()
             _bidiBars.Clear()
-            _bidiLabels.Clear()
             For Each s In _groupSections
                 s.PresetListBox = Nothing
                 s.PresetIntensityBar = Nothing
-                s.PresetIntensityLabel = Nothing
             Next
             If _groupSections.Count = 0 Then
                 Dim empty As New Label() With {
@@ -1353,27 +1434,17 @@ Public Class EditFace_Form
         AddHandler list.SelectedIndexChanged, Sub(s, e) OnPresetListChanged(section)
         block.Controls.Add(list, 0, 0)
 
-        Dim intensityRow As New TableLayoutPanel() With {
-            .Dock = DockStyle.Top, .AutoSize = True,
-            .AutoSizeMode = AutoSizeMode.GrowAndShrink,
-            .ColumnCount = 2, .RowCount = 1, .Margin = New Padding(0, 4, 0, 0)}
-        intensityRow.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100.0F))
-        intensityRow.ColumnStyles.Add(New ColumnStyle(SizeType.Absolute, 60))
-        Dim bar As New TrackBar() With {
-            .Minimum = 0, .Maximum = 100, .TickFrequency = 10, .TickStyle = TickStyle.None,
-            .Dock = DockStyle.Fill, .AutoSize = False, .Height = 28, .Margin = New Padding(2)}
-        Dim val As New Label() With {
-            .Text = "0.00", .AutoSize = False, .Width = 60,
-            .TextAlign = ContentAlignment.MiddleRight,
-            .Anchor = AnchorStyles.Left Or AnchorStyles.Right}
+        Dim bar As New FO4_Base_Library.TinySliderTextBox() With {
+            .Minimum = 0R, .Maximum = 1R,
+            .DisplayFormat = "0.00%", .InputScale = 0.01R,
+            .SmallChange = 0.01R, .LargeChange = 0.1R,
+            .Dock = DockStyle.Top, .Height = 28, .Margin = New Padding(0, 4, 0, 0)}
         AddHandler bar.ValueChanged, Sub(s, e) OnPresetIntensityChanged(section)
-        intensityRow.Controls.Add(bar, 0, 0)
-        intensityRow.Controls.Add(val, 1, 0)
-        block.Controls.Add(intensityRow, 0, 1)
+        AddHandler bar.DragEnded, AddressOf OnSliderDragEnded
+        block.Controls.Add(bar, 0, 1)
 
         section.PresetListBox = list
         section.PresetIntensityBar = bar
-        section.PresetIntensityLabel = val
         Return block
     End Function
 
@@ -1390,46 +1461,38 @@ Public Class EditFace_Form
             .AutoSizeMode = AutoSizeMode.GrowAndShrink,
             .ColumnCount = 2, .RowCount = 2,
             .Margin = New Padding(0, 4, 0, 2)}
-        row.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100.0F))
-        row.ColumnStyles.Add(New ColumnStyle(SizeType.Absolute, 50))
+        row.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 50.0F))
+        row.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 50.0F))
         row.RowStyles.Add(New RowStyle(SizeType.AutoSize))
         row.RowStyles.Add(New RowStyle(SizeType.AutoSize))
 
-        ' Title row: a sub-table that spans both columns of the outer row, with min-name on the
-        ' left and max-name on the right, both flush to the slider edges below.
-        Dim titleRow As New TableLayoutPanel() With {
-            .Dock = DockStyle.Top, .AutoSize = True,
-            .AutoSizeMode = AutoSizeMode.GrowAndShrink,
-            .ColumnCount = 2, .RowCount = 1, .Margin = New Padding(0, 0, 0, 2)}
-        titleRow.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 50.0F))
-        titleRow.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 50.0F))
-        titleRow.RowStyles.Add(New RowStyle(SizeType.AutoSize))
+        ' Title row: min-name on the left, max-name on the right, both flush to the slider edges
+        ' below.
         Dim lblMin As New Label() With {.Text = minName, .AutoSize = False,
             .TextAlign = ContentAlignment.MiddleLeft, .Dock = DockStyle.Fill,
             .Margin = New Padding(0)}
         Dim lblMax As New Label() With {.Text = maxName, .AutoSize = False,
             .TextAlign = ContentAlignment.MiddleRight, .Dock = DockStyle.Fill,
             .Margin = New Padding(0)}
-        titleRow.Controls.Add(lblMin, 0, 0)
-        titleRow.Controls.Add(lblMax, 1, 0)
-        row.SetColumnSpan(titleRow, 2)
-        row.Controls.Add(titleRow, 0, 0)
+        row.Controls.Add(lblMin, 0, 0)
+        row.Controls.Add(lblMax, 1, 0)
 
-        Dim bar As New TrackBar() With {
-            .Minimum = -100, .Maximum = 100, .TickFrequency = 25, .TickStyle = TickStyle.None,
-            .AutoSize = False, .Height = 22, .Value = 0,
+        Dim bar As New FO4_Base_Library.TinySliderTextBox() With {
+            .Minimum = -1R, .Maximum = 1R,
+            .DisplayFormat = "0.00%", .InputScale = 0.01R,
+            .SmallChange = 0.01R, .LargeChange = 0.1R,
+            .FillMode = FO4_Base_Library.TinySliderFillMode.Center,
+            .Value = 0R,
+            .Height = 28,
             .Dock = DockStyle.Fill, .Margin = New Padding(0)}
-        Dim val As New Label() With {.Text = "0.00", .AutoSize = False,
-            .TextAlign = ContentAlignment.MiddleRight,
-            .Dock = DockStyle.Fill}
         Dim capturedIdx = key
         AddHandler bar.ValueChanged, Sub(s, e) OnBidiSliderChanged(capturedIdx)
+        AddHandler bar.DragEnded, AddressOf OnSliderDragEnded
 
+        row.SetColumnSpan(bar, 2)
         row.Controls.Add(bar, 0, 1)
-        row.Controls.Add(val, 1, 1)
 
         _bidiBars(key) = bar
-        _bidiLabels(key) = val
         Return row
     End Function
 
@@ -1472,18 +1535,14 @@ Public Class EditFace_Form
                         End If
                     Next
                     section.PresetListBox.SelectedIndex = activeIdx
-                    Dim barVal = ClampInt(CInt(Math.Round(activeWeight * 100.0F)), 0, 100)
-                    section.PresetIntensityBar.Value = barVal
-                    UpdateLabel(section.PresetIntensityLabel, activeWeight)
+                    section.PresetIntensityBar.Value = activeWeight
                 End If
                 For Each k In section.BidiKeys
                     Dim w As Single = 0
                     p.ChargenFaceMorphs.TryGetValue(k, w)
-                    Dim bar As TrackBar = Nothing
-                    Dim lbl As Label = Nothing
-                    If _bidiBars.TryGetValue(k, bar) AndAlso _bidiLabels.TryGetValue(k, lbl) Then
-                        bar.Value = ClampInt(CInt(Math.Round(w * 100.0F)), -100, 100)
-                        UpdateLabel(lbl, w)
+                    Dim bar As FO4_Base_Library.TinySliderTextBox = Nothing
+                    If _bidiBars.TryGetValue(k, bar) Then
+                        bar.Value = w
                     End If
                 Next
             Next
@@ -1496,18 +1555,16 @@ Public Class EditFace_Form
     ''' removes the entry so the JSON LM Save round-trip stays clean.</summary>
     Private Sub OnBidiSliderChanged(key As UInteger)
         If _suspendEvents Then Return
-        Dim bar As TrackBar = Nothing
+        Dim bar As FO4_Base_Library.TinySliderTextBox = Nothing
         If Not _bidiBars.TryGetValue(key, bar) Then Return
-        Dim v As Single = bar.Value / 100.0F
+        Dim v As Single = CSng(bar.Value)
         Dim p = Preset
         If Math.Abs(v) < 0.001F Then
             p.ChargenFaceMorphs.Remove(key)
         Else
             p.ChargenFaceMorphs(key) = v
         End If
-        Dim lbl As Label = Nothing
-        If _bidiLabels.TryGetValue(key, lbl) Then UpdateLabel(lbl, v)
-        _refresh?.Invoke(FaceRefreshScope.Morphs)
+        ScheduleRefresh(FaceRefreshScope.Morphs)
     End Sub
 
     ''' <summary>ListBox selection: drop ALL keys of this group's presets from the overlay,
@@ -1522,21 +1579,19 @@ Public Class EditFace_Form
         Next
         Dim sel = TryCast(section.PresetListBox.SelectedItem, PresetItem)
         If sel IsNot Nothing AndAlso sel.Index <> 0UI Then
-            Dim weight As Single = section.PresetIntensityBar.Value / 100.0F
+            Dim weight As Single = CSng(section.PresetIntensityBar.Value)
             If weight < 0.001F Then weight = 1.0F  ' default to full intensity on first selection
             p.ChargenFaceMorphs(sel.Index) = weight
             _suspendEvents = True
             Try
-                section.PresetIntensityBar.Value = ClampInt(CInt(Math.Round(weight * 100.0F)), 0, 100)
-                UpdateLabel(section.PresetIntensityLabel, weight)
+                section.PresetIntensityBar.Value = weight
             Finally
                 _suspendEvents = False
             End Try
         Else
             _suspendEvents = True
             Try
-                section.PresetIntensityBar.Value = 0
-                UpdateLabel(section.PresetIntensityLabel, 0.0F)
+                section.PresetIntensityBar.Value = 0R
             Finally
                 _suspendEvents = False
             End Try
@@ -1550,15 +1605,14 @@ Public Class EditFace_Form
         If _suspendEvents Then Return
         Dim sel = TryCast(section.PresetListBox?.SelectedItem, PresetItem)
         If sel Is Nothing OrElse sel.Index = 0UI Then Return
-        Dim v As Single = section.PresetIntensityBar.Value / 100.0F
+        Dim v As Single = CSng(section.PresetIntensityBar.Value)
         Dim p = Preset
         If Math.Abs(v) < 0.001F Then
             p.ChargenFaceMorphs.Remove(sel.Index)
         Else
             p.ChargenFaceMorphs(sel.Index) = v
         End If
-        UpdateLabel(section.PresetIntensityLabel, v)
-        _refresh?.Invoke(FaceRefreshScope.Morphs)
+        ScheduleRefresh(FaceRefreshScope.Morphs)
     End Sub
 
     ' =====================================================================
@@ -1585,7 +1639,6 @@ Public Class EditFace_Form
     Private Sub BuildBoneRegionsUI()
         BoneRegionsContainer.Controls.Clear()
         _regionBars.Clear()
-        _regionLabels.Clear()
 
         Dim regionsFile = MainForm.GetFacialBoneRegionsForRace(_race, _isFemale)
         If regionsFile Is Nothing OrElse regionsFile.Regions Is Nothing OrElse regionsFile.Regions.Count = 0 Then
@@ -1640,29 +1693,28 @@ Public Class EditFace_Form
         Const RowHeight As Integer = 22
         Dim group As New GroupBox() With {
             .Text = rd.Name,
-            .Width = 230, .Height = 270,
+            .Width = 270, .Height = 265,
             .Margin = New Padding(4),
             .Padding = New Padding(6)}
         Dim tip As New ToolTip()
         tip.SetToolTip(group, $"FMRI Index: 0x{rd.ID:X8}")
 
-        Dim bars(6) As TrackBar
-        Dim lbls(6) As Label
+        Dim bars(6) As FO4_Base_Library.TinySliderTextBox
 
         Dim layout As New TableLayoutPanel() With {
-            .Dock = DockStyle.Fill, .ColumnCount = 3, .RowCount = 11}
+            .Dock = DockStyle.Fill, .ColumnCount = 2, .RowCount = 10}
         layout.ColumnStyles.Add(New ColumnStyle(SizeType.Absolute, 24))
         layout.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100.0F))
-        layout.ColumnStyles.Add(New ColumnStyle(SizeType.Absolute, 38))
-        For r = 0 To 10
+        For r = 0 To 9
             layout.RowStyles.Add(New RowStyle(SizeType.AutoSize))
         Next
 
         Dim addHeader = Sub(text As String, row As Integer)
-                            Dim h As New Label() With {.Text = text, .AutoSize = True,
+                            Dim h As New Label() With {.Text = text, .AutoSize = False,
                                 .Font = New Font(Font, FontStyle.Bold),
-                                .Anchor = AnchorStyles.Left}
-                            layout.SetColumnSpan(h, 3)
+                                .Dock = DockStyle.Fill,
+                                .TextAlign = ContentAlignment.MiddleCenter}
+                            layout.SetColumnSpan(h, 2)
                             layout.Controls.Add(h, 0, row)
                         End Sub
 
@@ -1673,24 +1725,22 @@ Public Class EditFace_Form
                              ' LerpFmrs (MainForm.vb:5447) maps -1 → minima, 0 → no delta,
                              ' +1 → maxima. NPC values in vanilla land between -1 and +1 directly,
                              ' not 0..1 lerped around 0.5. Slider must mirror that exactly.
-                             Dim bar As New TrackBar() With {.Minimum = -100, .Maximum = 100,
-                                 .TickFrequency = 25, .TickStyle = TickStyle.None,
-                                 .AutoSize = False, .Height = RowHeight, .Value = 0,
+                             Dim bar As New FO4_Base_Library.TinySliderTextBox() With {.Minimum = -1R, .Maximum = 1R,
+                                 .DisplayFormat = "0.00%", .InputScale = 0.01R,
+                                 .SmallChange = 0.01R, .LargeChange = 0.1R,
+                                 .FillMode = FO4_Base_Library.TinySliderFillMode.Center,
+                                 .Height = RowHeight, .Value = 0R,
                                  .Dock = DockStyle.Fill, .Margin = New Padding(0)}
-                             Dim val As New Label() With {.Text = "0.00", .AutoSize = False, .Width = 38,
-                                 .TextAlign = ContentAlignment.MiddleRight,
-                                 .Anchor = AnchorStyles.Left Or AnchorStyles.Right}
                              Dim regId = rd.ID
                              Dim compIdx = componentIdx
                              AddHandler bar.ValueChanged, Sub(s, e) OnRegionSliderChanged(regId, compIdx)
+                             AddHandler bar.DragEnded, AddressOf OnSliderDragEnded
                              AddHandler resetBtn.Click, Sub(s, e)
                                                             bar.Value = 0
                                                         End Sub
                              layout.Controls.Add(resetBtn, 0, row)
                              layout.Controls.Add(bar, 1, row)
-                             layout.Controls.Add(val, 2, row)
                              bars(componentIdx) = bar
-                             lbls(componentIdx) = val
                          End Sub
 
         addHeader("Position", 0)
@@ -1708,7 +1758,6 @@ Public Class EditFace_Form
 
         group.Controls.Add(layout)
         _regionBars(rd.ID) = bars
-        _regionLabels(rd.ID) = lbls
         Return group
     End Function
 
@@ -1722,13 +1771,11 @@ Public Class EditFace_Form
             For Each kv In _regionBars
                 Dim regId = kv.Key
                 Dim bars = kv.Value
-                Dim lbls = _regionLabels(regId)
                 Dim arr As Single() = Nothing
                 p.FaceBoneRegions.TryGetValue(regId, arr)
                 For i = 0 To 6
                     Dim v As Single = If(arr IsNot Nothing AndAlso i < arr.Length, arr(i), 0.0F)
-                    bars(i).Value = ClampInt(CInt(Math.Round(v * 100.0F)), -100, 100)
-                    UpdateLabel(lbls(i), v)
+                    bars(i).Value = v
                 Next
             Next
         Finally
@@ -1744,9 +1791,7 @@ Public Class EditFace_Form
     Private Sub OnRegionSliderChanged(regionId As UInteger, componentIdx As Integer)
         If _suspendEvents Then Return
         Dim bars = _regionBars(regionId)
-        Dim lbls = _regionLabels(regionId)
-        Dim v As Single = bars(componentIdx).Value / 100.0F
-        UpdateLabel(lbls(componentIdx), v)
+        Dim v As Single = CSng(bars(componentIdx).Value)
 
         Dim p = Preset
         Dim arr As Single() = Nothing
@@ -1773,7 +1818,7 @@ Public Class EditFace_Form
         Else
             p.FaceBoneRegions(regionId) = arr
         End If
-        _refresh?.Invoke(FaceRefreshScope.Pose)
+        ScheduleRefresh(FaceRefreshScope.Pose)
     End Sub
 
     Private Shared Function NewDefaultRegionValues() As Single()
@@ -1789,10 +1834,39 @@ Public Class EditFace_Form
 
     Private Sub OnFminChanged(sender As Object, e As EventArgs)
         If _suspendEvents Then Return
-        Dim v As Single = TrackBarFmin.Value / 100.0F
+        Dim v As Single = CSng(TrackBarFmin.Value)
         Preset.FacialMorphIntensity = v
-        UpdateLabel(LabelFminValue, v)
-        _refresh?.Invoke(FaceRefreshScope.Pose)
+        ScheduleRefresh(FaceRefreshScope.Pose)
+    End Sub
+
+    ''' <summary>Mark a scope as pending and start the throttle timer. Multiple distinct scopes
+    ''' across slider events accumulate; FlushRefresh emits one _refresh invocation per scope.</summary>
+    Private Sub ScheduleRefresh(scope As FaceRefreshScope)
+        _pendingScopes.Add(scope)
+        If Not _refreshTimer.Enabled Then _refreshTimer.Start()
+    End Sub
+
+    ''' <summary>Force-flush every pending scope immediately. Bound to slider DragEnded so
+    ''' releasing the mouse always shows the final preview without waiting for the timer.</summary>
+    Private Sub FlushRefresh()
+        If _pendingScopes.Count > 0 Then
+            ' Snapshot then clear before invoking — _refresh callbacks may take a while and we
+            ' don't want a re-entrant ScheduleRefresh during invoke to be lost or double-fired.
+            Dim scopes = _pendingScopes.ToList()
+            _pendingScopes.Clear()
+            For Each s In scopes
+                _refresh?.Invoke(s)
+            Next
+        End If
+        _refreshTimer.Stop()
+    End Sub
+
+    Private Sub RefreshTimer_Tick(sender As Object, e As EventArgs) Handles _refreshTimer.Tick
+        FlushRefresh()
+    End Sub
+
+    Private Sub OnSliderDragEnded(sender As Object, e As EventArgs)
+        FlushRefresh()
     End Sub
 
     ' =====================================================================
@@ -1888,9 +1962,7 @@ Public Class EditFace_Form
         p.FacialMorphIntensity = If(src IsNot Nothing, src.FacialMorphIntensity, 1.0F)
         _suspendEvents = True
         Try
-            TrackBarFmin.Value = ClampInt(CInt(Math.Round(p.FacialMorphIntensity * 100.0F)),
-                                          TrackBarFmin.Minimum, TrackBarFmin.Maximum)
-            UpdateLabel(LabelFminValue, p.FacialMorphIntensity)
+            TrackBarFmin.Value = p.FacialMorphIntensity
         Finally
             _suspendEvents = False
         End Try
@@ -1917,13 +1989,18 @@ Public Class EditFace_Form
         Close()
     End Sub
 
+    Protected Overrides Sub OnFormClosed(e As FormClosedEventArgs)
+        ' Flush any in-flight throttled refresh so closing doesn't leave a deferred render
+        ' hanging, then stop the timer so its tick doesn't fire on a disposed form.
+        FlushRefresh()
+        _refreshTimer.Stop()
+        _refreshTimer.Dispose()
+        MyBase.OnFormClosed(e)
+    End Sub
+
     ' =====================================================================
     ' Helpers
     ' =====================================================================
-
-    Private Shared Sub UpdateLabel(lbl As Label, value As Single)
-        lbl.Text = value.ToString("F2", CultureInfo.InvariantCulture)
-    End Sub
 
     Private Shared Function ClampInt(v As Integer, lo As Integer, hi As Integer) As Integer
         If v < lo Then Return lo

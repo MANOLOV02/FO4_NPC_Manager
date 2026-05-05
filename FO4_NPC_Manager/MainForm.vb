@@ -383,6 +383,12 @@ Public Class MainForm
         Public HairColorFormID As UInteger
         Public FacialHairColorFormID As UInteger
         Public HasTextureLighting As Boolean
+        ''' <summary>QNAM RGBA. Alpha is the body SoftLight intensity (vanilla = 1.0 by convention,
+        ''' synced with the slot-12 SkinTone tint layer's Value). When the editor mutates slot-12
+        ''' Value or Color, ResolveNpcSkinToneColor packs the new (Color, Value/100) back here so
+        ''' face and body stay symmetric — the engine itself reads QNAM.A as the body softlight
+        ''' opacity (wbDefinitionsFO4.pas:10776 wbFloatRGBA QNAM 'Texture lighting'), so this
+        ''' preserves engine-fidelity while reflecting the user's edit.</summary>
         Public TextureLightingColor As Color = Color.Empty
         Public HeadPartFormIDs As New List(Of UInteger)
         Public LoadoutArmorFormIDs As New List(Of UInteger)
@@ -3484,9 +3490,27 @@ Public Class MainForm
         If model Is Nothing OrElse model.meshes Is Nothing Then Return
 
         Dim qnam = state.TextureLightingColor
-        Dim qR As Single = CSng(qnam.R) / 255.0F
-        Dim qG As Single = CSng(qnam.G) / 255.0F
-        Dim qB As Single = CSng(qnam.B) / 255.0F
+
+        ' QNAM is RGBA — the alpha channel is the body SoftLight opacity. Vanilla NPCs ship
+        ' with alpha=1.0 (byte 255) by convention, synced to the slot-12 SkinTone tint layer's
+        ' Value. When the editor lowers slot-12 %, ResolveNpcSkinToneColor packs the new %
+        ' back here as alpha so face compositor and body SoftLight stay in lockstep.
+        '
+        ' Attenuation: lerp QNAM toward neutral grey (0.5,0.5,0.5) by (1 - alpha). SoftLight
+        ' against neutral grey is a no-op, so alpha=0 leaves the body diffuse untouched and
+        ' alpha=1 applies the full QNAM softlight. Mirror the face compositor's zero-opacity
+        ' early-out (line 3106): when alpha is effectively 0 we skip the body pass entirely so
+        ' face and body both reveal the pristine diffuse exactly — no shader rounding artefacts.
+        Dim t As Single = Math.Max(0.0F, Math.Min(1.0F, CSng(qnam.A) / 255.0F))
+        If t <= 0.001F Then
+            NpcPreviewLog.LogLazy(Function() $"  [BODYSKIN] zero-opacity early-out (qnam.A={qnam.A}); body keeps pristine diffuse")
+            Return
+        End If
+
+        Const NeutralGrey As Single = 0.5F
+        Dim qR As Single = NeutralGrey + (CSng(qnam.R) / 255.0F - NeutralGrey) * t
+        Dim qG As Single = NeutralGrey + (CSng(qnam.G) / 255.0F - NeutralGrey) * t
+        Dim qB As Single = NeutralGrey + (CSng(qnam.B) / 255.0F - NeutralGrey) * t
 
         ' BlendOp matches the face slot 12 path: SoftLight (Photoshop / W3C SVG) so the
         ' two meshes use the same compositing operation against the same colour.
@@ -7963,6 +7987,12 @@ Public Class MainForm
     ''' TemplateColorIndex, the colour comes from the CLFM referenced by TTEC[TemplateColorIndex];
     ''' otherwise the colour is taken directly from TEND RGB bytes 1..3. Returns Nothing when the
     ''' NPC has no SkinTone layer or the RACE template / CLFM lookup fails.</summary>
+    ''' <summary>Look up the NPC's slot-12 SkinTone tint layer and pack its effective colour as
+    ''' RGB plus its <c>tl.Value</c> intensity as the alpha channel. This mirrors the QNAM record's
+    ''' RGBA layout (wbDefinitionsFO4.pas:10776), so the body SoftLight pass can read alpha as the
+    ''' opacity factor — the same way the engine does. When the editor mutates slot-12, the new
+    ''' colour and percent both flow through here in a single QNAM-shaped blob; face compositor
+    ''' uses tl.Value directly while body reads alpha, both staying in lockstep.</summary>
     Private Function ResolveNpcSkinToneColor(state As NPCVisualState) As Nullable(Of Color)
         If state Is Nothing Then Return Nothing
         Dim modelNpcFormID = If(state.ModelSourceFormID <> 0UI, state.ModelSourceFormID, state.FormID)
@@ -7982,7 +8012,13 @@ Public Class MainForm
             ' Use the same resolver the compositor uses so body uniform and face compositor
             ' agree on the colour. The blendOp returned here is irrelevant for the body path.
             Dim resolved = ResolvePaletteLayerEffective(tl, opt)
-            If resolved.Color <> Color.Empty Then Return resolved.Color
+            If resolved.Color <> Color.Empty Then
+                ' Pack tl.Value (0..100) as the alpha byte (0..255) — same shape as QNAM RGBA.
+                ' Body SoftLight reads .A; face compositor reads tl.Value directly. Both stay
+                ' in sync because they trace back to the same source: the slot-12 layer's Value.
+                Dim alphaByte As Integer = Math.Max(0, Math.Min(255, CInt(Math.Round(CSng(tl.Value) * 2.55F))))
+                Return Color.FromArgb(alphaByte, resolved.Color.R, resolved.Color.G, resolved.Color.B)
+            End If
         Next
 
         Return Nothing

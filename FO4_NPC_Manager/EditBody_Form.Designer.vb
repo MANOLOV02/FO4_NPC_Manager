@@ -153,13 +153,12 @@ Partial Class EditBody_Form
         GroupBoxMrsv.AutoSizeMode = System.Windows.Forms.AutoSizeMode.GrowAndShrink
         GroupBoxMrsv.Controls.Add(MrsvLayout)
         '
-        ' MrsvLayout — populated dynamically with 5 (Label, TrackBar, ValueLabel) rows.
+        ' MrsvLayout — populated dynamically with 5 (Label, slider) rows.
         '
         MrsvLayout.Dock = System.Windows.Forms.DockStyle.Fill
-        MrsvLayout.ColumnCount = 3
+        MrsvLayout.ColumnCount = 2
         MrsvLayout.ColumnStyles.Add(New System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.AutoSize))
         MrsvLayout.ColumnStyles.Add(New System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 100.0F))
-        MrsvLayout.ColumnStyles.Add(New System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.AutoSize))
         MrsvLayout.RowCount = 5
         MrsvLayout.RowStyles.Add(New System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.AutoSize))
         MrsvLayout.RowStyles.Add(New System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.AutoSize))
