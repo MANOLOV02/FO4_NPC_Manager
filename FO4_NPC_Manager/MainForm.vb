@@ -10,20 +10,6 @@ Imports NiflySharp.Blocks
 
 Public Class MainForm
 
-    ''' <summary>Two-step skin tint experiment. When True:
-    '''   - Face: slot 12 SkinTone is composited as a normal Palette layer (with its authored
-    '''     SoftLight blendOp from TTEC) instead of being skipped. The render shader still
-    '''     multiplies by material.SkinTintColor afterwards (slot 12 RGB), so the final pixel
-    '''     becomes softlight(base, slot12) * slot12.
-    '''   - Body: a one-shot SoftLight pre-pass paints QNAM RGB onto the body diffuse before
-    '''     render. Render still multiplies by material.SkinTintColor (QNAM RGB), so the
-    '''     final pixel becomes softlight(base, qnam) * qnam — symmetric with face.
-    ''' When False: legacy behaviour. Slot 12 is skipped on the face, body gets only the
-    ''' render-shader uniform multiply. Use this flag to A/B compare without recompiling
-    ''' material code.</summary>
-    Private Const ENABLE_TWO_STEP_SKIN_TINT As Boolean = True
-
-
     Private ReadOnly _pluginManager As PluginManager
     Private _allNPCs As New List(Of NPC_Data)
     Private _previewControl As PreviewControl
@@ -53,10 +39,9 @@ Public Class MainForm
 
     ' Deferred face tint application — the texture cache is async (Render.vb queues uploads
     ' and processes them per-frame), so when ApplyFaceTintOverlay runs right after RenderShapes
-    ' the face diffuse texture may not be in Textures_Dictionary yet. We poll on this timer
-    ' until it appears, then bake the tints once and stop the timer.
-    Private WithEvents _pendingTintTimer As New System.Windows.Forms.Timer With {.Interval = 120}
-    Private _pendingTintState As NPCVisualState = Nothing
+    ' the face diffuse texture may not be in Textures_Dictionary yet. The polling timer plus
+    ' its state and attempts counter live on _renderHost so the editor previews (future phase)
+    ' can run their own deferral without stomping the main preview.
 
     ''' <summary>Process-lifetime cache of every face-tint DDS byte buffer we have ever pulled
     ''' from the FilesDictionary. Keyed by the normalized "textures\..." path. A Nothing entry
@@ -66,41 +51,8 @@ Public Class MainForm
     ''' <see cref="ClearFaceTintCaches"/> when the FilesDictionary is rebuilt.</summary>
     Private ReadOnly _tintBytesCache As New Dictionary(Of String, Byte())(StringComparer.OrdinalIgnoreCase)
 
-    ''' <summary>Process-lifetime cache of decoded DDS → GL textures keyed by the same
-    ''' normalized path used by <see cref="_tintBytesCache"/>. Lives in the library
-    ''' (<see cref="FaceTintTextureCache"/>) because the entries hold GL texture IDs that the
-    ''' compositor would otherwise allocate-and-delete every call. Invalidate together with
-    ''' <see cref="_tintBytesCache"/> via <see cref="ClearFaceTintCaches"/>.</summary>
-    Private ReadOnly _tintGpuCache As New FaceTintTextureCache()
-
-    ''' <summary>Pristine *decoded* pixel bytes (RGBA8) of every face/body diffuse the
-    ''' compositor is going to mutate, plus the dimensions and GL format constants needed to
-    ''' upload them again. Stored in CPU memory so each live tint refresh can re-upload
-    ''' directly via <c>glTexImage2D</c> — no DDS re-decompress, no extra GPU texture kept
-    ''' alive, no CopyImageSubData. The on-disk DDS is BC3/BC7 which costs tens of ms per
-    ''' face/body diffuse to decode; uploading already-decoded bytes is single-digit ms.
-    '''
-    ''' Captured the first time the compositor / SoftLight pass runs against a path. We hook
-    ''' into the per-path entry point and do one decode-and-stash before letting the
-    ''' compositor proceed. Every subsequent refresh skips the decode entirely.
-    '''
-    ''' Cleared on NPC change (different race / skin TXST = different paths) and on
-    ''' FilesDictionary rebuild (BA2 mount/unmount).</summary>
-    Private ReadOnly _pristineDiffusePixels As New Dictionary(Of String, PristinePixels)(StringComparer.OrdinalIgnoreCase)
-
-    Private NotInheritable Class PristinePixels
-        ''' <summary>Decoded BGRA8 pixel bytes of the level-0 mip (Width * Height * 4). Order is
-        ''' B,G,R,A in memory because the source is DirectXTexWrapperCLI.Loader.ConvertForBitmap,
-        ''' which produces the GDI Format32bppArgb layout. Upload with PixelFormat.Bgra (NOT Rgba)
-        ''' so the GL driver swizzles correctly.</summary>
-        Public Pixels As Byte()
-        Public Width As Integer
-        Public Height As Integer
-        Public DGXFormat_Original As Integer
-        Public DGXFormat_Final As Integer
-    End Class
-    Private _pendingTintAttempts As Integer = 0
-    Private Const PendingTintMaxAttempts As Integer = 60   ' 60 × 120ms = ~7.2s upper bound
+    ' _renderHost.TintGpuCache, _renderHost.PristineDiffusePixels and the PristinePixels nested class moved to
+    ' NpcRenderHost so each preview surface owns its own caches.
 
     ' xEdit wbDefinitionsFO4.pas:7365-7372 mapea HDPT.DATA flags POR POSICIÓN del array
     ' wbFlags, no por el valor en los comentarios `{0x...}`. Posiciones reales:
@@ -195,6 +147,10 @@ Public Class MainForm
         Public DisplayName As String = ""
         Public State As NPCVisualState
         Public UseFaceGen As Boolean
+        ''' <summary>When True, <see cref="CollectMeshCandidates"/> skips Skin and Outfit
+        ''' (only HeadParts enter the pipeline). Same mechanism the MainForm "Only Face"
+        ''' PreviewMode triggers; the editor host sets this True for its renders.</summary>
+        Public OnlyFaceCollect As Boolean = False
         Public ReadOnly Warnings As New List(Of String)
     End Class
 
@@ -296,7 +252,7 @@ Public Class MainForm
         Headwear = 7
     End Enum
 
-    Private Class PreviewResolutionResult
+    Friend Class PreviewResolutionResult
         Public ReadOnly Shapes As New List(Of IRenderableShape)
         Public SkeletonKey As String = ""
         Public ReadOnly Warnings As New List(Of String)
@@ -367,7 +323,7 @@ Public Class MainForm
         Public ObjectTemplateOMODFormIDs As New List(Of UInteger)
     End Class
 
-    Private Class NPCVisualState
+    Friend Class NPCVisualState
         Public FormID As UInteger
         Public RootNpcFormID As UInteger
         Public TraitsSourceFormID As UInteger
@@ -415,8 +371,9 @@ Public Class MainForm
     End Property
 
     Private Sub ComboBoxPreviewMode_SelectedIndexChanged(sender As Object, e As EventArgs) Handles ComboBoxPreviewMode.SelectedIndexChanged
+        If _renderHost Is Nothing Then Return
         ' Re-render the currently selected node with new preview mode
-        If _currentBaseState Is Nothing Then Return
+        If _renderHost.CurrentBaseState Is Nothing Then Return
         Dim requestVersion = Interlocked.Increment(_previewRequestVersion)
         RenderOnDemandAsync(requestVersion)
     End Sub
@@ -432,7 +389,9 @@ Public Class MainForm
     ''' Nothing would make the resolver's "If pose IsNot Nothing" guard skip the reset
     ''' and leave the previous deltas pegged on the SkeletonDictionary.</summary>
     Private Sub CheckBoxApplyBoneMorphs_CheckedChanged(sender As Object, e As EventArgs) Handles CheckBoxApplyBoneMorphs.CheckedChanged
+        If _renderHost Is Nothing Then Return
         NpcPreviewLog.LogLazy(Function() $"  [FMRS-TOGGLE] fired checked={CheckBoxApplyBoneMorphs.Checked}")
+        _renderHost.Toggles = RenderToggles.FromMainCheckBoxes(Me)
         RebuildAndApplyMergedPose()
     End Sub
 
@@ -459,16 +418,18 @@ Public Class MainForm
     ''' independently by CheckBoxBodyTri. The composite is rebuilt every time so the granular
     ''' gates inside (face=this checkbox, body=CheckBoxBodyTri) reflect the latest state.</summary>
     Private Sub CheckBoxApplyVertexMorphs_CheckedChanged(sender As Object, e As EventArgs) Handles CheckBoxApplyVertexMorphs.CheckedChanged
+        If _renderHost Is Nothing Then Return
         NpcPreviewLog.LogLazy(Function() $"  [FACE-VERTEX-MORPH-TOGGLE] fired checked={CheckBoxApplyVertexMorphs.Checked}")
-        If _lastRenderedState Is Nothing OrElse _lastRenderData Is Nothing Then
-            NpcPreviewLog.LogLazy(Function() $"  [FACE-VERTEX-MORPH-TOGGLE] ABORT — _lastRenderedState or _lastRenderData is Nothing")
+        _renderHost.Toggles = RenderToggles.FromMainCheckBoxes(Me)
+        If _renderHost.LastRenderedState Is Nothing OrElse _renderHost.LastRenderData Is Nothing Then
+            NpcPreviewLog.LogLazy(Function() $"  [FACE-VERTEX-MORPH-TOGGLE] ABORT — _renderHost.LastRenderedState or _renderHost.LastRenderData is Nothing")
             Return
         End If
-        Dim newResolver = BuildCompositeMorphResolver(_lastRenderedState, _lastRenderData)
+        Dim newResolver = BuildCompositeMorphResolver(_renderHost.LastRenderedState, _renderHost.LastRenderData)
         NpcPreviewLog.LogLazy(Function() $"  [FACE-VERTEX-MORPH-TOGGLE] new resolver = {If(newResolver IsNot Nothing, "SET", "Nothing")}")
         Dim intent = _previewControl.Intent
         intent.MorphResolver = newResolver
-        intent.MarkDirty(RenderDirtyFlags.Morphs, _lastRenderData.Shapes)
+        intent.MarkDirty(RenderDirtyFlags.Morphs, _renderHost.LastRenderData.Shapes)
         _previewControl.InvalidateRender()
     End Sub
 
@@ -483,7 +444,9 @@ Public Class MainForm
     ''' <summary>Toggle body-weight pose (MWGT × BSMS + MRSV + ARMA sculpt H3). Triggers granular
     ''' MarkDirty(Pose) — no full reload.</summary>
     Private Sub CheckBoxApplyBodyWeight_CheckedChanged(sender As Object, e As EventArgs) Handles CheckBoxApplyBodyWeight.CheckedChanged
+        If _renderHost Is Nothing Then Return
         NpcPreviewLog.LogLazy(Function() $"  [BODY-WEIGHT-TOGGLE] fired checked={CheckBoxApplyBodyWeight.Checked}")
+        _renderHost.Toggles = RenderToggles.FromMainCheckBoxes(Me)
         RebuildAndApplyMergedPose()
     End Sub
 
@@ -493,14 +456,16 @@ Public Class MainForm
     ''' Off = engine reads NifLocalVertices unmorphed for the body shape; face FRTRI003 morphs
     ''' still apply (separate resolver in the composite).</summary>
     Private Sub CheckBoxBodyTri_CheckedChanged(sender As Object, e As EventArgs) Handles CheckBoxBodyTri.CheckedChanged
+        If _renderHost Is Nothing Then Return
         NpcPreviewLog.LogLazy(Function() $"  [BODY-TRI-TOGGLE] fired checked={CheckBoxBodyTri.Checked}")
-        If _lastRenderedState Is Nothing OrElse _lastRenderData Is Nothing Then Return
+        _renderHost.Toggles = RenderToggles.FromMainCheckBoxes(Me)
+        If _renderHost.LastRenderedState Is Nothing OrElse _renderHost.LastRenderData Is Nothing Then Return
         ' Independent of CheckBoxApplyVertexMorphs (face). Composite always rebuilt; the gates
         ' inside (face=CheckBoxApplyVertexMorphs, body=this) decide what each subsection emits.
-        Dim newResolver = BuildCompositeMorphResolver(_lastRenderedState, _lastRenderData)
+        Dim newResolver = BuildCompositeMorphResolver(_renderHost.LastRenderedState, _renderHost.LastRenderData)
         Dim intent = _previewControl.Intent
         intent.MorphResolver = newResolver
-        intent.MarkDirty(RenderDirtyFlags.Morphs, _lastRenderData.Shapes)
+        intent.MarkDirty(RenderDirtyFlags.Morphs, _renderHost.LastRenderData.Shapes)
         _previewControl.InvalidateRender()
     End Sub
 
@@ -509,7 +474,9 @@ Public Class MainForm
     ''' the base skeleton (no SCLP amplifier). Diagnostic toggle to compare A/B with vs without
     ''' sculpt on the same NPC.</summary>
     Private Sub CheckBoxApplySculpt_CheckedChanged(sender As Object, e As EventArgs) Handles CheckBoxApplySculpt.CheckedChanged
+        If _renderHost Is Nothing Then Return
         NpcPreviewLog.LogLazy(Function() $"  [SCULPT-TOGGLE] fired checked={CheckBoxApplySculpt.Checked}")
+        _renderHost.Toggles = RenderToggles.FromMainCheckBoxes(Me)
         RebuildAndApplyMergedPose()
     End Sub
 
@@ -518,8 +485,10 @@ Public Class MainForm
     ''' y poder detectar visualmente bugs del SCLP. Requiere full re-render porque cambia el
     ''' set de shapes cargados, no sólo poses.</summary>
     Private Sub CheckBoxRenderArmor_CheckedChanged(sender As Object, e As EventArgs) Handles CheckBoxRenderArmor.CheckedChanged
+        If _renderHost Is Nothing Then Return
         NpcPreviewLog.LogLazy(Function() $"  [RENDER-ARMOR-TOGGLE] fired checked={CheckBoxRenderArmor.Checked}")
-        ApplyRenderToggleVisibility()
+        _renderHost.Toggles = RenderToggles.FromMainCheckBoxes(Me)
+        _renderHost.ApplyRenderToggleVisibility()
     End Sub
 
     ''' <summary>Toggle "Render underarmor". OFF oculta la ropa underarmor (Outfit con BODY/[U])
@@ -527,16 +496,20 @@ Public Class MainForm
     ''' el body skin / naked hands subyacentes — replica el efecto in-game `unequipall`.
     ''' Independiente de "Render armor [A]".</summary>
     Private Sub CheckBoxRenderUnderarmor_CheckedChanged(sender As Object, e As EventArgs) Handles CheckBoxRenderUnderarmor.CheckedChanged
+        If _renderHost Is Nothing Then Return
         NpcPreviewLog.LogLazy(Function() $"  [RENDER-UNDERARMOR-TOGGLE] fired checked={CheckBoxRenderUnderarmor.Checked}")
-        ApplyRenderToggleVisibility()
+        _renderHost.Toggles = RenderToggles.FromMainCheckBoxes(Me)
+        _renderHost.ApplyRenderToggleVisibility()
     End Sub
 
     ''' <summary>Toggle "Render body". OFF oculta el NPC desnudo: body skin (Kind=Skin con BODY,
     ''' que en FO4 cubre torso+piernas+pies), naked hands (Skin con bits hand) y head parts.
     ''' Deja sólo outfits/armor visibles — útil para revisar la silueta de la ropa sola.</summary>
     Private Sub CheckBoxRenderBody_CheckedChanged(sender As Object, e As EventArgs) Handles CheckBoxRenderBody.CheckedChanged
+        If _renderHost Is Nothing Then Return
         NpcPreviewLog.LogLazy(Function() $"  [RENDER-BODY-TOGGLE] fired checked={CheckBoxRenderBody.Checked}")
-        ApplyRenderToggleVisibility()
+        _renderHost.Toggles = RenderToggles.FromMainCheckBoxes(Me)
+        _renderHost.ApplyRenderToggleVisibility()
     End Sub
 
     ''' <summary>Toggle "Render headwear". OFF oculta cualquier prenda de cabeza/cara (helmets,
@@ -544,8 +517,10 @@ Public Class MainForm
     ''' que estaban ocluidos por la occlusion matrix vanilla (pelo bajo casco, barba bajo gas mask,
     ''' etc.). Replica el efecto in-game de quitar el headgear.</summary>
     Private Sub CheckBoxRenderHeadwear_CheckedChanged(sender As Object, e As EventArgs) Handles CheckBoxRenderHeadwear.CheckedChanged
+        If _renderHost Is Nothing Then Return
         LogLazy(Function() $"  [RENDER-HEADWEAR-TOGGLE] fired checked={CheckBoxRenderHeadwear.Checked}")
-        ApplyRenderToggleVisibility()
+        _renderHost.Toggles = RenderToggles.FromMainCheckBoxes(Me)
+        _renderHost.ApplyRenderToggleVisibility()
     End Sub
 
     ''' <summary>Toggle "Render gore". OFF oculta meatcap shapes (BSSubIndexTriShape sub-segments
@@ -553,13 +528,15 @@ Public Class MainForm
     ''' .xrc de BS-OS). Mismo destino visual que las HDPT type=7 Meatcaps que ya se filtran en
     ''' SelectWinningCandidates. ON las muestra para inspección.</summary>
     Private Sub CheckBoxRenderGore_CheckedChanged(sender As Object, e As EventArgs) Handles CheckBoxRenderGore.CheckedChanged
+        If _renderHost Is Nothing Then Return
         NpcPreviewLog.LogLazy(Function() $"  [RENDER-GORE-TOGGLE] fired checked={CheckBoxRenderGore.Checked}")
-        ApplyRenderToggleVisibility()
+        _renderHost.Toggles = RenderToggles.FromMainCheckBoxes(Me)
+        _renderHost.ApplyRenderToggleVisibility()
     End Sub
 
 
     Private Sub TriggerFullRender()
-        If _lastRenderedState Is Nothing Then Return
+        If _renderHost.LastRenderedState Is Nothing Then Return
         ' Reuse the existing flow used by other CheckedChanged handlers that need a full reload.
         ' We piggyback on the outfit selection refresh path to force the render pipeline.
         RenderCurrentStateAsyncWrapper()
@@ -577,35 +554,36 @@ Public Class MainForm
     ''' current checkbox state, apply it to the per-NPC SkeletonInstance, and MarkDirty(Pose,
     ''' shapes) so only this NPC's meshes recompute. SkeletonDictionary is already populated
     ''' from the initial render, so BuildMergedNpcPose can parent-walk.</summary>
-    Private Sub RebuildAndApplyMergedPose()
-        If _lastRenderedState Is Nothing OrElse _lastRenderData Is Nothing OrElse _lastSkeletonInstance Is Nothing Then
+    Friend Sub RebuildAndApplyMergedPose(Optional host As NpcRenderHost = Nothing)
+        If host Is Nothing Then host = _renderHost
+        If host.LastRenderedState Is Nothing OrElse host.LastRenderData Is Nothing OrElse host.LastSkeletonInstance Is Nothing Then
             NpcPreviewLog.LogLazy(Function() $"  [POSE-TOGGLE] ABORT — no initial render cached")
             Return
         End If
-        Dim fmrsEnabled = CheckBoxApplyBoneMorphs.Checked
-        Dim bwEnabled = CheckBoxApplyBodyWeight.Checked
-        Dim sculptEnabled = CheckBoxApplySculpt.Checked
+        Dim fmrsEnabled = host.Toggles.ApplyBoneMorphs
+        Dim bwEnabled = host.Toggles.ApplyBodyWeight
+        Dim sculptEnabled = host.Toggles.ApplySculpt
         ' Base pose (sin sculpt) → skeleton base.
-        Dim basePose = BuildMergedNpcPose(_lastRenderedState, _lastRenderData, fmrsEnabled, bwEnabled, _lastSkeletonInstance, Nothing)
-        _lastSkeletonInstance.ApplyPose(basePose)
+        Dim basePose = BuildMergedNpcPose(host.LastRenderedState, host.LastRenderData, fmrsEnabled, bwEnabled, host.LastSkeletonInstance, Nothing)
+        host.LastSkeletonInstance.ApplyPose(basePose)
 
         ' Lazy build / refresh of per-ARMA skeletons. Necesario cuando Sclpt arranca OFF en el
-        ' render inicial (entonces _lastSkelByArma quedó vacío) y el usuario lo enciende después,
+        ' render inicial (entonces host.LastSkelByArma quedó vacío) y el usuario lo enciende después,
         ' o cuando aparecen shapes con sculpt cuyo per-ARMA aún no existía. El MultiInstanceSkeletonResolver
-        ' tiene _lastShapeToSkel por referencia → mutar el dict aquí lo refleja en el siguiente Pose dirty.
+        ' tiene host.LastShapeToSkel por referencia → mutar el dict aquí lo refleja en el siguiente Pose dirty.
         Dim lazyBuilt As Integer = 0
-        If sculptEnabled AndAlso _lastShapeToSkel IsNot Nothing Then
-            For Each shape In _lastRenderData.Shapes
+        If sculptEnabled AndAlso host.LastShapeToSkel IsNot Nothing Then
+            For Each shape In host.LastRenderData.Shapes
                 Dim sculpt As Dictionary(Of String, System.Numerics.Vector3) = Nothing
-                If Not _lastRenderData.ShapeArmaSculpt.TryGetValue(shape, sculpt) Then Continue For
+                If Not host.LastRenderData.ShapeArmaSculpt.TryGetValue(shape, sculpt) Then Continue For
                 If sculpt Is Nothing OrElse sculpt.Count = 0 Then Continue For
                 Dim armaFormID As UInteger = 0
-                _lastRenderData.ShapeArmaFormID.TryGetValue(shape, armaFormID)
-                If _lastSkelByArma.ContainsKey(armaFormID) Then Continue For
+                host.LastRenderData.ShapeArmaFormID.TryGetValue(shape, armaFormID)
+                If host.LastSkelByArma.ContainsKey(armaFormID) Then Continue For
                 ' Build the missing per-ARMA skel.
-                Dim armaSkel = BuildSkeletonInstance(_lastRenderedState, _lastRenderData, _lastFaceSkelBytes)
-                _lastSkelByArma(armaFormID) = armaSkel
-                _lastSculptByArma(armaFormID) = sculpt
+                Dim armaSkel = BuildSkeletonInstance(host.LastRenderedState, host.LastRenderData, host.LastFaceSkelBytes)
+                host.LastSkelByArma(armaFormID) = armaSkel
+                host.LastSculptByArma(armaFormID) = sculpt
                 lazyBuilt += 1
             Next
         End If
@@ -613,37 +591,37 @@ Public Class MainForm
         ' Per-ARMA skeleton clones: cada uno recibe SU propio sculpt aplicado vía H3 multiplicative.
         ' Si sculpt OFF: rebuild las per-ARMA con Nothing (idéntico al base) — el shape sigue
         ' apuntando al per-ARMA skel pero éste pierde el SCLP, equivalente a base.
-        For Each kv In _lastSkelByArma
+        For Each kv In host.LastSkelByArma
             Dim armaSkel = kv.Value
             Dim sculpt As Dictionary(Of String, System.Numerics.Vector3) = Nothing
-            If sculptEnabled Then _lastSculptByArma.TryGetValue(kv.Key, sculpt)
-            Dim poseForArma = BuildMergedNpcPose(_lastRenderedState, _lastRenderData, fmrsEnabled, bwEnabled, armaSkel, sculpt)
+            If sculptEnabled Then host.LastSculptByArma.TryGetValue(kv.Key, sculpt)
+            Dim poseForArma = BuildMergedNpcPose(host.LastRenderedState, host.LastRenderData, fmrsEnabled, bwEnabled, armaSkel, sculpt)
             armaSkel.ApplyPose(poseForArma)
         Next
 
         ' Re-route shape→skel mappings según el toggle actual. Sclpt=ON → shapes con sculpt apuntan
         ' a su per-ARMA skel; Sclpt=OFF → todos apuntan al base. La mutación es visible al resolver
         ' porque éste tiene el dict por referencia.
-        If _lastShapeToSkel IsNot Nothing Then
-            For Each shape In _lastRenderData.Shapes
+        If host.LastShapeToSkel IsNot Nothing Then
+            For Each shape In host.LastRenderData.Shapes
                 Dim sculpt As Dictionary(Of String, System.Numerics.Vector3) = Nothing
                 Dim armaFormID As UInteger = 0
-                _lastRenderData.ShapeArmaSculpt.TryGetValue(shape, sculpt)
-                _lastRenderData.ShapeArmaFormID.TryGetValue(shape, armaFormID)
+                host.LastRenderData.ShapeArmaSculpt.TryGetValue(shape, sculpt)
+                host.LastRenderData.ShapeArmaFormID.TryGetValue(shape, armaFormID)
                 Dim armaSkel As SkeletonInstance = Nothing
                 If sculptEnabled AndAlso sculpt IsNot Nothing AndAlso sculpt.Count > 0 _
-                   AndAlso _lastSkelByArma.TryGetValue(armaFormID, armaSkel) Then
-                    _lastShapeToSkel(shape) = armaSkel
+                   AndAlso host.LastSkelByArma.TryGetValue(armaFormID, armaSkel) Then
+                    host.LastShapeToSkel(shape) = armaSkel
                 Else
-                    _lastShapeToSkel(shape) = _lastSkeletonInstance
+                    host.LastShapeToSkel(shape) = host.LastSkeletonInstance
                 End If
             Next
         End If
 
-        NpcPreviewLog.LogLazy(Function() $"  [POSE-TOGGLE] rebuilt merged pose (fmrs={fmrsEnabled} bw={bwEnabled} sculpt={sculptEnabled}) → base + {_lastSkelByArma.Count} per-ARMA skeletons updated (lazy-built {lazyBuilt})")
-        Dim intent = _previewControl.Intent
-        intent.MarkDirty(RenderDirtyFlags.Pose, _lastRenderData.Shapes)
-        _previewControl.InvalidateRender()
+        NpcPreviewLog.LogLazy(Function() $"  [POSE-TOGGLE] rebuilt merged pose (fmrs={fmrsEnabled} bw={bwEnabled} sculpt={sculptEnabled}) → base + {host.LastSkelByArma.Count} per-ARMA skeletons updated (lazy-built {lazyBuilt})")
+        Dim intent = host.PreviewCtl.Intent
+        intent.MarkDirty(RenderDirtyFlags.Pose, host.LastRenderData.Shapes)
+        host.PreviewCtl.InvalidateRender()
     End Sub
 
 
@@ -697,6 +675,14 @@ Public Class MainForm
         _previewControl = New PreviewControl() With {.Dock = DockStyle.Fill}
         PanelPreviewHost.Controls.Add(_previewControl)
         _previewControl.ApplyResize(True)
+
+        ' Render-pipeline state lives here, not on MainForm. Constructed once the preview
+        ' control exists. The Tick handler stays on MainForm during this phase — the editor
+        ' previews (future phase) will create their own NpcRenderHost and own their own Tick
+        ' handler local to the editor form.
+        _renderHost = New NpcRenderHost(_previewControl)
+        _renderHost.AppliedPresets = _appliedPresets
+        _renderHost.Toggles = RenderToggles.FromMainCheckBoxes(Me)
     End Sub
 
     Private Async Sub LoadDataAsync()
@@ -1324,33 +1310,16 @@ Public Class MainForm
         Return DescribeRecord(sourceRec)
     End Function
 
-    ''' <summary>Current NPC visual state being previewed (without outfit — outfit applied on-demand from combo).</summary>
-    Private _currentBaseState As NPCVisualState = Nothing
-    ''' <summary>State of the most recently rendered NPC variant. Used by the bone/vertex morph
-    ''' checkbox handlers to rebuild a single pipeline stage without re-running the full preview
-    ''' resolution.</summary>
-    Private _lastRenderedState As NPCVisualState = Nothing
-    Private _lastRenderData As PreviewResolutionResult = Nothing
-    ''' <summary>SkeletonInstance built per NPC in <see cref="RenderCurrentStateAsync"/>; reused by
-    ''' the pose-toggle handlers and the diagnostic harness so they read from the same skeleton
-    ''' the render is using (no singleton dependency).</summary>
-    Private _lastSkeletonInstance As SkeletonInstance = Nothing
-    ''' <summary>Per-ARMA skeleton clones built during the last render. Indexed by ArmorAddonFormID.
-    ''' Persisted so the dropdown handler (RebuildAndApplyMergedPose) can reconstruct each clone's
-    ''' pose when the user changes armaModel without forcing a full re-render.</summary>
-    Private _lastSkelByArma As New Dictionary(Of UInteger, SkeletonInstance)
-    ''' <summary>Per-ARMA sculpt deltas used when building each skeleton clone in _lastSkelByArma.
-    ''' Indexed by ArmorAddonFormID. Used to re-derive the pose for each clone when armaModel changes.</summary>
-    Private _lastSculptByArma As New Dictionary(Of UInteger, Dictionary(Of String, System.Numerics.Vector3))
-    ''' <summary>Shape→SkeletonInstance map handed to MultiInstanceSkeletonResolver. The resolver
-    ''' holds this by reference (IReadOnlyDictionary), so mutating entries here is observed by the
-    ''' render pipeline on the next Pose dirty pass — without rebuilding the resolver. Used by
-    ''' RebuildAndApplyMergedPose to lazy-build per-ARMA skels when Sclpt is toggled ON post-render.</summary>
-    Private _lastShapeToSkel As Dictionary(Of IRenderableShape, SkeletonInstance) = Nothing
-    ''' <summary>Cached face-skeleton bytes from the last render. Needed by BuildSkeletonInstance
-    ''' to rebuild per-ARMA clones when Sclpt is toggled ON post-render. Nothing if the NPC has no
-    ''' face-skel merge.</summary>
-    Private _lastFaceSkelBytes As Byte() = Nothing
+    ''' <summary>Per-preview render-pipeline state (last skeleton, ARMA clones, sculpt deltas,
+    ''' tint timer, pristine pixel cache, current base state, etc.). One instance per
+    ''' PreviewControl — MainForm holds the one for its main preview; editor forms will create
+    ''' their own in a later phase. Built in MainForm_Load right after _previewControl. See
+    ''' <see cref="NpcRenderHost"/> for the field-by-field documentation.</summary>
+    ''' <summary>Friend so EditFace_Form / EditBody_Form can read the resolved render state
+    ''' (e.g. <see cref="NpcRenderHost.LastFaceTriMorphNames"/>) directly when constructing the
+    ''' editor UI from MainForm's last completed render — avoids the order-of-operations issue
+    ''' where the editor's own _editorHost isn't populated until its Shown handler runs.</summary>
+    Friend _renderHost As NpcRenderHost = Nothing
     Private Enum OutfitSlotKind
         DefaultOutfit
         SleepOutfit
@@ -1439,7 +1408,7 @@ Public Class MainForm
                            End Sub)
             If requestVersion <> _previewRequestVersion Then Return
 
-            _currentBaseState = baseState
+            _renderHost.CurrentBaseState = baseState
             _currentOutfitEntries = If(outfitEntries, New List(Of OutfitComboEntry))
 
             ' Now that an NPC is selected and resolved, the editor actions can target it.
@@ -1521,7 +1490,7 @@ Public Class MainForm
                            End Sub)
             If requestVersion <> _previewRequestVersion Then Return
 
-            _currentBaseState = baseState
+            _renderHost.CurrentBaseState = baseState
             _currentOutfitEntries = If(outfitEntries, New List(Of OutfitComboEntry))
 
             ' Now that an NPC is selected and resolved, the editor actions can target it.
@@ -1563,13 +1532,14 @@ Public Class MainForm
 
     Private Sub ComboBoxOutfit_SelectedIndexChanged(sender As Object, e As EventArgs) Handles ComboBoxOutfit.SelectedIndexChanged
         If _suppressOutfitComboEvent Then Return
-        If _currentBaseState Is Nothing Then Return
+        If _renderHost Is Nothing Then Return
+        If _renderHost.CurrentBaseState Is Nothing Then Return
         Dim requestVersion = Interlocked.Increment(_previewRequestVersion)
         RenderOnDemandAsync(requestVersion)
     End Sub
 
     Private Sub ButtonReroll_Click(sender As Object, e As EventArgs) Handles ButtonReroll.Click
-        If _currentBaseState Is Nothing Then Return
+        If _renderHost.CurrentBaseState Is Nothing Then Return
 
         Dim idx = If(ComboBoxOutfit.InvokeRequired,
                      CInt(ComboBoxOutfit.Invoke(Function() ComboBoxOutfit.SelectedIndex)),
@@ -1660,14 +1630,15 @@ Public Class MainForm
         Return _currentOutfitEntries(idx).SampledArmorContextKeywords
     End Function
 
-    Private Async Function RenderCurrentStateAsync(requestVersion As Integer) As Task
-        If _currentBaseState Is Nothing Then Return
+    Private Async Function RenderCurrentStateAsync(requestVersion As Integer, Optional host As NpcRenderHost = Nothing) As Task
+        If host Is Nothing Then host = _renderHost
+        If host.CurrentBaseState Is Nothing Then Return
 
         ' Reset RenderScene log counter so the first ~3 frames de este render se loguean.
         _renderSceneLogCount = 0
 
         ' Build final state with selected outfit
-        Dim state = CloneVisualState(_currentBaseState)
+        Dim state = CloneVisualState(host.CurrentBaseState)
         state.LoadoutArmorFormIDs.AddRange(GetSelectedOutfitArmorIDs())
         For Each kvCtx In GetSelectedOutfitContextKeywords()
             state.LoadoutArmorContextKeywords(kvCtx.Key) = kvCtx.Value
@@ -1675,12 +1646,20 @@ Public Class MainForm
 
         Dim useFaceGen = HasFaceGenAssets(state)
 
+        ' OnlyFace collect-time filter: editor hosts set host.OnlyFaceCollect=True so their
+        ' embedded preview matches MainForm's "Only Face" PreviewMode (skin + outfit skipped at
+        ' CollectMeshCandidates, only HeadParts enter the pipeline). For the MainForm host the
+        ' value comes from its ComboBoxPreviewMode. Either path funnels into the same flag on
+        ' the variant — no parallel rendering paths.
+        Dim onlyFaceCollect = host.OnlyFaceCollect OrElse (host Is _renderHost AndAlso CurrentPreviewMode = PreviewMode.OnlyFace)
+
         Dim previewVariant As New PreviewVariantDefinition With {
             .RootNpcFormID = state.FormID,
             .VariantId = 1,
             .DisplayName = $"{DescribeNpc(GetParsedNpc(state.FormID))} | {ComboBoxOutfit.Text}",
             .State = state,
-            .UseFaceGen = useFaceGen
+            .UseFaceGen = useFaceGen,
+            .OnlyFaceCollect = onlyFaceCollect
         }
 
         SetStatus($"Rendering {previewVariant.DisplayName}...")
@@ -1702,16 +1681,16 @@ Public Class MainForm
         ' Granular toggles inside BuildCompositeMorphResolver: face = CheckBoxApplyVertexMorphs,
         ' body = CheckBoxBodyTri. No master-AND gate here — composite returns Nothing on its own
         ' when both subsections are unchecked.
-        Dim boneMorphsEnabled = CheckBoxApplyBoneMorphs.Checked
-        Dim morphResolver = BuildCompositeMorphResolver(state, renderData)
+        Dim boneMorphsEnabled = host.Toggles.ApplyBoneMorphs
+        Dim morphResolver = BuildCompositeMorphResolver(state, renderData, host)
 
         ' Build a pose carrying the FMRI/FMRS face bone deltas (each region's bones become
         ' PoseTransformData entries). This pose is applied via SkeletonInstance.ApplyPose which
         ' sets DeltaTransform on each bone — the same mechanism body poses use. The checkbox
         ' toggle lets the user compare "raw face" (no pose, no morphs) vs "with FMRS applied" live.
         Dim faceSkelBytes = TryLoadFaceSkeletonBytes(state)
-        Dim bodyWeightEnabled = CheckBoxApplyBodyWeight.Checked
-        Dim sculptEnabled = CheckBoxApplySculpt.Checked
+        Dim bodyWeightEnabled = host.Toggles.ApplyBodyWeight
+        Dim sculptEnabled = host.Toggles.ApplySculpt
         NpcPreviewLog.LogLazy(Function() $"  [BODY-WEIGHT-TOGGLE] {If(bodyWeightEnabled, "ON — body-weight pose applied", "OFF — body-weight pose skipped (MWGT/BSMS/NNAM not applied)")}")
         NpcPreviewLog.LogLazy(Function() $"  [SCULPT-TOGGLE] {If(sculptEnabled, "ON — ARMA SCLP per-bone scaling applied to [A] over-armor consumers", "OFF — ARMA SCLP suppressed; every shape on base skeleton")}")
 
@@ -1850,61 +1829,107 @@ Public Class MainForm
         ' Hide all shapes (RenderHide=True) during load + face tint composition so the user
         ' doesn't see a flash of untinted face. The control stays Visible so GL keeps processing
         ' texture uploads + FBO compositing (tint pipeline NEEDS the control rendering to work).
-        ' Cleared at the end of this method (or by the deferred tint timer if textures arrive late).
+        ' Cleared by the post-texture-upload hook below (success path → ApplyFaceTintOverlay +
+        ' RevealAllShapes) or by the watchdog timeout fallback (textures never finished loading).
         For Each sh In renderData.Shapes
             sh.RenderHide = True
         Next
-        _previewControl.RenderShapes(request)
+
+        ' Wire the post-texture-upload hook BEFORE invoking the render pipeline so the watchdog
+        ' deadline armed inside LoadTexturesAsync sees the action. The library guarantees the
+        ' callback fires exactly once, on the GL thread, when:
+        '   • all background diffuse uploads finished (success branch — bake passes run with
+        '     every diffuse already in Textures_Dictionary, then the shapes are revealed),
+        '   • OR the deadline elapsed without completion (timeout branch — reveal anyway so
+        '     the user sees an untinted preview rather than a permanently blank canvas).
+        ' Replaces the legacy PendingTintTimer polling: same observable behaviour, single
+        ' source of truth in the render pipeline, no per-app timer machinery.
+        Dim capturedState = state
+        Dim capturedRenderData = renderData
+        Dim capturedHost = host
+        host.PreviewCtl.Intent.PostTextureUploadAction = Sub(model)
+                                                            If capturedHost Is Nothing OrElse capturedHost.IsDisposed Then Return
+                                                            ApplyFaceTintOverlay(capturedState, capturedRenderData, capturedHost)
+                                                            RevealAllShapes(capturedHost)
+                                                            FinalizeRenderCamera(capturedHost)
+                                                        End Sub
+        host.PreviewCtl.Intent.PostTextureUploadTimeoutAction = Sub(model)
+                                                                    If capturedHost Is Nothing OrElse capturedHost.IsDisposed Then Return
+                                                                    NpcPreviewLog.LogLazy(Function() $"  [POST-TEX-HOOK] timeout — revealing shapes without tint bake")
+                                                                    RevealAllShapes(capturedHost)
+                                                                    FinalizeRenderCamera(capturedHost)
+                                                                End Sub
+
+        host.PreviewCtl.RenderShapes(request)
 
         ' Cache the resolved state + render data + skeleton instance so the morph/pose checkbox
         ' handlers can rebuild the merged pose on demand without re-running the full preview
         ' resolution pipeline. See CheckBoxApplyBoneMorphs_CheckedChanged /
         ' CheckBoxApplyVertexMorphs_CheckedChanged below — they follow the WM granular
         ' Intent.MarkDirty(Pose)/MarkDirty(Morphs) pattern, not a full reload.
-        _lastRenderedState = state
-        _lastRenderData = renderData
-        _lastSkeletonInstance = inst
-        _lastSkelByArma = skelByArma
-        _lastSculptByArma = sculptByArma
-        _lastShapeToSkel = shapeToSkel
-        _lastFaceSkelBytes = faceSkelBytes
+        host.LastRenderedState = state
+        host.LastRenderData = renderData
+        host.LastSkeletonInstance = inst
+        host.LastSkelByArma = skelByArma
+        host.LastSculptByArma = sculptByArma
+        host.LastShapeToSkel = shapeToSkel
+        host.LastFaceSkelBytes = faceSkelBytes
+
+        ' Publish the morph-name set of the face chargen TRI so EditFace_Form can filter sliders
+        ' to only entries the engine could actually apply. Vanilla data is inconsistent for some
+        ' races (e.g. HumanChildRace.MorphValues declares Brow/Chin sliders but the HDPT points
+        ' at BaseFemaleHeadChargen.tri which has none of those names). Showing those sliders in
+        ' the editor would lie to the user. Find the face shape via the same NifShaderType filter
+        ' the tint compositor uses, get its chargen TRI path from renderData, parse the TRI for
+        ' its morph names. Empty set on miss/error → editor falls back to "show all".
+        host.LastFaceTriMorphNames.Clear()
+        Try
+            Dim faceTriPath As String = ""
+            For Each mesh In host.PreviewCtl.Model.meshes
+                If mesh Is Nothing OrElse mesh.MeshData Is Nothing OrElse mesh.MeshData.Material Is Nothing Then Continue For
+                Dim shape = mesh.MeshData.Shape
+                If shape Is Nothing Then Continue For
+                Dim mb = mesh.MeshData.Material.MaterialBase
+                If mb Is Nothing Then Continue For
+                If mb.NifShaderType <> NiflySharp.Enums.BSLightingShaderType.FaceTint Then Continue For
+                If renderData.ShapeChargenTriPaths.TryGetValue(shape, faceTriPath) Then Exit For
+            Next
+            If Not String.IsNullOrEmpty(faceTriPath) Then
+                Dim normTri = NormalizeDictionaryKeyWithMeshesPrefix(faceTriPath)
+                Dim triLoc As FilesDictionary_class.File_Location = Nothing
+                If FilesDictionary_class.Dictionary.TryGetValue(normTri, triLoc) Then
+                    Dim triBytes = triLoc.GetBytes()
+                    If triBytes IsNot Nothing AndAlso triBytes.Length > 0 Then
+                        Dim triHead = TriHeadParser.ParseTriHeadFromBytes(triBytes)
+                        If triHead IsNot Nothing AndAlso triHead.Morphs IsNot Nothing Then
+                            For Each m In triHead.Morphs
+                                If Not String.IsNullOrEmpty(m.Name) Then
+                                    host.LastFaceTriMorphNames.Add(m.Name)
+                                End If
+                            Next
+                        End If
+                    End If
+                End If
+            End If
+            NpcPreviewLog.LogLazy(Function() $"  [FACE-TRI-MORPHS] race={state.RaceFormID:X8} faceTri='{faceTriPath}' morphs={host.LastFaceTriMorphNames.Count}")
+        Catch ex As Exception
+            NpcPreviewLog.LogLazy(Function() $"  [FACE-TRI-MORPHS] error: {ex.Message}")
+        End Try
 
         ' Gate the Edit Body button on whether this race + body actually has any editable channels.
         ' Some races (Ghoul, PowerArmorRace, custom robots) declare no BSMS WeightScale or Range
         ' Modifier and have no body PIRT .tri — opening the editor would show three empty panels.
         UpdateEditBodyEnabled()
-        ' Edit Face is enabled whenever an NPC is rendered. Unlike Body, every NPC has at least
-        ' one face channel (HeadParts always exist; Tints can be added even if the record has
-        ' none) so we don't compute granular availability — the form opens with empty sections
-        ' that the user can populate.
+        ' Gate the Edit Face button by the same shape as Edit Body: section availability per race
+        ' + gender. Skipped entirely when no head parts, no hair colors, no morph presets in the
+        ' loaded TRI, no tint groups, and no FacialBoneRegions JSON — opening the editor would
+        ' show only empty pickers. See ComputeFaceEditAvailability for the per-section rule.
         UpdateEditFaceEnabled()
 
-        ' After the shapes become RenderableMesh instances, compose the NPC's face tint layers
-        ' into an RGBA overlay texture via FBO and assign it to the face mesh's MaterialData.
-        ' This is done post-render because MaterialData only exists on a RenderableMesh.
-        ' (Shapes are still RenderHide=True at this point — tint pipeline only needs MaterialData
-        ' and texture uploads, not the visible draw of each shape.)
-        ApplyFaceTintOverlay(state, renderData)
-
-        ' Reveal: clear the blanket RenderHide=True we set above, then apply diagnostic toggle
-        ' visibility on top. Done only when tint applied synchronously; if deferred, the timer
-        ' handler calls RevealAllShapes() when it succeeds OR when it gives up.
-        If _pendingTintState Is Nothing Then RevealAllShapes()
-
-        ' Force ResetCamera now that all shapes are visible (RenderHide=False) and bounds reflect
-        ' final pose. Mirror WM Editor_Form Button9_Click behavior: ResetCamera(True) → RefreshRender.
-        ' WM doesn't need this because its "render" path is contiguous; NPC_Manager has the
-        ' load-with-hidden / reveal split which runs the first ResetCamera before RenderHide flips.
-        Try
-            DumpCameraDiagnostics("PRE-RESET")
-            _previewControl.ResetCamera(Force:=True)
-            DumpCameraDiagnostics("POST-RESET")
-            _previewControl.UpdateRequired = True
-            _previewControl.RefreshRender()
-        Catch ex As Exception
-            NpcPreviewLog.LogLazy(Function() $"  [CAMERA-RESET] post-render failed: {ex.Message}")
-        End Try
-
+        ' Face tint compositing + RevealAllShapes are sequenced by the PostTextureUploadAction
+        ' wired before RenderShapes (above). The library invokes them on the GL thread once the
+        ' background diffuse uploads complete, so the bake passes always see populated Textures_Dictionary
+        ' entries. RevealAllShapes is called inside the hook — shapes stay RenderHide=True until then.
 
         ' DIAGNOSTIC: for a small set of ground-truth NPCs (Alijo 0018A6D1, Cait 00079249),
         ' compare our post-morph vertices against CK's FaceGen bake on disk to find which verts
@@ -1916,6 +1941,42 @@ Public Class MainForm
         End Try
 
         SetStatus($"Rendered {previewVariant.DisplayName} ({renderData.Shapes.Count} shapes)")
+    End Function
+
+    ''' <summary>Last step of a render — invoked by the post-texture-upload hook AFTER face tint
+    ''' bake passes have completed and the shapes have been revealed. Forces ResetCamera now
+    ''' that mesh bounds reflect the final visible pose, then triggers a repaint. Mirrors WM's
+    ''' Editor_Form Button9_Click pattern (ResetCamera(True) → RefreshRender) but moved into the
+    ''' deferred hook so it sees populated mesh bounds rather than the pre-reveal state.</summary>
+    Private Sub FinalizeRenderCamera(host As NpcRenderHost)
+        If host Is Nothing OrElse host.PreviewCtl Is Nothing Then Return
+        Try
+            DumpCameraDiagnostics("PRE-RESET")
+            host.PreviewCtl.ResetCamera(Force:=True)
+            DumpCameraDiagnostics("POST-RESET")
+            host.PreviewCtl.UpdateRequired = True
+            host.PreviewCtl.RefreshRender()
+        Catch ex As Exception
+            NpcPreviewLog.LogLazy(Function() $"  [CAMERA-RESET] post-render failed: {ex.Message}")
+        End Try
+    End Sub
+
+    ''' <summary>Render the given NPC into the supplied host's preview. Used by editor forms
+    ''' to drive their embedded PreviewControl independently of the main form's preview.
+    ''' The targetHost must already have its Toggles and AppliedPresets configured before
+    ''' this call (typically Toggles via OnlyFace/FullBody preset and AppliedPresets shared
+    ''' by reference with the MainForm so live overlay edits inside the modal write through
+    ''' to the same dict the MainForm will re-resolve from on close).
+    ''' Friend (not Public) because <see cref="NpcRenderHost"/> is itself Friend; promoting this to
+    ''' Public would leak the type out of the assembly.</summary>
+    Friend Async Function RenderInHostAsync(targetHost As NpcRenderHost, npcFormID As UInteger) As Task
+        If targetHost Is Nothing Then Throw New ArgumentNullException(NameOf(targetHost))
+        Dim npc As NPC_Data = Nothing
+        If Not _npcByIdCache.TryGetValue(npcFormID, npc) OrElse npc Is Nothing Then
+            Throw New InvalidOperationException($"NPC 0x{npcFormID:X8} not in cache.")
+        End If
+        Dim requestVersion = Threading.Interlocked.Increment(_previewRequestVersion)
+        Await LoadNPCOnDemandAsyncFromExisting(npc, requestVersion, targetHost)
     End Function
 
     ''' <summary>Whitelisted FormIDs for FaceGen ground-truth diff. Diagnostic only — silent
@@ -2784,59 +2845,18 @@ Public Class MainForm
     ''' <summary>Entry point invoked right after RenderShapes. Tries to bake tints immediately;
     ''' if the face diffuse texture isn't in the cache yet (async upload pending), schedules a
     ''' polling timer that retries until the texture appears.</summary>
-    Private Sub ApplyFaceTintOverlay(state As NPCVisualState, renderData As PreviewResolutionResult)
+    ''' <summary>Run the face-tint compositor + the two skin-softlight pre-passes for the given
+    ''' state. ALL targets (face/body diffuse) are required to be already uploaded into the GL
+    ''' Textures_Dictionary before calling — that's the contract of the
+    ''' <c>RenderIntent.PostTextureUploadAction</c> hook this is registered to. No defer
+    ''' machinery: if the hook fired, textures are guaranteed ready.</summary>
+    Private Sub ApplyFaceTintOverlay(state As NPCVisualState, renderData As PreviewResolutionResult, Optional host As NpcRenderHost = Nothing)
+        If host Is Nothing Then host = _renderHost
         If state Is Nothing Then Return
 
-        ' Cancel any in-flight pending tint for a previous NPC.
-        _pendingTintTimer.Stop()
-        _pendingTintState = Nothing
-        _pendingTintAttempts = 0
-
-        Dim applied = TryApplyFaceTints(state)
-        If ENABLE_TWO_STEP_SKIN_TINT Then
-            TryApplyFaceSkinSoftLight(state)
-            TryApplyBodySkinSoftLight(state)
-        End If
-        If Not applied Then
-            ' Defer: store state, kick the timer.
-            _pendingTintState = state
-            _pendingTintAttempts = 0
-            _pendingTintTimer.Start()
-            NpcPreviewLog.LogLazy(Function() $"  [FACETINT] face diffuse not ready, deferred (timer started)")
-        End If
-    End Sub
-
-    Private Sub _pendingTintTimer_Tick(sender As Object, e As EventArgs) Handles _pendingTintTimer.Tick
-        If _pendingTintState Is Nothing Then
-            _pendingTintTimer.Stop()
-            RevealAllShapes()
-            Return
-        End If
-
-        _pendingTintAttempts += 1
-        If _pendingTintAttempts > PendingTintMaxAttempts Then
-            NpcPreviewLog.LogLazy(Function() $"  [FACETINT] giving up after {_pendingTintAttempts} attempts (~{_pendingTintAttempts * _pendingTintTimer.Interval}ms)")
-            _pendingTintTimer.Stop()
-            _pendingTintState = Nothing
-            ' Reveal aún sin tint — mejor ver "untinted face" que tener todo oculto indefinido.
-            RevealAllShapes()
-            Return
-        End If
-
-        Dim model = _previewControl.Model
-        If model Is Nothing OrElse Not model.TexturesReady Then Return
-
-        Dim applied = TryApplyFaceTints(_pendingTintState)
-        If applied Then
-            If ENABLE_TWO_STEP_SKIN_TINT Then
-                TryApplyFaceSkinSoftLight(_pendingTintState)
-                TryApplyBodySkinSoftLight(_pendingTintState)
-            End If
-            NpcPreviewLog.LogLazy(Function() $"  [FACETINT] applied on attempt #{_pendingTintAttempts}")
-            _pendingTintTimer.Stop()
-            _pendingTintState = Nothing
-            RevealAllShapes()
-        End If
+        TryApplyFaceTints(state, host)
+        TryApplyFaceSkinSoftLight(state, host)
+        TryApplyBodySkinSoftLight(state, host)
     End Sub
 
     ''' <summary>Diagnóstico: dumpea bounds per-mesh + scene AABB + tamaño del control + estado
@@ -2857,8 +2877,8 @@ Public Class MainForm
             ' Log shape category + material info to diagnose if a "tall" shape is actually rendered
             ' or invisible by material/shader properties (alpha, no-render flags).
             Dim cat As ShapeRenderCategory = ShapeRenderCategory.Other
-            If shape IsNot Nothing AndAlso _lastRenderData IsNot Nothing Then
-                _lastRenderData.ShapeCategory.TryGetValue(shape, cat)
+            If shape IsNot Nothing AndAlso _renderHost.LastRenderData IsNot Nothing Then
+                _renderHost.LastRenderData.ShapeCategory.TryGetValue(shape, cat)
             End If
             Dim matInfo As String = ""
             If mesh.MeshData.Material IsNot Nothing AndAlso mesh.MeshData.Material.MaterialBase IsNot Nothing Then
@@ -2893,12 +2913,13 @@ Public Class MainForm
 
     ''' <summary>Clear the blanket RenderHide=True set during the load+tint window, then apply
     ''' the diagnostic toggles on top. Idempotent — safe to call repeatedly.</summary>
-    Private Sub RevealAllShapes()
-        If _lastRenderData Is Nothing OrElse _lastRenderData.Shapes Is Nothing Then Return
-        For Each sh In _lastRenderData.Shapes
+    Private Sub RevealAllShapes(Optional host As NpcRenderHost = Nothing)
+        If host Is Nothing Then host = _renderHost
+        If host.LastRenderData Is Nothing OrElse host.LastRenderData.Shapes Is Nothing Then Return
+        For Each sh In host.LastRenderData.Shapes
             sh.RenderHide = False
         Next
-        ApplyRenderToggleVisibility()  ' Includes RefreshRender at the end.
+        host.ApplyRenderToggleVisibility()  ' Includes RefreshRender at the end.
     End Sub
 
     ''' <summary>Build the list of region-mask TXST swaps for an NPC. For each Morph Group
@@ -2978,7 +2999,8 @@ Public Class MainForm
     ''' <summary>Build the layer list, find the face mesh diffuse cache entry, run the compositor
     ''' and mutate the cache entry. Returns True if at least one face mesh was successfully tinted,
     ''' False if the texture wasn't ready (caller should defer and retry).</summary>
-    Private Function TryApplyFaceTints(state As NPCVisualState) As Boolean
+    Private Function TryApplyFaceTints(state As NPCVisualState, Optional host As NpcRenderHost = Nothing) As Boolean
+        If host Is Nothing Then host = _renderHost
         If state Is Nothing Then Return False
 
         Dim modelFormID = If(state.ModelSourceFormID <> 0UI, state.ModelSourceFormID, state.FormID)
@@ -3006,7 +3028,6 @@ Public Class MainForm
         Dim stat_added_palette As Integer = 0
         Dim stat_added_textureSet As Integer = 0
         Dim stat_added_takesSkinTone As Integer = 0
-        Dim stat_skip_skinToneSlot As Integer = 0
         Dim stat_skip_zeroOpacity As Integer = 0
         Dim stat_skip_zeroOpacity_takesSkinTone As Integer = 0
         Dim stat_skip_missingOption As Integer = 0
@@ -3026,6 +3047,33 @@ Public Class MainForm
         ' between NPC_Manager render and LM in-game.
         Dim raceTintRank As New Dictionary(Of UShort, Integer)
         Dim tintGroupsForRender = If(state.IsFemale, race.FemaleTintTemplateGroups, race.MaleTintTemplateGroups)
+        ' Diagnostic for race-scoped bugs (e.g. Ghoul TextureSet tints not rendering): how many
+        ' tint groups does the resolved race declare for this gender, and how many options total
+        ' across those groups. If 0 groups, the editor's Add list would be empty — if >0 but the
+        ' compositor still SKIPs, drill into the per-option [FACETINT/...] lines below.
+        Dim totalOptionsAcrossGroups As Integer = 0
+        If tintGroupsForRender IsNot Nothing Then
+            For Each grpDiag In tintGroupsForRender
+                totalOptionsAcrossGroups += If(grpDiag.Options Is Nothing, 0, grpDiag.Options.Count)
+            Next
+        End If
+        Dim totalGroupsLog As Integer = If(tintGroupsForRender Is Nothing, 0, tintGroupsForRender.Count)
+        NpcPreviewLog.LogLazy(Function() $"  [FACETINT-RACE] race={race.EditorID} (0x{race.FormID:X8}) gender={If(state.IsFemale, "F", "M")} tintGroups={totalGroupsLog} totalOptions={totalOptionsAcrossGroups}")
+
+        ' Dump every NPC face tint layer with its slot semantics + matched option name. Used to
+        ' verify against CK's "Character Tints" view: each row in CK shows Slot (semantic, 0..25)
+        ' and Index (race-option ID). This log mirrors that pairing 1:1 so a discrepancy between
+        ' "what CK shows" and "what we apply" can be pinpointed without guessing.
+        For Each tlDiag In npcData.FaceTintLayers
+            Dim optDiag = race.FindTintOption(tlDiag.Index, state.IsFemale)
+            Dim optName = If(optDiag IsNot Nothing AndAlso Not String.IsNullOrEmpty(optDiag.Name), optDiag.Name, "<no-option>")
+            Dim slotName = If(optDiag IsNot Nothing, TintSlotName(optDiag.Slot), "?")
+            Dim slotNum = If(optDiag IsNot Nothing, optDiag.Slot, CUShort(0))
+            Dim flagsHex = If(optDiag IsNot Nothing, $"0x{optDiag.Flags:X4}", "?")
+            Dim takesSkin = If(optDiag IsNot Nothing AndAlso (optDiag.Flags And &H4US) <> 0US, "TakesSkinTone", "-")
+            Dim valueLog = tlDiag.Value
+            NpcPreviewLog.LogLazy(Function() $"  [TINT-LAYER-DUMP] tl.Index={tlDiag.Index} value={valueLog} disc={tlDiag.Discriminator} -> opt='{optName}' slot={slotNum}/{slotName} flags={flagsHex}({takesSkin})")
+        Next
         Dim renderRank As Integer = 0
         For Each grp In tintGroupsForRender
             For Each o In grp.Options
@@ -3062,23 +3110,13 @@ Public Class MainForm
 
             Dim takesSkinTone As Boolean = (opt.Flags And &H4US) <> 0US
 
-            ' Slot 12 SkinTone handling depends on ENABLE_TWO_STEP_SKIN_TINT.
-            ' Legacy mode (False): skipped here -- the render shader's `albedo *= tintColor`
-            '   uniform handles skin tone on both face and body, with face using slot 12 RGB
-            '   and body using QNAM. No compositor pass touches slot 12.
-            ' Two-step mode (True): slot 12 enters the compositor as a normal Palette layer.
-            '   ResolvePaletteLayerEffective resolves its colour and blendOp from TTEC; in
-            '   HumanRace the authored blendOp for the SkinTone palette is SoftLight, so the
-            '   compositor produces softlight(base, slot12) which the render shader then
-            '   multiplies by slot12 again. The body path applies an analogous SoftLight with
-            '   QNAM in TryApplyBodySkinSoftLight so the two meshes stay symmetric.
-            If opt.Slot = CUShort(TintSlot.SkinTone) AndAlso Not ENABLE_TWO_STEP_SKIN_TINT Then
-                stat_skip_skinToneSlot += 1
-                NpcPreviewLog.LogLazy(Function() $"      -> SKIP SkinTone slot (legacy mode: render shader handles it via tintColor uniform on both face and body) value={tl.Value}")
-                If Not stat_byFlags_skipped.ContainsKey(rawOptFlagsU) Then stat_byFlags_skipped(rawOptFlagsU) = 0
-                stat_byFlags_skipped(rawOptFlagsU) += 1
-                Continue For
-            End If
+            ' Skin tone consumer Options (TTEF bit 2 = Takes Skin Tone) enter the compositor as
+            ' regular layers. ResolvePaletteLayerEffective resolves their colour and blendOp from
+            ' TTEC (HumanRace authors the SkinTone Palette with a SoftLight blendOp), so the
+            ' compositor produces softlight(base, skinColor) which the render shader then
+            ' multiplies by SkinTintColor again. The body path mirrors this with a one-shot
+            ' SoftLight pre-pass against QNAM in TryApplyBodySkinSoftLight, keeping face and
+            ' body in lockstep.
 
             ' DIAGNOSTIC: dump raw TEND bytes so we can verify the real layout vs xEdit/CK.
             If tl.RawTendBytes IsNot Nothing AndAlso tl.RawTendBytes.Length > 0 Then
@@ -3116,6 +3154,10 @@ Public Class MainForm
             End If
 
             ' Resolve TTET[0] (mask / diffuse). Always required.
+            Dim ttet0Snap = If(opt.Textures.Count > 0, opt.Textures(0), "")
+            Dim ttet1Snap = If(opt.Textures.Count > 1, opt.Textures(1), "")
+            Dim ttet2Snap = If(opt.Textures.Count > 2, opt.Textures(2), "")
+            NpcPreviewLog.LogLazy(Function() $"      [TTET-DUMP] opt='{opt.Name}' index={tl.Index} TTET[0]='{ttet0Snap}' TTET[1]='{ttet1Snap}' TTET[2]='{ttet2Snap}'")
             Dim diffuseLoad = LoadTintLayerBytesAndKey(opt.Textures(0))
             If diffuseLoad.Bytes Is Nothing Then
                 NpcPreviewLog.LogLazy(Function() $"      -> SKIP TTET[0] not found: '{opt.Textures(0)}'")
@@ -3249,7 +3291,7 @@ Public Class MainForm
         NpcPreviewLog.LogLazy(Function() $"  [FACETINT] === Summary for {npcData.EditorID} ===")
         NpcPreviewLog.LogLazy(Function() $"    Total NPC layers: {npcData.FaceTintLayers.Count}")
         NpcPreviewLog.LogLazy(Function() $"    ADDED: {layerInputs.Count} ({stat_added_palette} Palette + {stat_added_textureSet} TextureSet, {stat_added_takesSkinTone} takesSkinTone)")
-        NpcPreviewLog.LogLazy(Function() $"    SKIPPED: skinToneSlot={stat_skip_skinToneSlot} zeroOpacity={stat_skip_zeroOpacity} (of which takesSkinTone={stat_skip_zeroOpacity_takesSkinTone}) missingOption={stat_skip_missingOption} missingMask={stat_skip_missingMask} unknownDiscr={stat_skip_unknownDiscriminator}")
+        NpcPreviewLog.LogLazy(Function() $"    SKIPPED: zeroOpacity={stat_skip_zeroOpacity} (of which takesSkinTone={stat_skip_zeroOpacity_takesSkinTone}) missingOption={stat_skip_missingOption} missingMask={stat_skip_missingMask} unknownDiscr={stat_skip_unknownDiscriminator}")
         Dim allFlagKeys As New SortedSet(Of UShort)
         For Each k In stat_byFlags_added.Keys : allFlagKeys.Add(k) : Next
         For Each k In stat_byFlags_skipped.Keys : allFlagKeys.Add(k) : Next
@@ -3267,7 +3309,7 @@ Public Class MainForm
         ' Find the face mesh in the model, get its diffuse texture cache entry, and call the
         ' compositor on a copy. Then mutate the cache entry's GL Texture_ID so the existing
         ' render path picks up the modified diffuse without any library changes.
-        Dim model = _previewControl.Model
+        Dim model = host.PreviewCtl.Model
         If model Is Nothing OrElse model.meshes Is Nothing Then
             Return True   ' no model — nothing we can do, don't retry forever
         End If
@@ -3275,6 +3317,11 @@ Public Class MainForm
         Dim composedAny As Boolean = False
         Dim faceMeshFoundButTextureNotReady As Boolean = False
         Dim seenFaceMeshes As New HashSet(Of String)(StringComparer.OrdinalIgnoreCase)
+        ' Diagnostic: when the FaceTint shader filter rejects every mesh (typical Ghoul/Child
+        ' bug — the engine uses a different BSLightingShaderType for these races), enumerate
+        ' every mesh's shape name + shader type so we can see what we DO have vs what we look
+        ' for. Only emitted on the failure path below to keep the log compact.
+        Dim shaderInventoryForDiag As New List(Of String)
         For Each mesh In model.meshes
             If mesh Is Nothing OrElse mesh.MeshData Is Nothing OrElse mesh.MeshData.Material Is Nothing Then Continue For
             Dim shape = mesh.MeshData.Shape
@@ -3286,7 +3333,10 @@ Public Class MainForm
             ' The actual face shape uses the FaceTint shader (BSLightingShaderType). Other "head"
             ' shapes (BaseFemaleHeadRear with body texture, mouth, lashes, eyes) use SkinTint or
             ' EnvMap. Filtering by shader type avoids touching the headrear / mouth diffuses.
-            If materialBase.NifShaderType <> NiflySharp.Enums.BSLightingShaderType.FaceTint Then Continue For
+            If materialBase.NifShaderType <> NiflySharp.Enums.BSLightingShaderType.FaceTint Then
+                shaderInventoryForDiag.Add($"shape='{shape.ShapeName}' shader={materialBase.NifShaderType}")
+                Continue For
+            End If
 
             Dim diffusePath = FO4UnifiedMaterial_Class.CorrectTexturePath(materialBase.Diffuse_or_Base_Texture)
             If String.IsNullOrEmpty(diffusePath) Then Continue For
@@ -3324,18 +3374,18 @@ Public Class MainForm
             ' MPPK region mask so the tint layers below blend on top of the wrinkled base.
             ' The pre-pass is a no-op for NPCs whose presets don't have MPPT (all young NPCs).
             If regionSwaps.Count > 0 Then
-                ApplyRegionSwapChannelOnto(model, diffusePath, diffuseEntry, w, h, regionSwaps, FaceTintChannel.Diffuse)
-                ApplyRegionSwapChannelOnto(model, normalPath, Nothing, w, h, regionSwaps, FaceTintChannel.Normal)
-                ApplyRegionSwapChannelOnto(model, specPath, Nothing, w, h, regionSwaps, FaceTintChannel.Specular)
+                ApplyRegionSwapChannelOnto(model, diffusePath, diffuseEntry, w, h, regionSwaps, FaceTintChannel.Diffuse, host)
+                ApplyRegionSwapChannelOnto(model, normalPath, Nothing, w, h, regionSwaps, FaceTintChannel.Normal, host)
+                ApplyRegionSwapChannelOnto(model, specPath, Nothing, w, h, regionSwaps, FaceTintChannel.Specular, host)
 
                 ' Re-fetch diffuseEntry — ApplyRegionSwapChannelOnto may have replaced its
                 ' Texture_ID in place. The compositor below reads from this same entry.
                 model.Textures_Dictionary.TryGetValue(diffusePath, diffuseEntry)
             End If
 
-            ComposeChannelOnto(model, diffusePath, diffuseEntry, w, h, layerInputs, FaceTintChannel.Diffuse, composedAny)
-            ComposeChannelOnto(model, normalPath, Nothing, w, h, layerInputs, FaceTintChannel.Normal, composedAny)
-            ComposeChannelOnto(model, specPath, Nothing, w, h, layerInputs, FaceTintChannel.Specular, composedAny)
+            ComposeChannelOnto(model, diffusePath, diffuseEntry, w, h, layerInputs, FaceTintChannel.Diffuse, composedAny, host)
+            ComposeChannelOnto(model, normalPath, Nothing, w, h, layerInputs, FaceTintChannel.Normal, composedAny, host)
+            ComposeChannelOnto(model, specPath, Nothing, w, h, layerInputs, FaceTintChannel.Specular, composedAny, host)
 
             ' materialBase.SkinTint stays ENABLED. The render shader's `albedo *= tintColor`
             ' uniform handles slot 12 SkinTone uniformly on both face and body meshes, using
@@ -3347,13 +3397,36 @@ Public Class MainForm
         If composedAny Then Return True
         If faceMeshFoundButTextureNotReady Then Return False
         NpcPreviewLog.LogLazy(Function() $"  [FACETINT] no face mesh (NifShaderType=FaceTint) found in model")
+        ' Diagnostic dump: every mesh's shape name + the shader type the FaceTint filter rejected.
+        ' Helps identify which BSLightingShaderType the current race actually uses for its face
+        ' (Ghoul / Child probably differ from Human's FaceTint).
+        For Each diagLine In shaderInventoryForDiag
+            Dim diagLineLocal = diagLine
+            NpcPreviewLog.LogLazy(Function() $"    [FACETINT-INVENTORY] {diagLineLocal}")
+        Next
         Return True
     End Function
 
-    ''' <summary>Returns True iff the NPC has a face tint layer in slot 12 (SkinTone) with
-    ''' non-trivial slider value (>0.001). Used to decide whether the face compositor will
-    ''' apply SoftLight via the slot-12 Palette path on its own, or whether we need to run
-    ''' the standalone face SoftLight fallback against QNAM.</summary>
+    ''' <summary>Returns True iff the NPC has an active face tint layer at the race's SkinTone
+    ''' slot — i.e. the layer that the engine's <c>characterCreation-&gt;skinTint</c> pointer
+    ''' resolves to for this race. When such a layer exists, the face compositor processes it
+    ''' as a normal Palette layer (with its authored BlendOp, typically SoftLight) and produces
+    ''' <c>softlight(base, skinColor)</c> on the face diffuse, so the standalone QNAM SoftLight
+    ''' fallback must skip to avoid double-applying.
+    ''' <para>Detection: <c>opt.Slot == <see cref="TintSlot.SkinTone"/></c> with a non-trivial
+    ''' slider value. The Slot enum is not a hardcoded magic number — it is the schema-defined
+    ''' field name in <c>RACE.TintTemplateGroups[*].Options[*].Slot</c> (xEdit
+    ''' wbDefinitionsFO4.pas:3478). Bethesda's authoring convention places the skin-tone
+    ''' Palette template at this slot, and the engine's race-load resolves
+    ''' <c>characterCreation-&gt;skinTint</c> to that exact template. From an offline parser's
+    ''' perspective this slot is the canonical, structural anchor for the skin-tone layer —
+    ''' verified against F4SE/ScaleformNatives.cpp:860-922 (GetSkinColor uses
+    ''' <c>skinTemplate-&gt;templateIndex</c> to match NPC tint entries; that templateIndex
+    ''' originated from the slot-12 option at race-load).</para>
+    ''' <para>The TTEF 'Takes Skin Tone' flag (bit 2) is for SECONDARY layers (eye sockets,
+    ''' lips) that get tinted by the already-resolved <c>npc-&gt;skinColor</c> — it is NOT the
+    ''' dispatch for the base skin-tone layer itself, which is why AnneHargraves' 'Tono de piel'
+    ''' has flags=0x0000 yet is correctly identified by Slot=SkinTone.</para></summary>
     Private Function NpcHasSkinToneLayer(npcData As NPC_Data, race As RACE_Data, isFemale As Boolean) As Boolean
         If npcData Is Nothing OrElse race Is Nothing Then Return False
         If npcData.FaceTintLayers Is Nothing OrElse npcData.FaceTintLayers.Count = 0 Then Return False
@@ -3367,11 +3440,11 @@ Public Class MainForm
         Return False
     End Function
 
-    ''' <summary>Two-step skin tint — face FALLBACK side. Some NPCs (e.g. MayorMcDonough) do
-    ''' NOT declare a face tint layer in slot 12 SkinTone. For them the face compositor never
-    ''' runs the slot-12 Palette path, so the face misses the SoftLight that the body gets
-    ''' from TryApplyBodySkinSoftLight against QNAM. The result: face = base * QNAM but body
-    ''' = softlight(base, qnam) * qnam — visibly mismatched (the alcalde shows this).
+    ''' <summary>Two-step skin tint — face FALLBACK side. Some NPCs (e.g. MayorMcDonough, Alice)
+    ''' do NOT declare a face tint layer in slot 12 SkinTone. For them the face compositor never
+    ''' runs the slot-12 Palette path, so the face misses the SoftLight that the body gets from
+    ''' TryApplyBodySkinSoftLight against QNAM. The result without this fallback: face = base *
+    ''' QNAM but body = softlight(base, qnam) * qnam — visibly mismatched.
     '''
     ''' This function applies the same one-shot SoftLight pre-pass to the face mesh diffuse
     ''' (using QNAM as the colour, same as body) so both meshes end up doing
@@ -3382,8 +3455,16 @@ Public Class MainForm
     ''' the face diffuse (matches the order in which the body pre-pass runs against the body
     ''' mesh: a single uniform blend on top of whatever is already there). Skipped silently
     ''' when the NPC already has a slot 12 layer, when QNAM is absent, or when the face
-    ''' diffuse isn't in cache yet.</summary>
-    Private Sub TryApplyFaceSkinSoftLight(state As NPCVisualState)
+    ''' diffuse isn't in cache yet.
+    '''
+    ''' Pristine capture: this function calls CapturePristineDiffusePixels BEFORE the SoftLight
+    ''' upload so RefreshFaceTintLivePreview can roll back to the untinted byte image on every
+    ''' live edit. Without that capture the live refresh path has nothing to restore and each
+    ''' edit re-applies softlight on top of the previous baked result, visibly brightening the
+    ''' face on every slider tick (Alice repro). The capture happens on the very first call so
+    ''' first-render and live-edit produce the same number of softlight passes (exactly one).</summary>
+    Private Sub TryApplyFaceSkinSoftLight(state As NPCVisualState, Optional host As NpcRenderHost = Nothing)
+        If host Is Nothing Then host = _renderHost
         If state Is Nothing Then Return
         If Not state.HasTextureLighting Then
             NpcPreviewLog.LogLazy(Function() $"  [FACESKIN] no QNAM (HasTextureLighting=False), skip")
@@ -3398,14 +3479,14 @@ Public Class MainForm
             race = RecordParsers.ParseRACE(raceRec, _pluginManager)
         End If
 
-        ' If the NPC has a slot 12 layer, the face compositor already applied SoftLight via
-        ' the Palette path (when ENABLE_TWO_STEP_SKIN_TINT is True). Don't double-apply.
+        ' If the NPC has any active layer with TTEF 'Takes Skin Tone' (bit 2), the face compositor
+        ' already softlight-modulated the diffuse via that layer's Palette path. Don't double-apply.
         If NpcHasSkinToneLayer(npcData, race, state.IsFemale) Then
-            NpcPreviewLog.LogLazy(Function() $"  [FACESKIN] NPC has slot 12 layer, compositor handled it; skip face fallback")
+            NpcPreviewLog.LogLazy(Function() $"  [FACESKIN] NPC has 'Takes Skin Tone' layer, compositor handled it; skip face fallback")
             Return
         End If
 
-        Dim model = _previewControl.Model
+        Dim model = host.PreviewCtl.Model
         If model Is Nothing OrElse model.meshes Is Nothing Then Return
 
         Dim qnam = state.TextureLightingColor
@@ -3443,13 +3524,20 @@ Public Class MainForm
                 Continue For
             End If
 
-            ' Snapshot pristine before SoftLight destroys the original Texture_ID.
-            CapturePristineDiffusePixels(diffusePath)
+            ' Snapshot pristine BEFORE the SoftLight upload destroys the original Texture_ID.
+            ' This is the contract with RefreshFaceTintLivePreview: every diffuse that we are
+            ' about to softlight here must exist in host.PristineDiffusePixels so the live edit
+            ' path can roll back to it before re-applying. CapturePristineDiffusePixels is a
+            ' no-op when the path was already captured (line 3937 ContainsKey early-out), so
+            ' calling it on every render is cheap and guarantees idempotency for the slot-12
+            ' NPCs that go through TryApplyFaceTints (the compositor captures separately) AND
+            ' for the no-slot-12 NPCs that only reach softlight via this fallback.
+            CapturePristineDiffusePixels(diffusePath, host)
 
             NpcPreviewLog.LogLazy(Function() $"  [FACESKIN] applying softlight(QNAM) onto '{diffusePath}' ({w}x{h}), originalTexID={entry.Texture_ID}, qnam=({qnam.R},{qnam.G},{qnam.B})")
             Dim faceLogger As Action(Of String) = Sub(msg) NpcPreviewLog.Log($"  [FACESKIN]{msg}")
             Dim newTexId = FaceTintCompositor.ApplyUniformBlendOntoFaceTexture(
-                entry.Texture_ID, w, h, qR, qG, qB, SoftLightOp, logger:=faceLogger)
+                host.CompositorState, entry.Texture_ID, w, h, qR, qG, qB, SoftLightOp, logger:=faceLogger)
             If newTexId = 0 OrElse newTexId = entry.Texture_ID Then
                 NpcPreviewLog.LogLazy(Function() $"  [FACESKIN] returned 0 / no-op")
                 Continue For
@@ -3476,17 +3564,18 @@ Public Class MainForm
     ''' tint stays enabled). NO material modification — material.SkinTint and SkinTintColor
     ''' stay exactly as set by the existing override pipeline.
     '''
-    ''' Skipped silently when ENABLE_TWO_STEP_SKIN_TINT is False, when state has no QNAM,
-    ''' when the model has no body meshes, or when their diffuse textures aren't in cache yet
-    ''' (no retry mechanism — body diffuse usually loads with the rest of the body pass).</summary>
-    Private Sub TryApplyBodySkinSoftLight(state As NPCVisualState)
+    ''' Skipped silently when state has no QNAM, when the model has no body meshes, or when
+    ''' their diffuse textures aren't in cache yet (the post-texture-upload hook reschedules in
+    ''' that case — see RenderIntent.PostTextureUploadAction wiring at MainForm:1864).</summary>
+    Private Sub TryApplyBodySkinSoftLight(state As NPCVisualState, Optional host As NpcRenderHost = Nothing)
+        If host Is Nothing Then host = _renderHost
         If state Is Nothing Then Return
         If Not state.HasTextureLighting Then
             NpcPreviewLog.LogLazy(Function() $"  [BODYSKIN] no QNAM (HasTextureLighting=False), skip")
             Return
         End If
 
-        Dim model = _previewControl.Model
+        Dim model = host.PreviewCtl.Model
         If model Is Nothing OrElse model.meshes Is Nothing Then Return
 
         Dim qnam = state.TextureLightingColor
@@ -3548,12 +3637,12 @@ Public Class MainForm
             End If
 
             ' Snapshot pristine before SoftLight destroys the original Texture_ID.
-            CapturePristineDiffusePixels(diffusePath)
+            CapturePristineDiffusePixels(diffusePath, host)
 
             NpcPreviewLog.LogLazy(Function() $"  [BODYSKIN] applying softlight(QNAM) onto '{diffusePath}' ({w}x{h}), originalTexID={entry.Texture_ID}, qnam=({qnam.R},{qnam.G},{qnam.B})")
             Dim bodyLogger As Action(Of String) = Sub(msg) NpcPreviewLog.Log($"  [BODYSKIN]{msg}")
             Dim newTexId = FaceTintCompositor.ApplyUniformBlendOntoFaceTexture(
-                entry.Texture_ID, w, h, qR, qG, qB, SoftLightOp, logger:=bodyLogger)
+                host.CompositorState, entry.Texture_ID, w, h, qR, qG, qB, SoftLightOp, logger:=bodyLogger)
             If newTexId = 0 OrElse newTexId = entry.Texture_ID Then
                 NpcPreviewLog.LogLazy(Function() $"  [BODYSKIN] returned 0 / no-op")
                 Continue For
@@ -3656,7 +3745,9 @@ Public Class MainForm
                                    width As Integer, height As Integer,
                                    layers As IList(Of FaceTintLayerInput),
                                    channel As FaceTintChannel,
-                                   ByRef composedAny As Boolean)
+                                   ByRef composedAny As Boolean,
+                                   Optional host As NpcRenderHost = Nothing)
+        If host Is Nothing Then host = _renderHost
         If model Is Nothing OrElse String.IsNullOrEmpty(texPath) Then Return
 
         Dim entry = knownEntry
@@ -3693,11 +3784,11 @@ Public Class MainForm
         ' SoftLight on top of the previous bake).
         ' channel != Diffuse paths (normal, specular) follow the same logic — those also get
         ' replaced by the compositor for TextureSet layers.
-        CapturePristineDiffusePixels(texPath)
+        CapturePristineDiffusePixels(texPath, host)
 
         NpcPreviewLog.LogLazy(Function() $"  [FACETINT/{channel}] composing onto '{texPath}' ({width}x{height}), originalTexID={entry.Texture_ID}")
         Dim channelLogger As Action(Of String) = Sub(msg) NpcPreviewLog.Log($"  [FACETINT/{channel}]{msg}")
-        Dim newTexId As Integer = FaceTintCompositor.ComposeOntoFaceTexture(entry.Texture_ID, width, height, layers, channel, logger:=channelLogger, cache:=_tintGpuCache)
+        Dim newTexId As Integer = FaceTintCompositor.ComposeOntoFaceTexture(host.CompositorState, entry.Texture_ID, width, height, layers, channel, logger:=channelLogger, cache:=host.TintGpuCache)
         If newTexId = 0 OrElse newTexId = entry.Texture_ID Then
             NpcPreviewLog.LogLazy(Function() $"  [FACETINT/{channel}] compose returned 0 / no-op")
             Return
@@ -3719,7 +3810,9 @@ Public Class MainForm
                                            knownEntry As PreviewModel.Texture_Loaded_Class,
                                            width As Integer, height As Integer,
                                            swaps As IList(Of FaceRegionSwapInput),
-                                           channel As FaceTintChannel)
+                                           channel As FaceTintChannel,
+                                           Optional host As NpcRenderHost = Nothing)
+        If host Is Nothing Then host = _renderHost
         If model Is Nothing OrElse String.IsNullOrEmpty(texPath) Then Return
         If swaps Is Nothing OrElse swaps.Count = 0 Then Return
 
@@ -3752,7 +3845,7 @@ Public Class MainForm
 
         NpcPreviewLog.LogLazy(Function() $"  [REGION-SWAP/{channel}] applying onto '{texPath}' ({width}x{height}), originalTexID={entry.Texture_ID}")
         Dim channelLogger As Action(Of String) = Sub(msg) NpcPreviewLog.Log($"  [REGION-SWAP/{channel}]{msg}")
-        Dim newTexId As Integer = FaceTintCompositor.ApplyRegionSwapsOntoFaceTexture(entry.Texture_ID, width, height, swaps, channel, logger:=channelLogger, cache:=_tintGpuCache)
+        Dim newTexId As Integer = FaceTintCompositor.ApplyRegionSwapsOntoFaceTexture(host.CompositorState, entry.Texture_ID, width, height, swaps, channel, logger:=channelLogger, cache:=host.TintGpuCache)
         If newTexId = 0 OrElse newTexId = entry.Texture_ID Then
             NpcPreviewLog.LogLazy(Function() $"  [REGION-SWAP/{channel}] returned 0 / no-op")
             Return
@@ -3792,12 +3885,12 @@ Public Class MainForm
     End Function
 
     ''' <summary>Cached lookup keyed by the already-normalized dictionary key. Same key is
-    ''' used as the GPU cache key in <see cref="_tintGpuCache"/>, so the byte cache and the
+    ''' used as the GPU cache key in <see cref="_renderHost.TintGpuCache"/>, so the byte cache and the
     ''' GL-texture cache stay paired entry-for-entry.</summary>
     Private Function LoadTintLayerBytesByKey(normalizedKey As String) As Byte()
         If String.IsNullOrEmpty(normalizedKey) Then Return Nothing
         Dim cached As Byte() = Nothing
-        If _tintBytesCache.TryGetValue(normalizedKey, cached) Then Return cached  ' may be Nothing (negative cache)
+        If _tintBytesCache.TryGetValue(normalizedKey, cached) AndAlso cached IsNot Nothing Then Return cached
 
         Dim result As Byte() = Nothing
         Dim loc As FilesDictionary_class.File_Location = Nothing
@@ -3810,7 +3903,10 @@ Public Class MainForm
             End Try
         End If
 
-        _tintBytesCache(normalizedKey) = result  ' positive or negative — both prevent re-lookup
+        ' Cache only successful reads. A failed read (FilesDictionary miss, IO error, empty
+        ' bytes) is left out so the next call retries — caching Nothing was the bug behind
+        ' "if the first read fails, every subsequent NPC sees broken tints".
+        If result IsNot Nothing Then _tintBytesCache(normalizedKey) = result
         Return result
     End Function
 
@@ -3819,26 +3915,27 @@ Public Class MainForm
     ''' BA2 read cannot leak into a new asset set.</summary>
     Private Sub ClearFaceTintCaches()
         _tintBytesCache.Clear()
-        _tintGpuCache.Clear()
-        _pristineDiffusePixels.Clear()
+        _renderHost.TintGpuCache.Clear()
+        _renderHost.PristineDiffusePixels.Clear()
     End Sub
 
     ''' <summary>Decode-once snapshot: read the DDS bytes for <paramref name="diffusePath"/>,
     ''' run them through the native loader to get the level-0 RGBA8 pixel buffer, and stash
-    ''' (pixels, width, height) in <see cref="_pristineDiffusePixels"/>. No-op when a path is
+    ''' (pixels, width, height) in <see cref="_renderHost.PristineDiffusePixels"/>. No-op when a path is
     ''' already cached — the on-disk DDS doesn't change for the lifetime of an NPC.
     '''
     ''' Called from the per-path compositor entry points before the original Texture_ID gets
     ''' destroyed. The decode happens exactly once per path per NPC; every subsequent live
     ''' tint refresh just re-uploads the cached pixels without touching the DDS again.</summary>
-    Private Sub CapturePristineDiffusePixels(diffusePath As String)
+    Private Sub CapturePristineDiffusePixels(diffusePath As String, Optional host As NpcRenderHost = Nothing)
+        If host Is Nothing Then host = _renderHost
         If String.IsNullOrEmpty(diffusePath) Then Return
-        If _pristineDiffusePixels.ContainsKey(diffusePath) Then Return
+        If host.PristineDiffusePixels.ContainsKey(diffusePath) Then Return
 
         Dim loc As FilesDictionary_class.File_Location = Nothing
         If Not FilesDictionary_class.Dictionary.TryGetValue(diffusePath, loc) Then
             ' Negative cache so we don't keep retrying paths that don't resolve.
-            _pristineDiffusePixels(diffusePath) = Nothing
+            host.PristineDiffusePixels(diffusePath) = Nothing
             NpcPreviewLog.LogLazy(Function() $"  [PRISTINE] '{diffusePath}' not in FilesDictionary — live refresh on this path will fall back to FullReload")
             Return
         End If
@@ -3849,7 +3946,7 @@ Public Class MainForm
         Catch
         End Try
         If ddsBytes Is Nothing OrElse ddsBytes.Length = 0 Then
-            _pristineDiffusePixels(diffusePath) = Nothing
+            host.PristineDiffusePixels(diffusePath) = Nothing
             Return
         End If
 
@@ -3863,17 +3960,17 @@ Public Class MainForm
             tex = DirectXTexWrapperCLI.Loader.ConvertForBitmap(ddsBytes)
         Catch ex As Exception
             NpcPreviewLog.LogLazy(Function() $"  [PRISTINE] decode failed for '{diffusePath}': {ex.Message}")
-            _pristineDiffusePixels(diffusePath) = Nothing
+            host.PristineDiffusePixels(diffusePath) = Nothing
             Return
         End Try
         If tex Is Nothing OrElse Not tex.Loaded OrElse tex.Levels Is Nothing OrElse tex.Levels.Count = 0 Then
-            _pristineDiffusePixels(diffusePath) = Nothing
+            host.PristineDiffusePixels(diffusePath) = Nothing
             Return
         End If
 
         Dim lvl = tex.Levels(0)
         If lvl Is Nothing OrElse lvl.Data Is Nothing OrElse lvl.Data.Length = 0 Then
-            _pristineDiffusePixels(diffusePath) = Nothing
+            host.PristineDiffusePixels(diffusePath) = Nothing
             Return
         End If
         ' Copy the bytes off the native object (the wrapper recycles its own buffer); we want
@@ -3881,7 +3978,7 @@ Public Class MainForm
         Dim pixels(lvl.Data.Length - 1) As Byte
         Buffer.BlockCopy(lvl.Data, 0, pixels, 0, lvl.Data.Length)
 
-        _pristineDiffusePixels(diffusePath) = New PristinePixels With {
+        host.PristineDiffusePixels(diffusePath) = New NpcRenderHost.PristinePixels With {
             .Pixels = pixels,
             .Width = lvl.Width,
             .Height = lvl.Height,
@@ -3906,20 +4003,21 @@ Public Class MainForm
     '''
     ''' Returns False if any pristine path failed to resolve (caller should fall back to a
     ''' full reload for correctness on this edit).</summary>
-    Private Function RefreshFaceTintLivePreview() As Boolean
-        If _lastRenderedState Is Nothing OrElse _lastRenderData Is Nothing Then Return False
-        Dim model = _previewControl?.Model
+    Friend Function RefreshFaceTintLivePreview(Optional host As NpcRenderHost = Nothing) As Boolean
+        If host Is Nothing Then host = _renderHost
+        If host.LastRenderedState Is Nothing OrElse host.LastRenderData Is Nothing Then Return False
+        Dim model = host.PreviewCtl?.Model
         If model Is Nothing OrElse model.meshes Is Nothing Then Return False
 
         ' Stage 0: re-pull QNAM (and any other state field that overlay-mutates per edit)
-        ' from the overlay preset. _lastRenderedState was seeded once at NPC load (line
+        ' from the overlay preset. host.LastRenderedState was seeded once at NPC load (line
         ' 4106-4107 path) so it's stale after the user changes the combo. Without this sync,
         ' the rest of the function reads the OLD HairColorFormID — render shows previous hair
         ' color regardless of what the user picked.
         Dim overlayPreset As LooksmenuLoader.LooksmenuPreset = Nothing
-        If _appliedPresets.TryGetValue(_lastRenderedState.RootNpcFormID, overlayPreset) Then
+        If _appliedPresets.TryGetValue(host.LastRenderedState.RootNpcFormID, overlayPreset) Then
             If overlayPreset.HairColorFormID <> 0UI Then
-                _lastRenderedState.HairColorFormID = overlayPreset.HairColorFormID
+                host.LastRenderedState.HairColorFormID = overlayPreset.HairColorFormID
             End If
         End If
 
@@ -3928,7 +4026,7 @@ Public Class MainForm
         ' original bytes onto a fresh GL texture, swap it into the entry, and delete the stale
         ' baked one. After this, the next compositor + softlight passes will start from a
         ' clean baseline.
-        If Not RestoreCapturedDiffusesToPristine(model) Then
+        If Not RestoreCapturedDiffusesToPristine(model, host) Then
             ' Some path lacked pristine bytes (FilesDictionary miss) — the live preview can't
             ' guarantee correctness without a full reload.
             Return False
@@ -3941,16 +4039,16 @@ Public Class MainForm
         ' tone into state ourselves before calling the SoftLight pass, otherwise body would
         ' be tinted with the previous QNAM/SkinTone snapshot and face/body would diverge as
         ' the user moves the slot-12 colour combo.
-        Dim freshSkinTone = ResolveNpcSkinToneColor(_lastRenderedState)
+        Dim freshSkinTone = ResolveNpcSkinToneColor(host.LastRenderedState)
         If freshSkinTone.HasValue Then
-            _lastRenderedState.HasTextureLighting = True
-            _lastRenderedState.TextureLightingColor = freshSkinTone.Value
+            host.LastRenderedState.HasTextureLighting = True
+            host.LastRenderedState.TextureLightingColor = freshSkinTone.Value
         End If
 
         ' Stage 2b: re-run compositor + SoftLight passes (same chain ApplyFaceTintOverlay uses
         ' on first render). The compositor will read npcData.FaceTintLayers from the
         ' overlay-applied NPC_Data, so the freshly-edited preset is what gets baked.
-        ApplyFaceTintOverlay(_lastRenderedState, _lastRenderData)
+        ApplyFaceTintOverlay(host.LastRenderedState, host.LastRenderData, host)
 
         ' Stage 3: refresh material uniforms (SkinTintColor / HairTintColor + GrayscaleToPalette
         ' remap params) on every loaded mesh. These were set at NIF-load time inside
@@ -3958,13 +4056,13 @@ Public Class MainForm
         ' in place. The palette branch must mirror ApplyShapeMaterialOverrides exactly (line
         ' 7528-7556 in MainForm.vb) so a CLFM with HasRemappingIndex correctly drives
         ' GrayscaleToPaletteScale to a different palette row, not just a different tint colour.
-        Dim skinTone = ResolveNpcSkinToneColor(_lastRenderedState)
-        Dim clfmData = If(_lastRenderedState.HairColorFormID <> 0UI, ResolveColorFormData(_lastRenderedState.HairColorFormID), Nothing)
+        Dim skinTone = ResolveNpcSkinToneColor(host.LastRenderedState)
+        Dim clfmData = If(host.LastRenderedState.HairColorFormID <> 0UI, ResolveColorFormData(host.LastRenderedState.HairColorFormID), Nothing)
         Dim hairPaletteTexture As String = ""
         If clfmData IsNot Nothing AndAlso clfmData.HasRemappingIndex Then
-            hairPaletteTexture = ResolveRaceHairLookupTexture(_lastRenderedState)
+            hairPaletteTexture = ResolveRaceHairLookupTexture(host.LastRenderedState)
         End If
-        Dim hairCol = ResolveColorFormColor(_lastRenderedState.HairColorFormID)
+        Dim hairCol = ResolveColorFormColor(host.LastRenderedState.HairColorFormID)
         For Each mesh In model.meshes
             If mesh Is Nothing OrElse mesh.MeshData Is Nothing OrElse mesh.MeshData.Material Is Nothing Then Continue For
             Dim mat = mesh.MeshData.Material.MaterialBase
@@ -3974,11 +4072,19 @@ Public Class MainForm
             End If
             If mat.Hair OrElse mat.GrayscaleToPaletteColor Then
                 Dim didPalette As Boolean = False
-                If clfmData IsNot Nothing AndAlso clfmData.HasRemappingIndex AndAlso hairPaletteTexture <> "" Then
-                    mat.GrayscaleToPaletteColor = True
-                    mat.GrayscaleToPaletteScale = clfmData.RemappingIndex
-                    mat.GreyscaleTexture = hairPaletteTexture
-                    didPalette = True
+                If clfmData IsNot Nothing AndAlso clfmData.HasRemappingIndex Then
+                    ' Same priority as ApplyShapeMaterialOverrides: BGSM's GreyscaleTexture
+                    ' first (per-shape, authored-stylist intent), RACE.HNAM/HLTX as fallback.
+                    Dim effectivePaletteTex As String = If(mat.GreyscaleTexture, "")
+                    If effectivePaletteTex = "" Then
+                        effectivePaletteTex = hairPaletteTexture
+                    End If
+                    If effectivePaletteTex <> "" Then
+                        mat.GrayscaleToPaletteColor = True
+                        mat.GrayscaleToPaletteScale = clfmData.RemappingIndex
+                        mat.GreyscaleTexture = effectivePaletteTex
+                        didPalette = True
+                    End If
                 End If
                 If Not didPalette AndAlso hairCol.HasValue Then
                     mat.HairTintColor = hairCol.Value
@@ -3996,15 +4102,16 @@ Public Class MainForm
     '''
     ''' Returns False when a captured path's pristine pixels are missing — caller falls back
     ''' to full reload.</summary>
-    Private Function RestoreCapturedDiffusesToPristine(model As PreviewModel) As Boolean
-        If _pristineDiffusePixels.Count = 0 Then
+    Private Function RestoreCapturedDiffusesToPristine(model As PreviewModel, Optional host As NpcRenderHost = Nothing) As Boolean
+        If host Is Nothing Then host = _renderHost
+        If host.PristineDiffusePixels.Count = 0 Then
             ' Nothing was ever composited — nothing to restore. The upcoming ApplyFaceTintOverlay
             ' will run for the first time and CapturePristineDiffusePixels will populate the
             ' cache as the compositor walks each path.
             Return True
         End If
 
-        For Each kv In _pristineDiffusePixels
+        For Each kv In host.PristineDiffusePixels
             Dim path = kv.Key
             Dim pristine = kv.Value
             If pristine Is Nothing OrElse pristine.Pixels Is Nothing OrElse pristine.Pixels.Length = 0 Then
@@ -4021,38 +4128,64 @@ Public Class MainForm
             ' This is the single hot path on every slider tick — if you change anything here
             ' measure the slider responsiveness afterwards.
             Dim newId As Integer = 0
+            Dim uploadOk As Boolean = False
             Try
+                ' Drain any pre-existing GL error so the post-upload check below only
+                ' reports failures attributable to THIS upload.
+                Dim drainGuard As Integer = 0
+                Do While OpenTK.Graphics.OpenGL4.GL.GetError() <> OpenTK.Graphics.OpenGL4.ErrorCode.NoError
+                    drainGuard += 1
+                    If drainGuard > 32 Then Exit Do
+                Loop
+
                 newId = OpenTK.Graphics.OpenGL4.GL.GenTexture()
-                OpenTK.Graphics.OpenGL4.GL.BindTexture(OpenTK.Graphics.OpenGL4.TextureTarget.Texture2D, newId)
-                OpenTK.Graphics.OpenGL4.GL.TexParameter(OpenTK.Graphics.OpenGL4.TextureTarget.Texture2D, OpenTK.Graphics.OpenGL4.TextureParameterName.TextureMinFilter, CInt(OpenTK.Graphics.OpenGL4.TextureMinFilter.Linear))
-                OpenTK.Graphics.OpenGL4.GL.TexParameter(OpenTK.Graphics.OpenGL4.TextureTarget.Texture2D, OpenTK.Graphics.OpenGL4.TextureParameterName.TextureMagFilter, CInt(OpenTK.Graphics.OpenGL4.TextureMagFilter.Linear))
-                OpenTK.Graphics.OpenGL4.GL.TexParameter(OpenTK.Graphics.OpenGL4.TextureTarget.Texture2D, OpenTK.Graphics.OpenGL4.TextureParameterName.TextureWrapS, CInt(OpenTK.Graphics.OpenGL4.TextureWrapMode.ClampToEdge))
-                OpenTK.Graphics.OpenGL4.GL.TexParameter(OpenTK.Graphics.OpenGL4.TextureTarget.Texture2D, OpenTK.Graphics.OpenGL4.TextureParameterName.TextureWrapT, CInt(OpenTK.Graphics.OpenGL4.TextureWrapMode.ClampToEdge))
-                Dim handle = System.Runtime.InteropServices.GCHandle.Alloc(pristine.Pixels, System.Runtime.InteropServices.GCHandleType.Pinned)
-                Try
-                    ' DirectXTexWrapperCLI.Loader.ConvertForBitmap (the source of pristine.Pixels)
-                    ' produces GDI Format32bppArgb byte order, which is B,G,R,A in memory. Tell
-                    ' OpenGL that with PixelFormat.Bgra; the driver swaps to RGBA on upload so the
-                    ' internal representation is correct. Using PixelFormat.Rgba here gave a blue
-                    ' body (the body diffuse came back with R and B swapped on every live refresh).
-                    OpenTK.Graphics.OpenGL4.GL.TexImage2D(
-                        OpenTK.Graphics.OpenGL4.TextureTarget.Texture2D, 0,
-                        OpenTK.Graphics.OpenGL4.PixelInternalFormat.Rgba8,
-                        pristine.Width, pristine.Height, 0,
-                        OpenTK.Graphics.OpenGL4.PixelFormat.Bgra,
-                        OpenTK.Graphics.OpenGL4.PixelType.UnsignedByte,
-                        handle.AddrOfPinnedObject())
-                Finally
-                    handle.Free()
-                End Try
-                OpenTK.Graphics.OpenGL4.GL.BindTexture(OpenTK.Graphics.OpenGL4.TextureTarget.Texture2D, 0)
+                If newId = 0 Then
+                    NpcPreviewLog.LogLazy(Function() $"  [PRISTINE-RESTORE] GenTexture returned 0 for '{path}'")
+                Else
+                    OpenTK.Graphics.OpenGL4.GL.BindTexture(OpenTK.Graphics.OpenGL4.TextureTarget.Texture2D, newId)
+                    OpenTK.Graphics.OpenGL4.GL.TexParameter(OpenTK.Graphics.OpenGL4.TextureTarget.Texture2D, OpenTK.Graphics.OpenGL4.TextureParameterName.TextureMinFilter, CInt(OpenTK.Graphics.OpenGL4.TextureMinFilter.Linear))
+                    OpenTK.Graphics.OpenGL4.GL.TexParameter(OpenTK.Graphics.OpenGL4.TextureTarget.Texture2D, OpenTK.Graphics.OpenGL4.TextureParameterName.TextureMagFilter, CInt(OpenTK.Graphics.OpenGL4.TextureMagFilter.Linear))
+                    OpenTK.Graphics.OpenGL4.GL.TexParameter(OpenTK.Graphics.OpenGL4.TextureTarget.Texture2D, OpenTK.Graphics.OpenGL4.TextureParameterName.TextureWrapS, CInt(OpenTK.Graphics.OpenGL4.TextureWrapMode.ClampToEdge))
+                    OpenTK.Graphics.OpenGL4.GL.TexParameter(OpenTK.Graphics.OpenGL4.TextureTarget.Texture2D, OpenTK.Graphics.OpenGL4.TextureParameterName.TextureWrapT, CInt(OpenTK.Graphics.OpenGL4.TextureWrapMode.ClampToEdge))
+                    Dim handle = System.Runtime.InteropServices.GCHandle.Alloc(pristine.Pixels, System.Runtime.InteropServices.GCHandleType.Pinned)
+                    Try
+                        ' DirectXTexWrapperCLI.Loader.ConvertForBitmap (the source of pristine.Pixels)
+                        ' produces GDI Format32bppArgb byte order, which is B,G,R,A in memory. Tell
+                        ' OpenGL that with PixelFormat.Bgra; the driver swaps to RGBA on upload so the
+                        ' internal representation is correct. Using PixelFormat.Rgba here gave a blue
+                        ' body (the body diffuse came back with R and B swapped on every live refresh).
+                        OpenTK.Graphics.OpenGL4.GL.TexImage2D(
+                            OpenTK.Graphics.OpenGL4.TextureTarget.Texture2D, 0,
+                            OpenTK.Graphics.OpenGL4.PixelInternalFormat.Rgba8,
+                            pristine.Width, pristine.Height, 0,
+                            OpenTK.Graphics.OpenGL4.PixelFormat.Bgra,
+                            OpenTK.Graphics.OpenGL4.PixelType.UnsignedByte,
+                            handle.AddrOfPinnedObject())
+                    Finally
+                        handle.Free()
+                    End Try
+                    OpenTK.Graphics.OpenGL4.GL.BindTexture(OpenTK.Graphics.OpenGL4.TextureTarget.Texture2D, 0)
+
+                    ' Certify GL accepted the upload. A silent error here means the texture
+                    ' is allocated but contents are undefined (driver typically zeros it =
+                    ' solid black). Refuse to install it in the cache; caller will FullReload.
+                    Dim postErr = OpenTK.Graphics.OpenGL4.GL.GetError()
+                    If postErr <> OpenTK.Graphics.OpenGL4.ErrorCode.NoError Then
+                        NpcPreviewLog.LogLazy(Function() $"  [PRISTINE-RESTORE] GL error 0x{Hex(CInt(postErr))} ({postErr}) for '{path}'")
+                    Else
+                        uploadOk = True
+                    End If
+                End If
             Catch ex As Exception
+                NpcPreviewLog.LogLazy(Function() $"  [PRISTINE-RESTORE] upload failed for '{path}': {ex.Message}")
+            End Try
+
+            If Not uploadOk Then
                 If newId <> 0 Then
                     Try : OpenTK.Graphics.OpenGL4.GL.DeleteTexture(newId) : Catch : End Try
                 End If
-                NpcPreviewLog.LogLazy(Function() $"  [PRISTINE-RESTORE] upload failed for '{path}': {ex.Message}")
                 Return False
-            End Try
+            End If
 
             Dim oldId = entry.Texture_ID
             entry.Texture_ID = newId
@@ -4324,6 +4457,55 @@ Public Class MainForm
             End Try
         Next
 
+        ' CHILD-TRI-DUMP: enumerate every .tri entry in FilesDictionary whose path contains
+        ' "child" so we know exactly what TRIs vanilla / loaded mods ship for the Child race.
+        ' If any of them carries the Brow/Chin/EyesMove morph names that HumanChildRace.MorphValues
+        ' declares but BaseFemaleHeadChargen.tri lacks, we have a Child-specific TRI we should
+        ' be loading instead of (or in addition to) the adult chargen TRI.
+        NpcPreviewLog.LogSeparator("CHILD-TRI-DUMP: every .tri in FilesDictionary whose path contains 'child'")
+        Dim childTris = New List(Of String)
+        For Each kv In FilesDictionary_class.Dictionary
+            Dim k = kv.Key
+            If k.EndsWith(".tri", StringComparison.OrdinalIgnoreCase) AndAlso _
+               k.IndexOf("child", StringComparison.OrdinalIgnoreCase) >= 0 Then
+                childTris.Add(k)
+            End If
+        Next
+        childTris.Sort(StringComparer.OrdinalIgnoreCase)
+        NpcPreviewLog.LogLazy(Function() $"  found {childTris.Count} matching .tri paths")
+        For Each childTri In childTris
+            Dim probePath = childTri
+            Dim loc As FilesDictionary_class.File_Location = Nothing
+            If Not FilesDictionary_class.Dictionary.TryGetValue(probePath, loc) Then Continue For
+            Try
+                Dim bytes = loc.GetBytes()
+                If bytes Is Nothing OrElse bytes.Length < 64 Then
+                    NpcPreviewLog.LogLazy(Function() $"  [CHILD-TRI] '{probePath}': empty/short ({If(bytes Is Nothing, 0, bytes.Length)} B)")
+                    Continue For
+                End If
+                Dim magic = System.Text.Encoding.ASCII.GetString(bytes, 0, 8)
+                If magic.StartsWith("FRTRI") Then
+                    Dim numVerts = BitConverter.ToUInt32(bytes, 8)
+                    Dim numMorphs = BitConverter.ToUInt32(bytes, 8 + 7 * 4)
+                    NpcPreviewLog.LogLazy(Function() $"  [CHILD-TRI] '{probePath}' magic='{magic.TrimEnd(ChrW(0))}' verts={numVerts} morphs={numMorphs} bytes={bytes.Length}")
+                    Try
+                        Dim head = TriHeadParser.ParseTriHeadFromBytes(bytes)
+                        If head IsNot Nothing Then
+                            Dim allNames = head.Morphs.Select(Function(m) m.Name).ToList()
+                            NpcPreviewLog.LogLazy(Function() $"    morphs: [{String.Join(", ", allNames)}]")
+                        End If
+                    Catch
+                        NpcPreviewLog.LogLazy(Function() $"    (could not parse as TriHead — likely BodySlide PIRT, not chargen)")
+                    End Try
+                Else
+                    ' PIRT (BodySlide) tri — different magic, just log size.
+                    NpcPreviewLog.LogLazy(Function() $"  [CHILD-TRI] '{probePath}' magic='{magic.TrimEnd(ChrW(0))}' bytes={bytes.Length} (likely BodySlide PIRT, not chargen)")
+                End If
+            Catch ex As Exception
+                NpcPreviewLog.LogLazy(Function() $"  [CHILD-TRI] '{probePath}': error — {ex.Message}")
+            End Try
+        Next
+
         ' MOUTH-NIF-PROBE: enumerate shapes (name + vert count) inside FemaleMouth.nif and its
         ' _faceBones variant so we know exactly what geometry the engine puts where.
         NpcPreviewLog.LogSeparator("MOUTH-NIF-PROBE: shape names and vert counts inside FemaleMouth NIFs")
@@ -4424,7 +4606,8 @@ Public Class MainForm
     ''' Uses MSDK/MSDV morph presets from Chargen.tri (via RACE mapping) and
     ''' FMRI/FMRS face bone transforms (applied via skeleton DeltaTransform).
     ''' Body weight morphs are NOT applied (vanilla uses hardcoded bone scaling, not TRI).</summary>
-    Private Function BuildFaceMorphResolver(state As NPCVisualState, renderData As PreviewResolutionResult) As IMorphResolver
+    Private Function BuildFaceMorphResolver(state As NPCVisualState, renderData As PreviewResolutionResult, Optional host As NpcRenderHost = Nothing) As IMorphResolver
+        If host Is Nothing Then host = _renderHost
         If state Is Nothing Then Return Nothing
 
         ' Get the full NPC_Data for the model source (the NPC whose face we're rendering)
@@ -4522,9 +4705,10 @@ Public Class MainForm
     ''' The CheckBoxBodyTri toggle gates the entire BodySlide vertex-morph layer (BODYTRI .tri
     ''' lookup + slider apply). Unchecked = render exactly as if the JSON had no BodyMorphs key
     ''' for this NPC.</summary>
-    Private Function BuildBodyMorphResolver(state As NPCVisualState, renderData As PreviewResolutionResult) As IMorphResolver
+    Private Function BuildBodyMorphResolver(state As NPCVisualState, renderData As PreviewResolutionResult, Optional host As NpcRenderHost = Nothing) As IMorphResolver
+        If host Is Nothing Then host = _renderHost
         If state Is Nothing OrElse renderData Is Nothing Then Return Nothing
-        If Not CheckBoxBodyTri.Checked Then Return Nothing
+        If Not host.Toggles.BodyTri Then Return Nothing
         Dim sliders = GetEffectiveBodyMorphSliders(state.RootNpcFormID)
         If sliders Is Nothing OrElse sliders.Count = 0 Then Return Nothing
         Return New BodySlideMorphResolver(sliders, renderData.MeshDictKeys)
@@ -4538,10 +4722,11 @@ Public Class MainForm
     ''' Toggles are granular per-pipeline:
     '''   • CheckBoxApplyVertexMorphs gates the face FRTRI003 resolver only.
     '''   • CheckBoxBodyTri gates the body PIRT resolver only (inside BuildBodyMorphResolver).</summary>
-    Private Function BuildCompositeMorphResolver(state As NPCVisualState, renderData As PreviewResolutionResult) As IMorphResolver
+    Friend Function BuildCompositeMorphResolver(state As NPCVisualState, renderData As PreviewResolutionResult, Optional host As NpcRenderHost = Nothing) As IMorphResolver
+        If host Is Nothing Then host = _renderHost
         Dim face As IMorphResolver = Nothing
-        If CheckBoxApplyVertexMorphs.Checked Then face = BuildFaceMorphResolver(state, renderData)
-        Dim body = BuildBodyMorphResolver(state, renderData)
+        If host.Toggles.ApplyVertexMorphs Then face = BuildFaceMorphResolver(state, renderData, host)
+        Dim body = BuildBodyMorphResolver(state, renderData, host)
         If face Is Nothing AndAlso body Is Nothing Then Return Nothing
         If face IsNot Nothing AndAlso body Is Nothing Then Return face
         If body IsNot Nothing AndAlso face Is Nothing Then Return body
@@ -5632,6 +5817,11 @@ Public Class MainForm
     ''' the per-shape ARMA sculpt that would otherwise be resolved from renderData. Pass Nothing for
     ''' "no sculpt" (base pose used by shapes whose ARMA has no sculpt). Pass a specific dict (per ARMA)
     ''' when building the pose for a specific armor's skeleton clone — the per-skeleton-per-ARMA flow.</summary>
+    ' [REFACTOR-NOTE] Stays in MainForm because: calls Private MainForm helpers GetRaceHeight,
+    ' ResolveBodyWeightData and BuildFaceBoneTransforms — all three use _pluginManager,
+    ' GetParsedNpc, ApplyPresetOverlayToNpcData and GetFacialBoneRegionsForRace (MainForm-private
+    ' state and helpers). Per Phase 3 sub-phase D-3b rules: no callbacks, no deeper refactor —
+    ' leave in MainForm until those helpers are also migrated.
     Private Function BuildMergedNpcPose(state As NPCVisualState, renderData As PreviewResolutionResult,
                                         faceMorphsEnabled As Boolean,
                                         bodyWeightEnabled As Boolean,
@@ -5955,6 +6145,11 @@ Public Class MainForm
     ''' multi-skeleton-per-ARMA flow needs (load + cloth-bone + robot extension + face-bone merge).
     ''' Caller is responsible for ApplyPose afterwards. Used to build the base skeleton + one clone
     ''' per ARMA with sculpt.</summary>
+    ' [REFACTOR-NOTE] Stays in MainForm because: calls Private MainForm helper
+    ' MergeRobotExtendedSkeletonsIfRobot, which itself uses _pluginManager, RecordParsers.ParseRACE
+    ' and NormalizeDictionaryKeyWithMeshesPrefix (all MainForm-private). Per Phase 3 sub-phase D-3b
+    ' rules: no callbacks, no deeper refactor — leave in MainForm until those helpers are also
+    ' migrated (or until BuildSkeletonInstance is reworked to take a callback / be split).
     Private Function BuildSkeletonInstance(state As NPCVisualState, renderData As PreviewResolutionResult,
                                            faceSkelBytes As Byte()) As SkeletonInstance
         Dim s As New SkeletonInstance()
@@ -6040,7 +6235,7 @@ Public Class MainForm
         result.SkeletonKey = ResolveSkeletonKey(previewVariant.State, result.Warnings)
         NpcPreviewLog.LogLazy(Function() $"  Skeleton={result.SkeletonKey}")
 
-        Dim candidates = CollectMeshCandidates(previewVariant.State, result.Warnings, previewVariant.UseFaceGen)
+        Dim candidates = CollectMeshCandidates(previewVariant.State, result.Warnings, previewVariant.UseFaceGen, previewVariant.OnlyFaceCollect)
         NpcPreviewLog.LogLazy(Function() $"  Candidates collected: {candidates.Count}")
         For Each c In candidates
             NpcPreviewLog.LogLazy(Function() $"    [{c.Kind}] type={c.HeadPartType} slot={c.SlotMask:X8} pri={c.Priority} txst={c.TextureSetFormID:X8} mswp={c.MaterialSwapFormID:X8} solidTint={c.UseSolidTint} bodyTex={c.UsesBodyTexture} colorFID={c.HeadPartColorFormID:X8} key={c.DictKey}")
@@ -6240,6 +6435,17 @@ Public Class MainForm
             Else
                 state.HeadTextureFormID = If(race.MaleDefaultFaceTextureFormID <> 0UI, race.MaleDefaultFaceTextureFormID, race.FemaleDefaultFaceTextureFormID)
             End If
+        End If
+
+        ' HairColor fallback: when NPC.HCLF is absent (and the template chain didn't supply one
+        ' either — Model/Animation traits already collapsed by ResolveModelAnimationStateFromNPC),
+        ' the engine reads RACE.HCLF[gender] (Default Hair Colors). Mirror that here. Each gender
+        ' slot can be NULL per wbFormIDCk([NULL, CLFM]) at wbDefinitionsFO4.pas:11575 — same
+        ' "own gender first, fallback to the other" rule we use for DefaultFaceTexture above.
+        If state.HairColorFormID = 0UI Then
+            Dim ownGender = If(state.IsFemale, race.FemaleDefaultHairColorFormID, race.MaleDefaultHairColorFormID)
+            Dim otherGender = If(state.IsFemale, race.MaleDefaultHairColorFormID, race.FemaleDefaultHairColorFormID)
+            state.HairColorFormID = If(ownGender <> 0UI, ownGender, otherGender)
         End If
     End Sub
 
@@ -6522,13 +6728,14 @@ Public Class MainForm
         Return picked
     End Function
 
-    Private Function CollectMeshCandidates(state As NPCVisualState, warnings As List(Of String), Optional useFaceGen As Boolean = False) As List(Of MeshCandidate)
+    Private Function CollectMeshCandidates(state As NPCVisualState, warnings As List(Of String), Optional useFaceGen As Boolean = False, Optional onlyFaceCollect As Boolean = False) As List(Of MeshCandidate)
         Dim candidates As New List(Of MeshCandidate)
         Dim order As Integer = 0
-        Dim mode = CurrentPreviewMode
 
-        ' In OnlyFace mode, skip body skin and outfit meshes entirely
-        If mode = PreviewMode.FullCharacter Then
+        ' In OnlyFace mode, skip body skin and outfit meshes entirely. The flag is passed in
+        ' from PreviewVariantDefinition (ResolvePreviewVariant) which composes it from the
+        ' calling host (editor sets host.OnlyFaceCollect=True; MainForm reads its ComboBox).
+        If Not onlyFaceCollect Then
             If state.SkinFormID <> 0UI Then
                 CollectArmoCandidates(state.SkinFormID, state, MeshCandidateKind.Skin, candidates, order, warnings)
             End If
@@ -7234,69 +7441,6 @@ Public Class MainForm
         Return ShapeRenderCategory.Other
     End Function
 
-    ''' <summary>Aplica RenderHide a cada mesh según su categoría y el estado de los toggles
-    ''' independientes (CheckBoxRenderArmor, CheckBoxRenderUnderarmor). NO re-resuelve candidates
-    ''' ni recarga NIFs — sólo flip del flag y refresh GL.</summary>
-    Private Sub ApplyRenderToggleVisibility()
-        If _previewControl Is Nothing OrElse _previewControl.Model Is Nothing OrElse _lastRenderData Is Nothing Then Return
-        Dim renderArmor = CheckBoxRenderArmor.Checked
-        Dim renderUnderarmor = CheckBoxRenderUnderarmor.Checked
-        Dim renderBody = CheckBoxRenderBody.Checked
-        Dim renderHeadwear = CheckBoxRenderHeadwear.Checked
-        Dim renderGore = CheckBoxRenderGore.Checked
-
-        Dim hidden As Integer = 0
-        Dim shown As Integer = 0
-        For Each mesh In _previewControl.Model.meshes
-            If mesh Is Nothing OrElse mesh.MeshData Is Nothing OrElse mesh.MeshData.Shape Is Nothing Then Continue For
-            Dim shape = mesh.MeshData.Shape
-            Dim cat As ShapeRenderCategory = ShapeRenderCategory.Other
-            _lastRenderData.ShapeCategory.TryGetValue(shape, cat)
-            Dim covered As Boolean = False
-            _lastRenderData.ShapeCoveredByOutfit.TryGetValue(shape, covered)
-            Dim occludedByHeadwear As Boolean = False
-            _lastRenderData.ShapeOccludedByHeadwear.TryGetValue(shape, occludedByHeadwear)
-            Dim meatcapCls As MeatcapClassification = MeatcapClassification.Normal
-            _lastRenderData.ShapeMeatcap.TryGetValue(shape, meatcapCls)
-
-            Dim hide As Boolean = False
-            ' Render gore OFF → ocultar meatcap shapes (BSSubIndexTriShape sub-segments con
-            ' userSlotID en SECTIONCAP/TORSOCAP del enum NIF o en el rango Gore 100/102/103 del
-            ' .xrc de BS-OS). Geometría interna del corte que sólo se ve post-dismemberment. ON
-            ' las muestra para inspección.
-            If Not renderGore AndAlso meatcapCls <> MeatcapClassification.Normal Then hide = True
-            ' Render armor OFF → hide piezas [A] over-armor.
-            If Not renderArmor AndAlso cat = ShapeRenderCategory.ArmorOver Then hide = True
-            ' Render underarmor OFF → hide ropa que cubre body/hands desnudos: Underarmor (Outfit
-            ' con BODY/[U]) + GloveOutfit (Outfit con hand bits). Apagar estos destapa el Skin
-            ' subyacente, replicando el efecto in-game `unequipall`.
-            If Not renderUnderarmor AndAlso (cat = ShapeRenderCategory.Underarmor OrElse cat = ShapeRenderCategory.GloveOutfit) Then hide = True
-            ' Render body OFF → hide cuerpo desnudo del NPC: body skin + naked hands + head parts.
-            ' Aplica independientemente de si el Skin está cubierto o no (cat captura BodySkin sin
-            ' necesidad de mirar `covered`).
-            If Not renderBody AndAlso (cat = ShapeRenderCategory.BodySkin OrElse cat = ShapeRenderCategory.NakedHands OrElse cat = ShapeRenderCategory.HeadPart) Then hide = True
-            ' Render headwear OFF → hide cualquier headwear (Outfit con bits cabeza/cara puros).
-            If Not renderHeadwear AndAlso cat = ShapeRenderCategory.Headwear Then hide = True
-            ' Skin cubierto por outfit + Render underarmor ON → hide (el outfit lo tapa visualmente,
-            ' evita z-fighting). Cuando Render underarmor=OFF el outfit se oculta arriba y el Skin
-            ' subyacente queda visible (no se aplica este hide). Solo afecta a Skin candidates
-            ' (BodySkin/NakedHands); las otras categorías no setean ShapeCoveredByOutfit.
-            If covered AndAlso renderUnderarmor AndAlso (cat = ShapeRenderCategory.BodySkin OrElse cat = ShapeRenderCategory.NakedHands) Then hide = True
-            ' HeadPart ocluido por headwear + Render headwear ON → hide (replica occlusion matrix
-            ' vanilla pelo-bajo-casco, etc). Render headwear=OFF destapa el head part para mostrar
-            ' lo que estaba debajo del casco/glasses/etc.
-            If occludedByHeadwear AndAlso renderHeadwear AndAlso cat = ShapeRenderCategory.HeadPart Then hide = True
-
-            shape.RenderHide = hide
-            If hide Then hidden += 1 Else shown += 1
-        Next
-        NpcPreviewLog.LogLazy(Function() $"  [VISIBILITY] renderArmor={renderArmor} renderUnderarmor={renderUnderarmor} renderBody={renderBody} renderHeadwear={renderHeadwear} renderGore={renderGore} → shown={shown} hidden={hidden}")
-        ' RefreshRender fuerza repaint inmediato del control GL (Invalidate). InvalidateRender
-        ' va por el pipeline que requiere DirtyFlags y aquí no hay nada dirty — sólo flip de
-        ' RenderHide en shapes existentes que el shader respeta en cada frame.
-        _previewControl.RefreshRender()
-    End Sub
-
     Private Shared Function ArmorAddonMatchesRace(arma As ARMA_Data, npcRaceFormID As UInteger) As Boolean
         If npcRaceFormID = 0UI Then Return True
         If arma.RaceFormID = 0UI Then Return True
@@ -7388,11 +7532,53 @@ Public Class MainForm
 
             Dim shapes = NifRenderableShape.FromNif(nif)
 
+            ' Diagnostic: dump the raw shader of every shape STRAIGHT FROM THE NIF, before any
+            ' material copy or override runs. Lets us see whether the engine's _faceBones variant
+            ' carries FaceTint shaders or genérico Default — answers the Ghoul question (why does
+            ' TryApplyFaceTints find no FaceTint mesh after load).
+            For Each shape In shapes
+                EnsureShapeMaterialResolved(shape)
+                Dim rawShader As String = "<no-material>"
+                Dim rawDiffuse As String = ""
+                Dim rawMatPath As String = ""
+                Dim rawGreyPalette As String = "?"
+                Dim rawHair As String = "?"
+                Dim rawGreyTexture As String = ""
+                Dim shapeMat = shape.ShapeMaterial
+                If shapeMat IsNot Nothing Then
+                    rawMatPath = If(shapeMat.path, "")
+                    If shapeMat.material IsNot Nothing Then
+                        rawShader = shapeMat.material.NifShaderType.ToString()
+                        rawDiffuse = If(shapeMat.material.Diffuse_or_Base_Texture, "")
+                        rawGreyPalette = shapeMat.material.GrayscaleToPaletteColor.ToString()
+                        rawHair = shapeMat.material.Hair.ToString()
+                        rawGreyTexture = If(shapeMat.material.GreyscaleTexture, "")
+                    End If
+                End If
+                Dim shapeNameLog = shape.ShapeName
+                NpcPreviewLog.LogLazy(Function() $"  [NIF-LOAD-RAW] dictKey='{dictKey}' shape='{shapeNameLog}' rawShader={rawShader} matPath='{rawMatPath}' greyPalette={rawGreyPalette} hair={rawHair} greyTex='{rawGreyTexture}' diffuse='{rawDiffuse}'")
+            Next
+
             ' Sólo HeadRear: copia material part-específico desde el .nif base a los shapes del
             ' _faceBones (que vanilla autoreó con material genérico basehumanfemaleskin).
             CopyBaseMaterialsToFaceBonesShapes(candidate, shapes)
 
             ApplyShapeMaterialOverrides(candidate, state, shapes)
+
+            ' Diagnostic: dump the shader AFTER both passes (CopyBaseMaterialsToFaceBonesShapes
+            ' for HeadRear + ApplyShapeMaterialOverrides for everyone). Pairing with the
+            ' [NIF-LOAD-RAW] above lets us see if either pass mutated the shader type.
+            For Each shape In shapes
+                Dim postShader As String = "<no-material>"
+                Dim postDiffuse As String = ""
+                Dim shapeMat2 = shape.ShapeMaterial
+                If shapeMat2 IsNot Nothing AndAlso shapeMat2.material IsNot Nothing Then
+                    postShader = shapeMat2.material.NifShaderType.ToString()
+                    postDiffuse = If(shapeMat2.material.Diffuse_or_Base_Texture, "")
+                End If
+                Dim shapeNameLog2 = shape.ShapeName
+                NpcPreviewLog.LogLazy(Function() $"  [NIF-LOAD-POST] dictKey='{dictKey}' shape='{shapeNameLog2}' postShader={postShader} diffuse='{postDiffuse}'")
+            Next
 
             ' Convert the externally-determined sculpt-to-apply (per the slot-based rule
             ' computed in ResolvePreviewVariant) to a Dict(boneName -> Vec3). This is NOT the
@@ -7595,9 +7781,12 @@ Public Class MainForm
             End If
 
             If hasHairPaletteRemap AndAlso IsHairHeadPart(candidate) AndAlso material.GrayscaleToPaletteColor Then
-                ' Material already uses grayscale-to-palette: override scale with CLFM RemappingIndex
+                ' Material already uses grayscale-to-palette: override scale with CLFM RemappingIndex.
+                ' Texture priority: keep the BGSM's own GreyscaleTexture if present (per-shape,
+                ' authored intent), only fall through to the RACE.HNAM/HLTX value when the BGSM
+                ' didn't ship a palette path.
                 material.GrayscaleToPaletteScale = hairPaletteScale
-                If hairPaletteTexture <> "" Then
+                If String.IsNullOrEmpty(material.GreyscaleTexture) AndAlso hairPaletteTexture <> "" Then
                     material.GreyscaleTexture = hairPaletteTexture
                 End If
             ElseIf material.Hair OrElse material.GrayscaleToPaletteColor Then
@@ -7606,7 +7795,20 @@ Public Class MainForm
                 If state IsNot Nothing AndAlso state.HairColorFormID <> 0UI Then
                     Dim clfm = ResolveColorFormData(state.HairColorFormID)
                     If clfm IsNot Nothing AndAlso clfm.HasRemappingIndex Then
-                        Dim palTex = ResolveRaceHairLookupTexture(state)
+                        ' Priority: BGSM's own GreyscaleTexture first (it's per-shape, picked by
+                        ' the hair stylist for THIS mesh), RACE.HNAM/HLTX as a fallback (it's a
+                        ' single race-wide string for the chargen UI). The engine in-game binds
+                        ' the LUT from the material's TXST slot 3 at render time (verified in
+                        ' F4SE CharGenInterface.cpp:1106-1179, ProcessHairColor reads
+                        ' material->spLookupTexture and writes via SetTextureFilename(3, ...)).
+                        ' Vanilla HumanChildRace ships without HNAM/HLTX precisely because the
+                        ' BGSM carries it — they expect the BGSM to be the source of truth.
+                        ' No hardcoding: the path comes from the BGSM file the shape declared,
+                        ' or from the race record if the BGSM doesn't have one.
+                        Dim palTex As String = If(material.GreyscaleTexture, "")
+                        If palTex = "" Then
+                            palTex = ResolveRaceHairLookupTexture(state)
+                        End If
                         If palTex <> "" Then
                             material.GrayscaleToPaletteColor = True
                             material.GrayscaleToPaletteScale = clfm.RemappingIndex
@@ -7930,6 +8132,34 @@ Public Class MainForm
         Return True
     End Function
 
+    ''' <summary>Resolve the effective hair palette texture path for a given host + state, using
+    ''' the BGSM-first / RACE-fallback rule the renderer applies. Single source of truth so the
+    ''' UI swatch, the NIF-load material override, and the live-tint refresh agree. Returns
+    ''' "" when no palette is available from any source.
+    ''' <para>Priority:</para>
+    ''' <list>
+    ''' <item>Walk the host's loaded hair shapes (mat.Hair OR mat.GrayscaleToPaletteColor) and
+    '''       return the first non-empty <c>material.GreyscaleTexture</c>. Per-shape, authored
+    '''       by the stylist, matches what the engine binds at TXST slot 3.</item>
+    ''' <item>Otherwise fall back to <see cref="ResolveRaceHairLookupTexture"/> (RACE.HNAM/HLTX).
+    '''       Vanilla HumanRace declares HNAM and most hair BGSMs duplicate it, but
+    '''       HumanChildRace ships without HNAM/HLTX so we must rely on the BGSM there.</item>
+    ''' </list></summary>
+    Friend Function ResolveHairPaletteTexture(host As NpcRenderHost, state As NPCVisualState) As String
+        If host IsNot Nothing AndAlso host.PreviewCtl IsNot Nothing _
+           AndAlso host.PreviewCtl.Model IsNot Nothing AndAlso host.PreviewCtl.Model.meshes IsNot Nothing Then
+            For Each mesh In host.PreviewCtl.Model.meshes
+                If mesh Is Nothing OrElse mesh.MeshData Is Nothing OrElse mesh.MeshData.Material Is Nothing Then Continue For
+                Dim mb = mesh.MeshData.Material.MaterialBase
+                If mb Is Nothing Then Continue For
+                If Not (mb.Hair OrElse mb.GrayscaleToPaletteColor) Then Continue For
+                Dim gtex = If(mb.GreyscaleTexture, "")
+                If gtex <> "" Then Return gtex
+            Next
+        End If
+        Return ResolveRaceHairLookupTexture(state)
+    End Function
+
     Private Function ResolveRaceHairLookupTexture(state As NPCVisualState) As String
         If state Is Nothing OrElse state.RaceFormID = 0UI Then Return ""
 
@@ -7982,17 +8212,15 @@ Public Class MainForm
         Return Nothing
     End Function
 
-    ''' <summary>Look up the NPC's SkinTone tint layer (TETI slot 12) and resolve its effective
-    ''' colour using the same rule the face compositor applies: if the NPC TEND has a non-negative
-    ''' TemplateColorIndex, the colour comes from the CLFM referenced by TTEC[TemplateColorIndex];
-    ''' otherwise the colour is taken directly from TEND RGB bytes 1..3. Returns Nothing when the
-    ''' NPC has no SkinTone layer or the RACE template / CLFM lookup fails.</summary>
-    ''' <summary>Look up the NPC's slot-12 SkinTone tint layer and pack its effective colour as
-    ''' RGB plus its <c>tl.Value</c> intensity as the alpha channel. This mirrors the QNAM record's
-    ''' RGBA layout (wbDefinitionsFO4.pas:10776), so the body SoftLight pass can read alpha as the
-    ''' opacity factor — the same way the engine does. When the editor mutates slot-12, the new
-    ''' colour and percent both flow through here in a single QNAM-shaped blob; face compositor
-    ''' uses tl.Value directly while body reads alpha, both staying in lockstep.</summary>
+    ''' <summary>Resolve the NPC's effective skin-tone colour and pack it RGB + (tl.Value as
+    ''' alpha) — same shape as QNAM RGBA. Body SoftLight reads .A as the opacity factor; the
+    ''' face compositor reads tl.Value directly. Both stay in lockstep because they trace back
+    ''' to the same source: the layer at the race's SkinTone slot, which is what the engine's
+    ''' <c>characterCreation-&gt;skinTint</c> pointer resolves to (verified F4SE
+    ''' ScaleformNatives.cpp:860-922).
+    ''' <para>The Slot enum value here is a schema-defined field name (xEdit
+    ''' wbDefinitionsFO4.pas:3478), not a hardcoded magic number. Returns Nothing when the NPC
+    ''' has no layer at the SkinTone slot or the race / CLFM lookup fails.</para></summary>
     Private Function ResolveNpcSkinToneColor(state As NPCVisualState) As Nullable(Of Color)
         If state Is Nothing Then Return Nothing
         Dim modelNpcFormID = If(state.ModelSourceFormID <> 0UI, state.ModelSourceFormID, state.FormID)
@@ -8007,7 +8235,7 @@ Public Class MainForm
             Dim opt = race.FindTintOption(tl.Index, state.IsFemale)
             If opt Is Nothing Then Continue For
             If opt.Slot <> CUShort(TintSlot.SkinTone) Then Continue For
-            If tl.Discriminator <> 1 Then Continue For
+            If tl.Discriminator <> 1 Then Continue For   ' Palette only — color source for skin tone
 
             ' Use the same resolver the compositor uses so body uniform and face compositor
             ' agree on the colour. The blendOp returned here is irrelevant for the body path.
@@ -8545,9 +8773,9 @@ Public Class MainForm
     ''' the preset as a per-NPC overlay and re-renders. The underlying NPC_Data records are NOT
     ''' mutated — see <see cref="_appliedPresets"/>.</summary>
     Private Async Sub ButtonLoadLooksmenu_Click(sender As Object, e As EventArgs) Handles ButtonLoadLooksmenu.Click
-        If _currentBaseState Is Nothing Then Return
+        If _renderHost.CurrentBaseState Is Nothing Then Return
 
-        Dim npcFormID = _currentBaseState.RootNpcFormID
+        Dim npcFormID = _renderHost.CurrentBaseState.RootNpcFormID
         Dim npc As NPC_Data = Nothing
         If Not _npcByIdCache.TryGetValue(npcFormID, npc) OrElse npc Is Nothing Then
             MessageBox.Show("Could not find NPC record in cache.", "Load LooksMenu",
@@ -8558,15 +8786,15 @@ Public Class MainForm
         ' Resolve race for the header label only — LooksMenu presets live in a single flat folder
         ' and don't carry race info (CharGenInterface.cpp:90 saves Gender, not Race; LoadPreset
         ' applies to whatever the current actor's race is). The display name is purely informational.
-        Dim raceDisplay As String = $"0x{_currentBaseState.RaceFormID:X8}"
-        Dim raceRec = _pluginManager.GetRecord(_currentBaseState.RaceFormID)
+        Dim raceDisplay As String = $"0x{_renderHost.CurrentBaseState.RaceFormID:X8}"
+        Dim raceRec = _pluginManager.GetRecord(_renderHost.CurrentBaseState.RaceFormID)
         If raceRec IsNot Nothing Then
             Dim race = RecordParsers.ParseRACE(raceRec, _pluginManager)
             If race IsNot Nothing AndAlso Not String.IsNullOrEmpty(race.EditorID) Then
                 raceDisplay = race.EditorID
             End If
         End If
-        Dim gender As Byte = If(_currentBaseState.IsFemale, CByte(1), CByte(0))
+        Dim gender As Byte = If(_renderHost.CurrentBaseState.IsFemale, CByte(1), CByte(0))
 
         ' Snapshot the overlay state *before* the dialog opens so we can roll back on Cancel.
         ' The dialog drives a live preview via PreviewRequested on every selection change; if the
@@ -8698,10 +8926,10 @@ Public Class MainForm
     ''' its NIF root. Used to default the "Apply BodySlide sliders" checkbox in the Load
     ''' LooksMenu dialog.</summary>
     Private Function NpcHasAnyBodyTri() As Boolean
-        If _lastRenderData Is Nothing OrElse _lastRenderData.Shapes Is Nothing Then Return False
-        For Each shape In _lastRenderData.Shapes
+        If _renderHost.LastRenderData Is Nothing OrElse _renderHost.LastRenderData.Shapes Is Nothing Then Return False
+        For Each shape In _renderHost.LastRenderData.Shapes
             Dim meshKey As String = Nothing
-            If _lastRenderData.MeshDictKeys IsNot Nothing Then _lastRenderData.MeshDictKeys.TryGetValue(shape, meshKey)
+            If _renderHost.LastRenderData.MeshDictKeys IsNot Nothing Then _renderHost.LastRenderData.MeshDictKeys.TryGetValue(shape, meshKey)
             If BodySlideTriResolver.ResolveAndLoad(shape, meshKey) IsNot Nothing Then Return True
         Next
         Return False
@@ -8717,8 +8945,12 @@ Public Class MainForm
 
     ''' <summary>Same flow as <see cref="LoadNPCOnDemandAsync"/> but skipping EnsureAssetDictionary
     ''' (already mounted) — used after applying / removing an overlay to re-resolve from scratch
-    ''' so the resolver picks up the updated overlay state.</summary>
-    Private Async Function LoadNPCOnDemandAsyncFromExisting(npc As NPC_Data, requestVersion As Integer) As Task
+    ''' so the resolver picks up the updated overlay state.
+    ''' <para>Optional <paramref name="host"/> overrides the default <c>_renderHost</c> so an
+    ''' editor form can drive its own embedded preview via <see cref="RenderInHostAsync"/>. When
+    ''' <c>Nothing</c> the MainForm's host is used, which is the legacy behaviour.</para></summary>
+    Private Async Function LoadNPCOnDemandAsyncFromExisting(npc As NPC_Data, requestVersion As Integer, Optional host As NpcRenderHost = Nothing) As Task
+        If host Is Nothing Then host = _renderHost
         Dim baseState As NPCVisualState = Nothing
         Dim outfitEntries As List(Of OutfitComboEntry) = Nothing
         Await Task.Run(Sub()
@@ -8727,18 +8959,20 @@ Public Class MainForm
                        End Sub)
         If requestVersion <> _previewRequestVersion Then Return
 
-        ' Pristine diffuse cache is per-NPC: the diffuse paths (and their bytes) tied to one
-        ' actor's race/skin TXST are not valid for another. Drop the cache when the root NPC
-        ' identity changes; keep it across same-NPC reloads (overlay edits, paste look, etc.)
-        ' so live tint refreshes stay fast on the second click.
-        If _currentBaseState IsNot Nothing AndAlso baseState IsNot Nothing _
-           AndAlso _currentBaseState.RootNpcFormID <> baseState.RootNpcFormID Then
-            _pristineDiffusePixels.Clear()
-        ElseIf _currentBaseState Is Nothing Then
+        ' Tint caches are per-NPC: paths/keys tied to one actor's race/skin TXST are not
+        ' valid for another, and a poisoned entry (negative cache, GL upload that came back
+        ' silently corrupt) would otherwise leak into every subsequent NPC. ClearFaceTintCaches
+        ' drops _tintBytesCache + TintGpuCache + PristineDiffusePixels in one shot — the three
+        ' caches share the same per-NPC invariant. Keep them across same-NPC reloads
+        ' (overlay edits, paste look) so live tint refreshes stay fast on the second click.
+        If host.CurrentBaseState IsNot Nothing AndAlso baseState IsNot Nothing _
+           AndAlso host.CurrentBaseState.RootNpcFormID <> baseState.RootNpcFormID Then
+            ClearFaceTintCaches()
+        ElseIf host.CurrentBaseState Is Nothing Then
             ' Defensive: very first load of any NPC after process start — nothing to clear.
         End If
 
-        _currentBaseState = baseState
+        host.CurrentBaseState = baseState
         _currentOutfitEntries = If(outfitEntries, New List(Of OutfitComboEntry))
 
         ' Recompute Paste enable now that the target NPC may have changed race/gender.
@@ -8754,7 +8988,7 @@ Public Class MainForm
         PopulateRecordDetails(If(effective, npc))
 
         PopulateOutfitCombo()
-        Await RenderCurrentStateAsync(requestVersion)
+        Await RenderCurrentStateAsync(requestVersion, host)
     End Function
 
     ''' <summary>If an overlay is registered for <paramref name="selectedNpcFormID"/>, return a
@@ -8942,9 +9176,9 @@ Public Class MainForm
     ''' Returns False when there's no clipboard yet, no NPC selected, or either dimension differs.</summary>
     Private Function IsClipboardCompatibleWithCurrentNpc() As Boolean
         If _clipboardPreset Is Nothing Then Return False
-        If _currentBaseState Is Nothing Then Return False
-        If _currentBaseState.RaceFormID <> _clipboardSourceRaceFormID Then Return False
-        Dim targetGender As Byte = If(_currentBaseState.IsFemale, CByte(1), CByte(0))
+        If _renderHost.CurrentBaseState Is Nothing Then Return False
+        If _renderHost.CurrentBaseState.RaceFormID <> _clipboardSourceRaceFormID Then Return False
+        Dim targetGender As Byte = If(_renderHost.CurrentBaseState.IsFemale, CByte(1), CByte(0))
         If _clipboardPreset.Gender <> targetGender Then Return False
         Return True
     End Function
@@ -9136,7 +9370,7 @@ Public Class MainForm
     ''' the toolbar button accordingly. Disables the button entirely when no section has any
     ''' editable channel; otherwise the form opens with only the applicable sections visible.</summary>
     Private Sub UpdateEditBodyEnabled()
-        Dim avail = ComputeBodyEditAvailability(_lastRenderedState, _lastRenderData)
+        Dim avail = ComputeBodyEditAvailability(_renderHost.LastRenderedState, _renderHost.LastRenderData)
         Dim shouldEnable = avail.AnythingAvailable
         If InvokeRequired Then
             Invoke(Sub() ButtonEditBody.Enabled = shouldEnable)
@@ -9206,11 +9440,11 @@ Public Class MainForm
     ''' through the LooksMenu overlay (_appliedPresets) and a granular repaint callback. OK
     ''' commits the live state; Cancel restores the snapshot the form took at open time.
     ''' Sections are pre-gated against RACE BSMS and the loaded body .tri.</summary>
-    Private Sub ButtonEditBody_Click(sender As Object, e As EventArgs) Handles ButtonEditBody.Click
-        If _lastRenderedState Is Nothing OrElse _lastRenderData Is Nothing Then Return
+    Private Async Sub ButtonEditBody_Click(sender As Object, e As EventArgs) Handles ButtonEditBody.Click
+        If _renderHost.LastRenderedState Is Nothing OrElse _renderHost.LastRenderData Is Nothing Then Return
 
-        Dim avail = ComputeBodyEditAvailability(_lastRenderedState, _lastRenderData)
-        NpcPreviewLog.LogSeparator($"EDIT BODY {_lastRenderedState.RootNpcFormID:X8}")
+        Dim avail = ComputeBodyEditAvailability(_renderHost.LastRenderedState, _renderHost.LastRenderData)
+        NpcPreviewLog.LogSeparator($"EDIT BODY {_renderHost.LastRenderedState.RootNpcFormID:X8}")
         NpcPreviewLog.LogLazy(Function() $"  availability: MWGT={avail.HasMwgt} MRSV={avail.HasMrsv} BodySlide={avail.BodySlideSliders.Count}")
         If Not avail.AnythingAvailable Then
             ' Should never happen if ButtonEditBody.Enabled gating is correct, but guard anyway.
@@ -9223,12 +9457,12 @@ Public Class MainForm
         ' than showing zeros for a freshly-loaded NPC. We pull from state.WeightX (already
         ' resolved through ApplyRaceFallbacks + overlay) and from the post-overlay NPC_Data
         ' for MRSV.
-        Dim modelNpcFormID = If(_lastRenderedState.ModelSourceFormID <> 0UI, _lastRenderedState.ModelSourceFormID, _lastRenderedState.FormID)
-        Dim effectiveNpc = ApplyPresetOverlayToNpcData(GetParsedNpc(modelNpcFormID), _lastRenderedState.RootNpcFormID)
+        Dim modelNpcFormID = If(_renderHost.LastRenderedState.ModelSourceFormID <> 0UI, _renderHost.LastRenderedState.ModelSourceFormID, _renderHost.LastRenderedState.FormID)
+        Dim effectiveNpc = ApplyPresetOverlayToNpcData(GetParsedNpc(modelNpcFormID), _renderHost.LastRenderedState.RootNpcFormID)
         Dim initial As New EditBody_Form.InitialValues With {
-            .Thin = _lastRenderedState.WeightThin,
-            .Muscular = _lastRenderedState.WeightMuscular,
-            .Fat = _lastRenderedState.WeightFat
+            .Thin = _renderHost.LastRenderedState.WeightThin,
+            .Muscular = _renderHost.LastRenderedState.WeightMuscular,
+            .Fat = _renderHost.LastRenderedState.WeightFat
         }
         If effectiveNpc IsNot Nothing AndAlso effectiveNpc.BodyMorphRegionValues IsNot Nothing Then
             For i = 0 To 4
@@ -9240,66 +9474,122 @@ Public Class MainForm
         ' BodySlide sliders that the overlay (or a previously loaded preset) already carries —
         ' open at those values; otherwise zero. There is no record-level source for these.
         Dim existingPreset As LooksmenuLoader.LooksmenuPreset = Nothing
-        If _appliedPresets.TryGetValue(_lastRenderedState.RootNpcFormID, existingPreset) AndAlso existingPreset IsNot Nothing Then
+        If _appliedPresets.TryGetValue(_renderHost.LastRenderedState.RootNpcFormID, existingPreset) AndAlso existingPreset IsNot Nothing Then
             For Each kv In existingPreset.BodyMorphSliders
                 initial.BodySlide(kv.Key) = kv.Value
             Next
         End If
 
-        Dim refresh As Action = Sub() RefreshBodyEditOverlay()
-        ' MWGT sync: there are TWO state caches that read NPC weights — _lastRenderedState (used
-        ' by BuildBodyWeightPose for the live preview) and _currentBaseState (used by
-        ' BuildPresetFromState when Save LooksMenu / Copy Look fires). Both must be kept in
-        ' lockstep with the editor or the saved JSON will carry the pre-edit weights.
-        Dim onMwgtChanged As Action(Of Single, Single, Single) =
-            Sub(t, m, f)
-                If _lastRenderedState IsNot Nothing Then
-                    _lastRenderedState.WeightThin = t
-                    _lastRenderedState.WeightMuscular = m
-                    _lastRenderedState.WeightFat = f
-                End If
-                If _currentBaseState IsNot Nothing Then
-                    _currentBaseState.WeightThin = t
-                    _currentBaseState.WeightMuscular = m
-                    _currentBaseState.WeightFat = f
-                End If
-            End Sub
-
-        Using dlg As New EditBody_Form(_lastRenderedState.RootNpcFormID,
+        Dim mainGore As Boolean = CheckBoxRenderGore.Checked
+        Using dlg As New EditBody_Form(_renderHost.LastRenderedState.RootNpcFormID,
                                        _appliedPresets,
                                        avail.HasMwgt, avail.HasMrsv,
                                        avail.BodySlideSliders,
                                        initial,
-                                       refresh,
-                                       onMwgtChanged)
+                                       Me,
+                                       mainGore)
             dlg.ShowDialog(Me)
+            ' Phase D: reload MainForm preview only when the user committed via OK. Cancel
+            ' already rolled back the overlay; without an explicit MainForm render during the
+            ' modal session, our preview is still in the pre-edit state — no reload needed.
+            If dlg.DialogResult = DialogResult.OK AndAlso dlg.HasUncommittedChanges Then
+                Try
+                    Await RenderInHostAsync(_renderHost, _renderHost.LastRenderedState.RootNpcFormID)
+                Catch ex As Exception
+                    NpcPreviewLog.LogLazy(Function() $"  [POST-EDITBODY-RELOAD] failed: {ex.Message}")
+                End Try
+            End If
         End Using
     End Sub
 
-    ''' <summary>Granular repaint after a live body-edit slider tweak. MWGT and MRSV affect the
-    ''' bone-scale pose (BuildBodyWeightPose), so we need a Pose dirty pass; BodySlide sliders
-    ''' affect the vertex morph plan, so we also rebuild the MorphResolver and mark Morphs dirty.
-    ''' Both flags can be set on the same intent — the pipeline will run the relevant steps.</summary>
-    Private Sub RefreshBodyEditOverlay()
-        If _lastRenderedState Is Nothing OrElse _lastRenderData Is Nothing Then Return
-        Dim intent = _previewControl.Intent
-        intent.MorphResolver = BuildCompositeMorphResolver(_lastRenderedState, _lastRenderData)
-        intent.MarkDirty(RenderDirtyFlags.Morphs Or RenderDirtyFlags.Pose, _lastRenderData.Shapes)
-        ' Body-weight pose depends on the overlay's WeightThin/Muscular/Fat — rebuild it too so
-        ' MWGT live edits flow into the bone scaling, not just the JSON.
-        RebuildAndApplyMergedPose()
-        _previewControl.InvalidateRender()
-    End Sub
-
     ' =====================================================================
-    ' Edit Face — toolbar enable + dialog launch + granular refresh
+    ' Edit Face — toolbar enable + dialog launch
     ' =====================================================================
 
-    ''' <summary>Edit Face is enabled whenever an NPC is fully rendered. We don't gate by channel
-    ''' availability the way Edit Body does — every NPC has HeadParts and can have Tints/Morphs
-    ''' added; the editor opens with empty sections that the user can populate.</summary>
+    ''' <summary>What the face editor can offer for this NPC, given the RACE record + its
+    ''' optional FacialBoneRegions JSON + the chargen TRI loaded for the face shape. Each
+    ''' section gates independently; the button enables iff at least ONE section has content.
+    ''' <para>
+    ''' • HasHeadParts   — race declares chargen head parts for the active gender (RACE
+    '''                    Female/MaleHeadPartFormIDs).<br/>
+    ''' • HasHairColors  — race declares hair color CLFMs for the active gender (Female/MaleHairColorFormIDs).<br/>
+    ''' • HasMorphPresets— at least one MorphGroup has at least one preset whose MorphName is
+    '''                    present in the loaded chargen TRI (mirrors the "no presets → no
+    '''                    sliders" rule used by EditFace_Form.BuildMorphGroupSections).<br/>
+    ''' • HasFaceTints   — race declares tint template groups for the active gender
+    '''                    (Female/MaleTintTemplateGroups).<br/>
+    ''' • HasFaceBoneRegions — the FacialBoneRegions JSON exists for race+gender (the FMRS region
+    '''                    sliders depend on it).
+    ''' </para></summary>
+    Private Structure FaceEditAvailability
+        Public HasHeadParts As Boolean
+        Public HasHairColors As Boolean
+        Public HasMorphPresets As Boolean
+        Public HasFaceTints As Boolean
+        Public HasFaceBoneRegions As Boolean
+        Public ReadOnly Property AnythingAvailable As Boolean
+            Get
+                Return HasHeadParts OrElse HasHairColors OrElse HasMorphPresets OrElse HasFaceTints OrElse HasFaceBoneRegions
+            End Get
+        End Property
+    End Structure
+
+    ''' <summary>Compute face-edit availability against the currently rendered NPC. The TRI
+    ''' morph-name set comes from <see cref="NpcRenderHost.LastFaceTriMorphNames"/>, which is
+    ''' populated post-render in <see cref="RenderCurrentStateAsync"/> right before this method
+    ''' is invoked. The race record is parsed once and queried for each gendered list.</summary>
+    Private Function ComputeFaceEditAvailability(state As NPCVisualState, host As NpcRenderHost) As FaceEditAvailability
+        Dim avail As New FaceEditAvailability
+        If state Is Nothing OrElse state.RaceFormID = 0UI Then Return avail
+        Dim raceRec = _pluginManager.GetRecord(state.RaceFormID)
+        If raceRec Is Nothing OrElse raceRec.Header.Signature <> "RACE" Then Return avail
+        Dim race = RecordParsers.ParseRACE(raceRec, _pluginManager)
+        If race Is Nothing Then Return avail
+
+        Dim headParts = If(state.IsFemale, race.FemaleHeadPartFormIDs, race.MaleHeadPartFormIDs)
+        avail.HasHeadParts = (headParts IsNot Nothing AndAlso headParts.Count > 0)
+
+        Dim hairColors = If(state.IsFemale, race.FemaleHairColorFormIDs, race.MaleHairColorFormIDs)
+        avail.HasHairColors = (hairColors IsNot Nothing AndAlso hairColors.Count > 0)
+
+        Dim tintGroups = If(state.IsFemale, race.FemaleTintTemplateGroups, race.MaleTintTemplateGroups)
+        avail.HasFaceTints = (tintGroups IsNot Nothing AndAlso tintGroups.Count > 0)
+
+        avail.HasFaceBoneRegions = (GetFacialBoneRegionsForRace(race, state.IsFemale) IsNot Nothing)
+
+        ' Morph presets — same filter as EditFace_Form.BuildMorphGroupSections: a preset counts
+        ' only if its MorphName is present in the loaded chargen TRI. Empty TRI set means we
+        ' don't have the morph names yet; bail conservatively (HasMorphPresets stays False).
+        Dim triNames As HashSet(Of String) = If(host?.LastFaceTriMorphNames, Nothing)
+        Dim morphGroups = If(state.IsFemale, race.FemaleMorphGroups, race.MaleMorphGroups)
+        If morphGroups IsNot Nothing AndAlso triNames IsNot Nothing AndAlso triNames.Count > 0 Then
+            For Each g In morphGroups
+                If g.Presets Is Nothing Then Continue For
+                For Each p In g.Presets
+                    If Not String.IsNullOrEmpty(p.MorphName) AndAlso triNames.Contains(p.MorphName) Then
+                        avail.HasMorphPresets = True
+                        Exit For
+                    End If
+                Next
+                If avail.HasMorphPresets Then Exit For
+            Next
+        End If
+
+        Return avail
+    End Function
+
+    ''' <summary>Gate ButtonEditFace by <see cref="ComputeFaceEditAvailability"/>: the editor
+    ''' opens only when at least one section has authored content for this race+gender. If the
+    ''' race has no head parts, no hair colors, no morph presets backed by the loaded TRI, no
+    ''' tint groups, and no FacialBoneRegions JSON, the editor would be entirely empty — same
+    ''' rule Edit Body uses to skip a useless picker.</summary>
     Private Sub UpdateEditFaceEnabled()
-        Dim shouldEnable = (_lastRenderedState IsNot Nothing AndAlso _lastRenderData IsNot Nothing)
+        Dim shouldEnable As Boolean = False
+        If _renderHost.LastRenderedState IsNot Nothing AndAlso _renderHost.LastRenderData IsNot Nothing Then
+            Dim avail = ComputeFaceEditAvailability(_renderHost.LastRenderedState, _renderHost)
+            shouldEnable = avail.AnythingAvailable
+            NpcPreviewLog.LogLazy(Function() $"  [EDITFACE-GATE] headParts={avail.HasHeadParts} hair={avail.HasHairColors} morphPresets={avail.HasMorphPresets} tints={avail.HasFaceTints} regions={avail.HasFaceBoneRegions} → enable={shouldEnable}")
+        End If
         If InvokeRequired Then
             Invoke(Sub() ButtonEditFace.Enabled = shouldEnable)
         Else
@@ -9307,9 +9597,9 @@ Public Class MainForm
         End If
     End Sub
 
-    Private Sub ButtonEditFace_Click(sender As Object, e As EventArgs) Handles ButtonEditFace.Click
-        If _lastRenderedState Is Nothing Then Return
-        Dim raceFormID = _lastRenderedState.RaceFormID
+    Private Async Sub ButtonEditFace_Click(sender As Object, e As EventArgs) Handles ButtonEditFace.Click
+        If _renderHost.LastRenderedState Is Nothing Then Return
+        Dim raceFormID = _renderHost.LastRenderedState.RaceFormID
         If raceFormID = 0UI Then
             MessageBox.Show(Me, "This NPC has no resolved RACE — Edit Face needs the RACE record to populate" &
                             " palette / morph / region pickers.", "Edit Face", MessageBoxButtons.OK, MessageBoxIcon.Information)
@@ -9323,95 +9613,37 @@ Public Class MainForm
         ' Capture the raw NPC's AcbsFlags so the Edit Face form can compute the original bit and
         ' the form's Cancel rollback can restore it (the overlay only stores Boolean? — the raw
         ' value lives on the NPC record).
-        Dim modelNpcFormID = If(_lastRenderedState.ModelSourceFormID <> 0UI, _lastRenderedState.ModelSourceFormID, _lastRenderedState.FormID)
+        Dim modelNpcFormID = If(_renderHost.LastRenderedState.ModelSourceFormID <> 0UI, _renderHost.LastRenderedState.ModelSourceFormID, _renderHost.LastRenderedState.FormID)
         Dim rawNpc = GetParsedNpc(modelNpcFormID)
         Dim rawAcbsFlags As UInteger = If(rawNpc IsNot Nothing, rawNpc.AcbsFlags, 0UI)
 
-        Dim refresh As Action(Of EditFace_Form.FaceRefreshScope) = AddressOf RefreshFaceEditOverlay
         Dim formatRef As Func(Of UInteger, String) = AddressOf DescribeFormID
+        Dim mainGore As Boolean = CheckBoxRenderGore.Checked
 
-        Using dlg As New EditFace_Form(_lastRenderedState.RootNpcFormID,
+        Using dlg As New EditFace_Form(_renderHost.LastRenderedState.RootNpcFormID,
                                        _appliedPresets,
                                        _pluginManager,
                                        race,
                                        raceFormID,
-                                       _lastRenderedState.IsFemale,
-                                       refresh,
+                                       _renderHost.LastRenderedState.IsFemale,
                                        formatRef,
-                                       rawAcbsFlags)
+                                       rawAcbsFlags,
+                                       Me,
+                                       mainGore)
             dlg.ShowDialog(Me)
+            ' Phase D: reload MainForm preview only when the user committed via OK. Cancel
+            ' already rolled back the overlay; the MainForm preview was untouched during the
+            ' modal so it's already correct.
+            If dlg.DialogResult = DialogResult.OK AndAlso dlg.HasUncommittedChanges Then
+                Try
+                    Await RenderInHostAsync(_renderHost, _renderHost.LastRenderedState.RootNpcFormID)
+                Catch ex As Exception
+                    NpcPreviewLog.LogLazy(Function() $"  [POST-EDITFACE-RELOAD] failed: {ex.Message}")
+                End Try
+            End If
         End Using
 
-        ' After the dialog closes (OK or Cancel), do one final settling refresh. Cancel already
-        ' fires a FullReload in the form; OK leaves the overlay populated and the renderer in sync.
         UpdatePasteLookEnabled()
-    End Sub
-
-    ''' <summary>Granular repaint dispatcher for Edit Face. The form classifies each edit by
-    ''' <see cref="EditFace_Form.FaceRefreshScope"/>; we translate that into the cheapest
-    ''' MarkDirty pass that still produces a correct preview.</summary>
-    Private Sub RefreshFaceEditOverlay(scope As EditFace_Form.FaceRefreshScope)
-        If _lastRenderedState Is Nothing OrElse _lastRenderData Is Nothing Then Return
-        Select Case scope
-            Case EditFace_Form.FaceRefreshScope.FlagOnly
-                ' No render side-effect; just refresh the record-details panel if it's open so
-                ' the user sees the new flag bit immediately.
-                Dim modelFormID = If(_lastRenderedState.ModelSourceFormID <> 0UI, _lastRenderedState.ModelSourceFormID, _lastRenderedState.FormID)
-                Dim effective = ApplyPresetOverlayToNpcData(GetParsedNpc(modelFormID), _lastRenderedState.RootNpcFormID)
-                PopulateRecordDetails(If(effective, GetParsedNpc(modelFormID)))
-                Return
-            Case EditFace_Form.FaceRefreshScope.Morphs
-                ' Vertex morphs (MSDV) drive two pipelines: vertex deformation via MorphResolver
-                ' AND face-region TXST swaps when the active MPPI preset has an MPPT (the
-                ' "Wrinkled" / "Old" / etc. region textures composited by ApplyFaceTintOverlay →
-                ' BuildFaceRegionSwaps:MainForm.vb:2929). Re-running the morph resolver alone
-                ' updates geometry but leaves the textures stale — switching from "Smooth" to
-                ' "Wrinkled" Forehead would deform but show the old skin. So both passes run:
-                ' MarkDirty(Morphs) for the vertex side + RefreshFaceTintLivePreview for the
-                ' texture side (same code path as TexturesOnly).
-                Dim intent = _previewControl.Intent
-                intent.MorphResolver = BuildCompositeMorphResolver(_lastRenderedState, _lastRenderData)
-                intent.MarkDirty(RenderDirtyFlags.Morphs, _lastRenderData.Shapes)
-                RefreshFaceTintLivePreview()
-                _previewControl.InvalidateRender()
-                Return
-            Case EditFace_Form.FaceRefreshScope.Pose
-                ' FMRS / FMIN ride through skeleton DeltaTransform — rebuild the merged pose so
-                ' BuildFaceBoneTransforms picks up the new values.
-                RebuildAndApplyMergedPose()
-                _previewControl.Intent.MarkDirty(RenderDirtyFlags.Pose, _lastRenderData.Shapes)
-                _previewControl.InvalidateRender()
-                Return
-            Case EditFace_Form.FaceRefreshScope.TexturesOnly
-                ' Live tint / hair-color edit. Roll back the face/body diffuse cache entries
-                ' to the pristine bytes captured on first composite (so we don't SoftLight on
-                ' top of SoftLight), re-run the compositor + skin SoftLight passes, refresh
-                ' the SkinTint/HairTint material uniforms in place. No geometry reload — only
-                ' the texture upload + composite cost.
-                If RefreshFaceTintLivePreview() Then
-                    ' RefreshRender (not InvalidateRender) — we mutated GL texture ids and
-                    ' material uniforms directly without setting any RenderDirtyFlags. The
-                    ' pipeline early-returns from InvalidateRender when no flags are dirty
-                    ' (Render.vb:500), so the user wouldn't see anything. RefreshRender just
-                    ' forces a frame redraw, which is enough because the shader resolves
-                    ' Texture_ID and material uniforms on every frame from the same cache
-                    ' entries we just mutated.
-                    _previewControl.RefreshRender()
-                    Return
-                End If
-                ' Pristine cache miss (probably no compositor pass ran yet for this NPC, or
-                ' FilesDictionary lost the source). Fall through to full reload so the next
-                ' render seeds the pristine cache and subsequent edits go fast.
-                NpcPreviewLog.LogLazy(Function() "  [TINT-LIVE] pristine cache incomplete — falling back to full reload for this edit")
-                ReloadCurrentNpcFull()
-                Return
-            Case EditFace_Form.FaceRefreshScope.FullReload
-                ' HeadParts / Skin both change geometry (HDPT meshes / ARMO skin slots). The
-                ' renderer needs to walk the resolution chain again (HDPT.HNAM extras, ARMO
-                ' addon mounting, race fallbacks, etc). Same path LooksMenu Paste uses.
-                ReloadCurrentNpcFull()
-                Return
-        End Select
     End Sub
 
     ''' <summary>Re-trigger the on-demand NPC load for the currently-rendered NPC. Same path
@@ -9419,11 +9651,11 @@ Public Class MainForm
     ''' tints) from records + overlay. Used when geometry-affecting edits happen, or as a
     ''' fallback when an in-place refresh can't guarantee correctness.</summary>
     Private Sub ReloadCurrentNpcFull()
-        If _lastRenderedState Is Nothing Then
-            NpcPreviewLog.Log("[RELOAD-FULL] skipped: _lastRenderedState is Nothing")
+        If _renderHost.LastRenderedState Is Nothing Then
+            NpcPreviewLog.Log("[RELOAD-FULL] skipped: _renderHost.LastRenderedState is Nothing")
             Return
         End If
-        Dim modelFormID = If(_lastRenderedState.ModelSourceFormID <> 0UI, _lastRenderedState.ModelSourceFormID, _lastRenderedState.FormID)
+        Dim modelFormID = If(_renderHost.LastRenderedState.ModelSourceFormID <> 0UI, _renderHost.LastRenderedState.ModelSourceFormID, _renderHost.LastRenderedState.FormID)
         Dim raw = GetParsedNpc(modelFormID)
         If raw Is Nothing Then
             NpcPreviewLog.LogLazy(Function() $"[RELOAD-FULL] skipped: GetParsedNpc({modelFormID:X8}) returned Nothing")
@@ -9448,18 +9680,18 @@ Public Class MainForm
     End Sub
 
     Private Sub ButtonCopyLook_Click(sender As Object, e As EventArgs) Handles ButtonCopyLook.Click
-        If _currentBaseState Is Nothing Then Return
-        Dim built = BuildPresetFromState(_currentBaseState)
+        If _renderHost.CurrentBaseState Is Nothing Then Return
+        Dim built = BuildPresetFromState(_renderHost.CurrentBaseState)
         If built Is Nothing Then
             MessageBox.Show("Could not capture the current NPC state.", "Copy Look",
                             MessageBoxButtons.OK, MessageBoxIcon.Warning)
             Return
         End If
         _clipboardPreset = built
-        _clipboardSourceRaceFormID = _currentBaseState.RaceFormID
+        _clipboardSourceRaceFormID = _renderHost.CurrentBaseState.RaceFormID
         UpdatePasteLookEnabled()
 
-        NpcPreviewLog.LogSeparator($"COPY LOOK from {_currentBaseState.RootNpcFormID:X8}")
+        NpcPreviewLog.LogSeparator($"COPY LOOK from {_renderHost.CurrentBaseState.RootNpcFormID:X8}")
         NpcPreviewLog.LogLazy(Function() $"  source race=0x{_clipboardSourceRaceFormID:X8}  gender={If(built.Gender = 1, "Female", "Male")}")
         NpcPreviewLog.LogLazy(Function() $"  HeadParts={built.HeadPartFormIDs.Count} (after IsExtraPart filter)  HairColor=0x{built.HairColorFormID:X8}")
         NpcPreviewLog.LogLazy(Function() $"  Weight: thin={If(built.WeightThin.HasValue, built.WeightThin.Value.ToString("F3"), "—")} musc={If(built.WeightMuscular.HasValue, built.WeightMuscular.Value.ToString("F3"), "—")} fat={If(built.WeightFat.HasValue, built.WeightFat.Value.ToString("F3"), "—")}")
@@ -9473,7 +9705,7 @@ Public Class MainForm
         ' refuse anyway in case anything bypasses the gating.
         If Not IsClipboardCompatibleWithCurrentNpc() Then Return
 
-        Dim npcFormID = _currentBaseState.RootNpcFormID
+        Dim npcFormID = _renderHost.CurrentBaseState.RootNpcFormID
         Dim npc As NPC_Data = Nothing
         If Not _npcByIdCache.TryGetValue(npcFormID, npc) OrElse npc Is Nothing Then
             MessageBox.Show("Could not find NPC record in cache.", "Paste Look",
@@ -9481,10 +9713,22 @@ Public Class MainForm
             Return
         End If
 
+        ' Ask the user which categories of the clipboard preset to actually apply. Cancel = no-op,
+        ' nothing changes on the target NPC. The dialog defaults all checkboxes to True so the
+        ' "select OK without thinking" path matches the legacy "paste everything" behavior.
+        Dim options As PasteOptions
+        Using dlg As New PasteOptionsDialog()
+            If dlg.ShowDialog(Me) <> DialogResult.OK Then Return
+            options = dlg.BuildOptions()
+        End Using
+
+        Dim filtered = BuildFilteredPaste(_clipboardPreset, npc, options)
+
         Dim previousOverlay As LooksmenuLoader.LooksmenuPreset = Nothing
         _appliedPresets.TryGetValue(npcFormID, previousOverlay)
-        _appliedPresets(npcFormID) = _clipboardPreset
+        _appliedPresets(npcFormID) = filtered
         NpcPreviewLog.LogSeparator($"PASTE LOOK to {npc.EditorID} [0x{npc.FormID:X8}]")
+        NpcPreviewLog.LogLazy(Function() $"  options: BodyWeight={options.BodyWeight} BodyRegions={options.BodyRegions} BodySliders={options.BodySliders} SkinOverride={options.SkinOverride} FaceParts={options.FaceParts} HairColor={options.HairColor} FaceTints={options.FaceTints} FaceVertexMorphs={options.FaceVertexMorphs} FaceBoneRegions={options.FaceBoneRegions} IsCharGenPreset={options.IsCharGenPreset}")
 
         Try
             Dim requestVersion = Interlocked.Increment(_previewRequestVersion)
@@ -9500,13 +9744,145 @@ Public Class MainForm
         End Try
     End Sub
 
+    ''' <summary>Build a partial paste preset: take the SOURCE clipboard preset and, for every
+    ''' category whose flag is False in <paramref name="options"/>, replace that category's
+    ''' value(s) with the TARGET NPC's raw record value(s). The result is a preset that, when
+    ''' applied via <see cref="ApplyPresetOverlayToNpcData"/>, leaves the unchecked categories
+    ''' visually identical to "no overlay touched them" — because the overlay's value for those
+    ''' fields IS the raw NPC's own value.
+    ''' <para>Why copy raw instead of leaving empty: the overlay merge in
+    ''' <see cref="ApplyPresetOverlayToNpcData"/> uses "Count > 0" as the gate for several
+    ''' fields (FaceTintLayers, MorphValues, FaceBoneRegions, BodyMorphRegionValues), so an
+    ''' empty list IS treated as "preserve raw" already. But for HeadParts the engine-faithful
+    ''' behavior is wipe + race defaults + preset entries — empty preset HeadParts would still
+    ''' wipe the target's NPC.PNAM. Copying the raw NPC's HeadPartFormIDs into the preset
+    ''' guarantees engine-equivalent preservation regardless of which gate the overlay merge
+    ''' uses for that field. Same principle for HairColor (0 vs raw value), Weight (Nothing vs
+    ''' raw value), and IsCharGenPreset (Nothing vs raw ACBS bit).</para></summary>
+    Private Function BuildFilteredPaste(source As LooksmenuLoader.LooksmenuPreset,
+                                         targetRaw As NPC_Data,
+                                         options As PasteOptions) As LooksmenuLoader.LooksmenuPreset
+
+        Dim p As New LooksmenuLoader.LooksmenuPreset()
+        p.SourcePath = source.SourcePath
+        p.Gender = source.Gender
+
+        ' --- Body weight (3 floats) ---
+        If options.BodyWeight Then
+            p.WeightThin = source.WeightThin
+            p.WeightMuscular = source.WeightMuscular
+            p.WeightFat = source.WeightFat
+        Else
+            p.WeightThin = targetRaw.WeightThin
+            p.WeightMuscular = targetRaw.WeightMuscular
+            p.WeightFat = targetRaw.WeightFat
+        End If
+
+        ' --- Body regions (MRSV) ---
+        If options.BodyRegions Then
+            p.BodyMorphValues.AddRange(source.BodyMorphValues)
+        Else
+            p.BodyMorphValues.AddRange(targetRaw.BodyMorphRegionValues)
+        End If
+
+        ' --- Body sliders (BodySlide vertex morphs, F4SE-only — no record-level source) ---
+        If options.BodySliders Then
+            For Each kv In source.BodyMorphSliders
+                p.BodyMorphSliders(kv.Key) = kv.Value
+            Next
+        End If
+        ' If unchecked: leave p.BodyMorphSliders empty. The renderer's
+        ' GetEffectiveBodyMorphSliders treats empty-or-missing as "vanilla NPC, no overlay
+        ' sliders" — which is exactly what the target NPC was already showing pre-paste, since
+        ' the target NPC's BodyMorphSliders only existed if a previous overlay was applied (and
+        ' that overlay is being replaced wholesale by this paste). Engine-equivalent.
+
+        ' --- Skin override (NPC.WNAM) ---
+        If options.SkinOverride Then
+            p.SkinFormIDOverride = source.SkinFormIDOverride
+        Else
+            ' Don't touch — overlay merge falls back to targetRaw.SkinFormID when
+            ' SkinFormIDOverride is Nothing.
+            p.SkinFormIDOverride = Nothing
+        End If
+
+        ' --- Face parts (HeadParts) ---
+        ' The overlay merge does wipe + race-defaults + preset entries. To preserve the target
+        ' NPC's HeadParts when the user unchecks this category, copy targetRaw.HeadPartFormIDs
+        ' into the preset — the merge's "preset wins per type" rule then re-establishes the
+        ' target's own selections over race defaults, exact same outcome as no overlay applied.
+        If options.FaceParts Then
+            p.HeadPartFormIDs.AddRange(source.HeadPartFormIDs)
+        Else
+            p.HeadPartFormIDs.AddRange(targetRaw.HeadPartFormIDs)
+        End If
+
+        ' --- Hair color (HCLF) ---
+        If options.HairColor Then
+            p.HairColorFormID = source.HairColorFormID
+        Else
+            ' Setting to 0 would also work (the merge falls back to targetRaw on 0), but
+            ' setting it explicitly keeps Save LooksMenu round-trip stable.
+            p.HairColorFormID = targetRaw.HairColorFormID
+        End If
+
+        ' --- Face tints (TETI/TEND list, includes scars/paint/skin tone palette) ---
+        If options.FaceTints Then
+            For Each tl In source.FaceTintLayers
+                p.FaceTintLayers.Add(CloneFaceTint(tl))
+            Next
+        Else
+            For Each tl In targetRaw.FaceTintLayers
+                p.FaceTintLayers.Add(CloneFaceTint(tl))
+            Next
+        End If
+
+        ' --- Face vertex morphs (chargen MSDV) ---
+        If options.FaceVertexMorphs Then
+            For Each kv In source.ChargenFaceMorphs
+                p.ChargenFaceMorphs(kv.Key) = kv.Value
+            Next
+        Else
+            For Each kv In targetRaw.MorphValues
+                p.ChargenFaceMorphs(kv.Key) = kv.Value
+            Next
+        End If
+
+        ' --- Face bone regions (FMRS) + morph intensity (FMIN) ---
+        ' The two are paired: the engine always overwrites Intensity (1.0 default if missing
+        ' in JSON), so to "preserve target" we have to copy targetRaw.FacialMorphIntensity.
+        If options.FaceBoneRegions Then
+            For Each kv In source.FaceBoneRegions
+                p.FaceBoneRegions(kv.Key) = CType(kv.Value.Clone(), Single())
+            Next
+            p.FacialMorphIntensity = source.FacialMorphIntensity
+        Else
+            For Each fm In targetRaw.FaceMorphs
+                p.FaceBoneRegions(fm.Index) = fm.Values.ToArray()
+            Next
+            p.FacialMorphIntensity = targetRaw.FacialMorphIntensity
+        End If
+
+        ' --- IsCharGenFacePreset flag (ACBS bit 0x04) ---
+        Const AcbsBitIsCharGenFacePreset As UInteger = &H4UI
+        If options.IsCharGenPreset Then
+            p.IsCharGenFacePreset = source.IsCharGenFacePreset
+        Else
+            ' Preserve target's existing ACBS bit. Read the raw record's ACBS and set the
+            ' preset's flag explicitly so the overlay merge writes that exact bit back.
+            p.IsCharGenFacePreset = ((targetRaw.AcbsFlags And AcbsBitIsCharGenFacePreset) <> 0UI)
+        End If
+
+        Return p
+    End Function
+
     ''' <summary>Capture the current rendered state into a LooksMenu preset and save it to a JSON
     ''' file. Default location is Data\F4SE\Plugins\F4EE\Presets\ — the same folder
     ''' Load LooksMenu reads from. Default filename is the NPC's EditorID.</summary>
     Private Sub ButtonSaveLooksmenu_Click(sender As Object, e As EventArgs) Handles ButtonSaveLooksmenu.Click
-        If _currentBaseState Is Nothing Then Return
+        If _renderHost.CurrentBaseState Is Nothing Then Return
 
-        Dim npcFormID = _currentBaseState.RootNpcFormID
+        Dim npcFormID = _renderHost.CurrentBaseState.RootNpcFormID
         Dim npc As NPC_Data = Nothing
         If Not _npcByIdCache.TryGetValue(npcFormID, npc) OrElse npc Is Nothing Then
             MessageBox.Show("Could not find NPC record in cache.", "Save LooksMenu",
@@ -9514,7 +9890,7 @@ Public Class MainForm
             Return
         End If
 
-        Dim preset = BuildPresetFromState(_currentBaseState)
+        Dim preset = BuildPresetFromState(_renderHost.CurrentBaseState)
         If preset Is Nothing Then
             MessageBox.Show("Could not capture the current NPC state.", "Save LooksMenu",
                             MessageBoxButtons.OK, MessageBoxIcon.Warning)

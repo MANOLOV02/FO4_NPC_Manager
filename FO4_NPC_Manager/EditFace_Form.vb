@@ -10,9 +10,9 @@ Imports FO4_Base_Library
 ''' overlay (_appliedPresets[npc]) on the host MainForm. The renderer reads the overlay-applied
 ''' NPC_Data via ApplyPresetOverlayToNpcData (MainForm.vb:8429) and the resolvers downstream
 ''' (NpcMorphResolver, BuildFaceBoneTransforms, FaceTintCompositor, MergeHeadPartsWithRaceDefaults)
-''' pick up the effective values. The host's RefreshFaceEditOverlay then issues the right
-''' MarkDirty pass — granular for tints/morphs/pose, full reload for HeadParts/Skin (which
-''' change the rendered geometry).
+''' pick up the effective values. OnLocalFaceRefresh then issues the right MarkDirty pass on
+''' the editor's embedded host — granular for tints/morphs/pose, full reload for HeadParts/Skin
+''' (which change the rendered geometry).
 '''
 ''' Cancel rolls back to a deep snapshot of the overlay taken at form construction. OK is a
 ''' no-op (live edits are already applied).
@@ -56,6 +56,19 @@ Public Class EditFace_Form
     Private ReadOnly _refresh As Action(Of FaceRefreshScope)
     Private ReadOnly _formatNpcRef As Func(Of UInteger, String)
 
+    ' Phase D wiring: editor owns its own NpcRenderHost and drives the embedded preview through
+    ' it (no longer the MainForm's _renderHost). _mainForm is held only to invoke pipeline methods
+    ' (RenderInHostAsync, RefreshFaceTintLivePreview, RebuildAndApplyMergedPose) that still live
+    ' on MainForm but accept an arbitrary host. _mainGore is captured at .ctor as a snapshot of the
+    ' MainForm's RenderGore checkbox so the editor honours the user's global gore preference.
+    Private _editorHost As NpcRenderHost = Nothing
+    Private ReadOnly _mainForm As MainForm = Nothing
+    Private ReadOnly _mainGore As Boolean = False
+    ''' <summary>Set to True by OnOk when the user confirms; MainForm reads this after ShowDialog
+    ''' to decide whether to re-render its main preview from the (now-mutated) overlay. Cancel
+    ''' rolls back the overlay so the MainForm's preview is already correct without a reload.</summary>
+    Public Property HasUncommittedChanges As Boolean = False
+
     ' Slider drag throttle: model writes happen synchronously inside On...Changed (so OK captures
     ' fresh state) but the costly _refresh callback is deferred. Each slider emits a different
     ' FaceRefreshScope (Tint→TexturesOnly, FMIN/Region→Pose, Bidi/PresetIntensity→Morphs); the
@@ -74,6 +87,10 @@ Public Class EditFace_Form
 
     ' UI state.
     Private _suspendEvents As Boolean
+
+    ' Set to True while we seed CheckBoxRenderGore from MainForm at Shown so its
+    ' CheckedChanged handler doesn't fire ApplyRenderToggleVisibility on the seed assignment.
+    Private _seedingToggles As Boolean
 
     ' Vertex morph UI: one section per RACE MorphGroup (mirrors CK chargen UI). Each section
     ' has a preset ListBox + intensity slider (if the group has presets) and N MPGS sliders
@@ -147,9 +164,10 @@ Public Class EditFace_Form
                    race As RACE_Data,
                    raceFormID As UInteger,
                    isFemale As Boolean,
-                   refresh As Action(Of FaceRefreshScope),
                    formatNpcRef As Func(Of UInteger, String),
-                   priorAcbsFlagsRaw As UInteger)
+                   priorAcbsFlagsRaw As UInteger,
+                   mainForm As MainForm,
+                   mainGore As Boolean)
         InitializeComponent()
         _rootNpcFormID = rootNpcFormID
         _appliedPresets = appliedPresets
@@ -157,9 +175,11 @@ Public Class EditFace_Form
         _race = race
         _raceFormID = raceFormID
         _isFemale = isFemale
-        _refresh = refresh
+        _refresh = AddressOf OnLocalFaceRefresh
         _formatNpcRef = formatNpcRef
         _priorAcbsFlagsRaw = priorAcbsFlagsRaw
+        _mainForm = mainForm
+        _mainGore = mainGore
 
         ' Snapshot any existing overlay so Cancel can restore byte-equivalent.
         Dim existing As LooksmenuLoader.LooksmenuPreset = Nothing
@@ -179,6 +199,13 @@ Public Class EditFace_Form
         BuildMorphGroupSections()
         BuildTintGroupRanks()
         BuildBoneRegionsUI()
+
+        ' Click-to-sort on the two ListViews (HeadParts + Tints). The helper subscribes to
+        ' ColumnClick and rewires ListViewItemSorter on every click; Refresh*List() repopulates
+        ' rows but the sorter persists, so a user-chosen sort survives subsequent overlay
+        ' mutations (Add/Remove HeadPart, Add/Remove Tint).
+        SortableListView.Attach(ListViewHeadParts)
+        SortableListView.Attach(ListViewTints)
 
         WireHandlers()
         SeedFromOverlayOrRaw()
@@ -258,42 +285,92 @@ Public Class EditFace_Form
         _presetKeyToGroup.Clear()
         If _race Is Nothing Then Return
 
+        ' Filter sliders/presets to those whose morph names actually exist in the chargen TRI
+        ' loaded for the face shape — replicates engine in-game behavior of silently skipping
+        ' MSDV entries with names not present in the TRI. Vanilla data is inconsistent for some
+        ' races (HumanChildRace declares Brow/Chin sliders but its HDPT points at the adult
+        ' BaseFemaleHeadChargen.tri which lacks those names). Without this filter the editor
+        ' offers controls with zero visible effect.
+        '
+        ' Empty set means "TRI not yet loaded / unknown" — fall back to no-filter so we don't
+        ' block the user when the editor opens before the renderer published the morph names.
+        '
+        ' Source: MainForm._renderHost (NOT _editorHost). BuildMorphGroupSections runs in the
+        ' editor's CONSTRUCTOR, before the editor's Shown handler creates _editorHost and fires
+        ' its first render. MainForm's host always has the latest render state by the time
+        ' ButtonEditFace_Click runs (it's the host that just rendered the NPC the user is
+        ' editing). So we read the set from there.
+        Dim availableMorphs As HashSet(Of String) = Nothing
+        If _mainForm IsNot Nothing AndAlso _mainForm._renderHost IsNot Nothing _
+           AndAlso _mainForm._renderHost.LastFaceTriMorphNames IsNot Nothing _
+           AndAlso _mainForm._renderHost.LastFaceTriMorphNames.Count > 0 Then
+            availableMorphs = _mainForm._renderHost.LastFaceTriMorphNames
+        End If
+        Dim sliderIsAvailable = Function(mvDef As RACE_MorphValueDef) As Boolean
+                                    If availableMorphs Is Nothing Then Return True
+                                    If Not String.IsNullOrEmpty(mvDef.MinName) AndAlso availableMorphs.Contains(mvDef.MinName) Then Return True
+                                    If Not String.IsNullOrEmpty(mvDef.MaxName) AndAlso availableMorphs.Contains(mvDef.MaxName) Then Return True
+                                    Return False
+                                End Function
+        Dim mvDefByIndex As New Dictionary(Of UInteger, RACE_MorphValueDef)
+        If _race.MorphValues IsNot Nothing Then
+            For Each mv In _race.MorphValues
+                mvDefByIndex(mv.Index) = mv
+            Next
+        End If
+
         Dim groups = If(_isFemale, _race.FemaleMorphGroups, _race.MaleMorphGroups)
         Dim consumedBidi As New HashSet(Of UInteger)
 
+        ' Group rule: a group is shown ONLY when it has at least one usable preset (declared in
+        ' RACE.MorphGroups[*].Presets AND present in the loaded chargen TRI). Sliders are
+        ' secondary fine-tuning controls inside a preset-driven editor — without a preset there
+        ' is no top-level choice for the user, so the group has no UI meaning. This matches CK's
+        ' chargen behaviour (HumanChildRace declares slider-only groups but vanilla CK does not
+        ' offer a face-morph editor for children, exactly because no presets are authored).
         If groups IsNot Nothing Then
             For Each g In groups
-                Dim hasPresets = g.Presets IsNot Nothing AndAlso g.Presets.Count > 0
-                Dim hasSliders = g.SliderIndices IsNot Nothing AndAlso g.SliderIndices.Count > 0
-                If Not hasPresets AndAlso Not hasSliders Then Continue For
+                Dim filteredPresets As New List(Of RACE_MorphPresetDef)
+                If g.Presets IsNot Nothing Then
+                    For Each p In g.Presets
+                        If availableMorphs Is Nothing _
+                           OrElse (Not String.IsNullOrEmpty(p.MorphName) AndAlso availableMorphs.Contains(p.MorphName)) Then
+                            filteredPresets.Add(p)
+                        End If
+                    Next
+                End If
+                If filteredPresets.Count = 0 Then Continue For
+
+                Dim filteredSliders As New List(Of UInteger)
+                If g.SliderIndices IsNot Nothing Then
+                    For Each k In g.SliderIndices
+                        Dim mvDef As RACE_MorphValueDef = Nothing
+                        If mvDefByIndex.TryGetValue(k, mvDef) AndAlso sliderIsAvailable(mvDef) Then
+                            filteredSliders.Add(k)
+                        End If
+                    Next
+                End If
 
                 Dim section As New MorphGroupSection With {
                     .GroupName = If(g.Name, ""),
-                    .Presets = If(hasPresets, g.Presets, New List(Of RACE_MorphPresetDef))}
-                If hasSliders Then
-                    For Each k In g.SliderIndices
-                        section.BidiKeys.Add(k)
-                        consumedBidi.Add(k)
-                        _bidiKeyToGroup(k) = section
-                    Next
-                End If
-                If hasPresets Then
-                    For Each p In g.Presets
-                        _presetKeyToGroup(p.Index) = section
-                    Next
-                End If
+                    .Presets = filteredPresets}
+                For Each k In filteredSliders
+                    section.BidiKeys.Add(k)
+                    consumedBidi.Add(k)
+                    _bidiKeyToGroup(k) = section
+                Next
+                For Each p In filteredPresets
+                    _presetKeyToGroup(p.Index) = section
+                Next
                 _groupSections.Add(section)
             Next
         End If
 
-        ' "Other Sliders" — fallback section. RACE.MorphValues is a single race-wide table
-        ' (wbDefinitionsFO4.pas:11702 places it OUTSIDE the gendered head blocks). A given MSID
-        ' belongs to whichever gender's MorphGroup MPGS references it; entries owned by the
-        ' OPPOSITE gender appear here as "orphan" relative to the active gender's MPGS but they
-        ' are not really orphan — they're just not for this gender. So we exclude keys consumed
-        ' by EITHER gender's MPGS. True orphans (not in any MPGS at all) are vanishingly rare in
-        ' vanilla but we surface them in case a custom race authored some.
-        If _race.MorphValues IsNot Nothing Then
+        ' Orphan sliders fallback: only meaningful when the race uses a preset-driven editor
+        ' overall. If no preset-bearing group survived the filter above, the race effectively
+        ' has no face-morph editor for this gender (vanilla HumanChildRace) — surfacing orphans
+        ' in that case would be inconsistent with the "no presets → no sliders" rule.
+        If _race.MorphValues IsNot Nothing AndAlso _groupSections.Count > 0 Then
             Dim consumedAnyGender As New HashSet(Of UInteger)
             For Each k In consumedBidi : consumedAnyGender.Add(k) : Next
             Dim oppositeGroups = If(_isFemale, _race.MaleMorphGroups, _race.FemaleMorphGroups)
@@ -306,14 +383,12 @@ Public Class EditFace_Form
             Dim orphans As New List(Of UInteger)
             For Each mv In _race.MorphValues
                 If consumedAnyGender.Contains(mv.Index) Then Continue For
+                If Not sliderIsAvailable(mv) Then Continue For
                 orphans.Add(mv.Index)
                 Dim mvLocal = mv
                 NpcPreviewLog.LogLazy(Function() $"[EDITFACE-ORPHAN] MSID=0x{mvLocal.Index:X8} MSM0='{mvLocal.MinName}' MSM1='{mvLocal.MaxName}' (not in any MPGS, race={_race.EditorID})")
             Next
             If orphans.Count > 0 Then
-                ' Keys that no MPGS references in any gender. Should be empty in vanilla — if it
-                ' fires, the filter logic missed something or the RACE record is genuinely odd.
-                ' Title screams red so the user notices and reports.
                 Dim other As New MorphGroupSection With {.GroupName = "These shouldn't be here!!", .Presets = Nothing}
                 other.BidiKeys.AddRange(orphans)
                 For Each k In orphans
@@ -468,9 +543,13 @@ Public Class EditFace_Form
             RefreshHeadPartsList()
 
             ' --- HairColor ---
-            If p.HairColorFormID = 0UI AndAlso rawNpc IsNot Nothing Then
-                p.HairColorFormID = rawNpc.HairColorFormID
-            End If
+            ' Do NOT copy rawNpc.HairColorFormID into the overlay. preset.HairColorFormID = 0
+            ' is the "preserve" semantic per LM contract (CharGenInterface.cpp:344-359 — missing
+            ' key = preserve runtime value) AND per ESP contract (HCLF subrecord is optional per
+            ' wbDefinitionsFO4.pas:10749, missing = inherit from template chain or RACE.HCLF
+            ' default per wbDefinitionsFO4.pas:11575). The combo arranges in "(none / preserve)"
+            ' when the overlay carries no override; the swatch resolves the effective color
+            ' (race default chain) so the user sees what's currently visible on the NPC.
             PopulateHairColorCombo()
             UpdateHairColorSwatch()
 
@@ -481,12 +560,17 @@ Public Class EditFace_Form
             CheckBoxIsCharGenFacePreset.Checked = p.IsCharGenFacePreset.GetValueOrDefault(False)
 
             ' --- Tints ---
+            Dim presetTintCountBefore = p.FaceTintLayers.Count
+            Dim rawTintCount = If(rawNpc IsNot Nothing, rawNpc.FaceTintLayers.Count, -1)
+            NpcPreviewLog.LogLazy(Function() $"[EDITFACE-SEED] tints: preset.Count={presetTintCountBefore} rawNpc.Count={rawTintCount} rawNpcFound={(rawNpc IsNot Nothing)}")
             If p.FaceTintLayers.Count = 0 AndAlso rawNpc IsNot Nothing AndAlso rawNpc.FaceTintLayers.Count > 0 Then
                 For Each tl In rawNpc.FaceTintLayers
                     p.FaceTintLayers.Add(CloneFaceTint(tl))
                 Next
+                NpcPreviewLog.LogLazy(Function() $"[EDITFACE-SEED] tints: seeded {p.FaceTintLayers.Count} from rawNpc")
             End If
             RefreshTintsList()
+            NpcPreviewLog.LogLazy(Function() $"[EDITFACE-SEED] tints: after RefreshTintsList, ListView rows={ListViewTints.Items.Count}")
 
             ' --- Vertex morphs (MSDK/MSDV) ---
             If p.ChargenFaceMorphs.Count = 0 AndAlso rawNpc IsNot Nothing AndAlso rawNpc.MorphValues.Count > 0 Then
@@ -809,7 +893,7 @@ Public Class EditFace_Form
         ' of HairColor_Lgrad_d.dds at render time. If HasColor=False the swatch falls back to
         ' SystemColors.Control (grey), not black; if it shows black the parse is producing
         ' (0,0,0) which means CNAM is actually 0 in those CLFMs.
-        NpcPreviewLog.LogLazy(Function() $"[EDITFACE-HAIRCOLOR] selected '{it.Display}' fid={it.FormID:X8} HasColor={it.HasColor} rgba=({it.Color.R},{it.Color.G},{it.Color.B},{it.Color.A})")
+        NpcPreviewLog.LogLazy(Function() $"[EDITFACE-HAIRCOLOR] selected '{it.Display}' fid={it.FormID:X8} HasColor={it.HasColor} rgba=({it.Color.R},{it.Color.G},{it.Color.B},{it.Color.A}) HasRemappingIndex={it.HasRemappingIndex} RemappingIndex={it.RemappingIndex}")
         UpdateHairColorSwatch()
         _refresh?.Invoke(FaceRefreshScope.TexturesOnly)
     End Sub
@@ -837,6 +921,35 @@ Public Class EditFace_Form
         If it Is Nothing Then Return
         Dim rect = PanelHairColorSwatch.ClientRectangle
         If rect.Width <= 0 OrElse rect.Height <= 0 Then Return
+
+        ' "(none / preserve)" selected — read the EFFECTIVE color directly from the resolved
+        ' render state. ResolveNPCBaseState walks the full chain (NPC.HCLF → TPLT M/A template
+        ' → RACE.HCLF default per ApplyRaceFallbacks) once at load time and writes the result
+        ' to host.LastRenderedState.HairColorFormID. The swatch is the SAME consumer of the
+        ' SAME resolved value the renderer paints with — no parallel chain walk in the editor,
+        ' no duplicated semantics that could drift apart.
+        If it.FormID = 0UI Then
+            Dim effectiveFid As UInteger = 0UI
+            If _editorHost IsNot Nothing AndAlso _editorHost.LastRenderedState IsNot Nothing Then
+                effectiveFid = _editorHost.LastRenderedState.HairColorFormID
+            End If
+            If effectiveFid <> 0UI Then
+                Dim rec = _pluginManager.GetRecord(effectiveFid)
+                If rec IsNot Nothing AndAlso rec.Header.Signature = "CLFM" Then
+                    Dim clfm = RecordParsers.ParseCLFM(rec, _pluginManager)
+                    If clfm IsNot Nothing Then
+                        it = New HairColorItem With {
+                            .FormID = effectiveFid,
+                            .Display = "",
+                            .Color = clfm.Color,
+                            .HasColor = clfm.HasColor,
+                            .HasRemappingIndex = clfm.HasRemappingIndex,
+                            .RemappingIndex = clfm.RemappingIndex
+                        }
+                    End If
+                End If
+            End If
+        End If
 
         If it.HasRemappingIndex Then
             EnsureHairPaletteLoaded()
@@ -878,25 +991,29 @@ Public Class EditFace_Form
         ' Fall-through: neither palette nor RGB available — leave the BackColor showing.
     End Sub
 
-    ''' <summary>Decode the race's hair LUT (HairColor_Lgrad_d.dds or its extended sibling) once
-    ''' and cache it for swatch sampling. Lazy: only attempted on first request, and only once
-    ''' (failures stick — no retry storm if the DDS is unreadable). Path resolution mirrors
-    ''' MainForm.ResolveRaceHairLookupTexture: prefer the path that's actually in FilesDictionary,
-    ''' fall back to whichever non-empty path the RACE record declares.</summary>
+    ''' <summary>Decode the hair LUT (HairColor_Lgrad_d.dds or equivalent) once and cache it for
+    ''' swatch sampling. Lazy: only attempted on first request, and only once (failures stick — no
+    ''' retry storm if the DDS is unreadable).
+    ''' <para>Path priority mirrors the renderer (MainForm.ApplyShapeMaterialOverrides /
+    ''' RefreshFaceTintLivePreview): the BGSM's own GreyscaleTexture wins (it's per-shape, picked
+    ''' by the hair stylist for THIS mesh), falling back to RACE.HNAM/HLTX only if the loaded hair
+    ''' shape has no BGSM palette path. This matches engine behaviour (verified against F4SE
+    ''' CharGenInterface.cpp: the in-game shader binds the LUT from material TXST slot 3, not from
+    ''' the RACE record). Vanilla HumanChildRace ships without HNAM/HLTX precisely because the
+    ''' BGSM carries it; without BGSM-first, the swatch shows no preview for child NPCs.</para></summary>
     Private Sub EnsureHairPaletteLoaded()
         If _hairPaletteResolveAttempted Then Return
-        _hairPaletteResolveAttempted = True
-        If _race Is Nothing Then Return
-        Dim candidates = New String() {_race.HairColorLookupTexture, _race.HairColorExtendedLookupTexture}
-        Dim chosen As String = ""
-        For Each p In candidates
-            Dim corrected = FO4UnifiedMaterial_Class.CorrectTexturePath(p)
-            If corrected <> "" AndAlso FilesDictionary_class.Dictionary.ContainsKey(corrected) Then
-                chosen = corrected
-                Exit For
-            End If
-        Next
-        If chosen = "" Then Return
+
+        ' Single source of truth for the BGSM-first / RACE-fallback rule lives in MainForm so the
+        ' renderer and the swatch never disagree. Resolve via the helper, then check the chosen
+        ' path actually exists in FilesDictionary before attempting to decode.
+        Dim raw As String = ""
+        If _mainForm IsNot Nothing AndAlso _editorHost IsNot Nothing AndAlso _editorHost.LastRenderedState IsNot Nothing Then
+            raw = _mainForm.ResolveHairPaletteTexture(_editorHost, _editorHost.LastRenderedState)
+        End If
+        If String.IsNullOrEmpty(raw) Then Return
+        Dim chosen = FO4UnifiedMaterial_Class.CorrectTexturePath(raw)
+        If chosen = "" OrElse Not FilesDictionary_class.Dictionary.ContainsKey(chosen) Then Return
         Try
             Dim loc As FilesDictionary_class.File_Location = Nothing
             If Not FilesDictionary_class.Dictionary.TryGetValue(chosen, loc) Then Return
@@ -917,8 +1034,10 @@ Public Class EditFace_Form
             Finally
                 handle.Free()
             End Try
+            _hairPaletteResolveAttempted = True
         Catch ex As Exception
             NpcPreviewLog.LogLazy(Function() $"[EDITFACE-HAIRSWATCH] palette decode failed: {ex.Message}")
+            _hairPaletteResolveAttempted = True   ' decode-side failures are not transitory; stop retrying
         End Try
     End Sub
 
@@ -1193,47 +1312,22 @@ Public Class EditFace_Form
 
     Private Sub OnAddTint(sender As Object, e As EventArgs)
         ' Build a flat list of (group, option) candidates from RACE for this gender. The picker
-        ' filters out Mask-typed options (those are spatial region declarations consumed by the
-        ' REGION-SWAP render path, not paintable colour layers), so only Palette and TextureSet
-        ' options reach this code.
+        ' filters out Mask-typed options (region masks, not paintable colour layers) AND any
+        ' option Index already present in the active layer list — so the user only sees
+        ' additions still available to add. Vanilla NPCs carry one layer per option Index;
+        ' duplicates would over-saturate the compositor with no way to disambiguate in the
+        ' detail panel. Pre-filtering at the picker is cleaner than a post-Add MessageBox.
         If _race Is Nothing Then Return
         Dim groups = If(_isFemale, _race.FemaleTintTemplateGroups, _race.MaleTintTemplateGroups)
         If groups Is Nothing OrElse groups.Count = 0 Then Return
 
-        Using dlg As New TintPickerDialog(groups)
+        Dim p = Preset
+        Dim alreadyPresent As New HashSet(Of UShort)(p.FaceTintLayers.Select(Function(tl) tl.Index))
+
+        Using dlg As New TintPickerDialog(groups, alreadyPresent)
             If dlg.ShowDialog(Me) <> DialogResult.OK Then Return
             Dim opt = dlg.SelectedOption
             If opt Is Nothing Then Return
-            Dim p = Preset
-
-            ' Guard against duplicates: vanilla NPCs carry exactly one tint layer per RACE
-            ' option (Cait fixture: 10 layers with 10 distinct TETI.Index values). The render
-            ' compositor would gladly process two layers with the same Index, but they would
-            ' over-saturate (each contributes coverage * uColor) and there's no way to tell
-            ' which one the user is editing in the detail panel. If a layer already exists
-            ' for this option, surface the existing row and skip the Add — same effect as
-            ' "select the row that's already there".
-            Dim existingLayerIdx As Integer = -1
-            For idx = 0 To p.FaceTintLayers.Count - 1
-                If p.FaceTintLayers(idx).Index = opt.Index Then
-                    existingLayerIdx = idx
-                    Exit For
-                End If
-            Next
-            If existingLayerIdx >= 0 Then
-                Dim optDisplay = If(String.IsNullOrEmpty(opt.Name), $"option #{opt.Index}", opt.Name)
-                MessageBox.Show(Me,
-                    $"This NPC already carries a tint layer for '{optDisplay}'. Select the existing row to edit its colour or percent.",
-                    "Add Face Tint", MessageBoxButtons.OK, MessageBoxIcon.Information)
-                For Each item As ListViewItem In ListViewTints.Items
-                    If item.Tag IsNot Nothing AndAlso CInt(item.Tag) = existingLayerIdx Then
-                        item.Selected = True
-                        item.EnsureVisible()
-                        Exit For
-                    End If
-                Next
-                Return
-            End If
 
             Dim newLayer As New NPC_FaceTintLayerData With {
                 .Discriminator = If(opt.EntryType = RACE_TintEntryType.Palette, CUShort(1), CUShort(2)),
@@ -1971,6 +2065,9 @@ Public Class EditFace_Form
     End Sub
 
     Private Sub OnOk(sender As Object, e As EventArgs)
+        ' Live overlay edits already mutated _appliedPresets[npc]; flag the MainForm to recompose
+        ' its main preview from the now-final overlay state.
+        HasUncommittedChanges = True
         DialogResult = DialogResult.OK
         Close()
     End Sub
@@ -1982,11 +2079,70 @@ Public Class EditFace_Form
         Else
             _appliedPresets.Remove(_rootNpcFormID)
         End If
-        ' HeadParts and Skin both require full reload to revert (geometry changes). The host
-        ' will issue the right MarkDirty when it sees FaceRefreshScope.FullReload.
-        _refresh?.Invoke(FaceRefreshScope.FullReload)
+        ' Phase D: the MainForm's preview never reflected our intermediate edits (we render into
+        ' the editor's own embedded host), so on Cancel there's nothing to repaint there. The
+        ' overlay rollback above is enough; HasUncommittedChanges stays False and ButtonEditFace
+        ' caller skips the post-modal MainForm reload.
+        HasUncommittedChanges = False
         DialogResult = DialogResult.Cancel
         Close()
+    End Sub
+
+    ''' <summary>Refresh dispatcher that targets the editor's embedded NpcRenderHost. The form
+    ''' classifies each edit by <see cref="FaceRefreshScope"/>; we translate that into the
+    ''' cheapest MarkDirty pass that still produces a correct preview. The MainForm's preview
+    ''' is left untouched during the modal session.</summary>
+    Private Async Sub OnLocalFaceRefresh(scope As FaceRefreshScope)
+        If _editorHost Is Nothing OrElse _mainForm Is Nothing Then Return
+        Select Case scope
+            Case FaceRefreshScope.FlagOnly
+                ' No render side-effect.
+                Return
+            Case FaceRefreshScope.TexturesOnly
+                ' Live tint / hair-color edit on the editor's own preview.
+                Try
+                    _mainForm.RefreshFaceTintLivePreview(_editorHost)
+                    _editorHost.PreviewCtl.RefreshRender()
+                Catch ex As Exception
+                    NpcPreviewLog.LogLazy(Function() $"  [EDITFACE-PREVIEW] tint refresh failed: {ex.Message}")
+                End Try
+                Return
+            Case FaceRefreshScope.Morphs
+                If _editorHost.LastRenderData IsNot Nothing Then
+                    Dim intent = _editorHost.PreviewCtl.Intent
+                    intent.MorphResolver = _mainForm.BuildCompositeMorphResolver(_editorHost.LastRenderedState, _editorHost.LastRenderData, _editorHost)
+                    intent.MarkDirty(RenderDirtyFlags.Morphs, _editorHost.LastRenderData.Shapes)
+                End If
+                ' MPPI Morph Group presets like Murphy's "Arrugado" do TWO things: vertex
+                ' deformation (MSDV — handled by the resolver above) AND a per-region MPPT TXST
+                ' texture swap (Wrinkled skin texture inside the Forehead/Cheeks/Neck region
+                ' mask, applied by BuildFaceRegionSwaps → ApplyRegionSwapChannelOnto inside
+                ' TryApplyFaceTints). Re-running the resolver alone updates geometry but leaves
+                ' the textures stale — switching from Smooth to Wrinkled would deform the mesh
+                ' but show the previous texture. Refresh the tint pipeline too. No-op for NPCs
+                ' whose active presets carry no MPPT (BuildFaceRegionSwaps returns 0 swaps).
+                Try
+                    _mainForm.RefreshFaceTintLivePreview(_editorHost)
+                Catch ex As Exception
+                    NpcPreviewLog.LogLazy(Function() $"  [EDITFACE-PREVIEW] morph→tint refresh failed: {ex.Message}")
+                End Try
+                _editorHost.PreviewCtl.InvalidateRender()
+                Return
+            Case FaceRefreshScope.Pose
+                _mainForm.RebuildAndApplyMergedPose(_editorHost)
+                If _editorHost.LastRenderData IsNot Nothing Then
+                    _editorHost.PreviewCtl.Intent.MarkDirty(RenderDirtyFlags.Pose, _editorHost.LastRenderData.Shapes)
+                End If
+                _editorHost.PreviewCtl.InvalidateRender()
+                Return
+            Case FaceRefreshScope.FullReload
+                Try
+                    Await _mainForm.RenderInHostAsync(_editorHost, _rootNpcFormID)
+                Catch ex As Exception
+                    NpcPreviewLog.LogLazy(Function() $"  [EDITFACE-PREVIEW] full reload failed: {ex.Message}")
+                End Try
+                Return
+        End Select
     End Sub
 
     Protected Overrides Sub OnFormClosed(e As FormClosedEventArgs)
@@ -1999,6 +2155,103 @@ Public Class EditFace_Form
     End Sub
 
     ' =====================================================================
+    ' Embedded preview lifecycle (Shown / FormClosing)
+    '
+    ' Pattern adopted from Wardrobe_Manager Editor_Form.vb:1046 and
+    ' CreatefromNif_Form.vb:36 — the PreviewControl is created in Shown (NOT in
+    ' .ctor / Designer) so its OpenGL context is created when the form is actually
+    ' visible. FormClosing tears it down explicitly so the GL resources are released
+    ' before the form's own Dispose runs.
+    '
+    ' Multiple PreviewControl instances coexist with the MainForm's preview at runtime:
+    ' each control owns its own GL context and shaders (see Render.vb:677 OnLoad),
+    ' textures and buffers are not shared. WM ships this pattern in production with
+    ' Editor_Form + CreatefromNif_Form so it is a known-good baseline.
+    ' =====================================================================
+    Private WithEvents EditPreviewControl As PreviewControl = Nothing
+
+    Private Async Sub EditFaceForm_Shown(sender As Object, e As EventArgs) Handles Me.Shown
+        ' Defer GL context creation until the form is on screen. Building it here means an
+        ' exception inside OnLoad surfaces in-context (the form is already alive) instead of
+        ' aborting construction.
+        EditPreviewControl = New PreviewControl() With {.Dock = DockStyle.Fill}
+        PreviewHostPanel.Controls.Add(EditPreviewControl)
+        ' Force handle creation (and therefore PreviewControl.OnLoad — shader/program/default
+        ' textures init) synchronously BEFORE we await the first render. Without this, the
+        ' Await Task.Run inside RenderInHostAsync resumes before HandleCreated has fired, the
+        ' pipeline calls RenderShapes against a control whose SharedActiveShader is still
+        ' Nothing, and we get GL_INVALID_VALUE on the program handle plus VAO bind errors.
+        EditPreviewControl.CreateControl()
+
+        ' Seed the per-editor gore checkbox from MainForm so the embedded preview opens with
+        ' the user's global gore preference. _seedingToggles short-circuits the CheckedChanged
+        ' handler during the assignment so we don't run a redundant visibility pass before the
+        ' first render.
+        _seedingToggles = True
+        Try
+            CheckBoxRenderGore.Checked = _mainForm.CheckBoxRenderGore.Checked
+        Finally
+            _seedingToggles = False
+        End Try
+
+        ' Phase D — own host + initial render. AppliedPresets shares the dict by reference with
+        ' MainForm so live overlay edits inside the modal write through to the same source
+        ' MainForm will resolve from after OK.
+        _editorHost = New NpcRenderHost(EditPreviewControl)
+        _editorHost.AppliedPresets = _appliedPresets
+        ' Toggles baseline = OnlyFace (everything ON, gore overwritten below from the editor's
+        ' own checkbox). RenderToggles.OnlyFace is now a no-op for visibility (the head-only
+        ' filter happens at OnlyFaceCollect below) — see RenderToggles.vb.
+        Dim t = RenderToggles.OnlyFace(False)
+        t.RenderGore = CheckBoxRenderGore.Checked
+        _editorHost.Toggles = t
+        ' Match MainForm's "Only Face" PreviewMode at the COLLECT path: skin + outfit meshes
+        ' are skipped entirely so the editor preview shows just the head.
+        _editorHost.OnlyFaceCollect = True
+        ' Face tint deferral is now handled by the library's PostTextureUploadAction hook on
+        ' RenderIntent — wired by RenderCurrentStateAsync inside the render dispatch path so
+        ' editor hosts get the same generic post-texture sequencing the MainForm uses.
+
+        If _mainForm IsNot Nothing Then
+            Try
+                Await _mainForm.RenderInHostAsync(_editorHost, _rootNpcFormID)
+            Catch ex As Exception
+                NpcPreviewLog.LogLazy(Function() $"  [EDITFACE-PREVIEW] initial render failed: {ex.Message}")
+            End Try
+        End If
+    End Sub
+
+    Private Sub EditFaceForm_FormClosing(sender As Object, e As FormClosingEventArgs) Handles Me.FormClosing
+        ' Tear down the editor's host BEFORE the PreviewControl so the host's Dispose can drop
+        ' refs to last render artifacts while the GL context (still alive) can still reclaim
+        ' GPU caches via the TintGpuCache.Clear path.
+        If _editorHost IsNot Nothing Then
+            Try
+                _editorHost.Dispose()
+            Catch
+                ' Defensive — host disposal walks dictionaries / nullable refs; swallow so the
+                ' form still closes if anything throws.
+            End Try
+            _editorHost = Nothing
+        End If
+        ' Guard against double-Close / FormClosing firing twice: the WM pattern checks
+        ' IsDisposed before touching the GL handle so we mirror it exactly.
+        If EditPreviewControl IsNot Nothing AndAlso Not EditPreviewControl.IsDisposed Then
+            Try
+                EditPreviewControl.Clean()
+            Catch
+                ' Defensive — Clean() walks GL state; swallow so the form still closes if a
+                ' GL teardown corner-case throws.
+            End Try
+            Try
+                EditPreviewControl.Dispose()
+            Catch
+            End Try
+        End If
+        EditPreviewControl = Nothing
+    End Sub
+
+    ' =====================================================================
     ' Helpers
     ' =====================================================================
 
@@ -2007,5 +2260,15 @@ Public Class EditFace_Form
         If v > hi Then Return hi
         Return v
     End Function
+
+    ''' <summary>Render-gore checkbox toggle. Mutates the editor host's Toggles in place
+    ''' (the only visibility flag the EditFace surface exposes — head meshes don't have
+    ''' Underarmor/Armor/Headwear categories) and runs the standard visibility pass.</summary>
+    Private Sub OnRenderGoreChanged(sender As Object, e As EventArgs) Handles CheckBoxRenderGore.CheckedChanged
+        If _seedingToggles Then Return
+        If _editorHost Is Nothing Then Return
+        _editorHost.Toggles.RenderGore = CheckBoxRenderGore.Checked
+        _editorHost.ApplyRenderToggleVisibility()
+    End Sub
 
 End Class

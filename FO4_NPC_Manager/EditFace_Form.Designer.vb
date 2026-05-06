@@ -16,6 +16,11 @@ Partial Class EditFace_Form
 
     <System.Diagnostics.DebuggerStepThrough()>
     Private Sub InitializeComponent()
+        PreviewSplit = New SplitContainer()
+        PreviewSidebar = New TableLayoutPanel()
+        RenderTogglesPanel = New FlowLayoutPanel()
+        CheckBoxRenderGore = New CheckBox()
+        PreviewHostPanel = New Panel()
         RootLayout = New TableLayoutPanel()
         TabsFace = New TabControl()
         TabPageFaceParts = New TabPage()
@@ -85,6 +90,10 @@ Partial Class EditFace_Form
         ButtonOk = New Button()
         ButtonCancel = New Button()
         ButtonResetSection = New Button()
+        CType(PreviewSplit, ComponentModel.ISupportInitialize).BeginInit()
+        PreviewSplit.Panel1.SuspendLayout()
+        PreviewSplit.Panel2.SuspendLayout()
+        PreviewSplit.SuspendLayout()
         RootLayout.SuspendLayout()
         TabsFace.SuspendLayout()
         TabPageFaceParts.SuspendLayout()
@@ -108,9 +117,62 @@ Partial Class EditFace_Form
         FminLayout.SuspendLayout()
         BottomLayout.SuspendLayout()
         SuspendLayout()
-        ' 
+        '
+        ' PreviewSplit
+        '
+        ' Splits the form into two panels: Panel1 hosts the editor controls (the RootLayout that
+        ' was previously docked to the form root), Panel2 hosts the preview (a PreviewControl
+        ' created at Form.Shown — see WM Editor_Form/CreatefromNif_Form for the canonical pattern).
+        ' FixedPanel=Panel2 keeps the preview width stable when the form is resized so the editor
+        ' on the left gets the extra width.
+        PreviewSplit.Dock = DockStyle.Fill
+        PreviewSplit.FixedPanel = FixedPanel.Panel2
+        PreviewSplit.Location = New Point(0, 0)
+        PreviewSplit.Name = "PreviewSplit"
+        PreviewSplit.Panel1.Controls.Add(RootLayout)
+        PreviewSplit.Panel2.Controls.Add(PreviewSidebar)
+        PreviewSplit.Size = New Size(1320, 720)
+        PreviewSplit.SplitterDistance = 940
+        PreviewSplit.TabIndex = 0
+        '
+        ' PreviewSidebar — vertical TableLayoutPanel: row 0 hosts the per-editor render-gore
+        ' toggle, row 1 hosts the PreviewControl. Row 0 AutoSize, row 1 fills.
+        '
+        PreviewSidebar.Dock = DockStyle.Fill
+        PreviewSidebar.ColumnCount = 1
+        PreviewSidebar.RowCount = 2
+        PreviewSidebar.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100.0F))
+        PreviewSidebar.RowStyles.Add(New RowStyle(SizeType.AutoSize))
+        PreviewSidebar.RowStyles.Add(New RowStyle(SizeType.Percent, 100.0F))
+        PreviewSidebar.Controls.Add(RenderTogglesPanel, 0, 0)
+        PreviewSidebar.Controls.Add(PreviewHostPanel, 0, 1)
+        '
+        ' RenderTogglesPanel
+        '
+        RenderTogglesPanel.Dock = DockStyle.Fill
+        RenderTogglesPanel.AutoSize = True
+        RenderTogglesPanel.AutoSizeMode = AutoSizeMode.GrowAndShrink
+        RenderTogglesPanel.FlowDirection = FlowDirection.LeftToRight
+        RenderTogglesPanel.Padding = New Padding(2)
+        RenderTogglesPanel.Controls.Add(CheckBoxRenderGore)
+        '
+        CheckBoxRenderGore.AutoSize = True
+        CheckBoxRenderGore.Name = "CheckBoxRenderGore"
+        CheckBoxRenderGore.Text = "Render gore"
+        CheckBoxRenderGore.Margin = New Padding(4, 2, 8, 2)
+        '
+        ' PreviewHostPanel
+        '
+        ' Empty in Designer; the actual PreviewControl is added at Form.Shown so the GL context
+        ' isn't constructed until the form is visible. Disposed in FormClosing.
+        PreviewHostPanel.Dock = DockStyle.Fill
+        PreviewHostPanel.Location = New Point(0, 0)
+        PreviewHostPanel.Name = "PreviewHostPanel"
+        PreviewHostPanel.Size = New Size(380, 690)
+        PreviewHostPanel.TabIndex = 0
+        '
         ' RootLayout
-        ' 
+        '
         RootLayout.ColumnCount = 1
         RootLayout.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100.0F))
         RootLayout.Controls.Add(TabsFace, 0, 0)
@@ -122,7 +184,7 @@ Partial Class EditFace_Form
         RootLayout.RowCount = 2
         RootLayout.RowStyles.Add(New RowStyle(SizeType.Percent, 100.0F))
         RootLayout.RowStyles.Add(New RowStyle())
-        RootLayout.Size = New Size(1020, 720)
+        RootLayout.Size = New Size(936, 720)
         RootLayout.TabIndex = 0
         ' 
         ' TabsFace
@@ -855,8 +917,8 @@ Partial Class EditFace_Form
         ' 
         AcceptButton = ButtonOk
         CancelButton = ButtonCancel
-        ClientSize = New Size(1020, 720)
-        Controls.Add(RootLayout)
+        ClientSize = New Size(1320, 720)
+        Controls.Add(PreviewSplit)
         Name = "EditFace_Form"
         StartPosition = FormStartPosition.CenterParent
         Text = "Edit Face"
@@ -896,9 +958,18 @@ Partial Class EditFace_Form
         FminLayout.ResumeLayout(False)
         FminLayout.PerformLayout()
         BottomLayout.ResumeLayout(False)
+        PreviewSplit.Panel1.ResumeLayout(False)
+        PreviewSplit.Panel2.ResumeLayout(False)
+        CType(PreviewSplit, ComponentModel.ISupportInitialize).EndInit()
+        PreviewSplit.ResumeLayout(False)
         ResumeLayout(False)
     End Sub
 
+    Friend WithEvents PreviewSplit As System.Windows.Forms.SplitContainer
+    Friend WithEvents PreviewSidebar As System.Windows.Forms.TableLayoutPanel
+    Friend WithEvents RenderTogglesPanel As System.Windows.Forms.FlowLayoutPanel
+    Friend WithEvents CheckBoxRenderGore As System.Windows.Forms.CheckBox
+    Friend WithEvents PreviewHostPanel As System.Windows.Forms.Panel
     Friend WithEvents RootLayout As System.Windows.Forms.TableLayoutPanel
     Friend WithEvents TabsFace As System.Windows.Forms.TabControl
     Friend WithEvents TabPageFaceParts As System.Windows.Forms.TabPage

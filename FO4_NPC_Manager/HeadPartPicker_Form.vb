@@ -79,6 +79,7 @@ Public Class HeadPartPicker_Form
         AddHandler ListViewParts.DoubleClick, AddressOf OnListDoubleClick
         AddHandler ListViewParts.SelectedIndexChanged, AddressOf OnListSelectionChanged
         AddHandler ButtonOk.Click, AddressOf OnOk
+        SortableListView.Attach(ListViewParts)
     End Sub
 
     Private Sub BuildCandidates(raceFormID As UInteger, isFemale As Boolean, partType As Integer, raceDefaults As HashSet(Of UInteger))
