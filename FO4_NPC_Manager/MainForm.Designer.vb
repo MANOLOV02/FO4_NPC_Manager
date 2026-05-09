@@ -30,6 +30,7 @@ Partial Class MainForm
         PanelActionsToolbar = New TableLayoutPanel()
         LabelEdit = New Label()
         ButtonEditFace = New Button()
+        ButtonBuildCharGen = New Button()
         ButtonEditBody = New Button()
         ButtonEditOutfit = New Button()
         SeparatorActions1 = New Label()
@@ -258,7 +259,8 @@ Partial Class MainForm
         ' 
         PanelActionsToolbar.AutoSize = True
         PanelActionsToolbar.AutoSizeMode = AutoSizeMode.GrowAndShrink
-        PanelActionsToolbar.ColumnCount = 15
+        PanelActionsToolbar.ColumnCount = 16
+        PanelActionsToolbar.ColumnStyles.Add(New ColumnStyle())
         PanelActionsToolbar.ColumnStyles.Add(New ColumnStyle())
         PanelActionsToolbar.ColumnStyles.Add(New ColumnStyle())
         PanelActionsToolbar.ColumnStyles.Add(New ColumnStyle())
@@ -276,18 +278,19 @@ Partial Class MainForm
         PanelActionsToolbar.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100F))
         PanelActionsToolbar.Controls.Add(LabelEdit, 0, 0)
         PanelActionsToolbar.Controls.Add(ButtonEditFace, 1, 0)
-        PanelActionsToolbar.Controls.Add(ButtonEditBody, 2, 0)
-        PanelActionsToolbar.Controls.Add(ButtonEditOutfit, 3, 0)
-        PanelActionsToolbar.Controls.Add(SeparatorActions1, 4, 0)
-        PanelActionsToolbar.Controls.Add(LabelLooksMenu, 5, 0)
-        PanelActionsToolbar.Controls.Add(ButtonLoadLooksmenu, 6, 0)
-        PanelActionsToolbar.Controls.Add(ButtonSaveLooksmenu, 7, 0)
-        PanelActionsToolbar.Controls.Add(SeparatorActions2, 8, 0)
-        PanelActionsToolbar.Controls.Add(LabelLook, 9, 0)
-        PanelActionsToolbar.Controls.Add(ButtonCopyLook, 10, 0)
-        PanelActionsToolbar.Controls.Add(ButtonPasteLook, 11, 0)
-        PanelActionsToolbar.Controls.Add(SeparatorActions3, 12, 0)
-        PanelActionsToolbar.Controls.Add(ButtonSavePlugin, 13, 0)
+        PanelActionsToolbar.Controls.Add(ButtonBuildCharGen, 2, 0)
+        PanelActionsToolbar.Controls.Add(ButtonEditBody, 3, 0)
+        PanelActionsToolbar.Controls.Add(ButtonEditOutfit, 4, 0)
+        PanelActionsToolbar.Controls.Add(SeparatorActions1, 5, 0)
+        PanelActionsToolbar.Controls.Add(LabelLooksMenu, 6, 0)
+        PanelActionsToolbar.Controls.Add(ButtonLoadLooksmenu, 7, 0)
+        PanelActionsToolbar.Controls.Add(ButtonSaveLooksmenu, 8, 0)
+        PanelActionsToolbar.Controls.Add(SeparatorActions2, 9, 0)
+        PanelActionsToolbar.Controls.Add(LabelLook, 10, 0)
+        PanelActionsToolbar.Controls.Add(ButtonCopyLook, 11, 0)
+        PanelActionsToolbar.Controls.Add(ButtonPasteLook, 12, 0)
+        PanelActionsToolbar.Controls.Add(SeparatorActions3, 13, 0)
+        PanelActionsToolbar.Controls.Add(ButtonSavePlugin, 14, 0)
         PanelActionsToolbar.Dock = DockStyle.Top
         PanelActionsToolbar.Location = New Point(8, 108)
         PanelActionsToolbar.Name = "PanelActionsToolbar"
@@ -319,9 +322,21 @@ Partial Class MainForm
         ButtonEditFace.TabIndex = 1
         ButtonEditFace.Text = "Face"
         ButtonEditFace.UseVisualStyleBackColor = True
-        ' 
+        '
+        ' ButtonBuildCharGen
+        '
+        ButtonBuildCharGen.AutoSize = True
+        ButtonBuildCharGen.Enabled = False
+        ButtonBuildCharGen.Margin = New Padding(2)
+        ButtonBuildCharGen.MinimumSize = New Size(110, 28)
+        ButtonBuildCharGen.Name = "ButtonBuildCharGen"
+        ButtonBuildCharGen.Size = New Size(110, 28)
+        ButtonBuildCharGen.TabIndex = 2
+        ButtonBuildCharGen.Text = "Build CharGen"
+        ButtonBuildCharGen.UseVisualStyleBackColor = True
+        '
         ' ButtonEditBody
-        ' 
+        '
         ButtonEditBody.AutoSize = True
         ButtonEditBody.Enabled = False
         ButtonEditBody.Location = New Point(124, 2)
@@ -837,6 +852,7 @@ Partial Class MainForm
     Friend WithEvents PanelActionsToolbar As System.Windows.Forms.TableLayoutPanel
     Friend WithEvents LabelEdit As System.Windows.Forms.Label
     Friend WithEvents ButtonEditFace As System.Windows.Forms.Button
+    Friend WithEvents ButtonBuildCharGen As System.Windows.Forms.Button
     Friend WithEvents ButtonEditBody As System.Windows.Forms.Button
     Friend WithEvents ButtonEditOutfit As System.Windows.Forms.Button
     Friend WithEvents SeparatorActions1 As System.Windows.Forms.Label

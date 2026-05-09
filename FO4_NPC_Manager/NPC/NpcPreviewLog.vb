@@ -1,4 +1,6 @@
+Imports System.Globalization
 Imports System.IO
+Imports System.Threading
 
 ''' <summary>
 ''' Simple file logger for NPC preview pipeline debugging.
@@ -9,6 +11,11 @@ Imports System.IO
 ''' the entry guard so the file I/O cost is zero. Call sites that build expensive
 ''' interpolated strings should prefer <see cref="LogLazy"/>, which only invokes the
 ''' producer lambda when logging is enabled — eliminating the formatting cost too.
+'''
+''' Numeric formatting: messages are formatted under <see cref="CultureInfo.InvariantCulture"/>
+''' so floats appear with `.` as decimal separator regardless of the user's OS locale.
+''' This is critical for log analysis (Python/awk/grep parsing assumes invariant); without
+''' this, a Spanish/German/French OS produces commas and downstream tools mis-parse.
 ''' </summary>
 Public Module NpcPreviewLog
 
@@ -52,14 +59,24 @@ Public Module NpcPreviewLog
 
     ''' <summary>Lazy variant. The producer is only invoked when logging is enabled, so
     ''' hot paths can avoid building expensive interpolated strings while disabled.
-    ''' Use for any log line whose construction touches loops, hex dumps, or many fields.</summary>
+    ''' Use for any log line whose construction touches loops, hex dumps, or many fields.
+    '''
+    ''' Producer runs under <see cref="CultureInfo.InvariantCulture"/> so any VB
+    ''' interpolated `$"..."` strings inside emit floats with `.` decimal separator.
+    ''' This makes the log machine-parsable independently of the OS locale.</summary>
     Public Sub LogLazy(producer As Func(Of String))
         If Not _enabled OrElse _logPath = "" OrElse producer Is Nothing Then Return
         Dim msg As String
+        Dim prevCulture = Thread.CurrentThread.CurrentCulture
         Try
-            msg = producer()
-        Catch
-            Return
+            Thread.CurrentThread.CurrentCulture = CultureInfo.InvariantCulture
+            Try
+                msg = producer()
+            Catch
+                Return
+            End Try
+        Finally
+            Thread.CurrentThread.CurrentCulture = prevCulture
         End Try
         Log(msg)
     End Sub

@@ -50,6 +50,41 @@ Public Module LooksmenuLoader
         ''' callers that need byte-perfect round-trip must re-emit them from the parsed fields.</summary>
         Public FaceTintLayers As New List(Of NPC_FaceTintLayerData)
 
+        ''' <summary>Presence flags for the four overlay-replaceable list fields. True = "this
+        ''' preset declares that field is being overridden, the list (even empty) is authoritative".
+        ''' False = "field absent from this preset, ApplyPresetOverlayToNpcData preserves raw NPC".
+        '''
+        ''' Without this distinction Count=0 would be ambiguous: it could mean either "user wiped
+        ''' all entries and wants override-as-empty" (apply wipe) or "preset never carried this
+        ''' field" (preserve raw). Both are valid; the editor + Save flow needs the wipe semantics
+        ''' while Load LooksMenu absent-key needs preserve semantics. Has flags resolve it.
+        '''
+        ''' Note on engine semantics: vanilla LooksMenu (CharGenInterface.cpp:387-413, 421-450,
+        ''' 477-524) does NOT distinguish "key absent" from "key present empty {}/[]" — both yield
+        ''' members.size()==0 and both trigger Clear() of the corresponding NPC field. So the LM
+        ''' engine's actual behaviour is "any LoadPreset call wipes existing tints/morphs/regions
+        ''' even if that section is missing from the JSON". We deliberately diverge from that:
+        ''' loading a partial preset (e.g. only HeadParts) shouldn't nuke tints. Has flags make
+        ''' our overlay treat absent JSON keys as "preserve raw" — better UX than LM's wipe-all,
+        ''' and harmless because the wipe semantics are still available via explicit edits.
+        '''
+        ''' Setters: ParseFile sets True when JSON has the key (even if value is empty {}/[]).
+        ''' BuildPresetFromState sets all four True (snapshot is complete by definition).
+        ''' Edit forms set True at seed time (the editor opening "claims" these fields).
+        ''' Paste handler sets True for fields the options dialog ticked.
+        '''
+        ''' Reader: ApplyPresetOverlayToNpcData reads Has* (not Count). Count=0+Has=True ⇒ wipe.
+        ''' Count=0+Has=False ⇒ preserve raw (current behaviour for absent fields).</summary>
+        Public HasFaceTintLayers As Boolean = False
+        Public HasChargenFaceMorphs As Boolean = False
+        Public HasBodyMorphValues As Boolean = False
+        Public HasFaceBoneRegions As Boolean = False
+        ''' <summary>HeadParts presence — same semantics as the four list flags above.
+        ''' Without this, an empty HeadPartFormIDs.Count couldn't distinguish "not in this preset"
+        ''' from "user wiped all head parts". Save ESP needs the latter to emit zero PNAM
+        ''' subrecords (engine then falls back to RACE.HEAD only).</summary>
+        Public HasHeadPartFormIDs As Boolean = False
+
         ''' <summary>BodySlide vertex morph sliders ("BodyMorphs" in JSON). Dict keyed by slider
         ''' name (e.g. "BigBelly", "ChubbyButt"); the resolver looks each name up in the PIRT .tri
         ''' of every shape and applies wherever defined. Empty = no overlay; the NPC's body renders
@@ -117,6 +152,7 @@ Public Module LooksmenuLoader
             ' HeadParts: array of "Plugin.esp|FormIDhex" strings
             Dim hpEl As JsonElement
             If root.TryGetProperty("HeadParts", hpEl) AndAlso hpEl.ValueKind = JsonValueKind.Array Then
+                preset.HasHeadPartFormIDs = True
                 For Each entry In hpEl.EnumerateArray()
                     If entry.ValueKind = JsonValueKind.String Then
                         Dim hpStr = entry.GetString()
@@ -146,10 +182,14 @@ Public Module LooksmenuLoader
             End If
 
             ' Morphs.{Values, Presets, Regions, Intensity}
+            ' Has* flags: set True when the JSON contains the key (regardless of whether it's
+            ' empty or has entries). The presence of the key means "this preset declares this
+            ' field, even if empty" — the overlay will treat empty-with-Has=True as "wipe".
             Dim morphsEl As JsonElement
             If root.TryGetProperty("Morphs", morphsEl) AndAlso morphsEl.ValueKind = JsonValueKind.Object Then
                 Dim valuesEl As JsonElement
                 If morphsEl.TryGetProperty("Values", valuesEl) AndAlso valuesEl.ValueKind = JsonValueKind.Array Then
+                    preset.HasBodyMorphValues = True
                     For Each v In valuesEl.EnumerateArray()
                         If v.ValueKind = JsonValueKind.Number Then preset.BodyMorphValues.Add(v.GetSingle())
                     Next
@@ -157,6 +197,7 @@ Public Module LooksmenuLoader
 
                 Dim presetsEl As JsonElement
                 If morphsEl.TryGetProperty("Presets", presetsEl) AndAlso presetsEl.ValueKind = JsonValueKind.Object Then
+                    preset.HasChargenFaceMorphs = True
                     For Each prop In presetsEl.EnumerateObject()
                         Dim hash As UInteger
                         If UInteger.TryParse(prop.Name, Globalization.NumberStyles.HexNumber, Globalization.CultureInfo.InvariantCulture, hash) AndAlso prop.Value.ValueKind = JsonValueKind.Number Then
@@ -167,6 +208,7 @@ Public Module LooksmenuLoader
 
                 Dim regionsEl As JsonElement
                 If morphsEl.TryGetProperty("Regions", regionsEl) AndAlso regionsEl.ValueKind = JsonValueKind.Object Then
+                    preset.HasFaceBoneRegions = True
                     For Each prop In regionsEl.EnumerateObject()
                         Dim idx As UInteger
                         If UInteger.TryParse(prop.Name, Globalization.NumberStyles.HexNumber, Globalization.CultureInfo.InvariantCulture, idx) AndAlso prop.Value.ValueKind = JsonValueKind.Array Then
@@ -195,6 +237,7 @@ Public Module LooksmenuLoader
             Dim hasOrder = root.TryGetProperty("TintOrder", tintOrderEl) AndAlso tintOrderEl.ValueKind = JsonValueKind.Array
 
             If hasTints Then
+                preset.HasFaceTintLayers = True
                 Dim orderedKeys As New List(Of String)
                 If hasOrder Then
                     For Each k In tintOrderEl.EnumerateArray()
@@ -339,6 +382,67 @@ Public Module LooksmenuLoader
         ' LooksMenu always serializes the bare 24-bit local FormID (Utilities.cpp:112
         ' `modForm = formID & 0xFFFFFF`), so combine with the load-order index to get the global ID.
         Return (CUInt(loadOrderIdx) << 24) Or (localFormID And &HFFFFFFUI)
+    End Function
+
+    ''' <summary>Deep-clone a LooksmenuPreset. Single source of truth for preset cloning across
+    ''' the codebase — EditFace_Form, EditBody_Form and MainForm.BuildPresetFromState used to
+    ''' have their own near-identical copies that drifted (e.g. one missed copying Has* flags).
+    ''' Centralizing here guarantees any new field added to LooksmenuPreset propagates through
+    ''' every snapshot/copy path automatically.</summary>
+    Public Function ClonePreset(p As LooksmenuPreset) As LooksmenuPreset
+        If p Is Nothing Then Return Nothing
+        Dim c As New LooksmenuPreset()
+        c.SourcePath = p.SourcePath
+        c.Gender = p.Gender
+        c.HeadPartFormIDs.AddRange(p.HeadPartFormIDs)
+        c.UnresolvedHeadParts.AddRange(p.UnresolvedHeadParts)
+        c.HairColorFormID = p.HairColorFormID
+        c.WeightThin = p.WeightThin
+        c.WeightMuscular = p.WeightMuscular
+        c.WeightFat = p.WeightFat
+
+        For Each kv In p.ChargenFaceMorphs : c.ChargenFaceMorphs(kv.Key) = kv.Value : Next
+        c.BodyMorphValues.AddRange(p.BodyMorphValues)
+        For Each kv In p.FaceBoneRegions
+            c.FaceBoneRegions(kv.Key) = If(kv.Value Is Nothing, Nothing, CType(kv.Value.Clone(), Single()))
+        Next
+        c.FacialMorphIntensity = p.FacialMorphIntensity
+        For Each tl In p.FaceTintLayers
+            c.FaceTintLayers.Add(CloneFaceTintLayer(tl))
+        Next
+
+        ' Has flags must be carried with the lists they describe — without these the wipe vs
+        ' preserve semantics differ between original and clone.
+        c.HasFaceTintLayers = p.HasFaceTintLayers
+        c.HasChargenFaceMorphs = p.HasChargenFaceMorphs
+        c.HasBodyMorphValues = p.HasBodyMorphValues
+        c.HasFaceBoneRegions = p.HasFaceBoneRegions
+        c.HasHeadPartFormIDs = p.HasHeadPartFormIDs
+
+        For Each kv In p.BodyMorphSliders : c.BodyMorphSliders(kv.Key) = kv.Value : Next
+        c.UnsupportedCounts.Overlays = p.UnsupportedCounts.Overlays
+        c.UnsupportedCounts.BodyMorphSliders = p.UnsupportedCounts.BodyMorphSliders
+        c.UnsupportedCounts.HasSkinOverride = p.UnsupportedCounts.HasSkinOverride
+
+        ' Editor-only overrides (not part of the LM JSON schema, but live in the in-memory overlay).
+        c.IsCharGenFacePreset = p.IsCharGenFacePreset
+        c.SkinFormIDOverride = p.SkinFormIDOverride
+        Return c
+    End Function
+
+    ''' <summary>Deep-clone a single tint layer. Used by ClonePreset and by call sites that
+    ''' need to copy individual layers without cloning the full preset.</summary>
+    Public Function CloneFaceTintLayer(tl As NPC_FaceTintLayerData) As NPC_FaceTintLayerData
+        If tl Is Nothing Then Return Nothing
+        Return New NPC_FaceTintLayerData With {
+            .Discriminator = tl.Discriminator,
+            .Index = tl.Index,
+            .Value = tl.Value,
+            .Color = tl.Color,
+            .TemplateColorIndex = tl.TemplateColorIndex,
+            .RawTetiBytes = If(tl.RawTetiBytes Is Nothing, Nothing, CType(tl.RawTetiBytes.Clone(), Byte())),
+            .RawTendBytes = If(tl.RawTendBytes Is Nothing, Nothing, CType(tl.RawTendBytes.Clone(), Byte()))
+        }
     End Function
 
     ''' <summary>Serialize a preset to a LooksMenu-canonical JSON string. Schema replicates

@@ -107,8 +107,13 @@ Public Class EditFace_Form
     ' BuildBoneRegionsUI from the JSON FacialBoneRegions list of the active race+gender.
     Private ReadOnly _regionBars As New Dictionary(Of UInteger, FO4_Base_Library.TinySliderTextBox())
 
-    ' Currently selected tint, for routing slider events.
+    ' Currently selected tint, for routing slider events. _currentTintIndex points into
+    ' p.FaceTintLayers when the selection is an NPC override; for race-default rows it stays
+    ' at -1 and _currentTintVirtualLayer carries the synthesized data so the detail panel can
+    ' read it (palette swatch, percent display) but every mutate path bails on IsRaceDefault.
     Private _currentTintIndex As Integer = -1
+    Private _currentTintIsRaceDefault As Boolean = False
+    Private _currentTintVirtualLayer As NPC_FaceTintLayerData = Nothing
 
     ' Cached resolution dictionaries (built once at construction).
     Private ReadOnly _allHeadPartsByFid As New Dictionary(Of UInteger, HDPT_Data)
@@ -440,45 +445,15 @@ Public Class EditFace_Form
         End Get
     End Property
 
+    ''' <summary>Snapshot/restore clone — delegates to the canonical helper so any new
+    ''' LooksmenuPreset field propagates here automatically.</summary>
     Private Shared Function ClonePreset(p As LooksmenuLoader.LooksmenuPreset) As LooksmenuLoader.LooksmenuPreset
-        If p Is Nothing Then Return Nothing
-        Dim c As New LooksmenuLoader.LooksmenuPreset()
-        c.SourcePath = p.SourcePath
-        c.Gender = p.Gender
-        c.HeadPartFormIDs.AddRange(p.HeadPartFormIDs)
-        c.UnresolvedHeadParts.AddRange(p.UnresolvedHeadParts)
-        c.HairColorFormID = p.HairColorFormID
-        c.WeightThin = p.WeightThin
-        c.WeightMuscular = p.WeightMuscular
-        c.WeightFat = p.WeightFat
-        For Each kv In p.ChargenFaceMorphs : c.ChargenFaceMorphs(kv.Key) = kv.Value : Next
-        c.BodyMorphValues.AddRange(p.BodyMorphValues)
-        For Each kv In p.FaceBoneRegions
-            c.FaceBoneRegions(kv.Key) = If(kv.Value Is Nothing, Nothing, CType(kv.Value.Clone(), Single()))
-        Next
-        c.FacialMorphIntensity = p.FacialMorphIntensity
-        For Each tl In p.FaceTintLayers
-            c.FaceTintLayers.Add(CloneFaceTint(tl))
-        Next
-        For Each kv In p.BodyMorphSliders : c.BodyMorphSliders(kv.Key) = kv.Value : Next
-        c.UnsupportedCounts.Overlays = p.UnsupportedCounts.Overlays
-        c.UnsupportedCounts.BodyMorphSliders = p.UnsupportedCounts.BodyMorphSliders
-        c.UnsupportedCounts.HasSkinOverride = p.UnsupportedCounts.HasSkinOverride
-        c.IsCharGenFacePreset = p.IsCharGenFacePreset
-        c.SkinFormIDOverride = p.SkinFormIDOverride
-        Return c
+        Return LooksmenuLoader.ClonePreset(p)
     End Function
 
+    ''' <summary>Per-layer clone — delegates to the canonical helper.</summary>
     Private Shared Function CloneFaceTint(tl As NPC_FaceTintLayerData) As NPC_FaceTintLayerData
-        Return New NPC_FaceTintLayerData With {
-            .Discriminator = tl.Discriminator,
-            .Index = tl.Index,
-            .Value = tl.Value,
-            .Color = tl.Color,
-            .TemplateColorIndex = tl.TemplateColorIndex,
-            .RawTetiBytes = If(tl.RawTetiBytes Is Nothing, Nothing, CType(tl.RawTetiBytes.Clone(), Byte())),
-            .RawTendBytes = If(tl.RawTendBytes Is Nothing, Nothing, CType(tl.RawTendBytes.Clone(), Byte()))
-        }
+        Return LooksmenuLoader.CloneFaceTintLayer(tl)
     End Function
 
     ' =====================================================================
@@ -540,6 +515,10 @@ Public Class EditFace_Form
                 Next
                 p.HeadPartFormIDs.AddRange(freestandingMisc)
             End If
+            ' Editor takes ownership: from now on the user's edits (incl. removing all parts) are
+            ' authoritative. Without HasHeadPartFormIDs=True, a wipe would look like "preset never
+            ' carried HeadParts" and Save would preserve raw NPC PNAM instead of emitting empty.
+            p.HasHeadPartFormIDs = True
             RefreshHeadPartsList()
 
             ' --- HairColor ---
@@ -560,6 +539,10 @@ Public Class EditFace_Form
             CheckBoxIsCharGenFacePreset.Checked = p.IsCharGenFacePreset.GetValueOrDefault(False)
 
             ' --- Tints ---
+            ' Mark as "present in this preset" the moment the editor takes ownership: from now
+            ' on the user's edits (including deletions) authoritatively define the field. If the
+            ' overlay was empty, seed it from the raw NPC so the user sees the current state to
+            ' edit. If the overlay already had content, leave it.
             Dim presetTintCountBefore = p.FaceTintLayers.Count
             Dim rawTintCount = If(rawNpc IsNot Nothing, rawNpc.FaceTintLayers.Count, -1)
             NpcPreviewLog.LogLazy(Function() $"[EDITFACE-SEED] tints: preset.Count={presetTintCountBefore} rawNpc.Count={rawTintCount} rawNpcFound={(rawNpc IsNot Nothing)}")
@@ -569,6 +552,7 @@ Public Class EditFace_Form
                 Next
                 NpcPreviewLog.LogLazy(Function() $"[EDITFACE-SEED] tints: seeded {p.FaceTintLayers.Count} from rawNpc")
             End If
+            p.HasFaceTintLayers = True
             RefreshTintsList()
             NpcPreviewLog.LogLazy(Function() $"[EDITFACE-SEED] tints: after RefreshTintsList, ListView rows={ListViewTints.Items.Count}")
 
@@ -578,6 +562,7 @@ Public Class EditFace_Form
                     p.ChargenFaceMorphs(kv.Key) = kv.Value
                 Next
             End If
+            p.HasChargenFaceMorphs = True
             BuildMorphGroupRows()
             LoadMorphGroupValues()
 
@@ -587,6 +572,7 @@ Public Class EditFace_Form
                     p.FaceBoneRegions(fm.Index) = fm.Values.ToArray()
                 Next
             End If
+            p.HasFaceBoneRegions = True
             LoadBoneRegionValues()
 
             ' --- FMIN ---
@@ -1062,6 +1048,18 @@ Public Class EditFace_Form
     ' Custom RGB button, Percent slider.
     ' =====================================================================
 
+    ''' <summary>Tag payload for ListViewTints rows. OriginalIdx points at p.FaceTintLayers when
+    ''' IsRaceDefault=False (mutable NPC override). When IsRaceDefault=True the row was injected
+    ''' from the RACE.TintTemplateGroups defaults — OriginalIdx=-1 and VirtualLayer holds the
+    ''' synthesized data so the detail panel can describe it but Remove/edit are blocked.
+    ''' Mirrors HeadPartRowTag (line 654) so Add/Remove semantics are consistent across both
+    ''' RACE-default surfaces.</summary>
+    Private Class TintRowTag
+        Public OriginalIdx As Integer = -1
+        Public IsRaceDefault As Boolean = False
+        Public VirtualLayer As NPC_FaceTintLayerData
+    End Class
+
     Private Sub RefreshTintsList()
         ListViewTints.BeginUpdate()
         Try
@@ -1072,25 +1070,37 @@ Public Class EditFace_Form
             ' Tag still maps cleanly to the original index in p.FaceTintLayers — selecting a
             ' filtered row goes through the same OnTintSelectionChanged / OnRemoveTint code path.
             Dim filter As String = TextBoxTintFilter.Text.Trim()
-            ' Display in RACE-Group order (the same order the compositor uses), tied-broken by
-            ' the layer's original position in p.FaceTintLayers so two layers with the same
-            ' Index keep a stable relative order. The Tag still points at the original index in
-            ' p.FaceTintLayers so OnTintSelectionChanged / OnRemoveTint / etc. can mutate the
-            ' underlying list directly.
-            Dim ordered = p.FaceTintLayers.
-                Select(Function(tl, originalIdx)
+            ' Build the merged layer list using the same rule the renderer uses (FaceTintLayerBuilder
+            ' .MergeTintLayersWithRaceDefaults). For each TintTemplateGroup the NPC doesn't touch,
+            ' every Option whose TTED is present is injected as a virtual default. This mirrors
+            ' the engine's CK behaviour and keeps the editor's view 1:1 with what the render draws.
+            Dim merged = FaceTintLayerBuilder.MergeTintLayersWithRaceDefaults(p.FaceTintLayers, _race, _isFemale, _pluginManager)
+            ' Display in RACE-Group order (the same order the compositor uses), tied-broken by the
+            ' layer's original position in the merged list so two layers with the same Index keep
+            ' a stable relative order. NPC-authored layers carry their p.FaceTintLayers index in
+            ' OriginalIdx so OnTintSelectionChanged / OnRemoveTint can still mutate the underlying
+            ' list; race-default rows carry OriginalIdx=-1 so the same paths can refuse to mutate.
+            Dim npcOriginalIdxByRef As New Dictionary(Of NPC_FaceTintLayerData, Integer)
+            For i = 0 To p.FaceTintLayers.Count - 1
+                npcOriginalIdxByRef(p.FaceTintLayers(i)) = i
+            Next
+            Dim ordered = merged.
+                Select(Function(m, mergedIdx)
                            Dim r As Integer = Integer.MaxValue
-                           _tintRankByIndex.TryGetValue(tl.Index, r)
-                           Return New With {.Layer = tl, .OriginalIdx = originalIdx, .Rank = r}
+                           _tintRankByIndex.TryGetValue(m.Layer.Index, r)
+                           Dim originalIdx As Integer = -1
+                           If Not m.IsRaceDefault Then npcOriginalIdxByRef.TryGetValue(m.Layer, originalIdx)
+                           Return New With {.Merged = m, .MergedIdx = mergedIdx, .Rank = r, .OriginalIdx = originalIdx}
                        End Function).
                 OrderBy(Function(x) x.Rank).
-                ThenBy(Function(x) x.OriginalIdx).
+                ThenBy(Function(x) x.MergedIdx).
                 ToList()
             For Each entry In ordered
-                Dim tl = entry.Layer
+                Dim tl = entry.Merged.Layer
                 Dim grp = DescribeTintGroup(tl)
                 Dim slot = DescribeTintSlot(tl)
                 Dim layerName = DescribeTintLayer(tl)
+                If entry.Merged.IsRaceDefault Then layerName &= " (RACE)"
                 If filter.Length > 0 _
                    AndAlso grp.IndexOf(filter, StringComparison.OrdinalIgnoreCase) < 0 _
                    AndAlso slot.IndexOf(filter, StringComparison.OrdinalIgnoreCase) < 0 _
@@ -1102,7 +1112,12 @@ Public Class EditFace_Form
                 row.SubItems.Add(layerName)
                 row.SubItems.Add(DescribeTintColor(tl))
                 row.SubItems.Add(tl.Value.ToString(CultureInfo.InvariantCulture))
-                row.Tag = entry.OriginalIdx
+                row.Tag = New TintRowTag With {
+                    .OriginalIdx = entry.OriginalIdx,
+                    .IsRaceDefault = entry.Merged.IsRaceDefault,
+                    .VirtualLayer = If(entry.Merged.IsRaceDefault, tl, Nothing)
+                }
+                If entry.Merged.IsRaceDefault Then row.ForeColor = SystemColors.GrayText
                 ListViewTints.Items.Add(row)
             Next
         Finally
@@ -1143,10 +1158,19 @@ Public Class EditFace_Form
     End Function
 
     Private Sub OnTintSelectionChanged(sender As Object, e As EventArgs)
+        _currentTintIsRaceDefault = False
+        _currentTintVirtualLayer = Nothing
         If ListViewTints.SelectedItems.Count = 0 Then
             _currentTintIndex = -1
         Else
-            _currentTintIndex = CInt(ListViewTints.SelectedItems(0).Tag)
+            Dim tag = TryCast(ListViewTints.SelectedItems(0).Tag, TintRowTag)
+            If tag Is Nothing Then
+                _currentTintIndex = -1
+            Else
+                _currentTintIndex = tag.OriginalIdx
+                _currentTintIsRaceDefault = tag.IsRaceDefault
+                _currentTintVirtualLayer = tag.VirtualLayer
+            End If
         End If
         UpdateTintDetail()
     End Sub
@@ -1155,7 +1179,13 @@ Public Class EditFace_Form
         _suspendEvents = True
         Try
             Dim p = Preset
-            If _currentTintIndex < 0 OrElse _currentTintIndex >= p.FaceTintLayers.Count Then
+            Dim tl As NPC_FaceTintLayerData = Nothing
+            If _currentTintIsRaceDefault Then
+                tl = _currentTintVirtualLayer
+            ElseIf _currentTintIndex >= 0 AndAlso _currentTintIndex < p.FaceTintLayers.Count Then
+                tl = p.FaceTintLayers(_currentTintIndex)
+            End If
+            If tl Is Nothing Then
                 LabelTintLayerName.Text = "(none — select a layer above)"
                 ComboBoxTintPalette.Items.Clear()
                 ComboBoxTintPalette.Enabled = False
@@ -1164,11 +1194,13 @@ Public Class EditFace_Form
                 PanelTintColorSwatch.BackColor = SystemColors.Control
                 Return
             End If
-            Dim tl = p.FaceTintLayers(_currentTintIndex)
-            LabelTintLayerName.Text = DescribeTintLayer(tl)
+            LabelTintLayerName.Text = DescribeTintLayer(tl) & If(_currentTintIsRaceDefault, " (RACE default — edit to override)", "")
 
             Dim opt = _race?.FindTintOption(tl.Index, _isFemale)
             Dim isPalette = (opt IsNot Nothing AndAlso opt.EntryType = RACE_TintEntryType.Palette)
+            ' Race-default rows ARE editable: the first edit (palette pick / custom RGB / percent
+            ' slider) materializes the virtual layer into p.FaceTintLayers as a real NPC override.
+            ' From that point on the row goes from gray to black and behaves like any other layer.
             ComboBoxTintPalette.Enabled = isPalette
             ButtonTintCustomRGB.Enabled = isPalette
 
@@ -1241,8 +1273,29 @@ Public Class EditFace_Form
         End Function
     End Class
 
+    ''' <summary>If the currently selected row is a RACE default (virtual, not in
+    ''' p.FaceTintLayers), materialize it as a real NPC override by appending a clone of the
+    ''' virtual layer to p.FaceTintLayers and updating selection state to point at the new
+    ''' index. After this returns, _currentTintIsRaceDefault=False and _currentTintIndex is
+    ''' a valid index into p.FaceTintLayers, so the caller can mutate the layer normally.
+    ''' Returns True if a promotion happened (caller should RefreshTintsList because the gray
+    ''' row is replaced by a black one). Returns False when the selection is already an NPC
+    ''' override or when there's no virtual layer to promote.</summary>
+    Private Function PromoteRaceDefaultIfNeeded() As Boolean
+        If Not _currentTintIsRaceDefault Then Return False
+        If _currentTintVirtualLayer Is Nothing Then Return False
+        Dim p = Preset
+        Dim cloned = CloneFaceTint(_currentTintVirtualLayer)
+        p.FaceTintLayers.Add(cloned)
+        _currentTintIndex = p.FaceTintLayers.Count - 1
+        _currentTintIsRaceDefault = False
+        _currentTintVirtualLayer = Nothing
+        Return True
+    End Function
+
     Private Sub OnTintPaletteChanged(sender As Object, e As EventArgs)
         If _suspendEvents Then Return
+        Dim promoted = PromoteRaceDefaultIfNeeded()
         Dim p = Preset
         If _currentTintIndex < 0 OrElse _currentTintIndex >= p.FaceTintLayers.Count Then Return
         Dim it = TryCast(ComboBoxTintPalette.SelectedItem, TintPaletteItem)
@@ -1254,39 +1307,83 @@ Public Class EditFace_Form
         tl.Color = it.SwatchColor
         tl.TemplateColorIndex = CInt(it.TemplateIndex)
         PanelTintColorSwatch.BackColor = it.SwatchColor
-        UpdateTintRowDisplay(_currentTintIndex)
+        If promoted Then
+            RefreshTintsList()
+            ReselectNpcLayerByIndex(_currentTintIndex)
+        Else
+            UpdateTintRowDisplay(_currentTintIndex)
+        End If
         _refresh?.Invoke(FaceRefreshScope.TexturesOnly)
     End Sub
 
     Private Sub OnTintCustomRGB(sender As Object, e As EventArgs)
-        Dim p = Preset
-        If _currentTintIndex < 0 OrElse _currentTintIndex >= p.FaceTintLayers.Count Then Return
-        Dim tl = p.FaceTintLayers(_currentTintIndex)
+        ' Source the dialog's seed color from the active layer (real or virtual) WITHOUT
+        ' promoting yet — promotion only happens if the user actually picks a colour. Cancel
+        ' must leave p.FaceTintLayers untouched.
+        Dim seedTl As NPC_FaceTintLayerData = Nothing
+        If _currentTintIsRaceDefault Then
+            seedTl = _currentTintVirtualLayer
+        ElseIf _currentTintIndex >= 0 AndAlso _currentTintIndex < Preset.FaceTintLayers.Count Then
+            seedTl = Preset.FaceTintLayers(_currentTintIndex)
+        End If
+        If seedTl Is Nothing Then Return
         Using dlg As New ColorDialog()
             dlg.AllowFullOpen = True
             dlg.FullOpen = True
             dlg.AnyColor = True
-            dlg.Color = If(tl.Color.IsEmpty, Color.White, tl.Color)
+            dlg.Color = If(seedTl.Color.IsEmpty, Color.White, seedTl.Color)
             If dlg.ShowDialog(Me) <> DialogResult.OK Then Return
+            Dim promoted = PromoteRaceDefaultIfNeeded()
+            Dim p = Preset
+            If _currentTintIndex < 0 OrElse _currentTintIndex >= p.FaceTintLayers.Count Then Return
+            Dim tl = p.FaceTintLayers(_currentTintIndex)
             tl.Color = Color.FromArgb(255, dlg.Color.R, dlg.Color.G, dlg.Color.B)
             ' TemplateColorIndex left as-is — Save (BuildPresetFromState → ResolveTemplateColorIdToAbsolute)
             ' will re-resolve by RGB-match, falling back to opt.TemplateColors[0].TemplateIndex when
             ' the custom RGB isn't in the palette. That's the same fallback LooksMenu in-game uses.
             PanelTintColorSwatch.BackColor = tl.Color
-            UpdateTintRowDisplay(_currentTintIndex)
-            UpdateTintDetail()  ' re-pick combo (will land on "Custom RGB" since no CLFM matches)
+            If promoted Then
+                RefreshTintsList()
+                ReselectNpcLayerByIndex(_currentTintIndex)
+            Else
+                UpdateTintRowDisplay(_currentTintIndex)
+                UpdateTintDetail()  ' re-pick combo (will land on "Custom RGB" since no CLFM matches)
+            End If
             _refresh?.Invoke(FaceRefreshScope.TexturesOnly)
         End Using
     End Sub
 
     Private Sub OnTintPercentChanged(sender As Object, e As EventArgs)
         If _suspendEvents Then Return
+        Dim promoted = PromoteRaceDefaultIfNeeded()
         Dim p = Preset
         If _currentTintIndex < 0 OrElse _currentTintIndex >= p.FaceTintLayers.Count Then Return
         Dim tl = p.FaceTintLayers(_currentTintIndex)
         tl.Value = CInt(Math.Round(TrackBarTintPercent.Value))
-        UpdateTintRowDisplay(_currentTintIndex)
+        If promoted Then
+            ' Promote happened: the gray RACE row must be replaced by a real NPC row in the
+            ' ListView. Refreshing here means each first-touch of the slider on a virtual row
+            ' costs one extra refresh; subsequent moves on the now-NPC row are still light.
+            RefreshTintsList()
+            ReselectNpcLayerByIndex(_currentTintIndex)
+        Else
+            UpdateTintRowDisplay(_currentTintIndex)
+        End If
         ScheduleRefresh(FaceRefreshScope.TexturesOnly)
+    End Sub
+
+    ''' <summary>Re-select the ListView row whose Tag points at the given p.FaceTintLayers
+    ''' index. Used after RefreshTintsList rebuilt the list following a promote, so the user's
+    ''' selection follows the row they were editing instead of falling back to no-selection.</summary>
+    Private Sub ReselectNpcLayerByIndex(idx As Integer)
+        For Each item As ListViewItem In ListViewTints.Items
+            Dim tag = TryCast(item.Tag, TintRowTag)
+            If tag IsNot Nothing AndAlso Not tag.IsRaceDefault AndAlso tag.OriginalIdx = idx Then
+                item.Selected = True
+                item.EnsureVisible()
+                Exit For
+            End If
+        Next
     End Sub
 
     Private Sub UpdateTintRowDisplay(idx As Integer)
@@ -1297,7 +1394,8 @@ Public Class EditFace_Form
         Dim tl = p.FaceTintLayers(idx)
         Dim row As ListViewItem = Nothing
         For Each item As ListViewItem In ListViewTints.Items
-            If item.Tag IsNot Nothing AndAlso CInt(item.Tag) = idx Then
+            Dim tag = TryCast(item.Tag, TintRowTag)
+            If tag IsNot Nothing AndAlso Not tag.IsRaceDefault AndAlso tag.OriginalIdx = idx Then
                 row = item
                 Exit For
             End If
@@ -1358,7 +1456,8 @@ Public Class EditFace_Form
             ' entry's row position is determined by its Index group. Find by Tag (which equals
             ' the underlying p.FaceTintLayers index).
             For Each item As ListViewItem In ListViewTints.Items
-                If item.Tag IsNot Nothing AndAlso CInt(item.Tag) = newLayerIdx Then
+                Dim tag = TryCast(item.Tag, TintRowTag)
+                If tag IsNot Nothing AndAlso Not tag.IsRaceDefault AndAlso tag.OriginalIdx = newLayerIdx Then
                     item.Selected = True
                     item.EnsureVisible()
                     Exit For
@@ -1369,6 +1468,9 @@ Public Class EditFace_Form
     End Sub
 
     Private Sub OnRemoveTint(sender As Object, e As EventArgs)
+        ' Race-default rows are read-only; the user must Add the option to materialize it
+        ' as an NPC override before it can be removed. Mirrors HeadParts (line 851).
+        If _currentTintIsRaceDefault Then Return
         Dim p = Preset
         If _currentTintIndex < 0 OrElse _currentTintIndex >= p.FaceTintLayers.Count Then Return
         p.FaceTintLayers.RemoveAt(_currentTintIndex)

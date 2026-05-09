@@ -121,7 +121,13 @@ Public Class EditBody_Form
     ''' <summary>Seed the overlay preset's editable channels from the NPC's current effective
     ''' values, but only when the overlay hasn't already taken ownership of that channel. This
     ''' lets a user open Edit Body on a fresh NPC and see its real Weight/MRSV/BodySlide state
-    ''' rather than zeros, without trampling a preset they previously loaded.</summary>
+    ''' rather than zeros, without trampling a preset they previously loaded.
+    '''
+    ''' Sets HasBodyMorphValues=True regardless of whether the seed actually fired: opening
+    ''' Edit Body declares ownership of MRSV. If the user adjusts sliders to all zero (or starts
+    ''' from an empty MRSV race) and clicks OK, the resulting overlay must wipe MRSV on the NPC,
+    ''' not preserve raw — Has*=True is what tells ApplyPresetOverlayToNpcData "treat the list
+    ''' as authoritative even when empty".</summary>
     Private Shared Sub SeedOverlayFromInitial(p As LooksmenuLoader.LooksmenuPreset, initial As InitialValues)
         If initial Is Nothing Then Return
         If Not p.WeightThin.HasValue Then p.WeightThin = initial.Thin
@@ -133,6 +139,7 @@ Public Class EditBody_Form
                 p.BodyMorphValues.Add(If(i < initial.Mrsv.Length, initial.Mrsv(i), 0.0F))
             Next
         End If
+        p.HasBodyMorphValues = True
         If p.BodyMorphSliders.Count = 0 AndAlso initial.BodySlide IsNot Nothing Then
             For Each kv In initial.BodySlide
                 p.BodyMorphSliders(kv.Key) = kv.Value
@@ -157,34 +164,11 @@ Public Class EditBody_Form
         ButtonResetSection.Visible = hasBodySlide
     End Sub
 
-    ''' <summary>Deep-clone a LooksmenuPreset for snapshot/restore.</summary>
+    ''' <summary>Deep-clone for snapshot/restore. Delegates to LooksmenuLoader.ClonePreset
+    ''' (canonical) so any new field added to LooksmenuPreset propagates through every
+    ''' snapshot path automatically.</summary>
     Private Shared Function ClonePreset(p As LooksmenuLoader.LooksmenuPreset) As LooksmenuLoader.LooksmenuPreset
-        If p Is Nothing Then Return Nothing
-        Dim c As New LooksmenuLoader.LooksmenuPreset()
-        c.SourcePath = p.SourcePath
-        c.Gender = p.Gender
-        c.HeadPartFormIDs.AddRange(p.HeadPartFormIDs)
-        c.UnresolvedHeadParts.AddRange(p.UnresolvedHeadParts)
-        c.HairColorFormID = p.HairColorFormID
-        c.WeightThin = p.WeightThin
-        c.WeightMuscular = p.WeightMuscular
-        c.WeightFat = p.WeightFat
-        For Each kv In p.ChargenFaceMorphs : c.ChargenFaceMorphs(kv.Key) = kv.Value : Next
-        c.BodyMorphValues.AddRange(p.BodyMorphValues)
-        For Each kv In p.FaceBoneRegions
-            c.FaceBoneRegions(kv.Key) = If(kv.Value Is Nothing, Nothing, CType(kv.Value.Clone(), Single()))
-        Next
-        c.FacialMorphIntensity = p.FacialMorphIntensity
-        c.FaceTintLayers.AddRange(p.FaceTintLayers)
-        For Each kv In p.BodyMorphSliders : c.BodyMorphSliders(kv.Key) = kv.Value : Next
-        c.UnsupportedCounts.Overlays = p.UnsupportedCounts.Overlays
-        c.UnsupportedCounts.BodyMorphSliders = p.UnsupportedCounts.BodyMorphSliders
-        c.UnsupportedCounts.HasSkinOverride = p.UnsupportedCounts.HasSkinOverride
-        ' Carry editor-only overrides through the snapshot so that an EditFace edit followed by
-        ' an EditBody Cancel doesn't reset face-side overrides the user kept.
-        c.IsCharGenFacePreset = p.IsCharGenFacePreset
-        c.SkinFormIDOverride = p.SkinFormIDOverride
-        Return c
+        Return LooksmenuLoader.ClonePreset(p)
     End Function
 
     Private ReadOnly Property Preset As LooksmenuLoader.LooksmenuPreset

@@ -172,33 +172,11 @@ Public Class NpcMorphResolver
             If triHead IsNot Nothing Then AddFaceMorphPresetsFromTriHead(triHead, plan)
         End If
 
-        ' Collapse channels with the same morph name by SUMMING their weights.
-        ' Vanilla RACE records have several MPPI keys mapping to the same MPPM name
-        ' (e.g. "DefaultFaceType0" used in groups Nose + Cheeks + Neck + Mouth). Empirical
-        ' validation against CK's FaceGen bake (2026-04-18, Alijo + Cait) showed the previous
-        ' max-abs strategy produced consistently weaker deformation than CK: the chin/jaw
-        ' verts differed by up to 1.78 units because CK applies the SUM of per-group weights.
-        ' Example:
-        '   Alijo: 4 DefaultFaceType0 with weights 0.85+0.80+0.61+0.76 → sum=3.02 (ours was 0.85)
-        '   Cait:  4 DefaultFaceType0 with weights 1.0×4 → sum=4.0 (ours was 1.0)
-        ' Since all duplicate channels point to the same TriHead morph, their deltas are
-        ' identical; we only aggregate the weight.
-        If plan.Channels.Count > 1 Then
-            Dim summedByName As New Dictionary(Of String, MorphChannel)(StringComparer.OrdinalIgnoreCase)
-            For Each ch In plan.Channels
-                Dim existing As MorphChannel = Nothing
-                If summedByName.TryGetValue(ch.Name, existing) Then
-                    existing.Weight += ch.Weight
-                Else
-                    summedByName(ch.Name) = ch
-                End If
-            Next
-            If summedByName.Count <> plan.Channels.Count Then
-                NpcPreviewLog.LogLazy(Function() $"  [MORPH-DEDUP] '{shapeName}': {plan.Channels.Count} → {summedByName.Count} channels (weights summed across duplicates)")
-                plan.Channels.Clear()
-                plan.Channels.AddRange(summedByName.Values)
-            End If
-        End If
+        ' Channel dedup-by-name with SUMMED weights now lives inside
+        ' BuildFaceMorphPlanFromTriHead (called via AddFaceMorphPresetsFromTriHead above).
+        ' Empirical rationale (Alijo + Cait, 2026-04-18 against CK FaceGen): vanilla RACE has
+        ' multiple MPPI keys pointing to the same morph name (e.g. "DefaultFaceType0" across
+        ' Nose+Cheek+Neck+Mouth groups); CK applies the SUM, not max-abs.
 
         ' Diagnostic: log max delta magnitude per applied channel (helps spot scaling/space bugs)
         For Each ch In plan.Channels
@@ -240,18 +218,38 @@ Public Class NpcMorphResolver
     ' "MorphRegion<i>" morphs.
 
     ''' <summary>
-    ''' Add face morph presets from MSDK/MSDV using TriHead (Bethesda format) + RACE Morph Values.
-    ''' RACE defines MSID -> MSM0 (min morph name) / MSM1 (max morph name).
-    ''' NPC has MSDK key (= MSID) -> weight. If weight > 0, use MSM1; if weight &lt; 0, use MSM0 with abs(weight).
+    ''' Build the face MorphPlan for an NPC against a chargen TriHead, applying:
+    '''   1) MSID slider morphs (RACE.MorphValues): MSDK/MSDV weight ≥0 picks MSM1/MaxName,
+    '''      &lt;0 picks MSM0/MinName with abs(weight).
+    '''   2) MPPI preset morphs (RACE.MorphPresets gendered): direct mapping to MPPM morph name.
+    '''   3) Channel dedup-by-name with SUMMED weights — same data the runtime resolver applies
+    '''      (vanilla RACE has multiple MPPI keys pointing to the same morph name, e.g.
+    '''      "DefaultFaceType0" across Nose+Cheek+Neck+Mouth groups; CK applies the SUM).
+    '''
+    ''' Public Shared so offline bakes (FaceGenBuilder) can build the same plan the runtime
+    ''' uses without spinning up an IMorphResolver / SkinnedGeometry. The instance method
+    ''' <see cref="ResolveMorphPlan"/> delegates here for the runtime path so the two never
+    ''' drift.
     ''' </summary>
-    Private Sub AddFaceMorphPresetsFromTriHead(triHead As TriHeadFile, plan As MorphPlan)
-        Dim shapeName = If(triHead.Morphs.Count > 0, "head", "?")
+    ''' <param name="npcData">NPC face morph data (MorphValues dict, FMIN, etc.).</param>
+    ''' <param name="morphValueDefs">RACE.MorphValues (MSID → MSM0/MSM1).</param>
+    ''' <param name="morphPresetDefs">RACE.MorphPresets gendered (MPPI → MPPM).</param>
+    ''' <param name="triHead">Chargen FRTRI003 file already parsed for the target shape.</param>
+    ''' <param name="logShapeName">Optional shape name for log lines; empty disables logging.</param>
+    Public Shared Function BuildFaceMorphPlanFromTriHead(npcData As NPC_Data,
+                                                        morphValueDefs As List(Of RACE_MorphValueDef),
+                                                        morphPresetDefs As List(Of RACE_MorphPresetDef),
+                                                        triHead As TriHeadFile,
+                                                        Optional logShapeName As String = "") As MorphPlan
+        Dim plan As New MorphPlan()
+        If npcData Is Nothing OrElse triHead Is Nothing Then Return plan
+        If npcData.MorphValues Is Nothing OrElse npcData.MorphValues.Count = 0 Then Return plan
 
         ' 1) Morph Values (MSID → MSM0/MSM1 slider morphs)
-        If _morphValueDefs IsNot Nothing Then
-            For Each mvDef In _morphValueDefs
+        If morphValueDefs IsNot Nothing Then
+            For Each mvDef In morphValueDefs
                 Dim weight As Single = 0
-                If Not _npcData.MorphValues.TryGetValue(mvDef.Index, weight) Then Continue For
+                If Not npcData.MorphValues.TryGetValue(mvDef.Index, weight) Then Continue For
                 If Math.Abs(weight) < 0.001F Then Continue For
 
                 Dim usedMax As Boolean = (weight >= 0)
@@ -262,24 +260,26 @@ Public Class NpcMorphResolver
 
                 Dim triMorph = triHead.GetMorph(morphName)
                 If triMorph Is Nothing OrElse triMorph.Vertices Is Nothing OrElse triMorph.Vertices.Length = 0 Then
-                    NpcPreviewLog.LogLazy(Function() $"  [MORPH-SLIDER] MSID=0x{mvDef.Index:X8} npcWeight={weight:+0.000;-0.000} → picked={nameSrc}='{morphName}' w={morphWeight:F3} → NOT FOUND in TRI (MSM0='{mvDef.MinName}' MSM1='{mvDef.MaxName}')")
+                    If logShapeName <> "" Then NpcPreviewLog.LogLazy(Function() $"  [MORPH-SLIDER] MSID=0x{mvDef.Index:X8} npcWeight={weight:+0.000;-0.000} → picked={nameSrc}='{morphName}' w={morphWeight:F3} → NOT FOUND in TRI (MSM0='{mvDef.MinName}' MSM1='{mvDef.MaxName}')")
                     Continue For
                 End If
 
                 Dim deltas = ConvertTriHeadMorphToMorphData(triMorph)
                 If deltas.Count > 0 Then
                     plan.Channels.Add(New MorphChannel(morphName, morphWeight, deltas))
-                    Dim maxDeltaStr = DescribeMaxSignedDelta(triMorph, triHead)
-                    NpcPreviewLog.LogLazy(Function() $"  [MORPH-SLIDER] MSID=0x{mvDef.Index:X8} npcWeight={weight:+0.000;-0.000} → picked={nameSrc}='{morphName}' w={morphWeight:F3} verts={deltas.Count} (MSM0='{mvDef.MinName}' MSM1='{mvDef.MaxName}') maxDelta={maxDeltaStr}")
+                    If logShapeName <> "" Then
+                        Dim maxDeltaStr = DescribeMaxSignedDelta(triMorph, triHead)
+                        NpcPreviewLog.LogLazy(Function() $"  [MORPH-SLIDER] MSID=0x{mvDef.Index:X8} npcWeight={weight:+0.000;-0.000} → picked={nameSrc}='{morphName}' w={morphWeight:F3} verts={deltas.Count} (MSM0='{mvDef.MinName}' MSM1='{mvDef.MaxName}') maxDelta={maxDeltaStr}")
+                    End If
                 End If
             Next
         End If
 
         ' 2) Morph Group Presets (MPPI → MPPM morph name)
-        If _morphPresetDefs IsNot Nothing Then
-            For Each mpDef In _morphPresetDefs
+        If morphPresetDefs IsNot Nothing Then
+            For Each mpDef In morphPresetDefs
                 Dim weight As Single = 0
-                If Not _npcData.MorphValues.TryGetValue(mpDef.Index, weight) Then Continue For
+                If Not npcData.MorphValues.TryGetValue(mpDef.Index, weight) Then Continue For
                 If Math.Abs(weight) < 0.001F Then Continue For
 
                 Dim morphName = mpDef.MorphName
@@ -287,33 +287,53 @@ Public Class NpcMorphResolver
 
                 Dim triMorph = triHead.GetMorph(morphName)
                 If triMorph Is Nothing OrElse triMorph.Vertices Is Nothing OrElse triMorph.Vertices.Length = 0 Then
-                    NpcPreviewLog.LogLazy(Function() $"  [MORPH-PRESET] MPPI=0x{mpDef.Index:X8} '{morphName}' npcWeight={weight:+0.000;-0.000} → NOT FOUND in TRI")
+                    If logShapeName <> "" Then NpcPreviewLog.LogLazy(Function() $"  [MORPH-PRESET] MPPI=0x{mpDef.Index:X8} '{morphName}' npcWeight={weight:+0.000;-0.000} → NOT FOUND in TRI")
                     Continue For
                 End If
 
                 Dim deltas = ConvertTriHeadMorphToMorphData(triMorph)
                 If deltas.Count > 0 Then
                     plan.Channels.Add(New MorphChannel(morphName, weight, deltas))
-                    Dim topDeltas = DescribeTopSignedDeltas(triMorph, triHead, 5)
-                    NpcPreviewLog.LogLazy(Function() $"  [MORPH-PRESET] MPPI=0x{mpDef.Index:X8} '{morphName}' npcWeight={weight:+0.000;-0.000} verts={deltas.Count} top5=[{topDeltas}]")
-                    ' SYMMETRY-DUMP: dump every delta of selected morphs sorted by index so we can
-                    ' verify L/R mirror by inspection. Only fires for the morphs we are debugging
-                    ' so the log doesn't explode.
-                    Dim debugMorphs As String() = {"DefaultFaceType0", "LipFeature4", "LipFeature9", "LipFeature7", "EyesFeature2"}
-                    If Array.IndexOf(debugMorphs, morphName) >= 0 Then
-                        Dim sortedDeltas = deltas.OrderBy(Function(d) d.index).ToList()
-                        For Each d In sortedDeltas
-                            Dim idxLocal = CInt(d.index)
-                            Dim baseV = If(triHead.BaseVertices IsNot Nothing AndAlso idxLocal < triHead.BaseVertices.Length, triHead.BaseVertices(idxLocal), New OpenTK.Mathematics.Vector3(0, 0, 0))
-                            Dim mag = Math.Sqrt(d.PosDiff.X * d.PosDiff.X + d.PosDiff.Y * d.PosDiff.Y + d.PosDiff.Z * d.PosDiff.Z)
-                            NpcPreviewLog.LogLazy(Function() $"    [SYM-DUMP] '{morphName}' idx={idxLocal} base=({baseV.X:+0.000;-0.000;0.000},{baseV.Y:+0.000;-0.000;0.000},{baseV.Z:+0.000;-0.000;0.000}) delta=({d.PosDiff.X:+0.0000;-0.0000;0.0000},{d.PosDiff.Y:+0.0000;-0.0000;0.0000},{d.PosDiff.Z:+0.0000;-0.0000;0.0000}) mag={mag:F4}")
-                        Next
+                    If logShapeName <> "" Then
+                        Dim topDeltas = DescribeTopSignedDeltas(triMorph, triHead, 5)
+                        NpcPreviewLog.LogLazy(Function() $"  [MORPH-PRESET] MPPI=0x{mpDef.Index:X8} '{morphName}' npcWeight={weight:+0.000;-0.000} verts={deltas.Count} top5=[{topDeltas}]")
                     End If
                 End If
             Next
         End If
 
-        NpcPreviewLog.LogLazy(Function() $"  [MORPH-PLAN] {plan.Channels.Count} total channels for shape")
+        ' 3) Dedup channels by name SUMMING their weights — vanilla RACE uses several MPPI
+        ' keys pointing to the same morph name; CK applies the sum. Empirically validated
+        ' against CK FaceGen bake (Alijo + Cait 2026-04-18).
+        If plan.Channels.Count > 1 Then
+            Dim summedByName As New Dictionary(Of String, MorphChannel)(StringComparer.OrdinalIgnoreCase)
+            For Each ch In plan.Channels
+                Dim existing As MorphChannel = Nothing
+                If summedByName.TryGetValue(ch.Name, existing) Then
+                    existing.Weight += ch.Weight
+                Else
+                    summedByName(ch.Name) = ch
+                End If
+            Next
+            If summedByName.Count <> plan.Channels.Count Then
+                If logShapeName <> "" Then NpcPreviewLog.LogLazy(Function() $"  [MORPH-DEDUP] '{logShapeName}': {plan.Channels.Count} → {summedByName.Count} channels (weights summed across duplicates)")
+                plan.Channels.Clear()
+                plan.Channels.AddRange(summedByName.Values)
+            End If
+        End If
+
+        If logShapeName <> "" Then NpcPreviewLog.LogLazy(Function() $"  [MORPH-PLAN] {plan.Channels.Count} total channels for shape '{logShapeName}'")
+        Return plan
+    End Function
+
+    ''' <summary>
+    ''' Add face morph presets from MSDK/MSDV using TriHead (Bethesda format) + RACE Morph Values.
+    ''' Instance-side wrapper: delegates to <see cref="BuildFaceMorphPlanFromTriHead"/> using this
+    ''' resolver's stored npcData / RACE defs. Kept for readability of ResolveMorphPlan.
+    ''' </summary>
+    Private Sub AddFaceMorphPresetsFromTriHead(triHead As TriHeadFile, plan As MorphPlan)
+        Dim built = BuildFaceMorphPlanFromTriHead(_npcData, _morphValueDefs, _morphPresetDefs, triHead, logShapeName:="head")
+        plan.Channels.AddRange(built.Channels)
     End Sub
 
     ''' <summary>Convert PIRT TRI morph offsets (sparse) to MorphData list.</summary>
