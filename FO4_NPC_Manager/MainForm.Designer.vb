@@ -30,7 +30,6 @@ Partial Class MainForm
         PanelActionsToolbar = New TableLayoutPanel()
         LabelEdit = New Label()
         ButtonEditFace = New Button()
-        ButtonBuildCharGen = New Button()
         ButtonEditBody = New Button()
         ButtonEditOutfit = New Button()
         SeparatorActions1 = New Label()
@@ -43,6 +42,7 @@ Partial Class MainForm
         ButtonPasteLook = New Button()
         SeparatorActions3 = New Label()
         ButtonSavePlugin = New Button()
+        ButtonBuildCharGen = New Button()
         PanelPreviewToolbar = New TableLayoutPanel()
         CheckBoxRenderGore = New CheckBox()
         CheckBoxBodyTri = New CheckBox()
@@ -278,7 +278,6 @@ Partial Class MainForm
         PanelActionsToolbar.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100F))
         PanelActionsToolbar.Controls.Add(LabelEdit, 0, 0)
         PanelActionsToolbar.Controls.Add(ButtonEditFace, 1, 0)
-        PanelActionsToolbar.Controls.Add(ButtonBuildCharGen, 2, 0)
         PanelActionsToolbar.Controls.Add(ButtonEditBody, 3, 0)
         PanelActionsToolbar.Controls.Add(ButtonEditOutfit, 4, 0)
         PanelActionsToolbar.Controls.Add(SeparatorActions1, 5, 0)
@@ -291,6 +290,7 @@ Partial Class MainForm
         PanelActionsToolbar.Controls.Add(ButtonPasteLook, 12, 0)
         PanelActionsToolbar.Controls.Add(SeparatorActions3, 13, 0)
         PanelActionsToolbar.Controls.Add(ButtonSavePlugin, 14, 0)
+        PanelActionsToolbar.Controls.Add(ButtonBuildCharGen, 15, 0)
         PanelActionsToolbar.Dock = DockStyle.Top
         PanelActionsToolbar.Location = New Point(8, 108)
         PanelActionsToolbar.Name = "PanelActionsToolbar"
@@ -301,20 +301,21 @@ Partial Class MainForm
         ' 
         ' LabelEdit
         ' 
-        LabelEdit.Anchor = AnchorStyles.Left
         LabelEdit.AutoSize = True
-        LabelEdit.Location = New Point(2, 12)
-        LabelEdit.Margin = New Padding(2, 8, 6, 0)
+        LabelEdit.Dock = DockStyle.Fill
+        LabelEdit.Location = New Point(3, 3)
+        LabelEdit.Margin = New Padding(3)
         LabelEdit.Name = "LabelEdit"
-        LabelEdit.Size = New Size(30, 15)
+        LabelEdit.Size = New Size(30, 26)
         LabelEdit.TabIndex = 0
         LabelEdit.Text = "Edit:"
+        LabelEdit.TextAlign = ContentAlignment.MiddleLeft
         ' 
         ' ButtonEditFace
         ' 
         ButtonEditFace.AutoSize = True
         ButtonEditFace.Enabled = False
-        ButtonEditFace.Location = New Point(40, 2)
+        ButtonEditFace.Location = New Point(38, 2)
         ButtonEditFace.Margin = New Padding(2)
         ButtonEditFace.MinimumSize = New Size(80, 28)
         ButtonEditFace.Name = "ButtonEditFace"
@@ -322,24 +323,12 @@ Partial Class MainForm
         ButtonEditFace.TabIndex = 1
         ButtonEditFace.Text = "Face"
         ButtonEditFace.UseVisualStyleBackColor = True
-        '
-        ' ButtonBuildCharGen
-        '
-        ButtonBuildCharGen.AutoSize = True
-        ButtonBuildCharGen.Enabled = False
-        ButtonBuildCharGen.Margin = New Padding(2)
-        ButtonBuildCharGen.MinimumSize = New Size(110, 28)
-        ButtonBuildCharGen.Name = "ButtonBuildCharGen"
-        ButtonBuildCharGen.Size = New Size(110, 28)
-        ButtonBuildCharGen.TabIndex = 2
-        ButtonBuildCharGen.Text = "Build CharGen"
-        ButtonBuildCharGen.UseVisualStyleBackColor = True
-        '
+        ' 
         ' ButtonEditBody
-        '
+        ' 
         ButtonEditBody.AutoSize = True
         ButtonEditBody.Enabled = False
-        ButtonEditBody.Location = New Point(124, 2)
+        ButtonEditBody.Location = New Point(122, 2)
         ButtonEditBody.Margin = New Padding(2)
         ButtonEditBody.MinimumSize = New Size(80, 28)
         ButtonEditBody.Name = "ButtonEditBody"
@@ -352,7 +341,7 @@ Partial Class MainForm
         ' 
         ButtonEditOutfit.AutoSize = True
         ButtonEditOutfit.Enabled = False
-        ButtonEditOutfit.Location = New Point(208, 2)
+        ButtonEditOutfit.Location = New Point(206, 2)
         ButtonEditOutfit.Margin = New Padding(2)
         ButtonEditOutfit.MinimumSize = New Size(80, 28)
         ButtonEditOutfit.Name = "ButtonEditOutfit"
@@ -364,7 +353,7 @@ Partial Class MainForm
         ' SeparatorActions1
         ' 
         SeparatorActions1.BorderStyle = BorderStyle.Fixed3D
-        SeparatorActions1.Location = New Point(298, 4)
+        SeparatorActions1.Location = New Point(296, 4)
         SeparatorActions1.Margin = New Padding(8, 4, 8, 4)
         SeparatorActions1.Name = "SeparatorActions1"
         SeparatorActions1.Size = New Size(2, 24)
@@ -372,20 +361,21 @@ Partial Class MainForm
         ' 
         ' LabelLooksMenu
         ' 
-        LabelLooksMenu.Anchor = AnchorStyles.Left
         LabelLooksMenu.AutoSize = True
-        LabelLooksMenu.Location = New Point(310, 12)
-        LabelLooksMenu.Margin = New Padding(2, 8, 6, 0)
+        LabelLooksMenu.Dock = DockStyle.Fill
+        LabelLooksMenu.Location = New Point(309, 3)
+        LabelLooksMenu.Margin = New Padding(3)
         LabelLooksMenu.Name = "LabelLooksMenu"
-        LabelLooksMenu.Size = New Size(72, 15)
+        LabelLooksMenu.Size = New Size(72, 26)
         LabelLooksMenu.TabIndex = 5
         LabelLooksMenu.Text = "LooksMenu:"
+        LabelLooksMenu.TextAlign = ContentAlignment.MiddleLeft
         ' 
         ' ButtonLoadLooksmenu
         ' 
         ButtonLoadLooksmenu.AutoSize = True
         ButtonLoadLooksmenu.Enabled = False
-        ButtonLoadLooksmenu.Location = New Point(390, 2)
+        ButtonLoadLooksmenu.Location = New Point(386, 2)
         ButtonLoadLooksmenu.Margin = New Padding(2)
         ButtonLoadLooksmenu.MinimumSize = New Size(80, 28)
         ButtonLoadLooksmenu.Name = "ButtonLoadLooksmenu"
@@ -398,7 +388,7 @@ Partial Class MainForm
         ' 
         ButtonSaveLooksmenu.AutoSize = True
         ButtonSaveLooksmenu.Enabled = False
-        ButtonSaveLooksmenu.Location = New Point(474, 2)
+        ButtonSaveLooksmenu.Location = New Point(470, 2)
         ButtonSaveLooksmenu.Margin = New Padding(2)
         ButtonSaveLooksmenu.MinimumSize = New Size(80, 28)
         ButtonSaveLooksmenu.Name = "ButtonSaveLooksmenu"
@@ -410,7 +400,7 @@ Partial Class MainForm
         ' SeparatorActions2
         ' 
         SeparatorActions2.BorderStyle = BorderStyle.Fixed3D
-        SeparatorActions2.Location = New Point(564, 4)
+        SeparatorActions2.Location = New Point(560, 4)
         SeparatorActions2.Margin = New Padding(8, 4, 8, 4)
         SeparatorActions2.Name = "SeparatorActions2"
         SeparatorActions2.Size = New Size(2, 24)
@@ -418,20 +408,21 @@ Partial Class MainForm
         ' 
         ' LabelLook
         ' 
-        LabelLook.Anchor = AnchorStyles.Left
         LabelLook.AutoSize = True
-        LabelLook.Location = New Point(576, 12)
-        LabelLook.Margin = New Padding(2, 8, 6, 0)
+        LabelLook.Dock = DockStyle.Fill
+        LabelLook.Location = New Point(573, 3)
+        LabelLook.Margin = New Padding(3)
         LabelLook.Name = "LabelLook"
-        LabelLook.Size = New Size(36, 15)
+        LabelLook.Size = New Size(36, 26)
         LabelLook.TabIndex = 9
         LabelLook.Text = "Look:"
+        LabelLook.TextAlign = ContentAlignment.MiddleLeft
         ' 
         ' ButtonCopyLook
         ' 
         ButtonCopyLook.AutoSize = True
         ButtonCopyLook.Enabled = False
-        ButtonCopyLook.Location = New Point(620, 2)
+        ButtonCopyLook.Location = New Point(614, 2)
         ButtonCopyLook.Margin = New Padding(2)
         ButtonCopyLook.MinimumSize = New Size(80, 28)
         ButtonCopyLook.Name = "ButtonCopyLook"
@@ -445,7 +436,7 @@ Partial Class MainForm
         ButtonPasteLook.Anchor = AnchorStyles.Left
         ButtonPasteLook.AutoSize = True
         ButtonPasteLook.Enabled = False
-        ButtonPasteLook.Location = New Point(704, 2)
+        ButtonPasteLook.Location = New Point(698, 2)
         ButtonPasteLook.Margin = New Padding(2)
         ButtonPasteLook.MinimumSize = New Size(80, 28)
         ButtonPasteLook.Name = "ButtonPasteLook"
@@ -457,7 +448,7 @@ Partial Class MainForm
         ' SeparatorActions3
         ' 
         SeparatorActions3.BorderStyle = BorderStyle.Fixed3D
-        SeparatorActions3.Location = New Point(794, 4)
+        SeparatorActions3.Location = New Point(788, 4)
         SeparatorActions3.Margin = New Padding(8, 4, 8, 4)
         SeparatorActions3.Name = "SeparatorActions3"
         SeparatorActions3.Size = New Size(2, 24)
@@ -467,7 +458,7 @@ Partial Class MainForm
         ' 
         ButtonSavePlugin.AutoSize = True
         ButtonSavePlugin.Enabled = False
-        ButtonSavePlugin.Location = New Point(806, 2)
+        ButtonSavePlugin.Location = New Point(800, 2)
         ButtonSavePlugin.Margin = New Padding(2)
         ButtonSavePlugin.MinimumSize = New Size(110, 28)
         ButtonSavePlugin.Name = "ButtonSavePlugin"
@@ -475,6 +466,19 @@ Partial Class MainForm
         ButtonSavePlugin.TabIndex = 13
         ButtonSavePlugin.Text = "Save ESP/ESM"
         ButtonSavePlugin.UseVisualStyleBackColor = True
+        ' 
+        ' ButtonBuildCharGen
+        ' 
+        ButtonBuildCharGen.AutoSize = True
+        ButtonBuildCharGen.Enabled = False
+        ButtonBuildCharGen.Location = New Point(914, 2)
+        ButtonBuildCharGen.Margin = New Padding(2)
+        ButtonBuildCharGen.MinimumSize = New Size(110, 28)
+        ButtonBuildCharGen.Name = "ButtonBuildCharGen"
+        ButtonBuildCharGen.Size = New Size(132, 28)
+        ButtonBuildCharGen.TabIndex = 2
+        ButtonBuildCharGen.Text = "Build CharGen (loose)"
+        ButtonBuildCharGen.UseVisualStyleBackColor = True
         ' 
         ' PanelPreviewToolbar
         ' 

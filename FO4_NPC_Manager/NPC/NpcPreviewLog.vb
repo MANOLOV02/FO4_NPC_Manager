@@ -1,4 +1,4 @@
-Imports System.Globalization
+﻿Imports System.Globalization
 Imports System.IO
 Imports System.Threading
 
@@ -21,7 +21,7 @@ Public Module NpcPreviewLog
 
     Private ReadOnly _lock As New Object()
     Private _logPath As String = ""
-    Private _enabled As Boolean = True
+    Private _enabled As Boolean = False
     Private _initialized As Boolean = False
 
     ''' <summary>Toggle on/off at runtime. Default OFF. When set to True the log file is

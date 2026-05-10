@@ -51,7 +51,9 @@ Public Class SaveEsp_Form
                     .FileName = Path.GetFileName(filePath),
                     .NpcCount = npcIds.Count,
                     .NpcFormIDs = npcIds,
-                    .ContainsTargetNpc = False
+                    .ContainsTargetNpc = False,
+                    .IsEsm = reader.IsESM,
+                    .IsLight = reader.IsESL
                 }
                 result.Add(ep)
             Catch
@@ -112,6 +114,11 @@ Public Class SaveEsp_Form
         ''' the plugin from disk.</summary>
         Public NpcFormIDs As HashSet(Of UInteger)
         Public ContainsTargetNpc As Boolean
+        ''' <summary>TES4 header flags read at scan time. Used by the dialog to auto-populate
+        ''' the Master / Light checkboxes when the user picks "Update existing", so the saved
+        ''' plugin keeps the same flag set unless the user explicitly changes them.</summary>
+        Public IsEsm As Boolean
+        Public IsLight As Boolean
 
         Public Overrides Function ToString() As String
             Dim suffix As String = ""
@@ -128,6 +135,9 @@ Public Class SaveEsp_Form
     Public Class SaveTarget
         Public TargetPath As String
         Public IsNewPlugin As Boolean
+        ''' <summary>TES4 header ESM flag (0x01). When False the file is written as a plain
+        ''' ESP without the master flag. Independent of <see cref="LightMaster"/>.</summary>
+        Public MarkAsMaster As Boolean
         Public LightMaster As Boolean
         Public ReplacingExistingNpc As Boolean
         ''' <summary>When True the caller should bake the CharGen NIF + textures and pack
@@ -143,20 +153,69 @@ Public Class SaveEsp_Form
     Private ReadOnly _targetNpcFormID As UInteger
     Private ReadOnly _sourceMasterIsEsm As Boolean
     Private ReadOnly _npcIsCharGenFacePreset As Boolean
+    ' Save-execution dependencies — kept private so the form fully owns the run-the-save flow.
+    Private ReadOnly _saveCtx As NpcOverrideSaver.SaveContext
+    Private ReadOnly _saveNpc As NPC_Data
+    Private ReadOnly _saveRawRecord As PluginRecord
+    Private ReadOnly _saveRawNpcSpec As NPC_Data
+    Private ReadOnly _saveSourcePluginName As String
+    Private ReadOnly _saveBaseStateValid As Boolean
+    Private ReadOnly _saveBaseStateWeightThin As Single
+    Private ReadOnly _saveBaseStateWeightMuscular As Single
+    Private ReadOnly _saveBaseStateWeightFat As Single
 
     Public Property Result As SaveTarget = Nothing
+    ''' <summary>Populated by <see cref="OnOkClick"/> after the orchestrator finishes; remains
+    ''' Nothing on Cancel. MainForm reads this after <c>ShowDialog</c> returns to perform
+    ''' post-save cleanup (cache update, tree refresh, success MessageBox).</summary>
+    Public Property ExecutionResult As NpcOverrideSaver.SaveExecutionResult = Nothing
+
+    ''' <summary>True while the save orchestrator is running. Used by OnFormClosing to block
+    ''' user-initiated closes mid-write. Inferring this from PanelProgress.Visible was unreliable
+    ''' because the panel stays visible on the success path until Close() runs, and an earlier
+    ''' cancelled X-click could leave CloseReason sticky as UserClosing.</summary>
+    Private _workInProgress As Boolean = False
+
+    ''' <summary>Total number of high-level steps for the current save run. Computed at the
+    ''' start of OnOkClick from the SaveTarget (depends on update-vs-new and CharGen yes/no).
+    ''' Drives the determinate ProgressBarMain so the user sees real progress instead of a
+    ''' marquee.</summary>
+    Private _totalSteps As Integer = 0
+    Private _currentStep As Integer = 0
+    ''' <summary>Ordered list of Phase-substring → step-number mappings. The orchestrator emits
+    ''' free-form Phase strings; we match by substring (stable across minor wording changes)
+    ''' to advance the counter. Built in OnOkClick once per run.</summary>
+    Private _stepMap As List(Of (Match As String, StepNumber As Integer)) = Nothing
 
     Public Sub New(dataPath As String,
                    existingPlugins As List(Of ExistingPlugin),
                    targetNpcFormID As UInteger,
                    sourceMasterIsEsm As Boolean,
-                   npcIsCharGenFacePreset As Boolean)
+                   npcIsCharGenFacePreset As Boolean,
+                   saveNpc As NPC_Data,
+                   saveRawRecord As PluginRecord,
+                   saveRawNpcSpec As NPC_Data,
+                   saveSourcePluginName As String,
+                   saveBaseStateValid As Boolean,
+                   saveBaseStateWeightThin As Single,
+                   saveBaseStateWeightMuscular As Single,
+                   saveBaseStateWeightFat As Single,
+                   saveCtx As NpcOverrideSaver.SaveContext)
         InitializeComponent()
         _dataPath = dataPath
         _existingPlugins = If(existingPlugins, New List(Of ExistingPlugin)())
         _targetNpcFormID = targetNpcFormID
         _sourceMasterIsEsm = sourceMasterIsEsm
         _npcIsCharGenFacePreset = npcIsCharGenFacePreset
+        _saveNpc = saveNpc
+        _saveRawRecord = saveRawRecord
+        _saveRawNpcSpec = saveRawNpcSpec
+        _saveSourcePluginName = saveSourcePluginName
+        _saveBaseStateValid = saveBaseStateValid
+        _saveBaseStateWeightThin = saveBaseStateWeightThin
+        _saveBaseStateWeightMuscular = saveBaseStateWeightMuscular
+        _saveBaseStateWeightFat = saveBaseStateWeightFat
+        _saveCtx = saveCtx
 
         ' CharGen checkbox: default ON in both cases. When the NPC has no CharGen Face Preset
         ' flag, the engine relies on CK's baked FaceGen — without our BA2 the NPC renders as
@@ -181,10 +240,9 @@ Public Class SaveEsp_Form
             RadioButtonNew.Checked = True
         End If
 
-        ' Light master default mirrors the source NPC's master plugin: if the NPC originally
-        ' lives in an ESM, light master is safe (most common case). Otherwise default to off
-        ' (full ESP) but let the user override.
-        CheckBoxLightMaster.Checked = _sourceMasterIsEsm
+        ' Defaults for "Create new": no master flag, light flag on. ApplyFlagDefaultsForCreateNew
+        ' is also the reset hook when the user toggles back from "Update existing" to "Create new".
+        ApplyFlagDefaultsForCreateNew()
 
         AddHandler RadioButtonExisting.CheckedChanged, AddressOf OnRadioChanged
         AddHandler RadioButtonNew.CheckedChanged, AddressOf OnRadioChanged
@@ -194,6 +252,23 @@ Public Class SaveEsp_Form
 
         OnRadioChanged(Nothing, EventArgs.Empty)
         UpdateWarning()
+    End Sub
+
+    ''' <summary>Reset the Master / Light checkboxes to the "Create new" defaults: plain ESP
+    ''' (no master flag) with the Light flag on. Called at form construction and whenever the
+    ''' user switches back from "Update existing" to "Create new".</summary>
+    Private Sub ApplyFlagDefaultsForCreateNew()
+        CheckBoxMarkAsMaster.Checked = False
+        CheckBoxLightMaster.Checked = True
+    End Sub
+
+    ''' <summary>Sync the Master / Light checkboxes to whatever the selected existing plugin
+    ''' actually has on disk. Called whenever the user picks a different plugin from the list,
+    ''' so the saved file keeps the same flag set unless the user explicitly changes them.</summary>
+    Private Sub ApplyFlagsFromExisting(ep As ExistingPlugin)
+        If ep Is Nothing Then Return
+        CheckBoxMarkAsMaster.Checked = ep.IsEsm
+        CheckBoxLightMaster.Checked = ep.IsLight
     End Sub
 
     Private Sub PopulateExistingList()
@@ -210,10 +285,23 @@ Public Class SaveEsp_Form
         Dim isExisting = RadioButtonExisting.Checked
         ListBoxExisting.Enabled = isExisting AndAlso _existingPlugins.Count > 0
         TextBoxNewName.Enabled = Not isExisting
+        ' Sync the flag checkboxes: when entering "Update existing" mirror the currently-selected
+        ' plugin's on-disk flags, when entering "Create new" reset to the new-plugin defaults.
+        If isExisting Then
+            ApplyFlagsFromExisting(TryCast(ListBoxExisting.SelectedItem, ExistingPlugin))
+        Else
+            ApplyFlagDefaultsForCreateNew()
+        End If
         UpdateWarning()
     End Sub
 
     Private Sub OnSelectionChanged(sender As Object, e As EventArgs)
+        ' Re-sync flags when the user picks a different existing plugin. The text-box change
+        ' on the "Create new" side hits this handler too but ApplyFlagsFromExisting bails on
+        ' Nothing, so it's a no-op there.
+        If RadioButtonExisting.Checked Then
+            ApplyFlagsFromExisting(TryCast(ListBoxExisting.SelectedItem, ExistingPlugin))
+        End If
         UpdateWarning()
     End Sub
 
@@ -240,8 +328,11 @@ Public Class SaveEsp_Form
         LabelWarning.Text = ""
     End Sub
 
-    Private Sub OnOkClick(sender As Object, e As EventArgs)
+    ''' <summary>Validates the user's input, builds a <see cref="SaveTarget"/>. Returns Nothing
+    ''' on validation failure (the user has been notified via MessageBox).</summary>
+    Private Function BuildTargetFromUi() As SaveTarget
         Dim target As New SaveTarget With {
+            .MarkAsMaster = CheckBoxMarkAsMaster.Checked,
             .LightMaster = CheckBoxLightMaster.Checked,
             .GenerateChargen = CheckBoxGenerateChargen.Checked
         }
@@ -251,8 +342,7 @@ Public Class SaveEsp_Form
             If sel Is Nothing Then
                 MessageBox.Show(Me, "Select an existing plugin or switch to 'Create new'.",
                                 "Save ESP/ESM", MessageBoxButtons.OK, MessageBoxIcon.Warning)
-                DialogResult = DialogResult.None
-                Return
+                Return Nothing
             End If
             target.TargetPath = sel.FullPath
             target.IsNewPlugin = False
@@ -262,22 +352,18 @@ Public Class SaveEsp_Form
             If String.IsNullOrWhiteSpace(baseName) Then
                 MessageBox.Show(Me, "Plugin name cannot be empty.",
                                 "Save ESP/ESM", MessageBoxButtons.OK, MessageBoxIcon.Warning)
-                DialogResult = DialogResult.None
-                Return
+                Return Nothing
             End If
-            ' Sanitize: no path separators, no extension on input.
             If baseName.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0 Then
                 MessageBox.Show(Me, "Plugin name contains invalid characters.",
                                 "Save ESP/ESM", MessageBoxButtons.OK, MessageBoxIcon.Warning)
-                DialogResult = DialogResult.None
-                Return
+                Return Nothing
             End If
             If baseName.EndsWith(".esp", StringComparison.OrdinalIgnoreCase) OrElse
                baseName.EndsWith(".esm", StringComparison.OrdinalIgnoreCase) OrElse
                baseName.EndsWith(".esl", StringComparison.OrdinalIgnoreCase) Then
                 baseName = Path.GetFileNameWithoutExtension(baseName)
             End If
-            ' Auto-suffix on collision: NPC_Manager.esp, NPC_Manager_2.esp, ...
             Dim candidate = baseName & ".esp"
             Dim suffix = 2
             While File.Exists(Path.Combine(_dataPath, candidate))
@@ -289,8 +375,178 @@ Public Class SaveEsp_Form
             target.ReplacingExistingNpc = False
         End If
 
+        Return target
+    End Function
+
+    ''' <summary>Async OK handler. Validates, then runs the save orchestrator while showing
+    ''' progress in the embedded panel. Closes with DialogResult.OK on success, leaves the
+    ''' form open and re-enables controls on failure so the user can retry. Cancel is
+    ''' disabled during execution; <see cref="OnFormClosing"/> blocks closes while the work
+    ''' is running so the user can't tear the dialog down mid-write.</summary>
+    Private Async Sub OnOkClick(sender As Object, e As EventArgs)
+        Dim target = BuildTargetFromUi()
+        If target Is Nothing Then Return
         Result = target
-        DialogResult = DialogResult.OK
+
+        ' Lock UI: every interactive control (except the form chrome) goes disabled and the
+        ' progress panel becomes visible. Cancel button stays disabled too — the orchestrator
+        ' has no cancellation token plumbed through (writer + bake + BA2 pack run synchronously
+        ' on the worker Task), so offering a Cancel that doesn't actually cancel would lie.
+        _workInProgress = True
+        BuildStepPlan(target)
+        LockUiForExecution(True)
+
+        Dim progress As New Progress(Of NpcOverrideSaver.SaveProgress)(AddressOf ApplyProgress)
+
+        Try
+            ExecutionResult = Await NpcOverrideSaver.ExecuteAsync(
+                target,
+                _targetNpcFormID,
+                _saveNpc,
+                _saveRawRecord,
+                _saveRawNpcSpec,
+                _saveSourcePluginName,
+                _saveBaseStateWeightThin,
+                _saveBaseStateWeightMuscular,
+                _saveBaseStateWeightFat,
+                _saveBaseStateValid,
+                _saveCtx,
+                progress)
+        Catch ex As Exception
+            ' ExecuteAsync wraps internal failures in ExecutionResult.ErrorMessage; this Catch
+            ' only fires for genuinely unexpected failures (e.g. orchestrator constructor crash).
+            ExecutionResult = New NpcOverrideSaver.SaveExecutionResult With {
+                .Success = False,
+                .ErrorMessage = ex.Message
+            }
+        End Try
+
+        ' Clear the in-progress flag BEFORE Close() so OnFormClosing's guard does not block
+        ' the programmatic close. The guard only fires while work is actually running; once
+        ' the awaited orchestrator returns there is nothing to protect.
+        _workInProgress = False
+
+        If ExecutionResult IsNot Nothing AndAlso ExecutionResult.Success Then
+            DialogResult = DialogResult.OK
+            Close()
+        Else
+            ' Failure: re-enable UI so the user can adjust and retry, surface the error inline.
+            LockUiForExecution(False)
+            Dim msg = "Save failed."
+            If ExecutionResult IsNot Nothing AndAlso Not String.IsNullOrEmpty(ExecutionResult.ErrorMessage) Then
+                msg = "Save failed: " & ExecutionResult.ErrorMessage
+            End If
+            MessageBox.Show(Me, msg, "Save ESP/ESM", MessageBoxButtons.OK, MessageBoxIcon.Error)
+        End If
+    End Sub
+
+    ''' <summary>Toggle interactive controls + progress panel visibility for the work phase.
+    ''' True = lock (work running), False = restore (user can retry).</summary>
+    Private Sub LockUiForExecution(locked As Boolean)
+        Dim enabled = Not locked
+        RadioButtonExisting.Enabled = enabled AndAlso _existingPlugins.Count > 0
+        RadioButtonNew.Enabled = enabled
+        ListBoxExisting.Enabled = enabled AndAlso RadioButtonExisting.Checked AndAlso _existingPlugins.Count > 0
+        TextBoxNewName.Enabled = enabled AndAlso RadioButtonNew.Checked
+        CheckBoxMarkAsMaster.Enabled = enabled
+        CheckBoxLightMaster.Enabled = enabled
+        ' Chargen checkbox stays disabled when forced-True for non-CharGenPreset NPCs (its
+        ' constructor-time disabled state is sticky); only re-enable here when the NPC allows opt-out.
+        CheckBoxGenerateChargen.Enabled = enabled AndAlso _npcIsCharGenFacePreset
+        ButtonOk.Enabled = enabled
+        ButtonCancel.Enabled = enabled
+        PanelProgress.Visible = locked
+        If locked Then
+            ' Determinate from step 0; ApplyProgress advances as Phase strings arrive.
+            ProgressBarMain.Style = ProgressBarStyle.Continuous
+            ProgressBarMain.Minimum = 0
+            ProgressBarMain.Maximum = Math.Max(1, _totalSteps)
+            ProgressBarMain.Value = 0
+        Else
+            ProgressBarMain.Style = ProgressBarStyle.Continuous
+            ProgressBarMain.Value = ProgressBarMain.Minimum
+            LabelProgressStage.Text = ""
+            LabelProgressDetail.Text = ""
+        End If
+    End Sub
+
+    ''' <summary>Build the Phase→step map for the current SaveTarget. Phases are matched by
+    ''' substring because the orchestrator's free-form strings include trailing ellipses and
+    ''' contextual detail. Steps depend on:
+    '''   - update-existing (adds "Loading existing plugin…") vs new plugin (skips it)
+    '''   - GenerateChargen on (adds 4 bake/pack steps) vs off
+    ''' Total ranges from 4 (new plugin, no chargen) to 9 (update existing + chargen).</summary>
+    Private Sub BuildStepPlan(target As SaveTarget)
+        Dim map As New List(Of (Match As String, StepNumber As Integer))
+        Dim n As Integer = 0
+        n += 1 : map.Add(("Preparing NPC record", n))
+        If Not target.IsNewPlugin Then
+            n += 1 : map.Add(("Loading existing plugin", n))
+        End If
+        n += 1 : map.Add(("Writing NPC override", n))
+        n += 1 : map.Add(("Verifying written record", n))
+        If target.GenerateChargen Then
+            n += 1 : map.Add(("Baking CharGen", n))
+            n += 1 : map.Add(("Compressing FaceGen bundle", n))
+            n += 1 : map.Add(("Writing BA2", n))
+            n += 1 : map.Add(("Removing loose files", n))
+        End If
+        ' "Done." is reported by the packer on the chargen path; on the no-chargen path the
+        ' orchestrator just returns. Either way we want the final tick when work completes,
+        ' so we map "Done" to (n+1) and bump the total to include it.
+        n += 1 : map.Add(("Done", n))
+        _stepMap = map
+        _totalSteps = n
+        _currentStep = 0
+    End Sub
+
+    ''' <summary>Resolve the step number for a Phase string by first-substring match against
+    ''' the plan. Returns 0 if no entry matches (orchestrator may emit detail-only updates we
+    ''' don't want to advance on — e.g. "Removed 3/8" sub-progress reuses the parent phase).</summary>
+    Private Function ResolveStep(phase As String) As Integer
+        If _stepMap Is Nothing OrElse String.IsNullOrEmpty(phase) Then Return 0
+        For Each entry In _stepMap
+            If phase.IndexOf(entry.Match, StringComparison.OrdinalIgnoreCase) >= 0 Then
+                Return entry.StepNumber
+            End If
+        Next
+        Return 0
+    End Function
+
+    ''' <summary>IProgress(Of T) callback. Marshaled to the UI thread by the runtime, so it can
+    ''' touch controls directly. Maps the orchestrator's free-form Phase to a step number and
+    ''' advances the determinate ProgressBarMain. Sub-phase progress (compress N/4, remove N/M)
+    ''' surfaces in the detail label only — the main bar tracks high-level steps so the user
+    ''' always sees "Step k/N: …".</summary>
+    Private Sub ApplyProgress(p As NpcOverrideSaver.SaveProgress)
+        If p Is Nothing Then Return
+        Dim phase = If(p.Phase, "")
+        Dim resolved = ResolveStep(phase)
+        If resolved > 0 Then
+            ' Steps only move forward — guards against out-of-order reports (shouldn't happen
+            ' but the orchestrator emits sub-progress under reused phase strings).
+            If resolved > _currentStep Then _currentStep = resolved
+        End If
+
+        Dim shownStep As Integer = Math.Max(_currentStep, 1)
+        LabelProgressStage.Text = $"Step {shownStep}/{_totalSteps}: {phase}"
+        LabelProgressDetail.Text = If(p.Detail, "")
+
+        ProgressBarMain.Maximum = Math.Max(1, _totalSteps)
+        ProgressBarMain.Value = Math.Max(0, Math.Min(_currentStep, ProgressBarMain.Maximum))
+    End Sub
+
+    ''' <summary>Block close attempts while the save is running. The form has no Cancel-the-work
+    ''' path, so allowing close mid-write would orphan the worker Task and risk a half-written
+    ''' plugin file. Driven by the explicit <see cref="_workInProgress"/> flag rather than
+    ''' PanelProgress.Visible — the panel stays visible on the success path until Close() runs,
+    ''' and CloseReason can be sticky as UserClosing if a prior X-click was cancelled.</summary>
+    Protected Overrides Sub OnFormClosing(e As FormClosingEventArgs)
+        If _workInProgress AndAlso e.CloseReason = CloseReason.UserClosing Then
+            e.Cancel = True
+            Return
+        End If
+        MyBase.OnFormClosing(e)
     End Sub
 
 End Class

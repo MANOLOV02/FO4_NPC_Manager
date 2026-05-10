@@ -24,6 +24,17 @@ Public Class LooksmenuLoad_Form
     Private ReadOnly _gender As Byte
     Private ReadOnly _allPresets As New List(Of LooksmenuLoader.LooksmenuPreset)
 
+    ' Race-compatibility filter inputs (optional — Nothing means race info wasn't supplied
+    ' and the checkbox stays disabled because we can't compute compatibility).
+    Private ReadOnly _raceFormID As UInteger
+    Private ReadOnly _race As RACE_Data
+    Private ReadOnly _raceDefaults As HashSet(Of UInteger)
+    ' FLST cache reused across IsHdptValidForRace calls so each FLST is parsed once per session.
+    Private ReadOnly _flstCache As New Dictionary(Of UInteger, FLST_Data)
+    ' Compatibility memoization — preset → bool. Each preset is checked once even if the
+    ' user toggles the checkbox / re-runs ApplyFilter via the text-filter handler.
+    Private ReadOnly _compatibilityCache As New Dictionary(Of LooksmenuLoader.LooksmenuPreset, Boolean)
+
     ''' <summary>The preset the user picked. Nothing if the dialog was cancelled.</summary>
     Public Property SelectedPreset As LooksmenuLoader.LooksmenuPreset
 
@@ -56,22 +67,48 @@ Public Class LooksmenuLoad_Form
                    dataPath As String,
                    gender As Byte,
                    raceDisplayName As String,
-                   npcHasBodyTri As Boolean)
+                   npcHasBodyTri As Boolean,
+                   Optional raceFormID As UInteger = 0UI,
+                   Optional race As RACE_Data = Nothing,
+                   Optional raceDefaultHeadPartFormIDs As IEnumerable(Of UInteger) = Nothing)
         InitializeComponent()
         _pluginManager = pluginManager
         _dataPath = dataPath
         _gender = gender
+        _raceFormID = raceFormID
+        _race = race
+        _raceDefaults = New HashSet(Of UInteger)
+        If raceDefaultHeadPartFormIDs IsNot Nothing Then
+            For Each fid In raceDefaultHeadPartFormIDs
+                _raceDefaults.Add(fid)
+            Next
+        End If
 
-        ' Informational header. Presets live in a single flat folder and are race-agnostic — the
-        ' display name is shown so the user knows which NPC will receive the preset; the gender
-        ' is the only field LooksMenu actually filters on (CharGenInterface.cpp:301).
+        ' Informational header. Presets live in a single flat folder and are race-agnostic at the
+        ' file-system level, but the engine silently drops HDPTs / tints whose RACE doesn't accept
+        ' them. The "Show only race-compatible" checkbox lets the user hide presets that would
+        ' partially-apply for this NPC.
         LabelHeader.Text = $"Target NPC race: {raceDisplayName}  •  Gender: {If(gender = 1, "Female", "Male")}" & vbCrLf &
-                           "Listing all presets from Data\F4SE\Plugins\F4EE\Presets\ (filtered by gender)."
+                           "Listing all presets from Data\F4SE\Plugins\F4EE\Presets\."
 
         ' Default the checkbox to whether the NPC's NIF can actually consume BodySlide sliders.
         ' If there's no BODYTRI on the root NiNode the engine wouldn't apply them in-game either,
         ' so we default to unchecked — but leave the choice to the user.
         CheckBoxApplyBodySliders.Checked = npcHasBodyTri
+
+        ' Race-compatibility checkbox: only meaningful when caller supplied race data. Without
+        ' RACE_Data we can't validate tints, and without raceFormID we can't validate HDPTs —
+        ' so disable + uncheck rather than pretending to filter.
+        If _raceFormID = 0UI OrElse _race Is Nothing Then
+            CheckBoxRaceCompatible.Enabled = False
+            CheckBoxRaceCompatible.Checked = False
+        End If
+
+        AddHandler CheckBoxRaceCompatible.CheckedChanged, AddressOf OnRaceCompatibleToggled
+    End Sub
+
+    Private Sub OnRaceCompatibleToggled(sender As Object, e As EventArgs)
+        ApplyFilter()
     End Sub
 
     Private Sub LooksmenuLoad_Form_Load(sender As Object, e As EventArgs) Handles MyBase.Load
@@ -102,15 +139,16 @@ Public Class LooksmenuLoad_Form
     End Sub
 
     Private Sub ApplyFilter()
+        Dim raceFilterOn As Boolean = CheckBoxRaceCompatible.Enabled AndAlso CheckBoxRaceCompatible.Checked
         ListBoxPresets.BeginUpdate()
         Try
             ListBoxPresets.Items.Clear()
             Dim needle = TextBoxFilter.Text.Trim()
             For Each preset In _allPresets
                 Dim displayName = Path.GetFileNameWithoutExtension(preset.SourcePath)
-                If needle.Length = 0 OrElse displayName.IndexOf(needle, StringComparison.OrdinalIgnoreCase) >= 0 Then
-                    ListBoxPresets.Items.Add(New PresetItem(preset, displayName))
-                End If
+                If needle.Length > 0 AndAlso displayName.IndexOf(needle, StringComparison.OrdinalIgnoreCase) < 0 Then Continue For
+                If raceFilterOn AndAlso Not IsCompatibleWithTargetRace(preset) Then Continue For
+                ListBoxPresets.Items.Add(New PresetItem(preset, displayName))
             Next
         Finally
             ListBoxPresets.EndUpdate()
@@ -120,6 +158,18 @@ Public Class LooksmenuLoad_Form
         UpdateInfo(Nothing)
         ButtonOk.Enabled = False
     End Sub
+
+    ''' <summary>Memoized wrapper so the strict HeadPart + FaceTint check runs at most once per
+    ''' preset per session. Each preset's compatibility is invariant for the lifetime of this
+    ''' dialog (race + gender are fixed at construction).</summary>
+    Private Function IsCompatibleWithTargetRace(preset As LooksmenuLoader.LooksmenuPreset) As Boolean
+        Dim cached As Boolean
+        If _compatibilityCache.TryGetValue(preset, cached) Then Return cached
+        Dim result = HeadPartResolver.IsPresetCompatibleWithRace(
+            preset, _raceFormID, _gender = 1, _pluginManager, _race, _flstCache, _raceDefaults)
+        _compatibilityCache(preset) = result
+        Return result
+    End Function
 
     Private Sub ListBoxPresets_SelectedIndexChanged(sender As Object, e As EventArgs) Handles ListBoxPresets.SelectedIndexChanged
         Dim item = TryCast(ListBoxPresets.SelectedItem, PresetItem)

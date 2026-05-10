@@ -135,33 +135,12 @@ Public Class HeadPartPicker_Form
                 End If
             End If
 
-            ' Filter 4: RACE membership. Three pass conditions (any one is enough):
-            '   a) HDPT.RNAM = 0 (no restriction).
-            '   b) HDPT.RNAM points to a FLST that contains the NPC's RACE FormID. The FLST
-            '      can list multiple races (e.g. HumanRace+GhoulRace), so a HeadPart that's
-            '      "additional for ghoul" via shared-FLST is correctly accepted here.
-            '   c) The NPC's RACE record names this HDPT as a gender-default in its
-            '      Male/FemaleHeadPartFormIDs. RACE-declared defaults are valid by
-            '      construction, even when the HDPT's own RNAM is inconsistent (a few mods
-            '      fail to update RNAM after adding the HDPT to a new race's defaults).
-            Dim raceCheckOk As Boolean = False
-            If hdpt.ValidRacesFormID = 0UI Then
-                raceCheckOk = True
-            Else
-                Dim flst As FLST_Data = Nothing
-                If Not flstCache.TryGetValue(hdpt.ValidRacesFormID, flst) Then
-                    Dim flstRec = _pluginManager.GetRecord(hdpt.ValidRacesFormID)
-                    If flstRec IsNot Nothing AndAlso flstRec.Header.Signature = "FLST" Then
-                        flst = RecordParsers.ParseFLST(flstRec, _pluginManager)
-                    End If
-                    flstCache(hdpt.ValidRacesFormID) = flst
-                End If
-                If flst IsNot Nothing AndAlso flst.ItemFormIDs.Contains(raceFormID) Then raceCheckOk = True
-            End If
-            If Not raceCheckOk AndAlso raceDefaults IsNot Nothing AndAlso raceDefaults.Contains(hdpt.FormID) Then
-                raceCheckOk = True
-            End If
-            If Not raceCheckOk Then
+            ' Filter 4: RACE membership — delegated to HeadPartResolver.IsHdptValidForRace
+            ' so the picker, the LooksmenuLoad_Form race filter and any other caller stay in
+            ' lockstep with the same three pass conditions (HDPT.RNAM=0, FLST membership,
+            ' RACE-default gender list). flstCache is shared across the loop so each FLST
+            ' is parsed once even though we re-enter the helper per HDPT.
+            If Not HeadPartResolver.IsHdptValidForRace(hdpt.FormID, raceFormID, isFemale, _pluginManager, flstCache, raceDefaults) Then
                 filteredRace += 1
                 Continue For
             End If
@@ -239,73 +218,72 @@ Public Class HeadPartPicker_Form
 
         _previewLoadInProgress = True
         Try
-            Dim rec = _pluginManager.GetRecord(c.FormID)
-            If rec Is Nothing OrElse rec.Header.Signature <> "HDPT" Then
+            ' Walk the parent HDPT + every HDPT.ExtraPartFormIDs (HNAM) recursively. The engine
+            ' pulls these "misc" sub-parts automatically — eyelashes/AO/wet for eyes, hairlines
+            ' for hair, MouthShadowFemale/teeth for face, etc. Without expanding them the picker
+            ' renders only the parent geometry and the user sees an incomplete head part.
+            ' Shared HNAM-chain enumerator (also used by FaceGenBuilder).
+            Dim allShapes As New List(Of IRenderableShape)
+            Dim chainCount As Integer = 0
+            For Each hdpt In HeadPartResolver.EnumerateHdptChain({c.FormID}, _pluginManager)
+                chainCount += 1
+                If String.IsNullOrEmpty(hdpt.MeshPath) Then Continue For
+
+                ' Resolve the NIF bytes via FilesDictionary (same path MainForm.vb:7305 uses).
+                Dim dictKey = NormalizeMeshKey(hdpt.MeshPath)
+                Dim loc As FilesDictionary_class.File_Location = Nothing
+                If Not FilesDictionary_class.Dictionary.TryGetValue(dictKey, loc) Then Continue For
+                Dim bytes As Byte() = Nothing
+                Try
+                    bytes = loc.GetBytes()
+                Catch
+                End Try
+                If bytes Is Nothing OrElse bytes.Length = 0 Then Continue For
+
+                Dim nif As New Nifcontent_Class_Manolo()
+                Try
+                    nif.Load_Manolo(bytes)
+                Catch
+                    Continue For
+                End Try
+
+                Dim shapes = NifRenderableShape.FromNif(nif)
+                If shapes Is Nothing OrElse Not shapes.Any() Then Continue For
+
+                ' Apply this HDPT's TextureSet override (TNAM) to its own shapes only — extras
+                ' carry their own TNAM and apply it on their own iteration. Vanilla eye HDPTs
+                ' share femaleeyes.nif but each FemaleEyesHumanBlue/Brown/etc. has its own TXST,
+                ' so without this pass every eye colour renders the default brown.
+                If hdpt.TextureSetFormID <> 0UI Then
+                    Dim txstRec = _pluginManager.GetRecord(hdpt.TextureSetFormID)
+                    If txstRec IsNot Nothing AndAlso txstRec.Header.Signature = "TXST" Then
+                        Dim txst = RecordParsers.ParseTXST(txstRec, _pluginManager)
+                        If txst IsNot Nothing Then
+                            For Each shape In shapes
+                                MainForm.EnsureShapeMaterialResolved(shape)
+                                Dim relatedMaterial = shape.ShapeMaterial
+                                If relatedMaterial Is Nothing Then Continue For
+                                MainForm.ApplyTextureSetOverrides(txst, relatedMaterial, hdpt.UsesBodyTexture)
+                            Next
+                        End If
+                    End If
+                End If
+
+                allShapes.AddRange(shapes)
+            Next
+
+            If chainCount = 0 Then
                 ClearPreview("(record not found)")
                 Return
             End If
-            Dim hdpt = RecordParsers.ParseHDPT(rec, _pluginManager)
-            If hdpt Is Nothing OrElse String.IsNullOrEmpty(hdpt.MeshPath) Then
-                ClearPreview("(this HDPT declares no mesh path)")
+            If allShapes.Count = 0 Then
+                ClearPreview("(no renderable shapes resolved for this HDPT chain)")
                 Return
-            End If
-
-            ' Normalize and resolve the NIF bytes the same way MainForm does for HDPTs (line 7305).
-            Dim dictKey = NormalizeMeshKey(hdpt.MeshPath)
-            Dim loc As FilesDictionary_class.File_Location = Nothing
-            If Not FilesDictionary_class.Dictionary.TryGetValue(dictKey, loc) Then
-                ClearPreview($"(mesh not found in FilesDictionary: {dictKey})")
-                Return
-            End If
-            Dim bytes As Byte() = Nothing
-            Try
-                bytes = loc.GetBytes()
-            Catch
-            End Try
-            If bytes Is Nothing OrElse bytes.Length = 0 Then
-                ClearPreview("(mesh bytes empty)")
-                Return
-            End If
-
-            Dim nif As New Nifcontent_Class_Manolo()
-            Try
-                nif.Load_Manolo(bytes)
-            Catch ex As Exception
-                ClearPreview($"(parse error: {ex.Message})")
-                Return
-            End Try
-
-            Dim shapes = NifRenderableShape.FromNif(nif)
-            If shapes Is Nothing OrElse Not shapes.Any() Then
-                ClearPreview("(NIF carries no renderable shape)")
-                Return
-            End If
-
-            ' Apply the HDPT's TextureSet override (TNAM) to each shape's material so the
-            ' preview shows the same diffuse / normal / spec the engine would render. Vanilla
-            ' eye HDPTs share a single femaleeyes.nif whose default material points at a
-            ' brown-ish generic; the actual eye colour comes from the TXST that the HDPT
-            ' declares (FemaleEyesHumanBluePale -> EyesMaleHumanBluePale, etc.). Without this
-            ' pass the picker's preview always renders the default brown regardless of which
-            ' eye colour HDPT the user clicks. Same logic MainForm uses post-load at line ~7497.
-            If hdpt.TextureSetFormID <> 0UI Then
-                Dim txstRec = _pluginManager.GetRecord(hdpt.TextureSetFormID)
-                If txstRec IsNot Nothing AndAlso txstRec.Header.Signature = "TXST" Then
-                    Dim txst = RecordParsers.ParseTXST(txstRec, _pluginManager)
-                    If txst IsNot Nothing Then
-                        For Each shape In shapes
-                            MainForm.EnsureShapeMaterialResolved(shape)
-                            Dim relatedMaterial = shape.ShapeMaterial
-                            If relatedMaterial Is Nothing Then Continue For
-                            MainForm.ApplyTextureSetOverrides(txst, relatedMaterial, hdpt.UsesBodyTexture)
-                        Next
-                    End If
-                End If
             End If
 
             ' Synchronous, single-call entry point: PreviewControl applies sane defaults
             ' (no skinning resolver, no morph resolver, identity pose) and runs the pipeline.
-            _preview.RenderShapes(shapes)
+            _preview.RenderShapes(allShapes)
             _lastPreviewFormID = c.FormID
         Finally
             _previewLoadInProgress = False

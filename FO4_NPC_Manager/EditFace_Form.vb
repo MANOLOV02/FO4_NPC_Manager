@@ -2347,6 +2347,18 @@ Public Class EditFace_Form
     End Sub
 
     Private Sub EditFaceForm_FormClosing(sender As Object, e As FormClosingEventArgs) Handles Me.FormClosing
+        ' Quiesce the render loop FIRST so paints queued by the safety-repaint heartbeat
+        ' cannot drain while the host disposes GL caches (TintGpuCache, etc.). Without
+        ' this, an OnPaint between _editorHost.Dispose() and EditPreviewControl.Clean()
+        ' draws against shaders/textures the host has already deleted from the shared
+        ' GL context, surfacing as "Program handle does not refer to..." errors.
+        If EditPreviewControl IsNot Nothing AndAlso Not EditPreviewControl.IsDisposed Then
+            Try
+                EditPreviewControl.BeginTeardown()
+            Catch
+            End Try
+        End If
+
         ' Tear down the editor's host BEFORE the PreviewControl so the host's Dispose can drop
         ' refs to last render artifacts while the GL context (still alive) can still reclaim
         ' GPU caches via the TintGpuCache.Clear path.

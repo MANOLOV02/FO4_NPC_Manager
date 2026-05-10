@@ -22,9 +22,14 @@ Partial Class SaveEsp_Form
         LabelNewName = New Label()
         TextBoxNewName = New TextBox()
         LabelExtension = New Label()
+        CheckBoxMarkAsMaster = New CheckBox()
         CheckBoxLightMaster = New CheckBox()
         CheckBoxGenerateChargen = New CheckBox()
         LabelWarning = New Label()
+        PanelProgress = New Panel()
+        LabelProgressStage = New Label()
+        LabelProgressDetail = New Label()
+        ProgressBarMain = New ProgressBar()
         ButtonOk = New Button()
         ButtonCancel = New Button()
         SuspendLayout()
@@ -96,16 +101,28 @@ Partial Class SaveEsp_Form
         LabelExtension.TabIndex = 6
         LabelExtension.Text = ".esp"
         '
+        ' CheckBoxMarkAsMaster
+        '
+        CheckBoxMarkAsMaster.AutoSize = True
+        CheckBoxMarkAsMaster.Checked = False
+        CheckBoxMarkAsMaster.CheckState = CheckState.Unchecked
+        CheckBoxMarkAsMaster.Location = New Drawing.Point(12, 280)
+        CheckBoxMarkAsMaster.Name = "CheckBoxMarkAsMaster"
+        CheckBoxMarkAsMaster.Size = New Drawing.Size(280, 19)
+        CheckBoxMarkAsMaster.TabIndex = 7
+        CheckBoxMarkAsMaster.Text = "Mark as master (ESM flag)"
+        CheckBoxMarkAsMaster.UseVisualStyleBackColor = True
+        '
         ' CheckBoxLightMaster
         '
         CheckBoxLightMaster.AutoSize = True
         CheckBoxLightMaster.Checked = True
         CheckBoxLightMaster.CheckState = CheckState.Checked
-        CheckBoxLightMaster.Location = New Drawing.Point(12, 280)
+        CheckBoxLightMaster.Location = New Drawing.Point(12, 305)
         CheckBoxLightMaster.Name = "CheckBoxLightMaster"
         CheckBoxLightMaster.Size = New Drawing.Size(280, 19)
-        CheckBoxLightMaster.TabIndex = 7
-        CheckBoxLightMaster.Text = "Light master (ESM+ESL — recommended)"
+        CheckBoxLightMaster.TabIndex = 8
+        CheckBoxLightMaster.Text = "Light (ESL flag)"
         CheckBoxLightMaster.UseVisualStyleBackColor = True
         '
         ' CheckBoxGenerateChargen
@@ -113,10 +130,10 @@ Partial Class SaveEsp_Form
         CheckBoxGenerateChargen.AutoSize = True
         CheckBoxGenerateChargen.Checked = True
         CheckBoxGenerateChargen.CheckState = CheckState.Checked
-        CheckBoxGenerateChargen.Location = New Drawing.Point(12, 305)
+        CheckBoxGenerateChargen.Location = New Drawing.Point(12, 330)
         CheckBoxGenerateChargen.Name = "CheckBoxGenerateChargen"
         CheckBoxGenerateChargen.Size = New Drawing.Size(360, 19)
-        CheckBoxGenerateChargen.TabIndex = 8
+        CheckBoxGenerateChargen.TabIndex = 9
         CheckBoxGenerateChargen.Text = "Generate baked CharGen (NIF + textures) into BA2"
         CheckBoxGenerateChargen.UseVisualStyleBackColor = True
         '
@@ -124,20 +141,62 @@ Partial Class SaveEsp_Form
         '
         LabelWarning.Anchor = AnchorStyles.Bottom Or AnchorStyles.Left Or AnchorStyles.Right
         LabelWarning.ForeColor = Drawing.Color.DarkOrange
-        LabelWarning.Location = New Drawing.Point(12, 335)
+        LabelWarning.Location = New Drawing.Point(12, 360)
         LabelWarning.Name = "LabelWarning"
         LabelWarning.Size = New Drawing.Size(520, 36)
-        LabelWarning.TabIndex = 9
+        LabelWarning.TabIndex = 10
         LabelWarning.Text = ""
+        '
+        ' PanelProgress  (hidden until OK click — shows phase/detail/bar during the save work)
+        '
+        PanelProgress.Anchor = AnchorStyles.Bottom Or AnchorStyles.Left Or AnchorStyles.Right
+        PanelProgress.BorderStyle = BorderStyle.FixedSingle
+        PanelProgress.Location = New Drawing.Point(12, 400)
+        PanelProgress.Name = "PanelProgress"
+        PanelProgress.Size = New Drawing.Size(520, 78)
+        PanelProgress.TabIndex = 13
+        PanelProgress.Visible = False
+        PanelProgress.Controls.Add(LabelProgressStage)
+        PanelProgress.Controls.Add(LabelProgressDetail)
+        PanelProgress.Controls.Add(ProgressBarMain)
+        '
+        ' LabelProgressStage
+        '
+        LabelProgressStage.Anchor = AnchorStyles.Top Or AnchorStyles.Left Or AnchorStyles.Right
+        LabelProgressStage.Font = New Drawing.Font("Segoe UI", 9.0F, Drawing.FontStyle.Bold)
+        LabelProgressStage.Location = New Drawing.Point(8, 6)
+        LabelProgressStage.Name = "LabelProgressStage"
+        LabelProgressStage.Size = New Drawing.Size(504, 20)
+        LabelProgressStage.TabIndex = 0
+        LabelProgressStage.Text = ""
+        '
+        ' LabelProgressDetail
+        '
+        LabelProgressDetail.Anchor = AnchorStyles.Top Or AnchorStyles.Left Or AnchorStyles.Right
+        LabelProgressDetail.AutoEllipsis = True
+        LabelProgressDetail.ForeColor = SystemColors.GrayText
+        LabelProgressDetail.Location = New Drawing.Point(8, 28)
+        LabelProgressDetail.Name = "LabelProgressDetail"
+        LabelProgressDetail.Size = New Drawing.Size(504, 18)
+        LabelProgressDetail.TabIndex = 1
+        LabelProgressDetail.Text = ""
+        '
+        ' ProgressBarMain
+        '
+        ProgressBarMain.Anchor = AnchorStyles.Top Or AnchorStyles.Left Or AnchorStyles.Right
+        ProgressBarMain.Location = New Drawing.Point(8, 50)
+        ProgressBarMain.Name = "ProgressBarMain"
+        ProgressBarMain.Size = New Drawing.Size(504, 18)
+        ProgressBarMain.Style = ProgressBarStyle.Marquee
+        ProgressBarMain.TabIndex = 2
         '
         ' ButtonOk
         '
         ButtonOk.Anchor = AnchorStyles.Bottom Or AnchorStyles.Right
-        ButtonOk.DialogResult = DialogResult.OK
-        ButtonOk.Location = New Drawing.Point(376, 385)
+        ButtonOk.Location = New Drawing.Point(376, 490)
         ButtonOk.Name = "ButtonOk"
         ButtonOk.Size = New Drawing.Size(75, 27)
-        ButtonOk.TabIndex = 10
+        ButtonOk.TabIndex = 11
         ButtonOk.Text = "Save"
         ButtonOk.UseVisualStyleBackColor = True
         '
@@ -145,10 +204,10 @@ Partial Class SaveEsp_Form
         '
         ButtonCancel.Anchor = AnchorStyles.Bottom Or AnchorStyles.Right
         ButtonCancel.DialogResult = DialogResult.Cancel
-        ButtonCancel.Location = New Drawing.Point(457, 385)
+        ButtonCancel.Location = New Drawing.Point(457, 490)
         ButtonCancel.Name = "ButtonCancel"
         ButtonCancel.Size = New Drawing.Size(75, 27)
-        ButtonCancel.TabIndex = 11
+        ButtonCancel.TabIndex = 12
         ButtonCancel.Text = "Cancel"
         ButtonCancel.UseVisualStyleBackColor = True
         '
@@ -158,7 +217,7 @@ Partial Class SaveEsp_Form
         CancelButton = ButtonCancel
         AutoScaleDimensions = New Drawing.SizeF(7.0F, 15.0F)
         AutoScaleMode = AutoScaleMode.Font
-        ClientSize = New Drawing.Size(544, 424)
+        ClientSize = New Drawing.Size(544, 529)
         Controls.Add(LabelHeader)
         Controls.Add(RadioButtonExisting)
         Controls.Add(ListBoxExisting)
@@ -166,8 +225,10 @@ Partial Class SaveEsp_Form
         Controls.Add(LabelNewName)
         Controls.Add(TextBoxNewName)
         Controls.Add(LabelExtension)
+        Controls.Add(CheckBoxMarkAsMaster)
         Controls.Add(CheckBoxLightMaster)
         Controls.Add(CheckBoxGenerateChargen)
+        Controls.Add(PanelProgress)
         Controls.Add(LabelWarning)
         Controls.Add(ButtonOk)
         Controls.Add(ButtonCancel)
@@ -188,8 +249,13 @@ Partial Class SaveEsp_Form
     Friend WithEvents LabelNewName As Label
     Friend WithEvents TextBoxNewName As TextBox
     Friend WithEvents LabelExtension As Label
+    Friend WithEvents CheckBoxMarkAsMaster As CheckBox
     Friend WithEvents CheckBoxLightMaster As CheckBox
     Friend WithEvents CheckBoxGenerateChargen As CheckBox
+    Friend WithEvents PanelProgress As Panel
+    Friend WithEvents LabelProgressStage As Label
+    Friend WithEvents LabelProgressDetail As Label
+    Friend WithEvents ProgressBarMain As ProgressBar
     Friend WithEvents LabelWarning As Label
     Friend WithEvents ButtonOk As Button
     Friend WithEvents ButtonCancel As Button

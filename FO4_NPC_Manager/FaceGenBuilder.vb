@@ -695,35 +695,14 @@ Public Module FaceGenBuilder
         Dim mergedRoots = HeadPartResolver.MergeHeadPartsWithRaceDefaults(
             npc.RaceFormID, npc.IsFemale, npc.HeadPartFormIDs, pluginManager)
 
-        ' Breadth-first expansion of the head-part chain. Visited guards against cycles
-        ' (extra-part graphs in vanilla are trees, but a malformed mod could loop).
-        Dim visited As New HashSet(Of UInteger)
-        Dim queue As New Queue(Of UInteger)
-        For Each fid In mergedRoots
-            If fid <> 0UI Then queue.Enqueue(fid)
+        ' Walk the chain via the shared HNAM-expanding iterator (cycles guarded inside).
+        ' First-write wins: if an HDPT EditorID is reachable through multiple paths
+        ' (RACE default + NPC override + extra-part), the resolver puts NPC override
+        ' first in mergedRoots so the first Yield preserves override semantics.
+        For Each hdpt In HeadPartResolver.EnumerateHdptChain(mergedRoots, pluginManager)
+            If String.IsNullOrEmpty(hdpt.EditorID) Then Continue For
+            If Not allowed.ContainsKey(hdpt.EditorID) Then allowed(hdpt.EditorID) = hdpt
         Next
-
-        While queue.Count > 0
-            Dim fid = queue.Dequeue()
-            If Not visited.Add(fid) Then Continue While
-            Dim hdptRec = pluginManager.GetRecord(fid)
-            If hdptRec Is Nothing OrElse hdptRec.Header.Signature <> "HDPT" Then
-                sb.AppendLine($"[BUILDCHARGEN] hdpt expansion: FormID={fid:X8} <not a HDPT record>")
-                Continue While
-            End If
-            Dim hdpt = RecordParsers.ParseHDPT(hdptRec, pluginManager)
-            If Not String.IsNullOrEmpty(hdpt.EditorID) Then
-                ' First-write wins: if an HDPT EditorID is reachable through multiple paths
-                ' (RACE default + NPC override + extra-part), the resolver puts NPC override
-                ' first in mergedRoots, so first-write preserves the override semantics.
-                If Not allowed.ContainsKey(hdpt.EditorID) Then allowed(hdpt.EditorID) = hdpt
-            End If
-            If hdpt.ExtraPartFormIDs IsNot Nothing Then
-                For Each extraFid In hdpt.ExtraPartFormIDs
-                    If extraFid <> 0UI Then queue.Enqueue(extraFid)
-                Next
-            End If
-        End While
 
         Return allowed
     End Function

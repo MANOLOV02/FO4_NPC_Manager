@@ -18,6 +18,7 @@ Partial Class LooksmenuLoad_Form
         LabelHeader = New Label()
         LabelFilter = New Label()
         TextBoxFilter = New TextBox()
+        CheckBoxRaceCompatible = New CheckBox()
         ListBoxPresets = New ListBox()
         LabelInfo = New Label()
         CheckBoxApplyBodySliders = New CheckBox()
@@ -52,14 +53,27 @@ Partial Class LooksmenuLoad_Form
         TextBoxFilter.Size = New Drawing.Size(514, 23)
         TextBoxFilter.TabIndex = 2
         '
+        ' CheckBoxRaceCompatible — top filter row, hides presets whose HeadParts/Tints
+        ' don't apply to this NPC's race. ON by default; user can disable to see everything.
+        '
+        CheckBoxRaceCompatible.Anchor = AnchorStyles.Top Or AnchorStyles.Left
+        CheckBoxRaceCompatible.AutoSize = True
+        CheckBoxRaceCompatible.Checked = True
+        CheckBoxRaceCompatible.CheckState = CheckState.Checked
+        CheckBoxRaceCompatible.Location = New Drawing.Point(12, 76)
+        CheckBoxRaceCompatible.Name = "CheckBoxRaceCompatible"
+        CheckBoxRaceCompatible.Text = "Show only race-compatible presets"
+        CheckBoxRaceCompatible.TabIndex = 3
+        CheckBoxRaceCompatible.UseVisualStyleBackColor = True
+        '
         ' ListBoxPresets
         '
         ListBoxPresets.Anchor = AnchorStyles.Top Or AnchorStyles.Bottom Or AnchorStyles.Left Or AnchorStyles.Right
         ListBoxPresets.IntegralHeight = False
-        ListBoxPresets.Location = New Drawing.Point(12, 80)
+        ListBoxPresets.Location = New Drawing.Point(12, 100)
         ListBoxPresets.Name = "ListBoxPresets"
-        ListBoxPresets.Size = New Drawing.Size(560, 280)
-        ListBoxPresets.TabIndex = 3
+        ListBoxPresets.Size = New Drawing.Size(560, 260)
+        ListBoxPresets.TabIndex = 4
         '
         ' LabelInfo
         '
@@ -68,7 +82,7 @@ Partial Class LooksmenuLoad_Form
         LabelInfo.Location = New Drawing.Point(12, 370)
         LabelInfo.Name = "LabelInfo"
         LabelInfo.Size = New Drawing.Size(560, 36)
-        LabelInfo.TabIndex = 4
+        LabelInfo.TabIndex = 5
         LabelInfo.Text = ""
         '
         ' CheckBoxApplyBodySliders — anchored bottom-left next to the action buttons.
@@ -78,7 +92,7 @@ Partial Class LooksmenuLoad_Form
         CheckBoxApplyBodySliders.Location = New Drawing.Point(12, 419)
         CheckBoxApplyBodySliders.Name = "CheckBoxApplyBodySliders"
         CheckBoxApplyBodySliders.Text = "Apply BodySlide sliders"
-        CheckBoxApplyBodySliders.TabIndex = 5
+        CheckBoxApplyBodySliders.TabIndex = 6
         CheckBoxApplyBodySliders.UseVisualStyleBackColor = True
         '
         ' ButtonOk
@@ -88,7 +102,7 @@ Partial Class LooksmenuLoad_Form
         ButtonOk.Location = New Drawing.Point(388, 415)
         ButtonOk.Name = "ButtonOk"
         ButtonOk.Size = New Drawing.Size(90, 28)
-        ButtonOk.TabIndex = 6
+        ButtonOk.TabIndex = 7
         ButtonOk.Text = "OK"
         ButtonOk.UseVisualStyleBackColor = True
         '
@@ -99,7 +113,7 @@ Partial Class LooksmenuLoad_Form
         ButtonCancel.Location = New Drawing.Point(484, 415)
         ButtonCancel.Name = "ButtonCancel"
         ButtonCancel.Size = New Drawing.Size(90, 28)
-        ButtonCancel.TabIndex = 7
+        ButtonCancel.TabIndex = 8
         ButtonCancel.Text = "Cancel"
         ButtonCancel.UseVisualStyleBackColor = True
         '
@@ -116,6 +130,7 @@ Partial Class LooksmenuLoad_Form
         Controls.Add(CheckBoxApplyBodySliders)
         Controls.Add(LabelInfo)
         Controls.Add(ListBoxPresets)
+        Controls.Add(CheckBoxRaceCompatible)
         Controls.Add(TextBoxFilter)
         Controls.Add(LabelFilter)
         Controls.Add(LabelHeader)
@@ -130,6 +145,7 @@ Partial Class LooksmenuLoad_Form
     Friend WithEvents LabelHeader As Label
     Friend WithEvents LabelFilter As Label
     Friend WithEvents TextBoxFilter As TextBox
+    Friend WithEvents CheckBoxRaceCompatible As CheckBox
     Friend WithEvents ListBoxPresets As ListBox
     Friend WithEvents LabelInfo As Label
     Friend WithEvents CheckBoxApplyBodySliders As CheckBox

@@ -380,10 +380,12 @@ Public Class EditBody_Form
                     .Padding = New Padding(8)
                 }
                 BodySlidePanel.Controls.Add(empty)
-                ButtonResetSection.Enabled = False
+                ' Don't disable ButtonResetSection here — OnResetSection dispatches by active tab
+                ' (Body → MWGT/MRSV/Skin reset, BodySlide → wipe sliders). The Body-tab reset is
+                ' always meaningful regardless of whether this NPC has BodySlide PIRT data, and the
+                ' BodySlide-tab reset is a harmless no-op when there are no sliders.
                 Return
             End If
-            ButtonResetSection.Enabled = True
             Dim rowWidth = ComputeBodySlideRowWidth()
             For Each sliderName In _availableSliders
                 Dim row As New TableLayoutPanel() With {
@@ -882,6 +884,16 @@ Public Class EditBody_Form
     End Sub
 
     Private Sub EditBodyForm_FormClosing(sender As Object, e As System.Windows.Forms.FormClosingEventArgs) Handles Me.FormClosing
+        ' Quiesce the render loop FIRST — see EditFace_Form for the full rationale.
+        ' Without this the safety-repaint heartbeat can drain a paint mid-host-Dispose
+        ' against GL handles the host has already deleted.
+        If EditPreviewControl IsNot Nothing AndAlso Not EditPreviewControl.IsDisposed Then
+            Try
+                EditPreviewControl.BeginTeardown()
+            Catch
+            End Try
+        End If
+
         ' Tear down host BEFORE the preview control — same ordering rationale as EditFace_Form.
         If _editorHost IsNot Nothing Then
             Try

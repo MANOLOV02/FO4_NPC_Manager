@@ -6839,6 +6839,9 @@ Public Class MainForm
                 .MaterialSwapFormID = If(state.IsFemale,
                                           If(arma.FemaleMaterialSwapFormID <> 0UI, arma.FemaleMaterialSwapFormID, arma.MaleMaterialSwapFormID),
                                           If(arma.MaleMaterialSwapFormID <> 0UI, arma.MaleMaterialSwapFormID, arma.FemaleMaterialSwapFormID)),
+                .ColorRemapIndex = If(state.IsFemale,
+                                       If(arma.FemaleColorRemapIndex.HasValue, arma.FemaleColorRemapIndex, arma.MaleColorRemapIndex),
+                                       If(arma.MaleColorRemapIndex.HasValue, arma.MaleColorRemapIndex, arma.FemaleColorRemapIndex)),
                 .Order = order,
                 .ArmaBoneScaleDeltas = genderBoneScale
             })
@@ -7582,10 +7585,24 @@ Public Class MainForm
 
         NpcPreviewLog.LogLazy(Function() $"  [MAT-OVERRIDE] kind={candidate?.Kind} headPartType={candidate?.HeadPartType} key={candidate?.DictKey}")
 
-        ' Apply Material Swap (MSWP) first - replaces entire materials before other overrides
+        ' Apply Material Swap (MSWP) first - replaces entire materials before other overrides.
+        ' Then ColorRemap on top of the post-swap material — the engine reads the palette LUT
+        ' from the (possibly swapped) BGSM, so the order matters.
+        ' ARMA-direct values (MaterialSwapFormID/ColorRemapIndex per gender) are unconditional
+        ' "SET" semantics: a single base swap declared on the ARMA itself. The OBTS/OMOD path
+        ' (next session) will call the same helpers per-Property with the FunctionType from
+        ' the OMOD Property (SET/ADD/REM for MSWP, SET/ADD/MUL+ADD for ColorRemap).
         If candidate IsNot Nothing AndAlso candidate.MaterialSwapFormID <> 0UI Then
             NpcPreviewLog.LogLazy(Function() $"    MSWP={candidate.MaterialSwapFormID:X8}")
-            ApplyMaterialSwap(candidate.MaterialSwapFormID, shapes)
+            ShapeMaterialOverrides.ApplyMaterialSwap(candidate.MaterialSwapFormID,
+                                                    ShapeMaterialOverrides.MaterialSwapFunction.SET,
+                                                    shapes, _pluginManager)
+        End If
+        If candidate IsNot Nothing AndAlso candidate.ColorRemapIndex.HasValue Then
+            NpcPreviewLog.LogLazy(Function() $"    COLOR-REMAP scale={candidate.ColorRemapIndex.Value:F4}")
+            ShapeMaterialOverrides.ApplyColorRemap(candidate.ColorRemapIndex.Value, 0.0F,
+                                                   ShapeMaterialOverrides.ColorRemapFunction.SET,
+                                                   shapes)
         End If
 
         Dim solidTintColor = ResolveHeadPartSolidTintColor(candidate)
@@ -8034,54 +8051,9 @@ Public Class MainForm
         Return False
     End Function
 
-    ''' <summary>
-    ''' Apply a Material Swap (MSWP) to shapes - replaces materials matching OriginalMaterial
-    ''' with ReplacementMaterial from the swap record. This is how NPCs get unique skin textures.
-    ''' </summary>
-    Private Sub ApplyMaterialSwap(mswpFormID As UInteger, shapes As IEnumerable(Of IRenderableShape))
-        If mswpFormID = 0UI Then Return
-
-        Dim mswpRec = _pluginManager.GetRecord(mswpFormID)
-        If mswpRec Is Nothing OrElse mswpRec.Header.Signature <> "MSWP" Then Return
-
-        Dim mswp = RecordParsers.ParseMSWP(mswpRec, _pluginManager)
-        If mswp.Substitutions.Count = 0 Then Return
-
-        For Each shape In shapes
-            EnsureShapeMaterialResolved(shape)
-
-            Dim relatedMaterial = shape.ShapeMaterial
-            If relatedMaterial Is Nothing OrElse relatedMaterial.material Is Nothing Then Continue For
-
-            Dim currentPath = If(relatedMaterial.path, "").Trim()
-            If currentPath = "" Then Continue For
-
-            Dim correctedCurrentPath = FO4UnifiedMaterial_Class.CorrectMaterialPath(currentPath)
-
-            For Each sub_ In mswp.Substitutions
-                Dim origPath = FO4UnifiedMaterial_Class.CorrectMaterialPath(If(sub_.OriginalMaterial, ""))
-                If origPath = "" Then Continue For
-
-                If String.Equals(correctedCurrentPath, origPath, StringComparison.OrdinalIgnoreCase) Then
-                    Dim replacementPath = If(sub_.ReplacementMaterial, "")
-                    If replacementPath = "" Then Exit For
-
-                    Dim oldBack = relatedMaterial.material.BackLightPower
-                    Dim oldRim = relatedMaterial.material.RimPower
-                    Dim oldEmit = relatedMaterial.material.EmitEnabled
-                    Dim oldRoot = If(relatedMaterial.material.RootMaterialPath, "")
-
-                    Dim newMaterial = TryLoadMaterialFromDictionary(replacementPath, relatedMaterial.material)
-                    If newMaterial IsNot Nothing Then
-                        relatedMaterial.material = newMaterial
-                        relatedMaterial.path = FO4UnifiedMaterial_Class.CorrectMaterialPath(replacementPath)
-                        NpcPreviewLog.LogLazy(Function() $"  [MAT-MUTATE-MSWP] swap '{origPath}' -> '{relatedMaterial.path}': BackLightPower {oldBack}->{newMaterial.BackLightPower} RimPower {oldRim}->{newMaterial.RimPower} EmitEnabled {oldEmit}->{newMaterial.EmitEnabled} RootMaterialPath '{oldRoot}'->'{If(newMaterial.RootMaterialPath, "")}'")
-                    End If
-                    Exit For
-                End If
-            Next
-        Next
-    End Sub
+    ' ApplyMaterialSwap moved to ShapeMaterialOverrides module so it can be reused by
+    ' the upcoming NPC ObjectTemplate / OMOD path. Call sites use
+    ' `ShapeMaterialOverrides.ApplyMaterialSwap(formID, shapes, _pluginManager)`.
 
     Private Function ResolveHairTintColor(candidate As MeshCandidate, state As NPCVisualState, headPartColor As Nullable(Of Color)) As Nullable(Of Color)
         Select Case candidate.HeadPartType
@@ -8748,8 +8720,33 @@ Public Class MainForm
 #End Region
 
     Private Sub MainForm_FormClosing(sender As Object, e As FormClosingEventArgs) Handles MyBase.FormClosing
-        If _previewControl IsNot Nothing Then
-            _previewControl.Dispose()
+        ' Quiesce the render loop FIRST so the safety-repaint heartbeat cannot drain
+        ' a paint while the host disposes its GL caches (TintGpuCache, PristineDiffusePixels).
+        ' Same rationale as EditFace_Form / EditBody_Form.
+        If _previewControl IsNot Nothing AndAlso Not _previewControl.IsDisposed Then
+            Try
+                _previewControl.BeginTeardown()
+            Catch
+            End Try
+        End If
+
+        If _renderHost IsNot Nothing Then
+            Try
+                _renderHost.Dispose()
+            Catch
+            End Try
+            _renderHost = Nothing
+        End If
+
+        If _previewControl IsNot Nothing AndAlso Not _previewControl.IsDisposed Then
+            Try
+                _previewControl.Clean()
+            Catch
+            End Try
+            Try
+                _previewControl.Dispose()
+            Catch
+            End Try
         End If
     End Sub
 
@@ -8780,18 +8777,23 @@ Public Class MainForm
             Return
         End If
 
-        ' Resolve race for the header label only — LooksMenu presets live in a single flat folder
-        ' and don't carry race info (CharGenInterface.cpp:90 saves Gender, not Race; LoadPreset
-        ' applies to whatever the current actor's race is). The display name is purely informational.
-        Dim raceDisplay As String = $"0x{_renderHost.CurrentBaseState.RaceFormID:X8}"
-        Dim raceRec = _pluginManager.GetRecord(_renderHost.CurrentBaseState.RaceFormID)
+        ' Resolve race for both the header label AND the optional race-compatibility filter.
+        ' The filter checks each preset's HeadPartFormIDs against HDPT.RNAM/FLST + RACE defaults
+        ' and each FaceTintLayer.Index against RACE.Male/FemaleTintTemplateGroups, hiding presets
+        ' that would partially-apply to this NPC.
+        Dim raceFormID As UInteger = _renderHost.CurrentBaseState.RaceFormID
+        Dim raceDisplay As String = $"0x{raceFormID:X8}"
+        Dim race As RACE_Data = Nothing
+        Dim raceRec = _pluginManager.GetRecord(raceFormID)
         If raceRec IsNot Nothing Then
-            Dim race = RecordParsers.ParseRACE(raceRec, _pluginManager)
+            race = RecordParsers.ParseRACE(raceRec, _pluginManager)
             If race IsNot Nothing AndAlso Not String.IsNullOrEmpty(race.EditorID) Then
                 raceDisplay = race.EditorID
             End If
         End If
         Dim gender As Byte = If(_renderHost.CurrentBaseState.IsFemale, CByte(1), CByte(0))
+        Dim raceDefaultsForLm As IEnumerable(Of UInteger) =
+            If(_renderHost.CurrentBaseState.IsFemale, race?.FemaleHeadPartFormIDs, race?.MaleHeadPartFormIDs)
 
         ' Snapshot the overlay state *before* the dialog opens so we can roll back on Cancel.
         ' The dialog drives a live preview via PreviewRequested on every selection change; if the
@@ -8809,7 +8811,8 @@ Public Class MainForm
         Dim selected As LooksmenuLoader.LooksmenuPreset = Nothing
         Dim applyBody As Boolean = npcHasBodyTri
         Dim dialogResult As DialogResult
-        Using dlg As New LooksmenuLoad_Form(_pluginManager, _dataPath, gender, raceDisplay, npcHasBodyTri)
+        Using dlg As New LooksmenuLoad_Form(_pluginManager, _dataPath, gender, raceDisplay, npcHasBodyTri,
+                                            raceFormID, race, raceDefaultsForLm)
             AddHandler dlg.PreviewRequested, Sub(s, args) PreviewLooksmenuOverlay(npcFormID, npc, args.Preset, args.ApplyBodySliders)
             dialogResult = dlg.ShowDialog(Me)
             selected = dlg.SelectedPreset
@@ -10203,310 +10206,75 @@ Public Class MainForm
         Const AcbsBitIsCharGenFacePreset As UInteger = &H4UI
         Dim npcIsCharGenFacePreset = (rawNpcSpec.AcbsFlags And AcbsBitIsCharGenFacePreset) <> 0UI
 
-        ' Show dialog.
-        Dim target As SaveEsp_Form.SaveTarget = Nothing
-        Using dlg As New SaveEsp_Form(_dataPath, existing, npcFormID, sourceMasterIsEsm, npcIsCharGenFacePreset)
-            If dlg.ShowDialog(Me) <> DialogResult.OK Then Return
-            target = dlg.Result
-        End Using
-        If target Is Nothing Then Return
-
-        Dim npcSpec = ApplyPresetOverlayToNpcData(rawNpcSpec, npcFormID)
-
-        ' ApplyPresetOverlayToNpcData returns the raw when there's no preset applied (no edits
-        ' yet). In either case, the round-trip-only fields the parser captured (Vmad raw bytes,
-        ' Acbs trailing bytes, OBND, Object Template raw bytes, Faction list, AI data, etc.)
-        ' must come from the raw parse — the shadow copy in ApplyPresetOverlayToNpcData only
-        ' touches the renderer-relevant subset. Rather than refactor the helper, we copy the
-        ' missing fields back from rawNpcSpec onto the shadow.
-        If Not ReferenceEquals(npcSpec, rawNpcSpec) Then
-            CopyRoundTripOnlyFieldsFromRaw(rawNpcSpec, npcSpec)
-            ' Rebuild parallel collections (TintLayerStructs, FaceMorphTrailingBytes,
-            ' MorphKeysOrdered) when the overlay replaced the renderer-side list. Without
-            ' this the writer reads stale data from raw and ignores the overlay edits —
-            ' that was the bug that survived a tint deletion: 148 tints written instead of
-            ' the 23 the user kept.
-            SyncParallelCollectionsAfterOverlay(npcSpec)
-        End If
-
-        ' MWGT: preserve the parser's MwgtRaw (which captures the source bytes including the
-        ' Single.MaxValue "Default" sentinel encoding) UNLESS the user edited weights via
-        ' Edit Body.
-        '
-        ' Detection: compare baseState (renderer's current view, includes overlay edits) against
-        ' the RAW parse (rawNpcSpec, pre-overlay). If they differ → user edited. We must compare
-        ' against rawNpcSpec, NOT against npcSpec — because npcSpec is post-overlay and
-        ' ApplyPresetOverlayToNpcData already copied baseState's edits into shadow.WeightX
-        ' (lines 9134-9136). Comparing baseState vs npcSpec would always show "no edit" once
-        ' overlay applied, which silently preserved the vanilla raw bytes and dropped user edits.
-        ' (Bug observed in npc_preview.log VERIFY: expected 0.537/0.389/0.074 from edit, got
-        ' 0.411/0.589/0 from raw — heuristic concluded "not edited" because npcSpec already had
-        ' the edited values copied in.)
-        Dim baseState = _renderHost.CurrentBaseState
-        Dim mwgtUserEdited As Boolean = False
-        If baseState IsNot Nothing AndAlso
-           rawNpcSpec.WeightThin.HasValue AndAlso rawNpcSpec.WeightMuscular.HasValue AndAlso rawNpcSpec.WeightFat.HasValue Then
-            Const eps As Single = 0.0001F
-            mwgtUserEdited = (Math.Abs(baseState.WeightThin - rawNpcSpec.WeightThin.Value) > eps) OrElse
-                             (Math.Abs(baseState.WeightMuscular - rawNpcSpec.WeightMuscular.Value) > eps) OrElse
-                             (Math.Abs(baseState.WeightFat - rawNpcSpec.WeightFat.Value) > eps)
-        End If
-        If mwgtUserEdited Then
-            npcSpec.WeightThin = baseState.WeightThin
-            npcSpec.WeightMuscular = baseState.WeightMuscular
-            npcSpec.WeightFat = baseState.WeightFat
-            Using ms As New IO.MemoryStream()
-                Using bw As New IO.BinaryWriter(ms)
-                    bw.Write(baseState.WeightThin)
-                    bw.Write(baseState.WeightMuscular)
-                    bw.Write(baseState.WeightFat)
-                End Using
-                npcSpec.MwgtRaw = ms.ToArray()
-            End Using
-            npcSpec.HasMwgt = True
-        End If
-
-        ' HeadParts: ApplyPresetOverlayToNpcData seeds shadow.HeadPartFormIDs with RACE defaults
-        ' for the renderer (so the merged-with-race list shows up correctly when the user picks an
-        ' NPC with no explicit PNAMs). For Save ESP that's wrong: an override should emit ONLY the
-        ' NPC's own PNAM entries — the engine re-merges with RACE.HEAD at runtime
-        ' (CharGenInterface.cpp:308-342). Including race defaults here produced PNAM duplicates
-        ' (FemaleNeckGore from race + same FemaleNeckGore from preset) and triplicates when both
-        ' raw NPC and preset declared the same PartType.
-        '
-        ' Rebuild npcSpec.HeadPartFormIDs from scratch using the same Has* presence rule as the
-        ' other list fields:
-        '   • HasHeadPartFormIDs=True → merge raw NPC PNAM ∪ preset.HeadPartFormIDs with "preset
-        '     wins per PartType" dedup. No race seed. Empty preset list = wipe (override emits
-        '     no PNAM, engine falls back to RACE.HEAD only). NEVER use Count>0 here — Count=0
-        '     can mean either "wiped" (Has=True) or "absent" (Has=False), and the writer needs
-        '     the distinction.
-        '   • HasHeadPartFormIDs=False → emit raw NPC PNAM verbatim (preserve source NPC's own
-        '     override).
-        npcSpec.HeadPartFormIDs.Clear()
-        Dim overlay As LooksmenuLoader.LooksmenuPreset = Nothing
-        _appliedPresets.TryGetValue(npcFormID, overlay)
-        Dim presetHasHeadParts = (overlay IsNot Nothing AndAlso overlay.HasHeadPartFormIDs)
-        If presetHasHeadParts Then
-            Dim presetParts = overlay.HeadPartFormIDs
-            Dim mergedByType As New Dictionary(Of Integer, UInteger)
-            Dim freestandingMisc As New List(Of UInteger)
-            ' Step 1: seed from raw NPC PNAM (the actual override declared by the source NPC).
-            For Each fid In rawNpcSpec.HeadPartFormIDs
-                If fid = 0UI Then Continue For
-                Dim hpRec = _pluginManager.GetRecord(fid)
-                If hpRec Is Nothing OrElse hpRec.Header.Signature <> "HDPT" Then Continue For
-                Dim hd = RecordParsers.ParseHDPT(hpRec, _pluginManager)
-                If hd.PartType = 0 Then
-                    freestandingMisc.Add(fid)
-                ElseIf hd.PartType >= 1 AndAlso hd.PartType <= 9 Then
-                    mergedByType(hd.PartType) = fid
-                End If
-            Next
-            ' Step 2: preset overrides per PartType. Filter IsExtraPart — those are addons that
-            ' the engine regenerates from each main HDPT's HNAM extras (lashes, AO, etc.) and
-            ' shouldn't appear in the override's PNAM list.
-            For Each fid In presetParts
-                If fid = 0UI Then Continue For
-                Dim hpRec = _pluginManager.GetRecord(fid)
-                If hpRec Is Nothing OrElse hpRec.Header.Signature <> "HDPT" Then Continue For
-                Dim hd = RecordParsers.ParseHDPT(hpRec, _pluginManager)
-                If (hd.Flags And HeadPartFlagIsExtra) <> 0 Then Continue For
-                If hd.PartType = 0 Then
-                    freestandingMisc.Add(fid)
-                ElseIf hd.PartType >= 1 AndAlso hd.PartType <= 9 Then
-                    mergedByType(hd.PartType) = fid
-                End If
-            Next
-            For Each t In mergedByType.Keys.OrderBy(Function(k) k)
-                npcSpec.HeadPartFormIDs.Add(mergedByType(t))
-            Next
-            npcSpec.HeadPartFormIDs.AddRange(freestandingMisc)
-        Else
-            npcSpec.HeadPartFormIDs.AddRange(rawNpcSpec.HeadPartFormIDs)
-        End If
-
-        Dim entry As New SaveNpcEspWriter.NpcOverrideEntry With {
-            .Npc = npcSpec,
-            .SourcePluginName = sourcePluginName,
-            .OriginalHeader = rawRecord.Header
+        ' Build SaveContext — bundles the dependencies the orchestrator (NpcOverrideSaver) needs
+        ' to call back into the host. All MainForm helpers it consumes (overlay merge, round-trip
+        ' field copy, parallel-collection sync, CharGen bake) are forwarded as delegates so the
+        ' orchestrator stays UI-free.
+        Dim baseStateForCtx = _renderHost.CurrentBaseState
+        Dim baseStateValid = (baseStateForCtx IsNot Nothing)
+        Dim ctx As New NpcOverrideSaver.SaveContext With {
+            .PluginManager = _pluginManager,
+            .AppliedPresets = _appliedPresets,
+            .RenderHost = _renderHost,
+            .DataPath = _dataPath,
+            .ApplyPresetOverlayToNpcData = AddressOf ApplyPresetOverlayToNpcData,
+            .CopyRoundTripOnlyFieldsFromRaw = AddressOf CopyRoundTripOnlyFieldsFromRaw,
+            .SyncParallelCollectionsAfterOverlay = AddressOf SyncParallelCollectionsAfterOverlay,
+            .RunChargenBakeAndPack = Function(npcFid As UInteger, anchor As String, srcPlugin As String,
+                                               prog As IProgress(Of NpcOverrideSaver.SaveProgress)) _
+                                          As (Summary As String, Success As Boolean)
+                                         Return RunChargenBakeAndPack(npcFid, anchor, srcPlugin, prog)
+                                     End Function
         }
 
-        ' Load existing records from the target plugin if updating, so we preserve other
-        ' NPC overrides the user has previously saved into the same plugin.
-        Dim existingRecords As New List(Of PluginRecord)
-        Dim existingMasters As New List(Of String)
-        If Not target.IsNewPlugin AndAlso IO.File.Exists(target.TargetPath) Then
-            Try
-                Dim reader As New PluginReader()
-                reader.Load(target.TargetPath)
-                existingMasters.AddRange(reader.Masters)
+        ' Show dialog. The form runs the orchestrator internally (async, with progress in an
+        ' embedded panel), and exposes the result via dlg.ExecutionResult. ShowDialog returns
+        ' DialogResult.OK only after the save finished successfully.
+        Dim execResult As NpcOverrideSaver.SaveExecutionResult = Nothing
+        Dim target As SaveEsp_Form.SaveTarget = Nothing
+        Using dlg As New SaveEsp_Form(_dataPath, existing, npcFormID, sourceMasterIsEsm, npcIsCharGenFacePreset,
+                                      npc, rawRecord, rawNpcSpec, sourcePluginName,
+                                      baseStateValid,
+                                      If(baseStateValid, baseStateForCtx.WeightThin, 0F),
+                                      If(baseStateValid, baseStateForCtx.WeightMuscular, 0F),
+                                      If(baseStateValid, baseStateForCtx.WeightFat, 0F),
+                                      ctx)
+            If dlg.ShowDialog(Me) <> DialogResult.OK Then Return
+            target = dlg.Result
+            execResult = dlg.ExecutionResult
+        End Using
+        If target Is Nothing OrElse execResult Is Nothing OrElse Not execResult.Success Then Return
 
-                ' The records we just read carry FormIDs whose high byte indexes into THIS
-                ' plugin's MAST list, not the basePluginManager's load order. To filter out
-                ' "the record we're about to replace", we have to translate npcFormID (global,
-                ' high byte = basePluginManager load-order idx) to the same local form the
-                ' reader sees (high byte = MAST idx) before comparing.
-                ' Mirror of NpcOverrideVerifier's expected→local remap.
-                Dim npcSourceMasterName As String = ""
-                Dim npcGlobalHigh As Integer = CInt((npcFormID >> 24) And &HFFUI)
-                If npcGlobalHigh >= 0 AndAlso npcGlobalHigh < _pluginManager.Plugins.Count Then
-                    Dim sp = _pluginManager.Plugins(npcGlobalHigh)
-                    If sp IsNot Nothing Then npcSourceMasterName = sp.FileName
-                End If
-                Dim npcLocalFormID As UInteger = npcFormID
-                If Not String.IsNullOrEmpty(npcSourceMasterName) Then
-                    Dim newHigh As Integer = -1
-                    For i = 0 To reader.Masters.Count - 1
-                        If String.Equals(reader.Masters(i), npcSourceMasterName, StringComparison.OrdinalIgnoreCase) Then
-                            newHigh = i
-                            Exit For
-                        End If
-                    Next
-                    If newHigh < 0 Then newHigh = reader.Masters.Count  ' self
-                    npcLocalFormID = (CUInt(newHigh) << 24) Or (npcFormID And &HFFFFFFUI)
-                End If
-
-                For Each kv In reader.Records
-                    Dim rec = kv.Value
-                    ' Skip the record we're replacing — the new entry takes its place.
-                    If rec.Header.FormID = npcLocalFormID Then Continue For
-                    existingRecords.Add(rec)
-                Next
-            Catch ex As Exception
-                MessageBox.Show($"Failed to load existing plugin: {ex.Message}", "Save ESP/ESM",
-                                MessageBoxButtons.OK, MessageBoxIcon.Error)
-                Return
-            End Try
+        ' --- Post-save cleanup (cache update + tree refresh + success MessageBox). The
+        ' orchestrator gave us SavedFormIDs + WriterResult; everything below is host-state
+        ' bookkeeping that doesn't belong inside the orchestrator (would force passing the
+        ' tree, the cache, the helpers, etc., as deps).
+        If target.IsNewPlugin Then
+            RegisterSavedPluginInCache(target.TargetPath, execResult.SavedFormIDs, target.MarkAsMaster, target.LightMaster)
+        Else
+            RefreshSavedPluginInCache(target.TargetPath, execResult.SavedFormIDs, target.MarkAsMaster, target.LightMaster)
         End If
 
-        Dim entries As New List(Of SaveNpcEspWriter.NpcOverrideEntry) From {entry}
-
-        Dim progressDlg As New SaveEspProgress_Form()
-        progressDlg.Show(Me)
-        Try
-            progressDlg.ReportPhase("Writing NPC override to plugin…")
-            progressDlg.ReportDetail(IO.Path.GetFileName(target.TargetPath))
-            progressDlg.SetMarquee()
-
-            Dim game = Config_App.Current.Game
-            Dim result = SaveNpcEspWriter.SaveOverridePlugin(
-                target.TargetPath, game, target.LightMaster,
-                entries, existingRecords, existingMasters, _pluginManager)
-
-            progressDlg.ReportPhase("Updating plugin cache…")
-            progressDlg.ReportDetail("")
-
-            ' Update the auto-gen plugin cache so the next Save ESP dialog open sees this
-            ' plugin without re-scanning Data\. The final list of NPC FormIDs in the file =
-            ' the preserved existing records + the new override.
-            Dim savedFormIDs As New List(Of UInteger)
-            For Each existingRec In existingRecords
-                savedFormIDs.Add(existingRec.Header.FormID)
-            Next
-            savedFormIDs.Add(npcFormID)
-            If target.IsNewPlugin Then
-                RegisterSavedPluginInCache(target.TargetPath, savedFormIDs)
-            Else
-                RefreshSavedPluginInCache(target.TargetPath, savedFormIDs)
-            End If
-
-            ' Reflect the override in the NPC tree: move the NPC from its source plugin's
-            ' group to the just-saved plugin's group. This mirrors what the engine would show
-            ' if both plugins were loaded — the override wins, so the "owner" in the user's
-            ' mental model becomes the auto-gen plugin. _appliedPresets remains the source of
-            ' truth for the preview overlay; we only mutate PluginName for the tree grouping.
-            Dim savedPluginName = IO.Path.GetFileName(target.TargetPath)
-            Dim cachedNpc As NPC_Data = Nothing
-            If _npcByIdCache.TryGetValue(npcFormID, cachedNpc) AndAlso cachedNpc IsNot Nothing Then
-                If Not String.Equals(cachedNpc.PluginName, savedPluginName, StringComparison.OrdinalIgnoreCase) Then
-                    cachedNpc.PluginName = savedPluginName
-                    PopulateNPCTree(_pendingTreeFilter)
-                    ' Restore selection on the moved NPC so the user doesn't lose context.
-                    Dim moved = TreeViewNPCs.Nodes.Find($"NPC_{npcFormID:X8}", searchAllChildren:=True)
-                    If moved IsNot Nothing AndAlso moved.Length > 0 Then
-                        TreeViewNPCs.SelectedNode = moved(0)
-                        moved(0).EnsureVisible()
-                    End If
+        ' Reflect the override in the NPC tree: move the NPC from its source plugin's group to
+        ' the just-saved plugin's group. Mirrors what the engine would show if both plugins
+        ' were loaded — the override wins, so the "owner" in the user's mental model becomes
+        ' the auto-gen plugin.
+        Dim savedPluginName = IO.Path.GetFileName(target.TargetPath)
+        Dim cachedNpc As NPC_Data = Nothing
+        If _npcByIdCache.TryGetValue(npcFormID, cachedNpc) AndAlso cachedNpc IsNot Nothing Then
+            If Not String.Equals(cachedNpc.PluginName, savedPluginName, StringComparison.OrdinalIgnoreCase) Then
+                cachedNpc.PluginName = savedPluginName
+                PopulateNPCTree(_pendingTreeFilter)
+                Dim moved = TreeViewNPCs.Nodes.Find($"NPC_{npcFormID:X8}", searchAllChildren:=True)
+                If moved IsNot Nothing AndAlso moved.Length > 0 Then
+                    TreeViewNPCs.SelectedNode = moved(0)
+                    moved(0).EnsureVisible()
                 End If
             End If
+        End If
 
-            NpcPreviewLog.LogSeparator($"SAVE ESP from {npc.EditorID} [0x{npc.FormID:X8}]")
-            NpcPreviewLog.LogLazy(Function() $"  written to: {result.OutputPath}")
-            NpcPreviewLog.LogLazy(Function() $"  NPC count: {result.NpcCount}, MAST list: {String.Join(", ", result.MasterList)}")
-            If result.RemovedMasters.Count > 0 Then
-                NpcPreviewLog.LogLazy(Function() $"  Removed masters: {String.Join(", ", result.RemovedMasters)}")
-            End If
-            If result.AddedMasters.Count > 0 Then
-                NpcPreviewLog.LogLazy(Function() $"  Added masters: {String.Join(", ", result.AddedMasters)}")
-            End If
-            ' Per-master audit: which FormIDs brought each master in. Lets you spot legitimate
-            ' references vs parser bugs that pull in masters by mistake.
-            For Each kvp In result.MasterAudit
-                Dim auditMaster = kvp.Key
-                Dim auditFids = kvp.Value
-                NpcPreviewLog.LogLazy(Function() $"  [MAST] {auditMaster} ({auditFids.Count} ref{If(auditFids.Count = 1, "", "s")}): {String.Join(", ", auditFids.Take(8).Select(Function(f) $"0x{f:X8}"))}{If(auditFids.Count > 8, " ...", "")}")
-            Next
-
-            ' Round-trip verifier — only runs when NpcPreviewLog.Enabled (debug flag) so a
-            ' production save doesn't pay the read-back cost. Loads the just-written plugin,
-            ' parses our NPC override, and compares field-by-field against npcSpec (what we
-            ' intended to write). Any divergence is logged + shown in the success MessageBox.
-            Dim verifierSummary As String = ""
-            Dim verifierIcon As MessageBoxIcon = MessageBoxIcon.Information
-            If NpcPreviewLog.Enabled Then
-                Dim verifyRes = NpcOverrideVerifier.VerifyWrittenOverride(result.OutputPath, npcSpec, sourcePluginName, _pluginManager)
-                If Not String.IsNullOrEmpty(verifyRes.FatalError) Then
-                    NpcPreviewLog.LogLazy(Function() $"  [VERIFY] FATAL: {verifyRes.FatalError}")
-                    verifierSummary = vbCrLf & vbCrLf & "Verifier could not run: " & verifyRes.FatalError
-                    verifierIcon = MessageBoxIcon.Warning
-                ElseIf verifyRes.Match Then
-                    NpcPreviewLog.Log("  [VERIFY] todo igual")
-                    verifierSummary = vbCrLf & vbCrLf & "Verifier: todo igual"
-                Else
-                    NpcPreviewLog.LogLazy(Function() $"  [VERIFY] {verifyRes.Differences.Count} differences:")
-                    For Each line In verifyRes.Differences
-                        Dim local = line
-                        NpcPreviewLog.LogLazy(Function() "    " & local)
-                    Next
-                    Dim shownCount = Math.Min(verifyRes.Differences.Count, 10)
-                    Dim sb As New System.Text.StringBuilder()
-                    sb.AppendLine()
-                    sb.AppendLine()
-                    sb.AppendLine($"Verifier: {verifyRes.Differences.Count} difference(s) — see log for full list.")
-                    For i = 0 To shownCount - 1
-                        sb.AppendLine($"  • {verifyRes.Differences(i)}")
-                    Next
-                    If verifyRes.Differences.Count > shownCount Then
-                        sb.AppendLine($"  … {verifyRes.Differences.Count - shownCount} more")
-                    End If
-                    verifierSummary = sb.ToString()
-                    verifierIcon = MessageBoxIcon.Warning
-                End If
-            End If
-
-            ' --- CharGen bake + BA2 pack (optional per dialog checkbox) ----------------
-            ' For NPCs without IsCharGenFacePreset the dialog forced GenerateChargen=True;
-            ' the engine relies on a baked FaceGen NIF to render those NPCs. For NPCs with
-            ' the flag the bake is opt-in (default ON, user can disable).
-            Dim chargenSummary As String = ""
-            If target.GenerateChargen Then
-                Dim chargenRes = RunChargenBakeAndPack(progressDlg, npcFormID, target.TargetPath, sourcePluginName)
-                chargenSummary = chargenRes.Summary
-                If Not chargenRes.Success Then verifierIcon = MessageBoxIcon.Warning
-            End If
-
-            progressDlg.Close()
-
-            MessageBox.Show($"Saved {npc.EditorID} to {IO.Path.GetFileName(result.OutputPath)}.{chargenSummary}{verifierSummary}",
-                            "Save ESP/ESM", MessageBoxButtons.OK, verifierIcon)
-        Catch ex As Exception
-            progressDlg.Close()
-            MessageBox.Show($"Failed to write plugin: {ex.Message}", "Save ESP/ESM",
-                            MessageBoxButtons.OK, MessageBoxIcon.Error)
-        Finally
-            progressDlg.Dispose()
-        End Try
+        MessageBox.Show($"Saved {npc.EditorID} to {IO.Path.GetFileName(execResult.WriterResult.OutputPath)}.{execResult.ChargenSummary}{execResult.VerifierSummary}",
+                        "Save ESP/ESM", MessageBoxButtons.OK, execResult.VerifierIcon)
     End Sub
 
     ''' <summary>Bake the NPC's FaceGen NIF + FaceCustomization textures (canonical filenames,
@@ -10514,16 +10282,14 @@ Public Class MainForm
     ''' anchored to <paramref name="anchorPluginPath"/>. Returns (summary, success) — Success
     ''' is False when bake or pack failed (caller switches the MessageBox icon to Warning).
     ''' Never throws — failures surface in Summary so the ESP write isn't masked.</summary>
-    Private Function RunChargenBakeAndPack(progressDlg As SaveEspProgress_Form,
-                                           npcFormID As UInteger,
+    Private Function RunChargenBakeAndPack(npcFormID As UInteger,
                                            anchorPluginPath As String,
-                                           sourcePluginName As String) As (Summary As String, Success As Boolean)
+                                           sourcePluginName As String,
+                                           progress As IProgress(Of NpcOverrideSaver.SaveProgress)) As (Summary As String, Success As Boolean)
         ' Phase 1: bake. DebugMode toggled off transiently so the bake writes canonical
         ' filenames (<formId>.nif, <formId>_d.dds, …) instead of the _2.* sandbox suffix
         ' the standalone Build CharGen button uses for diff-vs-CK testing.
-        progressDlg.ReportPhase("Baking CharGen NIF + textures…")
-        progressDlg.ReportDetail("")
-        progressDlg.SetMarquee()
+        ReportSaveProgress(progress, "Baking CharGen NIF + textures…", "", False, 0, 0)
 
         Dim previousDebugMode = FaceGenBuilder.DebugMode
         FaceGenBuilder.DebugMode = False
@@ -10556,26 +10322,13 @@ Public Class MainForm
             Sub(p As NpcFaceGenPacker.PackProgress)
                 Select Case p.Phase
                     Case NpcFaceGenPacker.PackPhase.BuildingBundle
-                        progressDlg.ReportPhase("Compressing FaceGen bundle…")
-                        progressDlg.ReportDetail(p.Detail)
-                        If p.Max > 0 Then
-                            progressDlg.SetDeterminate(p.Max)
-                            progressDlg.SetValue(p.Current)
-                        End If
+                        ReportSaveProgress(progress, "Compressing FaceGen bundle…", p.Detail, p.Max > 0, p.Max, p.Current)
                     Case NpcFaceGenPacker.PackPhase.WritingArchive
-                        progressDlg.ReportPhase("Writing BA2 archive(s)…")
-                        progressDlg.ReportDetail(p.Detail)
-                        progressDlg.SetMarquee()
+                        ReportSaveProgress(progress, "Writing BA2 archive(s)…", p.Detail, False, 0, 0)
                     Case NpcFaceGenPacker.PackPhase.DeletingLoose
-                        progressDlg.ReportPhase("Removing loose files…")
-                        progressDlg.ReportDetail(p.Detail)
-                        If p.Max > 0 Then
-                            progressDlg.SetDeterminate(p.Max)
-                            progressDlg.SetValue(p.Current)
-                        End If
+                        ReportSaveProgress(progress, "Removing loose files…", p.Detail, p.Max > 0, p.Max, p.Current)
                     Case NpcFaceGenPacker.PackPhase.Done
-                        progressDlg.ReportPhase("Done.")
-                        progressDlg.ReportDetail("")
+                        ReportSaveProgress(progress, "Done.", "", False, 0, 0)
                 End Select
             End Sub)
 
@@ -10594,6 +10347,22 @@ Public Class MainForm
         End If
         Return ($"{vbCrLf}{vbCrLf}CharGen packed into {wrote} BA2 archive{If(wrote = 1, "", "s")}.", True)
     End Function
+
+    ''' <summary>Forward a save-pipeline progress update to the orchestrator's IProgress sink.
+    ''' Wrapper exists so RunChargenBakeAndPack stays terse — every `progress.Report(New ...)`
+    ''' call would otherwise need a 5-arg builder inline.</summary>
+    Private Sub ReportSaveProgress(progress As IProgress(Of NpcOverrideSaver.SaveProgress),
+                                   phase As String, detail As String,
+                                   determinate As Boolean, max As Integer, current As Integer)
+        If progress Is Nothing Then Return
+        progress.Report(New NpcOverrideSaver.SaveProgress With {
+            .Phase = phase,
+            .Detail = detail,
+            .Determinate = determinate,
+            .Max = max,
+            .Current = current
+        })
+    End Sub
 
     ''' <summary>Get the list of NPC_Manager auto-generated plugins. Uses a process-lifetime
     ''' in-memory cache (_autoGenPluginsCache) to avoid re-scanning Data\ on every Save dialog
@@ -10622,7 +10391,7 @@ Public Class MainForm
 
     ''' <summary>Add a newly-written plugin to the cache without re-scanning disk. Called by
     ''' the Save handler after a successful write of a NEW plugin.</summary>
-    Private Sub RegisterSavedPluginInCache(savedPath As String, savedNpcFormIDs As IEnumerable(Of UInteger))
+    Private Sub RegisterSavedPluginInCache(savedPath As String, savedNpcFormIDs As IEnumerable(Of UInteger), isEsm As Boolean, isLight As Boolean)
         If _autoGenPluginsCache Is Nothing Then Return  ' Will be picked up at first scan.
         ' Avoid duplicates if the cache somehow already has it (defensive).
         For Each cached In _autoGenPluginsCache
@@ -10636,24 +10405,30 @@ Public Class MainForm
             .FileName = IO.Path.GetFileName(savedPath),
             .NpcCount = ids.Count,
             .NpcFormIDs = ids,
-            .ContainsTargetNpc = False
+            .ContainsTargetNpc = False,
+            .IsEsm = isEsm,
+            .IsLight = isLight
         })
     End Sub
 
     ''' <summary>Update an existing cache entry after a successful write that targeted that
-    ''' plugin (the user picked "Update existing"). Replaces NpcFormIDs/NpcCount with the
-    ''' new state.</summary>
-    Private Sub RefreshSavedPluginInCache(savedPath As String, savedNpcFormIDs As IEnumerable(Of UInteger))
+    ''' plugin (the user picked "Update existing"). Replaces NpcFormIDs/NpcCount + ESM/Light
+    ''' flags with the freshly-written state so the next Save ESP dialog auto-populates the
+    ''' Mark-as-master / Light checkboxes from this updated value, not the stale pre-save
+    ''' snapshot.</summary>
+    Private Sub RefreshSavedPluginInCache(savedPath As String, savedNpcFormIDs As IEnumerable(Of UInteger), isEsm As Boolean, isLight As Boolean)
         If _autoGenPluginsCache Is Nothing Then Return
         For Each cached In _autoGenPluginsCache
             If String.Equals(cached.FullPath, savedPath, StringComparison.OrdinalIgnoreCase) Then
                 cached.NpcFormIDs = New HashSet(Of UInteger)(savedNpcFormIDs)
                 cached.NpcCount = cached.NpcFormIDs.Count
+                cached.IsEsm = isEsm
+                cached.IsLight = isLight
                 Return
             End If
         Next
         ' Wasn't in cache (race condition / external edit). Treat as new.
-        RegisterSavedPluginInCache(savedPath, savedNpcFormIDs)
+        RegisterSavedPluginInCache(savedPath, savedNpcFormIDs, isEsm, isLight)
     End Sub
 
     ' Note: the scan implementation now lives in SaveEsp_Form.ScanAutoGeneratedPlugins
