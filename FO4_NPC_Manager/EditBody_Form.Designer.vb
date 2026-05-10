@@ -1,4 +1,4 @@
-' UI built in Designer per feedback_ui_in_designer.md.
+﻿' UI built in Designer per feedback_ui_in_designer.md.
 <Global.Microsoft.VisualBasic.CompilerServices.DesignerGenerated()>
 Partial Class EditBody_Form
     Inherits System.Windows.Forms.Form
@@ -16,331 +16,656 @@ Partial Class EditBody_Form
 
     <System.Diagnostics.DebuggerStepThrough()>
     Private Sub InitializeComponent()
-        PreviewSplit = New System.Windows.Forms.SplitContainer()
-        PreviewSidebar = New System.Windows.Forms.TableLayoutPanel()
-        RenderTogglesPanel = New System.Windows.Forms.FlowLayoutPanel()
-        CheckBoxRenderUnderarmor = New System.Windows.Forms.CheckBox()
-        CheckBoxRenderArmor = New System.Windows.Forms.CheckBox()
-        CheckBoxRenderHeadwear = New System.Windows.Forms.CheckBox()
-        CheckBoxRenderGore = New System.Windows.Forms.CheckBox()
-        PreviewHostPanel = New System.Windows.Forms.Panel()
-        RootLayout = New System.Windows.Forms.TableLayoutPanel()
-        GroupBoxWeight = New System.Windows.Forms.GroupBox()
-        WeightLayout = New System.Windows.Forms.TableLayoutPanel()
+        PreviewSplit = New SplitContainer()
+        RootLayout = New TableLayoutPanel()
+        TabsBody = New TabControl()
+        TabPageBody = New TabPage()
+        BodyTabLayout = New TableLayoutPanel()
+        GroupBoxWeight = New GroupBox()
+        WeightLayout = New TableLayoutPanel()
         WeightTriangle = New WeightTriangleControl()
-        WeightLegend = New System.Windows.Forms.TableLayoutPanel()
-        LabelMuscular = New System.Windows.Forms.Label()
-        SliderMuscular = New FO4_Base_Library.TinySliderTextBox()
-        LabelThin = New System.Windows.Forms.Label()
-        SliderThin = New FO4_Base_Library.TinySliderTextBox()
-        LabelFat = New System.Windows.Forms.Label()
-        SliderFat = New FO4_Base_Library.TinySliderTextBox()
-
-        GroupBoxMrsv = New System.Windows.Forms.GroupBox()
-        MrsvLayout = New System.Windows.Forms.TableLayoutPanel()
-
-        GroupBoxBodySlide = New System.Windows.Forms.GroupBox()
-        BodySlideLayout = New System.Windows.Forms.TableLayoutPanel()
-        TextBoxBodySlideFilter = New System.Windows.Forms.TextBox()
-        BodySlidePanel = New System.Windows.Forms.FlowLayoutPanel()
-
-        ButtonOk = New System.Windows.Forms.Button()
-        ButtonCancel = New System.Windows.Forms.Button()
-        ButtonResetSection = New System.Windows.Forms.Button()
-        BottomLayout = New System.Windows.Forms.FlowLayoutPanel()
-
-        CType(PreviewSplit, System.ComponentModel.ISupportInitialize).BeginInit()
+        WeightLegend = New TableLayoutPanel()
+        LabelMuscular = New Label()
+        SliderMuscular = New TinySliderTextBox()
+        LabelThin = New Label()
+        SliderThin = New TinySliderTextBox()
+        LabelFat = New Label()
+        SliderFat = New TinySliderTextBox()
+        GroupBoxSkin = New GroupBox()
+        SkinLayout = New TableLayoutPanel()
+        LabelWnam = New Label()
+        ComboBoxWnam = New ComboBox()
+        LabelLmSkinTemplate = New Label()
+        ComboBoxLmSkinTemplate = New ComboBox()
+        GroupBoxMrsv = New GroupBox()
+        MrsvLayout = New TableLayoutPanel()
+        TabPageBodySlide = New TabPage()
+        BodySlideTabLayout = New TableLayoutPanel()
+        GroupBoxBodySlide = New GroupBox()
+        BodySlideLayout = New TableLayoutPanel()
+        TextBoxBodySlideFilter = New TextBox()
+        BodySlidePanel = New FlowLayoutPanel()
+        LabelBodySlideEmpty = New Label()
+        BottomLayout = New FlowLayoutPanel()
+        ButtonOk = New Button()
+        ButtonCancel = New Button()
+        ButtonResetSection = New Button()
+        PreviewSidebar = New TableLayoutPanel()
+        RenderTogglesPanel = New FlowLayoutPanel()
+        CheckBoxRenderUnderarmor = New CheckBox()
+        CheckBoxRenderArmor = New CheckBox()
+        CheckBoxRenderHeadwear = New CheckBox()
+        CheckBoxRenderGore = New CheckBox()
+        PreviewHostPanel = New Panel()
+        CType(PreviewSplit, ComponentModel.ISupportInitialize).BeginInit()
         PreviewSplit.Panel1.SuspendLayout()
         PreviewSplit.Panel2.SuspendLayout()
         PreviewSplit.SuspendLayout()
         RootLayout.SuspendLayout()
+        TabsBody.SuspendLayout()
+        TabPageBody.SuspendLayout()
+        BodyTabLayout.SuspendLayout()
         GroupBoxWeight.SuspendLayout()
         WeightLayout.SuspendLayout()
         WeightLegend.SuspendLayout()
+        GroupBoxSkin.SuspendLayout()
+        SkinLayout.SuspendLayout()
         GroupBoxMrsv.SuspendLayout()
+        TabPageBodySlide.SuspendLayout()
+        BodySlideTabLayout.SuspendLayout()
         GroupBoxBodySlide.SuspendLayout()
         BodySlideLayout.SuspendLayout()
         BottomLayout.SuspendLayout()
+        PreviewSidebar.SuspendLayout()
+        RenderTogglesPanel.SuspendLayout()
         SuspendLayout()
-        '
+        ' 
         ' PreviewSplit
-        '
-        ' Splits the form into two panels: Panel1 hosts the editor controls (the RootLayout that
-        ' was previously docked to the form root), Panel2 hosts the preview (a PreviewControl
-        ' created at Form.Shown — see WM Editor_Form/CreatefromNif_Form for the canonical pattern).
-        ' FixedPanel=Panel2 keeps the preview width stable when the form is resized so the editor
-        ' on the left gets the extra width.
-        PreviewSplit.Dock = System.Windows.Forms.DockStyle.Fill
-        PreviewSplit.FixedPanel = System.Windows.Forms.FixedPanel.Panel2
-        PreviewSplit.Location = New System.Drawing.Point(0, 0)
+        ' 
+        PreviewSplit.Dock = DockStyle.Fill
+        PreviewSplit.FixedPanel = FixedPanel.Panel1
+        PreviewSplit.Location = New Point(0, 0)
         PreviewSplit.Name = "PreviewSplit"
+        ' 
+        ' PreviewSplit.Panel1
+        ' 
         PreviewSplit.Panel1.Controls.Add(RootLayout)
+        PreviewSplit.Panel1MinSize = 550
+        ' 
+        ' PreviewSplit.Panel2
+        ' 
         PreviewSplit.Panel2.Controls.Add(PreviewSidebar)
-        PreviewSplit.Size = New System.Drawing.Size(940, 640)
-        PreviewSplit.SplitterDistance = 560
+        PreviewSplit.Size = New Size(1084, 621)
+        PreviewSplit.SplitterDistance = 550
         PreviewSplit.TabIndex = 0
-        '
-        ' PreviewSidebar — vertical TableLayoutPanel: row 0 hosts the per-editor render toggles
-        ' (Underarmor / Armor / Headwear / Gore), row 1 hosts the PreviewControl. Row 0 AutoSize
-        ' so the toggle bar is exactly the height of one CheckBox row; row 1 fills the rest.
-        '
-        PreviewSidebar.Dock = System.Windows.Forms.DockStyle.Fill
-        PreviewSidebar.ColumnCount = 1
-        PreviewSidebar.RowCount = 2
-        PreviewSidebar.ColumnStyles.Add(New System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 100.0F))
-        PreviewSidebar.RowStyles.Add(New System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.AutoSize))
-        PreviewSidebar.RowStyles.Add(New System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 100.0F))
-        PreviewSidebar.Controls.Add(RenderTogglesPanel, 0, 0)
-        PreviewSidebar.Controls.Add(PreviewHostPanel, 0, 1)
-        '
-        ' RenderTogglesPanel
-        '
-        RenderTogglesPanel.Dock = System.Windows.Forms.DockStyle.Fill
-        RenderTogglesPanel.AutoSize = True
-        RenderTogglesPanel.AutoSizeMode = System.Windows.Forms.AutoSizeMode.GrowAndShrink
-        RenderTogglesPanel.FlowDirection = System.Windows.Forms.FlowDirection.LeftToRight
-        RenderTogglesPanel.WrapContents = True
-        RenderTogglesPanel.Padding = New System.Windows.Forms.Padding(2)
-        RenderTogglesPanel.Controls.Add(CheckBoxRenderUnderarmor)
-        RenderTogglesPanel.Controls.Add(CheckBoxRenderArmor)
-        RenderTogglesPanel.Controls.Add(CheckBoxRenderHeadwear)
-        RenderTogglesPanel.Controls.Add(CheckBoxRenderGore)
-        '
-        CheckBoxRenderUnderarmor.AutoSize = True
-        CheckBoxRenderUnderarmor.Name = "CheckBoxRenderUnderarmor"
-        CheckBoxRenderUnderarmor.Text = "Render underarmor"
-        CheckBoxRenderUnderarmor.Margin = New System.Windows.Forms.Padding(4, 2, 8, 2)
-        '
-        CheckBoxRenderArmor.AutoSize = True
-        CheckBoxRenderArmor.Name = "CheckBoxRenderArmor"
-        CheckBoxRenderArmor.Text = "Render armor"
-        CheckBoxRenderArmor.Margin = New System.Windows.Forms.Padding(4, 2, 8, 2)
-        '
-        CheckBoxRenderHeadwear.AutoSize = True
-        CheckBoxRenderHeadwear.Name = "CheckBoxRenderHeadwear"
-        CheckBoxRenderHeadwear.Text = "Render headwear"
-        CheckBoxRenderHeadwear.Margin = New System.Windows.Forms.Padding(4, 2, 8, 2)
-        '
-        CheckBoxRenderGore.AutoSize = True
-        CheckBoxRenderGore.Name = "CheckBoxRenderGore"
-        CheckBoxRenderGore.Text = "Render gore"
-        CheckBoxRenderGore.Margin = New System.Windows.Forms.Padding(4, 2, 8, 2)
-        '
-        ' PreviewHostPanel
-        '
-        ' Empty in Designer; the actual PreviewControl is added at Form.Shown so the GL context
-        ' isn't constructed until the form is visible. Disposed in FormClosing.
-        PreviewHostPanel.Dock = System.Windows.Forms.DockStyle.Fill
-        PreviewHostPanel.Location = New System.Drawing.Point(0, 0)
-        PreviewHostPanel.Name = "PreviewHostPanel"
-        PreviewHostPanel.Size = New System.Drawing.Size(380, 600)
-        PreviewHostPanel.TabIndex = 0
-        '
+        ' 
         ' RootLayout
-        '
-        RootLayout.Dock = System.Windows.Forms.DockStyle.Fill
+        ' 
         RootLayout.ColumnCount = 1
-        RootLayout.ColumnStyles.Add(New System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 100.0F))
-        RootLayout.RowCount = 4
-        RootLayout.RowStyles.Add(New System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.AutoSize))
-        RootLayout.RowStyles.Add(New System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.AutoSize))
-        RootLayout.RowStyles.Add(New System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 100.0F))
-        RootLayout.RowStyles.Add(New System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.AutoSize))
-        RootLayout.Controls.Add(GroupBoxWeight, 0, 0)
-        RootLayout.Controls.Add(GroupBoxMrsv, 0, 1)
-        RootLayout.Controls.Add(GroupBoxBodySlide, 0, 2)
-        RootLayout.Controls.Add(BottomLayout, 0, 3)
-        RootLayout.Padding = New System.Windows.Forms.Padding(8)
-        '
+        RootLayout.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100F))
+        RootLayout.Controls.Add(TabsBody, 0, 0)
+        RootLayout.Controls.Add(BottomLayout, 0, 1)
+        RootLayout.Dock = DockStyle.Fill
+        RootLayout.Location = New Point(0, 0)
+        RootLayout.Name = "RootLayout"
+        RootLayout.Padding = New Padding(8)
+        RootLayout.RowCount = 2
+        RootLayout.RowStyles.Add(New RowStyle(SizeType.Percent, 100F))
+        RootLayout.RowStyles.Add(New RowStyle())
+        RootLayout.Size = New Size(550, 621)
+        RootLayout.TabIndex = 0
+        ' 
+        ' TabsBody
+        ' 
+        TabsBody.Controls.Add(TabPageBody)
+        TabsBody.Controls.Add(TabPageBodySlide)
+        TabsBody.Dock = DockStyle.Fill
+        TabsBody.Location = New Point(11, 11)
+        TabsBody.Name = "TabsBody"
+        TabsBody.SelectedIndex = 0
+        TabsBody.Size = New Size(528, 560)
+        TabsBody.TabIndex = 0
+        ' 
+        ' TabPageBody
+        ' 
+        TabPageBody.Controls.Add(BodyTabLayout)
+        TabPageBody.Location = New Point(4, 24)
+        TabPageBody.Name = "TabPageBody"
+        TabPageBody.Padding = New Padding(6)
+        TabPageBody.Size = New Size(520, 532)
+        TabPageBody.TabIndex = 0
+        TabPageBody.Text = "Body"
+        ' 
+        ' BodyTabLayout
+        ' 
+        BodyTabLayout.ColumnCount = 1
+        BodyTabLayout.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100F))
+        BodyTabLayout.Controls.Add(GroupBoxWeight, 0, 0)
+        BodyTabLayout.Controls.Add(GroupBoxSkin, 0, 1)
+        BodyTabLayout.Controls.Add(GroupBoxMrsv, 0, 2)
+        BodyTabLayout.Dock = DockStyle.Fill
+        BodyTabLayout.Location = New Point(6, 6)
+        BodyTabLayout.Name = "BodyTabLayout"
+        BodyTabLayout.RowCount = 3
+        BodyTabLayout.RowStyles.Add(New RowStyle())
+        BodyTabLayout.RowStyles.Add(New RowStyle())
+        BodyTabLayout.RowStyles.Add(New RowStyle(SizeType.Percent, 100F))
+        BodyTabLayout.RowStyles.Add(New RowStyle(SizeType.Absolute, 20F))
+        BodyTabLayout.Size = New Size(508, 520)
+        BodyTabLayout.TabIndex = 0
+        ' 
         ' GroupBoxWeight
-        '
-        GroupBoxWeight.Text = "Weight (NPC.MWGT — applied via bone scaling)"
-        GroupBoxWeight.Dock = System.Windows.Forms.DockStyle.Fill
+        ' 
         GroupBoxWeight.AutoSize = True
-        GroupBoxWeight.AutoSizeMode = System.Windows.Forms.AutoSizeMode.GrowAndShrink
+        GroupBoxWeight.AutoSizeMode = AutoSizeMode.GrowAndShrink
         GroupBoxWeight.Controls.Add(WeightLayout)
-        '
-        ' WeightLayout — barycentric triangle (left) + read-only legend (right). The triple is
-        ' inherently constrained to sum=1 by the triangle's geometry; we do not show three
-        ' independent sliders because that would invite drift the engine doesn't allow.
-        '
-        WeightLayout.Dock = System.Windows.Forms.DockStyle.Fill
-        WeightLayout.ColumnCount = 2
-        WeightLayout.ColumnStyles.Add(New System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 100.0F))
-        WeightLayout.ColumnStyles.Add(New System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.AutoSize))
-        WeightLayout.RowCount = 1
-        WeightLayout.RowStyles.Add(New System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.AutoSize))
+        GroupBoxWeight.Dock = DockStyle.Fill
+        GroupBoxWeight.Location = New Point(3, 3)
+        GroupBoxWeight.Name = "GroupBoxWeight"
+        GroupBoxWeight.Size = New Size(502, 214)
+        GroupBoxWeight.TabIndex = 0
+        GroupBoxWeight.TabStop = False
+        GroupBoxWeight.Text = "Weight (NPC.MWGT — applied via bone scaling)"
+        ' 
+        ' WeightLayout
+        ' 
         WeightLayout.AutoSize = True
-        WeightLayout.AutoSizeMode = System.Windows.Forms.AutoSizeMode.GrowAndShrink
-        WeightLayout.Padding = New System.Windows.Forms.Padding(4)
-        '
-        ' WeightTriangle — primary input. Drag inside to set (Thin, Muscular, Fat).
-        '
-        WeightTriangle.Dock = System.Windows.Forms.DockStyle.Fill
-        WeightTriangle.MinimumSize = New System.Drawing.Size(220, 180)
-        WeightTriangle.Margin = New System.Windows.Forms.Padding(2)
+        WeightLayout.AutoSizeMode = AutoSizeMode.GrowAndShrink
+        WeightLayout.ColumnCount = 2
+        WeightLayout.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100F))
+        WeightLayout.ColumnStyles.Add(New ColumnStyle())
         WeightLayout.Controls.Add(WeightTriangle, 0, 0)
-        '
-        ' WeightLegend — three read-only rows showing current values.
-        '
+        WeightLayout.Controls.Add(WeightLegend, 1, 0)
+        WeightLayout.Dock = DockStyle.Fill
+        WeightLayout.Location = New Point(3, 19)
+        WeightLayout.Name = "WeightLayout"
+        WeightLayout.Padding = New Padding(4)
+        WeightLayout.RowCount = 1
+        WeightLayout.RowStyles.Add(New RowStyle())
+        WeightLayout.Size = New Size(496, 192)
+        WeightLayout.TabIndex = 0
+        ' 
+        ' WeightTriangle
+        ' 
+        WeightTriangle.BackColor = SystemColors.Control
+        WeightTriangle.Dock = DockStyle.Fill
+        WeightTriangle.Location = New Point(6, 6)
+        WeightTriangle.Margin = New Padding(2)
+        WeightTriangle.MinimumSize = New Size(220, 180)
+        WeightTriangle.Name = "WeightTriangle"
+        WeightTriangle.Size = New Size(245, 180)
+        WeightTriangle.TabIndex = 0
+        ' 
+        ' WeightLegend
+        ' 
+        WeightLegend.Anchor = AnchorStyles.None
         WeightLegend.AutoSize = True
-        WeightLegend.AutoSizeMode = System.Windows.Forms.AutoSizeMode.GrowAndShrink
+        WeightLegend.AutoSizeMode = AutoSizeMode.GrowAndShrink
         WeightLegend.ColumnCount = 2
-        WeightLegend.ColumnStyles.Add(New System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.AutoSize))
-        WeightLegend.ColumnStyles.Add(New System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.AutoSize))
-        WeightLegend.RowCount = 3
-        WeightLegend.RowStyles.Add(New System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.AutoSize))
-        WeightLegend.RowStyles.Add(New System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.AutoSize))
-        WeightLegend.RowStyles.Add(New System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.AutoSize))
-        WeightLegend.Margin = New System.Windows.Forms.Padding(8, 2, 2, 2)
-        WeightLegend.Anchor = System.Windows.Forms.AnchorStyles.Top Or System.Windows.Forms.AnchorStyles.Right
-        '
-        LabelMuscular.Text = "Muscular:"
-        LabelMuscular.AutoSize = True
-        LabelMuscular.TextAlign = System.Drawing.ContentAlignment.MiddleLeft
-        SliderMuscular.Minimum = 0R
-        SliderMuscular.Maximum = 1R
-        SliderMuscular.SmallChange = 0.01R
-        SliderMuscular.LargeChange = 0.1R
-        SliderMuscular.DisplayFormat = "0.00"
-        SliderMuscular.MinimumSize = New System.Drawing.Size(140, 22)
-        SliderMuscular.Size = New System.Drawing.Size(160, 22)
-        SliderMuscular.Margin = New System.Windows.Forms.Padding(2)
-        '
-        LabelThin.Text = "Thin:"
-        LabelThin.AutoSize = True
-        LabelThin.TextAlign = System.Drawing.ContentAlignment.MiddleLeft
-        SliderThin.Minimum = 0R
-        SliderThin.Maximum = 1R
-        SliderThin.SmallChange = 0.01R
-        SliderThin.LargeChange = 0.1R
-        SliderThin.DisplayFormat = "0.00"
-        SliderThin.MinimumSize = New System.Drawing.Size(140, 22)
-        SliderThin.Size = New System.Drawing.Size(160, 22)
-        SliderThin.Margin = New System.Windows.Forms.Padding(2)
-        '
-        LabelFat.Text = "Fat:"
-        LabelFat.AutoSize = True
-        LabelFat.TextAlign = System.Drawing.ContentAlignment.MiddleLeft
-        SliderFat.Minimum = 0R
-        SliderFat.Maximum = 1R
-        SliderFat.SmallChange = 0.01R
-        SliderFat.LargeChange = 0.1R
-        SliderFat.DisplayFormat = "0.00"
-        SliderFat.MinimumSize = New System.Drawing.Size(140, 22)
-        SliderFat.Size = New System.Drawing.Size(160, 22)
-        SliderFat.Margin = New System.Windows.Forms.Padding(2)
-        '
-        ' Legend layout: Muscular at top (matches triangle apex), then Thin (bottom-left vertex),
-        ' then Fat (bottom-right vertex). Mirrors the triangle's spatial arrangement so the
-        ' user can read top→bottom and orient themselves.
+        WeightLegend.ColumnStyles.Add(New ColumnStyle())
+        WeightLegend.ColumnStyles.Add(New ColumnStyle())
         WeightLegend.Controls.Add(LabelMuscular, 0, 0)
         WeightLegend.Controls.Add(SliderMuscular, 1, 0)
         WeightLegend.Controls.Add(LabelThin, 0, 1)
         WeightLegend.Controls.Add(SliderThin, 1, 1)
         WeightLegend.Controls.Add(LabelFat, 0, 2)
         WeightLegend.Controls.Add(SliderFat, 1, 2)
-        WeightLayout.Controls.Add(WeightLegend, 1, 0)
-        '
+        WeightLegend.Location = New Point(261, 57)
+        WeightLegend.Margin = New Padding(8, 2, 2, 2)
+        WeightLegend.Name = "WeightLegend"
+        WeightLegend.RowCount = 3
+        WeightLegend.RowStyles.Add(New RowStyle())
+        WeightLegend.RowStyles.Add(New RowStyle())
+        WeightLegend.RowStyles.Add(New RowStyle())
+        WeightLegend.Size = New Size(229, 78)
+        WeightLegend.TabIndex = 1
+        ' 
+        ' LabelMuscular
+        ' 
+        LabelMuscular.Anchor = AnchorStyles.Left
+        LabelMuscular.AutoSize = True
+        LabelMuscular.Location = New Point(3, 5)
+        LabelMuscular.Name = "LabelMuscular"
+        LabelMuscular.Size = New Size(59, 15)
+        LabelMuscular.TabIndex = 0
+        LabelMuscular.Text = "Muscular:"
+        LabelMuscular.TextAlign = ContentAlignment.MiddleLeft
+        ' 
+        ' SliderMuscular
+        ' 
+        SliderMuscular.AccentColor = SystemColors.HotTrack
+        SliderMuscular.Anchor = AnchorStyles.None
+        SliderMuscular.BackColor = SystemColors.Control
+        SliderMuscular.DisplayFormat = "0.00"
+        SliderMuscular.LargeChange = 0.1R
+        SliderMuscular.Location = New Point(67, 2)
+        SliderMuscular.Margin = New Padding(2)
+        SliderMuscular.Maximum = 1R
+        SliderMuscular.MinimumSize = New Size(140, 22)
+        SliderMuscular.Name = "SliderMuscular"
+        SliderMuscular.Size = New Size(160, 22)
+        SliderMuscular.SmallChange = 0.01R
+        SliderMuscular.TabIndex = 1
+        SliderMuscular.TextBoxTextAlign = HorizontalAlignment.Right
+        SliderMuscular.ThumbColor = SystemColors.HotTrack
+        SliderMuscular.ThumbRadius = 4F
+        SliderMuscular.TrackColor = SystemColors.ControlDark
+        ' 
+        ' LabelThin
+        ' 
+        LabelThin.Anchor = AnchorStyles.Left
+        LabelThin.AutoSize = True
+        LabelThin.Location = New Point(3, 31)
+        LabelThin.Name = "LabelThin"
+        LabelThin.Size = New Size(34, 15)
+        LabelThin.TabIndex = 2
+        LabelThin.Text = "Thin:"
+        LabelThin.TextAlign = ContentAlignment.MiddleLeft
+        ' 
+        ' SliderThin
+        ' 
+        SliderThin.AccentColor = SystemColors.HotTrack
+        SliderThin.Anchor = AnchorStyles.None
+        SliderThin.BackColor = SystemColors.Control
+        SliderThin.DisplayFormat = "0.00"
+        SliderThin.LargeChange = 0.1R
+        SliderThin.Location = New Point(67, 28)
+        SliderThin.Margin = New Padding(2)
+        SliderThin.Maximum = 1R
+        SliderThin.MinimumSize = New Size(140, 22)
+        SliderThin.Name = "SliderThin"
+        SliderThin.Size = New Size(160, 22)
+        SliderThin.SmallChange = 0.01R
+        SliderThin.TabIndex = 3
+        SliderThin.TextBoxTextAlign = HorizontalAlignment.Right
+        SliderThin.ThumbColor = SystemColors.HotTrack
+        SliderThin.ThumbRadius = 4F
+        SliderThin.TrackColor = SystemColors.ControlDark
+        ' 
+        ' LabelFat
+        ' 
+        LabelFat.Anchor = AnchorStyles.Left
+        LabelFat.AutoSize = True
+        LabelFat.Location = New Point(3, 57)
+        LabelFat.Name = "LabelFat"
+        LabelFat.Size = New Size(26, 15)
+        LabelFat.TabIndex = 4
+        LabelFat.Text = "Fat:"
+        LabelFat.TextAlign = ContentAlignment.MiddleLeft
+        ' 
+        ' SliderFat
+        ' 
+        SliderFat.AccentColor = SystemColors.HotTrack
+        SliderFat.Anchor = AnchorStyles.None
+        SliderFat.BackColor = SystemColors.Control
+        SliderFat.DisplayFormat = "0.00"
+        SliderFat.LargeChange = 0.1R
+        SliderFat.Location = New Point(67, 54)
+        SliderFat.Margin = New Padding(2)
+        SliderFat.Maximum = 1R
+        SliderFat.MinimumSize = New Size(140, 22)
+        SliderFat.Name = "SliderFat"
+        SliderFat.Size = New Size(160, 22)
+        SliderFat.SmallChange = 0.01R
+        SliderFat.TabIndex = 5
+        SliderFat.TextBoxTextAlign = HorizontalAlignment.Right
+        SliderFat.ThumbColor = SystemColors.HotTrack
+        SliderFat.ThumbRadius = 4F
+        SliderFat.TrackColor = SystemColors.ControlDark
+        ' 
+        ' GroupBoxSkin
+        ' 
+        GroupBoxSkin.AutoSize = True
+        GroupBoxSkin.AutoSizeMode = AutoSizeMode.GrowAndShrink
+        GroupBoxSkin.Controls.Add(SkinLayout)
+        GroupBoxSkin.Dock = DockStyle.Fill
+        GroupBoxSkin.Location = New Point(3, 223)
+        GroupBoxSkin.Name = "GroupBoxSkin"
+        GroupBoxSkin.Size = New Size(502, 84)
+        GroupBoxSkin.TabIndex = 1
+        GroupBoxSkin.TabStop = False
+        GroupBoxSkin.Text = "Skin"
+        ' 
+        ' SkinLayout
+        ' 
+        SkinLayout.AutoSize = True
+        SkinLayout.AutoSizeMode = AutoSizeMode.GrowAndShrink
+        SkinLayout.ColumnCount = 2
+        SkinLayout.ColumnStyles.Add(New ColumnStyle())
+        SkinLayout.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100F))
+        SkinLayout.Controls.Add(LabelWnam, 0, 0)
+        SkinLayout.Controls.Add(ComboBoxWnam, 1, 0)
+        SkinLayout.Controls.Add(LabelLmSkinTemplate, 0, 1)
+        SkinLayout.Controls.Add(ComboBoxLmSkinTemplate, 1, 1)
+        SkinLayout.Dock = DockStyle.Fill
+        SkinLayout.Location = New Point(3, 19)
+        SkinLayout.Name = "SkinLayout"
+        SkinLayout.Padding = New Padding(4)
+        SkinLayout.RowCount = 2
+        SkinLayout.RowStyles.Add(New RowStyle())
+        SkinLayout.RowStyles.Add(New RowStyle())
+        SkinLayout.Size = New Size(496, 62)
+        SkinLayout.TabIndex = 0
+        ' 
+        ' LabelWnam
+        ' 
+        LabelWnam.AutoSize = True
+        LabelWnam.Location = New Point(6, 10)
+        LabelWnam.Margin = New Padding(2, 6, 8, 2)
+        LabelWnam.Name = "LabelWnam"
+        LabelWnam.Size = New Size(109, 15)
+        LabelWnam.TabIndex = 0
+        LabelWnam.Text = "Skin (NPC.WNAM):"
+        LabelWnam.TextAlign = ContentAlignment.MiddleLeft
+        ' 
+        ' ComboBoxWnam
+        ' 
+        ComboBoxWnam.Dock = DockStyle.Fill
+        ComboBoxWnam.DropDownStyle = ComboBoxStyle.DropDownList
+        ComboBoxWnam.Location = New Point(125, 6)
+        ComboBoxWnam.Margin = New Padding(2)
+        ComboBoxWnam.Name = "ComboBoxWnam"
+        ComboBoxWnam.Size = New Size(365, 23)
+        ComboBoxWnam.TabIndex = 1
+        ' 
+        ' LabelLmSkinTemplate
+        ' 
+        LabelLmSkinTemplate.AutoSize = True
+        LabelLmSkinTemplate.Location = New Point(6, 37)
+        LabelLmSkinTemplate.Margin = New Padding(2, 6, 8, 2)
+        LabelLmSkinTemplate.Name = "LabelLmSkinTemplate"
+        LabelLmSkinTemplate.Size = New Size(87, 15)
+        LabelLmSkinTemplate.TabIndex = 2
+        LabelLmSkinTemplate.Text = "LM Skin (F4SE):"
+        LabelLmSkinTemplate.TextAlign = ContentAlignment.MiddleLeft
+        ' 
+        ' ComboBoxLmSkinTemplate
+        ' 
+        ComboBoxLmSkinTemplate.Dock = DockStyle.Fill
+        ComboBoxLmSkinTemplate.DropDownStyle = ComboBoxStyle.DropDownList
+        ComboBoxLmSkinTemplate.Location = New Point(125, 33)
+        ComboBoxLmSkinTemplate.Margin = New Padding(2)
+        ComboBoxLmSkinTemplate.Name = "ComboBoxLmSkinTemplate"
+        ComboBoxLmSkinTemplate.Size = New Size(365, 23)
+        ComboBoxLmSkinTemplate.TabIndex = 3
+        ' 
         ' GroupBoxMrsv
-        '
-        GroupBoxMrsv.Text = "Body Morph Regions (NPC.MRSV — vanilla 5 regions, applied via bone scaling)"
-        GroupBoxMrsv.Dock = System.Windows.Forms.DockStyle.Fill
+        ' 
         GroupBoxMrsv.AutoSize = True
-        GroupBoxMrsv.AutoSizeMode = System.Windows.Forms.AutoSizeMode.GrowAndShrink
+        GroupBoxMrsv.AutoSizeMode = AutoSizeMode.GrowAndShrink
         GroupBoxMrsv.Controls.Add(MrsvLayout)
-        '
-        ' MrsvLayout — populated dynamically with 5 (Label, slider) rows.
-        '
-        MrsvLayout.Dock = System.Windows.Forms.DockStyle.Fill
-        MrsvLayout.ColumnCount = 2
-        MrsvLayout.ColumnStyles.Add(New System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.AutoSize))
-        MrsvLayout.ColumnStyles.Add(New System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 100.0F))
-        MrsvLayout.RowCount = 5
-        MrsvLayout.RowStyles.Add(New System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.AutoSize))
-        MrsvLayout.RowStyles.Add(New System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.AutoSize))
-        MrsvLayout.RowStyles.Add(New System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.AutoSize))
-        MrsvLayout.RowStyles.Add(New System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.AutoSize))
-        MrsvLayout.RowStyles.Add(New System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.AutoSize))
+        GroupBoxMrsv.Dock = DockStyle.Fill
+        GroupBoxMrsv.Location = New Point(3, 313)
+        GroupBoxMrsv.Name = "GroupBoxMrsv"
+        GroupBoxMrsv.Size = New Size(502, 204)
+        GroupBoxMrsv.TabIndex = 2
+        GroupBoxMrsv.TabStop = False
+        GroupBoxMrsv.Text = "Body Morph Regions (NPC.MRSV — vanilla 5 regions, applied via bone scaling)"
+        ' 
+        ' MrsvLayout
+        ' 
         MrsvLayout.AutoSize = True
-        MrsvLayout.AutoSizeMode = System.Windows.Forms.AutoSizeMode.GrowAndShrink
-        MrsvLayout.Padding = New System.Windows.Forms.Padding(4)
-        '
+        MrsvLayout.AutoSizeMode = AutoSizeMode.GrowAndShrink
+        MrsvLayout.ColumnCount = 2
+        MrsvLayout.ColumnStyles.Add(New ColumnStyle())
+        MrsvLayout.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100F))
+        MrsvLayout.Dock = DockStyle.Fill
+        MrsvLayout.Location = New Point(3, 19)
+        MrsvLayout.Name = "MrsvLayout"
+        MrsvLayout.Padding = New Padding(4)
+        MrsvLayout.RowCount = 5
+        MrsvLayout.RowStyles.Add(New RowStyle())
+        MrsvLayout.RowStyles.Add(New RowStyle())
+        MrsvLayout.RowStyles.Add(New RowStyle())
+        MrsvLayout.RowStyles.Add(New RowStyle())
+        MrsvLayout.RowStyles.Add(New RowStyle())
+        MrsvLayout.Size = New Size(496, 182)
+        MrsvLayout.TabIndex = 0
+        ' 
+        ' TabPageBodySlide
+        ' 
+        TabPageBodySlide.Controls.Add(BodySlideTabLayout)
+        TabPageBodySlide.Location = New Point(4, 24)
+        TabPageBodySlide.Name = "TabPageBodySlide"
+        TabPageBodySlide.Padding = New Padding(6)
+        TabPageBodySlide.Size = New Size(520, 532)
+        TabPageBodySlide.TabIndex = 1
+        TabPageBodySlide.Text = "BodySlide"
+        ' 
+        ' BodySlideTabLayout
+        ' 
+        BodySlideTabLayout.ColumnCount = 1
+        BodySlideTabLayout.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100F))
+        BodySlideTabLayout.Controls.Add(GroupBoxBodySlide, 0, 0)
+        BodySlideTabLayout.Controls.Add(LabelBodySlideEmpty, 0, 1)
+        BodySlideTabLayout.Dock = DockStyle.Fill
+        BodySlideTabLayout.Location = New Point(6, 6)
+        BodySlideTabLayout.Name = "BodySlideTabLayout"
+        BodySlideTabLayout.RowCount = 2
+        BodySlideTabLayout.RowStyles.Add(New RowStyle(SizeType.Percent, 100F))
+        BodySlideTabLayout.RowStyles.Add(New RowStyle())
+        BodySlideTabLayout.Size = New Size(508, 520)
+        BodySlideTabLayout.TabIndex = 0
+        ' 
         ' GroupBoxBodySlide
-        '
-        GroupBoxBodySlide.Text = "BodySlide Sliders (PIRT .tri — vertex morphs, F4SE-only field)"
-        GroupBoxBodySlide.Dock = System.Windows.Forms.DockStyle.Fill
+        ' 
         GroupBoxBodySlide.Controls.Add(BodySlideLayout)
-        '
+        GroupBoxBodySlide.Dock = DockStyle.Fill
+        GroupBoxBodySlide.Location = New Point(3, 3)
+        GroupBoxBodySlide.Name = "GroupBoxBodySlide"
+        GroupBoxBodySlide.Size = New Size(502, 491)
+        GroupBoxBodySlide.TabIndex = 0
+        GroupBoxBodySlide.TabStop = False
+        GroupBoxBodySlide.Text = "BodySlide Sliders (PIRT .tri — vertex morphs, F4SE-only field)"
+        ' 
         ' BodySlideLayout
-        '
-        BodySlideLayout.Dock = System.Windows.Forms.DockStyle.Fill
+        ' 
         BodySlideLayout.ColumnCount = 1
-        BodySlideLayout.ColumnStyles.Add(New System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 100.0F))
-        BodySlideLayout.RowCount = 2
-        BodySlideLayout.RowStyles.Add(New System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.AutoSize))
-        BodySlideLayout.RowStyles.Add(New System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 100.0F))
-        BodySlideLayout.Padding = New System.Windows.Forms.Padding(4)
-        '
-        ' TextBoxBodySlideFilter
-        '
-        TextBoxBodySlideFilter.PlaceholderText = "Filter sliders…"
-        TextBoxBodySlideFilter.Dock = System.Windows.Forms.DockStyle.Top
+        BodySlideLayout.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100F))
         BodySlideLayout.Controls.Add(TextBoxBodySlideFilter, 0, 0)
-        '
-        ' BodySlidePanel — populated dynamically. Auto-scroll handles N >> visible.
-        '
-        BodySlidePanel.Dock = System.Windows.Forms.DockStyle.Fill
-        BodySlidePanel.AutoScroll = True
-        BodySlidePanel.FlowDirection = System.Windows.Forms.FlowDirection.TopDown
-        BodySlidePanel.WrapContents = False
         BodySlideLayout.Controls.Add(BodySlidePanel, 0, 1)
-        '
+        BodySlideLayout.Dock = DockStyle.Fill
+        BodySlideLayout.Location = New Point(3, 19)
+        BodySlideLayout.Name = "BodySlideLayout"
+        BodySlideLayout.Padding = New Padding(4)
+        BodySlideLayout.RowCount = 2
+        BodySlideLayout.RowStyles.Add(New RowStyle())
+        BodySlideLayout.RowStyles.Add(New RowStyle(SizeType.Percent, 100F))
+        BodySlideLayout.Size = New Size(496, 469)
+        BodySlideLayout.TabIndex = 0
+        ' 
+        ' TextBoxBodySlideFilter
+        ' 
+        TextBoxBodySlideFilter.Dock = DockStyle.Top
+        TextBoxBodySlideFilter.Location = New Point(7, 7)
+        TextBoxBodySlideFilter.Name = "TextBoxBodySlideFilter"
+        TextBoxBodySlideFilter.PlaceholderText = "Filter sliders…"
+        TextBoxBodySlideFilter.Size = New Size(482, 23)
+        TextBoxBodySlideFilter.TabIndex = 0
+        ' 
+        ' BodySlidePanel
+        ' 
+        BodySlidePanel.AutoScroll = True
+        BodySlidePanel.Dock = DockStyle.Fill
+        BodySlidePanel.FlowDirection = FlowDirection.TopDown
+        BodySlidePanel.Location = New Point(7, 36)
+        BodySlidePanel.Name = "BodySlidePanel"
+        BodySlidePanel.Size = New Size(482, 426)
+        BodySlidePanel.TabIndex = 1
+        BodySlidePanel.WrapContents = False
+        ' 
+        ' LabelBodySlideEmpty
+        ' 
+        LabelBodySlideEmpty.AutoSize = True
+        LabelBodySlideEmpty.ForeColor = Color.Gray
+        LabelBodySlideEmpty.Location = New Point(8, 501)
+        LabelBodySlideEmpty.Margin = New Padding(8, 4, 8, 4)
+        LabelBodySlideEmpty.Name = "LabelBodySlideEmpty"
+        LabelBodySlideEmpty.Size = New Size(452, 15)
+        LabelBodySlideEmpty.TabIndex = 1
+        LabelBodySlideEmpty.Text = "This NPC has no BodySlide morph data (no BODYTRI extra-data on any body shape)."
+        LabelBodySlideEmpty.Visible = False
+        ' 
         ' BottomLayout
-        '
-        BottomLayout.Dock = System.Windows.Forms.DockStyle.Fill
-        BottomLayout.FlowDirection = System.Windows.Forms.FlowDirection.RightToLeft
+        ' 
         BottomLayout.AutoSize = True
-        BottomLayout.AutoSizeMode = System.Windows.Forms.AutoSizeMode.GrowAndShrink
-        BottomLayout.Padding = New System.Windows.Forms.Padding(0, 4, 0, 0)
-        ButtonOk.Text = "OK"
-        ButtonOk.Width = 80
-        ButtonCancel.Text = "Cancel"
-        ButtonCancel.Width = 80
-        ButtonResetSection.Text = "Reset BodySlide"
-        ButtonResetSection.Width = 110
+        BottomLayout.AutoSizeMode = AutoSizeMode.GrowAndShrink
         BottomLayout.Controls.Add(ButtonOk)
         BottomLayout.Controls.Add(ButtonCancel)
         BottomLayout.Controls.Add(ButtonResetSection)
-        '
+        BottomLayout.Dock = DockStyle.Fill
+        BottomLayout.FlowDirection = FlowDirection.RightToLeft
+        BottomLayout.Location = New Point(11, 577)
+        BottomLayout.Name = "BottomLayout"
+        BottomLayout.Padding = New Padding(0, 4, 0, 0)
+        BottomLayout.Size = New Size(528, 33)
+        BottomLayout.TabIndex = 1
+        ' 
+        ' ButtonOk
+        ' 
+        ButtonOk.Location = New Point(445, 7)
+        ButtonOk.Name = "ButtonOk"
+        ButtonOk.Size = New Size(80, 23)
+        ButtonOk.TabIndex = 0
+        ButtonOk.Text = "OK"
+        ' 
+        ' ButtonCancel
+        ' 
+        ButtonCancel.Location = New Point(359, 7)
+        ButtonCancel.Name = "ButtonCancel"
+        ButtonCancel.Size = New Size(80, 23)
+        ButtonCancel.TabIndex = 1
+        ButtonCancel.Text = "Cancel"
+        ' 
+        ' ButtonResetSection
+        ' 
+        ButtonResetSection.Location = New Point(243, 7)
+        ButtonResetSection.Name = "ButtonResetSection"
+        ButtonResetSection.Size = New Size(110, 23)
+        ButtonResetSection.TabIndex = 2
+        ButtonResetSection.Text = "Reset section"
+        ' 
+        ' PreviewSidebar
+        ' 
+        PreviewSidebar.ColumnCount = 1
+        PreviewSidebar.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100F))
+        PreviewSidebar.Controls.Add(RenderTogglesPanel, 0, 0)
+        PreviewSidebar.Controls.Add(PreviewHostPanel, 0, 1)
+        PreviewSidebar.Dock = DockStyle.Fill
+        PreviewSidebar.Location = New Point(0, 0)
+        PreviewSidebar.Name = "PreviewSidebar"
+        PreviewSidebar.RowCount = 2
+        PreviewSidebar.RowStyles.Add(New RowStyle())
+        PreviewSidebar.RowStyles.Add(New RowStyle(SizeType.Percent, 100F))
+        PreviewSidebar.Size = New Size(530, 621)
+        PreviewSidebar.TabIndex = 0
+        ' 
+        ' RenderTogglesPanel
+        ' 
+        RenderTogglesPanel.AutoSize = True
+        RenderTogglesPanel.AutoSizeMode = AutoSizeMode.GrowAndShrink
+        RenderTogglesPanel.Controls.Add(CheckBoxRenderUnderarmor)
+        RenderTogglesPanel.Controls.Add(CheckBoxRenderArmor)
+        RenderTogglesPanel.Controls.Add(CheckBoxRenderHeadwear)
+        RenderTogglesPanel.Controls.Add(CheckBoxRenderGore)
+        RenderTogglesPanel.Dock = DockStyle.Fill
+        RenderTogglesPanel.Location = New Point(3, 3)
+        RenderTogglesPanel.Name = "RenderTogglesPanel"
+        RenderTogglesPanel.Padding = New Padding(2)
+        RenderTogglesPanel.Size = New Size(524, 27)
+        RenderTogglesPanel.TabIndex = 0
+        ' 
+        ' CheckBoxRenderUnderarmor
+        ' 
+        CheckBoxRenderUnderarmor.AutoSize = True
+        CheckBoxRenderUnderarmor.Location = New Point(6, 4)
+        CheckBoxRenderUnderarmor.Margin = New Padding(4, 2, 8, 2)
+        CheckBoxRenderUnderarmor.Name = "CheckBoxRenderUnderarmor"
+        CheckBoxRenderUnderarmor.Size = New Size(129, 19)
+        CheckBoxRenderUnderarmor.TabIndex = 0
+        CheckBoxRenderUnderarmor.Text = "Render underarmor"
+        ' 
+        ' CheckBoxRenderArmor
+        ' 
+        CheckBoxRenderArmor.AutoSize = True
+        CheckBoxRenderArmor.Location = New Point(147, 4)
+        CheckBoxRenderArmor.Margin = New Padding(4, 2, 8, 2)
+        CheckBoxRenderArmor.Name = "CheckBoxRenderArmor"
+        CheckBoxRenderArmor.Size = New Size(98, 19)
+        CheckBoxRenderArmor.TabIndex = 1
+        CheckBoxRenderArmor.Text = "Render armor"
+        ' 
+        ' CheckBoxRenderHeadwear
+        ' 
+        CheckBoxRenderHeadwear.AutoSize = True
+        CheckBoxRenderHeadwear.Location = New Point(257, 4)
+        CheckBoxRenderHeadwear.Margin = New Padding(4, 2, 8, 2)
+        CheckBoxRenderHeadwear.Name = "CheckBoxRenderHeadwear"
+        CheckBoxRenderHeadwear.Size = New Size(117, 19)
+        CheckBoxRenderHeadwear.TabIndex = 2
+        CheckBoxRenderHeadwear.Text = "Render headwear"
+        ' 
+        ' CheckBoxRenderGore
+        ' 
+        CheckBoxRenderGore.AutoSize = True
+        CheckBoxRenderGore.Location = New Point(386, 4)
+        CheckBoxRenderGore.Margin = New Padding(4, 2, 8, 2)
+        CheckBoxRenderGore.Name = "CheckBoxRenderGore"
+        CheckBoxRenderGore.Size = New Size(90, 19)
+        CheckBoxRenderGore.TabIndex = 3
+        CheckBoxRenderGore.Text = "Render gore"
+        ' 
+        ' PreviewHostPanel
+        ' 
+        PreviewHostPanel.Dock = DockStyle.Fill
+        PreviewHostPanel.Location = New Point(3, 36)
+        PreviewHostPanel.Name = "PreviewHostPanel"
+        PreviewHostPanel.Size = New Size(524, 582)
+        PreviewHostPanel.TabIndex = 0
+        ' 
         ' EditBody_Form
-        '
+        ' 
         AcceptButton = ButtonOk
         CancelButton = ButtonCancel
-        Text = "Edit Body"
-        ClientSize = New System.Drawing.Size(940, 640)
-        StartPosition = System.Windows.Forms.FormStartPosition.CenterParent
+        ClientSize = New Size(1084, 621)
         Controls.Add(PreviewSplit)
-
+        MinimumSize = New Size(1000, 660)
+        Name = "EditBody_Form"
+        StartPosition = FormStartPosition.CenterParent
+        Text = "Edit Body"
+        PreviewSplit.Panel1.ResumeLayout(False)
+        PreviewSplit.Panel2.ResumeLayout(False)
+        CType(PreviewSplit, ComponentModel.ISupportInitialize).EndInit()
+        PreviewSplit.ResumeLayout(False)
         RootLayout.ResumeLayout(False)
         RootLayout.PerformLayout()
+        TabsBody.ResumeLayout(False)
+        TabPageBody.ResumeLayout(False)
+        BodyTabLayout.ResumeLayout(False)
+        BodyTabLayout.PerformLayout()
         GroupBoxWeight.ResumeLayout(False)
         GroupBoxWeight.PerformLayout()
         WeightLayout.ResumeLayout(False)
         WeightLayout.PerformLayout()
         WeightLegend.ResumeLayout(False)
         WeightLegend.PerformLayout()
+        GroupBoxSkin.ResumeLayout(False)
+        GroupBoxSkin.PerformLayout()
+        SkinLayout.ResumeLayout(False)
+        SkinLayout.PerformLayout()
         GroupBoxMrsv.ResumeLayout(False)
         GroupBoxMrsv.PerformLayout()
+        TabPageBodySlide.ResumeLayout(False)
+        BodySlideTabLayout.ResumeLayout(False)
+        BodySlideTabLayout.PerformLayout()
         GroupBoxBodySlide.ResumeLayout(False)
         BodySlideLayout.ResumeLayout(False)
         BodySlideLayout.PerformLayout()
         BottomLayout.ResumeLayout(False)
-        BottomLayout.PerformLayout()
-        PreviewSplit.Panel1.ResumeLayout(False)
-        PreviewSplit.Panel2.ResumeLayout(False)
-        CType(PreviewSplit, System.ComponentModel.ISupportInitialize).EndInit()
-        PreviewSplit.ResumeLayout(False)
+        PreviewSidebar.ResumeLayout(False)
+        PreviewSidebar.PerformLayout()
+        RenderTogglesPanel.ResumeLayout(False)
+        RenderTogglesPanel.PerformLayout()
         ResumeLayout(False)
     End Sub
 
@@ -353,6 +678,12 @@ Partial Class EditBody_Form
     Friend WithEvents CheckBoxRenderGore As System.Windows.Forms.CheckBox
     Friend WithEvents PreviewHostPanel As System.Windows.Forms.Panel
     Friend WithEvents RootLayout As System.Windows.Forms.TableLayoutPanel
+    Friend WithEvents TabsBody As System.Windows.Forms.TabControl
+    Friend WithEvents TabPageBody As System.Windows.Forms.TabPage
+    Friend WithEvents TabPageBodySlide As System.Windows.Forms.TabPage
+    Friend WithEvents BodyTabLayout As System.Windows.Forms.TableLayoutPanel
+    Friend WithEvents BodySlideTabLayout As System.Windows.Forms.TableLayoutPanel
+    Friend WithEvents LabelBodySlideEmpty As System.Windows.Forms.Label
     Friend WithEvents GroupBoxWeight As System.Windows.Forms.GroupBox
     Friend WithEvents WeightLayout As System.Windows.Forms.TableLayoutPanel
     Friend WithEvents WeightTriangle As WeightTriangleControl
@@ -363,6 +694,12 @@ Partial Class EditBody_Form
     Friend WithEvents SliderThin As FO4_Base_Library.TinySliderTextBox
     Friend WithEvents LabelFat As System.Windows.Forms.Label
     Friend WithEvents SliderFat As FO4_Base_Library.TinySliderTextBox
+    Friend WithEvents GroupBoxSkin As System.Windows.Forms.GroupBox
+    Friend WithEvents SkinLayout As System.Windows.Forms.TableLayoutPanel
+    Friend WithEvents LabelWnam As System.Windows.Forms.Label
+    Friend WithEvents ComboBoxWnam As System.Windows.Forms.ComboBox
+    Friend WithEvents LabelLmSkinTemplate As System.Windows.Forms.Label
+    Friend WithEvents ComboBoxLmSkinTemplate As System.Windows.Forms.ComboBox
     Friend WithEvents GroupBoxMrsv As System.Windows.Forms.GroupBox
     Friend WithEvents MrsvLayout As System.Windows.Forms.TableLayoutPanel
     Friend WithEvents GroupBoxBodySlide As System.Windows.Forms.GroupBox

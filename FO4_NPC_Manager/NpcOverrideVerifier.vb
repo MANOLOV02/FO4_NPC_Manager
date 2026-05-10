@@ -63,17 +63,49 @@ Public Module NpcOverrideVerifier
             Return res
         End Try
 
-        ' Find the NPC record matching the expected FormID. The written plugin keeps the
-        ' same global FormID (override semantics), so the lookup is a direct dict hit.
+        ' Find the NPC record. The written plugin's record header carries a FormID whose
+        ' high byte indexes into THIS plugin's MAST list, NOT the basePluginManager's load
+        ' order. SaveNpcEspWriter remapped global → local at write time
+        ' ([SaveNpcEspWriter.vb:458] via the FormIdRemapper closure built around the new
+        ' MAST cleanup). The verifier has to do the same remap on the expected FormID before
+        ' looking it up, otherwise a write that succeeded looks like "record not found".
+        '
+        ' Lookup: find expected's source-master name in basePluginManager, locate that name
+        ' in reader.Masters → that's the new high byte. Local ObjectID is invariant.
+        Dim expectedHighByte As Integer = CInt((expected.FormID >> 24) And &HFFUI)
+        Dim expectedSourceMasterName As String = ""
+        If expectedHighByte >= 0 AndAlso expectedHighByte < basePluginManager.Plugins.Count Then
+            Dim sourcePlugin = basePluginManager.Plugins(expectedHighByte)
+            If sourcePlugin IsNot Nothing Then expectedSourceMasterName = sourcePlugin.FileName
+        End If
+
+        Dim expectedLocalFormID As UInteger = expected.FormID
+        If Not String.IsNullOrEmpty(expectedSourceMasterName) Then
+            Dim newHigh As Integer = -1
+            For i = 0 To reader.Masters.Count - 1
+                If String.Equals(reader.Masters(i), expectedSourceMasterName, StringComparison.OrdinalIgnoreCase) Then
+                    newHigh = i
+                    Exit For
+                End If
+            Next
+            If newHigh < 0 Then
+                ' Not in MAST list → record was written as "self" (high byte = Masters.Count).
+                ' Rare for an override but possible if cleanup determined the source plugin
+                ' was the writer itself.
+                newHigh = reader.Masters.Count
+            End If
+            expectedLocalFormID = (CUInt(newHigh) << 24) Or (expected.FormID And &HFFFFFFUI)
+        End If
+
         Dim writtenRec As PluginRecord = Nothing
         For Each kvp In reader.Records
-            If kvp.Value.Header.FormID = expected.FormID Then
+            If kvp.Value.Header.FormID = expectedLocalFormID Then
                 writtenRec = kvp.Value
                 Exit For
             End If
         Next
         If writtenRec Is Nothing Then
-            res.FatalError = $"Verifier: NPC FormID 0x{expected.FormID:X8} not found in written plugin (records loaded: {reader.Records.Count})"
+            res.FatalError = $"Verifier: NPC FormID 0x{expected.FormID:X8} (local 0x{expectedLocalFormID:X8} after MAST remap; source master '{expectedSourceMasterName}') not found in written plugin (records loaded: {reader.Records.Count}, masters: {String.Join(", ", reader.Masters)})"
             Return res
         End If
 
@@ -710,7 +742,13 @@ Public Module NpcOverrideVerifier
                 diffs.Add($"FaceTintLayers[{i}].TemplateColorIndex: expected {a(i).TemplateColorIndex}, got {b(i).TemplateColorIndex}")
                 Return
             End If
-            If a(i).Color.ToArgb() <> b(i).Color.ToArgb() Then
+            ' Compare RGB only — TEND has no alpha channel ([RecordParsers.vb:2302] forces
+            ' A=255 on parse). Expected side may carry A=0 or other values from upstream
+            ' sources (LM preset JSON, overlay merge). The binary in the ESP only stores
+            ' R/G/B/Pad, so alpha divergence is structural noise, not a round-trip bug.
+            If (a(i).Color.R <> b(i).Color.R) OrElse
+               (a(i).Color.G <> b(i).Color.G) OrElse
+               (a(i).Color.B <> b(i).Color.B) Then
                 diffs.Add($"FaceTintLayers[{i}].Color: expected {a(i).Color}, got {b(i).Color}")
                 Return
             End If
@@ -764,13 +802,44 @@ Public Module NpcOverrideVerifier
                 diffs.Add($"FaceMorphs[{i}].Index: expected 0x{a(i).Index:X8}, got 0x{b(i).Index:X8}")
                 Return
             End If
-            If a(i).Values.Count <> b(i).Values.Count Then
-                diffs.Add($"FaceMorphs[{i}].Values count: expected {a(i).Values.Count}, got {b(i).Values.Count}")
-                Return
+
+            ' FMRS spec ([wbDefinitionsFO4.pas:10805-10814]): exactly 7 named floats
+            ' (Pos X/Y/Z, Rot X/Y/Z, Scale) + a wbByteArray('Unknown') trailing block.
+            ' LooksMenu in-memory carries 8 floats per region ([CharGenInterface.cpp:147]),
+            ' and our LM JSON saver pads to 8 to mimic LM's output. So `a` (built from a
+            ' loaded JSON via the overlay) may have 8, while `b` (re-parsed from the ESP we
+            ' just wrote) always has 7.
+            '
+            ' The 8th slot has only ever been observed as 0.0 in real LM JSONs (full dump
+            ' verified against multiple regions on this NPC: every `value[7]` is 0). The
+            ' writer truncates to 7 on emit, which is engine-correct. Treat the 8th slot
+            ' as comparator-irrelevant when it's zero on the expected side.
+            Dim aVals = a(i).Values
+            Dim bVals = b(i).Values
+            Dim aCnt = aVals.Count
+            Dim bCnt = bVals.Count
+            Dim cmpCount As Integer = Math.Min(aCnt, bCnt)
+            ' Tolerate the LM-padding asymmetry: if expected has 8 and got has 7, ignore the
+            ' 8th IFF it's zero. Anything non-zero in slot 7 IS reported (we'd be silently
+            ' losing data and the user should know).
+            If aCnt <> bCnt Then
+                Dim larger = If(aCnt > bCnt, aVals, bVals)
+                Dim allTrailingZero As Boolean = True
+                For k = cmpCount To larger.Count - 1
+                    If Math.Abs(larger(k)) > 0.0001F Then
+                        allTrailingZero = False
+                        Exit For
+                    End If
+                Next
+                If Not allTrailingZero Then
+                    diffs.Add($"FaceMorphs[{i}].Values count: expected {aCnt}, got {bCnt} (trailing values are non-zero — possible data loss)")
+                    Return
+                End If
             End If
-            For j = 0 To a(i).Values.Count - 1
-                If Math.Abs(a(i).Values(j) - b(i).Values(j)) > 0.0001F Then
-                    diffs.Add($"FaceMorphs[{i}].Values[{j}]: expected {a(i).Values(j)}, got {b(i).Values(j)}")
+
+            For j = 0 To cmpCount - 1
+                If Math.Abs(aVals(j) - bVals(j)) > 0.0001F Then
+                    diffs.Add($"FaceMorphs[{i}].Values[{j}]: expected {aVals(j)}, got {bVals(j)}")
                     Return
                 End If
             Next

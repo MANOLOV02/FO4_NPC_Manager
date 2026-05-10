@@ -23,6 +23,7 @@ Partial Class SaveEsp_Form
         TextBoxNewName = New TextBox()
         LabelExtension = New Label()
         CheckBoxLightMaster = New CheckBox()
+        CheckBoxGenerateChargen = New CheckBox()
         LabelWarning = New Label()
         ButtonOk = New Button()
         ButtonCancel = New Button()
@@ -107,24 +108,36 @@ Partial Class SaveEsp_Form
         CheckBoxLightMaster.Text = "Light master (ESM+ESL — recommended)"
         CheckBoxLightMaster.UseVisualStyleBackColor = True
         '
+        ' CheckBoxGenerateChargen
+        '
+        CheckBoxGenerateChargen.AutoSize = True
+        CheckBoxGenerateChargen.Checked = True
+        CheckBoxGenerateChargen.CheckState = CheckState.Checked
+        CheckBoxGenerateChargen.Location = New Drawing.Point(12, 305)
+        CheckBoxGenerateChargen.Name = "CheckBoxGenerateChargen"
+        CheckBoxGenerateChargen.Size = New Drawing.Size(360, 19)
+        CheckBoxGenerateChargen.TabIndex = 8
+        CheckBoxGenerateChargen.Text = "Generate baked CharGen (NIF + textures) into BA2"
+        CheckBoxGenerateChargen.UseVisualStyleBackColor = True
+        '
         ' LabelWarning
         '
         LabelWarning.Anchor = AnchorStyles.Bottom Or AnchorStyles.Left Or AnchorStyles.Right
         LabelWarning.ForeColor = Drawing.Color.DarkOrange
-        LabelWarning.Location = New Drawing.Point(12, 310)
+        LabelWarning.Location = New Drawing.Point(12, 335)
         LabelWarning.Name = "LabelWarning"
         LabelWarning.Size = New Drawing.Size(520, 36)
-        LabelWarning.TabIndex = 8
+        LabelWarning.TabIndex = 9
         LabelWarning.Text = ""
         '
         ' ButtonOk
         '
         ButtonOk.Anchor = AnchorStyles.Bottom Or AnchorStyles.Right
         ButtonOk.DialogResult = DialogResult.OK
-        ButtonOk.Location = New Drawing.Point(376, 360)
+        ButtonOk.Location = New Drawing.Point(376, 385)
         ButtonOk.Name = "ButtonOk"
         ButtonOk.Size = New Drawing.Size(75, 27)
-        ButtonOk.TabIndex = 9
+        ButtonOk.TabIndex = 10
         ButtonOk.Text = "Save"
         ButtonOk.UseVisualStyleBackColor = True
         '
@@ -132,10 +145,10 @@ Partial Class SaveEsp_Form
         '
         ButtonCancel.Anchor = AnchorStyles.Bottom Or AnchorStyles.Right
         ButtonCancel.DialogResult = DialogResult.Cancel
-        ButtonCancel.Location = New Drawing.Point(457, 360)
+        ButtonCancel.Location = New Drawing.Point(457, 385)
         ButtonCancel.Name = "ButtonCancel"
         ButtonCancel.Size = New Drawing.Size(75, 27)
-        ButtonCancel.TabIndex = 10
+        ButtonCancel.TabIndex = 11
         ButtonCancel.Text = "Cancel"
         ButtonCancel.UseVisualStyleBackColor = True
         '
@@ -145,7 +158,7 @@ Partial Class SaveEsp_Form
         CancelButton = ButtonCancel
         AutoScaleDimensions = New Drawing.SizeF(7.0F, 15.0F)
         AutoScaleMode = AutoScaleMode.Font
-        ClientSize = New Drawing.Size(544, 399)
+        ClientSize = New Drawing.Size(544, 424)
         Controls.Add(LabelHeader)
         Controls.Add(RadioButtonExisting)
         Controls.Add(ListBoxExisting)
@@ -154,6 +167,7 @@ Partial Class SaveEsp_Form
         Controls.Add(TextBoxNewName)
         Controls.Add(LabelExtension)
         Controls.Add(CheckBoxLightMaster)
+        Controls.Add(CheckBoxGenerateChargen)
         Controls.Add(LabelWarning)
         Controls.Add(ButtonOk)
         Controls.Add(ButtonCancel)
@@ -175,6 +189,7 @@ Partial Class SaveEsp_Form
     Friend WithEvents TextBoxNewName As TextBox
     Friend WithEvents LabelExtension As Label
     Friend WithEvents CheckBoxLightMaster As CheckBox
+    Friend WithEvents CheckBoxGenerateChargen As CheckBox
     Friend WithEvents LabelWarning As Label
     Friend WithEvents ButtonOk As Button
     Friend WithEvents ButtonCancel As Button

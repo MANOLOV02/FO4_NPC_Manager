@@ -1,4 +1,4 @@
-' UI built in Designer per feedback_ui_in_designer.md.
+﻿' UI built in Designer per feedback_ui_in_designer.md.
 <Global.Microsoft.VisualBasic.CompilerServices.DesignerGenerated()>
 Partial Class PasteOptionsDialog
     Inherits System.Windows.Forms.Form
@@ -16,30 +16,31 @@ Partial Class PasteOptionsDialog
 
     <System.Diagnostics.DebuggerStepThrough()>
     Private Sub InitializeComponent()
-        Root = New System.Windows.Forms.TableLayoutPanel()
-        LabelHeader = New System.Windows.Forms.Label()
-        GroupBoxBody = New System.Windows.Forms.GroupBox()
-        BodyLayout = New System.Windows.Forms.TableLayoutPanel()
-        CheckBoxBodyWeight = New System.Windows.Forms.CheckBox()
-        CheckBoxBodyRegions = New System.Windows.Forms.CheckBox()
-        CheckBoxBodySliders = New System.Windows.Forms.CheckBox()
-        CheckBoxSkinOverride = New System.Windows.Forms.CheckBox()
-        GroupBoxFace = New System.Windows.Forms.GroupBox()
-        FaceLayout = New System.Windows.Forms.TableLayoutPanel()
-        CheckBoxFaceParts = New System.Windows.Forms.CheckBox()
-        CheckBoxHairColor = New System.Windows.Forms.CheckBox()
-        CheckBoxFaceTints = New System.Windows.Forms.CheckBox()
-        CheckBoxFaceVertexMorphs = New System.Windows.Forms.CheckBox()
-        CheckBoxFaceBoneRegions = New System.Windows.Forms.CheckBox()
-        GroupBoxFlags = New System.Windows.Forms.GroupBox()
-        FlagsLayout = New System.Windows.Forms.TableLayoutPanel()
-        CheckBoxIsCharGenPreset = New System.Windows.Forms.CheckBox()
-        QuickRow = New System.Windows.Forms.FlowLayoutPanel()
-        ButtonSelectAll = New System.Windows.Forms.Button()
-        ButtonDeselectAll = New System.Windows.Forms.Button()
-        ButtonRow = New System.Windows.Forms.FlowLayoutPanel()
-        ButtonOk = New System.Windows.Forms.Button()
-        ButtonCancel = New System.Windows.Forms.Button()
+        Root = New TableLayoutPanel()
+        LabelHeader = New Label()
+        GroupBoxBody = New GroupBox()
+        BodyLayout = New TableLayoutPanel()
+        CheckBoxBodyWeight = New CheckBox()
+        CheckBoxBodyRegions = New CheckBox()
+        CheckBoxBodySliders = New CheckBox()
+        CheckBoxSkinOverride = New CheckBox()
+        CheckBoxLmSkinTemplate = New CheckBox()
+        GroupBoxFace = New GroupBox()
+        FaceLayout = New TableLayoutPanel()
+        CheckBoxFaceParts = New CheckBox()
+        CheckBoxHairColor = New CheckBox()
+        CheckBoxFaceTints = New CheckBox()
+        CheckBoxFaceVertexMorphs = New CheckBox()
+        CheckBoxFaceBoneRegions = New CheckBox()
+        GroupBoxFlags = New GroupBox()
+        FlagsLayout = New TableLayoutPanel()
+        CheckBoxIsCharGenPreset = New CheckBox()
+        QuickRow = New FlowLayoutPanel()
+        ButtonSelectAll = New Button()
+        ButtonDeselectAll = New Button()
+        ButtonRow = New FlowLayoutPanel()
+        ButtonOk = New Button()
+        ButtonCancel = New Button()
         Root.SuspendLayout()
         GroupBoxBody.SuspendLayout()
         BodyLayout.SuspendLayout()
@@ -50,248 +51,348 @@ Partial Class PasteOptionsDialog
         QuickRow.SuspendLayout()
         ButtonRow.SuspendLayout()
         SuspendLayout()
-        '
+        ' 
         ' Root
-        '
-        Root.Dock = System.Windows.Forms.DockStyle.Fill
+        ' 
         Root.ColumnCount = 1
-        Root.RowCount = 6
-        Root.Padding = New System.Windows.Forms.Padding(12)
-        Root.ColumnStyles.Add(New System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 100.0F))
-        Root.RowStyles.Add(New System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Absolute, 40.0F))
-        Root.RowStyles.Add(New System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Absolute, 130.0F))
-        Root.RowStyles.Add(New System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Absolute, 155.0F))
-        Root.RowStyles.Add(New System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Absolute, 70.0F))
-        Root.RowStyles.Add(New System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Absolute, 36.0F))
-        Root.RowStyles.Add(New System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 100.0F))
+        Root.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100F))
         Root.Controls.Add(LabelHeader, 0, 0)
         Root.Controls.Add(GroupBoxBody, 0, 1)
         Root.Controls.Add(GroupBoxFace, 0, 2)
         Root.Controls.Add(GroupBoxFlags, 0, 3)
         Root.Controls.Add(QuickRow, 0, 4)
         Root.Controls.Add(ButtonRow, 0, 5)
-        '
+        Root.Dock = DockStyle.Fill
+        Root.Location = New Point(0, 0)
+        Root.Name = "Root"
+        Root.Padding = New Padding(12)
+        Root.RowCount = 6
+        Root.RowStyles.Add(New RowStyle(SizeType.Absolute, 40F))
+        Root.RowStyles.Add(New RowStyle(SizeType.Absolute, 130F))
+        Root.RowStyles.Add(New RowStyle(SizeType.Absolute, 155F))
+        Root.RowStyles.Add(New RowStyle(SizeType.Absolute, 70F))
+        Root.RowStyles.Add(New RowStyle(SizeType.Absolute, 36F))
+        Root.RowStyles.Add(New RowStyle(SizeType.Percent, 100F))
+        Root.Size = New Size(480, 520)
+        Root.TabIndex = 0
+        ' 
         ' LabelHeader
-        '
-        LabelHeader.Dock = System.Windows.Forms.DockStyle.Fill
-        LabelHeader.Margin = New System.Windows.Forms.Padding(0, 0, 0, 8)
+        ' 
+        LabelHeader.Dock = DockStyle.Fill
+        LabelHeader.Location = New Point(12, 12)
+        LabelHeader.Margin = New Padding(0, 0, 0, 8)
+        LabelHeader.Name = "LabelHeader"
+        LabelHeader.Size = New Size(456, 32)
+        LabelHeader.TabIndex = 0
         LabelHeader.Text = "Choose which parts of the copied look to paste. Unchecked categories keep the target NPC's original values."
-        LabelHeader.TextAlign = System.Drawing.ContentAlignment.MiddleLeft
-        '
+        LabelHeader.TextAlign = ContentAlignment.MiddleLeft
+        ' 
         ' GroupBoxBody
-        '
-        GroupBoxBody.Dock = System.Windows.Forms.DockStyle.Fill
-        GroupBoxBody.Margin = New System.Windows.Forms.Padding(0, 0, 0, 6)
-        GroupBoxBody.Padding = New System.Windows.Forms.Padding(8, 4, 8, 8)
-        GroupBoxBody.MinimumSize = New System.Drawing.Size(0, 120)
-        GroupBoxBody.Text = "Body"
+        ' 
         GroupBoxBody.Controls.Add(BodyLayout)
-        '
+        GroupBoxBody.Dock = DockStyle.Fill
+        GroupBoxBody.Location = New Point(12, 52)
+        GroupBoxBody.Margin = New Padding(0, 0, 0, 6)
+        GroupBoxBody.MinimumSize = New Size(0, 150)
+        GroupBoxBody.Name = "GroupBoxBody"
+        GroupBoxBody.Padding = New Padding(8, 4, 8, 8)
+        GroupBoxBody.Size = New Size(456, 150)
+        GroupBoxBody.TabIndex = 1
+        GroupBoxBody.TabStop = False
+        GroupBoxBody.Text = "Body"
+        ' 
         ' BodyLayout
-        '
-        BodyLayout.Dock = System.Windows.Forms.DockStyle.Fill
+        ' 
         BodyLayout.ColumnCount = 1
-        BodyLayout.RowCount = 4
-        BodyLayout.ColumnStyles.Add(New System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 100.0F))
-        BodyLayout.RowStyles.Add(New System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 25.0F))
-        BodyLayout.RowStyles.Add(New System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 25.0F))
-        BodyLayout.RowStyles.Add(New System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 25.0F))
-        BodyLayout.RowStyles.Add(New System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 25.0F))
+        BodyLayout.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100F))
         BodyLayout.Controls.Add(CheckBoxBodyWeight, 0, 0)
         BodyLayout.Controls.Add(CheckBoxBodyRegions, 0, 1)
         BodyLayout.Controls.Add(CheckBoxBodySliders, 0, 2)
         BodyLayout.Controls.Add(CheckBoxSkinOverride, 0, 3)
-        '
+        BodyLayout.Controls.Add(CheckBoxLmSkinTemplate, 0, 4)
+        BodyLayout.Dock = DockStyle.Fill
+        BodyLayout.Location = New Point(8, 20)
+        BodyLayout.Name = "BodyLayout"
+        BodyLayout.RowCount = 5
+        BodyLayout.RowStyles.Add(New RowStyle(SizeType.Percent, 20F))
+        BodyLayout.RowStyles.Add(New RowStyle(SizeType.Percent, 20F))
+        BodyLayout.RowStyles.Add(New RowStyle(SizeType.Percent, 20F))
+        BodyLayout.RowStyles.Add(New RowStyle(SizeType.Percent, 20F))
+        BodyLayout.RowStyles.Add(New RowStyle(SizeType.Percent, 20F))
+        BodyLayout.Size = New Size(440, 122)
+        BodyLayout.TabIndex = 0
+        ' 
         ' CheckBoxBodyWeight
-        '
+        ' 
         CheckBoxBodyWeight.AutoSize = True
         CheckBoxBodyWeight.Checked = True
-        CheckBoxBodyWeight.CheckState = System.Windows.Forms.CheckState.Checked
+        CheckBoxBodyWeight.CheckState = CheckState.Checked
+        CheckBoxBodyWeight.Location = New Point(3, 3)
+        CheckBoxBodyWeight.Name = "CheckBoxBodyWeight"
+        CheckBoxBodyWeight.Size = New Size(217, 18)
+        CheckBoxBodyWeight.TabIndex = 0
         CheckBoxBodyWeight.Text = "Body weight  (Thin / Muscular / Fat)"
-        '
+        ' 
         ' CheckBoxBodyRegions
-        '
+        ' 
         CheckBoxBodyRegions.AutoSize = True
         CheckBoxBodyRegions.Checked = True
-        CheckBoxBodyRegions.CheckState = System.Windows.Forms.CheckState.Checked
+        CheckBoxBodyRegions.CheckState = CheckState.Checked
+        CheckBoxBodyRegions.Location = New Point(3, 27)
+        CheckBoxBodyRegions.Name = "CheckBoxBodyRegions"
+        CheckBoxBodyRegions.Size = New Size(243, 18)
+        CheckBoxBodyRegions.TabIndex = 1
         CheckBoxBodyRegions.Text = "Body regions  (MRSV per-region weights)"
-        '
+        ' 
         ' CheckBoxBodySliders
-        '
+        ' 
         CheckBoxBodySliders.AutoSize = True
         CheckBoxBodySliders.Checked = True
-        CheckBoxBodySliders.CheckState = System.Windows.Forms.CheckState.Checked
+        CheckBoxBodySliders.CheckState = CheckState.Checked
+        CheckBoxBodySliders.Location = New Point(3, 51)
+        CheckBoxBodySliders.Name = "CheckBoxBodySliders"
+        CheckBoxBodySliders.Size = New Size(233, 18)
+        CheckBoxBodySliders.TabIndex = 2
         CheckBoxBodySliders.Text = "Body sliders  (BodySlide vertex morphs)"
-        '
+        ' 
         ' CheckBoxSkinOverride
-        '
+        ' 
         CheckBoxSkinOverride.AutoSize = True
         CheckBoxSkinOverride.Checked = True
-        CheckBoxSkinOverride.CheckState = System.Windows.Forms.CheckState.Checked
+        CheckBoxSkinOverride.CheckState = CheckState.Checked
+        CheckBoxSkinOverride.Location = New Point(3, 75)
+        CheckBoxSkinOverride.Name = "CheckBoxSkinOverride"
+        CheckBoxSkinOverride.Size = New Size(174, 18)
+        CheckBoxSkinOverride.TabIndex = 3
         CheckBoxSkinOverride.Text = "Skin override  (NPC.WNAM)"
-        '
+        ' 
+        ' CheckBoxLmSkinTemplate
+        ' 
+        CheckBoxLmSkinTemplate.AutoSize = True
+        CheckBoxLmSkinTemplate.Checked = True
+        CheckBoxLmSkinTemplate.CheckState = CheckState.Checked
+        CheckBoxLmSkinTemplate.Location = New Point(3, 99)
+        CheckBoxLmSkinTemplate.Name = "CheckBoxLmSkinTemplate"
+        CheckBoxLmSkinTemplate.Size = New Size(155, 19)
+        CheckBoxLmSkinTemplate.TabIndex = 4
+        CheckBoxLmSkinTemplate.Text = "LM skin template  (F4SE)"
+        ' 
         ' GroupBoxFace
-        '
-        GroupBoxFace.Dock = System.Windows.Forms.DockStyle.Fill
-        GroupBoxFace.Margin = New System.Windows.Forms.Padding(0, 0, 0, 6)
-        GroupBoxFace.Padding = New System.Windows.Forms.Padding(8, 4, 8, 8)
-        GroupBoxFace.MinimumSize = New System.Drawing.Size(0, 145)
-        GroupBoxFace.Text = "Face"
+        ' 
         GroupBoxFace.Controls.Add(FaceLayout)
-        '
+        GroupBoxFace.Dock = DockStyle.Fill
+        GroupBoxFace.Location = New Point(12, 182)
+        GroupBoxFace.Margin = New Padding(0, 0, 0, 6)
+        GroupBoxFace.MinimumSize = New Size(0, 145)
+        GroupBoxFace.Name = "GroupBoxFace"
+        GroupBoxFace.Padding = New Padding(8, 4, 8, 8)
+        GroupBoxFace.Size = New Size(456, 149)
+        GroupBoxFace.TabIndex = 2
+        GroupBoxFace.TabStop = False
+        GroupBoxFace.Text = "Face"
+        ' 
         ' FaceLayout
-        '
-        FaceLayout.Dock = System.Windows.Forms.DockStyle.Fill
+        ' 
         FaceLayout.ColumnCount = 1
-        FaceLayout.RowCount = 5
-        FaceLayout.ColumnStyles.Add(New System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 100.0F))
-        FaceLayout.RowStyles.Add(New System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 20.0F))
-        FaceLayout.RowStyles.Add(New System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 20.0F))
-        FaceLayout.RowStyles.Add(New System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 20.0F))
-        FaceLayout.RowStyles.Add(New System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 20.0F))
-        FaceLayout.RowStyles.Add(New System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 20.0F))
+        FaceLayout.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100F))
         FaceLayout.Controls.Add(CheckBoxFaceParts, 0, 0)
         FaceLayout.Controls.Add(CheckBoxHairColor, 0, 1)
         FaceLayout.Controls.Add(CheckBoxFaceTints, 0, 2)
         FaceLayout.Controls.Add(CheckBoxFaceVertexMorphs, 0, 3)
         FaceLayout.Controls.Add(CheckBoxFaceBoneRegions, 0, 4)
-        '
+        FaceLayout.Dock = DockStyle.Fill
+        FaceLayout.Location = New Point(8, 20)
+        FaceLayout.Name = "FaceLayout"
+        FaceLayout.RowCount = 5
+        FaceLayout.RowStyles.Add(New RowStyle(SizeType.Percent, 20F))
+        FaceLayout.RowStyles.Add(New RowStyle(SizeType.Percent, 20F))
+        FaceLayout.RowStyles.Add(New RowStyle(SizeType.Percent, 20F))
+        FaceLayout.RowStyles.Add(New RowStyle(SizeType.Percent, 20F))
+        FaceLayout.RowStyles.Add(New RowStyle(SizeType.Percent, 20F))
+        FaceLayout.Size = New Size(440, 121)
+        FaceLayout.TabIndex = 0
+        ' 
         ' CheckBoxFaceParts
-        '
+        ' 
         CheckBoxFaceParts.AutoSize = True
         CheckBoxFaceParts.Checked = True
-        CheckBoxFaceParts.CheckState = System.Windows.Forms.CheckState.Checked
+        CheckBoxFaceParts.CheckState = CheckState.Checked
+        CheckBoxFaceParts.Location = New Point(3, 3)
+        CheckBoxFaceParts.Name = "CheckBoxFaceParts"
+        CheckBoxFaceParts.Size = New Size(231, 18)
+        CheckBoxFaceParts.TabIndex = 0
         CheckBoxFaceParts.Text = "Face parts  (head, eyes, hair, mouth, …)"
-        '
+        ' 
         ' CheckBoxHairColor
-        '
+        ' 
         CheckBoxHairColor.AutoSize = True
         CheckBoxHairColor.Checked = True
-        CheckBoxHairColor.CheckState = System.Windows.Forms.CheckState.Checked
+        CheckBoxHairColor.CheckState = CheckState.Checked
+        CheckBoxHairColor.Location = New Point(3, 27)
+        CheckBoxHairColor.Name = "CheckBoxHairColor"
+        CheckBoxHairColor.Size = New Size(121, 18)
+        CheckBoxHairColor.TabIndex = 1
         CheckBoxHairColor.Text = "Hair color  (HCLF)"
-        '
+        ' 
         ' CheckBoxFaceTints
-        '
+        ' 
         CheckBoxFaceTints.AutoSize = True
         CheckBoxFaceTints.Checked = True
-        CheckBoxFaceTints.CheckState = System.Windows.Forms.CheckState.Checked
+        CheckBoxFaceTints.CheckState = CheckState.Checked
+        CheckBoxFaceTints.Location = New Point(3, 51)
+        CheckBoxFaceTints.Name = "CheckBoxFaceTints"
+        CheckBoxFaceTints.Size = New Size(264, 18)
+        CheckBoxFaceTints.TabIndex = 2
         CheckBoxFaceTints.Text = "Face tints  (skin tone, paint, scars, freckles, …)"
-        '
+        ' 
         ' CheckBoxFaceVertexMorphs
-        '
+        ' 
         CheckBoxFaceVertexMorphs.AutoSize = True
         CheckBoxFaceVertexMorphs.Checked = True
-        CheckBoxFaceVertexMorphs.CheckState = System.Windows.Forms.CheckState.Checked
+        CheckBoxFaceVertexMorphs.CheckState = CheckState.Checked
+        CheckBoxFaceVertexMorphs.Location = New Point(3, 75)
+        CheckBoxFaceVertexMorphs.Name = "CheckBoxFaceVertexMorphs"
+        CheckBoxFaceVertexMorphs.Size = New Size(256, 18)
+        CheckBoxFaceVertexMorphs.TabIndex = 3
         CheckBoxFaceVertexMorphs.Text = "Face vertex morphs  (chargen MSDV sliders)"
-        '
+        ' 
         ' CheckBoxFaceBoneRegions
-        '
+        ' 
         CheckBoxFaceBoneRegions.AutoSize = True
         CheckBoxFaceBoneRegions.Checked = True
-        CheckBoxFaceBoneRegions.CheckState = System.Windows.Forms.CheckState.Checked
+        CheckBoxFaceBoneRegions.CheckState = CheckState.Checked
+        CheckBoxFaceBoneRegions.Location = New Point(3, 99)
+        CheckBoxFaceBoneRegions.Name = "CheckBoxFaceBoneRegions"
+        CheckBoxFaceBoneRegions.Size = New Size(300, 19)
+        CheckBoxFaceBoneRegions.TabIndex = 4
         CheckBoxFaceBoneRegions.Text = "Face bone regions  (FMRS sliders + morph intensity)"
-        '
+        ' 
         ' GroupBoxFlags
-        '
-        GroupBoxFlags.Dock = System.Windows.Forms.DockStyle.Fill
-        GroupBoxFlags.Margin = New System.Windows.Forms.Padding(0, 0, 0, 6)
-        GroupBoxFlags.Padding = New System.Windows.Forms.Padding(8, 4, 8, 8)
-        GroupBoxFlags.MinimumSize = New System.Drawing.Size(0, 60)
-        GroupBoxFlags.Text = "Flags"
+        ' 
         GroupBoxFlags.Controls.Add(FlagsLayout)
-        '
+        GroupBoxFlags.Dock = DockStyle.Fill
+        GroupBoxFlags.Location = New Point(12, 337)
+        GroupBoxFlags.Margin = New Padding(0, 0, 0, 6)
+        GroupBoxFlags.MinimumSize = New Size(0, 60)
+        GroupBoxFlags.Name = "GroupBoxFlags"
+        GroupBoxFlags.Padding = New Padding(8, 4, 8, 8)
+        GroupBoxFlags.Size = New Size(456, 64)
+        GroupBoxFlags.TabIndex = 3
+        GroupBoxFlags.TabStop = False
+        GroupBoxFlags.Text = "Flags"
+        ' 
         ' FlagsLayout
-        '
-        FlagsLayout.Dock = System.Windows.Forms.DockStyle.Fill
+        ' 
         FlagsLayout.ColumnCount = 1
-        FlagsLayout.RowCount = 1
-        FlagsLayout.ColumnStyles.Add(New System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 100.0F))
-        FlagsLayout.RowStyles.Add(New System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 100.0F))
+        FlagsLayout.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100F))
         FlagsLayout.Controls.Add(CheckBoxIsCharGenPreset, 0, 0)
-        '
+        FlagsLayout.Dock = DockStyle.Fill
+        FlagsLayout.Location = New Point(8, 20)
+        FlagsLayout.Name = "FlagsLayout"
+        FlagsLayout.RowCount = 1
+        FlagsLayout.RowStyles.Add(New RowStyle(SizeType.Percent, 100F))
+        FlagsLayout.Size = New Size(440, 36)
+        FlagsLayout.TabIndex = 0
+        ' 
         ' CheckBoxIsCharGenPreset
-        '
+        ' 
         CheckBoxIsCharGenPreset.AutoSize = True
         CheckBoxIsCharGenPreset.Checked = True
-        CheckBoxIsCharGenPreset.CheckState = System.Windows.Forms.CheckState.Checked
+        CheckBoxIsCharGenPreset.CheckState = CheckState.Checked
+        CheckBoxIsCharGenPreset.Location = New Point(3, 3)
+        CheckBoxIsCharGenPreset.Name = "CheckBoxIsCharGenPreset"
+        CheckBoxIsCharGenPreset.Size = New Size(243, 19)
+        CheckBoxIsCharGenPreset.TabIndex = 0
         CheckBoxIsCharGenPreset.Text = "CharGen Face Preset flag  (ACBS bit 0x04)"
-        '
+        ' 
         ' QuickRow
-        '
-        QuickRow.Dock = System.Windows.Forms.DockStyle.Fill
-        QuickRow.FlowDirection = System.Windows.Forms.FlowDirection.LeftToRight
+        ' 
         QuickRow.AutoSize = True
-        QuickRow.AutoSizeMode = System.Windows.Forms.AutoSizeMode.GrowAndShrink
-        QuickRow.Margin = New System.Windows.Forms.Padding(0, 0, 0, 8)
+        QuickRow.AutoSizeMode = AutoSizeMode.GrowAndShrink
         QuickRow.Controls.Add(ButtonSelectAll)
         QuickRow.Controls.Add(ButtonDeselectAll)
-        '
+        QuickRow.Dock = DockStyle.Fill
+        QuickRow.Location = New Point(12, 407)
+        QuickRow.Margin = New Padding(0, 0, 0, 8)
+        QuickRow.Name = "QuickRow"
+        QuickRow.Size = New Size(456, 28)
+        QuickRow.TabIndex = 4
+        ' 
         ' ButtonSelectAll
-        '
+        ' 
+        ButtonSelectAll.Location = New Point(3, 3)
+        ButtonSelectAll.Name = "ButtonSelectAll"
+        ButtonSelectAll.Size = New Size(90, 23)
+        ButtonSelectAll.TabIndex = 0
         ButtonSelectAll.Text = "Select all"
-        ButtonSelectAll.Width = 90
-        ButtonSelectAll.Margin = New System.Windows.Forms.Padding(0, 0, 6, 0)
-        '
+        ' 
         ' ButtonDeselectAll
-        '
+        ' 
+        ButtonDeselectAll.Location = New Point(99, 3)
+        ButtonDeselectAll.Name = "ButtonDeselectAll"
+        ButtonDeselectAll.Size = New Size(90, 23)
+        ButtonDeselectAll.TabIndex = 1
         ButtonDeselectAll.Text = "Deselect all"
-        ButtonDeselectAll.Width = 90
-        '
+        ' 
         ' ButtonRow
-        '
-        ButtonRow.Dock = System.Windows.Forms.DockStyle.Fill
-        ButtonRow.FlowDirection = System.Windows.Forms.FlowDirection.RightToLeft
+        ' 
         ButtonRow.AutoSize = True
-        ButtonRow.AutoSizeMode = System.Windows.Forms.AutoSizeMode.GrowAndShrink
-        ButtonRow.Padding = New System.Windows.Forms.Padding(0, 6, 0, 0)
+        ButtonRow.AutoSizeMode = AutoSizeMode.GrowAndShrink
         ButtonRow.Controls.Add(ButtonOk)
         ButtonRow.Controls.Add(ButtonCancel)
-        '
+        ButtonRow.Dock = DockStyle.Fill
+        ButtonRow.FlowDirection = FlowDirection.RightToLeft
+        ButtonRow.Location = New Point(15, 446)
+        ButtonRow.Name = "ButtonRow"
+        ButtonRow.Padding = New Padding(0, 6, 0, 0)
+        ButtonRow.Size = New Size(450, 59)
+        ButtonRow.TabIndex = 5
+        ' 
         ' ButtonOk
-        '
+        ' 
+        ButtonOk.DialogResult = DialogResult.OK
+        ButtonOk.Location = New Point(367, 9)
+        ButtonOk.Name = "ButtonOk"
+        ButtonOk.Size = New Size(80, 23)
+        ButtonOk.TabIndex = 0
         ButtonOk.Text = "OK"
-        ButtonOk.Width = 80
-        ButtonOk.DialogResult = System.Windows.Forms.DialogResult.OK
-        ButtonOk.Margin = New System.Windows.Forms.Padding(6, 0, 0, 0)
-        '
+        ' 
         ' ButtonCancel
-        '
+        ' 
+        ButtonCancel.DialogResult = DialogResult.Cancel
+        ButtonCancel.Location = New Point(281, 9)
+        ButtonCancel.Name = "ButtonCancel"
+        ButtonCancel.Size = New Size(80, 23)
+        ButtonCancel.TabIndex = 1
         ButtonCancel.Text = "Cancel"
-        ButtonCancel.Width = 80
-        ButtonCancel.DialogResult = System.Windows.Forms.DialogResult.Cancel
-        '
+        ' 
         ' PasteOptionsDialog
-        '
-        Text = "Paste Look — choose categories"
-        ClientSize = New System.Drawing.Size(480, 520)
-        MinimumSize = New System.Drawing.Size(480, 520)
-        StartPosition = System.Windows.Forms.FormStartPosition.CenterParent
-        FormBorderStyle = System.Windows.Forms.FormBorderStyle.FixedDialog
-        MinimizeBox = False
-        MaximizeBox = False
+        ' 
         AcceptButton = ButtonOk
         CancelButton = ButtonCancel
+        ClientSize = New Size(480, 520)
         Controls.Add(Root)
+        FormBorderStyle = FormBorderStyle.FixedDialog
+        MaximizeBox = False
+        MinimizeBox = False
+        MinimumSize = New Size(480, 520)
+        Name = "PasteOptionsDialog"
+        StartPosition = FormStartPosition.CenterParent
+        Text = "Paste Look — choose categories"
         Root.ResumeLayout(False)
         Root.PerformLayout()
         GroupBoxBody.ResumeLayout(False)
-        GroupBoxBody.PerformLayout()
         BodyLayout.ResumeLayout(False)
         BodyLayout.PerformLayout()
         GroupBoxFace.ResumeLayout(False)
-        GroupBoxFace.PerformLayout()
         FaceLayout.ResumeLayout(False)
         FaceLayout.PerformLayout()
         GroupBoxFlags.ResumeLayout(False)
-        GroupBoxFlags.PerformLayout()
         FlagsLayout.ResumeLayout(False)
         FlagsLayout.PerformLayout()
         QuickRow.ResumeLayout(False)
-        QuickRow.PerformLayout()
         ButtonRow.ResumeLayout(False)
-        ButtonRow.PerformLayout()
         ResumeLayout(False)
-        PerformLayout()
     End Sub
 
     Friend WithEvents Root As System.Windows.Forms.TableLayoutPanel
@@ -302,6 +403,7 @@ Partial Class PasteOptionsDialog
     Friend WithEvents CheckBoxBodyRegions As System.Windows.Forms.CheckBox
     Friend WithEvents CheckBoxBodySliders As System.Windows.Forms.CheckBox
     Friend WithEvents CheckBoxSkinOverride As System.Windows.Forms.CheckBox
+    Friend WithEvents CheckBoxLmSkinTemplate As System.Windows.Forms.CheckBox
     Friend WithEvents GroupBoxFace As System.Windows.Forms.GroupBox
     Friend WithEvents FaceLayout As System.Windows.Forms.TableLayoutPanel
     Friend WithEvents CheckBoxFaceParts As System.Windows.Forms.CheckBox

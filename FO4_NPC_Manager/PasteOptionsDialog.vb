@@ -1,4 +1,4 @@
-''' <summary>Modal dialog que permite al usuario elegir qué categorías del clipboard preset
+﻿''' <summary>Modal dialog que permite al usuario elegir qué categorías del clipboard preset
 ''' aplicar al NPC receptor en Paste Look. Cada checkbox controla UNA categoría independiente
 ''' del LooksMenu preset schema (HeadParts / HairColor / Weights / FaceTints / Morphs / etc.).
 ''' Las categorías NO tildadas preservan los datos originales del NPC receptor — el caller usa
@@ -18,6 +18,7 @@ Public Class PasteOptionsDialog
         CheckBoxBodyRegions.Checked = state
         CheckBoxBodySliders.Checked = state
         CheckBoxSkinOverride.Checked = state
+        CheckBoxLmSkinTemplate.Checked = state
         CheckBoxFaceParts.Checked = state
         CheckBoxHairColor.Checked = state
         CheckBoxFaceTints.Checked = state
@@ -34,6 +35,7 @@ Public Class PasteOptionsDialog
             .BodyRegions = CheckBoxBodyRegions.Checked,
             .BodySliders = CheckBoxBodySliders.Checked,
             .SkinOverride = CheckBoxSkinOverride.Checked,
+            .LmSkinTemplate = CheckBoxLmSkinTemplate.Checked,
             .FaceParts = CheckBoxFaceParts.Checked,
             .HairColor = CheckBoxHairColor.Checked,
             .FaceTints = CheckBoxFaceTints.Checked,
@@ -53,7 +55,8 @@ Public Structure PasteOptions
     Public BodyWeight As Boolean         ' WeightThin / WeightMuscular / WeightFat
     Public BodyRegions As Boolean        ' BodyMorphValues (MRSV)
     Public BodySliders As Boolean        ' BodyMorphSliders (BodySlide vertex morphs)
-    Public SkinOverride As Boolean       ' SkinFormIDOverride (NPC.WNAM)
+    Public SkinOverride As Boolean       ' SkinFormIDOverride (NPC.WNAM record skin)
+    Public LmSkinTemplate As Boolean     ' SkinTemplateId (F4SE LM SkinInterface)
     Public FaceParts As Boolean          ' HeadPartFormIDs
     Public HairColor As Boolean          ' HairColorFormID
     Public FaceTints As Boolean          ' FaceTintLayers

@@ -104,10 +104,37 @@ Public Module LooksmenuLoader
         Public IsCharGenFacePreset As Boolean?
 
         ''' <summary>Editor-only override of NPC.WNAM (vanilla Skin → ARMO FormID). Distinct from
-        ''' the LooksMenu JSON `Skin` field which is F4SE-only and remains deferred (see
-        ''' project_npc_looksmenu_pending §3). Nothing = preserve raw NPC.SkinFormID; 0 = clear
-        ''' (engine falls back to RACE.SkinFormID); other = ARMO FormID. NOT serialized to LM JSON.</summary>
+        ''' <see cref="SkinTemplateId"/> which is the F4SE LM template (different feature). NPC.WNAM
+        ''' lives on the record and persists to ESP; SkinTemplateId lives only in the LM JSON.
+        ''' Nothing = preserve raw NPC.SkinFormID; 0 = clear (engine falls back to RACE.SkinFormID);
+        ''' other = ARMO FormID. NOT serialized to LM JSON.</summary>
         Public SkinFormIDOverride As UInteger?
+
+        ''' <summary>F4SE LM Skin override — the string id of a SkinTemplate registered via
+        ''' <c>F4SEPlugins-master/f4ee/SkinInterface.cpp</c>. The template bundles ARMO + face TXST +
+        ''' head/headRear HDPT (see <see cref="LmSkinTemplate"/> for the full layout) and is applied
+        ''' at runtime by LooksMenu's <c>ApplyOverride</c> on top of whatever NPC.WNAM/RACE.WNAM
+        ''' resolved to. Nothing / empty = no LM override; non-empty = the id to apply. Serialized
+        ''' to LM JSON as the canonical "Skin" key (CharGenInterface.cpp emits/reads this string).
+        ''' Distinct from the vanilla <see cref="SkinFormIDOverride"/> — both can coexist; the LM
+        ''' template wins at preview time when both are set (matches in-game order).</summary>
+        Public SkinTemplateId As String = ""
+
+        ''' <summary>Set of HDPT FormIDs that were materialized into <see cref="HeadPartFormIDs"/>
+        ''' specifically by an LM SkinTemplate bundle (via
+        ''' <c>NpcRecordOverlay.MaterializeLmTemplateBundleToPreset</c>). Lets us distinguish
+        ''' "template-injected" entries from entries the user added manually via Edit Face, so
+        ''' switching/clearing the template can retract ONLY its own contribution without
+        ''' clobbering the user's edits.
+        ''' NOT serialized to LM JSON — it's overlay-only metadata. Cleared on Retract.</summary>
+        Public LmTemplateInjectedHdptFormIDs As New HashSet(Of UInteger)
+
+        ''' <summary>True when <see cref="HasHeadPartFormIDs"/> was flipped to True specifically by
+        ''' an LM template materialization (not by Edit Face / Paste / Load LM HeadParts array).
+        ''' Lets the Retract path safely flip Has* back to False when the template was the sole
+        ''' reason it was True. If Edit Face / Paste / etc. set Has* before or after the template
+        ''' was applied, this stays False and Retract preserves Has*=True.</summary>
+        Public HasHeadPartFormIDsSetByTemplate As Boolean = False
     End Class
 
     Public Class UnsupportedFieldCounts
@@ -132,7 +159,7 @@ Public Module LooksmenuLoader
 
         Dim doc As JsonDocument
         Try
-            doc = JsonDocument.Parse(raw)
+            doc = JsonDocument.Parse(raw, New JsonDocumentOptions With {.CommentHandling = JsonCommentHandling.Skip, .AllowTrailingCommas = True})
         Catch
             Return Nothing
         End Try
@@ -313,7 +340,9 @@ Public Module LooksmenuLoader
             End If
             Dim skEl As JsonElement
             If root.TryGetProperty("Skin", skEl) AndAlso skEl.ValueKind = JsonValueKind.String Then
-                preset.UnsupportedCounts.HasSkinOverride = Not String.IsNullOrEmpty(skEl.GetString())
+                Dim skId = skEl.GetString()
+                preset.SkinTemplateId = If(skId, "")
+                preset.UnsupportedCounts.HasSkinOverride = Not String.IsNullOrEmpty(skId)
             End If
 
             ' BodyMorphs: BodySlide vertex sliders. Canonical LooksMenu field — see
@@ -356,7 +385,7 @@ Public Module LooksmenuLoader
     ''' look like a successful resolution (and then GetRecord fails downstream with "not found").
     ''' Doing the lookup ourselves lets us cleanly distinguish "plugin not loaded" from "resolved
     ''' to a global ID that happens to have low bytes".</summary>
-    Private Function ResolveFormIdentifier(identifier As String, pluginManager As PluginManager) As UInteger
+    Friend Function ResolveFormIdentifier(identifier As String, pluginManager As PluginManager) As UInteger
         If String.IsNullOrEmpty(identifier) Then Return 0UI
         Dim pipeIdx = identifier.IndexOf("|"c)
         If pipeIdx <= 0 OrElse pipeIdx >= identifier.Length - 1 Then Return 0UI
@@ -427,6 +456,9 @@ Public Module LooksmenuLoader
         ' Editor-only overrides (not part of the LM JSON schema, but live in the in-memory overlay).
         c.IsCharGenFacePreset = p.IsCharGenFacePreset
         c.SkinFormIDOverride = p.SkinFormIDOverride
+        c.SkinTemplateId = p.SkinTemplateId
+        For Each fid In p.LmTemplateInjectedHdptFormIDs : c.LmTemplateInjectedHdptFormIDs.Add(fid) : Next
+        c.HasHeadPartFormIDsSetByTemplate = p.HasHeadPartFormIDsSetByTemplate
         Return c
     End Function
 
@@ -597,6 +629,14 @@ Public Module LooksmenuLoader
                     End If
 
                     w.WriteEndObject()
+                End If
+
+                ' Skin — F4SE LM SkinTemplate id. Emitted only when non-empty so unset presets
+                ' don't claim an override they don't have. CharGenInterface.cpp serializes this
+                ' as a plain string key (the template id; LM resolves it against in-memory
+                ' SkinTemplate registry on Load via SkinInterface::AddSkinOverride).
+                If Not String.IsNullOrEmpty(preset.SkinTemplateId) Then
+                    w.WriteString("Skin", preset.SkinTemplateId)
                 End If
 
                 ' Tints + TintOrder. Skip Value=0 entries (CharGenInterface.cpp:180-181). Both keys

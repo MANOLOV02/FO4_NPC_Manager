@@ -116,12 +116,9 @@ Public Class LooksmenuLoad_Form
             ListBoxPresets.EndUpdate()
         End Try
 
-        If ListBoxPresets.Items.Count > 0 Then
-            ListBoxPresets.SelectedIndex = 0
-        Else
-            UpdateInfo(Nothing)
-            ButtonOk.Enabled = False
-        End If
+        ListBoxPresets.ClearSelected()
+        UpdateInfo(Nothing)
+        ButtonOk.Enabled = False
     End Sub
 
     Private Sub ListBoxPresets_SelectedIndexChanged(sender As Object, e As EventArgs) Handles ListBoxPresets.SelectedIndexChanged

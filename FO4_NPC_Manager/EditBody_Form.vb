@@ -1,4 +1,4 @@
-Imports System.Globalization
+﻿Imports System.Globalization
 Imports FO4_Base_Library
 
 ''' <summary>Editor for an NPC's body weight (MWGT — 3 sliders), MRSV body morph regions
@@ -39,6 +39,14 @@ Public Class EditBody_Form
     Private ReadOnly _hadPriorOverlay As Boolean
     Private ReadOnly _priorPreset As LooksmenuLoader.LooksmenuPreset
 
+    ' Snapshot for per-tab Reset (mirrors EditFace_Form's _seedPreset). Captures the NPC's
+    ' effective state at form-open time so Reset on a tab reverts that tab's fields back to
+    ' "the way the NPC looked when Edit Body opened", scoped per-tab so the user can throw away
+    ' one tab's edits without touching the other.
+    Private ReadOnly _initialSeed As InitialValues
+    Private ReadOnly _initialWnamFormID As UInteger
+
+
     ' Per-MRSV slot labels + UI references. Populated in CreateMrsvRows.
     Private _mrsvBars(4) As FO4_Base_Library.TinySliderTextBox
     Private _suspendEvents As Boolean
@@ -70,6 +78,18 @@ Public Class EditBody_Form
         Public BodySlide As New Dictionary(Of String, Single)(StringComparer.OrdinalIgnoreCase)
     End Class
 
+    ' NPC race/gender + currently-effective WNAM (post-overlay), captured from MainForm at open
+    ' time. Used to build the two skin combos in PopulateSkinCombos.
+    Private ReadOnly _npcRaceFID As UInteger
+    Private ReadOnly _npcIsFemale As Boolean
+    Private ReadOnly _currentWnamFormID As UInteger
+    ' Maps the WNAM combo's selected index to the FormID it represents. Index 0 reserved for
+    ' the "(use RACE default)" sentinel = FormID 0; index 1 reserved for the pinned current WNAM
+    ' when it falls outside the filtered universe; the rest are the filtered candidates.
+    Private ReadOnly _wnamComboFormIDs As New List(Of UInteger)
+    ' Maps the LM Skin template combo's selected index to the template id (Nothing = "(none)").
+    Private ReadOnly _lmTemplateComboIds As New List(Of String)
+
     Public Sub New(rootNpcFormID As UInteger,
                    appliedPresets As Dictionary(Of UInteger, LooksmenuLoader.LooksmenuPreset),
                    hasMwgt As Boolean,
@@ -77,7 +97,10 @@ Public Class EditBody_Form
                    availableSliders As List(Of String),
                    initial As InitialValues,
                    mainForm As MainForm,
-                   mainGore As Boolean)
+                   mainGore As Boolean,
+                   npcRaceFID As UInteger,
+                   npcIsFemale As Boolean,
+                   currentWnamFormID As UInteger)
         InitializeComponent()
         _rootNpcFormID = rootNpcFormID
         _appliedPresets = appliedPresets
@@ -85,6 +108,11 @@ Public Class EditBody_Form
         _refresh = AddressOf OnLocalBodyRefresh
         _mainForm = mainForm
         _mainGore = mainGore
+        _npcRaceFID = npcRaceFID
+        _npcIsFemale = npcIsFemale
+        _currentWnamFormID = currentWnamFormID
+        _initialSeed = initial
+        _initialWnamFormID = currentWnamFormID
 
         ' Snapshot the existing overlay so Cancel can restore it byte-for-byte.
         Dim existing As LooksmenuLoader.LooksmenuPreset = Nothing
@@ -104,19 +132,146 @@ Public Class EditBody_Form
         ' overlay didn't already define (preserves any prior preset/edit).
         SeedOverlayFromInitial(p, initial)
 
+
         ApplyAvailability(hasMwgt, hasMrsv, _availableSliders.Count > 0)
 
         If hasMrsv Then CreateMrsvRows()
         CreateBodySlideRows()
+        PopulateSkinCombos()
 
         AddHandler WeightTriangle.WeightChanged, AddressOf OnWeightTriangleChanged
         AddHandler ButtonOk.Click, AddressOf OnOk
         AddHandler ButtonCancel.Click, AddressOf OnCancel
-        AddHandler ButtonResetSection.Click, AddressOf OnResetBodySlide
+        AddHandler ButtonResetSection.Click, AddressOf OnResetSection
         AddHandler TextBoxBodySlideFilter.TextChanged, AddressOf OnBodySlideFilterChanged
+        AddHandler ComboBoxWnam.SelectedIndexChanged, AddressOf OnWnamComboChanged
+        AddHandler ComboBoxLmSkinTemplate.SelectedIndexChanged, AddressOf OnLmSkinTemplateComboChanged
 
         LoadValuesFromOverlay()
     End Sub
+
+    ''' <summary>Populate ComboBoxWnam from MainForm.GetSkinArmoCandidates (race+gender filter)
+    ''' and ComboBoxLmSkinTemplate from MainForm.GetLmSkinTemplateCandidates. Pinned entries:
+    '''   • WNAM index 0 = "(use RACE default)" → FormID 0 (xEdit allows NULL — wbDefinitionsFO4.pas:11434).
+    '''   • WNAM index 1 (only when applicable) = the NPC's current effective WNAM, even if it
+    '''     falls outside the filter (so opening EditBody on an oddly-flagged NPC doesn't lose
+    '''     the live skin).
+    '''   • LM Skin index 0 = "(none)" → empty id.
+    ''' Selection is then driven from the overlay preset's SkinFormIDOverride / SkinTemplateId.</summary>
+    Private Sub PopulateSkinCombos()
+        _suspendEvents = True
+        Try
+            ' WNAM combo
+            ComboBoxWnam.Items.Clear()
+            _wnamComboFormIDs.Clear()
+            ComboBoxWnam.Items.Add("(use RACE default)")
+            _wnamComboFormIDs.Add(0UI)
+            Dim filtered = _mainForm.GetSkinArmoCandidates(_npcRaceFID, _npcIsFemale)
+            ' Pin current WNAM at the top if it's non-zero AND not already in the filtered list.
+            If _currentWnamFormID <> 0UI AndAlso Not filtered.Any(Function(x) x.FormID = _currentWnamFormID) Then
+                Dim disp = _mainForm.GetSkinArmoDisplayName(_currentWnamFormID)
+                If String.IsNullOrEmpty(disp) Then disp = _currentWnamFormID.ToString("X8")
+                ComboBoxWnam.Items.Add(disp & "  ⚠ outside race/gender filter")
+                _wnamComboFormIDs.Add(_currentWnamFormID)
+            End If
+            For Each cand In filtered
+                ComboBoxWnam.Items.Add(cand.DisplayName)
+                _wnamComboFormIDs.Add(cand.FormID)
+            Next
+
+            ' LM Skin template combo
+            ComboBoxLmSkinTemplate.Items.Clear()
+            _lmTemplateComboIds.Clear()
+            ComboBoxLmSkinTemplate.Items.Add("(none)")
+            _lmTemplateComboIds.Add("")
+            For Each tpl In _mainForm.GetLmSkinTemplateCandidates(_npcIsFemale)
+                ComboBoxLmSkinTemplate.Items.Add(tpl.DisplayName)
+                _lmTemplateComboIds.Add(tpl.Id)
+            Next
+
+            ' Initialize the selections from the overlay preset.
+            Dim p = Preset
+            ' WNAM: SkinFormIDOverride.HasValue = user explicitly set; otherwise pin to current
+            ' effective WNAM (which is what the NPC is rendering right now).
+            Dim selectedFid As UInteger
+            If p.SkinFormIDOverride.HasValue Then
+                selectedFid = p.SkinFormIDOverride.Value
+            Else
+                selectedFid = _currentWnamFormID
+            End If
+            Dim wnamIdx = _wnamComboFormIDs.IndexOf(selectedFid)
+            ComboBoxWnam.SelectedIndex = If(wnamIdx >= 0, wnamIdx, 0)
+            ' LM SkinTemplateId — empty maps to (none).
+            Dim selId = If(p.SkinTemplateId, "")
+            Dim lmIdx = _lmTemplateComboIds.IndexOf(selId)
+            ComboBoxLmSkinTemplate.SelectedIndex = If(lmIdx >= 0, lmIdx, 0)
+        Finally
+            _suspendEvents = False
+        End Try
+    End Sub
+
+    Private Async Sub OnWnamComboChanged(sender As Object, e As EventArgs)
+        If _suspendEvents Then Return
+        Dim idx = ComboBoxWnam.SelectedIndex
+        If idx < 0 OrElse idx >= _wnamComboFormIDs.Count Then Return
+        Dim p = Preset
+        ' Index 0 = "(use RACE default)" → FormID 0 (xEdit allows NULL on NPC.WNAM). Encoded as
+        ' SkinFormIDOverride = Some(0) so the writer can later emit "no WNAM subrecord" for the
+        ' Save ESP path; the runtime overlay merge already maps 0 to RACE.WNAM fallback
+        ' (MainForm.vb:6185-6187). Any other index encodes the chosen ARMO FormID.
+        p.SkinFormIDOverride = _wnamComboFormIDs(idx)
+        Await TriggerSkinChangeReload()
+    End Sub
+
+    Private Async Sub OnLmSkinTemplateComboChanged(sender As Object, e As EventArgs)
+        If _suspendEvents Then Return
+        Dim idx = ComboBoxLmSkinTemplate.SelectedIndex
+        If idx < 0 OrElse idx >= _lmTemplateComboIds.Count Then Return
+        Dim p = Preset
+
+        ' Origin-based template swap. The preset tracks exactly which HDPTs were injected by an
+        ' LM template (LmTemplateInjectedHdptFormIDs) and whether HasHeadPartFormIDs was flipped
+        ' True specifically by Materialize (HasHeadPartFormIDsSetByTemplate). Retract uses both
+        ' to remove ONLY the template's contribution, leaving anything Edit Face / Paste / Load
+        ' LM HeadParts arrays put in the preset untouched.
+        '
+        ' Sequence: Retract previous template → set new SkinTemplateId → Materialize new bundle.
+        ' "(none)" goes through the same path; Materialize is a no-op for an empty id, so the
+        ' result is "previous template's HDPTs gone, nothing else changed".
+        NpcRecordOverlay.RetractLmTemplateBundleFromPreset(p)
+
+        p.SkinTemplateId = _lmTemplateComboIds(idx)
+        NpcRecordOverlay.MaterializeLmTemplateBundleToPreset(p, _npcIsFemale, AddressOf _mainForm.ResolveLmSkinTemplate_Friend)
+        Await TriggerSkinChangeReload()
+    End Sub
+
+    ''' <summary>Append <paramref name="hdptFormID"/> to <paramref name="list"/> if non-zero and
+    ''' not already present. Kept around for any future caller; the LM template path now goes
+    ''' through <see cref="NpcRecordOverlay.MaterializeLmTemplateBundleToPreset"/>.</summary>
+    Private Shared Sub AddHdptIfMissing(list As List(Of UInteger), hdptFormID As UInteger)
+        If hdptFormID = 0UI Then Return
+        If list.Contains(hdptFormID) Then Return
+        list.Add(hdptFormID)
+    End Sub
+
+    ''' <summary>Refresh the preview after an NPC.WNAM / LM SkinTemplate combo change. Tries
+    ''' the fast-path first (RefreshBodySkinLivePreview): when the new skin ARMO points to the
+    ''' same mesh path as the previously-loaded one, only TXST + MaterialSwap fields are
+    ''' re-resolved and material parameters are mutated in place — no VBO regeneration,
+    ''' subsecond. Falls back to the full RenderInHostAsync when the mesh path differs (different
+    ''' .nif, different bone palette / vertex count) or when the host state is incomplete.
+    '''
+    ''' The fast-path shares CollectArmoCandidates + ApplyShapeMaterialOverrides with the normal
+    ''' render so TXST/MSWP resolution stays byte-identical between the two code paths.</summary>
+    Private Async Function TriggerSkinChangeReload() As Task
+        If _editorHost Is Nothing OrElse _mainForm Is Nothing Then Return
+        Try
+            If _mainForm.RefreshBodySkinLivePreview(_editorHost) Then Return
+            Await _mainForm.RenderInHostAsync(_editorHost, _rootNpcFormID)
+        Catch ex As Exception
+            NpcPreviewLog.LogLazy(Function() $"  [EDITBODY-SKIN-RELOAD] failed: {ex.Message}")
+        End Try
+    End Function
 
     ''' <summary>Seed the overlay preset's editable channels from the NPC's current effective
     ''' values, but only when the overlay hasn't already taken ownership of that channel. This
@@ -153,15 +308,11 @@ Public Class EditBody_Form
     Private Sub ApplyAvailability(hasMwgt As Boolean, hasMrsv As Boolean, hasBodySlide As Boolean)
         GroupBoxWeight.Visible = hasMwgt
         GroupBoxMrsv.Visible = hasMrsv
-        ' BodySlide section only shows when at least one shape's NIF root has BODYTRI extra-data
-        ' (LM-strict resolution per BodySlideTriResolver). Without that the engine wouldn't apply
-        ' any BodyMorphs in-game either, so the section has no semantic meaning to expose.
+        ' BodySlide tab: GroupBoxBodySlide carries the actual sliders; LabelBodySlideEmpty is the
+        ' empty-state legend shown when the body has no PIRT BODYTRI (engine wouldn't apply any
+        ' BodyMorphs either). Mirrors EditFace_Form's empty-section pattern.
         GroupBoxBodySlide.Visible = hasBodySlide
-        ' Reset section is the BodySlide-only reset (zero out preset.BodyMorphSliders). When there
-        ' is no BodySlide section to reset there is nothing to do, so hide the button entirely
-        ' rather than leave a no-op control. The Enable/Disable inside the BodySlide flow is
-        ' separate (depends on whether the user actually moved any slider).
-        ButtonResetSection.Visible = hasBodySlide
+        LabelBodySlideEmpty.Visible = Not hasBodySlide
     End Sub
 
     ''' <summary>Deep-clone for snapshot/restore. Delegates to LooksmenuLoader.ClonePreset
@@ -212,7 +363,9 @@ Public Class EditBody_Form
     End Sub
 
     ''' <summary>Build the dynamic BodySlide slider rows from the union of morph names
-    ''' present in the loaded body shapes' PIRT .tri files.</summary>
+    ''' present in the loaded body shapes' PIRT .tri files. Each row stretches to the panel's
+    ''' current client width via <see cref="BodySlidePanel_Resize"/>; FlowLayoutPanel doesn't
+    ''' honour Anchor on its children so we resize the rows ourselves on every parent resize.</summary>
     Private Sub CreateBodySlideRows()
         BodySlidePanel.SuspendLayout()
         Try
@@ -231,13 +384,14 @@ Public Class EditBody_Form
                 Return
             End If
             ButtonResetSection.Enabled = True
+            Dim rowWidth = ComputeBodySlideRowWidth()
             For Each sliderName In _availableSliders
                 Dim row As New TableLayoutPanel() With {
                     .ColumnCount = 2,
                     .RowCount = 1,
                     .AutoSize = True,
                     .AutoSizeMode = AutoSizeMode.GrowAndShrink,
-                    .Width = BodySlidePanel.ClientSize.Width - SystemInformation.VerticalScrollBarWidth - 4,
+                    .Width = rowWidth,
                     .Margin = New Padding(0, 0, 0, 2)
                 }
                 row.ColumnStyles.Add(New ColumnStyle(SizeType.Absolute, 180))
@@ -272,6 +426,32 @@ Public Class EditBody_Form
                 BodySlidePanel.Controls.Add(row)
                 _bodySlideBars(sliderName) = bar
                 _bodySlideRows(sliderName) = row
+            Next
+        Finally
+            BodySlidePanel.ResumeLayout()
+        End Try
+    End Sub
+
+    ''' <summary>Compute the width for a single BodySlide row inside <see cref="BodySlidePanel"/>:
+    ''' panel client width minus a vertical-scrollbar reserve so a row never gets clipped when
+    ''' the scrollbar appears. Used by both initial layout (CreateBodySlideRows) and resize
+    ''' (BodySlidePanel_Resize).</summary>
+    Private Function ComputeBodySlideRowWidth() As Integer
+        Dim w = BodySlidePanel.ClientSize.Width - SystemInformation.VerticalScrollBarWidth - 4
+        Return Math.Max(200, w)
+    End Function
+
+    ''' <summary>FlowLayoutPanel doesn't honour Anchor on its children, so we resize each row
+    ''' manually whenever the panel changes width (form resize, splitter drag, tab activate).
+    ''' Cheap: one Width assignment per row, no relayout cascade because rows are AutoSize on
+    ''' height only.</summary>
+    Private Sub BodySlidePanel_Resize(sender As Object, e As EventArgs) Handles BodySlidePanel.Resize
+        If _bodySlideRows.Count = 0 Then Return
+        Dim w = ComputeBodySlideRowWidth()
+        BodySlidePanel.SuspendLayout()
+        Try
+            For Each kv In _bodySlideRows
+                kv.Value.Width = w
             Next
         Finally
             BodySlidePanel.ResumeLayout()
@@ -524,7 +704,76 @@ Public Class EditBody_Form
         End Try
     End Sub
 
-    Private Sub OnResetBodySlide(sender As Object, e As EventArgs)
+    ''' <summary>Per-tab reset, mirroring EditFace_Form.OnResetSection. Active-tab dispatch:
+    '''   • Body tab → revert MWGT + MRSV + Skin combos to the values captured at form-open time.
+    '''   • BodySlide tab → wipe all BodySlide sliders to 0.
+    ''' Same idea as Cancel but scoped to the active tab so the user can discard one tab's edits
+    ''' without losing the others.</summary>
+    Private Sub OnResetSection(sender As Object, e As EventArgs)
+        Dim active = TabsBody.SelectedTab
+        If active Is TabPageBody Then
+            ResetBodySection()
+        ElseIf active Is TabPageBodySlide Then
+            ResetBodySlideSection()
+        End If
+    End Sub
+
+    ''' <summary>Revert MWGT (Weight triangle + 3 sliders), MRSV (5 region bars), and Skin combos
+    ''' (NPC.WNAM + LM template) to the snapshot taken at form-open time. The combos go back to
+    ''' whatever the prior overlay carried, falling back to "(use RACE default)" / "(none)" when
+    ''' the user opened Edit Body on an NPC with no prior overlay.</summary>
+    Private Sub ResetBodySection()
+        Dim p = Preset
+        _suspendEvents = True
+        Try
+            ' MWGT — back to initial values seeded from the live NPC at open time.
+            If _initialSeed IsNot Nothing Then
+                p.WeightThin = _initialSeed.Thin
+                p.WeightMuscular = _initialSeed.Muscular
+                p.WeightFat = _initialSeed.Fat
+                WeightTriangle.SetWeights(_initialSeed.Thin, _initialSeed.Muscular, _initialSeed.Fat)
+                SyncMwgtSliders(_initialSeed.Thin, _initialSeed.Muscular, _initialSeed.Fat)
+            End If
+
+            ' MRSV — back to initial 5-region values. ApplyPresetOverlayToNpcData reads
+            ' BodyMorphValues positionally, so we keep exactly 5 entries.
+            p.BodyMorphValues.Clear()
+            For i = 0 To 4
+                Dim v As Single = If(_initialSeed IsNot Nothing AndAlso i < _initialSeed.Mrsv.Length, _initialSeed.Mrsv(i), 0.0F)
+                p.BodyMorphValues.Add(v)
+                If i < _mrsvBars.Length AndAlso _mrsvBars(i) IsNot Nothing Then _mrsvBars(i).Value = v
+            Next
+            p.HasBodyMorphValues = True
+
+            ' Skin combos — revert to the prior overlay's choices. Without a prior overlay the
+            ' user-explicit override is cleared (Nothing) so the combo falls back to the NPC's
+            ' raw effective WNAM (whatever PopulateSkinCombos pinned at index 1 / "(use RACE default)").
+            If _priorPreset IsNot Nothing Then
+                p.SkinFormIDOverride = _priorPreset.SkinFormIDOverride
+                p.SkinTemplateId = If(_priorPreset.SkinTemplateId, "")
+            Else
+                p.SkinFormIDOverride = Nothing
+                p.SkinTemplateId = ""
+            End If
+            ' Reflect the new preset state in the combo selection without re-firing the change
+            ' handlers (they would otherwise trigger a render reload per combo, two reloads total).
+            Dim wnamFid As UInteger = If(p.SkinFormIDOverride.HasValue, p.SkinFormIDOverride.Value, _initialWnamFormID)
+            Dim wIdx = _wnamComboFormIDs.IndexOf(wnamFid)
+            ComboBoxWnam.SelectedIndex = If(wIdx >= 0, wIdx, 0)
+            Dim lmIdx = _lmTemplateComboIds.IndexOf(If(p.SkinTemplateId, ""))
+            ComboBoxLmSkinTemplate.SelectedIndex = If(lmIdx >= 0, lmIdx, 0)
+        Finally
+            _suspendEvents = False
+        End Try
+        ' Skin change requires a full reload (mesh + TXST + MSWP resolve from state.SkinFormID),
+        ' which TriggerSkinChangeReload handles. It also re-runs MWGT / MRSV pose so the weight
+        ' + region revert lands in the same render pass.
+        TriggerSkinChangeReload()
+    End Sub
+
+    ''' <summary>Wipe all BodySlide sliders to 0 (no PIRT vertex morph applied). Prior behaviour
+    ''' of the (now-renamed) OnResetBodySlide handler.</summary>
+    Private Sub ResetBodySlideSection()
         Dim p = Preset
         p.BodyMorphSliders.Clear()
         _suspendEvents = True

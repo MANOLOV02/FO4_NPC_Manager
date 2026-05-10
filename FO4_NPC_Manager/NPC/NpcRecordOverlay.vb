@@ -38,10 +38,40 @@ Public Module NpcRecordOverlay
     '''     using 1.0 when missing — parser already defaults to 1.0F so this is equivalent).
     '''   • Tints: Has*-driven, same shape as morphs.
     ''' </summary>
+    ''' <summary>Resolve an LM SkinTemplate id to its full bundle. Returns Nothing if the id
+    ''' isn't loaded. Optional injection so the offline bake path (FaceGenBuilder) can opt out —
+    ''' F4SE skin overrides are runtime only and don't apply to baked CharGen output.</summary>
+    Public Delegate Function ResolveLmSkinTemplateDelegate(templateId As String) As LmSkinTemplate
+
+    ''' <summary>HDPT.PartType enum values matching xEdit wbDefinitionsFO4.pas:7373-7384. These
+    ''' are the values the parser surfaces in HDPT_Data.PartType and that the renderer reads via
+    ''' state.HeadPartFormIDs lookups — NOT the F4SE runtime BGSHeadPart::Type enum (which uses
+    ''' different numbering). Used by ApplyLmHdptReplacement and by MainForm's overlay merge.</summary>
+    Public Const HdptPartType_Misc As Byte = 0
+    Public Const HdptPartType_Face As Byte = 1
+    Public Const HdptPartType_Eyes As Byte = 2
+    Public Const HdptPartType_Hair As Byte = 3
+    Public Const HdptPartType_FacialHair As Byte = 4
+    Public Const HdptPartType_Scar As Byte = 5
+    Public Const HdptPartType_Eyebrows As Byte = 6
+    Public Const HdptPartType_Meatcaps As Byte = 7
+    Public Const HdptPartType_Teeth As Byte = 8
+    Public Const HdptPartType_HeadRear As Byte = 9
+
+    ''' <summary>Public wrapper over ApplyLmHdptReplacement so MainForm's overlay merge can call
+    ''' the same helper the shadow uses, ensuring identical replacement semantics across both
+    ''' code paths. PartType is read from the new HDPT itself (engine-faithful per
+    ''' SkinInterface.cpp:292), so callers don't pass a target — the helper figures it out.</summary>
+    Public Sub ApplyLmHdptReplacementPublic(headParts As List(Of UInteger), newHdptFormID As UInteger,
+                                              pluginManager As PluginManager)
+        ApplyLmHdptReplacement(headParts, newHdptFormID, pluginManager)
+    End Sub
+
     Public Function ApplyPresetOverlayToNpcData(raw As NPC_Data,
                                                 selectedNpcFormID As UInteger,
                                                 appliedPresets As Dictionary(Of UInteger, LooksmenuLoader.LooksmenuPreset),
-                                                pluginManager As PluginManager) As NPC_Data
+                                                pluginManager As PluginManager,
+                                                Optional lmSkinTemplateResolver As ResolveLmSkinTemplateDelegate = Nothing) As NPC_Data
         If raw Is Nothing Then Return raw
         If appliedPresets Is Nothing Then Return raw
         Dim preset As LooksmenuLoader.LooksmenuPreset = Nothing
@@ -60,10 +90,34 @@ Public Module NpcRecordOverlay
         '   value <> 0    → ARMO override (e.g. a custom skin pulled in via Edit Face)
         '   value = 0     → explicit clear; the renderer's resolver falls back to RACE.WNAM
         shadow.SkinFormID = If(preset.SkinFormIDOverride.HasValue, preset.SkinFormIDOverride.Value, raw.SkinFormID)
+        ' LM SkinTemplate (F4SE bundle) wins over NPC.WNAM at preview time, mirroring
+        ' SkinInterface.cpp:250-332 in F4SEPlugins-master/f4ee — ApplyOverride applies the
+        ' template's `skin` ARMO + face[gender] TXST + head[gender] HDPT + rear[gender] HDPT.
+        ' Skin and face TXST are applied here; head / headRear HDPT replacement is applied below
+        ' after the preset HeadParts merge so the bundle sits on top of preset overrides.
+        Dim lmTemplate As LmSkinTemplate = Nothing
+        If Not String.IsNullOrEmpty(preset.SkinTemplateId) AndAlso lmSkinTemplateResolver IsNot Nothing Then
+            lmTemplate = lmSkinTemplateResolver(preset.SkinTemplateId)
+            If lmTemplate IsNot Nothing AndAlso lmTemplate.SkinArmoFormID <> 0UI Then
+                shadow.SkinFormID = lmTemplate.SkinArmoFormID
+            End If
+        End If
         shadow.IsFemale = raw.IsFemale
         shadow.DefaultOutfitFormID = raw.DefaultOutfitFormID
         shadow.SleepOutfitFormID = raw.SleepOutfitFormID
-        shadow.HeadTextureFormID = raw.HeadTextureFormID
+        ' HeadTextureFormID: LM template face TXST overrides if present (mirrors
+        ' SkinInterface.cpp:307-313 — overlay sets npc->headData->faceTextures = template.face[gender]).
+        Dim lmFaceTxst As UInteger = 0UI
+        If lmTemplate IsNot Nothing Then
+            Dim genderIdx As Integer = If(raw.IsFemale, 1, 0)
+            If lmTemplate.FaceTxstFormID(genderIdx) <> 0UI Then lmFaceTxst = lmTemplate.FaceTxstFormID(genderIdx)
+        End If
+        shadow.HeadTextureFormID = If(lmFaceTxst <> 0UI, lmFaceTxst, raw.HeadTextureFormID)
+        ' HasHeadTexture is the writer's "emit FTST subrecord" gate. When the LM template
+        ' injects a face TXST, mark Has*=True so Save ESP emits the override even if the raw
+        ' NPC didn't carry an FTST of its own. Otherwise the bundle's face[gender] would land
+        ' in the preview but disappear at ESP write time — WYSIWYG broken.
+        shadow.HasHeadTexture = raw.HasHeadTexture OrElse (lmFaceTxst <> 0UI)
         shadow.FacialHairColorFormID = raw.FacialHairColorFormID
         shadow.HasTextureLighting = raw.HasTextureLighting
         shadow.TextureLightingColor = raw.TextureLightingColor
@@ -95,6 +149,25 @@ Public Module NpcRecordOverlay
             If raceDefaults IsNot Nothing Then shadow.HeadPartFormIDs.AddRange(raceDefaults)
         End If
         shadow.HeadPartFormIDs.AddRange(preset.HeadPartFormIDs)
+
+        ' LM SkinTemplate head / headRear: replace the per-PartType HDPT entry. Mirrors
+        ' SkinInterface.cpp:289-303 — npc->ChangeHeadPart(template.head/rear, false, false)
+        ' which swaps the existing Face / HeadRear part for the template's. We do it here as a
+        ' post-merge override so that the resulting list is "race defaults + preset overrides
+        ' + LM bundle". HDPT.Type enum per xEdit wbDefinitionsFO4.pas:7373-7384:
+        '   0=Misc, 1=Face, 2=Eyes, 3=Hair, 4=FacialHair, 5=Scar, 6=Eyebrows, 7=Meatcaps,
+        '   8=Teeth, 9=HeadRear.
+        ' (Note: the F4SE C++ enum uses different numbering — kTypeFace=0, kTypeHeadRear=2 etc.
+        ' That's the runtime BGSHeadPart::Type, NOT the record PartType. Our parser already
+        ' surfaces the record value in HDPT_Data.PartType, so we match xEdit's numbering.)
+        If lmTemplate IsNot Nothing Then
+            Dim genderIdx As Integer = If(raw.IsFemale, 1, 0)
+            ' The helper reads each HDPT's own PartType to decide which slot to replace,
+            ' so a JSON template that puts (e.g.) a Hair HDPT in "maleHead" replaces the
+            ' Hair slot, not Face. Engine-faithful per SkinInterface.cpp:292.
+            ApplyLmHdptReplacement(shadow.HeadPartFormIDs, lmTemplate.HeadHdptFormID(genderIdx), pluginManager)
+            ApplyLmHdptReplacement(shadow.HeadPartFormIDs, lmTemplate.HeadRearHdptFormID(genderIdx), pluginManager)
+        End If
 
         ' HairColor: preset 0 means "not in JSON, preserve" (engine behaviour: nullptr form skips).
         shadow.HairColorFormID = If(preset.HairColorFormID <> 0UI, preset.HairColorFormID, raw.HairColorFormID)
@@ -162,5 +235,154 @@ Public Module NpcRecordOverlay
 
         Return shadow
     End Function
+
+    ''' <summary>Replace the HDPT entry of <paramref name="targetPartType"/> in
+    ''' <paramref name="headParts"/> with <paramref name="newHdptFormID"/>. No-op if the new
+    ''' FormID is 0 or doesn't resolve to an HDPT record. Mirrors
+    ''' <c>TESNPC::ChangeHeadPart</c> (SkinInterface.cpp:289-297): the engine looks up the
+    ''' current HDPT of the same PartType and overwrites it. If no entry of that PartType
+    ''' exists yet, we append the new one (LM in-game also calls AddHeadPart in that branch).</summary>
+    ''' <summary>Replace the entry in <paramref name="headParts"/> whose PartType matches the
+    ''' new HDPT's PartType, with <paramref name="newHdptFormID"/>. PartType is READ from the new
+    ''' HDPT itself — we do NOT assume "head=Face" or "headRear=HeadRear". This matches engine
+    ''' behaviour: F4SE's <c>SkinInterface.cpp:292</c> calls <c>npc->ChangeHeadPart(headPart, ...)</c>
+    ''' which internally uses <c>headPart->type</c> as the target slot, not a hardcoded category.
+    ''' So a JSON template that puts a Hair HDPT in "maleHead" replaces the Hair slot, not Face.
+    ''' If no entry of that PartType exists in <paramref name="headParts"/>, the new HDPT is
+    ''' appended (mirrors engine post-AddHeadPart fallthrough).</summary>
+    Private Sub ApplyLmHdptReplacement(headParts As List(Of UInteger), newHdptFormID As UInteger,
+                                        pluginManager As PluginManager)
+        If newHdptFormID = 0UI Then Return
+        Dim newRec = pluginManager.GetRecord(newHdptFormID)
+        If newRec Is Nothing OrElse newRec.Header.Signature <> "HDPT" Then Return
+
+        ' Read the target PartType from the NEW HDPT — engine-faithful (engine reads
+        ' headPart->type for the slot lookup, doesn't accept it as an argument).
+        Dim targetPartType As Integer
+        Try
+            Dim newHdpt = RecordParsers.ParseHDPT(newRec, pluginManager)
+            targetPartType = newHdpt.PartType
+        Catch
+            Return
+        End Try
+        ' PartType=0 (Misc) is freestanding (extras like eyelashes, AO meshes) — those don't
+        ' replace anything, they just accumulate. Add as freestanding.
+        If targetPartType = 0 Then
+            If Not headParts.Contains(newHdptFormID) Then headParts.Add(newHdptFormID)
+            Return
+        End If
+
+        ' Find the index of the existing HDPT of the same PartType. Walk from the front; if
+        ' multiple exist (shouldn't happen for vanilla NPCs but mods may inject) we replace the
+        ' first and remove the rest to mirror engine post-Add (one slot per PartType).
+        Dim replaceIdx As Integer = -1
+        Dim removalIndices As New List(Of Integer)
+        For i = 0 To headParts.Count - 1
+            Dim r = pluginManager.GetRecord(headParts(i))
+            If r Is Nothing OrElse r.Header.Signature <> "HDPT" Then Continue For
+            Try
+                Dim hd = RecordParsers.ParseHDPT(r, pluginManager)
+                If hd.PartType = targetPartType Then
+                    If replaceIdx < 0 Then
+                        replaceIdx = i
+                    Else
+                        removalIndices.Add(i)
+                    End If
+                End If
+            Catch
+            End Try
+        Next
+
+        If replaceIdx >= 0 Then
+            headParts(replaceIdx) = newHdptFormID
+            ' Remove duplicates back-to-front so indices stay valid.
+            For j = removalIndices.Count - 1 To 0 Step -1
+                headParts.RemoveAt(removalIndices(j))
+            Next
+        Else
+            headParts.Add(newHdptFormID)
+        End If
+    End Sub
+
+    ''' <summary>Single source of truth for "the preset must reflect the LM template's bundle,
+    ''' not just the id". Materializes <paramref name="preset.SkinTemplateId"/>'s head + headRear
+    ''' HDPT swaps into <paramref name="preset.HeadPartFormIDs"/> and marks
+    ''' <c>HasHeadPartFormIDs=True</c>, so any downstream consumer (Save ESP writer, Edit Face
+    ''' seed, Copy Look snapshot) sees the same picture the live render already shows via
+    ''' <see cref="ApplyPresetOverlayToNpcData"/>.
+    '''
+    ''' Idempotent: HDPTs already present in the list are NOT duplicated. Safe to call multiple
+    ''' times on the same preset.
+    '''
+    ''' Called by every path that touches a preset whose <c>SkinTemplateId</c> is set:
+    ''' • Load LooksMenu (after parsing the JSON).
+    ''' • Copy Look (BuildPresetFromState, after copying SkinTemplateId from overlay).
+    ''' • Edit Face seed (so the user sees the HDPTs the LM template injected).
+    ''' • EditBody combo handler (when the user picks a template from the dropdown).
+    ''' No-op when SkinTemplateId is empty or the resolver doesn't find the template.</summary>
+    Public Sub MaterializeLmTemplateBundleToPreset(preset As LooksmenuLoader.LooksmenuPreset,
+                                                    isFemale As Boolean,
+                                                    resolver As ResolveLmSkinTemplateDelegate)
+        If preset Is Nothing Then Return
+        If String.IsNullOrEmpty(preset.SkinTemplateId) Then Return
+        If resolver Is Nothing Then Return
+        Dim tpl = resolver(preset.SkinTemplateId)
+        If tpl Is Nothing Then Return
+
+        Dim genderIdx As Integer = If(isFemale, 1, 0)
+        Dim head As UInteger = tpl.HeadHdptFormID(genderIdx)
+        Dim rear As UInteger = tpl.HeadRearHdptFormID(genderIdx)
+        If head = 0UI AndAlso rear = 0UI Then Return
+
+        ' Track each HDPT we inject so Retract can identify and remove ONLY the template's
+        ' contribution later. AddHdptIfMissingPreset is idempotent vs the list, but the set
+        ' should get the FormID even if it was already present in the list (which may have
+        ' come from raw NPC PNAM and now coincides with the template — Retract still needs to
+        ' know "the template asserted this one too").
+        If head <> 0UI Then
+            AddHdptIfMissingPreset(preset.HeadPartFormIDs, head)
+            preset.LmTemplateInjectedHdptFormIDs.Add(head)
+        End If
+        If rear <> 0UI Then
+            AddHdptIfMissingPreset(preset.HeadPartFormIDs, rear)
+            preset.LmTemplateInjectedHdptFormIDs.Add(rear)
+        End If
+        ' Only flip Has* if it wasn't already True. If something else (Edit Face / Paste)
+        ' set it before us, preserve that authority — we record our own flag separately.
+        If Not preset.HasHeadPartFormIDs Then
+            preset.HasHeadPartFormIDs = True
+            preset.HasHeadPartFormIDsSetByTemplate = True
+        End If
+    End Sub
+
+    ''' <summary>Inverse of <see cref="MaterializeLmTemplateBundleToPreset"/>: removes from
+    ''' <paramref name="preset.HeadPartFormIDs"/> exactly the HDPTs a previous Materialize call
+    ''' injected (tracked in <see cref="LooksmenuLoader.LooksmenuPreset.LmTemplateInjectedHdptFormIDs"/>),
+    ''' and resets <c>HasHeadPartFormIDs=False</c> only if Materialize was the one that flipped it
+    ''' (tracked via <c>HasHeadPartFormIDsSetByTemplate</c>). Edits made by Edit Face / Paste / Load
+    ''' LM HeadParts arrays are preserved verbatim — Retract NEVER touches them.
+    '''
+    ''' Used by EditBody's LM template combo handler to do a clean revert before applying a new
+    ''' template (or when the user goes back to "(none)").</summary>
+    Public Sub RetractLmTemplateBundleFromPreset(preset As LooksmenuLoader.LooksmenuPreset)
+        If preset Is Nothing Then Return
+        If preset.LmTemplateInjectedHdptFormIDs.Count = 0 AndAlso
+           Not preset.HasHeadPartFormIDsSetByTemplate Then Return
+
+        For Each fid In preset.LmTemplateInjectedHdptFormIDs
+            preset.HeadPartFormIDs.Remove(fid)
+        Next
+        preset.LmTemplateInjectedHdptFormIDs.Clear()
+        If preset.HasHeadPartFormIDsSetByTemplate Then
+            preset.HasHeadPartFormIDs = False
+            preset.HasHeadPartFormIDsSetByTemplate = False
+        End If
+    End Sub
+
+    Private Sub AddHdptIfMissingPreset(list As List(Of UInteger), hdptFormID As UInteger)
+        If hdptFormID = 0UI Then Return
+        If list.Contains(hdptFormID) Then Return
+        list.Add(hdptFormID)
+    End Sub
 
 End Module

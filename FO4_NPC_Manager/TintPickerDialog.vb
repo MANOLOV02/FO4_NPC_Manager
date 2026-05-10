@@ -1,4 +1,4 @@
-Imports FO4_Base_Library
+﻿Imports FO4_Base_Library
 
 ''' <summary>Modal that lets the user pick one (group, option) from RACE.{Female|Male}TintTemplateGroups
 ''' to add as a new face tint layer in EditFace_Form. Two filters apply:

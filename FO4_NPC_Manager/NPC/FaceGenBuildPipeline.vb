@@ -177,7 +177,9 @@ Public Module FaceGenBuildPipeline
                                sb As Text.StringBuilder,
                                Optional ByRef vWorldOut As Vector3d() = Nothing,
                                Optional ByRef faceSkelOut As SkeletonInstance = Nothing,
-                               Optional ByRef bodySkelOut As SkeletonInstance = Nothing) As Boolean
+                               Optional ByRef bodySkelOut As SkeletonInstance = Nothing,
+                               Optional srcNif As Nifcontent_Class_Manolo = Nothing,
+                               Optional srcShape As INiShape = Nothing) As Boolean
         If state Is Nothing OrElse destNif Is Nothing OrElse clonedOrigShape Is Nothing Then Return False
         If facebonesNif Is Nothing OrElse facebonesShape Is Nothing Then Return False
 
@@ -192,9 +194,31 @@ Public Module FaceGenBuildPipeline
         faceSkelOut = wr.FaceSkel
         bodySkelOut = wr.BodySkel
 
+        ' 2a) Inject cloth-physics bones from the source NIF's BSClothExtraData into bodySkel.
+        ' Hair shapes (Hair28.nif et al.) carry an HKX skeleton inside BSClothExtraData with the
+        ' bind reference pose for cloth bones (Hair_C_Cloth00..02 etc.). The render injects these
+        ' at PrepareForShapes time so the live skin uses the HKX bind reference. Without this,
+        ' the bake's bind resolver falls back to Transform_Class.GetGlobalTransform(boneNode,
+        ' destNif) which reads whatever the cloned NIF carries for that bone — leading to
+        ' mismatched Mtot_orig vs CK and ~2 unit vertex RMS on hair shapes.
+        If srcNif IsNot Nothing AndAlso srcShape IsNot Nothing AndAlso wr.BodySkel IsNot Nothing AndAlso wr.BodySkel.HasSkeleton Then
+            Try
+                Dim clothSkel = SkeletonClothOverlayHelper_Class.ParseClothSkeleton(srcNif)
+                If clothSkel IsNot Nothing Then
+                    Dim clothWrap As New NifRenderableShape(srcNif, srcShape, 0)
+                    SkeletonClothOverlayHelper_Class.InjectMissingBonesIntoLiveSkeleton(clothWrap, wr.BodySkel, clothSkel)
+                    sb?.AppendLine($"[BUILDCHARGEN]     bake: cloth-bone inject from BSClothExtraData of '{srcShape.Name?.String}' into bodySkel (injectedCount={wr.BodySkel.InjectedBones.Count})")
+                End If
+            Catch ex As Exception
+                sb?.AppendLine($"[BUILDCHARGEN]     bake: cloth-bone inject failed: {ex.GetType().Name}: {ex.Message}")
+            End Try
+        End If
+
         ' 2) Per-vertex Mtot_orig from ORIG bones at canonical bind (body skel ∪ face skel ∪
         ' shape-internal fallback). NO FMRS applied to ORIG bones — the ORIG palette is body
         ' bones (HEAD, Neck_skin, ...) + a few face hooks; CK at bake time keeps them at bind.
+        ' With cloth-bone injection above, the resolver also resolves Hair_C_Cloth* etc. via the
+        ' HKX reference pose instead of falling through to the NIF-crude transform.
         Dim origResolver = BuildBindResolver(wr.FaceSkel, wr.BodySkel, destNif)
 
         ' Walk the cloned ORIG to compute its per-vertex Mtot at bind.
@@ -336,15 +360,22 @@ Public Module FaceGenBuildPipeline
         Dim triHead As TriHeadFile = Nothing
         If Not state.TriHeadCache.TryGetValue(triKey, triHead) Then
             Dim triBytes = FilesDictionary_class.GetBytes(triKey)
-            If triBytes Is Nothing OrElse triBytes.Length = 0 Then Return
+            If triBytes Is Nothing OrElse triBytes.Length = 0 Then
+                NpcPreviewLog.Log($"[BUILDCHARGEN] ApplyChargenMorphsInPlace: TRI '{triKey}' not in FilesDictionary or empty — skipping chargen morphs for this shape")
+                Return
+            End If
             Try
                 triHead = TriHeadParser.ParseTriHeadFromBytes(triBytes)
-            Catch
+            Catch ex As Exception
+                NpcPreviewLog.Log($"[BUILDCHARGEN] ApplyChargenMorphsInPlace: TRI '{triKey}' parse threw {ex.GetType().Name}: {ex.Message} — skipping chargen morphs for this shape")
                 Return
             End Try
             state.TriHeadCache(triKey) = triHead
         End If
-        If triHead Is Nothing Then Return
+        If triHead Is Nothing Then
+            NpcPreviewLog.Log($"[BUILDCHARGEN] ApplyChargenMorphsInPlace: TRI '{triKey}' returned Nothing after parse — skipping chargen morphs for this shape")
+            Return
+        End If
 
         Dim plan = NpcMorphResolver.BuildFaceMorphPlanFromTriHead(state.NpcData, state.RaceMorphValueDefs, state.RaceMorphPresetDefs, triHead, logShapeName:=If(shape.Name?.String, ""))
         If plan Is Nothing OrElse Not plan.HasMorphs Then Return

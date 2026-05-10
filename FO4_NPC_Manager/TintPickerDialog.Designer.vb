@@ -1,4 +1,4 @@
-' UI built in Designer per feedback_ui_in_designer.md.
+﻿' UI built in Designer per feedback_ui_in_designer.md.
 <Global.Microsoft.VisualBasic.CompilerServices.DesignerGenerated()>
 Partial Class TintPickerDialog
     Inherits System.Windows.Forms.Form
@@ -16,94 +16,129 @@ Partial Class TintPickerDialog
 
     <System.Diagnostics.DebuggerStepThrough()>
     Private Sub InitializeComponent()
-        Root = New System.Windows.Forms.TableLayoutPanel()
-        TextBoxFilter = New System.Windows.Forms.TextBox()
-        TintList = New System.Windows.Forms.ListView()
-        ColGroup = New System.Windows.Forms.ColumnHeader()
-        ColOption = New System.Windows.Forms.ColumnHeader()
-        ColSlot = New System.Windows.Forms.ColumnHeader()
-        ColType = New System.Windows.Forms.ColumnHeader()
-        ColIndex = New System.Windows.Forms.ColumnHeader()
-        ButtonRow = New System.Windows.Forms.FlowLayoutPanel()
-        ButtonOk = New System.Windows.Forms.Button()
-        ButtonCancel = New System.Windows.Forms.Button()
+        Root = New TableLayoutPanel()
+        TextBoxFilter = New TextBox()
+        TintList = New ListView()
+        ColGroup = New ColumnHeader()
+        ColOption = New ColumnHeader()
+        ColSlot = New ColumnHeader()
+        ColType = New ColumnHeader()
+        ColIndex = New ColumnHeader()
+        ButtonRow = New FlowLayoutPanel()
+        ButtonOk = New Button()
+        ButtonCancel = New Button()
         Root.SuspendLayout()
         ButtonRow.SuspendLayout()
         SuspendLayout()
-        '
+        ' 
         ' Root
-        '
-        Root.Dock = System.Windows.Forms.DockStyle.Fill
+        ' 
         Root.ColumnCount = 1
-        Root.RowCount = 3
-        Root.Padding = New System.Windows.Forms.Padding(8)
-        Root.ColumnStyles.Add(New System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 100.0F))
-        Root.RowStyles.Add(New System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.AutoSize))
-        Root.RowStyles.Add(New System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 100.0F))
-        Root.RowStyles.Add(New System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.AutoSize))
+        Root.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100F))
         Root.Controls.Add(TextBoxFilter, 0, 0)
         Root.Controls.Add(TintList, 0, 1)
         Root.Controls.Add(ButtonRow, 0, 2)
-        '
+        Root.Dock = DockStyle.Fill
+        Root.Location = New Point(0, 0)
+        Root.Name = "Root"
+        Root.Padding = New Padding(8)
+        Root.RowCount = 3
+        Root.RowStyles.Add(New RowStyle())
+        Root.RowStyles.Add(New RowStyle(SizeType.Percent, 100F))
+        Root.RowStyles.Add(New RowStyle())
+        Root.Size = New Size(610, 480)
+        Root.TabIndex = 0
+        ' 
         ' TextBoxFilter
-        '
-        TextBoxFilter.Dock = System.Windows.Forms.DockStyle.Fill
-        TextBoxFilter.Margin = New System.Windows.Forms.Padding(0, 0, 0, 6)
+        ' 
+        TextBoxFilter.Dock = DockStyle.Fill
+        TextBoxFilter.Location = New Point(8, 8)
+        TextBoxFilter.Margin = New Padding(0, 0, 0, 6)
+        TextBoxFilter.Name = "TextBoxFilter"
         TextBoxFilter.PlaceholderText = "Filter by group, option name, slot or type…"
-        '
+        TextBoxFilter.Size = New Size(594, 23)
+        TextBoxFilter.TabIndex = 0
+        ' 
         ' TintList
-        '
-        TintList.Dock = System.Windows.Forms.DockStyle.Fill
-        TintList.View = System.Windows.Forms.View.Details
+        ' 
+        TintList.Columns.AddRange(New ColumnHeader() {ColGroup, ColOption, ColSlot, ColType, ColIndex})
+        TintList.Dock = DockStyle.Fill
         TintList.FullRowSelect = True
+        TintList.Location = New Point(11, 40)
         TintList.MultiSelect = False
-        TintList.HideSelection = False
-        TintList.GridLines = False
-        TintList.Columns.AddRange(New System.Windows.Forms.ColumnHeader() {ColGroup, ColOption, ColSlot, ColType, ColIndex})
-        '
+        TintList.Name = "TintList"
+        TintList.Size = New Size(588, 388)
+        TintList.TabIndex = 1
+        TintList.UseCompatibleStateImageBehavior = False
+        TintList.View = View.Details
+        ' 
+        ' ColGroup
+        ' 
         ColGroup.Text = "Group"
         ColGroup.Width = 140
+        ' 
+        ' ColOption
+        ' 
         ColOption.Text = "Option"
         ColOption.Width = 220
+        ' 
+        ' ColSlot
+        ' 
         ColSlot.Text = "Slot"
         ColSlot.Width = 50
+        ' 
+        ' ColType
+        ' 
         ColType.Text = "Type"
         ColType.Width = 90
+        ' 
+        ' ColIndex
+        ' 
         ColIndex.Text = "Index"
-        ColIndex.Width = 60
-        '
+        ' 
         ' ButtonRow
-        '
-        ButtonRow.Dock = System.Windows.Forms.DockStyle.Fill
-        ButtonRow.FlowDirection = System.Windows.Forms.FlowDirection.RightToLeft
+        ' 
         ButtonRow.AutoSize = True
-        ButtonRow.AutoSizeMode = System.Windows.Forms.AutoSizeMode.GrowAndShrink
-        ButtonRow.Padding = New System.Windows.Forms.Padding(0, 6, 0, 0)
+        ButtonRow.AutoSizeMode = AutoSizeMode.GrowAndShrink
         ButtonRow.Controls.Add(ButtonOk)
         ButtonRow.Controls.Add(ButtonCancel)
-        '
+        ButtonRow.Dock = DockStyle.Fill
+        ButtonRow.FlowDirection = FlowDirection.RightToLeft
+        ButtonRow.Location = New Point(11, 434)
+        ButtonRow.Name = "ButtonRow"
+        ButtonRow.Padding = New Padding(0, 6, 0, 0)
+        ButtonRow.Size = New Size(588, 35)
+        ButtonRow.TabIndex = 2
+        ' 
         ' ButtonOk
-        '
+        ' 
+        ButtonOk.DialogResult = DialogResult.OK
+        ButtonOk.Location = New Point(505, 9)
+        ButtonOk.Name = "ButtonOk"
+        ButtonOk.Size = New Size(80, 23)
+        ButtonOk.TabIndex = 0
         ButtonOk.Text = "OK"
-        ButtonOk.Width = 80
-        ButtonOk.DialogResult = System.Windows.Forms.DialogResult.OK
-        '
+        ' 
         ' ButtonCancel
-        '
+        ' 
+        ButtonCancel.DialogResult = DialogResult.Cancel
+        ButtonCancel.Location = New Point(419, 9)
+        ButtonCancel.Name = "ButtonCancel"
+        ButtonCancel.Size = New Size(80, 23)
+        ButtonCancel.TabIndex = 1
         ButtonCancel.Text = "Cancel"
-        ButtonCancel.Width = 80
-        ButtonCancel.DialogResult = System.Windows.Forms.DialogResult.Cancel
-        '
+        ' 
         ' TintPickerDialog
-        '
-        Text = "Add Face Tint"
-        ClientSize = New System.Drawing.Size(560, 480)
-        StartPosition = System.Windows.Forms.FormStartPosition.CenterParent
-        MinimizeBox = False
-        MaximizeBox = False
+        ' 
         AcceptButton = ButtonOk
         CancelButton = ButtonCancel
+        ClientSize = New Size(610, 480)
         Controls.Add(Root)
+        MaximizeBox = False
+        MinimizeBox = False
+        Name = "TintPickerDialog"
+        StartPosition = FormStartPosition.CenterParent
+        Text = "Add Face Tint"
         Root.ResumeLayout(False)
         Root.PerformLayout()
         ButtonRow.ResumeLayout(False)

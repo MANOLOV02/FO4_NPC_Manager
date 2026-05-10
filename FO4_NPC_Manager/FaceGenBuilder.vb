@@ -32,6 +32,18 @@ Imports OpenTK.Mathematics
 ''' </summary>
 Public Module FaceGenBuilder
 
+    ''' <summary>When True the bake writes to "_2.nif" / "_2.dds" sandboxed paths so the engine
+    ''' keeps using CK's authoritative output, AND emits the full per-shape diff vs CK BA2 bake
+    ''' (THREEWAY, TEXSRC, RENDERDIFF, MAT-DIAG, POST-SAVE-EMBED). Use during development to
+    ''' compare our output against CK byte-by-byte.
+    '''
+    ''' When False (default — release mode) the bake writes "&lt;FormID&gt;.nif" / "&lt;FormID&gt;_d.dds"
+    ''' directly into the loose folder (clobbers CK's bake; the engine picks ours up). All
+    ''' diff/dump output is skipped because there is no longer a CK reference to compare
+    ''' against — we BECAME the bake. Logging that depends on the verbose pipeline ([BUILDCHARGEN-*])
+    ''' is also skipped to keep the log small.</summary>
+    Public Property DebugMode As Boolean = False
+
     ''' <summary>HDPT.PartType enum values per xEdit wbDefinitionsFO4.pas:7373-7384.</summary>
     Public Const PartTypeMisc As Integer = 0
     Public Const PartTypeFace As Integer = 1
@@ -99,7 +111,8 @@ Public Module FaceGenBuilder
                                  pluginManager As PluginManager,
                                  appliedPresets As Dictionary(Of UInteger, LooksmenuLoader.LooksmenuPreset),
                                  host As NpcRenderHost,
-                                 applyMaterialOverrides As ApplyShapeMaterialOverridesDelegate) As BuildResult
+                                 applyMaterialOverrides As ApplyShapeMaterialOverridesDelegate,
+                                 Optional lmSkinTemplateResolver As NpcRecordOverlay.ResolveLmSkinTemplateDelegate = Nothing) As BuildResult
 
         ' Build the visual state for the NPC being baked (NPC Y), independent of whatever NPC
         ' the preview is showing (NPC X). The bake must NEVER read state from the host. We
@@ -109,9 +122,14 @@ Public Module FaceGenBuilder
         ' Other state fields (outfit/loadout/weight/etc.) are not needed by the per-shape
         ' material resolver and stay at default. If the future reveals a resolver path that
         ' touches another field, surface it here and copy it from npcData.
+        '
+        ' WYSIWYG rule: if the user picked an LM SkinTemplate in EditBody, the bake must apply
+        ' that bundle exactly the same way the live render does — otherwise the .nif2 baked here
+        ' diverges from the WNAM the writer puts in the ESP. The resolver is forwarded from the
+        ' caller (MainForm) so the bake sees the same template the preview saw.
         Dim npcData = NpcRecordOverlay.ApplyPresetOverlayToNpcData(
             NpcRecordOverlay.GetParsedNpc(npcFormID, pluginManager),
-            npcFormID, appliedPresets, pluginManager)
+            npcFormID, appliedPresets, pluginManager, lmSkinTemplateResolver)
         Dim state As MainForm.NPCVisualState = Nothing
         If npcData IsNot Nothing Then
             state = New MainForm.NPCVisualState With {
@@ -127,6 +145,13 @@ Public Module FaceGenBuilder
                 .HasTextureLighting = npcData.HasTextureLighting,
                 .TextureLightingColor = npcData.TextureLightingColor
             }
+            state.HeadPartFormIDs.AddRange(npcData.HeadPartFormIDs)
+            ' Engine race fallbacks: NPC.WNAM=0 → RACE.SkinFormID, NPC head parts/texture/hair
+            ' → RACE defaults, NPC.MWGT sentinel substitution. Same path the render uses; without
+            ' it ResolveActorSkinTextureSet returns Nothing for NPCs that leave WNAM=0 (e.g.
+            ' vanilla children) and the bake falls through to HDPT.TNAM, which for ChildHeadRear
+            ' is hardcoded SkinBodyChildMale — wrong for female actors.
+            MainForm.ApplyRaceFallbacks(state, MainForm.CreateOwnTraitsState(npcData), pluginManager)
         End If
         Dim result As New BuildResult()
         Dim sb As New StringBuilder()
@@ -143,52 +168,44 @@ Public Module FaceGenBuilder
         Dim faceGenPath = ResolveFaceGenPath(npcFormID, pluginManager)
         sb.AppendLine($"[BUILDCHARGEN] facegen path: '{faceGenPath}'")
 
-        Dim bytes As Byte() = Nothing
+        ' Try to load the vanilla FaceGen if it exists. Two reasons:
+        '   - DebugMode: provides a reference to compare our output against (FaceGenComparator,
+        '     DumpHdptThreeWay/TextureSources, ProbeFaceCustomizationDdsFormats, RenderVsBaked).
+        '   - Release: not needed at all — we build the .nif2 from scratch and become the bake.
+        '
+        ' For NPCs with the IsCharGenFacePreset ACBS flag (player-spouse, chargen presets) CK
+        ' never produced a FaceGen, so vanillaBytes will be Nothing — that's expected and not
+        ' an error. The bake proceeds with a freshly created NIF.
+        Dim vanillaBytes As Byte() = Nothing
         Try
-            bytes = FilesDictionary_class.GetBytes(faceGenPath)
+            vanillaBytes = FilesDictionary_class.GetBytes(faceGenPath)
         Catch ex As Exception
             sb.AppendLine($"[BUILDCHARGEN] FilesDictionary.GetBytes threw: {ex.GetType().Name}: {ex.Message}")
         End Try
-        If bytes Is Nothing OrElse bytes.Length = 0 Then
-            sb.AppendLine("[BUILDCHARGEN] no bytes returned — file not present in BA2/loose pool")
-            NpcPreviewLog.Log(sb.ToString())
-            result.Summary = $"FaceGen NIF not found in BA2/loose: {faceGenPath}"
-            Return result
+        If vanillaBytes Is Nothing OrElse vanillaBytes.Length = 0 Then
+            sb.AppendLine("[BUILDCHARGEN] no vanilla FaceGen present in BA2/loose — building from scratch (expected for IsCharGenFacePreset NPCs)")
+            vanillaBytes = Nothing
+        Else
+            sb.AppendLine($"[BUILDCHARGEN] vanilla FaceGen present: {vanillaBytes.Length} bytes (used for diff-vs-CK reference only)")
         End If
-        sb.AppendLine($"[BUILDCHARGEN] loaded {bytes.Length} bytes from BA2/loose")
 
-        ' Load the baked NIF only as a SHELL: we'll wipe its shapes and rebuild from source.
-        ' Keeping the same NiHeader / NIF version preserves whatever bethesda-specific framing
-        ' bits (BSStreamHeader, BS version, endianness) the engine expects in a FaceGen file —
-        ' we only care about geometry + skin coming from sources. The shapes themselves are
-        ' replaced wholesale below; everything else is the baked file's framing.
+        ' Build a fresh FO4 NIF — same path OutfitStudio takes when importing OBJ/FBX without
+        ' a base mesh ([OutfitProject.cpp:515-531] calls workNif.Create(NiVersion::getFO4())).
+        ' NiVersion.GetFO4() = (V20_2_0_7, user=12, stream=130), the canonical FO4 framing CK
+        ' writes. withRootNode=True drops in the root NiNode the engine expects.
         Dim nif As New Nifcontent_Class_Manolo()
         Try
-            nif.Load_Manolo(bytes)
+            nif.Create(NiVersion.GetFO4(), withRootNode:=True)
         Catch ex As Exception
-            sb.AppendLine($"[BUILDCHARGEN] NIF load threw: {ex.GetType().Name}: {ex.Message}")
+            sb.AppendLine($"[BUILDCHARGEN] NIF Create threw: {ex.GetType().Name}: {ex.Message}")
             NpcPreviewLog.Log(sb.ToString())
-            result.Summary = $"Failed to parse FaceGen NIF: {ex.Message}"
+            result.Summary = $"Failed to create FaceGen NIF shell: {ex.Message}"
             Return result
         End Try
+        sb.AppendLine("[BUILDCHARGEN] created blank FO4 NIF shell (V20_2_0_7 / user=12 / stream=130)")
 
-        ' Diagnostic dump of the baked reference + the NPC's HeadParts (so the log shows what
-        ' we're aiming to reproduce).
-        DumpNifShapes(nif, sb)
+        ' Diagnostic dump of the NPC's HeadParts (the build target).
         DumpNpcHeadParts(npcFormID, pluginManager, sb)
-
-        ' Strip every shape from the shell. The .nif2 is going to be assembled fresh from the
-        ' HDPT source meshes. RemoveShape_Manolo also drops the shape's skin partition / shader
-        ' refs / and unreferenced blocks downstream of it.
-        Dim shellShapes = nif.GetShapes().ToList()
-        sb.AppendLine($"[BUILDCHARGEN] --- stripping baked shapes from shell (count={shellShapes.Count}) ---")
-        For Each shap In shellShapes
-            Try
-                nif.RemoveShape_Manolo(shap)
-            Catch ex As Exception
-                sb.AppendLine($"[BUILDCHARGEN]   RemoveShape_Manolo threw on '{If(shap.Name?.String, "")}': {ex.GetType().Name}: {ex.Message}")
-            End Try
-        Next
 
         ' Build the canonical HDPT chain for this NPC. Each entry has its MeshPath and (later)
         ' chargen TRI / FMRS info. This is the AUTHORITATIVE list — the .nif2 contains exactly
@@ -224,17 +241,20 @@ Public Module FaceGenBuilder
         Dim shapesSkippedDup As Integer = 0
         Dim shapesMorphed As Integer = 0
 
-        ' Reload a separate copy of the baked NIF as DIAGNOSTIC reference. The shell `nif`
-        ' above had its shapes stripped, so to dump the baked side per HDPT we keep an
-        ' independent loaded copy. Pure observation — never mutated.
+        ' Reload a separate copy of the baked NIF as DIAGNOSTIC reference (debug only).
+        ' Pure observation — never mutated. Skipped in release: we're going to overwrite the
+        ' BA2-baked reference anyway, the diff has no audience. Also skipped when no vanilla
+        ' bake exists (IsCharGenFacePreset NPCs) — there's nothing to compare against.
         Dim bakedRefNif As Nifcontent_Class_Manolo = Nothing
-        Try
-            bakedRefNif = New Nifcontent_Class_Manolo()
-            bakedRefNif.Load_Manolo(bytes)
-        Catch ex As Exception
-            sb.AppendLine($"[BUILDCHARGEN] failed to load baked diagnostic copy: {ex.Message}")
-            bakedRefNif = Nothing
-        End Try
+        If DebugMode AndAlso vanillaBytes IsNot Nothing Then
+            Try
+                bakedRefNif = New Nifcontent_Class_Manolo()
+                bakedRefNif.Load_Manolo(vanillaBytes)
+            Catch ex As Exception
+                sb.AppendLine($"[BUILDCHARGEN] failed to load baked diagnostic copy: {ex.Message}")
+                bakedRefNif = Nothing
+            End Try
+        End If
 
         ' --- ITERATION 3: build the FaceGen bake state (NPC overlay + race morph defs +
         ' FMRS pose). Single source of truth, consumed by FaceGenBuildPipeline.BakeShape per
@@ -278,8 +298,10 @@ Public Module FaceGenBuilder
             ' Three-way diagnostic dump (original / _facebones / baked) per HDPT — pure
             ' observation, no flow change. Lets us track that ORIG bone palette stays
             ' aligned with BAKE as we iterate the rest (vertex morphs, etc).
-            DumpHdptThreeWay(hdptName, hdpt, baseKey, faceBonesKey, bakedRefNif, sb)
-            DumpHdptTextureSources(hdptName, hdpt, baseKey, faceBonesKey, pluginManager, npcFormID, bakedRefNif, sb)
+            If DebugMode Then
+                DumpHdptThreeWay(hdptName, hdpt, baseKey, faceBonesKey, bakedRefNif, sb)
+                DumpHdptTextureSources(hdptName, hdpt, baseKey, faceBonesKey, pluginManager, npcFormID, bakedRefNif, sb)
+            End If
             Dim srcNif As Nifcontent_Class_Manolo = Nothing
             If Not loadedSources.TryGetValue(sourceKey, srcNif) Then
                 Dim srcBytes As Byte() = Nothing
@@ -323,6 +345,12 @@ Public Module FaceGenBuilder
             ' one shape per source, so the simple branch is the dominant path.
             Dim srcShapes = srcNif.GetShapes().ToList()
             sb.AppendLine($"[BUILDCHARGEN]   shapes in source: {srcShapes.Count}")
+            ' Log shader inline + BGSM material content for each shape AS LOADED FROM DISK.
+            ' This is the baseline: anything that mutates these values downstream (resolver,
+            ' MNAM swap, MSWP swap) will show up as a divergence in the comparison logs.
+            For Each ss In srcShapes
+                LogShapeLoadedMaterial(srcNif, ss, "SOURCE-LOAD", sb)
+            Next
             Dim shapeIdxInThisHdpt As Integer = 0
             For Each srcShape In srcShapes
                 Dim sourceName = If(srcShape.Name?.String, "")
@@ -374,7 +402,7 @@ Public Module FaceGenBuilder
                         ' BaseColor, NonOccluder). AlphaBlendMode left as the source has it
                         ' (Unknown) per user instruction — CK's normalization to None is purely
                         ' cosmetic at this point.
-                        ApplyRenderResolvedMaterialToShape(nif, cloned, srcNif, srcShape, hdpt, state, applyMaterialOverrides, sb)
+                        ApplyRenderResolvedMaterialToShape(nif, cloned, srcNif, srcShape, hdpt, state, pluginManager, applyMaterialOverrides, sb)
 
                         ' --- FaceCustomization texture bake: only for the Face shape (PartType=1).
                         ' GL-readback the 3 GPU textures the FaceTintCompositor wrote (D/N/S),
@@ -388,7 +416,8 @@ Public Module FaceGenBuilder
                         If hdpt.PartType = PartTypeFace AndAlso host IsNot Nothing Then
                             BakeFaceTextures(nif, cloned, srcNif, srcShape,
                                              npcFormID, originPlugin,
-                                             pluginManager, appliedPresets, host, sb)
+                                             pluginManager, appliedPresets, host, sb,
+                                             lmSkinTemplateResolver)
                         End If
 
                         ' MATERIAL DIAG moved to AFTER Save_As_Manolo (disk write). Comparing
@@ -465,7 +494,7 @@ Public Module FaceGenBuilder
                                     Dim stashV As Vector3d() = Nothing
                                     Dim stashFace As SkeletonInstance = Nothing
                                     Dim stashBody As SkeletonInstance = Nothing
-                                    Dim baked = FaceGenBuildPipeline.BakeShape(bakeState, nif, cloned, fbnsNif, fbnsShape, hdpt.ChargenMorphTriPath, sb, stashV, stashFace, stashBody)
+                                    Dim baked = FaceGenBuildPipeline.BakeShape(bakeState, nif, cloned, fbnsNif, fbnsShape, hdpt.ChargenMorphTriPath, sb, stashV, stashFace, stashBody, srcNif, srcShape)
                                     If baked Then
                                         shapesMorphed += 1
                                         If stashV IsNot Nothing Then
@@ -501,11 +530,13 @@ Public Module FaceGenBuilder
         ' different size and quality tradeoffs). Pure observation, runs once per build, no
         ' mutation. Looks up the head shape in the baked NIF reference and probes whatever
         ' texture paths its inline shader contains.
-        Try
-            ProbeFaceCustomizationDdsFormats(bakedRefNif, sb)
-        Catch ex As Exception
-            sb.AppendLine($"[BUILDCHARGEN-DDSPROBE] threw: {ex.GetType().Name}: {ex.Message}")
-        End Try
+        If DebugMode Then
+            Try
+                ProbeFaceCustomizationDdsFormats(bakedRefNif, sb)
+            Catch ex As Exception
+                sb.AppendLine($"[BUILDCHARGEN-DDSPROBE] threw: {ex.GetType().Name}: {ex.Message}")
+            End Try
+        End If
 
         result.ShapesKept = shapesCloned
         result.ShapesDropped = 0
@@ -523,9 +554,10 @@ Public Module FaceGenBuilder
             result.Summary = "DataPath unset; cannot write .nif2"
             Return result
         End If
+        Dim nifSuffix = If(DebugMode, "_2.nif", ".nif")
         Dim outAbs = Path.Combine(dataPathForNif,
                                   "Meshes", "Actors", "Character", "FaceGenData", "FaceGeom",
-                                  originPlugin, $"{formIdLow:X8}_2.nif")
+                                  originPlugin, $"{formIdLow:X8}{nifSuffix}")
         Try
             Directory.CreateDirectory(Path.GetDirectoryName(outAbs))
             nif.Save_As_Manolo(outAbs, Overwrite:=True)
@@ -537,73 +569,59 @@ Public Module FaceGenBuilder
         End Try
         sb.AppendLine($"[BUILDCHARGEN] wrote: {outAbs}")
 
-        ' BAKED-OURS dump: read back the .nif2 we just wrote and dump shader-inline texture
-        ' slots + AlphaProperty for every shape, side-by-side comparable to BAKED-CK so we
-        ' can verify per-slot what we actually emit vs what CK emits. Pure observation.
-        DumpOurBakeAllShapes(outAbs, sb)
+        ' Debug-only post-save observation: BAKED-OURS dump + POST-SAVE-EMBED reload + comparator
+        ' vs CK BA2 bake + render-vs-baked harness. All of these read the just-written file from
+        ' disk and compare against CK's bake — only meaningful in DebugMode where we wrote a
+        ' sandboxed _2.nif alongside CK's .nif. In release mode we OVERWROTE CK's .nif, so the
+        ' "BA2 bytes" reference no longer represents an independent baseline; we ARE the bake.
+        If DebugMode Then
+            ' BAKED-OURS dump: read back the .nif2 we just wrote and dump shader-inline texture
+            ' slots + AlphaProperty for every shape, side-by-side comparable to BAKED-CK so we
+            ' can verify per-slot what we actually emit vs what CK emits.
+            DumpOurBakeAllShapes(outAbs, sb)
 
-        ' MAT-DIAG: reload the .nif2 we just wrote from disk and compare each shape's resolved
-        ' material against the CK reference's, field by field. This is the ONLY honest
-        ' on-disk-vs-CK material comparison — the in-memory `nif` doesn't fully capture what
-        ' the serializer emits.
-        Try
-            Dim ourDiskNif As New Nifcontent_Class_Manolo()
-            ourDiskNif.Load_Manolo(File.ReadAllBytes(outAbs))
-            If bakedRefNif IsNot Nothing Then
-                ' Dump NIF version fields for both files. If StreamVersion / UserVersion /
-                ' BSStreamHeader differ, the parser may interpret the BSLightingShaderProperty
-                ' bitfields under a different layout (SK vs FO4 vs FO76SF) and the same bytes
-                ' decode to different field values. This is the first thing to check before
-                ' chasing per-field diffs.
-                Try
-                    Dim oh = ourDiskNif.Header
-                    Dim bh = bakedRefNif.Header
-                    sb.AppendLine($"[BUILDCHARGEN-MAT-DIAG] NIF header own: StreamVersion={oh.Version.StreamVersion} UserVersion={oh.Version.UserVersion}")
-                    sb.AppendLine($"[BUILDCHARGEN-MAT-DIAG] NIF header CK:  StreamVersion={bh.Version.StreamVersion} UserVersion={bh.Version.UserVersion}")
-                Catch ex As Exception
-                    sb.AppendLine($"[BUILDCHARGEN-MAT-DIAG] header dump threw: {ex.GetType().Name}: {ex.Message}")
-                End Try
-
-                For Each ourShape In ourDiskNif.GetShapes()
-                    Dim shapeName = If(ourShape.Name?.String, "")
-                    If shapeName = "" Then Continue For
-                    LogRenderVsBakeMaterial(shapeName, ourDiskNif, bakedRefNif, sb)
+            ' POST-SAVE-EMBED: reload the .nif2 from disk and log each shape's resolved material
+            ' lighting fields. Diff against POST-RESOLVER shows what Save_To_Shader actually
+            ' serialized (in case the writer drops or transforms fields).
+            Try
+                Dim savedNif As New Nifcontent_Class_Manolo()
+                savedNif.Load_Manolo(File.ReadAllBytes(outAbs))
+                For Each savedShape In savedNif.GetShapes()
+                    LogShapeLoadedMaterial(savedNif, savedShape, "POST-SAVE-EMBED", sb)
                 Next
-            Else
-                sb.AppendLine("[BUILDCHARGEN-MAT-DIAG] CK reference NIF unavailable — skipping material diff")
-            End If
-        Catch ex As Exception
-            sb.AppendLine($"[BUILDCHARGEN-MAT-DIAG] post-save reload threw: {ex.GetType().Name}: {ex.Message}")
-        End Try
+            Catch ex As Exception
+                sb.AppendLine($"[BUILDCHARGEN-MATLOG] [POST-SAVE-EMBED] reload threw: {ex.GetType().Name}: {ex.Message}")
+            End Try
+        End If
 
         NpcPreviewLog.Log(sb.ToString())
 
         result.Success = True
         result.OutputPath = outAbs
 
-        ' Compare the freshly written .nif2 against the BA2 baked NIF (the same `bytes` we
-        ' loaded above). Each iteration of this builder shrinks the diff. The comparator
-        ' logs its own [BUILDCHARGEN-DIFF] block and returns a structured report.
-        Dim cmp = FaceGenComparator.Compare(outAbs, bytes)
-        result.Compare = cmp
+        If DebugMode AndAlso vanillaBytes IsNot Nothing Then
+            ' Compare the freshly written .nif2 against the BA2 baked NIF.
+            Dim cmp = FaceGenComparator.Compare(outAbs, vanillaBytes)
+            result.Compare = cmp
 
-        ' Render-vs-baked world-space comparison. For every shape we baked, we already
-        ' captured v_world (the renderer's post-skinning output). Now we re-skin OURS (the
-        ' just-written .nif2) and CK-baked NIF with a bind-only resolver — that's exactly
-        ' what the engine does at draw time when it picks up a baked face NIF — and report
-        ' the per-shape RMS of v_world vs each. If iter-3 math is correct, render-vs-OURS
-        ' should be ≪ render-vs-CK; the latter floor is the residual we already know
-        ' (~0.006 for the head shape).
-        Try
-            DumpRenderVsBakedHarness(outAbs, bytes, renderStash)
-        Catch ex As Exception
-            NpcPreviewLog.Log($"[BUILDCHARGEN-RENDERDIFF] EXCEPTION {ex.GetType().Name}: {ex.Message}")
-        End Try
+            ' Render-vs-baked world-space comparison.
+            Try
+                DumpRenderVsBakedHarness(outAbs, vanillaBytes, renderStash)
+            Catch ex As Exception
+                NpcPreviewLog.Log($"[BUILDCHARGEN-RENDERDIFF] EXCEPTION {ex.GetType().Name}: {ex.Message}")
+            End Try
 
-        result.Summary = $"Wrote {outAbs}{Environment.NewLine}" &
-                         $"Cloned {result.ShapesKept} shape(s) from {hdptProcessed} HDPT source(s).{Environment.NewLine}" &
-                         $"Diff vs CK bake: {cmp.Summary}{Environment.NewLine}" &
-                         "See npc_preview.log [BUILDCHARGEN] + [BUILDCHARGEN-DIFF] for details."
+            result.Summary = $"Wrote {outAbs}{Environment.NewLine}" &
+                             $"Cloned {result.ShapesKept} shape(s) from {hdptProcessed} HDPT source(s).{Environment.NewLine}" &
+                             $"Diff vs CK bake: {cmp.Summary}{Environment.NewLine}" &
+                             "See npc_preview.log [BUILDCHARGEN] + [BUILDCHARGEN-DIFF] for details."
+        ElseIf DebugMode Then
+            ' DebugMode but no vanilla to compare against (IsCharGenFacePreset NPC).
+            result.Summary = $"Wrote {outAbs} ({result.ShapesKept} shapes from {hdptProcessed} HDPTs) — no vanilla FaceGen for diff"
+        Else
+            result.Summary = $"Wrote {outAbs} ({result.ShapesKept} shapes from {hdptProcessed} HDPTs)"
+        End If
+
         Return result
     End Function
 
@@ -948,7 +966,7 @@ Public Module FaceGenBuilder
                 Dim shaderType = bsls.ShaderType_SK_FO4
                 sb.AppendLine($"[BUILDCHARGEN-TEXSRC]     [{label}] shape='{shapeName}' shader=BSLightingShaderProperty type={shaderType}")
                 sb.AppendLine($"[BUILDCHARGEN-TEXSRC]       [{label}] shader-inline HasGreyscaleToPaletteColor={bsls.HasGreyscaleToPaletteColor} GrayscaleToPaletteScale={bsls.GrayscaleToPaletteScale}")
-                sb.AppendLine($"[BUILDCHARGEN-TEXSRC]       [{label}] shader-inline HasEnvironmentMapping={bsls.HasEnvironmentMapping} HasEyeEnvironmentMapping={bsls.HasEyeEnvironmentMapping} EnvironmentMapScale={bsls.EnvironmentMapScale} HasGlowmap={bsls.HasGlowmap} HasSpecular={bsls.HasSpecular}")
+                sb.AppendLine($"[BUILDCHARGEN-TEXSRC]       [{label}] shader-inline HasEnvironmentMapping={bsls.HasEnvironmentMapping} HasEyeEnvironmentMapping={bsls.HasEyeEnvironmentMapping} EnvironmentMapScale={bsls.EnvironmentMapScale} HasGlowmap={bsls.HasGlowmap} HasSpecular={bsls.HasSpecular} SpecularColor={bsls.SpecularColor} SpecularStrength={bsls.SpecularStrength}")
                 sb.AppendLine($"[BUILDCHARGEN-TEXSRC]       [{label}] shader-inline Emissive={bsls.Emissive} EmissiveColor={bsls.EmissiveColor} EmissiveMultiple={bsls.EmissiveMultiple} HasRimlight={bsls.HasRimlight} RimlightPower={bsls.RimlightPower} HasBacklight={bsls.HasBacklight} BacklightPower={bsls.BacklightPower} HasSoftlight={bsls.HasSoftlight} SubsurfaceRolloff={bsls.SubsurfaceRolloff} RootMaterialName='{bsls.RootMaterialName}'")
                 ' Inline TX00..TX07 from the shader's TextureSet
                 If bsls.TextureSetRef IsNot Nothing AndAlso bsls.TextureSetRef.Index >= 0 Then
@@ -1027,7 +1045,7 @@ Public Module FaceGenBuilder
         If Not String.IsNullOrEmpty(mat.SpecularTexture) Then sb.AppendLine($"[BUILDCHARGEN-TEXSRC]       {label} specular='{mat.SpecularTexture}'")
         sb.AppendLine($"[BUILDCHARGEN-TEXSRC]       {label} GrayscaleToPaletteColor={mat.GrayscaleToPaletteColor} GrayscaleToPaletteAlpha={mat.GrayscaleToPaletteAlpha} GrayscaleToPaletteScale={mat.GrayscaleToPaletteScale}")
         sb.AppendLine($"[BUILDCHARGEN-TEXSRC]       {label} Glowmap={mat.Glowmap} Hair={mat.Hair} SkinTint={mat.SkinTint} Facegen={mat.Facegen} EnvironmentMapping={mat.EnvironmentMapping} NifShaderType={mat.NifShaderType}")
-        sb.AppendLine($"[BUILDCHARGEN-TEXSRC]       {label} EmitEnabled={mat.EmitEnabled} EmittanceColor={mat.EmittanceColor} EmittanceMult={mat.EmittanceMult} RimLighting={mat.RimLighting} RimPower={mat.RimPower} BackLighting={mat.BackLighting} BackLightPower={mat.BackLightPower} SpecularEnabled={mat.SpecularEnabled} SubsurfaceLighting={mat.SubsurfaceLighting} SubsurfaceLightingRolloff={mat.SubsurfaceLightingRolloff} RootMaterialPath='{mat.RootMaterialPath}'")
+        sb.AppendLine($"[BUILDCHARGEN-TEXSRC]       {label} EmitEnabled={mat.EmitEnabled} EmittanceColor={mat.EmittanceColor} EmittanceMult={mat.EmittanceMult} RimLighting={mat.RimLighting} RimPower={mat.RimPower} BackLighting={mat.BackLighting} BackLightPower={mat.BackLightPower} SpecularEnabled={mat.SpecularEnabled} SpecularColor={mat.SpecularColor:X8} SpecularMult={mat.SpecularMult} Smoothness={mat.Smoothness} SubsurfaceLighting={mat.SubsurfaceLighting} SubsurfaceLightingRolloff={mat.SubsurfaceLightingRolloff} SoftEnabled={mat.SoftEnabled} SoftDepth={mat.SoftDepth} RootMaterialPath='{mat.RootMaterialPath}'")
     End Sub
 
     Private Sub DumpTxstDirectSlots(txst As TXST_Data, sb As StringBuilder)
@@ -1067,7 +1085,7 @@ Public Module FaceGenBuilder
             If bsls IsNot Nothing Then
                 sb.AppendLine($"[BUILDCHARGEN-TEXSRC]   BAKED-OURS shape='{shapeName}' shader=BSLightingShaderProperty type={bsls.ShaderType_SK_FO4}")
                 sb.AppendLine($"[BUILDCHARGEN-TEXSRC]     BAKED-OURS shader-inline HasGreyscaleToPaletteColor={bsls.HasGreyscaleToPaletteColor} GrayscaleToPaletteScale={bsls.GrayscaleToPaletteScale}")
-                sb.AppendLine($"[BUILDCHARGEN-TEXSRC]     BAKED-OURS shader-inline HasEnvironmentMapping={bsls.HasEnvironmentMapping} HasEyeEnvironmentMapping={bsls.HasEyeEnvironmentMapping} EnvironmentMapScale={bsls.EnvironmentMapScale} HasGlowmap={bsls.HasGlowmap} HasSpecular={bsls.HasSpecular}")
+                sb.AppendLine($"[BUILDCHARGEN-TEXSRC]     BAKED-OURS shader-inline HasEnvironmentMapping={bsls.HasEnvironmentMapping} HasEyeEnvironmentMapping={bsls.HasEyeEnvironmentMapping} EnvironmentMapScale={bsls.EnvironmentMapScale} HasGlowmap={bsls.HasGlowmap} HasSpecular={bsls.HasSpecular} SpecularColor={bsls.SpecularColor} SpecularStrength={bsls.SpecularStrength}")
                 sb.AppendLine($"[BUILDCHARGEN-TEXSRC]     BAKED-OURS shader-inline Emissive={bsls.Emissive} EmissiveColor={bsls.EmissiveColor} EmissiveMultiple={bsls.EmissiveMultiple} HasRimlight={bsls.HasRimlight} RimlightPower={bsls.RimlightPower} HasBacklight={bsls.HasBacklight} BacklightPower={bsls.BacklightPower} HasSoftlight={bsls.HasSoftlight} SubsurfaceRolloff={bsls.SubsurfaceRolloff} RootMaterialName='{bsls.RootMaterialName}'")
                 If bsls.TextureSetRef IsNot Nothing AndAlso bsls.TextureSetRef.Index >= 0 Then
                     Dim ts = TryCast(ourNif.Blocks(bsls.TextureSetRef.Index), BSShaderTextureSet)
@@ -1122,7 +1140,7 @@ Public Module FaceGenBuilder
         If bsls IsNot Nothing Then
             sb.AppendLine($"[BUILDCHARGEN-TEXSRC]   BAKED-CK shape='{hdptName}' shader=BSLightingShaderProperty type={bsls.ShaderType_SK_FO4}")
             sb.AppendLine($"[BUILDCHARGEN-TEXSRC]     BAKED-CK shader-inline HasGreyscaleToPaletteColor={bsls.HasGreyscaleToPaletteColor} GrayscaleToPaletteScale={bsls.GrayscaleToPaletteScale}")
-            sb.AppendLine($"[BUILDCHARGEN-TEXSRC]     BAKED-CK shader-inline HasEnvironmentMapping={bsls.HasEnvironmentMapping} HasEyeEnvironmentMapping={bsls.HasEyeEnvironmentMapping} EnvironmentMapScale={bsls.EnvironmentMapScale} HasGlowmap={bsls.HasGlowmap} HasSpecular={bsls.HasSpecular}")
+            sb.AppendLine($"[BUILDCHARGEN-TEXSRC]     BAKED-CK shader-inline HasEnvironmentMapping={bsls.HasEnvironmentMapping} HasEyeEnvironmentMapping={bsls.HasEyeEnvironmentMapping} EnvironmentMapScale={bsls.EnvironmentMapScale} HasGlowmap={bsls.HasGlowmap} HasSpecular={bsls.HasSpecular} SpecularColor={bsls.SpecularColor} SpecularStrength={bsls.SpecularStrength}")
             sb.AppendLine($"[BUILDCHARGEN-TEXSRC]     BAKED-CK shader-inline Emissive={bsls.Emissive} EmissiveColor={bsls.EmissiveColor} EmissiveMultiple={bsls.EmissiveMultiple} HasRimlight={bsls.HasRimlight} RimlightPower={bsls.RimlightPower} HasBacklight={bsls.HasBacklight} BacklightPower={bsls.BacklightPower} HasSoftlight={bsls.HasSoftlight} SubsurfaceRolloff={bsls.SubsurfaceRolloff} RootMaterialName='{bsls.RootMaterialName}'")
             If bsls.TextureSetRef IsNot Nothing AndAlso bsls.TextureSetRef.Index >= 0 Then
                 Dim ts = TryCast(bakedRefNif.Blocks(bsls.TextureSetRef.Index), BSShaderTextureSet)
@@ -1612,6 +1630,7 @@ Public Module FaceGenBuilder
                                                     srcShape As INiShape,
                                                     hdpt As HDPT_Data,
                                                     state As MainForm.NPCVisualState,
+                                                    pluginManager As PluginManager,
                                                     applyMaterialOverrides As ApplyShapeMaterialOverridesDelegate,
                                                     sb As StringBuilder)
         Dim sourceName As String = If(cloned.Name?.String, "")
@@ -1636,6 +1655,34 @@ Public Module FaceGenBuilder
             Return
         End Try
 
+        ' CBBE-style override fix mirrors MainForm.CollectHeadPartCandidate: if the HDPT is
+        ' FemaleHeadHumanRearTEMP (vanilla 0x0004D0E9), the flag is False, the record comes
+        ' from an override (originating plugin ≠ Fallout4.esm), and the actor is NOT
+        ' Human-female, force UsesBodyTexture=True so the resolver substitutes the actor's
+        ' body skin TXST. Same rule render uses; bake must mirror it because both consume
+        ' the same ApplyShapeMaterialOverrides delegate downstream.
+        ' Bare ID compare: load-order prefix in high byte differs per plugin (vanilla=0x00,
+        ' overrides=0x01..0xFF) but the record ID is shared. Mask to low 24 bits so CBBE-style
+        ' overrides (e.g. 0x0104D0E9) match the vanilla bare ID.
+        Const FemaleHeadHumanRearTEMPBareID As UInteger = &H4D0E9UI
+        Const HumanRaceBareID As UInteger = &H13746UI
+        Dim hdptFormID = hdpt.FormID
+        Dim effectiveUsesBodyTexture = hdpt.UsesBodyTexture
+        If (hdptFormID And &HFFFFFFUI) = FemaleHeadHumanRearTEMPBareID AndAlso Not hdpt.UsesBodyTexture Then
+            ' Override detection: PluginRecord.SourcePluginName carries the plugin that won the
+            ' merge for this record (last override). GetOriginatingPluginName returns the master
+            ' that owns the FormID (Fallout4.esm here) which is wrong signal for "is override".
+            Dim hdptRec = pluginManager.GetRecord(hdptFormID)
+            Dim sourcePlugin As String = If(hdptRec?.SourcePluginName, "")
+            Dim isOverride = Not String.Equals(sourcePlugin, "Fallout4.esm", StringComparison.OrdinalIgnoreCase) AndAlso Not String.IsNullOrEmpty(sourcePlugin)
+            Dim raceBare As UInteger = If(state IsNot Nothing, state.RaceFormID And &HFFFFFFUI, 0UI)
+            Dim isHumanFemale = (state IsNot Nothing) AndAlso raceBare = HumanRaceBareID AndAlso state.IsFemale
+            If isOverride AndAlso Not isHumanFemale Then
+                effectiveUsesBodyTexture = True
+                sb.AppendLine($"[BUILDCHARGEN] [CBBE-HEADREAR] forced UsesBodyTexture=True (HDPT 0x{hdptFormID:X8} override from '{sourcePlugin}', actor not Human-Female)")
+            End If
+        End If
+
         ' Build a minimal MeshCandidate from the HDPT in scope. For Build CharGen the candidate
         ' chain is straightforward (HDPT → Face/Eyes/Hair/etc.) so we don't need the full
         ' Outfit/LVLN/OBTS/OMOD resolution that the live render runs.
@@ -1644,10 +1691,19 @@ Public Module FaceGenBuilder
             .HeadPartType = hdpt.PartType,
             .HeadPartTypeRaw = hdpt.PartType,
             .TextureSetFormID = hdpt.TextureSetFormID,
-            .UsesBodyTexture = hdpt.UsesBodyTexture,
+            .UsesBodyTexture = effectiveUsesBodyTexture,
             .HeadPartColorFormID = hdpt.ColorFormID,
             .UseSolidTint = (hdpt.ColorFormID <> 0UI)
         }
+
+        ' PRE-RESOLVER snapshot: what the wrapper's material looks like right after the source
+        ' NIF + BGSM was loaded, BEFORE the resolver chain runs.
+        Dim preMat = wrapper.ShapeMaterial?.material
+        If preMat IsNot Nothing Then
+            sb.AppendLine($"[BUILDCHARGEN-MATLOG] [PRE-RESOLVER] shape='{sourceName}' path='{If(wrapper.ShapeMaterial.path, "")}' BackLighting={preMat.BackLighting} BackLightPower={preMat.BackLightPower} RimLighting={preMat.RimLighting} RimPower={preMat.RimPower} EmitEnabled={preMat.EmitEnabled} EmittanceColor={preMat.EmittanceColor} SpecularEnabled={preMat.SpecularEnabled} SubRoll={preMat.SubsurfaceLightingRolloff} RootMat='{If(preMat.RootMaterialPath, "")}'")
+        Else
+            sb.AppendLine($"[BUILDCHARGEN-MATLOG] [PRE-RESOLVER] shape='{sourceName}' wrapper.ShapeMaterial.material is Nothing")
+        End If
 
         ' Run the same per-shape resolver the render uses. Mutates wrapper.ShapeMaterial in-place.
         Try
@@ -1662,6 +1718,11 @@ Public Module FaceGenBuilder
             sb.AppendLine($"[BUILDCHARGEN]     mat-copy: resolver produced no material for '{sourceName}'")
             Return
         End If
+
+        ' POST-RESOLVER snapshot: same fields after the resolver ran. Diff against PRE shows
+        ' which fields the resolver chain (TXST.MNAM swap, MSWP swap, tint colour overrides, etc.)
+        ' actually mutated. Should match what gets serialized to disk by Save_To_Shader below.
+        sb.AppendLine($"[BUILDCHARGEN-MATLOG] [POST-RESOLVER] shape='{sourceName}' path='{If(wrapper.ShapeMaterial?.path, "")}' BackLighting={mat.BackLighting} BackLightPower={mat.BackLightPower} RimLighting={mat.RimLighting} RimPower={mat.RimPower} EmitEnabled={mat.EmitEnabled} EmittanceColor={mat.EmittanceColor} SpecularEnabled={mat.SpecularEnabled} SubRoll={mat.SubsurfaceLightingRolloff} RootMat='{If(mat.RootMaterialPath, "")}'")
 
         Dim shad = nif.GetShader(cloned)
         If shad Is Nothing Then
@@ -1695,6 +1756,18 @@ Public Module FaceGenBuilder
                 ' del .bgsm en disco) y para que el comparator embedded-vs-embedded de
                 ' GetRelatedMaterial caiga en la rama Create_From_Shader igual que el bake CK.
                 If bsls.Name IsNot Nothing Then bsls.Name.String = ""
+
+                ' CK convention for non-emissive shapes: when the BGSM source does NOT mark
+                ' the material as emissive, CK still emits Emissive=True + EmittanceColor=(0,0,0)
+                ' as a "field present, no light" centinela. Replicating lines up most baked
+                ' shapes' Emit fields with CK output. Verified against Alijo (8 shapes) and Carol
+                ' (NeckGore, EmitEnabled=True with rgb=(255,0,18) for ghoul gore must keep its
+                ' real colour). Branch gated on source mat.EmitEnabled to preserve real emisives.
+                If Not mat.EmitEnabled Then
+                    bsls.Emissive = True
+                    bsls.EmissiveColor = New NiflySharp.Structs.Color4(0.0F, 0.0F, 0.0F, 1.0F)
+                End If
+                bsls.RootMaterialName = ""
             Else
                 Dim bes = TryCast(shad, BSEffectShaderProperty)
                 If bes Is Nothing Then
@@ -1750,7 +1823,8 @@ Public Module FaceGenBuilder
                                  pluginManager As PluginManager,
                                  appliedPresets As Dictionary(Of UInteger, LooksmenuLoader.LooksmenuPreset),
                                  host As NpcRenderHost,
-                                 sb As StringBuilder)
+                                 sb As StringBuilder,
+                                 Optional lmSkinTemplateResolver As NpcRecordOverlay.ResolveLmSkinTemplateDelegate = Nothing)
         ' --- 1. Resolve the face source material (D/N/S texture paths) from the source NIF. ---
         Dim relMat = srcNif.GetRelatedMaterial(srcShape)
         Dim mat = relMat?.material
@@ -1768,9 +1842,12 @@ Public Module FaceGenBuilder
         End If
 
         ' --- 2. Resolve the NPC's race + gender so we can build layers + region swaps. ---
+        ' Forward the LM SkinTemplate resolver so face TXST overrides from the bundle land here
+        ' (template.face[gender] → npcData.HeadTextureFormID), keeping the bake's tint inputs
+        ' aligned with what the live render shows.
         Dim npcData = NpcRecordOverlay.ApplyPresetOverlayToNpcData(
             NpcRecordOverlay.GetParsedNpc(npcFormID, pluginManager),
-            npcFormID, appliedPresets, pluginManager)
+            npcFormID, appliedPresets, pluginManager, lmSkinTemplateResolver)
         If npcData Is Nothing Then
             sb.AppendLine("[BUILDCHARGEN-FACEBAKE] ABORT: NPC record could not be parsed")
             Return
@@ -1798,6 +1875,8 @@ Public Module FaceGenBuilder
             sb.AppendLine($"[BUILDCHARGEN-FACEBAKE] ABORT: diffuse '{diffuseKey}' not in FilesDictionary")
             Return
         End If
+        If normalBytesArr Is Nothing Then sb.AppendLine($"[BUILDCHARGEN-FACEBAKE] WARN: normal '{normalKey}' missing — face bake will skip slot 1")
+        If specBytesArr Is Nothing Then sb.AppendLine($"[BUILDCHARGEN-FACEBAKE] WARN: spec '{specKey}' missing — face bake will skip slot 7")
 
         Dim uploadPaths As New List(Of String)
         Dim uploadBytes As New List(Of Byte())
@@ -1873,10 +1952,16 @@ Public Module FaceGenBuilder
         Dim outDir = Path.Combine(dataPath, "Textures", "Actors", "Character", "FaceCustomization", originPlugin)
         Try : Directory.CreateDirectory(outDir) : Catch : End Try
 
+        ' Suffix gating: in DebugMode we keep the "_2" sandbox so the engine reads CK's authoritative
+        ' textures and we can diff side-by-side. In release we overwrite CK's FaceCustomization
+        ' (clobbering its baked diffuse/normal/spec).
+        Dim suffixD = If(DebugMode, "_d_2.dds", "_d.dds")
+        Dim suffixN = If(DebugMode, "_msn_2.dds", "_msn.dds")
+        Dim suffixS = If(DebugMode, "_s_2.dds", "_s.dds")
         Dim slotPlan = New (Slot As Integer, ResultId As Integer, Dxgi As Integer, Suffix As String)() {
-            (0, pipelineResult.Diffuse.TextureId, DirectXTextureConversionHelper.DxgiFormatBc3Unorm, "_d_2.dds"),
-            (1, pipelineResult.Normal.TextureId, DirectXTextureConversionHelper.DxgiFormatBc5Unorm, "_msn_2.dds"),
-            (7, pipelineResult.Specular.TextureId, DirectXTextureConversionHelper.DxgiFormatBc5Unorm, "_s_2.dds")
+            (0, pipelineResult.Diffuse.TextureId, DirectXTextureConversionHelper.DxgiFormatBc3Unorm, suffixD),
+            (1, pipelineResult.Normal.TextureId, DirectXTextureConversionHelper.DxgiFormatBc5Unorm, suffixN),
+            (7, pipelineResult.Specular.TextureId, DirectXTextureConversionHelper.DxgiFormatBc5Unorm, suffixS)
         }
 
         Dim bsls = TryCast(nif.GetShader(cloned), BSLightingShaderProperty)
@@ -1943,16 +2028,18 @@ Public Module FaceGenBuilder
 
             sb.AppendLine($"[BUILDCHARGEN-FACEBAKE]   slot[{entry.Slot}] {w}x{h} → '{outFile}' ({ddsBytes.Length} B, DXGI={entry.Dxgi}, mips={mipLevels}); shader path → '{canonicalNifPath}'")
 
-            Try
-                Dim ckDdsBytes = FilesDictionary_class.GetBytes(FO4UnifiedMaterial_Class.CorrectTexturePath(canonicalNifPath))
-                If ckDdsBytes IsNot Nothing AndAlso ckDdsBytes.Length > 128 Then
-                    LogFaceBakeBgraDiff(entry.Slot, w, h, bgra, ckDdsBytes, sb)
-                Else
-                    sb.AppendLine($"[BUILDCHARGEN-FACEBAKE]     CK reference '{canonicalNifPath}' not in FilesDictionary, skipping diff")
-                End If
-            Catch ex As Exception
-                sb.AppendLine($"[BUILDCHARGEN-FACEBAKE]     CK diff failed: {ex.GetType().Name}: {ex.Message}")
-            End Try
+            If DebugMode Then
+                Try
+                    Dim ckDdsBytes = FilesDictionary_class.GetBytes(FO4UnifiedMaterial_Class.CorrectTexturePath(canonicalNifPath))
+                    If ckDdsBytes IsNot Nothing AndAlso ckDdsBytes.Length > 128 Then
+                        LogFaceBakeBgraDiff(entry.Slot, w, h, bgra, ckDdsBytes, sb)
+                    Else
+                        sb.AppendLine($"[BUILDCHARGEN-FACEBAKE]     CK reference '{canonicalNifPath}' not in FilesDictionary, skipping diff")
+                    End If
+                Catch ex As Exception
+                    sb.AppendLine($"[BUILDCHARGEN-FACEBAKE]     CK diff failed: {ex.GetType().Name}: {ex.Message}")
+                End Try
+            End If
         Next
 
         ' --- 7. Cleanup. Delete the source temporaries we uploaded AND any fresh outputs the
@@ -1970,9 +2057,13 @@ Public Module FaceGenBuilder
         If String.IsNullOrEmpty(normalizedKey) Then Return Nothing
         Try
             Dim bytes = FilesDictionary_class.GetBytes(normalizedKey)
-            If bytes Is Nothing OrElse bytes.Length = 0 Then Return Nothing
+            If bytes Is Nothing OrElse bytes.Length = 0 Then
+                NpcPreviewLog.Log($"[BUILDCHARGEN-FACEBAKE] TryGetFilesDictionaryBytes miss: '{normalizedKey}' (Nothing or empty)")
+                Return Nothing
+            End If
             Return bytes
-        Catch
+        Catch ex As Exception
+            NpcPreviewLog.Log($"[BUILDCHARGEN-FACEBAKE] TryGetFilesDictionaryBytes threw on '{normalizedKey}': {ex.GetType().Name}: {ex.Message}")
             Return Nothing
         End Try
     End Function
@@ -2029,114 +2120,53 @@ Public Module FaceGenBuilder
         sb.AppendLine($"[BUILDCHARGEN-FACEBAKE]     CK diff slot[{slot}]: RMS B={rmsB:F2} G={rmsG:F2} R={rmsR:F2} A={rmsA:F2} total={rmsTotal:F2} (0-255 scale); max B={maxB} G={maxG} R={maxR} A={maxA}")
     End Sub
 
-    ''' <summary>Diagnostic-only: per cloned shape, log the material the render has resolved
-    ''' <summary>Diagnostic: log the material we wrote into our own bake side-by-side with the
-    ''' material the CK-baked reference NIF has inline. Pure observation, NO mutation.
-    '''
-    ''' Match strategy: both NIFs key the shape by HDPT EditorID at this point (the bake's
-    ''' clone was renamed during shape clone, and the CK bake names baked shapes by HDPT
-    ''' EditorID — verified empirically against vanilla bakes).</summary>
-    Private Sub LogRenderVsBakeMaterial(hdptName As String,
-                                         ownNif As Nifcontent_Class_Manolo,
-                                         bakedRefNif As Nifcontent_Class_Manolo,
-                                         sb As StringBuilder)
-        Dim ownMat As FO4UnifiedMaterial_Class = Nothing
-        Dim ownShaderName As String = ""
-        If ownNif IsNot Nothing Then
-            For Each s In ownNif.GetShapes()
-                If String.Equals(If(s.Name?.String, ""), hdptName, StringComparison.OrdinalIgnoreCase) Then
-                    Dim rel = ownNif.GetRelatedMaterial(s)
-                    If rel IsNot Nothing Then
-                        ownMat = rel.material
-                        ownShaderName = If(rel.path, "")
-                    End If
-                    Exit For
-                End If
-            Next
-        End If
+    ''' <summary>Log the shader-inline + related-material lighting fields for a shape, tagged
+    ''' with a stage label (e.g. "SOURCE-LOAD" right after Load_Manolo). Used to track where
+    ''' material values diverge across the bake pipeline: load → resolver → TXST.MNAM swap →
+    ''' MSWP swap → final embed. Comparing the same shape's tag-by-tag lines tells us which
+    ''' stage mutated each field.</summary>
+    Friend Sub LogShapeLoadedMaterial(nif As Nifcontent_Class_Manolo, shape As INiShape, stageTag As String, sb As StringBuilder)
+        If nif Is Nothing OrElse shape Is Nothing Then Return
+        Dim shapeName = If(shape.Name?.String, "<unnamed>")
 
-        Dim bakeMat As FO4UnifiedMaterial_Class = Nothing
-        Dim bakeShaderName As String = ""
-        If bakedRefNif IsNot Nothing Then
-            For Each s In bakedRefNif.GetShapes()
-                If String.Equals(If(s.Name?.String, ""), hdptName, StringComparison.OrdinalIgnoreCase) Then
-                    Dim rel = bakedRefNif.GetRelatedMaterial(s)
-                    If rel IsNot Nothing Then
-                        bakeMat = rel.material
-                        bakeShaderName = If(rel.path, "")
-                    End If
-                    Exit For
-                End If
-            Next
-        End If
-
-        sb.AppendLine($"[BUILDCHARGEN-MAT-DIAG] === '{hdptName}' ===")
-        sb.AppendLine($"[BUILDCHARGEN-MAT-DIAG]   own-shape found={ownMat IsNot Nothing}  bake-shape found={bakeMat IsNot Nothing}")
-        sb.AppendLine($"[BUILDCHARGEN-MAT-DIAG]   shader path: own='{ownShaderName}' bake='{bakeShaderName}'")
-        If ownMat Is Nothing OrElse bakeMat Is Nothing Then Return
-
-        ' Texture slots — these are what the engine actually samples.
-        DumpMatField(sb, "Diffuse        ", ownMat.Diffuse_or_Base_Texture, bakeMat.Diffuse_or_Base_Texture)
-        DumpMatField(sb, "Normal         ", ownMat.NormalTexture, bakeMat.NormalTexture)
-        DumpMatField(sb, "SmoothSpec     ", ownMat.SmoothSpecTexture, bakeMat.SmoothSpecTexture)
-        DumpMatField(sb, "Glow           ", ownMat.GlowTexture, bakeMat.GlowTexture)
-        DumpMatField(sb, "Greyscale      ", ownMat.GreyscaleTexture, bakeMat.GreyscaleTexture)
-        DumpMatField(sb, "Envmap         ", ownMat.EnvmapTexture, bakeMat.EnvmapTexture)
-        DumpMatField(sb, "EnvmapMask     ", ownMat.EnvmapMaskTexture, bakeMat.EnvmapMaskTexture)
-        DumpMatField(sb, "Wrinkles       ", ownMat.WrinklesTexture, bakeMat.WrinklesTexture)
-
-        DumpMatField(sb, "NifShaderType  ", ownMat.NifShaderType, bakeMat.NifShaderType)
-        DumpMatField(sb, "Hair           ", ownMat.Hair, bakeMat.Hair)
-        DumpMatField(sb, "SkinTint       ", ownMat.SkinTint, bakeMat.SkinTint)
-        DumpMatField(sb, "Glowmap        ", ownMat.Glowmap, bakeMat.Glowmap)
-        DumpMatField(sb, "EnvironmentMap ", ownMat.EnvironmentMapping, bakeMat.EnvironmentMapping)
-        DumpMatField(sb, "AlphaTest      ", ownMat.AlphaTest, bakeMat.AlphaTest)
-        DumpMatField(sb, "AlphaTestRef   ", ownMat.AlphaTestRef, bakeMat.AlphaTestRef)
-        DumpMatField(sb, "AlphaBlendMode ", ownMat.AlphaBlendMode, bakeMat.AlphaBlendMode)
-        DumpMatField(sb, "Alpha          ", ownMat.Alpha, bakeMat.Alpha)
-        DumpMatField(sb, "HairTintColor  ", ownMat.HairTintColor, bakeMat.HairTintColor)
-        DumpMatField(sb, "SkinTintColor  ", ownMat.SkinTintColor, bakeMat.SkinTintColor)
-        DumpMatField(sb, "BaseColor      ", ownMat.BaseColor, bakeMat.BaseColor)
-        DumpMatField(sb, "NonOccluder    ", ownMat.NonOccluder, bakeMat.NonOccluder)
-
-        Dim ownBgsm = TryCast(ownMat.Underlying_Material, MaterialLib.BGSM)
-        Dim bakeBgsm = TryCast(bakeMat.Underlying_Material, MaterialLib.BGSM)
-        If ownBgsm IsNot Nothing AndAlso bakeBgsm IsNot Nothing Then
-            sb.AppendLine($"[BUILDCHARGEN-MAT-DIAG]   BGSM flags own:  Glowmap={ownBgsm.Glowmap} Hair={ownBgsm.Hair} Facegen={ownBgsm.Facegen} SkinTint={ownBgsm.SkinTint} Tree={ownBgsm.Tree} Terrain={ownBgsm.Terrain} EnvWindow={ownBgsm.EnvironmentMappingWindow} EnvEye={ownBgsm.EnvironmentMappingEye}")
-            sb.AppendLine($"[BUILDCHARGEN-MAT-DIAG]   BGSM flags bake: Glowmap={bakeBgsm.Glowmap} Hair={bakeBgsm.Hair} Facegen={bakeBgsm.Facegen} SkinTint={bakeBgsm.SkinTint} Tree={bakeBgsm.Tree} Terrain={bakeBgsm.Terrain} EnvWindow={bakeBgsm.EnvironmentMappingWindow} EnvEye={bakeBgsm.EnvironmentMappingEye}")
-        ElseIf ownBgsm IsNot Nothing Then
-            sb.AppendLine($"[BUILDCHARGEN-MAT-DIAG]   BGSM flags own: Glowmap={ownBgsm.Glowmap} Hair={ownBgsm.Hair} Facegen={ownBgsm.Facegen} SkinTint={ownBgsm.SkinTint} Tree={ownBgsm.Tree} Terrain={ownBgsm.Terrain} EnvWindow={ownBgsm.EnvironmentMappingWindow} EnvEye={ownBgsm.EnvironmentMappingEye}  (bake material is not BGSM)")
-        End If
-
-        ' Bake-side inline shader flags read directly off the BSLightingShaderProperty in
-        ' the CK baked NIF. Independent of the BGSM file: tells us what flags CK literally
-        ' wrote into the shader at bake time. If `Glowmap=True` is set on the bake side and
-        ' the source-NIF / BGSM-render side is also `Glowmap=True`, the only diff is the
-        ' ShaderType_SK_FO4 enum — meaning the promotion rule is what we have to fix.
+        ' Shader inline (raw values written into the BSLightingShaderProperty / BSEffectShader
+        ' inside the NIF — what the engine actually reads at draw time when no external BGSM
+        ' is consulted). Independent of the .bgsm on disk.
         Try
-            Dim bakeShape As INiShape = Nothing
-            For Each s In bakedRefNif.GetShapes()
-                If String.Equals(If(s.Name?.String, ""), hdptName, StringComparison.OrdinalIgnoreCase) Then
-                    bakeShape = s : Exit For
-                End If
-            Next
-            If bakeShape IsNot Nothing Then
-                Dim bakeBsls = TryCast(bakedRefNif.GetShader(bakeShape), BSLightingShaderProperty)
-                If bakeBsls IsNot Nothing Then
-                    Dim shaderType = bakeBsls.ShaderType_SK_FO4
-                    sb.AppendLine($"[BUILDCHARGEN-MAT-DIAG]   bake NIF shader inline: ShaderType_SK_FO4={shaderType} HasGlowmap={bakeBsls.HasGlowmap} HasEnvironmentMapping={bakeBsls.HasEnvironmentMapping} HasSpecular={bakeBsls.HasSpecular} HasBacklight={bakeBsls.HasBacklight} HasRimlight={bakeBsls.HasRimlight} HasGreyscaleToPaletteColor={bakeBsls.HasGreyscaleToPaletteColor} HasSoftlight={bakeBsls.HasSoftlight}")
+            Dim shad = nif.GetShader(shape)
+            Dim bsls = TryCast(shad, BSLightingShaderProperty)
+            If bsls IsNot Nothing Then
+                Dim shaderName = If(bsls.Name?.String, "")
+                sb.AppendLine($"[BUILDCHARGEN-MATLOG] [{stageTag}] shape='{shapeName}' shader=BSLighting type={bsls.ShaderType_SK_FO4} Name='{shaderName}'")
+                sb.AppendLine($"[BUILDCHARGEN-MATLOG] [{stageTag}]   shader-inline Emissive={bsls.Emissive} EmissiveColor={bsls.EmissiveColor} EmissiveMultiple={bsls.EmissiveMultiple} HasRimlight={bsls.HasRimlight} RimlightPower={bsls.RimlightPower} HasBacklight={bsls.HasBacklight} BacklightPower={bsls.BacklightPower} HasSoftlight={bsls.HasSoftlight} SubsurfaceRolloff={bsls.SubsurfaceRolloff} HasSpecular={bsls.HasSpecular} HasGlowmap={bsls.HasGlowmap} HasEnvironmentMapping={bsls.HasEnvironmentMapping} HasGreyscaleToPaletteColor={bsls.HasGreyscaleToPaletteColor}")
+            Else
+                Dim bes = TryCast(shad, BSEffectShaderProperty)
+                If bes IsNot Nothing Then
+                    Dim shaderName = If(bes.Name?.String, "")
+                    sb.AppendLine($"[BUILDCHARGEN-MATLOG] [{stageTag}] shape='{shapeName}' shader=BSEffect Name='{shaderName}'")
+                Else
+                    sb.AppendLine($"[BUILDCHARGEN-MATLOG] [{stageTag}] shape='{shapeName}' shader=<unknown {shad?.GetType().Name}>")
                 End If
             End If
         Catch ex As Exception
-            sb.AppendLine($"[BUILDCHARGEN-MAT-DIAG]   bake shader inline read failed: {ex.GetType().Name}: {ex.Message}")
+            sb.AppendLine($"[BUILDCHARGEN-MATLOG] [{stageTag}]   shader inline read failed: {ex.GetType().Name}: {ex.Message}")
         End Try
-    End Sub
 
-    Private Sub DumpMatField(sb As StringBuilder, label As String, render As Object, bake As Object)
-        Dim r = If(render Is Nothing, "", render.ToString())
-        Dim b = If(bake Is Nothing, "", bake.ToString())
-        Dim marker = If(String.Equals(r, b, StringComparison.OrdinalIgnoreCase), "  ", "≠ ")
-        sb.AppendLine($"[BUILDCHARGEN-MAT-DIAG]   {marker}{label} own='{r}' bake='{b}'")
+        ' Related-material (what GetRelatedMaterial resolves: shader inline + BGSM file on disk
+        ' merged into a unified material).  This is the value the resolver chain consumes.
+        Try
+            Dim rel = nif.GetRelatedMaterial(shape)
+            If rel Is Nothing OrElse rel.material Is Nothing Then
+                sb.AppendLine($"[BUILDCHARGEN-MATLOG] [{stageTag}]   related-material: Nothing")
+                Return
+            End If
+            Dim mat = rel.material
+            sb.AppendLine($"[BUILDCHARGEN-MATLOG] [{stageTag}]   related-material path='{If(rel.path, "")}' shaderType={mat.NifShaderType} Hair={mat.Hair} SkinTint={mat.SkinTint} Glowmap={mat.Glowmap} EnvironmentMapping={mat.EnvironmentMapping}")
+            sb.AppendLine($"[BUILDCHARGEN-MATLOG] [{stageTag}]   related-material EmitEnabled={mat.EmitEnabled} EmittanceColor={mat.EmittanceColor} EmittanceMult={mat.EmittanceMult} RimLighting={mat.RimLighting} RimPower={mat.RimPower} BackLighting={mat.BackLighting} BackLightPower={mat.BackLightPower} SpecularEnabled={mat.SpecularEnabled} SubsurfaceLighting={mat.SubsurfaceLighting} SubsurfaceLightingRolloff={mat.SubsurfaceLightingRolloff} RootMaterialPath='{mat.RootMaterialPath}'")
+            sb.AppendLine($"[BUILDCHARGEN-MATLOG] [{stageTag}]   related-material textures D='{mat.Diffuse_or_Base_Texture}' N='{mat.NormalTexture}' S='{mat.SmoothSpecTexture}' Glow='{mat.GlowTexture}' Greyscale='{mat.GreyscaleTexture}' Envmap='{mat.EnvmapTexture}' EnvMask='{mat.EnvmapMaskTexture}' Wrinkles='{mat.WrinklesTexture}'")
+        Catch ex As Exception
+            sb.AppendLine($"[BUILDCHARGEN-MATLOG] [{stageTag}]   related-material read failed: {ex.GetType().Name}: {ex.Message}")
+        End Try
     End Sub
 
 End Module

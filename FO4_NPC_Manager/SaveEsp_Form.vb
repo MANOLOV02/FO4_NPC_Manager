@@ -130,24 +130,45 @@ Public Class SaveEsp_Form
         Public IsNewPlugin As Boolean
         Public LightMaster As Boolean
         Public ReplacingExistingNpc As Boolean
+        ''' <summary>When True the caller should bake the CharGen NIF + textures and pack
+        ''' them into <c>&lt;plugin&gt; - Main.ba2</c> + <c>&lt;plugin&gt; - Textures.ba2</c> after
+        ''' writing the override. Default True. Forced True (read-only) when the source NPC
+        ''' has no CharGen Face Preset flag — those NPCs the engine bakes via CK and the BA2
+        ''' is the only way they render in-world without a CK pass.</summary>
+        Public GenerateChargen As Boolean
     End Class
 
     Private ReadOnly _dataPath As String
     Private ReadOnly _existingPlugins As List(Of ExistingPlugin)
     Private ReadOnly _targetNpcFormID As UInteger
     Private ReadOnly _sourceMasterIsEsm As Boolean
+    Private ReadOnly _npcIsCharGenFacePreset As Boolean
 
     Public Property Result As SaveTarget = Nothing
 
     Public Sub New(dataPath As String,
                    existingPlugins As List(Of ExistingPlugin),
                    targetNpcFormID As UInteger,
-                   sourceMasterIsEsm As Boolean)
+                   sourceMasterIsEsm As Boolean,
+                   npcIsCharGenFacePreset As Boolean)
         InitializeComponent()
         _dataPath = dataPath
         _existingPlugins = If(existingPlugins, New List(Of ExistingPlugin)())
         _targetNpcFormID = targetNpcFormID
         _sourceMasterIsEsm = sourceMasterIsEsm
+        _npcIsCharGenFacePreset = npcIsCharGenFacePreset
+
+        ' CharGen checkbox: default ON in both cases. When the NPC has no CharGen Face Preset
+        ' flag, the engine relies on CK's baked FaceGen — without our BA2 the NPC renders as
+        ' a generic head — so the checkbox is forced True and disabled. When the flag IS set,
+        ' the engine reconstructs at runtime from records, so the bake is optional and the
+        ' user can turn it off (still defaults ON for parity).
+        CheckBoxGenerateChargen.Checked = True
+        If Not _npcIsCharGenFacePreset Then
+            CheckBoxGenerateChargen.Enabled = False
+            CheckBoxGenerateChargen.Text = CheckBoxGenerateChargen.Text &
+                "  (required — NPC has no CharGen Preset flag)"
+        End If
 
         PopulateExistingList()
         ' Default to "create new" when no existing plugins, else "update existing".
@@ -220,7 +241,10 @@ Public Class SaveEsp_Form
     End Sub
 
     Private Sub OnOkClick(sender As Object, e As EventArgs)
-        Dim target As New SaveTarget With {.LightMaster = CheckBoxLightMaster.Checked}
+        Dim target As New SaveTarget With {
+            .LightMaster = CheckBoxLightMaster.Checked,
+            .GenerateChargen = CheckBoxGenerateChargen.Checked
+        }
 
         If RadioButtonExisting.Checked Then
             Dim sel As ExistingPlugin = TryCast(ListBoxExisting.SelectedItem, ExistingPlugin)

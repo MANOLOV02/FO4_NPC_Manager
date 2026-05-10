@@ -24,6 +24,16 @@ Public Class MainForm
     Private _npcByIdCache As New Dictionary(Of UInteger, NPC_Data)()
     Private _templateDependencyMapCache As New Dictionary(Of UInteger, List(Of TemplateDependencyEdge))()
     Private _templateRootSourceIdsCache As New List(Of UInteger)()
+    ''' <summary>Universe of ARMO FormIDs referenced as skin by any RACE.WNAM or NPC_.WNAM in the
+    ''' load order. Populated once after ParseAllNPCs and consumed by EditBody's NPC.WNAM combo
+    ''' filter. Excludes pure outfit ARMOs because no record in the load order points to them as
+    ''' skin — a cheap and engine-faithful way to narrow the candidate pool.</summary>
+    Private _skinArmoUniverse As New HashSet(Of UInteger)()
+    ''' <summary>Parsed F4SE LooksMenu skin templates loaded from
+    ''' Data\F4SE\Plugins\F4EE\Skin\&lt;mod&gt;\skin.json and Data\F4SE\Plugins\F4EE\Skin\Loose\*.json.
+    ''' Mirrors the bundle structure of f4ee/SkinInterface.cpp:490-621 (id+name+gender+sort + per-gender
+    ''' face TXST / head HDPT / rear HDPT + skin ARMO). Populated once after plugin load.</summary>
+    Private _lmSkinTemplates As New List(Of LmSkinTemplate)()
     ''' <summary>NPCs directly placed in the world via ACHR records (unique characters).</summary>
     Private _directlyPlacedNPCFormIDs As New HashSet(Of UInteger)()
     ''' <summary>NPCs that appear in the game world: placed in CELLs (ACHR) or in LVLN encounter lists.</summary>
@@ -76,6 +86,7 @@ Public Class MainForm
     Private Const HeadPartTypeEyes As Integer = 2
     Private Const HeadPartTypeHair As Integer = 3
     Private Const HeadPartTypeFacialHair As Integer = 4
+    Private Const HeadPartTypeHeadRear As Integer = 9
 
     Private Enum PreviewMode
         FullCharacter = 0
@@ -308,11 +319,18 @@ Public Class MainForm
         ''' default (igual que HDPT type=7 Meatcaps, que ya se filtran en SelectWinningCandidates).
         ''' Shapes ausentes del dict o con valor Normal son geometría visible regular.</summary>
         Public ReadOnly ShapeMeatcap As New Dictionary(Of IRenderableShape, MeatcapClassification)
+        ''' <summary>Per-shape: True iff the shape's owning candidate had UsesBodyTexture=True
+        ''' (HDPT.DATA flag 0x40, post CBBE-style override fix). Lets the fast-path
+        ''' (RefreshBodySkinLivePreview) know which HeadPart shapes pull their diffuse from the
+        ''' actor's body skin TXST and therefore need a re-resolve when state.SkinFormID changes.
+        ''' Without this, ghoul/synth/etc. NPCs whose CBBE override forced UsesBodyTexture=True
+        ''' would render the OLD body diffuse on the headRear after a WNAM combo change.</summary>
+        Public ReadOnly ShapeUsesBodyTexture As New Dictionary(Of IRenderableShape, Boolean)
         ''' <summary>DEPRECATED. Used to be the cross-ARMA aggregated sculpt; now superseded by the
         ''' per-shape mapping above. Kept as always-empty for back-compat with consumers that read it.</summary>
         Public ReadOnly ArmaBoneScaleDeltas As New Dictionary(Of String, System.Numerics.Vector3)(StringComparer.OrdinalIgnoreCase)
     End Class
-    Private Class TraitsState
+    Friend Class TraitsState
         Public IsFemale As Boolean
         Public RaceFormID As UInteger
         Public SkinFormID As UInteger
@@ -322,6 +340,19 @@ Public Class MainForm
         Public WeightThin As Single?
         Public WeightMuscular As Single?
         Public WeightFat As Single?
+        ' [TEST: TPLT-traits-bucket] Face-appearance fields moved here from ModelAnimationState.
+        ' xEdit's wbTemplateFlags lists 15 bits but doesn't pin each NPC_ subrecord to a specific
+        ' bit. The previous bucketing (HeadParts/HairColor/HeadTexture/QNAM under ModelAnimation)
+        ' was an undocumented convention. Trying these under Traits since the CK label "Use Traits"
+        ' covers the actor's visual identity (race, skin, head, hair) — same conceptual bucket as
+        ' RNAM/WNAM/MWGT. Revert by moving the 5 fields back to ModelAnimationState if any cohort
+        ' regression appears.
+        Public HeadTextureFormID As UInteger
+        Public HairColorFormID As UInteger
+        Public FacialHairColorFormID As UInteger
+        Public HasTextureLighting As Boolean
+        Public TextureLightingColor As Color = Color.Empty
+        Public HeadPartFormIDs As New List(Of UInteger)
     End Class
 
     Private Class InventoryState
@@ -330,12 +361,9 @@ Public Class MainForm
     End Class
 
     Private Class ModelAnimationState
-        Public HeadTextureFormID As UInteger
-        Public HairColorFormID As UInteger
-        Public FacialHairColorFormID As UInteger
-        Public HasTextureLighting As Boolean
-        Public TextureLightingColor As Color = Color.Empty
-        Public HeadPartFormIDs As New List(Of UInteger)
+        ' [TEST: TPLT-traits-bucket] HeadTexture/HairColor/FacialHairColor/HeadParts/QNAM moved
+        ' to TraitsState. ObjectTemplateOMODFormIDs kept here — OBTS combinations are model
+        ' assembly (robot parts), conceptually closer to Model/Animation than to Traits.
         ''' <summary>OMOD FormIDs from NPC_.ObjectTemplate combination #0 (robot body parts).</summary>
         Public ObjectTemplateOMODFormIDs As New List(Of UInteger)
     End Class
@@ -814,6 +842,140 @@ Public Class MainForm
         _templateDependencyMapCache = BuildTemplateDependencyMap(_npcByIdCache)
         _templateRootSourceIdsCache = BuildTemplateTreeRootSourceIds(_npcByIdCache, _templateDependencyMapCache)
         BuildNPCClassification()
+        BuildSkinArmoUniverse()
+        BuildLmSkinTemplateCache()
+    End Sub
+
+    ''' <summary>Filter the skin ARMO universe (built once at plugin load) by the race+gender of
+    ''' the NPC currently being edited. An ARMO qualifies iff (a) at least one ARMA child has the
+    ''' gender's skin TXST set (so the candidate is actually a body skin, not a placeholder) AND
+    ''' (b) ARMO.RNAM matches OR at least one ARMA's RNAM/AdditionalRaces matches the NPC's race.
+    ''' Returned tuples are (FormID, DisplayName) ready for direct assignment to a ComboBox.
+    ''' DisplayName falls back to EditorID then to FormID-hex.</summary>
+    Friend Function GetSkinArmoCandidates(npcRaceFID As UInteger, isFemale As Boolean) As List(Of (FormID As UInteger, DisplayName As String))
+        Dim outList As New List(Of (FormID As UInteger, DisplayName As String))
+        For Each armoFID In _skinArmoUniverse
+            Dim rec = _pluginManager.GetRecord(armoFID)
+            If rec Is Nothing OrElse rec.Header.Signature <> "ARMO" Then Continue For
+            Dim armo As ARMO_Data
+            Try
+                armo = RecordParsers.ParseARMO(rec, _pluginManager)
+            Catch
+                Continue For
+            End Try
+            Dim raceMatch = (armo.RaceFormID = npcRaceFID)
+            Dim genderMatch As Boolean = False
+            For Each addon In armo.ArmorAddons
+                Dim aaRec = _pluginManager.GetRecord(addon.ArmaFormID)
+                If aaRec Is Nothing OrElse aaRec.Header.Signature <> "ARMA" Then Continue For
+                Dim arma As ARMA_Data
+                Try
+                    arma = RecordParsers.ParseARMA(aaRec, _pluginManager)
+                Catch
+                    Continue For
+                End Try
+                Dim armaRaceOk = (arma.RaceFormID = npcRaceFID) OrElse arma.AdditionalRaces.Contains(npcRaceFID)
+                If armaRaceOk Then raceMatch = True
+                Dim txst = If(isFemale, arma.FemaleSkinTextureFormID, arma.MaleSkinTextureFormID)
+                If armaRaceOk AndAlso txst <> 0UI Then
+                    genderMatch = True
+                End If
+            Next
+            If raceMatch AndAlso genderMatch Then
+                Dim display As String = If(Not String.IsNullOrEmpty(armo.FullName), armo.FullName,
+                                            If(Not String.IsNullOrEmpty(armo.EditorID), armo.EditorID,
+                                               armoFID.ToString("X8")))
+                outList.Add((armoFID, display))
+            End If
+        Next
+        Return outList.OrderBy(Function(x) x.DisplayName, StringComparer.OrdinalIgnoreCase).ToList()
+    End Function
+
+    ''' <summary>Filter the LM skin templates cache by gender (gender=2 means unisex per
+    ''' SkinInterface.h:38). Sorted by template.Sort then DisplayName, mirroring SkinInterface.cpp:610-611.</summary>
+    Friend Function GetLmSkinTemplateCandidates(isFemale As Boolean) As List(Of LmSkinTemplate)
+        Dim genderByte As Byte = If(isFemale, CByte(1), CByte(0))
+        Dim filtered = _lmSkinTemplates.
+            Where(Function(t) t.Gender = 2 OrElse t.Gender = genderByte).
+            OrderBy(Function(t) t.Sort).
+            ThenBy(Function(t) t.DisplayName, StringComparer.OrdinalIgnoreCase).
+            ToList()
+        Return filtered
+    End Function
+
+    ''' <summary>Best-effort display string for an ARMO FormID — used by Edit Body to add the
+    ''' NPC's currently-effective WNAM at the top of the combo even when it falls outside the
+    ''' filtered universe (e.g. an esoteric vanilla skin). Empty string if the FormID isn't an
+    ''' ARMO record.</summary>
+    Friend Function GetSkinArmoDisplayName(armoFID As UInteger) As String
+        If armoFID = 0UI Then Return ""
+        Dim rec = _pluginManager.GetRecord(armoFID)
+        If rec Is Nothing OrElse rec.Header.Signature <> "ARMO" Then Return ""
+        Try
+            Dim armo = RecordParsers.ParseARMO(rec, _pluginManager)
+            If Not String.IsNullOrEmpty(armo.FullName) Then Return armo.FullName
+            If Not String.IsNullOrEmpty(armo.EditorID) Then Return armo.EditorID
+        Catch
+        End Try
+        Return armoFID.ToString("X8")
+    End Function
+
+    ''' <summary>Builds the universe of ARMO FormIDs referenced as skin by any RACE or NPC_ in
+    ''' the load order. Sweep is one-shot per plugin reload — runs inside RebuildTreeModelCache.
+    ''' Cheaper than enumerating every ARMO record because most ARMOs are outfits/armor, never
+    ''' skin; only the ones some record actually marks as skin are interesting. The race+gender
+    ''' filter applied at combo-populate time runs over this set, not over the raw ARMO pool.</summary>
+    Private Sub BuildSkinArmoUniverse()
+        _skinArmoUniverse.Clear()
+        ' NPC.WNAM contributions — _allNPCs is already parsed by this point.
+        For Each npc In _allNPCs
+            If npc.SkinFormID <> 0UI Then _skinArmoUniverse.Add(npc.SkinFormID)
+        Next
+        ' RACE.WNAM contributions — iterate AllRecords filtering by signature; ParseRACE only on
+        ' matches. Vanilla FO4 has ~150 races so the cost is negligible.
+        For Each kvp In _pluginManager.AllRecords
+            Dim rec = kvp.Value
+            If rec Is Nothing OrElse rec.Header.Signature <> "RACE" Then Continue For
+            Try
+                Dim race = RecordParsers.ParseRACE(rec, _pluginManager)
+                If race.SkinFormID <> 0UI Then _skinArmoUniverse.Add(race.SkinFormID)
+            Catch
+            End Try
+        Next
+        NpcPreviewLog.LogLazy(Function() $"[SkinArmoUniverse] {_skinArmoUniverse.Count} ARMOs referenced as skin (RACE.WNAM ∪ NPC_.WNAM)")
+    End Sub
+
+    ''' <summary>Discover and parse F4SE LooksMenu skin templates from on-disk JSONs. Mirrors
+    ''' f4ee/SkinInterface.cpp:461-488 (LoadSkinMods) — iterates every plugin's
+    ''' Data\F4SE\Plugins\F4EE\Skin\&lt;pluginName&gt;\skin.json plus Data\F4SE\Plugins\F4EE\Skin\Loose\*.json.
+    ''' Form identifiers in the JSON ("PluginFile|FORMID") are resolved against the plugin manager
+    ''' so unresolved templates are skipped silently (LM does the same).</summary>
+    Private Sub BuildLmSkinTemplateCache()
+        _lmSkinTemplates.Clear()
+        If String.IsNullOrEmpty(_dataPath) Then Return
+        Dim baseSkinDir = Path.Combine(_dataPath, "F4SE", "Plugins", "F4EE", "Skin")
+        If Not Directory.Exists(baseSkinDir) Then Return
+        ' Per-plugin templates: Skin\<pluginName>\skin.json
+        For Each plugin In _pluginManager.Plugins
+            Dim p = Path.Combine(baseSkinDir, plugin.FileName, "skin.json")
+            If File.Exists(p) Then LmSkinTemplateLoader.LoadFromFile(p, _pluginManager, _lmSkinTemplates)
+        Next
+        ' Loose templates: Skin\Loose\*.json
+        Dim looseDir = Path.Combine(baseSkinDir, "Loose")
+        If Directory.Exists(looseDir) Then
+            For Each p In Directory.EnumerateFiles(looseDir, "*.json", SearchOption.TopDirectoryOnly)
+                LmSkinTemplateLoader.LoadFromFile(p, _pluginManager, _lmSkinTemplates)
+            Next
+        End If
+        NpcPreviewLog.LogLazy(Function() $"[LmSkinTemplates] {_lmSkinTemplates.Count} templates loaded from {baseSkinDir}")
+        ' Per-template trace so the user can see which JSON parsed and what each template
+        ' resolved to. Helps diagnose "0 templates" (subdir not from an active ESP, comments
+        ' rejected, malformed JSON) and "template appears but body doesn't change" (skin FormID
+        ' resolved to 0 because Fallout4.esm or another referenced master isn't loaded).
+        For Each tpl In _lmSkinTemplates
+            Dim t = tpl
+            NpcPreviewLog.LogLazy(Function() $"  [LmSkinTpl] id='{t.Id}' name='{t.DisplayName}' gender={t.Gender} sort={t.Sort} skin={t.SkinArmoFormID:X8} face=({t.FaceTxstFormID(0):X8},{t.FaceTxstFormID(1):X8}) head=({t.HeadHdptFormID(0):X8},{t.HeadHdptFormID(1):X8}) rear=({t.HeadRearHdptFormID(0):X8},{t.HeadRearHdptFormID(1):X8})")
+        Next
     End Sub
 
     ''' <summary>Classify NPCs:
@@ -1435,6 +1597,24 @@ Public Class MainForm
 
         PopulateRecordDetails(npc)
 
+        ' [TEST: TPLT-traits-bucket] Per-selection dump of TemplateFlags + TPLT so we can spot NPCs
+        ' with rare combinations (e.g. Traits=ON without ModelAnim) and confirm the chain walk.
+        NpcPreviewLog.LogSeparator($"NPC SELECTED {npc.EditorID} [{npc.FormID:X8}]")
+        NpcPreviewLog.LogLazy(Function() $"  TemplateFlags=0x{npc.TemplateFlags:X4} TPLT=0x{npc.TemplateFormID:X8}" &
+                                         $"  Traits={HasTemplateFlag(npc.TemplateFlags, NPC_TemplateCategory.Traits)}" &
+                                         $" Stats={HasTemplateFlag(npc.TemplateFlags, NPC_TemplateCategory.Stats)}" &
+                                         $" Factions={HasTemplateFlag(npc.TemplateFlags, NPC_TemplateCategory.Factions)}" &
+                                         $" SpellList={HasTemplateFlag(npc.TemplateFlags, NPC_TemplateCategory.SpellList)}" &
+                                         $" AIData={HasTemplateFlag(npc.TemplateFlags, NPC_TemplateCategory.AIData)}" &
+                                         $" AIPackages={HasTemplateFlag(npc.TemplateFlags, NPC_TemplateCategory.AIPackages)}" &
+                                         $" ModelAnim={HasTemplateFlag(npc.TemplateFlags, NPC_TemplateCategory.ModelAnimation)}" &
+                                         $" BaseData={HasTemplateFlag(npc.TemplateFlags, NPC_TemplateCategory.BaseData)}" &
+                                         $" Inventory={HasTemplateFlag(npc.TemplateFlags, NPC_TemplateCategory.Inventory)}" &
+                                         $" Script={HasTemplateFlag(npc.TemplateFlags, NPC_TemplateCategory.Script)}" &
+                                         $" DefPkgList={HasTemplateFlag(npc.TemplateFlags, NPC_TemplateCategory.DefaultPackageList)}" &
+                                         $" AttackData={HasTemplateFlag(npc.TemplateFlags, NPC_TemplateCategory.AttackData)}" &
+                                         $" Keywords={HasTemplateFlag(npc.TemplateFlags, NPC_TemplateCategory.Keywords)}")
+
         Dim reqVersion = Interlocked.Increment(_previewRequestVersion)
         LoadNPCOnDemandAsync(npc, reqVersion)
     End Sub
@@ -1897,14 +2077,20 @@ Public Class MainForm
         Dim capturedState = state
         Dim capturedRenderData = renderData
         Dim capturedHost = host
+        ' [TEST: fastpath-skin-softlight] Token check — if the user switches NPCs while the
+        ' async upload is pending, _previewRequestVersion advances and this hook would otherwise
+        ' bake tints/softlight onto the new NPC's textures using this NPC's state.
+        Dim capturedRequestVersion = requestVersion
         host.PreviewCtl.Intent.PostTextureUploadAction = Sub(model)
                                                              If capturedHost Is Nothing OrElse capturedHost.IsDisposed Then Return
+                                                             If capturedRequestVersion <> _previewRequestVersion Then Return
                                                              ApplyFaceTintOverlay(capturedState, capturedRenderData, capturedHost)
                                                              RevealAllShapes(capturedHost)
                                                              FinalizeRenderCamera(capturedHost)
                                                          End Sub
         host.PreviewCtl.Intent.PostTextureUploadTimeoutAction = Sub(model)
                                                                     If capturedHost Is Nothing OrElse capturedHost.IsDisposed Then Return
+                                                                    If capturedRequestVersion <> _previewRequestVersion Then Return
                                                                     NpcPreviewLog.LogLazy(Function() $"  [POST-TEX-HOOK] timeout — revealing shapes without tint bake")
                                                                     RevealAllShapes(capturedHost)
                                                                     FinalizeRenderCamera(capturedHost)
@@ -3551,6 +3737,322 @@ Public Class MainForm
         End Try
     End Sub
 
+    ''' <summary>Recompute the effective SkinFormID for an NPC by re-applying the same overlay
+    ''' precedence chain that <see cref="ApplyPresetOverlayToNpcData"/> uses: LM SkinTemplate
+    ''' bundle wins, then NPC.WNAM SkinFormIDOverride (Some(0) → fall back to RACE.WNAM), else
+    ''' the raw NPC.WNAM. Used by the fast-path so a combo edit lands on state.SkinFormID
+    ''' without re-running the full ResolveNPCBaseState pipeline.
+    ''' Returns the effective FormID (may be 0 if no resolution succeeds).</summary>
+    Private Function RecomputeEffectiveSkinFormID(rootNpcFormID As UInteger, raceFormID As UInteger,
+                                                   rawNpcFormID As UInteger) As UInteger
+        Dim raw = GetParsedNpc(rawNpcFormID)
+        Dim effective As UInteger = If(raw IsNot Nothing, raw.SkinFormID, 0UI)
+        Dim overlayPreset As LooksmenuLoader.LooksmenuPreset = Nothing
+        If _appliedPresets.TryGetValue(rootNpcFormID, overlayPreset) AndAlso overlayPreset IsNot Nothing Then
+            If overlayPreset.SkinFormIDOverride.HasValue Then
+                effective = overlayPreset.SkinFormIDOverride.Value
+            End If
+            ' LM SkinTemplate ARMO wins (matches NpcRecordOverlay.ApplyPresetOverlayToNpcData order).
+            If Not String.IsNullOrEmpty(overlayPreset.SkinTemplateId) Then
+                Dim tpl = ResolveLmSkinTemplate(overlayPreset.SkinTemplateId)
+                If tpl IsNot Nothing AndAlso tpl.SkinArmoFormID <> 0UI Then
+                    effective = tpl.SkinArmoFormID
+                End If
+            End If
+        End If
+        ' RACE.WNAM fallback: matches ApplyRaceFallbacks (state.SkinFormID = 0 → race.SkinFormID).
+        If effective = 0UI AndAlso raceFormID <> 0UI Then
+            Dim raceRec = _pluginManager.GetRecord(raceFormID)
+            If raceRec IsNot Nothing AndAlso raceRec.Header.Signature = "RACE" Then
+                effective = RecordParsers.ParseRACE(raceRec, _pluginManager).SkinFormID
+            End If
+        End If
+        Return effective
+    End Function
+
+    ''' <summary>Resolve the body skin's MeshCandidates from the host's current state. A skin
+    ''' ARMO commonly emits multiple candidates (NakedTorso + NakedHands) — one per ARMA in the
+    ''' addon group — so the fast-path needs ALL of them, not just the first. Builds the same
+    ''' candidates <see cref="CollectArmoCandidates"/> would emit during a full render, so the
+    ''' fast-path uses byte-identical TXST/MSWP resolution as the normal pipeline.
+    ''' Returns empty list when state.SkinFormID is 0 or no candidates could be built.</summary>
+    Private Function ResolveBodySkinCandidates(state As NPCVisualState) As List(Of MeshCandidate)
+        Dim candidates As New List(Of MeshCandidate)
+        If state Is Nothing OrElse state.SkinFormID = 0UI Then Return candidates
+        Dim order As Integer = 0
+        Dim warnings As New List(Of String)
+        CollectArmoCandidates(state.SkinFormID, state, MeshCandidateKind.Skin, candidates, order, warnings)
+        Return candidates
+    End Function
+
+    ''' <summary>Snapshot the (DictKey → shapes) map of the host's currently-loaded body-skin
+    ''' shapes. Used by the fast-path to decide which shapes get which new candidate's TXST/MSWP
+    ''' applied without walking <see cref="PreviewResolutionResult.Shapes"/> twice.</summary>
+    Private Function GroupBodySkinShapesByMeshPath(renderData As PreviewResolutionResult) As Dictionary(Of String, List(Of IRenderableShape))
+        Dim groups As New Dictionary(Of String, List(Of IRenderableShape))(StringComparer.OrdinalIgnoreCase)
+        If renderData Is Nothing OrElse renderData.Shapes Is Nothing Then Return groups
+        For Each shape In renderData.Shapes
+            Dim cat As ShapeRenderCategory = ShapeRenderCategory.Other
+            renderData.ShapeCategory.TryGetValue(shape, cat)
+            If cat <> ShapeRenderCategory.BodySkin AndAlso cat <> ShapeRenderCategory.NakedHands Then Continue For
+            Dim key As String = ""
+            renderData.MeshDictKeys.TryGetValue(shape, key)
+            If String.IsNullOrEmpty(key) Then Continue For
+            Dim bucket As List(Of IRenderableShape) = Nothing
+            If Not groups.TryGetValue(key, bucket) Then
+                bucket = New List(Of IRenderableShape)
+                groups(key) = bucket
+            End If
+            bucket.Add(shape)
+        Next
+        Return groups
+    End Function
+
+    ''' <summary>Fast-path for skin override changes (NPC.WNAM / LM SkinTemplate combos in
+    ''' EditBody). When the new skin ARMO's mesh-path SET matches the currently-loaded one, we
+    ''' re-resolve TXST + MSWP per candidate and call <see cref="ApplyShapeMaterialOverrides"/>
+    ''' over the matching shapes — material fields mutate in place, no VBO regeneration. ~1ms
+    ''' instead of ~50-100ms for a full reload.
+    '''
+    ''' A skin ARMO normally emits 2 ARMAs (NakedTorso + NakedHands) → 2 candidates with distinct
+    ''' DictKeys. The fast-path matches them by DictKey: same SET of mesh paths in the new skin
+    ''' as in the old one ⇒ apply each candidate to its corresponding shape group. Any DictKey
+    ''' missing on either side ⇒ bail to the full reload (different geometry layout).
+    '''
+    ''' Returns False when the mesh path set differs or state/render data is incomplete. The
+    ''' fast-path does NOT diverge from the normal render — it calls the same
+    ''' CollectArmoCandidates + ApplyShapeMaterialOverrides helpers, so any change to those
+    ''' automatically flows here too.</summary>
+    Friend Function RefreshBodySkinLivePreview(Optional host As NpcRenderHost = Nothing) As Boolean
+        If host Is Nothing Then host = _renderHost
+        If host?.LastRenderedState Is Nothing OrElse host?.LastRenderData Is Nothing Then
+            NpcPreviewLog.LogLazy(Function() "[FAST-SKIN] bail: host/state/renderData null")
+            Return False
+        End If
+
+        ' If the active LM template carries head / headRear HDPT swaps, the fast-path can't
+        ' reapply them because (a) we don't track HDPT shapes by PartType in LastRenderData,
+        ' and (b) a HDPT swap may bring a different mesh path that requires geometry reload.
+        ' Bail to the full reload so ResolveNPCBaseState picks up the bundle correctly.
+        ' face TXST (state.HeadTextureFormID) is just a texture override — that COULD be
+        ' fast-pathed, but skipping it together keeps the rule simple and consistent: any
+        ' face-side LM bundle ⇒ full reload.
+        Dim overlayPreset As LooksmenuLoader.LooksmenuPreset = Nothing
+        If _appliedPresets.TryGetValue(host.LastRenderedState.RootNpcFormID, overlayPreset) AndAlso overlayPreset IsNot Nothing _
+           AndAlso Not String.IsNullOrEmpty(overlayPreset.SkinTemplateId) Then
+            Dim tpl = ResolveLmSkinTemplate(overlayPreset.SkinTemplateId)
+            If tpl IsNot Nothing Then
+                Dim genderIdx As Integer = If(host.LastRenderedState.IsFemale, 1, 0)
+                If tpl.HeadHdptFormID(genderIdx) <> 0UI _
+                   OrElse tpl.HeadRearHdptFormID(genderIdx) <> 0UI _
+                   OrElse tpl.FaceTxstFormID(genderIdx) <> 0UI Then
+                    NpcPreviewLog.LogLazy(Function() $"[FAST-SKIN] bail: LM template '{tpl.Id}' carries head/headRear/face overrides → fallback to full reload")
+                    Return False
+                End If
+            End If
+        End If
+
+        ' Sync host state's SkinFormID with the overlay BEFORE resolving candidates. The host
+        ' state was set up at the previous render; the overlay (where the combo writes) is the
+        ' live source of truth. Without this the candidates resolve against the OLD skin.
+        Dim modelFormID = If(host.LastRenderedState.ModelSourceFormID <> 0UI,
+                              host.LastRenderedState.ModelSourceFormID, host.LastRenderedState.FormID)
+        Dim oldSkinFid = host.LastRenderedState.SkinFormID
+        host.LastRenderedState.SkinFormID = RecomputeEffectiveSkinFormID(
+            host.LastRenderedState.RootNpcFormID, host.LastRenderedState.RaceFormID, modelFormID)
+        Dim newSkinFid = host.LastRenderedState.SkinFormID
+        NpcPreviewLog.LogLazy(Function() $"[FAST-SKIN] SkinFormID old={oldSkinFid:X8} new={newSkinFid:X8}")
+
+        Dim newCandidates = ResolveBodySkinCandidates(host.LastRenderedState)
+        If newCandidates.Count = 0 Then
+            NpcPreviewLog.LogLazy(Function() "[FAST-SKIN] bail: 0 candidates resolved → fallback to full reload")
+            Return False
+        End If
+
+        ' Group existing body-skin shapes by their mesh path. This is the "old" set — the shapes
+        ' currently uploaded to the GL.
+        Dim oldGroups = GroupBodySkinShapesByMeshPath(host.LastRenderData)
+        Dim oldKeys = String.Join(",", oldGroups.Keys.OrderBy(Function(k) k))
+        Dim newKeys = String.Join(",", newCandidates.Select(Function(c) c.DictKey).OrderBy(Function(k) k))
+        NpcPreviewLog.LogLazy(Function() $"[FAST-SKIN] oldPaths=[{oldKeys}] newPaths=[{newKeys}]")
+
+        ' Path SET must match exactly — same count, same DictKeys (case-insensitive). Otherwise
+        ' the new skin has a different geometry layout (more/fewer ARMAs, or a different mesh
+        ' path) and we can't safely re-apply materials over the old shapes.
+        If newCandidates.Count <> oldGroups.Count Then
+            NpcPreviewLog.LogLazy(Function() $"[FAST-SKIN] bail: candidate count {newCandidates.Count} ≠ shape group count {oldGroups.Count} → fallback")
+            Return False
+        End If
+        For Each cand In newCandidates
+            If Not oldGroups.ContainsKey(cand.DictKey) Then
+                Dim missing = cand.DictKey
+                NpcPreviewLog.LogLazy(Function() $"[FAST-SKIN] bail: new candidate path '{missing}' not in old shapes → fallback")
+                Return False
+            End If
+        Next
+
+        ' Path sets match. Apply each new candidate's TXST/MSWP to its corresponding shape group.
+        Dim totalShapes As Integer = 0
+        For Each cand In newCandidates
+            Dim shapesForPath = oldGroups(cand.DictKey)
+            ApplyShapeMaterialOverrides(cand, host.LastRenderedState, shapesForPath)
+            totalShapes += shapesForPath.Count
+        Next
+
+        ' Skin-tint substitution on OUTFIT shapes — outfit shapes with material.NifShaderType =
+        ' SkinTint (escote, brazos expuestos, etc.) read their diffuse/normal/spec from the
+        ' actor's body-skin TXST (race-specific). Without re-applying this here, an outfit
+        ' rendered against the OLD skin still shows the OLD body diffuse on its skin patches
+        ' even after the body shape itself updated.
+        '
+        ' The render normal does this inside ApplyShapeMaterialOverrides when candidate.Kind=Outfit
+        ' (line ~7375), reading state.SkinFormID via ResolveActorSkinTextureSet. We can't re-call
+        ' ApplyShapeMaterialOverrides on outfit candidates here (we don't have them cached in
+        ' LastRenderData), so we replicate the per-shape texture sub directly.
+        Dim outfitSkinTintShapes = ApplyOutfitSkinTintRefreshAfterBodySkinChange(host)
+
+        ' Same idea for HeadPart shapes: HDPTs whose CK flag UsesBodyTexture=True (or whose CBBE
+        ' override fix forced it True for non-Human-Female actors) read their diffuse from the
+        ' body skin TXST. The fast-path must update those when state.SkinFormID changes too —
+        ' otherwise a ghoul → human skin swap leaves the headRear with the old ghoul diffuse.
+        Dim headPartBodyTexShapes = ApplyHeadPartBodyTextureRefreshAfterBodySkinChange(host)
+
+        ' [TEST: fastpath-skin-softlight] Re-bake softlight + face tints after the skin swap.
+        ' Original fastpath called RefreshRender (paint-only) and skipped TryApplyBodySkinSoftLight,
+        ' so the new body diffuse rendered without the QNAM softlight that the full render bakes.
+        ' Replicates the RefreshFaceTintLivePreview pattern: rollback every captured diffuse to
+        ' pristine, then route through MarkDirty(Textures) + InvalidateRender so Process_Textures_GL
+        ' picks up any new diffuse paths (Texture-only branch, async upload + PostTextureUploadAction
+        ' hook fires when ready). Caso (1) mismo path → hook sync inmediato; caso (2) path nuevo →
+        ' espera al upload y rebakea sobre la textura nueva.
+        Dim model = host.PreviewCtl?.Model
+        If model Is Nothing Then
+            NpcPreviewLog.LogLazy(Function() "[FAST-SKIN] bail: PreviewCtl.Model null → fallback to full reload")
+            Return False
+        End If
+        If Not RestoreCapturedDiffusesToPristine(model, host) Then
+            NpcPreviewLog.LogLazy(Function() "[FAST-SKIN] bail: pristine restore failed → fallback to full reload")
+            Return False
+        End If
+
+        Dim capturedState = host.LastRenderedState
+        Dim capturedRenderData = host.LastRenderData
+        Dim capturedHost = host
+        Dim capturedRequestVersion = _previewRequestVersion
+        host.PreviewCtl.Intent.PostTextureUploadAction = Sub(m)
+                                                             If capturedHost Is Nothing OrElse capturedHost.IsDisposed Then Return
+                                                             If capturedRequestVersion <> _previewRequestVersion Then Return
+                                                             ApplyFaceTintOverlay(capturedState, capturedRenderData, capturedHost)
+                                                         End Sub
+        host.PreviewCtl.Intent.MarkDirty(RenderDirtyFlags.Textures)
+        host.PreviewCtl.InvalidateRender()
+        NpcPreviewLog.LogLazy(Function() $"[FAST-SKIN] OK applied to {totalShapes} skin shapes + {outfitSkinTintShapes} outfit-SkinTint shapes + {headPartBodyTexShapes} HeadPart UsesBodyTexture shapes; pristine restored + softlight rebake queued (no full reload)")
+        Return True
+    End Function
+
+    ''' <summary>Re-apply the per-shape "outfit SkinTint texture sub" to all outfit shapes whose
+    ''' material is SkinTint. Mirrors the inline block in <see cref="ApplyShapeMaterialOverrides"/>
+    ''' (line ~7442) that runs during a full render but only for the outfit candidate currently
+    ''' being processed. Here we run it on every outfit shape already in the model, because the
+    ''' actor's body skin just changed and outfits of any category (Underarmor / Armor / Glove)
+    ''' may have skin-exposed patches that need to follow.
+    '''
+    ''' Region is inferred from the shape's category (GloveOutfit → Hand, everything else → Body)
+    ''' instead of from candidate.SlotMask, since we don't have outfit candidates cached.
+    ''' Returns the shape count touched (for logging).</summary>
+    Private Function ApplyOutfitSkinTintRefreshAfterBodySkinChange(host As NpcRenderHost) As Integer
+        Dim count As Integer = 0
+        Dim renderData = host.LastRenderData
+        Dim state = host.LastRenderedState
+        If renderData Is Nothing OrElse state Is Nothing Then Return 0
+
+        ' Resolve body and hand TXSTs once (state.SkinFormID was already updated by the caller).
+        Dim bodyTxst = ResolveActorSkinTextureSet(state, SkinRegion.Body)
+        Dim handTxst = ResolveActorSkinTextureSet(state, SkinRegion.Hand)
+
+        For Each shape In renderData.Shapes
+            Dim cat As ShapeRenderCategory = ShapeRenderCategory.Other
+            renderData.ShapeCategory.TryGetValue(shape, cat)
+            ' Only outfit categories — body-skin shapes (BodySkin/NakedHands) were handled by the
+            ' Skin candidate pass above.
+            If cat <> ShapeRenderCategory.Underarmor _
+               AndAlso cat <> ShapeRenderCategory.ArmorOver _
+               AndAlso cat <> ShapeRenderCategory.GloveOutfit _
+               AndAlso cat <> ShapeRenderCategory.Headwear Then Continue For
+
+            Dim relMat = shape.ShapeMaterial
+            If relMat Is Nothing Then Continue For
+            Dim mat = relMat.material
+            If mat Is Nothing Then Continue For
+            If mat.NifShaderType <> NiflySharp.Enums.BSLightingShaderType.SkinTint Then Continue For
+
+            Dim chosenTxst = If(cat = ShapeRenderCategory.GloveOutfit, handTxst, bodyTxst)
+            If chosenTxst Is Nothing Then Continue For
+
+            ' Same fragment as ApplyShapeMaterialOverrides body — only the diffuse/normal/spec
+            ' get substituted; material params (specular, smoothness, etc.) stay from the NIF.
+            If chosenTxst.MaterialPath <> "" Then
+                Dim bgsmMaterial = TryLoadMaterialFromDictionary(chosenTxst.MaterialPath, mat)
+                If bgsmMaterial IsNot Nothing Then
+                    If bgsmMaterial.Diffuse_or_Base_Texture <> "" Then mat.Diffuse_or_Base_Texture = bgsmMaterial.Diffuse_or_Base_Texture
+                    If bgsmMaterial.NormalTexture <> "" Then mat.NormalTexture = bgsmMaterial.NormalTexture
+                    If bgsmMaterial.SmoothSpecTexture <> "" Then mat.SmoothSpecTexture = bgsmMaterial.SmoothSpecTexture
+                End If
+            End If
+            ApplyTextureSetToMaterial(mat, chosenTxst)
+            count += 1
+        Next
+        Return count
+    End Function
+
+    ''' <summary>Re-apply body-skin TXST to HeadPart shapes whose owning HDPT had
+    ''' UsesBodyTexture=True (post CBBE fix). The full render's ResolveTextureSet
+    ''' (line ~7741) feeds the actor's body TXST into these HeadParts; when state.SkinFormID
+    ''' changes via the fast-path, those HeadParts must follow or they keep showing the OLD
+    ''' body diffuse (e.g. ghoul NPC + WNAM swapped to human skin → headRear mesh stays with
+    ''' the ghoul body texture). Returns the shape count touched.</summary>
+    Private Function ApplyHeadPartBodyTextureRefreshAfterBodySkinChange(host As NpcRenderHost) As Integer
+        Dim count As Integer = 0
+        Dim renderData = host.LastRenderData
+        Dim state = host.LastRenderedState
+        If renderData Is Nothing OrElse state Is Nothing Then Return 0
+
+        ' HeadParts always pull from the BODY region (not Hand) — by definition they're
+        ' face/headRear/etc., never hands. ResolveActorSkinTextureSet uses the now-updated
+        ' state.SkinFormID so this matches what a full render would produce.
+        Dim bodyTxst = ResolveActorSkinTextureSet(state, SkinRegion.Body)
+        If bodyTxst Is Nothing Then Return 0
+
+        For Each shape In renderData.Shapes
+            Dim cat As ShapeRenderCategory = ShapeRenderCategory.Other
+            renderData.ShapeCategory.TryGetValue(shape, cat)
+            If cat <> ShapeRenderCategory.HeadPart Then Continue For
+            Dim usesBody As Boolean = False
+            renderData.ShapeUsesBodyTexture.TryGetValue(shape, usesBody)
+            If Not usesBody Then Continue For
+
+            Dim relMat = shape.ShapeMaterial
+            If relMat Is Nothing Then Continue For
+            Dim mat = relMat.material
+            If mat Is Nothing Then Continue For
+
+            ' Same body-skin sub flow ApplyShapeMaterialOverrides uses: load BGSM (if MNAM
+            ' present in TXST), copy texture slots only, then apply the rest of the TXST.
+            ' Material params (specular, smoothness, subsurface) stay from the NIF.
+            If bodyTxst.MaterialPath <> "" Then
+                Dim bgsmMaterial = TryLoadMaterialFromDictionary(bodyTxst.MaterialPath, mat)
+                If bgsmMaterial IsNot Nothing Then
+                    If bgsmMaterial.Diffuse_or_Base_Texture <> "" Then mat.Diffuse_or_Base_Texture = bgsmMaterial.Diffuse_or_Base_Texture
+                    If bgsmMaterial.NormalTexture <> "" Then mat.NormalTexture = bgsmMaterial.NormalTexture
+                    If bgsmMaterial.SmoothSpecTexture <> "" Then mat.SmoothSpecTexture = bgsmMaterial.SmoothSpecTexture
+                End If
+            End If
+            ApplyTextureSetToMaterial(mat, bodyTxst)
+            count += 1
+        Next
+        Return count
+    End Function
+
     ''' <summary>Live tint refresh path. Restores every captured diffuse to its untinted
     ''' baseline, re-runs the face tint compositor and the face/body skin SoftLight passes,
     ''' and refreshes the SkinTintColor / HairTintColor uniforms in place. No geometry reload.
@@ -3792,6 +4294,8 @@ Public Class MainForm
         If inventory Is Nothing Then inventory = CreateOwnInventoryState(npc)
         If model Is Nothing Then model = CreateOwnModelAnimationState(npc)
 
+        ' [TEST: TPLT-traits-bucket] HeadTexture/HairColor/FacialHairColor/HeadParts/QNAM
+        ' now sourced from `traits` (was `model`). OBTS combinations stay on `model`.
         Dim state As New NPCVisualState With {
             .FormID = npc.FormID,
             .RootNpcFormID = npc.FormID,
@@ -3800,16 +4304,16 @@ Public Class MainForm
             .SkinFormID = traits.SkinFormID,
             .DefaultOutfitFormID = inventory.DefaultOutfitFormID,
             .SleepOutfitFormID = inventory.SleepOutfitFormID,
-            .HeadTextureFormID = model.HeadTextureFormID,
-            .HairColorFormID = model.HairColorFormID,
-            .FacialHairColorFormID = model.FacialHairColorFormID,
-            .HasTextureLighting = model.HasTextureLighting,
-            .TextureLightingColor = model.TextureLightingColor
+            .HeadTextureFormID = traits.HeadTextureFormID,
+            .HairColorFormID = traits.HairColorFormID,
+            .FacialHairColorFormID = traits.FacialHairColorFormID,
+            .HasTextureLighting = traits.HasTextureLighting,
+            .TextureLightingColor = traits.TextureLightingColor
         }
 
-        state.HeadPartFormIDs.AddRange(model.HeadPartFormIDs)
+        state.HeadPartFormIDs.AddRange(traits.HeadPartFormIDs)
         state.ObjectTemplateOMODFormIDs.AddRange(model.ObjectTemplateOMODFormIDs)
-        ApplyRaceFallbacks(state, traits)
+        ApplyRaceFallbacks(state, traits, _pluginManager)
         state.HeadPartFormIDs = state.HeadPartFormIDs.Where(Function(id) id <> 0UI).Distinct().ToList()
 
         ' Apply per-NPC LooksMenu overlay (if any) AFTER the template chain + race fallbacks ran.
@@ -3828,6 +4332,42 @@ Public Class MainForm
             If overlayPreset.WeightThin.HasValue Then state.WeightThin = overlayPreset.WeightThin.Value
             If overlayPreset.WeightMuscular.HasValue Then state.WeightMuscular = overlayPreset.WeightMuscular.Value
             If overlayPreset.WeightFat.HasValue Then state.WeightFat = overlayPreset.WeightFat.Value
+
+            ' Skin overrides — same precedence the NpcRecordOverlay shadow applies, but on the
+            ' state level. ResolveTraitsStateFromNPC re-parses the raw NPC by FormID (chain walk)
+            ' and never sees the overlay, so without this block ResolveActorSkinTextureSet ends
+            ' up reading state.SkinFormID = raw NPC.WNAM and the body/hands skin doesn't change.
+            '   1) NPC.WNAM record override: SkinFormIDOverride.HasValue → take that value
+            '      (Some(0) intentionally clears, downstream ApplyRaceFallbacks already substituted
+            '      RACE.WNAM on raw zero so we re-trigger the same fallback here).
+            '   2) LM SkinTemplate (F4SE bundle) wins after — mirrors SkinInterface.cpp:316-320.
+            '      Bundle's face TXST + head/headRear HDPT live in shadow.HeadTextureFormID /
+            '      shadow.HeadPartFormIDs; those flow into the state via the model/traits chain
+            '      already (HeadPartFormIDs were just overwritten above; HeadTextureFormID is set
+            '      below if the LM template carries one).
+            If overlayPreset.SkinFormIDOverride.HasValue Then
+                state.SkinFormID = overlayPreset.SkinFormIDOverride.Value
+                If state.SkinFormID = 0UI Then
+                    Dim raceRec2 = _pluginManager.GetRecord(state.RaceFormID)
+                    If raceRec2 IsNot Nothing AndAlso raceRec2.Header.Signature = "RACE" Then
+                        state.SkinFormID = RecordParsers.ParseRACE(raceRec2, _pluginManager).SkinFormID
+                    End If
+                End If
+            End If
+            If Not String.IsNullOrEmpty(overlayPreset.SkinTemplateId) Then
+                Dim tpl = ResolveLmSkinTemplate(overlayPreset.SkinTemplateId)
+                If tpl IsNot Nothing Then
+                    If tpl.SkinArmoFormID <> 0UI Then state.SkinFormID = tpl.SkinArmoFormID
+                    Dim genderIdx As Integer = If(state.IsFemale, 1, 0)
+                    If tpl.FaceTxstFormID(genderIdx) <> 0UI Then
+                        state.HeadTextureFormID = tpl.FaceTxstFormID(genderIdx)
+                    End If
+                    ' HDPT replacements — the helper reads each new HDPT's own PartType to
+                    ' decide which slot to replace, engine-faithful per SkinInterface.cpp:292.
+                    NpcRecordOverlay.ApplyLmHdptReplacementPublic(state.HeadPartFormIDs, tpl.HeadHdptFormID(genderIdx), _pluginManager)
+                    NpcRecordOverlay.ApplyLmHdptReplacementPublic(state.HeadPartFormIDs, tpl.HeadRearHdptFormID(genderIdx), _pluginManager)
+                End If
+            End If
 
             ' Body/face skin-tone parity. The face compositor consumes overlay tint layers via
             ' ApplyPresetOverlayToNpcData, so the face picks up the preset's skin tone. The body
@@ -5738,10 +6278,10 @@ Public Class MainForm
         Return clone
     End Function
 
-    Private Sub ApplyRaceFallbacks(state As NPCVisualState, traits As TraitsState)
+    Friend Shared Sub ApplyRaceFallbacks(state As NPCVisualState, traits As TraitsState, pluginManager As PluginManager)
         If state Is Nothing OrElse state.RaceFormID = 0UI Then Return
 
-        Dim raceRec = _pluginManager.GetRecord(state.RaceFormID)
+        Dim raceRec = pluginManager.GetRecord(state.RaceFormID)
         If raceRec Is Nothing OrElse raceRec.Header.Signature <> "RACE" Then
             ' No RACE record: all-Default MWGT can't be resolved → leave 0; explicit values pass through.
             state.WeightThin = traits.WeightThin.GetValueOrDefault(0.0F)
@@ -5750,7 +6290,7 @@ Public Class MainForm
             Return
         End If
 
-        Dim race = RecordParsers.ParseRACE(raceRec, _pluginManager)
+        Dim race = RecordParsers.ParseRACE(raceRec, pluginManager)
 
         ' Materialize NPC.MWGT into final 3 floats. Substitution rule lives in ResolveBodyWeights.
         ' Done before the head/skin fallbacks so callers reading state.WeightX downstream always
@@ -6106,7 +6646,7 @@ Public Class MainForm
         End If
 
         Dim mergedHeadParts = MergeHeadPartsWithRaceDefaults(state)
-        CollectHeadPartCandidates(mergedHeadParts, New HashSet(Of UInteger)(), candidates, order, warnings, useFaceGen)
+        CollectHeadPartCandidates(mergedHeadParts, New HashSet(Of UInteger)(), candidates, order, warnings, state, useFaceGen)
 
         ' Robot body parts via NPC_.ObjectTemplate OBTS Includes → OMOD.ModelPath.
         ' For vanilla robots (Assaultron, Mr Handy, etc.) the per-part meshes live in the OMOD records
@@ -6307,14 +6847,55 @@ Public Class MainForm
         Next
     End Sub
 
+    ''' <summary>Compute the EFFECTIVE UsesBodyTexture flag for an HDPT, applying the CBBE-style
+    ''' override fix for FemaleHeadHumanRearTEMP (vanilla FormID 0x0004D0E9).
+    '''
+    ''' Pure function over (hdpt, formID, sourceRecord, state). Used by:
+    ''' • CollectHeadPartCandidate during full render (to populate MeshCandidate.UsesBodyTexture).
+    ''' • RefreshBodySkinLivePreview's HeadPart refresh path during fast-path skin changes.
+    ''' Both code paths share this helper so the fix applies identically — no drift.
+    '''
+    ''' The fix: some body replacers override this HDPT and clear UsesBodyTexture, which leaves
+    ''' the headrear stuck on the vanilla basehumanfemaleskin material — wrong for non-human
+    ''' races (ghoul/synth/etc). Rule: if HDPT is FemaleHeadHumanRearTEMP AND it comes from an
+    ''' override (originating plugin ≠ Fallout4.esm) AND the flag is False, force it True for
+    ''' any actor that is NOT Human-Female. Human-Female keeps False (vanilla path).
+    '''
+    ''' FormID compare uses low-24-bits mask: load-order prefix differs per plugin chain (vanilla
+    ''' Fallout4.esm gets 0x00, mods get 0x01..0xFF), but the bare record ID is shared.
+    '''
+    ''' <paramref name="logTag"/> distinguishes log lines coming from different call sites
+    ''' (e.g. "CBBE-HEADREAR" for full render vs "CBBE-HEADREAR-FAST" for the fast-path).</summary>
+    Private Function ComputeEffectiveUsesBodyTexture(hdpt As HDPT_Data, hdptFormID As UInteger,
+                                                       hdptRec As PluginRecord, state As NPCVisualState,
+                                                       Optional logTag As String = "CBBE-HEADREAR") As Boolean
+        Const FemaleHeadHumanRearTEMPBareID As UInteger = &H4D0E9UI
+        Const HumanRaceBareID As UInteger = &H13746UI
+        Dim effective = hdpt.UsesBodyTexture
+        If (hdptFormID And &HFFFFFFUI) = FemaleHeadHumanRearTEMPBareID AndAlso Not hdpt.UsesBodyTexture Then
+            Dim sourcePlugin As String = If(hdptRec?.SourcePluginName, "")
+            Dim isOverride = Not String.Equals(sourcePlugin, "Fallout4.esm", StringComparison.OrdinalIgnoreCase) AndAlso Not String.IsNullOrEmpty(sourcePlugin)
+            Dim raceBare As UInteger = If(state IsNot Nothing, state.RaceFormID And &HFFFFFFUI, 0UI)
+            Dim isHumanFemale = (state IsNot Nothing) AndAlso raceBare = HumanRaceBareID AndAlso state.IsFemale
+            Dim tag = logTag
+            NpcPreviewLog.LogLazy(Function() $"  [{tag}-CHECK] hdpt=0x{hdptFormID:X8} (bare=0x{(hdptFormID And &HFFFFFFUI):X6}) flag=False sourcePlugin='{sourcePlugin}' isOverride={isOverride} stateNothing={state Is Nothing} race=0x{state?.RaceFormID:X8} (bare=0x{raceBare:X6}) female={state?.IsFemale} isHumanFemale={isHumanFemale} willForce={isOverride AndAlso Not isHumanFemale}")
+            If isOverride AndAlso Not isHumanFemale Then
+                effective = True
+                NpcPreviewLog.LogLazy(Function() $"  [{tag}] forced UsesBodyTexture=True (HDPT 0x{hdptFormID:X8} override from '{sourcePlugin}', actor not Human-Female; race=0x{state?.RaceFormID:X8} female={state?.IsFemale})")
+            End If
+        End If
+        Return effective
+    End Function
+
     Private Sub CollectHeadPartCandidates(headPartFormIDs As IEnumerable(Of UInteger),
                                           visited As HashSet(Of UInteger),
                                           candidates As List(Of MeshCandidate),
                                           ByRef order As Integer,
                                           warnings As List(Of String),
+                                          state As NPCVisualState,
                                           Optional useFaceGen As Boolean = False)
         For Each hdptFormID In headPartFormIDs.Where(Function(id) id <> 0UI)
-            CollectHeadPartCandidate(hdptFormID, visited, candidates, order, warnings, -1, useFaceGen)
+            CollectHeadPartCandidate(hdptFormID, visited, candidates, order, warnings, -1, state, useFaceGen)
         Next
     End Sub
 
@@ -6324,6 +6905,7 @@ Public Class MainForm
                                          ByRef order As Integer,
                                          warnings As List(Of String),
                                          parentPartType As Integer,
+                                         state As NPCVisualState,
                                          Optional useFaceGen As Boolean = False)
         If hdptFormID = 0UI Then Return
         If visited.Contains(hdptFormID) Then Return
@@ -6398,6 +6980,8 @@ Public Class MainForm
                 End If
             End If
 
+            Dim effectiveUsesBodyTexture = ComputeEffectiveUsesBodyTexture(hdpt, hdptFormID, hdptRec, state, logTag:="CBBE-HEADREAR")
+
             candidates.Add(New MeshCandidate With {
                 .DictKey = dictKey,
                 .BaseDictKeyForFaceBones = baseDictKeyForFaceBones,
@@ -6409,7 +6993,7 @@ Public Class MainForm
                 .HeadPartColorFormID = hdpt.ColorFormID,
                 .TextureSetFormID = hdpt.TextureSetFormID,
                 .UseSolidTint = (hdpt.Flags And HeadPartFlagUseSolidTint) <> 0,
-                .UsesBodyTexture = hdpt.UsesBodyTexture,
+                .UsesBodyTexture = effectiveUsesBodyTexture,
                 .Order = order,
                 .RaceMorphTriPath = hdpt.RaceMorphTriPath,
                 .ChargenMorphTriPath = hdpt.ChargenMorphTriPath,
@@ -6421,7 +7005,7 @@ Public Class MainForm
         ' Pass the effective type down so nested extras also inherit
         Dim childParentType = If(effectivePartType <> 0, effectivePartType, parentPartType)
         For Each extraPartFormID In hdpt.ExtraPartFormIDs
-            CollectHeadPartCandidate(extraPartFormID, visited, candidates, order, warnings, childParentType, useFaceGen)
+            CollectHeadPartCandidate(extraPartFormID, visited, candidates, order, warnings, childParentType, state, useFaceGen)
         Next
     End Sub
 
@@ -6891,6 +7475,7 @@ Public Class MainForm
                 result.ShapeCategory(shape) = category
                 result.ShapeCoveredByOutfit(shape) = candidate.IsCoveredByOutfit
                 result.ShapeOccludedByHeadwear(shape) = candidate.IsOccludedByHeadwear
+                result.ShapeUsesBodyTexture(shape) = candidate.UsesBodyTexture
                 ' HDPT type=7 Meatcaps (CK enum 7=Meatcaps, ver wbDefinitionsFO4 + comment en
                 ' CollectHeadPartCandidate). Confirmed por estar en enum oficial de Bethesda;
                 ' mismo nivel de certeza que BSDismemberBodyPartType SECTIONCAP/TORSOCAP. La
@@ -7073,7 +7658,7 @@ Public Class MainForm
             Dim relatedMaterial = shape.ShapeMaterial
             If relatedMaterial Is Nothing Then Continue For
 
-            ApplyTextureSetOverrides(textureSet, relatedMaterial)
+            ApplyTextureSetOverrides(textureSet, relatedMaterial, candidate.UsesBodyTexture)
 
             Dim material = relatedMaterial.material
             If material Is Nothing Then Continue For
@@ -7115,9 +7700,26 @@ Public Class MainForm
                 End If
             ElseIf material.Hair OrElse material.GrayscaleToPaletteColor Then
                 ' Material is hair or uses grayscale-to-palette: try palette remap first, tint as fallback.
+                ' Gate by the same HCLF resolution rules TryResolveHairPaletteRemap uses, so a
+                ' FacialHair shape with NPC.QNAM=0 doesn't get HairColor leaked into the beard
+                ' (Preston / MS04AJ: state.FacialHairColorFormID=0 must NOT fall back to
+                ' state.HairColorFormID — CK leaves Beard01's BGSM Stubble untouched).
+                Dim hairColorFormID As UInteger = 0UI
+                If candidate IsNot Nothing Then
+                    Select Case candidate.HeadPartType
+                        Case HeadPartTypeHair, 6
+                            hairColorFormID = If(state IsNot Nothing, state.HairColorFormID, 0UI)
+                        Case HeadPartTypeFacialHair
+                            hairColorFormID = If(state IsNot Nothing, state.FacialHairColorFormID, 0UI)
+                        Case Else
+                            hairColorFormID = If(state IsNot Nothing, state.HairColorFormID, 0UI)
+                    End Select
+                Else
+                    hairColorFormID = If(state IsNot Nothing, state.HairColorFormID, 0UI)
+                End If
                 Dim didPalette = False
-                If state IsNot Nothing AndAlso state.HairColorFormID <> 0UI Then
-                    Dim clfm = ResolveColorFormData(state.HairColorFormID)
+                If hairColorFormID <> 0UI Then
+                    Dim clfm = ResolveColorFormData(hairColorFormID)
                     If clfm IsNot Nothing AndAlso clfm.HasRemappingIndex Then
                         ' Priority: BGSM's own GreyscaleTexture first (it's per-shape, picked by
                         ' the hair stylist for THIS mesh), RACE.HNAM/HLTX as a fallback (it's a
@@ -7143,8 +7745,8 @@ Public Class MainForm
                 End If
                 If Not didPalette Then
                     Dim effectiveHairColor = hairTintColor
-                    If Not effectiveHairColor.HasValue AndAlso state IsNot Nothing Then
-                        effectiveHairColor = ResolveColorFormColor(state.HairColorFormID)
+                    If Not effectiveHairColor.HasValue AndAlso hairColorFormID <> 0UI Then
+                        effectiveHairColor = ResolveColorFormColor(hairColorFormID)
                     End If
                     If effectiveHairColor.HasValue Then material.HairTintColor = effectiveHairColor.Value
                 End If
@@ -7315,18 +7917,43 @@ Public Class MainForm
     ''' Height / Env / Multilayer / Spec). Si el TXST trae un .bgsm/.bgem en MaterialPath,
     ''' carga ese material y reemplaza el del shape. <c>Friend Shared</c> para que
     ''' HeadPartPicker_Form pueda reutilizarlo en su preview de HDPT.</summary>
-    Friend Shared Sub ApplyTextureSetOverrides(textureSet As TXST_Data, relatedMaterial As Nifcontent_Class_Manolo.RelatedMaterial_Class)
+    Friend Shared Sub ApplyTextureSetOverrides(textureSet As TXST_Data, relatedMaterial As Nifcontent_Class_Manolo.RelatedMaterial_Class, usesBodyTexture As Boolean)
         If textureSet Is Nothing OrElse relatedMaterial Is Nothing Then Return
 
         Dim material = relatedMaterial.material
         If material Is Nothing Then Return
 
+        ' MNAM-loaded rule (split by HDPT.UsesBodyTexture, verified empirically vs CK bake):
+        '   - UsesBodyTexture=True : full-replace. The HDPT declares "this part wears the
+        '     body skin" so the MNAM-pointed BGSM is the body-skin material in its entirety;
+        '     D + N + S + everything else come from the override. Verified vs Alice
+        '     ChildHeadRear (vanilla female child, MNAM=childfemalebody.bgsm) and the
+        '     Carol-style ghoul HeadRear with CBBE override.
+        '   - UsesBodyTexture=False: diffuse-only. The MNAM just supplies the surface tint
+        '     for this specific shape; Normal/SmoothSpec/Envmap/shaderType/EnvironmentMapping/
+        '     TwoSided all stay from the inline NIF shader. Verified vs Valentine
+        '     SynthGen2HeadRearValentine (TXST.MNAM=gen2skindirty.bgsm has type=Default
+        '     no-Envmap, but CK bake kept inline type=EnvironmentMap with the Envmap path
+        '     and the non-dirty SmoothSpec).
+        ' The TXST's TX## slots are layered on top by ApplyTextureSetToMaterial below, so any
+        ' slot the TXST explicitly sets still wins regardless of the branch above.
         If textureSet.MaterialPath <> "" Then
+            Dim oldPath = If(relatedMaterial.path, "")
+
             Dim overrideMaterial = TryLoadMaterialFromDictionary(textureSet.MaterialPath, material)
             If overrideMaterial IsNot Nothing Then
-                relatedMaterial.material = overrideMaterial
-                relatedMaterial.path = FO4UnifiedMaterial_Class.CorrectMaterialPath(textureSet.MaterialPath)
-                material = overrideMaterial
+                If usesBodyTexture Then
+                    relatedMaterial.material = overrideMaterial
+                    material = overrideMaterial
+                    relatedMaterial.path = FO4UnifiedMaterial_Class.CorrectMaterialPath(textureSet.MaterialPath)
+                    NpcPreviewLog.LogLazy(Function() $"  [MAT-MUTATE-MNAM] full-replace (UsesBodyTexture=True) path '{oldPath}' -> '{relatedMaterial.path}'")
+                Else
+                    Dim oldDiffuse = If(material.Diffuse_or_Base_Texture, "")
+                    Dim newDiffuse = If(overrideMaterial.Diffuse_or_Base_Texture, "")
+                    If newDiffuse <> "" Then material.Diffuse_or_Base_Texture = newDiffuse
+                    relatedMaterial.path = FO4UnifiedMaterial_Class.CorrectMaterialPath(textureSet.MaterialPath)
+                    NpcPreviewLog.LogLazy(Function() $"  [MAT-MUTATE-MNAM] diffuse-only (UsesBodyTexture=False) path '{oldPath}' -> '{relatedMaterial.path}', Diffuse '{oldDiffuse}' -> '{newDiffuse}'; inline N/S/Envmap/shaderType preserved")
+                End If
             End If
         End If
 
@@ -7439,10 +8066,16 @@ Public Class MainForm
                     Dim replacementPath = If(sub_.ReplacementMaterial, "")
                     If replacementPath = "" Then Exit For
 
+                    Dim oldBack = relatedMaterial.material.BackLightPower
+                    Dim oldRim = relatedMaterial.material.RimPower
+                    Dim oldEmit = relatedMaterial.material.EmitEnabled
+                    Dim oldRoot = If(relatedMaterial.material.RootMaterialPath, "")
+
                     Dim newMaterial = TryLoadMaterialFromDictionary(replacementPath, relatedMaterial.material)
                     If newMaterial IsNot Nothing Then
                         relatedMaterial.material = newMaterial
                         relatedMaterial.path = FO4UnifiedMaterial_Class.CorrectMaterialPath(replacementPath)
+                        NpcPreviewLog.LogLazy(Function() $"  [MAT-MUTATE-MSWP] swap '{origPath}' -> '{relatedMaterial.path}': BackLightPower {oldBack}->{newMaterial.BackLightPower} RimPower {oldRim}->{newMaterial.RimPower} EmitEnabled {oldEmit}->{newMaterial.EmitEnabled} RootMaterialPath '{oldRoot}'->'{If(newMaterial.RootMaterialPath, "")}'")
                     End If
                     Exit For
                 End If
@@ -7478,6 +8111,13 @@ Public Class MainForm
             Case HeadPartTypeHair, 6 ' Hair and Hairline/Brow use hair color
                 colorFormID = state.HairColorFormID
             Case HeadPartTypeFacialHair
+                ' FacialHair: prefer NPC.QNAM, fall back to NPC.HCLF. The scale (CLFM
+                ' RemappingIndex) is consumed by the rama 7634 only when the BGSM
+                ' already declares GrayscaleToPaletteColor=True — that's the BGSM-side
+                ' opt-in (e.g. beard_1bit.bgsm). BGSMs with GrayscaleToPaletteColor=False
+                ' (Stubble.bgsm) won't trigger that branch, and the fallback rama 7643
+                ' independently gates beard tint by FacialHairColorFormID-only so a
+                ' QNAM=0 beard with non-opt-in BGSM is not retinted.
                 colorFormID = If(state.FacialHairColorFormID <> 0UI, state.FacialHairColorFormID, state.HairColorFormID)
         End Select
 
@@ -7682,15 +8322,24 @@ Public Class MainForm
         Return NpcRecordOverlay.GetParsedNpc(formID, _pluginManager)
     End Function
 
-    Private Shared Function CreateOwnTraitsState(npc As NPC_Data) As TraitsState
-        Return New TraitsState With {
+    Friend Shared Function CreateOwnTraitsState(npc As NPC_Data) As TraitsState
+        ' [TEST: TPLT-traits-bucket] HeadTexture/HairColor/FacialHairColor/HeadParts/QNAM
+        ' now seeded here so they ride the Traits chain walk.
+        Dim state As New TraitsState With {
             .IsFemale = npc.IsFemale,
             .RaceFormID = npc.RaceFormID,
             .SkinFormID = npc.SkinFormID,
             .WeightThin = npc.WeightThin,
             .WeightMuscular = npc.WeightMuscular,
-            .WeightFat = npc.WeightFat
+            .WeightFat = npc.WeightFat,
+            .HeadTextureFormID = npc.HeadTextureFormID,
+            .HairColorFormID = npc.HairColorFormID,
+            .FacialHairColorFormID = npc.FacialHairColorFormID,
+            .HasTextureLighting = npc.HasTextureLighting,
+            .TextureLightingColor = npc.TextureLightingColor
         }
+        state.HeadPartFormIDs.AddRange(npc.HeadPartFormIDs)
+        Return state
     End Function
 
     Private Shared Function CreateOwnInventoryState(npc As NPC_Data) As InventoryState
@@ -7701,14 +8350,8 @@ Public Class MainForm
     End Function
 
     Private Shared Function CreateOwnModelAnimationState(npc As NPC_Data) As ModelAnimationState
-        Dim state As New ModelAnimationState With {
-            .HeadTextureFormID = npc.HeadTextureFormID,
-            .HairColorFormID = npc.HairColorFormID,
-            .FacialHairColorFormID = npc.FacialHairColorFormID,
-            .HasTextureLighting = npc.HasTextureLighting,
-            .TextureLightingColor = npc.TextureLightingColor
-        }
-        state.HeadPartFormIDs.AddRange(npc.HeadPartFormIDs)
+        ' [TEST: TPLT-traits-bucket] Face-appearance fields moved to CreateOwnTraitsState.
+        Dim state As New ModelAnimationState
         state.ObjectTemplateOMODFormIDs.AddRange(npc.ObjectTemplateOMODFormIDs)
         Return state
     End Function
@@ -8239,6 +8882,13 @@ Public Class MainForm
             ' preset so the dialog's parsed object stays intact (in case the user toggles the
             ' checkbox back on without re-selecting).
             Dim toApply = If(applyBodySliders, preset, ClonePresetWithoutBodySliders(preset))
+            ' WYSIWYG: if the loaded JSON references an LM SkinTemplate, materialize its head/
+            ' headRear HDPT swaps into preset.HeadPartFormIDs so Save ESP / Edit Face / Copy see
+            ' the same picture the live render shows via ApplyPresetOverlayToNpcData. The template
+            ' bundle is otherwise applied only to the runtime shadow; without this call the JSON
+            ' could be loaded, the preview would render the template HDPTs, but exporting to ESP
+            ' would emit raw NPC PNAM (no headRear swap).
+            NpcRecordOverlay.MaterializeLmTemplateBundleToPreset(toApply, npc.IsFemale, AddressOf ResolveLmSkinTemplate)
             _appliedPresets(npcFormID) = toApply
         End If
         Dim previewVersion = Interlocked.Increment(_previewRequestVersion)
@@ -8368,7 +9018,26 @@ Public Class MainForm
     ''' lives in the helper module so offline bake (FaceGenBuilder) can reuse without coupling
     ''' to MainForm instance state.</summary>
     Private Function ApplyPresetOverlayToNpcData(raw As NPC_Data, selectedNpcFormID As UInteger) As NPC_Data
-        Return NpcRecordOverlay.ApplyPresetOverlayToNpcData(raw, selectedNpcFormID, _appliedPresets, _pluginManager)
+        Return NpcRecordOverlay.ApplyPresetOverlayToNpcData(raw, selectedNpcFormID, _appliedPresets,
+                                                            _pluginManager, AddressOf ResolveLmSkinTemplate)
+    End Function
+
+    ''' <summary>Resolver passed to the overlay helper so it can map an LM SkinTemplate id to
+    ''' its full bundle (skin ARMO + face TXST + head/headRear HDPT). Nothing if the id isn't
+    ''' in the loaded template cache — caller treats that as "no override".</summary>
+    Private Function ResolveLmSkinTemplate(templateId As String) As LmSkinTemplate
+        If String.IsNullOrEmpty(templateId) Then Return Nothing
+        For Each tpl In _lmSkinTemplates
+            If String.Equals(tpl.Id, templateId, StringComparison.Ordinal) Then Return tpl
+        Next
+        Return Nothing
+    End Function
+
+    ''' <summary>Friend wrapper so EditBody / EditFace can invoke
+    ''' <see cref="NpcRecordOverlay.MaterializeLmTemplateBundleToPreset"/> with a delegate to this
+    ''' MainForm's resolver. Same Function reference — just exposed at Friend scope.</summary>
+    Friend Function ResolveLmSkinTemplate_Friend(templateId As String) As LmSkinTemplate
+        Return ResolveLmSkinTemplate(templateId)
     End Function
 
     ''' <summary>Per-layer clone — delegates to the canonical helper.</summary>
@@ -8692,7 +9361,17 @@ Public Class MainForm
             For Each kv In overlay.BodyMorphSliders
                 preset.BodyMorphSliders(kv.Key) = kv.Value
             Next
+            ' LM SkinTemplate id is overlay-only (no record source). Carry through so Copy Look
+            ' captures it and Save Looksmenu emits it.
+            preset.SkinTemplateId = If(overlay.SkinTemplateId, "")
         End If
+
+        ' WYSIWYG: with the SkinTemplateId carried over, materialize the template's HDPT bundle
+        ' into preset.HeadPartFormIDs so a paste at the destination NPC still emits the correct
+        ' PNAM at Save ESP time. Without this, the clipboard would carry SkinTemplateId but its
+        ' headRear swap would only ever exist in the runtime shadow, dropping out of any ESP
+        ' the destination NPC writes after a paste.
+        NpcRecordOverlay.MaterializeLmTemplateBundleToPreset(preset, state.IsFemale, AddressOf ResolveLmSkinTemplate)
 
         ' Tints — skip Value=0 entries (CharGenInterface.cpp:180-181). Order matters: it determines
         ' the layer composition order at render time (the ESP TETI/TEND order is the natural NPC
@@ -8755,6 +9434,14 @@ Public Class MainForm
         preset.HasBodyMorphValues = True
         preset.HasFaceBoneRegions = True
         preset.HasHeadPartFormIDs = True
+        ' Origin reset: the line above asserts authority based on "snapshot is complete",
+        ' independent of the LM template. So the writer-trackable origin flag stays False —
+        ' otherwise a Paste followed by an LM template change in EditBody would erroneously
+        ' Retract the HDPTs the snapshot put in (the user didn't ask for that).
+        ' LmTemplateInjectedHdptFormIDs likewise stays empty: the HDPTs in HeadPartFormIDs at
+        ' this point describe the rendered state, not the template's contribution per se.
+        preset.HasHeadPartFormIDsSetByTemplate = False
+        preset.LmTemplateInjectedHdptFormIDs.Clear()
 
         Return preset
     End Function
@@ -8923,7 +9610,10 @@ Public Class MainForm
                                        avail.BodySlideSliders,
                                        initial,
                                        Me,
-                                       mainGore)
+                                       mainGore,
+                                       _renderHost.LastRenderedState.RaceFormID,
+                                       _renderHost.LastRenderedState.IsFemale,
+                                       _renderHost.LastRenderedState.SkinFormID)
             dlg.ShowDialog(Me)
             ' Phase D: reload MainForm preview only when the user committed via OK. Cancel
             ' already rolled back the overlay; without an explicit MainForm render during the
@@ -9100,28 +9790,26 @@ Public Class MainForm
                                 _renderHost.LastRenderedState.FormID)
         If modelNpcFormID = 0UI Then Return
 
-        ' Force the diagnostic log on for this run regardless of the user's previous toggle,
-        ' so the kept/dropped trace always lands somewhere visible. Restore afterwards.
+        ' DebugMode (FaceGenBuilder.DebugMode) controls the dual-mode behaviour:
+        '   • True  → sandboxed _2.nif/_2.dds output, full per-shape diff vs CK BA2 bake,
+        '             logging forced on. Run when iterating on engine-faithfulness.
+        '   • False → release: writes the canonical .nif/.dds (overwrites CK), skips diff
+        '             dumps and harness because there's no longer an independent reference.
+        ' In debug runs we force NpcPreviewLog on so the diff/harness output is captured.
         Dim wasEnabled = NpcPreviewLog.Enabled
-        NpcPreviewLog.Enabled = True
+        If FaceGenBuilder.DebugMode Then NpcPreviewLog.Enabled = True
         Dim result As FaceGenBuilder.BuildResult
         Try
-            ' Pass the render's resolved Model: its meshes carry the post-override materials,
-            ' and its Textures_Dictionary holds the GPU textures the FaceTintCompositor wrote
-            ' (needed for the FaceCustomization _d/_msn/_s bake — readback from those texIds).
-            ' BuildCharGen writes the .nif2 and the FaceCustomization .dds2 textures directly
-            ' to Config_App.Current.DataPath (the live FO4 loose folder); no separate output
-            ' root is needed — the .nif2/.dds2 extensions keep us from clobbering the engine's
-            ' canonical .nif/.dds files.
-            result = FaceGenBuilder.BuildCharGen(modelNpcFormID, _pluginManager, _appliedPresets, _renderHost, AddressOf ApplyShapeMaterialOverrides)
+            result = FaceGenBuilder.BuildCharGen(modelNpcFormID, _pluginManager, _appliedPresets, _renderHost, AddressOf ApplyShapeMaterialOverrides, AddressOf ResolveLmSkinTemplate)
         Catch ex As Exception
-            NpcPreviewLog.Log($"[BUILDCHARGEN] EXCEPTION {ex.GetType().Name}: {ex.Message}{vbCrLf}{ex.StackTrace}")
+            If FaceGenBuilder.DebugMode Then NpcPreviewLog.Log($"[BUILDCHARGEN] EXCEPTION {ex.GetType().Name}: {ex.Message}{vbCrLf}{ex.StackTrace}")
             result = New FaceGenBuilder.BuildResult With {.Success = False, .Summary = $"Build CharGen failed: {ex.GetType().Name}: {ex.Message}"}
         End Try
         NpcPreviewLog.Enabled = wasEnabled
 
-        Dim icon = If(result.Success, MessageBoxIcon.Information, MessageBoxIcon.Warning)
-        MessageBox.Show(Me, result.Summary, "Build CharGen", MessageBoxButtons.OK, icon)
+        Dim icon = If(result.Success, MessageBoxIcon.Information, MessageBoxIcon.Error)
+        Dim message = If(result.Success, "Generated OK", "Error — see npc_preview.log for details")
+        MessageBox.Show(Me, message, "Build CharGen", MessageBoxButtons.OK, icon)
     End Sub
 
     ''' <summary>Re-trigger the on-demand NPC load for the currently-rendered NPC. Same path
@@ -9169,7 +9857,15 @@ Public Class MainForm
         _clipboardSourceRaceFormID = _renderHost.CurrentBaseState.RaceFormID
         UpdatePasteLookEnabled()
 
+        Dim consoleCmd = $"player.placeatme {_renderHost.CurrentBaseState.RootNpcFormID:X8} 1"
+        Try
+            Clipboard.SetText(consoleCmd)
+        Catch ex As Exception
+            NpcPreviewLog.LogLazy(Function() $"  [WARN] Clipboard.SetText failed: {ex.Message}")
+        End Try
+
         NpcPreviewLog.LogSeparator($"COPY LOOK from {_renderHost.CurrentBaseState.RootNpcFormID:X8}")
+        NpcPreviewLog.LogLazy(Function() $"  console command copied to text clipboard: {consoleCmd}")
         NpcPreviewLog.LogLazy(Function() $"  source race=0x{_clipboardSourceRaceFormID:X8}  gender={If(built.Gender = 1, "Female", "Male")}")
         NpcPreviewLog.LogLazy(Function() $"  HeadParts={built.HeadPartFormIDs.Count} (after IsExtraPart filter)  HairColor=0x{built.HairColorFormID:X8}")
         NpcPreviewLog.LogLazy(Function() $"  Weight: thin={If(built.WeightThin.HasValue, built.WeightThin.Value.ToString("F3"), "—")} musc={If(built.WeightMuscular.HasValue, built.WeightMuscular.Value.ToString("F3"), "—")} fat={If(built.WeightFat.HasValue, built.WeightFat.Value.ToString("F3"), "—")}")
@@ -9206,7 +9902,7 @@ Public Class MainForm
         _appliedPresets.TryGetValue(npcFormID, previousOverlay)
         _appliedPresets(npcFormID) = filtered
         NpcPreviewLog.LogSeparator($"PASTE LOOK to {npc.EditorID} [0x{npc.FormID:X8}]")
-        NpcPreviewLog.LogLazy(Function() $"  options: BodyWeight={options.BodyWeight} BodyRegions={options.BodyRegions} BodySliders={options.BodySliders} SkinOverride={options.SkinOverride} FaceParts={options.FaceParts} HairColor={options.HairColor} FaceTints={options.FaceTints} FaceVertexMorphs={options.FaceVertexMorphs} FaceBoneRegions={options.FaceBoneRegions} IsCharGenPreset={options.IsCharGenPreset}")
+        NpcPreviewLog.LogLazy(Function() $"  options: BodyWeight={options.BodyWeight} BodyRegions={options.BodyRegions} BodySliders={options.BodySliders} SkinOverride={options.SkinOverride} LmSkinTemplate={options.LmSkinTemplate} FaceParts={options.FaceParts} HairColor={options.HairColor} FaceTints={options.FaceTints} FaceVertexMorphs={options.FaceVertexMorphs} FaceBoneRegions={options.FaceBoneRegions} IsCharGenPreset={options.IsCharGenPreset}")
 
         Try
             Dim requestVersion = Interlocked.Increment(_previewRequestVersion)
@@ -9287,6 +9983,13 @@ Public Class MainForm
             p.SkinFormIDOverride = Nothing
         End If
 
+        ' --- LM skin template (F4SE SkinInterface, separate from NPC.WNAM record skin) ---
+        If options.LmSkinTemplate Then
+            p.SkinTemplateId = If(source.SkinTemplateId, "")
+        Else
+            p.SkinTemplateId = ""
+        End If
+
         ' --- Face parts (HeadParts) ---
         ' The overlay merge does wipe + race-defaults + preset entries. To preserve the target
         ' NPC's HeadParts when the user unchecks this category, copy targetRaw.HeadPartFormIDs
@@ -9356,6 +10059,25 @@ Public Class MainForm
             ' Preserve target's existing ACBS bit. Read the raw record's ACBS and set the
             ' preset's flag explicitly so the overlay merge writes that exact bit back.
             p.IsCharGenFacePreset = ((targetRaw.AcbsFlags And AcbsBitIsCharGenFacePreset) <> 0UI)
+        End If
+
+        ' If the paste copied an LM SkinTemplate, populate the origin tracker so a later
+        ' Retract (e.g. user opens EditBody on the target and switches the template) can
+        ' identify exactly which HDPTs came from this template. Without this, the target's
+        ' HeadPartFormIDs would carry the template's HDPTs but Retract would find an empty
+        ' tracker and leave them stuck — a later combo change would then duplicate-by-PartType.
+        If Not String.IsNullOrEmpty(p.SkinTemplateId) Then
+            Dim tpl = ResolveLmSkinTemplate(p.SkinTemplateId)
+            If tpl IsNot Nothing Then
+                Dim genderIdx As Integer = If(p.Gender = 1, 1, 0)
+                Dim head As UInteger = tpl.HeadHdptFormID(genderIdx)
+                Dim rear As UInteger = tpl.HeadRearHdptFormID(genderIdx)
+                If head <> 0UI AndAlso p.HeadPartFormIDs.Contains(head) Then p.LmTemplateInjectedHdptFormIDs.Add(head)
+                If rear <> 0UI AndAlso p.HeadPartFormIDs.Contains(rear) Then p.LmTemplateInjectedHdptFormIDs.Add(rear)
+                ' HasHeadPartFormIDsSetByTemplate stays False: Paste's Has*=True (line 9824)
+                ' is asserted independently of the template (snapshot semantics). Retract should
+                ' remove just the template's HDPTs, not flip Has* off.
+            End If
         End If
 
         Return p
@@ -9468,19 +10190,27 @@ Public Class MainForm
         ' Scan Data\ for existing auto-generated plugins.
         Dim existing = ScanForAutoGeneratedPlugins(npcFormID)
 
+        ' Parse the raw vanilla record first; reused below for overlay merge AND for the
+        ' IsCharGenFacePreset flag the dialog needs. ApplyPresetOverlayToNpcData is the
+        ' same helper the renderer uses, so Save and render share one source of truth.
+        Dim rawNpcSpec = RecordParsers.ParseNPC(rawRecord, sourcePluginName, _pluginManager)
+
+        ' Read IsCharGenFacePreset flag from raw ACBS bits (xEdit wbDefinitionsFO4: bit 0x04
+        ' of the NPC.ACBS Flags u32). Drives whether the CharGen checkbox in the dialog can
+        ' be turned off: NPCs WITHOUT the flag rely on the engine's CK FaceGen bake (we MUST
+        ' supply a BA2'd one), NPCs WITH the flag are runtime-reconstructed by chargen so
+        ' the bake is optional.
+        Const AcbsBitIsCharGenFacePreset As UInteger = &H4UI
+        Dim npcIsCharGenFacePreset = (rawNpcSpec.AcbsFlags And AcbsBitIsCharGenFacePreset) <> 0UI
+
         ' Show dialog.
         Dim target As SaveEsp_Form.SaveTarget = Nothing
-        Using dlg As New SaveEsp_Form(_dataPath, existing, npcFormID, sourceMasterIsEsm)
+        Using dlg As New SaveEsp_Form(_dataPath, existing, npcFormID, sourceMasterIsEsm, npcIsCharGenFacePreset)
             If dlg.ShowDialog(Me) <> DialogResult.OK Then Return
             target = dlg.Result
         End Using
         If target Is Nothing Then Return
 
-        ' Parse the raw vanilla record first, then apply the overlay preset so face tints,
-        ' chargen morphs, body morphs, head parts, hair color, and weight edits all show up
-        ' in the saved override. ApplyPresetOverlayToNpcData is the same helper the renderer
-        ' uses (line 4329, 5521, etc.), so Save and render share one source of truth.
-        Dim rawNpcSpec = RecordParsers.ParseNPC(rawRecord, sourcePluginName, _pluginManager)
         Dim npcSpec = ApplyPresetOverlayToNpcData(rawNpcSpec, npcFormID)
 
         ' ApplyPresetOverlayToNpcData returns the raw when there's no preset applied (no edits
@@ -9611,10 +10341,36 @@ Public Class MainForm
                 Dim reader As New PluginReader()
                 reader.Load(target.TargetPath)
                 existingMasters.AddRange(reader.Masters)
+
+                ' The records we just read carry FormIDs whose high byte indexes into THIS
+                ' plugin's MAST list, not the basePluginManager's load order. To filter out
+                ' "the record we're about to replace", we have to translate npcFormID (global,
+                ' high byte = basePluginManager load-order idx) to the same local form the
+                ' reader sees (high byte = MAST idx) before comparing.
+                ' Mirror of NpcOverrideVerifier's expected→local remap.
+                Dim npcSourceMasterName As String = ""
+                Dim npcGlobalHigh As Integer = CInt((npcFormID >> 24) And &HFFUI)
+                If npcGlobalHigh >= 0 AndAlso npcGlobalHigh < _pluginManager.Plugins.Count Then
+                    Dim sp = _pluginManager.Plugins(npcGlobalHigh)
+                    If sp IsNot Nothing Then npcSourceMasterName = sp.FileName
+                End If
+                Dim npcLocalFormID As UInteger = npcFormID
+                If Not String.IsNullOrEmpty(npcSourceMasterName) Then
+                    Dim newHigh As Integer = -1
+                    For i = 0 To reader.Masters.Count - 1
+                        If String.Equals(reader.Masters(i), npcSourceMasterName, StringComparison.OrdinalIgnoreCase) Then
+                            newHigh = i
+                            Exit For
+                        End If
+                    Next
+                    If newHigh < 0 Then newHigh = reader.Masters.Count  ' self
+                    npcLocalFormID = (CUInt(newHigh) << 24) Or (npcFormID And &HFFFFFFUI)
+                End If
+
                 For Each kv In reader.Records
                     Dim rec = kv.Value
                     ' Skip the record we're replacing — the new entry takes its place.
-                    If rec.Header.FormID = npcFormID Then Continue For
+                    If rec.Header.FormID = npcLocalFormID Then Continue For
                     existingRecords.Add(rec)
                 Next
             Catch ex As Exception
@@ -9626,11 +10382,20 @@ Public Class MainForm
 
         Dim entries As New List(Of SaveNpcEspWriter.NpcOverrideEntry) From {entry}
 
+        Dim progressDlg As New SaveEspProgress_Form()
+        progressDlg.Show(Me)
         Try
+            progressDlg.ReportPhase("Writing NPC override to plugin…")
+            progressDlg.ReportDetail(IO.Path.GetFileName(target.TargetPath))
+            progressDlg.SetMarquee()
+
             Dim game = Config_App.Current.Game
             Dim result = SaveNpcEspWriter.SaveOverridePlugin(
                 target.TargetPath, game, target.LightMaster,
                 entries, existingRecords, existingMasters, _pluginManager)
+
+            progressDlg.ReportPhase("Updating plugin cache…")
+            progressDlg.ReportDetail("")
 
             ' Update the auto-gen plugin cache so the next Save ESP dialog open sees this
             ' plugin without re-scanning Data\. The final list of NPC FormIDs in the file =
@@ -9688,11 +10453,13 @@ Public Class MainForm
             ' parses our NPC override, and compares field-by-field against npcSpec (what we
             ' intended to write). Any divergence is logged + shown in the success MessageBox.
             Dim verifierSummary As String = ""
+            Dim verifierIcon As MessageBoxIcon = MessageBoxIcon.Information
             If NpcPreviewLog.Enabled Then
                 Dim verifyRes = NpcOverrideVerifier.VerifyWrittenOverride(result.OutputPath, npcSpec, sourcePluginName, _pluginManager)
                 If Not String.IsNullOrEmpty(verifyRes.FatalError) Then
                     NpcPreviewLog.LogLazy(Function() $"  [VERIFY] FATAL: {verifyRes.FatalError}")
                     verifierSummary = vbCrLf & vbCrLf & "Verifier could not run: " & verifyRes.FatalError
+                    verifierIcon = MessageBoxIcon.Warning
                 ElseIf verifyRes.Match Then
                     NpcPreviewLog.Log("  [VERIFY] todo igual")
                     verifierSummary = vbCrLf & vbCrLf & "Verifier: todo igual"
@@ -9714,16 +10481,119 @@ Public Class MainForm
                         sb.AppendLine($"  … {verifyRes.Differences.Count - shownCount} more")
                     End If
                     verifierSummary = sb.ToString()
+                    verifierIcon = MessageBoxIcon.Warning
                 End If
             End If
 
-            MessageBox.Show($"Saved {npc.EditorID} to {IO.Path.GetFileName(result.OutputPath)}.{verifierSummary}",
-                            "Save ESP/ESM", MessageBoxButtons.OK, MessageBoxIcon.Information)
+            ' --- CharGen bake + BA2 pack (optional per dialog checkbox) ----------------
+            ' For NPCs without IsCharGenFacePreset the dialog forced GenerateChargen=True;
+            ' the engine relies on a baked FaceGen NIF to render those NPCs. For NPCs with
+            ' the flag the bake is opt-in (default ON, user can disable).
+            Dim chargenSummary As String = ""
+            If target.GenerateChargen Then
+                Dim chargenRes = RunChargenBakeAndPack(progressDlg, npcFormID, target.TargetPath, sourcePluginName)
+                chargenSummary = chargenRes.Summary
+                If Not chargenRes.Success Then verifierIcon = MessageBoxIcon.Warning
+            End If
+
+            progressDlg.Close()
+
+            MessageBox.Show($"Saved {npc.EditorID} to {IO.Path.GetFileName(result.OutputPath)}.{chargenSummary}{verifierSummary}",
+                            "Save ESP/ESM", MessageBoxButtons.OK, verifierIcon)
         Catch ex As Exception
+            progressDlg.Close()
             MessageBox.Show($"Failed to write plugin: {ex.Message}", "Save ESP/ESM",
                             MessageBoxButtons.OK, MessageBoxIcon.Error)
+        Finally
+            progressDlg.Dispose()
         End Try
     End Sub
+
+    ''' <summary>Bake the NPC's FaceGen NIF + FaceCustomization textures (canonical filenames,
+    ''' DebugMode forced OFF) and pack the four resulting loose files into the BA2 set
+    ''' anchored to <paramref name="anchorPluginPath"/>. Returns (summary, success) — Success
+    ''' is False when bake or pack failed (caller switches the MessageBox icon to Warning).
+    ''' Never throws — failures surface in Summary so the ESP write isn't masked.</summary>
+    Private Function RunChargenBakeAndPack(progressDlg As SaveEspProgress_Form,
+                                           npcFormID As UInteger,
+                                           anchorPluginPath As String,
+                                           sourcePluginName As String) As (Summary As String, Success As Boolean)
+        ' Phase 1: bake. DebugMode toggled off transiently so the bake writes canonical
+        ' filenames (<formId>.nif, <formId>_d.dds, …) instead of the _2.* sandbox suffix
+        ' the standalone Build CharGen button uses for diff-vs-CK testing.
+        progressDlg.ReportPhase("Baking CharGen NIF + textures…")
+        progressDlg.ReportDetail("")
+        progressDlg.SetMarquee()
+
+        Dim previousDebugMode = FaceGenBuilder.DebugMode
+        FaceGenBuilder.DebugMode = False
+        Dim bakeResult As FaceGenBuilder.BuildResult
+        Try
+            bakeResult = FaceGenBuilder.BuildCharGen(npcFormID, _pluginManager, _appliedPresets,
+                                                     _renderHost, AddressOf ApplyShapeMaterialOverrides,
+                                                     AddressOf ResolveLmSkinTemplate)
+        Catch ex As Exception
+            FaceGenBuilder.DebugMode = previousDebugMode
+            NpcPreviewLog.LogLazy(Function() $"  [CHARGEN-BAKE] EXCEPTION {ex.GetType().Name}: {ex.Message}")
+            Return ($"{vbCrLf}{vbCrLf}(CharGen bake failed: {ex.Message})", False)
+        End Try
+        FaceGenBuilder.DebugMode = previousDebugMode
+
+        If Not bakeResult.Success Then
+            NpcPreviewLog.LogLazy(Function() $"  [CHARGEN-BAKE] failed: {bakeResult.Summary}")
+            Return ($"{vbCrLf}{vbCrLf}(CharGen bake failed — see npc_preview.log)", False)
+        End If
+
+        ' Phase 2: pack the four bake outputs. originPlugin matches FaceGenBuilder's path
+        ' resolution (PluginManager.GetOriginatingPluginName) — same string segment used
+        ' to write the loose, so the packer reads the right files.
+        Dim originPlugin = _pluginManager.GetOriginatingPluginName(npcFormID)
+        Dim formIdLow = (npcFormID And &HFFFFFFUI)
+
+        Dim packResult = NpcFaceGenPacker.PackForNpc(
+            anchorPluginPath, _dataPath, Config_App.Current.Game,
+            originPlugin, formIdLow,
+            Sub(p As NpcFaceGenPacker.PackProgress)
+                Select Case p.Phase
+                    Case NpcFaceGenPacker.PackPhase.BuildingBundle
+                        progressDlg.ReportPhase("Compressing FaceGen bundle…")
+                        progressDlg.ReportDetail(p.Detail)
+                        If p.Max > 0 Then
+                            progressDlg.SetDeterminate(p.Max)
+                            progressDlg.SetValue(p.Current)
+                        End If
+                    Case NpcFaceGenPacker.PackPhase.WritingArchive
+                        progressDlg.ReportPhase("Writing BA2 archive(s)…")
+                        progressDlg.ReportDetail(p.Detail)
+                        progressDlg.SetMarquee()
+                    Case NpcFaceGenPacker.PackPhase.DeletingLoose
+                        progressDlg.ReportPhase("Removing loose files…")
+                        progressDlg.ReportDetail(p.Detail)
+                        If p.Max > 0 Then
+                            progressDlg.SetDeterminate(p.Max)
+                            progressDlg.SetValue(p.Current)
+                        End If
+                    Case NpcFaceGenPacker.PackPhase.Done
+                        progressDlg.ReportPhase("Done.")
+                        progressDlg.ReportDetail("")
+                End Select
+            End Sub)
+
+        If Not packResult.Success Then
+            NpcPreviewLog.LogLazy(Function() $"  [CHARGEN-PACK] failed: {packResult.ErrorMessage}")
+            ' Bake succeeded but pack failed — loose files remain on disk for the user to
+            ' inspect or pack manually. Don't delete them.
+            Return ($"{vbCrLf}{vbCrLf}(CharGen baked OK but BA2 pack failed: {packResult.ErrorMessage})", False)
+        End If
+
+        NpcPreviewLog.LogLazy(Function() $"  [CHARGEN-PACK] wrote {packResult.WrittenArchives.Count} archive(s), skipped {packResult.SkippedArchives.Count}, removed {packResult.DeletedLoose.Count} loose")
+        Dim wrote = packResult.WrittenArchives.Count
+        Dim skipped = packResult.SkippedArchives.Count
+        If wrote = 0 AndAlso skipped > 0 Then
+            Return ($"{vbCrLf}{vbCrLf}CharGen unchanged ({skipped} BA2 archive{If(skipped = 1, "", "s")} already had this NPC).", True)
+        End If
+        Return ($"{vbCrLf}{vbCrLf}CharGen packed into {wrote} BA2 archive{If(wrote = 1, "", "s")}.", True)
+    End Function
 
     ''' <summary>Get the list of NPC_Manager auto-generated plugins. Uses a process-lifetime
     ''' in-memory cache (_autoGenPluginsCache) to avoid re-scanning Data\ on every Save dialog

@@ -509,6 +509,23 @@ Public Class EditFace_Form
                                    End Sub
                 seedFromList(raceDefaults)
                 seedFromList(rawNpc.HeadPartFormIDs)
+                ' WYSIWYG: LM SkinTemplate head/headRear HDPTs win over race defaults + raw NPC
+                ' PNAM (mirrors NpcRecordOverlay.ApplyLmHdptReplacement order, which runs AFTER
+                ' race defaults + preset.HeadPartFormIDs are merged into the shadow). Without
+                ' this, opening Edit Face on an NPC with an active LM template hides the
+                ' template's headRear from the user, who would lose it the moment they touch
+                ' any HeadParts control (the editor takes ownership via HasHeadPartFormIDs=True).
+                If Not String.IsNullOrEmpty(p.SkinTemplateId) Then
+                    Dim tpl = _mainForm.GetLmSkinTemplateCandidates(_isFemale).
+                        FirstOrDefault(Function(t) String.Equals(t.Id, p.SkinTemplateId, StringComparison.Ordinal))
+                    If tpl IsNot Nothing Then
+                        Dim genderIdx As Integer = If(_isFemale, 1, 0)
+                        Dim tplHdpts As New List(Of UInteger)
+                        If tpl.HeadHdptFormID(genderIdx) <> 0UI Then tplHdpts.Add(tpl.HeadHdptFormID(genderIdx))
+                        If tpl.HeadRearHdptFormID(genderIdx) <> 0UI Then tplHdpts.Add(tpl.HeadRearHdptFormID(genderIdx))
+                        seedFromList(tplHdpts)
+                    End If
+                End If
 
                 For Each t In mergedByType.Keys.OrderBy(Function(k) k)
                     p.HeadPartFormIDs.Add(mergedByType(t))
@@ -519,6 +536,12 @@ Public Class EditFace_Form
             ' authoritative. Without HasHeadPartFormIDs=True, a wipe would look like "preset never
             ' carried HeadParts" and Save would preserve raw NPC PNAM instead of emitting empty.
             p.HasHeadPartFormIDs = True
+            ' Edit Face seizes the Has* authority. If an LM template's Materialize had previously
+            ' set HasHeadPartFormIDsSetByTemplate=True, that's stale now — Retract should NOT
+            ' flip Has* back to False just because the user later switches templates in EditBody,
+            ' because Edit Face just claimed ownership. Clear the tracker so the user's edits
+            ' survive any subsequent template change.
+            p.HasHeadPartFormIDsSetByTemplate = False
             RefreshHeadPartsList()
 
             ' --- HairColor ---
@@ -2373,4 +2396,7 @@ Public Class EditFace_Form
         _editorHost.ApplyRenderToggleVisibility()
     End Sub
 
+    Private Sub EditFace_Form_Load(sender As Object, e As EventArgs) Handles MyBase.Load
+
+    End Sub
 End Class
