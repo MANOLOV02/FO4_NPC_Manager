@@ -62,6 +62,7 @@ Partial Class MainForm
         CheckBoxRenderHeadwear = New CheckBox()
         ButtonRandomNPC = New Button()
         ButtonReroll = New Button()
+        ButtonDumpObjectTemplates = New Button()
         CheckBoxApplySculpt = New CheckBox()
         LabelStatus = New Label()
         PanelPreviewHost = New Panel()
@@ -292,7 +293,7 @@ Partial Class MainForm
         PanelActionsToolbar.Controls.Add(ButtonSavePlugin, 14, 0)
         PanelActionsToolbar.Controls.Add(ButtonBuildCharGen, 15, 0)
         PanelActionsToolbar.Dock = DockStyle.Top
-        PanelActionsToolbar.Location = New Point(8, 108)
+        PanelActionsToolbar.Location = New Point(8, 117)
         PanelActionsToolbar.Name = "PanelActionsToolbar"
         PanelActionsToolbar.RowCount = 1
         PanelActionsToolbar.RowStyles.Add(New RowStyle())
@@ -510,6 +511,7 @@ Partial Class MainForm
         PanelPreviewToolbar.Controls.Add(CheckBoxRenderHeadwear, 4, 3)
         PanelPreviewToolbar.Controls.Add(ButtonRandomNPC, 6, 0)
         PanelPreviewToolbar.Controls.Add(ButtonReroll, 6, 1)
+        PanelPreviewToolbar.Controls.Add(ButtonDumpObjectTemplates, 6, 2)
         PanelPreviewToolbar.Controls.Add(CheckBoxApplySculpt, 5, 2)
         PanelPreviewToolbar.Dock = DockStyle.Top
         PanelPreviewToolbar.Location = New Point(8, 6)
@@ -519,7 +521,7 @@ Partial Class MainForm
         PanelPreviewToolbar.RowStyles.Add(New RowStyle())
         PanelPreviewToolbar.RowStyles.Add(New RowStyle())
         PanelPreviewToolbar.RowStyles.Add(New RowStyle())
-        PanelPreviewToolbar.Size = New Size(1184, 102)
+        PanelPreviewToolbar.Size = New Size(1184, 111)
         PanelPreviewToolbar.TabIndex = 0
         ' 
         ' CheckBoxRenderGore
@@ -527,7 +529,7 @@ Partial Class MainForm
         CheckBoxRenderGore.AutoSize = True
         CheckBoxRenderGore.Checked = True
         CheckBoxRenderGore.CheckState = CheckState.Checked
-        CheckBoxRenderGore.Location = New Point(936, 82)
+        CheckBoxRenderGore.Location = New Point(936, 91)
         CheckBoxRenderGore.Margin = New Padding(2, 1, 8, 1)
         CheckBoxRenderGore.Name = "CheckBoxRenderGore"
         CheckBoxRenderGore.Size = New Size(90, 19)
@@ -606,7 +608,7 @@ Partial Class MainForm
         ' 
         LabelMorphs.Anchor = AnchorStyles.Left
         LabelMorphs.AutoSize = True
-        LabelMorphs.Location = New Point(2, 65)
+        LabelMorphs.Location = New Point(2, 69)
         LabelMorphs.Margin = New Padding(2, 4, 4, 0)
         LabelMorphs.Name = "LabelMorphs"
         LabelMorphs.Size = New Size(51, 15)
@@ -653,7 +655,7 @@ Partial Class MainForm
         ' 
         LabelRenders.Anchor = AnchorStyles.Left
         LabelRenders.AutoSize = True
-        LabelRenders.Location = New Point(2, 86)
+        LabelRenders.Location = New Point(2, 95)
         LabelRenders.Margin = New Padding(2, 4, 4, 0)
         LabelRenders.Name = "LabelRenders"
         LabelRenders.Size = New Size(52, 15)
@@ -665,7 +667,7 @@ Partial Class MainForm
         CheckBoxRenderBody.AutoSize = True
         CheckBoxRenderBody.Checked = True
         CheckBoxRenderBody.CheckState = CheckState.Checked
-        CheckBoxRenderBody.Location = New Point(72, 82)
+        CheckBoxRenderBody.Location = New Point(72, 91)
         CheckBoxRenderBody.Margin = New Padding(2, 1, 8, 1)
         CheckBoxRenderBody.Name = "CheckBoxRenderBody"
         CheckBoxRenderBody.Size = New Size(93, 19)
@@ -677,7 +679,7 @@ Partial Class MainForm
         CheckBoxRenderUnderarmor.AutoSize = True
         CheckBoxRenderUnderarmor.Checked = True
         CheckBoxRenderUnderarmor.CheckState = CheckState.Checked
-        CheckBoxRenderUnderarmor.Location = New Point(288, 82)
+        CheckBoxRenderUnderarmor.Location = New Point(288, 91)
         CheckBoxRenderUnderarmor.Margin = New Padding(2, 1, 8, 1)
         CheckBoxRenderUnderarmor.Name = "CheckBoxRenderUnderarmor"
         CheckBoxRenderUnderarmor.Size = New Size(129, 19)
@@ -689,7 +691,7 @@ Partial Class MainForm
         CheckBoxRenderArmor.AutoSize = True
         CheckBoxRenderArmor.Checked = True
         CheckBoxRenderArmor.CheckState = CheckState.Checked
-        CheckBoxRenderArmor.Location = New Point(504, 82)
+        CheckBoxRenderArmor.Location = New Point(504, 91)
         CheckBoxRenderArmor.Margin = New Padding(2, 1, 8, 1)
         CheckBoxRenderArmor.Name = "CheckBoxRenderArmor"
         CheckBoxRenderArmor.Size = New Size(98, 19)
@@ -701,7 +703,7 @@ Partial Class MainForm
         CheckBoxRenderHeadwear.AutoSize = True
         CheckBoxRenderHeadwear.Checked = True
         CheckBoxRenderHeadwear.CheckState = CheckState.Checked
-        CheckBoxRenderHeadwear.Location = New Point(720, 82)
+        CheckBoxRenderHeadwear.Location = New Point(720, 91)
         CheckBoxRenderHeadwear.Margin = New Padding(2, 1, 8, 1)
         CheckBoxRenderHeadwear.Name = "CheckBoxRenderHeadwear"
         CheckBoxRenderHeadwear.Size = New Size(117, 19)
@@ -731,6 +733,18 @@ Partial Class MainForm
         ButtonReroll.Size = New Size(26, 26)
         ButtonReroll.TabIndex = 6
         ButtonReroll.Text = "↻"
+        ' 
+        ' ButtonDumpObjectTemplates
+        ' 
+        ButtonDumpObjectTemplates.Anchor = AnchorStyles.Right
+        ButtonDumpObjectTemplates.FlatStyle = FlatStyle.System
+        ButtonDumpObjectTemplates.Font = New Font("Segoe UI Symbol", 10F, FontStyle.Bold)
+        ButtonDumpObjectTemplates.Location = New Point(1156, 62)
+        ButtonDumpObjectTemplates.Margin = New Padding(2)
+        ButtonDumpObjectTemplates.Name = "ButtonDumpObjectTemplates"
+        ButtonDumpObjectTemplates.Size = New Size(26, 26)
+        ButtonDumpObjectTemplates.TabIndex = 20
+        ButtonDumpObjectTemplates.Text = "📋"
         ' 
         ' CheckBoxApplySculpt
         ' 
@@ -851,6 +865,7 @@ Partial Class MainForm
     Friend WithEvents LabelOutfit As System.Windows.Forms.Label
     Friend WithEvents ComboBoxOutfit As System.Windows.Forms.ComboBox
     Friend WithEvents ButtonReroll As System.Windows.Forms.Button
+    Friend WithEvents ButtonDumpObjectTemplates As System.Windows.Forms.Button
     Friend WithEvents LabelMorphs As System.Windows.Forms.Label
     Friend WithEvents LabelRenders As System.Windows.Forms.Label
     Friend WithEvents PanelActionsToolbar As System.Windows.Forms.TableLayoutPanel

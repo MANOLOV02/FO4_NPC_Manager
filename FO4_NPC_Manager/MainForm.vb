@@ -123,6 +123,26 @@ Public Class MainForm
         Public ArmorAddonFormID As UInteger
         Public MaterialSwapFormID As UInteger
         Public ColorRemapIndex As Nullable(Of Single)
+        ''' <summary>OBTS/OMOD resolution for this candidate. Applied AFTER the ARMA-direct
+        ''' MaterialSwapFormID/ColorRemapIndex base, so DirectProperties and Properties of
+        ''' IncludedOmods can stack/override. Populated by:
+        '''   - CollectArmoCandidates (humanoid path): formType=ARMO, shared across addon shapes.
+        '''   - CollectRobotCandidates (NPC_.OBTE path): formType=NPC_, shared across chunks of
+        '''     the chosen combination. Each chunk gets its own MeshCandidate but they all link
+        '''     back to the same OmodResolution so Properties apply once at the actor level.</summary>
+        Public OmodResolution As ObjectTemplateResolver.CombinationResolution = Nothing
+        ''' <summary>For chunk MeshCandidates emitted by the NPC robot path: the FormType context
+        ''' the OmodResolutionApplier should use ("ARMO" for humanoid, "NPC_" for robot). Drives
+        ''' which PropertyIndex enum interprets each Property idx. Defaults to "ARMO" because
+        ''' the humanoid path is the legacy default.</summary>
+        Public OmodResolutionFormType As String = "ARMO"
+        ''' <summary>OMOD chunk metadata for the robot path. Empty/zero for humanoid candidates.
+        ''' AttachPointKywdEditorId is the resolved EditorID of OMOD.AttachPointFormID (matches
+        ''' BSConnectPoint::Parents.Name in the actor skeleton). MountSocket carries the socket's
+        ''' transform once resolved (Nothing if no socket matches; chunk falls back to origin).</summary>
+        Public ChunkOmodFormID As UInteger
+        Public AttachPointKywdEditorId As String = ""
+        Public MountSocket As BSConnectPointReader.ConnectPointInfo = Nothing
         ''' <summary>Effective PartType: HDPT.PartType, falling back to the parent HNAM-chain
         ''' part type for sub-parts whose own PartType=0 (Misc). Used by skinning / FBNS
         ''' resolution / FaceTint candidacy where a Misc child of Face must behave Face-like.</summary>
@@ -364,8 +384,12 @@ Public Class MainForm
         ' [TEST: TPLT-traits-bucket] HeadTexture/HairColor/FacialHairColor/HeadParts/QNAM moved
         ' to TraitsState. ObjectTemplateOMODFormIDs kept here — OBTS combinations are model
         ' assembly (robot parts), conceptually closer to Model/Animation than to Traits.
-        ''' <summary>OMOD FormIDs from NPC_.ObjectTemplate combination #0 (robot body parts).</summary>
+        ''' <summary>Legacy flat list of OMOD FormIDs from combo #0 (kept for back-compat).</summary>
         Public ObjectTemplateOMODFormIDs As New List(Of UInteger)
+        ''' <summary>Full OBTE/OBTS combinations — used by the new robot path resolver.</summary>
+        Public ObjectTemplateCombinations As New List(Of FO4_Base_Library.NPC_ObjectTemplateCombination)
+        ''' <summary>True when source NPC_ had an OBTE present.</summary>
+        Public HasObjectTemplate As Boolean = False
     End Class
 
     Friend Class NPCVisualState
@@ -402,8 +426,15 @@ Public Class MainForm
         Public WeightMuscular As Single
         Public WeightFat As Single
         ''' <summary>OMOD FormIDs from NPC_.ObjectTemplate combination #0 (robot body parts).
-        ''' Empty for humanoids; populated for Assaultron/MrHandy/etc.</summary>
+        ''' Legacy flat list — kept for back-compat with old robot-path code that hasn't
+        ''' migrated yet. New code uses ObjectTemplateCombinations + ObjectTemplateResolver.</summary>
         Public ObjectTemplateOMODFormIDs As New List(Of UInteger)
+        ''' <summary>Full NPC_.OBTE/OBTS combinations (every header + payload) — fed into
+        ''' ObjectTemplateResolver.ResolveNpcCombinations to pick the engine-applied
+        ''' combination and walk its Includes/Properties recursively.</summary>
+        Public ObjectTemplateCombinations As New List(Of FO4_Base_Library.NPC_ObjectTemplateCombination)
+        ''' <summary>True when the source NPC_ had OBTE present. Robot path activates only if so.</summary>
+        Public HasObjectTemplate As Boolean = False
     End Class
 
     Private ReadOnly Property CurrentPreviewMode As PreviewMode
@@ -691,6 +722,7 @@ Public Class MainForm
         _searchDebounceTimer.Interval = 250
         Config_App.Current.Game = Config_App.Game_Enum.Fallout4
         NpcPreviewLog.Initialize()
+        NpcPreviewLog.Enabled = True
         LoadDataAsync()
     End Sub
 
@@ -1821,6 +1853,51 @@ Public Class MainForm
             Await RenderCurrentStateAsync(requestVersion)
         Catch ex As Exception
             SetStatus($"Error: {ex.Message}")
+        End Try
+    End Sub
+
+    ''' <summary>One-shot exhaustive dump of every loaded NPC's Object Template (combinations,
+    ''' includes, properties, OMOD details). Output is a text file alongside the executable.
+    ''' Read-only diagnostic — no records are modified, no other files are touched. See
+    ''' <see cref="ObjectTemplateDumper"/> for the format. Runs on a background thread so the
+    ''' status bar (and the rest of the UI) stays responsive while it works; phase reports come
+    ''' through IProgress(Of String) and are marshalled back to SetStatus on the UI thread.</summary>
+    Private Async Sub ButtonDumpObjectTemplates_Click(sender As Object, e As EventArgs) Handles ButtonDumpObjectTemplates.Click
+        If _allNPCs Is Nothing OrElse _allNPCs.Count = 0 Then
+            MessageBox.Show("No NPCs loaded yet. Load plugins first.", "Dump Object Templates", MessageBoxButtons.OK, MessageBoxIcon.Information)
+            Return
+        End If
+        If _pluginManager Is Nothing Then
+            MessageBox.Show("PluginManager not initialized.", "Dump Object Templates", MessageBoxButtons.OK, MessageBoxIcon.Warning)
+            Return
+        End If
+
+        Dim outputPath = Path.Combine("C:\temp", "obts_dump.txt")
+        Try
+            Directory.CreateDirectory("C:\temp")
+        Catch ex As Exception
+            MessageBox.Show($"Could not create output directory C:\temp:{Environment.NewLine}{ex.Message}",
+                            "Dump Object Templates", MessageBoxButtons.OK, MessageBoxIcon.Error)
+            Return
+        End Try
+        Dim oldCursor = Cursor
+        Dim npcsSnapshot = _allNPCs.ToList() ' isolate from UI mutations during background run
+        Dim pm = _pluginManager
+        Dim progress As New Progress(Of String)(Sub(msg) SetStatus(msg))
+        ButtonDumpObjectTemplates.Enabled = False
+        Try
+            Cursor = Cursors.WaitCursor
+            SetStatus("Dump: starting...")
+            Await Task.Run(Sub() ObjectTemplateDumper.Run(npcsSnapshot, pm, outputPath, progress))
+            SetStatus($"Dump written to {outputPath}")
+            MessageBox.Show($"Dump written to:{Environment.NewLine}{outputPath}", "Dump Object Templates", MessageBoxButtons.OK, MessageBoxIcon.Information)
+        Catch ex As Exception
+            SetStatus($"Dump failed: {ex.Message}")
+            MessageBox.Show($"Dump failed:{Environment.NewLine}{ex.GetType().Name}: {ex.Message}{Environment.NewLine}{Environment.NewLine}{ex.StackTrace}",
+                            "Dump Object Templates", MessageBoxButtons.OK, MessageBoxIcon.Error)
+        Finally
+            Cursor = oldCursor
+            ButtonDumpObjectTemplates.Enabled = True
         End Try
     End Sub
 
@@ -4313,6 +4390,8 @@ Public Class MainForm
 
         state.HeadPartFormIDs.AddRange(traits.HeadPartFormIDs)
         state.ObjectTemplateOMODFormIDs.AddRange(model.ObjectTemplateOMODFormIDs)
+        state.ObjectTemplateCombinations.AddRange(model.ObjectTemplateCombinations)
+        state.HasObjectTemplate = model.HasObjectTemplate
         ApplyRaceFallbacks(state, traits, _pluginManager)
         state.HeadPartFormIDs = state.HeadPartFormIDs.Where(Function(id) id <> 0UI).Distinct().ToList()
 
@@ -6275,6 +6354,8 @@ Public Class MainForm
             clone.LoadoutArmorContextKeywords(kv.Key) = New List(Of UInteger)(kv.Value)
         Next
         clone.ObjectTemplateOMODFormIDs.AddRange(state.ObjectTemplateOMODFormIDs)
+        clone.ObjectTemplateCombinations.AddRange(state.ObjectTemplateCombinations)
+        clone.HasObjectTemplate = state.HasObjectTemplate
         Return clone
     End Function
 
@@ -6648,37 +6729,20 @@ Public Class MainForm
         Dim mergedHeadParts = MergeHeadPartsWithRaceDefaults(state)
         CollectHeadPartCandidates(mergedHeadParts, New HashSet(Of UInteger)(), candidates, order, warnings, state, useFaceGen)
 
-        ' Robot body parts via NPC_.ObjectTemplate OBTS Includes → OMOD.ModelPath.
-        ' For vanilla robots (Assaultron, Mr Handy, etc.) the per-part meshes live in the OMOD records
-        ' referenced from the first combination of NPC_.ObjectTemplate. Each OMOD has a MODL mesh path
-        ' (captured at CraftingRecords.OMOD_Data.ModelPath). Emit one Skin-kind candidate per OMOD that
-        ' has a non-empty ModelPath. Spec: project_robot_rendering_combinations.md (memory).
-        If state.ObjectTemplateOMODFormIDs IsNot Nothing AndAlso state.ObjectTemplateOMODFormIDs.Count > 0 Then
-            NpcPreviewLog.LogLazy(Function() $"  [ROBOT-PARTS] NPC has {state.ObjectTemplateOMODFormIDs.Count} OMOD includes in ObjectTemplate combination #0")
-            For Each omodFID In state.ObjectTemplateOMODFormIDs
-                If omodFID = 0UI Then Continue For
-                Dim omodRec = _pluginManager.GetRecord(omodFID)
-                If omodRec Is Nothing OrElse omodRec.Header.Signature <> "OMOD" Then
-                    NpcPreviewLog.LogLazy(Function() $"    [ROBOT-PARTS] {omodFID:X8} → OMOD NOT FOUND")
-                    Continue For
-                End If
-                Dim omod = CraftingRecordParsers.ParseOMOD(omodRec, _pluginManager)
-                If String.IsNullOrEmpty(omod.ModelPath) Then
-                    NpcPreviewLog.LogLazy(Function() $"    [ROBOT-PARTS] {omodFID:X8} '{omod.EditorID}' → empty ModelPath, skipped")
-                    Continue For
-                End If
-                Dim dictKey = NormalizeDictionaryKeyWithMeshesPrefix(omod.ModelPath)
-                NpcPreviewLog.LogLazy(Function() $"    [ROBOT-PARTS] {omodFID:X8} '{omod.EditorID}' → mesh='{dictKey}'")
-                candidates.Add(New MeshCandidate With {
-                    .DictKey = dictKey,
-                    .SlotMask = 0UI,
-                    .Priority = 0,
-                    .Kind = MeshCandidateKind.Skin,
-                    .SourceFormID = omodFID,
-                    .Order = order
-                })
-                order += 1
-            Next
+        ' Robot path (NPC_.ObjectTemplate). Replaces the legacy "iterate combo #0
+        ' OMODFormIDs flat list" branch. Engine rule (verified vs dump v2):
+        '   1. ObjectTemplateResolver.ResolveNpcCombinations picks ONE combination
+        '      (kw-match → first Default → first overall).
+        '   2. Walk the chosen combination's IncludedOmods: each OMOD.ModelPath != ""
+        '      is a chunk MeshCandidate to mount via BSConnectPoint::Parents lookup
+        '      from the actor's skeleton NIF (helper BSConnectPointReader).
+        '   3. OMODs without ModelPath but with Properties feed OmodResolutionApplier
+        '      with formType="NPC_" (idx 5 MaterialSwap, idx 4 ColorRemap).
+        ' AttachPoint resolution: OMOD.AttachPointFormID → KYWD record → EditorID,
+        ' matched case-insens against ConnectPointInfo.Name.
+        If state.HasObjectTemplate AndAlso state.ObjectTemplateCombinations IsNot Nothing _
+           AndAlso state.ObjectTemplateCombinations.Count > 0 Then
+            CollectRobotChunkCandidates(state, candidates, order, warnings)
         End If
 
         Return candidates
@@ -6727,12 +6791,23 @@ Public Class MainForm
         ' combination matchea contexto de keywords) y carga TODOS los Models cuyo INDX coincide.
         '   - Sturgess (Abbot): efectiveIdx=0, dos Models con INDX=0 (clothes+gloves) → carga ambos.
         '   - Gunner Combat Torso: keyword Heavy → OMOD AddonIndex=2 → carga el grupo INDX=2.
+        ' ctxKeywords lifted out of the addon-resolve block so the OBTS/OMOD resolver below can
+        ' use the same set. Source: LVLI.LLKC propagation (arch_outfit_resolution.md). Empty
+        ' for ARMOs reached without a leveled outfit (e.g. NPC.WNAM skin) — combinations with
+        ' Default=True still apply, keyword-only combinations don't.
+        Dim ctxKeywords As List(Of UInteger) = Nothing
+        If state.LoadoutArmorContextKeywords IsNot Nothing Then
+            state.LoadoutArmorContextKeywords.TryGetValue(armoFormID, ctxKeywords)
+        End If
+
+        ' Resolve OBTS/OMOD canonical view ONCE per ARMO. Shared by every MeshCandidate
+        ' produced for this ARMO's addons — they all live under the same combination overlay.
+        ' The applier runs in ApplyShapeMaterialOverrides after the ARMA-direct base swap.
+        Dim omodResolution = ObjectTemplateResolver.ResolveArmoCombinations(armo, ctxKeywords, _pluginManager)
+        NpcPreviewLog.LogLazy(Function() $"    [OMOD-RESOLVE] {armo.EditorID}: appliedCombos={omodResolution.AppliedCombinations.Count} directProps={omodResolution.DirectProperties.Count} includedOmods={omodResolution.IncludedOmods.Count}")
+
         Dim addonOrder As List(Of UInteger)
         If armo.ArmorAddons.Count >= 1 Then
-            Dim ctxKeywords As List(Of UInteger) = Nothing
-            If state.LoadoutArmorContextKeywords IsNot Nothing Then
-                state.LoadoutArmorContextKeywords.TryGetValue(armoFormID, ctxKeywords)
-            End If
             For Each entry In armo.ArmorAddons
                 Dim peekRec = _pluginManager.GetRecord(entry.ArmaFormID)
                 If peekRec IsNot Nothing AndAlso peekRec.Header.Signature = "ARMA" Then
@@ -6842,6 +6917,7 @@ Public Class MainForm
                 .ColorRemapIndex = If(state.IsFemale,
                                        If(arma.FemaleColorRemapIndex.HasValue, arma.FemaleColorRemapIndex, arma.MaleColorRemapIndex),
                                        If(arma.MaleColorRemapIndex.HasValue, arma.MaleColorRemapIndex, arma.FemaleColorRemapIndex)),
+                .OmodResolution = omodResolution,
                 .Order = order,
                 .ArmaBoneScaleDeltas = genderBoneScale
             })
@@ -6890,6 +6966,140 @@ Public Class MainForm
         Return effective
     End Function
 
+    ''' <summary>NPC robot path: walks NPC_.OBTE via the canonical resolver, picks ONE
+    ''' combination, expands its IncludedOmods recursively, emits one MeshCandidate per chunk
+    ''' OMOD (with mount transform from BSConnectPoint::Parents lookup), and shares the
+    ''' resolution across all emitted candidates so the applier runs Properties once at the
+    ''' actor level.
+    '''
+    ''' Engine semantics (verified vs dump v2):
+    '''   - Each chunk OMOD has ModelPath != "" and AttachPointFormID → KYWD whose EditorID
+    '''     matches a BSConnectPoint::Parents.Name in the actor skeleton NIF.
+    '''   - The chunk renders at the socket's local transform on top of the bone Parent.
+    '''   - OMODs without ModelPath but with Properties (or DirectProperties on the combination)
+    '''     contribute Materials/Color swaps applied via OmodResolutionApplier formType="NPC_".
+    '''
+    ''' AttachPoint logging: KYWD records were not loaded by the legacy plugin filter
+    ''' (SIGS_NPC_RENDERING did not include "KYWD" until 2026-05-10). With the fix in place
+    ''' AttachPoint EditorIDs resolve and chunks mount at the correct sockets.
+    '''
+    ''' Skeleton merge: the legacy MergeRobotExtendedSkeletonsIfRobot heuristic
+    ''' (SkeletonRef.nif sibling probe) is left in place for now — to be replaced after we
+    ''' verify that chunk shapes mount correctly using BSConnectPoint and the standard
+    ''' SkeletonInstance.MergeAdditionalSkeleton pipeline.</summary>
+    Private Sub CollectRobotChunkCandidates(state As NPCVisualState,
+                                            candidates As List(Of MeshCandidate),
+                                            ByRef order As Integer,
+                                            warnings As List(Of String))
+        ' Build a stub NPC_Data carrying the OBTE so we can re-use ResolveNpcCombinations.
+        Dim stubNpc As New NPC_Data With {
+            .FormID = state.FormID,
+            .HasObjectTemplate = state.HasObjectTemplate
+        }
+        For Each ch In state.ObjectTemplateCombinations
+            stubNpc.ObjectTemplateCombinations.Add(ch)
+        Next
+
+        ' ctxKeywords: NPC robots typically don't get LVLI.LLKC propagation (they're not
+        ' wrapped in OTFT). Pass empty so the resolver falls through to first-Default.
+        Dim ctxKeywords As New List(Of UInteger)
+        Dim resolution = ObjectTemplateResolver.ResolveNpcCombinations(stubNpc, ctxKeywords, _pluginManager)
+
+        NpcPreviewLog.LogLazy(Function() $"  [ROBOT-RESOLVE] HasOBTE={state.HasObjectTemplate} combos={state.ObjectTemplateCombinations.Count} → applied={resolution.AppliedCombinations.Count} directProps={resolution.DirectProperties.Count} includedOmods={resolution.IncludedOmods.Count}")
+
+        If resolution.IncludedOmods.Count = 0 AndAlso resolution.DirectProperties.Count = 0 Then
+            NpcPreviewLog.LogLazy(Function() "  [ROBOT-RESOLVE] resolution empty — no chunks to mount")
+            Return
+        End If
+
+        ' Load the actor's skeleton NIF once and pre-index its BSConnectPoint::Parents by
+        ' socket name (case-insens). Used to look up MountSocket transform per chunk.
+        Dim socketsByName = LoadActorBSConnectPoints(state, warnings)
+        NpcPreviewLog.LogLazy(Function() $"  [ROBOT-SOCKETS] skeleton sockets indexed: {socketsByName.Count}")
+
+        ' Walk IncludedOmods. Each OMOD with ModelPath = chunk to mount; OMODs without
+        ' ModelPath contribute Properties only (resolved en bloque por el applier al final).
+        Dim chunkCount As Integer = 0
+        For Each omod In resolution.IncludedOmods
+            If omod Is Nothing Then Continue For
+            If String.IsNullOrEmpty(omod.ModelPath) Then Continue For ' property-only OMODs
+            If omod.FormTypeSignature <> "NPC_" Then
+                NpcPreviewLog.LogLazy(Function() $"  [ROBOT-CHUNK-SKIP] omod={omod.EditorID} ({omod.FormID:X8}) FormType={omod.FormTypeSignature} ≠ NPC_ → skipped")
+                Continue For
+            End If
+
+            Dim apEditorId = ResolveAttachPointEditorId(omod.AttachPointFormID)
+            Dim socket As BSConnectPointReader.ConnectPointInfo = Nothing
+            If apEditorId <> "" AndAlso socketsByName.ContainsKey(apEditorId) Then
+                socket = socketsByName(apEditorId)
+            End If
+
+            Dim socketTag = If(socket IsNot Nothing,
+                               $"socket='{socket.Name}' onBone='{socket.ParentBoneName}'",
+                               $"socket=NOT-FOUND-FOR-AP-EDITORID='{apEditorId}'")
+            NpcPreviewLog.LogLazy(Function() $"  [ROBOT-CHUNK] omod={omod.EditorID} ({omod.FormID:X8}) mesh='{omod.ModelPath}' attachPt={omod.AttachPointFormID:X8}('{apEditorId}') {socketTag}")
+
+            Dim dictKey = NormalizeDictionaryKeyWithMeshesPrefix(omod.ModelPath)
+            candidates.Add(New MeshCandidate With {
+                .DictKey = dictKey,
+                .SlotMask = 0UI,
+                .Priority = 0,
+                .Kind = MeshCandidateKind.Skin,
+                .SourceFormID = omod.FormID,
+                .ChunkOmodFormID = omod.FormID,
+                .AttachPointKywdEditorId = apEditorId,
+                .MountSocket = socket,
+                .OmodResolution = resolution,
+                .OmodResolutionFormType = "NPC_",
+                .Order = order
+            })
+            order += 1
+            chunkCount += 1
+        Next
+
+        NpcPreviewLog.LogLazy(Function() $"  [ROBOT-RESOLVE] emitted {chunkCount} chunk candidates")
+    End Sub
+
+    ''' <summary>Resolve OMOD.AttachPointFormID (KYWD FormID) to the KYWD's EditorID. Returns ""
+    ''' when the FormID is 0 or the record isn't loaded (which happened for every OMOD before the
+    ''' KYWD loader fix on 2026-05-10).</summary>
+    Private Function ResolveAttachPointEditorId(kywdFormID As UInteger) As String
+        If kywdFormID = 0UI Then Return ""
+        Dim rec = _pluginManager.GetRecord(kywdFormID)
+        If rec Is Nothing OrElse rec.Header.Signature <> "KYWD" Then Return ""
+        Return rec.EditorID
+    End Function
+
+    ''' <summary>Load the actor's skeleton NIF and index every BSConnectPoint::Parents socket by
+    ''' Name (case-insens). Empty dict if no NIF / no sockets. The same skeleton key used by the
+    ''' main render pipeline (ResolveSkeletonKey) is used here so the lookup is consistent.</summary>
+    Private Function LoadActorBSConnectPoints(state As NPCVisualState, warnings As List(Of String)) As Dictionary(Of String, BSConnectPointReader.ConnectPointInfo)
+        Dim dict As New Dictionary(Of String, BSConnectPointReader.ConnectPointInfo)(StringComparer.OrdinalIgnoreCase)
+        Dim skelKey = ResolveSkeletonKey(state, warnings)
+        If String.IsNullOrEmpty(skelKey) Then Return dict
+
+        Dim loc As FilesDictionary_class.File_Location = Nothing
+        If Not FilesDictionary_class.Dictionary.TryGetValue(skelKey, loc) Then
+            NpcPreviewLog.LogLazy(Function() $"  [ROBOT-SOCKETS] skeleton '{skelKey}' not in FilesDictionary")
+            Return dict
+        End If
+        Try
+            Dim bytes = loc.GetBytes()
+            If bytes Is Nothing OrElse bytes.Length = 0 Then Return dict
+            Dim nif As New Nifcontent_Class_Manolo()
+            nif.Load_Manolo(bytes)
+            Dim parents = BSConnectPointReader.ReadParents(nif)
+            For Each p In parents
+                If String.IsNullOrEmpty(p.Name) Then Continue For
+                ' Last-wins on duplicate names (vanilla shouldn't have duplicates; defensive).
+                dict(p.Name) = p
+            Next
+        Catch ex As Exception
+            NpcPreviewLog.LogLazy(Function() $"  [ROBOT-SOCKETS] failed to read sockets from '{skelKey}': {ex.GetType().Name}: {ex.Message}")
+        End Try
+        Return dict
+    End Function
+
     Private Sub CollectHeadPartCandidates(headPartFormIDs As IEnumerable(Of UInteger),
                                           visited As HashSet(Of UInteger),
                                           candidates As List(Of MeshCandidate),
@@ -6897,8 +7107,32 @@ Public Class MainForm
                                           warnings As List(Of String),
                                           state As NPCVisualState,
                                           Optional useFaceGen As Boolean = False)
+        ' Per-render FLST cache so IsHdptValidForRace's race-membership checks parse each FLST
+        ' at most once across the whole HDPT chain (vanilla has 3-4 distinct FLSTs referenced
+        ' by hundreds of HDPTs).
+        Dim flstCache As New Dictionary(Of UInteger, FLST_Data)
+        ' Race defaults (gender-appropriate) so RACE-declared HDPTs always pass the check even
+        ' when their RNAM is mod-inconsistent. Mirrors HeadPartPicker_Form's seed.
+        Dim raceDefaults As New HashSet(Of UInteger)
+        ' Non-humanoid race signal: a RACE that declares NO head parts (neither Male nor Female)
+        ' is a creature/robot/dog race. RNAM=0 HDPTs only pass for humanoid races (engine drops
+        ' them on dogs/robots even when NPC.PNAM has a buggy reference, e.g. EncRaiderDog01).
+        Dim raceHasAnyHeadParts As Boolean = False
+        Dim raceRec = If(state IsNot Nothing AndAlso state.RaceFormID <> 0UI, _pluginManager.GetRecord(state.RaceFormID), Nothing)
+        If raceRec IsNot Nothing AndAlso raceRec.Header.Signature = "RACE" Then
+            Dim race = RecordParsers.ParseRACE(raceRec, _pluginManager)
+            Dim defs = If(state.IsFemale, race?.FemaleHeadPartFormIDs, race?.MaleHeadPartFormIDs)
+            If defs IsNot Nothing Then
+                For Each fid In defs : raceDefaults.Add(fid) : Next
+            End If
+            ' Either gender having head parts is enough — the race is humanoid.
+            Dim maleCount = If(race?.MaleHeadPartFormIDs?.Count, 0)
+            Dim femaleCount = If(race?.FemaleHeadPartFormIDs?.Count, 0)
+            raceHasAnyHeadParts = (maleCount + femaleCount) > 0
+        End If
+
         For Each hdptFormID In headPartFormIDs.Where(Function(id) id <> 0UI)
-            CollectHeadPartCandidate(hdptFormID, visited, candidates, order, warnings, -1, state, useFaceGen)
+            CollectHeadPartCandidate(hdptFormID, visited, candidates, order, warnings, -1, state, useFaceGen, flstCache, raceDefaults, raceHasAnyHeadParts)
         Next
     End Sub
 
@@ -6909,7 +7143,10 @@ Public Class MainForm
                                          warnings As List(Of String),
                                          parentPartType As Integer,
                                          state As NPCVisualState,
-                                         Optional useFaceGen As Boolean = False)
+                                         Optional useFaceGen As Boolean = False,
+                                         Optional flstCache As Dictionary(Of UInteger, FLST_Data) = Nothing,
+                                         Optional raceDefaults As HashSet(Of UInteger) = Nothing,
+                                         Optional raceHasAnyHeadParts As Boolean = True)
         If hdptFormID = 0UI Then Return
         If visited.Contains(hdptFormID) Then Return
         visited.Add(hdptFormID)
@@ -6924,6 +7161,19 @@ Public Class MainForm
         Dim effectivePartType = hdpt.PartType
         If parentPartType >= 0 AndAlso hdpt.PartType = 0 Then
             effectivePartType = parentPartType
+        End If
+
+        ' Race-membership check: drop HDPTs the engine wouldn't render. The only practical
+        ' case this catches today is RNAM=0 HDPTs assigned (via NPC.PNAM) to a non-humanoid
+        ' race — e.g. EncRaiderDog01 lists MaleMouthHumanoidDirtyTeethMissing yet the engine
+        ' renders no human teeth on raider dogs because RaiderDogRace declares zero head parts.
+        ' Humanoid races (HumanRace, GhoulRace, etc.) keep all their RNAM=0 HDPTs as before.
+        If flstCache IsNot Nothing AndAlso state IsNot Nothing AndAlso state.RaceFormID <> 0UI Then
+            Dim raceOk = HeadPartResolver.IsHdptValidForRace(hdptFormID, state.RaceFormID, state.IsFemale, _pluginManager, flstCache, raceDefaults, raceHasAnyHeadParts)
+            If Not raceOk Then
+                NpcPreviewLog.LogLazy(Function() $"  [HDPT-RACE-MISMATCH] {hdpt.EditorID} FID={hdptFormID:X8} type={hdpt.PartType} RNAM=0x{hdpt.ValidRacesFormID:X8} race=0x{state.RaceFormID:X8} female={state.IsFemale} raceHasHeadParts={raceHasAnyHeadParts} parent={parentPartType} — DROPPED (engine drops these too; vanilla data inconsistency)")
+                Return
+            End If
         End If
 
         NpcPreviewLog.LogLazy(Function() $"  [HDPT] {hdpt.EditorID} FID={hdptFormID:X8} type={hdpt.PartType} effectiveType={effectivePartType} mesh={hdpt.MeshPath} txst={hdpt.TextureSetFormID:X8} color={hdpt.ColorFormID:X8} flags={hdpt.Flags:X2} bodyTex={hdpt.UsesBodyTexture} extras={hdpt.ExtraPartFormIDs.Count} parent={parentPartType} raceTri={hdpt.RaceMorphTriPath} chargenTri={hdpt.ChargenMorphTriPath} tri(NAM0=1)={hdpt.TriPath}")
@@ -7008,7 +7258,7 @@ Public Class MainForm
         ' Pass the effective type down so nested extras also inherit
         Dim childParentType = If(effectivePartType <> 0, effectivePartType, parentPartType)
         For Each extraPartFormID In hdpt.ExtraPartFormIDs
-            CollectHeadPartCandidate(extraPartFormID, visited, candidates, order, warnings, childParentType, state, useFaceGen)
+            CollectHeadPartCandidate(extraPartFormID, visited, candidates, order, warnings, childParentType, state, useFaceGen, flstCache, raceDefaults, raceHasAnyHeadParts)
         Next
     End Sub
 
@@ -7024,11 +7274,24 @@ Public Class MainForm
     Private Const SlotBitEyes As UInteger = &H20000UI        ' Slot 47 - Eyes          (glasses, goggles)
     Private Const SlotBitBeard As UInteger = &H40000UI       ' Slot 48 - Beard         (algo equipable que pisa la zona barba)
     Private Const SlotBitMouth As UInteger = &H80000UI       ' Slot 49 - Mouth         (bandana, máscara quirúrgica, gas mask boca)
-    ''' <summary>Máscara unificada de bits "headwear": cualquier prenda de cabeza/cara. Usada por
-    ''' ClassifyShapeCategory para categoría Headwear y por ApplyRenderToggleVisibility para el
-    ''' toggle "Render headwear". Slots 30-32 (HairTop/HairLong/FaceGenHead) + 46-49 (Headband/Eyes/Beard/Mouth).</summary>
+    ' Slots 50-52 — nombres canónicos en wbDefinitionsFO4.pas:3766-3768. Categorización:
+    '   • Neck (50)  → headwear: bandana de cuello, collar, bufanda. Es prenda equipable.
+    '   • Ring (51)  → body (mano): anillo, accesorio de mano. Cae en HAND_MASK.
+    '   • Scalp (52) → body (cabeza/cuello): overlay que sigue al body skin, no es prenda
+    '                  equipable. Tratado como BODY (agregado a BODY_MASK en ClassifyShapeCategory).
+    ' Slot 53 (Decapitation) NO se clasifica: es geometría de gore que aparece tras desmembrar
+    ' al actor, no una prenda equipable. Slots 54-55 son "Unnamed" en xEdit (sin uso vanilla) —
+    ' los dejamos fuera de toda máscara para no asignarlos al toggle equivocado.
+    Private Const SlotBitNeck As UInteger = &H100000UI       ' Slot 50 - Neck          (bandana cuello, collar, bufanda)
+    Private Const SlotBitRing As UInteger = &H200000UI       ' Slot 51 - Ring          (anillo — body, va en la mano)
+    Private Const SlotBitScalp As UInteger = &H400000UI      ' Slot 52 - Scalp         (overlay cabeza/cuello — body, no prenda)
+    ''' <summary>Máscara unificada de bits "headwear": cualquier prenda de cabeza/cara/cuello.
+    ''' Usada por ClassifyShapeCategory para categoría Headwear y por ApplyRenderToggleVisibility
+    ''' para el toggle "Render headwear". Slots 30-32 (HairTop/HairLong/FaceGenHead) + 46-49
+    ''' (Headband/Eyes/Beard/Mouth) + 50 (Neck). Ring (51) y Scalp (52) NO están acá — son body.</summary>
     Private Const HEADWEAR_MASK As UInteger = SlotBitHairTop Or SlotBitHairLong Or SlotBitFaceGenHead Or
-                                              SlotBitHeadband Or SlotBitEyes Or SlotBitBeard Or SlotBitMouth
+                                              SlotBitHeadband Or SlotBitEyes Or SlotBitBeard Or SlotBitMouth Or
+                                              SlotBitNeck
 
     Private Function SelectWinningCandidates(candidates As List(Of MeshCandidate)) As List(Of MeshCandidate)
         Dim selected As New List(Of MeshCandidate)
@@ -7195,12 +7458,15 @@ Public Class MainForm
         Dim hasBeard As Boolean = (occupiedSlots And SlotBitBeard) <> 0UI
         Dim hasMouth As Boolean = (occupiedSlots And SlotBitMouth) <> 0UI
 
-        ' Pasada 2 — slotless. HeadParts ocluidos por headwear aceptado se MARCAN con flag
-        ' IsOccludedByHeadwear pero NO se descartan: ApplyRenderToggleVisibility decide hide en
-        ' runtime. Cuando "Render headwear" se apaga el head part ocluido se destapa para mostrar
-        ' el pelo/barba/etc bajo el casco oculto. Antes hacía Continue For (descarte estructural)
-        ' que impedía destapar runtime — mismo patrón que el Skin (ver pasada 0).
-        For Each slotlessCandidate In visibleCandidates.Where(Function(c) c.SlotMask = 0UI).OrderBy(Function(c) c.Order)
+        ' Pasada 2 — slotless NO-Skin (HeadParts y similares). HeadParts ocluidos por headwear
+        ' aceptado se MARCAN con flag IsOccludedByHeadwear pero NO se descartan;
+        ' ApplyRenderToggleVisibility decide hide en runtime para que "Render headwear" OFF los
+        ' destape. Antes hacía Continue For (descarte estructural) — mismo patrón que el Skin.
+        '
+        ' EXCLUSIÓN Kind=Skin: los Skin con SlotMask=0 ya se aceptaron en la pasada 0 (skinCandidates).
+        ' Sin este filtro los chunks robot (NPC_.OBTE — Kind=Skin SlotMask=0) entrarían DOS veces a
+        ' `selected` (regresión observada 2026-05-10: Codsworth 12 chunks → Selected winners=24).
+        For Each slotlessCandidate In visibleCandidates.Where(Function(c) c.SlotMask = 0UI AndAlso c.Kind <> MeshCandidateKind.Skin).OrderBy(Function(c) c.Order)
             If slotlessCandidate.Kind = MeshCandidateKind.HeadPart Then
                 Dim occluded As Boolean = False
                 Select Case slotlessCandidate.HeadPartType
@@ -7257,15 +7523,21 @@ Public Class MainForm
     Private Shared Function ClassifyShapeCategory(candidate As MeshCandidate) As ShapeRenderCategory
         If candidate.Kind = MeshCandidateKind.HeadPart Then Return ShapeRenderCategory.HeadPart
 
-        Const BODY_BIT As UInteger = 1UI << 3
+        ' BODY_BIT cubre el torso (slot 33). Scalp (slot 52) es overlay de cabeza/cuello que
+        ' sigue al body skin, no una prenda — agrupado con BODY así un Scalp Skin cae en
+        ' BodySkin igual que el torso, y un Scalp Outfit cae en Underarmor. Caso real raro
+        ' pero la semántica del bit es "geometría de body, no equipable".
+        Const BODY_MASK As UInteger = (1UI << 3) Or SlotBitScalp
         Dim U_MASK As UInteger = 0UI
         For b = 6 To 10 : U_MASK = U_MASK Or (1UI << b) : Next
         Dim A_MASK As UInteger = 0UI
         For b = 11 To 15 : A_MASK = A_MASK Or (1UI << b) : Next
-        Const HAND_MASK As UInteger = (1UI << 4) Or (1UI << 5)
+        ' Slot 34 (L Hand) + 35 (R Hand) son las manos del actor. Slot 51 (Ring) es un accesorio
+        ' que va EN la mano — categóricamente body, mismo toggle visual que glove/hand.
+        Const HAND_MASK As UInteger = (1UI << 4) Or (1UI << 5) Or SlotBitRing
 
         Dim slot = candidate.SlotMask
-        Dim touchesBody = (slot And BODY_BIT) <> 0UI
+        Dim touchesBody = (slot And BODY_MASK) <> 0UI
         Dim touchesU = (slot And U_MASK) <> 0UI
         Dim touchesA = (slot And A_MASK) <> 0UI
         Dim touchesHand = (slot And HAND_MASK) <> 0UI
@@ -7346,16 +7618,25 @@ Public Class MainForm
             End If
 
             ' Layer 2: cada OMOD include dentro de la combination puede sobrescribir via su
-            ' AddonIndex Property. Si hay varias, último gana (semántica SET secuencial).
+            ' AddonIndex Property. wbDefinitionsFO4.pas:5710+5842 — FunctionType=0 SET (overwrite),
+            ' FunctionType=2 ADD (add to running value). Vanilla dump v2 (2026-05-10): 59 SET
+            ' casos + 10 ADD casos confirman ambos. Walk ops en orden de declaración del OMOD.
             For Each omodFid In combo.IncludeOMODFormIDs
                 Dim omodRec = _pluginManager.GetRecord(omodFid)
                 If omodRec Is Nothing OrElse omodRec.Header.Signature <> "OMOD" Then Continue For
                 Dim omod = CraftingRecordParsers.ParseOMOD(omodRec, _pluginManager)
-                Dim override_ = omod.GetAddonIndexOverride()
-                If override_ >= 0 Then
-                    effectiveIdx = override_
-                    NpcPreviewLog.LogLazy(Function() $"    [ARMO-ADDON-RESOLVE] OMOD {omod.EditorID} (FID={omodFid:X8}) sets AddonIndex={effectiveIdx}")
-                End If
+                For Each addonOp In omod.GetAddonIndexOps()
+                    Dim opLabel = If(addonOp.IsSet, "SET", "ADD")
+                    Dim oldIdx = effectiveIdx
+                    If addonOp.IsSet Then
+                        effectiveIdx = addonOp.Value
+                    Else
+                        ' ADD over a still-uninitialized index treats the running base as 0
+                        ' (engine convention: ADD without prior SET = absolute value).
+                        effectiveIdx = If(effectiveIdx >= 0, effectiveIdx, 0) + addonOp.Value
+                    End If
+                    NpcPreviewLog.LogLazy(Function() $"    [ARMO-ADDON-RESOLVE] OMOD {omod.EditorID} (FID={omodFid:X8}) op={opLabel} value={addonOp.Value} → effectiveIdx {oldIdx}→{effectiveIdx}")
+                Next
             Next
         Next
 
@@ -7585,13 +7866,14 @@ Public Class MainForm
 
         NpcPreviewLog.LogLazy(Function() $"  [MAT-OVERRIDE] kind={candidate?.Kind} headPartType={candidate?.HeadPartType} key={candidate?.DictKey}")
 
-        ' Apply Material Swap (MSWP) first - replaces entire materials before other overrides.
-        ' Then ColorRemap on top of the post-swap material — the engine reads the palette LUT
-        ' from the (possibly swapped) BGSM, so the order matters.
-        ' ARMA-direct values (MaterialSwapFormID/ColorRemapIndex per gender) are unconditional
-        ' "SET" semantics: a single base swap declared on the ARMA itself. The OBTS/OMOD path
-        ' (next session) will call the same helpers per-Property with the FunctionType from
-        ' the OMOD Property (SET/ADD/REM for MSWP, SET/ADD/MUL+ADD for ColorRemap).
+        ' Material override pipeline order (matches engine application order):
+        '   1. ARMA-direct base swap (MaterialSwapFormID + ColorRemapIndex per gender on the ARMA
+        '      record itself — semantically SET).
+        '   2. OBTS/OMOD resolution from the parent ARMO — DirectProperties of applied
+        '      combinations, then Properties of every IncludedOmod, in declaration order.
+        '      SET overwrites the current material; ADD muta lo que dejó la pasada anterior.
+        ' (3) Texture/Skin/Hair palette overrides happen later in this method and read whatever
+        ' material this pipeline left in place.
         If candidate IsNot Nothing AndAlso candidate.MaterialSwapFormID <> 0UI Then
             NpcPreviewLog.LogLazy(Function() $"    MSWP={candidate.MaterialSwapFormID:X8}")
             ShapeMaterialOverrides.ApplyMaterialSwap(candidate.MaterialSwapFormID,
@@ -7603,6 +7885,12 @@ Public Class MainForm
             ShapeMaterialOverrides.ApplyColorRemap(candidate.ColorRemapIndex.Value, 0.0F,
                                                    ShapeMaterialOverrides.ColorRemapFunction.SET,
                                                    shapes)
+        End If
+        If candidate IsNot Nothing AndAlso candidate.OmodResolution IsNot Nothing Then
+            ' FormType context comes from the candidate. Humanoid path (CollectArmoCandidates)
+            ' sets "ARMO"; NPC robot path (CollectRobotChunkCandidates) sets "NPC_". Drives
+            ' which PropertyIndex enum interprets each Property idx.
+            OmodResolutionApplier.ApplyResolutionToShapes(candidate.OmodResolution, candidate.OmodResolutionFormType, shapes, _pluginManager)
         End If
 
         Dim solidTintColor = ResolveHeadPartSolidTintColor(candidate)
@@ -8325,6 +8613,8 @@ Public Class MainForm
         ' [TEST: TPLT-traits-bucket] Face-appearance fields moved to CreateOwnTraitsState.
         Dim state As New ModelAnimationState
         state.ObjectTemplateOMODFormIDs.AddRange(npc.ObjectTemplateOMODFormIDs)
+        state.ObjectTemplateCombinations.AddRange(npc.ObjectTemplateCombinations)
+        state.HasObjectTemplate = npc.HasObjectTemplate
         Return state
     End Function
 

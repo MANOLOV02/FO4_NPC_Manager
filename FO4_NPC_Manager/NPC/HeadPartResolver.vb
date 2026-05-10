@@ -102,14 +102,23 @@ Public Module HeadPartResolver
     End Function
 
     ''' <summary>Whether <paramref name="hdptFormID"/> is valid for an NPC of <paramref name="raceFormID"/>.
-    ''' Mirrors the engine's three pass conditions (any one suffices), the same logic
-    ''' <see cref="HeadPartPicker_Form"/> uses to populate its candidate list:
-    '''   a) HDPT.RNAM = 0 (no race restriction).
+    ''' Pass conditions:
+    '''   a) HDPT.RNAM = 0 (empty Valid Races) AND the target RACE declares head parts at all
+    '''      (i.e. is a humanoid race). Most vanilla hair/face HDPTs use RNAM=0 yet render
+    '''      correctly on HumanRace NPCs because HumanRace declares head parts.
     '''   b) HDPT.RNAM points to a FLST whose ItemFormIDs contain raceFormID.
     '''   c) The NPC's RACE record names this HDPT as a gender-default in
-    '''      Male/FemaleHeadPartFormIDs (RACE-declared defaults are valid by construction
-    '''      even when the HDPT's own RNAM is inconsistent — some mods forget to update RNAM
-    '''      after adding the HDPT to a new race's defaults).
+    '''      Male/FemaleHeadPartFormIDs.
+    '''
+    ''' Why path (a) requires the RACE to have head parts: vanilla EncRaiderDog01
+    ''' (Fallout4.esm 0x000B2BF2) lists the human MaleMouthHumanoidDirtyTeethMissing in its
+    ''' NPC.PNAM (RNAM=0) but the engine doesn't render human teeth on raider dogs in-game.
+    ''' RaiderDogRace declares zero head parts — it's a non-humanoid race. So RNAM=0 is
+    ''' NOT a universal pass; it requires the RACE to be one that uses head parts at all.
+    '''
+    ''' <paramref name="raceHasAnyHeadParts"/> caller-supplied: True if the target RACE
+    ''' declares head parts in either Male or Female list. False = non-humanoid race
+    ''' (dog/robot/creature) where RNAM=0 HDPTs are silently dropped by the engine.
     '''
     ''' <paramref name="flstCache"/> is shared across calls so a batch of HDPTs against the
     ''' same race only parses each FLST once. Pass an empty dict on first call and reuse it.</summary>
@@ -118,15 +127,20 @@ Public Module HeadPartResolver
                                        isFemale As Boolean,
                                        pluginManager As PluginManager,
                                        flstCache As Dictionary(Of UInteger, FLST_Data),
-                                       Optional raceDefaults As HashSet(Of UInteger) = Nothing) As Boolean
+                                       Optional raceDefaults As HashSet(Of UInteger) = Nothing,
+                                       Optional raceHasAnyHeadParts As Boolean = True) As Boolean
         If hdptFormID = 0UI OrElse pluginManager Is Nothing Then Return False
         Dim rec = pluginManager.GetRecord(hdptFormID)
         If rec Is Nothing OrElse rec.Header.Signature <> "HDPT" Then Return False
         Dim hdpt = RecordParsers.ParseHDPT(rec, pluginManager)
         If hdpt Is Nothing Then Return False
 
-        If hdpt.ValidRacesFormID = 0UI Then Return True
+        ' Path (a): no race restriction declared. Pass only if the RACE itself uses head parts
+        ' (humanoid). Non-humanoid races (dog/robot/creature) drop RNAM=0 HDPTs even though
+        ' a buggy NPC.PNAM might list one — engine-faithful behavior.
+        If hdpt.ValidRacesFormID = 0UI Then Return raceHasAnyHeadParts
 
+        ' Path (b): RNAM points to a FLST and the FLST contains the target race.
         Dim flst As FLST_Data = Nothing
         If Not flstCache.TryGetValue(hdpt.ValidRacesFormID, flst) Then
             Dim flstRec = pluginManager.GetRecord(hdpt.ValidRacesFormID)
@@ -137,6 +151,7 @@ Public Module HeadPartResolver
         End If
         If flst IsNot Nothing AndAlso flst.ItemFormIDs.Contains(raceFormID) Then Return True
 
+        ' Path (c): the NPC's RACE record declares this HDPT as a gender-default.
         If raceDefaults IsNot Nothing AndAlso raceDefaults.Contains(hdptFormID) Then Return True
 
         Return False
