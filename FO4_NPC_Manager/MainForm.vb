@@ -2423,52 +2423,152 @@ Public Class MainForm
             totalInjected += n
             Dim postCount = inst.SkeletonDictionary.Count
 
-            ' [CHUNK-RESKIN] Re-skinear shape.ShapeBoneTransforms por la diferencia entre el socket
-            ' como lo declara el chunk hermano (chunk-source) y como está en el dict del actor
-            ' (dict-existing). socketCorrections fue poblada en iteraciones anteriores por
-            ' CHUNK-PARENTS-DUMP cuando detectó DIFFERS. Aquí, por cada shape bone cuyo nombre
-            ' matchee una corrección registrada, modificamos el bind in-place:
-            '   bind' = correction.Compose(originalBind)
-            ' Solo toca shape.ShapeBoneTransforms (per-instance NIF, safe mutar). No toca
-            ' SkeletonDictionary del actor.
-            If socketCorrections.Count > 0 AndAlso shape.ShapeBones IsNot Nothing AndAlso shape.ShapeBoneTransforms IsNot Nothing Then
-                Dim reskinCount As Integer = 0
-                For sbi = 0 To Math.Min(shape.ShapeBones.Count, shape.ShapeBoneTransforms.Count) - 1
-                    Dim niN = TryCast(shape.ShapeBones(sbi), NiflySharp.Blocks.NiNode)
-                    If niN Is Nothing Then Continue For
-                    Dim boneName = If(niN.Name?.String, "")
-                    If String.IsNullOrEmpty(boneName) Then Continue For
-                    Dim correction As Transform_Class = Nothing
-                    If socketCorrections.TryGetValue(boneName, correction) Then
-                        Dim originalBind = shape.ShapeBoneTransforms(sbi)
-                        If originalBind IsNot Nothing Then
-                            ' ShapeBoneTransforms es IReadOnlyList — no podemos reasignar el slot,
-                            ' pero Transform_Class es Class (referencia), así mutamos los fields del
-                            ' objeto in-place. La lista sigue apuntando al mismo objeto, con valores nuevos.
-                            Dim origTcap = New Transform_Class With {
-                                .Translation = originalBind.Translation,
-                                .Rotation = originalBind.Rotation,
-                                .Scale = originalBind.Scale,
-                                .ScaleVector = originalBind.ScaleVector
-                            }
-                            Dim newBind = correction.ComposeTransforms(originalBind)
-                            originalBind.Translation = newBind.Translation
-                            originalBind.Rotation = newBind.Rotation
-                            originalBind.Scale = newBind.Scale
-                            originalBind.ScaleVector = newBind.ScaleVector
-                            reskinCount += 1
-                            If isRobotMount Then
-                                Dim sbiL = sbi, bnL = boneName, shL = shape.ShapeName
-                                Dim origT = origTcap.Translation, newT = newBind.Translation
-                                Logger.LogLazy(Function() $"[CHUNK-RESKIN] shape='{shL}' bone[{sbiL}] '{bnL}' bind T: ({origT.X:F3},{origT.Y:F3},{origT.Z:F3}) → ({newT.X:F3},{newT.Y:F3},{newT.Z:F3})")
-                            End If
+            ' [CHUNK-RESKIN-V2] Re-skinear shape.ShapeBoneTransforms usando la fórmula per-bone
+            ' OpenAI: cada bone B del chunk obtiene W_B = G_B × A, donde:
+            '   G_B    = global transform de B's NiNode en el árbol del chunk NIF (no derivado de inv(bind))
+            '   G_CX   = global transform del NiNode C-X (declarado en BSConnectPoint::Children del chunk)
+            '   P_world = parent_bone.world × socketLocal_chunk-source-if-override (M_mesh corregido)
+            '   A      = inv(G_CX) × P_world   (único transform de attachment chunk→actor)
+            '
+            ' Math: render quiere v_world = sum(w_B · v · bind(B) · W_B). Con render actual usando
+            ' actor.B.world del dict, modificamos bind tal que:
+            '   bind' = correction.Compose(bind), donde correction = inv(actor.B.world).Compose(W_B)
+            ' Resultado: v · bind' × actor.B.world = v · bind × W_B (engine-equivalente).
+            '
+            ' Para C-X bone, W_C-X = G_CX × A = G_CX × inv(G_CX) × P_world = P_world (= M_mesh corregido).
+            ' Para otros bones (Arm1..Arm7, etc.), W_B preserva la posición relativa del chunk-NIF tree
+            ' transportada por A — esto mantiene la articulación del chunk en vez de colapsar todos los
+            ' bones en el mismo punto (que era el bug del attempt previo).
+            If shape.ShapeBones IsNot Nothing AndAlso shape.ShapeBoneTransforms IsNot Nothing Then
+                Try
+                    ' Get cxName from chunk's Children block (returns tuple of (Skinned, PointNames)).
+                    Dim cxName As String = Nothing
+                    Try
+                        Dim chunkChildren = BSConnectPointReader.ReadChildren(shape.NifContent)
+                        If chunkChildren.PointNames IsNot Nothing AndAlso chunkChildren.PointNames.Count > 0 Then
+                            cxName = chunkChildren.PointNames(0)
                         End If
+                    Catch
+                    End Try
+
+                    If Not String.IsNullOrEmpty(cxName) Then
+                        ' Find C-X NiNode (try exact, fallback suffix strip).
+                        Dim cxNode As NiflySharp.Blocks.NiNode = shape.NifContent.FindBlockByName(Of NiflySharp.Blocks.NiNode)(cxName)
+                        If cxNode Is Nothing Then
+                            Dim StripSfx = Function(s As String) As String
+                                               If String.IsNullOrEmpty(s) Then Return s
+                                               Dim pp = s.LastIndexOf("|"c)
+                                               If pp <= 0 OrElse pp >= s.Length - 1 Then Return s
+                                               For Each c In s.Substring(pp + 1)
+                                                   If Not Char.IsDigit(c) Then Return s
+                                               Next
+                                               Return s.Substring(0, pp)
+                                           End Function
+                            Dim cxNormSearch = StripSfx(cxName)
+                            For Each blk In shape.NifContent.Blocks
+                                Dim cand = TryCast(blk, NiflySharp.Blocks.NiNode)
+                                If cand Is Nothing Then Continue For
+                                Dim candNm = If(cand.Name?.String, "")
+                                If String.Equals(StripSfx(candNm), cxNormSearch, StringComparison.OrdinalIgnoreCase) Then
+                                    cxNode = cand
+                                    Exit For
+                                End If
+                            Next
+                        End If
+
+                        If cxNode IsNot Nothing Then
+                            Dim G_CX = Transform_Class.GetGlobalTransform(cxNode, shape.NifContent)
+
+                            ' Compute P_world (M_mesh). Use chunk-source socket if we detected a discrepancy
+                            ' (socketCorrections contains the correction = inv(dict_existing).Compose(chunk_source)).
+                            ' Reconstruct chunk-source socketLocal: dict_existing.Compose(correction) since
+                            ' correction.M = chunk_source.M × inv(dict_existing).M, so chunk_source.M =
+                            ' correction.M × dict_existing.M.
+                            Dim parentBoneHb As HierarchiBone_class = Nothing
+                            inst.SkeletonDictionary.TryGetValue(socket.ParentBoneName, parentBoneHb)
+                            Dim parentBoneWorld As Transform_Class = If(parentBoneHb IsNot Nothing,
+                                parentBoneHb.OriginalGetGlobalTransform, New Transform_Class())
+
+                            Dim dictExistingSocketLocal As New Transform_Class With {
+                                .Translation = socket.Translation,
+                                .Rotation = BSConnectPointReader.QuatToMatrix33(socket.Rotation),
+                                .Scale = If(socket.Scale > 0.0F, socket.Scale, 1.0F)
+                            }
+                            Dim socketLocalForMmesh As Transform_Class = dictExistingSocketLocal
+                            Dim socketCorrection As Transform_Class = Nothing
+                            Dim usedChunkSource As Boolean = False
+                            If socketCorrections.TryGetValue(cxName, socketCorrection) Then
+                                ' chunk_source = dict_existing.Compose(correction)
+                                socketLocalForMmesh = dictExistingSocketLocal.ComposeTransforms(socketCorrection)
+                                usedChunkSource = True
+                            End If
+
+                            Dim M_mesh = parentBoneWorld.ComposeTransforms(socketLocalForMmesh)
+                            Dim invGCX = G_CX.Inverse()
+                            ' A = inv(G_CX) × M_mesh in row-vec composition = M_mesh.Compose(invGCX)
+                            Dim A = M_mesh.ComposeTransforms(invGCX)
+
+                            Dim reskinCount As Integer = 0
+                            Dim skipCount As Integer = 0
+                            For sbi = 0 To Math.Min(shape.ShapeBones.Count, shape.ShapeBoneTransforms.Count) - 1
+                                Dim niN = TryCast(shape.ShapeBones(sbi), NiflySharp.Blocks.NiNode)
+                                If niN Is Nothing Then Continue For
+                                Dim boneName = If(niN.Name?.String, "")
+                                If String.IsNullOrEmpty(boneName) Then Continue For
+                                ' Look up actor's bone.world from dict. Si no está, skip — no
+                                ' podemos computar correction sin la referencia actor.
+                                Dim actorBhb As HierarchiBone_class = Nothing
+                                If Not inst.SkeletonDictionary.TryGetValue(boneName, actorBhb) Then
+                                    skipCount += 1
+                                    Continue For
+                                End If
+                                Dim actor_B_world = actorBhb.OriginalGetGlobalTransform
+                                ' G_B desde el chunk NIF tree (no desde inv(bind)).
+                                Dim G_B = Transform_Class.GetGlobalTransform(niN, shape.NifContent)
+                                ' W_B = G_B × A (in row-vec composition).
+                                Dim W_B = A.ComposeTransforms(G_B)
+                                ' correction = inv(actor.B.world).Compose(W_B).
+                                ' bind' = correction.Compose(bind).
+                                Dim correctionBone = actor_B_world.Inverse().ComposeTransforms(W_B)
+                                Dim originalBind = shape.ShapeBoneTransforms(sbi)
+                                If originalBind IsNot Nothing Then
+                                    Dim origTcap = New Transform_Class With {
+                                        .Translation = originalBind.Translation,
+                                        .Rotation = originalBind.Rotation,
+                                        .Scale = originalBind.Scale,
+                                        .ScaleVector = originalBind.ScaleVector
+                                    }
+                                    Dim newBind = correctionBone.ComposeTransforms(originalBind)
+                                    originalBind.Translation = newBind.Translation
+                                    originalBind.Rotation = newBind.Rotation
+                                    originalBind.Scale = newBind.Scale
+                                    originalBind.ScaleVector = newBind.ScaleVector
+                                    reskinCount += 1
+                                    If isRobotMount Then
+                                        Dim sbiL = sbi, bnL = boneName, shL = shape.ShapeName
+                                        Dim origT = origTcap.Translation, newT = newBind.Translation
+                                        Dim wBT = W_B.Translation, gBT = G_B.Translation
+                                        Logger.LogLazy(Function() $"[CHUNK-RESKIN-V2] shape='{shL}' bone[{sbiL}] '{bnL}' G_B.T=({gBT.X:F3},{gBT.Y:F3},{gBT.Z:F3}) W_B.T=({wBT.X:F3},{wBT.Y:F3},{wBT.Z:F3}) bind T: ({origT.X:F3},{origT.Y:F3},{origT.Z:F3}) → ({newT.X:F3},{newT.Y:F3},{newT.Z:F3})")
+                                    End If
+                                End If
+                            Next
+                            If isRobotMount Then
+                                Dim rcL = reskinCount, skL = skipCount, shL = shape.ShapeName, cxL = cxName, usedL = usedChunkSource
+                                Dim AT = A.Translation, GCXT = G_CX.Translation
+                                Logger.LogLazy(Function() $"[CHUNK-RESKIN-V2] shape='{shL}' cx='{cxL}' G_CX.T=({GCXT.X:F3},{GCXT.Y:F3},{GCXT.Z:F3}) A.T=({AT.X:F3},{AT.Y:F3},{AT.Z:F3}) usedChunkSrcSocket={usedL} summary: reskin={rcL} skip={skL}")
+                            End If
+                        ElseIf isRobotMount Then
+                            Dim shL = shape.ShapeName, cxL = cxName
+                            Logger.LogLazy(Function() $"[CHUNK-RESKIN-V2] shape='{shL}' cx='{cxL}' SKIP: C-X NiNode not found in chunk NIF tree")
+                        End If
+                    ElseIf isRobotMount Then
+                        Dim shL = shape.ShapeName
+                        Logger.LogLazy(Function() $"[CHUNK-RESKIN-V2] shape='{shL}' SKIP: chunk has no BSConnectPoint::Children")
                     End If
-                Next
-                If isRobotMount AndAlso reskinCount > 0 Then
-                    Dim rcL = reskinCount, shL = shape.ShapeName
-                    Logger.LogLazy(Function() $"[CHUNK-RESKIN] shape='{shL}' summary: {rcL} bone(s) re-skinned")
-                End If
+                Catch ex As Exception
+                    Dim shL = shape.ShapeName, exL = ex
+                    Logger.LogLazy(Function() $"[CHUNK-RESKIN-V2] shape='{shL}' EXCEPTION: {exL.GetType().Name}: {exL.Message}")
+                End Try
             End If
             If isRobotMount Then
                 Dim newKeys = inst.SkeletonDictionary.Keys.Where(Function(k) Not preKeysSet.Contains(k)).OrderBy(Function(k) k).ToList()
