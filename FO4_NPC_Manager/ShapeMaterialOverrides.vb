@@ -61,6 +61,8 @@ Friend Module ShapeMaterialOverrides
                                  funcType As MaterialSwapFunction,
                                  shapes As IEnumerable(Of IRenderableShape),
                                  pluginManager As PluginManager)
+        Logger.LogLazy(Function() $"[MSWP-ENTRY] mswp=0x{mswpFormID:X8} func={funcType}")
+
         If mswpFormID = 0UI Then Return
         If pluginManager Is Nothing Then Return
 
@@ -68,15 +70,25 @@ Friend Module ShapeMaterialOverrides
             ' Placeholder. Trip the debugger so we catch the first vanilla case and can decide
             ' the revert algorithm with real data instead of inventing one. NO-OP visual until
             ' implemented — better than the wrong heuristic.
+            Logger.LogLazy(Function() $"[MSWP-REMOVE-STUB] mswp=0x{mswpFormID:X8} — REM function not implemented, no-op")
             Debugger.Break()
             Return
         End If
 
         Dim mswpRec = pluginManager.GetRecord(mswpFormID)
-        If mswpRec Is Nothing OrElse mswpRec.Header.Signature <> "MSWP" Then Return
+        If mswpRec Is Nothing OrElse mswpRec.Header.Signature <> "MSWP" Then
+            Logger.LogLazy(Function() $"[MSWP-LOAD-FAIL] mswp=0x{mswpFormID:X8} reason='record-not-found-or-wrong-sig'")
+            Return
+        End If
 
         Dim mswp = RecordParsers.ParseMSWP(mswpRec, pluginManager)
-        If mswp.Substitutions.Count = 0 Then Return
+        If mswp.Substitutions.Count = 0 Then
+            Logger.LogLazy(Function() $"[MSWP-LOAD] mswp=0x{mswpFormID:X8} subs=0 (empty MSWP)")
+            Return
+        End If
+
+        Dim subsCount = mswp.Substitutions.Count
+        Logger.LogLazy(Function() $"[MSWP-LOAD] mswp=0x{mswpFormID:X8} subs={subsCount}")
 
         ' SET and ADD share the same code path. Distinction is conceptual: SET assumes "first
         ' swap on this shape", ADD assumes "stacking on a previous swap". Both mutate the
@@ -87,34 +99,52 @@ Friend Module ShapeMaterialOverrides
             MainForm.EnsureShapeMaterialResolved(shape)
 
             Dim relatedMaterial = shape.ShapeMaterial
-            If relatedMaterial Is Nothing OrElse relatedMaterial.material Is Nothing Then Continue For
+            Dim shapeNameLog = shape.ShapeName
+            If relatedMaterial Is Nothing OrElse relatedMaterial.material Is Nothing Then
+                Logger.LogLazy(Function() $"[MSWP-SHAPE-SKIP] shape='{shapeNameLog}' reason='no-material'")
+                Continue For
+            End If
 
             Dim currentPath = If(relatedMaterial.path, "").Trim()
-            If currentPath = "" Then Continue For
+            If currentPath = "" Then
+                Logger.LogLazy(Function() $"[MSWP-SHAPE-SKIP] shape='{shapeNameLog}' reason='empty-current-path'")
+                Continue For
+            End If
 
             Dim correctedCurrentPath = FO4UnifiedMaterial_Class.CorrectMaterialPath(currentPath)
+            Dim ccpLog = correctedCurrentPath
+            Logger.LogLazy(Function() $"[MSWP-SHAPE] shape='{shapeNameLog}' currentPath='{ccpLog}'")
 
+            Dim matched As Boolean = False
             For Each sub_ In mswp.Substitutions
                 Dim origPath = FO4UnifiedMaterial_Class.CorrectMaterialPath(If(sub_.OriginalMaterial, ""))
                 If origPath = "" Then Continue For
 
                 If String.Equals(correctedCurrentPath, origPath, StringComparison.OrdinalIgnoreCase) Then
                     Dim replacementPath = If(sub_.ReplacementMaterial, "")
-                    If replacementPath = "" Then Exit For
+                    Dim repL = replacementPath
+                    Dim origL = origPath
+                    If replacementPath = "" Then
+                        Logger.LogLazy(Function() $"[MSWP-MATCH-EMPTY-REPL] shape='{shapeNameLog}' orig='{origL}' replacement=''")
+                        matched = True
+                        Exit For
+                    End If
 
-                    Dim oldBack = relatedMaterial.material.BackLightPower
-                    Dim oldRim = relatedMaterial.material.RimPower
-                    Dim oldEmit = relatedMaterial.material.EmitEnabled
-                    Dim oldRoot = If(relatedMaterial.material.RootMaterialPath, "")
-
-                    Dim newMaterial = MainForm.TryLoadMaterialFromDictionary(replacementPath, relatedMaterial.material)
+                    Dim newMaterial = MainForm.TryLoadMaterialFromDictionary(replacementPath, relatedMaterial.material, shape.NifShape, shape.NifContent)
                     If newMaterial IsNot Nothing Then
                         relatedMaterial.material = newMaterial
                         relatedMaterial.path = FO4UnifiedMaterial_Class.CorrectMaterialPath(replacementPath)
+                        Logger.LogLazy(Function() $"[MSWP-APPLIED] shape='{shapeNameLog}' orig='{origL}' → repl='{repL}' loadResult=OK")
+                    Else
+                        Logger.LogLazy(Function() $"[MSWP-APPLIED-LOAD-FAIL] shape='{shapeNameLog}' orig='{origL}' → repl='{repL}' loadResult=NULL — material unchanged")
                     End If
+                    matched = True
                     Exit For
                 End If
             Next
+            If Not matched Then
+                Logger.LogLazy(Function() $"[MSWP-NO-MATCH] shape='{shapeNameLog}' currentPath='{ccpLog}' subs={subsCount} — no substitution matched")
+            End If
         Next
     End Sub
 
@@ -122,6 +152,8 @@ Friend Module ShapeMaterialOverrides
                                value2 As Single,
                                funcType As ColorRemapFunction,
                                shapes As IEnumerable(Of IRenderableShape))
+        Logger.LogLazy(Function() $"[CREMAP-ENTRY] func={funcType} v1={value1:F4} v2={value2:F4}")
+
         If shapes Is Nothing Then Return
 
         If funcType = ColorRemapFunction.MUL_ADD Then
@@ -129,6 +161,7 @@ Friend Module ShapeMaterialOverrides
             ' `current * value1 + value2`, but no vanilla case observed yet; trip the
             ' debugger on first occurrence so we can validate the formula against in-game
             ' rendering before committing to it.
+            Logger.LogLazy(Function() $"[CREMAP-MUL_ADD-STUB] v1={value1:F4} v2={value2:F4} — MUL_ADD not implemented, no-op")
             Debugger.Break()
             Return
         End If
@@ -137,12 +170,21 @@ Friend Module ShapeMaterialOverrides
             MainForm.EnsureShapeMaterialResolved(shape)
 
             Dim relatedMaterial = shape.ShapeMaterial
-            If relatedMaterial Is Nothing Then Continue For
+            Dim shapeNameLog = shape.ShapeName
+            If relatedMaterial Is Nothing Then
+                Logger.LogLazy(Function() $"[CREMAP-SHAPE-SKIP] shape='{shapeNameLog}' reason='no-related-material'")
+                Continue For
+            End If
 
             Dim material = relatedMaterial.material
-            If material Is Nothing Then Continue For
+            If material Is Nothing Then
+                Logger.LogLazy(Function() $"[CREMAP-SHAPE-SKIP] shape='{shapeNameLog}' reason='material-Nothing'")
+                Continue For
+            End If
 
             Dim oldScale = material.GrayscaleToPaletteScale
+            Dim paletteEnabled = material.GrayscaleToPaletteColor
+            Dim paletteTex = If(material.GreyscaleTexture, "")
             Dim newScale As Single
             Select Case funcType
                 Case ColorRemapFunction.SET
@@ -154,6 +196,12 @@ Friend Module ShapeMaterialOverrides
             End Select
 
             material.GrayscaleToPaletteScale = newScale
+
+            Dim oldL = oldScale, newL = newScale, palL = paletteEnabled, palTexL = paletteTex
+            Logger.LogLazy(Function() $"[CREMAP-APPLIED] shape='{shapeNameLog}' palEnabled={palL} palTex='{palTexL}' oldScale={oldL:F4} → newScale={newL:F4}")
+            If Not paletteEnabled Then
+                Logger.LogLazy(Function() $"[CREMAP-NO-PALETTE] shape='{shapeNameLog}' newScale={newL:F4} but GrayscaleToPaletteColor=False — visual no-op (engine-faithful: caller responsible for palette-enabled BGSM)")
+            End If
         Next
     End Sub
 

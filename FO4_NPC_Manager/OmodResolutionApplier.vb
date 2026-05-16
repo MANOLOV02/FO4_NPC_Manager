@@ -37,6 +37,10 @@ Public Module OmodResolutionApplier
         If res Is Nothing OrElse shapes Is Nothing OrElse pm Is Nothing Then Return
         If res.AppliedCombinations.Count = 0 AndAlso res.DirectProperties.Count = 0 AndAlso res.IncludedOmods.Count = 0 Then Return
 
+        Dim shapeCount = shapes.Count()
+        Dim directCount = res.DirectProperties.Count
+        Dim omodCount = res.IncludedOmods.Count
+        Logger.LogLazy(Function() $"[OMOD-APPLY-ENTRY] ctx={formTypeContext} shapes={shapeCount} directProps={directCount} omods={omodCount}")
 
         ' (1) DirectProperties of applied combinations — walked in the order ObjectTemplateResolver
         ' produced them (which matches record declaration order).
@@ -52,12 +56,15 @@ Public Module OmodResolutionApplier
             ' NONE (workshop wrappers) reached via inventory-side chains. They contribute no
             ' visual change to the actor.
             If omod.FormTypeSignature <> formTypeContext Then
+                Dim oL = omod
+                Logger.LogLazy(Function() $"[OMOD-APPLY-OMOD-SKIP] omod={oL.EditorID}(0x{oL.FormID:X8}) omodFormType='{oL.FormTypeSignature}' ctx='{formTypeContext}' propsDropped={oL.Properties.Count}")
                 Continue For
             End If
 
-            ' OMOD chunk meshes (NPC_ robots): ModelPath != "" means this OMOD contributes a
-            ' mesh chunk. Mounting requires AttachPoint resolution (KYWD → BSConnectPoint),
-            ' deferred to the robot rendering rewrite. Log so we know where they'd land.
+            Dim oL2 = omod
+            Dim propsLen = If(omod.Properties Is Nothing, 0, omod.Properties.Count)
+            Dim hasMesh = Not String.IsNullOrEmpty(omod.ModelPath)
+            Logger.LogLazy(Function() $"[OMOD-APPLY-OMOD] omod={oL2.EditorID}(0x{oL2.FormID:X8}) hasMesh={hasMesh} props={propsLen}")
 
             For Each prop In omod.Properties
                 ApplyOneProperty(prop, formTypeContext, shapes, pm, $"OMOD:{omod.FormID:X8}")
@@ -73,22 +80,36 @@ Public Module OmodResolutionApplier
                                  pm As PluginManager,
                                  sourceTag As String)
         ' Dispatch by (FormType context, PropertyIdx) — only visual properties produce side-effects.
+        Dim dispatched As String = "SKIP"
         Select Case formTypeContext
             Case "ARMO"
                 Select Case prop.PropertyIndex
                     Case 12US ' ColorRemappingIndex (Float)
-                        ApplyColorRemapProp(prop, shapes, sourceTag)
+                        dispatched = "CREMAP"
                     Case 13US ' MaterialSwaps (FormID,Int)
-                        ApplyMswpProp(prop, shapes, pm, sourceTag)
+                        dispatched = "MSWP"
                 End Select
             Case "NPC_"
                 Select Case prop.PropertyIndex
                     Case 4US ' ColorRemappingIndex (NPC_) — 0 vanilla cases per dump v2 but supported
-                        ApplyColorRemapProp(prop, shapes, sourceTag)
+                        dispatched = "CREMAP"
                     Case 5US ' MaterialSwaps (FormID,Int)
-                        ApplyMswpProp(prop, shapes, pm, sourceTag)
+                        dispatched = "MSWP"
                 End Select
                 ' WEAP / NONE — out of scope for shape rendering.
+        End Select
+
+        Dim propL = prop
+        Dim srcL = sourceTag
+        Dim ctxL = formTypeContext
+        Dim dispL = dispatched
+        Logger.LogLazy(Function() $"[OMOD-APPLY-PROP] src={srcL} ctx={ctxL} idx={propL.PropertyIndex} func={propL.FunctionType} v1=0x{propL.Value1FormID:X8}/v1f={propL.Value1:F3} v2f={propL.Value2:F3} → {dispL}")
+
+        Select Case dispatched
+            Case "CREMAP"
+                ApplyColorRemapProp(prop, shapes, sourceTag)
+            Case "MSWP"
+                ApplyMswpProp(prop, shapes, pm, sourceTag)
         End Select
     End Sub
 

@@ -371,6 +371,14 @@ Public Class MainForm
         ''' DictKey but each parses its own fresh NIF, so identity comparison on the NIF reaches
         ''' only the shapes of THAT candidate). Reference equality is intentional.</summary>
         Public ReadOnly CandidateNif As New Dictionary(Of MeshCandidate, Nifcontent_Class_Manolo)
+        ''' <summary>Per-shape → owning MeshCandidate. Populated by LoadNifShapes at NIF-load
+        ''' time. Used by paths that mutate material state per-shape but only have access to the
+        ''' shape (e.g. RefreshFaceTintLivePreview, where the user-facing edit refreshes color
+        ''' uniforms on every mesh and needs candidate.HeadPartType to gate hair color
+        ''' resolution correctly per shape). Without this dict the live-edit path was forced to
+        ''' iterate model.meshes blindly and apply hair color to any palette-enabled material —
+        ''' which leaked hair color into robot armor / face / body shapes with palette opt-in.</summary>
+        Public ReadOnly ShapeCandidate As New Dictionary(Of IRenderableShape, MeshCandidate)
     End Class
     Friend Class TraitsState
         Public IsFemale As Boolean
@@ -1918,6 +1926,23 @@ Public Class MainForm
         LoadNPCOnDemandAsync(npc, requestVersion2)
     End Sub
 
+    Private Sub ButtonLightRig_Click(sender As Object, e As EventArgs) Handles ButtonLightRig.Click
+        Dim form As New LightRigForm
+        AddHandler form.LightsChanged, AddressOf OnLightRigChanged
+        Try
+            form.ShowDialog(Me)
+        Finally
+            RemoveHandler form.LightsChanged, AddressOf OnLightRigChanged
+        End Try
+    End Sub
+
+    Private Sub OnLightRigChanged()
+        If _previewControl IsNot Nothing AndAlso Not _previewControl.IsDisposed Then
+            _previewControl.UpdateRequired = True
+            _previewControl.Update()
+        End If
+    End Sub
+
     Private Async Sub RenderOnDemandAsync(requestVersion As Integer)
         Try
             Await RenderCurrentStateAsync(requestVersion)
@@ -2225,29 +2250,76 @@ Public Class MainForm
         ' contaminar logs de humanoides normales.
         Dim isRobotMount = state.HasObjectTemplate AndAlso shapesWithSocket.Count > 0
         If isRobotMount Then
+            ' [DIAG-PRE-INJECT] Dump bones del actor ANTES de cualquier inject de chunk.
             Dim preKeys = inst.SkeletonDictionary.Keys.OrderBy(Function(k) k).ToList()
+            Dim preCountAll = preKeys.Count
+            Logger.LogLazy(Function() $"[PRE-INJECT-SKEL] actor skeleton bones count={preCountAll}")
             For Each k In preKeys
+                Dim kn = k
+                Logger.LogLazy(Function() $"[PRE-INJECT-SKEL]   '{kn}'")
             Next
+
+            ' Per-shape: clasificar bones del chunk en in-dict (idempotent skip) vs needs-inject.
             For Each sh In shapesWithSocket
-                Dim shapeBoneNames As New List(Of String)
+                Dim shapeNameLog = sh.ShapeName
+                Dim sharedBones As New List(Of String)
+                Dim newBones As New List(Of String)
                 If sh.ShapeBones IsNot Nothing Then
                     For Each bn In sh.ShapeBones
                         Dim niNode = TryCast(bn, NiflySharp.Blocks.NiNode)
-                        If niNode IsNot Nothing Then shapeBoneNames.Add(If(niNode.Name?.String, "<null>"))
+                        If niNode Is Nothing Then Continue For
+                        Dim boneName = If(niNode.Name?.String, "<null>")
+                        If inst.SkeletonDictionary.ContainsKey(boneName) Then
+                            sharedBones.Add(boneName)
+                        Else
+                            newBones.Add(boneName)
+                        End If
                     Next
                 End If
+                Dim sharedStr = String.Join(", ", sharedBones)
+                Dim newStr = String.Join(", ", newBones)
+                Dim sharedCount = sharedBones.Count
+                Dim newCount = newBones.Count
+                Logger.LogLazy(Function() $"[PRE-INJECT-CLASSIFY] shape='{shapeNameLog}' shared(idempotent-skip)={sharedCount} needsInject={newCount}")
+                Logger.LogLazy(Function() $"[PRE-INJECT-CLASSIFY]   shared=[{sharedStr}]")
+                Logger.LogLazy(Function() $"[PRE-INJECT-CLASSIFY]   needsInject=[{newStr}]")
             Next
         End If
 
         ' Host NIF: materializa sockets nivel-1 (C-X cuyo P-X vive en el host).
         If inst.Skeleton IsNot Nothing Then
-            BSConnectPointBoneInjector_Class.MaterializeSocketsAsConnectPointBones(inst.Skeleton, inst)
+            Dim preHostKeys = New HashSet(Of String)(inst.SkeletonDictionary.Keys, StringComparer.OrdinalIgnoreCase)
+            Dim addedHost = BSConnectPointBoneInjector_Class.MaterializeSocketsAsConnectPointBones(inst.Skeleton, inst)
+            If isRobotMount Then
+                Dim postNew = inst.SkeletonDictionary.Keys.Where(Function(k) Not preHostKeys.Contains(k)).OrderBy(Function(k) k).ToList()
+                Dim addedHostLog = addedHost
+                Logger.LogLazy(Function() $"[MATERIALIZE-HOST] from inst.Skeleton (host NIF): added={addedHostLog} newBones=[{String.Join(", ", postNew)}]")
+                For Each nbName In postNew
+                    Dim n = nbName
+                    Dim hb As HierarchiBone_class = Nothing
+                    inst.SkeletonDictionary.TryGetValue(n, hb)
+                    If hb IsNot Nothing Then
+                        Dim localT = hb.OriginalLocaLTransform
+                        Dim worldT = hb.OriginalGetGlobalTransform
+                        Dim lr = localT.Rotation, wr = worldT.Rotation
+                        Logger.LogLazy(Function() $"[MATERIALIZE-HOST]   '{n}' parent='{hb.Parent?.BoneName}' local: T=({localT.Translation.X:F3},{localT.Translation.Y:F3},{localT.Translation.Z:F3}) S={localT.Scale:F3} R=[{lr.M11:F3},{lr.M12:F3},{lr.M13:F3}|{lr.M21:F3},{lr.M22:F3},{lr.M23:F3}|{lr.M31:F3},{lr.M32:F3},{lr.M33:F3}]")
+                        Logger.LogLazy(Function() $"[MATERIALIZE-HOST]   '{n}' world: T=({worldT.Translation.X:F3},{worldT.Translation.Y:F3},{worldT.Translation.Z:F3}) S={worldT.Scale:F3} R=[{wr.M11:F3},{wr.M12:F3},{wr.M13:F3}|{wr.M21:F3},{wr.M22:F3},{wr.M23:F3}|{wr.M31:F3},{wr.M32:F3},{wr.M33:F3}]")
+                    End If
+                Next
+            End If
         End If
 
         ' Inject + materialize por shape en orden topológico. processedNifs idempotencia para
         ' chunks que aparecen en múltiples shapes (mismo NIF, varios shapes adentro).
         Dim processedNifs As New HashSet(Of Nifcontent_Class_Manolo)
         Dim totalInjected As Integer = 0
+        ' Por-bone correcciones detectadas por CHUNK-PARENTS-DUMP. Si un chunk hermano (procesado
+        ' antes en el orden topológico) declara socket P-X con T/R/S distinto al que ya estaba
+        ' en el dict (proveniente del skeleton.nif del actor), guardamos la corrección que hay
+        ' que aplicar al bind de cualquier shape bone cuyo nombre matchee el C-X counterpart.
+        ' Math: bind' = correction.Compose(originalBind), donde correction = inv(dict_existing).Compose(chunk_source).
+        ' Esto re-skinea el chunk in-memory por la diferencia, sin tocar el SkeletonDictionary.
+        Dim socketCorrections As New Dictionary(Of String, Transform_Class)(StringComparer.OrdinalIgnoreCase)
         For Each shape In ordered
             Dim socket As BSConnectPointReader.ConnectPointInfo = Nothing
             If Not renderData.ShapeMountSocket.TryGetValue(shape, socket) Then Continue For
@@ -2344,19 +2416,165 @@ Public Class MainForm
                 End Try
             End If
 
+            ' [DIAG-INJECT] Pre/post snapshots para inferir qué bones se crearon.
+            Dim preKeysSet = New HashSet(Of String)(inst.SkeletonDictionary.Keys, StringComparer.OrdinalIgnoreCase)
             Dim preCount = inst.SkeletonDictionary.Count
             Dim n = BSConnectPointBoneInjector_Class.InjectChunkBonesIntoLiveSkeleton(shape.NifContent, shape, socket, inst)
             totalInjected += n
+            Dim postCount = inst.SkeletonDictionary.Count
+
+            ' [CHUNK-RESKIN] Re-skinear shape.ShapeBoneTransforms por la diferencia entre el socket
+            ' como lo declara el chunk hermano (chunk-source) y como está en el dict del actor
+            ' (dict-existing). socketCorrections fue poblada en iteraciones anteriores por
+            ' CHUNK-PARENTS-DUMP cuando detectó DIFFERS. Aquí, por cada shape bone cuyo nombre
+            ' matchee una corrección registrada, modificamos el bind in-place:
+            '   bind' = correction.Compose(originalBind)
+            ' Solo toca shape.ShapeBoneTransforms (per-instance NIF, safe mutar). No toca
+            ' SkeletonDictionary del actor.
+            If socketCorrections.Count > 0 AndAlso shape.ShapeBones IsNot Nothing AndAlso shape.ShapeBoneTransforms IsNot Nothing Then
+                Dim reskinCount As Integer = 0
+                For sbi = 0 To Math.Min(shape.ShapeBones.Count, shape.ShapeBoneTransforms.Count) - 1
+                    Dim niN = TryCast(shape.ShapeBones(sbi), NiflySharp.Blocks.NiNode)
+                    If niN Is Nothing Then Continue For
+                    Dim boneName = If(niN.Name?.String, "")
+                    If String.IsNullOrEmpty(boneName) Then Continue For
+                    Dim correction As Transform_Class = Nothing
+                    If socketCorrections.TryGetValue(boneName, correction) Then
+                        Dim originalBind = shape.ShapeBoneTransforms(sbi)
+                        If originalBind IsNot Nothing Then
+                            ' ShapeBoneTransforms es IReadOnlyList — no podemos reasignar el slot,
+                            ' pero Transform_Class es Class (referencia), así mutamos los fields del
+                            ' objeto in-place. La lista sigue apuntando al mismo objeto, con valores nuevos.
+                            Dim origTcap = New Transform_Class With {
+                                .Translation = originalBind.Translation,
+                                .Rotation = originalBind.Rotation,
+                                .Scale = originalBind.Scale,
+                                .ScaleVector = originalBind.ScaleVector
+                            }
+                            Dim newBind = correction.ComposeTransforms(originalBind)
+                            originalBind.Translation = newBind.Translation
+                            originalBind.Rotation = newBind.Rotation
+                            originalBind.Scale = newBind.Scale
+                            originalBind.ScaleVector = newBind.ScaleVector
+                            reskinCount += 1
+                            If isRobotMount Then
+                                Dim sbiL = sbi, bnL = boneName, shL = shape.ShapeName
+                                Dim origT = origTcap.Translation, newT = newBind.Translation
+                                Logger.LogLazy(Function() $"[CHUNK-RESKIN] shape='{shL}' bone[{sbiL}] '{bnL}' bind T: ({origT.X:F3},{origT.Y:F3},{origT.Z:F3}) → ({newT.X:F3},{newT.Y:F3},{newT.Z:F3})")
+                            End If
+                        End If
+                    End If
+                Next
+                If isRobotMount AndAlso reskinCount > 0 Then
+                    Dim rcL = reskinCount, shL = shape.ShapeName
+                    Logger.LogLazy(Function() $"[CHUNK-RESKIN] shape='{shL}' summary: {rcL} bone(s) re-skinned")
+                End If
+            End If
+            If isRobotMount Then
+                Dim newKeys = inst.SkeletonDictionary.Keys.Where(Function(k) Not preKeysSet.Contains(k)).OrderBy(Function(k) k).ToList()
+                Dim shNameLog = shape.ShapeName, nLog = n, preLog = preCount, postLog = postCount
+                Logger.LogLazy(Function() $"[INJECT] shape='{shNameLog}' returned={nLog} dictCount {preLog}→{postLog} added={newKeys.Count}: [{String.Join(", ", newKeys)}]")
+                ' Para cada bone nuevo, dumpear su world resuelto (esperado = inverseBind × M_mesh para shape bones, M_mesh para anchor).
+                For Each nbName In newKeys
+                    Dim nb = nbName
+                    Dim hb As HierarchiBone_class = Nothing
+                    inst.SkeletonDictionary.TryGetValue(nb, hb)
+                    If hb IsNot Nothing Then
+                        Dim worldT = hb.OriginalGetGlobalTransform
+                        Dim wr = worldT.Rotation
+                        Dim parentName = If(hb.Parent IsNot Nothing, hb.Parent.BoneName, "<root>")
+                        Logger.LogLazy(Function() $"[INJECT]   '{nb}' parent='{parentName}' world: T=({worldT.Translation.X:F3},{worldT.Translation.Y:F3},{worldT.Translation.Z:F3}) S={worldT.Scale:F3} R=[{wr.M11:F3},{wr.M12:F3},{wr.M13:F3}|{wr.M21:F3},{wr.M22:F3},{wr.M23:F3}|{wr.M31:F3},{wr.M32:F3},{wr.M33:F3}]")
+                    End If
+                Next
+            End If
+
+            ' [CHUNK-PARENTS-DUMP] Antes de materializar el chunk's BSConnectPoint::Parents, leerlos
+            ' del NIF y comparar con lo que ya está en el dict. Si el chunk redeclara un socket name
+            ' con T/R/S distintos a los del skeleton.nif del actor (o de chunks previos), la idempotencia
+            ' de MaterializeSocketsAsConnectPointBones los skipea silenciosamente — pero el engine de
+            ' FO4 podría usar la versión del chunk. Log diagnóstico para detectar discrepancias.
+            If isRobotMount AndAlso Not processedNifs.Contains(shape.NifContent) Then
+                Try
+                    Dim chunkParents = BSConnectPointReader.ReadParents(shape.NifContent)
+                    If chunkParents IsNot Nothing Then
+                        For Each cp In chunkParents
+                            If cp Is Nothing OrElse String.IsNullOrEmpty(cp.Name) Then Continue For
+                            Dim cName = If(cp.Name.StartsWith("P-", StringComparison.OrdinalIgnoreCase),
+                                           "C-" & cp.Name.Substring(2), "")
+                            If String.IsNullOrEmpty(cName) Then Continue For
+                            Dim chunkRotMat = BSConnectPointReader.QuatToMatrix33(cp.Rotation)
+                            Dim chunkT = cp.Translation, chunkS = If(cp.Scale > 0.0F, cp.Scale, 1.0F)
+                            Dim existing As HierarchiBone_class = Nothing
+                            Dim shLogP = shape.ShapeName, cpName = cp.Name, cnL = cName, cpParent = cp.ParentBoneName
+                            Dim cTL = chunkT, cSL = chunkS, cRL = chunkRotMat
+                            If inst.SkeletonDictionary.TryGetValue(cName, existing) Then
+                                Dim existLocal = existing.OriginalLocaLTransform
+                                Dim eT = existLocal.Translation, eS = existLocal.Scale, eR = existLocal.Rotation
+                                Dim existParent = If(existing.Parent IsNot Nothing, existing.Parent.BoneName, "<root>")
+                                Const eps As Single = 0.001F
+                                Dim tDiff = Math.Abs(eT.X - cTL.X) + Math.Abs(eT.Y - cTL.Y) + Math.Abs(eT.Z - cTL.Z)
+                                Dim sDiff = Math.Abs(eS - cSL)
+                                Dim rDiff = Math.Abs(eR.M11 - cRL.M11) + Math.Abs(eR.M12 - cRL.M12) + Math.Abs(eR.M13 - cRL.M13) +
+                                            Math.Abs(eR.M21 - cRL.M21) + Math.Abs(eR.M22 - cRL.M22) + Math.Abs(eR.M23 - cRL.M23) +
+                                            Math.Abs(eR.M31 - cRL.M31) + Math.Abs(eR.M32 - cRL.M32) + Math.Abs(eR.M33 - cRL.M33)
+                                Dim parentDiff = Not String.Equals(existParent, cpParent, StringComparison.OrdinalIgnoreCase)
+                                Dim diffTag = If(tDiff > eps OrElse sDiff > eps OrElse rDiff > eps OrElse parentDiff, "DIFFERS", "MATCH")
+                                Dim tDiffL = tDiff, sDiffL = sDiff, rDiffL = rDiff, parDiffL = parentDiff, dtL = diffTag
+                                Dim eTL = eT, eSL = eS, eRL = eR, exParL = existParent
+                                Logger.LogLazy(Function() $"[CHUNK-PARENTS-DUMP] shape='{shLogP}' socket='{cpName}' → cName='{cnL}' EXISTS-IN-DICT diff={dtL} (tDiff={tDiffL:F3} sDiff={sDiffL:F3} rDiff={rDiffL:F3} parentDiff={parDiffL})")
+                                Logger.LogLazy(Function() $"[CHUNK-PARENTS-DUMP]   chunk-source:  parent='{cpParent}' T=({cTL.X:F3},{cTL.Y:F3},{cTL.Z:F3}) S={cSL:F3} R=[{cRL.M11:F3},{cRL.M12:F3},{cRL.M13:F3}|{cRL.M21:F3},{cRL.M22:F3},{cRL.M23:F3}|{cRL.M31:F3},{cRL.M32:F3},{cRL.M33:F3}]")
+                                Logger.LogLazy(Function() $"[CHUNK-PARENTS-DUMP]   dict-existing: parent='{exParL}' T=({eTL.X:F3},{eTL.Y:F3},{eTL.Z:F3}) S={eSL:F3} R=[{eRL.M11:F3},{eRL.M12:F3},{eRL.M13:F3}|{eRL.M21:F3},{eRL.M22:F3},{eRL.M23:F3}|{eRL.M31:F3},{eRL.M32:F3},{eRL.M33:F3}]")
+                                ' Si DIFFERS, computar la corrección que hay que aplicar al bind de cualquier
+                                ' shape bone cuyo nombre coincida con este cName. La corrección lleva el bind
+                                ' "como el chunk lo skineó" (chunk-source) al frame que tiene el dict del actor.
+                                ' Math: correction = inv(dict_existing).Compose(chunk_source). Aplicar después
+                                ' como bind' = correction.Compose(originalBind).
+                                If tDiff > eps OrElse sDiff > eps OrElse rDiff > eps Then
+                                    Try
+                                        Dim chunkSocketLocal As New Transform_Class With {
+                                            .Translation = cTL,
+                                            .Rotation = cRL,
+                                            .Scale = cSL
+                                        }
+                                        Dim correction = existLocal.Inverse().ComposeTransforms(chunkSocketLocal)
+                                        socketCorrections(cName) = correction
+                                        Dim corrL = correction
+                                        Logger.LogLazy(Function() $"[CHUNK-PARENTS-DUMP]   → correction stored for '{cnL}': T=({corrL.Translation.X:F3},{corrL.Translation.Y:F3},{corrL.Translation.Z:F3}) S={corrL.Scale:F3}")
+                                    Catch exC As Exception
+                                        Logger.LogLazy(Function() $"[CHUNK-PARENTS-DUMP]   → correction compute FAILED: {exC.Message}")
+                                    End Try
+                                End If
+                            Else
+                                Logger.LogLazy(Function() $"[CHUNK-PARENTS-DUMP] shape='{shLogP}' socket='{cpName}' → cName='{cnL}' NOT-IN-DICT (will be materialized fresh from chunk: parent='{cpParent}' T=({cTL.X:F3},{cTL.Y:F3},{cTL.Z:F3}) S={cSL:F3} R=[{cRL.M11:F3},{cRL.M12:F3},{cRL.M13:F3}|{cRL.M21:F3},{cRL.M22:F3},{cRL.M23:F3}|{cRL.M31:F3},{cRL.M32:F3},{cRL.M33:F3}])")
+                            End If
+                        Next
+                    End If
+                Catch ex As Exception
+                    Dim shL = shape.ShapeName, exL = ex
+                    Logger.LogLazy(Function() $"[CHUNK-PARENTS-DUMP] shape='{shL}' EXCEPTION: {exL.GetType().Name}: {exL.Message}")
+                End Try
+            End If
+
             If processedNifs.Add(shape.NifContent) Then
+                Dim preMatKeysSet = New HashSet(Of String)(inst.SkeletonDictionary.Keys, StringComparer.OrdinalIgnoreCase)
                 Dim preMatCount = inst.SkeletonDictionary.Count
                 Dim m = BSConnectPointBoneInjector_Class.MaterializeSocketsAsConnectPointBones(shape.NifContent, inst)
+                If isRobotMount Then
+                    Dim newMatKeys = inst.SkeletonDictionary.Keys.Where(Function(k) Not preMatKeysSet.Contains(k)).OrderBy(Function(k) k).ToList()
+                    Dim shNameMat = shape.ShapeName, mLog = m
+                    Logger.LogLazy(Function() $"[MATERIALIZE-CHUNK] shape='{shNameMat}' returned={mLog} addedSubSockets={newMatKeys.Count}: [{String.Join(", ", newMatKeys)}]")
+                End If
             End If
         Next
 
         ' DIAG: dump post-inject — solo bones nuevos (los inyectados).
         If isRobotMount Then
             Dim injected = inst.InjectedBones.OrderBy(Function(k) k).ToList()
+            Dim injCount = injected.Count
+            Logger.LogLazy(Function() $"[POST-INJECT-SUMMARY] inst.InjectedBones count={injCount} total={inst.SkeletonDictionary.Count}")
             For Each k In injected
+                Dim kn = k
+                Logger.LogLazy(Function() $"[POST-INJECT-SUMMARY]   '{kn}'")
             Next
         End If
 
@@ -2419,6 +2637,32 @@ Public Class MainForm
                     Dim sampleCount = Math.Min(3, positions.Count)
                     Logger.LogLazy(Function() $"[VERTEX-TRACE] shape='{shName}' verts={positions.Count} wpv={wpv} sampling first {sampleCount}")
 
+                    ' [DIAG-EXPECTED] Posición esperada para el origen (0,0,0) del chunk: socket × parent_bone.world.
+                    ' En row-vec: M_mesh = socketLocal × parent_world. v_origin = (0,0,0) → cae en M_mesh.Translation.
+                    Try
+                        Dim socketLocalExp As New Transform_Class With {
+                            .Translation = sock.Translation,
+                            .Rotation = BSConnectPointReader.QuatToMatrix33(sock.Rotation),
+                            .Scale = If(sock.Scale > 0.0F, sock.Scale, 1.0F)
+                        }
+                        Dim parentWorldExp As Transform_Class = New Transform_Class()
+                        Dim parentFound As Boolean = False
+                        Dim parentHb As HierarchiBone_class = Nothing
+                        If Not String.IsNullOrEmpty(sock.ParentBoneName) AndAlso inst.SkeletonDictionary.TryGetValue(sock.ParentBoneName, parentHb) Then
+                            parentWorldExp = parentHb.OriginalGetGlobalTransform
+                            parentFound = True
+                        End If
+                        Dim mMesh = parentWorldExp.ComposeTransforms(socketLocalExp)
+                        Dim mr = mMesh.Rotation
+                        Dim parentFoundCap = parentFound
+                        Dim sockName = sock.Name
+                        Dim sockParent = sock.ParentBoneName
+                        Logger.LogLazy(Function() $"[VERTEX-TRACE]   EXPECTED M_mesh (socket='{sockName}' × parent='{sockParent}'.world) parentFound={parentFoundCap}")
+                        Logger.LogLazy(Function() $"[VERTEX-TRACE]     M_mesh.T={mMesh.Translation.X:F2},{mMesh.Translation.Y:F2},{mMesh.Translation.Z:F2}  M_mesh.S={mMesh.Scale:F3}  R=[{mr.M11:F3},{mr.M12:F3},{mr.M13:F3}|{mr.M21:F3},{mr.M22:F3},{mr.M23:F3}|{mr.M31:F3},{mr.M32:F3},{mr.M33:F3}]")
+                    Catch ex As Exception
+                        Logger.LogLazy(Function() $"[VERTEX-TRACE]   EXPECTED M_mesh EXCEPTION: {ex.Message}")
+                    End Try
+
                     For vi = 0 To sampleCount - 1
                         Dim vp = positions(vi)
                         Dim vLocal As New System.Numerics.Vector3(vp.X, vp.Y, vp.Z)
@@ -2442,6 +2686,14 @@ Public Class MainForm
                             Dim hb As HierarchiBone_class = Nothing
                             inst.SkeletonDictionary.TryGetValue(boneName, hb)
                             Dim boneWorld As Transform_Class = If(hb IsNot Nothing, hb.OriginalGetGlobalTransform, New Transform_Class())
+                            Dim originTag As String
+                            If hb Is Nothing Then
+                                originTag = "NOT-IN-DICT"
+                            ElseIf inst.InjectedBones.Contains(boneName) Then
+                                originTag = "INJECTED"
+                            Else
+                                originTag = "SHARED-WITH-ACTOR"
+                            End If
 
                             ' v_after_localT = v · R_localT + T_localT
                             Dim rL = localT.Rotation
@@ -2463,7 +2715,8 @@ Public Class MainForm
                             Dim bnLog = boneName, wLog = w
                             Dim aXL = aX, aYL = aY, aZL = aZ
                             Dim wXL = wX, wYL = wY, wZL = wZ
-                            Logger.LogLazy(Function() $"[VERTEX-TRACE]     v[{viCap2}] bone[{jCap}]='{bnLog}' w={wLog:F3} v_after_localT=({aXL:F2},{aYL:F2},{aZL:F2}) v_world_i=({wXL:F2},{wYL:F2},{wZL:F2})")
+                            Dim originLog = originTag
+                            Logger.LogLazy(Function() $"[VERTEX-TRACE]     v[{viCap2}] bone[{jCap}]='{bnLog}' {originLog} w={wLog:F3} v_after_localT=({aXL:F2},{aYL:F2},{aZL:F2}) v_world_i=({wXL:F2},{wYL:F2},{wZL:F2})")
                         Next
 
                         Dim vbX = vBlendX, vbY = vBlendY, vbZ = vBlendZ, swCap = sumW
@@ -2473,6 +2726,222 @@ Public Class MainForm
                 Next
             Catch ex As Exception
                 Logger.LogLazy(Function() $"[VERTEX-TRACE] EXCEPTION: {ex.GetType().Name}: {ex.Message}")
+            End Try
+
+            ' [STRATEGY-SIMULATE] Para vertex 0 de cada chunk con socket: computar v_world predicto
+            ' bajo CUATRO hipótesis distintas de cómo derivar bone.world(actor). El render real NO
+            ' se toca; sólo loggeamos predicciones para comparar visualmente contra lo que se ve.
+            ' Math común: v_world = v_local · bind · bone.world (row-vec). bind = shape.ShapeBoneTransforms[k].
+            '
+            '   S1 = CURRENT     → bone.world = actor.SkeletonDictionary[bone].OriginalGlobalTransform
+            '                      (lo que el render usa hoy: BPTD para shared, inv(bind)·P-X.world para injected).
+            '   S2 = IDENTITY    → bone.world = inv(bind).  Equivale a chunkRoot.world(actor)=identity.
+            '                      Implica que el chunk se autoreó "en actor world".
+            '   S3 = SOCKET-ONLY → bone.world = socketLocal·inv(bind). NO compone parent_bone.world.
+            '                      Equivale a chunkRoot.world(actor)=socketLocal.
+            '   S4 = CX-ALIGN    → M = P-X.world·bind(C-X). bone.world = M·inv(bind).
+            '                      "Alinea bind-derived chunk-C-X position al P-X world del socket".
+            '                      Requiere que el chunk tenga un shapeBone cuyo nombre coincida con
+            '                      la "C-X" declarada en BSConnectPoint::Children.
+            Try
+                For Each sh In ordered
+                    Dim sock As BSConnectPointReader.ConnectPointInfo = Nothing
+                    If Not renderData.ShapeMountSocket.TryGetValue(sh, sock) Then Continue For
+                    If sh.NifContent Is Nothing OrElse sh.Geometry Is Nothing Then Continue For
+                    Dim shapeBones2 = sh.ShapeBones
+                    Dim shapeBoneT2 = sh.ShapeBoneTransforms
+                    If shapeBones2 Is Nothing OrElse shapeBoneT2 Is Nothing Then Continue For
+                    Dim positions2 = sh.Geometry.GetVertexPositions()
+                    Dim skinning2 = sh.Geometry.GetSkinning()
+                    If positions2.Count = 0 OrElse skinning2.WeightsPerVertex <= 0 Then Continue For
+                    If skinning2.BoneIndices Is Nothing Then Continue For
+
+                    Dim shNameSim = sh.ShapeName
+
+                    ' Compute socketLocal (T+R from quat) and P-X.world once per chunk.
+                    Dim socketLocalSim As New Transform_Class With {
+                        .Translation = sock.Translation,
+                        .Rotation = BSConnectPointReader.QuatToMatrix33(sock.Rotation),
+                        .Scale = If(sock.Scale > 0.0F, sock.Scale, 1.0F)
+                    }
+                    Dim parentWorldSim As Transform_Class = New Transform_Class()
+                    Dim parentHbSim As HierarchiBone_class = Nothing
+                    If Not String.IsNullOrEmpty(sock.ParentBoneName) AndAlso inst.SkeletonDictionary.TryGetValue(sock.ParentBoneName, parentHbSim) Then
+                        parentWorldSim = parentHbSim.OriginalGetGlobalTransform
+                    End If
+                    Dim pxWorldSim = parentWorldSim.ComposeTransforms(socketLocalSim)
+
+                    ' Find C-X bind for S4: scan shape bones for a name that matches one of the
+                    ' chunk's BSConnectPoint::Children declarations. RenameShapeBoneIndices renames
+                    ' shape bones |0→|N for multi-instance but NOT the Children block — so to match
+                    ' both base (|0) and renamed (|1, |2) instances we strip any trailing |<digits>
+                    ' from BOTH sides before comparing.
+                    Dim StripInstanceSuffix = Function(s As String) As String
+                                                  If String.IsNullOrEmpty(s) Then Return s
+                                                  Dim pipeIdx = s.LastIndexOf("|"c)
+                                                  If pipeIdx <= 0 OrElse pipeIdx >= s.Length - 1 Then Return s
+                                                  Dim tail = s.Substring(pipeIdx + 1)
+                                                  For Each c In tail
+                                                      If Not Char.IsDigit(c) Then Return s
+                                                  Next
+                                                  Return s.Substring(0, pipeIdx)
+                                              End Function
+                    Dim childrenInfoSim = BSConnectPointReader.ReadChildren(sh.NifContent)
+                    Dim cxBind As Transform_Class = Nothing
+                    Dim cxBoneName As String = ""
+                    For Each childName In childrenInfoSim.PointNames
+                        Dim childNorm = StripInstanceSuffix(childName)
+                        For idx As Integer = 0 To shapeBones2.Count - 1
+                            Dim niN = TryCast(shapeBones2(idx), NiflySharp.Blocks.NiNode)
+                            Dim bn = If(niN?.Name?.String, "")
+                            Dim bnNorm = StripInstanceSuffix(bn)
+                            If String.Equals(bnNorm, childNorm, StringComparison.OrdinalIgnoreCase) Then
+                                cxBind = shapeBoneT2(idx)
+                                cxBoneName = bn
+                                Exit For
+                            End If
+                        Next
+                        If cxBind IsNot Nothing Then Exit For
+                    Next
+
+                    ' M_chunk_to_actor under S4. NA if no C-X skinning bone found.
+                    Dim mS4 As Transform_Class = Nothing
+                    If cxBind IsNot Nothing Then
+                        mS4 = pxWorldSim.ComposeTransforms(cxBind)
+                    End If
+
+                    ' [S5] General CX-align via NIF tree walk. The chunk's C-X NiNode may NOT be a
+                    ' skinning bone (most non-arm chunks); we look it up in the full block tree and
+                    ' compose its chunk-NIF-global transform. Math:
+                    '   T_chunk_to_actor = pxWorld · inv(C-X.chunkGlobalT)
+                    '   bone.actorWorld(B) = inv(bind(B)) · T_chunk_to_actor   (∀ B in skinning)
+                    '   v_world = v · bind(B) · bone.actorWorld
+                    ' When C-X IS a skinning bone, C-X.chunkGlobalT = inv(bind(C-X)) so S5 collapses
+                    ' to S4 (verified analytically; reported both for sanity).
+                    Dim cxChunkGlobalT As Transform_Class = Nothing
+                    Dim cxNiNodeName As String = ""
+                    For Each childName In childrenInfoSim.PointNames
+                        Dim cxNode = sh.NifContent.FindBlockByName(Of NiflySharp.Blocks.NiNode)(childName)
+                        If cxNode IsNot Nothing Then
+                            cxChunkGlobalT = Transform_Class.GetGlobalTransform(cxNode, sh.NifContent)
+                            cxNiNodeName = childName
+                            Exit For
+                        End If
+                        Dim childNorm5 = StripInstanceSuffix(childName)
+                        For Each candidateBlock In sh.NifContent.Blocks
+                            Dim niNodeCand = TryCast(candidateBlock, NiflySharp.Blocks.NiNode)
+                            If niNodeCand Is Nothing Then Continue For
+                            Dim candName = If(niNodeCand.Name?.String, "")
+                            Dim candNorm = StripInstanceSuffix(candName)
+                            If String.Equals(candNorm, childNorm5, StringComparison.OrdinalIgnoreCase) Then
+                                cxChunkGlobalT = Transform_Class.GetGlobalTransform(niNodeCand, sh.NifContent)
+                                cxNiNodeName = candName
+                                Exit For
+                            End If
+                        Next
+                        If cxChunkGlobalT IsNot Nothing Then Exit For
+                    Next
+                    Dim tChunkToActor As Transform_Class = Nothing
+                    If cxChunkGlobalT IsNot Nothing Then
+                        tChunkToActor = pxWorldSim.ComposeTransforms(cxChunkGlobalT.Inverse())
+                    End If
+
+                    ' Vertex 0:
+                    Dim vp0Sim = positions2(0)
+                    Dim vLSim As New System.Numerics.Vector3(vp0Sim.X, vp0Sim.Y, vp0Sim.Z)
+
+                    Dim wpvSim = skinning2.WeightsPerVertex
+                    Dim s1X As Single = 0, s1Y As Single = 0, s1Z As Single = 0
+                    Dim s2X As Single = 0, s2Y As Single = 0, s2Z As Single = 0
+                    Dim s3X As Single = 0, s3Y As Single = 0, s3Z As Single = 0
+                    Dim s4X As Single = 0, s4Y As Single = 0, s4Z As Single = 0
+                    Dim s5X As Single = 0, s5Y As Single = 0, s5Z As Single = 0
+                    Dim s4Available As Boolean = (mS4 IsNot Nothing)
+                    Dim s5Available As Boolean = (tChunkToActor IsNot Nothing)
+                    Dim sumWSim As Single = 0
+
+                    For j = 0 To wpvSim - 1
+                        Dim baseSkin = j
+                        If baseSkin >= skinning2.BoneIndices.Length Then Exit For
+                        Dim boneIdx = CInt(skinning2.BoneIndices(baseSkin))
+                        Dim w = CSng(skinning2.BoneWeights(baseSkin))
+                        If w <= 0 OrElse boneIdx >= shapeBones2.Count OrElse boneIdx >= shapeBoneT2.Count Then Continue For
+                        sumWSim += w
+
+                        Dim boneNode2 = TryCast(shapeBones2(boneIdx), NiflySharp.Blocks.NiNode)
+                        Dim boneNameSim2 = If(boneNode2?.Name?.String, "<null>")
+                        Dim bindB = shapeBoneT2(boneIdx)
+                        Dim invBindB = bindB.Inverse()
+
+                        ' Helper: compute v_world = v_local · bind · boneWorld (row-vec).
+                        Dim ComputeVWorld = Function(boneWorld As Transform_Class) As System.Numerics.Vector3
+                                                Dim rB = bindB.Rotation, tB = bindB.Translation
+                                                Dim aX = vLSim.X * rB.M11 + vLSim.Y * rB.M21 + vLSim.Z * rB.M31 + tB.X
+                                                Dim aY = vLSim.X * rB.M12 + vLSim.Y * rB.M22 + vLSim.Z * rB.M32 + tB.Y
+                                                Dim aZ = vLSim.X * rB.M13 + vLSim.Y * rB.M23 + vLSim.Z * rB.M33 + tB.Z
+                                                Dim rW = boneWorld.Rotation, tW = boneWorld.Translation
+                                                Dim wxL = aX * rW.M11 + aY * rW.M21 + aZ * rW.M31 + tW.X
+                                                Dim wyL = aX * rW.M12 + aY * rW.M22 + aZ * rW.M32 + tW.Y
+                                                Dim wzL = aX * rW.M13 + aY * rW.M23 + aZ * rW.M33 + tW.Z
+                                                Return New System.Numerics.Vector3(wxL, wyL, wzL)
+                                            End Function
+
+                        ' S1: actor's current bone.world.
+                        Dim hb1 As HierarchiBone_class = Nothing
+                        inst.SkeletonDictionary.TryGetValue(boneNameSim2, hb1)
+                        Dim bw1Sim As Transform_Class = If(hb1 IsNot Nothing, hb1.OriginalGetGlobalTransform, New Transform_Class())
+                        Dim v1 = ComputeVWorld(bw1Sim)
+                        s1X += w * v1.X : s1Y += w * v1.Y : s1Z += w * v1.Z
+
+                        ' S2: bone.world = inv(bind).
+                        Dim v2 = ComputeVWorld(invBindB)
+                        s2X += w * v2.X : s2Y += w * v2.Y : s2Z += w * v2.Z
+
+                        ' S3: bone.world = socketLocal·inv(bind) = socketLocal.Compose(invBind).
+                        Dim bw3Sim = socketLocalSim.ComposeTransforms(invBindB)
+                        Dim v3 = ComputeVWorld(bw3Sim)
+                        s3X += w * v3.X : s3Y += w * v3.Y : s3Z += w * v3.Z
+
+                        ' S4: bone.world = M·inv(bind) where M = pxWorld·bind(C-X). NA if no C-X.
+                        If s4Available Then
+                            Dim bw4Sim = mS4.ComposeTransforms(invBindB)
+                            Dim v4 = ComputeVWorld(bw4Sim)
+                            s4X += w * v4.X : s4Y += w * v4.Y : s4Z += w * v4.Z
+                        End If
+
+                        ' S5: bone.world = inv(bind) · T_chunk_to_actor (general C-X via NIF tree).
+                        If s5Available Then
+                            Dim bw5Sim = tChunkToActor.ComposeTransforms(invBindB)
+                            Dim v5 = ComputeVWorld(bw5Sim)
+                            s5X += w * v5.X : s5Y += w * v5.Y : s5Z += w * v5.Z
+                        End If
+                    Next
+
+                    Dim vLLog = vLSim, sumWLog = sumWSim, cxLog = cxBoneName
+                    Logger.LogLazy(Function() $"[STRATEGY-SIMULATE] shape='{shNameSim}' v[0]_local=({vLLog.X:F2},{vLLog.Y:F2},{vLLog.Z:F2}) sumW={sumWLog:F3} cxBone={If(String.IsNullOrEmpty(cxLog), "<none>", "'" & cxLog & "'")}")
+                    Dim s1XL = s1X, s1YL = s1Y, s1ZL = s1Z
+                    Logger.LogLazy(Function() $"[STRATEGY-SIMULATE]   S1 (current/actor-bone):                 ({s1XL:F2},{s1YL:F2},{s1ZL:F2})")
+                    Dim s2XL = s2X, s2YL = s2Y, s2ZL = s2Z
+                    Logger.LogLazy(Function() $"[STRATEGY-SIMULATE]   S2 (chunkRoot=identity, bone=inv(bind)): ({s2XL:F2},{s2YL:F2},{s2ZL:F2})")
+                    Dim s3XL = s3X, s3YL = s3Y, s3ZL = s3Z
+                    Logger.LogLazy(Function() $"[STRATEGY-SIMULATE]   S3 (chunkRoot=socketLocal, no parent):   ({s3XL:F2},{s3YL:F2},{s3ZL:F2})")
+                    If s4Available Then
+                        Dim s4XL = s4X, s4YL = s4Y, s4ZL = s4Z
+                        Logger.LogLazy(Function() $"[STRATEGY-SIMULATE]   S4 (CX-align: M=P-X.world·bind(C-X)):    ({s4XL:F2},{s4YL:F2},{s4ZL:F2})")
+                    Else
+                        Logger.LogLazy(Function() $"[STRATEGY-SIMULATE]   S4 (CX-align): NA (no C-X skinning bone in shape)")
+                    End If
+                    If s5Available Then
+                        Dim s5XL = s5X, s5YL = s5Y, s5ZL = s5Z
+                        Dim cxNiL = cxNiNodeName
+                        Dim cxgT = cxChunkGlobalT.Translation
+                        Logger.LogLazy(Function() $"[STRATEGY-SIMULATE]   S5 (CX-NIF-tree: cx='{cxNiL}' chunkT=({cxgT.X:F2},{cxgT.Y:F2},{cxgT.Z:F2})): ({s5XL:F2},{s5YL:F2},{s5ZL:F2})")
+                    Else
+                        Logger.LogLazy(Function() $"[STRATEGY-SIMULATE]   S5 (CX-NIF-tree): NA (C-X NiNode not found in chunk NIF)")
+                    End If
+                Next
+            Catch ex As Exception
+                Logger.LogLazy(Function() $"[STRATEGY-SIMULATE] EXCEPTION: {ex.GetType().Name}: {ex.Message}")
             End Try
         End If
 
@@ -3596,7 +4065,7 @@ Public Class MainForm
             ' Same fragment as ApplyShapeMaterialOverrides body — only the diffuse/normal/spec
             ' get substituted; material params (specular, smoothness, etc.) stay from the NIF.
             If chosenTxst.MaterialPath <> "" Then
-                Dim bgsmMaterial = TryLoadMaterialFromDictionary(chosenTxst.MaterialPath, mat)
+                Dim bgsmMaterial = TryLoadMaterialFromDictionary(chosenTxst.MaterialPath, mat, shape.NifShape, shape.NifContent)
                 If bgsmMaterial IsNot Nothing Then
                     If bgsmMaterial.Diffuse_or_Base_Texture <> "" Then mat.Diffuse_or_Base_Texture = bgsmMaterial.Diffuse_or_Base_Texture
                     If bgsmMaterial.NormalTexture <> "" Then mat.NormalTexture = bgsmMaterial.NormalTexture
@@ -3644,7 +4113,7 @@ Public Class MainForm
             ' present in TXST), copy texture slots only, then apply the rest of the TXST.
             ' Material params (specular, smoothness, subsurface) stay from the NIF.
             If bodyTxst.MaterialPath <> "" Then
-                Dim bgsmMaterial = TryLoadMaterialFromDictionary(bodyTxst.MaterialPath, mat)
+                Dim bgsmMaterial = TryLoadMaterialFromDictionary(bodyTxst.MaterialPath, mat, shape.NifShape, shape.NifContent)
                 If bgsmMaterial IsNot Nothing Then
                     If bgsmMaterial.Diffuse_or_Base_Texture <> "" Then mat.Diffuse_or_Base_Texture = bgsmMaterial.Diffuse_or_Base_Texture
                     If bgsmMaterial.NormalTexture <> "" Then mat.NormalTexture = bgsmMaterial.NormalTexture
@@ -3725,46 +4194,37 @@ Public Class MainForm
         ' overlay-applied NPC_Data, so the freshly-edited preset is what gets baked.
         ApplyFaceTintOverlay(host.LastRenderedState, host.LastRenderData, host)
 
-        ' Stage 3: refresh material uniforms (SkinTintColor / HairTintColor + GrayscaleToPalette
-        ' remap params) on every loaded mesh. These were set at NIF-load time inside
-        ' ApplyShapeMaterialOverrides and are invisible to MarkDirty(Textures); we mutate them
-        ' in place. The palette branch must mirror ApplyShapeMaterialOverrides exactly (line
-        ' 7528-7556 in MainForm.vb) so a CLFM with HasRemappingIndex correctly drives
-        ' GrayscaleToPaletteScale to a different palette row, not just a different tint colour.
+        ' Stage 3: refresh material uniforms (SkinTintColor + GrayscaleToPalette / HairTintColor)
+        ' on every loaded shape. These were set at NIF-load time inside ApplyShapeMaterialOverrides
+        ' and are invisible to MarkDirty(Textures); we mutate them in place.
+        '
+        ' Iterate renderData.Shapes (not model.meshes) so each shape can be looked up against
+        ' renderData.ShapeCandidate — without candidate context the prior code path applied hair
+        ' color to ANY palette-enabled material, leaking it into robot armor / face / body shapes.
+        ' Shared helper ApplyMaterialPaletteHairColor enforces the engine rule (Hair/FacialHair/
+        ' Brow HDPTs only) and is the same code path NIF-load uses now — no parallel copy to
+        ' drift.
+        '
+        ' SkinTintColor refresh stays inline here using the simple SkinTone resolution (no
+        ' candidate-aware override). NIF-load uses the richer ResolveSkinTintColor which factors
+        ' in solidTintColor for face HeadParts — that asymmetry is a separate frontier (see
+        ' project_palette_routing_pending.md). Not touched here to avoid changing render behavior
+        ' for face shapes edited in live preview.
+        Dim renderData = host.LastRenderData
         Dim skinTone = ResolveNpcSkinToneColor(host.LastRenderedState)
-        Dim clfmData = If(host.LastRenderedState.HairColorFormID <> 0UI, ResolveColorFormData(host.LastRenderedState.HairColorFormID), Nothing)
-        Dim hairPaletteTexture As String = ""
-        If clfmData IsNot Nothing AndAlso clfmData.HasRemappingIndex Then
-            hairPaletteTexture = ResolveRaceHairLookupTexture(host.LastRenderedState)
-        End If
-        Dim hairCol = ResolveColorFormColor(host.LastRenderedState.HairColorFormID)
-        For Each mesh In model.meshes
-            If mesh Is Nothing OrElse mesh.MeshData Is Nothing OrElse mesh.MeshData.Material Is Nothing Then Continue For
-            Dim mat = mesh.MeshData.Material.MaterialBase
-            If mat Is Nothing Then Continue For
+        For Each shape In renderData.Shapes
+            If shape Is Nothing Then Continue For
+            Dim relatedMaterial = shape.ShapeMaterial
+            If relatedMaterial Is Nothing OrElse relatedMaterial.material Is Nothing Then Continue For
+            Dim mat = relatedMaterial.material
+
             If mat.SkinTint AndAlso skinTone.HasValue Then
                 mat.SkinTintColor = skinTone.Value
             End If
-            If mat.Hair OrElse mat.GrayscaleToPaletteColor Then
-                Dim didPalette As Boolean = False
-                If clfmData IsNot Nothing AndAlso clfmData.HasRemappingIndex Then
-                    ' Same priority as ApplyShapeMaterialOverrides: BGSM's GreyscaleTexture
-                    ' first (per-shape, authored-stylist intent), RACE.HNAM/HLTX as fallback.
-                    Dim effectivePaletteTex As String = If(mat.GreyscaleTexture, "")
-                    If effectivePaletteTex = "" Then
-                        effectivePaletteTex = hairPaletteTexture
-                    End If
-                    If effectivePaletteTex <> "" Then
-                        mat.GrayscaleToPaletteColor = True
-                        mat.GrayscaleToPaletteScale = clfmData.RemappingIndex
-                        mat.GreyscaleTexture = effectivePaletteTex
-                        didPalette = True
-                    End If
-                End If
-                If Not didPalette AndAlso hairCol.HasValue Then
-                    mat.HairTintColor = hairCol.Value
-                End If
-            End If
+
+            Dim shapeCandidate As MeshCandidate = Nothing
+            renderData.ShapeCandidate.TryGetValue(shape, shapeCandidate)
+            ApplyMaterialPaletteHairColor(mat, shapeCandidate, host.LastRenderedState, Nothing)
         Next
 
         Return True
@@ -5811,6 +6271,16 @@ Public Class MainForm
                                             candidates As List(Of MeshCandidate),
                                             ByRef order As Integer,
                                             warnings As List(Of String))
+        ' [DIAG] Entry log — confirma estado de entrada del robot path.
+        Dim stateFid = state.FormID
+        Dim stateRace = state.RaceFormID
+        Dim hasOT = state.HasObjectTemplate
+        Dim otCount = If(state.ObjectTemplateCombinations Is Nothing, 0, state.ObjectTemplateCombinations.Count)
+        Dim apSlotCount = If(state.AttachParentSlotFormIDs Is Nothing, 0, state.AttachParentSlotFormIDs.Count)
+        Dim apSlotStr = If(state.AttachParentSlotFormIDs Is Nothing OrElse state.AttachParentSlotFormIDs.Count = 0, "[]",
+                           "[" & String.Join(",", state.AttachParentSlotFormIDs.Select(Function(f) "0x" & f.ToString("X8") & "(" & ObjectTemplateResolver.KywdEditorIdSafe(f, _pluginManager) & ")")) & "]")
+        Logger.LogLazy(Function() $"[ROBOT-ENTRY] npc=0x{stateFid:X8} race=0x{stateRace:X8} hasOT={hasOT} combos={otCount} npcAPPR={apSlotCount}={apSlotStr}")
+
         ' Build a stub NPC_Data carrying the OBTE so we can re-use ResolveNpcCombinations.
         Dim stubNpc As New NPC_Data With {
             .FormID = state.FormID,
@@ -5899,18 +6369,33 @@ Public Class MainForm
                                         apIdx As Byte,
                                         socketsByName As Dictionary(Of String, BSConnectPointReader.ConnectPointInfo)) _
                                         As BSConnectPointReader.ConnectPointInfo
-        If String.IsNullOrEmpty(apEditorId) Then Return Nothing
+        If String.IsNullOrEmpty(apEditorId) Then
+            Logger.LogLazy(Function() $"[MOUNT-LOOKUP] apEditorId='' → NOT-FOUND (KYWD not resolvable)")
+            Return Nothing
+        End If
         Dim baseName = apEditorId
+        Dim stripped As String = ""
         If baseName.StartsWith("ap_Bot_", StringComparison.OrdinalIgnoreCase) Then
+            stripped = "ap_Bot_"
             baseName = baseName.Substring("ap_Bot_".Length)
         ElseIf baseName.StartsWith("ap_", StringComparison.OrdinalIgnoreCase) Then
+            stripped = "ap_"
             baseName = baseName.Substring("ap_".Length)
         End If
         Dim indexed = $"P-{baseName}|{apIdx}"
-        Dim socket As BSConnectPointReader.ConnectPointInfo = Nothing
-        If socketsByName.TryGetValue(indexed, socket) Then Return socket
         Dim plain = $"P-{baseName}"
-        If socketsByName.TryGetValue(plain, socket) Then Return socket
+        Dim socket As BSConnectPointReader.ConnectPointInfo = Nothing
+        Dim apEditorIdLog = apEditorId, baseNameLog = baseName, strippedLog = stripped
+        Dim indexedLog = indexed, plainLog = plain, apIdxLog = apIdx
+        If socketsByName.TryGetValue(indexed, socket) Then
+            Logger.LogLazy(Function() $"[MOUNT-LOOKUP] apEditorId='{apEditorIdLog}' stripped='{strippedLog}' base='{baseNameLog}' apIdx={apIdxLog} → tried '{indexedLog}' MATCH parent='{socket.ParentBoneName}'")
+            Return socket
+        End If
+        If socketsByName.TryGetValue(plain, socket) Then
+            Logger.LogLazy(Function() $"[MOUNT-LOOKUP] apEditorId='{apEditorIdLog}' stripped='{strippedLog}' base='{baseNameLog}' apIdx={apIdxLog} → tried '{indexedLog}' MISS, tried '{plainLog}' MATCH parent='{socket.ParentBoneName}'")
+            Return socket
+        End If
+        Logger.LogLazy(Function() $"[MOUNT-LOOKUP] apEditorId='{apEditorIdLog}' stripped='{strippedLog}' base='{baseNameLog}' apIdx={apIdxLog} → tried '{indexedLog}' MISS, tried '{plainLog}' MISS → NOT-FOUND")
         Return Nothing
     End Function
 
@@ -5918,10 +6403,26 @@ Public Class MainForm
     ''' when the FormID is 0 or the record isn't loaded (which happened for every OMOD before the
     ''' KYWD loader fix on 2026-05-10).</summary>
     Private Function ResolveAttachPointEditorId(kywdFormID As UInteger) As String
-        If kywdFormID = 0UI Then Return ""
+        If kywdFormID = 0UI Then
+            Logger.LogLazy(Function() $"[AP-RESOLVE] kywdFid=0 → empty")
+            Return ""
+        End If
         Dim rec = _pluginManager.GetRecord(kywdFormID)
-        If rec Is Nothing OrElse rec.Header.Signature <> "KYWD" Then Return ""
-        Return rec.EditorID
+        Dim fidLog = kywdFormID
+        If rec Is Nothing Then
+            Logger.LogLazy(Function() $"[AP-RESOLVE] kywdFid=0x{fidLog:X8} → NOT FOUND in PluginManager")
+            Return ""
+        End If
+        If rec.Header.Signature <> "KYWD" Then
+            Dim sig = rec.Header.Signature
+            Logger.LogLazy(Function() $"[AP-RESOLVE] kywdFid=0x{fidLog:X8} → wrong sig '{sig}' (expected KYWD)")
+            Return ""
+        End If
+        Dim eid = If(rec.EditorID, "")
+        If String.IsNullOrEmpty(eid) Then
+            Logger.LogLazy(Function() $"[AP-RESOLVE] kywdFid=0x{fidLog:X8} → KYWD with empty EditorID")
+        End If
+        Return eid
     End Function
 
     ''' <summary>Load the actor's skeleton NIFs and index every BSConnectPoint::Parents socket by
@@ -5937,15 +6438,38 @@ Public Class MainForm
 
         ' Source 1: RACE.ANAM
         Dim skelKey = ResolveSkeletonKey(state, warnings)
+        Dim countAfterSrc1 As Integer = 0
         If Not String.IsNullOrEmpty(skelKey) Then
             IndexSocketsFromSkeletonKey(skelKey, dict)
+            countAfterSrc1 = dict.Count
+            Logger.LogLazy(Function() $"[SOCKETS-SRC1-RACE.ANAM] key='{skelKey}' addedTotal={countAfterSrc1}")
+        Else
+            Logger.LogLazy(Function() $"[SOCKETS-SRC1-RACE.ANAM] skelKey EMPTY → skipped")
         End If
 
         ' Source 2: BPTD.MODL (via RACE.GNAM) — aporta sockets cross-folder y los del SkeletonRef.
         Dim bptdBytes = BodyPartSkeletonResolver.TryLoadBptdSkeletonBytes(state.RaceFormID, _pluginManager)
         If bptdBytes IsNot Nothing AndAlso bptdBytes.Length > 0 Then
             IndexSocketsFromBytes(bptdBytes, "BPTD.MODL", dict)
+            Dim countAfterSrc2 = dict.Count
+            Dim diff = countAfterSrc2 - countAfterSrc1
+            Logger.LogLazy(Function() $"[SOCKETS-SRC2-BPTD.MODL] bytes={bptdBytes.Length} totalAfter={countAfterSrc2} delta={diff} (delta cuenta nuevos+overwrites; overwrites no detectables sin tracking adicional)")
+        Else
+            Logger.LogLazy(Function() $"[SOCKETS-SRC2-BPTD.MODL] BPTD bytes EMPTY → skipped")
         End If
+
+        ' [DIAG] Dump completo del dict — sockets disponibles para el resolver.
+        Dim sorted = dict.OrderBy(Function(kv) kv.Key).ToList()
+        Logger.LogLazy(Function() $"[SOCKETS-DICT] count={sorted.Count}")
+        For Each kv In sorted
+            Dim name = kv.Key
+            Dim cp = kv.Value
+            Dim t = cp.Translation
+            Dim qx = cp.Rotation.X, qy = cp.Rotation.Y, qz = cp.Rotation.Z, qw = cp.Rotation.W
+            Dim parentBone = cp.ParentBoneName
+            Dim sc = cp.Scale
+            Logger.LogLazy(Function() $"[SOCKETS-DICT]   '{name}' parent='{parentBone}' T=({t.X:F3},{t.Y:F3},{t.Z:F3}) QuatNiflyXYZW=({qx:F4},{qy:F4},{qz:F4},{qw:F4}) [disco(w,x,y,z)=({qx:F4},{qy:F4},{qz:F4},{qw:F4})] S={sc:F3}")
+        Next
 
         Return dict
     End Function
@@ -6599,6 +7123,9 @@ Public Class MainForm
             ' sin tocar el resto del NIF. Reescritura quirúrgica per-instancia.
             If candidate.ChunkOmodFormID <> 0UI AndAlso candidate.MountApIdx > 0 Then
                 RenameShapeBoneIndices(shapes, candidate.MountApIdx)
+                ' Fix Bug HIGH #1+#2: sub-sockets que esta chunk NIF expone también necesitan
+                ' rename del ParentBoneName, sino sub-chunks se anclan al bone |0 equivocado.
+                RenameSubSocketParentBones(nif, candidate.MountApIdx)
             End If
 
             ' TODO multi-instance chunks: el MountSocket transform no se aplica a shapes
@@ -6798,14 +7325,38 @@ Public Class MainForm
                 End If
                 Dim rootNode = nif.GetRootNode()
                 Dim rootDesc As String
+                Dim rootIsIdentity As Boolean = False
                 If rootNode IsNot Nothing Then
                     Dim r = rootNode.Rotation
-                    rootDesc = $"name='{rootNode.Name?.String}' T=({rootNode.Translation.X:F2},{rootNode.Translation.Y:F2},{rootNode.Translation.Z:F2}) S={rootNode.Scale:F3} R=[{r.M11:F3},{r.M12:F3},{r.M13:F3} | {r.M21:F3},{r.M22:F3},{r.M23:F3} | {r.M31:F3},{r.M32:F3},{r.M33:F3}]"
+                    Dim rt = rootNode.Translation
+                    Dim rs = rootNode.Scale
+                    Const eps As Single = 0.0001F
+                    rootIsIdentity = (Math.Abs(rt.X) < eps AndAlso Math.Abs(rt.Y) < eps AndAlso Math.Abs(rt.Z) < eps AndAlso
+                                      Math.Abs(rs - 1.0F) < eps AndAlso
+                                      Math.Abs(r.M11 - 1.0F) < eps AndAlso Math.Abs(r.M12) < eps AndAlso Math.Abs(r.M13) < eps AndAlso
+                                      Math.Abs(r.M21) < eps AndAlso Math.Abs(r.M22 - 1.0F) < eps AndAlso Math.Abs(r.M23) < eps AndAlso
+                                      Math.Abs(r.M31) < eps AndAlso Math.Abs(r.M32) < eps AndAlso Math.Abs(r.M33 - 1.0F) < eps)
+                    Dim idTag = If(rootIsIdentity, "IDENTITY", "NON-IDENTITY")
+                    rootDesc = $"name='{rootNode.Name?.String}' {idTag} T=({rt.X:F4},{rt.Y:F4},{rt.Z:F4}) S={rs:F4} R=[{r.M11:F4},{r.M12:F4},{r.M13:F4} | {r.M21:F4},{r.M22:F4},{r.M23:F4} | {r.M31:F4},{r.M32:F4},{r.M33:F4}]"
                 Else
                     rootDesc = "Nothing"
                 End If
                 Logger.LogLazy(Function() $"[CHUNK-PROP] omod=0x{cFid:X8} apIdx={apIdx} socket={sockDesc}")
                 Logger.LogLazy(Function() $"[CHUNK-PROP]   nif.root: {rootDesc}")
+
+                ' [DIAG-ROOT] NIF root global = walk hacia arriba desde root (es solo root.local).
+                ' Para chunks con root NON-IDENTITY este es exactamente el transform que el render
+                ' está IGNORANDO (SkinningHelper:151-156 fuerza GlobalTransform=Identity para skinned).
+                If rootNode IsNot Nothing Then
+                    Try
+                        Dim rootGlobal = Transform_Class.GetGlobalTransform(rootNode, nif)
+                        Dim rg = rootGlobal.Rotation
+                        Dim rgt = rootGlobal.Translation
+                        Logger.LogLazy(Function() $"[CHUNK-PROP]   nif.root.computedGlobal: T=({rgt.X:F4},{rgt.Y:F4},{rgt.Z:F4}) S={rootGlobal.Scale:F4} R=[{rg.M11:F4},{rg.M12:F4},{rg.M13:F4} | {rg.M21:F4},{rg.M22:F4},{rg.M23:F4} | {rg.M31:F4},{rg.M32:F4},{rg.M33:F4}]")
+                    Catch ex As Exception
+                        Logger.LogLazy(Function() $"[CHUNK-PROP]   nif.root.computedGlobal EXCEPTION: {ex.Message}")
+                    End Try
+                End If
 
                 ' DIAG sub-sockets/children: dump BSConnectPoint::Parents (sub-sockets que el chunk
                 ' EXPONE para que otro chunk se monte encima — ej. HandLeftProtectronClaw expone
@@ -6844,6 +7395,38 @@ Public Class MainForm
                         niShapeT = $"T=({ts.Translation.X:F2},{ts.Translation.Y:F2},{ts.Translation.Z:F2}) S={ts.Scale:F3} R=[{r.M11:F3},{r.M12:F3},{r.M13:F3} | {r.M21:F3},{r.M22:F3},{r.M23:F3} | {r.M31:F3},{r.M32:F3},{r.M33:F3}]"
                     End If
 
+                    ' [DIAG-CHAIN] Cadena del shape NiAVObject hacia el root, con cada local.
+                    ' Aporta info sobre intermedios entre shape y root (no son raros — Bethesda
+                    ' a veces mete NiNodes wrapper con offsets). El render skinned actualmente
+                    ' compone esta cadena y la fuerza a Identity (SkinningHelper:151-156).
+                    Try
+                        Dim curNode = TryCast(niShape, NiflySharp.Blocks.NiAVObject)
+                        Dim depth As Integer = 0
+                        While curNode IsNot Nothing
+                            Dim cn = curNode
+                            Dim cName = If(cn.Name?.String, "<null>")
+                            Dim cT = cn.Translation
+                            Dim cR = cn.Rotation
+                            Dim cS = cn.Scale
+                            Dim isRoot = (rootNode IsNot Nothing AndAlso ReferenceEquals(cn, rootNode))
+                            Dim d = depth, isRootCap = isRoot, cNameCap = cName, cTcap = cT, cRcap = cR, cScap = cS
+                            Const eps As Single = 0.0001F
+                            Dim cIsId = (Math.Abs(cT.X) < eps AndAlso Math.Abs(cT.Y) < eps AndAlso Math.Abs(cT.Z) < eps AndAlso
+                                         Math.Abs(cS - 1.0F) < eps AndAlso
+                                         Math.Abs(cR.M11 - 1.0F) < eps AndAlso Math.Abs(cR.M12) < eps AndAlso Math.Abs(cR.M13) < eps AndAlso
+                                         Math.Abs(cR.M21) < eps AndAlso Math.Abs(cR.M22 - 1.0F) < eps AndAlso Math.Abs(cR.M23) < eps AndAlso
+                                         Math.Abs(cR.M31) < eps AndAlso Math.Abs(cR.M32) < eps AndAlso Math.Abs(cR.M33 - 1.0F) < eps)
+                            Dim cIdTag = If(cIsId, "ID", "NON-ID")
+                            Logger.LogLazy(Function() $"[CHUNK-PROP]     shape-chain[{d}] '{cNameCap}'{If(isRootCap, " (ROOT)", "")} {cIdTag} T=({cTcap.X:F4},{cTcap.Y:F4},{cTcap.Z:F4}) S={cScap:F4} R=[{cRcap.M11:F4},{cRcap.M12:F4},{cRcap.M13:F4}|{cRcap.M21:F4},{cRcap.M22:F4},{cRcap.M23:F4}|{cRcap.M31:F4},{cRcap.M32:F4},{cRcap.M33:F4}]")
+                            If isRoot Then Exit While
+                            curNode = TryCast(nif.GetParentNode(curNode), NiflySharp.Blocks.NiAVObject)
+                            depth += 1
+                            If depth > 20 Then Exit While
+                        End While
+                    Catch ex As Exception
+                        Logger.LogLazy(Function() $"[CHUNK-PROP]     shape-chain EXCEPTION: {ex.Message}")
+                    End Try
+
                     Dim boneNames As New List(Of String)
                     If sh.ShapeBones IsNot Nothing Then
                         For Each bn In sh.ShapeBones
@@ -6881,6 +7464,9 @@ Public Class MainForm
             End If
 
             result.Shapes.AddRange(shapes)
+            For Each sh In shapes
+                If sh IsNot Nothing Then result.ShapeCandidate(sh) = candidate
+            Next
         Catch ex As Exception
         End Try
     End Sub
@@ -6909,6 +7495,36 @@ Public Class MainForm
                     Dim sLog = s
                     Dim renamedLog = renamed
                     Logger.LogLazy(Function() $"[BONE-RENAME] '{sLog}' → '{renamedLog}'")
+                End If
+            Next
+        Next
+    End Sub
+
+    ''' <summary>Cuando un chunk multi-instance (MountApIdx > 0) tiene sus shape bones renombrados
+    ''' de `Bone|0` a `Bone|N`, los sub-sockets BSConnectPoint::Parents que esa chunk NIF expone
+    ''' siguen apuntando a `Bone|0` en su `ParentBoneName` literal — esto hace que sub-chunks que
+    ''' se mounten sobre el chunk parent terminen anclados al bone |0 en vez del |N correcto.
+    ''' Remap el ParentBoneName de cada sub-socket en la misma sufijo |N que los shape bones.
+    ''' Fix de Bug HIGH #1 + #2 del análisis 2026-05-15.</summary>
+    Private Sub RenameSubSocketParentBones(nif As Nifcontent_Class_Manolo, apIdx As Byte)
+        If nif Is Nothing OrElse apIdx = 0 Then Return
+        Dim root = nif.GetRootNode()
+        If root Is Nothing OrElse root.ExtraDataList Is Nothing Then Return
+        Dim newSuffix = "|" & apIdx.ToString()
+        For Each ref In root.ExtraDataList.References
+            Dim block = nif.Blocks(ref.Index)
+            Dim parents = TryCast(block, NiflySharp.Blocks.BSConnectPoint_Parents)
+            If parents Is Nothing OrElse parents.ConnectPoints Is Nothing Then Continue For
+            For Each cp In parents.ConnectPoints
+                If cp.Parent Is Nothing Then Continue For
+                Dim s = cp.Parent.Content
+                If String.IsNullOrEmpty(s) Then Continue For
+                If s.EndsWith("|0", StringComparison.Ordinal) Then
+                    Dim renamed = s.Substring(0, s.Length - 2) & newSuffix
+                    cp.Parent.Content = renamed
+                    Dim sLog = s, renamedLog = renamed
+                    Dim socketLog = If(cp.Name?.Content, "<unnamed>")
+                    Logger.LogLazy(Function() $"[SUBSOCKET-RENAME] socket='{socketLog}' ParentBone '{sLog}' → '{renamedLog}'")
                 End If
             Next
         Next
@@ -7017,6 +7633,15 @@ Public Class MainForm
     Friend Sub ApplyShapeMaterialOverrides(candidate As MeshCandidate, state As NPCVisualState, shapes As IEnumerable(Of IRenderableShape))
         If shapes Is Nothing Then Return
 
+        Dim candFidLog As UInteger = If(candidate IsNot Nothing, candidate.SourceFormID, 0UI)
+        Dim chunkOmodLog As UInteger = If(candidate IsNot Nothing, candidate.ChunkOmodFormID, 0UI)
+        Dim candKindLog As String = If(candidate IsNot Nothing, candidate.Kind.ToString(), "<no-cand>")
+        Dim ctxLog As String = If(candidate IsNot Nothing AndAlso candidate.OmodResolutionFormType IsNot Nothing, candidate.OmodResolutionFormType, "")
+        Dim mswpLog As UInteger = If(candidate IsNot Nothing, candidate.MaterialSwapFormID, 0UI)
+        Dim cremapLog As String = If(candidate IsNot Nothing AndAlso candidate.ColorRemapIndex.HasValue, candidate.ColorRemapIndex.Value.ToString("F4"), "none")
+        Dim hasOmodResLog As Boolean = candidate IsNot Nothing AndAlso candidate.OmodResolution IsNot Nothing
+        Dim shapeCountLog As Integer = shapes.Count()
+        Logger.LogLazy(Function() $"[SHAPEMAT-ENTRY] cand=0x{candFidLog:X8} kind={candKindLog} chunkOmod=0x{chunkOmodLog:X8} ctxFormType='{ctxLog}' shapes={shapeCountLog} armaMSWP=0x{mswpLog:X8} armaColorRemap={cremapLog} hasOmodResolution={hasOmodResLog}")
 
         ' Material override pipeline order (matches engine application order):
         '   1. ARMA-direct base swap (MaterialSwapFormID + ColorRemapIndex per gender on the ARMA
@@ -7047,9 +7672,6 @@ Public Class MainForm
         Dim hairTintColor = ResolveHairTintColor(candidate, state, solidTintColor)
         Dim skinTintColor = ResolveSkinTintColor(candidate, state, solidTintColor)
         Dim textureSet = ResolveTextureSet(candidate, state)
-        Dim hairPaletteTexture As String = ""
-        Dim hairPaletteScale As Single = 0.0F
-        Dim hasHairPaletteRemap = TryResolveHairPaletteRemap(candidate, state, hairPaletteTexture, hairPaletteScale)
 
         ' Skin substitution per-shape para Outfit: el engine vanilla sustituye la diffuse de shapes
         ' con shader SkinTint dentro de un outfit (escote, brazos expuestos) por la del actor's body
@@ -7069,35 +7691,29 @@ Public Class MainForm
         Dim faceTestForceSSL As Boolean = (candidate IsNot Nothing AndAlso candidate.Kind = MeshCandidateKind.HeadPart AndAlso candidate.HeadPartType = HeadPartTypeFace)
         Const FaceTestRolloff As Single = 0.5F
 
-        ' Dump every TX0x slot + MNAM the TXST carries — empirical record so we can reason
-        ' over what the override pass will and won't touch. The render pre/post material lines
-        ' (added below per shape) make the diff visible without tools.
-        If textureSet IsNot Nothing Then
-            ' If the TXST has MNAM, load that BGSM/BGEM and dump its texture slots so we
-            ' can compare side-by-side: TXST.TX0x (legacy strings on the record) vs
-            ' MNAM-pointed material (modern, intended). Lets us decide whether MNAM-driven
-            ' material replacement is the right pivot vs slot-by-slot TXST overlay.
-            If Not String.IsNullOrEmpty(textureSet.MaterialPath) Then
-                Try
-                    Dim mnamMat = TryLoadMaterialFromDictionary(textureSet.MaterialPath, Nothing)
-                    If mnamMat IsNot Nothing Then
-                    Else
-                    End If
-                Catch ex As Exception
-                End Try
-            End If
-        End If
-
         For Each shape In shapes
             EnsureShapeMaterialResolved(shape)
 
             Dim relatedMaterial = shape.ShapeMaterial
             If relatedMaterial Is Nothing Then Continue For
 
-            ApplyTextureSetOverrides(textureSet, relatedMaterial, candidate.UsesBodyTexture)
+            Dim shapeNamePre = shape.ShapeName
+            Dim matPre = relatedMaterial.material
+            If matPre IsNot Nothing Then
+                Dim palOnPre = matPre.GrayscaleToPaletteColor
+                Dim palScalePre = matPre.GrayscaleToPaletteScale
+                Dim greyTexPre = If(matPre.GreyscaleTexture, "")
+                Logger.LogLazy(Function() $"[PALSCALE-PRE] shape='{shapeNamePre}' path='{relatedMaterial.path}' palColor={palOnPre} palScale={palScalePre:F4} greyTex='{greyTexPre}' (post-load, pre-overrides)")
+            End If
+
+            ApplyTextureSetOverrides(textureSet, relatedMaterial, candidate.UsesBodyTexture, shape.NifShape, shape.NifContent)
 
             Dim material = relatedMaterial.material
             If material Is Nothing Then Continue For
+
+            Dim palOnPostTxst = material.GrayscaleToPaletteColor
+            Dim palScalePostTxst = material.GrayscaleToPaletteScale
+            Logger.LogLazy(Function() $"[PALSCALE-POST-TXST] shape='{shapeNamePre}' palColor={palOnPostTxst} palScale={palScalePostTxst:F4} (post TXST/MNAM override)")
 
             ' Face SubsurfaceLighting test override (user-approved 2026-05-15, TEST): hardcoded
             ' True / 0.5 sobre face shapes (NifShaderType=FaceTint). Probar si cierra gap visual
@@ -7124,7 +7740,7 @@ Public Class MainForm
                 ' cargar el BGSM para extraer sus paths. NO copiamos otros params del BGSM (sólo
                 ' las texturas), preservando los params del material original del shape.
                 If actorBodySkinTxst.MaterialPath <> "" Then
-                    Dim bgsmMaterial = TryLoadMaterialFromDictionary(actorBodySkinTxst.MaterialPath, material)
+                    Dim bgsmMaterial = TryLoadMaterialFromDictionary(actorBodySkinTxst.MaterialPath, material, shape.NifShape, shape.NifContent)
                     If bgsmMaterial IsNot Nothing Then
                         If bgsmMaterial.Diffuse_or_Base_Texture <> "" Then material.Diffuse_or_Base_Texture = bgsmMaterial.Diffuse_or_Base_Texture
                         If bgsmMaterial.NormalTexture <> "" Then material.NormalTexture = bgsmMaterial.NormalTexture
@@ -7134,68 +7750,13 @@ Public Class MainForm
                 ApplyTextureSetToMaterial(material, actorBodySkinTxst)
             End If
 
-            If hasHairPaletteRemap AndAlso IsHairHeadPart(candidate) AndAlso material.GrayscaleToPaletteColor Then
-                ' Material already uses grayscale-to-palette: override scale with CLFM RemappingIndex.
-                ' Texture priority: keep the BGSM's own GreyscaleTexture if present (per-shape,
-                ' authored intent), only fall through to the RACE.HNAM/HLTX value when the BGSM
-                ' didn't ship a palette path.
-                material.GrayscaleToPaletteScale = hairPaletteScale
-                If String.IsNullOrEmpty(material.GreyscaleTexture) AndAlso hairPaletteTexture <> "" Then
-                    material.GreyscaleTexture = hairPaletteTexture
-                End If
-            ElseIf material.Hair OrElse material.GrayscaleToPaletteColor Then
-                ' Material is hair or uses grayscale-to-palette: try palette remap first, tint as fallback.
-                ' Gate by the same HCLF resolution rules TryResolveHairPaletteRemap uses, so a
-                ' FacialHair shape with NPC.QNAM=0 doesn't get HairColor leaked into the beard
-                ' (Preston / MS04AJ: state.FacialHairColorFormID=0 must NOT fall back to
-                ' state.HairColorFormID — CK leaves Beard01's BGSM Stubble untouched).
-                Dim hairColorFormID As UInteger = 0UI
-                If candidate IsNot Nothing Then
-                    Select Case candidate.HeadPartType
-                        Case HeadPartTypeHair, 6
-                            hairColorFormID = If(state IsNot Nothing, state.HairColorFormID, 0UI)
-                        Case HeadPartTypeFacialHair
-                            hairColorFormID = If(state IsNot Nothing, state.FacialHairColorFormID, 0UI)
-                        Case Else
-                            hairColorFormID = If(state IsNot Nothing, state.HairColorFormID, 0UI)
-                    End Select
-                Else
-                    hairColorFormID = If(state IsNot Nothing, state.HairColorFormID, 0UI)
-                End If
-                Dim didPalette = False
-                If hairColorFormID <> 0UI Then
-                    Dim clfm = ResolveColorFormData(hairColorFormID)
-                    If clfm IsNot Nothing AndAlso clfm.HasRemappingIndex Then
-                        ' Priority: BGSM's own GreyscaleTexture first (it's per-shape, picked by
-                        ' the hair stylist for THIS mesh), RACE.HNAM/HLTX as a fallback (it's a
-                        ' single race-wide string for the chargen UI). The engine in-game binds
-                        ' the LUT from the material's TXST slot 3 at render time (verified in
-                        ' F4SE CharGenInterface.cpp:1106-1179, ProcessHairColor reads
-                        ' material->spLookupTexture and writes via SetTextureFilename(3, ...)).
-                        ' Vanilla HumanChildRace ships without HNAM/HLTX precisely because the
-                        ' BGSM carries it — they expect the BGSM to be the source of truth.
-                        ' No hardcoding: the path comes from the BGSM file the shape declared,
-                        ' or from the race record if the BGSM doesn't have one.
-                        Dim palTex As String = If(material.GreyscaleTexture, "")
-                        If palTex = "" Then
-                            palTex = ResolveRaceHairLookupTexture(state)
-                        End If
-                        If palTex <> "" Then
-                            material.GrayscaleToPaletteColor = True
-                            material.GrayscaleToPaletteScale = clfm.RemappingIndex
-                            material.GreyscaleTexture = palTex
-                            didPalette = True
-                        End If
-                    End If
-                End If
-                If Not didPalette Then
-                    Dim effectiveHairColor = hairTintColor
-                    If Not effectiveHairColor.HasValue AndAlso hairColorFormID <> 0UI Then
-                        effectiveHairColor = ResolveColorFormColor(hairColorFormID)
-                    End If
-                    If effectiveHairColor.HasValue Then material.HairTintColor = effectiveHairColor.Value
-                End If
-            End If
+            ' Hair/Palette + HairTintColor: shared with RefreshFaceTintLivePreview via helper.
+            ' Pre-resolved hairTintColor (incl. solidTintColor head-part color) passed as override
+            ' so the helper can short-circuit ResolveColorFormColor for hair HeadParts whose
+            ' candidate carries a richer color choice. Helper is the single source of truth for
+            ' the engine-faithful gate (Hair/FacialHair/Brow HDPTs only) — removes the prior
+            ' If/ElseIf duplication and the looser parallel copy in RefreshFaceTintLivePreview.
+            ApplyMaterialPaletteHairColor(material, candidate, state, hairTintColor)
 
             Dim preSkinTint = material.SkinTint
             Dim shouldForce = skinTintColor.HasValue AndAlso ShouldForceSkinTint(candidate, material)
@@ -7222,7 +7783,126 @@ Public Class MainForm
             If solidTintColor.HasValue AndAlso Not material.Hair AndAlso Not material.SkinTint Then
                 shape.TintColor = solidTintColor.Value
             End If
+
+            Dim shapeNameFinal = shape.ShapeName
+            Dim pathFinal = If(relatedMaterial.path, "")
+            Dim rootFinal = If(material.RootMaterialPath, "")
+            Dim shaderFinal = material.NifShaderType.ToString()
+            Dim isBgsmFinal = material.IsBGSM()
+            Dim palOnFinal = material.GrayscaleToPaletteColor
+            Dim palScaleFinal = material.GrayscaleToPaletteScale
+            Dim texDiff = If(material.Diffuse_or_Base_Texture, "")
+            Dim texNorm = If(material.NormalTexture, "")
+            Dim texGlow = If(material.GlowTexture, "")
+            Dim texGrey = If(material.GreyscaleTexture, "")
+            Dim texSpec = If(material.SpecularTexture, "")
+            Dim texSmSpec = If(material.SmoothSpecTexture, "")
+            Dim texEnv = If(material.EnvmapTexture, "")
+            Dim texEnvMask = If(material.EnvmapMaskTexture, "")
+            Dim texLight = If(material.LightingTexture, "")
+            Dim texWrink = If(material.WrinklesTexture, "")
+            Dim texInner = If(material.InnerLayerTexture, "")
+            Dim texTintMask = If(material.TintMaskTexture, "")
+            Logger.LogLazy(Function() $"[SHAPEMAT-FINAL] shape='{shapeNameFinal}' path='{pathFinal}' root='{rootFinal}' shader={shaderFinal} isBGSM={isBgsmFinal} palette={palOnFinal} palScale={palScaleFinal:F4}")
+            Logger.LogLazy(Function() $"[SHAPEMAT-FINAL-TEX] shape='{shapeNameFinal}' diff='{texDiff}' norm='{texNorm}' glow='{texGlow}' grey='{texGrey}' spec='{texSpec}' smSpec='{texSmSpec}' env='{texEnv}' envMask='{texEnvMask}' light='{texLight}' wrink='{texWrink}' inner='{texInner}' tintMask='{texTintMask}'")
         Next
+    End Sub
+
+    ''' <summary>Engine-faithful palette/HairTintColor resolution for hair HeadParts. Single source
+    ''' of truth — used by BOTH the NIF-load pass (<see cref="ApplyShapeMaterialOverrides"/>) and
+    ''' the live face-tint preset refresh (<see cref="RefreshFaceTintLivePreview"/>). Previously
+    ''' duplicated in those two sites with subtly different guards; the looser guard at the live
+    ''' path leaked hair color into any palette-enabled material (robot armor, face shapes with
+    ''' palette opt-in, etc.). This helper enforces the engine rule once.
+    '''
+    ''' Engine rule: <c>CLFM.RemappingIndex</c> is consumed only by HDPTs that the engine equips
+    ''' with a NPC color form. That's Hair (3) / FacialHair (4) / Brow (6) via NPC.HNAM / NPC.QNAM.
+    ''' Other HeadParts (Face / Eyes / HeadRear / Meatcaps) carry palette in their BGSM but their
+    ''' engine-correct paint comes from TETI SkinTone or the FaceTintCompositor, not from this path.
+    ''' Misc (0) deferred — open question whether some Misc parts legitimately need hair color.
+    '''
+    ''' <para>Behavior per resolved <c>hairColorFormID</c>:
+    ''' <list type="number">
+    ''' <item>If CLFM has RemappingIndex AND a palette LUT path is resolvable (BGSM-first, RACE.HNAM
+    '''   fallback): set <c>GrayscaleToPaletteColor=True</c>, <c>GrayscaleToPaletteScale=clfm.RemappingIndex</c>,
+    '''   <c>GreyscaleTexture=palTex</c>.</item>
+    ''' <item>Else: fall back to <c>HairTintColor</c>. Caller can pre-resolve a richer tint (NIF-load
+    '''   passes ResolveHairTintColor with solidTintColor consideration) via
+    '''   <paramref name="hairTintColorOverride"/>; if Nothing the helper resolves via
+    '''   ResolveColorFormColor on the hair color form.</item>
+    ''' </list></para>
+    '''
+    ''' No-op for: material=Nothing, candidate not IsHairHeadPart, or material that's neither Hair
+    ''' shader nor palette opt-in. Silent (no warning logs) — those are expected for the vast
+    ''' majority of shapes; the diagnostic only fires when the helper actually mutates state.
+    ''' </summary>
+    Friend Sub ApplyMaterialPaletteHairColor(material As FO4UnifiedMaterial_Class,
+                                             candidate As MeshCandidate,
+                                             state As NPCVisualState,
+                                             hairTintColorOverride As Nullable(Of Color))
+        If material Is Nothing Then Return
+        If Not IsHairHeadPart(candidate) Then Return
+        If Not (material.Hair OrElse material.GrayscaleToPaletteColor) Then Return
+
+        ' Resolve hairColorFormID by HeadPartType. Hair/Brow share HairColor (NPC.HCLF);
+        ' FacialHair uses FacialHairColor (NPC.BCLF) and falls back to HCLF when BCLF=0
+        ' so the beard picks up the same palette row as the hair. Verified against CK BA2
+        ' bake (FaceGenData/Fallout4.esm/*.nif): CK writes palScale=clfm.RemappingIndex(HCLF)
+        ' on beard shapes for NPCs that carry no BCLF — matches what our render produces.
+        ' Without this fallback, vanilla hair CLFMs (which carry RemappingIndex but no RGB)
+        ' would leave the beard at the BGSM default row (gris/rubio) and diverge from CK.
+        Dim hairColorFormID As UInteger = 0UI
+        Select Case candidate.HeadPartType
+            Case HeadPartTypeHair, 6
+                hairColorFormID = If(state IsNot Nothing, state.HairColorFormID, 0UI)
+            Case HeadPartTypeFacialHair
+                hairColorFormID = If(state IsNot Nothing, state.FacialHairColorFormID, 0UI)
+                If hairColorFormID = 0UI AndAlso state IsNot Nothing Then
+                    hairColorFormID = state.HairColorFormID
+                End If
+        End Select
+
+        Dim shapeMatPath = "" ' for logging only — material doesn't carry its shape ref
+
+        Dim didPalette As Boolean = False
+        If hairColorFormID <> 0UI Then
+            Dim clfm = ResolveColorFormData(hairColorFormID)
+            If clfm IsNot Nothing AndAlso clfm.HasRemappingIndex Then
+                ' Priority: BGSM's own GreyscaleTexture first (per-shape, picked by the stylist
+                ' for THIS mesh), RACE.HNAM/HLTX as fallback. The engine in-game binds the LUT
+                ' from the material's TXST slot 3 at render time (F4SE CharGenInterface.cpp:
+                ' 1106-1179, ProcessHairColor → SetTextureFilename(3, ...)). Vanilla
+                ' HumanChildRace ships without HNAM/HLTX precisely because the BGSM carries it.
+                Dim palTex As String = If(material.GreyscaleTexture, "")
+                If palTex = "" Then palTex = ResolveRaceHairLookupTexture(state)
+                If palTex <> "" Then
+                    Dim oldPalColor = material.GrayscaleToPaletteColor
+                    Dim oldScale = material.GrayscaleToPaletteScale
+                    Dim oldGreyTex = If(material.GreyscaleTexture, "")
+                    material.GrayscaleToPaletteColor = True
+                    material.GrayscaleToPaletteScale = clfm.RemappingIndex
+                    material.GreyscaleTexture = palTex
+                    didPalette = True
+                    Dim newScale = clfm.RemappingIndex
+                    Dim hairFidL = hairColorFormID
+                    Dim palTexL = palTex
+                    Logger.LogLazy(Function() $"[PALSCALE-WRITE] branch=Hair-CLFM hdptType={candidate.HeadPartType} hairColorFid=0x{hairFidL:X8} oldPalColor={oldPalColor} oldScale={oldScale:F4} oldGreyTex='{oldGreyTex}' → newPalColor=True newScale={newScale:F4} newGreyTex='{palTexL}'")
+                End If
+            End If
+        End If
+
+        If Not didPalette Then
+            Dim effectiveHairColor = hairTintColorOverride
+            If Not effectiveHairColor.HasValue AndAlso hairColorFormID <> 0UI Then
+                effectiveHairColor = ResolveColorFormColor(hairColorFormID)
+            End If
+            If effectiveHairColor.HasValue Then
+                Dim oldHairCol = material.HairTintColor
+                material.HairTintColor = effectiveHairColor.Value
+                Dim newColLog = effectiveHairColor.Value
+                Logger.LogLazy(Function() $"[HAIRTINT-WRITE] hdptType={candidate.HeadPartType} oldRGB=({oldHairCol.R},{oldHairCol.G},{oldHairCol.B}) → newRGB=({newColLog.R},{newColLog.G},{newColLog.B})")
+            End If
+        End If
     End Sub
 
     ''' <summary>Resuelve el TXST del body skin del actor (NPC.WNAM o RACE.WNAM via state.SkinFormID),
@@ -7376,7 +8056,7 @@ Public Class MainForm
     ''' Height / Env / Multilayer / Spec). Si el TXST trae un .bgsm/.bgem en MaterialPath,
     ''' carga ese material y reemplaza el del shape. <c>Friend Shared</c> para que
     ''' HeadPartPicker_Form pueda reutilizarlo en su preview de HDPT.</summary>
-    Friend Shared Sub ApplyTextureSetOverrides(textureSet As TXST_Data, relatedMaterial As Nifcontent_Class_Manolo.RelatedMaterial_Class, usesBodyTexture As Boolean)
+    Friend Shared Sub ApplyTextureSetOverrides(textureSet As TXST_Data, relatedMaterial As Nifcontent_Class_Manolo.RelatedMaterial_Class, usesBodyTexture As Boolean, shap As NiflySharp.INiShape, nif As Nifcontent_Class_Manolo)
         If textureSet Is Nothing OrElse relatedMaterial Is Nothing Then Return
 
         Dim material = relatedMaterial.material
@@ -7399,7 +8079,7 @@ Public Class MainForm
         If textureSet.MaterialPath <> "" Then
             Dim oldPath = If(relatedMaterial.path, "")
 
-            Dim overrideMaterial = TryLoadMaterialFromDictionary(textureSet.MaterialPath, material)
+            Dim overrideMaterial = TryLoadMaterialFromDictionary(textureSet.MaterialPath, material, shap, nif)
             If overrideMaterial IsNot Nothing Then
                 If usesBodyTexture Then
                     relatedMaterial.material = overrideMaterial
@@ -7417,7 +8097,7 @@ Public Class MainForm
         ApplyTextureSetToMaterial(material, textureSet)
     End Sub
 
-    Friend Shared Function TryLoadMaterialFromDictionary(materialPath As String, fallbackMaterial As FO4UnifiedMaterial_Class) As FO4UnifiedMaterial_Class
+    Friend Shared Function TryLoadMaterialFromDictionary(materialPath As String, fallbackMaterial As FO4UnifiedMaterial_Class, shap As NiflySharp.INiShape, nif As Nifcontent_Class_Manolo) As FO4UnifiedMaterial_Class
         Dim rawPathLog = If(materialPath, "")
         Dim correctedPath = FO4UnifiedMaterial_Class.CorrectMaterialPath(materialPath)
         If correctedPath = "" Then
@@ -7440,10 +8120,13 @@ Public Class MainForm
 
         Try
             Dim material As New FO4UnifiedMaterial_Class()
-            material.Deserialize(correctedPath, materialType)
+            material.Deserialize(correctedPath, materialType, shap, nif)
             Dim loadedAt = material.AlphaTest.ToString()
             Dim typeLog = materialType.Name
-            Logger.LogLazy(Function() $"[MAT-LOAD] rawPath='{rawPathLog}' lookupKey='{lookupKeyLog}' containsKey=True type={typeLog} loadedAT={loadedAt} result=OK")
+            Dim palOnLoad = material.GrayscaleToPaletteColor
+            Dim palScaleLoad = material.GrayscaleToPaletteScale
+            Dim greyTexLoad = If(material.GreyscaleTexture, "")
+            Logger.LogLazy(Function() $"[MAT-LOAD] rawPath='{rawPathLog}' lookupKey='{lookupKeyLog}' containsKey=True type={typeLog} loadedAT={loadedAt} palColor={palOnLoad} palScale={palScaleLoad:F4} greyTex='{greyTexLoad}' result=OK")
             Return material
         Catch ex As Exception
             Dim msg = ex.Message
@@ -7652,31 +8335,15 @@ Public Class MainForm
         If state Is Nothing Then Return Nothing
         Dim modelNpcFormID = If(state.ModelSourceFormID <> 0UI, state.ModelSourceFormID, state.FormID)
         Dim npcData = ApplyPresetOverlayToNpcData(GetParsedNpc(modelNpcFormID), state.RootNpcFormID)
-        If npcData Is Nothing OrElse npcData.FaceTintLayers.Count = 0 Then Return Nothing
+        If npcData Is Nothing Then Return Nothing
 
         Dim raceRec = _pluginManager.GetRecord(state.RaceFormID)
         If raceRec Is Nothing OrElse raceRec.Header.Signature <> "RACE" Then Return Nothing
         Dim race = RecordParsers.ParseRACE(raceRec, _pluginManager)
 
-        For Each tl In npcData.FaceTintLayers
-            Dim opt = race.FindTintOption(tl.Index, state.IsFemale)
-            If opt Is Nothing Then Continue For
-            If opt.Slot <> CUShort(TintSlot.SkinTone) Then Continue For
-            If tl.Discriminator <> 1 Then Continue For   ' Palette only — color source for skin tone
-
-            ' Use the same resolver the compositor uses so body uniform and face compositor
-            ' agree on the colour. The blendOp returned here is irrelevant for the body path.
-            Dim resolved = ResolvePaletteLayerEffective(tl, opt)
-            If resolved.Color <> Color.Empty Then
-                ' Pack tl.Value (0..100) as the alpha byte (0..255) — same shape as QNAM RGBA.
-                ' Body SoftLight reads .A; face compositor reads tl.Value directly. Both stay
-                ' in sync because they trace back to the same source: the slot-12 layer's Value.
-                Dim alphaByte As Integer = Math.Max(0, Math.Min(255, CInt(Math.Round(CSng(tl.Value) * 2.55F))))
-                Return Color.FromArgb(alphaByte, resolved.Color.R, resolved.Color.G, resolved.Color.B)
-            End If
-        Next
-
-        Return Nothing
+        ' Single source of truth — same derivation NpcRecordOverlay uses at save time, so the
+        ' preview's body skin tone and the persisted ESP's QNAM are guaranteed to agree.
+        Return NpcRecordOverlay.DeriveSkinToneQnam(npcData, race, state.IsFemale)
     End Function
 
     Private Function ResolveColorFormColor(formID As UInteger) As Nullable(Of Color)
@@ -8605,7 +9272,10 @@ Public Class MainForm
         shadow.HasDefaultPackageList = raw.HasDefaultPackageList
         shadow.CrimeFactionFormID = raw.CrimeFactionFormID
         shadow.HasCrimeFaction = raw.HasCrimeFaction
-        shadow.TextureLightingFloats = raw.TextureLightingFloats
+        ' QNAM (TextureLightingFloats) is NOT round-trip-only — NpcRecordOverlay.ApplyPresetOverlayToNpcData
+        ' already populates it: derived from slot-12 SkinTone tint when present, raw otherwise. Copying
+        ' raw here would clobber that derivation and persist the original QNAM instead of the user's
+        ' Edit Face skin-tint change. Removed 2026-05-16.
         shadow.HasFmin = raw.HasFmin
         shadow.ActivateTextOverride = raw.ActivateTextOverride
         shadow.HasActivateTextOverride = raw.HasActivateTextOverride

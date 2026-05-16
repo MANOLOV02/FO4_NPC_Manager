@@ -62,6 +62,7 @@ Partial Class MainForm
         CheckBoxRenderHeadwear = New CheckBox()
         ButtonRandomNPC = New Button()
         ButtonReroll = New Button()
+        ButtonLightRig = New Button()
         CheckBoxApplySculpt = New CheckBox()
         LabelStatus = New Label()
         PanelPreviewHost = New Panel()
@@ -510,6 +511,7 @@ Partial Class MainForm
         PanelPreviewToolbar.Controls.Add(CheckBoxRenderHeadwear, 4, 3)
         PanelPreviewToolbar.Controls.Add(ButtonRandomNPC, 6, 0)
         PanelPreviewToolbar.Controls.Add(ButtonReroll, 6, 1)
+        PanelPreviewToolbar.Controls.Add(ButtonLightRig, 6, 2)
         PanelPreviewToolbar.Controls.Add(CheckBoxApplySculpt, 5, 2)
         PanelPreviewToolbar.Dock = DockStyle.Top
         PanelPreviewToolbar.Location = New Point(8, 6)
@@ -732,6 +734,18 @@ Partial Class MainForm
         ButtonReroll.TabIndex = 6
         ButtonReroll.Text = "↻"
         '
+        ' ButtonLightRig
+        '
+        ButtonLightRig.Anchor = AnchorStyles.Right
+        ButtonLightRig.FlatStyle = FlatStyle.System
+        ButtonLightRig.Font = New Font("Segoe UI Symbol", 10F, FontStyle.Bold)
+        ButtonLightRig.Location = New Point(1156, 62)
+        ButtonLightRig.Margin = New Padding(2)
+        ButtonLightRig.Name = "ButtonLightRig"
+        ButtonLightRig.Size = New Size(26, 26)
+        ButtonLightRig.TabIndex = 18
+        ButtonLightRig.Text = "💡"
+        '
         ' CheckBoxApplySculpt
         ' 
         CheckBoxApplySculpt.AutoSize = True
@@ -884,4 +898,5 @@ Partial Class MainForm
     Friend WithEvents SplitContainer2 As SplitContainer
     Friend WithEvents CheckBoxBodyTri As CheckBox
     Friend WithEvents CheckBoxRenderGore As CheckBox
+    Friend WithEvents ButtonLightRig As System.Windows.Forms.Button
 End Class

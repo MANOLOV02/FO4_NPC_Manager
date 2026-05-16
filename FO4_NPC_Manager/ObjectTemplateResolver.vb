@@ -146,6 +146,22 @@ Public Module ObjectTemplateResolver
     ''' Thread-unsafe but render resolution runs single-threaded.</summary>
     Private ReadOnly _rng As New Random()
 
+    ''' <summary>[DIAG] Devuelve EditorID del KYWD para logging legible. "?" si record no
+    ''' carga (caso típico: KYWD no incluido en SIGS_NPC_RENDERING o plugin no resuelto).
+    ''' "-" para FormID=0.</summary>
+    Friend Function KywdEditorIdSafe(fid As UInteger, pm As PluginManager) As String
+        If fid = 0UI Then Return "-"
+        If pm Is Nothing Then Return "?"
+        Try
+            Dim r = pm.GetRecord(fid)
+            If r Is Nothing Then Return "?MISSING"
+            If r.Header.Signature <> "KYWD" Then Return "?" & r.Header.Signature
+            Return If(r.EditorID, "?NOEDID")
+        Catch ex As Exception
+            Return "?EX:" & ex.GetType().Name
+        End Try
+    End Function
+
     Private Sub ResolveCombinationList(combos As List(Of ARMO_Combination),
                                        ctxKeywords As List(Of UInteger),
                                        pm As PluginManager,
@@ -176,20 +192,41 @@ Public Module ObjectTemplateResolver
         ' AttachPointFormID determines whether it slots or stacks. Visited-set guards
         ' against cycles (vanilla observed depth = 14 on Mr Handy chains).
 
+        ' [DIAG] Log combos count + ctxKeywords for the resolve context.
+        Dim ctxKwStr = If(ctxKeywords Is Nothing OrElse ctxKeywords.Count = 0, "(empty)",
+                          String.Join(",", ctxKeywords.Select(Function(k) "0x" & k.ToString("X8") & "(" & KywdEditorIdSafe(k, pm) & ")")))
+        Logger.LogLazy(Function() $"[OBTE-RESOLVE-START] combos={combos.Count} ctxKeywords={ctxKwStr} initialPool={initialApPool.Count}")
+
         ' Selection: build the applicable set in record declaration order.
         Dim applicable As New List(Of ARMO_Combination)
+        Dim comboIdx As Integer = 0
         For Each combo In combos
-            If combo Is Nothing Then Continue For
+            Dim curIdx = comboIdx
+            comboIdx += 1
+            If combo Is Nothing Then
+                Logger.LogLazy(Function() $"[OBTE-COMBO] idx={curIdx} NULL combo — skipped")
+                Continue For
+            End If
             Dim isApplicable As Boolean = combo.IsDefault
+            Dim reason As String = If(combo.IsDefault, "Default", "")
+            Dim matchedKw As UInteger = 0UI
             If Not isApplicable AndAlso combo.Keywords IsNot Nothing AndAlso combo.Keywords.Count > 0 _
                AndAlso ctxKeywords IsNot Nothing AndAlso ctxKeywords.Count > 0 Then
                 For Each kw In combo.Keywords
                     If ctxKeywords.Contains(kw) Then
                         isApplicable = True
+                        matchedKw = kw
+                        reason = $"KWMatch(0x{kw:X8}={KywdEditorIdSafe(kw, pm)})"
                         Exit For
                     End If
                 Next
             End If
+            Dim kwsStr = If(combo.Keywords Is Nothing OrElse combo.Keywords.Count = 0, "[]",
+                            "[" & String.Join(",", combo.Keywords.Select(Function(k) "0x" & k.ToString("X8") & "(" & KywdEditorIdSafe(k, pm) & ")")) & "]")
+            Dim incCount = If(combo.Includes Is Nothing, 0, combo.Includes.Count)
+            Dim propCount = If(combo.Properties Is Nothing, 0, combo.Properties.Count)
+            Dim isAppLog = isApplicable, reasonLog = If(isApplicable, reason, "INERT-no-default-no-kwmatch")
+            Logger.LogLazy(Function() $"[OBTE-COMBO] idx={curIdx} isDefault={combo.IsDefault} kw={kwsStr} inc={incCount} props={propCount} applicable={isAppLog} reason={reasonLog}")
             If isApplicable Then applicable.Add(combo)
         Next
 
@@ -198,6 +235,7 @@ Public Module ObjectTemplateResolver
         If applicable.Count = 0 Then
             For Each combo In combos
                 If combo IsNot Nothing Then
+                    Logger.LogLazy(Function() $"[OBTE-FALLBACK] no combo applicable → forcing first non-null combo")
                     applicable.Add(combo)
                     Exit For
                 End If
@@ -255,7 +293,7 @@ Public Module ObjectTemplateResolver
 
         ' Phase 2: AP-pool filter.
         Dim apPool As New HashSet(Of UInteger)(initialApPool)
-        Dim apPoolBeforeStr = String.Join(",", apPool.Select(Function(f) "0x" & f.ToString("X8")))
+        Dim apPoolBeforeStr = String.Join(",", apPool.Select(Function(f) "0x" & f.ToString("X8") & "(" & KywdEditorIdSafe(f, pm) & ")"))
         Logger.LogLazy(Function() $"[OBTE-POOL-INIT] initial pool({apPool.Count}) = [{apPoolBeforeStr}]")
 
         Dim accepted As New List(Of (Omod As OMOD_Data, ApIdx As Byte))
@@ -275,8 +313,8 @@ Public Module ObjectTemplateResolver
                             If fid <> 0UI Then apPool.Add(fid)
                         Next
                     End If
-                    Dim cL = cand
-                    Logger.LogLazy(Function() $"[OBTE-POOL-ACCEPT] omod={cL.Omod.EditorID}(0x{cL.Omod.FormID:X8}) ap=0x{cL.Omod.AttachPointFormID:X8} added APs=[{String.Join(",", cL.Omod.AttachParentSlotFormIDs.Select(Function(f) "0x" & f.ToString("X8")))}]")
+                    Dim cL = cand, pmL = pm
+                    Logger.LogLazy(Function() $"[OBTE-POOL-ACCEPT] omod={cL.Omod.EditorID}(0x{cL.Omod.FormID:X8}) ap=0x{cL.Omod.AttachPointFormID:X8}({KywdEditorIdSafe(cL.Omod.AttachPointFormID, pmL)}) addedAPs=[{String.Join(",", cL.Omod.AttachParentSlotFormIDs.Select(Function(f) "0x" & f.ToString("X8") & "(" & KywdEditorIdSafe(f, pmL) & ")"))}]")
                 Else
                     stillPending.Add(cand)
                 End If
@@ -287,8 +325,8 @@ Public Module ObjectTemplateResolver
         Loop
 
         For Each rej In pending
-            Dim rejL = rej
-            Logger.LogLazy(Function() $"[OBTE-POOL-REJECT] omod={rejL.Omod.EditorID}(0x{rejL.Omod.FormID:X8}) ap=0x{rejL.Omod.AttachPointFormID:X8} (not in pool)")
+            Dim rejL = rej, pmRej = pm
+            Logger.LogLazy(Function() $"[OBTE-POOL-REJECT] omod={rejL.Omod.EditorID}(0x{rejL.Omod.FormID:X8}) ftype={rejL.Omod.FormTypeSignature} ap=0x{rejL.Omod.AttachPointFormID:X8}({KywdEditorIdSafe(rejL.Omod.AttachPointFormID, pmRej)}) (not in pool)")
         Next
 
         Logger.LogLazy(Function() $"[OBTE-RESOLVE] applicable={applicable.Count} collected={candidates.Count} accepted={accepted.Count} rejected={pending.Count} unslotted={unslottedOmods.Count} iterations={iterations}")
@@ -329,8 +367,8 @@ Public Module ObjectTemplateResolver
         If omod.AttachPointFormID <> 0UI Then
             ' Leaf candidate — has its own AP, will compete in the AP-pool filter.
             candidates.Add((omod, apIdx))
-            Dim ol = omod, fl = omodFid, al = apIdx
-            Logger.LogLazy(Function() $"[OBTE-CAND] omod={ol.EditorID}(0x{fl:X8}) ap=0x{ol.AttachPointFormID:X8} apIdx={al} model='{ol.ModelPath}' parentSlots=[{String.Join(",", ol.AttachParentSlotFormIDs.Select(Function(f) "0x" & f.ToString("X8")))}]")
+            Dim ol = omod, fl = omodFid, al = apIdx, pmL = pm
+            Logger.LogLazy(Function() $"[OBTE-CAND] omod={ol.EditorID}(0x{fl:X8}) ftype={ol.FormTypeSignature} ap=0x{ol.AttachPointFormID:X8}({KywdEditorIdSafe(ol.AttachPointFormID, pmL)}) apIdx={al} model='{ol.ModelPath}' parentSlots=[{String.Join(",", ol.AttachParentSlotFormIDs.Select(Function(f) "0x" & f.ToString("X8") & "(" & KywdEditorIdSafe(f, pmL) & ")"))}]")
             ' Recurse into the leaf's own Includes (some chunks expose sub-OMODs that
             ' depend on their AP being available — handled by AP-pool filter naturally).
             If omod.Includes IsNot Nothing AndAlso omod.Includes.Count > 0 Then

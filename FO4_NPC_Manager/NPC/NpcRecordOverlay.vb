@@ -119,8 +119,14 @@ Public Module NpcRecordOverlay
         ' in the preview but disappear at ESP write time — WYSIWYG broken.
         shadow.HasHeadTexture = raw.HasHeadTexture OrElse (lmFaceTxst <> 0UI)
         shadow.FacialHairColorFormID = raw.FacialHairColorFormID
+        ' QNAM (TextureLighting): seeded from raw here. Post-FaceTintLayers copy below we
+        ' re-derive from the preset's slot-12 SkinTone tint via DeriveSkinToneQnam so the
+        ' written ESP carries the face/body match the preview shows. Without that derivation
+        ' the shadow's QNAM is stale (no Edit Face mutation ever reaches QNAM). Single source
+        ' of truth shared with MainForm.ResolveNpcSkinToneColor.
         shadow.HasTextureLighting = raw.HasTextureLighting
         shadow.TextureLightingColor = raw.TextureLightingColor
+        shadow.TextureLightingFloats = raw.TextureLightingFloats
         shadow.TemplateFormID = raw.TemplateFormID
         shadow.TemplateFlags = raw.TemplateFlags
         ' ACBS bit 2 (0x04 = "Is CharGen Face Preset"). Editor overlay can set/clear it for
@@ -233,7 +239,73 @@ Public Module NpcRecordOverlay
             Next
         End If
 
+        ' QNAM derivation (post-Tints): if the shadow now carries a slot-12 SkinTone tint, re-derive
+        ' QNAM from it so the saved ESP matches the face/body skin tone the preview composites with.
+        ' LooksMenu doesn't serialize QNAM (CharGenInterface.cpp doesn't emit "TextureLighting") —
+        ' the engine reads it at runtime from the actor's tint array. We mirror that here at write
+        ' time so the persisted record carries the effective colour, not the original raw QNAM that
+        ' the user's edits never reached. If the shadow has no SkinTone tint, leave the raw-seeded
+        ' QNAM (line 122-127) untouched.
+        If raceRec IsNot Nothing AndAlso raceRec.Header.Signature = "RACE" Then
+            Dim raceParsed = RecordParsers.ParseRACE(raceRec, pluginManager)
+            Dim derivedSkinTone = DeriveSkinToneQnam(shadow, raceParsed, raw.IsFemale)
+            Dim tintCountLog = shadow.FaceTintLayers.Count
+            Dim hasDerivedLog = derivedSkinTone.HasValue
+            If derivedSkinTone.HasValue Then
+                shadow.HasTextureLighting = True
+                shadow.TextureLightingColor = derivedSkinTone.Value
+                shadow.TextureLightingFloats = New NPC_TextureLightingFloats With {
+                    .R = derivedSkinTone.Value.R / 255.0F,
+                    .G = derivedSkinTone.Value.G / 255.0F,
+                    .B = derivedSkinTone.Value.B / 255.0F,
+                    .A = derivedSkinTone.Value.A / 255.0F
+                }
+                Dim dR = derivedSkinTone.Value.R
+                Dim dG = derivedSkinTone.Value.G
+                Dim dB = derivedSkinTone.Value.B
+                Dim dA = derivedSkinTone.Value.A
+                Dim fidLog = raw.FormID
+                Logger.LogLazy(Function() $"[QNAM-OVERLAY] fid=0x{fidLog:X8} derived from SkinTone tint: RGBA=({dR},{dG},{dB},{dA}) tintCount={tintCountLog}")
+            Else
+                Dim rawFloatsR As Single = If(raw.TextureLightingFloats IsNot Nothing, raw.TextureLightingFloats.R, 0.0F)
+                Dim rawFloatsG As Single = If(raw.TextureLightingFloats IsNot Nothing, raw.TextureLightingFloats.G, 0.0F)
+                Dim rawFloatsB As Single = If(raw.TextureLightingFloats IsNot Nothing, raw.TextureLightingFloats.B, 0.0F)
+                Dim rawFloatsA As Single = If(raw.TextureLightingFloats IsNot Nothing, raw.TextureLightingFloats.A, 1.0F)
+                Dim rawFloatsLog As String = If(raw.TextureLightingFloats Is Nothing, "Nothing", $"({rawFloatsR:F3},{rawFloatsG:F3},{rawFloatsB:F3},{rawFloatsA:F3})")
+                Dim fidLog = raw.FormID
+                Logger.LogLazy(Function() $"[QNAM-OVERLAY] fid=0x{fidLog:X8} NO derivation — preserving raw QNAM={rawFloatsLog} tintCount={tintCountLog}")
+            End If
+        End If
+
         Return shadow
+    End Function
+
+    ''' <summary>Derive the effective QNAM (TextureLightingColor) from the NPC's slot-12 SkinTone
+    ''' tint layer. Returns Nothing when no such layer exists or its palette doesn't resolve. The
+    ''' returned Color packs RGB from the palette CLFM and A from tl.Value (the layer's percent,
+    ''' scaled to 0..255) — same shape MainForm.ResolveNpcSkinToneColor consumes. Single source of
+    ''' truth shared by render (preview) and save (NpcRecordOverlay) so the two never drift.
+    ''' <para>The Slot enum value is a schema-defined field name (xEdit wbDefinitionsFO4.pas:3478),
+    ''' NOT a hardcoded magic number — this is the canonical lookup for "skin tint layer".</para></summary>
+    Public Function DeriveSkinToneQnam(npc As NPC_Data, race As RACE_Data, isFemale As Boolean) As Nullable(Of Color)
+        If npc Is Nothing OrElse race Is Nothing OrElse npc.FaceTintLayers Is Nothing Then Return Nothing
+        If npc.FaceTintLayers.Count = 0 Then Return Nothing
+
+        For Each tl In npc.FaceTintLayers
+            Dim opt = race.FindTintOption(tl.Index, isFemale)
+            If opt Is Nothing Then Continue For
+            If opt.Slot <> CUShort(TintSlot.SkinTone) Then Continue For
+            If tl.Discriminator <> 1 Then Continue For   ' Palette only — color source for skin tone
+
+            ' Same resolver the face compositor uses so face and body trace back to one source.
+            Dim resolved = FaceTintLayerBuilder.ResolvePaletteLayerEffective(tl, opt)
+            If resolved.Color <> Color.Empty Then
+                Dim alphaByte As Integer = Math.Max(0, Math.Min(255, CInt(Math.Round(CSng(tl.Value) * 2.55F))))
+                Return Color.FromArgb(alphaByte, resolved.Color.R, resolved.Color.G, resolved.Color.B)
+            End If
+        Next
+
+        Return Nothing
     End Function
 
     ''' <summary>Replace the HDPT entry of <paramref name="targetPartType"/> in

@@ -1020,9 +1020,15 @@ Public Class EditFace_Form
         ' Single source of truth for the BGSM-first / RACE-fallback rule lives in MainForm so the
         ' renderer and the swatch never disagree. Resolve via the helper, then check the chosen
         ' path actually exists in FilesDictionary before attempting to decode.
+        ' Host source: _editorHost is created in this form's Shown handler (post-constructor), but
+        ' the first swatch Paint can fire during construction (SeedFromOverlayOrRaw → Invalidate).
+        ' Fall back to MainForm._renderHost — same NPC, same state, palette path is identical.
+        ' Mirrors the BuildMorphGroupSections pattern documented above at line 303-304.
+        Dim host As NpcRenderHost = _editorHost
+        If host Is Nothing OrElse host.LastRenderedState Is Nothing Then host = _mainForm?._renderHost
         Dim raw As String = ""
-        If _mainForm IsNot Nothing AndAlso _editorHost IsNot Nothing AndAlso _editorHost.LastRenderedState IsNot Nothing Then
-            raw = _mainForm.ResolveHairPaletteTexture(_editorHost, _editorHost.LastRenderedState)
+        If _mainForm IsNot Nothing AndAlso host IsNot Nothing AndAlso host.LastRenderedState IsNot Nothing Then
+            raw = _mainForm.ResolveHairPaletteTexture(host, host.LastRenderedState)
         End If
         If String.IsNullOrEmpty(raw) Then Return
         Dim chosen = FO4UnifiedMaterial_Class.CorrectTexturePath(raw)
