@@ -1,4 +1,4 @@
-﻿Imports FO4_Base_Library
+Imports FO4_Base_Library
 
 ''' <summary>Modal dialog that lets the user pick one HDPT for a given (RACE, gender, partType)
 ''' triple. Filters the master plugin HDPT enumeration by:
@@ -154,7 +154,6 @@ Public Class HeadPartPicker_Form
             })
         Next
 
-        NpcPreviewLog.LogLazy(Function() $"[HDPT-PICKER] partType={partType} race={raceFormID:X8} {If(isFemale, "F", "M")} : scanned={totalScanned} accepted={accepted} | filtered: partType={filteredPartType} isExtra={filteredIsExtra} gender={filteredGender} race={filteredRace}")
 
         _candidates.Sort(Function(a, b) String.Compare(a.EditorID, b.EditorID, StringComparison.OrdinalIgnoreCase))
     End Sub

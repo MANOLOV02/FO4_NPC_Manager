@@ -25,6 +25,8 @@ Partial Class SaveEsp_Form
         CheckBoxMarkAsMaster = New CheckBox()
         CheckBoxLightMaster = New CheckBox()
         CheckBoxGenerateChargen = New CheckBox()
+        CheckBoxWriteBssliders = New CheckBox()
+        CheckBoxEmitBodyGen = New CheckBox()
         LabelWarning = New Label()
         PanelProgress = New Panel()
         LabelProgressStage = New Label()
@@ -137,24 +139,48 @@ Partial Class SaveEsp_Form
         CheckBoxGenerateChargen.Text = "Generate baked CharGen (NIF + textures) into BA2"
         CheckBoxGenerateChargen.UseVisualStyleBackColor = True
         '
+        ' CheckBoxWriteBssliders
+        '
+        CheckBoxWriteBssliders.AutoSize = True
+        CheckBoxWriteBssliders.Checked = True
+        CheckBoxWriteBssliders.CheckState = CheckState.Checked
+        CheckBoxWriteBssliders.Location = New Drawing.Point(12, 355)
+        CheckBoxWriteBssliders.Name = "CheckBoxWriteBssliders"
+        CheckBoxWriteBssliders.Size = New Drawing.Size(480, 19)
+        CheckBoxWriteBssliders.TabIndex = 10
+        CheckBoxWriteBssliders.Text = "Save BodyMorphs + Skin sidecar (.bssliders, preserves editor state)"
+        CheckBoxWriteBssliders.UseVisualStyleBackColor = True
+        '
+        ' CheckBoxEmitBodyGen
+        '
+        CheckBoxEmitBodyGen.AutoSize = True
+        CheckBoxEmitBodyGen.Checked = False
+        CheckBoxEmitBodyGen.CheckState = CheckState.Unchecked
+        CheckBoxEmitBodyGen.Location = New Drawing.Point(12, 380)
+        CheckBoxEmitBodyGen.Name = "CheckBoxEmitBodyGen"
+        CheckBoxEmitBodyGen.Size = New Drawing.Size(520, 19)
+        CheckBoxEmitBodyGen.TabIndex = 11
+        CheckBoxEmitBodyGen.Text = "Emit BodyGen .ini (engine applies sliders on first-load in NEW saves)"
+        CheckBoxEmitBodyGen.UseVisualStyleBackColor = True
+        '
         ' LabelWarning
         '
         LabelWarning.Anchor = AnchorStyles.Bottom Or AnchorStyles.Left Or AnchorStyles.Right
         LabelWarning.ForeColor = Drawing.Color.DarkOrange
-        LabelWarning.Location = New Drawing.Point(12, 360)
+        LabelWarning.Location = New Drawing.Point(12, 410)
         LabelWarning.Name = "LabelWarning"
         LabelWarning.Size = New Drawing.Size(520, 36)
-        LabelWarning.TabIndex = 10
+        LabelWarning.TabIndex = 12
         LabelWarning.Text = ""
         '
         ' PanelProgress  (hidden until OK click — shows phase/detail/bar during the save work)
         '
         PanelProgress.Anchor = AnchorStyles.Bottom Or AnchorStyles.Left Or AnchorStyles.Right
         PanelProgress.BorderStyle = BorderStyle.FixedSingle
-        PanelProgress.Location = New Drawing.Point(12, 400)
+        PanelProgress.Location = New Drawing.Point(12, 450)
         PanelProgress.Name = "PanelProgress"
         PanelProgress.Size = New Drawing.Size(520, 78)
-        PanelProgress.TabIndex = 13
+        PanelProgress.TabIndex = 15
         PanelProgress.Visible = False
         PanelProgress.Controls.Add(LabelProgressStage)
         PanelProgress.Controls.Add(LabelProgressDetail)
@@ -193,10 +219,10 @@ Partial Class SaveEsp_Form
         ' ButtonOk
         '
         ButtonOk.Anchor = AnchorStyles.Bottom Or AnchorStyles.Right
-        ButtonOk.Location = New Drawing.Point(376, 490)
+        ButtonOk.Location = New Drawing.Point(376, 540)
         ButtonOk.Name = "ButtonOk"
         ButtonOk.Size = New Drawing.Size(75, 27)
-        ButtonOk.TabIndex = 11
+        ButtonOk.TabIndex = 13
         ButtonOk.Text = "Save"
         ButtonOk.UseVisualStyleBackColor = True
         '
@@ -204,10 +230,10 @@ Partial Class SaveEsp_Form
         '
         ButtonCancel.Anchor = AnchorStyles.Bottom Or AnchorStyles.Right
         ButtonCancel.DialogResult = DialogResult.Cancel
-        ButtonCancel.Location = New Drawing.Point(457, 490)
+        ButtonCancel.Location = New Drawing.Point(457, 540)
         ButtonCancel.Name = "ButtonCancel"
         ButtonCancel.Size = New Drawing.Size(75, 27)
-        ButtonCancel.TabIndex = 12
+        ButtonCancel.TabIndex = 14
         ButtonCancel.Text = "Cancel"
         ButtonCancel.UseVisualStyleBackColor = True
         '
@@ -217,7 +243,7 @@ Partial Class SaveEsp_Form
         CancelButton = ButtonCancel
         AutoScaleDimensions = New Drawing.SizeF(7.0F, 15.0F)
         AutoScaleMode = AutoScaleMode.Font
-        ClientSize = New Drawing.Size(544, 529)
+        ClientSize = New Drawing.Size(544, 579)
         Controls.Add(LabelHeader)
         Controls.Add(RadioButtonExisting)
         Controls.Add(ListBoxExisting)
@@ -228,6 +254,8 @@ Partial Class SaveEsp_Form
         Controls.Add(CheckBoxMarkAsMaster)
         Controls.Add(CheckBoxLightMaster)
         Controls.Add(CheckBoxGenerateChargen)
+        Controls.Add(CheckBoxWriteBssliders)
+        Controls.Add(CheckBoxEmitBodyGen)
         Controls.Add(PanelProgress)
         Controls.Add(LabelWarning)
         Controls.Add(ButtonOk)
@@ -252,6 +280,8 @@ Partial Class SaveEsp_Form
     Friend WithEvents CheckBoxMarkAsMaster As CheckBox
     Friend WithEvents CheckBoxLightMaster As CheckBox
     Friend WithEvents CheckBoxGenerateChargen As CheckBox
+    Friend WithEvents CheckBoxWriteBssliders As CheckBox
+    Friend WithEvents CheckBoxEmitBodyGen As CheckBox
     Friend WithEvents PanelProgress As Panel
     Friend WithEvents LabelProgressStage As Label
     Friend WithEvents LabelProgressDetail As Label

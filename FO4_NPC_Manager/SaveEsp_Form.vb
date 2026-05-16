@@ -146,6 +146,17 @@ Public Class SaveEsp_Form
         ''' has no CharGen Face Preset flag — those NPCs the engine bakes via CK and the BA2
         ''' is the only way they render in-world without a CK pass.</summary>
         Public GenerateChargen As Boolean
+        ''' <summary>When True the orchestrator writes (or refreshes) the BodyMorphs/Skin sidecar
+        ''' (<c>&lt;plugin&gt;.bssliders</c>) next to the ESP after the plugin is written. The
+        ''' sidecar carries F4SE-only fields that have no record equivalent so re-opening the
+        ''' ESP in NPC_Manager restores the slider state. Default True.</summary>
+        Public WriteBssliders As Boolean
+        ''' <summary>When True the orchestrator emits the F4SE BodyGen .ini pair
+        ''' (<c>Data\F4SE\Plugins\F4EE\BodyGen\&lt;plugin&gt;\templates.ini</c> +
+        ''' <c>morphs.ini</c>) so LooksMenu applies the sliders to NPCs on first-load in NEW
+        ''' saves. Opt-in (default False); does not apply retroactively to actors already
+        ''' spawned in a saved game.</summary>
+        Public EmitBodyGen As Boolean
     End Class
 
     Private ReadOnly _dataPath As String
@@ -334,7 +345,9 @@ Public Class SaveEsp_Form
         Dim target As New SaveTarget With {
             .MarkAsMaster = CheckBoxMarkAsMaster.Checked,
             .LightMaster = CheckBoxLightMaster.Checked,
-            .GenerateChargen = CheckBoxGenerateChargen.Checked
+            .GenerateChargen = CheckBoxGenerateChargen.Checked,
+            .WriteBssliders = CheckBoxWriteBssliders.Checked,
+            .EmitBodyGen = CheckBoxEmitBodyGen.Checked
         }
 
         If RadioButtonExisting.Checked Then
@@ -453,6 +466,8 @@ Public Class SaveEsp_Form
         ' Chargen checkbox stays disabled when forced-True for non-CharGenPreset NPCs (its
         ' constructor-time disabled state is sticky); only re-enable here when the NPC allows opt-out.
         CheckBoxGenerateChargen.Enabled = enabled AndAlso _npcIsCharGenFacePreset
+        CheckBoxWriteBssliders.Enabled = enabled
+        CheckBoxEmitBodyGen.Enabled = enabled
         ButtonOk.Enabled = enabled
         ButtonCancel.Enabled = enabled
         PanelProgress.Visible = locked
@@ -485,6 +500,12 @@ Public Class SaveEsp_Form
         End If
         n += 1 : map.Add(("Writing NPC override", n))
         n += 1 : map.Add(("Verifying written record", n))
+        If target.WriteBssliders Then
+            n += 1 : map.Add(("Writing .bssliders sidecar", n))
+        End If
+        If target.EmitBodyGen Then
+            n += 1 : map.Add(("Writing BodyGen", n))
+        End If
         If target.GenerateChargen Then
             n += 1 : map.Add(("Baking CharGen", n))
             n += 1 : map.Add(("Compressing FaceGen bundle", n))

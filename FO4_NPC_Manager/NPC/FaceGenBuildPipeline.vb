@@ -163,21 +163,12 @@ Public Module FaceGenBuildPipeline
     ''' is loaded fresh (caller-owned) and its shape has the same VertexCount and ordering as
     ''' the cloned ORIG (verified empirically by the THREEWAY harness for face HDPTs).
     '''
-    ''' The optional ByRef out parameters expose intermediate state to the caller for diagnostic
-    ''' purposes: <paramref name="vWorldOut"/> is the render-equivalent v_world that drove the
-    ''' bake (so the caller can compare against re-skinned .nif2 / CK-baked NIF), and
-    ''' <paramref name="faceSkelOut"/> / <paramref name="bodySkelOut"/> are the resolved
-    ''' skeletons (so the caller can build the same bind resolver to re-skin reference NIFs).</summary>
     Public Function BakeShape(state As BakeState,
                                destNif As Nifcontent_Class_Manolo,
                                clonedOrigShape As INiShape,
                                facebonesNif As Nifcontent_Class_Manolo,
                                facebonesShape As INiShape,
                                chargenTriPath As String,
-                               sb As Text.StringBuilder,
-                               Optional ByRef vWorldOut As Vector3d() = Nothing,
-                               Optional ByRef faceSkelOut As SkeletonInstance = Nothing,
-                               Optional ByRef bodySkelOut As SkeletonInstance = Nothing,
                                Optional srcNif As Nifcontent_Class_Manolo = Nothing,
                                Optional srcShape As INiShape = Nothing) As Boolean
         If state Is Nothing OrElse destNif Is Nothing OrElse clonedOrigShape Is Nothing Then Return False
@@ -186,13 +177,9 @@ Public Module FaceGenBuildPipeline
         ' 1) v_world via FBNS skin with FMRS pose applied + chargen morphs.
         Dim wr = ComputeWorldVerticesForShape(state, facebonesNif, facebonesShape, chargenTriPath)
         If wr Is Nothing OrElse wr.WorldVertices Is Nothing Then
-            sb?.AppendLine("[BUILDCHARGEN]     bake: ComputeWorldVerticesForShape returned Nothing — skipping")
             Return False
         End If
         Dim vWorld = wr.WorldVertices
-        vWorldOut = vWorld
-        faceSkelOut = wr.FaceSkel
-        bodySkelOut = wr.BodySkel
 
         ' 2a) Inject cloth-physics bones from the source NIF's BSClothExtraData into bodySkel.
         ' Hair shapes (Hair28.nif et al.) carry an HKX skeleton inside BSClothExtraData with the
@@ -207,10 +194,8 @@ Public Module FaceGenBuildPipeline
                 If clothSkel IsNot Nothing Then
                     Dim clothWrap As New NifRenderableShape(srcNif, srcShape, 0)
                     SkeletonClothOverlayHelper_Class.InjectMissingBonesIntoLiveSkeleton(clothWrap, wr.BodySkel, clothSkel)
-                    sb?.AppendLine($"[BUILDCHARGEN]     bake: cloth-bone inject from BSClothExtraData of '{srcShape.Name?.String}' into bodySkel (injectedCount={wr.BodySkel.InjectedBones.Count})")
                 End If
             Catch ex As Exception
-                sb?.AppendLine($"[BUILDCHARGEN]     bake: cloth-bone inject failed: {ex.GetType().Name}: {ex.Message}")
             End Try
         End If
 
@@ -226,7 +211,6 @@ Public Module FaceGenBuildPipeline
         Dim shapeBones = wrap.ShapeBones.ToArray()
         Dim shapeLocalTs = wrap.ShapeBoneTransforms.ToArray()
         If shapeBones.Length <> shapeLocalTs.Length OrElse shapeBones.Length = 0 Then
-            sb?.AppendLine("[BUILDCHARGEN]     bake: cloned ORIG has no bones — skipping")
             Return False
         End If
         Dim nBones = shapeBones.Length
@@ -253,7 +237,6 @@ Public Module FaceGenBuildPipeline
         Dim vCount = positions.Count
 
         If vCount <> vWorld.Length Then
-            sb?.AppendLine($"[BUILDCHARGEN]     bake: vertex count mismatch ORIG={vCount} FBNS={vWorld.Length} — skipping")
             Return False
         End If
 
@@ -315,13 +298,10 @@ Public Module FaceGenBuildPipeline
                     If mag > mx Then mx = mag
                 Next
                 Dim rms = Math.Sqrt(ssq / vCount)
-                sb?.AppendLine($"[BUILDCHARGEN]     bake-selfcheck: in-memory re-skin RMS={rms:E3} max={mx:E3}")
             End If
         Catch ex As Exception
-            sb?.AppendLine($"[BUILDCHARGEN]     bake-selfcheck: failed {ex.GetType().Name}: {ex.Message}")
         End Try
 
-        sb?.AppendLine($"[BUILDCHARGEN]     bake: applied v_baked over {vCount} vertices (singular Mtot={singularCount})")
         Return True
     End Function
 
@@ -361,19 +341,16 @@ Public Module FaceGenBuildPipeline
         If Not state.TriHeadCache.TryGetValue(triKey, triHead) Then
             Dim triBytes = FilesDictionary_class.GetBytes(triKey)
             If triBytes Is Nothing OrElse triBytes.Length = 0 Then
-                NpcPreviewLog.Log($"[BUILDCHARGEN] ApplyChargenMorphsInPlace: TRI '{triKey}' not in FilesDictionary or empty — skipping chargen morphs for this shape")
                 Return
             End If
             Try
                 triHead = TriHeadParser.ParseTriHeadFromBytes(triBytes)
             Catch ex As Exception
-                NpcPreviewLog.Log($"[BUILDCHARGEN] ApplyChargenMorphsInPlace: TRI '{triKey}' parse threw {ex.GetType().Name}: {ex.Message} — skipping chargen morphs for this shape")
                 Return
             End Try
             state.TriHeadCache(triKey) = triHead
         End If
         If triHead Is Nothing Then
-            NpcPreviewLog.Log($"[BUILDCHARGEN] ApplyChargenMorphsInPlace: TRI '{triKey}' returned Nothing after parse — skipping chargen morphs for this shape")
             Return
         End If
 

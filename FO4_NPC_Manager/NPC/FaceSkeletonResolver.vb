@@ -46,16 +46,13 @@ Public Module FaceSkeletonResolver
                 Try
                     Dim bytes = loc.GetBytes()
                     If bytes IsNot Nothing AndAlso bytes.Length > 0 Then
-                        NpcPreviewLog.LogLazy(Function() $"  [FACE-SKEL] loaded '{normalized}' ({bytes.Length} bytes) for race {race.EditorID}")
                         Return bytes
                     End If
                 Catch ex As Exception
-                    NpcPreviewLog.LogLazy(Function() $"  [FACE-SKEL] error reading '{normalized}': {ex.Message}")
                 End Try
             End If
         Next
 
-        NpcPreviewLog.LogLazy(Function() $"  [FACE-SKEL] no face skeleton found for race {race.EditorID} (body skel='{bodySkel}')")
         Return Nothing
     End Function
 

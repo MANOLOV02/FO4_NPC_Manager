@@ -37,7 +37,6 @@ Public Module OmodResolutionApplier
         If res Is Nothing OrElse shapes Is Nothing OrElse pm Is Nothing Then Return
         If res.AppliedCombinations.Count = 0 AndAlso res.DirectProperties.Count = 0 AndAlso res.IncludedOmods.Count = 0 Then Return
 
-        NpcPreviewLog.LogLazy(Function() $"  [OMOD-RES] formType={formTypeContext} appliedCombos={res.AppliedCombinations.Count} directProps={res.DirectProperties.Count} includedOmods={res.IncludedOmods.Count}")
 
         ' (1) DirectProperties of applied combinations — walked in the order ObjectTemplateResolver
         ' produced them (which matches record declaration order).
@@ -53,16 +52,12 @@ Public Module OmodResolutionApplier
             ' NONE (workshop wrappers) reached via inventory-side chains. They contribute no
             ' visual change to the actor.
             If omod.FormTypeSignature <> formTypeContext Then
-                NpcPreviewLog.LogLazy(Function() $"  [OMOD-RES-SKIP-FORMTYPE] omod={omod.EditorID}({omod.FormID:X8}) target={omod.FormTypeSignature} ≠ ctx={formTypeContext} → ignored")
                 Continue For
             End If
 
             ' OMOD chunk meshes (NPC_ robots): ModelPath != "" means this OMOD contributes a
             ' mesh chunk. Mounting requires AttachPoint resolution (KYWD → BSConnectPoint),
             ' deferred to the robot rendering rewrite. Log so we know where they'd land.
-            If Not String.IsNullOrEmpty(omod.ModelPath) Then
-                NpcPreviewLog.LogLazy(Function() $"  [OMOD-MESH-DEFERRED] omod={omod.EditorID}({omod.FormID:X8}) modelPath='{omod.ModelPath}' attachPoint={omod.AttachPointFormID:X8} — chunk emit deferred to robot path")
-            End If
 
             For Each prop In omod.Properties
                 ApplyOneProperty(prop, formTypeContext, shapes, pm, $"OMOD:{omod.FormID:X8}")
@@ -109,10 +104,8 @@ Public Module OmodResolutionApplier
             Case 1 : funcType = ShapeMaterialOverrides.MaterialSwapFunction.Remov
             Case 2 : funcType = ShapeMaterialOverrides.MaterialSwapFunction.ADD
             Case Else
-                NpcPreviewLog.LogLazy(Function() $"  [OMOD-RES-MSWP-UNKNOWN-OP] src={sourceTag} mswp={mswpFid:X8} funcType={prop.FunctionType} — ignored")
                 Return
         End Select
-        NpcPreviewLog.LogLazy(Function() $"  [OMOD-RES-MSWP] src={sourceTag} op={funcType} mswp={mswpFid:X8}")
         ShapeMaterialOverrides.ApplyMaterialSwap(mswpFid, funcType, shapes, pm)
     End Sub
 
@@ -125,10 +118,8 @@ Public Module OmodResolutionApplier
             Case 1 : funcType = ShapeMaterialOverrides.ColorRemapFunction.MUL_ADD
             Case 2 : funcType = ShapeMaterialOverrides.ColorRemapFunction.ADD
             Case Else
-                NpcPreviewLog.LogLazy(Function() $"  [OMOD-RES-COLOR-UNKNOWN-OP] src={sourceTag} funcType={prop.FunctionType} — ignored")
                 Return
         End Select
-        NpcPreviewLog.LogLazy(Function() $"  [OMOD-RES-COLOR] src={sourceTag} op={funcType} v1={prop.Value1:R} v2={prop.Value2:R}")
         ShapeMaterialOverrides.ApplyColorRemap(prop.Value1, prop.Value2, funcType, shapes)
     End Sub
 

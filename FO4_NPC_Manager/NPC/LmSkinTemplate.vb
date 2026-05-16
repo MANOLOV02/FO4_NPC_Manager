@@ -85,9 +85,6 @@ Public Module LmSkinTemplateLoader
                 Next
             End Using
         Catch
-            ' Match LM behavior: a malformed JSON logs and continues (no crash). NpcPreviewLog
-            ' isn't reachable from a Module without a forward dep, so we swallow here — the
-            ' BuildLmSkinTemplateCache caller logs the cache total which makes a missed file visible.
         End Try
         Return added
     End Function

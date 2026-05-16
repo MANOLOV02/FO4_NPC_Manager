@@ -46,7 +46,6 @@ Public Class BodySlideMorphResolver
 
         Dim pirt = BodySlideTriResolver.ResolveAndLoad(shape, meshKey)
         If pirt Is Nothing Then
-            NpcPreviewLog.LogLazy(Function() $"  [BSMR] shape='{shapeName}' meshKey='{meshKey}' → no PIRT .tri found")
             Return plan
         End If
 
@@ -71,14 +70,12 @@ Public Class BodySlideMorphResolver
         Dim resolvedTriShapeName = ResolveTriShapeKey(pirt, shapeName)
         Dim nifVerts = geom.NifLocalVertices.Length
         Dim shapeKeys = pirt.ShapeMorphs.Keys.ToList()
-        NpcPreviewLog.LogLazy(Function() $"  [BSMR-PROBE] nifShape='{shapeName}' nifVerts={nifVerts} pirt_shapes=[{String.Join(",", shapeKeys)}] resolvedTriShape={If(resolvedTriShapeName, "<no match>")}")
 
         If resolvedTriShapeName Is Nothing Then
             For Each kv In _sliders
                 If Math.Abs(kv.Value) < 0.001F Then Continue For
                 If BodySlideTriResolver.IsExcludedSliderName(kv.Key) Then Continue For
                 Dim sliderLocal = kv.Key
-                NpcPreviewLog.LogLazy(Function() $"    [BSMR-DROP] slider='{sliderLocal}' — NIF shape '{shapeName}' not in .tri (LM would also skip)")
             Next
             Return plan
         End If
@@ -93,7 +90,6 @@ Public Class BodySlideMorphResolver
             If morph Is Nothing OrElse morph.Offsets.Count = 0 Then
                 Dim sLocal = sliderName
                 Dim triKeyMiss = resolvedTriShapeName
-                NpcPreviewLog.LogLazy(Function() $"    [BSMR-MISS] slider='{sLocal}' has no morph entry for tri shape '{triKeyMiss}'")
                 Continue For
             End If
 
@@ -118,7 +114,6 @@ Public Class BodySlideMorphResolver
             Dim oobC = oobCount
             Dim w = weight
             Dim triKey = resolvedTriShapeName
-            NpcPreviewLog.LogLazy(Function() $"    [BSMR-APPLY] slider='{sName}' triShape='{triKey}' w={w:F3} morphVerts={deltaTotal} maxIdx={mIdx} oobVsNif={oobC}{If(oobC > 0, " (out-of-range deltas dropped)", "")}")
 
             plan.Channels.Add(New MorphChannel(sliderName, weight, deltas))
         Next

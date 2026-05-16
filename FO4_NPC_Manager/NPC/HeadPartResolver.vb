@@ -78,25 +78,17 @@ Public Module HeadPartResolver
         Dim typeNames = New String() {"Misc", "Face", "Eyes", "Hair", "FacialHair", "Scar", "Eyebrows", "Meatcaps", "Teeth", "HeadRear"}
         Dim summary As New StringBuilder
         summary.Append($"  [HEADPARTS-MERGE] RACE '{race.EditorID}' {If(isFemale, "F", "M")} | NPC.PNAM={safeNpcParts.Count} race.defaults={raceDefaults.Count} → merged={finalList.Count}")
-        NpcPreviewLog.Log(summary.ToString())
         For t = 1 To 9
             Dim prov As String = Nothing
             If provenanceByType.TryGetValue(t, prov) Then
                 Dim from = If(prov.StartsWith("NPC:"), "NPC", "RACE-DEFAULT")
                 Dim tLocal = t
-                NpcPreviewLog.LogLazy(Function() $"    [HEADPARTS-MERGE] type={tLocal}/{typeNames(tLocal)}: from={from} {prov.Substring(prov.IndexOf(":"c) + 1)}")
             End If
         Next
-        If freestandingMisc.Count > 0 Then
-            NpcPreviewLog.LogLazy(Function() $"    [HEADPARTS-MERGE] freestanding-misc (type=0): {freestandingMisc.Count} entries [{String.Join(", ", miscProvenance)}]")
-        End If
         Dim missedTypes = New List(Of String)
         For t = 1 To 9
             If Not provenanceByType.ContainsKey(t) Then missedTypes.Add(typeNames(t))
         Next
-        If missedTypes.Count > 0 Then
-            NpcPreviewLog.LogLazy(Function() $"    [HEADPARTS-MERGE] no-data-for-types: {String.Join(", ", missedTypes)} (neither RACE nor NPC declared; slot left empty)")
-        End If
 
         Return finalList
     End Function

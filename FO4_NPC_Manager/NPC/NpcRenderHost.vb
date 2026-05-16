@@ -3,10 +3,10 @@ Imports FO4_Base_Library
 
 ''' <summary>Per-PreviewControl bag of render-pipeline state for an NPC preview. Holds the
 ''' "Last*" snapshots produced by a render (skeleton instance, ARMA-cloned skeletons, sculpt
-''' deltas, the shape→skeleton resolver map, the face-skeleton merged bytes, the resolver
-''' result and the visual state itself), the deferred face-tint polling timer + its
-''' state/attempts counter, and the GPU/CPU caches used by the live tint compositor
-''' (FaceTintTextureCache and the pristine-diffuse pixel dictionary).
+''' deltas, the shape→skeleton resolver map, the resolver result and the visual state itself),
+''' the deferred face-tint polling timer + its state/attempts counter, and the GPU/CPU caches
+''' used by the live tint compositor (FaceTintTextureCache and the pristine-diffuse pixel
+''' dictionary).
 '''
 ''' MainForm owns one instance of this for its main preview. EditFace_Form / EditBody_Form
 ''' will own their own instance for the embedded preview inside the editor (a future phase
@@ -69,11 +69,6 @@ Friend Class NpcRenderHost
     ''' resolver. Used by RebuildAndApplyMergedPose to lazy-build per-ARMA skels when Sclpt
     ''' is toggled ON post-render.</summary>
     Public Property LastShapeToSkel As Dictionary(Of IRenderableShape, SkeletonInstance) = Nothing
-
-    ''' <summary>Cached face-skeleton bytes from the last render. Needed by
-    ''' BuildSkeletonInstance to rebuild per-ARMA clones when Sclpt is toggled ON
-    ''' post-render. Nothing if the NPC has no face-skel merge.</summary>
-    Public Property LastFaceSkelBytes As Byte() = Nothing
 
     ''' <summary>Morph names available in the chargen TRI loaded for the face shape on the last
     ''' render. Used by EditFace_Form to filter slider/preset UI to only entries the engine
@@ -195,7 +190,6 @@ Friend Class NpcRenderHost
             shape.RenderHide = hide
             If hide Then hidden += 1 Else shown += 1
         Next
-        NpcPreviewLog.LogLazy(Function() $"  [VISIBILITY] renderArmor={renderArmor} renderUnderarmor={renderUnderarmor} renderBody={renderBody} renderHeadwear={renderHeadwear} renderGore={renderGore} → shown={shown} hidden={hidden}")
         ' RefreshRender fuerza repaint inmediato del control GL (Invalidate). InvalidateRender
         ' va por el pipeline que requiere DirtyFlags y aquí no hay nada dirty — sólo flip de
         ' RenderHide en shapes existentes que el shader respeta en cada frame.
@@ -235,7 +229,6 @@ Friend Class NpcRenderHost
         LastRenderData = Nothing
         LastSkeletonInstance = Nothing
         LastShapeToSkel = Nothing
-        LastFaceSkelBytes = Nothing
         CurrentBaseState = Nothing
 
         If LastSkelByArma IsNot Nothing Then LastSkelByArma.Clear()

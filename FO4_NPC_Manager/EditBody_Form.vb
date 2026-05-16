@@ -1,4 +1,4 @@
-﻿Imports System.Globalization
+Imports System.Globalization
 Imports FO4_Base_Library
 
 ''' <summary>Editor for an NPC's body weight (MWGT — 3 sliders), MRSV body morph regions
@@ -269,7 +269,6 @@ Public Class EditBody_Form
             If _mainForm.RefreshBodySkinLivePreview(_editorHost) Then Return
             Await _mainForm.RenderInHostAsync(_editorHost, _rootNpcFormID)
         Catch ex As Exception
-            NpcPreviewLog.LogLazy(Function() $"  [EDITBODY-SKIN-RELOAD] failed: {ex.Message}")
         End Try
     End Function
 
@@ -878,7 +877,6 @@ Public Class EditBody_Form
             Try
                 Await _mainForm.RenderInHostAsync(_editorHost, _rootNpcFormID)
             Catch ex As Exception
-                NpcPreviewLog.LogLazy(Function() $"  [EDITBODY-PREVIEW] initial render failed: {ex.Message}")
             End Try
         End If
     End Sub

@@ -1,4 +1,4 @@
-﻿Imports System.Drawing
+Imports System.Drawing
 Imports System.Globalization
 Imports FO4_Base_Library
 
@@ -391,7 +391,6 @@ Public Class EditFace_Form
                 If Not sliderIsAvailable(mv) Then Continue For
                 orphans.Add(mv.Index)
                 Dim mvLocal = mv
-                NpcPreviewLog.LogLazy(Function() $"[EDITFACE-ORPHAN] MSID=0x{mvLocal.Index:X8} MSM0='{mvLocal.MinName}' MSM1='{mvLocal.MaxName}' (not in any MPGS, race={_race.EditorID})")
             Next
             If orphans.Count > 0 Then
                 Dim other As New MorphGroupSection With {.GroupName = "These shouldn't be here!!", .Presets = Nothing}
@@ -568,16 +567,13 @@ Public Class EditFace_Form
             ' edit. If the overlay already had content, leave it.
             Dim presetTintCountBefore = p.FaceTintLayers.Count
             Dim rawTintCount = If(rawNpc IsNot Nothing, rawNpc.FaceTintLayers.Count, -1)
-            NpcPreviewLog.LogLazy(Function() $"[EDITFACE-SEED] tints: preset.Count={presetTintCountBefore} rawNpc.Count={rawTintCount} rawNpcFound={(rawNpc IsNot Nothing)}")
             If p.FaceTintLayers.Count = 0 AndAlso rawNpc IsNot Nothing AndAlso rawNpc.FaceTintLayers.Count > 0 Then
                 For Each tl In rawNpc.FaceTintLayers
                     p.FaceTintLayers.Add(CloneFaceTint(tl))
                 Next
-                NpcPreviewLog.LogLazy(Function() $"[EDITFACE-SEED] tints: seeded {p.FaceTintLayers.Count} from rawNpc")
             End If
             p.HasFaceTintLayers = True
             RefreshTintsList()
-            NpcPreviewLog.LogLazy(Function() $"[EDITFACE-SEED] tints: after RefreshTintsList, ListView rows={ListViewTints.Items.Count}")
 
             ' --- Vertex morphs (MSDK/MSDV) ---
             If p.ChargenFaceMorphs.Count = 0 AndAlso rawNpc IsNot Nothing AndAlso rawNpc.MorphValues.Count > 0 Then
@@ -599,11 +595,15 @@ Public Class EditFace_Form
             LoadBoneRegionValues()
 
             ' --- FMIN ---
-            ' FacialMorphIntensity always carries 1.0F when the JSON omits it (LooksmenuLoader sets
-            ' the default at parse time). For a fresh editor open, prefer the raw NPC value if the
-            ' overlay still carries the parser default — Math.Abs(p.FMIN - 1.0F) < epsilon. This
-            ' avoids the form opening at "1.00" for an NPC whose record actually says 1.4 or 0.7.
-            If rawNpc IsNot Nothing AndAlso Math.Abs(p.FacialMorphIntensity - 1.0F) < 0.0001F Then
+            ' If there's no prior overlay (NPC never touched by LM or by a prior Edit Face), seed
+            ' the slider from the raw NPC record so it reflects the actual current value (records
+            ' authored at 1.4 / 0.7 / etc. shouldn't snap to 1.0 just because the editor opened).
+            ' If an overlay DOES exist (LM preset load or prior edit), trust p.FacialMorphIntensity
+            ' verbatim — 1.0F is a valid explicit value per LM contract (omitted key parses to 1.0
+            ' identical to an explicit "Intensity":1.0), NOT a "default sentinel" we can overwrite.
+            ' Prior heuristic (Math.Abs(p.FMIN - 1.0F) < epsilon → fallback to raw) wrongly clobbered
+            ' LM presets that explicitly carried FMIN=1.0.
+            If Not _hadPriorOverlay AndAlso rawNpc IsNot Nothing Then
                 p.FacialMorphIntensity = If(rawNpc.FacialMorphIntensity > 0.0F, rawNpc.FacialMorphIntensity, 1.0F)
             End If
             TrackBarFmin.Value = p.FacialMorphIntensity
@@ -862,9 +862,14 @@ Public Class EditFace_Form
                 })
             Next
 
-            ' Select current.
+            ' Select current. Overlay takes priority (explicit user override); if absent (= 0)
+            ' fall back to the effective HCLF the renderer would paint with (raw NPC -> Traits
+            ' template chain -> RACE.AHCM/AHCF default). Display only — does NOT mutate the
+            ' overlay (preserve semantic stays intact until the user actively touches the combo).
             Dim p = Preset
-            Dim targetFid = p.HairColorFormID
+            Dim targetFid = If(p.HairColorFormID <> 0UI,
+                               p.HairColorFormID,
+                               _mainForm.ResolveEffectiveHairColorFormID(_rootNpcFormID))
             For i = 0 To ComboBoxHairColor.Items.Count - 1
                 Dim it = TryCast(ComboBoxHairColor.Items(i), HairColorItem)
                 If it IsNot Nothing AndAlso it.FormID = targetFid Then
@@ -902,7 +907,6 @@ Public Class EditFace_Form
         ' of HairColor_Lgrad_d.dds at render time. If HasColor=False the swatch falls back to
         ' SystemColors.Control (grey), not black; if it shows black the parse is producing
         ' (0,0,0) which means CNAM is actually 0 in those CLFMs.
-        NpcPreviewLog.LogLazy(Function() $"[EDITFACE-HAIRCOLOR] selected '{it.Display}' fid={it.FormID:X8} HasColor={it.HasColor} rgba=({it.Color.R},{it.Color.G},{it.Color.B},{it.Color.A}) HasRemappingIndex={it.HasRemappingIndex} RemappingIndex={it.RemappingIndex}")
         UpdateHairColorSwatch()
         _refresh?.Invoke(FaceRefreshScope.TexturesOnly)
     End Sub
@@ -1045,7 +1049,6 @@ Public Class EditFace_Form
             End Try
             _hairPaletteResolveAttempted = True
         Catch ex As Exception
-            NpcPreviewLog.LogLazy(Function() $"[EDITFACE-HAIRSWATCH] palette decode failed: {ex.Message}")
             _hairPaletteResolveAttempted = True   ' decode-side failures are not transitory; stop retrying
         End Try
     End Sub
@@ -2229,7 +2232,6 @@ Public Class EditFace_Form
                     _mainForm.RefreshFaceTintLivePreview(_editorHost)
                     _editorHost.PreviewCtl.RefreshRender()
                 Catch ex As Exception
-                    NpcPreviewLog.LogLazy(Function() $"  [EDITFACE-PREVIEW] tint refresh failed: {ex.Message}")
                 End Try
                 Return
             Case FaceRefreshScope.Morphs
@@ -2249,7 +2251,6 @@ Public Class EditFace_Form
                 Try
                     _mainForm.RefreshFaceTintLivePreview(_editorHost)
                 Catch ex As Exception
-                    NpcPreviewLog.LogLazy(Function() $"  [EDITFACE-PREVIEW] morph→tint refresh failed: {ex.Message}")
                 End Try
                 _editorHost.PreviewCtl.InvalidateRender()
                 Return
@@ -2264,7 +2265,6 @@ Public Class EditFace_Form
                 Try
                     Await _mainForm.RenderInHostAsync(_editorHost, _rootNpcFormID)
                 Catch ex As Exception
-                    NpcPreviewLog.LogLazy(Function() $"  [EDITFACE-PREVIEW] full reload failed: {ex.Message}")
                 End Try
                 Return
         End Select
@@ -2341,7 +2341,6 @@ Public Class EditFace_Form
             Try
                 Await _mainForm.RenderInHostAsync(_editorHost, _rootNpcFormID)
             Catch ex As Exception
-                NpcPreviewLog.LogLazy(Function() $"  [EDITFACE-PREVIEW] initial render failed: {ex.Message}")
             End Try
         End If
     End Sub

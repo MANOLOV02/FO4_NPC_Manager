@@ -22,7 +22,8 @@ Module Program
             If preflight.ShowDialog() <> DialogResult.OK Then Return
             Application.Run(New MainForm(preflight.LoadedPluginManager,
                                          preflight.LoadedDataPath,
-                                         preflight.LoadedAutoGenPlugins))
+                                         preflight.LoadedAutoGenPlugins,
+                                         preflight.LoadedSidecars))
         End Using
     End Sub
 End Module

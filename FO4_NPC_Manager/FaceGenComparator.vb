@@ -84,12 +84,12 @@ Public Module FaceGenComparator
 
         If Not File.Exists(generatedPath) Then
             report.Summary = $"Generated .nif2 not found: {generatedPath}"
-            NpcPreviewLog.Log($"[BUILDCHARGEN-DIFF] {report.Summary}")
+            Logger.Log($"[BUILDCHARGEN-DIFF] {report.Summary}")
             Return report
         End If
         If bakedFromBa2Bytes Is Nothing OrElse bakedFromBa2Bytes.Length = 0 Then
             report.Summary = "Baked NIF bytes not provided."
-            NpcPreviewLog.Log($"[BUILDCHARGEN-DIFF] {report.Summary}")
+            Logger.Log($"[BUILDCHARGEN-DIFF] {report.Summary}")
             Return report
         End If
 
@@ -99,14 +99,14 @@ Public Module FaceGenComparator
             genNif.Load_Manolo(generatedPath)
         Catch ex As Exception
             report.Summary = $"Failed to load generated .nif2: {ex.GetType().Name}: {ex.Message}"
-            NpcPreviewLog.Log($"[BUILDCHARGEN-DIFF] {report.Summary}")
+            Logger.Log($"[BUILDCHARGEN-DIFF] {report.Summary}")
             Return report
         End Try
         Try
             bakeNif.Load_Manolo(bakedFromBa2Bytes)
         Catch ex As Exception
             report.Summary = $"Failed to load baked NIF: {ex.GetType().Name}: {ex.Message}"
-            NpcPreviewLog.Log($"[BUILDCHARGEN-DIFF] {report.Summary}")
+            Logger.Log($"[BUILDCHARGEN-DIFF] {report.Summary}")
             Return report
         End Try
 
@@ -413,7 +413,7 @@ Public Module FaceGenComparator
         sb.AppendLine($"[BUILDCHARGEN-DIFF]   per-vertex attrs: normals-diff={shapesWithNormalDiff}  tangents-diff={shapesWithTangentDiff}  UVs-diff={shapesWithUvDiff}  colors-diff={shapesWithColorDiff}")
 
         report.Summary = $"shapes both={bothPresent.Count}/{totalShapes} | VC mismatches={vcMismatches.Count} | bones missing={totalMissingBones} extra={totalExtraBones} | tri-mismatch ordered={totalTriOrdMismatch} sorted={totalTriSortedMismatch} | mat-diff={shapesWithMaterialMismatch} | agg vertex RMS={If(aggRms >= 0, aggRms.ToString("F6"), "N/A")}"
-        NpcPreviewLog.Log(sb.ToString())
+        Logger.Log(sb.ToString())
         Return report
     End Function
 

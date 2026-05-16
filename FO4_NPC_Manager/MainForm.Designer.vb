@@ -62,7 +62,6 @@ Partial Class MainForm
         CheckBoxRenderHeadwear = New CheckBox()
         ButtonRandomNPC = New Button()
         ButtonReroll = New Button()
-        ButtonDumpObjectTemplates = New Button()
         CheckBoxApplySculpt = New CheckBox()
         LabelStatus = New Label()
         PanelPreviewHost = New Panel()
@@ -511,7 +510,6 @@ Partial Class MainForm
         PanelPreviewToolbar.Controls.Add(CheckBoxRenderHeadwear, 4, 3)
         PanelPreviewToolbar.Controls.Add(ButtonRandomNPC, 6, 0)
         PanelPreviewToolbar.Controls.Add(ButtonReroll, 6, 1)
-        PanelPreviewToolbar.Controls.Add(ButtonDumpObjectTemplates, 6, 2)
         PanelPreviewToolbar.Controls.Add(CheckBoxApplySculpt, 5, 2)
         PanelPreviewToolbar.Dock = DockStyle.Top
         PanelPreviewToolbar.Location = New Point(8, 6)
@@ -733,19 +731,7 @@ Partial Class MainForm
         ButtonReroll.Size = New Size(26, 26)
         ButtonReroll.TabIndex = 6
         ButtonReroll.Text = "↻"
-        ' 
-        ' ButtonDumpObjectTemplates
-        ' 
-        ButtonDumpObjectTemplates.Anchor = AnchorStyles.Right
-        ButtonDumpObjectTemplates.FlatStyle = FlatStyle.System
-        ButtonDumpObjectTemplates.Font = New Font("Segoe UI Symbol", 10F, FontStyle.Bold)
-        ButtonDumpObjectTemplates.Location = New Point(1156, 62)
-        ButtonDumpObjectTemplates.Margin = New Padding(2)
-        ButtonDumpObjectTemplates.Name = "ButtonDumpObjectTemplates"
-        ButtonDumpObjectTemplates.Size = New Size(26, 26)
-        ButtonDumpObjectTemplates.TabIndex = 20
-        ButtonDumpObjectTemplates.Text = "📋"
-        ' 
+        '
         ' CheckBoxApplySculpt
         ' 
         CheckBoxApplySculpt.AutoSize = True
@@ -865,7 +851,6 @@ Partial Class MainForm
     Friend WithEvents LabelOutfit As System.Windows.Forms.Label
     Friend WithEvents ComboBoxOutfit As System.Windows.Forms.ComboBox
     Friend WithEvents ButtonReroll As System.Windows.Forms.Button
-    Friend WithEvents ButtonDumpObjectTemplates As System.Windows.Forms.Button
     Friend WithEvents LabelMorphs As System.Windows.Forms.Label
     Friend WithEvents LabelRenders As System.Windows.Forms.Label
     Friend WithEvents PanelActionsToolbar As System.Windows.Forms.TableLayoutPanel

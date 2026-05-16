@@ -55,7 +55,6 @@ Public Module FaceTintLayerBuilder
         result.NpcData = npcData
         result.Race = race
         result.RegionSwaps = BuildFaceRegionSwaps(npcData, race, isFemale, pluginManager, tintBytesCache)
-        NpcPreviewLog.LogLazy(Function() $"  [REGION-SWAP] built {result.RegionSwaps.Count} region swaps for {npcData.EditorID}")
 
         ' Merge NPC-declared layers with RACE defaults: for each TintTemplateGroup the NPC
         ' doesn't touch, inject every Option whose TTED is present (HasDefaultValue=True).
@@ -187,7 +186,6 @@ Public Module FaceTintLayerBuilder
                 Dim specLoad = LoadTintLayerBytesAndKey(txst.SmoothSpecTexture, tintBytesCache)
 
                 If diffLoad.Bytes Is Nothing AndAlso normLoad.Bytes Is Nothing AndAlso specLoad.Bytes Is Nothing Then
-                    NpcPreviewLog.LogLazy(Function() $"  [REGION-SWAP] '{g.Name}/{p.PresetName}' MPPT={txstRec.EditorID}: no D/N/S bytes, skip")
                     Continue For
                 End If
 
@@ -203,10 +201,6 @@ Public Module FaceTintLayerBuilder
                     .DebugName = $"{g.Name}/{p.PresetName}"
                 }
                 swaps.Add(sw)
-                NpcPreviewLog.LogLazy(Function()
-                                          Dim chans = If(diffLoad.Bytes IsNot Nothing, "D", "-") & If(normLoad.Bytes IsNot Nothing, "+N", "") & If(specLoad.Bytes IsNot Nothing, "+S", "")
-                                          Return $"  [REGION-SWAP] ADDED '{g.Name}/{p.PresetName}' slot={CInt(slot)} mask='{maskOpt.Textures(0)}' MPPT={txstRec.EditorID} channels={chans}"
-                                      End Function)
             Next
         Next
         Return swaps
@@ -239,7 +233,6 @@ Public Module FaceTintLayerBuilder
 
         Dim raceDefaultCount As Integer = Enumerable.Count(mergedLayers, Function(m) m.IsRaceDefault)
         Dim npcOwnCount As Integer = mergedLayers.Count - raceDefaultCount
-        NpcPreviewLog.LogLazy(Function() $"  [FACETINT] processing {mergedLayers.Count} tint layers for {npcData.EditorID} (NPC={npcOwnCount}, RACE-default={raceDefaultCount})")
 
         Dim raceTintRank As New Dictionary(Of UShort, Integer)
         Dim tintGroupsForRender = If(isFemale, race.FemaleTintTemplateGroups, race.MaleTintTemplateGroups)
@@ -250,7 +243,6 @@ Public Module FaceTintLayerBuilder
             Next
         End If
         Dim totalGroupsLog As Integer = If(tintGroupsForRender Is Nothing, 0, tintGroupsForRender.Count)
-        NpcPreviewLog.LogLazy(Function() $"  [FACETINT-RACE] race={race.EditorID} (0x{race.FormID:X8}) gender={If(isFemale, "F", "M")} tintGroups={totalGroupsLog} totalOptions={totalOptionsAcrossGroups}")
 
         For Each mDiag In mergedLayers
             Dim tlDiag = mDiag.Layer
@@ -262,7 +254,6 @@ Public Module FaceTintLayerBuilder
             Dim takesSkin = If(optDiag IsNot Nothing AndAlso (optDiag.Flags And &H4US) <> 0US, "TakesSkinTone", "-")
             Dim valueLog = tlDiag.Value
             Dim origin = If(mDiag.IsRaceDefault, "RACE-DEFAULT", "NPC")
-            NpcPreviewLog.LogLazy(Function() $"  [TINT-LAYER-DUMP] origin={origin} tl.Index={tlDiag.Index} value={valueLog} disc={tlDiag.Discriminator} -> opt='{optName}' slot={slotNum}/{slotName} flags={flagsHex}({takesSkin})")
         Next
         Dim renderRank As Integer = 0
         For Each grp In tintGroupsForRender
@@ -291,7 +282,6 @@ Public Module FaceTintLayerBuilder
             Dim rawOptFlagsName = If(opt IsNot Nothing, FormatTintFlagsName(opt.Flags), "?")
 
             If opt Is Nothing OrElse opt.Textures Is Nothing OrElse opt.Textures.Count = 0 Then
-                NpcPreviewLog.LogLazy(Function() $"      -> SKIP option/textures missing")
                 stat_skip_missingOption += 1
                 If Not stat_byFlags_skipped.ContainsKey(rawOptFlagsU) Then stat_byFlags_skipped(rawOptFlagsU) = 0
                 stat_byFlags_skipped(rawOptFlagsU) += 1
@@ -318,7 +308,6 @@ Public Module FaceTintLayerBuilder
                     tplLo = $"0x{tl.RawTendBytes(5):X2}"
                     tplHi = $"0x{tl.RawTendBytes(6):X2}"
                 End If
-                NpcPreviewLog.LogLazy(Function() $"      [TEND-RAW] disc={tl.Discriminator} optName={opt.Name} TETI.Index={tl.Index} len={tl.RawTendBytes.Length} bytes=[{hex.ToString()}] | Value=0x{tl.RawTendBytes(0):X2}({tl.Value}) R=0x{If(tl.RawTendBytes.Length >= 2, tl.RawTendBytes(1), CByte(0)):X2} G=0x{If(tl.RawTendBytes.Length >= 3, tl.RawTendBytes(2), CByte(0)):X2} B=0x{If(tl.RawTendBytes.Length >= 4, tl.RawTendBytes(3), CByte(0)):X2} Unused(b4)={unusedByte} TplLo(b5)={tplLo} TplHi(b6)={tplHi} TplIdx={tl.TemplateColorIndex}{unusedFlag}")
             End If
 
             Dim opacity As Single = CSng(tl.Value) / 100.0F
@@ -326,7 +315,6 @@ Public Module FaceTintLayerBuilder
                 stat_skip_zeroOpacity += 1
                 If takesSkinTone Then stat_skip_zeroOpacity_takesSkinTone += 1
                 Dim warn = If(takesSkinTone, " <<< takesSkinTone -- N/S also lost here", "")
-                NpcPreviewLog.LogLazy(Function() $"      -> SKIP value=0/low (opacity={opacity:F3}){warn}")
                 If Not stat_byFlags_skipped.ContainsKey(rawOptFlagsU) Then stat_byFlags_skipped(rawOptFlagsU) = 0
                 stat_byFlags_skipped(rawOptFlagsU) += 1
                 Continue For
@@ -335,10 +323,8 @@ Public Module FaceTintLayerBuilder
             Dim ttet0Snap = If(opt.Textures.Count > 0, opt.Textures(0), "")
             Dim ttet1Snap = If(opt.Textures.Count > 1, opt.Textures(1), "")
             Dim ttet2Snap = If(opt.Textures.Count > 2, opt.Textures(2), "")
-            NpcPreviewLog.LogLazy(Function() $"      [TTET-DUMP] opt='{opt.Name}' index={tl.Index} TTET[0]='{ttet0Snap}' TTET[1]='{ttet1Snap}' TTET[2]='{ttet2Snap}'")
             Dim diffuseLoad = LoadTintLayerBytesAndKey(opt.Textures(0), tintBytesCache)
             If diffuseLoad.Bytes Is Nothing Then
-                NpcPreviewLog.LogLazy(Function() $"      -> SKIP TTET[0] not found: '{opt.Textures(0)}'")
                 stat_skip_missingMask += 1
                 If Not stat_byFlags_skipped.ContainsKey(rawOptFlagsU) Then stat_byFlags_skipped(rawOptFlagsU) = 0
                 stat_byFlags_skipped(rawOptFlagsU) += 1
@@ -385,7 +371,6 @@ Public Module FaceTintLayerBuilder
                 layerInput.BlendOp = CInt(resolved.BlendOp)
                 layerInput.Opacity = opacity
                 Dim resolveMode As String = If(resolved.Matched, "PRESET (match TTEC.TemplateIndex)", "CUSTOM (no match — tendRGB + TTEC(1).BlendOp)")
-                NpcPreviewLog.LogLazy(Function() $"      -> Palette resolve: mode={resolveMode} TemplateColorIndex={tl.TemplateColorIndex} tendRGB=({tl.Color.R},{tl.Color.G},{tl.Color.B}) effectiveRGB=({resolved.Color.R},{resolved.Color.G},{resolved.Color.B}) blendOp={resolved.BlendOp}({BlendOpName(resolved.BlendOp)}) opt.TTEB={opt.BlendOperation}({BlendOpName(opt.BlendOperation)}) NPC.Value={opacity:F2} tplAlpha={resolved.OpacityScale:F2} (engine ignores tplAlpha) effOpacity={opacity:F2}")
                 If opt IsNot Nothing AndAlso opt.TemplateColors IsNot Nothing AndAlso opt.TemplateColors.Count > 0 Then
                     Dim sb As New System.Text.StringBuilder()
                     For i = 0 To opt.TemplateColors.Count - 1
@@ -403,14 +388,11 @@ Public Module FaceTintLayerBuilder
                         If i > 0 Then sb.Append(" | ")
                         sb.Append($"[pos={i} TemplateIndex={tc.TemplateIndex} CLFM={tc.ColorFormID:X8} rgb={rgbStr} blendOp={tc.BlendOperation}]")
                     Next
-                    NpcPreviewLog.LogLazy(Function() $"      -> TTEC list ({opt.TemplateColors.Count} entries): {sb}")
                 End If
             ElseIf tl.Discriminator = 2 Then
                 layerInput.Kind = FaceTintLayerKind.TextureSetDiffuse
                 layerInput.BlendOp = CInt(ResolveFallbackBlendOp(opt))
-                NpcPreviewLog.LogLazy(Function() $"      -> TextureSet resolve: blendOp={layerInput.BlendOp}({BlendOpName(CUInt(layerInput.BlendOp))}) opt.TTEB={opt.BlendOperation}({BlendOpName(opt.BlendOperation)}) TTEC.Count={If(opt.TemplateColors IsNot Nothing, opt.TemplateColors.Count, 0)} opacity={opacity:F2}")
             Else
-                NpcPreviewLog.LogLazy(Function() $"      -> SKIP unknown discriminator={tl.Discriminator}")
                 stat_skip_unknownDiscriminator += 1
                 If Not stat_byFlags_skipped.ContainsKey(rawOptFlagsU) Then stat_byFlags_skipped(rawOptFlagsU) = 0
                 stat_byFlags_skipped(rawOptFlagsU) += 1
@@ -422,7 +404,6 @@ Public Module FaceTintLayerBuilder
             Dim chans = "D"
             If normalBytes IsNot Nothing Then chans &= "+N"
             If specularBytes IsNot Nothing Then chans &= "+S"
-            NpcPreviewLog.LogLazy(Function() $"      -> ADDED slot={opt.Slot}({slotNm}) kind={layerInput.Kind} blendOp={layerInput.BlendOp}({opName}) value={tl.Value} opacity={opacity:F2} flags={rawOptFlagsHex}({rawOptFlagsName}) takesSkinTone={takesSkinTone} channels={chans}")
             layerInputs.Add(layerInput)
 
             If layerInput.Kind = FaceTintLayerKind.PaletteMask Then
@@ -435,22 +416,14 @@ Public Module FaceTintLayerBuilder
             stat_byFlags_added(rawOptFlagsU) += 1
         Next
 
-        NpcPreviewLog.LogLazy(Function() $"  [FACETINT] === Summary for {npcData.EditorID} ===")
-        NpcPreviewLog.LogLazy(Function() $"    Total merged layers: {mergedLayers.Count} (NPC={npcOwnCount}, RACE-default={raceDefaultCount})")
-        NpcPreviewLog.LogLazy(Function() $"    ADDED: {layerInputs.Count} ({stat_added_palette} Palette + {stat_added_textureSet} TextureSet, {stat_added_takesSkinTone} takesSkinTone)")
-        NpcPreviewLog.LogLazy(Function() $"    SKIPPED: zeroOpacity={stat_skip_zeroOpacity} (of which takesSkinTone={stat_skip_zeroOpacity_takesSkinTone}) missingOption={stat_skip_missingOption} missingMask={stat_skip_missingMask} unknownDiscr={stat_skip_unknownDiscriminator}")
         Dim allFlagKeys As New SortedSet(Of UShort)
         For Each k In stat_byFlags_added.Keys : allFlagKeys.Add(k) : Next
         For Each k In stat_byFlags_skipped.Keys : allFlagKeys.Add(k) : Next
         For Each fk In allFlagKeys
             Dim a As Integer = 0 : stat_byFlags_added.TryGetValue(fk, a)
             Dim s As Integer = 0 : stat_byFlags_skipped.TryGetValue(fk, s)
-            NpcPreviewLog.LogLazy(Function() $"    flags 0x{fk:X4} ({FormatTintFlagsName(fk)}): ADDED={a} SKIPPED={s}")
         Next
 
-        If layerInputs.Count = 0 Then
-            NpcPreviewLog.LogLazy(Function() $"  [FACETINT] no valid layers for {npcData.EditorID}")
-        End If
 
         Return layerInputs
     End Function

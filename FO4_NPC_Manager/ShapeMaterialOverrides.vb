@@ -68,7 +68,6 @@ Friend Module ShapeMaterialOverrides
             ' Placeholder. Trip the debugger so we catch the first vanilla case and can decide
             ' the revert algorithm with real data instead of inventing one. NO-OP visual until
             ' implemented — better than the wrong heuristic.
-            NpcPreviewLog.LogLazy(Function() $"  [MAT-MUTATE-MSWP-REM-UNHANDLED] mswp={mswpFormID:X8} — REM op not yet implemented; tripping Debugger.Break for analysis")
             Debugger.Break()
             Return
         End If
@@ -112,7 +111,6 @@ Friend Module ShapeMaterialOverrides
                     If newMaterial IsNot Nothing Then
                         relatedMaterial.material = newMaterial
                         relatedMaterial.path = FO4UnifiedMaterial_Class.CorrectMaterialPath(replacementPath)
-                        NpcPreviewLog.LogLazy(Function() $"  [MAT-MUTATE-MSWP] op={funcType} swap '{origPath}' -> '{relatedMaterial.path}': BackLightPower {oldBack}->{newMaterial.BackLightPower} RimPower {oldRim}->{newMaterial.RimPower} EmitEnabled {oldEmit}->{newMaterial.EmitEnabled} RootMaterialPath '{oldRoot}'->'{If(newMaterial.RootMaterialPath, "")}'")
                     End If
                     Exit For
                 End If
@@ -131,7 +129,6 @@ Friend Module ShapeMaterialOverrides
             ' `current * value1 + value2`, but no vanilla case observed yet; trip the
             ' debugger on first occurrence so we can validate the formula against in-game
             ' rendering before committing to it.
-            NpcPreviewLog.LogLazy(Function() $"  [MAT-MUTATE-COLORREMAP-MULADD-UNHANDLED] v1={value1:F4} v2={value2:F4} — MUL+ADD op not yet implemented; tripping Debugger.Break for analysis")
             Debugger.Break()
             Return
         End If
@@ -157,7 +154,6 @@ Friend Module ShapeMaterialOverrides
             End Select
 
             material.GrayscaleToPaletteScale = newScale
-            NpcPreviewLog.LogLazy(Function() $"  [MAT-MUTATE-COLORREMAP] op={funcType} '{If(relatedMaterial.path, "")}' GrayscaleToPaletteScale {oldScale:F4}->{newScale:F4} (palette opt-in={material.GrayscaleToPaletteColor})")
         Next
     End Sub
 

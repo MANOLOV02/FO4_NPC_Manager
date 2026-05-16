@@ -33,23 +33,17 @@ Public Module FaceBonePoseBuilder
         Dim npcIndices = npcData.FaceMorphs.Select(Function(f) f.Index).OrderBy(Function(i) i).ToList()
         Dim missingInNpc = raceRegionIndices.Except(npcIndices).ToList()
         Dim extraInNpc = npcIndices.Except(raceRegionIndices).ToList()
-        NpcPreviewLog.LogLazy(Function() $"  [FMRS-RAW] RACE regions={raceRegionIndices.Count} NPC FaceMorphs={npcIndices.Count} missing-in-NPC={missingInNpc.Count} extra-in-NPC={extraInNpc.Count} fmin={fmin:F3}")
         If missingInNpc.Count > 0 Then
             Dim missingDetail = String.Join(", ", missingInNpc.Take(10).Select(Function(i)
                                                                                    Dim r As FacialBoneRegion = Nothing
                                                                                    regionsFile.Regions.TryGetValue(i, r)
                                                                                    Return $"{i}('{If(r IsNot Nothing, r.Name, "?")}')"
                                                                                End Function))
-            NpcPreviewLog.LogLazy(Function() $"  [FMRS-RAW] regions-in-RACE-not-in-NPC (first 10): {missingDetail}")
-        End If
-        If extraInNpc.Count > 0 Then
-            NpcPreviewLog.LogLazy(Function() $"  [FMRS-RAW] indices-in-NPC-not-in-RACE (first 10): {String.Join(", ", extraInNpc.Take(10))}")
         End If
 
         For Each fm In npcData.FaceMorphs
             Dim region As FacialBoneRegion = Nothing
             If Not regionsFile.Regions.TryGetValue(fm.Index, region) Then
-                NpcPreviewLog.LogLazy(Function() $"  [FMRS-RAW] FMRI={fm.Index} → NOT FOUND in RACE regions JSON")
                 Continue For
             End If
 
@@ -65,7 +59,6 @@ Public Module FaceBonePoseBuilder
                                      Math.Abs(rx) < 0.0001F AndAlso Math.Abs(ry) < 0.0001F AndAlso Math.Abs(rz) < 0.0001F AndAlso
                                      Math.Abs(sc) < 0.0001F)
             Dim nonZeroMark As String = If(isZero, " (all-zero, will skip)", "")
-            NpcPreviewLog.LogLazy(Function() $"  [FMRS-RAW] FMRI={fm.Index} region='{region.Name}' bones={region.Bones.Count} sliders: pos=({px:+0.000;-0.000;0.000},{py:+0.000;-0.000;0.000},{pz:+0.000;-0.000;0.000}) rot=({rx:+0.000;-0.000;0.000},{ry:+0.000;-0.000;0.000},{rz:+0.000;-0.000;0.000}) scale={sc:+0.000;-0.000;0.000}{nonZeroMark}")
 
             ' Skip regions with all-zero FMRS (no deformation at all)
             If Math.Abs(px) < 0.0001F AndAlso Math.Abs(py) < 0.0001F AndAlso Math.Abs(pz) < 0.0001F AndAlso
@@ -125,9 +118,6 @@ Public Module FaceBonePoseBuilder
                 Dim isAnyNonZero As Boolean = (Math.Abs(deltaPos.X) > 0.0001F OrElse Math.Abs(deltaPos.Y) > 0.0001F OrElse Math.Abs(deltaPos.Z) > 0.0001F _
                                             OrElse Math.Abs(deltaRot.X) > 0.0001F OrElse Math.Abs(deltaRot.Y) > 0.0001F OrElse Math.Abs(deltaRot.Z) > 0.0001F _
                                             OrElse Math.Abs(deltaScale.X) > 0.0001F OrElse Math.Abs(deltaScale.Y) > 0.0001F OrElse Math.Abs(deltaScale.Z) > 0.0001F)
-                If isAnyNonZero Then
-                    NpcPreviewLog.LogLazy(Function() $"    [FMRS-BONE] region='{region.Name}' bone='{targetBoneName}' deltaPos=({deltaPos.X:+0.000;-0.000;0.000},{deltaPos.Y:+0.000;-0.000;0.000},{deltaPos.Z:+0.000;-0.000;0.000}) deltaRot=({deltaRot.X:+0.000;-0.000;0.000},{deltaRot.Y:+0.000;-0.000;0.000},{deltaRot.Z:+0.000;-0.000;0.000}) deltaScale=({deltaScale.X:+0.000;-0.000;0.000},{deltaScale.Y:+0.000;-0.000;0.000},{deltaScale.Z:+0.000;-0.000;0.000})")
-                End If
             Next
         Next
 

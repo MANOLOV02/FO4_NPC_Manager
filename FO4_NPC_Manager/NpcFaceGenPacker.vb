@@ -55,8 +55,7 @@ Friend Module NpcFaceGenPacker
     ''' <summary>Pack the four bake outputs of <paramref name="originPlugin"/>:<paramref name="formIdLow"/>
     ''' into the BA2 archive set anchored to <paramref name="anchorPluginPath"/>.
     '''
-    ''' Loose paths consumed (must already exist on disk; produced by FaceGenBuilder when
-    ''' DebugMode=False):
+    ''' Loose paths consumed (must already exist on disk; produced by FaceGenBuilder):
     '''   Data\Meshes\Actors\Character\FaceGenData\FaceGeom\&lt;originPlugin&gt;\&lt;FormID8hex&gt;.nif
     '''   Data\Textures\Actors\Character\FaceCustomization\&lt;originPlugin&gt;\&lt;FormID8hex&gt;_d.dds
     '''   Data\Textures\Actors\Character\FaceCustomization\&lt;originPlugin&gt;\&lt;FormID8hex&gt;_msn.dds

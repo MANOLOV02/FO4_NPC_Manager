@@ -95,7 +95,6 @@ Public Class NpcMorphResolver
             Next
             Dim pct = (100.0 * nearZero) / overlap
             Dim kind = If(CInt(triHead.NumVertices) = shapeVertCount, "MATCH", "MISMATCH")
-            NpcPreviewLog.LogLazy(Function() $"  [TRI-BASE-ALIGN-PROBE] '{shapeName}' {kind} triVerts={triHead.NumVertices} nifVerts={shapeVertCount} overlap={overlap} nearZero(<0.0001)={nearZero} ({pct:F1}%) maxDiff={maxMag:F4} atIdx={maxIdx}")
             For i = 0 To Math.Min(4, overlap - 1)
                 Dim t = triHead.BaseVertices(i)
                 Dim n = geom.NifLocalVertices(i)
@@ -104,19 +103,15 @@ Public Class NpcMorphResolver
                 Dim dz = CDbl(t.Z) - n.Z
                 Dim mag = Math.Sqrt(dx * dx + dy * dy + dz * dz)
                 Dim iLocal = i
-                NpcPreviewLog.LogLazy(Function() $"    [TRI-BASE-ALIGN-PROBE] i={iLocal} TRI=({t.X:F4},{t.Y:F4},{t.Z:F4}) NIF=({n.X:F4},{n.Y:F4},{n.Z:F4}) |diff|={mag:F4}")
             Next
             If maxIdx >= 0 AndAlso maxMag > 0.0001 Then
                 Dim t = triHead.BaseVertices(maxIdx)
                 Dim n = geom.NifLocalVertices(maxIdx)
-                NpcPreviewLog.LogLazy(Function() $"    [TRI-BASE-ALIGN-PROBE] worst match i={maxIdx} TRI=({t.X:F4},{t.Y:F4},{t.Z:F4}) NIF=({n.X:F4},{n.Y:F4},{n.Z:F4})")
             End If
             If shapeVertCount > overlap Then
-                NpcPreviewLog.LogLazy(Function() $"  [TRI-BASE-ALIGN-PROBE] NIF extras (indices {overlap}..{shapeVertCount - 1}) — {shapeVertCount - overlap} verts:")
                 For i = overlap To Math.Min(shapeVertCount - 1, overlap + 9)
                     Dim n = geom.NifLocalVertices(i)
                     Dim iLocal = i
-                    NpcPreviewLog.LogLazy(Function() $"    [TRI-BASE-ALIGN-PROBE] extra[{iLocal}] NIF=({n.X:F4},{n.Y:F4},{n.Z:F4})")
                 Next
             End If
         End If
@@ -140,9 +135,7 @@ Public Class NpcMorphResolver
             If CInt(triHead.NumVertices) = shapeVertCount Then
                 ' Case A — nothing to log
             ElseIf CInt(triHead.NumVertices) < shapeVertCount Then
-                NpcPreviewLog.LogLazy(Function() $"  [MORPH-EXTEND] Shape '{shapeName}' has {shapeVertCount} NIF verts vs {triHead.NumVertices} TRI deltas — applying to first {triHead.NumVertices} indices, extras [{triHead.NumVertices}..{shapeVertCount - 1}] stay at NIF rest (vanilla _faceBones convention)")
             Else
-                NpcPreviewLog.LogLazy(Function() $"  [MORPH-SHRINK] Shape '{shapeName}' has {shapeVertCount} NIF verts but {triHead.NumVertices} TRI deltas — NIF was downsized (likely mod); MorphEngine will drop indices >= {shapeVertCount}")
             End If
         End If
 
@@ -162,11 +155,9 @@ Public Class NpcMorphResolver
 
         ' 2) Face morph presets (MSDK/MSDV) - via TriHead chargen .tri + RACE MSID→MSM0/MSM1
         If _npcData.MorphValues.Count > 0 Then
-            NpcPreviewLog.LogLazy(Function() $"  [MORPH] Shape '{shapeName}' verts={shapeVertCount}: TRI={tri IsNot Nothing} TriHead={triHead IsNot Nothing}({If(triHead IsNot Nothing, CInt(triHead.NumVertices), 0)} verts, {If(triHead IsNot Nothing, triHead.Morphs.Count, 0)} morphs) MorphValues={_npcData.MorphValues.Count}")
             ' Raw dump of parsed MSDK→MSDV pairs for cross-reference with xEdit.
             Dim dumpIdx As Integer = 0
             For Each kvp In _npcData.MorphValues
-                NpcPreviewLog.LogLazy(Function() $"    [MSDV-RAW] #{dumpIdx} MPPI=0x{kvp.Key:X8} value={kvp.Value:F6}")
                 dumpIdx += 1
             Next
             If triHead IsNot Nothing Then AddFaceMorphPresetsFromTriHead(triHead, plan)
@@ -187,7 +178,6 @@ Public Class NpcMorphResolver
                 If m > maxMag Then maxMag = m
             Next
             maxMag = CSng(Math.Sqrt(maxMag))
-            NpcPreviewLog.LogLazy(Function() $"  [MORPH-CH] '{shapeName}' '{ch.Name}' w={ch.Weight:F3} verts={ch.Deltas.Count} maxDelta={maxMag:F3} effective={maxMag * Math.Abs(ch.Weight):F3}")
         Next
 
         ' 3) Face sculpting (FMRI/FMRS) — DISABLED: these are bone transforms
@@ -204,9 +194,6 @@ Public Class NpcMorphResolver
         ' The residual 0.012 at V-only is NOT FMIN: it's our resolver applying morph deltas at
         ' edge verts that CK's bake doesn't have. Separate bug, out of scope for FMIN semantics.
         ' No-op for the scaling; log FMIN for visibility.
-        If Math.Abs(_npcData.FacialMorphIntensity - 1.0F) > 0.001F AndAlso plan.Channels.Count > 0 Then
-            NpcPreviewLog.LogLazy(Function() $"  [MORPH] Vertex morphs NOT scaled by FMIN={_npcData.FacialMorphIntensity:F3} (only FMRS path applies it, validated empirically 2026-04-19)")
-        End If
 
         Return plan
     End Function
@@ -260,7 +247,6 @@ Public Class NpcMorphResolver
 
                 Dim triMorph = triHead.GetMorph(morphName)
                 If triMorph Is Nothing OrElse triMorph.Vertices Is Nothing OrElse triMorph.Vertices.Length = 0 Then
-                    If logShapeName <> "" Then NpcPreviewLog.LogLazy(Function() $"  [MORPH-SLIDER] MSID=0x{mvDef.Index:X8} npcWeight={weight:+0.000;-0.000} → picked={nameSrc}='{morphName}' w={morphWeight:F3} → NOT FOUND in TRI (MSM0='{mvDef.MinName}' MSM1='{mvDef.MaxName}')")
                     Continue For
                 End If
 
@@ -269,7 +255,6 @@ Public Class NpcMorphResolver
                     plan.Channels.Add(New MorphChannel(morphName, morphWeight, deltas))
                     If logShapeName <> "" Then
                         Dim maxDeltaStr = DescribeMaxSignedDelta(triMorph, triHead)
-                        NpcPreviewLog.LogLazy(Function() $"  [MORPH-SLIDER] MSID=0x{mvDef.Index:X8} npcWeight={weight:+0.000;-0.000} → picked={nameSrc}='{morphName}' w={morphWeight:F3} verts={deltas.Count} (MSM0='{mvDef.MinName}' MSM1='{mvDef.MaxName}') maxDelta={maxDeltaStr}")
                     End If
                 End If
             Next
@@ -287,7 +272,6 @@ Public Class NpcMorphResolver
 
                 Dim triMorph = triHead.GetMorph(morphName)
                 If triMorph Is Nothing OrElse triMorph.Vertices Is Nothing OrElse triMorph.Vertices.Length = 0 Then
-                    If logShapeName <> "" Then NpcPreviewLog.LogLazy(Function() $"  [MORPH-PRESET] MPPI=0x{mpDef.Index:X8} '{morphName}' npcWeight={weight:+0.000;-0.000} → NOT FOUND in TRI")
                     Continue For
                 End If
 
@@ -296,7 +280,6 @@ Public Class NpcMorphResolver
                     plan.Channels.Add(New MorphChannel(morphName, weight, deltas))
                     If logShapeName <> "" Then
                         Dim topDeltas = DescribeTopSignedDeltas(triMorph, triHead, 5)
-                        NpcPreviewLog.LogLazy(Function() $"  [MORPH-PRESET] MPPI=0x{mpDef.Index:X8} '{morphName}' npcWeight={weight:+0.000;-0.000} verts={deltas.Count} top5=[{topDeltas}]")
                     End If
                 End If
             Next
@@ -316,13 +299,11 @@ Public Class NpcMorphResolver
                 End If
             Next
             If summedByName.Count <> plan.Channels.Count Then
-                If logShapeName <> "" Then NpcPreviewLog.LogLazy(Function() $"  [MORPH-DEDUP] '{logShapeName}': {plan.Channels.Count} → {summedByName.Count} channels (weights summed across duplicates)")
                 plan.Channels.Clear()
                 plan.Channels.AddRange(summedByName.Values)
             End If
         End If
 
-        If logShapeName <> "" Then NpcPreviewLog.LogLazy(Function() $"  [MORPH-PLAN] {plan.Channels.Count} total channels for shape '{logShapeName}'")
         Return plan
     End Function
 
@@ -457,9 +438,6 @@ Public Class NpcMorphResolver
                 If triHead IsNot Nothing Then
                     Dim regBase = triHead.Morphs.Where(Function(m) Not m.IsModMorph).Select(Function(m) m.Name).ToList()
                     Dim modBase = triHead.Morphs.Where(Function(m) m.IsModMorph).Select(Function(m) m.Name).ToList()
-                    NpcPreviewLog.LogLazy(Function() $"[TRI] Base TRI '{normRace}': {regBase.Count} regular + {modBase.Count} mod-morphs")
-                    If regBase.Count > 0 Then NpcPreviewLog.Log($"[TRI]   regular: {String.Join(", ", regBase)}")
-                    If modBase.Count > 0 Then NpcPreviewLog.Log($"[TRI]   mod: {String.Join(", ", modBase)}")
                 End If
             End If
         End If
@@ -471,9 +449,6 @@ Public Class NpcMorphResolver
             If chargenHead IsNot Nothing Then
                 Dim regularMorphs = chargenHead.Morphs.Where(Function(m) Not m.IsModMorph).Select(Function(m) m.Name).ToList()
                 Dim modMorphs = chargenHead.Morphs.Where(Function(m) m.IsModMorph).Select(Function(m) m.Name).ToList()
-                NpcPreviewLog.LogLazy(Function() $"[TRI] Chargen TRI '{normChargen}': {regularMorphs.Count} regular + {modMorphs.Count} mod-morphs")
-                If regularMorphs.Count > 0 Then NpcPreviewLog.Log($"[TRI]   regular: {String.Join(", ", regularMorphs)}")
-                If modMorphs.Count > 0 Then NpcPreviewLog.Log($"[TRI]   mod: {String.Join(", ", modMorphs)}")
                 If triHead Is Nothing Then
                     triHead = chargenHead
                 Else
@@ -495,7 +470,6 @@ Public Class NpcMorphResolver
 
         Dim bytes = TryGetFileBytes(normalizedPath)
         If bytes Is Nothing Then
-            NpcPreviewLog.LogLazy(Function() $"[TRI] NotFound (PIRT path): '{normalizedPath}'")
             Return Nothing
         End If
 
@@ -504,7 +478,6 @@ Public Class NpcMorphResolver
             SyncLock _triCache
                 _triCache(normalizedPath) = pirt
             End SyncLock
-            NpcPreviewLog.LogLazy(Function() $"[TRI] PIRT loaded: '{normalizedPath}' ({pirt.ShapeMorphs.Count} shapes)")
             Return pirt
         Catch
             Return Nothing
@@ -524,7 +497,6 @@ Public Class NpcMorphResolver
 
         Dim bytes = TryGetFileBytes(normalizedPath)
         If bytes Is Nothing Then
-            NpcPreviewLog.LogLazy(Function() $"[TRI] NotFound: '{normalizedPath}' (FilesDictionary miss — vertex morphs will not apply to shapes that needed this TRI)")
             Return Nothing
         End If
 
@@ -534,16 +506,11 @@ Public Class NpcMorphResolver
                 SyncLock _triHeadCache
                     _triHeadCache(normalizedPath) = head
                 End SyncLock
-                NpcPreviewLog.LogLazy(Function() $"[TRI] TriHead loaded: '{normalizedPath}' ({head.Morphs.Count} morphs, {head.NumVertices} verts)")
                 ' Full morph-name dump so we can compare what each TRI provides (NAM0=1 vs NAM0=2).
                 Dim morphNames = head.Morphs.Select(Function(m) m.Name).ToList()
-                If morphNames.Count > 0 Then
-                    NpcPreviewLog.LogLazy(Function() $"[TRI]   morphs: {String.Join(", ", morphNames)}")
-                End If
             End If
             Return head
         Catch ex As Exception
-            NpcPreviewLog.LogLazy(Function() $"[TRI] Failed: '{normalizedPath}': {ex.Message}")
             Return Nothing
         End Try
     End Function

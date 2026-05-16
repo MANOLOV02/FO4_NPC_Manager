@@ -74,8 +74,7 @@ Public Module NpcOverrideSaver
     '''   1. Build override entry (apply overlay, sync MWGT, rebuild HeadParts).
     '''   2. Load existing records from the target plugin (Update existing path).
     '''   3. Write plugin via <see cref="SaveNpcEspWriter.SaveOverridePlugin"/>.
-    '''   4. Optional verifier (only when <see cref="NpcPreviewLog.Enabled"/>).
-    '''   5. Optional CharGen bake + BA2 pack (per <see cref="SaveEsp_Form.SaveTarget.GenerateChargen"/>).</summary>
+    '''   4. Optional CharGen bake + BA2 pack (per <see cref="SaveEsp_Form.SaveTarget.GenerateChargen"/>).</summary>
     ''' <summary>Run the save end-to-end. Hybrid threading model — pure-IO phases (write ESP,
     ''' verifier, BA2 pack) run on a worker Task so the UI message pump stays alive and the
     ''' progress panel repaints; the CharGen bake runs on the UI thread because it touches the
@@ -124,7 +123,6 @@ Public Module NpcOverrideSaver
         Catch ex As Exception
             result.Success = False
             result.ErrorMessage = ex.Message
-            NpcPreviewLog.LogLazy(Function() $"  [SAVE-ESP] EXCEPTION {ex.GetType().Name}: {ex.Message}")
         End Try
 
         Return result
@@ -289,54 +287,28 @@ Public Module NpcOverrideSaver
         Next
         result.SavedFormIDs.Add(npcFormID)
 
-        NpcPreviewLog.LogSeparator($"SAVE ESP from {npc.EditorID} [0x{npc.FormID:X8}]")
-        NpcPreviewLog.LogLazy(Function() $"  written to: {writeRes.OutputPath}")
-        NpcPreviewLog.LogLazy(Function() $"  NPC count: {writeRes.NpcCount}, MAST list: {String.Join(", ", writeRes.MasterList)}")
-        If writeRes.RemovedMasters.Count > 0 Then
-            NpcPreviewLog.LogLazy(Function() $"  Removed masters: {String.Join(", ", writeRes.RemovedMasters)}")
-        End If
-        If writeRes.AddedMasters.Count > 0 Then
-            NpcPreviewLog.LogLazy(Function() $"  Added masters: {String.Join(", ", writeRes.AddedMasters)}")
-        End If
-        For Each kvp In writeRes.MasterAudit
-            Dim auditMaster = kvp.Key
-            Dim auditFids = kvp.Value
-            NpcPreviewLog.LogLazy(Function() $"  [MAST] {auditMaster} ({auditFids.Count} ref{If(auditFids.Count = 1, "", "s")}): {String.Join(", ", auditFids.Take(8).Select(Function(f) $"0x{f:X8}"))}{If(auditFids.Count > 8, " ...", "")}")
-        Next
-
-        ' Phase 4: optional round-trip verifier (debug only — gated by NpcPreviewLog.Enabled).
-        result.VerifierIcon = MessageBoxIcon.Information
-        If NpcPreviewLog.Enabled Then
-            ReportPhase(progress, "Verifying written record…", "")
-            Dim verifyRes = NpcOverrideVerifier.VerifyWrittenOverride(writeRes.OutputPath, npcSpec, sourcePluginName, ctx.PluginManager)
-            If Not String.IsNullOrEmpty(verifyRes.FatalError) Then
-                NpcPreviewLog.LogLazy(Function() $"  [VERIFY] FATAL: {verifyRes.FatalError}")
-                result.VerifierSummary = vbCrLf & vbCrLf & "Verifier could not run: " & verifyRes.FatalError
-                result.VerifierIcon = MessageBoxIcon.Warning
-            ElseIf verifyRes.Match Then
-                NpcPreviewLog.Log("  [VERIFY] todo igual")
-                result.VerifierSummary = vbCrLf & vbCrLf & "Verifier: todo igual"
-            Else
-                NpcPreviewLog.LogLazy(Function() $"  [VERIFY] {verifyRes.Differences.Count} differences:")
-                For Each line In verifyRes.Differences
-                    Dim local = line
-                    NpcPreviewLog.LogLazy(Function() "    " & local)
-                Next
-                Dim shownCount = Math.Min(verifyRes.Differences.Count, 10)
-                Dim sb As New System.Text.StringBuilder()
-                sb.AppendLine()
-                sb.AppendLine()
-                sb.AppendLine($"Verifier: {verifyRes.Differences.Count} difference(s) — see log for full list.")
-                For i = 0 To shownCount - 1
-                    sb.AppendLine($"  • {verifyRes.Differences(i)}")
-                Next
-                If verifyRes.Differences.Count > shownCount Then
-                    sb.AppendLine($"  … {verifyRes.Differences.Count - shownCount} more")
-                End If
-                result.VerifierSummary = sb.ToString()
-                result.VerifierIcon = MessageBoxIcon.Warning
+        ' Phase 3b: refresh the BodyMorphs/Skin sidecar (default ON). Always builds the merged
+        ' SidecarFile when WriteBssliders OR EmitBodyGen is set — the BodyGen emitter consumes
+        ' the post-merge dict so its .ini reflects both the current NPC and any pre-existing
+        ' entries from prior saves of other NPCs to the same plugin.
+        Dim mergedSidecar As BssliderSidecar.SidecarFile = Nothing
+        If target.WriteBssliders OrElse target.EmitBodyGen Then
+            mergedSidecar = MergeSidecarForCurrentNpc(target, npcFormID, npcSpec, ctx)
+            If target.WriteBssliders Then
+                ReportPhase(progress, "Writing .bssliders sidecar…", IO.Path.GetFileName(target.TargetPath))
+                Dim sidecarPath = BssliderSidecar.BuildPath(target.TargetPath)
+                BssliderSidecar.Write(sidecarPath, mergedSidecar)
             End If
         End If
+
+        ' Phase 3c: BodyGen .ini pair (opt-in). Iterates the post-merge sidecar so all NPCs of
+        ' the plugin contribute their templates, not just the one currently being saved.
+        If target.EmitBodyGen AndAlso mergedSidecar IsNot Nothing Then
+            ReportPhase(progress, "Writing BodyGen .ini…", IO.Path.GetFileName(target.TargetPath))
+            EmitBodyGenFromSidecar(target, mergedSidecar, ctx)
+        End If
+
+        result.VerifierIcon = MessageBoxIcon.Information
 
         ' Default ChargenSuccess to True so the caller can OR it with the bake outcome later.
         result.ChargenSuccess = True
@@ -351,6 +323,83 @@ Public Module NpcOverrideSaver
     Private Sub ReportPhase(progress As IProgress(Of SaveProgress), phase As String, detail As String)
         If progress Is Nothing Then Return
         progress.Report(New SaveProgress With {.Phase = phase, .Detail = detail, .Determinate = False})
+    End Sub
+
+    ''' <summary>Read the existing <c>&lt;plugin&gt;.bssliders</c> sidecar (if any), overwrite
+    ''' the entry for the NPC being saved with whatever its overlay currently holds, and
+    ''' return the merged in-memory SidecarFile. The caller writes it (when the user has
+    ''' WriteBssliders ON) and/or feeds it to the BodyGen emitter. Entries for other NPCs of
+    ''' the plugin are preserved as-is so a single-NPC save never wipes the rest.</summary>
+    Private Function MergeSidecarForCurrentNpc(target As SaveEsp_Form.SaveTarget,
+                                               npcFormID As UInteger,
+                                               npcSpec As NPC_Data,
+                                               ctx As SaveContext) As BssliderSidecar.SidecarFile
+        Dim sidecarPath = BssliderSidecar.BuildPath(target.TargetPath)
+        Dim merged = BssliderSidecar.Read(sidecarPath)
+        If merged Is Nothing Then merged = New BssliderSidecar.SidecarFile()
+        merged.Plugin = IO.Path.GetFileName(target.TargetPath)
+
+        ' BodyGen matches morphs.ini rows by the NPC's ORIGINATING master (the plugin that
+        ' originally defines the NPC), not by the override plugin we're writing to. Use the
+        ' source plugin lookup so the identifier is stable for re-emits even when the load
+        ' order changes.
+        Dim masterName = ctx.PluginManager.GetOriginatingPluginName(npcFormID)
+        If String.IsNullOrEmpty(masterName) Then masterName = "Unknown.esp"
+        Dim identifier = BssliderSidecar.BuildIdentifier(masterName, npcFormID)
+
+        Dim entry As New BssliderSidecar.NpcEntry With {
+            .EditorId = If(npcSpec.EditorID, ""),
+            .Gender = If(npcSpec.IsFemale, "female", "male")
+        }
+
+        Dim overlay As LooksmenuLoader.LooksmenuPreset = Nothing
+        ctx.AppliedPresets.TryGetValue(npcFormID, overlay)
+        If overlay IsNot Nothing Then
+            If overlay.BodyMorphSliders IsNot Nothing Then
+                For Each kv In overlay.BodyMorphSliders
+                    entry.BodyMorphs(kv.Key) = kv.Value
+                Next
+            End If
+            entry.SkinTemplateId = If(overlay.SkinTemplateId, "")
+        End If
+
+        ' Always overwrite the current NPC's slot — even if entry ends up empty. Write() drops
+        ' empty entries so a clear-then-save round trip removes the row instead of leaving stale
+        ' data on disk.
+        merged.Npcs(identifier) = entry
+        Return merged
+    End Function
+
+    ''' <summary>Translate the merged sidecar into BodyGenIniWriter entries and emit the .ini
+    ''' pair. Sidecar rows without BodyMorphs (SkinTemplate-only entries) are skipped — the
+    ''' Skin override is an F4SE feature unrelated to BodyGen. Malformed identifiers are also
+    ''' skipped silently; the sidecar Read() already filters them out, this Catch is belt-and-
+    ''' suspenders.</summary>
+    Private Sub EmitBodyGenFromSidecar(target As SaveEsp_Form.SaveTarget,
+                                       sidecar As BssliderSidecar.SidecarFile,
+                                       ctx As SaveContext)
+        Dim entries As New List(Of BodyGenIniWriter.NpcEntry)
+        For Each kv In sidecar.Npcs
+            Dim e = kv.Value
+            If e Is Nothing OrElse e.BodyMorphs Is Nothing OrElse e.BodyMorphs.Count = 0 Then Continue For
+
+            Dim masterName As String = ""
+            Dim localFid As UInteger = 0UI
+            If Not BssliderSidecar.TryParseIdentifier(kv.Key, masterName, localFid) Then Continue For
+
+            Dim editorId = If(e.EditorId, "")
+            Dim templateName = "NPCM_" & BodyGenIniWriter.SanitizeTemplateName(editorId)
+            entries.Add(New BodyGenIniWriter.NpcEntry With {
+                .TemplateName = templateName,
+                .MasterPluginFileName = masterName,
+                .LocalFormIDHex = localFid.ToString("X6"),
+                .Gender = If(e.Gender, ""),
+                .BodyMorphs = New Dictionary(Of String, Single)(e.BodyMorphs, StringComparer.OrdinalIgnoreCase)
+            })
+        Next
+
+        Dim baseName = IO.Path.GetFileNameWithoutExtension(target.TargetPath)
+        BodyGenIniWriter.Emit(ctx.DataPath, baseName, entries)
     End Sub
 
 End Module
