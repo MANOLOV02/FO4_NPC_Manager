@@ -678,10 +678,18 @@ Public Class EditFace_Form
     ''' that PartType. The render's MergeHeadPartsWithRaceDefaults (MainForm.vb:6582) does the same
     ''' merge — the editor mirrors it so the user sees what the render will draw, not just the raw
     ''' NPC override list. Race defaults are read-only here: removing them requires a different
-    ''' mechanism (explicit "no part" override) which the model doesn't currently support.</summary>
+    ''' mechanism (explicit "no part" override) which the model doesn't currently support.
+    '''
+    ''' IsHnamExtra=True means the row is a sub-part derived from a parent HDPT's ExtraPartFormIDs
+    ''' (hairlines, eyelashes, AO/wet, mouth shadow). The render's CollectHeadPartCandidate walks
+    ''' the HNAM chain (MainForm.vb:7544) and pulls these automatically; they don't need to be
+    ''' stored in preset.HeadPartFormIDs. The editor displays them indented under their parent so
+    ''' the user can see what the render will draw without making them removable independently
+    ''' (removing the parent cascade-removes any duplicate Misc in preset that matches HNAM).</summary>
     Private Class HeadPartRowTag
         Public FormID As UInteger
         Public IsRaceDefault As Boolean
+        Public IsHnamExtra As Boolean
     End Class
 
     Private Sub RefreshHeadPartsList()
@@ -690,23 +698,81 @@ Public Class EditFace_Form
             ListViewHeadParts.Items.Clear()
             Dim p = Preset
 
-            ' NPC overrides first — exactly as the user declared them.
-            For Each fid In p.HeadPartFormIDs
-                ListViewHeadParts.Items.Add(BuildHeadPartRow(fid, isRaceDefault:=False))
-            Next
+            ' Pre-compute: para cada Misc en preset, ¿algún parent non-Misc del preset o de los
+            ' RACE defaults visibles la declara en su HNAM? Si sí, sale como sub-row del parent y
+            ' NO como top-level entry. Esto elimina la duplicación visual que vanilla NPC.PNAM
+            ' frecuentemente trae (hairline listada tanto en HNAM como standalone Misc en PNAM).
+            Dim raceDefaults = If(_isFemale, _race?.FemaleHeadPartFormIDs, _race?.MaleHeadPartFormIDs)
+            Dim visibleParents As New List(Of UInteger)
+            Dim visibleParentIsRaceDefault As New Dictionary(Of UInteger, Boolean)
 
-            ' Compute which non-Misc PartTypes the NPC has already overridden, then add RACE
-            ' defaults for any PartType (1..9) the NPC didn't claim. This mirrors the render's
-            ' "NPC override wins per-type, RACE default fills the gap" rule (MainForm.vb:6573-6575).
+            ' Parents NPC-override (no Misc).
             Dim overriddenTypes As New HashSet(Of Integer)
             For Each fid In p.HeadPartFormIDs
                 Dim hd As HDPT_Data = Nothing
                 If _allHeadPartsByFid.TryGetValue(fid, hd) AndAlso hd.PartType <> HdptTypeMisc Then
                     overriddenTypes.Add(hd.PartType)
+                    visibleParents.Add(fid)
+                    visibleParentIsRaceDefault(fid) = False
+                End If
+            Next
+            ' Parents RACE-default (no Misc) que llenan PartTypes no override-ados.
+            If raceDefaults IsNot Nothing Then
+                For Each fid In raceDefaults
+                    Dim hd As HDPT_Data = Nothing
+                    If Not _allHeadPartsByFid.TryGetValue(fid, hd) Then Continue For
+                    If hd.PartType = HdptTypeMisc Then Continue For
+                    If overriddenTypes.Contains(hd.PartType) Then Continue For
+                    visibleParents.Add(fid)
+                    visibleParentIsRaceDefault(fid) = True
+                Next
+            End If
+
+            ' Set de FormIDs que serán mostrados como HNAM-extras debajo de algún parent visible.
+            ' Estos se excluyen de la sección top-level Misc para no duplicar visualmente.
+            Dim claimedAsExtra As New HashSet(Of UInteger)
+            Dim extrasByParent As New Dictionary(Of UInteger, List(Of UInteger))
+            For Each parentFid In visibleParents
+                Dim hd As HDPT_Data = Nothing
+                If Not _allHeadPartsByFid.TryGetValue(parentFid, hd) Then Continue For
+                If hd.ExtraPartFormIDs Is Nothing OrElse hd.ExtraPartFormIDs.Count = 0 Then Continue For
+                Dim list As New List(Of UInteger)
+                For Each ex In hd.ExtraPartFormIDs
+                    Dim exData As HDPT_Data = Nothing
+                    If Not _allHeadPartsByFid.TryGetValue(ex, exData) Then Continue For
+                    list.Add(ex)
+                    claimedAsExtra.Add(ex)
+                Next
+                If list.Count > 0 Then extrasByParent(parentFid) = list
+            Next
+
+            ' Emisión: para cada FID en preset que sea Parent (non-Misc), fila top-level + sub-rows
+            ' HNAM extras. Misc en preset que ya estén claimedAsExtra se omiten (saldrán bajo su
+            ' parent). Misc en preset NO claimedAsExtra (addons standalone legítimos: mouth shadow,
+            ' AO/wet sueltos) salen como top-level normal.
+            For Each fid In p.HeadPartFormIDs
+                Dim hd As HDPT_Data = Nothing
+                If Not _allHeadPartsByFid.TryGetValue(fid, hd) Then
+                    ' Unresolved: lo mostramos top-level para que el usuario vea el FormID roto.
+                    ListViewHeadParts.Items.Add(BuildHeadPartRow(fid, isRaceDefault:=False))
+                    Continue For
+                End If
+                If hd.PartType = HdptTypeMisc AndAlso claimedAsExtra.Contains(fid) Then
+                    ' Va a salir como sub-row del parent que la reclama. Skip top-level.
+                    Continue For
+                End If
+                ListViewHeadParts.Items.Add(BuildHeadPartRow(fid, isRaceDefault:=False))
+                ' Si es parent non-Misc, emit las HNAM-extras como sub-rows readonly.
+                Dim extras As List(Of UInteger) = Nothing
+                If hd.PartType <> HdptTypeMisc AndAlso extrasByParent.TryGetValue(fid, extras) Then
+                    For Each ex In extras
+                        ListViewHeadParts.Items.Add(BuildHeadPartRow(ex, isRaceDefault:=False, isHnamExtra:=True))
+                    Next
                 End If
             Next
 
-            Dim raceDefaults = If(_isFemale, _race?.FemaleHeadPartFormIDs, _race?.MaleHeadPartFormIDs)
+            ' RACE defaults non-Misc que llenen PartTypes que el NPC no claimeó. Mismo flujo:
+            ' fila top-level + sub-rows HNAM-extras (también readonly por IsRaceDefault).
             If raceDefaults IsNot Nothing Then
                 For Each fid In raceDefaults
                     Dim hd As HDPT_Data = Nothing
@@ -714,6 +780,12 @@ Public Class EditFace_Form
                     If hd.PartType = HdptTypeMisc Then Continue For
                     If overriddenTypes.Contains(hd.PartType) Then Continue For
                     ListViewHeadParts.Items.Add(BuildHeadPartRow(fid, isRaceDefault:=True))
+                    Dim extras As List(Of UInteger) = Nothing
+                    If extrasByParent.TryGetValue(fid, extras) Then
+                        For Each ex In extras
+                            ListViewHeadParts.Items.Add(BuildHeadPartRow(ex, isRaceDefault:=True, isHnamExtra:=True))
+                        Next
+                    End If
                 Next
             End If
         Finally
@@ -725,33 +797,37 @@ Public Class EditFace_Form
     ''' layout (Type / Editor ID / Name / Plugin / FormID) so the eye doesn't have to translate
     ''' between the two views. Unresolved FormIDs (e.g. plugin missing) still get a row showing
     ''' the FormID so the user can see what's broken instead of getting a silent gap. Race-default
-    ''' rows are rendered in gray and tagged so OnRemoveHeadPart can refuse to mutate them.</summary>
-    Private Function BuildHeadPartRow(fid As UInteger, isRaceDefault As Boolean) As ListViewItem
-        Dim tag As New HeadPartRowTag With {.FormID = fid, .IsRaceDefault = isRaceDefault}
+    ''' and HNAM-extra rows are rendered in gray and tagged so OnRemoveHeadPart can refuse to
+    ''' mutate them. HNAM-extra rows are also indented in the Type column to make the
+    ''' parent-child relationship visible.</summary>
+    Private Function BuildHeadPartRow(fid As UInteger, isRaceDefault As Boolean, Optional isHnamExtra As Boolean = False) As ListViewItem
+        Dim tag As New HeadPartRowTag With {.FormID = fid, .IsRaceDefault = isRaceDefault, .IsHnamExtra = isHnamExtra}
         Dim hd As HDPT_Data = Nothing
         Dim hex = fid.ToString("X8")
+        Dim indent As String = If(isHnamExtra, "    └─ ", "")
         If Not _allHeadPartsByFid.TryGetValue(fid, hd) Then
-            Dim missing As New ListViewItem("(unresolved)")
+            Dim missing As New ListViewItem(indent & "(unresolved)")
             missing.SubItems.Add("")
             missing.SubItems.Add("")
             missing.SubItems.Add("")
             missing.SubItems.Add(hex)
             missing.Tag = tag
-            If isRaceDefault Then missing.ForeColor = SystemColors.GrayText
+            If isRaceDefault OrElse isHnamExtra Then missing.ForeColor = SystemColors.GrayText
             Return missing
         End If
         Dim plugin As String = ""
         Dim rec = _pluginManager.GetRecord(fid)
         If rec IsNot Nothing AndAlso Not String.IsNullOrWhiteSpace(rec.SourcePluginName) Then plugin = rec.SourcePluginName
-        Dim typeText = HdptTypeName(hd.PartType)
+        Dim typeText = indent & HdptTypeName(hd.PartType)
         If isRaceDefault Then typeText &= " (RACE)"
+        If isHnamExtra Then typeText &= " (HNAM)"
         Dim row As New ListViewItem(typeText)
         row.SubItems.Add(If(hd.EditorID, ""))
         row.SubItems.Add(If(hd.FullName, ""))
         row.SubItems.Add(plugin)
         row.SubItems.Add(hex)
         row.Tag = tag
-        If isRaceDefault Then row.ForeColor = SystemColors.GrayText
+        If isRaceDefault OrElse isHnamExtra Then row.ForeColor = SystemColors.GrayText
         Return row
     End Function
 
@@ -830,10 +906,51 @@ Public Class EditFace_Form
         ' part of NPC.HeadPartFormIDs. The user can override them via Add (which will replace
         ' the default in the merge) but can't outright "remove" them from this view.
         If tag.IsRaceDefault Then Return
+        ' HNAM-extra sub-rows are read-only too — they're derived from the parent's HDPT.HNAM,
+        ' not stored in preset. Removing the parent cascade-removes them (below); the row itself
+        ' is a view of the parent's HNAM, not an independent entry.
+        If tag.IsHnamExtra Then Return
         Dim p = Preset
         Dim idx = p.HeadPartFormIDs.IndexOf(tag.FormID)
         If idx < 0 Then Return
         p.HeadPartFormIDs.RemoveAt(idx)
+
+        ' Cascade: si el HDPT removido es un parent non-Misc con HNAM-extras, los Misc del preset
+        ' que estén declarados en su ExtraPartFormIDs quedan como orphans (effective type=0, paleta
+        ' no aplica → color BGSM default). Vanilla NPC.PNAM frecuentemente lista hairlines/etc. tanto
+        ' en HNAM del parent como standalone Misc en PNAM; cuando el usuario borra el parent, esos
+        ' standalone se vuelven huérfanos y rompen el render. Los limpiamos acá. No tocamos Misc del
+        ' preset cuyo FormID NO esté en el HNAM del parent removido — pueden ser addons legítimos
+        ' independientes (mouth shadow, AO/wet) que el usuario quiere conservar.
+        Dim removedHdpt As HDPT_Data = Nothing
+        If _allHeadPartsByFid.TryGetValue(tag.FormID, removedHdpt) AndAlso
+           removedHdpt.PartType <> HdptTypeMisc AndAlso
+           removedHdpt.ExtraPartFormIDs IsNot Nothing AndAlso
+           removedHdpt.ExtraPartFormIDs.Count > 0 Then
+            Dim extras As New HashSet(Of UInteger)(removedHdpt.ExtraPartFormIDs)
+            ' Defensive: si otra entrada del preset también declara este extra en su HNAM, NO lo
+            ' removemos — sigue siendo HNAM-child de un parent vivo. Caso raro en vanilla pero
+            ' barato cubrirlo.
+            Dim claimedByOtherParent As New HashSet(Of UInteger)
+            For Each otherFid In p.HeadPartFormIDs
+                Dim otherHdpt As HDPT_Data = Nothing
+                If Not _allHeadPartsByFid.TryGetValue(otherFid, otherHdpt) Then Continue For
+                If otherHdpt.ExtraPartFormIDs Is Nothing Then Continue For
+                For Each ex In otherHdpt.ExtraPartFormIDs
+                    If extras.Contains(ex) Then claimedByOtherParent.Add(ex)
+                Next
+            Next
+            For i = p.HeadPartFormIDs.Count - 1 To 0 Step -1
+                Dim fid = p.HeadPartFormIDs(i)
+                If Not extras.Contains(fid) Then Continue For
+                If claimedByOtherParent.Contains(fid) Then Continue For
+                Dim extraHdpt As HDPT_Data = Nothing
+                If Not _allHeadPartsByFid.TryGetValue(fid, extraHdpt) Then Continue For
+                If extraHdpt.PartType <> HdptTypeMisc Then Continue For
+                p.HeadPartFormIDs.RemoveAt(i)
+            Next
+        End If
+
         RefreshHeadPartsList()
         _refresh?.Invoke(FaceRefreshScope.FullReload)
     End Sub
