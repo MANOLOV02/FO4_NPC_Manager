@@ -2432,6 +2432,57 @@ Public Class MainForm
             totalInjected += n
             Dim postCount = inst.SkeletonDictionary.Count
 
+            ' [FAKE-SKIN] Para shapes UNSKINNED dentro de un chunk BSConnectPoint, aplicar
+            ' synthetic skin tying todos los vertices al chunk anchor con weight 1.0. Sin esto,
+            ' SkinningHelper.vb:374 (path A unskinned) computa Mtot = GetGlobalTransform en chunk-
+            ' local frame y el shader lo aplica como si fuera actor-world → geometría cae al
+            ' origen (caso LightPlane en Protectron). Con fake-skin, la shape entra al path
+            ' skinned nativo y el anchor.posedWorld se aplica per frame (= pose follow gratis,
+            ' bounds/world cache también).
+            '
+            ' IMPORTANTE bind matrix: walkear backing → ... → parent_de_chunkRoot, NO componer
+            ' chunkRoot.local. Per BSConnectPointBoneInjector.vb:137-140 chunkRoot.R es scene-
+            ' viewer rotation del modelador, NO parte del attachment. anchor.world ya incluye
+            ' la rotación del parent bone del actor (= Chest.R, que matchea chunkRoot.R por
+            ' diseño del chunk). Si bind incluye chunkRoot.R y luego × anchor.world (que tiene
+            ' Chest.R), se mete un flip espurio (verificado: composición R_chunk × R_anchor da
+            ' rotación 180° Y para HeadProtectron → light termina detrás del actor).
+            If isRobotMount AndAlso Not shape.IsSkinned Then
+                Try
+                    Dim asOverride = TryCast(shape, IRuntimeSkinOverride)
+                    If asOverride IsNot Nothing Then
+                        Dim chunkRootName = If(shape.NifContent.GetRootNode()?.Name?.String, "chunk")
+                        Dim anchorName = "__chunkAnchor__" & socket.Name & "__" & chunkRootName
+
+                        ' Computar bind manualmente: walk desde backing hacia arriba pero
+                        ' STOP antes de componer chunkRoot.local.
+                        Dim backing = shape.Geometry.BackingShape
+                        Dim chunkRootNode = shape.NifContent.GetRootNode()
+                        Dim bindMatrix As Transform_Class = New Transform_Class(backing)
+                        Dim curNode As NiflySharp.Blocks.NiNode = TryCast(shape.NifContent.GetParentNode(backing), NiflySharp.Blocks.NiNode)
+                        While curNode IsNot Nothing AndAlso Not ReferenceEquals(curNode, chunkRootNode)
+                            bindMatrix = New Transform_Class(curNode).ComposeTransforms(bindMatrix)
+                            curNode = TryCast(shape.NifContent.GetParentNode(curNode), NiflySharp.Blocks.NiNode)
+                        End While
+
+                        ' Placeholder NiNode en memoria — su .Name debe matchear el anchor que
+                        ' BSConnectPointBoneInjector creó en SkeletonInstance.SkeletonDictionary.
+                        ' No se agrega a chunkNif.Blocks, vive solo como referencia de bone name.
+                        Dim placeholder As New NiflySharp.Blocks.NiNode()
+                        placeholder.Name = New NiflySharp.NiStringRef(anchorName)
+
+                        asOverride.ApplySyntheticAnchorSkin(placeholder, bindMatrix)
+
+                        Dim shL = shape.ShapeName, anL = anchorName
+                        Dim bT = bindMatrix.Translation
+                        Logger.LogLazy(Function() $"[FAKE-SKIN] shape='{shL}' anchor='{anL}' bind.T=({bT.X:F3},{bT.Y:F3},{bT.Z:F3}) (excluye chunkRoot.local)")
+                    End If
+                Catch ex As Exception
+                    Dim shL = shape.ShapeName, exL = ex
+                    Logger.LogLazy(Function() $"[FAKE-SKIN] shape='{shL}' EXCEPTION: {exL.GetType().Name}: {exL.Message}")
+                End Try
+            End If
+
             ' [CHUNK-RESKIN-V2] Re-skinear shape.ShapeBoneTransforms usando la fórmula per-bone
             ' OpenAI: cada bone B del chunk obtiene W_B = G_B × A, donde:
             '   G_B    = global transform de B's NiNode en el árbol del chunk NIF (no derivado de inv(bind))
@@ -2448,6 +2499,19 @@ Public Class MainForm
             ' Para otros bones (Arm1..Arm7, etc.), W_B preserva la posición relativa del chunk-NIF tree
             ' transportada por A — esto mantiene la articulación del chunk en vez de colapsar todos los
             ' bones en el mismo punto (que era el bug del attempt previo).
+            ' Skip V2 reskin para shapes fake-skinned (HasSyntheticSkin=True). Su bind ya está
+            ' seteado por ApplySyntheticAnchorSkin como el Mtot chunk-local; el shader compone
+            ' con actor.anchor.posedWorld y produce vertex × Mtot × anchor.world correctamente.
+            ' V2 sobre estas shapes meterá un factor espurio inv(chunkRoot.R) que rompe el render.
+            Dim _syntheticOverride = TryCast(shape, IRuntimeSkinOverride)
+            If _syntheticOverride IsNot Nothing AndAlso _syntheticOverride.HasSyntheticSkin Then
+                If isRobotMount Then
+                    Dim shL = shape.ShapeName
+                    Logger.LogLazy(Function() $"[CHUNK-RESKIN-V2] shape='{shL}' SKIP: HasSyntheticSkin=True (fake-skinned)")
+                End If
+                Continue For
+            End If
+
             If shape.ShapeBones IsNot Nothing AndAlso shape.ShapeBoneTransforms IsNot Nothing Then
                 Try
                     ' Derive cxName from the actual mount socket (counterpart of socket.Name).
