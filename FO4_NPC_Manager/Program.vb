@@ -16,6 +16,7 @@ Module Program
         Application.SetCompatibleTextRenderingDefault(False)
 
         Config_App.LoadConfig()
+        NPC_Config.LoadConfig()
         Config_App.Current.Game = Config_App.Game_Enum.Fallout4
 
         Using preflight As New Preflight_Form()

@@ -793,6 +793,9 @@ Public Class MainForm
         ' FO4_Base_Library.Logger habilitado para diagnostic OBTE/OMOD; archivo en bin\.
         FO4_Base_Library.Logger.Enabled = True
         FO4_Base_Library.Logger.Initialize(IO.Path.Combine(Application.StartupPath, "fo4lib.log"))
+        ' Restore persisted UI toggles BEFORE InitializePreview (Shown handler snapshots
+        ' checkbox state into _renderHost.Toggles via RenderToggles.FromMainCheckBoxes).
+        CheckBoxRenderGore.Checked = NPC_Config.Current.RenderGore
         LoadDataAsync()
     End Sub
 
@@ -2320,6 +2323,12 @@ Public Class MainForm
         ' Math: bind' = correction.Compose(originalBind), donde correction = inv(dict_existing).Compose(chunk_source).
         ' Esto re-skinea el chunk in-memory por la diferencia, sin tocar el SkeletonDictionary.
         Dim socketCorrections As New Dictionary(Of String, Transform_Class)(StringComparer.OrdinalIgnoreCase)
+        ' [DIAG-ACCUMULATION] Tracking de W_B por bone name a través de chunks. Si un sub-chunk
+        ' reskinea un bone cuyo nombre ya fue reskin-eado por un chunk previo, loggear el delta
+        ' entre actor.B.world (que usamos) y prev_W_B (donde el geometry previo renderiza). Test
+        ' de la hipótesis del usuario: armor de pierna se reskinea contra actor.LThigh.world del
+        ' skeleton.nif, no contra W_B(LThigh) que produjo LegsAssaultron. Solo log, no afecta render.
+        Dim chunkWBHistory As New Dictionary(Of String, Transform_Class)(StringComparer.OrdinalIgnoreCase)
         For Each shape In ordered
             Dim socket As BSConnectPointReader.ConnectPointInfo = Nothing
             If Not renderData.ShapeMountSocket.TryGetValue(shape, socket) Then Continue For
@@ -2441,15 +2450,28 @@ Public Class MainForm
             ' bones en el mismo punto (que era el bug del attempt previo).
             If shape.ShapeBones IsNot Nothing AndAlso shape.ShapeBoneTransforms IsNot Nothing Then
                 Try
-                    ' Get cxName from chunk's Children block (returns tuple of (Skinned, PointNames)).
-                    Dim cxName As String = Nothing
-                    Try
-                        Dim chunkChildren = BSConnectPointReader.ReadChildren(shape.NifContent)
-                        If chunkChildren.PointNames IsNot Nothing AndAlso chunkChildren.PointNames.Count > 0 Then
-                            cxName = chunkChildren.PointNames(0)
+                    ' Derive cxName from the actual mount socket (counterpart of socket.Name).
+                    ' El chunk's BSConnectPoint::Children PointName puede ser inconsistente con el
+                    ' socket donde OBTE lo monta: ej. HeadArmorProtectron.nif (clean) declara
+                    ' Children=["C-Head"] pero se monta en P-HeadArmorProtectron. Usar el cxName
+                    ' del chunk hace que V2 elija G_CX de un NiNode posicionado para OTRO frame
+                    ' de attachment (C-Head a altura de cabeza vs C-HeadArmorProtectron a altura
+                    ' del helmet socket) → A equivocado → casco rotado/caído. OBTE es autoritativo.
+                    ' Convención canónica (per BSConnectPointBoneInjector.TryGetSocketCounterpartName):
+                    ' "P-X" → "C-X", "P_X" → "C_X".
+                    Dim cxName As String = ""
+                    If socket IsNot Nothing AndAlso Not String.IsNullOrEmpty(socket.Name) AndAlso socket.Name.Length > 2 Then
+                        If socket.Name.StartsWith("P-", StringComparison.OrdinalIgnoreCase) Then
+                            cxName = "C-" & socket.Name.Substring(2)
+                        ElseIf socket.Name.StartsWith("P_", StringComparison.OrdinalIgnoreCase) Then
+                            cxName = "C_" & socket.Name.Substring(2)
+                        Else
+                            ' Edge case: socket sin prefijo P-/P_. No conocemos caso real; queremos
+                            ' verlo si aparece. Debug break para inspección manual; en release no
+                            ' aborta (Debugger.Break solo dispara con debugger adjunto).
+                            System.Diagnostics.Debugger.Break()
                         End If
-                    Catch
-                    End Try
+                    End If
 
                     If Not String.IsNullOrEmpty(cxName) Then
                         ' Find C-X NiNode (try exact, fallback suffix strip).
@@ -2494,19 +2516,30 @@ Public Class MainForm
                                 .Rotation = BSConnectPointReader.QuatToMatrix33(socket.Rotation),
                                 .Scale = If(socket.Scale > 0.0F, socket.Scale, 1.0F)
                             }
+                            ' socket.Translation YA viene del resolver en Parents space (BSConnectPoint::Parents
+                            ' = chunk-source declaration). La correction almacenada en socketCorrections es
+                            ' inv(bone-dict-C-X).Compose(Parents) — pensada para llevar bone-dict-C-X → Parents.
+                            ' Aplicarla aquí encima de socket.Translation duplicaba el shift +2.908 X (verificado
+                            ' 2026-05-16 con CHUNK-RESKIN-V2-ALT: eyes/arms Codsworth shift consistente delta=2.908
+                            ' entre W_B_chunkSrc y W_B_dictExisting). CHUNK-PARENTS-DUMP sigue almacenando la
+                            ' correction como diagnostic; ningún caller actual la usa.
                             Dim socketLocalForMmesh As Transform_Class = dictExistingSocketLocal
-                            Dim socketCorrection As Transform_Class = Nothing
                             Dim usedChunkSource As Boolean = False
-                            If socketCorrections.TryGetValue(cxName, socketCorrection) Then
-                                ' chunk_source = dict_existing.Compose(correction)
-                                socketLocalForMmesh = dictExistingSocketLocal.ComposeTransforms(socketCorrection)
-                                usedChunkSource = True
-                            End If
 
                             Dim M_mesh = parentBoneWorld.ComposeTransforms(socketLocalForMmesh)
                             Dim invGCX = G_CX.Inverse()
                             ' A = inv(G_CX) × M_mesh in row-vec composition = M_mesh.Compose(invGCX)
                             Dim A = M_mesh.ComposeTransforms(invGCX)
+
+                            ' [DIAG-EYES] Alternative A computed with dict-existing socket (no chunk-source
+                            ' override). Si usedChunkSource=False, A_alt = A. Si True, A_alt es la versión
+                            ' SIN el shift +2.908 X. Diff W_B - W_B_alt cuantifica el offset que el chunk
+                            ' source override mete. Solo log, no afecta render.
+                            Dim A_alt As Transform_Class = A
+                            If usedChunkSource Then
+                                Dim M_mesh_alt = parentBoneWorld.ComposeTransforms(dictExistingSocketLocal)
+                                A_alt = M_mesh_alt.ComposeTransforms(invGCX)
+                            End If
 
                             Dim reskinCount As Integer = 0
                             Dim skipCount As Integer = 0
@@ -2523,10 +2556,36 @@ Public Class MainForm
                                     Continue For
                                 End If
                                 Dim actor_B_world = actorBhb.OriginalGetGlobalTransform
+
+                                ' [CHUNK-ACCUMULATION] Si bone fue reskin-eado por chunk previo, loggear
+                                ' delta entre actor.world (que usamos para corregir) y prev_W_B (donde el
+                                ' chunk previo realmente puso el geometry). Si delta ≠ 0, este sub-chunk
+                                ' está usando referencia stale.
+                                Dim prevWB As Transform_Class = Nothing
+                                If isRobotMount AndAlso chunkWBHistory.TryGetValue(boneName, prevWB) AndAlso prevWB IsNot Nothing Then
+                                    Dim aT0 = actor_B_world.Translation, pT0 = prevWB.Translation
+                                    Dim dX = pT0.X - aT0.X, dY = pT0.Y - aT0.Y, dZ = pT0.Z - aT0.Z
+                                    Dim bnL0 = boneName, shL0 = shape.ShapeName
+                                    Logger.LogLazy(Function() $"[CHUNK-ACCUMULATION] shape='{shL0}' bone='{bnL0}' actor.world=({aT0.X:F3},{aT0.Y:F3},{aT0.Z:F3}) prevChunkWB=({pT0.X:F3},{pT0.Y:F3},{pT0.Z:F3}) delta=({dX:F3},{dY:F3},{dZ:F3})")
+                                End If
+
                                 ' G_B desde el chunk NIF tree (no desde inv(bind)).
                                 Dim G_B = Transform_Class.GetGlobalTransform(niN, shape.NifContent)
                                 ' W_B = G_B × A (in row-vec composition).
                                 Dim W_B = A.ComposeTransforms(G_B)
+
+                                ' [DIAG-EYES] W_B_alt = G_B × A_alt. Si no hay chunk source override, A_alt=A
+                                ' y W_B_alt=W_B (delta=0). Si hay override, delta cuantifica el shift que
+                                ' la corrección +2.908 X mete vs el path sin corregir.
+                                If isRobotMount AndAlso usedChunkSource Then
+                                    Dim W_B_alt = A_alt.ComposeTransforms(G_B)
+                                    Dim wT = W_B.Translation, wAt = W_B_alt.Translation
+                                    Dim bnL1 = boneName, shL1 = shape.ShapeName
+                                    Logger.LogLazy(Function() $"[CHUNK-RESKIN-V2-ALT] shape='{shL1}' bone='{bnL1}' W_B_chunkSrc=({wT.X:F3},{wT.Y:F3},{wT.Z:F3}) W_B_dictExisting=({wAt.X:F3},{wAt.Y:F3},{wAt.Z:F3}) delta=({wT.X - wAt.X:F3},{wT.Y - wAt.Y:F3},{wT.Z - wAt.Z:F3})")
+                                End If
+
+                                ' Acumular W_B en history para que sub-chunks posteriores puedan compararse.
+                                If isRobotMount Then chunkWBHistory(boneName) = W_B
                                 ' correction = inv(actor.B.world).Compose(W_B).
                                 ' bind' = correction.Compose(bind).
                                 Dim correctionBone = actor_B_world.Inverse().ComposeTransforms(W_B)
@@ -8968,6 +9027,12 @@ Public Class MainForm
 #End Region
 
     Private Sub MainForm_FormClosing(sender As Object, e As FormClosingEventArgs) Handles MyBase.FormClosing
+        ' Persist UI-level config BEFORE teardown. Setting_Lightrig lives in shared Config_App
+        ' (written in-memory by LightRigForm); RenderGore is NPC-only and lives in NPC_Config.
+        NPC_Config.Current.RenderGore = CheckBoxRenderGore.Checked
+        Config_App.SaveConfig()
+        NPC_Config.SaveConfig()
+
         ' Quiesce the render loop FIRST so the safety-repaint heartbeat cannot drain
         ' a paint while the host disposes its GL caches (TintGpuCache, PristineDiffusePixels).
         ' Same rationale as EditFace_Form / EditBody_Form.
