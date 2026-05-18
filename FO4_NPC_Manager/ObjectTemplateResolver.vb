@@ -121,9 +121,19 @@ Public Module ObjectTemplateResolver
         If armo Is Nothing OrElse armo.Combinations Is Nothing OrElse armo.Combinations.Count = 0 Then
             Return result
         End If
-        ' ARMO doesn't have an actor-level APPR — children pool starts empty (humanoid armor
-        ' chains don't use the AP-filter mechanic the way robots/brahmin do).
-        ResolveCombinationList(armo.Combinations, ctxKeywords, pm, result, New HashSet(Of UInteger))
+        ' ARMO.APPR seedea el AP-pool inicial per wbDefinitionsFO4.pas:6206 (wbAPPR aparece en
+        ' record ARMO después de TNAM y antes de wbObjectTemplate). Comentario previo decía
+        ' "ARMO doesn't have an actor-level APPR" — incorrecto. Caso vivo: Armor_MiningHelmet
+        ' declara ap_PowerArmor_HeadMod aquí; sin el seed, Helmet_Mining_Mod queda rechazado
+        ' por pool empty y no se emite chunk biped. Children OMODs aceptados extienden el pool
+        ' vía sus propias AttachParentSlots — mismo modelo que NPC.APPR/RACE.APPR.
+        Dim initialPool As New HashSet(Of UInteger)
+        If armo.AttachParentSlotFormIDs IsNot Nothing Then
+            For Each fid In armo.AttachParentSlotFormIDs
+                If fid <> 0UI Then initialPool.Add(fid)
+            Next
+        End If
+        ResolveCombinationList(armo.Combinations, ctxKeywords, pm, result, initialPool)
         Return result
     End Function
 

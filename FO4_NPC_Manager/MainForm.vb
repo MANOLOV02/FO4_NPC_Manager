@@ -2542,7 +2542,12 @@ Public Class MainForm
             Try
                 Dim _cand As MeshCandidate = Nothing
                 renderData.ShapeCandidate.TryGetValue(shape, _cand)
-                If _cand IsNot Nothing AndAlso _cand.Kind = MeshCandidateKind.Attachment AndAlso _cand.OmodResolutionFormType = "NPC_" AndAlso _cand.MountSocket IsNot Nothing Then
+                ' [FASE 3] Criterio estructural: el chunk-mount path es 'soy attachment con
+                ' MountSocket resuelto', no 'soy de FormType X'. Antes el filtro NPC_ gateaba
+                ' biped fuera; ahora capas 1+2 (coord fix + socket disambig) son compartidas.
+                ' Capa 3 V2 SKEL-OVERRIDE está gateada en OverrideActorBoneWorld via isRobotMount
+                ' (Fase 2.5) — humanoid no muta OriginalLocaLTransform.
+                If _cand IsNot Nothing AndAlso _cand.Kind = MeshCandidateKind.Attachment AndAlso _cand.MountSocket IsNot Nothing Then
                     EnsureChunkToActor(_cand, _candByOrdinal, renderData, inst, chunkWBHistory, ensureVisiting)
                 End If
             Catch exJit As Exception
@@ -4274,6 +4279,13 @@ Public Class MainForm
             race = RecordParsers.ParseRACE(raceRec, _pluginManager)
         End If
 
+        ' Guard race-catalog: paralelo al de TryApplyBodySkinSoftLight. Si la raza NO declara
+        ' slot SkinTone en su TintTemplateGroups, no aplica fallback de face softlight tampoco —
+        ' synth/ghoul/robot no deberían recibirlo, sus shapes face no son SkinTint en sentido humano.
+        If race Is Nothing OrElse race.FindTintOptionsBySlot(TintSlot.SkinTone, state.IsFemale).Count = 0 Then
+            Return
+        End If
+
         ' If the NPC has any active layer with TTEF 'Takes Skin Tone' (bit 2), the face compositor
         ' already softlight-modulated the diffuse via that layer's Palette path. Don't double-apply.
         If NpcHasSkinToneLayer(npcData, race, state.IsFemale) Then
@@ -4367,6 +4379,25 @@ Public Class MainForm
         End If
         If Not state.HasTextureLighting Then
             Logger.LogLazy(Function() $"[BODY-SOFTLIGHT] skip: HasTextureLighting=False")
+            Return
+        End If
+
+        ' Guard race-catalog: si la raza del actor NO declara ningún TintOption de slot SkinTone
+        ' (TintSlot 12) en su MaleTintTemplateGroups / FemaleTintTemplateGroups, no debería existir
+        ' tinta de piel para este actor — el engine vanilla no la ofrece. Aplica QNAM softlight
+        ' a body skin de razas no-humanas (Synth, Feral Ghoul, Robot) generaba tinta espuria que
+        ' divergía el color entre shapes SkinTint=True vs SkinTint=False del mismo NIF
+        ' (caso 2026-05-18 SynthGen2Mech: Gen2MechNew:1 recibía softlight; G2Skin_LArm/Rleg/etc no
+        ' por SkinTint=False). HumanRace tiene el slot en el catálogo aunque el NPC no liste
+        ' tints explícitos en NPC.PNAM, así que humanos vanilla bare-NPCs siguen pasando el guard.
+        Dim raceRec = If(state.RaceFormID <> 0UI, _pluginManager.GetRecord(state.RaceFormID), Nothing)
+        Dim race As RACE_Data = Nothing
+        If raceRec IsNot Nothing AndAlso raceRec.Header.Signature = "RACE" Then
+            race = RecordParsers.ParseRACE(raceRec, _pluginManager)
+        End If
+        If race Is Nothing OrElse race.FindTintOptionsBySlot(TintSlot.SkinTone, state.IsFemale).Count = 0 Then
+            Dim raceEdid = If(race?.EditorID, "?")
+            Logger.LogLazy(Function() $"[BODY-SOFTLIGHT] skip: race '{raceEdid}' has no SkinTone tint catalog (non-skin-tone race)")
             Return
         End If
 
@@ -6966,6 +6997,14 @@ Public Class MainForm
         ' The applier runs in ApplyShapeMaterialOverrides after the ARMA-direct base swap.
         Dim omodResolution = ObjectTemplateResolver.ResolveArmoCombinations(armo, ctxKeywords, _pluginManager)
 
+        ' [FASE 3] Chunk-mount path biped: OMODs con AttachPoint != 0 AND ModelPath != "" se
+        ' montan vía BSConnectPoint igual que robot chunks. Delegate al shared con
+        ' formType="ARMO". Para ARMOs sin chunk-mount OMODs (solo property modifiers tipo
+        ' ap_armor_Lining/Tier/Size), el shared early-returns sin emitir candidates.
+        ' Capa V2 SKEL-OVERRIDE no aplica: isRobotMount=False en el shape loop, gate Fase 2.5
+        ' suprime mutación de OriginalLocaLTransform en humanoid bones.
+        CollectOmodChunkCandidates(omodResolution, "ARMO", state, candidates, order, warnings)
+
         Dim addonOrder As List(Of UInteger)
         If armo.ArmorAddons.Count >= 1 Then
             For Each entry In armo.ArmorAddons
@@ -7182,6 +7221,24 @@ Public Class MainForm
         Dim ctxKeywords As New List(Of UInteger)
         Dim resolution = ObjectTemplateResolver.ResolveNpcCombinations(stubNpc, ctxKeywords, _pluginManager)
 
+        ' Delegate to shared OMOD chunk-mounting collector (robot + biped share capas 1+2:
+        ' coord fix + socket disambig). Capa 3 (V2 SKEL-OVERRIDE) está gateada en
+        ' OverrideActorBoneWorld por isRobotMount — biped path la pasará False (Fase 2.5).
+        CollectOmodChunkCandidates(resolution, "NPC_", state, candidates, order, warnings)
+    End Sub
+
+    ''' <summary>Shared OMOD chunk-mounting candidate emit. Toma una CombinationResolution
+    ''' ya construida (vía ResolveNpcCombinations o ResolveArmoCombinations) y emite los
+    ''' MeshCandidates Attachment con host-scoped socket resolution. formType marca el
+    ''' origen ("NPC_" robot, "ARMO" biped) y se propaga al candidate para downstream
+    ''' filtering. La capa V2 SKEL-OVERRIDE NO vive aquí — vive en el shape loop con
+    ''' isRobotMount flag y en OverrideActorBoneWorld gateado.</summary>
+    Private Sub CollectOmodChunkCandidates(resolution As ObjectTemplateResolver.CombinationResolution,
+                                           formType As String,
+                                           state As NPCVisualState,
+                                           candidates As List(Of MeshCandidate),
+                                           ByRef order As Integer,
+                                           warnings As List(Of String))
 
         If resolution.IncludedOmods.Count = 0 AndAlso resolution.DirectProperties.Count = 0 Then
             Return
@@ -7463,7 +7520,7 @@ Public Class MainForm
                 .ResolvedHostSocketGlobalT = If(resolvedInfo IsNot Nothing, resolvedInfo.HostSocketGlobalT, Nothing),
                 .ParentFoundInMatchedHostNif = If(resolvedInfo IsNot Nothing, resolvedInfo.ParentFoundInHostNif, False),
                 .OmodResolution = resolution,
-                .OmodResolutionFormType = "NPC_",
+                .OmodResolutionFormType = formType,
                 .Order = order
             })
             order += 1
@@ -7525,6 +7582,18 @@ Public Class MainForm
         Dim cT = currentWorld.Translation, dT = desiredWorld.Translation
         Dim diff = Math.Sqrt((cT.X - dT.X) ^ 2 + (cT.Y - dT.Y) ^ 2 + (cT.Z - dT.Z) ^ 2)
         If diff < 0.5 Then Return ' no-op: ya coincide (numerical noise threshold)
+        ' [FASE 2.5] Frontera arquitectónica robot-only: OverrideActorBoneWorld muta
+        ' bone.OriginalLocaLTransform (bind), que se compone con DeltaTransform donde
+        ' MRSV/pose/ARMA bone scale escriben. Para bones humanoid con HasRangeModifier
+        ' (Chest/Spine/Neck/etc.) la composición no es inocua. Capa 3 V2 SKEL-OVERRIDE
+        ' queda restringida a robot path hasta que un caso biped concreto demuestre
+        ' que necesita el override. Caller pasa isRobotMount=False (biped) → suppressed
+        ' con log diagnostic para dimensionar qué tan común es el caso.
+        If Not isRobotMount Then
+            Dim bnSup = hb.BoneName, ctxSup = contextLabel, ctSup = cT, dSup = dT, diSup = diff
+            Logger.LogLazy(Function() $"[SKEL-OVERRIDE-SUPPRESSED] bone='{bnSup}' ctx='{ctxSup}' biped-path → V2 SKEL-OVERRIDE robot-only por Fase 2.5; would-have-set.world.T=({dSup.X:F3},{dSup.Y:F3},{dSup.Z:F3}) was.world.T=({ctSup.X:F3},{ctSup.Y:F3},{ctSup.Z:F3}) diff={diSup:F3}")
+            Return
+        End If
         Dim parentWorld As Transform_Class
         If hb.Parent IsNot Nothing Then
             parentWorld = hb.Parent.OriginalGetGlobalTransform
@@ -7534,10 +7603,8 @@ Public Class MainForm
         Dim newLocal = parentWorld.Inverse().ComposeTransforms(desiredWorld)
         Dim oldLocalT = hb.OriginalLocaLTransform.Translation
         hb.OriginalLocaLTransform = newLocal
-        If isRobotMount Then
-            Dim bnL = hb.BoneName, ctxL = contextLabel, ctL = cT, dL = dT, diL = diff, olT = oldLocalT, nlT = newLocal.Translation
-            Logger.LogLazy(Function() $"[SKEL-OVERRIDE] bone='{bnL}' ctx='{ctxL}' was.world.T=({ctL.X:F3},{ctL.Y:F3},{ctL.Z:F3}) → wants.world.T=({dL.X:F3},{dL.Y:F3},{dL.Z:F3}) diff={diL:F3} local.T was=({olT.X:F3},{olT.Y:F3},{olT.Z:F3}) now=({nlT.X:F3},{nlT.Y:F3},{nlT.Z:F3})")
-        End If
+        Dim bnL = hb.BoneName, ctxL = contextLabel, ctL = cT, dL = dT, diL = diff, olT = oldLocalT, nlT = newLocal.Translation
+        Logger.LogLazy(Function() $"[SKEL-OVERRIDE] bone='{bnL}' ctx='{ctxL}' was.world.T=({ctL.X:F3},{ctL.Y:F3},{ctL.Z:F3}) → wants.world.T=({dL.X:F3},{dL.Y:F3},{dL.Z:F3}) diff={diL:F3} local.T was=({olT.X:F3},{olT.Y:F3},{olT.Z:F3}) now=({nlT.X:F3},{nlT.Y:F3},{nlT.Z:F3})")
     End Sub
 
     ''' <summary>Resuelve la "posición efectiva" de un bone en el actor world: si un parent
