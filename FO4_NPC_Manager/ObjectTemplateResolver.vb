@@ -78,6 +78,37 @@ Public Module ObjectTemplateResolver
         ''' sockets in the host (Mr Handy 3 arms: same AP, apIdx 0/1/2). Sub-OMODs from
         ''' OMOD.Includes carry apIdx=0 (OMOD_Include doesn't have the field).</summary>
         Public IncludedOmodApIdx As New List(Of Byte)
+
+        ''' <summary>Parallel list of host-publisher FormIDs (1:1 with <see cref="IncludedOmods"/>).
+        ''' The host of a chunk is the OMOD that introduced the AP this chunk consumes into the
+        ''' AP-pool — i.e. the chunk that publishes the socket the consumer mounts on. 0 = the
+        ''' AP was in <c>initialApPool</c> (NPC.APPR seed), so the host is the actor/skeleton
+        ''' root (no upstream chunk publisher).
+        '''
+        ''' Used for host-scoped socket resolution: a consumer's socket transform is looked up
+        ''' in the host's published BSConnectPoint::Parents, walking the host chain up to root.
+        ''' Replaces the flat global <c>SocketsDictionary</c> resolution which conflated
+        ''' STATIC skeleton sockets and per-chunk publisher sockets into a single namespace.</summary>
+        Public IncludedOmodHostFormID As New List(Of UInteger)
+        ''' <summary>Parallel list of host-publisher ApIdx (1:1 with <see cref="IncludedOmods"/>).
+        ''' Junto con <see cref="IncludedOmodHostFormID"/> identifica el asset host. Solo
+        ''' para logging legible: la identidad runtime real es <see cref="IncludedOmodHostInstanceOrdinal"/>.
+        ''' 0 (con HostFormID=0) = host es el actor/skeleton root.</summary>
+        Public IncludedOmodHostApIdx As New List(Of Byte)
+
+        ''' <summary>Parallel list de InstanceOrdinal monotónico (1:1 con <see cref="IncludedOmods"/>).
+        ''' IDENTIDAD RUNTIME REAL del candidate. Asignado en expand-time (CollectOmodCandidate)
+        ''' al emitir cada leaf — antes de cualquier dedup. Esto permite que el mismo OMOD asset
+        ''' aparezca múltiples veces en el árbol de mounting (Bethesda reutiliza assets) sin
+        ''' colapsar identidades. Ordinal 0 reservado para "skeleton root" (no usado por
+        ''' candidates emitidos, solo como sentinel en host references). Ordinals reales ≥ 1.</summary>
+        Public IncludedOmodInstanceOrdinal As New List(Of Integer)
+
+        ''' <summary>Parallel list de host InstanceOrdinal (1:1 con <see cref="IncludedOmods"/>).
+        ''' Apunta a la INSTANCIA del host (no al asset). 0 = host es skeleton root.
+        ''' Junto con <see cref="IncludedOmodInstanceOrdinal"/> reemplaza la tuple (FormID, ApIdx)
+        ''' como identidad. Inmune a colisiones por reúso de asset bajo hosts distintos.</summary>
+        Public IncludedOmodHostInstanceOrdinal As New List(Of Integer)
     End Class
 
     ''' <summary>Resolve combinations for an ARMO under the given keyword context (typically
@@ -266,13 +297,19 @@ Public Module ObjectTemplateResolver
         '   declared by the OBTE but their parent chain doesn't authorize the slot
         '   (e.g. PackLight01 with AP=ap_PackLight01 is rejected if no accepted OMOD exposed
         '   ap_PackLight01 in its AttachParentSlots).
-        ' Visited keyed by (FormID, apIdx): the same OMOD can be referenced multiple times
-        ' with different apIdx values (Mr Handy 3 eyes = same Eye1B OMOD with apIdx 0/1/2;
-        ' ModArmsHandyAR1A appears twice with apIdx 0 and 1). Dedup by FormID alone would
-        ' collapse all instances to the first one.
-        Dim visitedOmods As New HashSet(Of (UInteger, Byte))
-        Dim candidates As New List(Of (Omod As OMOD_Data, ApIdx As Byte))
-        Dim unslottedOmods As New List(Of (OMOD_Data, Byte))
+        ' [INSTANCE-IDENTITY] Identidad runtime asignada al emit-time en CollectOmodCandidate
+        ' (no al accept-time). Permite que el mismo OMOD asset aparezca múltiples veces en el
+        ' árbol bajo hosts distintos sin colapsarse — caso teórico que Bethesda puede ejercer
+        ' al reutilizar mods. La invariante "(FormID, ApIdx) único" del visited-set permanente
+        ' ya no se asume; sustituida por DFS path tracking (stack) que solo previene CICLOS
+        ' (un mismo nodo dentro del path actual), no expand-time dedup.
+        '
+        ' Ordinal counter: monotónico, incremental en cada CollectOmodCandidate exitoso.
+        ' Ordinal 0 reservado para "skeleton root" (sentinel). Candidates reciben ≥ 1.
+        Dim instanceOrdinalCounter As Integer = 0
+        Dim pathStack As New HashSet(Of (UInteger, Byte))
+        Dim candidates As New List(Of (Omod As OMOD_Data, ApIdx As Byte, InstanceOrdinal As Integer))
+        Dim unslottedOmods As New List(Of (Omod As OMOD_Data, ApIdx As Byte, InstanceOrdinal As Integer))
 
         For Each combo In applicable
             ' DirectProperties — inline on combination, no slot concept (all stack).
@@ -286,7 +323,7 @@ Public Module ObjectTemplateResolver
                     If inc Is Nothing OrElse inc.ModFormID = 0UI Then Continue For
                     Dim incLocal = inc
                     Logger.LogLazy(Function() $"[OBTE-INC] modFid=0x{incLocal.ModFormID:X8} apIdx={incLocal.AttachPointIndex} dontUseAll={incLocal.DontUseAll}")
-                    CollectOmodCandidate(inc.ModFormID, inc.AttachPointIndex, inc.DontUseAll, pm, visitedOmods, candidates, unslottedOmods)
+                    CollectOmodCandidate(inc.ModFormID, inc.AttachPointIndex, inc.DontUseAll, pm, pathStack, candidates, unslottedOmods, instanceOrdinalCounter)
                 Next
             End If
         Next
@@ -296,25 +333,100 @@ Public Module ObjectTemplateResolver
         Dim apPoolBeforeStr = String.Join(",", apPool.Select(Function(f) "0x" & f.ToString("X8") & "(" & KywdEditorIdSafe(f, pm) & ")"))
         Logger.LogLazy(Function() $"[OBTE-POOL-INIT] initial pool({apPool.Count}) = [{apPoolBeforeStr}]")
 
-        Dim accepted As New List(Of (Omod As OMOD_Data, ApIdx As Byte))
-        Dim pending As New List(Of (Omod As OMOD_Data, ApIdx As Byte))(candidates)
+        Dim accepted As New List(Of (Omod As OMOD_Data, ApIdx As Byte, InstanceOrdinal As Integer, HostInstanceOrdinal As Integer, HostFormID As UInteger, HostApIdx As Byte))
+        ' [APPROVIDER-PER-INSTANCE] Cada apFid puede tener MÚLTIPLES providers (instancias
+        ' distintas que declaran el mismo AP en sus AttachParentSlots). Vanilla scope: 1
+        ' provider por apFid (un NPC tiene UN torso). Mod scope teórico: ≥2 providers para
+        ' un híbrido con dos torsos que ambos publican mismas AP names. Preservamos todos.
+        ' Decisión de policy: FIRST-WINS en accept-time (la primera entry de la list es el
+        ' host efectivo). Si list.Count > 1: log [OBTE-AP-MULTI-PROVIDER] flagging el caso
+        ' para investigación futura. Sin evidencia engine de cómo Bethesda resuelve ambigüedad,
+        ' first-wins es la única regla defendible.
+        Dim apProvider As New Dictionary(Of UInteger, List(Of (HostOrdinal As Integer, HostFid As UInteger, HostApIdx As Byte)))
+        For Each seedAp In initialApPool
+            If Not apProvider.ContainsKey(seedAp) Then
+                apProvider(seedAp) = New List(Of (Integer, UInteger, Byte)) From {(0, 0UI, CByte(0))}
+            End If
+        Next
+        Dim pending As New List(Of (Omod As OMOD_Data, ApIdx As Byte, InstanceOrdinal As Integer))(candidates)
         Dim iterations As Integer = 0
         Const maxIter As Integer = 16
         Do
             iterations += 1
             Dim changed As Boolean = False
-            Dim stillPending As New List(Of (OMOD_Data, Byte))
+            Dim stillPending As New List(Of (Omod As OMOD_Data, ApIdx As Byte, InstanceOrdinal As Integer))
             For Each cand In pending
                 If apPool.Contains(cand.Omod.AttachPointFormID) Then
-                    accepted.Add(cand)
+                    ' Resolve host via APIDX-MATCH (preferido) → fallback FIRST-WINS.
+                    ' Policy: la convención canónica Bethesda para desambiguar instancias
+                    ' espaciales del mismo OMOD usa apIdx (downstream lo aplicamos en
+                    ' ResolveMountSocket para "P-base|apIdx"). Aplicar la misma convención
+                    ' en el provider resolution mantiene consistencia. Si multi-provider
+                    ' Y consumer.ApIdx matchea EXACTAMENTE uno: usar ese (caso Codsworth
+                    ' Mr Handy arms — cada arm mod va al brazo de su apIdx). Si no hay
+                    ' match O hay múltiples matches: log diagnóstico + first-wins.
+                    Dim hostList As List(Of (HostOrdinal As Integer, HostFid As UInteger, HostApIdx As Byte)) = Nothing
+                    Dim hostOrd As Integer = 0
+                    Dim hostFid As UInteger = 0UI
+                    Dim hostApIdxResolved As Byte = 0
+                    If apProvider.TryGetValue(cand.Omod.AttachPointFormID, hostList) AndAlso hostList.Count > 0 Then
+                        If hostList.Count = 1 Then
+                            ' Single provider — sin ambigüedad.
+                            Dim only0 = hostList(0)
+                            hostOrd = only0.HostOrdinal
+                            hostFid = only0.HostFid
+                            hostApIdxResolved = only0.HostApIdx
+                        Else
+                            ' Multi-provider. Match por apIdx primero.
+                            Dim matches = hostList.Where(Function(p) p.HostApIdx = cand.ApIdx).ToList()
+                            Dim apFidL = cand.Omod.AttachPointFormID, candL = cand, pmL_multi = pm, listCount = hostList.Count
+                            Dim providersStr = String.Join(",", hostList.Select(Function(p) $"(ord={p.HostOrdinal},0x{p.HostFid:X8},apIdx={p.HostApIdx})"))
+                            If matches.Count = 1 Then
+                                ' apIdx-match unique — caso limpio (Codsworth Mr Handy mods).
+                                Dim m0 = matches(0)
+                                hostOrd = m0.HostOrdinal
+                                hostFid = m0.HostFid
+                                hostApIdxResolved = m0.HostApIdx
+                                Dim hOrdL_log = hostOrd, hFidL_log = hostFid
+                                Logger.LogLazy(Function() $"[OBTE-AP-MULTI-PROVIDER] cand={candL.Omod.EditorID}(0x{candL.Omod.FormID:X8}) ord={candL.InstanceOrdinal} apIdx={candL.ApIdx} ap=0x{apFidL:X8}({KywdEditorIdSafe(apFidL, pmL_multi)}) providers({listCount})=[{providersStr}] → apIdx-match unique ord={hOrdL_log} (0x{hFidL_log:X8})")
+                            ElseIf matches.Count > 1 Then
+                                ' Multi-provider Y multi-match — ambigüedad real, first-wins entre matches.
+                                Dim m0 = matches(0)
+                                hostOrd = m0.HostOrdinal
+                                hostFid = m0.HostFid
+                                hostApIdxResolved = m0.HostApIdx
+                                Dim mCount = matches.Count, hOrdL_log = hostOrd
+                                Logger.LogLazy(Function() $"[OBTE-AP-AMBIGUOUS-MATCH] cand={candL.Omod.EditorID}(0x{candL.Omod.FormID:X8}) ord={candL.InstanceOrdinal} apIdx={candL.ApIdx} ap=0x{apFidL:X8}({KywdEditorIdSafe(apFidL, pmL_multi)}) providers({listCount})=[{providersStr}] {mCount} apIdx matches → first-wins ord={hOrdL_log}")
+                            Else
+                                ' No apIdx match — fallback first-wins entre todos.
+                                Dim first0 = hostList(0)
+                                hostOrd = first0.HostOrdinal
+                                hostFid = first0.HostFid
+                                hostApIdxResolved = first0.HostApIdx
+                                Dim hOrdL_log = hostOrd
+                                Logger.LogLazy(Function() $"[OBTE-AP-NO-IDX-MATCH] cand={candL.Omod.EditorID}(0x{candL.Omod.FormID:X8}) ord={candL.InstanceOrdinal} apIdx={candL.ApIdx} ap=0x{apFidL:X8}({KywdEditorIdSafe(apFidL, pmL_multi)}) providers({listCount})=[{providersStr}] no provider with apIdx={candL.ApIdx} → fallback first-wins ord={hOrdL_log}")
+                            End If
+                        End If
+                    End If
+                    accepted.Add((cand.Omod, cand.ApIdx, cand.InstanceOrdinal, hostOrd, hostFid, hostApIdxResolved))
                     changed = True
                     If cand.Omod.AttachParentSlotFormIDs IsNot Nothing Then
                         For Each fid In cand.Omod.AttachParentSlotFormIDs
-                            If fid <> 0UI Then apPool.Add(fid)
+                            If fid = 0UI Then Continue For
+                            apPool.Add(fid)
+                            ' Append a la list (no overwrite). Permite multiplicidad real
+                            ' visible para apIdx-match en la resolución.
+                            Dim plist As List(Of (HostOrdinal As Integer, HostFid As UInteger, HostApIdx As Byte)) = Nothing
+                            If Not apProvider.TryGetValue(fid, plist) Then
+                                plist = New List(Of (Integer, UInteger, Byte))
+                                apProvider(fid) = plist
+                            End If
+                            plist.Add((cand.InstanceOrdinal, cand.Omod.FormID, cand.ApIdx))
                         Next
                     End If
-                    Dim cL = cand, pmL = pm
-                    Logger.LogLazy(Function() $"[OBTE-POOL-ACCEPT] omod={cL.Omod.EditorID}(0x{cL.Omod.FormID:X8}) ap=0x{cL.Omod.AttachPointFormID:X8}({KywdEditorIdSafe(cL.Omod.AttachPointFormID, pmL)}) addedAPs=[{String.Join(",", cL.Omod.AttachParentSlotFormIDs.Select(Function(f) "0x" & f.ToString("X8") & "(" & KywdEditorIdSafe(f, pmL) & ")"))}]")
+                    Dim cL = cand, pmL = pm, hostOrdL = hostOrd, hostFidL = hostFid, hostApIdxL = hostApIdxResolved
+                    Dim addedApStr = If(cL.Omod.AttachParentSlotFormIDs Is Nothing, "(none)", String.Join(",", cL.Omod.AttachParentSlotFormIDs.Select(Function(f) "0x" & f.ToString("X8") & "(" & KywdEditorIdSafe(f, pmL) & ")")))
+                    Logger.LogLazy(Function() $"[OBTE-POOL-ACCEPT] omod={cL.Omod.EditorID}(0x{cL.Omod.FormID:X8}) ord={cL.InstanceOrdinal} ap=0x{cL.Omod.AttachPointFormID:X8}({KywdEditorIdSafe(cL.Omod.AttachPointFormID, pmL)}) host=(ord={hostOrdL},0x{hostFidL:X8},apIdx={hostApIdxL}) addedAPs=[{addedApStr}]")
                 Else
                     stillPending.Add(cand)
                 End If
@@ -335,62 +447,94 @@ Public Module ObjectTemplateResolver
         For Each entry In accepted
             result.IncludedOmods.Add(entry.Omod)
             result.IncludedOmodApIdx.Add(entry.ApIdx)
+            result.IncludedOmodInstanceOrdinal.Add(entry.InstanceOrdinal)
+            result.IncludedOmodHostInstanceOrdinal.Add(entry.HostInstanceOrdinal)
+            result.IncludedOmodHostFormID.Add(entry.HostFormID)
+            result.IncludedOmodHostApIdx.Add(entry.HostApIdx)
         Next
         For Each entry In unslottedOmods
-            result.IncludedOmods.Add(entry.Item1)
-            result.IncludedOmodApIdx.Add(entry.Item2)
+            result.IncludedOmods.Add(entry.Omod)
+            result.IncludedOmodApIdx.Add(entry.ApIdx)
+            result.IncludedOmodInstanceOrdinal.Add(entry.InstanceOrdinal)
+            ' Unslotted = container properties (color overlays, MSWP). No mount, no host concept.
+            result.IncludedOmodHostInstanceOrdinal.Add(0)
+            result.IncludedOmodHostFormID.Add(0UI)
+            result.IncludedOmodHostApIdx.Add(CByte(0))
         Next
     End Sub
 
     ''' <summary>Collect an OMOD candidate (or recurse into its container).
-    '''   - OMOD with AttachPoint != 0 → leaf candidate; added to candidates list.
+    '''   - OMOD with AttachPoint != 0 → leaf candidate; added to candidates list with a
+    '''     fresh InstanceOrdinal (incrementing the counter). Permite que el mismo OMOD asset
+    '''     aparezca múltiples veces en el árbol bajo paths distintos sin colapsar identidad.
     '''   - OMOD without AttachPoint (container) → not emitted itself; its Includes are walked
     '''     according to <paramref name="dontUseAll"/>:
     '''       True  → random-pick 1 Include and recurse only on it (modcol_* mutex variants).
     '''       False → walk all Includes.
-    ''' Visited-set guards against cycles.</summary>
+    '''
+    ''' Cycle prevention: stack-based path tracking (push on entry, pop on exit). NO dedup
+    ''' permanente — el mismo (FormID, ApIdx) puede aparecer DOS veces si llega via paths
+    ''' distintos (no cíclicos). Reemplaza el visitedOmods HashSet permanente que colapsaba
+    ''' identidades expandidas desde árboles distintos.</summary>
     Private Sub CollectOmodCandidate(omodFid As UInteger,
                                       apIdx As Byte,
                                       dontUseAll As Boolean,
                                       pm As PluginManager,
-                                      visited As HashSet(Of (UInteger, Byte)),
-                                      candidates As List(Of (Omod As OMOD_Data, ApIdx As Byte)),
-                                      unslotted As List(Of (OMOD_Data, Byte)))
+                                      pathStack As HashSet(Of (UInteger, Byte)),
+                                      candidates As List(Of (Omod As OMOD_Data, ApIdx As Byte, InstanceOrdinal As Integer)),
+                                      unslotted As List(Of (Omod As OMOD_Data, ApIdx As Byte, InstanceOrdinal As Integer)),
+                                      ByRef instanceOrdinalCounter As Integer)
         If omodFid = 0UI Then Return
-        If Not visited.Add((omodFid, apIdx)) Then Return ' cycle / already expanded for this (fid, apIdx)
+        Dim pathKey = (omodFid, apIdx)
+        If pathStack.Contains(pathKey) Then
+            ' Cycle detection — el mismo (fid, apIdx) ya está en el path actual del DFS.
+            ' Skip silente; cycle real.
+            Dim fl = omodFid, al = apIdx
+            Logger.LogLazy(Function() $"[OBTE-CYCLE] omod=0x{fl:X8} apIdx={al} ya en path actual — skip ciclo")
+            Return
+        End If
+        pathStack.Add(pathKey)
+        Try
+            Dim rec = pm.GetRecord(omodFid)
+            If rec Is Nothing OrElse rec.Header.Signature <> "OMOD" Then Return
 
-        Dim rec = pm.GetRecord(omodFid)
-        If rec Is Nothing OrElse rec.Header.Signature <> "OMOD" Then Return
+            Dim omod = CraftingRecordParsers.ParseOMOD(rec, pm)
 
-        Dim omod = CraftingRecordParsers.ParseOMOD(rec, pm)
-
-        If omod.AttachPointFormID <> 0UI Then
-            ' Leaf candidate — has its own AP, will compete in the AP-pool filter.
-            candidates.Add((omod, apIdx))
-            Dim ol = omod, fl = omodFid, al = apIdx, pmL = pm
-            Logger.LogLazy(Function() $"[OBTE-CAND] omod={ol.EditorID}(0x{fl:X8}) ftype={ol.FormTypeSignature} ap=0x{ol.AttachPointFormID:X8}({KywdEditorIdSafe(ol.AttachPointFormID, pmL)}) apIdx={al} model='{ol.ModelPath}' parentSlots=[{String.Join(",", ol.AttachParentSlotFormIDs.Select(Function(f) "0x" & f.ToString("X8") & "(" & KywdEditorIdSafe(f, pmL) & ")"))}]")
-            ' Recurse into the leaf's own Includes (some chunks expose sub-OMODs that
-            ' depend on their AP being available — handled by AP-pool filter naturally).
-            If omod.Includes IsNot Nothing AndAlso omod.Includes.Count > 0 Then
-                RecurseContainerIncludes(omod, dontUseAll, pm, visited, candidates, unslotted)
+            If omod.AttachPointFormID <> 0UI Then
+                ' Leaf candidate — has its own AP, will compete in the AP-pool filter.
+                instanceOrdinalCounter += 1
+                Dim ord = instanceOrdinalCounter
+                candidates.Add((omod, apIdx, ord))
+                Dim ol = omod, fl = omodFid, al = apIdx, pmL = pm, ordL = ord
+                Dim parentSlotsStr = If(ol.AttachParentSlotFormIDs Is Nothing, "(none)", String.Join(",", ol.AttachParentSlotFormIDs.Select(Function(f) "0x" & f.ToString("X8") & "(" & KywdEditorIdSafe(f, pmL) & ")")))
+                Logger.LogLazy(Function() $"[OBTE-CAND] omod={ol.EditorID}(0x{fl:X8}) ord={ordL} ftype={ol.FormTypeSignature} ap=0x{ol.AttachPointFormID:X8}({KywdEditorIdSafe(ol.AttachPointFormID, pmL)}) apIdx={al} model='{ol.ModelPath}' parentSlots=[{parentSlotsStr}]")
+                ' Recurse into the leaf's own Includes (some chunks expose sub-OMODs that
+                ' depend on their AP being available — handled by AP-pool filter naturally).
+                If omod.Includes IsNot Nothing AndAlso omod.Includes.Count > 0 Then
+                    RecurseContainerIncludes(omod, dontUseAll, pm, pathStack, candidates, unslotted, instanceOrdinalCounter)
+                End If
+                Return
             End If
-            Return
-        End If
 
-        ' Container (AP=0). DirectProperties of containers (color overlays, MSWP) go to the
-        ' unslotted bucket and stack — they don't go through the AP filter.
-        If omod.Properties IsNot Nothing AndAlso omod.Properties.Count > 0 AndAlso (omod.Includes Is Nothing OrElse omod.Includes.Count = 0) Then
-            unslotted.Add((omod, apIdx))
-            Dim ol = omod, fl = omodFid
-            Logger.LogLazy(Function() $"[OBTE-CAND] omod={ol.EditorID}(0x{fl:X8}) ap=0 (container, properties-only) → unslotted bucket")
-            Return
-        End If
+            ' Container (AP=0). DirectProperties of containers (color overlays, MSWP) go to the
+            ' unslotted bucket and stack — they don't go through the AP filter.
+            If omod.Properties IsNot Nothing AndAlso omod.Properties.Count > 0 AndAlso (omod.Includes Is Nothing OrElse omod.Includes.Count = 0) Then
+                instanceOrdinalCounter += 1
+                Dim ordU = instanceOrdinalCounter
+                unslotted.Add((omod, apIdx, ordU))
+                Dim ol = omod, fl = omodFid, ordUL = ordU
+                Logger.LogLazy(Function() $"[OBTE-CAND] omod={ol.EditorID}(0x{fl:X8}) ord={ordUL} ap=0 (container, properties-only) → unslotted bucket")
+                Return
+            End If
 
-        Dim ol2 = omod, fl2 = omodFid, dontL = dontUseAll
-        Logger.LogLazy(Function() $"[OBTE-CAND] omod={ol2.EditorID}(0x{fl2:X8}) ap=0 (container, recurse children, dontUseAll={dontL})")
+            Dim ol2 = omod, fl2 = omodFid, dontL = dontUseAll
+            Logger.LogLazy(Function() $"[OBTE-CAND] omod={ol2.EditorID}(0x{fl2:X8}) ap=0 (container, recurse children, dontUseAll={dontL})")
 
-        ' Recurse children per dontUseAll.
-        RecurseContainerIncludes(omod, dontUseAll, pm, visited, candidates, unslotted)
+            ' Recurse children per dontUseAll.
+            RecurseContainerIncludes(omod, dontUseAll, pm, pathStack, candidates, unslotted, instanceOrdinalCounter)
+        Finally
+            pathStack.Remove(pathKey)
+        End Try
     End Sub
 
     ''' <summary>Walk the Includes of an OMOD container according to the dontUseAll flag of
@@ -400,9 +544,10 @@ Public Module ObjectTemplateResolver
     Private Sub RecurseContainerIncludes(omod As OMOD_Data,
                                           dontUseAll As Boolean,
                                           pm As PluginManager,
-                                          visited As HashSet(Of (UInteger, Byte)),
-                                          candidates As List(Of (Omod As OMOD_Data, ApIdx As Byte)),
-                                          unslotted As List(Of (OMOD_Data, Byte)))
+                                          pathStack As HashSet(Of (UInteger, Byte)),
+                                          candidates As List(Of (Omod As OMOD_Data, ApIdx As Byte, InstanceOrdinal As Integer)),
+                                          unslotted As List(Of (Omod As OMOD_Data, ApIdx As Byte, InstanceOrdinal As Integer)),
+                                          ByRef instanceOrdinalCounter As Integer)
         If omod.Includes Is Nothing OrElse omod.Includes.Count = 0 Then Return
         Dim validIncludes = omod.Includes.Where(Function(i) i IsNot Nothing AndAlso i.ModFormID <> 0UI).ToList()
         If validIncludes.Count = 0 Then Return
@@ -415,10 +560,10 @@ Public Module ObjectTemplateResolver
             Dim pick = validIncludes(_rng.Next(validIncludes.Count))
             Dim ol = omod, pickL = pick
             Logger.LogLazy(Function() $"[OBTE-RANDOM-PICK] parent={ol.EditorID} picks include modFid=0x{pickL.ModFormID:X8} (of {validIncludes.Count})")
-            CollectOmodCandidate(pick.ModFormID, 0, pick.DontUseAll, pm, visited, candidates, unslotted)
+            CollectOmodCandidate(pick.ModFormID, 0, pick.DontUseAll, pm, pathStack, candidates, unslotted, instanceOrdinalCounter)
         Else
             For Each inc In validIncludes
-                CollectOmodCandidate(inc.ModFormID, 0, inc.DontUseAll, pm, visited, candidates, unslotted)
+                CollectOmodCandidate(inc.ModFormID, 0, inc.DontUseAll, pm, pathStack, candidates, unslotted, instanceOrdinalCounter)
             Next
         End If
     End Sub

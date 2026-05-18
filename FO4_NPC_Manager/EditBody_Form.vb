@@ -475,7 +475,11 @@ Public Class EditBody_Form
             ' OnMwgtSliderChanged.
             SyncMwgtSliders(WeightTriangle.Thin, WeightTriangle.Muscular, WeightTriangle.Fat)
             ' MRSV — preset.BodyMorphValues already mirrors NPC.MRSV (5 floats in [-1..+1]).
+            ' Null-guard: si la raza no expone MRSV regions (ej. Feral Ghoul), CreateMrsvRows no
+            ' corrió y _mrsvBars(i) queda Nothing. Skip el set en ese caso — la sección entera
+            ' ya está oculta por ApplyAvailability(hasMrsv=False).
             For i = 0 To 4
+                If _mrsvBars(i) Is Nothing Then Continue For
                 Dim v As Single = If(i < p.BodyMorphValues.Count, p.BodyMorphValues(i), 0.0F)
                 _mrsvBars(i).Value = v
             Next

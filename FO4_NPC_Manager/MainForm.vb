@@ -6,6 +6,7 @@ Imports System.Threading
 Imports System.Threading.Tasks
 Imports FO4_Base_Library
 Imports MaterialLib
+Imports NiflySharp
 Imports NiflySharp.Blocks
 Imports OpenTK.Mathematics
 
@@ -116,6 +117,32 @@ Public Class MainForm
         Attachment = 3
     End Enum
 
+    ''' <summary>Per-socket info published by a host chunk via BSConnectPoint::Parents.
+    ''' Cacheada por <c>publisherSockets</c> durante SRC3 indexing. Incluye el global del
+    ''' socket EN EL ESPACIO DEL NIF DEL HOST (no en actor) para que el consumer pueda
+    ''' componer correctamente sin mezclar coord systems:
+    '''
+    '''   M_mesh_consumer = host.ChunkToActor × <see cref="HostSocketGlobalT"/>
+    '''
+    ''' donde <c>host.ChunkToActor</c> mapea chunk-internal space del host a actor world.
+    ''' Para casos donde <see cref="ParentFoundInHostNif"/>=False (parent name no existe en
+    ''' el NIF del host), el consumer cae al path skeleton fallback (actor.parentBone ×
+    ''' socket.local) — apropiado para sockets que referencian bones del actor skel directo.</summary>
+    Friend Class PublisherSocketInfo
+        Public Socket As BSConnectPointReader.ConnectPointInfo
+        ''' <summary>Transform global del socket dentro del NIF del host, computado como
+        ''' <c>parentNiNode.GlobalTransform.Compose(socket.LocalAsTransform)</c>. Cuando el
+        ''' parent name del socket está vacío, equivale al socket.Local respecto al root del
+        ''' NIF (semántica engine de connect points sin parent explícito).</summary>
+        Public HostSocketGlobalT As Transform_Class
+        ''' <summary>True si el ParentBoneName del socket fue encontrado como NiNode en el
+        ''' NIF del host (o si ParentBoneName="" → parent implícito = root del host NIF).
+        ''' False = parent name no aparece en el NIF; consumer debe caer al path skeleton
+        ''' fallback (actor.parentBone × socket.local), apropiado para sockets que referencian
+        ''' bones del actor que NO existen en el host como NiNodes internos.</summary>
+        Public ParentFoundInHostNif As Boolean
+    End Class
+
     Friend Class MeshCandidate
         Public DictKey As String = ""
         Public SlotMask As UInteger
@@ -150,6 +177,78 @@ Public Class MainForm
         ''' resolver falls back to the unindexed name.</summary>
         Public MountApIdx As Byte = 0
         Public MountSocket As BSConnectPointReader.ConnectPointInfo = Nothing
+        ''' <summary>Skeleton-scoped socket fallback para Path B (cuando Path A no aplica —
+        ''' chunks sin C-X NiNode interno). Resuelto desde el flat <c>skeletonSockets</c>
+        ''' (SRC1 RACE.ANAM + SRC2 BPTD.MODL) por nombre exacto en CollectRobotChunkCandidates.
+        '''
+        ''' Su <c>ParentBoneName</c> usa nomenclatura actor skel (con suffixes indexed como
+        ''' <c>Arm1|0</c>), distinto al publisher chunk socket que usa chunk-internal naming
+        ''' sin suffix. Path B usa ESTE para evitar mezclar chunk-internal-parent-naming con
+        ''' actor-skel-bone-lookup, que rompía multi-instance Mr Handy attachments donde el
+        ''' chunk dice <c>parent='Arm1'</c> pero actor.skel solo tiene <c>Arm1|0/1/2</c>.
+        '''
+        ''' Nothing cuando el skeleton no publica el socket name (raro — típicamente solo
+        ''' chunks root que son los primeros publishers de su AP). En ese caso Path B cae al
+        ''' MountSocket publisher como último recurso.
+        '''
+        ''' Separación estructural (per OpenAI Vuelta 17): el MountSocket original hacía 2
+        ''' trabajos distintos (publisher coord system para Path A, skeleton bone naming para
+        ''' Path B). Persistir dos representaciones distintas en el candidate cierra la
+        ''' sobrecarga conceptual.</summary>
+        Public SkeletonFallbackSocket As BSConnectPointReader.ConnectPointInfo = Nothing
+        ''' <summary>InstanceOrdinal único de ESTE candidate — identidad runtime real asignada
+        ''' en expand-time por ObjectTemplateResolver (CollectOmodCandidate). Inmune a colisión
+        ''' por reúso de OMOD asset bajo hosts distintos: cada expansión exitosa recibe ordinal
+        ''' fresco del counter monotónico, antes de cualquier dedup. 0 = sentinel "skeleton root"
+        ''' (no asignado a ningún candidate real; usado como hostOrdinal para chunks que mountean
+        ''' en el actor root via initialApPool).</summary>
+        Public ChunkInstanceOrdinal As Integer = 0
+        ''' <summary>OMOD FormID del chunk publisher cuyo AP introduce este chunk al pool —
+        ''' el "host inmediato" en el árbol de mounting OBTE. 0UI = host es el actor/skeleton
+        ''' root (AP venía del initialApPool / NPC.APPR seed).
+        '''
+        ''' SOLO para logging legible. La identidad runtime del host vive en
+        ''' <see cref="MountHostInstanceOrdinal"/>. La tuple (FormID, ApIdx) puede colisionar
+        ''' bajo reúso teórico de asset; el ordinal no.</summary>
+        Public MountHostOmodFormID As UInteger = 0UI
+        ''' <summary>ApIdx del host instance (solo logging). Identidad runtime real:
+        ''' <see cref="MountHostInstanceOrdinal"/>.</summary>
+        Public MountHostApIdx As Byte = 0
+        ''' <summary>InstanceOrdinal del host inmediato. 0 = skeleton root. Identidad runtime
+        ''' real para el host chain walk — usado como key en hostChainMap / _candByOrdinal.</summary>
+        Public MountHostInstanceOrdinal As Integer = 0
+        ''' <summary>Transform chunk-to-actor de este chunk montado (= A computado por V2:
+        ''' A = M_mesh × inv(G_CX)). Mapea coordenadas del NIF interno del chunk al actor
+        ''' world space. Los consumers de este chunk (chunks montados via sockets que ESTE
+        ''' publica) usan: M_mesh_consumer = host.ChunkToActor × HostSocketGlobalT, evitando
+        ''' la mezcla de coord systems entre actor.parentBone y socket.local-en-chunk-frame.
+        '''
+        ''' Nothing = aún no calculado (pre-pass no corrió, o este candidate no es robot
+        ''' mount). Los lookups de consumers que ven Nothing caen al path skeleton fallback.
+        ''' Se popula en el pre-pass <c>PopulateRobotChunkChunkToActor</c> apenas A es derivable
+        ''' (M_mesh + G_CX disponibles), ANTES del split actor-rig/module-rig de V2.</summary>
+        Public ChunkToActor As Transform_Class = Nothing
+        ''' <summary>FormID del host donde el resolver host-scoped efectivamente encontró el
+        ''' socket de este consumer (puede ser distinto al MountHostOmodFormID inmediato si
+        ''' el resolver walkeó la cadena hacia arriba). 0UI = socket vino del skeleton root
+        ''' o no se encontró. SOLO para logging — identidad runtime real:
+        ''' <see cref="MatchedHostInstanceOrdinal"/>.</summary>
+        Public MatchedHostOmodFormID As UInteger = 0UI
+        ''' <summary>ApIdx del matched host (solo logging). Identidad runtime real:
+        ''' <see cref="MatchedHostInstanceOrdinal"/>.</summary>
+        Public MatchedHostApIdx As Byte = 0
+        ''' <summary>InstanceOrdinal del host donde el resolver host-scoped efectivamente encontró
+        ''' el socket. Path A usa ESTE ordinal para buscar host.ChunkToActor via _candByOrdinal.
+        ''' 0 = skeleton root (Path A no aplica).</summary>
+        Public MatchedHostInstanceOrdinal As Integer = 0
+        ''' <summary>HostSocketGlobalT del PublisherSocketInfo resuelto — global del socket
+        ''' dentro del NIF del matched host. Path A: M_mesh = matchedHost.ChunkToActor × ESTE.
+        ''' Nothing si el socket vino del skeleton (no aplica Path A).</summary>
+        Public ResolvedHostSocketGlobalT As Transform_Class = Nothing
+        ''' <summary>True si el ParentBoneName del socket fue encontrado como NiNode en el NIF
+        ''' del matched host (o si el parent era vacío y se interpretó como root del host NIF).
+        ''' False = consumer debe caer al path skeleton fallback en lugar de Path A.</summary>
+        Public ParentFoundInMatchedHostNif As Boolean = False
         ''' <summary>Effective PartType: HDPT.PartType, falling back to the parent HNAM-chain
         ''' part type for sub-parts whose own PartType=0 (Misc). Used by skinning / FBNS
         ''' resolution / FaceTint candidacy where a Misc child of Face must behave Face-like.</summary>
@@ -1763,12 +1862,14 @@ Public Class MainForm
                            ButtonSaveLooksmenu.Enabled = True
                            ButtonCopyLook.Enabled = True
                            ButtonSavePlugin.Enabled = True
+                           ButtonSaveSceneNif.Enabled = True
                        End Sub)
             Else
                 ButtonLoadLooksmenu.Enabled = True
                 ButtonSaveLooksmenu.Enabled = True
                 ButtonCopyLook.Enabled = True
                 ButtonSavePlugin.Enabled = True
+                ButtonSaveSceneNif.Enabled = True
             End If
             UpdatePasteLookEnabled()
             ' ButtonEditBody.Enabled is decided after render in UpdateEditBodyEnabled when we
@@ -1846,12 +1947,14 @@ Public Class MainForm
                            ButtonSaveLooksmenu.Enabled = True
                            ButtonCopyLook.Enabled = True
                            ButtonSavePlugin.Enabled = True
+                           ButtonSaveSceneNif.Enabled = True
                        End Sub)
             Else
                 ButtonLoadLooksmenu.Enabled = True
                 ButtonSaveLooksmenu.Enabled = True
                 ButtonCopyLook.Enabled = True
                 ButtonSavePlugin.Enabled = True
+                ButtonSaveSceneNif.Enabled = True
             End If
             UpdatePasteLookEnabled()
             ' ButtonEditBody.Enabled is decided after render in UpdateEditBodyEnabled when we
@@ -2068,6 +2171,23 @@ Public Class MainForm
         ' Re-introducción del dropdown experimental se descartó 2026-04-29 tras detectar que el
         ' clip motivador era OMODs/add-ons no renderizados, no la fórmula.
         Dim inst = PrepareSkeleton(state, renderData)
+
+        ' [PIPBOY-DIAG] dump del skeleton actor para ver si trae el socket donde el Pipboy NIF
+        ' espera mounting. Convención vanilla: el host (actor skeleton) expone "P-X" como NiNode,
+        ' el cliente (Pipboy NIF) declara "C-X" en BSConnectPoint::Children y el mount-resolver
+        ' los matchea. Loguemos cualquier key que contenga "Pip" (case-insensitive) o que arranque
+        ' con "P-" (cualquier P- socket). Si no hay nada → no hay punto de mounting → el render
+        ' debe inventarlo (anclar a LArm_skin, etc.) o dejar el Pipboy en el origen.
+        Dim skelKeys = inst.SkeletonDictionary.Keys.ToList()
+        Dim pipMatches = skelKeys.Where(Function(k) k.IndexOf("pip", StringComparison.OrdinalIgnoreCase) >= 0).OrderBy(Function(k) k).ToList()
+        Dim pSocketMatches = skelKeys.Where(Function(k) k.StartsWith("P-", StringComparison.OrdinalIgnoreCase)).OrderBy(Function(k) k).ToList()
+        Logger.LogLazy(Function() $"[PIPBOY-DIAG] skeleton total-bones={skelKeys.Count} pip-related-keys=[{String.Join(",", pipMatches)}] P-prefix-keys=[{String.Join(",", pSocketMatches)}]")
+
+        ' Pipboy synthetic-skin: corre ahora que `inst` está construido. Descubre el bone target
+        ' dinámicamente del SkeletonDictionary (case-insensitive match contra "pipboy"). Sin
+        ' hardcoding: razas distintas (Ghoul, Child, Synth) pueden traer otro nombre o ninguno.
+        ApplyPipboySyntheticSkin(renderData, inst)
+
         Dim basePose = BuildMergedNpcPose(state, renderData, boneMorphsEnabled, bodyWeightEnabled,
                                           inst, Nothing)  ' Nothing = no sculpt → base pose
         inst.ApplyPose(basePose)
@@ -2340,9 +2460,95 @@ Public Class MainForm
         ' de la hipótesis del usuario: armor de pierna se reskinea contra actor.LThigh.world del
         ' skeleton.nif, no contra W_B(LThigh) que produjo LegsAssaultron. Solo log, no afecta render.
         Dim chunkWBHistory As New Dictionary(Of String, Transform_Class)(StringComparer.OrdinalIgnoreCase)
+
+        ' [HOST-SCOPED A_HOST] Cache de candidates por ORDINAL runtime. Construido desde
+        ' renderData.CandidateNif.Keys (todos los candidates con NIF cargado, NO solo los
+        ' con shapes renderizables). Eso desacopla la identidad de instancia host de la
+        ' shape materialization — un host que publica sockets pero no emite shapes propias
+        ' igual aparece en este cache y puede recibir ChunkToActor lazy via EnsureChunkToActor.
+        Dim _candByOrdinal As New Dictionary(Of Integer, MeshCandidate)
+        For Each _cv In renderData.CandidateNif.Keys
+            If _cv Is Nothing OrElse _cv.ChunkInstanceOrdinal = 0 Then Continue For
+            Dim _key = _cv.ChunkInstanceOrdinal
+            Dim _existing As MeshCandidate = Nothing
+            If _candByOrdinal.TryGetValue(_key, _existing) Then
+                If Not ReferenceEquals(_existing, _cv) Then
+                    Dim kOrdL = _key, oldNmL = If(_existing.MountSocket?.Name, "?"), newNmL = If(_cv.MountSocket?.Name, "?"), oldFidL = _existing.ChunkOmodFormID, newFidL = _cv.ChunkOmodFormID
+                    Logger.LogLazy(Function() $"[CAND-BY-ORDINAL-OVERWRITE] ordinal={kOrdL} existing.socket='{oldNmL}' (0x{oldFidL:X8}) new.socket='{newNmL}' (0x{newFidL:X8}) — bug serio: ordinal debería ser único por construcción")
+                End If
+            End If
+            _candByOrdinal(_key) = _cv
+        Next
+
+        ' [VISITING-SET] DFS cycle detection para EnsureChunkToActor recursivo. Ordinals
+        ' actualmente en stack de cómputo se pushean acá; si recursión llega a uno ya
+        ' presente, es ciclo real (loggeado, fallback Path B). Standard DFS coloring
+        ' (gray = visiting). Push/pop en EnsureChunkToActor via Try/Finally.
+        Dim ensureVisiting As New HashSet(Of Integer)
+
         For Each shape In ordered
             Dim socket As BSConnectPointReader.ConnectPointInfo = Nothing
             If Not renderData.ShapeMountSocket.TryGetValue(shape, socket) Then Continue For
+
+            ' [SOCKET-EFFECTIVE-OVERRIDE] Per OpenAI Vuelta 17: para chunks downstream del
+            ' shape loop (INJECT, FAKE-SKIN, V2 reskin path B), usar el SkeletonFallbackSocket
+            ' del cand cuando existe — su parent bone está en nomenclatura actor.skel (indexed:
+            ' Arm1|0/1/2) en lugar del publisher chunk socket cuyo parent es chunk-internal
+            ' (Arm1 sin suffix). Plus apIdx-substitution del suffix '|N' del parent para
+            ' matchear el consumer apIdx (caso vivo Codsworth Mr Handy ModArmsHandyAR1A
+            ' apIdx=1 que necesita Arm1|1, no el Arm1|0 default del skeleton publish).
+            '
+            ' Cuando NO hay SkeletonFallbackSocket (cand fue creado fuera del robot path o
+            ' skeleton no publica el socket), mantenemos el socket original como antes.
+            Dim _candForSocket As MeshCandidate = Nothing
+            If renderData.ShapeCandidate.TryGetValue(shape, _candForSocket) AndAlso _candForSocket IsNot Nothing AndAlso _candForSocket.SkeletonFallbackSocket IsNot Nothing Then
+                Dim skelFb = _candForSocket.SkeletonFallbackSocket
+                Dim effectiveParent = If(skelFb.ParentBoneName, "")
+                ' apIdx substitution: si parent termina en '|N' numérico y consumer apIdx != 0,
+                ' sustituir N por consumer apIdx.
+                If _candForSocket.MountApIdx <> 0 AndAlso Not String.IsNullOrEmpty(effectiveParent) Then
+                    Dim pipe = effectiveParent.LastIndexOf("|"c)
+                    If pipe > 0 AndAlso pipe < effectiveParent.Length - 1 Then
+                        Dim sfx = effectiveParent.Substring(pipe + 1)
+                        Dim allDigits As Boolean = True
+                        For Each c In sfx
+                            If Not Char.IsDigit(c) Then allDigits = False : Exit For
+                        Next
+                        If allDigits Then
+                            effectiveParent = effectiveParent.Substring(0, pipe + 1) & _candForSocket.MountApIdx.ToString()
+                        End If
+                    End If
+                End If
+                Dim effectiveSocket As New BSConnectPointReader.ConnectPointInfo With {
+                    .Name = skelFb.Name,
+                    .ParentBoneName = effectiveParent,
+                    .Translation = skelFb.Translation,
+                    .Rotation = skelFb.Rotation,
+                    .Scale = skelFb.Scale
+                }
+                If isRobotMount AndAlso Not String.Equals(effectiveSocket.ParentBoneName, socket.ParentBoneName, StringComparison.Ordinal) Then
+                    Dim shL = shape.ShapeName, origParL = If(socket.ParentBoneName, ""), newParL = effectiveParent, apL = _candForSocket.MountApIdx
+                    Logger.LogLazy(Function() $"[SOCKET-EFFECTIVE-OVERRIDE] shape='{shL}' apIdx={apL} parent '{origParL}' (publisher) → '{newParL}' (skeleton+apIdx-sub)")
+                End If
+                socket = effectiveSocket
+            End If
+
+            ' [A_HOST-JIT] Thin caller a EnsureChunkToActor. Extrae el compute de
+            ' ChunkToActor del shape loop. Si _cand es robot mount y ChunkToActor no está
+            ' set, EnsureChunkToActor lo computa lazy + resuelve recursivamente la cadena
+            ' de hosts (cada host es ensured antes que sus consumers via recursión).
+            ' Cubre el caso "host publisher sin shapes" — ese host nunca pasa por este JIT
+            ' pero recibe ChunkToActor cuando algún descendant con shapes lo requiere.
+            Try
+                Dim _cand As MeshCandidate = Nothing
+                renderData.ShapeCandidate.TryGetValue(shape, _cand)
+                If _cand IsNot Nothing AndAlso _cand.Kind = MeshCandidateKind.Attachment AndAlso _cand.OmodResolutionFormType = "NPC_" AndAlso _cand.MountSocket IsNot Nothing Then
+                    EnsureChunkToActor(_cand, _candByOrdinal, renderData, inst, chunkWBHistory, ensureVisiting)
+                End If
+            Catch exJit As Exception
+                Dim shL = shape.ShapeName, msgL = exJit.Message
+                Logger.LogLazy(Function() $"[A_HOST-JIT] shape='{shL}' EXCEPTION: {msgL}")
+            End Try
 
             ' DIAG-PRE-INJECT: dump TODO lo necesario para hacer la matemática del attachment
             ' offline. Para cada chunk con socket loggeamos:
@@ -2675,6 +2881,15 @@ Public Class MainForm
                             ' socket.Translation YA viene del resolver en Parents space (BSConnectPoint::Parents
                             ' = chunk-source declaration). La correction almacenada en socketCorrections es
                             ' inv(bone-dict-C-X).Compose(Parents) — pensada para llevar bone-dict-C-X → Parents.
+
+                            ' [HOST-SCOPED PATH A] Si la pre-pass A_HOST ya computó cand.ChunkToActor
+                            ' (Path A: M_mesh = host.ChunkToActor × HostSocketGlobalT en espacio del NIF
+                            ' del host), V2 deriva M_mesh = A × G_CX para mantener consistencia con
+                            ' downstream checks (ACTOR-RIG vs MODULE-RIG depende de M_mesh.T). Esto
+                            ' reemplaza el cálculo legacy parentBoneWorld × socketLocal solo cuando
+                            ' la pre-pass aplicó Path A — sino el path skeleton actual sigue.
+                            Dim _candForShape As MeshCandidate = Nothing
+                            renderData.ShapeCandidate.TryGetValue(shape, _candForShape)
                             ' Aplicarla aquí encima de socket.Translation duplicaba el shift +2.908 X (verificado
                             ' 2026-05-16 con CHUNK-RESKIN-V2-ALT: eyes/arms Codsworth shift consistente delta=2.908
                             ' entre W_B_chunkSrc y W_B_dictExisting). CHUNK-PARENTS-DUMP sigue almacenando la
@@ -2682,7 +2897,19 @@ Public Class MainForm
                             Dim socketLocalForMmesh As Transform_Class = dictExistingSocketLocal
                             Dim usedChunkSource As Boolean = False
 
-                            Dim M_mesh = parentBoneWorld.ComposeTransforms(socketLocalForMmesh)
+                            Dim M_mesh As Transform_Class
+                            If _candForShape IsNot Nothing AndAlso _candForShape.ChunkToActor IsNot Nothing Then
+                                ' Path A: A ya fue computado por la pre-pass usando coord system del
+                                ' host NIF correctamente. Derivar M_mesh = A × G_CX para mantener
+                                ' compatibilidad con downstream checks (ACTOR-RIG vs MODULE-RIG).
+                                M_mesh = _candForShape.ChunkToActor.ComposeTransforms(G_CX)
+                                Dim shL_pa = shape.ShapeName
+                                Dim mmTl = M_mesh.Translation
+                                Logger.LogLazy(Function() $"[V2-MMESH-PATH-A] shape='{shL_pa}' using pre-pass ChunkToActor, M_mesh.T=({mmTl.X:F3},{mmTl.Y:F3},{mmTl.Z:F3})")
+                            Else
+                                ' Path B: legacy/fallback. actor.parentBone × socket.local.
+                                M_mesh = parentBoneWorld.ComposeTransforms(socketLocalForMmesh)
+                            End If
 
                             ' [DIAG-CHUNKROOT] Hipótesis: GetGlobalTransform incluye chunkRoot.local
                             ' en su composición. Per BSConnectPointBoneInjector.vb:137-140 el
@@ -6230,6 +6457,11 @@ Public Class MainForm
         ' metadata del CK para validar compatibilidad chunk↔slot, no la fuente del mounting.
         ResolveRobotChunkMounts(selectedCandidates, loadedNifs, previewVariant.State, result.Warnings)
 
+        ' NOTA: Pipboy synthetic-skin pass se ejecuta DESPUÉS de PrepareSkeleton (no acá), porque
+        ' necesita el SkeletonInstance del actor para descubrir el bone target via lookup
+        ' case-insensitive contra el dictionary (evita hardcodear "PipboyBone" — distintas razas
+        ' pueden tener otra convención de nombre). Ver llamada post-PrepareSkeleton más abajo.
+
         ' Map shape → (MountSocket, chunkNif) para los robot chunks resueltos. Consumido por
         ' PrepareSkeleton para inyectar bones internos del chunk al SkeletonInstance del actor
         ' anchored al socket bone (BSConnectPointBoneInjector_Class). Solo se popula para
@@ -6817,9 +7049,10 @@ Public Class MainForm
                 Continue For
             End If
 
+            Dim effSlotMask As UInteger = If(arma.SlotMask <> 0UI, arma.SlotMask, armo.SlotMask)
             candidates.Add(New MeshCandidate With {
                 .DictKey = NormalizeDictionaryKeyWithMeshesPrefix(meshPath),
-                .SlotMask = If(arma.SlotMask <> 0UI, arma.SlotMask, armo.SlotMask),
+                .SlotMask = effSlotMask,
                 .Priority = If(state.IsFemale, arma.FemalePriority, arma.MalePriority),
                 .Kind = kind,
                 .SourceFormID = armoFormID,
@@ -6837,6 +7070,20 @@ Public Class MainForm
                 .Order = order,
                 .ArmaBoneScaleDeltas = genderBoneScale
             })
+
+            ' [OUTFIT-RESOLVE] dump por cada candidate emitido. Tag PIPBOY-CANDIDATE cuando el
+            ' SlotMask contiene bit 30 (slot 60 - Pipboy, wbDefinitionsFO4.pas:3776). Permite ver
+            ' qué ARMA produce el mesh del Pipboy, qué path se resuelve, qué slot mask trae, y
+            ' poder cotejar contra el NIF (skinned? BSConnectPoint::Parents declarado?).
+            Dim slotHex = effSlotMask.ToString("X8")
+            Dim armoEdid = If(armo.EditorID, "")
+            Dim armaEdid = If(arma.EditorID, "")
+            Dim isPipboyBit As Boolean = (effSlotMask And &H40000000UI) <> 0UI
+            Dim tag = If(isPipboyBit, "[OUTFIT-RESOLVE PIPBOY-CANDIDATE]", "[OUTFIT-RESOLVE]")
+            Dim meshPathL = meshPath
+            Dim orderL = order
+            Dim kindL = kind
+            Logger.LogLazy(Function() $"{tag} kind={kindL} order={orderL} ARMO=0x{armoFormID:X8} '{armoEdid}' ARMA=0x{armaFormID:X8} '{armaEdid}' slot=0x{slotHex} mesh='{meshPathL}'")
 
             order += 1
         Next
@@ -6944,6 +7191,24 @@ Public Class MainForm
         ' socket name (case-insens). Used to look up MountSocket transform per chunk.
         Dim socketsByName = LoadActorBSConnectPoints(state, warnings)
 
+        ' [HOST-SCOPED-SNAPSHOT] skeletonSockets = SRC1+SRC2 sockets ANTES de que SRC3
+        ' contribuya. Estos son los sockets del actor/skeleton root — el fallback final
+        ' de la cadena host walk. Cualquier socket que un chunk publique vía SRC3 vive en
+        ' su propio namespace (publisherSockets[omodFid]) y se resuelve consultando el
+        ' host inmediato del consumer hacia arriba. El namespace flat global socketsByName
+        ' se mantiene para callers legacy que aún no migraron, pero el robot path mount-
+        ' lookup ya no lo consulta — usa host-scoped.
+        Dim skeletonSockets As New Dictionary(Of String, BSConnectPointReader.ConnectPointInfo)(socketsByName, StringComparer.OrdinalIgnoreCase)
+        ' Per-publisher socket map: cada chunk publisher (OMOD FormID) tiene su propio
+        ' diccionario de sockets que él publica vía BSConnectPoint::Parents. Sin merging
+        ' con skeleton, sin FIRST-WINS — cada publisher tiene su namespace propio.
+        ' Cada entry guarda PublisherSocketInfo (Socket + HostSocketGlobalT + flag de parent),
+        ' computado UNA vez al indexing time, reusado por todos los consumers de ese host.
+        ' Keyed por OMOD FormID asset-level: los sockets que un OMOD publica son los mismos
+        ' independiente de apIdx (son propiedad del NIF, no de la instancia). La identidad
+        ' por instancia (FormID, ApIdx) la lleva hostChainMap aparte.
+        Dim publisherSockets As New Dictionary(Of UInteger, Dictionary(Of String, PublisherSocketInfo))
+
         ' Source 3 (runtime pre-mount): cada chunk en IncludedOmods puede exponer sub-sockets
         ' (BSConnectPoint::Parents en su NIF) que child chunks van a buscar para montarse.
         ' Estos sockets pueden vivir SOLO en el chunk NIF y no en RACE.ANAM/BPTD.MODL.
@@ -7000,6 +7265,60 @@ Public Class MainForm
                         Logger.LogLazy(Function() $"[DIAG-CHAIN] EXCEPTION socket='{socketNm2}': {exMsg}")
                     End Try
                 Next
+                ' [HOST-SCOPED] Poblar publisherSockets[omodPre.FormID] con TODOS los sockets
+                ' que este chunk publica — sin merging con skeleton, sin FIRST-WINS. El
+                ' namespace del publisher es propio. Conflicts dentro del mismo publisher
+                ' (mismo nombre dos veces en el mismo chunk) son inconsistencia local —
+                ' loggear, mantener primero.
+                '
+                ' Por cada socket computamos HostSocketGlobalT EN EL ESPACIO DEL NIF DEL HOST:
+                '   - Si parent.NiNode existe en este NIF: parent.global.compose(socket.local).
+                '   - Si parent.NiNode NO existe (parent name no aparece en este NIF tree):
+                '     ParentFoundInHostNif=False; consumer fallback al path skeleton.
+                '   - Si parent name está vacío: tratamos como parent=root del host NIF
+                '     (identity), semántica engine para sockets sin parent explícito.
+                Dim hostMap As Dictionary(Of String, PublisherSocketInfo) = Nothing
+                If Not publisherSockets.TryGetValue(omodPre.FormID, hostMap) Then
+                    hostMap = New Dictionary(Of String, PublisherSocketInfo)(StringComparer.OrdinalIgnoreCase)
+                    publisherSockets(omodPre.FormID) = hostMap
+                End If
+                For Each cpHost In chunkParents
+                    Dim nmHost = If(cpHost.Name, "")
+                    If String.IsNullOrEmpty(nmHost) Then Continue For
+                    If hostMap.ContainsKey(nmHost) Then
+                        Dim nmHostL = nmHost, omNmHostL = omodPre.EditorID
+                        Logger.LogLazy(Function() $"[SOCKETS-PUBLISHER-DUP]   '{nmHostL}' duplicado dentro del mismo chunk '{omNmHostL}' — keep first")
+                        Continue For
+                    End If
+                    Dim parentFound As Boolean = False
+                    Dim parentGlobal As Transform_Class = New Transform_Class() ' identity default = host NIF root
+                    Dim parentNm = If(cpHost.ParentBoneName, "")
+                    If String.IsNullOrEmpty(parentNm) Then
+                        ' Parent vacío = parent implícito root del host NIF (identity).
+                        parentFound = True
+                    Else
+                        Dim parentNode = nifPre.FindBlockByName(Of NiflySharp.Blocks.NiNode)(parentNm)
+                        If parentNode IsNot Nothing Then
+                            parentFound = True
+                            parentGlobal = Transform_Class.GetGlobalTransform(parentNode, nifPre)
+                        End If
+                    End If
+                    Dim socketLocalAsTransform As New Transform_Class With {
+                        .Translation = cpHost.Translation,
+                        .Rotation = BSConnectPointReader.QuatToMatrix33(cpHost.Rotation),
+                        .Scale = If(cpHost.Scale > 0.0F, cpHost.Scale, 1.0F)
+                    }
+                    Dim hostSocketGlobal As Transform_Class = parentGlobal.ComposeTransforms(socketLocalAsTransform)
+                    hostMap(nmHost) = New PublisherSocketInfo With {
+                        .Socket = cpHost,
+                        .HostSocketGlobalT = hostSocketGlobal,
+                        .ParentFoundInHostNif = parentFound
+                    }
+                    Dim nmHostL2 = nmHost, omNmHostL2 = omodPre.EditorID, pfL = parentFound
+                    Dim hsT = hostSocketGlobal.Translation
+                    Logger.LogLazy(Function() $"[PUBLISHER-SOCKET-INDEX] chunk='{omNmHostL2}' socket='{nmHostL2}' parent='{parentNm}' parentFoundInHostNif={pfL} hostSocketGlobal.T=({hsT.X:F3},{hsT.Y:F3},{hsT.Z:F3})")
+                Next
+
                 For Each cp In chunkParents
                     Dim nm = If(cp.Name, "")
                     If String.IsNullOrEmpty(nm) Then Continue For
@@ -7049,10 +7368,32 @@ Public Class MainForm
         '   3. Fall back to 'P-<base>' (single-instance — host has no |N suffix).
         ' Both shapes coexist in vanilla: TorsoHandy → P-BotCore (no suffix), Arm_Right_Flamer
         ' → P-ArmsTypeA1|1 (suffixed). The lookup tries indexed first and falls back.
+        ' [HOST-SCOPED ORDINAL] hostChainMap[ordinal] = hostOrdinal del padre inmediato.
+        ' Identidad por ordinal monotónico (expand-time, antes de cualquier dedup) garantiza
+        ' que el mismo OMOD asset reutilizado bajo hosts distintos NO colapsa identidades.
+        ' Ordinal 0 reservado para skeleton root sentinel.
+        Dim hostChainMap As New Dictionary(Of Integer, Integer)
+        For hi = 0 To resolution.IncludedOmods.Count - 1
+            Dim omodHi = resolution.IncludedOmods(hi)
+            If omodHi Is Nothing Then Continue For
+            Dim ordHi As Integer = If(hi < resolution.IncludedOmodInstanceOrdinal.Count, resolution.IncludedOmodInstanceOrdinal(hi), 0)
+            Dim hostOrdHi As Integer = If(hi < resolution.IncludedOmodHostInstanceOrdinal.Count, resolution.IncludedOmodHostInstanceOrdinal(hi), 0)
+            If ordHi = 0 Then Continue For ' unslotted properties-only — no host concept
+            If hostChainMap.ContainsKey(ordHi) Then
+                Dim ordHiL = ordHi, existingHL = hostChainMap(ordHi), newHL = hostOrdHi
+                Logger.LogLazy(Function() $"[HOSTCHAIN-OVERWRITE] ordinal={ordHiL} existing.host={existingHL} new.host={newHL} — bug de implementación: ordinal monotónico debería ser único")
+            End If
+            hostChainMap(ordHi) = hostOrdHi
+        Next
+
         Dim chunkCount As Integer = 0
         For i = 0 To resolution.IncludedOmods.Count - 1
             Dim omod = resolution.IncludedOmods(i)
             Dim apIdx = If(i < resolution.IncludedOmodApIdx.Count, resolution.IncludedOmodApIdx(i), CByte(0))
+            Dim ord As Integer = If(i < resolution.IncludedOmodInstanceOrdinal.Count, resolution.IncludedOmodInstanceOrdinal(i), 0)
+            Dim hostOrd As Integer = If(i < resolution.IncludedOmodHostInstanceOrdinal.Count, resolution.IncludedOmodHostInstanceOrdinal(i), 0)
+            Dim hostFid As UInteger = If(i < resolution.IncludedOmodHostFormID.Count, resolution.IncludedOmodHostFormID(i), 0UI)
+            Dim hostApIdx As Byte = If(i < resolution.IncludedOmodHostApIdx.Count, resolution.IncludedOmodHostApIdx(i), CByte(0))
             If omod Is Nothing Then Continue For
             If String.IsNullOrEmpty(omod.ModelPath) Then Continue For ' property-only OMODs
             ' Note: vanilla rusty/variant OMODs (Bot_ArmLeftProtectronRusty1 etc.) have
@@ -7060,12 +7401,45 @@ Public Class MainForm
             ' would drop the variants — they render in-game, so we accept any FormType here.
 
             Dim apEditorId = ResolveAttachPointEditorId(omod.AttachPointFormID)
-            Dim socket = ResolveMountSocket(apEditorId, apIdx, socketsByName)
+            ' Host-scoped resolution: walk host chain por ORDINAL hasta caer en skeleton root.
+            ' Devuelve PublisherSocketInfo (con HostSocketGlobalT precomputado) + matchedHostOrdinal —
+            ' el consumer no re-descubre el publisher después.
+            Dim resolvedInfo As PublisherSocketInfo = Nothing
+            Dim matchedHostOrdResolved As Integer = 0
+            Dim matchedHostFid As UInteger = 0UI
+            Dim matchedHostAi As Byte = 0
+            Dim socket = ResolveMountSocketHostScoped(apEditorId, apIdx, hostOrd, publisherSockets, hostChainMap, resolution, skeletonSockets, resolvedInfo, matchedHostOrdResolved, matchedHostFid, matchedHostAi)
+
+            ' [SKELETON-FALLBACK-SOCKET] Resolución paralela contra skeletonSockets (SRC1+SRC2)
+            ' para Path B. El skeleton publica P-X con ParentBoneName usando nomenclatura
+            ' actor-skel (indexed: Arm1|0, Arm1|1, etc.), distinto al publisher chunk socket
+            ' que usa chunk-internal naming sin suffix. Path B (chunks sin C-X NiNode interno)
+            ' usa ESTE socket para que ResolveEffectiveWorld(parentBone) encuentre el bone
+            ' indexed correcto en actor.skel. Nothing si el skeleton no publica este socket
+            ' (raro — Path B caería al publisher socket como último recurso, loggeado).
+            ' Lookup: indexed (P-base|apIdx) primero, plain (P-base) fallback.
+            Dim skelFallbackSocket As BSConnectPointReader.ConnectPointInfo = Nothing
+            If Not String.IsNullOrEmpty(apEditorId) Then
+                Dim baseNm_fb = apEditorId
+                If baseNm_fb.StartsWith("ap_Bot_", StringComparison.OrdinalIgnoreCase) Then
+                    baseNm_fb = baseNm_fb.Substring("ap_Bot_".Length)
+                ElseIf baseNm_fb.StartsWith("ap_", StringComparison.OrdinalIgnoreCase) Then
+                    baseNm_fb = baseNm_fb.Substring("ap_".Length)
+                End If
+                Dim indexed_fb = $"P-{baseNm_fb}|{apIdx}"
+                Dim plain_fb = $"P-{baseNm_fb}"
+                If Not skeletonSockets.TryGetValue(indexed_fb, skelFallbackSocket) Then
+                    skeletonSockets.TryGetValue(plain_fb, skelFallbackSocket)
+                End If
+            End If
 
             Dim apIdxLog = apIdx
             Dim apEditorLog = apEditorId
             Dim socketLocalForLog = socket
-            Logger.LogLazy(Function() $"[ROBOT-CHUNK] omod={omod.EditorID}({omod.FormID:X8}) apEditor='{apEditorLog}' apIdx={apIdxLog} → socket={If(socketLocalForLog Is Nothing, "NOT-FOUND", $"'{socketLocalForLog.Name}' onBone='{socketLocalForLog.ParentBoneName}'")}")
+            Dim ordLog = ord, hostOrdLog = hostOrd, matchedOrdLog = matchedHostOrdResolved
+            Dim hostFidLog = hostFid, hostApIdxLog = hostApIdx, matchedHostFidLog = matchedHostFid
+            Dim skelFbForLog = skelFallbackSocket
+            Logger.LogLazy(Function() $"[ROBOT-CHUNK] omod={omod.EditorID}({omod.FormID:X8}) ord={ordLog} apEditor='{apEditorLog}' apIdx={apIdxLog} host=(ord={hostOrdLog},0x{hostFidLog:X8},apIdx={hostApIdxLog}) matchedHost=(ord={matchedOrdLog},0x{matchedHostFidLog:X8}) → socket={If(socketLocalForLog Is Nothing, "NOT-FOUND", $"'{socketLocalForLog.Name}' onBone='{socketLocalForLog.ParentBoneName}'")} skelFallback={If(skelFbForLog Is Nothing, "NOT-FOUND", $"'{skelFbForLog.Name}' onBone='{skelFbForLog.ParentBoneName}'")}")
 
             Dim dictKey = NormalizeDictionaryKeyWithMeshesPrefix(omod.ModelPath)
             candidates.Add(New MeshCandidate With {
@@ -7078,6 +7452,16 @@ Public Class MainForm
                 .AttachPointKywdEditorId = apEditorId,
                 .MountApIdx = apIdx,
                 .MountSocket = socket,
+                .SkeletonFallbackSocket = skelFallbackSocket,
+                .ChunkInstanceOrdinal = ord,
+                .MountHostOmodFormID = hostFid,
+                .MountHostApIdx = hostApIdx,
+                .MountHostInstanceOrdinal = hostOrd,
+                .MatchedHostOmodFormID = matchedHostFid,
+                .MatchedHostApIdx = matchedHostAi,
+                .MatchedHostInstanceOrdinal = matchedHostOrdResolved,
+                .ResolvedHostSocketGlobalT = If(resolvedInfo IsNot Nothing, resolvedInfo.HostSocketGlobalT, Nothing),
+                .ParentFoundInMatchedHostNif = If(resolvedInfo IsNot Nothing, resolvedInfo.ParentFoundInHostNif, False),
                 .OmodResolution = resolution,
                 .OmodResolutionFormType = "NPC_",
                 .Order = order
@@ -7085,6 +7469,12 @@ Public Class MainForm
             order += 1
             chunkCount += 1
         Next
+
+        ' [PRE-PASS A_HOST] La pre-pass que computa ChunkToActor por candidate corre más
+        ' tarde, en V2 setup, donde el SkeletonInstance (inst) está disponible para resolver
+        ' actor.parentBone.world en el path fallback (Path B). Ver PopulateRobotChunkChunkToActor
+        ' llamado en RegisterRobotMountSockets / antes del V2 shape loop. Aquí solo persistimos
+        ' las estructuras necesarias en renderData para que la pre-pass las pueda consumir.
 
     End Sub
 
@@ -7284,6 +7674,309 @@ Public Class MainForm
         Return Nothing
     End Function
 
+    ''' <summary>Host-scoped resolution del MountSocket de un robot chunk. Walkea la cadena
+    ''' de hosts: <c>host inmediato → host del host → ... → skeleton root</c>. En cada nivel
+    ''' busca el socket en el namespace local del publisher (BSConnectPoint::Parents que ese
+    ''' chunk publica). Si no aparece en ningún host de la cadena, cae al <c>skeletonSockets</c>
+    ''' (SRC1+SRC2: RACE.ANAM + BPTD.MODL).
+    '''
+    ''' Reemplaza la resolución flat global que mezclaba STATIC skeleton + per-chunk publishers
+    ''' en un único <c>SocketsDictionary</c> y forzaba políticas FIRST-WINS/CHUNK-WINS para
+    ''' decidir conflicts artificiales que en realidad eran namespaces distintos. Caso vivo:
+    ''' Assaultron Torso publica P-ArmRight con T=(8.666, ...) acomodado a sus hombros
+    ''' estrechos; el skeleton vanilla publica P-ArmRight con T=(18.772, ...) genérico
+    ''' humanoide. Con host-scoped, ArmRightAssaultron (host = TorsoAssaultron) resuelve
+    ''' contra el T=(8.666) del torso publisher → brazo encastra. El skeleton sólo se
+    ''' consulta si NINGÚN host de la cadena publicó P-ArmRight.</summary>
+    Private Function ResolveMountSocketHostScoped(apEditorId As String,
+                                                  apIdx As Byte,
+                                                  hostOrdinal As Integer,
+                                                  publisherSockets As Dictionary(Of UInteger, Dictionary(Of String, PublisherSocketInfo)),
+                                                  hostChainMap As Dictionary(Of Integer, Integer),
+                                                  resolution As ObjectTemplateResolver.CombinationResolution,
+                                                  skeletonSockets As Dictionary(Of String, BSConnectPointReader.ConnectPointInfo),
+                                                  ByRef resolvedInfo As PublisherSocketInfo,
+                                                  ByRef matchedHostOrdinal As Integer,
+                                                  ByRef matchedHostFormID As UInteger,
+                                                  ByRef matchedHostApIdx As Byte) _
+                                                  As BSConnectPointReader.ConnectPointInfo
+        resolvedInfo = Nothing
+        matchedHostOrdinal = 0
+        matchedHostFormID = 0UI
+        matchedHostApIdx = 0
+        If String.IsNullOrEmpty(apEditorId) Then
+            Logger.LogLazy(Function() $"[MOUNT-LOOKUP-HS] apEditorId='' → NOT-FOUND (KYWD not resolvable)")
+            Return Nothing
+        End If
+        Dim baseName = apEditorId
+        Dim stripped As String = ""
+        If baseName.StartsWith("ap_Bot_", StringComparison.OrdinalIgnoreCase) Then
+            stripped = "ap_Bot_"
+            baseName = baseName.Substring("ap_Bot_".Length)
+        ElseIf baseName.StartsWith("ap_", StringComparison.OrdinalIgnoreCase) Then
+            stripped = "ap_"
+            baseName = baseName.Substring("ap_".Length)
+        End If
+        Dim indexed = $"P-{baseName}|{apIdx}"
+        Dim plain = $"P-{baseName}"
+        Dim apEditorIdLog = apEditorId, baseNameLog = baseName, strippedLog = stripped
+        Dim indexedLog = indexed, plainLog = plain, apIdxLog = apIdx
+
+        ' Walk host chain por ORDINAL runtime. Safety cap contra ciclo (no debería ocurrir
+        ' — ordinals son monotónicos, no se pueden ciclar, pero defensivo).
+        Dim currentOrd As Integer = hostOrdinal
+        Dim hops As Integer = 0
+        Const maxHops As Integer = 32
+        Dim chainTrace As New System.Text.StringBuilder()
+        While currentOrd <> 0 AndAlso hops < maxHops
+            ' Lookup FormID del OMOD para este ordinal via resolution parallel arrays.
+            ' Necesario porque publisherSockets sigue keyeado por FormID (asset-level —
+            ' los sockets son propiedad del NIF, idénticos entre instancias del mismo asset).
+            Dim currentFid As UInteger = 0UI
+            For idx = 0 To resolution.IncludedOmodInstanceOrdinal.Count - 1
+                If resolution.IncludedOmodInstanceOrdinal(idx) = currentOrd Then
+                    Dim om = resolution.IncludedOmods(idx)
+                    If om IsNot Nothing Then currentFid = om.FormID
+                    Exit For
+                End If
+            Next
+            chainTrace.Append($"→(ord={currentOrd},0x{currentFid:X8})")
+            Dim hostMap As Dictionary(Of String, PublisherSocketInfo) = Nothing
+            If currentFid <> 0UI AndAlso publisherSockets.TryGetValue(currentFid, hostMap) Then
+                Dim info As PublisherSocketInfo = Nothing
+                If hostMap.TryGetValue(indexed, info) Then
+                    resolvedInfo = info
+                    matchedHostOrdinal = currentOrd
+                    matchedHostFormID = currentFid
+                    ' Lookup apIdx via parallel arrays para logging legible.
+                    For idx2 = 0 To resolution.IncludedOmodInstanceOrdinal.Count - 1
+                        If resolution.IncludedOmodInstanceOrdinal(idx2) = currentOrd Then
+                            matchedHostApIdx = resolution.IncludedOmodApIdx(idx2)
+                            Exit For
+                        End If
+                    Next
+                    Dim ordL = currentOrd, fidL = currentFid, traceL = chainTrace.ToString()
+                    Logger.LogLazy(Function() $"[MOUNT-LOOKUP-HS] apEditorId='{apEditorIdLog}' apIdx={apIdxLog} base='{baseNameLog}' chain={traceL} → MATCH '{indexedLog}' at host=(ord={ordL},0x{fidL:X8}) parent='{info.Socket.ParentBoneName}' parentFoundInHost={info.ParentFoundInHostNif}")
+                    Return info.Socket
+                End If
+                If hostMap.TryGetValue(plain, info) Then
+                    resolvedInfo = info
+                    matchedHostOrdinal = currentOrd
+                    matchedHostFormID = currentFid
+                    For idx2 = 0 To resolution.IncludedOmodInstanceOrdinal.Count - 1
+                        If resolution.IncludedOmodInstanceOrdinal(idx2) = currentOrd Then
+                            matchedHostApIdx = resolution.IncludedOmodApIdx(idx2)
+                            Exit For
+                        End If
+                    Next
+                    Dim ordL = currentOrd, fidL = currentFid, traceL = chainTrace.ToString()
+                    Logger.LogLazy(Function() $"[MOUNT-LOOKUP-HS] apEditorId='{apEditorIdLog}' apIdx={apIdxLog} base='{baseNameLog}' chain={traceL} → MATCH '{plainLog}' at host=(ord={ordL},0x{fidL:X8}) parent='{info.Socket.ParentBoneName}' parentFoundInHost={info.ParentFoundInHostNif}")
+                    Return info.Socket
+                End If
+            End If
+            Dim parentOrd As Integer = 0
+            hostChainMap.TryGetValue(currentOrd, parentOrd)
+            currentOrd = parentOrd
+            hops += 1
+        End While
+
+        ' Fallback: skeleton root (SRC1+SRC2). resolvedInfo queda Nothing → consumer cae
+        ' al Path B fallback en V2 (actor.parentBone × socket.local con ResolveEffectiveWorld).
+        Dim sk As BSConnectPointReader.ConnectPointInfo = Nothing
+        If skeletonSockets.TryGetValue(indexed, sk) Then
+            Dim traceL = chainTrace.ToString()
+            Logger.LogLazy(Function() $"[MOUNT-LOOKUP-HS] apEditorId='{apEditorIdLog}' apIdx={apIdxLog} base='{baseNameLog}' chain={traceL}→skeleton → MATCH '{indexedLog}' parent='{sk.ParentBoneName}'")
+            Return sk
+        End If
+        If skeletonSockets.TryGetValue(plain, sk) Then
+            Dim traceL = chainTrace.ToString()
+            Logger.LogLazy(Function() $"[MOUNT-LOOKUP-HS] apEditorId='{apEditorIdLog}' apIdx={apIdxLog} base='{baseNameLog}' chain={traceL}→skeleton → MATCH '{plainLog}' parent='{sk.ParentBoneName}'")
+            Return sk
+        End If
+        Dim traceFinal = chainTrace.ToString()
+        Logger.LogLazy(Function() $"[MOUNT-LOOKUP-HS] apEditorId='{apEditorIdLog}' apIdx={apIdxLog} base='{baseNameLog}' chain={traceFinal}→skeleton → NOT-FOUND (tried '{indexedLog}' and '{plainLog}' in every host + skeleton)")
+        Return Nothing
+    End Function
+
+    ''' <summary>Compute (si no está cacheado) y devuelve cand.ChunkToActor para un robot
+    ''' chunk. Recursivo — Path A consulta host.ChunkToActor, que si no está set se computa
+    ''' lazy via EnsureChunkToActor(host). Esto desacopla el compute de ChunkToActor del
+    ''' shape materialization: un host que publica sockets pero no emite shapes propias
+    ''' (caso "host publisher sin shapes") nunca dispara JIT por shape loop, pero recibe
+    ''' ChunkToActor cuando algún descendant con shapes lo requiere via recursión.
+    '''
+    ''' Cycle detection: <paramref name="visiting"/> set DFS coloring. Push del ordinal al
+    ''' entrar (Try); pop al salir (Finally). Si recursión llega a ordinal ya en visiting
+    ''' es ciclo real (loggeado, fallback Path B sin host). Cap defensivo 32 hops también.
+    '''
+    ''' Devuelve cand.ChunkToActor (o Nothing si compute falla — cand queda sin ChunkToActor).</summary>
+    Private Function EnsureChunkToActor(cand As MeshCandidate,
+                                         candByOrdinal As Dictionary(Of Integer, MeshCandidate),
+                                         renderData As PreviewResolutionResult,
+                                         inst As SkeletonInstance,
+                                         chunkWBHistory As Dictionary(Of String, Transform_Class),
+                                         visiting As HashSet(Of Integer)) As Transform_Class
+        If cand Is Nothing Then Return Nothing
+        If cand.ChunkToActor IsNot Nothing Then Return cand.ChunkToActor
+        If cand.MountSocket Is Nothing Then Return Nothing
+
+        Dim ordSelf = cand.ChunkInstanceOrdinal
+        If ordSelf <> 0 AndAlso visiting.Contains(ordSelf) Then
+            ' Ciclo detectado — el ordinal actual ya está siendo computado más arriba en
+            ' la recursión. Log y NO recursar.
+            Dim ordL = ordSelf, nmL = If(cand.MountSocket?.Name, "?")
+            Logger.LogLazy(Function() $"[A_HOST-CYCLE] ord={ordL} socket='{nmL}' — ciclo detectado en host chain (DFS visiting set hit), no recursar; ChunkToActor queda Nothing")
+            Return Nothing
+        End If
+
+        If ordSelf <> 0 Then visiting.Add(ordSelf)
+        Try
+            ' Resolver host's ChunkToActor recursivamente si Path A puede aplicar.
+            Dim hostA As Transform_Class = Nothing
+            Dim usedPathA As Boolean = False
+            Dim hostCand As MeshCandidate = Nothing
+            If cand.ParentFoundInMatchedHostNif AndAlso cand.ResolvedHostSocketGlobalT IsNot Nothing AndAlso cand.MatchedHostInstanceOrdinal <> 0 Then
+                candByOrdinal.TryGetValue(cand.MatchedHostInstanceOrdinal, hostCand)
+                If hostCand IsNot Nothing Then
+                    hostA = EnsureChunkToActor(hostCand, candByOrdinal, renderData, inst, chunkWBHistory, visiting)
+                End If
+            End If
+
+            ' Resolver G_CX desde chunk NIF — necesario en ambos paths.
+            Dim chunkNif As Nifcontent_Class_Manolo = Nothing
+            If Not renderData.CandidateNif.TryGetValue(cand, chunkNif) OrElse chunkNif Is Nothing Then
+                Dim ordL_dbg = cand.ChunkInstanceOrdinal, nmL_dbg = If(cand.MountSocket?.Name, "?"), fidL_dbg = cand.ChunkOmodFormID
+                Logger.LogLazy(Function() $"[A_HOST-JIT-EARLY] ord={ordL_dbg} fid=0x{fidL_dbg:X8} socket='{nmL_dbg}' reason=CandidateNif-miss")
+                Return Nothing
+            End If
+            Dim socketNm = If(cand.MountSocket.Name, "")
+            If String.IsNullOrEmpty(socketNm) OrElse socketNm.Length <= 2 Then
+                Dim ordL_dbg = cand.ChunkInstanceOrdinal, fidL_dbg = cand.ChunkOmodFormID
+                Logger.LogLazy(Function() $"[A_HOST-JIT-EARLY] ord={ordL_dbg} fid=0x{fidL_dbg:X8} socket='{socketNm}' reason=socket-name-too-short")
+                Return Nothing
+            End If
+            Dim cxNm As String = ""
+            If socketNm.StartsWith("P-", StringComparison.OrdinalIgnoreCase) Then
+                cxNm = "C-" & socketNm.Substring(2)
+            ElseIf socketNm.StartsWith("P_", StringComparison.OrdinalIgnoreCase) Then
+                cxNm = "C_" & socketNm.Substring(2)
+            End If
+            If String.IsNullOrEmpty(cxNm) Then
+                Dim ordL_dbg = cand.ChunkInstanceOrdinal, fidL_dbg = cand.ChunkOmodFormID
+                Logger.LogLazy(Function() $"[A_HOST-JIT-EARLY] ord={ordL_dbg} fid=0x{fidL_dbg:X8} socket='{socketNm}' reason=cxNm-empty (socket sin prefix P-/P_)")
+                Return Nothing
+            End If
+            Dim cxNode = chunkNif.FindBlockByName(Of NiflySharp.Blocks.NiNode)(cxNm)
+            If cxNode Is Nothing Then
+                ' Strip-on-NIF-side fallback: chunks multi-instance comparten el MISMO NIF
+                ' (mismo OMOD asset, distintos apIdx publisher-side). El NIF tiene UN único
+                ' C-X NiNode (típicamente con sufijo apIdx fijo authoreado, p.ej. `C-X|0`).
+                ' Cuando el resolver da socket `P-X|2` → cxNm=`C-X|2` exact no matchea el NIF
+                ' que tiene `C-X|0`. Regla: cualquier NiNode cuyo base (pre-`|`) coincida con
+                ' cxNm base es el mismo socket — el sufijo numérico es índice publisher, no
+                ' parte del nombre semántico. Esto cubre Codsworth Bot_ModTorsoHandyEye1B
+                ' apIdx=1/2 (NIF tiene C-ModSlotB|0, socket pide |1 o |2 → strip a C-ModSlotB
+                ' en ambos lados → match). Paridad con la lógica StripSfx del V2 legacy
+                ' (líneas ~2703-2712 inline en shape loop pre-refactor).
+                Dim StripSfx = Function(s As String) As String
+                                   If String.IsNullOrEmpty(s) Then Return s
+                                   Dim pp = s.LastIndexOf("|"c)
+                                   If pp <= 0 OrElse pp >= s.Length - 1 Then Return s
+                                   For Each c In s.Substring(pp + 1)
+                                       If Not Char.IsDigit(c) Then Return s
+                                   Next
+                                   Return s.Substring(0, pp)
+                               End Function
+                Dim cxNormSearch = StripSfx(cxNm)
+                For Each blk In chunkNif.Blocks
+                    Dim candBlk = TryCast(blk, NiflySharp.Blocks.NiNode)
+                    If candBlk Is Nothing Then Continue For
+                    Dim candNm = If(candBlk.Name?.String, "")
+                    If String.Equals(StripSfx(candNm), cxNormSearch, StringComparison.OrdinalIgnoreCase) Then
+                        cxNode = candBlk
+                        Exit For
+                    End If
+                Next
+            End If
+            If cxNode Is Nothing Then
+                ' Chunk no tiene C-X NiNode interno — caso "attachment-style" (mesh skinned
+                ' directamente a un bone parent del actor sin chunk-internal coord system).
+                ' Path A no aplica; el chunk render va por el path INJECT/legacy con
+                ' SkeletonFallbackSocket en el shape loop (SOCKET-EFFECTIVE-OVERRIDE).
+                Dim ordL_dbg = cand.ChunkInstanceOrdinal, fidL_dbg = cand.ChunkOmodFormID, sNmL_dbg = socketNm, cxNmL_dbg = cxNm
+                Logger.LogLazy(Function() $"[A_HOST-JIT-EARLY] ord={ordL_dbg} fid=0x{fidL_dbg:X8} socket='{sNmL_dbg}' cxNm='{cxNmL_dbg}' reason=cxNode-not-found-in-chunk-NIF (attachment-style chunk, render via legacy INJECT path)")
+                Return Nothing
+            End If
+            Dim G_CX = Transform_Class.GetGlobalTransform(cxNode, chunkNif)
+
+            ' Path A si host A está computado.
+            Dim M_mesh As Transform_Class = Nothing
+            Dim pathBSource As String = ""
+            If hostA IsNot Nothing Then
+                M_mesh = hostA.ComposeTransforms(cand.ResolvedHostSocketGlobalT)
+                usedPathA = True
+            Else
+                ' [PATH B — SOCKET SOURCE SEPARATION] Per OpenAI Vuelta 17: el publisher chunk
+                ' socket usa chunk-internal naming (parent='Arm1' sin suffix), pero Path B
+                ' resuelve parent contra actor.skel que tiene indexed (Arm1|0/1/2). Eso rompe
+                ' multi-instance attachments (Codsworth Mr Handy ModArmsHandyAR1A apIdx=0/1).
+                ' Fix estructural: Path B usa SkeletonFallbackSocket (publisher SRC1/SRC2 con
+                ' parent indexed correcto), NO el publisher chunk socket. Sólo cae al publisher
+                ' socket como último recurso (loggeado) si skeleton no tiene este socket name.
+                Dim socketForPathB As BSConnectPointReader.ConnectPointInfo = cand.SkeletonFallbackSocket
+                If socketForPathB IsNot Nothing Then
+                    pathBSource = "skel"
+                Else
+                    socketForPathB = cand.MountSocket
+                    pathBSource = "publisher-fallback"
+                    Dim ordL_pbf = ordSelf, nmL_pbf = socketNm
+                    Logger.LogLazy(Function() $"[A_HOST-JIT-PATHB-FALLBACK] ord={ordL_pbf} socket='{nmL_pbf}' — SkeletonFallbackSocket is Nothing, usando publisher socket (último recurso; parent puede no estar en actor.skel)")
+                End If
+                ' [PATH B — APIDX SUBSTITUTION] Skeleton publica P-X con UN solo parent indexed
+                ' (típicamente '|0'). Para consumers multi-instance con apIdx != 0, sustituir
+                ' el suffix del parent para apuntar al bone indexed correcto del actor skel.
+                ' Caso vivo Mr Handy: skeleton P-ModArmsSlotA parent='Arm1|0'. Consumer apIdx=1
+                ' (Flamer arm mod) necesita parent='Arm1|1'. Engine convention empírica: el
+                ' suffix '|N' del parent matchea el apIdx del consumer.
+                Dim parentForPathB = If(socketForPathB.ParentBoneName, "")
+                Dim parentForLookup = parentForPathB
+                If cand.MountApIdx <> 0 AndAlso Not String.IsNullOrEmpty(parentForPathB) Then
+                    Dim pipe = parentForPathB.LastIndexOf("|"c)
+                    If pipe > 0 AndAlso pipe < parentForPathB.Length - 1 Then
+                        Dim sfx = parentForPathB.Substring(pipe + 1)
+                        Dim allDigits As Boolean = True
+                        For Each c In sfx
+                            If Not Char.IsDigit(c) Then allDigits = False : Exit For
+                        Next
+                        If allDigits Then
+                            parentForLookup = parentForPathB.Substring(0, pipe + 1) & cand.MountApIdx.ToString()
+                            If Not String.Equals(parentForLookup, parentForPathB, StringComparison.Ordinal) Then
+                                Dim ordL_sub = ordSelf, origL = parentForPathB, newL = parentForLookup, apL = cand.MountApIdx
+                                Logger.LogLazy(Function() $"[A_HOST-JIT-PATHB-APIDX-SUB] ord={ordL_sub} parent '{origL}' → '{newL}' (consumer apIdx={apL})")
+                            End If
+                        End If
+                    End If
+                End If
+                Dim parentBoneWorld = ResolveEffectiveWorld(chunkWBHistory, inst, parentForLookup)
+                Dim socketLocal As New Transform_Class With {
+                    .Translation = socketForPathB.Translation,
+                    .Rotation = BSConnectPointReader.QuatToMatrix33(socketForPathB.Rotation),
+                    .Scale = If(socketForPathB.Scale > 0.0F, socketForPathB.Scale, 1.0F)
+                }
+                M_mesh = parentBoneWorld.ComposeTransforms(socketLocal)
+            End If
+            cand.ChunkToActor = M_mesh.ComposeTransforms(G_CX.Inverse())
+
+            Dim ordL2 = ordSelf, matchedOrdL = cand.MatchedHostInstanceOrdinal, sNmL = socketNm
+            Dim pathL = If(usedPathA, "A(host.ChunkToActor × HostSocketGlobalT)", "B(" & pathBSource & " × socket.local)")
+            Dim mmT = M_mesh.Translation, aT = cand.ChunkToActor.Translation
+            Logger.LogLazy(Function() $"[A_HOST-JIT] ord={ordL2} socket='{sNmL}' matchedHost.ord={matchedOrdL} path={pathL} M_mesh.T=({mmT.X:F3},{mmT.Y:F3},{mmT.Z:F3}) A.T=({aT.X:F3},{aT.Y:F3},{aT.Z:F3})")
+            Return cand.ChunkToActor
+        Finally
+            If ordSelf <> 0 Then visiting.Remove(ordSelf)
+        End Try
+    End Function
+
     ''' <summary>Resolve OMOD.AttachPointFormID (KYWD FormID) to the KYWD's EditorID. Returns ""
     ''' when the FormID is 0 or the record isn't loaded (which happened for every OMOD before the
     ''' KYWD loader fix on 2026-05-10).</summary>
@@ -7372,6 +8065,106 @@ Public Class MainForm
             IndexSocketsFromBytes(bytes, skelKey, dict)
         Catch ex As Exception
         End Try
+    End Sub
+
+    ''' <summary>Mount the standalone Pipboy ARMO mesh on the actor's pipboy bone via synthetic
+    ''' skin. El ARMO Pipboy ships con NIF unskinned + sin BSConnectPoint::Children — engine
+    ''' vanilla hardcoded mountea a un bone del actor cuyo nombre contiene "pipboy" (HumanRace
+    ''' 369-bone expone "PipboyBone" + "PipboyBone_Offset"). Convención inalcanzable desde data
+    ''' del record; la replicamos via synthetic skin + bone lookup dinámico.
+    '''
+    ''' Lookup target: case-insensitive contra el SkeletonDictionary del actor. Distintas razas
+    ''' pueden traer otra convención de nombre (Ghoul, Child, Synth Race) o ninguna — NO
+    ''' hardcodeamos "PipboyBone". Preferimos el match que NO termina en "_Offset" (es el bone
+    ''' deformable, el _Offset es rest anchor; vanilla mountea al deformable).
+    '''
+    ''' Bind matrix: walking shape backing → parent → ... → root (exclusive). Misma fórmula que
+    ''' FAKE-SKIN del Protectron HeadLight (MainForm.vb:2716-2748); root.local se excluye porque
+    ''' en vanilla Bethesda authora ahí la transform de "scene viewer" del CK, no parte del attach.
+    '''
+    ''' Gate: SOLO standalone Pipboy ARMO (slot==SlotBitPipboy exacto, sólo bit 30). Outfits que
+    ''' declaran bit Pipboy junto con otros bits (ej. ClothesVaultTecScientist slot=0x40000008
+    ''' BODY+Pipboy) NO entran — son outfits regulares con sus propios shapes skinneados, el bit
+    ''' Pipboy es declarativo de slot reserve, no garantiza pipboy mesh built-in. Check IsSkinned
+    ''' per-shape adicional como defense-in-depth.
+    '''
+    ''' Si el actor skeleton no expone ningún bone "*pipboy*" → log warning + skip; el Pipboy
+    ''' renderiza al origin igual que sin fix (no es regresión, sólo no-op).</summary>
+    Private Sub ApplyPipboySyntheticSkin(result As PreviewResolutionResult, inst As SkeletonInstance)
+        If result Is Nothing OrElse inst Is Nothing Then Return
+
+        Dim hasPipboyCandidate As Boolean = result.CandidateNif.Keys.Any(Function(c) c.SlotMask = SlotBitPipboy)
+        If Not hasPipboyCandidate Then Return
+
+        ' Discover pipboy bone target del skeleton del actor (case-insensitive, sin hardcoding).
+        Dim pipboyBoneName As String = Nothing
+        Dim pipboyCandidates = inst.SkeletonDictionary.Keys.
+            Where(Function(k) k.IndexOf("pipboy", StringComparison.OrdinalIgnoreCase) >= 0).
+            ToList()
+        If pipboyCandidates.Count > 0 Then
+            Dim primary = pipboyCandidates.FirstOrDefault(Function(k) Not k.EndsWith("_Offset", StringComparison.OrdinalIgnoreCase))
+            pipboyBoneName = If(primary, pipboyCandidates(0))
+        End If
+        If pipboyBoneName Is Nothing Then
+            Logger.Log("[PIPBOY-DIAG] FAKE-SKIN skip: no '*pipboy*' bone en actor skeleton — Pipboy renderiza al origin (raza sin chargen-bones?)")
+            Return
+        End If
+        Dim boneNameL = pipboyBoneName
+        Logger.LogLazy(Function() $"[PIPBOY-DIAG] FAKE-SKIN target bone resolved: '{boneNameL}'")
+
+        For Each cand In result.CandidateNif.Keys
+            If cand.SlotMask <> SlotBitPipboy Then Continue For
+            Dim pipboyNif As Nifcontent_Class_Manolo = Nothing
+            If Not result.CandidateNif.TryGetValue(cand, pipboyNif) Then Continue For
+            Dim rootNode = pipboyNif.GetRootNode()
+            If rootNode Is Nothing Then Continue For
+
+            ' Guard "no traen mounting": si el NIF declara BSConnectPoint::Children (mecanismo
+            ' de socket-mounting via "C-X" → "P-X" match contra el actor skeleton), el modder
+            ' quiso usar ese path — NO aplicar synthetic skin para no doblar el montaje.
+            ' Vanilla Pipboy NIF no declara children (verificado en log: 0 children), así que
+            ' este guard no dispara en data vanilla; es defensa contra mods custom.
+            Try
+                Dim childrenInfo = BSConnectPointReader.ReadChildren(pipboyNif)
+                If childrenInfo.PointNames IsNot Nothing AndAlso childrenInfo.PointNames.Count > 0 Then
+                    Dim candFidL = cand.SourceFormID
+                    Dim ptsL = String.Join(",", childrenInfo.PointNames)
+                    Logger.LogLazy(Function() $"[PIPBOY-DIAG] FAKE-SKIN skip cand=0x{candFidL:X8}: NIF declara BSConnectPoint::Children=[{ptsL}] — mod usa socket-mounting, no hardcoded bone attach")
+                    Continue For
+                End If
+            Catch exChildren As Exception
+                Dim msg = exChildren.Message
+                Logger.LogLazy(Function() $"[PIPBOY-DIAG] FAKE-SKIN ReadChildren EXCEPTION: {msg} (proceediendo con synthetic skin)")
+            End Try
+
+            For Each shape In result.Shapes
+                If shape.NifContent IsNot pipboyNif Then Continue For
+                If shape.IsSkinned Then Continue For
+                Dim asOverride = TryCast(shape, IRuntimeSkinOverride)
+                If asOverride Is Nothing Then Continue For
+
+                Try
+                    Dim backing = shape.Geometry.BackingShape
+                    Dim bindMatrix As Transform_Class = New Transform_Class(backing)
+                    Dim curNode As NiflySharp.Blocks.NiNode = TryCast(pipboyNif.GetParentNode(backing), NiflySharp.Blocks.NiNode)
+                    While curNode IsNot Nothing AndAlso Not ReferenceEquals(curNode, rootNode)
+                        bindMatrix = New Transform_Class(curNode).ComposeTransforms(bindMatrix)
+                        curNode = TryCast(pipboyNif.GetParentNode(curNode), NiflySharp.Blocks.NiNode)
+                    End While
+
+                    Dim placeholder As New NiflySharp.Blocks.NiNode()
+                    placeholder.Name = New NiflySharp.NiStringRef(pipboyBoneName)
+                    asOverride.ApplySyntheticAnchorSkin(placeholder, bindMatrix)
+
+                    Dim shL = shape.ShapeName
+                    Dim bT = bindMatrix.Translation
+                    Logger.LogLazy(Function() $"[PIPBOY-DIAG] FAKE-SKIN shape='{shL}' anchor='{boneNameL}' bind.T=({bT.X:F3},{bT.Y:F3},{bT.Z:F3})")
+                Catch ex As Exception
+                    Dim shL = shape.ShapeName, exL = ex
+                    Logger.LogLazy(Function() $"[PIPBOY-DIAG] FAKE-SKIN shape='{shL}' EXCEPTION: {exL.GetType().Name}: {exL.Message}")
+                End Try
+            Next
+        Next
     End Sub
 
     ''' <summary>Mount-resolve pass for robot chunks. Delegates al
@@ -7666,6 +8459,8 @@ Public Class MainForm
     Private Const SlotBitNeck As UInteger = &H100000UI       ' Slot 50 - Neck          (bandana cuello, collar, bufanda)
     Private Const SlotBitRing As UInteger = &H200000UI       ' Slot 51 - Ring          (anillo — body, va en la mano)
     Private Const SlotBitScalp As UInteger = &H400000UI      ' Slot 52 - Scalp         (overlay cabeza/cuello — body, no prenda)
+    Private Const SlotBitALArm As UInteger = &H1000UI        ' Slot 42 - [A] L Arm     (over-armor antebrazo izquierdo — bracer, PA L Arm)
+    Private Const SlotBitPipboy As UInteger = &H40000000UI   ' Slot 60 - Pipboy        (atado a la muñeca/antebrazo izquierdo)
     ''' <summary>Máscara unificada de bits "headwear": cualquier prenda de cabeza/cara/cuello.
     ''' Usada por ClassifyShapeCategory para categoría Headwear y por ApplyRenderToggleVisibility
     ''' para el toggle "Render headwear". Slots 30-32 (HairTop/HairLong/FaceGenHead) + 46-49
@@ -7789,8 +8584,32 @@ Public Class MainForm
             If (candidate.SlotMask And shieldedSlots) <> 0UI Then
                 Continue For
             End If
-            ' Atomic mutex any-bit: si toca un bit ya ocupado → descartado entero.
-            If (candidate.SlotMask And occupiedSlots) <> 0UI Then
+            ' Atomic mutex any-bit: si toca un bit ya ocupado → descartado entero. El bit Pipboy
+            ' (slot 60 / 0x40000000) se strippea del mask comparado: empíricamente vanilla usa el
+            ' bit como tag declarativo, no garantiza que el NIF traiga geometría de pipboy (ej.
+            ' ClothesVaultTecScientist declara slot=0x40000008 = BODY+Pipboy pero su NIF NO trae
+            ' pipboy; el bit es ruido del record). Si lo tratáramos como slot ocupado real, una
+            ' Pipboy ARMO standalone (slot=0x40000000) descartaría al outfit entero por ese único
+            ' bit → outfit roto, NPC desnudo. El bit se sigue agregando a occupiedSlots cuando un
+            ' candidato lo trae (informativo), pero no bloquea conflict-check.
+            Dim conflictMask = candidate.SlotMask And Not SlotBitPipboy
+            Dim occupiedForCheck = occupiedSlots And Not SlotBitPipboy
+            If (conflictMask And occupiedForCheck) <> 0UI Then
+                Continue For
+            End If
+            ' Virtual mutex Pipboy ↔ [A] L Arm (slots 60 / 42, wbDefinitionsFO4.pas:3739/3776 — slot
+            ' 60 = Pipboy, atado a la muñeca/antebrazo izquierdo). El biped system no declara
+            ' conflicto entre ellos, así que una outfit con Pipboy + bracer/PA L Arm renderiza
+            ' ambos solapados. Tratamos los dos slots como mutuamente excluyentes (last-equipped
+            ' wins igual que el resto del mutex): si occupiedSlots ya tiene uno y el candidato
+            ' trae el otro → descartado entero. Tentativo — se verá con casos reales si la regla
+            ' aplica o se ajusta. Underarmor ([U] L Arm, slot 39) NO incluido: Pipboy se lleva
+            ' arriba del jumpsuit, no compite con la capa underarmor.
+            Dim slot = candidate.SlotMask
+            If (slot And SlotBitPipboy) <> 0UI AndAlso (occupiedSlots And SlotBitALArm) <> 0UI Then
+                Continue For
+            End If
+            If (slot And SlotBitALArm) <> 0UI AndAlso (occupiedSlots And SlotBitPipboy) <> 0UI Then
                 Continue For
             End If
             occupiedSlots = occupiedSlots Or candidate.SlotMask
@@ -7945,6 +8764,10 @@ Public Class MainForm
         If touchesHand AndAlso candidate.Kind = MeshCandidateKind.Outfit Then Return ShapeRenderCategory.GloveOutfit
         ' [A] puro: declara algún bit [A] sin BODY/[U].
         If touchesA Then Return ShapeRenderCategory.ArmorOver
+        ' Pipboy (slot 60 / 0x40000000) — accesorio de antebrazo izq. que el engine vanilla
+        ' monta hardcoded en el player. Como NPC outfit puede aparecer y debe respetar el toggle
+        ' "Render armor". No declara bits [A], por eso lo agrupamos acá explícito.
+        If (slot And &H40000000UI) <> 0UI AndAlso candidate.Kind = MeshCandidateKind.Outfit Then Return ShapeRenderCategory.ArmorOver
         ' Resto (accessories 16+ raros, shapes sin slot, etc.).
         Return ShapeRenderCategory.Other
     End Function
@@ -8088,6 +8911,57 @@ Public Class MainForm
             Dim shapesCountLog = shapes.Count
             Dim nifHashLog = nif.GetHashCode()
             Logger.LogLazy(Function() $"[LOAD-NIF] candFid=0x{candFidLog:X8} chunkOmod=0x{chunkOmodLog:X8} dictKey='{dkLog}' shapes={shapesCountLog} nifHash={nifHashLog}")
+
+            ' [PIPBOY-DIAG] Para candidates con bit Pipboy (slot 60 / 0x40000000), dump per-shape
+            ' IsSkinned + lista de BSConnectPoint::Parents del NIF. Si IsSkinned=False y hay un
+            ' parent socket (típicamente "P-PipBoy" en LArm_skin del esqueleto), el render debería
+            ' anclar el mesh a ese socket; si IsSkinned=True y la pose del actor es la default,
+            ' el mesh debería seguir al bone correspondiente. "Pipboy en el suelo" puede ser:
+            '   a) no skinned + sin parent socket → mesh queda en world-origin de su NIF.
+            '   b) skinned a bones que el esqueleto del actor no tiene → SSBO bone matrices
+            '      colapsan al origin.
+            '   c) socket declarado pero el chunk-mount resolver no lo aplica (sólo lo hace para
+            '      candidates con ChunkOmodFormID; outfits regulares no pasan por mount-resolver).
+            If (candidate.SlotMask And &H40000000UI) <> 0UI Then
+                Dim slotL = candidate.SlotMask.ToString("X8")
+                Dim armoL = candidate.SourceFormID
+                Dim armaL = candidate.ArmorAddonFormID
+                Logger.LogLazy(Function() $"[PIPBOY-DIAG] candidate ARMO=0x{armoL:X8} ARMA=0x{armaL:X8} slot=0x{slotL} mesh='{dkLog}' shapes={shapesCountLog}")
+                For Each sh In shapes
+                    Dim shName = If(sh.ShapeName, "")
+                    Dim isSk = sh.IsSkinned
+                    Logger.LogLazy(Function() $"[PIPBOY-DIAG]   shape='{shName}' IsSkinned={isSk}")
+                Next
+                Try
+                    Dim parents = BSConnectPointReader.ReadParents(nif)
+                    If parents Is Nothing OrElse parents.Count = 0 Then
+                        Logger.Log("[PIPBOY-DIAG]   BSConnectPoint::Parents = (none declared in NIF)")
+                    Else
+                        For Each p In parents
+                            Dim pn = p.Name
+                            Dim parn = p.ParentBoneName
+                            Dim pt = p.Translation
+                            Logger.LogLazy(Function() $"[PIPBOY-DIAG]   ConnectPointParent name='{pn}' parentBone='{parn}' T=({pt.X:F3},{pt.Y:F3},{pt.Z:F3})")
+                        Next
+                    End If
+                Catch ex As Exception
+                    Dim msg = ex.Message
+                    Logger.LogLazy(Function() $"[PIPBOY-DIAG]   BSConnectPoint::Parents READ EXCEPTION: {msg}")
+                End Try
+                Try
+                    Dim children = BSConnectPointReader.ReadChildren(nif)
+                    If children.PointNames Is Nothing OrElse children.PointNames.Count = 0 Then
+                        Logger.Log("[PIPBOY-DIAG]   BSConnectPoint::Children = (none declared in NIF)")
+                    Else
+                        Dim skFlag = children.Skinned
+                        Dim pointsStr = String.Join(",", children.PointNames)
+                        Logger.LogLazy(Function() $"[PIPBOY-DIAG]   ConnectPointChildren skinnedFlag={skFlag} points=[{pointsStr}]")
+                    End If
+                Catch ex As Exception
+                    Dim msg = ex.Message
+                    Logger.LogLazy(Function() $"[PIPBOY-DIAG]   BSConnectPoint::Children READ EXCEPTION: {msg}")
+                End Try
+            End If
 
             ' DIAG (multi-arm Mr Handy): contar shapes brutos del NIF antes de cualquier filtro,
             ' para confirmar si el archivo trae 1 mesh o N meshes internos (caso Bethesda autora
@@ -11326,6 +12200,201 @@ Public Class MainForm
 
         MessageBox.Show($"Saved {npc.EditorID} to {IO.Path.GetFileName(execResult.WriterResult.OutputPath)}.{execResult.ChargenSummary}{execResult.VerifierSummary}",
                         "Save ESP/ESM", MessageBoxButtons.OK, execResult.VerifierIcon)
+    End Sub
+
+    ''' <summary>Dump the current rendered scene to a multi-shape NIF with each visible shape
+    ''' transformed into world-pose vertices. Filter is shape.RenderHide = False — the same flag
+    ''' NpcRenderHost.ApplyRenderToggleVisibility sets from the render toggles (Body / Underarmor
+    ''' / Armor / Headwear / Gore), shape category, ShapeCoveredByOutfit, and ShapeOccludedByHeadwear.
+    ''' Whatever is visible in the preview is what gets exported.
+    '''
+    ''' Positioning uses geom.PerVertexSkinMatrix (per-vertex shape-local → world transform)
+    ''' directly — same matrix the renderer uses on the CPU skinning path and the GPU SSBO bone
+    ''' palette (Σw·matsPose for multi-bone skinned; bindT∘localT for single-bone skinned;
+    ''' shape.T/R/S × parent_chain for unskinned). v_world = v_local × PerVertexSkinMatrix(i).
+    ''' Equivalent for normals/tangents/bitangents via the normal matrix (transpose of inverse).
+    '''
+    ''' This bypasses SkinningHelper.BakeFromMemoryUsingOriginal, whose v_baked = v × MposeBlend ×
+    ''' inv(MbindBlend) produces "rebind" coordinates (verts that yield world-pose when re-skinned
+    ''' through MbindBlend) — useful for WM's build-shape flow that re-emits the shape with
+    ''' skinning intact, wrong for our strip-skin export which needs absolute world coords.
+    '''
+    ''' Per shape: clone into destNif via CloneShape_Original (preserves shader + UVs + triangles +
+    ''' skinning palette), inject world-pose verts/normals/tangents/bitangents through the clone's
+    ''' IShapeGeometry adapter, reset clone's local T/R/S to identity (CloneShape_Original's
+    ''' unskinned-path parent-baking would otherwise double-transform our already-absolute verts),
+    ''' strip skin (IsSkinned=False + SkinInstanceRef.Clear()) so viewers don't re-apply the bone
+    ''' palette.
+    '''
+    ''' Material handling: clone shader verbatim — BGSM/DDS paths in the destination point at
+    ''' the same files as the source. Self-contained material inlining (FaceGenBuilder-style)
+    ''' is out of scope for this MVP.</summary>
+    Private Sub ButtonSaveSceneNif_Click(sender As Object, e As EventArgs) Handles ButtonSaveSceneNif.Click
+        If _renderHost Is Nothing OrElse _renderHost.CurrentBaseState Is Nothing Then Return
+        If _previewControl Is Nothing OrElse _previewControl.Model Is Nothing OrElse
+           _previewControl.Model.meshes Is Nothing OrElse _previewControl.Model.meshes.Count = 0 Then
+            MessageBox.Show("No rendered scene to export.", "NPC Model to NIF",
+                            MessageBoxButtons.OK, MessageBoxIcon.Warning)
+            Return
+        End If
+
+        Dim npcFormID = _renderHost.CurrentBaseState.RootNpcFormID
+        Dim npc As NPC_Data = Nothing
+        _npcByIdCache.TryGetValue(npcFormID, npc)
+
+        Dim defaultName = If(npc IsNot Nothing AndAlso Not String.IsNullOrEmpty(npc.EditorID),
+                             npc.EditorID, $"NPC_{npcFormID:X8}") & ".nif"
+        Dim defaultDir = _dataPath
+        If String.IsNullOrEmpty(defaultDir) Then defaultDir = IO.Directory.GetCurrentDirectory()
+
+        Dim outPath As String = Nothing
+        Using dlg As New SaveFileDialog()
+            dlg.Title = "Save NPC Model to NIF"
+            dlg.Filter = "NIF (*.nif)|*.nif"
+            dlg.InitialDirectory = defaultDir
+            dlg.FileName = defaultName
+            dlg.OverwritePrompt = True
+            dlg.AddExtension = True
+            dlg.DefaultExt = "nif"
+            If dlg.ShowDialog(Me) <> DialogResult.OK Then Return
+            outPath = dlg.FileName
+        End Using
+
+        Dim destNif As New Nifcontent_Class_Manolo()
+        destNif.Create(NiVersion.GetFO4(), withRootNode:=True)
+
+        Dim shapesWritten As Integer = 0
+        Dim shapesFailed As Integer = 0
+        Dim failureDetails As New System.Text.StringBuilder()
+        Dim destIdx As Integer = 0
+
+        For Each mesh In _previewControl.Model.meshes
+            If mesh Is Nothing OrElse mesh.MeshData Is Nothing OrElse mesh.MeshData.Shape Is Nothing Then Continue For
+            Dim srcRenderable = mesh.MeshData.Shape
+            If srcRenderable.RenderHide Then Continue For
+            Dim srcINiShape = srcRenderable.NifShape
+            Dim srcNif = srcRenderable.NifContent
+            If srcINiShape Is Nothing OrElse srcNif Is Nothing Then Continue For
+
+            Dim shapeName = If(srcINiShape.Name?.String, $"Shape_{destIdx}")
+            Try
+                Dim liveGeom = mesh.MeshData.Meshgeometry
+                Dim localVerts = liveGeom.Vertices  ' post-morph, pre-skin (shape-local).
+                Dim perVtxMat = liveGeom.PerVertexSkinMatrix
+                If localVerts Is Nothing OrElse perVtxMat Is Nothing OrElse localVerts.Length <> perVtxMat.Length Then
+                    shapesFailed += 1
+                    failureDetails.AppendLine($"{shapeName}: missing skin matrix / vertex data")
+                    Continue For
+                End If
+                Dim n = localVerts.Length
+
+                ' Compute world-pose attributes per vertex. Position via TransformPosition;
+                ' normals/tangents/bitangents via per-vertex normal matrix (transpose of inverse
+                ' of upper-left 3x3 of the skin matrix). Same formula the renderer uses.
+                Dim worldPos As New List(Of System.Numerics.Vector3)(n)
+                Dim hasN = liveGeom.Normals IsNot Nothing AndAlso liveGeom.Normals.Length = n
+                Dim hasT = liveGeom.Tangents IsNot Nothing AndAlso liveGeom.Tangents.Length = n
+                Dim hasB = liveGeom.Bitangents IsNot Nothing AndAlso liveGeom.Bitangents.Length = n
+                Dim worldN As List(Of System.Numerics.Vector3) = If(hasN, New List(Of System.Numerics.Vector3)(n), Nothing)
+                Dim worldT As List(Of System.Numerics.Vector3) = If(hasT, New List(Of System.Numerics.Vector3)(n), Nothing)
+                Dim worldB As List(Of System.Numerics.Vector3) = If(hasB, New List(Of System.Numerics.Vector3)(n), Nothing)
+
+                For i = 0 To n - 1
+                    Dim m4 = perVtxMat(i)
+                    Dim wv = Vector3d.TransformPosition(localVerts(i), m4)
+                    worldPos.Add(New System.Numerics.Vector3(CSng(wv.X), CSng(wv.Y), CSng(wv.Z)))
+
+                    If hasN OrElse hasT OrElse hasB Then
+                        Dim m3 As New Matrix3d(m4)
+                        Dim nm = m3.Inverted().Transposed()
+                        Dim nm4 As Matrix4d = Matrix4d.Identity
+                        nm4.M11 = nm.M11 : nm4.M12 = nm.M12 : nm4.M13 = nm.M13
+                        nm4.M21 = nm.M21 : nm4.M22 = nm.M22 : nm4.M23 = nm.M23
+                        nm4.M31 = nm.M31 : nm4.M32 = nm.M32 : nm4.M33 = nm.M33
+                        If hasN Then
+                            Dim nrm = Vector3d.Normalize(Vector3d.TransformNormal(liveGeom.Normals(i), nm4))
+                            worldN.Add(New System.Numerics.Vector3(CSng(nrm.X), CSng(nrm.Y), CSng(nrm.Z)))
+                        End If
+                        If hasT Then
+                            Dim tan = Vector3d.Normalize(Vector3d.TransformNormal(liveGeom.Tangents(i), nm4))
+                            worldT.Add(New System.Numerics.Vector3(CSng(tan.X), CSng(tan.Y), CSng(tan.Z)))
+                        End If
+                        If hasB Then
+                            Dim bit = Vector3d.Normalize(Vector3d.TransformNormal(liveGeom.Bitangents(i), nm4))
+                            worldB.Add(New System.Numerics.Vector3(CSng(bit.X), CSng(bit.Y), CSng(bit.Z)))
+                        End If
+                    End If
+                Next
+
+                Dim clonedINiShape = destNif.CloneShape_Original(srcINiShape, shapeName, srcNif)
+                If clonedINiShape Is Nothing Then
+                    shapesFailed += 1
+                    failureDetails.AppendLine($"Clone failed: {shapeName}")
+                    Continue For
+                End If
+
+                ' Reset clone's local T/R/S to identity. CloneShape_Original's unskinned branch
+                ' (NifContent_Class.vb:407+) bakes srcShape's parent_chain (without root) into
+                ' destShape.T/R/S so unskinned clones display at the right NIF-world position.
+                ' Our verts are ALREADY in world coords (via PerVertexSkinMatrix, which absorbs
+                ' parent_chain for unskinned and bone palette for skinned). Leaving the baked
+                ' T/R/S in place would double-transform the verts.
+                clonedINiShape.Translation = New System.Numerics.Vector3(0, 0, 0)
+                clonedINiShape.Rotation = New NiflySharp.Structs.Matrix33()
+                clonedINiShape.Scale = 1.0F
+
+                ' Write world-pose attributes into the clone via its polymorphic adapter.
+                Dim cloneRenderable As New NifRenderableShape(destNif, clonedINiShape, destIdx)
+                Dim cloneAdapter = cloneRenderable.Geometry
+                cloneAdapter.SetVertexPositions(worldPos)
+                If hasN AndAlso cloneAdapter.HasNormals Then cloneAdapter.SetNormals(worldN)
+                If hasT AndAlso cloneAdapter.HasTangents Then cloneAdapter.SetTangents(worldT)
+                If hasB AndAlso cloneAdapter.HasTangents Then cloneAdapter.SetBitangents(worldB)
+
+                ' Strip skin on the clone. For BSTriShape this clears the VertexAttribute.Skinned
+                ' flag (FinalizeData → CalcDataSizes excludes the bone weight/index bytes from the
+                ' per-vertex stream on save). For NiTriShape the setter is a no-op; the
+                ' SkinInstanceRef.Clear() below is what disables skinning in that family.
+                clonedINiShape.IsSkinned = False
+                If clonedINiShape.SkinInstanceRef IsNot Nothing Then
+                    clonedINiShape.SkinInstanceRef.Clear()
+                End If
+
+                shapesWritten += 1
+                destIdx += 1
+            Catch ex As Exception
+                shapesFailed += 1
+                failureDetails.AppendLine($"{shapeName}: {ex.Message}")
+            End Try
+        Next
+
+        If shapesWritten = 0 Then
+            MessageBox.Show("No visible shapes were exported." & vbCrLf & failureDetails.ToString(),
+                            "NPC Model to NIF", MessageBoxButtons.OK, MessageBoxIcon.Warning)
+            Return
+        End If
+
+        ' Drop unreferenced BSSkin_Instance / BSSkin_BoneData / NiSkinInstance / NiSkinData /
+        ' NiSkinPartition blocks orphaned by the cleared SkinInstanceRefs.
+        Try
+            destNif.RemoveUnreferencedBlocks()
+        Catch
+        End Try
+
+        Try
+            destNif.Save_As_Manolo(outPath, Overwrite:=True)
+        Catch ex As Exception
+            MessageBox.Show($"Failed to write {outPath}: {ex.Message}",
+                            "NPC Model to NIF", MessageBoxButtons.OK, MessageBoxIcon.Error)
+            Return
+        End Try
+
+        Dim summary = $"Wrote {shapesWritten} shape{If(shapesWritten = 1, "", "s")} to {outPath}."
+        If shapesFailed > 0 Then
+            summary &= vbCrLf & $"{shapesFailed} shape{If(shapesFailed = 1, "", "s")} failed:" & vbCrLf & failureDetails.ToString()
+        End If
+        MessageBox.Show(summary, "NPC Model to NIF", MessageBoxButtons.OK,
+                        If(shapesFailed = 0, MessageBoxIcon.Information, MessageBoxIcon.Warning))
     End Sub
 
     ''' <summary>Bake the NPC's FaceGen NIF + FaceCustomization textures and pack the four

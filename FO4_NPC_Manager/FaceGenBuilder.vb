@@ -82,13 +82,14 @@ Public Module FaceGenBuilder
         Public Property ShapesDropped As Integer
     End Class
 
-    ''' <summary>Dual-mode bake toggle. False (release): output canonical paths
+    ''' <summary>Dual-mode bake toggle. False (release, default): output canonical paths
     ''' (<formID>.nif + _d.dds / _msn.dds / _s.dds) — pisa el CK BA2 bake; el engine in-game
     ''' usa nuestro output. True (debug): output sandbox (<formID>_2.nif + _d_2.dds etc.)
     ''' alongside CK's; comparator se dispara contra el CK BA2 baseline y loguea
-    ''' <c>[BUILDCHARGEN-DIFF]</c>. Default True para sesión actual — restaurar a False antes
-    ''' de release. Toggle programático: <c>FaceGenBuilder.DebugMode = False</c>.</summary>
-    Public Property DebugMode As Boolean = True
+    ''' <c>[BUILDCHARGEN-DIFF]</c>. Re-activar a True sólo para diagnóstico contra CK
+    ''' (ver arch_facegen_debug_mode memory). Toggle programático:
+    ''' <c>FaceGenBuilder.DebugMode = True</c>.</summary>
+    Public Property DebugMode As Boolean = False
 
     ''' <summary>Build a baked FaceGen NIF for this NPC. See module-level summary for the
     ''' v0 strategy. Always also writes a structured dump to npc_preview.log so the user

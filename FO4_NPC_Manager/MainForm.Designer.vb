@@ -43,6 +43,7 @@ Partial Class MainForm
         SeparatorActions3 = New Label()
         ButtonSavePlugin = New Button()
         ButtonBuildCharGen = New Button()
+        ButtonSaveSceneNif = New Button()
         PanelPreviewToolbar = New TableLayoutPanel()
         CheckBoxRenderGore = New CheckBox()
         CheckBoxBodyTri = New CheckBox()
@@ -260,7 +261,8 @@ Partial Class MainForm
         ' 
         PanelActionsToolbar.AutoSize = True
         PanelActionsToolbar.AutoSizeMode = AutoSizeMode.GrowAndShrink
-        PanelActionsToolbar.ColumnCount = 16
+        PanelActionsToolbar.ColumnCount = 17
+        PanelActionsToolbar.ColumnStyles.Add(New ColumnStyle())
         PanelActionsToolbar.ColumnStyles.Add(New ColumnStyle())
         PanelActionsToolbar.ColumnStyles.Add(New ColumnStyle())
         PanelActionsToolbar.ColumnStyles.Add(New ColumnStyle())
@@ -292,6 +294,7 @@ Partial Class MainForm
         PanelActionsToolbar.Controls.Add(SeparatorActions3, 13, 0)
         PanelActionsToolbar.Controls.Add(ButtonSavePlugin, 14, 0)
         PanelActionsToolbar.Controls.Add(ButtonBuildCharGen, 15, 0)
+        PanelActionsToolbar.Controls.Add(ButtonSaveSceneNif, 16, 0)
         PanelActionsToolbar.Dock = DockStyle.Top
         PanelActionsToolbar.Location = New Point(8, 117)
         PanelActionsToolbar.Name = "PanelActionsToolbar"
@@ -480,6 +483,19 @@ Partial Class MainForm
         ButtonBuildCharGen.TabIndex = 2
         ButtonBuildCharGen.Text = "Build CharGen (loose)"
         ButtonBuildCharGen.UseVisualStyleBackColor = True
+        '
+        ' ButtonSaveSceneNif
+        '
+        ButtonSaveSceneNif.AutoSize = True
+        ButtonSaveSceneNif.Enabled = False
+        ButtonSaveSceneNif.Location = New Point(1050, 2)
+        ButtonSaveSceneNif.Margin = New Padding(2)
+        ButtonSaveSceneNif.MinimumSize = New Size(120, 28)
+        ButtonSaveSceneNif.Name = "ButtonSaveSceneNif"
+        ButtonSaveSceneNif.Size = New Size(132, 28)
+        ButtonSaveSceneNif.TabIndex = 14
+        ButtonSaveSceneNif.Text = "NPC Model to NIF"
+        ButtonSaveSceneNif.UseVisualStyleBackColor = True
         ' 
         ' PanelPreviewToolbar
         ' 
@@ -871,6 +887,7 @@ Partial Class MainForm
     Friend WithEvents LabelEdit As System.Windows.Forms.Label
     Friend WithEvents ButtonEditFace As System.Windows.Forms.Button
     Friend WithEvents ButtonBuildCharGen As System.Windows.Forms.Button
+    Friend WithEvents ButtonSaveSceneNif As System.Windows.Forms.Button
     Friend WithEvents ButtonEditBody As System.Windows.Forms.Button
     Friend WithEvents ButtonEditOutfit As System.Windows.Forms.Button
     Friend WithEvents SeparatorActions1 As System.Windows.Forms.Label
