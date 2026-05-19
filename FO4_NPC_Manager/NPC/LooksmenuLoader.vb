@@ -371,6 +371,30 @@ Public Module LooksmenuLoader
             ' top-level key — it would duplicate the canonical channel and break round-trip
             ' compatibility with LooksMenu in-game.
 
+            ' === NPC_Manager extensions (paired con SerializePreset) ===
+            ' Keys "_npcm_*" emitidas por SerializePreset; LM in-game las ignora. Si la JSON no
+            ' las trae (preset autoreado por LM o por NPC_Manager pre-extensión), los campos
+            ' quedan Nothing y el overlay merge cae al preserve-raw semantic.
+            Dim skinFidEl As JsonElement
+            If root.TryGetProperty("_npcm_SkinFormID", skinFidEl) AndAlso skinFidEl.ValueKind = JsonValueKind.String Then
+                Dim sfStr = skinFidEl.GetString()
+                If String.IsNullOrEmpty(sfStr) Then
+                    ' Empty string = clear (engine fallback to RACE.WNAM). Equivale a Some(0).
+                    preset.SkinFormIDOverride = 0UI
+                Else
+                    Dim resolved = ResolveFormIdentifier(sfStr, pluginManager)
+                    ' Si plugin no está cargado, ResolveFormIdentifier devuelve 0 → cae como Some(0).
+                    ' Aceptable: si el JSON referenciaba un ARMO custom que el user no tiene activo,
+                    ' el render cae a RACE.WNAM en lugar de crashear.
+                    preset.SkinFormIDOverride = resolved
+                End If
+            End If
+            Dim cgpEl As JsonElement
+            If root.TryGetProperty("_npcm_IsCharGenPreset", cgpEl) AndAlso
+               (cgpEl.ValueKind = JsonValueKind.True OrElse cgpEl.ValueKind = JsonValueKind.False) Then
+                preset.IsCharGenFacePreset = cgpEl.GetBoolean()
+            End If
+
             Return preset
         End Using
     End Function
@@ -697,6 +721,24 @@ Public Module LooksmenuLoader
                 w.WriteNumberValue(preset.WeightMuscular.GetValueOrDefault(0.0F))
                 w.WriteNumberValue(preset.WeightFat.GetValueOrDefault(0.0F))
                 w.WriteEndArray()
+
+                ' === NPC_Manager extensions (NOT part of vanilla LM schema) ===
+                ' Prefix "_npcm_" marca extensions específicas de NPC_Manager fuera del namespace
+                ' LM. CharGenInterface.cpp LoadPreset accede a keys conocidas por nombre via
+                ' root["Key"]; no itera el objeto root → unknown keys son ignoradas silenciosamente
+                ' por LM in-game. Verificado contra F4SEPlugins-master/f4ee/CharGenInterface.cpp.
+                ' Independientes entre sí; la precedencia en aplicación la resuelve
+                ' NpcRecordOverlay (orden: NPC.WNAM primero, luego LM SkinTemplate pisa si está
+                ' set), mismo orden que el overlay aplica a render.
+                If preset.SkinFormIDOverride.HasValue Then
+                    Dim sfId = FormatFormIdentifier(preset.SkinFormIDOverride.Value, pluginManager)
+                    ' Empty string = clear semantic (engine cae a RACE.WNAM). Emitimos string siempre
+                    ' (incluso vacío) cuando HasValue=True para distinguir de "key absent" = preserve.
+                    w.WriteString("_npcm_SkinFormID", sfId)
+                End If
+                If preset.IsCharGenFacePreset.HasValue Then
+                    w.WriteBoolean("_npcm_IsCharGenPreset", preset.IsCharGenFacePreset.Value)
+                End If
 
                 w.WriteEndObject()
                 w.Flush()

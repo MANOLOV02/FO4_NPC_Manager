@@ -43,6 +43,22 @@ Public Class MainForm
     Private _finalLVLNFormIDs As New List(Of UInteger)()
     ''' <summary>Parsed LVLN data cache keyed by FormID.</summary>
     Private _lvlnDataCache As New Dictionary(Of UInteger, LVLN_Data)()
+    ''' <summary>Pre-computed flattened leaf NPC FormID list per LVLN. Recursive descent into
+    ''' nested LVLNs is resolved during cache warmup (BuildNPCClassification) so the tree
+    ''' rebuild path doesn't do per-keystroke recursion + per-entry _pluginManager.GetRecord
+    ''' lookups. Invalidation: BuildNPCClassification clears + repopulates. Save ESP doesn't
+    ''' mutate LVLN data → cache stays valid across saves.</summary>
+    Private _lvlnLeavesCache As New Dictionary(Of UInteger, List(Of UInteger))()
+    ''' <summary>Pre-computed lowercase searchable text per NPC FormID. Concatenates the 6 fields
+    ''' MatchesNpcFilter compares against (ToString, EditorID, FullName, PluginName, FormID hex)
+    ''' so per-keystroke filter becomes ONE IndexOf instead of 6 + a String() allocation.
+    ''' Invalidation: rebuilt in BuildNPCClassification. Save ESP changes PluginName for a single
+    ''' NPC → entry gets rebuilt via InvalidateNpcSearchCache.</summary>
+    Private _npcSearchableCache As New Dictionary(Of UInteger, String)()
+    ''' <summary>Pre-computed display label per NPC FormID ("FullName (EditorID, FormID)" with
+    ''' fallbacks). All inputs are FormID-stable (FullName/EditorID don't change post-load), so
+    ''' no invalidation needed after initial warmup.</summary>
+    Private _npcDisplayLabelCache As New Dictionary(Of UInteger, String)()
     Private _pendingTreeFilter As String = ""
     Private WithEvents _searchDebounceTimer As New System.Windows.Forms.Timer()
 
@@ -851,6 +867,7 @@ Public Class MainForm
         ' tints, weights, MRSV, FMRI/FMRS, MSDK/MSDV) are preserved from the raw record.
         HydrateAppliedPresetsFromSidecars(sidecars)
         ComboBoxPreviewMode.SelectedIndex = 0
+        ComboBoxGender.SelectedIndex = 0
     End Sub
 
     ''' <summary>Translate each sidecar entry's "Master.esp|HEX6" key into a global FormID via
@@ -897,9 +914,13 @@ Public Class MainForm
     Private Sub MainForm_Load(sender As Object, e As EventArgs) Handles MyBase.Load
         _searchDebounceTimer.Interval = 250
         Config_App.Current.Game = Config_App.Game_Enum.Fallout4
-        ' FO4_Base_Library.Logger habilitado para diagnostic OBTE/OMOD; archivo en bin\.
+        ' Logger habilitado SOLO en Debug builds. En Release: Logger.Enabled stays default (False)
+        ' y todos los Logger.Log/LogLazy retornan early sin allocar — sin overhead. Si necesitás
+        ' diagnóstico en Release, descomentar manualmente y rebuild.
+#If DEBUG Then
         FO4_Base_Library.Logger.Enabled = True
         FO4_Base_Library.Logger.Initialize(IO.Path.Combine(Application.StartupPath, "fo4lib.log"))
+#End If
         ' Restore persisted UI toggles BEFORE InitializePreview (Shown handler snapshots
         ' checkbox state into _renderHost.Toggles via RenderToggles.FromMainCheckBoxes).
         CheckBoxRenderGore.Checked = NPC_Config.Current.RenderGore
@@ -1041,10 +1062,33 @@ Public Class MainForm
         _npcByIdCache = _allNPCs.GroupBy(Function(n) n.FormID).Select(Function(g) g.First()).ToDictionary(Function(n) n.FormID)
         _templateDependencyMapCache = BuildTemplateDependencyMap(_npcByIdCache)
         _templateRootSourceIdsCache = BuildTemplateTreeRootSourceIds(_npcByIdCache, _templateDependencyMapCache)
+        ' Pre-build per-NPC caches (searchable text + display label) en bulk una sola vez. La
+        ' lectura per-keystroke pasa a Dictionary.TryGetValue O(1) sin string formatting.
+        ' BuildNPCClassification() llamado a continuación pisa los caches y los rellena de nuevo
+        ' — orden importa: classifications limpia ambos primero, así no acumulamos entries
+        ' obsoletos.
         BuildNPCClassification()
         BuildSkinArmoUniverse()
         BuildLmSkinTemplateCache()
+        For Each npc In _npcByIdCache.Values
+            _npcSearchableCache(npc.FormID) = BuildNpcSearchableText(npc)
+            _npcDisplayLabelCache(npc.FormID) = BuildNpcDisplayLabel(npc)
+        Next
     End Sub
+
+    ''' <summary>Build the concatenated lowercase searchable text for an NPC. Mirror the same 6
+    ''' fields que MatchesNpcFilter comparaba (ToString, EditorID, FullName, PluginName,
+    ''' FormID hex). Single string permite reducir el match a un IndexOf en lugar de 6.</summary>
+    Private Shared Function BuildNpcSearchableText(npc As NPC_Data) As String
+        If npc Is Nothing Then Return ""
+        Dim sb As New System.Text.StringBuilder()
+        sb.Append(If(npc.ToString(), "")).Append("|"c)
+        sb.Append(If(npc.EditorID, "")).Append("|"c)
+        sb.Append(If(npc.FullName, "")).Append("|"c)
+        sb.Append(If(npc.PluginName, "")).Append("|"c)
+        sb.Append(npc.FormID.ToString("X8"))
+        Return sb.ToString().ToLowerInvariant()
+    End Function
 
     ''' <summary>Filter the skin ARMO universe (built once at plugin load) by the race+gender of
     ''' the NPC currently being edited. An ARMO qualifies iff (a) at least one ARMA child has the
@@ -1209,6 +1253,9 @@ Public Class MainForm
         _npcsUsedAsTemplates.Clear()
         _finalLVLNFormIDs.Clear()
         _lvlnDataCache.Clear()
+        _lvlnLeavesCache.Clear()
+        _npcSearchableCache.Clear()
+        _npcDisplayLabelCache.Clear()
 
         ' Collect NPCs placed in the world (ACHR records from CELL/WRLD groups)
         Dim placedNPCs = _pluginManager.GetPlacedNPCFormIDs()
@@ -1247,6 +1294,14 @@ Public Class MainForm
         ' Collect NPCs in leveled lists (encounter spawns)
         For Each rec In allLVLNRecords
             CollectNPCsFromLVLNRecursive(rec.Header.FormID, _npcsInGameWorld, New HashSet(Of UInteger)())
+        Next
+
+        ' Warm _lvlnLeavesCache: pre-compute flattened NPC FormID list for every LVLN. Recursion
+        ' memoizada via ComputeAndCacheLVLNLeaves — sub-LVLNs ya cacheadas se leen del cache, no
+        ' se re-walkean. Costo total: O(total entries across all LVLNs). Una sola vez al startup;
+        ' PopulateNPCTree luego sólo hace dictionary lookups O(1) por LVLN.
+        For Each lvlnFid In _lvlnDataCache.Keys
+            ComputeAndCacheLVLNLeaves(lvlnFid, New HashSet(Of UInteger)())
         Next
 
         ' Scan all NPCs to find which are used as template sources
@@ -1366,18 +1421,11 @@ Public Class MainForm
                         }
                     End If
 
-                    Dim formIdText = npc.FormID.ToString("X8")
-                    Dim displayText As String
-                    If npc.FullName <> "" Then
-                        Dim parenContent = If(npc.EditorID <> "", $"{npc.EditorID}, {formIdText}", formIdText)
-                        displayText = $"{npc.FullName} ({parenContent})"
-                    ElseIf npc.EditorID <> "" Then
-                        displayText = $"{npc.EditorID} ({formIdText})"
-                    Else
-                        displayText = formIdText
+                    Dim displayLabel As String = Nothing
+                    If Not _npcDisplayLabelCache.TryGetValue(npc.FormID, displayLabel) Then
+                        displayLabel = BuildNpcDisplayLabel(npc)
                     End If
-
-                    Dim npcNode = New TreeNode(displayText) With {
+                    Dim npcNode = New TreeNode(displayLabel) With {
                         .Name = $"NPC_{npc.FormID:X8}",
                         .Tag = npc
                     }
@@ -1393,6 +1441,11 @@ Public Class MainForm
             Next
 
             ' === Section 2: Final Leveled NPC Lists (encounter spawns) ===
+            ' Cada LVLN se cuelga con sus NPC entries como hijos (recursión flatten via
+            ' CollectLVLNLeafNpcIds). El usuario puede expandir el LVLN y elegir un NPC específico,
+            ' o clickear el LVLN para random roll (handler diferencia por Tag type). Sin dedup:
+            ' un NPC puede aparecer bajo CADA LVLN que lo lista (regla del usuario 2026-05-18 —
+            ' útil para ver qué LVLNs enrolan a un mismo NPC).
             If _finalLVLNFormIDs.Count > 0 Then
                 ' Group final LVLNs by source plugin
                 Dim lvlnsByPlugin = _finalLVLNFormIDs.
@@ -1410,7 +1463,10 @@ Public Class MainForm
                     Dim matchCount = 0
 
                     For Each item In pluginGroup.OrderBy(Function(x) x.Data.EditorID, StringComparer.OrdinalIgnoreCase)
-                        If normalizedFilter.Length > 0 AndAlso Not MatchesRecordFilter(item.Record, normalizedFilter) Then Continue For
+                        ' NO early-skip por filtro del LVLN propio: aunque el LVLN no matchee
+                        ' su EditorID/FormID, los hijos sí pueden matchear (filtro por un FormID
+                        ' de NPC concreto, por ej.). La decisión final de incluir/descartar este
+                        ' nodo se toma después de iterar children (ver chequeo post-loop más abajo).
 
                         If pluginNode Is Nothing Then
                             pluginNode = New TreeNode($"[LVLN] {pluginGroup.Key}") With {
@@ -1419,19 +1475,49 @@ Public Class MainForm
                             }
                         End If
 
-                        Dim leafCount = CountLVLNLeafNPCs(item.FormID, New HashSet(Of UInteger)())
                         Dim label = If(item.Data.EditorID <> "", item.Data.EditorID, item.FormID.ToString("X8"))
-                        Dim displayText = $"{label} ({leafCount} NPCs)"
 
-                        Dim lvlnNode = New TreeNode(displayText) With {
+                        Dim lvlnNode = New TreeNode(label) With {
                             .Name = $"LVLN_{item.FormID:X8}",
                             .Tag = item.Data
                         }
+
+                        ' Colgar cada NPC leaf del LVLN como hijo seleccionable. Recurse en nested
+                        ' LVLNs para aplanar el árbol — el usuario ve los NPCs concretos, no
+                        ' sub-LVLNs intermedios. SIN dedup contra otros LVLNs: si el NPC está en
+                        ' múltiples lvl lists, aparece bajo cada una. Leaves vienen del cache
+                        ' precomputado (_lvlnLeavesCache) — O(1) lookup en lugar de recursión.
+                        Dim leaves As List(Of UInteger) = Nothing
+                        If Not _lvlnLeavesCache.TryGetValue(item.FormID, leaves) Then leaves = New List(Of UInteger)
+                        Dim childMatchCount = 0
+                        For Each leafFid In leaves
+                            Dim leafNpc As NPC_Data = Nothing
+                            If Not _npcByIdCache.TryGetValue(leafFid, leafNpc) Then Continue For
+                            If normalizedFilter.Length > 0 AndAlso Not MatchesNpcFilter(leafNpc, Nothing, normalizedFilter) Then Continue For
+                            Dim childLabel As String = Nothing
+                            If Not _npcDisplayLabelCache.TryGetValue(leafFid, childLabel) Then
+                                childLabel = BuildNpcDisplayLabel(leafNpc)
+                            End If
+                            Dim childNode = New TreeNode(childLabel) With {
+                                .Name = $"NPC_{leafNpc.FormID:X8}",
+                                .Tag = leafNpc
+                            }
+                            lvlnNode.Nodes.Add(childNode)
+                            childMatchCount += 1
+                        Next
+
+                        ' Si el filtro está activo y NI el LVLN matchea por su record ni ningún
+                        ' child sobrevivió, no agregamos el LVLN al árbol (ruido vacío).
+                        If normalizedFilter.Length > 0 AndAlso childMatchCount = 0 AndAlso Not MatchesRecordFilter(item.Record, normalizedFilter) Then
+                            Continue For
+                        End If
+
                         pluginNode.Nodes.Add(lvlnNode)
                         matchCount += 1
+                        If normalizedFilter.Length > 0 AndAlso childMatchCount > 0 Then lvlnNode.Expand()
                     Next
 
-                    If pluginNode IsNot Nothing Then
+                    If pluginNode IsNot Nothing AndAlso pluginNode.Nodes.Count > 0 Then
                         pluginNode.Text = $"[LVLN] {pluginGroup.Key} ({matchCount})"
                         TreeViewNPCs.Nodes.Add(pluginNode)
                         If normalizedFilter.Length > 0 Then pluginNode.Expand()
@@ -1444,28 +1530,52 @@ Public Class MainForm
         End Try
     End Sub
 
-    ''' <summary>Count the total number of leaf NPC_ entries reachable from a LVLN (recursing into nested LVLNs).</summary>
-    Private Function CountLVLNLeafNPCs(lvlnFormID As UInteger, visited As HashSet(Of UInteger)) As Integer
-        If lvlnFormID = 0UI OrElse visited.Contains(lvlnFormID) Then Return 0
-        visited.Add(lvlnFormID)
+    ''' <summary>Display label for an NPC tree node: "FullName (EditorID, FormID)" with fallbacks
+    ''' a EditorID (FormID) cuando no hay FullName, o sólo FormID cuando tampoco hay EditorID.
+    ''' Compartido por Section 1 placed NPCs y Section 2 LVLN children.</summary>
+    Private Shared Function BuildNpcDisplayLabel(npc As NPC_Data) As String
+        Dim formIdText = npc.FormID.ToString("X8")
+        If npc.FullName <> "" Then
+            Dim parenContent = If(npc.EditorID <> "", $"{npc.EditorID}, {formIdText}", formIdText)
+            Return $"{npc.FullName} ({parenContent})"
+        ElseIf npc.EditorID <> "" Then
+            Return $"{npc.EditorID} ({formIdText})"
+        End If
+        Return formIdText
+    End Function
 
+    ''' <summary>Compute (memoized) la lista flattened de NPC FormIDs alcanzables desde un LVLN.
+    ''' Recurse en sub-LVLNs vía la misma función (memoización mutua). El cache global
+    ''' <see cref="_lvlnLeavesCache"/> guarda el resultado por FormID, así una sola pasada en
+    ''' BuildNPCClassification cubre todos los LVLNs y los rebuilds del tree (filter / save)
+    ''' luego sólo hacen lookup O(1) sin volver a tocar el plugin manager.
+    '''
+    ''' Cycle detection: `inProgress` se pasa por la cadena de recursión activa. Si A→B→A, la
+    ''' segunda visita a A retorna lista vacía y el cache de B captura la parte de B sin
+    ''' contribución cíclica. Vanilla FO4 no tiene ciclos LVLN; el guard es defensivo.</summary>
+    Private Function ComputeAndCacheLVLNLeaves(lvlnFormID As UInteger, inProgress As HashSet(Of UInteger)) As List(Of UInteger)
+        Dim cached As List(Of UInteger) = Nothing
+        If _lvlnLeavesCache.TryGetValue(lvlnFormID, cached) Then Return cached
+        If lvlnFormID = 0UI OrElse inProgress.Contains(lvlnFormID) Then Return New List(Of UInteger)()
+        inProgress.Add(lvlnFormID)
+        Dim result As New List(Of UInteger)
         Dim lvln As LVLN_Data = Nothing
-        If Not _lvlnDataCache.TryGetValue(lvlnFormID, lvln) Then Return 0
-
-        Dim count = 0
-        For Each entry In lvln.Entries
-            If entry.FormID = 0UI Then Continue For
-            Dim entryRec = _pluginManager.GetRecord(entry.FormID)
-            If entryRec Is Nothing Then Continue For
-
-            Select Case entryRec.Header.Signature
-                Case "NPC_"
-                    count += 1
-                Case "LVLN"
-                    count += CountLVLNLeafNPCs(entry.FormID, visited)
-            End Select
-        Next
-        Return count
+        If _lvlnDataCache.TryGetValue(lvlnFormID, lvln) Then
+            For Each entry In lvln.Entries
+                If entry.FormID = 0UI Then Continue For
+                Dim entryRec = _pluginManager.GetRecord(entry.FormID)
+                If entryRec Is Nothing Then Continue For
+                Select Case entryRec.Header.Signature
+                    Case "NPC_"
+                        result.Add(entry.FormID)
+                    Case "LVLN"
+                        result.AddRange(ComputeAndCacheLVLNLeaves(entry.FormID, inProgress))
+                End Select
+            Next
+        End If
+        inProgress.Remove(lvlnFormID)
+        _lvlnLeavesCache(lvlnFormID) = result
+        Return result
     End Function
 
     Private Function GetNpcTemplateSummary(npc As NPC_Data) As String
@@ -1694,16 +1804,24 @@ Public Class MainForm
         If String.IsNullOrWhiteSpace(filter) Then Return True
         If npc Is Nothing Then Return False
 
-        Dim comparisons As String() = {
-            npc.ToString(),
-            npc.EditorID,
-            npc.FullName,
-            npc.PluginName,
-            npc.FormID.ToString("X8"),
-            If(dependencyEdge Is Nothing, "", String.Join(" ", dependencyEdge.Categories))
-        }
-
-        Return comparisons.Any(Function(value) Not String.IsNullOrEmpty(value) AndAlso value.IndexOf(filter, StringComparison.OrdinalIgnoreCase) >= 0)
+        ' Fast path: searchable text pre-built en BuildNPCClassification (lowercase concat de los
+        ' 5 campos base separados por '|'). Match con un solo IndexOf. dependencyEdge sólo
+        ' aplica al template tree path (BuildTemplateTreeNode), no a la lista plana de NPCs.
+        Dim cached As String = Nothing
+        If _npcSearchableCache.TryGetValue(npc.FormID, cached) Then
+            If cached.IndexOf(filter, StringComparison.OrdinalIgnoreCase) >= 0 Then Return True
+        Else
+            ' Fallback para NPCs no incluidos en el cache (raro — debería estar todo)
+            Dim fallback = BuildNpcSearchableText(npc)
+            If fallback.IndexOf(filter, StringComparison.OrdinalIgnoreCase) >= 0 Then Return True
+        End If
+        ' Categorías del template dependency edge no entran al cache (depende del contexto del
+        ' template tree, no del NPC). Si hay edge, evaluamos esa sola string adicional.
+        If dependencyEdge IsNot Nothing AndAlso dependencyEdge.Categories.Count > 0 Then
+            Dim cats = String.Join(" ", dependencyEdge.Categories)
+            If cats.IndexOf(filter, StringComparison.OrdinalIgnoreCase) >= 0 Then Return True
+        End If
+        Return False
     End Function
 
     Private Shared Function MatchesRecordFilter(rec As PluginRecord, filter As String) As Boolean
@@ -1875,16 +1993,19 @@ Public Class MainForm
             ' ButtonEditBody.Enabled is decided after render in UpdateEditBodyEnabled when we
             ' know whether the race's RACE.BSMS / body .tri actually carry editable channels.
 
-            ' Enable/disable NPC randomization controls based on whether NPC has LVLN in template chain
+            ' Re-roll button gates on whether the NPC has LVLN in its template chain.
+            ' Gender combo is LVLN-node-only (the gender filter applies to picking a leaf from a
+            ' leveled list, not to re-rolling templates of an already-selected NPC), so it stays
+            ' disabled here regardless of templates. Enabled in LoadLVLNOnDemandAsync.
             Dim hasLeveledTemplates = NpcHasLeveledTemplates(npc)
             If InvokeRequired Then
                 Invoke(Sub()
                            ButtonRandomNPC.Enabled = hasLeveledTemplates
-                           ComboBoxGender.Enabled = hasLeveledTemplates
+                           ComboBoxGender.Enabled = False
                        End Sub)
             Else
                 ButtonRandomNPC.Enabled = hasLeveledTemplates
-                ComboBoxGender.Enabled = hasLeveledTemplates
+                ComboBoxGender.Enabled = False
             End If
 
             ' Populate outfit combo
@@ -2178,10 +2299,12 @@ Public Class MainForm
         ' los matchea. Loguemos cualquier key que contenga "Pip" (case-insensitive) o que arranque
         ' con "P-" (cualquier P- socket). Si no hay nada → no hay punto de mounting → el render
         ' debe inventarlo (anclar a LArm_skin, etc.) o dejar el Pipboy en el origen.
-        Dim skelKeys = inst.SkeletonDictionary.Keys.ToList()
-        Dim pipMatches = skelKeys.Where(Function(k) k.IndexOf("pip", StringComparison.OrdinalIgnoreCase) >= 0).OrderBy(Function(k) k).ToList()
-        Dim pSocketMatches = skelKeys.Where(Function(k) k.StartsWith("P-", StringComparison.OrdinalIgnoreCase)).OrderBy(Function(k) k).ToList()
-        Logger.LogLazy(Function() $"[PIPBOY-DIAG] skeleton total-bones={skelKeys.Count} pip-related-keys=[{String.Join(",", pipMatches)}] P-prefix-keys=[{String.Join(",", pSocketMatches)}]")
+        If Logger.Enabled Then
+            Dim skelKeys = inst.SkeletonDictionary.Keys.ToList()
+            Dim pipMatches = skelKeys.Where(Function(k) k.IndexOf("pip", StringComparison.OrdinalIgnoreCase) >= 0).OrderBy(Function(k) k).ToList()
+            Dim pSocketMatches = skelKeys.Where(Function(k) k.StartsWith("P-", StringComparison.OrdinalIgnoreCase)).OrderBy(Function(k) k).ToList()
+            Logger.LogLazy(Function() $"[PIPBOY-DIAG] skeleton total-bones={skelKeys.Count} pip-related-keys=[{String.Join(",", pipMatches)}] P-prefix-keys=[{String.Join(",", pSocketMatches)}]")
+        End If
 
         ' Pipboy synthetic-skin: corre ahora que `inst` está construido. Descubre el bone target
         ' dinámicamente del SkeletonDictionary (case-insensitive match contra "pipboy"). Sin
@@ -2383,7 +2506,7 @@ Public Class MainForm
         ' por idempotencia. Filtrado por chunks robot solo (state.HasObjectTemplate) para no
         ' contaminar logs de humanoides normales.
         Dim isRobotMount = state.HasObjectTemplate AndAlso shapesWithSocket.Count > 0
-        If isRobotMount Then
+        If isRobotMount AndAlso Logger.Enabled Then
             ' [DIAG-PRE-INJECT] Dump bones del actor ANTES de cualquier inject de chunk.
             Dim preKeys = inst.SkeletonDictionary.Keys.OrderBy(Function(k) k).ToList()
             Dim preCountAll = preKeys.Count
@@ -2424,7 +2547,7 @@ Public Class MainForm
         If inst.Skeleton IsNot Nothing Then
             Dim preHostKeys = New HashSet(Of String)(inst.SkeletonDictionary.Keys, StringComparer.OrdinalIgnoreCase)
             Dim addedHost = BSConnectPointBoneInjector_Class.MaterializeSocketsAsConnectPointBones(inst.Skeleton, inst)
-            If isRobotMount Then
+            If isRobotMount AndAlso Logger.Enabled Then
                 Dim postNew = inst.SkeletonDictionary.Keys.Where(Function(k) Not preHostKeys.Contains(k)).OrderBy(Function(k) k).ToList()
                 Dim addedHostLog = addedHost
                 Logger.LogLazy(Function() $"[MATERIALIZE-HOST] from inst.Skeleton (host NIF): added={addedHostLog} newBones=[{String.Join(", ", postNew)}]")
@@ -2564,7 +2687,7 @@ Public Class MainForm
             '   - Para cada ShapeBone del chunk: NiNode raw local + cadena hasta chunkRoot +
             '     bind matrix (chunk-frame inverse-bind) + authoring world derivado del bind
             ' Filtra solo chunks de robot OBTE para no contaminar.
-            If isRobotMount Then
+            If isRobotMount AndAlso Logger.Enabled Then
                 Try
                     Dim shName = shape.ShapeName
                     Dim chunkNif = shape.NifContent
@@ -2745,8 +2868,31 @@ Public Class MainForm
                 Try
                     Dim asOverride = TryCast(shape, IRuntimeSkinOverride)
                     If asOverride IsNot Nothing Then
-                        Dim chunkRootName = If(shape.NifContent.GetRootNode()?.Name?.String, "chunk")
-                        Dim anchorName = "__chunkAnchor__" & socket.Name & "__" & chunkRootName
+                        ' [V2-AWARE ANCHOR] Preferir el C-X counterpart (materializado por
+                        ' MaterializeSocketsAsConnectPointBones desde inst.Skeleton.nif) sobre
+                        ' el synthetic '__chunkAnchor__'. El C-X bone está en la misma posición
+                        ' world que el synthetic (ambos derivados de parent×socket.local), pero
+                        ' además cascadea correctamente cuando V2 SKEL-OVERRIDE lo modifica
+                        ' (caso vivo: LightPlane Protectron — V2 mueve C-Head 5.47 unidades,
+                        ' synthetic anchor parented a Chest no seguía, light renderizaba en
+                        ' posición vieja). Plus cubre chunks 100% unskinned (shishkebab DLC
+                        ' Mechanist Assaultron) donde InjectChunkBonesIntoLiveSkeleton
+                        ' early-exits y nunca crea el synthetic anchor.
+                        Dim cxBoneName As String = ""
+                        If Not String.IsNullOrEmpty(socket.Name) AndAlso socket.Name.Length >= 2 Then
+                            If socket.Name.StartsWith("P-", StringComparison.OrdinalIgnoreCase) Then
+                                cxBoneName = "C-" & socket.Name.Substring(2)
+                            ElseIf socket.Name.StartsWith("P_", StringComparison.OrdinalIgnoreCase) Then
+                                cxBoneName = "C_" & socket.Name.Substring(2)
+                            End If
+                        End If
+                        Dim anchorName As String
+                        If Not String.IsNullOrEmpty(cxBoneName) AndAlso inst.SkeletonDictionary.ContainsKey(cxBoneName) Then
+                            anchorName = cxBoneName
+                        Else
+                            Dim chunkRootName = If(shape.NifContent.GetRootNode()?.Name?.String, "chunk")
+                            anchorName = "__chunkAnchor__" & socket.Name & "__" & chunkRootName
+                        End If
 
                         ' Computar bind manualmente: walk desde backing hacia arriba pero
                         ' STOP antes de componer chunkRoot.local.
@@ -2767,9 +2913,11 @@ Public Class MainForm
 
                         asOverride.ApplySyntheticAnchorSkin(placeholder, bindMatrix)
 
-                        Dim shL = shape.ShapeName, anL = anchorName
-                        Dim bT = bindMatrix.Translation
-                        Logger.LogLazy(Function() $"[FAKE-SKIN] shape='{shL}' anchor='{anL}' bind.T=({bT.X:F3},{bT.Y:F3},{bT.Z:F3}) (excluye chunkRoot.local)")
+                        If Logger.Enabled Then
+                            Dim shL = shape.ShapeName, anL = anchorName
+                            Dim bT = bindMatrix.Translation
+                            Logger.LogLazy(Function() $"[FAKE-SKIN] shape='{shL}' anchor='{anL}' bind.T=({bT.X:F3},{bT.Y:F3},{bT.Z:F3}) (excluye chunkRoot.local)")
+                        End If
                     End If
                 Catch ex As Exception
                     Dim shL = shape.ShapeName, exL = ex
@@ -2923,7 +3071,7 @@ Public Class MainForm
                             ' espurio en G_CX / G_B / W_B → rotación/translation extra en render.
                             ' Loguear con-root vs stripped para confirmar la magnitud del impacto.
                             ' Corre PRE-skip así también vemos arms (que van a SKIP).
-                            If isRobotMount Then
+                            If isRobotMount AndAlso Logger.Enabled Then
                                 Try
                                     Dim chunkRootNode = shape.NifContent.GetRootNode()
                                     Dim chunkRootLocal As Transform_Class
@@ -3195,7 +3343,7 @@ Public Class MainForm
                                 ' [DIAG-EYES] W_B_alt = G_B × A_alt. Si no hay chunk source override, A_alt=A
                                 ' y W_B_alt=W_B (delta=0). Si hay override, delta cuantifica el shift que
                                 ' la corrección +2.908 X mete vs el path sin corregir.
-                                If isRobotMount AndAlso usedChunkSource Then
+                                If isRobotMount AndAlso usedChunkSource AndAlso Logger.Enabled Then
                                     Dim W_B_alt = A_alt.ComposeTransforms(G_B)
                                     Dim wT = W_B.Translation, wAt = W_B_alt.Translation
                                     Dim bnL1 = boneName, shL1 = shape.ShapeName
@@ -3390,7 +3538,7 @@ Public Class MainForm
                 Dim preMatKeysSet = New HashSet(Of String)(inst.SkeletonDictionary.Keys, StringComparer.OrdinalIgnoreCase)
                 Dim preMatCount = inst.SkeletonDictionary.Count
                 Dim m = BSConnectPointBoneInjector_Class.MaterializeSocketsAsConnectPointBones(shape.NifContent, inst)
-                If isRobotMount Then
+                If isRobotMount AndAlso Logger.Enabled Then
                     Dim newMatKeys = inst.SkeletonDictionary.Keys.Where(Function(k) Not preMatKeysSet.Contains(k)).OrderBy(Function(k) k).ToList()
                     Dim shNameMat = shape.ShapeName, mLog = m
                     Logger.LogLazy(Function() $"[MATERIALIZE-CHUNK] shape='{shNameMat}' returned={mLog} addedSubSockets={newMatKeys.Count}: [{String.Join(", ", newMatKeys)}]")
@@ -3399,7 +3547,7 @@ Public Class MainForm
         Next
 
         ' DIAG: dump post-inject — solo bones nuevos (los inyectados).
-        If isRobotMount Then
+        If isRobotMount AndAlso Logger.Enabled Then
             Dim injected = inst.InjectedBones.OrderBy(Function(k) k).ToList()
             Dim injCount = injected.Count
             Logger.LogLazy(Function() $"[POST-INJECT-SUMMARY] inst.InjectedBones count={injCount} total={inst.SkeletonDictionary.Count}")
@@ -3412,7 +3560,7 @@ Public Class MainForm
         ' DIAG (2026-05-13 socket-math): para cada chunk shape con socket, dumpear el
         ' bone.world (OriginalGetGlobalTransform) de cada bone que el shape referencia.
         ' Con esto + bind log + socket log podemos hacer la matemática completa offline.
-        If isRobotMount Then
+        If isRobotMount AndAlso Logger.Enabled Then
             For Each sh In ordered
                 Dim sock As BSConnectPointReader.ConnectPointInfo = Nothing
                 If Not renderData.ShapeMountSocket.TryGetValue(sh, sock) Then Continue For
@@ -5398,7 +5546,9 @@ Public Class MainForm
                     Sub(info) UpdateAssetLoadProgress(info)
                 )
 
-                FilesDictionary_class.CacheDirectory = Application.StartupPath
+                Dim cacheDir = IO.Path.Combine(Application.StartupPath, "Caches")
+                IO.Directory.CreateDirectory(cacheDir)
+                FilesDictionary_class.CacheDirectory = cacheDir
                 ' .ssf (Segment Sub-File) maps BSSubIndexTriShape SubSegment BoneIDs to symbolic
                 ' gore-zone names for FO4 actor meshes. .sclp (ARMA Sculpt) carries per-bone
                 ' translation/scale deltas referenced by ARMA records. Both are NPC-rendering
@@ -5760,11 +5910,13 @@ Public Class MainForm
             ' Dump the raw JSON to a sibling file so we can see exactly what the engine reads
             ' (independent of our parser). Compares against xEdit hex IDs to catch any parser
             ' bug. Path: same directory as the log file, named per gender.
-            Try
-                Dim dumpPath = IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, $"fbr_dump_{race.EditorID}_{genderKey}.txt")
-                IO.File.WriteAllBytes(dumpPath, bytes)
-            Catch dumpEx As Exception
-            End Try
+            If Logger.Enabled Then
+                Try
+                    Dim dumpPath = IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, $"fbr_dump_{race.EditorID}_{genderKey}.txt")
+                    IO.File.WriteAllBytes(dumpPath, bytes)
+                Catch dumpEx As Exception
+                End Try
+            End If
             Dim parsed = FacialBoneRegionsFile.ParseFromBytes(bytes)
             _facialBoneRegionsCache(cacheKey) = parsed
             Return parsed
@@ -5858,7 +6010,7 @@ Public Class MainForm
         Dim nnamX As Single = If(state.IsFemale, race.FemaleNeckNNAMX, race.MaleNeckNNAMX)
         Dim nnamY As Single = If(state.IsFemale, race.FemaleNeckNNAMY, race.MaleNeckNNAMY)
         Dim nnamRaw = If(state.IsFemale, race.FemaleNeckNNAMRaw, race.MaleNeckNNAMRaw)
-        Logger.Log($"[NNAM-DIAG] race={race.EditorID} gender={If(state.IsFemale, "F", "M")} MWGT(t={wt.ToString("F3", CultureInfo.InvariantCulture)},m={wm.ToString("F3", CultureInfo.InvariantCulture)},f={wf.ToString("F3", CultureInfo.InvariantCulture)}) NNAM_M={fmtNNAM(race.MaleNeckNNAMRaw, race.MaleNeckNNAMX, race.MaleNeckNNAMY)} NNAM_F={fmtNNAM(race.FemaleNeckNNAMRaw, race.FemaleNeckNNAMX, race.FemaleNeckNNAMY)}")
+        Logger.LogLazy(Function() $"[NNAM-DIAG] race={race.EditorID} gender={If(state.IsFemale, "F", "M")} MWGT(t={wt.ToString("F3", CultureInfo.InvariantCulture)},m={wm.ToString("F3", CultureInfo.InvariantCulture)},f={wf.ToString("F3", CultureInfo.InvariantCulture)}) NNAM_M={fmtNNAM(race.MaleNeckNNAMRaw, race.MaleNeckNNAMX, race.MaleNeckNNAMY)} NNAM_F={fmtNNAM(race.FemaleNeckNNAMRaw, race.FemaleNeckNNAMX, race.FemaleNeckNNAMY)}")
 
         Dim targetGender As UInteger = If(state.IsFemale, 1UI, 0UI)
         For Each bd In race.BoneData
@@ -6114,12 +6266,12 @@ Public Class MainForm
             Where(Function(n) n.IndexOf("Neck", StringComparison.OrdinalIgnoreCase) >= 0).
             OrderBy(Function(n) n, StringComparer.OrdinalIgnoreCase).
             ToList()
-        Logger.Log($"[NNAM-DIAG] BuildBodyWeightPose inputs: wt={wt.ToString("F3", CultureInfo.InvariantCulture)} wm={wm.ToString("F3", CultureInfo.InvariantCulture)} wf={wf.ToString("F3", CultureInfo.InvariantCulture)} nnamX={nnamX.ToString("F4", CultureInfo.InvariantCulture)} nnamY={nnamY.ToString("F4", CultureInfo.InvariantCulture)} weightLayersEnabled={weightLayersEnabled} neck-bone-count={neckCandidates.Count}")
+        Logger.LogLazy(Function() $"[NNAM-DIAG] BuildBodyWeightPose inputs: wt={wt.ToString("F3", CultureInfo.InvariantCulture)} wm={wm.ToString("F3", CultureInfo.InvariantCulture)} wf={wf.ToString("F3", CultureInfo.InvariantCulture)} nnamX={nnamX.ToString("F4", CultureInfo.InvariantCulture)} nnamY={nnamY.ToString("F4", CultureInfo.InvariantCulture)} weightLayersEnabled={weightLayersEnabled} neck-bone-count={neckCandidates.Count}")
         For Each nc In neckCandidates
             Dim cb As RACE_BoneData = Nothing
             Dim hasWS As Boolean = False
             If boneLookup.TryGetValue(nc, cb) Then hasWS = cb.HasWeightScale
-            Logger.Log($"[NNAM-DIAG]   candidate bone='{nc}' isSkin={nc.EndsWith("_skin", StringComparison.OrdinalIgnoreCase)} inRaceBoneData={cb IsNot Nothing} HasWeightScale={hasWS}")
+            Logger.LogLazy(Function() $"[NNAM-DIAG]   candidate bone='{nc}' isSkin={nc.EndsWith("_skin", StringComparison.OrdinalIgnoreCase)} inRaceBoneData={cb IsNot Nothing} HasWeightScale={hasWS}")
         Next
 
         For Each boneName In allBoneNames
@@ -6193,14 +6345,14 @@ Public Class MainForm
                     sy *= mulY
                     nnamApplied = True
                 End If
-                Logger.Log($"[NNAM-DIAG] {If(DisableNnamLayer2, "WOULD-APPLY", "APPLY")} bone='{boneName}' isSkin={boneName.EndsWith("_skin", StringComparison.OrdinalIgnoreCase)} preLayer1(sx={sxR.ToString("F4", CultureInfo.InvariantCulture)},sy={syR.ToString("F4", CultureInfo.InvariantCulture)},sz={szR.ToString("F4", CultureInfo.InvariantCulture)}) preLayer2(sx={sxBefore.ToString("F4", CultureInfo.InvariantCulture)},sy={syBefore.ToString("F4", CultureInfo.InvariantCulture)}) mul(x={mulX.ToString("F4", CultureInfo.InvariantCulture)},y={mulY.ToString("F4", CultureInfo.InvariantCulture)}) post(sx={sx.ToString("F4", CultureInfo.InvariantCulture)},sy={sy.ToString("F4", CultureInfo.InvariantCulture)},sz={sz.ToString("F4", CultureInfo.InvariantCulture)})")
+                Logger.LogLazy(Function() $"[NNAM-DIAG] {If(DisableNnamLayer2, "WOULD-APPLY", "APPLY")} bone='{boneName}' isSkin={boneName.EndsWith("_skin", StringComparison.OrdinalIgnoreCase)} preLayer1(sx={sxR.ToString("F4", CultureInfo.InvariantCulture)},sy={syR.ToString("F4", CultureInfo.InvariantCulture)},sz={szR.ToString("F4", CultureInfo.InvariantCulture)}) preLayer2(sx={sxBefore.ToString("F4", CultureInfo.InvariantCulture)},sy={syBefore.ToString("F4", CultureInfo.InvariantCulture)}) mul(x={mulX.ToString("F4", CultureInfo.InvariantCulture)},y={mulY.ToString("F4", CultureInfo.InvariantCulture)}) post(sx={sx.ToString("F4", CultureInfo.InvariantCulture)},sy={sy.ToString("F4", CultureInfo.InvariantCulture)},sz={sz.ToString("F4", CultureInfo.InvariantCulture)})")
             ElseIf isNeckCandidate Then
                 Dim reason As String =
                     If(Not weightLayersEnabled, "weightLayers=off",
                     If(bone Is Nothing, "no-race-bone-data",
                     If(Not bone.HasWeightScale, "no-WeightScale",
                     If(Math.Abs(nnamX) < Single.Epsilon AndAlso Math.Abs(nnamY) < Single.Epsilon, "nnam-zero", "unknown"))))
-                Logger.Log($"[NNAM-DIAG] SKIP  bone='{boneName}' isSkin={boneName.EndsWith("_skin", StringComparison.OrdinalIgnoreCase)} reason={reason}")
+                Logger.LogLazy(Function() $"[NNAM-DIAG] SKIP  bone='{boneName}' isSkin={boneName.EndsWith("_skin", StringComparison.OrdinalIgnoreCase)} reason={reason}")
             End If
             Dim sxN As Single = sx, syN As Single = sy, szN As Single = sz   ' snapshot post-NNAM
 
@@ -8173,7 +8325,7 @@ Public Class MainForm
             pipboyBoneName = If(primary, pipboyCandidates(0))
         End If
         If pipboyBoneName Is Nothing Then
-            Logger.Log("[PIPBOY-DIAG] FAKE-SKIN skip: no '*pipboy*' bone en actor skeleton — Pipboy renderiza al origin (raza sin chargen-bones?)")
+            Logger.LogLazy(Function() "[PIPBOY-DIAG] FAKE-SKIN skip: no '*pipboy*' bone en actor skeleton — Pipboy renderiza al origin (raza sin chargen-bones?)")
             Return
         End If
         Dim boneNameL = pipboyBoneName
@@ -9002,7 +9154,7 @@ Public Class MainForm
                 Try
                     Dim parents = BSConnectPointReader.ReadParents(nif)
                     If parents Is Nothing OrElse parents.Count = 0 Then
-                        Logger.Log("[PIPBOY-DIAG]   BSConnectPoint::Parents = (none declared in NIF)")
+                        Logger.LogLazy(Function() "[PIPBOY-DIAG]   BSConnectPoint::Parents = (none declared in NIF)")
                     Else
                         For Each p In parents
                             Dim pn = p.Name
@@ -9018,7 +9170,7 @@ Public Class MainForm
                 Try
                     Dim children = BSConnectPointReader.ReadChildren(nif)
                     If children.PointNames Is Nothing OrElse children.PointNames.Count = 0 Then
-                        Logger.Log("[PIPBOY-DIAG]   BSConnectPoint::Children = (none declared in NIF)")
+                        Logger.LogLazy(Function() "[PIPBOY-DIAG]   BSConnectPoint::Children = (none declared in NIF)")
                     Else
                         Dim skFlag = children.Skinned
                         Dim pointsStr = String.Join(",", children.PointNames)
@@ -11393,6 +11545,26 @@ Public Class MainForm
             preset.SkinTemplateId = If(overlay.SkinTemplateId, "")
         End If
 
+        ' NPC.WNAM skin override: capturamos la skin EFECTIVA que se está renderizando ahora —
+        ' que ya considera overlay.SkinFormIDOverride si existe, raw NPC.WNAM como fallback, y
+        ' RACE.WNAM si ambos son 0 (ver ApplyRaceFallbacks / RecomputeEffectiveSkinFormID).
+        ' Capturar state.SkinFormID directamente vs overlay-only garantiza que Copy → Paste
+        ' transfiera el skin AUNQUE el NPC source no tenga overlay explícito (caso típico:
+        ' vanilla NPC con WNAM autoreado). SerializePreset (Save Looksmenu) NO emite este campo
+        ' al JSON — es overlay/clipboard only, no afecta el round-trip JSON ↔ LM in-game.
+        preset.SkinFormIDOverride = state.SkinFormID
+
+        ' NPC.ACBS bit 0x04 "Is CharGen Face Preset": misma semántica que skin. Capturamos el
+        ' valor EFECTIVO — overlay si existe, sino raw NPC.ACBS bit. BuildFilteredPaste lo
+        ' consume cuando options.IsCharGenPreset=True (línea ~12184). Sin esto Copy→Paste perdía
+        ' la flag aunque el dialog tuviera el checkbox activo.
+        Const AcbsBitIsCharGenFacePreset As UInteger = &H4UI
+        If overlay IsNot Nothing AndAlso overlay.IsCharGenFacePreset.HasValue Then
+            preset.IsCharGenFacePreset = overlay.IsCharGenFacePreset.Value
+        Else
+            preset.IsCharGenFacePreset = ((raw.AcbsFlags And AcbsBitIsCharGenFacePreset) <> 0UI)
+        End If
+
         ' WYSIWYG: with the SkinTemplateId carried over, materialize the template's HDPT bundle
         ' into preset.HeadPartFormIDs so a paste at the destination NPC still emits the correct
         ' PNAM at Save ESP time. Without this, the clipboard would carry SkinTemplateId but its
@@ -11816,7 +11988,7 @@ Public Class MainForm
         Try
             result = FaceGenBuilder.BuildCharGen(modelNpcFormID, _pluginManager, _appliedPresets, _renderHost, AddressOf ApplyShapeMaterialOverrides, AddressOf ResolveLmSkinTemplate)
         Catch ex As Exception
-            Logger.Log($"[BUILDCHARGEN] EXCEPTION {ex.GetType().Name}: {ex.Message}{vbCrLf}{ex.StackTrace}")
+            Logger.LogLazy(Function() $"[BUILDCHARGEN] EXCEPTION {ex.GetType().Name}: {ex.Message}{vbCrLf}{ex.StackTrace}")
             result = New FaceGenBuilder.BuildResult With {.Success = False, .Summary = $"Build CharGen failed: {ex.GetType().Name}: {ex.Message}"}
         End Try
 
@@ -12256,6 +12428,11 @@ Public Class MainForm
         If _npcByIdCache.TryGetValue(npcFormID, cachedNpc) AndAlso cachedNpc IsNot Nothing Then
             If Not String.Equals(cachedNpc.PluginName, savedPluginName, StringComparison.OrdinalIgnoreCase) Then
                 cachedNpc.PluginName = savedPluginName
+                ' Invalidate the searchable cache entry — PluginName cambió y forma parte del
+                ' concat lowercase. Display label es invariante (FullName/EditorID/FormID) así que
+                ' _npcDisplayLabelCache no necesita refresh. _lvlnLeavesCache es invariante (sólo
+                ' FormIDs estructurales) — save ESP no toca LVLN data.
+                _npcSearchableCache(npcFormID) = BuildNpcSearchableText(cachedNpc)
                 PopulateNPCTree(_pendingTreeFilter)
                 Dim moved = TreeViewNPCs.Nodes.Find($"NPC_{npcFormID:X8}", searchAllChildren:=True)
                 If moved IsNot Nothing AndAlso moved.Length > 0 Then

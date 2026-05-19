@@ -650,6 +650,7 @@ Public Class EditFace_Form
 
         AddHandler ButtonAddTint.Click, AddressOf OnAddTint
         AddHandler ButtonRemoveTint.Click, AddressOf OnRemoveTint
+        AddHandler ButtonRemoveAllInCategory.Click, AddressOf OnRemoveAllInCategory
         AddHandler ButtonRemoveZeroedTints.Click, AddressOf OnRemoveZeroedTints
         AddHandler TextBoxTintFilter.TextChanged, AddressOf OnTintFilterChanged
         AddHandler ListViewTints.SelectedIndexChanged, AddressOf OnTintSelectionChanged
@@ -1622,10 +1623,59 @@ Public Class EditFace_Form
         If _currentTintIsRaceDefault Then Return
         Dim p = Preset
         If _currentTintIndex < 0 OrElse _currentTintIndex >= p.FaceTintLayers.Count Then Return
+        Dim selectedRowIdx As Integer = If(ListViewTints.SelectedIndices.Count > 0, ListViewTints.SelectedIndices(0), -1)
         p.FaceTintLayers.RemoveAt(_currentTintIndex)
         _currentTintIndex = -1
         RefreshTintsList()
+        SelectNeighborTintRow(selectedRowIdx)
         _refresh?.Invoke(FaceRefreshScope.TexturesOnly)
+    End Sub
+
+    ''' <summary>Remove every NPC-override layer whose TintTemplateGroup matches the group of
+    ''' the currently selected row. The group is resolved via <see cref="_tintGroupByIndex"/>
+    ''' (built from RACE) and works for both NPC-override and RACE-default selections — the
+    ''' selection just tells us which category to drop. RACE-default rows themselves are not
+    ''' stored in p.FaceTintLayers so they're untouched by this; they'll simply re-appear at the
+    ''' top of their group after the merge if all overrides for that group are gone.</summary>
+    Private Sub OnRemoveAllInCategory(sender As Object, e As EventArgs)
+        Dim p = Preset
+        Dim selectedTintIndex As UShort = 0
+        Dim hasSelection As Boolean = False
+        If _currentTintIsRaceDefault AndAlso _currentTintVirtualLayer IsNot Nothing Then
+            selectedTintIndex = _currentTintVirtualLayer.Index
+            hasSelection = True
+        ElseIf _currentTintIndex >= 0 AndAlso _currentTintIndex < p.FaceTintLayers.Count Then
+            selectedTintIndex = p.FaceTintLayers(_currentTintIndex).Index
+            hasSelection = True
+        End If
+        If Not hasSelection Then Return
+
+        Dim groupName As String = Nothing
+        If Not _tintGroupByIndex.TryGetValue(selectedTintIndex, groupName) Then Return
+
+        Dim selectedRowIdx As Integer = If(ListViewTints.SelectedIndices.Count > 0, ListViewTints.SelectedIndices(0), -1)
+        Dim removed As Integer = p.FaceTintLayers.RemoveAll(
+            Function(tl)
+                Dim g As String = Nothing
+                _tintGroupByIndex.TryGetValue(tl.Index, g)
+                Return String.Equals(g, groupName, StringComparison.Ordinal)
+            End Function)
+        If removed = 0 Then Return
+        _currentTintIndex = -1
+        RefreshTintsList()
+        SelectNeighborTintRow(selectedRowIdx)
+        _refresh?.Invoke(FaceRefreshScope.TexturesOnly)
+    End Sub
+
+    ''' <summary>After a Remove (single or category) rebuilt the ListView, place the selection
+    ''' on the row at the same visual position as before — clamped to the new row count, no-op
+    ''' if the list is now empty. Lets the user keep tabbing through layers without re-clicking.</summary>
+    Private Sub SelectNeighborTintRow(originalRowIdx As Integer)
+        If ListViewTints.Items.Count = 0 OrElse originalRowIdx < 0 Then Return
+        Dim newIdx As Integer = Math.Min(originalRowIdx, ListViewTints.Items.Count - 1)
+        If newIdx < 0 Then Return
+        ListViewTints.Items(newIdx).Selected = True
+        ListViewTints.Items(newIdx).EnsureVisible()
     End Sub
 
     ''' <summary>Drop every tint layer with Value &lt;= 0. Save LM already filters these at
@@ -1634,10 +1684,12 @@ Public Class EditFace_Form
     ''' nothing the second time.</summary>
     Private Sub OnRemoveZeroedTints(sender As Object, e As EventArgs)
         Dim p = Preset
+        Dim selectedRowIdx As Integer = If(ListViewTints.SelectedIndices.Count > 0, ListViewTints.SelectedIndices(0), -1)
         Dim removed As Integer = p.FaceTintLayers.RemoveAll(Function(tl) tl.Value <= 0)
         If removed = 0 Then Return
         _currentTintIndex = -1
         RefreshTintsList()
+        SelectNeighborTintRow(selectedRowIdx)
         _refresh?.Invoke(FaceRefreshScope.TexturesOnly)
     End Sub
 

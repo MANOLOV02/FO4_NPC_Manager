@@ -146,11 +146,11 @@ Partial Class EditBody_Form
         BodyTabLayout.Dock = DockStyle.Fill
         BodyTabLayout.Location = New Point(6, 6)
         BodyTabLayout.Name = "BodyTabLayout"
-        BodyTabLayout.RowCount = 3
+        BodyTabLayout.RowCount = 4
+        BodyTabLayout.RowStyles.Add(New RowStyle())
         BodyTabLayout.RowStyles.Add(New RowStyle())
         BodyTabLayout.RowStyles.Add(New RowStyle())
         BodyTabLayout.RowStyles.Add(New RowStyle(SizeType.Percent, 100F))
-        BodyTabLayout.RowStyles.Add(New RowStyle(SizeType.Absolute, 20F))
         BodyTabLayout.Size = New Size(508, 520)
         BodyTabLayout.TabIndex = 0
         ' 

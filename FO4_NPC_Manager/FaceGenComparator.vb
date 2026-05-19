@@ -82,14 +82,23 @@ Public Module FaceGenComparator
     Public Function Compare(generatedPath As String, bakedFromBa2Bytes As Byte()) As CompareReport
         Dim report As New CompareReport With {.GeneratedPath = generatedPath}
 
+        ' Guard: el comparator entero es diag (33 sb.AppendLine + LINQ aggregates + per-shape
+        ' bone/vertex/triangle RMS). Sólo tiene sentido cuando FaceGenBuilder.DebugMode = True.
+        ' Caller único hoy (FaceGenBuilder.vb) ya gatea con DebugMode — esto es defensa en
+        ' profundidad contra futuros callers no gateados. Ver feedback_logging_loglazy_and_guards.
+        If Not FaceGenBuilder.DebugMode Then
+            report.Summary = "Compare skipped (DebugMode=Off)"
+            Return report
+        End If
+
         If Not File.Exists(generatedPath) Then
             report.Summary = $"Generated .nif2 not found: {generatedPath}"
-            Logger.Log($"[BUILDCHARGEN-DIFF] {report.Summary}")
+            Logger.LogLazy(Function() $"[BUILDCHARGEN-DIFF] {report.Summary}")
             Return report
         End If
         If bakedFromBa2Bytes Is Nothing OrElse bakedFromBa2Bytes.Length = 0 Then
             report.Summary = "Baked NIF bytes not provided."
-            Logger.Log($"[BUILDCHARGEN-DIFF] {report.Summary}")
+            Logger.LogLazy(Function() $"[BUILDCHARGEN-DIFF] {report.Summary}")
             Return report
         End If
 
@@ -99,14 +108,14 @@ Public Module FaceGenComparator
             genNif.Load_Manolo(generatedPath)
         Catch ex As Exception
             report.Summary = $"Failed to load generated .nif2: {ex.GetType().Name}: {ex.Message}"
-            Logger.Log($"[BUILDCHARGEN-DIFF] {report.Summary}")
+            Logger.LogLazy(Function() $"[BUILDCHARGEN-DIFF] {report.Summary}")
             Return report
         End Try
         Try
             bakeNif.Load_Manolo(bakedFromBa2Bytes)
         Catch ex As Exception
             report.Summary = $"Failed to load baked NIF: {ex.GetType().Name}: {ex.Message}"
-            Logger.Log($"[BUILDCHARGEN-DIFF] {report.Summary}")
+            Logger.LogLazy(Function() $"[BUILDCHARGEN-DIFF] {report.Summary}")
             Return report
         End Try
 
@@ -413,7 +422,7 @@ Public Module FaceGenComparator
         sb.AppendLine($"[BUILDCHARGEN-DIFF]   per-vertex attrs: normals-diff={shapesWithNormalDiff}  tangents-diff={shapesWithTangentDiff}  UVs-diff={shapesWithUvDiff}  colors-diff={shapesWithColorDiff}")
 
         report.Summary = $"shapes both={bothPresent.Count}/{totalShapes} | VC mismatches={vcMismatches.Count} | bones missing={totalMissingBones} extra={totalExtraBones} | tri-mismatch ordered={totalTriOrdMismatch} sorted={totalTriSortedMismatch} | mat-diff={shapesWithMaterialMismatch} | agg vertex RMS={If(aggRms >= 0, aggRms.ToString("F6"), "N/A")}"
-        Logger.Log(sb.ToString())
+        Logger.LogLazy(Function() sb.ToString())
         Return report
     End Function
 

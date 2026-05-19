@@ -62,6 +62,7 @@ Partial Class EditFace_Form
         TintsButtonRow = New FlowLayoutPanel()
         ButtonAddTint = New Button()
         ButtonRemoveTint = New Button()
+        ButtonRemoveAllInCategory = New Button()
         ButtonRemoveZeroedTints = New Button()
         PanelTintDetail = New GroupBox()
         TintDetailLayout = New TableLayoutPanel()
@@ -607,6 +608,7 @@ Partial Class EditFace_Form
         TintsButtonRow.AutoSizeMode = AutoSizeMode.GrowAndShrink
         TintsButtonRow.Controls.Add(ButtonAddTint)
         TintsButtonRow.Controls.Add(ButtonRemoveTint)
+        TintsButtonRow.Controls.Add(ButtonRemoveAllInCategory)
         TintsButtonRow.Controls.Add(ButtonRemoveZeroedTints)
         TintsButtonRow.Dock = DockStyle.Fill
         TintsButtonRow.Location = New Point(7, 346)
@@ -631,15 +633,25 @@ Partial Class EditFace_Form
         ButtonRemoveTint.Size = New Size(75, 25)
         ButtonRemoveTint.TabIndex = 1
         ButtonRemoveTint.Text = "Remove"
-        ' 
+        '
+        ' ButtonRemoveAllInCategory
+        '
+        ButtonRemoveAllInCategory.AutoSize = True
+        ButtonRemoveAllInCategory.AutoSizeMode = AutoSizeMode.GrowAndShrink
+        ButtonRemoveAllInCategory.Location = New Point(165, 3)
+        ButtonRemoveAllInCategory.Name = "ButtonRemoveAllInCategory"
+        ButtonRemoveAllInCategory.Size = New Size(125, 25)
+        ButtonRemoveAllInCategory.TabIndex = 2
+        ButtonRemoveAllInCategory.Text = "Remove all category"
+        '
         ' ButtonRemoveZeroedTints
-        ' 
+        '
         ButtonRemoveZeroedTints.AutoSize = True
         ButtonRemoveZeroedTints.AutoSizeMode = AutoSizeMode.GrowAndShrink
-        ButtonRemoveZeroedTints.Location = New Point(165, 3)
+        ButtonRemoveZeroedTints.Location = New Point(296, 3)
         ButtonRemoveZeroedTints.Name = "ButtonRemoveZeroedTints"
         ButtonRemoveZeroedTints.Size = New Size(113, 25)
-        ButtonRemoveZeroedTints.TabIndex = 2
+        ButtonRemoveZeroedTints.TabIndex = 3
         ButtonRemoveZeroedTints.Text = "Remove all zeroed"
         ' 
         ' PanelTintDetail
@@ -1083,6 +1095,7 @@ Partial Class EditFace_Form
     Friend WithEvents TintsButtonRow As System.Windows.Forms.FlowLayoutPanel
     Friend WithEvents ButtonAddTint As System.Windows.Forms.Button
     Friend WithEvents ButtonRemoveTint As System.Windows.Forms.Button
+    Friend WithEvents ButtonRemoveAllInCategory As System.Windows.Forms.Button
     Friend WithEvents ButtonRemoveZeroedTints As System.Windows.Forms.Button
     Friend WithEvents TextBoxTintFilter As System.Windows.Forms.TextBox
 

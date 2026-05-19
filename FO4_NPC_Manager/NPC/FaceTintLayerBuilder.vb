@@ -435,13 +435,24 @@ Public Module FaceTintLayerBuilder
     ''' a last-resort fallback, not a primary source.</summary>
     Public Function ResolveFallbackBlendOp(opt As RACE_TintTemplateOption) As UInteger
         If opt Is Nothing Then Return 0UI
+        Dim raw As UInteger
         If opt.TemplateColors IsNot Nothing AndAlso opt.TemplateColors.Count >= 2 Then
-            Return opt.TemplateColors(1).BlendOperation
+            raw = opt.TemplateColors(1).BlendOperation
         ElseIf opt.TemplateColors IsNot Nothing AndAlso opt.TemplateColors.Count = 1 Then
-            Return opt.TemplateColors(0).BlendOperation
+            raw = opt.TemplateColors(0).BlendOperation
         Else
-            Return opt.BlendOperation
+            raw = opt.BlendOperation
         End If
+        ' Slot SkinTone (12) + BlendOp Default (0) → promover a SoftLight (3). Default sobre
+        ' skin tone aplica como overlay plano que aplasta la luminancia del diffuse autoreado;
+        ' SoftLight es la fórmula vanilla canónica para slot 12 (matchea TryApplyFaceSkinSoftLight
+        ' fallback + el body softlight path). Aplicado en el helper de resolución para que TODOS
+        ' los consumers de ResolveFallbackBlendOp/ResolvePaletteLayerEffective hereden la regla.
+        ' Convenio: 0=Default, 1=Multiply, 2=Overlay, 3=SoftLight, 4=HardLight (ver BlendOpName).
+        If opt.Slot = CUShort(TintSlot.SkinTone) AndAlso raw = 0UI Then
+            Return 3UI
+        End If
+        Return raw
     End Function
 
     ''' <summary>Resolve effective Color/BlendOp/OpacityScale for a Palette (disc=1) layer.
@@ -472,6 +483,12 @@ Public Module FaceTintLayerBuilder
                     End If
                 End If
             End If
+        End If
+
+        ' Slot SkinTone + BlendOp Default → SoftLight. Misma regla que ResolveFallbackBlendOp;
+        ' acá la re-aplicamos por si el match preset trajo tplCol.BlendOperation=0 (autoría rara).
+        If opt IsNot Nothing AndAlso opt.Slot = CUShort(TintSlot.SkinTone) AndAlso resolvedBlendOp = 0UI Then
+            resolvedBlendOp = 3UI
         End If
 
         Return (resolvedColor, resolvedBlendOp, matched, opacityScale)

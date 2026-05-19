@@ -483,9 +483,9 @@ Partial Class MainForm
         ButtonBuildCharGen.TabIndex = 2
         ButtonBuildCharGen.Text = "Build CharGen (loose)"
         ButtonBuildCharGen.UseVisualStyleBackColor = True
-        '
+        ' 
         ' ButtonSaveSceneNif
-        '
+        ' 
         ButtonSaveSceneNif.AutoSize = True
         ButtonSaveSceneNif.Enabled = False
         ButtonSaveSceneNif.Location = New Point(1050, 2)
@@ -749,9 +749,9 @@ Partial Class MainForm
         ButtonReroll.Size = New Size(26, 26)
         ButtonReroll.TabIndex = 6
         ButtonReroll.Text = "↻"
-        '
+        ' 
         ' ButtonLightRig
-        '
+        ' 
         ButtonLightRig.Anchor = AnchorStyles.Right
         ButtonLightRig.FlatStyle = FlatStyle.System
         ButtonLightRig.Font = New Font("Segoe UI Symbol", 10F, FontStyle.Bold)
@@ -761,7 +761,7 @@ Partial Class MainForm
         ButtonLightRig.Size = New Size(26, 26)
         ButtonLightRig.TabIndex = 18
         ButtonLightRig.Text = "💡"
-        '
+        ' 
         ' CheckBoxApplySculpt
         ' 
         CheckBoxApplySculpt.AutoSize = True

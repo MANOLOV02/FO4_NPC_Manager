@@ -157,7 +157,9 @@ Public Class Preflight_Form
             ' --- Archive load: Fill_DictionaryAsync reports (stage, value, max) and discovers the
             ' archive count itself from the Data folder. Switch to indeterminate marquee until the
             ' first progress tick gives us a max.
-            FilesDictionary_class.CacheDirectory = Application.StartupPath
+            Dim cacheDir = IO.Path.Combine(Application.StartupPath, "Caches")
+            IO.Directory.CreateDirectory(cacheDir)
+            FilesDictionary_class.CacheDirectory = cacheDir
             FilesDictionary_class.RegisterExtensions(".ssf", ".sclp")
 
             ProgressBarLoad.Style = ProgressBarStyle.Marquee
