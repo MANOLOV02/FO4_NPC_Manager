@@ -39,7 +39,11 @@ Public Module FaceTintLayerBuilder
                           isFemale As Boolean,
                           pluginManager As PluginManager,
                           appliedPresets As Dictionary(Of UInteger, LooksmenuLoader.LooksmenuPreset),
-                          tintBytesCache As Dictionary(Of String, Byte())) As TintBuildResult
+                          tintBytesCache As Dictionary(Of String, Byte()),
+                          Optional hairLutPath As String = "",
+                          Optional hairColorFormID As UInteger = 0UI,
+                          Optional hasTextureLighting As Boolean = False,
+                          Optional textureLightingColorArgb As Integer = 0) As TintBuildResult
         Dim result As New TintBuildResult()
         If pluginManager Is Nothing Then Return result
 
@@ -61,9 +65,66 @@ Public Module FaceTintLayerBuilder
         ' Mirrors the engine's CK behaviour: groups not overridden by the NPC fall back to
         ' the race-authored defaults. The merged list is what the compositor consumes.
         Dim mergedLayers = MergeTintLayersWithRaceDefaults(npcData.FaceTintLayers, race, isFemale, pluginManager)
-        result.Layers = BuildLayerList(npcData, race, isFemale, mergedLayers, pluginManager, tintBytesCache)
+
+        ' Single skin-tone path: when the compositor reaches the slot-12 (SkinTone) rank it must
+        ' apply the NPC's authored layer if present, else a synthetic stand-in built from QNAM
+        ' (state.TextureLightingColor). Injecting it as a real layer here -- instead of a separate
+        ' full-face SoftLight post-pass -- means it sequences in engine tint order: lower-rank
+        ' tints compose under it, higher-rank details (brow slot 23, scars slot 21) on top, so
+        ' details are no longer washed out. No-op when QNAM is absent, when the race has no
+        ' slot-12 catalog (non-skin races), or when the NPC already authors a slot-12 layer.
+        InjectSyntheticSkinToneLayer(mergedLayers, npcData, race, isFemale, hasTextureLighting, textureLightingColorArgb)
+        ' Pass the caller-supplied HCLF through verbatim -- it is the engine-effective value
+        ' (NPC.HCLF + TPLT chain + LM overlay + RACE.HCLF fallback) resolved by the caller's
+        ' state pipeline. The builder must not second-guess it; if the caller decides the NPC
+        ' has no hair colour (0), the brow override silently no-ops.
+        result.Layers = BuildLayerList(npcData, race, isFemale, mergedLayers, pluginManager, tintBytesCache, hairLutPath, hairColorFormID)
         Return result
     End Function
+
+    ''' <summary>Append a synthetic SkinTone (slot 12) layer to <paramref name="mergedLayers"/>
+    ''' built from the NPC's QNAM TextureLighting colour, used when the NPC authors no slot-12
+    ''' layer. It is added unordered; BuildLayerList sorts the whole list by RACE tint rank, so
+    ''' it lands at slot-12's position and the compositor composes it there (details ranked after
+    ''' compose on top). Color = QNAM RGB, opacity = QNAM.A, BlendOp resolves to SoftLight via
+    ''' the slot-12 fallback. No-op if QNAM absent, race has no slot-12 option, or the NPC already
+    ''' authors one.</summary>
+    Private Sub InjectSyntheticSkinToneLayer(mergedLayers As List(Of MergedTintLayer),
+                                             npcData As NPC_Data,
+                                             race As RACE_Data,
+                                             isFemale As Boolean,
+                                             hasTextureLighting As Boolean,
+                                             textureLightingColorArgb As Integer)
+        If Not hasTextureLighting OrElse race Is Nothing Then Return
+        Dim skinOpts = race.FindTintOptionsBySlot(TintSlot.SkinTone, isFemale)
+        If skinOpts Is Nothing OrElse skinOpts.Count = 0 Then Return
+
+        ' Already authored? (NPC has a FaceTintLayer whose Index belongs to a slot-12 option.)
+        Dim skinIndices As New HashSet(Of UShort)(skinOpts.Select(Function(o) o.Index))
+        If npcData.FaceTintLayers IsNot Nothing _
+           AndAlso npcData.FaceTintLayers.Any(Function(tl) skinIndices.Contains(tl.Index)) Then
+            Return
+        End If
+
+        Dim skinOpt = skinOpts(0)
+        Dim qa As Integer = (textureLightingColorArgb >> 24) And &HFF
+        Dim qr As Integer = (textureLightingColorArgb >> 16) And &HFF
+        Dim qg As Integer = (textureLightingColorArgb >> 8) And &HFF
+        Dim qb As Integer = textureLightingColorArgb And &HFF
+        ' QNAM.A is the SoftLight intensity (0..255). NPC_FaceTintLayerData.Value is 0..100
+        ' (opacity = Value/100 downstream), matching what the old uniform pass used (opacity =
+        ' QNAM.A/255). 0 alpha -> Value 0 -> skipped by the zero-opacity gate, same as before.
+        Dim qValue As Integer = CInt(Math.Round(qa / 2.55))
+        Dim disc As UShort = If(skinOpt.EntryType = RACE_TintEntryType.TextureSet, CUShort(2), CUShort(1))
+        Dim synthSkin As New NPC_FaceTintLayerData With {
+            .Index = skinOpt.Index,
+            .Value = qValue,
+            .Discriminator = disc,
+            .Color = Color.FromArgb(255, qr, qg, qb),
+            .TemplateColorIndex = -1
+        }
+        mergedLayers.Add(New MergedTintLayer With {.Layer = synthSkin, .IsRaceDefault = False})
+    End Sub
 
     ''' <summary>Merge an NPC's authored FaceTintLayers with the race-authored defaults from
     ''' RACE.FemaleTintTemplateGroups / MaleTintTemplateGroups. Rule:
@@ -217,7 +278,9 @@ Public Module FaceTintLayerBuilder
                                     isFemale As Boolean,
                                     mergedLayers As List(Of MergedTintLayer),
                                     pluginManager As PluginManager,
-                                    tintBytesCache As Dictionary(Of String, Byte())) As List(Of FaceTintLayerInput)
+                                    tintBytesCache As Dictionary(Of String, Byte()),
+                                    hairLutPath As String,
+                                    hairColorFormID As UInteger) As List(Of FaceTintLayerInput)
         Dim layerInputs As New List(Of FaceTintLayerInput)
 
         Dim stat_added_palette As Integer = 0
@@ -397,6 +460,146 @@ Public Module FaceTintLayerBuilder
                 If Not stat_byFlags_skipped.ContainsKey(rawOptFlagsU) Then stat_byFlags_skipped(rawOptFlagsU) = 0
                 stat_byFlags_skipped(rawOptFlagsU) += 1
                 Continue For
+            End If
+
+            ' Slot Brows (23) override: regardless of the layer's authored RGB or
+            ' TemplateColorIndex, the colour is sourced from the NPC's hair (HCLF). Applies to
+            ' BOTH layer kinds (vanilla brow opts are TextureSet per RecordParsers.vb:1030 with
+            ' T=3 C=0; PaletteMask is supported for completeness when modders author tint-style
+            ' brow layers).
+            '   HCLF.HasColor (RGB CLFM):
+            '     - PaletteMask: override layerInput.R/G/B; existing shader path already uses uColor.
+            '     - TextureSet : override layerInput.R/G/B AND set ForceUniformColor so the
+            '                    shader's TS branch substitutes uColor for layerSample.rgb while
+            '                    keeping shape via alpha.
+            '   HCLF.HasRemappingIndex (palette CLFM): set UseHairPalette + LUT + row. The shader
+            '     picks the X source per-kind (mask.r for Palette, grayscale of layerSample.rgb
+            '     for TextureSet), mirroring the formula the brow MESH grayscale-to-palette uses.
+            ' No-op when the NPC has no HCLF, when the CLFM resolves to neither flag, or (in the
+            ' palette branch) when the LUT bytes don't load.
+            If opt.Slot = CUShort(TintSlot.Brows) Then
+                Dim browIdxLog = tl.Index, browDiscLog = tl.Discriminator, browKindLog = layerInput.Kind
+                Dim browHairFidLog = hairColorFormID, browLutLog = hairLutPath
+                Dim browAction As String = "no-op (default)"
+                Dim browClfm As CLFM_Data = Nothing
+                If hairColorFormID = 0UI Then
+                    browAction = "no-op (NPC has no HCLF -- race fallback returned 0)"
+                Else
+                    Dim hairClfmRec = pluginManager.GetRecord(hairColorFormID)
+                    If hairClfmRec Is Nothing OrElse hairClfmRec.Header.Signature <> "CLFM" Then
+                        browAction = "no-op (HCLF record missing or wrong sig)"
+                    Else
+                        browClfm = RecordParsers.ParseCLFM(hairClfmRec, pluginManager)
+                        If browClfm Is Nothing Then
+                            browAction = "no-op (CLFM parse failed)"
+                        ElseIf browClfm.HasColor Then
+                            layerInput.R = browClfm.Color.R
+                            layerInput.G = browClfm.Color.G
+                            layerInput.B = browClfm.Color.B
+                            If layerInput.Kind = FaceTintLayerKind.TextureSetDiffuse Then
+                                layerInput.ForceUniformColor = True
+                            End If
+                            browAction = $"RGB override ({browClfm.Color.R},{browClfm.Color.G},{browClfm.Color.B}){If(layerInput.ForceUniformColor, " [ForceUniformColor=True]", "")}"
+                        ElseIf browClfm.HasRemappingIndex Then
+                            If String.IsNullOrEmpty(hairLutPath) Then
+                                browAction = "no-op (HasRemappingIndex but hairLutPath empty)"
+                            Else
+                                Dim lutLoad = LoadTintLayerBytesAndKey(hairLutPath, tintBytesCache)
+                                If lutLoad.Bytes Is Nothing Then
+                                    browAction = $"no-op (LUT bytes failed to load from '{hairLutPath}')"
+                                Else
+                                    layerInput.UseHairPalette = True
+                                    layerInput.HairLutDdsBytes = lutLoad.Bytes
+                                    layerInput.HairLutCacheKey = lutLoad.Key
+                                    layerInput.HairPaletteRow = browClfm.RemappingIndex
+                                    browAction = $"LUT remap (row={browClfm.RemappingIndex:F4}, key='{lutLoad.Key}')"
+                                End If
+                            End If
+                        Else
+                            browAction = "no-op (CLFM has neither HasColor nor HasRemappingIndex)"
+                        End If
+                    End If
+                End If
+                Dim actLog = browAction
+                Logger.LogLazy(Function() $"[BROW-TINT] tl.Index={browIdxLog} disc={browDiscLog} kind={browKindLog} hairFid=0x{browHairFidLog:X8} lutPath='{browLutLog}' -> {actLog}")
+
+                ' Diagnostic: decode the brow diffuse (TTET[0]) and characterize its channels over
+                ' the opaque region (alpha>16). Tells us whether the texture is grayscale (R==G==B)
+                ' or coloured, and what range its luminance grayscale + green fall in -- that range
+                ' is the X coordinate the shader feeds the LUT, so it explains a "too light/dark"
+                ' brow directly. Sampled on a coarse stride to stay cheap.
+                If Logger.Enabled AndAlso diffuseBytes IsNot Nothing Then
+                    Dim browTexLog = ttet0Snap
+                    Try
+                        Dim tex = DirectXTexWrapperCLI.Loader.ConvertForBitmap(diffuseBytes)
+                        If tex IsNot Nothing AndAlso tex.Loaded AndAlso tex.Levels IsNot Nothing AndAlso tex.Levels.Count > 0 Then
+                            Dim lvl = tex.Levels(0)
+                            If lvl IsNot Nothing AndAlso lvl.Data IsNot Nothing AndAlso lvl.Width > 0 AndAlso lvl.Height > 0 Then
+                                Dim w = lvl.Width, h = lvl.Height
+                                Dim stride = w * 4
+                                Dim stepPx = Math.Max(1, CInt(Math.Min(w, h) \ 64))
+                                Dim n As Long = 0
+                                Dim sumR As Long = 0, sumG As Long = 0, sumB As Long = 0
+                                Dim minR As Integer = 255, maxR As Integer = 0
+                                Dim minG As Integer = 255, maxG As Integer = 0
+                                Dim minB As Integer = 255, maxB As Integer = 0
+                                ' Alpha tracked over ALL sampled pixels (not gated on opaque) so we see
+                                ' whether the brow shape lives in alpha and what its peak/range is --
+                                ' candidate X source if RGB is flat-dark.
+                                Dim totalScanned As Long = 0
+                                Dim sumAall As Long = 0, minAall As Integer = 255, maxAall As Integer = 0
+                                Dim sumAopaque As Long = 0, minAop As Integer = 255, maxAop As Integer = 0
+                                Dim y = 0
+                                While y < h
+                                    Dim x = 0
+                                    While x < w
+                                        Dim idx = y * stride + x * 4
+                                        If idx + 3 < lvl.Data.Length Then
+                                            ' ConvertForBitmap = BGRA byte order.
+                                            Dim b = CInt(lvl.Data(idx + 0))
+                                            Dim g = CInt(lvl.Data(idx + 1))
+                                            Dim r = CInt(lvl.Data(idx + 2))
+                                            Dim a = CInt(lvl.Data(idx + 3))
+                                            totalScanned += 1
+                                            sumAall += a
+                                            If a < minAall Then minAall = a
+                                            If a > maxAall Then maxAall = a
+                                            If a > 16 Then
+                                                n += 1
+                                                sumR += r : sumG += g : sumB += b
+                                                sumAopaque += a
+                                                If a < minAop Then minAop = a
+                                                If a > maxAop Then maxAop = a
+                                                If r < minR Then minR = r
+                                                If r > maxR Then maxR = r
+                                                If g < minG Then minG = g
+                                                If g > maxG Then maxG = g
+                                                If b < minB Then minB = b
+                                                If b > maxB Then maxB = b
+                                            End If
+                                        End If
+                                        x += stepPx
+                                    End While
+                                    y += stepPx
+                                End While
+                                Dim avgAall = If(totalScanned > 0, CInt(sumAall \ totalScanned), 0)
+                                If n > 0 Then
+                                    Dim avgR = CInt(sumR \ n), avgG = CInt(sumG \ n), avgB = CInt(sumB \ n)
+                                    Dim avgAop = CInt(sumAopaque \ n)
+                                    Dim avgGray = (0.299F * avgR + 0.587F * avgG + 0.114F * avgB) / 255.0F
+                                    Dim avgGN = avgG / 255.0F
+                                    Dim avgAopN = avgAop / 255.0F
+                                    Dim looksGray = (Math.Abs(avgR - avgG) <= 4 AndAlso Math.Abs(avgG - avgB) <= 4)
+                                    Logger.LogLazy(Function() $"[BROW-TEX] tex='{browTexLog}' {w}x{h} scanned={totalScanned} opaque={n} avgRGB=({avgR},{avgG},{avgB}) R[{minR}..{maxR}] G[{minG}..{maxG}] B[{minB}..{maxB}] alphaOpaque(avg={avgAop} [{minAop}..{maxAop}]) alphaAll(avg={avgAall} [{minAall}..{maxAall}]) -> grayX={avgGray:F4} greenX={avgGN:F4} alphaX={avgAopN:F4} looksGrayscale={looksGray}")
+                                Else
+                                    Logger.LogLazy(Function() $"[BROW-TEX] tex='{browTexLog}' {w}x{h} scanned={totalScanned} -> no opaque samples; alphaAll(avg={avgAall} [{minAall}..{maxAall}])")
+                                End If
+                            End If
+                        End If
+                    Catch ex As Exception
+                        Logger.LogLazy(Function() $"[BROW-TEX] tex='{browTexLog}' decode failed: {ex.Message}")
+                    End Try
+                End If
             End If
 
             Dim slotNm = TintSlotName(opt.Slot)

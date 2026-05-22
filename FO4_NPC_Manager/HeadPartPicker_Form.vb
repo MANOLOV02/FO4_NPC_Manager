@@ -224,7 +224,8 @@ Public Class HeadPartPicker_Form
             ' Shared HNAM-chain enumerator (also used by FaceGenBuilder).
             Dim allShapes As New List(Of IRenderableShape)
             Dim chainCount As Integer = 0
-            For Each hdpt In HeadPartResolver.EnumerateHdptChain({c.FormID}, _pluginManager)
+            For Each chainEntry In HeadPartResolver.EnumerateHdptChain({c.FormID}, _pluginManager)
+                Dim hdpt = chainEntry.Hdpt
                 chainCount += 1
                 If String.IsNullOrEmpty(hdpt.MeshPath) Then Continue For
 

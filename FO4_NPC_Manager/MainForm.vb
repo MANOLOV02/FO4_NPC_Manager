@@ -502,6 +502,30 @@ Public Class MainForm
         ''' iterate model.meshes blindly and apply hair color to any palette-enabled material —
         ''' which leaked hair color into robot armor / face / body shapes with palette opt-in.</summary>
         Public ReadOnly ShapeCandidate As New Dictionary(Of IRenderableShape, MeshCandidate)
+        ''' <summary>Cache de los (boneName, desiredWorld) que V2 computó durante el shape loop.
+        ''' <para>
+        ''' Per OpenAI Vuelta 7: para que ApplyPose pueda limpiar MountDeltaTransform y
+        ''' repopular post-pose change vía ApplyMountPlanForActor pre-pass, el shape loop
+        ''' V2 ALSO escribe acá. Pre-pass re-fires desde este cache sin re-iterar el shape loop.
+        ''' </para>
+        ''' <para>List preserva orden topológico (parent-first) que V2 emite por depth-sort.
+        ''' Multi-chunk same-bone: múltiples entries con mismo BoneName → last-wins en
+        ''' OverrideActorBoneWorld vía guardrail [MOUNTDELTA-BONE-CONFLICT].
+        ''' </para></summary>
+        Public ReadOnly MountDesiredWorlds As New List(Of MountDesiredWorldEntry)
+    End Class
+
+    ''' <summary>Cache entry para el pre-pass MountDelta. Almacena el desiredWorld que V2 computó
+    ''' por bone, plus contextLabel para diagnostic logs.
+    ''' <para><c>TargetSkel</c> ata el entry a la SkeletonInstance en la que V2 escribió. El
+    ''' replay sólo aplica si <c>inst Is TargetSkel</c> — evita que per-ARMA clones reciban
+    ''' MountDeltas de chunks que mountean al base inst, lo que las deformaría por bone-name
+    ''' collision.</para></summary>
+    Public Class MountDesiredWorldEntry
+        Public BoneName As String
+        Public DesiredWorld As Transform_Class
+        Public ContextLabel As String
+        Public TargetSkel As SkeletonInstance
     End Class
     Friend Class TraitsState
         Public IsFemale As Boolean
@@ -788,6 +812,10 @@ Public Class MainForm
         ' Base pose (sin sculpt) → skeleton base.
         Dim basePose = BuildMergedNpcPose(host.LastRenderedState, host.LastRenderData, fmrsEnabled, bwEnabled, host.LastSkeletonInstance, Nothing)
         host.LastSkeletonInstance.ApplyPose(basePose)
+        ' [MOUNTDELTA-PREPASS] ApplyPose limpia ambos deltas. Repopular MountDelta desde cache
+        ' que el shape loop V2 populated en el render inicial. Sin esto los chunks quedan
+        ' sin V2 correction post-pose-change.
+        ApplyMountPlanForActor(host.LastSkeletonInstance, host.LastRenderData)
 
         ' Lazy build / refresh of per-ARMA skeletons. Necesario cuando Sclpt arranca OFF en el
         ' render inicial (entonces host.LastSkelByArma quedó vacío) y el usuario lo enciende después,
@@ -819,6 +847,8 @@ Public Class MainForm
             If sculptEnabled Then host.LastSculptByArma.TryGetValue(kv.Key, sculpt)
             Dim poseForArma = BuildMergedNpcPose(host.LastRenderedState, host.LastRenderData, fmrsEnabled, bwEnabled, armaSkel, sculpt)
             armaSkel.ApplyPose(poseForArma)
+            ' [MOUNTDELTA-PREPASS] Per-instance MountDelta para este clone sculpt — repopula desde cache.
+            ApplyMountPlanForActor(armaSkel, host.LastRenderData)
         Next
 
         ' Re-route shape→skel mappings según el toggle actual. Sclpt=ON → shapes con sculpt apuntan
@@ -914,6 +944,13 @@ Public Class MainForm
     Private Sub MainForm_Load(sender As Object, e As EventArgs) Handles MyBase.Load
         _searchDebounceTimer.Interval = 250
         Config_App.Current.Game = Config_App.Game_Enum.Fallout4
+        ' Plugin text encoding: mirror of xEdit xeInit.pas:1118-1129 (game default) + :1274-1329
+        ' (sLanguage from Fallout4.ini). Must run BEFORE LoadDataAsync — plugin records are parsed
+        ' during preflight and any FULL/SHRT decoded with the wrong encoding becomes mojibake we
+        ' cannot recover later.
+        PluginEncodingSettings.InitializeForGame(Config_App.Game_Enum.Fallout4)
+        Dim iniLanguage = PluginEncodingSettings.ReadLanguageFromIni()
+        If iniLanguage <> "" Then PluginEncodingSettings.SetLanguage(iniLanguage)
         ' Logger habilitado SOLO en Debug builds. En Release: Logger.Enabled stays default (False)
         ' y todos los Logger.Log/LogLazy retornan early sin allocar — sin overhead. Si necesitás
         ' diagnóstico en Release, descomentar manualmente y rebuild.
@@ -977,6 +1014,7 @@ Public Class MainForm
             MessageBox.Show(ex.ToString(), "Load Error", MessageBoxButtons.OK, MessageBoxIcon.Error)
         End Try
     End Sub
+
 
     Private Sub ParseAllNPCs()
         _allNPCs.Clear()
@@ -2505,6 +2543,9 @@ Public Class MainForm
         ' para entender qué bones ya están + qué nombres aporta cada chunk + si hay colisión
         ' por idempotencia. Filtrado por chunks robot solo (state.HasObjectTemplate) para no
         ' contaminar logs de humanoides normales.
+        ' NOTA: isRobotMount es SOLO filtro de verbosidad de diagnósticos. La aplicación V2
+        ' SKEL-OVERRIDE ya NO depende de este flag (gate Fase 2.5 removido) — V2 aplica a
+        ' robot Y biped por igual. Biped corre V2 sin emitir estos logs verbosos.
         Dim isRobotMount = state.HasObjectTemplate AndAlso shapesWithSocket.Count > 0
         If isRobotMount AndAlso Logger.Enabled Then
             ' [DIAG-PRE-INJECT] Dump bones del actor ANTES de cualquier inject de chunk.
@@ -2568,7 +2609,10 @@ Public Class MainForm
 
         ' Inject + materialize por shape en orden topológico. processedNifs idempotencia para
         ' chunks que aparecen en múltiples shapes (mismo NIF, varios shapes adentro).
-        Dim processedNifs As New HashSet(Of Nifcontent_Class_Manolo)
+        ' [PER-SKEL] La clave es (targetSkel, NIF): un mismo NIF puede necesitar materializarse
+        ' en el base inst Y en un clone per-ARMA si shapes del mismo NIF rutean a skels distintos
+        ' (mount shape sculpted → clone). Sin la clave per-skel, el clone quedaría sin sockets.
+        Dim processedNifs As New HashSet(Of (SkeletonInstance, Nifcontent_Class_Manolo))
         Dim totalInjected As Integer = 0
         ' Por-bone correcciones detectadas por CHUNK-PARENTS-DUMP. Si un chunk hermano (procesado
         ' antes en el orden topológico) declara socket P-X con T/R/S distinto al que ya estaba
@@ -2582,7 +2626,17 @@ Public Class MainForm
         ' entre actor.B.world (que usamos) y prev_W_B (donde el geometry previo renderiza). Test
         ' de la hipótesis del usuario: armor de pierna se reskinea contra actor.LThigh.world del
         ' skeleton.nif, no contra W_B(LThigh) que produjo LegsAssaultron. Solo log, no afecta render.
-        Dim chunkWBHistory As New Dictionary(Of String, Transform_Class)(StringComparer.OrdinalIgnoreCase)
+        ' [PER-SKEL] chunkWBHistory es per-target-skel: la cascade cross-shape (un chunk montando
+        ' sobre un bone que otro chunk corrigió) solo tiene sentido dentro del MISMO skeleton.
+        ' Mount shapes que rutean a clones sculpt acumulan su W_B en el dict del clone, no del base.
+        ' Para shapes base-targeted (la mayoría), targetSkel = inst → un solo dict como antes.
+        Dim chunkWBHistoryBySkel As New Dictionary(Of SkeletonInstance, Dictionary(Of String, Transform_Class))
+        ' [PER-SKEL HOST-MATERIALIZE] El host materialize (sockets P-X/C-X del skeleton.nif del actor)
+        ' corre arriba SOLO sobre `inst` base. Un clone per-ARMA (PrepareSkeleton) NO trae esos host
+        ' sockets. Si una mount shape rutea a un clone, ese clone necesita el mismo contexto
+        ' estructural host-level. Materializamos host sockets lazily por skel la primera vez que una
+        ' mount shape lo toca. `inst` ya está materializado (bloque MATERIALIZE-HOST de arriba).
+        Dim hostMaterializedSkels As New HashSet(Of SkeletonInstance) From {inst}
 
         ' [HOST-SCOPED A_HOST] Cache de candidates por ORDINAL runtime. Construido desde
         ' renderData.CandidateNif.Keys (todos los candidates con NIF cargado, NO solo los
@@ -2612,6 +2666,27 @@ Public Class MainForm
         For Each shape In ordered
             Dim socket As BSConnectPointReader.ConnectPointInfo = Nothing
             If Not renderData.ShapeMountSocket.TryGetValue(shape, socket) Then Continue For
+
+            ' [PER-SKEL] Target skel real de esta shape: clone per-ARMA si es sculpted mount, sino
+            ' base inst. TODO el procesamiento de chunk-mount (inject, materialize, JIT, V2 collect)
+            ' opera sobre targetSkel — no sobre inst hardcoded — para que mount shapes ruteadas a
+            ' clones reciban sus bones + MountDelta. Para la mayoría (base-targeted) targetSkel = inst.
+            Dim targetSkel As SkeletonInstance = Nothing
+            If Not shapeToSkel.TryGetValue(shape, targetSkel) OrElse targetSkel Is Nothing Then targetSkel = inst
+            Dim targetWB As Dictionary(Of String, Transform_Class) = Nothing
+            If Not chunkWBHistoryBySkel.TryGetValue(targetSkel, targetWB) Then
+                targetWB = New Dictionary(Of String, Transform_Class)(StringComparer.OrdinalIgnoreCase)
+                chunkWBHistoryBySkel(targetSkel) = targetWB
+            End If
+            ' [PER-SKEL HOST-MATERIALIZE] Si esta shape rutea a un clone que aún no recibió el host
+            ' materialize (sockets del skeleton.nif del actor), hacerlo ahora — para que el clone
+            ' tenga el mismo contexto estructural host-level que el base inst antes de inject/V2.
+            If Not hostMaterializedSkels.Contains(targetSkel) AndAlso targetSkel.Skeleton IsNot Nothing Then
+                BSConnectPointBoneInjector_Class.MaterializeSocketsAsConnectPointBones(targetSkel.Skeleton, targetSkel)
+                hostMaterializedSkels.Add(targetSkel)
+                Dim shHM = shape.ShapeName
+                Logger.LogLazy(Function() $"[MATERIALIZE-HOST-CLONE] host sockets materializados sobre clone per-ARMA para mount shape '{shHM}'")
+            End If
 
             ' [SOCKET-EFFECTIVE-OVERRIDE] Per OpenAI Vuelta 17: para chunks downstream del
             ' shape loop (INJECT, FAKE-SKIN, V2 reskin path B), usar el SkeletonFallbackSocket
@@ -2668,10 +2743,11 @@ Public Class MainForm
                 ' [FASE 3] Criterio estructural: el chunk-mount path es 'soy attachment con
                 ' MountSocket resuelto', no 'soy de FormType X'. Antes el filtro NPC_ gateaba
                 ' biped fuera; ahora capas 1+2 (coord fix + socket disambig) son compartidas.
-                ' Capa 3 V2 SKEL-OVERRIDE está gateada en OverrideActorBoneWorld via isRobotMount
-                ' (Fase 2.5) — humanoid no muta OriginalLocaLTransform.
+                ' Capa 3 V2 SKEL-OVERRIDE aplica a robot Y biped: cualquier shape con MountSocket
+                ' recibe V2 vía MountDeltaTransform (no muta OriginalLocaLTransform). isRobotMount
+                ' quedó sólo como filtro de verbosidad de diagnósticos.
                 If _cand IsNot Nothing AndAlso _cand.Kind = MeshCandidateKind.Attachment AndAlso _cand.MountSocket IsNot Nothing Then
-                    EnsureChunkToActor(_cand, _candByOrdinal, renderData, inst, chunkWBHistory, ensureVisiting)
+                    EnsureChunkToActor(_cand, _candByOrdinal, renderData, targetSkel, targetWB, ensureVisiting)
                 End If
             Catch exJit As Exception
                 Dim shL = shape.ShapeName, msgL = exJit.Message
@@ -2834,20 +2910,12 @@ Public Class MainForm
                 End Try
             End If
 
-            ' [DIAG-INJECT] Pre/post snapshots para inferir qué bones se crearon.
-            Dim preKeysSet = New HashSet(Of String)(inst.SkeletonDictionary.Keys, StringComparer.OrdinalIgnoreCase)
-            Dim preCount = inst.SkeletonDictionary.Count
-            Dim n = BSConnectPointBoneInjector_Class.InjectChunkBonesIntoLiveSkeleton(shape.NifContent, shape, socket, inst)
+            ' [DIAG-INJECT] Pre/post snapshots para inferir qué bones se crearon (sobre targetSkel).
+            Dim preKeysSet = New HashSet(Of String)(targetSkel.SkeletonDictionary.Keys, StringComparer.OrdinalIgnoreCase)
+            Dim preCount = targetSkel.SkeletonDictionary.Count
+            Dim n = BSConnectPointBoneInjector_Class.InjectChunkBonesIntoLiveSkeleton(shape.NifContent, shape, socket, targetSkel)
             totalInjected += n
-            Dim postCount = inst.SkeletonDictionary.Count
-
-            ' [DESACTIVADO 2026-05-17] PROPAGATE-V2-ANCHOR legacy patch.
-            ' SKEL-OVERRIDE ya modifica actor.target.world directamente (cascada via
-            ' OriginalGetGlobalTransform recursivo). El injector creó anchor con parent =
-            ' actor.target — cuando actor.target.world cambia (post-override), el anchor.world
-            ' también cambia automáticamente vía la cadena padre. Esta correction explícita
-            ' del anchor.local era doble-aplicación que generaba el bug Codsworth arm caps
-            ' flotando (verificado 2026-05-17).
+            Dim postCount = targetSkel.SkeletonDictionary.Count
 
             ' [FAKE-SKIN] Para shapes UNSKINNED dentro de un chunk BSConnectPoint, aplicar
             ' synthetic skin tying todos los vertices al chunk anchor con weight 1.0. Sin esto,
@@ -2887,7 +2955,7 @@ Public Class MainForm
                             End If
                         End If
                         Dim anchorName As String
-                        If Not String.IsNullOrEmpty(cxBoneName) AndAlso inst.SkeletonDictionary.ContainsKey(cxBoneName) Then
+                        If Not String.IsNullOrEmpty(cxBoneName) AndAlso targetSkel.SkeletonDictionary.ContainsKey(cxBoneName) Then
                             anchorName = cxBoneName
                         Else
                             Dim chunkRootName = If(shape.NifContent.GetRootNode()?.Name?.String, "chunk")
@@ -2954,510 +3022,16 @@ Public Class MainForm
                 Continue For
             End If
 
-            If shape.ShapeBones IsNot Nothing AndAlso shape.ShapeBoneTransforms IsNot Nothing Then
-                Try
-                    ' Derive cxName from the actual mount socket (counterpart of socket.Name).
-                    ' El chunk's BSConnectPoint::Children PointName puede ser inconsistente con el
-                    ' socket donde OBTE lo monta: ej. HeadArmorProtectron.nif (clean) declara
-                    ' Children=["C-Head"] pero se monta en P-HeadArmorProtectron. Usar el cxName
-                    ' del chunk hace que V2 elija G_CX de un NiNode posicionado para OTRO frame
-                    ' de attachment (C-Head a altura de cabeza vs C-HeadArmorProtectron a altura
-                    ' del helmet socket) → A equivocado → casco rotado/caído. OBTE es autoritativo.
-                    ' Convención canónica (per BSConnectPointBoneInjector.TryGetSocketCounterpartName):
-                    ' "P-X" → "C-X", "P_X" → "C_X".
-                    Dim cxName As String = ""
-                    If socket IsNot Nothing AndAlso Not String.IsNullOrEmpty(socket.Name) AndAlso socket.Name.Length > 2 Then
-                        If socket.Name.StartsWith("P-", StringComparison.OrdinalIgnoreCase) Then
-                            cxName = "C-" & socket.Name.Substring(2)
-                        ElseIf socket.Name.StartsWith("P_", StringComparison.OrdinalIgnoreCase) Then
-                            cxName = "C_" & socket.Name.Substring(2)
-                        Else
-                            ' Edge case: socket sin prefijo P-/P_. No conocemos caso real; queremos
-                            ' verlo si aparece. Debug break para inspección manual; en release no
-                            ' aborta (Debugger.Break solo dispara con debugger adjunto).
-                            System.Diagnostics.Debugger.Break()
-                        End If
-                    End If
-
-                    If Not String.IsNullOrEmpty(cxName) Then
-                        ' Find C-X NiNode (try exact, fallback suffix strip).
-                        Dim cxNode As NiflySharp.Blocks.NiNode = shape.NifContent.FindBlockByName(Of NiflySharp.Blocks.NiNode)(cxName)
-                        If cxNode Is Nothing Then
-                            Dim StripSfx = Function(s As String) As String
-                                               If String.IsNullOrEmpty(s) Then Return s
-                                               Dim pp = s.LastIndexOf("|"c)
-                                               If pp <= 0 OrElse pp >= s.Length - 1 Then Return s
-                                               For Each c In s.Substring(pp + 1)
-                                                   If Not Char.IsDigit(c) Then Return s
-                                               Next
-                                               Return s.Substring(0, pp)
-                                           End Function
-                            Dim cxNormSearch = StripSfx(cxName)
-                            For Each blk In shape.NifContent.Blocks
-                                Dim cand = TryCast(blk, NiflySharp.Blocks.NiNode)
-                                If cand Is Nothing Then Continue For
-                                Dim candNm = If(cand.Name?.String, "")
-                                If String.Equals(StripSfx(candNm), cxNormSearch, StringComparison.OrdinalIgnoreCase) Then
-                                    cxNode = cand
-                                    Exit For
-                                End If
-                            Next
-                        End If
-
-                        If cxNode IsNot Nothing Then
-                            Dim G_CX = Transform_Class.GetGlobalTransform(cxNode, shape.NifContent)
-
-                            ' Compute P_world (M_mesh). Use chunk-source socket if we detected a discrepancy
-                            ' (socketCorrections contains the correction = inv(dict_existing).Compose(chunk_source)).
-                            ' Reconstruct chunk-source socketLocal: dict_existing.Compose(correction) since
-                            ' correction.M = chunk_source.M × inv(dict_existing).M, so chunk_source.M =
-                            ' correction.M × dict_existing.M.
-                            '
-                            ' UNIFICACIÓN: parentBoneWorld usa ResolveEffectiveWorld para respetar V2
-                            ' de parent chunks. Si un chunk anterior corrió V2 sobre socket.ParentBoneName,
-                            ' su W_B vive en chunkWBHistory[ParentBoneName] y representa la posición real
-                            ' del bone post-V2. Sin esto, V2 sobre chunks que montan en V2-corregidos
-                            ' usaría posiciones desactualizadas y la cascada se rompería.
-                            Dim parentBoneWorld As Transform_Class = ResolveEffectiveWorld(chunkWBHistory, inst, socket.ParentBoneName)
-                            If isRobotMount Then
-                                Dim hasOverride = chunkWBHistory.ContainsKey(socket.ParentBoneName)
-                                Dim shL = shape.ShapeName, pbnL = socket.ParentBoneName, hoL = hasOverride
-                                Dim pwT = parentBoneWorld.Translation
-                                Logger.LogLazy(Function() $"[V2-MMESH] shape='{shL}' parent_bone='{pbnL}' effective_world.T=({pwT.X:F3},{pwT.Y:F3},{pwT.Z:F3}) (chunkWBHistory-override={hoL})")
-                            End If
-
-                            Dim dictExistingSocketLocal As New Transform_Class With {
-                                .Translation = socket.Translation,
-                                .Rotation = BSConnectPointReader.QuatToMatrix33(socket.Rotation),
-                                .Scale = If(socket.Scale > 0.0F, socket.Scale, 1.0F)
-                            }
-                            ' socket.Translation YA viene del resolver en Parents space (BSConnectPoint::Parents
-                            ' = chunk-source declaration). La correction almacenada en socketCorrections es
-                            ' inv(bone-dict-C-X).Compose(Parents) — pensada para llevar bone-dict-C-X → Parents.
-
-                            ' [HOST-SCOPED PATH A] Si la pre-pass A_HOST ya computó cand.ChunkToActor
-                            ' (Path A: M_mesh = host.ChunkToActor × HostSocketGlobalT en espacio del NIF
-                            ' del host), V2 deriva M_mesh = A × G_CX para mantener consistencia con
-                            ' downstream checks (ACTOR-RIG vs MODULE-RIG depende de M_mesh.T). Esto
-                            ' reemplaza el cálculo legacy parentBoneWorld × socketLocal solo cuando
-                            ' la pre-pass aplicó Path A — sino el path skeleton actual sigue.
-                            Dim _candForShape As MeshCandidate = Nothing
-                            renderData.ShapeCandidate.TryGetValue(shape, _candForShape)
-                            ' Aplicarla aquí encima de socket.Translation duplicaba el shift +2.908 X (verificado
-                            ' 2026-05-16 con CHUNK-RESKIN-V2-ALT: eyes/arms Codsworth shift consistente delta=2.908
-                            ' entre W_B_chunkSrc y W_B_dictExisting). CHUNK-PARENTS-DUMP sigue almacenando la
-                            ' correction como diagnostic; ningún caller actual la usa.
-                            Dim socketLocalForMmesh As Transform_Class = dictExistingSocketLocal
-                            Dim usedChunkSource As Boolean = False
-
-                            Dim M_mesh As Transform_Class
-                            If _candForShape IsNot Nothing AndAlso _candForShape.ChunkToActor IsNot Nothing Then
-                                ' Path A: A ya fue computado por la pre-pass usando coord system del
-                                ' host NIF correctamente. Derivar M_mesh = A × G_CX para mantener
-                                ' compatibilidad con downstream checks (ACTOR-RIG vs MODULE-RIG).
-                                M_mesh = _candForShape.ChunkToActor.ComposeTransforms(G_CX)
-                                Dim shL_pa = shape.ShapeName
-                                Dim mmTl = M_mesh.Translation
-                                Logger.LogLazy(Function() $"[V2-MMESH-PATH-A] shape='{shL_pa}' using pre-pass ChunkToActor, M_mesh.T=({mmTl.X:F3},{mmTl.Y:F3},{mmTl.Z:F3})")
-                            Else
-                                ' Path B: legacy/fallback. actor.parentBone × socket.local.
-                                M_mesh = parentBoneWorld.ComposeTransforms(socketLocalForMmesh)
-                            End If
-
-                            ' [DIAG-CHUNKROOT] Hipótesis: GetGlobalTransform incluye chunkRoot.local
-                            ' en su composición. Per BSConnectPointBoneInjector.vb:137-140 el
-                            ' chunkRoot.local es "scene-viewer rotation del modelador, NO parte del
-                            ' attachment". Si chunkRoot.local NO es identity, V2 (y SKIP) lo metería
-                            ' espurio en G_CX / G_B / W_B → rotación/translation extra en render.
-                            ' Loguear con-root vs stripped para confirmar la magnitud del impacto.
-                            ' Corre PRE-skip así también vemos arms (que van a SKIP).
-                            If isRobotMount AndAlso Logger.Enabled Then
-                                Try
-                                    Dim chunkRootNode = shape.NifContent.GetRootNode()
-                                    Dim chunkRootLocal As Transform_Class
-                                    If chunkRootNode IsNot Nothing Then
-                                        chunkRootLocal = New Transform_Class(chunkRootNode)
-                                    Else
-                                        chunkRootLocal = New Transform_Class()
-                                    End If
-                                    Dim chunkRootIsIdent = chunkRootLocal.Equals(New Transform_Class())
-                                    Dim invChunkRoot = chunkRootLocal.Inverse()
-                                    Dim G_CX_stripped = G_CX.ComposeTransforms(invChunkRoot)
-                                    Dim invGCXStripped = G_CX_stripped.Inverse()
-                                    Dim A_with = M_mesh.ComposeTransforms(G_CX.Inverse())
-                                    Dim A_stripped = M_mesh.ComposeTransforms(invGCXStripped)
-                                    Dim shL_cr = shape.ShapeName, cxL_cr = cxName, isIdL = chunkRootIsIdent
-                                    Dim crT = chunkRootLocal.Translation, crR = chunkRootLocal.Rotation
-                                    Dim gcxT = G_CX.Translation, gcxR = G_CX.Rotation
-                                    Dim gcxStrT = G_CX_stripped.Translation, gcxStrR = G_CX_stripped.Rotation
-                                    Dim aT_cr = A_with.Translation, aR_cr = A_with.Rotation
-                                    Dim asT = A_stripped.Translation, asR = A_stripped.Rotation
-                                    Logger.LogLazy(Function() $"[DIAG-CHUNKROOT] shape='{shL_cr}' cx='{cxL_cr}' chunkRoot.local IDENTITY={isIdL} T=({crT.X:F3},{crT.Y:F3},{crT.Z:F3}) R=[{crR.M11:F3},{crR.M12:F3},{crR.M13:F3}|{crR.M21:F3},{crR.M22:F3},{crR.M23:F3}|{crR.M31:F3},{crR.M32:F3},{crR.M33:F3}]")
-                                    Logger.LogLazy(Function() $"[DIAG-CHUNKROOT]   G_CX(with-root).T=({gcxT.X:F3},{gcxT.Y:F3},{gcxT.Z:F3}) R=[{gcxR.M11:F3},{gcxR.M12:F3},{gcxR.M13:F3}|{gcxR.M21:F3},{gcxR.M22:F3},{gcxR.M23:F3}|{gcxR.M31:F3},{gcxR.M32:F3},{gcxR.M33:F3}]")
-                                    Logger.LogLazy(Function() $"[DIAG-CHUNKROOT]   G_CX(stripped).T=({gcxStrT.X:F3},{gcxStrT.Y:F3},{gcxStrT.Z:F3}) R=[{gcxStrR.M11:F3},{gcxStrR.M12:F3},{gcxStrR.M13:F3}|{gcxStrR.M21:F3},{gcxStrR.M22:F3},{gcxStrR.M23:F3}|{gcxStrR.M31:F3},{gcxStrR.M32:F3},{gcxStrR.M33:F3}]")
-                                    Logger.LogLazy(Function() $"[DIAG-CHUNKROOT]   A(with-root).T=({aT_cr.X:F3},{aT_cr.Y:F3},{aT_cr.Z:F3}) R=[{aR_cr.M11:F3},{aR_cr.M12:F3},{aR_cr.M13:F3}|{aR_cr.M21:F3},{aR_cr.M22:F3},{aR_cr.M23:F3}|{aR_cr.M31:F3},{aR_cr.M32:F3},{aR_cr.M33:F3}]")
-                                    Logger.LogLazy(Function() $"[DIAG-CHUNKROOT]   A(stripped).T=({asT.X:F3},{asT.Y:F3},{asT.Z:F3}) R=[{asR.M11:F3},{asR.M12:F3},{asR.M13:F3}|{asR.M21:F3},{asR.M22:F3},{asR.M23:F3}|{asR.M31:F3},{asR.M32:F3},{asR.M33:F3}]")
-                                    For sbiCR = 0 To Math.Min(shape.ShapeBones.Count, shape.ShapeBoneTransforms.Count) - 1
-                                        Dim niNCR = TryCast(shape.ShapeBones(sbiCR), NiflySharp.Blocks.NiNode)
-                                        If niNCR Is Nothing Then Continue For
-                                        Dim bnNmCR = If(niNCR.Name?.String, "")
-                                        If String.IsNullOrEmpty(bnNmCR) Then Continue For
-                                        Dim G_B_with = Transform_Class.GetGlobalTransform(niNCR, shape.NifContent)
-                                        Dim G_B_stripped = G_B_with.ComposeTransforms(invChunkRoot)
-                                        Dim WB_with = A_with.ComposeTransforms(G_B_with)
-                                        Dim WB_stripped = A_stripped.ComposeTransforms(G_B_stripped)
-                                        Dim wT_w = WB_with.Translation, wT_s = WB_stripped.Translation
-                                        Dim diff = Math.Sqrt((wT_w.X - wT_s.X) ^ 2 + (wT_w.Y - wT_s.Y) ^ 2 + (wT_w.Z - wT_s.Z) ^ 2)
-                                        Dim shLb = shape.ShapeName, bnLb = bnNmCR, dL = diff
-                                        Logger.LogLazy(Function() $"[DIAG-CHUNKROOT]     bone='{bnLb}' W_B(with).T=({wT_w.X:F3},{wT_w.Y:F3},{wT_w.Z:F3}) W_B(stripped).T=({wT_s.X:F3},{wT_s.Y:F3},{wT_s.Z:F3}) |diff|={dL:F3}")
-                                    Next
-                                Catch exCR As Exception
-                                    Dim shL_cr = shape.ShapeName, msgL = exCR.Message
-                                    Logger.LogLazy(Function() $"[DIAG-CHUNKROOT] shape='{shL_cr}' EXCEPTION: {msgL}")
-                                End Try
-                            End If
-
-                            ' Discriminador actor-rig vs module-rig. Si CUALQUIER ShapeBone tiene
-                            ' actor.world ≈ M_mesh, el chunk pesa contra bones que YA están en el
-                            ' skeleton actor (replacement skin). Bind autorado contra esa pose →
-                            ' aplicar A meterá shift = offset entre chunk.C-X y chunk.actorBone.
-                            ' Solo módulos autocontenidos (bones chunk-internos, no preexisten en
-                            ' actor) necesitan que V2 los re-anchore via C-X.
-                            ' Tolerancia dT<0.1, dR<0.1 (empírico: Protectron arm da dT=0.0000 exact).
-                            Dim isActorRigMode As Boolean = False
-                            Dim actorRigMatchedBone As String = ""
-                            If shape.ShapeBones IsNot Nothing AndAlso shape.ShapeBones.Count > 0 Then
-                                Try
-                                    Dim mT = M_mesh.Translation
-                                    Dim mR = M_mesh.Rotation
-                                    Dim matchedDT As Double = Double.MaxValue
-                                    Dim matchedDR As Double = Double.MaxValue
-                                    For Each bn In shape.ShapeBones
-                                        Dim bnNode = TryCast(bn, NiflySharp.Blocks.NiNode)
-                                        Dim bnName = If(bnNode?.Name?.String, "")
-                                        If String.IsNullOrEmpty(bnName) Then Continue For
-                                        Dim hb As HierarchiBone_class = Nothing
-                                        If Not inst.SkeletonDictionary.TryGetValue(bnName, hb) Then Continue For
-                                        Dim aW = hb.OriginalGetGlobalTransform
-                                        Dim aT = aW.Translation, aR = aW.Rotation
-                                        Dim dT = Math.Sqrt((mT.X - aT.X) ^ 2 + (mT.Y - aT.Y) ^ 2 + (mT.Z - aT.Z) ^ 2)
-                                        Dim dR = Math.Sqrt(
-                                            (mR.M11 - aR.M11) ^ 2 + (mR.M12 - aR.M12) ^ 2 + (mR.M13 - aR.M13) ^ 2 +
-                                            (mR.M21 - aR.M21) ^ 2 + (mR.M22 - aR.M22) ^ 2 + (mR.M23 - aR.M23) ^ 2 +
-                                            (mR.M31 - aR.M31) ^ 2 + (mR.M32 - aR.M32) ^ 2 + (mR.M33 - aR.M33) ^ 2)
-                                        If isRobotMount Then
-                                            Dim shLp = shape.ShapeName, bnLp = bnName, dTp = dT, dRp = dR, aTp = aT
-                                            Logger.LogLazy(Function() $"[DIAG-MMESH-PER-BONE] shape='{shLp}' bone='{bnLp}' actor.T=({aTp.X:F3},{aTp.Y:F3},{aTp.Z:F3}) dT={dTp:F4} dR={dRp:F4}")
-                                        End If
-                                        If dT < 0.1 AndAlso dR < 0.1 Then
-                                            If actorRigMatchedBone = "" OrElse dT < matchedDT Then
-                                                actorRigMatchedBone = bnName
-                                                matchedDT = dT
-                                                matchedDR = dR
-                                                isActorRigMode = True
-                                            End If
-                                        End If
-                                    Next
-                                    If isRobotMount Then
-                                        Dim shL = shape.ShapeName, mnL = actorRigMatchedBone, mdT = matchedDT, mdR = matchedDR
-                                        Dim mTL = mT
-                                        If isActorRigMode Then
-                                            Logger.LogLazy(Function() $"[DIAG-MMESH-VS-ANY-BONE] shape='{shL}' M_mesh.T=({mTL.X:F3},{mTL.Y:F3},{mTL.Z:F3}) MATCH bone='{mnL}' dT={mdT:F4} dR={mdR:F4} → ACTOR-RIG mode (V2 SKIP)")
-                                        Else
-                                            Logger.LogLazy(Function() $"[DIAG-MMESH-VS-ANY-BONE] shape='{shL}' M_mesh.T=({mTL.X:F3},{mTL.Y:F3},{mTL.Z:F3}) NO MATCH in any ShapeBone → MODULE-RIG mode (V2 applies)")
-                                        End If
-                                    End If
-                                Catch exMM As Exception
-                                    If isRobotMount Then Logger.LogLazy(Function() $"[DIAG-MMESH-VS-ANY-BONE] EXCEPTION: {exMM.Message}")
-                                End Try
-                            End If
-
-                            ' [SKEL-OVERRIDE pre] Antes del switch ACTOR-RIG vs MODULE-RIG: computar
-                            ' A y W_B por shape bone, aplicar override a actor.bone. Esto unifica
-                            ' ambos paths bajo el mismo mecanismo (no más SKIP+PROPAGATE).
-                            '
-                            ' Para ACTOR-RIG (Protectron arm): W_B suele coincidir con actor.bone
-                            ' (chain[0] compensa) → override no-op por threshold. Sin regresión.
-                            ' Para chunks donde W_B ≠ actor.bone (Assaultron arm) → override fires
-                            ' → actor.bone se mueve al chunk-decl post-mount position → arm encastra.
-                            If isActorRigMode Then
-                                Try
-                                    Dim invGCX_ar = G_CX.Inverse()
-                                    Dim A_ar = M_mesh.ComposeTransforms(invGCX_ar)
-                                    ' [DEPTH-ORDER] Sortear shape bones por hierarchy depth en actor.skel
-                                    ' (parent primero). Sin esto, NIF order arbitrary → si root está al final
-                                    ' (caso LEFT arm Protectron), overrides children fires antes que parent →
-                                    ' cuando parent override fires después → cascade rompe children → arm
-                                    ' "desguazado". Procesar top-down garantiza cada override ve parent.world
-                                    ' ya finalizado, sin drift.
-                                    Dim boneList_ar As New List(Of Tuple(Of Integer, NiflySharp.Blocks.NiNode, HierarchiBone_class, Integer))
-                                    Dim seenBones_ar As New HashSet(Of String)(StringComparer.OrdinalIgnoreCase)
-                                    For sbi_pre = 0 To Math.Min(shape.ShapeBones.Count, shape.ShapeBoneTransforms.Count) - 1
-                                        Dim niN_pre = TryCast(shape.ShapeBones(sbi_pre), NiflySharp.Blocks.NiNode)
-                                        If niN_pre Is Nothing Then Continue For
-                                        Dim bnName_pre = If(niN_pre.Name?.String, "")
-                                        If String.IsNullOrEmpty(bnName_pre) Then Continue For
-                                        Dim hb_pre As HierarchiBone_class = Nothing
-                                        If Not inst.SkeletonDictionary.TryGetValue(bnName_pre, hb_pre) Then Continue For
-                                        If seenBones_ar.Add(bnName_pre) Then
-                                            Dim depth_pre = GetBoneHierarchyDepth(hb_pre)
-                                            boneList_ar.Add(Tuple.Create(sbi_pre, niN_pre, hb_pre, depth_pre))
-                                        End If
-                                        ' [CHAIN-INTERMEDIATES] Walk parent chain de esta shape bone via chunk NIF
-                                        ' tree (GetParentNode). Para cada parent intermedio (hasta C-X), si su
-                                        ' nombre está en actor.SkeletonDictionary, agregarlo al boneList. Cubre
-                                        ' Assaultron (RUPPERARM intermedio entre RClavicleTwist y ShoulderTwist;
-                                        ' HeadNod intermedio entre Neck y HeadTwist). Para chunks donde shape
-                                        ' bones cubren toda la chain (Protectron), no-op. Depth-sort más abajo
-                                        ' procesa todo top-down → sin cascade drift.
-                                        Dim parentNode_ar = TryCast(shape.NifContent.GetParentNode(niN_pre), NiflySharp.Blocks.NiNode)
-                                        Dim safetyHops_ar As Integer = 0
-                                        While parentNode_ar IsNot Nothing AndAlso Not ReferenceEquals(parentNode_ar, cxNode) AndAlso safetyHops_ar < 20
-                                            Dim parentNm_pre = If(parentNode_ar.Name?.String, "")
-                                            If Not String.IsNullOrEmpty(parentNm_pre) Then
-                                                Dim parentHb_pre As HierarchiBone_class = Nothing
-                                                If inst.SkeletonDictionary.TryGetValue(parentNm_pre, parentHb_pre) AndAlso seenBones_ar.Add(parentNm_pre) Then
-                                                    Dim depthP_pre = GetBoneHierarchyDepth(parentHb_pre)
-                                                    boneList_ar.Add(Tuple.Create(-1, parentNode_ar, parentHb_pre, depthP_pre))
-                                                End If
-                                            End If
-                                            parentNode_ar = TryCast(shape.NifContent.GetParentNode(parentNode_ar), NiflySharp.Blocks.NiNode)
-                                            safetyHops_ar += 1
-                                        End While
-                                    Next
-                                    boneList_ar.Sort(Function(x_sort, y_sort) x_sort.Item4.CompareTo(y_sort.Item4))
-                                    Dim overrideCount As Integer = 0
-                                    For Each entry In boneList_ar
-                                        Dim niN_ar = entry.Item2
-                                        Dim actorBhb_ar = entry.Item3
-                                        Dim boneName_ar = actorBhb_ar.BoneName
-                                        Dim G_B_ar = Transform_Class.GetGlobalTransform(niN_ar, shape.NifContent)
-                                        Dim W_B_ar = A_ar.ComposeTransforms(G_B_ar)
-                                        If isRobotMount Then chunkWBHistory(boneName_ar) = W_B_ar
-                                        Dim worldBefore = actorBhb_ar.OriginalGetGlobalTransform.Translation
-                                        OverrideActorBoneWorld(actorBhb_ar, W_B_ar, isRobotMount, "V2-ACTORRIG-" & shape.ShapeName)
-                                        Dim worldAfter = actorBhb_ar.OriginalGetGlobalTransform.Translation
-                                        If worldBefore.X <> worldAfter.X OrElse worldBefore.Y <> worldAfter.Y OrElse worldBefore.Z <> worldAfter.Z Then
-                                            overrideCount += 1
-                                        End If
-                                    Next
-                                    If isRobotMount Then
-                                        Dim shL = shape.ShapeName, cxL = cxName, mnL = actorRigMatchedBone, ovC = overrideCount
-                                        Logger.LogLazy(Function() $"[CHUNK-RESKIN-V2] shape='{shL}' cx='{cxL}' ACTOR-RIG via skel-override (M_mesh ≈ actor.{mnL}.world, {ovC} overrides applied, depth-sorted)")
-                                    End If
-                                Catch exAR As Exception
-                                    Dim shL = shape.ShapeName, msgL = exAR.Message
-                                    Logger.LogLazy(Function() $"[CHUNK-RESKIN-V2] shape='{shL}' ACTOR-RIG override EXCEPTION: {msgL}")
-                                End Try
-                                ' [DESACTIVADO 2026-05-17] PROPAGATE-V2 legacy patch — SKEL-OVERRIDE
-                                ' ya hizo el trabajo modificando actor.bone directamente. PROPAGATE
-                                ' lee actor.bone post-override y aplica correction otra vez sobre el
-                                ' bind del armor → doble aplicación, geometría flota (caso Codsworth
-                                ' arm caps verificado 2026-05-17).
-                                ' ApplyParentV2CorrectionToBinds(shape, inst, chunkWBHistory, isRobotMount)
-                                Continue For
-                            End If
-
-                            Dim invGCX = G_CX.Inverse()
-                            ' A = inv(G_CX) × M_mesh in row-vec composition = M_mesh.Compose(invGCX)
-                            Dim A = M_mesh.ComposeTransforms(invGCX)
-
-                            ' [DIAG-EYES] Alternative A computed with dict-existing socket (no chunk-source
-                            ' override). Si usedChunkSource=False, A_alt = A. Si True, A_alt es la versión
-                            ' SIN el shift +2.908 X. Diff W_B - W_B_alt cuantifica el offset que el chunk
-                            ' source override mete. Solo log, no afecta render.
-                            Dim A_alt As Transform_Class = A
-                            If usedChunkSource Then
-                                Dim M_mesh_alt = parentBoneWorld.ComposeTransforms(dictExistingSocketLocal)
-                                A_alt = M_mesh_alt.ComposeTransforms(invGCX)
-                            End If
-
-                            Dim reskinCount As Integer = 0
-                            Dim skipCount As Integer = 0
-                            ' [DEPTH-ORDER] Sortear shape bones por hierarchy depth en actor.skel
-                            ' (parent primero) antes de aplicar overrides. Sin esto, cascade drift
-                            ' rompe arms con NIF order non-hierarchical.
-                            Dim boneList_mod As New List(Of Tuple(Of Integer, NiflySharp.Blocks.NiNode, HierarchiBone_class, Integer))
-                            Dim seenBones_mod As New HashSet(Of String)(StringComparer.OrdinalIgnoreCase)
-                            For sbi_pre2 = 0 To Math.Min(shape.ShapeBones.Count, shape.ShapeBoneTransforms.Count) - 1
-                                Dim niN_pre2 = TryCast(shape.ShapeBones(sbi_pre2), NiflySharp.Blocks.NiNode)
-                                If niN_pre2 Is Nothing Then Continue For
-                                Dim bnName_pre2 = If(niN_pre2.Name?.String, "")
-                                If String.IsNullOrEmpty(bnName_pre2) Then Continue For
-                                Dim hb_pre2 As HierarchiBone_class = Nothing
-                                If Not inst.SkeletonDictionary.TryGetValue(bnName_pre2, hb_pre2) Then
-                                    skipCount += 1
-                                    Continue For
-                                End If
-                                If seenBones_mod.Add(bnName_pre2) Then
-                                    Dim depth_pre2 = GetBoneHierarchyDepth(hb_pre2)
-                                    boneList_mod.Add(Tuple.Create(sbi_pre2, niN_pre2, hb_pre2, depth_pre2))
-                                End If
-                                ' [CHAIN-INTERMEDIATES] Walk parent chain de esta shape bone via chunk NIF
-                                ' tree (GetParentNode). Para cada parent intermedio (hasta C-X), si su
-                                ' nombre está en actor.SkeletonDictionary, agregarlo al boneList. Cubre
-                                ' HeadAssaultron (HeadNod intermedio entre Neck y HeadTwist en chain[1]),
-                                ' y cualquier otro chunk MODULE-RIG con bones intermedios no declarados
-                                ' como shape bones. Depth-sort más abajo procesa todo top-down → sin
-                                ' cascade drift. Idéntico al patrón ACTOR-RIG.
-                                Dim parentNode_mod = TryCast(shape.NifContent.GetParentNode(niN_pre2), NiflySharp.Blocks.NiNode)
-                                Dim safetyHops_mod As Integer = 0
-                                While parentNode_mod IsNot Nothing AndAlso Not ReferenceEquals(parentNode_mod, cxNode) AndAlso safetyHops_mod < 20
-                                    Dim parentNm_pre2 = If(parentNode_mod.Name?.String, "")
-                                    If Not String.IsNullOrEmpty(parentNm_pre2) Then
-                                        Dim parentHb_pre2 As HierarchiBone_class = Nothing
-                                        If inst.SkeletonDictionary.TryGetValue(parentNm_pre2, parentHb_pre2) AndAlso seenBones_mod.Add(parentNm_pre2) Then
-                                            Dim depthP_pre2 = GetBoneHierarchyDepth(parentHb_pre2)
-                                            boneList_mod.Add(Tuple.Create(-1, parentNode_mod, parentHb_pre2, depthP_pre2))
-                                        End If
-                                    End If
-                                    parentNode_mod = TryCast(shape.NifContent.GetParentNode(parentNode_mod), NiflySharp.Blocks.NiNode)
-                                    safetyHops_mod += 1
-                                End While
-                            Next
-                            boneList_mod.Sort(Function(x_sort2, y_sort2) x_sort2.Item4.CompareTo(y_sort2.Item4))
-                            For Each entry_mod In boneList_mod
-                                Dim sbi = entry_mod.Item1
-                                Dim niN = entry_mod.Item2
-                                Dim actorBhb = entry_mod.Item3
-                                Dim boneName = actorBhb.BoneName
-                                Dim actor_B_world = actorBhb.OriginalGetGlobalTransform
-
-                                ' [CHUNK-ACCUMULATION] Si bone fue reskin-eado por chunk previo, loggear
-                                ' delta entre actor.world (que usamos para corregir) y prev_W_B (donde el
-                                ' chunk previo realmente puso el geometry). Si delta ≠ 0, este sub-chunk
-                                ' está usando referencia stale.
-                                Dim prevWB As Transform_Class = Nothing
-                                If isRobotMount AndAlso chunkWBHistory.TryGetValue(boneName, prevWB) AndAlso prevWB IsNot Nothing Then
-                                    Dim aT0 = actor_B_world.Translation, pT0 = prevWB.Translation
-                                    Dim dX = pT0.X - aT0.X, dY = pT0.Y - aT0.Y, dZ = pT0.Z - aT0.Z
-                                    Dim bnL0 = boneName, shL0 = shape.ShapeName
-                                    Logger.LogLazy(Function() $"[CHUNK-ACCUMULATION] shape='{shL0}' bone='{bnL0}' actor.world=({aT0.X:F3},{aT0.Y:F3},{aT0.Z:F3}) prevChunkWB=({pT0.X:F3},{pT0.Y:F3},{pT0.Z:F3}) delta=({dX:F3},{dY:F3},{dZ:F3})")
-                                End If
-
-                                ' G_B desde el chunk NIF tree (no desde inv(bind)).
-                                Dim G_B = Transform_Class.GetGlobalTransform(niN, shape.NifContent)
-                                ' W_B = G_B × A (in row-vec composition).
-                                Dim W_B = A.ComposeTransforms(G_B)
-
-                                ' [DIAG-EYES] W_B_alt = G_B × A_alt. Si no hay chunk source override, A_alt=A
-                                ' y W_B_alt=W_B (delta=0). Si hay override, delta cuantifica el shift que
-                                ' la corrección +2.908 X mete vs el path sin corregir.
-                                If isRobotMount AndAlso usedChunkSource AndAlso Logger.Enabled Then
-                                    Dim W_B_alt = A_alt.ComposeTransforms(G_B)
-                                    Dim wT = W_B.Translation, wAt = W_B_alt.Translation
-                                    Dim bnL1 = boneName, shL1 = shape.ShapeName
-                                    Logger.LogLazy(Function() $"[CHUNK-RESKIN-V2-ALT] shape='{shL1}' bone='{bnL1}' W_B_chunkSrc=({wT.X:F3},{wT.Y:F3},{wT.Z:F3}) W_B_dictExisting=({wAt.X:F3},{wAt.Y:F3},{wAt.Z:F3}) delta=({wT.X - wAt.X:F3},{wT.Y - wAt.Y:F3},{wT.Z - wAt.Z:F3})")
-                                End If
-
-                                ' Acumular W_B en history para que sub-chunks posteriores puedan compararse.
-                                If isRobotMount Then chunkWBHistory(boneName) = W_B
-                                ' [SKEL-OVERRIDE] Reemplaza V2 bind modification. En lugar de modificar
-                                ' el bind del shape para compensar (vertex × bind' × actor.bone = vertex × bind × W_B),
-                                ' modificamos actor.bone para que coincida con W_B. Render: vertex × bind × actor.bone
-                                ' (= W_B) = vertex × bind × W_B = mismo resultado. Children del bone cascadean
-                                ' automáticamente — futuros chunks que referencien actor.bone-child verán la
-                                ' nueva pose. Esto elimina la necesidad de PROPAGATE-V2/ANCHOR como parches.
-                                OverrideActorBoneWorld(actorBhb, W_B, isRobotMount, "V2-MODULE-" & shape.ShapeName)
-                                reskinCount += 1
-                                If isRobotMount Then
-                                    Dim sbiL = sbi, bnL = boneName, shL = shape.ShapeName
-                                    Dim wBT = W_B.Translation, gBT = G_B.Translation
-                                    Logger.LogLazy(Function() $"[CHUNK-RESKIN-V2] shape='{shL}' bone[{sbiL}] '{bnL}' G_B.T=({gBT.X:F3},{gBT.Y:F3},{gBT.Z:F3}) W_B.T=({wBT.X:F3},{wBT.Y:F3},{wBT.Z:F3}) → skel override applied")
-                                End If
-                            Next
-                            If isRobotMount Then
-                                Dim rcL = reskinCount, skL = skipCount, shL = shape.ShapeName, cxL = cxName, usedL = usedChunkSource
-                                Dim AT = A.Translation, GCXT = G_CX.Translation
-                                Logger.LogLazy(Function() $"[CHUNK-RESKIN-V2] shape='{shL}' cx='{cxL}' G_CX.T=({GCXT.X:F3},{GCXT.Y:F3},{GCXT.Z:F3}) A.T=({AT.X:F3},{AT.Y:F3},{AT.Z:F3}) usedChunkSrcSocket={usedL} summary: reskin={rcL} skip={skL}")
-                            End If
-                        ElseIf isRobotMount Then
-                            Dim shL = shape.ShapeName, cxL = cxName
-                            Logger.LogLazy(Function() $"[CHUNK-RESKIN-V2] shape='{shL}' cx='{cxL}' SKIP: C-X NiNode not found in chunk NIF tree")
-
-                            ' [DESACTIVADO 2026-05-17] PROPAGATE-V2 legacy patch — ver razón en la
-                            ' rama ACTOR-RIG. SKEL-OVERRIDE ya hace el trabajo.
-                            ' ApplyParentV2CorrectionToBinds(shape, inst, chunkWBHistory, isRobotMount)
-
-                            ' [DIAG-BIND-BAKE] Para chunks SKIP (sin C-X), comparar inv(bind) vs actor.bone.world
-                            ' vs actor.parent_bone.world × socket.local (M_mesh). Permite ver empíricamente si el
-                            ' bind tiene baked SOLO bone (Assaultron, needs fix) o bone+socket (Protectron, OK as-is).
-                            Try
-                                Dim parentBoneHbDiag As HierarchiBone_class = Nothing
-                                If inst.SkeletonDictionary.TryGetValue(socket.ParentBoneName, parentBoneHbDiag) Then
-                                    Dim parentBoneWorldDiag = parentBoneHbDiag.OriginalGetGlobalTransform
-                                    Dim socketLocalDiag As New Transform_Class With {
-                                        .Translation = socket.Translation,
-                                        .Rotation = BSConnectPointReader.QuatToMatrix33(socket.Rotation),
-                                        .Scale = If(socket.Scale > 0.0F, socket.Scale, 1.0F)
-                                    }
-                                    Dim mMeshDiag = parentBoneWorldDiag.ComposeTransforms(socketLocalDiag)
-                                    Dim mmT_outer = mMeshDiag.Translation
-
-                                    For sbiD = 0 To Math.Min(shape.ShapeBones.Count, shape.ShapeBoneTransforms.Count) - 1
-                                        Dim niN = TryCast(shape.ShapeBones(sbiD), NiflySharp.Blocks.NiNode)
-                                        If niN Is Nothing Then Continue For
-                                        Dim boneName = If(niN.Name?.String, "")
-                                        If String.IsNullOrEmpty(boneName) Then Continue For
-                                        Dim bind = shape.ShapeBoneTransforms(sbiD)
-                                        If bind Is Nothing Then Continue For
-                                        Dim bindT As New Transform_Class With {
-                                            .Translation = bind.Translation,
-                                            .Rotation = bind.Rotation,
-                                            .Scale = bind.Scale,
-                                            .ScaleVector = bind.ScaleVector
-                                        }
-                                        Dim invBind = bindT.Inverse()
-                                        Dim invBindT = invBind.Translation
-                                        Dim actorBhbDiag As HierarchiBone_class = Nothing
-                                        Dim hasActor = inst.SkeletonDictionary.TryGetValue(boneName, actorBhbDiag)
-                                        Dim aBT As System.Numerics.Vector3 = If(hasActor, actorBhbDiag.OriginalGetGlobalTransform.Translation, New System.Numerics.Vector3(0, 0, 0))
-                                        Dim dT_bone As Double = If(hasActor,
-                                            Math.Sqrt((invBindT.X - aBT.X) ^ 2 + (invBindT.Y - aBT.Y) ^ 2 + (invBindT.Z - aBT.Z) ^ 2),
-                                            Double.NaN)
-                                        Dim dT_mmesh As Double = Math.Sqrt((invBindT.X - mmT_outer.X) ^ 2 + (invBindT.Y - mmT_outer.Y) ^ 2 + (invBindT.Z - mmT_outer.Z) ^ 2)
-                                        Dim verdict As String
-                                        If Not hasActor Then
-                                            verdict = "actor.bone NOT-IN-DICT"
-                                        ElseIf dT_bone < 1.0 AndAlso dT_mmesh > 1.0 Then
-                                            verdict = "BIND≈ACTOR.BONE (sin socket; chunk-frame literal)"
-                                        ElseIf dT_mmesh < 1.0 AndAlso dT_bone > 1.0 Then
-                                            verdict = "BIND≈M_MESH (socket baked; renders OK as-is)"
-                                        ElseIf dT_bone < dT_mmesh Then
-                                            verdict = "CLOSER-TO-BONE"
-                                        Else
-                                            verdict = "CLOSER-TO-M_MESH"
-                                        End If
-                                        Dim shLD = shape.ShapeName, bnLD = boneName, ibTL = invBindT, aBTL = aBT, mmTL = mmT_outer, dTbL = dT_bone, dTmL = dT_mmesh, vrL = verdict
-                                        Logger.LogLazy(Function() $"[DIAG-BIND-BAKE] shape='{shLD}' bone='{bnLD}' inv(bind).T=({ibTL.X:F3},{ibTL.Y:F3},{ibTL.Z:F3}) actor.bone.T=({aBTL.X:F3},{aBTL.Y:F3},{aBTL.Z:F3}) M_mesh.T=({mmTL.X:F3},{mmTL.Y:F3},{mmTL.Z:F3}) dT_bone={dTbL:F3} dT_mmesh={dTmL:F3} → {vrL}")
-                                    Next
-                                Else
-                                    Dim shLD2 = shape.ShapeName, pbnL = socket.ParentBoneName
-                                    Logger.LogLazy(Function() $"[DIAG-BIND-BAKE] shape='{shLD2}' SKIP: parent bone '{pbnL}' NOT-IN-DICT")
-                                End If
-                            Catch exBb As Exception
-                                Dim shLD3 = shape.ShapeName, msgL = exBb.Message
-                                Logger.LogLazy(Function() $"[DIAG-BIND-BAKE] shape='{shLD3}' EXCEPTION: {msgL}")
-                            End Try
-                        End If
-                    ElseIf isRobotMount Then
-                        Dim shL = shape.ShapeName
-                        Logger.LogLazy(Function() $"[CHUNK-RESKIN-V2] shape='{shL}' SKIP: chunk has no BSConnectPoint::Children")
-                    End If
-                Catch ex As Exception
-                    Dim shL = shape.ShapeName, exL = ex
-                    Logger.LogLazy(Function() $"[CHUNK-RESKIN-V2] shape='{shL}' EXCEPTION: {exL.GetType().Name}: {exL.Message}")
-                End Try
-            End If
+            CollectV2PlanForShape(shape, socket, targetSkel, renderData, targetWB, isRobotMount)
             If isRobotMount Then
-                Dim newKeys = inst.SkeletonDictionary.Keys.Where(Function(k) Not preKeysSet.Contains(k)).OrderBy(Function(k) k).ToList()
+                Dim newKeys = targetSkel.SkeletonDictionary.Keys.Where(Function(k) Not preKeysSet.Contains(k)).OrderBy(Function(k) k).ToList()
                 Dim shNameLog = shape.ShapeName, nLog = n, preLog = preCount, postLog = postCount
                 Logger.LogLazy(Function() $"[INJECT] shape='{shNameLog}' returned={nLog} dictCount {preLog}→{postLog} added={newKeys.Count}: [{String.Join(", ", newKeys)}]")
                 ' Para cada bone nuevo, dumpear su world resuelto (esperado = inverseBind × M_mesh para shape bones, M_mesh para anchor).
                 For Each nbName In newKeys
                     Dim nb = nbName
                     Dim hb As HierarchiBone_class = Nothing
-                    inst.SkeletonDictionary.TryGetValue(nb, hb)
+                    targetSkel.SkeletonDictionary.TryGetValue(nb, hb)
                     If hb IsNot Nothing Then
                         Dim worldT = hb.OriginalGetGlobalTransform
                         Dim wr = worldT.Rotation
@@ -3472,7 +3046,7 @@ Public Class MainForm
             ' con T/R/S distintos a los del skeleton.nif del actor (o de chunks previos), la idempotencia
             ' de MaterializeSocketsAsConnectPointBones los skipea silenciosamente — pero el engine de
             ' FO4 podría usar la versión del chunk. Log diagnóstico para detectar discrepancias.
-            If isRobotMount AndAlso Not processedNifs.Contains(shape.NifContent) Then
+            If isRobotMount AndAlso Not processedNifs.Contains((targetSkel, shape.NifContent)) Then
                 Try
                     Dim chunkParents = BSConnectPointReader.ReadParents(shape.NifContent)
                     If chunkParents IsNot Nothing Then
@@ -3486,7 +3060,7 @@ Public Class MainForm
                             Dim existing As HierarchiBone_class = Nothing
                             Dim shLogP = shape.ShapeName, cpName = cp.Name, cnL = cName, cpParent = cp.ParentBoneName
                             Dim cTL = chunkT, cSL = chunkS, cRL = chunkRotMat
-                            If inst.SkeletonDictionary.TryGetValue(cName, existing) Then
+                            If targetSkel.SkeletonDictionary.TryGetValue(cName, existing) Then
                                 Dim existLocal = existing.OriginalLocaLTransform
                                 Dim eT = existLocal.Translation, eS = existLocal.Scale, eR = existLocal.Rotation
                                 Dim existParent = If(existing.Parent IsNot Nothing, existing.Parent.BoneName, "<root>")
@@ -3534,16 +3108,27 @@ Public Class MainForm
                 End Try
             End If
 
-            If processedNifs.Add(shape.NifContent) Then
-                Dim preMatKeysSet = New HashSet(Of String)(inst.SkeletonDictionary.Keys, StringComparer.OrdinalIgnoreCase)
-                Dim preMatCount = inst.SkeletonDictionary.Count
-                Dim m = BSConnectPointBoneInjector_Class.MaterializeSocketsAsConnectPointBones(shape.NifContent, inst)
+            If processedNifs.Add((targetSkel, shape.NifContent)) Then
+                Dim preMatKeysSet = New HashSet(Of String)(targetSkel.SkeletonDictionary.Keys, StringComparer.OrdinalIgnoreCase)
+                Dim preMatCount = targetSkel.SkeletonDictionary.Count
+                Dim m = BSConnectPointBoneInjector_Class.MaterializeSocketsAsConnectPointBones(shape.NifContent, targetSkel)
                 If isRobotMount AndAlso Logger.Enabled Then
-                    Dim newMatKeys = inst.SkeletonDictionary.Keys.Where(Function(k) Not preMatKeysSet.Contains(k)).OrderBy(Function(k) k).ToList()
+                    Dim newMatKeys = targetSkel.SkeletonDictionary.Keys.Where(Function(k) Not preMatKeysSet.Contains(k)).OrderBy(Function(k) k).ToList()
                     Dim shNameMat = shape.ShapeName, mLog = m
                     Logger.LogLazy(Function() $"[MATERIALIZE-CHUNK] shape='{shNameMat}' returned={mLog} addedSubSockets={newMatKeys.Count}: [{String.Join(", ", newMatKeys)}]")
                 End If
             End If
+        Next
+
+        ' [MOUNTDELTA-APPLY] Fuente única de verdad: el shape loop SOLO colectó el plan
+        ' (renderData.MountDesiredWorlds) — acá lo aplicamos en orden topológico. El initial render
+        ' usa el mismo ApplyMountPlanForActor que el pose-dirty refresh. Base inst primero.
+        ApplyMountPlanForActor(inst, renderData)
+        ' Per-instance scope: cada clone sculpt aplica su propio subset (filtrado por TargetSkel).
+        For Each kv In skelByArma
+            Dim cloneInst = kv.Value
+            If cloneInst Is Nothing OrElse ReferenceEquals(cloneInst, inst) Then Continue For
+            ApplyMountPlanForActor(cloneInst, renderData)
         Next
 
         ' DIAG: dump post-inject — solo bones nuevos (los inyectados).
@@ -4165,8 +3750,13 @@ Public Class MainForm
         If host Is Nothing Then host = _renderHost
         If state Is Nothing Then Return
 
+        ' Single skin-tone path: the slot-12 SkinTone (authored, or a QNAM stand-in synthesized
+        ' in FaceTintLayerBuilder when the NPC authors none) is composed as a normal tint layer
+        ' in engine rank order INSIDE TryApplyFaceTints. Detail tints ranked after slot 12 (brow,
+        ' scars) therefore compose on top of the toned skin instead of being washed out by a
+        ' separate full-face SoftLight post-pass. No face-side TryApplyFaceSkinSoftLight anymore.
+        ' Body SoftLight stays a separate pass (different meshes).
         TryApplyFaceTints(state, host)
-        TryApplyFaceSkinSoftLight(state, host)
         TryApplyBodySkinSoftLight(state, host)
     End Sub
 
@@ -4219,6 +3809,38 @@ Public Class MainForm
         If state Is Nothing Then Return emptyResult
 
         Dim modelFormID = If(state.ModelSourceFormID <> 0UI, state.ModelSourceFormID, state.FormID)
+        ' Resolve the hair LUT path so slot Brows palette layers can drive their per-pixel
+        ' grayscale-to-palette colour off the same LUT the hair/brow MESHES sample at render
+        ' time. BGSM-first / RACE.HNAM fallback lives in ResolveHairPaletteTexture (single
+        ' source of truth shared with the mesh-side ApplyMaterialPaletteHairColor).
+        Dim hairLutPath As String = ResolveHairPaletteTexture(_renderHost, state, _pluginManager)
+        ' Diagnostic: dump what the brow tint will use (LUT path + HCLF RemappingIndex) alongside
+        ' what each loaded hair/grayscale MESH material uses (GreyscaleTexture + GrayscaleToPaletteScale),
+        ' so the two can be compared 1:1 against the [PALSCALE-WRITE] mesh log. Confirms palette
+        ' (LUT) + index (scale) parity between the brow face-tint and the brow MESH.
+        If Logger.Enabled Then
+            Dim browHcfid = state.HairColorFormID
+            Dim browClfmDiag = ResolveColorFormData(browHcfid)
+            Dim browRow As Single = If(browClfmDiag IsNot Nothing, browClfmDiag.RemappingIndex, -1.0F)
+            Dim browHasRemap As Boolean = (browClfmDiag IsNot Nothing AndAlso browClfmDiag.HasRemappingIndex)
+            Dim browHasColor As Boolean = (browClfmDiag IsNot Nothing AndAlso browClfmDiag.HasColor)
+            Dim browLutKey = FO4UnifiedMaterial_Class.CorrectTexturePath(hairLutPath)
+            Logger.LogLazy(Function() $"[BROW-LUT-RESOLVE] hairFid=0x{browHcfid:X8} hasColor={browHasColor} hasRemap={browHasRemap} row={browRow:F4} lutPath='{hairLutPath}' lutKey='{browLutKey}'")
+            Dim model0 = _renderHost?.PreviewCtl?.Model
+            If model0 IsNot Nothing AndAlso model0.meshes IsNot Nothing Then
+                For Each mDiag In model0.meshes
+                    If mDiag Is Nothing OrElse mDiag.MeshData Is Nothing OrElse mDiag.MeshData.Material Is Nothing Then Continue For
+                    Dim mbDiag = mDiag.MeshData.Material.MaterialBase
+                    If mbDiag Is Nothing Then Continue For
+                    If Not (mbDiag.Hair OrElse mbDiag.GrayscaleToPaletteColor) Then Continue For
+                    Dim shapeNm = If(mDiag.MeshData.Shape IsNot Nothing, mDiag.MeshData.Shape.ShapeName, "<?>")
+                    Dim gtexDiag = If(mbDiag.GreyscaleTexture, "")
+                    Dim gtexKeyDiag = FO4UnifiedMaterial_Class.CorrectTexturePath(gtexDiag)
+                    Dim scaleDiag = mbDiag.GrayscaleToPaletteScale
+                    Logger.LogLazy(Function() $"[BROW-MESH-LUT] shape='{shapeNm}' hair={mbDiag.Hair} g2p={mbDiag.GrayscaleToPaletteColor} scale={scaleDiag:F4} greyTex='{gtexDiag}' greyKey='{gtexKeyDiag}'")
+                Next
+            End If
+        End If
         Dim built = FaceTintLayerBuilder.Build(
             modelFormID:=modelFormID,
             rootFormID:=state.RootNpcFormID,
@@ -4226,7 +3848,11 @@ Public Class MainForm
             isFemale:=state.IsFemale,
             pluginManager:=_pluginManager,
             appliedPresets:=_appliedPresets,
-            tintBytesCache:=_tintBytesCache)
+            tintBytesCache:=_tintBytesCache,
+            hairLutPath:=hairLutPath,
+            hairColorFormID:=state.HairColorFormID,
+            hasTextureLighting:=state.HasTextureLighting,
+            textureLightingColorArgb:=state.TextureLightingColor.ToArgb())
 
         Return (layers:=built.Layers, regionSwaps:=built.RegionSwaps, npcData:=built.NpcData, race:=built.Race)
     End Function
@@ -4400,11 +4026,12 @@ Public Class MainForm
     '''   final = softlight(base, qnam) * qnam
     ''' even when slot 12 is absent. Symmetric with the body path.
     '''
-    ''' MUST be called AFTER TryApplyFaceTints so the SoftLight is the LAST thing baked into
-    ''' the face diffuse (matches the order in which the body pre-pass runs against the body
-    ''' mesh: a single uniform blend on top of whatever is already there). Skipped silently
-    ''' when the NPC already has a slot 12 layer, when QNAM is absent, or when the face
-    ''' diffuse isn't in cache yet.
+    ''' MUST be called BEFORE TryApplyFaceTints (see ApplyFaceTintOverlay) so this synthetic
+    ''' slot-12 stand-in tones the BASE skin first and the detail tints (brow/scar/etc.) then
+    ''' composite ON TOP of it instead of being washed out. (Earlier this ran last, which
+    ''' whitened brow and scar layers -- the bug this ordering fixes.) Skipped silently when the
+    ''' NPC already has a slot 12 layer (compositor sequences it in-rank), when QNAM is absent,
+    ''' or when the face diffuse isn't in cache yet.
     '''
     ''' Pristine capture: this function calls CapturePristineDiffusePixels BEFORE the SoftLight
     ''' upload so RefreshFaceTintLivePreview can roll back to the untinted byte image on every
@@ -4416,6 +4043,7 @@ Public Class MainForm
         If host Is Nothing Then host = _renderHost
         If state Is Nothing Then Return
         If Not state.HasTextureLighting Then
+            Logger.LogLazy(Function() $"[FACE-SOFTLIGHT] skip: HasTextureLighting=False")
             Return
         End If
 
@@ -4431,14 +4059,19 @@ Public Class MainForm
         ' slot SkinTone en su TintTemplateGroups, no aplica fallback de face softlight tampoco —
         ' synth/ghoul/robot no deberían recibirlo, sus shapes face no son SkinTint en sentido humano.
         If race Is Nothing OrElse race.FindTintOptionsBySlot(TintSlot.SkinTone, state.IsFemale).Count = 0 Then
+            Logger.LogLazy(Function() $"[FACE-SOFTLIGHT] skip: race has no SkinTone tint catalog")
             Return
         End If
 
         ' If the NPC has any active layer with TTEF 'Takes Skin Tone' (bit 2), the face compositor
         ' already softlight-modulated the diffuse via that layer's Palette path. Don't double-apply.
         If NpcHasSkinToneLayer(npcData, race, state.IsFemale) Then
+            Logger.LogLazy(Function() $"[FACE-SOFTLIGHT] skip: NPC has SkinTone layer (compositor already did softlight)")
             Return
         End If
+        Dim qnamE = state.TextureLightingColor
+        Dim qnamER = qnamE.R, qnamEG = qnamE.G, qnamEB = qnamE.B, qnamEA = qnamE.A
+        Logger.LogLazy(Function() $"[FACE-SOFTLIGHT] entry qnam=RGBA({qnamER},{qnamEG},{qnamEB},{qnamEA}) -> WILL run uniform softlight over whole face diffuse (washes brow/scar tints composited earlier)")
 
         Dim model = host.PreviewCtl.Model
         If model Is Nothing OrElse model.meshes Is Nothing Then Return
@@ -4499,10 +4132,14 @@ Public Class MainForm
 
             Dim oldId = entry.Texture_ID
             entry.Texture_ID = newTexId
+            Dim diffuseLog = diffusePath
+            Logger.LogLazy(Function() $"[FACE-SOFTLIGHT] applied diffuse='{diffuseLog}' oldTex={oldId} -> newTex={newTexId}")
             Try : OpenTK.Graphics.OpenGL4.GL.DeleteTexture(oldId) : Catch : End Try
             affected += 1
         Next
 
+        Dim affectedLog = affected
+        Logger.LogLazy(Function() $"[FACE-SOFTLIGHT] done affected={affectedLog}")
     End Sub
 
     ''' <summary>Two-step skin tint experiment — body side. Applies a one-shot SoftLight pass
@@ -7153,8 +6790,8 @@ Public Class MainForm
         ' montan vía BSConnectPoint igual que robot chunks. Delegate al shared con
         ' formType="ARMO". Para ARMOs sin chunk-mount OMODs (solo property modifiers tipo
         ' ap_armor_Lining/Tier/Size), el shared early-returns sin emitir candidates.
-        ' Capa V2 SKEL-OVERRIDE no aplica: isRobotMount=False en el shape loop, gate Fase 2.5
-        ' suprime mutación de OriginalLocaLTransform en humanoid bones.
+        ' Capa V2 SKEL-OVERRIDE ahora SÍ aplica a biped: el gate Fase 2.5 fue removido. Toda
+        ' shape con MountSocket recibe V2 vía MountDeltaTransform (sin mutar OriginalLocaLTransform).
         CollectOmodChunkCandidates(omodResolution, "ARMO", state, candidates, order, warnings)
 
         Dim addonOrder As List(Of UInteger)
@@ -7374,8 +7011,8 @@ Public Class MainForm
         Dim resolution = ObjectTemplateResolver.ResolveNpcCombinations(stubNpc, ctxKeywords, _pluginManager)
 
         ' Delegate to shared OMOD chunk-mounting collector (robot + biped share capas 1+2:
-        ' coord fix + socket disambig). Capa 3 (V2 SKEL-OVERRIDE) está gateada en
-        ' OverrideActorBoneWorld por isRobotMount — biped path la pasará False (Fase 2.5).
+        ' coord fix + socket disambig). Capa 3 (V2 SKEL-OVERRIDE) aplica a robot Y biped
+        ' (gate Fase 2.5 removido).
         CollectOmodChunkCandidates(resolution, "NPC_", state, candidates, order, warnings)
     End Sub
 
@@ -7383,8 +7020,8 @@ Public Class MainForm
     ''' ya construida (vía ResolveNpcCombinations o ResolveArmoCombinations) y emite los
     ''' MeshCandidates Attachment con host-scoped socket resolution. formType marca el
     ''' origen ("NPC_" robot, "ARMO" biped) y se propaga al candidate para downstream
-    ''' filtering. La capa V2 SKEL-OVERRIDE NO vive aquí — vive en el shape loop con
-    ''' isRobotMount flag y en OverrideActorBoneWorld gateado.</summary>
+    ''' filtering. La capa V2 SKEL-OVERRIDE NO vive aquí — se colecta en CollectV2PlanForShape
+    ''' (shape loop) y se aplica en ApplyMountPlanForActor. Robot Y biped por igual.</summary>
     Private Sub CollectOmodChunkCandidates(resolution As ObjectTemplateResolver.CombinationResolution,
                                            formType As String,
                                            state As NPCVisualState,
@@ -7537,14 +7174,10 @@ Public Class MainForm
                         Dim nmL = nm, cpL = cp, omodNmL = omodPre.EditorID
                         Logger.LogLazy(Function() $"[SOCKETS-SRC3-CHUNK]   '{nmL}' parent='{cpL.ParentBoneName}' T=({cpL.Translation.X:F3},{cpL.Translation.Y:F3},{cpL.Translation.Z:F3}) Quat(XYZW)=({cpL.Rotation.X:F4},{cpL.Rotation.Y:F4},{cpL.Rotation.Z:F4},{cpL.Rotation.W:F4}) (added from chunk '{omodNmL}')")
                     Else
-                        ' [DESACTIVADO 2026-05-17] CHUNK-WINS legacy patch — la idea era que chunks
-                        ' exposing sockets con T/R race-specific overriden la versión static. Pero
-                        ' eso movía M_mesh y disparaba V2 MODULE-RIG en chunks que con static eran
-                        ' ACTOR-RIG limpio (cascade drift en arms Assaultron). Con SKEL-OVERRIDE,
-                        ' actor.bones se mueven directamente vía chunks-internal NiNode positions,
-                        ' que es la fuente más confiable. Volvemos a FIRST-WINS: el static dict
-                        ' (skeleton del actor) gana siempre — chunks aportan solo sockets nuevos.
-                        ' Mantenemos solo el log de conflict para diagnóstico, sin override.
+                        ' FIRST-WINS sockets: el static dict (skeleton del actor) gana siempre,
+                        ' chunks aportan sólo sockets nuevos. Bone positioning real lo hace
+                        ' V2 SKEL-OVERRIDE vía MountDelta sobre chunk-internal NiNode positions.
+                        ' Log de conflicto sólo para diagnóstico.
                         Dim existing = socketsByName(nm)
                         Dim tDiff = Math.Sqrt((existing.Translation.X - cp.Translation.X) ^ 2 + (existing.Translation.Y - cp.Translation.Y) ^ 2 + (existing.Translation.Z - cp.Translation.Z) ^ 2)
                         Dim qDiff = Math.Sqrt((existing.Rotation.X - cp.Rotation.X) ^ 2 + (existing.Rotation.Y - cp.Rotation.Y) ^ 2 + (existing.Rotation.Z - cp.Rotation.Z) ^ 2 + (existing.Rotation.W - cp.Rotation.W) ^ 2)
@@ -7707,45 +7340,544 @@ Public Class MainForm
         Return depth
     End Function
 
-    ''' <summary>Override actor bone world position to match desired W_B (where the chunk
-    ''' wants the bone to be). Sets bone.OriginalLocaLTransform such that bone's
-    ''' OriginalGetGlobalTransform returns desiredWorld. Children del bone en actor
-    ''' skeleton cascadean automáticamente via parent chain (no necesitan update explícito).
+    ''' <summary>COLECTA el plan V2 SKEL-OVERRIDE para una shape con mount socket: computa cxNode,
+    ''' G_CX, parentBoneWorld, M_mesh, isActorRigMode discriminator, y por cada bone agrega un
+    ''' <see cref="MountDesiredWorldEntry"/> al plan <see cref="PreviewResolutionResult.MountDesiredWorlds"/>
+    ''' (con <c>TargetSkel</c>) más actualiza <paramref name="chunkWBHistory"/> para la cascade
+    ''' cross-shape. NO aplica MountDelta — eso lo hace <see cref="ApplyMountPlanForActor"/> en
+    ''' orden topológico tras el shape loop (fuente única de verdad para initial render + pose-dirty).
+    ''' Si cxNode no se encuentra en chunk NIF, emite DIAG-BIND-BAKE diagnostics.
+    ''' Try/Catch envolvente — excepciones se loggean sin propagar al shape loop.</summary>
+    Private Sub CollectV2PlanForShape(shape As IRenderableShape,
+                                       socket As BSConnectPointReader.ConnectPointInfo,
+                                       targetSkel As SkeletonInstance,
+                                       renderData As PreviewResolutionResult,
+                                       wbHistory As Dictionary(Of String, Transform_Class),
+                                       isRobotMount As Boolean)
+        If shape.ShapeBones Is Nothing OrElse shape.ShapeBoneTransforms Is Nothing Then Return
+        Try
+            ' Derive cxName from the actual mount socket (counterpart of socket.Name).
+            ' El chunk's BSConnectPoint::Children PointName puede ser inconsistente con el
+            ' socket donde OBTE lo monta: ej. HeadArmorProtectron.nif (clean) declara
+            ' Children=["C-Head"] pero se monta en P-HeadArmorProtectron. Usar el cxName
+            ' del chunk hace que V2 elija G_CX de un NiNode posicionado para OTRO frame
+            ' de attachment (C-Head a altura de cabeza vs C-HeadArmorProtectron a altura
+            ' del helmet socket) → A equivocado → casco rotado/caído. OBTE es autoritativo.
+            ' Convención canónica (per BSConnectPointBoneInjector.TryGetSocketCounterpartName):
+            ' "P-X" → "C-X", "P_X" → "C_X".
+            Dim cxName As String = ""
+            If socket IsNot Nothing AndAlso Not String.IsNullOrEmpty(socket.Name) AndAlso socket.Name.Length > 2 Then
+                If socket.Name.StartsWith("P-", StringComparison.OrdinalIgnoreCase) Then
+                    cxName = "C-" & socket.Name.Substring(2)
+                ElseIf socket.Name.StartsWith("P_", StringComparison.OrdinalIgnoreCase) Then
+                    cxName = "C_" & socket.Name.Substring(2)
+                Else
+                    ' Edge case: socket sin prefijo P-/P_. No conocemos caso real; queremos
+                    ' verlo si aparece. Debug break para inspección manual; en release no
+                    ' aborta (Debugger.Break solo dispara con debugger adjunto).
+                    System.Diagnostics.Debugger.Break()
+                End If
+            End If
+
+            If Not String.IsNullOrEmpty(cxName) Then
+                ' Find C-X NiNode (try exact, fallback suffix strip).
+                Dim cxNode As NiflySharp.Blocks.NiNode = shape.NifContent.FindBlockByName(Of NiflySharp.Blocks.NiNode)(cxName)
+                If cxNode Is Nothing Then
+                    Dim StripSfx = Function(s As String) As String
+                                       If String.IsNullOrEmpty(s) Then Return s
+                                       Dim pp = s.LastIndexOf("|"c)
+                                       If pp <= 0 OrElse pp >= s.Length - 1 Then Return s
+                                       For Each c In s.Substring(pp + 1)
+                                           If Not Char.IsDigit(c) Then Return s
+                                       Next
+                                       Return s.Substring(0, pp)
+                                   End Function
+                    Dim cxNormSearch = StripSfx(cxName)
+                    For Each blk In shape.NifContent.Blocks
+                        Dim cand = TryCast(blk, NiflySharp.Blocks.NiNode)
+                        If cand Is Nothing Then Continue For
+                        Dim candNm = If(cand.Name?.String, "")
+                        If String.Equals(StripSfx(candNm), cxNormSearch, StringComparison.OrdinalIgnoreCase) Then
+                            cxNode = cand
+                            Exit For
+                        End If
+                    Next
+                End If
+
+                If cxNode IsNot Nothing Then
+                    Dim G_CX = Transform_Class.GetGlobalTransform(cxNode, shape.NifContent)
+
+                    ' Compute P_world (M_mesh). Use chunk-source socket if we detected a discrepancy
+                    ' (socketCorrections contains the correction = inv(dict_existing).Compose(chunk_source)).
+                    ' Reconstruct chunk-source socketLocal: dict_existing.Compose(correction) since
+                    ' correction.M = chunk_source.M × inv(dict_existing).M, so chunk_source.M =
+                    ' correction.M × dict_existing.M.
+                    '
+                    ' UNIFICACIÓN: parentBoneWorld usa ResolveEffectiveWorld para respetar V2
+                    ' de parent chunks. Si un chunk anterior corrió V2 sobre socket.ParentBoneName,
+                    ' su W_B vive en chunkWBHistory[ParentBoneName] y representa la posición real
+                    ' del bone post-V2. Sin esto, V2 sobre chunks que montan en V2-corregidos
+                    ' usaría posiciones desactualizadas y la cascada se rompería.
+                    Dim parentBoneWorld As Transform_Class = ResolveEffectiveWorld(wbHistory, targetSkel, socket.ParentBoneName)
+                    If isRobotMount Then
+                        Dim hasOverride = wbHistory.ContainsKey(socket.ParentBoneName)
+                        Dim shL = shape.ShapeName, pbnL = socket.ParentBoneName, hoL = hasOverride
+                        Dim pwT = parentBoneWorld.Translation
+                        Logger.LogLazy(Function() $"[V2-MMESH] shape='{shL}' parent_bone='{pbnL}' effective_world.T=({pwT.X:F3},{pwT.Y:F3},{pwT.Z:F3}) (chunkWBHistory-override={hoL})")
+                    End If
+
+                    Dim dictExistingSocketLocal As New Transform_Class With {
+                        .Translation = socket.Translation,
+                        .Rotation = BSConnectPointReader.QuatToMatrix33(socket.Rotation),
+                        .Scale = If(socket.Scale > 0.0F, socket.Scale, 1.0F)
+                    }
+                    ' socket.Translation YA viene del resolver en Parents space (BSConnectPoint::Parents
+                    ' = chunk-source declaration). La correction almacenada en socketCorrections es
+                    ' inv(bone-dict-C-X).Compose(Parents) — pensada para llevar bone-dict-C-X → Parents.
+
+                    ' [HOST-SCOPED PATH A] Si la pre-pass A_HOST ya computó cand.ChunkToActor
+                    ' (Path A: M_mesh = host.ChunkToActor × HostSocketGlobalT en espacio del NIF
+                    ' del host), V2 deriva M_mesh = A × G_CX para mantener consistencia con
+                    ' downstream checks (ACTOR-RIG vs MODULE-RIG depende de M_mesh.T). Esto
+                    ' reemplaza el cálculo legacy parentBoneWorld × socketLocal solo cuando
+                    ' la pre-pass aplicó Path A — sino el path skeleton actual sigue.
+                    Dim _candForShape As MeshCandidate = Nothing
+                    renderData.ShapeCandidate.TryGetValue(shape, _candForShape)
+                    ' Aplicarla aquí encima de socket.Translation duplicaba el shift +2.908 X (verificado
+                    ' 2026-05-16 con CHUNK-RESKIN-V2-ALT: eyes/arms Codsworth shift consistente delta=2.908
+                    ' entre W_B_chunkSrc y W_B_dictExisting). CHUNK-PARENTS-DUMP sigue almacenando la
+                    ' correction como diagnostic; ningún caller actual la usa.
+                    Dim socketLocalForMmesh As Transform_Class = dictExistingSocketLocal
+                    Dim usedChunkSource As Boolean = False
+
+                    Dim M_mesh As Transform_Class
+                    If _candForShape IsNot Nothing AndAlso _candForShape.ChunkToActor IsNot Nothing Then
+                        ' Path A: A ya fue computado por la pre-pass usando coord system del
+                        ' host NIF correctamente. Derivar M_mesh = A × G_CX para mantener
+                        ' compatibilidad con downstream checks (ACTOR-RIG vs MODULE-RIG).
+                        M_mesh = _candForShape.ChunkToActor.ComposeTransforms(G_CX)
+                        Dim shL_pa = shape.ShapeName
+                        Dim mmTl = M_mesh.Translation
+                        Logger.LogLazy(Function() $"[V2-MMESH-PATH-A] shape='{shL_pa}' using pre-pass ChunkToActor, M_mesh.T=({mmTl.X:F3},{mmTl.Y:F3},{mmTl.Z:F3})")
+                    Else
+                        ' Path B: legacy/fallback. actor.parentBone × socket.local.
+                        M_mesh = parentBoneWorld.ComposeTransforms(socketLocalForMmesh)
+                    End If
+
+                    ' [DIAG-CHUNKROOT] Hipótesis: GetGlobalTransform incluye chunkRoot.local
+                    ' en su composición. Per BSConnectPointBoneInjector.vb:137-140 el
+                    ' chunkRoot.local es "scene-viewer rotation del modelador, NO parte del
+                    ' attachment". Si chunkRoot.local NO es identity, V2 (y SKIP) lo metería
+                    ' espurio en G_CX / G_B / W_B → rotación/translation extra en render.
+                    ' Loguear con-root vs stripped para confirmar la magnitud del impacto.
+                    ' Corre PRE-skip así también vemos arms (que van a SKIP).
+                    If isRobotMount AndAlso Logger.Enabled Then
+                        Try
+                            Dim chunkRootNode = shape.NifContent.GetRootNode()
+                            Dim chunkRootLocal As Transform_Class
+                            If chunkRootNode IsNot Nothing Then
+                                chunkRootLocal = New Transform_Class(chunkRootNode)
+                            Else
+                                chunkRootLocal = New Transform_Class()
+                            End If
+                            Dim chunkRootIsIdent = chunkRootLocal.Equals(New Transform_Class())
+                            Dim invChunkRoot = chunkRootLocal.Inverse()
+                            Dim G_CX_stripped = G_CX.ComposeTransforms(invChunkRoot)
+                            Dim invGCXStripped = G_CX_stripped.Inverse()
+                            Dim A_with = M_mesh.ComposeTransforms(G_CX.Inverse())
+                            Dim A_stripped = M_mesh.ComposeTransforms(invGCXStripped)
+                            Dim shL_cr = shape.ShapeName, cxL_cr = cxName, isIdL = chunkRootIsIdent
+                            Dim crT = chunkRootLocal.Translation, crR = chunkRootLocal.Rotation
+                            Dim gcxT = G_CX.Translation, gcxR = G_CX.Rotation
+                            Dim gcxStrT = G_CX_stripped.Translation, gcxStrR = G_CX_stripped.Rotation
+                            Dim aT_cr = A_with.Translation, aR_cr = A_with.Rotation
+                            Dim asT = A_stripped.Translation, asR = A_stripped.Rotation
+                            Logger.LogLazy(Function() $"[DIAG-CHUNKROOT] shape='{shL_cr}' cx='{cxL_cr}' chunkRoot.local IDENTITY={isIdL} T=({crT.X:F3},{crT.Y:F3},{crT.Z:F3}) R=[{crR.M11:F3},{crR.M12:F3},{crR.M13:F3}|{crR.M21:F3},{crR.M22:F3},{crR.M23:F3}|{crR.M31:F3},{crR.M32:F3},{crR.M33:F3}]")
+                            Logger.LogLazy(Function() $"[DIAG-CHUNKROOT]   G_CX(with-root).T=({gcxT.X:F3},{gcxT.Y:F3},{gcxT.Z:F3}) R=[{gcxR.M11:F3},{gcxR.M12:F3},{gcxR.M13:F3}|{gcxR.M21:F3},{gcxR.M22:F3},{gcxR.M23:F3}|{gcxR.M31:F3},{gcxR.M32:F3},{gcxR.M33:F3}]")
+                            Logger.LogLazy(Function() $"[DIAG-CHUNKROOT]   G_CX(stripped).T=({gcxStrT.X:F3},{gcxStrT.Y:F3},{gcxStrT.Z:F3}) R=[{gcxStrR.M11:F3},{gcxStrR.M12:F3},{gcxStrR.M13:F3}|{gcxStrR.M21:F3},{gcxStrR.M22:F3},{gcxStrR.M23:F3}|{gcxStrR.M31:F3},{gcxStrR.M32:F3},{gcxStrR.M33:F3}]")
+                            Logger.LogLazy(Function() $"[DIAG-CHUNKROOT]   A(with-root).T=({aT_cr.X:F3},{aT_cr.Y:F3},{aT_cr.Z:F3}) R=[{aR_cr.M11:F3},{aR_cr.M12:F3},{aR_cr.M13:F3}|{aR_cr.M21:F3},{aR_cr.M22:F3},{aR_cr.M23:F3}|{aR_cr.M31:F3},{aR_cr.M32:F3},{aR_cr.M33:F3}]")
+                            Logger.LogLazy(Function() $"[DIAG-CHUNKROOT]   A(stripped).T=({asT.X:F3},{asT.Y:F3},{asT.Z:F3}) R=[{asR.M11:F3},{asR.M12:F3},{asR.M13:F3}|{asR.M21:F3},{asR.M22:F3},{asR.M23:F3}|{asR.M31:F3},{asR.M32:F3},{asR.M33:F3}]")
+                            For sbiCR = 0 To Math.Min(shape.ShapeBones.Count, shape.ShapeBoneTransforms.Count) - 1
+                                Dim niNCR = TryCast(shape.ShapeBones(sbiCR), NiflySharp.Blocks.NiNode)
+                                If niNCR Is Nothing Then Continue For
+                                Dim bnNmCR = If(niNCR.Name?.String, "")
+                                If String.IsNullOrEmpty(bnNmCR) Then Continue For
+                                Dim G_B_with = Transform_Class.GetGlobalTransform(niNCR, shape.NifContent)
+                                Dim G_B_stripped = G_B_with.ComposeTransforms(invChunkRoot)
+                                Dim WB_with = A_with.ComposeTransforms(G_B_with)
+                                Dim WB_stripped = A_stripped.ComposeTransforms(G_B_stripped)
+                                Dim wT_w = WB_with.Translation, wT_s = WB_stripped.Translation
+                                Dim diff = Math.Sqrt((wT_w.X - wT_s.X) ^ 2 + (wT_w.Y - wT_s.Y) ^ 2 + (wT_w.Z - wT_s.Z) ^ 2)
+                                Dim shLb = shape.ShapeName, bnLb = bnNmCR, dL = diff
+                                Logger.LogLazy(Function() $"[DIAG-CHUNKROOT]     bone='{bnLb}' W_B(with).T=({wT_w.X:F3},{wT_w.Y:F3},{wT_w.Z:F3}) W_B(stripped).T=({wT_s.X:F3},{wT_s.Y:F3},{wT_s.Z:F3}) |diff|={dL:F3}")
+                            Next
+                        Catch exCR As Exception
+                            Dim shL_cr = shape.ShapeName, msgL = exCR.Message
+                            Logger.LogLazy(Function() $"[DIAG-CHUNKROOT] shape='{shL_cr}' EXCEPTION: {msgL}")
+                        End Try
+                    End If
+
+                    ' Discriminador actor-rig vs module-rig. Si CUALQUIER ShapeBone tiene
+                    ' actor.world ≈ M_mesh, el chunk pesa contra bones que YA están en el
+                    ' skeleton actor (replacement skin). Bind autorado contra esa pose →
+                    ' aplicar A meterá shift = offset entre chunk.C-X y chunk.actorBone.
+                    ' Solo módulos autocontenidos (bones chunk-internos, no preexisten en
+                    ' actor) necesitan que V2 los re-anchore via C-X.
+                    ' Tolerancia dT<0.1, dR<0.1 (empírico: Protectron arm da dT=0.0000 exact).
+                    Dim isActorRigMode As Boolean = False
+                    Dim actorRigMatchedBone As String = ""
+                    If shape.ShapeBones IsNot Nothing AndAlso shape.ShapeBones.Count > 0 Then
+                        Try
+                            Dim mT = M_mesh.Translation
+                            Dim mR = M_mesh.Rotation
+                            Dim matchedDT As Double = Double.MaxValue
+                            Dim matchedDR As Double = Double.MaxValue
+                            For Each bn In shape.ShapeBones
+                                Dim bnNode = TryCast(bn, NiflySharp.Blocks.NiNode)
+                                Dim bnName = If(bnNode?.Name?.String, "")
+                                If String.IsNullOrEmpty(bnName) Then Continue For
+                                Dim hb As HierarchiBone_class = Nothing
+                                If Not targetSkel.SkeletonDictionary.TryGetValue(bnName, hb) Then Continue For
+                                Dim aW = hb.OriginalGetGlobalTransform
+                                Dim aT = aW.Translation, aR = aW.Rotation
+                                Dim dT = Math.Sqrt((mT.X - aT.X) ^ 2 + (mT.Y - aT.Y) ^ 2 + (mT.Z - aT.Z) ^ 2)
+                                Dim dR = Math.Sqrt(
+                                    (mR.M11 - aR.M11) ^ 2 + (mR.M12 - aR.M12) ^ 2 + (mR.M13 - aR.M13) ^ 2 +
+                                    (mR.M21 - aR.M21) ^ 2 + (mR.M22 - aR.M22) ^ 2 + (mR.M23 - aR.M23) ^ 2 +
+                                    (mR.M31 - aR.M31) ^ 2 + (mR.M32 - aR.M32) ^ 2 + (mR.M33 - aR.M33) ^ 2)
+                                If isRobotMount Then
+                                    Dim shLp = shape.ShapeName, bnLp = bnName, dTp = dT, dRp = dR, aTp = aT
+                                    Logger.LogLazy(Function() $"[DIAG-MMESH-PER-BONE] shape='{shLp}' bone='{bnLp}' actor.T=({aTp.X:F3},{aTp.Y:F3},{aTp.Z:F3}) dT={dTp:F4} dR={dRp:F4}")
+                                End If
+                                If dT < 0.1 AndAlso dR < 0.1 Then
+                                    If actorRigMatchedBone = "" OrElse dT < matchedDT Then
+                                        actorRigMatchedBone = bnName
+                                        matchedDT = dT
+                                        matchedDR = dR
+                                        isActorRigMode = True
+                                    End If
+                                End If
+                            Next
+                            If isRobotMount Then
+                                Dim shL = shape.ShapeName, mnL = actorRigMatchedBone, mdT = matchedDT, mdR = matchedDR
+                                Dim mTL = mT
+                                If isActorRigMode Then
+                                    Logger.LogLazy(Function() $"[DIAG-MMESH-VS-ANY-BONE] shape='{shL}' M_mesh.T=({mTL.X:F3},{mTL.Y:F3},{mTL.Z:F3}) MATCH bone='{mnL}' dT={mdT:F4} dR={mdR:F4} → ACTOR-RIG mode (V2 SKIP)")
+                                Else
+                                    Logger.LogLazy(Function() $"[DIAG-MMESH-VS-ANY-BONE] shape='{shL}' M_mesh.T=({mTL.X:F3},{mTL.Y:F3},{mTL.Z:F3}) NO MATCH in any ShapeBone → MODULE-RIG mode (V2 applies)")
+                                End If
+                            End If
+                        Catch exMM As Exception
+                            If isRobotMount Then Logger.LogLazy(Function() $"[DIAG-MMESH-VS-ANY-BONE] EXCEPTION: {exMM.Message}")
+                        End Try
+                    End If
+
+                    ' [SKEL-OVERRIDE pre] Antes del switch ACTOR-RIG vs MODULE-RIG: computar
+                    ' A y W_B por shape bone, aplicar override a actor.bone. Esto unifica
+                    ' ambos paths bajo el mismo mecanismo (no más SKIP+PROPAGATE).
+                    '
+                    ' Para ACTOR-RIG (Protectron arm): W_B suele coincidir con actor.bone
+                    ' (chain[0] compensa) → override no-op por threshold. Sin regresión.
+                    ' Para chunks donde W_B ≠ actor.bone (Assaultron arm) → override fires
+                    ' → actor.bone se mueve al chunk-decl post-mount position → arm encastra.
+                    If isActorRigMode Then
+                        Try
+                            Dim invGCX_ar = G_CX.Inverse()
+                            Dim A_ar = M_mesh.ComposeTransforms(invGCX_ar)
+                            ' [DEPTH-ORDER] Sortear shape bones por hierarchy depth en actor.skel
+                            ' (parent primero). Sin esto, NIF order arbitrary → si root está al final
+                            ' (caso LEFT arm Protectron), overrides children fires antes que parent →
+                            ' cuando parent override fires después → cascade rompe children → arm
+                            ' "desguazado". Procesar top-down garantiza cada override ve parent.world
+                            ' ya finalizado, sin drift.
+                            Dim boneList_ar As New List(Of Tuple(Of Integer, NiflySharp.Blocks.NiNode, HierarchiBone_class, Integer))
+                            Dim seenBones_ar As New HashSet(Of String)(StringComparer.OrdinalIgnoreCase)
+                            For sbi_pre = 0 To Math.Min(shape.ShapeBones.Count, shape.ShapeBoneTransforms.Count) - 1
+                                Dim niN_pre = TryCast(shape.ShapeBones(sbi_pre), NiflySharp.Blocks.NiNode)
+                                If niN_pre Is Nothing Then Continue For
+                                Dim bnName_pre = If(niN_pre.Name?.String, "")
+                                If String.IsNullOrEmpty(bnName_pre) Then Continue For
+                                Dim hb_pre As HierarchiBone_class = Nothing
+                                If Not targetSkel.SkeletonDictionary.TryGetValue(bnName_pre, hb_pre) Then Continue For
+                                If seenBones_ar.Add(bnName_pre) Then
+                                    Dim depth_pre = GetBoneHierarchyDepth(hb_pre)
+                                    boneList_ar.Add(Tuple.Create(sbi_pre, niN_pre, hb_pre, depth_pre))
+                                End If
+                                ' [CHAIN-INTERMEDIATES] Walk parent chain de esta shape bone via chunk NIF
+                                ' tree (GetParentNode). Para cada parent intermedio (hasta C-X), si su
+                                ' nombre está en actor.SkeletonDictionary, agregarlo al boneList. Cubre
+                                ' Assaultron (RUPPERARM intermedio entre RClavicleTwist y ShoulderTwist;
+                                ' HeadNod intermedio entre Neck y HeadTwist). Para chunks donde shape
+                                ' bones cubren toda la chain (Protectron), no-op. Depth-sort más abajo
+                                ' procesa todo top-down → sin cascade drift.
+                                Dim parentNode_ar = TryCast(shape.NifContent.GetParentNode(niN_pre), NiflySharp.Blocks.NiNode)
+                                Dim safetyHops_ar As Integer = 0
+                                While parentNode_ar IsNot Nothing AndAlso Not ReferenceEquals(parentNode_ar, cxNode) AndAlso safetyHops_ar < 20
+                                    Dim parentNm_pre = If(parentNode_ar.Name?.String, "")
+                                    If Not String.IsNullOrEmpty(parentNm_pre) Then
+                                        Dim parentHb_pre As HierarchiBone_class = Nothing
+                                        If targetSkel.SkeletonDictionary.TryGetValue(parentNm_pre, parentHb_pre) AndAlso seenBones_ar.Add(parentNm_pre) Then
+                                            Dim depthP_pre = GetBoneHierarchyDepth(parentHb_pre)
+                                            boneList_ar.Add(Tuple.Create(-1, parentNode_ar, parentHb_pre, depthP_pre))
+                                        End If
+                                    End If
+                                    parentNode_ar = TryCast(shape.NifContent.GetParentNode(parentNode_ar), NiflySharp.Blocks.NiNode)
+                                    safetyHops_ar += 1
+                                End While
+                            Next
+                            boneList_ar.Sort(Function(x_sort, y_sort) x_sort.Item4.CompareTo(y_sort.Item4))
+                            Dim collectedCount As Integer = 0
+                            For Each entry In boneList_ar
+                                Dim niN_ar = entry.Item2
+                                Dim actorBhb_ar = entry.Item3
+                                Dim boneName_ar = actorBhb_ar.BoneName
+                                Dim G_B_ar = Transform_Class.GetGlobalTransform(niN_ar, shape.NifContent)
+                                Dim W_B_ar = A_ar.ComposeTransforms(G_B_ar)
+                                wbHistory(boneName_ar) = W_B_ar
+                                ' [MOUNTDELTA-PLAN] V2 SOLO colecta el plan; el apply (OverrideActorBoneWorld)
+                                ' lo hace ApplyMountPlanForActor en orden topológico tras el shape loop.
+                                ' wbHistory se sigue actualizando acá para la cascade cross-shape en colección.
+                                renderData.MountDesiredWorlds.Add(New MountDesiredWorldEntry With {
+                                    .BoneName = actorBhb_ar.BoneName,
+                                    .DesiredWorld = W_B_ar,
+                                    .ContextLabel = "V2-ACTORRIG-" & shape.ShapeName,
+                                    .TargetSkel = targetSkel
+                                })
+                                collectedCount += 1
+                            Next
+                            If isRobotMount Then
+                                Dim shL = shape.ShapeName, cxL = cxName, mnL = actorRigMatchedBone, ovC = collectedCount
+                                Logger.LogLazy(Function() $"[CHUNK-RESKIN-V2] shape='{shL}' cx='{cxL}' ACTOR-RIG plan collected (M_mesh ≈ actor.{mnL}.world, {ovC} entries, depth-sorted)")
+                            End If
+                        Catch exAR As Exception
+                            Dim shL = shape.ShapeName, msgL = exAR.Message
+                            Logger.LogLazy(Function() $"[CHUNK-RESKIN-V2] shape='{shL}' ACTOR-RIG override EXCEPTION: {msgL}")
+                        End Try
+                        Return
+                    End If
+
+                    Dim invGCX = G_CX.Inverse()
+                    ' A = inv(G_CX) × M_mesh in row-vec composition = M_mesh.Compose(invGCX)
+                    Dim A = M_mesh.ComposeTransforms(invGCX)
+
+                    ' [DIAG-EYES] Alternative A computed with dict-existing socket (no chunk-source
+                    ' override). Si usedChunkSource=False, A_alt = A. Si True, A_alt es la versión
+                    ' SIN el shift +2.908 X. Diff W_B - W_B_alt cuantifica el offset que el chunk
+                    ' source override mete. Solo log, no afecta render.
+                    Dim A_alt As Transform_Class = A
+                    If usedChunkSource Then
+                        Dim M_mesh_alt = parentBoneWorld.ComposeTransforms(dictExistingSocketLocal)
+                        A_alt = M_mesh_alt.ComposeTransforms(invGCX)
+                    End If
+
+                    Dim reskinCount As Integer = 0
+                    Dim skipCount As Integer = 0
+                    ' [DEPTH-ORDER] Sortear shape bones por hierarchy depth en actor.skel
+                    ' (parent primero) antes de aplicar overrides. Sin esto, cascade drift
+                    ' rompe arms con NIF order non-hierarchical.
+                    Dim boneList_mod As New List(Of Tuple(Of Integer, NiflySharp.Blocks.NiNode, HierarchiBone_class, Integer))
+                    Dim seenBones_mod As New HashSet(Of String)(StringComparer.OrdinalIgnoreCase)
+                    For sbi_pre2 = 0 To Math.Min(shape.ShapeBones.Count, shape.ShapeBoneTransforms.Count) - 1
+                        Dim niN_pre2 = TryCast(shape.ShapeBones(sbi_pre2), NiflySharp.Blocks.NiNode)
+                        If niN_pre2 Is Nothing Then Continue For
+                        Dim bnName_pre2 = If(niN_pre2.Name?.String, "")
+                        If String.IsNullOrEmpty(bnName_pre2) Then Continue For
+                        Dim hb_pre2 As HierarchiBone_class = Nothing
+                        If Not targetSkel.SkeletonDictionary.TryGetValue(bnName_pre2, hb_pre2) Then
+                            skipCount += 1
+                            Continue For
+                        End If
+                        If seenBones_mod.Add(bnName_pre2) Then
+                            Dim depth_pre2 = GetBoneHierarchyDepth(hb_pre2)
+                            boneList_mod.Add(Tuple.Create(sbi_pre2, niN_pre2, hb_pre2, depth_pre2))
+                        End If
+                        ' [CHAIN-INTERMEDIATES] Walk parent chain de esta shape bone via chunk NIF
+                        ' tree (GetParentNode). Para cada parent intermedio (hasta C-X), si su
+                        ' nombre está en actor.SkeletonDictionary, agregarlo al boneList. Cubre
+                        ' HeadAssaultron (HeadNod intermedio entre Neck y HeadTwist en chain[1]),
+                        ' y cualquier otro chunk MODULE-RIG con bones intermedios no declarados
+                        ' como shape bones. Depth-sort más abajo procesa todo top-down → sin
+                        ' cascade drift. Idéntico al patrón ACTOR-RIG.
+                        Dim parentNode_mod = TryCast(shape.NifContent.GetParentNode(niN_pre2), NiflySharp.Blocks.NiNode)
+                        Dim safetyHops_mod As Integer = 0
+                        While parentNode_mod IsNot Nothing AndAlso Not ReferenceEquals(parentNode_mod, cxNode) AndAlso safetyHops_mod < 20
+                            Dim parentNm_pre2 = If(parentNode_mod.Name?.String, "")
+                            If Not String.IsNullOrEmpty(parentNm_pre2) Then
+                                Dim parentHb_pre2 As HierarchiBone_class = Nothing
+                                If targetSkel.SkeletonDictionary.TryGetValue(parentNm_pre2, parentHb_pre2) AndAlso seenBones_mod.Add(parentNm_pre2) Then
+                                    Dim depthP_pre2 = GetBoneHierarchyDepth(parentHb_pre2)
+                                    boneList_mod.Add(Tuple.Create(-1, parentNode_mod, parentHb_pre2, depthP_pre2))
+                                End If
+                            End If
+                            parentNode_mod = TryCast(shape.NifContent.GetParentNode(parentNode_mod), NiflySharp.Blocks.NiNode)
+                            safetyHops_mod += 1
+                        End While
+                    Next
+                    boneList_mod.Sort(Function(x_sort2, y_sort2) x_sort2.Item4.CompareTo(y_sort2.Item4))
+                    For Each entry_mod In boneList_mod
+                        Dim sbi = entry_mod.Item1
+                        Dim niN = entry_mod.Item2
+                        Dim actorBhb = entry_mod.Item3
+                        Dim boneName = actorBhb.BoneName
+                        Dim actor_B_world = actorBhb.OriginalGetGlobalTransform
+
+                        ' [CHUNK-ACCUMULATION] Si bone fue reskin-eado por chunk previo, loggear
+                        ' delta entre actor.world (que usamos para corregir) y prev_W_B (donde el
+                        ' chunk previo realmente puso el geometry). Si delta ≠ 0, este sub-chunk
+                        ' está usando referencia stale.
+                        Dim prevWB As Transform_Class = Nothing
+                        If isRobotMount AndAlso wbHistory.TryGetValue(boneName, prevWB) AndAlso prevWB IsNot Nothing Then
+                            Dim aT0 = actor_B_world.Translation, pT0 = prevWB.Translation
+                            Dim dX = pT0.X - aT0.X, dY = pT0.Y - aT0.Y, dZ = pT0.Z - aT0.Z
+                            Dim bnL0 = boneName, shL0 = shape.ShapeName
+                            Logger.LogLazy(Function() $"[CHUNK-ACCUMULATION] shape='{shL0}' bone='{bnL0}' actor.world=({aT0.X:F3},{aT0.Y:F3},{aT0.Z:F3}) prevChunkWB=({pT0.X:F3},{pT0.Y:F3},{pT0.Z:F3}) delta=({dX:F3},{dY:F3},{dZ:F3})")
+                        End If
+
+                        ' G_B desde el chunk NIF tree (no desde inv(bind)).
+                        Dim G_B = Transform_Class.GetGlobalTransform(niN, shape.NifContent)
+                        ' W_B = G_B × A (in row-vec composition).
+                        Dim W_B = A.ComposeTransforms(G_B)
+
+                        ' [DIAG-EYES] W_B_alt = G_B × A_alt. Si no hay chunk source override, A_alt=A
+                        ' y W_B_alt=W_B (delta=0). Si hay override, delta cuantifica el shift que
+                        ' la corrección +2.908 X mete vs el path sin corregir.
+                        If isRobotMount AndAlso usedChunkSource AndAlso Logger.Enabled Then
+                            Dim W_B_alt = A_alt.ComposeTransforms(G_B)
+                            Dim wT = W_B.Translation, wAt = W_B_alt.Translation
+                            Dim bnL1 = boneName, shL1 = shape.ShapeName
+                            Logger.LogLazy(Function() $"[CHUNK-RESKIN-V2-ALT] shape='{shL1}' bone='{bnL1}' W_B_chunkSrc=({wT.X:F3},{wT.Y:F3},{wT.Z:F3}) W_B_dictExisting=({wAt.X:F3},{wAt.Y:F3},{wAt.Z:F3}) delta=({wT.X - wAt.X:F3},{wT.Y - wAt.Y:F3},{wT.Z - wAt.Z:F3})")
+                        End If
+
+                        ' Acumular W_B en history para que sub-chunks posteriores puedan compararse
+                        ' (cascade cross-shape en colección).
+                        wbHistory(boneName) = W_B
+                        ' [MOUNTDELTA-PLAN] V2 SOLO colecta el plan; el apply lo hace
+                        ' ApplyMountPlanForActor en orden topológico tras el shape loop.
+                        renderData.MountDesiredWorlds.Add(New MountDesiredWorldEntry With {
+                            .BoneName = actorBhb.BoneName,
+                            .DesiredWorld = W_B,
+                            .ContextLabel = "V2-MODULE-" & shape.ShapeName,
+                            .TargetSkel = targetSkel
+                        })
+                        reskinCount += 1
+                        If isRobotMount Then
+                            Dim sbiL = sbi, bnL = boneName, shL = shape.ShapeName
+                            Dim wBT = W_B.Translation, gBT = G_B.Translation
+                            Logger.LogLazy(Function() $"[CHUNK-RESKIN-V2] shape='{shL}' bone[{sbiL}] '{bnL}' G_B.T=({gBT.X:F3},{gBT.Y:F3},{gBT.Z:F3}) W_B.T=({wBT.X:F3},{wBT.Y:F3},{wBT.Z:F3}) → plan entry collected")
+                        End If
+                    Next
+                    If isRobotMount Then
+                        Dim rcL = reskinCount, skL = skipCount, shL = shape.ShapeName, cxL = cxName, usedL = usedChunkSource
+                        Dim AT = A.Translation, GCXT = G_CX.Translation
+                        Logger.LogLazy(Function() $"[CHUNK-RESKIN-V2] shape='{shL}' cx='{cxL}' G_CX.T=({GCXT.X:F3},{GCXT.Y:F3},{GCXT.Z:F3}) A.T=({AT.X:F3},{AT.Y:F3},{AT.Z:F3}) usedChunkSrcSocket={usedL} summary: reskin={rcL} skip={skL}")
+                    End If
+                ElseIf isRobotMount Then
+                    Dim shL = shape.ShapeName, cxL = cxName
+                    Logger.LogLazy(Function() $"[CHUNK-RESKIN-V2] shape='{shL}' cx='{cxL}' SKIP: C-X NiNode not found in chunk NIF tree")
+
+                    ' [DIAG-BIND-BAKE] Para chunks SKIP (sin C-X), comparar inv(bind) vs actor.bone.world
+                    ' vs actor.parent_bone.world × socket.local (M_mesh). Permite ver empíricamente si el
+                    ' bind tiene baked SOLO bone (Assaultron, needs fix) o bone+socket (Protectron, OK as-is).
+                    Try
+                        Dim parentBoneHbDiag As HierarchiBone_class = Nothing
+                        If targetSkel.SkeletonDictionary.TryGetValue(socket.ParentBoneName, parentBoneHbDiag) Then
+                            Dim parentBoneWorldDiag = parentBoneHbDiag.OriginalGetGlobalTransform
+                            Dim socketLocalDiag As New Transform_Class With {
+                                .Translation = socket.Translation,
+                                .Rotation = BSConnectPointReader.QuatToMatrix33(socket.Rotation),
+                                .Scale = If(socket.Scale > 0.0F, socket.Scale, 1.0F)
+                            }
+                            Dim mMeshDiag = parentBoneWorldDiag.ComposeTransforms(socketLocalDiag)
+                            Dim mmT_outer = mMeshDiag.Translation
+
+                            For sbiD = 0 To Math.Min(shape.ShapeBones.Count, shape.ShapeBoneTransforms.Count) - 1
+                                Dim niN = TryCast(shape.ShapeBones(sbiD), NiflySharp.Blocks.NiNode)
+                                If niN Is Nothing Then Continue For
+                                Dim boneName = If(niN.Name?.String, "")
+                                If String.IsNullOrEmpty(boneName) Then Continue For
+                                Dim bind = shape.ShapeBoneTransforms(sbiD)
+                                If bind Is Nothing Then Continue For
+                                Dim bindT As New Transform_Class With {
+                                    .Translation = bind.Translation,
+                                    .Rotation = bind.Rotation,
+                                    .Scale = bind.Scale,
+                                    .ScaleVector = bind.ScaleVector
+                                }
+                                Dim invBind = bindT.Inverse()
+                                Dim invBindT = invBind.Translation
+                                Dim actorBhbDiag As HierarchiBone_class = Nothing
+                                Dim hasActor = targetSkel.SkeletonDictionary.TryGetValue(boneName, actorBhbDiag)
+                                Dim aBT As System.Numerics.Vector3 = If(hasActor, actorBhbDiag.OriginalGetGlobalTransform.Translation, New System.Numerics.Vector3(0, 0, 0))
+                                Dim dT_bone As Double = If(hasActor,
+                                    Math.Sqrt((invBindT.X - aBT.X) ^ 2 + (invBindT.Y - aBT.Y) ^ 2 + (invBindT.Z - aBT.Z) ^ 2),
+                                    Double.NaN)
+                                Dim dT_mmesh As Double = Math.Sqrt((invBindT.X - mmT_outer.X) ^ 2 + (invBindT.Y - mmT_outer.Y) ^ 2 + (invBindT.Z - mmT_outer.Z) ^ 2)
+                                Dim verdict As String
+                                If Not hasActor Then
+                                    verdict = "actor.bone NOT-IN-DICT"
+                                ElseIf dT_bone < 1.0 AndAlso dT_mmesh > 1.0 Then
+                                    verdict = "BIND≈ACTOR.BONE (sin socket; chunk-frame literal)"
+                                ElseIf dT_mmesh < 1.0 AndAlso dT_bone > 1.0 Then
+                                    verdict = "BIND≈M_MESH (socket baked; renders OK as-is)"
+                                ElseIf dT_bone < dT_mmesh Then
+                                    verdict = "CLOSER-TO-BONE"
+                                Else
+                                    verdict = "CLOSER-TO-M_MESH"
+                                End If
+                                Dim shLD = shape.ShapeName, bnLD = boneName, ibTL = invBindT, aBTL = aBT, mmTL = mmT_outer, dTbL = dT_bone, dTmL = dT_mmesh, vrL = verdict
+                                Logger.LogLazy(Function() $"[DIAG-BIND-BAKE] shape='{shLD}' bone='{bnLD}' inv(bind).T=({ibTL.X:F3},{ibTL.Y:F3},{ibTL.Z:F3}) actor.bone.T=({aBTL.X:F3},{aBTL.Y:F3},{aBTL.Z:F3}) M_mesh.T=({mmTL.X:F3},{mmTL.Y:F3},{mmTL.Z:F3}) dT_bone={dTbL:F3} dT_mmesh={dTmL:F3} → {vrL}")
+                            Next
+                        Else
+                            Dim shLD2 = shape.ShapeName, pbnL = socket.ParentBoneName
+                            Logger.LogLazy(Function() $"[DIAG-BIND-BAKE] shape='{shLD2}' SKIP: parent bone '{pbnL}' NOT-IN-DICT")
+                        End If
+                    Catch exBb As Exception
+                        Dim shLD3 = shape.ShapeName, msgL = exBb.Message
+                        Logger.LogLazy(Function() $"[DIAG-BIND-BAKE] shape='{shLD3}' EXCEPTION: {msgL}")
+                    End Try
+                End If
+            ElseIf isRobotMount Then
+                Dim shL = shape.ShapeName
+                Logger.LogLazy(Function() $"[CHUNK-RESKIN-V2] shape='{shL}' SKIP: chunk has no BSConnectPoint::Children")
+            End If
+        Catch ex As Exception
+            Dim shL = shape.ShapeName, exL = ex
+            Logger.LogLazy(Function() $"[CHUNK-RESKIN-V2] shape='{shL}' EXCEPTION: {exL.GetType().Name}: {exL.Message}")
+        End Try
+    End Sub
+
+    ''' <summary>Override actor bone world position to match <paramref name="desiredWorld"/>
+    ''' (donde el chunk quiere el bone) escribiendo <c>MountDeltaTransform</c> sin mutar el
+    ''' bind original. Children del bone cascadean automáticamente via parent chain
+    ''' (no necesitan update explícito).
     '''
-    ''' Esta es la fuente única estructural que reemplaza V2 bind modification +
-    ''' PROPAGATE-V2 + PROPAGATE-V2-ANCHOR + CHUNK-WINS sockets. En vez de compensar el
-    ''' bind del shape o el anchor del chunk para que la geometría termine donde el chunk
-    ''' la quiere, modificamos directamente la pose del actor bone para que coincida con
-    ''' lo que el chunk publica. Como children cascadean, basta override del bone raíz
-    ''' de la cadena (ej. override RClavicle → RClavicleTwist se mueve automáticamente).
+    ''' Reemplaza la cadena V2 bind modification + PROPAGATE-V2 + PROPAGATE-V2-ANCHOR +
+    ''' CHUNK-WINS sockets. En vez de compensar el bind del shape o el anchor del chunk,
+    ''' movemos el actor bone directamente para que su world coincida con el desiredWorld
+    ''' del chunk. Basta override del bone raíz de la cadena (override RClavicle →
+    ''' RClavicleTwist se mueve por cascade).
     '''
-    ''' Idempotente: si actor.bone.world ya coincide con desiredWorld (diff &lt; threshold),
-    ''' es no-op. Threshold 0.5 unidades — diferencias menores son numerical noise.
-    '''
-    ''' Matemática inversa: queremos hb.OriginalGetGlobalTransform = desiredWorld.
-    ''' Como OriginalGetGlobalTransform = parent.OriginalGetGlobalTransform.Compose(OriginalLocaLTransform),
-    ''' setear OriginalLocaLTransform = inv(parent.world).Compose(desiredWorld) garantiza igualdad.</summary>
+    ''' Matemática:
+    '''   newLocal  = inv(parent.OriginalGetGlobalTransform) × desiredWorld
+    '''   MountDelta = inv(OrigL) × newLocal
+    ''' Resultante: <c>LocaLTransform = OrigL × MountDelta × Delta = newLocal × Delta</c>,
+    ''' bit-equivalente al committed pre-refactor (que mutaba <c>OrigL := newLocal</c>).
+    ''' <c>parent.OriginalGetGlobalTransform</c> incluye MountDelta del parent en la cadena
+    ''' (propagación cascade depth-sorted).</summary>
     Private Sub OverrideActorBoneWorld(hb As HierarchiBone_class,
                                         desiredWorld As Transform_Class,
-                                        isRobotMount As Boolean,
                                         contextLabel As String)
         If hb Is Nothing OrElse desiredWorld Is Nothing Then Return
         Dim currentWorld = hb.OriginalGetGlobalTransform
         Dim cT = currentWorld.Translation, dT = desiredWorld.Translation
         Dim diff = Math.Sqrt((cT.X - dT.X) ^ 2 + (cT.Y - dT.Y) ^ 2 + (cT.Z - dT.Z) ^ 2)
-        If diff < 0.5 Then Return ' no-op: ya coincide (numerical noise threshold)
-        ' [FASE 2.5] Frontera arquitectónica robot-only: OverrideActorBoneWorld muta
-        ' bone.OriginalLocaLTransform (bind), que se compone con DeltaTransform donde
-        ' MRSV/pose/ARMA bone scale escriben. Para bones humanoid con HasRangeModifier
-        ' (Chest/Spine/Neck/etc.) la composición no es inocua. Capa 3 V2 SKEL-OVERRIDE
-        ' queda restringida a robot path hasta que un caso biped concreto demuestre
-        ' que necesita el override. Caller pasa isRobotMount=False (biped) → suppressed
-        ' con log diagnostic para dimensionar qué tan común es el caso.
-        If Not isRobotMount Then
-            Dim bnSup = hb.BoneName, ctxSup = contextLabel, ctSup = cT, dSup = dT, diSup = diff
-            Logger.LogLazy(Function() $"[SKEL-OVERRIDE-SUPPRESSED] bone='{bnSup}' ctx='{ctxSup}' biped-path → V2 SKEL-OVERRIDE robot-only por Fase 2.5; would-have-set.world.T=({dSup.X:F3},{dSup.Y:F3},{dSup.Z:F3}) was.world.T=({ctSup.X:F3},{ctSup.Y:F3},{ctSup.Z:F3}) diff={diSup:F3}")
-            Return
-        End If
+        ' [MOUNTDELTA] Composición 3-layer: OrigL × MountDelta × Delta.
+        '   pre-refactor: OrigL_mutated = newLocal = inv(parent.OrigGlobal) × desiredWorld;
+        '                 LocaLTransform_old = newLocal × Delta.
+        '   post-refactor: OrigL × MountDelta × Delta = newLocal × Delta.
+        '                  ⟹ OrigL × MountDelta = newLocal
+        '                  ⟹ MountDelta = inv(OrigL) × newLocal.
+        ' OrigL no se muta; el getter cancela algebraicamente: OrigL × inv(OrigL) = I.
         Dim parentWorld As Transform_Class
         If hb.Parent IsNot Nothing Then
             parentWorld = hb.Parent.OriginalGetGlobalTransform
@@ -7753,10 +7885,72 @@ Public Class MainForm
             parentWorld = New Transform_Class()
         End If
         Dim newLocal = parentWorld.Inverse().ComposeTransforms(desiredWorld)
-        Dim oldLocalT = hb.OriginalLocaLTransform.Translation
-        hb.OriginalLocaLTransform = newLocal
-        Dim bnL = hb.BoneName, ctxL = contextLabel, ctL = cT, dL = dT, diL = diff, olT = oldLocalT, nlT = newLocal.Translation
-        Logger.LogLazy(Function() $"[SKEL-OVERRIDE] bone='{bnL}' ctx='{ctxL}' was.world.T=({ctL.X:F3},{ctL.Y:F3},{ctL.Z:F3}) → wants.world.T=({dL.X:F3},{dL.Y:F3},{dL.Z:F3}) diff={diL:F3} local.T was=({olT.X:F3},{olT.Y:F3},{olT.Z:F3}) now=({nlT.X:F3},{nlT.Y:F3},{nlT.Z:F3})")
+        Dim newMountDelta = hb.OriginalLocaLTransform.Inverse().ComposeTransforms(newLocal)
+        ' [MOUNTDELTA-BONE-CONFLICT] Guardrail: si MountDelta ya estaba set por otro chunk
+        ' previamente, last-write-wins pero loggeamos para diagnóstico (per OpenAI Vuelta 6).
+        ' Conflict = magnitud de la diferencia entre el MountDelta previo y el nuevo.
+        If hb.MountDeltaTransform IsNot Nothing Then
+            Dim existingT = hb.MountDeltaTransform.Translation
+            Dim newT = newMountDelta.Translation
+            Dim mdDiff = Math.Sqrt((existingT.X - newT.X) ^ 2 + (existingT.Y - newT.Y) ^ 2 + (existingT.Z - newT.Z) ^ 2)
+            If mdDiff > 0.5 Then
+                Dim bnCf = hb.BoneName, ctxCf = contextLabel, exT = existingT, nwT = newT, mdDf = mdDiff
+                Logger.LogLazy(Function() $"[MOUNTDELTA-BONE-CONFLICT] bone='{bnCf}' ctx='{ctxCf}' existing.T=({exT.X:F3},{exT.Y:F3},{exT.Z:F3}) new.T=({nwT.X:F3},{nwT.Y:F3},{nwT.Z:F3}) diff={mdDf:F3} → last-write-wins")
+            End If
+        End If
+        hb.MountDeltaTransform = newMountDelta
+        Dim bnL = hb.BoneName, ctxL = contextLabel, ctL = cT, dL = dT, diL = diff, mdT = newMountDelta.Translation
+        Logger.LogLazy(Function() $"[MOUNTDELTA-WRITE] bone='{bnL}' ctx='{ctxL}' was.world.T=({ctL.X:F3},{ctL.Y:F3},{ctL.Z:F3}) → wants.world.T=({dL.X:F3},{dL.Y:F3},{dL.Z:F3}) diff={diL:F3} MountDelta.T=({mdT.X:F3},{mdT.Y:F3},{mdT.Z:F3})")
+    End Sub
+
+    ''' <summary>Aplicador canónico ÚNICO del plan de mount. Recorre el plan
+    ''' <c>renderData.MountDesiredWorlds</c> (colectado por <see cref="CollectV2PlanForShape"/> en
+    ''' orden topológico) y escribe <c>MountDeltaTransform</c> vía <see cref="OverrideActorBoneWorld"/>.
+    ''' Fuente única de verdad: initial render (tras shape loop) y pose-dirty refresh usan ESTE mismo
+    ''' aplicador — sin segundo camino.
+    ''' <para>
+    ''' Patrón canónico: <c>ApplyPose(inst) → ApplyMountPlanForActor(inst, renderData) [→ MarkDirty(Pose)]</c>.
+    ''' ApplyPose limpia ambos deltas; el apply repopula MountDelta desde el plan.
+    ''' </para>
+    ''' <para>
+    ''' Per-instance scope: cada <c>SkeletonInstance</c> (base + clones sculpt) tiene SUS PROPIOS
+    ''' bones. El filtro TargetSkel garantiza que cada entry solo aplique a su inst (W_B es
+    ''' la posición authored por el chunk en actor world, no depende de pose o sculpt source).
+    ''' </para>
+    ''' <para>
+    ''' Iteración preserva orden topológico (el cache fue populado por shape loop V2 con
+    ''' depth-sort parent-first). Cascade parent-V2 ya resuelta al cachear — el
+    ''' <c>desiredWorld</c> del cache ya refleja las correcciones aplicadas por V2 sobre
+    ''' los parents. El replay no recomputa cascade.
+    ''' </para></summary>
+    Private Sub ApplyMountPlanForActor(inst As SkeletonInstance, renderData As PreviewResolutionResult)
+        If inst Is Nothing OrElse renderData Is Nothing Then Return
+        If renderData.MountDesiredWorlds Is Nothing OrElse renderData.MountDesiredWorlds.Count = 0 Then Return
+
+        Dim writtenCount As Integer = 0
+        Dim skippedNoBone As Integer = 0
+        Dim skippedScopeMismatch As Integer = 0
+        For Each entry In renderData.MountDesiredWorlds
+            If entry Is Nothing OrElse String.IsNullOrEmpty(entry.BoneName) Then Continue For
+            ' Per-instance scope: si el entry fue escrito para otra SkeletonInstance (p.ej. base
+            ' inst) no aplica acá (p.ej. per-ARMA clone). Sin este filtro, clones reciben mount
+            ' deltas de chunks que no les pertenecen vía bone-name collision → deformación.
+            If entry.TargetSkel IsNot Nothing AndAlso Not entry.TargetSkel Is inst Then
+                skippedScopeMismatch += 1
+                Continue For
+            End If
+            Dim hb As HierarchiBone_class = Nothing
+            If Not inst.SkeletonDictionary.TryGetValue(entry.BoneName, hb) OrElse hb Is Nothing Then
+                skippedNoBone += 1
+                Continue For
+            End If
+            OverrideActorBoneWorld(hb, entry.DesiredWorld, entry.ContextLabel & "-APPLY")
+            writtenCount += 1
+        Next
+
+        Dim instBonesL = inst.SkeletonDictionary.Count, cacheL = renderData.MountDesiredWorlds.Count
+        Dim writtenL = writtenCount, skippedL = skippedNoBone, skippedScopeL = skippedScopeMismatch
+        Logger.LogLazy(Function() $"[MOUNTDELTA-PREPASS] inst.bones={instBonesL} cache.entries={cacheL} written={writtenL} skipped(boneNotInDict)={skippedL} skipped(scopeMismatch)={skippedScopeL}")
     End Sub
 
     ''' <summary>Resuelve la "posición efectiva" de un bone en el actor world: si un parent
@@ -7785,75 +7979,6 @@ Public Class MainForm
         End If
         Return New Transform_Class()
     End Function
-
-    ''' <summary>Instancia de la fórmula unificada aplicada al bind de shape bones de chunks SKIP.
-    '''
-    ''' Formula universal:
-    '''   desired_W(B) = ResolveEffectiveWorld(chunkWBHistory, inst, boneName)
-    '''                = chunkWBHistory[B] si parent V2 corrigió B, sino actor.B.world
-    '''   correction = inv(actor.B.world) × desired_W(B)
-    '''   bind' = correction × bind_orig
-    '''
-    ''' Render: vertex × bind' × actor.B.world = vertex × bind_orig × desired_W(B)
-    ''' Si no hay override (desired_W=actor.B.world) → correction=identity → bind sin cambios.
-    ''' Por eso solo iteramos shape bones que tienen entry en chunkWBHistory (optimización).
-    '''
-    ''' Caso vivo: LegsAssaultron V2 con A.T=(-8.69, 0, 8.69) corrige bind de LLowerLegBiped
-    ''' (W_B.T = -7.20, -2.29, 38.42). El armor LegLeftArmorAssaultronLow fue autorado con
-    ''' bind cuyo inv.T = (-7.20, -2.29, 38.42) = mismo W_B. Sin propagar, render con
-    ''' actor.LLowerLegBiped.world=(-14.93, 0.88, 38.42) produce shift ≈ (-7.73, 3.17, 0)
-    ''' (= delta W_B vs actor). Aplicando correction al bind, queda alineado.</summary>
-    Private Sub ApplyParentV2CorrectionToBinds(shape As IRenderableShape,
-                                                inst As SkeletonInstance,
-                                                chunkWBHistory As Dictionary(Of String, Transform_Class),
-                                                isRobotMount As Boolean)
-        If shape Is Nothing OrElse shape.ShapeBones Is Nothing OrElse shape.ShapeBoneTransforms Is Nothing Then Return
-        If inst Is Nothing OrElse chunkWBHistory Is Nothing OrElse chunkWBHistory.Count = 0 Then Return
-        Try
-            Dim propagated As Integer = 0
-            For sbiP = 0 To Math.Min(shape.ShapeBones.Count, shape.ShapeBoneTransforms.Count) - 1
-                Dim niN = TryCast(shape.ShapeBones(sbiP), NiflySharp.Blocks.NiNode)
-                If niN Is Nothing Then Continue For
-                Dim boneName = If(niN.Name?.String, "")
-                If String.IsNullOrEmpty(boneName) Then Continue For
-                ' Gate: skip bones sin override (desired_W=actor.B.world → correction=identity).
-                If Not chunkWBHistory.ContainsKey(boneName) Then Continue For
-                Dim hb As HierarchiBone_class = Nothing
-                If Not inst.SkeletonDictionary.TryGetValue(boneName, hb) Then Continue For
-                Dim actorWorld = hb.OriginalGetGlobalTransform
-                Dim desired_W = ResolveEffectiveWorld(chunkWBHistory, inst, boneName)
-                Dim bind = shape.ShapeBoneTransforms(sbiP)
-                If bind Is Nothing Then Continue For
-                Dim origBindCap As New Transform_Class With {
-                    .Translation = bind.Translation,
-                    .Rotation = bind.Rotation,
-                    .Scale = bind.Scale,
-                    .ScaleVector = bind.ScaleVector
-                }
-                Dim correction = actorWorld.Inverse().ComposeTransforms(desired_W)
-                Dim newBind = correction.ComposeTransforms(origBindCap)
-                bind.Translation = newBind.Translation
-                bind.Rotation = newBind.Rotation
-                bind.Scale = newBind.Scale
-                bind.ScaleVector = newBind.ScaleVector
-                propagated += 1
-                If isRobotMount Then
-                    Dim shL = shape.ShapeName, bnL = boneName
-                    Dim oT = origBindCap.Translation, nT = newBind.Translation, wbT = desired_W.Translation, aT = actorWorld.Translation
-                    Logger.LogLazy(Function() $"[PROPAGATE-V2] shape='{shL}' bone='{bnL}' desired_W.T=({wbT.X:F3},{wbT.Y:F3},{wbT.Z:F3}) actor.bone.T=({aT.X:F3},{aT.Y:F3},{aT.Z:F3}) bind T: ({oT.X:F3},{oT.Y:F3},{oT.Z:F3}) → ({nT.X:F3},{nT.Y:F3},{nT.Z:F3})")
-                End If
-            Next
-            If isRobotMount AndAlso propagated > 0 Then
-                Dim shL = shape.ShapeName, cntL = propagated
-                Logger.LogLazy(Function() $"[PROPAGATE-V2] shape='{shL}' propagated {cntL} bind correction(s) from parent chunk V2")
-            End If
-        Catch ex As Exception
-            If isRobotMount Then
-                Dim shL = shape.ShapeName, msgL = ex.Message
-                Logger.LogLazy(Function() $"[PROPAGATE-V2] shape='{shL}' EXCEPTION: {msgL}")
-            End If
-        End Try
-    End Sub
 
     ''' <summary>Resolve a robot-chunk mount socket from the host skeleton.
     ''' Tries 'P-&lt;base&gt;|&lt;apIdx&gt;' first (multi-instance), falls back to 'P-&lt;base&gt;'
@@ -8032,8 +8157,8 @@ Public Class MainForm
     Private Function EnsureChunkToActor(cand As MeshCandidate,
                                          candByOrdinal As Dictionary(Of Integer, MeshCandidate),
                                          renderData As PreviewResolutionResult,
-                                         inst As SkeletonInstance,
-                                         chunkWBHistory As Dictionary(Of String, Transform_Class),
+                                         targetSkel As SkeletonInstance,
+                                         wbHistory As Dictionary(Of String, Transform_Class),
                                          visiting As HashSet(Of Integer)) As Transform_Class
         If cand Is Nothing Then Return Nothing
         If cand.ChunkToActor IsNot Nothing Then Return cand.ChunkToActor
@@ -8057,7 +8182,7 @@ Public Class MainForm
             If cand.ParentFoundInMatchedHostNif AndAlso cand.ResolvedHostSocketGlobalT IsNot Nothing AndAlso cand.MatchedHostInstanceOrdinal <> 0 Then
                 candByOrdinal.TryGetValue(cand.MatchedHostInstanceOrdinal, hostCand)
                 If hostCand IsNot Nothing Then
-                    hostA = EnsureChunkToActor(hostCand, candByOrdinal, renderData, inst, chunkWBHistory, visiting)
+                    hostA = EnsureChunkToActor(hostCand, candByOrdinal, renderData, targetSkel, wbHistory, visiting)
                 End If
             End If
 
@@ -8176,7 +8301,7 @@ Public Class MainForm
                         End If
                     End If
                 End If
-                Dim parentBoneWorld = ResolveEffectiveWorld(chunkWBHistory, inst, parentForLookup)
+                Dim parentBoneWorld = ResolveEffectiveWorld(wbHistory, targetSkel, parentForLookup)
                 Dim socketLocal As New Transform_Class With {
                     .Translation = socketForPathB.Translation,
                     .Rotation = BSConnectPointReader.QuatToMatrix33(socketForPathB.Rotation),
@@ -8522,34 +8647,11 @@ Public Class MainForm
             raceHasAnyHeadParts = (maleCount + femaleCount) > 0
         End If
 
-        ' Pre-compute: para cada Misc HDPT en el merged list, ¿algún otro HDPT del mismo set la
-        ' declara en su ExtraPartFormIDs (HNAM)? Si sí, guardamos el effective type del parent
-        ' para promover la Misc en el caso top-level (parent=-1). Esto es engine-faithful:
-        ' vanilla NPC.PNAM frecuentemente lista una hairline tanto en HNAM del hair como standalone
-        ' en PNAM; antes de este mapa la cascade dependía del orden de visit (HNAM walk gana via
-        ' dedup), pero si el orden invierte o el parent no es alcanzable, la Misc top-level se
-        ' queda con effective=0 y la paleta hair no aplica. La promoción acá cierra ese gap sin
-        ' tocar el preset ni cambiar la matrix de occlusion.
-        Dim parsedHdpts As New Dictionary(Of UInteger, HDPT_Data)
-        For Each fid In headPartFormIDs.Where(Function(id) id <> 0UI)
-            Dim rec = _pluginManager.GetRecord(fid)
-            If rec Is Nothing OrElse rec.Header.Signature <> "HDPT" Then Continue For
-            parsedHdpts(fid) = RecordParsers.ParseHDPT(rec, _pluginManager)
-        Next
-        Dim miscToParentEffective As New Dictionary(Of UInteger, Integer)
-        For Each parentKv In parsedHdpts
-            Dim parentEff = parentKv.Value.PartType
-            If parentEff = 0 Then Continue For
-            If parentKv.Value.ExtraPartFormIDs Is Nothing Then Continue For
-            For Each extraFid In parentKv.Value.ExtraPartFormIDs
-                Dim extraData As HDPT_Data = Nothing
-                If Not parsedHdpts.TryGetValue(extraFid, extraData) Then Continue For
-                If extraData.PartType <> 0 Then Continue For
-                If Not miscToParentEffective.ContainsKey(extraFid) Then
-                    miscToParentEffective(extraFid) = parentEff
-                End If
-            Next
-        Next
+        ' Pre-compute Misc->parent effective-type promotion for the top-level (parent=-1) case:
+        ' vanilla NPC.PNAM often lists a hairline both in the hair's HNAM and standalone in PNAM;
+        ' without this map the cascade depended on visit order. Shared helper = single source of
+        ' truth with the bake's EnumerateHdptChain (no duplicated rule).
+        Dim miscToParentEffective = HeadPartResolver.BuildMiscToParentEffective(headPartFormIDs, _pluginManager)
 
         For Each hdptFormID In headPartFormIDs.Where(Function(id) id <> 0UI)
             CollectHeadPartCandidate(hdptFormID, visited, candidates, order, warnings, -1, state, useFaceGen, flstCache, raceDefaults, raceHasAnyHeadParts, miscToParentEffective)
@@ -8584,15 +8686,8 @@ Public Class MainForm
         ' este Misc en su HNAM (vanilla NPC.PNAM duplica hairlines típicamente), promovemos al
         ' effective de ese parent. Cierra el bug donde Hairline standalone en NPC.PNAM no
         ' cascadeaba si el visit order ponía el Misc antes del parent.
-        Dim effectivePartType = hdpt.PartType
-        If parentPartType >= 0 AndAlso hdpt.PartType = 0 Then
-            effectivePartType = parentPartType
-        ElseIf parentPartType < 0 AndAlso hdpt.PartType = 0 AndAlso miscToParentEffective IsNot Nothing Then
-            Dim promoted As Integer = 0
-            If miscToParentEffective.TryGetValue(hdptFormID, promoted) Then
-                effectivePartType = promoted
-            End If
-        End If
+        ' Shared rule = single source of truth with the bake's EnumerateHdptChain.
+        Dim effectivePartType = HeadPartResolver.ResolveEffectivePartType(hdpt.PartType, parentPartType, hdptFormID, miscToParentEffective)
 
         ' Race-membership check: drop HDPTs the engine wouldn't render. The only practical
         ' case this catches today is RNAM=0 HDPTs assigned (via NPC.PNAM) to a non-humanoid
@@ -9906,7 +10001,7 @@ Public Class MainForm
                 ' 1106-1179, ProcessHairColor → SetTextureFilename(3, ...)). Vanilla
                 ' HumanChildRace ships without HNAM/HLTX precisely because the BGSM carries it.
                 Dim palTex As String = If(material.GreyscaleTexture, "")
-                If palTex = "" Then palTex = ResolveRaceHairLookupTexture(state)
+                If palTex = "" Then palTex = ResolveRaceHairLookupTexture(state, _pluginManager)
                 If palTex <> "" Then
                     Dim oldPalColor = material.GrayscaleToPaletteColor
                     Dim oldScale = material.GrayscaleToPaletteScale
@@ -10267,7 +10362,7 @@ Public Class MainForm
         Dim clfm = ResolveColorFormData(colorFormID)
         If clfm Is Nothing OrElse Not clfm.HasRemappingIndex Then Return False
 
-        paletteTexture = ResolveRaceHairLookupTexture(state)
+        paletteTexture = ResolveRaceHairLookupTexture(state, _pluginManager)
         If paletteTexture = "" Then Return False
 
         paletteScale = clfm.RemappingIndex
@@ -10287,7 +10382,7 @@ Public Class MainForm
     '''       Vanilla HumanRace declares HNAM and most hair BGSMs duplicate it, but
     '''       HumanChildRace ships without HNAM/HLTX so we must rely on the BGSM there.</item>
     ''' </list></summary>
-    Friend Function ResolveHairPaletteTexture(host As NpcRenderHost, state As NPCVisualState) As String
+    Friend Shared Function ResolveHairPaletteTexture(host As NpcRenderHost, state As NPCVisualState, pluginManager As PluginManager) As String
         If host IsNot Nothing AndAlso host.PreviewCtl IsNot Nothing _
            AndAlso host.PreviewCtl.Model IsNot Nothing AndAlso host.PreviewCtl.Model.meshes IsNot Nothing Then
             For Each mesh In host.PreviewCtl.Model.meshes
@@ -10299,16 +10394,16 @@ Public Class MainForm
                 If gtex <> "" Then Return gtex
             Next
         End If
-        Return ResolveRaceHairLookupTexture(state)
+        Return ResolveRaceHairLookupTexture(state, pluginManager)
     End Function
 
-    Private Function ResolveRaceHairLookupTexture(state As NPCVisualState) As String
-        If state Is Nothing OrElse state.RaceFormID = 0UI Then Return ""
+    Friend Shared Function ResolveRaceHairLookupTexture(state As NPCVisualState, pluginManager As PluginManager) As String
+        If state Is Nothing OrElse state.RaceFormID = 0UI OrElse pluginManager Is Nothing Then Return ""
 
-        Dim raceRec = _pluginManager.GetRecord(state.RaceFormID)
+        Dim raceRec = pluginManager.GetRecord(state.RaceFormID)
         If raceRec Is Nothing OrElse raceRec.Header.Signature <> "RACE" Then Return ""
 
-        Dim race = RecordParsers.ParseRACE(raceRec, _pluginManager)
+        Dim race = RecordParsers.ParseRACE(raceRec, pluginManager)
         If race Is Nothing Then Return ""
 
         Dim lookupCandidates = New String() {race.HairColorLookupTexture, race.HairColorExtendedLookupTexture}
@@ -12652,9 +12747,21 @@ Public Class MainForm
                                            progress As IProgress(Of NpcOverrideSaver.SaveProgress)) As (Summary As String, Success As Boolean)
         ReportSaveProgress(progress, "Baking CharGen NIF + textures…", "", False, 0, 0)
 
+        ' Bake the SAME identity the "Build CharGen (loose)" button uses: the rendered, overlay-
+        ' resolved model source (ModelSourceFormID, else FormID) — i.e. the NPC AS IT RENDERS.
+        ' Save must take the same path as loose so the bake output lands exactly where the pack
+        ' looks: one identity, one directory (the NPC's origin mod). Falls back to the save's
+        ' npcFormID only when nothing is rendered.
+        Dim bakeFormID As UInteger = npcFormID
+        Dim rendered = _renderHost?.LastRenderedState
+        If rendered IsNot Nothing Then
+            bakeFormID = If(rendered.ModelSourceFormID <> 0UI, rendered.ModelSourceFormID,
+                            If(rendered.FormID <> 0UI, rendered.FormID, npcFormID))
+        End If
+
         Dim bakeResult As FaceGenBuilder.BuildResult
         Try
-            bakeResult = FaceGenBuilder.BuildCharGen(npcFormID, _pluginManager, _appliedPresets,
+            bakeResult = FaceGenBuilder.BuildCharGen(bakeFormID, _pluginManager, _appliedPresets,
                                                      _renderHost, AddressOf ApplyShapeMaterialOverrides,
                                                      AddressOf ResolveLmSkinTemplate)
         Catch ex As Exception
@@ -12668,12 +12775,17 @@ Public Class MainForm
         ' Phase 2: pack the four bake outputs. originPlugin matches FaceGenBuilder's path
         ' resolution (PluginManager.GetOriginatingPluginName) — same string segment used
         ' to write the loose, so the packer reads the right files.
-        Dim originPlugin = _pluginManager.GetOriginatingPluginName(npcFormID)
-        Dim formIdLow = (npcFormID And &HFFFFFFUI)
+        ' Pack reads the same identity the bake wrote: the resolved model source, in its origin
+        ' mod's FaceCustomization directory. originPlugin + formIdLow derive from bakeFormID, NOT
+        ' the raw npcFormID — that is the fix for "one path, the NPC's origin-mod directory".
+        Dim originPlugin = _pluginManager.GetOriginatingPluginName(bakeFormID)
+        Dim formIdLow = (bakeFormID And &HFFFFFFUI)
+
+        Logger.LogLazy(Function() $"[CHARGEN-ID] save npcFormID=0x{npcFormID:X8} bakeFormID=0x{bakeFormID:X8} → originPlugin='{originPlugin}' formIdLow=0x{formIdLow:X8}")
 
         Dim packResult = NpcFaceGenPacker.PackForNpc(
             anchorPluginPath, _dataPath, Config_App.Current.Game,
-            originPlugin, formIdLow,
+            originPlugin, formIdLow, NPC_Config.Current.Ba2Version_FO4,
             Sub(p As NpcFaceGenPacker.PackProgress)
                 Select Case p.Phase
                     Case NpcFaceGenPacker.PackPhase.BuildingBundle

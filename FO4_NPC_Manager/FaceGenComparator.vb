@@ -350,11 +350,20 @@ Public Module FaceGenComparator
             sb.AppendLine($"[BUILDCHARGEN-DIFF]   VC gen={shapeReport.GeneratedVertexCount} bake={shapeReport.BakedVertexCount} match={shapeReport.GeneratedVertexCount = shapeReport.BakedVertexCount}")
             sb.AppendLine($"[BUILDCHARGEN-DIFF]   TC gen={shapeReport.GeneratedTriangleCount} bake={shapeReport.BakedTriangleCount} match={shapeReport.GeneratedTriangleCount = shapeReport.BakedTriangleCount}")
             sb.AppendLine($"[BUILDCHARGEN-DIFF]   material gen.path='{shapeReport.GeneratedMaterialPath}' bake.path='{shapeReport.BakedMaterialPath}'")
+            ' Dump the actual texture slot paths the shader of EACH nif points at (gen = our
+            ' .nif2 inline shader, bake = CK BA2 inline shader). This is where each side reads its
+            ' textures from -- the pixel comparison below loads from THESE paths, not a convention.
+            sb.AppendLine($"[BUILDCHARGEN-DIFF]   gen.tex  {FormatMaterialTextures(shapeReport.GeneratedMaterial)}")
+            sb.AppendLine($"[BUILDCHARGEN-DIFF]   bake.tex {FormatMaterialTextures(shapeReport.BakedMaterial)}")
             If shapeReport.GeneratedMaterial IsNot Nothing AndAlso shapeReport.BakedMaterial IsNot Nothing Then
                 sb.AppendLine($"[BUILDCHARGEN-DIFF]   material content match={shapeReport.MaterialMatch}")
                 If Not shapeReport.MaterialMatch Then
                     DumpMaterialDiff(shapeReport.GeneratedMaterial, shapeReport.BakedMaterial, sb)
                 End If
+                ' Per-slot pixel diff using the shaders' OWN texture paths (D/N/S). Loads each
+                ' side's referenced DDS, decodes, compares. Logs path + presence so a "not found"
+                ' is unambiguous (it's the actual shader path that's missing, not a guessed name).
+                DumpTexturePixelDiff(name, shapeReport.GeneratedMaterial, shapeReport.BakedMaterial, sb)
             ElseIf shapeReport.GeneratedMaterial Is Nothing AndAlso shapeReport.BakedMaterial Is Nothing Then
                 sb.AppendLine($"[BUILDCHARGEN-DIFF]   material: <both sides have no shader/material>")
             Else
@@ -442,6 +451,104 @@ Public Module FaceGenComparator
             sb.AppendLine($"[BUILDCHARGEN-DIFF]     mat.{d.PropertyName}: gen='{FormatValue(d.ValueA)}' bake='{FormatValue(d.ValueB)}'")
         Next
     End Sub
+
+    ''' <summary>One-line dump of the texture slots a material's shader points at (D/N/S + the
+    ''' grayscale/glow/spec auxiliaries). Used to show, per shape, exactly where each NIF reads
+    ''' its textures from.</summary>
+    Private Function FormatMaterialTextures(mat As FO4UnifiedMaterial_Class) As String
+        If mat Is Nothing Then Return "<no material>"
+        Return $"D='{If(mat.Diffuse_or_Base_Texture, "")}' N='{If(mat.NormalTexture, "")}' S='{If(mat.SmoothSpecTexture, "")}' grey='{If(mat.GreyscaleTexture, "")}' glow='{If(mat.GlowTexture, "")}' spec='{If(mat.SpecularTexture, "")}'"
+    End Function
+
+    ''' <summary>Per-slot pixel diff (D/N/S) loading each side's texture from the path its OWN
+    ''' shader references (gen = our .nif2 inline shader, bake = CK BA2 inline shader). Resolves
+    ''' bytes via FilesDictionary, with a loose-disk fallback for freshly-written sandbox files
+    ''' the dictionary hasn't indexed. Logs path + presence so a MISSING is unambiguously the
+    ''' actual shader path, not a guessed convention name.</summary>
+    Private Sub DumpTexturePixelDiff(shapeName As String, gen As FO4UnifiedMaterial_Class, bake As FO4UnifiedMaterial_Class, sb As StringBuilder)
+        DumpOneSlotPixelDiff(shapeName, "D", gen.Diffuse_or_Base_Texture, bake.Diffuse_or_Base_Texture, sb)
+        DumpOneSlotPixelDiff(shapeName, "N", gen.NormalTexture, bake.NormalTexture, sb)
+        DumpOneSlotPixelDiff(shapeName, "S", gen.SmoothSpecTexture, bake.SmoothSpecTexture, sb)
+    End Sub
+
+    Private Sub DumpOneSlotPixelDiff(shapeName As String, slot As String, genPath As String, bakePath As String, sb As StringBuilder)
+        If String.IsNullOrEmpty(genPath) AndAlso String.IsNullOrEmpty(bakePath) Then Return
+        Dim genBytes = LoadTextureBytesByPath(genPath)
+        Dim bakeBytes = LoadTextureBytesByPath(bakePath)
+        If genBytes Is Nothing OrElse bakeBytes Is Nothing Then
+            sb.AppendLine($"[BUILDCHARGEN-DIFF]     tex[{slot}] gen='{genPath}'({If(genBytes Is Nothing, "MISSING", "ok")}) bake='{bakePath}'({If(bakeBytes Is Nothing, "MISSING", "ok")}) -> cannot compare")
+            Return
+        End If
+        Try
+            Dim gt = DirectXTexWrapperCLI.Loader.ConvertForBitmap(genBytes)
+            Dim bt = DirectXTexWrapperCLI.Loader.ConvertForBitmap(bakeBytes)
+            If gt Is Nothing OrElse Not gt.Loaded OrElse gt.Levels Is Nothing OrElse gt.Levels.Count = 0 _
+               OrElse bt Is Nothing OrElse Not bt.Loaded OrElse bt.Levels Is Nothing OrElse bt.Levels.Count = 0 Then
+                sb.AppendLine($"[BUILDCHARGEN-DIFF]     tex[{slot}] decode failed (gen ok={gt IsNot Nothing AndAlso gt.Loaded} bake ok={bt IsNot Nothing AndAlso bt.Loaded})")
+                Return
+            End If
+            Dim gl = gt.Levels(0), bl = bt.Levels(0)
+            If gl.Width <> bl.Width OrElse gl.Height <> bl.Height Then
+                sb.AppendLine($"[BUILDCHARGEN-DIFF]     tex[{slot}] size mismatch gen={gl.Width}x{gl.Height} bake={bl.Width}x{bl.Height} (skip per-pixel) | gen='{genPath}' bake='{bakePath}'")
+                Return
+            End If
+            Dim w = gl.Width, h = gl.Height
+            Dim need = w * h * 4
+            If gl.Data Is Nothing OrElse bl.Data Is Nothing OrElse gl.Data.Length < need OrElse bl.Data.Length < need Then
+                sb.AppendLine($"[BUILDCHARGEN-DIFF]     tex[{slot}] buffer too small (need={need})")
+                Return
+            End If
+            Dim pixels As Long = CLng(w) * h
+            Dim sumB As Long = 0, sumG As Long = 0, sumR As Long = 0
+            Dim maxB As Integer = 0, maxG As Integer = 0, maxR As Integer = 0
+            Dim sq As Double = 0
+            Dim diffPx As Long = 0
+            Dim i As Long = 0
+            While i < pixels
+                Dim idx = CInt(i * 4)
+                Dim db = Math.Abs(CInt(gl.Data(idx + 0)) - CInt(bl.Data(idx + 0)))
+                Dim dg = Math.Abs(CInt(gl.Data(idx + 1)) - CInt(bl.Data(idx + 1)))
+                Dim dr = Math.Abs(CInt(gl.Data(idx + 2)) - CInt(bl.Data(idx + 2)))
+                sumB += db : sumG += dg : sumR += dr
+                If db > maxB Then maxB = db
+                If dg > maxG Then maxG = dg
+                If dr > maxR Then maxR = dr
+                sq += CDbl(db) * db + CDbl(dg) * dg + CDbl(dr) * dr
+                If db > 8 OrElse dg > 8 OrElse dr > 8 Then diffPx += 1
+                i += 1
+            End While
+            Dim avgB = CInt(sumB \ pixels), avgG = CInt(sumG \ pixels), avgR = CInt(sumR \ pixels)
+            Dim rms = Math.Sqrt(sq / (pixels * 3.0))
+            Dim pct = (diffPx * 100.0) / pixels
+            sb.AppendLine($"[BUILDCHARGEN-DIFF]     tex[{slot}] {w}x{h} rmsRGB={rms:F2} avgBGR=({avgB},{avgG},{avgR}) maxBGR=({maxB},{maxG},{maxR}) pct>8={pct:F2}% | gen='{genPath}' bake='{bakePath}'")
+        Catch ex As Exception
+            sb.AppendLine($"[BUILDCHARGEN-DIFF]     tex[{slot}] exception: {ex.Message}")
+        End Try
+    End Sub
+
+    ''' <summary>Resolve raw DDS bytes for a material texture path: FilesDictionary first
+    ''' (normalized, BA2 + loose), then a loose-disk fallback under Data\ for sandbox files the
+    ''' dictionary hasn't indexed yet (e.g. our just-written _2.dds). Nothing on miss.</summary>
+    Private Function LoadTextureBytesByPath(rawPath As String) As Byte()
+        If String.IsNullOrEmpty(rawPath) Then Return Nothing
+        Dim key = FO4UnifiedMaterial_Class.CorrectTexturePath(rawPath)
+        Try
+            Dim b = FilesDictionary_class.GetBytes(key)
+            If b IsNot Nothing AndAlso b.Length > 0 Then Return b
+        Catch
+        End Try
+        Try
+            Dim dp = Config_App.Current.DataPath
+            If Not String.IsNullOrEmpty(dp) Then
+                Dim rel = rawPath.Replace("/"c, "\"c)
+                If rel.StartsWith("Data\", StringComparison.OrdinalIgnoreCase) Then rel = rel.Substring(5)
+                Dim full = Path.Combine(dp, rel)
+                If File.Exists(full) Then Return File.ReadAllBytes(full)
+            End If
+        Catch
+        End Try
+        Return Nothing
+    End Function
 
     ''' <summary>True when gen and bake have NO non-cosmetic property diffs — every
     ''' difference in <see cref="FO4UnifiedMaterial_Class.GetDifferences"/> is either a

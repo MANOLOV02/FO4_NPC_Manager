@@ -78,6 +78,7 @@ Friend Module NpcFaceGenPacker
                                game As Config_App.Game_Enum,
                                originPlugin As String,
                                formIdLow As UInteger,
+                               ba2Version As UInteger,
                                Optional progress As Action(Of PackProgress) = Nothing) As PackResult
 
         Dim result As New PackResult()
@@ -151,6 +152,7 @@ Friend Module NpcFaceGenPacker
 
         Dim req As New PackagerRequest With {
             .Game = MapGame(game),
+            .Ba2Version = ba2Version,
             .ModBaseName = modBaseName,
             .OutputDir = dataDir,
             .Entries = entries,

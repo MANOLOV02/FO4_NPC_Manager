@@ -89,7 +89,9 @@ Public Module FaceGenBuilder
     ''' <c>[BUILDCHARGEN-DIFF]</c>. Re-activar a True sólo para diagnóstico contra CK
     ''' (ver arch_facegen_debug_mode memory). Toggle programático:
     ''' <c>FaceGenBuilder.DebugMode = True</c>.</summary>
-    Public Property DebugMode As Boolean = False
+    ' TEMP: True para habilitar el comparador de texturas [FACEBAKE-TEXDIFF] + diff de geometría
+    ' [BUILDCHARGEN-DIFF] (output sandbox _2, no pisa CK). Volver a False para release.
+    Public Property DebugMode As Boolean = True
 
     ''' <summary>Build a baked FaceGen NIF for this NPC. See module-level summary for the
     ''' v0 strategy. Always also writes a structured dump to npc_preview.log so the user
@@ -208,9 +210,10 @@ Public Module FaceGenBuilder
         End If
         Dim bakeState As FaceGenBuildPipeline.BakeState =
             FaceGenBuildPipeline.BuildBakeState(npcFormID, pluginManager, appliedPresets, regionsFile)
-        For Each kv In hdptMap.OrderBy(Function(p) p.Value.PartType).ThenBy(Function(p) p.Key)
+        For Each kv In hdptMap.OrderBy(Function(p) p.Value.Hdpt.PartType).ThenBy(Function(p) p.Key)
             Dim hdptName = kv.Key
-            Dim hdpt = kv.Value
+            Dim hdpt = kv.Value.Hdpt
+            Dim effectiveHeadPartType = kv.Value.EffectivePartType
             If String.IsNullOrEmpty(hdpt.MeshPath) Then
                 hdptSourceMissing += 1
                 Continue For
@@ -310,7 +313,7 @@ Public Module FaceGenBuilder
                         ' BaseColor, NonOccluder). AlphaBlendMode left as the source has it
                         ' (Unknown) per user instruction — CK's normalization to None is purely
                         ' cosmetic at this point.
-                        ApplyRenderResolvedMaterialToShape(nif, cloned, srcNif, srcShape, hdpt, state, pluginManager, applyMaterialOverrides)
+                        ApplyRenderResolvedMaterialToShape(nif, cloned, srcNif, srcShape, hdpt, effectiveHeadPartType, state, pluginManager, applyMaterialOverrides)
 
                         ' --- FaceCustomization texture bake: only for the Face shape (PartType=1).
                         ' GL-readback the 3 GPU textures the FaceTintCompositor wrote (D/N/S),
@@ -321,10 +324,11 @@ Public Module FaceGenBuilder
                         ' extension keeps us from clobbering the real CK FaceCustomization on
                         ' disk; for a real bake this would emit .dds and the engine would pick
                         ' those up directly.
-                        If hdpt.PartType = PartTypeFace AndAlso host IsNot Nothing Then
+                        If hdpt.PartType = PartTypeFace AndAlso host IsNot Nothing AndAlso state IsNot Nothing Then
                             BakeFaceTextures(nif, cloned, srcNif, srcShape,
                                              npcFormID, originPlugin,
                                              pluginManager, appliedPresets, host,
+                                             state,
                                              lmSkinTemplateResolver)
                         End If
 
@@ -489,8 +493,8 @@ Public Module FaceGenBuilder
     ''' RaceMorphTriPath, ChargenMorphTriPath, PartType, etc. needed to construct each shape
     ''' from records (iteration 1+ replaces "copy from baked" with "load from MeshPath").</summary>
     Private Function BuildAllowedShapeMap(npcFormID As UInteger,
-                                          pluginManager As PluginManager) As Dictionary(Of String, HDPT_Data)
-        Dim allowed As New Dictionary(Of String, HDPT_Data)(StringComparer.OrdinalIgnoreCase)
+                                          pluginManager As PluginManager) As Dictionary(Of String, HeadPartResolver.HdptChainEntry)
+        Dim allowed As New Dictionary(Of String, HeadPartResolver.HdptChainEntry)(StringComparer.OrdinalIgnoreCase)
         Dim npcRec = pluginManager.GetRecord(npcFormID)
         If npcRec Is Nothing Then Return allowed
         Dim npc = RecordParsers.ParseNPC(npcRec, npcRec.SourcePluginName, pluginManager)
@@ -500,13 +504,13 @@ Public Module FaceGenBuilder
         Dim mergedRoots = HeadPartResolver.MergeHeadPartsWithRaceDefaults(
             npc.RaceFormID, npc.IsFemale, npc.HeadPartFormIDs, pluginManager)
 
-        ' Walk the chain via the shared HNAM-expanding iterator (cycles guarded inside).
-        ' First-write wins: if an HDPT EditorID is reachable through multiple paths
-        ' (RACE default + NPC override + extra-part), the resolver puts NPC override
-        ' first in mergedRoots so the first Yield preserves override semantics.
-        For Each hdpt In HeadPartResolver.EnumerateHdptChain(mergedRoots, pluginManager)
-            If String.IsNullOrEmpty(hdpt.EditorID) Then Continue For
-            If Not allowed.ContainsKey(hdpt.EditorID) Then allowed(hdpt.EditorID) = hdpt
+        ' Walk the chain via the shared HNAM-expanding iterator (cycles guarded inside). Each
+        ' entry carries the EFFECTIVE part type (Misc hairline under hair → Hair=3), the single
+        ' source of truth shared with the render walk — so the bake colors sub-parts like the
+        ' render does. First-write wins on EditorID collisions.
+        For Each entry In HeadPartResolver.EnumerateHdptChain(mergedRoots, pluginManager)
+            If String.IsNullOrEmpty(entry.Hdpt.EditorID) Then Continue For
+            If Not allowed.ContainsKey(entry.Hdpt.EditorID) Then allowed(entry.Hdpt.EditorID) = entry
         Next
 
         Return allowed
@@ -595,6 +599,7 @@ Public Module FaceGenBuilder
                                                     srcNif As Nifcontent_Class_Manolo,
                                                     srcShape As INiShape,
                                                     hdpt As HDPT_Data,
+                                                    effectiveHeadPartType As Integer,
                                                     state As MainForm.NPCVisualState,
                                                     pluginManager As PluginManager,
                                                     applyMaterialOverrides As ApplyShapeMaterialOverridesDelegate)
@@ -648,9 +653,12 @@ Public Module FaceGenBuilder
         ' Build a minimal MeshCandidate from the HDPT in scope. For Build CharGen the candidate
         ' chain is straightforward (HDPT → Face/Eyes/Hair/etc.) so we don't need the full
         ' Outfit/LVLN/OBTS/OMOD resolution that the live render runs.
+        ' HeadPartType = EFFECTIVE type (Misc hairline under hair → Hair=3) so the shared
+        ' material resolver colors sub-parts like the render does (e.g. hair palette on the
+        ' hairline). HeadPartTypeRaw keeps the HDPT's own type for any raw-type logic downstream.
         Dim candidate As New MainForm.MeshCandidate With {
             .Kind = MainForm.MeshCandidateKind.HeadPart,
-            .HeadPartType = hdpt.PartType,
+            .HeadPartType = effectiveHeadPartType,
             .HeadPartTypeRaw = hdpt.PartType,
             .TextureSetFormID = hdpt.TextureSetFormID,
             .UsesBodyTexture = effectiveUsesBodyTexture,
@@ -774,11 +782,14 @@ Public Module FaceGenBuilder
                                  pluginManager As PluginManager,
                                  appliedPresets As Dictionary(Of UInteger, LooksmenuLoader.LooksmenuPreset),
                                  host As NpcRenderHost,
+                                 state As MainForm.NPCVisualState,
                                  Optional lmSkinTemplateResolver As NpcRecordOverlay.ResolveLmSkinTemplateDelegate = Nothing)
+        Logger.LogLazy(Function() $"[FACEBAKE] enter npcFormID=0x{npcFormID:X8} originPlugin='{originPlugin}' srcShape='{srcShape?.Name?.ToString()}'")
         ' --- 1. Resolve the face source material (D/N/S texture paths) from the source NIF. ---
         Dim relMat = srcNif.GetRelatedMaterial(srcShape)
         Dim mat = relMat?.material
         If mat Is Nothing Then
+            Logger.LogLazy(Function() $"[FACEBAKE] BAIL: source material is Nothing (npcFormID=0x{npcFormID:X8})")
             Return
         End If
 
@@ -786,6 +797,7 @@ Public Module FaceGenBuilder
         Dim normalPath = mat.NormalTexture
         Dim specPath = mat.SmoothSpecTexture
         If String.IsNullOrEmpty(diffusePath) Then
+            Logger.LogLazy(Function() $"[FACEBAKE] BAIL: diffusePath empty (npcFormID=0x{npcFormID:X8})")
             Return
         End If
 
@@ -797,8 +809,15 @@ Public Module FaceGenBuilder
             NpcRecordOverlay.GetParsedNpc(npcFormID, pluginManager),
             npcFormID, appliedPresets, pluginManager, lmSkinTemplateResolver)
         If npcData Is Nothing Then
+            Logger.LogLazy(Function() $"[FACEBAKE] BAIL: npcData is Nothing (npcFormID=0x{npcFormID:X8})")
             Return
         End If
+
+        ' Resolve the hair LUT path for slot Brows palette layers via the same BGSM-first /
+        ' RACE-fallback rule the live render and the EditFace swatch use. Single source of truth
+        ' (MainForm.ResolveHairPaletteTexture). Empty string when neither source resolves -- the
+        ' builder then skips the palette branch; RGB-CLFM (HasColor) still works.
+        Dim hairLutPathBake As String = MainForm.ResolveHairPaletteTexture(host, state, pluginManager)
 
         Dim built = FaceTintLayerBuilder.Build(
             modelFormID:=npcFormID,
@@ -807,7 +826,11 @@ Public Module FaceGenBuilder
             isFemale:=npcData.IsFemale,
             pluginManager:=pluginManager,
             appliedPresets:=appliedPresets,
-            tintBytesCache:=Nothing)
+            tintBytesCache:=Nothing,
+            hairLutPath:=hairLutPathBake,
+            hairColorFormID:=state.HairColorFormID,
+            hasTextureLighting:=state.HasTextureLighting,
+            textureLightingColorArgb:=state.TextureLightingColor.ToArgb())
 
         ' --- 3. Upload face source D/N/S to GL temporaries (these are the inputs to the pipeline). ---
         Dim diffuseKey = FO4UnifiedMaterial_Class.CorrectTexturePath(diffusePath)
@@ -818,6 +841,7 @@ Public Module FaceGenBuilder
         Dim normalBytesArr = TryGetFilesDictionaryBytes(normalKey)
         Dim specBytesArr = TryGetFilesDictionaryBytes(specKey)
         If diffuseBytes Is Nothing Then
+            Logger.LogLazy(Function() $"[FACEBAKE] BAIL: diffuse bytes not resolved key='{diffuseKey}' (npcFormID=0x{npcFormID:X8})")
             Return
         End If
 
@@ -837,6 +861,7 @@ Public Module FaceGenBuilder
                 uploadPaths.ToArray(), uploadBytes.ToArray(),
                 useCompress:=True, forceOpenGL:=False)
         Catch ex As Exception
+            Logger.LogLazy(Function() $"[FACEBAKE] BAIL: GL upload threw {ex.GetType().Name}: {ex.Message} (npcFormID=0x{npcFormID:X8})")
             Return
         End Try
 
@@ -852,6 +877,7 @@ Public Module FaceGenBuilder
         If specEntry IsNot Nothing AndAlso specEntry.Texture_ID <> 0 Then tempIds.Add(specEntry.Texture_ID)
 
         If diffEntry Is Nothing OrElse diffEntry.Texture_ID = 0 Then
+            Logger.LogLazy(Function() $"[FACEBAKE] BAIL: diffuse GL texture id 0 (npcFormID=0x{npcFormID:X8})")
             DeleteGlTextures(tempIds)
             Return
         End If
@@ -859,18 +885,29 @@ Public Module FaceGenBuilder
         Dim w = diffEntry.Size.Width
         Dim h = diffEntry.Size.Height
         If w <= 0 OrElse h <= 0 Then
+            Logger.LogLazy(Function() $"[FACEBAKE] BAIL: diffuse size {w}x{h} (npcFormID=0x{npcFormID:X8})")
             DeleteGlTextures(tempIds)
             Return
         End If
 
         ' --- 4. Run the shared compositor pipeline (region-swap + tint compose). ---
-        Dim pipelineResult = FaceTintCompositor.ApplyFaceTintPipeline(
-            host.CompositorState, host.TintGpuCache,
-            diffEntry.Texture_ID,
-            If(normEntry?.Texture_ID, 0),
-            If(specEntry?.Texture_ID, 0),
-            w, h,
-            built.Layers, built.RegionSwaps)
+        ' TEMP DEBUG: enable per-layer/per-swap delta logging ONLY for the bake (never render),
+        ' and only in DebugMode. The compositor double-gates the readback on this flag AND
+        ' Logger.Enabled, so it costs nothing in release. Restored in Finally.
+        Dim prevPerLayerDiffLog = FaceTintCompositor.PerLayerDiffLog
+        If DebugMode Then FaceTintCompositor.PerLayerDiffLog = True
+        Dim pipelineResult As FaceTintCompositor.FaceTintPipelineResult
+        Try
+            pipelineResult = FaceTintCompositor.ApplyFaceTintPipeline(
+                host.CompositorState, host.TintGpuCache,
+                diffEntry.Texture_ID,
+                If(normEntry?.Texture_ID, 0),
+                If(specEntry?.Texture_ID, 0),
+                w, h,
+                built.Layers, built.RegionSwaps)
+        Finally
+            FaceTintCompositor.PerLayerDiffLog = prevPerLayerDiffLog
+        End Try
 
         ' Track any fresh textures the pipeline produced so we can delete them on exit.
         Dim freshIds As New List(Of Integer)
@@ -882,6 +919,7 @@ Public Module FaceGenBuilder
         Dim formIdLow = (npcFormID And &HFFFFFFUI)
         Dim dataPath = Config_App.Current.DataPath
         If String.IsNullOrEmpty(dataPath) Then
+            Logger.LogLazy(Function() $"[FACEBAKE] BAIL: Config_App.Current.DataPath empty (npcFormID=0x{npcFormID:X8})")
             DeleteGlTextures(tempIds) : DeleteGlTextures(freshIds)
             Return
         End If
@@ -907,6 +945,7 @@ Public Module FaceGenBuilder
             texset = TryCast(nif.Blocks(bsls.TextureSetRef.Index), BSShaderTextureSet)
         End If
         If texset Is Nothing OrElse texset.Textures Is Nothing Then
+            Logger.LogLazy(Function() $"[FACEBAKE] BAIL: cloned shape has no BSShaderTextureSet (npcFormID=0x{npcFormID:X8})")
             DeleteGlTextures(tempIds) : DeleteGlTextures(freshIds)
             Return
         End If
@@ -914,6 +953,7 @@ Public Module FaceGenBuilder
         ' --- 6. Per-slot: readback → encode → write → rewrite slot path → diff vs CK. ---
         For Each entry In slotPlan
             If entry.ResultId = 0 Then
+                Logger.LogLazy(Function() $"[FACEBAKE] slot {entry.Slot}{entry.Suffix}: pipeline produced no texture (ResultId=0) — SKIPPED (npcFormID=0x{npcFormID:X8})")
                 Continue For
             End If
 
@@ -930,6 +970,9 @@ Public Module FaceGenBuilder
                 Continue For
             End Try
 
+            ' (Texture pixel comparison vs CK now lives in FaceGenComparator's [BUILDCHARGEN-DIFF],
+            ' loading from each NIF shader's ACTUAL texture path -- not a convention name.)
+
             Dim mipLevels = CInt(Math.Floor(Math.Log(Math.Min(w, h), 2))) + 1
             Dim ddsBytes As Byte() = Nothing
             Try
@@ -944,7 +987,9 @@ Public Module FaceGenBuilder
             Dim outFile = Path.Combine(outDir, $"{formIdLow:X8}{entry.Suffix}")
             Try
                 File.WriteAllBytes(outFile, ddsBytes)
+                Logger.LogLazy(Function() $"[FACEBAKE] wrote '{outFile}'")
             Catch ex As Exception
+                Logger.LogLazy(Function() $"[FACEBAKE] write FAILED '{outFile}': {ex.Message}")
                 Continue For
             End Try
 
@@ -993,11 +1038,6 @@ Public Module FaceGenBuilder
         Next
         ids.Clear()
     End Sub
-
-    ''' <summary>Decode the CK reference DDS (uncompressed BGRA8 per DDSPROBE: fourCC='    ',
-    ''' 1 mip, 4 bytes/pixel) and compare per channel against our composited BGRA buffer.
-    ''' Logs RMS per B/G/R/A channel and overall. The CK file layout is documented in DDSPROBE
-    ''' so we can decode it inline without going through DirectXTex.</summary>
 
     ''' <summary>Log the shader-inline + related-material lighting fields for a shape, tagged
     ''' with a stage label (e.g. "SOURCE-LOAD" right after Load_Manolo). Used to track where

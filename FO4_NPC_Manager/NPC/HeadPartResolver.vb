@@ -188,39 +188,113 @@ Public Module HeadPartResolver
         Return True
     End Function
 
+    ''' <summary>Precompute the Misc(0) -> parent-effective-type promotion over a set of root
+    ''' HDPTs: if a root HDPT is declared as a Misc(0) HNAM extra of another root whose type is
+    ''' non-zero, it inherits that parent's type even when visited at top level. Order-independent.
+    ''' Single source of truth shared by the render candidate walk (MainForm.CollectHeadPartCandidates)
+    ''' and <see cref="EnumerateHdptChain"/>.</summary>
+    Public Function BuildMiscToParentEffective(rootFormIDs As IEnumerable(Of UInteger),
+                                               pluginManager As PluginManager) As Dictionary(Of UInteger, Integer)
+        Dim result As New Dictionary(Of UInteger, Integer)
+        If rootFormIDs Is Nothing OrElse pluginManager Is Nothing Then Return result
+        Dim parsed As New Dictionary(Of UInteger, HDPT_Data)
+        For Each fid In rootFormIDs
+            If fid = 0UI OrElse parsed.ContainsKey(fid) Then Continue For
+            Dim rec = pluginManager.GetRecord(fid)
+            If rec IsNot Nothing AndAlso rec.Header.Signature = "HDPT" Then parsed(fid) = RecordParsers.ParseHDPT(rec, pluginManager)
+        Next
+        For Each parentKv In parsed
+            Dim parentEff = parentKv.Value.PartType
+            If parentEff = 0 Then Continue For
+            If parentKv.Value.ExtraPartFormIDs Is Nothing Then Continue For
+            For Each extraFid In parentKv.Value.ExtraPartFormIDs
+                Dim extraData As HDPT_Data = Nothing
+                If Not parsed.TryGetValue(extraFid, extraData) Then Continue For
+                If extraData.PartType <> 0 Then Continue For
+                If Not result.ContainsKey(extraFid) Then result(extraFid) = parentEff
+            Next
+        Next
+        Return result
+    End Function
+
+    ''' <summary>Per-node effective-type rule: the HDPT's own PartType, unless it is Misc(0) — then
+    ''' inherit the parent's effective type (HNAM cascade, <paramref name="parentPartType"/> &gt;= 0),
+    ''' or the precomputed top-level promotion (<paramref name="parentPartType"/> &lt; 0). Single
+    ''' source of truth shared by the render walk and <see cref="EnumerateHdptChain"/>.</summary>
+    Public Function ResolveEffectivePartType(ownPartType As Integer,
+                                             parentPartType As Integer,
+                                             hdptFormID As UInteger,
+                                             miscToParentEffective As Dictionary(Of UInteger, Integer)) As Integer
+        If ownPartType <> 0 Then Return ownPartType
+        If parentPartType >= 0 Then Return parentPartType
+        If miscToParentEffective IsNot Nothing Then
+            Dim promoted As Integer = 0
+            If miscToParentEffective.TryGetValue(hdptFormID, promoted) Then Return promoted
+        End If
+        Return ownPartType
+    End Function
+
+    ''' <summary>One yielded entry of <see cref="EnumerateHdptChain"/>: the parsed HDPT plus the
+    ''' EFFECTIVE part type. Effective type = the HDPT's own PartType, except a Misc(0) sub-part
+    ''' reached through a parent's HNAM inherits the parent's type (a hair Hairline, HDPT
+    ''' PartType=Misc, becomes effective type Hair=3). This is the single source of truth for the
+    ''' rule the render applies inline in <c>MainForm.CollectHeadPartCandidate</c>; callers that
+    ''' need to color/treat a sub-part like its parent (e.g. hair palette on a hairline) must use
+    ''' <see cref="EffectivePartType"/>, not <c>Hdpt.PartType</c>.</summary>
+    Public Class HdptChainEntry
+        Public Property Hdpt As HDPT_Data
+        Public Property EffectivePartType As Integer
+    End Class
+
     ''' <summary>BFS expansion of an HDPT chain via <c>HDPT.ExtraPartFormIDs</c> (HNAM extras).
-    ''' Yields every reachable HDPT_Data starting from <paramref name="rootFormIDs"/>, including
-    ''' the roots themselves. Cycles are guarded via a visited-set; non-HDPT records and
-    ''' unparseable HDPTs are silently skipped (caller decides what to do with the rest).
+    ''' Yields every reachable HDPT (as <see cref="HdptChainEntry"/> carrying the effective part
+    ''' type) starting from <paramref name="rootFormIDs"/>, including the roots themselves. Cycles
+    ''' are guarded via a visited-set; non-HDPT records and unparseable HDPTs are silently skipped.
     '''
     ''' Vanilla HDPTs use HNAM to attach technical sub-parts (Lashes/AO/Wet for eyes, Hairlines
     ''' for hair, MouthShadow/Teeth for face). Anything that wants to "render the same set of
     ''' shapes the engine renders" needs this expansion — the parent mesh alone is incomplete.
     '''
-    ''' Callers inside NPC_Manager: <see cref="FaceGenBuilder.BuildAllowedShapeMap"/> (uses
-    ''' the yielded HDPTs to build a name→data dict) and <see cref="HeadPartPicker_Form"/>
-    ''' (loads each yielded HDPT's NIF + TXST into the preview). Both want the same enumeration
-    ''' shape but disagree on what to do with each HDPT, so this iterator stops at "hand back
-    ''' the records" rather than baking in a specific output shape.</summary>
+    ''' Effective-type rule (mirrors the render walk): a Misc(0) sub-part inherits the effective
+    ''' type of the parent that reached it through HNAM. A top-level Misc that is ALSO declared as
+    ''' another root's HNAM extra is promoted to that parent's type (precomputed below) so the
+    ''' result is order-independent — same as MainForm's miscToParentEffective.
+    '''
+    ''' Callers inside NPC_Manager: <see cref="FaceGenBuilder.BuildAllowedShapeMap"/> and
+    ''' <see cref="HeadPartPicker_Form"/>.</summary>
     Public Iterator Function EnumerateHdptChain(rootFormIDs As IEnumerable(Of UInteger),
-                                                pluginManager As PluginManager) As IEnumerable(Of HDPT_Data)
+                                                pluginManager As PluginManager) As IEnumerable(Of HdptChainEntry)
         If rootFormIDs Is Nothing OrElse pluginManager Is Nothing Then Return
+        Dim roots = rootFormIDs.Where(Function(f) f <> 0UI).ToList()
+
+        ' Shared precompute (also used by the render walk) so the effective-type rule lives once.
+        Dim miscToParentEffective = BuildMiscToParentEffective(roots, pluginManager)
+
         Dim visited As New HashSet(Of UInteger)
-        Dim queue As New Queue(Of UInteger)
-        For Each fid In rootFormIDs
-            If fid <> 0UI Then queue.Enqueue(fid)
+        ' Queue of (FormID, parent effective type). Roots carry parentEff = -1.
+        Dim queue As New Queue(Of (Fid As UInteger, ParentEff As Integer))
+        For Each fid In roots
+            queue.Enqueue((fid, -1))
         Next
         While queue.Count > 0
-            Dim fid = queue.Dequeue()
+            Dim item = queue.Dequeue()
+            Dim fid = item.Fid
             If Not visited.Add(fid) Then Continue While
             Dim rec = pluginManager.GetRecord(fid)
             If rec Is Nothing OrElse rec.Header.Signature <> "HDPT" Then Continue While
             Dim hdpt = RecordParsers.ParseHDPT(rec, pluginManager)
             If hdpt Is Nothing Then Continue While
-            Yield hdpt
+
+            ' Effective type via the shared rule (same one the render walk uses).
+            Dim effectiveType = ResolveEffectivePartType(hdpt.PartType, item.ParentEff, fid, miscToParentEffective)
+
+            Yield New HdptChainEntry With {.Hdpt = hdpt, .EffectivePartType = effectiveType}
+
+            ' Children inherit this node's effective type (so a hairline under hair stays Hair).
+            Dim childParentEff = If(effectiveType <> 0, effectiveType, item.ParentEff)
             If hdpt.ExtraPartFormIDs IsNot Nothing Then
                 For Each extraFid In hdpt.ExtraPartFormIDs
-                    If extraFid <> 0UI Then queue.Enqueue(extraFid)
+                    If extraFid <> 0UI Then queue.Enqueue((extraFid, childParentEff))
                 Next
             End If
         End While

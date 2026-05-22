@@ -16,6 +16,12 @@ Public Class NPC_Config
     ''' the form has always shown.</summary>
     Public Property RenderGore As Boolean = True
 
+    ''' <summary>BA2 header version written when packing the baked CharGen for FO4. FO4-only
+    ''' (SSE packs BSA v105, unaffected). 8 = Next Gen (default; loads only on NG Fallout4.exe
+    ''' 1.10.980+). 1 = Old Gen / universal (loads on both OG and NG). Passed straight to the
+    ''' BA2 writer via PackForNpc → PackagerRequest.Ba2Version.</summary>
+    Public Property Ba2Version_FO4 As UInteger = 8UI
+
     Private Shared ReadOnly ConfigFilePath As String = Path.Combine(Application.StartupPath, "npc_config.json")
     Private Shared ReadOnly SaveOptions As New JsonSerializerOptions With {.WriteIndented = True}
 

@@ -1146,7 +1146,7 @@ Public Class EditFace_Form
         If host Is Nothing OrElse host.LastRenderedState Is Nothing Then host = _mainForm?._renderHost
         Dim raw As String = ""
         If _mainForm IsNot Nothing AndAlso host IsNot Nothing AndAlso host.LastRenderedState IsNot Nothing Then
-            raw = _mainForm.ResolveHairPaletteTexture(host, host.LastRenderedState)
+            raw = MainForm.ResolveHairPaletteTexture(host, host.LastRenderedState, _pluginManager)
         End If
         If String.IsNullOrEmpty(raw) Then Return
         Dim chosen = FO4UnifiedMaterial_Class.CorrectTexturePath(raw)
@@ -1403,7 +1403,13 @@ Public Class EditFace_Form
                 ComboBoxTintPalette.SelectedIndex = selectedIdx
             End If
 
-            PanelTintColorSwatch.BackColor = If(isPalette, tl.Color, SystemColors.Control)
+            ' Force alpha=255: tl.Color can carry alpha=0 (RACE-default seeded from CLFM bytes
+            ' whose engine-unused alpha vanilla often leaves at 0; same in LM-loaded layers).
+            ' WinForms Panel.BackColor with alpha<255 renders as parent fill — the combo path
+            ' already forces opaque at the TintPaletteItem construction (line 1381), which is
+            ' why changing the combo lit the swatch but list-selection didn't.
+            ' TextureSet and Mask entries: leave swatch blank (no visual preview here).
+            PanelTintColorSwatch.BackColor = If(isPalette, Color.FromArgb(255, tl.Color.R, tl.Color.G, tl.Color.B), SystemColors.Control)
 
             TrackBarTintPercent.Enabled = True
             TrackBarTintPercent.Value = tl.Value

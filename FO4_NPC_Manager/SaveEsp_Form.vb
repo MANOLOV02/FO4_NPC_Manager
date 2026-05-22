@@ -53,7 +53,8 @@ Public Class SaveEsp_Form
                     .NpcFormIDs = npcIds,
                     .ContainsTargetNpc = False,
                     .IsEsm = reader.IsESM,
-                    .IsLight = reader.IsESL
+                    .IsLight = reader.IsESL,
+                    .TranslatableEncoding = reader.TranslatableEncoding
                 }
                 result.Add(ep)
             Catch
@@ -84,18 +85,42 @@ Public Class SaveEsp_Form
                     Dim dataSize = br.ReadUInt32()
                     fs.Seek(16, SeekOrigin.Current)
                     Dim bodyEnd = fs.Position + CLng(dataSize)
+
+                    ' Two-pass to honor per-file SNAM <cp:XXXX> tag (xEdit flEncodingTrans):
+                    ' first scan locates CNAM bytes + SNAM tag, then decodes CNAM with the
+                    ' per-file encoding when present. xEdit canonical FO4 order is CNAM before
+                    ' SNAM, so the on-disk CNAM is reached first while seeking — buffer its
+                    ' bytes and resolve later. ASCII-only author literals are encoding-invariant
+                    ' so the typical NPC_Manager scan path works either way; this loop is the
+                    ' robust path for tooling that ever writes non-ASCII authors.
+                    Dim cnamBytes As Byte() = Nothing
+                    Dim perFileEnc As System.Text.Encoding = Nothing
+
                     While fs.Position <= bodyEnd - 6
                         Dim subSig = System.Text.Encoding.ASCII.GetString(br.ReadBytes(4))
                         Dim subSize = br.ReadUInt16()
                         If subSig = "CNAM" Then
-                            Dim bytes = br.ReadBytes(CInt(subSize))
-                            ' Strip NUL terminator.
-                            Dim len = bytes.Length
-                            If len > 0 AndAlso bytes(len - 1) = 0 Then len -= 1
-                            Return System.Text.Encoding.ASCII.GetString(bytes, 0, len)
+                            cnamBytes = br.ReadBytes(CInt(subSize))
+                        ElseIf subSig = "SNAM" Then
+                            Dim snamBytes = br.ReadBytes(CInt(subSize))
+                            Dim snamLen = snamBytes.Length
+                            If snamLen > 0 AndAlso snamBytes(snamLen - 1) = 0 Then snamLen -= 1
+                            Dim snamText = PluginEncodingSettings.DecodeTranslatable(snamBytes, 0, snamLen)
+                            perFileEnc = PluginEncodingSettings.ParseSnamCpTag(snamText)
+                            ' CNAM seen first per xEdit canonical order — we have what we need.
+                            If cnamBytes IsNot Nothing Then Exit While
+                        Else
+                            fs.Seek(CLng(subSize), SeekOrigin.Current)
                         End If
-                        fs.Seek(CLng(subSize), SeekOrigin.Current)
                     End While
+
+                    If cnamBytes Is Nothing Then Return Nothing
+                    Dim cnamLen = cnamBytes.Length
+                    If cnamLen > 0 AndAlso cnamBytes(cnamLen - 1) = 0 Then cnamLen -= 1
+                    If perFileEnc IsNot Nothing Then
+                        Return PluginEncodingSettings.DecodeWithEncoding(cnamBytes, 0, cnamLen, perFileEnc)
+                    End If
+                    Return PluginEncodingSettings.DecodeTranslatable(cnamBytes, 0, cnamLen)
                 End Using
             End Using
         Catch
@@ -119,6 +144,12 @@ Public Class SaveEsp_Form
         ''' plugin keeps the same flag set unless the user explicitly changes them.</summary>
         Public IsEsm As Boolean
         Public IsLight As Boolean
+        ''' <summary>Per-file translatable encoding parsed from the plugin's TES4 SNAM
+        ''' &lt;cp:XXXX&gt; tag at scan time. Nothing when the plugin has no tag (default →
+        ''' global Translatable). Used by the Save dialog to auto-select the encoding combo
+        ''' when the user picks "Update existing", so the rewrite keeps the same encoding
+        ''' the file originally had unless the user explicitly changes it.</summary>
+        Public TranslatableEncoding As System.Text.Encoding
 
         Public Overrides Function ToString() As String
             Dim suffix As String = ""
@@ -261,9 +292,74 @@ Public Class SaveEsp_Form
         AddHandler TextBoxNewName.TextChanged, AddressOf OnSelectionChanged
         AddHandler ButtonOk.Click, AddressOf OnOkClick
 
+        PopulateEncodingCombo()
+        InitBa2VersionCombo()
+
         OnRadioChanged(Nothing, EventArgs.Empty)
         UpdateWarning()
     End Sub
+
+    ''' <summary>FO4-only BA2 header version selector. Hidden for SSE (which packs BSA v105 — no
+    ''' version choice). Index 0 = v8 (Next Gen, default); index 1 = v1 (Old Gen / universal).
+    ''' Persists into NPC_Config.Ba2Version_FO4, read at pack time by RunChargenBakeAndPack.</summary>
+    Private Sub InitBa2VersionCombo()
+        ComboBoxBa2Version.Items.Clear()
+        ComboBoxBa2Version.Items.Add("8 - Next Gen (NG)")
+        ComboBoxBa2Version.Items.Add("1 - Old Gen (OG / universal)")
+        ' Set selection BEFORE wiring the handler so this init does not write config back.
+        ComboBoxBa2Version.SelectedIndex = If(NPC_Config.Current.Ba2Version_FO4 = 1UI, 1, 0)
+        AddHandler ComboBoxBa2Version.SelectedIndexChanged, AddressOf OnBa2VersionChanged
+
+        Dim isFo4 As Boolean = (Config_App.Current.Game = Config_App.Game_Enum.Fallout4)
+        LabelBa2Version.Visible = isFo4
+        ComboBoxBa2Version.Visible = isFo4
+    End Sub
+
+    Private Sub OnBa2VersionChanged(sender As Object, e As EventArgs)
+        ' Index 0 = v8 (Next Gen, default); index 1 = v1 (Old Gen / universal).
+        NPC_Config.Current.Ba2Version_FO4 = If(ComboBoxBa2Version.SelectedIndex = 1, 1UI, 8UI)
+    End Sub
+
+    ''' <summary>Encoding selector entries. Mirror of xEdit -cp-trans command-line param values
+    ''' (xeInit.pas:1320) plus the per-language Auto option (mirror of xeInit.pas:1297 sLanguage
+    ''' lookup). Default UTF-8 matches xeInit.pas:1122 wbLEncodingDefault[False] for FO4.</summary>
+    Private NotInheritable Class EncodingOption
+        Public Property Label As String
+        ''' <summary>Code page string passed to PluginEncodingSettings.SetTranslatableOverride.
+        ''' Empty means "use Auto sLanguage" (no override; whatever startup set stays in force).</summary>
+        Public Property OverrideValue As String
+        Public Overrides Function ToString() As String
+            Return Label
+        End Function
+    End Class
+
+    Private Sub PopulateEncodingCombo()
+        ComboBoxEncoding.Items.Clear()
+
+        Dim utf8 As New EncodingOption With {.Label = "UTF-8 (recommended — FO4 default)", .OverrideValue = "65001"}
+        ComboBoxEncoding.Items.Add(utf8)
+        ComboBoxEncoding.Items.Add(New EncodingOption With {.Label = "Auto (sLanguage from Fallout4.ini)", .OverrideValue = ""})
+        ComboBoxEncoding.Items.Add(New EncodingOption With {.Label = "Windows-1252 (Western European)", .OverrideValue = "1252"})
+        ComboBoxEncoding.Items.Add(New EncodingOption With {.Label = "Windows-1250 (Central European)", .OverrideValue = "1250"})
+        ComboBoxEncoding.Items.Add(New EncodingOption With {.Label = "Windows-1251 (Cyrillic / Russian)", .OverrideValue = "1251"})
+        ComboBoxEncoding.Items.Add(New EncodingOption With {.Label = "Windows-1253 (Greek)", .OverrideValue = "1253"})
+        ComboBoxEncoding.Items.Add(New EncodingOption With {.Label = "Windows-1254 (Turkish)", .OverrideValue = "1254"})
+        ComboBoxEncoding.Items.Add(New EncodingOption With {.Label = "Windows-1256 (Arabic)", .OverrideValue = "1256"})
+        ComboBoxEncoding.Items.Add(New EncodingOption With {.Label = "CP932 (Japanese Shift-JIS)", .OverrideValue = "932"})
+        ComboBoxEncoding.Items.Add(New EncodingOption With {.Label = "CP936 (Simplified Chinese GBK)", .OverrideValue = "936"})
+        ComboBoxEncoding.Items.Add(New EncodingOption With {.Label = "CP950 (Traditional Chinese Big5)", .OverrideValue = "950"})
+
+        ComboBoxEncoding.SelectedItem = utf8
+    End Sub
+
+    ''' <summary>Resolve the user's choice into the value passed to SetTranslatableOverride.
+    ''' Empty means "leave the startup-applied Auto setting in place".</summary>
+    Private Function GetSelectedEncodingOverride() As String
+        Dim opt = TryCast(ComboBoxEncoding.SelectedItem, EncodingOption)
+        If opt Is Nothing Then Return "65001"   ' fall back to UTF-8 if something went sideways
+        Return opt.OverrideValue
+    End Function
+
 
     ''' <summary>Reset the Master / Light checkboxes to the "Create new" defaults: plain ESP
     ''' (no master flag) with the Light flag on. Called at form construction and whenever the
@@ -271,6 +367,9 @@ Public Class SaveEsp_Form
     Private Sub ApplyFlagDefaultsForCreateNew()
         CheckBoxMarkAsMaster.Checked = False
         CheckBoxLightMaster.Checked = True
+        ' "Create new" returns the encoding combo to the UTF-8 default (FO4 default per
+        ' xeInit.pas:1122). User can still pick a different value before saving.
+        SelectEncodingComboByCodePage(65001)
     End Sub
 
     ''' <summary>Sync the Master / Light checkboxes to whatever the selected existing plugin
@@ -280,6 +379,26 @@ Public Class SaveEsp_Form
         If ep Is Nothing Then Return
         CheckBoxMarkAsMaster.Checked = ep.IsEsm
         CheckBoxLightMaster.Checked = ep.IsLight
+        ' Auto-select the encoding combo to match the plugin's per-file <cp:XXXX> tag so the
+        ' rewrite preserves it. Nothing on the ep means the plugin had no tag → default UTF-8
+        ' (FO4 canonical default). User can override before clicking Save.
+        Dim cp = If(ep.TranslatableEncoding IsNot Nothing, ep.TranslatableEncoding.CodePage, 65001)
+        SelectEncodingComboByCodePage(cp)
+    End Sub
+
+    ''' <summary>Find the encoding combo item whose OverrideValue maps to the given code page
+    ''' and select it. No-op if no match (e.g. an exotic code page we don't expose).</summary>
+    Private Sub SelectEncodingComboByCodePage(codePage As Integer)
+        If ComboBoxEncoding Is Nothing OrElse ComboBoxEncoding.Items.Count = 0 Then Return
+        Dim target = codePage.ToString()
+        For Each item In ComboBoxEncoding.Items
+            Dim opt = TryCast(item, EncodingOption)
+            If opt Is Nothing Then Continue For
+            If opt.OverrideValue = target Then
+                ComboBoxEncoding.SelectedItem = opt
+                Return
+            End If
+        Next
     End Sub
 
     Private Sub PopulateExistingList()
@@ -303,7 +422,22 @@ Public Class SaveEsp_Form
         Else
             ApplyFlagDefaultsForCreateNew()
         End If
+        UpdateEncodingHint()
         UpdateWarning()
+    End Sub
+
+    ''' <summary>
+    ''' Make it visible in the UI that the encoding combo is auto-detected (preserved) from the
+    ''' selected plugin in "Update existing" mode, vs a free choice in "Create new" mode. Without
+    ''' this, the combo silently switches to e.g. "Windows-1251" and the user can't tell whether
+    ''' that's their choice or came from the plugin.
+    ''' </summary>
+    Private Sub UpdateEncodingHint()
+        If RadioButtonExisting.Checked Then
+            LabelEncodingHint.Text = "(from plugin)"
+        Else
+            LabelEncodingHint.Text = ""
+        End If
     End Sub
 
     Private Sub OnSelectionChanged(sender As Object, e As EventArgs)
@@ -401,6 +535,17 @@ Public Class SaveEsp_Form
         If target Is Nothing Then Return
         Result = target
 
+        ' Apply translatable-encoding override BEFORE BuildStepPlan / ExecuteAsync. The writer
+        ' reads PluginEncodingSettings.Translatable inside EmitLString — once the write starts
+        ' it's too late to change. Empty value means "Auto" (leave whatever MainForm_Load set
+        ' from Fallout4.ini sLanguage in place). Mirror of xEdit -cp-trans command-line param.
+        Dim encOverride = GetSelectedEncodingOverride()
+        If encOverride <> "" Then PluginEncodingSettings.SetTranslatableOverride(encOverride)
+        ' NOTE: encoding-conflict pre-check (FULL/SHRT/ATTX vs selected encoding, for the edited
+        ' NPC + all pre-existing NPCs when updating) runs inside NpcOverrideSaver.ExecuteWritePhases
+        ' right after the existing plugin is loaded — reusing that single PluginReader.Load instead
+        ' of loading the plugin twice. A conflict aborts the save with a descriptive message.
+
         ' Lock UI: every interactive control (except the form chrome) goes disabled and the
         ' progress panel becomes visible. Cancel button stays disabled too — the orchestrator
         ' has no cancellation token plumbed through (writer + bake + BA2 pack run synchronously
@@ -468,6 +613,8 @@ Public Class SaveEsp_Form
         CheckBoxGenerateChargen.Enabled = enabled AndAlso _npcIsCharGenFacePreset
         CheckBoxWriteBssliders.Enabled = enabled
         CheckBoxEmitBodyGen.Enabled = enabled
+        ComboBoxEncoding.Enabled = enabled
+        ComboBoxBa2Version.Enabled = enabled
         ButtonOk.Enabled = enabled
         ButtonCancel.Enabled = enabled
         PanelProgress.Visible = locked

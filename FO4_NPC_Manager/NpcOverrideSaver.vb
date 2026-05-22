@@ -134,6 +134,32 @@ Public Module NpcOverrideSaver
         Public NpcSpec As NPC_Data
     End Class
 
+    ''' <summary>
+    ''' Check the translatable string fields (FULL/SHRT/ATTX — the ones NpcSubrecordWriter.EmitLString
+    ''' emits) of one NPC against the currently-selected Translatable encoding. Returns "" if all
+    ''' fit, or a user-facing message naming the offending field + value. labelSuffix distinguishes
+    ''' pre-existing NPCs from the one being edited.
+    ''' </summary>
+    Private Function FindEncodingConflict(npc As NPC_Data, labelSuffix As String) As String
+        If npc Is Nothing Then Return ""
+
+        Dim checks As New List(Of (Field As String, Value As String))
+        If npc.HasFull Then checks.Add(("FULL (nombre)" & labelSuffix, npc.FullName))
+        If npc.HasShortName Then checks.Add(("SHRT (nombre corto)" & labelSuffix, npc.ShortName))
+        If npc.HasActivateTextOverride Then checks.Add(("ATTX (texto de activación)" & labelSuffix, npc.ActivateTextOverride))
+
+        For Each check In checks
+            If Not String.IsNullOrEmpty(check.Value) AndAlso Not PluginEncodingSettings.CanEncodeTranslatableStrict(check.Value) Then
+                Return $"El campo {check.Field} contiene caracteres que no caben en el encoding seleccionado." & vbCrLf & vbCrLf &
+                       $"Valor: ""{check.Value}""" & vbCrLf & vbCrLf &
+                       "Esos caracteres se perderían (reemplazados por '?'). Elegí UTF-8 (recomendado) " &
+                       "o un encoding que cubra el alfabeto del nombre, y volvé a guardar."
+            End If
+        Next
+
+        Return ""
+    End Function
+
     ''' <summary>Phases 1-3 of the save: build the override entry (overlay + MWGT + HeadParts
     ''' merge), load existing records, write the plugin, and run the optional verifier. All
     ''' pure CPU/IO — safe to run on a worker Task. Mutates <paramref name="result"/> in place
@@ -271,6 +297,22 @@ Public Module NpcOverrideSaver
                 existingRecords.Add(rec)
             Next
         End If
+
+        ' Phase 2b: encoding-conflict check. The writer re-emits the edited NPC AND every
+        ' pre-existing NPC using the currently-selected Translatable encoding. If any FULL/SHRT/
+        ' ATTX contains characters that don't fit, .NET would silently replace them with '?'
+        ' (xEdit-faithful but corrupting). Detect it here — reusing the existingRecords already
+        ' loaded above (no second PluginReader.Load) — and abort with a descriptive message.
+        Dim editedConflict = FindEncodingConflict(entry.Npc, "")
+        If editedConflict <> "" Then Throw New InvalidDataException(editedConflict)
+        For Each existing In existingRecords
+            If existing.Header.Signature <> "NPC_" Then Continue For
+            Dim parsedExisting = RecordParsers.ParseNPC(existing, existing.SourcePluginName, ctx.PluginManager)
+            Dim label = If(parsedExisting.HasFull AndAlso parsedExisting.FullName <> "",
+                           parsedExisting.FullName, $"FormID {existing.Header.FormID:X8}")
+            Dim existingConflict = FindEncodingConflict(parsedExisting, $" del NPC [{label}]")
+            If existingConflict <> "" Then Throw New InvalidDataException(existingConflict)
+        Next
 
         ' Phase 3: write plugin.
         ReportPhase(progress, "Writing NPC override to plugin…", IO.Path.GetFileName(target.TargetPath))
