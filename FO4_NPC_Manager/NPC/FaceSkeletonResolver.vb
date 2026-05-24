@@ -40,17 +40,8 @@ Public Module FaceSkeletonResolver
         }
 
         For Each raw In candidates
-            Dim normalized = MeshPathHelpers.NormalizeMeshKey(raw)
-            Dim loc As FilesDictionary_class.File_Location = Nothing
-            If FilesDictionary_class.Dictionary.TryGetValue(normalized, loc) Then
-                Try
-                    Dim bytes = loc.GetBytes()
-                    If bytes IsNot Nothing AndAlso bytes.Length > 0 Then
-                        Return bytes
-                    End If
-                Catch ex As Exception
-                End Try
-            End If
+            Dim bytes = MeshPathHelpers.TryLoadMeshBytes(MeshPathHelpers.NormalizeMeshKey(raw))
+            If bytes IsNot Nothing Then Return bytes
         Next
 
         Return Nothing

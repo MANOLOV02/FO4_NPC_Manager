@@ -61,13 +61,9 @@ Public Class EditFace_Form
     ' (RenderInHostAsync, RefreshFaceTintLivePreview, RebuildAndApplyMergedPose) that still live
     ' on MainForm but accept an arbitrary host. _mainGore is captured at .ctor as a snapshot of the
     ' MainForm's RenderGore checkbox so the editor honours the user's global gore preference.
-    Private _editorHost As NpcRenderHost = Nothing
+    ' _editorHost / HasUncommittedChanges lifted to EditorFormBase (shared with EditBody_Form).
     Private ReadOnly _mainForm As MainForm = Nothing
     Private ReadOnly _mainGore As Boolean = False
-    ''' <summary>Set to True by OnOk when the user confirms; MainForm reads this after ShowDialog
-    ''' to decide whether to re-render its main preview from the (now-mutated) overlay. Cancel
-    ''' rolls back the overlay so the MainForm's preview is already correct without a reload.</summary>
-    Public Property HasUncommittedChanges As Boolean = False
 
     ' Slider drag throttle: model writes happen synchronously inside On...Changed (so OK captures
     ' fresh state) but the costly _refresh callback is deferred. Each slider emits a different
@@ -85,12 +81,7 @@ Public Class EditFace_Form
     Private _seedPreset As LooksmenuLoader.LooksmenuPreset
     Private ReadOnly _priorAcbsFlagsRaw As UInteger
 
-    ' UI state.
-    Private _suspendEvents As Boolean
-
-    ' Set to True while we seed CheckBoxRenderGore from MainForm at Shown so its
-    ' CheckedChanged handler doesn't fire ApplyRenderToggleVisibility on the seed assignment.
-    Private _seedingToggles As Boolean
+    ' _suspendEvents / _seedingToggles lifted to EditorFormBase (shared with EditBody_Form).
 
     ' Vertex morph UI: one section per RACE MorphGroup (mirrors CK chargen UI). Each section
     ' has a preset ListBox + intensity slider (if the group has presets) and N MPGS sliders
@@ -2432,6 +2423,7 @@ Public Class EditFace_Form
                 Try
                     _mainForm.RefreshFaceTintLivePreview(_editorHost)
                 Catch ex As Exception
+                    Logger.LogLazy(Function() $"[EDIT-FACE] tint refresh failed for NPC 0x{_rootNpcFormID:X8}: {ex.GetType().Name}: {ex.Message}")
                 End Try
                 _editorHost.PreviewCtl.InvalidateRender()
                 Return
@@ -2446,6 +2438,7 @@ Public Class EditFace_Form
                 Try
                     Await _mainForm.RenderInHostAsync(_editorHost, _rootNpcFormID)
                 Catch ex As Exception
+                    Logger.LogLazy(Function() $"[EDIT-FACE] full reload failed for NPC 0x{_rootNpcFormID:X8}: {ex.GetType().Name}: {ex.Message}")
                 End Try
                 Return
         End Select
@@ -2522,6 +2515,7 @@ Public Class EditFace_Form
             Try
                 Await _mainForm.RenderInHostAsync(_editorHost, _rootNpcFormID)
             Catch ex As Exception
+                Logger.LogLazy(Function() $"[EDIT-FACE] initial render failed for NPC 0x{_rootNpcFormID:X8}: {ex.GetType().Name}: {ex.Message}")
             End Try
         End If
     End Sub

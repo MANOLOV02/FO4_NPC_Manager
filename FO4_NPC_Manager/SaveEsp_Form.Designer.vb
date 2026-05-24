@@ -29,6 +29,7 @@ Partial Class SaveEsp_Form
         CheckBoxEmitBodyGen = New CheckBox()
         LabelEncoding = New Label()
         ComboBoxEncoding = New ComboBox()
+        LabelEncodingHint = New Label()
         LabelBa2Version = New Label()
         ComboBoxBa2Version = New ComboBox()
         LabelWarning = New Label()

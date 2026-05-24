@@ -19,7 +19,11 @@ Imports FO4_Base_Library
 '''
 ''' After a successful pack the four loose files under Data\Meshes\... and
 ''' Data\Textures\... are deleted, mirroring how WM_PackUnpack handles the cloned
-''' material flow.
+''' material flow — EXCEPT when packing a DebugMode bake (debugSandbox = True). There the bake
+''' wrote the loose with a _2 suffix and the user keeps them on disk for inspection: the packer
+''' reads the _2 files but names the BA2 entries canonically (the emitted NIF already embeds
+''' canonical texture paths via FaceGenBuilder slotPlan.CanonSuffix), so the archive is identical
+''' to a release pack, and the _2 loose are left untouched.
 ''' </summary>
 Friend Module NpcFaceGenPacker
 
@@ -71,6 +75,10 @@ Friend Module NpcFaceGenPacker
     ''' the loose under this same segment.</param>
     ''' <param name="formIdLow">NPC FormID with the master-index high byte cleared (the same value
     ''' FaceGenBuilder used to name the files).</param>
+    ''' <param name="debugSandbox">True when the bake ran with FaceGenBuilder.DebugMode on: the
+    ''' loose were written with a _2 suffix. The packer then reads the _2 files, names the BA2
+    ''' entries canonically, and skips deleting the loose (the _2 stay on disk). False = release:
+    ''' reads the canonical loose and deletes them after packing.</param>
     ''' <param name="progress">Optional progress callback; invoked synchronously from the calling
     ''' (UI) thread.</param>
     Friend Function PackForNpc(anchorPluginPath As String,
@@ -79,6 +87,7 @@ Friend Module NpcFaceGenPacker
                                originPlugin As String,
                                formIdLow As UInteger,
                                ba2Version As UInteger,
+                               debugSandbox As Boolean,
                                Optional progress As Action(Of PackProgress) = Nothing) As PackResult
 
         Dim result As New PackResult()
@@ -98,18 +107,35 @@ Friend Module NpcFaceGenPacker
 
         ' Resolve the four loose paths produced by FaceGenBuilder. Order matters for the
         ' progress bar: NIF first (fastest), then 3 DDS.
+        '
+        ' Source vs entry split: in DebugMode (debugSandbox) the bake wrote the loose with a _2
+        ' suffix and we read those, but the BA2 entry names are always canonical (non-_2) — the
+        ' emitted NIF already embeds canonical texture paths, so the packed archive is identical
+        ' to a release pack. In release the two coincide.
         Dim formIdHex = formIdLow.ToString("X8")
-        Dim nifPath = Path.Combine(dataDir,
-            "Meshes", "Actors", "Character", "FaceGenData", "FaceGeom",
-            originPlugin, formIdHex & ".nif")
+        Dim faceGeomDir = Path.Combine(dataDir,
+            "Meshes", "Actors", "Character", "FaceGenData", "FaceGeom", originPlugin)
         Dim ddsBase = Path.Combine(dataDir,
-            "Textures", "Actors", "Character", "FaceCustomization",
-            originPlugin)
-        Dim ddsD = Path.Combine(ddsBase, formIdHex & "_d.dds")
-        Dim ddsN = Path.Combine(ddsBase, formIdHex & "_msn.dds")
-        Dim ddsS = Path.Combine(ddsBase, formIdHex & "_s.dds")
+            "Textures", "Actors", "Character", "FaceCustomization", originPlugin)
 
-        Dim sources As String() = {nifPath, ddsD, ddsN, ddsS}
+        Dim nifSuffix = If(debugSandbox, "_2.nif", ".nif")
+        Dim dSuffix = If(debugSandbox, "_d_2.dds", "_d.dds")
+        Dim nSuffix = If(debugSandbox, "_msn_2.dds", "_msn.dds")
+        Dim sSuffix = If(debugSandbox, "_s_2.dds", "_s.dds")
+
+        ' Sources read from disk.
+        Dim nifSrc = Path.Combine(faceGeomDir, formIdHex & nifSuffix)
+        Dim ddsDSrc = Path.Combine(ddsBase, formIdHex & dSuffix)
+        Dim ddsNSrc = Path.Combine(ddsBase, formIdHex & nSuffix)
+        Dim ddsSSrc = Path.Combine(ddsBase, formIdHex & sSuffix)
+
+        ' Canonical names the entries take inside the BA2 (always non-_2).
+        Dim nifEntry = Path.Combine(faceGeomDir, formIdHex & ".nif")
+        Dim ddsDEntry = Path.Combine(ddsBase, formIdHex & "_d.dds")
+        Dim ddsNEntry = Path.Combine(ddsBase, formIdHex & "_msn.dds")
+        Dim ddsSEntry = Path.Combine(ddsBase, formIdHex & "_s.dds")
+
+        Dim sources As String() = {nifSrc, ddsDSrc, ddsNSrc, ddsSSrc}
         For Each s In sources
             If Not File.Exists(s) Then
                 result.ErrorMessage = $"Bake output missing: '{s}'. CharGen build did not produce all four files."
@@ -121,13 +147,13 @@ Friend Module NpcFaceGenPacker
         Report(progress, PackPhase.BuildingBundle, "Compressing FaceGen NIF…", 0, 4)
         Dim entries As New List(Of VirtualEntry)
         Try
-            entries.Add(MakeMaterialEntry(dataDir, nifPath, game))
+            entries.Add(MakeMaterialEntry(dataDir, nifSrc, nifEntry, game))
             Report(progress, PackPhase.BuildingBundle, "Compressing FaceCustomization _d.dds…", 1, 4)
-            entries.Add(MakeTextureEntry(dataDir, ddsD, game))
+            entries.Add(MakeTextureEntry(dataDir, ddsDSrc, ddsDEntry, game))
             Report(progress, PackPhase.BuildingBundle, "Compressing FaceCustomization _msn.dds…", 2, 4)
-            entries.Add(MakeTextureEntry(dataDir, ddsN, game))
+            entries.Add(MakeTextureEntry(dataDir, ddsNSrc, ddsNEntry, game))
             Report(progress, PackPhase.BuildingBundle, "Compressing FaceCustomization _s.dds…", 3, 4)
-            entries.Add(MakeTextureEntry(dataDir, ddsS, game))
+            entries.Add(MakeTextureEntry(dataDir, ddsSSrc, ddsSEntry, game))
             Report(progress, PackPhase.BuildingBundle, "Done compressing.", 4, 4)
         Catch ex As Exception
             result.ErrorMessage = $"Failed to build BA2 entries: {ex.GetType().Name}: {ex.Message}"
@@ -208,6 +234,15 @@ Friend Module NpcFaceGenPacker
             Return result
         End If
 
+        ' DebugMode: the loose are the _2 sandbox files the user keeps on disk for inspection /
+        ' diffing. The content is already committed to the BA2 (under canonical names) — skip the
+        ' delete + dictionary eviction entirely so the _2 remain untouched.
+        If debugSandbox Then
+            result.Success = True
+            Report(progress, PackPhase.Done, "Done (debug: _2 loose kept on disk).", 1, 1)
+            Return result
+        End If
+
         Report(progress, PackPhase.DeletingLoose, "Removing loose files…", 0, sources.Length)
         Dim deletedAt As Integer = 0
         For Each src In sources
@@ -242,9 +277,11 @@ Friend Module NpcFaceGenPacker
     ' Ba2_Bsa_Library.
     ' ============================================================================
 
-    Private Function MakeMaterialEntry(dataDir As String, fullPath As String, game As Config_App.Game_Enum) As VirtualEntry
-        Dim relUnderData = Path.GetRelativePath(dataDir, fullPath).Correct_Path_Separator
-        Dim bytes = File.ReadAllBytes(fullPath)
+    Private Function MakeMaterialEntry(dataDir As String, sourcePath As String, entryPath As String, game As Config_App.Game_Enum) As VirtualEntry
+        ' entryPath = canonical path that names the BA2 entry; sourcePath = the file we read
+        ' (carries the _2 suffix in DebugMode). They coincide in release.
+        Dim relUnderData = Path.GetRelativePath(dataDir, entryPath).Correct_Path_Separator
+        Dim bytes = File.ReadAllBytes(sourcePath)
         Dim relDir As String = "", relFile As String = ""
         PathUtil.SplitDirFile(relUnderData, relDir, relFile)
         Dim crc = Ba2WriterCommon.Crc32Bytes(bytes)
@@ -275,9 +312,11 @@ Friend Module NpcFaceGenPacker
         Return ve
     End Function
 
-    Private Function MakeTextureEntry(dataDir As String, fullPath As String, game As Config_App.Game_Enum) As VirtualEntry
-        Dim relUnderData = Path.GetRelativePath(dataDir, fullPath).Correct_Path_Separator
-        Dim bytes = File.ReadAllBytes(fullPath)
+    Private Function MakeTextureEntry(dataDir As String, sourcePath As String, entryPath As String, game As Config_App.Game_Enum) As VirtualEntry
+        ' entryPath = canonical path that names the BA2 entry; sourcePath = the file we read
+        ' (carries the _2 suffix in DebugMode). They coincide in release.
+        Dim relUnderData = Path.GetRelativePath(dataDir, entryPath).Correct_Path_Separator
+        Dim bytes = File.ReadAllBytes(sourcePath)
 
         If game = Config_App.Game_Enum.Skyrim Then
             Dim relDir As String = "", relFile As String = ""

@@ -20,9 +20,15 @@ Public Class NpcMorphResolver
     Private ReadOnly _shapeRaceMorphTriPaths As Dictionary(Of IRenderableShape, String)
     Private ReadOnly _morphValueDefs As List(Of RACE_MorphValueDef)      ' MSID -> MSM0/MSM1 from RACE
     Private ReadOnly _morphPresetDefs As List(Of RACE_MorphPresetDef)   ' MPPI -> MPPM from RACE Morph Groups
-    Private ReadOnly _triCache As New Dictionary(Of String, TriFile)(StringComparer.OrdinalIgnoreCase)
-    Private ReadOnly _triHeadCache As New Dictionary(Of String, TriHeadFile)(StringComparer.OrdinalIgnoreCase)
-    Private ReadOnly _triLoadAttempted As New HashSet(Of String)(StringComparer.OrdinalIgnoreCase)
+    ' Per-process (Shared) TRI caches: a given chargen/race .tri is parsed at most once for the
+    ' lifetime of the process and shared across every NpcMorphResolver instance — the resolver is
+    ' rebuilt on each render/toggle (MainForm.BuildCompositeMorphResolver), so a per-instance cache
+    ' re-parsed the FRTRI003 TriHead every frame. Mirrors the existing Shared path-keyed
+    ' FilesDictionary caches (BodySlideTriResolver._pirtCache, MainForm._facialBoneRegionsCache):
+    ' FilesDictionary content is treated as process-stable, so no per-render invalidation.
+    Private Shared ReadOnly _triCache As New Dictionary(Of String, TriFile)(StringComparer.OrdinalIgnoreCase)
+    Private Shared ReadOnly _triHeadCache As New Dictionary(Of String, TriHeadFile)(StringComparer.OrdinalIgnoreCase)
+    Private Shared ReadOnly _triLoadAttempted As New HashSet(Of String)(StringComparer.OrdinalIgnoreCase)
 
     ' MRSV — Body Morph Region Values. Per TES5Edit/Core/wbDefinitionsFO4.pas:10793-10799,
     ' the subrecord is a fixed struct of 5 floats with these region labels in this order.
@@ -413,7 +419,7 @@ Public Class NpcMorphResolver
 
         ' Step 2: fall back to BODYTRI extra data for the race/expression slot if HDPT didn't provide it
         If String.IsNullOrEmpty(raceMorphPath) Then
-            Dim bodyTriPath = GetBodyTriPath(shape)
+            Dim bodyTriPath = MeshPathHelpers.ReadBodyTriPath(shape, includeShapeLevel:=True)
             If bodyTriPath <> "" Then raceMorphPath = bodyTriPath
         End If
 
@@ -431,24 +437,18 @@ Public Class NpcMorphResolver
 
         ' Load race/expression TRI: try PIRT first (BodySlide format), then TriHead (Bethesda format)
         If Not String.IsNullOrEmpty(raceMorphPath) Then
-            Dim normRace = NormalizeDictPath(raceMorphPath)
+            Dim normRace = MeshPathHelpers.NormalizeMeshKey(raceMorphPath)
             tri = TryLoadPirt(normRace)
             If tri Is Nothing Then
                 triHead = TryLoadTriHead(normRace)
-                If triHead IsNot Nothing Then
-                    Dim regBase = triHead.Morphs.Where(Function(m) Not m.IsModMorph).Select(Function(m) m.Name).ToList()
-                    Dim modBase = triHead.Morphs.Where(Function(m) m.IsModMorph).Select(Function(m) m.Name).ToList()
-                End If
             End If
         End If
 
         ' Load chargen TRI (always TriHead format) and merge into triHead
         If Not String.IsNullOrEmpty(chargenPath) Then
-            Dim normChargen = NormalizeDictPath(chargenPath)
+            Dim normChargen = MeshPathHelpers.NormalizeMeshKey(chargenPath)
             Dim chargenHead = TryLoadTriHead(normChargen)
             If chargenHead IsNot Nothing Then
-                Dim regularMorphs = chargenHead.Morphs.Where(Function(m) Not m.IsModMorph).Select(Function(m) m.Name).ToList()
-                Dim modMorphs = chargenHead.Morphs.Where(Function(m) m.IsModMorph).Select(Function(m) m.Name).ToList()
                 If triHead Is Nothing Then
                     triHead = chargenHead
                 Else
@@ -506,8 +506,6 @@ Public Class NpcMorphResolver
                 SyncLock _triHeadCache
                     _triHeadCache(normalizedPath) = head
                 End SyncLock
-                ' Full morph-name dump so we can compare what each TRI provides (NAM0=1 vs NAM0=2).
-                Dim morphNames = head.Morphs.Select(Function(m) m.Name).ToList()
             End If
             Return head
         Catch ex As Exception
@@ -521,46 +519,6 @@ Public Class NpcMorphResolver
         Dim bytes = loc.GetBytes()
         If bytes Is Nothing OrElse bytes.Length < 8 Then Return Nothing
         Return bytes
-    End Function
-
-    ''' <summary>Extract BODYTRI extra data path from a NIF shape or its root.</summary>
-    Private Shared Function GetBodyTriPath(shape As IRenderableShape) As String
-        If shape.NifContent Is Nothing OrElse shape.NifContent.Blocks Is Nothing Then Return ""
-
-        ' Check shape-level extra data
-        If shape.NifShape IsNot Nothing AndAlso shape.NifShape.ExtraDataList IsNot Nothing Then
-            For Each edRef In shape.NifShape.ExtraDataList.References
-                If edRef.Index < 0 OrElse edRef.Index >= shape.NifContent.Blocks.Count Then Continue For
-                Dim ed = TryCast(shape.NifContent.Blocks(edRef.Index), NiflySharp.Blocks.NiStringExtraData)
-                If ed IsNot Nothing AndAlso ed.Name IsNot Nothing AndAlso ed.Name.String = "BODYTRI" Then
-                    Return If(ed.StringData?.String, "")
-                End If
-            Next
-        End If
-
-        ' Check root node extra data
-        Dim rootNode = shape.NifContent.Blocks.OfType(Of NiflySharp.Blocks.NiNode)().FirstOrDefault()
-        If rootNode IsNot Nothing AndAlso rootNode.ExtraDataList IsNot Nothing Then
-            For Each edRef In rootNode.ExtraDataList.References
-                If edRef.Index < 0 OrElse edRef.Index >= shape.NifContent.Blocks.Count Then Continue For
-                Dim ed = TryCast(shape.NifContent.Blocks(edRef.Index), NiflySharp.Blocks.NiStringExtraData)
-                If ed IsNot Nothing AndAlso ed.Name IsNot Nothing AndAlso ed.Name.String = "BODYTRI" Then
-                    Return If(ed.StringData?.String, "")
-                End If
-            Next
-        End If
-
-        Return ""
-    End Function
-
-    ''' <summary>Normalize a file path for FilesDictionary lookup.</summary>
-    Private Shared Function NormalizeDictPath(path As String) As String
-        If String.IsNullOrWhiteSpace(path) Then Return ""
-        Dim normalized = path.Replace("/", "\").Trim().ToLowerInvariant()
-        If Not normalized.StartsWith("meshes\") Then
-            normalized = "meshes\" & normalized
-        End If
-        Return normalized
     End Function
 
 End Class

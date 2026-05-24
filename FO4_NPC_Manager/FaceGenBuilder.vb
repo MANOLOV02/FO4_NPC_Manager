@@ -82,16 +82,20 @@ Public Module FaceGenBuilder
         Public Property ShapesDropped As Integer
     End Class
 
-    ''' <summary>Dual-mode bake toggle. False (release, default): output canonical paths
-    ''' (<formID>.nif + _d.dds / _msn.dds / _s.dds) — pisa el CK BA2 bake; el engine in-game
-    ''' usa nuestro output. True (debug): output sandbox (<formID>_2.nif + _d_2.dds etc.)
-    ''' alongside CK's; comparator se dispara contra el CK BA2 baseline y loguea
-    ''' <c>[BUILDCHARGEN-DIFF]</c>. Re-activar a True sólo para diagnóstico contra CK
-    ''' (ver arch_facegen_debug_mode memory). Toggle programático:
-    ''' <c>FaceGenBuilder.DebugMode = True</c>.</summary>
-    ' TEMP: True para habilitar el comparador de texturas [FACEBAKE-TEXDIFF] + diff de geometría
-    ' [BUILDCHARGEN-DIFF] (output sandbox _2, no pisa CK). Volver a False para release.
-    Public Property DebugMode As Boolean = True
+    ''' <summary>Dual-mode bake toggle, DRIVEN BY THE LOGGER. ON only when
+    ''' <see cref="Logger.Enabled"/> is True (diagnostic session); OFF (release) otherwise.
+    ''' OFF (release): output canonical paths (<formID>.nif + _d.dds / _msn.dds / _s.dds) — pisa el
+    ''' CK BA2 bake; el engine in-game usa nuestro output; texturas comprimidas BC3/BC5; sin
+    ''' comparator ni dumps. ON (logger activo): output sandbox (<formID>_2.nif + _d_2.dds etc.)
+    ''' alongside CK's, B8G8R8A8 sin comprimir; el comparator se dispara contra el CK BA2 baseline y
+    ''' loguea <c>[BUILDCHARGEN-DIFF]</c> / <c>[FACEBAKE-TEXDIFF]</c>. Para diagnosticar contra CK,
+    ''' encender el Logger (Logger.Enabled = True). Read-only a propósito: el modo debug y el logging
+    ''' van juntos, así no quedan desincronizados (ver arch_facegen_debug_mode memory).</summary>
+    Public ReadOnly Property DebugMode As Boolean
+        Get
+            Return Logger.Enabled
+        End Get
+    End Property
 
     ''' <summary>Build a baked FaceGen NIF for this NPC. See module-level summary for the
     ''' v0 strategy. Always also writes a structured dump to npc_preview.log so the user
@@ -122,9 +126,8 @@ Public Module FaceGenBuilder
         ' that bundle exactly the same way the live render does — otherwise the .nif2 baked here
         ' diverges from the WNAM the writer puts in the ESP. The resolver is forwarded from the
         ' caller (MainForm) so the bake sees the same template the preview saw.
-        Dim npcData = NpcRecordOverlay.ApplyPresetOverlayToNpcData(
-            NpcRecordOverlay.GetParsedNpc(npcFormID, pluginManager),
-            npcFormID, appliedPresets, pluginManager, lmSkinTemplateResolver)
+        Dim npcData = NpcRecordOverlay.ResolveOverlaidNpcData(
+            npcFormID, pluginManager, appliedPresets, lmSkinTemplateResolver)
         Dim state As MainForm.NPCVisualState = Nothing
         If npcData IsNot Nothing Then
             state = New MainForm.NPCVisualState With {
@@ -216,6 +219,8 @@ Public Module FaceGenBuilder
             Dim effectiveHeadPartType = kv.Value.EffectivePartType
             If String.IsNullOrEmpty(hdpt.MeshPath) Then
                 hdptSourceMissing += 1
+                Dim hnLog = hdptName
+                Logger.LogLazy(Function() $"[FACEBAKE] HDPT '{hnLog}' has empty MeshPath; shape skipped")
                 Continue For
             End If
 
@@ -238,6 +243,8 @@ Public Module FaceGenBuilder
                 End Try
                 If srcBytes Is Nothing OrElse srcBytes.Length = 0 Then
                     hdptSourceMissing += 1
+                    Dim skLogMiss = sourceKey
+                    Logger.LogLazy(Function() $"[FACEBAKE] source mesh not in FilesDictionary: '{skLogMiss}'; shape skipped")
                     Continue For
                 End If
                 srcNif = New Nifcontent_Class_Manolo()
@@ -245,6 +252,8 @@ Public Module FaceGenBuilder
                     srcNif.Load_Manolo(srcBytes)
                 Catch ex As Exception
                     hdptSourceLoadFail += 1
+                    Dim skLogFail = sourceKey
+                    Logger.LogLazy(Function() $"[FACEBAKE] source NIF failed to load: '{skLogFail}': {ex.GetType().Name}: {ex.Message}; shape skipped")
                     Continue For
                 End Try
                 loadedSources(sourceKey) = srcNif
@@ -452,6 +461,9 @@ Public Module FaceGenBuilder
         result.Success = True
         result.OutputPath = outAbs
         result.Summary = $"Wrote {outAbs} ({result.ShapesKept} shapes from {hdptProcessed} HDPTs)"
+        If hdptSourceMissing > 0 OrElse hdptSourceLoadFail > 0 Then
+            result.Summary &= $" | WARNING: {hdptSourceMissing} source mesh(es) missing, {hdptSourceLoadFail} failed to load — see [FACEBAKE] log"
+        End If
 
         ' DebugMode: run comparator against the CK BA2 baseline. The baseline path is the canonical
         ' one (no _2 suffix) — FilesDictionary resolves either a loose CK output or the vanilla
@@ -805,9 +817,8 @@ Public Module FaceGenBuilder
         ' Forward the LM SkinTemplate resolver so face TXST overrides from the bundle land here
         ' (template.face[gender] → npcData.HeadTextureFormID), keeping the bake's tint inputs
         ' aligned with what the live render shows.
-        Dim npcData = NpcRecordOverlay.ApplyPresetOverlayToNpcData(
-            NpcRecordOverlay.GetParsedNpc(npcFormID, pluginManager),
-            npcFormID, appliedPresets, pluginManager, lmSkinTemplateResolver)
+        Dim npcData = NpcRecordOverlay.ResolveOverlaidNpcData(
+            npcFormID, pluginManager, appliedPresets, lmSkinTemplateResolver)
         If npcData Is Nothing Then
             Logger.LogLazy(Function() $"[FACEBAKE] BAIL: npcData is Nothing (npcFormID=0x{npcFormID:X8})")
             Return
@@ -895,7 +906,14 @@ Public Module FaceGenBuilder
         ' and only in DebugMode. The compositor double-gates the readback on this flag AND
         ' Logger.Enabled, so it costs nothing in release. Restored in Finally.
         Dim prevPerLayerDiffLog = FaceTintCompositor.PerLayerDiffLog
-        If DebugMode Then FaceTintCompositor.PerLayerDiffLog = True
+        Dim prevDumpMaskDir = FaceTintCompositor.DumpMaskDir
+        If DebugMode Then
+            FaceTintCompositor.PerLayerDiffLog = True
+            ' TEMP DEBUG: dump every applied mask/texture (all layers, all channels) to TGA next
+            ' to the FaceCustomization output, so each can be inspected as the GPU sampled it.
+            Dim maskDir = Path.Combine(Config_App.Current.DataPath, "Textures", "Actors", "Character", "FaceCustomization", originPlugin, "mask Tests")
+            Try : Directory.CreateDirectory(maskDir) : FaceTintCompositor.DumpMaskDir = maskDir : Catch : End Try
+        End If
         Dim pipelineResult As FaceTintCompositor.FaceTintPipelineResult
         Try
             pipelineResult = FaceTintCompositor.ApplyFaceTintPipeline(
@@ -907,6 +925,7 @@ Public Module FaceGenBuilder
                 built.Layers, built.RegionSwaps)
         Finally
             FaceTintCompositor.PerLayerDiffLog = prevPerLayerDiffLog
+            FaceTintCompositor.DumpMaskDir = prevDumpMaskDir
         End Try
 
         ' Track any fresh textures the pipeline produced so we can delete them on exit.
@@ -933,10 +952,24 @@ Public Module FaceGenBuilder
         Dim suffixD = If(DebugMode, "_d_2.dds", "_d.dds")
         Dim suffixN = If(DebugMode, "_msn_2.dds", "_msn.dds")
         Dim suffixS = If(DebugMode, "_s_2.dds", "_s.dds")
-        Dim slotPlan = New (Slot As Integer, ResultId As Integer, Dxgi As Integer, Suffix As String)() {
-            (0, pipelineResult.Diffuse.TextureId, DirectXTextureConversionHelper.DxgiFormatBc3Unorm, suffixD),
-            (1, pipelineResult.Normal.TextureId, DirectXTextureConversionHelper.DxgiFormatBc5Unorm, suffixN),
-            (7, pipelineResult.Specular.TextureId, DirectXTextureConversionHelper.DxgiFormatBc5Unorm, suffixS)
+        ' Format: production uses BC3 (diffuse) + BC5 (normal/spec) to match the source-NIF DXGI.
+        ' DebugMode writes the _2 sandbox textures UNCOMPRESSED (B8G8R8A8) so the pixel comparison
+        ' vs CK (which writes FaceCustomization uncompressed B8G8R8X8) is apples-to-apples — BC5
+        ' block compression adds zero-mean noise on high-frequency channels (e.g. spec G, RMS ~10)
+        ' that would otherwise masquerade as a bake error. Release is unchanged (still BC3/BC5).
+        Dim dxgiD = If(DebugMode, DirectXTextureConversionHelper.DxgiFormatB8G8R8A8Unorm, DirectXTextureConversionHelper.DxgiFormatBc3Unorm)
+        Dim dxgiN = If(DebugMode, DirectXTextureConversionHelper.DxgiFormatB8G8R8A8Unorm, DirectXTextureConversionHelper.DxgiFormatBc5Unorm)
+        Dim dxgiS = If(DebugMode, DirectXTextureConversionHelper.DxgiFormatB8G8R8A8Unorm, DirectXTextureConversionHelper.DxgiFormatBc5Unorm)
+        ' CanonSuffix = the canonical (non-_2) suffix. The DDS files on disk use Suffix (which
+        ' carries _2 in DebugMode), but the path embedded INTO the NIF always uses CanonSuffix, so
+        ' the emitted NIF references <id>_d.dds even in DebugMode. The loose _2.nif is never loaded
+        ' by the engine directly (wrong name) — it is either renamed to <id>.nif for a manual test
+        ' or repacked into BA2 under the canonical name (NpcFaceGenPacker debugSandbox path); both
+        ' resolve textures as <id>_d.dds. In release Suffix already equals CanonSuffix (no-op).
+        Dim slotPlan = New (Slot As Integer, ResultId As Integer, Dxgi As Integer, Suffix As String, CanonSuffix As String)() {
+            (0, pipelineResult.Diffuse.TextureId, dxgiD, suffixD, "_d.dds"),
+            (1, pipelineResult.Normal.TextureId, dxgiN, suffixN, "_msn.dds"),
+            (7, pipelineResult.Specular.TextureId, dxgiS, suffixS, "_s.dds")
         }
 
         Dim bsls = TryCast(nif.GetShader(cloned), BSLightingShaderProperty)
@@ -993,7 +1026,7 @@ Public Module FaceGenBuilder
                 Continue For
             End Try
 
-            Dim canonicalNifPath = $"Data\Textures\Actors\Character\FaceCustomization\{originPlugin}\{formIdLow:X8}{entry.Suffix}"
+            Dim canonicalNifPath = $"Data\Textures\Actors\Character\FaceCustomization\{originPlugin}\{formIdLow:X8}{entry.CanonSuffix}"
             While texset.Textures.Count <= entry.Slot
                 texset.Textures.Add(New NiflySharp.NiString4 With {.Content = ""})
             End While

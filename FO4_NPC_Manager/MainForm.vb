@@ -28,6 +28,20 @@ Public Class MainForm
     ''' filter. Excludes pure outfit ARMOs because no record in the load order points to them as
     ''' skin — a cheap and engine-faithful way to narrow the candidate pool.</summary>
     Private _skinArmoUniverse As New HashSet(Of UInteger)()
+    ''' <summary>Universe of OTFT FormIDs in the load order. Populated once in RebuildTreeModelCache;
+    ''' consumed by the Edit Outfit picker (NPC.DOFT override). The per-race/gender filter
+    ''' (<see cref="GetOutfitCandidates"/>) runs over this set, expanding each OTFT deterministically
+    ''' via OutfitResolver.EnumerateAllTerminalArmos and checking per-ARMA race+gender validity.</summary>
+    Private _outfitUniverse As New HashSet(Of UInteger)()
+    ''' <summary>Cache of GetOutfitCandidates results keyed by (race, isFemale). The deterministic
+    ''' OTFT→ARMO expansion + ARMA parse is the costly part, so the first picker-open per race/gender
+    ''' pays it and subsequent opens are instant. Cleared whenever the universe is rebuilt.</summary>
+    Private _outfitCandidateCache As New Dictionary(Of (Race As UInteger, Female As Boolean), List(Of (FormID As UInteger, DisplayName As String)))
+    ''' <summary>Cache of "does (race, gender) have ANY valid outfit?" — drives the Edit Outfit button
+    ''' enable so it isn't lit for races with zero compatible outfits (creatures, robots, some
+    ''' children). Cheaper than the full list (early-exits on the first match) and cached so the
+    ''' render-complete gate doesn't re-scan. Cleared whenever the universe is rebuilt.</summary>
+    Private _outfitAvailabilityCache As New Dictionary(Of (Race As UInteger, Female As Boolean), Boolean)
     ''' <summary>Parsed F4SE LooksMenu skin templates loaded from
     ''' Data\F4SE\Plugins\F4EE\Skin\&lt;mod&gt;\skin.json and Data\F4SE\Plugins\F4EE\Skin\Loose\*.json.
     ''' Mirrors the bundle structure of f4ee/SkinInterface.cpp:490-621 (id+name+gender+sort + per-gender
@@ -83,6 +97,21 @@ Public Class MainForm
     ''' are identical) and across re-previews of the same NPC. Invalidate via
     ''' <see cref="ClearFaceTintCaches"/> when the FilesDictionary is rebuilt.</summary>
     Private ReadOnly _tintBytesCache As New Dictionary(Of String, Byte())(StringComparer.OrdinalIgnoreCase)
+
+    ''' <summary>Per-MainForm caches of parsed ARMO/ARMA records keyed by FormID. <see cref="_pluginManager"/>
+    ''' is ReadOnly (set once in the ctor) and the underlying records are immutable post-load, so a parsed
+    ''' result is stable for this MainForm's lifetime — a new load order means a new PluginManager which
+    ''' (ReadOnly) means a new MainForm, so these caches die with the load order and need no explicit
+    ''' invalidation. ConcurrentDictionary because ResolvePreviewVariant → CollectMeshCandidates runs on a
+    ''' Task.Run background thread and overlapping renders can execute concurrently. Reached via
+    ''' <see cref="GetParsedArmo"/> / <see cref="GetParsedArma"/>, which replace the per-call
+    ''' RecordParsers.ParseARMO/ParseARMA that re-decoded the same records on every render.</summary>
+    Private ReadOnly _parsedArmoCache As New System.Collections.Concurrent.ConcurrentDictionary(Of UInteger, ARMO_Data)()
+    Private ReadOnly _parsedArmaCache As New System.Collections.Concurrent.ConcurrentDictionary(Of UInteger, ARMA_Data)()
+    ' Same rationale/lifetime as the ARMO/ARMA caches above. RACE especially: the NPC's race record is
+    ' re-parsed ~20×/render (skeleton setup, body-weight, skin resolution) — memoizing collapses it to one.
+    Private ReadOnly _parsedRaceCache As New System.Collections.Concurrent.ConcurrentDictionary(Of UInteger, RACE_Data)()
+    Private ReadOnly _parsedHdptCache As New System.Collections.Concurrent.ConcurrentDictionary(Of UInteger, HDPT_Data)()
 
     ' _renderHost.TintGpuCache, _renderHost.PristineDiffusePixels and the PristinePixels nested class moved to
     ' NpcRenderHost so each preview surface owns its own caches.
@@ -794,6 +823,7 @@ Public Class MainForm
         Try
             Await RenderCurrentStateAsync(System.Threading.Interlocked.Increment(_previewRequestVersion))
         Catch ex As Exception
+            Logger.LogLazy(Function() $"[RENDER] main render failed: {ex.GetType().Name}: {ex.Message}")
         End Try
     End Sub
 
@@ -949,8 +979,11 @@ Public Class MainForm
         ' during preflight and any FULL/SHRT decoded with the wrong encoding becomes mojibake we
         ' cannot recover later.
         PluginEncodingSettings.InitializeForGame(Config_App.Game_Enum.Fallout4)
-        Dim iniLanguage = PluginEncodingSettings.ReadLanguageFromIni()
-        If iniLanguage <> "" Then PluginEncodingSettings.SetLanguage(iniLanguage)
+        ' SetLanguage runs UNCONDITIONALLY (mirror xeInit.pas:1323). An empty/missing sLanguage
+        ' resolves to the primary default (UTF-8 for FO4) — NOT a stale cp1252. Guarding with
+        ' `If <> ""` left cp1252 in place for users without an sLanguage line, breaking Korean/
+        ' Chinese plugin names.
+        PluginEncodingSettings.SetLanguage(PluginEncodingSettings.ReadLanguageFromIni())
         ' Logger habilitado SOLO en Debug builds. En Release: Logger.Enabled stays default (False)
         ' y todos los Logger.Log/LogLazy retornan early sin allocar — sin overhead. Si necesitás
         ' diagnóstico en Release, descomentar manualmente y rebuild.
@@ -1107,6 +1140,7 @@ Public Class MainForm
         ' obsoletos.
         BuildNPCClassification()
         BuildSkinArmoUniverse()
+        BuildOutfitUniverse()
         BuildLmSkinTemplateCache()
         For Each npc In _npcByIdCache.Values
             _npcSearchableCache(npc.FormID) = BuildNpcSearchableText(npc)
@@ -1137,25 +1171,23 @@ Public Class MainForm
     Friend Function GetSkinArmoCandidates(npcRaceFID As UInteger, isFemale As Boolean) As List(Of (FormID As UInteger, DisplayName As String))
         Dim outList As New List(Of (FormID As UInteger, DisplayName As String))
         For Each armoFID In _skinArmoUniverse
-            Dim rec = _pluginManager.GetRecord(armoFID)
-            If rec Is Nothing OrElse rec.Header.Signature <> "ARMO" Then Continue For
             Dim armo As ARMO_Data
             Try
-                armo = RecordParsers.ParseARMO(rec, _pluginManager)
+                armo = GetParsedArmo(armoFID)
             Catch
                 Continue For
             End Try
+            If armo Is Nothing Then Continue For
             Dim raceMatch = (armo.RaceFormID = npcRaceFID)
             Dim genderMatch As Boolean = False
             For Each addon In armo.ArmorAddons
-                Dim aaRec = _pluginManager.GetRecord(addon.ArmaFormID)
-                If aaRec Is Nothing OrElse aaRec.Header.Signature <> "ARMA" Then Continue For
                 Dim arma As ARMA_Data
                 Try
-                    arma = RecordParsers.ParseARMA(aaRec, _pluginManager)
+                    arma = GetParsedArma(addon.ArmaFormID)
                 Catch
                     Continue For
                 End Try
+                If arma Is Nothing Then Continue For
                 Dim armaRaceOk = (arma.RaceFormID = npcRaceFID) OrElse arma.AdditionalRaces.Contains(npcRaceFID)
                 If armaRaceOk Then raceMatch = True
                 Dim txst = If(isFemale, arma.FemaleSkinTextureFormID, arma.MaleSkinTextureFormID)
@@ -1187,7 +1219,7 @@ Public Class MainForm
 
         Dim raceRec = _pluginManager.GetRecord(traits.RaceFormID)
         If raceRec Is Nothing OrElse raceRec.Header.Signature <> "RACE" Then Return 0UI
-        Dim race = RecordParsers.ParseRACE(raceRec, _pluginManager)
+        Dim race = ParseRaceCached(raceRec)
         If race Is Nothing Then Return 0UI
 
         Dim ownGender = If(traits.IsFemale, race.FemaleDefaultHairColorFormID, race.MaleDefaultHairColorFormID)
@@ -1213,14 +1245,15 @@ Public Class MainForm
     ''' ARMO record.</summary>
     Friend Function GetSkinArmoDisplayName(armoFID As UInteger) As String
         If armoFID = 0UI Then Return ""
-        Dim rec = _pluginManager.GetRecord(armoFID)
-        If rec Is Nothing OrElse rec.Header.Signature <> "ARMO" Then Return ""
+        Dim armo As ARMO_Data = Nothing
         Try
-            Dim armo = RecordParsers.ParseARMO(rec, _pluginManager)
-            If Not String.IsNullOrEmpty(armo.FullName) Then Return armo.FullName
-            If Not String.IsNullOrEmpty(armo.EditorID) Then Return armo.EditorID
+            armo = GetParsedArmo(armoFID)
         Catch
+            Return armoFID.ToString("X8")
         End Try
+        If armo Is Nothing Then Return ""
+        If Not String.IsNullOrEmpty(armo.FullName) Then Return armo.FullName
+        If Not String.IsNullOrEmpty(armo.EditorID) Then Return armo.EditorID
         Return armoFID.ToString("X8")
     End Function
 
@@ -1241,12 +1274,159 @@ Public Class MainForm
             Dim rec = kvp.Value
             If rec Is Nothing OrElse rec.Header.Signature <> "RACE" Then Continue For
             Try
-                Dim race = RecordParsers.ParseRACE(rec, _pluginManager)
+                Dim race = ParseRaceCached(rec)
                 If race.SkinFormID <> 0UI Then _skinArmoUniverse.Add(race.SkinFormID)
             Catch
             End Try
         Next
     End Sub
+
+    ''' <summary>Sweep all OTFT FormIDs in the load order into <see cref="_outfitUniverse"/>. Cheap —
+    ''' no expansion here; the per-race/gender filter expands lazily in <see cref="GetOutfitCandidates"/>.
+    ''' Runs once per plugin reload inside RebuildTreeModelCache, right after BuildSkinArmoUniverse.
+    ''' Also clears the candidate cache so a reload doesn't serve stale lists.</summary>
+    Private Sub BuildOutfitUniverse()
+        _outfitUniverse.Clear()
+        _outfitCandidateCache.Clear()
+        _outfitAvailabilityCache.Clear()
+        Dim otftRecs = _pluginManager.GetRecordsOfType("OTFT")
+        If otftRecs Is Nothing Then Return
+        For Each rec In otftRecs
+            If rec Is Nothing Then Continue For
+            _outfitUniverse.Add(rec.Header.FormID)
+        Next
+    End Sub
+
+    ''' <summary>Outfits selectable for (race, gender). For each OTFT in the universe, deterministically
+    ''' enumerate every possible terminal ARMO (<see cref="OutfitResolver.EnumerateAllTerminalArmos"/>)
+    ''' and accept the OTFT if ANY of its ARMAs is valid for the race (RaceFormID ∪ AdditionalRaces)
+    ''' AND carries a world mesh (with the renderer's male/female fallback, MainForm.vb:6914-6915).
+    ''' <para>Filter is PER-ARMA, never by ARMO.RaceFormID: most vanilla clothing has RNAM=HumanRace,
+    ''' so filtering by the ARMO would drop outfits valid for ghouls/other races (the closed
+    ''' ghoul-outfit bug). Known deferred edge case: ghouls wearing human outfits whose ARMA doesn't
+    ''' list GhoulRace won't pass this filter (project_ghoul_armor_race_filter_deferred).</para>
+    ''' Cached per (race, gender) — the costly OTFT expansion + ARMA parse runs once per pair.</summary>
+    Friend Function GetOutfitCandidates(npcRaceFID As UInteger, isFemale As Boolean) As List(Of (FormID As UInteger, DisplayName As String))
+        Dim cacheKey = (npcRaceFID, isFemale)
+        Dim cached As List(Of (FormID As UInteger, DisplayName As String)) = Nothing
+        If _outfitCandidateCache.TryGetValue(cacheKey, cached) Then Return cached
+
+        Dim outList As New List(Of (FormID As UInteger, DisplayName As String))
+        For Each otftFID In _outfitUniverse
+            If OutfitHasValidArma(otftFID, npcRaceFID, isFemale) Then
+                outList.Add((otftFID, GetOutfitDisplayName(otftFID)))
+            End If
+        Next
+        outList = outList.OrderBy(Function(x) x.DisplayName, StringComparer.OrdinalIgnoreCase).ToList()
+        _outfitCandidateCache(cacheKey) = outList
+        Return outList
+    End Function
+
+    ''' <summary>True if (race, gender) has at least one valid outfit. Early-exits on the first match
+    ''' (cheaper than <see cref="GetOutfitCandidates"/>, which builds the whole sorted list), and
+    ''' answers from the full-list cache when it's already populated. Cached per (race, gender) so the
+    ''' render-complete button gate doesn't re-scan. Drives <see cref="UpdateEditOutfitEnabled"/> so
+    ''' the button reflects real availability instead of being lit for every NPC.</summary>
+    Private Function HasAnyOutfitCandidate(npcRaceFID As UInteger, isFemale As Boolean) As Boolean
+        Dim cacheKey = (npcRaceFID, isFemale)
+        Dim cachedBool As Boolean
+        If _outfitAvailabilityCache.TryGetValue(cacheKey, cachedBool) Then Return cachedBool
+        ' If the full candidate list was already built (picker opened before), answer from it.
+        Dim cachedList As List(Of (FormID As UInteger, DisplayName As String)) = Nothing
+        If _outfitCandidateCache.TryGetValue(cacheKey, cachedList) Then
+            Dim fromList = cachedList.Count > 0
+            _outfitAvailabilityCache(cacheKey) = fromList
+            Return fromList
+        End If
+        ' Otherwise scan the universe, early-exiting on the first valid outfit.
+        Dim result As Boolean = False
+        For Each otftFID In _outfitUniverse
+            If OutfitHasValidArma(otftFID, npcRaceFID, isFemale) Then
+                result = True
+                Exit For
+            End If
+        Next
+        _outfitAvailabilityCache(cacheKey) = result
+        Return result
+    End Function
+
+    ''' <summary>True if the OTFT resolves (over all possible realizations) to at least one ARMA valid
+    ''' for the race + gender. Used by <see cref="GetOutfitCandidates"/>. Per-ARMA race check + world
+    ''' mesh presence with the same male/female fallback the renderer applies.</summary>
+    Private Function OutfitHasValidArma(otftFID As UInteger, npcRaceFID As UInteger, isFemale As Boolean) As Boolean
+        For Each armoFID In OutfitResolver.EnumerateAllTerminalArmos(otftFID, _pluginManager)
+            Dim armo As ARMO_Data
+            Try
+                armo = GetParsedArmo(armoFID)
+            Catch
+                Continue For
+            End Try
+            If armo Is Nothing Then Continue For
+            For Each addon In armo.ArmorAddons
+                Dim arma As ARMA_Data
+                Try
+                    arma = GetParsedArma(addon.ArmaFormID)
+                Catch
+                    Continue For
+                End Try
+                If arma Is Nothing Then Continue For
+                Dim armaRaceOk = (arma.RaceFormID = npcRaceFID) OrElse arma.AdditionalRaces.Contains(npcRaceFID)
+                If Not armaRaceOk Then Continue For
+                If arma.FemaleMeshPath <> "" OrElse arma.MaleMeshPath <> "" Then Return True
+            Next
+        Next
+        Return False
+    End Function
+
+    ''' <summary>Display label for an OTFT FormID: EditorID if any, else hex. OTFTs carry no FULL name
+    ''' (OTFT_Data is FormID + EditorID + INAM array).</summary>
+    Friend Function GetOutfitDisplayName(otftFID As UInteger) As String
+        If otftFID = 0UI Then Return ""
+        Dim rec = _pluginManager.GetRecord(otftFID)
+        If rec Is Nothing OrElse rec.Header.Signature <> "OTFT" Then Return otftFID.ToString("X8")
+        If Not String.IsNullOrEmpty(rec.EditorID) Then Return rec.EditorID
+        Return otftFID.ToString("X8")
+    End Function
+
+    ''' <summary>World-mesh paths to render in the Edit Outfit picker preview for one OTFT + (race,
+    ''' gender). Samples ONE realization (<see cref="OutfitResolver.SampleOutfitWithKeywords"/>) — the
+    ''' deterministic full enumeration is only for the list filter; a single realization is what the
+    ''' actor would actually wear. For each resolved ARMO, loads the base-addon-index ARMAs whose race
+    ''' matches, picking the gender mesh with the renderer's male/female fallback. No OMOD keyword
+    ''' swap (a render-path concern); the picker loads these NIFs raw (no skinning/morphs), matching
+    ''' HeadPartPicker_Form's lightweight preview.</summary>
+    Friend Function ResolveOutfitPreviewMeshPaths(otftFID As UInteger, npcRaceFID As UInteger, isFemale As Boolean) As List(Of String)
+        Dim paths As New List(Of String)
+        If otftFID = 0UI Then Return paths
+        Dim warnings As New List(Of String)
+        For Each pick In OutfitResolver.SampleOutfitWithKeywords(otftFID, _pluginManager, warnings)
+            Dim armo As ARMO_Data
+            Try
+                armo = GetParsedArmo(pick.ArmoFormID)
+            Catch
+                Continue For
+            End Try
+            If armo Is Nothing Then Continue For
+            Dim effectiveIdx As Integer = If(armo.BaseAddonIndex >= 0, armo.BaseAddonIndex, 0)
+            Dim matched = armo.ArmorAddons.Where(Function(a) a.AddonIndex = effectiveIdx).ToList()
+            If matched.Count = 0 Then matched = armo.ArmorAddons.ToList()
+            For Each addon In matched
+                Dim arma As ARMA_Data
+                Try
+                    arma = GetParsedArma(addon.ArmaFormID)
+                Catch
+                    Continue For
+                End Try
+                If arma Is Nothing Then Continue For
+                Dim armaRaceOk = (arma.RaceFormID = npcRaceFID) OrElse arma.AdditionalRaces.Contains(npcRaceFID)
+                If Not armaRaceOk Then Continue For
+                Dim meshPath = If(isFemale, arma.FemaleMeshPath, arma.MaleMeshPath)
+                If meshPath = "" Then meshPath = If(arma.MaleMeshPath <> "", arma.MaleMeshPath, arma.FemaleMeshPath)
+                If meshPath <> "" Then paths.Add(meshPath)
+            Next
+        Next
+        Return paths
+    End Function
 
     ''' <summary>Discover and parse F4SE LooksMenu skin templates from on-disk JSONs. Mirrors
     ''' f4ee/SkinInterface.cpp:461-488 (LoadSkinMods) — iterates every plugin's
@@ -2932,7 +3112,21 @@ Public Class MainForm
             ' diseño del chunk). Si bind incluye chunkRoot.R y luego × anchor.world (que tiene
             ' Chest.R), se mete un flip espurio (verificado: composición R_chunk × R_anchor da
             ' rotación 180° Y para HeadProtectron → light termina detrás del actor).
-            If isRobotMount AndAlso Not shape.IsSkinned Then
+            ' [BIPED-FAKE-SKIN] Gate semántico (per OpenAI Vuelta 19): el synthetic anchor para
+            ' chunks unskinned attachment-style aplica a robot Y biped. Antes era robot-only
+            ' (isRobotMount) → bipeds con chunk unskinned (ej. PA_T45_Headlamp sobre Mining Helmet
+            ' en humano) caían al origen porque InjectChunkBonesIntoLiveSkeleton early-exit en shapes
+            ' sin bones y nunca recibían ancla. Criterio: unskinned + Attachment + MountSocket resuelto.
+            Dim fakeSkinCand As MeshCandidate = Nothing
+            renderData.ShapeCandidate.TryGetValue(shape, fakeSkinCand)
+            Dim isAttachmentMount As Boolean = fakeSkinCand IsNot Nothing AndAlso fakeSkinCand.Kind = MeshCandidateKind.Attachment AndAlso fakeSkinCand.MountSocket IsNot Nothing
+            If Not shape.IsSkinned AndAlso isAttachmentMount Then
+                ' [FAKE-SKIN-DIAG] Confirmaciones discriminantes (OpenAI Vuelta 19): estado de la shape
+                ' antes de aplicar el anchor. Permite verificar la hipótesis del bug en el log.
+                If Logger.Enabled Then
+                    Dim shD = shape.ShapeName, isSk = shape.IsSkinned, sbC = If(shape.ShapeBones IsNot Nothing, shape.ShapeBones.Count, -1), sockD = If(socket?.Name, "?")
+                    Logger.LogLazy(Function() $"[FAKE-SKIN-DIAG] shape='{shD}' IsSkinned={isSk} ShapeBones.Count={sbC} socket='{sockD}' isRobotMount={isRobotMount}")
+                End If
                 Try
                     Dim asOverride = TryCast(shape, IRuntimeSkinOverride)
                     If asOverride IsNot Nothing Then
@@ -2954,12 +3148,35 @@ Public Class MainForm
                                 cxBoneName = "C_" & socket.Name.Substring(2)
                             End If
                         End If
+                        Dim cxInDict As Boolean = Not String.IsNullOrEmpty(cxBoneName) AndAlso targetSkel.SkeletonDictionary.ContainsKey(cxBoneName)
+                        ' [CAMINO C — materialización lazy on-demand del C-X] (OpenAI Vuelta 20).
+                        ' Si el C-X counterpart no está en el skel (chunk unskinned puro: el injector
+                        ' early-exit con ShapeBones=0 y el bulk materialize pudo no correr/correr tarde),
+                        ' materializarlo AHORA desde el socket EFECTIVO que el shape loop ya tiene. Mantiene
+                        ' el modelo (socket vive como bone C-X), no depende del orden helmet-antes-de-child
+                        ' ni de ShapeBones>0. Reusa la semántica de MaterializeSocketsAsConnectPointBones.
+                        If Not cxInDict Then
+                            Dim ensuredName = BSConnectPointBoneInjector_Class.EnsureSocketCounterpartBone(socket, targetSkel)
+                            If Not String.IsNullOrEmpty(ensuredName) Then
+                                cxBoneName = ensuredName
+                                cxInDict = True
+                            End If
+                        End If
                         Dim anchorName As String
-                        If Not String.IsNullOrEmpty(cxBoneName) AndAlso targetSkel.SkeletonDictionary.ContainsKey(cxBoneName) Then
+                        If cxInDict Then
                             anchorName = cxBoneName
                         Else
                             Dim chunkRootName = If(shape.NifContent.GetRootNode()?.Name?.String, "chunk")
                             anchorName = "__chunkAnchor__" & socket.Name & "__" & chunkRootName
+                        End If
+                        ' [FAKE-SKIN-DIAG] Confirmación #2 (OpenAI Vuelta 19): ¿el C-X counterpart
+                        ' está materializado en el skel? Si cxInDict=False, el anchor cae al synthetic
+                        ' __chunkAnchor__ que el injector puede no haber creado para shapes sin bones →
+                        ' el anchor apuntaría a un bone inexistente → sin ancla real (origen).
+                        If Logger.Enabled Then
+                            Dim shD2 = shape.ShapeName, cxN = cxBoneName, inD = cxInDict, anN = anchorName
+                            Dim anchorExists = targetSkel.SkeletonDictionary.ContainsKey(anN)
+                            Logger.LogLazy(Function() $"[FAKE-SKIN-DIAG] shape='{shD2}' cxBone='{cxN}' cxInDict={inD} → anchor='{anN}' anchorExistsInSkel={anchorExists}")
                         End If
 
                         ' Computar bind manualmente: walk desde backing hacia arriba pero
@@ -3015,7 +3232,7 @@ Public Class MainForm
             ' V2 sobre estas shapes meterá un factor espurio inv(chunkRoot.R) que rompe el render.
             Dim _syntheticOverride = TryCast(shape, IRuntimeSkinOverride)
             If _syntheticOverride IsNot Nothing AndAlso _syntheticOverride.HasSyntheticSkin Then
-                If isRobotMount Then
+                If isRobotMount AndAlso Logger.Enabled Then
                     Dim shL = shape.ShapeName
                     Logger.LogLazy(Function() $"[CHUNK-RESKIN-V2] shape='{shL}' SKIP: HasSyntheticSkin=True (fake-skinned)")
                 End If
@@ -3023,7 +3240,7 @@ Public Class MainForm
             End If
 
             CollectV2PlanForShape(shape, socket, targetSkel, renderData, targetWB, isRobotMount)
-            If isRobotMount Then
+            If isRobotMount AndAlso Logger.Enabled Then
                 Dim newKeys = targetSkel.SkeletonDictionary.Keys.Where(Function(k) Not preKeysSet.Contains(k)).OrderBy(Function(k) k).ToList()
                 Dim shNameLog = shape.ShapeName, nLog = n, preLog = preCount, postLog = postCount
                 Logger.LogLazy(Function() $"[INJECT] shape='{shNameLog}' returned={nLog} dictCount {preLog}→{postLog} added={newKeys.Count}: [{String.Join(", ", newKeys)}]")
@@ -3696,6 +3913,9 @@ Public Class MainForm
         ' loaded TRI, no tint groups, and no FacialBoneRegions JSON — opening the editor would
         ' show only empty pickers. See ComputeFaceEditAvailability for the per-section rule.
         UpdateEditFaceEnabled()
+        ' Gate the Edit Outfit button: enabled when an NPC with a race is loaded and the load order
+        ' has any outfit. The per-race candidate filter is deferred to picker-open (GetOutfitCandidates).
+        UpdateEditOutfitEnabled()
 
         ' Face tint compositing + RevealAllShapes are sequenced by the PostTextureUploadAction
         ' wired before RenderShapes (above). The library invokes them on the GL thread once the
@@ -4052,7 +4272,7 @@ Public Class MainForm
         Dim raceRec = _pluginManager.GetRecord(state.RaceFormID)
         Dim race As RACE_Data = Nothing
         If raceRec IsNot Nothing AndAlso raceRec.Header.Signature = "RACE" Then
-            race = RecordParsers.ParseRACE(raceRec, _pluginManager)
+            race = ParseRaceCached(raceRec)
         End If
 
         ' Guard race-catalog: paralelo al de TryApplyBodySkinSoftLight. Si la raza NO declara
@@ -4178,7 +4398,7 @@ Public Class MainForm
         Dim raceRec = If(state.RaceFormID <> 0UI, _pluginManager.GetRecord(state.RaceFormID), Nothing)
         Dim race As RACE_Data = Nothing
         If raceRec IsNot Nothing AndAlso raceRec.Header.Signature = "RACE" Then
-            race = RecordParsers.ParseRACE(raceRec, _pluginManager)
+            race = ParseRaceCached(raceRec)
         End If
         If race Is Nothing OrElse race.FindTintOptionsBySlot(TintSlot.SkinTone, state.IsFemale).Count = 0 Then
             Dim raceEdid = If(race?.EditorID, "?")
@@ -4489,7 +4709,7 @@ Public Class MainForm
         If effective = 0UI AndAlso raceFormID <> 0UI Then
             Dim raceRec = _pluginManager.GetRecord(raceFormID)
             If raceRec IsNot Nothing AndAlso raceRec.Header.Signature = "RACE" Then
-                effective = RecordParsers.ParseRACE(raceRec, _pluginManager).SkinFormID
+                effective = ParseRaceCached(raceRec).SkinFormID
             End If
         End If
         Return effective
@@ -5090,7 +5310,7 @@ Public Class MainForm
                 If state.SkinFormID = 0UI Then
                     Dim raceRec2 = _pluginManager.GetRecord(state.RaceFormID)
                     If raceRec2 IsNot Nothing AndAlso raceRec2.Header.Signature = "RACE" Then
-                        state.SkinFormID = RecordParsers.ParseRACE(raceRec2, _pluginManager).SkinFormID
+                        state.SkinFormID = ParseRaceCached(raceRec2).SkinFormID
                     End If
                 End If
             End If
@@ -5107,6 +5327,14 @@ Public Class MainForm
                     NpcRecordOverlay.ApplyLmHdptReplacementPublic(state.HeadPartFormIDs, tpl.HeadHdptFormID(genderIdx), _pluginManager)
                     NpcRecordOverlay.ApplyLmHdptReplacementPublic(state.HeadPartFormIDs, tpl.HeadRearHdptFormID(genderIdx), _pluginManager)
                 End If
+            End If
+
+            ' Default outfit (NPC.DOFT) override — set by the Edit Outfit picker. Applied at the
+            ' state level so BuildOutfitComboEntries (called right after ResolveNPCBaseState in
+            ' LoadNPCOnDemandAsyncFromExisting) re-samples the chosen OTFT and the render consumes it.
+            '   value <> 0 → OTFT override   ·   value = 0 → no outfit (naked)   ·   Nothing → preserve.
+            If overlayPreset.DefaultOutfitFormIDOverride.HasValue Then
+                state.DefaultOutfitFormID = overlayPreset.DefaultOutfitFormIDOverride.Value
             End If
 
             ' Body/face skin-tone parity. The face compositor consumes overlay tint layers via
@@ -5396,7 +5624,7 @@ Public Class MainForm
         ' Get RACE morph definitions for mapping MSDK keys ? morph names
         Dim raceRec = _pluginManager.GetRecord(state.RaceFormID)
         If raceRec Is Nothing OrElse raceRec.Header.Signature <> "RACE" Then Return Nothing
-        Dim race = RecordParsers.ParseRACE(raceRec, _pluginManager)
+        Dim race = ParseRaceCached(raceRec)
 
         Dim morphValueDefs = race.MorphValues
         Dim morphPresetDefs = If(state.IsFemale, race.FemaleMorphPresets, race.MaleMorphPresets)
@@ -5581,7 +5809,7 @@ Public Class MainForm
 
         Dim raceRec = _pluginManager.GetRecord(state.RaceFormID)
         If raceRec Is Nothing OrElse raceRec.Header.Signature <> "RACE" Then Return Nothing
-        Dim race = RecordParsers.ParseRACE(raceRec, _pluginManager)
+        Dim race = ParseRaceCached(raceRec)
 
         Dim regionsFile = GetFacialBoneRegionsForRace(race, state.IsFemale)
         If regionsFile Is Nothing Then Return Nothing
@@ -5628,7 +5856,7 @@ Public Class MainForm
 
         Dim raceRec = _pluginManager.GetRecord(state.RaceFormID)
         If raceRec Is Nothing OrElse raceRec.Header.Signature <> "RACE" Then Return Nothing
-        Dim race = RecordParsers.ParseRACE(raceRec, _pluginManager)
+        Dim race = ParseRaceCached(raceRec)
 
         ' Log the FaceGen clamps for reference. TBD whether they apply to body BSMS output
         ' or only to face slider*FMIN. Not applying any clamp formula without spec.
@@ -5721,7 +5949,7 @@ Public Class MainForm
         If state Is Nothing OrElse state.RaceFormID = 0UI Then Return 1.0F
         Dim raceRec = _pluginManager.GetRecord(state.RaceFormID)
         If raceRec Is Nothing OrElse raceRec.Header.Signature <> "RACE" Then Return 1.0F
-        Dim race = RecordParsers.ParseRACE(raceRec, _pluginManager)
+        Dim race = ParseRaceCached(raceRec)
         Dim h = If(state.IsFemale, race.FemaleHeight, race.MaleHeight)
         If h <= 0 Then Return 1.0F
         Return h
@@ -6235,11 +6463,8 @@ Public Class MainForm
                 ' Check NoUnderarmorScaling flag (opt-out from receiving scaling).
                 Dim noUnderArmorFlag As Boolean = False
                 If candidate.ArmorAddonFormID <> 0UI Then
-                    Dim aaRec = _pluginManager.GetRecord(candidate.ArmorAddonFormID)
-                    If aaRec IsNot Nothing AndAlso aaRec.Header.Signature = "ARMA" Then
-                        Dim aa = RecordParsers.ParseARMA(aaRec, _pluginManager)
-                        noUnderArmorFlag = aa.NoUnderarmorScaling
-                    End If
+                    Dim aa = GetParsedArma(candidate.ArmorAddonFormID)
+                    If aa IsNot Nothing Then noUnderArmorFlag = aa.NoUnderarmorScaling
                 End If
 
                 If Not noUnderArmorFlag Then
@@ -6483,7 +6708,7 @@ Public Class MainForm
         Dim raceRec = _pluginManager.GetRecord(state.RaceFormID)
         If raceRec Is Nothing OrElse raceRec.Header.Signature <> "RACE" Then Return ""
 
-        Dim race = RecordParsers.ParseRACE(raceRec, _pluginManager)
+        Dim race = ParseRaceCached(raceRec)
         Dim skeletonPath = If(state.IsFemale, race.FemaleSkeletonPath, race.MaleSkeletonPath)
         If String.IsNullOrWhiteSpace(skeletonPath) Then
             skeletonPath = If(race.MaleSkeletonPath <> "", race.MaleSkeletonPath, race.FemaleSkeletonPath)
@@ -6744,16 +6969,56 @@ Public Class MainForm
         Return HeadPartResolver.MergeHeadPartsWithRaceDefaults(state.RaceFormID, state.IsFemale, state.HeadPartFormIDs, _pluginManager)
     End Function
 
+    ''' <summary>Parse (and cache) an ARMO by FormID. Returns Nothing if the FormID does not resolve
+    ''' to an ARMO record. Does NOT swallow parse exceptions — callers that need to tolerate a malformed
+    ''' record keep their own Try/Catch around the call (same behavior as the previous inline
+    ''' RecordParsers.ParseARMO). See <see cref="_parsedArmoCache"/> for cache lifetime/thread-safety.</summary>
+    Private Function GetParsedArmo(formID As UInteger) As ARMO_Data
+        If formID = 0UI Then Return Nothing
+        Return _parsedArmoCache.GetOrAdd(formID,
+            Function(fid)
+                Dim rec = _pluginManager.GetRecord(fid)
+                If rec Is Nothing OrElse rec.Header.Signature <> "ARMO" Then Return Nothing
+                Return RecordParsers.ParseARMO(rec, _pluginManager)
+            End Function)
+    End Function
+
+    ''' <summary>Parse (and cache) an ARMA by FormID. Returns Nothing if the FormID does not resolve to
+    ''' an ARMA record. Does NOT swallow parse exceptions (see <see cref="GetParsedArmo"/>).</summary>
+    Private Function GetParsedArma(formID As UInteger) As ARMA_Data
+        If formID = 0UI Then Return Nothing
+        Return _parsedArmaCache.GetOrAdd(formID,
+            Function(fid)
+                Dim rec = _pluginManager.GetRecord(fid)
+                If rec Is Nothing OrElse rec.Header.Signature <> "ARMA" Then Return Nothing
+                Return RecordParsers.ParseARMA(rec, _pluginManager)
+            End Function)
+    End Function
+
+    ''' <summary>Parse (and cache) a RACE from an already-fetched record, keyed by its FormID. Drop-in
+    ''' replacement for the inline <c>ParseRaceCached(rec)</c> at every call site —
+    ''' the record is already in scope so behavior is identical, just memoized. Same lifetime/thread-safety
+    ''' as <see cref="_parsedArmoCache"/> (dies with the load order; ConcurrentDictionary for overlapping renders).</summary>
+    Private Function ParseRaceCached(rRec As PluginRecord) As RACE_Data
+        If rRec Is Nothing Then Return Nothing
+        Return _parsedRaceCache.GetOrAdd(rRec.Header.FormID, Function(fid) RecordParsers.ParseRACE(rRec, _pluginManager))
+    End Function
+
+    ''' <summary>Parse (and cache) an HDPT from an already-fetched record, keyed by its FormID.
+    ''' Drop-in replacement for inline <c>ParseHdptCached(rec)</c>.</summary>
+    Private Function ParseHdptCached(hRec As PluginRecord) As HDPT_Data
+        If hRec Is Nothing Then Return Nothing
+        Return _parsedHdptCache.GetOrAdd(hRec.Header.FormID, Function(fid) RecordParsers.ParseHDPT(hRec, _pluginManager))
+    End Function
+
     Private Sub CollectArmoCandidates(armoFormID As UInteger,
                                       state As NPCVisualState,
                                       kind As MeshCandidateKind,
                                       candidates As List(Of MeshCandidate),
                                       ByRef order As Integer,
                                       warnings As List(Of String))
-        Dim armoRec = _pluginManager.GetRecord(armoFormID)
-        If armoRec Is Nothing OrElse armoRec.Header.Signature <> "ARMO" Then Return
-
-        Dim armo = RecordParsers.ParseARMO(armoRec, _pluginManager)
+        Dim armo = GetParsedArmo(armoFormID)
+        If armo Is Nothing Then Return
         ' NO early-out on ARMO.RaceFormID: vanilla convention is each ARMA declares its own
         ' race compatibility via RNAM + AdditionalRaces (MODL entries). An ARMO with
         ' RNAM=HumanRace is commonly worn by Ghouls/Synths if the sub-ARMAs list those as
@@ -6796,12 +7061,6 @@ Public Class MainForm
 
         Dim addonOrder As List(Of UInteger)
         If armo.ArmorAddons.Count >= 1 Then
-            For Each entry In armo.ArmorAddons
-                Dim peekRec = _pluginManager.GetRecord(entry.ArmaFormID)
-                If peekRec IsNot Nothing AndAlso peekRec.Header.Signature = "ARMA" Then
-                    Dim peekArma = RecordParsers.ParseARMA(peekRec, _pluginManager)
-                End If
-            Next
             ' Resolve effective AddonIndex. ResolveEffectiveAddonIndex ahora devuelve Integer? —
             ' HasValue=True cuando hay OMOD override keyword-driven; sino Nothing → usar
             ' BaseAddonIndex (FNAM) si está, sino 0 (vanilla default).
@@ -6830,19 +7089,14 @@ Public Class MainForm
                 For Each entry In armo.ArmorAddons
                     If CInt(entry.AddonIndex) = minIdx Then addonOrder.Add(entry.ArmaFormID)
                 Next
-            Else
-                Dim ctxStr = If(ctxKeywords Is Nothing OrElse ctxKeywords.Count = 0, "(none)",
-                                String.Join(",", ctxKeywords.Select(Function(k) k.ToString("X8"))))
             End If
         Else
             addonOrder = armo.ArmorAddonFormIDs.ToList()
         End If
 
         For Each armaFormID In addonOrder
-            Dim armaRec = _pluginManager.GetRecord(armaFormID)
-            If armaRec Is Nothing OrElse armaRec.Header.Signature <> "ARMA" Then Continue For
-
-            Dim arma = RecordParsers.ParseARMA(armaRec, _pluginManager)
+            Dim arma = GetParsedArma(armaFormID)
+            If arma Is Nothing Then Continue For
             If Not ArmorAddonMatchesRace(arma, state.RaceFormID) Then
                 Continue For
             End If
@@ -7419,7 +7673,7 @@ Public Class MainForm
                     ' del bone post-V2. Sin esto, V2 sobre chunks que montan en V2-corregidos
                     ' usaría posiciones desactualizadas y la cascada se rompería.
                     Dim parentBoneWorld As Transform_Class = ResolveEffectiveWorld(wbHistory, targetSkel, socket.ParentBoneName)
-                    If isRobotMount Then
+                    If isRobotMount AndAlso Logger.Enabled Then
                         Dim hasOverride = wbHistory.ContainsKey(socket.ParentBoneName)
                         Dim shL = shape.ShapeName, pbnL = socket.ParentBoneName, hoL = hasOverride
                         Dim pwT = parentBoneWorld.Translation
@@ -7545,7 +7799,7 @@ Public Class MainForm
                                     (mR.M11 - aR.M11) ^ 2 + (mR.M12 - aR.M12) ^ 2 + (mR.M13 - aR.M13) ^ 2 +
                                     (mR.M21 - aR.M21) ^ 2 + (mR.M22 - aR.M22) ^ 2 + (mR.M23 - aR.M23) ^ 2 +
                                     (mR.M31 - aR.M31) ^ 2 + (mR.M32 - aR.M32) ^ 2 + (mR.M33 - aR.M33) ^ 2)
-                                If isRobotMount Then
+                                If isRobotMount AndAlso Logger.Enabled Then
                                     Dim shLp = shape.ShapeName, bnLp = bnName, dTp = dT, dRp = dR, aTp = aT
                                     Logger.LogLazy(Function() $"[DIAG-MMESH-PER-BONE] shape='{shLp}' bone='{bnLp}' actor.T=({aTp.X:F3},{aTp.Y:F3},{aTp.Z:F3}) dT={dTp:F4} dR={dRp:F4}")
                                 End If
@@ -7558,7 +7812,7 @@ Public Class MainForm
                                     End If
                                 End If
                             Next
-                            If isRobotMount Then
+                            If isRobotMount AndAlso Logger.Enabled Then
                                 Dim shL = shape.ShapeName, mnL = actorRigMatchedBone, mdT = matchedDT, mdR = matchedDR
                                 Dim mTL = mT
                                 If isActorRigMode Then
@@ -7568,7 +7822,7 @@ Public Class MainForm
                                 End If
                             End If
                         Catch exMM As Exception
-                            If isRobotMount Then Logger.LogLazy(Function() $"[DIAG-MMESH-VS-ANY-BONE] EXCEPTION: {exMM.Message}")
+                            If isRobotMount AndAlso Logger.Enabled Then Logger.LogLazy(Function() $"[DIAG-MMESH-VS-ANY-BONE] EXCEPTION: {exMM.Message}")
                         End Try
                     End If
 
@@ -7645,7 +7899,7 @@ Public Class MainForm
                                 })
                                 collectedCount += 1
                             Next
-                            If isRobotMount Then
+                            If isRobotMount AndAlso Logger.Enabled Then
                                 Dim shL = shape.ShapeName, cxL = cxName, mnL = actorRigMatchedBone, ovC = collectedCount
                                 Logger.LogLazy(Function() $"[CHUNK-RESKIN-V2] shape='{shL}' cx='{cxL}' ACTOR-RIG plan collected (M_mesh ≈ actor.{mnL}.world, {ovC} entries, depth-sorted)")
                             End If
@@ -7760,18 +8014,18 @@ Public Class MainForm
                             .TargetSkel = targetSkel
                         })
                         reskinCount += 1
-                        If isRobotMount Then
+                        If isRobotMount AndAlso Logger.Enabled Then
                             Dim sbiL = sbi, bnL = boneName, shL = shape.ShapeName
                             Dim wBT = W_B.Translation, gBT = G_B.Translation
                             Logger.LogLazy(Function() $"[CHUNK-RESKIN-V2] shape='{shL}' bone[{sbiL}] '{bnL}' G_B.T=({gBT.X:F3},{gBT.Y:F3},{gBT.Z:F3}) W_B.T=({wBT.X:F3},{wBT.Y:F3},{wBT.Z:F3}) → plan entry collected")
                         End If
                     Next
-                    If isRobotMount Then
+                    If isRobotMount AndAlso Logger.Enabled Then
                         Dim rcL = reskinCount, skL = skipCount, shL = shape.ShapeName, cxL = cxName, usedL = usedChunkSource
                         Dim AT = A.Translation, GCXT = G_CX.Translation
                         Logger.LogLazy(Function() $"[CHUNK-RESKIN-V2] shape='{shL}' cx='{cxL}' G_CX.T=({GCXT.X:F3},{GCXT.Y:F3},{GCXT.Z:F3}) A.T=({AT.X:F3},{AT.Y:F3},{AT.Z:F3}) usedChunkSrcSocket={usedL} summary: reskin={rcL} skip={skL}")
                     End If
-                ElseIf isRobotMount Then
+                ElseIf isRobotMount AndAlso Logger.Enabled Then
                     Dim shL = shape.ShapeName, cxL = cxName
                     Logger.LogLazy(Function() $"[CHUNK-RESKIN-V2] shape='{shL}' cx='{cxL}' SKIP: C-X NiNode not found in chunk NIF tree")
 
@@ -7836,7 +8090,7 @@ Public Class MainForm
                         Logger.LogLazy(Function() $"[DIAG-BIND-BAKE] shape='{shLD3}' EXCEPTION: {msgL}")
                     End Try
                 End If
-            ElseIf isRobotMount Then
+            ElseIf isRobotMount AndAlso Logger.Enabled Then
                 Dim shL = shape.ShapeName
                 Logger.LogLazy(Function() $"[CHUNK-RESKIN-V2] shape='{shL}' SKIP: chunk has no BSConnectPoint::Children")
             End If
@@ -7978,44 +8232,6 @@ Public Class MainForm
             End If
         End If
         Return New Transform_Class()
-    End Function
-
-    ''' <summary>Resolve a robot-chunk mount socket from the host skeleton.
-    ''' Tries 'P-&lt;base&gt;|&lt;apIdx&gt;' first (multi-instance), falls back to 'P-&lt;base&gt;'
-    ''' (single-instance). The base is derived from the AttachPoint KYWD EditorID by stripping
-    ''' a leading 'ap_Bot_' or 'ap_'. Returns Nothing if no socket matches.</summary>
-    Private Function ResolveMountSocket(apEditorId As String,
-                                        apIdx As Byte,
-                                        socketsByName As Dictionary(Of String, BSConnectPointReader.ConnectPointInfo)) _
-                                        As BSConnectPointReader.ConnectPointInfo
-        If String.IsNullOrEmpty(apEditorId) Then
-            Logger.LogLazy(Function() $"[MOUNT-LOOKUP] apEditorId='' → NOT-FOUND (KYWD not resolvable)")
-            Return Nothing
-        End If
-        Dim baseName = apEditorId
-        Dim stripped As String = ""
-        If baseName.StartsWith("ap_Bot_", StringComparison.OrdinalIgnoreCase) Then
-            stripped = "ap_Bot_"
-            baseName = baseName.Substring("ap_Bot_".Length)
-        ElseIf baseName.StartsWith("ap_", StringComparison.OrdinalIgnoreCase) Then
-            stripped = "ap_"
-            baseName = baseName.Substring("ap_".Length)
-        End If
-        Dim indexed = $"P-{baseName}|{apIdx}"
-        Dim plain = $"P-{baseName}"
-        Dim socket As BSConnectPointReader.ConnectPointInfo = Nothing
-        Dim apEditorIdLog = apEditorId, baseNameLog = baseName, strippedLog = stripped
-        Dim indexedLog = indexed, plainLog = plain, apIdxLog = apIdx
-        If socketsByName.TryGetValue(indexed, socket) Then
-            Logger.LogLazy(Function() $"[MOUNT-LOOKUP] apEditorId='{apEditorIdLog}' stripped='{strippedLog}' base='{baseNameLog}' apIdx={apIdxLog} → tried '{indexedLog}' MATCH parent='{socket.ParentBoneName}'")
-            Return socket
-        End If
-        If socketsByName.TryGetValue(plain, socket) Then
-            Logger.LogLazy(Function() $"[MOUNT-LOOKUP] apEditorId='{apEditorIdLog}' stripped='{strippedLog}' base='{baseNameLog}' apIdx={apIdxLog} → tried '{indexedLog}' MISS, tried '{plainLog}' MATCH parent='{socket.ParentBoneName}'")
-            Return socket
-        End If
-        Logger.LogLazy(Function() $"[MOUNT-LOOKUP] apEditorId='{apEditorIdLog}' stripped='{strippedLog}' base='{baseNameLog}' apIdx={apIdxLog} → tried '{indexedLog}' MISS, tried '{plainLog}' MISS → NOT-FOUND")
-        Return Nothing
     End Function
 
     ''' <summary>Host-scoped resolution del MountSocket de un robot chunk. Walkea la cadena
@@ -8636,7 +8852,7 @@ Public Class MainForm
         Dim raceHasAnyHeadParts As Boolean = False
         Dim raceRec = If(state IsNot Nothing AndAlso state.RaceFormID <> 0UI, _pluginManager.GetRecord(state.RaceFormID), Nothing)
         If raceRec IsNot Nothing AndAlso raceRec.Header.Signature = "RACE" Then
-            Dim race = RecordParsers.ParseRACE(raceRec, _pluginManager)
+            Dim race = ParseRaceCached(raceRec)
             Dim defs = If(state.IsFemale, race?.FemaleHeadPartFormIDs, race?.MaleHeadPartFormIDs)
             If defs IsNot Nothing Then
                 For Each fid In defs : raceDefaults.Add(fid) : Next
@@ -8677,7 +8893,7 @@ Public Class MainForm
         Dim hdptRec = _pluginManager.GetRecord(hdptFormID)
         If hdptRec Is Nothing OrElse hdptRec.Header.Signature <> "HDPT" Then Return
 
-        Dim hdpt = RecordParsers.ParseHDPT(hdptRec, _pluginManager)
+        Dim hdpt = ParseHdptCached(hdptRec)
 
         ' Extra parts (type=0/Misc) inherit the parent's type for color treatment.
         ' E.g. a hair extra part mesh needs the same hair palette remap as the main hair.
@@ -9810,14 +10026,6 @@ Public Class MainForm
             actorBodySkinTxst = ResolveActorSkinTextureSet(state, region)
         End If
 
-        ' Face SubsurfaceLighting test override (user-approved 2026-05-15, TEST): forzar
-        ' SubsurfaceLighting=True y Rolloff=0.5 en face shapes para probar si esto cierra el
-        ' gap visual cara/cuello. Hardcoded a propósito — no se intenta resolver desde body BGSM
-        ' (TXST.MaterialPath vacío en vanilla FO4). Si la prueba pasa visualmente, decidiremos
-        ' después si convertir a resolver real desde body shape.
-        Dim faceTestForceSSL As Boolean = (candidate IsNot Nothing AndAlso candidate.Kind = MeshCandidateKind.HeadPart AndAlso candidate.HeadPartType = HeadPartTypeFace)
-        Const FaceTestRolloff As Single = 0.5F
-
         For Each shape In shapes
             EnsureShapeMaterialResolved(shape)
 
@@ -9841,20 +10049,6 @@ Public Class MainForm
             Dim palOnPostTxst = material.GrayscaleToPaletteColor
             Dim palScalePostTxst = material.GrayscaleToPaletteScale
             Logger.LogLazy(Function() $"[PALSCALE-POST-TXST] shape='{shapeNamePre}' palColor={palOnPostTxst} palScale={palScalePostTxst:F4} (post TXST/MNAM override)")
-
-            ' Face SubsurfaceLighting test override (user-approved 2026-05-15, TEST): hardcoded
-            ' True / 0.5 sobre face shapes (NifShaderType=FaceTint). Probar si cierra gap visual
-            ' cara/cuello; si pasa, decidir después si convertirlo a resolver real.
-            If faceTestForceSSL AndAlso material.NifShaderType = NiflySharp.Enums.BSLightingShaderType.FaceTint Then
-                Dim shapeNameSSL = shape.ShapeName
-                Dim preSSL = material.SubsurfaceLighting
-                Dim preRolloff = material.SubsurfaceLightingRolloff
-                material.SubsurfaceLighting = True
-                material.SubsurfaceLightingRolloff = FaceTestRolloff
-                Dim postSSL = material.SubsurfaceLighting
-                Dim postRolloff = material.SubsurfaceLightingRolloff
-                Logger.LogLazy(Function() $"[FACE-SSL-OVERRIDE-TEST] face shape='{shapeNameSSL}' preSSL={preSSL}/{preRolloff:F3} postSSL={postSSL}/{postRolloff:F3}")
-            End If
 
             ' Shape con piel expuesta (shader=SkinTint): sustituir SÓLO sus texturas (diffuse +
             ' normal + spec) por las del body skin del actor (race-specific). Material params
@@ -10043,10 +10237,7 @@ Public Class MainForm
     Private Function ResolveActorSkinTextureSet(state As NPCVisualState, region As SkinRegion) As TXST_Data
         If state Is Nothing OrElse state.SkinFormID = 0UI Then Return Nothing
 
-        Dim armoRec = _pluginManager.GetRecord(state.SkinFormID)
-        If armoRec Is Nothing OrElse armoRec.Header.Signature <> "ARMO" Then Return Nothing
-
-        Dim armo = RecordParsers.ParseARMO(armoRec, _pluginManager)
+        Dim armo = GetParsedArmo(state.SkinFormID)
         If armo Is Nothing Then Return Nothing
 
         Const BODY_BIT As UInteger = 1UI << 3
@@ -10054,10 +10245,8 @@ Public Class MainForm
 
         ' Iterar las ARMAs del Skin ARMO; elegir la que cubra la región pedida.
         For Each entry In armo.ArmorAddons
-            Dim armaRec = _pluginManager.GetRecord(entry.ArmaFormID)
-            If armaRec Is Nothing OrElse armaRec.Header.Signature <> "ARMA" Then Continue For
-
-            Dim arma = RecordParsers.ParseARMA(armaRec, _pluginManager)
+            Dim arma = GetParsedArma(entry.ArmaFormID)
+            If arma Is Nothing Then Continue For
             Dim armaSlot = arma.SlotMask
 
             Dim matches As Boolean = False
@@ -10375,9 +10564,10 @@ Public Class MainForm
     ''' "" when no palette is available from any source.
     ''' <para>Priority:</para>
     ''' <list>
-    ''' <item>Walk the host's loaded hair shapes (mat.Hair OR mat.GrayscaleToPaletteColor) and
-    '''       return the first non-empty <c>material.GreyscaleTexture</c>. Per-shape, authored
-    '''       by the stylist, matches what the engine binds at TXST slot 3.</item>
+    ''' <item>Walk the host's loaded HAIR shapes (mat.Hair only — NOT every g2p material, which
+    '''       would also match recolourable armor) and return the first non-empty
+    '''       <c>material.GreyscaleTexture</c>. Per-shape, authored by the stylist, matches what
+    '''       the engine binds at TXST slot 3.</item>
     ''' <item>Otherwise fall back to <see cref="ResolveRaceHairLookupTexture"/> (RACE.HNAM/HLTX).
     '''       Vanilla HumanRace declares HNAM and most hair BGSMs duplicate it, but
     '''       HumanChildRace ships without HNAM/HLTX so we must rely on the BGSM there.</item>
@@ -10389,7 +10579,14 @@ Public Class MainForm
                 If mesh Is Nothing OrElse mesh.MeshData Is Nothing OrElse mesh.MeshData.Material Is Nothing Then Continue For
                 Dim mb = mesh.MeshData.Material.MaterialBase
                 If mb Is Nothing Then Continue For
-                If Not (mb.Hair OrElse mb.GrayscaleToPaletteColor) Then Continue For
+                ' Require a REAL hair material (BGSM Hair flag). The old test
+                ' "mb.Hair OrElse mb.GrayscaleToPaletteColor" also matched recolourable ARMOR
+                ' (GrayscaleToPaletteColor=True, Hair=False): when the NPC wore e.g. combat armor,
+                ' its palette (CombatArmor_palette_d) preceded the hair shape in the mesh list and
+                ' was returned as the brow LUT instead of the hair colour LUT (HairColor_*_d). That
+                ' was the root cause of the wrong / load-order-"unstable" brow palette. Armor has
+                ' Hair=False, so this filter excludes it; bald NPCs fall through to RACE HNAM/HLTX.
+                If Not mb.Hair Then Continue For
                 Dim gtex = If(mb.GreyscaleTexture, "")
                 If gtex <> "" Then Return gtex
             Next
@@ -10466,7 +10663,7 @@ Public Class MainForm
 
         Dim raceRec = _pluginManager.GetRecord(state.RaceFormID)
         If raceRec Is Nothing OrElse raceRec.Header.Signature <> "RACE" Then Return Nothing
-        Dim race = RecordParsers.ParseRACE(raceRec, _pluginManager)
+        Dim race = ParseRaceCached(raceRec)
 
         ' Single source of truth — same derivation NpcRecordOverlay uses at save time, so the
         ' preview's body skin tone and the persisted ESP's QNAM are guaranteed to agree.
@@ -10756,7 +10953,7 @@ Public Class MainForm
                 For Each hpFormID In modelNpc.HeadPartFormIDs
                     Dim hpRec = _pluginManager.GetRecord(hpFormID)
                     If hpRec IsNot Nothing Then
-                        Dim hdpt = RecordParsers.ParseHDPT(hpRec, _pluginManager)
+                        Dim hdpt = ParseHdptCached(hpRec)
                         Dim typeName = GetHeadPartTypeName(hdpt.PartType)
                         Dim hpChildNode = AddNode(hpNode, $"[{typeName}] {hdpt.EditorID}  [{hpFormID:X8}]")
                         If hdpt.MeshPath <> "" Then AddNode(hpChildNode, $"Mesh: {hdpt.MeshPath}")
@@ -10853,7 +11050,7 @@ Public Class MainForm
         Dim raceRec = _pluginManager.GetRecord(raceFormID)
         If raceRec Is Nothing OrElse raceRec.Header.Signature <> "RACE" Then Return
 
-        Dim race = RecordParsers.ParseRACE(raceRec, _pluginManager)
+        Dim race = ParseRaceCached(raceRec)
         Dim raceNode = AddNode(parentNode, $"Race: {race.FullName} [{race.EditorID}]")
         If isFemale Then
             If race.FemaleSkeletonPath <> "" Then AddNode(raceNode, $"Skeleton: {race.FemaleSkeletonPath}")
@@ -10898,7 +11095,7 @@ Public Class MainForm
 
         Select Case itemRec.Header.Signature
             Case "ARMO"
-                Dim armo = RecordParsers.ParseARMO(itemRec, _pluginManager)
+                Dim armo = GetParsedArmo(itemFormID)
                 Dim slotStr = FormatSlotMask(armo.SlotMask)
                 Dim armoNode = AddNode(parentNode, $"ARMO {armo.EditorID}  ""{armo.FullName}""  [{armo.FormID:X8}]  Slots:{slotStr}")
 
@@ -10914,7 +11111,7 @@ Public Class MainForm
                         AddNode(armoNode, $"ARMA [{aaFormID:X8}] (missing)")
                         Continue For
                     End If
-                    Dim arma = RecordParsers.ParseARMA(aaRec, _pluginManager)
+                    Dim arma = GetParsedArma(aaFormID)
                     Dim aaNode = AddNode(armoNode, $"ARMA {arma.EditorID}  [{arma.FormID:X8}]  Slots:{FormatSlotMask(arma.SlotMask)}")
                     If arma.MaleMeshPath <> "" Then AddNode(aaNode, $"Male Mesh: {arma.MaleMeshPath}")
                     If arma.FemaleMeshPath <> "" Then AddNode(aaNode, $"Female Mesh: {arma.FemaleMeshPath}")
@@ -11067,7 +11264,7 @@ Public Class MainForm
         Dim race As RACE_Data = Nothing
         Dim raceRec = _pluginManager.GetRecord(raceFormID)
         If raceRec IsNot Nothing Then
-            race = RecordParsers.ParseRACE(raceRec, _pluginManager)
+            race = ParseRaceCached(raceRec)
             If race IsNot Nothing AndAlso Not String.IsNullOrEmpty(race.EditorID) Then
                 raceDisplay = race.EditorID
             End If
@@ -11131,7 +11328,7 @@ Public Class MainForm
             If rec Is Nothing OrElse rec.Header.Signature <> "HDPT" Then
                 Continue For
             End If
-            Dim hd = RecordParsers.ParseHDPT(rec, _pluginManager)
+            Dim hd = ParseHdptCached(rec)
             Dim typeLabel = If(hd.PartType >= 0 AndAlso hd.PartType < hpTypeNames.Length, hpTypeNames(hd.PartType), $"type={hd.PartType}")
         Next
         If selected.UnresolvedHeadParts.Count > 0 Then
@@ -11200,6 +11397,7 @@ Public Class MainForm
         Try
             Await LoadNPCOnDemandAsyncFromExisting(npc, requestVersion)
         Catch ex As Exception
+            Logger.LogLazy(Function() $"[OVERLAY-PREVIEW] fire-and-forget overlay preview failed: {ex.GetType().Name}: {ex.Message}")
         End Try
     End Function
 
@@ -11605,7 +11803,7 @@ Public Class MainForm
             If fid = 0UI Then Continue For
             Dim rec = _pluginManager.GetRecord(fid)
             If rec Is Nothing OrElse rec.Header.Signature <> "HDPT" Then Continue For
-            Dim hd = RecordParsers.ParseHDPT(rec, _pluginManager)
+            Dim hd = ParseHdptCached(rec)
             If (hd.Flags And HeadPartFlagIsExtra) <> 0 Then Continue For
             preset.HeadPartFormIDs.Add(fid)
         Next
@@ -11649,6 +11847,12 @@ Public Class MainForm
         ' al JSON — es overlay/clipboard only, no afecta el round-trip JSON ↔ LM in-game.
         preset.SkinFormIDOverride = state.SkinFormID
 
+        ' NPC.DOFT default outfit: capturamos el outfit EFECTIVO (post-override) igual que skin.
+        ' Se arrastra Copy → Paste (gated por options.Outfit) y SerializePreset lo emite como
+        ' _npcm_DefaultOutfit. state.DefaultOutfitFormID ya considera el override aplicado en
+        ' ResolveNPCBaseState.
+        preset.DefaultOutfitFormIDOverride = state.DefaultOutfitFormID
+
         ' NPC.ACBS bit 0x04 "Is CharGen Face Preset": misma semántica que skin. Capturamos el
         ' valor EFECTIVO — overlay si existe, sino raw NPC.ACBS bit. BuildFilteredPaste lo
         ' consume cuando options.IsCharGenPreset=True (línea ~12184). Sin esto Copy→Paste perdía
@@ -11682,7 +11886,7 @@ Public Class MainForm
         Dim raceRec = If(state.RaceFormID <> 0UI, _pluginManager.GetRecord(state.RaceFormID), Nothing)
         Dim race As RACE_Data = Nothing
         If raceRec IsNot Nothing AndAlso raceRec.Header.Signature = "RACE" Then
-            race = RecordParsers.ParseRACE(raceRec, _pluginManager)
+            race = ParseRaceCached(raceRec)
         End If
 
         ' Build a TETI.Index → RACE-order rank dict by walking the gender-appropriate TintGroups
@@ -11796,6 +12000,23 @@ Public Class MainForm
         End If
     End Sub
 
+    ''' <summary>Gate ButtonEditOutfit on REAL availability: enabled only when the NPC's race+gender
+    ''' has at least one compatible outfit (<see cref="HasAnyOutfitCandidate"/>, early-exit + cached).
+    ''' Previously this just checked "the load order has any OTFT", which lit the button for every NPC
+    ''' even creatures/robots with zero compatible outfits — the picker then opened empty. The check
+    ''' is cached per (race, gender) so it costs a one-time scan per race on the render-complete path
+    ''' (background continuation), not every render.</summary>
+    Private Sub UpdateEditOutfitEnabled()
+        Dim st = _renderHost.LastRenderedState
+        Dim shouldEnable As Boolean = st IsNot Nothing AndAlso st.RaceFormID <> 0UI AndAlso
+                                      HasAnyOutfitCandidate(st.RaceFormID, st.IsFemale)
+        If InvokeRequired Then
+            Invoke(Sub() ButtonEditOutfit.Enabled = shouldEnable)
+        Else
+            ButtonEditOutfit.Enabled = shouldEnable
+        End If
+    End Sub
+
     ''' <summary>What the body editor can offer for this NPC, given the RACE record and the
     ''' loaded body shapes. Each section is gated independently: a race like Ghoul or
     ''' PowerArmorRace may declare no BSMS WeightScale / RangeModifier on any bone, in which
@@ -11830,7 +12051,7 @@ Public Class MainForm
         ' one block shared between genders).
         Dim raceRec = If(state.RaceFormID <> 0UI, _pluginManager.GetRecord(state.RaceFormID), Nothing)
         If raceRec IsNot Nothing AndAlso raceRec.Header.Signature = "RACE" Then
-            Dim race = RecordParsers.ParseRACE(raceRec, _pluginManager)
+            Dim race = ParseRaceCached(raceRec)
             Dim targetGender As UInteger = If(state.IsFemale, 1UI, 0UI)
             Dim chosen As RACE_BoneDataGender = race.BoneData.FirstOrDefault(Function(bd) bd.Gender = targetGender)
             If chosen Is Nothing OrElse chosen.Bones.Count = 0 Then
@@ -11914,8 +12135,60 @@ Public Class MainForm
                 Try
                     Await RenderInHostAsync(_renderHost, _renderHost.LastRenderedState.RootNpcFormID)
                 Catch ex As Exception
+                    Logger.LogLazy(Function() $"[EDITOR] post-edit MainForm re-render failed: {ex.GetType().Name}: {ex.Message}")
                 End Try
             End If
+        End Using
+    End Sub
+
+    ''' <summary>Open the Edit Outfit picker (NPC.DOFT override) for the current NPC. Modal,
+    ''' lightweight preview (HeadPartPicker style). On OK the chosen value lands in the overlay's
+    ''' <c>DefaultOutfitFormIDOverride</c> and the MainForm preview reloads — ResolveNPCBaseState
+    ''' picks it up and BuildOutfitComboEntries re-samples it. Picker return:
+    '''   Nothing → "(record default)" (clear override, preserve raw NPC.DOFT)
+    '''   Some(0) → "(no outfit)"
+    '''   Some(fid) → OTFT override.</summary>
+    Private Async Sub ButtonEditOutfit_Click(sender As Object, e As EventArgs) Handles ButtonEditOutfit.Click
+        If _renderHost.LastRenderedState Is Nothing Then Return
+        Dim st = _renderHost.LastRenderedState
+        Dim npcFormID = st.RootNpcFormID
+        Dim npc As NPC_Data = Nothing
+        If Not _npcByIdCache.TryGetValue(npcFormID, npc) OrElse npc Is Nothing Then Return
+
+        ' Raw record DOFT drives the "(record default)" pinned entry → Nothing semantic.
+        Dim modelFormID = If(st.ModelSourceFormID <> 0UI, st.ModelSourceFormID, npcFormID)
+        Dim rawNpc = GetParsedNpc(modelFormID)
+        Dim rawOutfit As UInteger = If(rawNpc IsNot Nothing, rawNpc.DefaultOutfitFormID, 0UI)
+
+        Dim raceRec = If(st.RaceFormID <> 0UI, _pluginManager.GetRecord(st.RaceFormID), Nothing)
+        Dim raceEditorID = If(raceRec IsNot Nothing, raceRec.EditorID, "?")
+
+        Using dlg As New OutfitPicker_Form(Me, st.RaceFormID, raceEditorID, st.IsFemale, st.DefaultOutfitFormID, rawOutfit)
+            If dlg.ShowDialog(Me) <> DialogResult.OK Then Return
+            Dim result As UInteger? = dlg.SelectedOutfitOverride
+
+            Dim previousOverlay As LooksmenuLoader.LooksmenuPreset = Nothing
+            Dim hadOverlay = _appliedPresets.TryGetValue(npcFormID, previousOverlay)
+            Dim p As LooksmenuLoader.LooksmenuPreset
+            If Not hadOverlay OrElse previousOverlay Is Nothing Then
+                p = New LooksmenuLoader.LooksmenuPreset()
+                _appliedPresets(npcFormID) = p
+            Else
+                p = previousOverlay
+            End If
+            Dim priorOutfitOverride = p.DefaultOutfitFormIDOverride
+            p.DefaultOutfitFormIDOverride = result
+
+            Try
+                Dim requestVersion = Interlocked.Increment(_previewRequestVersion)
+                Await LoadNPCOnDemandAsyncFromExisting(npc, requestVersion)
+            Catch ex As Exception
+                ' Revert just the outfit field; don't clobber other overlay edits.
+                p.DefaultOutfitFormIDOverride = priorOutfitOverride
+                If Not hadOverlay Then _appliedPresets.Remove(npcFormID)
+                MessageBox.Show($"Failed to render outfit: {ex.Message}{vbCrLf}Outfit reverted.",
+                                "Edit Outfit", MessageBoxButtons.OK, MessageBoxIcon.Error)
+            End Try
         End Using
     End Sub
 
@@ -11960,7 +12233,7 @@ Public Class MainForm
         If state Is Nothing OrElse state.RaceFormID = 0UI Then Return avail
         Dim raceRec = _pluginManager.GetRecord(state.RaceFormID)
         If raceRec Is Nothing OrElse raceRec.Header.Signature <> "RACE" Then Return avail
-        Dim race = RecordParsers.ParseRACE(raceRec, _pluginManager)
+        Dim race = ParseRaceCached(raceRec)
         If race Is Nothing Then Return avail
 
         Dim headParts = If(state.IsFemale, race.FemaleHeadPartFormIDs, race.MaleHeadPartFormIDs)
@@ -12027,7 +12300,7 @@ Public Class MainForm
         End If
         Dim raceRec = _pluginManager.GetRecord(raceFormID)
         If raceRec Is Nothing OrElse raceRec.Header.Signature <> "RACE" Then Return
-        Dim race = RecordParsers.ParseRACE(raceRec, _pluginManager)
+        Dim race = ParseRaceCached(raceRec)
         If race Is Nothing Then Return
 
         ' Capture the raw NPC's AcbsFlags so the Edit Face form can compute the original bit and
@@ -12058,6 +12331,7 @@ Public Class MainForm
                 Try
                     Await RenderInHostAsync(_renderHost, _renderHost.LastRenderedState.RootNpcFormID)
                 Catch ex As Exception
+                    Logger.LogLazy(Function() $"[EDITOR] post-edit MainForm re-render failed: {ex.GetType().Name}: {ex.Message}")
                 End Try
             End If
         End Using
@@ -12246,6 +12520,15 @@ Public Class MainForm
             ' Don't touch — overlay merge falls back to targetRaw.SkinFormID when
             ' SkinFormIDOverride is Nothing.
             p.SkinFormIDOverride = Nothing
+        End If
+
+        ' --- Default outfit (NPC.DOFT) ---
+        If options.Outfit Then
+            p.DefaultOutfitFormIDOverride = source.DefaultOutfitFormIDOverride
+        Else
+            ' Don't touch — overlay merge falls back to targetRaw.DefaultOutfitFormID (raw DOFT)
+            ' when DefaultOutfitFormIDOverride is Nothing.
+            p.DefaultOutfitFormIDOverride = Nothing
         End If
 
         ' --- LM skin template (F4SE SkinInterface, separate from NPC.WNAM record skin) ---
@@ -12786,6 +13069,7 @@ Public Class MainForm
         Dim packResult = NpcFaceGenPacker.PackForNpc(
             anchorPluginPath, _dataPath, Config_App.Current.Game,
             originPlugin, formIdLow, NPC_Config.Current.Ba2Version_FO4,
+            FaceGenBuilder.DebugMode,
             Sub(p As NpcFaceGenPacker.PackProgress)
                 Select Case p.Phase
                     Case NpcFaceGenPacker.PackPhase.BuildingBundle
@@ -12872,9 +13156,21 @@ Public Class MainForm
             .NpcFormIDs = ids,
             .ContainsTargetNpc = False,
             .IsEsm = isEsm,
-            .IsLight = isLight
+            .IsLight = isLight,
+            .TranslatableEncoding = ComputeSavedTranslatableEncoding()
         })
     End Sub
+
+    ''' <summary>The encoding a fresh disk re-scan would report for the plugin we just wrote.
+    ''' Mirrors the writer's SNAM-tag rule: UTF-8 emits NO tag, so a re-scan sees Nothing;
+    ''' any other code page emits &lt;cp:XXXX&gt;, so a re-scan sees that encoding. Without keeping
+    ''' the cache in sync with this, the next Save dialog would auto-recommend the OLD encoding
+    ''' (the value captured at the initial preflight scan), not the one just saved.</summary>
+    Private Function ComputeSavedTranslatableEncoding() As System.Text.Encoding
+        Dim enc = PluginEncodingSettings.Translatable
+        If enc IsNot Nothing AndAlso enc.CodePage <> 65001 Then Return enc
+        Return Nothing
+    End Function
 
     ''' <summary>Update an existing cache entry after a successful write that targeted that
     ''' plugin (the user picked "Update existing"). Replaces NpcFormIDs/NpcCount + ESM/Light
@@ -12889,6 +13185,9 @@ Public Class MainForm
                 cached.NpcCount = cached.NpcFormIDs.Count
                 cached.IsEsm = isEsm
                 cached.IsLight = isLight
+                ' Sync the encoding to what we just wrote, so the next Save dialog auto-recommends
+                ' the NEW encoding, not the stale pre-save value captured at preflight.
+                cached.TranslatableEncoding = ComputeSavedTranslatableEncoding()
                 Return
             End If
         Next

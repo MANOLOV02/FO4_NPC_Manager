@@ -18,8 +18,7 @@ Public Module HeadPartResolver
     ''' Type 0 Misc: should only appear as extras inside each main HDPT's HNAM; freestanding top-level
     ''' type=0 entries (rare/undocumented in vanilla) are preserved as additive to avoid data loss.
     ''' HDPT spec: wbDefinitionsFO4.pas:7373-7384.
-    ''' RACE.HeadParts per gender: parsed into RACE_Data.MaleHeadPartFormIDs / FemaleHeadPartFormIDs.
-    ''' Logs one [HEADPARTS-MERGE] summary line + per-type decision for traceability.</summary>
+    ''' RACE.HeadParts per gender: parsed into RACE_Data.MaleHeadPartFormIDs / FemaleHeadPartFormIDs.</summary>
     Public Function MergeHeadPartsWithRaceDefaults(raceFormID As UInteger,
                                                    isFemale As Boolean,
                                                    npcHeadPartFormIDs As IReadOnlyList(Of UInteger),
@@ -33,11 +32,9 @@ Public Module HeadPartResolver
         Dim race = RecordParsers.ParseRACE(raceRec, pluginManager)
         Dim raceDefaults = If(isFemale, race.FemaleHeadPartFormIDs, race.MaleHeadPartFormIDs)
 
-        ' Build merged dict by PartType for main types (1..9). Track provenance for logging.
+        ' Build merged dict by PartType for main types (1..9).
         Dim mergedByType As New Dictionary(Of Integer, UInteger)
-        Dim provenanceByType As New Dictionary(Of Integer, String) ' value format "RACE:{edid}" or "NPC:{edid}"
         Dim freestandingMisc As New List(Of UInteger)
-        Dim miscProvenance As New List(Of String)
 
         ' Step 1: seed with RACE defaults
         For Each defFID In raceDefaults
@@ -46,10 +43,8 @@ Public Module HeadPartResolver
             Dim hdpt = RecordParsers.ParseHDPT(defRec, pluginManager)
             If hdpt.PartType = 0 Then
                 freestandingMisc.Add(defFID)
-                miscProvenance.Add($"RACE:{hdpt.EditorID}")
             ElseIf hdpt.PartType >= 1 AndAlso hdpt.PartType <= 9 Then
                 mergedByType(hdpt.PartType) = defFID
-                provenanceByType(hdpt.PartType) = $"RACE:{hdpt.EditorID}"
             End If
         Next
 
@@ -60,10 +55,8 @@ Public Module HeadPartResolver
             Dim hdpt = RecordParsers.ParseHDPT(npcRec, pluginManager)
             If hdpt.PartType = 0 Then
                 freestandingMisc.Add(npcFID)
-                miscProvenance.Add($"NPC:{hdpt.EditorID}")
             ElseIf hdpt.PartType >= 1 AndAlso hdpt.PartType <= 9 Then
                 mergedByType(hdpt.PartType) = npcFID
-                provenanceByType(hdpt.PartType) = $"NPC:{hdpt.EditorID}"
             End If
         Next
 
@@ -73,22 +66,6 @@ Public Module HeadPartResolver
             finalList.Add(mergedByType(t))
         Next
         finalList.AddRange(freestandingMisc)
-
-        ' Step 4: summary log — one line with per-type decision for traceability per NPC.
-        Dim typeNames = New String() {"Misc", "Face", "Eyes", "Hair", "FacialHair", "Scar", "Eyebrows", "Meatcaps", "Teeth", "HeadRear"}
-        Dim summary As New StringBuilder
-        summary.Append($"  [HEADPARTS-MERGE] RACE '{race.EditorID}' {If(isFemale, "F", "M")} | NPC.PNAM={safeNpcParts.Count} race.defaults={raceDefaults.Count} → merged={finalList.Count}")
-        For t = 1 To 9
-            Dim prov As String = Nothing
-            If provenanceByType.TryGetValue(t, prov) Then
-                Dim from = If(prov.StartsWith("NPC:"), "NPC", "RACE-DEFAULT")
-                Dim tLocal = t
-            End If
-        Next
-        Dim missedTypes = New List(Of String)
-        For t = 1 To 9
-            If Not provenanceByType.ContainsKey(t) Then missedTypes.Add(typeNames(t))
-        Next
 
         Return finalList
     End Function

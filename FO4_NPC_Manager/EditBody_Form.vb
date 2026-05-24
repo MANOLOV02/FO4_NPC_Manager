@@ -27,13 +27,9 @@ Public Class EditBody_Form
     ' Phase D wiring — see EditFace_Form for the full rationale. _editorHost owns this form's
     ' embedded preview; _mainForm is referenced only to invoke pipeline methods that still live
     ' on MainForm but accept an arbitrary host.
-    Private _editorHost As NpcRenderHost = Nothing
+    ' _editorHost / HasUncommittedChanges lifted to EditorFormBase (shared with EditFace_Form).
     Private ReadOnly _mainForm As MainForm = Nothing
     Private ReadOnly _mainGore As Boolean = False
-    ''' <summary>Set to True by OnOk; MainForm reads this after ShowDialog to decide whether to
-    ''' re-render its main preview from the (now-mutated) overlay. Cancel rolls back the overlay
-    ''' so the MainForm's preview is already correct without a reload.</summary>
-    Public Property HasUncommittedChanges As Boolean = False
 
     ' Snapshot for Cancel rollback. Cloned at construction; if the user cancels we restore.
     Private ReadOnly _hadPriorOverlay As Boolean
@@ -49,12 +45,7 @@ Public Class EditBody_Form
 
     ' Per-MRSV slot labels + UI references. Populated in CreateMrsvRows.
     Private _mrsvBars(4) As FO4_Base_Library.TinySliderTextBox
-    Private _suspendEvents As Boolean
-
-    ' Set to True while we seed the render-toggle checkboxes from MainForm at Shown so their
-    ' CheckedChanged handlers don't each rebuild Toggles + run ApplyRenderToggleVisibility per
-    ' assignment (would be 4 redundant passes before the first render).
-    Private _seedingToggles As Boolean
+    ' _suspendEvents / _seedingToggles lifted to EditorFormBase (shared with EditFace_Form).
 
     ' Per-BodySlide-slider UI references. Key = sliderName (case-insensitive).
     Private ReadOnly _bodySlideBars As New Dictionary(Of String, FO4_Base_Library.TinySliderTextBox)(StringComparer.OrdinalIgnoreCase)
@@ -269,6 +260,7 @@ Public Class EditBody_Form
             If _mainForm.RefreshBodySkinLivePreview(_editorHost) Then Return
             Await _mainForm.RenderInHostAsync(_editorHost, _rootNpcFormID)
         Catch ex As Exception
+            Logger.LogLazy(Function() $"[EDIT-BODY] skin-change reload failed for NPC 0x{_rootNpcFormID:X8}: {ex.GetType().Name}: {ex.Message}")
         End Try
     End Function
 
@@ -744,7 +736,7 @@ Public Class EditBody_Form
             ' BodyMorphValues positionally, so we keep exactly 5 entries.
             p.BodyMorphValues.Clear()
             For i = 0 To 4
-                Dim v As Single = If(_initialSeed IsNot Nothing AndAlso i < _initialSeed.Mrsv.Length, _initialSeed.Mrsv(i), 0.0F)
+                Dim v As Single = If(_initialSeed IsNot Nothing AndAlso _initialSeed.Mrsv IsNot Nothing AndAlso i < _initialSeed.Mrsv.Length, _initialSeed.Mrsv(i), 0.0F)
                 p.BodyMorphValues.Add(v)
                 If i < _mrsvBars.Length AndAlso _mrsvBars(i) IsNot Nothing Then _mrsvBars(i).Value = v
             Next
@@ -881,6 +873,7 @@ Public Class EditBody_Form
             Try
                 Await _mainForm.RenderInHostAsync(_editorHost, _rootNpcFormID)
             Catch ex As Exception
+                Logger.LogLazy(Function() $"[EDIT-BODY] initial render failed for NPC 0x{_rootNpcFormID:X8}: {ex.GetType().Name}: {ex.Message}")
             End Try
         End If
     End Sub

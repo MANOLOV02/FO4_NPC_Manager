@@ -29,9 +29,9 @@ Public Class BodySlideTriResolver
     ''' meshDictKey is unused (kept in the signature for caller-side stability while we
     ''' migrate; LM doesn't consult the mesh path at all).</summary>
     Public Shared Function ResolvePirtPath(shape As IRenderableShape, meshDictKey As String) As String
-        Dim bodyTri = ReadBodyTriFromRoot(shape)
+        Dim bodyTri = MeshPathHelpers.ReadBodyTriPath(shape, includeShapeLevel:=False)
         If String.IsNullOrEmpty(bodyTri) Then Return Nothing
-        Return Normalize(bodyTri)
+        Return MeshPathHelpers.NormalizeMeshKey(bodyTri)
     End Function
 
     ''' <summary>Load a PIRT .tri from FilesDictionary. Returns Nothing if path is empty,
@@ -113,29 +113,4 @@ Public Class BodySlideTriResolver
         Return False
     End Function
 
-    Private Shared Function Normalize(path As String) As String
-        If String.IsNullOrWhiteSpace(path) Then Return ""
-        Dim normalized = path.Replace("/", "\").Trim().ToLowerInvariant()
-        If Not normalized.StartsWith("meshes\") Then normalized = "meshes\" & normalized
-        Return normalized
-    End Function
-
-    ''' <summary>Read BODYTRI NiStringExtraData from the NIF's ROOT NiNode only — never the
-    ''' shape itself. LM does object->GetExtraData("BODYTRI") on the root in
-    ''' BodyMorphProcessor::Process (BodyMorphInterface.cpp:1356).</summary>
-    Private Shared Function ReadBodyTriFromRoot(shape As IRenderableShape) As String
-        If shape Is Nothing OrElse shape.NifContent Is Nothing OrElse shape.NifContent.Blocks Is Nothing Then Return ""
-
-        Dim rootNode = shape.NifContent.Blocks.OfType(Of NiNode)().FirstOrDefault()
-        If rootNode Is Nothing OrElse rootNode.ExtraDataList Is Nothing Then Return ""
-
-        For Each edRef In rootNode.ExtraDataList.References
-            If edRef.Index < 0 OrElse edRef.Index >= shape.NifContent.Blocks.Count Then Continue For
-            Dim ed = TryCast(shape.NifContent.Blocks(edRef.Index), NiStringExtraData)
-            If ed IsNot Nothing AndAlso ed.Name IsNot Nothing AndAlso ed.Name.String = "BODYTRI" Then
-                Return If(ed.StringData?.String, "")
-            End If
-        Next
-        Return ""
-    End Function
 End Class

@@ -110,6 +110,14 @@ Public Module LooksmenuLoader
         ''' other = ARMO FormID. NOT serialized to LM JSON.</summary>
         Public SkinFormIDOverride As UInteger?
 
+        ''' <summary>Editor-only override of NPC.DOFT (Default Outfit → OTFT FormID). Same shape as
+        ''' <see cref="SkinFormIDOverride"/>: a record-level field that lives in the in-memory overlay,
+        ''' round-trips through the <c>_npcm_DefaultOutfit</c> JSON extension and Copy/Paste, and will
+        ''' persist to ESP via Save ESP (NPC_.DOFT). Set by the Edit Outfit picker.
+        ''' Nothing = preserve raw NPC.DOFT; 0 = no outfit (naked); other = OTFT FormID.
+        ''' NOT a vanilla LooksMenu field — LM in-game ignores the <c>_npcm_</c> key.</summary>
+        Public DefaultOutfitFormIDOverride As UInteger?
+
         ''' <summary>F4SE LM Skin override — the string id of a SkinTemplate registered via
         ''' <c>F4SEPlugins-master/f4ee/SkinInterface.cpp</c>. The template bundles ARMO + face TXST +
         ''' head/headRear HDPT (see <see cref="LmSkinTemplate"/> for the full layout) and is applied
@@ -389,6 +397,18 @@ Public Module LooksmenuLoader
                     preset.SkinFormIDOverride = resolved
                 End If
             End If
+            Dim outfitFidEl As JsonElement
+            If root.TryGetProperty("_npcm_DefaultOutfit", outfitFidEl) AndAlso outfitFidEl.ValueKind = JsonValueKind.String Then
+                Dim ofStr = outfitFidEl.GetString()
+                If String.IsNullOrEmpty(ofStr) Then
+                    ' Empty string = "no outfit". Equivale a Some(0).
+                    preset.DefaultOutfitFormIDOverride = 0UI
+                Else
+                    ' Si el plugin del OTFT no está cargado, ResolveFormIdentifier devuelve 0 → cae como
+                    ' Some(0) = "no outfit" en lugar de crashear (mismo criterio que _npcm_SkinFormID).
+                    preset.DefaultOutfitFormIDOverride = ResolveFormIdentifier(ofStr, pluginManager)
+                End If
+            End If
             Dim cgpEl As JsonElement
             If root.TryGetProperty("_npcm_IsCharGenPreset", cgpEl) AndAlso
                (cgpEl.ValueKind = JsonValueKind.True OrElse cgpEl.ValueKind = JsonValueKind.False) Then
@@ -480,6 +500,7 @@ Public Module LooksmenuLoader
         ' Editor-only overrides (not part of the LM JSON schema, but live in the in-memory overlay).
         c.IsCharGenFacePreset = p.IsCharGenFacePreset
         c.SkinFormIDOverride = p.SkinFormIDOverride
+        c.DefaultOutfitFormIDOverride = p.DefaultOutfitFormIDOverride
         c.SkinTemplateId = p.SkinTemplateId
         For Each fid In p.LmTemplateInjectedHdptFormIDs : c.LmTemplateInjectedHdptFormIDs.Add(fid) : Next
         c.HasHeadPartFormIDsSetByTemplate = p.HasHeadPartFormIDsSetByTemplate
@@ -735,6 +756,12 @@ Public Module LooksmenuLoader
                     ' Empty string = clear semantic (engine cae a RACE.WNAM). Emitimos string siempre
                     ' (incluso vacío) cuando HasValue=True para distinguir de "key absent" = preserve.
                     w.WriteString("_npcm_SkinFormID", sfId)
+                End If
+                If preset.DefaultOutfitFormIDOverride.HasValue Then
+                    Dim ofId = FormatFormIdentifier(preset.DefaultOutfitFormIDOverride.Value, pluginManager)
+                    ' Empty string = "no outfit" (Some(0)). String siempre presente cuando HasValue=True
+                    ' para distinguir de "key absent" = preserve raw NPC.DOFT.
+                    w.WriteString("_npcm_DefaultOutfit", ofId)
                 End If
                 If preset.IsCharGenFacePreset.HasValue Then
                     w.WriteBoolean("_npcm_IsCharGenPreset", preset.IsCharGenFacePreset.Value)

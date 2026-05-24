@@ -25,6 +25,7 @@ Partial Class PasteOptionsDialog
         CheckBoxBodySliders = New CheckBox()
         CheckBoxSkinOverride = New CheckBox()
         CheckBoxLmSkinTemplate = New CheckBox()
+        CheckBoxOutfit = New CheckBox()
         GroupBoxFace = New GroupBox()
         FaceLayout = New TableLayoutPanel()
         CheckBoxFaceParts = New CheckBox()
@@ -68,12 +69,12 @@ Partial Class PasteOptionsDialog
         Root.Padding = New Padding(12)
         Root.RowCount = 6
         Root.RowStyles.Add(New RowStyle(SizeType.Absolute, 40F))
-        Root.RowStyles.Add(New RowStyle(SizeType.Absolute, 130F))
+        Root.RowStyles.Add(New RowStyle(SizeType.Absolute, 158F))
         Root.RowStyles.Add(New RowStyle(SizeType.Absolute, 155F))
         Root.RowStyles.Add(New RowStyle(SizeType.Absolute, 70F))
         Root.RowStyles.Add(New RowStyle(SizeType.Absolute, 36F))
         Root.RowStyles.Add(New RowStyle(SizeType.Percent, 100F))
-        Root.Size = New Size(480, 520)
+        Root.Size = New Size(480, 548)
         Root.TabIndex = 0
         ' 
         ' LabelHeader
@@ -93,10 +94,10 @@ Partial Class PasteOptionsDialog
         GroupBoxBody.Dock = DockStyle.Fill
         GroupBoxBody.Location = New Point(12, 52)
         GroupBoxBody.Margin = New Padding(0, 0, 0, 6)
-        GroupBoxBody.MinimumSize = New Size(0, 150)
+        GroupBoxBody.MinimumSize = New Size(0, 178)
         GroupBoxBody.Name = "GroupBoxBody"
         GroupBoxBody.Padding = New Padding(8, 4, 8, 8)
-        GroupBoxBody.Size = New Size(456, 150)
+        GroupBoxBody.Size = New Size(456, 178)
         GroupBoxBody.TabIndex = 1
         GroupBoxBody.TabStop = False
         GroupBoxBody.Text = "Body"
@@ -110,16 +111,18 @@ Partial Class PasteOptionsDialog
         BodyLayout.Controls.Add(CheckBoxBodySliders, 0, 2)
         BodyLayout.Controls.Add(CheckBoxSkinOverride, 0, 3)
         BodyLayout.Controls.Add(CheckBoxLmSkinTemplate, 0, 4)
+        BodyLayout.Controls.Add(CheckBoxOutfit, 0, 5)
         BodyLayout.Dock = DockStyle.Fill
         BodyLayout.Location = New Point(8, 20)
         BodyLayout.Name = "BodyLayout"
-        BodyLayout.RowCount = 5
-        BodyLayout.RowStyles.Add(New RowStyle(SizeType.Percent, 20F))
-        BodyLayout.RowStyles.Add(New RowStyle(SizeType.Percent, 20F))
-        BodyLayout.RowStyles.Add(New RowStyle(SizeType.Percent, 20F))
-        BodyLayout.RowStyles.Add(New RowStyle(SizeType.Percent, 20F))
-        BodyLayout.RowStyles.Add(New RowStyle(SizeType.Percent, 20F))
-        BodyLayout.Size = New Size(440, 122)
+        BodyLayout.RowCount = 6
+        BodyLayout.RowStyles.Add(New RowStyle(SizeType.Percent, 16.66F))
+        BodyLayout.RowStyles.Add(New RowStyle(SizeType.Percent, 16.66F))
+        BodyLayout.RowStyles.Add(New RowStyle(SizeType.Percent, 16.66F))
+        BodyLayout.RowStyles.Add(New RowStyle(SizeType.Percent, 16.66F))
+        BodyLayout.RowStyles.Add(New RowStyle(SizeType.Percent, 16.66F))
+        BodyLayout.RowStyles.Add(New RowStyle(SizeType.Percent, 16.66F))
+        BodyLayout.Size = New Size(440, 150)
         BodyLayout.TabIndex = 0
         ' 
         ' CheckBoxBodyWeight
@@ -176,7 +179,18 @@ Partial Class PasteOptionsDialog
         CheckBoxLmSkinTemplate.Size = New Size(155, 19)
         CheckBoxLmSkinTemplate.TabIndex = 4
         CheckBoxLmSkinTemplate.Text = "LM skin template  (F4SE)"
-        ' 
+        '
+        ' CheckBoxOutfit
+        '
+        CheckBoxOutfit.AutoSize = True
+        CheckBoxOutfit.Checked = True
+        CheckBoxOutfit.CheckState = CheckState.Checked
+        CheckBoxOutfit.Location = New Point(3, 123)
+        CheckBoxOutfit.Name = "CheckBoxOutfit"
+        CheckBoxOutfit.Size = New Size(168, 19)
+        CheckBoxOutfit.TabIndex = 5
+        CheckBoxOutfit.Text = "Outfit  (NPC.DOFT default)"
+        '
         ' GroupBoxFace
         ' 
         GroupBoxFace.Controls.Add(FaceLayout)
@@ -370,12 +384,12 @@ Partial Class PasteOptionsDialog
         ' 
         AcceptButton = ButtonOk
         CancelButton = ButtonCancel
-        ClientSize = New Size(480, 520)
+        ClientSize = New Size(480, 548)
         Controls.Add(Root)
         FormBorderStyle = FormBorderStyle.FixedDialog
         MaximizeBox = False
         MinimizeBox = False
-        MinimumSize = New Size(480, 520)
+        MinimumSize = New Size(480, 548)
         Name = "PasteOptionsDialog"
         StartPosition = FormStartPosition.CenterParent
         Text = "Paste Look — choose categories"
@@ -404,6 +418,7 @@ Partial Class PasteOptionsDialog
     Friend WithEvents CheckBoxBodySliders As System.Windows.Forms.CheckBox
     Friend WithEvents CheckBoxSkinOverride As System.Windows.Forms.CheckBox
     Friend WithEvents CheckBoxLmSkinTemplate As System.Windows.Forms.CheckBox
+    Friend WithEvents CheckBoxOutfit As System.Windows.Forms.CheckBox
     Friend WithEvents GroupBoxFace As System.Windows.Forms.GroupBox
     Friend WithEvents FaceLayout As System.Windows.Forms.TableLayoutPanel
     Friend WithEvents CheckBoxFaceParts As System.Windows.Forms.CheckBox

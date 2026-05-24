@@ -100,9 +100,7 @@ Public Module FaceGenBuildPipeline
                                     pluginManager As PluginManager,
                                     appliedPresets As Dictionary(Of UInteger, LooksmenuLoader.LooksmenuPreset),
                                     facialBoneRegions As FacialBoneRegionsFile) As BakeState
-        Dim raw = NpcRecordOverlay.GetParsedNpc(npcFormID, pluginManager)
-        If raw Is Nothing Then Return Nothing
-        Dim npcData = NpcRecordOverlay.ApplyPresetOverlayToNpcData(raw, npcFormID, appliedPresets, pluginManager)
+        Dim npcData = NpcRecordOverlay.ResolveOverlaidNpcData(npcFormID, pluginManager, appliedPresets)
         If npcData Is Nothing Then Return Nothing
 
         Dim raceRec = pluginManager.GetRecord(npcData.RaceFormID)

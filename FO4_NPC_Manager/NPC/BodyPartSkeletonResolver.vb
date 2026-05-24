@@ -44,21 +44,7 @@ Public Module BodyPartSkeletonResolver
             Return Nothing
         End If
 
-        Dim normalized = MeshPathHelpers.NormalizeMeshKey(bptd.ModelPath)
-        Dim loc As FilesDictionary_class.File_Location = Nothing
-        If Not FilesDictionary_class.Dictionary.TryGetValue(normalized, loc) Then
-            Return Nothing
-        End If
-
-        Try
-            Dim bytes = loc.GetBytes()
-            If bytes Is Nothing OrElse bytes.Length = 0 Then
-                Return Nothing
-            End If
-            Return bytes
-        Catch ex As Exception
-            Return Nothing
-        End Try
+        Return MeshPathHelpers.TryLoadMeshBytes(MeshPathHelpers.NormalizeMeshKey(bptd.ModelPath))
     End Function
 
 End Module

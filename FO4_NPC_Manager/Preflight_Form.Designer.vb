@@ -48,15 +48,15 @@ Partial Class Preflight_Form
         TextBoxExePath.Location = New Point(107, 12)
         TextBoxExePath.Name = "TextBoxExePath"
         TextBoxExePath.ReadOnly = True
-        TextBoxExePath.Size = New Size(533, 23)
+        TextBoxExePath.Size = New Size(489, 23)
         TextBoxExePath.TabIndex = 1
         ' 
         ' ButtonBrowse
         ' 
         ButtonBrowse.Anchor = AnchorStyles.Top Or AnchorStyles.Right
-        ButtonBrowse.Location = New Point(646, 11)
+        ButtonBrowse.Location = New Point(604, 11)
         ButtonBrowse.Name = "ButtonBrowse"
-        ButtonBrowse.Size = New Size(90, 25)
+        ButtonBrowse.Size = New Size(132, 25)
         ButtonBrowse.TabIndex = 2
         ButtonBrowse.Text = "Browse..."
         ButtonBrowse.UseVisualStyleBackColor = True

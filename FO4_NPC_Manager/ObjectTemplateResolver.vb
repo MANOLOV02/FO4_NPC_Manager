@@ -453,6 +453,35 @@ Public Module ObjectTemplateResolver
 
         Logger.LogLazy(Function() $"[OBTE-RESOLVE] applicable={applicable.Count} collected={candidates.Count} accepted={accepted.Count} rejected={pending.Count} unslotted={unslottedOmods.Count} iterations={iterations}")
 
+        ' [SLOT-DEDUP] (Bug B) Slot-by-slot last-writer-wins. N combos aplicables pueden traer el
+        ' MISMO geometry en el MISMO slot (caso Mining Helmet: 8 Default combos, cada una con
+        ' Helmet + Headlamp). El header de diseño dice "LAST in declaration order wins per slot",
+        ' pero el emit acumulaba todos → 8× overdraw. Colapsamos por clave
+        ' (AttachPoint, apIdx, HostInstanceOrdinal), keep-last:
+        '   - apIdx separa instancias espaciales (Mr Handy brazo izq/der: mismo slot, apIdx 0 vs 1 → ambos).
+        '   - HostInstanceOrdinal preserva el caso multi-host del refactor InstanceOrdinal
+        '     (mismo OMOD bajo hosts distintos → keys distintas → ambos).
+        '   - Los 8 color combos comparten (slot, apIdx, host) → colapsan a 1 (último = último color).
+        ' Unslotted (color overlays AttachPoint=0) NO se tocan — stackean como siempre.
+        Dim dedupedAccepted As New List(Of (Omod As OMOD_Data, ApIdx As Byte, InstanceOrdinal As Integer, HostInstanceOrdinal As Integer, HostFormID As UInteger, HostApIdx As Byte))
+        Dim slotSeen As New Dictionary(Of (UInteger, Byte, Integer), Integer)
+        For Each entry In accepted
+            Dim key = (entry.Omod.AttachPointFormID, entry.ApIdx, entry.HostInstanceOrdinal)
+            Dim existingIdx As Integer
+            If slotSeen.TryGetValue(key, existingIdx) Then
+                dedupedAccepted(existingIdx) = entry ' last-writer-wins
+            Else
+                slotSeen(key) = dedupedAccepted.Count
+                dedupedAccepted.Add(entry)
+            End If
+        Next
+        Dim droppedDup = accepted.Count - dedupedAccepted.Count
+        If droppedDup > 0 Then
+            Dim ddL = droppedDup, keptL = dedupedAccepted.Count
+            Logger.LogLazy(Function() $"[SLOT-DEDUP] accepted={ddL + keptL} → kept={keptL} dropped={ddL} (slot-by-slot last-wins por (AttachPoint,apIdx,host))")
+        End If
+        accepted = dedupedAccepted
+
         ' Emit accepted slotted OMODs first, then unslotted (color overlays, properties-only).
         For Each entry In accepted
             result.IncludedOmods.Add(entry.Omod)

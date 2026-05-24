@@ -1,7 +1,7 @@
 ﻿' UI built in Designer per feedback_ui_in_designer.md.
 <Global.Microsoft.VisualBasic.CompilerServices.DesignerGenerated()>
 Partial Class EditFace_Form
-    Inherits System.Windows.Forms.Form
+    Inherits EditorFormBase
 
     <System.Diagnostics.DebuggerNonUserCode()>
     Protected Overrides Sub Dispose(disposing As Boolean)

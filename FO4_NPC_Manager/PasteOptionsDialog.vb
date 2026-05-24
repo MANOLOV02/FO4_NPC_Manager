@@ -19,6 +19,7 @@ Public Class PasteOptionsDialog
         CheckBoxBodySliders.Checked = state
         CheckBoxSkinOverride.Checked = state
         CheckBoxLmSkinTemplate.Checked = state
+        CheckBoxOutfit.Checked = state
         CheckBoxFaceParts.Checked = state
         CheckBoxHairColor.Checked = state
         CheckBoxFaceTints.Checked = state
@@ -36,6 +37,7 @@ Public Class PasteOptionsDialog
             .BodySliders = CheckBoxBodySliders.Checked,
             .SkinOverride = CheckBoxSkinOverride.Checked,
             .LmSkinTemplate = CheckBoxLmSkinTemplate.Checked,
+            .Outfit = CheckBoxOutfit.Checked,
             .FaceParts = CheckBoxFaceParts.Checked,
             .HairColor = CheckBoxHairColor.Checked,
             .FaceTints = CheckBoxFaceTints.Checked,
@@ -57,6 +59,7 @@ Public Structure PasteOptions
     Public BodySliders As Boolean        ' BodyMorphSliders (BodySlide vertex morphs)
     Public SkinOverride As Boolean       ' SkinFormIDOverride (NPC.WNAM record skin)
     Public LmSkinTemplate As Boolean     ' SkinTemplateId (F4SE LM SkinInterface)
+    Public Outfit As Boolean             ' DefaultOutfitFormIDOverride (NPC.DOFT record outfit)
     Public FaceParts As Boolean          ' HeadPartFormIDs
     Public HairColor As Boolean          ' HairColorFormID
     Public FaceTints As Boolean          ' FaceTintLayers

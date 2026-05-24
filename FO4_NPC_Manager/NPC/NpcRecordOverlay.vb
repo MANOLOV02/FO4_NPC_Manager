@@ -21,6 +21,19 @@ Public Module NpcRecordOverlay
         Return RecordParsers.ParseNPC(rec, pluginName, pluginManager)
     End Function
 
+    ''' <summary>Convenience composition of <see cref="GetParsedNpc"/> + <see cref="ApplyPresetOverlayToNpcData"/>:
+    ''' fetch+parse the NPC record and apply the LooksMenu preset overlay in one call. Returns Nothing if the
+    ''' NPC record doesn't resolve. Single source of truth for the FaceGen bake paths (FaceGenBuilder.BuildCharGen /
+    ''' .BakeFaceTextures, FaceGenBuildPipeline.BuildBakeState) which all needed the same two-step sequence.</summary>
+    Public Function ResolveOverlaidNpcData(npcFormID As UInteger,
+                                           pluginManager As PluginManager,
+                                           appliedPresets As Dictionary(Of UInteger, LooksmenuLoader.LooksmenuPreset),
+                                           Optional lmSkinTemplateResolver As ResolveLmSkinTemplateDelegate = Nothing) As NPC_Data
+        Dim raw = GetParsedNpc(npcFormID, pluginManager)
+        If raw Is Nothing Then Return Nothing
+        Return ApplyPresetOverlayToNpcData(raw, npcFormID, appliedPresets, pluginManager, lmSkinTemplateResolver)
+    End Function
+
     ''' <summary>If an overlay is registered for <paramref name="selectedNpcFormID"/> in
     ''' <paramref name="appliedPresets"/>, return a shallow copy of <paramref name="raw"/>
     ''' with the preset's morph/face-tint/HeadPart/etc. fields swapped in. Otherwise return
@@ -103,7 +116,11 @@ Public Module NpcRecordOverlay
             End If
         End If
         shadow.IsFemale = raw.IsFemale
-        shadow.DefaultOutfitFormID = raw.DefaultOutfitFormID
+        ' NPC.DOFT (default outfit → OTFT). Three states, same shape as SkinFormID:
+        '   Nothing    → preserve raw NPC.DOFT
+        '   value <> 0 → OTFT override (Edit Outfit picker)
+        '   value = 0  → explicit "no outfit" (naked)
+        shadow.DefaultOutfitFormID = If(preset.DefaultOutfitFormIDOverride.HasValue, preset.DefaultOutfitFormIDOverride.Value, raw.DefaultOutfitFormID)
         shadow.SleepOutfitFormID = raw.SleepOutfitFormID
         ' HeadTextureFormID: LM template face TXST overrides if present (mirrors
         ' SkinInterface.cpp:307-313 — overlay sets npc->headData->faceTextures = template.face[gender]).
@@ -334,7 +351,8 @@ Public Module NpcRecordOverlay
         Try
             Dim newHdpt = RecordParsers.ParseHDPT(newRec, pluginManager)
             targetPartType = newHdpt.PartType
-        Catch
+        Catch ex As Exception
+            Logger.LogLazy(Function() $"[LM-HDPT-REPLACE] HDPT 0x{newHdptFormID:X8} parse failed; replacement skipped: {ex.GetType().Name}: {ex.Message}")
             Return
         End Try
         ' PartType=0 (Misc) is freestanding (extras like eyelashes, AO meshes) — those don't

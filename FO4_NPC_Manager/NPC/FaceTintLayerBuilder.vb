@@ -259,8 +259,10 @@ Public Module FaceTintLayerBuilder
                     .SwapNormalCacheKey = If(normLoad.Bytes IsNot Nothing, normLoad.Key, Nothing),
                     .SwapSpecularDdsBytes = specLoad.Bytes,
                     .SwapSpecularCacheKey = If(specLoad.Bytes IsNot Nothing, specLoad.Key, Nothing),
+                    .Intensity = msdvVal,
                     .DebugName = $"{g.Name}/{p.PresetName}"
                 }
+                Logger.LogLazy(Function() $"[REGIONSWAP-BUILD] '{g.Name}/{p.PresetName}' presetIdx={p.Index} msdv(intensity)={msdvVal:F3} txst=0x{p.TextureFormID:X8}")
                 swaps.Add(sw)
             Next
         Next
@@ -422,6 +424,7 @@ Public Module FaceTintLayerBuilder
                 .SpecularCacheKey = specularKey,
                 .Opacity = opacity,
                 .TakesSkinTone = takesSkinTone,
+                .IsSkinTone = (opt.Slot = CUShort(TintSlot.SkinTone)),
                 .DebugName = opt.Name
             }
 
