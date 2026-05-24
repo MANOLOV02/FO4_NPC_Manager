@@ -1,4 +1,4 @@
-Imports System.Drawing
+﻿Imports System.Drawing
 Imports FO4_Base_Library
 
 ''' <summary>
@@ -333,7 +333,7 @@ Public Module FaceTintLayerBuilder
             Select(Function(m, originalIdx)
                        Dim r As Integer = Integer.MaxValue
                        raceTintRank.TryGetValue(m.Layer.Index, r)
-                       Return New With {.Layer = m.Layer, .Rank = r, .Idx = originalIdx}
+                       Return New With {m.Layer, .Rank = r, .Idx = originalIdx}
                    End Function).
             OrderBy(Function(x) x.Rank).
             ThenBy(Function(x) x.Idx).

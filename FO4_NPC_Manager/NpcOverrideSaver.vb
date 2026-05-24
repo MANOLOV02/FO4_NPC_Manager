@@ -63,6 +63,12 @@ Public Module NpcOverrideSaver
         ''' BA2 pack. Kept as a callback because the bake pipeline lives in MainForm/FaceGenBuilder
         ''' and pulls render state from <see cref="RenderHost"/>.</summary>
         Public RunChargenBakeAndPack As Func(Of UInteger, String, String, IProgress(Of SaveProgress), (Summary As String, Success As Boolean))
+        ''' <summary>All outfit drafts authored in the Edit Outfit "Create" tab (MainForm's
+        ''' <c>_outfitDrafts</c>, minus the throwaway preview sentinel). When the save target's
+        ''' <c>SaveNewOutfits</c> is True, ExecuteWritePhases emits as OTFT records every draft that is
+        ''' dirty OR referenced by this NPC's DOFT (so the plugin is self-contained); clean unreferenced
+        ''' drafts are skipped (the "don't re-save what's already saved" rule). Nothing = none.</summary>
+        Public OutfitDrafts As List(Of OutfitDraft) = Nothing
     End Class
 
     ''' <summary>Execute the save end-to-end. Runs the synchronous CPU/IO work on a background
@@ -254,6 +260,35 @@ Public Module NpcOverrideSaver
             npcSpec.HeadPartFormIDs.AddRange(rawNpcSpec.HeadPartFormIDs)
         End If
 
+        ' Phase 1d: outfit (DOFT) + new-outfit (OTFT) handling for the Edit Outfit "Create" tab.
+        '   • SaveNewOutfits ON  → emit as OTFT every draft that is dirty OR referenced by this NPC's DOFT
+        '     (so the output plugin is self-contained). If the NPC's DOFT points at a NEW draft (provisional
+        '     0xFF FormID) the writer remaps it to the real self FormID. Clean unreferenced drafts are
+        '     skipped — the "don't re-save what's already saved unless modified" rule.
+        '   • SaveNewOutfits OFF → write NO outfits; if the NPC's DOFT points at a NEW draft, revert it to
+        '     the NPC's ORIGINAL record outfit (the user's rule: saving the NPC without the checkbox keeps
+        '     its original outfit, not the unsaved draft). A DOFT pointing at a REAL OTFT (existing record,
+        '     picked in Browse) is kept either way — the checkbox only governs NEW drafts.
+        Dim outfitEntries As New List(Of SaveNpcEspWriter.OtftRecordEntry)
+        If target.SaveNewOutfits Then
+            If ctx.OutfitDrafts IsNot Nothing Then
+                For Each d In ctx.OutfitDrafts
+                    If d Is Nothing OrElse d.FormID = OutfitDraft.PreviewDraftFormID Then Continue For
+                    If Not (d.IsDirty OrElse d.FormID = npcSpec.DefaultOutfitFormID) Then Continue For
+                    Dim oe As New SaveNpcEspWriter.OtftRecordEntry With {
+                        .FormID = d.FormID,
+                        .EditorID = d.EditorID,
+                        .IsOverride = d.IsOverride
+                    }
+                    oe.ItemArmoFormIDs.AddRange(d.ItemArmoFormIDs)
+                    outfitEntries.Add(oe)
+                Next
+            End If
+        ElseIf OutfitDraft.IsDraftFormID(npcSpec.DefaultOutfitFormID) Then
+            npcSpec.DefaultOutfitFormID = rawNpcSpec.DefaultOutfitFormID
+            npcSpec.HasDefaultOutfit = rawNpcSpec.HasDefaultOutfit
+        End If
+
         Dim entry As New SaveNpcEspWriter.NpcOverrideEntry With {
             .Npc = npcSpec,
             .SourcePluginName = sourcePluginName,
@@ -269,15 +304,13 @@ Public Module NpcOverrideSaver
             reader.Load(target.TargetPath)
             existingMasters.AddRange(reader.Masters)
 
-            ' Translate the global FormID (high byte = host load-order) to the local FormID
-            ' the reader sees (high byte = MAST idx of the source master in the existing
-            ' plugin) so we can identify and skip the record we're about to replace.
-            Dim npcSourceMasterName As String = ""
-            Dim npcGlobalHigh As Integer = CInt((npcFormID >> 24) And &HFFUI)
-            If npcGlobalHigh >= 0 AndAlso npcGlobalHigh < ctx.PluginManager.Plugins.Count Then
-                Dim sp = ctx.PluginManager.Plugins(npcGlobalHigh)
-                If sp IsNot Nothing Then npcSourceMasterName = sp.FileName
-            End If
+            ' Translate the global FormID to the local FormID the reader sees (high byte = MAST idx of
+            ' the source master in the existing plugin) so we can identify and skip the record we're
+            ' about to replace. The source plugin comes from GetOriginatingPluginName (engine FileID
+            ' scheme, full + 0xFE light); the object width is 12-bit for an ESL source, 24-bit for full.
+            Dim npcSourceMasterName As String = ctx.PluginManager.GetOriginatingPluginName(npcFormID)
+            Dim npcIsLight As Boolean = ((npcFormID >> 24) And &HFFUI) = &HFEUI
+            Dim npcObject As UInteger = If(npcIsLight, npcFormID And &HFFFUI, npcFormID And &HFFFFFFUI)
             Dim npcLocalFormID As UInteger = npcFormID
             If Not String.IsNullOrEmpty(npcSourceMasterName) Then
                 Dim newHigh As Integer = -1
@@ -288,12 +321,28 @@ Public Module NpcOverrideSaver
                     End If
                 Next
                 If newHigh < 0 Then newHigh = reader.Masters.Count  ' self
-                npcLocalFormID = (CUInt(newHigh) << 24) Or (npcFormID And &HFFFFFFUI)
+                npcLocalFormID = (CUInt(newHigh) << 24) Or npcObject
             End If
 
             For Each kv In reader.Records
                 Dim rec = kv.Value
                 If rec.Header.FormID = npcLocalFormID Then Continue For
+                ' OTFT outfits from a prior save belong to the OTFT path, not existingRecords (which
+                ' SerializeExistingRecord only handles for NPC_). Re-emit them as OVERRIDE entries so
+                ' the writer preserves them (other NPCs in the plugin may reference them) with proper
+                ' FormID + INAM remapping. Resolve to global FormIDs first. Runs regardless of
+                ' SaveNewOutfits — preservation of existing records is not gated by the new-draft toggle.
+                If rec.Header.Signature = "OTFT" Then
+                    Dim parsedOtft = RecordParsers.ParseOTFT(rec, ctx.PluginManager)
+                    Dim oe As New SaveNpcEspWriter.OtftRecordEntry With {
+                        .FormID = ctx.PluginManager.ResolveReferencedFormID(rec.SourcePluginName, rec.Header.FormID),
+                        .EditorID = parsedOtft.EditorID,
+                        .IsOverride = True
+                    }
+                    oe.ItemArmoFormIDs.AddRange(parsedOtft.ItemFormIDs)
+                    outfitEntries.Add(oe)
+                    Continue For
+                End If
                 existingRecords.Add(rec)
             Next
         End If
@@ -320,7 +369,7 @@ Public Module NpcOverrideSaver
         Dim game = Config_App.Current.Game
         Dim writeRes = SaveNpcEspWriter.SaveOverridePlugin(
             target.TargetPath, game, target.MarkAsMaster, target.LightMaster,
-            entries, existingRecords, existingMasters, ctx.PluginManager)
+            entries, existingRecords, existingMasters, ctx.PluginManager, outfitEntries)
 
         result.WriterResult = writeRes
 

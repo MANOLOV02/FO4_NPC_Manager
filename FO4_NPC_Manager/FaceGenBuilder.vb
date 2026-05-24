@@ -1,4 +1,4 @@
-Imports System.IO
+﻿Imports System.IO
 Imports FO4_Base_Library
 Imports MaterialLib
 Imports NiflySharp
@@ -396,7 +396,7 @@ Public Module FaceGenBuilder
                                     Dim colonIdx = sourceName.LastIndexOf(":"c)
                                     Dim faceBonesName As String
                                     If colonIdx > 0 Then
-                                        faceBonesName = sourceName.Substring(0, colonIdx) & "_faceBones" & sourceName.Substring(colonIdx)
+                                        faceBonesName = String.Concat(sourceName.AsSpan(0, colonIdx), "_faceBones", sourceName.AsSpan(colonIdx))
                                     Else
                                         faceBonesName = sourceName & "_faceBones"
                                     End If

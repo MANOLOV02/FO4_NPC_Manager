@@ -26,6 +26,7 @@ Partial Class Preflight_Form
         ListViewPlugins = New ListView()
         ColumnHeaderPlugin = New ColumnHeader()
         ColumnHeaderState = New ColumnHeader()
+        ButtonCheckMasters = New Button()
         ButtonOk = New Button()
         ButtonCancel = New Button()
         LabelStatus = New Label()
@@ -132,9 +133,20 @@ Partial Class Preflight_Form
         ' 
         ColumnHeaderState.Text = "State"
         ColumnHeaderState.Width = 180
-        ' 
+        '
+        ' ButtonCheckMasters
+        '
+        ButtonCheckMasters.Anchor = AnchorStyles.Bottom Or AnchorStyles.Right
+        ButtonCheckMasters.Location = New Point(414, 505)
+        ButtonCheckMasters.Name = "ButtonCheckMasters"
+        ButtonCheckMasters.Size = New Size(130, 28)
+        ButtonCheckMasters.TabIndex = 14
+        ButtonCheckMasters.Text = "Check Masters"
+        ButtonCheckMasters.UseVisualStyleBackColor = True
+        ButtonCheckMasters.Visible = False
+        '
         ' ButtonOk
-        ' 
+        '
         ButtonOk.Anchor = AnchorStyles.Bottom Or AnchorStyles.Right
         ButtonOk.Location = New Point(550, 505)
         ButtonOk.Name = "ButtonOk"
@@ -194,6 +206,7 @@ Partial Class Preflight_Form
         Controls.Add(LabelStatus)
         Controls.Add(ButtonCancel)
         Controls.Add(ButtonOk)
+        Controls.Add(ButtonCheckMasters)
         Controls.Add(ListViewPlugins)
         Controls.Add(ButtonUnmarkAll)
         Controls.Add(ButtonMarkAll)
@@ -222,6 +235,7 @@ Partial Class Preflight_Form
     Friend WithEvents ListViewPlugins As ListView
     Friend WithEvents ColumnHeaderPlugin As ColumnHeader
     Friend WithEvents ColumnHeaderState As ColumnHeader
+    Friend WithEvents ButtonCheckMasters As Button
     Friend WithEvents ButtonOk As Button
     Friend WithEvents ButtonCancel As Button
     Friend WithEvents LabelStatus As Label

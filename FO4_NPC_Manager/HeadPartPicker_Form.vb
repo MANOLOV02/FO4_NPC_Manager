@@ -1,4 +1,4 @@
-Imports FO4_Base_Library
+﻿Imports FO4_Base_Library
 
 ''' <summary>Modal dialog that lets the user pick one HDPT for a given (RACE, gender, partType)
 ''' triple. Filters the master plugin HDPT enumeration by:
@@ -188,8 +188,8 @@ Public Class HeadPartPicker_Form
             _filtered = New List(Of Candidate)(_candidates)
         Else
             _filtered = _candidates.Where(Function(c) _
-                c.EditorID.IndexOf(text, StringComparison.OrdinalIgnoreCase) >= 0 OrElse
-                c.FullName.IndexOf(text, StringComparison.OrdinalIgnoreCase) >= 0).ToList()
+                c.EditorID.Contains(text, StringComparison.OrdinalIgnoreCase) OrElse
+                c.FullName.Contains(text, StringComparison.OrdinalIgnoreCase)).ToList()
         End If
         RefreshList()
     End Sub

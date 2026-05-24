@@ -19,6 +19,14 @@ Module Program
         NPC_Config.LoadConfig()
         Config_App.Current.Game = Config_App.Game_Enum.Fallout4
 
+        ' Plugin text encoding MUST be configured BEFORE any plugin is loaded — mirror of xEdit's
+        ' order: xeInit configures wbEncodingTrans (from sLanguage) before TwbFile loads. The
+        ' preflight below loads + scans all plugins; even though FULL/EDID parsing is lazy, doing
+        ' this here guarantees every decode (eager or lazy, preflight or later) uses the correct
+        ' encoding from the start. Process model = xEdit: configure → load all → edit.
+        PluginEncodingSettings.InitializeForGame(Config_App.Current.Game)
+        PluginEncodingSettings.SetLanguage(PluginEncodingSettings.ReadLanguageFromIni())
+
         Using preflight As New Preflight_Form()
             If preflight.ShowDialog() <> DialogResult.OK Then Return
             Application.Run(New MainForm(preflight.LoadedPluginManager,

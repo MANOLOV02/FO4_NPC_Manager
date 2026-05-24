@@ -1,4 +1,4 @@
-Imports FO4_Base_Library
+﻿Imports FO4_Base_Library
 
 ''' <summary>
 ''' Reusable NPC record-parsing and LooksMenu preset overlay helpers. App-specific
@@ -93,16 +93,17 @@ Public Module NpcRecordOverlay
         ' Shallow copy of NPC_Data with the preset-touched fields replaced. The base record stays
         ' immutable; downstream code that reads other fields (RaceFormID, TemplateFormID, etc) sees
         ' the same values it would have without the overlay.
-        Dim shadow As New NPC_Data()
-        shadow.FormID = raw.FormID
-        shadow.EditorID = raw.EditorID
-        shadow.FullName = raw.FullName
-        shadow.RaceFormID = raw.RaceFormID
         ' NPC.WNAM (vanilla skin → ARMO). Three states for the overlay:
         '   Nothing       → preserve raw NPC.WNAM
         '   value <> 0    → ARMO override (e.g. a custom skin pulled in via Edit Face)
         '   value = 0     → explicit clear; the renderer's resolver falls back to RACE.WNAM
-        shadow.SkinFormID = If(preset.SkinFormIDOverride.HasValue, preset.SkinFormIDOverride.Value, raw.SkinFormID)
+        Dim shadow As New NPC_Data With {
+            .FormID = raw.FormID,
+            .EditorID = raw.EditorID,
+            .FullName = raw.FullName,
+            .RaceFormID = raw.RaceFormID,
+            .SkinFormID = If(preset.SkinFormIDOverride, raw.SkinFormID)
+        }
         ' LM SkinTemplate (F4SE bundle) wins over NPC.WNAM at preview time, mirroring
         ' SkinInterface.cpp:250-332 in F4SEPlugins-master/f4ee — ApplyOverride applies the
         ' template's `skin` ARMO + face[gender] TXST + head[gender] HDPT + rear[gender] HDPT.
@@ -120,7 +121,13 @@ Public Module NpcRecordOverlay
         '   Nothing    → preserve raw NPC.DOFT
         '   value <> 0 → OTFT override (Edit Outfit picker)
         '   value = 0  → explicit "no outfit" (naked)
-        shadow.DefaultOutfitFormID = If(preset.DefaultOutfitFormIDOverride.HasValue, preset.DefaultOutfitFormIDOverride.Value, raw.DefaultOutfitFormID)
+        shadow.DefaultOutfitFormID = If(preset.DefaultOutfitFormIDOverride, raw.DefaultOutfitFormID)
+        ' DOFT emission gate: the writer emits DOFT only when HasDefaultOutfit. When the override is
+        ' active, derive the flag from it — value<>0 → emit DOFT=value; value=0 → "no outfit", omit
+        ' DOFT. Without this, an override on an NPC whose raw record had no DOFT would be dropped at
+        ' write time (CopyRoundTripOnlyFieldsFromRaw no longer copies HasDefaultOutfit — this owns it).
+        ' Nothing → preserve raw flag.
+        shadow.HasDefaultOutfit = If(preset.DefaultOutfitFormIDOverride.HasValue, preset.DefaultOutfitFormIDOverride.Value <> 0UI, raw.HasDefaultOutfit)
         shadow.SleepOutfitFormID = raw.SleepOutfitFormID
         ' HeadTextureFormID: LM template face TXST overrides if present (mirrors
         ' SkinInterface.cpp:307-313 — overlay sets npc->headData->faceTextures = template.face[gender]).

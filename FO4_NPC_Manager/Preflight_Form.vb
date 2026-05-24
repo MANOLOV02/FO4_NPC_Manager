@@ -12,7 +12,7 @@ Imports FO4_Base_Library
 ''' sin re-cargar.</summary>
 Public Class Preflight_Form
 
-    Private _activeOrder As List(Of String) = New List(Of String)()
+    Private _activeOrder As New List(Of String)()
 
     ' Master list of plugins found in Data\, in stable display order (actives first per load
     ' order, then inactives alphabetical). Survives filter changes so OK can rebuild
@@ -28,6 +28,26 @@ Public Class Preflight_Form
     ' and during Mark/Unmark loops so the user-driven OnItemChecked handler doesn't double-track
     ' or fight the source-of-truth update.
     Private _suspendItemChecked As Boolean = False
+
+    ' Direct master list per plugin filename, read ONCE via a cheap TES4-header-only load on a
+    ' background sweep after the list is built. Every subsequent validation is pure in-memory
+    ' lookup against this — no disk I/O when the user marks plugins (single toggle or bulk button).
+    Private ReadOnly _mastersByName As New Dictionary(Of String, List(Of String))(StringComparer.OrdinalIgnoreCase)
+
+    ' All plugin filenames physically present in Data\ (case-insensitive). Lets validation tell
+    ' "master missing on disk" apart from "master present on disk but not checked".
+    Private ReadOnly _presentFiles As New HashSet(Of String)(StringComparer.OrdinalIgnoreCase)
+
+    ' Checked plugins that have at least one direct master not satisfied (missing on disk OR not
+    ' checked). Drives the red row color and the OK gate. Recomputed in-memory on every check change.
+    Private ReadOnly _brokenPlugins As New HashSet(Of String)(StringComparer.OrdinalIgnoreCase)
+
+    ' True once the background masters sweep has populated _mastersByName. OK stays disabled until
+    ' then so we never enable a selection we haven't validated.
+    Private _mastersReady As Boolean = False
+
+    ' Monotonic token so a stale background sweep (user re-browsed mid-sweep) discards its result.
+    Private _mastersSweepToken As Integer = 0
 
     Private Structure PluginRow
         Public Name As String
@@ -90,6 +110,10 @@ Public Class Preflight_Form
     Private Sub RefreshPluginList()
         _allRows.Clear()
         _checkedPlugins.Clear()
+        _mastersByName.Clear()
+        _presentFiles.Clear()
+        _brokenPlugins.Clear()
+        _mastersReady = False
         ListViewPlugins.Items.Clear()
         ButtonOk.Enabled = False
         LabelStatus.Text = ""
@@ -108,6 +132,7 @@ Public Class Preflight_Form
                 ToList()
 
         Dim allPluginsSet = New HashSet(Of String)(allPluginFiles, StringComparer.OrdinalIgnoreCase)
+        For Each f In allPluginsSet : _presentFiles.Add(f) : Next
         Dim rendered = New HashSet(Of String)(StringComparer.OrdinalIgnoreCase)
 
         For Each pluginName In _activeOrder
@@ -126,7 +151,185 @@ Public Class Preflight_Form
         Next
 
         ApplyFilter()
-        ButtonOk.Enabled = True
+
+        ' Masters are needed before we can validate dependencies and enable OK. Read them off the
+        ' UI thread (one cheap TES4-header read per plugin) so the dialog stays responsive; OK is
+        ' gated by RecomputeValidation until the sweep finishes and on every check change after.
+        BeginMastersSweep(dataPath)
+    End Sub
+
+    ''' <summary>Background pass that reads each plugin's direct master list (TES4 header only) and,
+    ''' on completion, runs the first validation. Tokenized so a re-browse mid-sweep discards the
+    ''' stale result. After this, all marking is validated in-memory with no further disk access.</summary>
+    Private Async Sub BeginMastersSweep(dataPath As String)
+        _mastersSweepToken += 1
+        Dim token = _mastersSweepToken
+        Dim names = _allRows.Select(Function(r) r.Name).ToList()
+        If names.Count = 0 Then
+            _mastersReady = True
+            RecomputeValidation()
+            Return
+        End If
+
+        LabelStatus.Text = $"Reading plugin masters (0/{names.Count})..."
+        Dim prog As New Progress(Of Integer)(
+            Sub(done) LabelStatus.Text = $"Reading plugin masters ({done}/{names.Count})...")
+
+        Try
+            Dim result = Await Task.Run(Function() ReadAllMasters(dataPath, names, prog))
+
+            ' Discard if a newer sweep started (user re-browsed) or the form is gone.
+            If token <> _mastersSweepToken OrElse IsDisposed Then Return
+
+            _mastersByName.Clear()
+            For Each kvp In result : _mastersByName(kvp.Key) = kvp.Value : Next
+            _mastersReady = True
+            RecomputeValidation()
+        Catch ex As Exception
+            If token <> _mastersSweepToken OrElse IsDisposed Then Return
+            Logger.LogLazy(Function() $"[PREFLIGHT] Masters sweep failed: {ex.Message}")
+            ' Without master data we can't validate; leave validation off (no false reds) and let
+            ' OK enable so the user isn't hard-blocked by a sweep failure.
+            _mastersReady = True
+            RecomputeValidation()
+        End Try
+    End Sub
+
+    ''' <summary>Read the direct master list of each named plugin via a TES4-header-only load.
+    ''' Runs on a worker thread. A plugin whose header can't be read maps to an empty list (it
+    ''' won't be flagged for missing masters — a corrupt plugin is a separate concern).</summary>
+    Private Shared Function ReadAllMasters(dataPath As String,
+                                           names As List(Of String),
+                                           progress As IProgress(Of Integer)) As Dictionary(Of String, List(Of String))
+        Dim map As New Dictionary(Of String, List(Of String))(StringComparer.OrdinalIgnoreCase)
+        Dim i As Integer = 0
+        For Each pluginName In names
+            i += 1
+            Dim masters As New List(Of String)
+            Try
+                Dim reader As New PluginReader()
+                reader.LoadHeaderOnly(IO.Path.Combine(dataPath, pluginName))
+                masters = reader.Masters
+            Catch
+                ' Unreadable/malformed header — treat as no declared masters.
+            End Try
+            map(pluginName) = masters
+            If (i And &H3F) = 0 Then progress?.Report(i)
+        Next
+        progress?.Report(names.Count)
+        Return map
+    End Function
+
+    ''' <summary>Recompute which CHECKED plugins have an unsatisfied direct master — i.e. a master
+    ''' missing on disk OR present but not checked — then repaint row colors and gate OK. Pure
+    ''' in-memory set lookups over the cached master lists, so it's cheap to call on every single
+    ''' check toggle and once after each bulk operation. No-op (OK stays disabled) until the masters
+    ''' sweep has populated <see cref="_mastersByName"/>.</summary>
+    Private Sub RecomputeValidation()
+        If Not _mastersReady Then
+            ButtonOk.Enabled = False
+            ButtonCheckMasters.Visible = False
+            Return
+        End If
+
+        _brokenPlugins.Clear()
+        For Each pluginName In _checkedPlugins
+            Dim masters As List(Of String) = Nothing
+            If Not _mastersByName.TryGetValue(pluginName, masters) OrElse masters Is Nothing Then Continue For
+            For Each m In masters
+                If (Not _presentFiles.Contains(m)) OrElse (Not _checkedPlugins.Contains(m)) Then
+                    _brokenPlugins.Add(pluginName)
+                    Exit For
+                End If
+            Next
+        Next
+
+        For Each it As ListViewItem In ListViewPlugins.Items
+            ApplyRowColor(it)
+        Next
+
+        ButtonOk.Enabled = (_brokenPlugins.Count = 0)
+        ' "Check Masters" affordance: shown whenever a checked plugin is broken. Clicking ticks the
+        ' fixable masters (present on disk) transitively and reports any that are missing on disk.
+        ButtonCheckMasters.Visible = (_brokenPlugins.Count > 0)
+        UpdateStatusLabel()
+    End Sub
+
+    ''' <summary>Walk the master dependency graph of every CHECKED plugin (following only masters
+    ''' present on disk, so the walk stops at missing ones) and split the requirements into:
+    ''' <paramref name="toCheck"/> = present-on-disk masters not yet checked (the transitive set the
+    ''' "Check Masters" button will tick), and <paramref name="missing"/> = masters not present on
+    ''' disk, mapped to the plugins that require them. Pure in-memory over the cached master lists.</summary>
+    Private Sub CollectMasterClosure(ByRef toCheck As List(Of String),
+                                     ByRef missing As Dictionary(Of String, List(Of String)))
+        toCheck = New List(Of String)
+        missing = New Dictionary(Of String, List(Of String))(StringComparer.OrdinalIgnoreCase)
+        Dim toCheckSet As New HashSet(Of String)(StringComparer.OrdinalIgnoreCase)
+        Dim seen As New HashSet(Of String)(StringComparer.OrdinalIgnoreCase)
+        Dim queue As New Queue(Of String)
+        For Each pluginName In _checkedPlugins : queue.Enqueue(pluginName) : Next
+
+        While queue.Count > 0
+            Dim p = queue.Dequeue()
+            If Not seen.Add(p) Then Continue While
+            Dim masters As List(Of String) = Nothing
+            If Not _mastersByName.TryGetValue(p, masters) OrElse masters Is Nothing Then Continue While
+            For Each m In masters
+                If _presentFiles.Contains(m) Then
+                    ' Present on disk → fixable. Tick if not already checked; follow its own chain.
+                    If Not _checkedPlugins.Contains(m) AndAlso toCheckSet.Add(m) Then toCheck.Add(m)
+                    queue.Enqueue(m)
+                Else
+                    ' Missing on disk → can't be ticked; record which plugin needs it.
+                    Dim reqs As List(Of String) = Nothing
+                    If Not missing.TryGetValue(m, reqs) Then
+                        reqs = New List(Of String)
+                        missing(m) = reqs
+                    End If
+                    If Not reqs.Contains(p) Then reqs.Add(p)
+                End If
+            Next
+        End While
+    End Sub
+
+    ''' <summary>Resolve the masters of the checked selection: tick every fixable (present-on-disk)
+    ''' master transitively so the broken plugins go green, then — if any required master is missing
+    ''' from Data\ — inform the user which files are missing and which plugins need them.</summary>
+    Private Sub ButtonCheckMasters_Click(sender As Object, e As EventArgs) Handles ButtonCheckMasters.Click
+        Dim toCheck As List(Of String) = Nothing
+        Dim missing As Dictionary(Of String, List(Of String)) = Nothing
+        CollectMasterClosure(toCheck, missing)
+
+        If toCheck IsNot Nothing AndAlso toCheck.Count > 0 Then
+            For Each m In toCheck : _checkedPlugins.Add(m) : Next
+            ApplyFilter()          ' reflect the newly-ticked masters in the ListView
+            RecomputeValidation()  ' recolor, re-gate OK, refresh button visibility
+        End If
+
+        If missing IsNot Nothing AndAlso missing.Count > 0 Then
+            Dim sb As New System.Text.StringBuilder()
+            sb.AppendLine("These master files are missing from your Data folder and can't be selected:")
+            sb.AppendLine()
+            For Each kvp In missing.OrderBy(Function(k) k.Key, StringComparer.OrdinalIgnoreCase)
+                sb.AppendLine($"  • {kvp.Key}   (required by: {String.Join(", ", kvp.Value)})")
+            Next
+            sb.AppendLine()
+            sb.AppendLine("Install/enable these plugins, or untick the plugins that depend on them.")
+            MessageBox.Show(sb.ToString(), "Missing masters", MessageBoxButtons.OK, MessageBoxIcon.Warning)
+        End If
+    End Sub
+
+    ''' <summary>Color a row from its current state: red if it's a checked plugin with an
+    ''' unsatisfied master, gray if inactive, default otherwise. Row.IsActive is carried in
+    ''' it.Tag by ApplyFilter so this stays a pure lookup.</summary>
+    Private Sub ApplyRowColor(it As ListViewItem)
+        If _brokenPlugins.Contains(it.Text) Then
+            it.ForeColor = Color.Red
+        ElseIf TypeOf it.Tag Is Boolean AndAlso Not CBool(it.Tag) Then
+            it.ForeColor = SystemColors.GrayText
+        Else
+            it.ForeColor = SystemColors.WindowText
+        End If
     End Sub
 
     ''' <summary>Repopulate the ListView from _allRows filtered by TextBoxFilter.Text (case-
@@ -143,8 +346,9 @@ Public Class Preflight_Form
                 If filter.Length > 0 AndAlso row.Name.IndexOf(filter, StringComparison.OrdinalIgnoreCase) < 0 Then Continue For
                 Dim it As New ListViewItem(row.Name)
                 it.SubItems.Add(If(row.IsActive, "Active", "Inactive"))
+                it.Tag = row.IsActive
                 it.Checked = _checkedPlugins.Contains(row.Name)
-                If Not row.IsActive Then it.ForeColor = SystemColors.GrayText
+                ApplyRowColor(it)
                 ListViewPlugins.Items.Add(it)
             Next
         Finally
@@ -152,12 +356,21 @@ Public Class Preflight_Form
             _suspendItemChecked = False
         End Try
 
+        UpdateStatusLabel()
+    End Sub
+
+    ''' <summary>Refresh the status line: counts of shown/total/active/checked plus a warning
+    ''' suffix when some checked plugins have missing masters. Single source for the label so the
+    ''' filter, check toggles and bulk buttons all read consistently.</summary>
+    Private Sub UpdateStatusLabel()
         Dim activeCount As Integer = _allRows.Where(Function(r) r.IsActive).Count()
-        Dim totalShown As Integer = ListViewPlugins.Items.Count
+        Dim filter As String = If(TextBoxFilter.Text, "").Trim()
+        Dim brokenSuffix As String = If(_brokenPlugins.Count > 0,
+                                        $" — ⚠ {_brokenPlugins.Count} with missing master(s)", "")
         If filter.Length > 0 Then
-            LabelStatus.Text = $"{totalShown} shown / {_allRows.Count} total ({activeCount} active) — {_checkedPlugins.Count} checked."
+            LabelStatus.Text = $"{ListViewPlugins.Items.Count} shown / {_allRows.Count} total ({activeCount} active) — {_checkedPlugins.Count} checked{brokenSuffix}."
         Else
-            LabelStatus.Text = $"{_allRows.Count} plugins found ({activeCount} active, {_allRows.Count - activeCount} inactive) — {_checkedPlugins.Count} checked."
+            LabelStatus.Text = $"{_allRows.Count} plugins found ({activeCount} active, {_allRows.Count - activeCount} inactive) — {_checkedPlugins.Count} checked{brokenSuffix}."
         End If
     End Sub
 
@@ -172,14 +385,8 @@ Public Class Preflight_Form
         Else
             _checkedPlugins.Remove(e.Item.Text)
         End If
-        ' Refresh the status counter without rebuilding the list. Cheap: just reads counts.
-        Dim activeCount As Integer = _allRows.Where(Function(r) r.IsActive).Count()
-        Dim filter As String = If(TextBoxFilter.Text, "").Trim()
-        If filter.Length > 0 Then
-            LabelStatus.Text = $"{ListViewPlugins.Items.Count} shown / {_allRows.Count} total ({activeCount} active) — {_checkedPlugins.Count} checked."
-        Else
-            LabelStatus.Text = $"{_allRows.Count} plugins found ({activeCount} active, {_allRows.Count - activeCount} inactive) — {_checkedPlugins.Count} checked."
-        End If
+        ' One in-memory validation pass: repaints affected rows, gates OK, refreshes status counts.
+        RecomputeValidation()
     End Sub
 
     Private Sub ButtonMarkAll_Click(sender As Object, e As EventArgs) Handles ButtonMarkAll.Click
@@ -200,6 +407,8 @@ Public Class Preflight_Form
             If row.IsActive Then _checkedPlugins.Add(row.Name)
         Next
         ApplyFilter()
+        ' Single validation pass after the bulk selection change (not per-row).
+        RecomputeValidation()
     End Sub
 
     ''' <summary>Apply <paramref name="checkedState"/> to every row currently visible in the
@@ -222,13 +431,8 @@ Public Class Preflight_Form
             _suspendItemChecked = False
         End Try
 
-        Dim activeCount As Integer = _allRows.Where(Function(r) r.IsActive).Count()
-        Dim filter As String = If(TextBoxFilter.Text, "").Trim()
-        If filter.Length > 0 Then
-            LabelStatus.Text = $"{ListViewPlugins.Items.Count} shown / {_allRows.Count} total ({activeCount} active) — {_checkedPlugins.Count} checked."
-        Else
-            LabelStatus.Text = $"{_allRows.Count} plugins found ({activeCount} active, {_allRows.Count - activeCount} inactive) — {_checkedPlugins.Count} checked."
-        End If
+        ' Single validation pass after the bulk check change (the per-item handler was suspended).
+        RecomputeValidation()
     End Sub
 
     Private Async Sub ButtonOk_Click(sender As Object, e As EventArgs) Handles ButtonOk.Click
@@ -323,6 +527,8 @@ Public Class Preflight_Form
             Close()
         Catch ex As Exception
             SetLoadingMode(False)
+            ' SetLoadingMode re-enabled OK unconditionally; re-gate it against the master validation.
+            RecomputeValidation()
             LabelProgress.Text = ""
             ProgressBarLoad.Visible = False
             LabelProgress.Visible = False
@@ -361,6 +567,7 @@ Public Class Preflight_Form
         ButtonSelectActives.Enabled = Not loading
         ButtonMarkAll.Enabled = Not loading
         ButtonUnmarkAll.Enabled = Not loading
+        ButtonCheckMasters.Enabled = Not loading
         ButtonOk.Enabled = Not loading
         ProgressBarLoad.Visible = loading
         LabelProgress.Visible = loading

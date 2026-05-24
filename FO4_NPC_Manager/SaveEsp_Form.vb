@@ -1,4 +1,5 @@
-Imports System.IO
+﻿Imports System.IO
+Imports System.Linq
 Imports FO4_Base_Library
 
 ''' <summary>
@@ -188,6 +189,12 @@ Public Class SaveEsp_Form
         ''' saves. Opt-in (default False); does not apply retroactively to actors already
         ''' spawned in a saved game.</summary>
         Public EmitBodyGen As Boolean
+        ''' <summary>When True the orchestrator emits the outfits authored in the Edit Outfit "Create"
+        ''' tab as OTFT records in this plugin (every dirty draft + the one this NPC's DOFT references).
+        ''' When False no outfit is written and an NPC whose DOFT points at an unsaved draft falls back
+        ''' to its original record outfit. Opt-in (default False) — outfits are only persisted alongside
+        ''' an NPC save, never on their own.</summary>
+        Public SaveNewOutfits As Boolean
     End Class
 
     Private ReadOnly _dataPath As String
@@ -269,6 +276,17 @@ Public Class SaveEsp_Form
             CheckBoxGenerateChargen.Enabled = False
             CheckBoxGenerateChargen.Text = CheckBoxGenerateChargen.Text &
                 "  (required — NPC has no CharGen Preset flag)"
+        End If
+
+        ' "Save new outfits": only meaningful when the Edit Outfit "Create" tab has unsaved (dirty)
+        ' drafts. Auto-check + enable when there are; otherwise disable so the user isn't offered a
+        ' no-op. (The preview sentinel draft is excluded — it's transient.)
+        Dim hasDirtyDrafts As Boolean = _saveCtx IsNot Nothing AndAlso _saveCtx.OutfitDrafts IsNot Nothing AndAlso
+            _saveCtx.OutfitDrafts.Any(Function(d) d IsNot Nothing AndAlso d.IsDirty AndAlso d.FormID <> OutfitDraft.PreviewDraftFormID)
+        CheckBoxSaveNewOutfits.Enabled = hasDirtyDrafts
+        CheckBoxSaveNewOutfits.Checked = hasDirtyDrafts
+        If Not hasDirtyDrafts Then
+            CheckBoxSaveNewOutfits.Text = CheckBoxSaveNewOutfits.Text & "  (no new outfits)"
         End If
 
         PopulateExistingList()
@@ -481,7 +499,8 @@ Public Class SaveEsp_Form
             .LightMaster = CheckBoxLightMaster.Checked,
             .GenerateChargen = CheckBoxGenerateChargen.Checked,
             .WriteBssliders = CheckBoxWriteBssliders.Checked,
-            .EmitBodyGen = CheckBoxEmitBodyGen.Checked
+            .EmitBodyGen = CheckBoxEmitBodyGen.Checked,
+            .SaveNewOutfits = CheckBoxSaveNewOutfits.Checked
         }
 
         If RadioButtonExisting.Checked Then
@@ -674,7 +693,7 @@ Public Class SaveEsp_Form
     Private Function ResolveStep(phase As String) As Integer
         If _stepMap Is Nothing OrElse String.IsNullOrEmpty(phase) Then Return 0
         For Each entry In _stepMap
-            If phase.IndexOf(entry.Match, StringComparison.OrdinalIgnoreCase) >= 0 Then
+            If phase.Contains(entry.Match, StringComparison.OrdinalIgnoreCase) Then
                 Return entry.StepNumber
             End If
         Next

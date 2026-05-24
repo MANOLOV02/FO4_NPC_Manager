@@ -1,4 +1,4 @@
-Imports System.Drawing
+﻿Imports System.Drawing
 Imports System.Globalization
 Imports FO4_Base_Library
 
@@ -185,8 +185,9 @@ Public Class EditFace_Form
         ' Ensure an overlay exists for live editing. Removed in Cancel if it didn't exist.
         Dim p As LooksmenuLoader.LooksmenuPreset = Nothing
         If Not _appliedPresets.TryGetValue(rootNpcFormID, p) OrElse p Is Nothing Then
-            p = New LooksmenuLoader.LooksmenuPreset()
-            p.Gender = If(_isFemale, CByte(1), CByte(0))
+            p = New LooksmenuLoader.LooksmenuPreset With {
+                .Gender = If(_isFemale, CByte(1), CByte(0))
+            }
             _appliedPresets(rootNpcFormID) = p
         End If
 
@@ -1231,7 +1232,7 @@ Public Class EditFace_Form
                            _tintRankByIndex.TryGetValue(m.Layer.Index, r)
                            Dim originalIdx As Integer = -1
                            If Not m.IsRaceDefault Then npcOriginalIdxByRef.TryGetValue(m.Layer, originalIdx)
-                           Return New With {.Merged = m, .MergedIdx = mergedIdx, .Rank = r, .OriginalIdx = originalIdx}
+                           Return New With {.Merged = m, mergedIdx, .Rank = r, originalIdx}
                        End Function).
                 OrderBy(Function(x) x.Rank).
                 ThenBy(Function(x) x.MergedIdx).
@@ -1737,16 +1738,20 @@ Public Class EditFace_Form
                 Return
             End If
 
-            Dim tabs As New TabControl() With {.Dock = DockStyle.Fill}
             ' Owner-draw the tab headers so we can colour the "Other" tab text red — the tab
             ' control's default rendering ignores TabPage.ForeColor.
-            tabs.DrawMode = TabDrawMode.OwnerDrawFixed
+            Dim tabs As New TabControl With {
+                .Dock = DockStyle.Fill,
+                .DrawMode = TabDrawMode.OwnerDrawFixed
+            }
             AddHandler tabs.DrawItem, AddressOf OnVertexTabDrawItem
             For Each section In _groupSections
                 Dim isOther = (section.Presets Is Nothing)
                 Dim title = If(isOther, "⚠ " & section.GroupName, section.GroupName)
-                Dim page As New TabPage(title) With {.AutoScroll = True, .Padding = New Padding(6)}
-                page.Tag = section ' carry section ref for the owner-draw handler
+                Dim page As New TabPage(title) With {
+                    .AutoScroll = True, .Padding = New Padding(6),
+                    .Tag = section ' carry section ref for the owner-draw handler
+                }
                 page.Controls.Add(BuildGroupSectionContent(section))
                 tabs.TabPages.Add(page)
             Next
@@ -2496,8 +2501,9 @@ Public Class EditFace_Form
         ' Phase D — own host + initial render. AppliedPresets shares the dict by reference with
         ' MainForm so live overlay edits inside the modal write through to the same source
         ' MainForm will resolve from after OK.
-        _editorHost = New NpcRenderHost(EditPreviewControl)
-        _editorHost.AppliedPresets = _appliedPresets
+        _editorHost = New NpcRenderHost(EditPreviewControl) With {
+            .AppliedPresets = _appliedPresets
+        }
         ' Toggles baseline = OnlyFace (everything ON, gore overwritten below from the editor's
         ' own checkbox). RenderToggles.OnlyFace is now a no-op for visibility (the head-only
         ' filter happens at OnlyFaceCollect below) — see RenderToggles.vb.

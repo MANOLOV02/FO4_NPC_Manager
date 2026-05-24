@@ -1,4 +1,4 @@
-Imports System.Globalization
+﻿Imports System.Globalization
 Imports FO4_Base_Library
 
 ''' <summary>Editor for an NPC's body weight (MWGT — 3 sliders), MRSV body morph regions
@@ -55,7 +55,7 @@ Public Class EditBody_Form
     ' captures fresh state) but the costly _refresh callback is deferred. Same pattern as
     ' Editor_Form.vb (WM): timer fires after the user pauses; DragEnded forces an immediate flush
     ' so releasing the mouse always shows the final preview without waiting for the timer tick.
-    Private WithEvents _refreshTimer As New Timer() With {.Interval = 500, .Enabled = False}
+    Private WithEvents RefreshTimer As New Timer() With {.Interval = 500, .Enabled = False}
     Private _pendingRefresh As Boolean = False
 
     ''' <summary>Initial values seeded from the live NPC (post-overlay-applied). Used to
@@ -333,8 +333,8 @@ Public Class EditBody_Form
                 .Anchor = AnchorStyles.Left Or AnchorStyles.Right
             }
             Dim bar As New FO4_Base_Library.TinySliderTextBox() With {
-                .Minimum = -1R,
-                .Maximum = 1R,
+                .Minimum = -1.0R,
+                .Maximum = 1.0R,
                 .DisplayFormat = "0.00%",
                 .InputScale = 0.01R,
                 .SmallChange = 0.01R,
@@ -400,11 +400,11 @@ Public Class EditBody_Form
                 }
                 Dim bar As New FO4_Base_Library.TinySliderTextBox() With {
                     .Minimum = 0R,
-                    .Maximum = 100R,
+                    .Maximum = 100.0R,
                     .AllowExtremeValues = True,
                     .DisplayFormat = "0\%",
-                    .SmallChange = 1R,
-                    .LargeChange = 10R,
+                    .SmallChange = 1.0R,
+                    .LargeChange = 10.0R,
                     .Height = 28,
                     .Value = 0R,
                     .Dock = DockStyle.Fill,
@@ -666,7 +666,7 @@ Public Class EditBody_Form
     ''' running. The model is already written; this only defers the costly _refresh callback.</summary>
     Private Sub ScheduleRefresh()
         _pendingRefresh = True
-        If Not _refreshTimer.Enabled Then _refreshTimer.Start()
+        If Not RefreshTimer.Enabled Then RefreshTimer.Start()
     End Sub
 
     ''' <summary>Force-flush any pending refresh immediately. Bound to every slider's DragEnded
@@ -676,10 +676,10 @@ Public Class EditBody_Form
             _pendingRefresh = False
             _refresh?.Invoke()
         End If
-        _refreshTimer.Stop()
+        RefreshTimer.Stop()
     End Sub
 
-    Private Sub RefreshTimer_Tick(sender As Object, e As EventArgs) Handles _refreshTimer.Tick
+    Private Sub RefreshTimer_Tick(sender As Object, e As EventArgs) Handles RefreshTimer.Tick
         FlushRefresh()
     End Sub
 
@@ -693,7 +693,7 @@ Public Class EditBody_Form
         Try
             For Each kv In _bodySlideRows
                 Dim visible = (filter.Length = 0) OrElse
-                              (kv.Key.IndexOf(filter, StringComparison.OrdinalIgnoreCase) >= 0)
+                              (kv.Key.Contains(filter, StringComparison.OrdinalIgnoreCase))
                 kv.Value.Visible = visible
             Next
         Finally
@@ -706,10 +706,10 @@ Public Class EditBody_Form
     '''   • BodySlide tab → wipe all BodySlide sliders to 0.
     ''' Same idea as Cancel but scoped to the active tab so the user can discard one tab's edits
     ''' without losing the others.</summary>
-    Private Sub OnResetSection(sender As Object, e As EventArgs)
+    Private Async Sub OnResetSection(sender As Object, e As EventArgs)
         Dim active = TabsBody.SelectedTab
         If active Is TabPageBody Then
-            ResetBodySection()
+            Await ResetBodySection()
         ElseIf active Is TabPageBodySlide Then
             ResetBodySlideSection()
         End If
@@ -719,7 +719,7 @@ Public Class EditBody_Form
     ''' (NPC.WNAM + LM template) to the snapshot taken at form-open time. The combos go back to
     ''' whatever the prior overlay carried, falling back to "(use RACE default)" / "(none)" when
     ''' the user opened Edit Body on an NPC with no prior overlay.</summary>
-    Private Sub ResetBodySection()
+    Private Async Function ResetBodySection() As Task
         Dim p = Preset
         _suspendEvents = True
         Try
@@ -754,7 +754,7 @@ Public Class EditBody_Form
             End If
             ' Reflect the new preset state in the combo selection without re-firing the change
             ' handlers (they would otherwise trigger a render reload per combo, two reloads total).
-            Dim wnamFid As UInteger = If(p.SkinFormIDOverride.HasValue, p.SkinFormIDOverride.Value, _initialWnamFormID)
+            Dim wnamFid As UInteger = If(p.SkinFormIDOverride, _initialWnamFormID)
             Dim wIdx = _wnamComboFormIDs.IndexOf(wnamFid)
             ComboBoxWnam.SelectedIndex = If(wIdx >= 0, wIdx, 0)
             Dim lmIdx = _lmTemplateComboIds.IndexOf(If(p.SkinTemplateId, ""))
@@ -765,8 +765,8 @@ Public Class EditBody_Form
         ' Skin change requires a full reload (mesh + TXST + MSWP resolve from state.SkinFormID),
         ' which TriggerSkinChangeReload handles. It also re-runs MWGT / MRSV pose so the weight
         ' + region revert lands in the same render pass.
-        TriggerSkinChangeReload()
-    End Sub
+        Await TriggerSkinChangeReload()
+    End Function
 
     ''' <summary>Wipe all BodySlide sliders to 0 (no PIRT vertex morph applied). Prior behaviour
     ''' of the (now-renamed) OnResetBodySlide handler.</summary>
@@ -822,8 +822,8 @@ Public Class EditBody_Form
         ' Flush any in-flight throttled refresh so OK doesn't leave a deferred render hanging,
         ' then stop the timer so its tick doesn't fire on a disposed form.
         FlushRefresh()
-        _refreshTimer.Stop()
-        _refreshTimer.Dispose()
+        RefreshTimer.Stop()
+        RefreshTimer.Dispose()
         MyBase.OnFormClosed(e)
     End Sub
 
@@ -857,14 +857,15 @@ Public Class EditBody_Form
             _seedingToggles = False
         End Try
 
-        _editorHost = New NpcRenderHost(EditPreviewControl)
-        _editorHost.AppliedPresets = _appliedPresets
         ' Toggle preset uses FullBody as the morph/sculpt baseline (everything ON), then
         ' OVERWRITES the 4 visibility flags from the editor's own checkboxes. The editor
         ' checkboxes own the truth post-seed; CheckedChanged handlers below mutate them and
         ' rebuild the same way. _mainGore is no longer special — the editor's gore checkbox
         ' replaces it as the visibility input.
-        _editorHost.Toggles = BuildTogglesFromEditorCheckboxes()
+        _editorHost = New NpcRenderHost(EditPreviewControl) With {
+            .AppliedPresets = _appliedPresets,
+            .Toggles = BuildTogglesFromEditorCheckboxes()
+        }
         ' Face tint deferral is now handled by the library's PostTextureUploadAction hook on
         ' RenderIntent — wired by RenderCurrentStateAsync inside the render dispatch path so
         ' editor hosts get the same generic post-texture sequencing the MainForm uses.

@@ -27,6 +27,7 @@ Partial Class SaveEsp_Form
         CheckBoxGenerateChargen = New CheckBox()
         CheckBoxWriteBssliders = New CheckBox()
         CheckBoxEmitBodyGen = New CheckBox()
+        CheckBoxSaveNewOutfits = New CheckBox()
         LabelEncoding = New Label()
         ComboBoxEncoding = New ComboBox()
         LabelEncodingHint = New Label()
@@ -147,7 +148,7 @@ Partial Class SaveEsp_Form
         ' LabelBa2Version
         '
         LabelBa2Version.AutoSize = True
-        LabelBa2Version.Location = New Drawing.Point(12, 441)
+        LabelBa2Version.Location = New Drawing.Point(12, 469)
         LabelBa2Version.Name = "LabelBa2Version"
         LabelBa2Version.Size = New Drawing.Size(110, 15)
         LabelBa2Version.TabIndex = 18
@@ -156,7 +157,7 @@ Partial Class SaveEsp_Form
         ' ComboBoxBa2Version
         '
         ComboBoxBa2Version.DropDownStyle = ComboBoxStyle.DropDownList
-        ComboBoxBa2Version.Location = New Drawing.Point(140, 438)
+        ComboBoxBa2Version.Location = New Drawing.Point(140, 466)
         ComboBoxBa2Version.Name = "ComboBoxBa2Version"
         ComboBoxBa2Version.Size = New Drawing.Size(280, 23)
         ComboBoxBa2Version.TabIndex = 19
@@ -185,10 +186,22 @@ Partial Class SaveEsp_Form
         CheckBoxEmitBodyGen.Text = "Emit BodyGen .ini (engine applies sliders on first-load in NEW saves)"
         CheckBoxEmitBodyGen.UseVisualStyleBackColor = True
         '
+        ' CheckBoxSaveNewOutfits
+        '
+        CheckBoxSaveNewOutfits.AutoSize = True
+        CheckBoxSaveNewOutfits.Checked = False
+        CheckBoxSaveNewOutfits.CheckState = CheckState.Unchecked
+        CheckBoxSaveNewOutfits.Location = New Drawing.Point(12, 405)
+        CheckBoxSaveNewOutfits.Name = "CheckBoxSaveNewOutfits"
+        CheckBoxSaveNewOutfits.Size = New Drawing.Size(520, 19)
+        CheckBoxSaveNewOutfits.TabIndex = 21
+        CheckBoxSaveNewOutfits.Text = "Save new outfits (Edit Outfit ""Create"" tab) as OTFT records in this plugin"
+        CheckBoxSaveNewOutfits.UseVisualStyleBackColor = True
+        '
         ' LabelEncoding
         '
         LabelEncoding.AutoSize = True
-        LabelEncoding.Location = New Drawing.Point(12, 411)
+        LabelEncoding.Location = New Drawing.Point(12, 439)
         LabelEncoding.Name = "LabelEncoding"
         LabelEncoding.Size = New Drawing.Size(120, 15)
         LabelEncoding.TabIndex = 16
@@ -197,7 +210,7 @@ Partial Class SaveEsp_Form
         ' ComboBoxEncoding
         '
         ComboBoxEncoding.DropDownStyle = ComboBoxStyle.DropDownList
-        ComboBoxEncoding.Location = New Drawing.Point(140, 408)
+        ComboBoxEncoding.Location = New Drawing.Point(140, 436)
         ComboBoxEncoding.Name = "ComboBoxEncoding"
         ComboBoxEncoding.Size = New Drawing.Size(280, 23)
         ComboBoxEncoding.TabIndex = 17
@@ -206,7 +219,7 @@ Partial Class SaveEsp_Form
         '
         LabelEncodingHint.AutoSize = True
         LabelEncodingHint.ForeColor = SystemColors.GrayText
-        LabelEncodingHint.Location = New Drawing.Point(426, 411)
+        LabelEncodingHint.Location = New Drawing.Point(426, 439)
         LabelEncodingHint.Name = "LabelEncodingHint"
         LabelEncodingHint.Size = New Drawing.Size(0, 15)
         LabelEncodingHint.TabIndex = 20
@@ -216,7 +229,7 @@ Partial Class SaveEsp_Form
         '
         LabelWarning.Anchor = AnchorStyles.Bottom Or AnchorStyles.Left Or AnchorStyles.Right
         LabelWarning.ForeColor = Drawing.Color.DarkOrange
-        LabelWarning.Location = New Drawing.Point(12, 472)
+        LabelWarning.Location = New Drawing.Point(12, 500)
         LabelWarning.Name = "LabelWarning"
         LabelWarning.Size = New Drawing.Size(520, 36)
         LabelWarning.TabIndex = 12
@@ -226,7 +239,7 @@ Partial Class SaveEsp_Form
         '
         PanelProgress.Anchor = AnchorStyles.Bottom Or AnchorStyles.Left Or AnchorStyles.Right
         PanelProgress.BorderStyle = BorderStyle.FixedSingle
-        PanelProgress.Location = New Drawing.Point(12, 514)
+        PanelProgress.Location = New Drawing.Point(12, 542)
         PanelProgress.Name = "PanelProgress"
         PanelProgress.Size = New Drawing.Size(520, 78)
         PanelProgress.TabIndex = 15
@@ -268,7 +281,7 @@ Partial Class SaveEsp_Form
         ' ButtonOk
         '
         ButtonOk.Anchor = AnchorStyles.Bottom Or AnchorStyles.Right
-        ButtonOk.Location = New Drawing.Point(376, 601)
+        ButtonOk.Location = New Drawing.Point(376, 629)
         ButtonOk.Name = "ButtonOk"
         ButtonOk.Size = New Drawing.Size(75, 27)
         ButtonOk.TabIndex = 13
@@ -279,7 +292,7 @@ Partial Class SaveEsp_Form
         '
         ButtonCancel.Anchor = AnchorStyles.Bottom Or AnchorStyles.Right
         ButtonCancel.DialogResult = DialogResult.Cancel
-        ButtonCancel.Location = New Drawing.Point(457, 601)
+        ButtonCancel.Location = New Drawing.Point(457, 629)
         ButtonCancel.Name = "ButtonCancel"
         ButtonCancel.Size = New Drawing.Size(75, 27)
         ButtonCancel.TabIndex = 14
@@ -292,7 +305,7 @@ Partial Class SaveEsp_Form
         CancelButton = ButtonCancel
         AutoScaleDimensions = New Drawing.SizeF(7.0F, 15.0F)
         AutoScaleMode = AutoScaleMode.Font
-        ClientSize = New Drawing.Size(544, 640)
+        ClientSize = New Drawing.Size(544, 668)
         Controls.Add(LabelHeader)
         Controls.Add(RadioButtonExisting)
         Controls.Add(ListBoxExisting)
@@ -305,6 +318,7 @@ Partial Class SaveEsp_Form
         Controls.Add(CheckBoxGenerateChargen)
         Controls.Add(CheckBoxWriteBssliders)
         Controls.Add(CheckBoxEmitBodyGen)
+        Controls.Add(CheckBoxSaveNewOutfits)
         Controls.Add(LabelEncoding)
         Controls.Add(ComboBoxEncoding)
         Controls.Add(LabelEncodingHint)
@@ -336,6 +350,7 @@ Partial Class SaveEsp_Form
     Friend WithEvents CheckBoxGenerateChargen As CheckBox
     Friend WithEvents CheckBoxWriteBssliders As CheckBox
     Friend WithEvents CheckBoxEmitBodyGen As CheckBox
+    Friend WithEvents CheckBoxSaveNewOutfits As CheckBox
     Friend WithEvents LabelEncoding As Label
     Friend WithEvents ComboBoxEncoding As ComboBox
     Friend WithEvents LabelEncodingHint As Label

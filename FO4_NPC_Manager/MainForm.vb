@@ -42,6 +42,20 @@ Public Class MainForm
     ''' children). Cheaper than the full list (early-exits on the first match) and cached so the
     ''' render-complete gate doesn't re-scan. Cleared whenever the universe is rebuilt.</summary>
     Private _outfitAvailabilityCache As New Dictionary(Of (Race As UInteger, Female As Boolean), Boolean)
+    ''' <summary>Cache of selectable ARMO ITEMS (armor/clothing pieces) for the Edit Outfit "Create"
+    ''' tab, keyed by (race, gender). Each entry is (FormID, DisplayName, SlotMask). The full ARMO
+    ''' sweep + per-ARMA race/gender resolution is the costly part, so the first Create-tab-open per
+    ''' race/gender pays it and the rest are instant. Cleared on plugin reload.</summary>
+    Private _armoItemCandidateCache As New Dictionary(Of (Race As UInteger, Female As Boolean), List(Of (FormID As UInteger, DisplayName As String, SlotMask As UInteger, Plugin As String)))
+    ''' <summary>Outfits authored in the Edit Outfit "Create" tab — drafts that live here (process
+    ''' scope, survive NPC selection changes) until the Save dialog's "Save new outfits" persists
+    ''' them. New drafts get a provisional FormID (<see cref="OutfitDraft.DraftFormIdHighByte"/>)
+    ''' allocated from <see cref="_nextDraftObjIndex"/>; the render/Browse/writer resolve them via
+    ''' <see cref="TryGetOutfitDraft"/>. Cleared on plugin reload (RebuildTreeModelCache).</summary>
+    Private ReadOnly _outfitDrafts As New List(Of OutfitDraft)
+    ''' <summary>Next object index (low 3 bytes, ≥0x800 per the FO4/xEdit new-record convention) for
+    ''' a provisional draft FormID.</summary>
+    Private _nextDraftObjIndex As UInteger = &H800UI
     ''' <summary>Parsed F4SE LooksMenu skin templates loaded from
     ''' Data\F4SE\Plugins\F4EE\Skin\&lt;mod&gt;\skin.json and Data\F4SE\Plugins\F4EE\Skin\Loose\*.json.
     ''' Mirrors the bundle structure of f4ee/SkinInterface.cpp:490-621 (id+name+gender+sort + per-gender
@@ -74,7 +88,7 @@ Public Class MainForm
     ''' no invalidation needed after initial warmup.</summary>
     Private _npcDisplayLabelCache As New Dictionary(Of UInteger, String)()
     Private _pendingTreeFilter As String = ""
-    Private WithEvents _searchDebounceTimer As New System.Windows.Forms.Timer()
+    Private WithEvents SearchDebounceTimer As New System.Windows.Forms.Timer()
 
     ''' <summary>Cache of NPC_Manager auto-generated plugins on disk (TES4.CNAM matches the
     ''' canonical author string). Populated lazily the first time the user opens the Save ESP
@@ -972,18 +986,11 @@ Public Class MainForm
     End Sub
 
     Private Sub MainForm_Load(sender As Object, e As EventArgs) Handles MyBase.Load
-        _searchDebounceTimer.Interval = 250
+        SearchDebounceTimer.Interval = 250
         Config_App.Current.Game = Config_App.Game_Enum.Fallout4
-        ' Plugin text encoding: mirror of xEdit xeInit.pas:1118-1129 (game default) + :1274-1329
-        ' (sLanguage from Fallout4.ini). Must run BEFORE LoadDataAsync — plugin records are parsed
-        ' during preflight and any FULL/SHRT decoded with the wrong encoding becomes mojibake we
-        ' cannot recover later.
-        PluginEncodingSettings.InitializeForGame(Config_App.Game_Enum.Fallout4)
-        ' SetLanguage runs UNCONDITIONALLY (mirror xeInit.pas:1323). An empty/missing sLanguage
-        ' resolves to the primary default (UTF-8 for FO4) — NOT a stale cp1252. Guarding with
-        ' `If <> ""` left cp1252 in place for users without an sLanguage line, breaking Korean/
-        ' Chinese plugin names.
-        PluginEncodingSettings.SetLanguage(PluginEncodingSettings.ReadLanguageFromIni())
+        ' NOTE: plugin text encoding (InitializeForGame + SetLanguage) is configured in Program.Main
+        ' BEFORE the preflight loads any plugin — mirror of xEdit's "configure → load → edit" order.
+        ' Do NOT re-init here; that would run AFTER the preflight already loaded plugins.
         ' Logger habilitado SOLO en Debug builds. En Release: Logger.Enabled stays default (False)
         ' y todos los Logger.Log/LogLazy retornan early sin allocar — sin overhead. Si necesitás
         ' diagnóstico en Release, descomentar manualmente y rebuild.
@@ -1008,13 +1015,14 @@ Public Class MainForm
     End Sub
 
     Private Sub InitializePreview()
-        ' Remove the LabelStatus placeholder from the toolbar host (sin afectar la toolbar)
+        ' Remove the LabelStatus "Loading..." placeholder from the preview host (sin afectar la toolbar)
         If LabelStatus IsNot Nothing AndAlso LabelStatus.Parent IsNot Nothing Then
             LabelStatus.Parent.Controls.Remove(LabelStatus)
         End If
-        ' GLControl en su panel exclusivo (PanelPreviewHost = Panel2 del SplitContainerPreview).
-        ' Dock.Fill funciona correctamente porque el container es dedicado y su tamaño ya fue
-        ' resuelto por el SplitContainer al momento de Shown. No comparte rectángulo con la toolbar.
+        ' GLControl en su panel exclusivo (PanelPreviewHost), fila 3 (Percent 100) del
+        ' PanelPreviewLayout (TableLayoutPanel). Las dos toolbars van en las filas 1 y 2 (AutoSize):
+        ' cuando PanelActionsToolbar (FlowLayoutPanel, WrapContents) envuelve a una 2da fila, el TLP
+        ' fija el ancho de columna antes de medir, así que la fila crece y el render baja sin solapar.
         _previewControl = New PreviewControl() With {.Dock = DockStyle.Fill}
         PanelPreviewHost.Controls.Add(_previewControl)
         _previewControl.ApplyResize(True)
@@ -1023,9 +1031,10 @@ Public Class MainForm
         ' control exists. The Tick handler stays on MainForm during this phase — the editor
         ' previews (future phase) will create their own NpcRenderHost and own their own Tick
         ' handler local to the editor form.
-        _renderHost = New NpcRenderHost(_previewControl)
-        _renderHost.AppliedPresets = _appliedPresets
-        _renderHost.Toggles = RenderToggles.FromMainCheckBoxes(Me)
+        _renderHost = New NpcRenderHost(_previewControl) With {
+            .AppliedPresets = _appliedPresets,
+            .Toggles = RenderToggles.FromMainCheckBoxes(Me)
+        }
     End Sub
 
     Private Async Sub LoadDataAsync()
@@ -1188,7 +1197,7 @@ Public Class MainForm
                     Continue For
                 End Try
                 If arma Is Nothing Then Continue For
-                Dim armaRaceOk = (arma.RaceFormID = npcRaceFID) OrElse arma.AdditionalRaces.Contains(npcRaceFID)
+                Dim armaRaceOk = ArmorAddonMatchesRace(arma, npcRaceFID)
                 If armaRaceOk Then raceMatch = True
                 Dim txst = If(isFemale, arma.FemaleSkinTextureFormID, arma.MaleSkinTextureFormID)
                 If armaRaceOk AndAlso txst <> 0UI Then
@@ -1245,7 +1254,8 @@ Public Class MainForm
     ''' ARMO record.</summary>
     Friend Function GetSkinArmoDisplayName(armoFID As UInteger) As String
         If armoFID = 0UI Then Return ""
-        Dim armo As ARMO_Data = Nothing
+        Dim armo As ARMO_Data
+
         Try
             armo = GetParsedArmo(armoFID)
         Catch
@@ -1289,6 +1299,7 @@ Public Class MainForm
         _outfitUniverse.Clear()
         _outfitCandidateCache.Clear()
         _outfitAvailabilityCache.Clear()
+        _armoItemCandidateCache.Clear()
         Dim otftRecs = _pluginManager.GetRecordsOfType("OTFT")
         If otftRecs Is Nothing Then Return
         For Each rec In otftRecs
@@ -1296,6 +1307,7 @@ Public Class MainForm
             _outfitUniverse.Add(rec.Header.FormID)
         Next
     End Sub
+
 
     ''' <summary>Outfits selectable for (race, gender). For each OTFT in the universe, deterministically
     ''' enumerate every possible terminal ARMO (<see cref="OutfitResolver.EnumerateAllTerminalArmos"/>)
@@ -1308,18 +1320,29 @@ Public Class MainForm
     ''' Cached per (race, gender) — the costly OTFT expansion + ARMA parse runs once per pair.</summary>
     Friend Function GetOutfitCandidates(npcRaceFID As UInteger, isFemale As Boolean) As List(Of (FormID As UInteger, DisplayName As String))
         Dim cacheKey = (npcRaceFID, isFemale)
-        Dim cached As List(Of (FormID As UInteger, DisplayName As String)) = Nothing
-        If _outfitCandidateCache.TryGetValue(cacheKey, cached) Then Return cached
+        ' Cached OTFT sweep (the expensive part).
+        Dim otftList As List(Of (FormID As UInteger, DisplayName As String)) = Nothing
+        If Not _outfitCandidateCache.TryGetValue(cacheKey, otftList) Then
+            otftList = New List(Of (FormID As UInteger, DisplayName As String))
+            For Each otftFID In _outfitUniverse
+                If OutfitHasValidArma(otftFID, npcRaceFID, isFemale) Then
+                    otftList.Add((otftFID, GetOutfitDisplayName(otftFID)))
+                End If
+            Next
+            otftList = otftList.OrderBy(Function(x) x.DisplayName, StringComparer.OrdinalIgnoreCase).ToList()
+            _outfitCandidateCache(cacheKey) = otftList
+        End If
 
-        Dim outList As New List(Of (FormID As UInteger, DisplayName As String))
-        For Each otftFID In _outfitUniverse
-            If OutfitHasValidArma(otftFID, npcRaceFID, isFemale) Then
-                outList.Add((otftFID, GetOutfitDisplayName(otftFID)))
-            End If
+        ' In-memory drafts authored in the Create tab — appended fresh (NOT cached, they change as the
+        ' user authors them). Shown for any NPC (they're deliberate user creations); the render's
+        ' per-ARMA race check drops any piece that doesn't fit the actual NPC. Marked "[draft]".
+        If _outfitDrafts.Count = 0 Then Return otftList
+        Dim result As New List(Of (FormID As UInteger, DisplayName As String))(otftList)
+        For Each d In _outfitDrafts
+            If d.FormID = OutfitDraft.PreviewDraftFormID Then Continue For   ' throwaway picker-preview draft
+            result.Add((d.FormID, d.EditorID & "  [draft]"))
         Next
-        outList = outList.OrderBy(Function(x) x.DisplayName, StringComparer.OrdinalIgnoreCase).ToList()
-        _outfitCandidateCache(cacheKey) = outList
-        Return outList
+        Return result
     End Function
 
     ''' <summary>True if (race, gender) has at least one valid outfit. Early-exits on the first match
@@ -1370,7 +1393,7 @@ Public Class MainForm
                     Continue For
                 End Try
                 If arma Is Nothing Then Continue For
-                Dim armaRaceOk = (arma.RaceFormID = npcRaceFID) OrElse arma.AdditionalRaces.Contains(npcRaceFID)
+                Dim armaRaceOk = ArmorAddonMatchesRace(arma, npcRaceFID)
                 If Not armaRaceOk Then Continue For
                 If arma.FemaleMeshPath <> "" OrElse arma.MaleMeshPath <> "" Then Return True
             Next
@@ -1382,50 +1405,187 @@ Public Class MainForm
     ''' (OTFT_Data is FormID + EditorID + INAM array).</summary>
     Friend Function GetOutfitDisplayName(otftFID As UInteger) As String
         If otftFID = 0UI Then Return ""
+        Dim draft = TryGetOutfitDraft(otftFID)
+        If draft IsNot Nothing Then Return draft.EditorID
         Dim rec = _pluginManager.GetRecord(otftFID)
         If rec Is Nothing OrElse rec.Header.Signature <> "OTFT" Then Return otftFID.ToString("X8")
         If Not String.IsNullOrEmpty(rec.EditorID) Then Return rec.EditorID
         Return otftFID.ToString("X8")
     End Function
 
-    ''' <summary>World-mesh paths to render in the Edit Outfit picker preview for one OTFT + (race,
-    ''' gender). Samples ONE realization (<see cref="OutfitResolver.SampleOutfitWithKeywords"/>) — the
-    ''' deterministic full enumeration is only for the list filter; a single realization is what the
-    ''' actor would actually wear. For each resolved ARMO, loads the base-addon-index ARMAs whose race
-    ''' matches, picking the gender mesh with the renderer's male/female fallback. No OMOD keyword
-    ''' swap (a render-path concern); the picker loads these NIFs raw (no skinning/morphs), matching
-    ''' HeadPartPicker_Form's lightweight preview.</summary>
-    Friend Function ResolveOutfitPreviewMeshPaths(otftFID As UInteger, npcRaceFID As UInteger, isFemale As Boolean) As List(Of String)
-        Dim paths As New List(Of String)
-        If otftFID = 0UI Then Return paths
-        Dim warnings As New List(Of String)
-        For Each pick In OutfitResolver.SampleOutfitWithKeywords(otftFID, _pluginManager, warnings)
-            Dim armo As ARMO_Data
-            Try
-                armo = GetParsedArmo(pick.ArmoFormID)
-            Catch
-                Continue For
-            End Try
-            If armo Is Nothing Then Continue For
-            Dim effectiveIdx As Integer = If(armo.BaseAddonIndex >= 0, armo.BaseAddonIndex, 0)
-            Dim matched = armo.ArmorAddons.Where(Function(a) a.AddonIndex = effectiveIdx).ToList()
-            If matched.Count = 0 Then matched = armo.ArmorAddons.ToList()
-            For Each addon In matched
-                Dim arma As ARMA_Data
+    ''' <summary>Return the in-memory outfit draft for <paramref name="formID"/>, or Nothing. Matches
+    ''' both provisional (new, 0xFF sentinel) and override (existing FormID kept) drafts.</summary>
+    Friend Function TryGetOutfitDraft(formID As UInteger) As OutfitDraft
+        If formID = 0UI Then Return Nothing
+        For Each d In _outfitDrafts
+            If d.FormID = formID Then Return d
+        Next
+        Return Nothing
+    End Function
+
+    ''' <summary>Allocate a fresh provisional FormID for a NEW outfit draft (0xFF high byte +
+    ''' object index ≥0x800, FO4/xEdit new-record convention). The writer rewrites it to the real
+    ''' plugin self-index FormID at save time.</summary>
+    Friend Function AllocateDraftFormID() As UInteger
+        Dim fid As UInteger = OutfitDraft.DraftFormIdHighByte Or _nextDraftObjIndex
+        _nextDraftObjIndex += 1UI
+        Return fid
+    End Function
+
+    ''' <summary>The biped slot mask an armor addon effectively occupies: the ARMA's own BOD2 mask, or the
+    ''' owning ARMO's BOD2 when the ARMA declares none. SINGLE source for armor slot-footprint logic — used
+    ''' by both the render (<see cref="CollectArmoCandidates"/>, once per ARMA candidate) and the Edit Outfit
+    ''' item enumeration (<see cref="GetArmoItemCandidates"/>, OR-ed across an ARMO's race-valid addons). Both
+    ''' MUST go through here so the Create tab's slot-conflict marking always matches what the render resolves
+    ''' (do not re-inline the ARMA-vs-ARMO choice anywhere else).</summary>
+    Private Shared Function EffectiveArmaSlotMask(arma As ARMA_Data, armo As ARMO_Data) As UInteger
+        Return If(arma.SlotMask <> 0UI, arma.SlotMask, armo.SlotMask)
+    End Function
+
+    ''' <summary>Short source-plugin (esp/esm) name for a FormID, shown next to the ID in the Edit Outfit
+    ''' lists and used by their filters. Not-yet-saved drafts → "(new)"; otherwise the originating plugin
+    ''' via <see cref="PluginManager.GetOriginatingPluginName"/> (ESL-aware high-byte scheme).</summary>
+    Friend Function GetOutfitPluginName(formID As UInteger) As String
+        If OutfitDraft.IsDraftFormID(formID) Then Return "(new)"
+        Return If(_pluginManager.GetOriginatingPluginName(formID), "")
+    End Function
+
+    ''' <summary>Selectable ARMO items (armor/clothing pieces) for the Edit Outfit "Create" tab,
+    ''' filtered by (race, gender): every ARMO that has a race-valid ARMA (<see cref="ArmorAddonMatchesRace"/>)
+    ''' carrying a world mesh for the gender (male/female with the renderer's fallback). Returns
+    ''' (FormID, DisplayName, SlotMask, Plugin). SlotMask is the effective slot footprint — the union of
+    ''' <see cref="EffectiveArmaSlotMask"/> across the ARMO's race-valid addons (same per-addon choice the
+    ''' render makes), so the conflict resolver sees exactly what the render does. Cached per (race, gender)
+    ''' — the full ARMO+ARMA sweep is the costly part; ARMO/ARMA parses are globally cached so each record
+    ''' is parsed once.</summary>
+    Friend Function GetArmoItemCandidates(npcRaceFID As UInteger, isFemale As Boolean) As List(Of (FormID As UInteger, DisplayName As String, SlotMask As UInteger, Plugin As String))
+        Dim cacheKey = (npcRaceFID, isFemale)
+        Dim cached As List(Of (FormID As UInteger, DisplayName As String, SlotMask As UInteger, Plugin As String)) = Nothing
+        If _armoItemCandidateCache.TryGetValue(cacheKey, cached) Then Return cached
+
+        Dim outList As New List(Of (FormID As UInteger, DisplayName As String, SlotMask As UInteger, Plugin As String))
+        Dim armoRecs = _pluginManager.GetRecordsOfType("ARMO")
+        If armoRecs IsNot Nothing Then
+            For Each rec In armoRecs
+                If rec Is Nothing Then Continue For
+                Dim armoFID = rec.Header.FormID
+                Dim armo As ARMO_Data
                 Try
-                    arma = GetParsedArma(addon.ArmaFormID)
+                    armo = GetParsedArmo(armoFID)
                 Catch
                     Continue For
                 End Try
-                If arma Is Nothing Then Continue For
-                Dim armaRaceOk = (arma.RaceFormID = npcRaceFID) OrElse arma.AdditionalRaces.Contains(npcRaceFID)
-                If Not armaRaceOk Then Continue For
-                Dim meshPath = If(isFemale, arma.FemaleMeshPath, arma.MaleMeshPath)
-                If meshPath = "" Then meshPath = If(arma.MaleMeshPath <> "", arma.MaleMeshPath, arma.FemaleMeshPath)
-                If meshPath <> "" Then paths.Add(meshPath)
+                If armo Is Nothing Then Continue For
+                ' Effective slot footprint, matching the render (CollectArmoCandidates:7319): per addon take
+                ' the ARMA's own BOD2 mask, falling back to the ARMO's only when the ARMA declares none, and
+                ' UNION across every race-valid addon that has a mesh. The render builds one candidate per
+                ' ARMA and feeds them all to SlotConflictResolver; for the Create tab — one piece per ARMO —
+                ' the union is the equivalent footprint, so two pieces overlapping on ANY slot conflict the
+                ' same way they do in-game. (The old "ARMO BOD2 first, first ARMA only" path used a declared
+                ' mask that can diverge from the ARMA's real slots, so same-slot pieces weren't eliminated.)
+                Dim slotMask As UInteger = 0UI
+                Dim valid As Boolean = False
+                For Each addon In armo.ArmorAddons
+                    Dim arma As ARMA_Data
+                    Try
+                        arma = GetParsedArma(addon.ArmaFormID)
+                    Catch
+                        Continue For
+                    End Try
+                    If arma Is Nothing Then Continue For
+                    If Not ArmorAddonMatchesRace(arma, npcRaceFID) Then Continue For
+                    Dim genderMesh = If(isFemale, arma.FemaleMeshPath, arma.MaleMeshPath)
+                    If genderMesh = "" Then genderMesh = If(arma.MaleMeshPath <> "", arma.MaleMeshPath, arma.FemaleMeshPath)
+                    If genderMesh <> "" Then
+                        valid = True
+                        slotMask = slotMask Or EffectiveArmaSlotMask(arma, armo)
+                    End If
+                Next
+                ' No addon contributed a mask (slotless mesh / world-model only) → fall back to the ARMO's.
+                If slotMask = 0UI Then slotMask = armo.SlotMask
+                If valid Then
+                    Dim disp As String = If(Not String.IsNullOrEmpty(armo.FullName), armo.FullName,
+                                            If(Not String.IsNullOrEmpty(armo.EditorID), armo.EditorID, armoFID.ToString("X8")))
+                    outList.Add((armoFID, disp, slotMask, GetOutfitPluginName(armoFID)))
+                End If
             Next
+        End If
+        outList = outList.OrderBy(Function(x) x.DisplayName, StringComparer.OrdinalIgnoreCase).ToList()
+        _armoItemCandidateCache(cacheKey) = outList
+        Return outList
+    End Function
+
+    ''' <summary>WYSIWYG outfit preview: render the NPC wearing <paramref name="overrideValue"/> into the
+    ''' Edit Outfit picker's own <see cref="NpcRenderHost"/> using the EXACT same pipeline as the main
+    ''' preview (<see cref="RenderInHostAsync"/> → CollectMeshCandidates → SelectWinningCandidates →
+    ''' skinning/morphs/pose/tints). There is NO separate "lightweight" outfit resolver anymore — the
+    ''' picker and the main viewer resolve outfits through one path, so what the picker shows is what the
+    ''' main render produces (OMOD addon-index resolution, ARMO WorldModel fallback, slot-conflict
+    ''' elimination, chunk mounting, body weight, all included).
+    '''
+    ''' Semantics of <paramref name="overrideValue"/> (mirrors <c>DefaultOutfitFormIDOverride</c>):
+    '''   Nothing → preserve the raw NPC.DOFT · Some(0) → no outfit (naked) · Some(fid) → OTFT / draft.
+    ''' The override is HOST-SCOPED (set on <paramref name="host"/>, applied in ResolveNPCBaseState): it
+    ''' does NOT touch the shared <see cref="_appliedPresets"/>, so browsing outfits in the picker never
+    ''' disturbs the main render's committed state. Cancel needs no restore; on OK the caller
+    ''' (<see cref="ButtonEditOutfit_Click"/>) commits the chosen value to the overlay and re-renders main.</summary>
+    Friend Async Function PreviewOutfitInHostAsync(host As NpcRenderHost, npcFormID As UInteger, overrideValue As UInteger?) As Task
+        If host Is Nothing Then Return
+        host.OutfitPreviewActive = True
+        host.OutfitPreviewOverride = overrideValue
+        Await RenderInHostAsync(host, npcFormID)
+    End Function
+
+    ''' <summary>Render toggles for the Edit Outfit picker preview: FullBody baseline (every
+    ''' morph/sculpt/body-weight stage ON so the outfit is judged against the real body), with gore read
+    ''' from the user's global checkbox. Same baseline EditBody_Form uses for its embedded preview.</summary>
+    Friend Function BuildOutfitPickerToggles() As RenderToggles
+        Return RenderToggles.FullBody(CheckBoxRenderGore.Checked)
+    End Function
+
+    ''' <summary>Remove an in-memory outfit draft (by FormID). Used by the Edit Outfit picker to drop the
+    ''' throwaway preview draft (<see cref="OutfitDraft.PreviewDraftFormID"/>) it registers while the
+    ''' user assembles a Create-tab outfit, so it never leaks into Browse / the save set.</summary>
+    Friend Sub UnregisterOutfitDraft(formID As UInteger)
+        Dim existing = _outfitDrafts.FirstOrDefault(Function(x) x.FormID = formID)
+        If existing IsNot Nothing Then _outfitDrafts.Remove(existing)
+    End Sub
+
+    ''' <summary>Resolve an outfit FormID to its current ARMO list — a draft → its items; a real OTFT
+    ''' → one sampled realization. Used by the Create tab's Override pre-fill.</summary>
+    Friend Function ResolveOutfitArmoList(fid As UInteger) As List(Of UInteger)
+        If fid = 0UI Then Return New List(Of UInteger)
+        Dim draft = TryGetOutfitDraft(fid)
+        If draft IsNot Nothing Then Return New List(Of UInteger)(draft.ItemArmoFormIDs)
+        Dim warnings As New List(Of String)
+        Return OutfitResolver.SampleOutfitWithKeywords(fid, _pluginManager, warnings).Select(Function(p) p.ArmoFormID).ToList()
+    End Function
+
+    ''' <summary>Register a newly created/edited outfit draft so the render (TryGetOutfitDraft), the
+    ''' Browse list (GetOutfitCandidates) and the Save flow can see it. Replaces any existing draft
+    ''' with the same FormID (re-edit).</summary>
+    Friend Sub RegisterOutfitDraft(d As OutfitDraft)
+        If d Is Nothing Then Return
+        Dim existing = _outfitDrafts.FirstOrDefault(Function(x) x.FormID = d.FormID)
+        If existing IsNot Nothing Then _outfitDrafts.Remove(existing)
+        _outfitDrafts.Add(d)
+    End Sub
+
+    ''' <summary>True if <paramref name="edid"/> is NOT already used by any loaded record or existing
+    ''' draft (case-insensitive). Used by the Create tab to validate a new outfit's EditorID before
+    ''' committing. O(N) over AllRecords — called on commit, not per keystroke.</summary>
+    Friend Function IsOutfitEditorIdAvailable(edid As String) As Boolean
+        If String.IsNullOrWhiteSpace(edid) Then Return False
+        For Each d In _outfitDrafts
+            If d.FormID = OutfitDraft.PreviewDraftFormID Then Continue For   ' throwaway picker-preview draft
+            If String.Equals(d.EditorID, edid, StringComparison.OrdinalIgnoreCase) Then Return False
         Next
-        Return paths
+        For Each kvp In _pluginManager.AllRecords
+            Dim rec = kvp.Value
+            If rec Is Nothing Then Continue For
+            If String.Equals(rec.EditorID, edid, StringComparison.OrdinalIgnoreCase) Then Return False
+        Next
+        Return True
     End Function
 
     ''' <summary>Discover and parse F4SE LooksMenu skin templates from on-disk JSONs. Mirrors
@@ -1450,13 +1610,6 @@ Public Class MainForm
                 LmSkinTemplateLoader.LoadFromFile(p, _pluginManager, _lmSkinTemplates)
             Next
         End If
-        ' Per-template trace so the user can see which JSON parsed and what each template
-        ' resolved to. Helps diagnose "0 templates" (subdir not from an active ESP, comments
-        ' rejected, malformed JSON) and "template appears but body doesn't change" (skin FormID
-        ' resolved to 0 because Fallout4.esm or another referenced master isn't loaded).
-        For Each tpl In _lmSkinTemplates
-            Dim t = tpl
-        Next
     End Sub
 
     ''' <summary>Classify NPCs:
@@ -1658,6 +1811,7 @@ Public Class MainForm
                 End If
             Next
 
+            Dim value As LVLN_Data = Nothing
             ' === Section 2: Final Leveled NPC Lists (encounter spawns) ===
             ' Cada LVLN se cuelga con sus NPC entries como hijos (recursión flatten via
             ' CollectLVLNLeafNpcIds). El usuario puede expandir el LVLN y elegir un NPC específico,
@@ -1669,7 +1823,7 @@ Public Class MainForm
                 Dim lvlnsByPlugin = _finalLVLNFormIDs.
                     Select(Function(fid)
                                Dim rec = _pluginManager.GetRecord(fid)
-                               Dim lvln = If(_lvlnDataCache.ContainsKey(fid), _lvlnDataCache(fid), Nothing)
+                               Dim lvln = If(_lvlnDataCache.TryGetValue(fid, value), value, Nothing)
                                Return (FormID:=fid, Record:=rec, Data:=lvln)
                            End Function).
                     Where(Function(x) x.Record IsNot Nothing AndAlso x.Data IsNot Nothing).
@@ -1957,9 +2111,9 @@ Public Class MainForm
                                            npcById As IReadOnlyDictionary(Of UInteger, NPC_Data),
                                            filter As String,
                                            path As HashSet(Of UInteger)) As TreeNode
-        Dim node As TreeNode = Nothing
-        Dim selfMatches = False
+        Dim selfMatches As Boolean
 
+        Dim node As TreeNode
         If npcById.ContainsKey(sourceId) Then
             Dim npc = npcById(sourceId)
             selfMatches = MatchesNpcFilter(npc, dependencyEdge, filter)
@@ -1979,10 +2133,9 @@ Public Class MainForm
         End If
 
         Dim childNodes As New List(Of TreeNode)()
-        If path.Contains(sourceId) Then
+        If Not path.Add(sourceId) Then
             childNodes.Add(New TreeNode("<cycle detected>") With {.Tag = Nothing})
         Else
-            path.Add(sourceId)
             Dim edges As List(Of TemplateDependencyEdge) = Nothing
             If dependencyMap.TryGetValue(sourceId, edges) Then
                 For Each childEdge In edges
@@ -1998,10 +2151,10 @@ Public Class MainForm
         End If
 
         For Each childNode In childNodes
-            node.Nodes.Add(childNode)
+            CType(Nothing, TreeNode).Nodes.Add(childNode)
         Next
 
-        Return node
+        Return Nothing
     End Function
 
     Private Shared Function GetNpcNodeDisplayText(npc As NPC_Data, dependencyEdge As TemplateDependencyEdge) As String
@@ -2027,17 +2180,17 @@ Public Class MainForm
         ' aplica al template tree path (BuildTemplateTreeNode), no a la lista plana de NPCs.
         Dim cached As String = Nothing
         If _npcSearchableCache.TryGetValue(npc.FormID, cached) Then
-            If cached.IndexOf(filter, StringComparison.OrdinalIgnoreCase) >= 0 Then Return True
+            If cached.Contains(filter, StringComparison.OrdinalIgnoreCase) Then Return True
         Else
             ' Fallback para NPCs no incluidos en el cache (raro — debería estar todo)
             Dim fallback = BuildNpcSearchableText(npc)
-            If fallback.IndexOf(filter, StringComparison.OrdinalIgnoreCase) >= 0 Then Return True
+            If fallback.Contains(filter, StringComparison.OrdinalIgnoreCase) Then Return True
         End If
         ' Categorías del template dependency edge no entran al cache (depende del contexto del
         ' template tree, no del NPC). Si hay edge, evaluamos esa sola string adicional.
         If dependencyEdge IsNot Nothing AndAlso dependencyEdge.Categories.Count > 0 Then
             Dim cats = String.Join(" ", dependencyEdge.Categories)
-            If cats.IndexOf(filter, StringComparison.OrdinalIgnoreCase) >= 0 Then Return True
+            If cats.Contains(filter, StringComparison.OrdinalIgnoreCase) Then Return True
         End If
         Return False
     End Function
@@ -2053,7 +2206,7 @@ Public Class MainForm
             rec.Header.Signature
         }
 
-        Return comparisons.Any(Function(value) Not String.IsNullOrEmpty(value) AndAlso value.IndexOf(filter, StringComparison.OrdinalIgnoreCase) >= 0)
+        Return comparisons.Any(Function(value) Not String.IsNullOrEmpty(value) AndAlso value.Contains(filter, StringComparison.OrdinalIgnoreCase))
     End Function
 
     Private Function GetTemplateSourceSortKey(sourceId As UInteger, npcById As IReadOnlyDictionary(Of UInteger, NPC_Data)) As String
@@ -2085,7 +2238,8 @@ Public Class MainForm
     ''' editor UI from MainForm's last completed render — avoids the order-of-operations issue
     ''' where the editor's own _editorHost isn't populated until its Shown handler runs.</summary>
     Friend _renderHost As NpcRenderHost = Nothing
-    Private Enum OutfitSlotKind
+    ' Friend (not Private) because OutfitComboEntry.SlotKind is exposed via NpcRenderHost.OutfitEntries.
+    Friend Enum OutfitSlotKind
         DefaultOutfit
         SleepOutfit
         NoOutfit
@@ -2093,12 +2247,13 @@ Public Class MainForm
 
     ''' <summary>One entry of the outfit combo. With the new canonical model, entries enumerate
     ''' <c>(branch, slot_kind)</c> — today one per (DOFT?, SOFT?) of the current base state. A
-    ''' sampled realization of ARMO FormIDs is cached per entry; Reroll re-samples via the library.</summary>
-    Private Class OutfitComboEntry
+    ''' sampled realization of ARMO FormIDs is cached per entry; Reroll re-samples via the library.
+    ''' Friend (not Private) so <see cref="NpcRenderHost.OutfitEntries"/> can hold the per-host set.</summary>
+    Friend Class OutfitComboEntry
         Public Label As String
         Public SlotKind As OutfitSlotKind
         Public OutfitFormID As UInteger
-        Public SampledArmorFormIDs As List(Of UInteger) = New List(Of UInteger)
+        Public SampledArmorFormIDs As New List(Of UInteger)
         ''' <summary>Per-ARMO contextual keywords inherited from the LLKC chain at sample time.
         ''' Key = ARMO FormID, value = list of KYWD FormIDs that the LVLI sequence accumulated
         ''' along the path. Used by CollectArmoCandidates to match OBTS combinations and apply
@@ -2181,7 +2336,7 @@ Public Class MainForm
             Dim baseState As NPCVisualState = Nothing
             Dim outfitEntries As List(Of OutfitComboEntry) = Nothing
             Await Task.Run(Sub()
-                               baseState = ResolveNPCBaseState(npc)
+                               baseState = ResolveNPCBaseState(npc, _renderHost)
                                outfitEntries = BuildOutfitComboEntries(baseState)
                            End Sub)
             If requestVersion <> _previewRequestVersion Then Return
@@ -2269,7 +2424,7 @@ Public Class MainForm
             Dim baseState As NPCVisualState = Nothing
             Dim outfitEntries As List(Of OutfitComboEntry) = Nothing
             Await Task.Run(Sub()
-                               baseState = ResolveNPCBaseState(npc)
+                               baseState = ResolveNPCBaseState(npc, _renderHost)
                                outfitEntries = BuildOutfitComboEntries(baseState)
                            End Sub)
             If requestVersion <> _previewRequestVersion Then Return
@@ -2427,20 +2582,31 @@ Public Class MainForm
         _suppressOutfitComboEvent = False
     End Sub
 
-    Private Function GetSelectedOutfitArmorIDs() As List(Of UInteger)
-        Dim idx = If(ComboBoxOutfit.InvokeRequired,
-                     CInt(ComboBoxOutfit.Invoke(Function() ComboBoxOutfit.SelectedIndex)),
-                     ComboBoxOutfit.SelectedIndex)
-        If idx < 0 OrElse idx >= _currentOutfitEntries.Count Then Return New List(Of UInteger)
-        Return _currentOutfitEntries(idx).SampledArmorFormIDs
+    Private Function GetSelectedOutfitArmorIDs(host As NpcRenderHost) As List(Of UInteger)
+        Dim entry = SelectedOutfitEntryForHost(host)
+        Return If(entry Is Nothing, New List(Of UInteger), entry.SampledArmorFormIDs)
     End Function
 
-    Private Function GetSelectedOutfitContextKeywords() As Dictionary(Of UInteger, List(Of UInteger))
-        Dim idx = If(ComboBoxOutfit.InvokeRequired,
-                     CInt(ComboBoxOutfit.Invoke(Function() ComboBoxOutfit.SelectedIndex)),
-                     ComboBoxOutfit.SelectedIndex)
-        If idx < 0 OrElse idx >= _currentOutfitEntries.Count Then Return New Dictionary(Of UInteger, List(Of UInteger))
-        Return _currentOutfitEntries(idx).SampledArmorContextKeywords
+    Private Function GetSelectedOutfitContextKeywords(host As NpcRenderHost) As Dictionary(Of UInteger, List(Of UInteger))
+        Dim entry = SelectedOutfitEntryForHost(host)
+        Return If(entry Is Nothing, New Dictionary(Of UInteger, List(Of UInteger)), entry.SampledArmorContextKeywords)
+    End Function
+
+    ''' <summary>The outfit entry to render for a host. The MAIN host reads the entry selected in
+    ''' <c>ComboBoxOutfit</c> (backed by <c>_currentOutfitEntries</c>). Editor / outfit-picker hosts read
+    ''' the Default entry (index 0) of their own <see cref="NpcRenderHost.OutfitEntries"/>, so they never
+    ''' depend on — or are perturbed by — the main form's outfit combo selection.</summary>
+    Private Function SelectedOutfitEntryForHost(host As NpcRenderHost) As OutfitComboEntry
+        If host Is _renderHost Then
+            Dim idx = If(ComboBoxOutfit.InvokeRequired,
+                         CInt(ComboBoxOutfit.Invoke(Function() ComboBoxOutfit.SelectedIndex)),
+                         ComboBoxOutfit.SelectedIndex)
+            If idx < 0 OrElse idx >= _currentOutfitEntries.Count Then Return Nothing
+            Return _currentOutfitEntries(idx)
+        End If
+        Dim entries = host.OutfitEntries
+        If entries Is Nothing OrElse entries.Count = 0 Then Return Nothing
+        Return entries(0)
     End Function
 
     Private Async Function RenderCurrentStateAsync(requestVersion As Integer, Optional host As NpcRenderHost = Nothing) As Task
@@ -2449,8 +2615,8 @@ Public Class MainForm
 
         ' Build final state with selected outfit
         Dim state = CloneVisualState(host.CurrentBaseState)
-        state.LoadoutArmorFormIDs.AddRange(GetSelectedOutfitArmorIDs())
-        For Each kvCtx In GetSelectedOutfitContextKeywords()
+        state.LoadoutArmorFormIDs.AddRange(GetSelectedOutfitArmorIDs(host))
+        For Each kvCtx In GetSelectedOutfitContextKeywords(host)
             state.LoadoutArmorContextKeywords(kvCtx.Key) = kvCtx.Value
         Next
 
@@ -2519,7 +2685,7 @@ Public Class MainForm
         ' debe inventarlo (anclar a LArm_skin, etc.) o dejar el Pipboy en el origen.
         If Logger.Enabled Then
             Dim skelKeys = inst.SkeletonDictionary.Keys.ToList()
-            Dim pipMatches = skelKeys.Where(Function(k) k.IndexOf("pip", StringComparison.OrdinalIgnoreCase) >= 0).OrderBy(Function(k) k).ToList()
+            Dim pipMatches = skelKeys.Where(Function(k) k.Contains("pip", StringComparison.OrdinalIgnoreCase)).OrderBy(Function(k) k).ToList()
             Dim pSocketMatches = skelKeys.Where(Function(k) k.StartsWith("P-", StringComparison.OrdinalIgnoreCase)).OrderBy(Function(k) k).ToList()
             Logger.LogLazy(Function() $"[PIPBOY-DIAG] skeleton total-bones={skelKeys.Count} pip-related-keys=[{String.Join(",", pipMatches)}] P-prefix-keys=[{String.Join(",", pSocketMatches)}]")
         End If
@@ -2893,7 +3059,7 @@ Public Class MainForm
                             If Not Char.IsDigit(c) Then allDigits = False : Exit For
                         Next
                         If allDigits Then
-                            effectiveParent = effectiveParent.Substring(0, pipe + 1) & _candForSocket.MountApIdx.ToString()
+                            effectiveParent = String.Concat(effectiveParent.AsSpan(0, pipe + 1), _candForSocket.MountApIdx.ToString())
                         End If
                     End If
                 End If
@@ -3143,9 +3309,9 @@ Public Class MainForm
                         Dim cxBoneName As String = ""
                         If Not String.IsNullOrEmpty(socket.Name) AndAlso socket.Name.Length >= 2 Then
                             If socket.Name.StartsWith("P-", StringComparison.OrdinalIgnoreCase) Then
-                                cxBoneName = "C-" & socket.Name.Substring(2)
+                                cxBoneName = String.Concat("C-", socket.Name.AsSpan(2))
                             ElseIf socket.Name.StartsWith("P_", StringComparison.OrdinalIgnoreCase) Then
-                                cxBoneName = "C_" & socket.Name.Substring(2)
+                                cxBoneName = String.Concat("C_", socket.Name.AsSpan(2))
                             End If
                         End If
                         Dim cxInDict As Boolean = Not String.IsNullOrEmpty(cxBoneName) AndAlso targetSkel.SkeletonDictionary.ContainsKey(cxBoneName)
@@ -3183,7 +3349,7 @@ Public Class MainForm
                         ' STOP antes de componer chunkRoot.local.
                         Dim backing = shape.Geometry.BackingShape
                         Dim chunkRootNode = shape.NifContent.GetRootNode()
-                        Dim bindMatrix As Transform_Class = New Transform_Class(backing)
+                        Dim bindMatrix As New Transform_Class(backing)
                         Dim curNode As NiflySharp.Blocks.NiNode = TryCast(shape.NifContent.GetParentNode(backing), NiflySharp.Blocks.NiNode)
                         While curNode IsNot Nothing AndAlso Not ReferenceEquals(curNode, chunkRootNode)
                             bindMatrix = New Transform_Class(curNode).ComposeTransforms(bindMatrix)
@@ -3193,8 +3359,9 @@ Public Class MainForm
                         ' Placeholder NiNode en memoria — su .Name debe matchear el anchor que
                         ' BSConnectPointBoneInjector creó en SkeletonInstance.SkeletonDictionary.
                         ' No se agrega a chunkNif.Blocks, vive solo como referencia de bone name.
-                        Dim placeholder As New NiflySharp.Blocks.NiNode()
-                        placeholder.Name = New NiflySharp.NiStringRef(anchorName)
+                        Dim placeholder As New NiflySharp.Blocks.NiNode With {
+                            .Name = New NiflySharp.NiStringRef(anchorName)
+                        }
 
                         asOverride.ApplySyntheticAnchorSkin(placeholder, bindMatrix)
 
@@ -3270,7 +3437,7 @@ Public Class MainForm
                         For Each cp In chunkParents
                             If cp Is Nothing OrElse String.IsNullOrEmpty(cp.Name) Then Continue For
                             Dim cName = If(cp.Name.StartsWith("P-", StringComparison.OrdinalIgnoreCase),
-                                           "C-" & cp.Name.Substring(2), "")
+                                           String.Concat("C-", cp.Name.AsSpan(2)), "")
                             If String.IsNullOrEmpty(cName) Then Continue For
                             Dim chunkRotMat = BSConnectPointReader.QuatToMatrix33(cp.Rotation)
                             Dim chunkT = cp.Translation, chunkS = If(cp.Scale > 0.0F, cp.Scale, 1.0F)
@@ -3426,7 +3593,7 @@ Public Class MainForm
                             .Rotation = BSConnectPointReader.QuatToMatrix33(sock.Rotation),
                             .Scale = If(sock.Scale > 0.0F, sock.Scale, 1.0F)
                         }
-                        Dim parentWorldExp As Transform_Class = New Transform_Class()
+                        Dim parentWorldExp As New Transform_Class()
                         Dim parentFound As Boolean = False
                         Dim parentHb As HierarchiBone_class = Nothing
                         If Not String.IsNullOrEmpty(sock.ParentBoneName) AndAlso inst.SkeletonDictionary.TryGetValue(sock.ParentBoneName, parentHb) Then
@@ -3545,7 +3712,7 @@ Public Class MainForm
                         .Rotation = BSConnectPointReader.QuatToMatrix33(sock.Rotation),
                         .Scale = If(sock.Scale > 0.0F, sock.Scale, 1.0F)
                     }
-                    Dim parentWorldSim As Transform_Class = New Transform_Class()
+                    Dim parentWorldSim As New Transform_Class()
                     Dim parentHbSim As HierarchiBone_class = Nothing
                     If Not String.IsNullOrEmpty(sock.ParentBoneName) AndAlso inst.SkeletonDictionary.TryGetValue(sock.ParentBoneName, parentHbSim) Then
                         parentWorldSim = parentHbSim.OriginalGetGlobalTransform
@@ -3949,7 +4116,7 @@ Public Class MainForm
     ''' Friend (not Public) because <see cref="NpcRenderHost"/> is itself Friend; promoting this to
     ''' Public would leak the type out of the assembly.</summary>
     Friend Async Function RenderInHostAsync(targetHost As NpcRenderHost, npcFormID As UInteger) As Task
-        If targetHost Is Nothing Then Throw New ArgumentNullException(NameOf(targetHost))
+        ArgumentNullException.ThrowIfNull(targetHost)
         Dim npc As NPC_Data = Nothing
         If Not _npcByIdCache.TryGetValue(npcFormID, npc) OrElse npc Is Nothing Then
             Throw New InvalidOperationException($"NPC 0x{npcFormID:X8} not in cache.")
@@ -4074,7 +4241,7 @@ Public Class MainForm
             hasTextureLighting:=state.HasTextureLighting,
             textureLightingColorArgb:=state.TextureLightingColor.ToArgb())
 
-        Return (layers:=built.Layers, regionSwaps:=built.RegionSwaps, npcData:=built.NpcData, race:=built.Race)
+        Return (built.Layers, built.RegionSwaps, built.NpcData, built.Race)
     End Function
 
 
@@ -4193,12 +4360,6 @@ Public Class MainForm
         ' If we composed at least one, success. Otherwise nothing matched — give up (no retry).
         If composedAny Then Return True
         If faceMeshFoundButTextureNotReady Then Return False
-        ' Diagnostic dump: every mesh's shape name + the shader type the FaceTint filter rejected.
-        ' Helps identify which BSLightingShaderType the current race actually uses for its face
-        ' (Ghoul / Child probably differ from Human's FaceTint).
-        For Each diagLine In shaderInventoryForDiag
-            Dim diagLineLocal = diagLine
-        Next
         Return True
     End Function
 
@@ -4642,7 +4803,8 @@ Public Class MainForm
         ' exactly what we need for a fast TexImage2D upload. We reuse this rather than
         ' Loader.LoadTextures because we don't want to maintain GL format swizzles / mipmap
         ' chains; the live tint refresh only needs the level-0 RGBA8 pixels.
-        Dim tex As DirectXTexWrapperCLI.TextureLoaded = Nothing
+        Dim tex As DirectXTexWrapperCLI.TextureLoaded
+
         Try
             tex = DirectXTexWrapperCLI.Loader.ConvertForBitmap(ddsBytes)
         Catch ex As Exception
@@ -5238,7 +5400,10 @@ Public Class MainForm
     <ThreadStatic> Private Shared _lvlnPickCache As Dictionary(Of UInteger, UInteger)
 
     ''' <summary>Resolve the NPC's base visual state (traits + model, without outfit expansion).</summary>
-    Private Function ResolveNPCBaseState(npc As NPC_Data) As NPCVisualState
+    ''' <param name="host">The render host this resolution feeds. Supplies the host-scoped outfit
+    ''' preview override (Edit Outfit picker) so the preview never mutates the shared overlay. Pass the
+    ''' host being rendered into (<c>_renderHost</c> for the main preview).</param>
+    Private Function ResolveNPCBaseState(npc As NPC_Data, host As NpcRenderHost) As NPCVisualState
         ' Fresh LVLN pick cache for this resolution — ensures consistent picks across categories
         _lvlnPickCache = New Dictionary(Of UInteger, UInteger)()
 
@@ -5354,6 +5519,14 @@ Public Class MainForm
             End If
         End If
 
+        ' Out-of-band outfit preview (Edit Outfit picker) — applied LAST and scoped to the host being
+        ' rendered into, so it NEVER touches the shared overlay (_appliedPresets): browsing outfits in
+        ' the picker leaves the main render's committed state untouched. Inert on the main host
+        ' (OutfitPreviewActive=False). Value: Nothing → raw record DOFT · 0 → naked · fid → OTFT/draft.
+        If host IsNot Nothing AndAlso host.OutfitPreviewActive Then
+            state.DefaultOutfitFormID = If(host.OutfitPreviewOverride, inventory.DefaultOutfitFormID)
+        End If
+
         Return state
     End Function
 
@@ -5372,6 +5545,21 @@ Public Class MainForm
 
     Private Sub AddOutfitEntryIfPresent(entries As List(Of OutfitComboEntry), otftFormID As UInteger, kind As OutfitSlotKind, slotName As String)
         If otftFormID = 0UI Then Return
+
+        ' Outfit draft (Create tab): a FLAT ARMO list — no OTFT record, no LVLI sampling. Resolve
+        ' directly from the draft's items so the render shows exactly the assembled pieces. Slot
+        ' conflicts are handled downstream by SelectWinningCandidates (same SlotConflictResolver).
+        Dim draft = TryGetOutfitDraft(otftFormID)
+        If draft IsNot Nothing Then
+            entries.Add(New OutfitComboEntry With {
+                .Label = $"{slotName} — {draft.EditorID} ({draft.ItemArmoFormIDs.Count} pcs) [draft]",
+                .SlotKind = kind,
+                .OutfitFormID = otftFormID,
+                .SampledArmorFormIDs = New List(Of UInteger)(draft.ItemArmoFormIDs),
+                .SampledArmorContextKeywords = New Dictionary(Of UInteger, List(Of UInteger))
+            })
+            Return
+        End If
 
         Dim otftRec = _pluginManager.GetRecord(otftFormID)
         If otftRec Is Nothing OrElse otftRec.Header.Signature <> "OTFT" Then
@@ -5492,7 +5680,7 @@ Public Class MainForm
         For Each kv In FilesDictionary_class.Dictionary
             Dim k = kv.Key
             If k.EndsWith(".tri", StringComparison.OrdinalIgnoreCase) AndAlso
-               k.IndexOf("child", StringComparison.OrdinalIgnoreCase) >= 0 Then
+               k.Contains("child", StringComparison.OrdinalIgnoreCase) Then
                 childTris.Add(k)
             End If
         Next
@@ -5648,11 +5836,14 @@ Public Class MainForm
             Dim key = kvp.Key
             Dim value = kvp.Value
             Dim classification As String
+
+            Dim value1 As String = Nothing
+
             If sliderIndexSet.Contains(key) Then
                 Dim mvDef = morphValueDefs.FirstOrDefault(Function(m) m.Index = key)
                 classification = $"SLIDER (RACE.MSID) MSM0='{mvDef.MinName}' MSM1='{mvDef.MaxName}'"
-            ElseIf presetIndexMap.ContainsKey(key) Then
-                classification = $"PRESET (RACE.MPPI) morphName='{presetIndexMap(key)}'"
+            ElseIf presetIndexMap.TryGetValue(key, value1) Then
+                classification = $"PRESET (RACE.MPPI) morphName='{value1}'"
             Else
                 classification = "??? (not found in RACE MSID/MPPI for this gender)"
             End If
@@ -5849,7 +6040,7 @@ Public Class MainForm
         Dim wt As Single = state.WeightThin
         Dim wm As Single = state.WeightMuscular
         Dim wf As Single = state.WeightFat
-        Dim armaDeltas = If(renderData IsNot Nothing, renderData.ArmaBoneScaleDeltas, Nothing)
+        Dim armaDeltas = renderData?.ArmaBoneScaleDeltas
         Dim hasMwgt = (wt + wm + wf) >= 0.001F
         Dim hasArmaDeltas = (armaDeltas IsNot Nothing AndAlso armaDeltas.Count > 0)
         If Not hasMwgt AndAlso Not hasArmaDeltas Then Return Nothing
@@ -6128,7 +6319,7 @@ Public Class MainForm
         ' and HasWeightScale. Lets the user see which bones the substring-match in Layer 2
         ' selects before any scale is applied.
         Dim neckCandidates = allBoneNames.
-            Where(Function(n) n.IndexOf("Neck", StringComparison.OrdinalIgnoreCase) >= 0).
+            Where(Function(n) n.Contains("Neck", StringComparison.OrdinalIgnoreCase)).
             OrderBy(Function(n) n, StringComparer.OrdinalIgnoreCase).
             ToList()
         Logger.LogLazy(Function() $"[NNAM-DIAG] BuildBodyWeightPose inputs: wt={wt.ToString("F3", CultureInfo.InvariantCulture)} wm={wm.ToString("F3", CultureInfo.InvariantCulture)} wf={wf.ToString("F3", CultureInfo.InvariantCulture)} nnamX={nnamX.ToString("F4", CultureInfo.InvariantCulture)} nnamY={nnamY.ToString("F4", CultureInfo.InvariantCulture)} weightLayersEnabled={weightLayersEnabled} neck-bone-count={neckCandidates.Count}")
@@ -6197,7 +6388,7 @@ Public Class MainForm
             ' head-mesh neck verts via bones shared between head and body skin (Neck_skin,
             ' Neck_Low_skin, Neck1_skin). Validate with harness [BW-only] RMS Científica < 0.10
             ' before promoting out of hypothesis.
-            Dim isNeckCandidate As Boolean = boneName.IndexOf("Neck", StringComparison.OrdinalIgnoreCase) >= 0
+            Dim isNeckCandidate As Boolean = boneName.Contains("Neck", StringComparison.OrdinalIgnoreCase)
             Dim nnamApplied As Boolean = False
             If weightLayersEnabled AndAlso bone IsNot Nothing AndAlso bone.HasWeightScale _
                AndAlso isNeckCandidate _
@@ -6682,9 +6873,9 @@ Public Class MainForm
                 Dim raceT = If(isFemale, race.FemaleDefaultWeightThin, race.MaleDefaultWeightThin).GetValueOrDefault(0.0F)
                 Dim raceM = If(isFemale, race.FemaleDefaultWeightMuscular, race.MaleDefaultWeightMuscular).GetValueOrDefault(0.0F)
                 Dim raceF = If(isFemale, race.FemaleDefaultWeightFat, race.MaleDefaultWeightFat).GetValueOrDefault(0.0F)
-                resT = If(rawT.HasValue, rawT.Value, raceT)
-                resM = If(rawM.HasValue, rawM.Value, raceM)
-                resF = If(rawF.HasValue, rawF.Value, raceF)
+                resT = If(rawT, raceT)
+                resM = If(rawM, raceM)
+                resF = If(rawF, raceF)
                 Dim sum = resT + resM + resF
                 If sum > 0.0F Then
                     resT /= sum : resM /= sum : resF /= sum
@@ -7042,9 +7233,7 @@ Public Class MainForm
         ' for ARMOs reached without a leveled outfit (e.g. NPC.WNAM skin) — combinations with
         ' Default=True still apply, keyword-only combinations don't.
         Dim ctxKeywords As List(Of UInteger) = Nothing
-        If state.LoadoutArmorContextKeywords IsNot Nothing Then
-            state.LoadoutArmorContextKeywords.TryGetValue(armoFormID, ctxKeywords)
-        End If
+        state.LoadoutArmorContextKeywords?.TryGetValue(armoFormID, ctxKeywords)
 
         ' Resolve OBTS/OMOD canonical view ONCE per ARMO. Shared by every MeshCandidate
         ' produced for this ARMO's addons — they all live under the same combination overlay.
@@ -7094,10 +7283,33 @@ Public Class MainForm
             addonOrder = armo.ArmorAddonFormIDs.ToList()
         End If
 
+        ' Within-ARMO armature slot occupancy (engine "first addon claims the slot" rule, see the
+        ' coveredSlots check before candidates.Add below). Accumulates the biped slots already taken
+        ' by earlier race-matching armature entries of THIS ARMO.
+        Dim coveredSlots As UInteger = 0UI
         For Each armaFormID In addonOrder
             Dim arma = GetParsedArma(armaFormID)
             If arma Is Nothing Then Continue For
-            If Not ArmorAddonMatchesRace(arma, state.RaceFormID) Then
+            ' raceOk drives the skip below (app logic, always computed). The block under
+            ' If Logger.Enabled is PURELY diagnostic — it dumps every ARMA at the effective addon
+            ' index (even race-skipped ones) with its model flags (MO2F/MO3F/MO4F/MO5F) + all four
+            ' model paths, so the bombín "human + robot" duplicate can be read off the log: which
+            ' addons sit at this index, which races they accept, and whether a second ARMA is
+            ' pulling in a 1st-person / facebones / robot-variant model.
+            Dim raceOk As Boolean = ArmorAddonMatchesRace(arma, state.RaceFormID)
+            If Logger.Enabled Then
+                Dim a = arma
+                Dim afid = armaFormID
+                Dim armoFid = armoFormID
+                Dim rOkL = raceOk
+                Logger.LogLazy(Function() $"[ARMA-MODELFLAGS] ARMO=0x{armoFid:X8} ARMA=0x{afid:X8} '{a.EditorID}' " &
+                    $"race=0x{a.RaceFormID:X8} addRaces=[{String.Join(",", a.AdditionalRaces.Select(Function(x) x.ToString("X8")))}] raceOk={rOkL} slot=0x{a.SlotMask:X8} | " &
+                    $"MO2F=0x{a.MaleModelFlags:X2}({DescribeModelFlags(a.MaleModelFlags)}) MO3F=0x{a.FemaleModelFlags:X2}({DescribeModelFlags(a.FemaleModelFlags)}) " &
+                    $"MO4F=0x{a.MaleFPModelFlags:X2} MO5F=0x{a.FemaleFPModelFlags:X2} | " &
+                    $"MO2S(matswap)=0x{a.MaleMaterialSwapFormID:X8} MO3S=0x{a.FemaleMaterialSwapFormID:X8} MO2C(remap)={If(a.MaleColorRemapIndex.HasValue, a.MaleColorRemapIndex.Value.ToString("F3"), "none")} | " &
+                    $"MOD2='{a.MaleMeshPath}' MOD3='{a.FemaleMeshPath}' MOD4='{a.MaleFPMeshPath}' MOD5='{a.FemaleFPMeshPath}'")
+            End If
+            If Not raceOk Then
                 Continue For
             End If
 
@@ -7131,7 +7343,28 @@ Public Class MainForm
                 Continue For
             End If
 
-            Dim effSlotMask As UInteger = If(arma.SlotMask <> 0UI, arma.SlotMask, armo.SlotMask)
+            Dim effSlotMask As UInteger = EffectiveArmaSlotMask(arma, armo)
+
+            ' Within-ARMO armature dedup. The engine processes the armature in Models order; the FIRST
+            ' race-matching addon to claim a biped slot owns it, and a later addon overlapping an
+            ' already-claimed slot is dropped. This is what selects the human variant over the Mr Handy
+            ' variant of a hat that lists BOTH races at the same INDX (AAClothesMobsterHat #0 race={Human}
+            ' + AAHandyMobsterHat #1 race={Human,Handy}, both INDX 0, both slot 30): on a human #0 claims
+            ' slot 30 → #1 overlaps → dropped; on a Mr Handy #0 fails the race check → #1 claims it.
+            ' Per-SLOT, so complementary same-index addons (Sturgess clothes BODY + gloves Hands, different
+            ' slots) BOTH still load. Distinct from SelectWinningCandidates' cross-outfit last-equipped-wins
+            ' (that's between DIFFERENT equipped ARMOs). Slotless addons (effSlotMask=0) are never dropped
+            ' here — they occupy no biped slot.
+            If effSlotMask <> 0UI AndAlso (effSlotMask And coveredSlots) <> 0UI Then
+                Dim aEdid = If(arma.EditorID, "")
+                Dim afid2 = armaFormID
+                Dim armoFid2 = armoFormID
+                Dim slotL = effSlotMask
+                Logger.LogLazy(Function() $"[ARMA-ARMATURE-DEDUP] ARMO=0x{armoFid2:X8} dropped ARMA=0x{afid2:X8} '{aEdid}' slot=0x{slotL:X8} — biped slot already claimed by an earlier race-matching armature entry of this ARMO")
+                Continue For
+            End If
+            coveredSlots = coveredSlots Or effSlotMask
+
             candidates.Add(New MeshCandidate With {
                 .DictKey = NormalizeDictionaryKeyWithMeshesPrefix(meshPath),
                 .SlotMask = effSlotMask,
@@ -7201,7 +7434,6 @@ Public Class MainForm
             Dim isOverride = Not String.Equals(sourcePlugin, "Fallout4.esm", StringComparison.OrdinalIgnoreCase) AndAlso Not String.IsNullOrEmpty(sourcePlugin)
             Dim raceBare As UInteger = If(state IsNot Nothing, state.RaceFormID And &HFFFFFFUI, 0UI)
             Dim isHumanFemale = (state IsNot Nothing) AndAlso raceBare = HumanRaceBareID AndAlso state.IsFemale
-            Dim tag = logTag
             If isOverride AndAlso Not isHumanFemale Then
                 effective = True
             End If
@@ -7391,7 +7623,7 @@ Public Class MainForm
                         Continue For
                     End If
                     Dim parentFound As Boolean = False
-                    Dim parentGlobal As Transform_Class = New Transform_Class() ' identity default = host NIF root
+                    Dim parentGlobal As New Transform_Class() ' identity default = host NIF root
                     Dim parentNm = If(cpHost.ParentBoneName, "")
                     If String.IsNullOrEmpty(parentNm) Then
                         ' Parent vacío = parent implícito root del host NIF (identity).
@@ -7422,17 +7654,15 @@ Public Class MainForm
                 For Each cp In chunkParents
                     Dim nm = If(cp.Name, "")
                     If String.IsNullOrEmpty(nm) Then Continue For
-                    If Not socketsByName.ContainsKey(nm) Then
+
+                    Dim existing As ConnectPointInfo = Nothing
+
+                    If Not socketsByName.TryGetValue(nm, existing) Then
                         socketsByName(nm) = cp
                         chunkSubSocketsAdded += 1
                         Dim nmL = nm, cpL = cp, omodNmL = omodPre.EditorID
                         Logger.LogLazy(Function() $"[SOCKETS-SRC3-CHUNK]   '{nmL}' parent='{cpL.ParentBoneName}' T=({cpL.Translation.X:F3},{cpL.Translation.Y:F3},{cpL.Translation.Z:F3}) Quat(XYZW)=({cpL.Rotation.X:F4},{cpL.Rotation.Y:F4},{cpL.Rotation.Z:F4},{cpL.Rotation.W:F4}) (added from chunk '{omodNmL}')")
                     Else
-                        ' FIRST-WINS sockets: el static dict (skeleton del actor) gana siempre,
-                        ' chunks aportan sólo sockets nuevos. Bone positioning real lo hace
-                        ' V2 SKEL-OVERRIDE vía MountDelta sobre chunk-internal NiNode positions.
-                        ' Log de conflicto sólo para diagnóstico.
-                        Dim existing = socketsByName(nm)
                         Dim tDiff = Math.Sqrt((existing.Translation.X - cp.Translation.X) ^ 2 + (existing.Translation.Y - cp.Translation.Y) ^ 2 + (existing.Translation.Z - cp.Translation.Z) ^ 2)
                         Dim qDiff = Math.Sqrt((existing.Rotation.X - cp.Rotation.X) ^ 2 + (existing.Rotation.Y - cp.Rotation.Y) ^ 2 + (existing.Rotation.Z - cp.Rotation.Z) ^ 2 + (existing.Rotation.W - cp.Rotation.W) ^ 2)
                         Dim parentDiff = Not String.Equals(existing.ParentBoneName, cp.ParentBoneName, StringComparison.OrdinalIgnoreCase)
@@ -7475,8 +7705,11 @@ Public Class MainForm
             Dim ordHi As Integer = If(hi < resolution.IncludedOmodInstanceOrdinal.Count, resolution.IncludedOmodInstanceOrdinal(hi), 0)
             Dim hostOrdHi As Integer = If(hi < resolution.IncludedOmodHostInstanceOrdinal.Count, resolution.IncludedOmodHostInstanceOrdinal(hi), 0)
             If ordHi = 0 Then Continue For ' unslotted properties-only — no host concept
-            If hostChainMap.ContainsKey(ordHi) Then
-                Dim ordHiL = ordHi, existingHL = hostChainMap(ordHi), newHL = hostOrdHi
+
+            Dim existingHL As Integer = Nothing
+
+            If hostChainMap.TryGetValue(ordHi, existingHL) Then
+                Dim ordHiL = ordHi, newHL = hostOrdHi
                 Logger.LogLazy(Function() $"[HOSTCHAIN-OVERWRITE] ordinal={ordHiL} existing.host={existingHL} new.host={newHL} — bug de implementación: ordinal monotónico debería ser único")
             End If
             hostChainMap(ordHi) = hostOrdHi
@@ -7556,8 +7789,8 @@ Public Class MainForm
                 .MatchedHostOmodFormID = matchedHostFid,
                 .MatchedHostApIdx = matchedHostAi,
                 .MatchedHostInstanceOrdinal = matchedHostOrdResolved,
-                .ResolvedHostSocketGlobalT = If(resolvedInfo IsNot Nothing, resolvedInfo.HostSocketGlobalT, Nothing),
-                .ParentFoundInMatchedHostNif = If(resolvedInfo IsNot Nothing, resolvedInfo.ParentFoundInHostNif, False),
+                .ResolvedHostSocketGlobalT = resolvedInfo?.HostSocketGlobalT,
+                .ParentFoundInMatchedHostNif = resolvedInfo IsNot Nothing AndAlso resolvedInfo.ParentFoundInHostNif,
                 .OmodResolution = resolution,
                 .OmodResolutionFormType = formType,
                 .Order = order
@@ -7622,9 +7855,9 @@ Public Class MainForm
             Dim cxName As String = ""
             If socket IsNot Nothing AndAlso Not String.IsNullOrEmpty(socket.Name) AndAlso socket.Name.Length > 2 Then
                 If socket.Name.StartsWith("P-", StringComparison.OrdinalIgnoreCase) Then
-                    cxName = "C-" & socket.Name.Substring(2)
+                    cxName = String.Concat("C-", socket.Name.AsSpan(2))
                 ElseIf socket.Name.StartsWith("P_", StringComparison.OrdinalIgnoreCase) Then
-                    cxName = "C_" & socket.Name.Substring(2)
+                    cxName = String.Concat("C_", socket.Name.AsSpan(2))
                 Else
                     ' Edge case: socket sin prefijo P-/P_. No conocemos caso real; queremos
                     ' verlo si aparece. Debug break para inspección manual; en release no
@@ -8189,7 +8422,7 @@ Public Class MainForm
             ' Per-instance scope: si el entry fue escrito para otra SkeletonInstance (p.ej. base
             ' inst) no aplica acá (p.ej. per-ARMA clone). Sin este filtro, clones reciben mount
             ' deltas de chunks que no les pertenecen vía bone-name collision → deformación.
-            If entry.TargetSkel IsNot Nothing AndAlso Not entry.TargetSkel Is inst Then
+            If entry.TargetSkel IsNot Nothing AndAlso entry.TargetSkel IsNot inst Then
                 skippedScopeMismatch += 1
                 Continue For
             End If
@@ -8417,9 +8650,9 @@ Public Class MainForm
             End If
             Dim cxNm As String = ""
             If socketNm.StartsWith("P-", StringComparison.OrdinalIgnoreCase) Then
-                cxNm = "C-" & socketNm.Substring(2)
+                cxNm = String.Concat("C-", socketNm.AsSpan(2))
             ElseIf socketNm.StartsWith("P_", StringComparison.OrdinalIgnoreCase) Then
-                cxNm = "C_" & socketNm.Substring(2)
+                cxNm = String.Concat("C_", socketNm.AsSpan(2))
             End If
             If String.IsNullOrEmpty(cxNm) Then
                 Dim ordL_dbg = cand.ChunkInstanceOrdinal, fidL_dbg = cand.ChunkOmodFormID
@@ -8509,7 +8742,7 @@ Public Class MainForm
                             If Not Char.IsDigit(c) Then allDigits = False : Exit For
                         Next
                         If allDigits Then
-                            parentForLookup = parentForPathB.Substring(0, pipe + 1) & cand.MountApIdx.ToString()
+                            parentForLookup = String.Concat(parentForPathB.AsSpan(0, pipe + 1), cand.MountApIdx.ToString())
                             If Not String.Equals(parentForLookup, parentForPathB, StringComparison.Ordinal) Then
                                 Dim ordL_sub = ordSelf, origL = parentForPathB, newL = parentForLookup, apL = cand.MountApIdx
                                 Logger.LogLazy(Function() $"[A_HOST-JIT-PATHB-APIDX-SUB] ord={ordL_sub} parent '{origL}' → '{newL}' (consumer apIdx={apL})")
@@ -8659,7 +8892,7 @@ Public Class MainForm
         ' Discover pipboy bone target del skeleton del actor (case-insensitive, sin hardcoding).
         Dim pipboyBoneName As String = Nothing
         Dim pipboyCandidates = inst.SkeletonDictionary.Keys.
-            Where(Function(k) k.IndexOf("pipboy", StringComparison.OrdinalIgnoreCase) >= 0).
+            Where(Function(k) k.Contains("pipboy", StringComparison.OrdinalIgnoreCase)).
             ToList()
         If pipboyCandidates.Count > 0 Then
             Dim primary = pipboyCandidates.FirstOrDefault(Function(k) Not k.EndsWith("_Offset", StringComparison.OrdinalIgnoreCase))
@@ -8705,15 +8938,16 @@ Public Class MainForm
 
                 Try
                     Dim backing = shape.Geometry.BackingShape
-                    Dim bindMatrix As Transform_Class = New Transform_Class(backing)
+                    Dim bindMatrix As New Transform_Class(backing)
                     Dim curNode As NiflySharp.Blocks.NiNode = TryCast(pipboyNif.GetParentNode(backing), NiflySharp.Blocks.NiNode)
                     While curNode IsNot Nothing AndAlso Not ReferenceEquals(curNode, rootNode)
                         bindMatrix = New Transform_Class(curNode).ComposeTransforms(bindMatrix)
                         curNode = TryCast(pipboyNif.GetParentNode(curNode), NiflySharp.Blocks.NiNode)
                     End While
 
-                    Dim placeholder As New NiflySharp.Blocks.NiNode()
-                    placeholder.Name = New NiflySharp.NiStringRef(pipboyBoneName)
+                    Dim placeholder As New NiflySharp.Blocks.NiNode With {
+                        .Name = New NiflySharp.NiStringRef(pipboyBoneName)
+                    }
                     asOverride.ApplySyntheticAnchorSkin(placeholder, bindMatrix)
 
                     Dim shL = shape.ShapeName
@@ -9026,16 +9260,7 @@ Public Class MainForm
         ' BODY+[U]LArm+[U]RArm+[A]LLeg+[A]RLeg. Reserva bits 14, 15. Las combat legs (slot 0x4000
         ' / 0x8000) declaran bits 14/15 → se descartan. Las combat torso/arm (bits 11, 12) NO
         ' tocan los reservados → entran normalmente.
-        Const BODY_BIT As Integer = 3
-        Dim U_MASK_RES As UInteger = 0UI
-        For b = 6 To 10
-            U_MASK_RES = U_MASK_RES Or (1UI << b)
-        Next
-        Dim A_MASK_RES As UInteger = 0UI
-        For b = 11 To 15
-            A_MASK_RES = A_MASK_RES Or (1UI << b)
-        Next
-        Dim BODY_MASK_RES As UInteger = 1UI << BODY_BIT
+        ' (extended-underarmor BODY/[U]/[A] slot masks now live in SlotConflictResolver)
 
         ' Skin candidates (NPC_.WNAM / RACE.WNAM via state.SkinFormID) representan la base body
         ' geometry del NPC — NO son piezas equipables que compitan por slots con outfits/armor.
@@ -9055,101 +9280,15 @@ Public Class MainForm
 
         Dim slottedCandidates = nonSkinCandidates.Where(Function(c) c.SlotMask <> 0UI).ToList()
 
-        ' Pasada 1a — extended underarmors ([U]+[A] o BODY+[A] en la misma pieza).
-        ' Excepción preservada: el engine en estos casos hace que el [A] del extended underarmor
-        ' "gane" sobre cualquier over-armor puro [A] que pise sus bits — caso Bridget DCGuard
-        ' UnderArmor (slot 0xC7F8 BODY+[U]LArm+[U]RArm+[A]LLeg+[A]RLeg) descarta a las combat legs
-        ' puras (slot 0x4000/0x8000) que pisan sus bits [A] reservados. Esto NO es engine vanilla
-        ' standard — es un patrón observado en Bethesda donde la geometría del extended ya cubre
-        ' las piernas y poner un combat-leg encima causa clipping. Lo preservamos como regla
-        ' explícita per usuario 2026-04-29.
-        '
-        ' Bits cubiertos por extended underarmors quedan "blindados" para la pasada 1b: ningún
-        ' otro candidate puede desplazarlos. Esto los mantiene como ganadores aunque la pasada
-        ' 1b corra después con regla last-wins.
-        Dim extendedUnderarmors = slottedCandidates.Where(Function(c)
-                                                              Dim hasUnderlayer = (c.SlotMask And BODY_MASK_RES) <> 0UI OrElse (c.SlotMask And U_MASK_RES) <> 0UI
-                                                              Dim hasAlayer = (c.SlotMask And A_MASK_RES) <> 0UI
-                                                              Return hasUnderlayer AndAlso hasAlayer
-                                                          End Function).
-                                                       OrderBy(Function(c) c.Order).
-                                                       ToList()
-
-        Dim occupiedSlots As UInteger = 0UI
-        Dim reservedAbits As UInteger = 0UI
-        Dim shieldedSlots As UInteger = 0UI ' bits "no desplazables" por la pasada 1b
-
-        For Each candidate In extendedUnderarmors
-            Dim freeBits = candidate.SlotMask And Not occupiedSlots
-            If freeBits = 0UI Then Continue For
-            occupiedSlots = occupiedSlots Or freeBits
-            shieldedSlots = shieldedSlots Or candidate.SlotMask
-            reservedAbits = reservedAbits Or (candidate.SlotMask And A_MASK_RES)
-            selected.Add(candidate)
-        Next
-
-
-        ' Pasada 1b — atomic mutex por any-bit overlap, last-equipped wins.
-        ' Regla canónica del engine Bethesda confirmada en research 2026-04-29: cuando dos piezas
-        ' chocan en CUALQUIER bit del slot mask, la pieza nueva desplaza a la vieja entera (no
-        ' parcial). Cita: "if you have a vault suit equipped and equip something else that uses
-        ' the same right arm slot, the vault suit will be unequipped because the new item bumps
-        ' the previous outfit off". Implementación: recorremos en orden inverso (Order desc =
-        ' último OTFT.INAM primero) y aplicamos mutex; el primero que reclama un bit lo gana.
-        '
-        ' Skin sigue siendo mutex atómico para BODY (su geometría es el body completo, no se
-        ' fragmenta). Outfits ahora también son atómicos: si CUALQUIER bit choca con bits ya
-        ' ganados, descartado entero — no más "claim free bits".
-        Dim pass1bCandidates = slottedCandidates.Where(Function(c) Not extendedUnderarmors.Contains(c)).
-                                                  OrderByDescending(Function(c) c.Order).
-                                                  ToList()
-
-        Dim acceptedReverse As New List(Of MeshCandidate)
-        For Each candidate In pass1bCandidates
-            ' Bits [A] reservados por extended underarmors → descarte entero (excepción Bridget).
-            If (candidate.SlotMask And reservedAbits) <> 0UI Then
-                Continue For
-            End If
-            ' Bits "shielded" por extended underarmors → tampoco desplazables.
-            If (candidate.SlotMask And shieldedSlots) <> 0UI Then
-                Continue For
-            End If
-            ' Atomic mutex any-bit: si toca un bit ya ocupado → descartado entero. El bit Pipboy
-            ' (slot 60 / 0x40000000) se strippea del mask comparado: empíricamente vanilla usa el
-            ' bit como tag declarativo, no garantiza que el NIF traiga geometría de pipboy (ej.
-            ' ClothesVaultTecScientist declara slot=0x40000008 = BODY+Pipboy pero su NIF NO trae
-            ' pipboy; el bit es ruido del record). Si lo tratáramos como slot ocupado real, una
-            ' Pipboy ARMO standalone (slot=0x40000000) descartaría al outfit entero por ese único
-            ' bit → outfit roto, NPC desnudo. El bit se sigue agregando a occupiedSlots cuando un
-            ' candidato lo trae (informativo), pero no bloquea conflict-check.
-            Dim conflictMask = candidate.SlotMask And Not SlotBitPipboy
-            Dim occupiedForCheck = occupiedSlots And Not SlotBitPipboy
-            If (conflictMask And occupiedForCheck) <> 0UI Then
-                Continue For
-            End If
-            ' Virtual mutex Pipboy ↔ [A] L Arm (slots 60 / 42, wbDefinitionsFO4.pas:3739/3776 — slot
-            ' 60 = Pipboy, atado a la muñeca/antebrazo izquierdo). El biped system no declara
-            ' conflicto entre ellos, así que una outfit con Pipboy + bracer/PA L Arm renderiza
-            ' ambos solapados. Tratamos los dos slots como mutuamente excluyentes (last-equipped
-            ' wins igual que el resto del mutex): si occupiedSlots ya tiene uno y el candidato
-            ' trae el otro → descartado entero. Tentativo — se verá con casos reales si la regla
-            ' aplica o se ajusta. Underarmor ([U] L Arm, slot 39) NO incluido: Pipboy se lleva
-            ' arriba del jumpsuit, no compite con la capa underarmor.
-            Dim slot = candidate.SlotMask
-            If (slot And SlotBitPipboy) <> 0UI AndAlso (occupiedSlots And SlotBitALArm) <> 0UI Then
-                Continue For
-            End If
-            If (slot And SlotBitALArm) <> 0UI AndAlso (occupiedSlots And SlotBitPipboy) <> 0UI Then
-                Continue For
-            End If
-            occupiedSlots = occupiedSlots Or candidate.SlotMask
-            acceptedReverse.Add(candidate)
-        Next
-
-        ' acceptedReverse está en orden inverso (último OTFT primero). Los append en `selected`
-        ' van en orden cronológico ascendente para que el render dispatch siga el Order natural.
-        acceptedReverse.Reverse()
-        selected.AddRange(acceptedReverse)
+        ' Slot conflict resolution (pass 1a extended-underarmor + pass 1b atomic-mutex last-wins +
+        ' pipboy↔[A]LArm mutex) extracted to SlotConflictResolver so the render path and the Edit
+        ' Outfit "Create" tab share the SAME engine rules. Winners append to `selected` (skin was
+        ' already added above, outside the tournament); occupiedSlots feeds the head-part occlusion
+        ' (pass 2) + skin coverage (pass 3) below.
+        Dim slotResolution = SlotConflictResolver.ResolveSlotWinners(
+            slottedCandidates, Function(c) c.SlotMask, Function(c) c.Order)
+        selected.AddRange(slotResolution.Winners)
+        Dim occupiedSlots As UInteger = slotResolution.OccupiedSlots
 
         ' Third pass: add slotless (head parts), hiding based on occupied biped slots.
         '
@@ -9302,11 +9441,30 @@ Public Class MainForm
         Return ShapeRenderCategory.Other
     End Function
 
+    ''' <summary>Strict per-ARMA race match: the ARMA's RaceFormID equals the NPC's race, or its
+    ''' AdditionalRaces (MODL) include it. Unified rule used by the render AND the skin/outfit/item
+    ''' pickers. The permissive "arma.RaceFormID = 0 → any race" clause was REMOVED per user
+    ''' 2026-05-24: a load-order sweep found 0 of 1084 ARMAs with RaceFormID=0 (all declare a race),
+    ''' so the clause was dead — strict is preferred and unifies render + pickers on one rule. The
+    ''' npcRaceFormID=0 guard stays: it keeps a degenerate NPC whose race didn't resolve from
+    ''' rendering naked.</summary>
     Private Shared Function ArmorAddonMatchesRace(arma As ARMA_Data, npcRaceFormID As UInteger) As Boolean
         If npcRaceFormID = 0UI Then Return True
-        If arma.RaceFormID = 0UI Then Return True
         If arma.RaceFormID = npcRaceFormID Then Return True
         Return arma.AdditionalRaces.Contains(npcRaceFormID)
+    End Function
+
+    ''' <summary>Human-readable decode of a wbModelFlags byte (MO2F/MO3F/MO4F/MO5F): bit 0x01 =
+    ''' FaceBones, 0x02 = 1stPerson (TES5Edit wbDefinitionsFO4.pas:4622). Diagnostic only (used by the
+    ''' [ARMA-MODELFLAGS] log).</summary>
+    Private Shared Function DescribeModelFlags(b As Byte) As String
+        If b = 0 Then Return "none"
+        Dim parts As New List(Of String)
+        If (b And &H1) <> 0 Then parts.Add("FaceBones")
+        If (b And &H2) <> 0 Then parts.Add("1stPerson")
+        Dim extra = b And Not CByte(&H3)
+        If extra <> 0 Then parts.Add($"unk0x{extra:X2}")
+        Return String.Join("|", parts)
     End Function
 
     ''' <summary>Resuelve el AddonIndex selector para una ARMO multi-addon.
@@ -9833,7 +9991,7 @@ Public Class MainForm
                 Dim s = niNode.Name.String
                 If String.IsNullOrEmpty(s) Then Continue For
                 If s.EndsWith("|0", StringComparison.Ordinal) Then
-                    Dim renamed = s.Substring(0, s.Length - 2) & newSuffix
+                    Dim renamed = String.Concat(s.AsSpan(0, s.Length - 2), newSuffix)
                     niNode.Name.String = renamed
                     Dim sLog = s
                     Dim renamedLog = renamed
@@ -9863,7 +10021,7 @@ Public Class MainForm
                 Dim s = cp.Parent.Content
                 If String.IsNullOrEmpty(s) Then Continue For
                 If s.EndsWith("|0", StringComparison.Ordinal) Then
-                    Dim renamed = s.Substring(0, s.Length - 2) & newSuffix
+                    Dim renamed = String.Concat(s.AsSpan(0, s.Length - 2), newSuffix)
                     cp.Parent.Content = renamed
                     Dim sLog = s, renamedLog = renamed
                     Dim socketLog = If(cp.Name?.Content, "<unnamed>")
@@ -9970,7 +10128,7 @@ Public Class MainForm
         Const Suffix As String = "_faceBones"
         Dim idx = name.IndexOf(Suffix, StringComparison.OrdinalIgnoreCase)
         If idx < 0 Then Return name
-        Return name.Substring(0, idx) & name.Substring(idx + Suffix.Length)
+        Return String.Concat(name.AsSpan(0, idx), name.AsSpan(idx + Suffix.Length))
     End Function
 
     Friend Sub ApplyShapeMaterialOverrides(candidate As MeshCandidate, state As NPCVisualState, shapes As IEnumerable(Of IRenderableShape))
@@ -10827,12 +10985,12 @@ Public Class MainForm
 
     Private Sub TextBoxSearch_TextChanged(sender As Object, e As EventArgs) Handles TextBoxSearch.TextChanged
         _pendingTreeFilter = TextBoxSearch.Text
-        _searchDebounceTimer.Stop()
-        _searchDebounceTimer.Start()
+        SearchDebounceTimer.Stop()
+        SearchDebounceTimer.Start()
     End Sub
 
-    Private Sub SearchDebounceTimer_Tick(sender As Object, e As EventArgs) Handles _searchDebounceTimer.Tick
-        _searchDebounceTimer.Stop()
+    Private Sub SearchDebounceTimer_Tick(sender As Object, e As EventArgs) Handles SearchDebounceTimer.Tick
+        SearchDebounceTimer.Stop()
         PopulateNPCTree(_pendingTreeFilter)
     End Sub
 
@@ -11412,7 +11570,7 @@ Public Class MainForm
         Dim baseState As NPCVisualState = Nothing
         Dim outfitEntries As List(Of OutfitComboEntry) = Nothing
         Await Task.Run(Sub()
-                           baseState = ResolveNPCBaseState(npc)
+                           baseState = ResolveNPCBaseState(npc, host)
                            outfitEntries = BuildOutfitComboEntries(baseState)
                        End Sub)
         If requestVersion <> _previewRequestVersion Then Return
@@ -11431,21 +11589,31 @@ Public Class MainForm
         End If
 
         host.CurrentBaseState = baseState
-        _currentOutfitEntries = If(outfitEntries, New List(Of OutfitComboEntry))
 
-        ' Recompute Paste enable now that the target NPC may have changed race/gender.
-        UpdatePasteLookEnabled()
+        ' Main-form UI is updated ONLY when rendering into the main host. Editor / outfit-picker hosts
+        ' keep their sampled outfit on the host (host.OutfitEntries) and DON'T touch the MainForm-global
+        ' outfit combo / record details / paste-enable — so an editor or picker render is fully isolated
+        ' from the main viewer's state (the user's "no live preview en el render principal" rule).
+        If host Is _renderHost Then
+            _currentOutfitEntries = If(outfitEntries, New List(Of OutfitComboEntry))
 
-        ' Refresh the right-side record details panel so weights / morphs / tints reflect the
-        ' overlay-applied state instead of the raw record. ApplyPresetOverlayToNpcData returns
-        ' the raw NPC_Data when there's no overlay registered, so this is also a no-op for the
-        ' non-overlay path. Header fields (FormID/EditorID/Plugin) are preserved by the shallow
-        ' copy so the panel still identifies the record correctly.
-        Dim modelFormID = If(baseState.ModelSourceFormID <> 0UI, baseState.ModelSourceFormID, baseState.FormID)
-        Dim effective = ApplyPresetOverlayToNpcData(GetParsedNpc(modelFormID), baseState.RootNpcFormID)
-        PopulateRecordDetails(If(effective, npc))
+            ' Recompute Paste enable now that the target NPC may have changed race/gender.
+            UpdatePasteLookEnabled()
 
-        PopulateOutfitCombo()
+            ' Refresh the right-side record details panel so weights / morphs / tints reflect the
+            ' overlay-applied state instead of the raw record. ApplyPresetOverlayToNpcData returns
+            ' the raw NPC_Data when there's no overlay registered, so this is also a no-op for the
+            ' non-overlay path. Header fields (FormID/EditorID/Plugin) are preserved by the shallow
+            ' copy so the panel still identifies the record correctly.
+            Dim modelFormID = If(baseState.ModelSourceFormID <> 0UI, baseState.ModelSourceFormID, baseState.FormID)
+            Dim effective = ApplyPresetOverlayToNpcData(GetParsedNpc(modelFormID), baseState.RootNpcFormID)
+            PopulateRecordDetails(If(effective, npc))
+
+            PopulateOutfitCombo()
+        Else
+            host.OutfitEntries = If(outfitEntries, New List(Of OutfitComboEntry))
+        End If
+
         Await RenderCurrentStateAsync(requestVersion, host)
     End Function
 
@@ -11614,7 +11782,9 @@ Public Class MainForm
         shadow.HasMwgt = raw.HasMwgt
         shadow.HasFull = raw.HasFull
         shadow.HasTemplate = raw.HasTemplate
-        shadow.HasDefaultOutfit = raw.HasDefaultOutfit
+        ' HasDefaultOutfit is owned by ApplyPresetOverlayToNpcData (it derives the DOFT-emission gate
+        ' from the outfit override). Copying it from raw here would clobber an override that added an
+        ' outfit to an NPC whose raw record had none. SleepOutfit is not overridden → still copied.
         shadow.HasSleepOutfit = raw.HasSleepOutfit
         shadow.HasHairColor = raw.HasHairColor
         shadow.HasFacialHairColor = raw.HasFacialHairColor
@@ -11713,7 +11883,8 @@ Public Class MainForm
                 End If
             Else
                 ' Preset-created entry without a matching raw — default to vanilla CK's 8 zeroes.
-                newTrailing.Add(New Byte(VanillaFmrsTrailingSize - 1) {})
+                Dim item2 = New Byte(VanillaFmrsTrailingSize - 1) {}
+                newTrailing.Add(item2)
             End If
         Next
         shadow.FaceMorphTrailingBytes = newTrailing
@@ -11787,9 +11958,10 @@ Public Class MainForm
         ' Capture rendered state — overlay-on-top-of-template, just like the renderer reads it.
         Dim effective = ApplyPresetOverlayToNpcData(raw, state.RootNpcFormID)
 
-        Dim preset As New LooksmenuLoader.LooksmenuPreset
-        preset.SourcePath = $"<clipboard from {raw.EditorID}>"
-        preset.Gender = If(state.IsFemale, CByte(1), CByte(0))
+        Dim preset As New LooksmenuLoader.LooksmenuPreset With {
+            .SourcePath = $"<clipboard from {raw.EditorID}>",
+            .Gender = If(state.IsFemale, CByte(1), CByte(0))
+        }
 
         ' HeadParts. state.HeadPartFormIDs only carries explicit NPC.PNAM entries — slots that
         ' the NPC didn't override (Meatcaps for most humans, Teeth/HeadRear sometimes) get filled
@@ -11911,7 +12083,7 @@ Public Class MainForm
             Select(Function(tl, originalIdx)
                        Dim r As Integer = Integer.MaxValue
                        raceTintRank.TryGetValue(tl.Index, r)
-                       Return New With {.Layer = tl, .Rank = r, .OriginalIdx = originalIdx}
+                       Return New With {.Layer = tl, .Rank = r, originalIdx}
                    End Function).
             OrderBy(Function(x) x.Rank).
             ThenBy(Function(x) x.OriginalIdx).
@@ -12141,13 +12313,14 @@ Public Class MainForm
         End Using
     End Sub
 
-    ''' <summary>Open the Edit Outfit picker (NPC.DOFT override) for the current NPC. Modal,
-    ''' lightweight preview (HeadPartPicker style). On OK the chosen value lands in the overlay's
-    ''' <c>DefaultOutfitFormIDOverride</c> and the MainForm preview reloads — ResolveNPCBaseState
-    ''' picks it up and BuildOutfitComboEntries re-samples it. Picker return:
+    ''' <summary>Open the Edit Outfit picker (NPC.DOFT override) for the current NPC. The picker renders
+    ''' its WYSIWYG preview through the SAME pipeline as this viewer (<see cref="PreviewOutfitInHostAsync"/>)
+    ''' but into ITS OWN host with a host-scoped override — it never touches the shared overlay
+    ''' (_appliedPresets) nor the main preview, so cancel is inherently non-destructive (nothing to undo).
+    ''' On OK the chosen value is committed to the overlay and the MAIN preview reloads. Picker return:
     '''   Nothing → "(record default)" (clear override, preserve raw NPC.DOFT)
     '''   Some(0) → "(no outfit)"
-    '''   Some(fid) → OTFT override.</summary>
+    '''   Some(fid) → OTFT / draft override.</summary>
     Private Async Sub ButtonEditOutfit_Click(sender As Object, e As EventArgs) Handles ButtonEditOutfit.Click
         If _renderHost.LastRenderedState Is Nothing Then Return
         Dim st = _renderHost.LastRenderedState
@@ -12163,18 +12336,21 @@ Public Class MainForm
         Dim raceRec = If(st.RaceFormID <> 0UI, _pluginManager.GetRecord(st.RaceFormID), Nothing)
         Dim raceEditorID = If(raceRec IsNot Nothing, raceRec.EditorID, "?")
 
-        Using dlg As New OutfitPicker_Form(Me, st.RaceFormID, raceEditorID, st.IsFemale, st.DefaultOutfitFormID, rawOutfit)
+        Using dlg As New OutfitPicker_Form(Me, npcFormID, _appliedPresets, st.RaceFormID, raceEditorID, st.IsFemale, st.DefaultOutfitFormID, rawOutfit)
+            ' Cancel: the picker rendered only into its own host; the main preview + overlay were never
+            ' touched, so there is nothing to undo.
             If dlg.ShowDialog(Me) <> DialogResult.OK Then Return
-            Dim result As UInteger? = dlg.SelectedOutfitOverride
 
+            ' OK: commit the chosen value to the overlay and reload the MAIN preview.
+            Dim result As UInteger? = dlg.SelectedOutfitOverride
             Dim previousOverlay As LooksmenuLoader.LooksmenuPreset = Nothing
-            Dim hadOverlay = _appliedPresets.TryGetValue(npcFormID, previousOverlay)
+            Dim hadOverlay = _appliedPresets.TryGetValue(npcFormID, previousOverlay) AndAlso previousOverlay IsNot Nothing
             Dim p As LooksmenuLoader.LooksmenuPreset
-            If Not hadOverlay OrElse previousOverlay Is Nothing Then
+            If hadOverlay Then
+                p = previousOverlay
+            Else
                 p = New LooksmenuLoader.LooksmenuPreset()
                 _appliedPresets(npcFormID) = p
-            Else
-                p = previousOverlay
             End If
             Dim priorOutfitOverride = p.DefaultOutfitFormIDOverride
             p.DefaultOutfitFormIDOverride = result
@@ -12475,10 +12651,10 @@ Public Class MainForm
     Private Function BuildFilteredPaste(source As LooksmenuLoader.LooksmenuPreset,
                                          targetRaw As NPC_Data,
                                          options As PasteOptions) As LooksmenuLoader.LooksmenuPreset
-
-        Dim p As New LooksmenuLoader.LooksmenuPreset()
-        p.SourcePath = source.SourcePath
-        p.Gender = source.Gender
+        Dim p As New LooksmenuLoader.LooksmenuPreset With {
+            .SourcePath = source.SourcePath,
+            .Gender = source.Gender
+        }
 
         ' --- Body weight (3 floats) ---
         If options.BodyWeight Then
@@ -12766,7 +12942,8 @@ Public Class MainForm
                                                prog As IProgress(Of NpcOverrideSaver.SaveProgress)) _
                                           As (Summary As String, Success As Boolean)
                                          Return RunChargenBakeAndPack(npcFid, anchor, srcPlugin, prog)
-                                     End Function
+                                     End Function,
+            .OutfitDrafts = New List(Of OutfitDraft)(_outfitDrafts)
         }
 
         ' Show dialog. The form runs the orchestrator internally (async, with progress in an
@@ -12786,6 +12963,17 @@ Public Class MainForm
             execResult = dlg.ExecutionResult
         End Using
         If target Is Nothing OrElse execResult Is Nothing OrElse Not execResult.Success Then Return
+
+        ' Outfit drafts written this save are no longer "new"/"modified": clear their dirty flags so a
+        ' subsequent NPC save with "Save new outfits" ON doesn't re-emit them (the user's rule: once
+        ' saved they aren't re-saved unless edited again). The throwaway preview sentinel is never dirty.
+        If target.SaveNewOutfits Then
+            For Each d In _outfitDrafts
+                If d Is Nothing Then Continue For
+                d.IsNew = False
+                d.IsModified = False
+            Next
+        End If
 
         ' --- Post-save cleanup (cache update + tree refresh + success MessageBox). The
         ' orchestrator gave us SavedFormIDs + WriterResult; everything below is host-state
@@ -12978,9 +13166,7 @@ Public Class MainForm
                 ' per-vertex stream on save). For NiTriShape the setter is a no-op; the
                 ' SkinInstanceRef.Clear() below is what disables skinning in that family.
                 clonedINiShape.IsSkinned = False
-                If clonedINiShape.SkinInstanceRef IsNot Nothing Then
-                    clonedINiShape.SkinInstanceRef.Clear()
-                End If
+                clonedINiShape.SkinInstanceRef?.Clear()
 
                 shapesWritten += 1
                 destIdx += 1

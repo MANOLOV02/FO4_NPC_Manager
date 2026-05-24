@@ -88,10 +88,10 @@ Partial Public Class TintPickerDialog
                 Dim optName = If(row.SubItems.Count > 1, row.SubItems(1).Text, "")
                 Dim slot = If(row.SubItems.Count > 2, row.SubItems(2).Text, "")
                 Dim kind = If(row.SubItems.Count > 3, row.SubItems(3).Text, "")
-                If grp.IndexOf(filter, StringComparison.OrdinalIgnoreCase) >= 0 _
-                   OrElse optName.IndexOf(filter, StringComparison.OrdinalIgnoreCase) >= 0 _
-                   OrElse slot.IndexOf(filter, StringComparison.OrdinalIgnoreCase) >= 0 _
-                   OrElse kind.IndexOf(filter, StringComparison.OrdinalIgnoreCase) >= 0 Then
+                If grp.Contains(filter, StringComparison.OrdinalIgnoreCase) _
+                   OrElse optName.Contains(filter, StringComparison.OrdinalIgnoreCase) _
+                   OrElse slot.Contains(filter, StringComparison.OrdinalIgnoreCase) _
+                   OrElse kind.Contains(filter, StringComparison.OrdinalIgnoreCase) Then
                     TintList.Items.Add(row)
                 End If
             Next

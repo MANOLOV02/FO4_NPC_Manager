@@ -36,6 +36,8 @@ Friend Module NpcFaceGenPacker
         Public ReadOnly SkippedArchives As New List(Of String)
         ''' <summary>Loose files removed from disk after a successful pack.</summary>
         Public ReadOnly DeletedLoose As New List(Of String)
+        ''' <summary>Now-empty directories pruned (up to, but excluding, Data) after the loose were removed.</summary>
+        Public ReadOnly RemovedDirs As New List(Of String)
         ''' <summary>Free-form failure message when Success = False.</summary>
         Public Property ErrorMessage As String = ""
     End Class
@@ -263,10 +265,60 @@ Friend Module NpcFaceGenPacker
             Report(progress, PackPhase.DeletingLoose, $"Removed {deletedAt}/{sources.Length}", deletedAt, sources.Length)
         Next
 
+        ' Prune directories left empty by the deletions, walking up toward (but never past) dataDir.
+        ' Each FaceGen bake writes into Meshes\...\FaceGeom\<plugin>\ and Textures\...\FaceCustomization\
+        ' <plugin>\; once the loose are packed + removed those per-plugin folders are usually empty.
+        ' Only the dirs we actually deleted from are candidates; the emptiness check stops at the first
+        ' ancestor that still holds another NPC / mod content, so we never over-delete.
+        Dim affectedDirs As New HashSet(Of String)(StringComparer.OrdinalIgnoreCase)
+        For Each src In result.DeletedLoose
+            Dim d = Path.GetDirectoryName(src)
+            If Not String.IsNullOrEmpty(d) Then affectedDirs.Add(d)
+        Next
+        For Each leaf In affectedDirs
+            RemoveEmptyDirsUpTo(leaf, dataDir, result.RemovedDirs)
+        Next
+
         result.Success = True
         Report(progress, PackPhase.Done, "Done.", 1, 1)
         Return result
     End Function
+
+    ''' <summary>Delete <paramref name="leafDir"/> and each ancestor left empty, walking UP until
+    ''' (and excluding) <paramref name="stopDir"/>. Stops at the first non-empty ancestor. Never
+    ''' deletes stopDir itself nor anything outside it (the StartsWith guard keeps the walk strictly
+    ''' under stopDir). Best-effort: any IO failure aborts the walk for that branch without throwing —
+    ''' a leftover empty dir is harmless.</summary>
+    Private Sub RemoveEmptyDirsUpTo(leafDir As String, stopDir As String, removed As List(Of String))
+        Try
+            Dim sep = Path.DirectorySeparatorChar
+            Dim stopFull = Path.GetFullPath(stopDir).TrimEnd(sep, Path.AltDirectorySeparatorChar)
+            Dim current = Path.GetFullPath(leafDir).TrimEnd(sep, Path.AltDirectorySeparatorChar)
+            While True
+                ' Boundary: stop at dataDir and never walk outside it.
+                If String.Equals(current, stopFull, StringComparison.OrdinalIgnoreCase) Then Exit While
+                If Not current.StartsWith(stopFull & sep, StringComparison.OrdinalIgnoreCase) Then Exit While
+
+                If Directory.Exists(current) Then
+                    ' Only remove when truly empty (no files AND no subdirs).
+                    Dim hasAny As Boolean = False
+                    For Each e In Directory.EnumerateFileSystemEntries(current)
+                        hasAny = True
+                        Exit For
+                    Next
+                    If hasAny Then Exit While   ' a real ancestor with other content — stop here
+                    Directory.Delete(current, recursive:=False)
+                    If removed IsNot Nothing Then removed.Add(current)
+                End If
+                ' Walk up (also when current was already gone via a sibling leaf's walk).
+                Dim parent = Path.GetDirectoryName(current)
+                If String.IsNullOrEmpty(parent) Then Exit While
+                current = parent
+            End While
+        Catch
+            ' Best-effort cleanup; leftover empty dirs are harmless.
+        End Try
+    End Sub
 
     ' ============================================================================
     ' Entry builders — mirror Wardrobe_Manager.WM_PackUnpack.MakeMaterialEntry /

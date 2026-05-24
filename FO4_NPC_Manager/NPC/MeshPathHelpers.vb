@@ -1,4 +1,4 @@
-Imports FO4_Base_Library
+﻿Imports FO4_Base_Library
 
 ''' <summary>
 ''' Path normalization helpers for FilesDictionary lookups of mesh files.
@@ -33,7 +33,7 @@ Public Module MeshPathHelpers
     Public Function TryGetFaceBonesVariant(meshKey As String) As String
         If String.IsNullOrEmpty(meshKey) Then Return ""
         If Not meshKey.EndsWith(".nif", StringComparison.OrdinalIgnoreCase) Then Return ""
-        Dim candidate = meshKey.Substring(0, meshKey.Length - 4) & "_facebones.nif"
+        Dim candidate = String.Concat(meshKey.AsSpan(0, meshKey.Length - 4), "_facebones.nif")
         If FilesDictionary_class.Dictionary.ContainsKey(candidate) Then Return candidate
         Return ""
     End Function

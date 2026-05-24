@@ -1,4 +1,4 @@
-Imports System.Windows.Forms
+﻿Imports System.Windows.Forms
 Imports System.Collections
 
 ''' <summary>Click-to-sort helper for any <see cref="ListView"/> in details view. Wire-up
@@ -26,7 +26,7 @@ Public NotInheritable Class SortableListView
     ''' hold a reference to the returned instance; the ListView keeps it alive via its event
     ''' subscription.</summary>
     Public Shared Function Attach(lv As ListView) As SortableListView
-        If lv Is Nothing Then Throw New ArgumentNullException(NameOf(lv))
+        ArgumentNullException.ThrowIfNull(lv)
         Dim instance As New SortableListView(lv)
         Return instance
     End Function

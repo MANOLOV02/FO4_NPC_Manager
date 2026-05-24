@@ -25,25 +25,7 @@ Partial Class MainForm
         PanelRecordDetails = New Panel()
         TreeViewRecordDetails = New TreeView()
         LabelRecordTitle = New Label()
-        SplitContainerPreview = New SplitContainer()
-        PanelPreviewControls = New Panel()
-        PanelActionsToolbar = New TableLayoutPanel()
-        LabelEdit = New Label()
-        ButtonEditFace = New Button()
-        ButtonEditBody = New Button()
-        ButtonEditOutfit = New Button()
-        SeparatorActions1 = New Label()
-        LabelLooksMenu = New Label()
-        ButtonLoadLooksmenu = New Button()
-        ButtonSaveLooksmenu = New Button()
-        SeparatorActions2 = New Label()
-        LabelLook = New Label()
-        ButtonCopyLook = New Button()
-        ButtonPasteLook = New Button()
-        SeparatorActions3 = New Label()
-        ButtonSavePlugin = New Button()
-        ButtonBuildCharGen = New Button()
-        ButtonSaveSceneNif = New Button()
+        PanelPreviewLayout = New TableLayoutPanel()
         PanelPreviewToolbar = New TableLayoutPanel()
         CheckBoxRenderGore = New CheckBox()
         CheckBoxBodyTri = New CheckBox()
@@ -65,8 +47,25 @@ Partial Class MainForm
         ButtonReroll = New Button()
         ButtonLightRig = New Button()
         CheckBoxApplySculpt = New CheckBox()
-        LabelStatus = New Label()
+        PanelActionsToolbar = New FlowLayoutPanel()
+        LabelEdit = New Label()
+        ButtonEditFace = New Button()
+        ButtonEditBody = New Button()
+        ButtonEditOutfit = New Button()
+        SeparatorActions1 = New Label()
+        LabelLooksMenu = New Label()
+        ButtonLoadLooksmenu = New Button()
+        ButtonSaveLooksmenu = New Button()
+        SeparatorActions2 = New Label()
+        LabelLook = New Label()
+        ButtonCopyLook = New Button()
+        ButtonPasteLook = New Button()
+        SeparatorActions3 = New Label()
+        ButtonSavePlugin = New Button()
+        ButtonBuildCharGen = New Button()
+        ButtonSaveSceneNif = New Button()
         PanelPreviewHost = New Panel()
+        LabelStatus = New Label()
         StatusStrip1 = New StatusStrip()
         ToolStripStatusLabel1 = New ToolStripStatusLabel()
         ToolStripProgressBar1 = New ToolStripProgressBar()
@@ -84,13 +83,10 @@ Partial Class MainForm
         SplitContainer2.Panel2.SuspendLayout()
         SplitContainer2.SuspendLayout()
         PanelRecordDetails.SuspendLayout()
-        CType(SplitContainerPreview, ComponentModel.ISupportInitialize).BeginInit()
-        SplitContainerPreview.Panel1.SuspendLayout()
-        SplitContainerPreview.Panel2.SuspendLayout()
-        SplitContainerPreview.SuspendLayout()
-        PanelPreviewControls.SuspendLayout()
-        PanelActionsToolbar.SuspendLayout()
+        PanelPreviewLayout.SuspendLayout()
         PanelPreviewToolbar.SuspendLayout()
+        PanelActionsToolbar.SuspendLayout()
+        PanelPreviewHost.SuspendLayout()
         StatusStrip1.SuspendLayout()
         SuspendLayout()
         ' 
@@ -107,7 +103,7 @@ Partial Class MainForm
         ' 
         ' SplitContainer1.Panel2
         ' 
-        SplitContainer1.Panel2.Controls.Add(SplitContainerPreview)
+        SplitContainer1.Panel2.Controls.Add(PanelPreviewLayout)
         SplitContainer1.Panel2MinSize = 400
         SplitContainer1.Size = New Size(1904, 1019)
         SplitContainer1.SplitterDistance = 700
@@ -224,93 +220,335 @@ Partial Class MainForm
         LabelRecordTitle.Text = "  Record Details"
         LabelRecordTitle.TextAlign = ContentAlignment.MiddleLeft
         ' 
-        ' SplitContainerPreview
+        ' PanelPreviewLayout
         ' 
-        SplitContainerPreview.Dock = DockStyle.Fill
-        SplitContainerPreview.FixedPanel = FixedPanel.Panel1
-        SplitContainerPreview.Location = New Point(0, 0)
-        SplitContainerPreview.Name = "SplitContainerPreview"
-        SplitContainerPreview.Orientation = Orientation.Horizontal
+        PanelPreviewLayout.ColumnCount = 1
+        PanelPreviewLayout.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100F))
+        PanelPreviewLayout.Controls.Add(PanelPreviewToolbar, 0, 0)
+        PanelPreviewLayout.Controls.Add(PanelActionsToolbar, 0, 1)
+        PanelPreviewLayout.Controls.Add(PanelPreviewHost, 0, 2)
+        PanelPreviewLayout.Dock = DockStyle.Fill
+        PanelPreviewLayout.Location = New Point(0, 0)
+        PanelPreviewLayout.Name = "PanelPreviewLayout"
+        PanelPreviewLayout.Padding = New Padding(8, 6, 8, 6)
+        PanelPreviewLayout.RowCount = 3
+        PanelPreviewLayout.RowStyles.Add(New RowStyle())
+        PanelPreviewLayout.RowStyles.Add(New RowStyle())
+        PanelPreviewLayout.RowStyles.Add(New RowStyle(SizeType.Percent, 100F))
+        PanelPreviewLayout.Size = New Size(1200, 1019)
+        PanelPreviewLayout.TabIndex = 0
         ' 
-        ' SplitContainerPreview.Panel1
+        ' PanelPreviewToolbar
         ' 
-        SplitContainerPreview.Panel1.Controls.Add(PanelPreviewControls)
-        SplitContainerPreview.Panel1MinSize = 120
+        PanelPreviewToolbar.AutoSize = True
+        PanelPreviewToolbar.AutoSizeMode = AutoSizeMode.GrowAndShrink
+        PanelPreviewToolbar.ColumnCount = 7
+        PanelPreviewToolbar.ColumnStyles.Add(New ColumnStyle(SizeType.Absolute, 70F))
+        PanelPreviewToolbar.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 20F))
+        PanelPreviewToolbar.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 20F))
+        PanelPreviewToolbar.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 20F))
+        PanelPreviewToolbar.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 20F))
+        PanelPreviewToolbar.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 20F))
+        PanelPreviewToolbar.ColumnStyles.Add(New ColumnStyle(SizeType.Absolute, 30F))
+        PanelPreviewToolbar.Controls.Add(CheckBoxRenderGore, 5, 3)
+        PanelPreviewToolbar.Controls.Add(CheckBoxBodyTri, 4, 2)
+        PanelPreviewToolbar.Controls.Add(LabelPreviewMode, 0, 0)
+        PanelPreviewToolbar.Controls.Add(ComboBoxPreviewMode, 1, 0)
+        PanelPreviewToolbar.Controls.Add(ComboBoxGender, 2, 0)
+        PanelPreviewToolbar.Controls.Add(LabelOutfit, 0, 1)
+        PanelPreviewToolbar.Controls.Add(ComboBoxOutfit, 1, 1)
+        PanelPreviewToolbar.Controls.Add(LabelMorphs, 0, 2)
+        PanelPreviewToolbar.Controls.Add(CheckBoxApplyBoneMorphs, 1, 2)
+        PanelPreviewToolbar.Controls.Add(CheckBoxApplyVertexMorphs, 2, 2)
+        PanelPreviewToolbar.Controls.Add(CheckBoxApplyBodyWeight, 3, 2)
+        PanelPreviewToolbar.Controls.Add(LabelRenders, 0, 3)
+        PanelPreviewToolbar.Controls.Add(CheckBoxRenderBody, 1, 3)
+        PanelPreviewToolbar.Controls.Add(CheckBoxRenderUnderarmor, 2, 3)
+        PanelPreviewToolbar.Controls.Add(CheckBoxRenderArmor, 3, 3)
+        PanelPreviewToolbar.Controls.Add(CheckBoxRenderHeadwear, 4, 3)
+        PanelPreviewToolbar.Controls.Add(ButtonRandomNPC, 6, 0)
+        PanelPreviewToolbar.Controls.Add(ButtonReroll, 6, 1)
+        PanelPreviewToolbar.Controls.Add(ButtonLightRig, 6, 2)
+        PanelPreviewToolbar.Controls.Add(CheckBoxApplySculpt, 5, 2)
+        PanelPreviewToolbar.Dock = DockStyle.Top
+        PanelPreviewToolbar.Location = New Point(11, 9)
+        PanelPreviewToolbar.Name = "PanelPreviewToolbar"
+        PanelPreviewToolbar.RowCount = 4
+        PanelPreviewToolbar.RowStyles.Add(New RowStyle())
+        PanelPreviewToolbar.RowStyles.Add(New RowStyle())
+        PanelPreviewToolbar.RowStyles.Add(New RowStyle())
+        PanelPreviewToolbar.RowStyles.Add(New RowStyle())
+        PanelPreviewToolbar.Size = New Size(1178, 111)
+        PanelPreviewToolbar.TabIndex = 0
         ' 
-        ' SplitContainerPreview.Panel2
+        ' CheckBoxRenderGore
         ' 
-        SplitContainerPreview.Panel2.Controls.Add(PanelPreviewHost)
-        SplitContainerPreview.Panel2MinSize = 200
-        SplitContainerPreview.Size = New Size(1200, 1019)
-        SplitContainerPreview.SplitterDistance = 160
-        SplitContainerPreview.TabIndex = 0
+        CheckBoxRenderGore.AutoSize = True
+        CheckBoxRenderGore.Checked = True
+        CheckBoxRenderGore.CheckState = CheckState.Checked
+        CheckBoxRenderGore.Location = New Point(932, 91)
+        CheckBoxRenderGore.Margin = New Padding(2, 1, 8, 1)
+        CheckBoxRenderGore.Name = "CheckBoxRenderGore"
+        CheckBoxRenderGore.Size = New Size(90, 19)
+        CheckBoxRenderGore.TabIndex = 19
+        CheckBoxRenderGore.Text = "Render gore"
         ' 
-        ' PanelPreviewControls
+        ' CheckBoxBodyTri
         ' 
-        PanelPreviewControls.Controls.Add(PanelActionsToolbar)
-        PanelPreviewControls.Controls.Add(PanelPreviewToolbar)
-        PanelPreviewControls.Controls.Add(LabelStatus)
-        PanelPreviewControls.Dock = DockStyle.Fill
-        PanelPreviewControls.Location = New Point(0, 0)
-        PanelPreviewControls.Name = "PanelPreviewControls"
-        PanelPreviewControls.Padding = New Padding(8, 6, 8, 6)
-        PanelPreviewControls.Size = New Size(1200, 160)
-        PanelPreviewControls.TabIndex = 0
+        CheckBoxBodyTri.AutoSize = True
+        CheckBoxBodyTri.Checked = True
+        CheckBoxBodyTri.CheckState = CheckState.Checked
+        CheckBoxBodyTri.Location = New Point(717, 61)
+        CheckBoxBodyTri.Margin = New Padding(2, 1, 8, 1)
+        CheckBoxBodyTri.Name = "CheckBoxBodyTri"
+        CheckBoxBodyTri.Size = New Size(114, 19)
+        CheckBoxBodyTri.TabIndex = 17
+        CheckBoxBodyTri.Text = "Body Sliders (Tri)"
+        ' 
+        ' LabelPreviewMode
+        ' 
+        LabelPreviewMode.Anchor = AnchorStyles.Left
+        LabelPreviewMode.AutoSize = True
+        LabelPreviewMode.Location = New Point(2, 10)
+        LabelPreviewMode.Margin = New Padding(2, 6, 4, 0)
+        LabelPreviewMode.Name = "LabelPreviewMode"
+        LabelPreviewMode.Size = New Size(51, 15)
+        LabelPreviewMode.TabIndex = 0
+        LabelPreviewMode.Text = "Preview:"
+        ' 
+        ' ComboBoxPreviewMode
+        ' 
+        ComboBoxPreviewMode.Dock = DockStyle.Fill
+        ComboBoxPreviewMode.DropDownStyle = ComboBoxStyle.DropDownList
+        ComboBoxPreviewMode.Items.AddRange(New Object() {"Full Character", "Only Face"})
+        ComboBoxPreviewMode.Location = New Point(72, 2)
+        ComboBoxPreviewMode.Margin = New Padding(2, 2, 4, 2)
+        ComboBoxPreviewMode.Name = "ComboBoxPreviewMode"
+        ComboBoxPreviewMode.Size = New Size(209, 23)
+        ComboBoxPreviewMode.TabIndex = 1
+        ' 
+        ' ComboBoxGender
+        ' 
+        PanelPreviewToolbar.SetColumnSpan(ComboBoxGender, 4)
+        ComboBoxGender.Dock = DockStyle.Fill
+        ComboBoxGender.DropDownStyle = ComboBoxStyle.DropDownList
+        ComboBoxGender.Items.AddRange(New Object() {"Random", "Male", "Female"})
+        ComboBoxGender.Location = New Point(287, 2)
+        ComboBoxGender.Margin = New Padding(2, 2, 4, 2)
+        ComboBoxGender.Name = "ComboBoxGender"
+        ComboBoxGender.Size = New Size(854, 23)
+        ComboBoxGender.TabIndex = 2
+        ' 
+        ' LabelOutfit
+        ' 
+        LabelOutfit.Anchor = AnchorStyles.Left
+        LabelOutfit.AutoSize = True
+        LabelOutfit.Location = New Point(2, 40)
+        LabelOutfit.Margin = New Padding(2, 6, 4, 0)
+        LabelOutfit.Name = "LabelOutfit"
+        LabelOutfit.Size = New Size(41, 15)
+        LabelOutfit.TabIndex = 4
+        LabelOutfit.Text = "Outfit:"
+        ' 
+        ' ComboBoxOutfit
+        ' 
+        PanelPreviewToolbar.SetColumnSpan(ComboBoxOutfit, 5)
+        ComboBoxOutfit.Dock = DockStyle.Fill
+        ComboBoxOutfit.DropDownStyle = ComboBoxStyle.DropDownList
+        ComboBoxOutfit.Location = New Point(72, 32)
+        ComboBoxOutfit.Margin = New Padding(2, 2, 4, 2)
+        ComboBoxOutfit.Name = "ComboBoxOutfit"
+        ComboBoxOutfit.Size = New Size(1069, 23)
+        ComboBoxOutfit.TabIndex = 5
+        ' 
+        ' LabelMorphs
+        ' 
+        LabelMorphs.Anchor = AnchorStyles.Left
+        LabelMorphs.AutoSize = True
+        LabelMorphs.Location = New Point(2, 69)
+        LabelMorphs.Margin = New Padding(2, 4, 4, 0)
+        LabelMorphs.Name = "LabelMorphs"
+        LabelMorphs.Size = New Size(51, 15)
+        LabelMorphs.TabIndex = 15
+        LabelMorphs.Text = "Morphs:"
+        ' 
+        ' CheckBoxApplyBoneMorphs
+        ' 
+        CheckBoxApplyBoneMorphs.AutoSize = True
+        CheckBoxApplyBoneMorphs.Checked = True
+        CheckBoxApplyBoneMorphs.CheckState = CheckState.Checked
+        CheckBoxApplyBoneMorphs.Location = New Point(72, 61)
+        CheckBoxApplyBoneMorphs.Margin = New Padding(2, 1, 8, 1)
+        CheckBoxApplyBoneMorphs.Name = "CheckBoxApplyBoneMorphs"
+        CheckBoxApplyBoneMorphs.Size = New Size(138, 19)
+        CheckBoxApplyBoneMorphs.TabIndex = 7
+        CheckBoxApplyBoneMorphs.Text = "Bone morphs (FMRS)"
+        ' 
+        ' CheckBoxApplyVertexMorphs
+        ' 
+        CheckBoxApplyVertexMorphs.AutoSize = True
+        CheckBoxApplyVertexMorphs.Checked = True
+        CheckBoxApplyVertexMorphs.CheckState = CheckState.Checked
+        CheckBoxApplyVertexMorphs.Location = New Point(287, 61)
+        CheckBoxApplyVertexMorphs.Margin = New Padding(2, 1, 8, 1)
+        CheckBoxApplyVertexMorphs.Name = "CheckBoxApplyVertexMorphs"
+        CheckBoxApplyVertexMorphs.Size = New Size(129, 19)
+        CheckBoxApplyVertexMorphs.TabIndex = 8
+        CheckBoxApplyVertexMorphs.Text = "Vertex morphs (TRI)"
+        ' 
+        ' CheckBoxApplyBodyWeight
+        ' 
+        CheckBoxApplyBodyWeight.AutoSize = True
+        CheckBoxApplyBodyWeight.Checked = True
+        CheckBoxApplyBodyWeight.CheckState = CheckState.Checked
+        CheckBoxApplyBodyWeight.Location = New Point(502, 61)
+        CheckBoxApplyBodyWeight.Margin = New Padding(2, 1, 8, 1)
+        CheckBoxApplyBodyWeight.Name = "CheckBoxApplyBodyWeight"
+        CheckBoxApplyBodyWeight.Size = New Size(140, 19)
+        CheckBoxApplyBodyWeight.TabIndex = 9
+        CheckBoxApplyBodyWeight.Text = "Body weight (MWGT)"
+        ' 
+        ' LabelRenders
+        ' 
+        LabelRenders.Anchor = AnchorStyles.Left
+        LabelRenders.AutoSize = True
+        LabelRenders.Location = New Point(2, 95)
+        LabelRenders.Margin = New Padding(2, 4, 4, 0)
+        LabelRenders.Name = "LabelRenders"
+        LabelRenders.Size = New Size(52, 15)
+        LabelRenders.TabIndex = 16
+        LabelRenders.Text = "Renders:"
+        ' 
+        ' CheckBoxRenderBody
+        ' 
+        CheckBoxRenderBody.AutoSize = True
+        CheckBoxRenderBody.Checked = True
+        CheckBoxRenderBody.CheckState = CheckState.Checked
+        CheckBoxRenderBody.Location = New Point(72, 91)
+        CheckBoxRenderBody.Margin = New Padding(2, 1, 8, 1)
+        CheckBoxRenderBody.Name = "CheckBoxRenderBody"
+        CheckBoxRenderBody.Size = New Size(93, 19)
+        CheckBoxRenderBody.TabIndex = 11
+        CheckBoxRenderBody.Text = "Render body"
+        ' 
+        ' CheckBoxRenderUnderarmor
+        ' 
+        CheckBoxRenderUnderarmor.AutoSize = True
+        CheckBoxRenderUnderarmor.Checked = True
+        CheckBoxRenderUnderarmor.CheckState = CheckState.Checked
+        CheckBoxRenderUnderarmor.Location = New Point(287, 91)
+        CheckBoxRenderUnderarmor.Margin = New Padding(2, 1, 8, 1)
+        CheckBoxRenderUnderarmor.Name = "CheckBoxRenderUnderarmor"
+        CheckBoxRenderUnderarmor.Size = New Size(129, 19)
+        CheckBoxRenderUnderarmor.TabIndex = 12
+        CheckBoxRenderUnderarmor.Text = "Render underarmor"
+        ' 
+        ' CheckBoxRenderArmor
+        ' 
+        CheckBoxRenderArmor.AutoSize = True
+        CheckBoxRenderArmor.Checked = True
+        CheckBoxRenderArmor.CheckState = CheckState.Checked
+        CheckBoxRenderArmor.Location = New Point(502, 91)
+        CheckBoxRenderArmor.Margin = New Padding(2, 1, 8, 1)
+        CheckBoxRenderArmor.Name = "CheckBoxRenderArmor"
+        CheckBoxRenderArmor.Size = New Size(98, 19)
+        CheckBoxRenderArmor.TabIndex = 13
+        CheckBoxRenderArmor.Text = "Render armor"
+        ' 
+        ' CheckBoxRenderHeadwear
+        ' 
+        CheckBoxRenderHeadwear.AutoSize = True
+        CheckBoxRenderHeadwear.Checked = True
+        CheckBoxRenderHeadwear.CheckState = CheckState.Checked
+        CheckBoxRenderHeadwear.Location = New Point(717, 91)
+        CheckBoxRenderHeadwear.Margin = New Padding(2, 1, 8, 1)
+        CheckBoxRenderHeadwear.Name = "CheckBoxRenderHeadwear"
+        CheckBoxRenderHeadwear.Size = New Size(117, 19)
+        CheckBoxRenderHeadwear.TabIndex = 14
+        CheckBoxRenderHeadwear.Text = "Render headwear"
+        ' 
+        ' ButtonRandomNPC
+        ' 
+        ButtonRandomNPC.Anchor = AnchorStyles.Right
+        ButtonRandomNPC.FlatStyle = FlatStyle.System
+        ButtonRandomNPC.Font = New Font("Segoe UI Symbol", 10F, FontStyle.Bold)
+        ButtonRandomNPC.Location = New Point(1150, 2)
+        ButtonRandomNPC.Margin = New Padding(2)
+        ButtonRandomNPC.Name = "ButtonRandomNPC"
+        ButtonRandomNPC.Size = New Size(26, 26)
+        ButtonRandomNPC.TabIndex = 3
+        ButtonRandomNPC.Text = "🎲"
+        ' 
+        ' ButtonReroll
+        ' 
+        ButtonReroll.Anchor = AnchorStyles.Right
+        ButtonReroll.FlatStyle = FlatStyle.System
+        ButtonReroll.Font = New Font("Segoe UI Symbol", 10F, FontStyle.Bold)
+        ButtonReroll.Location = New Point(1150, 32)
+        ButtonReroll.Margin = New Padding(2)
+        ButtonReroll.Name = "ButtonReroll"
+        ButtonReroll.Size = New Size(26, 26)
+        ButtonReroll.TabIndex = 6
+        ButtonReroll.Text = "↻"
+        ' 
+        ' ButtonLightRig
+        ' 
+        ButtonLightRig.Anchor = AnchorStyles.Right
+        ButtonLightRig.FlatStyle = FlatStyle.System
+        ButtonLightRig.Font = New Font("Segoe UI Symbol", 10F, FontStyle.Bold)
+        ButtonLightRig.Location = New Point(1150, 62)
+        ButtonLightRig.Margin = New Padding(2)
+        ButtonLightRig.Name = "ButtonLightRig"
+        ButtonLightRig.Size = New Size(26, 26)
+        ButtonLightRig.TabIndex = 18
+        ButtonLightRig.Text = "💡"
+        ' 
+        ' CheckBoxApplySculpt
+        ' 
+        CheckBoxApplySculpt.AutoSize = True
+        CheckBoxApplySculpt.Checked = True
+        CheckBoxApplySculpt.CheckState = CheckState.Checked
+        CheckBoxApplySculpt.Location = New Point(932, 61)
+        CheckBoxApplySculpt.Margin = New Padding(2, 1, 8, 1)
+        CheckBoxApplySculpt.Name = "CheckBoxApplySculpt"
+        CheckBoxApplySculpt.Size = New Size(134, 19)
+        CheckBoxApplySculpt.TabIndex = 10
+        CheckBoxApplySculpt.Text = "Sculpt (ARMA SCLP)"
         ' 
         ' PanelActionsToolbar
         ' 
         PanelActionsToolbar.AutoSize = True
         PanelActionsToolbar.AutoSizeMode = AutoSizeMode.GrowAndShrink
-        PanelActionsToolbar.ColumnCount = 17
-        PanelActionsToolbar.ColumnStyles.Add(New ColumnStyle())
-        PanelActionsToolbar.ColumnStyles.Add(New ColumnStyle())
-        PanelActionsToolbar.ColumnStyles.Add(New ColumnStyle())
-        PanelActionsToolbar.ColumnStyles.Add(New ColumnStyle())
-        PanelActionsToolbar.ColumnStyles.Add(New ColumnStyle())
-        PanelActionsToolbar.ColumnStyles.Add(New ColumnStyle())
-        PanelActionsToolbar.ColumnStyles.Add(New ColumnStyle())
-        PanelActionsToolbar.ColumnStyles.Add(New ColumnStyle())
-        PanelActionsToolbar.ColumnStyles.Add(New ColumnStyle())
-        PanelActionsToolbar.ColumnStyles.Add(New ColumnStyle())
-        PanelActionsToolbar.ColumnStyles.Add(New ColumnStyle())
-        PanelActionsToolbar.ColumnStyles.Add(New ColumnStyle())
-        PanelActionsToolbar.ColumnStyles.Add(New ColumnStyle())
-        PanelActionsToolbar.ColumnStyles.Add(New ColumnStyle())
-        PanelActionsToolbar.ColumnStyles.Add(New ColumnStyle())
-        PanelActionsToolbar.ColumnStyles.Add(New ColumnStyle())
-        PanelActionsToolbar.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100F))
-        PanelActionsToolbar.Controls.Add(LabelEdit, 0, 0)
-        PanelActionsToolbar.Controls.Add(ButtonEditFace, 1, 0)
-        PanelActionsToolbar.Controls.Add(ButtonEditBody, 3, 0)
-        PanelActionsToolbar.Controls.Add(ButtonEditOutfit, 4, 0)
-        PanelActionsToolbar.Controls.Add(SeparatorActions1, 5, 0)
-        PanelActionsToolbar.Controls.Add(LabelLooksMenu, 6, 0)
-        PanelActionsToolbar.Controls.Add(ButtonLoadLooksmenu, 7, 0)
-        PanelActionsToolbar.Controls.Add(ButtonSaveLooksmenu, 8, 0)
-        PanelActionsToolbar.Controls.Add(SeparatorActions2, 9, 0)
-        PanelActionsToolbar.Controls.Add(LabelLook, 10, 0)
-        PanelActionsToolbar.Controls.Add(ButtonCopyLook, 11, 0)
-        PanelActionsToolbar.Controls.Add(ButtonPasteLook, 12, 0)
-        PanelActionsToolbar.Controls.Add(SeparatorActions3, 13, 0)
-        PanelActionsToolbar.Controls.Add(ButtonSavePlugin, 14, 0)
-        PanelActionsToolbar.Controls.Add(ButtonBuildCharGen, 15, 0)
-        PanelActionsToolbar.Controls.Add(ButtonSaveSceneNif, 16, 0)
+        PanelActionsToolbar.Controls.Add(LabelEdit)
+        PanelActionsToolbar.Controls.Add(ButtonEditFace)
+        PanelActionsToolbar.Controls.Add(ButtonEditBody)
+        PanelActionsToolbar.Controls.Add(ButtonEditOutfit)
+        PanelActionsToolbar.Controls.Add(SeparatorActions1)
+        PanelActionsToolbar.Controls.Add(LabelLooksMenu)
+        PanelActionsToolbar.Controls.Add(ButtonLoadLooksmenu)
+        PanelActionsToolbar.Controls.Add(ButtonSaveLooksmenu)
+        PanelActionsToolbar.Controls.Add(SeparatorActions2)
+        PanelActionsToolbar.Controls.Add(LabelLook)
+        PanelActionsToolbar.Controls.Add(ButtonCopyLook)
+        PanelActionsToolbar.Controls.Add(ButtonPasteLook)
+        PanelActionsToolbar.Controls.Add(SeparatorActions3)
+        PanelActionsToolbar.Controls.Add(ButtonSavePlugin)
+        PanelActionsToolbar.Controls.Add(ButtonBuildCharGen)
+        PanelActionsToolbar.Controls.Add(ButtonSaveSceneNif)
         PanelActionsToolbar.Dock = DockStyle.Top
-        PanelActionsToolbar.Location = New Point(8, 117)
+        PanelActionsToolbar.Location = New Point(11, 126)
         PanelActionsToolbar.Name = "PanelActionsToolbar"
-        PanelActionsToolbar.RowCount = 1
-        PanelActionsToolbar.RowStyles.Add(New RowStyle())
-        PanelActionsToolbar.Size = New Size(1184, 32)
+        PanelActionsToolbar.Size = New Size(1178, 64)
         PanelActionsToolbar.TabIndex = 1
         ' 
         ' LabelEdit
         ' 
+        LabelEdit.Anchor = AnchorStyles.None
         LabelEdit.AutoSize = True
-        LabelEdit.Dock = DockStyle.Fill
-        LabelEdit.Location = New Point(3, 3)
+        LabelEdit.Location = New Point(3, 8)
         LabelEdit.Margin = New Padding(3)
         LabelEdit.Name = "LabelEdit"
-        LabelEdit.Size = New Size(30, 26)
+        LabelEdit.Size = New Size(30, 15)
         LabelEdit.TabIndex = 0
         LabelEdit.Text = "Edit:"
         LabelEdit.TextAlign = ContentAlignment.MiddleLeft
@@ -365,12 +603,12 @@ Partial Class MainForm
         ' 
         ' LabelLooksMenu
         ' 
+        LabelLooksMenu.Anchor = AnchorStyles.None
         LabelLooksMenu.AutoSize = True
-        LabelLooksMenu.Dock = DockStyle.Fill
-        LabelLooksMenu.Location = New Point(309, 3)
+        LabelLooksMenu.Location = New Point(309, 8)
         LabelLooksMenu.Margin = New Padding(3)
         LabelLooksMenu.Name = "LabelLooksMenu"
-        LabelLooksMenu.Size = New Size(72, 26)
+        LabelLooksMenu.Size = New Size(72, 15)
         LabelLooksMenu.TabIndex = 5
         LabelLooksMenu.Text = "LooksMenu:"
         LabelLooksMenu.TextAlign = ContentAlignment.MiddleLeft
@@ -412,12 +650,12 @@ Partial Class MainForm
         ' 
         ' LabelLook
         ' 
+        LabelLook.Anchor = AnchorStyles.None
         LabelLook.AutoSize = True
-        LabelLook.Dock = DockStyle.Fill
-        LabelLook.Location = New Point(573, 3)
+        LabelLook.Location = New Point(573, 8)
         LabelLook.Margin = New Padding(3)
         LabelLook.Name = "LabelLook"
-        LabelLook.Size = New Size(36, 26)
+        LabelLook.Size = New Size(36, 15)
         LabelLook.TabIndex = 9
         LabelLook.Text = "Look:"
         LabelLook.TextAlign = ContentAlignment.MiddleLeft
@@ -488,7 +726,7 @@ Partial Class MainForm
         ' 
         ButtonSaveSceneNif.AutoSize = True
         ButtonSaveSceneNif.Enabled = False
-        ButtonSaveSceneNif.Location = New Point(1050, 2)
+        ButtonSaveSceneNif.Location = New Point(2, 34)
         ButtonSaveSceneNif.Margin = New Padding(2)
         ButtonSaveSceneNif.MinimumSize = New Size(120, 28)
         ButtonSaveSceneNif.Name = "ButtonSaveSceneNif"
@@ -497,303 +735,27 @@ Partial Class MainForm
         ButtonSaveSceneNif.Text = "NPC Model to NIF"
         ButtonSaveSceneNif.UseVisualStyleBackColor = True
         ' 
-        ' PanelPreviewToolbar
+        ' PanelPreviewHost
         ' 
-        PanelPreviewToolbar.AutoSize = True
-        PanelPreviewToolbar.AutoSizeMode = AutoSizeMode.GrowAndShrink
-        PanelPreviewToolbar.ColumnCount = 7
-        PanelPreviewToolbar.ColumnStyles.Add(New ColumnStyle(SizeType.Absolute, 70F))
-        PanelPreviewToolbar.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 20F))
-        PanelPreviewToolbar.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 20F))
-        PanelPreviewToolbar.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 20F))
-        PanelPreviewToolbar.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 20F))
-        PanelPreviewToolbar.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 20F))
-        PanelPreviewToolbar.ColumnStyles.Add(New ColumnStyle(SizeType.Absolute, 30F))
-        PanelPreviewToolbar.Controls.Add(CheckBoxRenderGore, 5, 3)
-        PanelPreviewToolbar.Controls.Add(CheckBoxBodyTri, 4, 2)
-        PanelPreviewToolbar.Controls.Add(LabelPreviewMode, 0, 0)
-        PanelPreviewToolbar.Controls.Add(ComboBoxPreviewMode, 1, 0)
-        PanelPreviewToolbar.Controls.Add(ComboBoxGender, 2, 0)
-        PanelPreviewToolbar.Controls.Add(LabelOutfit, 0, 1)
-        PanelPreviewToolbar.Controls.Add(ComboBoxOutfit, 1, 1)
-        PanelPreviewToolbar.Controls.Add(LabelMorphs, 0, 2)
-        PanelPreviewToolbar.Controls.Add(CheckBoxApplyBoneMorphs, 1, 2)
-        PanelPreviewToolbar.Controls.Add(CheckBoxApplyVertexMorphs, 2, 2)
-        PanelPreviewToolbar.Controls.Add(CheckBoxApplyBodyWeight, 3, 2)
-        PanelPreviewToolbar.Controls.Add(LabelRenders, 0, 3)
-        PanelPreviewToolbar.Controls.Add(CheckBoxRenderBody, 1, 3)
-        PanelPreviewToolbar.Controls.Add(CheckBoxRenderUnderarmor, 2, 3)
-        PanelPreviewToolbar.Controls.Add(CheckBoxRenderArmor, 3, 3)
-        PanelPreviewToolbar.Controls.Add(CheckBoxRenderHeadwear, 4, 3)
-        PanelPreviewToolbar.Controls.Add(ButtonRandomNPC, 6, 0)
-        PanelPreviewToolbar.Controls.Add(ButtonReroll, 6, 1)
-        PanelPreviewToolbar.Controls.Add(ButtonLightRig, 6, 2)
-        PanelPreviewToolbar.Controls.Add(CheckBoxApplySculpt, 5, 2)
-        PanelPreviewToolbar.Dock = DockStyle.Top
-        PanelPreviewToolbar.Location = New Point(8, 6)
-        PanelPreviewToolbar.Name = "PanelPreviewToolbar"
-        PanelPreviewToolbar.RowCount = 4
-        PanelPreviewToolbar.RowStyles.Add(New RowStyle())
-        PanelPreviewToolbar.RowStyles.Add(New RowStyle())
-        PanelPreviewToolbar.RowStyles.Add(New RowStyle())
-        PanelPreviewToolbar.RowStyles.Add(New RowStyle())
-        PanelPreviewToolbar.Size = New Size(1184, 111)
-        PanelPreviewToolbar.TabIndex = 0
-        ' 
-        ' CheckBoxRenderGore
-        ' 
-        CheckBoxRenderGore.AutoSize = True
-        CheckBoxRenderGore.Checked = True
-        CheckBoxRenderGore.CheckState = CheckState.Checked
-        CheckBoxRenderGore.Location = New Point(936, 91)
-        CheckBoxRenderGore.Margin = New Padding(2, 1, 8, 1)
-        CheckBoxRenderGore.Name = "CheckBoxRenderGore"
-        CheckBoxRenderGore.Size = New Size(90, 19)
-        CheckBoxRenderGore.TabIndex = 19
-        CheckBoxRenderGore.Text = "Render gore"
-        ' 
-        ' CheckBoxBodyTri
-        ' 
-        CheckBoxBodyTri.AutoSize = True
-        CheckBoxBodyTri.Checked = True
-        CheckBoxBodyTri.CheckState = CheckState.Checked
-        CheckBoxBodyTri.Location = New Point(720, 61)
-        CheckBoxBodyTri.Margin = New Padding(2, 1, 8, 1)
-        CheckBoxBodyTri.Name = "CheckBoxBodyTri"
-        CheckBoxBodyTri.Size = New Size(114, 19)
-        CheckBoxBodyTri.TabIndex = 17
-        CheckBoxBodyTri.Text = "Body Sliders (Tri)"
-        ' 
-        ' LabelPreviewMode
-        ' 
-        LabelPreviewMode.Anchor = AnchorStyles.Left
-        LabelPreviewMode.AutoSize = True
-        LabelPreviewMode.Location = New Point(2, 10)
-        LabelPreviewMode.Margin = New Padding(2, 6, 4, 0)
-        LabelPreviewMode.Name = "LabelPreviewMode"
-        LabelPreviewMode.Size = New Size(51, 15)
-        LabelPreviewMode.TabIndex = 0
-        LabelPreviewMode.Text = "Preview:"
-        ' 
-        ' ComboBoxPreviewMode
-        ' 
-        ComboBoxPreviewMode.Dock = DockStyle.Fill
-        ComboBoxPreviewMode.DropDownStyle = ComboBoxStyle.DropDownList
-        ComboBoxPreviewMode.Items.AddRange(New Object() {"Full Character", "Only Face"})
-        ComboBoxPreviewMode.Location = New Point(72, 2)
-        ComboBoxPreviewMode.Margin = New Padding(2, 2, 4, 2)
-        ComboBoxPreviewMode.Name = "ComboBoxPreviewMode"
-        ComboBoxPreviewMode.Size = New Size(210, 23)
-        ComboBoxPreviewMode.TabIndex = 1
-        ' 
-        ' ComboBoxGender
-        ' 
-        PanelPreviewToolbar.SetColumnSpan(ComboBoxGender, 4)
-        ComboBoxGender.Dock = DockStyle.Fill
-        ComboBoxGender.DropDownStyle = ComboBoxStyle.DropDownList
-        ComboBoxGender.Items.AddRange(New Object() {"Random", "Male", "Female"})
-        ComboBoxGender.Location = New Point(288, 2)
-        ComboBoxGender.Margin = New Padding(2, 2, 4, 2)
-        ComboBoxGender.Name = "ComboBoxGender"
-        ComboBoxGender.Size = New Size(858, 23)
-        ComboBoxGender.TabIndex = 2
-        ' 
-        ' LabelOutfit
-        ' 
-        LabelOutfit.Anchor = AnchorStyles.Left
-        LabelOutfit.AutoSize = True
-        LabelOutfit.Location = New Point(2, 40)
-        LabelOutfit.Margin = New Padding(2, 6, 4, 0)
-        LabelOutfit.Name = "LabelOutfit"
-        LabelOutfit.Size = New Size(41, 15)
-        LabelOutfit.TabIndex = 4
-        LabelOutfit.Text = "Outfit:"
-        ' 
-        ' ComboBoxOutfit
-        ' 
-        PanelPreviewToolbar.SetColumnSpan(ComboBoxOutfit, 5)
-        ComboBoxOutfit.Dock = DockStyle.Fill
-        ComboBoxOutfit.DropDownStyle = ComboBoxStyle.DropDownList
-        ComboBoxOutfit.Location = New Point(72, 32)
-        ComboBoxOutfit.Margin = New Padding(2, 2, 4, 2)
-        ComboBoxOutfit.Name = "ComboBoxOutfit"
-        ComboBoxOutfit.Size = New Size(1074, 23)
-        ComboBoxOutfit.TabIndex = 5
-        ' 
-        ' LabelMorphs
-        ' 
-        LabelMorphs.Anchor = AnchorStyles.Left
-        LabelMorphs.AutoSize = True
-        LabelMorphs.Location = New Point(2, 69)
-        LabelMorphs.Margin = New Padding(2, 4, 4, 0)
-        LabelMorphs.Name = "LabelMorphs"
-        LabelMorphs.Size = New Size(51, 15)
-        LabelMorphs.TabIndex = 15
-        LabelMorphs.Text = "Morphs:"
-        ' 
-        ' CheckBoxApplyBoneMorphs
-        ' 
-        CheckBoxApplyBoneMorphs.AutoSize = True
-        CheckBoxApplyBoneMorphs.Checked = True
-        CheckBoxApplyBoneMorphs.CheckState = CheckState.Checked
-        CheckBoxApplyBoneMorphs.Location = New Point(72, 61)
-        CheckBoxApplyBoneMorphs.Margin = New Padding(2, 1, 8, 1)
-        CheckBoxApplyBoneMorphs.Name = "CheckBoxApplyBoneMorphs"
-        CheckBoxApplyBoneMorphs.Size = New Size(138, 19)
-        CheckBoxApplyBoneMorphs.TabIndex = 7
-        CheckBoxApplyBoneMorphs.Text = "Bone morphs (FMRS)"
-        ' 
-        ' CheckBoxApplyVertexMorphs
-        ' 
-        CheckBoxApplyVertexMorphs.AutoSize = True
-        CheckBoxApplyVertexMorphs.Checked = True
-        CheckBoxApplyVertexMorphs.CheckState = CheckState.Checked
-        CheckBoxApplyVertexMorphs.Location = New Point(288, 61)
-        CheckBoxApplyVertexMorphs.Margin = New Padding(2, 1, 8, 1)
-        CheckBoxApplyVertexMorphs.Name = "CheckBoxApplyVertexMorphs"
-        CheckBoxApplyVertexMorphs.Size = New Size(129, 19)
-        CheckBoxApplyVertexMorphs.TabIndex = 8
-        CheckBoxApplyVertexMorphs.Text = "Vertex morphs (TRI)"
-        ' 
-        ' CheckBoxApplyBodyWeight
-        ' 
-        CheckBoxApplyBodyWeight.AutoSize = True
-        CheckBoxApplyBodyWeight.Checked = True
-        CheckBoxApplyBodyWeight.CheckState = CheckState.Checked
-        CheckBoxApplyBodyWeight.Location = New Point(504, 61)
-        CheckBoxApplyBodyWeight.Margin = New Padding(2, 1, 8, 1)
-        CheckBoxApplyBodyWeight.Name = "CheckBoxApplyBodyWeight"
-        CheckBoxApplyBodyWeight.Size = New Size(140, 19)
-        CheckBoxApplyBodyWeight.TabIndex = 9
-        CheckBoxApplyBodyWeight.Text = "Body weight (MWGT)"
-        ' 
-        ' LabelRenders
-        ' 
-        LabelRenders.Anchor = AnchorStyles.Left
-        LabelRenders.AutoSize = True
-        LabelRenders.Location = New Point(2, 95)
-        LabelRenders.Margin = New Padding(2, 4, 4, 0)
-        LabelRenders.Name = "LabelRenders"
-        LabelRenders.Size = New Size(52, 15)
-        LabelRenders.TabIndex = 16
-        LabelRenders.Text = "Renders:"
-        ' 
-        ' CheckBoxRenderBody
-        ' 
-        CheckBoxRenderBody.AutoSize = True
-        CheckBoxRenderBody.Checked = True
-        CheckBoxRenderBody.CheckState = CheckState.Checked
-        CheckBoxRenderBody.Location = New Point(72, 91)
-        CheckBoxRenderBody.Margin = New Padding(2, 1, 8, 1)
-        CheckBoxRenderBody.Name = "CheckBoxRenderBody"
-        CheckBoxRenderBody.Size = New Size(93, 19)
-        CheckBoxRenderBody.TabIndex = 11
-        CheckBoxRenderBody.Text = "Render body"
-        ' 
-        ' CheckBoxRenderUnderarmor
-        ' 
-        CheckBoxRenderUnderarmor.AutoSize = True
-        CheckBoxRenderUnderarmor.Checked = True
-        CheckBoxRenderUnderarmor.CheckState = CheckState.Checked
-        CheckBoxRenderUnderarmor.Location = New Point(288, 91)
-        CheckBoxRenderUnderarmor.Margin = New Padding(2, 1, 8, 1)
-        CheckBoxRenderUnderarmor.Name = "CheckBoxRenderUnderarmor"
-        CheckBoxRenderUnderarmor.Size = New Size(129, 19)
-        CheckBoxRenderUnderarmor.TabIndex = 12
-        CheckBoxRenderUnderarmor.Text = "Render underarmor"
-        ' 
-        ' CheckBoxRenderArmor
-        ' 
-        CheckBoxRenderArmor.AutoSize = True
-        CheckBoxRenderArmor.Checked = True
-        CheckBoxRenderArmor.CheckState = CheckState.Checked
-        CheckBoxRenderArmor.Location = New Point(504, 91)
-        CheckBoxRenderArmor.Margin = New Padding(2, 1, 8, 1)
-        CheckBoxRenderArmor.Name = "CheckBoxRenderArmor"
-        CheckBoxRenderArmor.Size = New Size(98, 19)
-        CheckBoxRenderArmor.TabIndex = 13
-        CheckBoxRenderArmor.Text = "Render armor"
-        ' 
-        ' CheckBoxRenderHeadwear
-        ' 
-        CheckBoxRenderHeadwear.AutoSize = True
-        CheckBoxRenderHeadwear.Checked = True
-        CheckBoxRenderHeadwear.CheckState = CheckState.Checked
-        CheckBoxRenderHeadwear.Location = New Point(720, 91)
-        CheckBoxRenderHeadwear.Margin = New Padding(2, 1, 8, 1)
-        CheckBoxRenderHeadwear.Name = "CheckBoxRenderHeadwear"
-        CheckBoxRenderHeadwear.Size = New Size(117, 19)
-        CheckBoxRenderHeadwear.TabIndex = 14
-        CheckBoxRenderHeadwear.Text = "Render headwear"
-        ' 
-        ' ButtonRandomNPC
-        ' 
-        ButtonRandomNPC.Anchor = AnchorStyles.Right
-        ButtonRandomNPC.FlatStyle = FlatStyle.System
-        ButtonRandomNPC.Font = New Font("Segoe UI Symbol", 10F, FontStyle.Bold)
-        ButtonRandomNPC.Location = New Point(1156, 2)
-        ButtonRandomNPC.Margin = New Padding(2)
-        ButtonRandomNPC.Name = "ButtonRandomNPC"
-        ButtonRandomNPC.Size = New Size(26, 26)
-        ButtonRandomNPC.TabIndex = 3
-        ButtonRandomNPC.Text = "🎲"
-        ' 
-        ' ButtonReroll
-        ' 
-        ButtonReroll.Anchor = AnchorStyles.Right
-        ButtonReroll.FlatStyle = FlatStyle.System
-        ButtonReroll.Font = New Font("Segoe UI Symbol", 10F, FontStyle.Bold)
-        ButtonReroll.Location = New Point(1156, 32)
-        ButtonReroll.Margin = New Padding(2)
-        ButtonReroll.Name = "ButtonReroll"
-        ButtonReroll.Size = New Size(26, 26)
-        ButtonReroll.TabIndex = 6
-        ButtonReroll.Text = "↻"
-        ' 
-        ' ButtonLightRig
-        ' 
-        ButtonLightRig.Anchor = AnchorStyles.Right
-        ButtonLightRig.FlatStyle = FlatStyle.System
-        ButtonLightRig.Font = New Font("Segoe UI Symbol", 10F, FontStyle.Bold)
-        ButtonLightRig.Location = New Point(1156, 62)
-        ButtonLightRig.Margin = New Padding(2)
-        ButtonLightRig.Name = "ButtonLightRig"
-        ButtonLightRig.Size = New Size(26, 26)
-        ButtonLightRig.TabIndex = 18
-        ButtonLightRig.Text = "💡"
-        ' 
-        ' CheckBoxApplySculpt
-        ' 
-        CheckBoxApplySculpt.AutoSize = True
-        CheckBoxApplySculpt.Checked = True
-        CheckBoxApplySculpt.CheckState = CheckState.Checked
-        CheckBoxApplySculpt.Location = New Point(936, 61)
-        CheckBoxApplySculpt.Margin = New Padding(2, 1, 8, 1)
-        CheckBoxApplySculpt.Name = "CheckBoxApplySculpt"
-        CheckBoxApplySculpt.Size = New Size(134, 19)
-        CheckBoxApplySculpt.TabIndex = 10
-        CheckBoxApplySculpt.Text = "Sculpt (ARMA SCLP)"
+        PanelPreviewHost.BackColor = Color.FromArgb(CByte(40), CByte(40), CByte(44))
+        PanelPreviewHost.Controls.Add(LabelStatus)
+        PanelPreviewHost.Dock = DockStyle.Fill
+        PanelPreviewHost.Location = New Point(11, 196)
+        PanelPreviewHost.Name = "PanelPreviewHost"
+        PanelPreviewHost.Size = New Size(1178, 814)
+        PanelPreviewHost.TabIndex = 0
         ' 
         ' LabelStatus
         ' 
         LabelStatus.Dock = DockStyle.Fill
         LabelStatus.Font = New Font("Segoe UI", 11F)
         LabelStatus.ForeColor = SystemColors.GrayText
-        LabelStatus.Location = New Point(8, 6)
+        LabelStatus.Location = New Point(0, 0)
         LabelStatus.Name = "LabelStatus"
-        LabelStatus.Size = New Size(1184, 148)
+        LabelStatus.Size = New Size(1178, 814)
         LabelStatus.TabIndex = 1
         LabelStatus.Text = "Loading..."
         LabelStatus.TextAlign = ContentAlignment.MiddleCenter
-        ' 
-        ' PanelPreviewHost
-        ' 
-        PanelPreviewHost.BackColor = Color.FromArgb(CByte(40), CByte(40), CByte(44))
-        PanelPreviewHost.Dock = DockStyle.Fill
-        PanelPreviewHost.Location = New Point(0, 0)
-        PanelPreviewHost.Name = "PanelPreviewHost"
-        PanelPreviewHost.Size = New Size(1200, 855)
-        PanelPreviewHost.TabIndex = 0
         ' 
         ' StatusStrip1
         ' 
@@ -845,16 +807,13 @@ Partial Class MainForm
         CType(SplitContainer2, ComponentModel.ISupportInitialize).EndInit()
         SplitContainer2.ResumeLayout(False)
         PanelRecordDetails.ResumeLayout(False)
-        SplitContainerPreview.Panel1.ResumeLayout(False)
-        SplitContainerPreview.Panel2.ResumeLayout(False)
-        CType(SplitContainerPreview, ComponentModel.ISupportInitialize).EndInit()
-        SplitContainerPreview.ResumeLayout(False)
-        PanelPreviewControls.ResumeLayout(False)
-        PanelPreviewControls.PerformLayout()
-        PanelActionsToolbar.ResumeLayout(False)
-        PanelActionsToolbar.PerformLayout()
+        PanelPreviewLayout.ResumeLayout(False)
+        PanelPreviewLayout.PerformLayout()
         PanelPreviewToolbar.ResumeLayout(False)
         PanelPreviewToolbar.PerformLayout()
+        PanelActionsToolbar.ResumeLayout(False)
+        PanelActionsToolbar.PerformLayout()
+        PanelPreviewHost.ResumeLayout(False)
         StatusStrip1.ResumeLayout(False)
         StatusStrip1.PerformLayout()
         ResumeLayout(False)
@@ -863,10 +822,9 @@ Partial Class MainForm
 
     Friend WithEvents SplitContainer1 As System.Windows.Forms.SplitContainer
     Friend WithEvents SplitContainerLeft As System.Windows.Forms.SplitContainer
-    Friend WithEvents SplitContainerPreview As System.Windows.Forms.SplitContainer
     Friend WithEvents PanelNpcList As System.Windows.Forms.Panel
     Friend WithEvents PanelRecordDetails As System.Windows.Forms.Panel
-    Friend WithEvents PanelPreviewControls As System.Windows.Forms.Panel
+    Friend WithEvents PanelPreviewLayout As System.Windows.Forms.TableLayoutPanel
     Friend WithEvents PanelPreviewHost As System.Windows.Forms.Panel
     Friend WithEvents TreeViewNPCs As System.Windows.Forms.TreeView
     Friend WithEvents TextBoxSearch As System.Windows.Forms.TextBox
@@ -883,7 +841,7 @@ Partial Class MainForm
     Friend WithEvents ButtonReroll As System.Windows.Forms.Button
     Friend WithEvents LabelMorphs As System.Windows.Forms.Label
     Friend WithEvents LabelRenders As System.Windows.Forms.Label
-    Friend WithEvents PanelActionsToolbar As System.Windows.Forms.TableLayoutPanel
+    Friend WithEvents PanelActionsToolbar As System.Windows.Forms.FlowLayoutPanel
     Friend WithEvents LabelEdit As System.Windows.Forms.Label
     Friend WithEvents ButtonEditFace As System.Windows.Forms.Button
     Friend WithEvents ButtonBuildCharGen As System.Windows.Forms.Button

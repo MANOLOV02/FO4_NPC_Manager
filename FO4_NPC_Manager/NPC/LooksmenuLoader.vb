@@ -1,4 +1,4 @@
-Imports System.IO
+﻿Imports System.IO
 Imports System.Text
 Imports System.Text.Json
 Imports FO4_Base_Library
@@ -452,9 +452,10 @@ Public Module LooksmenuLoader
         Next
         If loadOrderIdx < 0 Then Return 0UI
 
-        ' LooksMenu always serializes the bare 24-bit local FormID (Utilities.cpp:112
-        ' `modForm = formID & 0xFFFFFF`), so combine with the load-order index to get the global ID.
-        Return (CUInt(loadOrderIdx) << 24) Or (localFormID And &HFFFFFFUI)
+        ' LooksMenu serializes the runtime FormID masked to 24 bits (Utilities.cpp:112
+        ' `modForm = formID & 0xFFFFFF`). Combine with the plugin's engine FileID slot (full or 0xFE
+        ' light) — PluginManager owns that scheme so ESL plugins resolve correctly.
+        Return pluginManager.GlobalFormIDFromIdentifierLocal(pluginName, localFormID)
     End Function
 
     ''' <summary>Deep-clone a LooksmenuPreset. Single source of truth for preset cloning across
@@ -464,9 +465,10 @@ Public Module LooksmenuLoader
     ''' every snapshot/copy path automatically.</summary>
     Public Function ClonePreset(p As LooksmenuPreset) As LooksmenuPreset
         If p Is Nothing Then Return Nothing
-        Dim c As New LooksmenuPreset()
-        c.SourcePath = p.SourcePath
-        c.Gender = p.Gender
+        Dim c As New LooksmenuPreset With {
+            .SourcePath = p.SourcePath,
+            .Gender = p.Gender
+        }
         c.HeadPartFormIDs.AddRange(p.HeadPartFormIDs)
         c.UnresolvedHeadParts.AddRange(p.UnresolvedHeadParts)
         c.HairColorFormID = p.HairColorFormID
@@ -816,9 +818,11 @@ Public Module LooksmenuLoader
     ''' in the load order, and emit "Plugin.esp|HEX" with the local 24-bit FormID.</summary>
     Private Function FormatFormIdentifier(globalFormID As UInteger, pluginManager As PluginManager) As String
         If globalFormID = 0UI Then Return ""
-        Dim loadOrderIdx = CInt((globalFormID >> 24) And &HFFUI)
-        Dim pluginName = pluginManager.GetPluginNameByLoadOrderIndex(loadOrderIdx)
+        ' GetOriginatingPluginName handles both full (high byte = full slot) and ESL (0xFE light) globals.
+        Dim pluginName = pluginManager.GetOriginatingPluginName(globalFormID)
         If String.IsNullOrEmpty(pluginName) Then Return ""
+        ' LooksMenu's local = runtime FormID & 0xFFFFFF (for ESL this carries the light-slot bits, which
+        ' is exactly what GlobalFormIDFromIdentifierLocal expects on the way back).
         Dim localFormID = globalFormID And &HFFFFFFUI
         ' LooksMenu uses %06X (6-digit zero-padded hex) per Utilities.cpp:127.
         Return pluginName & "|" & localFormID.ToString("X6", Globalization.CultureInfo.InvariantCulture)

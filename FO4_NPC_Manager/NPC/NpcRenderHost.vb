@@ -128,6 +128,22 @@ Friend Class NpcRenderHost
     ''' from after OK. Never assigned here — the owner sets it after constructing the host.</summary>
     Public Property AppliedPresets As Dictionary(Of UInteger, FO4_NPC_Manager.LooksmenuLoader.LooksmenuPreset) = Nothing
 
+    ''' <summary>Outfit combo entries sampled for THIS host's last render (Default + optional Sleep,
+    ''' each carrying one LVLI realization). Non-main hosts (editor / outfit picker) render the Default
+    ''' entry from here, so an editor/picker render never reads or mutates the MainForm-global
+    ''' <c>_currentOutfitEntries</c> + outfit combo. Nothing for the main host, which keeps using
+    ''' <c>_currentOutfitEntries</c> + <c>ComboBoxOutfit</c>.</summary>
+    Public Property OutfitEntries As List(Of MainForm.OutfitComboEntry) = Nothing
+
+    ''' <summary>Out-of-band outfit override for a WYSIWYG preview (Edit Outfit picker), applied in
+    ''' <c>ResolveNPCBaseState</c> on top of the overlay-derived outfit. Host-scoped: it NEVER writes
+    ''' the shared <see cref="AppliedPresets"/> / MainForm <c>_appliedPresets</c>, so browsing outfits
+    ''' in the picker leaves the main render's committed state untouched. Honoured only when
+    ''' <see cref="OutfitPreviewActive"/> is True (the main host leaves it False, so the main render path
+    ''' is inert). Value: Nothing → raw record DOFT · Some(0) → naked · Some(fid) → OTFT / draft.</summary>
+    Public Property OutfitPreviewActive As Boolean = False
+    Public Property OutfitPreviewOverride As UInteger?
+
     ''' <summary>One-shot construction. The PreviewControl must already be created and
     ''' attached to its parent panel; this class does not own its lifetime.</summary>
     Public Sub New(previewCtl As PreviewControl)
