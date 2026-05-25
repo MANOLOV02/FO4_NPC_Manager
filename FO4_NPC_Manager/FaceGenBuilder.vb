@@ -106,11 +106,21 @@ Public Module FaceGenBuilder
     ''' NPC being baked — same code path the live render uses, no preview dependency.</summary>
     Friend Delegate Sub ApplyShapeMaterialOverridesDelegate(candidate As MainForm.MeshCandidate, state As MainForm.NPCVisualState, shapes As IEnumerable(Of IRenderableShape))
 
+    ''' <param name="willBePacked">Distinguishes the two consumers of this bake, which differ ONLY
+    ''' in DebugMode and ONLY in the texture path embedded inside the NIF:
+    '''   True  = Save ESP path: the loose _2 outputs get repacked into a BA2 under canonical
+    '''           (non-_2) names by NpcFaceGenPacker, so the NIF must embed canonical paths
+    '''           (&lt;id&gt;_d.dds) to match the renamed BA2 entries.
+    '''   False = "Build CharGen (loose)" button: nothing repacks/renames, so the NIF must embed
+    '''           the actual on-disk path (&lt;id&gt;_d_2.dds) or the standalone loose NIF references a
+    '''           texture that does not exist under that name.
+    ''' In release (DebugMode=Off) Suffix == CanonSuffix, so this flag is a no-op.</param>
     Friend Function BuildCharGen(npcFormID As UInteger,
                                  pluginManager As PluginManager,
                                  appliedPresets As Dictionary(Of UInteger, LooksmenuLoader.LooksmenuPreset),
                                  host As NpcRenderHost,
                                  applyMaterialOverrides As ApplyShapeMaterialOverridesDelegate,
+                                 willBePacked As Boolean,
                                  Optional lmSkinTemplateResolver As NpcRecordOverlay.ResolveLmSkinTemplateDelegate = Nothing) As BuildResult
 
         ' Build the visual state for the NPC being baked (NPC Y), independent of whatever NPC
@@ -165,7 +175,18 @@ Public Module FaceGenBuilder
         ' writes. withRootNode=True drops in the root NiNode the engine expects.
         Dim nif As New Nifcontent_Class_Manolo()
         Try
-            nif.Create(NiVersion.GetFO4(), withRootNode:=True)
+            ' Shell idéntico a CK (verificado extrayendo el vanilla 0005E560.NIF del BA2, 2026-05-25):
+            ' root = BSFadeNode con nombre "" y Flags 0x2000400E — NO el NiNode "Scene Root" que deja
+            ' Create(withRootNode:=True). El loader FaceGen loose del engine exige este root. Lo
+            ' agregamos como bloque 0 para que GetRootNode()/CloneShape parenteen contra él. (Los shapes
+            ' se re-cuelgan luego bajo un nodo BSFaceGenNiNodeSkinned — ver post-proceso más abajo.)
+            nif.Create(NiVersion.GetFO4(), withRootNode:=False)
+            Dim faceRoot As New NiflySharp.Blocks.BSFadeNode() With {
+                .Name = New NiflySharp.NiStringRef(""),
+                .Flags_ui = &H2000400EUI,
+                .Rotation = New NiflySharp.Structs.Matrix33 With {.M11 = 1.0F, .M22 = 1.0F, .M33 = 1.0F}
+            }
+            nif.AddBlock(faceRoot)
         Catch ex As Exception
             result.Summary = $"Failed to create FaceGen NIF shell: {ex.Message}"
             Return result
@@ -213,6 +234,16 @@ Public Module FaceGenBuilder
         End If
         Dim bakeState As FaceGenBuildPipeline.BakeState =
             FaceGenBuildPipeline.BuildBakeState(npcFormID, pluginManager, appliedPresets, regionsFile)
+        ' Skin-tint strength for SkinTint shapes (shaderType=5). It's the NPC's QNAM/SkinTone-layer
+        ' alpha — a SEPARATE float from the skin tone RGB (NpcRecordOverlay derives both into
+        ' TextureLightingFloats: RGB from the SkinTone palette, A from the layer opacity, else the
+        ' raw QNAM float). The LIBRARY Save_To_Shader writes it to the shader (gated on SkinTint);
+        ' we only hand it the value, because it's NPC-level (the BGSM has no skin-tint-alpha field) —
+        ' exactly the split used for the skin tone COLOR. Use the float (not Color.A/255). 1.0 if absent.
+        Dim skinTintAlpha As Single = 1.0F
+        If bakeState IsNot Nothing AndAlso bakeState.NpcData IsNot Nothing AndAlso bakeState.NpcData.TextureLightingFloats IsNot Nothing Then
+            skinTintAlpha = bakeState.NpcData.TextureLightingFloats.A
+        End If
         For Each kv In hdptMap.OrderBy(Function(p) p.Value.Hdpt.PartType).ThenBy(Function(p) p.Key)
             Dim hdptName = kv.Key
             Dim hdpt = kv.Value.Hdpt
@@ -322,7 +353,7 @@ Public Module FaceGenBuilder
                         ' BaseColor, NonOccluder). AlphaBlendMode left as the source has it
                         ' (Unknown) per user instruction — CK's normalization to None is purely
                         ' cosmetic at this point.
-                        ApplyRenderResolvedMaterialToShape(nif, cloned, srcNif, srcShape, hdpt, effectiveHeadPartType, state, pluginManager, applyMaterialOverrides)
+                        ApplyRenderResolvedMaterialToShape(nif, cloned, srcNif, srcShape, hdpt, effectiveHeadPartType, state, pluginManager, applyMaterialOverrides, skinTintAlpha)
 
                         ' --- FaceCustomization texture bake: only for the Face shape (PartType=1).
                         ' GL-readback the 3 GPU textures the FaceTintCompositor wrote (D/N/S),
@@ -337,7 +368,7 @@ Public Module FaceGenBuilder
                             BakeFaceTextures(nif, cloned, srcNif, srcShape,
                                              npcFormID, originPlugin,
                                              pluginManager, appliedPresets, host,
-                                             state,
+                                             state, willBePacked,
                                              lmSkinTemplateResolver)
                         End If
 
@@ -433,6 +464,86 @@ Public Module FaceGenBuilder
         Catch ex As Exception
         End Try
 
+        ' --- FaceGen shell parity (Fase 1): los shapes deben colgar de un NiNode
+        ' 'BSFaceGenNiNodeSkinned' (Flags 0x2000000E, identidad), NO directo del root. El root ya es
+        ' BSFadeNode "" (creado arriba). Sin esta capa el FaceGen LOOSE no renderiza la cabeza (el
+        ' engine FaceGen exige la geometría skinneada bajo ese nodo). Verificado contra el NIF vanilla
+        ' de CK 2026-05-25. Los huesos (NiNode) quedan como hijos directos del root, igual que CK.
+        ' Corre DESPUÉS de RemoveUnreferencedBlocks para operar sobre índices de bloque ya finales.
+        Try
+            Dim faceGenRoot = nif.GetRootNode()
+            If faceGenRoot IsNot Nothing AndAlso faceGenRoot.Children IsNot Nothing Then
+                Dim skinnedNode As New NiflySharp.Blocks.NiNode() With {
+                    .Name = New NiflySharp.NiStringRef("BSFaceGenNiNodeSkinned"),
+                    .Flags_ui = &H2000000EUI,
+                    .Rotation = New NiflySharp.Structs.Matrix33 With {.M11 = 1.0F, .M22 = 1.0F, .M33 = 1.0F}
+                }
+                Dim skinnedIdx = nif.AddBlock(skinnedNode)
+
+                Dim boneChildIdx As New List(Of Integer)
+                Dim shapeChildIdx As New List(Of Integer)
+                ' Race height (RACE.DATA Female/MaleHeight, ya parseado en bakeState.Race). CK escala
+                ' las TRANSLATIONS de los nodos de hueso por este factor (female ≈ 0.98). Solo a los
+                ' nodos de referencia: la geometría queda ×1.0 (la escala real la aplica el motor al
+                ' actor en runtime; hornearla en la malla la dejaría doble-escalada). Verificado vs CK
+                ' 2026-05-25: nodos female = base × 0.98, geo ×1.0, bind ×1.0.
+                Dim raceHeight As Single = 1.0F
+                If bakeState IsNot Nothing AndAlso bakeState.Race IsNot Nothing Then
+                    Dim rh = If(bakeState.IsFemale, bakeState.Race.FemaleHeight, bakeState.Race.MaleHeight)
+                    If rh > 0.0F Then raceHeight = rh
+                End If
+                For Each childIdx In faceGenRoot.Children.Indices.ToList()
+                    Dim childBlk = nif.GetBlock(childIdx)
+                    If TypeOf childBlk Is INiShape Then
+                        shapeChildIdx.Add(childIdx)
+                        Dim triShape = TryCast(childBlk, NiflySharp.Blocks.BSTriShape)
+                        If triShape IsNot Nothing Then
+                            ' #2 BoundingSphere → (0,0,0,0) como CK: el FaceGen vanilla deja la esfera
+                            ' en cero y el engine computa los bounds del skinned desde los huesos.
+                            ' Nosotros calculábamos valores reales (deriva de culling). Igualar a CK.
+                            triShape.Bounds = New NiflySharp.Structs.BoundingSphere(System.Numerics.Vector3.Zero, 0.0F)
+                            ' #1 skin.SkeletonRoot → BSFaceGenNiNodeSkinned. CK apunta el SkeletonRoot
+                            ' (NiBlockPtr) del BSSkin::Instance al nodo skinned; nosotros lo dejábamos
+                            ' null(-1). Lo seteamos al índice del nodo creado arriba.
+                            Dim skinRef = triShape.SkinInstanceRef
+                            If skinRef IsNot Nothing AndAlso skinRef.Index >= 0 AndAlso skinRef.Index < nif.Blocks.Count Then
+                                Dim si = TryCast(nif.Blocks(skinRef.Index), NiflySharp.Blocks.BSSkin_Instance)
+                                If si IsNot Nothing Then
+                                    si.SkeletonRoot = New NiflySharp.NiBlockPtr(Of NiflySharp.Blocks.NiAVObject)(skinnedIdx)
+                                End If
+                            End If
+                        End If
+                    Else
+                        ' Bone node (flat child of root). Dos toques de paridad CK:
+                        '  - HEAD→Head: match EXACTO del nombre completo "HEAD" (no Contains/Replace,
+                        '    para no tocar "Head_skin" ni otros). CK normaliza el casing del hueso head;
+                        '    el match skin→esqueleto del actor es case-insensitive (no afecta render),
+                        '    lo igualamos por paridad byte. Fuente real del mesh/esqueleto = "HEAD".
+                        '  - race height: escalar SOLO la translation del nodo por raceHeight (ver arriba).
+                        '    Geometría y bind intactos.
+                        boneChildIdx.Add(childIdx)
+                        Dim boneNode = TryCast(childBlk, NiflySharp.Blocks.NiNode)
+                        If boneNode IsNot Nothing Then
+                            If boneNode.Name IsNot Nothing AndAlso boneNode.Name.String = "HEAD" Then
+                                boneNode.Name.String = "Head"
+                            End If
+                            If raceHeight <> 1.0F Then
+                                boneNode.Translation = boneNode.Translation * raceHeight
+                            End If
+                        End If
+                    End If
+                Next
+
+                ' root.Children = huesos + BSFaceGenNiNodeSkinned ; skinnedNode.Children = los shapes
+                boneChildIdx.Add(skinnedIdx)
+                faceGenRoot.Children.SetIndices(boneChildIdx)
+                skinnedNode.Children.SetIndices(shapeChildIdx)
+                Logger.LogLazy(Function() $"[FACEBAKE] reparent OK: {shapeChildIdx.Count} shapes bajo BSFaceGenNiNodeSkinned, {boneChildIdx.Count - 1} huesos en root")
+            End If
+        Catch ex As Exception
+            Logger.LogLazy(Function() $"[FACEBAKE] reparent BSFaceGenNiNodeSkinned FAILED: {ex.GetType().Name}: {ex.Message}")
+        End Try
+
         result.ShapesKept = shapesCloned
         result.ShapesDropped = 0
 
@@ -446,7 +557,9 @@ Public Module FaceGenBuilder
             result.Summary = "DataPath unset; cannot write .nif"
             Return result
         End If
-        Dim nifFileName = If(DebugMode, $"{formIdLow:X8}_2.nif", $"{formIdLow:X8}.nif")
+        ' Extension uppercase ".NIF" to match CK vanilla exactly (CK writes <FormID>.NIF). Cosmetic
+        ' on Windows (case-insensitive FS) but removes it as a variable while we chase the loose bug.
+        Dim nifFileName = If(DebugMode, $"{formIdLow:X8}_2.NIF", $"{formIdLow:X8}.NIF")
         Dim outAbs = Path.Combine(dataPathForNif,
                                   "Meshes", "Actors", "Character", "FaceGenData", "FaceGeom",
                                   originPlugin, nifFileName)
@@ -614,7 +727,8 @@ Public Module FaceGenBuilder
                                                     effectiveHeadPartType As Integer,
                                                     state As MainForm.NPCVisualState,
                                                     pluginManager As PluginManager,
-                                                    applyMaterialOverrides As ApplyShapeMaterialOverridesDelegate)
+                                                    applyMaterialOverrides As ApplyShapeMaterialOverridesDelegate,
+                                                    skinTintAlpha As Single)
         Dim sourceName As String = If(cloned.Name?.String, "")
         If applyMaterialOverrides Is Nothing Then
             Return
@@ -724,6 +838,11 @@ Public Module FaceGenBuilder
                 Else
                     slot5Path = mat.EnvmapMaskTexture
                 End If
+                ' Hand the library the per-NPC skin-tint strength (from the NPC's QNAM/SkinTone-layer
+                ' alpha). Save_To_Shader writes it to shad.SkinTintAlpha (only when SkinTint) — the
+                ' value is NPC-level, not a BGSM field, so the app provides it (same split as the skin
+                ' tone COLOR which the resolver puts in HairTintColor and the library writes).
+                mat.SkinTintAlpha = skinTintAlpha
                 mat.Save_To_Shader(nif, cloned, bsls, mat.NifShaderType, slot5Path)
                 ' CK al bakear el FaceGen deja shad.Name vacío en el shader inline (no
                 ' linkea al BGSM external). Replicamos eso para que el .nif2 sea standalone
@@ -743,6 +862,25 @@ Public Module FaceGenBuilder
                     bsls.EmissiveColor = New NiflySharp.Structs.Color4(0.0F, 0.0F, 0.0F, 1.0F)
                 End If
                 bsls.RootMaterialName = ""
+                ' CK sets Transform_Changed (F4SPF2 bit 7) on every baked FaceGen shape — universal
+                ' across all 4 reference NPCs (human M/F, ghoul, supermutant), every single shape,
+                ' no exception (measured 2026-05-25 via C:\temp\flagcmp.py). It's a housekeeping flag,
+                ' not a material field (absent from the BGSM), so it belongs here with the other CK
+                ' bake conventions, not in Save_To_Shader. shad.Type was set by Save_To_Shader above,
+                ' so SetFlagSF2 resolves the FO4-specific bit correctly.
+                NiflySharp.Helpers.ShaderHelper.SetFlagSF2(bsls, CUInt(NiflySharp.Enums.Fallout4ShaderPropertyFlags2.Transform_Changed), True)
+                ' CK downgrades the eye-env shader variant to plain env-mapping in every FaceGen bake:
+                ' Eye_Environment_Mapping (F4SPF1 bit 17) = 0 on ALL baked eye shapes (measured 4 NPCs,
+                ' 2026-05-25), even the iris whose SOURCE mesh (MaleEyes.nif) ships it ON together with
+                ' the eye cubemap. In FO4 (StreamVersion 130) the block has NO ShaderType field — the
+                ' eye-vs-standard distinction lives only in the flags — and CK never keeps the eye path
+                ' for a baked static head; the cubemap reflection rides on Environment_Mapping (bit 7,
+                ' which we already match). Save_To_Shader writes bit 17 from the BGSM's legacy
+                ' bEnvironmentMappingEye (True on the shared human eye material), so without this clear
+                ' we'd set it ON for every eye — even Wet/Lashes whose source mesh has it OFF. Clearing
+                ' here (not in Save_To_Shader, which must stay faithful for normal render of the source
+                ' mesh) matches CK. Unconditional: no shape in any of the 4 reference NPCs keeps bit 17.
+                NiflySharp.Helpers.ShaderHelper.SetFlagSF1(bsls, CUInt(NiflySharp.Enums.Fallout4ShaderPropertyFlags1.Eye_Environment_Mapping), False)
             Else
                 Dim bes = TryCast(shad, BSEffectShaderProperty)
                 If bes Is Nothing Then
@@ -754,6 +892,11 @@ Public Module FaceGenBuilder
                 End If
                 mat.Save_To_Shader(nif, cloned, bes)
                 If bes.Name IsNot Nothing Then bes.Name.String = ""
+                ' Transform_Changed (F4SPF2 bit 7) — CK lo setea en TODO shape baked, también los
+                ' effect shaders (AO/MouthShadow). El fix de lighting (bsls) lo cubría, pero esta
+                ' rama (bes) se lo saltaba → AO/MouthShadow quedaban con bit 7 = 0 vs CK 1. Mismo
+                ' tratamiento que bsls. shad.Type ya quedó seteado por Save_To_Shader arriba.
+                NiflySharp.Helpers.ShaderHelper.SetFlagSF2(bes, CUInt(NiflySharp.Enums.Fallout4ShaderPropertyFlags2.Transform_Changed), True)
             End If
         Catch ex As Exception
         End Try
@@ -774,9 +917,11 @@ Public Module FaceGenBuilder
     ''' Also reads the CK-baked .dds (uncompressed BGRA8) and logs a per-channel BGRA RMS
     ''' diff — gives a quantitative signal of how close our composited bake is to CK's.</summary>
     ''' <summary>Bake the per-NPC FaceCustomization _d/_msn/_s textures, write them to the loose
-    ''' folder under <c>Data\Textures\Actors\Character\FaceCustomization\&lt;plugin&gt;\&lt;formId&gt;_*_2.dds</c>,
-    ''' and rewrite slots 0/1/7 of the cloned shape's TextureSet to point at the canonical
-    ''' engine paths.
+    ''' folder under <c>Data\Textures\Actors\Character\FaceCustomization\&lt;plugin&gt;\&lt;formId&gt;_*_2.dds</c>
+    ''' (the _2 suffix only in DebugMode), and rewrite slots 0/1/7 of the cloned shape's TextureSet
+    ''' to point at those textures. The embedded path uses the canonical (non-_2) name when
+    ''' <paramref name="willBePacked"/> is True (Save ESP → BA2 repack renames to canonical) or the
+    ''' actual on-disk _2 name when False ("Build CharGen (loose)" → standalone, no rename).
     '''
     ''' Standalone — does NOT read the live preview <c>Textures_Dictionary</c>. The face source
     ''' D/N/S DDS bytes are pulled directly from the FilesDictionary via the source NIF's
@@ -795,6 +940,7 @@ Public Module FaceGenBuilder
                                  appliedPresets As Dictionary(Of UInteger, LooksmenuLoader.LooksmenuPreset),
                                  host As NpcRenderHost,
                                  state As MainForm.NPCVisualState,
+                                 willBePacked As Boolean,
                                  Optional lmSkinTemplateResolver As NpcRecordOverlay.ResolveLmSkinTemplateDelegate = Nothing)
         Logger.LogLazy(Function() $"[FACEBAKE] enter npcFormID=0x{npcFormID:X8} originPlugin='{originPlugin}' srcShape='{srcShape?.Name?.ToString()}'")
         ' --- 1. Resolve the face source material (D/N/S texture paths) from the source NIF. ---
@@ -960,12 +1106,15 @@ Public Module FaceGenBuilder
         Dim dxgiD = If(DebugMode, DirectXTextureConversionHelper.DxgiFormatB8G8R8A8Unorm, DirectXTextureConversionHelper.DxgiFormatBc3Unorm)
         Dim dxgiN = If(DebugMode, DirectXTextureConversionHelper.DxgiFormatB8G8R8A8Unorm, DirectXTextureConversionHelper.DxgiFormatBc5Unorm)
         Dim dxgiS = If(DebugMode, DirectXTextureConversionHelper.DxgiFormatB8G8R8A8Unorm, DirectXTextureConversionHelper.DxgiFormatBc5Unorm)
-        ' CanonSuffix = the canonical (non-_2) suffix. The DDS files on disk use Suffix (which
-        ' carries _2 in DebugMode), but the path embedded INTO the NIF always uses CanonSuffix, so
-        ' the emitted NIF references <id>_d.dds even in DebugMode. The loose _2.nif is never loaded
-        ' by the engine directly (wrong name) — it is either renamed to <id>.nif for a manual test
-        ' or repacked into BA2 under the canonical name (NpcFaceGenPacker debugSandbox path); both
-        ' resolve textures as <id>_d.dds. In release Suffix already equals CanonSuffix (no-op).
+        ' CanonSuffix = the canonical (non-_2) suffix. The DDS files on disk always use Suffix
+        ' (which carries _2 in DebugMode). The suffix embedded INTO the NIF depends on the consumer
+        ' (willBePacked), because the two paths reconcile the _2 differently:
+        '   willBePacked=True  (Save ESP): NpcFaceGenPacker repacks the _2 loose into a BA2 under
+        '       canonical names, so embed CanonSuffix (<id>_d.dds) to match the renamed entries.
+        '   willBePacked=False ("Build CharGen (loose)" button): nothing repacks/renames, so embed
+        '       the actual on-disk Suffix (<id>_d_2.dds) — otherwise the standalone loose NIF would
+        '       reference <id>_d.dds, which does not exist on disk under that name.
+        ' In release Suffix already equals CanonSuffix, so willBePacked is a no-op either way.
         Dim slotPlan = New (Slot As Integer, ResultId As Integer, Dxgi As Integer, Suffix As String, CanonSuffix As String)() {
             (0, pipelineResult.Diffuse.TextureId, dxgiD, suffixD, "_d.dds"),
             (1, pipelineResult.Normal.TextureId, dxgiN, suffixN, "_msn.dds"),
@@ -1026,7 +1175,10 @@ Public Module FaceGenBuilder
                 Continue For
             End Try
 
-            Dim canonicalNifPath = $"Data\Textures\Actors\Character\FaceCustomization\{originPlugin}\{formIdLow:X8}{entry.CanonSuffix}"
+            Dim embeddedSuffix = If(willBePacked, entry.CanonSuffix, entry.Suffix)
+            ' Full "Data\Textures\..." prefix, matching CK vanilla exactly (CK's loose FaceGen renders
+            ' fine with this prefix — verified 2026-05-25 — so the prefix is NOT the loose-breaker).
+            Dim canonicalNifPath = $"Data\Textures\Actors\Character\FaceCustomization\{originPlugin}\{formIdLow:X8}{embeddedSuffix}"
             While texset.Textures.Count <= entry.Slot
                 texset.Textures.Add(New NiflySharp.NiString4 With {.Content = ""})
             End While

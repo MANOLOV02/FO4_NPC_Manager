@@ -397,6 +397,7 @@ Public Class SaveEsp_Form
         ComboBoxEncoding.Items.Add(New EncodingOption With {.Label = "Windows-1253 (Greek)", .OverrideValue = "1253"})
         ComboBoxEncoding.Items.Add(New EncodingOption With {.Label = "Windows-1254 (Turkish)", .OverrideValue = "1254"})
         ComboBoxEncoding.Items.Add(New EncodingOption With {.Label = "Windows-1256 (Arabic)", .OverrideValue = "1256"})
+        ComboBoxEncoding.Items.Add(New EncodingOption With {.Label = "CP949 (Korean UHC)", .OverrideValue = "949"})
         ComboBoxEncoding.Items.Add(New EncodingOption With {.Label = "CP932 (Japanese Shift-JIS)", .OverrideValue = "932"})
         ComboBoxEncoding.Items.Add(New EncodingOption With {.Label = "CP936 (Simplified Chinese GBK)", .OverrideValue = "936"})
         ComboBoxEncoding.Items.Add(New EncodingOption With {.Label = "CP950 (Traditional Chinese Big5)", .OverrideValue = "950"})

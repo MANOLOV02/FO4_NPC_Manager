@@ -33,6 +33,28 @@ Public Class MainForm
     ''' (<see cref="GetOutfitCandidates"/>) runs over this set, expanding each OTFT deterministically
     ''' via OutfitResolver.EnumerateAllTerminalArmos and checking per-ARMA race+gender validity.</summary>
     Private _outfitUniverse As New HashSet(Of UInteger)()
+
+    ' --- Manual multi-select for the NPC tree (WinForms TreeView has no native multi-select) ---
+    ''' <summary>NPC FormIDs currently multi-selected in the tree. Keyed by FormID so an NPC that
+    ''' appears under several nodes (its plugin group + every LVLN that lists it) highlights
+    ''' everywhere at once and batch ops dedup naturally. Drives the highlight in
+    ''' <see cref="TreeViewNPCs_DrawNode"/> and the random render pick.</summary>
+    Private ReadOnly _selectedNpcFormIDs As New HashSet(Of UInteger)()
+    ''' <summary>Anchor node for Shift-range selection (set on the last plain/Ctrl click).</summary>
+    Private _multiSelectAnchorNode As TreeNode = Nothing
+    ''' <summary>FormID of the NPC actually being rendered out of the selection (the random pick, or
+    ''' the single selected one). Painted with the full highlight; the rest of the set gets a paler
+    ''' one so the user can see which member was rolled.</summary>
+    Private _currentRandomPickFormID As UInteger = 0UI
+    ''' <summary>Pale highlight brush for non-picked members of a multi-selection. Lazily created,
+    ''' disposed in <see cref="MainForm_FormClosing"/>.</summary>
+    Private _multiSelectBrush As System.Drawing.SolidBrush = Nothing
+    ''' <summary>FormIDs the tree context menu acts on (the multi-selection when the right-click
+    ''' lands inside it, else just the clicked NPC). Set in <see cref="TreeViewNPCs_NodeMouseClick"/>.</summary>
+    Private ReadOnly _contextMenuTargets As New List(Of UInteger)()
+    ''' <summary>Debounce timer: coalesces rapid selection changes so the heavy render fires once
+    ''' after the selection settles (same pattern as Wardrobe Manager's source/target lists).</summary>
+    Private WithEvents _selectionDebounceTimer As New System.Windows.Forms.Timer With {.Interval = 180}
     ''' <summary>Cache of GetOutfitCandidates results keyed by (race, isFemale). The deterministic
     ''' OTFT→ARMO expansion + ARMA parse is the costly part, so the first picker-open per race/gender
     ''' pays it and subsequent opens are instant. Cleared whenever the universe is rebuilt.</summary>
@@ -2544,72 +2566,271 @@ Public Class MainForm
             nodeFont = _dirtyNodeFont
         End If
 
-        ' Selection highlight
-        If (e.State And TreeNodeStates.Selected) <> 0 Then
+        ' Selection highlight. With manual multi-select the framework only marks SelectedNode, so we
+        ' paint every node whose NPC FormID is in _selectedNpcFormIDs. The member actually being
+        ' rendered (_currentRandomPickFormID) gets the full system highlight; the rest of a
+        ' multi-selection get a paler highlight so the user can tell which one was rolled.
+        Dim inMultiSet As Boolean = (npc IsNot Nothing AndAlso _selectedNpcFormIDs.Contains(npc.FormID))
+        Dim isPicked As Boolean = (npc IsNot Nothing AndAlso _currentRandomPickFormID <> 0UI AndAlso npc.FormID = _currentRandomPickFormID)
+        ' Only honor the framework's SelectedNode highlight when there is NO multi-selection (e.g. an
+        ' LVLN / group node is focused). Otherwise the framework SelectedNode can diverge from our set
+        ' and paint a PHANTOM second highlight — the "I selected one but two stay lit" bug.
+        Dim frameworkSelected As Boolean = ((e.State And TreeNodeStates.Selected) <> 0) AndAlso _selectedNpcFormIDs.Count = 0
+        If isPicked OrElse frameworkSelected Then
             e.Graphics.FillRectangle(SystemBrushes.Highlight, e.Bounds)
             TextRenderer.DrawText(e.Graphics, e.Node.Text, nodeFont, e.Bounds, SystemColors.HighlightText, TextFormatFlags.GlyphOverhangPadding)
+        ElseIf inMultiSet Then
+            If _multiSelectBrush Is Nothing Then _multiSelectBrush = New SolidBrush(Color.FromArgb(198, 220, 247))
+            e.Graphics.FillRectangle(_multiSelectBrush, e.Bounds)
+            TextRenderer.DrawText(e.Graphics, e.Node.Text, nodeFont, e.Bounds, textColor, TextFormatFlags.GlyphOverhangPadding)
         Else
             e.Graphics.FillRectangle(SystemBrushes.Window, e.Bounds)
             TextRenderer.DrawText(e.Graphics, e.Node.Text, nodeFont, e.Bounds, textColor, TextFormatFlags.GlyphOverhangPadding)
         End If
     End Sub
 
+    ''' <summary>Tree selection changed (mouse or keyboard). With manual multi-select this no longer
+    ''' renders directly — it updates the selection set (collapsing to a single NPC when no Ctrl/Shift
+    ''' modifier is held; Ctrl/Shift mutations happen in <see cref="TreeViewNPCs_NodeMouseClick"/>) and
+    ''' (re)starts the debounce timer. The render runs once the selection settles —
+    ''' see <see cref="SelectionDebounceTimer_Tick"/> / <see cref="RenderFromCurrentSelection"/>.</summary>
+    ''' <summary>AfterSelect ONLY refreshes the record-details panel. Selection-SET management lives
+    ''' in <see cref="TreeViewNPCs_NodeMouseClick"/> (mouse) and <see cref="TreeViewNPCs_KeyUp"/>
+    ''' (keyboard), so it can never fight this event: touching _selectedNpcFormIDs here collapsed or
+    ''' deselected multi-selections because AfterSelect's order relative to NodeMouseClick is not
+    ''' guaranteed (it can fire before OR after the click handler).</summary>
     Private Sub TreeViewNPCs_AfterSelect(sender As Object, e As TreeViewEventArgs) Handles TreeViewNPCs.AfterSelect
-        Dim selectedNode = e.Node
-        If selectedNode Is Nothing Then
-            PopulateRecordDetails(Nothing)
-            DisableNpcActionControls()
+        PopulateRecordDetails(TryCast(e.Node?.Tag, NPC_Data))
+    End Sub
+
+    ''' <summary>Tree mouse click. LEFT click drives manual multi-select (plain = single, Ctrl =
+    ''' toggle, Shift = range over the currently-shown NPC leaf nodes). RIGHT click opens the context
+    ''' menu on NPC nodes only (never on plugin-group / LVLN / empty space), targeting the whole
+    ''' multi-selection when the click lands inside it, otherwise just the clicked NPC. Right-click
+    ''' does not start a render (no heavy work on a context click).</summary>
+    Private Sub TreeViewNPCs_NodeMouseClick(sender As Object, e As TreeNodeMouseClickEventArgs) Handles TreeViewNPCs.NodeMouseClick
+        If e.Button = MouseButtons.Left Then
+            HandleLeftMultiSelectClick(e)
             Return
         End If
+        If e.Button <> MouseButtons.Right Then Return
 
-        ClearPreviewImmediate()
+        Dim npc = TryCast(e.Node.Tag, NPC_Data)
+        If npc Is Nothing Then Return
 
-        ' Check if the selected node is a LVLN
-        Dim lvlnData = TryCast(selectedNode.Tag, LVLN_Data)
-        If lvlnData IsNot Nothing Then
-            PopulateRecordDetails(Nothing)
-            Dim requestVersion = Interlocked.Increment(_previewRequestVersion)
-            LoadLVLNOnDemandAsync(lvlnData, requestVersion)
-            Return
+        ' Action targets: the whole multi-selection if the right-click landed inside it, otherwise
+        ' re-select just this node and act on it alone.
+        _contextMenuTargets.Clear()
+        If _selectedNpcFormIDs.Count > 1 AndAlso _selectedNpcFormIDs.Contains(npc.FormID) Then
+            _contextMenuTargets.AddRange(_selectedNpcFormIDs)
+        Else
+            _selectedNpcFormIDs.Clear()
+            _selectedNpcFormIDs.Add(npc.FormID)
+            _multiSelectAnchorNode = e.Node
+            _currentRandomPickFormID = npc.FormID
+            _contextMenuTargets.Add(npc.FormID)
+            TreeViewNPCs.Invalidate()
         End If
+        _contextMenuNpcFormID = npc.FormID
 
-        ' Otherwise expect NPC_Data
-        Dim npc = TryCast(selectedNode.Tag, NPC_Data)
+        ' Reset is only meaningful when at least one target has something to discard.
+        MenuItemResetOverlay.Enabled = _contextMenuTargets.Any(
+            Function(fid) _appliedPresets.ContainsKey(fid) OrElse _dirtyNpcs.Contains(fid))
+        TreeViewNpcsContextMenu.Show(TreeViewNPCs, e.Location)
+    End Sub
+
+    ''' <summary>Apply a LEFT-click to the multi-selection per the held modifier. Only NPC leaf nodes
+    ''' participate; clicks on group / LVLN nodes are handled by AfterSelect (which clears the set).
+    ''' Plain click is handled here too (not only in AfterSelect) so clicking an already-selected node
+    ''' still collapses a multi-selection to that one — AfterSelect won't fire when the selection
+    ''' didn't change.</summary>
+    Private Sub HandleLeftMultiSelectClick(e As TreeNodeMouseClickEventArgs)
+        Dim npc = TryCast(e.Node.Tag, NPC_Data)
         If npc Is Nothing Then
-            ' Non-actionable node (plugin-group / "[LVLN]" root, Tag = Nothing): no current NPC.
-            ' Restore the no-selection baseline so the per-NPC action buttons stop targeting the
-            ' previously loaded NPC via _renderHost.LastRenderedState / CurrentBaseState.
-            PopulateRecordDetails(Nothing)
-            DisableNpcActionControls()
+            ' group / LVLN node → drop the NPC multi-selection; the debounce tick renders the LVLN
+            ' (random) via TreeViewNPCs.SelectedNode, or disables the per-NPC controls.
+            _selectedNpcFormIDs.Clear()
+            _multiSelectAnchorNode = Nothing
+            TreeViewNPCs.Invalidate()
+            RestartSelectionDebounce()
             Return
         End If
 
+        ' Operate directly on the persistent _selectedNpcFormIDs — AfterSelect never touches it, so
+        ' this is immune to the TreeView's mouse/select event ordering.
+        Dim ctrlDown As Boolean = (Control.ModifierKeys And Keys.Control) <> 0
+        Dim shiftDown As Boolean = (Control.ModifierKeys And Keys.Shift) <> 0
+
+        If shiftDown AndAlso _multiSelectAnchorNode IsNot Nothing Then
+            SelectNpcRange(_multiSelectAnchorNode, e.Node)   ' range REPLACES the selection
+        ElseIf ctrlDown Then
+            If Not _selectedNpcFormIDs.Remove(npc.FormID) Then _selectedNpcFormIDs.Add(npc.FormID)
+            _multiSelectAnchorNode = e.Node
+        Else
+            ' Plain click → single-select.
+            _selectedNpcFormIDs.Clear()
+            _selectedNpcFormIDs.Add(npc.FormID)
+            _multiSelectAnchorNode = e.Node
+        End If
+
+        TreeViewNPCs.Invalidate()
+        RestartSelectionDebounce()
+    End Sub
+
+    ''' <summary>Keyboard navigation in the tree → single-select the focused node (no Ctrl/Shift
+    ''' multi-select via keys for now). Fires only for keyboard, never mouse, so it cannot race the
+    ''' click handler.</summary>
+    Private Sub TreeViewNPCs_KeyUp(sender As Object, e As KeyEventArgs) Handles TreeViewNPCs.KeyUp
+        Select Case e.KeyCode
+            Case Keys.Up, Keys.Down, Keys.Left, Keys.Right, Keys.PageUp, Keys.PageDown, Keys.Home, Keys.End
+                Dim node = TreeViewNPCs.SelectedNode
+                Dim npc = TryCast(node?.Tag, NPC_Data)
+                _selectedNpcFormIDs.Clear()
+                If npc IsNot Nothing Then
+                    _selectedNpcFormIDs.Add(npc.FormID)
+                    _multiSelectAnchorNode = node
+                Else
+                    _multiSelectAnchorNode = Nothing
+                End If
+                TreeViewNPCs.Invalidate()
+                RestartSelectionDebounce()
+        End Select
+    End Sub
+
+    ''' <summary>Set the selection to the NPC leaf nodes between anchor and target in display order
+    ''' (expand-aware: only currently-shown rows). Falls back to single-select if the anchor is no
+    ''' longer in the tree (e.g. after a rebuild).</summary>
+    Private Sub SelectNpcRange(anchorNode As TreeNode, targetNode As TreeNode)
+        Dim flat = FlattenVisibleNodes()
+        Dim iA = flat.IndexOf(anchorNode)
+        Dim iB = flat.IndexOf(targetNode)
+        _selectedNpcFormIDs.Clear()
+        If iA < 0 OrElse iB < 0 Then
+            Dim n0 = TryCast(targetNode.Tag, NPC_Data)
+            If n0 IsNot Nothing Then _selectedNpcFormIDs.Add(n0.FormID)
+            _multiSelectAnchorNode = targetNode
+            Return
+        End If
+        Dim lo = Math.Min(iA, iB)
+        Dim hi = Math.Max(iA, iB)
+        For i = lo To hi
+            Dim n = TryCast(flat(i).Tag, NPC_Data)
+            If n IsNot Nothing Then _selectedNpcFormIDs.Add(n.FormID)
+        Next
+    End Sub
+
+    ''' <summary>Currently-shown tree nodes in display order (expand-aware: collapsed children are
+    ''' excluded, matching the rows the user sees). Used for Shift-range selection.</summary>
+    Private Function FlattenVisibleNodes() As List(Of TreeNode)
+        Dim acc As New List(Of TreeNode)()
+        For Each top As TreeNode In TreeViewNPCs.Nodes
+            FlattenVisibleInto(top, acc)
+        Next
+        Return acc
+    End Function
+
+    Private Sub FlattenVisibleInto(node As TreeNode, acc As List(Of TreeNode))
+        acc.Add(node)
+        If node.IsExpanded Then
+            For Each child As TreeNode In node.Nodes
+                FlattenVisibleInto(child, acc)
+            Next
+        End If
+    End Sub
+
+    ''' <summary>(Re)start the selection debounce so the render fires once the selection settles.
+    ''' Also refreshes the Re-roll enable state + the selection-count readout immediately (not only
+    ''' after the debounced render) so the user gets instant feedback on the true set size.</summary>
+    Private Sub RestartSelectionDebounce()
+        UpdateRerollEnabled()
+        _selectionDebounceTimer.Stop()
+        _selectionDebounceTimer.Start()
+    End Sub
+
+    Private Sub SelectionDebounceTimer_Tick(sender As Object, e As EventArgs) Handles _selectionDebounceTimer.Tick
+        _selectionDebounceTimer.Stop()
+        RenderFromCurrentSelection()
+    End Sub
+
+    ''' <summary>Render the current selection: a single NPC renders directly; a multi-selection
+    ''' renders ONE random member (ad-hoc leveled list); an LVLN node renders its own random roll;
+    ''' anything else clears the per-NPC action controls.</summary>
+    Private Sub RenderFromCurrentSelection()
+        ' Clear the viewport before the (possibly async) load so the previous NPC doesn't linger.
+        ClearPreviewImmediate()
+        If _selectedNpcFormIDs.Count >= 1 Then
+            Dim targetFid = PickRenderTargetFromSelection()
+            Dim npc As NPC_Data = Nothing
+            If targetFid <> 0UI AndAlso _npcByIdCache.TryGetValue(targetFid, npc) AndAlso npc IsNot Nothing Then
+                _currentRandomPickFormID = targetFid
+                UpdateRerollEnabled()
+                TreeViewNPCs.Invalidate()
+                PopulateRecordDetails(npc)
+                Dim reqVersion = Interlocked.Increment(_previewRequestVersion)
+                LoadNPCOnDemandAsync(npc, reqVersion)
+                Return
+            End If
+        End If
+
+        _currentRandomPickFormID = 0UI
+        UpdateRerollEnabled()
+        TreeViewNPCs.Invalidate()
+        Dim lvln = TryCast(TreeViewNPCs.SelectedNode?.Tag, LVLN_Data)
+        If lvln IsNot Nothing Then
+            Dim requestVersion = Interlocked.Increment(_previewRequestVersion)
+            LoadLVLNOnDemandAsync(lvln, requestVersion)
+        Else
+            DisableNpcActionControls()
+        End If
+    End Sub
+
+    ''' <summary>Pick the FormID to render from the current selection: the only member when one is
+    ''' selected, else a uniform-random member (each NPC weighted equally — an ad-hoc LVLN).</summary>
+    Private Function PickRenderTargetFromSelection() As UInteger
+        If _selectedNpcFormIDs.Count = 0 Then Return 0UI
+        If _selectedNpcFormIDs.Count = 1 Then Return _selectedNpcFormIDs.First()
+        Dim arr = _selectedNpcFormIDs.ToArray()
+        Return arr(_rng.Next(arr.Length))
+    End Function
+
+    ''' <summary>Re-roll: render a different random member of the current multi-selection without
+    ''' changing the selection. Tries to avoid re-picking the one already shown.</summary>
+    Private Sub ButtonRerollNpc_Click(sender As Object, e As EventArgs) Handles ButtonRerollNpc.Click
+        If _selectedNpcFormIDs.Count < 2 Then Return
+        Dim arr = _selectedNpcFormIDs.ToArray()
+        Dim pick As UInteger = 0UI
+        Dim guard As Integer = 0
+        Do
+            pick = arr(_rng.Next(arr.Length))
+            guard += 1
+        Loop While pick = _currentRandomPickFormID AndAlso guard < 8
+        Dim npc As NPC_Data = Nothing
+        If Not _npcByIdCache.TryGetValue(pick, npc) OrElse npc Is Nothing Then Return
+        _currentRandomPickFormID = pick
+        TreeViewNPCs.Invalidate()
         PopulateRecordDetails(npc)
-
-
         Dim reqVersion = Interlocked.Increment(_previewRequestVersion)
         LoadNPCOnDemandAsync(npc, reqVersion)
     End Sub
 
-    ''' <summary>Right-click on an NPC node opens the context menu (Mark as changed / Reset) for
-    ''' that NPC. The clicked node's FormID is captured and the menu shown manually (instead of
-    ''' wiring TreeViewNPCs.ContextMenuStrip) so it appears only on NPC nodes — never on plugin-group
-    ''' or LVLN nodes or empty space — and so a right-click does NOT change the selection (no heavy
-    ''' re-render on a context click).</summary>
-    Private Sub TreeViewNPCs_NodeMouseClick(sender As Object, e As TreeNodeMouseClickEventArgs) Handles TreeViewNPCs.NodeMouseClick
-        If e.Button <> MouseButtons.Right Then Return
-        Dim npc = TryCast(e.Node.Tag, NPC_Data)
-        If npc Is Nothing Then Return
-        _contextMenuNpcFormID = npc.FormID
-        ' Reset is only meaningful when there is something to discard (overlay or dirty mark).
-        MenuItemResetOverlay.Enabled = _appliedPresets.ContainsKey(npc.FormID) OrElse _dirtyNpcs.Contains(npc.FormID)
-        TreeViewNpcsContextMenu.Show(TreeViewNPCs, e.Location)
+    ''' <summary>Re-roll is only meaningful with 2+ NPCs selected. Also reflects the TRUE selection
+    ''' count in the window title so multi-select state is unambiguous (independent of any highlight).</summary>
+    Private Sub UpdateRerollEnabled()
+        If ButtonRerollNpc IsNot Nothing Then ButtonRerollNpc.Enabled = (_selectedNpcFormIDs.Count >= 2)
+        Dim n = _selectedNpcFormIDs.Count
+        Dim rerollState = If(ButtonRerollNpc Is Nothing, "NULL", ButtonRerollNpc.Enabled.ToString())
+        Me.Text = $"FO4 NPC Manager  —  {n} selected, reroll={rerollState}"
     End Sub
 
     ''' <summary>Context-menu "Mark as changed": flags the NPC dirty (bold) even with no overlay, so
     ''' a subsequent Save emits a forwarded (identity) override for it.</summary>
     Private Sub MenuItemMarkChanged_Click(sender As Object, e As EventArgs) Handles MenuItemMarkChanged.Click
-        MarkNpcDirty(_contextMenuNpcFormID)
+        Dim targets = If(_contextMenuTargets.Count > 0, _contextMenuTargets, New List(Of UInteger) From {_contextMenuNpcFormID})
+        Dim changed As Boolean = False
+        For Each fid In targets
+            If fid <> 0UI AndAlso _dirtyNpcs.Add(fid) Then changed = True
+        Next
+        If changed Then RefreshTreeAfterDirtyChange()
     End Sub
 
     ''' <summary>Context-menu "Reset": discard the in-memory overlay for the NPC and clear its dirty
@@ -2618,27 +2839,37 @@ Public Class MainForm
     ''' saved override if it was saved this session (MergeOverridePlugin put it in GetRecord), else
     ''' vanilla. Destructive (drops BodyMorphs/Skin edits too) → confirmation first.</summary>
     Private Async Sub MenuItemResetOverlay_Click(sender As Object, e As EventArgs) Handles MenuItemResetOverlay.Click
-        Dim npcFormID = _contextMenuNpcFormID
-        If npcFormID = 0UI Then Return
-        Dim hasOverlay = _appliedPresets.ContainsKey(npcFormID)
-        Dim isDirty = _dirtyNpcs.Contains(npcFormID)
-        If Not hasOverlay AndAlso Not isDirty Then Return
+        Dim sourceTargets = If(_contextMenuTargets.Count > 0, _contextMenuTargets, New List(Of UInteger) From {_contextMenuNpcFormID})
+        ' Only NPCs that actually have something to discard (overlay or dirty mark).
+        Dim targets = sourceTargets.
+            Where(Function(fid) fid <> 0UI AndAlso (_appliedPresets.ContainsKey(fid) OrElse _dirtyNpcs.Contains(fid))).
+            Distinct().ToList()
+        If targets.Count = 0 Then Return
 
+        Dim prompt = If(targets.Count = 1,
+            "Discard all in-memory changes for this NPC (including BodyMorphs / Skin / Overlays edits) and revert to its current record?",
+            $"Discard all in-memory changes for the {targets.Count} selected NPCs (including BodyMorphs / Skin / Overlays edits) and revert each to its current record?")
         If MessageBox.Show(Me,
-                           "Discard all in-memory changes for this NPC (including BodyMorphs / Skin / Overlays edits) and revert to its current record?" & vbCrLf & vbCrLf &
+                           prompt & vbCrLf & vbCrLf &
                            "This does NOT delete any ESP/ESM or sidecar already written to disk.",
                            "Reset NPC", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) <> DialogResult.Yes Then
             Return
         End If
 
-        _appliedPresets.Remove(npcFormID)
-        ClearNpcDirty(npcFormID)
+        Dim shownFormID As UInteger = If(_renderHost IsNot Nothing AndAlso _renderHost.LastRenderedState IsNot Nothing,
+                                         _renderHost.LastRenderedState.RootNpcFormID, 0UI)
+        Dim mustReRender As Boolean = False
+        For Each fid In targets
+            _appliedPresets.Remove(fid)
+            _dirtyNpcs.Remove(fid)
+            If fid = shownFormID Then mustReRender = True
+        Next
+        RefreshTreeAfterDirtyChange()
 
-        ' Re-render from the baseline only if this NPC is the one currently shown.
-        If _renderHost IsNot Nothing AndAlso _renderHost.LastRenderedState IsNot Nothing AndAlso
-           _renderHost.LastRenderedState.RootNpcFormID = npcFormID Then
+        ' Re-render from the baseline only if the currently-shown NPC was among those reset.
+        If mustReRender AndAlso shownFormID <> 0UI Then
             Dim npc As NPC_Data = Nothing
-            If _npcByIdCache.TryGetValue(npcFormID, npc) AndAlso npc IsNot Nothing Then
+            If _npcByIdCache.TryGetValue(shownFormID, npc) AndAlso npc IsNot Nothing Then
                 Try
                     Dim version = Interlocked.Increment(_previewRequestVersion)
                     Await LoadNPCOnDemandAsyncFromExisting(npc, version)
@@ -2681,6 +2912,7 @@ Public Class MainForm
         ButtonSavePlugin.Enabled = False
         ButtonBuildCharGen.Enabled = False
         ButtonSaveSceneNif.Enabled = False
+        ButtonRerollNpc.Enabled = False
     End Sub
 
     Private Async Sub LoadNPCOnDemandAsync(npc As NPC_Data, requestVersion As Integer)
@@ -4514,7 +4746,93 @@ Public Class MainForm
         ' separate full-face SoftLight post-pass. No face-side TryApplyFaceSkinSoftLight anymore.
         ' Body SoftLight stays a separate pass (different meshes).
         TryApplyFaceTints(state, host)
+        ' Render-only: make body skin light like the face (subsurface scattering). Runs before
+        ' the SoftLight pass and is NOT gated by its skin-tone guards — see method docs.
+        MatchBodySkinSubsurfaceToFace(host)
         TryApplyBodySkinSoftLight(state, host)
+    End Sub
+
+    ''' <summary>Render-only: copy the authoritative face material's subsurface-scattering
+    ''' response onto every body skin material so face and body skin light identically. The
+    ''' face material (BSLightingShaderType.FaceTint) "wins": its SubsurfaceLighting (on/off)
+    ''' and SubsurfaceLightingRolloff are copied verbatim (including False) onto each body skin
+    ''' material (the SkinTint flag, excluding the face itself). The render shader reads both
+    ''' fields per material every draw (Render.vb: bSoftlight + subsurfaceRolloff), so this
+    ''' mutation takes effect on the next frame with no texture work.
+    '''
+    ''' Sole precondition: a face material exists AND a body skin material exists — none of the
+    ''' SoftLight guards (HasTextureLighting / race SkinTone catalog / QNAM opacity) apply,
+    ''' because subsurface response is a material lighting property independent of skin TONE.
+    ''' Runs at the render-finalization chokepoint (ApplyFaceTintOverlay), by which point every
+    ''' shape's material is fully resolved (per-candidate ApplyShapeMaterialOverrides already
+    ''' ran) and is not re-resolved again before the draw.
+    '''
+    ''' Render-only / no persistence: each shape owns a fresh material instance deserialized per
+    ''' load (TryLoadMaterialFromDictionary: New + Deserialize — no shared cache), the FaceGen
+    ''' bake builds its own material wrappers (FaceGenBuilder), and Save ESP never serializes
+    ''' material fields. Values come from the loaded face material (its BGSM/inline shader), never
+    ''' hardcoded. BGSM-only: the SubsurfaceLighting getter throws on non-BGSM/BGEM and BGEM has
+    ''' no such field, so both source and targets are gated to BGSM-backed materials.</summary>
+    Private Sub MatchBodySkinSubsurfaceToFace(host As NpcRenderHost)
+        If host Is Nothing Then host = _renderHost
+        Dim model = host?.PreviewCtl?.Model
+        If model Is Nothing OrElse model.meshes Is Nothing Then
+            Logger.LogLazy(Function() $"[BODY-SUBSURFACE] skip: model/meshes Nothing")
+            Return
+        End If
+
+        ' Source: the authoritative face material (FaceTint shader, BGSM-backed).
+        Dim faceFound As Boolean = False
+        Dim faceOn As Boolean = False
+        Dim faceRolloff As Single = 0.0F
+        For Each fm In model.meshes
+            If fm Is Nothing OrElse fm.MeshData Is Nothing OrElse fm.MeshData.Material Is Nothing Then Continue For
+            Dim fmb = fm.MeshData.Material.MaterialBase
+            If fmb Is Nothing Then Continue For
+            If fmb.NifShaderType <> NiflySharp.Enums.BSLightingShaderType.FaceTint Then Continue For
+            If Not (TypeOf fmb.Underlying_Material Is BGSM) Then Continue For
+            faceOn = fmb.SubsurfaceLighting
+            faceRolloff = fmb.SubsurfaceLightingRolloff
+            faceFound = True
+            Exit For
+        Next
+        If Not faceFound Then
+            Logger.LogLazy(Function() $"[BODY-SUBSURFACE] skip: no FaceTint source material in scene")
+            Return
+        End If
+
+        Dim faceOnLog = faceOn
+        Dim faceRollLog = faceRolloff
+        Logger.LogLazy(Function() $"[BODY-SUBSURFACE] face source on={faceOnLog} rolloff={faceRollLog:F4}")
+
+        ' Targets: body skin materials (SkinTint flag, not the face), BGSM-backed. Same shape
+        ' set TryApplyBodySkinSoftLight touches.
+        Dim applied As Integer = 0
+        For Each mesh In model.meshes
+            If mesh Is Nothing OrElse mesh.MeshData Is Nothing OrElse mesh.MeshData.Material Is Nothing Then Continue For
+            Dim mb = mesh.MeshData.Material.MaterialBase
+            If mb Is Nothing Then Continue For
+            If Not mb.SkinTint Then Continue For
+            If mb.NifShaderType = NiflySharp.Enums.BSLightingShaderType.FaceTint Then Continue For
+            If Not (TypeOf mb.Underlying_Material Is BGSM) Then Continue For
+
+            Dim preOn = mb.SubsurfaceLighting
+            Dim preRoll = mb.SubsurfaceLightingRolloff
+            If preOn = faceOn AndAlso preRoll = faceRolloff Then Continue For
+
+            mb.SubsurfaceLighting = faceOn
+            mb.SubsurfaceLightingRolloff = faceRolloff
+            applied += 1
+            Dim snLog = mesh.MeshData.Shape?.ShapeName
+            Dim preOnL = preOn
+            Dim preRollL = preRoll
+            Dim newOnL = faceOn
+            Dim newRollL = faceRolloff
+            Logger.LogLazy(Function() $"[BODY-SUBSURFACE] shape='{snLog}' {preOnL}/{preRollL:F4} → {newOnL}/{newRollL:F4} (from face)")
+        Next
+
+        Dim appliedLog = applied
+        Logger.LogLazy(Function() $"[BODY-SUBSURFACE] done applied={appliedLog}")
     End Sub
 
     ''' <summary>Diagnóstico: dumpea bounds per-mesh + scene AABB + tamaño del control + estado
@@ -11836,6 +12154,17 @@ Public Class MainForm
             _dirtyNodeFont.Dispose()
             _dirtyNodeFont = Nothing
         End If
+
+        Try
+            _selectionDebounceTimer.Stop()
+            _selectionDebounceTimer.Dispose()
+        Catch
+        End Try
+
+        If _multiSelectBrush IsNot Nothing Then
+            _multiSelectBrush.Dispose()
+            _multiSelectBrush = Nothing
+        End If
     End Sub
 
     Private Sub PanelNpcList_Paint(sender As Object, e As PaintEventArgs) Handles PanelNpcList.Paint
@@ -13027,7 +13356,9 @@ Public Class MainForm
 
         Dim result As FaceGenBuilder.BuildResult
         Try
-            result = FaceGenBuilder.BuildCharGen(modelNpcFormID, _pluginManager, _appliedPresets, _renderHost, AddressOf ApplyShapeMaterialOverrides, AddressOf ResolveLmSkinTemplate)
+            ' willBePacked:=False — loose output stays standalone (no BA2 repack/rename), so the NIF
+            ' must embed the actual on-disk texture suffix (carries _2 in DebugMode). See BuildCharGen.
+            result = FaceGenBuilder.BuildCharGen(modelNpcFormID, _pluginManager, _appliedPresets, _renderHost, AddressOf ApplyShapeMaterialOverrides, willBePacked:=False, lmSkinTemplateResolver:=AddressOf ResolveLmSkinTemplate)
         Catch ex As Exception
             Logger.LogLazy(Function() $"[BUILDCHARGEN] EXCEPTION {ex.GetType().Name}: {ex.Message}{vbCrLf}{ex.StackTrace}")
             result = New FaceGenBuilder.BuildResult With {.Success = False, .Summary = $"Build CharGen failed: {ex.GetType().Name}: {ex.Message}"}
@@ -13857,9 +14188,11 @@ Public Class MainForm
         ' yet, so we are still on the UI thread the orchestrator called us from.
         Dim bakeResult As FaceGenBuilder.BuildResult
         Try
+            ' willBePacked:=True — Save ESP repacks the _2 loose into a BA2 under canonical names
+            ' (NpcFaceGenPacker), so the NIF must embed canonical texture paths. UNCHANGED behaviour.
             bakeResult = FaceGenBuilder.BuildCharGen(bakeFormID, _pluginManager, _appliedPresets,
                                                      _renderHost, AddressOf ApplyShapeMaterialOverrides,
-                                                     AddressOf ResolveLmSkinTemplate)
+                                                     willBePacked:=True, lmSkinTemplateResolver:=AddressOf ResolveLmSkinTemplate)
         Catch ex As Exception
             Return ($"{vbCrLf}{vbCrLf}(CharGen bake failed: {ex.Message})", False)
         End Try

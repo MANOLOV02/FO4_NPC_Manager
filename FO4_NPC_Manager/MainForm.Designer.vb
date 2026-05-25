@@ -68,6 +68,7 @@ Partial Class MainForm
         SeparatorActions3 = New Label()
         ButtonSavePlugin = New Button()
         ButtonBuildCharGen = New Button()
+        ButtonRerollNpc = New Button()
         ButtonSaveSceneNif = New Button()
         PanelPreviewHost = New Panel()
         LabelStatus = New Label()
@@ -554,6 +555,7 @@ Partial Class MainForm
         PanelActionsToolbar.Controls.Add(SeparatorActions3)
         PanelActionsToolbar.Controls.Add(ButtonSavePlugin)
         PanelActionsToolbar.Controls.Add(ButtonBuildCharGen)
+        PanelActionsToolbar.Controls.Add(ButtonRerollNpc)
         PanelActionsToolbar.Controls.Add(ButtonSaveSceneNif)
         PanelActionsToolbar.Dock = DockStyle.Top
         PanelActionsToolbar.Location = New Point(11, 126)
@@ -741,9 +743,21 @@ Partial Class MainForm
         ButtonBuildCharGen.TabIndex = 2
         ButtonBuildCharGen.Text = "Build CharGen (loose)"
         ButtonBuildCharGen.UseVisualStyleBackColor = True
-        ' 
+        '
+        ' ButtonRerollNpc
+        '
+        ButtonRerollNpc.AutoSize = True
+        ButtonRerollNpc.Enabled = False
+        ButtonRerollNpc.Margin = New Padding(2)
+        ButtonRerollNpc.MinimumSize = New Size(110, 28)
+        ButtonRerollNpc.Name = "ButtonRerollNpc"
+        ButtonRerollNpc.Size = New Size(110, 28)
+        ButtonRerollNpc.TabIndex = 14
+        ButtonRerollNpc.Text = "Re-roll (random)"
+        ButtonRerollNpc.UseVisualStyleBackColor = True
+        '
         ' ButtonSaveSceneNif
-        ' 
+        '
         ButtonSaveSceneNif.AutoSize = True
         ButtonSaveSceneNif.Enabled = False
         ButtonSaveSceneNif.Location = New Point(2, 34)
@@ -887,6 +901,7 @@ Partial Class MainForm
     Friend WithEvents LabelEdit As System.Windows.Forms.Label
     Friend WithEvents ButtonEditFace As System.Windows.Forms.Button
     Friend WithEvents ButtonBuildCharGen As System.Windows.Forms.Button
+    Friend WithEvents ButtonRerollNpc As System.Windows.Forms.Button
     Friend WithEvents ButtonSaveSceneNif As System.Windows.Forms.Button
     Friend WithEvents ButtonEditBody As System.Windows.Forms.Button
     Friend WithEvents ButtonEditOutfit As System.Windows.Forms.Button
