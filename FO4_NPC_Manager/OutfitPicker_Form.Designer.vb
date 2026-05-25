@@ -36,12 +36,17 @@ Partial Class OutfitPicker_Form
         ColItemSlots = New ColumnHeader()
         ColItemFormID = New ColumnHeader()
         ColItemPlugin = New ColumnHeader()
+        AddButtonsRow = New FlowLayoutPanel()
         ButtonAddItem = New Button()
+        ButtonNewLvl = New Button()
+        ButtonAddToLvl = New Button()
+        ButtonReroll = New Button()
         LabelPieces = New Label()
         ListViewPieces = New ListView()
         ColPieceName = New ColumnHeader()
         ColPieceSlots = New ColumnHeader()
         ColPieceStatus = New ColumnHeader()
+        PiecesButtonsRow = New FlowLayoutPanel()
         ButtonRemovePiece = New Button()
         EdidRow = New FlowLayoutPanel()
         LabelEdidPrefix = New Label()
@@ -58,6 +63,7 @@ Partial Class OutfitPicker_Form
         BottomLayout = New FlowLayoutPanel()
         ButtonOk = New Button()
         ButtonCancel = New Button()
+        Plugin = New ColumnHeader()
         RootLayout.SuspendLayout()
         CType(MainSplit, ComponentModel.ISupportInitialize).BeginInit()
         MainSplit.Panel1.SuspendLayout()
@@ -68,6 +74,8 @@ Partial Class OutfitPicker_Form
         BrowseLayout.SuspendLayout()
         TabPageCreate.SuspendLayout()
         CreateLayout.SuspendLayout()
+        AddButtonsRow.SuspendLayout()
+        PiecesButtonsRow.SuspendLayout()
         EdidRow.SuspendLayout()
         ModeRow.SuspendLayout()
         PreviewLayout.SuspendLayout()
@@ -183,25 +191,25 @@ Partial Class OutfitPicker_Form
         ' ColumnName
         ' 
         ColumnName.Text = "Outfit"
-        ColumnName.Width = 360
-        '
+        ColumnName.Width = 420
+        ' 
         ' ColumnFormID
-        '
+        ' 
         ColumnFormID.Text = "FormID"
         ColumnFormID.Width = 90
-        '
+        ' 
         ' ColumnPlugin
-        '
+        ' 
         ColumnPlugin.Text = "Plugin"
-        ColumnPlugin.Width = 250
-        '
+        ColumnPlugin.Width = 183
+        ' 
         ' TabPageCreate
         ' 
         TabPageCreate.Controls.Add(CreateLayout)
         TabPageCreate.Location = New Point(4, 24)
         TabPageCreate.Name = "TabPageCreate"
         TabPageCreate.Padding = New Padding(6)
-        TabPageCreate.Size = New Size(572, 476)
+        TabPageCreate.Size = New Size(731, 490)
         TabPageCreate.TabIndex = 1
         TabPageCreate.Text = "Create"
         TabPageCreate.UseVisualStyleBackColor = True
@@ -213,10 +221,10 @@ Partial Class OutfitPicker_Form
         CreateLayout.Controls.Add(LabelItems, 0, 0)
         CreateLayout.Controls.Add(TextBoxItemFilter, 0, 1)
         CreateLayout.Controls.Add(ListViewItems, 0, 2)
-        CreateLayout.Controls.Add(ButtonAddItem, 0, 3)
+        CreateLayout.Controls.Add(AddButtonsRow, 0, 3)
         CreateLayout.Controls.Add(LabelPieces, 0, 4)
         CreateLayout.Controls.Add(ListViewPieces, 0, 5)
-        CreateLayout.Controls.Add(ButtonRemovePiece, 0, 6)
+        CreateLayout.Controls.Add(PiecesButtonsRow, 0, 6)
         CreateLayout.Controls.Add(EdidRow, 0, 7)
         CreateLayout.Controls.Add(ModeRow, 0, 8)
         CreateLayout.Controls.Add(LabelCreateStatus, 0, 9)
@@ -234,7 +242,7 @@ Partial Class OutfitPicker_Form
         CreateLayout.RowStyles.Add(New RowStyle())
         CreateLayout.RowStyles.Add(New RowStyle())
         CreateLayout.RowStyles.Add(New RowStyle())
-        CreateLayout.Size = New Size(560, 464)
+        CreateLayout.Size = New Size(719, 478)
         CreateLayout.TabIndex = 0
         ' 
         ' LabelItems
@@ -254,7 +262,7 @@ Partial Class OutfitPicker_Form
         TextBoxItemFilter.Margin = New Padding(0, 0, 0, 4)
         TextBoxItemFilter.Name = "TextBoxItemFilter"
         TextBoxItemFilter.PlaceholderText = "Filter by name, slot, plugin or FormID..."
-        TextBoxItemFilter.Size = New Size(560, 23)
+        TextBoxItemFilter.Size = New Size(719, 23)
         TextBoxItemFilter.TabIndex = 1
         ' 
         ' ListViewItems
@@ -265,7 +273,7 @@ Partial Class OutfitPicker_Form
         ListViewItems.Location = New Point(3, 47)
         ListViewItems.MultiSelect = False
         ListViewItems.Name = "ListViewItems"
-        ListViewItems.Size = New Size(554, 126)
+        ListViewItems.Size = New Size(713, 133)
         ListViewItems.TabIndex = 2
         ListViewItems.UseCompatibleStateImageBehavior = False
         ListViewItems.View = View.Details
@@ -273,37 +281,76 @@ Partial Class OutfitPicker_Form
         ' ColItemName
         ' 
         ColItemName.Text = "Item"
-        ColItemName.Width = 220
-        '
+        ColItemName.Width = 255
+        ' 
         ' ColItemSlots
-        '
+        ' 
         ColItemSlots.Text = "Slots"
-        ColItemSlots.Width = 150
+        ColItemSlots.Width = 215
         ' 
         ' ColItemFormID
         ' 
         ColItemFormID.Text = "FormID"
-        ColItemFormID.Width = 70
-        '
+        ColItemFormID.Width = 100
+        ' 
         ' ColItemPlugin
-        '
+        ' 
         ColItemPlugin.Text = "Plugin"
-        ColItemPlugin.Width = 110
-        '
+        ColItemPlugin.Width = 120
+        ' 
         ' ButtonAddItem
         ' 
-        ButtonAddItem.Location = New Point(0, 179)
         ButtonAddItem.Margin = New Padding(0, 3, 0, 6)
         ButtonAddItem.Name = "ButtonAddItem"
         ButtonAddItem.Size = New Size(130, 25)
         ButtonAddItem.TabIndex = 3
         ButtonAddItem.Text = "Add to outfit ▼"
         ButtonAddItem.UseVisualStyleBackColor = True
-        ' 
+        '
+        ' AddButtonsRow
+        '
+        AddButtonsRow.AutoSize = True
+        AddButtonsRow.AutoSizeMode = AutoSizeMode.GrowAndShrink
+        AddButtonsRow.Controls.Add(ButtonAddItem)
+        AddButtonsRow.Controls.Add(ButtonAddToLvl)
+        AddButtonsRow.Controls.Add(ButtonReroll)
+        AddButtonsRow.Margin = New Padding(0)
+        AddButtonsRow.Name = "AddButtonsRow"
+        AddButtonsRow.WrapContents = False
+        '
+        ' ButtonNewLvl
+        '
+        ButtonNewLvl.Margin = New Padding(0, 3, 0, 6)
+        ButtonNewLvl.Name = "ButtonNewLvl"
+        ButtonNewLvl.Size = New Size(90, 25)
+        ButtonNewLvl.TabIndex = 0
+        ButtonNewLvl.Text = "New LVL…"
+        ButtonNewLvl.UseVisualStyleBackColor = True
+        '
+        ' ButtonAddToLvl
+        '
+        ButtonAddToLvl.Enabled = False
+        ButtonAddToLvl.Margin = New Padding(8, 3, 0, 6)
+        ButtonAddToLvl.Name = "ButtonAddToLvl"
+        ButtonAddToLvl.Size = New Size(95, 25)
+        ButtonAddToLvl.TabIndex = 5
+        ButtonAddToLvl.Text = "Add to lvl ▼"
+        ButtonAddToLvl.UseVisualStyleBackColor = True
+        '
+        ' ButtonReroll
+        '
+        ButtonReroll.Enabled = False
+        ButtonReroll.Margin = New Padding(8, 3, 0, 6)
+        ButtonReroll.Name = "ButtonReroll"
+        ButtonReroll.Size = New Size(100, 25)
+        ButtonReroll.TabIndex = 6
+        ButtonReroll.Text = "🎲 Reroll LVL"
+        ButtonReroll.UseVisualStyleBackColor = True
+        '
         ' LabelPieces
         ' 
         LabelPieces.AutoSize = True
-        LabelPieces.Location = New Point(0, 210)
+        LabelPieces.Location = New Point(0, 217)
         LabelPieces.Margin = New Padding(0, 0, 0, 2)
         LabelPieces.Name = "LabelPieces"
         LabelPieces.Size = New Size(77, 15)
@@ -312,13 +359,13 @@ Partial Class OutfitPicker_Form
         ' 
         ' ListViewPieces
         ' 
-        ListViewPieces.Columns.AddRange(New ColumnHeader() {ColPieceName, ColPieceSlots, ColPieceStatus})
+        ListViewPieces.Columns.AddRange(New ColumnHeader() {ColPieceName, ColPieceSlots, ColPieceStatus, Plugin})
         ListViewPieces.Dock = DockStyle.Fill
         ListViewPieces.FullRowSelect = True
-        ListViewPieces.Location = New Point(3, 230)
+        ListViewPieces.Location = New Point(3, 237)
         ListViewPieces.MultiSelect = False
         ListViewPieces.Name = "ListViewPieces"
-        ListViewPieces.Size = New Size(554, 126)
+        ListViewPieces.Size = New Size(713, 133)
         ListViewPieces.TabIndex = 5
         ListViewPieces.UseCompatibleStateImageBehavior = False
         ListViewPieces.View = View.Details
@@ -326,38 +373,48 @@ Partial Class OutfitPicker_Form
         ' ColPieceName
         ' 
         ColPieceName.Text = "Piece"
-        ColPieceName.Width = 280
+        ColPieceName.Width = 255
         ' 
         ' ColPieceSlots
         ' 
         ColPieceSlots.Text = "Slots"
-        ColPieceSlots.Width = 170
+        ColPieceSlots.Width = 215
         ' 
         ' ColPieceStatus
         ' 
         ColPieceStatus.Text = "Status"
         ColPieceStatus.Width = 100
-        ' 
+        '
+        ' PiecesButtonsRow
+        '
+        PiecesButtonsRow.AutoSize = True
+        PiecesButtonsRow.AutoSizeMode = AutoSizeMode.GrowAndShrink
+        PiecesButtonsRow.Controls.Add(ButtonNewLvl)
+        PiecesButtonsRow.Controls.Add(ButtonRemovePiece)
+        PiecesButtonsRow.Margin = New Padding(0)
+        PiecesButtonsRow.Name = "PiecesButtonsRow"
+        PiecesButtonsRow.TabIndex = 6
+        PiecesButtonsRow.WrapContents = False
+        '
         ' ButtonRemovePiece
-        ' 
-        ButtonRemovePiece.Location = New Point(0, 362)
-        ButtonRemovePiece.Margin = New Padding(0, 3, 0, 6)
+        '
+        ButtonRemovePiece.Margin = New Padding(8, 3, 0, 6)
         ButtonRemovePiece.Name = "ButtonRemovePiece"
         ButtonRemovePiece.Size = New Size(130, 25)
-        ButtonRemovePiece.TabIndex = 6
+        ButtonRemovePiece.TabIndex = 1
         ButtonRemovePiece.Text = "Remove piece"
         ButtonRemovePiece.UseVisualStyleBackColor = True
-        ' 
+        '
         ' EdidRow
-        ' 
+        '
         EdidRow.AutoSize = True
         EdidRow.Controls.Add(LabelEdidPrefix)
         EdidRow.Controls.Add(TextBoxEdid)
         EdidRow.Dock = DockStyle.Fill
-        EdidRow.Location = New Point(0, 393)
+        EdidRow.Location = New Point(0, 407)
         EdidRow.Margin = New Padding(0)
         EdidRow.Name = "EdidRow"
-        EdidRow.Size = New Size(560, 29)
+        EdidRow.Size = New Size(719, 29)
         EdidRow.TabIndex = 7
         EdidRow.WrapContents = False
         ' 
@@ -385,10 +442,10 @@ Partial Class OutfitPicker_Form
         ModeRow.Controls.Add(RadioButtonNew)
         ModeRow.Controls.Add(RadioButtonOverride)
         ModeRow.Dock = DockStyle.Fill
-        ModeRow.Location = New Point(0, 422)
+        ModeRow.Location = New Point(0, 436)
         ModeRow.Margin = New Padding(0)
         ModeRow.Name = "ModeRow"
-        ModeRow.Size = New Size(560, 25)
+        ModeRow.Size = New Size(719, 25)
         ModeRow.TabIndex = 8
         ModeRow.WrapContents = False
         ' 
@@ -418,7 +475,7 @@ Partial Class OutfitPicker_Form
         ' 
         LabelCreateStatus.AutoSize = True
         LabelCreateStatus.ForeColor = Color.DimGray
-        LabelCreateStatus.Location = New Point(0, 449)
+        LabelCreateStatus.Location = New Point(0, 463)
         LabelCreateStatus.Margin = New Padding(0, 2, 0, 0)
         LabelCreateStatus.Name = "LabelCreateStatus"
         LabelCreateStatus.Size = New Size(0, 15)
@@ -515,12 +572,20 @@ Partial Class OutfitPicker_Form
         ButtonCancel.TabIndex = 1
         ButtonCancel.Text = "Cancel"
         ' 
-        ' OutfitPicker_Form
+        ' Plugin
         ' 
+        Plugin.Text = "Plugin"
+        Plugin.Width = 120
+        ' 
+        ' OutfitPicker_Form
+        '
         AcceptButton = ButtonOk
+        AutoScaleDimensions = New SizeF(7F, 15F)
+        AutoScaleMode = AutoScaleMode.Font
         CancelButton = ButtonCancel
         ClientSize = New Size(1244, 581)
         Controls.Add(RootLayout)
+        Font = New Font("Segoe UI", 9.0F)
         MaximizeBox = False
         MinimizeBox = False
         Name = "OutfitPicker_Form"
@@ -539,6 +604,8 @@ Partial Class OutfitPicker_Form
         TabPageCreate.ResumeLayout(False)
         CreateLayout.ResumeLayout(False)
         CreateLayout.PerformLayout()
+        AddButtonsRow.ResumeLayout(False)
+        PiecesButtonsRow.ResumeLayout(False)
         EdidRow.ResumeLayout(False)
         EdidRow.PerformLayout()
         ModeRow.ResumeLayout(False)
@@ -571,12 +638,17 @@ Partial Class OutfitPicker_Form
     Friend WithEvents ColItemFormID As System.Windows.Forms.ColumnHeader
     Friend WithEvents ColItemPlugin As System.Windows.Forms.ColumnHeader
     Friend WithEvents ButtonAddItem As System.Windows.Forms.Button
+    Friend WithEvents AddButtonsRow As System.Windows.Forms.FlowLayoutPanel
+    Friend WithEvents ButtonReroll As System.Windows.Forms.Button
+    Friend WithEvents ButtonNewLvl As System.Windows.Forms.Button
+    Friend WithEvents ButtonAddToLvl As System.Windows.Forms.Button
     Friend WithEvents LabelPieces As System.Windows.Forms.Label
     Friend WithEvents ListViewPieces As System.Windows.Forms.ListView
     Friend WithEvents ColPieceName As System.Windows.Forms.ColumnHeader
     Friend WithEvents ColPieceSlots As System.Windows.Forms.ColumnHeader
     Friend WithEvents ColPieceStatus As System.Windows.Forms.ColumnHeader
     Friend WithEvents ButtonRemovePiece As System.Windows.Forms.Button
+    Friend WithEvents PiecesButtonsRow As System.Windows.Forms.FlowLayoutPanel
     Friend WithEvents EdidRow As System.Windows.Forms.FlowLayoutPanel
     Friend WithEvents LabelEdidPrefix As System.Windows.Forms.Label
     Friend WithEvents TextBoxEdid As System.Windows.Forms.TextBox
@@ -592,4 +664,5 @@ Partial Class OutfitPicker_Form
     Friend WithEvents BottomLayout As System.Windows.Forms.FlowLayoutPanel
     Friend WithEvents ButtonOk As System.Windows.Forms.Button
     Friend WithEvents ButtonCancel As System.Windows.Forms.Button
+    Friend WithEvents Plugin As ColumnHeader
 End Class

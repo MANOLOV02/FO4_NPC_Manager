@@ -35,7 +35,15 @@ Public Class OutfitDraft
 
     Public Property FormID As UInteger
     Public Property EditorID As String = ""
-    Public ReadOnly Property ItemArmoFormIDs As New List(Of UInteger)
+    ''' <summary>The OTFT.INAM entries — a flat list of ARMO **or LVLI** FormIDs. ARMOs render directly;
+    ''' LVLIs are sampled to a realization (see <see cref="LvliRealization"/>) and persist AS the LVLI
+    ''' (the engine rolls at runtime), so the saved outfit is leveled, not flattened.</summary>
+    Public ReadOnly Property ItemFormIDs As New List(Of UInteger)
+    ''' <summary>Transient (not persisted, not in INAM): the currently-sampled terminal ARMO FormIDs for
+    ''' each LVLI item, keyed by the LVLI FormID. Cached so the preview/conflict is STABLE between renders
+    ''' (no flicker) — a Reroll clears the relevant entry to re-sample. Editor-only; the saved OTFT keeps
+    ''' the LVLI reference.</summary>
+    Public ReadOnly Property LvliRealization As New Dictionary(Of UInteger, List(Of UInteger))
     ''' <summary>True = override an existing OTFT (keep its EditorID + FormID). False = brand-new OTFT.</summary>
     Public Property IsOverride As Boolean
     ''' <summary>Never written to the ESP yet.</summary>
@@ -65,7 +73,10 @@ Public Class OutfitDraft
             .IsNew = IsNew,
             .IsModified = IsModified
         }
-        c.ItemArmoFormIDs.AddRange(ItemArmoFormIDs)
+        c.ItemFormIDs.AddRange(ItemFormIDs)
+        For Each kv In LvliRealization
+            c.LvliRealization(kv.Key) = New List(Of UInteger)(kv.Value)
+        Next
         Return c
     End Function
 

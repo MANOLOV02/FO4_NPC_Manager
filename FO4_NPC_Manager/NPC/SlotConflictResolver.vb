@@ -84,6 +84,7 @@ Public Module SlotConflictResolver
 
         ' Pass 1b — atomic mutex, last-equipped wins (descending Order).
         Dim acceptedReverse As New List(Of T)
+        Dim pipboyDeviceOccupied As Boolean = False   ' an actual Pipboy device (slot 60, no body coverage) was kept
         For Each it In slotted.Where(Function(x) Not extended.Contains(x)).OrderByDescending(orderOf)
             Dim m = slotMaskOf(it)
             ' [A] bits reserved by an extended underarmor → discard whole (Bridget exception).
@@ -94,10 +95,16 @@ Public Module SlotConflictResolver
             Dim conflictMask = m And Not SLOT_PIPBOY
             Dim occupiedForCheck = occupied And Not SLOT_PIPBOY
             If (conflictMask And occupiedForCheck) <> 0UI Then res.Losers.Add(it) : Continue For
-            ' Virtual mutex Pipboy(60) ↔ [A] L Arm(42).
-            If (m And SLOT_PIPBOY) <> 0UI AndAlso (occupied And SLOT_ALARM) <> 0UI Then res.Losers.Add(it) : Continue For
-            If (m And SLOT_ALARM) <> 0UI AndAlso (occupied And SLOT_PIPBOY) <> 0UI Then res.Losers.Add(it) : Continue For
+            ' Virtual mutex Pipboy(60) ↔ [A] L Arm(42): the Pipboy DEVICE sits on the left forearm, same
+            ' place as [A] L Arm armor, so they can't coexist. SCOPED to an actual device — a piece that
+            ' declares the Pipboy slot but NO body coverage (BODY/[U]). An underarmor that merely lists
+            ' slot 60 as incidental coverage (e.g. raider "curtido" = BODY+[U]*+Pipboy) is NOT a device and
+            ' must not drop the left-arm over-armor (different bits → they layer normally per the canonical rule).
+            Dim mIsPipboyDevice As Boolean = (m And SLOT_PIPBOY) <> 0UI AndAlso (m And (BODY_MASK Or U_MASK)) = 0UI
+            If mIsPipboyDevice AndAlso (occupied And SLOT_ALARM) <> 0UI Then res.Losers.Add(it) : Continue For
+            If (m And SLOT_ALARM) <> 0UI AndAlso pipboyDeviceOccupied Then res.Losers.Add(it) : Continue For
             occupied = occupied Or m
+            If mIsPipboyDevice Then pipboyDeviceOccupied = True
             acceptedReverse.Add(it)
         Next
         acceptedReverse.Reverse()   ' back to chronological (ascending) order

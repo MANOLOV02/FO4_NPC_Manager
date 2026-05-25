@@ -89,6 +89,13 @@ Public Class OutfitPicker_Form
         Public Display As String
         Public SlotMask As UInteger
         Public Order As Integer
+        Public Plugin As String = ""
+        ''' <summary>True if <see cref="FormID"/> is an LVLI (leveled list) rather than a concrete ARMO.</summary>
+        Public IsLeveled As Boolean
+        ''' <summary>For an LVLI piece: the currently-sampled terminal ARMO FormIDs (the realization shown +
+        ''' rendered + conflict-checked). Re-sampled by Reroll. Nothing for a plain ARMO piece. The draft
+        ''' persists the LVLI FormID, not this — so the saved outfit stays leveled.</summary>
+        Public Realization As List(Of UInteger)
     End Class
 
     Private Class Candidate
@@ -140,7 +147,7 @@ Public Class OutfitPicker_Form
 
         ' --- Create tab ---
         LabelEdidPrefix.Text = "EDID: " & OutfitDraft.EditorIdPrefix
-        _itemCandidates = _mainForm.GetArmoItemCandidates(_raceFormID, _isFemale)
+        _itemCandidates = _mainForm.GetArmoItemCandidatesWithDrafts(_raceFormID, _isFemale)
         _filteredItems = New List(Of (FormID As UInteger, DisplayName As String, SlotMask As UInteger, Plugin As String))(_itemCandidates)
         RefreshItemList()
         RefreshPieces()
@@ -148,6 +155,9 @@ Public Class OutfitPicker_Form
         AddHandler ListViewItems.DoubleClick, AddressOf OnAddItem
         AddHandler ButtonAddItem.Click, AddressOf OnAddItem
         AddHandler ButtonRemovePiece.Click, AddressOf OnRemovePiece
+        AddHandler ButtonReroll.Click, AddressOf OnReroll
+        AddHandler ButtonNewLvl.Click, AddressOf OnNewLvl
+        AddHandler ButtonAddToLvl.Click, AddressOf OnAddToLvl
         AddHandler RadioButtonOverride.CheckedChanged, AddressOf OnModeChanged
         AddHandler TabsMain.SelectedIndexChanged, AddressOf OnTabChanged
         ' Preview-mode toggle (whole outfit vs selected piece) + selection-driven piece preview.
@@ -157,6 +167,12 @@ Public Class OutfitPicker_Form
         ' The "selected piece" preview follows whichever Create list has focus — track the last one entered.
         AddHandler ListViewItems.Enter, AddressOf OnItemsListEnter
         AddHandler ListViewPieces.Enter, AddressOf OnPiecesListEnter
+
+        ' Click-to-sort on every column of all three lists (same helper EditFace uses). The sorter
+        ' persists across the lists' re-populations (filter/refresh), so a user-chosen sort survives.
+        SortableListView.Attach(ListViewParts)
+        SortableListView.Attach(ListViewItems)
+        SortableListView.Attach(ListViewPieces)
 
         ' First open: stay in "New outfit" (the Designer default) but pre-load a COPY of the NPC's current
         ' outfit, so the user edits a fresh, isolated record and never risks changing a shared OTFT by
@@ -271,9 +287,11 @@ Public Class OutfitPicker_Form
     ''' before PreviewOverrideAsync, which re-renders because the dedup key changed with the mode).</summary>
     Private Sub ApplyPreviewToggles(pieceOnly As Boolean)
         If _host Is Nothing Then Return
-        Dim t = _mainForm.BuildOutfitPickerToggles()   ' FullBody + global gore
-        If pieceOnly Then t.RenderBody = False
-        _host.Toggles = t
+        _host.Toggles = _mainForm.BuildOutfitPickerToggles()   ' FullBody + global gore
+        ' Piece-only: collect ONLY the selected piece (the 1-item draft) — skip body/head at COLLECT time
+        ' instead of skinning them and hiding via RenderBody=False. Renders just the piece on the posed,
+        ' body-weighted skeleton (WYSIWYG, ~half the work). See NpcRenderHost.OnlyOutfitCollect.
+        _host.OnlyOutfitCollect = pieceOnly
     End Sub
 
     ''' <summary>Coalescing preview request. Records the LATEST desired preview (override value + dedup
@@ -307,9 +325,12 @@ Public Class OutfitPicker_Form
                 ' Create previews: register the throwaway draft with THIS request's contents so the render
                 ' reads exactly what we're about to mark as rendered (no stale-content race).
                 If reqDraftItems IsNot Nothing Then
+                    ' The preview draft is FLAT terminal ARMOs: ARMO pieces + each LVLI piece's current
+                    ' cached realization (see FlattenPieces). So it renders exactly the sample shown in the
+                    ' pieces list, with no fresh re-roll on every render.
                     Dim d As New OutfitDraft With {.FormID = OutfitDraft.PreviewDraftFormID,
                                                    .EditorID = OutfitDraft.EditorIdPrefix & "(preview)"}
-                    d.ItemArmoFormIDs.AddRange(reqDraftItems)
+                    d.ItemFormIDs.AddRange(reqDraftItems)
                     _mainForm.RegisterOutfitDraft(d)
                     _previewDraftRegistered = True
                 End If
@@ -393,30 +414,54 @@ Public Class OutfitPicker_Form
     End Sub
 
     Private Sub RefreshItemList()
+        ' Preserve the top-list selection across the rebuild (candidate refresh / filter change), same as the
+        ' pieces list — so "Add to lvl" doesn't drop the item you just picked. No-op if it's filtered out.
+        Dim keepFid As UInteger = SelectedItemFormID()
         ListViewItems.BeginUpdate()
         Try
             ListViewItems.Items.Clear()
             For Each it In _filteredItems
-                Dim row As New ListViewItem(it.DisplayName)
+                Dim isLvl = _mainForm.IsLeveledItem(it.FormID)
+                Dim row As New ListViewItem(If(isLvl, "🎲 " & it.DisplayName, it.DisplayName))
                 row.SubItems.Add(DescribeSlotMask(it.SlotMask))
                 row.SubItems.Add(it.FormID.ToString("X8"))
                 row.SubItems.Add(it.Plugin)
                 row.Tag = it.FormID
+                If keepFid <> 0UI AndAlso it.FormID = keepFid Then row.Selected = True
                 ListViewItems.Items.Add(row)
             Next
         Finally
             ListViewItems.EndUpdate()
         End Try
+        If ListViewItems.SelectedItems.Count > 0 Then ListViewItems.SelectedItems(0).EnsureVisible()
     End Sub
 
     Private Sub OnAddItem(sender As Object, e As EventArgs)
         If ListViewItems.SelectedItems.Count = 0 Then Return
-        Dim fid As UInteger = CUInt(ListViewItems.SelectedItems(0).Tag)
-        If _pieces.Any(Function(p) p.FormID = fid) Then Return  ' no exact-duplicate ARMO
+        AddItemFidAsPiece(CUInt(ListViewItems.SelectedItems(0).Tag))
+    End Sub
+
+    ''' <summary>Add an item (ARMO or LVLI, including an own draft LVL) to the pieces list by FormID: dedup,
+    ''' build the <see cref="PieceEntry"/>, sample a realization for leveled items, then refresh. Shared by
+    ''' "Add to outfit" and by "New LVL…" (which auto-adds the freshly-created list as a piece).</summary>
+    Private Sub AddItemFidAsPiece(fid As UInteger)
+        If fid = 0UI Then Return
+        If _pieces.Any(Function(p) p.FormID = fid) Then Return  ' no exact-duplicate item (ARMO or LVLI)
         Dim it = _itemCandidates.FirstOrDefault(Function(x) x.FormID = fid)
         If it.FormID = 0UI Then Return
         _pieceOrderCounter += 1
-        _pieces.Add(New PieceEntry With {.FormID = it.FormID, .Display = it.DisplayName, .SlotMask = it.SlotMask, .Order = _pieceOrderCounter})
+        Dim piece As New PieceEntry With {.FormID = it.FormID, .Display = it.DisplayName, .SlotMask = it.SlotMask,
+                                          .Order = _pieceOrderCounter, .Plugin = it.Plugin}
+        ' LVLI piece: sample a realization now (approach A — its terminal(s) drive display/conflict/render).
+        ' The draft keeps the LVLI FormID; Reroll re-samples this. A freshly-created empty LVL realizes to
+        ' nothing (slot 0) until the user fills it via "Add to lvl".
+        If _mainForm.IsLeveledItem(fid) Then
+            piece.IsLeveled = True
+            Dim r = _mainForm.SampleLeveledRealization(fid, _raceFormID, _isFemale)
+            piece.Realization = r.Terminals
+            piece.SlotMask = r.SlotMask
+        End If
+        _pieces.Add(piece)
         RefreshPieces()
     End Sub
 
@@ -428,11 +473,106 @@ Public Class OutfitPicker_Form
         RefreshPieces()
     End Sub
 
+    ''' <summary>Reroll: re-sample every LVLI piece's realization (new terminals + slot), then refresh the
+    ''' list + preview. Only meaningful when a leveled piece is present (the button is enabled accordingly).</summary>
+    Private Sub OnReroll(sender As Object, e As EventArgs)
+        Dim any As Boolean = False
+        For Each p In _pieces
+            If p.IsLeveled Then
+                Dim r = _mainForm.SampleLeveledRealization(p.FormID, _raceFormID, _isFemale)
+                p.Realization = r.Terminals
+                p.SlotMask = r.SlotMask
+                any = True
+            End If
+        Next
+        If Not any Then Return
+        _lastPreviewKey = Nothing   ' the piece FormIDs are unchanged; force the re-render of the new sample
+        RefreshPieces()
+    End Sub
+
+    ''' <summary>Rebuild the Create item-candidate list (after a new LVL draft is created) so own LVL drafts
+    ''' (🎲) appear/update, then re-apply the current filter.</summary>
+    Private Sub RefreshItemCandidates()
+        _itemCandidates = _mainForm.GetArmoItemCandidatesWithDrafts(_raceFormID, _isFemale)
+        OnItemFilterChanged(Me, EventArgs.Empty)   ' re-filters + RefreshItemList
+    End Sub
+
+    ''' <summary>"New LVL…" → modal (name + 3 LVLF flags + Chance None + Max Count) → register an empty own
+    ''' LeveledListDraft, which then shows in the item list (🎲) ready to be filled via "Add to lvl".</summary>
+    Private Sub OnNewLvl(sender As Object, e As EventArgs)
+        Using dlg As New LeveledListEditor_Form(_mainForm)
+            If dlg.ShowDialog(Me) <> DialogResult.OK Then Return
+            Dim d As New LeveledListDraft With {
+                .FormID = _mainForm.AllocateDraftFormID(),
+                .EditorID = dlg.FullEditorID,
+                .CalcAllLevels = dlg.CalcAllLevels,
+                .CalcEachInCount = dlg.CalcEachInCount,
+                .UseAll = dlg.UseAll,
+                .ChanceNone = dlg.ChanceNoneValue,
+                .MaxCount = dlg.MaxCountValue,
+                .IsNew = True
+            }
+            _mainForm.RegisterLeveledListDraft(d)
+            RefreshItemCandidates()
+            ' Auto-add the new (empty) leveled list as a piece, then select it so "Add to lvl" is enabled
+            ' immediately — the user creates the list and starts filling it without an extra "Add" step.
+            AddItemFidAsPiece(d.FormID)
+            SelectPieceByFormID(d.FormID)
+        End Using
+    End Sub
+
+    ''' <summary>"Add to lvl": put the item selected in the candidate list (top) into the OWN leveled-list
+    ''' piece selected in the pieces list (bottom), prompting for the entry Level/Count/ChanceNone. Blocks
+    ''' self-insert and cycles (lvl1→lvl2→lvl1).</summary>
+    Private Sub OnAddToLvl(sender As Object, e As EventArgs)
+        Dim target = SelectedPieceEntry()
+        If target Is Nothing OrElse Not _mainForm.IsOwnLeveledDraft(target.FormID) Then Return
+        Dim itemFid = SelectedItemFormID()
+        If itemFid = 0UI Then
+            MessageBox.Show(Me, "Select an item in the top list to add into the leveled list.", "Add to lvl",
+                            MessageBoxButtons.OK, MessageBoxIcon.Information)
+            Return
+        End If
+        If _mainForm.WouldCreateLeveledCycle(target.FormID, itemFid) Then
+            MessageBox.Show(Me, "That would create a leveled-list cycle (the list would end up containing itself).",
+                            "Add to lvl", MessageBoxButtons.OK, MessageBoxIcon.Warning)
+            Return
+        End If
+        Dim lvl = _mainForm.TryGetLeveledListDraft(target.FormID)
+        If lvl Is Nothing Then Return
+        Dim itemName = _itemCandidates.Where(Function(x) x.FormID = itemFid).Select(Function(x) x.DisplayName).FirstOrDefault()
+        Using dlg As New LeveledEntryDialog_Form($"Add '{If(itemName, itemFid.ToString("X8"))}'  →  '{lvl.EditorID}'")
+            If dlg.ShowDialog(Me) <> DialogResult.OK Then Return
+            lvl.Entries.Add(New LeveledListDraft.LeveledEntry With {
+                .RefFormID = itemFid, .Level = dlg.LevelValue, .Count = dlg.CountValue, .ChanceNone = dlg.ChanceNoneValue})
+            lvl.IsModified = True
+        End Using
+        ' The LVL's contents changed → re-sample the affected piece's realization + refresh list/candidates.
+        Dim r = _mainForm.SampleLeveledRealization(target.FormID, _raceFormID, _isFemale)
+        target.Realization = r.Terminals
+        target.SlotMask = r.SlotMask
+        RefreshItemCandidates()   ' the LVL's slot footprint in the candidate list may have changed
+        _lastPreviewKey = Nothing
+        RefreshPieces()
+    End Sub
+
+    ''' <summary>"Add to lvl" is enabled only when the selected piece (bottom) is an OWN leveled-list draft
+    ''' (not a vanilla/loaded LVLI, not an ARMO).</summary>
+    Private Sub UpdateAddToLvlEnabled()
+        Dim p = SelectedPieceEntry()
+        ButtonAddToLvl.Enabled = (p IsNot Nothing AndAlso _mainForm.IsOwnLeveledDraft(p.FormID))
+    End Sub
+
     ''' <summary>Run the shared slot-conflict resolver over the assembled pieces, repaint the list
     ''' (✓ winners / ✗ eliminated, losers greyed), preview the resolved (winner) set, and update the
     ''' status line. Losers stay visible so the user sees what got eliminated and can remove a winner
     ''' to promote a loser; only winners are saved into the outfit (the resolved, conflict-free set).</summary>
     Private Async Sub RefreshPieces()
+        ' Remember the selected piece so a rebuild (add item, add-to-lvl, reroll) doesn't drop the
+        ' selection — the user can keep acting on the same piece (e.g. add several items into the same
+        ' leveled list) without re-selecting it every time. No-op if that piece is gone (e.g. Remove).
+        Dim keepSelectedFid As UInteger = If(SelectedPieceEntry()?.FormID, 0UI)
+
         Dim res = SlotConflictResolver.ResolveSlotWinners(_pieces, Function(p) p.SlotMask, Function(p) p.Order)
         Dim winners As New HashSet(Of PieceEntry)(res.Winners)
         ListViewPieces.BeginUpdate()
@@ -440,16 +580,24 @@ Public Class OutfitPicker_Form
             ListViewPieces.Items.Clear()
             For Each p In _pieces.OrderBy(Function(x) x.Order)
                 Dim isWin = winners.Contains(p)
-                Dim row As New ListViewItem(p.Display)
+                Dim row As New ListViewItem(If(p.IsLeveled, "🎲 " & p.Display, p.Display))
                 row.SubItems.Add(DescribeSlotMask(p.SlotMask))
                 row.SubItems.Add(If(isWin, "✓", "✗ eliminated"))
+                row.SubItems.Add(p.Plugin)
                 row.Tag = p
                 If Not isWin Then row.ForeColor = Color.Gray
+                If keepSelectedFid <> 0UI AndAlso p.FormID = keepSelectedFid Then row.Selected = True
                 ListViewPieces.Items.Add(row)
             Next
         Finally
             ListViewPieces.EndUpdate()
         End Try
+        Dim restored = ListViewPieces.SelectedItems.Count > 0
+        If restored Then ListViewPieces.SelectedItems(0).EnsureVisible()
+
+        ' Reroll only makes sense (and is only enabled) when there's a leveled list among the pieces.
+        ButtonReroll.Enabled = _pieces.Any(Function(x) x.IsLeveled)
+        UpdateAddToLvlEnabled()   ' reflects the (preserved) selection
 
         Dim losers = res.Losers.Count
         LabelCreateStatus.Text = $"{res.Winners.Count} piece(s) in outfit" & If(losers > 0, $"  ·  {losers} eliminated by slot conflict", "")
@@ -478,17 +626,49 @@ Public Class OutfitPicker_Form
             End If
         Else
             Dim res = SlotConflictResolver.ResolveSlotWinners(_pieces, Function(p) p.SlotMask, Function(p) p.Order)
-            Await PreviewCreateAssemblyAsync(res.Winners.Select(Function(p) p.FormID).ToList())
+            ' Flatten to terminal ARMOs (LVLI winners → their cached realization) so the preview draft is
+            ' the concrete sample currently shown in the list (Reroll changes it).
+            Await PreviewCreateAssemblyAsync(FlattenPieces(res.Winners))
         End If
+    End Function
+
+    ''' <summary>Flatten pieces to render-ready terminal ARMO FormIDs: ARMO pieces pass through; LVLI pieces
+    ''' expand to their cached realization. Used to build the FLAT preview draft (the committed draft keeps
+    ''' the LVLI FormIDs).</summary>
+    Private Function FlattenPieces(pieces As IEnumerable(Of PieceEntry)) As List(Of UInteger)
+        Dim flat As New List(Of UInteger)
+        For Each p In pieces
+            If p.IsLeveled AndAlso p.Realization IsNot Nothing Then
+                flat.AddRange(p.Realization)
+            Else
+                flat.Add(p.FormID)
+            End If
+        Next
+        Return flat
+    End Function
+
+    ''' <summary>Terminal ARMO FormIDs to preview for a single selected FormID: a chosen LVLI piece → its
+    ''' cached realization; a candidate LVLI item (not yet added) → a fresh sample; an ARMO → itself.</summary>
+    Private Function RealizedTerminalsFor(fid As UInteger) As List(Of UInteger)
+        Dim p = _pieces.FirstOrDefault(Function(x) x.FormID = fid)
+        If p IsNot Nothing Then
+            If p.IsLeveled AndAlso p.Realization IsNot Nothing Then Return New List(Of UInteger)(p.Realization)
+            Return New List(Of UInteger) From {p.FormID}
+        End If
+        If _mainForm.IsLeveledItem(fid) Then Return _mainForm.SampleLeveledRealization(fid, _raceFormID, _isFemale).Terminals
+        Return New List(Of UInteger) From {fid}
     End Function
 
     ''' <summary>Preview a single ARMO piece via the throwaway draft (one-item set) — same WYSIWYG host
     ''' path the assembly preview uses, just with one FormID.</summary>
-    Private Async Function PreviewCreatePieceAsync(armoFid As UInteger) As Task
-        ' Single-item throwaway draft; pieceOnly hides body/head so ONLY the piece shows. Draft register +
-        ' toggles are coalesced with the render inside RequestPreviewAsync.
-        Await RequestPreviewAsync(OutfitDraft.PreviewDraftFormID, "piece:" & armoFid.ToString("X"),
-                                  pieceOnly:=True, draftItems:=New List(Of UInteger) From {armoFid})
+    Private Async Function PreviewCreatePieceAsync(fid As UInteger) As Task
+        ' Single-item preview; pieceOnly hides body/head so ONLY the piece shows. For an LVLI the realized
+        ' terminal(s) are previewed (the key includes them so a Reroll re-renders). Draft register + toggles
+        ' are coalesced with the render inside RequestPreviewAsync.
+        Dim flat = RealizedTerminalsFor(fid)
+        Await RequestPreviewAsync(OutfitDraft.PreviewDraftFormID,
+                                  "piece:" & fid.ToString("X") & ":" & String.Join(",", flat.Select(Function(f) f.ToString("X"))),
+                                  pieceOnly:=True, draftItems:=flat)
     End Function
 
     ''' <summary>Toggle whole-outfit ⇄ selected-piece. Re-renders per the new mode.</summary>
@@ -505,16 +685,22 @@ Public Class OutfitPicker_Form
     End Sub
 
     Private Async Sub OnCreatePieceSelectionChanged(sender As Object, e As EventArgs)
+        UpdateAddToLvlEnabled()   ' applies regardless of preview mode
         If TabsMain.SelectedTab IsNot TabPageCreate OrElse Not RadioButtonRenderPiece.Checked Then Return
         Await RefreshCreatePreview()
     End Sub
 
-    Private Sub OnItemsListEnter(sender As Object, e As EventArgs)
+    ' Focus-gain must (re)fire the piece preview for THIS list's selection: switching lists doesn't always
+    ' change a selection (the target row may already be selected), so SelectedIndexChanged wouldn't fire and
+    ' the render would stay on the other list's item. Only relevant in "selected piece only" mode on Create.
+    Private Async Sub OnItemsListEnter(sender As Object, e As EventArgs)
         _pieceListHasPreviewFocus = False   ' top list (candidate items) now drives the piece preview
+        If RadioButtonRenderPiece.Checked AndAlso TabsMain.SelectedTab Is TabPageCreate Then Await RefreshCreatePreview()
     End Sub
 
-    Private Sub OnPiecesListEnter(sender As Object, e As EventArgs)
+    Private Async Sub OnPiecesListEnter(sender As Object, e As EventArgs)
         _pieceListHasPreviewFocus = True    ' bottom list (chosen pieces) now drives the piece preview
+        If RadioButtonRenderPiece.Checked AndAlso TabsMain.SelectedTab Is TabPageCreate Then Await RefreshCreatePreview()
     End Sub
 
     ''' <summary>FormID of the selected row in the items-to-choose list (0 if none).</summary>
@@ -528,6 +714,22 @@ Public Class OutfitPicker_Form
         If ListViewPieces.SelectedItems.Count = 0 Then Return Nothing
         Return TryCast(ListViewPieces.SelectedItems(0).Tag, PieceEntry)
     End Function
+
+    ''' <summary>Select the chosen-pieces row whose entry has <paramref name="fid"/> (used after "New LVL…"
+    ''' auto-adds the new list, so it's the active selection and "Add to lvl" enables right away). No-op when
+    ''' the FormID isn't in the list.</summary>
+    Private Sub SelectPieceByFormID(fid As UInteger)
+        For Each row As ListViewItem In ListViewPieces.Items
+            Dim p = TryCast(row.Tag, PieceEntry)
+            If p IsNot Nothing AndAlso p.FormID = fid Then
+                ListViewPieces.SelectedItems.Clear()
+                row.Selected = True
+                row.EnsureVisible()
+                UpdateAddToLvlEnabled()
+                Return
+            End If
+        Next
+    End Sub
 
     ''' <summary>FormID to preview in "selected piece" mode: the selection of whichever Create list the
     ''' user last had focus in (top = candidate items, bottom = chosen pieces, per
@@ -592,11 +794,20 @@ Public Class OutfitPicker_Form
     Private Sub PrefillPiecesFromOutfit(fid As UInteger)
         _pieces.Clear()
         _pieceOrderCounter = 0
-        For Each armoFID In _mainForm.ResolveOutfitArmoList(fid)
-            Dim it = _itemCandidates.FirstOrDefault(Function(x) x.FormID = armoFID)
+        ' INAM items AS AUTHORED (ARMO or LVLI) — a leveled entry stays a leveled piece (not flattened).
+        For Each itemFID In _mainForm.ResolveOutfitItemList(fid)
+            Dim it = _itemCandidates.FirstOrDefault(Function(x) x.FormID = itemFID)
             If it.FormID = 0UI Then Continue For
             _pieceOrderCounter += 1
-            _pieces.Add(New PieceEntry With {.FormID = it.FormID, .Display = it.DisplayName, .SlotMask = it.SlotMask, .Order = _pieceOrderCounter})
+            Dim piece As New PieceEntry With {.FormID = it.FormID, .Display = it.DisplayName, .SlotMask = it.SlotMask,
+                                              .Order = _pieceOrderCounter, .Plugin = it.Plugin}
+            If _mainForm.IsLeveledItem(itemFID) Then
+                piece.IsLeveled = True
+                Dim r = _mainForm.SampleLeveledRealization(itemFID, _raceFormID, _isFemale)
+                piece.Realization = r.Terminals
+                piece.SlotMask = r.SlotMask
+            End If
+            _pieces.Add(piece)
         Next
         RefreshPieces()
     End Sub
@@ -653,7 +864,15 @@ Public Class OutfitPicker_Form
             draft.EditorID = fullEdid
             draft.IsOverride = False
         End If
-        draft.ItemArmoFormIDs.AddRange(winnerFIDs)
+        ' INAM = the winning piece FormIDs as authored — ARMO or LVLI (LVLIs persist as leveled entries).
+        draft.ItemFormIDs.AddRange(winnerFIDs)
+        ' Carry each LVLI piece's current realization to the draft so the committed render matches the
+        ' picker's preview (until rerolled later). The draft still saves the LVLI ref in INAM.
+        For Each p In res.Winners
+            If p.IsLeveled AndAlso p.Realization IsNot Nothing Then
+                draft.LvliRealization(p.FormID) = New List(Of UInteger)(p.Realization)
+            End If
+        Next
         draft.IsNew = True
         draft.IsModified = False
         _mainForm.RegisterOutfitDraft(draft)

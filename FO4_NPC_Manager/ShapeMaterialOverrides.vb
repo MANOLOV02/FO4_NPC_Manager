@@ -66,15 +66,6 @@ Friend Module ShapeMaterialOverrides
         If mswpFormID = 0UI Then Return
         If pluginManager Is Nothing Then Return
 
-        If funcType = MaterialSwapFunction.Remov Then
-            ' Placeholder. Trip the debugger so we catch the first vanilla case and can decide
-            ' the revert algorithm with real data instead of inventing one. NO-OP visual until
-            ' implemented — better than the wrong heuristic.
-            Logger.LogLazy(Function() $"[MSWP-REMOVE-STUB] mswp=0x{mswpFormID:X8} — REM function not implemented, no-op")
-            Debugger.Break()
-            Return
-        End If
-
         Dim mswpRec = pluginManager.GetRecord(mswpFormID)
         If mswpRec Is Nothing OrElse mswpRec.Header.Signature <> "MSWP" Then
             Logger.LogLazy(Function() $"[MSWP-LOAD-FAIL] mswp=0x{mswpFormID:X8} reason='record-not-found-or-wrong-sig'")
@@ -90,11 +81,15 @@ Friend Module ShapeMaterialOverrides
         Dim subsCount = mswp.Substitutions.Count
         Logger.LogLazy(Function() $"[MSWP-LOAD] mswp=0x{mswpFormID:X8} subs={subsCount}")
 
-        ' SET and ADD share the same code path. Distinction is conceptual: SET assumes "first
-        ' swap on this shape", ADD assumes "stacking on a previous swap". Both mutate the
-        ' current material in place by path match, so the render output is identical in
-        ' practice — the engine accumulates by walking the Includes in order, each call
-        ' mutating whatever the previous call left.
+        ' SET / ADD / REM share ONE direction-aware path. SET and ADD both match a shape's current material
+        ' against a substitution's OriginalMaterial and swap in the ReplacementMaterial — conceptually SET =
+        ' "first swap", ADD = "stack on a previous swap", but identical in-place mutation (the engine
+        ' accumulates by walking the OMODs in order, each call mutating whatever the previous left). REM is
+        ' the EXACT inverse: it matches the ReplacementMaterial and reverts to the OriginalMaterial, undoing
+        ' a prior SET/ADD of this same MSWP. Paint OMODs (e.g. DLC05 Abraxo) REM the base material swap
+        ' before ADDing their own, so the new swap — which maps from the original NIF material — matches.
+        Dim isRemove = (funcType = MaterialSwapFunction.Remov)
+        Dim dirLog = If(isRemove, "REM", "SET/ADD")
         For Each shape In shapes
             MainForm.EnsureShapeMaterialResolved(shape)
 
@@ -113,37 +108,38 @@ Friend Module ShapeMaterialOverrides
 
             Dim correctedCurrentPath = FO4UnifiedMaterial_Class.CorrectMaterialPath(currentPath)
             Dim ccpLog = correctedCurrentPath
-            Logger.LogLazy(Function() $"[MSWP-SHAPE] shape='{shapeNameLog}' currentPath='{ccpLog}'")
+            Logger.LogLazy(Function() $"[MSWP-SHAPE] shape='{shapeNameLog}' currentPath='{ccpLog}' dir={dirLog}")
 
             Dim matched As Boolean = False
             For Each sub_ In mswp.Substitutions
-                Dim origPath = FO4UnifiedMaterial_Class.CorrectMaterialPath(If(sub_.OriginalMaterial, ""))
-                If origPath = "" Then Continue For
+                ' Direction: SET/ADD match Original→Replacement; REM matches Replacement→Original.
+                Dim fromPath = FO4UnifiedMaterial_Class.CorrectMaterialPath(If(If(isRemove, sub_.ReplacementMaterial, sub_.OriginalMaterial), ""))
+                If fromPath = "" Then Continue For
 
-                If String.Equals(correctedCurrentPath, origPath, StringComparison.OrdinalIgnoreCase) Then
-                    Dim replacementPath = If(sub_.ReplacementMaterial, "")
-                    Dim repL = replacementPath
-                    Dim origL = origPath
-                    If replacementPath = "" Then
-                        Logger.LogLazy(Function() $"[MSWP-MATCH-EMPTY-REPL] shape='{shapeNameLog}' orig='{origL}' replacement=''")
+                If String.Equals(correctedCurrentPath, fromPath, StringComparison.OrdinalIgnoreCase) Then
+                    Dim targetPath = If(If(isRemove, sub_.OriginalMaterial, sub_.ReplacementMaterial), "")
+                    Dim toL = targetPath
+                    Dim fromL = fromPath
+                    If targetPath = "" Then
+                        Logger.LogLazy(Function() $"[MSWP-MATCH-EMPTY-TARGET] shape='{shapeNameLog}' from='{fromL}' target='' dir={dirLog}")
                         matched = True
                         Exit For
                     End If
 
-                    Dim newMaterial = MainForm.TryLoadMaterialFromDictionary(replacementPath, relatedMaterial.material, shape.NifShape, shape.NifContent)
+                    Dim newMaterial = MainForm.TryLoadMaterialFromDictionary(targetPath, relatedMaterial.material, shape.NifShape, shape.NifContent)
                     If newMaterial IsNot Nothing Then
                         relatedMaterial.material = newMaterial
-                        relatedMaterial.path = FO4UnifiedMaterial_Class.CorrectMaterialPath(replacementPath)
-                        Logger.LogLazy(Function() $"[MSWP-APPLIED] shape='{shapeNameLog}' orig='{origL}' → repl='{repL}' loadResult=OK")
+                        relatedMaterial.path = FO4UnifiedMaterial_Class.CorrectMaterialPath(targetPath)
+                        Logger.LogLazy(Function() $"[MSWP-APPLIED] shape='{shapeNameLog}' from='{fromL}' → to='{toL}' dir={dirLog} loadResult=OK")
                     Else
-                        Logger.LogLazy(Function() $"[MSWP-APPLIED-LOAD-FAIL] shape='{shapeNameLog}' orig='{origL}' → repl='{repL}' loadResult=NULL — material unchanged")
+                        Logger.LogLazy(Function() $"[MSWP-APPLIED-LOAD-FAIL] shape='{shapeNameLog}' from='{fromL}' → to='{toL}' dir={dirLog} loadResult=NULL — material unchanged")
                     End If
                     matched = True
                     Exit For
                 End If
             Next
             If Not matched Then
-                Logger.LogLazy(Function() $"[MSWP-NO-MATCH] shape='{shapeNameLog}' currentPath='{ccpLog}' subs={subsCount} — no substitution matched")
+                Logger.LogLazy(Function() $"[MSWP-NO-MATCH] shape='{shapeNameLog}' currentPath='{ccpLog}' subs={subsCount} dir={dirLog} — no substitution matched")
             End If
         Next
     End Sub

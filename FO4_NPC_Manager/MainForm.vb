@@ -53,6 +53,10 @@ Public Class MainForm
     ''' allocated from <see cref="_nextDraftObjIndex"/>; the render/Browse/writer resolve them via
     ''' <see cref="TryGetOutfitDraft"/>. Cleared on plugin reload (RebuildTreeModelCache).</summary>
     Private ReadOnly _outfitDrafts As New List(Of OutfitDraft)
+    ''' <summary>Author-built leveled lists (LVLI drafts) — same lifetime/scope as <see cref="_outfitDrafts"/>;
+    ''' provisional FormIDs from the SAME <see cref="AllocateDraftFormID"/> counter so OTFT and LVLI drafts
+    ''' never collide. Resolved via <see cref="TryGetLeveledListDraft"/>. Cleared on plugin reload.</summary>
+    Private ReadOnly _leveledListDrafts As New List(Of LeveledListDraft)
     ''' <summary>Next object index (low 3 bytes, ≥0x800 per the FO4/xEdit new-record convention) for
     ''' a provisional draft FormID.</summary>
     Private _nextDraftObjIndex As UInteger = &H800UI
@@ -372,6 +376,9 @@ Public Class MainForm
         ''' (only HeadParts enter the pipeline). Same mechanism the MainForm "Only Face"
         ''' PreviewMode triggers; the editor host sets this True for its renders.</summary>
         Public OnlyFaceCollect As Boolean = False
+        ''' <summary>When True, <see cref="CollectMeshCandidates"/> collects ONLY the outfit (skips Skin,
+        ''' HeadParts and robot chunks) — used by the Edit Outfit "selected piece only" preview.</summary>
+        Public OnlyOutfitCollect As Boolean = False
         Public ReadOnly Warnings As New List(Of String)
     End Class
 
@@ -1187,6 +1194,8 @@ Public Class MainForm
                 Continue For
             End Try
             If armo Is Nothing Then Continue For
+            ' Power-armor gate (same rule as the render): don't offer a power-armor skin for a non-PA race.
+            If ArmoIsPowerArmor(armoFID) AndAlso Not RaceIsPowerArmor(npcRaceFID) Then Continue For
             Dim raceMatch = (armo.RaceFormID = npcRaceFID)
             Dim genderMatch As Boolean = False
             For Each addon In armo.ArmorAddons
@@ -1300,6 +1309,7 @@ Public Class MainForm
         _outfitCandidateCache.Clear()
         _outfitAvailabilityCache.Clear()
         _armoItemCandidateCache.Clear()
+        _outfitLeveledListCache = Nothing   ' OTFT-referenced LVLI set is derived from records → re-derive
         Dim otftRecs = _pluginManager.GetRecordsOfType("OTFT")
         If otftRecs Is Nothing Then Return
         For Each rec In otftRecs
@@ -1336,10 +1346,18 @@ Public Class MainForm
         ' In-memory drafts authored in the Create tab — appended fresh (NOT cached, they change as the
         ' user authors them). Shown for any NPC (they're deliberate user creations); the render's
         ' per-ARMA race check drops any piece that doesn't fit the actual NPC. Marked "[draft]".
+        ' Dedupe: an Override draft keeps the base OTFT's FormID, so it would otherwise show TWICE (the
+        ' real OTFT row + a "[draft]" row, same FormID). Skip the draft row when its FormID is already
+        ' listed — the existing row already resolves to the draft at render time (TryGetOutfitDraft wins),
+        ' so one row is enough and it applies the modified outfit. (Operates on _outfitDrafts, which only
+        ' changes on OK via RegisterOutfitDraft — the in-dialog Override↔New toggling never touches it, and
+        ' the preview throwaway draft is excluded below.)
         If _outfitDrafts.Count = 0 Then Return otftList
         Dim result As New List(Of (FormID As UInteger, DisplayName As String))(otftList)
+        Dim listedIds As New HashSet(Of UInteger)(otftList.Select(Function(x) x.FormID))
         For Each d In _outfitDrafts
             If d.FormID = OutfitDraft.PreviewDraftFormID Then Continue For   ' throwaway picker-preview draft
+            If listedIds.Contains(d.FormID) Then Continue For                 ' override of an already-listed OTFT — dedupe
             result.Add((d.FormID, d.EditorID & "  [draft]"))
         Next
         Return result
@@ -1385,6 +1403,10 @@ Public Class MainForm
                 Continue For
             End Try
             If armo Is Nothing Then Continue For
+            ' Power-armor gate (same rule as the render): a PA ARMO is not a valid piece for a non-PA race
+            ' (it'd be dropped at render). A mixed outfit still validates via its non-PA pieces; a purely-PA
+            ' outfit won't list for a non-PA NPC.
+            If ArmoIsPowerArmor(armoFID) AndAlso Not RaceIsPowerArmor(npcRaceFID) Then Continue For
             For Each addon In armo.ArmorAddons
                 Dim arma As ARMA_Data
                 Try
@@ -1476,6 +1498,9 @@ Public Class MainForm
                     Continue For
                 End Try
                 If armo Is Nothing Then Continue For
+                ' Power-armor gate (same rule as the render): don't offer ArmorTypePower pieces for a
+                ' non-power-armor race — they'd mount wrong without a frame.
+                If ArmoIsPowerArmor(armoFID) AndAlso Not RaceIsPowerArmor(npcRaceFID) Then Continue For
                 ' Effective slot footprint, matching the render (CollectArmoCandidates:7319): per addon take
                 ' the ARMA's own BOD2 mask, falling back to the ARMO's only when the ARMA declares none, and
                 ' UNION across every race-valid addon that has a mesh. The render builds one candidate per
@@ -1483,36 +1508,113 @@ Public Class MainForm
                 ' the union is the equivalent footprint, so two pieces overlapping on ANY slot conflict the
                 ' same way they do in-game. (The old "ARMO BOD2 first, first ARMA only" path used a declared
                 ' mask that can diverge from the ARMA's real slots, so same-slot pieces weren't eliminated.)
-                Dim slotMask As UInteger = 0UI
-                Dim valid As Boolean = False
-                For Each addon In armo.ArmorAddons
-                    Dim arma As ARMA_Data
-                    Try
-                        arma = GetParsedArma(addon.ArmaFormID)
-                    Catch
-                        Continue For
-                    End Try
-                    If arma Is Nothing Then Continue For
-                    If Not ArmorAddonMatchesRace(arma, npcRaceFID) Then Continue For
-                    Dim genderMesh = If(isFemale, arma.FemaleMeshPath, arma.MaleMeshPath)
-                    If genderMesh = "" Then genderMesh = If(arma.MaleMeshPath <> "", arma.MaleMeshPath, arma.FemaleMeshPath)
-                    If genderMesh <> "" Then
-                        valid = True
-                        slotMask = slotMask Or EffectiveArmaSlotMask(arma, armo)
-                    End If
-                Next
-                ' No addon contributed a mask (slotless mesh / world-model only) → fall back to the ARMO's.
-                If slotMask = 0UI Then slotMask = armo.SlotMask
-                If valid Then
+                Dim armoSlot = ComputeArmoEffectiveSlotMask(armo, npcRaceFID, isFemale)
+                If armoSlot.Valid Then
                     Dim disp As String = If(Not String.IsNullOrEmpty(armo.FullName), armo.FullName,
                                             If(Not String.IsNullOrEmpty(armo.EditorID), armo.EditorID, armoFID.ToString("X8")))
-                    outList.Add((armoFID, disp, slotMask, GetOutfitPluginName(armoFID)))
+                    outList.Add((armoFID, disp, armoSlot.Mask, GetOutfitPluginName(armoFID)))
                 End If
             Next
         End If
+
+        ' LVLI items — let the user add a leveled list as an outfit piece (it persists AS a leveled entry;
+        ' the engine rolls at runtime, the editor previews a rerollable realization). Offered only for the
+        ' leveled lists that outfits actually use (GetOutfitLeveledListFormIDs), and only when the list can
+        ' produce >=1 race/gender-valid terminal. SlotMask = UNION of those terminals' effective masks (the
+        ' footprint it could cover). The Type is derived at use time via IsLeveledItem (record signature).
+        For Each lvliFID In GetOutfitLeveledListFormIDs()
+            Dim lvliRec = _pluginManager.GetRecord(lvliFID)
+            If lvliRec Is Nothing Then Continue For
+            Dim unionMask As UInteger = 0UI
+            Dim anyValid As Boolean = False
+            For Each terminalFID In OutfitResolver.EnumerateItemTerminalArmos(lvliFID, _pluginManager)
+                Dim tArmo As ARMO_Data
+                Try
+                    tArmo = GetParsedArmo(terminalFID)
+                Catch
+                    Continue For
+                End Try
+                Dim tr = ComputeArmoEffectiveSlotMask(tArmo, npcRaceFID, isFemale)
+                If tr.Valid Then
+                    anyValid = True
+                    unionMask = unionMask Or tr.Mask
+                End If
+            Next
+            If anyValid Then
+                Dim disp As String = If(lvliRec.EditorID <> "", lvliRec.EditorID, lvliFID.ToString("X8"))
+                outList.Add((lvliFID, disp, unionMask, GetOutfitPluginName(lvliFID)))
+            End If
+        Next
+
         outList = outList.OrderBy(Function(x) x.DisplayName, StringComparer.OrdinalIgnoreCase).ToList()
         _armoItemCandidateCache(cacheKey) = outList
         Return outList
+    End Function
+
+    ''' <summary>Like <see cref="GetArmoItemCandidates"/> but ALSO appends the author-built LVLI drafts
+    ''' (🎲, own), fresh on every call (not cached — they change as the user builds them). The Edit Outfit
+    ''' picker uses this so own leveled lists are addable as outfit pieces / nestable into other LVLs. Each
+    ''' draft's slot footprint = UNION of <see cref="ComputeArmoEffectiveSlotMask"/> over the terminals its
+    ''' entries can produce (<see cref="EnumerateLeveledTerminalsAll"/>, draft-aware/recursive).</summary>
+    Friend Function GetArmoItemCandidatesWithDrafts(npcRaceFID As UInteger, isFemale As Boolean) As List(Of (FormID As UInteger, DisplayName As String, SlotMask As UInteger, Plugin As String))
+        Dim baseList = GetArmoItemCandidates(npcRaceFID, isFemale)
+        If _leveledListDrafts.Count = 0 Then Return baseList
+        Dim result As New List(Of (FormID As UInteger, DisplayName As String, SlotMask As UInteger, Plugin As String))(baseList)
+        For Each d In _leveledListDrafts
+            Dim unionMask As UInteger = 0UI
+            For Each t In EnumerateLeveledTerminalsAll(d.FormID)
+                unionMask = unionMask Or ComputeArmoEffectiveSlotMask(GetParsedArmo(t), npcRaceFID, isFemale).Mask
+            Next
+            result.Add((d.FormID, d.EditorID & "  [LVL]", unionMask, "(new)"))
+        Next
+        Return result
+    End Function
+
+    ''' <summary>Effective slot footprint of an ARMO for a race/gender: UNION of <see cref="EffectiveArmaSlotMask"/>
+    ''' over its race-valid addons that carry a gender mesh, falling back to the ARMO's own BOD2 when no addon
+    ''' contributes. Valid = at least one addon had a mesh for this race/gender. Shared by the ARMO and the
+    ''' LVLI-terminal paths of <see cref="GetArmoItemCandidates"/> so both compute the slot identically.</summary>
+    Private Function ComputeArmoEffectiveSlotMask(armo As ARMO_Data, npcRaceFID As UInteger, isFemale As Boolean) As (Mask As UInteger, Valid As Boolean)
+        If armo Is Nothing Then Return (0UI, False)
+        Dim slotMask As UInteger = 0UI
+        Dim valid As Boolean = False
+        For Each addon In armo.ArmorAddons
+            Dim arma As ARMA_Data
+            Try
+                arma = GetParsedArma(addon.ArmaFormID)
+            Catch
+                Continue For
+            End Try
+            If arma Is Nothing Then Continue For
+            If Not ArmorAddonMatchesRace(arma, npcRaceFID) Then Continue For
+            Dim genderMesh = If(isFemale, arma.FemaleMeshPath, arma.MaleMeshPath)
+            If genderMesh = "" Then genderMesh = If(arma.MaleMeshPath <> "", arma.MaleMeshPath, arma.FemaleMeshPath)
+            If genderMesh <> "" Then
+                valid = True
+                slotMask = slotMask Or EffectiveArmaSlotMask(arma, armo)
+            End If
+        Next
+        If slotMask = 0UI Then slotMask = armo.SlotMask
+        Return (slotMask, valid)
+    End Function
+
+    ''' <summary>The set of LVLI FormIDs referenced directly by any OTFT's INAM — i.e. the leveled lists that
+    ''' outfits actually use. These are what the Create tab offers as addable leveled pieces (a bounded,
+    ''' relevant set, instead of sweeping every LVLI in the load order). Cached once per load order.</summary>
+    Private _outfitLeveledListCache As List(Of UInteger) = Nothing
+    Private Function GetOutfitLeveledListFormIDs() As List(Of UInteger)
+        If _outfitLeveledListCache IsNot Nothing Then Return _outfitLeveledListCache
+        Dim seen As New HashSet(Of UInteger)
+        Dim result As New List(Of UInteger)
+        For Each otftFID In _outfitUniverse
+            Dim rec = _pluginManager.GetRecord(otftFID)
+            If rec Is Nothing OrElse rec.Header.Signature <> "OTFT" Then Continue For
+            For Each itemFID In RecordParsers.ParseOTFT(rec, _pluginManager).ItemFormIDs
+                If seen.Add(itemFID) AndAlso IsLeveledItem(itemFID) Then result.Add(itemFID)
+            Next
+        Next
+        _outfitLeveledListCache = result
+        Return result
     End Function
 
     ''' <summary>WYSIWYG outfit preview: render the NPC wearing <paramref name="overrideValue"/> into the
@@ -1551,14 +1653,127 @@ Public Class MainForm
         If existing IsNot Nothing Then _outfitDrafts.Remove(existing)
     End Sub
 
-    ''' <summary>Resolve an outfit FormID to its current ARMO list — a draft → its items; a real OTFT
-    ''' → one sampled realization. Used by the Create tab's Override pre-fill.</summary>
-    Friend Function ResolveOutfitArmoList(fid As UInteger) As List(Of UInteger)
+    ''' <summary>Resolve an outfit FormID to its INAM item list — the entries AS AUTHORED (ARMO **or LVLI**
+    ''' FormIDs), NOT sampled. A draft → its ItemFormIDs; a real OTFT → its parsed INAM. Used by the Create
+    ''' tab's Override pre-fill so a leveled entry stays a leveled piece (not flattened to one realization).</summary>
+    Friend Function ResolveOutfitItemList(fid As UInteger) As List(Of UInteger)
         If fid = 0UI Then Return New List(Of UInteger)
         Dim draft = TryGetOutfitDraft(fid)
-        If draft IsNot Nothing Then Return New List(Of UInteger)(draft.ItemArmoFormIDs)
-        Dim warnings As New List(Of String)
-        Return OutfitResolver.SampleOutfitWithKeywords(fid, _pluginManager, warnings).Select(Function(p) p.ArmoFormID).ToList()
+        If draft IsNot Nothing Then Return New List(Of UInteger)(draft.ItemFormIDs)
+        Dim rec = _pluginManager.GetRecord(fid)
+        If rec Is Nothing OrElse rec.Header.Signature <> "OTFT" Then Return New List(Of UInteger)
+        Return New List(Of UInteger)(RecordParsers.ParseOTFT(rec, _pluginManager).ItemFormIDs)
+    End Function
+
+    ''' <summary>True if <paramref name="fid"/> is a leveled item list — a real LVLI record OR an author-built
+    ''' LVLI draft (which lives outside the PluginManager, so GetRecord wouldn't see it).</summary>
+    Friend Function IsLeveledItem(fid As UInteger) As Boolean
+        If fid = 0UI Then Return False
+        If IsOwnLeveledDraft(fid) Then Return True
+        Dim rec = _pluginManager.GetRecord(fid)
+        Return rec IsNot Nothing AndAlso rec.Header.Signature = "LVLI"
+    End Function
+
+    ''' <summary>Leveled-list resolver injected into <see cref="OutfitResolver"/> so the lib's ONE sampler/
+    ''' enumerator also sees our in-memory LVLI drafts (which aren't in the PluginManager). Returns the draft
+    ''' as an <see cref="LVLI_Data"/> view when <paramref name="formID"/> is an own draft; Nothing otherwise
+    ''' (the lib then resolves it as a real record). This is what removed the app-side duplicate of the
+    ''' leveled sampling algorithm — the app supplies only the draft DATA, never the logic.</summary>
+    Private Function ResolveLeveledDraftView(formID As UInteger) As LVLI_Data
+        Dim d = TryGetLeveledListDraft(formID)
+        If d Is Nothing Then Return Nothing
+        Dim data As New LVLI_Data With {.FormID = d.FormID, .EditorID = d.EditorID, .ChanceNone = d.ChanceNone, .Flags = d.FlagsByte()}
+        For Each e In d.Entries
+            data.Entries.Add(New LVLI_Entry With {.FormID = e.RefFormID, .Level = e.Level, .Count = e.Count, .ChanceNone = e.ChanceNone})
+        Next
+        ' Drafts carry no LLKC (FilterKeywords stays empty) — same as the old app-side sampler.
+        Return data
+    End Function
+
+    ''' <summary>Sample ONE realization of a leveled item (real LVLI or own draft) to terminal ARMO FormIDs,
+    ''' through the single lib sampler with the draft view injected. Handles UseAll / ChanceNone / Count /
+    ''' CalcEach / nesting uniformly for real and draft lists.</summary>
+    Friend Function SampleLeveledTerminals(fid As UInteger) As List(Of UInteger)
+        Return OutfitResolver.SampleItemWithKeywords(fid, _pluginManager, leveledResolver:=AddressOf ResolveLeveledDraftView) _
+            .Select(Function(p) p.ArmoFormID).ToList()
+    End Function
+
+    ''' <summary>Deterministic: ALL terminal ARMOs a leveled item can produce (real or own draft), for the
+    ''' candidate-list slot footprint — through the single lib enumerator with the draft view injected.</summary>
+    Friend Function EnumerateLeveledTerminalsAll(fid As UInteger) As List(Of UInteger)
+        Return OutfitResolver.EnumerateItemTerminalArmos(fid, _pluginManager, leveledResolver:=AddressOf ResolveLeveledDraftView)
+    End Function
+
+    ''' <summary>True if adding <paramref name="itemFid"/> into the own leveled list <paramref name="lvlFid"/>
+    ''' would create a cycle — the item IS the list, or the item is an own LVL that already contains the list
+    ''' (directly or transitively, e.g. lvl1→lvl2→lvl1). Blocks "Add to lvl" cycles. (Runtime resolution is
+    ''' already cycle-safe via visited sets; this stops the user authoring one in the first place.)</summary>
+    Friend Function WouldCreateLeveledCycle(lvlFid As UInteger, itemFid As UInteger) As Boolean
+        If lvlFid = itemFid Then Return True
+        If Not IsOwnLeveledDraft(itemFid) Then Return False   ' real LVLIs can't reference our drafts → no cycle
+        Return LeveledDraftReaches(itemFid, lvlFid, New HashSet(Of UInteger))
+    End Function
+
+    Private Function LeveledDraftReaches(fromFid As UInteger, targetFid As UInteger, visited As HashSet(Of UInteger)) As Boolean
+        Dim d = TryGetLeveledListDraft(fromFid)
+        If d Is Nothing OrElse Not visited.Add(fromFid) Then Return False
+        For Each e In d.Entries
+            If e.RefFormID = targetFid Then Return True
+            If IsOwnLeveledDraft(e.RefFormID) AndAlso LeveledDraftReaches(e.RefFormID, targetFid, visited) Then Return True
+        Next
+        Return False
+    End Function
+
+    ''' <summary>Flatten a draft to its render-ready terminal ARMO list: ARMO items pass through; LVLI items
+    ''' use their cached realization (sampled once via <see cref="OutfitResolver.SampleItemWithKeywords"/>,
+    ''' stored on the draft so the preview is STABLE between renders — Reroll clears the cache to re-sample).
+    ''' The draft keeps the LVLI FormIDs (persists as leveled); this is only the editor's current sample.</summary>
+    Friend Function ResolveDraftArmoList(draft As OutfitDraft) As List(Of UInteger)
+        Dim outList As New List(Of UInteger)
+        If draft Is Nothing Then Return outList
+        For Each itemFid In draft.ItemFormIDs
+            If IsLeveledItem(itemFid) Then
+                Dim realized As List(Of UInteger) = Nothing
+                If Not draft.LvliRealization.TryGetValue(itemFid, realized) Then
+                    realized = SampleLeveledTerminals(itemFid)
+                    draft.LvliRealization(itemFid) = realized
+                End If
+                outList.AddRange(realized)
+            Else
+                outList.Add(itemFid)
+            End If
+        Next
+        Return outList
+    End Function
+
+    ''' <summary>Reroll an LVLI item's cached realization (clear it so the next resolve re-samples). Pass 0
+    ''' to reroll ALL leveled items in the draft.</summary>
+    Friend Sub RerollDraftLeveled(draft As OutfitDraft, Optional lvliFid As UInteger = 0UI)
+        If draft Is Nothing Then Return
+        If lvliFid = 0UI Then
+            draft.LvliRealization.Clear()
+        Else
+            draft.LvliRealization.Remove(lvliFid)
+        End If
+    End Sub
+
+    ''' <summary>True if the draft contains at least one LVLI item.</summary>
+    Friend Function DraftHasLeveled(draft As OutfitDraft) As Boolean
+        If draft Is Nothing Then Return False
+        Return draft.ItemFormIDs.Any(Function(f) IsLeveledItem(f))
+    End Function
+
+    ''' <summary>Sample ONE realization of an LVLI for the Edit Outfit picker: the terminal ARMO FormIDs +
+    ''' their UNION effective slot mask (for the piece's display/conflict, approach A — the LVLI behaves as
+    ''' its current sample). Called on Add and Reroll; the result is cached on the piece/draft so the preview
+    ''' is stable between renders. The draft persists the LVLI FormID, not this realization.</summary>
+    Friend Function SampleLeveledRealization(lvliFid As UInteger, npcRaceFID As UInteger, isFemale As Boolean) As (Terminals As List(Of UInteger), SlotMask As UInteger)
+        Dim terminals = SampleLeveledTerminals(lvliFid)
+        Dim mask As UInteger = 0UI
+        For Each t In terminals
+            mask = mask Or ComputeArmoEffectiveSlotMask(GetParsedArmo(t), npcRaceFID, isFemale).Mask
+        Next
+        Return (terminals, mask)
     End Function
 
     ''' <summary>Register a newly created/edited outfit draft so the render (TryGetOutfitDraft), the
@@ -1570,6 +1785,30 @@ Public Class MainForm
         If existing IsNot Nothing Then _outfitDrafts.Remove(existing)
         _outfitDrafts.Add(d)
     End Sub
+
+    ''' <summary>Register/replace an author-built leveled list (LVLI draft). Seen by the candidate list,
+    ''' the draft-aware resolver and the Save flow.</summary>
+    Friend Sub RegisterLeveledListDraft(d As LeveledListDraft)
+        If d Is Nothing Then Return
+        Dim existing = _leveledListDrafts.FirstOrDefault(Function(x) x.FormID = d.FormID)
+        If existing IsNot Nothing Then _leveledListDrafts.Remove(existing)
+        _leveledListDrafts.Add(d)
+    End Sub
+
+    ''' <summary>The in-memory LVLI draft for <paramref name="formID"/>, or Nothing.</summary>
+    Friend Function TryGetLeveledListDraft(formID As UInteger) As LeveledListDraft
+        If formID = 0UI Then Return Nothing
+        For Each d In _leveledListDrafts
+            If d.FormID = formID Then Return d
+        Next
+        Return Nothing
+    End Function
+
+    ''' <summary>True if <paramref name="formID"/> is an author-built LVLI draft (own, not a vanilla/loaded
+    ''' record). Drives the "Add to lvl" enable (only own leveled lists can be edited).</summary>
+    Friend Function IsOwnLeveledDraft(formID As UInteger) As Boolean
+        Return TryGetLeveledListDraft(formID) IsNot Nothing
+    End Function
 
     ''' <summary>True if <paramref name="edid"/> is NOT already used by any loaded record or existing
     ''' draft (case-insensitive). Used by the Create tab to validate a new outfit's EditorID before
@@ -1586,6 +1825,16 @@ Public Class MainForm
             If String.Equals(rec.EditorID, edid, StringComparison.OrdinalIgnoreCase) Then Return False
         Next
         Return True
+    End Function
+
+    ''' <summary>True if <paramref name="edid"/> is free for a new author-built LVLI: not used by another
+    ''' leveled draft, an outfit draft, or any loaded record (EditorIDs are globally unique).</summary>
+    Friend Function IsLeveledEditorIdAvailable(edid As String) As Boolean
+        If String.IsNullOrWhiteSpace(edid) Then Return False
+        For Each d In _leveledListDrafts
+            If String.Equals(d.EditorID, edid, StringComparison.OrdinalIgnoreCase) Then Return False
+        Next
+        Return IsOutfitEditorIdAvailable(edid)
     End Function
 
     ''' <summary>Discover and parse F4SE LooksMenu skin templates from on-disk JSONs. Mirrors
@@ -1762,6 +2011,9 @@ Public Class MainForm
         End If
 
         Dim normalizedFilter = If(filter, "").Trim()
+        ' "Only changed" filter: when ticked, restrict the tree to NPCs in the dirty set (bold ones),
+        ' combined with the text filter. Applies to both placed NPCs and LVLN leaf NPCs.
+        Dim onlyChanged As Boolean = CheckBoxOnlyChanged IsNot Nothing AndAlso CheckBoxOnlyChanged.Checked
 
         TreeViewNPCs.SuspendLayout()
         TreeViewNPCs.BeginUpdate()
@@ -1783,6 +2035,7 @@ Public Class MainForm
                 Dim matchCount = 0
 
                 For Each npc In pluginGroup.OrderBy(Function(n) n.ToString(), StringComparer.OrdinalIgnoreCase)
+                    If onlyChanged AndAlso Not _dirtyNpcs.Contains(npc.FormID) Then Continue For
                     If normalizedFilter.Length > 0 AndAlso Not MatchesNpcFilter(npc, Nothing, normalizedFilter) Then Continue For
 
                     If pluginNode Is Nothing Then
@@ -1807,7 +2060,7 @@ Public Class MainForm
                 If pluginNode IsNot Nothing Then
                     pluginNode.Text = $"{pluginGroup.Key} ({matchCount})"
                     TreeViewNPCs.Nodes.Add(pluginNode)
-                    If normalizedFilter.Length > 0 Then pluginNode.Expand()
+                    If normalizedFilter.Length > 0 OrElse onlyChanged Then pluginNode.Expand()
                 End If
             Next
 
@@ -1865,6 +2118,7 @@ Public Class MainForm
                         For Each leafFid In leaves
                             Dim leafNpc As NPC_Data = Nothing
                             If Not _npcByIdCache.TryGetValue(leafFid, leafNpc) Then Continue For
+                            If onlyChanged AndAlso Not _dirtyNpcs.Contains(leafFid) Then Continue For
                             If normalizedFilter.Length > 0 AndAlso Not MatchesNpcFilter(leafNpc, Nothing, normalizedFilter) Then Continue For
                             Dim childLabel As String = Nothing
                             If Not _npcDisplayLabelCache.TryGetValue(leafFid, childLabel) Then
@@ -1878,21 +2132,29 @@ Public Class MainForm
                             childMatchCount += 1
                         Next
 
-                        ' Si el filtro está activo y NI el LVLN matchea por su record ni ningún
-                        ' child sobrevivió, no agregamos el LVLN al árbol (ruido vacío).
-                        If normalizedFilter.Length > 0 AndAlso childMatchCount = 0 AndAlso Not MatchesRecordFilter(item.Record, normalizedFilter) Then
-                            Continue For
+                        ' Descartar el LVLN cuando ningún child sobrevivió. Bajo "Only changed" un
+                        ' LVLN nunca está "cambiado" por sí mismo (sólo los NPC tienen dirty flag), así
+                        ' que se muestra SOLO si tiene al menos un child dirty. Con filtro de texto y sin
+                        ' only-changed, se conserva si el record del LVLN matchea (aunque no haya childs).
+                        If childMatchCount = 0 Then
+                            If onlyChanged Then
+                                Continue For
+                            ElseIf normalizedFilter.Length > 0 AndAlso Not MatchesRecordFilter(item.Record, normalizedFilter) Then
+                                Continue For
+                            End If
                         End If
 
                         pluginNode.Nodes.Add(lvlnNode)
                         matchCount += 1
-                        If normalizedFilter.Length > 0 AndAlso childMatchCount > 0 Then lvlnNode.Expand()
+                        ' Auto-expand to reveal the surviving children when filtering by text or by
+                        ' "Only changed" (so the dirty NPCs show without a manual expand).
+                        If childMatchCount > 0 AndAlso (normalizedFilter.Length > 0 OrElse onlyChanged) Then lvlnNode.Expand()
                     Next
 
                     If pluginNode IsNot Nothing AndAlso pluginNode.Nodes.Count > 0 Then
                         pluginNode.Text = $"[LVLN] {pluginGroup.Key} ({matchCount})"
                         TreeViewNPCs.Nodes.Add(pluginNode)
-                        If normalizedFilter.Length > 0 Then pluginNode.Expand()
+                        If normalizedFilter.Length > 0 OrElse onlyChanged Then pluginNode.Expand()
                     End If
                 Next
             End If
@@ -2274,13 +2536,21 @@ Public Class MainForm
             textColor = Color.DarkBlue
         End If
 
+        ' NPCs with unsaved changes (edited this session or manually marked) render bold. The bold
+        ' font is derived once from the tree's font and cached (_dirtyNodeFont).
+        Dim nodeFont = TreeViewNPCs.Font
+        If npc IsNot Nothing AndAlso _dirtyNpcs.Contains(npc.FormID) Then
+            If _dirtyNodeFont Is Nothing Then _dirtyNodeFont = New Font(TreeViewNPCs.Font, FontStyle.Bold)
+            nodeFont = _dirtyNodeFont
+        End If
+
         ' Selection highlight
         If (e.State And TreeNodeStates.Selected) <> 0 Then
             e.Graphics.FillRectangle(SystemBrushes.Highlight, e.Bounds)
-            TextRenderer.DrawText(e.Graphics, e.Node.Text, TreeViewNPCs.Font, e.Bounds, SystemColors.HighlightText, TextFormatFlags.GlyphOverhangPadding)
+            TextRenderer.DrawText(e.Graphics, e.Node.Text, nodeFont, e.Bounds, SystemColors.HighlightText, TextFormatFlags.GlyphOverhangPadding)
         Else
             e.Graphics.FillRectangle(SystemBrushes.Window, e.Bounds)
-            TextRenderer.DrawText(e.Graphics, e.Node.Text, TreeViewNPCs.Font, e.Bounds, textColor, TextFormatFlags.GlyphOverhangPadding)
+            TextRenderer.DrawText(e.Graphics, e.Node.Text, nodeFont, e.Bounds, textColor, TextFormatFlags.GlyphOverhangPadding)
         End If
     End Sub
 
@@ -2288,6 +2558,7 @@ Public Class MainForm
         Dim selectedNode = e.Node
         If selectedNode Is Nothing Then
             PopulateRecordDetails(Nothing)
+            DisableNpcActionControls()
             Return
         End If
 
@@ -2305,7 +2576,11 @@ Public Class MainForm
         ' Otherwise expect NPC_Data
         Dim npc = TryCast(selectedNode.Tag, NPC_Data)
         If npc Is Nothing Then
+            ' Non-actionable node (plugin-group / "[LVLN]" root, Tag = Nothing): no current NPC.
+            ' Restore the no-selection baseline so the per-NPC action buttons stop targeting the
+            ' previously loaded NPC via _renderHost.LastRenderedState / CurrentBaseState.
             PopulateRecordDetails(Nothing)
+            DisableNpcActionControls()
             Return
         End If
 
@@ -2316,6 +2591,65 @@ Public Class MainForm
         LoadNPCOnDemandAsync(npc, reqVersion)
     End Sub
 
+    ''' <summary>Right-click on an NPC node opens the context menu (Mark as changed / Reset) for
+    ''' that NPC. The clicked node's FormID is captured and the menu shown manually (instead of
+    ''' wiring TreeViewNPCs.ContextMenuStrip) so it appears only on NPC nodes — never on plugin-group
+    ''' or LVLN nodes or empty space — and so a right-click does NOT change the selection (no heavy
+    ''' re-render on a context click).</summary>
+    Private Sub TreeViewNPCs_NodeMouseClick(sender As Object, e As TreeNodeMouseClickEventArgs) Handles TreeViewNPCs.NodeMouseClick
+        If e.Button <> MouseButtons.Right Then Return
+        Dim npc = TryCast(e.Node.Tag, NPC_Data)
+        If npc Is Nothing Then Return
+        _contextMenuNpcFormID = npc.FormID
+        ' Reset is only meaningful when there is something to discard (overlay or dirty mark).
+        MenuItemResetOverlay.Enabled = _appliedPresets.ContainsKey(npc.FormID) OrElse _dirtyNpcs.Contains(npc.FormID)
+        TreeViewNpcsContextMenu.Show(TreeViewNPCs, e.Location)
+    End Sub
+
+    ''' <summary>Context-menu "Mark as changed": flags the NPC dirty (bold) even with no overlay, so
+    ''' a subsequent Save emits a forwarded (identity) override for it.</summary>
+    Private Sub MenuItemMarkChanged_Click(sender As Object, e As EventArgs) Handles MenuItemMarkChanged.Click
+        MarkNpcDirty(_contextMenuNpcFormID)
+    End Sub
+
+    ''' <summary>Context-menu "Reset": discard the in-memory overlay for the NPC and clear its dirty
+    ''' flag (no longer bold). Overlay-only by design — does NOT delete any on-disk sidecar or saved
+    ''' ESP override (user decision 2026-05-24). The NPC reverts to its current baseline record: the
+    ''' saved override if it was saved this session (MergeOverridePlugin put it in GetRecord), else
+    ''' vanilla. Destructive (drops BodyMorphs/Skin edits too) → confirmation first.</summary>
+    Private Async Sub MenuItemResetOverlay_Click(sender As Object, e As EventArgs) Handles MenuItemResetOverlay.Click
+        Dim npcFormID = _contextMenuNpcFormID
+        If npcFormID = 0UI Then Return
+        Dim hasOverlay = _appliedPresets.ContainsKey(npcFormID)
+        Dim isDirty = _dirtyNpcs.Contains(npcFormID)
+        If Not hasOverlay AndAlso Not isDirty Then Return
+
+        If MessageBox.Show(Me,
+                           "Discard all in-memory changes for this NPC (including BodyMorphs / Skin / Overlays edits) and revert to its current record?" & vbCrLf & vbCrLf &
+                           "This does NOT delete any ESP/ESM or sidecar already written to disk.",
+                           "Reset NPC", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) <> DialogResult.Yes Then
+            Return
+        End If
+
+        _appliedPresets.Remove(npcFormID)
+        ClearNpcDirty(npcFormID)
+
+        ' Re-render from the baseline only if this NPC is the one currently shown.
+        If _renderHost IsNot Nothing AndAlso _renderHost.LastRenderedState IsNot Nothing AndAlso
+           _renderHost.LastRenderedState.RootNpcFormID = npcFormID Then
+            Dim npc As NPC_Data = Nothing
+            If _npcByIdCache.TryGetValue(npcFormID, npc) AndAlso npc IsNot Nothing Then
+                Try
+                    Dim version = Interlocked.Increment(_previewRequestVersion)
+                    Await LoadNPCOnDemandAsyncFromExisting(npc, version)
+                Catch ex As Exception
+                    MessageBox.Show($"Failed to re-render after reset: {ex.Message}", "Reset NPC",
+                                    MessageBoxButtons.OK, MessageBoxIcon.Error)
+                End Try
+            End If
+        End If
+    End Sub
+
     ''' <summary>Limpia el viewport inmediatamente al cambiar de selección.
     ''' El pipeline en Render.vb trata Shapes vacío como reset: Clean(False) + CleanTextures()
     ''' + LoadedShapes.Clear() — sin mensaje al usuario. Si la carga async del nuevo NPC produce
@@ -2324,6 +2658,29 @@ Public Class MainForm
     Private Sub ClearPreviewImmediate()
         If _renderHost Is Nothing OrElse _renderHost.PreviewCtl Is Nothing Then Return
         _renderHost.PreviewCtl.RenderShapes(Array.Empty(Of IRenderableShape)())
+    End Sub
+
+    ''' <summary>Restaura el estado "sin NPC seleccionado" de los controles de acción por-NPC
+    ''' (el mismo baseline que el Designer fija al arrancar — ver MainForm.Designer.vb líneas
+    ''' 576-745). Se llama desde <see cref="TreeViewNPCs_AfterSelect"/> cuando la selección del
+    ''' árbol cae en un nodo NO accionable: un root de plugin / grupo "[LVLN]" (Tag = Nothing) o
+    ''' ausencia de nodo. Sin esto los botones quedaban habilitados apuntando vía
+    ''' <c>_renderHost.LastRenderedState</c> / <c>CurrentBaseState</c> al NPC cargado previamente
+    ''' (ButtonEditBody/EditFace/CopyLook/SavePlugin/… leen ese estado), de modo que la acción
+    ''' operaba sobre la selección vieja. Los handlers de NPC (LoadNPCOnDemandAsync) y de LVLN
+    ''' (LoadLVLNOnDemandAsync) re-habilitan lo que corresponde al cargar una selección válida.
+    ''' Corre siempre en el UI thread (AfterSelect es un event handler de WinForms).</summary>
+    Private Sub DisableNpcActionControls()
+        ButtonEditFace.Enabled = False
+        ButtonEditBody.Enabled = False
+        ButtonEditOutfit.Enabled = False
+        ButtonLoadLooksmenu.Enabled = False
+        ButtonSaveLooksmenu.Enabled = False
+        ButtonCopyLook.Enabled = False
+        ButtonPasteLook.Enabled = False
+        ButtonSavePlugin.Enabled = False
+        ButtonBuildCharGen.Enabled = False
+        ButtonSaveSceneNif.Enabled = False
     End Sub
 
     Private Async Sub LoadNPCOnDemandAsync(npc As NPC_Data, requestVersion As Integer)
@@ -2500,13 +2857,24 @@ Public Class MainForm
         If Not hasOutfit AndAlso Not hasObte Then Return
 
         If hasOutfit Then
-            ' Re-sample outfit ARMOs (LVLI random pick + LLKC propagation).
-            Dim warnings As New List(Of String)
-            Dim picks = OutfitResolver.SampleOutfitWithKeywords(entry.OutfitFormID, _pluginManager, warnings)
-            entry.SampledArmorFormIDs = picks.Select(Function(p) p.ArmoFormID).ToList()
-            entry.SampledArmorContextKeywords = picks.ToDictionary(Function(p) p.ArmoFormID, Function(p) p.ContextKeywords)
-            For Each w In warnings
-            Next
+            Dim draft = TryGetOutfitDraft(entry.OutfitFormID)
+            If draft IsNot Nothing Then
+                ' Draft outfit: the lib sampler can't see drafts (GetRecord(0xFF…)=Nothing → empty → naked).
+                ' Re-roll the draft's own leveled items (clear the cached realization) and re-resolve through
+                ' the draft path. Context keywords stay empty (drafts carry no OMOD/LLKC context), matching
+                ' AddOutfitEntryIfPresent.
+                RerollDraftLeveled(draft)
+                entry.SampledArmorFormIDs = ResolveDraftArmoList(draft)
+                entry.SampledArmorContextKeywords = New Dictionary(Of UInteger, List(Of UInteger))
+            Else
+                ' Real OTFT: re-sample outfit ARMOs (LVLI random pick + LLKC propagation).
+                Dim warnings As New List(Of String)
+                Dim picks = OutfitResolver.SampleOutfitWithKeywords(entry.OutfitFormID, _pluginManager, warnings)
+                entry.SampledArmorFormIDs = picks.Select(Function(p) p.ArmoFormID).ToList()
+                entry.SampledArmorContextKeywords = picks.ToDictionary(Function(p) p.ArmoFormID, Function(p) p.ContextKeywords)
+                For Each w In warnings
+                Next
+            End If
         End If
 
         ' Disparar render: si hay OBTE, ResolveNpcCombinations re-rolea los modcol_* internamente
@@ -2628,6 +2996,7 @@ Public Class MainForm
         ' value comes from its ComboBoxPreviewMode. Either path funnels into the same flag on
         ' the variant — no parallel rendering paths.
         Dim onlyFaceCollect = host.OnlyFaceCollect OrElse (host Is _renderHost AndAlso CurrentPreviewMode = PreviewMode.OnlyFace)
+        Dim onlyOutfitCollect = host.OnlyOutfitCollect
 
         Dim previewVariant As New PreviewVariantDefinition With {
             .RootNpcFormID = state.FormID,
@@ -2635,7 +3004,8 @@ Public Class MainForm
             .DisplayName = $"{DescribeNpc(GetParsedNpc(state.FormID))} | {ComboBoxOutfit.Text}",
             .State = state,
             .UseFaceGen = useFaceGen,
-            .OnlyFaceCollect = onlyFaceCollect
+            .OnlyFaceCollect = onlyFaceCollect,
+            .OnlyOutfitCollect = onlyOutfitCollect
         }
 
         SetStatus($"Rendering {previewVariant.DisplayName}...")
@@ -5546,16 +5916,17 @@ Public Class MainForm
     Private Sub AddOutfitEntryIfPresent(entries As List(Of OutfitComboEntry), otftFormID As UInteger, kind As OutfitSlotKind, slotName As String)
         If otftFormID = 0UI Then Return
 
-        ' Outfit draft (Create tab): a FLAT ARMO list — no OTFT record, no LVLI sampling. Resolve
-        ' directly from the draft's items so the render shows exactly the assembled pieces. Slot
-        ' conflicts are handled downstream by SelectWinningCandidates (same SlotConflictResolver).
+        ' Outfit draft (Create tab): ARMO items render directly; LVLI items are sampled to their cached
+        ' realization (stable until Reroll). ResolveDraftArmoList does that flattening so the render shows
+        ' the current realization. Slot conflicts handled downstream by SelectWinningCandidates.
         Dim draft = TryGetOutfitDraft(otftFormID)
         If draft IsNot Nothing Then
+            Dim realized = ResolveDraftArmoList(draft)
             entries.Add(New OutfitComboEntry With {
-                .Label = $"{slotName} — {draft.EditorID} ({draft.ItemArmoFormIDs.Count} pcs) [draft]",
+                .Label = $"{slotName} — {draft.EditorID} ({realized.Count} pcs) [draft]",
                 .SlotKind = kind,
                 .OutfitFormID = otftFormID,
-                .SampledArmorFormIDs = New List(Of UInteger)(draft.ItemArmoFormIDs),
+                .SampledArmorFormIDs = realized,
                 .SampledArmorContextKeywords = New Dictionary(Of UInteger, List(Of UInteger))
             })
             Return
@@ -6577,7 +6948,7 @@ Public Class MainForm
         result.Warnings.AddRange(previewVariant.Warnings)
         result.SkeletonKey = ResolveSkeletonKey(previewVariant.State, result.Warnings)
 
-        Dim candidates = CollectMeshCandidates(previewVariant.State, result.Warnings, previewVariant.UseFaceGen, previewVariant.OnlyFaceCollect)
+        Dim candidates = CollectMeshCandidates(previewVariant.State, result.Warnings, previewVariant.UseFaceGen, previewVariant.OnlyFaceCollect, previewVariant.OnlyOutfitCollect)
         For Each c In candidates
         Next
 
@@ -7098,18 +7469,22 @@ Public Class MainForm
         Return picked
     End Function
 
-    Private Function CollectMeshCandidates(state As NPCVisualState, warnings As List(Of String), Optional useFaceGen As Boolean = False, Optional onlyFaceCollect As Boolean = False) As List(Of MeshCandidate)
+    Private Function CollectMeshCandidates(state As NPCVisualState, warnings As List(Of String), Optional useFaceGen As Boolean = False, Optional onlyFaceCollect As Boolean = False, Optional onlyOutfitCollect As Boolean = False) As List(Of MeshCandidate)
         Dim candidates As New List(Of MeshCandidate)
         Dim order As Integer = 0
 
-        ' In OnlyFace mode, skip body skin and outfit meshes entirely. The flag is passed in
-        ' from PreviewVariantDefinition (ResolvePreviewVariant) which composes it from the
-        ' calling host (editor sets host.OnlyFaceCollect=True; MainForm reads its ComboBox).
-        If Not onlyFaceCollect Then
-            If state.SkinFormID <> 0UI Then
-                CollectArmoCandidates(state.SkinFormID, state, MeshCandidateKind.Skin, candidates, order, warnings)
-            End If
+        ' Collect scope (Full / OnlyFace / OnlyOutfit):
+        '   • Skin (body) — Full only; OnlyFace and OnlyOutfit both drop it.
+        '   • Outfit      — Full + OnlyOutfit (the picker's single-piece preview uses a 1-item draft);
+        '                    OnlyFace drops it.
+        '   • HeadParts + robot chunks — Full + OnlyFace; OnlyOutfit drops them.
+        ' OnlyFaceCollect: editor host / MainForm "Only Face" ComboBox. OnlyOutfitCollect: the Edit Outfit
+        ' picker's "selected piece only". Both funnel here via PreviewVariantDefinition — no parallel paths.
+        If Not onlyFaceCollect AndAlso Not onlyOutfitCollect AndAlso state.SkinFormID <> 0UI Then
+            CollectArmoCandidates(state.SkinFormID, state, MeshCandidateKind.Skin, candidates, order, warnings)
+        End If
 
+        If Not onlyFaceCollect Then
             ' Use pre-resolved LoadoutArmorFormIDs (already expanded from LVLI).
             ' These are the final ARMO FormIDs for this specific variant.
             If state.LoadoutArmorFormIDs.Count > 0 Then
@@ -7130,8 +7505,11 @@ Public Class MainForm
             End If
         End If
 
-        Dim mergedHeadParts = MergeHeadPartsWithRaceDefaults(state)
-        CollectHeadPartCandidates(mergedHeadParts, New HashSet(Of UInteger)(), candidates, order, warnings, state, useFaceGen)
+        ' HeadParts: Full + OnlyFace; OnlyOutfit (single-piece preview) drops them.
+        If Not onlyOutfitCollect Then
+            Dim mergedHeadParts = MergeHeadPartsWithRaceDefaults(state)
+            CollectHeadPartCandidates(mergedHeadParts, New HashSet(Of UInteger)(), candidates, order, warnings, state, useFaceGen)
+        End If
 
         ' Robot path (NPC_.ObjectTemplate). Replaces the legacy "iterate combo #0
         ' OMODFormIDs flat list" branch. Engine rule (verified vs dump v2):
@@ -7144,7 +7522,7 @@ Public Class MainForm
         '      with formType="NPC_" (idx 5 MaterialSwap, idx 4 ColorRemap).
         ' AttachPoint resolution: OMOD.AttachPointFormID → KYWD record → EditorID,
         ' matched case-insens against ConnectPointInfo.Name.
-        If state.HasObjectTemplate AndAlso state.ObjectTemplateCombinations IsNot Nothing _
+        If Not onlyOutfitCollect AndAlso state.HasObjectTemplate AndAlso state.ObjectTemplateCombinations IsNot Nothing _
            AndAlso state.ObjectTemplateCombinations.Count > 0 Then
             CollectRobotChunkCandidates(state, candidates, order, warnings)
         End If
@@ -7202,6 +7580,61 @@ Public Class MainForm
         Return _parsedHdptCache.GetOrAdd(hRec.Header.FormID, Function(fid) RecordParsers.ParseHDPT(hRec, _pluginManager))
     End Function
 
+    ' === Power-armor gating (registry-derived, no hardcoded race/FormID list) ===
+    ' FO4 carries armor type in KWDA, not BOD2 (BOD2 = slot flags only). A piece is power armor iff its
+    ' ARMO has the ArmorTypePower keyword; a race is a power-armor race iff its RACE.WNAM (Skin) ARMO is
+    ' itself power armor (vanilla PowerArmorRace.WNAM = SkinPowerArmor [ArmorTypePower]). PA armatures also
+    ' list HumanRace (for the inventory model), so the per-ARMA race check alone leaks PA pieces onto humans
+    ' mounted wrong — hence this gate. The ArmorTypePower KYWD is resolved by EditorID (canonical schema
+    ' name; one vanilla keyword mods reference but never redefine), so no FormID is hardcoded.
+    Private _armorTypePowerKywdResolved As Boolean = False
+    Private _armorTypePowerKywdFid As UInteger = 0UI
+    Private ReadOnly _isPowerArmorArmoCache As New System.Collections.Concurrent.ConcurrentDictionary(Of UInteger, Boolean)
+    Private ReadOnly _isPowerArmorRaceCache As New System.Collections.Concurrent.ConcurrentDictionary(Of UInteger, Boolean)
+
+    ''' <summary>FormID of the vanilla <c>ArmorTypePower</c> KYWD, found once by EditorID. 0 if the load
+    ''' order has no such keyword (then the gate is inert).</summary>
+    Private Function ArmorTypePowerKeywordFid() As UInteger
+        If Not _armorTypePowerKywdResolved Then
+            _armorTypePowerKywdResolved = True
+            Dim kywds = _pluginManager.GetRecordsOfType("KYWD")
+            If kywds IsNot Nothing Then
+                For Each kw In kywds
+                    If kw IsNot Nothing AndAlso String.Equals(kw.EditorID, "ArmorTypePower", StringComparison.OrdinalIgnoreCase) Then
+                        _armorTypePowerKywdFid = kw.Header.FormID
+                        Exit For
+                    End If
+                Next
+            End If
+        End If
+        Return _armorTypePowerKywdFid
+    End Function
+
+    ''' <summary>True if the ARMO is power armor — carries the ArmorTypePower keyword. Cached per ARMO.</summary>
+    Private Function ArmoIsPowerArmor(armoFID As UInteger) As Boolean
+        If armoFID = 0UI Then Return False
+        Dim kFid = ArmorTypePowerKeywordFid()
+        If kFid = 0UI Then Return False
+        Return _isPowerArmorArmoCache.GetOrAdd(armoFID,
+            Function(fid)
+                Dim a = GetParsedArmo(fid)
+                Return a IsNot Nothing AndAlso a.KeywordFormIDs.Contains(kFid)
+            End Function)
+    End Function
+
+    ''' <summary>True if the race is a power-armor race — its RACE.WNAM (Skin) ARMO is power armor. Covers
+    ''' vanilla PowerArmorRace + DLC/mod PA races without a hardcoded race list. Cached per race.</summary>
+    Private Function RaceIsPowerArmor(raceFID As UInteger) As Boolean
+        If raceFID = 0UI Then Return False
+        Return _isPowerArmorRaceCache.GetOrAdd(raceFID,
+            Function(fid)
+                Dim rRec = _pluginManager.GetRecord(fid)
+                If rRec Is Nothing OrElse rRec.Header.Signature <> "RACE" Then Return False
+                Dim race = ParseRaceCached(rRec)
+                Return race IsNot Nothing AndAlso ArmoIsPowerArmor(race.SkinFormID)
+            End Function)
+    End Function
+
     Private Sub CollectArmoCandidates(armoFormID As UInteger,
                                       state As NPCVisualState,
                                       kind As MeshCandidateKind,
@@ -7210,6 +7643,14 @@ Public Class MainForm
                                       warnings As List(Of String))
         Dim armo = GetParsedArmo(armoFormID)
         If armo Is Nothing Then Return
+
+        ' Power-armor gate: an ArmorTypePower piece only fits an actor whose race is a power-armor race
+        ' (in a frame). Drop the whole ARMO otherwise — PA armatures list HumanRace too, so the per-ARMA
+        ' race check would render it on humans mounted wrong (see helper block above).
+        If ArmoIsPowerArmor(armoFormID) AndAlso Not RaceIsPowerArmor(state.RaceFormID) Then
+            Logger.LogLazy(Function() $"[PA-GATE] dropped ARMO=0x{armoFormID:X8} (ArmorTypePower) — race=0x{state.RaceFormID:X8} is not a power-armor race")
+            Return
+        End If
         ' NO early-out on ARMO.RaceFormID: vanilla convention is each ARMA declares its own
         ' race compatibility via RNAM + AdditionalRaces (MODL entries). An ARMO with
         ' RNAM=HumanRace is commonly worn by Ghouls/Synths if the sub-ARMAs list those as
@@ -10994,6 +11435,12 @@ Public Class MainForm
         PopulateNPCTree(_pendingTreeFilter)
     End Sub
 
+    ''' <summary>"Only changed" tree filter toggle: rebuild the tree restricted to dirty NPCs (when
+    ''' ticked) or back to the full set, in both cases honoring the current text filter.</summary>
+    Private Sub CheckBoxOnlyChanged_CheckedChanged(sender As Object, e As EventArgs) Handles CheckBoxOnlyChanged.CheckedChanged
+        PopulateNPCTree(_pendingTreeFilter)
+    End Sub
+
     Private Sub SetStatus(text As String)
         If InvokeRequired Then
             BeginInvoke(Sub() SetStatus(text))
@@ -11384,6 +11831,11 @@ Public Class MainForm
             Catch
             End Try
         End If
+
+        If _dirtyNodeFont IsNot Nothing Then
+            _dirtyNodeFont.Dispose()
+            _dirtyNodeFont = Nothing
+        End If
     End Sub
 
     Private Sub PanelNpcList_Paint(sender As Object, e As PaintEventArgs) Handles PanelNpcList.Paint
@@ -11398,6 +11850,46 @@ Public Class MainForm
     ''' dict at the points where it would otherwise read from the NPC_Data and prefers preset
     ''' values when present.</summary>
     Private ReadOnly _appliedPresets As New Dictionary(Of UInteger, LooksmenuLoader.LooksmenuPreset)
+
+    ''' <summary>NPCs the user has changed this session — drives the bold rendering in
+    ''' <see cref="TreeViewNPCs_DrawNode"/>. Set on each editor commit (Load LM / Edit Face /
+    ''' Edit Body / Edit Outfit / Paste) and on the context-menu "Mark as changed"; cleared on a
+    ''' successful Save of that NPC and on context-menu "Reset". Deliberately decoupled from
+    ''' <see cref="_appliedPresets"/> emptiness: after Save the overlay keeps non-ESP fields
+    ''' (BodyMorphs/Skin) but the NPC must stop being bold, and "Mark as changed" can flag an NPC
+    ''' with no overlay at all. Sidecar hydration (<see cref="HydrateAppliedPresetsFromSidecars"/>)
+    ''' does NOT mark dirty — those BodyMorphs were already persisted in a prior Save.</summary>
+    Private ReadOnly _dirtyNpcs As New HashSet(Of UInteger)
+
+    ''' <summary>Bold font for dirty NPC nodes, lazily derived from the tree's font on first dirty
+    ''' paint and reused (one allocation, not per-paint). Disposed in <see cref="MainForm_FormClosing"/>.</summary>
+    Private _dirtyNodeFont As Font
+
+    ''' <summary>FormID of the NPC node the tree context menu was opened on. Set in
+    ''' <see cref="TreeViewNPCs_NodeMouseClick"/>, consumed by the Mark/Reset menu handlers.</summary>
+    Private _contextMenuNpcFormID As UInteger
+
+    ''' <summary>Flag an NPC as having unsaved changes (bold in the tree). Idempotent.</summary>
+    Private Sub MarkNpcDirty(npcFormID As UInteger)
+        If npcFormID = 0UI Then Return
+        If _dirtyNpcs.Add(npcFormID) Then RefreshTreeAfterDirtyChange()
+    End Sub
+
+    ''' <summary>Clear an NPC's dirty flag (no longer bold). Idempotent.</summary>
+    Private Sub ClearNpcDirty(npcFormID As UInteger)
+        If _dirtyNpcs.Remove(npcFormID) Then RefreshTreeAfterDirtyChange()
+    End Sub
+
+    ''' <summary>Reflect a dirty-set change in the tree. When "Only changed" is active the dirty set
+    ''' defines tree membership, so the tree is rebuilt; otherwise a cheap repaint updates the bold
+    ''' styling without disturbing the node structure or selection.</summary>
+    Private Sub RefreshTreeAfterDirtyChange()
+        If CheckBoxOnlyChanged IsNot Nothing AndAlso CheckBoxOnlyChanged.Checked Then
+            PopulateNPCTree(_pendingTreeFilter)
+        Else
+            TreeViewNPCs.Invalidate()
+        End If
+    End Sub
 
     ''' <summary>Open the LooksMenu preset picker for the currently selected NPC. On OK records
     ''' the preset as a per-NPC overlay and re-renders. The underlying NPC_Data records are NOT
@@ -11475,7 +11967,8 @@ Public Class MainForm
         If selected Is Nothing Then Return
 
         ' OK path: the live preview already left `selected` applied in _appliedPresets and rendered.
-        ' Nothing to re-apply or re-render — just log the commit.
+        ' Nothing to re-apply or re-render — just mark the NPC changed (bold) and log the commit.
+        MarkNpcDirty(npcFormID)
 
         ' Per-HeadPart breakdown so we can spot when the preset actually declared Eyes/Hair but the
         ' merger discarded them (meaning we're losing them somewhere) vs. when the JSON simply
@@ -12304,6 +12797,7 @@ Public Class MainForm
             ' already rolled back the overlay; without an explicit MainForm render during the
             ' modal session, our preview is still in the pre-edit state — no reload needed.
             If dlg.DialogResult = DialogResult.OK AndAlso dlg.HasUncommittedChanges Then
+                MarkNpcDirty(_renderHost.LastRenderedState.RootNpcFormID)
                 Try
                     Await RenderInHostAsync(_renderHost, _renderHost.LastRenderedState.RootNpcFormID)
                 Catch ex As Exception
@@ -12358,6 +12852,7 @@ Public Class MainForm
             Try
                 Dim requestVersion = Interlocked.Increment(_previewRequestVersion)
                 Await LoadNPCOnDemandAsyncFromExisting(npc, requestVersion)
+                MarkNpcDirty(npcFormID)
             Catch ex As Exception
                 ' Revert just the outfit field; don't clobber other overlay edits.
                 p.DefaultOutfitFormIDOverride = priorOutfitOverride
@@ -12504,6 +12999,7 @@ Public Class MainForm
             ' already rolled back the overlay; the MainForm preview was untouched during the
             ' modal so it's already correct.
             If dlg.DialogResult = DialogResult.OK AndAlso dlg.HasUncommittedChanges Then
+                MarkNpcDirty(_renderHost.LastRenderedState.RootNpcFormID)
                 Try
                     Await RenderInHostAsync(_renderHost, _renderHost.LastRenderedState.RootNpcFormID)
                 Catch ex As Exception
@@ -12622,6 +13118,7 @@ Public Class MainForm
         Try
             Dim requestVersion = Interlocked.Increment(_previewRequestVersion)
             Await LoadNPCOnDemandAsyncFromExisting(npc, requestVersion)
+            MarkNpcDirty(npcFormID)
         Catch ex As Exception
             If previousOverlay Is Nothing Then
                 _appliedPresets.Remove(npcFormID)
@@ -12866,70 +13363,46 @@ Public Class MainForm
     '''   4. Pass to SaveNpcEspWriter.SaveOverridePlugin which handles MAST cleanup
     '''      (xEdit-style: drop unused masters, re-map FormIDs to new MAST list).
     ''' Light master flag default is taken from the source NPC's master plugin (IsESM).</summary>
-    Private Sub ButtonSavePlugin_Click(sender As Object, e As EventArgs) Handles ButtonSavePlugin.Click
+    Private Async Sub ButtonSavePlugin_Click(sender As Object, e As EventArgs) Handles ButtonSavePlugin.Click
         If _renderHost.CurrentBaseState Is Nothing Then Return
 
-        Dim npcFormID = _renderHost.CurrentBaseState.RootNpcFormID
-        Dim npc As NPC_Data = Nothing
-        If Not _npcByIdCache.TryGetValue(npcFormID, npc) OrElse npc Is Nothing Then
-            MessageBox.Show("Could not find NPC record in cache.", "Save ESP/ESM",
+        ' The selected NPC is the default ("Selected") scope. Always savable, even if not dirty
+        ' (produces a forwarded/identity override).
+        Dim selectedFormID = _renderHost.CurrentBaseState.RootNpcFormID
+        Dim selectedInput = TryBuildNpcSaveInput(selectedFormID)
+        If selectedInput Is Nothing Then
+            MessageBox.Show("Could not find or parse the selected NPC record.", "Save ESP/ESM",
                             MessageBoxButtons.OK, MessageBoxIcon.Error)
             Return
         End If
 
-        ' Re-parse the NPC's effective state from the renderer's view. We re-parse from the
-        ' raw record to capture all subrecords; live edits applied via overlay (BodyMorphs,
-        ' tint changes via Edit Face/Body) are NOT all reflected on the record yet — those
-        ' belong to the LooksMenu preset overlay, not ESP records.
-        ' Save ESP fase 1 covers vanilla NPC fields only (MWGT, MRSV, FMRI/FMRS, MSDK/MSDV,
-        ' TETI/TEND, headparts, hair color). BodyMorphs / Overlays / Skin override remain
-        ' deferred to fase 2 (bodygen.ini). See memory/project_npc_save_esp_status.md.
-        Dim rawRecord = _pluginManager.GetRecord(npcFormID)
-        If rawRecord Is Nothing Then
-            MessageBox.Show("Could not retrieve raw NPC record from PluginManager.", "Save ESP/ESM",
-                            MessageBoxButtons.OK, MessageBoxIcon.Error)
-            Return
-        End If
+        ' The "Apply to all changed NPCs" scope = every dirty NPC (parsed; unparseable ones skipped).
+        Dim allDirtyInputs As New List(Of NpcOverrideSaver.NpcSaveInput)
+        Dim seen As New HashSet(Of UInteger)
+        For Each fid In _dirtyNpcs
+            Dim inp = TryBuildNpcSaveInput(fid)
+            If inp IsNot Nothing AndAlso seen.Add(fid) Then allDirtyInputs.Add(inp)
+        Next
+        ' If nothing is dirty, the "all" scope collapses to the selected NPC so it is never empty.
+        If allDirtyInputs.Count = 0 Then allDirtyInputs.Add(selectedInput)
 
-        ' Source plugin name comes from the raw record's SourcePluginName (the plugin actually
-        ' loaded in PluginManager that owns this record), NOT from npc.PluginName which may have
-        ' been mutated after a previous Save to reflect tree-grouping under the new auto-gen
-        ' plugin. The raw record's name is the only reliable key for FormID resolution because
-        ' PluginManager._pluginIndex is keyed by loaded plugin file names.
-        Dim sourcePluginName = If(rawRecord.SourcePluginName, "")
-
-        ' Get the source plugin's IsESM (decides default light master flag).
+        ' Source plugin's IsESM (default light-master flag) — from the selected NPC's source.
         Dim sourceMasterIsEsm As Boolean = False
         For Each plugin In _pluginManager.Plugins
             If plugin Is Nothing Then Continue For
-            If String.Equals(plugin.FileName, sourcePluginName, StringComparison.OrdinalIgnoreCase) Then
+            If String.Equals(plugin.FileName, selectedInput.SourcePluginName, StringComparison.OrdinalIgnoreCase) Then
                 sourceMasterIsEsm = plugin.IsESM
                 Exit For
             End If
         Next
 
-        ' Scan Data\ for existing auto-generated plugins.
-        Dim existing = ScanForAutoGeneratedPlugins(npcFormID)
-
-        ' Parse the raw vanilla record first; reused below for overlay merge AND for the
-        ' IsCharGenFacePreset flag the dialog needs. ApplyPresetOverlayToNpcData is the
-        ' same helper the renderer uses, so Save and render share one source of truth.
-        Dim rawNpcSpec = RecordParsers.ParseNPC(rawRecord, sourcePluginName, _pluginManager)
-
-        ' Read IsCharGenFacePreset flag from raw ACBS bits (xEdit wbDefinitionsFO4: bit 0x04
-        ' of the NPC.ACBS Flags u32). Drives whether the CharGen checkbox in the dialog can
-        ' be turned off: NPCs WITHOUT the flag rely on the engine's CK FaceGen bake (we MUST
-        ' supply a BA2'd one), NPCs WITH the flag are runtime-reconstructed by chargen so
-        ' the bake is optional.
-        Const AcbsBitIsCharGenFacePreset As UInteger = &H4UI
-        Dim npcIsCharGenFacePreset = (rawNpcSpec.AcbsFlags And AcbsBitIsCharGenFacePreset) <> 0UI
+        ' Scan Data\ for existing auto-generated plugins (ContainsTargetNpc keyed to the selected NPC).
+        Dim existing = ScanForAutoGeneratedPlugins(selectedFormID)
 
         ' Build SaveContext — bundles the dependencies the orchestrator (NpcOverrideSaver) needs
         ' to call back into the host. All MainForm helpers it consumes (overlay merge, round-trip
         ' field copy, parallel-collection sync, CharGen bake) are forwarded as delegates so the
         ' orchestrator stays UI-free.
-        Dim baseStateForCtx = _renderHost.CurrentBaseState
-        Dim baseStateValid = (baseStateForCtx IsNot Nothing)
         Dim ctx As New NpcOverrideSaver.SaveContext With {
             .PluginManager = _pluginManager,
             .AppliedPresets = _appliedPresets,
@@ -12940,10 +13413,11 @@ Public Class MainForm
             .SyncParallelCollectionsAfterOverlay = AddressOf SyncParallelCollectionsAfterOverlay,
             .RunChargenBakeAndPack = Function(npcFid As UInteger, anchor As String, srcPlugin As String,
                                                prog As IProgress(Of NpcOverrideSaver.SaveProgress)) _
-                                          As (Summary As String, Success As Boolean)
+                                          As Task(Of (Summary As String, Success As Boolean))
                                          Return RunChargenBakeAndPack(npcFid, anchor, srcPlugin, prog)
                                      End Function,
-            .OutfitDrafts = New List(Of OutfitDraft)(_outfitDrafts)
+            .OutfitDrafts = New List(Of OutfitDraft)(_outfitDrafts),
+            .LeveledListDrafts = New List(Of LeveledListDraft)(_leveledListDrafts)
         }
 
         ' Show dialog. The form runs the orchestrator internally (async, with progress in an
@@ -12951,65 +13425,215 @@ Public Class MainForm
         ' DialogResult.OK only after the save finished successfully.
         Dim execResult As NpcOverrideSaver.SaveExecutionResult = Nothing
         Dim target As SaveEsp_Form.SaveTarget = Nothing
-        Using dlg As New SaveEsp_Form(_dataPath, existing, npcFormID, sourceMasterIsEsm, npcIsCharGenFacePreset,
-                                      npc, rawRecord, rawNpcSpec, sourcePluginName,
-                                      baseStateValid,
-                                      If(baseStateValid, baseStateForCtx.WeightThin, 0F),
-                                      If(baseStateValid, baseStateForCtx.WeightMuscular, 0F),
-                                      If(baseStateValid, baseStateForCtx.WeightFat, 0F),
-                                      ctx)
+        Using dlg As New SaveEsp_Form(_dataPath, existing, selectedInput, allDirtyInputs, sourceMasterIsEsm, ctx)
             If dlg.ShowDialog(Me) <> DialogResult.OK Then Return
             target = dlg.Result
             execResult = dlg.ExecutionResult
         End Using
         If target Is Nothing OrElse execResult Is Nothing OrElse Not execResult.Success Then Return
 
-        ' Outfit drafts written this save are no longer "new"/"modified": clear their dirty flags so a
-        ' subsequent NPC save with "Save new outfits" ON doesn't re-emit them (the user's rule: once
-        ' saved they aren't re-saved unless edited again). The throwaway preview sentinel is never dirty.
-        If target.SaveNewOutfits Then
-            For Each d In _outfitDrafts
-                If d Is Nothing Then Continue For
-                d.IsNew = False
-                d.IsModified = False
-            Next
-        End If
+        ' Drafts written this save (OTFT outfits + LVLI leveled lists) are PROMOTED to real records inside
+        ' ApplyPostSaveReadback: once the saved plugin is re-mounted, every reference still pointing at a
+        ' provisional FormID is remapped to the real record and the draft is dropped from the in-memory set,
+        ' so re-using the outfit on another NPC reuses the real record instead of re-emitting a duplicate.
 
-        ' --- Post-save cleanup (cache update + tree refresh + success MessageBox). The
-        ' orchestrator gave us SavedFormIDs + WriterResult; everything below is host-state
-        ' bookkeeping that doesn't belong inside the orchestrator (would force passing the
-        ' tree, the cache, the helpers, etc., as deps).
+        ' Cache update (add/refresh the auto-gen plugin entry without re-scanning disk).
         If target.IsNewPlugin Then
             RegisterSavedPluginInCache(target.TargetPath, execResult.SavedFormIDs, target.MarkAsMaster, target.LightMaster)
         Else
             RefreshSavedPluginInCache(target.TargetPath, execResult.SavedFormIDs, target.MarkAsMaster, target.LightMaster)
         End If
 
-        ' Reflect the override in the NPC tree: move the NPC from its source plugin's group to
-        ' the just-saved plugin's group. Mirrors what the engine would show if both plugins
-        ' were loaded — the override wins, so the "owner" in the user's mental model becomes
-        ' the auto-gen plugin.
-        Dim savedPluginName = IO.Path.GetFileName(target.TargetPath)
-        Dim cachedNpc As NPC_Data = Nothing
-        If _npcByIdCache.TryGetValue(npcFormID, cachedNpc) AndAlso cachedNpc IsNot Nothing Then
-            If Not String.Equals(cachedNpc.PluginName, savedPluginName, StringComparison.OrdinalIgnoreCase) Then
-                cachedNpc.PluginName = savedPluginName
-                ' Invalidate the searchable cache entry — PluginName cambió y forma parte del
-                ' concat lowercase. Display label es invariante (FullName/EditorID/FormID) así que
-                ' _npcDisplayLabelCache no necesita refresh. _lvlnLeavesCache es invariante (sólo
-                ' FormIDs estructurales) — save ESP no toca LVLN data.
-                _npcSearchableCache(npcFormID) = BuildNpcSearchableText(cachedNpc)
-                PopulateNPCTree(_pendingTreeFilter)
-                Dim moved = TreeViewNPCs.Nodes.Find($"NPC_{npcFormID:X8}", searchAllChildren:=True)
+        ' Step 6: re-read the just-saved records as the new baseline (mount the written plugin last
+        ' in load order), strip the now-persisted ESP fields from each overlay (keeping non-ESP
+        ' BodyMorphs/Skin), clear the dirty marks, regroup in the tree, and re-render the loaded NPC.
+        Await ApplyPostSaveReadback(execResult.WrittenNpcFormIDs, target.TargetPath, execResult.DraftFormIdMap)
+
+        Dim savedCount = execResult.WrittenNpcFormIDs.Count
+        Dim what = If(savedCount = 1, $"{If(selectedInput.Npc?.EditorID, selectedFormID.ToString("X8"))}", $"{savedCount} NPCs")
+        MessageBox.Show($"Saved {what} to {IO.Path.GetFileName(execResult.WriterResult.OutputPath)}.{execResult.ChargenSummary}{execResult.VerifierSummary}",
+                        "Save ESP/ESM", MessageBoxButtons.OK, execResult.VerifierIcon)
+    End Sub
+
+    ''' <summary>Build the per-NPC save input from a FormID: fetch + type-safe parse the raw record,
+    ''' resolve its source plugin, and read the CharGen Face Preset flag. Returns Nothing when the
+    ''' record is missing or not an NPC_. Note: after a prior Save this session mounted an auto-gen
+    ''' override (MergeOverridePlugin), GetRecord returns that override — re-saving then uses the
+    ''' saved state as its base, which is the intended "saved override is the new baseline" behaviour.</summary>
+    Private Function TryBuildNpcSaveInput(npcFormID As UInteger) As NpcOverrideSaver.NpcSaveInput
+        If npcFormID = 0UI Then Return Nothing
+        Dim rawRecord = _pluginManager.GetRecord(npcFormID)
+        If rawRecord Is Nothing OrElse rawRecord.Header.Signature <> "NPC_" Then Return Nothing
+        Dim sourcePluginName = If(rawRecord.SourcePluginName, "")
+        Dim rawNpcSpec = RecordParsers.ParseNPC(rawRecord, sourcePluginName, _pluginManager)
+        If rawNpcSpec Is Nothing Then Return Nothing
+        Dim npc As NPC_Data = Nothing
+        _npcByIdCache.TryGetValue(npcFormID, npc)
+        ' ACBS bit 0x04 = "Is CharGen Face Preset" (xEdit wbDefinitionsFO4).
+        Const AcbsBitIsCharGenFacePreset As UInteger = &H4UI
+        Return New NpcOverrideSaver.NpcSaveInput With {
+            .NpcFormID = npcFormID,
+            .Npc = If(npc, rawNpcSpec),
+            .RawRecord = rawRecord,
+            .RawNpcSpec = rawNpcSpec,
+            .SourcePluginName = sourcePluginName,
+            .IsCharGenFacePreset = (rawNpcSpec.AcbsFlags And AcbsBitIsCharGenFacePreset) <> 0UI
+        }
+    End Function
+
+    ''' <summary>Strip the ESP-persisted fields from an NPC's overlay after a successful Save, keeping
+    ''' only the F4SE-only fields that have no record equivalent (BodyMorphs sliders + Skin template).
+    ''' The ESP fields are now in the saved override (re-read via MergeOverridePlugin), so dropping
+    ''' them avoids a redundant overlay re-applying the same values, while the kept fields preserve
+    ''' the user's BodyMorphs/Skin edits. Mirror of <see cref="HydrateAppliedPresetsFromSidecars"/>:
+    ''' the residual overlay is structurally identical to a fresh sidecar hydration. If nothing
+    ''' non-ESP remains, the overlay is removed entirely.</summary>
+    Private Sub StripEspFieldsFromOverlay(npcFormID As UInteger)
+        Dim overlay As LooksmenuLoader.LooksmenuPreset = Nothing
+        If Not _appliedPresets.TryGetValue(npcFormID, overlay) OrElse overlay Is Nothing Then Return
+
+        Dim residual As New LooksmenuLoader.LooksmenuPreset()
+        Dim keptAnything = False
+        If overlay.BodyMorphSliders IsNot Nothing AndAlso overlay.BodyMorphSliders.Count > 0 Then
+            For Each kv In overlay.BodyMorphSliders
+                residual.BodyMorphSliders(kv.Key) = kv.Value
+            Next
+            keptAnything = True
+        End If
+        If Not String.IsNullOrEmpty(overlay.SkinTemplateId) Then
+            residual.SkinTemplateId = overlay.SkinTemplateId
+            keptAnything = True
+        End If
+
+        If keptAnything Then
+            _appliedPresets(npcFormID) = residual
+        Else
+            _appliedPresets.Remove(npcFormID)
+        End If
+    End Sub
+
+    ''' <summary>Post-save re-read (Step 6). Mounts the just-written plugin as the top override so
+    ''' GetRecord/GetParsedNpc return the saved state (the uncached GetParsedNpc means every later
+    ''' render reflects it). For each written NPC: strip the ESP fields from its overlay, clear its
+    ''' dirty mark (no longer bold), and move it to the saved plugin's tree group. Re-renders the
+    ''' currently-loaded NPC when it was among those saved so the preview drops the overlay and shows
+    ''' the clean saved record.</summary>
+    Private Async Function ApplyPostSaveReadback(writtenFormIDs As List(Of UInteger), savedPluginPath As String,
+                                                 draftFormIdMap As Dictionary(Of UInteger, UInteger)) As Task
+        Dim mergeOk As Boolean = True
+        Try
+            _pluginManager.MergeOverridePlugin(savedPluginPath)
+        Catch ex As Exception
+            mergeOk = False
+            Logger.LogLazy(Function() $"[SAVE-READBACK] MergeOverridePlugin failed for {savedPluginPath}: {ex.Message}")
+        End Try
+
+        Dim savedPluginName = IO.Path.GetFileName(savedPluginPath)
+
+        ' Promote the just-written OTFT/LVLI drafts to real records BEFORE re-rendering: remap any overlay /
+        ' remaining-draft reference that still points at a provisional FormID to the real record, drop the
+        ' persisted drafts, and refresh the outfit universe so they reappear in the editor as real records.
+        ' Only when the re-mount succeeded — otherwise the file-local→global resolution would be wrong and
+        ' we keep the drafts so a retry still works.
+        If mergeOk Then PromoteSavedDrafts(draftFormIdMap, savedPluginName)
+        Dim reloadFid As UInteger = If(_renderHost?.LastRenderedState IsNot Nothing, _renderHost.LastRenderedState.RootNpcFormID, 0UI)
+        Dim treeChanged = False
+
+        For Each fid In writtenFormIDs
+            StripEspFieldsFromOverlay(fid)
+            ClearNpcDirty(fid)
+            Dim cachedNpc As NPC_Data = Nothing
+            If _npcByIdCache.TryGetValue(fid, cachedNpc) AndAlso cachedNpc IsNot Nothing Then
+                If Not String.Equals(cachedNpc.PluginName, savedPluginName, StringComparison.OrdinalIgnoreCase) Then
+                    cachedNpc.PluginName = savedPluginName
+                    _npcSearchableCache(fid) = BuildNpcSearchableText(cachedNpc)
+                    treeChanged = True
+                End If
+            End If
+        Next
+
+        ' When the tree grouping changed, rebuild it and re-select the loaded NPC — the AfterSelect
+        ' handler re-renders it from the clean record. Otherwise re-render explicitly if the loaded
+        ' NPC was saved (its overlay was just stripped and needs to drop off the preview).
+        If treeChanged Then
+            PopulateNPCTree(_pendingTreeFilter)
+            If reloadFid <> 0UI Then
+                Dim moved = TreeViewNPCs.Nodes.Find($"NPC_{reloadFid:X8}", searchAllChildren:=True)
                 If moved IsNot Nothing AndAlso moved.Length > 0 Then
-                    TreeViewNPCs.SelectedNode = moved(0)
                     moved(0).EnsureVisible()
+                    TreeViewNPCs.SelectedNode = moved(0)  ' fires AfterSelect → reload (clean state)
+                    Return
                 End If
             End If
         End If
 
-        MessageBox.Show($"Saved {npc.EditorID} to {IO.Path.GetFileName(execResult.WriterResult.OutputPath)}.{execResult.ChargenSummary}{execResult.VerifierSummary}",
-                        "Save ESP/ESM", MessageBoxButtons.OK, execResult.VerifierIcon)
+        If reloadFid <> 0UI AndAlso writtenFormIDs.Contains(reloadFid) Then
+            Dim npc As NPC_Data = Nothing
+            If _npcByIdCache.TryGetValue(reloadFid, npc) AndAlso npc IsNot Nothing Then
+                Try
+                    Dim version = Interlocked.Increment(_previewRequestVersion)
+                    Await LoadNPCOnDemandAsyncFromExisting(npc, version)
+                Catch ex As Exception
+                    Logger.LogLazy(Function() $"[SAVE-READBACK] re-render failed: {ex.Message}")
+                End Try
+            End If
+        End If
+    End Function
+
+    ''' <summary>Promote the OTFT/LVLI drafts just written into the saved plugin to real records. For each
+    ''' (provisional → file-local real) the writer reported, resolve the GLOBAL FormID of the now-mounted
+    ''' record, then: (1) remap any overlay outfit override still pointing at the provisional; (2) remap any
+    ''' SURVIVING draft's internal reference (OTFT items / LVLI entries) to a promoted one; (3) drop the
+    ''' promoted drafts from the in-memory sets (they are real records now, enumerated from the load order);
+    ''' (4) rebuild the outfit universe so the real records surface in the editor. No-op when the map is
+    ''' empty. MUST run after <see cref="PluginManager.MergeOverridePlugin"/> so the file-local→global
+    ''' resolution sees the mounted plugin (handles full and ESL slots like the record re-read).</summary>
+    Private Sub PromoteSavedDrafts(draftFormIdMap As Dictionary(Of UInteger, UInteger), savedPluginName As String)
+        If draftFormIdMap Is Nothing OrElse draftFormIdMap.Count = 0 Then Return
+
+        Dim realGlobal As New Dictionary(Of UInteger, UInteger)
+        For Each kv In draftFormIdMap
+            Dim g = _pluginManager.ResolveReferencedFormID(savedPluginName, kv.Value)
+            ' A still-provisional result means the plugin didn't resolve (e.g. not mounted) — skip it so we
+            ' never rewrite a reference to a bogus FormID or drop a draft that wasn't actually persisted.
+            If g <> 0UI AndAlso Not OutfitDraft.IsDraftFormID(g) Then realGlobal(kv.Key) = g
+        Next
+        If realGlobal.Count = 0 Then Return
+
+        ' (1) Overlays: an outfit override still aimed at a promoted draft → its real record. (For the NPCs
+        ' just saved this is redundant — their overlay DOFT is stripped right after — but it's what keeps a
+        ' DIFFERENT NPC that shares the same draft pointing at the real record instead of a dead provisional.)
+        For Each ov In _appliedPresets.Values
+            If ov Is Nothing OrElse Not ov.DefaultOutfitFormIDOverride.HasValue Then Continue For
+            Dim mapped As UInteger
+            If realGlobal.TryGetValue(ov.DefaultOutfitFormIDOverride.Value, mapped) Then
+                ov.DefaultOutfitFormIDOverride = mapped
+            End If
+        Next
+
+        ' (2) Surviving drafts that reference a promoted one (a clean unsaved outfit pointing at a saved
+        ' LVLI, or a non-emitted LVLI nesting a saved one): rewrite the provisional ref to the real FormID.
+        For Each d In _outfitDrafts
+            If d Is Nothing Then Continue For
+            For i = 0 To d.ItemFormIDs.Count - 1
+                Dim mapped As UInteger
+                If realGlobal.TryGetValue(d.ItemFormIDs(i), mapped) Then d.ItemFormIDs(i) = mapped
+            Next
+        Next
+        For Each d In _leveledListDrafts
+            If d Is Nothing Then Continue For
+            For Each e In d.Entries
+                Dim mapped As UInteger
+                If realGlobal.TryGetValue(e.RefFormID, mapped) Then e.RefFormID = mapped
+            Next
+        Next
+
+        ' (3) Drop the promoted drafts. The throwaway preview sentinel is never in the map, so it survives.
+        _outfitDrafts.RemoveAll(Function(d) d IsNot Nothing AndAlso realGlobal.ContainsKey(d.FormID))
+        _leveledListDrafts.RemoveAll(Function(d) d IsNot Nothing AndAlso realGlobal.ContainsKey(d.FormID))
+
+        ' (4) Refresh the outfit universe so the newly-real OTFT/LVLI surface in Browse + the item lists.
+        BuildOutfitUniverse()
     End Sub
 
     ''' <summary>Dump the current rendered scene to a multi-shape NIF with each visible shape
@@ -13210,24 +13834,27 @@ Public Class MainForm
     ''' Returns (summary, success) — Success is False when bake or pack failed (caller switches
     ''' the MessageBox icon to Warning). Never throws — failures surface in Summary so the ESP
     ''' write isn't masked.</summary>
-    Private Function RunChargenBakeAndPack(npcFormID As UInteger,
-                                           anchorPluginPath As String,
-                                           sourcePluginName As String,
-                                           progress As IProgress(Of NpcOverrideSaver.SaveProgress)) As (Summary As String, Success As Boolean)
+    Private Async Function RunChargenBakeAndPack(npcFormID As UInteger,
+                                                 anchorPluginPath As String,
+                                                 sourcePluginName As String,
+                                                 progress As IProgress(Of NpcOverrideSaver.SaveProgress)) As Task(Of (Summary As String, Success As Boolean))
         ReportSaveProgress(progress, "Baking CharGen NIF + textures…", "", False, 0, 0)
 
-        ' Bake the SAME identity the "Build CharGen (loose)" button uses: the rendered, overlay-
-        ' resolved model source (ModelSourceFormID, else FormID) — i.e. the NPC AS IT RENDERS.
-        ' Save must take the same path as loose so the bake output lands exactly where the pack
-        ' looks: one identity, one directory (the NPC's origin mod). Falls back to the save's
-        ' npcFormID only when nothing is rendered.
+        ' Bake the SAME identity the "Build CharGen (loose)" button uses for the rendered NPC: its
+        ' overlay-resolved model source (ModelSourceFormID, else FormID). But ONLY when the NPC being
+        ' baked IS the one currently rendered — in a batch ("Apply to all") save the other NPCs are
+        ' not rendered, so for those we bake their own FormID directly (FaceGenBuilder.BuildCharGen is
+        ' headless: it resolves appearance from the record + overlay, no render-host state).
         Dim bakeFormID As UInteger = npcFormID
         Dim rendered = _renderHost?.LastRenderedState
-        If rendered IsNot Nothing Then
+        If rendered IsNot Nothing AndAlso rendered.RootNpcFormID = npcFormID Then
             bakeFormID = If(rendered.ModelSourceFormID <> 0UI, rendered.ModelSourceFormID,
                             If(rendered.FormID <> 0UI, rendered.FormID, npcFormID))
         End If
 
+        ' GL-bound bake (FaceTintCompositor GPU pipeline + GL.GetTexImage readback) — MUST stay on
+        ' the UI thread, which owns the OpenGL context. Runs synchronously here: no await has happened
+        ' yet, so we are still on the UI thread the orchestrator called us from.
         Dim bakeResult As FaceGenBuilder.BuildResult
         Try
             bakeResult = FaceGenBuilder.BuildCharGen(bakeFormID, _pluginManager, _appliedPresets,
@@ -13252,35 +13879,55 @@ Public Class MainForm
 
         Logger.LogLazy(Function() $"[CHARGEN-ID] save npcFormID=0x{npcFormID:X8} bakeFormID=0x{bakeFormID:X8} → originPlugin='{originPlugin}' formIdLow=0x{formIdLow:X8}")
 
-        Dim packResult = NpcFaceGenPacker.PackForNpc(
-            anchorPluginPath, _dataPath, Config_App.Current.Game,
-            originPlugin, formIdLow, NPC_Config.Current.Ba2Version_FO4,
-            FaceGenBuilder.DebugMode,
-            Sub(p As NpcFaceGenPacker.PackProgress)
-                Select Case p.Phase
-                    Case NpcFaceGenPacker.PackPhase.BuildingBundle
-                        ReportSaveProgress(progress, "Compressing FaceGen bundle…", p.Detail, p.Max > 0, p.Max, p.Current)
-                    Case NpcFaceGenPacker.PackPhase.WritingArchive
-                        ReportSaveProgress(progress, "Writing BA2 archive(s)…", p.Detail, False, 0, 0)
-                    Case NpcFaceGenPacker.PackPhase.DeletingLoose
-                        ReportSaveProgress(progress, "Removing loose files…", p.Detail, p.Max > 0, p.Max, p.Current)
-                    Case NpcFaceGenPacker.PackPhase.Done
-                        ReportSaveProgress(progress, "Done.", "", False, 0, 0)
-                End Select
-            End Sub)
+        ' Capture the config singletons on the UI thread before going to the worker (don't read
+        ' shared Config_App/NPC_Config from a background thread).
+        Dim dataPath = _dataPath
+        Dim game = Config_App.Current.Game
+        Dim ba2Version = NPC_Config.Current.Ba2Version_FO4
+        Dim debugMode = FaceGenBuilder.DebugMode
 
-        If Not packResult.Success Then
-            ' Bake succeeded but pack failed — loose files remain on disk for the user to
-            ' inspect or pack manually. Don't delete them.
-            Return ($"{vbCrLf}{vbCrLf}(CharGen baked OK but BA2 pack failed: {packResult.ErrorMessage})", False)
-        End If
+        ' Phase 2: pack the four bake outputs. This is pure file I/O + DDS compression — NO GL — so it
+        ' runs on a WORKER thread (Await Task.Run). That frees the UI thread the GL bake above held:
+        ' the window stays responsive and the pack's sub-steps (Compressing / Writing BA2 / Removing)
+        ' animate live, because progress.Report marshals back to the UI thread while the worker runs.
+        ' originPlugin + formIdLow derive from bakeFormID (the NPC's origin-mod directory).
+        Try
+            Dim packResult = Await Task.Run(
+                Function()
+                    Return NpcFaceGenPacker.PackForNpc(
+                        anchorPluginPath, dataPath, game,
+                        originPlugin, formIdLow, ba2Version, debugMode,
+                        Sub(p As NpcFaceGenPacker.PackProgress)
+                            Select Case p.Phase
+                                Case NpcFaceGenPacker.PackPhase.BuildingBundle
+                                    ReportSaveProgress(progress, "Compressing FaceGen bundle…", p.Detail, p.Max > 0, p.Max, p.Current)
+                                Case NpcFaceGenPacker.PackPhase.WritingArchive
+                                    ReportSaveProgress(progress, "Writing BA2 archive(s)…", p.Detail, False, 0, 0)
+                                Case NpcFaceGenPacker.PackPhase.DeletingLoose
+                                    ReportSaveProgress(progress, "Removing loose files…", p.Detail, p.Max > 0, p.Max, p.Current)
+                                Case NpcFaceGenPacker.PackPhase.Done
+                                    ReportSaveProgress(progress, "Done.", "", False, 0, 0)
+                            End Select
+                        End Sub)
+                End Function)
 
-        Dim wrote = packResult.WrittenArchives.Count
-        Dim skipped = packResult.SkippedArchives.Count
-        If wrote = 0 AndAlso skipped > 0 Then
-            Return ($"{vbCrLf}{vbCrLf}CharGen unchanged ({skipped} BA2 archive{If(skipped = 1, "", "s")} already had this NPC).", True)
-        End If
-        Return ($"{vbCrLf}{vbCrLf}CharGen packed into {wrote} BA2 archive{If(wrote = 1, "", "s")}.", True)
+            If Not packResult.Success Then
+                ' Bake succeeded but pack failed — loose files remain on disk for the user to
+                ' inspect or pack manually. Don't delete them.
+                Return ($"{vbCrLf}{vbCrLf}(CharGen baked OK but BA2 pack failed: {packResult.ErrorMessage})", False)
+            End If
+
+            Dim wrote = packResult.WrittenArchives.Count
+            Dim skipped = packResult.SkippedArchives.Count
+            If wrote = 0 AndAlso skipped > 0 Then
+                Return ($"{vbCrLf}{vbCrLf}CharGen unchanged ({skipped} BA2 archive{If(skipped = 1, "", "s")} already had this NPC).", True)
+            End If
+            Return ($"{vbCrLf}{vbCrLf}CharGen packed into {wrote} BA2 archive{If(wrote = 1, "", "s")}.", True)
+        Catch ex As Exception
+            ' Preserve the "never throws" contract — pack failures surface in the summary, not as a
+            ' thrown exception that would mark the whole (already-written) save as failed.
+            Return ($"{vbCrLf}{vbCrLf}(CharGen baked OK but BA2 pack failed: {ex.Message})", False)
+        End Try
     End Function
 
     ''' <summary>Forward a save-pipeline progress update to the orchestrator's IProgress sink.

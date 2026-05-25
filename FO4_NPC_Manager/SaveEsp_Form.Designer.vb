@@ -16,6 +16,9 @@ Partial Class SaveEsp_Form
 
     Private Sub InitializeComponent()
         LabelHeader = New Label()
+        PanelScope = New Panel()
+        RadioScopeAllChanged = New RadioButton()
+        RadioScopeSelected = New RadioButton()
         RadioButtonExisting = New RadioButton()
         ListBoxExisting = New ListBox()
         RadioButtonNew = New RadioButton()
@@ -44,12 +47,40 @@ Partial Class SaveEsp_Form
         '
         ' LabelHeader
         '
-        LabelHeader.Anchor = AnchorStyles.Top Or AnchorStyles.Left Or AnchorStyles.Right
-        LabelHeader.Location = New Drawing.Point(12, 9)
+        LabelHeader.AutoSize = True
+        LabelHeader.Location = New Drawing.Point(12, 13)
         LabelHeader.Name = "LabelHeader"
-        LabelHeader.Size = New Drawing.Size(520, 32)
         LabelHeader.TabIndex = 0
-        LabelHeader.Text = "Save NPC override to plugin"
+        LabelHeader.Text = "Save:"
+        '
+        ' PanelScope  (own container so the scope radios form a group SEPARATE from Existing/New)
+        '
+        PanelScope.Controls.Add(RadioScopeAllChanged)
+        PanelScope.Controls.Add(RadioScopeSelected)
+        PanelScope.Location = New Drawing.Point(50, 7)
+        PanelScope.Name = "PanelScope"
+        PanelScope.Size = New Drawing.Size(482, 26)
+        PanelScope.TabIndex = 23
+        '
+        ' RadioScopeAllChanged
+        '
+        RadioScopeAllChanged.AutoSize = True
+        RadioScopeAllChanged.Checked = True
+        RadioScopeAllChanged.Location = New Drawing.Point(6, 4)
+        RadioScopeAllChanged.Name = "RadioScopeAllChanged"
+        RadioScopeAllChanged.TabIndex = 0
+        RadioScopeAllChanged.TabStop = True
+        RadioScopeAllChanged.Text = "All changed"
+        RadioScopeAllChanged.UseVisualStyleBackColor = True
+        '
+        ' RadioScopeSelected
+        '
+        RadioScopeSelected.AutoSize = True
+        RadioScopeSelected.Location = New Drawing.Point(150, 4)
+        RadioScopeSelected.Name = "RadioScopeSelected"
+        RadioScopeSelected.TabIndex = 1
+        RadioScopeSelected.Text = "Selected only"
+        RadioScopeSelected.UseVisualStyleBackColor = True
         '
         ' RadioButtonExisting
         '
@@ -142,7 +173,7 @@ Partial Class SaveEsp_Form
         CheckBoxGenerateChargen.Name = "CheckBoxGenerateChargen"
         CheckBoxGenerateChargen.Size = New Drawing.Size(360, 19)
         CheckBoxGenerateChargen.TabIndex = 9
-        CheckBoxGenerateChargen.Text = "Generate baked CharGen (NIF + textures) into BA2"
+        CheckBoxGenerateChargen.Text = "Bake CharGen (NIF + textures) → BA2"
         CheckBoxGenerateChargen.UseVisualStyleBackColor = True
         '
         ' LabelBa2Version
@@ -171,7 +202,7 @@ Partial Class SaveEsp_Form
         CheckBoxWriteBssliders.Name = "CheckBoxWriteBssliders"
         CheckBoxWriteBssliders.Size = New Drawing.Size(480, 19)
         CheckBoxWriteBssliders.TabIndex = 10
-        CheckBoxWriteBssliders.Text = "Save BodyMorphs + Skin sidecar (.bssliders, preserves editor state)"
+        CheckBoxWriteBssliders.Text = "Save BodyMorphs + Skin sidecar (.bssliders)"
         CheckBoxWriteBssliders.UseVisualStyleBackColor = True
         '
         ' CheckBoxEmitBodyGen
@@ -183,7 +214,7 @@ Partial Class SaveEsp_Form
         CheckBoxEmitBodyGen.Name = "CheckBoxEmitBodyGen"
         CheckBoxEmitBodyGen.Size = New Drawing.Size(520, 19)
         CheckBoxEmitBodyGen.TabIndex = 11
-        CheckBoxEmitBodyGen.Text = "Emit BodyGen .ini (engine applies sliders on first-load in NEW saves)"
+        CheckBoxEmitBodyGen.Text = "Emit BodyGen .ini (sliders on first load, new games)"
         CheckBoxEmitBodyGen.UseVisualStyleBackColor = True
         '
         ' CheckBoxSaveNewOutfits
@@ -195,7 +226,7 @@ Partial Class SaveEsp_Form
         CheckBoxSaveNewOutfits.Name = "CheckBoxSaveNewOutfits"
         CheckBoxSaveNewOutfits.Size = New Drawing.Size(520, 19)
         CheckBoxSaveNewOutfits.TabIndex = 21
-        CheckBoxSaveNewOutfits.Text = "Save new outfits (Edit Outfit ""Create"" tab) as OTFT records in this plugin"
+        CheckBoxSaveNewOutfits.Text = "Save new outfits (Create tab) as OTFT records"
         CheckBoxSaveNewOutfits.UseVisualStyleBackColor = True
         '
         ' LabelEncoding
@@ -307,6 +338,7 @@ Partial Class SaveEsp_Form
         AutoScaleMode = AutoScaleMode.Font
         ClientSize = New Drawing.Size(544, 668)
         Controls.Add(LabelHeader)
+        Controls.Add(PanelScope)
         Controls.Add(RadioButtonExisting)
         Controls.Add(ListBoxExisting)
         Controls.Add(RadioButtonNew)
@@ -339,6 +371,9 @@ Partial Class SaveEsp_Form
     End Sub
 
     Friend WithEvents LabelHeader As Label
+    Friend WithEvents PanelScope As Panel
+    Friend WithEvents RadioScopeAllChanged As RadioButton
+    Friend WithEvents RadioScopeSelected As RadioButton
     Friend WithEvents RadioButtonExisting As RadioButton
     Friend WithEvents ListBoxExisting As ListBox
     Friend WithEvents RadioButtonNew As RadioButton

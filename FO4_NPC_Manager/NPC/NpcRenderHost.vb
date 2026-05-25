@@ -106,6 +106,13 @@ Friend Class NpcRenderHost
     ''' selects the mode via its ComboBox; the consumer side merges both.</summary>
     Public Property OnlyFaceCollect As Boolean = False
 
+    ''' <summary>When True, <c>CollectMeshCandidates</c> collects ONLY the outfit (skips Skin, HeadParts
+    ''' and robot chunks) while still building the posed/weighted skeleton. The Edit Outfit picker sets
+    ''' this for its "selected piece only" preview: the throwaway draft holds the single piece, so the
+    ''' render shows just that piece skinned to the real body skeleton — no wasted skinning of body/head
+    ''' that the old RenderBody=False only hid post-collection.</summary>
+    Public Property OnlyOutfitCollect As Boolean = False
+
     ''' <summary>Deferred face-tint polling timer. The texture cache is async (Render.vb
     ''' <summary>Current NPC visual state being previewed (without outfit — outfit applied
     ''' on-demand from combo). The Save / Copy snapshot reads from this; the render reads

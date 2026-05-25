@@ -1,19 +1,26 @@
 Imports System.IO
+Imports System.Linq
+Imports System.Threading
 Imports System.Threading.Tasks
 Imports System.Windows.Forms
 Imports FO4_Base_Library
 
 ''' <summary>
 ''' Orchestrator for the Save NPC override flow. Owns the multi-phase work that used to live
-''' inline in <see cref="MainForm.ButtonSavePlugin_Click"/>: build the override entry, write the
+''' inline in <see cref="MainForm.ButtonSavePlugin_Click"/>: build the override entries, write the
 ''' plugin via <see cref="SaveNpcEspWriter"/>, optionally bake the CharGen NIF + textures and
 ''' pack them into BA2.
 '''
+''' Batch-capable: <see cref="ExecuteAsync"/> takes a LIST of <see cref="NpcSaveInput"/> so the Save
+''' dialog can persist either the single selected NPC or every NPC the user changed this session.
+''' All NPCs in the batch are written into ONE target plugin in a single write; the CharGen bake
+''' runs once per NPC after the write.
+'''
 ''' Reports progress through <see cref="IProgress(Of SaveProgress)"/> so the caller (the Save
 ''' dialog) can render an embedded progress panel without a separate form. Cleanup tasks that
-''' depend on MainForm internals (auto-gen plugin cache, NPC tree refresh, success MessageBox)
-''' are NOT performed here — the orchestrator returns the data those steps need and MainForm
-''' performs them after the dialog closes.
+''' depend on MainForm internals (auto-gen plugin cache, NPC tree refresh, post-save re-read,
+''' success MessageBox) are NOT performed here — the orchestrator returns the data those steps
+''' need and MainForm performs them after the dialog closes.
 ''' </summary>
 Public Module NpcOverrideSaver
 
@@ -26,14 +33,40 @@ Public Module NpcOverrideSaver
         Public Current As Integer
     End Class
 
+    ''' <summary>Per-NPC input for a save run. MainForm builds one of these for every NPC being
+    ''' saved (the selected one, or every dirty NPC) from its cached record + a fresh raw parse.</summary>
+    Public Class NpcSaveInput
+        Public NpcFormID As UInteger
+        ''' <summary>Cached NPC_Data (for EditorID in progress/messages). Not used for serialization.</summary>
+        Public Npc As NPC_Data
+        Public RawRecord As PluginRecord
+        ''' <summary>Fresh type-safe parse of <see cref="RawRecord"/> — the base the overlay is applied on.</summary>
+        Public RawNpcSpec As NPC_Data
+        Public SourcePluginName As String
+        ''' <summary>ACBS "Is CharGen Face Preset" bit. Drives whether the CharGen bake is optional
+        ''' for this NPC; the dialog forces the bake on when ANY batch NPC lacks the flag.</summary>
+        Public IsCharGenFacePreset As Boolean
+    End Class
+
     ''' <summary>Outcome of <see cref="ExecuteAsync"/>. Populated even on failure so the caller
     ''' can show a meaningful error.</summary>
     Public Class SaveExecutionResult
         Public Success As Boolean
+        ''' <summary>True when the bake loop was stopped early by the user. The plugin write already
+        ''' succeeded (Success stays True); some NPCs' FaceGen BA2 may be unbaked.</summary>
+        Public BakeCancelled As Boolean
         Public WriterResult As SaveNpcEspWriter.SaveResult
-        ''' <summary>Final list of NPC FormIDs in the saved plugin (preserved existing + the new
+        ''' <summary>Final list of NPC FormIDs in the saved plugin (preserved existing + every new
         ''' override). Used by MainForm to update the auto-gen plugin cache.</summary>
         Public SavedFormIDs As New List(Of UInteger)
+        ''' <summary>The FormIDs this run actually wrote as overrides (the batch). MainForm uses this
+        ''' for the post-save re-read + overlay cleanup (distinct from SavedFormIDs, which also
+        ''' includes pre-existing records preserved from the target plugin).</summary>
+        Public WrittenNpcFormIDs As New List(Of UInteger)
+        ''' <summary>Provisional draft FormID → file-local real FormID for every OTFT/LVLI draft emitted this
+        ''' save (copied from <see cref="SaveNpcEspWriter.SaveResult.DraftFormIdMap"/>). MainForm uses it to
+        ''' promote drafts to real records post-readback. Empty when no new outfits/leveled lists were written.</summary>
+        Public DraftFormIdMap As Dictionary(Of UInteger, UInteger) = Nothing
         Public VerifierSummary As String = ""
         Public VerifierIcon As MessageBoxIcon = MessageBoxIcon.Information
         Public ChargenSummary As String = ""
@@ -59,70 +92,86 @@ Public Module NpcOverrideSaver
         ''' <summary>MainForm helper: rebuild the parser's parallel collections (TintLayerStructs,
         ''' FaceMorphTrailingBytes, MorphKeysOrdered) on the shadow after overlay copy.</summary>
         Public SyncParallelCollectionsAfterOverlay As Action(Of NPC_Data)
-        ''' <summary>FaceGen bake delegate: invoked when the user opted into CharGen bake +
-        ''' BA2 pack. Kept as a callback because the bake pipeline lives in MainForm/FaceGenBuilder
-        ''' and pulls render state from <see cref="RenderHost"/>.</summary>
-        Public RunChargenBakeAndPack As Func(Of UInteger, String, String, IProgress(Of SaveProgress), (Summary As String, Success As Boolean))
+        ''' <summary>FaceGen bake delegate: invoked once per NPC when the user opted into CharGen
+        ''' bake + BA2 pack. Kept as a callback because the bake pipeline lives in MainForm/
+        ''' FaceGenBuilder and pulls GL resources from <see cref="RenderHost"/>.</summary>
+        Public RunChargenBakeAndPack As Func(Of UInteger, String, String, IProgress(Of SaveProgress), Task(Of (Summary As String, Success As Boolean)))
         ''' <summary>All outfit drafts authored in the Edit Outfit "Create" tab (MainForm's
         ''' <c>_outfitDrafts</c>, minus the throwaway preview sentinel). When the save target's
-        ''' <c>SaveNewOutfits</c> is True, ExecuteWritePhases emits as OTFT records every draft that is
-        ''' dirty OR referenced by this NPC's DOFT (so the plugin is self-contained); clean unreferenced
-        ''' drafts are skipped (the "don't re-save what's already saved" rule). Nothing = none.</summary>
+        ''' <c>SaveNewOutfits</c> is True, the orchestrator emits as OTFT records every draft that is
+        ''' dirty OR referenced by any saved NPC's DOFT (so the plugin is self-contained); clean
+        ''' unreferenced drafts are skipped (the "don't re-save what's already saved" rule). Nothing = none.</summary>
         Public OutfitDrafts As List(Of OutfitDraft) = Nothing
+        ''' <summary>All author-built leveled lists (LVLI drafts) from MainForm's <c>_leveledListDrafts</c>.
+        ''' When <c>SaveNewOutfits</c> is True the orchestrator emits as LVLI records the TRANSITIVE CLOSURE
+        ''' of drafts reachable from the emitted OTFTs' items (so an outfit that references a draft LVLI — and
+        ''' a draft LVLI that nests other draft LVLIs — never writes a dangling 0xFF reference), plus any dirty
+        ''' draft the user built standalone. Nothing = none.</summary>
+        Public LeveledListDrafts As List(Of LeveledListDraft) = Nothing
     End Class
 
-    ''' <summary>Execute the save end-to-end. Runs the synchronous CPU/IO work on a background
-    ''' Task so the UI thread can paint progress reports without blocking. <paramref name="progress"/>
-    ''' callbacks are marshaled back to the UI thread by .NET's <see cref="IProgress(Of T)"/>
-    ''' contract.
+    ''' <summary>Run the save end-to-end for one or more NPCs into a single target plugin. Hybrid
+    ''' threading model — pure-IO phases (build entries, write ESP, sidecar) run on a worker Task
+    ''' so the UI message pump stays alive and the progress panel repaints; the CharGen bake runs
+    ''' on the UI thread because it touches the OpenGL render host, which is single-thread-bound to
+    ''' the GL context owner. Awaits alternate the two so the orchestrator stays a single linear flow.
     '''
-    ''' Phases (each one emits a progress report at start):
-    '''   1. Build override entry (apply overlay, sync MWGT, rebuild HeadParts).
-    '''   2. Load existing records from the target plugin (Update existing path).
-    '''   3. Write plugin via <see cref="SaveNpcEspWriter.SaveOverridePlugin"/>.
-    '''   4. Optional CharGen bake + BA2 pack (per <see cref="SaveEsp_Form.SaveTarget.GenerateChargen"/>).</summary>
-    ''' <summary>Run the save end-to-end. Hybrid threading model — pure-IO phases (write ESP,
-    ''' verifier, BA2 pack) run on a worker Task so the UI message pump stays alive and the
-    ''' progress panel repaints; the CharGen bake runs on the UI thread because it touches the
-    ''' OpenGL render host, which is single-thread-bound to the GL context owner. Awaits
-    ''' alternate the two so the orchestrator stays a single linear flow.</summary>
+    ''' <paramref name="bakeCancel"/> is checked only between NPCs in the bake loop (the long part).
+    ''' The plugin write itself is atomic and not cancellable; cancelling stops baking the remaining
+    ''' NPCs' FaceGen, leaving the already-written ESP intact.</summary>
     Public Async Function ExecuteAsync(target As SaveEsp_Form.SaveTarget,
-                                       npcFormID As UInteger,
-                                       npc As NPC_Data,
-                                       rawRecord As PluginRecord,
-                                       rawNpcSpec As NPC_Data,
-                                       sourcePluginName As String,
-                                       baseStateWeightThin As Single,
-                                       baseStateWeightMuscular As Single,
-                                       baseStateWeightFat As Single,
-                                       baseStateValid As Boolean,
+                                       inputs As List(Of NpcSaveInput),
                                        ctx As SaveContext,
-                                       progress As IProgress(Of SaveProgress)) As Task(Of SaveExecutionResult)
+                                       progress As IProgress(Of SaveProgress),
+                                       bakeCancel As CancellationToken) As Task(Of SaveExecutionResult)
 
         Dim result As New SaveExecutionResult
 
         Try
-            ' Phases 1-3 (record build → existing-plugin load → write → verifier) are pure CPU/IO;
-            ' run on a worker so the UI thread keeps pumping messages and the progress panel
-            ' repaints. Returns the post-overlay NPC_Data via WritePhaseResult; we don't need it
-            ' here yet, but the bake phase may consume it later for write/bake parity checks.
+            ' Phases 1-3 (build entries → existing-plugin load → write → sidecar) are pure CPU/IO;
+            ' run on a worker so the UI thread keeps pumping messages and the progress panel repaints.
             Await Task.Run(Sub()
-                               ExecuteWritePhases(target, npcFormID, npc, rawRecord, rawNpcSpec,
-                                                  sourcePluginName,
-                                                  baseStateWeightThin, baseStateWeightMuscular, baseStateWeightFat,
-                                                  baseStateValid, ctx, progress, result)
+                               ExecuteWritePhases(target, inputs, ctx, progress, result)
                            End Sub)
 
-            ' Phase 4: CharGen bake. Must run on the UI thread because FaceGenBuilder.BuildCharGen
-            ' reads textures from the live GL context. Yield first so the panel paints "Baking…"
-            ' before the synchronous bake call blocks the message pump again.
+            ' Phase 4: CharGen bake, once per NPC. RunChargenBakeAndPack runs the GL-bound texture
+            ' bake synchronously on the UI thread (the GL context lives there) and then awaits the
+            ' BA2 pack on a worker thread, so the UI only blocks for the (short) GL bake, not the
+            ' (long) compression. Yield first so the "NPC k/N" header paints before the GL bake.
             If target.GenerateChargen Then
-                Await Task.Yield()
-                ReportPhase(progress, "Baking CharGen NIF + textures…", "")
-                Dim chargenRes = ctx.RunChargenBakeAndPack(npcFormID, target.TargetPath, sourcePluginName, progress)
-                result.ChargenSummary = chargenRes.Summary
-                result.ChargenSuccess = chargenRes.Success
-                If Not chargenRes.Success Then result.VerifierIcon = MessageBoxIcon.Warning
+                Dim totalBakes = inputs.Count
+                Dim bakedOk = 0
+                Dim bakedFail = 0
+                For i = 0 To inputs.Count - 1
+                    If bakeCancel.IsCancellationRequested Then
+                        result.BakeCancelled = True
+                        Exit For
+                    End If
+                    Dim npcInput = inputs(i)
+                    Await Task.Yield()
+                    Dim label = If(npcInput.Npc IsNot Nothing AndAlso Not String.IsNullOrEmpty(npcInput.Npc.EditorID),
+                                   npcInput.Npc.EditorID, npcInput.NpcFormID.ToString("X8"))
+                    progress?.Report(New SaveProgress With {
+                        .Phase = "Baking CharGen NIF + textures…",
+                        .Detail = $"NPC {i + 1}/{totalBakes}: {label}",
+                        .Determinate = True,
+                        .Max = totalBakes,
+                        .Current = i + 1
+                    })
+                    Dim chargenRes = Await ctx.RunChargenBakeAndPack(npcInput.NpcFormID, target.TargetPath, npcInput.SourcePluginName, progress)
+                    If chargenRes.Success Then bakedOk += 1 Else bakedFail += 1
+                Next
+                If totalBakes = 1 Then
+                    ' Single-NPC: terse summary. Only mention failures when there ARE any (no "0 failed" noise).
+                    result.ChargenSummary = $"{vbCrLf}{vbCrLf}CharGen bake: {bakedOk} OK" &
+                        If(bakedFail > 0, $", {bakedFail} failed", "") & "."
+                Else
+                    result.ChargenSummary = $"{vbCrLf}{vbCrLf}CharGen bake: {bakedOk}/{totalBakes} OK" &
+                        If(bakedFail > 0, $", {bakedFail} failed", "") &
+                        If(result.BakeCancelled, " (cancelled — remaining NPCs not baked)", "") & "."
+                End If
+                result.ChargenSuccess = (bakedFail = 0)
+                If bakedFail > 0 Then result.VerifierIcon = MessageBoxIcon.Warning
             End If
 
             result.Success = True
@@ -133,12 +182,6 @@ Public Module NpcOverrideSaver
 
         Return result
     End Function
-
-    ''' <summary>Bag returned by <see cref="ExecuteWritePhases"/> so the caller can hand off
-    ''' state from the worker-thread phases to subsequent UI-thread phases.</summary>
-    Private Class WritePhaseResult
-        Public NpcSpec As NPC_Data
-    End Class
 
     ''' <summary>
     ''' Check the translatable string fields (FULL/SHRT/ATTX — the ones NpcSubrecordWriter.EmitLString
@@ -166,26 +209,228 @@ Public Module NpcOverrideSaver
         Return ""
     End Function
 
-    ''' <summary>Phases 1-3 of the save: build the override entry (overlay + MWGT + HeadParts
-    ''' merge), load existing records, write the plugin, and run the optional verifier. All
-    ''' pure CPU/IO — safe to run on a worker Task. Mutates <paramref name="result"/> in place
-    ''' (writer result, saved FormIDs, verifier summary/icon) and returns the post-overlay
-    ''' <see cref="NPC_Data"/> for downstream phases.</summary>
-    Private Function ExecuteWritePhases(target As SaveEsp_Form.SaveTarget,
-                                        npcFormID As UInteger,
-                                        npc As NPC_Data,
-                                        rawRecord As PluginRecord,
-                                        rawNpcSpec As NPC_Data,
-                                        sourcePluginName As String,
-                                        baseStateWeightThin As Single,
-                                        baseStateWeightMuscular As Single,
-                                        baseStateWeightFat As Single,
-                                        baseStateValid As Boolean,
-                                        ctx As SaveContext,
-                                        progress As IProgress(Of SaveProgress),
-                                        result As SaveExecutionResult) As WritePhaseResult
+    ''' <summary>Phases 1-3 of the save: build one override entry per input NPC (overlay + MWGT +
+    ''' HeadParts merge), load existing records (skipping every NPC being written), write the plugin
+    ''' in a single pass, and refresh the BodyMorphs/Skin sidecar. All pure CPU/IO — safe on a worker
+    ''' Task. Mutates <paramref name="result"/> in place.</summary>
+    Private Sub ExecuteWritePhases(target As SaveEsp_Form.SaveTarget,
+                                   inputs As List(Of NpcSaveInput),
+                                   ctx As SaveContext,
+                                   progress As IProgress(Of SaveProgress),
+                                   result As SaveExecutionResult)
 
-        ReportPhase(progress, "Preparing NPC record…", "")
+        ReportPhase(progress, "Preparing NPC records…", "")
+
+        ' Phase 1: build one override entry per NPC. outfitEntries is shared and deduped at the end.
+        Dim entries As New List(Of SaveNpcEspWriter.NpcOverrideEntry)
+        For Each npcInput In inputs
+            Dim entry = BuildOverrideEntry(npcInput, ctx, target)
+            ' Encoding-conflict check for the edited NPC (per-NPC FULL/SHRT/ATTX vs encoding).
+            Dim editedConflict = FindEncodingConflict(entry.Npc, "")
+            If editedConflict <> "" Then Throw New InvalidDataException(editedConflict)
+            entries.Add(entry)
+        Next
+
+        ' Phase 2: load existing records from the target plugin when updating, skipping EVERY NPC
+        ' we are about to (re)write. Outfit records (OTFT) authored in prior saves are re-emitted as
+        ' OVERRIDE entries so they survive (other NPCs may reference them).
+        ReportPhase(progress, "Loading existing plugin…", IO.Path.GetFileName(target.TargetPath))
+        Dim existingRecords As New List(Of PluginRecord)
+        Dim existingMasters As New List(Of String)
+        Dim outfitEntries As New List(Of SaveNpcEspWriter.OtftRecordEntry)
+        ' Existing LVLI records (authored in prior saves) are preserved as OVERRIDE entries too, here, so a
+        ' re-save of the same plugin doesn't choke (the writer only copy-through-preserves NPC_ records).
+        ' Draft LVLIs (Phase 2d) append to this same list.
+        Dim leveledEntries As New List(Of SaveNpcEspWriter.LvliRecordEntry)
+        If Not target.IsNewPlugin AndAlso File.Exists(target.TargetPath) Then
+            Dim reader As New PluginReader()
+            reader.Load(target.TargetPath)
+            existingMasters.AddRange(reader.Masters)
+
+            ' Build the set of LOCAL FormIDs (as the target plugin's MAST list sees them) for every
+            ' NPC being written, so we drop the records we're about to replace. Mirror of the engine
+            ' FileID scheme: 12-bit object for an ESL source, 24-bit for a full source.
+            Dim skipLocalFormIDs As New HashSet(Of UInteger)
+            For Each npcInput In inputs
+                skipLocalFormIDs.Add(MapGlobalToLocalInPlugin(npcInput.NpcFormID, reader, ctx.PluginManager))
+            Next
+
+            For Each kv In reader.Records
+                Dim rec = kv.Value
+                If skipLocalFormIDs.Contains(rec.Header.FormID) Then Continue For
+                If rec.Header.Signature = "OTFT" Then
+                    Dim parsedOtft = RecordParsers.ParseOTFT(rec, ctx.PluginManager)
+                    Dim oe As New SaveNpcEspWriter.OtftRecordEntry With {
+                        .FormID = ctx.PluginManager.ResolveReferencedFormID(rec.SourcePluginName, rec.Header.FormID),
+                        .EditorID = parsedOtft.EditorID,
+                        .IsOverride = True
+                    }
+                    oe.ItemArmoFormIDs.AddRange(parsedOtft.ItemFormIDs)
+                    outfitEntries.Add(oe)
+                    Continue For
+                End If
+                If rec.Header.Signature = "LVLI" Then
+                    Dim parsedLvli = RecordParsers.ParseLVLI(rec, ctx.PluginManager)
+                    Dim le As New SaveNpcEspWriter.LvliRecordEntry With {
+                        .FormID = ctx.PluginManager.ResolveReferencedFormID(rec.SourcePluginName, rec.Header.FormID),
+                        .EditorID = parsedLvli.EditorID,
+                        .ChanceNone = parsedLvli.ChanceNone,
+                        .MaxCount = parsedLvli.MaxCount,
+                        .Flags = parsedLvli.Flags,
+                        .IsOverride = True
+                    }
+                    For Each ent In parsedLvli.Entries
+                        le.Entries.Add(New SaveNpcEspWriter.LvliEntryData With {
+                            .Level = ent.Level, .RefFormID = ent.FormID, .Count = ent.Count, .ChanceNone = ent.ChanceNone})
+                    Next
+                    leveledEntries.Add(le)
+                    Continue For
+                End If
+                existingRecords.Add(rec)
+            Next
+        End If
+
+        ' Phase 2b: encoding-conflict check for every pre-existing NPC re-emitted by the writer.
+        For Each existing In existingRecords
+            If existing.Header.Signature <> "NPC_" Then Continue For
+            Dim parsedExisting = RecordParsers.ParseNPC(existing, existing.SourcePluginName, ctx.PluginManager)
+            Dim label = If(parsedExisting.HasFull AndAlso parsedExisting.FullName <> "",
+                           parsedExisting.FullName, $"FormID {existing.Header.FormID:X8}")
+            Dim existingConflict = FindEncodingConflict(parsedExisting, $" del NPC [{label}]")
+            If existingConflict <> "" Then Throw New InvalidDataException(existingConflict)
+        Next
+
+        ' Phase 2c: new-outfit (OTFT) drafts authored in the Edit Outfit "Create" tab. Emitted ONCE
+        ' for the whole batch: every dirty draft, plus any draft referenced by a saved NPC's DOFT
+        ' (so the plugin is self-contained). Deduped against the existing-OTFT entries by FormID.
+        If target.SaveNewOutfits AndAlso ctx.OutfitDrafts IsNot Nothing Then
+            Dim referencedDoft As New HashSet(Of UInteger)
+            For Each entry In entries
+                If entry.Npc IsNot Nothing Then referencedDoft.Add(entry.Npc.DefaultOutfitFormID)
+            Next
+            Dim alreadyEmitted As New HashSet(Of UInteger)(outfitEntries.Select(Function(o) o.FormID))
+            For Each d In ctx.OutfitDrafts
+                If d Is Nothing OrElse d.FormID = OutfitDraft.PreviewDraftFormID Then Continue For
+                If Not (d.IsDirty OrElse referencedDoft.Contains(d.FormID)) Then Continue For
+                If Not alreadyEmitted.Add(d.FormID) Then Continue For
+                Dim oe As New SaveNpcEspWriter.OtftRecordEntry With {
+                    .FormID = d.FormID,
+                    .EditorID = d.EditorID,
+                    .IsOverride = d.IsOverride
+                }
+                ' INAM = the draft's items as authored — ARMO or LVLI FormIDs (the writer's INAM is
+                ' FormID-agnostic, so an LVLI ref persists as a leveled entry; the engine rolls at runtime).
+                oe.ItemArmoFormIDs.AddRange(d.ItemFormIDs)
+                outfitEntries.Add(oe)
+            Next
+        End If
+
+        ' Phase 2d: author-built leveled lists (LVLI drafts) needed by this save. Emit the TRANSITIVE
+        ' CLOSURE of draft LVLIs reachable from the emitted OTFTs' INAM items (so a saved outfit that
+        ' references a draft LVLI — and a draft LVLI that nests other draft LVLIs — is self-contained and
+        ' never writes a dangling 0xFF reference), plus any dirty draft the user built standalone. The
+        ' writer pre-assigns every draft (OTFT + LVLI) its real self-index FormID, so the cross-references
+        ' resolve regardless of emit order. Appends to leveledEntries (which already holds the preserved
+        ' existing LVLI overrides); drafts are deduped by FormID against those.
+        If target.SaveNewOutfits AndAlso ctx.LeveledListDrafts IsNot Nothing AndAlso ctx.LeveledListDrafts.Count > 0 Then
+            Dim alreadyLeveled As New HashSet(Of UInteger)(leveledEntries.Select(Function(l) l.FormID))
+            Dim draftByFid As New Dictionary(Of UInteger, LeveledListDraft)
+            For Each d In ctx.LeveledListDrafts
+                If d IsNot Nothing Then draftByFid(d.FormID) = d
+            Next
+            Dim needed As New HashSet(Of UInteger)
+            Dim toVisit As New Queue(Of UInteger)
+            ' Seed: every draft LVLI referenced by an emitted OTFT's items.
+            For Each oe In outfitEntries
+                For Each fid In oe.ItemArmoFormIDs
+                    If draftByFid.ContainsKey(fid) AndAlso needed.Add(fid) Then toVisit.Enqueue(fid)
+                Next
+            Next
+            ' Seed: dirty standalone drafts (user built them this session; persist even if unreferenced).
+            For Each d In ctx.LeveledListDrafts
+                If d IsNot Nothing AndAlso d.IsDirty AndAlso needed.Add(d.FormID) Then toVisit.Enqueue(d.FormID)
+            Next
+            ' Walk nested draft LVLI → draft LVLI references (cycle-safe via the visited set).
+            While toVisit.Count > 0
+                Dim fid = toVisit.Dequeue()
+                Dim d = draftByFid(fid)
+                For Each e In d.Entries
+                    If draftByFid.ContainsKey(e.RefFormID) AndAlso needed.Add(e.RefFormID) Then toVisit.Enqueue(e.RefFormID)
+                Next
+            End While
+            ' Build the writer entries (skip any FormID already present as a preserved existing override).
+            For Each fid In needed
+                If Not alreadyLeveled.Add(fid) Then Continue For
+                Dim d = draftByFid(fid)
+                Dim le As New SaveNpcEspWriter.LvliRecordEntry With {
+                    .FormID = d.FormID,
+                    .EditorID = d.EditorID,
+                    .ChanceNone = d.ChanceNone,
+                    .MaxCount = d.MaxCount,
+                    .Flags = d.FlagsByte()
+                }
+                For Each e In d.Entries
+                    If e.RefFormID = 0UI Then Continue For
+                    le.Entries.Add(New SaveNpcEspWriter.LvliEntryData With {
+                        .Level = e.Level, .RefFormID = e.RefFormID, .Count = e.Count, .ChanceNone = e.ChanceNone
+                    })
+                Next
+                leveledEntries.Add(le)
+            Next
+        End If
+
+        ' Phase 3: write the plugin (all entries in one pass).
+        ReportPhase(progress, "Writing NPC override to plugin…", IO.Path.GetFileName(target.TargetPath))
+        Dim game = Config_App.Current.Game
+        Dim writeRes = SaveNpcEspWriter.SaveOverridePlugin(
+            target.TargetPath, game, target.MarkAsMaster, target.LightMaster,
+            entries, existingRecords, existingMasters, ctx.PluginManager, outfitEntries, leveledEntries)
+
+        result.WriterResult = writeRes
+        result.DraftFormIdMap = writeRes.DraftFormIdMap
+        For Each existingRec In existingRecords
+            result.SavedFormIDs.Add(existingRec.Header.FormID)
+        Next
+        For Each npcInput In inputs
+            result.SavedFormIDs.Add(npcInput.NpcFormID)
+            result.WrittenNpcFormIDs.Add(npcInput.NpcFormID)
+        Next
+
+        ' Phase 3b: refresh the BodyMorphs/Skin sidecar (default ON). Read once, merge every NPC in
+        ' the batch, write once. The BodyGen emitter consumes the post-merge dict so its .ini
+        ' reflects all NPCs of the plugin (this batch + any pre-existing entries from prior saves).
+        If target.WriteBssliders OrElse target.EmitBodyGen Then
+            Dim sidecarPath = BssliderSidecar.BuildPath(target.TargetPath)
+            Dim mergedSidecar = BssliderSidecar.Read(sidecarPath)
+            If mergedSidecar Is Nothing Then mergedSidecar = New BssliderSidecar.SidecarFile()
+            mergedSidecar.Plugin = IO.Path.GetFileName(target.TargetPath)
+            ' entries are built in input order in Phase 1, so entries(i) ↔ inputs(i).
+            For i = 0 To inputs.Count - 1
+                MergeOneNpcIntoSidecar(mergedSidecar, inputs(i).NpcFormID, entries(i).Npc, ctx)
+            Next
+            If target.WriteBssliders Then
+                ReportPhase(progress, "Writing .bssliders sidecar…", IO.Path.GetFileName(target.TargetPath))
+                BssliderSidecar.Write(sidecarPath, mergedSidecar)
+            End If
+            If target.EmitBodyGen Then
+                ReportPhase(progress, "Writing BodyGen .ini…", IO.Path.GetFileName(target.TargetPath))
+                EmitBodyGenFromSidecar(target, mergedSidecar, ctx)
+            End If
+        End If
+
+        result.VerifierIcon = MessageBoxIcon.Information
+        result.ChargenSuccess = True
+    End Sub
+
+    ''' <summary>Build a single NPC override entry: apply the overlay onto the raw parse, copy
+    ''' round-trip-only fields, detect a user MWGT edit from the overlay, rebuild HeadParts (raw
+    ''' PNAM ∪ preset, deduped by PartType), and resolve the outfit (DOFT) draft fallback. Pure —
+    ''' no IO. Shared by every NPC in a batch.</summary>
+    Private Function BuildOverrideEntry(npcInput As NpcSaveInput,
+                                        ctx As SaveContext,
+                                        target As SaveEsp_Form.SaveTarget) As SaveNpcEspWriter.NpcOverrideEntry
+        Dim npcFormID = npcInput.NpcFormID
+        Dim rawNpcSpec = npcInput.RawNpcSpec
 
         ' Phase 1a: apply overlay + copy round-trip-only fields.
         Dim npcSpec = ctx.ApplyPresetOverlayToNpcData(rawNpcSpec, npcFormID)
@@ -194,24 +439,41 @@ Public Module NpcOverrideSaver
             ctx.SyncParallelCollectionsAfterOverlay(npcSpec)
         End If
 
-        ' Phase 1b: detect MWGT user edits via baseState vs raw and copy live values onto shadow.
+        ' Reconcile the IsCharGenFacePreset overlay edit into the ACBS struct the writer emits.
+        ' ApplyPresetOverlayToNpcData sets only the AcbsFlags mirror; EmitAcbs writes Acbs.Flags, and
+        ' CopyRoundTripOnlyFieldsFromRaw copies Acbs from the raw parse BY REFERENCE — so without this
+        ' the edited bit never reaches the ESP. Clone before mutating so the shared raw parse isn't
+        ' corrupted. (No-op when the two already agree, i.e. no IsCharGenFacePreset override.)
+        If npcSpec.Acbs IsNot Nothing AndAlso npcSpec.Acbs.Flags <> npcSpec.AcbsFlags Then
+            npcSpec.Acbs = CloneAcbsWithFlags(npcSpec.Acbs, npcSpec.AcbsFlags)
+        End If
+
+        Dim overlay As LooksmenuLoader.LooksmenuPreset = Nothing
+        ctx.AppliedPresets.TryGetValue(npcFormID, overlay)
+
+        ' Phase 1b: detect a user MWGT edit from the OVERLAY (not the live render dual-cache, so the
+        ' check works for non-loaded NPCs too). EditBody's ApplyMwgt writes overlay.WeightX on every
+        ' weight drag, so a HasValue weight that differs from the raw record by >eps is a real edit.
+        ' Guard on raw HasValue mirrors the single-NPC path: an NPC whose raw weight is the
+        ' Single.MaxValue sentinel ("inherit from race") is left as-is rather than baked to a literal.
         Dim mwgtUserEdited As Boolean = False
-        If baseStateValid AndAlso
+        If overlay IsNot Nothing AndAlso
+           overlay.WeightThin.HasValue AndAlso overlay.WeightMuscular.HasValue AndAlso overlay.WeightFat.HasValue AndAlso
            rawNpcSpec.WeightThin.HasValue AndAlso rawNpcSpec.WeightMuscular.HasValue AndAlso rawNpcSpec.WeightFat.HasValue Then
             Const eps As Single = 0.0001F
-            mwgtUserEdited = (Math.Abs(baseStateWeightThin - rawNpcSpec.WeightThin.Value) > eps) OrElse
-                             (Math.Abs(baseStateWeightMuscular - rawNpcSpec.WeightMuscular.Value) > eps) OrElse
-                             (Math.Abs(baseStateWeightFat - rawNpcSpec.WeightFat.Value) > eps)
+            mwgtUserEdited = (Math.Abs(overlay.WeightThin.Value - rawNpcSpec.WeightThin.Value) > eps) OrElse
+                             (Math.Abs(overlay.WeightMuscular.Value - rawNpcSpec.WeightMuscular.Value) > eps) OrElse
+                             (Math.Abs(overlay.WeightFat.Value - rawNpcSpec.WeightFat.Value) > eps)
         End If
         If mwgtUserEdited Then
-            npcSpec.WeightThin = baseStateWeightThin
-            npcSpec.WeightMuscular = baseStateWeightMuscular
-            npcSpec.WeightFat = baseStateWeightFat
+            npcSpec.WeightThin = overlay.WeightThin.Value
+            npcSpec.WeightMuscular = overlay.WeightMuscular.Value
+            npcSpec.WeightFat = overlay.WeightFat.Value
             Using ms As New MemoryStream()
                 Using bw As New BinaryWriter(ms)
-                    bw.Write(baseStateWeightThin)
-                    bw.Write(baseStateWeightMuscular)
-                    bw.Write(baseStateWeightFat)
+                    bw.Write(overlay.WeightThin.Value)
+                    bw.Write(overlay.WeightMuscular.Value)
+                    bw.Write(overlay.WeightFat.Value)
                 End Using
                 npcSpec.MwgtRaw = ms.ToArray()
             End Using
@@ -219,16 +481,19 @@ Public Module NpcOverrideSaver
         End If
 
         ' Phase 1c: rebuild HeadPartFormIDs from raw NPC PNAM ∪ preset, dedup by PartType.
-        ' (Replicates the merge that ButtonSavePlugin_Click used to do inline.)
+        ' Snapshot the raw head parts FIRST. When no overlay is applied, ApplyPresetOverlayToNpcData returns
+        ' the SAME instance (npcSpec IS rawNpcSpec), so clearing npcSpec.HeadPartFormIDs would also empty
+        ' rawNpcSpec.HeadPartFormIDs — and the rebuild below would then read an empty list, WIPING every head
+        ' part on a no-op re-save (the "save again with no changes → parts lost" bug). The snapshot is a
+        ' separate list, so the clear can't cannibalize the source.
+        Dim rawHeadParts As New List(Of UInteger)(rawNpcSpec.HeadPartFormIDs)
         npcSpec.HeadPartFormIDs.Clear()
-        Dim overlay As LooksmenuLoader.LooksmenuPreset = Nothing
-        ctx.AppliedPresets.TryGetValue(npcFormID, overlay)
         Dim presetHasHeadParts = (overlay IsNot Nothing AndAlso overlay.HasHeadPartFormIDs)
         If presetHasHeadParts Then
             Dim presetParts = overlay.HeadPartFormIDs
             Dim mergedByType As New Dictionary(Of Integer, UInteger)
             Dim freestandingMisc As New List(Of UInteger)
-            For Each fid In rawNpcSpec.HeadPartFormIDs
+            For Each fid In rawHeadParts
                 If fid = 0UI Then Continue For
                 Dim hpRec = ctx.PluginManager.GetRecord(fid)
                 If hpRec Is Nothing OrElse hpRec.Header.Signature <> "HDPT" Then Continue For
@@ -257,155 +522,60 @@ Public Module NpcOverrideSaver
             Next
             npcSpec.HeadPartFormIDs.AddRange(freestandingMisc)
         Else
-            npcSpec.HeadPartFormIDs.AddRange(rawNpcSpec.HeadPartFormIDs)
+            npcSpec.HeadPartFormIDs.AddRange(rawHeadParts)
         End If
 
-        ' Phase 1d: outfit (DOFT) + new-outfit (OTFT) handling for the Edit Outfit "Create" tab.
-        '   • SaveNewOutfits ON  → emit as OTFT every draft that is dirty OR referenced by this NPC's DOFT
-        '     (so the output plugin is self-contained). If the NPC's DOFT points at a NEW draft (provisional
-        '     0xFF FormID) the writer remaps it to the real self FormID. Clean unreferenced drafts are
-        '     skipped — the "don't re-save what's already saved unless modified" rule.
-        '   • SaveNewOutfits OFF → write NO outfits; if the NPC's DOFT points at a NEW draft, revert it to
-        '     the NPC's ORIGINAL record outfit (the user's rule: saving the NPC without the checkbox keeps
-        '     its original outfit, not the unsaved draft). A DOFT pointing at a REAL OTFT (existing record,
-        '     picked in Browse) is kept either way — the checkbox only governs NEW drafts.
-        Dim outfitEntries As New List(Of SaveNpcEspWriter.OtftRecordEntry)
-        If target.SaveNewOutfits Then
-            If ctx.OutfitDrafts IsNot Nothing Then
-                For Each d In ctx.OutfitDrafts
-                    If d Is Nothing OrElse d.FormID = OutfitDraft.PreviewDraftFormID Then Continue For
-                    If Not (d.IsDirty OrElse d.FormID = npcSpec.DefaultOutfitFormID) Then Continue For
-                    Dim oe As New SaveNpcEspWriter.OtftRecordEntry With {
-                        .FormID = d.FormID,
-                        .EditorID = d.EditorID,
-                        .IsOverride = d.IsOverride
-                    }
-                    oe.ItemArmoFormIDs.AddRange(d.ItemArmoFormIDs)
-                    outfitEntries.Add(oe)
-                Next
-            End If
-        ElseIf OutfitDraft.IsDraftFormID(npcSpec.DefaultOutfitFormID) Then
+        ' Phase 1d: outfit (DOFT) draft fallback. When the user is NOT saving new outfits and this
+        ' NPC's DOFT points at an unsaved draft (provisional FormID), revert it to the original
+        ' record outfit (the user's rule). Draft EMISSION (the ON case) is handled once per batch in
+        ' ExecuteWritePhases Phase 2c. A DOFT pointing at a real OTFT is kept either way.
+        If Not target.SaveNewOutfits AndAlso OutfitDraft.IsDraftFormID(npcSpec.DefaultOutfitFormID) Then
             npcSpec.DefaultOutfitFormID = rawNpcSpec.DefaultOutfitFormID
             npcSpec.HasDefaultOutfit = rawNpcSpec.HasDefaultOutfit
         End If
 
-        Dim entry As New SaveNpcEspWriter.NpcOverrideEntry With {
+        Return New SaveNpcEspWriter.NpcOverrideEntry With {
             .Npc = npcSpec,
-            .SourcePluginName = sourcePluginName,
-            .OriginalHeader = rawRecord.Header
+            .SourcePluginName = npcInput.SourcePluginName,
+            .OriginalHeader = npcInput.RawRecord.Header
         }
+    End Function
 
-        ' Phase 2: load existing records from the target plugin if updating.
-        ReportPhase(progress, "Loading existing plugin…", IO.Path.GetFileName(target.TargetPath))
-        Dim existingRecords As New List(Of PluginRecord)
-        Dim existingMasters As New List(Of String)
-        If Not target.IsNewPlugin AndAlso File.Exists(target.TargetPath) Then
-            Dim reader As New PluginReader()
-            reader.Load(target.TargetPath)
-            existingMasters.AddRange(reader.Masters)
+    ''' <summary>Shallow copy of an <see cref="NPC_AcbsData"/> with an overridden Flags value. Used to
+    ''' apply the IsCharGenFacePreset overlay edit without mutating the raw parse's shared Acbs instance.
+    ''' Byte-array fields (Unknown18/TrailingBytes) are emit-only, so sharing the references is safe.</summary>
+    Private Function CloneAcbsWithFlags(src As NPC_AcbsData, flags As UInteger) As NPC_AcbsData
+        Return New NPC_AcbsData With {
+            .Flags = flags,
+            .XpValueOffset = src.XpValueOffset,
+            .LevelOrLevelMult = src.LevelOrLevelMult,
+            .CalcMinLevel = src.CalcMinLevel,
+            .CalcMaxLevel = src.CalcMaxLevel,
+            .DispositionBase = src.DispositionBase,
+            .TemplateFlags = src.TemplateFlags,
+            .BleedoutOverride = src.BleedoutOverride,
+            .Unknown18 = src.Unknown18,
+            .TrailingBytes = src.TrailingBytes
+        }
+    End Function
 
-            ' Translate the global FormID to the local FormID the reader sees (high byte = MAST idx of
-            ' the source master in the existing plugin) so we can identify and skip the record we're
-            ' about to replace. The source plugin comes from GetOriginatingPluginName (engine FileID
-            ' scheme, full + 0xFE light); the object width is 12-bit for an ESL source, 24-bit for full.
-            Dim npcSourceMasterName As String = ctx.PluginManager.GetOriginatingPluginName(npcFormID)
-            Dim npcIsLight As Boolean = ((npcFormID >> 24) And &HFFUI) = &HFEUI
-            Dim npcObject As UInteger = If(npcIsLight, npcFormID And &HFFFUI, npcFormID And &HFFFFFFUI)
-            Dim npcLocalFormID As UInteger = npcFormID
-            If Not String.IsNullOrEmpty(npcSourceMasterName) Then
-                Dim newHigh As Integer = -1
-                For i = 0 To reader.Masters.Count - 1
-                    If String.Equals(reader.Masters(i), npcSourceMasterName, StringComparison.OrdinalIgnoreCase) Then
-                        newHigh = i
-                        Exit For
-                    End If
-                Next
-                If newHigh < 0 Then newHigh = reader.Masters.Count  ' self
-                npcLocalFormID = (CUInt(newHigh) << 24) Or npcObject
+    ''' <summary>Translate a global FormID to the local FormID the target plugin's MAST list sees,
+    ''' so existing-record load can identify the records being replaced. Mirror of the engine FileID
+    ''' scheme (12-bit object for an ESL source, 24-bit for a full source).</summary>
+    Private Function MapGlobalToLocalInPlugin(npcFormID As UInteger, reader As PluginReader, pm As PluginManager) As UInteger
+        Dim npcSourceMasterName As String = pm.GetOriginatingPluginName(npcFormID)
+        Dim npcIsLight As Boolean = ((npcFormID >> 24) And &HFFUI) = &HFEUI
+        Dim npcObject As UInteger = If(npcIsLight, npcFormID And &HFFFUI, npcFormID And &HFFFFFFUI)
+        If String.IsNullOrEmpty(npcSourceMasterName) Then Return npcFormID
+        Dim newHigh As Integer = -1
+        For i = 0 To reader.Masters.Count - 1
+            If String.Equals(reader.Masters(i), npcSourceMasterName, StringComparison.OrdinalIgnoreCase) Then
+                newHigh = i
+                Exit For
             End If
-
-            For Each kv In reader.Records
-                Dim rec = kv.Value
-                If rec.Header.FormID = npcLocalFormID Then Continue For
-                ' OTFT outfits from a prior save belong to the OTFT path, not existingRecords (which
-                ' SerializeExistingRecord only handles for NPC_). Re-emit them as OVERRIDE entries so
-                ' the writer preserves them (other NPCs in the plugin may reference them) with proper
-                ' FormID + INAM remapping. Resolve to global FormIDs first. Runs regardless of
-                ' SaveNewOutfits — preservation of existing records is not gated by the new-draft toggle.
-                If rec.Header.Signature = "OTFT" Then
-                    Dim parsedOtft = RecordParsers.ParseOTFT(rec, ctx.PluginManager)
-                    Dim oe As New SaveNpcEspWriter.OtftRecordEntry With {
-                        .FormID = ctx.PluginManager.ResolveReferencedFormID(rec.SourcePluginName, rec.Header.FormID),
-                        .EditorID = parsedOtft.EditorID,
-                        .IsOverride = True
-                    }
-                    oe.ItemArmoFormIDs.AddRange(parsedOtft.ItemFormIDs)
-                    outfitEntries.Add(oe)
-                    Continue For
-                End If
-                existingRecords.Add(rec)
-            Next
-        End If
-
-        ' Phase 2b: encoding-conflict check. The writer re-emits the edited NPC AND every
-        ' pre-existing NPC using the currently-selected Translatable encoding. If any FULL/SHRT/
-        ' ATTX contains characters that don't fit, .NET would silently replace them with '?'
-        ' (xEdit-faithful but corrupting). Detect it here — reusing the existingRecords already
-        ' loaded above (no second PluginReader.Load) — and abort with a descriptive message.
-        Dim editedConflict = FindEncodingConflict(entry.Npc, "")
-        If editedConflict <> "" Then Throw New InvalidDataException(editedConflict)
-        For Each existing In existingRecords
-            If existing.Header.Signature <> "NPC_" Then Continue For
-            Dim parsedExisting = RecordParsers.ParseNPC(existing, existing.SourcePluginName, ctx.PluginManager)
-            Dim label = If(parsedExisting.HasFull AndAlso parsedExisting.FullName <> "",
-                           parsedExisting.FullName, $"FormID {existing.Header.FormID:X8}")
-            Dim existingConflict = FindEncodingConflict(parsedExisting, $" del NPC [{label}]")
-            If existingConflict <> "" Then Throw New InvalidDataException(existingConflict)
         Next
-
-        ' Phase 3: write plugin.
-        ReportPhase(progress, "Writing NPC override to plugin…", IO.Path.GetFileName(target.TargetPath))
-        Dim entries As New List(Of SaveNpcEspWriter.NpcOverrideEntry) From {entry}
-        Dim game = Config_App.Current.Game
-        Dim writeRes = SaveNpcEspWriter.SaveOverridePlugin(
-            target.TargetPath, game, target.MarkAsMaster, target.LightMaster,
-            entries, existingRecords, existingMasters, ctx.PluginManager, outfitEntries)
-
-        result.WriterResult = writeRes
-
-        For Each existingRec In existingRecords
-            result.SavedFormIDs.Add(existingRec.Header.FormID)
-        Next
-        result.SavedFormIDs.Add(npcFormID)
-
-        ' Phase 3b: refresh the BodyMorphs/Skin sidecar (default ON). Always builds the merged
-        ' SidecarFile when WriteBssliders OR EmitBodyGen is set — the BodyGen emitter consumes
-        ' the post-merge dict so its .ini reflects both the current NPC and any pre-existing
-        ' entries from prior saves of other NPCs to the same plugin.
-        Dim mergedSidecar As BssliderSidecar.SidecarFile = Nothing
-        If target.WriteBssliders OrElse target.EmitBodyGen Then
-            mergedSidecar = MergeSidecarForCurrentNpc(target, npcFormID, npcSpec, ctx)
-            If target.WriteBssliders Then
-                ReportPhase(progress, "Writing .bssliders sidecar…", IO.Path.GetFileName(target.TargetPath))
-                Dim sidecarPath = BssliderSidecar.BuildPath(target.TargetPath)
-                BssliderSidecar.Write(sidecarPath, mergedSidecar)
-            End If
-        End If
-
-        ' Phase 3c: BodyGen .ini pair (opt-in). Iterates the post-merge sidecar so all NPCs of
-        ' the plugin contribute their templates, not just the one currently being saved.
-        If target.EmitBodyGen AndAlso mergedSidecar IsNot Nothing Then
-            ReportPhase(progress, "Writing BodyGen .ini…", IO.Path.GetFileName(target.TargetPath))
-            EmitBodyGenFromSidecar(target, mergedSidecar, ctx)
-        End If
-
-        result.VerifierIcon = MessageBoxIcon.Information
-
-        ' Default ChargenSuccess to True so the caller can OR it with the bake outcome later.
-        result.ChargenSuccess = True
-
-        ' Hand the post-overlay record back so ExecuteAsync can pass it to the bake phase.
-        Return New WritePhaseResult With {.NpcSpec = npcSpec}
+        If newHigh < 0 Then newHigh = reader.Masters.Count  ' self
+        Return (CUInt(newHigh) << 24) Or npcObject
     End Function
 
     ''' <summary>Push a marquee-style phase update through IProgress. The runtime marshals the
@@ -416,24 +586,15 @@ Public Module NpcOverrideSaver
         progress.Report(New SaveProgress With {.Phase = phase, .Detail = detail, .Determinate = False})
     End Sub
 
-    ''' <summary>Read the existing <c>&lt;plugin&gt;.bssliders</c> sidecar (if any), overwrite
-    ''' the entry for the NPC being saved with whatever its overlay currently holds, and
-    ''' return the merged in-memory SidecarFile. The caller writes it (when the user has
-    ''' WriteBssliders ON) and/or feeds it to the BodyGen emitter. Entries for other NPCs of
-    ''' the plugin are preserved as-is so a single-NPC save never wipes the rest.</summary>
-    Private Function MergeSidecarForCurrentNpc(target As SaveEsp_Form.SaveTarget,
-                                               npcFormID As UInteger,
-                                               npcSpec As NPC_Data,
-                                               ctx As SaveContext) As BssliderSidecar.SidecarFile
-        Dim sidecarPath = BssliderSidecar.BuildPath(target.TargetPath)
-        Dim merged = BssliderSidecar.Read(sidecarPath)
-        If merged Is Nothing Then merged = New BssliderSidecar.SidecarFile()
-        merged.Plugin = IO.Path.GetFileName(target.TargetPath)
-
+    ''' <summary>Overwrite the entry for one NPC in an in-memory sidecar with whatever its overlay
+    ''' currently holds (BodyMorphs + SkinTemplate). Entries for other NPCs are preserved. The
+    ''' caller reads the sidecar once and calls this per NPC, then writes once.</summary>
+    Private Sub MergeOneNpcIntoSidecar(merged As BssliderSidecar.SidecarFile,
+                                       npcFormID As UInteger,
+                                       npcSpec As NPC_Data,
+                                       ctx As SaveContext)
         ' BodyGen matches morphs.ini rows by the NPC's ORIGINATING master (the plugin that
-        ' originally defines the NPC), not by the override plugin we're writing to. Use the
-        ' source plugin lookup so the identifier is stable for re-emits even when the load
-        ' order changes.
+        ' originally defines the NPC), not by the override plugin we're writing to.
         Dim masterName = ctx.PluginManager.GetOriginatingPluginName(npcFormID)
         If String.IsNullOrEmpty(masterName) Then masterName = "Unknown.esp"
         Dim identifier = BssliderSidecar.BuildIdentifier(masterName, npcFormID)
@@ -454,18 +615,15 @@ Public Module NpcOverrideSaver
             entry.SkinTemplateId = If(overlay.SkinTemplateId, "")
         End If
 
-        ' Always overwrite the current NPC's slot — even if entry ends up empty. Write() drops
-        ' empty entries so a clear-then-save round trip removes the row instead of leaving stale
-        ' data on disk.
+        ' Always overwrite the NPC's slot — even if entry ends up empty. Write() drops empty entries
+        ' so a clear-then-save round trip removes the row instead of leaving stale data on disk.
         merged.Npcs(identifier) = entry
-        Return merged
-    End Function
+    End Sub
 
     ''' <summary>Translate the merged sidecar into BodyGenIniWriter entries and emit the .ini
     ''' pair. Sidecar rows without BodyMorphs (SkinTemplate-only entries) are skipped — the
     ''' Skin override is an F4SE feature unrelated to BodyGen. Malformed identifiers are also
-    ''' skipped silently; the sidecar Read() already filters them out, this Catch is belt-and-
-    ''' suspenders.</summary>
+    ''' skipped silently; the sidecar Read() already filters them out.</summary>
     Private Sub EmitBodyGenFromSidecar(target As SaveEsp_Form.SaveTarget,
                                        sidecar As BssliderSidecar.SidecarFile,
                                        ctx As SaveContext)

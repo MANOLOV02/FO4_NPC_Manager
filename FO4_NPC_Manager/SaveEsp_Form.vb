@@ -201,17 +201,20 @@ Public Class SaveEsp_Form
     Private ReadOnly _existingPlugins As List(Of ExistingPlugin)
     Private ReadOnly _targetNpcFormID As UInteger
     Private ReadOnly _sourceMasterIsEsm As Boolean
-    Private ReadOnly _npcIsCharGenFacePreset As Boolean
     ' Save-execution dependencies — kept private so the form fully owns the run-the-save flow.
     Private ReadOnly _saveCtx As NpcOverrideSaver.SaveContext
-    Private ReadOnly _saveNpc As NPC_Data
-    Private ReadOnly _saveRawRecord As PluginRecord
-    Private ReadOnly _saveRawNpcSpec As NPC_Data
-    Private ReadOnly _saveSourcePluginName As String
-    Private ReadOnly _saveBaseStateValid As Boolean
-    Private ReadOnly _saveBaseStateWeightThin As Single
-    Private ReadOnly _saveBaseStateWeightMuscular As Single
-    Private ReadOnly _saveBaseStateWeightFat As Single
+    ''' <summary>The NPC currently selected/loaded — the default scope ("Selected").</summary>
+    Private ReadOnly _selectedInput As NpcOverrideSaver.NpcSaveInput
+    ''' <summary>Every NPC the user changed this session (includes the selected one). The
+    ''' "Apply to all changed NPCs" checkbox switches the save scope to this list.</summary>
+    Private ReadOnly _allDirtyInputs As List(Of NpcOverrideSaver.NpcSaveInput)
+    ''' <summary>True when EVERY NPC in the current scope has the CharGen Face Preset flag, so the
+    ''' bake is optional. Recomputed when the scope (Apply-to-all) toggles. When False the CharGen
+    ''' checkbox is forced on (at least one NPC needs the BA2 to render in-world).</summary>
+    Private _scopeAllowsChargenOptOut As Boolean
+    ''' <summary>Cancellation source for the per-NPC bake loop. Created per run; the Stop button
+    ''' cancels it between NPCs so a long "Apply to all" batch can be interrupted.</summary>
+    Private _bakeCts As System.Threading.CancellationTokenSource
 
     Public Property Result As SaveTarget = Nothing
     ''' <summary>Populated by <see cref="OnOkClick"/> after the orchestrator finishes; remains
@@ -235,48 +238,40 @@ Public Class SaveEsp_Form
     ''' free-form Phase strings; we match by substring (stable across minor wording changes)
     ''' to advance the counter. Built in OnOkClick once per run.</summary>
     Private _stepMap As List(Of (Match As String, StepNumber As Integer)) = Nothing
+    ''' <summary>True for a multi-NPC ("All changed") run. The single-NPC determinate step plan
+    ''' doesn't fit a batch, so batch runs drive the bar by NPC count (0..N) — advancing on each
+    ''' "Baking CharGen" report — with "NPC k/N" in the detail. Single-NPC runs keep the step plan.</summary>
+    Private _batchProgress As Boolean = False
+    ''' <summary>NPC count for the current batch run; the determinate bar maximum.</summary>
+    Private _batchNpcCount As Integer = 0
 
     Public Sub New(dataPath As String,
                    existingPlugins As List(Of ExistingPlugin),
-                   targetNpcFormID As UInteger,
+                   selectedInput As NpcOverrideSaver.NpcSaveInput,
+                   allDirtyInputs As List(Of NpcOverrideSaver.NpcSaveInput),
                    sourceMasterIsEsm As Boolean,
-                   npcIsCharGenFacePreset As Boolean,
-                   saveNpc As NPC_Data,
-                   saveRawRecord As PluginRecord,
-                   saveRawNpcSpec As NPC_Data,
-                   saveSourcePluginName As String,
-                   saveBaseStateValid As Boolean,
-                   saveBaseStateWeightThin As Single,
-                   saveBaseStateWeightMuscular As Single,
-                   saveBaseStateWeightFat As Single,
                    saveCtx As NpcOverrideSaver.SaveContext)
         InitializeComponent()
         _dataPath = dataPath
         _existingPlugins = If(existingPlugins, New List(Of ExistingPlugin)())
-        _targetNpcFormID = targetNpcFormID
+        _selectedInput = selectedInput
+        _allDirtyInputs = If(allDirtyInputs, New List(Of NpcOverrideSaver.NpcSaveInput)())
+        _targetNpcFormID = selectedInput.NpcFormID
         _sourceMasterIsEsm = sourceMasterIsEsm
-        _npcIsCharGenFacePreset = npcIsCharGenFacePreset
-        _saveNpc = saveNpc
-        _saveRawRecord = saveRawRecord
-        _saveRawNpcSpec = saveRawNpcSpec
-        _saveSourcePluginName = saveSourcePluginName
-        _saveBaseStateValid = saveBaseStateValid
-        _saveBaseStateWeightThin = saveBaseStateWeightThin
-        _saveBaseStateWeightMuscular = saveBaseStateWeightMuscular
-        _saveBaseStateWeightFat = saveBaseStateWeightFat
         _saveCtx = saveCtx
 
-        ' CharGen checkbox: default ON in both cases. When the NPC has no CharGen Face Preset
-        ' flag, the engine relies on CK's baked FaceGen — without our BA2 the NPC renders as
-        ' a generic head — so the checkbox is forced True and disabled. When the flag IS set,
-        ' the engine reconstructs at runtime from records, so the bake is optional and the
-        ' user can turn it off (still defaults ON for parity).
+        ' Scope radios: "All changed" (default) vs "Selected only". The Designer defaults to All;
+        ' here we annotate All with the dirty count. When only one NPC is dirty the two are
+        ' equivalent (harmless) — both still work.
+        Dim dirtyCount = _allDirtyInputs.Count
+        RadioScopeAllChanged.Text = If(dirtyCount > 1, $"All changed ({dirtyCount})", "All changed")
+
+        ' CharGen checkbox: default ON. When ANY NPC in the current scope has no CharGen Face Preset
+        ' flag, the engine relies on CK's baked FaceGen — without our BA2 those NPCs render as a
+        ' generic head — so the checkbox is forced True and disabled. When all NPCs in scope have the
+        ' flag, the engine reconstructs at runtime, so the bake is optional (still defaults ON).
         CheckBoxGenerateChargen.Checked = True
-        If Not _npcIsCharGenFacePreset Then
-            CheckBoxGenerateChargen.Enabled = False
-            CheckBoxGenerateChargen.Text = CheckBoxGenerateChargen.Text &
-                "  (required — NPC has no CharGen Preset flag)"
-        End If
+        RecomputeChargenForcing()
 
         ' "Save new outfits": only meaningful when the Edit Outfit "Create" tab has unsaved (dirty)
         ' drafts. Auto-check + enable when there are; otherwise disable so the user isn't offered a
@@ -288,6 +283,9 @@ Public Class SaveEsp_Form
         If Not hasDirtyDrafts Then
             CheckBoxSaveNewOutfits.Text = CheckBoxSaveNewOutfits.Text & "  (no new outfits)"
         End If
+
+        AddHandler RadioScopeAllChanged.CheckedChanged, AddressOf OnScopeChanged
+        AddHandler ButtonCancel.Click, AddressOf OnCancelOrStopClick
 
         PopulateExistingList()
         ' Default to "create new" when no existing plugins, else "update existing".
@@ -308,12 +306,48 @@ Public Class SaveEsp_Form
         AddHandler RadioButtonNew.CheckedChanged, AddressOf OnRadioChanged
         AddHandler ListBoxExisting.SelectedIndexChanged, AddressOf OnSelectionChanged
         AddHandler TextBoxNewName.TextChanged, AddressOf OnSelectionChanged
+        ' Flag toggles refresh the warning (ESM/ESL flip on a plugin with new records is risky).
+        AddHandler CheckBoxMarkAsMaster.CheckedChanged, AddressOf OnFlagChanged
+        AddHandler CheckBoxLightMaster.CheckedChanged, AddressOf OnFlagChanged
         AddHandler ButtonOk.Click, AddressOf OnOkClick
 
         PopulateEncodingCombo()
         InitBa2VersionCombo()
 
         OnRadioChanged(Nothing, EventArgs.Empty)
+        UpdateWarning()
+    End Sub
+
+    ''' <summary>The NPCs the current scope will save: just the selected NPC when "Selected only" is
+    ''' picked, else the full dirty list ("All changed", the default).</summary>
+    Private Function CurrentInputs() As List(Of NpcOverrideSaver.NpcSaveInput)
+        If RadioScopeSelected.Checked Then
+            Return New List(Of NpcOverrideSaver.NpcSaveInput) From {_selectedInput}
+        End If
+        Return _allDirtyInputs
+    End Function
+
+    ''' <summary>Recompute whether the CharGen bake can be opted out for the current scope. The bake
+    ''' is forced on (checkbox checked + disabled) when ANY NPC in scope lacks the CharGen Face
+    ''' Preset flag — those NPCs render as a generic head in-world without our BA2.</summary>
+    Private Sub RecomputeChargenForcing()
+        _scopeAllowsChargenOptOut = CurrentInputs().All(Function(i) i.IsCharGenFacePreset)
+        ' Strip any prior "(required…)" suffix before re-deciding. Keep in sync with the Designer text.
+        Const baseText As String = "Bake CharGen (NIF + textures) → BA2"
+        If _scopeAllowsChargenOptOut Then
+            CheckBoxGenerateChargen.Enabled = True
+            CheckBoxGenerateChargen.Text = baseText
+        Else
+            CheckBoxGenerateChargen.Checked = True
+            CheckBoxGenerateChargen.Enabled = False
+            CheckBoxGenerateChargen.Text = baseText & "  (required: a NPC lacks CharGen flag)"
+        End If
+    End Sub
+
+    ''' <summary>Scope radio toggle: recompute the CharGen forcing for the new scope and refresh the
+    ''' warning hint. Wired to RadioScopeAllChanged.CheckedChanged (fires on every scope change).</summary>
+    Private Sub OnScopeChanged(sender As Object, e As EventArgs)
+        RecomputeChargenForcing()
         UpdateWarning()
     End Sub
 
@@ -468,28 +502,76 @@ Public Class SaveEsp_Form
         UpdateWarning()
     End Sub
 
+    ''' <summary>ESM/ESL checkbox toggled — refresh the warning so a risky flag flip surfaces live.</summary>
+    Private Sub OnFlagChanged(sender As Object, e As EventArgs)
+        UpdateWarning()
+    End Sub
+
     Private Sub UpdateWarning()
+        Dim warnings As New List(Of String)
+
         If RadioButtonExisting.Checked Then
             Dim sel As ExistingPlugin = TryCast(ListBoxExisting.SelectedItem, ExistingPlugin)
             If sel IsNot Nothing AndAlso sel.ContainsTargetNpc Then
-                LabelWarning.Text = "Warning: this plugin already overrides the selected NPC. " &
-                                    "The existing override will be replaced with the current state."
-                Return
+                warnings.Add("This plugin already overrides the selected NPC — the existing override will be replaced.")
             End If
         End If
-        ' Detect collision: target NPC already overridden in some OTHER auto-gen plugin.
+
+        ' Collision: target NPC already overridden in some OTHER auto-gen plugin.
         Dim collidingPlugins = _existingPlugins.
             Where(Function(p) p.ContainsTargetNpc).
             Select(Function(p) p.FileName).
             ToList()
         If collidingPlugins.Count > 0 Then
-            LabelWarning.Text = "Warning: this NPC is already overridden in: " &
-                                String.Join(", ", collidingPlugins) &
-                                ". Last-loaded plugin wins; consider updating the existing one instead."
-            Return
+            warnings.Add("Also overridden in: " & String.Join(", ", collidingPlugins) &
+                         " — last-loaded wins; consider updating that one.")
         End If
-        LabelWarning.Text = ""
+
+        ' ESM/ESL flag flip on an existing plugin that originates new records (OTFTs): flipping
+        ' re-encodes those records' FormIDs (inherent to ESP↔ESL), breaking external references.
+        If IsRiskyEslFlip() Then
+            warnings.Add("⚠ Changing ESM/ESL re-encodes this plugin's NEW outfit (OTFT) FormIDs — existing saves/mods referencing them would break. (NPC overrides are unaffected.)")
+        End If
+
+        LabelWarning.Text = String.Join(vbCrLf, warnings)
     End Sub
+
+    ''' <summary>True when the user is updating an existing plugin, has changed its ESM or ESL flag
+    ''' from the on-disk value, AND that plugin originates new records (OTFTs). Only then does the
+    ''' flag flip re-encode FormIDs in a way that breaks external references — a pure NPC-override
+    ''' plugin flips with zero FormID change (overrides keep their master FormID).</summary>
+    Private Function IsRiskyEslFlip() As Boolean
+        If Not RadioButtonExisting.Checked Then Return False
+        Dim sel = TryCast(ListBoxExisting.SelectedItem, ExistingPlugin)
+        If sel Is Nothing Then Return False
+        Dim flagChanged = (CheckBoxMarkAsMaster.Checked <> sel.IsEsm) OrElse (CheckBoxLightMaster.Checked <> sel.IsLight)
+        If Not flagChanged Then Return False
+        Return PluginHasNewSelfRecords(sel.FullPath)
+    End Function
+
+    ''' <summary>Whether a plugin file contains any record it ORIGINATES (a "self" record: file-local
+    ''' FormID high byte ≥ the plugin's master count), as opposed to overrides of master records.
+    ''' For NPC_Manager auto-gen plugins these are the new OTFT outfits. Result cached per path.</summary>
+    Private Function PluginHasNewSelfRecords(path As String) As Boolean
+        Dim cached As Boolean
+        If _hasNewRecordsCache.TryGetValue(path, cached) Then Return cached
+        Dim result As Boolean = False
+        Try
+            Dim reader As New PluginReader()
+            reader.Load(path)
+            For Each kvp In reader.Records
+                If (kvp.Key >> 24) >= CUInt(reader.Masters.Count) Then
+                    result = True
+                    Exit For
+                End If
+            Next
+        Catch
+        End Try
+        _hasNewRecordsCache(path) = result
+        Return result
+    End Function
+
+    Private ReadOnly _hasNewRecordsCache As New Dictionary(Of String, Boolean)(StringComparer.OrdinalIgnoreCase)
 
     ''' <summary>Validates the user's input, builds a <see cref="SaveTarget"/>. Returns Nothing
     ''' on validation failure (the user has been notified via MessageBox).</summary>
@@ -552,6 +634,19 @@ Public Class SaveEsp_Form
     Private Async Sub OnOkClick(sender As Object, e As EventArgs)
         Dim target = BuildTargetFromUi()
         If target Is Nothing Then Return
+
+        ' Confirm a risky ESM/ESL flag flip (existing plugin with new OTFT records) before writing —
+        ' it re-encodes those records' FormIDs, breaking external references.
+        If IsRiskyEslFlip() Then
+            If MessageBox.Show(Me,
+                "You changed the ESM/ESL flag of an existing plugin that contains new outfit (OTFT) records." & vbCrLf & vbCrLf &
+                "Flipping the flag re-encodes those new records' FormIDs. Any existing savegame or other mod already referencing them would break. Your NPC overrides are NOT affected." & vbCrLf & vbCrLf &
+                "Continue?",
+                "ESM/ESL flag change", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) <> DialogResult.Yes Then
+                Return
+            End If
+        End If
+
         Result = target
 
         ' Apply translatable-encoding override BEFORE BuildStepPlan / ExecuteAsync. The writer
@@ -570,25 +665,20 @@ Public Class SaveEsp_Form
         ' has no cancellation token plumbed through (writer + bake + BA2 pack run synchronously
         ' on the worker Task), so offering a Cancel that doesn't actually cancel would lie.
         _workInProgress = True
-        BuildStepPlan(target)
+        Dim inputs = CurrentInputs()
+        BuildStepPlan(target, inputs.Count)
         LockUiForExecution(True)
 
+        _bakeCts = New System.Threading.CancellationTokenSource()
         Dim progress As New Progress(Of NpcOverrideSaver.SaveProgress)(AddressOf ApplyProgress)
 
         Try
             ExecutionResult = Await NpcOverrideSaver.ExecuteAsync(
                 target,
-                _targetNpcFormID,
-                _saveNpc,
-                _saveRawRecord,
-                _saveRawNpcSpec,
-                _saveSourcePluginName,
-                _saveBaseStateWeightThin,
-                _saveBaseStateWeightMuscular,
-                _saveBaseStateWeightFat,
-                _saveBaseStateValid,
+                inputs,
                 _saveCtx,
-                progress)
+                progress,
+                _bakeCts.Token)
         Catch ex As Exception
             ' ExecuteAsync wraps internal failures in ExecutionResult.ErrorMessage; this Catch
             ' only fires for genuinely unexpected failures (e.g. orchestrator constructor crash).
@@ -602,6 +692,8 @@ Public Class SaveEsp_Form
         ' the programmatic close. The guard only fires while work is actually running; once
         ' the awaited orchestrator returns there is nothing to protect.
         _workInProgress = False
+        _bakeCts?.Dispose()
+        _bakeCts = Nothing
 
         If ExecutionResult IsNot Nothing AndAlso ExecutionResult.Success Then
             DialogResult = DialogResult.OK
@@ -621,28 +713,50 @@ Public Class SaveEsp_Form
     ''' True = lock (work running), False = restore (user can retry).</summary>
     Private Sub LockUiForExecution(locked As Boolean)
         Dim enabled = Not locked
+        RadioScopeAllChanged.Enabled = enabled
+        RadioScopeSelected.Enabled = enabled
         RadioButtonExisting.Enabled = enabled AndAlso _existingPlugins.Count > 0
         RadioButtonNew.Enabled = enabled
         ListBoxExisting.Enabled = enabled AndAlso RadioButtonExisting.Checked AndAlso _existingPlugins.Count > 0
         TextBoxNewName.Enabled = enabled AndAlso RadioButtonNew.Checked
         CheckBoxMarkAsMaster.Enabled = enabled
         CheckBoxLightMaster.Enabled = enabled
-        ' Chargen checkbox stays disabled when forced-True for non-CharGenPreset NPCs (its
-        ' constructor-time disabled state is sticky); only re-enable here when the NPC allows opt-out.
-        CheckBoxGenerateChargen.Enabled = enabled AndAlso _npcIsCharGenFacePreset
+        ' Chargen checkbox stays disabled when forced-True (some NPC in scope has no CharGen Preset
+        ' flag); only re-enable here when the whole scope allows opt-out.
+        CheckBoxGenerateChargen.Enabled = enabled AndAlso _scopeAllowsChargenOptOut
         CheckBoxWriteBssliders.Enabled = enabled
         CheckBoxEmitBodyGen.Enabled = enabled
         ComboBoxEncoding.Enabled = enabled
         ComboBoxBa2Version.Enabled = enabled
         ButtonOk.Enabled = enabled
-        ButtonCancel.Enabled = enabled
+        ' During work, ButtonCancel becomes "Stop": it cancels the per-NPC bake loop (between NPCs)
+        ' instead of closing the dialog. DialogResult is cleared so a click runs OnCancelOrStopClick
+        ' without auto-closing; restored to Cancel when work ends.
+        If locked Then
+            ButtonCancel.Text = "Stop"
+            ButtonCancel.DialogResult = DialogResult.None
+            ButtonCancel.Enabled = True
+        Else
+            ButtonCancel.Text = "Cancel"
+            ButtonCancel.DialogResult = DialogResult.Cancel
+            ButtonCancel.Enabled = True
+        End If
         PanelProgress.Visible = locked
         If locked Then
-            ' Determinate from step 0; ApplyProgress advances as Phase strings arrive.
-            ProgressBarMain.Style = ProgressBarStyle.Continuous
-            ProgressBarMain.Minimum = 0
-            ProgressBarMain.Maximum = Math.Max(1, _totalSteps)
-            ProgressBarMain.Value = 0
+            If _batchProgress Then
+                ' Multi-NPC: determinate bar over the NPC count (0..N). ApplyProgress advances it on
+                ' each "Baking CharGen" report; the fast write phase shows 0/N until baking starts.
+                ProgressBarMain.Style = ProgressBarStyle.Continuous
+                ProgressBarMain.Minimum = 0
+                ProgressBarMain.Maximum = Math.Max(1, _batchNpcCount)
+                ProgressBarMain.Value = 0
+            Else
+                ' Determinate from step 0; ApplyProgress advances as Phase strings arrive.
+                ProgressBarMain.Style = ProgressBarStyle.Continuous
+                ProgressBarMain.Minimum = 0
+                ProgressBarMain.Maximum = Math.Max(1, _totalSteps)
+                ProgressBarMain.Value = 0
+            End If
         Else
             ProgressBarMain.Style = ProgressBarStyle.Continuous
             ProgressBarMain.Value = ProgressBarMain.Minimum
@@ -657,7 +771,18 @@ Public Class SaveEsp_Form
     '''   - update-existing (adds "Loading existing plugin…") vs new plugin (skips it)
     '''   - GenerateChargen on (adds 4 bake/pack steps) vs off
     ''' Total ranges from 4 (new plugin, no chargen) to 9 (update existing + chargen).</summary>
-    Private Sub BuildStepPlan(target As SaveTarget)
+    Private Sub BuildStepPlan(target As SaveTarget, npcCount As Integer)
+        ' Batch runs (All changed): the bake phase repeats per NPC, which the fixed substring→step
+        ' map can't represent, so the bar tracks NPC count (advanced in ApplyProgress) instead.
+        _batchProgress = npcCount > 1
+        _batchNpcCount = npcCount
+        If _batchProgress Then
+            _stepMap = New List(Of (Match As String, StepNumber As Integer))
+            _totalSteps = 0
+            _currentStep = 0
+            Return
+        End If
+
         Dim map As New List(Of (Match As String, StepNumber As Integer))
         Dim n As Integer = 0
         n += 1 : map.Add(("Preparing NPC record", n))
@@ -708,19 +833,45 @@ Public Class SaveEsp_Form
     Private Sub ApplyProgress(p As NpcOverrideSaver.SaveProgress)
         If p Is Nothing Then Return
         Dim phase = If(p.Phase, "")
-        Dim resolved = ResolveStep(phase)
-        If resolved > 0 Then
-            ' Steps only move forward — guards against out-of-order reports (shouldn't happen
-            ' but the orchestrator emits sub-progress under reused phase strings).
-            If resolved > _currentStep Then _currentStep = resolved
+
+        If _batchProgress Then
+            ' Batch run: the bar tracks NPC count. Advance it only on the per-NPC "Baking CharGen"
+            ' report (Determinate, Max=N, Current=k); the per-NPC pack sub-steps and the fast write
+            ' phase update the text labels only, leaving the bar at the current NPC.
+            LabelProgressStage.Text = phase
+            LabelProgressDetail.Text = If(p.Detail, "")
+            If p.Determinate AndAlso p.Max > 0 AndAlso phase.Contains("Baking CharGen", StringComparison.OrdinalIgnoreCase) Then
+                ProgressBarMain.Maximum = Math.Max(1, p.Max)
+                ProgressBarMain.Value = Math.Max(0, Math.Min(p.Current, ProgressBarMain.Maximum))
+            End If
+        Else
+            Dim resolved = ResolveStep(phase)
+            ' Steps only move forward — guards against out-of-order reports.
+            If resolved > 0 AndAlso resolved > _currentStep Then _currentStep = resolved
+            Dim shownStep As Integer = Math.Max(_currentStep, 1)
+            LabelProgressStage.Text = $"Step {shownStep}/{_totalSteps}: {phase}"
+            LabelProgressDetail.Text = If(p.Detail, "")
+            ProgressBarMain.Maximum = Math.Max(1, _totalSteps)
+            ProgressBarMain.Value = Math.Max(0, Math.Min(_currentStep, ProgressBarMain.Maximum))
         End If
 
-        Dim shownStep As Integer = Math.Max(_currentStep, 1)
-        LabelProgressStage.Text = $"Step {shownStep}/{_totalSteps}: {phase}"
-        LabelProgressDetail.Text = If(p.Detail, "")
+        ' Force an immediate synchronous repaint of the panel + its labels/bar. Without this the
+        ' caption updates only paint on the next idle, and the CharGen bake holds the UI thread for
+        ' seconds — so the legends would look blank/frozen while work is clearly happening. Refresh()
+        ' = Invalidate(children) + Update(), so the child labels repaint now, not later.
+        PanelProgress.Refresh()
+    End Sub
 
-        ProgressBarMain.Maximum = Math.Max(1, _totalSteps)
-        ProgressBarMain.Value = Math.Max(0, Math.Min(_currentStep, ProgressBarMain.Maximum))
+    ''' <summary>ButtonCancel click. While work runs it acts as "Stop": cancels the per-NPC bake
+    ''' loop (checked between NPCs) and disables itself; it does NOT close the dialog (DialogResult
+    ''' was cleared to None in LockUiForExecution). When idle the Designer DialogResult.Cancel does
+    ''' the normal cancel-and-close, and this handler is a no-op.</summary>
+    Private Sub OnCancelOrStopClick(sender As Object, e As EventArgs)
+        If _workInProgress Then
+            _bakeCts?.Cancel()
+            ButtonCancel.Enabled = False
+            LabelProgressDetail.Text = "Stopping after the current NPC…"
+        End If
     End Sub
 
     ''' <summary>Block close attempts while the save is running. The form has no Cancel-the-work

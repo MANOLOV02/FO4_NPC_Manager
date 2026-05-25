@@ -15,12 +15,17 @@ Partial Class MainForm
     End Sub
 
     Private Sub InitializeComponent()
+        components = New System.ComponentModel.Container()
+        TreeViewNpcsContextMenu = New ContextMenuStrip(components)
+        MenuItemMarkChanged = New ToolStripMenuItem()
+        MenuItemResetOverlay = New ToolStripMenuItem()
         SplitContainer1 = New SplitContainer()
         SplitContainerLeft = New SplitContainer()
         PanelNpcList = New Panel()
         SplitContainer2 = New SplitContainer()
         TextBoxSearch = New TextBox()
         LabelSearch = New Label()
+        CheckBoxOnlyChanged = New CheckBox()
         TreeViewNPCs = New TreeView()
         PanelRecordDetails = New Panel()
         TreeViewRecordDetails = New TreeView()
@@ -150,6 +155,7 @@ Partial Class MainForm
         ' 
         SplitContainer2.Panel1.Controls.Add(TextBoxSearch)
         SplitContainer2.Panel1.Controls.Add(LabelSearch)
+        SplitContainer2.Panel1.Controls.Add(CheckBoxOnlyChanged)
         ' 
         ' SplitContainer2.Panel2
         ' 
@@ -164,11 +170,22 @@ Partial Class MainForm
         TextBoxSearch.Location = New Point(59, 17)
         TextBoxSearch.Name = "TextBoxSearch"
         TextBoxSearch.PlaceholderText = "Filter NPCs..."
-        TextBoxSearch.Size = New Size(638, 23)
+        TextBoxSearch.Size = New Size(508, 23)
         TextBoxSearch.TabIndex = 1
-        ' 
+        '
+        ' CheckBoxOnlyChanged
+        '
+        CheckBoxOnlyChanged.Anchor = AnchorStyles.Top Or AnchorStyles.Right
+        CheckBoxOnlyChanged.AutoSize = True
+        CheckBoxOnlyChanged.Location = New Point(575, 19)
+        CheckBoxOnlyChanged.Name = "CheckBoxOnlyChanged"
+        CheckBoxOnlyChanged.Size = New Size(122, 19)
+        CheckBoxOnlyChanged.TabIndex = 3
+        CheckBoxOnlyChanged.Text = "Only changed"
+        CheckBoxOnlyChanged.UseVisualStyleBackColor = True
+        '
         ' LabelSearch
-        ' 
+        '
         LabelSearch.AutoSize = True
         LabelSearch.Location = New Point(7, 20)
         LabelSearch.Name = "LabelSearch"
@@ -201,7 +218,10 @@ Partial Class MainForm
         ' 
         TreeViewRecordDetails.BorderStyle = BorderStyle.None
         TreeViewRecordDetails.Dock = DockStyle.Fill
-        TreeViewRecordDetails.Font = New Font("Cascadia Code", 8.5F)
+        ' Segoe UI: fuente de sistema con font-linking CJK (Windows sustituye Malgun Gothic /
+        ' MS Gothic para coreano/japonés/chino automáticamente). Reemplaza a Cascadia Code, que
+        ' no tenía glifos CJK → mostraba tofu (□) en records con nombres coreanos.
+        TreeViewRecordDetails.Font = New Font("Segoe UI", 9.0F)
         TreeViewRecordDetails.Location = New Point(0, 24)
         TreeViewRecordDetails.Name = "TreeViewRecordDetails"
         TreeViewRecordDetails.Size = New Size(700, 441)
@@ -778,9 +798,27 @@ Partial Class MainForm
         ToolStripProgressBar1.Name = "ToolStripProgressBar1"
         ToolStripProgressBar1.Size = New Size(100, 16)
         ToolStripProgressBar1.Visible = False
-        ' 
+        '
+        ' TreeViewNpcsContextMenu
+        '
+        TreeViewNpcsContextMenu.Items.AddRange(New ToolStripItem() {MenuItemMarkChanged, MenuItemResetOverlay})
+        TreeViewNpcsContextMenu.Name = "TreeViewNpcsContextMenu"
+        TreeViewNpcsContextMenu.Size = New Size(200, 48)
+        '
+        ' MenuItemMarkChanged
+        '
+        MenuItemMarkChanged.Name = "MenuItemMarkChanged"
+        MenuItemMarkChanged.Size = New Size(199, 22)
+        MenuItemMarkChanged.Text = "Mark as changed"
+        '
+        ' MenuItemResetOverlay
+        '
+        MenuItemResetOverlay.Name = "MenuItemResetOverlay"
+        MenuItemResetOverlay.Size = New Size(199, 22)
+        MenuItemResetOverlay.Text = "Reset (discard changes)"
+        '
         ' MainForm
-        ' 
+        '
         AutoScaleDimensions = New SizeF(7F, 15F)
         AutoScaleMode = AutoScaleMode.Font
         AutoScroll = True
@@ -827,8 +865,12 @@ Partial Class MainForm
     Friend WithEvents PanelPreviewLayout As System.Windows.Forms.TableLayoutPanel
     Friend WithEvents PanelPreviewHost As System.Windows.Forms.Panel
     Friend WithEvents TreeViewNPCs As System.Windows.Forms.TreeView
+    Friend WithEvents TreeViewNpcsContextMenu As System.Windows.Forms.ContextMenuStrip
+    Friend WithEvents MenuItemMarkChanged As System.Windows.Forms.ToolStripMenuItem
+    Friend WithEvents MenuItemResetOverlay As System.Windows.Forms.ToolStripMenuItem
     Friend WithEvents TextBoxSearch As System.Windows.Forms.TextBox
     Friend WithEvents LabelSearch As System.Windows.Forms.Label
+    Friend WithEvents CheckBoxOnlyChanged As System.Windows.Forms.CheckBox
     Friend WithEvents TreeViewRecordDetails As System.Windows.Forms.TreeView
     Friend WithEvents LabelRecordTitle As System.Windows.Forms.Label
     Friend WithEvents PanelPreviewToolbar As System.Windows.Forms.TableLayoutPanel
