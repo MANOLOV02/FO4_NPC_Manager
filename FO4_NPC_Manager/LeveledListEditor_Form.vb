@@ -1,4 +1,4 @@
-Imports System.Windows.Forms
+﻿Imports System.Windows.Forms
 
 ''' <summary>Small modal to author a new leveled list (LVLI): EditorID name + the three LVLF flag
 ''' checkboxes (Calculate from all levels ≤ player's level / Calculate for each item in count / Use All) +

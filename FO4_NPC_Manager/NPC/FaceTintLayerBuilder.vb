@@ -285,6 +285,10 @@ Public Module FaceTintLayerBuilder
                                     hairColorFormID As UInteger) As List(Of FaceTintLayerInput)
         Dim layerInputs As New List(Of FaceTintLayerInput)
 
+        ' SkipEyebrowsTone.ini (appdir, case-insensitive): si existe, en vez del color de pelo (HCLF)
+        ' las cejas usan una LUT SINTÉTICA de degradé entre Dark y Light (campos del INI, default negro).
+        Dim eyebrowLut = BuildSyntheticEyebrowLut(tintBytesCache)
+
         Dim stat_added_palette As Integer = 0
         Dim stat_added_textureSet As Integer = 0
         Dim stat_added_takesSkinTone As Integer = 0
@@ -480,7 +484,19 @@ Public Module FaceTintLayerBuilder
             '     for TextureSet), mirroring the formula the brow MESH grayscale-to-palette uses.
             ' No-op when the NPC has no HCLF, when the CLFM resolves to neither flag, or (in the
             ' palette branch) when the LUT bytes don't load.
-            If opt.Slot = CUShort(TintSlot.Brows) Then
+            If opt.Slot = CUShort(TintSlot.Brows) AndAlso eyebrowLut.Enabled Then
+                ' SkipEyebrowsTone.ini presente: en vez del color de pelo (HCLF), la ceja usa la LUT
+                ' sintética de degradé Dark->Light. X = grayscale del brow (col 0 = Dark, col 255 =
+                ' Light). HairPaletteRow=0 (la LUT replica una sola fila).
+                If eyebrowLut.Bytes IsNot Nothing Then
+                    layerInput.UseHairPalette = True
+                    layerInput.HairLutDdsBytes = eyebrowLut.Bytes
+                    layerInput.HairLutCacheKey = eyebrowLut.Key
+                    layerInput.HairPaletteRow = 0.0F
+                End If
+                Dim browSynthIdx = tl.Index
+                Logger.LogLazy(Function() $"[BROW-TINT] tl.Index={browSynthIdx} -> SYNTHETIC LUT (SkipEyebrowsTone.ini): degrade Dark->Light")
+            ElseIf opt.Slot = CUShort(TintSlot.Brows) Then
                 Dim browIdxLog = tl.Index, browDiscLog = tl.Discriminator, browKindLog = layerInput.Kind
                 Dim browHairFidLog = hairColorFormID, browLutLog = hairLutPath
                 Dim browAction As String = "no-op (default)"
@@ -710,6 +726,72 @@ Public Module FaceTintLayerBuilder
         If String.IsNullOrEmpty(rawPath) Then Return Nothing
         Dim normalized = NormalizeDictionaryKeyWithTexturesPrefix(rawPath)
         Return LoadTintLayerBytesByKey(normalized, tintBytesCache)
+    End Function
+
+    ''' <summary>SkipEyebrowsTone.ini en el appdir (case-insensitive via File.Exists): si existe,
+    ''' sintetiza una LUT de degradé Dark->Light (campos "Light=R,G,B" / "Dark=R,G,B", ambos default
+    ''' negro -> cejas negras) en BGRA8 sin compresión ni mips, devuelta como bytes DDS para el path
+    ''' UseHairPalette del override de cejas. Cachea por color en tintBytesCache.</summary>
+    Private Function BuildSyntheticEyebrowLut(tintBytesCache As Dictionary(Of String, Byte())) As (Enabled As Boolean, Bytes As Byte(), Key As String)
+        Dim iniPath = System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "SkipEyebrowsTone.ini")
+        If Not System.IO.File.Exists(iniPath) Then Return (False, Nothing, Nothing)
+
+        Dim dark() As Integer = {0, 0, 0}
+        Dim light() As Integer = {0, 0, 0}
+        Try
+            For Each rawLine In System.IO.File.ReadAllLines(iniPath)
+                Dim line = rawLine.Trim()
+                If line.Length = 0 OrElse line.StartsWith(";") OrElse line.StartsWith("#") OrElse line.StartsWith("[") Then Continue For
+                Dim eq = line.IndexOf("="c)
+                If eq <= 0 Then Continue For
+                Dim key = line.Substring(0, eq).Trim().ToLowerInvariant()
+                If key <> "light" AndAlso key <> "dark" Then Continue For
+                Dim parts = line.Substring(eq + 1).Trim().Split(","c)
+                If parts.Length < 3 Then Continue For
+                Dim rgb(2) As Integer
+                Dim ok = True
+                For i = 0 To 2
+                    Dim n As Integer
+                    If Not Integer.TryParse(parts(i).Trim(), n) Then ok = False : Exit For
+                    rgb(i) = Math.Max(0, Math.Min(255, n))
+                Next
+                If Not ok Then Continue For
+                If key = "light" Then light = rgb Else dark = rgb
+            Next
+        Catch
+            ' INI presente pero ilegible: degradé negro->negro (default)
+        End Try
+
+        Dim cacheKey = $"::synthetic-eyebrow::dark={dark(0)},{dark(1)},{dark(2)}::light={light(0)},{light(1)},{light(2)}"
+        Dim cached As Byte() = Nothing
+        If tintBytesCache IsNot Nothing AndAlso tintBytesCache.TryGetValue(cacheKey, cached) AndAlso cached IsNot Nothing Then
+            Return (True, cached, cacheKey)
+        End If
+
+        ' Degradé Dark (col 0 = grayscale 0) -> Light (col W-1 = grayscale 1), BGRA8, H filas replicadas.
+        Const W As Integer = 256
+        Const H As Integer = 4
+        Dim px(W * H * 4 - 1) As Byte
+        For x = 0 To W - 1
+            Dim t = CSng(x) / CSng(W - 1)
+            Dim rr = CByte(Math.Max(0, Math.Min(255, CInt(Math.Round(dark(0) + (light(0) - dark(0)) * t)))))
+            Dim gg = CByte(Math.Max(0, Math.Min(255, CInt(Math.Round(dark(1) + (light(1) - dark(1)) * t)))))
+            Dim bb = CByte(Math.Max(0, Math.Min(255, CInt(Math.Round(dark(2) + (light(2) - dark(2)) * t)))))
+            For y = 0 To H - 1
+                Dim o = (y * W + x) * 4
+                px(o) = bb : px(o + 1) = gg : px(o + 2) = rr : px(o + 3) = CByte(255)
+            Next
+        Next
+
+        Dim dds As Byte() = Nothing
+        Try
+            dds = DirectXTextureConversionHelper.Bgra32BytesToDdsBytes(W, H, px, DirectXTextureConversionHelper.DxgiFormatB8G8R8A8Unorm, generateMipMaps:=False)
+        Catch ex As Exception
+            Logger.LogLazy(Function() $"[BROW-TINT] synthetic LUT build failed: {ex.GetType().Name}: {ex.Message}")
+            Return (True, Nothing, cacheKey)
+        End Try
+        If tintBytesCache IsNot Nothing AndAlso dds IsNot Nothing Then tintBytesCache(cacheKey) = dds
+        Return (True, dds, cacheKey)
     End Function
 
     ''' <summary>Two-output variant: returns the bytes AND the normalized cache key so the

@@ -1,4 +1,4 @@
-Imports System.Windows.Forms
+﻿Imports System.Windows.Forms
 
 ''' <summary>Small modal prompting the per-entry data when adding an item into a leveled list via the Edit
 ''' Outfit "Add to lvl" button: Level / Count / Chance None (the LVLO fields). The reference (the item) is

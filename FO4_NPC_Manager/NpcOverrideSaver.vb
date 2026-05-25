@@ -95,7 +95,7 @@ Public Module NpcOverrideSaver
         ''' <summary>FaceGen bake delegate: invoked once per NPC when the user opted into CharGen
         ''' bake + BA2 pack. Kept as a callback because the bake pipeline lives in MainForm/
         ''' FaceGenBuilder and pulls GL resources from <see cref="RenderHost"/>.</summary>
-        Public RunChargenBakeAndPack As Func(Of UInteger, String, String, IProgress(Of SaveProgress), Task(Of (Summary As String, Success As Boolean)))
+        Public RunChargenBakeAndPack As Func(Of UInteger, String, String, IProgress(Of SaveProgress), Task(Of (Summary As String, Success As Boolean, Skipped As Boolean)))
         ''' <summary>All outfit drafts authored in the Edit Outfit "Create" tab (MainForm's
         ''' <c>_outfitDrafts</c>, minus the throwaway preview sentinel). When the save target's
         ''' <c>SaveNewOutfits</c> is True, the orchestrator emits as OTFT records every draft that is
@@ -142,6 +142,7 @@ Public Module NpcOverrideSaver
                 Dim totalBakes = inputs.Count
                 Dim bakedOk = 0
                 Dim bakedFail = 0
+                Dim bakedSkip = 0
                 For i = 0 To inputs.Count - 1
                     If bakeCancel.IsCancellationRequested Then
                         result.BakeCancelled = True
@@ -159,14 +160,24 @@ Public Module NpcOverrideSaver
                         .Current = i + 1
                     })
                     Dim chargenRes = Await ctx.RunChargenBakeAndPack(npcInput.NpcFormID, target.TargetPath, npcInput.SourcePluginName, progress)
-                    If chargenRes.Success Then bakedOk += 1 Else bakedFail += 1
+                    ' Skipped (no FaceGen head parts — non-human race, etc.) is counted separately from
+                    ' OK/failed, mirroring the loose batch, so the save summary reports it as a SKIP.
+                    If chargenRes.Skipped Then
+                        bakedSkip += 1
+                    ElseIf chargenRes.Success Then
+                        bakedOk += 1
+                    Else
+                        bakedFail += 1
+                    End If
                 Next
                 If totalBakes = 1 Then
-                    ' Single-NPC: terse summary. Only mention failures when there ARE any (no "0 failed" noise).
+                    ' Single-NPC: terse summary. Only mention skip/failure when there is one (no noise).
                     result.ChargenSummary = $"{vbCrLf}{vbCrLf}CharGen bake: {bakedOk} OK" &
+                        If(bakedSkip > 0, $", {bakedSkip} skipped", "") &
                         If(bakedFail > 0, $", {bakedFail} failed", "") & "."
                 Else
                     result.ChargenSummary = $"{vbCrLf}{vbCrLf}CharGen bake: {bakedOk}/{totalBakes} OK" &
+                        If(bakedSkip > 0, $", {bakedSkip} skipped", "") &
                         If(bakedFail > 0, $", {bakedFail} failed", "") &
                         If(result.BakeCancelled, " (cancelled — remaining NPCs not baked)", "") & "."
                 End If

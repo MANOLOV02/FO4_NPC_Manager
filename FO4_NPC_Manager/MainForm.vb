@@ -2572,9 +2572,9 @@ Public Class MainForm
         ' multi-selection get a paler highlight so the user can tell which one was rolled.
         Dim inMultiSet As Boolean = (npc IsNot Nothing AndAlso _selectedNpcFormIDs.Contains(npc.FormID))
         Dim isPicked As Boolean = (npc IsNot Nothing AndAlso _currentRandomPickFormID <> 0UI AndAlso npc.FormID = _currentRandomPickFormID)
-        ' Only honor the framework's SelectedNode highlight when there is NO multi-selection (e.g. an
-        ' LVLN / group node is focused). Otherwise the framework SelectedNode can diverge from our set
-        ' and paint a PHANTOM second highlight — the "I selected one but two stay lit" bug.
+        ' Only honor the framework's SelectedNode highlight when there is NO NPC multi-selection (e.g. a
+        ' single LVLN / plugin / group node is focused). Otherwise the framework SelectedNode can diverge
+        ' from our set and paint a PHANTOM second highlight — the "I selected one but two stay lit" bug.
         Dim frameworkSelected As Boolean = ((e.State And TreeNodeStates.Selected) <> 0) AndAlso _selectedNpcFormIDs.Count = 0
         If isPicked OrElse frameworkSelected Then
             e.Graphics.FillRectangle(SystemBrushes.Highlight, e.Bounds)
@@ -2647,8 +2647,15 @@ Public Class MainForm
     Private Sub HandleLeftMultiSelectClick(e As TreeNodeMouseClickEventArgs)
         Dim npc = TryCast(e.Node.Tag, NPC_Data)
         If npc Is Nothing Then
-            ' group / LVLN node → drop the NPC multi-selection; the debounce tick renders the LVLN
-            ' (random) via TreeViewNPCs.SelectedNode, or disables the per-NPC controls.
+            Dim lvln = TryCast(e.Node.Tag, LVLN_Data)
+            ' LVLN nodes only count as a SINGLE selection (their own random pick). Held with
+            ' Ctrl/Shift they are NOT considered — leave the current NPC multi-selection untouched.
+            If lvln IsNot Nothing AndAlso (Control.ModifierKeys And (Keys.Control Or Keys.Shift)) <> 0 Then
+                Return
+            End If
+            ' Plain LVLN click, or a plugin / group node → drop the NPC multi-selection. The tick then
+            ' renders the LVLN's own random pick (single) via TreeViewNPCs.SelectedNode, or disables
+            ' the per-NPC controls for a group node.
             _selectedNpcFormIDs.Clear()
             _multiSelectAnchorNode = Nothing
             TreeViewNPCs.Invalidate()
@@ -2742,7 +2749,7 @@ Public Class MainForm
     ''' Also refreshes the Re-roll enable state + the selection-count readout immediately (not only
     ''' after the debounced render) so the user gets instant feedback on the true set size.</summary>
     Private Sub RestartSelectionDebounce()
-        UpdateRerollEnabled()
+        RefreshMultiSelectControls()
         _selectionDebounceTimer.Stop()
         _selectionDebounceTimer.Start()
     End Sub
@@ -2763,7 +2770,7 @@ Public Class MainForm
             Dim npc As NPC_Data = Nothing
             If targetFid <> 0UI AndAlso _npcByIdCache.TryGetValue(targetFid, npc) AndAlso npc IsNot Nothing Then
                 _currentRandomPickFormID = targetFid
-                UpdateRerollEnabled()
+                RefreshMultiSelectControls()
                 TreeViewNPCs.Invalidate()
                 PopulateRecordDetails(npc)
                 Dim reqVersion = Interlocked.Increment(_previewRequestVersion)
@@ -2773,7 +2780,7 @@ Public Class MainForm
         End If
 
         _currentRandomPickFormID = 0UI
-        UpdateRerollEnabled()
+        RefreshMultiSelectControls()
         TreeViewNPCs.Invalidate()
         Dim lvln = TryCast(TreeViewNPCs.SelectedNode?.Tag, LVLN_Data)
         If lvln IsNot Nothing Then
@@ -2784,28 +2791,48 @@ Public Class MainForm
         End If
     End Sub
 
-    ''' <summary>Pick the FormID to render from the current selection: the only member when one is
-    ''' selected, else a uniform-random member (each NPC weighted equally — an ad-hoc LVLN).</summary>
-    Private Function PickRenderTargetFromSelection() As UInteger
+    ''' <summary>Pick the FormID to render from the current selection (treated as an ad-hoc leveled
+    ''' list): the only member when one is selected, else a random member honoring the gender combo
+    ''' filter (same rule as PickWeightedRandomFromLVLN). <paramref name="avoid"/>, when non-zero, is
+    ''' not re-picked as long as another candidate exists (used by the NPC Re-roll to show a
+    ''' different one).</summary>
+    Private Function PickRenderTargetFromSelection(Optional avoid As UInteger = 0UI) As UInteger
         If _selectedNpcFormIDs.Count = 0 Then Return 0UI
-        If _selectedNpcFormIDs.Count = 1 Then Return _selectedNpcFormIDs.First()
-        Dim arr = _selectedNpcFormIDs.ToArray()
-        Return arr(_rng.Next(arr.Length))
+
+        Dim candidates = _selectedNpcFormIDs.ToList()
+
+        ' Gender filter (Random = no filter). Falls back to the unfiltered set if the filter would
+        ' leave nothing (e.g. an all-male selection with the Female filter).
+        Dim genderFilter = CurrentGenderFilter
+        If genderFilter <> GenderFilterMode.Random Then
+            Dim filtered = candidates.Where(
+                Function(fid)
+                    Dim n As NPC_Data = Nothing
+                    If _npcByIdCache.TryGetValue(fid, n) AndAlso n IsNot Nothing Then
+                        Return If(genderFilter = GenderFilterMode.Female, n.IsFemale, Not n.IsFemale)
+                    End If
+                    Return True
+                End Function).ToList()
+            If filtered.Count > 0 Then candidates = filtered
+        End If
+
+        ' Prefer not to re-pick the one already shown when there's an alternative.
+        If avoid <> 0UI AndAlso candidates.Count > 1 Then
+            candidates = candidates.Where(Function(fid) fid <> avoid).ToList()
+        End If
+
+        If candidates.Count = 1 Then Return candidates(0)
+        Return candidates(_rng.Next(candidates.Count))
     End Function
 
-    ''' <summary>Re-roll: render a different random member of the current multi-selection without
-    ''' changing the selection. Tries to avoid re-picking the one already shown.</summary>
-    Private Sub ButtonRerollNpc_Click(sender As Object, e As EventArgs) Handles ButtonRerollNpc.Click
+    ''' <summary>NPC Re-roll over the multi-selection: render a different (gender-filtered) random
+    ''' member without changing the selection. Driven by the existing <see cref="ButtonRandomNPC"/>
+    ''' and the gender combo when 2+ NPCs are selected.</summary>
+    Private Sub RerollFromSelection()
         If _selectedNpcFormIDs.Count < 2 Then Return
-        Dim arr = _selectedNpcFormIDs.ToArray()
-        Dim pick As UInteger = 0UI
-        Dim guard As Integer = 0
-        Do
-            pick = arr(_rng.Next(arr.Length))
-            guard += 1
-        Loop While pick = _currentRandomPickFormID AndAlso guard < 8
+        Dim pick = PickRenderTargetFromSelection(avoid:=_currentRandomPickFormID)
         Dim npc As NPC_Data = Nothing
-        If Not _npcByIdCache.TryGetValue(pick, npc) OrElse npc Is Nothing Then Return
+        If pick = 0UI OrElse Not _npcByIdCache.TryGetValue(pick, npc) OrElse npc Is Nothing Then Return
         _currentRandomPickFormID = pick
         TreeViewNPCs.Invalidate()
         PopulateRecordDetails(npc)
@@ -2813,13 +2840,18 @@ Public Class MainForm
         LoadNPCOnDemandAsync(npc, reqVersion)
     End Sub
 
-    ''' <summary>Re-roll is only meaningful with 2+ NPCs selected. Also reflects the TRUE selection
-    ''' count in the window title so multi-select state is unambiguous (independent of any highlight).</summary>
-    Private Sub UpdateRerollEnabled()
-        If ButtonRerollNpc IsNot Nothing Then ButtonRerollNpc.Enabled = (_selectedNpcFormIDs.Count >= 2)
+    ''' <summary>Refresh controls that depend on the multi-selection: when 2+ NPCs are selected the
+    ''' selection behaves as an ad-hoc leveled list, so enable the existing NPC Re-roll button
+    ''' (<see cref="ButtonRandomNPC"/>) and the gender filter, and show the true selection count in
+    ''' the title. The single/none state is set authoritatively by the render
+    ''' (LoadNPCOnDemandAsync / LoadLVLNOnDemandAsync), so this only force-enables for the multi case.</summary>
+    Private Sub RefreshMultiSelectControls()
+        If _selectedNpcFormIDs.Count >= 2 Then
+            If ButtonRandomNPC IsNot Nothing Then ButtonRandomNPC.Enabled = True
+            If ComboBoxGender IsNot Nothing Then ComboBoxGender.Enabled = True
+        End If
         Dim n = _selectedNpcFormIDs.Count
-        Dim rerollState = If(ButtonRerollNpc Is Nothing, "NULL", ButtonRerollNpc.Enabled.ToString())
-        Me.Text = $"FO4 NPC Manager  —  {n} selected, reroll={rerollState}"
+        Me.Text = If(n = 0, "FO4 NPC Manager", $"FO4 NPC Manager  —  {n} NPC(s) selected")
     End Sub
 
     ''' <summary>Context-menu "Mark as changed": flags the NPC dirty (bold) even with no overlay, so
@@ -2831,6 +2863,25 @@ Public Class MainForm
             If fid <> 0UI AndAlso _dirtyNpcs.Add(fid) Then changed = True
         Next
         If changed Then RefreshTreeAfterDirtyChange()
+    End Sub
+
+    ''' <summary>Context-menu "Save Selected": opens the Save ESP/ESM dialog defaulting to the
+    ''' "Selected" scope (the NPC multi-selection). The toolbar Save button defaults to "All changed".</summary>
+    Private Async Sub MenuItemSaveSelected_Click(sender As Object, e As EventArgs) Handles MenuItemSaveSelected.Click
+        Await LaunchSaveDialogAsync(defaultToSelected:=True)
+    End Sub
+
+    ''' <summary>Context-menu "Build CharGen (loose) — Selected": bake CharGen loose for every selected
+    ''' NPC. One NPC → blocking msgbox (same as the toolbar single path); many → a determinate progress
+    ''' dialog (see <see cref="BuildCharGenForSelectionAsync"/>).</summary>
+    Private Async Sub MenuItemBuildChargen_Click(sender As Object, e As EventArgs) Handles MenuItemBuildChargen.Click
+        Dim targets = If(_contextMenuTargets.Count > 0, _contextMenuTargets.Distinct().ToList(), New List(Of UInteger))
+        If targets.Count = 0 Then Return
+        If targets.Count = 1 Then
+            BuildCharGenSingle(targets(0))
+        Else
+            Await BuildCharGenForSelectionAsync(targets)
+        End If
     End Sub
 
     ''' <summary>Context-menu "Reset": discard the in-memory overlay for the NPC and clear its dirty
@@ -2912,7 +2963,6 @@ Public Class MainForm
         ButtonSavePlugin.Enabled = False
         ButtonBuildCharGen.Enabled = False
         ButtonSaveSceneNif.Enabled = False
-        ButtonRerollNpc.Enabled = False
     End Sub
 
     Private Async Sub LoadNPCOnDemandAsync(npc As NPC_Data, requestVersion As Integer)
@@ -2959,15 +3009,20 @@ Public Class MainForm
             ' Gender combo is LVLN-node-only (the gender filter applies to picking a leaf from a
             ' leveled list, not to re-rolling templates of an already-selected NPC), so it stays
             ' disabled here regardless of templates. Enabled in LoadLVLNOnDemandAsync.
+            ' Re-roll + gender enable when the NPC has leveled templates OR when this render came from
+            ' an NPC multi-selection (the conjunto acts as an ad-hoc leveled list). _selectedNpcFormIDs
+            ' is read on the UI thread inside each branch.
             Dim hasLeveledTemplates = NpcHasLeveledTemplates(npc)
             If InvokeRequired Then
                 Invoke(Sub()
-                           ButtonRandomNPC.Enabled = hasLeveledTemplates
-                           ComboBoxGender.Enabled = False
+                           Dim multiSel = _selectedNpcFormIDs.Count >= 2
+                           ButtonRandomNPC.Enabled = hasLeveledTemplates OrElse multiSel
+                           ComboBoxGender.Enabled = multiSel
                        End Sub)
             Else
-                ButtonRandomNPC.Enabled = hasLeveledTemplates
-                ComboBoxGender.Enabled = False
+                Dim multiSel = _selectedNpcFormIDs.Count >= 2
+                ButtonRandomNPC.Enabled = hasLeveledTemplates OrElse multiSel
+                ComboBoxGender.Enabled = multiSel
             End If
 
             ' Populate outfit combo
@@ -3117,6 +3172,12 @@ Public Class MainForm
     End Sub
 
     Private Sub ButtonRandomNPC_Click(sender As Object, e As EventArgs) Handles ButtonRandomNPC.Click
+        ' Multi-selection acts as an ad-hoc leveled list: re-roll a (gender-filtered) random member.
+        If _selectedNpcFormIDs.Count >= 2 Then
+            RerollFromSelection()
+            Return
+        End If
+
         Dim selectedNode = TreeViewNPCs.SelectedNode
         If selectedNode Is Nothing Then Return
 
@@ -3135,6 +3196,21 @@ Public Class MainForm
 
         Dim requestVersion2 = Interlocked.Increment(_previewRequestVersion)
         LoadNPCOnDemandAsync(npc, requestVersion2)
+    End Sub
+
+    ''' <summary>Changing the gender filter re-rolls the pick: from the multi-selection (ad-hoc
+    ''' leveled list) when 2+ NPCs are selected, otherwise from the selected LVLN node. No-op for a
+    ''' single plain NPC (the filter only governs random picks).</summary>
+    Private Sub ComboBoxGender_SelectedIndexChanged(sender As Object, e As EventArgs) Handles ComboBoxGender.SelectedIndexChanged
+        If _selectedNpcFormIDs.Count >= 2 Then
+            RerollFromSelection()
+            Return
+        End If
+        Dim lvln = TryCast(TreeViewNPCs.SelectedNode?.Tag, LVLN_Data)
+        If lvln IsNot Nothing Then
+            Dim v = Interlocked.Increment(_previewRequestVersion)
+            LoadLVLNOnDemandAsync(lvln, v)
+        End If
     End Sub
 
     Private Sub ButtonLightRig_Click(sender As Object, e As EventArgs) Handles ButtonLightRig.Click
@@ -13279,14 +13355,18 @@ Public Class MainForm
             Dim avail = ComputeFaceEditAvailability(_renderHost.LastRenderedState, _renderHost)
             shouldEnable = avail.AnythingAvailable
         End If
+        ' Build CharGen also enables for a multi-selection: the batch resolves + skips per NPC, so it
+        ' must NOT be gated on the single rendered NPC's face-edit availability (the random pick could
+        ' be an NPC with no facegen while others in the set have it). Edit Face stays single-NPC.
+        Dim multiSel = _selectedNpcFormIDs.Count >= 2
         If InvokeRequired Then
             Invoke(Sub()
                        ButtonEditFace.Enabled = shouldEnable
-                       ButtonBuildCharGen.Enabled = shouldEnable
+                       ButtonBuildCharGen.Enabled = shouldEnable OrElse multiSel
                    End Sub)
         Else
             ButtonEditFace.Enabled = shouldEnable
-            ButtonBuildCharGen.Enabled = shouldEnable
+            ButtonBuildCharGen.Enabled = shouldEnable OrElse multiSel
         End If
     End Sub
 
@@ -13347,27 +13427,112 @@ Public Class MainForm
     ''' &lt;exe dir&gt;\BakedFaceGen\Meshes\Actors\Character\FaceGenData\FaceGeom\&lt;plugin&gt;\&lt;FormID8hex&gt;.nif2
     ''' so the engine never sees it; the file is meant for side-by-side diff with the BA2
     ''' original. Each run also dumps the kept/dropped decision per shape to npc_preview.log.</summary>
-    Private Sub ButtonBuildCharGen_Click(sender As Object, e As EventArgs) Handles ButtonBuildCharGen.Click
+    Private Async Sub ButtonBuildCharGen_Click(sender As Object, e As EventArgs) Handles ButtonBuildCharGen.Click
+        ' Multi-selection → batch build with a determinate progress dialog. Otherwise the single
+        ' currently-rendered NPC, reported via a blocking message box (unchanged behaviour).
+        If _selectedNpcFormIDs.Count >= 2 Then
+            Await BuildCharGenForSelectionAsync(_selectedNpcFormIDs.ToList())
+            Return
+        End If
         If _renderHost.LastRenderedState Is Nothing Then Return
         Dim modelNpcFormID = If(_renderHost.LastRenderedState.ModelSourceFormID <> 0UI,
                                 _renderHost.LastRenderedState.ModelSourceFormID,
                                 _renderHost.LastRenderedState.FormID)
-        If modelNpcFormID = 0UI Then Return
+        BuildCharGenSingle(modelNpcFormID)
+    End Sub
 
+    ''' <summary>Build CharGen (loose) for a single NPC, reporting via a blocking message box.</summary>
+    Private Sub BuildCharGenSingle(npcFormID As UInteger)
+        If npcFormID = 0UI Then Return
         Dim result As FaceGenBuilder.BuildResult
         Try
             ' willBePacked:=False — loose output stays standalone (no BA2 repack/rename), so the NIF
             ' must embed the actual on-disk texture suffix (carries _2 in DebugMode). See BuildCharGen.
-            result = FaceGenBuilder.BuildCharGen(modelNpcFormID, _pluginManager, _appliedPresets, _renderHost, AddressOf ApplyShapeMaterialOverrides, willBePacked:=False, lmSkinTemplateResolver:=AddressOf ResolveLmSkinTemplate)
+            result = FaceGenBuilder.BuildCharGen(npcFormID, _pluginManager, _appliedPresets, _renderHost, AddressOf ApplyShapeMaterialOverrides, willBePacked:=False, lmSkinTemplateResolver:=AddressOf ResolveLmSkinTemplate)
         Catch ex As Exception
             Logger.LogLazy(Function() $"[BUILDCHARGEN] EXCEPTION {ex.GetType().Name}: {ex.Message}{vbCrLf}{ex.StackTrace}")
             result = New FaceGenBuilder.BuildResult With {.Success = False, .Summary = $"Build CharGen failed: {ex.GetType().Name}: {ex.Message}"}
         End Try
 
-        Dim icon = If(result.Success, MessageBoxIcon.Information, MessageBoxIcon.Error)
-        Dim message = If(result.Success, "Generated OK", $"Error: {result.Summary}")
+        Dim icon As MessageBoxIcon
+        Dim message As String
+        If result.Skipped Then
+            icon = MessageBoxIcon.Information
+            message = result.Summary   ' "No FaceGen head parts for this NPC — skipped."
+        ElseIf result.Success Then
+            icon = MessageBoxIcon.Information
+            message = "Generated OK"
+        Else
+            icon = MessageBoxIcon.Error
+            message = $"Error: {result.Summary}"
+        End If
         MessageBox.Show(Me, message, "Build CharGen", MessageBoxButtons.OK, icon)
     End Sub
+
+    ''' <summary>Build CharGen (loose) for many NPCs with a determinate, MODAL progress dialog. The
+    ''' GL-bound bake (FaceGenBuilder.BuildCharGen) MUST run on the UI thread (it owns the OpenGL
+    ''' context), so it runs synchronously per NPC; <c>Await Task.Yield()</c> between NPCs returns to
+    ''' the dialog's modal message loop so the bar repaints and Cancel stays responsive — the same
+    ''' GL-sync / rest-async split the Save pipeline uses. The loop runs inside the dialog's Shown
+    ''' event (ShowDialog), so modality blocks the main window automatically (no manual Enable toggle,
+    ''' which left the owned non-modal dialog unable to repaint its Cancel button). No BA2 pack.</summary>
+    Private Function BuildCharGenForSelectionAsync(formIDs As List(Of UInteger)) As Task
+        If formIDs Is Nothing OrElse formIDs.Count = 0 Then Return Task.CompletedTask
+        Dim total = formIDs.Count
+        Dim ok As Integer = 0
+        Dim skipped As Integer = 0
+        Dim failed As New List(Of String)
+
+        Using prog As New BuildProgress_Form()
+            prog.Text = $"Build CharGen (loose) — {total} NPCs"
+            prog.WorkAsync =
+                Async Function(p As BuildProgress_Form) As Task
+                    ' Let the dialog fully paint (Cancel button included) before the first blocking
+                    ' bake. Task.Delay (NOT Task.Yield) is deliberate: a Yield continuation outranks
+                    ' WM_PAINT, so the form never repaints between the synchronous GL bakes (the
+                    ' "white Cancel button / frozen UI" symptom). A 1 ms delay gives the message loop
+                    ' idle time to process WM_PAINT + the Cancel click before resuming.
+                    Await Task.Delay(1)
+                    For i = 0 To total - 1
+                        If p.Cancelled Then Exit For
+                        Dim fid = formIDs(i)
+                        Dim npc As NPC_Data = Nothing
+                        Dim name = If(_npcByIdCache.TryGetValue(fid, npc) AndAlso npc IsNot Nothing, npc.ToString(), fid.ToString("X8"))
+                        p.SetProgress(i, total, $"Building {i + 1}/{total}: {name}")
+                        Await Task.Delay(1)   ' idle window so the bar/button repaint + Cancel processes
+                        If p.Cancelled Then Exit For
+                        Try
+                            Dim r = FaceGenBuilder.BuildCharGen(fid, _pluginManager, _appliedPresets, _renderHost, AddressOf ApplyShapeMaterialOverrides, willBePacked:=False, lmSkinTemplateResolver:=AddressOf ResolveLmSkinTemplate)
+                            If r.Skipped Then
+                                skipped += 1
+                            ElseIf r.Success Then
+                                ok += 1
+                            Else
+                                failed.Add($"{name}: {r.Summary}")
+                            End If
+                        Catch ex As Exception
+                            Logger.LogLazy(Function() $"[BUILDCHARGEN-BATCH] EXCEPTION 0x{fid:X8} {ex.GetType().Name}: {ex.Message}")
+                            failed.Add($"{name}: {ex.Message}")
+                        End Try
+                    Next
+                    p.SetProgress(total, total, "Done.")
+                End Function
+            prog.ShowDialog(Me)   ' modal: runs WorkAsync on Shown, closes itself when the loop ends
+        End Using
+
+        Dim doneCount = ok + skipped + failed.Count
+        Dim summary = $"Built CharGen (loose) for {ok}/{total} NPC(s)."
+        If skipped > 0 Then summary &= $"{vbCrLf}Skipped {skipped} (no FaceGen head parts)."
+        If doneCount < total Then summary &= $"{vbCrLf}Cancelled — {total - doneCount} not processed."
+        If failed.Count > 0 Then
+            Dim shown = failed.Take(15).ToList()
+            summary &= $"{vbCrLf}{vbCrLf}Failed ({failed.Count}):{vbCrLf}" & String.Join(vbCrLf, shown)
+            If failed.Count > shown.Count Then summary &= $"{vbCrLf}… (+{failed.Count - shown.Count} more)"
+        End If
+        MessageBox.Show(Me, summary, "Build CharGen", MessageBoxButtons.OK,
+                        If(failed.Count = 0, MessageBoxIcon.Information, MessageBoxIcon.Warning))
+        Return Task.CompletedTask
+    End Function
 
     ''' <summary>Re-trigger the on-demand NPC load for the currently-rendered NPC. Same path
     ''' LooksMenu Paste uses; reconstructs every render-side cache (geometry, materials,
@@ -13695,17 +13860,39 @@ Public Class MainForm
     '''      (xEdit-style: drop unused masters, re-map FormIDs to new MAST list).
     ''' Light master flag default is taken from the source NPC's master plugin (IsESM).</summary>
     Private Async Sub ButtonSavePlugin_Click(sender As Object, e As EventArgs) Handles ButtonSavePlugin.Click
+        ' Toolbar Save → defaults to the "All changed" scope. The tree context-menu "Save Selected"
+        ' calls LaunchSaveDialogAsync(defaultToSelected:=True) instead.
+        Await LaunchSaveDialogAsync(defaultToSelected:=False)
+    End Sub
+
+    ''' <summary>Open the Save ESP/ESM dialog. <paramref name="defaultToSelected"/> picks the default
+    ''' scope radio: False (toolbar) → "All changed"; True (context-menu "Save Selected") → "Selected"
+    ''' (the NPC multi-selection / conjunto). Both scope labels always show their NPC count.</summary>
+    Private Async Function LaunchSaveDialogAsync(defaultToSelected As Boolean) As Task
         If _renderHost.CurrentBaseState Is Nothing Then Return
 
-        ' The selected NPC is the default ("Selected") scope. Always savable, even if not dirty
-        ' (produces a forwarded/identity override).
-        Dim selectedFormID = _renderHost.CurrentBaseState.RootNpcFormID
-        Dim selectedInput = TryBuildNpcSaveInput(selectedFormID)
-        If selectedInput Is Nothing Then
-            MessageBox.Show("Could not find or parse the selected NPC record.", "Save ESP/ESM",
+        ' "Selected" scope = the NPC multi-selection (the conjunto), or the currently-rendered NPC
+        ' when nothing is multi-selected. Always savable, even if not dirty (forwarded/identity
+        ' override). The first entry is the anchor for the existing-plugin scan + source plugin.
+        Dim selectedFormIDs As New List(Of UInteger)
+        If _selectedNpcFormIDs.Count >= 1 Then
+            selectedFormIDs.AddRange(_selectedNpcFormIDs)
+        Else
+            selectedFormIDs.Add(_renderHost.CurrentBaseState.RootNpcFormID)
+        End If
+        Dim selectedInputs As New List(Of NpcOverrideSaver.NpcSaveInput)
+        Dim seenSel As New HashSet(Of UInteger)
+        For Each fid In selectedFormIDs
+            Dim inp = TryBuildNpcSaveInput(fid)
+            If inp IsNot Nothing AndAlso seenSel.Add(fid) Then selectedInputs.Add(inp)
+        Next
+        If selectedInputs.Count = 0 Then
+            MessageBox.Show("Could not find or parse the selected NPC record(s).", "Save ESP/ESM",
                             MessageBoxButtons.OK, MessageBoxIcon.Error)
             Return
         End If
+        Dim selectedInput = selectedInputs(0)
+        Dim selectedFormID = selectedInput.NpcFormID
 
         ' The "Apply to all changed NPCs" scope = every dirty NPC (parsed; unparseable ones skipped).
         Dim allDirtyInputs As New List(Of NpcOverrideSaver.NpcSaveInput)
@@ -13744,7 +13931,7 @@ Public Class MainForm
             .SyncParallelCollectionsAfterOverlay = AddressOf SyncParallelCollectionsAfterOverlay,
             .RunChargenBakeAndPack = Function(npcFid As UInteger, anchor As String, srcPlugin As String,
                                                prog As IProgress(Of NpcOverrideSaver.SaveProgress)) _
-                                          As Task(Of (Summary As String, Success As Boolean))
+                                          As Task(Of (Summary As String, Success As Boolean, Skipped As Boolean))
                                          Return RunChargenBakeAndPack(npcFid, anchor, srcPlugin, prog)
                                      End Function,
             .OutfitDrafts = New List(Of OutfitDraft)(_outfitDrafts),
@@ -13756,7 +13943,7 @@ Public Class MainForm
         ' DialogResult.OK only after the save finished successfully.
         Dim execResult As NpcOverrideSaver.SaveExecutionResult = Nothing
         Dim target As SaveEsp_Form.SaveTarget = Nothing
-        Using dlg As New SaveEsp_Form(_dataPath, existing, selectedInput, allDirtyInputs, sourceMasterIsEsm, ctx)
+        Using dlg As New SaveEsp_Form(_dataPath, existing, selectedInputs, allDirtyInputs, sourceMasterIsEsm, ctx, defaultToSelected)
             If dlg.ShowDialog(Me) <> DialogResult.OK Then Return
             target = dlg.Result
             execResult = dlg.ExecutionResult
@@ -13784,7 +13971,7 @@ Public Class MainForm
         Dim what = If(savedCount = 1, $"{If(selectedInput.Npc?.EditorID, selectedFormID.ToString("X8"))}", $"{savedCount} NPCs")
         MessageBox.Show($"Saved {what} to {IO.Path.GetFileName(execResult.WriterResult.OutputPath)}.{execResult.ChargenSummary}{execResult.VerifierSummary}",
                         "Save ESP/ESM", MessageBoxButtons.OK, execResult.VerifierIcon)
-    End Sub
+    End Function
 
     ''' <summary>Build the per-NPC save input from a FormID: fetch + type-safe parse the raw record,
     ''' resolve its source plugin, and read the CharGen Face Preset flag. Returns Nothing when the
@@ -14168,7 +14355,7 @@ Public Class MainForm
     Private Async Function RunChargenBakeAndPack(npcFormID As UInteger,
                                                  anchorPluginPath As String,
                                                  sourcePluginName As String,
-                                                 progress As IProgress(Of NpcOverrideSaver.SaveProgress)) As Task(Of (Summary As String, Success As Boolean))
+                                                 progress As IProgress(Of NpcOverrideSaver.SaveProgress)) As Task(Of (Summary As String, Success As Boolean, Skipped As Boolean))
         ReportSaveProgress(progress, "Baking CharGen NIF + textures…", "", False, 0, 0)
 
         ' Bake the SAME identity the "Build CharGen (loose)" button uses for the rendered NPC: its
@@ -14194,11 +14381,17 @@ Public Class MainForm
                                                      _renderHost, AddressOf ApplyShapeMaterialOverrides,
                                                      willBePacked:=True, lmSkinTemplateResolver:=AddressOf ResolveLmSkinTemplate)
         Catch ex As Exception
-            Return ($"{vbCrLf}{vbCrLf}(CharGen bake failed: {ex.Message})", False)
+            Return ($"{vbCrLf}{vbCrLf}(CharGen bake failed: {ex.Message})", False, False)
         End Try
 
+        ' No FaceGen head parts (non-human race, etc.) → nothing to bake/pack. That's a SKIP, not a
+        ' failure: the ESP write still succeeds; report the skip in the summary without an error icon.
+        If bakeResult.Skipped Then
+            Return ($"{vbCrLf}{vbCrLf}(CharGen skipped — no FaceGen head parts for this NPC)", True, True)
+        End If
+
         If Not bakeResult.Success Then
-            Return ($"{vbCrLf}{vbCrLf}(CharGen bake failed — see npc_preview.log)", False)
+            Return ($"{vbCrLf}{vbCrLf}(CharGen bake failed — see npc_preview.log)", False, False)
         End If
 
         ' Phase 2: pack the four bake outputs. originPlugin matches FaceGenBuilder's path
@@ -14247,19 +14440,19 @@ Public Class MainForm
             If Not packResult.Success Then
                 ' Bake succeeded but pack failed — loose files remain on disk for the user to
                 ' inspect or pack manually. Don't delete them.
-                Return ($"{vbCrLf}{vbCrLf}(CharGen baked OK but BA2 pack failed: {packResult.ErrorMessage})", False)
+                Return ($"{vbCrLf}{vbCrLf}(CharGen baked OK but BA2 pack failed: {packResult.ErrorMessage})", False, False)
             End If
 
             Dim wrote = packResult.WrittenArchives.Count
             Dim skipped = packResult.SkippedArchives.Count
             If wrote = 0 AndAlso skipped > 0 Then
-                Return ($"{vbCrLf}{vbCrLf}CharGen unchanged ({skipped} BA2 archive{If(skipped = 1, "", "s")} already had this NPC).", True)
+                Return ($"{vbCrLf}{vbCrLf}CharGen unchanged ({skipped} BA2 archive{If(skipped = 1, "", "s")} already had this NPC).", True, False)
             End If
-            Return ($"{vbCrLf}{vbCrLf}CharGen packed into {wrote} BA2 archive{If(wrote = 1, "", "s")}.", True)
+            Return ($"{vbCrLf}{vbCrLf}CharGen packed into {wrote} BA2 archive{If(wrote = 1, "", "s")}.", True, False)
         Catch ex As Exception
             ' Preserve the "never throws" contract — pack failures surface in the summary, not as a
             ' thrown exception that would mark the whole (already-written) save as failed.
-            Return ($"{vbCrLf}{vbCrLf}(CharGen baked OK but BA2 pack failed: {ex.Message})", False)
+            Return ($"{vbCrLf}{vbCrLf}(CharGen baked OK but BA2 pack failed: {ex.Message})", False, False)
         End Try
     End Function
 

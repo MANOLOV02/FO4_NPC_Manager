@@ -204,7 +204,8 @@ Public Class SaveEsp_Form
     ' Save-execution dependencies — kept private so the form fully owns the run-the-save flow.
     Private ReadOnly _saveCtx As NpcOverrideSaver.SaveContext
     ''' <summary>The NPC currently selected/loaded — the default scope ("Selected").</summary>
-    Private ReadOnly _selectedInput As NpcOverrideSaver.NpcSaveInput
+    Private ReadOnly _selectedInput As NpcOverrideSaver.NpcSaveInput  ' anchor = first of _selectedInputs
+    Private ReadOnly _selectedInputs As List(Of NpcOverrideSaver.NpcSaveInput)
     ''' <summary>Every NPC the user changed this session (includes the selected one). The
     ''' "Apply to all changed NPCs" checkbox switches the save scope to this list.</summary>
     Private ReadOnly _allDirtyInputs As List(Of NpcOverrideSaver.NpcSaveInput)
@@ -247,24 +248,37 @@ Public Class SaveEsp_Form
 
     Public Sub New(dataPath As String,
                    existingPlugins As List(Of ExistingPlugin),
-                   selectedInput As NpcOverrideSaver.NpcSaveInput,
+                   selectedInputs As List(Of NpcOverrideSaver.NpcSaveInput),
                    allDirtyInputs As List(Of NpcOverrideSaver.NpcSaveInput),
                    sourceMasterIsEsm As Boolean,
-                   saveCtx As NpcOverrideSaver.SaveContext)
+                   saveCtx As NpcOverrideSaver.SaveContext,
+                   Optional defaultToSelected As Boolean = False)
         InitializeComponent()
         _dataPath = dataPath
         _existingPlugins = If(existingPlugins, New List(Of ExistingPlugin)())
-        _selectedInput = selectedInput
+        _selectedInputs = If(selectedInputs, New List(Of NpcOverrideSaver.NpcSaveInput)())
+        If _selectedInputs.Count = 0 Then Throw New ArgumentException("selectedInputs must have at least one entry", NameOf(selectedInputs))
+        _selectedInput = _selectedInputs(0)
         _allDirtyInputs = If(allDirtyInputs, New List(Of NpcOverrideSaver.NpcSaveInput)())
-        _targetNpcFormID = selectedInput.NpcFormID
+        _targetNpcFormID = _selectedInput.NpcFormID
         _sourceMasterIsEsm = sourceMasterIsEsm
         _saveCtx = saveCtx
 
-        ' Scope radios: "All changed" (default) vs "Selected only". The Designer defaults to All;
-        ' here we annotate All with the dirty count. When only one NPC is dirty the two are
-        ' equivalent (harmless) — both still work.
+        ' Scope radios: "Selected" vs "All changed". The default depends on the entry point: the
+        ' toolbar Save button defaults to "All changed"; the tree context-menu "Save Selected"
+        ' defaults to "Selected" (defaultToSelected:=True). Both labels ALWAYS show their count so the
+        ' user knows exactly how many NPCs each scope will save.
         Dim dirtyCount = _allDirtyInputs.Count
-        RadioScopeAllChanged.Text = If(dirtyCount > 1, $"All changed ({dirtyCount})", "All changed")
+        Dim selCount = _selectedInputs.Count
+        RadioScopeAllChanged.Text = $"All changed ({dirtyCount})"
+        RadioScopeSelected.Text = $"Selected ({selCount})"
+        If defaultToSelected Then
+            RadioScopeSelected.Checked = True
+            RadioScopeAllChanged.Checked = False
+        Else
+            RadioScopeAllChanged.Checked = True
+            RadioScopeSelected.Checked = False
+        End If
 
         ' CharGen checkbox: default ON. When ANY NPC in the current scope has no CharGen Face Preset
         ' flag, the engine relies on CK's baked FaceGen — without our BA2 those NPCs render as a
@@ -322,7 +336,7 @@ Public Class SaveEsp_Form
     ''' picked, else the full dirty list ("All changed", the default).</summary>
     Private Function CurrentInputs() As List(Of NpcOverrideSaver.NpcSaveInput)
         If RadioScopeSelected.Checked Then
-            Return New List(Of NpcOverrideSaver.NpcSaveInput) From {_selectedInput}
+            Return _selectedInputs
         End If
         Return _allDirtyInputs
     End Function

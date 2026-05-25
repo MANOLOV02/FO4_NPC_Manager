@@ -74,6 +74,10 @@ Public Module FaceGenBuilder
     ''' <summary>Result of a BuildCharGen run.</summary>
     Public Class BuildResult
         Public Property Success As Boolean
+        ''' <summary>True when the NPC has no FaceGen-eligible head parts (non-human race, robot,
+        ''' etc.) so there was nothing to bake. NOT a failure — callers should count it as a SKIP
+        ''' (no .nif written). When True, Success is False.</summary>
+        Public Property Skipped As Boolean
         ''' <summary>Where the .nif2 was written (only when Success). Empty otherwise.</summary>
         Public Property OutputPath As String = ""
         ''' <summary>One-line user-facing summary suitable for a MessageBox.</summary>
@@ -196,6 +200,16 @@ Public Module FaceGenBuilder
         ' chargen TRI / FMRS info. This is the AUTHORITATIVE list — the .nif2 contains exactly
         ' the shapes that come out of these sources.
         Dim hdptMap = BuildAllowedShapeMap(npcFormID, pluginManager)
+
+        ' No FaceGen-eligible head parts (non-human race, robot, turret, creature, …) → nothing to
+        ' bake. This is a SKIP, not a failure: don't write an empty NIF, and let the caller count it
+        ' separately (batch summary / Save) instead of reporting a spurious "fail".
+        If hdptMap Is Nothing OrElse hdptMap.Count = 0 Then
+            result.Skipped = True
+            result.Success = False
+            result.Summary = "No FaceGen head parts for this NPC — skipped."
+            Return result
+        End If
 
         ' --- ITERATION 1: assemble shapes from source meshes per HDPT.
         '

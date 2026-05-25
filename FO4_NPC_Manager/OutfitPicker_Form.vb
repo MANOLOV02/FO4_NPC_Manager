@@ -994,4 +994,5 @@ Public Class OutfitPicker_Form
             End Try
         End If
     End Sub
+
 End Class

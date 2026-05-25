@@ -38,7 +38,6 @@ Partial Class OutfitPicker_Form
         ColItemPlugin = New ColumnHeader()
         AddButtonsRow = New FlowLayoutPanel()
         ButtonAddItem = New Button()
-        ButtonNewLvl = New Button()
         ButtonAddToLvl = New Button()
         ButtonReroll = New Button()
         LabelPieces = New Label()
@@ -46,7 +45,9 @@ Partial Class OutfitPicker_Form
         ColPieceName = New ColumnHeader()
         ColPieceSlots = New ColumnHeader()
         ColPieceStatus = New ColumnHeader()
+        Plugin = New ColumnHeader()
         PiecesButtonsRow = New FlowLayoutPanel()
+        ButtonNewLvl = New Button()
         ButtonRemovePiece = New Button()
         EdidRow = New FlowLayoutPanel()
         LabelEdidPrefix = New Label()
@@ -63,7 +64,6 @@ Partial Class OutfitPicker_Form
         BottomLayout = New FlowLayoutPanel()
         ButtonOk = New Button()
         ButtonCancel = New Button()
-        Plugin = New ColumnHeader()
         RootLayout.SuspendLayout()
         CType(MainSplit, ComponentModel.ISupportInitialize).BeginInit()
         MainSplit.Panel1.SuspendLayout()
@@ -298,55 +298,52 @@ Partial Class OutfitPicker_Form
         ColItemPlugin.Text = "Plugin"
         ColItemPlugin.Width = 120
         ' 
+        ' AddButtonsRow
+        ' 
+        AddButtonsRow.AutoSize = True
+        AddButtonsRow.AutoSizeMode = AutoSizeMode.GrowAndShrink
+        AddButtonsRow.Controls.Add(ButtonAddItem)
+        AddButtonsRow.Controls.Add(ButtonAddToLvl)
+        AddButtonsRow.Controls.Add(ButtonReroll)
+        AddButtonsRow.Location = New Point(0, 183)
+        AddButtonsRow.Margin = New Padding(0)
+        AddButtonsRow.Name = "AddButtonsRow"
+        AddButtonsRow.Size = New Size(341, 34)
+        AddButtonsRow.TabIndex = 3
+        AddButtonsRow.WrapContents = False
+        ' 
         ' ButtonAddItem
         ' 
+        ButtonAddItem.Location = New Point(0, 3)
         ButtonAddItem.Margin = New Padding(0, 3, 0, 6)
         ButtonAddItem.Name = "ButtonAddItem"
         ButtonAddItem.Size = New Size(130, 25)
         ButtonAddItem.TabIndex = 3
         ButtonAddItem.Text = "Add to outfit ▼"
         ButtonAddItem.UseVisualStyleBackColor = True
-        '
-        ' AddButtonsRow
-        '
-        AddButtonsRow.AutoSize = True
-        AddButtonsRow.AutoSizeMode = AutoSizeMode.GrowAndShrink
-        AddButtonsRow.Controls.Add(ButtonAddItem)
-        AddButtonsRow.Controls.Add(ButtonAddToLvl)
-        AddButtonsRow.Controls.Add(ButtonReroll)
-        AddButtonsRow.Margin = New Padding(0)
-        AddButtonsRow.Name = "AddButtonsRow"
-        AddButtonsRow.WrapContents = False
-        '
-        ' ButtonNewLvl
-        '
-        ButtonNewLvl.Margin = New Padding(0, 3, 0, 6)
-        ButtonNewLvl.Name = "ButtonNewLvl"
-        ButtonNewLvl.Size = New Size(90, 25)
-        ButtonNewLvl.TabIndex = 0
-        ButtonNewLvl.Text = "New LVL…"
-        ButtonNewLvl.UseVisualStyleBackColor = True
-        '
+        ' 
         ' ButtonAddToLvl
-        '
+        ' 
         ButtonAddToLvl.Enabled = False
+        ButtonAddToLvl.Location = New Point(138, 3)
         ButtonAddToLvl.Margin = New Padding(8, 3, 0, 6)
         ButtonAddToLvl.Name = "ButtonAddToLvl"
         ButtonAddToLvl.Size = New Size(95, 25)
         ButtonAddToLvl.TabIndex = 5
         ButtonAddToLvl.Text = "Add to lvl ▼"
         ButtonAddToLvl.UseVisualStyleBackColor = True
-        '
+        ' 
         ' ButtonReroll
-        '
+        ' 
         ButtonReroll.Enabled = False
+        ButtonReroll.Location = New Point(241, 3)
         ButtonReroll.Margin = New Padding(8, 3, 0, 6)
         ButtonReroll.Name = "ButtonReroll"
         ButtonReroll.Size = New Size(100, 25)
         ButtonReroll.TabIndex = 6
         ButtonReroll.Text = "🎲 Reroll LVL"
         ButtonReroll.UseVisualStyleBackColor = True
-        '
+        ' 
         ' LabelPieces
         ' 
         LabelPieces.AutoSize = True
@@ -384,29 +381,47 @@ Partial Class OutfitPicker_Form
         ' 
         ColPieceStatus.Text = "Status"
         ColPieceStatus.Width = 100
-        '
+        ' 
+        ' Plugin
+        ' 
+        Plugin.Text = "Plugin"
+        Plugin.Width = 120
+        ' 
         ' PiecesButtonsRow
-        '
+        ' 
         PiecesButtonsRow.AutoSize = True
         PiecesButtonsRow.AutoSizeMode = AutoSizeMode.GrowAndShrink
         PiecesButtonsRow.Controls.Add(ButtonNewLvl)
         PiecesButtonsRow.Controls.Add(ButtonRemovePiece)
+        PiecesButtonsRow.Location = New Point(0, 373)
         PiecesButtonsRow.Margin = New Padding(0)
         PiecesButtonsRow.Name = "PiecesButtonsRow"
+        PiecesButtonsRow.Size = New Size(228, 34)
         PiecesButtonsRow.TabIndex = 6
         PiecesButtonsRow.WrapContents = False
-        '
+        ' 
+        ' ButtonNewLvl
+        ' 
+        ButtonNewLvl.Location = New Point(0, 3)
+        ButtonNewLvl.Margin = New Padding(0, 3, 0, 6)
+        ButtonNewLvl.Name = "ButtonNewLvl"
+        ButtonNewLvl.Size = New Size(90, 25)
+        ButtonNewLvl.TabIndex = 0
+        ButtonNewLvl.Text = "New LVL…"
+        ButtonNewLvl.UseVisualStyleBackColor = True
+        ' 
         ' ButtonRemovePiece
-        '
+        ' 
+        ButtonRemovePiece.Location = New Point(98, 3)
         ButtonRemovePiece.Margin = New Padding(8, 3, 0, 6)
         ButtonRemovePiece.Name = "ButtonRemovePiece"
         ButtonRemovePiece.Size = New Size(130, 25)
         ButtonRemovePiece.TabIndex = 1
         ButtonRemovePiece.Text = "Remove piece"
         ButtonRemovePiece.UseVisualStyleBackColor = True
-        '
+        ' 
         ' EdidRow
-        '
+        ' 
         EdidRow.AutoSize = True
         EdidRow.Controls.Add(LabelEdidPrefix)
         EdidRow.Controls.Add(TextBoxEdid)
@@ -572,20 +587,15 @@ Partial Class OutfitPicker_Form
         ButtonCancel.TabIndex = 1
         ButtonCancel.Text = "Cancel"
         ' 
-        ' Plugin
-        ' 
-        Plugin.Text = "Plugin"
-        Plugin.Width = 120
-        ' 
         ' OutfitPicker_Form
-        '
+        ' 
         AcceptButton = ButtonOk
         AutoScaleDimensions = New SizeF(7F, 15F)
         AutoScaleMode = AutoScaleMode.Font
         CancelButton = ButtonCancel
         ClientSize = New Size(1244, 581)
         Controls.Add(RootLayout)
-        Font = New Font("Segoe UI", 9.0F)
+        Font = New Font("Segoe UI", 9F)
         MaximizeBox = False
         MinimizeBox = False
         Name = "OutfitPicker_Form"

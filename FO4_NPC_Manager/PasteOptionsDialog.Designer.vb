@@ -176,12 +176,12 @@ Partial Class PasteOptionsDialog
         CheckBoxLmSkinTemplate.CheckState = CheckState.Checked
         CheckBoxLmSkinTemplate.Location = New Point(3, 99)
         CheckBoxLmSkinTemplate.Name = "CheckBoxLmSkinTemplate"
-        CheckBoxLmSkinTemplate.Size = New Size(155, 19)
+        CheckBoxLmSkinTemplate.Size = New Size(155, 18)
         CheckBoxLmSkinTemplate.TabIndex = 4
         CheckBoxLmSkinTemplate.Text = "LM skin template  (F4SE)"
-        '
+        ' 
         ' CheckBoxOutfit
-        '
+        ' 
         CheckBoxOutfit.AutoSize = True
         CheckBoxOutfit.Checked = True
         CheckBoxOutfit.CheckState = CheckState.Checked
@@ -190,12 +190,12 @@ Partial Class PasteOptionsDialog
         CheckBoxOutfit.Size = New Size(168, 19)
         CheckBoxOutfit.TabIndex = 5
         CheckBoxOutfit.Text = "Outfit  (NPC.DOFT default)"
-        '
+        ' 
         ' GroupBoxFace
         ' 
         GroupBoxFace.Controls.Add(FaceLayout)
         GroupBoxFace.Dock = DockStyle.Fill
-        GroupBoxFace.Location = New Point(12, 182)
+        GroupBoxFace.Location = New Point(12, 210)
         GroupBoxFace.Margin = New Padding(0, 0, 0, 6)
         GroupBoxFace.MinimumSize = New Size(0, 145)
         GroupBoxFace.Name = "GroupBoxFace"
@@ -285,7 +285,7 @@ Partial Class PasteOptionsDialog
         ' 
         GroupBoxFlags.Controls.Add(FlagsLayout)
         GroupBoxFlags.Dock = DockStyle.Fill
-        GroupBoxFlags.Location = New Point(12, 337)
+        GroupBoxFlags.Location = New Point(12, 365)
         GroupBoxFlags.Margin = New Padding(0, 0, 0, 6)
         GroupBoxFlags.MinimumSize = New Size(0, 60)
         GroupBoxFlags.Name = "GroupBoxFlags"
@@ -326,7 +326,7 @@ Partial Class PasteOptionsDialog
         QuickRow.Controls.Add(ButtonSelectAll)
         QuickRow.Controls.Add(ButtonDeselectAll)
         QuickRow.Dock = DockStyle.Fill
-        QuickRow.Location = New Point(12, 407)
+        QuickRow.Location = New Point(12, 435)
         QuickRow.Margin = New Padding(0, 0, 0, 8)
         QuickRow.Name = "QuickRow"
         QuickRow.Size = New Size(456, 28)
@@ -356,7 +356,7 @@ Partial Class PasteOptionsDialog
         ButtonRow.Controls.Add(ButtonCancel)
         ButtonRow.Dock = DockStyle.Fill
         ButtonRow.FlowDirection = FlowDirection.RightToLeft
-        ButtonRow.Location = New Point(15, 446)
+        ButtonRow.Location = New Point(15, 474)
         ButtonRow.Name = "ButtonRow"
         ButtonRow.Padding = New Padding(0, 6, 0, 0)
         ButtonRow.Size = New Size(450, 59)

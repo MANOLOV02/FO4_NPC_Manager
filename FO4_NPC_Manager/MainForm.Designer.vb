@@ -19,6 +19,8 @@ Partial Class MainForm
         TreeViewNpcsContextMenu = New ContextMenuStrip(components)
         MenuItemMarkChanged = New ToolStripMenuItem()
         MenuItemResetOverlay = New ToolStripMenuItem()
+        MenuItemSaveSelected = New ToolStripMenuItem()
+        MenuItemBuildChargen = New ToolStripMenuItem()
         SplitContainer1 = New SplitContainer()
         SplitContainerLeft = New SplitContainer()
         PanelNpcList = New Panel()
@@ -26,7 +28,7 @@ Partial Class MainForm
         TextBoxSearch = New TextBox()
         LabelSearch = New Label()
         CheckBoxOnlyChanged = New CheckBox()
-        TreeViewNPCs = New TreeView()
+        TreeViewNPCs = New BufferedTreeView()
         PanelRecordDetails = New Panel()
         TreeViewRecordDetails = New TreeView()
         LabelRecordTitle = New Label()
@@ -68,7 +70,6 @@ Partial Class MainForm
         SeparatorActions3 = New Label()
         ButtonSavePlugin = New Button()
         ButtonBuildCharGen = New Button()
-        ButtonRerollNpc = New Button()
         ButtonSaveSceneNif = New Button()
         PanelPreviewHost = New Panel()
         LabelStatus = New Label()
@@ -555,7 +556,6 @@ Partial Class MainForm
         PanelActionsToolbar.Controls.Add(SeparatorActions3)
         PanelActionsToolbar.Controls.Add(ButtonSavePlugin)
         PanelActionsToolbar.Controls.Add(ButtonBuildCharGen)
-        PanelActionsToolbar.Controls.Add(ButtonRerollNpc)
         PanelActionsToolbar.Controls.Add(ButtonSaveSceneNif)
         PanelActionsToolbar.Dock = DockStyle.Top
         PanelActionsToolbar.Location = New Point(11, 126)
@@ -744,18 +744,6 @@ Partial Class MainForm
         ButtonBuildCharGen.Text = "Build CharGen (loose)"
         ButtonBuildCharGen.UseVisualStyleBackColor = True
         '
-        ' ButtonRerollNpc
-        '
-        ButtonRerollNpc.AutoSize = True
-        ButtonRerollNpc.Enabled = False
-        ButtonRerollNpc.Margin = New Padding(2)
-        ButtonRerollNpc.MinimumSize = New Size(110, 28)
-        ButtonRerollNpc.Name = "ButtonRerollNpc"
-        ButtonRerollNpc.Size = New Size(110, 28)
-        ButtonRerollNpc.TabIndex = 14
-        ButtonRerollNpc.Text = "Re-roll (random)"
-        ButtonRerollNpc.UseVisualStyleBackColor = True
-        '
         ' ButtonSaveSceneNif
         '
         ButtonSaveSceneNif.AutoSize = True
@@ -815,21 +803,33 @@ Partial Class MainForm
         '
         ' TreeViewNpcsContextMenu
         '
-        TreeViewNpcsContextMenu.Items.AddRange(New ToolStripItem() {MenuItemMarkChanged, MenuItemResetOverlay})
+        TreeViewNpcsContextMenu.Items.AddRange(New ToolStripItem() {MenuItemMarkChanged, MenuItemResetOverlay, New ToolStripSeparator(), MenuItemSaveSelected, MenuItemBuildChargen})
         TreeViewNpcsContextMenu.Name = "TreeViewNpcsContextMenu"
-        TreeViewNpcsContextMenu.Size = New Size(200, 48)
+        TreeViewNpcsContextMenu.Size = New Size(220, 98)
         '
         ' MenuItemMarkChanged
         '
         MenuItemMarkChanged.Name = "MenuItemMarkChanged"
-        MenuItemMarkChanged.Size = New Size(199, 22)
+        MenuItemMarkChanged.Size = New Size(219, 22)
         MenuItemMarkChanged.Text = "Mark as changed"
         '
         ' MenuItemResetOverlay
         '
         MenuItemResetOverlay.Name = "MenuItemResetOverlay"
-        MenuItemResetOverlay.Size = New Size(199, 22)
+        MenuItemResetOverlay.Size = New Size(219, 22)
         MenuItemResetOverlay.Text = "Reset (discard changes)"
+        '
+        ' MenuItemSaveSelected
+        '
+        MenuItemSaveSelected.Name = "MenuItemSaveSelected"
+        MenuItemSaveSelected.Size = New Size(219, 22)
+        MenuItemSaveSelected.Text = "Save Selected (ESP/ESM)..."
+        '
+        ' MenuItemBuildChargen
+        '
+        MenuItemBuildChargen.Name = "MenuItemBuildChargen"
+        MenuItemBuildChargen.Size = New Size(219, 22)
+        MenuItemBuildChargen.Text = "Build CharGen (loose)"
         '
         ' MainForm
         '
@@ -878,10 +878,12 @@ Partial Class MainForm
     Friend WithEvents PanelRecordDetails As System.Windows.Forms.Panel
     Friend WithEvents PanelPreviewLayout As System.Windows.Forms.TableLayoutPanel
     Friend WithEvents PanelPreviewHost As System.Windows.Forms.Panel
-    Friend WithEvents TreeViewNPCs As System.Windows.Forms.TreeView
+    Friend WithEvents TreeViewNPCs As BufferedTreeView
     Friend WithEvents TreeViewNpcsContextMenu As System.Windows.Forms.ContextMenuStrip
     Friend WithEvents MenuItemMarkChanged As System.Windows.Forms.ToolStripMenuItem
     Friend WithEvents MenuItemResetOverlay As System.Windows.Forms.ToolStripMenuItem
+    Friend WithEvents MenuItemSaveSelected As System.Windows.Forms.ToolStripMenuItem
+    Friend WithEvents MenuItemBuildChargen As System.Windows.Forms.ToolStripMenuItem
     Friend WithEvents TextBoxSearch As System.Windows.Forms.TextBox
     Friend WithEvents LabelSearch As System.Windows.Forms.Label
     Friend WithEvents CheckBoxOnlyChanged As System.Windows.Forms.CheckBox
@@ -901,7 +903,6 @@ Partial Class MainForm
     Friend WithEvents LabelEdit As System.Windows.Forms.Label
     Friend WithEvents ButtonEditFace As System.Windows.Forms.Button
     Friend WithEvents ButtonBuildCharGen As System.Windows.Forms.Button
-    Friend WithEvents ButtonRerollNpc As System.Windows.Forms.Button
     Friend WithEvents ButtonSaveSceneNif As System.Windows.Forms.Button
     Friend WithEvents ButtonEditBody As System.Windows.Forms.Button
     Friend WithEvents ButtonEditOutfit As System.Windows.Forms.Button
