@@ -248,7 +248,9 @@ Public Class Preflight_Form
             ApplyRowColor(it)
         Next
 
-        ButtonOk.Enabled = (_brokenPlugins.Count = 0)
+        ' OK requires (a) at least one plugin checked (empty selection has nothing to load) AND
+        ' (b) no checked plugin with unsatisfied masters.
+        ButtonOk.Enabled = (_checkedPlugins.Count > 0 AndAlso _brokenPlugins.Count = 0)
         ' "Check Masters" affordance: shown whenever a checked plugin is broken. Clicking ticks the
         ' fixable masters (present on disk) transitively and reports any that are missing on disk.
         ButtonCheckMasters.Visible = (_brokenPlugins.Count > 0)

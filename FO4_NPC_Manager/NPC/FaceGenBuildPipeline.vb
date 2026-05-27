@@ -371,6 +371,35 @@ Public Module FaceGenBuildPipeline
         geom.SetVertexPositions(outFloat)
     End Sub
 
+    ''' <summary>Returns the union of bone names from the actor's face + body skeletons.
+    ''' Used by the bake to drop source shapes that skin to bones outside this set
+    ''' (e.g. MaleEyesGhoul.nif's GhoulTearDuct sub-shape, which skins to a custom
+    ''' 'GhoulTearDuct' bone that no actor skeleton exposes — CK drops it for that reason).
+    ''' Returns an empty (case-insensitive) HashSet if either skeleton load fails.</summary>
+    Public Function GetActorBoneNames(state As BakeState) As HashSet(Of String)
+        Dim names As New HashSet(Of String)(StringComparer.OrdinalIgnoreCase)
+        If state Is Nothing Then Return names
+        Try
+            Dim faceSkel = LoadFaceSkeleton(state)
+            If faceSkel IsNot Nothing AndAlso faceSkel.HasSkeleton Then
+                For Each k In faceSkel.SkeletonDictionary.Keys
+                    names.Add(k)
+                Next
+            End If
+        Catch ex As Exception
+        End Try
+        Try
+            Dim bodySkel = LoadBodySkeleton(state)
+            If bodySkel IsNot Nothing AndAlso bodySkel.HasSkeleton Then
+                For Each k In bodySkel.SkeletonDictionary.Keys
+                    names.Add(k)
+                Next
+            End If
+        Catch ex As Exception
+        End Try
+        Return names
+    End Function
+
     Private Function LoadFaceSkeleton(state As BakeState) As SkeletonInstance
         Dim bytes = FaceSkeletonResolver.TryLoadFaceSkeletonBytes(state.RaceFormID, state.IsFemale, state.PluginManager)
         If bytes Is Nothing Then Return Nothing

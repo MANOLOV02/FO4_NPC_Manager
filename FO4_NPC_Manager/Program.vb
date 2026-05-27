@@ -19,6 +19,17 @@ Module Program
         NPC_Config.LoadConfig()
         Config_App.Current.Game = Config_App.Game_Enum.Fallout4
 
+        ' Logger live BEFORE encoding init / preflight so every startup-time LogLazy is captured
+        ' (encoding override INI, TES4 SNAM parse, plugin scan). Was in MainForm_Load — moved
+        ' here because MainForm_Load runs AFTER the preflight has already loaded plugins.
+        ' Logger habilitado SOLO en Debug builds. En Release: Logger.Enabled stays default (False)
+        ' y todos los Logger.Log/LogLazy retornan early sin allocar — sin overhead. Si necesitás
+        ' diagnóstico en Release, descomentar manualmente y rebuild.
+#If DEBUG Then
+        Logger.Enabled = True
+        Logger.Initialize(IO.Path.Combine(Application.StartupPath, "fo4lib.log"))
+#End If
+
         ' Plugin text encoding MUST be configured BEFORE any plugin is loaded — mirror of xEdit's
         ' order: xeInit configures wbEncodingTrans (from sLanguage) before TwbFile loads. The
         ' preflight below loads + scans all plugins; even though FULL/EDID parsing is lazy, doing
@@ -26,6 +37,10 @@ Module Program
         ' encoding from the start. Process model = xEdit: configure → load all → edit.
         PluginEncodingSettings.InitializeForGame(Config_App.Current.Game)
         PluginEncodingSettings.SetLanguage(PluginEncodingSettings.ReadLanguageFromIni())
+        ' OverridePluginEncoding.ini (optional, appdir): user escape hatch for cases where the
+        ' game language and the plugin encoding diverge — canonical case is Korean FO4
+        ' (sLanguage=en + fan-translated UTF-8 plugins). File-based mirror of xEdit's -cp-trans.
+        PluginEncodingSettings.ApplyOverrideIni(AppDomain.CurrentDomain.BaseDirectory)
 
         Using preflight As New Preflight_Form()
             If preflight.ShowDialog() <> DialogResult.OK Then Return

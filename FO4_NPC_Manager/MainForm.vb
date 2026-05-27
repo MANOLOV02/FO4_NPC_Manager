@@ -1017,16 +1017,10 @@ Public Class MainForm
     Private Sub MainForm_Load(sender As Object, e As EventArgs) Handles MyBase.Load
         SearchDebounceTimer.Interval = 250
         Config_App.Current.Game = Config_App.Game_Enum.Fallout4
-        ' NOTE: plugin text encoding (InitializeForGame + SetLanguage) is configured in Program.Main
-        ' BEFORE the preflight loads any plugin — mirror of xEdit's "configure → load → edit" order.
-        ' Do NOT re-init here; that would run AFTER the preflight already loaded plugins.
-        ' Logger habilitado SOLO en Debug builds. En Release: Logger.Enabled stays default (False)
-        ' y todos los Logger.Log/LogLazy retornan early sin allocar — sin overhead. Si necesitás
-        ' diagnóstico en Release, descomentar manualmente y rebuild.
-#If DEBUG Then
-        FO4_Base_Library.Logger.Enabled = True
-        FO4_Base_Library.Logger.Initialize(IO.Path.Combine(Application.StartupPath, "fo4lib.log"))
-#End If
+        ' NOTE: plugin text encoding (InitializeForGame + SetLanguage + ApplyOverrideIni) AND the
+        ' Logger init both live in Program.Main, BEFORE the preflight loads any plugin — mirror
+        ' of xEdit's "configure → load → edit" order. Do NOT re-init either here; that would run
+        ' AFTER the preflight already loaded plugins, and would lose every startup-time log.
         ' Restore persisted UI toggles BEFORE InitializePreview (Shown handler snapshots
         ' checkbox state into _renderHost.Toggles via RenderToggles.FromMainCheckBoxes).
         CheckBoxRenderGore.Checked = NPC_Config.Current.RenderGore
@@ -11158,23 +11152,13 @@ Public Class MainForm
         If Not IsHairHeadPart(candidate) Then Return
         If Not (material.Hair OrElse material.GrayscaleToPaletteColor) Then Return
 
-        ' Resolve hairColorFormID by HeadPartType. Hair/Brow share HairColor (NPC.HCLF);
-        ' FacialHair uses FacialHairColor (NPC.BCLF) and falls back to HCLF when BCLF=0
-        ' so the beard picks up the same palette row as the hair. Verified against CK BA2
-        ' bake (FaceGenData/Fallout4.esm/*.nif): CK writes palScale=clfm.RemappingIndex(HCLF)
-        ' on beard shapes for NPCs that carry no BCLF — matches what our render produces.
-        ' Without this fallback, vanilla hair CLFMs (which carry RemappingIndex but no RGB)
-        ' would leave the beard at the BGSM default row (gris/rubio) and diverge from CK.
-        Dim hairColorFormID As UInteger = 0UI
-        Select Case candidate.HeadPartType
-            Case HeadPartTypeHair, 6
-                hairColorFormID = If(state IsNot Nothing, state.HairColorFormID, 0UI)
-            Case HeadPartTypeFacialHair
-                hairColorFormID = If(state IsNot Nothing, state.FacialHairColorFormID, 0UI)
-                If hairColorFormID = 0UI AndAlso state IsNot Nothing Then
-                    hairColorFormID = state.HairColorFormID
-                End If
-        End Select
+        ' Hair/FacialHair/Brow all read NPC.HCLF. NPC.BCLF is preserved in the ESP for
+        ' round-trip (Save ESP writes raw BCLF untouched) but ignored at render/bake time:
+        ' F4SE/LooksMenu in-game also only reads headData->hairColor (CharGenInterface.cpp
+        ' ProcessHairColor), and a workspace audit found BCLF used by 5/4473 NPCs total
+        ' (all from one CC pack, 4 redundant with HCLF). Unifying on HCLF aligns with the
+        ' in-game runtime the user actually sees.
+        Dim hairColorFormID As UInteger = If(state IsNot Nothing, state.HairColorFormID, 0UI)
 
         Dim shapeMatPath = "" ' for logging only — material doesn't carry its shape ref
 
@@ -11504,13 +11488,10 @@ Public Class MainForm
     ' `ShapeMaterialOverrides.ApplyMaterialSwap(formID, shapes, _pluginManager)`.
 
     Private Function ResolveHairTintColor(candidate As MeshCandidate, state As NPCVisualState, headPartColor As Nullable(Of Color)) As Nullable(Of Color)
+        ' Hair/FacialHair/Brow all read NPC.HCLF (see ApplyMaterialPaletteHairColor for the
+        ' rationale: BCLF ignored at render/bake, preserved untouched in the ESP).
         Select Case candidate.HeadPartType
-            Case HeadPartTypeHair, 6 ' Hair and Hairline/Brow use hair color
-                Dim hairColor = ResolveColorFormColor(state.HairColorFormID)
-                If hairColor.HasValue Then Return hairColor
-            Case HeadPartTypeFacialHair
-                Dim facialHairColor = ResolveColorFormColor(state.FacialHairColorFormID)
-                If facialHairColor.HasValue Then Return facialHairColor
+            Case HeadPartTypeHair, HeadPartTypeFacialHair, 6
                 Dim hairColor = ResolveColorFormColor(state.HairColorFormID)
                 If hairColor.HasValue Then Return hairColor
         End Select
@@ -11526,20 +11507,8 @@ Public Class MainForm
 
         If candidate Is Nothing OrElse state Is Nothing OrElse Not IsHairHeadPart(candidate) Then Return False
 
-        Dim colorFormID As UInteger = 0UI
-        Select Case candidate.HeadPartType
-            Case HeadPartTypeHair, 6 ' Hair and Hairline/Brow use hair color
-                colorFormID = state.HairColorFormID
-            Case HeadPartTypeFacialHair
-                ' FacialHair: prefer NPC.QNAM, fall back to NPC.HCLF. The scale (CLFM
-                ' RemappingIndex) is consumed by the rama 7634 only when the BGSM
-                ' already declares GrayscaleToPaletteColor=True — that's the BGSM-side
-                ' opt-in (e.g. beard_1bit.bgsm). BGSMs with GrayscaleToPaletteColor=False
-                ' (Stubble.bgsm) won't trigger that branch, and the fallback rama 7643
-                ' independently gates beard tint by FacialHairColorFormID-only so a
-                ' QNAM=0 beard with non-opt-in BGSM is not retinted.
-                colorFormID = If(state.FacialHairColorFormID <> 0UI, state.FacialHairColorFormID, state.HairColorFormID)
-        End Select
+        ' Hair/FacialHair/Brow all read NPC.HCLF (see ApplyMaterialPaletteHairColor).
+        Dim colorFormID As UInteger = state.HairColorFormID
 
         Dim clfm = ResolveColorFormData(colorFormID)
         If clfm Is Nothing OrElse Not clfm.HasRemappingIndex Then Return False
@@ -13929,11 +13898,17 @@ Public Class MainForm
             .ApplyPresetOverlayToNpcData = AddressOf ApplyPresetOverlayToNpcData,
             .CopyRoundTripOnlyFieldsFromRaw = AddressOf CopyRoundTripOnlyFieldsFromRaw,
             .SyncParallelCollectionsAfterOverlay = AddressOf SyncParallelCollectionsAfterOverlay,
-            .RunChargenBakeAndPack = Function(npcFid As UInteger, anchor As String, srcPlugin As String,
-                                               prog As IProgress(Of NpcOverrideSaver.SaveProgress)) _
-                                          As Task(Of (Summary As String, Success As Boolean, Skipped As Boolean))
-                                         Return RunChargenBakeAndPack(npcFid, anchor, srcPlugin, prog)
-                                     End Function,
+            .RunChargenBake = Function(npcFid As UInteger, anchor As String, srcPlugin As String,
+                                        prog As IProgress(Of NpcOverrideSaver.SaveProgress)) _
+                                   As Task(Of (Success As Boolean, Skipped As Boolean, Bundle As NpcFaceGenPacker.BakedNpcBundle, FailureMessage As String))
+                                  Return RunChargenBake(npcFid, anchor, srcPlugin, prog)
+                              End Function,
+            .RunChargenPackBatch = Function(anchor As String,
+                                             bundles As IReadOnlyList(Of NpcFaceGenPacker.BakedNpcBundle),
+                                             prog As IProgress(Of NpcOverrideSaver.SaveProgress)) _
+                                        As Task(Of (Summary As String, Success As Boolean))
+                                       Return RunChargenPackBatch(anchor, bundles, prog)
+                                   End Function,
             .OutfitDrafts = New List(Of OutfitDraft)(_outfitDrafts),
             .LeveledListDrafts = New List(Of LeveledListDraft)(_leveledListDrafts)
         }
@@ -14347,15 +14322,14 @@ Public Class MainForm
                         If(shapesFailed = 0, MessageBoxIcon.Information, MessageBoxIcon.Warning))
     End Sub
 
-    ''' <summary>Bake the NPC's FaceGen NIF + FaceCustomization textures and pack the four
-    ''' resulting loose files into the BA2 set anchored to <paramref name="anchorPluginPath"/>.
-    ''' Returns (summary, success) — Success is False when bake or pack failed (caller switches
-    ''' the MessageBox icon to Warning). Never throws — failures surface in Summary so the ESP
-    ''' write isn't masked.</summary>
-    Private Async Function RunChargenBakeAndPack(npcFormID As UInteger,
-                                                 anchorPluginPath As String,
-                                                 sourcePluginName As String,
-                                                 progress As IProgress(Of NpcOverrideSaver.SaveProgress)) As Task(Of (Summary As String, Success As Boolean, Skipped As Boolean))
+    ''' <summary>Phase 4a delegate: bake one NPC's FaceGen NIF + FaceCustomization textures to
+    ''' loose files. UI-thread / GL-bound. Returns a <see cref="NpcFaceGenPacker.BakedNpcBundle"/>
+    ''' identifying the loose so the orchestrator can batch them into one PackBatch call after the
+    ''' whole bake loop. Never throws — failures surface via Success=False + FailureMessage.</summary>
+    Private Async Function RunChargenBake(npcFormID As UInteger,
+                                          anchorPluginPath As String,
+                                          sourcePluginName As String,
+                                          progress As IProgress(Of NpcOverrideSaver.SaveProgress)) As Task(Of (Success As Boolean, Skipped As Boolean, Bundle As NpcFaceGenPacker.BakedNpcBundle, FailureMessage As String))
         ReportSaveProgress(progress, "Baking CharGen NIF + textures…", "", False, 0, 0)
 
         ' Bake the SAME identity the "Build CharGen (loose)" button uses for the rendered NPC: its
@@ -14371,62 +14345,80 @@ Public Class MainForm
         End If
 
         ' GL-bound bake (FaceTintCompositor GPU pipeline + GL.GetTexImage readback) — MUST stay on
-        ' the UI thread, which owns the OpenGL context. Runs synchronously here: no await has happened
-        ' yet, so we are still on the UI thread the orchestrator called us from.
+        ' the UI thread, which owns the OpenGL context. Runs synchronously: no await has happened
+        ' yet, so we are still on the UI thread the orchestrator called us from. Single Await
+        ' Task.Yield at entry would already have yielded; placing it here keeps the function async.
+        Await Task.Yield()
         Dim bakeResult As FaceGenBuilder.BuildResult
         Try
-            ' willBePacked:=True — Save ESP repacks the _2 loose into a BA2 under canonical names
-            ' (NpcFaceGenPacker), so the NIF must embed canonical texture paths. UNCHANGED behaviour.
+            ' willBePacked:=True — Save ESP normally repacks the _2 loose into a BA2 under canonical
+            ' names (NpcFaceGenPacker), so the NIF must embed canonical texture paths. When the BA2
+            ' pack is skipped (loose-only mode, Ba2Version_FO4=0), canonical paths are STILL what the
+            ' engine looks up at runtime — _2 suffix is only the disk filename, not the NIF reference.
             bakeResult = FaceGenBuilder.BuildCharGen(bakeFormID, _pluginManager, _appliedPresets,
                                                      _renderHost, AddressOf ApplyShapeMaterialOverrides,
                                                      willBePacked:=True, lmSkinTemplateResolver:=AddressOf ResolveLmSkinTemplate)
         Catch ex As Exception
-            Return ($"{vbCrLf}{vbCrLf}(CharGen bake failed: {ex.Message})", False, False)
+            Return (False, False, Nothing, $"CharGen bake failed: {ex.Message}")
         End Try
 
-        ' No FaceGen head parts (non-human race, etc.) → nothing to bake/pack. That's a SKIP, not a
-        ' failure: the ESP write still succeeds; report the skip in the summary without an error icon.
         If bakeResult.Skipped Then
-            Return ($"{vbCrLf}{vbCrLf}(CharGen skipped — no FaceGen head parts for this NPC)", True, True)
+            ' No FaceGen head parts (non-human race, etc.) → nothing to bake/pack. SKIP, not failure.
+            Return (True, True, Nothing, "")
         End If
-
         If Not bakeResult.Success Then
-            Return ($"{vbCrLf}{vbCrLf}(CharGen bake failed — see npc_preview.log)", False, False)
+            Return (False, False, Nothing, "CharGen bake failed")
         End If
 
-        ' Phase 2: pack the four bake outputs. originPlugin matches FaceGenBuilder's path
-        ' resolution (PluginManager.GetOriginatingPluginName) — same string segment used
-        ' to write the loose, so the packer reads the right files.
-        ' Pack reads the same identity the bake wrote: the resolved model source, in its origin
-        ' mod's FaceCustomization directory. originPlugin + formIdLow derive from bakeFormID, NOT
-        ' the raw npcFormID — that is the fix for "one path, the NPC's origin-mod directory".
         Dim originPlugin = _pluginManager.GetOriginatingPluginName(bakeFormID)
         Dim formIdLow = (bakeFormID And &HFFFFFFUI)
-
         Logger.LogLazy(Function() $"[CHARGEN-ID] save npcFormID=0x{npcFormID:X8} bakeFormID=0x{bakeFormID:X8} → originPlugin='{originPlugin}' formIdLow=0x{formIdLow:X8}")
 
-        ' Capture the config singletons on the UI thread before going to the worker (don't read
-        ' shared Config_App/NPC_Config from a background thread).
+        Dim bundle As New NpcFaceGenPacker.BakedNpcBundle With {
+            .OriginPlugin = originPlugin,
+            .FormIdLow = formIdLow,
+            .DebugSandbox = FaceGenBuilder.DebugMode
+        }
+        Return (True, False, bundle, "")
+    End Function
+
+    ''' <summary>Phase 4b delegate: take the bundles collected from successful per-NPC bakes and
+    ''' pack them into the BA2 set anchored to <paramref name="anchorPluginPath"/> in ONE batched
+    ''' <see cref="NpcFaceGenPacker.PackBatch"/> call. Runs on a worker thread (Task.Run).
+    '''
+    ''' Honors the loose-only sentinel: when <see cref="NPC_Config.Ba2Version_FO4"/>=0, returns
+    ''' a summary saying the bake outputs were left as loose and skips the pack entirely.
+    ''' Never throws — pack failures surface via Success=False + Summary.</summary>
+    Private Async Function RunChargenPackBatch(anchorPluginPath As String,
+                                                bundles As IReadOnlyList(Of NpcFaceGenPacker.BakedNpcBundle),
+                                                progress As IProgress(Of NpcOverrideSaver.SaveProgress)) As Task(Of (Summary As String, Success As Boolean))
+        If bundles Is Nothing OrElse bundles.Count = 0 Then
+            Return ("", True)
+        End If
+
+        ' Capture config on the UI thread before going to the worker — same pattern the original
+        ' RunChargenBakeAndPack used.
         Dim dataPath = _dataPath
         Dim game = Config_App.Current.Game
         Dim ba2Version = NPC_Config.Current.Ba2Version_FO4
-        Dim debugMode = FaceGenBuilder.DebugMode
 
-        ' Phase 2: pack the four bake outputs. This is pure file I/O + DDS compression — NO GL — so it
-        ' runs on a WORKER thread (Await Task.Run). That frees the UI thread the GL bake above held:
-        ' the window stays responsive and the pack's sub-steps (Compressing / Writing BA2 / Removing)
-        ' animate live, because progress.Report marshals back to the UI thread while the worker runs.
-        ' originPlugin + formIdLow derive from bakeFormID (the NPC's origin-mod directory).
+        ' Loose-only sentinel: skip the pack. The 4 loose files per NPC stay on disk where the
+        ' engine auto-discovers them at runtime. Matches the user's intent for the
+        ' "None - Loose files" option in the SaveEsp BA2 version combo.
+        If ba2Version = 0UI Then
+            Dim n = bundles.Count
+            Return ($"BA2 pack skipped — {n} NPC{If(n = 1, "", "s")} left as loose files (None - Loose mode).", True)
+        End If
+
         Try
             Dim packResult = Await Task.Run(
                 Function()
-                    Return NpcFaceGenPacker.PackForNpc(
-                        anchorPluginPath, dataPath, game,
-                        originPlugin, formIdLow, ba2Version, debugMode,
+                    Return NpcFaceGenPacker.PackBatch(
+                        anchorPluginPath, dataPath, game, ba2Version, bundles,
                         Sub(p As NpcFaceGenPacker.PackProgress)
                             Select Case p.Phase
                                 Case NpcFaceGenPacker.PackPhase.BuildingBundle
-                                    ReportSaveProgress(progress, "Compressing FaceGen bundle…", p.Detail, p.Max > 0, p.Max, p.Current)
+                                    ReportSaveProgress(progress, "Compressing FaceGen bundles…", p.Detail, p.Max > 0, p.Max, p.Current)
                                 Case NpcFaceGenPacker.PackPhase.WritingArchive
                                     ReportSaveProgress(progress, "Writing BA2 archive(s)…", p.Detail, False, 0, 0)
                                 Case NpcFaceGenPacker.PackPhase.DeletingLoose
@@ -14438,21 +14430,55 @@ Public Class MainForm
                 End Function)
 
             If Not packResult.Success Then
-                ' Bake succeeded but pack failed — loose files remain on disk for the user to
-                ' inspect or pack manually. Don't delete them.
-                Return ($"{vbCrLf}{vbCrLf}(CharGen baked OK but BA2 pack failed: {packResult.ErrorMessage})", False, False)
+                Return ($"(CharGen baked OK but BA2 pack failed: {packResult.ErrorMessage})", False)
             End If
 
-            Dim wrote = packResult.WrittenArchives.Count
-            Dim skipped = packResult.SkippedArchives.Count
-            If wrote = 0 AndAlso skipped > 0 Then
-                Return ($"{vbCrLf}{vbCrLf}CharGen unchanged ({skipped} BA2 archive{If(skipped = 1, "", "s")} already had this NPC).", True, False)
+            ' Dedup across flushes: same archive path appears once per flush it was rewritten in.
+            ' For the user-facing count we want the DISTINCT archive files touched, not the total
+            ' write operations.
+            Dim distinctWritten = packResult.WrittenArchives.Distinct(StringComparer.OrdinalIgnoreCase).ToList()
+            Dim distinctSkipped = packResult.SkippedArchives.Distinct(StringComparer.OrdinalIgnoreCase).
+                                      Where(Function(p) Not distinctWritten.Contains(p, StringComparer.OrdinalIgnoreCase)).ToList()
+            Dim wrote = distinctWritten.Count
+            Dim skipped = distinctSkipped.Count
+            Dim committed = packResult.BundlesCommitted
+            Dim total = bundles.Count
+            Dim flushes = packResult.FlushesCommitted
+            Dim missingSources = packResult.MissingSources.Count
+            Dim missingBundles = total - committed
+            Dim summary As String
+
+            ' Gate the wording on COMMITTED bundles, not on wrote/skipped archive counts. When 0
+            ' bundles committed (all failed) but partial entries reached Pack, ArchivePackager can
+            ' still report the existing archive as Skipped (byte-identical for whatever fragment
+            ' made it through) — saying "BA2 unchanged" in that case is a half-truth that hides
+            ' the failure. Branch order matters: success/unchanged use committed; failure uses
+            ' missingBundles.
+            If committed = 0 Then
+                summary = $"BA2 pack: 0/{total} NPC{If(total = 1, "", "s")} packed."
+            ElseIf wrote = 0 AndAlso skipped > 0 Then
+                ' Byte-identical: every entry of every committed bundle matched existing CRC32 →
+                ' no rewrite, ArchivePackager reported the archives as Skipped.
+                summary = $"BA2 unchanged ({committed}/{total} NPC{If(total = 1, "", "s")} already present byte-identical in {skipped} archive{If(skipped = 1, "", "s")})."
+            Else
+                ' At least one entry differed → archive(s) rewritten with the bundle entries
+                ' replacing the prior CRC-mismatched ones, plus stream-copy of preserved entries.
+                summary = $"Packed {committed}/{total} NPC{If(total = 1, "", "s")} into {wrote} BA2 archive{If(wrote = 1, "", "s")}" &
+                          If(flushes > 1, $" ({flushes} flushes).", ".")
             End If
-            Return ($"{vbCrLf}{vbCrLf}CharGen packed into {wrote} BA2 archive{If(wrote = 1, "", "s")}.", True, False)
+            If missingBundles > 0 Then
+                ' Hard discrepancy: we baked N OK and only N - missingBundles fully landed in BA2.
+                ' Surface the count in the MessageBox; the per-path breakdown lives in the log
+                ' (Debug build only — Release has Logger.Enabled=False, so no log file is written).
+                ' Don't reference the log here so the Release message doesn't point users at a
+                ' non-existent file.
+                summary &= $" ⚠ {missingBundles} NPC{If(missingBundles = 1, "", "s")} failed to pack ({missingSources} file{If(missingSources = 1, "", "s")} unaccounted for)."
+            End If
+            Return (summary, True)
         Catch ex As Exception
             ' Preserve the "never throws" contract — pack failures surface in the summary, not as a
             ' thrown exception that would mark the whole (already-written) save as failed.
-            Return ($"{vbCrLf}{vbCrLf}(CharGen baked OK but BA2 pack failed: {ex.Message})", False, False)
+            Return ($"(CharGen baked OK but BA2 pack failed: {ex.Message})", False)
         End Try
     End Function
 

@@ -92,10 +92,17 @@ Public Module NpcOverrideSaver
         ''' <summary>MainForm helper: rebuild the parser's parallel collections (TintLayerStructs,
         ''' FaceMorphTrailingBytes, MorphKeysOrdered) on the shadow after overlay copy.</summary>
         Public SyncParallelCollectionsAfterOverlay As Action(Of NPC_Data)
-        ''' <summary>FaceGen bake delegate: invoked once per NPC when the user opted into CharGen
-        ''' bake + BA2 pack. Kept as a callback because the bake pipeline lives in MainForm/
-        ''' FaceGenBuilder and pulls GL resources from <see cref="RenderHost"/>.</summary>
-        Public RunChargenBakeAndPack As Func(Of UInteger, String, String, IProgress(Of SaveProgress), Task(Of (Summary As String, Success As Boolean, Skipped As Boolean)))
+        ''' <summary>FaceGen bake delegate: invoked once per NPC during Phase 4a. Writes the 4 loose
+        ''' files (NIF + 3 DDS) on the UI thread (GL-bound), returns a <see cref="NpcFaceGenPacker.BakedNpcBundle"/>
+        ''' identifying that NPC's bake outputs so the orchestrator can batch them into one pack call.
+        ''' Bundle is Nothing when the bake was skipped (no FaceGen head parts) or failed.</summary>
+        Public RunChargenBake As Func(Of UInteger, String, String, IProgress(Of SaveProgress), Task(Of (Success As Boolean, Skipped As Boolean, Bundle As NpcFaceGenPacker.BakedNpcBundle, FailureMessage As String)))
+
+        ''' <summary>BA2 pack delegate: invoked ONCE in Phase 4b with the bundles collected from all
+        ''' successful Phase 4a bakes. Honors the loose-only sentinel (NPC_Config.Ba2Version_FO4 = 0)
+        ''' by skipping the pack and leaving the loose on disk. Returns a single summary the orchestrator
+        ''' appends to the user-facing message.</summary>
+        Public RunChargenPackBatch As Func(Of String, IReadOnlyList(Of NpcFaceGenPacker.BakedNpcBundle), IProgress(Of SaveProgress), Task(Of (Summary As String, Success As Boolean)))
         ''' <summary>All outfit drafts authored in the Edit Outfit "Create" tab (MainForm's
         ''' <c>_outfitDrafts</c>, minus the throwaway preview sentinel). When the save target's
         ''' <c>SaveNewOutfits</c> is True, the orchestrator emits as OTFT records every draft that is
@@ -134,22 +141,27 @@ Public Module NpcOverrideSaver
                                ExecuteWritePhases(target, inputs, ctx, progress, result)
                            End Sub)
 
-            ' Phase 4: CharGen bake, once per NPC. RunChargenBakeAndPack runs the GL-bound texture
-            ' bake synchronously on the UI thread (the GL context lives there) and then awaits the
-            ' BA2 pack on a worker thread, so the UI only blocks for the (short) GL bake, not the
-            ' (long) compression. Yield first so the "NPC k/N" header paints before the GL bake.
+            ' Phase 4: CharGen bake + BA2 pack, split into two sub-phases:
+            '   4a) Per-NPC GL bake (UI thread) — writes the 4 loose files. Collects a BakedNpcBundle
+            '       for each successful bake into 'bundles' (the deferred pack list).
+            '   4b) Single PackBatch call (worker thread) with all collected bundles. ArchivePackager
+            '       still does CRC32 diff per entry so override semantics are preserved; the win is
+            '       O(N²)→O(K) BA2 rewrites where K = ceil(totalCompressedBytes / MEMORY_CAP_BYTES)
+            '       (typically K=1 for normal save sizes). When NPC_Config.Ba2Version_FO4=0
+            '       (loose-only sentinel), the PackBatch delegate skips the pack entirely and the
+            '       loose stay on disk.
             If target.GenerateChargen Then
                 Dim totalBakes = inputs.Count
                 Dim bakedOk = 0
                 Dim bakedFail = 0
                 Dim bakedSkip = 0
+                Dim bundles As New List(Of NpcFaceGenPacker.BakedNpcBundle)
                 For i = 0 To inputs.Count - 1
                     If bakeCancel.IsCancellationRequested Then
                         result.BakeCancelled = True
                         Exit For
                     End If
                     Dim npcInput = inputs(i)
-                    Await Task.Yield()
                     Dim label = If(npcInput.Npc IsNot Nothing AndAlso Not String.IsNullOrEmpty(npcInput.Npc.EditorID),
                                    npcInput.Npc.EditorID, npcInput.NpcFormID.ToString("X8"))
                     progress?.Report(New SaveProgress With {
@@ -159,17 +171,40 @@ Public Module NpcOverrideSaver
                         .Max = totalBakes,
                         .Current = i + 1
                     })
-                    Dim chargenRes = Await ctx.RunChargenBakeAndPack(npcInput.NpcFormID, target.TargetPath, npcInput.SourcePluginName, progress)
+                    ' Yield to the WinForms message pump BEFORE the synchronous GL-bound bake
+                    ' grabs the UI thread for the next NPC. Without this, a Stop click between
+                    ' NPCs has no chance to register — the synchronous bake call blocks the pump
+                    ' until completion. Task.Delay(1) (≈ one timer tick) is stronger than
+                    ' Task.Yield(): Yield just posts the continuation back to the SyncContext,
+                    ' Delay actually drains the queued WM_PAINT + WM_LBUTTONDOWN events.
+                    ' Re-check cancel immediately after the yield in case Stop fired during it.
+                    Await Task.Delay(1)
+                    If bakeCancel.IsCancellationRequested Then
+                        result.BakeCancelled = True
+                        Exit For
+                    End If
+                    Dim bakeRes = Await ctx.RunChargenBake(npcInput.NpcFormID, target.TargetPath, npcInput.SourcePluginName, progress)
                     ' Skipped (no FaceGen head parts — non-human race, etc.) is counted separately from
-                    ' OK/failed, mirroring the loose batch, so the save summary reports it as a SKIP.
-                    If chargenRes.Skipped Then
+                    ' OK/failed; reported as a SKIP in the summary.
+                    If bakeRes.Skipped Then
                         bakedSkip += 1
-                    ElseIf chargenRes.Success Then
+                    ElseIf bakeRes.Success AndAlso bakeRes.Bundle IsNot Nothing Then
                         bakedOk += 1
+                        bundles.Add(bakeRes.Bundle)
                     Else
                         bakedFail += 1
                     End If
                 Next
+
+                ' Phase 4b: single PackBatch call with all successful bundles.
+                Dim packSummary As String = ""
+                Dim packSuccess As Boolean = True
+                If bundles.Count > 0 Then
+                    Dim packRes = Await ctx.RunChargenPackBatch(target.TargetPath, bundles, progress)
+                    packSummary = If(packRes.Summary, "")
+                    packSuccess = packRes.Success
+                End If
+
                 If totalBakes = 1 Then
                     ' Single-NPC: terse summary. Only mention skip/failure when there is one (no noise).
                     result.ChargenSummary = $"{vbCrLf}{vbCrLf}CharGen bake: {bakedOk} OK" &
@@ -181,8 +216,9 @@ Public Module NpcOverrideSaver
                         If(bakedFail > 0, $", {bakedFail} failed", "") &
                         If(result.BakeCancelled, " (cancelled — remaining NPCs not baked)", "") & "."
                 End If
-                result.ChargenSuccess = (bakedFail = 0)
-                If bakedFail > 0 Then result.VerifierIcon = MessageBoxIcon.Warning
+                If packSummary <> "" Then result.ChargenSummary &= vbCrLf & packSummary
+                result.ChargenSuccess = (bakedFail = 0) AndAlso packSuccess
+                If Not result.ChargenSuccess Then result.VerifierIcon = MessageBoxIcon.Warning
             End If
 
             result.Success = True

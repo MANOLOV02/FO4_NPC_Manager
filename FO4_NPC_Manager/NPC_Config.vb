@@ -17,9 +17,14 @@ Public Class NPC_Config
     Public Property RenderGore As Boolean = True
 
     ''' <summary>BA2 header version written when packing the baked CharGen for FO4. FO4-only
-    ''' (SSE packs BSA v105, unaffected). 8 = Next Gen (default; loads only on NG Fallout4.exe
-    ''' 1.10.980+). 1 = Old Gen / universal (loads on both OG and NG). Passed straight to the
-    ''' BA2 writer via PackForNpc → PackagerRequest.Ba2Version.</summary>
+    ''' (SSE packs BSA v105, unaffected). Values:
+    '''   8 = Next Gen (default; loads only on NG Fallout4.exe 1.10.980+).
+    '''   1 = Old Gen / universal (loads on both OG and NG).
+    '''   0 = Loose-only sentinel. Skips BA2 pack entirely; the baked .nif + 3 .dds are left
+    '''       as loose files under Data\Meshes\... and Data\Textures\... where the engine
+    '''       auto-discovers them. Useful for debugging / modders who want to inspect the bake
+    '''       output without packing.
+    ''' Passed to NpcFaceGenPacker.PackBatch → PackagerRequest.Ba2Version (skipped when 0).</summary>
     Public Property Ba2Version_FO4 As UInteger = 8UI
 
     Private Shared ReadOnly ConfigFilePath As String = Path.Combine(Application.StartupPath, "npc_config.json")

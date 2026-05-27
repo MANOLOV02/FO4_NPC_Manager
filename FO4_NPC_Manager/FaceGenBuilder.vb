@@ -127,6 +127,22 @@ Public Module FaceGenBuilder
                                  willBePacked As Boolean,
                                  Optional lmSkinTemplateResolver As NpcRecordOverlay.ResolveLmSkinTemplateDelegate = Nothing) As BuildResult
 
+        ' Claim the GL context for THIS bake before any GL operation. OpenTK's "current context"
+        ' is per-thread, process-wide — multiple PreviewControls coexist (MainForm + EditFace_Form
+        ' + EditBody_Form etc.), each with its own context. Any sibling's Invalidate→OnPaint will
+        ' MakeCurrent on its own control and steal the context from ours. Without this guard, the
+        ' bake's GL ops (texture upload, GetTexImage readback, etc.) target whatever context was
+        ' last current — which intermittently caused "diffuse GL texture id 0" bails after the
+        ' user occluded the window (a sibling's WM_PAINT fired on restore and stole the context).
+        ' No-op when already current.
+        Try
+            host?.PreviewCtl?.MakeCurrent()
+        Catch ex As Exception
+            Dim msgL = ex.Message
+            Dim typeL = ex.GetType().Name
+            Logger.LogLazy(Function() $"[FACEBAKE-FAIL] MakeCurrent threw at bake entry npcFormID=0x{npcFormID:X8}: {typeL}: {msgL}")
+        End Try
+
         ' Build the visual state for the NPC being baked (NPC Y), independent of whatever NPC
         ' the preview is showing (NPC X). The bake must NEVER read state from the host. We
         ' parse the NPC record + apply LooksMenu preset overlay (same overlay the live render
@@ -248,6 +264,10 @@ Public Module FaceGenBuilder
         End If
         Dim bakeState As FaceGenBuildPipeline.BakeState =
             FaceGenBuildPipeline.BuildBakeState(npcFormID, pluginManager, appliedPresets, regionsFile)
+        ' Names of every bone the actor's face + body skeletons expose. Used below
+        ' to drop source shapes whose skin references a bone outside this set
+        ' (CK-equivalent filter — see the call site for the rationale).
+        Dim actorBoneNames As HashSet(Of String) = FaceGenBuildPipeline.GetActorBoneNames(bakeState)
         ' Skin-tint strength for SkinTint shapes (shaderType=5). It's the NPC's QNAM/SkinTone-layer
         ' alpha — a SEPARATE float from the skin tone RGB (NpcRecordOverlay derives both into
         ' TextureLightingFloats: RGB from the SkinTone palette, A from the layer opacity, else the
@@ -337,11 +357,63 @@ Public Module FaceGenBuilder
                     shapesSkippedDup += 1
                     Continue For
                 End If
+                ' CK-equivalent filter: drop a source shape whose skin references a bone
+                ' that doesn't exist in the actor's face/body skeleton. Vanilla example:
+                ' MaleEyesGhoul.nif holds two shapes — the iris (skins to 'Head') and
+                ' a tear-duct sub-shape (skins to a custom 'GhoulTearDuct' bone that the
+                ' actor's skeleton.nif does not expose). CK drops the second; we mirror
+                ' that here so the bake doesn't carry an unrenderable extra shape.
+                Dim skipUnknownBone As String = Nothing
+                If actorBoneNames IsNot Nothing AndAlso actorBoneNames.Count > 0 Then
+                    Try
+                        Dim sti = TryCast(srcShape, NiflySharp.Blocks.BSTriShape)
+                        If sti IsNot Nothing AndAlso sti.SkinInstanceRef IsNot Nothing AndAlso sti.SkinInstanceRef.Index >= 0 Then
+                            Dim srcSi = TryCast(srcNif.Blocks(sti.SkinInstanceRef.Index), NiflySharp.Blocks.BSSkin_Instance)
+                            If srcSi IsNot Nothing AndAlso srcSi.Bones IsNot Nothing Then
+                                For bi As Integer = 0 To srcSi.Bones.Count - 1
+                                    Dim bRef = srcSi.Bones.GetBlockRef(bi)
+                                    If bRef < 0 Then Continue For
+                                    Dim bNode = TryCast(srcNif.Blocks(bRef), NiflySharp.Blocks.NiNode)
+                                    Dim bName = bNode?.Name?.String
+                                    If Not String.IsNullOrEmpty(bName) AndAlso Not actorBoneNames.Contains(bName) Then
+                                        skipUnknownBone = bName
+                                        Exit For
+                                    End If
+                                Next
+                            End If
+                        End If
+                    Catch ex As Exception
+                    End Try
+                End If
+                If skipUnknownBone IsNot Nothing Then
+                    Dim hnLog = hdptName
+                    Dim snLog = sourceName
+                    Dim bnLog = skipUnknownBone
+                    Logger.LogLazy(Function() $"[FACEBAKE] dropping shape '{snLog}' from HDPT '{hnLog}': skins to bone '{bnLog}' not in actor skeleton")
+                    Continue For
+                End If
                 Try
                     Dim cloned = nif.CloneShape_Original(srcShape, destName, srcNif)
                     If cloned IsNot Nothing Then
                         clonedShapeNames.Add(destName)
                         shapesCloned += 1
+
+                        ' CBBE source for the female rear head ships with a malformed SSFFile
+                        ' ("...\FacePssf", no extension). CK blanks SSFFile when baking; clear
+                        ' only this exact (shape name, value) pair so we don't touch anything
+                        ' else.
+                        Try
+                            If destName = "FemaleHeadHumanRearTEMP" Then
+                                Dim subIdx = TryCast(cloned, NiflySharp.Blocks.BSSubIndexTriShape)
+                                If subIdx IsNot Nothing AndAlso Not IsNothing(subIdx.SegmentData) AndAlso subIdx.SegmentData.SSFFile IsNot Nothing Then
+                                    Const MalformedFacePssf As String = "Meshes\Actors\Character\CharacterAssets\FacePssf"
+                                    If subIdx.SegmentData.SSFFile.Content = MalformedFacePssf Then
+                                        subIdx.SegmentData.SSFFile.Content = ""
+                                    End If
+                                End If
+                            End If
+                        Catch ex As Exception
+                        End Try
 
                         ' Match CK's behaviour: in a baked FaceGen NIF the shader carries no
                         ' BGSM/BGEM external path — all material data lives inline in the shader
@@ -506,6 +578,29 @@ Public Module FaceGenBuilder
                     Dim rh = If(bakeState.IsFemale, bakeState.Race.FemaleHeight, bakeState.Race.MaleHeight)
                     If rh > 0.0F Then raceHeight = rh
                 End If
+
+                ' Build the set of bone block indices that SOME BSSkin::Instance references
+                ' (either as .Bones[i] or as .SkeletonRoot). Used below to drop bone NiNodes
+                ' that ended up orphaned after the strip+clone passes (e.g. MaleEyes.nif's
+                ' look-at dummy 'EyeLeftDummy001', or 'GhoulTearDuct' after we dropped its
+                ' shape via the unknown-bone filter). Mirrors CK behaviour.
+                Dim referencedBones As New HashSet(Of Integer)
+                For Each anyBlk In nif.Blocks
+                    Dim si = TryCast(anyBlk, NiflySharp.Blocks.BSSkin_Instance)
+                    If si IsNot Nothing Then
+                        If si.Bones IsNot Nothing Then
+                            For bi As Integer = 0 To si.Bones.Count - 1
+                                Dim bRef = si.Bones.GetBlockRef(bi)
+                                If bRef >= 0 Then referencedBones.Add(bRef)
+                            Next
+                        End If
+                        If si.SkeletonRoot IsNot Nothing AndAlso si.SkeletonRoot.Index >= 0 Then
+                            referencedBones.Add(si.SkeletonRoot.Index)
+                        End If
+                    End If
+                Next
+
+                Dim droppedOrphanBones As Integer = 0
                 For Each childIdx In faceGenRoot.Children.Indices.ToList()
                     Dim childBlk = nif.GetBlock(childIdx)
                     If TypeOf childBlk Is INiShape Then
@@ -535,8 +630,21 @@ Public Module FaceGenBuilder
                         '    lo igualamos por paridad byte. Fuente real del mesh/esqueleto = "HEAD".
                         '  - race height: escalar SOLO la translation del nodo por raceHeight (ver arriba).
                         '    Geometría y bind intactos.
-                        boneChildIdx.Add(childIdx)
                         Dim boneNode = TryCast(childBlk, NiflySharp.Blocks.NiNode)
+                        ' Orphan-bone guard: drop this bone NiNode from root.Children iff
+                        '   - no BSSkin::Instance references it (Bones[] or SkeletonRoot)
+                        '   - it has no children of its own (no subtree depends on it)
+                        ' Conservative: any extra reference and we keep it. The post-reparent
+                        ' RemoveUnreferencedBlocks call (below) actually evicts the block.
+                        If boneNode IsNot Nothing _
+                           AndAlso Not referencedBones.Contains(childIdx) _
+                           AndAlso (boneNode.Children Is Nothing OrElse boneNode.Children.Count = 0) Then
+                            Dim bNameLog = If(boneNode.Name?.String, "")
+                            Logger.LogLazy(Function() $"[FACEBAKE] dropping orphan bone NiNode('{bNameLog}'): no skin references it, no children")
+                            droppedOrphanBones += 1
+                            Continue For
+                        End If
+                        boneChildIdx.Add(childIdx)
                         If boneNode IsNot Nothing Then
                             If boneNode.Name IsNot Nothing AndAlso boneNode.Name.String = "HEAD" Then
                                 boneNode.Name.String = "Head"
@@ -552,10 +660,18 @@ Public Module FaceGenBuilder
                 boneChildIdx.Add(skinnedIdx)
                 faceGenRoot.Children.SetIndices(boneChildIdx)
                 skinnedNode.Children.SetIndices(shapeChildIdx)
-                Logger.LogLazy(Function() $"[FACEBAKE] reparent OK: {shapeChildIdx.Count} shapes bajo BSFaceGenNiNodeSkinned, {boneChildIdx.Count - 1} huesos en root")
+                Logger.LogLazy(Function() $"[FACEBAKE] reparent OK: {shapeChildIdx.Count} shapes bajo BSFaceGenNiNodeSkinned, {boneChildIdx.Count - 1} huesos en root, {droppedOrphanBones} huesos huerfanos descartados")
             End If
         Catch ex As Exception
             Logger.LogLazy(Function() $"[FACEBAKE] reparent BSFaceGenNiNodeSkinned FAILED: {ex.GetType().Name}: {ex.Message}")
+        End Try
+
+        ' Second pass to evict the now-unreferenced orphan bone blocks (the loop above
+        ' only removed them from root.Children; they still sit in nif.Blocks). This is
+        ' the same idempotent helper called pre-reparent.
+        Try
+            nif.RemoveUnreferencedBlocks()
+        Catch ex As Exception
         End Try
 
         result.ShapesKept = shapesCloned
@@ -760,6 +876,10 @@ Public Module FaceGenBuilder
         Try
             wrapper = New NifRenderableShape(srcNif, srcShape, 0)
         Catch ex As Exception
+            Dim shapeNameL = sourceName
+            Dim msgL = ex.Message
+            Dim typeL = ex.GetType().Name
+            Logger.LogLazy(Function() $"[FACEBAKE-FAIL] NifRenderableShape wrap shape='{shapeNameL}': {typeL}: {msgL}")
             Return
         End Try
 
@@ -817,6 +937,10 @@ Public Module FaceGenBuilder
         Try
             applyMaterialOverrides(candidate, state, {DirectCast(wrapper, IRenderableShape)})
         Catch ex As Exception
+            Dim shapeNameL = sourceName
+            Dim msgL = ex.Message
+            Dim typeL = ex.GetType().Name
+            Logger.LogLazy(Function() $"[FACEBAKE-FAIL] applyMaterialOverrides shape='{shapeNameL}': {typeL}: {msgL}")
             Return
         End Try
 
@@ -1067,11 +1191,15 @@ Public Module FaceGenBuilder
         ' Logger.Enabled, so it costs nothing in release. Restored in Finally.
         Dim prevPerLayerDiffLog = FaceTintCompositor.PerLayerDiffLog
         Dim prevDumpMaskDir = FaceTintCompositor.DumpMaskDir
+        Dim prevCurrentNpcFormID = FaceTintCompositor.CurrentNpcFormID
         If DebugMode Then
             FaceTintCompositor.PerLayerDiffLog = True
+            FaceTintCompositor.CurrentNpcFormID = npcFormID
             ' TEMP DEBUG: dump every applied mask/texture (all layers, all channels) to TGA next
             ' to the FaceCustomization output, so each can be inspected as the GPU sampled it.
-            Dim maskDir = Path.Combine(Config_App.Current.DataPath, "Textures", "Actors", "Character", "FaceCustomization", originPlugin, "mask Tests")
+            ' Per-NPC subfolder so files from different NPCs in the same bake run don't
+            ' overwrite each other (the layer names are generic — L00_Poblado, etc.).
+            Dim maskDir = Path.Combine(Config_App.Current.DataPath, "Textures", "Actors", "Character", "FaceCustomization", originPlugin, "mask Tests", $"0x{npcFormID:X8}")
             Try : Directory.CreateDirectory(maskDir) : FaceTintCompositor.DumpMaskDir = maskDir : Catch : End Try
         End If
         Dim pipelineResult As FaceTintCompositor.FaceTintPipelineResult
@@ -1086,6 +1214,7 @@ Public Module FaceGenBuilder
         Finally
             FaceTintCompositor.PerLayerDiffLog = prevPerLayerDiffLog
             FaceTintCompositor.DumpMaskDir = prevDumpMaskDir
+            FaceTintCompositor.CurrentNpcFormID = prevCurrentNpcFormID
         End Try
 
         ' Track any fresh textures the pipeline produced so we can delete them on exit.
@@ -1163,6 +1292,12 @@ Public Module FaceGenBuilder
                     handle.Free()
                 End Try
             Catch ex As Exception
+                Dim slotL = entry.Slot
+                Dim suffixL = entry.Suffix
+                Dim resultIdL = entry.ResultId
+                Dim msgL = ex.Message
+                Dim typeL = ex.GetType().Name
+                Logger.LogLazy(Function() $"[FACEBAKE-FAIL] GL.GetTexImage slot={slotL}{suffixL} ResultId={resultIdL} npcFormID=0x{npcFormID:X8}: {typeL}: {msgL}")
                 Continue For
             End Try
 
@@ -1177,6 +1312,15 @@ Public Module FaceGenBuilder
                     outputDxgiFormat:=entry.Dxgi,
                     generateMipMaps:=True, generatedMipLevels:=mipLevels)
             Catch ex As Exception
+                Dim slotL = entry.Slot
+                Dim suffixL = entry.Suffix
+                Dim dxgiL = entry.Dxgi
+                Dim wL = w
+                Dim hL = h
+                Dim mipsL = mipLevels
+                Dim msgL = ex.Message
+                Dim typeL = ex.GetType().Name
+                Logger.LogLazy(Function() $"[FACEBAKE-FAIL] DDS encode slot={slotL}{suffixL} dxgi={dxgiL} {wL}x{hL} mips={mipsL} npcFormID=0x{npcFormID:X8}: {typeL}: {msgL}")
                 Continue For
             End Try
 
@@ -1188,6 +1332,23 @@ Public Module FaceGenBuilder
                 Logger.LogLazy(Function() $"[FACEBAKE] write FAILED '{outFile}': {ex.Message}")
                 Continue For
             End Try
+
+            ' DebugMode: dump the final composited buffer as uncompressed TGA next to the _2.dds
+            ' so the bake output can be inspected lossless without a DDS viewer (e.g. <formId>_d_2.tga
+            ' sits alongside <formId>_d_2.dds). Release: no-op (DebugMode=False).
+            If DebugMode Then
+                Try
+                    Dim tgaSuffix = Path.ChangeExtension(entry.Suffix, "tga")
+                    Dim outTga = Path.Combine(outDir, $"{formIdLow:X8}{tgaSuffix}")
+                    FaceTintCompositor.WriteBgraToTga(outTga, bgra, w, h)
+                    Logger.LogLazy(Function() $"[FACEBAKE] wrote '{outTga}'")
+                Catch ex As Exception
+                    Dim slotL = entry.Slot
+                    Dim msgL = ex.Message
+                    Dim typeL = ex.GetType().Name
+                    Logger.LogLazy(Function() $"[FACEBAKE-FAIL] TGA dump slot={slotL} npcFormID=0x{npcFormID:X8}: {typeL}: {msgL}")
+                End Try
+            End If
 
             Dim embeddedSuffix = If(willBePacked, entry.CanonSuffix, entry.Suffix)
             ' Full "Data\Textures\..." prefix, matching CK vanilla exactly (CK's loose FaceGen renders
@@ -1221,10 +1382,15 @@ Public Module FaceGenBuilder
         Try
             Dim bytes = FilesDictionary_class.GetBytes(normalizedKey)
             If bytes Is Nothing OrElse bytes.Length = 0 Then
+                Logger.LogLazy(Function() $"[FACEBAKE-FAIL] FilesDictionary.GetBytes returned empty for key='{normalizedKey}'")
                 Return Nothing
             End If
             Return bytes
         Catch ex As Exception
+            Dim keyL = normalizedKey
+            Dim msgL = ex.Message
+            Dim typeL = ex.GetType().Name
+            Logger.LogLazy(Function() $"[FACEBAKE-FAIL] FilesDictionary.GetBytes threw for key='{keyL}': {typeL}: {msgL}")
             Return Nothing
         End Try
     End Function

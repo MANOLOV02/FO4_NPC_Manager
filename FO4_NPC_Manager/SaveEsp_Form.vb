@@ -366,14 +366,24 @@ Public Class SaveEsp_Form
     End Sub
 
     ''' <summary>FO4-only BA2 header version selector. Hidden for SSE (which packs BSA v105 — no
-    ''' version choice). Index 0 = v8 (Next Gen, default); index 1 = v1 (Old Gen / universal).
-    ''' Persists into NPC_Config.Ba2Version_FO4, read at pack time by RunChargenBakeAndPack.</summary>
+    ''' version choice). Three options:
+    '''   index 0 = v8 (Next Gen, default)
+    '''   index 1 = v1 (Old Gen / universal)
+    '''   index 2 = 0 (None / Loose) — skip BA2 pack entirely, leave the bake outputs as loose
+    ''' Persists into NPC_Config.Ba2Version_FO4, read at pack time.</summary>
     Private Sub InitBa2VersionCombo()
         ComboBoxBa2Version.Items.Clear()
         ComboBoxBa2Version.Items.Add("8 - Next Gen (NG)")
         ComboBoxBa2Version.Items.Add("1 - Old Gen (OG / universal)")
+        ComboBoxBa2Version.Items.Add("None - Loose files (skip BA2 pack)")
         ' Set selection BEFORE wiring the handler so this init does not write config back.
-        ComboBoxBa2Version.SelectedIndex = If(NPC_Config.Current.Ba2Version_FO4 = 1UI, 1, 0)
+        Dim idx As Integer
+        Select Case NPC_Config.Current.Ba2Version_FO4
+            Case 0UI : idx = 2
+            Case 1UI : idx = 1
+            Case Else : idx = 0     ' 8 / unknown -> default NG
+        End Select
+        ComboBoxBa2Version.SelectedIndex = idx
         AddHandler ComboBoxBa2Version.SelectedIndexChanged, AddressOf OnBa2VersionChanged
 
         Dim isFo4 As Boolean = (Config_App.Current.Game = Config_App.Game_Enum.Fallout4)
@@ -382,8 +392,11 @@ Public Class SaveEsp_Form
     End Sub
 
     Private Sub OnBa2VersionChanged(sender As Object, e As EventArgs)
-        ' Index 0 = v8 (Next Gen, default); index 1 = v1 (Old Gen / universal).
-        NPC_Config.Current.Ba2Version_FO4 = If(ComboBoxBa2Version.SelectedIndex = 1, 1UI, 8UI)
+        Select Case ComboBoxBa2Version.SelectedIndex
+            Case 1 : NPC_Config.Current.Ba2Version_FO4 = 1UI       ' OG
+            Case 2 : NPC_Config.Current.Ba2Version_FO4 = 0UI       ' Loose-only sentinel
+            Case Else : NPC_Config.Current.Ba2Version_FO4 = 8UI    ' NG default
+        End Select
     End Sub
 
     ''' <summary>Encoding selector entries. Mirror of xEdit -cp-trans command-line param values
