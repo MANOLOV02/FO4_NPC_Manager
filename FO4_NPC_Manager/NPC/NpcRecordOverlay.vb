@@ -321,11 +321,9 @@ Public Module NpcRecordOverlay
             If opt.Slot <> CUShort(TintSlot.SkinTone) Then Continue For
             If tl.Discriminator <> 1 Then Continue For   ' Palette only — color source for skin tone
 
-            ' Same resolver the face compositor uses so face and body trace back to one source.
-            Dim resolved = FaceTintLayerBuilder.ResolvePaletteLayerEffective(tl, opt)
-            If resolved.Color <> Color.Empty Then
+            If tl.Color <> Color.Empty Then
                 Dim alphaByte As Integer = Math.Max(0, Math.Min(255, CInt(Math.Round(CSng(tl.Value) * 2.55F))))
-                Return Color.FromArgb(alphaByte, resolved.Color.R, resolved.Color.G, resolved.Color.B)
+                Return Color.FromArgb(alphaByte, tl.Color.R, tl.Color.G, tl.Color.B)
             End If
         Next
 

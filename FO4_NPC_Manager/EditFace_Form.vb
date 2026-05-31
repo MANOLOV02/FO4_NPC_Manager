@@ -1449,11 +1449,17 @@ Public Class EditFace_Form
         Dim it = TryCast(ComboBoxTintPalette.SelectedItem, TintPaletteItem)
         If it Is Nothing OrElse it.IsCustom Then Return  ' "Custom RGB" is informational; user clicks the button to actually pick.
         Dim tl = p.FaceTintLayers(_currentTintIndex)
-        ' BuildPresetFromState resolves ColorID by RGB-match at save time (MainForm.vb:8722-8748),
-        ' so the canonical truth is the layer's RGB, not the TemplateColorIndex. Setting both keeps
-        ' the in-memory state internally consistent.
+        ' Canonical truth is the layer's RGB; the index is always re-derived from the colour via the
+        ' single resolver (alpha-closest to opacity among equal-colour presets), identical to Save.
+        ' Picking a swatch sets the colour; the resolver then picks the matching preset, so two
+        ' presets sharing a colour collapse to the same index the Save path would compute.
         tl.Color = it.SwatchColor
-        tl.TemplateColorIndex = CInt(it.TemplateIndex)
+        Dim optPick = _race?.FindTintOption(tl.Index, _isFemale)
+        If optPick IsNot Nothing Then
+            tl.TemplateColorIndex = FaceTintLayerBuilder.ResolveTemplateColorIndex(tl.Color, tl.Value / 100.0F, optPick, _pluginManager)
+        Else
+            tl.TemplateColorIndex = CInt(it.TemplateIndex)
+        End If
         PanelTintColorSwatch.BackColor = it.SwatchColor
         If promoted Then
             RefreshTintsList()
@@ -1486,9 +1492,13 @@ Public Class EditFace_Form
             If _currentTintIndex < 0 OrElse _currentTintIndex >= p.FaceTintLayers.Count Then Return
             Dim tl = p.FaceTintLayers(_currentTintIndex)
             tl.Color = Color.FromArgb(255, dlg.Color.R, dlg.Color.G, dlg.Color.B)
-            ' TemplateColorIndex left as-is — Save (BuildPresetFromState → ResolveTemplateColorIdToAbsolute)
-            ' will re-resolve by RGB-match, falling back to opt.TemplateColors[0].TemplateIndex when
-            ' the custom RGB isn't in the palette. That's the same fallback LooksMenu in-game uses.
+            ' Re-derive the index from the new colour through the single resolver, identical to Save:
+            ' a palette preset whose CLFM RGB matches → that preset (alpha-closest to opacity among
+            ' equal-colour presets); no match → -1 (custom). Keeps live preview and Save consistent.
+            Dim optCustom = _race?.FindTintOption(tl.Index, _isFemale)
+            If optCustom IsNot Nothing Then
+                tl.TemplateColorIndex = FaceTintLayerBuilder.ResolveTemplateColorIndex(tl.Color, tl.Value / 100.0F, optCustom, _pluginManager)
+            End If
             PanelTintColorSwatch.BackColor = tl.Color
             If promoted Then
                 RefreshTintsList()

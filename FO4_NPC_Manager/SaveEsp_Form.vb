@@ -246,13 +246,23 @@ Public Class SaveEsp_Form
     ''' <summary>NPC count for the current batch run; the determinate bar maximum.</summary>
     Private _batchNpcCount As Integer = 0
 
+    ''' <summary>The plugin filename the anchor NPC is currently parented to in the MainForm tree.
+    ''' Equals <c>selectedInput.SourcePluginName</c> = the plugin that wins the override post-merge.
+    ''' Used by <see cref="PopulateExistingList"/> to pre-select EXACTLY this plugin when it appears
+    ''' in the existing-auto-gen list (the user's expectation when re-saving an NPC whose override
+    ''' already lives in a specific auto-gen plugin: the dialog defaults to THAT plugin, not "any
+    ''' plugin that happens to contain this NPC"). Falls back to ContainsTargetNpc match, then to
+    ''' index 0, when the anchor's source is a master or an unsaved plugin name.</summary>
+    Private ReadOnly _anchorSourcePluginName As String
+
     Public Sub New(dataPath As String,
                    existingPlugins As List(Of ExistingPlugin),
                    selectedInputs As List(Of NpcOverrideSaver.NpcSaveInput),
                    allDirtyInputs As List(Of NpcOverrideSaver.NpcSaveInput),
                    sourceMasterIsEsm As Boolean,
                    saveCtx As NpcOverrideSaver.SaveContext,
-                   Optional defaultToSelected As Boolean = False)
+                   Optional defaultToSelected As Boolean = False,
+                   Optional anchorSourcePluginName As String = "")
         InitializeComponent()
         _dataPath = dataPath
         _existingPlugins = If(existingPlugins, New List(Of ExistingPlugin)())
@@ -263,6 +273,7 @@ Public Class SaveEsp_Form
         _targetNpcFormID = _selectedInput.NpcFormID
         _sourceMasterIsEsm = sourceMasterIsEsm
         _saveCtx = saveCtx
+        _anchorSourcePluginName = If(anchorSourcePluginName, "")
 
         ' Scope radios: "Selected" vs "All changed". The default depends on the entry point: the
         ' toolbar Save button defaults to "All changed"; the tree context-menu "Save Selected"
@@ -484,10 +495,37 @@ Public Class SaveEsp_Form
     Private Sub PopulateExistingList()
         ListBoxExisting.BeginUpdate()
         ListBoxExisting.Items.Clear()
-        For Each ep In _existingPlugins
+        ' Preselection priority — exact > heuristic > default:
+        '   1) The plugin that hosts the anchor NPC in the MainForm tree (= its post-merge
+        '      SourcePluginName). Re-saving an NPC from "NPC_Manager_3.esp" defaults to
+        '      "NPC_Manager_3.esp", NOT to "NPC_Manager.esp" just because that plugin happens
+        '      to also contain the NPC.
+        '   2) Any auto-gen plugin that currently overrides the anchor (ContainsTargetNpc) —
+        '      kicks in when the anchor's source is a master (Fallout4.esm etc.) so the tree
+        '      parent is a master rather than an auto-gen plugin.
+        '   3) Index 0 — first plugin alphabetically, deterministic fallback.
+        Dim anchorMatchIndex As Integer = -1
+        Dim containsMatchIndex As Integer = -1
+        For i = 0 To _existingPlugins.Count - 1
+            Dim ep = _existingPlugins(i)
             ListBoxExisting.Items.Add(ep)
+            If anchorMatchIndex < 0 AndAlso _anchorSourcePluginName <> "" AndAlso
+               String.Equals(ep.FileName, _anchorSourcePluginName, StringComparison.OrdinalIgnoreCase) Then
+                anchorMatchIndex = i
+            End If
+            If containsMatchIndex < 0 AndAlso ep.ContainsTargetNpc Then containsMatchIndex = i
         Next
-        If ListBoxExisting.Items.Count > 0 Then ListBoxExisting.SelectedIndex = 0
+        If ListBoxExisting.Items.Count > 0 Then
+            Dim preselectIndex As Integer
+            If anchorMatchIndex >= 0 Then
+                preselectIndex = anchorMatchIndex
+            ElseIf containsMatchIndex >= 0 Then
+                preselectIndex = containsMatchIndex
+            Else
+                preselectIndex = 0
+            End If
+            ListBoxExisting.SelectedIndex = preselectIndex
+        End If
         ListBoxExisting.EndUpdate()
     End Sub
 

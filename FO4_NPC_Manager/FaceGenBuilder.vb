@@ -59,6 +59,44 @@ Public Module FaceGenBuilder
         End Select
     End Function
 
+    ''' <summary>FormID local del FaceGen segun convencion CK. Full plugins: stripear el high byte
+    ''' (&amp; 0xFFFFFF). ESL/light plugins (high byte 0xFE): stripear TAMBIEN el light-slot de 12 bits,
+    ''' dejando solo el record de 12 bits (&amp; 0xFFF). CK nombra el NIF FaceGen y las texturas
+    ''' FaceCustomization con este id enmascarado, zero-padded a 8 hex. Verificado: NPC ESL runtime
+    ''' 0xFE032800 -> CK escribe "00000800" (record 0x800), NO "00032800". Bug previo: usaba &amp; 0xFFFFFF
+    ''' para todos, dejando el light-slot del ESL en el nombre -> el juego no encontraba la textura.</summary>
+    Private Function FaceGenLocalId(npcFormID As UInteger) As UInteger
+        If (npcFormID >> 24) = &HFEUI Then Return npcFormID And &HFFFUI
+        Return npcFormID And &HFFFFFFUI
+    End Function
+
+    ''' <summary>LUT 0..255 sRGB-byte -> gamma2.2-byte (decode sRGB a linear, encode 2.2). El engine
+    ''' almacena el diffuse FaceCustomization en gamma-2.2; el compositor acumula en sRGB.</summary>
+    Private ReadOnly _srgbToG22Lut As Byte() = BuildSrgbToG22Lut()
+    Private Function BuildSrgbToG22Lut() As Byte()
+        Dim t(255) As Byte
+        For i As Integer = 0 To 255
+            Dim s As Double = i / 255.0
+            Dim lin As Double = If(s <= 0.04045, s / 12.92, Math.Pow((s + 0.055) / 1.055, 2.4))
+            Dim g As Double = Math.Pow(Math.Max(lin, 0.0), 1.0 / 2.2)
+            t(i) = CByte(Math.Max(0, Math.Min(255, Math.Round(g * 255.0))))
+        Next
+        Return t
+    End Function
+
+    ''' <summary>Aplica el encode de storage sRGB->gamma2.2 a los canales RGB de un buffer BGRA
+    ''' (alpha intacto). Solo para el DIFFUSE; N/S son datos lineales y no se tocan.</summary>
+    Private Sub ApplySrgbToGamma22Diffuse(bgra As Byte())
+        Dim n As Integer = bgra.Length
+        Dim i As Integer = 0
+        Do While i + 3 < n
+            bgra(i) = _srgbToG22Lut(bgra(i))          ' B
+            bgra(i + 1) = _srgbToG22Lut(bgra(i + 1))  ' G
+            bgra(i + 2) = _srgbToG22Lut(bgra(i + 2))  ' R
+            i += 4
+        Loop
+    End Sub
+
     ''' <summary>Resolve the FaceGen NIF path the engine would load for this NPC. Path layout
     ''' is "Meshes\Actors\Character\FaceGenData\FaceGeom\&lt;origin plugin filename&gt;\&lt;FormID8hex&gt;.nif"
     ''' where origin plugin is the master that owns this FormID — high-byte of the global
@@ -67,7 +105,7 @@ Public Module FaceGenBuilder
     Public Function ResolveFaceGenPath(npcFormID As UInteger, pluginManager As PluginManager) As String
         Dim originPlugin = pluginManager.GetOriginatingPluginName(npcFormID)
         If String.IsNullOrEmpty(originPlugin) Then Return ""
-        Dim formIdLow = (npcFormID And &HFFFFFFUI)
+        Dim formIdLow = FaceGenLocalId(npcFormID)
         Return $"Meshes\Actors\Character\FaceGenData\FaceGeom\{originPlugin}\{formIdLow:X8}.nif"
     End Function
 
@@ -452,6 +490,7 @@ Public Module FaceGenBuilder
                         ' those up directly.
                         If hdpt.PartType = PartTypeFace AndAlso host IsNot Nothing AndAlso state IsNot Nothing Then
                             BakeFaceTextures(nif, cloned, srcNif, srcShape,
+                                             hdpt, effectiveHeadPartType, applyMaterialOverrides,
                                              npcFormID, originPlugin,
                                              pluginManager, appliedPresets, host,
                                              state, willBePacked,
@@ -681,7 +720,7 @@ Public Module FaceGenBuilder
         '   DebugMode=False (default): <formID>.nif → pisa el CK bake; engine usa este al cargar.
         '   DebugMode=True: <formID>_2.nif → sandbox al lado del CK bake, sin pisar; engine
         '                   sigue usando el CK; el comparator diff-ea against CK BA2 baseline.
-        Dim formIdLow = (npcFormID And &HFFFFFFUI)
+        Dim formIdLow = FaceGenLocalId(npcFormID)
         Dim dataPathForNif = Config_App.Current.DataPath
         If String.IsNullOrEmpty(dataPathForNif) Then
             result.Summary = "DataPath unset; cannot write .nif"
@@ -849,29 +888,30 @@ Public Module FaceGenBuilder
     '''   - HairFemale03 / NeckGore / Mouth: render applies tints (128/26 grey), CK leaves white
     '''     because the shader doesn't consume them.
     ''' AlphaBlendMode Unknown→None left as-is per user; investigating separately.</summary>
-    Private Sub ApplyRenderResolvedMaterialToShape(nif As Nifcontent_Class_Manolo,
-                                                    cloned As INiShape,
-                                                    srcNif As Nifcontent_Class_Manolo,
-                                                    srcShape As INiShape,
-                                                    hdpt As HDPT_Data,
-                                                    effectiveHeadPartType As Integer,
-                                                    state As MainForm.NPCVisualState,
-                                                    pluginManager As PluginManager,
-                                                    applyMaterialOverrides As ApplyShapeMaterialOverridesDelegate,
-                                                    skinTintAlpha As Single)
-        Dim sourceName As String = If(cloned.Name?.String, "")
-        If applyMaterialOverrides Is Nothing Then
-            Return
-        End If
+    ''' <summary>Resuelve el material FINAL de un head-part igual que la ruta de render: envuelve el
+    ''' shape SOURCE como IRenderableShape, arma el MeshCandidate del HDPT (incluyendo el fix CBBE
+    ''' UsesBodyTexture) y corre el MISMO delegate <paramref name="applyMaterialOverrides"/> (cadena
+    ''' TXST/FTST + MNAM-BGSM + tints + palette) que usa el render. Devuelve el material con D/N/S ya
+    ''' RESUELTOS por el FaceTextureSet del NPC — p.ej. para NPCs viejos el head OldHumanFemaleHead_d
+    ''' pisa al BaseFemaleHead_d del material crudo del NIF — o Nothing si no hay resolver / falla el
+    ''' wrap. Single source of truth: lo consumen <see cref="ApplyRenderResolvedMaterialToShape"/>
+    ''' (transcribe el material al shader inline del .nif2) y <see cref="BakeFaceTextures"/> (base D/N/S
+    ''' del FaceTintCompositor), de modo que render y bake parten de las MISMAS texturas resueltas.
+    ''' GetRelatedMaterial construye un material fresco por llamada, así resolver dos veces (una por
+    ''' consumidor) es idempotente y sin estado compartido.</summary>
+    Private Function ResolveRenderResolvedShapeMaterial(srcNif As Nifcontent_Class_Manolo,
+                                                        srcShape As INiShape,
+                                                        hdpt As HDPT_Data,
+                                                        effectiveHeadPartType As Integer,
+                                                        state As MainForm.NPCVisualState,
+                                                        pluginManager As PluginManager,
+                                                        applyMaterialOverrides As ApplyShapeMaterialOverridesDelegate) As FO4UnifiedMaterial_Class
+        If applyMaterialOverrides Is Nothing Then Return Nothing
+        Dim sourceName As String = If(srcShape?.Name?.String, "")
 
-        ' Wrap the SOURCE shape (not the cloned one) as IRenderableShape so the resolver sees
-        ' the original shader with its BGSM path intact. The cloned shape's shader was already
-        ' overwritten earlier in BuildCharGen with shad.Name="" (CK-faithful: bake NIFs carry
-        ' material inline, not via external BGSM linkage). If we wrapped the cloned shape, the
-        ' wrapper's GetRelatedMaterial would only see the inline fields and lose every BGSM
-        ' field that lives outside the shader (Wrinkles texture, AO Normal slot, etc.).
-        ' The resolver reads from the source NIF; we transcribe its result into the cloned
-        ' shape's inline shader at the bottom of this function.
+        ' Wrap the SOURCE shape (not any cloned one) as IRenderableShape so the resolver sees the
+        ' original shader with its BGSM path intact (a cloned shape's shader gets Name="" inline and
+        ' would lose every BGSM field outside the shader — Wrinkles texture, AO Normal slot, etc.).
         Dim wrapper As NifRenderableShape
         Try
             wrapper = New NifRenderableShape(srcNif, srcShape, 0)
@@ -880,7 +920,7 @@ Public Module FaceGenBuilder
             Dim msgL = ex.Message
             Dim typeL = ex.GetType().Name
             Logger.LogLazy(Function() $"[FACEBAKE-FAIL] NifRenderableShape wrap shape='{shapeNameL}': {typeL}: {msgL}")
-            Return
+            Return Nothing
         End Try
 
         ' CBBE-style override fix mirrors MainForm.CollectHeadPartCandidate: if the HDPT is
@@ -926,13 +966,6 @@ Public Module FaceGenBuilder
             .UseSolidTint = (hdpt.ColorFormID <> 0UI)
         }
 
-        ' PRE-RESOLVER snapshot: what the wrapper's material looks like right after the source
-        ' NIF + BGSM was loaded, BEFORE the resolver chain runs.
-        Dim preMat = wrapper.ShapeMaterial?.material
-        If preMat IsNot Nothing Then
-        Else
-        End If
-
         ' Run the same per-shape resolver the render uses. Mutates wrapper.ShapeMaterial in-place.
         Try
             applyMaterialOverrides(candidate, state, {DirectCast(wrapper, IRenderableShape)})
@@ -941,10 +974,25 @@ Public Module FaceGenBuilder
             Dim msgL = ex.Message
             Dim typeL = ex.GetType().Name
             Logger.LogLazy(Function() $"[FACEBAKE-FAIL] applyMaterialOverrides shape='{shapeNameL}': {typeL}: {msgL}")
-            Return
+            Return Nothing
         End Try
 
-        Dim mat = wrapper.ShapeMaterial?.material
+        Return wrapper.ShapeMaterial?.material
+    End Function
+
+    Private Sub ApplyRenderResolvedMaterialToShape(nif As Nifcontent_Class_Manolo,
+                                                    cloned As INiShape,
+                                                    srcNif As Nifcontent_Class_Manolo,
+                                                    srcShape As INiShape,
+                                                    hdpt As HDPT_Data,
+                                                    effectiveHeadPartType As Integer,
+                                                    state As MainForm.NPCVisualState,
+                                                    pluginManager As PluginManager,
+                                                    applyMaterialOverrides As ApplyShapeMaterialOverridesDelegate,
+                                                    skinTintAlpha As Single)
+        ' Resolve the FINAL material exactly like the render (TXST/FTST + MNAM-BGSM + tints + palette);
+        ' shared with the FaceTint bake so both transcribe / composite the SAME resolved textures.
+        Dim mat = ResolveRenderResolvedShapeMaterial(srcNif, srcShape, hdpt, effectiveHeadPartType, state, pluginManager, applyMaterialOverrides)
         If mat Is Nothing Then
             Return
         End If
@@ -1072,6 +1120,9 @@ Public Module FaceGenBuilder
                                  cloned As INiShape,
                                  srcNif As Nifcontent_Class_Manolo,
                                  srcShape As INiShape,
+                                 hdpt As HDPT_Data,
+                                 effectiveHeadPartType As Integer,
+                                 applyMaterialOverrides As ApplyShapeMaterialOverridesDelegate,
                                  npcFormID As UInteger,
                                  originPlugin As String,
                                  pluginManager As PluginManager,
@@ -1081,11 +1132,16 @@ Public Module FaceGenBuilder
                                  willBePacked As Boolean,
                                  Optional lmSkinTemplateResolver As NpcRecordOverlay.ResolveLmSkinTemplateDelegate = Nothing)
         Logger.LogLazy(Function() $"[FACEBAKE] enter npcFormID=0x{npcFormID:X8} originPlugin='{originPlugin}' srcShape='{srcShape?.Name?.ToString()}'")
-        ' --- 1. Resolve the face source material (D/N/S texture paths) from the source NIF. ---
-        Dim relMat = srcNif.GetRelatedMaterial(srcShape)
-        Dim mat = relMat?.material
+        ' --- 1. Resolve the face source material (D/N/S texture paths) the SAME way the render does
+        ' (TXST/FTST + MNAM-BGSM + tints + palette) — NOT the raw NIF material. For age/FTST NPCs the
+        ' FaceTextureSet pisa the head Diffuse (e.g. BaseFemaleHead_d → OldHumanFemaleHead_d); CK and
+        ' the live render composite the FaceTint onto THAT resolved head, so the bake must too —
+        ' otherwise the baked _d sits on the wrong base head and never byte-matches CK. Same helper
+        ' ApplyRenderResolvedMaterialToShape uses to transcribe the .nif2 material (single source of
+        ' truth: render base == .nif2 inline == FaceTint compositor base). ---
+        Dim mat = ResolveRenderResolvedShapeMaterial(srcNif, srcShape, hdpt, effectiveHeadPartType, state, pluginManager, applyMaterialOverrides)
         If mat Is Nothing Then
-            Logger.LogLazy(Function() $"[FACEBAKE] BAIL: source material is Nothing (npcFormID=0x{npcFormID:X8})")
+            Logger.LogLazy(Function() $"[FACEBAKE] BAIL: resolved source material is Nothing (npcFormID=0x{npcFormID:X8})")
             Return
         End If
 
@@ -1192,6 +1248,7 @@ Public Module FaceGenBuilder
         Dim prevPerLayerDiffLog = FaceTintCompositor.PerLayerDiffLog
         Dim prevDumpMaskDir = FaceTintCompositor.DumpMaskDir
         Dim prevCurrentNpcFormID = FaceTintCompositor.CurrentNpcFormID
+        Dim maskDir As String = Nothing
         If DebugMode Then
             FaceTintCompositor.PerLayerDiffLog = True
             FaceTintCompositor.CurrentNpcFormID = npcFormID
@@ -1199,7 +1256,7 @@ Public Module FaceGenBuilder
             ' to the FaceCustomization output, so each can be inspected as the GPU sampled it.
             ' Per-NPC subfolder so files from different NPCs in the same bake run don't
             ' overwrite each other (the layer names are generic — L00_Poblado, etc.).
-            Dim maskDir = Path.Combine(Config_App.Current.DataPath, "Textures", "Actors", "Character", "FaceCustomization", originPlugin, "mask Tests", $"0x{npcFormID:X8}")
+            maskDir = Path.Combine(Config_App.Current.DataPath, "Textures", "Actors", "Character", "FaceCustomization", originPlugin, "mask Tests", $"0x{npcFormID:X8}")
             Try : Directory.CreateDirectory(maskDir) : FaceTintCompositor.DumpMaskDir = maskDir : Catch : End Try
         End If
         Dim pipelineResult As FaceTintCompositor.FaceTintPipelineResult
@@ -1217,6 +1274,16 @@ Public Module FaceGenBuilder
             FaceTintCompositor.CurrentNpcFormID = prevCurrentNpcFormID
         End Try
 
+        ' PRISTINE BASEIN dump (NPC-side, DebugMode). El compositor dumpea los layer/swap pristinos
+        ' in-place; aca agregamos la base (no llega al compositor como path). MISMO dumper unico:
+        ' FaceTintCompositor.WritePristineTga(sourcePath, outPath) -> decode CPU/DirectXTex
+        ' (byte-identico a texconv/CK, validado en Tools/PristineDumpProbe), nunca la GPU.
+        If DebugMode AndAlso Not String.IsNullOrEmpty(maskDir) Then
+            FaceTintCompositor.WritePristineTga(diffuseKey, Path.Combine(maskDir, "BASEIN_Diffuse.tga"))
+            FaceTintCompositor.WritePristineTga(normalKey, Path.Combine(maskDir, "BASEIN_Normal.tga"))
+            FaceTintCompositor.WritePristineTga(specKey, Path.Combine(maskDir, "BASEIN_Specular.tga"))
+        End If
+
         ' Track any fresh textures the pipeline produced so we can delete them on exit.
         Dim freshIds As New List(Of Integer)
         If pipelineResult.Diffuse.IsFresh Then freshIds.Add(pipelineResult.Diffuse.TextureId)
@@ -1224,7 +1291,7 @@ Public Module FaceGenBuilder
         If pipelineResult.Specular.IsFresh Then freshIds.Add(pipelineResult.Specular.TextureId)
 
         ' --- 5. Output dir + slot plan + texture-set for slot rewrites. ---
-        Dim formIdLow = (npcFormID And &HFFFFFFUI)
+        Dim formIdLow = FaceGenLocalId(npcFormID)
         Dim dataPath = Config_App.Current.DataPath
         If String.IsNullOrEmpty(dataPath) Then
             Logger.LogLazy(Function() $"[FACEBAKE] BAIL: Config_App.Current.DataPath empty (npcFormID=0x{npcFormID:X8})")
@@ -1303,6 +1370,12 @@ Public Module FaceGenBuilder
 
             ' (Texture pixel comparison vs CK now lives in FaceGenComparator's [BUILDCHARGEN-DIFF],
             ' loading from each NIF shader's ACTUAL texture path -- not a convention name.)
+
+            ' STORAGE encode del DIFFUSE: el engine almacena la FaceCustomization diffuse en gamma-2.2.
+            ' El compositor acumula en sRGB (ping-pong float); aca convertimos sRGB->g22 por canal RGB
+            ' (decode sRGB a linear, encode 2.2), alpha intacto. Solo el diffuse (slot 0); N/S (slot 1/7)
+            ' son datos lineales y se escriben raw. Esto hace el DDS (y el _2 dump) byte-comparable a CK.
+            If entry.Slot = 0 Then ApplySrgbToGamma22Diffuse(bgra)
 
             Dim mipLevels = CInt(Math.Floor(Math.Log(Math.Min(w, h), 2))) + 1
             Dim ddsBytes As Byte() = Nothing

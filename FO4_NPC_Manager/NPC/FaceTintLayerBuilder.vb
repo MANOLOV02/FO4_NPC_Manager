@@ -303,7 +303,6 @@ Public Module FaceTintLayerBuilder
         Dim raceDefaultCount As Integer = Enumerable.Count(mergedLayers, Function(m) m.IsRaceDefault)
         Dim npcOwnCount As Integer = mergedLayers.Count - raceDefaultCount
 
-        Dim raceTintRank As New Dictionary(Of UShort, Integer)
         Dim tintGroupsForRender = If(isFemale, race.FemaleTintTemplateGroups, race.MaleTintTemplateGroups)
         Dim totalOptionsAcrossGroups As Integer = 0
         If tintGroupsForRender IsNot Nothing Then
@@ -324,22 +323,14 @@ Public Module FaceTintLayerBuilder
             Dim valueLog = tlDiag.Value
             Dim origin = If(mDiag.IsRaceDefault, "RACE-DEFAULT", "NPC")
         Next
-        Dim renderRank As Integer = 0
-        For Each grp In tintGroupsForRender
-            For Each o In grp.Options
-                If Not raceTintRank.ContainsKey(o.Index) Then
-                    raceTintRank(o.Index) = renderRank
-                    renderRank += 1
-                End If
-            Next
-        Next
+        ' Orden de composicion = INDICE de tint DESCENDENTE (ley "descending index", probada vs CK
+        ' y replicada por el compositor _3 de Tools/FaceGenByteCompare). Con over-RUNNING el orden
+        ' importa: indice alto se pinta PRIMERO (fondo), indice bajo se pinta ULTIMO (encima).
+        ' Antes se ordenaba por rank de grupo de RACE; era inocuo con over-original (suma de deltas,
+        ' independiente del orden) pero NO replicaba la secuencia de CK al pasar a over-running.
         Dim orderedLayers = mergedLayers.
-            Select(Function(m, originalIdx)
-                       Dim r As Integer = Integer.MaxValue
-                       raceTintRank.TryGetValue(m.Layer.Index, r)
-                       Return New With {m.Layer, .Rank = r, .Idx = originalIdx}
-                   End Function).
-            OrderBy(Function(x) x.Rank).
+            Select(Function(m, originalIdx) New With {m.Layer, .Idx = originalIdx}).
+            OrderByDescending(Function(x) x.Layer.Index).
             ThenBy(Function(x) x.Idx).
             Select(Function(x) x.Layer).
             ToList()
@@ -429,18 +420,25 @@ Public Module FaceTintLayerBuilder
                 .Opacity = opacity,
                 .TakesSkinTone = takesSkinTone,
                 .IsSkinTone = (opt.Slot = CUShort(TintSlot.SkinTone)),
+                .Slot = opt.Slot,
+                .IsTextureSet = (tl.Discriminator = 2),
                 .DebugName = opt.Name
             }
 
             If tl.Discriminator = 1 Then
                 layerInput.Kind = FaceTintLayerKind.PaletteMask
-                Dim resolved = ResolvePaletteLayerEffective(tl, opt)
+                Dim resolved = ResolvePaletteLayerEffective(tl, opt, pluginManager)
                 layerInput.R = resolved.Color.R
                 layerInput.G = resolved.Color.G
                 layerInput.B = resolved.Color.B
                 layerInput.BlendOp = CInt(resolved.BlendOp)
+                ' OpacityScale (tplCol.Alpha del match) NO se aplica al opacity. Verificado
+                ' empíricamente con analyzer 2026-05-28 (B01_idx11 Barra de labios): al multiplicar
+                ' op por Alpha=0.5 el residual byte saltó de 0.39 a 8.46 → el engine NO multiplica
+                ' TEND.Value por tplCol.Alpha. OpacityScale del resolver se preserva como info
+                ' contextual del match pero no afecta el cómputo.
                 layerInput.Opacity = opacity
-                Dim resolveMode As String = If(resolved.Matched, "PRESET (match TTEC.TemplateIndex)", "CUSTOM (no match — tendRGB + TTEC(1).BlendOp)")
+                Dim resolveMode As String = If(resolved.Matched, "MATCH (Step1 idx or Step2 color)", "FALLBACK (Step3 mode)")
                 If opt IsNot Nothing AndAlso opt.TemplateColors IsNot Nothing AndAlso opt.TemplateColors.Count > 0 Then
                     Dim sb As New System.Text.StringBuilder()
                     For i = 0 To opt.TemplateColors.Count - 1
@@ -626,6 +624,99 @@ Public Module FaceTintLayerBuilder
             Dim chans = "D"
             If normalBytes IsNot Nothing Then chans &= "+N"
             If specularBytes IsNot Nothing Then chans &= "+S"
+
+            ' [FACETINT-BUILD] one line per built layer with EVERY metadata field that goes into
+            ' the shader (and several that do not, for the python derivation tool to see what CK
+            ' might be using). Correlate with [FACETINT-LAYER] by layer index within the npc.
+            Dim buildIdx = layerInputs.Count
+            Dim npcFidLocal = npcData.FormID
+            Dim tlIdxLocal = tl.Index
+            Dim tlDiscLocal = tl.Discriminator
+            Dim tlTplIdxLocal = tl.TemplateColorIndex
+            Dim tlValueLocal = tl.Value
+            Dim tlColorLocal = tl.Color
+            Dim tendBytesLocal = If(tl.RawTendBytes Is Nothing, 0, tl.RawTendBytes.Length)
+            Dim optSlotLocal = opt.Slot
+            Dim optNameLocal = opt.Name
+            Dim optFlagsHexLocal = $"0x{opt.Flags:X4}"
+            Dim optFlagsNameLocal = FormatTintFlagsName(opt.Flags)
+            Dim optEntryTypeLocal = opt.EntryType.ToString()
+            Dim optBlendOpLocal = opt.BlendOperation
+            Dim optHasDefaultLocal = opt.HasDefaultValue
+            Dim optDefaultValLocal = opt.DefaultValue
+            Dim optTplColorsCountLocal = If(opt.TemplateColors Is Nothing, 0, opt.TemplateColors.Count)
+            Dim optTexturesCountLocal = If(opt.Textures Is Nothing, 0, opt.Textures.Count)
+            Dim lyrR = layerInput.R
+            Dim lyrG = layerInput.G
+            Dim lyrBlue = layerInput.B
+            Dim lyrBlendOp = layerInput.BlendOp
+            Dim lyrOpacity = layerInput.Opacity
+            Dim lyrKind = layerInput.Kind.ToString()
+            Dim lyrTakesSkin = layerInput.TakesSkinTone
+            Dim lyrIsSkin = layerInput.IsSkinTone
+            Dim lyrHairPal = layerInput.UseHairPalette
+            Dim lyrForceUni = layerInput.ForceUniformColor
+            Dim lyrRow = layerInput.HairPaletteRow
+            ' Resolved palette context (only meaningful for disc=1): which TTEC entry matched?
+            Dim palMatched As String = "-"
+            Dim palAlpha As String = "-"
+            If tl.Discriminator = 1 AndAlso opt IsNot Nothing _
+               AndAlso opt.TemplateColors IsNot Nothing AndAlso opt.TemplateColors.Count > 0 _
+               AndAlso tl.TemplateColorIndex >= 0 Then
+                Dim needle As UShort = CUShort(tl.TemplateColorIndex)
+                Dim hit = opt.TemplateColors.FirstOrDefault(Function(t) t.TemplateIndex = needle)
+                If hit IsNot Nothing Then
+                    palMatched = $"pos={opt.TemplateColors.IndexOf(hit)} clfm=0x{hit.ColorFormID:X8} blendOp={hit.BlendOperation}"
+                    palAlpha = hit.Alpha.ToString("F3")
+                End If
+            End If
+            Dim tlRed = tlColorLocal.R
+            Dim tlGreen = tlColorLocal.G
+            Dim tlBlue = tlColorLocal.B
+            Logger.LogLazy(Function() $"[FACETINT-BUILD] npc=0x{npcFidLocal:X8} buildIdx={buildIdx} tl(idx={tlIdxLocal} disc={tlDiscLocal} tplIdx={tlTplIdxLocal} val={tlValueLocal} color=({tlRed},{tlGreen},{tlBlue}) tendLen={tendBytesLocal}) opt(slot={optSlotLocal}/{slotNm} '{optNameLocal}' flags={optFlagsHexLocal}/{optFlagsNameLocal} entryType={optEntryTypeLocal} blendOp={optBlendOpLocal} hasDefault={optHasDefaultLocal} defaultVal={optDefaultValLocal:F3} tplColors={optTplColorsCountLocal} textures={optTexturesCountLocal}) palette({palMatched} alpha={palAlpha}) li(kind={lyrKind} rgb=({lyrR},{lyrG},{lyrBlue}) blend={lyrBlendOp}/{opName} op={lyrOpacity:F3} takesSkin={lyrTakesSkin} isSkin={lyrIsSkin} hairPal={lyrHairPal} forceUni={lyrForceUni} row={lyrRow:F3}) chans={chans}")
+
+            ' [FACETINT-PALETTE] for Palette-type layers (tplColors > 0): dump every CLFM
+            ' colour the palette holds so the python derivation can test "src varies per pixel
+            ' via mask-byte palette lookup" hypothesis. One line per palette entry.
+            If opt.TemplateColors IsNot Nothing AndAlso opt.TemplateColors.Count > 0 Then
+                For tcI As Integer = 0 To opt.TemplateColors.Count - 1
+                    Dim tc = opt.TemplateColors(tcI)
+                    Dim tcR As Integer = -1, tcG As Integer = -1, tcB As Integer = -1
+                    Dim tcHasColor As Boolean = False
+                    Dim tcHasRemap As Boolean = False
+                    Dim tcRemapIdx As Single = 0.0F
+                    If tc.ColorFormID <> 0UI AndAlso pluginManager IsNot Nothing Then
+                        Dim cr = pluginManager.GetRecord(tc.ColorFormID)
+                        If cr IsNot Nothing AndAlso cr.Header.Signature = "CLFM" Then
+                            Dim cc = RecordParsers.ParseCLFM(cr, pluginManager)
+                            If cc IsNot Nothing Then
+                                tcHasColor = cc.HasColor
+                                If cc.HasColor Then
+                                    tcR = cc.Color.R : tcG = cc.Color.G : tcB = cc.Color.B
+                                End If
+                                tcHasRemap = cc.HasRemappingIndex
+                                tcRemapIdx = cc.RemappingIndex
+                            End If
+                        End If
+                    End If
+                    Dim pIdxLocal = tcI
+                    Dim pRedLocal = tcR
+                    Dim pGreenLocal = tcG
+                    Dim pBlueLocal = tcB
+                    Dim pHasColorLocal = tcHasColor
+                    Dim pHasRemapLocal = tcHasRemap
+                    Dim pRemapLocal = tcRemapIdx
+                    Dim pClfmLocal = tc.ColorFormID
+                    Dim pTplIdxLocal = tc.TemplateIndex
+                    Dim pBlendLocal = tc.BlendOperation
+                    Dim pAlphaLocal = tc.Alpha
+                    Dim npcFidLocal2 = npcFidLocal
+                    Dim buildIdxLocal = buildIdx
+                    Dim optIdxLocal = tl.Index
+                    Logger.LogLazy(Function() $"[FACETINT-PALETTE] npc=0x{npcFidLocal2:X8} buildIdx={buildIdxLocal} optIdx={optIdxLocal} pIdx={pIdxLocal} tplIdx={pTplIdxLocal} clfm=0x{pClfmLocal:X8} hasColor={pHasColorLocal} rgb=({pRedLocal},{pGreenLocal},{pBlueLocal}) hasRemap={pHasRemapLocal} remap={pRemapLocal:F4} blendOp={pBlendLocal} alpha={pAlphaLocal:F3}")
+                Next
+            End If
+
             layerInputs.Add(layerInput)
 
             If layerInput.Kind = FaceTintLayerKind.PaletteMask Then
@@ -655,65 +746,29 @@ Public Module FaceTintLayerBuilder
     ''' the first real preset at pos=1 carries the authored BlendOp (usually SoftLight). The
     ''' option-level TTEB (opt.BlendOperation) is almost always empty in vanilla data, so it's
     ''' a last-resort fallback, not a primary source.</summary>
+    ''' <summary>Delegate to FO4_Base_Library.FaceTintPaletteResolver — single source of truth.
+    ''' Mantenido como wrapper local para compat con call sites de NPC_Manager.</summary>
     Public Function ResolveFallbackBlendOp(opt As RACE_TintTemplateOption) As UInteger
-        If opt Is Nothing Then Return 0UI
-        Dim raw As UInteger
-        If opt.TemplateColors IsNot Nothing AndAlso opt.TemplateColors.Count >= 2 Then
-            raw = opt.TemplateColors(1).BlendOperation
-        ElseIf opt.TemplateColors IsNot Nothing AndAlso opt.TemplateColors.Count = 1 Then
-            raw = opt.TemplateColors(0).BlendOperation
-        Else
-            raw = opt.BlendOperation
-        End If
-        ' Slot SkinTone (12) + BlendOp Default (0) → promover a SoftLight (3). Default sobre
-        ' skin tone aplica como overlay plano que aplasta la luminancia del diffuse autoreado;
-        ' SoftLight es la fórmula vanilla canónica para slot 12 (matchea TryApplyFaceSkinSoftLight
-        ' fallback + el body softlight path). Aplicado en el helper de resolución para que TODOS
-        ' los consumers de ResolveFallbackBlendOp/ResolvePaletteLayerEffective hereden la regla.
-        ' Convenio: 0=Default, 1=Multiply, 2=Overlay, 3=SoftLight, 4=HardLight (ver BlendOpName).
-        If opt.Slot = CUShort(TintSlot.SkinTone) AndAlso raw = 0UI Then
-            Return 3UI
-        End If
-        Return raw
+        Return FaceTintPaletteResolver.ResolveFallbackBlendOp(opt)
     End Function
 
-    ''' <summary>Resolve effective Color/BlendOp/OpacityScale for a Palette (disc=1) layer.
-    ''' Lookup by VALUE of TTEC entry's TemplateIndex matching TEND.TemplateColorIndex (not by
-    ''' array position). On match: TEND RGB (preserved verbatim) + preset BlendOp + preset Alpha.
-    ''' On no match (CUSTOM): tendRGB + ResolveFallbackBlendOp(opt) + opacityScale 1.0.
-    ''' </summary>
-    Public Function ResolvePaletteLayerEffective(tl As NPC_FaceTintLayerData, opt As RACE_TintTemplateOption) As (Color As Color, BlendOp As UInteger, Matched As Boolean, OpacityScale As Single)
-        Dim resolvedColor As Color = tl.Color
-        Dim resolvedBlendOp As UInteger = ResolveFallbackBlendOp(opt)
-        Dim matched As Boolean = False
-        Dim opacityScale As Single = 1.0F
+    ''' <summary>Delegate to FO4_Base_Library.FaceTintPaletteResolver — single source of truth.
+    ''' Mantenido como wrapper local para compat con call sites de NPC_Manager.</summary>
+    Public Function ResolvePaletteLayerEffective(tl As NPC_FaceTintLayerData, opt As RACE_TintTemplateOption, pm As PluginManager) As (Color As Color, BlendOp As UInteger, Matched As Boolean, OpacityScale As Single)
+        Return FaceTintPaletteResolver.ResolvePaletteLayerEffective(tl, opt, pm)
+    End Function
 
-        If opt IsNot Nothing Then
-            If opt.TemplateColors IsNot Nothing AndAlso opt.TemplateColors.Count > 0 _
-               AndAlso tl.TemplateColorIndex >= 0 Then
-                Dim needle As UShort = CUShort(tl.TemplateColorIndex)
-                Dim tplCol As RACE_TintTemplateColor = opt.TemplateColors.FirstOrDefault(
-                    Function(t) t.TemplateIndex = needle)
-                If tplCol IsNot Nothing Then
-                    If tplCol.Alpha <= 0.0F Then
-                        ' "Default neutral" placeholder: skip the match so we fall back to TEND
-                        ' RGB + value (same path as TemplateColorIndex < 0).
-                    Else
-                        matched = True
-                        resolvedBlendOp = tplCol.BlendOperation
-                        opacityScale = tplCol.Alpha
-                    End If
-                End If
-            End If
-        End If
-
-        ' Slot SkinTone + BlendOp Default → SoftLight. Misma regla que ResolveFallbackBlendOp;
-        ' acá la re-aplicamos por si el match preset trajo tplCol.BlendOperation=0 (autoría rara).
-        If opt IsNot Nothing AndAlso opt.Slot = CUShort(TintSlot.SkinTone) AndAlso resolvedBlendOp = 0UI Then
-            resolvedBlendOp = 3UI
-        End If
-
-        Return (resolvedColor, resolvedBlendOp, matched, opacityScale)
+    ''' <summary>Resolve the TemplateColorIndex (TEND ColorID) of an NPC face-tint Palette layer
+    ''' purely from its colour: the TemplateIndex of the preset matched by FindTemplateColorByColor
+    ''' (exact CLFM RGB, tie-broken to the Alpha closest to <paramref name="npcOpacity"/> = the
+    ''' layer's Value/100), or -1 when no preset's colour matches (custom RGB → no CLFM link).
+    ''' Delegates to FaceTintPaletteResolver.FindTemplateColorByColor so the index resolver and the
+    ''' render/bake resolver (ResolvePaletteLayerEffective) pick the SAME preset. Called by the
+    ''' editor (EditFace_Form custom-RGB and palette-pick) and Save
+    ''' (MainForm.ResolveTemplateColorIdToAbsolute).</summary>
+    Public Function ResolveTemplateColorIndex(layerColor As Color, npcOpacity As Single, opt As RACE_TintTemplateOption, pm As PluginManager) As Integer
+        Dim m = FaceTintPaletteResolver.FindTemplateColorByColor(layerColor, npcOpacity, opt, pm)
+        Return If(m Is Nothing, -1, CInt(m.TemplateIndex))
     End Function
 
     ''' <summary>Resolve a tint layer texture path to its raw DDS bytes via FilesDictionary.

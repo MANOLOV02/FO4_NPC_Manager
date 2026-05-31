@@ -289,10 +289,15 @@ Public Module NpcOverrideSaver
         ' re-save of the same plugin doesn't choke (the writer only copy-through-preserves NPC_ records).
         ' Draft LVLIs (Phase 2d) append to this same list.
         Dim leveledEntries As New List(Of SaveNpcEspWriter.LvliRecordEntry)
+        ' HEDR.NextObjectID of the on-disk plugin (0 when creating fresh). Forwarded to the writer
+        ' so re-save doesn't roll back the dispense counter and accidentally re-issue an ID that
+        ' CK already consumed between saves (mirror of TwbFile.NewFormID at wbImplementation.pas:5083).
+        Dim existingNextObjectId As UInteger = 0UI
         If Not target.IsNewPlugin AndAlso File.Exists(target.TargetPath) Then
             Dim reader As New PluginReader()
             reader.Load(target.TargetPath)
             existingMasters.AddRange(reader.Masters)
+            existingNextObjectId = reader.NextObjectId
 
             ' Build the set of LOCAL FormIDs (as the target plugin's MAST list sees them) for every
             ' NPC being written, so we drop the records we're about to replace. Mirror of the engine
@@ -310,7 +315,9 @@ Public Module NpcOverrideSaver
                     Dim oe As New SaveNpcEspWriter.OtftRecordEntry With {
                         .FormID = ctx.PluginManager.ResolveReferencedFormID(rec.SourcePluginName, rec.Header.FormID),
                         .EditorID = parsedOtft.EditorID,
-                        .IsOverride = True
+                        .IsOverride = True,
+                        .OriginalVcs1 = rec.Header.VCS1,
+                        .OriginalVcs2 = rec.Header.VCS2
                     }
                     oe.ItemArmoFormIDs.AddRange(parsedOtft.ItemFormIDs)
                     outfitEntries.Add(oe)
@@ -321,14 +328,36 @@ Public Module NpcOverrideSaver
                     Dim le As New SaveNpcEspWriter.LvliRecordEntry With {
                         .FormID = ctx.PluginManager.ResolveReferencedFormID(rec.SourcePluginName, rec.Header.FormID),
                         .EditorID = parsedLvli.EditorID,
+                        .ObjectBoundsRaw = parsedLvli.ObjectBoundsRaw,
                         .ChanceNone = parsedLvli.ChanceNone,
                         .MaxCount = parsedLvli.MaxCount,
                         .Flags = parsedLvli.Flags,
-                        .IsOverride = True
+                        .IsOverride = True,
+                        .HasUseGlobal = parsedLvli.HasUseGlobal,
+                        .UseGlobalFormID = parsedLvli.UseGlobalFormID,
+                        .HasEpicLootChance = parsedLvli.HasEpicLootChance,
+                        .EpicLootChanceFormID = parsedLvli.EpicLootChanceFormID,
+                        .HasOverrideName = parsedLvli.HasOverrideName,
+                        .OverrideName = parsedLvli.OverrideName,
+                        .OriginalVcs1 = rec.Header.VCS1,
+                        .OriginalVcs2 = rec.Header.VCS2
                     }
                     For Each ent In parsedLvli.Entries
                         le.Entries.Add(New SaveNpcEspWriter.LvliEntryData With {
-                            .Level = ent.Level, .RefFormID = ent.FormID, .Count = ent.Count, .ChanceNone = ent.ChanceNone})
+                            .Level = ent.Level,
+                            .RefFormID = ent.FormID,
+                            .Count = ent.Count,
+                            .ChanceNone = ent.ChanceNone,
+                            .HasCoed = ent.HasCoed,
+                            .CoedOwnerFormID = ent.CoedOwnerFormID,
+                            .CoedOwnerExtra = ent.CoedOwnerExtra,
+                            .CoedExtraIsFormID = ent.CoedExtraIsFormID,
+                            .CoedItemCondition = ent.CoedItemCondition})
+                    Next
+                    For Each fk In parsedLvli.FilterKeywords
+                        le.FilterKeywords.Add(New SaveNpcEspWriter.LvliFilterKeywordData With {
+                            .KeywordFormID = fk.KeywordFormID,
+                            .Chance = fk.Chance})
                     Next
                     leveledEntries.Add(le)
                     Continue For
@@ -431,7 +460,8 @@ Public Module NpcOverrideSaver
         Dim game = Config_App.Current.Game
         Dim writeRes = SaveNpcEspWriter.SaveOverridePlugin(
             target.TargetPath, game, target.MarkAsMaster, target.LightMaster,
-            entries, existingRecords, existingMasters, ctx.PluginManager, outfitEntries, leveledEntries)
+            entries, existingRecords, existingMasters, ctx.PluginManager, outfitEntries, leveledEntries,
+            existingNextObjectId)
 
         result.WriterResult = writeRes
         result.DraftFormIdMap = writeRes.DraftFormIdMap

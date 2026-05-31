@@ -263,7 +263,7 @@ Public Class HeadPartPicker_Form
                                 MainForm.EnsureShapeMaterialResolved(shape)
                                 Dim relatedMaterial = shape.ShapeMaterial
                                 If relatedMaterial Is Nothing Then Continue For
-                                MainForm.ApplyTextureSetOverrides(txst, relatedMaterial, hdpt.UsesBodyTexture, shape.NifShape, shape.NifContent)
+                                MainForm.ApplyTextureSetOverrides(txst, relatedMaterial, hdpt.UsesBodyTexture, shape.NifShape, shape.NifContent, isHeadPartTextureSet:=True)
                             Next
                         End If
                     End If
