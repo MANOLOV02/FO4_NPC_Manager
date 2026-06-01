@@ -70,32 +70,9 @@ Public Module FaceGenBuilder
         Return npcFormID And &HFFFFFFUI
     End Function
 
-    ''' <summary>LUT 0..255 sRGB-byte -> gamma2.2-byte (decode sRGB a linear, encode 2.2). El engine
-    ''' almacena el diffuse FaceCustomization en gamma-2.2; el compositor acumula en sRGB.</summary>
-    Private ReadOnly _srgbToG22Lut As Byte() = BuildSrgbToG22Lut()
-    Private Function BuildSrgbToG22Lut() As Byte()
-        Dim t(255) As Byte
-        For i As Integer = 0 To 255
-            Dim s As Double = i / 255.0
-            Dim lin As Double = If(s <= 0.04045, s / 12.92, Math.Pow((s + 0.055) / 1.055, 2.4))
-            Dim g As Double = Math.Pow(Math.Max(lin, 0.0), 1.0 / 2.2)
-            t(i) = CByte(Math.Max(0, Math.Min(255, Math.Round(g * 255.0))))
-        Next
-        Return t
-    End Function
-
-    ''' <summary>Aplica el encode de storage sRGB->gamma2.2 a los canales RGB de un buffer BGRA
-    ''' (alpha intacto). Solo para el DIFFUSE; N/S son datos lineales y no se tocan.</summary>
-    Private Sub ApplySrgbToGamma22Diffuse(bgra As Byte())
-        Dim n As Integer = bgra.Length
-        Dim i As Integer = 0
-        Do While i + 3 < n
-            bgra(i) = _srgbToG22Lut(bgra(i))          ' B
-            bgra(i + 1) = _srgbToG22Lut(bgra(i + 1))  ' G
-            bgra(i + 2) = _srgbToG22Lut(bgra(i + 2))  ' R
-            i += 4
-        Loop
-    End Sub
+    ' (Removido: _srgbToG22Lut / BuildSrgbToG22Lut / ApplySrgbToGamma22Diffuse — el encode de storage
+    '  sRGB->g22 del diffuse ahora nace en el SEED del path único (FaceTintCompositor.ApplyFaceTintPipeline,
+    '  en float, sin tabla byte->byte). Ver el comentario del slot 0 en BakeFaceTextures.)
 
     ''' <summary>Resolve the FaceGen NIF path the engine would load for this NPC. Path layout
     ''' is "Meshes\Actors\Character\FaceGenData\FaceGeom\&lt;origin plugin filename&gt;\&lt;FormID8hex&gt;.nif"
@@ -139,6 +116,40 @@ Public Module FaceGenBuilder
         End Get
     End Property
 
+    ''' <summary>Fuerza el sufijo SANDBOX `_2` (+ el TGA lossless) AUN en Release (Logger.Enabled=False).
+    ''' Desacopla el output de comparación del DebugMode/logger: permite correr el batch en Release (sin
+    ''' overhead de LogLazy, CPU paralelo) y seguir escribiendo `{id}_d_2.dds`/`.tga` al lado del CK (sin
+    ''' pisar `{id}_d.dds`). Default False (Release real escribe `_d.dds`). Se enciende en Program.vb para
+    ''' la fase de derivación.</summary>
+    Public Property SandboxOutput As Boolean = False
+
+    ''' <summary>Dumps INTERMEDIOS por-capa/swap (BASEIN, L## layer/diffmask, S## swap/regionmask,
+    ''' {canal}_state_initial, {canal}_swapstate_NN, CPU_*) — SOLO para derivar la ley single-NPC. OFF por
+    ''' default: en batch (cientos de clones) explotaría el disco con decenas de TGA por NPC. El _2 (GPU) /
+    ''' _2b (CPU) finales NO dependen de esto (se escriben siempre en DebugMode). Encender a mano para el
+    ''' chase byte-level de una cara concreta.</summary>
+    Public Property DumpIntermediates As Boolean = False
+
+    ''' <summary>Settings de salida del bake (resolución por canal + compresión del diffuse), DERIVADO del
+    ''' config persistido (Config_App, botón "CharGen Options"). Single source of truth = config; sin estado
+    ''' que sincronizar. Se pasa idéntico al compositor GL y al CPU (-> GL==CPU). Lógica de tamaño:
+    '''   PerLayer=False (ALL, default): los 3 canales usan el tamaño Diffuse (N/S heredan de D).
+    '''   PerLayer=True: cada canal su propio tamaño.
+    ''' Default config = All + Inherit (nativo) + BC3 = comportamiento actual / byte-comparable a gen3.</summary>
+    Public ReadOnly Property OutputSettings As FaceTintConvention.FaceTintResolutionSettings
+        Get
+            Dim c = Config_App.Current
+            Dim d = c.Setting_FaceGenDiffuseResolution
+            Dim perLayer = c.Setting_FaceGenPerLayerResolution
+            Return New FaceTintConvention.FaceTintResolutionSettings With {
+                .Diffuse = d,
+                .Normal = If(perLayer, c.Setting_FaceGenNormalResolution, d),
+                .Specular = If(perLayer, c.Setting_FaceGenSpecularResolution, d),
+                .DiffuseCompression = c.Setting_FaceGenDiffuseCompression
+            }
+        End Get
+    End Property
+
     ''' <summary>Build a baked FaceGen NIF for this NPC. See module-level summary for the
     ''' v0 strategy. Always also writes a structured dump to npc_preview.log so the user
     ''' can review the kept/dropped decision per shape. Returns BuildResult; on failure
@@ -173,13 +184,19 @@ Public Module FaceGenBuilder
         ' last current — which intermittently caused "diffuse GL texture id 0" bails after the
         ' user occluded the window (a sibling's WM_PAINT fired on restore and stole the context).
         ' No-op when already current.
-        Try
-            host?.PreviewCtl?.MakeCurrent()
-        Catch ex As Exception
-            Dim msgL = ex.Message
-            Dim typeL = ex.GetType().Name
-            Logger.LogLazy(Function() $"[FACEBAKE-FAIL] MakeCurrent threw at bake entry npcFormID=0x{npcFormID:X8}: {typeL}: {msgL}")
-        End Try
+        ' SOLO en DebugMode el bake usa GL (escribe el _2 de comparación vs el _2b del CPU) -> hay que
+        ' MakeCurrent en el hilo GL. En RELEASE el bake es 100% CPU (FaceTintCpuCompositor: decode/compose/
+        ' encode por wrapper DirectXTex, sin GL) -> puede correr ASYNC en un thread de fondo, donde
+        ' MakeCurrent FALLARIA (el contexto GL es per-thread, del hilo UI). Por eso se saltea fuera de debug.
+        If DebugMode Then
+            Try
+                host?.PreviewCtl?.MakeCurrent()
+            Catch ex As Exception
+                Dim msgL = ex.Message
+                Dim typeL = ex.GetType().Name
+                Logger.LogLazy(Function() $"[FACEBAKE-FAIL] MakeCurrent threw at bake entry npcFormID=0x{npcFormID:X8}: {typeL}: {msgL}")
+            End Try
+        End If
 
         ' Build the visual state for the NPC being baked (NPC Y), independent of whatever NPC
         ' the preview is showing (NPC X). The bake must NEVER read state from the host. We
@@ -1196,83 +1213,122 @@ Public Module FaceGenBuilder
             Return
         End If
 
-        Dim uploadPaths As New List(Of String)
-        Dim uploadBytes As New List(Of Byte())
-        uploadPaths.Add(diffuseKey) : uploadBytes.Add(diffuseBytes)
-        If normalBytesArr IsNot Nothing Then
-            uploadPaths.Add(normalKey) : uploadBytes.Add(normalBytesArr)
+        ' === Compositor del bake (REGLA): CharGen -> SIEMPRE CPU (float64, exacto a gen3; NO toca GL ->
+        ' bake async-able). needGl = se necesita GL: SOLO en DebugMode (para escribir _2 GPU y comparar
+        ' contra _2b CPU) o si el output fuera GPU (no es el caso). En RELEASE needGl=False -> NO se corre
+        ' el GL pipeline: solo CPU (no se duplica GPU+CPU). El compose CPU usa las DDS ya leidas (wrapper,
+        ' sin GL). Se computa ACA (antes del upload) para tener su tamaño cuando no hay GL.
+        Dim useCpuOutput As Boolean = True
+        ' GL pipeline (produce el _2 GPU para comparar paridad) SOLO si DumpIntermediates (single-NPC debug).
+        ' En batch (DumpIntermediates=False) NO se corre el GL: solo CPU -> sin doble-compose, sin dependencia
+        ' GL (bake async-able). El output principal (_d_2.dds en DebugMode) cae a CPU por el fallback de mas
+        ' abajo (gpuBgra Nothing -> cbSlot). Si el output fuera GPU (no es el caso, useCpuOutput=True) tambien
+        ' forzaria GL.
+        ' SandboxOutput tambien corre el GL -> escribe el _2b (GPU) ademas del _2 (CPU) para VERIFICAR
+        ' paridad CPU==GPU (post-fix g22). En esa rama el bake DEBE correr en el hilo UI (contexto GL); el
+        ' caller (MainForm) lo agenda sync cuando SandboxOutput. Sin SandboxOutput (produccion): CPU-only.
+        Dim needGl As Boolean = (DebugMode AndAlso DumpIntermediates) OrElse (Not useCpuOutput) OrElse SandboxOutput
+        Dim cpu As FaceTintCpuCompositor.CpuPipelineResult = Nothing
+        If DebugMode OrElse useCpuOutput Then
+            Try
+                cpu = FaceTintCpuCompositor.ComposeCpuPipeline(diffuseBytes, normalBytesArr, specBytesArr, built.Layers, built.RegionSwaps, OutputSettings, diffuseKey, normalKey, specKey)
+            Catch ex As Exception
+                Dim m = ex.Message
+                Logger.LogLazy(Function() $"[FACEBAKE-CPU] CPU compose failed: {m}")
+            End Try
         End If
-        If specBytesArr IsNot Nothing Then
-            uploadPaths.Add(specKey) : uploadBytes.Add(specBytesArr)
-        End If
-
-        Dim uploaded As Dictionary(Of String, PreviewModel.Texture_Loaded_Class) = Nothing
-        Try
-            uploaded = DirectXDDSLoader.Load_And_GenerateOpenGLTextures_Memory(
-                uploadPaths.ToArray(), uploadBytes.ToArray(),
-                useCompress:=True, forceOpenGL:=False)
-        Catch ex As Exception
-            Logger.LogLazy(Function() $"[FACEBAKE] BAIL: GL upload threw {ex.GetType().Name}: {ex.Message} (npcFormID=0x{npcFormID:X8})")
+        If (Not needGl) AndAlso (cpu Is Nothing OrElse cpu.Diffuse Is Nothing OrElse cpu.Diffuse.Bgra Is Nothing) Then
+            Logger.LogLazy(Function() $"[FACEBAKE] BAIL: CPU compose produced no diffuse (npcFormID=0x{npcFormID:X8})")
             Return
-        End Try
+        End If
 
         Dim tempIds As New List(Of Integer)
         Dim diffEntry As PreviewModel.Texture_Loaded_Class = Nothing
         Dim normEntry As PreviewModel.Texture_Loaded_Class = Nothing
         Dim specEntry As PreviewModel.Texture_Loaded_Class = Nothing
-        uploaded.TryGetValue(diffuseKey, diffEntry)
-        uploaded.TryGetValue(normalKey, normEntry)
-        uploaded.TryGetValue(specKey, specEntry)
-        If diffEntry IsNot Nothing AndAlso diffEntry.Texture_ID <> 0 Then tempIds.Add(diffEntry.Texture_ID)
-        If normEntry IsNot Nothing AndAlso normEntry.Texture_ID <> 0 Then tempIds.Add(normEntry.Texture_ID)
-        If specEntry IsNot Nothing AndAlso specEntry.Texture_ID <> 0 Then tempIds.Add(specEntry.Texture_ID)
+        Dim w As Integer, h As Integer
+        If needGl Then
+            ' --- GL path (DebugMode): upload source D/N/S a GL para correr el GPU pipeline (escribe _2). ---
+            Dim uploadPaths As New List(Of String)
+            Dim uploadBytes As New List(Of Byte())
+            uploadPaths.Add(diffuseKey) : uploadBytes.Add(diffuseBytes)
+            If normalBytesArr IsNot Nothing Then
+                uploadPaths.Add(normalKey) : uploadBytes.Add(normalBytesArr)
+            End If
+            If specBytesArr IsNot Nothing Then
+                uploadPaths.Add(specKey) : uploadBytes.Add(specBytesArr)
+            End If
 
-        If diffEntry Is Nothing OrElse diffEntry.Texture_ID = 0 Then
-            Logger.LogLazy(Function() $"[FACEBAKE] BAIL: diffuse GL texture id 0 (npcFormID=0x{npcFormID:X8})")
-            DeleteGlTextures(tempIds)
-            Return
+            Dim uploaded As Dictionary(Of String, PreviewModel.Texture_Loaded_Class) = Nothing
+            Try
+                uploaded = DirectXDDSLoader.Load_And_GenerateOpenGLTextures_Memory(
+                    uploadPaths.ToArray(), uploadBytes.ToArray(),
+                    useCompress:=True, forceOpenGL:=False)
+            Catch ex As Exception
+                Logger.LogLazy(Function() $"[FACEBAKE] BAIL: GL upload threw {ex.GetType().Name}: {ex.Message} (npcFormID=0x{npcFormID:X8})")
+                Return
+            End Try
+
+            uploaded.TryGetValue(diffuseKey, diffEntry)
+            uploaded.TryGetValue(normalKey, normEntry)
+            uploaded.TryGetValue(specKey, specEntry)
+            If diffEntry IsNot Nothing AndAlso diffEntry.Texture_ID <> 0 Then tempIds.Add(diffEntry.Texture_ID)
+            If normEntry IsNot Nothing AndAlso normEntry.Texture_ID <> 0 Then tempIds.Add(normEntry.Texture_ID)
+            If specEntry IsNot Nothing AndAlso specEntry.Texture_ID <> 0 Then tempIds.Add(specEntry.Texture_ID)
+
+            If diffEntry Is Nothing OrElse diffEntry.Texture_ID = 0 Then
+                Logger.LogLazy(Function() $"[FACEBAKE] BAIL: diffuse GL texture id 0 (npcFormID=0x{npcFormID:X8})")
+                DeleteGlTextures(tempIds)
+                Return
+            End If
+
+            w = diffEntry.Size.Width
+            h = diffEntry.Size.Height
+            If w <= 0 OrElse h <= 0 Then
+                Logger.LogLazy(Function() $"[FACEBAKE] BAIL: diffuse size {w}x{h} (npcFormID=0x{npcFormID:X8})")
+                DeleteGlTextures(tempIds)
+                Return
+            End If
+        Else
+            ' --- CPU-only (release): sin GL. El tamaño sale del resultado CPU. ---
+            w = cpu.Diffuse.Width
+            h = cpu.Diffuse.Height
         End If
 
-        Dim w = diffEntry.Size.Width
-        Dim h = diffEntry.Size.Height
-        If w <= 0 OrElse h <= 0 Then
-            Logger.LogLazy(Function() $"[FACEBAKE] BAIL: diffuse size {w}x{h} (npcFormID=0x{npcFormID:X8})")
-            DeleteGlTextures(tempIds)
-            Return
-        End If
-
-        ' --- 4. Run the shared compositor pipeline (region-swap + tint compose). ---
-        ' TEMP DEBUG: enable per-layer/per-swap delta logging ONLY for the bake (never render),
-        ' and only in DebugMode. The compositor double-gates the readback on this flag AND
-        ' Logger.Enabled, so it costs nothing in release. Restored in Finally.
+        ' --- 4. GL pipeline (SOLO needGl = DebugMode): region-swap + tint compose en GPU para escribir
+        ' el _2 de comparación (vs el _2b del CPU). En RELEASE-CPU NO corre -> no se duplica GPU+CPU y el
+        ' bake no toca GL (async). El CPU ya se compuso arriba (cpu). ---
         Dim prevPerLayerDiffLog = FaceTintCompositor.PerLayerDiffLog
         Dim prevDumpMaskDir = FaceTintCompositor.DumpMaskDir
         Dim prevCurrentNpcFormID = FaceTintCompositor.CurrentNpcFormID
         Dim maskDir As String = Nothing
-        If DebugMode Then
-            FaceTintCompositor.PerLayerDiffLog = True
-            FaceTintCompositor.CurrentNpcFormID = npcFormID
-            ' TEMP DEBUG: dump every applied mask/texture (all layers, all channels) to TGA next
-            ' to the FaceCustomization output, so each can be inspected as the GPU sampled it.
-            ' Per-NPC subfolder so files from different NPCs in the same bake run don't
-            ' overwrite each other (the layer names are generic — L00_Poblado, etc.).
-            maskDir = Path.Combine(Config_App.Current.DataPath, "Textures", "Actors", "Character", "FaceCustomization", originPlugin, "mask Tests", $"0x{npcFormID:X8}")
-            Try : Directory.CreateDirectory(maskDir) : FaceTintCompositor.DumpMaskDir = maskDir : Catch : End Try
+        Dim pipelineResult As FaceTintCompositor.FaceTintPipelineResult = Nothing
+        If needGl Then
+            If DebugMode AndAlso DumpIntermediates Then
+                FaceTintCompositor.PerLayerDiffLog = True
+                FaceTintCompositor.CurrentNpcFormID = npcFormID
+                ' dump de cada mask/textura aplicada (todas las capas/canales) a TGA junto al output,
+                ' en subcarpeta por-NPC (los nombres de capa son genéricos). SOLO si DumpIntermediates
+                ' (single-NPC); en batch queda Nothing -> el bloque BASEIN/CPU_* de abajo tambien se saltea
+                ' (gateado por maskDir no vacío) y solo quedan los _2/_2b finales.
+                maskDir = Path.Combine(Config_App.Current.DataPath, "Textures", "Actors", "Character", "FaceCustomization", originPlugin, "mask Tests", $"0x{npcFormID:X8}")
+                Try : Directory.CreateDirectory(maskDir) : FaceTintCompositor.DumpMaskDir = maskDir : Catch : End Try
+            End If
+            Try
+                pipelineResult = FaceTintCompositor.ApplyFaceTintPipeline(
+                    host.CompositorState, host.TintGpuCache,
+                    diffEntry.Texture_ID,
+                    If(normEntry?.Texture_ID, 0),
+                    If(specEntry?.Texture_ID, 0),
+                    w, h,
+                    built.Layers, built.RegionSwaps,
+                    OutputSettings)
+            Finally
+                FaceTintCompositor.PerLayerDiffLog = prevPerLayerDiffLog
+                FaceTintCompositor.DumpMaskDir = prevDumpMaskDir
+                FaceTintCompositor.CurrentNpcFormID = prevCurrentNpcFormID
+            End Try
         End If
-        Dim pipelineResult As FaceTintCompositor.FaceTintPipelineResult
-        Try
-            pipelineResult = FaceTintCompositor.ApplyFaceTintPipeline(
-                host.CompositorState, host.TintGpuCache,
-                diffEntry.Texture_ID,
-                If(normEntry?.Texture_ID, 0),
-                If(specEntry?.Texture_ID, 0),
-                w, h,
-                built.Layers, built.RegionSwaps)
-        Finally
-            FaceTintCompositor.PerLayerDiffLog = prevPerLayerDiffLog
-            FaceTintCompositor.DumpMaskDir = prevDumpMaskDir
-            FaceTintCompositor.CurrentNpcFormID = prevCurrentNpcFormID
-        End Try
 
         ' PRISTINE BASEIN dump (NPC-side, DebugMode). El compositor dumpea los layer/swap pristinos
         ' in-place; aca agregamos la base (no llega al compositor como path). MISMO dumper unico:
@@ -1282,13 +1338,23 @@ Public Module FaceGenBuilder
             FaceTintCompositor.WritePristineTga(diffuseKey, Path.Combine(maskDir, "BASEIN_Diffuse.tga"))
             FaceTintCompositor.WritePristineTga(normalKey, Path.Combine(maskDir, "BASEIN_Normal.tga"))
             FaceTintCompositor.WritePristineTga(specKey, Path.Combine(maskDir, "BASEIN_Specular.tga"))
+            ' espejo CPU TGA por canal (CPU_*.tga, D en g22 / N/S lineal) para el byte-test contra el
+            ' `_d_2.tga` (GPU) y el `_3` de gen3. (El _2b.dds se escribe en el loop de slots de abajo.)
+            If cpu IsNot Nothing Then
+                DumpCpuTga(cpu.Diffuse, Path.Combine(maskDir, "CPU_Diffuse.tga"))
+                DumpCpuTga(cpu.Normal, Path.Combine(maskDir, "CPU_Normal.tga"))
+                DumpCpuTga(cpu.Specular, Path.Combine(maskDir, "CPU_Specular.tga"))
+            End If
         End If
 
-        ' Track any fresh textures the pipeline produced so we can delete them on exit.
+        ' Track any fresh textures the pipeline produced so we can delete them on exit. (Nothing en
+        ' release-CPU: no hubo GL pipeline.)
         Dim freshIds As New List(Of Integer)
-        If pipelineResult.Diffuse.IsFresh Then freshIds.Add(pipelineResult.Diffuse.TextureId)
-        If pipelineResult.Normal.IsFresh Then freshIds.Add(pipelineResult.Normal.TextureId)
-        If pipelineResult.Specular.IsFresh Then freshIds.Add(pipelineResult.Specular.TextureId)
+        If pipelineResult IsNot Nothing Then
+            If pipelineResult.Diffuse.IsFresh Then freshIds.Add(pipelineResult.Diffuse.TextureId)
+            If pipelineResult.Normal.IsFresh Then freshIds.Add(pipelineResult.Normal.TextureId)
+            If pipelineResult.Specular.IsFresh Then freshIds.Add(pipelineResult.Specular.TextureId)
+        End If
 
         ' --- 5. Output dir + slot plan + texture-set for slot rewrites. ---
         Dim formIdLow = FaceGenLocalId(npcFormID)
@@ -1301,19 +1367,22 @@ Public Module FaceGenBuilder
         Dim outDir = Path.Combine(dataPath, "Textures", "Actors", "Character", "FaceCustomization", originPlugin)
         Try : Directory.CreateDirectory(outDir) : Catch : End Try
 
-        ' Suffix:
-        '   DebugMode=False (default): _d.dds / _msn.dds / _s.dds → pisa CK textures.
-        '   DebugMode=True: _d_2.dds / _msn_2.dds / _s_2.dds → sandbox alongside CK.
+        ' Suffix (sandbox = DebugMode O SandboxOutput; SandboxOutput permite el `_2` en Release sin logger):
+        '   sandbox=False: _d.dds / _msn.dds / _s.dds → pisa CK textures (bake de producción).
+        '   sandbox=True : _d_2.dds / _msn_2.dds / _s_2.dds → sandbox alongside CK (derivación/comparación).
         ' El NIF emitido referencia el suffix que corresponde (ver canonicalNifPath abajo).
-        Dim suffixD = If(DebugMode, "_d_2.dds", "_d.dds")
-        Dim suffixN = If(DebugMode, "_msn_2.dds", "_msn.dds")
-        Dim suffixS = If(DebugMode, "_s_2.dds", "_s.dds")
-        ' Format: production uses BC3 (diffuse) + BC5 (normal/spec) to match the source-NIF DXGI.
-        ' DebugMode writes the _2 sandbox textures UNCOMPRESSED (B8G8R8A8) so the pixel comparison
-        ' vs CK (which writes FaceCustomization uncompressed B8G8R8X8) is apples-to-apples — BC5
-        ' block compression adds zero-mean noise on high-frequency channels (e.g. spec G, RMS ~10)
-        ' that would otherwise masquerade as a bake error. Release is unchanged (still BC3/BC5).
-        Dim dxgiD = If(DebugMode, DirectXTextureConversionHelper.DxgiFormatB8G8R8A8Unorm, DirectXTextureConversionHelper.DxgiFormatBc3Unorm)
+        Dim sandbox As Boolean = DebugMode OrElse SandboxOutput
+        Dim suffixD = If(sandbox, "_d_2.dds", "_d.dds")
+        Dim suffixN = If(sandbox, "_msn_2.dds", "_msn.dds")
+        Dim suffixS = If(sandbox, "_s_2.dds", "_s.dds")
+        ' Format: production usa BC3 (diffuse, DEFAULT) o BC7 (opción del usuario via OutputSettings) +
+        ' BC5 (normal/spec) para matchear el DXGI del source-NIF. NO hay auto-detección: es flag/opción.
+        ' DebugMode escribe los _2 sandbox UNCOMPRESSED (B8G8R8A8) para que la comparación de píxeles vs
+        ' CK (FaceCustomization uncompressed B8G8R8X8) sea apples-to-apples — la compresión BC agrega ruido
+        ' de media cero en canales de alta frecuencia (p.ej. spec G, RMS ~10) que parecería un bake error.
+        Dim dxgiDRelease As Integer = If(OutputSettings IsNot Nothing AndAlso OutputSettings.DiffuseCompression = FaceTintConvention.FaceTintDiffuseCompression.Bc7,
+                                         DirectXTextureConversionHelper.DxgiFormatBc7Unorm, DirectXTextureConversionHelper.DxgiFormatBc3Unorm)
+        Dim dxgiD = If(DebugMode, DirectXTextureConversionHelper.DxgiFormatB8G8R8A8Unorm, dxgiDRelease)
         Dim dxgiN = If(DebugMode, DirectXTextureConversionHelper.DxgiFormatB8G8R8A8Unorm, DirectXTextureConversionHelper.DxgiFormatBc5Unorm)
         Dim dxgiS = If(DebugMode, DirectXTextureConversionHelper.DxgiFormatB8G8R8A8Unorm, DirectXTextureConversionHelper.DxgiFormatBc5Unorm)
         ' CanonSuffix = the canonical (non-_2) suffix. The DDS files on disk always use Suffix
@@ -1325,10 +1394,16 @@ Public Module FaceGenBuilder
         '       the actual on-disk Suffix (<id>_d_2.dds) — otherwise the standalone loose NIF would
         '       reference <id>_d.dds, which does not exist on disk under that name.
         ' In release Suffix already equals CanonSuffix, so willBePacked is a no-op either way.
-        Dim slotPlan = New (Slot As Integer, ResultId As Integer, Dxgi As Integer, Suffix As String, CanonSuffix As String)() {
-            (0, pipelineResult.Diffuse.TextureId, dxgiD, suffixD, "_d.dds"),
-            (1, pipelineResult.Normal.TextureId, dxgiN, suffixN, "_msn.dds"),
-            (7, pipelineResult.Specular.TextureId, dxgiS, suffixS, "_s.dds")
+        ' W/H por canal = el tamaño del RESULTADO del pipeline (= target de resolución del canal, o nativo
+        ' si Inherit). Se lee back a ESE tamaño, no al del source (que puede diferir si el enum de
+        ' resolución pidió otro tamaño). Fallback al nativo (w/h) si el pipeline no lo seteó (0).
+        ' ResultId = textura GL del pipeline (0 en release-CPU). W/H = tamaño del resultado (del pipeline GL
+        ' si corrió, sino del resultado CPU; fallback w/h). En CPU-only pipelineResult es Nothing.
+        Dim pr = pipelineResult
+        Dim slotPlan = New (Slot As Integer, ResultId As Integer, Dxgi As Integer, Suffix As String, CanonSuffix As String, W As Integer, H As Integer)() {
+            (0, If(pr IsNot Nothing, pr.Diffuse.TextureId, 0), dxgiD, suffixD, "_d.dds", SlotDim(pr?.Diffuse, cpu?.Diffuse, w, True), SlotDim(pr?.Diffuse, cpu?.Diffuse, h, False)),
+            (1, If(pr IsNot Nothing, pr.Normal.TextureId, 0), dxgiN, suffixN, "_msn.dds", SlotDim(pr?.Normal, cpu?.Normal, w, True), SlotDim(pr?.Normal, cpu?.Normal, h, False)),
+            (7, If(pr IsNot Nothing, pr.Specular.TextureId, 0), dxgiS, suffixS, "_s.dds", SlotDim(pr?.Specular, cpu?.Specular, w, True), SlotDim(pr?.Specular, cpu?.Specular, h, False))
         }
 
         Dim bsls = TryCast(nif.GetShader(cloned), BSLightingShaderProperty)
@@ -1344,44 +1419,55 @@ Public Module FaceGenBuilder
 
         ' --- 6. Per-slot: readback → encode → write → rewrite slot path → diff vs CK. ---
         For Each entry In slotPlan
-            If entry.ResultId = 0 Then
-                Logger.LogLazy(Function() $"[FACEBAKE] slot {entry.Slot}{entry.Suffix}: pipeline produced no texture (ResultId=0) — SKIPPED (npcFormID=0x{npcFormID:X8})")
+            Dim ddW As Integer = entry.W, ddH As Integer = entry.H
+            Dim cbSlot As Byte() = CpuBgraForSlot(cpu, entry.Slot)   ' CPU bgra del canal (Nothing si no hay)
+
+            ' GPU readback SOLO needGl (DebugMode) + textura válida. En release-CPU no hay textura -> sin GL.
+            Dim gpuBgra As Byte() = Nothing
+            If needGl AndAlso entry.ResultId <> 0 Then
+                Dim gbuf(ddW * ddH * 4 - 1) As Byte
+                Try
+                    GL.BindTexture(TextureTarget.Texture2D, entry.ResultId)
+                    Dim handle = Runtime.InteropServices.GCHandle.Alloc(gbuf, Runtime.InteropServices.GCHandleType.Pinned)
+                    Try
+                        GL.GetTexImage(TextureTarget.Texture2D, 0, OpenTK.Graphics.OpenGL4.PixelFormat.Bgra, PixelType.UnsignedByte, handle.AddrOfPinnedObject())
+                    Finally
+                        handle.Free()
+                    End Try
+                    gpuBgra = gbuf
+                Catch ex As Exception
+                    Dim slotL = entry.Slot
+                    Dim suffixL = entry.Suffix
+                    Dim resultIdL = entry.ResultId
+                    Dim msgL = ex.Message
+                    Dim typeL = ex.GetType().Name
+                    Logger.LogLazy(Function() $"[FACEBAKE-FAIL] GL.GetTexImage slot={slotL}{suffixL} ResultId={resultIdL} npcFormID=0x{npcFormID:X8}: {typeL}: {msgL}")
+                    gpuBgra = Nothing
+                End Try
+            End If
+
+            ' OUTPUT principal (_d.dds release / _d_2.dds debug): SIEMPRE CPU (el path always-on, byte-exacto a
+            ' build_3). El GPU es contingente (solo DumpIntermediates) y va al _2b de comparacion. Fallback a GPU
+            ' solo si por algun motivo no hay CPU; si tampoco hay GPU -> skip el slot.
+            Dim bgra As Byte() = If(cbSlot, gpuBgra)
+            If bgra Is Nothing Then
+                Logger.LogLazy(Function() $"[FACEBAKE] slot {entry.Slot}{entry.Suffix}: sin textura (ni CPU ni GPU) — SKIPPED (npcFormID=0x{npcFormID:X8})")
                 Continue For
             End If
 
-            Dim bgra(w * h * 4 - 1) As Byte
-            Try
-                GL.BindTexture(TextureTarget.Texture2D, entry.ResultId)
-                Dim handle = Runtime.InteropServices.GCHandle.Alloc(bgra, Runtime.InteropServices.GCHandleType.Pinned)
-                Try
-                    GL.GetTexImage(TextureTarget.Texture2D, 0, OpenTK.Graphics.OpenGL4.PixelFormat.Bgra, PixelType.UnsignedByte, handle.AddrOfPinnedObject())
-                Finally
-                    handle.Free()
-                End Try
-            Catch ex As Exception
-                Dim slotL = entry.Slot
-                Dim suffixL = entry.Suffix
-                Dim resultIdL = entry.ResultId
-                Dim msgL = ex.Message
-                Dim typeL = ex.GetType().Name
-                Logger.LogLazy(Function() $"[FACEBAKE-FAIL] GL.GetTexImage slot={slotL}{suffixL} ResultId={resultIdL} npcFormID=0x{npcFormID:X8}: {typeL}: {msgL}")
-                Continue For
-            End Try
-
-            ' (Texture pixel comparison vs CK now lives in FaceGenComparator's [BUILDCHARGEN-DIFF],
-            ' loading from each NIF shader's ACTUAL texture path -- not a convention name.)
-
             ' STORAGE encode del DIFFUSE: el engine almacena la FaceCustomization diffuse en gamma-2.2.
-            ' El compositor acumula en sRGB (ping-pong float); aca convertimos sRGB->g22 por canal RGB
-            ' (decode sRGB a linear, encode 2.2), alpha intacto. Solo el diffuse (slot 0); N/S (slot 1/7)
-            ' son datos lineales y se escriben raw. Esto hace el DDS (y el _2 dump) byte-comparable a CK.
-            If entry.Slot = 0 Then ApplySrgbToGamma22Diffuse(bgra)
+            ' Con el PATH UNICO (ley gen3) el acumulador D ya vive en G22 desde el SEED: el compositor
+            ' (FaceTintCompositor.ApplyFaceTintPipeline) convierte el source sRGB->g22 UNA vez, en float,
+            ' antes de componer. Por eso aca NO se re-encodea: el bgra leido del resultado YA es g22. N/S
+            ' (slot 1/7) son datos lineales y se escriben raw. (Antes el compositor acumulaba en sRGB y
+            ' aca se hacia ApplySrgbToGamma22Diffuse byte->byte; eso se movio al seed, en float, sin
+            ' quantizar -> byte-comparable a CK / al `_3` de gen3.)
 
-            Dim mipLevels = CInt(Math.Floor(Math.Log(Math.Min(w, h), 2))) + 1
+            Dim mipLevels = CInt(Math.Floor(Math.Log(Math.Min(ddW, ddH), 2))) + 1
             Dim ddsBytes As Byte() = Nothing
             Try
                 ddsBytes = DirectXTextureConversionHelper.Bgra32BytesToDdsBytes(
-                    width:=w, height:=h, bgraPixels:=bgra,
+                    width:=ddW, height:=ddH, bgraPixels:=bgra,
                     outputDxgiFormat:=entry.Dxgi,
                     generateMipMaps:=True, generatedMipLevels:=mipLevels)
             Catch ex As Exception
@@ -1406,14 +1492,17 @@ Public Module FaceGenBuilder
                 Continue For
             End Try
 
-            ' DebugMode: dump the final composited buffer as uncompressed TGA next to the _2.dds
-            ' so the bake output can be inspected lossless without a DDS viewer (e.g. <formId>_d_2.tga
-            ' sits alongside <formId>_d_2.dds). Release: no-op (DebugMode=False).
-            If DebugMode Then
+            ' sandbox (DebugMode O SandboxOutput): dump del buffer final como TGA uncompressed al lado del
+            ' _2.dds para inspeccion lossless sin visor DDS (<formId>_d_2.tga junto a <formId>_d_2.dds).
+            ' Produccion (sandbox=False): no-op.
+            If sandbox Then
+                ' _2.dds (escrito arriba) + _2.tga = CPU (la salida always-on). Aca: _2.tga del CPU, y SOLO si
+                ' corrio el GL (DumpIntermediates) tambien _2b.dds + _2b.tga del GPU -> comparar CPU(_2) vs
+                ' GPU(_2b). En batch (sin GL) NO se escribe _2b -> sin doble-encode, solo el _2 del CPU.
                 Try
                     Dim tgaSuffix = Path.ChangeExtension(entry.Suffix, "tga")
                     Dim outTga = Path.Combine(outDir, $"{formIdLow:X8}{tgaSuffix}")
-                    FaceTintCompositor.WriteBgraToTga(outTga, bgra, w, h)
+                    FaceTintCompositor.WriteBgraToTga(outTga, bgra, ddW, ddH)
                     Logger.LogLazy(Function() $"[FACEBAKE] wrote '{outTga}'")
                 Catch ex As Exception
                     Dim slotL = entry.Slot
@@ -1421,6 +1510,22 @@ Public Module FaceGenBuilder
                     Dim typeL = ex.GetType().Name
                     Logger.LogLazy(Function() $"[FACEBAKE-FAIL] TGA dump slot={slotL} npcFormID=0x{npcFormID:X8}: {typeL}: {msgL}")
                 End Try
+                If gpuBgra IsNot Nothing Then
+                    Dim slotL2 = entry.Slot
+                    Try
+                        Dim suffix2b = entry.Suffix.Replace("_2.dds", "_2b.dds")
+                        Dim mips2b = CInt(Math.Floor(Math.Log(Math.Min(ddW, ddH), 2))) + 1
+                        Dim dds2b = DirectXTextureConversionHelper.Bgra32BytesToDdsBytes(
+                            ddW, ddH, gpuBgra, DirectXTextureConversionHelper.DxgiFormatB8G8R8A8Unorm,
+                            generateMipMaps:=True, generatedMipLevels:=mips2b)
+                        File.WriteAllBytes(Path.Combine(outDir, $"{formIdLow:X8}{suffix2b}"), dds2b)
+                        FaceTintCompositor.WriteBgraToTga(Path.Combine(outDir, $"{formIdLow:X8}{Path.ChangeExtension(suffix2b, "tga")}"), gpuBgra, ddW, ddH)
+                        Logger.LogLazy(Function() $"[FACEBAKE-GPU] wrote _2b (dds+tga) slot={slotL2}")
+                    Catch ex As Exception
+                        Dim m = ex.Message
+                        Logger.LogLazy(Function() $"[FACEBAKE-GPU] _2b write failed slot={slotL2}: {m}")
+                    End Try
+                End If
             End If
 
             Dim embeddedSuffix = If(willBePacked, entry.CanonSuffix, entry.Suffix)
@@ -1476,6 +1581,40 @@ Public Module FaceGenBuilder
         Next
         ids.Clear()
     End Sub
+
+    ''' <summary>DebugMode: dump de un canal del espejo CPU (FaceTintCpuCompositor) a TGA uncompressed
+    ''' (BGRA), via el mismo writer que el GL. No-op si el canal es Nothing.</summary>
+    Private Sub DumpCpuTga(ch As FaceTintCpuCompositor.CpuChannelResult, path As String)
+        If ch Is Nothing OrElse ch.Bgra Is Nothing Then Return
+        FaceTintCompositor.WriteBgraToTga(path, ch.Bgra, ch.Width, ch.Height)
+    End Sub
+
+    ''' <summary>Tamaño (W si isWidth, sino H) del slot: del canal del pipeline GL si tiene (>0), sino del
+    ''' canal CPU, sino el fallback (nativo). Sirve para el readback/encode en GL y CPU por igual.</summary>
+    Private Function SlotDim(pl As FaceTintCompositor.FaceTintPipelineChannelResult, cpuCh As FaceTintCpuCompositor.CpuChannelResult, fallback As Integer, isWidth As Boolean) As Integer
+        If pl IsNot Nothing Then
+            Dim v = If(isWidth, pl.Width, pl.Height)
+            If v > 0 Then Return v
+        End If
+        If cpuCh IsNot Nothing Then
+            Dim v = If(isWidth, cpuCh.Width, cpuCh.Height)
+            If v > 0 Then Return v
+        End If
+        Return fallback
+    End Function
+
+    ''' <summary>BGRA del canal del resultado CPU para un slot del bake (0=Diffuse, 1=Normal, 7=Specular).
+    ''' Nothing si el resultado o el canal son Nothing.</summary>
+    Private Function CpuBgraForSlot(cpu As FaceTintCpuCompositor.CpuPipelineResult, slot As Integer) As Byte()
+        If cpu Is Nothing Then Return Nothing
+        Dim ch As FaceTintCpuCompositor.CpuChannelResult
+        Select Case slot
+            Case 1 : ch = cpu.Normal
+            Case 7 : ch = cpu.Specular
+            Case Else : ch = cpu.Diffuse
+        End Select
+        Return If(ch Is Nothing, Nothing, ch.Bgra)
+    End Function
 
     ''' <summary>Log the shader-inline + related-material lighting fields for a shape, tagged
     ''' with a stage label (e.g. "SOURCE-LOAD" right after Load_Manolo). Used to track where

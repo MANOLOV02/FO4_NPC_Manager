@@ -70,6 +70,7 @@ Partial Class MainForm
         SeparatorActions3 = New Label()
         ButtonSavePlugin = New Button()
         ButtonBuildCharGen = New Button()
+        ButtonCharGenOptions = New Button()
         ButtonSaveSceneNif = New Button()
         PanelPreviewHost = New Panel()
         LabelStatus = New Label()
@@ -556,6 +557,7 @@ Partial Class MainForm
         PanelActionsToolbar.Controls.Add(SeparatorActions3)
         PanelActionsToolbar.Controls.Add(ButtonSavePlugin)
         PanelActionsToolbar.Controls.Add(ButtonBuildCharGen)
+        PanelActionsToolbar.Controls.Add(ButtonCharGenOptions)
         PanelActionsToolbar.Controls.Add(ButtonSaveSceneNif)
         PanelActionsToolbar.Dock = DockStyle.Top
         PanelActionsToolbar.Location = New Point(11, 126)
@@ -744,6 +746,17 @@ Partial Class MainForm
         ButtonBuildCharGen.Text = "Build CharGen (loose)"
         ButtonBuildCharGen.UseVisualStyleBackColor = True
         '
+        ' ButtonCharGenOptions
+        '
+        ButtonCharGenOptions.AutoSize = True
+        ButtonCharGenOptions.Margin = New Padding(2)
+        ButtonCharGenOptions.MinimumSize = New Size(110, 28)
+        ButtonCharGenOptions.Name = "ButtonCharGenOptions"
+        ButtonCharGenOptions.Size = New Size(120, 28)
+        ButtonCharGenOptions.TabIndex = 3
+        ButtonCharGenOptions.Text = "CharGen Options"
+        ButtonCharGenOptions.UseVisualStyleBackColor = True
+        '
         ' ButtonSaveSceneNif
         '
         ButtonSaveSceneNif.AutoSize = True
@@ -903,6 +916,7 @@ Partial Class MainForm
     Friend WithEvents LabelEdit As System.Windows.Forms.Label
     Friend WithEvents ButtonEditFace As System.Windows.Forms.Button
     Friend WithEvents ButtonBuildCharGen As System.Windows.Forms.Button
+    Friend WithEvents ButtonCharGenOptions As System.Windows.Forms.Button
     Friend WithEvents ButtonSaveSceneNif As System.Windows.Forms.Button
     Friend WithEvents ButtonEditBody As System.Windows.Forms.Button
     Friend WithEvents ButtonEditOutfit As System.Windows.Forms.Button

@@ -2872,7 +2872,7 @@ Public Class MainForm
         Dim targets = If(_contextMenuTargets.Count > 0, _contextMenuTargets.Distinct().ToList(), New List(Of UInteger))
         If targets.Count = 0 Then Return
         If targets.Count = 1 Then
-            BuildCharGenSingle(targets(0))
+            Await BuildCharGenSingle(targets(0))
         Else
             Await BuildCharGenForSelectionAsync(targets)
         End If
@@ -13537,6 +13537,14 @@ Public Class MainForm
     ''' &lt;exe dir&gt;\BakedFaceGen\Meshes\Actors\Character\FaceGenData\FaceGeom\&lt;plugin&gt;\&lt;FormID8hex&gt;.nif2
     ''' so the engine never sees it; the file is meant for side-by-side diff with the BA2
     ''' original. Each run also dumps the kept/dropped decision per shape to npc_preview.log.</summary>
+    ''' <summary>Abre el diálogo CharGen Options (tamaño de textura por canal + formato del diffuse,
+    ''' persistido en Config_App). El bake lee esos settings via FaceGenBuilder.OutputSettings.</summary>
+    Private Sub ButtonCharGenOptions_Click(sender As Object, e As EventArgs) Handles ButtonCharGenOptions.Click
+        Using f As New CharGenOptionsForm()
+            f.ShowDialog(Me)
+        End Using
+    End Sub
+
     Private Async Sub ButtonBuildCharGen_Click(sender As Object, e As EventArgs) Handles ButtonBuildCharGen.Click
         ' Multi-selection → batch build with a determinate progress dialog. Otherwise the single
         ' currently-rendered NPC, reported via a blocking message box (unchanged behaviour).
@@ -13548,17 +13556,24 @@ Public Class MainForm
         Dim modelNpcFormID = If(_renderHost.LastRenderedState.ModelSourceFormID <> 0UI,
                                 _renderHost.LastRenderedState.ModelSourceFormID,
                                 _renderHost.LastRenderedState.FormID)
-        BuildCharGenSingle(modelNpcFormID)
+        Await BuildCharGenSingle(modelNpcFormID)
     End Sub
 
     ''' <summary>Build CharGen (loose) for a single NPC, reporting via a blocking message box.</summary>
-    Private Sub BuildCharGenSingle(npcFormID As UInteger)
+    Private Async Function BuildCharGenSingle(npcFormID As UInteger) As Task
         If npcFormID = 0UI Then Return
         Dim result As FaceGenBuilder.BuildResult
         Try
             ' willBePacked:=False — loose output stays standalone (no BA2 repack/rename), so the NIF
             ' must embed the actual on-disk texture suffix (carries _2 in DebugMode). See BuildCharGen.
-            result = FaceGenBuilder.BuildCharGen(npcFormID, _pluginManager, _appliedPresets, _renderHost, AddressOf ApplyShapeMaterialOverrides, willBePacked:=False, lmSkinTemplateResolver:=AddressOf ResolveLmSkinTemplate)
+            ' CPU-only (sin GL) -> bake en thread de fondo; DebugMode O SandboxOutput (corren GL para el _2b
+            ' GPU de paridad) -> sync en el hilo UI (contexto GL).
+            Dim fidL = npcFormID
+            If FaceGenBuilder.DebugMode OrElse FaceGenBuilder.SandboxOutput Then
+                result = FaceGenBuilder.BuildCharGen(fidL, _pluginManager, _appliedPresets, _renderHost, AddressOf ApplyShapeMaterialOverrides, willBePacked:=False, lmSkinTemplateResolver:=AddressOf ResolveLmSkinTemplate)
+            Else
+                result = Await Task.Run(Function() FaceGenBuilder.BuildCharGen(fidL, _pluginManager, _appliedPresets, _renderHost, AddressOf ApplyShapeMaterialOverrides, willBePacked:=False, lmSkinTemplateResolver:=AddressOf ResolveLmSkinTemplate))
+            End If
         Catch ex As Exception
             Logger.LogLazy(Function() $"[BUILDCHARGEN] EXCEPTION {ex.GetType().Name}: {ex.Message}{vbCrLf}{ex.StackTrace}")
             result = New FaceGenBuilder.BuildResult With {.Success = False, .Summary = $"Build CharGen failed: {ex.GetType().Name}: {ex.Message}"}
@@ -13577,7 +13592,7 @@ Public Class MainForm
             message = $"Error: {result.Summary}"
         End If
         MessageBox.Show(Me, message, "Build CharGen", MessageBoxButtons.OK, icon)
-    End Sub
+    End Function
 
     ''' <summary>Build CharGen (loose) for many NPCs with a determinate, MODAL progress dialog. The
     ''' GL-bound bake (FaceGenBuilder.BuildCharGen) MUST run on the UI thread (it owns the OpenGL
@@ -13603,6 +13618,11 @@ Public Class MainForm
                     ' "white Cancel button / frozen UI" symptom). A 1 ms delay gives the message loop
                     ' idle time to process WM_PAINT + the Cancel click before resuming.
                     Await Task.Delay(1)
+                    ' Cache de decode a nivel BATCH: las texturas source (face d/_n/_s) + tint + swap se
+                    ' repiten entre clones -> decode UNA vez por DDS en todo el batch (no por clon). Se limpia
+                    ' en el Finally (incluso si se cancela). Equivalente CPU del TintGpuCache persistente del GL.
+                    FaceTintCpuCompositor.BeginBatchDecodeCache()
+                    Try
                     For i = 0 To total - 1
                         If p.Cancelled Then Exit For
                         Dim fid = formIDs(i)
@@ -13612,7 +13632,17 @@ Public Class MainForm
                         Await Task.Delay(1)   ' idle window so the bar/button repaint + Cancel processes
                         If p.Cancelled Then Exit For
                         Try
-                            Dim r = FaceGenBuilder.BuildCharGen(fid, _pluginManager, _appliedPresets, _renderHost, AddressOf ApplyShapeMaterialOverrides, willBePacked:=False, lmSkinTemplateResolver:=AddressOf ResolveLmSkinTemplate)
+                            ' Release (CharGen=CPU, sin GL) -> bake en thread de fondo (Await Task.Run): la
+                            ' UI repinta y Cancel responde DURANTE el bake, no solo entre NPCs. Secuencial
+                            ' (await uno a la vez) -> sin race. DebugMode O SandboxOutput usan GL (para el _2b
+                            ' GPU de paridad) -> sync en el hilo UI; si no, CPU en thread de fondo.
+                            Dim fidL = fid
+                            Dim r As FaceGenBuilder.BuildResult
+                            If FaceGenBuilder.DebugMode OrElse FaceGenBuilder.SandboxOutput Then
+                                r = FaceGenBuilder.BuildCharGen(fidL, _pluginManager, _appliedPresets, _renderHost, AddressOf ApplyShapeMaterialOverrides, willBePacked:=False, lmSkinTemplateResolver:=AddressOf ResolveLmSkinTemplate)
+                            Else
+                                r = Await Task.Run(Function() FaceGenBuilder.BuildCharGen(fidL, _pluginManager, _appliedPresets, _renderHost, AddressOf ApplyShapeMaterialOverrides, willBePacked:=False, lmSkinTemplateResolver:=AddressOf ResolveLmSkinTemplate))
+                            End If
                             If r.Skipped Then
                                 skipped += 1
                             ElseIf r.Success Then
@@ -13625,6 +13655,9 @@ Public Class MainForm
                             failed.Add($"{name}: {ex.Message}")
                         End Try
                     Next
+                    Finally
+                        FaceTintCpuCompositor.EndBatchDecodeCache()
+                    End Try
                     p.SetProgress(total, total, "Done.")
                 End Function
             prog.ShowDialog(Me)   ' modal: runs WorkAsync on Shown, closes itself when the loop ends
@@ -14496,9 +14529,18 @@ Public Class MainForm
             ' names (NpcFaceGenPacker), so the NIF must embed canonical texture paths. When the BA2
             ' pack is skipped (loose-only mode, Ba2Version_FO4=0), canonical paths are STILL what the
             ' engine looks up at runtime — _2 suffix is only the disk filename, not the NIF reference.
-            bakeResult = FaceGenBuilder.BuildCharGen(bakeFormID, _pluginManager, _appliedPresets,
-                                                     _renderHost, AddressOf ApplyShapeMaterialOverrides,
-                                                     willBePacked:=True, lmSkinTemplateResolver:=AddressOf ResolveLmSkinTemplate)
+            ' Release (CharGen=CPU, sin GL) -> bake en thread de fondo (Await Task.Run); DebugMode (GL) ->
+            ' sync en el hilo UI (ya estamos en él tras el Yield). Secuencial -> sin race entre NPCs.
+            Dim fidL = bakeFormID
+            If FaceGenBuilder.DebugMode Then
+                bakeResult = FaceGenBuilder.BuildCharGen(fidL, _pluginManager, _appliedPresets,
+                                                         _renderHost, AddressOf ApplyShapeMaterialOverrides,
+                                                         willBePacked:=True, lmSkinTemplateResolver:=AddressOf ResolveLmSkinTemplate)
+            Else
+                bakeResult = Await Task.Run(Function() FaceGenBuilder.BuildCharGen(fidL, _pluginManager, _appliedPresets,
+                                                         _renderHost, AddressOf ApplyShapeMaterialOverrides,
+                                                         willBePacked:=True, lmSkinTemplateResolver:=AddressOf ResolveLmSkinTemplate))
+            End If
         Catch ex As Exception
             Return (False, False, Nothing, $"CharGen bake failed: {ex.Message}")
         End Try

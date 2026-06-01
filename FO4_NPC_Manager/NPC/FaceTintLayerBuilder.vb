@@ -235,7 +235,10 @@ Public Module FaceTintLayerBuilder
                 If p.TextureFormID = 0UI Then Continue For
                 Dim msdvVal As Single = 0F
                 If Not npcData.MorphValues.TryGetValue(p.Index, msdvVal) Then Continue For
-                If msdvVal <= 0.001F Then Continue For
+                ' Gate de msdv<=0.001 REMOVIDO (a pedido): se incluye el swap aunque el msdv sea bajo o 0
+                ' (Intensity baja -> running con cov chica; 0 = no-op). build_3 compone todo msdv>0; el
+                ' gate viejo se comia valores fraccionarios bajos. (El TryGetValue de arriba sigue: si el
+                ' NPC no tiene ese morph, no hay swap.)
 
                 Dim txstRec = pluginManager.GetRecord(p.TextureFormID)
                 If txstRec Is Nothing OrElse txstRec.Header.Signature <> "TXST" Then Continue For
@@ -323,14 +326,26 @@ Public Module FaceTintLayerBuilder
             Dim valueLog = tlDiag.Value
             Dim origin = If(mDiag.IsRaceDefault, "RACE-DEFAULT", "NPC")
         Next
-        ' Orden de composicion = INDICE de tint DESCENDENTE (ley "descending index", probada vs CK
-        ' y replicada por el compositor _3 de Tools/FaceGenByteCompare). Con over-RUNNING el orden
-        ' importa: indice alto se pinta PRIMERO (fondo), indice bajo se pinta ULTIMO (encima).
-        ' Antes se ordenaba por rank de grupo de RACE; era inocuo con over-original (suma de deltas,
-        ' independiente del orden) pero NO replicaba la secuencia de CK al pasar a over-running.
+        ' Orden de composicion = (group_idx, teti) DESCENDENTE (ley de _3/build_3.py:161-162, probada vs CK).
+        ' group_idx = posicion del grupo en el RACE que contiene la opcion (clave PRIMARIA); teti = Layer.Index
+        ' del NPC = indice de la opcion (clave SECUNDARIA). Con over-RUNNING el orden importa: el de MAYOR
+        ' (group_idx, teti) se pinta PRIMERO (fondo), el de MENOR queda ULTIMO (encima). Antes era SOLO teti
+        ' desc -> el skintone (slot12)/dirt quedaban en la posicion equivocada del stack y no replicaba CK.
+        Dim groupIndexByOption As New Dictionary(Of UShort, Integer)
+        If tintGroupsForRender IsNot Nothing Then
+            For giOrder As Integer = 0 To tintGroupsForRender.Count - 1
+                Dim grpOrder = tintGroupsForRender(giOrder)
+                If grpOrder.Options Is Nothing Then Continue For
+                For Each optOrder In grpOrder.Options
+                    If Not groupIndexByOption.ContainsKey(optOrder.Index) Then groupIndexByOption(optOrder.Index) = giOrder
+                Next
+            Next
+        End If
         Dim orderedLayers = mergedLayers.
-            Select(Function(m, originalIdx) New With {m.Layer, .Idx = originalIdx}).
-            OrderByDescending(Function(x) x.Layer.Index).
+            Select(Function(m, originalIdx) New With {m.Layer, .Idx = originalIdx,
+                       .GroupIdx = If(groupIndexByOption.ContainsKey(m.Layer.Index), groupIndexByOption(m.Layer.Index), Integer.MaxValue)}).
+            OrderByDescending(Function(x) x.GroupIdx).
+            ThenByDescending(Function(x) x.Layer.Index).
             ThenBy(Function(x) x.Idx).
             Select(Function(x) x.Layer).
             ToList()
@@ -371,14 +386,10 @@ Public Module FaceTintLayerBuilder
             End If
 
             Dim opacity As Single = CSng(tl.Value) / 100.0F
-            If opacity <= 0.001F Then
-                stat_skip_zeroOpacity += 1
-                If takesSkinTone Then stat_skip_zeroOpacity_takesSkinTone += 1
-                Dim warn = If(takesSkinTone, " <<< takesSkinTone -- N/S also lost here", "")
-                If Not stat_byFlags_skipped.ContainsKey(rawOptFlagsU) Then stat_byFlags_skipped(rawOptFlagsU) = 0
-                stat_byFlags_skipped(rawOptFlagsU) += 1
-                Continue For
-            End If
+            ' Gate de zero-opacity REMOVIDO (a pedido): se incluyen TODAS las capas sin filtrar por
+            ' intensidad. Una capa con op=0 se compone como no-op (cov=g22_encode(mask)*0=0 -> acc sin
+            ' cambio), = build_3 que compone toda capa con intensity>0. Los gates de option/textura/
+            ' discriminador faltantes siguen abajo (esos SI saltan capas que no se pueden componer).
 
             Dim ttet0Snap = If(opt.Textures.Count > 0, opt.Textures(0), "")
             Dim ttet1Snap = If(opt.Textures.Count > 1, opt.Textures(1), "")
