@@ -326,11 +326,27 @@ Public Module FaceTintLayerBuilder
             Dim valueLog = tlDiag.Value
             Dim origin = If(mDiag.IsRaceDefault, "RACE-DEFAULT", "NPC")
         Next
-        ' Orden de composicion = (group_idx, teti) DESCENDENTE (ley de _3/build_3.py:161-162, probada vs CK).
-        ' group_idx = posicion del grupo en el RACE que contiene la opcion (clave PRIMARIA); teti = Layer.Index
-        ' del NPC = indice de la opcion (clave SECUNDARIA). Con over-RUNNING el orden importa: el de MAYOR
-        ' (group_idx, teti) se pinta PRIMERO (fondo), el de MENOR queda ULTIMO (encima). Antes era SOLO teti
-        ' desc -> el skintone (slot12)/dirt quedaban en la posicion equivocada del stack y no replicaba CK.
+        ' Orden de composicion = (group_idx DESC, teti DESC). group_idx = posicion del grupo en el RACE
+        ' (clave PRIMARIA, sin cambios); Layer.Index = teti = indice de la tint-option en el RACE (clave
+        ' SECUNDARIA intra-grupo). Con over-RUNNING el de MAYOR se pinta PRIMERO (fondo), el de MENOR queda
+        ' ULTIMO (encima).
+        ' 2026-06-02: REVERTIDO el desempate de Idx (orden del array ESP) a teti (Layer.Index). El 2026-06-01
+        ' se habia cambiado a Idx por un sweep de 90 ordenes que miraba D-general; un re-test mas amplio lo
+        ' corrige -> Tools/FaceTintDerive/retest_flagrule.py sobre Alana 0x0005E564 (191 ordenes unicos de
+        ' group/slot/teti/blendop, todas las direcciones; el compositor Python tiene paridad byte-exacta en
+        ' D y N con el bake real, verificada por parity_check.py). teti-desc vs idx-desc en esa corrida:
+        '   - N-general 0.28 mean / 100% px<10  vs  0.32 / 99.9%  (N esta casi byte-exacto -> es el canal que
+        '     mejor refleja el orden verdadero, y prefiere teti).
+        '   - sombra de ojos (footprint) 7.72 / 74%  vs  10.20 / 56%  (rasgo visible; idx-desc la tapaba).
+        '   - unico a favor de idx: D-general 5.17 vs 5.34 -> teti pierde 0.17 byte, en la piel ancha dominada
+        '     por el residual de dirt conocido (canal menos sensible). Paridad byte-exacta es D/N (no S).
+        ' El flag TakesSkinTone se modelo (pre-toneo del diffuse solo si la capa compone DESPUES de skintone) y
+        ' resulto INERTE en ordenes group-desc (las flagged van antes de skintone) -> no afecta este desempate.
+        ' blendop como criterio de orden empeora todo en la corrida -> descartado.
+        ' COBERTURA (NO medido): el re-test uso Alana full-authored. Las capas inyectadas -- skintone sintetico
+        ' (InjectSyntheticSkinToneLayer, ~line 126) y race-defaults (~line 194) -- se APPENDEAN con Idx alto;
+        ' bajo idx-desc quedaban deterministamente al fondo de su grupo, bajo teti-desc su orden pasa a darlo
+        ' su Layer.Index real. Sub-caso NO ejercido por ninguna medicion -> validar en un NPC con race-defaults.
         Dim groupIndexByOption As New Dictionary(Of UShort, Integer)
         If tintGroupsForRender IsNot Nothing Then
             For giOrder As Integer = 0 To tintGroupsForRender.Count - 1
@@ -346,7 +362,6 @@ Public Module FaceTintLayerBuilder
                        .GroupIdx = If(groupIndexByOption.ContainsKey(m.Layer.Index), groupIndexByOption(m.Layer.Index), Integer.MaxValue)}).
             OrderByDescending(Function(x) x.GroupIdx).
             ThenByDescending(Function(x) x.Layer.Index).
-            ThenBy(Function(x) x.Idx).
             Select(Function(x) x.Layer).
             ToList()
 
@@ -470,7 +485,7 @@ Public Module FaceTintLayerBuilder
                 End If
             ElseIf tl.Discriminator = 2 Then
                 layerInput.Kind = FaceTintLayerKind.TextureSetDiffuse
-                layerInput.BlendOp = CInt(ResolveFallbackBlendOp(opt))
+                layerInput.BlendOp = CInt(ResolveFallbackBlendOp(opt, opacity))
             Else
                 stat_skip_unknownDiscriminator += 1
                 If Not stat_byFlags_skipped.ContainsKey(rawOptFlagsU) Then stat_byFlags_skipped(rawOptFlagsU) = 0
@@ -759,8 +774,8 @@ Public Module FaceTintLayerBuilder
     ''' a last-resort fallback, not a primary source.</summary>
     ''' <summary>Delegate to FO4_Base_Library.FaceTintPaletteResolver — single source of truth.
     ''' Mantenido como wrapper local para compat con call sites de NPC_Manager.</summary>
-    Public Function ResolveFallbackBlendOp(opt As RACE_TintTemplateOption) As UInteger
-        Return FaceTintPaletteResolver.ResolveFallbackBlendOp(opt)
+    Public Function ResolveFallbackBlendOp(opt As RACE_TintTemplateOption, npcOpacity As Single) As UInteger
+        Return FaceTintPaletteResolver.ResolveFallbackBlendOp(opt, npcOpacity)
     End Function
 
     ''' <summary>Delegate to FO4_Base_Library.FaceTintPaletteResolver — single source of truth.

@@ -2039,12 +2039,13 @@ Public Class EditFace_Form
     ' minima, 1 ≈ fully toward maxima.
     ' =====================================================================
 
-    ''' <summary>Build the per-MorphGroup TabControl + per-region GroupBoxes inside the bone
-    ''' regions tab. One sub-tab per AssociatedMorphGroup the JSON declares; regions without a
-    ''' group go to a synthetic "Other" sub-tab. Within each sub-tab, every region from the
-    ''' active race+gender JSON appears as a GroupBox with 7 sliders (PosX/Y/Z, RotX/Y/Z, Scale)
-    ''' — no Add/Remove picker because the JSON enumerates the universe of regions; the user
-    ''' simply changes values from the bind pose (0.5 lerp midpoint).</summary>
+    ''' <summary>Build the bone-regions editor as a TabControl. Tabs come from a data-derived
+    ''' group chain (AssociatedMorphGroup → else the Name prefix before " - " → else leftovers
+    ''' bucketed by shared bone-set and labelled by their common Name prefix). Inside each tab,
+    ''' regions that drive the same bone-set are collapsed into one card (GroupBox) that stacks
+    ''' each member's LIVE axes only. Bone-less placeholder regions and axes whose range equals
+    ''' the region Default (render no-ops) are hidden. All derived from the active race+gender
+    ''' JSON — no hardcoded region IDs, names or bone lists.</summary>
     Private Sub BuildBoneRegionsUI()
         BoneRegionsContainer.Controls.Clear()
         _regionBars.Clear()
@@ -2058,21 +2059,45 @@ Public Class EditFace_Form
             Return
         End If
 
-        ' Group regions by AssociatedMorphGroup (with "Other" bucket for empty/missing).
+        ' Build tabs from a data-derived group chain, then collapse same-bone regions into one
+        ' card per tab. Everything is derived from the active race+gender JSON (no hardcoded IDs,
+        ' names or bone lists). See TabGroupForRegion / BuildBoneCard.
         Dim grouped As New Dictionary(Of String, List(Of FacialBoneRegion))(StringComparer.OrdinalIgnoreCase)
         Dim groupOrder As New List(Of String)
+        Dim addToGroup As Action(Of String, FacialBoneRegion) =
+            Sub(g As String, rd As FacialBoneRegion)
+                Dim list As List(Of FacialBoneRegion) = Nothing
+                If Not grouped.TryGetValue(g, list) Then
+                    list = New List(Of FacialBoneRegion)
+                    grouped(g) = list
+                    groupOrder.Add(g)
+                End If
+                list.Add(rd)
+            End Sub
+
+        ' Pass 1: AssociatedMorphGroup, else the Name prefix before " - ". Regions with no bones
+        ' are skipped (placeholder menu separators shipped by some sculpt mods are render no-ops;
+        ' vanilla has none). Leftovers (no group, no " - ") go to pass 2.
+        Dim leftovers As New List(Of FacialBoneRegion)
         For Each rd As FacialBoneRegion In regionsFile.Regions.Values.OrderBy(Function(r) r.Name)
-            Dim g = If(String.IsNullOrEmpty(rd.AssociatedMorphGroup), "Other", rd.AssociatedMorphGroup)
-            Dim list As List(Of FacialBoneRegion) = Nothing
-            If Not grouped.TryGetValue(g, list) Then
-                list = New List(Of FacialBoneRegion)
-                grouped(g) = list
-                groupOrder.Add(g)
-            End If
-            list.Add(rd)
+            If rd.Bones.Count = 0 Then Continue For
+            Dim g As String = TabGroupForRegion(rd)
+            If g Is Nothing Then leftovers.Add(rd) Else addToGroup(g, rd)
         Next
 
-        ' Sort group tabs alphabetically except "Other" which goes last.
+        ' Pass 2: bucket the leftovers by shared bone-set, labelled by the common Name prefix, so
+        ' nothing falls into a generic "Other" (e.g. the mod's group-less "Nose Side *" set). The
+        ' "Other" name only appears as a last resort for unknown data with no shared prefix.
+        For Each bsGroup In leftovers.GroupBy(Function(r) RegionBoneSetKey(r))
+            Dim members = bsGroup.ToList()
+            Dim label As String = CommonNamePrefix(members.Select(Function(r) r.Name))
+            If String.IsNullOrEmpty(label) Then label = "Other"
+            For Each rd In members
+                addToGroup(label, rd)
+            Next
+        Next
+
+        ' Tabs alphabetical, any "Other" (unknown-data fallback) last.
         groupOrder.Sort(Function(a, b)
                             If a.Equals("Other", StringComparison.OrdinalIgnoreCase) Then Return 1
                             If b.Equals("Other", StringComparison.OrdinalIgnoreCase) Then Return -1
@@ -2086,8 +2111,19 @@ Public Class EditFace_Form
                 .Dock = DockStyle.Fill, .AutoScroll = True,
                 .FlowDirection = FlowDirection.LeftToRight,
                 .WrapContents = True}
-            For Each rd As FacialBoneRegion In grouped(groupName)
-                flow.Controls.Add(BuildRegionGroupBox(rd))
+            ' Collapse: one card per shared bone-set. Compute the display label once per card.
+            Dim cards = grouped(groupName).
+                GroupBy(Function(r) RegionBoneSetKey(r)).
+                Select(Function(grp)
+                           Dim ms = grp.OrderBy(Function(r) r.Name).ToList()
+                           Dim lbl As String = CommonNamePrefix(ms.Select(Function(r) r.Name))
+                           If String.IsNullOrEmpty(lbl) Then lbl = ms(0).Name
+                           Return (Label:=lbl, Members:=ms)
+                       End Function).
+                OrderBy(Function(c) c.Label, StringComparer.OrdinalIgnoreCase)
+            For Each c In cards
+                Dim card = BuildBoneCard(c.Label, c.Members)
+                If card IsNot Nothing Then flow.Controls.Add(card)
             Next
             page.Controls.Add(flow)
             tabs.TabPages.Add(page)
@@ -2095,78 +2131,195 @@ Public Class EditFace_Form
         BoneRegionsContainer.Controls.Add(tabs)
     End Sub
 
-    ''' <summary>Build one GroupBox per region with Position (X/Y/Z), Rotation (X/Y/Z), Scale +
-    ''' a per-axis reset button that sets the slider back to 0.5 (bind pose). Title shows the
-    ''' region name; tooltip carries the FMRI Index in hex for the technical user.</summary>
-    Private Function BuildRegionGroupBox(rd As FacialBoneRegion) As Control
-        Const RowHeight As Integer = 22
-        Dim group As New GroupBox() With {
-            .Text = rd.Name,
-            .Width = 270, .Height = 265,
-            .Margin = New Padding(4),
-            .Padding = New Padding(6)}
-        Dim tip As New ToolTip()
-        tip.SetToolTip(group, $"FMRI Index: 0x{rd.ID:X8}")
+    ''' <summary>Tab group for a region: AssociatedMorphGroup if present, else the Name prefix
+    ''' before " - " (vanilla leaves some regions — Eyebrows, Jowls, Nose-Ridge — without a
+    ''' MorphGroup but their Name carries the feature). Returns Nothing when neither applies so
+    ''' the caller can bucket the region by shared bone-set. Data-derived; no hardcoded names.</summary>
+    Private Shared Function TabGroupForRegion(rd As FacialBoneRegion) As String
+        If Not String.IsNullOrEmpty(rd.AssociatedMorphGroup) Then Return rd.AssociatedMorphGroup
+        Dim n As String = If(rd.Name, "")
+        Dim idx As Integer = n.IndexOf(" - ", StringComparison.Ordinal)
+        If idx > 0 Then Return n.Substring(0, idx)
+        Return Nothing
+    End Function
 
-        Dim bars(6) As FO4_Base_Library.TinySliderTextBox
+    ''' <summary>Stable key for the set of bones a region drives (sorted, case-insensitive).
+    ''' Regions sharing it are variants of one physical control and collapse into one card.</summary>
+    Private Shared Function RegionBoneSetKey(rd As FacialBoneRegion) As String
+        Return String.Join("|", rd.Bones.Select(Function(b) b.Bone).
+                                 OrderBy(Function(nm) nm, StringComparer.OrdinalIgnoreCase))
+    End Function
+
+    ''' <summary>Longest common leading word-sequence of the given names ("" if none). Used to
+    ''' label a collapsed card / leftover bucket from its members' Names (e.g. "Forehead",
+    ''' "Nose Side").</summary>
+    Private Shared Function CommonNamePrefix(names As IEnumerable(Of String)) As String
+        Dim lists = names.Where(Function(n) Not String.IsNullOrEmpty(n)).
+                          Select(Function(n) n.Split(" "c)).ToList()
+        If lists.Count = 0 Then Return ""
+        Dim minLen As Integer = lists.Min(Function(w) w.Length)
+        Dim out As New List(Of String)
+        For i = 0 To minLen - 1
+            Dim idx As Integer = i
+            Dim w As String = lists(0)(idx)
+            If lists.All(Function(arr) String.Equals(arr(idx), w, StringComparison.Ordinal)) Then
+                out.Add(w)
+            Else
+                Exit For
+            End If
+        Next
+        Return String.Join(" ", out)
+    End Function
+
+    ''' <summary>Which of the 7 FMRS components (PosX/Y/Z, RotX/Y/Z, Scale) can produce a non-zero
+    ''' bone delta. An axis is live iff Maxima or Minima differ from the region's Default on that
+    ''' axis — that is exactly LerpFmrs (max-default / min-default, FaceBonePoseBuilder.vb). Comparing
+    ''' against 0 would mis-handle a non-zero Default (hide a live axis, or show a dead min=max=default
+    ''' one). Component 6 (Scale) drives all three scale axes from the single FMRS scale value, so it
+    ''' is live if any scale axis ranges off its Default.</summary>
+    Private Shared Function RegionLiveComponents(rd As FacialBoneRegion) As Boolean()
+        Dim live(6) As Boolean
+        Dim dp = rd.DefaultPosition, dr = rd.DefaultRotation, ds = rd.DefaultScale
+        For Each b In rd.Bones
+            If b.MinimaPosition.X <> dp.X OrElse b.MaximaPosition.X <> dp.X Then live(0) = True
+            If b.MinimaPosition.Y <> dp.Y OrElse b.MaximaPosition.Y <> dp.Y Then live(1) = True
+            If b.MinimaPosition.Z <> dp.Z OrElse b.MaximaPosition.Z <> dp.Z Then live(2) = True
+            If b.MinimaRotation.X <> dr.X OrElse b.MaximaRotation.X <> dr.X Then live(3) = True
+            If b.MinimaRotation.Y <> dr.Y OrElse b.MaximaRotation.Y <> dr.Y Then live(4) = True
+            If b.MinimaRotation.Z <> dr.Z OrElse b.MaximaRotation.Z <> dr.Z Then live(5) = True
+            If b.MinimaScale.X <> ds.X OrElse b.MaximaScale.X <> ds.X OrElse
+               b.MinimaScale.Y <> ds.Y OrElse b.MaximaScale.Y <> ds.Y OrElse
+               b.MinimaScale.Z <> ds.Z OrElse b.MaximaScale.Z <> ds.Z Then live(6) = True
+        Next
+        Return live
+    End Function
+
+    Private Shared Function AxisName(componentIdx As Integer) As String
+        Select Case componentIdx
+            Case 0 : Return "Position X"
+            Case 1 : Return "Position Y"
+            Case 2 : Return "Position Z"
+            Case 3 : Return "Rotation X"
+            Case 4 : Return "Rotation Y"
+            Case 5 : Return "Rotation Z"
+            Case Else : Return "Scale"
+        End Select
+    End Function
+
+    ''' <summary>Label distinguishing a member region inside a collapsed card: its Name with the
+    ''' shared card prefix removed ("Forehead Extended" → "Extended"); "Base" when the member IS
+    ''' the prefix.</summary>
+    Private Shared Function VariantLabel(regionName As String, cardLabel As String) As String
+        Dim n As String = If(regionName, "")
+        If Not String.IsNullOrEmpty(cardLabel) AndAlso n.StartsWith(cardLabel, StringComparison.Ordinal) Then
+            Dim rest As String = n.Substring(cardLabel.Length).Trim()
+            Return If(rest.Length > 0, rest, "Base")
+        End If
+        Return n
+    End Function
+
+    ''' <summary>Add a full-width bold header row (variant name or section name) to a card layout,
+    ''' advancing the row index and running content height by ref.</summary>
+    Private Sub AddCardHeaderRow(layout As TableLayoutPanel, text As String, leftAlign As Boolean,
+                                 ByRef row As Integer, ByRef contentH As Integer, hdrH As Integer)
+        Dim h As New Label() With {.Text = text, .AutoSize = False,
+            .Font = New Font(Me.Font, FontStyle.Bold), .Dock = DockStyle.Fill,
+            .TextAlign = If(leftAlign, ContentAlignment.MiddleLeft, ContentAlignment.MiddleCenter)}
+        layout.RowCount = row + 1
+        layout.RowStyles.Add(New RowStyle(SizeType.Absolute, hdrH))
+        layout.SetColumnSpan(h, 2)
+        layout.Controls.Add(h, 0, row)
+        row += 1
+        contentH += hdrH
+    End Sub
+
+    ''' <summary>Build one card (GroupBox) for the regions that share a bone-set. Title is the
+    ''' precomputed common-Name label; tooltip carries the bone name(s) and FMRI index. Each member
+    ''' lists only its live axes, grouped under Translation / Rotation / Scale section headers;
+    ''' with more than one member each member also gets a bold variant sub-header. The reset/axis
+    ''' buttons match the slider textbox height so they line up. Returns Nothing if the set is empty
+    ''' or every member is a render no-op.</summary>
+    Private Function BuildBoneCard(cardLabel As String, members As List(Of FacialBoneRegion)) As Control
+        If members Is Nothing OrElse members.Count = 0 Then Return Nothing
+        ' RowH ≥ TinySliderTextBox.MinimumSize.Height (24): a shorter row pins the slider at its min
+        ' while the reset button shrinks, so they stop matching. The button height equals the slider's
+        ' inner textbox height (22) so the two line up at the top.
+        Const RowH As Integer = 26
+        Const HdrH As Integer = 18
+        Dim showSub As Boolean = members.Count > 1
+
+        ' FMRS component layout (binary spec, not game data): Translation = PosX/Y/Z (0..2),
+        ' Rotation = RotX/Y/Z (3..5), Scale = a single slider (6, drives all 3 scale axes).
+        Dim secNames = {"Translation", "Rotation", "Scale"}
+        Dim secComps = {New Integer() {0, 1, 2}, New Integer() {3, 4, 5}, New Integer() {6}}
+        Dim secLabels = {New String() {"X", "Y", "Z"}, New String() {"X", "Y", "Z"}, New String() {"S"}}
 
         Dim layout As New TableLayoutPanel() With {
-            .Dock = DockStyle.Fill, .ColumnCount = 2, .RowCount = 10}
-        layout.ColumnStyles.Add(New ColumnStyle(SizeType.Absolute, 24))
+            .Dock = DockStyle.Fill, .ColumnCount = 2, .AutoSize = False, .Margin = New Padding(0)}
+        layout.ColumnStyles.Add(New ColumnStyle(SizeType.Absolute, 26))
         layout.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100.0F))
-        For r = 0 To 9
-            layout.RowStyles.Add(New RowStyle(SizeType.AutoSize))
+
+        Dim tip As New ToolTip()
+        Dim row As Integer = 0
+        Dim contentH As Integer = 0
+
+        For Each rd As FacialBoneRegion In members
+            Dim live = RegionLiveComponents(rd)
+            If Not live.Any(Function(x) x) Then Continue For
+
+            Dim bars(6) As FO4_Base_Library.TinySliderTextBox
+
+            If showSub Then AddCardHeaderRow(layout, VariantLabel(rd.Name, cardLabel), True, row, contentH, HdrH)
+
+            For s = 0 To secNames.Length - 1
+                Dim comps = secComps(s)
+                If Not comps.Any(Function(ci) live(ci)) Then Continue For
+                AddCardHeaderRow(layout, secNames(s), False, row, contentH, HdrH)
+                For k = 0 To comps.Length - 1
+                    Dim ci As Integer = comps(k)
+                    If Not live(ci) Then Continue For
+                    ' FMRS values are signed [-1..+1]; 0 = bind pose. LerpFmrs maps -1→min, +1→max.
+                    Dim bar As New FO4_Base_Library.TinySliderTextBox() With {.Minimum = -1R, .Maximum = 1R,
+                        .DisplayFormat = "0.00%", .InputScale = 0.01R,
+                        .SmallChange = 0.01R, .LargeChange = 0.1R,
+                        .FillMode = FO4_Base_Library.TinySliderFillMode.Center,
+                        .Value = 0R, .Dock = DockStyle.Fill, .Margin = New Padding(0, 1, 0, 1)}
+                    Dim resetBtn As New Button() With {.Text = secLabels(s)(k),
+                        .Dock = DockStyle.Top, .Height = 22, .Margin = New Padding(0, 1, 2, 1),
+                        .TabStop = False, .Padding = New Padding(0)}
+                    Dim regId As UInteger = rd.ID
+                    Dim compIdx As Integer = ci
+                    Dim theBar = bar
+                    AddHandler bar.ValueChanged, Sub(sndr, e) OnRegionSliderChanged(regId, compIdx)
+                    AddHandler bar.DragEnded, AddressOf OnSliderDragEnded
+                    AddHandler resetBtn.Click, Sub(sndr, e) theBar.Value = 0
+                    tip.SetToolTip(resetBtn, AxisName(ci) & " — reset")
+                    layout.RowCount = row + 1
+                    layout.RowStyles.Add(New RowStyle(SizeType.Absolute, RowH))
+                    layout.Controls.Add(resetBtn, 0, row)
+                    layout.Controls.Add(bar, 1, row)
+                    bars(ci) = bar
+                    row += 1 : contentH += RowH
+                Next
+            Next
+
+            _regionBars(rd.ID) = bars
         Next
 
-        Dim addHeader = Sub(text As String, row As Integer)
-                            Dim h As New Label() With {.Text = text, .AutoSize = False,
-                                .Font = New Font(Font, FontStyle.Bold),
-                                .Dock = DockStyle.Fill,
-                                .TextAlign = ContentAlignment.MiddleCenter}
-                            layout.SetColumnSpan(h, 2)
-                            layout.Controls.Add(h, 0, row)
-                        End Sub
+        If row = 0 Then Return Nothing
 
-        Dim addAxisRow = Sub(componentIdx As Integer, axisLabel As String, row As Integer)
-                             Dim resetBtn As New Button() With {.Text = axisLabel, .Width = 22, .Height = RowHeight,
-                                 .Margin = New Padding(0, 0, 2, 0), .TabStop = False}
-                             ' FMRS values are signed [-1..+1] with 0 = bind pose (default).
-                             ' LerpFmrs (MainForm.vb:5447) maps -1 → minima, 0 → no delta,
-                             ' +1 → maxima. NPC values in vanilla land between -1 and +1 directly,
-                             ' not 0..1 lerped around 0.5. Slider must mirror that exactly.
-                             Dim bar As New FO4_Base_Library.TinySliderTextBox() With {.Minimum = -1R, .Maximum = 1R,
-                                 .DisplayFormat = "0.00%", .InputScale = 0.01R,
-                                 .SmallChange = 0.01R, .LargeChange = 0.1R,
-                                 .FillMode = FO4_Base_Library.TinySliderFillMode.Center,
-                                 .Height = RowHeight, .Value = 0R,
-                                 .Dock = DockStyle.Fill, .Margin = New Padding(0)}
-                             Dim regId = rd.ID
-                             Dim compIdx = componentIdx
-                             AddHandler bar.ValueChanged, Sub(s, e) OnRegionSliderChanged(regId, compIdx)
-                             AddHandler bar.DragEnded, AddressOf OnSliderDragEnded
-                             AddHandler resetBtn.Click, Sub(s, e)
-                                                            bar.Value = 0
-                                                        End Sub
-                             layout.Controls.Add(resetBtn, 0, row)
-                             layout.Controls.Add(bar, 1, row)
-                             bars(componentIdx) = bar
-                         End Sub
+        ' Trailing flexible row: absorbs leftover height in the fixed-size card so the content rows
+        ' above keep their exact heights (buttons stay aligned with sliders) instead of the last row
+        ' stretching. An empty AutoSize row would be 0 and absorb nothing — Percent(100) takes the slack.
+        layout.RowCount = row + 1
+        layout.RowStyles.Add(New RowStyle(SizeType.Percent, 100.0F))
 
-        addHeader("Position", 0)
-        addAxisRow(0, "X", 1)
-        addAxisRow(1, "Y", 2)
-        addAxisRow(2, "Z", 3)
-
-        addHeader("Rotation", 4)
-        addAxisRow(3, "X", 5)
-        addAxisRow(4, "Y", 6)
-        addAxisRow(5, "Z", 7)
-
-        addHeader("Scale", 8)
-        addAxisRow(6, "S", 9)
-
+        Dim group As New GroupBox() With {
+            .Text = cardLabel, .Width = 230, .Height = contentH + 34,
+            .Margin = New Padding(4), .Padding = New Padding(6, 4, 6, 4)}
+        Dim boneList As String = String.Join(", ", members(0).Bones.Select(Function(b) b.Bone))
+        tip.SetToolTip(group, If(showSub, $"Bones: {boneList}", $"Bones: {boneList}  •  FMRI 0x{members(0).ID:X8}"))
         group.Controls.Add(layout)
-        _regionBars(rd.ID) = bars
         Return group
     End Function
 
@@ -2183,6 +2336,7 @@ Public Class EditFace_Form
                 Dim arr As Single() = Nothing
                 p.FaceBoneRegions.TryGetValue(regId, arr)
                 For i = 0 To 6
+                    If bars(i) Is Nothing Then Continue For   ' dead axes aren't built (BuildBoneCard)
                     Dim v As Single = If(arr IsNot Nothing AndAlso i < arr.Length, arr(i), 0.0F)
                     bars(i).Value = v
                 Next

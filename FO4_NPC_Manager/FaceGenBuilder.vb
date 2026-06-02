@@ -1219,6 +1219,7 @@ Public Module FaceGenBuilder
         ' el GL pipeline: solo CPU (no se duplica GPU+CPU). El compose CPU usa las DDS ya leidas (wrapper,
         ' sin GL). Se computa ACA (antes del upload) para tener su tamaño cuando no hay GL.
         Dim useCpuOutput As Boolean = True
+        Dim WriteGPUSandboxOutput As Boolean = False
         ' GL pipeline (produce el _2 GPU para comparar paridad) SOLO si DumpIntermediates (single-NPC debug).
         ' En batch (DumpIntermediates=False) NO se corre el GL: solo CPU -> sin doble-compose, sin dependencia
         ' GL (bake async-able). El output principal (_d_2.dds en DebugMode) cae a CPU por el fallback de mas
@@ -1227,7 +1228,7 @@ Public Module FaceGenBuilder
         ' SandboxOutput tambien corre el GL -> escribe el _2b (GPU) ademas del _2 (CPU) para VERIFICAR
         ' paridad CPU==GPU (post-fix g22). En esa rama el bake DEBE correr en el hilo UI (contexto GL); el
         ' caller (MainForm) lo agenda sync cuando SandboxOutput. Sin SandboxOutput (produccion): CPU-only.
-        Dim needGl As Boolean = (DebugMode AndAlso DumpIntermediates) OrElse (Not useCpuOutput) OrElse SandboxOutput
+        Dim needGl As Boolean = (DebugMode AndAlso DumpIntermediates) OrElse (Not useCpuOutput) OrElse (SandboxOutput AndAlso WriteGPUSandboxOutput)
         Dim cpu As FaceTintCpuCompositor.CpuPipelineResult = Nothing
         If DebugMode OrElse useCpuOutput Then
             Try
