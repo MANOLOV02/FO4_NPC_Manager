@@ -1219,7 +1219,7 @@ Public Module FaceGenBuilder
         ' el GL pipeline: solo CPU (no se duplica GPU+CPU). El compose CPU usa las DDS ya leidas (wrapper,
         ' sin GL). Se computa ACA (antes del upload) para tener su tamaño cuando no hay GL.
         Dim useCpuOutput As Boolean = True
-        Dim WriteGPUSandboxOutput As Boolean = False
+        Dim WriteGPUSandboxOutput As Boolean = True
         ' GL pipeline (produce el _2 GPU para comparar paridad) SOLO si DumpIntermediates (single-NPC debug).
         ' En batch (DumpIntermediates=False) NO se corre el GL: solo CPU -> sin doble-compose, sin dependencia
         ' GL (bake async-able). El output principal (_d_2.dds en DebugMode) cae a CPU por el fallback de mas

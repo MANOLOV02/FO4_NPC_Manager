@@ -2111,18 +2111,11 @@ Public Class EditFace_Form
                 .Dock = DockStyle.Fill, .AutoScroll = True,
                 .FlowDirection = FlowDirection.LeftToRight,
                 .WrapContents = True}
-            ' Collapse: one card per shared bone-set. Compute the display label once per card.
-            Dim cards = grouped(groupName).
-                GroupBy(Function(r) RegionBoneSetKey(r)).
-                Select(Function(grp)
-                           Dim ms = grp.OrderBy(Function(r) r.Name).ToList()
-                           Dim lbl As String = CommonNamePrefix(ms.Select(Function(r) r.Name))
-                           If String.IsNullOrEmpty(lbl) Then lbl = ms(0).Name
-                           Return (Label:=lbl, Members:=ms)
-                       End Function).
-                OrderBy(Function(c) c.Label, StringComparer.OrdinalIgnoreCase)
-            For Each c In cards
-                Dim card = BuildBoneCard(c.Label, c.Members)
+            ' No bone-set collapse: one full single-member card per region (sorted by Name). Keeps
+            ' vanilla cards exactly as in vanilla; the user opted out of collapse since a mod's extra
+            ' regions can't be told apart from vanilla without the vanilla baseline (BA2 diff / RACE).
+            For Each rd As FacialBoneRegion In grouped(groupName).OrderBy(Function(r) r.Name)
+                Dim card = BuildBoneCard(rd.Name, New List(Of FacialBoneRegion) From {rd})
                 If card IsNot Nothing Then flow.Controls.Add(card)
             Next
             page.Controls.Add(flow)
@@ -2218,13 +2211,18 @@ Public Class EditFace_Form
         Return n
     End Function
 
-    ''' <summary>Add a full-width bold header row (variant name or section name) to a card layout,
-    ''' advancing the row index and running content height by ref.</summary>
-    Private Sub AddCardHeaderRow(layout As TableLayoutPanel, text As String, leftAlign As Boolean,
+    ''' <summary>Add a full-width bold, centered header row. When <paramref name="isBand"/> (a member
+    ''' separator inside a collapsed multi-region card) it gets a light-grey background so the members
+    ''' read as distinct blocks; otherwise it's a plain section header (Translation / Rotation / Scale).</summary>
+    Private Sub AddCardHeaderRow(layout As TableLayoutPanel, text As String, isBand As Boolean,
                                  ByRef row As Integer, ByRef contentH As Integer, hdrH As Integer)
         Dim h As New Label() With {.Text = text, .AutoSize = False,
             .Font = New Font(Me.Font, FontStyle.Bold), .Dock = DockStyle.Fill,
-            .TextAlign = If(leftAlign, ContentAlignment.MiddleLeft, ContentAlignment.MiddleCenter)}
+            .TextAlign = ContentAlignment.MiddleCenter}
+        If isBand Then
+            h.BackColor = SystemColors.ControlDark
+            h.ForeColor = SystemColors.ControlLightLight
+        End If
         layout.RowCount = row + 1
         layout.RowStyles.Add(New RowStyle(SizeType.Absolute, hdrH))
         layout.SetColumnSpan(h, 2)
@@ -2235,10 +2233,10 @@ Public Class EditFace_Form
 
     ''' <summary>Build one card (GroupBox) for the regions that share a bone-set. Title is the
     ''' precomputed common-Name label; tooltip carries the bone name(s) and FMRI index. Each member
-    ''' lists only its live axes, grouped under Translation / Rotation / Scale section headers;
-    ''' with more than one member each member also gets a bold variant sub-header. The reset/axis
-    ''' buttons match the slider textbox height so they line up. Returns Nothing if the set is empty
-    ''' or every member is a render no-op.</summary>
+    ''' shows ALL 7 axes under Translation / Rotation / Scale headers; axes that are no-ops for the
+    ''' region (min/max == Default) are rendered DISABLED rather than omitted, so every single-member
+    ''' card has the same size. With more than one member each member also gets a bold variant
+    ''' sub-header. Returns Nothing if the set is empty or every member is a render no-op.</summary>
     Private Function BuildBoneCard(cardLabel As String, members As List(Of FacialBoneRegion)) As Control
         If members Is Nothing OrElse members.Count = 0 Then Return Nothing
         ' RowH ≥ TinySliderTextBox.MinimumSize.Height (24): a shorter row pins the slider at its min
@@ -2269,31 +2267,35 @@ Public Class EditFace_Form
 
             Dim bars(6) As FO4_Base_Library.TinySliderTextBox
 
-            If showSub Then AddCardHeaderRow(layout, VariantLabel(rd.Name, cardLabel), True, row, contentH, HdrH)
+            If showSub Then AddCardHeaderRow(layout, VariantLabel(rd.Name, cardLabel), True, row, contentH, HdrH + 4)
 
             For s = 0 To secNames.Length - 1
                 Dim comps = secComps(s)
-                If Not comps.Any(Function(ci) live(ci)) Then Continue For
                 AddCardHeaderRow(layout, secNames(s), False, row, contentH, HdrH)
                 For k = 0 To comps.Length - 1
                     Dim ci As Integer = comps(k)
-                    If Not live(ci) Then Continue For
+                    Dim isLive As Boolean = live(ci)
                     ' FMRS values are signed [-1..+1]; 0 = bind pose. LerpFmrs maps -1→min, +1→max.
+                    ' No-op axes (min/max == Default) are still built but DISABLED, so every card keeps
+                    ' the same layout/size instead of shrinking to its live axes.
                     Dim bar As New FO4_Base_Library.TinySliderTextBox() With {.Minimum = -1R, .Maximum = 1R,
                         .DisplayFormat = "0.00%", .InputScale = 0.01R,
                         .SmallChange = 0.01R, .LargeChange = 0.1R,
                         .FillMode = FO4_Base_Library.TinySliderFillMode.Center,
-                        .Value = 0R, .Dock = DockStyle.Fill, .Margin = New Padding(0, 1, 0, 1)}
+                        .Value = 0R, .Dock = DockStyle.Fill, .Margin = New Padding(0, 1, 0, 1),
+                        .Enabled = isLive}
                     Dim resetBtn As New Button() With {.Text = secLabels(s)(k),
                         .Dock = DockStyle.Top, .Height = 22, .Margin = New Padding(0, 1, 2, 1),
-                        .TabStop = False, .Padding = New Padding(0)}
+                        .TabStop = False, .Padding = New Padding(0), .Enabled = isLive}
                     Dim regId As UInteger = rd.ID
                     Dim compIdx As Integer = ci
                     Dim theBar = bar
-                    AddHandler bar.ValueChanged, Sub(sndr, e) OnRegionSliderChanged(regId, compIdx)
-                    AddHandler bar.DragEnded, AddressOf OnSliderDragEnded
-                    AddHandler resetBtn.Click, Sub(sndr, e) theBar.Value = 0
-                    tip.SetToolTip(resetBtn, AxisName(ci) & " — reset")
+                    If isLive Then
+                        AddHandler bar.ValueChanged, Sub(sndr, e) OnRegionSliderChanged(regId, compIdx)
+                        AddHandler bar.DragEnded, AddressOf OnSliderDragEnded
+                        AddHandler resetBtn.Click, Sub(sndr, e) theBar.Value = 0
+                    End If
+                    tip.SetToolTip(resetBtn, AxisName(ci) & If(isLive, " — reset", " — (no usado por esta región)"))
                     layout.RowCount = row + 1
                     layout.RowStyles.Add(New RowStyle(SizeType.Absolute, RowH))
                     layout.Controls.Add(resetBtn, 0, row)
