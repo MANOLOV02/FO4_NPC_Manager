@@ -21,8 +21,9 @@ Public Class OutfitDraft
     ''' rewrites it to (selfMasterIndex &lt;&lt; 24 | objectIndex) on save.</summary>
     Public Const DraftFormIdHighByte As UInteger = &HFF000000UI
 
-    ''' <summary>EditorID prefix for outfits authored here, so they're identifiable in xEdit / the
-    ''' load order and namespaced away from vanilla/mod OTFTs.</summary>
+    ''' <summary>Working EditorID prefix (type segment) for outfits authored here: <c>npcm_Outfit_&lt;name&gt;</c>.
+    ''' At save the destination plugin name is injected (NpcOverrideSaver.ApplyEspNamespaceToEditorId) →
+    ''' final <c>npcm_&lt;ESPNAME&gt;_Outfit_&lt;name&gt;</c>, identifiable + per-plugin namespaced in xEdit.</summary>
     Public Const EditorIdPrefix As String = "npcm_Outfit_"
 
     ''' <summary>Reserved sentinel FormID for the Edit Outfit picker's throwaway "preview" draft — the

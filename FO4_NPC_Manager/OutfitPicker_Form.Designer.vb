@@ -441,7 +441,7 @@ Partial Class OutfitPicker_Form
         LabelEdidPrefix.Name = "LabelEdidPrefix"
         LabelEdidPrefix.Size = New Size(110, 15)
         LabelEdidPrefix.TabIndex = 0
-        LabelEdidPrefix.Text = "EDID: npcm_Outfit_"
+        LabelEdidPrefix.Text = "EDID: npcm_<esp>_Outfit_"
         ' 
         ' TextBoxEdid
         ' 

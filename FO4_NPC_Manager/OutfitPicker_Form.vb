@@ -146,7 +146,7 @@ Public Class OutfitPicker_Form
         AddHandler ButtonOk.Click, AddressOf OnOk
 
         ' --- Create tab ---
-        LabelEdidPrefix.Text = "EDID: " & OutfitDraft.EditorIdPrefix
+        LabelEdidPrefix.Text = "EDID: npcm_<esp>_Outfit_"
         _itemCandidates = _mainForm.GetArmoItemCandidatesWithDrafts(_raceFormID, _isFemale)
         _filteredItems = New List(Of (FormID As UInteger, DisplayName As String, SlotMask As UInteger, Plugin As String))(_itemCandidates)
         RefreshItemList()
@@ -769,7 +769,7 @@ Public Class OutfitPicker_Form
         Else
             _overrideTargetFormID = 0UI
             _overrideTargetEditorID = ""
-            LabelEdidPrefix.Text = "EDID: " & OutfitDraft.EditorIdPrefix
+            LabelEdidPrefix.Text = "EDID: npcm_<esp>_Outfit_"
             TextBoxEdid.Enabled = True
             TextBoxEdid.Text = ""
         End If

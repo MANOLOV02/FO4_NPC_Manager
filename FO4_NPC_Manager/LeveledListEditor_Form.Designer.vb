@@ -38,7 +38,7 @@ Partial Class LeveledListEditor_Form
         LabelName.Name = "LabelName"
         LabelName.Size = New Size(100, 15)
         LabelName.TabIndex = 0
-        LabelName.Text = "EDID: npcm_LVLI_"
+        LabelName.Text = "EDID: npcm_<esp>_LVLI_"
         ' 
         ' TextBoxName
         ' 

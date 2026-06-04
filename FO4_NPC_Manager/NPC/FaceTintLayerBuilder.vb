@@ -326,42 +326,43 @@ Public Module FaceTintLayerBuilder
             Dim valueLog = tlDiag.Value
             Dim origin = If(mDiag.IsRaceDefault, "RACE-DEFAULT", "NPC")
         Next
-        ' Orden de composicion = (group_idx DESC, teti DESC). group_idx = posicion del grupo en el RACE
-        ' (clave PRIMARIA, sin cambios); Layer.Index = teti = indice de la tint-option en el RACE (clave
-        ' SECUNDARIA intra-grupo). Con over-RUNNING el de MAYOR se pinta PRIMERO (fondo), el de MENOR queda
-        ' ULTIMO (encima).
-        ' 2026-06-02: REVERTIDO el desempate de Idx (orden del array ESP) a teti (Layer.Index). El 2026-06-01
-        ' se habia cambiado a Idx por un sweep de 90 ordenes que miraba D-general; un re-test mas amplio lo
-        ' corrige -> Tools/FaceTintDerive/retest_flagrule.py sobre Alana 0x0005E564 (191 ordenes unicos de
-        ' group/slot/teti/blendop, todas las direcciones; el compositor Python tiene paridad byte-exacta en
-        ' D y N con el bake real, verificada por parity_check.py). teti-desc vs idx-desc en esa corrida:
-        '   - N-general 0.28 mean / 100% px<10  vs  0.32 / 99.9%  (N esta casi byte-exacto -> es el canal que
-        '     mejor refleja el orden verdadero, y prefiere teti).
-        '   - sombra de ojos (footprint) 7.72 / 74%  vs  10.20 / 56%  (rasgo visible; idx-desc la tapaba).
-        '   - unico a favor de idx: D-general 5.17 vs 5.34 -> teti pierde 0.17 byte, en la piel ancha dominada
-        '     por el residual de dirt conocido (canal menos sensible). Paridad byte-exacta es D/N (no S).
-        ' El flag TakesSkinTone se modelo (pre-toneo del diffuse solo si la capa compone DESPUES de skintone) y
-        ' resulto INERTE en ordenes group-desc (las flagged van antes de skintone) -> no afecta este desempate.
-        ' blendop como criterio de orden empeora todo en la corrida -> descartado.
-        ' COBERTURA (NO medido): el re-test uso Alana full-authored. Las capas inyectadas -- skintone sintetico
-        ' (InjectSyntheticSkinToneLayer, ~line 126) y race-defaults (~line 194) -- se APPENDEAN con Idx alto;
-        ' bajo idx-desc quedaban deterministamente al fondo de su grupo, bajo teti-desc su orden pasa a darlo
-        ' su Layer.Index real. Sub-caso NO ejercido por ninguna medicion -> validar en un NPC con race-defaults.
-        Dim groupIndexByOption As New Dictionary(Of UShort, Integer)
+        ' Orden de composicion = ORDEN FISICO del record del template del RACE (reverse). El engine itera las
+        ' tint-options en el orden en que estan ALMACENADAS en el RACE (grupo por grupo, opcion por opcion) y la
+        ' PRIMERA listada queda ENCIMA (over-running: la de MAYOR posicion fisica se pinta PRIMERO=fondo, la de
+        ' MENOR ULTIMO=encima). UNA sola clave = physIndexByOption (posicion fisica global de la opcion).
+        ' 2026-06-03 DERIVADO + VALIDADO (Tools/FaceTintDerive, vs bakes de CK de Alana 0x0005E564):
+        '   - PHYS-desc full-face 3.222 (mejor que group+teti 3.558 y que group+entry+slot+teti 3.543).
+        '   - Matchea 10/10 los tops AISLADOS de CK del batch de composicion (OrderBatch.esp batch80), INCLUIDO
+        '     el maquillaje (Lapiz de ojos 2 > Lapiz de ojos 6, etc.) y g1 (Cara emborronada ENCIMA de Resplandor
+        '     doble) -- casos que group/slot/entry/teti-numero/blendop NO explicaban.
+        '   - group_idx, slot, entry, teti-NUMERO y blendop eran PROXIES imperfectos del orden fisico. teti-numero
+        '     ~ orden fisico salvo donde el record desordena: Cara (teti 1916) esta FISICAMENTE ANTES que
+        '     Resplandor (teti 1915) -> teti-desc dejaba Resplandor VISIBLE; el orden fisico lo OCLUYE como CK.
+        '   - Es propiedad del RACE (no de la lista del NPC) -> clone-independiente (compatible con batch79, que
+        '     solo refuto el orden de la LISTA del NPC -idx-).
+        ' TakesSkinTone: las flagged que componen ANTES del skintone no necesitan pre-toneo (el skintone compone
+        ' encima); la regla de pre-toneo del compositor es INERTE para Alana pero DEBE estar (otros NPCs pueden
+        ' tener flagged en posicion fisica <= skintone).
+        Dim physIndexByOption As New Dictionary(Of UShort, Integer)
+        Dim physPos As Integer = 0
         If tintGroupsForRender IsNot Nothing Then
             For giOrder As Integer = 0 To tintGroupsForRender.Count - 1
                 Dim grpOrder = tintGroupsForRender(giOrder)
                 If grpOrder.Options Is Nothing Then Continue For
                 For Each optOrder In grpOrder.Options
-                    If Not groupIndexByOption.ContainsKey(optOrder.Index) Then groupIndexByOption(optOrder.Index) = giOrder
+                    If Not physIndexByOption.ContainsKey(optOrder.Index) Then physIndexByOption(optOrder.Index) = physPos
+                    physPos += 1
                 Next
             Next
         End If
+        ' Over-running: mayor posicion fisica = fondo (compone primero); menor = encima (compone ultimo).
+        ' Tiebreak = orden original de la lista del NPC ascendente (las opciones del template son unicas, asi que
+        ' el tiebreak solo aplica a opciones AUSENTES del template -> ambas Integer.MaxValue -> al fondo).
         Dim orderedLayers = mergedLayers.
             Select(Function(m, originalIdx) New With {m.Layer, .Idx = originalIdx,
-                       .GroupIdx = If(groupIndexByOption.ContainsKey(m.Layer.Index), groupIndexByOption(m.Layer.Index), Integer.MaxValue)}).
-            OrderByDescending(Function(x) x.GroupIdx).
-            ThenByDescending(Function(x) x.Layer.Index).
+                       .PhysIdx = If(physIndexByOption.ContainsKey(m.Layer.Index), physIndexByOption(m.Layer.Index), Integer.MaxValue)}).
+            OrderByDescending(Function(x) x.PhysIdx).
+            ThenBy(Function(x) x.Idx).
             Select(Function(x) x.Layer).
             ToList()
 

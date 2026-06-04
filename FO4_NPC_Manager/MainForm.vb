@@ -14084,7 +14084,8 @@ Public Class MainForm
                                        Return RunChargenPackBatch(anchor, bundles, prog)
                                    End Function,
             .OutfitDrafts = New List(Of OutfitDraft)(_outfitDrafts),
-            .LeveledListDrafts = New List(Of LeveledListDraft)(_leveledListDrafts)
+            .LeveledListDrafts = New List(Of LeveledListDraft)(_leveledListDrafts),
+            .AllocateDraftFormID = AddressOf AllocateDraftFormID
         }
 
         ' Show dialog. The form runs the orchestrator internally (async, with progress in an

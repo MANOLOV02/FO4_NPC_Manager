@@ -195,6 +195,21 @@ Public Class SaveEsp_Form
         ''' to its original record outfit. Opt-in (default False) — outfits are only persisted alongside
         ''' an NPC save, never on their own.</summary>
         Public SaveNewOutfits As Boolean
+
+        ''' <summary>When True the saved NPC(s) are added to a Leveled NPC list (LVLN) written into the SAME
+        ''' target plugin. Each saved NPC's GLOBAL FormID becomes one LVLO entry. Opt-in (default False).</summary>
+        Public AddToLvlList As Boolean
+        ''' <summary>True = create a NEW LVLN named <see cref="LvlListNewName"/>. False = append to the
+        ''' EXISTING LVLN identified by <see cref="LvlListExistingEditorID"/> (which must live in the target
+        ''' plugin — no cross-plugin). Only meaningful when <see cref="AddToLvlList"/> is True.</summary>
+        Public LvlListIsNew As Boolean
+        ''' <summary>Base name for a NEW list (ASCII; the saver writes it as <c>npcm_&lt;ESPNAME&gt;_LVLN_&lt;name&gt;</c>).
+        ''' The first list keeps the base name; on overflow past 255 entries, sibling lists get <c>_1</c>,
+        ''' <c>_2</c>, … appended (flat — no parent list).</summary>
+        Public LvlListNewName As String
+        ''' <summary>EditorID of the existing LVLN (in the target plugin) to append to. Matched by EditorID
+        ''' in the saver against the LVLN the preserve-existing pass loads from the same plugin.</summary>
+        Public LvlListExistingEditorID As String
     End Class
 
     Private ReadOnly _dataPath As String
@@ -335,6 +350,15 @@ Public Class SaveEsp_Form
         AddHandler CheckBoxMarkAsMaster.CheckedChanged, AddressOf OnFlagChanged
         AddHandler CheckBoxLightMaster.CheckedChanged, AddressOf OnFlagChanged
         AddHandler ButtonOk.Click, AddressOf OnOkClick
+
+        ' Leveled NPC list ("Add to LVL list"): default off. The existing-list combo is scoped to the
+        ' SELECTED target plugin only (no cross-plugin) and refreshed whenever the plugin/mode changes.
+        ' OnRadioChanged below (called at the end of New) runs the first RefreshLvlListUi.
+        CheckBoxAddToLvlList.Checked = False
+        RadioLvlNew.Checked = True
+        AddHandler CheckBoxAddToLvlList.CheckedChanged, AddressOf OnLvlListChanged
+        AddHandler RadioLvlNew.CheckedChanged, AddressOf OnLvlListChanged
+        AddHandler RadioLvlExisting.CheckedChanged, AddressOf OnLvlListChanged
 
         PopulateEncodingCombo()
         InitBa2VersionCombo()
@@ -542,6 +566,7 @@ Public Class SaveEsp_Form
         End If
         UpdateEncodingHint()
         UpdateWarning()
+        RefreshLvlListUi()
     End Sub
 
     ''' <summary>
@@ -566,6 +591,7 @@ Public Class SaveEsp_Form
             ApplyFlagsFromExisting(TryCast(ListBoxExisting.SelectedItem, ExistingPlugin))
         End If
         UpdateWarning()
+        RefreshLvlListUi()
     End Sub
 
     ''' <summary>ESM/ESL checkbox toggled — refresh the warning so a risky flag flip surfaces live.</summary>
@@ -689,6 +715,43 @@ Public Class SaveEsp_Form
             target.ReplacingExistingNpc = False
         End If
 
+        ' Leveled NPC list ("Add to LVL list"): add the saved NPC(s) to a new or existing LVLN in the
+        ' SAME target plugin. Existing lists are matched by EditorID against the target plugin's LVLN.
+        If CheckBoxAddToLvlList.Checked Then
+            target.AddToLvlList = True
+            If RadioLvlExisting.Checked Then
+                Dim selLvl = TryCast(ComboBoxLvlExisting.SelectedItem, LvlnListInfo)
+                If selLvl Is Nothing Then
+                    MessageBox.Show(Me, "Elegí una Leveled NPC list existente, o cambiá a 'New'.",
+                                    "Save ESP/ESM", MessageBoxButtons.OK, MessageBoxIcon.Warning)
+                    Return Nothing
+                End If
+                target.LvlListIsNew = False
+                target.LvlListExistingEditorID = selLvl.EditorID
+            Else
+                Dim lvlName = TextBoxLvlNewName.Text.Trim()
+                If Not IsValidLvlListName(lvlName) Then
+                    MessageBox.Show(Me, "El nombre de la Leveled NPC list debe ser ASCII: letras, números o guion bajo (sin espacios ni acentos).",
+                                    "Save ESP/ESM", MessageBoxButtons.OK, MessageBoxIcon.Warning)
+                    Return Nothing
+                End If
+                ' Collision with an existing LVLN in the target plugin? (Only update-existing can collide;
+                ' a brand-new plugin has none.) Compare against the FINAL namespaced EditorID the saver writes
+                ' (npcm_<ESPNAME>_LVLN_<name>) — same transform, so the check matches what lands on disk.
+                Dim espNameNoExt = Path.GetFileNameWithoutExtension(target.TargetPath)
+                Dim wouldBeEdid = NpcOverrideSaver.ApplyEspNamespaceToEditorId(NpcOverrideSaver.LeveledNpcListEditorIdPrefix & lvlName, espNameNoExt)
+                If Not target.IsNewPlugin AndAlso
+                   GetLvlnListsForPlugin(target.TargetPath).Any(Function(i) String.Equals(i.EditorID, wouldBeEdid, StringComparison.OrdinalIgnoreCase)) Then
+                    MessageBox.Show(Me, $"Ya existe una Leveled NPC list '{wouldBeEdid}' en este plugin." & vbCrLf &
+                                    "Elegí 'Existing' para agregarle, o usá un nombre distinto.",
+                                    "Save ESP/ESM", MessageBoxButtons.OK, MessageBoxIcon.Warning)
+                    Return Nothing
+                End If
+                target.LvlListIsNew = True
+                target.LvlListNewName = lvlName
+            End If
+        End If
+
         Return target
     End Function
 
@@ -792,6 +855,8 @@ Public Class SaveEsp_Form
         CheckBoxGenerateChargen.Enabled = enabled AndAlso _scopeAllowsChargenOptOut
         CheckBoxWriteBssliders.Enabled = enabled
         CheckBoxEmitBodyGen.Enabled = enabled
+        ' Whole LVLN group greys out during work; children keep their individual enabled states for restore.
+        GroupBoxLvlList.Enabled = enabled
         ComboBoxEncoding.Enabled = enabled
         ComboBoxBa2Version.Enabled = enabled
         ButtonOk.Enabled = enabled
@@ -952,5 +1017,132 @@ Public Class SaveEsp_Form
         End If
         MyBase.OnFormClosing(e)
     End Sub
+
+    ' ============================================================================
+    ' Leveled NPC list ("Add to LVL list") helpers.
+    ' ============================================================================
+
+    ''' <summary>One LVLN (Leveled NPC) record found in the selected target plugin — a candidate to add the
+    ''' saved NPCs to. Matched in the saver by <see cref="EditorID"/> (unique within a plugin).</summary>
+    Public Class LvlnListInfo
+        Public EditorID As String
+        Public EntryCount As Integer
+        Public Overrides Function ToString() As String
+            Return $"{EditorID}  ({EntryCount} NPC{If(EntryCount = 1, "", "s")})"
+        End Function
+    End Class
+
+    ''' <summary>Guards <see cref="RefreshLvlListUi"/> against the CheckedChanged re-entrancy it triggers
+    ''' when it forces RadioLvlNew on (so the body runs once per user action, not recursively).</summary>
+    Private _suppressLvlEvents As Boolean = False
+    ''' <summary>Per-plugin LVLN list cache, populated on demand from disk. The dialog is reconstructed on
+    ''' every open (fresh cache), so each open reflects the current on-disk plugin — including lists this
+    ''' feature wrote in a prior save. Not invalidated within one dialog lifetime (a successful save closes
+    ''' the dialog, so a list can't be added mid-session). Keyed by full path, case-insensitive.</summary>
+    Private ReadOnly _lvlnCache As New Dictionary(Of String, List(Of LvlnListInfo))(StringComparer.OrdinalIgnoreCase)
+
+    Private Sub OnLvlListChanged(sender As Object, e As EventArgs)
+        RefreshLvlListUi()
+    End Sub
+
+    ''' <summary>Repopulate the existing-list combo from the selected target plugin and set the enabled
+    ''' states of the LVLN sub-controls. Existing mode is only offered when "Add to LVL list" is on AND
+    ''' the selected target plugin actually has LVLN records; otherwise New is forced.</summary>
+    Private Sub RefreshLvlListUi()
+        If _suppressLvlEvents Then Return
+        _suppressLvlEvents = True
+        Try
+            Dim addOn = CheckBoxAddToLvlList.Checked
+            RefreshLvlExistingCombo()
+            Dim hasExisting = ComboBoxLvlExisting.Items.Count > 0
+            ' Force New when Existing isn't available (no LVLN in the selected plugin, or Create-new mode).
+            If addOn AndAlso RadioLvlExisting.Checked AndAlso Not hasExisting Then RadioLvlNew.Checked = True
+            RadioLvlNew.Enabled = addOn
+            RadioLvlExisting.Enabled = addOn AndAlso hasExisting
+            TextBoxLvlNewName.Enabled = addOn AndAlso RadioLvlNew.Checked
+            ComboBoxLvlExisting.Enabled = addOn AndAlso RadioLvlExisting.Checked AndAlso hasExisting
+            LabelLvlNewHint.Enabled = addOn
+        Finally
+            _suppressLvlEvents = False
+        End Try
+    End Sub
+
+    ''' <summary>Fill the existing-LVLN combo from the currently-selected target plugin (none in Create-new
+    ''' mode). Preserves the prior selection by EditorID when possible, else selects the first entry.</summary>
+    Private Sub RefreshLvlExistingCombo()
+        Dim prev = TryCast(ComboBoxLvlExisting.SelectedItem, LvlnListInfo)
+        Dim prevEdid = If(prev IsNot Nothing, prev.EditorID, "")
+        ComboBoxLvlExisting.BeginUpdate()
+        ComboBoxLvlExisting.Items.Clear()
+        Dim path = SelectedTargetPluginPathForLvl()
+        If path <> "" Then
+            For Each info In GetLvlnListsForPlugin(path)
+                ComboBoxLvlExisting.Items.Add(info)
+            Next
+        End If
+        If ComboBoxLvlExisting.Items.Count > 0 Then
+            Dim sel As Integer = 0
+            If prevEdid <> "" Then
+                For i = 0 To ComboBoxLvlExisting.Items.Count - 1
+                    Dim it = TryCast(ComboBoxLvlExisting.Items(i), LvlnListInfo)
+                    If it IsNot Nothing AndAlso String.Equals(it.EditorID, prevEdid, StringComparison.OrdinalIgnoreCase) Then
+                        sel = i
+                        Exit For
+                    End If
+                Next
+            End If
+            ComboBoxLvlExisting.SelectedIndex = sel
+        End If
+        ComboBoxLvlExisting.EndUpdate()
+    End Sub
+
+    ''' <summary>Full path of the plugin the LVLN would be written into: the selected existing plugin when
+    ''' updating, or "" for Create-new (a fresh plugin has no existing LVLN to choose from).</summary>
+    Private Function SelectedTargetPluginPathForLvl() As String
+        If RadioButtonExisting.Checked Then
+            Dim sel = TryCast(ListBoxExisting.SelectedItem, ExistingPlugin)
+            If sel IsNot Nothing Then Return sel.FullPath
+        End If
+        Return ""
+    End Function
+
+    ''' <summary>Read the LVLN records (EditorID + LVLO count) from a plugin file. Cached per path so
+    ''' switching the combo doesn't re-read. Best-effort: a malformed plugin yields an empty list.</summary>
+    Private Function GetLvlnListsForPlugin(path As String) As List(Of LvlnListInfo)
+        Dim cached As List(Of LvlnListInfo) = Nothing
+        If _lvlnCache.TryGetValue(path, cached) Then Return cached
+        Dim result As New List(Of LvlnListInfo)
+        Try
+            Dim reader As New PluginReader()
+            reader.Load(path)
+            For Each kvp In reader.Records
+                Dim rec = kvp.Value
+                If rec.Header.Signature <> "LVLN" Then Continue For
+                Dim edid = If(rec.EditorID, "")
+                If edid = "" Then Continue For
+                Dim cnt = rec.Subrecords.Where(Function(sr) sr.Signature = "LVLO").Count()
+                result.Add(New LvlnListInfo With {.EditorID = edid, .EntryCount = cnt})
+            Next
+        Catch
+            ' Unreadable plugin — leave the list empty (the combo just won't offer existing lists).
+        End Try
+        result.Sort(Function(a, b) String.Compare(a.EditorID, b.EditorID, StringComparison.OrdinalIgnoreCase))
+        _lvlnCache(path) = result
+        Return result
+    End Function
+
+    ''' <summary>True when the name is a valid Leveled-NPC-list base name: non-empty and ASCII letters,
+    ''' digits or underscore only (so the resulting EditorID is a clean zstring with no encoding pitfalls).</summary>
+    Private Shared Function IsValidLvlListName(name As String) As Boolean
+        If String.IsNullOrEmpty(name) Then Return False
+        For Each c In name
+            Dim ok = (c >= "a"c AndAlso c <= "z"c) OrElse
+                     (c >= "A"c AndAlso c <= "Z"c) OrElse
+                     (c >= "0"c AndAlso c <= "9"c) OrElse
+                     c = "_"c
+            If Not ok Then Return False
+        Next
+        Return True
+    End Function
 
 End Class

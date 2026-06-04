@@ -115,6 +115,12 @@ Public Module NpcOverrideSaver
         ''' a draft LVLI that nests other draft LVLIs — never writes a dangling 0xFF reference), plus any dirty
         ''' draft the user built standalone. Nothing = none.</summary>
         Public LeveledListDrafts As List(Of LeveledListDraft) = Nothing
+        ''' <summary>MainForm helper: allocate the next provisional draft FormID (0xFF high byte) from the
+        ''' SAME counter as OTFT/LVLI drafts, so a Leveled-NPC list (LVLN) built at save time
+        ''' (<c>SaveTarget.AddToLvlList</c>) gets a sentinel that can't collide with any other draft. The
+        ''' writer rewrites it to a real self-index FormID via draftRemap. Nothing → the saver uses a safe
+        ''' local fallback counter (the LVLN are terminal, nothing references them by provisional).</summary>
+        Public AllocateDraftFormID As Func(Of UInteger) = Nothing
     End Class
 
     ''' <summary>Run the save end-to-end for one or more NPCs into a single target plugin. Hybrid
@@ -268,6 +274,10 @@ Public Module NpcOverrideSaver
 
         ReportPhase(progress, "Preparing NPC records…", "")
 
+        ' EditorID namespace segment for author-built records (OTFT/LVLI/LVLN), known only here (at save):
+        ' the destination plugin name. Injected into every NEW author record → npcm_<ESPNAME>_<TYPE>_<name>.
+        Dim espNameNoExt = IO.Path.GetFileNameWithoutExtension(target.TargetPath)
+
         ' Phase 1: build one override entry per NPC. outfitEntries is shared and deduped at the end.
         Dim entries As New List(Of SaveNpcEspWriter.NpcOverrideEntry)
         For Each npcInput In inputs
@@ -362,6 +372,50 @@ Public Module NpcOverrideSaver
                     leveledEntries.Add(le)
                     Continue For
                 End If
+                If rec.Header.Signature = "LVLN" Then
+                    ' Leveled NPC lists authored externally (or in a prior save) are preserved as OVERRIDE
+                    ' entries on the shared leveled path (IsNpcList=True → emitted as LVLN). Without this they
+                    ' fell through to existingRecords → SerializeExistingRecord, which only handles NPC_ and
+                    ' threw "currently only supports NPC_ records. Encountered 'LVLN'". Full round-trip parity
+                    ' with LVLI (OBND/LVLM/LVLG/COED/LLKC + LVLN-only generic model).
+                    Dim parsedLvln = RecordParsers.ParseLVLN(rec, ctx.PluginManager)
+                    Dim le As New SaveNpcEspWriter.LvliRecordEntry With {
+                        .FormID = ctx.PluginManager.ResolveReferencedFormID(rec.SourcePluginName, rec.Header.FormID),
+                        .EditorID = parsedLvln.EditorID,
+                        .ObjectBoundsRaw = parsedLvln.ObjectBoundsRaw,
+                        .ChanceNone = parsedLvln.ChanceNone,
+                        .MaxCount = parsedLvln.MaxCount,
+                        .Flags = parsedLvln.Flags,
+                        .IsOverride = True,
+                        .IsNpcList = True,
+                        .HasUseGlobal = parsedLvln.HasUseGlobal,
+                        .UseGlobalFormID = parsedLvln.UseGlobalFormID,
+                        .OriginalVcs1 = rec.Header.VCS1,
+                        .OriginalVcs2 = rec.Header.VCS2
+                    }
+                    For Each ent In parsedLvln.Entries
+                        le.Entries.Add(New SaveNpcEspWriter.LvliEntryData With {
+                            .Level = ent.Level,
+                            .RefFormID = ent.FormID,
+                            .Count = ent.Count,
+                            .ChanceNone = ent.ChanceNone,
+                            .HasCoed = ent.HasCoed,
+                            .CoedOwnerFormID = ent.CoedOwnerFormID,
+                            .CoedOwnerExtra = ent.CoedOwnerExtra,
+                            .CoedExtraIsFormID = ent.CoedExtraIsFormID,
+                            .CoedItemCondition = ent.CoedItemCondition})
+                    Next
+                    For Each fk In parsedLvln.FilterKeywords
+                        le.FilterKeywords.Add(New SaveNpcEspWriter.LvliFilterKeywordData With {
+                            .KeywordFormID = fk.KeywordFormID,
+                            .Chance = fk.Chance})
+                    Next
+                    For Each m In parsedLvln.ModelSubrecords
+                        le.ModelSubrecords.Add((m.Signature, m.Data))
+                    Next
+                    leveledEntries.Add(le)
+                    Continue For
+                End If
                 existingRecords.Add(rec)
             Next
         End If
@@ -385,13 +439,29 @@ Public Module NpcOverrideSaver
                 If entry.Npc IsNot Nothing Then referencedDoft.Add(entry.Npc.DefaultOutfitFormID)
             Next
             Dim alreadyEmitted As New HashSet(Of UInteger)(outfitEntries.Select(Function(o) o.FormID))
+            ' EDID uniqueness guard: dedup each NEW draft's final namespaced EditorID against the OTFTs already
+            ' bound for this plugin (preserved existing + earlier drafts), auto-suffixing _2/_3 on collision.
+            ' Overrides keep their EditorID verbatim (they target an existing record by FormID) but still seed
+            ' the set so a later new draft doesn't collide with them.
+            Dim usedOtftEdids As New HashSet(Of String)(outfitEntries.Select(Function(o) o.EditorID), StringComparer.OrdinalIgnoreCase)
             For Each d In ctx.OutfitDrafts
                 If d Is Nothing OrElse d.FormID = OutfitDraft.PreviewDraftFormID Then Continue For
                 If Not (d.IsDirty OrElse referencedDoft.Contains(d.FormID)) Then Continue For
                 If Not alreadyEmitted.Add(d.FormID) Then Continue For
+                Dim oeEdid As String
+                If d.IsOverride Then
+                    oeEdid = d.EditorID
+                    usedOtftEdids.Add(oeEdid)
+                Else
+                    Dim desiredEdid = ApplyEspNamespaceToEditorId(d.EditorID, espNameNoExt)
+                    oeEdid = MakeUniqueEditorId(desiredEdid, usedOtftEdids)
+                    If Not String.Equals(oeEdid, desiredEdid, StringComparison.Ordinal) Then
+                        Logger.LogLazy(Function() $"[SAVE] Outfit EditorID '{desiredEdid}' already used in {IO.Path.GetFileName(target.TargetPath)} → renamed to '{oeEdid}' (FormID unchanged).")
+                    End If
+                End If
                 Dim oe As New SaveNpcEspWriter.OtftRecordEntry With {
                     .FormID = d.FormID,
-                    .EditorID = d.EditorID,
+                    .EditorID = oeEdid,
                     .IsOverride = d.IsOverride
                 }
                 ' INAM = the draft's items as authored — ARMO or LVLI FormIDs (the writer's INAM is
@@ -435,12 +505,20 @@ Public Module NpcOverrideSaver
                 Next
             End While
             ' Build the writer entries (skip any FormID already present as a preserved existing override).
+            ' EDID uniqueness guard: dedup each draft's final namespaced EditorID against the LVLI/LVLN already
+            ' bound for this plugin (preserved existing + earlier drafts), auto-suffixing _2/_3 on collision.
+            Dim usedLeveledEdids As New HashSet(Of String)(leveledEntries.Select(Function(l) l.EditorID), StringComparer.OrdinalIgnoreCase)
             For Each fid In needed
                 If Not alreadyLeveled.Add(fid) Then Continue For
                 Dim d = draftByFid(fid)
+                Dim desiredLvliEdid = ApplyEspNamespaceToEditorId(d.EditorID, espNameNoExt)
+                Dim finalLvliEdid = MakeUniqueEditorId(desiredLvliEdid, usedLeveledEdids)
+                If Not String.Equals(finalLvliEdid, desiredLvliEdid, StringComparison.Ordinal) Then
+                    Logger.LogLazy(Function() $"[SAVE] LVLI EditorID '{desiredLvliEdid}' already used in {IO.Path.GetFileName(target.TargetPath)} → renamed to '{finalLvliEdid}' (FormID unchanged).")
+                End If
                 Dim le As New SaveNpcEspWriter.LvliRecordEntry With {
                     .FormID = d.FormID,
-                    .EditorID = d.EditorID,
+                    .EditorID = finalLvliEdid,
                     .ChanceNone = d.ChanceNone,
                     .MaxCount = d.MaxCount,
                     .Flags = d.FlagsByte()
@@ -453,6 +531,16 @@ Public Module NpcOverrideSaver
                 Next
                 leveledEntries.Add(le)
             Next
+        End If
+
+        ' Phase 2e: add the saved NPCs to a Leveled NPC list (LVLN) when requested. Each saved NPC's
+        ' GLOBAL FormID (inputs(i).NpcFormID is global — GetRecord-keyed) becomes one LVLO entry. We pass
+        ' GLOBAL FormIDs and 0xFF provisional sentinels ONLY — the writer's remapper/draftRemap does ALL
+        ' master/high-byte/ESL mapping; nothing here computes a high byte (same contract as the LVLI path).
+        ' Standard "pick one" semantics (LVLF=0). On overflow (>255, the LLCT u8 cap) the list is split into
+        ' FLAT siblings: the first keeps the base name, the rest get _1, _2, … (no parent — chosen topology).
+        If target.AddToLvlList Then
+            BuildLeveledNpcListEntries(target, inputs, ctx, leveledEntries)
         End If
 
         ' Phase 3: write the plugin (all entries in one pass).
@@ -639,6 +727,193 @@ Public Module NpcOverrideSaver
     ''' <summary>Translate a global FormID to the local FormID the target plugin's MAST list sees,
     ''' so existing-record load can identify the records being replaced. Mirror of the engine FileID
     ''' scheme (12-bit object for an ESL source, 24-bit for a full source).</summary>
+    ''' <summary>Working EditorID prefix (type segment) for Leveled-NPC lists authored by the Save dialog's
+    ''' "Add to LVL list" feature: <c>npcm_LVLN_&lt;name&gt;</c>. At save the destination plugin name is
+    ''' injected via <see cref="ApplyEspNamespaceToEditorId"/> → final <c>npcm_&lt;ESPNAME&gt;_LVLN_&lt;name&gt;</c>.
+    ''' Mirror of <see cref="OutfitDraft.EditorIdPrefix"/> / <see cref="LeveledListDraft.EditorIdPrefix"/>.</summary>
+    Public Const LeveledNpcListEditorIdPrefix As String = "npcm_LVLN_"
+
+    ''' <summary>LLCT is itU8 (wbDefinitionsFO4.pas:3674) → a leveled list holds at most 255 entries.</summary>
+    Private Const LeveledListEntryCap As Integer = 255
+
+    ''' <summary>Sanitize a string into a clean EditorID segment: ASCII letters/digits/underscore only
+    ''' (every other run collapses to a single '_'; leading/trailing '_' trimmed). Used for the
+    ''' &lt;ESPNAME&gt; segment so a plugin filename with spaces/dashes still yields a valid EditorID.</summary>
+    Public Function SanitizeEditorIdSegment(s As String) As String
+        If String.IsNullOrEmpty(s) Then Return "esp"
+        Dim sb As New System.Text.StringBuilder(s.Length)
+        Dim lastUnderscore As Boolean = False
+        For Each c In s
+            If (c >= "a"c AndAlso c <= "z"c) OrElse (c >= "A"c AndAlso c <= "Z"c) OrElse (c >= "0"c AndAlso c <= "9"c) Then
+                sb.Append(c)
+                lastUnderscore = False
+            ElseIf Not lastUnderscore Then
+                sb.Append("_"c)
+                lastUnderscore = True
+            End If
+        Next
+        Dim r = sb.ToString().Trim("_"c)
+        Return If(r.Length = 0, "esp", r)
+    End Function
+
+    ''' <summary>Namespace an author-built record's EditorID with the destination plugin name, the standardized
+    ''' convention for ALL author records (OTFT/LVLI/LVLN): <c>npcm_&lt;TYPE&gt;_&lt;name&gt;</c> →
+    ''' <c>npcm_&lt;ESPNAME&gt;_&lt;TYPE&gt;_&lt;name&gt;</c>. The plugin name is known only at save, so this runs
+    ''' there. Only EditorIDs that start with the author prefix <c>npcm_</c> are rewritten — overrides of
+    ''' pre-existing records (whatever their EditorID) and already-saved records pass through unchanged, which
+    ''' keeps re-saves idempotent. Caller must NOT apply this to override entries.</summary>
+    Public Function ApplyEspNamespaceToEditorId(edid As String, espNameNoExt As String) As String
+        If String.IsNullOrEmpty(edid) OrElse Not edid.StartsWith("npcm_", StringComparison.Ordinal) Then Return edid
+        Return "npcm_" & SanitizeEditorIdSegment(espNameNoExt) & "_" & edid.Substring("npcm_".Length)
+    End Function
+
+    ''' <summary>Return an EditorID unique within <paramref name="used"/>: the desired value if free, else
+    ''' <c>desired_2</c>, <c>desired_3</c>, … Adds the chosen value to the set. Guards against a DUPLICATE
+    ''' EditorID landing in one plugin — the realistic case is a cross-session re-creation of the same
+    ''' outfit/list name into the same target esp, where the final namespaced EditorID would otherwise equal
+    ''' a previously-saved record's. The numeric suffix mirrors the plugin auto-suffix (_2/_3) and the LVLN
+    ''' overflow convention. The rename is COSMETIC: FO4 keys records by FormID, so identity and all
+    ''' references are unaffected — the suffix only keeps xEdit's EDID namespace clean.</summary>
+    Private Function MakeUniqueEditorId(desired As String, used As HashSet(Of String)) As String
+        If used.Add(desired) Then Return desired
+        Dim n As Integer = 2
+        Dim candidate As String
+        Do
+            candidate = $"{desired}_{n}"
+            n += 1
+        Loop While Not used.Add(candidate)
+        Return candidate
+    End Function
+
+    ''' <summary>Build (or extend) the Leveled NPC list(s) for a save where <c>AddToLvlList</c> is set, and
+    ''' append the resulting <see cref="SaveNpcEspWriter.LvliRecordEntry"/> (IsNpcList) to
+    ''' <paramref name="leveledEntries"/>. CRITICAL (FormID resolution): every LVLO reference is the saved
+    ''' NPC's GLOBAL FormID and every NEW list record carries a 0xFF provisional sentinel — the writer's
+    ''' remapper/draftRemap performs ALL high-byte/master/ESL mapping. This method never builds a high byte.</summary>
+    Private Sub BuildLeveledNpcListEntries(target As SaveEsp_Form.SaveTarget,
+                                           inputs As List(Of NpcSaveInput),
+                                           ctx As SaveContext,
+                                           leveledEntries As List(Of SaveNpcEspWriter.LvliRecordEntry))
+        ' Saved NPC FormIDs in scope: GLOBAL, de-duplicated, order preserved.
+        Dim npcFids As New List(Of UInteger)
+        Dim npcSeen As New HashSet(Of UInteger)
+        For Each ni In inputs
+            If ni IsNot Nothing AndAlso ni.NpcFormID <> 0UI AndAlso npcSeen.Add(ni.NpcFormID) Then npcFids.Add(ni.NpcFormID)
+        Next
+        If npcFids.Count = 0 Then Return
+
+        ' Provisional FormID allocator: prefer MainForm's shared draft counter (no collision with OTFT/LVLI
+        ' drafts). Fallback is a high local 0xFF counter — these LVLN are terminal (nothing references them by
+        ' provisional), so the only requirement is in-save uniqueness.
+        Dim fallbackCtr As UInteger = &HFF0F0000UI
+        Dim allocProvisional As Func(Of UInteger) =
+            Function() As UInteger
+                If ctx.AllocateDraftFormID IsNot Nothing Then Return ctx.AllocateDraftFormID()
+                fallbackCtr += 1UI
+                Return fallbackCtr
+            End Function
+
+        ' Make one LVLO entry per NPC: Level 1 / Count 1 / ChanceNone 0. RefFormID is GLOBAL (remapped on emit).
+        Dim makeEntry As Func(Of UInteger, SaveNpcEspWriter.LvliEntryData) =
+            Function(fid) New SaveNpcEspWriter.LvliEntryData With {.Level = 1US, .RefFormID = fid, .Count = 1US, .ChanceNone = 0}
+
+        ' Make a NEW LVLN sibling with the given EditorID + entries (provisional FormID, standard flags).
+        Dim makeList As Func(Of String, IEnumerable(Of SaveNpcEspWriter.LvliEntryData), SaveNpcEspWriter.LvliRecordEntry) =
+            Function(edid, ents)
+                Dim le As New SaveNpcEspWriter.LvliRecordEntry With {
+                    .FormID = allocProvisional(),
+                    .EditorID = edid,
+                    .ChanceNone = 0,
+                    .MaxCount = 0,
+                    .Flags = 0,
+                    .IsOverride = False,
+                    .IsNpcList = True
+                }
+                le.Entries.AddRange(ents)
+                Return le
+            End Function
+
+        ' EditorIDs already used by LVLN in this save (preserved overrides + drafts) — so overflow siblings
+        ' never collide with an existing list name.
+        Dim usedEdids As New HashSet(Of String)(
+            leveledEntries.Where(Function(l) l.IsNpcList).Select(Function(l) l.EditorID),
+            StringComparer.OrdinalIgnoreCase)
+
+        If target.LvlListIsNew Then
+            ' NEW list(s): final EditorID = npcm_<ESPNAME>_LVLN_<name>; first chunk keeps the base, overflow
+            ' chunks get _1, _2, … The esp segment is injected here (same convention as OTFT/LVLI drafts).
+            Dim espNameNoExt = IO.Path.GetFileNameWithoutExtension(target.TargetPath)
+            Dim editorBase = ApplyEspNamespaceToEditorId(LeveledNpcListEditorIdPrefix & If(target.LvlListNewName, "").Trim(), espNameNoExt)
+            Dim chunks = ChunkList(npcFids, LeveledListEntryCap)
+            For ci = 0 To chunks.Count - 1
+                Dim edid = NextFreeListEditorId(editorBase, ci, usedEdids)
+                leveledEntries.Add(makeList(edid, chunks(ci).Select(makeEntry)))
+            Next
+        Else
+            ' EXISTING list: the preserve-existing pass already added the chosen LVLN to leveledEntries as an
+            ' override (matched by EditorID). Append the new NPCs, deduped against its current entries; spill
+            ' any overflow past 255 into NEW sibling lists EditorID_1, _2, …
+            Dim targetEdid = If(target.LvlListExistingEditorID, "")
+            Dim host = leveledEntries.FirstOrDefault(
+                Function(l) l.IsNpcList AndAlso String.Equals(l.EditorID, targetEdid, StringComparison.OrdinalIgnoreCase))
+            If host Is Nothing Then Return  ' chosen list not present (shouldn't happen — dialog only offers in-plugin LVLN)
+
+            Dim present As New HashSet(Of UInteger)(host.Entries.Select(Function(e) e.RefFormID))
+            For Each fid In npcFids
+                If present.Add(fid) Then host.Entries.Add(makeEntry(fid))
+            Next
+
+            If host.Entries.Count > LeveledListEntryCap Then
+                Dim overflow = host.Entries.Skip(LeveledListEntryCap).ToList()
+                host.Entries.RemoveRange(LeveledListEntryCap, host.Entries.Count - LeveledListEntryCap)
+                Dim siblingIdx As Integer = 1
+                For Each chunk In ChunkList(overflow, LeveledListEntryCap)
+                    Dim edid = NextFreeListEditorId(host.EditorID, siblingIdx, usedEdids)
+                    leveledEntries.Add(makeList(edid, chunk))
+                    siblingIdx += 1
+                Next
+            End If
+        End If
+    End Sub
+
+    ''' <summary>Resolve a list EditorID for chunk index <paramref name="idx"/>: idx 0 → the base name as-is;
+    ''' idx ≥ 1 → base_idx, advancing past any name already taken in <paramref name="used"/> (so overflow
+    ''' siblings never collide). Adds the chosen name to <paramref name="used"/>.</summary>
+    Private Function NextFreeListEditorId(baseEdid As String, idx As Integer, used As HashSet(Of String)) As String
+        Dim edid As String = baseEdid
+        Dim n As Integer = If(idx <= 0, 0, idx)
+        If n = 0 Then
+            ' First chunk keeps the base name; if (rarely) taken, fall through to suffixing from _1.
+            If Not used.Contains(edid) Then
+                used.Add(edid)
+                Return edid
+            End If
+            n = 1
+        End If
+        Do
+            edid = $"{baseEdid}_{n}"
+            n += 1
+        Loop While used.Contains(edid)
+        used.Add(edid)
+        Return edid
+    End Function
+
+    ''' <summary>Split a list into consecutive chunks of at most <paramref name="size"/> items, order preserved.</summary>
+    Private Function ChunkList(Of T)(items As IList(Of T), size As Integer) As List(Of List(Of T))
+        Dim result As New List(Of List(Of T))
+        Dim i As Integer = 0
+        While i < items.Count
+            Dim take = Math.Min(size, items.Count - i)
+            Dim chunk As New List(Of T)(take)
+            For j = 0 To take - 1
+                chunk.Add(items(i + j))
+            Next
+            result.Add(chunk)
+            i += take
+        End While
+        Return result
+    End Function
+
     Private Function MapGlobalToLocalInPlugin(npcFormID As UInteger, reader As PluginReader, pm As PluginManager) As UInteger
         Dim npcSourceMasterName As String = pm.GetOriginatingPluginName(npcFormID)
         Dim npcIsLight As Boolean = ((npcFormID >> 24) And &HFFUI) = &HFEUI

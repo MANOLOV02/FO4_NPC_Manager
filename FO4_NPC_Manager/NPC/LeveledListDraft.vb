@@ -13,7 +13,9 @@
 ''' rewrites it to (selfMasterIndex &lt;&lt; 24 | objectIndex) on save and remaps every reference to it.</summary>
 Public Class LeveledListDraft
 
-    ''' <summary>EditorID prefix so author-built leveled lists are identifiable / namespaced in xEdit.</summary>
+    ''' <summary>Working EditorID prefix (type segment): <c>npcm_LVLI_&lt;name&gt;</c>. At save the destination
+    ''' plugin name is injected (NpcOverrideSaver.ApplyEspNamespaceToEditorId) → final
+    ''' <c>npcm_&lt;ESPNAME&gt;_LVLI_&lt;name&gt;</c>, identifiable + per-plugin namespaced in xEdit.</summary>
     Public Const EditorIdPrefix As String = "npcm_LVLI_"
 
     Public Property FormID As UInteger
