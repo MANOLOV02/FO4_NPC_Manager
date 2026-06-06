@@ -1,4 +1,4 @@
-Imports System.IO
+﻿Imports System.IO
 Imports System.Linq
 Imports System.Text.Json
 Imports FO4_Base_Library
@@ -39,13 +39,25 @@ Module Program
     End Class
 
     ' TETI.Slot enum (xEdit wbDefinitionsFO4.pas:3465-3491) — nombre por valor, para --tints.
-    Private ReadOnly SlotNames As String() = {
-        "ForeheadMask", "EyesMask", "NoseMask", "EarsMask", "CheeksMask", "MouthMask", "NeckMask",
-        "LipColor", "CheekColor", "Eyeliner", "EyeSocketUpper", "EyeSocketLower", "SkinTone", "Paint",
-        "LaughLines", "CheekColorLower", "Nose", "Chin", "Neck", "Forehead", "Dirt", "Scars",
-        "FaceDetail", "Brows", "Wrinkles", "Beards"}
-    Private Function SlotName(s As Integer) As String
-        Return If(s >= 0 AndAlso s < SlotNames.Length, SlotNames(s), $"Slot{s}")
+    'Private ReadOnly SlotNames As String() = {
+    '    "ForeheadMask", "EyesMask", "NoseMask", "EarsMask", "CheeksMask", "MouthMask", "NeckMask",
+    '    "LipColor", "CheekColor", "Eyeliner", "EyeSocketUpper", "EyeSocketLower", "SkinTone", "Paint",
+    '    "LaughLines", "CheekColorLower", "Nose", "Chin", "Neck", "Forehead", "Dirt", "Scars",
+    '    "FaceDetail", "Brows", "Wrinkles", "Beards"}
+    'Private Function SlotName(s As Integer) As String
+    '    Return If(s >= 0 AndAlso s < SlotNames.Length, SlotNames(s), $"Slot{s}")
+    'End Function
+
+    ' BlendOp (FaceTint): 0=Replace 1=Multiply 2=Overlay 3=SoftLight 4=HardLight.
+    Private Function BlendName(b As UInteger) As String
+        Select Case b
+            Case 0UI : Return "Replace"
+            Case 1UI : Return "Multiply"
+            Case 2UI : Return "Overlay"
+            Case 3UI : Return "SoftLight"
+            Case 4UI : Return "HardLight"
+            Case Else : Return $"bop{b}"
+        End Select
     End Function
 
     Sub Main(args As String())
@@ -583,7 +595,7 @@ Module Program
                                 Dim clfm = RecordParsers.ParseCLFM(crec, pm)
                                 If clfm IsNot Nothing AndAlso clfm.HasColor Then col = $"ARGB(0x{clfm.Color.ToArgb():X8})"
                             End If
-                            Console.WriteLine($"        tplCol tplIdx={tc.TemplateIndex} alpha={tc.Alpha:G6} clfm=0x{tc.ColorFormID:X8} {col}")
+                            Console.WriteLine($"        tplCol tplIdx={tc.TemplateIndex} alpha={tc.Alpha:G6} blendOp={tc.BlendOperation}/{BlendName(tc.BlendOperation)} clfm=0x{tc.ColorFormID:X8} {col}")
                         Next
                     End If
                 Next
@@ -592,9 +604,18 @@ Module Program
         Console.WriteLine($"-- TTED summary: con-TTED={nTted}, denormales(=entero leido como float)={nDenorm} -> {If(nDenorm = 0, "TODOS floats sanos", "HAY enteros/denormales")} --")
 
         Dim merged = FaceTintInputBuilder.MergeTintLayersWithRaceDefaults(npcData.FaceTintLayers, race, isFemale, pm)
-        Console.WriteLine($"-- MERGED ({merged.Count}) --")
+        Console.WriteLine($"-- MERGED ({merged.Count}) -- (RESOLVED = ResolvePaletteLayerEffective: que BlendOp/color usa el compositor)")
         For Each m In merged
-            Console.WriteLine($"  idx={m.Layer.Index} value={m.Layer.Value} tplColIdx={m.Layer.TemplateColorIndex} color=ARGB(0x{m.Layer.Color.ToArgb():X8}) raceDefault={m.IsRaceDefault}")
+            Dim lyr = m.Layer
+            Dim resolvedStr As String = ""
+            If lyr.Discriminator = 1 Then   ' Palette: resolver Step1(idx)/Step2(color)/Step3(fallback)
+                Dim opt = race.FindTintOption(lyr.Index, isFemale)
+                If opt IsNot Nothing Then
+                    Dim r = FaceTintInputBuilder.ResolvePaletteLayerEffective(lyr, opt, pm)
+                    resolvedStr = $"  -> RESOLVED matched={r.Matched} blendOp={r.BlendOp}/{BlendName(r.BlendOp)} color=ARGB(0x{r.Color.ToArgb():X8}) opScale={r.OpacityScale:G4}"
+                End If
+            End If
+            Console.WriteLine($"  idx={lyr.Index} disc={lyr.Discriminator} value={lyr.Value} tplColIdx={lyr.TemplateColorIndex} color=ARGB(0x{lyr.Color.ToArgb():X8}) raceDefault={m.IsRaceDefault}{resolvedStr}")
         Next
     End Sub
 
