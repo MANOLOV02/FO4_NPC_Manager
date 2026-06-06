@@ -2082,7 +2082,10 @@ Public Class MainForm
             ' (raiders, gunners, etc.) — their appearance comes from the template chain,
             ' so they are represented by the LVLN entries in section 2.
             Dim placedNpcs = _allNPCs.
-                Where(Function(n) _directlyPlacedNPCFormIDs.Contains(n.FormID) AndAlso Not NpcInheritsVisualAppearance(n)).
+                Where(Function(n) _directlyPlacedNPCFormIDs.Contains(n.FormID) AndAlso
+                                   Not NpcInheritsVisualAppearance(n) AndAlso
+                                   (Not onlyChanged OrElse _dirtyNpcs.Contains(n.FormID)) AndAlso
+                                   (normalizedFilter.Length = 0 OrElse MatchesNpcFilter(n, Nothing, normalizedFilter))).
                 GroupBy(Function(n) If(n.PluginName, "Unknown")).
                 OrderBy(Function(g) g.Key, StringComparer.OrdinalIgnoreCase)
 
@@ -2091,9 +2094,6 @@ Public Class MainForm
                 Dim matchCount = 0
 
                 For Each npc In pluginGroup.OrderBy(Function(n) n.ToString(), StringComparer.OrdinalIgnoreCase)
-                    If onlyChanged AndAlso Not _dirtyNpcs.Contains(npc.FormID) Then Continue For
-                    If normalizedFilter.Length > 0 AndAlso Not MatchesNpcFilter(npc, Nothing, normalizedFilter) Then Continue For
-
                     If pluginNode Is Nothing Then
                         pluginNode = New TreeNode(pluginGroup.Key) With {
                             .Name = $"PLUGIN_{pluginGroup.Key}",
@@ -2128,14 +2128,42 @@ Public Class MainForm
             ' un NPC puede aparecer bajo CADA LVLN que lo lista (regla del usuario 2026-05-18 —
             ' útil para ver qué LVLNs enrolan a un mismo NPC).
             If _finalLVLNFormIDs.Count > 0 Then
+                Dim visibleLvlns As New List(Of (FormID As UInteger,
+                                                 Record As PluginRecord,
+                                                 Data As LVLN_Data,
+                                                 VisibleLeaves As List(Of NPC_Data)))
+
+                For Each fid In _finalLVLNFormIDs
+                    Dim rec = _pluginManager.GetRecord(fid)
+                    Dim lvln = If(_lvlnDataCache.TryGetValue(fid, value), value, Nothing)
+                    If rec Is Nothing OrElse lvln Is Nothing Then Continue For
+
+                    Dim visibleLeaves As List(Of NPC_Data) = Nothing
+                    If onlyChanged OrElse normalizedFilter.Length > 0 Then
+                        visibleLeaves = New List(Of NPC_Data)
+                        Dim leaves As List(Of UInteger) = Nothing
+                        If Not _lvlnLeavesCache.TryGetValue(fid, leaves) Then leaves = New List(Of UInteger)
+
+                        For Each leafFid In leaves
+                            Dim leafNpc As NPC_Data = Nothing
+                            If Not _npcByIdCache.TryGetValue(leafFid, leafNpc) Then Continue For
+                            If onlyChanged AndAlso Not _dirtyNpcs.Contains(leafFid) Then Continue For
+                            If normalizedFilter.Length > 0 AndAlso Not MatchesNpcFilter(leafNpc, Nothing, normalizedFilter) Then Continue For
+                            visibleLeaves.Add(leafNpc)
+                        Next
+
+                        If onlyChanged Then
+                            If visibleLeaves.Count = 0 Then Continue For
+                        ElseIf normalizedFilter.Length > 0 AndAlso visibleLeaves.Count = 0 AndAlso Not MatchesRecordFilter(rec, normalizedFilter) Then
+                            Continue For
+                        End If
+                    End If
+
+                    visibleLvlns.Add((fid, rec, lvln, visibleLeaves))
+                Next
+
                 ' Group final LVLNs by source plugin
-                Dim lvlnsByPlugin = _finalLVLNFormIDs.
-                    Select(Function(fid)
-                               Dim rec = _pluginManager.GetRecord(fid)
-                               Dim lvln = If(_lvlnDataCache.TryGetValue(fid, value), value, Nothing)
-                               Return (FormID:=fid, Record:=rec, Data:=lvln)
-                           End Function).
-                    Where(Function(x) x.Record IsNot Nothing AndAlso x.Data IsNot Nothing).
+                Dim lvlnsByPlugin = visibleLvlns.
                     GroupBy(Function(x) If(x.Record.SourcePluginName, "Unknown")).
                     OrderBy(Function(g) g.Key, StringComparer.OrdinalIgnoreCase)
 
@@ -2144,11 +2172,6 @@ Public Class MainForm
                     Dim matchCount = 0
 
                     For Each item In pluginGroup.OrderBy(Function(x) x.Data.EditorID, StringComparer.OrdinalIgnoreCase)
-                        ' NO early-skip por filtro del LVLN propio: aunque el LVLN no matchee
-                        ' su EditorID/FormID, los hijos sí pueden matchear (filtro por un FormID
-                        ' de NPC concreto, por ej.). La decisión final de incluir/descartar este
-                        ' nodo se toma después de iterar children (ver chequeo post-loop más abajo).
-
                         If pluginNode Is Nothing Then
                             pluginNode = New TreeNode($"[LVLN] {pluginGroup.Key}") With {
                                 .Name = $"LVLN_PLUGIN_{pluginGroup.Key}",
@@ -2168,36 +2191,37 @@ Public Class MainForm
                         ' sub-LVLNs intermedios. SIN dedup contra otros LVLNs: si el NPC está en
                         ' múltiples lvl lists, aparece bajo cada una. Leaves vienen del cache
                         ' precomputado (_lvlnLeavesCache) — O(1) lookup en lugar de recursión.
-                        Dim leaves As List(Of UInteger) = Nothing
-                        If Not _lvlnLeavesCache.TryGetValue(item.FormID, leaves) Then leaves = New List(Of UInteger)
                         Dim childMatchCount = 0
-                        For Each leafFid In leaves
-                            Dim leafNpc As NPC_Data = Nothing
-                            If Not _npcByIdCache.TryGetValue(leafFid, leafNpc) Then Continue For
-                            If onlyChanged AndAlso Not _dirtyNpcs.Contains(leafFid) Then Continue For
-                            If normalizedFilter.Length > 0 AndAlso Not MatchesNpcFilter(leafNpc, Nothing, normalizedFilter) Then Continue For
-                            Dim childLabel As String = Nothing
-                            If Not _npcDisplayLabelCache.TryGetValue(leafFid, childLabel) Then
-                                childLabel = BuildNpcDisplayLabel(leafNpc)
-                            End If
-                            Dim childNode = New TreeNode(childLabel) With {
-                                .Name = $"NPC_{leafNpc.FormID:X8}",
-                                .Tag = leafNpc
-                            }
-                            lvlnNode.Nodes.Add(childNode)
-                            childMatchCount += 1
-                        Next
-
-                        ' Descartar el LVLN cuando ningún child sobrevivió. Bajo "Only changed" un
-                        ' LVLN nunca está "cambiado" por sí mismo (sólo los NPC tienen dirty flag), así
-                        ' que se muestra SOLO si tiene al menos un child dirty. Con filtro de texto y sin
-                        ' only-changed, se conserva si el record del LVLN matchea (aunque no haya childs).
-                        If childMatchCount = 0 Then
-                            If onlyChanged Then
-                                Continue For
-                            ElseIf normalizedFilter.Length > 0 AndAlso Not MatchesRecordFilter(item.Record, normalizedFilter) Then
-                                Continue For
-                            End If
+                        If item.VisibleLeaves IsNot Nothing Then
+                            For Each leafNpc In item.VisibleLeaves
+                                Dim childLabel As String = Nothing
+                                If Not _npcDisplayLabelCache.TryGetValue(leafNpc.FormID, childLabel) Then
+                                    childLabel = BuildNpcDisplayLabel(leafNpc)
+                                End If
+                                Dim childNode = New TreeNode(childLabel) With {
+                                    .Name = $"NPC_{leafNpc.FormID:X8}",
+                                    .Tag = leafNpc
+                                }
+                                lvlnNode.Nodes.Add(childNode)
+                                childMatchCount += 1
+                            Next
+                        Else
+                            Dim leaves As List(Of UInteger) = Nothing
+                            If Not _lvlnLeavesCache.TryGetValue(item.FormID, leaves) Then leaves = New List(Of UInteger)
+                            For Each leafFid In leaves
+                                Dim leafNpc As NPC_Data = Nothing
+                                If Not _npcByIdCache.TryGetValue(leafFid, leafNpc) Then Continue For
+                                Dim childLabel As String = Nothing
+                                If Not _npcDisplayLabelCache.TryGetValue(leafFid, childLabel) Then
+                                    childLabel = BuildNpcDisplayLabel(leafNpc)
+                                End If
+                                Dim childNode = New TreeNode(childLabel) With {
+                                    .Name = $"NPC_{leafNpc.FormID:X8}",
+                                    .Tag = leafNpc
+                                }
+                                lvlnNode.Nodes.Add(childNode)
+                                childMatchCount += 1
+                            Next
                         End If
 
                         pluginNode.Nodes.Add(lvlnNode)
@@ -2516,15 +2540,11 @@ Public Class MainForm
     Private Shared Function MatchesRecordFilter(rec As PluginRecord, filter As String) As Boolean
         If String.IsNullOrWhiteSpace(filter) Then Return True
         If rec Is Nothing Then Return False
-
-        Dim comparisons As String() = {
-            rec.EditorID,
-            rec.Header.FormID.ToString("X8"),
-            rec.SourcePluginName,
-            rec.Header.Signature
-        }
-
-        Return comparisons.Any(Function(value) Not String.IsNullOrEmpty(value) AndAlso value.Contains(filter, StringComparison.OrdinalIgnoreCase))
+        If Not String.IsNullOrEmpty(rec.EditorID) AndAlso rec.EditorID.Contains(filter, StringComparison.OrdinalIgnoreCase) Then Return True
+        If rec.Header.FormID.ToString("X8").Contains(filter, StringComparison.OrdinalIgnoreCase) Then Return True
+        If Not String.IsNullOrEmpty(rec.SourcePluginName) AndAlso rec.SourcePluginName.Contains(filter, StringComparison.OrdinalIgnoreCase) Then Return True
+        If Not String.IsNullOrEmpty(rec.Header.Signature) AndAlso rec.Header.Signature.Contains(filter, StringComparison.OrdinalIgnoreCase) Then Return True
+        Return False
     End Function
 
     Private Function GetTemplateSourceSortKey(sourceId As UInteger, npcById As IReadOnlyDictionary(Of UInteger, NPC_Data)) As String
@@ -3437,50 +3457,6 @@ Public Class MainForm
             End If
             shapeToSkel(shape) = armaSkel
         Next
-
-        ' DIAG: para cada chunk robot, log de qué skel le tocó (debería ser el mismo `inst`
-        ' que tiene los bones inyectados, NO un per-ARMA clonado que NO los tendría).
-        For Each kv In shapeToSkel
-            Dim shape = kv.Key
-            Dim skelForShape = kv.Value
-            If renderData.ShapeMountSocket.ContainsKey(shape) Then
-                Dim sameAsBase = (skelForShape Is inst)
-            End If
-        Next
-
-        ' Diagnostic 2026-04-27: dump bone palette of each renderable shape to determine
-        ' if the gloves mesh uses _skin bones (which receive sculpt scale) or principal bones
-        ' (which don't). If gloves don't use _skin → sculpt automatically does NOT affect them.
-        ' If they DO use _skin → we have a real problem requiring skeleton dual or shape-level
-        ' filtering. Logged once per render to pinpoint affected shapes.
-        Try
-            For Each sh In renderData.Shapes
-                Dim shapeName = sh.ShapeName
-                Dim boneNames As New List(Of String)
-                Dim hasSkinBones As Boolean = False
-                Dim hasPrincipalBones As Boolean = False
-                For Each b In sh.ShapeBones
-                    Dim bn = If(b.Name?.String, "")
-                    If bn.Length = 0 Then Continue For
-                    boneNames.Add(bn)
-                    If bn.EndsWith("_skin", StringComparison.OrdinalIgnoreCase) OrElse
-                       bn.EndsWith("_Skin", StringComparison.Ordinal) Then
-                        hasSkinBones = True
-                    Else
-                        hasPrincipalBones = True
-                    End If
-                Next
-                Dim skinCount As Integer = 0
-                For Each bn In boneNames
-                    If bn.EndsWith("_skin", StringComparison.OrdinalIgnoreCase) Then skinCount += 1
-                Next
-                Dim principalCount = boneNames.Count - skinCount
-                ' Sample-truncated lists for spot-check.
-                Dim skinSample = boneNames.Where(Function(n) n.EndsWith("_skin", StringComparison.OrdinalIgnoreCase)).Take(8).ToArray()
-                Dim princSample = boneNames.Where(Function(n) Not n.EndsWith("_skin", StringComparison.OrdinalIgnoreCase) AndAlso Not n.EndsWith("_Skin", StringComparison.Ordinal)).Take(8).ToArray()
-            Next
-        Catch ex As Exception
-        End Try
 
         ' Per-shape meatcap classification by geometry: read BSSubIndexTriShape segmentation,
         ' classify each shape via ClassifyShapeMeatcap (Confirmed = NIF enum SECTIONCAP/TORSOCAP,
@@ -7362,12 +7338,7 @@ Public Class MainForm
         result.SkeletonKey = ResolveSkeletonKey(previewVariant.State, result.Warnings)
 
         Dim candidates = CollectMeshCandidates(previewVariant.State, result.Warnings, previewVariant.UseFaceGen, previewVariant.OnlyFaceCollect, previewVariant.OnlyOutfitCollect)
-        For Each c In candidates
-        Next
-
         Dim selectedCandidates = SelectWinningCandidates(candidates)
-        For Each c In selectedCandidates
-        Next
 
         ' Diagnostic toggles "Render armor" / "Render only armor" se aplican vía RenderHide en
         ' el draw loop (sin re-resolver candidates). Cada shape se categoriza a la salida del
@@ -7405,13 +7376,6 @@ Public Class MainForm
                 End If
             Next
         Next
-        If globalSculptSource IsNot Nothing Then
-        ElseIf uSculptSourceByBit.Count > 0 Then
-            For Each kv In uSculptSourceByBit
-            Next
-        Else
-        End If
-
         Dim loadedNifs As New Dictionary(Of String, Nifcontent_Class_Manolo)(StringComparer.OrdinalIgnoreCase)
 
         ' Compute the over-armor [A] slot mask = bits 11..15.
@@ -7494,8 +7458,10 @@ Public Class MainForm
             ' NIF instances — referencia identity matches only this candidate's shapes.
             Dim chunkNif As Nifcontent_Class_Manolo = Nothing
             If Not result.CandidateNif.TryGetValue(cand, chunkNif) Then
-                Dim cfid = cand.SourceFormID
-                Logger.LogLazy(Function() $"[MOUNT-MAP] cand=0x{cfid:X8} NO CandidateNif entry — skipping")
+                If Logger.Enabled Then
+                    Dim cfid = cand.SourceFormID
+                    Logger.LogLazy(Function() $"[MOUNT-MAP] cand=0x{cfid:X8} NO CandidateNif entry — skipping")
+                End If
                 Continue For
             End If
             Dim matched As Integer = 0
@@ -7505,20 +7471,22 @@ Public Class MainForm
                 result.ShapeChunkNif(shape) = chunkNif
                 matched += 1
             Next
-            Dim cFidLog = cand.SourceFormID
-            Dim socketNameLog = cand.MountSocket.Name
-            Dim nifHashLog2 = chunkNif.GetHashCode()
-            Dim matchedLog = matched
-            Logger.LogLazy(Function() $"[MOUNT-MAP] cand=0x{cFidLog:X8} socket='{socketNameLog}' nifHash={nifHashLog2} matchedShapes={matchedLog}")
+            If Logger.Enabled Then
+                Dim cFidLog = cand.SourceFormID
+                Dim socketNameLog = cand.MountSocket.Name
+                Dim nifHashLog2 = chunkNif.GetHashCode()
+                Dim matchedLog = matched
+                Logger.LogLazy(Function() $"[MOUNT-MAP] cand=0x{cFidLog:X8} socket='{socketNameLog}' nifHash={nifHashLog2} matchedShapes={matchedLog}")
+            End If
         Next
-        Dim shapeCountLog = result.Shapes.Count
-        Dim mountCountLog = result.ShapeMountSocket.Count
-        Logger.LogLazy(Function() $"[MOUNT-MAP] DONE result.Shapes.Count={shapeCountLog} result.ShapeMountSocket.Count={mountCountLog}")
+        If Logger.Enabled Then
+            Dim shapeCountLog = result.Shapes.Count
+            Dim mountCountLog = result.ShapeMountSocket.Count
+            Logger.LogLazy(Function() $"[MOUNT-MAP] DONE result.Shapes.Count={shapeCountLog} result.ShapeMountSocket.Count={mountCountLog}")
+        End If
 
 
         DeduplicateWarnings(result.Warnings)
-        For Each w In result.Warnings
-        Next
         Return result
     End Function
 
@@ -9853,19 +9821,6 @@ Public Class MainForm
                                             }
                                         End Function).Where(Function(a) a.Nif IsNot Nothing).ToList()
 
-        ' DIAG (multi-socket hipótesis): dumpear los `P-*` del host y los `C-*` de cada addon
-        ' para validar empíricamente si vanilla declara el patrón |0/|1/|2 (ArmsTypeA1 etc).
-        ' Si addon trae 1 sólo C-Name|0 y host trae P-Name|0,|1,|2 → confirma que el resolver
-        ' debe instanciar el mesh N veces. Si addon trae C-Name|0,|1,|2 directamente → distinto.
-        If hostNif IsNot Nothing Then
-            Dim hostParents = BSConnectPointReader.ReadParents(hostNif)
-            For Each p In hostParents
-            Next
-        End If
-        For Each a In addons
-            Dim ch = BSConnectPointReader.ReadChildren(a.Nif)
-        Next
-
         Dim resolutions = ConnectPointMountResolver.Instance.ResolveMounts(hostNif, addons)
 
         ' Aplicar resultados al MountSocket de cada candidate. Si CollectRobotChunkCandidates
@@ -10440,16 +10395,23 @@ Public Class MainForm
             ' Parse a fresh NIF per candidate. Multi-instance robot chunks (Mr Handy 3 arms,
             ' 3 eyes) point to the same DictKey but each render-instance must own its own
             ' NIF + IRenderableShape so per-shape mutations (sculpt, morph, GPU upload) don't
-            ' bleed across instances. The loadedNifs dict still holds the LAST parsed nif for
-            ' downstream consumers that expect a representative NIF per DictKey.
+            ' bleed across instances.
             Dim nif As New Nifcontent_Class_Manolo()
             nif.Load_Manolo(bytes)
-            loadedNifs(dictKey) = nif
-            ' Track the candidate↔NIF link so the mount pass can address THIS instance
-            ' (not "any candidate that shares this DictKey").
-            result.CandidateNif(candidate) = nif
+            Dim trackChunkNif = candidate.ChunkOmodFormID <> 0UI
+            Dim trackCandidateNif = trackChunkNif OrElse candidate.SlotMask = SlotBitPipboy
+            If trackChunkNif Then
+                ' Keep one representative parsed NIF per DictKey only for chunk-mount consumers.
+                loadedNifs(dictKey) = nif
+            End If
+            If trackCandidateNif Then
+                ' Track the candidate↔NIF link only for paths that need the exact instance
+                ' downstream (chunk mounting / pipboy synthetic skin).
+                result.CandidateNif(candidate) = nif
+            End If
 
             Dim shapes = NifRenderableShape.FromNif(nif)
+            Dim logEnabled = Logger.Enabled
 
             ' Multi-instance bone rename: chunks robot mounteados en P-X|<apIdx> traen
             ' bone references al set |0 nativo del NIF. Cuando MountApIdx > 0, hay que
@@ -10479,12 +10441,14 @@ Public Class MainForm
             '    ApplySocketToBindTransforms(shapes, candidate.MountSocket)
             'End If
 
-            Dim candFidLog = candidate.SourceFormID
-            Dim chunkOmodLog = candidate.ChunkOmodFormID
-            Dim dkLog = dictKey
-            Dim shapesCountLog = shapes.Count
-            Dim nifHashLog = nif.GetHashCode()
-            Logger.LogLazy(Function() $"[LOAD-NIF] candFid=0x{candFidLog:X8} chunkOmod=0x{chunkOmodLog:X8} dictKey='{dkLog}' shapes={shapesCountLog} nifHash={nifHashLog}")
+            If logEnabled Then
+                Dim candFidLog = candidate.SourceFormID
+                Dim chunkOmodLog = candidate.ChunkOmodFormID
+                Dim dkLog = dictKey
+                Dim shapesCountLog = shapes.Count
+                Dim nifHashLog = nif.GetHashCode()
+                Logger.LogLazy(Function() $"[LOAD-NIF] candFid=0x{candFidLog:X8} chunkOmod=0x{chunkOmodLog:X8} dictKey='{dkLog}' shapes={shapesCountLog} nifHash={nifHashLog}")
+            End If
 
             ' [PIPBOY-DIAG] Para candidates con bit Pipboy (slot 60 / 0x40000000), dump per-shape
             ' IsSkinned + lista de BSConnectPoint::Parents del NIF. Si IsSkinned=False y hay un
@@ -10496,7 +10460,9 @@ Public Class MainForm
             '      colapsan al origin.
             '   c) socket declarado pero el chunk-mount resolver no lo aplica (sólo lo hace para
             '      candidates con ChunkOmodFormID; outfits regulares no pasan por mount-resolver).
-            If (candidate.SlotMask And &H40000000UI) <> 0UI Then
+            If logEnabled AndAlso (candidate.SlotMask And &H40000000UI) <> 0UI Then
+                Dim dkLog = dictKey
+                Dim shapesCountLog = shapes.Count
                 Dim slotL = candidate.SlotMask.ToString("X8")
                 Dim armoL = candidate.SourceFormID
                 Dim armaL = candidate.ArmorAddonFormID
@@ -10537,73 +10503,39 @@ Public Class MainForm
                 End Try
             End If
 
-            ' DIAG (multi-arm Mr Handy): contar shapes brutos del NIF antes de cualquier filtro,
-            ' para confirmar si el archivo trae 1 mesh o N meshes internos (caso Bethesda autora
-            ' los 3 brazos como 3 shapes adentro del mismo NIF).
-            For Each s In shapes
-            Next
-
             ' Diagnostic: dump the raw shader of every shape STRAIGHT FROM THE NIF, before any
             ' material copy or override runs. Lets us see whether the engine's _faceBones variant
             ' carries FaceTint shaders or genérico Default — answers the Ghoul question (why does
             ' TryApplyFaceTints find no FaceTint mesh after load).
-            For Each shape In shapes
-                ' Read the SHADER straight off the NIF disk binary BEFORE any unified material
-                ' lookup runs (Create_From_Shader + Deserialize(BGSM) both can mutate the
-                ' NifShaderType on the unified material). This tells us what the NIF author
-                ' actually wrote into the BSLightingShaderProperty.ShaderType_SK_FO4 field.
-                Dim rawNifShaderType As String = "<n/a>"
-                Dim rawNifHasGlowmap As String = "?"
-                Dim rawNifHasEnvMap As String = "?"
-                Dim rawNifHasSpecular As String = "?"
-                Try
-                    Dim niShad = shape.NifShader
-                    Dim bsls = TryCast(niShad, NiflySharp.Blocks.BSLightingShaderProperty)
-                    If bsls IsNot Nothing Then
-                        rawNifShaderType = bsls.ShaderType_SK_FO4.ToString()
-                        rawNifHasGlowmap = bsls.HasGlowmap.ToString()
-                        rawNifHasEnvMap = bsls.HasEnvironmentMapping.ToString()
-                        rawNifHasSpecular = bsls.HasSpecular.ToString()
+            If logEnabled Then
+                For Each shape In shapes
+                    EnsureShapeMaterialResolved(shape)
+                    Dim rawMatPath As String = ""
+                    Dim rawAT As String = "?"
+                    Dim rawATRef As String = "?"
+                    Dim rawABM As String = "?"
+                    Dim shapeMat = shape.ShapeMaterial
+                    If shapeMat IsNot Nothing Then
+                        rawMatPath = If(shapeMat.path, "")
+                        If shapeMat.material IsNot Nothing Then
+                            rawAT = shapeMat.material.AlphaTest.ToString()
+                            rawATRef = shapeMat.material.AlphaTestRef.ToString()
+                            rawABM = shapeMat.material.AlphaBlendMode.ToString()
+                        End If
                     End If
-                Catch
-                End Try
-
-                EnsureShapeMaterialResolved(shape)
-                Dim rawShader As String = "<no-material>"
-                Dim rawDiffuse As String = ""
-                Dim rawMatPath As String = ""
-                Dim rawGreyPalette As String = "?"
-                Dim rawHair As String = "?"
-                Dim rawGreyTexture As String = ""
-                Dim rawAT As String = "?"
-                Dim rawATRef As String = "?"
-                Dim rawABM As String = "?"
-                Dim shapeMat = shape.ShapeMaterial
-                If shapeMat IsNot Nothing Then
-                    rawMatPath = If(shapeMat.path, "")
-                    If shapeMat.material IsNot Nothing Then
-                        rawShader = shapeMat.material.NifShaderType.ToString()
-                        rawDiffuse = If(shapeMat.material.Diffuse_or_Base_Texture, "")
-                        rawGreyPalette = shapeMat.material.GrayscaleToPaletteColor.ToString()
-                        rawHair = shapeMat.material.Hair.ToString()
-                        rawGreyTexture = If(shapeMat.material.GreyscaleTexture, "")
-                        rawAT = shapeMat.material.AlphaTest.ToString()
-                        rawATRef = shapeMat.material.AlphaTestRef.ToString()
-                        rawABM = shapeMat.material.AlphaBlendMode.ToString()
+                    Dim rawHasNiAlp As String = "?"
+                    If shape.NifShape IsNot Nothing AndAlso shape.NifShape.AlphaPropertyRef IsNot Nothing Then
+                        rawHasNiAlp = (shape.NifShape.AlphaPropertyRef.Index <> -1).ToString()
                     End If
-                End If
-                Dim rawHasNiAlp As String = "?"
-                If shape.NifShape IsNot Nothing AndAlso shape.NifShape.AlphaPropertyRef IsNot Nothing Then
-                    rawHasNiAlp = (shape.NifShape.AlphaPropertyRef.Index <> -1).ToString()
-                End If
-                Dim shapeNameLog = shape.ShapeName
-                Dim rawAtLog = rawAT
-                Dim rawAtRefLog = rawATRef
-                Dim rawAbmLog = rawABM
-                Dim rawHasNiAlpLog = rawHasNiAlp
-                Dim rawPathLog = rawMatPath
-                Logger.LogLazy(Function() $"[ALPHA-PRE] shape='{shapeNameLog}' path='{rawPathLog}' AT={rawAtLog} ATRef={rawAtRefLog} ABM={rawAbmLog} hasNiAlp={rawHasNiAlpLog}")
-            Next
+                    Dim shapeNameLog = shape.ShapeName
+                    Dim rawAtLog = rawAT
+                    Dim rawAtRefLog = rawATRef
+                    Dim rawAbmLog = rawABM
+                    Dim rawHasNiAlpLog = rawHasNiAlp
+                    Dim rawPathLog = rawMatPath
+                    Logger.LogLazy(Function() $"[ALPHA-PRE] shape='{shapeNameLog}' path='{rawPathLog}' AT={rawAtLog} ATRef={rawAtRefLog} ABM={rawAbmLog} hasNiAlp={rawHasNiAlpLog}")
+                Next
+            End If
 
             ' Sólo HeadRear: copia material part-específico desde el .nif base a los shapes del
             ' _faceBones (que vanilla autoreó con material genérico basehumanfemaleskin).
@@ -10614,36 +10546,34 @@ Public Class MainForm
             ' Diagnostic: dump the shader AFTER both passes (CopyBaseMaterialsToFaceBonesShapes
             ' for HeadRear + ApplyShapeMaterialOverrides for everyone). Pairing with the
             ' [NIF-LOAD-RAW] above lets us see if either pass mutated the shader type.
-            For Each shape In shapes
-                Dim postShader As String = "<no-material>"
-                Dim postDiffuse As String = ""
-                Dim postPath As String = ""
-                Dim postAT As String = "?"
-                Dim postATRef As String = "?"
-                Dim postABM As String = "?"
-                Dim shapeMat2 = shape.ShapeMaterial
-                If shapeMat2 IsNot Nothing Then
-                    postPath = If(shapeMat2.path, "")
-                    If shapeMat2.material IsNot Nothing Then
-                        postShader = shapeMat2.material.NifShaderType.ToString()
-                        postDiffuse = If(shapeMat2.material.Diffuse_or_Base_Texture, "")
-                        postAT = shapeMat2.material.AlphaTest.ToString()
-                        postATRef = shapeMat2.material.AlphaTestRef.ToString()
-                        postABM = shapeMat2.material.AlphaBlendMode.ToString()
+            If logEnabled Then
+                For Each shape In shapes
+                    Dim postPath As String = ""
+                    Dim postAT As String = "?"
+                    Dim postATRef As String = "?"
+                    Dim postABM As String = "?"
+                    Dim shapeMat2 = shape.ShapeMaterial
+                    If shapeMat2 IsNot Nothing Then
+                        postPath = If(shapeMat2.path, "")
+                        If shapeMat2.material IsNot Nothing Then
+                            postAT = shapeMat2.material.AlphaTest.ToString()
+                            postATRef = shapeMat2.material.AlphaTestRef.ToString()
+                            postABM = shapeMat2.material.AlphaBlendMode.ToString()
+                        End If
                     End If
-                End If
-                Dim postHasNiAlp As String = "?"
-                If shape.NifShape IsNot Nothing AndAlso shape.NifShape.AlphaPropertyRef IsNot Nothing Then
-                    postHasNiAlp = (shape.NifShape.AlphaPropertyRef.Index <> -1).ToString()
-                End If
-                Dim shapeNameLog2 = shape.ShapeName
-                Dim postPathLog = postPath
-                Dim postAtLog = postAT
-                Dim postAtRefLog = postATRef
-                Dim postAbmLog = postABM
-                Dim postHasNiAlpLog = postHasNiAlp
-                Logger.LogLazy(Function() $"[ALPHA-POST] shape='{shapeNameLog2}' path='{postPathLog}' AT={postAtLog} ATRef={postAtRefLog} ABM={postAbmLog} hasNiAlp={postHasNiAlpLog}")
-            Next
+                    Dim postHasNiAlp As String = "?"
+                    If shape.NifShape IsNot Nothing AndAlso shape.NifShape.AlphaPropertyRef IsNot Nothing Then
+                        postHasNiAlp = (shape.NifShape.AlphaPropertyRef.Index <> -1).ToString()
+                    End If
+                    Dim shapeNameLog2 = shape.ShapeName
+                    Dim postPathLog = postPath
+                    Dim postAtLog = postAT
+                    Dim postAtRefLog = postATRef
+                    Dim postAbmLog = postABM
+                    Dim postHasNiAlpLog = postHasNiAlp
+                    Logger.LogLazy(Function() $"[ALPHA-POST] shape='{shapeNameLog2}' path='{postPathLog}' AT={postAtLog} ATRef={postAtRefLog} ABM={postAbmLog} hasNiAlp={postHasNiAlpLog}")
+                Next
+            End If
 
             ' Convert the externally-determined sculpt-to-apply (per the slot-based rule
             ' computed in ResolvePreviewVariant) to a Dict(boneName -> Vec3). This is NOT the
@@ -10699,7 +10629,7 @@ Public Class MainForm
             ' We want to verify what bone names the shape ACTUALLY references and if there's
             ' any anchor/transform info we're not consuming. Goal: figure out if the shape
             ' carries '|N' suffix already, or if engine adds it via something else.
-            If candidate.ChunkOmodFormID <> 0UI Then
+            If logEnabled AndAlso candidate.ChunkOmodFormID <> 0UI Then
                 Dim cFid = candidate.ChunkOmodFormID
                 Dim apIdx = candidate.MountApIdx
                 Dim sock = candidate.MountSocket
@@ -11020,17 +10950,20 @@ Public Class MainForm
     Friend Sub ApplyShapeMaterialOverrides(candidate As MeshCandidate, state As NPCVisualState, shapes As IEnumerable(Of IRenderableShape))
         If shapes Is Nothing Then Return
 
+        Dim logEnabled = Logger.Enabled
         DumpAllTxstFlagsOnce()  ' diagnóstico one-shot: todos los TXST + flag (gateado por Logger.Enabled)
 
-        Dim candFidLog As UInteger = If(candidate IsNot Nothing, candidate.SourceFormID, 0UI)
-        Dim chunkOmodLog As UInteger = If(candidate IsNot Nothing, candidate.ChunkOmodFormID, 0UI)
-        Dim candKindLog As String = If(candidate IsNot Nothing, candidate.Kind.ToString(), "<no-cand>")
-        Dim ctxLog As String = If(candidate IsNot Nothing AndAlso candidate.OmodResolutionFormType IsNot Nothing, candidate.OmodResolutionFormType, "")
-        Dim mswpLog As UInteger = If(candidate IsNot Nothing, candidate.MaterialSwapFormID, 0UI)
-        Dim cremapLog As String = If(candidate IsNot Nothing AndAlso candidate.ColorRemapIndex.HasValue, candidate.ColorRemapIndex.Value.ToString("F4"), "none")
-        Dim hasOmodResLog As Boolean = candidate IsNot Nothing AndAlso candidate.OmodResolution IsNot Nothing
-        Dim shapeCountLog As Integer = shapes.Count()
-        Logger.LogLazy(Function() $"[SHAPEMAT-ENTRY] cand=0x{candFidLog:X8} kind={candKindLog} chunkOmod=0x{chunkOmodLog:X8} ctxFormType='{ctxLog}' shapes={shapeCountLog} armaMSWP=0x{mswpLog:X8} armaColorRemap={cremapLog} hasOmodResolution={hasOmodResLog}")
+        If logEnabled Then
+            Dim candFidLog As UInteger = If(candidate IsNot Nothing, candidate.SourceFormID, 0UI)
+            Dim chunkOmodLog As UInteger = If(candidate IsNot Nothing, candidate.ChunkOmodFormID, 0UI)
+            Dim candKindLog As String = If(candidate IsNot Nothing, candidate.Kind.ToString(), "<no-cand>")
+            Dim ctxLog As String = If(candidate IsNot Nothing AndAlso candidate.OmodResolutionFormType IsNot Nothing, candidate.OmodResolutionFormType, "")
+            Dim mswpLog As UInteger = If(candidate IsNot Nothing, candidate.MaterialSwapFormID, 0UI)
+            Dim cremapLog As String = If(candidate IsNot Nothing AndAlso candidate.ColorRemapIndex.HasValue, candidate.ColorRemapIndex.Value.ToString("F4"), "none")
+            Dim hasOmodResLog As Boolean = candidate IsNot Nothing AndAlso candidate.OmodResolution IsNot Nothing
+            Dim shapeCountLog As Integer = shapes.Count()
+            Logger.LogLazy(Function() $"[SHAPEMAT-ENTRY] cand=0x{candFidLog:X8} kind={candKindLog} chunkOmod=0x{chunkOmodLog:X8} ctxFormType='{ctxLog}' shapes={shapeCountLog} armaMSWP=0x{mswpLog:X8} armaColorRemap={cremapLog} hasOmodResolution={hasOmodResLog}")
+        End If
 
         ' Material override pipeline order (matches engine application order):
         '   1. ARMA-direct base swap (MaterialSwapFormID + ColorRemapIndex per gender on the ARMA
@@ -11078,28 +11011,26 @@ Public Class MainForm
             Dim relatedMaterial = shape.ShapeMaterial
             If relatedMaterial Is Nothing Then Continue For
 
-            Dim shapeNamePre = shape.ShapeName
             Dim matPre = relatedMaterial.material
-            If matPre IsNot Nothing Then
+            If logEnabled AndAlso matPre IsNot Nothing Then
                 Dim palOnPre = matPre.GrayscaleToPaletteColor
                 Dim palScalePre = matPre.GrayscaleToPaletteScale
                 Dim greyTexPre = If(matPre.GreyscaleTexture, "")
+                Dim shapeNamePre = shape.ShapeName
                 Logger.LogLazy(Function() $"[PALSCALE-PRE] shape='{shapeNamePre}' path='{relatedMaterial.path}' palColor={palOnPre} palScale={palScalePre:F4} greyTex='{greyTexPre}' (post-load, pre-overrides)")
 
                 ' Snapshot del material INLINE del NIF/BGSM ANTES de cualquier override TXST/FTST.
                 ' Para ojos esto muestra la FUENTE de EyeGloss_n / eyeenvironmentmask_m (lo que el
                 ' shader de ojos trae) vs lo que después intenta pisar el TXST (EyeBrown_n / Eye_s).
-                If Logger.Enabled Then
-                    Dim shP = matPre.NifShaderType.ToString()
-                    Dim isBgsmP = matPre.IsBGSM()
-                    Dim dP = If(matPre.Diffuse_or_Base_Texture, "")
-                    Dim nP = If(matPre.NormalTexture, "")
-                    Dim sP = If(matPre.SmoothSpecTexture, "")
-                    Dim specP = If(matPre.SpecularTexture, "")
-                    Dim wP = If(matPre.WrinklesTexture, "")
-                    Dim envP = If(matPre.EnvmapTexture, "")
-                    Logger.LogLazy(Function() $"[SHAPEMAT-PRE-TEX] shape='{shapeNamePre}' shader={shP} isBGSM={isBgsmP} (inline NIF/BGSM source, pre-TXST) D='{dP}' N='{nP}' S='{sP}' spec='{specP}' W='{wP}' env='{envP}'")
-                End If
+                Dim shP = matPre.NifShaderType.ToString()
+                Dim isBgsmP = matPre.IsBGSM()
+                Dim dP = If(matPre.Diffuse_or_Base_Texture, "")
+                Dim nP = If(matPre.NormalTexture, "")
+                Dim sP = If(matPre.SmoothSpecTexture, "")
+                Dim specP = If(matPre.SpecularTexture, "")
+                Dim wP = If(matPre.WrinklesTexture, "")
+                Dim envP = If(matPre.EnvmapTexture, "")
+                Logger.LogLazy(Function() $"[SHAPEMAT-PRE-TEX] shape='{shapeNamePre}' shader={shP} isBGSM={isBgsmP} (inline NIF/BGSM source, pre-TXST) D='{dP}' N='{nP}' S='{sP}' spec='{specP}' W='{wP}' env='{envP}'")
             End If
 
             ApplyTextureSetOverrides(textureSet, relatedMaterial, candidate.UsesBodyTexture, shape.NifShape, shape.NifContent,
@@ -11108,9 +11039,12 @@ Public Class MainForm
             Dim material = relatedMaterial.material
             If material Is Nothing Then Continue For
 
-            Dim palOnPostTxst = material.GrayscaleToPaletteColor
-            Dim palScalePostTxst = material.GrayscaleToPaletteScale
-            Logger.LogLazy(Function() $"[PALSCALE-POST-TXST] shape='{shapeNamePre}' palColor={palOnPostTxst} palScale={palScalePostTxst:F4} (post TXST/MNAM override)")
+            If logEnabled Then
+                Dim palOnPostTxst = material.GrayscaleToPaletteColor
+                Dim palScalePostTxst = material.GrayscaleToPaletteScale
+                Dim shapeNamePre = shape.ShapeName
+                Logger.LogLazy(Function() $"[PALSCALE-POST-TXST] shape='{shapeNamePre}' palColor={palOnPostTxst} palScale={palScalePostTxst:F4} (post TXST/MNAM override)")
+            End If
 
             ' Shape con piel expuesta (shader=SkinTint): sustituir SÓLO sus texturas (diffuse +
             ' normal + spec) por las del body skin del actor (race-specific). Material params
@@ -11128,12 +11062,17 @@ Public Class MainForm
                         If bgsmMaterial.Diffuse_or_Base_Texture <> "" Then material.Diffuse_or_Base_Texture = bgsmMaterial.Diffuse_or_Base_Texture
                         If bgsmMaterial.NormalTexture <> "" Then material.NormalTexture = bgsmMaterial.NormalTexture
                         If bgsmMaterial.SmoothSpecTexture <> "" Then material.SmoothSpecTexture = bgsmMaterial.SmoothSpecTexture
-                        Dim mnamL = If(actorBodySkinTxst.MaterialPath, ""), shapeL = shape.ShapeName
-                        Logger.LogLazy(Function() $"[SKINSUB-MNAM] shape='{shapeL}' bodyBgsm='{mnamL}' → copia D/N/SmoothSpec del BGSM body (otros params del NIF; SKIP)")
+                        If logEnabled Then
+                            Dim mnamL = If(actorBodySkinTxst.MaterialPath, "")
+                            Dim shapeL = shape.ShapeName
+                            Logger.LogLazy(Function() $"[SKINSUB-MNAM] shape='{shapeL}' bodyBgsm='{mnamL}' → copia D/N/SmoothSpec del BGSM body (otros params del NIF; SKIP)")
+                        End If
                     End If
                 End If
-                Dim shapeSubL = shape.ShapeName
-                Logger.LogLazy(Function() $"[SKINSUB] shape='{shapeSubL}' SkinTint en Outfit → sustituye texturas por body skin del actor (luego TXST slots encima)")
+                If logEnabled Then
+                    Dim shapeSubL = shape.ShapeName
+                    Logger.LogLazy(Function() $"[SKINSUB] shape='{shapeSubL}' SkinTint en Outfit → sustituye texturas por body skin del actor (luego TXST slots encima)")
+                End If
                 ApplyTextureSetToMaterial(material, actorBodySkinTxst)
             End If
 
@@ -11151,17 +11090,19 @@ Public Class MainForm
                 material.SkinTint = True
             End If
 
-            Dim shapeNameST = shape.ShapeName
-            Dim candKindST = If(candidate IsNot Nothing, candidate.Kind.ToString(), "<no-cand>")
-            Dim candUsesBodyTex = If(candidate IsNot Nothing, candidate.UsesBodyTexture.ToString(), "?")
-            Dim candHeadPartType = If(candidate IsNot Nothing, candidate.HeadPartType.ToString(), "?")
-            Dim matShader = material.NifShaderType.ToString()
-            Dim matIsBgsm = material.IsBGSM().ToString()
-            Dim preST = preSkinTint.ToString()
-            Dim postST = material.SkinTint.ToString()
-            Dim hasTintColor = skinTintColor.HasValue.ToString()
-            Dim shouldForceLog = shouldForce.ToString()
-            Logger.LogLazy(Function() $"[SKINTINT-DECISION] shape='{shapeNameST}' kind={candKindST} usesBodyTex={candUsesBodyTex} hdptType={candHeadPartType} matShader={matShader} isBGSM={matIsBgsm} hasSkinTintColor={hasTintColor} preST={preST} shouldForce={shouldForceLog} postST={postST}")
+            If logEnabled Then
+                Dim shapeNameST = shape.ShapeName
+                Dim candKindST = If(candidate IsNot Nothing, candidate.Kind.ToString(), "<no-cand>")
+                Dim candUsesBodyTex = If(candidate IsNot Nothing, candidate.UsesBodyTexture.ToString(), "?")
+                Dim candHeadPartType = If(candidate IsNot Nothing, candidate.HeadPartType.ToString(), "?")
+                Dim matShader = material.NifShaderType.ToString()
+                Dim matIsBgsm = material.IsBGSM().ToString()
+                Dim preST = preSkinTint.ToString()
+                Dim postST = material.SkinTint.ToString()
+                Dim hasTintColor = skinTintColor.HasValue.ToString()
+                Dim shouldForceLog = shouldForce.ToString()
+                Logger.LogLazy(Function() $"[SKINTINT-DECISION] shape='{shapeNameST}' kind={candKindST} usesBodyTex={candUsesBodyTex} hdptType={candHeadPartType} matShader={matShader} isBGSM={matIsBgsm} hasSkinTintColor={hasTintColor} preST={preST} shouldForce={shouldForceLog} postST={postST}")
+            End If
 
             If material.SkinTint AndAlso skinTintColor.HasValue Then
                 material.SkinTintColor = skinTintColor.Value
@@ -11171,27 +11112,29 @@ Public Class MainForm
                 shape.TintColor = solidTintColor.Value
             End If
 
-            Dim shapeNameFinal = shape.ShapeName
-            Dim pathFinal = If(relatedMaterial.path, "")
-            Dim rootFinal = If(material.RootMaterialPath, "")
-            Dim shaderFinal = material.NifShaderType.ToString()
-            Dim isBgsmFinal = material.IsBGSM()
-            Dim palOnFinal = material.GrayscaleToPaletteColor
-            Dim palScaleFinal = material.GrayscaleToPaletteScale
-            Dim texDiff = If(material.Diffuse_or_Base_Texture, "")
-            Dim texNorm = If(material.NormalTexture, "")
-            Dim texGlow = If(material.GlowTexture, "")
-            Dim texGrey = If(material.GreyscaleTexture, "")
-            Dim texSpec = If(material.SpecularTexture, "")
-            Dim texSmSpec = If(material.SmoothSpecTexture, "")
-            Dim texEnv = If(material.EnvmapTexture, "")
-            Dim texEnvMask = If(material.EnvmapMaskTexture, "")
-            Dim texLight = If(material.LightingTexture, "")
-            Dim texWrink = If(material.WrinklesTexture, "")
-            Dim texInner = If(material.InnerLayerTexture, "")
-            Dim texTintMask = If(material.TintMaskTexture, "")
-            Logger.LogLazy(Function() $"[SHAPEMAT-FINAL] shape='{shapeNameFinal}' path='{pathFinal}' root='{rootFinal}' shader={shaderFinal} isBGSM={isBgsmFinal} palette={palOnFinal} palScale={palScaleFinal:F4}")
-            Logger.LogLazy(Function() $"[SHAPEMAT-FINAL-TEX] shape='{shapeNameFinal}' diff='{texDiff}' norm='{texNorm}' glow='{texGlow}' grey='{texGrey}' spec='{texSpec}' smSpec='{texSmSpec}' env='{texEnv}' envMask='{texEnvMask}' light='{texLight}' wrink='{texWrink}' inner='{texInner}' tintMask='{texTintMask}'")
+            If logEnabled Then
+                Dim shapeNameFinal = shape.ShapeName
+                Dim pathFinal = If(relatedMaterial.path, "")
+                Dim rootFinal = If(material.RootMaterialPath, "")
+                Dim shaderFinal = material.NifShaderType.ToString()
+                Dim isBgsmFinal = material.IsBGSM()
+                Dim palOnFinal = material.GrayscaleToPaletteColor
+                Dim palScaleFinal = material.GrayscaleToPaletteScale
+                Dim texDiff = If(material.Diffuse_or_Base_Texture, "")
+                Dim texNorm = If(material.NormalTexture, "")
+                Dim texGlow = If(material.GlowTexture, "")
+                Dim texGrey = If(material.GreyscaleTexture, "")
+                Dim texSpec = If(material.SpecularTexture, "")
+                Dim texSmSpec = If(material.SmoothSpecTexture, "")
+                Dim texEnv = If(material.EnvmapTexture, "")
+                Dim texEnvMask = If(material.EnvmapMaskTexture, "")
+                Dim texLight = If(material.LightingTexture, "")
+                Dim texWrink = If(material.WrinklesTexture, "")
+                Dim texInner = If(material.InnerLayerTexture, "")
+                Dim texTintMask = If(material.TintMaskTexture, "")
+                Logger.LogLazy(Function() $"[SHAPEMAT-FINAL] shape='{shapeNameFinal}' path='{pathFinal}' root='{rootFinal}' shader={shaderFinal} isBGSM={isBgsmFinal} palette={palOnFinal} palScale={palScaleFinal:F4}")
+                Logger.LogLazy(Function() $"[SHAPEMAT-FINAL-TEX] shape='{shapeNameFinal}' diff='{texDiff}' norm='{texNorm}' glow='{texGlow}' grey='{texGrey}' spec='{texSpec}' smSpec='{texSmSpec}' env='{texEnv}' envMask='{texEnvMask}' light='{texLight}' wrink='{texWrink}' inner='{texInner}' tintMask='{texTintMask}'")
+            End If
         Next
     End Sub
 
@@ -11231,6 +11174,7 @@ Public Class MainForm
         If Not IsHairHeadPart(candidate) Then Return
         If Not (material.Hair OrElse material.GrayscaleToPaletteColor) Then Return
 
+        Dim logEnabled = Logger.Enabled
         ' Hair/FacialHair/Brow all read NPC.HCLF. NPC.BCLF is preserved in the ESP for
         ' round-trip (Save ESP writes raw BCLF untouched) but ignored at render/bake time:
         ' F4SE/LooksMenu in-game also only reads headData->hairColor (CharGenInterface.cpp
@@ -11238,8 +11182,6 @@ Public Class MainForm
         ' (all from one CC pack, 4 redundant with HCLF). Unifying on HCLF aligns with the
         ' in-game runtime the user actually sees.
         Dim hairColorFormID As UInteger = If(state IsNot Nothing, state.HairColorFormID, 0UI)
-
-        Dim shapeMatPath = "" ' for logging only — material doesn't carry its shape ref
 
         Dim didPalette As Boolean = False
         If hairColorFormID <> 0UI Then
@@ -11255,15 +11197,17 @@ Public Class MainForm
                 If palTex <> "" Then
                     Dim oldPalColor = material.GrayscaleToPaletteColor
                     Dim oldScale = material.GrayscaleToPaletteScale
-                    Dim oldGreyTex = If(material.GreyscaleTexture, "")
+                    Dim oldGreyTex = If(logEnabled, If(material.GreyscaleTexture, ""), Nothing)
                     material.GrayscaleToPaletteColor = True
                     material.GrayscaleToPaletteScale = clfm.RemappingIndex
                     material.GreyscaleTexture = palTex
                     didPalette = True
-                    Dim newScale = clfm.RemappingIndex
-                    Dim hairFidL = hairColorFormID
-                    Dim palTexL = palTex
-                    Logger.LogLazy(Function() $"[PALSCALE-WRITE] branch=Hair-CLFM hdptType={candidate.HeadPartType} hairColorFid=0x{hairFidL:X8} oldPalColor={oldPalColor} oldScale={oldScale:F4} oldGreyTex='{oldGreyTex}' → newPalColor=True newScale={newScale:F4} newGreyTex='{palTexL}'")
+                    If logEnabled Then
+                        Dim newScale = clfm.RemappingIndex
+                        Dim hairFidL = hairColorFormID
+                        Dim palTexL = palTex
+                        Logger.LogLazy(Function() $"[PALSCALE-WRITE] branch=Hair-CLFM hdptType={candidate.HeadPartType} hairColorFid=0x{hairFidL:X8} oldPalColor={oldPalColor} oldScale={oldScale:F4} oldGreyTex='{oldGreyTex}' → newPalColor=True newScale={newScale:F4} newGreyTex='{palTexL}'")
+                    End If
                 End If
             End If
         End If
@@ -11276,8 +11220,10 @@ Public Class MainForm
             If effectiveHairColor.HasValue Then
                 Dim oldHairCol = material.HairTintColor
                 material.HairTintColor = effectiveHairColor.Value
-                Dim newColLog = effectiveHairColor.Value
-                Logger.LogLazy(Function() $"[HAIRTINT-WRITE] hdptType={candidate.HeadPartType} oldRGB=({oldHairCol.R},{oldHairCol.G},{oldHairCol.B}) → newRGB=({newColLog.R},{newColLog.G},{newColLog.B})")
+                If logEnabled Then
+                    Dim newColLog = effectiveHairColor.Value
+                    Logger.LogLazy(Function() $"[HAIRTINT-WRITE] hdptType={candidate.HeadPartType} oldRGB=({oldHairCol.R},{oldHairCol.G},{oldHairCol.B}) → newRGB=({newColLog.R},{newColLog.G},{newColLog.B})")
+                End If
             End If
         End If
     End Sub
@@ -11380,6 +11326,7 @@ Public Class MainForm
     End Function
 
     Private Function ResolveTextureSet(candidate As MeshCandidate, state As NPCVisualState) As TXST_Data
+        Dim logEnabled = Logger.Enabled
         ' Regla canónica HeadPart TXST resolution (per HDPT.DATA flags spec
         ' wbDefinitionsFO4.pas:7365-7372):
         '   A) sin TNAM, sin UsesBodyTexture → Nothing (deja lo embebido del NIF).
@@ -11402,9 +11349,11 @@ Public Class MainForm
             If candidate.UsesBodyTexture AndAlso state IsNot Nothing Then
                 Dim bodyTxst = ResolveActorSkinTextureSet(state, SkinRegion.Body)
                 If bodyTxst IsNot Nothing Then
-                    Dim bFid = bodyTxst.FormID, bMnam = If(bodyTxst.MaterialPath, "")
-                    Dim bD = If(bodyTxst.DiffuseTexture, ""), bN = If(bodyTxst.NormalTexture, ""), bS = If(bodyTxst.SmoothSpecTexture, "")
-                    Logger.LogLazy(Function() $"[TXST-RESOLVE] source=BodySkin(UsesBodyTexture) txst=0x{bFid:X8} mnam='{bMnam}' D='{bD}' N='{bN}' S='{bS}'")
+                    If logEnabled Then
+                        Dim bFid = bodyTxst.FormID, bMnam = If(bodyTxst.MaterialPath, "")
+                        Dim bD = If(bodyTxst.DiffuseTexture, ""), bN = If(bodyTxst.NormalTexture, ""), bS = If(bodyTxst.SmoothSpecTexture, "")
+                        Logger.LogLazy(Function() $"[TXST-RESOLVE] source=BodySkin(UsesBodyTexture) txst=0x{bFid:X8} mnam='{bMnam}' D='{bD}' N='{bN}' S='{bS}'")
+                    End If
                     Return bodyTxst
                 End If
                 ' Fallthrough si el actor no tiene body skin resuelto (raro): seguir con TNAM/Face.
@@ -11440,19 +11389,23 @@ Public Class MainForm
 
         Dim rec = _pluginManager.GetRecord(textureSetFormID)
         If rec Is Nothing OrElse rec.Header.Signature <> "TXST" Then
-            Dim fidL = textureSetFormID, srcL = txstSource
-            Logger.LogLazy(Function() $"[TXST-RESOLVE] source={srcL} formID=0x{fidL:X8} → NOT-FOUND-or-not-TXST")
+            If logEnabled Then
+                Dim fidL = textureSetFormID, srcL = txstSource
+                Logger.LogLazy(Function() $"[TXST-RESOLVE] source={srcL} formID=0x{fidL:X8} → NOT-FOUND-or-not-TXST")
+            End If
             Return Nothing
         End If
 
         Dim parsed = RecordParsers.ParseTXST(rec, _pluginManager)
-        Dim srcL2 = txstSource, pEid = If(parsed.EditorID, ""), pMnam = If(parsed.MaterialPath, "")
-        Dim pD = If(parsed.DiffuseTexture, ""), pN = If(parsed.NormalTexture, ""), pS = If(parsed.SmoothSpecTexture, ""), pW = If(parsed.WrinklesTexture, "")
-        ' DNAM flags (wbDefinitionsFO4.pas:7350): 0x0001 NoSpecularMap, 0x0002 FacegenTextures, 0x0004 HasModelSpaceNormal.
-        ' Hipótesis: 'FacegenTextures' (0x0002) marca el set de complexión (full D/N/S en el bake) vs TXST normal.
-        Dim pFlags = parsed.Flags
-        Dim pFacegen = (pFlags And &H2US) <> 0US, pNoSpec = (pFlags And &H1US) <> 0US, pMsn = (pFlags And &H4US) <> 0US
-        Logger.LogLazy(Function() $"[TXST-RESOLVE] source={srcL2} txst=0x{parsed.FormID:X8} eid='{pEid}' flags=0x{pFlags:X4}(facegen={pFacegen},noSpec={pNoSpec},msn={pMsn}) mnam='{pMnam}' D='{pD}' N='{pN}' S='{pS}' W='{pW}'")
+        If logEnabled Then
+            Dim srcL2 = txstSource, pEid = If(parsed.EditorID, ""), pMnam = If(parsed.MaterialPath, "")
+            Dim pD = If(parsed.DiffuseTexture, ""), pN = If(parsed.NormalTexture, ""), pS = If(parsed.SmoothSpecTexture, ""), pW = If(parsed.WrinklesTexture, "")
+            ' DNAM flags (wbDefinitionsFO4.pas:7350): 0x0001 NoSpecularMap, 0x0002 FacegenTextures, 0x0004 HasModelSpaceNormal.
+            ' Hipótesis: 'FacegenTextures' (0x0002) marca el set de complexión (full D/N/S en el bake) vs TXST normal.
+            Dim pFlags = parsed.Flags
+            Dim pFacegen = (pFlags And &H2US) <> 0US, pNoSpec = (pFlags And &H1US) <> 0US, pMsn = (pFlags And &H4US) <> 0US
+            Logger.LogLazy(Function() $"[TXST-RESOLVE] source={srcL2} txst=0x{parsed.FormID:X8} eid='{pEid}' flags=0x{pFlags:X4}(facegen={pFacegen},noSpec={pNoSpec},msn={pMsn}) mnam='{pMnam}' D='{pD}' N='{pN}' S='{pS}' W='{pW}'")
+        End If
         Return parsed
     End Function
 
@@ -11463,6 +11416,7 @@ Public Class MainForm
     Friend Shared Sub ApplyTextureSetOverrides(textureSet As TXST_Data, relatedMaterial As Nifcontent_Class_Manolo.RelatedMaterial_Class, usesBodyTexture As Boolean, shap As NiflySharp.INiShape, nif As Nifcontent_Class_Manolo, Optional isHeadPartTextureSet As Boolean = False)
         If textureSet Is Nothing OrElse relatedMaterial Is Nothing Then Return
 
+        Dim logEnabled = Logger.Enabled
         Dim material = relatedMaterial.material
         If material Is Nothing Then Return
 
@@ -11485,19 +11439,24 @@ Public Class MainForm
 
             Dim overrideMaterial = TryLoadMaterialFromDictionary(textureSet.MaterialPath, material, shap, nif)
             If overrideMaterial IsNot Nothing Then
-                Dim mnamL = If(textureSet.MaterialPath, ""), ubt = usesBodyTexture
                 If usesBodyTexture Then
                     relatedMaterial.material = overrideMaterial
                     material = overrideMaterial
                     relatedMaterial.path = FO4UnifiedMaterial_Class.CorrectMaterialPath(textureSet.MaterialPath)
-                    Logger.LogLazy(Function() $"[TXST-MNAM] mnam='{mnamL}' usesBodyTexture={ubt} → FULL-REPLACE (D+N+S+todo del BGSM override)")
+                    If logEnabled Then
+                        Dim mnamL = If(textureSet.MaterialPath, ""), ubt = usesBodyTexture
+                        Logger.LogLazy(Function() $"[TXST-MNAM] mnam='{mnamL}' usesBodyTexture={ubt} → FULL-REPLACE (D+N+S+todo del BGSM override)")
+                    End If
                 Else
                     Dim oldDiffuse = If(material.Diffuse_or_Base_Texture, "")
                     Dim newDiffuse = If(overrideMaterial.Diffuse_or_Base_Texture, "")
                     If newDiffuse <> "" Then material.Diffuse_or_Base_Texture = newDiffuse
                     relatedMaterial.path = FO4UnifiedMaterial_Class.CorrectMaterialPath(textureSet.MaterialPath)
-                    Dim oldDiffL = oldDiffuse, newDiffL = newDiffuse
-                    Logger.LogLazy(Function() $"[TXST-MNAM] mnam='{mnamL}' usesBodyTexture={ubt} → DIFFUSE-ONLY (N/S/Env/etc del NIF inline; SKIP) oldD='{oldDiffL}' newD='{newDiffL}'")
+                    If logEnabled Then
+                        Dim mnamL = If(textureSet.MaterialPath, ""), ubt = usesBodyTexture
+                        Dim oldDiffL = oldDiffuse, newDiffL = newDiffuse
+                        Logger.LogLazy(Function() $"[TXST-MNAM] mnam='{mnamL}' usesBodyTexture={ubt} → DIFFUSE-ONLY (N/S/Env/etc del NIF inline; SKIP) oldD='{oldDiffL}' newD='{newDiffL}'")
+                    End If
                 End If
             End If
         End If
@@ -11506,39 +11465,52 @@ Public Class MainForm
     End Sub
 
     Friend Shared Function TryLoadMaterialFromDictionary(materialPath As String, fallbackMaterial As FO4UnifiedMaterial_Class, shap As NiflySharp.INiShape, nif As Nifcontent_Class_Manolo) As FO4UnifiedMaterial_Class
-        Dim rawPathLog = If(materialPath, "")
+        Dim logEnabled = Logger.Enabled
+        Dim rawPathLog = If(logEnabled, If(materialPath, ""), Nothing)
         Dim correctedPath = FO4UnifiedMaterial_Class.CorrectMaterialPath(materialPath)
         If correctedPath = "" Then
-            Logger.LogLazy(Function() $"[MAT-LOAD] rawPath='{rawPathLog}' lookupKey='' result=NULL-PATH")
+            If logEnabled Then
+                Logger.LogLazy(Function() $"[MAT-LOAD] rawPath='{rawPathLog}' lookupKey='' result=NULL-PATH")
+            End If
             Return Nothing
         End If
         Dim containsKey = FilesDictionary_class.Dictionary.ContainsKey(correctedPath)
-        Dim lookupKeyLog = correctedPath
-        Dim containsKeyLog = containsKey
         If Not containsKey Then
-            Logger.LogLazy(Function() $"[MAT-LOAD] rawPath='{rawPathLog}' lookupKey='{lookupKeyLog}' containsKey=False result=NOT-FOUND")
+            If logEnabled Then
+                Dim lookupKeyLog = correctedPath
+                Logger.LogLazy(Function() $"[MAT-LOAD] rawPath='{rawPathLog}' lookupKey='{lookupKeyLog}' containsKey=False result=NOT-FOUND")
+            End If
             Return Nothing
         End If
 
         Dim materialType = GetMaterialTypeFromPath(correctedPath, fallbackMaterial)
         If materialType Is Nothing Then
-            Logger.LogLazy(Function() $"[MAT-LOAD] rawPath='{rawPathLog}' lookupKey='{lookupKeyLog}' containsKey=True result=UNKNOWN-TYPE")
+            If logEnabled Then
+                Dim lookupKeyLog = correctedPath
+                Logger.LogLazy(Function() $"[MAT-LOAD] rawPath='{rawPathLog}' lookupKey='{lookupKeyLog}' containsKey=True result=UNKNOWN-TYPE")
+            End If
             Return Nothing
         End If
 
         Try
             Dim material As New FO4UnifiedMaterial_Class()
             material.Deserialize(correctedPath, materialType, shap, nif)
-            Dim loadedAt = material.AlphaTest.ToString()
-            Dim typeLog = materialType.Name
-            Dim palOnLoad = material.GrayscaleToPaletteColor
-            Dim palScaleLoad = material.GrayscaleToPaletteScale
-            Dim greyTexLoad = If(material.GreyscaleTexture, "")
-            Logger.LogLazy(Function() $"[MAT-LOAD] rawPath='{rawPathLog}' lookupKey='{lookupKeyLog}' containsKey=True type={typeLog} loadedAT={loadedAt} palColor={palOnLoad} palScale={palScaleLoad:F4} greyTex='{greyTexLoad}' result=OK")
+            If logEnabled Then
+                Dim lookupKeyLog = correctedPath
+                Dim loadedAt = material.AlphaTest.ToString()
+                Dim typeLog = materialType.Name
+                Dim palOnLoad = material.GrayscaleToPaletteColor
+                Dim palScaleLoad = material.GrayscaleToPaletteScale
+                Dim greyTexLoad = If(material.GreyscaleTexture, "")
+                Logger.LogLazy(Function() $"[MAT-LOAD] rawPath='{rawPathLog}' lookupKey='{lookupKeyLog}' containsKey=True type={typeLog} loadedAT={loadedAt} palColor={palOnLoad} palScale={palScaleLoad:F4} greyTex='{greyTexLoad}' result=OK")
+            End If
             Return material
         Catch ex As Exception
-            Dim msg = ex.Message
-            Logger.LogLazy(Function() $"[MAT-LOAD] rawPath='{rawPathLog}' lookupKey='{lookupKeyLog}' containsKey=True result=EX msg='{msg}'")
+            If logEnabled Then
+                Dim lookupKeyLog = correctedPath
+                Dim msg = ex.Message
+                Logger.LogLazy(Function() $"[MAT-LOAD] rawPath='{rawPathLog}' lookupKey='{lookupKeyLog}' containsKey=True result=EX msg='{msg}'")
+            End If
             Return Nothing
         End Try
     End Function
@@ -11561,6 +11533,7 @@ Public Class MainForm
     Friend Shared Sub ApplyTextureSetToMaterial(material As FO4UnifiedMaterial_Class, textureSet As TXST_Data, Optional isHeadPartTextureSet As Boolean = False)
         If material Is Nothing OrElse textureSet Is Nothing Then Return
 
+        Dim logEnabled = Logger.Enabled
         ' Slot override gate — regla confirmada por dump de 997 TXST (2026-05-31, bug Alana/OldHumanFemale).
         ' Por defecto el TXST pisa TODOS los slots que resuelven (D+N+W+Glow+Height+Env+Inner+SmoothSpec).
         ' ÚNICA excepción (diffuse-only): el TextureSet de un HEAD PART SIN el flag DNAM 'Facegen Textures'
@@ -11573,13 +11546,15 @@ Public Class MainForm
         ' Old_n/_s del Face = el bug) y el parche transitorio por match "Eyes".
         Dim isFacegen = (textureSet.Flags And &H2US) <> 0US
         Dim diffuseOnly = isHeadPartTextureSet AndAlso Not isFacegen
-
         Dim txstFid = textureSet.FormID
-        Dim txstEid = If(textureSet.EditorID, "")
-        Dim mnamLog = If(textureSet.MaterialPath, "")
-        Dim noSpecL = (textureSet.Flags And &H1US) <> 0US, msnL = (textureSet.Flags And &H4US) <> 0US
-        Dim flagsL = textureSet.Flags, hpL = isHeadPartTextureSet, fgL = isFacegen, doL = diffuseOnly
-        Logger.LogLazy(Function() $"[TXST-APPLY] txst=0x{txstFid:X8} eid='{txstEid}' flags=0x{flagsL:X4}(facegen={fgL},noSpec={noSpecL},msn={msnL}) headPart={hpL} → diffuseOnly={doL} mnam='{mnamLog}'")
+
+        If logEnabled Then
+            Dim txstEid = If(textureSet.EditorID, "")
+            Dim mnamLog = If(textureSet.MaterialPath, "")
+            Dim noSpecL = (textureSet.Flags And &H1US) <> 0US, msnL = (textureSet.Flags And &H4US) <> 0US
+            Dim flagsL = textureSet.Flags, hpL = isHeadPartTextureSet, fgL = isFacegen, doL = diffuseOnly
+            Logger.LogLazy(Function() $"[TXST-APPLY] txst=0x{txstFid:X8} eid='{txstEid}' flags=0x{flagsL:X4}(facegen={fgL},noSpec={noSpecL},msn={msnL}) headPart={hpL} → diffuseOnly={doL} mnam='{mnamLog}'")
+        End If
 
         ' Diffuse (TX00): nunca se gatea. Resto: se salta solo si diffuseOnly (head-part sin flag Facegen).
         If TxstSlotDecision(txstFid, "Diffuse", textureSet.DiffuseTexture, material.Diffuse_or_Base_Texture, gatedSlot:=False, diffuseOnly:=diffuseOnly) Then material.Diffuse_or_Base_Texture = textureSet.DiffuseTexture
@@ -11678,23 +11653,24 @@ Public Class MainForm
         Dim resolves = TxstSlotResolves(txstPath, label, currentValue)
         Dim blocked = gatedSlot AndAlso diffuseOnly
         Dim apply = resolves AndAlso Not blocked
+        If Logger.Enabled Then
+            Dim reason As String
+            If apply Then
+                reason = "APPLY"
+            ElseIf Not hasPath Then
+                reason = "skip:empty-path"
+            ElseIf blocked Then
+                reason = "skip:HEADPART-DIFFUSE-ONLY"
+            ElseIf Not resolves Then
+                reason = "skip:unresolved-in-dict"
+            Else
+                reason = "skip:unknown"
+            End If
 
-        Dim reason As String
-        If apply Then
-            reason = "APPLY"
-        ElseIf Not hasPath Then
-            reason = "skip:empty-path"
-        ElseIf blocked Then
-            reason = "skip:HEADPART-DIFFUSE-ONLY"
-        ElseIf Not resolves Then
-            reason = "skip:unresolved-in-dict"
-        Else
-            reason = "skip:unknown"
+            Dim pathL = If(txstPath, ""), keptL = If(currentValue, ""), reasonL = reason
+            Dim resolvesL = resolves, doL = diffuseOnly, gsL = gatedSlot
+            Logger.LogLazy(Function() $"[TXST-SLOT] txst=0x{txstFid:X8} slot={label} txstPath='{pathL}' resolves={resolvesL} gatedSlot={gsL} diffuseOnly={doL} → {reasonL} (kept='{keptL}')")
         End If
-
-        Dim pathL = If(txstPath, ""), keptL = If(currentValue, ""), reasonL = reason
-        Dim resolvesL = resolves, doL = diffuseOnly, gsL = gatedSlot
-        Logger.LogLazy(Function() $"[TXST-SLOT] txst=0x{txstFid:X8} slot={label} txstPath='{pathL}' resolves={resolvesL} gatedSlot={gsL} diffuseOnly={doL} → {reasonL} (kept='{keptL}')")
         Return apply
     End Function
 
@@ -11881,6 +11857,7 @@ Public Class MainForm
     Friend Shared Sub EnsureShapeMaterialResolved(shape As IRenderableShape)
         If shape Is Nothing Then Return
 
+        Dim logEnabled = Logger.Enabled
         Dim relatedMaterial = shape.ShapeMaterial
         If relatedMaterial Is Nothing Then Return
 
@@ -11889,21 +11866,26 @@ Public Class MainForm
         Dim containsKey = FilesDictionary_class.Dictionary.ContainsKey(materialPath)
         Dim hasResolvableMaterial = relatedMaterial.path <> "" AndAlso containsKey
 
-        Dim hadMaterial = relatedMaterial.material IsNot Nothing
-        Dim preAT = "?"
-        If hadMaterial Then preAT = relatedMaterial.material.AlphaTest.ToString()
-        Dim shapeNameLog = shape.ShapeName
-        Dim rawPathLog = rawPath
-        Dim lookupKeyLog = materialPath
-        Dim containsKeyLog = containsKey
-        Dim hasResolvableLog = hasResolvableMaterial
-        Dim hadMaterialLog = hadMaterial
-        Dim preAtLog = preAT
-        Logger.LogLazy(Function() $"[MAT-RESOLVE] shape='{shapeNameLog}' rawPath='{rawPathLog}' lookupKey='{lookupKeyLog}' containsKey={containsKeyLog} hasResolvable={hasResolvableLog} hadMat={hadMaterialLog} preAT={preAtLog}")
+        If logEnabled Then
+            Dim hadMaterial = relatedMaterial.material IsNot Nothing
+            Dim preAT = "?"
+            If hadMaterial Then preAT = relatedMaterial.material.AlphaTest.ToString()
+            Dim shapeNameLog = shape.ShapeName
+            Dim rawPathLog = rawPath
+            Dim lookupKeyLog = materialPath
+            Dim containsKeyLog = containsKey
+            Dim hasResolvableLog = hasResolvableMaterial
+            Dim hadMaterialLog = hadMaterial
+            Dim preAtLog = preAT
+            Logger.LogLazy(Function() $"[MAT-RESOLVE] shape='{shapeNameLog}' rawPath='{rawPathLog}' lookupKey='{lookupKeyLog}' containsKey={containsKeyLog} hasResolvable={hasResolvableLog} hadMat={hadMaterialLog} preAT={preAtLog}")
+        End If
 
         If relatedMaterial.material IsNot Nothing AndAlso (relatedMaterial.path = "" OrElse hasResolvableMaterial) Then Return
         If shape.NifContent Is Nothing OrElse shape.NifShape Is Nothing OrElse shape.NifShader Is Nothing Then
-            Logger.LogLazy(Function() $"[MAT-RESOLVE-SKIP] shape='{shapeNameLog}' reason='missing NifContent/Shape/Shader'")
+            If logEnabled Then
+                Dim shapeNameLog = shape.ShapeName
+                Logger.LogLazy(Function() $"[MAT-RESOLVE-SKIP] shape='{shapeNameLog}' reason='missing NifContent/Shape/Shader'")
+            End If
             Return
         End If
 
@@ -11920,8 +11902,13 @@ Public Class MainForm
 
         relatedMaterial.material = rebuiltMaterial
         relatedMaterial.path = ""
-        Dim postAtLog = rebuiltMaterial.AlphaTest.ToString()
-        Logger.LogLazy(Function() $"[MAT-REBUILD] shape='{shapeNameLog}' rawPath='{rawPathLog}' lookupKey='{lookupKeyLog}' → REBUILT via Create_From_Shader, postAT={postAtLog}")
+        If logEnabled Then
+            Dim shapeNameLog = shape.ShapeName
+            Dim rawPathLog = rawPath
+            Dim lookupKeyLog = materialPath
+            Dim postAtLog = rebuiltMaterial.AlphaTest.ToString()
+            Logger.LogLazy(Function() $"[MAT-REBUILD] shape='{shapeNameLog}' rawPath='{rawPathLog}' lookupKey='{lookupKeyLog}' → REBUILT via Create_From_Shader, postAT={postAtLog}")
+        End If
     End Sub
     ''' <summary>Thin wrapper over <see cref="MeshPathHelpers.NormalizeMeshKey"/>; centralizes
     ''' path normalization in MeshPathHelpers so render path + offline bake never drift.</summary>
