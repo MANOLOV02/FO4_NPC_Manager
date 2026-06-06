@@ -115,20 +115,16 @@ Public Module FaceGenBuilder
             Return Logger.Enabled
         End Get
     End Property
+    Public Property WriteGPUSandboxOutput As Boolean = False
+    ''' <summary>Tilde "Generate TGA" del diálogo CharGen Options (persistido en Config). Cuando está ON,
+    ''' escribe un TGA UNCOMPRESSED al lado de cada .dds (CPU y, si corrió, GPU) — lossless aunque el .dds
+    ''' sea BCn. ReadOnly: lo maneja el setting, no un setter externo.</summary>
+    Public ReadOnly Property WriteTGASandboxOutput As Boolean
+        Get
+            Return If(Config_App.Current IsNot Nothing, Config_App.Current.Setting_FaceGenGenerateTga, False)
+        End Get
+    End Property
 
-    ''' <summary>Fuerza el sufijo SANDBOX `_2` (+ el TGA lossless) AUN en Release (Logger.Enabled=False).
-    ''' Desacopla el output de comparación del DebugMode/logger: permite correr el batch en Release (sin
-    ''' overhead de LogLazy, CPU paralelo) y seguir escribiendo `{id}_d_2.dds`/`.tga` al lado del CK (sin
-    ''' pisar `{id}_d.dds`). Default False (Release real escribe `_d.dds`). Se enciende en Program.vb para
-    ''' la fase de derivación.</summary>
-    Public Property SandboxOutput As Boolean = False
-
-    ''' <summary>Dumps INTERMEDIOS por-capa/swap (BASEIN, L## layer/diffmask, S## swap/regionmask,
-    ''' {canal}_state_initial, {canal}_swapstate_NN, CPU_*) — SOLO para derivar la ley single-NPC. OFF por
-    ''' default: en batch (cientos de clones) explotaría el disco con decenas de TGA por NPC. El _2 (GPU) /
-    ''' _2b (CPU) finales NO dependen de esto (se escriben siempre en DebugMode). Encender a mano para el
-    ''' chase byte-level de una cara concreta.</summary>
-    Public Property DumpIntermediates As Boolean = True
 
     ''' <summary>Settings de salida del bake (resolución por canal + compresión del diffuse), DERIVADO del
     ''' config persistido (Config_App, botón "CharGen Options"). Single source of truth = config; sin estado
@@ -141,14 +137,33 @@ Public Module FaceGenBuilder
             Dim c = Config_App.Current
             Dim d = c.Setting_FaceGenDiffuseResolution
             Dim perLayer = c.Setting_FaceGenPerLayerResolution
+            Dim dc = c.Setting_FaceGenDiffuseCompression
             Return New FaceTintConvention.FaceTintResolutionSettings With {
                 .Diffuse = d,
                 .Normal = If(perLayer, c.Setting_FaceGenNormalResolution, d),
                 .Specular = If(perLayer, c.Setting_FaceGenSpecularResolution, d),
-                .DiffuseCompression = c.Setting_FaceGenDiffuseCompression
+                .DiffuseCompression = dc,
+                .NormalCompression = If(perLayer, c.Setting_FaceGenNormalCompression, NsCompressionFromDiffuse(dc)),
+                .SpecularCompression = If(perLayer, c.Setting_FaceGenSpecularCompression, NsCompressionFromDiffuse(dc))
             }
         End Get
     End Property
+
+    ''' <summary>Modo All: N/S siguen al Diffuse -> Uncompressed si el Diffuse es Uncompressed, sino BC5.</summary>
+    Private Function NsCompressionFromDiffuse(d As FaceTintConvention.FaceTintDiffuseCompression) As FaceTintConvention.FaceTintNormalSpecularCompression
+        Return If(d = FaceTintConvention.FaceTintDiffuseCompression.Uncompressed,
+                  FaceTintConvention.FaceTintNormalSpecularCompression.Uncompressed,
+                  FaceTintConvention.FaceTintNormalSpecularCompression.Bc5)
+    End Function
+
+    ''' <summary>True si el output del bake queda LOOSE en disco (no se empaqueta a un BA2): Build CharGen
+    ''' loose (Not willBePacked) o Save ESP en modo loose-only (NPC_Config.Ba2Version_FO4 = 0). Los
+    ''' artefactos de inspección (TGA, _2b) SOLO se escriben en este caso: el packer (NpcFaceGenPacker) mete
+    ''' únicamente NIF + 3 DDS por nombre, así que un .tga/_2b en un BA2-save quedaría huérfano loose.</summary>
+    Private Function OutputStaysLoose(willBePacked As Boolean) As Boolean
+        If Not willBePacked Then Return True
+        Return NPC_Config.Current Is Nothing OrElse NPC_Config.Current.Ba2Version_FO4 = 0
+    End Function
 
     ''' <summary>Build a baked FaceGen NIF for this NPC. See module-level summary for the
     ''' v0 strategy. Always also writes a structured dump to npc_preview.log so the user
@@ -1213,31 +1228,25 @@ Public Module FaceGenBuilder
             Return
         End If
 
-        ' === Compositor del bake (REGLA): CharGen -> SIEMPRE CPU (float64, exacto a gen3; NO toca GL ->
-        ' bake async-able). needGl = se necesita GL: SOLO en DebugMode (para escribir _2 GPU y comparar
-        ' contra _2b CPU) o si el output fuera GPU (no es el caso). En RELEASE needGl=False -> NO se corre
-        ' el GL pipeline: solo CPU (no se duplica GPU+CPU). El compose CPU usa las DDS ya leidas (wrapper,
-        ' sin GL). Se computa ACA (antes del upload) para tener su tamaño cuando no hay GL.
-        Dim useCpuOutput As Boolean = True
-        Dim WriteGPUSandboxOutput As Boolean = True
-        ' GL pipeline (produce el _2 GPU para comparar paridad) SOLO si DumpIntermediates (single-NPC debug).
-        ' En batch (DumpIntermediates=False) NO se corre el GL: solo CPU -> sin doble-compose, sin dependencia
-        ' GL (bake async-able). El output principal (_d_2.dds en DebugMode) cae a CPU por el fallback de mas
-        ' abajo (gpuBgra Nothing -> cbSlot). Si el output fuera GPU (no es el caso, useCpuOutput=True) tambien
-        ' forzaria GL.
-        ' SandboxOutput tambien corre el GL -> escribe el _2b (GPU) ademas del _2 (CPU) para VERIFICAR
-        ' paridad CPU==GPU (post-fix g22). En esa rama el bake DEBE correr en el hilo UI (contexto GL); el
-        ' caller (MainForm) lo agenda sync cuando SandboxOutput. Sin SandboxOutput (produccion): CPU-only.
-        Dim needGl As Boolean = (DebugMode AndAlso DumpIntermediates) OrElse (Not useCpuOutput) OrElse (SandboxOutput AndAlso WriteGPUSandboxOutput)
+        ' FLAGS INDEPENDIENTES:
+        '  - CPU = output principal, SIEMPRE (el `cpu` de abajo). Formato + NOMBRE por DebugMode
+        '    (release: canonico _d.dds + BCn; debug: _d_2.dds + uncompressed B8G8R8A8). No depende del GL
+        '    -> el bake puede correr async (Await Task.Run en el caller).
+        '  - WriteGPUSandboxOutput = corre el GL y escribe el _2b (MISMO formato que el CPU, NOMBRE siempre
+        '    _2b). INDEPENDIENTE de DebugMode -> needGl = este flag. Como toca GL, el bake DEBE ir sync en el
+        '    hilo UI (contexto GL): el caller (MainForm) lo agenda sync cuando WriteGPUSandboxOutput.
+        '  - WriteTGASandboxOutput = ademas un TGA UNCOMPRESSED al lado de cada .dds (CPU y, si corrio, GPU),
+        '    desde el buffer en memoria (lossless aunque el .dds sea BCn). INDEPENDIENTE de DebugMode (release tambien).
+        Dim needGl As Boolean = WriteGPUSandboxOutput
         Dim cpu As FaceTintCpuCompositor.CpuPipelineResult = Nothing
-        If DebugMode OrElse useCpuOutput Then
-            Try
-                cpu = FaceTintCpuCompositor.ComposeCpuPipeline(diffuseBytes, normalBytesArr, specBytesArr, built.Layers, built.RegionSwaps, OutputSettings, diffuseKey, normalKey, specKey)
-            Catch ex As Exception
-                Dim m = ex.Message
-                Logger.LogLazy(Function() $"[FACEBAKE-CPU] CPU compose failed: {m}")
-            End Try
-        End If
+
+        Try
+            cpu = FaceTintCpuCompositor.ComposeCpuPipeline(diffuseBytes, normalBytesArr, specBytesArr, built.Layers, built.RegionSwaps, OutputSettings, diffuseKey, normalKey, specKey)
+        Catch ex As Exception
+            Dim m = ex.Message
+            Logger.LogLazy(Function() $"[FACEBAKE-CPU] CPU compose failed: {m}")
+        End Try
+
         If (Not needGl) AndAlso (cpu Is Nothing OrElse cpu.Diffuse Is Nothing OrElse cpu.Diffuse.Bgra Is Nothing) Then
             Logger.LogLazy(Function() $"[FACEBAKE] BAIL: CPU compose produced no diffuse (npcFormID=0x{npcFormID:X8})")
             Return
@@ -1299,32 +1308,17 @@ Public Module FaceGenBuilder
         ' --- 4. GL pipeline (SOLO needGl = DebugMode): region-swap + tint compose en GPU para escribir
         ' el _2 de comparación (vs el _2b del CPU). En RELEASE-CPU NO corre -> no se duplica GPU+CPU y el
         ' bake no toca GL (async). El CPU ya se compuso arriba (cpu). ---
-        Dim prevPerLayerDiffLog = FaceTintCompositor.PerLayerDiffLog
-        Dim prevCurrentNpcFormID = FaceTintCompositor.CurrentNpcFormID
         Dim pipelineResult As FaceTintCompositor.FaceTintPipelineResult = Nothing
         If needGl Then
-            If DebugMode AndAlso DumpIntermediates Then
-                FaceTintCompositor.PerLayerDiffLog = True
-                FaceTintCompositor.CurrentNpcFormID = npcFormID
-            End If
-            Try
-                pipelineResult = FaceTintCompositor.ApplyFaceTintPipeline(
-                    host.CompositorState, host.TintGpuCache,
-                    diffEntry.Texture_ID,
-                    If(normEntry?.Texture_ID, 0),
-                    If(specEntry?.Texture_ID, 0),
-                    w, h,
-                    built.Layers, built.RegionSwaps,
-                    OutputSettings)
-            Finally
-                FaceTintCompositor.PerLayerDiffLog = prevPerLayerDiffLog
-                FaceTintCompositor.CurrentNpcFormID = prevCurrentNpcFormID
-            End Try
+            pipelineResult = FaceTintCompositor.ApplyFaceTintPipeline(
+                host.CompositorState, host.TintGpuCache,
+                diffEntry.Texture_ID,
+                If(normEntry?.Texture_ID, 0),
+                If(specEntry?.Texture_ID, 0),
+                w, h,
+                built.Layers, built.RegionSwaps,
+                OutputSettings)
         End If
-
-        ' Dumps de mask/intermediates movidos al CLI (FO4_FaceTint_CLI --dump escribe SOLO los masks).
-        ' El app/lib produce únicamente el _2/_2b final + el TGA final (gateado por DebugMode/SandboxOutput);
-        ' los intermedios de composición (BASEIN/CPU_*/per-stage) se eliminaron.
 
         ' Track any fresh textures the pipeline produced so we can delete them on exit. (Nothing en
         ' release-CPU: no hubo GL pipeline.)
@@ -1346,24 +1340,24 @@ Public Module FaceGenBuilder
         Dim outDir = Path.Combine(dataPath, "Textures", "Actors", "Character", "FaceCustomization", originPlugin)
         Try : Directory.CreateDirectory(outDir) : Catch : End Try
 
-        ' Suffix (sandbox = DebugMode O SandboxOutput; SandboxOutput permite el `_2` en Release sin logger):
-        '   sandbox=False: _d.dds / _msn.dds / _s.dds → pisa CK textures (bake de producción).
-        '   sandbox=True : _d_2.dds / _msn_2.dds / _s_2.dds → sandbox alongside CK (derivación/comparación).
-        ' El NIF emitido referencia el suffix que corresponde (ver canonicalNifPath abajo).
-        Dim sandbox As Boolean = DebugMode OrElse SandboxOutput
-        Dim suffixD = If(sandbox, "_d_2.dds", "_d.dds")
-        Dim suffixN = If(sandbox, "_msn_2.dds", "_msn.dds")
-        Dim suffixS = If(sandbox, "_s_2.dds", "_s.dds")
-        ' Format: production usa BC3 (diffuse, DEFAULT) o BC7 (opción del usuario via OutputSettings) +
-        ' BC5 (normal/spec) para matchear el DXGI del source-NIF. NO hay auto-detección: es flag/opción.
-        ' DebugMode escribe los _2 sandbox UNCOMPRESSED (B8G8R8A8) para que la comparación de píxeles vs
-        ' CK (FaceCustomization uncompressed B8G8R8X8) sea apples-to-apples — la compresión BC agrega ruido
-        ' de media cero en canales de alta frecuencia (p.ej. spec G, RMS ~10) que parecería un bake error.
-        Dim dxgiDRelease As Integer = If(OutputSettings IsNot Nothing AndAlso OutputSettings.DiffuseCompression = FaceTintConvention.FaceTintDiffuseCompression.Bc7,
-                                         DirectXTextureConversionHelper.DxgiFormatBc7Unorm, DirectXTextureConversionHelper.DxgiFormatBc3Unorm)
-        Dim dxgiD = If(DebugMode, DirectXTextureConversionHelper.DxgiFormatB8G8R8A8Unorm, dxgiDRelease)
-        Dim dxgiN = If(DebugMode, DirectXTextureConversionHelper.DxgiFormatB8G8R8A8Unorm, DirectXTextureConversionHelper.DxgiFormatBc5Unorm)
-        Dim dxgiS = If(DebugMode, DirectXTextureConversionHelper.DxgiFormatB8G8R8A8Unorm, DirectXTextureConversionHelper.DxgiFormatBc5Unorm)
+        Dim suffixD = If(DebugMode, "_d_2.dds", "_d.dds")
+        Dim suffixN = If(DebugMode, "_msn_2.dds", "_msn.dds")
+        Dim suffixS = If(DebugMode, "_s_2.dds", "_s.dds")
+        ' Formato por canal = SETTINGS (decisión usuario: independiente de DebugMode; DebugMode solo decide
+        ' el NOMBRE _2 y si corre el GL). Diffuse: BC3 (default) / BC7 / Uncompressed. N/S: BC5 (default) /
+        ' Uncompressed. Uncompressed = B8G8R8A8 (true-color, sin pérdida). Para inspección lossless sin tocar
+        ' el formato del .dds está el tilde Generate TGA (WriteTGASandboxOutput).
+        Dim os = OutputSettings
+        Dim dxgiD As Integer
+        Select Case If(os IsNot Nothing, os.DiffuseCompression, FaceTintConvention.FaceTintDiffuseCompression.Bc3)
+            Case FaceTintConvention.FaceTintDiffuseCompression.Bc7 : dxgiD = DirectXTextureConversionHelper.DxgiFormatBc7Unorm
+            Case FaceTintConvention.FaceTintDiffuseCompression.Uncompressed : dxgiD = DirectXTextureConversionHelper.DxgiFormatB8G8R8A8Unorm
+            Case Else : dxgiD = DirectXTextureConversionHelper.DxgiFormatBc3Unorm
+        End Select
+        Dim dxgiN As Integer = If(os IsNot Nothing AndAlso os.NormalCompression = FaceTintConvention.FaceTintNormalSpecularCompression.Uncompressed,
+                                  DirectXTextureConversionHelper.DxgiFormatB8G8R8A8Unorm, DirectXTextureConversionHelper.DxgiFormatBc5Unorm)
+        Dim dxgiS As Integer = If(os IsNot Nothing AndAlso os.SpecularCompression = FaceTintConvention.FaceTintNormalSpecularCompression.Uncompressed,
+                                  DirectXTextureConversionHelper.DxgiFormatB8G8R8A8Unorm, DirectXTextureConversionHelper.DxgiFormatBc5Unorm)
         ' CanonSuffix = the canonical (non-_2) suffix. The DDS files on disk always use Suffix
         ' (which carries _2 in DebugMode). The suffix embedded INTO the NIF depends on the consumer
         ' (willBePacked), because the two paths reconcile the _2 differently:
@@ -1379,7 +1373,7 @@ Public Module FaceGenBuilder
         ' ResultId = textura GL del pipeline (0 en release-CPU). W/H = tamaño del resultado (del pipeline GL
         ' si corrió, sino del resultado CPU; fallback w/h). En CPU-only pipelineResult es Nothing.
         Dim pr = pipelineResult
-        Dim slotPlan = New (Slot As Integer, ResultId As Integer, Dxgi As Integer, Suffix As String, CanonSuffix As String, W As Integer, H As Integer)() {
+        Dim slotPlan = New(Slot As Integer, ResultId As Integer, Dxgi As Integer, Suffix As String, CanonSuffix As String, W As Integer, H As Integer)() {
             (0, If(pr IsNot Nothing, pr.Diffuse.TextureId, 0), dxgiD, suffixD, "_d.dds", SlotDim(pr?.Diffuse, cpu?.Diffuse, w, True), SlotDim(pr?.Diffuse, cpu?.Diffuse, h, False)),
             (1, If(pr IsNot Nothing, pr.Normal.TextureId, 0), dxgiN, suffixN, "_msn.dds", SlotDim(pr?.Normal, cpu?.Normal, w, True), SlotDim(pr?.Normal, cpu?.Normal, h, False)),
             (7, If(pr IsNot Nothing, pr.Specular.TextureId, 0), dxgiS, suffixS, "_s.dds", SlotDim(pr?.Specular, cpu?.Specular, w, True), SlotDim(pr?.Specular, cpu?.Specular, h, False))
@@ -1471,13 +1465,12 @@ Public Module FaceGenBuilder
                 Continue For
             End Try
 
-            ' sandbox (DebugMode O SandboxOutput): dump del buffer final como TGA uncompressed al lado del
-            ' _2.dds para inspeccion lossless sin visor DDS (<formId>_d_2.tga junto a <formId>_d_2.dds).
-            ' Produccion (sandbox=False): no-op.
-            If sandbox Then
-                ' _2.dds (escrito arriba) + _2.tga = CPU (la salida always-on). Aca: _2.tga del CPU, y SOLO si
-                ' corrio el GL (DumpIntermediates) tambien _2b.dds + _2b.tga del GPU -> comparar CPU(_2) vs
-                ' GPU(_2b). En batch (sin GL) NO se escribe _2b -> sin doble-encode, solo el _2 del CPU.
+            ' TGA del CPU: copia UNCOMPRESSED (true-color) al lado del .dds, desde el buffer en memoria
+            ' (bgra) -> lossless aunque el .dds sea BCn. Gateado SOLO por WriteTGASandboxOutput
+            ' (independiente de DebugMode -> tambien en release). Nombre = el del CPU: {id}_d.tga en
+            ' release, {id}_d_2.tga en debug (sigue a entry.Suffix). SOLO si el output queda loose (no se
+            ' empaqueta a BA2): el .tga no entra al BA2 y quedaría huérfano. Ver OutputStaysLoose.
+            If WriteTGASandboxOutput AndAlso OutputStaysLoose(willBePacked) Then
                 Try
                     Dim tgaSuffix = Path.ChangeExtension(entry.Suffix, "tga")
                     Dim outTga = Path.Combine(outDir, $"{formIdLow:X8}{tgaSuffix}")
@@ -1489,22 +1482,32 @@ Public Module FaceGenBuilder
                     Dim typeL = ex.GetType().Name
                     Logger.LogLazy(Function() $"[FACEBAKE-FAIL] TGA dump slot={slotL} npcFormID=0x{npcFormID:X8}: {typeL}: {msgL}")
                 End Try
-                If gpuBgra IsNot Nothing Then
-                    Dim slotL2 = entry.Slot
-                    Try
-                        Dim suffix2b = entry.Suffix.Replace("_2.dds", "_2b.dds")
-                        Dim mips2b = CInt(Math.Floor(Math.Log(Math.Min(ddW, ddH), 2))) + 1
-                        Dim dds2b = DirectXTextureConversionHelper.Bgra32BytesToDdsBytes(
-                            ddW, ddH, gpuBgra, DirectXTextureConversionHelper.DxgiFormatB8G8R8A8Unorm,
-                            generateMipMaps:=True, generatedMipLevels:=mips2b)
-                        File.WriteAllBytes(Path.Combine(outDir, $"{formIdLow:X8}{suffix2b}"), dds2b)
+            End If
+
+            ' Output GPU (_2b): SOLO si corrio el GL (gpuBgra <> Nothing = WriteGPUSandboxOutput,
+            ' independiente de DebugMode). .dds con el MISMO formato que el CPU (entry.Dxgi: BCn en release,
+            ' B8G8R8A8 en debug) y NOMBRE SIEMPRE _2b ({id}_d_2b.dds, armado desde CanonSuffix para no
+            ' depender del _2 del Suffix). Su TGA (uncompressed, desde gpuBgra) si WriteTGASandboxOutput.
+            ' Sirve para diff directo CPU vs GPU al mismo formato. SOLO si el output queda loose (mismo
+            ' motivo que el TGA: el packer no mete el _2b -> quedaría huérfano en un BA2 save).
+            If gpuBgra IsNot Nothing AndAlso OutputStaysLoose(willBePacked) Then
+                Dim slotL2 = entry.Slot
+                Try
+                    Dim suffix2b = entry.CanonSuffix.Replace(".dds", "_2b.dds")
+                    Dim mips2b = CInt(Math.Floor(Math.Log(Math.Min(ddW, ddH), 2))) + 1
+                    Dim dds2b = DirectXTextureConversionHelper.Bgra32BytesToDdsBytes(
+                        width:=ddW, height:=ddH, bgraPixels:=gpuBgra,
+                        outputDxgiFormat:=entry.Dxgi,
+                        generateMipMaps:=True, generatedMipLevels:=mips2b)
+                    File.WriteAllBytes(Path.Combine(outDir, $"{formIdLow:X8}{suffix2b}"), dds2b)
+                    Logger.LogLazy(Function() $"[FACEBAKE-GPU] wrote '{formIdLow:X8}{suffix2b}' slot={slotL2}")
+                    If WriteTGASandboxOutput Then
                         FaceTintCompositor.WriteBgraToTga(Path.Combine(outDir, $"{formIdLow:X8}{Path.ChangeExtension(suffix2b, "tga")}"), gpuBgra, ddW, ddH)
-                        Logger.LogLazy(Function() $"[FACEBAKE-GPU] wrote _2b (dds+tga) slot={slotL2}")
-                    Catch ex As Exception
-                        Dim m = ex.Message
-                        Logger.LogLazy(Function() $"[FACEBAKE-GPU] _2b write failed slot={slotL2}: {m}")
-                    End Try
-                End If
+                    End If
+                Catch ex As Exception
+                    Dim m = ex.Message
+                    Logger.LogLazy(Function() $"[FACEBAKE-GPU] _2b write failed slot={slotL2}: {m}")
+                End Try
             End If
 
             Dim embeddedSuffix = If(willBePacked, entry.CanonSuffix, entry.Suffix)

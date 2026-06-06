@@ -30,12 +30,6 @@ Module Program
         Logger.Initialize(IO.Path.Combine(Application.StartupPath, "fo4lib.log"))
 #End If
 
-        ' Derivación FaceTint (POR AHORA): forzar el sufijo sandbox `_2` (+ TGA) AUN en Release. Permite
-        ' correr el batch en Release (Logger.Enabled=False -> sin overhead de LogLazy, CPU paralelo) y seguir
-        ' escribiendo `{id}_d_2.dds`/`.tga` al lado del CK para comparar, sin pisar `{id}_d.dds`. Corre fuera
-        ' del #If DEBUG (también en Release). Comentar esta línea para bakes de PRODUCCIÓN (escriben `_d.dds`).
-        FaceGenBuilder.SandboxOutput = True
-
         ' Plugin text encoding MUST be configured BEFORE any plugin is loaded — mirror of xEdit's
         ' order: xeInit configures wbEncodingTrans (from sLanguage) before TwbFile loads. The
         ' preflight below loads + scans all plugins; even though FULL/EDID parsing is lazy, doing

@@ -5,8 +5,11 @@
 ''' Persiste en Config_App (config.json). Lógica de tamaño:
 '''   - All (uniform): los 3 canales usan el tamaño Diffuse; Normal/Specular deshabilitados y siguen a D.
 '''   - Per layer: cada canal su propio tamaño; los 3 habilitados.
-''' Tamaño por canal: Inherit (MIP0 nativo, sin downgrade) o 512/1024/2048/4096/8192. Formato diffuse:
-''' BC3 (default) o BC7. N/S siempre BC5 (no editable). Toda la UI vive en el .Designer.vb.
+''' Tamaño por canal: Inherit (MIP0 nativo, sin downgrade) o 512/1024/2048/4096/8192.
+''' Formato por canal (misma sincronía All/Per-layer que el tamaño): Diffuse BC3(default)/BC7/Uncompressed,
+''' N/S BC5(default)/Uncompressed. En All, N/S siguen al Diffuse (Uncompressed si el Diffuse lo es, sino BC5).
+''' Tilde "Generate TGA": escribe un TGA uncompressed al lado de cada .dds. Botón "Revert to default" del tab
+''' Size = All + Inherit + BC3/BC5 + no TGA. Toda la UI vive en el .Designer.vb.
 ''' </summary>
 Public Class CharGenOptionsForm
 
@@ -19,7 +22,10 @@ Public Class CharGenOptionsForm
         ComboDiffuse.SelectedIndex = ResToIndex(c.Setting_FaceGenDiffuseResolution)
         ComboNormal.SelectedIndex = ResToIndex(c.Setting_FaceGenNormalResolution)
         ComboSpecular.SelectedIndex = ResToIndex(c.Setting_FaceGenSpecularResolution)
-        ComboFormat.SelectedIndex = If(c.Setting_FaceGenDiffuseCompression = FaceTintConvention.FaceTintDiffuseCompression.Bc7, 1, 0)
+        ComboFormat.SelectedIndex = CInt(c.Setting_FaceGenDiffuseCompression)      ' Bc3=0 / Bc7=1 / Uncompressed=2
+        ComboFormatN.SelectedIndex = CInt(c.Setting_FaceGenNormalCompression)      ' Bc5=0 / Uncompressed=1
+        ComboFormatS.SelectedIndex = CInt(c.Setting_FaceGenSpecularCompression)
+        CheckGenerateTga.Checked = c.Setting_FaceGenGenerateTga
         If c.Setting_FaceGenPerLayerResolution Then
             RadioPerLayer.Checked = True
         Else
@@ -221,19 +227,49 @@ Public Class CharGenOptionsForm
         Return CType(idx, FaceTintConvention.FaceTintChannelResolution)
     End Function
 
-    ''' <summary>Habilita/deshabilita N/S según el modo. En "All" los deshabilita y los hace seguir a D.</summary>
+    ''' <summary>Habilita/deshabilita N/S (tamaño Y formato) según el modo. En "All" los deshabilita y los
+    ''' hace seguir a D: el tamaño copia el índice del Diffuse; el formato deriva (Uncompressed si el Diffuse
+    ''' es Uncompressed, sino BC5) — misma sincronía que el tamaño.</summary>
     Private Sub UpdateEnabledState()
         Dim perLayer = RadioPerLayer.Checked
         ComboNormal.Enabled = perLayer
         ComboSpecular.Enabled = perLayer
+        ComboFormatN.Enabled = perLayer
+        ComboFormatS.Enabled = perLayer
         If Not perLayer Then
             ComboNormal.SelectedIndex = ComboDiffuse.SelectedIndex
             ComboSpecular.SelectedIndex = ComboDiffuse.SelectedIndex
+            Dim ns = NsFormatIndexFromDiffuse()
+            ComboFormatN.SelectedIndex = ns
+            ComboFormatS.SelectedIndex = ns
         End If
     End Sub
 
+    ''' <summary>Modo All: índice del combo N/S derivado del Diffuse — Uncompressed (1) si el Diffuse es
+    ''' Uncompressed (índice 2), sino BC5 (0).</summary>
+    Private Function NsFormatIndexFromDiffuse() As Integer
+        Return If(ComboFormat.SelectedIndex = 2, 1, 0)
+    End Function
+
     Private Sub RadioMode_CheckedChanged(sender As Object, e As EventArgs) Handles RadioAll.CheckedChanged, RadioPerLayer.CheckedChanged
         If _loading Then Return
+        UpdateEnabledState()
+    End Sub
+
+    ''' <summary>Defaults del tab Size: All + Inherit (los 3) + Diffuse BC3 + N/S BC5 + Generate TGA off
+    ''' (= los defaults del CÓDIGO/Config). En memoria; OK persiste, Cancel descarta. Independiente de los
+    ''' Revert de Conventions/Order (no toca esos tabs).</summary>
+    Private Sub ButtonResetSize_Click(sender As Object, e As EventArgs) Handles ButtonResetSize.Click
+        _loading = True
+        RadioAll.Checked = True
+        ComboDiffuse.SelectedIndex = 0      ' Inherit
+        ComboNormal.SelectedIndex = 0
+        ComboSpecular.SelectedIndex = 0
+        ComboFormat.SelectedIndex = 0       ' BC3
+        ComboFormatN.SelectedIndex = 0      ' BC5
+        ComboFormatS.SelectedIndex = 0      ' BC5
+        CheckGenerateTga.Checked = False
+        _loading = False
         UpdateEnabledState()
     End Sub
 
@@ -242,6 +278,16 @@ Public Class CharGenOptionsForm
         If RadioAll.Checked Then
             ComboNormal.SelectedIndex = ComboDiffuse.SelectedIndex
             ComboSpecular.SelectedIndex = ComboDiffuse.SelectedIndex
+        End If
+    End Sub
+
+    ''' <summary>En "All", el formato N/S sigue al Diffuse: Uncompressed si el Diffuse es Uncompressed, sino BC5.</summary>
+    Private Sub ComboFormat_SelectedIndexChanged(sender As Object, e As EventArgs) Handles ComboFormat.SelectedIndexChanged
+        If _loading Then Return
+        If RadioAll.Checked Then
+            Dim ns = NsFormatIndexFromDiffuse()
+            ComboFormatN.SelectedIndex = ns
+            ComboFormatS.SelectedIndex = ns
         End If
     End Sub
 
@@ -257,8 +303,17 @@ Public Class CharGenOptionsForm
             c.Setting_FaceGenNormalResolution = c.Setting_FaceGenDiffuseResolution
             c.Setting_FaceGenSpecularResolution = c.Setting_FaceGenDiffuseResolution
         End If
-        c.Setting_FaceGenDiffuseCompression = If(ComboFormat.SelectedIndex = 1,
-            FaceTintConvention.FaceTintDiffuseCompression.Bc7, FaceTintConvention.FaceTintDiffuseCompression.Bc3)
+        c.Setting_FaceGenDiffuseCompression = CType(Math.Max(0, ComboFormat.SelectedIndex), FaceTintConvention.FaceTintDiffuseCompression)
+        If RadioPerLayer.Checked Then
+            c.Setting_FaceGenNormalCompression = CType(Math.Max(0, ComboFormatN.SelectedIndex), FaceTintConvention.FaceTintNormalSpecularCompression)
+            c.Setting_FaceGenSpecularCompression = CType(Math.Max(0, ComboFormatS.SelectedIndex), FaceTintConvention.FaceTintNormalSpecularCompression)
+        Else
+            ' All: N/S siguen al Diffuse (Uncompressed si el Diffuse lo es, sino BC5).
+            Dim ns = CType(NsFormatIndexFromDiffuse(), FaceTintConvention.FaceTintNormalSpecularCompression)
+            c.Setting_FaceGenNormalCompression = ns
+            c.Setting_FaceGenSpecularCompression = ns
+        End If
+        c.Setting_FaceGenGenerateTga = CheckGenerateTga.Checked
 
         ' --- Tab "FaceTint Conventions": persistir la convención concreta por bucket. ---
         Dim s = c.Setting_FaceTintConvention

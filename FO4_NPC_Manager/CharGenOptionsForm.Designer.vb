@@ -34,6 +34,10 @@ Partial Class CharGenOptionsForm
         ComboSpecular = New ComboBox()
         LabelFormat = New Label()
         ComboFormat = New ComboBox()
+        ComboFormatN = New ComboBox()
+        ComboFormatS = New ComboBox()
+        CheckGenerateTga = New CheckBox()
+        ButtonResetSize = New Button()
         TabPageConv = New TabPage()
         GroupConvDiffuse = New GroupBox()
         LblDWork = New Label()
@@ -136,6 +140,7 @@ Partial Class CharGenOptionsForm
         ' TabPageSize
         ' 
         TabPageSize.Controls.Add(GroupBoxSize)
+        TabPageSize.Controls.Add(ButtonResetSize)
         TabPageSize.Location = New Point(4, 24)
         TabPageSize.Name = "TabPageSize"
         TabPageSize.Padding = New Padding(3)
@@ -156,9 +161,12 @@ Partial Class CharGenOptionsForm
         GroupBoxSize.Controls.Add(ComboNormal)
         GroupBoxSize.Controls.Add(LabelSpecular)
         GroupBoxSize.Controls.Add(ComboSpecular)
+        GroupBoxSize.Controls.Add(ComboFormatN)
+        GroupBoxSize.Controls.Add(ComboFormatS)
+        GroupBoxSize.Controls.Add(CheckGenerateTga)
         GroupBoxSize.Location = New Point(6, 6)
         GroupBoxSize.Name = "GroupBoxSize"
-        GroupBoxSize.Size = New Size(606, 170)
+        GroupBoxSize.Size = New Size(606, 200)
         GroupBoxSize.TabIndex = 0
         GroupBoxSize.TabStop = False
         GroupBoxSize.Text = "Texture size (per channel)"
@@ -245,17 +253,54 @@ Partial Class CharGenOptionsForm
         LabelFormat.Name = "LabelFormat"
         LabelFormat.Size = New Size(83, 15)
         LabelFormat.TabIndex = 1
-        LabelFormat.Text = "Diffuse format"
+        LabelFormat.Text = "Format"
         ' 
         ' ComboFormat
         ' 
         ComboFormat.DropDownStyle = ComboBoxStyle.DropDownList
-        ComboFormat.Items.AddRange(New Object() {"BC3 (default)", "BC7"})
+        ComboFormat.Items.AddRange(New Object() {"BC3 (default)", "BC7", "Uncompressed"})
         ComboFormat.Location = New Point(410, 55)
         ComboFormat.Name = "ComboFormat"
         ComboFormat.Size = New Size(190, 23)
         ComboFormat.TabIndex = 2
-        ' 
+        '
+        ' ComboFormatN
+        '
+        ComboFormatN.DropDownStyle = ComboBoxStyle.DropDownList
+        ComboFormatN.Items.AddRange(New Object() {"BC5 (default)", "Uncompressed"})
+        ComboFormatN.Location = New Point(410, 87)
+        ComboFormatN.Name = "ComboFormatN"
+        ComboFormatN.Size = New Size(190, 23)
+        ComboFormatN.TabIndex = 4
+        '
+        ' ComboFormatS
+        '
+        ComboFormatS.DropDownStyle = ComboBoxStyle.DropDownList
+        ComboFormatS.Items.AddRange(New Object() {"BC5 (default)", "Uncompressed"})
+        ComboFormatS.Location = New Point(410, 119)
+        ComboFormatS.Name = "ComboFormatS"
+        ComboFormatS.Size = New Size(190, 23)
+        ComboFormatS.TabIndex = 6
+        '
+        ' CheckGenerateTga
+        '
+        CheckGenerateTga.AutoSize = True
+        CheckGenerateTga.Location = New Point(12, 158)
+        CheckGenerateTga.Name = "CheckGenerateTga"
+        CheckGenerateTga.Size = New Size(200, 19)
+        CheckGenerateTga.TabIndex = 8
+        CheckGenerateTga.Text = "Generate TGA (uncompressed)"
+        CheckGenerateTga.UseVisualStyleBackColor = True
+        '
+        ' ButtonResetSize
+        '
+        ButtonResetSize.Location = New Point(456, 278)
+        ButtonResetSize.Name = "ButtonResetSize"
+        ButtonResetSize.Size = New Size(168, 26)
+        ButtonResetSize.TabIndex = 1
+        ButtonResetSize.Text = "Revert to default"
+        ButtonResetSize.UseVisualStyleBackColor = True
+        '
         ' TabPageConv
         ' 
         TabPageConv.Controls.Add(GroupConvDiffuse)
@@ -1065,6 +1110,10 @@ Partial Class CharGenOptionsForm
     Friend WithEvents ComboSpecular As System.Windows.Forms.ComboBox
     Friend WithEvents LabelFormat As System.Windows.Forms.Label
     Friend WithEvents ComboFormat As System.Windows.Forms.ComboBox
+    Friend WithEvents ComboFormatN As System.Windows.Forms.ComboBox
+    Friend WithEvents ComboFormatS As System.Windows.Forms.ComboBox
+    Friend WithEvents CheckGenerateTga As System.Windows.Forms.CheckBox
+    Friend WithEvents ButtonResetSize As System.Windows.Forms.Button
     Friend WithEvents GroupConvDiffuse As System.Windows.Forms.GroupBox
     Friend WithEvents LblDWork As System.Windows.Forms.Label
     Friend WithEvents ComboDWork As System.Windows.Forms.ComboBox

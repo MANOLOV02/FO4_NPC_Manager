@@ -15,7 +15,7 @@ Partial Class MainForm
     End Sub
 
     Private Sub InitializeComponent()
-        components = New System.ComponentModel.Container()
+        components = New ComponentModel.Container()
         TreeViewNpcsContextMenu = New ContextMenuStrip(components)
         MenuItemMarkChanged = New ToolStripMenuItem()
         MenuItemResetOverlay = New ToolStripMenuItem()
@@ -68,15 +68,19 @@ Partial Class MainForm
         ButtonCopyLook = New Button()
         ButtonPasteLook = New Button()
         SeparatorActions3 = New Label()
+        Label1 = New Label()
         ButtonSavePlugin = New Button()
         ButtonBuildCharGen = New Button()
         ButtonCharGenOptions = New Button()
+        Label2 = New Label()
+        Label3 = New Label()
         ButtonSaveSceneNif = New Button()
         PanelPreviewHost = New Panel()
         LabelStatus = New Label()
         StatusStrip1 = New StatusStrip()
         ToolStripStatusLabel1 = New ToolStripStatusLabel()
         ToolStripProgressBar1 = New ToolStripProgressBar()
+        TreeViewNpcsContextMenu.SuspendLayout()
         CType(SplitContainer1, ComponentModel.ISupportInitialize).BeginInit()
         SplitContainer1.Panel1.SuspendLayout()
         SplitContainer1.Panel2.SuspendLayout()
@@ -97,6 +101,36 @@ Partial Class MainForm
         PanelPreviewHost.SuspendLayout()
         StatusStrip1.SuspendLayout()
         SuspendLayout()
+        ' 
+        ' TreeViewNpcsContextMenu
+        ' 
+        TreeViewNpcsContextMenu.Items.AddRange(New ToolStripItem() {MenuItemMarkChanged, MenuItemResetOverlay, MenuItemSaveSelected, MenuItemBuildChargen})
+        TreeViewNpcsContextMenu.Name = "TreeViewNpcsContextMenu"
+        TreeViewNpcsContextMenu.Size = New Size(213, 92)
+        ' 
+        ' MenuItemMarkChanged
+        ' 
+        MenuItemMarkChanged.Name = "MenuItemMarkChanged"
+        MenuItemMarkChanged.Size = New Size(212, 22)
+        MenuItemMarkChanged.Text = "Mark as changed"
+        ' 
+        ' MenuItemResetOverlay
+        ' 
+        MenuItemResetOverlay.Name = "MenuItemResetOverlay"
+        MenuItemResetOverlay.Size = New Size(212, 22)
+        MenuItemResetOverlay.Text = "Reset (discard changes)"
+        ' 
+        ' MenuItemSaveSelected
+        ' 
+        MenuItemSaveSelected.Name = "MenuItemSaveSelected"
+        MenuItemSaveSelected.Size = New Size(212, 22)
+        MenuItemSaveSelected.Text = "Save Selected (ESP/ESM)..."
+        ' 
+        ' MenuItemBuildChargen
+        ' 
+        MenuItemBuildChargen.Name = "MenuItemBuildChargen"
+        MenuItemBuildChargen.Size = New Size(212, 22)
+        MenuItemBuildChargen.Text = "Build CharGen (loose)"
         ' 
         ' SplitContainer1
         ' 
@@ -175,26 +209,26 @@ Partial Class MainForm
         TextBoxSearch.PlaceholderText = "Filter NPCs..."
         TextBoxSearch.Size = New Size(508, 23)
         TextBoxSearch.TabIndex = 1
-        '
-        ' CheckBoxOnlyChanged
-        '
-        CheckBoxOnlyChanged.Anchor = AnchorStyles.Top Or AnchorStyles.Right
-        CheckBoxOnlyChanged.AutoSize = True
-        CheckBoxOnlyChanged.Location = New Point(575, 19)
-        CheckBoxOnlyChanged.Name = "CheckBoxOnlyChanged"
-        CheckBoxOnlyChanged.Size = New Size(122, 19)
-        CheckBoxOnlyChanged.TabIndex = 3
-        CheckBoxOnlyChanged.Text = "Only changed"
-        CheckBoxOnlyChanged.UseVisualStyleBackColor = True
-        '
+        ' 
         ' LabelSearch
-        '
+        ' 
         LabelSearch.AutoSize = True
         LabelSearch.Location = New Point(7, 20)
         LabelSearch.Name = "LabelSearch"
         LabelSearch.Size = New Size(45, 15)
         LabelSearch.TabIndex = 2
         LabelSearch.Text = "Search:"
+        ' 
+        ' CheckBoxOnlyChanged
+        ' 
+        CheckBoxOnlyChanged.Anchor = AnchorStyles.Top Or AnchorStyles.Right
+        CheckBoxOnlyChanged.AutoSize = True
+        CheckBoxOnlyChanged.Location = New Point(597, 19)
+        CheckBoxOnlyChanged.Name = "CheckBoxOnlyChanged"
+        CheckBoxOnlyChanged.Size = New Size(100, 19)
+        CheckBoxOnlyChanged.TabIndex = 3
+        CheckBoxOnlyChanged.Text = "Only changed"
+        CheckBoxOnlyChanged.UseVisualStyleBackColor = True
         ' 
         ' TreeViewNPCs
         ' 
@@ -221,10 +255,7 @@ Partial Class MainForm
         ' 
         TreeViewRecordDetails.BorderStyle = BorderStyle.None
         TreeViewRecordDetails.Dock = DockStyle.Fill
-        ' Segoe UI: fuente de sistema con font-linking CJK (Windows sustituye Malgun Gothic /
-        ' MS Gothic para coreano/japonés/chino automáticamente). Reemplaza a Cascadia Code, que
-        ' no tenía glifos CJK → mostraba tofu (□) en records con nombres coreanos.
-        TreeViewRecordDetails.Font = New Font("Segoe UI", 9.0F)
+        TreeViewRecordDetails.Font = New Font("Segoe UI", 9F)
         TreeViewRecordDetails.Location = New Point(0, 24)
         TreeViewRecordDetails.Name = "TreeViewRecordDetails"
         TreeViewRecordDetails.Size = New Size(700, 441)
@@ -555,9 +586,12 @@ Partial Class MainForm
         PanelActionsToolbar.Controls.Add(ButtonCopyLook)
         PanelActionsToolbar.Controls.Add(ButtonPasteLook)
         PanelActionsToolbar.Controls.Add(SeparatorActions3)
+        PanelActionsToolbar.Controls.Add(Label1)
         PanelActionsToolbar.Controls.Add(ButtonSavePlugin)
         PanelActionsToolbar.Controls.Add(ButtonBuildCharGen)
         PanelActionsToolbar.Controls.Add(ButtonCharGenOptions)
+        PanelActionsToolbar.Controls.Add(Label2)
+        PanelActionsToolbar.Controls.Add(Label3)
         PanelActionsToolbar.Controls.Add(ButtonSaveSceneNif)
         PanelActionsToolbar.Dock = DockStyle.Top
         PanelActionsToolbar.Location = New Point(11, 126)
@@ -720,11 +754,23 @@ Partial Class MainForm
         SeparatorActions3.Size = New Size(2, 24)
         SeparatorActions3.TabIndex = 12
         ' 
+        ' Label1
+        ' 
+        Label1.Anchor = AnchorStyles.None
+        Label1.AutoSize = True
+        Label1.Location = New Point(801, 8)
+        Label1.Margin = New Padding(3)
+        Label1.Name = "Label1"
+        Label1.Size = New Size(57, 15)
+        Label1.TabIndex = 15
+        Label1.Text = "Generate:"
+        Label1.TextAlign = ContentAlignment.MiddleLeft
+        ' 
         ' ButtonSavePlugin
         ' 
         ButtonSavePlugin.AutoSize = True
         ButtonSavePlugin.Enabled = False
-        ButtonSavePlugin.Location = New Point(800, 2)
+        ButtonSavePlugin.Location = New Point(863, 2)
         ButtonSavePlugin.Margin = New Padding(2)
         ButtonSavePlugin.MinimumSize = New Size(110, 28)
         ButtonSavePlugin.Name = "ButtonSavePlugin"
@@ -737,7 +783,7 @@ Partial Class MainForm
         ' 
         ButtonBuildCharGen.AutoSize = True
         ButtonBuildCharGen.Enabled = False
-        ButtonBuildCharGen.Location = New Point(914, 2)
+        ButtonBuildCharGen.Location = New Point(977, 2)
         ButtonBuildCharGen.Margin = New Padding(2)
         ButtonBuildCharGen.MinimumSize = New Size(110, 28)
         ButtonBuildCharGen.Name = "ButtonBuildCharGen"
@@ -745,10 +791,11 @@ Partial Class MainForm
         ButtonBuildCharGen.TabIndex = 2
         ButtonBuildCharGen.Text = "Build CharGen (loose)"
         ButtonBuildCharGen.UseVisualStyleBackColor = True
-        '
+        ' 
         ' ButtonCharGenOptions
-        '
+        ' 
         ButtonCharGenOptions.AutoSize = True
+        ButtonCharGenOptions.Location = New Point(2, 34)
         ButtonCharGenOptions.Margin = New Padding(2)
         ButtonCharGenOptions.MinimumSize = New Size(110, 28)
         ButtonCharGenOptions.Name = "ButtonCharGenOptions"
@@ -756,12 +803,33 @@ Partial Class MainForm
         ButtonCharGenOptions.TabIndex = 3
         ButtonCharGenOptions.Text = "CharGen Options"
         ButtonCharGenOptions.UseVisualStyleBackColor = True
-        '
+        ' 
+        ' Label2
+        ' 
+        Label2.BorderStyle = BorderStyle.Fixed3D
+        Label2.Location = New Point(132, 36)
+        Label2.Margin = New Padding(8, 4, 8, 4)
+        Label2.Name = "Label2"
+        Label2.Size = New Size(2, 24)
+        Label2.TabIndex = 16
+        ' 
+        ' Label3
+        ' 
+        Label3.Anchor = AnchorStyles.None
+        Label3.AutoSize = True
+        Label3.Location = New Point(145, 40)
+        Label3.Margin = New Padding(3)
+        Label3.Name = "Label3"
+        Label3.Size = New Size(40, 15)
+        Label3.TabIndex = 17
+        Label3.Text = "Extras:"
+        Label3.TextAlign = ContentAlignment.MiddleLeft
+        ' 
         ' ButtonSaveSceneNif
-        '
+        ' 
         ButtonSaveSceneNif.AutoSize = True
         ButtonSaveSceneNif.Enabled = False
-        ButtonSaveSceneNif.Location = New Point(2, 34)
+        ButtonSaveSceneNif.Location = New Point(190, 34)
         ButtonSaveSceneNif.Margin = New Padding(2)
         ButtonSaveSceneNif.MinimumSize = New Size(120, 28)
         ButtonSaveSceneNif.Name = "ButtonSaveSceneNif"
@@ -813,39 +881,9 @@ Partial Class MainForm
         ToolStripProgressBar1.Name = "ToolStripProgressBar1"
         ToolStripProgressBar1.Size = New Size(100, 16)
         ToolStripProgressBar1.Visible = False
-        '
-        ' TreeViewNpcsContextMenu
-        '
-        TreeViewNpcsContextMenu.Items.AddRange(New ToolStripItem() {MenuItemMarkChanged, MenuItemResetOverlay, New ToolStripSeparator(), MenuItemSaveSelected, MenuItemBuildChargen})
-        TreeViewNpcsContextMenu.Name = "TreeViewNpcsContextMenu"
-        TreeViewNpcsContextMenu.Size = New Size(220, 98)
-        '
-        ' MenuItemMarkChanged
-        '
-        MenuItemMarkChanged.Name = "MenuItemMarkChanged"
-        MenuItemMarkChanged.Size = New Size(219, 22)
-        MenuItemMarkChanged.Text = "Mark as changed"
-        '
-        ' MenuItemResetOverlay
-        '
-        MenuItemResetOverlay.Name = "MenuItemResetOverlay"
-        MenuItemResetOverlay.Size = New Size(219, 22)
-        MenuItemResetOverlay.Text = "Reset (discard changes)"
-        '
-        ' MenuItemSaveSelected
-        '
-        MenuItemSaveSelected.Name = "MenuItemSaveSelected"
-        MenuItemSaveSelected.Size = New Size(219, 22)
-        MenuItemSaveSelected.Text = "Save Selected (ESP/ESM)..."
-        '
-        ' MenuItemBuildChargen
-        '
-        MenuItemBuildChargen.Name = "MenuItemBuildChargen"
-        MenuItemBuildChargen.Size = New Size(219, 22)
-        MenuItemBuildChargen.Text = "Build CharGen (loose)"
-        '
+        ' 
         ' MainForm
-        '
+        ' 
         AutoScaleDimensions = New SizeF(7F, 15F)
         AutoScaleMode = AutoScaleMode.Font
         AutoScroll = True
@@ -857,6 +895,7 @@ Partial Class MainForm
         StartPosition = FormStartPosition.CenterScreen
         Text = "FO4 NPC Manager"
         WindowState = FormWindowState.Maximized
+        TreeViewNpcsContextMenu.ResumeLayout(False)
         SplitContainer1.Panel1.ResumeLayout(False)
         SplitContainer1.Panel2.ResumeLayout(False)
         CType(SplitContainer1, ComponentModel.ISupportInitialize).EndInit()
@@ -946,4 +985,7 @@ Partial Class MainForm
     Friend WithEvents CheckBoxBodyTri As CheckBox
     Friend WithEvents CheckBoxRenderGore As CheckBox
     Friend WithEvents ButtonLightRig As System.Windows.Forms.Button
+    Friend WithEvents Label1 As Label
+    Friend WithEvents Label2 As Label
+    Friend WithEvents Label3 As Label
 End Class

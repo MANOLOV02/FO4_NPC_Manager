@@ -13640,10 +13640,10 @@ Public Class MainForm
         Try
             ' willBePacked:=False — loose output stays standalone (no BA2 repack/rename), so the NIF
             ' must embed the actual on-disk texture suffix (carries _2 in DebugMode). See BuildCharGen.
-            ' CPU-only (sin GL) -> bake en thread de fondo; DebugMode O SandboxOutput (corren GL para el _2b
-            ' GPU de paridad) -> sync en el hilo UI (contexto GL).
+            ' WriteGPUSandboxOutput corre el GL (para el _2b) -> sync en el hilo UI (contexto GL),
+            ' INDEPENDIENTE de DebugMode. Sin ese flag (output CPU-only, sin GL) -> bake en thread de fondo.
             Dim fidL = npcFormID
-            If FaceGenBuilder.DebugMode OrElse FaceGenBuilder.SandboxOutput Then
+            If FaceGenBuilder.WriteGPUSandboxOutput Then
                 result = FaceGenBuilder.BuildCharGen(fidL, _pluginManager, _appliedPresets, _renderHost, AddressOf ApplyShapeMaterialOverrides, willBePacked:=False, lmSkinTemplateResolver:=AddressOf ResolveLmSkinTemplate)
             Else
                 result = Await Task.Run(Function() FaceGenBuilder.BuildCharGen(fidL, _pluginManager, _appliedPresets, _renderHost, AddressOf ApplyShapeMaterialOverrides, willBePacked:=False, lmSkinTemplateResolver:=AddressOf ResolveLmSkinTemplate))
@@ -13697,38 +13697,38 @@ Public Class MainForm
                     ' en el Finally (incluso si se cancela). Equivalente CPU del TintGpuCache persistente del GL.
                     FaceTintCpuCompositor.BeginBatchDecodeCache()
                     Try
-                    For i = 0 To total - 1
-                        If p.Cancelled Then Exit For
-                        Dim fid = formIDs(i)
-                        Dim npc As NPC_Data = Nothing
-                        Dim name = If(_npcByIdCache.TryGetValue(fid, npc) AndAlso npc IsNot Nothing, npc.ToString(), fid.ToString("X8"))
-                        p.SetProgress(i, total, $"Building {i + 1}/{total}: {name}")
-                        Await Task.Delay(1)   ' idle window so the bar/button repaint + Cancel processes
-                        If p.Cancelled Then Exit For
-                        Try
-                            ' Release (CharGen=CPU, sin GL) -> bake en thread de fondo (Await Task.Run): la
-                            ' UI repinta y Cancel responde DURANTE el bake, no solo entre NPCs. Secuencial
-                            ' (await uno a la vez) -> sin race. DebugMode O SandboxOutput usan GL (para el _2b
-                            ' GPU de paridad) -> sync en el hilo UI; si no, CPU en thread de fondo.
-                            Dim fidL = fid
-                            Dim r As FaceGenBuilder.BuildResult
-                            If FaceGenBuilder.DebugMode OrElse FaceGenBuilder.SandboxOutput Then
-                                r = FaceGenBuilder.BuildCharGen(fidL, _pluginManager, _appliedPresets, _renderHost, AddressOf ApplyShapeMaterialOverrides, willBePacked:=False, lmSkinTemplateResolver:=AddressOf ResolveLmSkinTemplate)
-                            Else
-                                r = Await Task.Run(Function() FaceGenBuilder.BuildCharGen(fidL, _pluginManager, _appliedPresets, _renderHost, AddressOf ApplyShapeMaterialOverrides, willBePacked:=False, lmSkinTemplateResolver:=AddressOf ResolveLmSkinTemplate))
-                            End If
-                            If r.Skipped Then
-                                skipped += 1
-                            ElseIf r.Success Then
-                                ok += 1
-                            Else
-                                failed.Add($"{name}: {r.Summary}")
-                            End If
-                        Catch ex As Exception
-                            Logger.LogLazy(Function() $"[BUILDCHARGEN-BATCH] EXCEPTION 0x{fid:X8} {ex.GetType().Name}: {ex.Message}")
-                            failed.Add($"{name}: {ex.Message}")
-                        End Try
-                    Next
+                        For i = 0 To total - 1
+                            If p.Cancelled Then Exit For
+                            Dim fid = formIDs(i)
+                            Dim npc As NPC_Data = Nothing
+                            Dim name = If(_npcByIdCache.TryGetValue(fid, npc) AndAlso npc IsNot Nothing, npc.ToString(), fid.ToString("X8"))
+                            p.SetProgress(i, total, $"Building {i + 1}/{total}: {name}")
+                            Await Task.Delay(1)   ' idle window so the bar/button repaint + Cancel processes
+                            If p.Cancelled Then Exit For
+                            Try
+                                ' WriteGPUSandboxOutput corre el GL (para el _2b) -> sync en el hilo UI (contexto
+                                ' GL), INDEPENDIENTE de DebugMode. Sin ese flag (output CPU-only, sin GL) -> bake
+                                ' en thread de fondo (Await Task.Run): la UI repinta y Cancel responde DURANTE el
+                                ' bake. Secuencial (await uno a la vez) -> sin race.
+                                Dim fidL = fid
+                                Dim r As FaceGenBuilder.BuildResult
+                                If FaceGenBuilder.WriteGPUSandboxOutput Then
+                                    r = FaceGenBuilder.BuildCharGen(fidL, _pluginManager, _appliedPresets, _renderHost, AddressOf ApplyShapeMaterialOverrides, willBePacked:=False, lmSkinTemplateResolver:=AddressOf ResolveLmSkinTemplate)
+                                Else
+                                    r = Await Task.Run(Function() FaceGenBuilder.BuildCharGen(fidL, _pluginManager, _appliedPresets, _renderHost, AddressOf ApplyShapeMaterialOverrides, willBePacked:=False, lmSkinTemplateResolver:=AddressOf ResolveLmSkinTemplate))
+                                End If
+                                If r.Skipped Then
+                                    skipped += 1
+                                ElseIf r.Success Then
+                                    ok += 1
+                                Else
+                                    failed.Add($"{name}: {r.Summary}")
+                                End If
+                            Catch ex As Exception
+                                Logger.LogLazy(Function() $"[BUILDCHARGEN-BATCH] EXCEPTION 0x{fid:X8} {ex.GetType().Name}: {ex.Message}")
+                                failed.Add($"{name}: {ex.Message}")
+                            End Try
+                        Next
                     Finally
                         FaceTintCpuCompositor.EndBatchDecodeCache()
                     End Try
@@ -14604,10 +14604,11 @@ Public Class MainForm
             ' names (NpcFaceGenPacker), so the NIF must embed canonical texture paths. When the BA2
             ' pack is skipped (loose-only mode, Ba2Version_FO4=0), canonical paths are STILL what the
             ' engine looks up at runtime — _2 suffix is only the disk filename, not the NIF reference.
-            ' Release (CharGen=CPU, sin GL) -> bake en thread de fondo (Await Task.Run); DebugMode (GL) ->
-            ' sync en el hilo UI (ya estamos en él tras el Yield). Secuencial -> sin race entre NPCs.
+            ' WriteGPUSandboxOutput corre el GL (para el _2b) -> sync en el hilo UI (contexto GL; ya estamos
+            ' en él tras el Yield), INDEPENDIENTE de DebugMode. Sin ese flag (output CPU-only, sin GL) -> bake
+            ' en thread de fondo (Await Task.Run). Secuencial -> sin race entre NPCs.
             Dim fidL = bakeFormID
-            If FaceGenBuilder.DebugMode Then
+            If FaceGenBuilder.WriteGPUSandboxOutput Then
                 bakeResult = FaceGenBuilder.BuildCharGen(fidL, _pluginManager, _appliedPresets,
                                                          _renderHost, AddressOf ApplyShapeMaterialOverrides,
                                                          willBePacked:=True, lmSkinTemplateResolver:=AddressOf ResolveLmSkinTemplate)

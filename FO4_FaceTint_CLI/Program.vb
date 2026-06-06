@@ -39,14 +39,14 @@ Module Program
     End Class
 
     ' TETI.Slot enum (xEdit wbDefinitionsFO4.pas:3465-3491) — nombre por valor, para --tints.
-    'Private ReadOnly SlotNames As String() = {
-    '    "ForeheadMask", "EyesMask", "NoseMask", "EarsMask", "CheeksMask", "MouthMask", "NeckMask",
-    '    "LipColor", "CheekColor", "Eyeliner", "EyeSocketUpper", "EyeSocketLower", "SkinTone", "Paint",
-    '    "LaughLines", "CheekColorLower", "Nose", "Chin", "Neck", "Forehead", "Dirt", "Scars",
-    '    "FaceDetail", "Brows", "Wrinkles", "Beards"}
-    'Private Function SlotName(s As Integer) As String
-    '    Return If(s >= 0 AndAlso s < SlotNames.Length, SlotNames(s), $"Slot{s}")
-    'End Function
+    Private ReadOnly SlotNames As String() = {
+        "ForeheadMask", "EyesMask", "NoseMask", "EarsMask", "CheeksMask", "MouthMask", "NeckMask",
+        "LipColor", "CheekColor", "Eyeliner", "EyeSocketUpper", "EyeSocketLower", "SkinTone", "Paint",
+        "LaughLines", "CheekColorLower", "Nose", "Chin", "Neck", "Forehead", "Dirt", "Scars",
+        "FaceDetail", "Brows", "Wrinkles", "Beards"}
+    Private Function SlotName(s As Integer) As String
+        Return If(s >= 0 AndAlso s < SlotNames.Length, SlotNames(s), $"Slot{s}")
+    End Function
 
     ' BlendOp (FaceTint): 0=Replace 1=Multiply 2=Overlay 3=SoftLight 4=HardLight.
     Private Function BlendName(b As UInteger) As String
