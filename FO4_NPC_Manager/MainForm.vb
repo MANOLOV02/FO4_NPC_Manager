@@ -12598,6 +12598,17 @@ Public Class MainForm
             ' could be loaded, the preview would render the template HDPTs, but exporting to ESP
             ' would emit raw NPC PNAM (no headRear swap).
             NpcRecordOverlay.MaterializeLmTemplateBundleToPreset(toApply, npc.IsFemale, AddressOf ResolveLmSkinTemplate)
+            ' Normalizar el TemplateColorIndex de TODOS los layers re-derivándolo desde el Color — misma
+            ' resolución que Copy/Paste hace en BuildPresetFromState. El load de LooksMenu toma el "ColorID"
+            ' crudo del JSON, que no siempre coincide con el TemplateIndex del RACE; sin esto el resolver del
+            ' render (match por TemplateIndex) no encuentra la entrada y el layer cae a su color crudo
+            ' (skin-tone slot-12 -> pálido/blanco). Idempotente; no-op en no-Palette.
+            Dim raceForTintNorm As RACE_Data = Nothing
+            Dim raceRecForTintNorm = _pluginManager.GetRecord(npc.RaceFormID)
+            If raceRecForTintNorm IsNot Nothing AndAlso raceRecForTintNorm.Header.Signature = "RACE" Then
+                raceForTintNorm = ParseRaceCached(raceRecForTintNorm)
+            End If
+            NormalizePresetTintTemplateColorIds(toApply, raceForTintNorm, npc.IsFemale)
             _appliedPresets(npcFormID) = toApply
         End If
         Dim previewVersion = Interlocked.Increment(_previewRequestVersion)
@@ -13168,7 +13179,7 @@ Public Class MainForm
                        Return New With {.Layer = tl, .Rank = r, originalIdx}
                    End Function).
             OrderBy(Function(x) x.Rank).
-            ThenBy(Function(x) x.OriginalIdx).
+            ThenBy(Function(x) x.originalIdx).
             ToList()
 
         For Each entry In layersWithRank
@@ -13221,6 +13232,20 @@ Public Class MainForm
         If opt Is Nothing OrElse opt.TemplateColors Is Nothing OrElse opt.TemplateColors.Count = 0 Then Return
 
         layer.TemplateColorIndex = FaceTintInputBuilder.ResolveTemplateColorIndex(layer.Color, layer.Value / 100.0F, opt, _pluginManager)
+    End Sub
+
+    ''' <summary>Normaliza el TemplateColorIndex de CADA Palette layer del preset re-derivándolo desde su
+    ''' Color (vía <see cref="ResolveTemplateColorIdToAbsolute"/>), idéntico a lo que Copy/Paste hace en
+    ''' BuildPresetFromState. Necesario en el load de LooksMenu: LooksmenuLoader toma el "ColorID" crudo del
+    ''' JSON, que NO siempre coincide con el TemplateIndex del RACE — y el resolver del render
+    ''' (FaceTintInputBuilder, match por TemplateIndex) entonces no matchea y el layer cae a su color crudo
+    ''' (el skin-tone slot-12 -> pálido/blanco). Idempotente (re-deriva del Color, que no toca); no-op en
+    ''' layers no-Palette (Discriminator&lt;&gt;1) y si falta race.</summary>
+    Private Sub NormalizePresetTintTemplateColorIds(preset As LooksmenuLoader.LooksmenuPreset, race As RACE_Data, isFemale As Boolean)
+        If preset Is Nothing OrElse race Is Nothing OrElse preset.FaceTintLayers Is Nothing Then Return
+        For Each tl In preset.FaceTintLayers
+            ResolveTemplateColorIdToAbsolute(tl, race, isFemale)
+        Next
     End Sub
 
     ''' <summary>Compute body-edit availability against the currently rendered NPC and update
