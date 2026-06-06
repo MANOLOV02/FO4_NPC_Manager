@@ -272,7 +272,7 @@ Public Module NpcRecordOverlay
         ' QNAM (line 122-127) untouched.
         If raceRec IsNot Nothing AndAlso raceRec.Header.Signature = "RACE" Then
             Dim raceParsed = RecordParsers.ParseRACE(raceRec, pluginManager)
-            Dim derivedSkinTone = DeriveSkinToneQnam(shadow, raceParsed, raw.IsFemale)
+            Dim derivedSkinTone = DeriveSkinToneQnam(shadow, raceParsed, raw.IsFemale, pluginManager)
             Dim tintCountLog = shadow.FaceTintLayers.Count
             Dim hasDerivedLog = derivedSkinTone.HasValue
             If derivedSkinTone.HasValue Then
@@ -311,11 +311,19 @@ Public Module NpcRecordOverlay
     ''' truth shared by render (preview) and save (NpcRecordOverlay) so the two never drift.
     ''' <para>The Slot enum value is a schema-defined field name (xEdit wbDefinitionsFO4.pas:3478),
     ''' NOT a hardcoded magic number — this is the canonical lookup for "skin tint layer".</para></summary>
-    Public Function DeriveSkinToneQnam(npc As NPC_Data, race As RACE_Data, isFemale As Boolean) As Nullable(Of Color)
-        If npc Is Nothing OrElse race Is Nothing OrElse npc.FaceTintLayers Is Nothing Then Return Nothing
-        If npc.FaceTintLayers.Count = 0 Then Return Nothing
+    Public Function DeriveSkinToneQnam(npc As NPC_Data, race As RACE_Data, isFemale As Boolean, pluginManager As PluginManager) As Nullable(Of Color)
+        If npc Is Nothing OrElse race Is Nothing Then Return Nothing
 
-        For Each tl In npc.FaceTintLayers
+        ' Iterar las capas MERGED (autoradas + defaults HEREDADOS de RACE), NO solo npc.FaceTintLayers.
+        ' Asi el skin-tone HEREDADO (slot-12 que el NPC no autora) tambien resuelve -> el render (uniform
+        ' albedo*=tintColor) y el save lo toman SIN tener que materializarlo en Face Edit. El heredado se
+        ' comporta identico a uno autorado: MergeTintLayersWithRaceDefaults ya pone Color=CLFM y
+        ' Value=Alpha*100 del TemplateColor por el indice TTED. Ver [[arch_facetint_race_default_inheritance]].
+        Dim safeNpc As IList(Of NPC_FaceTintLayerData) = If(npc.FaceTintLayers, CType(New List(Of NPC_FaceTintLayerData)(), IList(Of NPC_FaceTintLayerData)))
+        Dim merged = FaceTintInputBuilder.MergeTintLayersWithRaceDefaults(safeNpc, race, isFemale, pluginManager)
+
+        For Each m In merged
+            Dim tl = m.Layer
             Dim opt = race.FindTintOption(tl.Index, isFemale)
             If opt Is Nothing Then Continue For
             If opt.Slot <> CUShort(TintSlot.SkinTone) Then Continue For

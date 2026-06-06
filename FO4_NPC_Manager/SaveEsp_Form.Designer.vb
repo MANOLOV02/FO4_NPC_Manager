@@ -1,4 +1,4 @@
-<Global.Microsoft.VisualBasic.CompilerServices.DesignerGenerated()>
+﻿<Global.Microsoft.VisualBasic.CompilerServices.DesignerGenerated()>
 Partial Class SaveEsp_Form
     Inherits System.Windows.Forms.Form
 
@@ -19,18 +19,26 @@ Partial Class SaveEsp_Form
         PanelScope = New Panel()
         RadioScopeAllChanged = New RadioButton()
         RadioScopeSelected = New RadioButton()
+        GroupBoxTarget = New GroupBox()
         RadioButtonExisting = New RadioButton()
         ListBoxExisting = New ListBox()
         RadioButtonNew = New RadioButton()
         LabelNewName = New Label()
         TextBoxNewName = New TextBox()
         LabelExtension = New Label()
-        CheckBoxMarkAsMaster = New CheckBox()
         CheckBoxLightMaster = New CheckBox()
+        CheckBoxMarkAsMaster = New CheckBox()
+        GroupBoxSave = New GroupBox()
         CheckBoxGenerateChargen = New CheckBox()
         CheckBoxWriteBssliders = New CheckBox()
         CheckBoxEmitBodyGen = New CheckBox()
         CheckBoxSaveNewOutfits = New CheckBox()
+        GroupBoxEncoding = New GroupBox()
+        LabelEncoding = New Label()
+        ComboBoxEncoding = New ComboBox()
+        LabelEncodingHint = New Label()
+        LabelBa2Version = New Label()
+        ComboBoxBa2Version = New ComboBox()
         GroupBoxLvlList = New GroupBox()
         CheckBoxAddToLvlList = New CheckBox()
         RadioLvlNew = New RadioButton()
@@ -38,405 +46,394 @@ Partial Class SaveEsp_Form
         LabelLvlNewHint = New Label()
         RadioLvlExisting = New RadioButton()
         ComboBoxLvlExisting = New ComboBox()
-        LabelEncoding = New Label()
-        ComboBoxEncoding = New ComboBox()
-        LabelEncodingHint = New Label()
-        LabelBa2Version = New Label()
-        ComboBoxBa2Version = New ComboBox()
+        CheckBoxLvlNoDup = New CheckBox()
         LabelWarning = New Label()
-        PanelProgress = New Panel()
-        LabelProgressStage = New Label()
-        LabelProgressDetail = New Label()
-        ProgressBarMain = New ProgressBar()
         ButtonOk = New Button()
         ButtonCancel = New Button()
+        PanelScope.SuspendLayout()
+        GroupBoxTarget.SuspendLayout()
+        GroupBoxSave.SuspendLayout()
+        GroupBoxEncoding.SuspendLayout()
+        GroupBoxLvlList.SuspendLayout()
         SuspendLayout()
-        '
+        ' 
         ' LabelHeader
-        '
+        ' 
         LabelHeader.AutoSize = True
-        LabelHeader.Location = New Drawing.Point(12, 13)
+        LabelHeader.Location = New Point(12, 14)
         LabelHeader.Name = "LabelHeader"
+        LabelHeader.Size = New Size(42, 15)
         LabelHeader.TabIndex = 0
-        LabelHeader.Text = "Save:"
-        '
-        ' PanelScope  (own container so the scope radios form a group SEPARATE from Existing/New)
-        '
+        LabelHeader.Text = "Scope:"
+        ' 
+        ' PanelScope
+        ' 
         PanelScope.Controls.Add(RadioScopeAllChanged)
         PanelScope.Controls.Add(RadioScopeSelected)
-        PanelScope.Location = New Drawing.Point(50, 7)
+        PanelScope.Location = New Point(64, 8)
         PanelScope.Name = "PanelScope"
-        PanelScope.Size = New Drawing.Size(482, 26)
-        PanelScope.TabIndex = 23
-        '
+        PanelScope.Size = New Size(484, 26)
+        PanelScope.TabIndex = 1
+        ' 
         ' RadioScopeAllChanged
-        '
+        ' 
         RadioScopeAllChanged.AutoSize = True
         RadioScopeAllChanged.Checked = True
-        RadioScopeAllChanged.Location = New Drawing.Point(6, 4)
+        RadioScopeAllChanged.Location = New Point(6, 4)
         RadioScopeAllChanged.Name = "RadioScopeAllChanged"
+        RadioScopeAllChanged.Size = New Size(88, 19)
         RadioScopeAllChanged.TabIndex = 0
         RadioScopeAllChanged.TabStop = True
         RadioScopeAllChanged.Text = "All changed"
         RadioScopeAllChanged.UseVisualStyleBackColor = True
-        '
+        ' 
         ' RadioScopeSelected
-        '
+        ' 
         RadioScopeSelected.AutoSize = True
-        RadioScopeSelected.Location = New Drawing.Point(150, 4)
+        RadioScopeSelected.Location = New Point(160, 4)
         RadioScopeSelected.Name = "RadioScopeSelected"
+        RadioScopeSelected.Size = New Size(95, 19)
         RadioScopeSelected.TabIndex = 1
         RadioScopeSelected.Text = "Selected only"
         RadioScopeSelected.UseVisualStyleBackColor = True
-        '
+        ' 
+        ' GroupBoxTarget
+        ' 
+        GroupBoxTarget.Controls.Add(RadioButtonExisting)
+        GroupBoxTarget.Controls.Add(ListBoxExisting)
+        GroupBoxTarget.Controls.Add(RadioButtonNew)
+        GroupBoxTarget.Controls.Add(LabelNewName)
+        GroupBoxTarget.Controls.Add(TextBoxNewName)
+        GroupBoxTarget.Controls.Add(LabelExtension)
+        GroupBoxTarget.Controls.Add(CheckBoxLightMaster)
+        GroupBoxTarget.Controls.Add(CheckBoxMarkAsMaster)
+        GroupBoxTarget.Location = New Point(12, 42)
+        GroupBoxTarget.Name = "GroupBoxTarget"
+        GroupBoxTarget.Size = New Size(536, 240)
+        GroupBoxTarget.TabIndex = 2
+        GroupBoxTarget.TabStop = False
+        GroupBoxTarget.Text = "Target plugin"
+        ' 
         ' RadioButtonExisting
-        '
+        ' 
         RadioButtonExisting.AutoSize = True
-        RadioButtonExisting.Location = New Drawing.Point(12, 50)
+        RadioButtonExisting.Location = New Point(12, 22)
         RadioButtonExisting.Name = "RadioButtonExisting"
-        RadioButtonExisting.Size = New Drawing.Size(180, 19)
-        RadioButtonExisting.TabIndex = 1
+        RadioButtonExisting.Size = New Size(143, 19)
+        RadioButtonExisting.TabIndex = 0
         RadioButtonExisting.Text = "Update existing plugin"
         RadioButtonExisting.UseVisualStyleBackColor = True
-        '
+        ' 
         ' ListBoxExisting
-        '
-        ListBoxExisting.Anchor = AnchorStyles.Top Or AnchorStyles.Left Or AnchorStyles.Right
+        ' 
         ListBoxExisting.IntegralHeight = False
-        ListBoxExisting.Location = New Drawing.Point(30, 75)
+        ListBoxExisting.ItemHeight = 15
+        ListBoxExisting.Location = New Point(30, 46)
         ListBoxExisting.Name = "ListBoxExisting"
-        ListBoxExisting.Size = New Drawing.Size(502, 130)
-        ListBoxExisting.TabIndex = 2
-        '
+        ListBoxExisting.Size = New Size(494, 96)
+        ListBoxExisting.TabIndex = 1
+        ' 
         ' RadioButtonNew
-        '
+        ' 
         RadioButtonNew.AutoSize = True
         RadioButtonNew.Checked = True
-        RadioButtonNew.Location = New Drawing.Point(12, 215)
+        RadioButtonNew.Location = New Point(12, 150)
         RadioButtonNew.Name = "RadioButtonNew"
-        RadioButtonNew.Size = New Drawing.Size(150, 19)
-        RadioButtonNew.TabIndex = 3
+        RadioButtonNew.Size = New Size(121, 19)
+        RadioButtonNew.TabIndex = 2
+        RadioButtonNew.TabStop = True
         RadioButtonNew.Text = "Create new plugin"
         RadioButtonNew.UseVisualStyleBackColor = True
-        '
+        ' 
         ' LabelNewName
-        '
+        ' 
         LabelNewName.AutoSize = True
-        LabelNewName.Location = New Drawing.Point(30, 244)
+        LabelNewName.Location = New Point(30, 182)
         LabelNewName.Name = "LabelNewName"
-        LabelNewName.Size = New Drawing.Size(40, 15)
-        LabelNewName.TabIndex = 4
+        LabelNewName.Size = New Size(42, 15)
+        LabelNewName.TabIndex = 3
         LabelNewName.Text = "Name:"
-        '
+        ' 
         ' TextBoxNewName
-        '
-        TextBoxNewName.Anchor = AnchorStyles.Top Or AnchorStyles.Left Or AnchorStyles.Right
-        TextBoxNewName.Location = New Drawing.Point(76, 241)
+        ' 
+        TextBoxNewName.Location = New Point(140, 179)
         TextBoxNewName.Name = "TextBoxNewName"
-        TextBoxNewName.Size = New Drawing.Size(380, 23)
-        TextBoxNewName.TabIndex = 5
+        TextBoxNewName.Size = New Size(300, 23)
+        TextBoxNewName.TabIndex = 4
         TextBoxNewName.Text = "NPC_Manager"
-        '
+        ' 
         ' LabelExtension
-        '
+        ' 
         LabelExtension.AutoSize = True
         LabelExtension.ForeColor = SystemColors.GrayText
-        LabelExtension.Location = New Drawing.Point(462, 244)
+        LabelExtension.Location = New Point(446, 182)
         LabelExtension.Name = "LabelExtension"
-        LabelExtension.Size = New Drawing.Size(28, 15)
-        LabelExtension.TabIndex = 6
+        LabelExtension.Size = New Size(28, 15)
+        LabelExtension.TabIndex = 5
         LabelExtension.Text = ".esp"
-        '
-        ' CheckBoxMarkAsMaster
-        '
-        CheckBoxMarkAsMaster.AutoSize = True
-        CheckBoxMarkAsMaster.Checked = False
-        CheckBoxMarkAsMaster.CheckState = CheckState.Unchecked
-        CheckBoxMarkAsMaster.Location = New Drawing.Point(12, 280)
-        CheckBoxMarkAsMaster.Name = "CheckBoxMarkAsMaster"
-        CheckBoxMarkAsMaster.Size = New Drawing.Size(280, 19)
-        CheckBoxMarkAsMaster.TabIndex = 7
-        CheckBoxMarkAsMaster.Text = "Mark as master (ESM flag)"
-        CheckBoxMarkAsMaster.UseVisualStyleBackColor = True
-        '
+        ' 
         ' CheckBoxLightMaster
-        '
+        ' 
         CheckBoxLightMaster.AutoSize = True
         CheckBoxLightMaster.Checked = True
         CheckBoxLightMaster.CheckState = CheckState.Checked
-        CheckBoxLightMaster.Location = New Drawing.Point(12, 305)
+        CheckBoxLightMaster.Location = New Point(30, 210)
         CheckBoxLightMaster.Name = "CheckBoxLightMaster"
-        CheckBoxLightMaster.Size = New Drawing.Size(280, 19)
-        CheckBoxLightMaster.TabIndex = 8
+        CheckBoxLightMaster.Size = New Size(105, 19)
+        CheckBoxLightMaster.TabIndex = 6
         CheckBoxLightMaster.Text = "Light (ESL flag)"
         CheckBoxLightMaster.UseVisualStyleBackColor = True
-        '
+        ' 
+        ' CheckBoxMarkAsMaster
+        ' 
+        CheckBoxMarkAsMaster.AutoSize = True
+        CheckBoxMarkAsMaster.Location = New Point(190, 210)
+        CheckBoxMarkAsMaster.Name = "CheckBoxMarkAsMaster"
+        CheckBoxMarkAsMaster.Size = New Size(163, 19)
+        CheckBoxMarkAsMaster.TabIndex = 7
+        CheckBoxMarkAsMaster.Text = "Mark as master (ESM flag)"
+        CheckBoxMarkAsMaster.UseVisualStyleBackColor = True
+        ' 
+        ' GroupBoxSave
+        ' 
+        GroupBoxSave.Controls.Add(CheckBoxGenerateChargen)
+        GroupBoxSave.Controls.Add(CheckBoxWriteBssliders)
+        GroupBoxSave.Controls.Add(CheckBoxEmitBodyGen)
+        GroupBoxSave.Controls.Add(CheckBoxSaveNewOutfits)
+        GroupBoxSave.Location = New Point(12, 290)
+        GroupBoxSave.Name = "GroupBoxSave"
+        GroupBoxSave.Size = New Size(536, 130)
+        GroupBoxSave.TabIndex = 3
+        GroupBoxSave.TabStop = False
+        GroupBoxSave.Text = "What to save"
+        ' 
         ' CheckBoxGenerateChargen
-        '
+        ' 
         CheckBoxGenerateChargen.AutoSize = True
         CheckBoxGenerateChargen.Checked = True
         CheckBoxGenerateChargen.CheckState = CheckState.Checked
-        CheckBoxGenerateChargen.Location = New Drawing.Point(12, 330)
+        CheckBoxGenerateChargen.Location = New Point(12, 24)
         CheckBoxGenerateChargen.Name = "CheckBoxGenerateChargen"
-        CheckBoxGenerateChargen.Size = New Drawing.Size(360, 19)
-        CheckBoxGenerateChargen.TabIndex = 9
-        CheckBoxGenerateChargen.Text = "Bake CharGen (NIF + textures) → BA2"
+        CheckBoxGenerateChargen.Size = New Size(268, 19)
+        CheckBoxGenerateChargen.TabIndex = 0
+        CheckBoxGenerateChargen.Text = "Bake CharGen (NIF + textures) → BA2 / Looses"
         CheckBoxGenerateChargen.UseVisualStyleBackColor = True
-        '
+        ' 
         ' CheckBoxWriteBssliders
-        '
+        ' 
         CheckBoxWriteBssliders.AutoSize = True
         CheckBoxWriteBssliders.Checked = True
         CheckBoxWriteBssliders.CheckState = CheckState.Checked
-        CheckBoxWriteBssliders.Location = New Drawing.Point(12, 355)
+        CheckBoxWriteBssliders.Location = New Point(12, 50)
         CheckBoxWriteBssliders.Name = "CheckBoxWriteBssliders"
-        CheckBoxWriteBssliders.Size = New Drawing.Size(480, 19)
-        CheckBoxWriteBssliders.TabIndex = 10
+        CheckBoxWriteBssliders.Size = New Size(256, 19)
+        CheckBoxWriteBssliders.TabIndex = 1
         CheckBoxWriteBssliders.Text = "Save BodyMorphs + Skin sidecar (.bssliders)"
         CheckBoxWriteBssliders.UseVisualStyleBackColor = True
-        '
+        ' 
         ' CheckBoxEmitBodyGen
-        '
+        ' 
         CheckBoxEmitBodyGen.AutoSize = True
-        CheckBoxEmitBodyGen.Checked = False
-        CheckBoxEmitBodyGen.CheckState = CheckState.Unchecked
-        CheckBoxEmitBodyGen.Location = New Drawing.Point(12, 380)
+        CheckBoxEmitBodyGen.Location = New Point(12, 76)
         CheckBoxEmitBodyGen.Name = "CheckBoxEmitBodyGen"
-        CheckBoxEmitBodyGen.Size = New Drawing.Size(520, 19)
-        CheckBoxEmitBodyGen.TabIndex = 11
+        CheckBoxEmitBodyGen.Size = New Size(296, 19)
+        CheckBoxEmitBodyGen.TabIndex = 2
         CheckBoxEmitBodyGen.Text = "Emit BodyGen .ini (sliders on first load, new games)"
         CheckBoxEmitBodyGen.UseVisualStyleBackColor = True
-        '
+        ' 
         ' CheckBoxSaveNewOutfits
-        '
+        ' 
         CheckBoxSaveNewOutfits.AutoSize = True
-        CheckBoxSaveNewOutfits.Checked = False
-        CheckBoxSaveNewOutfits.CheckState = CheckState.Unchecked
-        CheckBoxSaveNewOutfits.Location = New Drawing.Point(12, 405)
+        CheckBoxSaveNewOutfits.Location = New Point(12, 102)
         CheckBoxSaveNewOutfits.Name = "CheckBoxSaveNewOutfits"
-        CheckBoxSaveNewOutfits.Size = New Drawing.Size(520, 19)
-        CheckBoxSaveNewOutfits.TabIndex = 21
-        CheckBoxSaveNewOutfits.Text = "Save new outfits (Create tab) as OTFT records"
+        CheckBoxSaveNewOutfits.Size = New Size(112, 19)
+        CheckBoxSaveNewOutfits.TabIndex = 3
+        CheckBoxSaveNewOutfits.Text = "Save new outfits"
         CheckBoxSaveNewOutfits.UseVisualStyleBackColor = True
-        '
-        ' GroupBoxLvlList  (add saved NPCs to a Leveled NPC list — LVLN)
-        '
+        ' 
+        ' GroupBoxEncoding
+        ' 
+        GroupBoxEncoding.Controls.Add(LabelEncoding)
+        GroupBoxEncoding.Controls.Add(ComboBoxEncoding)
+        GroupBoxEncoding.Controls.Add(LabelEncodingHint)
+        GroupBoxEncoding.Controls.Add(LabelBa2Version)
+        GroupBoxEncoding.Controls.Add(ComboBoxBa2Version)
+        GroupBoxEncoding.Location = New Point(12, 428)
+        GroupBoxEncoding.Name = "GroupBoxEncoding"
+        GroupBoxEncoding.Size = New Size(536, 88)
+        GroupBoxEncoding.TabIndex = 4
+        GroupBoxEncoding.TabStop = False
+        GroupBoxEncoding.Text = "Encoding && archive"
+        ' 
+        ' LabelEncoding
+        ' 
+        LabelEncoding.AutoSize = True
+        LabelEncoding.Location = New Point(12, 26)
+        LabelEncoding.Name = "LabelEncoding"
+        LabelEncoding.Size = New Size(119, 15)
+        LabelEncoding.TabIndex = 0
+        LabelEncoding.Text = "Plugin text encoding:"
+        ' 
+        ' ComboBoxEncoding
+        ' 
+        ComboBoxEncoding.DropDownStyle = ComboBoxStyle.DropDownList
+        ComboBoxEncoding.Location = New Point(140, 23)
+        ComboBoxEncoding.Name = "ComboBoxEncoding"
+        ComboBoxEncoding.Size = New Size(300, 23)
+        ComboBoxEncoding.TabIndex = 1
+        ' 
+        ' LabelEncodingHint
+        ' 
+        LabelEncodingHint.AutoSize = True
+        LabelEncodingHint.ForeColor = SystemColors.GrayText
+        LabelEncodingHint.Location = New Point(446, 26)
+        LabelEncodingHint.Name = "LabelEncodingHint"
+        LabelEncodingHint.Size = New Size(0, 15)
+        LabelEncodingHint.TabIndex = 2
+        ' 
+        ' LabelBa2Version
+        ' 
+        LabelBa2Version.AutoSize = True
+        LabelBa2Version.Location = New Point(12, 55)
+        LabelBa2Version.Name = "LabelBa2Version"
+        LabelBa2Version.Size = New Size(104, 15)
+        LabelBa2Version.TabIndex = 3
+        LabelBa2Version.Text = "BA2 version (FO4):"
+        ' 
+        ' ComboBoxBa2Version
+        ' 
+        ComboBoxBa2Version.DropDownStyle = ComboBoxStyle.DropDownList
+        ComboBoxBa2Version.Location = New Point(140, 52)
+        ComboBoxBa2Version.Name = "ComboBoxBa2Version"
+        ComboBoxBa2Version.Size = New Size(300, 23)
+        ComboBoxBa2Version.TabIndex = 4
+        ' 
+        ' GroupBoxLvlList
+        ' 
         GroupBoxLvlList.Controls.Add(CheckBoxAddToLvlList)
         GroupBoxLvlList.Controls.Add(RadioLvlNew)
         GroupBoxLvlList.Controls.Add(TextBoxLvlNewName)
         GroupBoxLvlList.Controls.Add(LabelLvlNewHint)
         GroupBoxLvlList.Controls.Add(RadioLvlExisting)
         GroupBoxLvlList.Controls.Add(ComboBoxLvlExisting)
-        GroupBoxLvlList.Location = New Drawing.Point(12, 430)
+        GroupBoxLvlList.Controls.Add(CheckBoxLvlNoDup)
+        GroupBoxLvlList.Location = New Point(12, 524)
         GroupBoxLvlList.Name = "GroupBoxLvlList"
-        GroupBoxLvlList.Size = New Drawing.Size(520, 96)
-        GroupBoxLvlList.TabIndex = 22
+        GroupBoxLvlList.Size = New Size(536, 124)
+        GroupBoxLvlList.TabIndex = 5
         GroupBoxLvlList.TabStop = False
         GroupBoxLvlList.Text = "Leveled NPC list (LVLN)"
-        '
+        ' 
         ' CheckBoxAddToLvlList
-        '
+        ' 
         CheckBoxAddToLvlList.AutoSize = True
-        CheckBoxAddToLvlList.Location = New Drawing.Point(10, 20)
+        CheckBoxAddToLvlList.Location = New Point(10, 20)
         CheckBoxAddToLvlList.Name = "CheckBoxAddToLvlList"
-        CheckBoxAddToLvlList.Size = New Drawing.Size(300, 19)
+        CheckBoxAddToLvlList.Size = New Size(232, 19)
         CheckBoxAddToLvlList.TabIndex = 0
         CheckBoxAddToLvlList.Text = "Add saved NPC(s) to a Leveled NPC list"
         CheckBoxAddToLvlList.UseVisualStyleBackColor = True
-        '
+        ' 
         ' RadioLvlNew
-        '
+        ' 
         RadioLvlNew.AutoSize = True
         RadioLvlNew.Checked = True
-        RadioLvlNew.Location = New Drawing.Point(28, 44)
+        RadioLvlNew.Location = New Point(28, 44)
         RadioLvlNew.Name = "RadioLvlNew"
-        RadioLvlNew.Size = New Drawing.Size(50, 19)
+        RadioLvlNew.Size = New Size(52, 19)
         RadioLvlNew.TabIndex = 1
         RadioLvlNew.TabStop = True
         RadioLvlNew.Text = "New:"
         RadioLvlNew.UseVisualStyleBackColor = True
-        '
+        ' 
         ' TextBoxLvlNewName
-        '
-        TextBoxLvlNewName.Location = New Drawing.Point(95, 42)
+        ' 
+        TextBoxLvlNewName.Location = New Point(160, 42)
         TextBoxLvlNewName.Name = "TextBoxLvlNewName"
-        TextBoxLvlNewName.Size = New Drawing.Size(230, 23)
+        TextBoxLvlNewName.Size = New Size(165, 23)
         TextBoxLvlNewName.TabIndex = 2
-        '
+        ' 
         ' LabelLvlNewHint
-        '
+        ' 
         LabelLvlNewHint.AutoSize = True
         LabelLvlNewHint.ForeColor = SystemColors.GrayText
-        LabelLvlNewHint.Location = New Drawing.Point(331, 45)
+        LabelLvlNewHint.Location = New Point(331, 45)
         LabelLvlNewHint.Name = "LabelLvlNewHint"
-        LabelLvlNewHint.Size = New Drawing.Size(180, 15)
+        LabelLvlNewHint.Size = New Size(173, 15)
         LabelLvlNewHint.TabIndex = 3
         LabelLvlNewHint.Text = "→ npcm_<esp>_LVLN_<name>"
-        '
+        ' 
         ' RadioLvlExisting
-        '
+        ' 
         RadioLvlExisting.AutoSize = True
-        RadioLvlExisting.Location = New Drawing.Point(28, 69)
+        RadioLvlExisting.Location = New Point(28, 69)
         RadioLvlExisting.Name = "RadioLvlExisting"
-        RadioLvlExisting.Size = New Drawing.Size(130, 19)
+        RadioLvlExisting.Size = New Size(124, 19)
         RadioLvlExisting.TabIndex = 4
         RadioLvlExisting.Text = "Existing in this esp:"
         RadioLvlExisting.UseVisualStyleBackColor = True
-        '
+        ' 
         ' ComboBoxLvlExisting
-        '
+        ' 
         ComboBoxLvlExisting.DropDownStyle = ComboBoxStyle.DropDownList
-        ComboBoxLvlExisting.Location = New Drawing.Point(160, 66)
+        ComboBoxLvlExisting.Location = New Point(160, 66)
         ComboBoxLvlExisting.Name = "ComboBoxLvlExisting"
-        ComboBoxLvlExisting.Size = New Drawing.Size(348, 23)
+        ComboBoxLvlExisting.Size = New Size(364, 23)
         ComboBoxLvlExisting.TabIndex = 5
-        '
-        ' LabelEncoding
-        '
-        LabelEncoding.AutoSize = True
-        LabelEncoding.Location = New Drawing.Point(12, 539)
-        LabelEncoding.Name = "LabelEncoding"
-        LabelEncoding.Size = New Drawing.Size(120, 15)
-        LabelEncoding.TabIndex = 16
-        LabelEncoding.Text = "Plugin text encoding:"
-        '
-        ' ComboBoxEncoding
-        '
-        ComboBoxEncoding.DropDownStyle = ComboBoxStyle.DropDownList
-        ComboBoxEncoding.Location = New Drawing.Point(140, 536)
-        ComboBoxEncoding.Name = "ComboBoxEncoding"
-        ComboBoxEncoding.Size = New Drawing.Size(280, 23)
-        ComboBoxEncoding.TabIndex = 17
-        '
-        ' LabelEncodingHint
-        '
-        LabelEncodingHint.AutoSize = True
-        LabelEncodingHint.ForeColor = SystemColors.GrayText
-        LabelEncodingHint.Location = New Drawing.Point(426, 539)
-        LabelEncodingHint.Name = "LabelEncodingHint"
-        LabelEncodingHint.Size = New Drawing.Size(0, 15)
-        LabelEncodingHint.TabIndex = 20
-        LabelEncodingHint.Text = ""
-        '
-        ' LabelBa2Version
-        '
-        LabelBa2Version.AutoSize = True
-        LabelBa2Version.Location = New Drawing.Point(12, 569)
-        LabelBa2Version.Name = "LabelBa2Version"
-        LabelBa2Version.Size = New Drawing.Size(110, 15)
-        LabelBa2Version.TabIndex = 18
-        LabelBa2Version.Text = "BA2 version (FO4):"
-        '
-        ' ComboBoxBa2Version
-        '
-        ComboBoxBa2Version.DropDownStyle = ComboBoxStyle.DropDownList
-        ComboBoxBa2Version.Location = New Drawing.Point(140, 566)
-        ComboBoxBa2Version.Name = "ComboBoxBa2Version"
-        ComboBoxBa2Version.Size = New Drawing.Size(280, 23)
-        ComboBoxBa2Version.TabIndex = 19
-        '
+        ' 
+        ' CheckBoxLvlNoDup
+        ' 
+        CheckBoxLvlNoDup.AutoSize = True
+        CheckBoxLvlNoDup.Location = New Point(10, 98)
+        CheckBoxLvlNoDup.Name = "CheckBoxLvlNoDup"
+        CheckBoxLvlNoDup.Size = New Size(274, 19)
+        CheckBoxLvlNoDup.TabIndex = 6
+        CheckBoxLvlNoDup.Text = "Skip NPCs already in a leveled list of this plugin"
+        CheckBoxLvlNoDup.UseVisualStyleBackColor = True
+        ' 
         ' LabelWarning
-        '
+        ' 
         LabelWarning.Anchor = AnchorStyles.Bottom Or AnchorStyles.Left Or AnchorStyles.Right
-        LabelWarning.ForeColor = Drawing.Color.DarkOrange
-        LabelWarning.Location = New Drawing.Point(12, 600)
+        LabelWarning.ForeColor = Color.DarkOrange
+        LabelWarning.Location = New Point(12, 654)
         LabelWarning.Name = "LabelWarning"
-        LabelWarning.Size = New Drawing.Size(520, 36)
-        LabelWarning.TabIndex = 12
-        LabelWarning.Text = ""
-        '
-        ' PanelProgress  (hidden until OK click — shows phase/detail/bar during the save work)
-        '
-        PanelProgress.Anchor = AnchorStyles.Bottom Or AnchorStyles.Left Or AnchorStyles.Right
-        PanelProgress.BorderStyle = BorderStyle.FixedSingle
-        PanelProgress.Location = New Drawing.Point(12, 642)
-        PanelProgress.Name = "PanelProgress"
-        PanelProgress.Size = New Drawing.Size(520, 78)
-        PanelProgress.TabIndex = 15
-        PanelProgress.Visible = False
-        PanelProgress.Controls.Add(LabelProgressStage)
-        PanelProgress.Controls.Add(LabelProgressDetail)
-        PanelProgress.Controls.Add(ProgressBarMain)
-        '
-        ' LabelProgressStage
-        '
-        LabelProgressStage.Anchor = AnchorStyles.Top Or AnchorStyles.Left Or AnchorStyles.Right
-        LabelProgressStage.Font = New Drawing.Font("Segoe UI", 9.0F, Drawing.FontStyle.Bold)
-        LabelProgressStage.Location = New Drawing.Point(8, 6)
-        LabelProgressStage.Name = "LabelProgressStage"
-        LabelProgressStage.Size = New Drawing.Size(504, 20)
-        LabelProgressStage.TabIndex = 0
-        LabelProgressStage.Text = ""
-        '
-        ' LabelProgressDetail
-        '
-        LabelProgressDetail.Anchor = AnchorStyles.Top Or AnchorStyles.Left Or AnchorStyles.Right
-        LabelProgressDetail.AutoEllipsis = True
-        LabelProgressDetail.ForeColor = SystemColors.GrayText
-        LabelProgressDetail.Location = New Drawing.Point(8, 28)
-        LabelProgressDetail.Name = "LabelProgressDetail"
-        LabelProgressDetail.Size = New Drawing.Size(504, 18)
-        LabelProgressDetail.TabIndex = 1
-        LabelProgressDetail.Text = ""
-        '
-        ' ProgressBarMain
-        '
-        ProgressBarMain.Anchor = AnchorStyles.Top Or AnchorStyles.Left Or AnchorStyles.Right
-        ProgressBarMain.Location = New Drawing.Point(8, 50)
-        ProgressBarMain.Name = "ProgressBarMain"
-        ProgressBarMain.Size = New Drawing.Size(504, 18)
-        ProgressBarMain.Style = ProgressBarStyle.Marquee
-        ProgressBarMain.TabIndex = 2
-        '
+        LabelWarning.Size = New Size(536, 34)
+        LabelWarning.TabIndex = 6
+        ' 
         ' ButtonOk
-        '
+        ' 
         ButtonOk.Anchor = AnchorStyles.Bottom Or AnchorStyles.Right
-        ButtonOk.Location = New Drawing.Point(376, 729)
+        ButtonOk.Location = New Point(392, 694)
         ButtonOk.Name = "ButtonOk"
-        ButtonOk.Size = New Drawing.Size(75, 27)
-        ButtonOk.TabIndex = 13
+        ButtonOk.Size = New Size(75, 27)
+        ButtonOk.TabIndex = 7
         ButtonOk.Text = "Save"
         ButtonOk.UseVisualStyleBackColor = True
-        '
+        ' 
         ' ButtonCancel
-        '
+        ' 
         ButtonCancel.Anchor = AnchorStyles.Bottom Or AnchorStyles.Right
         ButtonCancel.DialogResult = DialogResult.Cancel
-        ButtonCancel.Location = New Drawing.Point(457, 729)
+        ButtonCancel.Location = New Point(473, 694)
         ButtonCancel.Name = "ButtonCancel"
-        ButtonCancel.Size = New Drawing.Size(75, 27)
-        ButtonCancel.TabIndex = 14
+        ButtonCancel.Size = New Size(75, 27)
+        ButtonCancel.TabIndex = 8
         ButtonCancel.Text = "Cancel"
         ButtonCancel.UseVisualStyleBackColor = True
-        '
+        ' 
         ' SaveEsp_Form
-        '
+        ' 
         AcceptButton = ButtonOk
-        CancelButton = ButtonCancel
-        AutoScaleDimensions = New Drawing.SizeF(7.0F, 15.0F)
+        AutoScaleDimensions = New SizeF(7F, 15F)
         AutoScaleMode = AutoScaleMode.Font
-        ClientSize = New Drawing.Size(544, 768)
+        CancelButton = ButtonCancel
+        ClientSize = New Size(560, 733)
         Controls.Add(LabelHeader)
         Controls.Add(PanelScope)
-        Controls.Add(RadioButtonExisting)
-        Controls.Add(ListBoxExisting)
-        Controls.Add(RadioButtonNew)
-        Controls.Add(LabelNewName)
-        Controls.Add(TextBoxNewName)
-        Controls.Add(LabelExtension)
-        Controls.Add(CheckBoxMarkAsMaster)
-        Controls.Add(CheckBoxLightMaster)
-        Controls.Add(CheckBoxGenerateChargen)
-        Controls.Add(CheckBoxWriteBssliders)
-        Controls.Add(CheckBoxEmitBodyGen)
-        Controls.Add(CheckBoxSaveNewOutfits)
+        Controls.Add(GroupBoxTarget)
+        Controls.Add(GroupBoxSave)
+        Controls.Add(GroupBoxEncoding)
         Controls.Add(GroupBoxLvlList)
-        Controls.Add(LabelEncoding)
-        Controls.Add(ComboBoxEncoding)
-        Controls.Add(LabelEncodingHint)
-        Controls.Add(LabelBa2Version)
-        Controls.Add(ComboBoxBa2Version)
-        Controls.Add(PanelProgress)
         Controls.Add(LabelWarning)
         Controls.Add(ButtonOk)
         Controls.Add(ButtonCancel)
@@ -446,6 +443,16 @@ Partial Class SaveEsp_Form
         Name = "SaveEsp_Form"
         StartPosition = FormStartPosition.CenterParent
         Text = "Save NPC override (ESP/ESM)"
+        PanelScope.ResumeLayout(False)
+        PanelScope.PerformLayout()
+        GroupBoxTarget.ResumeLayout(False)
+        GroupBoxTarget.PerformLayout()
+        GroupBoxSave.ResumeLayout(False)
+        GroupBoxSave.PerformLayout()
+        GroupBoxEncoding.ResumeLayout(False)
+        GroupBoxEncoding.PerformLayout()
+        GroupBoxLvlList.ResumeLayout(False)
+        GroupBoxLvlList.PerformLayout()
         ResumeLayout(False)
         PerformLayout()
     End Sub
@@ -454,6 +461,7 @@ Partial Class SaveEsp_Form
     Friend WithEvents PanelScope As Panel
     Friend WithEvents RadioScopeAllChanged As RadioButton
     Friend WithEvents RadioScopeSelected As RadioButton
+    Friend WithEvents GroupBoxTarget As GroupBox
     Friend WithEvents RadioButtonExisting As RadioButton
     Friend WithEvents ListBoxExisting As ListBox
     Friend WithEvents RadioButtonNew As RadioButton
@@ -462,10 +470,17 @@ Partial Class SaveEsp_Form
     Friend WithEvents LabelExtension As Label
     Friend WithEvents CheckBoxMarkAsMaster As CheckBox
     Friend WithEvents CheckBoxLightMaster As CheckBox
+    Friend WithEvents GroupBoxSave As GroupBox
     Friend WithEvents CheckBoxGenerateChargen As CheckBox
     Friend WithEvents CheckBoxWriteBssliders As CheckBox
     Friend WithEvents CheckBoxEmitBodyGen As CheckBox
     Friend WithEvents CheckBoxSaveNewOutfits As CheckBox
+    Friend WithEvents GroupBoxEncoding As GroupBox
+    Friend WithEvents LabelEncoding As Label
+    Friend WithEvents ComboBoxEncoding As ComboBox
+    Friend WithEvents LabelEncodingHint As Label
+    Friend WithEvents LabelBa2Version As Label
+    Friend WithEvents ComboBoxBa2Version As ComboBox
     Friend WithEvents GroupBoxLvlList As GroupBox
     Friend WithEvents CheckBoxAddToLvlList As CheckBox
     Friend WithEvents RadioLvlNew As RadioButton
@@ -473,15 +488,7 @@ Partial Class SaveEsp_Form
     Friend WithEvents LabelLvlNewHint As Label
     Friend WithEvents RadioLvlExisting As RadioButton
     Friend WithEvents ComboBoxLvlExisting As ComboBox
-    Friend WithEvents LabelEncoding As Label
-    Friend WithEvents ComboBoxEncoding As ComboBox
-    Friend WithEvents LabelEncodingHint As Label
-    Friend WithEvents LabelBa2Version As Label
-    Friend WithEvents ComboBoxBa2Version As ComboBox
-    Friend WithEvents PanelProgress As Panel
-    Friend WithEvents LabelProgressStage As Label
-    Friend WithEvents LabelProgressDetail As Label
-    Friend WithEvents ProgressBarMain As ProgressBar
+    Friend WithEvents CheckBoxLvlNoDup As CheckBox
     Friend WithEvents LabelWarning As Label
     Friend WithEvents ButtonOk As Button
     Friend WithEvents ButtonCancel As Button

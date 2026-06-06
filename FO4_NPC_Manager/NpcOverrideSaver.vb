@@ -802,6 +802,29 @@ Public Module NpcOverrideSaver
         Next
         If npcFids.Count = 0 Then Return
 
+        ' "Evitar duplicados": drop NPCs already a member of ANY Leveled NPC list IN THIS PLUGIN. Scope =
+        ' the LVLN bound for this save (preserved existing overrides in leveledEntries + the list being
+        ' appended to). Cheap (no load-order scan) and predictable: vanilla/other-mod lists are not consulted.
+        ' OFF by default → an NPC can intentionally live in several lists. Note: the existing-list append path
+        ' ALSO dedups against the target list's own entries regardless of this flag (never double-add to one
+        ' list); this flag widens that to all of the plugin's leveled-NPC lists.
+        If target.LvlListNoDuplicate Then
+            Dim alreadyLeveled As New HashSet(Of UInteger)
+            For Each le In leveledEntries
+                If Not le.IsNpcList Then Continue For
+                For Each e In le.Entries
+                    If e.RefFormID <> 0UI Then alreadyLeveled.Add(e.RefFormID)
+                Next
+            Next
+            If alreadyLeveled.Count > 0 Then
+                Dim before = npcFids.Count
+                npcFids = npcFids.Where(Function(f) Not alreadyLeveled.Contains(f)).ToList()
+                Dim skipped = before - npcFids.Count
+                If skipped > 0 Then Logger.LogLazy(Function() $"[SAVE] Add-to-LVL: skipped {skipped} NPC(s) already in a leveled list of {IO.Path.GetFileName(target.TargetPath)} (no-dup).")
+            End If
+            If npcFids.Count = 0 Then Return  ' every selected NPC was already leveled — nothing to add
+        End If
+
         ' Provisional FormID allocator: prefer MainForm's shared draft counter (no collision with OTFT/LVLI
         ' drafts). Fallback is a high local 0xFF counter — these LVLN are terminal (nothing references them by
         ' provisional), so the only requirement is in-save uniqueness.

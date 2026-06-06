@@ -1216,7 +1216,7 @@ Public Class EditFace_Form
             ' .MergeTintLayersWithRaceDefaults). For each TintTemplateGroup the NPC doesn't touch,
             ' every Option whose TTED is present is injected as a virtual default. This mirrors
             ' the engine's CK behaviour and keeps the editor's view 1:1 with what the render draws.
-            Dim merged = FaceTintLayerBuilder.MergeTintLayersWithRaceDefaults(p.FaceTintLayers, _race, _isFemale, _pluginManager)
+            Dim merged = FaceTintInputBuilder.MergeTintLayersWithRaceDefaults(p.FaceTintLayers, _race, _isFemale, _pluginManager)
             ' Display in RACE-Group order (the same order the compositor uses), tied-broken by the
             ' layer's original position in the merged list so two layers with the same Index keep
             ' a stable relative order. NPC-authored layers carry their p.FaceTintLayers index in
@@ -1456,7 +1456,7 @@ Public Class EditFace_Form
         tl.Color = it.SwatchColor
         Dim optPick = _race?.FindTintOption(tl.Index, _isFemale)
         If optPick IsNot Nothing Then
-            tl.TemplateColorIndex = FaceTintLayerBuilder.ResolveTemplateColorIndex(tl.Color, tl.Value / 100.0F, optPick, _pluginManager)
+            tl.TemplateColorIndex = FaceTintInputBuilder.ResolveTemplateColorIndex(tl.Color, tl.Value / 100.0F, optPick, _pluginManager)
         Else
             tl.TemplateColorIndex = CInt(it.TemplateIndex)
         End If
@@ -1497,7 +1497,7 @@ Public Class EditFace_Form
             ' equal-colour presets); no match → -1 (custom). Keeps live preview and Save consistent.
             Dim optCustom = _race?.FindTintOption(tl.Index, _isFemale)
             If optCustom IsNot Nothing Then
-                tl.TemplateColorIndex = FaceTintLayerBuilder.ResolveTemplateColorIndex(tl.Color, tl.Value / 100.0F, optCustom, _pluginManager)
+                tl.TemplateColorIndex = FaceTintInputBuilder.ResolveTemplateColorIndex(tl.Color, tl.Value / 100.0F, optCustom, _pluginManager)
             End If
             PanelTintColorSwatch.BackColor = tl.Color
             If promoted Then

@@ -1,4 +1,4 @@
-<Global.Microsoft.VisualBasic.CompilerServices.DesignerGenerated()>
+﻿<Global.Microsoft.VisualBasic.CompilerServices.DesignerGenerated()>
 Partial Class CharGenOptionsForm
     Inherits System.Windows.Forms.Form
 
@@ -21,175 +21,1039 @@ Partial Class CharGenOptionsForm
     'Do not modify it using the code editor.
     <System.Diagnostics.DebuggerStepThrough()>
     Private Sub InitializeComponent()
-        GroupBoxSize = New System.Windows.Forms.GroupBox()
-        RadioAll = New System.Windows.Forms.RadioButton()
-        RadioPerLayer = New System.Windows.Forms.RadioButton()
-        LabelDiffuse = New System.Windows.Forms.Label()
-        ComboDiffuse = New System.Windows.Forms.ComboBox()
-        LabelNormal = New System.Windows.Forms.Label()
-        ComboNormal = New System.Windows.Forms.ComboBox()
-        LabelSpecular = New System.Windows.Forms.Label()
-        ComboSpecular = New System.Windows.Forms.ComboBox()
-        LabelFormat = New System.Windows.Forms.Label()
-        ComboFormat = New System.Windows.Forms.ComboBox()
-        ButtonOK = New System.Windows.Forms.Button()
-        ButtonCancel = New System.Windows.Forms.Button()
+        TabMain = New TabControl()
+        TabPageSize = New TabPage()
+        GroupBoxSize = New GroupBox()
+        RadioAll = New RadioButton()
+        RadioPerLayer = New RadioButton()
+        LabelDiffuse = New Label()
+        ComboDiffuse = New ComboBox()
+        LabelNormal = New Label()
+        ComboNormal = New ComboBox()
+        LabelSpecular = New Label()
+        ComboSpecular = New ComboBox()
+        LabelFormat = New Label()
+        ComboFormat = New ComboBox()
+        TabPageConv = New TabPage()
+        GroupConvDiffuse = New GroupBox()
+        LblDWork = New Label()
+        ComboDWork = New ComboBox()
+        LblDComp = New Label()
+        ComboDComp = New ComboBox()
+        LblDSrc = New Label()
+        ComboDSrc = New ComboBox()
+        LblDOut = New Label()
+        ComboDOut = New ComboBox()
+        LblDMask = New Label()
+        ComboDMask = New ComboBox()
+        LblDFw = New Label()
+        ComboDFw = New ComboBox()
+        LblDSoft = New Label()
+        ComboDSoft = New ComboBox()
+        LblDBlend = New Label()
+        ComboDBlend = New ComboBox()
+        CheckDSeedG22 = New CheckBox()
+        GroupConvNormal = New GroupBox()
+        LblNWork = New Label()
+        ComboNWork = New ComboBox()
+        LblNComp = New Label()
+        ComboNComp = New ComboBox()
+        LblNSrc = New Label()
+        ComboNSrc = New ComboBox()
+        LblNOut = New Label()
+        ComboNOut = New ComboBox()
+        LblNMask = New Label()
+        ComboNMask = New ComboBox()
+        LblNFw = New Label()
+        ComboNFw = New ComboBox()
+        LblNSoft = New Label()
+        ComboNSoft = New ComboBox()
+        LblNBlend = New Label()
+        ComboNBlend = New ComboBox()
+        GroupConvSwap = New GroupBox()
+        LblSWork = New Label()
+        ComboSWork = New ComboBox()
+        LblSComp = New Label()
+        ComboSComp = New ComboBox()
+        LblSSrc = New Label()
+        ComboSSrc = New ComboBox()
+        LblSOut = New Label()
+        ComboSOut = New ComboBox()
+        LblSMask = New Label()
+        ComboSMask = New ComboBox()
+        LblSFw = New Label()
+        ComboSFw = New ComboBox()
+        LblSSoft = New Label()
+        ComboSSoft = New ComboBox()
+        LblSBlend = New Label()
+        ComboSBlend = New ComboBox()
+        ButtonResetConv = New Button()
+        ButtonOK = New Button()
+        ButtonCancel = New Button()
+        TabPageOrder = New TabPage()
+        GroupTintOrder = New GroupBox()
+        ListTintRules = New ListBox()
+        ComboTintKey = New ComboBox()
+        ChkTintDesc = New CheckBox()
+        BtnTintAdd = New Button()
+        BtnTintRemove = New Button()
+        BtnTintUp = New Button()
+        BtnTintDown = New Button()
+        GroupSwapOrder = New GroupBox()
+        ListSwapRules = New ListBox()
+        ComboSwapKey = New ComboBox()
+        ChkSwapDesc = New CheckBox()
+        BtnSwapAdd = New Button()
+        BtnSwapRemove = New Button()
+        BtnSwapUp = New Button()
+        BtnSwapDown = New Button()
+        LblSkinPlacement = New Label()
+        ComboSkinPlacement = New ComboBox()
+        BtnSortRevert = New Button()
+        TabMain.SuspendLayout()
+        TabPageSize.SuspendLayout()
         GroupBoxSize.SuspendLayout()
+        TabPageConv.SuspendLayout()
+        GroupConvDiffuse.SuspendLayout()
+        GroupConvNormal.SuspendLayout()
+        GroupConvSwap.SuspendLayout()
+        TabPageOrder.SuspendLayout()
+        GroupTintOrder.SuspendLayout()
+        GroupSwapOrder.SuspendLayout()
         SuspendLayout()
-        '
-        'GroupBoxSize
-        '
+        ' 
+        ' TabMain
+        ' 
+        TabMain.Controls.Add(TabPageSize)
+        TabMain.Controls.Add(TabPageConv)
+        TabMain.Controls.Add(TabPageOrder)
+        TabMain.Location = New Point(12, 12)
+        TabMain.Name = "TabMain"
+        TabMain.SelectedIndex = 0
+        TabMain.Size = New Size(640, 340)
+        TabMain.TabIndex = 0
+        ' 
+        ' TabPageSize
+        ' 
+        TabPageSize.Controls.Add(GroupBoxSize)
+        TabPageSize.Location = New Point(4, 24)
+        TabPageSize.Name = "TabPageSize"
+        TabPageSize.Padding = New Padding(3)
+        TabPageSize.Size = New Size(632, 312)
+        TabPageSize.TabIndex = 0
+        TabPageSize.Text = "Texture Size"
+        TabPageSize.UseVisualStyleBackColor = True
+        ' 
+        ' GroupBoxSize
+        ' 
         GroupBoxSize.Controls.Add(RadioAll)
+        GroupBoxSize.Controls.Add(LabelFormat)
         GroupBoxSize.Controls.Add(RadioPerLayer)
+        GroupBoxSize.Controls.Add(ComboFormat)
         GroupBoxSize.Controls.Add(LabelDiffuse)
         GroupBoxSize.Controls.Add(ComboDiffuse)
         GroupBoxSize.Controls.Add(LabelNormal)
         GroupBoxSize.Controls.Add(ComboNormal)
         GroupBoxSize.Controls.Add(LabelSpecular)
         GroupBoxSize.Controls.Add(ComboSpecular)
-        GroupBoxSize.Location = New System.Drawing.Point(12, 12)
+        GroupBoxSize.Location = New Point(6, 6)
         GroupBoxSize.Name = "GroupBoxSize"
-        GroupBoxSize.Size = New System.Drawing.Size(312, 152)
+        GroupBoxSize.Size = New Size(606, 170)
         GroupBoxSize.TabIndex = 0
         GroupBoxSize.TabStop = False
         GroupBoxSize.Text = "Texture size (per channel)"
-        '
-        'RadioAll
-        '
+        ' 
+        ' RadioAll
+        ' 
         RadioAll.AutoSize = True
-        RadioAll.Location = New System.Drawing.Point(12, 24)
+        RadioAll.Location = New Point(12, 24)
         RadioAll.Name = "RadioAll"
-        RadioAll.Size = New System.Drawing.Size(98, 19)
+        RadioAll.Size = New Size(93, 19)
         RadioAll.TabIndex = 0
         RadioAll.TabStop = True
         RadioAll.Text = "All (uniform)"
         RadioAll.UseVisualStyleBackColor = True
-        '
-        'RadioPerLayer
-        '
+        ' 
+        ' RadioPerLayer
+        ' 
         RadioPerLayer.AutoSize = True
-        RadioPerLayer.Location = New System.Drawing.Point(150, 24)
+        RadioPerLayer.Location = New Point(150, 24)
         RadioPerLayer.Name = "RadioPerLayer"
-        RadioPerLayer.Size = New System.Drawing.Size(78, 19)
+        RadioPerLayer.Size = New Size(70, 19)
         RadioPerLayer.TabIndex = 1
         RadioPerLayer.Text = "Per layer"
         RadioPerLayer.UseVisualStyleBackColor = True
-        '
-        'LabelDiffuse
-        '
+        ' 
+        ' LabelDiffuse
+        ' 
         LabelDiffuse.AutoSize = True
-        LabelDiffuse.Location = New System.Drawing.Point(12, 58)
+        LabelDiffuse.Location = New Point(12, 58)
         LabelDiffuse.Name = "LabelDiffuse"
-        LabelDiffuse.Size = New System.Drawing.Size(48, 15)
+        LabelDiffuse.Size = New Size(44, 15)
         LabelDiffuse.TabIndex = 2
         LabelDiffuse.Text = "Diffuse"
-        '
-        'ComboDiffuse
-        '
-        ComboDiffuse.DropDownStyle = System.Windows.Forms.ComboBoxStyle.DropDownList
+        ' 
+        ' ComboDiffuse
+        ' 
+        ComboDiffuse.DropDownStyle = ComboBoxStyle.DropDownList
         ComboDiffuse.Items.AddRange(New Object() {"Inherit (native)", "512", "1024", "2048", "4096", "8192"})
-        ComboDiffuse.Location = New System.Drawing.Point(100, 55)
+        ComboDiffuse.Location = New Point(100, 55)
         ComboDiffuse.Name = "ComboDiffuse"
-        ComboDiffuse.Size = New System.Drawing.Size(190, 23)
+        ComboDiffuse.Size = New Size(190, 23)
         ComboDiffuse.TabIndex = 3
-        '
-        'LabelNormal
-        '
+        ' 
+        ' LabelNormal
+        ' 
         LabelNormal.AutoSize = True
-        LabelNormal.Location = New System.Drawing.Point(12, 90)
+        LabelNormal.Location = New Point(12, 90)
         LabelNormal.Name = "LabelNormal"
-        LabelNormal.Size = New System.Drawing.Size(48, 15)
+        LabelNormal.Size = New Size(47, 15)
         LabelNormal.TabIndex = 4
         LabelNormal.Text = "Normal"
-        '
-        'ComboNormal
-        '
-        ComboNormal.DropDownStyle = System.Windows.Forms.ComboBoxStyle.DropDownList
+        ' 
+        ' ComboNormal
+        ' 
+        ComboNormal.DropDownStyle = ComboBoxStyle.DropDownList
         ComboNormal.Items.AddRange(New Object() {"Inherit (native)", "512", "1024", "2048", "4096", "8192"})
-        ComboNormal.Location = New System.Drawing.Point(100, 87)
+        ComboNormal.Location = New Point(100, 87)
         ComboNormal.Name = "ComboNormal"
-        ComboNormal.Size = New System.Drawing.Size(190, 23)
+        ComboNormal.Size = New Size(190, 23)
         ComboNormal.TabIndex = 5
-        '
-        'LabelSpecular
-        '
+        ' 
+        ' LabelSpecular
+        ' 
         LabelSpecular.AutoSize = True
-        LabelSpecular.Location = New System.Drawing.Point(12, 122)
+        LabelSpecular.Location = New Point(12, 122)
         LabelSpecular.Name = "LabelSpecular"
-        LabelSpecular.Size = New System.Drawing.Size(56, 15)
+        LabelSpecular.Size = New Size(52, 15)
         LabelSpecular.TabIndex = 6
         LabelSpecular.Text = "Specular"
-        '
-        'ComboSpecular
-        '
-        ComboSpecular.DropDownStyle = System.Windows.Forms.ComboBoxStyle.DropDownList
+        ' 
+        ' ComboSpecular
+        ' 
+        ComboSpecular.DropDownStyle = ComboBoxStyle.DropDownList
         ComboSpecular.Items.AddRange(New Object() {"Inherit (native)", "512", "1024", "2048", "4096", "8192"})
-        ComboSpecular.Location = New System.Drawing.Point(100, 119)
+        ComboSpecular.Location = New Point(100, 119)
         ComboSpecular.Name = "ComboSpecular"
-        ComboSpecular.Size = New System.Drawing.Size(190, 23)
+        ComboSpecular.Size = New Size(190, 23)
         ComboSpecular.TabIndex = 7
-        '
-        'LabelFormat
-        '
+        ' 
+        ' LabelFormat
+        ' 
         LabelFormat.AutoSize = True
-        LabelFormat.Location = New System.Drawing.Point(12, 178)
+        LabelFormat.Location = New Point(310, 58)
         LabelFormat.Name = "LabelFormat"
-        LabelFormat.Size = New System.Drawing.Size(89, 15)
+        LabelFormat.Size = New Size(83, 15)
         LabelFormat.TabIndex = 1
         LabelFormat.Text = "Diffuse format"
-        '
-        'ComboFormat
-        '
-        ComboFormat.DropDownStyle = System.Windows.Forms.ComboBoxStyle.DropDownList
+        ' 
+        ' ComboFormat
+        ' 
+        ComboFormat.DropDownStyle = ComboBoxStyle.DropDownList
         ComboFormat.Items.AddRange(New Object() {"BC3 (default)", "BC7"})
-        ComboFormat.Location = New System.Drawing.Point(112, 175)
+        ComboFormat.Location = New Point(410, 55)
         ComboFormat.Name = "ComboFormat"
-        ComboFormat.Size = New System.Drawing.Size(130, 23)
+        ComboFormat.Size = New Size(190, 23)
         ComboFormat.TabIndex = 2
-        '
-        'ButtonOK
-        '
-        ButtonOK.Location = New System.Drawing.Point(158, 218)
+        ' 
+        ' TabPageConv
+        ' 
+        TabPageConv.Controls.Add(GroupConvDiffuse)
+        TabPageConv.Controls.Add(GroupConvNormal)
+        TabPageConv.Controls.Add(GroupConvSwap)
+        TabPageConv.Controls.Add(ButtonResetConv)
+        TabPageConv.Location = New Point(4, 24)
+        TabPageConv.Name = "TabPageConv"
+        TabPageConv.Padding = New Padding(3)
+        TabPageConv.Size = New Size(632, 312)
+        TabPageConv.TabIndex = 1
+        TabPageConv.Text = "FaceTint Conventions"
+        TabPageConv.UseVisualStyleBackColor = True
+        ' 
+        ' GroupConvDiffuse
+        ' 
+        GroupConvDiffuse.Controls.Add(LblDWork)
+        GroupConvDiffuse.Controls.Add(ComboDWork)
+        GroupConvDiffuse.Controls.Add(LblDComp)
+        GroupConvDiffuse.Controls.Add(ComboDComp)
+        GroupConvDiffuse.Controls.Add(LblDSrc)
+        GroupConvDiffuse.Controls.Add(ComboDSrc)
+        GroupConvDiffuse.Controls.Add(LblDOut)
+        GroupConvDiffuse.Controls.Add(ComboDOut)
+        GroupConvDiffuse.Controls.Add(LblDMask)
+        GroupConvDiffuse.Controls.Add(ComboDMask)
+        GroupConvDiffuse.Controls.Add(LblDFw)
+        GroupConvDiffuse.Controls.Add(ComboDFw)
+        GroupConvDiffuse.Controls.Add(LblDSoft)
+        GroupConvDiffuse.Controls.Add(ComboDSoft)
+        GroupConvDiffuse.Controls.Add(LblDBlend)
+        GroupConvDiffuse.Controls.Add(ComboDBlend)
+        GroupConvDiffuse.Controls.Add(CheckDSeedG22)
+        GroupConvDiffuse.Location = New Point(8, 8)
+        GroupConvDiffuse.Name = "GroupConvDiffuse"
+        GroupConvDiffuse.Size = New Size(200, 292)
+        GroupConvDiffuse.TabIndex = 0
+        GroupConvDiffuse.TabStop = False
+        GroupConvDiffuse.Text = "Diffuse"
+        ' 
+        ' LblDWork
+        ' 
+        LblDWork.AutoSize = True
+        LblDWork.Location = New Point(8, 24)
+        LblDWork.Name = "LblDWork"
+        LblDWork.Size = New Size(52, 15)
+        LblDWork.TabIndex = 0
+        LblDWork.Text = "Working"
+        ' 
+        ' ComboDWork
+        ' 
+        ComboDWork.DropDownStyle = ComboBoxStyle.DropDownList
+        ComboDWork.Items.AddRange(New Object() {"Linear", "Srgb", "G22", "G24"})
+        ComboDWork.Location = New Point(84, 21)
+        ComboDWork.Name = "ComboDWork"
+        ComboDWork.Size = New Size(108, 23)
+        ComboDWork.TabIndex = 1
+        ' 
+        ' LblDComp
+        ' 
+        LblDComp.AutoSize = True
+        LblDComp.Location = New Point(8, 54)
+        LblDComp.Name = "LblDComp"
+        LblDComp.Size = New Size(65, 15)
+        LblDComp.TabIndex = 2
+        LblDComp.Text = "Composite"
+        ' 
+        ' ComboDComp
+        ' 
+        ComboDComp.DropDownStyle = ComboBoxStyle.DropDownList
+        ComboDComp.Items.AddRange(New Object() {"Linear", "Srgb", "G22", "G24"})
+        ComboDComp.Location = New Point(84, 51)
+        ComboDComp.Name = "ComboDComp"
+        ComboDComp.Size = New Size(108, 23)
+        ComboDComp.TabIndex = 3
+        ' 
+        ' LblDSrc
+        ' 
+        LblDSrc.AutoSize = True
+        LblDSrc.Location = New Point(8, 84)
+        LblDSrc.Name = "LblDSrc"
+        LblDSrc.Size = New Size(23, 15)
+        LblDSrc.TabIndex = 4
+        LblDSrc.Text = "Src"
+        ' 
+        ' ComboDSrc
+        ' 
+        ComboDSrc.DropDownStyle = ComboBoxStyle.DropDownList
+        ComboDSrc.Items.AddRange(New Object() {"Linear", "Srgb", "G22", "G24"})
+        ComboDSrc.Location = New Point(84, 81)
+        ComboDSrc.Name = "ComboDSrc"
+        ComboDSrc.Size = New Size(108, 23)
+        ComboDSrc.TabIndex = 5
+        ' 
+        ' LblDOut
+        ' 
+        LblDOut.AutoSize = True
+        LblDOut.Location = New Point(8, 114)
+        LblDOut.Name = "LblDOut"
+        LblDOut.Size = New Size(45, 15)
+        LblDOut.TabIndex = 6
+        LblDOut.Text = "Output"
+        ' 
+        ' ComboDOut
+        ' 
+        ComboDOut.DropDownStyle = ComboBoxStyle.DropDownList
+        ComboDOut.Items.AddRange(New Object() {"Linear", "Srgb", "G22", "G24"})
+        ComboDOut.Location = New Point(84, 111)
+        ComboDOut.Name = "ComboDOut"
+        ComboDOut.Size = New Size(108, 23)
+        ComboDOut.TabIndex = 7
+        ' 
+        ' LblDMask
+        ' 
+        LblDMask.AutoSize = True
+        LblDMask.Location = New Point(8, 144)
+        LblDMask.Name = "LblDMask"
+        LblDMask.Size = New Size(35, 15)
+        LblDMask.TabIndex = 8
+        LblDMask.Text = "Mask"
+        ' 
+        ' ComboDMask
+        ' 
+        ComboDMask.DropDownStyle = ComboBoxStyle.DropDownList
+        ComboDMask.Items.AddRange(New Object() {"Raw", "SrgbEncode", "SrgbDecode", "G22Encode", "G22Decode", "G24Encode", "G24Decode"})
+        ComboDMask.Location = New Point(84, 141)
+        ComboDMask.Name = "ComboDMask"
+        ComboDMask.Size = New Size(108, 23)
+        ComboDMask.TabIndex = 9
+        ' 
+        ' LblDFw
+        ' 
+        LblDFw.AutoSize = True
+        LblDFw.Location = New Point(8, 174)
+        LblDFw.Name = "LblDFw"
+        LblDFw.Size = New Size(66, 15)
+        LblDFw.TabIndex = 10
+        LblDFw.Text = "Framework"
+        ' 
+        ' ComboDFw
+        ' 
+        ComboDFw.DropDownStyle = ComboBoxStyle.DropDownList
+        ComboDFw.Items.AddRange(New Object() {"OverPrev", "OverBase", "AddBase", "ModSrc"})
+        ComboDFw.Location = New Point(84, 171)
+        ComboDFw.Name = "ComboDFw"
+        ComboDFw.Size = New Size(108, 23)
+        ComboDFw.TabIndex = 11
+        ' 
+        ' LblDSoft
+        ' 
+        LblDSoft.AutoSize = True
+        LblDSoft.Location = New Point(8, 204)
+        LblDSoft.Name = "LblDSoft"
+        LblDSoft.Size = New Size(55, 15)
+        LblDSoft.TabIndex = 12
+        LblDSoft.Text = "SoftLight"
+        ' 
+        ' ComboDSoft
+        ' 
+        ComboDSoft.DropDownStyle = ComboBoxStyle.DropDownList
+        ComboDSoft.Items.AddRange(New Object() {"W3C", "Gimp", "Illusions", "Pegtop"})
+        ComboDSoft.Location = New Point(84, 201)
+        ComboDSoft.Name = "ComboDSoft"
+        ComboDSoft.Size = New Size(108, 23)
+        ComboDSoft.TabIndex = 13
+        ' 
+        ' LblDBlend
+        ' 
+        LblDBlend.AutoSize = True
+        LblDBlend.Location = New Point(8, 234)
+        LblDBlend.Name = "LblDBlend"
+        LblDBlend.Size = New Size(37, 15)
+        LblDBlend.TabIndex = 14
+        LblDBlend.Text = "Blend"
+        ' 
+        ' ComboDBlend
+        ' 
+        ComboDBlend.DropDownStyle = ComboBoxStyle.DropDownList
+        ComboDBlend.Enabled = False
+        ComboDBlend.Items.AddRange(New Object() {"From record"})
+        ComboDBlend.Location = New Point(84, 231)
+        ComboDBlend.Name = "ComboDBlend"
+        ComboDBlend.Size = New Size(108, 23)
+        ComboDBlend.TabIndex = 15
+        ' 
+        ' CheckDSeedG22
+        ' 
+        CheckDSeedG22.AutoSize = True
+        CheckDSeedG22.Location = New Point(8, 264)
+        CheckDSeedG22.Name = "CheckDSeedG22"
+        CheckDSeedG22.Size = New Size(126, 19)
+        CheckDSeedG22.TabIndex = 16
+        CheckDSeedG22.Text = "Seed diffuse → G22"
+        CheckDSeedG22.UseVisualStyleBackColor = True
+        ' 
+        ' GroupConvNormal
+        ' 
+        GroupConvNormal.Controls.Add(LblNWork)
+        GroupConvNormal.Controls.Add(ComboNWork)
+        GroupConvNormal.Controls.Add(LblNComp)
+        GroupConvNormal.Controls.Add(ComboNComp)
+        GroupConvNormal.Controls.Add(LblNSrc)
+        GroupConvNormal.Controls.Add(ComboNSrc)
+        GroupConvNormal.Controls.Add(LblNOut)
+        GroupConvNormal.Controls.Add(ComboNOut)
+        GroupConvNormal.Controls.Add(LblNMask)
+        GroupConvNormal.Controls.Add(ComboNMask)
+        GroupConvNormal.Controls.Add(LblNFw)
+        GroupConvNormal.Controls.Add(ComboNFw)
+        GroupConvNormal.Controls.Add(LblNSoft)
+        GroupConvNormal.Controls.Add(ComboNSoft)
+        GroupConvNormal.Controls.Add(LblNBlend)
+        GroupConvNormal.Controls.Add(ComboNBlend)
+        GroupConvNormal.Location = New Point(216, 8)
+        GroupConvNormal.Name = "GroupConvNormal"
+        GroupConvNormal.Size = New Size(200, 262)
+        GroupConvNormal.TabIndex = 1
+        GroupConvNormal.TabStop = False
+        GroupConvNormal.Text = "Normal + Specular"
+        ' 
+        ' LblNWork
+        ' 
+        LblNWork.AutoSize = True
+        LblNWork.Location = New Point(8, 24)
+        LblNWork.Name = "LblNWork"
+        LblNWork.Size = New Size(52, 15)
+        LblNWork.TabIndex = 0
+        LblNWork.Text = "Working"
+        ' 
+        ' ComboNWork
+        ' 
+        ComboNWork.DropDownStyle = ComboBoxStyle.DropDownList
+        ComboNWork.Items.AddRange(New Object() {"Linear", "Srgb", "G22", "G24"})
+        ComboNWork.Location = New Point(84, 21)
+        ComboNWork.Name = "ComboNWork"
+        ComboNWork.Size = New Size(108, 23)
+        ComboNWork.TabIndex = 1
+        ' 
+        ' LblNComp
+        ' 
+        LblNComp.AutoSize = True
+        LblNComp.Location = New Point(8, 54)
+        LblNComp.Name = "LblNComp"
+        LblNComp.Size = New Size(65, 15)
+        LblNComp.TabIndex = 2
+        LblNComp.Text = "Composite"
+        ' 
+        ' ComboNComp
+        ' 
+        ComboNComp.DropDownStyle = ComboBoxStyle.DropDownList
+        ComboNComp.Items.AddRange(New Object() {"Linear", "Srgb", "G22", "G24"})
+        ComboNComp.Location = New Point(84, 51)
+        ComboNComp.Name = "ComboNComp"
+        ComboNComp.Size = New Size(108, 23)
+        ComboNComp.TabIndex = 3
+        ' 
+        ' LblNSrc
+        ' 
+        LblNSrc.AutoSize = True
+        LblNSrc.Location = New Point(8, 84)
+        LblNSrc.Name = "LblNSrc"
+        LblNSrc.Size = New Size(23, 15)
+        LblNSrc.TabIndex = 4
+        LblNSrc.Text = "Src"
+        ' 
+        ' ComboNSrc
+        ' 
+        ComboNSrc.DropDownStyle = ComboBoxStyle.DropDownList
+        ComboNSrc.Items.AddRange(New Object() {"Linear", "Srgb", "G22", "G24"})
+        ComboNSrc.Location = New Point(84, 81)
+        ComboNSrc.Name = "ComboNSrc"
+        ComboNSrc.Size = New Size(108, 23)
+        ComboNSrc.TabIndex = 5
+        ' 
+        ' LblNOut
+        ' 
+        LblNOut.AutoSize = True
+        LblNOut.Location = New Point(8, 114)
+        LblNOut.Name = "LblNOut"
+        LblNOut.Size = New Size(45, 15)
+        LblNOut.TabIndex = 6
+        LblNOut.Text = "Output"
+        ' 
+        ' ComboNOut
+        ' 
+        ComboNOut.DropDownStyle = ComboBoxStyle.DropDownList
+        ComboNOut.Items.AddRange(New Object() {"Linear", "Srgb", "G22", "G24"})
+        ComboNOut.Location = New Point(84, 111)
+        ComboNOut.Name = "ComboNOut"
+        ComboNOut.Size = New Size(108, 23)
+        ComboNOut.TabIndex = 7
+        ' 
+        ' LblNMask
+        ' 
+        LblNMask.AutoSize = True
+        LblNMask.Location = New Point(8, 144)
+        LblNMask.Name = "LblNMask"
+        LblNMask.Size = New Size(35, 15)
+        LblNMask.TabIndex = 8
+        LblNMask.Text = "Mask"
+        ' 
+        ' ComboNMask
+        ' 
+        ComboNMask.DropDownStyle = ComboBoxStyle.DropDownList
+        ComboNMask.Items.AddRange(New Object() {"Raw", "SrgbEncode", "SrgbDecode", "G22Encode", "G22Decode", "G24Encode", "G24Decode"})
+        ComboNMask.Location = New Point(84, 141)
+        ComboNMask.Name = "ComboNMask"
+        ComboNMask.Size = New Size(108, 23)
+        ComboNMask.TabIndex = 9
+        ' 
+        ' LblNFw
+        ' 
+        LblNFw.AutoSize = True
+        LblNFw.Location = New Point(8, 174)
+        LblNFw.Name = "LblNFw"
+        LblNFw.Size = New Size(66, 15)
+        LblNFw.TabIndex = 10
+        LblNFw.Text = "Framework"
+        ' 
+        ' ComboNFw
+        ' 
+        ComboNFw.DropDownStyle = ComboBoxStyle.DropDownList
+        ComboNFw.Items.AddRange(New Object() {"OverPrev", "OverBase", "AddBase", "ModSrc"})
+        ComboNFw.Location = New Point(84, 171)
+        ComboNFw.Name = "ComboNFw"
+        ComboNFw.Size = New Size(108, 23)
+        ComboNFw.TabIndex = 11
+        ' 
+        ' LblNSoft
+        ' 
+        LblNSoft.AutoSize = True
+        LblNSoft.Location = New Point(8, 204)
+        LblNSoft.Name = "LblNSoft"
+        LblNSoft.Size = New Size(55, 15)
+        LblNSoft.TabIndex = 12
+        LblNSoft.Text = "SoftLight"
+        ' 
+        ' ComboNSoft
+        ' 
+        ComboNSoft.DropDownStyle = ComboBoxStyle.DropDownList
+        ComboNSoft.Items.AddRange(New Object() {"W3C", "Gimp", "Illusions", "Pegtop"})
+        ComboNSoft.Location = New Point(84, 201)
+        ComboNSoft.Name = "ComboNSoft"
+        ComboNSoft.Size = New Size(108, 23)
+        ComboNSoft.TabIndex = 13
+        ' 
+        ' LblNBlend
+        ' 
+        LblNBlend.AutoSize = True
+        LblNBlend.Location = New Point(8, 234)
+        LblNBlend.Name = "LblNBlend"
+        LblNBlend.Size = New Size(37, 15)
+        LblNBlend.TabIndex = 14
+        LblNBlend.Text = "Blend"
+        ' 
+        ' ComboNBlend
+        ' 
+        ComboNBlend.DropDownStyle = ComboBoxStyle.DropDownList
+        ComboNBlend.Enabled = False
+        ComboNBlend.Items.AddRange(New Object() {"Replace"})
+        ComboNBlend.Location = New Point(84, 231)
+        ComboNBlend.Name = "ComboNBlend"
+        ComboNBlend.Size = New Size(108, 23)
+        ComboNBlend.TabIndex = 15
+        ' 
+        ' GroupConvSwap
+        ' 
+        GroupConvSwap.Controls.Add(LblSWork)
+        GroupConvSwap.Controls.Add(ComboSWork)
+        GroupConvSwap.Controls.Add(LblSComp)
+        GroupConvSwap.Controls.Add(ComboSComp)
+        GroupConvSwap.Controls.Add(LblSSrc)
+        GroupConvSwap.Controls.Add(ComboSSrc)
+        GroupConvSwap.Controls.Add(LblSOut)
+        GroupConvSwap.Controls.Add(ComboSOut)
+        GroupConvSwap.Controls.Add(LblSMask)
+        GroupConvSwap.Controls.Add(ComboSMask)
+        GroupConvSwap.Controls.Add(LblSFw)
+        GroupConvSwap.Controls.Add(ComboSFw)
+        GroupConvSwap.Controls.Add(LblSSoft)
+        GroupConvSwap.Controls.Add(ComboSSoft)
+        GroupConvSwap.Controls.Add(LblSBlend)
+        GroupConvSwap.Controls.Add(ComboSBlend)
+        GroupConvSwap.Location = New Point(424, 8)
+        GroupConvSwap.Name = "GroupConvSwap"
+        GroupConvSwap.Size = New Size(200, 262)
+        GroupConvSwap.TabIndex = 2
+        GroupConvSwap.TabStop = False
+        GroupConvSwap.Text = "Swaps (Diffuse)"
+        ' 
+        ' LblSWork
+        ' 
+        LblSWork.AutoSize = True
+        LblSWork.Location = New Point(8, 24)
+        LblSWork.Name = "LblSWork"
+        LblSWork.Size = New Size(52, 15)
+        LblSWork.TabIndex = 0
+        LblSWork.Text = "Working"
+        ' 
+        ' ComboSWork
+        ' 
+        ComboSWork.DropDownStyle = ComboBoxStyle.DropDownList
+        ComboSWork.Items.AddRange(New Object() {"Linear", "Srgb", "G22", "G24"})
+        ComboSWork.Location = New Point(84, 21)
+        ComboSWork.Name = "ComboSWork"
+        ComboSWork.Size = New Size(108, 23)
+        ComboSWork.TabIndex = 1
+        ' 
+        ' LblSComp
+        ' 
+        LblSComp.AutoSize = True
+        LblSComp.Location = New Point(8, 54)
+        LblSComp.Name = "LblSComp"
+        LblSComp.Size = New Size(65, 15)
+        LblSComp.TabIndex = 2
+        LblSComp.Text = "Composite"
+        ' 
+        ' ComboSComp
+        ' 
+        ComboSComp.DropDownStyle = ComboBoxStyle.DropDownList
+        ComboSComp.Items.AddRange(New Object() {"Linear", "Srgb", "G22", "G24"})
+        ComboSComp.Location = New Point(84, 51)
+        ComboSComp.Name = "ComboSComp"
+        ComboSComp.Size = New Size(108, 23)
+        ComboSComp.TabIndex = 3
+        ' 
+        ' LblSSrc
+        ' 
+        LblSSrc.AutoSize = True
+        LblSSrc.Location = New Point(8, 84)
+        LblSSrc.Name = "LblSSrc"
+        LblSSrc.Size = New Size(23, 15)
+        LblSSrc.TabIndex = 4
+        LblSSrc.Text = "Src"
+        ' 
+        ' ComboSSrc
+        ' 
+        ComboSSrc.DropDownStyle = ComboBoxStyle.DropDownList
+        ComboSSrc.Items.AddRange(New Object() {"Linear", "Srgb", "G22", "G24"})
+        ComboSSrc.Location = New Point(84, 81)
+        ComboSSrc.Name = "ComboSSrc"
+        ComboSSrc.Size = New Size(108, 23)
+        ComboSSrc.TabIndex = 5
+        ' 
+        ' LblSOut
+        ' 
+        LblSOut.AutoSize = True
+        LblSOut.Location = New Point(8, 114)
+        LblSOut.Name = "LblSOut"
+        LblSOut.Size = New Size(45, 15)
+        LblSOut.TabIndex = 6
+        LblSOut.Text = "Output"
+        ' 
+        ' ComboSOut
+        ' 
+        ComboSOut.DropDownStyle = ComboBoxStyle.DropDownList
+        ComboSOut.Items.AddRange(New Object() {"Linear", "Srgb", "G22", "G24"})
+        ComboSOut.Location = New Point(84, 111)
+        ComboSOut.Name = "ComboSOut"
+        ComboSOut.Size = New Size(108, 23)
+        ComboSOut.TabIndex = 7
+        ' 
+        ' LblSMask
+        ' 
+        LblSMask.AutoSize = True
+        LblSMask.Location = New Point(8, 144)
+        LblSMask.Name = "LblSMask"
+        LblSMask.Size = New Size(35, 15)
+        LblSMask.TabIndex = 8
+        LblSMask.Text = "Mask"
+        ' 
+        ' ComboSMask
+        ' 
+        ComboSMask.DropDownStyle = ComboBoxStyle.DropDownList
+        ComboSMask.Items.AddRange(New Object() {"Raw", "SrgbEncode", "SrgbDecode", "G22Encode", "G22Decode", "G24Encode", "G24Decode"})
+        ComboSMask.Location = New Point(84, 141)
+        ComboSMask.Name = "ComboSMask"
+        ComboSMask.Size = New Size(108, 23)
+        ComboSMask.TabIndex = 9
+        ' 
+        ' LblSFw
+        ' 
+        LblSFw.AutoSize = True
+        LblSFw.Location = New Point(8, 174)
+        LblSFw.Name = "LblSFw"
+        LblSFw.Size = New Size(66, 15)
+        LblSFw.TabIndex = 10
+        LblSFw.Text = "Framework"
+        ' 
+        ' ComboSFw
+        ' 
+        ComboSFw.DropDownStyle = ComboBoxStyle.DropDownList
+        ComboSFw.Items.AddRange(New Object() {"OverPrev", "OverBase", "AddBase", "ModSrc"})
+        ComboSFw.Location = New Point(84, 171)
+        ComboSFw.Name = "ComboSFw"
+        ComboSFw.Size = New Size(108, 23)
+        ComboSFw.TabIndex = 11
+        ' 
+        ' LblSSoft
+        ' 
+        LblSSoft.AutoSize = True
+        LblSSoft.Location = New Point(8, 204)
+        LblSSoft.Name = "LblSSoft"
+        LblSSoft.Size = New Size(55, 15)
+        LblSSoft.TabIndex = 12
+        LblSSoft.Text = "SoftLight"
+        ' 
+        ' ComboSSoft
+        ' 
+        ComboSSoft.DropDownStyle = ComboBoxStyle.DropDownList
+        ComboSSoft.Items.AddRange(New Object() {"W3C", "Gimp", "Illusions", "Pegtop"})
+        ComboSSoft.Location = New Point(84, 201)
+        ComboSSoft.Name = "ComboSSoft"
+        ComboSSoft.Size = New Size(108, 23)
+        ComboSSoft.TabIndex = 13
+        ' 
+        ' LblSBlend
+        ' 
+        LblSBlend.AutoSize = True
+        LblSBlend.Location = New Point(8, 234)
+        LblSBlend.Name = "LblSBlend"
+        LblSBlend.Size = New Size(37, 15)
+        LblSBlend.TabIndex = 14
+        LblSBlend.Text = "Blend"
+        ' 
+        ' ComboSBlend
+        ' 
+        ComboSBlend.DropDownStyle = ComboBoxStyle.DropDownList
+        ComboSBlend.Enabled = False
+        ComboSBlend.Items.AddRange(New Object() {"Replace"})
+        ComboSBlend.Location = New Point(84, 231)
+        ComboSBlend.Name = "ComboSBlend"
+        ComboSBlend.Size = New Size(108, 23)
+        ComboSBlend.TabIndex = 15
+        ' 
+        ' ButtonResetConv
+        ' 
+        ButtonResetConv.Location = New Point(456, 278)
+        ButtonResetConv.Name = "ButtonResetConv"
+        ButtonResetConv.Size = New Size(168, 26)
+        ButtonResetConv.TabIndex = 3
+        ButtonResetConv.Text = "Revert to default"
+        ButtonResetConv.UseVisualStyleBackColor = True
+        ' 
+        ' ButtonOK
+        ' 
+        ButtonOK.Location = New Point(488, 362)
         ButtonOK.Name = "ButtonOK"
-        ButtonOK.Size = New System.Drawing.Size(78, 26)
-        ButtonOK.TabIndex = 3
+        ButtonOK.Size = New Size(78, 26)
+        ButtonOK.TabIndex = 1
         ButtonOK.Text = "OK"
         ButtonOK.UseVisualStyleBackColor = True
-        '
-        'ButtonCancel
-        '
-        ButtonCancel.DialogResult = System.Windows.Forms.DialogResult.Cancel
-        ButtonCancel.Location = New System.Drawing.Point(246, 218)
+        ' 
+        ' ButtonCancel
+        ' 
+        ButtonCancel.DialogResult = DialogResult.Cancel
+        ButtonCancel.Location = New Point(574, 362)
         ButtonCancel.Name = "ButtonCancel"
-        ButtonCancel.Size = New System.Drawing.Size(78, 26)
-        ButtonCancel.TabIndex = 4
+        ButtonCancel.Size = New Size(78, 26)
+        ButtonCancel.TabIndex = 2
         ButtonCancel.Text = "Cancel"
         ButtonCancel.UseVisualStyleBackColor = True
         '
-        'CharGenOptionsForm
+        ' TabPageOrder
+        '
+        TabPageOrder.Controls.Add(GroupTintOrder)
+        TabPageOrder.Controls.Add(GroupSwapOrder)
+        TabPageOrder.Controls.Add(LblSkinPlacement)
+        TabPageOrder.Controls.Add(ComboSkinPlacement)
+        TabPageOrder.Controls.Add(BtnSortRevert)
+        TabPageOrder.Location = New Point(4, 24)
+        TabPageOrder.Name = "TabPageOrder"
+        TabPageOrder.Padding = New Padding(3)
+        TabPageOrder.Size = New Size(632, 312)
+        TabPageOrder.TabIndex = 2
+        TabPageOrder.Text = "Tint Order"
+        TabPageOrder.UseVisualStyleBackColor = True
+        '
+        ' GroupTintOrder
+        '
+        GroupTintOrder.Controls.Add(ListTintRules)
+        GroupTintOrder.Controls.Add(ComboTintKey)
+        GroupTintOrder.Controls.Add(ChkTintDesc)
+        GroupTintOrder.Controls.Add(BtnTintAdd)
+        GroupTintOrder.Controls.Add(BtnTintRemove)
+        GroupTintOrder.Controls.Add(BtnTintUp)
+        GroupTintOrder.Controls.Add(BtnTintDown)
+        GroupTintOrder.Location = New Point(8, 8)
+        GroupTintOrder.Name = "GroupTintOrder"
+        GroupTintOrder.Size = New Size(300, 250)
+        GroupTintOrder.TabStop = False
+        GroupTintOrder.Text = "Tint layer order (1st = bottom)"
+        '
+        ' ListTintRules
+        '
+        ListTintRules.FormattingEnabled = True
+        ListTintRules.ItemHeight = 15
+        ListTintRules.Location = New Point(8, 22)
+        ListTintRules.Name = "ListTintRules"
+        ListTintRules.Size = New Size(284, 139)
+        ListTintRules.TabIndex = 0
+        '
+        ' ComboTintKey
+        '
+        ComboTintKey.DropDownStyle = ComboBoxStyle.DropDownList
+        ComboTintKey.Location = New Point(8, 168)
+        ComboTintKey.Name = "ComboTintKey"
+        ComboTintKey.Size = New Size(180, 23)
+        ComboTintKey.TabIndex = 1
+        '
+        ' ChkTintDesc
+        '
+        ChkTintDesc.AutoSize = True
+        ChkTintDesc.Location = New Point(196, 170)
+        ChkTintDesc.Name = "ChkTintDesc"
+        ChkTintDesc.Size = New Size(90, 19)
+        ChkTintDesc.TabIndex = 2
+        ChkTintDesc.Text = "Descending"
+        ChkTintDesc.UseVisualStyleBackColor = True
+        '
+        ' BtnTintAdd
+        '
+        BtnTintAdd.Location = New Point(8, 196)
+        BtnTintAdd.Name = "BtnTintAdd"
+        BtnTintAdd.Size = New Size(66, 26)
+        BtnTintAdd.TabIndex = 3
+        BtnTintAdd.Text = "Add"
+        BtnTintAdd.UseVisualStyleBackColor = True
+        '
+        ' BtnTintRemove
+        '
+        BtnTintRemove.Location = New Point(78, 196)
+        BtnTintRemove.Name = "BtnTintRemove"
+        BtnTintRemove.Size = New Size(66, 26)
+        BtnTintRemove.TabIndex = 4
+        BtnTintRemove.Text = "Remove"
+        BtnTintRemove.UseVisualStyleBackColor = True
+        '
+        ' BtnTintUp
+        '
+        BtnTintUp.Location = New Point(148, 196)
+        BtnTintUp.Name = "BtnTintUp"
+        BtnTintUp.Size = New Size(66, 26)
+        BtnTintUp.TabIndex = 5
+        BtnTintUp.Text = "Up"
+        BtnTintUp.UseVisualStyleBackColor = True
+        '
+        ' BtnTintDown
+        '
+        BtnTintDown.Location = New Point(218, 196)
+        BtnTintDown.Name = "BtnTintDown"
+        BtnTintDown.Size = New Size(66, 26)
+        BtnTintDown.TabIndex = 6
+        BtnTintDown.Text = "Down"
+        BtnTintDown.UseVisualStyleBackColor = True
+        '
+        ' GroupSwapOrder
+        '
+        GroupSwapOrder.Controls.Add(ListSwapRules)
+        GroupSwapOrder.Controls.Add(ComboSwapKey)
+        GroupSwapOrder.Controls.Add(ChkSwapDesc)
+        GroupSwapOrder.Controls.Add(BtnSwapAdd)
+        GroupSwapOrder.Controls.Add(BtnSwapRemove)
+        GroupSwapOrder.Controls.Add(BtnSwapUp)
+        GroupSwapOrder.Controls.Add(BtnSwapDown)
+        GroupSwapOrder.Location = New Point(316, 8)
+        GroupSwapOrder.Name = "GroupSwapOrder"
+        GroupSwapOrder.Size = New Size(300, 250)
+        GroupSwapOrder.TabStop = False
+        GroupSwapOrder.Text = "Swap order (1st = first applied)"
+        '
+        ' ListSwapRules
+        '
+        ListSwapRules.FormattingEnabled = True
+        ListSwapRules.ItemHeight = 15
+        ListSwapRules.Location = New Point(8, 22)
+        ListSwapRules.Name = "ListSwapRules"
+        ListSwapRules.Size = New Size(284, 139)
+        ListSwapRules.TabIndex = 0
+        '
+        ' ComboSwapKey
+        '
+        ComboSwapKey.DropDownStyle = ComboBoxStyle.DropDownList
+        ComboSwapKey.Location = New Point(8, 168)
+        ComboSwapKey.Name = "ComboSwapKey"
+        ComboSwapKey.Size = New Size(180, 23)
+        ComboSwapKey.TabIndex = 1
+        '
+        ' ChkSwapDesc
+        '
+        ChkSwapDesc.AutoSize = True
+        ChkSwapDesc.Location = New Point(196, 170)
+        ChkSwapDesc.Name = "ChkSwapDesc"
+        ChkSwapDesc.Size = New Size(90, 19)
+        ChkSwapDesc.TabIndex = 2
+        ChkSwapDesc.Text = "Descending"
+        ChkSwapDesc.UseVisualStyleBackColor = True
+        '
+        ' BtnSwapAdd
+        '
+        BtnSwapAdd.Location = New Point(8, 196)
+        BtnSwapAdd.Name = "BtnSwapAdd"
+        BtnSwapAdd.Size = New Size(66, 26)
+        BtnSwapAdd.TabIndex = 3
+        BtnSwapAdd.Text = "Add"
+        BtnSwapAdd.UseVisualStyleBackColor = True
+        '
+        ' BtnSwapRemove
+        '
+        BtnSwapRemove.Location = New Point(78, 196)
+        BtnSwapRemove.Name = "BtnSwapRemove"
+        BtnSwapRemove.Size = New Size(66, 26)
+        BtnSwapRemove.TabIndex = 4
+        BtnSwapRemove.Text = "Remove"
+        BtnSwapRemove.UseVisualStyleBackColor = True
+        '
+        ' BtnSwapUp
+        '
+        BtnSwapUp.Location = New Point(148, 196)
+        BtnSwapUp.Name = "BtnSwapUp"
+        BtnSwapUp.Size = New Size(66, 26)
+        BtnSwapUp.TabIndex = 5
+        BtnSwapUp.Text = "Up"
+        BtnSwapUp.UseVisualStyleBackColor = True
+        '
+        ' BtnSwapDown
+        '
+        BtnSwapDown.Location = New Point(218, 196)
+        BtnSwapDown.Name = "BtnSwapDown"
+        BtnSwapDown.Size = New Size(66, 26)
+        BtnSwapDown.TabIndex = 6
+        BtnSwapDown.Text = "Down"
+        BtnSwapDown.UseVisualStyleBackColor = True
+        '
+        ' LblSkinPlacement
+        '
+        LblSkinPlacement.AutoSize = True
+        LblSkinPlacement.Location = New Point(8, 268)
+        LblSkinPlacement.Name = "LblSkinPlacement"
+        LblSkinPlacement.Size = New Size(122, 15)
+        LblSkinPlacement.TabIndex = 1
+        LblSkinPlacement.Text = "SkinTone placement:"
+        '
+        ' ComboSkinPlacement
+        '
+        ComboSkinPlacement.DropDownStyle = ComboBoxStyle.DropDownList
+        ComboSkinPlacement.Items.AddRange(New Object() {"Positional", "FirstOfAll", "LastOfAll"})
+        ComboSkinPlacement.Location = New Point(160, 265)
+        ComboSkinPlacement.Name = "ComboSkinPlacement"
+        ComboSkinPlacement.Size = New Size(180, 23)
+        ComboSkinPlacement.TabIndex = 2
+        '
+        ' BtnSortRevert
+        '
+        BtnSortRevert.Location = New Point(470, 264)
+        BtnSortRevert.Name = "BtnSortRevert"
+        BtnSortRevert.Size = New Size(146, 26)
+        BtnSortRevert.TabIndex = 3
+        BtnSortRevert.Text = "Revert to default"
+        BtnSortRevert.UseVisualStyleBackColor = True
+        '
+        ' CharGenOptionsForm
         '
         AcceptButton = ButtonOK
-        AutoScaleDimensions = New System.Drawing.SizeF(7.0F, 15.0F)
-        AutoScaleMode = System.Windows.Forms.AutoScaleMode.Font
+        AutoScaleDimensions = New SizeF(7F, 15F)
+        AutoScaleMode = AutoScaleMode.Font
         CancelButton = ButtonCancel
-        ClientSize = New System.Drawing.Size(336, 256)
-        Controls.Add(GroupBoxSize)
-        Controls.Add(LabelFormat)
-        Controls.Add(ComboFormat)
+        ClientSize = New Size(664, 400)
+        Controls.Add(TabMain)
         Controls.Add(ButtonOK)
         Controls.Add(ButtonCancel)
-        FormBorderStyle = System.Windows.Forms.FormBorderStyle.FixedDialog
+        FormBorderStyle = FormBorderStyle.FixedDialog
         MaximizeBox = False
         MinimizeBox = False
         Name = "CharGenOptionsForm"
-        StartPosition = System.Windows.Forms.FormStartPosition.CenterParent
+        StartPosition = FormStartPosition.CenterParent
         Text = "CharGen Options"
+        TabMain.ResumeLayout(False)
+        TabPageSize.ResumeLayout(False)
         GroupBoxSize.ResumeLayout(False)
         GroupBoxSize.PerformLayout()
+        TabPageConv.ResumeLayout(False)
+        GroupConvDiffuse.ResumeLayout(False)
+        GroupConvDiffuse.PerformLayout()
+        GroupConvNormal.ResumeLayout(False)
+        GroupConvNormal.PerformLayout()
+        GroupConvSwap.ResumeLayout(False)
+        GroupConvSwap.PerformLayout()
+        TabPageOrder.ResumeLayout(False)
+        TabPageOrder.PerformLayout()
+        GroupTintOrder.ResumeLayout(False)
+        GroupSwapOrder.ResumeLayout(False)
         ResumeLayout(False)
-        PerformLayout()
     End Sub
 
+    Friend WithEvents TabMain As System.Windows.Forms.TabControl
+    Friend WithEvents TabPageSize As System.Windows.Forms.TabPage
+    Friend WithEvents TabPageConv As System.Windows.Forms.TabPage
     Friend WithEvents GroupBoxSize As System.Windows.Forms.GroupBox
     Friend WithEvents RadioAll As System.Windows.Forms.RadioButton
     Friend WithEvents RadioPerLayer As System.Windows.Forms.RadioButton
@@ -201,6 +1065,79 @@ Partial Class CharGenOptionsForm
     Friend WithEvents ComboSpecular As System.Windows.Forms.ComboBox
     Friend WithEvents LabelFormat As System.Windows.Forms.Label
     Friend WithEvents ComboFormat As System.Windows.Forms.ComboBox
+    Friend WithEvents GroupConvDiffuse As System.Windows.Forms.GroupBox
+    Friend WithEvents LblDWork As System.Windows.Forms.Label
+    Friend WithEvents ComboDWork As System.Windows.Forms.ComboBox
+    Friend WithEvents LblDComp As System.Windows.Forms.Label
+    Friend WithEvents ComboDComp As System.Windows.Forms.ComboBox
+    Friend WithEvents LblDSrc As System.Windows.Forms.Label
+    Friend WithEvents ComboDSrc As System.Windows.Forms.ComboBox
+    Friend WithEvents LblDOut As System.Windows.Forms.Label
+    Friend WithEvents ComboDOut As System.Windows.Forms.ComboBox
+    Friend WithEvents LblDMask As System.Windows.Forms.Label
+    Friend WithEvents ComboDMask As System.Windows.Forms.ComboBox
+    Friend WithEvents LblDFw As System.Windows.Forms.Label
+    Friend WithEvents ComboDFw As System.Windows.Forms.ComboBox
+    Friend WithEvents LblDSoft As System.Windows.Forms.Label
+    Friend WithEvents ComboDSoft As System.Windows.Forms.ComboBox
+    Friend WithEvents LblDBlend As System.Windows.Forms.Label
+    Friend WithEvents ComboDBlend As System.Windows.Forms.ComboBox
+    Friend WithEvents CheckDSeedG22 As System.Windows.Forms.CheckBox
+    Friend WithEvents GroupConvNormal As System.Windows.Forms.GroupBox
+    Friend WithEvents LblNWork As System.Windows.Forms.Label
+    Friend WithEvents ComboNWork As System.Windows.Forms.ComboBox
+    Friend WithEvents LblNComp As System.Windows.Forms.Label
+    Friend WithEvents ComboNComp As System.Windows.Forms.ComboBox
+    Friend WithEvents LblNSrc As System.Windows.Forms.Label
+    Friend WithEvents ComboNSrc As System.Windows.Forms.ComboBox
+    Friend WithEvents LblNOut As System.Windows.Forms.Label
+    Friend WithEvents ComboNOut As System.Windows.Forms.ComboBox
+    Friend WithEvents LblNMask As System.Windows.Forms.Label
+    Friend WithEvents ComboNMask As System.Windows.Forms.ComboBox
+    Friend WithEvents LblNFw As System.Windows.Forms.Label
+    Friend WithEvents ComboNFw As System.Windows.Forms.ComboBox
+    Friend WithEvents LblNSoft As System.Windows.Forms.Label
+    Friend WithEvents ComboNSoft As System.Windows.Forms.ComboBox
+    Friend WithEvents LblNBlend As System.Windows.Forms.Label
+    Friend WithEvents ComboNBlend As System.Windows.Forms.ComboBox
+    Friend WithEvents GroupConvSwap As System.Windows.Forms.GroupBox
+    Friend WithEvents LblSWork As System.Windows.Forms.Label
+    Friend WithEvents ComboSWork As System.Windows.Forms.ComboBox
+    Friend WithEvents LblSComp As System.Windows.Forms.Label
+    Friend WithEvents ComboSComp As System.Windows.Forms.ComboBox
+    Friend WithEvents LblSSrc As System.Windows.Forms.Label
+    Friend WithEvents ComboSSrc As System.Windows.Forms.ComboBox
+    Friend WithEvents LblSOut As System.Windows.Forms.Label
+    Friend WithEvents ComboSOut As System.Windows.Forms.ComboBox
+    Friend WithEvents LblSMask As System.Windows.Forms.Label
+    Friend WithEvents ComboSMask As System.Windows.Forms.ComboBox
+    Friend WithEvents LblSFw As System.Windows.Forms.Label
+    Friend WithEvents ComboSFw As System.Windows.Forms.ComboBox
+    Friend WithEvents LblSSoft As System.Windows.Forms.Label
+    Friend WithEvents ComboSSoft As System.Windows.Forms.ComboBox
+    Friend WithEvents LblSBlend As System.Windows.Forms.Label
+    Friend WithEvents ComboSBlend As System.Windows.Forms.ComboBox
+    Friend WithEvents ButtonResetConv As System.Windows.Forms.Button
     Friend WithEvents ButtonOK As System.Windows.Forms.Button
     Friend WithEvents ButtonCancel As System.Windows.Forms.Button
+    Friend WithEvents TabPageOrder As System.Windows.Forms.TabPage
+    Friend WithEvents GroupTintOrder As System.Windows.Forms.GroupBox
+    Friend WithEvents ListTintRules As System.Windows.Forms.ListBox
+    Friend WithEvents ComboTintKey As System.Windows.Forms.ComboBox
+    Friend WithEvents ChkTintDesc As System.Windows.Forms.CheckBox
+    Friend WithEvents BtnTintAdd As System.Windows.Forms.Button
+    Friend WithEvents BtnTintRemove As System.Windows.Forms.Button
+    Friend WithEvents BtnTintUp As System.Windows.Forms.Button
+    Friend WithEvents BtnTintDown As System.Windows.Forms.Button
+    Friend WithEvents GroupSwapOrder As System.Windows.Forms.GroupBox
+    Friend WithEvents ListSwapRules As System.Windows.Forms.ListBox
+    Friend WithEvents ComboSwapKey As System.Windows.Forms.ComboBox
+    Friend WithEvents ChkSwapDesc As System.Windows.Forms.CheckBox
+    Friend WithEvents BtnSwapAdd As System.Windows.Forms.Button
+    Friend WithEvents BtnSwapRemove As System.Windows.Forms.Button
+    Friend WithEvents BtnSwapUp As System.Windows.Forms.Button
+    Friend WithEvents BtnSwapDown As System.Windows.Forms.Button
+    Friend WithEvents LblSkinPlacement As System.Windows.Forms.Label
+    Friend WithEvents ComboSkinPlacement As System.Windows.Forms.ComboBox
+    Friend WithEvents BtnSortRevert As System.Windows.Forms.Button
 End Class

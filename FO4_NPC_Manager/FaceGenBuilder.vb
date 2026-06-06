@@ -128,7 +128,7 @@ Public Module FaceGenBuilder
     ''' default: en batch (cientos de clones) explotaría el disco con decenas de TGA por NPC. El _2 (GPU) /
     ''' _2b (CPU) finales NO dependen de esto (se escriben siempre en DebugMode). Encender a mano para el
     ''' chase byte-level de una cara concreta.</summary>
-    Public Property DumpIntermediates As Boolean = False
+    Public Property DumpIntermediates As Boolean = True
 
     ''' <summary>Settings de salida del bake (resolución por canal + compresión del diffuse), DERIVADO del
     ''' config persistido (Config_App, botón "CharGen Options"). Single source of truth = config; sin estado
@@ -1300,20 +1300,12 @@ Public Module FaceGenBuilder
         ' el _2 de comparación (vs el _2b del CPU). En RELEASE-CPU NO corre -> no se duplica GPU+CPU y el
         ' bake no toca GL (async). El CPU ya se compuso arriba (cpu). ---
         Dim prevPerLayerDiffLog = FaceTintCompositor.PerLayerDiffLog
-        Dim prevDumpMaskDir = FaceTintCompositor.DumpMaskDir
         Dim prevCurrentNpcFormID = FaceTintCompositor.CurrentNpcFormID
-        Dim maskDir As String = Nothing
         Dim pipelineResult As FaceTintCompositor.FaceTintPipelineResult = Nothing
         If needGl Then
             If DebugMode AndAlso DumpIntermediates Then
                 FaceTintCompositor.PerLayerDiffLog = True
                 FaceTintCompositor.CurrentNpcFormID = npcFormID
-                ' dump de cada mask/textura aplicada (todas las capas/canales) a TGA junto al output,
-                ' en subcarpeta por-NPC (los nombres de capa son genéricos). SOLO si DumpIntermediates
-                ' (single-NPC); en batch queda Nothing -> el bloque BASEIN/CPU_* de abajo tambien se saltea
-                ' (gateado por maskDir no vacío) y solo quedan los _2/_2b finales.
-                maskDir = Path.Combine(Config_App.Current.DataPath, "Textures", "Actors", "Character", "FaceCustomization", originPlugin, "mask Tests", $"0x{npcFormID:X8}")
-                Try : Directory.CreateDirectory(maskDir) : FaceTintCompositor.DumpMaskDir = maskDir : Catch : End Try
             End If
             Try
                 pipelineResult = FaceTintCompositor.ApplyFaceTintPipeline(
@@ -1326,27 +1318,13 @@ Public Module FaceGenBuilder
                     OutputSettings)
             Finally
                 FaceTintCompositor.PerLayerDiffLog = prevPerLayerDiffLog
-                FaceTintCompositor.DumpMaskDir = prevDumpMaskDir
                 FaceTintCompositor.CurrentNpcFormID = prevCurrentNpcFormID
             End Try
         End If
 
-        ' PRISTINE BASEIN dump (NPC-side, DebugMode). El compositor dumpea los layer/swap pristinos
-        ' in-place; aca agregamos la base (no llega al compositor como path). MISMO dumper unico:
-        ' FaceTintCompositor.WritePristineTga(sourcePath, outPath) -> decode CPU/DirectXTex
-        ' (byte-identico a texconv/CK, validado en Tools/PristineDumpProbe), nunca la GPU.
-        If DebugMode AndAlso Not String.IsNullOrEmpty(maskDir) Then
-            FaceTintCompositor.WritePristineTga(diffuseKey, Path.Combine(maskDir, "BASEIN_Diffuse.tga"))
-            FaceTintCompositor.WritePristineTga(normalKey, Path.Combine(maskDir, "BASEIN_Normal.tga"))
-            FaceTintCompositor.WritePristineTga(specKey, Path.Combine(maskDir, "BASEIN_Specular.tga"))
-            ' espejo CPU TGA por canal (CPU_*.tga, D en g22 / N/S lineal) para el byte-test contra el
-            ' `_d_2.tga` (GPU) y el `_3` de gen3. (El _2b.dds se escribe en el loop de slots de abajo.)
-            If cpu IsNot Nothing Then
-                DumpCpuTga(cpu.Diffuse, Path.Combine(maskDir, "CPU_Diffuse.tga"))
-                DumpCpuTga(cpu.Normal, Path.Combine(maskDir, "CPU_Normal.tga"))
-                DumpCpuTga(cpu.Specular, Path.Combine(maskDir, "CPU_Specular.tga"))
-            End If
-        End If
+        ' Dumps de mask/intermediates movidos al CLI (FO4_FaceTint_CLI --dump escribe SOLO los masks).
+        ' El app/lib produce únicamente el _2/_2b final + el TGA final (gateado por DebugMode/SandboxOutput);
+        ' los intermedios de composición (BASEIN/CPU_*/per-stage) se eliminaron.
 
         ' Track any fresh textures the pipeline produced so we can delete them on exit. (Nothing en
         ' release-CPU: no hubo GL pipeline.)
@@ -1581,13 +1559,6 @@ Public Module FaceGenBuilder
             Try : GL.DeleteTexture(id) : Catch : End Try
         Next
         ids.Clear()
-    End Sub
-
-    ''' <summary>DebugMode: dump de un canal del espejo CPU (FaceTintCpuCompositor) a TGA uncompressed
-    ''' (BGRA), via el mismo writer que el GL. No-op si el canal es Nothing.</summary>
-    Private Sub DumpCpuTga(ch As FaceTintCpuCompositor.CpuChannelResult, path As String)
-        If ch Is Nothing OrElse ch.Bgra Is Nothing Then Return
-        FaceTintCompositor.WriteBgraToTga(path, ch.Bgra, ch.Width, ch.Height)
     End Sub
 
     ''' <summary>Tamaño (W si isWidth, sino H) del slot: del canal del pipeline GL si tiene (>0), sino del

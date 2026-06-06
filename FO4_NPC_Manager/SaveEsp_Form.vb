@@ -210,6 +210,10 @@ Public Class SaveEsp_Form
         ''' <summary>EditorID of the existing LVLN (in the target plugin) to append to. Matched by EditorID
         ''' in the saver against the LVLN the preserve-existing pass loads from the same plugin.</summary>
         Public LvlListExistingEditorID As String
+        ''' <summary>When True, skip any saved NPC that is ALREADY a member of a Leveled NPC list (LVLN) in
+        ''' THIS target plugin (the lists we manage — not load-order-wide). Opt-in (default False = add all,
+        ''' allowing the same NPC to appear in multiple lists). Independent of new/existing mode.</summary>
+        Public LvlListNoDuplicate As Boolean
     End Class
 
     Private ReadOnly _dataPath As String
@@ -228,9 +232,6 @@ Public Class SaveEsp_Form
     ''' bake is optional. Recomputed when the scope (Apply-to-all) toggles. When False the CharGen
     ''' checkbox is forced on (at least one NPC needs the BA2 to render in-world).</summary>
     Private _scopeAllowsChargenOptOut As Boolean
-    ''' <summary>Cancellation source for the per-NPC bake loop. Created per run; the Stop button
-    ''' cancels it between NPCs so a long "Apply to all" batch can be interrupted.</summary>
-    Private _bakeCts As System.Threading.CancellationTokenSource
 
     Public Property Result As SaveTarget = Nothing
     ''' <summary>Populated by <see cref="OnOkClick"/> after the orchestrator finishes; remains
@@ -238,16 +239,10 @@ Public Class SaveEsp_Form
     ''' post-save cleanup (cache update, tree refresh, success MessageBox).</summary>
     Public Property ExecutionResult As NpcOverrideSaver.SaveExecutionResult = Nothing
 
-    ''' <summary>True while the save orchestrator is running. Used by OnFormClosing to block
-    ''' user-initiated closes mid-write. Inferring this from PanelProgress.Visible was unreliable
-    ''' because the panel stays visible on the success path until Close() runs, and an earlier
-    ''' cancelled X-click could leave CloseReason sticky as UserClosing.</summary>
-    Private _workInProgress As Boolean = False
-
     ''' <summary>Total number of high-level steps for the current save run. Computed at the
     ''' start of OnOkClick from the SaveTarget (depends on update-vs-new and CharGen yes/no).
-    ''' Drives the determinate ProgressBarMain so the user sees real progress instead of a
-    ''' marquee.</summary>
+    ''' Drives the determinate bar of the shared progress dialog so the user sees real progress
+    ''' instead of a marquee.</summary>
     Private _totalSteps As Integer = 0
     Private _currentStep As Integer = 0
     ''' <summary>Ordered list of Phase-substring → step-number mappings. The orchestrator emits
@@ -260,6 +255,11 @@ Public Class SaveEsp_Form
     Private _batchProgress As Boolean = False
     ''' <summary>NPC count for the current batch run; the determinate bar maximum.</summary>
     Private _batchNpcCount As Integer = 0
+    ''' <summary>Last bar position reported in a batch run. Batch sub-phase reports (pack steps) update
+    ''' the status text only and must leave the determinate bar where the last per-NPC "Baking CharGen"
+    ''' report left it — the progress dialog's SetProgress sets both bar and text, so we re-pass these.</summary>
+    Private _lastBatchCurrent As Integer = 0
+    Private _lastBatchMax As Integer = 1
 
     ''' <summary>The plugin filename the anchor NPC is currently parented to in the MainForm tree.
     ''' Equals <c>selectedInput.SourcePluginName</c> = the plugin that wins the override post-merge.
@@ -325,7 +325,6 @@ Public Class SaveEsp_Form
         End If
 
         AddHandler RadioScopeAllChanged.CheckedChanged, AddressOf OnScopeChanged
-        AddHandler ButtonCancel.Click, AddressOf OnCancelOrStopClick
 
         PopulateExistingList()
         ' Default to "create new" when no existing plugins, else "update existing".
@@ -719,10 +718,11 @@ Public Class SaveEsp_Form
         ' SAME target plugin. Existing lists are matched by EditorID against the target plugin's LVLN.
         If CheckBoxAddToLvlList.Checked Then
             target.AddToLvlList = True
+            target.LvlListNoDuplicate = CheckBoxLvlNoDup.Checked
             If RadioLvlExisting.Checked Then
                 Dim selLvl = TryCast(ComboBoxLvlExisting.SelectedItem, LvlnListInfo)
                 If selLvl Is Nothing Then
-                    MessageBox.Show(Me, "Elegí una Leveled NPC list existente, o cambiá a 'New'.",
+                    MessageBox.Show(Me, "Select an existing leveled NPC list, or switch to 'New'.",
                                     "Save ESP/ESM", MessageBoxButtons.OK, MessageBoxIcon.Warning)
                     Return Nothing
                 End If
@@ -731,7 +731,7 @@ Public Class SaveEsp_Form
             Else
                 Dim lvlName = TextBoxLvlNewName.Text.Trim()
                 If Not IsValidLvlListName(lvlName) Then
-                    MessageBox.Show(Me, "El nombre de la Leveled NPC list debe ser ASCII: letras, números o guion bajo (sin espacios ni acentos).",
+                    MessageBox.Show(Me, "The leveled NPC list name must be ASCII: letters, digits or underscore (no spaces or accents).",
                                     "Save ESP/ESM", MessageBoxButtons.OK, MessageBoxIcon.Warning)
                     Return Nothing
                 End If
@@ -742,8 +742,8 @@ Public Class SaveEsp_Form
                 Dim wouldBeEdid = NpcOverrideSaver.ApplyEspNamespaceToEditorId(NpcOverrideSaver.LeveledNpcListEditorIdPrefix & lvlName, espNameNoExt)
                 If Not target.IsNewPlugin AndAlso
                    GetLvlnListsForPlugin(target.TargetPath).Any(Function(i) String.Equals(i.EditorID, wouldBeEdid, StringComparison.OrdinalIgnoreCase)) Then
-                    MessageBox.Show(Me, $"Ya existe una Leveled NPC list '{wouldBeEdid}' en este plugin." & vbCrLf &
-                                    "Elegí 'Existing' para agregarle, o usá un nombre distinto.",
+                    MessageBox.Show(Me, $"A leveled NPC list '{wouldBeEdid}' already exists in this plugin." & vbCrLf &
+                                    "Choose 'Existing' to add to it, or use a different name.",
                                     "Save ESP/ESM", MessageBoxButtons.OK, MessageBoxIcon.Warning)
                     Return Nothing
                 End If
@@ -755,12 +755,14 @@ Public Class SaveEsp_Form
         Return target
     End Function
 
-    ''' <summary>Async OK handler. Validates, then runs the save orchestrator while showing
-    ''' progress in the embedded panel. Closes with DialogResult.OK on success, leaves the
-    ''' form open and re-enables controls on failure so the user can retry. Cancel is
-    ''' disabled during execution; <see cref="OnFormClosing"/> blocks closes while the work
-    ''' is running so the user can't tear the dialog down mid-write.</summary>
-    Private Async Sub OnOkClick(sender As Object, e As EventArgs)
+    ''' <summary>OK handler. Validates, then runs the save orchestrator inside the shared modal
+    ''' progress dialog (<see cref="BuildProgress_Form"/> — the same one Build CharGen loose uses).
+    ''' The modal blocks this form automatically (no manual control-locking) and has no close box,
+    ''' so the user can't tear it down mid-write. Closes this dialog with DialogResult.OK on success;
+    ''' on failure the modal closes, this form is interactive again and the error is shown inline so
+    ''' the user can adjust and retry. Not async: ShowDialog is blocking; the orchestrator await lives
+    ''' inside the dialog's WorkAsync closure, which populates <see cref="ExecutionResult"/>.</summary>
+    Private Sub OnOkClick(sender As Object, e As EventArgs)
         Dim target = BuildTargetFromUi()
         If target Is Nothing Then Return
 
@@ -789,110 +791,62 @@ Public Class SaveEsp_Form
         ' right after the existing plugin is loaded — reusing that single PluginReader.Load instead
         ' of loading the plugin twice. A conflict aborts the save with a descriptive message.
 
-        ' Lock UI: every interactive control (except the form chrome) goes disabled and the
-        ' progress panel becomes visible. Cancel button stays disabled too — the orchestrator
-        ' has no cancellation token plumbed through (writer + bake + BA2 pack run synchronously
-        ' on the worker Task), so offering a Cancel that doesn't actually cancel would lie.
-        _workInProgress = True
         Dim inputs = CurrentInputs()
         BuildStepPlan(target, inputs.Count)
-        LockUiForExecution(True)
+        _lastBatchCurrent = 0
+        _lastBatchMax = Math.Max(1, _batchNpcCount)
 
-        _bakeCts = New System.Threading.CancellationTokenSource()
-        Dim progress As New Progress(Of NpcOverrideSaver.SaveProgress)(AddressOf ApplyProgress)
-
+        ' The CTS lives here (not inside the closure) so its lifetime spans ShowDialog: by the time
+        ' the modal loop returns, every queued progress callback that touches it has been pumped, so
+        ' disposing it afterwards can't race a late report.
+        Dim cts As New System.Threading.CancellationTokenSource()
         Try
-            ExecutionResult = Await NpcOverrideSaver.ExecuteAsync(
-                target,
-                inputs,
-                _saveCtx,
-                progress,
-                _bakeCts.Token)
-        Catch ex As Exception
-            ' ExecuteAsync wraps internal failures in ExecutionResult.ErrorMessage; this Catch
-            ' only fires for genuinely unexpected failures (e.g. orchestrator constructor crash).
-            ExecutionResult = New NpcOverrideSaver.SaveExecutionResult With {
-                .Success = False,
-                .ErrorMessage = ex.Message
-            }
-        End Try
+            Using prog As New BuildProgress_Form()
+                prog.Text = If(inputs.Count > 1, $"Saving {inputs.Count} NPC overrides…", "Saving NPC override…")
+                prog.WorkAsync =
+                    Async Function(dlg As BuildProgress_Form) As Task
+                        ' Let the dialog (Cancel button included) paint before the first blocking GL
+                        ' bake — same rationale as the Build CharGen loose loop: a synchronous bake on
+                        ' the UI thread otherwise leaves the dialog unpainted until it next yields.
+                        Await Task.Delay(1)
 
-        ' Clear the in-progress flag BEFORE Close() so OnFormClosing's guard does not block
-        ' the programmatic close. The guard only fires while work is actually running; once
-        ' the awaited orchestrator returns there is nothing to protect.
-        _workInProgress = False
-        _bakeCts?.Dispose()
-        _bakeCts = Nothing
+                        Dim progress As New Progress(Of NpcOverrideSaver.SaveProgress)(
+                            Sub(p)
+                                ' Bridge the dialog's Cancel flag to the orchestrator's token. The bake
+                                ' loop checks the token between NPCs, so cancel takes effect at the next
+                                ' per-NPC boundary (same granularity as the old in-form Stop button).
+                                If dlg.Cancelled AndAlso Not cts.IsCancellationRequested Then cts.Cancel()
+                                ApplyProgressToDialog(dlg, p)
+                            End Sub)
+                        Try
+                            ExecutionResult = Await NpcOverrideSaver.ExecuteAsync(
+                                target, inputs, _saveCtx, progress, cts.Token)
+                        Catch ex As Exception
+                            ' ExecuteAsync wraps internal failures in ExecutionResult.ErrorMessage; this
+                            ' Catch only fires for genuinely unexpected failures (e.g. ctor crash).
+                            ExecutionResult = New NpcOverrideSaver.SaveExecutionResult With {
+                                .Success = False,
+                                .ErrorMessage = ex.Message
+                            }
+                        End Try
+                    End Function
+                prog.ShowDialog(Me)
+            End Using
+        Finally
+            cts.Dispose()
+        End Try
 
         If ExecutionResult IsNot Nothing AndAlso ExecutionResult.Success Then
             DialogResult = DialogResult.OK
             Close()
         Else
-            ' Failure: re-enable UI so the user can adjust and retry, surface the error inline.
-            LockUiForExecution(False)
+            ' Failure (or user-cancelled mid-batch): the modal closed, this dialog is interactive
+            ' again — surface the error inline so the user can adjust and retry.
             Dim msg = "Save failed."
             If ExecutionResult IsNot Nothing AndAlso Not String.IsNullOrEmpty(ExecutionResult.ErrorMessage) Then
                 msg = "Save failed: " & ExecutionResult.ErrorMessage
             End If
             MessageBox.Show(Me, msg, "Save ESP/ESM", MessageBoxButtons.OK, MessageBoxIcon.Error)
-        End If
-    End Sub
-
-    ''' <summary>Toggle interactive controls + progress panel visibility for the work phase.
-    ''' True = lock (work running), False = restore (user can retry).</summary>
-    Private Sub LockUiForExecution(locked As Boolean)
-        Dim enabled = Not locked
-        RadioScopeAllChanged.Enabled = enabled
-        RadioScopeSelected.Enabled = enabled
-        RadioButtonExisting.Enabled = enabled AndAlso _existingPlugins.Count > 0
-        RadioButtonNew.Enabled = enabled
-        ListBoxExisting.Enabled = enabled AndAlso RadioButtonExisting.Checked AndAlso _existingPlugins.Count > 0
-        TextBoxNewName.Enabled = enabled AndAlso RadioButtonNew.Checked
-        CheckBoxMarkAsMaster.Enabled = enabled
-        CheckBoxLightMaster.Enabled = enabled
-        ' Chargen checkbox stays disabled when forced-True (some NPC in scope has no CharGen Preset
-        ' flag); only re-enable here when the whole scope allows opt-out.
-        CheckBoxGenerateChargen.Enabled = enabled AndAlso _scopeAllowsChargenOptOut
-        CheckBoxWriteBssliders.Enabled = enabled
-        CheckBoxEmitBodyGen.Enabled = enabled
-        ' Whole LVLN group greys out during work; children keep their individual enabled states for restore.
-        GroupBoxLvlList.Enabled = enabled
-        ComboBoxEncoding.Enabled = enabled
-        ComboBoxBa2Version.Enabled = enabled
-        ButtonOk.Enabled = enabled
-        ' During work, ButtonCancel becomes "Stop": it cancels the per-NPC bake loop (between NPCs)
-        ' instead of closing the dialog. DialogResult is cleared so a click runs OnCancelOrStopClick
-        ' without auto-closing; restored to Cancel when work ends.
-        If locked Then
-            ButtonCancel.Text = "Stop"
-            ButtonCancel.DialogResult = DialogResult.None
-            ButtonCancel.Enabled = True
-        Else
-            ButtonCancel.Text = "Cancel"
-            ButtonCancel.DialogResult = DialogResult.Cancel
-            ButtonCancel.Enabled = True
-        End If
-        PanelProgress.Visible = locked
-        If locked Then
-            If _batchProgress Then
-                ' Multi-NPC: determinate bar over the NPC count (0..N). ApplyProgress advances it on
-                ' each "Baking CharGen" report; the fast write phase shows 0/N until baking starts.
-                ProgressBarMain.Style = ProgressBarStyle.Continuous
-                ProgressBarMain.Minimum = 0
-                ProgressBarMain.Maximum = Math.Max(1, _batchNpcCount)
-                ProgressBarMain.Value = 0
-            Else
-                ' Determinate from step 0; ApplyProgress advances as Phase strings arrive.
-                ProgressBarMain.Style = ProgressBarStyle.Continuous
-                ProgressBarMain.Minimum = 0
-                ProgressBarMain.Maximum = Math.Max(1, _totalSteps)
-                ProgressBarMain.Value = 0
-            End If
-        Else
-            ProgressBarMain.Style = ProgressBarStyle.Continuous
-            ProgressBarMain.Value = ProgressBarMain.Minimum
-            LabelProgressStage.Text = ""
-            LabelProgressDetail.Text = ""
         End If
     End Sub
 
@@ -904,7 +858,7 @@ Public Class SaveEsp_Form
     ''' Total ranges from 4 (new plugin, no chargen) to 9 (update existing + chargen).</summary>
     Private Sub BuildStepPlan(target As SaveTarget, npcCount As Integer)
         ' Batch runs (All changed): the bake phase repeats per NPC, which the fixed substring→step
-        ' map can't represent, so the bar tracks NPC count (advanced in ApplyProgress) instead.
+        ' map can't represent, so the bar tracks NPC count (advanced in ApplyProgressToDialog) instead.
         _batchProgress = npcCount > 1
         _batchNpcCount = npcCount
         If _batchProgress Then
@@ -956,67 +910,42 @@ Public Class SaveEsp_Form
         Return 0
     End Function
 
-    ''' <summary>IProgress(Of T) callback. Marshaled to the UI thread by the runtime, so it can
-    ''' touch controls directly. Maps the orchestrator's free-form Phase to a step number and
-    ''' advances the determinate ProgressBarMain. Sub-phase progress (compress N/4, remove N/M)
-    ''' surfaces in the detail label only — the main bar tracks high-level steps so the user
-    ''' always sees "Step k/N: …".</summary>
-    Private Sub ApplyProgress(p As NpcOverrideSaver.SaveProgress)
-        If p Is Nothing Then Return
+    ''' <summary>Maps an orchestrator SaveProgress report onto the shared <see cref="BuildProgress_Form"/>'s
+    ''' determinate bar + single status line. Single-NPC runs track the step plan ("Step k/N: phase");
+    ''' batch runs track the NPC count, advancing the bar only on the per-NPC "Baking CharGen" report
+    ''' while pack sub-steps update the text only. Marshaled to the UI thread by Progress(Of T), so it
+    ''' touches the dialog directly; SetProgress forces the synchronous repaint the GL bake would
+    ''' otherwise starve.</summary>
+    Private Sub ApplyProgressToDialog(dlg As BuildProgress_Form, p As NpcOverrideSaver.SaveProgress)
+        If p Is Nothing OrElse dlg Is Nothing Then Return
         Dim phase = If(p.Phase, "")
+        Dim detail = If(p.Detail, "")
 
         If _batchProgress Then
-            ' Batch run: the bar tracks NPC count. Advance it only on the per-NPC "Baking CharGen"
-            ' report (Determinate, Max=N, Current=k); the per-NPC pack sub-steps and the fast write
-            ' phase update the text labels only, leaving the bar at the current NPC.
-            LabelProgressStage.Text = phase
-            LabelProgressDetail.Text = If(p.Detail, "")
+            ' Batch: the bar tracks NPC count. Advance it only on the per-NPC "Baking CharGen" report
+            ' (Determinate, Max=N, Current=k); the per-NPC pack sub-steps and the fast write phase
+            ' update the text only — re-pass the last bar position so SetProgress leaves it put.
             If p.Determinate AndAlso p.Max > 0 AndAlso phase.Contains("Baking CharGen", StringComparison.OrdinalIgnoreCase) Then
-                ProgressBarMain.Maximum = Math.Max(1, p.Max)
-                ProgressBarMain.Value = Math.Max(0, Math.Min(p.Current, ProgressBarMain.Maximum))
+                _lastBatchMax = Math.Max(1, p.Max)
+                _lastBatchCurrent = Math.Max(0, Math.Min(p.Current, _lastBatchMax))
             End If
+            dlg.SetProgress(_lastBatchCurrent, _lastBatchMax, ComposeStatus(phase, detail))
         Else
             Dim resolved = ResolveStep(phase)
             ' Steps only move forward — guards against out-of-order reports.
             If resolved > 0 AndAlso resolved > _currentStep Then _currentStep = resolved
             Dim shownStep As Integer = Math.Max(_currentStep, 1)
-            LabelProgressStage.Text = $"Step {shownStep}/{_totalSteps}: {phase}"
-            LabelProgressDetail.Text = If(p.Detail, "")
-            ProgressBarMain.Maximum = Math.Max(1, _totalSteps)
-            ProgressBarMain.Value = Math.Max(0, Math.Min(_currentStep, ProgressBarMain.Maximum))
-        End If
-
-        ' Force an immediate synchronous repaint of the panel + its labels/bar. Without this the
-        ' caption updates only paint on the next idle, and the CharGen bake holds the UI thread for
-        ' seconds — so the legends would look blank/frozen while work is clearly happening. Refresh()
-        ' = Invalidate(children) + Update(), so the child labels repaint now, not later.
-        PanelProgress.Refresh()
-    End Sub
-
-    ''' <summary>ButtonCancel click. While work runs it acts as "Stop": cancels the per-NPC bake
-    ''' loop (checked between NPCs) and disables itself; it does NOT close the dialog (DialogResult
-    ''' was cleared to None in LockUiForExecution). When idle the Designer DialogResult.Cancel does
-    ''' the normal cancel-and-close, and this handler is a no-op.</summary>
-    Private Sub OnCancelOrStopClick(sender As Object, e As EventArgs)
-        If _workInProgress Then
-            _bakeCts?.Cancel()
-            ButtonCancel.Enabled = False
-            LabelProgressDetail.Text = "Stopping after the current NPC…"
+            dlg.SetProgress(_currentStep, Math.Max(1, _totalSteps),
+                            ComposeStatus($"Step {shownStep}/{_totalSteps}: {phase}", detail))
         End If
     End Sub
 
-    ''' <summary>Block close attempts while the save is running. The form has no Cancel-the-work
-    ''' path, so allowing close mid-write would orphan the worker Task and risk a half-written
-    ''' plugin file. Driven by the explicit <see cref="_workInProgress"/> flag rather than
-    ''' PanelProgress.Visible — the panel stays visible on the success path until Close() runs,
-    ''' and CloseReason can be sticky as UserClosing if a prior X-click was cancelled.</summary>
-    Protected Overrides Sub OnFormClosing(e As FormClosingEventArgs)
-        If _workInProgress AndAlso e.CloseReason = CloseReason.UserClosing Then
-            e.Cancel = True
-            Return
-        End If
-        MyBase.OnFormClosing(e)
-    End Sub
+    ''' <summary>Join the phase headline and optional sub-detail into the single status line the
+    ''' shared progress dialog exposes (it has no separate detail label, unlike the old embedded panel).</summary>
+    Private Shared Function ComposeStatus(headline As String, detail As String) As String
+        If String.IsNullOrEmpty(detail) Then Return headline
+        Return headline & " — " & detail
+    End Function
 
     ' ============================================================================
     ' Leveled NPC list ("Add to LVL list") helpers.
@@ -1062,6 +991,7 @@ Public Class SaveEsp_Form
             TextBoxLvlNewName.Enabled = addOn AndAlso RadioLvlNew.Checked
             ComboBoxLvlExisting.Enabled = addOn AndAlso RadioLvlExisting.Checked AndAlso hasExisting
             LabelLvlNewHint.Enabled = addOn
+            CheckBoxLvlNoDup.Enabled = addOn
         Finally
             _suppressLvlEvents = False
         End Try

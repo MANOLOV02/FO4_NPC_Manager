@@ -600,6 +600,11 @@ Public Class MainForm
         Public TargetSkel As SkeletonInstance
     End Class
     Friend Class TraitsState
+        ''' <summary>FormID of the NPC_ record this Traits bucket was resolved FROM — own FormID for a
+        ''' non-inheriting NPC, or the terminal template source when Use Traits walked the chain. Lets
+        ''' the face appearance reads (tint/morphs) pull from the inherited source, mirroring how
+        ''' HeadPartFormIDs already travel in this state. Propagated to NPCVisualState.TraitsSourceFormID.</summary>
+        Public SourceFormID As UInteger
         Public IsFemale As Boolean
         Public RaceFormID As UInteger
         Public SkinFormID As UInteger
@@ -658,6 +663,10 @@ Public Class MainForm
         Public DefaultOutfitFormID As UInteger
         Public SleepOutfitFormID As UInteger
         Public HeadTextureFormID As UInteger
+        ' FTST PROPIO del NPC (NPC_.FTST), capturado ANTES del fallback DFTM que pisa HeadTextureFormID en
+        ' BuildNPCVisualState. Distingue "el NPC declara su cara" (FTST) del default de raza (DFTM), para la
+        ' precedencia FTST > HDPT.TNAM > DFTM en ResolveTextureSet. 0 = el NPC no tiene FTST propio.
+        Public ExplicitHeadTextureFormID As UInteger
         Public HairColorFormID As UInteger
         Public FacialHairColorFormID As UInteger
         Public HasTextureLighting As Boolean
@@ -1956,6 +1965,37 @@ Public Class MainForm
                 End If
             Next
         Next
+
+        ' DIAGNOSTIC (LogLazy, one-shot per load): the NPCs Section 1 hides from the ESP-madre list
+        ' because they inherit their appearance via a template (NpcInheritsVisualAppearance). Pick one
+        ' of the "placed+inheriting" entries to open in CK and study how to "un-inherit" it — the basis
+        ' for the deferred promote-inherited→own path. The summary also counts the whole in-game
+        ' inheriting population (mostly LVLN encounters, which section 2 still shows). Guarded because
+        ' the scan exists only to feed the log.
+        If Logger.Enabled Then
+            Dim inheritingInWorld = 0
+            Dim placedInheriting = 0
+            For Each kv In _npcByIdCache
+                Dim npc = kv.Value
+                If npc Is Nothing OrElse Not _npcsInGameWorld.Contains(npc.FormID) Then Continue For
+                If Not NpcInheritsVisualAppearance(npc) Then Continue For
+                inheritingInWorld += 1
+                If _directlyPlacedNPCFormIDs.Contains(npc.FormID) Then
+                    placedInheriting += 1
+                    Dim n = npc
+                    Logger.LogLazy(Function() $"[SECTION1-DISCARD] placed+inheriting (hidden from ESP-madre) " &
+                                              $"FormID=0x{n.FormID:X8} '{DescribeNpc(n)}' plugin='{n.PluginName}' " &
+                                              $"templateFlags=0x{n.TemplateFlags:X4} " &
+                                              $"useTraits={HasTemplateFlag(n.TemplateFlags, NPC_TemplateCategory.Traits)} " &
+                                              $"useModelAnim={HasTemplateFlag(n.TemplateFlags, NPC_TemplateCategory.ModelAnimation)} " &
+                                              $"TPLT=0x{n.TemplateFormID:X8}")
+                End If
+            Next
+            Dim totalInWorld = inheritingInWorld
+            Dim totalPlaced = placedInheriting
+            Logger.LogLazy(Function() $"[SECTION1-DISCARD] summary: {totalPlaced} placed+inheriting (detailed above), " &
+                                      $"{totalInWorld} in-game NPCs inherit appearance total (the rest are LVLN encounters, still listed under section 2)")
+        End If
 
     End Sub
 
@@ -4939,6 +4979,17 @@ Public Class MainForm
     '''
     ''' Returns Nothing values inside the tuple's npcData/race when the inputs can't be
     ''' resolved; layers/regionSwaps are always non-Nothing (empty list when nothing applies).</summary>
+    ''' <summary>The FormID to read FACE/BODY appearance (tint, chargen + face-bone morphs, MRSV,
+    ''' skin-tone, FaceGen NIF) from: the resolved Traits source (inherited) when set, else the NPC's
+    ''' own FormID. For a non-inheriting NPC this equals the root, so every read is byte-identical to
+    ''' before — only template-inheriting NPCs change. Mirrors how HeadPartFormIDs/Hair already resolve
+    ''' from the Traits source. Replaces the old ModelSourceFormID-or-root pattern, which always fell to
+    ''' root because ModelSourceFormID was never wired in the render path.</summary>
+    Private Shared Function FaceAppearanceSourceFormID(state As NPCVisualState) As UInteger
+        If state Is Nothing Then Return 0UI
+        Return If(state.TraitsSourceFormID <> 0UI, state.TraitsSourceFormID, state.FormID)
+    End Function
+
     Friend Function BuildFaceTintLayerInputs(state As NPCVisualState) As (
         layers As List(Of FaceTintLayerInput),
         regionSwaps As List(Of FaceRegionSwapInput),
@@ -4953,7 +5004,7 @@ Public Class MainForm
 
         If state Is Nothing Then Return emptyResult
 
-        Dim modelFormID = If(state.ModelSourceFormID <> 0UI, state.ModelSourceFormID, state.FormID)
+        Dim modelFormID = FaceAppearanceSourceFormID(state)
         ' Resolve the hair LUT path so slot Brows palette layers can drive their per-pixel
         ' grayscale-to-palette colour off the same LUT the hair/brow MESHES sample at render
         ' time. BGSM-first / RACE.HNAM fallback lives in ResolveHairPaletteTexture (single
@@ -5186,7 +5237,7 @@ Public Class MainForm
             Return
         End If
 
-        Dim modelFormID = If(state.ModelSourceFormID <> 0UI, state.ModelSourceFormID, state.FormID)
+        Dim modelFormID = FaceAppearanceSourceFormID(state)
         Dim npcData = ApplyPresetOverlayToNpcData(GetParsedNpc(modelFormID), state.RootNpcFormID)
         Dim raceRec = _pluginManager.GetRecord(state.RaceFormID)
         Dim race As RACE_Data = Nothing
@@ -5476,19 +5527,19 @@ Public Class MainForm
         Try : OpenTK.Graphics.OpenGL4.GL.DeleteTexture(oldId) : Catch : End Try
     End Sub
 
-    ' LoadTintLayerBytes* moved to FaceTintLayerBuilder. Wrappers below preserve the
+    ' LoadTintLayerBytes* moved to FaceTintInputBuilder. Wrappers below preserve the
     ' existing private signatures used elsewhere in MainForm (and pass our shared
     ' _tintBytesCache so the per-process cache stays single-instance).
     Private Function LoadTintLayerBytes(rawPath As String) As Byte()
-        Return FaceTintLayerBuilder.LoadTintLayerBytes(rawPath, _tintBytesCache)
+        Return FaceTintInputBuilder.LoadTintLayerBytes(rawPath, _tintBytesCache)
     End Function
 
     Private Function LoadTintLayerBytesAndKey(rawPath As String) As (Bytes As Byte(), Key As String)
-        Return FaceTintLayerBuilder.LoadTintLayerBytesAndKey(rawPath, _tintBytesCache)
+        Return FaceTintInputBuilder.LoadTintLayerBytesAndKey(rawPath, _tintBytesCache)
     End Function
 
     Private Function LoadTintLayerBytesByKey(normalizedKey As String) As Byte()
-        Return FaceTintLayerBuilder.LoadTintLayerBytesByKey(normalizedKey, _tintBytesCache)
+        Return FaceTintInputBuilder.LoadTintLayerBytesByKey(normalizedKey, _tintBytesCache)
     End Function
 
     ''' <summary>Drop every cached face-tint byte buffer and decoded GL texture. Call this
@@ -5692,8 +5743,7 @@ Public Class MainForm
         ' Sync host state's SkinFormID with the overlay BEFORE resolving candidates. The host
         ' state was set up at the previous render; the overlay (where the combo writes) is the
         ' live source of truth. Without this the candidates resolve against the OLD skin.
-        Dim modelFormID = If(host.LastRenderedState.ModelSourceFormID <> 0UI,
-                              host.LastRenderedState.ModelSourceFormID, host.LastRenderedState.FormID)
+        Dim modelFormID = FaceAppearanceSourceFormID(host.LastRenderedState)
         Dim oldSkinFid = host.LastRenderedState.SkinFormID
         host.LastRenderedState.SkinFormID = RecomputeEffectiveSkinFormID(
             host.LastRenderedState.RootNpcFormID, host.LastRenderedState.RaceFormID, modelFormID)
@@ -6107,23 +6157,23 @@ Public Class MainForm
         Return True
     End Function
 
-    ' Naming helpers moved to FaceTintLayerBuilder. Wrappers preserve the existing
+    ' Naming helpers moved to FaceTintInputBuilder. Wrappers preserve the existing
     ' private signatures used by other MainForm members (TintPickerDialog, EditFace_Form,
     ' diagnostic logs, etc).
     Private Shared Function TintSlotName(slot As UShort) As String
-        Return FaceTintLayerBuilder.TintSlotName(slot)
+        Return FaceTintInputBuilder.TintSlotName(slot)
     End Function
 
     Private Shared Function BlendOpName(op As UInteger) As String
-        Return FaceTintLayerBuilder.BlendOpName(op)
+        Return FaceTintInputBuilder.BlendOpName(op)
     End Function
 
     Private Shared Function FormatTintFlagsName(flags As UShort) As String
-        Return FaceTintLayerBuilder.FormatTintFlagsName(flags)
+        Return FaceTintInputBuilder.FormatTintFlagsName(flags)
     End Function
 
     Private Shared Function NormalizeDictionaryKeyWithTexturesPrefix(rawPath As String) As String
-        Return FaceTintLayerBuilder.NormalizeDictionaryKeyWithTexturesPrefix(rawPath)
+        Return FaceTintInputBuilder.NormalizeDictionaryKeyWithTexturesPrefix(rawPath)
     End Function
 
     ''' <summary>Per-resolve cache of LVLN picks. When the same LVLN is encountered multiple times
@@ -6162,7 +6212,8 @@ Public Class MainForm
             .HairColorFormID = traits.HairColorFormID,
             .FacialHairColorFormID = traits.FacialHairColorFormID,
             .HasTextureLighting = traits.HasTextureLighting,
-            .TextureLightingColor = traits.TextureLightingColor
+            .TextureLightingColor = traits.TextureLightingColor,
+            .TraitsSourceFormID = traits.SourceFormID
         }
 
         state.HeadPartFormIDs.AddRange(traits.HeadPartFormIDs)
@@ -6535,7 +6586,7 @@ Public Class MainForm
         If state Is Nothing Then Return Nothing
 
         ' Get the full NPC_Data for the model source (the NPC whose face we're rendering)
-        Dim modelNpcFormID = If(state.ModelSourceFormID <> 0UI, state.ModelSourceFormID, state.FormID)
+        Dim modelNpcFormID = FaceAppearanceSourceFormID(state)
         Dim npcData = ApplyPresetOverlayToNpcData(GetParsedNpc(modelNpcFormID), state.RootNpcFormID)
         If npcData Is Nothing Then Return Nothing
 
@@ -6727,7 +6778,7 @@ Public Class MainForm
     Private Function BuildFaceBoneTransforms(state As NPCVisualState) As Poses_class
         If state Is Nothing Then Return Nothing
 
-        Dim modelNpcFormID = If(state.ModelSourceFormID <> 0UI, state.ModelSourceFormID, state.FormID)
+        Dim modelNpcFormID = FaceAppearanceSourceFormID(state)
         Dim npcData = ApplyPresetOverlayToNpcData(GetParsedNpc(modelNpcFormID), state.RootNpcFormID)
         If npcData Is Nothing OrElse npcData.FaceMorphs.Count = 0 Then Return Nothing
 
@@ -6762,7 +6813,7 @@ Public Class MainForm
     Private Function ResolveBodyWeightData(state As NPCVisualState, renderData As PreviewResolutionResult) As (Wt As Single, Wm As Single, Wf As Single, GenderBlock As RACE_BoneDataGender, MrsvValues As List(Of Single), ArmaDeltas As Dictionary(Of String, System.Numerics.Vector3), NnamX As Single, NnamY As Single)
         If state Is Nothing Then Return Nothing
 
-        Dim modelNpcFormID = If(state.ModelSourceFormID <> 0UI, state.ModelSourceFormID, state.FormID)
+        Dim modelNpcFormID = FaceAppearanceSourceFormID(state)
         Dim npcData = ApplyPresetOverlayToNpcData(GetParsedNpc(modelNpcFormID), state.RootNpcFormID)
         If npcData Is Nothing Then Return Nothing
 
@@ -7267,7 +7318,7 @@ Public Class MainForm
     ''' For templated NPCs, uses the model source FormID (the NPC that owns the visual traits).</summary>
     Private Function HasFaceGenAssets(state As NPCVisualState) As Boolean
         If state Is Nothing Then Return False
-        Dim modelFormID = If(state.ModelSourceFormID <> 0UI, state.ModelSourceFormID, state.FormID)
+        Dim modelFormID = FaceAppearanceSourceFormID(state)
         Dim path = ResolveFaceGenNifPath(modelFormID)
         Return path <> "" AndAlso FilesDictionary_class.Dictionary.ContainsKey(path)
     End Function
@@ -7530,6 +7581,11 @@ Public Class MainForm
         If state.SkinFormID = 0UI Then
             state.SkinFormID = race.SkinFormID
         End If
+
+        ' FTST PROPIO del NPC (0 si no tiene), capturado ANTES del fallback DFTM de abajo. Acá
+        ' state.HeadTextureFormID aún es el FTST del record; las líneas siguientes lo pisan con DFTM cuando es 0.
+        ' Lo usa ResolveTextureSet para la precedencia FTST > HDPT.TNAM > DFTM (sin esto no se distingue FTST de DFTM).
+        state.ExplicitHeadTextureFormID = state.HeadTextureFormID
 
         If state.HeadPartFormIDs.Count = 0 Then
             If state.IsFemale Then
@@ -11361,10 +11417,22 @@ Public Class MainForm
         If candidate IsNot Nothing Then
             textureSetFormID = candidate.TextureSetFormID
             If textureSetFormID <> 0UI Then txstSource = "HDPT.TNAM"
-            If textureSetFormID = 0UI AndAlso candidate.Kind = MeshCandidateKind.HeadPart _
-               AndAlso candidate.HeadPartTypeRaw = HeadPartTypeFace AndAlso state IsNot Nothing Then
-                textureSetFormID = state.HeadTextureFormID
-                If textureSetFormID <> 0UI Then txstSource = "NPC.FTST(Face-fallback)"
+            ' Precedencia de la textura base para Face head parts: FTST (propio del NPC) > HDPT.TNAM > DFTM (default
+            ' de la raza). El FTST PROPIO (state.ExplicitHeadTextureFormID, capturado ANTES del fallback DFTM en
+            ' BuildNPCVisualState) REEMPLAZA el TNAM — la cara declarada del NPC gana sobre el skin default del HDPT
+            ' (ej. Mitch FTST=SkinHeadMayor pisa MaleHeadHuman.TNAM=SkinHeadHeroMale). Si no hay FTST propio, queda el
+            ' TNAM del head part. Sólo si tampoco hay TNAM se cae a DFTM (state.HeadTextureFormID = DFTM cuando no hay
+            ' FTST propio, llenado en :7584). Guard raw=Face (HeadPartTypeRaw, NO effective) protege sub-parts Misc
+            ' heredados como Face (MouthShadow/AO/lashes/wet) que conservan su propio material. (Antes:
+            ' state.HeadTextureFormID=FTST-o-DFTM pisaba el TNAM -> DFTM le ganaba a TNAM en razas con DFTM<>TNAM; mal.)
+            If candidate.Kind = MeshCandidateKind.HeadPart AndAlso candidate.HeadPartTypeRaw = HeadPartTypeFace AndAlso state IsNot Nothing Then
+                If state.ExplicitHeadTextureFormID <> 0UI Then
+                    textureSetFormID = state.ExplicitHeadTextureFormID
+                    txstSource = "NPC.FTST(Face-override)"
+                ElseIf textureSetFormID = 0UI AndAlso state.HeadTextureFormID <> 0UI Then
+                    textureSetFormID = state.HeadTextureFormID
+                    txstSource = "RACE.DFTM(Face-fallback)"
+                End If
             End If
         End If
 
@@ -11778,7 +11846,7 @@ Public Class MainForm
     ''' has no layer at the SkinTone slot or the race / CLFM lookup fails.</para></summary>
     Private Function ResolveNpcSkinToneColor(state As NPCVisualState) As Nullable(Of Color)
         If state Is Nothing Then Return Nothing
-        Dim modelNpcFormID = If(state.ModelSourceFormID <> 0UI, state.ModelSourceFormID, state.FormID)
+        Dim modelNpcFormID = FaceAppearanceSourceFormID(state)
         Dim npcData = ApplyPresetOverlayToNpcData(GetParsedNpc(modelNpcFormID), state.RootNpcFormID)
         If npcData Is Nothing Then Return Nothing
 
@@ -11788,7 +11856,7 @@ Public Class MainForm
 
         ' Single source of truth — same derivation NpcRecordOverlay uses at save time, so the
         ' preview's body skin tone and the persisted ESP's QNAM are guaranteed to agree.
-        Return NpcRecordOverlay.DeriveSkinToneQnam(npcData, race, state.IsFemale)
+        Return NpcRecordOverlay.DeriveSkinToneQnam(npcData, race, state.IsFemale, _pluginManager)
     End Function
 
     Private Function ResolveColorFormColor(formID As UInteger) As Nullable(Of Color)
@@ -11886,6 +11954,7 @@ Public Class MainForm
         ' [TEST: TPLT-traits-bucket] HeadTexture/HairColor/FacialHairColor/HeadParts/QNAM
         ' now seeded here so they ride the Traits chain walk.
         Dim state As New TraitsState With {
+            .SourceFormID = npc.FormID,
             .IsFemale = npc.IsFemale,
             .RaceFormID = npc.RaceFormID,
             .SkinFormID = npc.SkinFormID,
@@ -12631,7 +12700,7 @@ Public Class MainForm
             ' the raw NPC_Data when there's no overlay registered, so this is also a no-op for the
             ' non-overlay path. Header fields (FormID/EditorID/Plugin) are preserved by the shallow
             ' copy so the panel still identifies the record correctly.
-            Dim modelFormID = If(baseState.ModelSourceFormID <> 0UI, baseState.ModelSourceFormID, baseState.FormID)
+            Dim modelFormID = FaceAppearanceSourceFormID(baseState)
             Dim effective = ApplyPresetOverlayToNpcData(GetParsedNpc(modelFormID), baseState.RootNpcFormID)
             PopulateRecordDetails(If(effective, npc))
 
@@ -12978,7 +13047,7 @@ Public Class MainForm
     ''' </summary>
     Private Function BuildPresetFromState(state As NPCVisualState) As LooksmenuLoader.LooksmenuPreset
         If state Is Nothing Then Return Nothing
-        Dim modelFormID = If(state.ModelSourceFormID <> 0UI, state.ModelSourceFormID, state.FormID)
+        Dim modelFormID = FaceAppearanceSourceFormID(state)
         Dim raw = GetParsedNpc(modelFormID)
         If raw Is Nothing Then Return Nothing
         ' Capture rendered state — overlay-on-top-of-template, just like the renderer reads it.
@@ -13143,7 +13212,7 @@ Public Class MainForm
     End Function
 
     ''' <summary>Resolve layer.TemplateColorIndex (the TEND ColorID) purely from the layer's
-    ''' colour. Delegates to FaceTintLayerBuilder.ResolveTemplateColorIndex (single source of
+    ''' colour. Delegates to FaceTintInputBuilder.ResolveTemplateColorIndex (single source of
     ''' truth shared with the editor): a TTEC preset whose CLFM RGB matches tl.Color wins; among
     ''' presets sharing that colour, the one whose Alpha is closest to the layer's opacity
     ''' (Value/100); no colour match → -1 (custom RGB outside the palette — the TEND RGB is used
@@ -13164,7 +13233,7 @@ Public Class MainForm
         Dim opt = race.FindTintOption(layer.Index, isFemale)
         If opt Is Nothing OrElse opt.TemplateColors Is Nothing OrElse opt.TemplateColors.Count = 0 Then Return
 
-        layer.TemplateColorIndex = FaceTintLayerBuilder.ResolveTemplateColorIndex(layer.Color, layer.Value / 100.0F, opt, _pluginManager)
+        layer.TemplateColorIndex = FaceTintInputBuilder.ResolveTemplateColorIndex(layer.Color, layer.Value / 100.0F, opt, _pluginManager)
     End Sub
 
     ''' <summary>Compute body-edit availability against the currently rendered NPC and update
@@ -13273,7 +13342,7 @@ Public Class MainForm
         ' than showing zeros for a freshly-loaded NPC. We pull from state.WeightX (already
         ' resolved through ApplyRaceFallbacks + overlay) and from the post-overlay NPC_Data
         ' for MRSV.
-        Dim modelNpcFormID = If(_renderHost.LastRenderedState.ModelSourceFormID <> 0UI, _renderHost.LastRenderedState.ModelSourceFormID, _renderHost.LastRenderedState.FormID)
+        Dim modelNpcFormID = FaceAppearanceSourceFormID(_renderHost.LastRenderedState)
         Dim effectiveNpc = ApplyPresetOverlayToNpcData(GetParsedNpc(modelNpcFormID), _renderHost.LastRenderedState.RootNpcFormID)
         Dim initial As New EditBody_Form.InitialValues With {
             .Thin = _renderHost.LastRenderedState.WeightThin,
@@ -13541,7 +13610,12 @@ Public Class MainForm
     ''' persistido en Config_App). El bake lee esos settings via FaceGenBuilder.OutputSettings.</summary>
     Private Sub ButtonCharGenOptions_Click(sender As Object, e As EventArgs) Handles ButtonCharGenOptions.Click
         Using f As New CharGenOptionsForm()
-            f.ShowDialog(Me)
+            If f.ShowDialog(Me) = DialogResult.OK Then
+                ' Las convenciones FaceTint (tab "FaceTint Conventions") afectan el composite del render
+                ' EN VIVO, no sólo el bake. Re-render el NPC actual para reflejarlo (decisión usuario
+                ' 2026-06-04, opción A). RenderFromCurrentSelection re-corre la pipeline facetint completa.
+                RenderFromCurrentSelection()
+            End If
         End Using
     End Sub
 
