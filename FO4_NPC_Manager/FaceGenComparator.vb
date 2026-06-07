@@ -1,4 +1,4 @@
-Imports System.IO
+﻿Imports System.IO
 Imports System.Text
 Imports FO4_Base_Library
 Imports NiflySharp
@@ -363,7 +363,7 @@ Public Module FaceGenComparator
                 ' Per-slot pixel diff using the shaders' OWN texture paths (D/N/S). Loads each
                 ' side's referenced DDS, decodes, compares. Logs path + presence so a "not found"
                 ' is unambiguous (it's the actual shader path that's missing, not a guessed name).
-                DumpTexturePixelDiff(name, shapeReport.GeneratedMaterial, shapeReport.BakedMaterial, sb)
+                DumpTexturePixelDiff(shapeReport.GeneratedMaterial, shapeReport.BakedMaterial, sb)
             ElseIf shapeReport.GeneratedMaterial Is Nothing AndAlso shapeReport.BakedMaterial Is Nothing Then
                 sb.AppendLine($"[BUILDCHARGEN-DIFF]   material: <both sides have no shader/material>")
             Else
@@ -465,13 +465,13 @@ Public Module FaceGenComparator
     ''' bytes via FilesDictionary, with a loose-disk fallback for freshly-written sandbox files
     ''' the dictionary hasn't indexed. Logs path + presence so a MISSING is unambiguously the
     ''' actual shader path, not a guessed convention name.</summary>
-    Private Sub DumpTexturePixelDiff(shapeName As String, gen As FO4UnifiedMaterial_Class, bake As FO4UnifiedMaterial_Class, sb As StringBuilder)
-        DumpOneSlotPixelDiff(shapeName, "D", gen.Diffuse_or_Base_Texture, bake.Diffuse_or_Base_Texture, sb)
-        DumpOneSlotPixelDiff(shapeName, "N", gen.NormalTexture, bake.NormalTexture, sb)
-        DumpOneSlotPixelDiff(shapeName, "S", gen.SmoothSpecTexture, bake.SmoothSpecTexture, sb)
+    Private Sub DumpTexturePixelDiff(gen As FO4UnifiedMaterial_Class, bake As FO4UnifiedMaterial_Class, sb As StringBuilder)
+        DumpOneSlotPixelDiff("D", gen.Diffuse_or_Base_Texture, bake.Diffuse_or_Base_Texture, sb)
+        DumpOneSlotPixelDiff("N", gen.NormalTexture, bake.NormalTexture, sb)
+        DumpOneSlotPixelDiff("S", gen.SmoothSpecTexture, bake.SmoothSpecTexture, sb)
     End Sub
 
-    Private Sub DumpOneSlotPixelDiff(shapeName As String, slot As String, genPath As String, bakePath As String, sb As StringBuilder)
+    Private Sub DumpOneSlotPixelDiff(slot As String, genPath As String, bakePath As String, sb As StringBuilder)
         If String.IsNullOrEmpty(genPath) AndAlso String.IsNullOrEmpty(bakePath) Then Return
         Dim genBytes = LoadTextureBytesByPath(genPath)
         Dim bakeBytes = LoadTextureBytesByPath(bakePath)

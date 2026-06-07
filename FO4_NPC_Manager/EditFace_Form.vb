@@ -1352,7 +1352,12 @@ Public Class EditFace_Form
                 ' RGB. Walking the palette is identical to ResolveTemplateColorIdToAbsolute except
                 ' here we go RGB → palette index (display-time), not palette → RGB (save-time).
                 ComboBoxTintPalette.Items.Add(New TintPaletteItem With {.IsCustom = True, .Display = "(custom RGB)"})
-                Dim selectedIdx As Integer = 0
+                ' PRIORIDAD: el índice del layer manda. El editor muestra la entrada que apunta
+                ' tl.TemplateColorIndex (consistente con el render, que matchea por TemplateIndex); el
+                ' match por color es SOLO fallback (custom genuino si ni el índice ni el color matchean).
+                ' Sin esto, un layer con índice válido pero color no-exacto al CLFM quedaba en "(custom RGB)".
+                Dim indexMatchIdx As Integer = -1
+                Dim colorMatchIdx As Integer = -1
                 For posIdx = 0 To opt.TemplateColors.Count - 1
                     Dim tplCol = opt.TemplateColors(posIdx)
                     Dim clfm As CLFM_Data = Nothing
@@ -1384,15 +1389,21 @@ Public Class EditFace_Form
                         .SwatchColor = swatchColor,
                         .Display = $"#{tplCol.TemplateIndex} — {displayName}"
                     })
-                    ' Pick the entry whose CLFM RGB matches the layer's current RGB.
-                    If clfm IsNot Nothing AndAlso clfm.HasColor _
+                    Dim thisComboIdx = ComboBoxTintPalette.Items.Count - 1
+                    ' PRIORIDAD 1: el índice del layer (si está) → esta entrada, sin re-matchear por color.
+                    If tl.TemplateColorIndex >= 0 AndAlso CInt(tplCol.TemplateIndex) = tl.TemplateColorIndex Then
+                        indexMatchIdx = thisComboIdx
+                    End If
+                    ' PRIORIDAD 2 (fallback): primera entrada cuyo CLFM RGB matchea exacto el color del layer.
+                    If colorMatchIdx < 0 AndAlso clfm IsNot Nothing AndAlso clfm.HasColor _
                        AndAlso clfm.Color.R = tl.Color.R _
                        AndAlso clfm.Color.G = tl.Color.G _
                        AndAlso clfm.Color.B = tl.Color.B Then
-                        selectedIdx = ComboBoxTintPalette.Items.Count - 1
+                        colorMatchIdx = thisComboIdx
                     End If
                 Next
-                ComboBoxTintPalette.SelectedIndex = selectedIdx
+                ' Índice gana; si no, color; si ninguno, 0 = "(custom RGB)".
+                ComboBoxTintPalette.SelectedIndex = If(indexMatchIdx >= 0, indexMatchIdx, Math.Max(0, colorMatchIdx))
             End If
 
             ' Force alpha=255: tl.Color can carry alpha=0 (RACE-default seeded from CLFM bytes
