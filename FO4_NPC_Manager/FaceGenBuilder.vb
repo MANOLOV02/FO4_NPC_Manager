@@ -1098,7 +1098,14 @@ Public Module FaceGenBuilder
                 ' we'd set it ON for every eye — even Wet/Lashes whose source mesh has it OFF. Clearing
                 ' here (not in Save_To_Shader, which must stay faithful for normal render of the source
                 ' mesh) matches CK. Unconditional: no shape in any of the 4 reference NPCs keeps bit 17.
-                NiflySharp.Helpers.ShaderHelper.SetFlagSF1(bsls, CUInt(NiflySharp.Enums.Fallout4ShaderPropertyFlags1.Eye_Environment_Mapping), False)
+
+                If bsls.ShaderType = Enums.BSLightingShaderType.EyeEnvmap Then
+                    Debugger.Break()
+                    ' TO SETTLE
+                    bsls.ShaderType = Enums.BSLightingShaderType.EnvironmentMap
+                    NiflySharp.Helpers.ShaderHelper.SetFlagSF1(bsls, CUInt(NiflySharp.Enums.Fallout4ShaderPropertyFlags1.Eye_Environment_Mapping), False)
+                End If
+
             Else
                 Dim bes = TryCast(shad, BSEffectShaderProperty)
                 If bes Is Nothing Then
