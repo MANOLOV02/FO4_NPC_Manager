@@ -205,7 +205,7 @@ Public Module FaceGenBuilder
         ' MakeCurrent FALLARIA (el contexto GL es per-thread, del hilo UI). Por eso se saltea fuera de debug.
         If DebugMode Then
             Try
-                host?.PreviewCtl?.MakeCurrent()
+                host?.PreviewCtl?.EnsureContextCurrent()
             Catch ex As Exception
                 Dim msgL = ex.Message
                 Dim typeL = ex.GetType().Name

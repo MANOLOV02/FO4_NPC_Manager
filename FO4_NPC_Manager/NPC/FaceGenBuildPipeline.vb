@@ -54,10 +54,12 @@ Public Module FaceGenBuildPipeline
         ' caller passes a freshly-loaded NIF that nobody else reads).
         ApplyChargenMorphsInPlace(facebonesNif, facebonesShape, chargenTriPath, state)
 
-        ' 2) Build face-skel SkeletonInstance with FMRS pose applied.
+        ' 2) Build face-skel SkeletonInstance with FMRS bone-morph applied. Va a la capa
+        ' MorphDeltaTransform (igual que el render en vivo); el bake lee GetGlobalTransform, que
+        ' compone todas las capas, así que el resultado es idéntico y la semántica queda uniforme.
         Dim faceSkel = LoadFaceSkeleton(state)
         If state.FmrsPose IsNot Nothing AndAlso faceSkel IsNot Nothing AndAlso faceSkel.HasSkeleton Then
-            faceSkel.ApplyPose(state.FmrsPose)
+            faceSkel.ApplyBoneMorphPose(state.FmrsPose)
         End If
 
         ' 3) Build body-skel SkeletonInstance (no pose — body bones are at canonical bind in

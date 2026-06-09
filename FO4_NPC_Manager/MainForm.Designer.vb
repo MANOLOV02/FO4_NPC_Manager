@@ -77,6 +77,14 @@ Partial Class MainForm
         ButtonSaveSceneNif = New Button()
         PanelPreviewHost = New Panel()
         LabelStatus = New Label()
+        PanelAnimBar = New FlowLayoutPanel()
+        ComboAnim = New ComboBox()
+        ButtonSelectAnim = New Button()
+        ButtonAnimPlay = New Button()
+        SliderAnimFrame = New FO4_Base_Library.TinySliderTextBox()
+        NumericAnimFrameMs = New NumericUpDown()
+        LabelAnimMs = New Label()
+        LabelAnimFrame = New Label()
         StatusStrip1 = New StatusStrip()
         ToolStripStatusLabel1 = New ToolStripStatusLabel()
         ToolStripProgressBar1 = New ToolStripProgressBar()
@@ -99,6 +107,8 @@ Partial Class MainForm
         PanelPreviewToolbar.SuspendLayout()
         PanelActionsToolbar.SuspendLayout()
         PanelPreviewHost.SuspendLayout()
+        PanelAnimBar.SuspendLayout()
+        CType(NumericAnimFrameMs, ComponentModel.ISupportInitialize).BeginInit()
         StatusStrip1.SuspendLayout()
         SuspendLayout()
         ' 
@@ -281,14 +291,16 @@ Partial Class MainForm
         PanelPreviewLayout.Controls.Add(PanelPreviewToolbar, 0, 0)
         PanelPreviewLayout.Controls.Add(PanelActionsToolbar, 0, 1)
         PanelPreviewLayout.Controls.Add(PanelPreviewHost, 0, 2)
+        PanelPreviewLayout.Controls.Add(PanelAnimBar, 0, 3)
         PanelPreviewLayout.Dock = DockStyle.Fill
         PanelPreviewLayout.Location = New Point(0, 0)
         PanelPreviewLayout.Name = "PanelPreviewLayout"
         PanelPreviewLayout.Padding = New Padding(8, 6, 8, 6)
-        PanelPreviewLayout.RowCount = 3
+        PanelPreviewLayout.RowCount = 4
         PanelPreviewLayout.RowStyles.Add(New RowStyle())
         PanelPreviewLayout.RowStyles.Add(New RowStyle())
         PanelPreviewLayout.RowStyles.Add(New RowStyle(SizeType.Percent, 100F))
+        PanelPreviewLayout.RowStyles.Add(New RowStyle())
         PanelPreviewLayout.Size = New Size(1200, 1019)
         PanelPreviewLayout.TabIndex = 0
         ' 
@@ -859,9 +871,96 @@ Partial Class MainForm
         LabelStatus.TabIndex = 1
         LabelStatus.Text = "Loading..."
         LabelStatus.TextAlign = ContentAlignment.MiddleCenter
-        ' 
+        '
+        ' PanelAnimBar
+        '
+        PanelAnimBar.AutoSize = True
+        PanelAnimBar.Controls.Add(ComboAnim)
+        PanelAnimBar.Controls.Add(ButtonSelectAnim)
+        PanelAnimBar.Controls.Add(ButtonAnimPlay)
+        PanelAnimBar.Controls.Add(SliderAnimFrame)
+        PanelAnimBar.Controls.Add(LabelAnimMs)
+        PanelAnimBar.Controls.Add(NumericAnimFrameMs)
+        PanelAnimBar.Controls.Add(LabelAnimFrame)
+        PanelAnimBar.Dock = DockStyle.Fill
+        PanelAnimBar.Margin = New Padding(0, 4, 0, 0)
+        PanelAnimBar.Name = "PanelAnimBar"
+        PanelAnimBar.WrapContents = False
+        '
+        ' ComboAnim
+        '
+        ComboAnim.DropDownStyle = ComboBoxStyle.DropDownList
+        ComboAnim.Margin = New Padding(3, 4, 3, 3)
+        ComboAnim.Name = "ComboAnim"
+        ComboAnim.Size = New Size(260, 23)
+        ComboAnim.TabIndex = 0
+        '
+        ' ButtonSelectAnim
+        '
+        ButtonSelectAnim.AutoSize = True
+        ButtonSelectAnim.Margin = New Padding(3, 3, 12, 3)
+        ButtonSelectAnim.Name = "ButtonSelectAnim"
+        ButtonSelectAnim.Size = New Size(110, 25)
+        ButtonSelectAnim.TabIndex = 1
+        ButtonSelectAnim.Text = "Select Animation…"
+        ButtonSelectAnim.UseVisualStyleBackColor = True
+        '
+        ' ButtonAnimPlay
+        '
+        ButtonAnimPlay.Enabled = False
+        ButtonAnimPlay.Margin = New Padding(3, 3, 8, 3)
+        ButtonAnimPlay.Name = "ButtonAnimPlay"
+        ButtonAnimPlay.Size = New Size(40, 25)
+        ButtonAnimPlay.TabIndex = 2
+        ButtonAnimPlay.Text = "▶"
+        ButtonAnimPlay.UseVisualStyleBackColor = True
+        '
+        ' SliderAnimFrame
+        '
+        SliderAnimFrame.AccentColor = SystemColors.HotTrack
+        SliderAnimFrame.DisplayFormat = "0"
+        SliderAnimFrame.Enabled = False
+        SliderAnimFrame.Margin = New Padding(3, 4, 3, 3)
+        SliderAnimFrame.Maximum = 0R
+        SliderAnimFrame.Minimum = 0R
+        SliderAnimFrame.Name = "SliderAnimFrame"
+        SliderAnimFrame.ShowTicks = True
+        SliderAnimFrame.Size = New Size(300, 26)
+        SliderAnimFrame.TabIndex = 3
+        SliderAnimFrame.TextBoxTextAlign = HorizontalAlignment.Right
+        SliderAnimFrame.ThumbRadius = 4F
+        SliderAnimFrame.Value = 0R
+        '
+        ' LabelAnimMs
+        '
+        LabelAnimMs.Anchor = AnchorStyles.Left
+        LabelAnimMs.AutoSize = True
+        LabelAnimMs.Margin = New Padding(10, 8, 1, 0)
+        LabelAnimMs.Name = "LabelAnimMs"
+        LabelAnimMs.Text = "FPS:"
+        '
+        ' NumericAnimFrameMs
+        '
+        NumericAnimFrameMs.Enabled = False
+        NumericAnimFrameMs.Margin = New Padding(1, 4, 3, 3)
+        NumericAnimFrameMs.Maximum = New Decimal(New Integer() {120, 0, 0, 0})
+        NumericAnimFrameMs.Minimum = New Decimal(New Integer() {1, 0, 0, 0})
+        NumericAnimFrameMs.Name = "NumericAnimFrameMs"
+        NumericAnimFrameMs.Size = New Size(62, 23)
+        NumericAnimFrameMs.TabIndex = 5
+        NumericAnimFrameMs.TextAlign = HorizontalAlignment.Right
+        NumericAnimFrameMs.Value = New Decimal(New Integer() {30, 0, 0, 0})
+        '
+        ' LabelAnimFrame
+        '
+        LabelAnimFrame.Anchor = AnchorStyles.Left
+        LabelAnimFrame.AutoSize = True
+        LabelAnimFrame.Margin = New Padding(6, 8, 3, 0)
+        LabelAnimFrame.Name = "LabelAnimFrame"
+        LabelAnimFrame.Text = "0 / 0"
+        '
         ' StatusStrip1
-        ' 
+        '
         StatusStrip1.Items.AddRange(New ToolStripItem() {ToolStripStatusLabel1, ToolStripProgressBar1})
         StatusStrip1.Location = New Point(0, 1019)
         StatusStrip1.Name = "StatusStrip1"
@@ -918,6 +1017,9 @@ Partial Class MainForm
         PanelActionsToolbar.ResumeLayout(False)
         PanelActionsToolbar.PerformLayout()
         PanelPreviewHost.ResumeLayout(False)
+        PanelAnimBar.ResumeLayout(False)
+        PanelAnimBar.PerformLayout()
+        CType(NumericAnimFrameMs, ComponentModel.ISupportInitialize).EndInit()
         StatusStrip1.ResumeLayout(False)
         StatusStrip1.PerformLayout()
         ResumeLayout(False)
@@ -978,6 +1080,14 @@ Partial Class MainForm
     Friend WithEvents CheckBoxRenderBody As System.Windows.Forms.CheckBox
     Friend WithEvents CheckBoxRenderHeadwear As System.Windows.Forms.CheckBox
     Friend WithEvents LabelStatus As System.Windows.Forms.Label
+    Friend WithEvents PanelAnimBar As System.Windows.Forms.FlowLayoutPanel
+    Friend WithEvents ComboAnim As System.Windows.Forms.ComboBox
+    Friend WithEvents ButtonSelectAnim As System.Windows.Forms.Button
+    Friend WithEvents ButtonAnimPlay As System.Windows.Forms.Button
+    Friend WithEvents SliderAnimFrame As FO4_Base_Library.TinySliderTextBox
+    Friend WithEvents NumericAnimFrameMs As System.Windows.Forms.NumericUpDown
+    Friend WithEvents LabelAnimMs As System.Windows.Forms.Label
+    Friend WithEvents LabelAnimFrame As System.Windows.Forms.Label
     Friend WithEvents StatusStrip1 As System.Windows.Forms.StatusStrip
     Friend WithEvents ToolStripStatusLabel1 As System.Windows.Forms.ToolStripStatusLabel
     Friend WithEvents ToolStripProgressBar1 As System.Windows.Forms.ToolStripProgressBar

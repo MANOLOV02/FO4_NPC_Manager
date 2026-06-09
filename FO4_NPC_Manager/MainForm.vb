@@ -893,10 +893,12 @@ Public Class MainForm
         Dim sculptEnabled = host.Toggles.ApplySculpt
         ' Base pose (sin sculpt) → skeleton base.
         Dim basePose = BuildMergedNpcPose(host.LastRenderedState, host.LastRenderData, fmrsEnabled, bwEnabled, host.LastSkeletonInstance, Nothing)
-        host.LastSkeletonInstance.ApplyPose(basePose)
-        ' [MOUNTDELTA-PREPASS] ApplyPose limpia ambos deltas. Repopular MountDelta desde cache
-        ' que el shape loop V2 populated en el render inicial. Sin esto los chunks quedan
-        ' sin V2 correction post-pose-change.
+        ' Los bone-morphs van a la capa MorphDeltaTransform (no a la pose). Así la capa Delta
+        ' (pose/animación) queda libre y el morph sobrevive a un futuro ApplyPose por frame.
+        host.LastSkeletonInstance.ApplyBoneMorphPose(basePose)
+        ' [MOUNTDELTA-PREPASS] Repopular MountDelta desde la cache que el shape loop V2 populated
+        ' en el render inicial. (ApplyBoneMorphPose ya no borra el mount — ResetMorph limpia solo
+        ' la capa morph — así que esto es un re-write idempotente; se mantiene por claridad.)
         ApplyMountPlanForActor(host.LastSkeletonInstance, host.LastRenderData)
 
         ' Lazy build / refresh of per-ARMA skeletons. Necesario cuando Sclpt arranca OFF en el
@@ -928,7 +930,7 @@ Public Class MainForm
             Dim sculpt As Dictionary(Of String, System.Numerics.Vector3) = Nothing
             If sculptEnabled Then host.LastSculptByArma.TryGetValue(kv.Key, sculpt)
             Dim poseForArma = BuildMergedNpcPose(host.LastRenderedState, host.LastRenderData, fmrsEnabled, bwEnabled, armaSkel, sculpt)
-            armaSkel.ApplyPose(poseForArma)
+            armaSkel.ApplyBoneMorphPose(poseForArma)
             ' [MOUNTDELTA-PREPASS] Per-instance MountDelta para este clone sculpt — repopula desde cache.
             ApplyMountPlanForActor(armaSkel, host.LastRenderData)
         Next
@@ -956,6 +958,355 @@ Public Class MainForm
         intent.MarkDirty(RenderDirtyFlags.Pose, host.LastRenderData.Shapes)
         host.PreviewCtl.InvalidateRender()
     End Sub
+
+#Region "Animation bar (combo + Select Animation + play/frames) — live preview on the main render"
+    ' El behavior es de la RAZA (ver [[arch_race_behavior_resolution]]); el clip se reproduce con
+    ' HkxPoseImportSession (skeleton del rigName + clip + skeleton vivo del render) y se aplica a la
+    ' capa Delta vía SkeletonInstance.ApplyPose. La capa pose/Delta está en IDENTIDAD en el render
+    ' normal (los morphs viven en MorphDeltaTransform vía ApplyBoneMorphPose) → la animación tiene esa
+    ' capa libre y ResetPose vuelve al estático morph-only. Cache POR RAZA (no por NPC): el behavior
+    ' es de la raza, así dos NPCs de la misma raza comparten clips+skeleton (solo se enumera una vez).
+    Private Class AnimRaceModel
+        Public Clips As List(Of ResolvedAnimationClip)
+        Public SkeletonBytes As Byte()
+    End Class
+    Private ReadOnly _animRaceCache As New Dictionary(Of String, AnimRaceModel)(StringComparer.OrdinalIgnoreCase)
+    Private _animCacheKey As String = ""                ' "raceFormID|F|M" actualmente en el combo
+    Private _animClips As List(Of ResolvedAnimationClip) = Nothing
+    Private _animSkeletonBytes As Byte() = Nothing
+    Private _animSession As HkxPoseImportSession = Nothing
+    ' Playback compartido con WM (reloj + selección de frame por FPS + caché de poses). El timer de
+    ' WinForms sigue siendo el driver; el player provee FrameForNow()/PoseForFrame().
+    Private _animPlayer As HkxAnimationPlayer = Nothing
+    Private _animSuppress As Boolean = False
+    Private _animSuppressMs As Boolean = False          ' al setear NumericAnimFrameMs programáticamente
+    Private _animOverBudget As Boolean = False          ' FPS en rojo = render no llega al target
+    Private WithEvents _animPlayTimer As New System.Windows.Forms.Timer With {.Interval = 33}
+
+    ''' <summary>Refresca la barra de animación al NPC actual. Se llama al INICIO de RenderCurrentStateAsync
+    ''' (cubre TODOS los paths de render: wrapper, RenderFromCurrentSelection, etc. — usa CurrentBaseState,
+    ''' el NPC que se va a renderizar). Fuerza stop + estático + repuebla el combo (cache por raza) y lo
+    ''' deja en "(None)". Imprescindible: al cambiar de NPC el combo NO debe quedar con clips de otra raza.</summary>
+    Private Sub RefreshAnimBarForCurrentNpc()
+        StopAnimPlayback()
+        SetPlayingAnimation(False)
+        _animSession = Nothing
+        EnsureAnimModelForCurrentNpc()        ' repuebla el combo si cambió la raza (cache por raza)
+        _animSuppress = True
+        If ComboAnim.Items.Count > 0 Then ComboAnim.SelectedIndex = 0
+        _animSuppress = False
+        SliderAnimFrame.Enabled = False : NumericAnimFrameMs.Enabled = False : ButtonAnimPlay.Enabled = False
+        LabelAnimFrame.Text = "0 / 0"
+    End Sub
+
+    ' Resuelve las animaciones de la RAZA del NPC actual y puebla el combo. Cache por raza+gender:
+    ' enumerar los behaviors (cargar decenas de .hkx + parsear cientos de clips) se hace UNA vez por
+    ' raza; el resto de NPCs de esa raza es un AddRange instantáneo. La resolución NPC→raza es barata.
+    ' Lee de CurrentBaseState (NPC seleccionado/a renderizar) — disponible antes que LastRenderedState.
+    Private Function EnsureAnimModelForCurrentNpc() As Boolean
+        If _renderHost Is Nothing OrElse _pluginManager Is Nothing Then Return False
+        Dim st = If(_renderHost.CurrentBaseState, _renderHost.LastRenderedState)
+        If st Is Nothing Then Return False
+        Dim fid = st.RootNpcFormID
+        If fid = 0UI Then Return False
+        Try
+            Dim npcRec = _pluginManager.GetRecord(fid)
+            If npcRec Is Nothing Then Return False
+            Dim npc = RecordParsers.ParseNPCLight(npcRec, npcRec.SourcePluginName, _pluginManager)
+            Dim rb = RaceBehaviorResolver.ResolveNpcBehavior(npc, _pluginManager)
+            If rb Is Nothing Then Return False
+            Dim isFemale = st.IsFemale
+            rb.IsFemale = isFemale
+            Dim key = $"{rb.RaceFormID:X8}|{If(isFemale, "F", "M")}"
+            If key = _animCacheKey AndAlso _animClips IsNot Nothing Then Return _animClips.Count > 0  ' combo ya poblado
+
+            Dim model As AnimRaceModel = Nothing
+            If Not _animRaceCache.TryGetValue(key, model) Then
+                Dim loader As Func(Of String, Byte()) = AddressOf LoadAnimHkxBytes
+                model = New AnimRaceModel With {
+                    .Clips = BehaviorClipEnumerator.EnumerateClips(rb, loader).
+                                OrderBy(Function(c) AnimClipLabel(c), StringComparer.OrdinalIgnoreCase).ToList(),
+                    .SkeletonBytes = LoadAnimHkxBytes(BehaviorClipEnumerator.ResolveHavokSkeleton(rb, loader))
+                }
+                _animRaceCache(key) = model
+                Logger.LogLazy(Function() $"[ANIM-BAR] enumerated race {key} ({rb.RaceEditorID}): {model.Clips.Count} clips, skeletonBytes={If(model.SkeletonBytes Is Nothing, 0, model.SkeletonBytes.Length)}")
+            End If
+
+            _animClips = model.Clips
+            _animSkeletonBytes = model.SkeletonBytes
+            _animCacheKey = key
+
+            _animSuppress = True
+            ComboAnim.BeginUpdate()
+            ComboAnim.Items.Clear()
+            ComboAnim.Items.Add("(None — static)")
+            ComboAnim.Items.AddRange(_animClips.Select(Function(c) CObj(AnimClipLabel(c))).ToArray())
+            ComboAnim.SelectedIndex = 0
+            ComboAnim.EndUpdate()
+            _animSuppress = False
+            Logger.LogLazy(Function() $"[ANIM-BAR] NPC 0x{fid:X8} race={rb.RaceEditorID}({key}): {_animClips.Count} clips, skeletonBytes={If(_animSkeletonBytes Is Nothing, 0, _animSkeletonBytes.Length)}{If(_animSkeletonBytes Is Nothing, " ** NO HAVOK SKELETON RESOLVED **", "")}")
+            Return _animClips.Count > 0
+        Catch ex As Exception
+            Logger.LogLazy(Function() $"[ANIM-BAR] resolve failed: {ex.GetType().Name}: {ex.Message}")
+            Return False
+        End Try
+    End Function
+
+    ' Activa/desactiva el modo "reproduciendo animación" del control de render (como WM): cuando está
+    ' activo, los frames se aplican como cambio de POSE solamente — sin reset de cámara ni recompute de
+    ' bounds (Render.vb) → updates eficientes. Se apaga al volver a estático o al cambiar de NPC.
+    Private Sub SetPlayingAnimation(value As Boolean)
+        If _renderHost IsNot Nothing AndAlso _renderHost.PreviewCtl IsNot Nothing Then _renderHost.PreviewCtl.PlayingAnimation = value
+    End Sub
+
+    Private Shared Function AnimClipLabel(c As ResolvedAnimationClip) As String
+        Dim nm = If(String.IsNullOrWhiteSpace(c.ClipName), System.IO.Path.GetFileNameWithoutExtension(c.AnimationFile), c.ClipName)
+        Return If(c.Roles.Count > 0, $"{nm}  [{String.Join(",", c.Roles)}]", nm)
+    End Function
+
+    ' Carga un .hkx por path lógico (Data-relativo): prueba con/sin "Meshes\" y .hkx/.hkt vía FilesDictionary.
+    Private Function LoadAnimHkxBytes(path As String) As Byte()
+        If String.IsNullOrWhiteSpace(path) Then Return Nothing
+        Dim variants As New List(Of String) From {path}
+        If path.EndsWith(".hkx", StringComparison.OrdinalIgnoreCase) Then variants.Add(path.Substring(0, path.Length - 4) & ".hkt")
+        If path.EndsWith(".hkt", StringComparison.OrdinalIgnoreCase) Then variants.Add(path.Substring(0, path.Length - 4) & ".hkx")
+        For Each v In variants
+            For Each key In {v, "Meshes\" & v}
+                Dim loc As FilesDictionary_class.File_Location = Nothing
+                If FilesDictionary_class.Dictionary.TryGetValue(key, loc) AndAlso loc IsNot Nothing Then
+                    Try
+                        Dim b = loc.GetBytes()
+                        If b IsNot Nothing AndAlso b.Length > 0 Then Return b
+                    Catch
+                    End Try
+                End If
+            Next
+        Next
+        Return Nothing
+    End Function
+
+    Private Sub ButtonSelectAnim_Click(sender As Object, e As EventArgs) Handles ButtonSelectAnim.Click
+        If Not EnsureAnimModelForCurrentNpc() Then
+            MsgBox("No animations resolved for the current NPC (load/render an NPC first).", vbInformation Or vbOKOnly, "Animations")
+            Return
+        End If
+        Dim current = TryCast(If(ComboAnim.SelectedIndex > 0, _animClips(ComboAnim.SelectedIndex - 1), Nothing), ResolvedAnimationClip)
+        Using dlg As New AnimationPicker_Form(_animClips, If(current?.AnimationFile, ""))
+            If dlg.ShowDialog(Me) = DialogResult.OK AndAlso dlg.SelectedClip IsNot Nothing Then
+                Dim idx = _animClips.IndexOf(dlg.SelectedClip)
+                If idx >= 0 Then ComboAnim.SelectedIndex = idx + 1   ' +1 por el "(None)"
+            End If
+        End Using
+    End Sub
+
+    Private Sub ComboAnim_DropDown(sender As Object, e As EventArgs) Handles ComboAnim.DropDown
+        EnsureAnimModelForCurrentNpc()
+    End Sub
+
+    Private Sub ComboAnim_SelectedIndexChanged(sender As Object, e As EventArgs) Handles ComboAnim.SelectedIndexChanged
+        If _animSuppress Then Return
+        StopAnimPlayback()
+        If ComboAnim.SelectedIndex <= 0 OrElse _animClips Is Nothing Then
+            ResetAnimToTPose()
+            Return
+        End If
+        SelectAnimationClip(_animClips(ComboAnim.SelectedIndex - 1))
+    End Sub
+
+    Private Sub SelectAnimationClip(clip As ResolvedAnimationClip)
+        If clip Is Nothing OrElse _renderHost Is Nothing OrElse _renderHost.LastSkeletonInstance Is Nothing Then
+            Logger.LogLazy(Function() $"[ANIM-BAR] SelectAnimationClip abort: clip={(clip IsNot Nothing)} host={(_renderHost IsNot Nothing)} liveSkel={(_renderHost?.LastSkeletonInstance IsNot Nothing)}")
+            Return
+        End If
+        Dim liveBones = _renderHost.LastSkeletonInstance.SkeletonDictionary.Count
+        ' Skeleton para interpretar ESTE clip = el del actor de origen de la anim (clip.SourceSkeletonPath,
+        ' resuelto del path de animationNames). Una anim humana reusada por SuperMutant se interpreta con el
+        ' rig humano → nombres de hueso → se mapean por NOMBRE al skeleton vivo (no por índice → no deforma).
+        Dim clipSkelBytes = LoadAnimHkxBytes(clip.SourceSkeletonPath)
+        If clipSkelBytes Is Nothing Then clipSkelBytes = _animSkeletonBytes   ' fallback: rigName del NPC
+        Logger.LogLazy(Function() $"[ANIM-BAR] select clip='{clip.ClipName}' file='{clip.AnimationFile}' srcSkel='{clip.SourceSkeletonPath}'({If(clipSkelBytes Is Nothing, 0, clipSkelBytes.Length)}b) roles=[{String.Join(",", clip.Roles)}] race={_animCacheKey} liveBones={liveBones}")
+        Dim clipBytes = LoadAnimHkxBytes(clip.AnimationFile)
+        If clipBytes Is Nothing Then
+            SetStatus_Anim($"Clip not found: {clip.AnimationFile}")
+            Return
+        End If
+        Try
+            _animSession = HkxPoseImportSession.Create(clipSkelBytes, clipBytes, _renderHost.LastSkeletonInstance, clip.AnimationFile, clip.SourceSkeletonPath)
+            _animPlayer = New HkxAnimationPlayer(_animSession) With {.PoseName = "Animation"}
+            Logger.LogLazy(Function() $"[ANIM-BAR] session OK frames={_animSession.FrameCount} tracks={_animSession.TrackCount} frameDur={_animSession.FrameDuration:0.####} skelSrc={_animSession.SkeletonSource}")
+        Catch ex As Exception
+            _animSession = Nothing
+            Logger.LogLazy(Function() $"[ANIM-BAR] session create FAILED clip='{clip.AnimationFile}': {ex.GetType().Name}: {ex.Message}")
+            SetStatus_Anim("Animation load error: " & ex.Message)
+            Return
+        End Try
+        ' Clip activo → modo animación (pose-only, sin reset de cámara/bounds) mientras esté seleccionado.
+        SetPlayingAnimation(True)
+        Dim maxFrame = Math.Max(0, _animSession.FrameCount - 1)
+        _animSuppress = True
+        SliderAnimFrame.Minimum = 0 : SliderAnimFrame.Maximum = maxFrame : SliderAnimFrame.Value = 0
+        _animSuppress = False
+        SliderAnimFrame.Enabled = maxFrame > 0
+        NumericAnimFrameMs.Enabled = maxFrame > 0
+        ButtonAnimPlay.Enabled = maxFrame > 0
+        ApplyAnimPlaybackInterval()   ' setea el ms/frame por defecto desde el FrameDuration del clip (editable)
+        ApplyAnimFrame(0)
+    End Sub
+
+    ' Default del FPS desde el FrameDuration del clip (editable por el usuario), igual que WM
+    ' (ApplyHkxPlaybackInterval). El timer corre a ≤16ms y el player consulta el reloj de pared.
+    Private Sub ApplyAnimPlaybackInterval()
+        Dim fps As Double = 30.0
+        If _animPlayer IsNot Nothing AndAlso _animPlayer.NativeFps > 0.0 Then fps = _animPlayer.NativeFps
+        fps = Math.Min(CDbl(NumericAnimFrameMs.Maximum), Math.Max(CDbl(NumericAnimFrameMs.Minimum), fps))
+        _animSuppressMs = True
+        NumericAnimFrameMs.Value = CDec(Math.Round(fps, MidpointRounding.AwayFromZero))
+        _animSuppressMs = False
+        Dim appliedFps = Math.Max(1.0, CDbl(NumericAnimFrameMs.Value))
+        If _animPlayer IsNot Nothing Then _animPlayer.TargetFps = appliedFps
+        _animPlayTimer.Interval = FpsToCheckInterval(appliedFps)
+    End Sub
+
+    Private Sub NumericAnimFrameMs_ValueChanged(sender As Object, e As EventArgs) Handles NumericAnimFrameMs.ValueChanged
+        If _animSuppressMs Then Return
+        Dim fps = Math.Max(1.0, CDbl(NumericAnimFrameMs.Value))   ' el numeric ahora es FPS
+        _animPlayTimer.Interval = FpsToCheckInterval(fps)
+        If _animPlayer IsNot Nothing Then
+            _animPlayer.TargetFps = fps
+            ' Reanclar el reloj al frame actual para que el cambio de FPS no pegue un salto.
+            If _animPlayTimer.Enabled Then _animPlayer.Rebase(CInt(Math.Round(SliderAnimFrame.Value)))
+        End If
+    End Sub
+
+    ''' <summary>Intervalo del timer de chequeo (ms) a partir del FPS objetivo: ~la mitad del tiempo
+    ''' por frame, tope 16ms. El player elige el frame real por reloj.</summary>
+    Private Shared Function FpsToCheckInterval(fps As Double) As Integer
+        Dim frameMs = 1000.0 / Math.Max(1.0, fps)
+        Return Math.Max(1, Math.Min(16, CInt(Math.Floor(frameMs / 2.0))))
+    End Function
+
+    Private Sub ApplyAnimFrame(frame As Integer)
+        If _animPlayer Is Nothing OrElse _renderHost Is Nothing OrElse _renderHost.LastSkeletonInstance Is Nothing OrElse _renderHost.LastRenderData Is Nothing Then Return
+        Try
+            ' El player cachea la pose por frame → scrub/play barato. La pose es por nombre de bone
+            ' → se aplica igual al skeleton base y a los clones per-ARMA (sculpt). ApplyPose toca SOLO
+            ' la capa DeltaTransform → el morph (MorphDelta) y el mount sobreviven.
+            Dim pose = _animPlayer.PoseForFrame(frame)
+            _renderHost.LastSkeletonInstance.ApplyPose(pose)
+            If _renderHost.LastSkelByArma IsNot Nothing Then
+                For Each kv In _renderHost.LastSkelByArma
+                    If kv.Value IsNot Nothing Then kv.Value.ApplyPose(pose)
+                Next
+            End If
+            ' [ANIM-BONE-DIAG] Diagnóstico (no fix): para resolver chunks (cabeza/brazos Assaultron) dumpea
+            ' por frame los bones de chunk — world final + mount (con rotación) + delta de la animación.
+            ' Así se ve si el mount tiene rotación (eje de la anim mal) o cómo la pose mueve el chunk.
+            ' Scrub a un frame da 1 dump limpio; en play se samplea 1 de cada 30 para no spamear.
+            If Logger.Enabled AndAlso (Not _animPlayTimer.Enabled OrElse frame Mod 30 = 0) Then
+                Dim instD = _renderHost.LastSkeletonInstance
+                ' Formatea un Transform COMPLETO (R 3×3 + T + Scale) para hacer la math offline con las
+                ' convenciones reales. Nothing = "I".
+                Dim fmt = Function(t As Transform_Class) As String
+                              If t Is Nothing Then Return "I"
+                              Dim r = t.Rotation, tt = t.Translation
+                              Return $"R[{r.M11:F4},{r.M12:F4},{r.M13:F4}|{r.M21:F4},{r.M22:F4},{r.M23:F4}|{r.M31:F4},{r.M32:F4},{r.M33:F4}] T({tt.X:F3},{tt.Y:F3},{tt.Z:F3}) S={t.Scale:F4}"
+                          End Function
+                For Each bn In {"Neck", "HeadTwist", "HeadNod", "LUPPERARM", "Chest"}
+                    Dim hb As HierarchiBone_class = Nothing
+                    If Not instD.SkeletonDictionary.TryGetValue(bn, hb) OrElse hb Is Nothing Then Continue For
+                    Dim bnL = bn, frL = frame
+                    Dim oS = fmt(hb.OriginalLocaLTransform), mS = fmt(hb.MountDeltaTransform), dS = fmt(hb.DeltaTransform), phS = fmt(hb.MorphDeltaTransform)
+                    Dim bw = hb.OriginalGetGlobalTransform.Translation, pw = hb.GetGlobalTransform.Translation
+                    Logger.LogLazy(Function() $"[ANIM-BONE] f={frL} '{bnL}'{Environment.NewLine}    O    ={oS}{Environment.NewLine}    Mount={mS}{Environment.NewLine}    Morph={phS}{Environment.NewLine}    Delta={dS}{Environment.NewLine}    bindWorld.T=({bw.X:F3},{bw.Y:F3},{bw.Z:F3})  poseWorld.T=({pw.X:F3},{pw.Y:F3},{pw.Z:F3})")
+                Next
+            End If
+            ' Solo POSE dirty (no recarga geometría/materiales). Con PlayingAnimation=True el control
+            ' omite reset de cámara y recompute de bounds → update eficiente como WM.
+            _renderHost.PreviewCtl.Intent.MarkDirty(RenderDirtyFlags.Pose, _renderHost.LastRenderData.Shapes)
+            _renderHost.PreviewCtl.InvalidateRender()
+            LabelAnimFrame.Text = $"{frame} / {Math.Max(0, _animPlayer.FrameCount - 1)}"
+        Catch ex As Exception
+            Logger.LogLazy(Function() $"[ANIM-BAR] ApplyAnimFrame({frame}) FAILED: {ex.GetType().Name}: {ex.Message}{Environment.NewLine}{ex.StackTrace}")
+            SetStatus_Anim($"Frame {frame} error: {ex.Message}")
+        End Try
+    End Sub
+
+    ' "(None)" = estático: limpia SOLO la capa pose/Delta (ResetPose) → queda el morph (MorphDelta) +
+    ' mount. Vuelve a modo normal del control (PlayingAnimation=False).
+    Private Sub ResetAnimToTPose()
+        StopAnimPlayback()
+        _animSession = Nothing
+        _animPlayer = Nothing
+        SliderAnimFrame.Enabled = False : NumericAnimFrameMs.Enabled = False : ButtonAnimPlay.Enabled = False
+        LabelAnimFrame.Text = "0 / 0"
+        If _renderHost Is Nothing OrElse _renderHost.LastSkeletonInstance Is Nothing OrElse _renderHost.LastRenderData Is Nothing Then
+            SetPlayingAnimation(False)
+            Return
+        End If
+        _renderHost.LastSkeletonInstance.ResetPose()
+        If _renderHost.LastSkelByArma IsNot Nothing Then
+            For Each kv In _renderHost.LastSkelByArma
+                If kv.Value IsNot Nothing Then kv.Value.ResetPose()
+            Next
+        End If
+        _renderHost.PreviewCtl.Intent.MarkDirty(RenderDirtyFlags.Pose, _renderHost.LastRenderData.Shapes)
+        _renderHost.PreviewCtl.InvalidateRender()
+        SetPlayingAnimation(False)
+    End Sub
+
+    ' El slider tiny (TinySliderTextBox) muestra el frame inline y es el único control de frame (scrub).
+    Private Sub SliderAnimFrame_ValueChanged(sender As Object, e As EventArgs) Handles SliderAnimFrame.ValueChanged
+        If _animSuppress Then Return
+        ApplyAnimFrame(CInt(Math.Round(SliderAnimFrame.Value)))
+    End Sub
+
+    Private Sub ButtonAnimPlay_Click(sender As Object, e As EventArgs) Handles ButtonAnimPlay.Click
+        If _animPlayTimer.Enabled Then
+            StopAnimPlayback()
+        ElseIf _animPlayer IsNot Nothing AndAlso SliderAnimFrame.Maximum > 0 Then
+            SetPlayingAnimation(True)
+            Dim fps = Math.Max(1.0, CDbl(NumericAnimFrameMs.Value))
+            _animPlayer.TargetFps = fps
+            _animPlayTimer.Interval = FpsToCheckInterval(fps)
+            _animPlayer.Start(CInt(Math.Round(SliderAnimFrame.Value)))
+            _animPlayTimer.Start()
+            ButtonAnimPlay.Text = "⏸"
+        End If
+    End Sub
+
+    Private Sub StopAnimPlayback()
+        _animPlayTimer.Stop()
+        _animPlayer?.Stop()
+        If ButtonAnimPlay IsNot Nothing Then ButtonAnimPlay.Text = "▶"
+        If _animOverBudget Then NumericAnimFrameMs.ForeColor = SystemColors.ControlText : _animOverBudget = False
+    End Sub
+
+    Private Sub AnimPlayTimer_Tick(sender As Object, e As EventArgs) Handles _animPlayTimer.Tick
+        If _animPlayer Is Nothing OrElse SliderAnimFrame.Maximum <= 0 Then StopAnimPlayback() : Return
+        ' Igual que WM: el frame objetivo lo elige el player por reloj de pared + FPS objetivo → salta
+        ' frames si el render no llega; nunca acelera.
+        Dim frame = _animPlayer.FrameForNow()
+        If frame < 0 OrElse frame = CInt(Math.Round(SliderAnimFrame.Value)) Then Return
+        _animSuppress = True : SliderAnimFrame.Value = frame : _animSuppress = False
+
+        ' Medir el render del frame (InvalidateRender es síncrono) y, si excede el target (ms/frame =
+        ' 1000/FPS), pintar el numeric en rojo: el playback no llega al target y salta frames.
+        Dim budgetMs = Math.Max(1, CInt(Math.Round(1000.0 / Math.Max(1.0, CDbl(NumericAnimFrameMs.Value)))))
+        Dim sw = System.Diagnostics.Stopwatch.StartNew()
+        ApplyAnimFrame(frame)
+        sw.Stop()
+        If sw.ElapsedMilliseconds > budgetMs Then
+            If Not _animOverBudget Then NumericAnimFrameMs.ForeColor = Color.Red : _animOverBudget = True
+        Else
+            If _animOverBudget Then NumericAnimFrameMs.ForeColor = SystemColors.ControlText : _animOverBudget = False
+        End If
+    End Sub
+
+    Private Sub SetStatus_Anim(msg As String)
+        Logger.LogLazy(Function() "[ANIM-BAR] " & msg)
+        LabelAnimFrame.Text = msg
+    End Sub
+#End Region
 
 
     Public Sub New(pluginManager As PluginManager,
@@ -3343,6 +3694,11 @@ Public Class MainForm
         If host Is Nothing Then host = _renderHost
         If host.CurrentBaseState Is Nothing Then Return
 
+        ' Cualquier re-render del preview principal (cualquier path: wrapper, RenderFromCurrentSelection,
+        ' etc.) invalida la animación en curso y refresca la barra al NPC actual (CurrentBaseState ya es
+        ' el nuevo). Imprescindible para que el combo NO quede con clips de la raza anterior.
+        If host Is _renderHost Then RefreshAnimBarForCurrentNpc()
+
         ' Build final state with selected outfit
         Dim state = CloneVisualState(host.CurrentBaseState)
         state.LoadoutArmorFormIDs.AddRange(GetSelectedOutfitArmorIDs(host))
@@ -3429,7 +3785,8 @@ Public Class MainForm
 
         Dim basePose = BuildMergedNpcPose(state, renderData, boneMorphsEnabled, bodyWeightEnabled,
                                           inst, Nothing)  ' Nothing = no sculpt → base pose
-        inst.ApplyPose(basePose)
+        ' Bone-morphs → capa MorphDeltaTransform (deja libre la capa pose/animación).
+        inst.ApplyBoneMorphPose(basePose)
 
         ' DIAG POST-PASE: dump del estado de los bones inyectados de chunks robot DESPUÉS de ApplyPose.
         Dim shapeToSkel As New Dictionary(Of IRenderableShape, SkeletonInstance)
@@ -3451,7 +3808,7 @@ Public Class MainForm
                 armaSkel = PrepareSkeleton(state, renderData)
                 Dim poseForArma = BuildMergedNpcPose(state, renderData, boneMorphsEnabled, bodyWeightEnabled,
                                                      armaSkel, sculpt)
-                armaSkel.ApplyPose(poseForArma)
+                armaSkel.ApplyBoneMorphPose(poseForArma)
                 skelByArma(armaFormID) = armaSkel
                 sculptByArma(armaFormID) = sculpt
             End If
