@@ -22,11 +22,8 @@ Partial Class AnimationPicker_Form
         LabelFilter = New System.Windows.Forms.Label()
         TextFilter = New System.Windows.Forms.TextBox()
         LabelCount = New System.Windows.Forms.Label()
-        ListClips = New System.Windows.Forms.ListView()
-        ColClip = New System.Windows.Forms.ColumnHeader()
-        ColRole = New System.Windows.Forms.ColumnHeader()
-        ColSpeed = New System.Windows.Forms.ColumnHeader()
-        ColFile = New System.Windows.Forms.ColumnHeader()
+        CheckFilterGender = New System.Windows.Forms.CheckBox()
+        TreeClips = New System.Windows.Forms.TreeView()
         ButtonRow = New System.Windows.Forms.FlowLayoutPanel()
         ButtonCancel = New System.Windows.Forms.Button()
         ButtonOk = New System.Windows.Forms.Button()
@@ -40,7 +37,7 @@ Partial Class AnimationPicker_Form
         RootLayout.ColumnCount = 1
         RootLayout.ColumnStyles.Add(New System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 100F))
         RootLayout.Controls.Add(FilterRow, 0, 0)
-        RootLayout.Controls.Add(ListClips, 0, 1)
+        RootLayout.Controls.Add(TreeClips, 0, 1)
         RootLayout.Controls.Add(ButtonRow, 0, 2)
         RootLayout.Dock = System.Windows.Forms.DockStyle.Fill
         RootLayout.Location = New System.Drawing.Point(0, 0)
@@ -56,6 +53,7 @@ Partial Class AnimationPicker_Form
         '
         FilterRow.Controls.Add(LabelFilter)
         FilterRow.Controls.Add(TextFilter)
+        FilterRow.Controls.Add(CheckFilterGender)
         FilterRow.Controls.Add(LabelCount)
         FilterRow.Dock = System.Windows.Forms.DockStyle.Fill
         FilterRow.Location = New System.Drawing.Point(3, 3)
@@ -88,39 +86,25 @@ Partial Class AnimationPicker_Form
         LabelCount.Name = "LabelCount"
         LabelCount.Text = "0 clips"
         '
-        ' ListClips
+        ' CheckFilterGender
         '
-        ListClips.Columns.AddRange(New System.Windows.Forms.ColumnHeader() {ColClip, ColRole, ColSpeed, ColFile})
-        ListClips.Dock = System.Windows.Forms.DockStyle.Fill
-        ListClips.FullRowSelect = True
-        ListClips.HideSelection = False
-        ListClips.Location = New System.Drawing.Point(3, 39)
-        ListClips.MultiSelect = False
-        ListClips.Name = "ListClips"
-        ListClips.Size = New System.Drawing.Size(634, 382)
-        ListClips.TabIndex = 1
-        ListClips.UseCompatibleStateImageBehavior = False
-        ListClips.View = System.Windows.Forms.View.Details
+        CheckFilterGender.Anchor = System.Windows.Forms.AnchorStyles.Left
+        CheckFilterGender.AutoSize = True
+        CheckFilterGender.Checked = True
+        CheckFilterGender.CheckState = System.Windows.Forms.CheckState.Checked
+        CheckFilterGender.Margin = New System.Windows.Forms.Padding(3, 5, 12, 0)
+        CheckFilterGender.Name = "CheckFilterGender"
+        CheckFilterGender.Text = "Filter by gender"
+        CheckFilterGender.UseVisualStyleBackColor = True
         '
-        ' ColClip
+        ' TreeClips
         '
-        ColClip.Text = "Clip"
-        ColClip.Width = 220
-        '
-        ' ColRole
-        '
-        ColRole.Text = "Role"
-        ColRole.Width = 120
-        '
-        ' ColSpeed
-        '
-        ColSpeed.Text = "Speed"
-        ColSpeed.Width = 60
-        '
-        ' ColFile
-        '
-        ColFile.Text = "Animation file"
-        ColFile.Width = 360
+        TreeClips.Dock = System.Windows.Forms.DockStyle.Fill
+        TreeClips.HideSelection = False
+        TreeClips.Location = New System.Drawing.Point(3, 39)
+        TreeClips.Name = "TreeClips"
+        TreeClips.Size = New System.Drawing.Size(634, 382)
+        TreeClips.TabIndex = 1
         '
         ' ButtonRow
         '
@@ -175,11 +159,8 @@ Partial Class AnimationPicker_Form
     Friend WithEvents LabelFilter As System.Windows.Forms.Label
     Friend WithEvents TextFilter As System.Windows.Forms.TextBox
     Friend WithEvents LabelCount As System.Windows.Forms.Label
-    Friend WithEvents ListClips As System.Windows.Forms.ListView
-    Friend WithEvents ColClip As System.Windows.Forms.ColumnHeader
-    Friend WithEvents ColRole As System.Windows.Forms.ColumnHeader
-    Friend WithEvents ColSpeed As System.Windows.Forms.ColumnHeader
-    Friend WithEvents ColFile As System.Windows.Forms.ColumnHeader
+    Friend WithEvents CheckFilterGender As System.Windows.Forms.CheckBox
+    Friend WithEvents TreeClips As System.Windows.Forms.TreeView
     Friend WithEvents ButtonRow As System.Windows.Forms.FlowLayoutPanel
     Friend WithEvents ButtonCancel As System.Windows.Forms.Button
     Friend WithEvents ButtonOk As System.Windows.Forms.Button

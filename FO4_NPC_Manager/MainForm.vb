@@ -975,13 +975,13 @@ Public Class MainForm
     Private _animClips As List(Of ResolvedAnimationClip) = Nothing
     Private _animSkeletonBytes As Byte() = Nothing
     Private _animSession As HkxPoseImportSession = Nothing
-    ' Playback compartido con WM (reloj + selección de frame por FPS + caché de poses). El timer de
-    ' WinForms sigue siendo el driver; el player provee FrameForNow()/PoseForFrame().
+    ' Playback compartido con WM (reloj + selección de frame por FPS + caché de poses + loop
+    ' Application.Idle). El player ES el driver: BeginIdlePlayback/EndIdlePlayback reemplazan al
+    ' WinForms Timer y, en cada frame elegido por reloj, llaman OnAnimPlaybackFrame en el hilo UI.
     Private _animPlayer As HkxAnimationPlayer = Nothing
     Private _animSuppress As Boolean = False
     Private _animSuppressMs As Boolean = False          ' al setear NumericAnimFrameMs programáticamente
     Private _animOverBudget As Boolean = False          ' FPS en rojo = render no llega al target
-    Private WithEvents _animPlayTimer As New System.Windows.Forms.Timer With {.Interval = 33}
 
     ''' <summary>Refresca la barra de animación al NPC actual. Se llama al INICIO de RenderCurrentStateAsync
     ''' (cubre TODOS los paths de render: wrapper, RenderFromCurrentSelection, etc. — usa CurrentBaseState,
@@ -1091,7 +1091,8 @@ Public Class MainForm
             Return
         End If
         Dim current = TryCast(If(ComboAnim.SelectedIndex > 0, _animClips(ComboAnim.SelectedIndex - 1), Nothing), ResolvedAnimationClip)
-        Using dlg As New AnimationPicker_Form(_animClips, If(current?.AnimationFile, ""))
+        Dim isFemale = _animCacheKey.EndsWith("|F", StringComparison.OrdinalIgnoreCase)   ' género del NPC actual (clave "raceFID|F/M")
+        Using dlg As New AnimationPicker_Form(_animClips, isFemale, If(current?.AnimationFile, ""))
             If dlg.ShowDialog(Me) = DialogResult.OK AndAlso dlg.SelectedClip IsNot Nothing Then
                 Dim idx = _animClips.IndexOf(dlg.SelectedClip)
                 If idx >= 0 Then ComboAnim.SelectedIndex = idx + 1   ' +1 por el "(None)"
@@ -1140,8 +1141,9 @@ Public Class MainForm
             SetStatus_Anim("Animation load error: " & ex.Message)
             Return
         End Try
-        ' Clip activo → modo animación (pose-only, sin reset de cámara/bounds) mientras esté seleccionado.
-        SetPlayingAnimation(True)
+        ' Clip seleccionado = PAUSADO en frame 0 (no es "playing"). PlayingAnimation sigue la lógica
+        ' del botón Play (True solo al reproducir), igual que WM — si no, el RenderTimer queda parado
+        ' en pausa y no se puede rotar/zoom. Acá NO se setea True.
         Dim maxFrame = Math.Max(0, _animSession.FrameCount - 1)
         _animSuppress = True
         SliderAnimFrame.Minimum = 0 : SliderAnimFrame.Maximum = maxFrame : SliderAnimFrame.Value = 0
@@ -1164,25 +1166,21 @@ Public Class MainForm
         _animSuppressMs = False
         Dim appliedFps = Math.Max(1.0, CDbl(NumericAnimFrameMs.Value))
         If _animPlayer IsNot Nothing Then _animPlayer.TargetFps = appliedFps
-        _animPlayTimer.Interval = FpsToCheckInterval(appliedFps)
     End Sub
 
     Private Sub NumericAnimFrameMs_ValueChanged(sender As Object, e As EventArgs) Handles NumericAnimFrameMs.ValueChanged
         If _animSuppressMs Then Return
         Dim fps = Math.Max(1.0, CDbl(NumericAnimFrameMs.Value))   ' el numeric ahora es FPS
-        _animPlayTimer.Interval = FpsToCheckInterval(fps)
         If _animPlayer IsNot Nothing Then
             _animPlayer.TargetFps = fps
             ' Reanclar el reloj al frame actual para que el cambio de FPS no pegue un salto.
-            If _animPlayTimer.Enabled Then _animPlayer.Rebase(CInt(Math.Round(SliderAnimFrame.Value)))
+            If _animPlayer.IsPlaying Then _animPlayer.Rebase(CInt(Math.Round(SliderAnimFrame.Value)))
         End If
     End Sub
 
-    ''' <summary>Intervalo del timer de chequeo (ms) a partir del FPS objetivo: ~la mitad del tiempo
-    ''' por frame, tope 16ms. El player elige el frame real por reloj.</summary>
-    Private Shared Function FpsToCheckInterval(fps As Double) As Integer
-        Dim frameMs = 1000.0 / Math.Max(1.0, fps)
-        Return Math.Max(1, Math.Min(16, CInt(Math.Floor(frameMs / 2.0))))
+    ''' <summary>True si el player está reproduciendo (reemplaza el viejo _animPlayTimer.Enabled).</summary>
+    Private Function IsAnimPlayingNow() As Boolean
+        Return _animPlayer IsNot Nothing AndAlso _animPlayer.IsPlaying
     End Function
 
     Private Sub ApplyAnimFrame(frame As Integer)
@@ -1202,7 +1200,7 @@ Public Class MainForm
             ' por frame los bones de chunk — world final + mount (con rotación) + delta de la animación.
             ' Así se ve si el mount tiene rotación (eje de la anim mal) o cómo la pose mueve el chunk.
             ' Scrub a un frame da 1 dump limpio; en play se samplea 1 de cada 30 para no spamear.
-            If Logger.Enabled AndAlso (Not _animPlayTimer.Enabled OrElse frame Mod 30 = 0) Then
+            If Logger.Enabled AndAlso (Not IsAnimPlayingNow() OrElse frame Mod 30 = 0) Then
                 Dim instD = _renderHost.LastSkeletonInstance
                 ' Formatea un Transform COMPLETO (R 3×3 + T + Scale) para hacer la math offline con las
                 ' convenciones reales. Nothing = "I".
@@ -1261,32 +1259,32 @@ Public Class MainForm
     End Sub
 
     Private Sub ButtonAnimPlay_Click(sender As Object, e As EventArgs) Handles ButtonAnimPlay.Click
-        If _animPlayTimer.Enabled Then
+        If IsAnimPlayingNow() Then
             StopAnimPlayback()
         ElseIf _animPlayer IsNot Nothing AndAlso SliderAnimFrame.Maximum > 0 Then
             SetPlayingAnimation(True)
             Dim fps = Math.Max(1.0, CDbl(NumericAnimFrameMs.Value))
             _animPlayer.TargetFps = fps
-            _animPlayTimer.Interval = FpsToCheckInterval(fps)
             _animPlayer.Start(CInt(Math.Round(SliderAnimFrame.Value)))
-            _animPlayTimer.Start()
+            _animPlayer.BeginIdlePlayback(AddressOf OnAnimPlaybackFrame)
             ButtonAnimPlay.Text = "⏸"
         End If
     End Sub
 
     Private Sub StopAnimPlayback()
-        _animPlayTimer.Stop()
+        _animPlayer?.EndIdlePlayback()
         _animPlayer?.Stop()
+        ' Stop/pausa → PlayingAnimation=False (igual que WM): reactiva el RenderTimer para rotar/zoom.
+        SetPlayingAnimation(False)
         If ButtonAnimPlay IsNot Nothing Then ButtonAnimPlay.Text = "▶"
         If _animOverBudget Then NumericAnimFrameMs.ForeColor = SystemColors.ControlText : _animOverBudget = False
     End Sub
 
-    Private Sub AnimPlayTimer_Tick(sender As Object, e As EventArgs) Handles _animPlayTimer.Tick
+    ''' <summary>Callback del loop Application.Idle del player (hilo UI, igual que el viejo Tick).
+    ''' Recibe el frame ya elegido por reloj real (el player ya dedup-ea por _lastShownFrame);
+    ''' actualiza el slider, mide el render y aplica. Reemplaza al viejo AnimPlayTimer_Tick.</summary>
+    Private Sub OnAnimPlaybackFrame(frame As Integer)
         If _animPlayer Is Nothing OrElse SliderAnimFrame.Maximum <= 0 Then StopAnimPlayback() : Return
-        ' Igual que WM: el frame objetivo lo elige el player por reloj de pared + FPS objetivo → salta
-        ' frames si el render no llega; nunca acelera.
-        Dim frame = _animPlayer.FrameForNow()
-        If frame < 0 OrElse frame = CInt(Math.Round(SliderAnimFrame.Value)) Then Return
         _animSuppress = True : SliderAnimFrame.Value = frame : _animSuppress = False
 
         ' Medir el render del frame (InvalidateRender es síncrono) y, si excede el target (ms/frame =
@@ -7628,6 +7626,21 @@ Public Class MainForm
         Dim s As New SkeletonInstance()
         ' Source 1: RACE.ANAM
         s.LoadFromKey(renderData.SkeletonKey)
+        ' Source 1b: HKX de animación (behavior rigName) como base AUTORITATIVA — huesos compartidos al world
+        ' del HKX + agrega solo-HKX (Weapon/IK, chunk-bones de robot + C-). HKX Nothing → no-op (fallback NIF).
+        ' Reusa la misma resolución que la anim-bar (project→character→rigName, ver MainForm ~1029).
+        Try
+            Dim rbSkel = RaceBehaviorResolver.ResolveRaceBehavior(state.RaceFormID, _pluginManager)
+            If rbSkel IsNot Nothing Then
+                rbSkel.IsFemale = state.IsFemale
+                Dim hkxLoader As Func(Of String, Byte()) = AddressOf LoadAnimHkxBytes
+                Dim hkxBytes = LoadAnimHkxBytes(BehaviorClipEnumerator.ResolveHavokSkeleton(rbSkel, hkxLoader))
+                Dim merged = s.MergeHkxSkeleton(hkxBytes)
+                Logger.LogLazy(Function() $"[PREP-SKEL] HKX base merge: {merged} bones (hkxBytes={If(hkxBytes Is Nothing, 0, hkxBytes.Length)})")
+            End If
+        Catch ex As Exception
+            Logger.LogLazy(Function() $"[PREP-SKEL] HKX base merge failed (fallback NIF): {ex.GetType().Name}: {ex.Message}")
+        End Try
         ' Source 2: BPTD.MODL (vía RACE.GNAM)
         Dim bptdBytes = BodyPartSkeletonResolver.TryLoadBptdSkeletonBytes(state.RaceFormID, _pluginManager)
         If bptdBytes IsNot Nothing Then s.MergeAdditionalSkeleton(bptdBytes)

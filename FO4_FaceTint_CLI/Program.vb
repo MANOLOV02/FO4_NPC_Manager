@@ -37,6 +37,13 @@ Module Program
         Public TtedScan As Boolean = False
         Public RaceAnim As Boolean = False      ' --raceanim: dump del behavior resuelto por raza (project+subgraphs+SRAC)
         Public MountValidate As Boolean = False ' --mountvalidate: valida orden mount/pose con datos reales
+        Public FindHkx As String = ""           ' --findhkx <substr>: lista .hkx del load order que matchean + face-bones
+        Public ChunkCompare As String = ""       ' --chunkcompare <chunkNif>: layout interno del chunk vs CreateABot
+        Public DumpBehavior As String = ""       ' --dumpbehavior <hkx>: clip generators + character animationNames/behaviorFilename
+        Public HkxCoverage As Boolean = False    ' --hkxcoverage: cuenta todos los .hkx/.hkt y verifica que estén referenciados
+        Public KwType As String = ""             ' --kwtype <substr>: lista KYWD (EDID + TNAM Type enum) que matchean (discriminador identidad-vs-estado)
+        Public StateMap As Boolean = False       ' --statemap: por raza, clasifica subgraphs por EJE DE ESTADO (TNAM type) y muestra qué entra/queda afuera
+        Public ClipResolve As Boolean = False     ' --clipresolve: valida la resolución clip→archivo por EXISTENCIA sobre rutas SAPT (cobertura % por raza)
         Public RankBy As String = "n"   ' canal por el que rankea el sweep: n (default) / d / s
     End Class
 
@@ -114,7 +121,7 @@ Module Program
 
         ' --- 3. Lista de trabajo (esp, edid) ---
         Dim work = BuildWorkList(opt)
-        If work.Count = 0 AndAlso Not opt.TtedScan AndAlso Not opt.RaceAnim AndAlso Not opt.MountValidate Then
+        If work.Count = 0 AndAlso Not opt.TtedScan AndAlso Not opt.RaceAnim AndAlso Not opt.MountValidate AndAlso opt.FindHkx = "" AndAlso opt.ChunkCompare = "" AndAlso opt.DumpBehavior = "" AndAlso Not opt.HkxCoverage AndAlso opt.KwType = "" AndAlso Not opt.StateMap AndAlso Not opt.ClipResolve Then
             Console.Error.WriteLine("No hay NPCs para procesar (revisa --edid / --list).") : Environment.ExitCode = 1 : Return
         End If
 
@@ -164,9 +171,51 @@ Module Program
             Return
         End If
 
+        ' --- FINDHKX: lista .hkx/.hkt del load order que matchean un substr + tags (skeleton/face-bones/rig).
+        If opt.FindHkx <> "" Then
+            FindHkxScan(opt.FindHkx)
+            Return
+        End If
+
+        ' --- CHUNKCOMPARE: layout interno del chunk-NIF (relativo a su ancla compartida) vs CreateABot.
+        If opt.ChunkCompare <> "" Then
+            ChunkLayoutCompare(opt.ChunkCompare)
+            Return
+        End If
+
+        ' --- DUMPBEHAVIOR: clip generators (animationName) + character animationNames/behaviorFilename de un HKX.
+        If opt.DumpBehavior <> "" Then
+            DumpBehaviorClips(opt.DumpBehavior)
+            Return
+        End If
+
         ' --- RACEANIM: resuelve el behavior por raza (project+skeleton por gender + subgraphs vía SRAC/SADD).
         If opt.RaceAnim Then
             RaceAnimScan(pm, opt.Edid)
+            Return
+        End If
+
+        ' --- HKXCOVERAGE: cuenta todos los .hkx/.hkt del load order y verifica que cada uno esté referenciado.
+        If opt.HkxCoverage Then
+            HkxCoverageScan(pm)
+            Return
+        End If
+
+        ' --- KWTYPE: lista KYWD (EDID + TNAM Type) que matchean un substr → discriminador identidad-vs-estado.
+        If opt.KwType <> "" Then
+            KwTypeScan(pm, opt.KwType)
+            Return
+        End If
+
+        ' --- STATEMAP: por raza, clasifica subgraphs por EJE DE ESTADO (TNAM type) y muestra entra/fuera.
+        If opt.StateMap Then
+            StateMapScan(pm, opt.Edid)
+            Return
+        End If
+
+        ' --- CLIPRESOLVE: valida resolución clip→archivo por EXISTENCIA sobre rutas SAPT (cobertura por raza).
+        If opt.ClipResolve Then
+            ClipResolveScan(pm, opt.Edid)
             Return
         End If
 
@@ -692,6 +741,697 @@ Module Program
     ''' PartType + HDPT.TextureSet + el material inline del NIF) con dims de cada DDS. Permite ver con keys
     ''' exactos que usa el app vs el CLI sin componer. No escribe nada.</summary>
     ' Dump del behavior resuelto por raza: project+skeleton por gender + subgraphs (propios o vía SRAC/SADD).
+    ''' <summary>Lista los .hkx/.hkt del load order que matchean un substring, y para cada uno taggea:
+    ''' hkaSkeleton (name + #bones + face-bones detectados), hkbCharacterStringData (name + rigName).
+    ''' Sirve para responder "¿hay un HKX específico de cara (face skeleton/behavior)?".</summary>
+    Private Sub FindHkxScan(substr As String)
+        Dim rxFace = New System.Text.RegularExpressions.Regex("jaw|lip|cheek|brow|mouth|tongue|teeth|nose|chin|forehead|eyelid|^eye|_eye|face|phoneme", System.Text.RegularExpressions.RegexOptions.IgnoreCase)
+        Dim keys = FilesDictionary_class.Dictionary.Keys.
+            Where(Function(k) (k.EndsWith(".hkx", StringComparison.OrdinalIgnoreCase) OrElse k.EndsWith(".hkt", StringComparison.OrdinalIgnoreCase)) AndAlso
+                              k.IndexOf(substr, StringComparison.OrdinalIgnoreCase) >= 0).
+            OrderBy(Function(k) k, StringComparer.OrdinalIgnoreCase).ToList()
+        Console.WriteLine($"[findhkx] '{substr}': {keys.Count} archivos .hkx/.hkt en el load order")
+        Dim parsed = 0
+        For Each k In keys
+            Dim bytes = FilesDictionary_class.GetBytes(k)
+            If bytes Is Nothing OrElse bytes.Length = 0 Then Console.WriteLine($"  {k}  (no carga)") : Continue For
+            Dim tags As New List(Of String)
+            Try
+                Dim sg = HkxObjectGraphParser_Class.BuildGraph(HkxPackfileParser_Class.Parse(bytes))
+                For Each o In sg.GetObjectsByClassName("hkaSkeleton")
+                    Dim sk = sg.ParseSkeleton(o)
+                    If sk Is Nothing OrElse sk.Bones Is Nothing Then Continue For
+                    Dim faceB = sk.Bones.Select(Function(b) b.Name).Where(Function(n) Not String.IsNullOrEmpty(n) AndAlso rxFace.IsMatch(n)).Take(30).ToList()
+                    tags.Add($"hkaSkeleton '{sk.Name}' bones={sk.Bones.Count}{If(faceB.Count > 0, " FACE-BONES(" & faceB.Count & "):[" & String.Join(",", faceB) & "]", " (sin face-bones)")}")
+                    If keys.Count <= 2 Then Console.WriteLine($"     TODOS los bones [{sk.Bones.Count}]: {String.Join(", ", sk.Bones.Select(Function(b) b.Name))}")
+                Next
+                For Each o In sg.GetObjectsByClassName("hkbCharacterStringData")
+                    Dim csd = sg.ParseCharacterStringData(o)
+                    If csd IsNot Nothing Then tags.Add($"character '{csd.CharacterName}' rig='{csd.RigName}'")
+                Next
+            Catch ex As Exception
+                tags.Add("(parse fail: " & ex.GetType().Name & ")")
+            End Try
+            parsed += 1
+            Console.WriteLine($"  {k}  →  {If(tags.Count > 0, String.Join("  |  ", tags), "(sin skeleton/character)")}")
+        Next
+        Console.WriteLine($"[findhkx] {parsed} parseados.")
+    End Sub
+
+    ''' <summary>Valida el armado del skeleton base como lo hace PrepareSkeleton: LoadFromBytes(nif) +
+    ''' MergeHkxSkeleton(hkx). Dumpea pre/post bone count, cuántos mergeó, InjectedBones (debe ser 0 sin
+    ''' shapes/cloth), y el world de bones clave (Root + chunk-bones de robot) para confirmar que quedan en
+    ''' la posición ensamblada del HKX.</summary>
+    Private Sub ValidateMergeHkx(label As String, hkxPath As String, nifPath As String)
+        Dim nifBytes = LoadAnimCand(nifPath) : Dim hkxBytes = LoadAnimCand(hkxPath)
+        If nifBytes Is Nothing OrElse hkxBytes Is Nothing Then
+            Console.WriteLine($"  [MERGE-VALIDATE] falta archivo (nif={nifBytes IsNot Nothing}, hkx={hkxBytes IsNot Nothing})") : Return
+        End If
+        Dim s As New SkeletonInstance()
+        If Not s.LoadFromBytes(nifBytes) Then Console.WriteLine("  [MERGE-VALIDATE] LoadFromBytes(nif) falló") : Return
+        Dim pre = s.SkeletonDictionary.Count
+        Dim merged = s.MergeHkxSkeleton(hkxBytes)
+        Dim post = s.SkeletonDictionary.Count
+        Console.WriteLine($"  [MERGE-VALIDATE] {label}: NIF={pre} bones → +HKX merge={merged} → total={post} | InjectedBones={s.InjectedBones.Count} (esperado 0)")
+        ' Dump del world de bones clave (los que existan): root, locomoción, chunk-bones de robot.
+        Dim probes = {"Root", "COM", "Neck", "Head", "C-BotCore", "C-BotLegs", "BUpperLeg", "LArm_UpperArm", "Camera"}
+        For Each bn In probes
+            Dim hb As HierarchiBone_class = Nothing
+            If s.SkeletonDictionary.TryGetValue(bn, hb) Then
+                Dim w = hb.OriginalGetGlobalTransform
+                Dim parent = If(hb.Parent IsNot Nothing, hb.Parent.BoneName, "<root>")
+                Console.WriteLine($"     '{bn}' parent='{parent}' world.T=({w.Translation.X:F1},{w.Translation.Y:F1},{w.Translation.Z:F1})")
+            End If
+        Next
+    End Sub
+
+    ''' <summary>Compara el LAYOUT INTERNO de un chunk-NIF (posiciones de sus bones relativas al bone-ancla
+    ''' compartido más root-most) contra CreateABot.hkx. Si el layout COINCIDE ⇒ el chunk está autoreado igual
+    ''' a CreateABot y el offset de ensamblaje (9–18u) viene de la CADENA (host P-X), no del chunk ⇒ el re-bind
+    ''' al HKX es posible (alinear el ancla). Si DIFIERE ⇒ el chunk está autoreado distinto ⇒ no encastra rígido.</summary>
+    Private Sub ChunkLayoutCompare(chunkNifPath As String)
+        Dim hkxPath = "Actors\CreateABot\CharacterAssets\skeleton.hkx"
+        Dim nbx = LoadAnimCand(chunkNifPath) : Dim hbx = LoadAnimCand(hkxPath)
+        If nbx Is Nothing OrElse hbx Is Nothing Then Console.WriteLine($"[chunkcompare] falta archivo (nif={nbx IsNot Nothing}, hkx={hbx IsNot Nothing})") : Return
+        ' Chunk NIF: nodo → world + depth.
+        Dim nif As New Nifcontent_Class_Manolo() : nif.Load_Manolo(nbx)
+        Dim cWorld As New Dictionary(Of String, Transform_Class)(StringComparer.OrdinalIgnoreCase)
+        Dim cDepth As New Dictionary(Of String, Integer)(StringComparer.OrdinalIgnoreCase)
+        For Each blk In nif.Blocks
+            Dim nn = TryCast(blk, NiflySharp.Blocks.NiNode)
+            If nn Is Nothing OrElse nn.Name Is Nothing Then Continue For
+            Dim nm = nn.Name.String
+            If String.IsNullOrEmpty(nm) OrElse cWorld.ContainsKey(nm) Then Continue For
+            cWorld(nm) = Transform_Class.GetGlobalTransform(nn, nif)
+            Dim d = 0 : Dim cur = TryCast(nif.GetParentNode(nn), NiflySharp.Blocks.NiNode)
+            While cur IsNot Nothing AndAlso d < 200 : d += 1 : cur = TryCast(nif.GetParentNode(cur), NiflySharp.Blocks.NiNode) : End While
+            cDepth(nm) = d
+        Next
+        ' CreateABot HKX: bone → world.
+        Dim sg = HkxObjectGraphParser_Class.BuildGraph(HkxPackfileParser_Class.Parse(hbx))
+        Dim skel = sg.GetObjectsByClassName("hkaSkeleton").Select(Function(o) sg.ParseSkeleton(o)).
+                      Where(Function(s) s IsNot Nothing AndAlso s.Bones IsNot Nothing AndAlso s.ParentIndices IsNot Nothing AndAlso
+                            (String.IsNullOrEmpty(s.Name) OrElse s.Name.IndexOf("Ragdoll", StringComparison.OrdinalIgnoreCase) < 0)).FirstOrDefault()
+        If skel Is Nothing Then Console.WriteLine("[chunkcompare] CreateABot sin skeleton anim") : Return
+        Dim nB = skel.Bones.Count
+        Dim hWorld(nB - 1) As Transform_Class
+        Dim hByName As New Dictionary(Of String, Transform_Class)(StringComparer.OrdinalIgnoreCase)
+        For i = 0 To nB - 1
+            Dim loc = HkxTransformConventionHelper.ToTransform(skel.ReferencePose(i))
+            Dim p = If(i < skel.ParentIndices.Count, CInt(skel.ParentIndices(i)), -1)
+            hWorld(i) = If(p < 0 OrElse p >= i, loc, hWorld(p).ComposeTransforms(loc))
+            Dim nm = skel.Bones(i).Name
+            If Not String.IsNullOrEmpty(nm) AndAlso Not hByName.ContainsKey(nm) Then hByName(nm) = hWorld(i)
+        Next
+        ' Bones compartidos + ancla = el más root-most en el chunk.
+        Dim sharedBones = cWorld.Keys.Where(Function(k) hByName.ContainsKey(k)).OrderBy(Function(k) cDepth(k)).ToList()
+        If sharedBones.Count = 0 Then Console.WriteLine("[chunkcompare] sin bones compartidos con CreateABot") : Return
+        Dim refBone = sharedBones(0)
+        Console.WriteLine($"[chunkcompare] {chunkNifPath}")
+        Console.WriteLine($"   shared con CreateABot = {sharedBones.Count} | ancla (root-most) = '{refBone}'")
+        Dim cRefInv = cWorld(refBone).Inverse()
+        Dim hRefInv = hByName(refBone).Inverse()
+        Dim maxDT = 0.0F, maxDR = 0.0F
+        For Each b In sharedBones
+            Dim relC = cRefInv.ComposeTransforms(cWorld(b))
+            Dim relH = hRefInv.ComposeTransforms(hByName(b))
+            Dim dT = (relC.Translation - relH.Translation).Length()
+            Dim cr = relC.Rotation, hr = relH.Rotation
+            Dim dR = Math.Abs(cr.M11 - hr.M11) + Math.Abs(cr.M12 - hr.M12) + Math.Abs(cr.M13 - hr.M13) +
+                     Math.Abs(cr.M21 - hr.M21) + Math.Abs(cr.M22 - hr.M22) + Math.Abs(cr.M23 - hr.M23) +
+                     Math.Abs(cr.M31 - hr.M31) + Math.Abs(cr.M32 - hr.M32) + Math.Abs(cr.M33 - hr.M33)
+            maxDT = Math.Max(maxDT, dT) : maxDR = Math.Max(maxDR, dR)
+            If dT > 0.1F OrElse dR > 0.02F Then Console.WriteLine($"   {b,-22}: rel-vs-CreateABot dT={dT:F2} dR={dR:F2}")
+        Next
+        Dim match = maxDT < 0.5F AndAlso maxDR < 0.05F
+        Console.WriteLine($"[chunkcompare] maxDT={maxDT:F2} maxDR={maxDR:F2} ⇒ {If(match, "LAYOUT == CreateABot (el offset de ensamblaje viene de la CADENA/host-P-X, NO del chunk → re-bind al HKX posible)", "LAYOUT DIFIERE de CreateABot (chunk autoreado distinto → no encastra rígido al HKX)")}")
+    End Sub
+
+    ''' <summary>Vuelca de un HKX: clip generators (Name + AnimationName) + characters (animationNames +
+    ''' behaviorFilename + rigName). Para ver el linking DIRECTO clip↔anim sin heurísticas de path.</summary>
+    Private Sub DumpBehaviorClips(path As String)
+        Dim b = LoadAnimCand(path)
+        If b Is Nothing Then Console.WriteLine($"[dumpbeh] '{path}' no carga") : Return
+        Dim g = HkxObjectGraphParser_Class.BuildGraph(HkxPackfileParser_Class.Parse(b))
+        Dim cgs = g.GetObjectsByClassName("hkbClipGenerator").Select(Function(o) g.ParseClipGenerator(o)).Where(Function(c) c IsNot Nothing).ToList()
+        Dim refs = g.GetObjectsByClassName("hkbBehaviorReferenceGenerator").Select(Function(o) g.ResolveLocalString(o.RelativeOffset + &H88)).Where(Function(s) Not String.IsNullOrEmpty(s)).Distinct().ToList()
+        Console.WriteLine($"[dumpbeh] {path}: clipGenerators={cgs.Count} behaviorRefs={refs.Count}")
+        For Each r In refs
+            Console.WriteLine($"   behaviorRef→ {r}")
+        Next
+        For Each c In cgs.Select(Function(x) x.AnimationName).Distinct().Take(40)
+            Console.WriteLine($"   clip-anim: {c}")
+        Next
+        For Each o In g.GetObjectsByClassName("hkbCharacterStringData")
+            Dim csd = g.ParseCharacterStringData(o)
+            If csd Is Nothing Then Continue For
+            Console.WriteLine($"   [character] name='{csd.CharacterName}' rig='{csd.RigName}' behaviorFile='{csd.BehaviorFilename}' animNames={csd.AnimationFilenames.Count}")
+            For Each an In csd.AnimationFilenames.Take(40)
+                Console.WriteLine($"      animName: {an}")
+            Next
+        Next
+    End Sub
+
+    ''' <summary>EDID de un FormID (keyword, etc.) vía PluginManager; "" si fid=0, hex si no resuelve.</summary>
+    Private Function EdidOf(pm As PluginManager, fid As UInteger) As String
+        If fid = 0UI Then Return ""
+        Try
+            Dim r = pm.GetRecord(fid)
+            Return If(r IsNot Nothing AndAlso Not String.IsNullOrEmpty(r.EditorID), r.EditorID, $"0x{fid:X8}")
+        Catch
+            Return $"0x{fid:X8}"
+        End Try
+    End Function
+
+    ' ── Helpers de path (canon / combine) replicados de la lib para el audit de cobertura.
+    Private Function CanonHkx(p As String) As String
+        If String.IsNullOrEmpty(p) Then Return ""
+        p = p.Replace("/"c, "\"c)
+        If p.StartsWith("Meshes\", StringComparison.OrdinalIgnoreCase) Then p = p.Substring(7)
+        If p.EndsWith(".hkt", StringComparison.OrdinalIgnoreCase) Then p = p.Substring(0, p.Length - 4) & ".hkx"
+        Return p.ToLowerInvariant()
+    End Function
+    Private Function HkxCategory(p As String) As String
+        Dim lp = p.ToLowerInvariant()
+        If lp.Contains("\animations\") Then Return "Animation"
+        If lp.Contains("\behaviors\") Then Return "Behavior"
+        If lp.Contains("\characters\") Then Return "Character"
+        If lp.Contains("\characterassets\") Then Return "Skeleton/Ragdoll"
+        If lp.EndsWith("project.hkx") OrElse lp.EndsWith("project.hkt") Then Return "Project"
+        Return "Other"
+    End Function
+    Private Function DirNameC(p As String) As String
+        Dim i = p.LastIndexOf("\"c) : Return If(i > 0, p.Substring(0, i), "")
+    End Function
+    Private Function CombineC(root As String, rel As String) As String
+        If String.IsNullOrWhiteSpace(rel) Then Return ""
+        Dim lc = rel.Replace("/"c, "\"c).TrimStart("\"c)
+        If lc.StartsWith("actors\", StringComparison.OrdinalIgnoreCase) OrElse lc.StartsWith("meshes\", StringComparison.OrdinalIgnoreCase) OrElse root = "" Then Return lc
+        Return root.TrimEnd("\"c) & "\" & lc
+    End Function
+    Private Function ResolveRelC(root As String, rel As String) As String
+        Dim combined = CombineC(root, rel)
+        Dim stack As New List(Of String)
+        For Each seg In combined.Split("\"c)
+            If seg = "" OrElse seg = "." Then Continue For
+            If seg = ".." Then
+                If stack.Count > 0 Then stack.RemoveAt(stack.Count - 1)
+            Else
+                stack.Add(seg)
+            End If
+        Next
+        Return String.Join("\", stack)
+    End Function
+    Private Function ActorRootC(p As String) As String
+        For Each m In {"\Animations\", "\CharacterAssets\", "\Characters\", "\Behaviors\"}
+            Dim i = p.IndexOf(m, StringComparison.OrdinalIgnoreCase)
+            If i > 0 Then Return p.Substring(0, i)
+        Next
+        Return DirNameC(p)
+    End Function
+
+    ''' <summary>Audit de cobertura: cuenta TODOS los .hkx/.hkt del load order y verifica que cada uno esté
+    ''' referenciado por alguna raza (project / character / skeleton-rig / behavior recursivo / animación).
+    ''' Reporta referenciado vs HUÉRFANO por categoría. Los huérfanos = no alcanzables desde ningún RACE.</summary>
+    Private Sub HkxCoverageScan(pm As PluginManager)
+        ' (1) Inventario de todos los .hkx/.hkt (canon → categoría).
+        Dim allFiles As New Dictionary(Of String, String)(StringComparer.OrdinalIgnoreCase)
+        For Each key In FilesDictionary_class.Dictionary.Keys
+            If Not (key.EndsWith(".hkx", StringComparison.OrdinalIgnoreCase) OrElse key.EndsWith(".hkt", StringComparison.OrdinalIgnoreCase)) Then Continue For
+            Dim c = CanonHkx(key)
+            If Not allFiles.ContainsKey(c) Then allFiles(c) = HkxCategory(key)
+        Next
+        Console.WriteLine($"[hkxcoverage] total .hkx/.hkt en load order (canon dedup) = {allFiles.Count}")
+
+        ' (2) Conjunto REFERENCIADO: caminar todas las razas con behavior.
+        Dim referenced As New HashSet(Of String)(StringComparer.OrdinalIgnoreCase)
+        Dim behVisited As New HashSet(Of String)(StringComparer.OrdinalIgnoreCase)
+        Dim loader As Func(Of String, Byte()) = AddressOf LoadDictBytes
+        Dim races = pm.GetRecordsOfType("RACE")
+        Dim nRaces = 0
+        For Each rec In races
+            Dim race As RACE_Data = Nothing
+            Try : race = RecordParsers.ParseRACE(rec, pm) : Catch : Continue For : End Try
+            If race Is Nothing Then Continue For
+            Dim rb = RaceBehaviorResolver.ResolveRaceBehavior(race.FormID, pm)
+            If rb Is Nothing OrElse (rb.MaleProject = "" AndAlso rb.FemaleProject = "") Then Continue For
+            nRaces += 1
+            AddRefC(referenced, rb.MaleProject) : AddRefC(referenced, rb.FemaleProject)
+            AddRefC(referenced, BehaviorClipEnumerator.ResolveHavokSkeleton(rb, loader))
+            For Each proj In {rb.MaleProject, rb.FemaleProject}.Where(Function(p) p <> "").Distinct(StringComparer.OrdinalIgnoreCase)
+                CollectProjectRefs(proj, referenced)
+            Next
+            For Each sg In rb.Subgraphs
+                CollectBehaviorRefs(sg.BehaviourGraph, referenced, behVisited, 0)
+            Next
+            Try
+                For Each c In BehaviorClipEnumerator.EnumerateClips(rb, loader)
+                    AddRefC(referenced, c.AnimationFile)
+                Next
+            Catch
+            End Try
+        Next
+        Console.WriteLine($"[hkxcoverage] razas con behavior caminadas = {nRaces} | archivos referenciados = {referenced.Count}")
+
+        ' (3) Reporte por categoría: referenciado vs NO-referenciado-por-raza.
+        Dim allOrphans As New List(Of String)
+        For Each cat In {"Animation", "Behavior", "Character", "Skeleton/Ragdoll", "Project", "Other"}
+            Dim inCat = allFiles.Where(Function(kv) kv.Value = cat).Select(Function(kv) kv.Key).ToList()
+            Dim orph = inCat.Where(Function(k) Not referenced.Contains(k)).ToList()
+            allOrphans.AddRange(orph)
+            Console.WriteLine($"  {cat,-16}: total={inCat.Count,5}  ref-por-raza={inCat.Count - orph.Count,5}  NO-ref-por-raza={orph.Count,5}")
+        Next
+        ' (4) Sub-categorizar los NO-referenciados por patrón (¿no-race legítimo, o gap real de raza?).
+        Dim pat = Function(p As String) As String
+                      If p.Contains("\_1stperson\") OrElse p.Contains("\1stperson\") Then Return "1stPerson"
+                      If p.Contains("\weapons\") OrElse p.Contains("teslacannon") OrElse p.Contains("\weapon\") Then Return "Weapon-anim"
+                      If p.Contains("\hair\") Then Return "Hair (cloth/facebones)"
+                      If p.StartsWith("animobjects\") OrElse p.StartsWith("furniture\") Then Return "AnimObject/Furniture-obj"
+                      If p.StartsWith("weapons\") Then Return "Weapon(root)"
+                      If p.StartsWith("vehicles\") OrElse p.Contains("carproject") Then Return "Vehicle"
+                      If p.StartsWith("pipboy\") OrElse p.Contains("\pipboy") Then Return "Pipboy"
+                      If p.Contains("\_test") OrElse p.StartsWith("actors\_test") Then Return "Test"
+                      If p.Contains("\critter") OrElse p.Contains("\crow\") OrElse p.Contains("\gulper\") OrElse p.Contains("\dlc03\") Then Return "Critter/Creature-DLC"
+                      If p.StartsWith("actors\") Then Return "actors\… (cuerpo de actor — REVISAR)"
+                      Return "otro"
+                  End Function
+        Console.WriteLine($"  --- NO-referenciados por RAZA, por patrón (total {allOrphans.Count}) ---")
+        For Each grp In allOrphans.GroupBy(Function(o) pat(o)).OrderByDescending(Function(g) g.Count())
+            Console.WriteLine($"     {grp.Key,-34}: {grp.Count()}")
+        Next
+        Dim suspect = allOrphans.Where(Function(o) pat(o).StartsWith("actors\…")).OrderBy(Function(o) o).ToList()
+        Console.WriteLine($"  --- SOSPECHOSOS (actors\… cuerpo huérfano = posible gap de raza): {suspect.Count} ---")
+        For Each s In suspect.Take(25) : Console.WriteLine($"      {s}") : Next
+    End Sub
+
+    Private Sub AddRefC(referenced As HashSet(Of String), p As String)
+        If Not String.IsNullOrWhiteSpace(p) Then referenced.Add(CanonHkx(p))
+    End Sub
+    ' project → CharacterFilenames → character (rig + behaviorFile + animationNames). Todo referenciado.
+    Private Sub CollectProjectRefs(proj As String, referenced As HashSet(Of String))
+        Dim actorRoot = DirNameC(proj)
+        Dim pb = LoadAnimCand(proj)
+        If pb Is Nothing Then Return
+        Try
+            Dim g = HkxObjectGraphParser_Class.BuildGraph(HkxPackfileParser_Class.Parse(pb))
+            For Each o In g.GetObjectsByClassName("hkbProjectStringData")
+                Dim psd = g.ParseProjectStringData(o)
+                If psd Is Nothing Then Continue For
+                For Each cf In psd.CharacterFilenames
+                    If String.IsNullOrWhiteSpace(cf) Then Continue For
+                    Dim charPath = CombineC(actorRoot, cf)
+                    AddRefC(referenced, charPath)
+                    Dim cb = LoadAnimCand(charPath)
+                    If cb Is Nothing Then cb = LoadAnimCand(cf)
+                    If cb Is Nothing Then Continue For
+                    Dim gc = HkxObjectGraphParser_Class.BuildGraph(HkxPackfileParser_Class.Parse(cb))
+                    For Each co In gc.GetObjectsByClassName("hkbCharacterStringData")
+                        Dim csd = gc.ParseCharacterStringData(co)
+                        If csd Is Nothing Then Continue For
+                        AddRefC(referenced, CombineC(actorRoot, csd.RigName))
+                        AddRefC(referenced, CombineC(actorRoot, csd.BehaviorFilename))
+                        For Each an In csd.AnimationFilenames
+                            AddRefC(referenced, ResolveRelC(actorRoot, an))
+                        Next
+                    Next
+                Next
+            Next
+        Catch
+        End Try
+    End Sub
+    ' behavior + sus referencias (hkbBehaviorReferenceGenerator) recursivamente. visited global (coverage).
+    Private Sub CollectBehaviorRefs(behFile As String, referenced As HashSet(Of String), visited As HashSet(Of String), depth As Integer)
+        If String.IsNullOrWhiteSpace(behFile) OrElse depth > 12 Then Return
+        Dim canon = CanonHkx(behFile)
+        If Not visited.Add(canon) Then Return
+        referenced.Add(canon)
+        Dim bb = LoadAnimCand(behFile)
+        If bb Is Nothing Then Return
+        Try
+            Dim g = HkxObjectGraphParser_Class.BuildGraph(HkxPackfileParser_Class.Parse(bb))
+            Dim behRoot = ActorRootC(behFile)
+            For Each refObj In g.GetObjectsByClassName("hkbBehaviorReferenceGenerator")
+                Dim refName = g.ResolveLocalString(refObj.RelativeOffset + &H88)
+                If Not String.IsNullOrWhiteSpace(refName) Then CollectBehaviorRefs(CombineC(behRoot, refName), referenced, visited, depth + 1)
+            Next
+        Catch
+        End Try
+    End Sub
+
+    ' KYWD TNAM Type enum (xEdit wbDefinitionsFO4.pas:5213 wbKeywordTypeEnum).
+    Private ReadOnly KeywordTypeNames As String() = {
+        "None", "Component Tech Level", "Attach Point", "Component Property", "Instantiation Filter",
+        "Mod Association", "Sound", "Anim Archetype", "Function Call", "Recipe Filter", "Attraction Type",
+        "Dialogue Subtype", "Quest Target", "Anim Flavor", "Anim Gender", "Anim Face", "Quest Group",
+        "Anim Injured", "Dispel Effect"}
+    Private Function KwTypeName(t As UInteger) As String
+        Return If(t < CUInt(KeywordTypeNames.Length), KeywordTypeNames(CInt(t)), $"Type{t}")
+    End Function
+
+    ''' <summary>Lista KYWD (EDID + TNAM Type) que matchean un substr. El TNAM Type es el discriminador
+    ''' AUTORITATIVO identidad-vs-estado de los SAKD: 'Anim Injured'(17)/'Anim Archetype'(7)/'Anim Flavor'(13)
+    ''' = gates de ESTADO runtime (no filtrar por raza); 'None'(0) = keyword de identidad ('Anims&lt;X&gt;Race').</summary>
+    Private Sub KwTypeScan(pm As PluginManager, substr As String)
+        Dim kws = pm.GetRecordsOfType("KYWD")
+        Console.WriteLine($"[kwtype] {kws.Count} KYWD records | filtro edid='{substr}'")
+        Dim shown = 0
+        Dim byType As New Dictionary(Of String, Integer)(StringComparer.OrdinalIgnoreCase)
+        For Each rec In kws
+            Dim edid = rec.EditorID
+            If String.IsNullOrEmpty(edid) Then Continue For
+            If substr <> "" AndAlso edid.IndexOf(substr, StringComparison.OrdinalIgnoreCase) < 0 Then Continue For
+            Dim t As UInteger = 0
+            For Each sr In rec.Subrecords
+                If sr.Signature = "TNAM" AndAlso sr.Data IsNot Nothing AndAlso sr.Data.Length >= 4 Then
+                    t = BitConverter.ToUInt32(sr.Data, 0) : Exit For
+                End If
+            Next
+            Dim tn = KwTypeName(t)
+            byType(tn) = If(byType.ContainsKey(tn), byType(tn) + 1, 1)
+            If shown < 60 Then Console.WriteLine($"   {edid,-42} TNAM={t} '{tn}'")
+            shown += 1
+        Next
+        Console.WriteLine($"[kwtype] matcheados={shown}")
+        For Each kv In byType.OrderByDescending(Function(x) x.Value)
+            Console.WriteLine($"   tipo {kv.Key,-22}: {kv.Value}")
+        Next
+    End Sub
+
+    ''' <summary>Mapa de ESTADO por raza: clasifica cada subgraph por el TIPO (KYWD.TNAM) de sus keywords SAKD,
+    ''' NO por su string. Regla type-driven (sin listas hardcodeadas): una keyword de tipo 'None' que pertenece a
+    ''' la KWDA de ALGUNA raza = discriminador de IDENTIDAD; cualquier otro tipo ('Anim Injured/Archetype/Flavor/
+    ''' Gender/Face') = EJE DE ESTADO runtime. Un subgraph se EXCLUYE solo si requiere una identidad de OTRA raza
+    ''' (kw tipo None, ∈ KWDA de alguna raza, ∉ esta raza). Muestra qué entra, por qué eje de estado, y qué queda
+    ''' afuera (con la identidad ajena que lo gatea). Compara contra la regla VIEJA (SAKD ∩ KWDA) para ver el delta.</summary>
+    Private Sub StateMapScan(pm As PluginManager, edidFilter As String)
+        ' (1) KYWD → tipo (TNAM) y → EDID, leídos del record (no del nombre).
+        Dim kwType As New Dictionary(Of UInteger, UInteger)
+        Dim kwEdid As New Dictionary(Of UInteger, String)
+        For Each rec In pm.GetRecordsOfType("KYWD")
+            Dim t As UInteger = 0
+            For Each sr In rec.Subrecords
+                If sr.Signature = "TNAM" AndAlso sr.Data IsNot Nothing AndAlso sr.Data.Length >= 4 Then t = BitConverter.ToUInt32(sr.Data, 0) : Exit For
+            Next
+            kwType(rec.Header.FormID) = t
+            kwEdid(rec.Header.FormID) = rec.EditorID
+        Next
+        ' (2) Identidades de raza = keywords tipo None que ALGUNA raza declara en KWDA (→ a quién pertenece).
+        Dim owner As New Dictionary(Of UInteger, String)
+        Dim races = pm.GetRecordsOfType("RACE")
+        For Each rec In races
+            Dim race As RACE_Data = Nothing
+            Try : race = RecordParsers.ParseRACE(rec, pm) : Catch : Continue For : End Try
+            If race Is Nothing Then Continue For
+            For Each k In race.Keywords
+                Dim tt As UInteger = 0 : kwType.TryGetValue(k, tt)
+                If tt = 0UI AndAlso Not owner.ContainsKey(k) Then owner(k) = race.EditorID  ' None-typed ∧ en KWDA = identidad
+            Next
+        Next
+        Console.WriteLine($"[statemap] KYWD={kwType.Count} | identidades-de-raza(None∧∈KWDA)={owner.Count} | filtro='{edidFilter}'")
+
+        Dim isIdentity = Function(k As UInteger) owner.ContainsKey(k)               ' identidad de alguna raza
+        Dim isState = Function(k As UInteger) As Boolean                           ' eje de estado = tipo ≠ None
+                          Dim tt As UInteger = 0 : kwType.TryGetValue(k, tt) : Return tt <> 0UI
+                      End Function
+
+        Dim gEntries = 0, gOld = 0, gNew = 0, gRecovered = 0, gExcluded = 0
+        Dim gAxisEntries As New Dictionary(Of String, Integer)
+        For Each rec In races
+            Dim race As RACE_Data = Nothing
+            Try : race = RecordParsers.ParseRACE(rec, pm) : Catch : Continue For : End Try
+            If race Is Nothing Then Continue For
+            If race.MaleBehaviorGraphProject = "" AndAlso race.FemaleBehaviorGraphProject = "" Then Continue For
+            If edidFilter <> "" AndAlso race.EditorID.IndexOf(edidFilter, StringComparison.OrdinalIgnoreCase) < 0 Then Continue For
+            Dim rb = RaceBehaviorResolver.ResolveRaceBehavior(race.FormID, pm)
+            If rb Is Nothing Then Continue For
+            Dim thisKw As New HashSet(Of UInteger)(race.Keywords)
+            Dim ownId = race.Keywords.Where(Function(k) isIdentity(k)).Select(Function(k) kwEdid.GetValueOrDefault(k, $"0x{k:X8}"))
+
+            ' Clasificar cada entry.
+            Dim byAxis As New Dictionary(Of String, List(Of RACE_SubgraphData))(StringComparer.OrdinalIgnoreCase)
+            Dim excluded As New List(Of (sd As RACE_SubgraphData, needs As String))
+            Dim nOld = 0, nNew = 0, nRec = 0
+            For Each sd In rb.Subgraphs
+                ' Regla VIEJA (heurística): aplica si SAKD vacío o ∩ KWDA ≠ ∅.
+                Dim oldApply = sd.ActorKeywordFormIDs.Count = 0 OrElse sd.ActorKeywordFormIDs.Any(Function(k) thisKw.Contains(k))
+                ' Regla NUEVA (type-driven): excluir solo si requiere identidad AJENA (None ∧ de otra raza).
+                Dim foreignId = sd.ActorKeywordFormIDs.FirstOrDefault(Function(k) isIdentity(k) AndAlso Not thisKw.Contains(k))
+                Dim newApply = (foreignId = 0UI)
+                If oldApply Then nOld += 1
+                If newApply Then
+                    nNew += 1
+                    If Not oldApply Then nRec += 1   ' recuperado: lo aplicamos ahora y antes NO
+                    ' Eje de estado = los tipos de las keywords de estado (TNAM ≠ None); si ninguna → Normal.
+                    Dim stateTypes = sd.ActorKeywordFormIDs.Where(Function(k) isState(k)).
+                                       Select(Function(k) KwTypeName(kwType.GetValueOrDefault(k, 0UI))).Distinct().OrderBy(Function(s) s).ToList()
+                    Dim axis = If(stateTypes.Count = 0, "Normal", String.Join("+", stateTypes))
+                    If Not byAxis.ContainsKey(axis) Then byAxis(axis) = New List(Of RACE_SubgraphData)
+                    byAxis(axis).Add(sd)
+                Else
+                    excluded.Add((sd, kwEdid.GetValueOrDefault(foreignId, $"0x{foreignId:X8}") & "(None, de " & owner.GetValueOrDefault(foreignId, "?") & ")"))
+                End If
+            Next
+
+            Console.WriteLine($"=== {race.EditorID} [0x{race.FormID:X8}] | identidad propia=[{String.Join(", ", ownId)}] ===")
+            Console.WriteLine($"    subgraphs={rb.Subgraphs.Count} | OLD-aplica={nOld} | NEW-aplica={nNew} | RECUPERADOS(estado)={nRec} | FUERA(identidad ajena)={excluded.Count}")
+            For Each kv In byAxis.OrderBy(Function(x) If(x.Key = "Normal", "", x.Key))
+                Dim saptSet = kv.Value.SelectMany(Function(s) s.AnimationPaths).Select(Function(p) LastTwoSeg(p)).Distinct().Take(6)
+                Dim tag = If(kv.Key <> "Normal" AndAlso kv.Value.Any(Function(s) Not (s.ActorKeywordFormIDs.Count = 0 OrElse s.ActorKeywordFormIDs.Any(Function(k) thisKw.Contains(k)))), "  <<< RECUPERADO", "")
+                Console.WriteLine($"      [{kv.Key,-26}] x{kv.Value.Count,-3} roles={String.Join(",", kv.Value.Select(Function(s) RoleName(s.Role)).Distinct())}  SAPT≈[{String.Join(" ; ", saptSet)}]{tag}")
+            Next
+            If excluded.Count > 0 Then
+                Console.WriteLine($"    FUERA por identidad AJENA:")
+                For Each e In excluded.GroupBy(Function(x) System.IO.Path.GetFileName(x.sd.BehaviourGraph) & " ⟵ " & x.needs).OrderByDescending(Function(g) g.Count()).Take(10)
+                    Console.WriteLine($"       x{e.Count(),-3} {e.Key}")
+                Next
+            End If
+
+            gEntries += rb.Subgraphs.Count : gOld += nOld : gNew += nNew : gRecovered += nRec : gExcluded += excluded.Count
+            For Each kv In byAxis : gAxisEntries(kv.Key) = gAxisEntries.GetValueOrDefault(kv.Key, 0) + kv.Value.Count : Next
+        Next
+        Console.WriteLine($"[statemap-TOTAL] entries={gEntries} | OLD-aplica={gOld} | NEW-aplica={gNew} | RECUPERADOS(estado-gated)={gRecovered} | FUERA(identidad ajena)={gExcluded}")
+        Console.WriteLine($"[statemap-TOTAL] entries NEW-aplicados por EJE DE ESTADO:")
+        For Each kv In gAxisEntries.OrderByDescending(Function(x) x.Value)
+            Console.WriteLine($"      [{kv.Key,-26}] {kv.Value}")
+        Next
+    End Sub
+
+    ''' <summary>Valida la resolución clip→archivo SIN heurística de nombres: por EXISTENCIA del archivo sobre las
+    ''' rutas de búsqueda SAPT (el mecanismo de search-path del engine). Para cada clip prueba, en orden de
+    ''' prioridad SAPT, (1) el path tal-como-autoreado y (2) el path sin el primer segmento (actor-autor del core
+    ''' compartido); la EXISTENCIA en el índice de archivos decide. Camina root behavior + subgraphs aplicados
+    ''' (filtro type-driven). Reporta cobertura % por raza + cómo resolvió (full/strip) + no-resueltos.</summary>
+    Private Sub ClipResolveScan(pm As PluginManager, edidFilter As String)
+        ' Índice de existencia: todos los .hkx/.hkt del load order, canon (sin Meshes\, .hkt→.hkx, lower).
+        Dim animSet As New HashSet(Of String)(StringComparer.OrdinalIgnoreCase)
+        For Each key In FilesDictionary_class.Dictionary.Keys
+            If key.EndsWith(".hkx", StringComparison.OrdinalIgnoreCase) OrElse key.EndsWith(".hkt", StringComparison.OrdinalIgnoreCase) Then animSet.Add(CanonHkx(key))
+        Next
+        ' KYWD type + identidades de raza (mismo discriminador type-driven que --statemap).
+        Dim kwType As New Dictionary(Of UInteger, UInteger)
+        For Each rec In pm.GetRecordsOfType("KYWD")
+            Dim t As UInteger = 0
+            For Each sr In rec.Subrecords
+                If sr.Signature = "TNAM" AndAlso sr.Data IsNot Nothing AndAlso sr.Data.Length >= 4 Then t = BitConverter.ToUInt32(sr.Data, 0) : Exit For
+            Next
+            kwType(rec.Header.FormID) = t
+        Next
+        Dim races = pm.GetRecordsOfType("RACE")
+        Dim owner As New HashSet(Of UInteger)
+        For Each rec In races
+            Dim rr As RACE_Data = Nothing
+            Try : rr = RecordParsers.ParseRACE(rec, pm) : Catch : Continue For : End Try
+            If rr Is Nothing Then Continue For
+            For Each k In rr.Keywords
+                If kwType.GetValueOrDefault(k, 0UI) = 0UI Then owner.Add(k)
+            Next
+        Next
+        Console.WriteLine($"[clipresolve] index .hkx/.hkt={animSet.Count} | identidades-raza={owner.Count} | filtro='{edidFilter}'")
+
+        Dim loader As Func(Of String, Byte()) = AddressOf LoadDictBytes
+        Dim gTot = 0, gRes = 0, gFull = 0, gStrip = 0, gAmbig = 0, gWeColl = 0
+        For Each rec In races
+            Dim race As RACE_Data = Nothing
+            Try : race = RecordParsers.ParseRACE(rec, pm) : Catch : Continue For : End Try
+            If race Is Nothing Then Continue For
+            If race.MaleBehaviorGraphProject = "" AndAlso race.FemaleBehaviorGraphProject = "" Then Continue For
+            If edidFilter <> "" AndAlso race.EditorID.IndexOf(edidFilter, StringComparison.OrdinalIgnoreCase) < 0 Then Continue For
+            Dim rb = RaceBehaviorResolver.ResolveRaceBehavior(race.FormID, pm)
+            If rb Is Nothing OrElse String.IsNullOrWhiteSpace(rb.Project) Then Continue For
+            Dim thisKw As New HashSet(Of UInteger)(race.Keywords)
+            Dim actorRoot = DirNameC(rb.Project)
+            Dim graphCache As New Dictionary(Of String, HkxObjectGraph_Class)(StringComparer.OrdinalIgnoreCase)
+
+            Dim tot = 0, res = 0, full = 0, strip = 0, ambig = 0, weColl = 0
+            Dim unresolved As New List(Of String)
+            Dim ambigSamples As New List(Of String)
+            Dim weCollSamples As New List(Of String)
+            Dim resolvedFiles As New HashSet(Of String)(StringComparer.OrdinalIgnoreCase)
+            Dim unresDistinct As New HashSet(Of String)(StringComparer.OrdinalIgnoreCase)
+            ' Conteo por clip: AMBIGÜEDAD (>1 candidato, casi todo fallback cross-entry benigno) + weColl (full Y
+            ' strip distintos en la MISMA ruta = único desempate propio del código).
+            Dim tally As Action(Of String, Boolean, (file As String, mode As String, cands As List(Of String))) =
+                Sub(an, we, how)
+                    tot += 1
+                    If how.file <> "" Then
+                        res += 1 : resolvedFiles.Add(how.file) : If how.mode = "strip" Then strip += 1 Else full += 1
+                        If how.cands.Count > 1 Then
+                            ambig += 1
+                            If ambigSamples.Count < 4 Then ambigSamples.Add($"{an}  →  [{String.Join(" | ", how.cands)}]")
+                        End If
+                        If we Then
+                            weColl += 1
+                            If weCollSamples.Count < 6 Then weCollSamples.Add($"{an}  →  [{String.Join(" | ", how.cands)}]")
+                        End If
+                    Else
+                        unresDistinct.Add(an) : If unresolved.Count < 6 Then unresolved.Add(an)
+                    End If
+                End Sub
+
+            ' (1) ROOT behavior (project→character→behaviorFilename), SAPT nativo = actorRoot\Animations.
+            Dim rootBeh = ResolveRootBehaviorFile(rb.Project, loader)
+            If rootBeh <> "" Then
+                Dim anims As New List(Of String)
+                CollectClipAnims(rootBeh, loader, graphCache, New HashSet(Of String)(StringComparer.OrdinalIgnoreCase), anims, 0)
+                For Each an In anims
+                    Dim we As Boolean = False : Dim how = ResolveExist(an, New List(Of String), actorRoot, animSet, we) : tally(an, we, how)
+                Next
+            End If
+
+            ' (2) Subgraphs APLICADOS (type-driven: excluir solo identidad ajena).
+            For Each sd In rb.Subgraphs
+                Dim foreignId = sd.ActorKeywordFormIDs.FirstOrDefault(Function(k) owner.Contains(k) AndAlso Not thisKw.Contains(k))
+                If foreignId <> 0UI Then Continue For  ' identidad de OTRA raza → no aplica
+                Dim anims As New List(Of String)
+                CollectClipAnims(NormHkx(sd.BehaviourGraph), loader, graphCache, New HashSet(Of String)(StringComparer.OrdinalIgnoreCase), anims, 0)
+                For Each an In anims
+                    Dim we As Boolean = False : Dim how = ResolveExist(an, sd.AnimationPaths, actorRoot, animSet, we) : tally(an, we, how)
+                Next
+            Next
+
+            Console.WriteLine($"=== {race.EditorID,-32} repertorio={resolvedFiles.Count,5}  NO-resueltos={unresDistinct.Count,4}  ambig(fallback)={ambig,6}  weColl(full≠strip MISMA ruta)={weColl}")
+            For Each u In unresolved : Console.WriteLine($"      NO-RESUELTO {u}") : Next
+            For Each a In weCollSamples : Console.WriteLine($"      weColl {a}") : Next
+            ' Dump del repertorio (para verificar sharing entre razas vía intersección externa) cuando hay filtro.
+            If edidFilter <> "" Then
+                Dim dumpPath = System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"rep_{race.EditorID}.txt")
+                System.IO.File.WriteAllLines(dumpPath, resolvedFiles.OrderBy(Function(x) x, StringComparer.OrdinalIgnoreCase))
+                Console.WriteLine($"      [dump] repertorio → {dumpPath}")
+            End If
+            gTot += tot : gRes += res : gFull += full : gStrip += strip : gAmbig += ambig : gWeColl += weColl
+        Next
+        Dim gp = If(gTot > 0, 100.0 * gRes / gTot, 100.0)
+        Console.WriteLine($"[clipresolve-TOTAL] attempts={gTot} resueltos={gRes} ({gp:F1}%) | full={gFull} strip={gStrip}")
+        Console.WriteLine($"[clipresolve-TOTAL] ambig(fallback cross-entry, benigno)={gAmbig} | weColl(full≠strip MISMA ruta = desempate propio)={gWeColl}")
+    End Sub
+
+    ' project → CharacterFilenames → character → behaviorFilename (root behavior del actor). "" si no resuelve.
+    Private Function ResolveRootBehaviorFile(proj As String, loader As Func(Of String, Byte())) As String
+        Dim actorRoot = DirNameC(proj)
+        Dim pb = LoadAnimCand(proj) : If pb Is Nothing Then Return ""
+        Try
+            Dim g = HkxObjectGraphParser_Class.BuildGraph(HkxPackfileParser_Class.Parse(pb))
+            For Each o In g.GetObjectsByClassName("hkbProjectStringData")
+                Dim psd = g.ParseProjectStringData(o) : If psd Is Nothing Then Continue For
+                For Each cf In psd.CharacterFilenames
+                    Dim cb = LoadAnimCand(CombineC(actorRoot, cf)) : If cb Is Nothing Then cb = LoadAnimCand(cf)
+                    If cb Is Nothing Then Continue For
+                    Dim gc = HkxObjectGraphParser_Class.BuildGraph(HkxPackfileParser_Class.Parse(cb))
+                    For Each co In gc.GetObjectsByClassName("hkbCharacterStringData")
+                        Dim csd = gc.ParseCharacterStringData(co)
+                        If csd IsNot Nothing AndAlso Not String.IsNullOrWhiteSpace(csd.BehaviorFilename) Then Return NormHkx(CombineC(actorRoot, csd.BehaviorFilename))
+                    Next
+                Next
+            Next
+        Catch
+        End Try
+        Return ""
+    End Function
+
+    ' Recolecta los animationName de los hkbClipGenerator de un behavior + sus hkbBehaviorReferenceGenerator (recursivo).
+    Private Sub CollectClipAnims(behFile As String, loader As Func(Of String, Byte()), graphCache As Dictionary(Of String, HkxObjectGraph_Class),
+                                 visited As HashSet(Of String), outAnims As List(Of String), depth As Integer)
+        If depth > 12 OrElse String.IsNullOrWhiteSpace(behFile) OrElse Not visited.Add(behFile) Then Return
+        Dim graph As HkxObjectGraph_Class = Nothing
+        If Not graphCache.TryGetValue(behFile, graph) Then
+            Dim bytes = LoadAnimCand(behFile)
+            If bytes IsNot Nothing AndAlso bytes.Length > 0 Then
+                Try : graph = HkxObjectGraphParser_Class.BuildGraph(HkxPackfileParser_Class.Parse(bytes)) : Catch : End Try
+            End If
+            graphCache(behFile) = graph
+        End If
+        If graph Is Nothing Then Return
+        For Each o In graph.GetObjectsByClassName("hkbClipGenerator")
+            Dim cg = graph.ParseClipGenerator(o)
+            If cg IsNot Nothing AndAlso Not String.IsNullOrWhiteSpace(cg.AnimationName) Then outAnims.Add(cg.AnimationName)
+        Next
+        Dim behRoot = ActorRootC(behFile)
+        For Each ro In graph.GetObjectsByClassName("hkbBehaviorReferenceGenerator")
+            Dim refName = graph.ResolveLocalString(ro.RelativeOffset + &H88)
+            If Not String.IsNullOrWhiteSpace(refName) Then CollectClipAnims(NormHkx(CombineC(behRoot, refName)), loader, graphCache, visited, outAnims, depth + 1)
+        Next
+    End Sub
+
+    ' Resolución por EXISTENCIA sobre rutas SAPT (search-path). Devuelve (file canon, mode: full/strip) o ("","").
+    ' clipRel = parte del animName tras "Animations\". Para cada root SAPT (orden de prioridad): prueba el path
+    ' completo (full) y luego sin el primer segmento (strip = saca el actor-autor del core compartido); la
+    ' EXISTENCIA decide. Sin SAPT → root nativo = actorRoot\Animations.
+    ' Resolución por EXISTENCIA sobre rutas SAPT (search-path). DETERMINÍSTICA: candidatos en orden de prioridad
+    ' = (ruta SAPT en orden del record) × (full antes que strip); gana el PRIMERO que existe. cands = lista de
+    ' archivos DISTINTOS que existen (cands.Count>1 ⇒ varios candidatos → el orden decide; informativo p/ auditar).
+    ' weColl (ByRef): True si en ALGUNA ruta SAPT existen DOS archivos distintos por full Y strip a la vez — el
+    ' único desempate que hace este código más allá del orden del record (full gana). Si nunca pasa ⇒ el código
+    ' no agrega indeterminismo: el resultado lo fija el orden de rutas del record.
+    Private Function ResolveExist(animName As String, saptFolders As List(Of String), actorRoot As String, animSet As HashSet(Of String), Optional ByRef weColl As Boolean = False) As (file As String, mode As String, cands As List(Of String))
+        Dim none As (String, String, List(Of String)) = ("", "", New List(Of String))
+        If String.IsNullOrWhiteSpace(animName) Then Return none
+        Dim norm = animName.Replace("/"c, "\"c)
+        Dim i = norm.IndexOf("Animations\", StringComparison.OrdinalIgnoreCase)
+        Dim clipRel = If(i >= 0, norm.Substring(i + "Animations\".Length), norm.TrimStart("\"c, "."c))
+        If clipRel = "" Then Return none
+        Dim roots As New List(Of String)
+        If saptFolders IsNot Nothing Then roots.AddRange(saptFolders.Where(Function(s) Not String.IsNullOrWhiteSpace(s)))
+        ' SIN SAPT (root behavior): el animName es autoritativo relativo al actor — incluye redirects EXPLÍCITOS
+        ' "..\OtroActor\Animations\X" (ej. SuperMutant reusa death humano). ResolveRelC resuelve el "..\".
+        If roots.Count = 0 Then
+            Dim cand = CanonHkx(ResolveRelC(actorRoot, norm))
+            If animSet.Contains(cand) Then Return (cand, "native", New List(Of String) From {cand})
+            Return none
+        End If
+        Dim found As New List(Of String)
+        Dim firstMode As String = ""
+        For Each s In roots
+            Dim sn = s.Replace("/"c, "\"c).TrimEnd("\"c)
+            Dim c1 = CanonHkx(sn & "\" & clipRel)
+            Dim c1Ok = animSet.Contains(c1)
+            If c1Ok AndAlso Not found.Contains(c1, StringComparer.OrdinalIgnoreCase) Then found.Add(c1) : If firstMode = "" Then firstMode = "full"
+            Dim j = clipRel.IndexOf("\"c)
+            If j >= 0 Then
+                Dim c2 = CanonHkx(sn & "\" & clipRel.Substring(j + 1))
+                Dim c2Ok = animSet.Contains(c2)
+                If c1Ok AndAlso c2Ok AndAlso Not String.Equals(c1, c2, StringComparison.OrdinalIgnoreCase) Then weColl = True   ' full Y strip distintos en la MISMA ruta
+                If c2Ok AndAlso Not found.Contains(c2, StringComparer.OrdinalIgnoreCase) Then found.Add(c2) : If firstMode = "" Then firstMode = "strip"
+            End If
+        Next
+        If found.Count = 0 Then Return none
+        Return (found(0), firstMode, found)
+    End Function
+
+    ' .hkt→.hkx (las refs internas usan .hkt; los archivos reales son .hkx). NO lowercasea ni strip.
+    Private Function NormHkx(p As String) As String
+        If String.IsNullOrWhiteSpace(p) Then Return ""
+        If p.EndsWith(".hkt", StringComparison.OrdinalIgnoreCase) Then Return p.Substring(0, p.Length - 4) & ".hkx"
+        Return p
+    End Function
+
+    ' Últimos 2 segmentos de un path (para mostrar la carpeta SAPT compacta).
+    Private Function LastTwoSeg(p As String) As String
+        If String.IsNullOrWhiteSpace(p) Then Return ""
+        Dim segs = p.TrimEnd("\"c).Split("\"c)
+        If segs.Length <= 2 Then Return p
+        Return segs(segs.Length - 2) & "\" & segs(segs.Length - 1)
+    End Function
+
     Private Sub RaceAnimScan(pm As PluginManager, edidFilter As String)
         Dim races = pm.GetRecordsOfType("RACE")
         Console.WriteLine($"[raceanim] {races.Count} RACE records | filtro edid='{edidFilter}'")
@@ -725,6 +1465,17 @@ Module Program
             Next
             If byGraph.Count > 8 Then Console.WriteLine($"     … (+{byGraph.Count - 8} graphs más)")
             Console.WriteLine($"  archivos .hkx distintos a cargar: {rb.DistinctBehaviorFiles().Count}")
+            ' [RACE-RECORD] keywords del RACE + subgraphs (SAKD/SAPT) marcando los que matchean → filtro por raza.
+            If edidFilter <> "" Then
+                Dim raceKw = String.Join(", ", race.Keywords.Select(Function(k) EdidOf(pm, k)))
+                Console.WriteLine($"  [RACE-RECORD] {race.EditorID}: Keywords=[{raceKw}] | PROPIO={race.SubgraphData.Count} SRAC=0x{race.SubgraphTemplateRaceFormID:X8}")
+                Dim kwSet = New HashSet(Of UInteger)(race.Keywords)
+                For Each sd In rb.Subgraphs
+                    Dim sakd = String.Join("+", sd.ActorKeywordFormIDs.Select(Function(k) EdidOf(pm, k)))
+                    Dim apply = sd.ActorKeywordFormIDs.Count = 0 OrElse sd.ActorKeywordFormIDs.Any(Function(k) kwSet.Contains(k))
+                    Console.WriteLine($"     {If(apply, "✓APLICA", "·skip  ")} SGNM='{System.IO.Path.GetFileName(sd.BehaviourGraph)}' SAKD=[{sakd}] SAPT: {String.Join(" ; ", sd.AnimationPaths)}")
+                Next
+            End If
 
             ' Skeleton SÓLIDO (rigName del behavior character) + enumeración de clips.
             Dim loader As Func(Of String, Byte()) = AddressOf LoadDictBytes
@@ -745,7 +1496,7 @@ Module Program
 
             ' === VALIDACIÓN compacta (TODAS las razas): cada clip debe existir y maxBoneIdx < bones del skel.
             Dim vOk = 0, vLow = 0, vMiss = 0
-            ValidateRaceClipsCompact(havokSkel, clips, vOk, vLow, vMiss)
+            ValidateRaceClipsCompact(havokSkel, clips, vOk, vLow, vMiss, edidFilter <> "")
             Dim badTag = If(vLow > 0, "  <<< LOW-COVERAGE(no mapea)", "") & If(vMiss > 0, "  <missing " & vMiss & ">", "")
             Console.WriteLine($"  [VALIDATE] clips={clips.Count} ok={vOk} lowcov={vLow} missing={vMiss}{badTag}")
             gTotClips += clips.Count : gOk += vOk : gMis += vLow : gMiss += vMiss
@@ -763,6 +1514,7 @@ Module Program
 
             ' === DIAGNÓSTICO detallado (solo con filtro edid) ===========================
             If edidFilter <> "" Then
+                DumpBehaviorChain(rb)
                 RawClipPathDump(rb, loader)
                 RaceAnimDiagnostics(havokSkel, rb.Skeleton, clips)
             End If
@@ -818,6 +1570,17 @@ Module Program
         Dim skel = sg.GetObjectsByClassName("hkaSkeleton").Select(Function(o) sg.ParseSkeleton(o)).
                       Where(Function(s) s IsNot Nothing AndAlso s.Bones IsNot Nothing AndAlso s.ParentIndices IsNot Nothing AndAlso
                             (String.IsNullOrEmpty(s.Name) OrElse s.Name.IndexOf("Ragdoll", StringComparison.OrdinalIgnoreCase) < 0)).FirstOrDefault()
+        ' DIAG: todos los hkaSkeleton del archivo (name + root + #bones) — para evaluar selección por root.
+        Dim allSk = sg.GetObjectsByClassName("hkaSkeleton").Select(Function(o) sg.ParseSkeleton(o)).
+                        Where(Function(s) s IsNot Nothing AndAlso s.Bones IsNot Nothing).ToList()
+        Dim rootOf = Function(s As HkaSkeletonGraph_Class) As String
+                         For i = 0 To s.Bones.Count - 1
+                             Dim pp = If(i < s.ParentIndices.Count, CInt(s.ParentIndices(i)), -1)
+                             If pp < 0 OrElse pp >= s.Bones.Count Then Return s.Bones(i).Name
+                         Next
+                         Return If(s.Bones.Count > 0, s.Bones(0).Name, "(none)")
+                     End Function
+        Console.WriteLine($"     [SKEL-PICK] {allSk.Count} hkaSkeleton en archivo: {String.Join(" | ", allSk.Select(Function(s) $"name='{s.Name}' root='{rootOf(s)}' bones={s.Bones.Count}"))}")
         If skel Is Nothing Then Console.WriteLine("  [NIF-vs-HKX] HKX sin skeleton de animación") : Return
         Dim nB = skel.Bones.Count
         Dim hWorld(nB - 1) As Transform_Class, hParent(nB - 1) As String
@@ -862,6 +1625,9 @@ Module Program
             If dT > 0.5F OrElse dR > 0.05F Then tMis += 1 : tMisList.Add($"{nm}: dT={dT:F2} dR={dR:F2}")
         Next
         Dim onlyNif = nWorld.Keys.Where(Function(k) Not skel.Bones.Any(Function(b) String.Equals(b.Name, k, StringComparison.OrdinalIgnoreCase))).ToList()
+        Dim nifRoots = nParent.Where(Function(kv) kv.Value = "(root)").Select(Function(kv) kv.Key).ToList()
+        Console.WriteLine($"     [SKEL-PICK] NIF root(s): {String.Join(", ", nifRoots)}   | HKX(elegido) root='{rootOf(skel)}' name='{skel.Name}'")
+        Console.WriteLine($"     [SKEL-PICK] root∈NIF? {String.Join(" | ", allSk.Select(Function(s) $"'{rootOf(s)}'={If(nWorld.ContainsKey(rootOf(s)), "SÍ", "no")}"))}")
         Console.WriteLine($"  [NIF-vs-HKX] {label}: HKX={nB} NIF={nWorld.Count} | both={both} | parent-mismatch={pMis} | transform-mismatch={tMis} | soloHKX={onlyHkx.Count} soloNIF={onlyNif.Count}")
         If pMisList.Count > 0 Then Console.WriteLine($"     PARENT distinto ({pMisList.Count}): {String.Join("  |  ", pMisList.Take(12))}")
         If tMisList.Count > 0 Then Console.WriteLine($"     TRANSFORM distinto ({tMisList.Count}): {String.Join("  |  ", tMisList.Take(12))}")
@@ -874,7 +1640,7 @@ Module Program
             Console.WriteLine($"     OTROS (no _Offset) [{reales.Count}]: {String.Join(", ", reales)}")
         End If
         ' Búsqueda de nodos de REGIÓN (Torso/Upper/Lower/Leg/Arm/Limb/Region/Hip/Body) en NIF y HKX.
-        Dim rxRegion = New System.Text.RegularExpressions.Regex("torso|upper|lower|leg|arm|limb|region|hip|body|skin", System.Text.RegularExpressions.RegexOptions.IgnoreCase)
+        Dim rxRegion = New System.Text.RegularExpressions.Regex("torso|upper|lower|leg|arm|limb|region|hip|body|skin|jaw|lip|cheek|brow|mouth|tongue|eye|face|teeth|tongue", System.Text.RegularExpressions.RegexOptions.IgnoreCase)
         Dim regNif = nWorld.Keys.Where(Function(k) rxRegion.IsMatch(k)).OrderBy(Function(k) k).ToList()
         Dim regHkx = skel.Bones.Select(Function(b) b.Name).Where(Function(n) Not String.IsNullOrEmpty(n) AndAlso rxRegion.IsMatch(n)).OrderBy(Function(n) n).ToList()
         Console.WriteLine($"     REGIÓN en HKX ({regHkx.Count}): {String.Join(", ", regHkx)}")
@@ -984,6 +1750,40 @@ Module Program
         If resid > 0 Then Console.WriteLine($"     RESIDUAL (composed≠NIF) ej: {String.Join("  |  ", residList.Take(10))}")
         If aOnly.Count > 0 Then Console.WriteLine($"     A-only (HKX, se AGREGAN al NIF): {String.Join(", ", aOnly.Take(25))}")
         If clothBones.Count > 0 Then Console.WriteLine($"     cloth-bones (C, del BSClothExtraData): {String.Join(", ", clothBones.Take(25))}")
+    End Sub
+
+    ''' <summary>Dump de la cadena de resolución del skeleton HKX: project → hkbProjectStringData.CharacterFilenames
+    ''' → character → hkbCharacterStringData.rigName. Muestra cuántos character files hay y a qué rig apunta cada uno.</summary>
+    Private Sub DumpBehaviorChain(rb As ResolvedRaceBehavior)
+        If rb Is Nothing OrElse String.IsNullOrWhiteSpace(rb.Project) Then Return
+        Dim proj = rb.Project
+        Dim slash = proj.LastIndexOf("\"c)
+        Dim actorRoot = If(slash > 0, proj.Substring(0, slash), "")
+        Dim pb = LoadAnimCand(proj)
+        If pb Is Nothing Then Console.WriteLine($"  [CHAIN] project '{proj}' no carga") : Return
+        Dim g = HkxObjectGraphParser_Class.BuildGraph(HkxPackfileParser_Class.Parse(pb))
+        Dim charFiles As New List(Of String)
+        Dim nPsd = 0
+        For Each o In g.GetObjectsByClassName("hkbProjectStringData")
+            nPsd += 1
+            Dim psd = g.ParseProjectStringData(o)
+            If psd IsNot Nothing Then charFiles.AddRange(psd.CharacterFilenames)
+        Next
+        Console.WriteLine($"  [CHAIN] project='{proj}' | hkbProjectStringData x{nPsd} | CharacterFilenames={charFiles.Count}: {String.Join(", ", charFiles)}")
+        For Each cf In charFiles
+            Dim lc = cf.TrimStart("\"c)
+            Dim full = If(lc.StartsWith("actors\", StringComparison.OrdinalIgnoreCase) OrElse lc.StartsWith("meshes\", StringComparison.OrdinalIgnoreCase) OrElse actorRoot = "", lc, actorRoot & "\" & lc)
+            Dim cb = LoadAnimCand(full)
+            If cb Is Nothing Then cb = LoadAnimCand(cf)
+            If cb Is Nothing Then Console.WriteLine($"     character '{cf}' no carga") : Continue For
+            Dim gc = HkxObjectGraphParser_Class.BuildGraph(HkxPackfileParser_Class.Parse(cb))
+            Dim nCsd = 0
+            For Each o In gc.GetObjectsByClassName("hkbCharacterStringData")
+                nCsd += 1
+                Dim csd = gc.ParseCharacterStringData(o)
+                If csd IsNot Nothing Then Console.WriteLine($"     character '{cf}' [hkbCharacterStringData x{nCsd}] → name='{csd.CharacterName}' rigName='{csd.RigName}'")
+            Next
+        Next
     End Sub
 
     ''' <summary>Parsea números en formato es-AR del log (coma decimal Y coma separador): empareja
@@ -1478,17 +2278,19 @@ Module Program
     ' (del path del archivo) → nombres de hueso animados; se cuenta cuántos existen en el skeleton del
     ' actor CONSUMIDOR (destino). Cobertura alta = reproduce bien; baja = no mapea (estático/roto).
     Private Sub ValidateRaceClipsCompact(havokSkelPath As String, clips As List(Of ResolvedAnimationClip),
-                                         ByRef ok As Integer, ByRef lowcov As Integer, ByRef missing As Integer)
+                                         ByRef ok As Integer, ByRef lowcov As Integer, ByRef missing As Integer,
+                                         Optional verbose As Boolean = False)
         Dim consumingNames = CachedActorSkelNames(ActorRootOf(havokSkelPath))
         Dim consumingSet As New HashSet(Of String)(If(consumingNames, New List(Of String)()), StringComparer.OrdinalIgnoreCase)
+        Dim notFound As New List(Of String), parseFail As New List(Of String), lowList As New List(Of String)
         For Each c In clips
             Dim cb = LoadAnimCand(c.AnimationFile)
-            If cb Is Nothing Then missing += 1 : Continue For
+            If cb Is Nothing Then missing += 1 : notFound.Add(c.AnimationFile) : Continue For
             Try
                 Dim ag = HkxObjectGraphParser_Class.BuildGraph(HkxPackfileParser_Class.Parse(cb))
                 Dim anim = ag.ParseAnimations().FirstOrDefault()
                 If anim Is Nothing Then anim = ag.ParseLosslessAnimations().FirstOrDefault()
-                If anim Is Nothing Then missing += 1 : Continue For
+                If anim Is Nothing Then missing += 1 : parseFail.Add(c.AnimationFile) : Continue For
                 Dim idxs = anim.Binding?.TransformTrackToBoneIndices
                 If idxs Is Nothing OrElse idxs.Count = 0 Then ok += 1 : Continue For
                 ' Skeleton del actor de ORIGEN de la anim (del path), no el del consumidor.
@@ -1503,11 +2305,16 @@ Module Program
                     End If
                 Next
                 Dim cov = If(total > 0, mapped / CDbl(total), 0.0)
-                If cov >= 0.9 Then ok += 1 Else lowcov += 1
-            Catch
-                missing += 1
+                If cov >= 0.9 Then ok += 1 Else lowcov += 1 : lowList.Add($"{c.AnimationFile} cov={cov:P0} src='{ActorRootOf(c.AnimationFile)}' ({mapped}/{total})")
+            Catch ex As Exception
+                missing += 1 : parseFail.Add(c.AnimationFile & " [EX:" & ex.GetType().Name & "]")
             End Try
         Next
+        If verbose Then
+            If notFound.Count > 0 Then Console.WriteLine($"     [MISSING-NOTFOUND {notFound.Count}]: {String.Join(" | ", notFound)}")
+            If parseFail.Count > 0 Then Console.WriteLine($"     [MISSING-PARSEFAIL {parseFail.Count}]: {String.Join(" | ", parseFail)}")
+            If lowList.Count > 0 Then Console.WriteLine($"     [LOWCOV {lowList.Count}]: {String.Join("  ||  ", lowList)}")
+        End If
     End Sub
 
     ' Dump del skeleton del behavior (rigName) + por-clip: ¿existe? frames/tracks/maxBoneIdx vs bones del
@@ -1926,12 +2733,19 @@ Module Program
                 Case "--ttedscan" : a.TtedScan = True : i += 1
                 Case "--raceanim" : a.RaceAnim = True : i += 1
                 Case "--mountvalidate" : a.MountValidate = True : i += 1
+                Case "--findhkx" : a.FindHkx = v : i += 2
+                Case "--chunkcompare" : a.ChunkCompare = v : i += 2
+                Case "--dumpbehavior" : a.DumpBehavior = v : i += 2
+                Case "--hkxcoverage" : a.HkxCoverage = True : i += 1
+                Case "--kwtype" : a.KwType = v : i += 2
+                Case "--statemap" : a.StateMap = True : i += 1
+                Case "--clipresolve" : a.ClipResolve = True : i += 1
                 Case "-h", "--help" : PrintUsage() : Return Nothing
                 Case Else
                     Console.Error.WriteLine($"Arg desconocido: {args(i)}") : PrintUsage() : Return Nothing
             End Select
         End While
-        If a.ListPath = "" AndAlso (a.Esp = "" OrElse a.Edid = "") AndAlso Not a.TtedScan AndAlso Not a.RaceAnim AndAlso Not a.MountValidate Then
+        If a.ListPath = "" AndAlso (a.Esp = "" OrElse a.Edid = "") AndAlso Not a.TtedScan AndAlso Not a.RaceAnim AndAlso Not a.MountValidate AndAlso a.FindHkx = "" AndAlso a.ChunkCompare = "" AndAlso a.DumpBehavior = "" AndAlso Not a.HkxCoverage AndAlso a.KwType = "" AndAlso Not a.StateMap AndAlso Not a.ClipResolve Then
             Console.Error.WriteLine("Faltan --esp y --edid (o usa --list).") : PrintUsage() : Return Nothing
         End If
         Return a

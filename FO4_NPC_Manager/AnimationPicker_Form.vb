@@ -5,27 +5,27 @@ Imports System.Collections.Generic
 Imports System.Linq
 Imports FO4_Base_Library
 
-''' <summary>Picker de animaciones con filtro de texto + columnas ordenables (Clip/Role/Speed/File).
-''' Lo abre el botón "Select Animation" de la barra de animación de MainForm para buscar fácil entre
-''' las (cientos de) animaciones de la raza. Al aceptar, MainForm setea el combo con el clip elegido.</summary>
+''' <summary>Picker de animaciones en ÁRBOL con categorías "humanas": Role (Locomoción/Arma/Furniture/Idle/
+''' Pipboy/Core) → eje de Estado (Normal/Injured/Archetype/Flavor/…) → clip. Filtro de texto + checkbox
+''' "Filter by gender" (default ON: si el NPC es varón oculta los clips female-only; mujer ve todo). Lo abre el
+''' botón "Select Animation" de la barra de animación de MainForm. Al aceptar, MainForm setea el combo.</summary>
 Public Class AnimationPicker_Form
 
     Private ReadOnly _all As List(Of ResolvedAnimationClip)
     Private ReadOnly _initialFile As String
-    Private _sortColumn As Integer = 0
-    Private _sortAsc As Boolean = True
+    Private ReadOnly _isFemale As Boolean
 
-    ''' <summary>Clip elegido (Nothing si se canceló).</summary>
+    ''' <summary>Clip elegido (Nothing si se canceló o si el nodo seleccionado es una categoría).</summary>
     Public ReadOnly Property SelectedClip As ResolvedAnimationClip
         Get
-            If ListClips.SelectedItems.Count = 0 Then Return Nothing
-            Return TryCast(ListClips.SelectedItems(0).Tag, ResolvedAnimationClip)
+            Return TryCast(TreeClips.SelectedNode?.Tag, ResolvedAnimationClip)
         End Get
     End Property
 
-    Public Sub New(clips As IEnumerable(Of ResolvedAnimationClip), Optional currentFile As String = Nothing)
+    Public Sub New(clips As IEnumerable(Of ResolvedAnimationClip), isFemale As Boolean, Optional currentFile As String = Nothing)
         InitializeComponent()
         _all = If(clips, Enumerable.Empty(Of ResolvedAnimationClip)()).Where(Function(c) c IsNot Nothing).ToList()
+        _isFemale = isFemale
         _initialFile = If(currentFile, "")
     End Sub
 
@@ -38,18 +38,11 @@ Public Class AnimationPicker_Form
         Rebuild()
     End Sub
 
-    ' Orden por columna (toggle asc/desc al re-clickear la misma).
-    Private Sub ListClips_ColumnClick(sender As Object, e As ColumnClickEventArgs) Handles ListClips.ColumnClick
-        If e.Column = _sortColumn Then
-            _sortAsc = Not _sortAsc
-        Else
-            _sortColumn = e.Column
-            _sortAsc = True
-        End If
+    Private Sub CheckFilterGender_CheckedChanged(sender As Object, e As EventArgs) Handles CheckFilterGender.CheckedChanged
         Rebuild()
     End Sub
 
-    Private Sub ListClips_DoubleClick(sender As Object, e As EventArgs) Handles ListClips.DoubleClick
+    Private Sub TreeClips_DoubleClick(sender As Object, e As EventArgs) Handles TreeClips.DoubleClick
         If SelectedClip IsNot Nothing Then
             DialogResult = DialogResult.OK
             Close()
@@ -58,66 +51,123 @@ Public Class AnimationPicker_Form
 
     Private Sub ButtonOk_Click(sender As Object, e As EventArgs) Handles ButtonOk.Click
         If SelectedClip Is Nothing Then
-            MsgBox("Select an animation from the list.", vbInformation Or vbOKOnly, "Select Animation")
+            MsgBox("Select an animation (a leaf node) from the tree.", vbInformation Or vbOKOnly, "Select Animation")
             Return
         End If
         DialogResult = DialogResult.OK
         Close()
     End Sub
 
-    ' Aplica filtro (términos separados por espacio, AND, contra Clip+Role+File) + orden, y repuebla.
+    ' Reconstruye el árbol: filtro texto (AND de términos vs nombre+role+file) + filtro de género; agrupa por
+    ' Role → eje de Estado → clip. Un clip con varios roles/ejes aparece bajo cada categoría que le corresponde.
     Private Sub Rebuild()
+        ' Guard: el Designer setea CheckFilterGender.Checked=True dentro de InitializeComponent() → dispara
+        ' CheckedChanged → Rebuild() ANTES de que el ctor asigne _all. El build real corre en Shown.
+        If _all Is Nothing Then Return
         Dim terms = TextFilter.Text.Split(New Char() {" "c}, StringSplitOptions.RemoveEmptyEntries)
-        Dim filtered = _all.Where(Function(c) MatchesAll(c, terms))
+        Dim shown = _all.Where(Function(c) PassesGender(c) AndAlso MatchesAll(c, terms)).ToList()
 
-        Select Case _sortColumn
-            Case 1 : filtered = OrderBoolDir(filtered, Function(c) RolesText(c))
-            Case 2 : filtered = If(_sortAsc, filtered.OrderBy(Function(c) c.PlaybackSpeed), filtered.OrderByDescending(Function(c) c.PlaybackSpeed))
-            Case 3 : filtered = OrderBoolDir(filtered, Function(c) c.AnimationFile)
-            Case Else : filtered = OrderBoolDir(filtered, Function(c) ClipDisplayName(c))
-        End Select
-
-        ListClips.BeginUpdate()
+        TreeClips.BeginUpdate()
         Try
-            ListClips.Items.Clear()
-            Dim toSelect As ListViewItem = Nothing
-            For Each c In filtered
-                Dim it As New ListViewItem(ClipDisplayName(c)) With {.Tag = c}
-                it.SubItems.Add(RolesText(c))
-                it.SubItems.Add(c.PlaybackSpeed.ToString("0.##"))
-                it.SubItems.Add(c.AnimationFile)
-                ListClips.Items.Add(it)
-                If toSelect Is Nothing AndAlso _initialFile <> "" AndAlso String.Equals(c.AnimationFile, _initialFile, StringComparison.OrdinalIgnoreCase) Then toSelect = it
+            TreeClips.Nodes.Clear()
+            Dim toSelect As TreeNode = Nothing
+            ' Role (orden estable) → State axis → clip.
+            For Each roleGrp In shown.SelectMany(Function(cl) RolesOf(cl).Select(Function(r) (Role:=r, Clip:=cl))).
+                                       GroupBy(Function(x) x.Role).OrderBy(Function(g) RoleOrder(g.Key))
+                Dim roleNode As New TreeNode(RoleDisplay(roleGrp.Key))
+                For Each axisGrp In roleGrp.SelectMany(Function(x) AxesOf(x.Clip).Select(Function(a) (Axis:=a, Clip:=x.Clip))).
+                                            GroupBy(Function(x) x.Axis).OrderBy(Function(g) AxisOrder(g.Key))
+                    Dim axisNode As New TreeNode(AxisDisplay(axisGrp.Key))
+                    For Each cl In axisGrp.Select(Function(x) x.Clip).Distinct().OrderBy(Function(cc) ClipDisplayName(cc), StringComparer.OrdinalIgnoreCase)
+                        Dim leaf As New TreeNode(LeafLabel(cl)) With {.Tag = cl}
+                        axisNode.Nodes.Add(leaf)
+                        If toSelect Is Nothing AndAlso _initialFile <> "" AndAlso String.Equals(cl.AnimationFile, _initialFile, StringComparison.OrdinalIgnoreCase) Then toSelect = leaf
+                    Next
+                    axisNode.Text = $"{axisNode.Text} ({axisNode.Nodes.Count})"
+                    roleNode.Nodes.Add(axisNode)
+                Next
+                roleNode.Text = $"{roleNode.Text} ({roleNode.Nodes.Cast(Of TreeNode)().Sum(Function(n) n.Nodes.Count)})"
+                TreeClips.Nodes.Add(roleNode)
             Next
+
             If toSelect IsNot Nothing Then
-                toSelect.Selected = True
+                TreeClips.SelectedNode = toSelect
                 toSelect.EnsureVisible()
+            ElseIf terms.Length > 0 Then
+                TreeClips.ExpandAll()
+            Else
+                For Each n As TreeNode In TreeClips.Nodes : n.Expand() : Next   ' solo el primer nivel
             End If
         Finally
-            ListClips.EndUpdate()
+            TreeClips.EndUpdate()
         End Try
-        LabelCount.Text = $"{ListClips.Items.Count} / {_all.Count} clips"
+        LabelCount.Text = $"{shown.Count} / {_all.Count} clips"
     End Sub
 
-    Private Function OrderBoolDir(src As IEnumerable(Of ResolvedAnimationClip), key As Func(Of ResolvedAnimationClip, String)) As IEnumerable(Of ResolvedAnimationClip)
-        Return If(_sortAsc, src.OrderBy(key, StringComparer.OrdinalIgnoreCase), src.OrderByDescending(key, StringComparer.OrdinalIgnoreCase))
+    ' Género: con el checkbox ON, un NPC varón NO ve los clips female-only (RequiresFemale); la mujer ve todo
+    ' (juega female + neutral). OFF = todo.
+    Private Function PassesGender(c As ResolvedAnimationClip) As Boolean
+        If Not CheckFilterGender.Checked Then Return True
+        If _isFemale Then Return True
+        Return Not c.RequiresFemale
     End Function
 
     Private Shared Function MatchesAll(c As ResolvedAnimationClip, terms As String()) As Boolean
         If terms Is Nothing OrElse terms.Length = 0 Then Return True
-        Dim hay = ClipDisplayName(c) & " " & RolesText(c) & " " & c.AnimationFile
+        Dim hay = ClipDisplayName(c) & " " & String.Join(",", c.Roles) & " " & String.Join(",", c.StateAxes) & " " & c.AnimationFile
         For Each t In terms
             If hay.IndexOf(t, StringComparison.OrdinalIgnoreCase) < 0 Then Return False
         Next
         Return True
     End Function
 
+    Private Shared Function RolesOf(c As ResolvedAnimationClip) As IEnumerable(Of String)
+        Return If(c.Roles.Count > 0, c.Roles.AsEnumerable(), {"Other"})
+    End Function
+    Private Shared Function AxesOf(c As ResolvedAnimationClip) As IEnumerable(Of String)
+        Return If(c.StateAxes.Count > 0, c.StateAxes.AsEnumerable(), {"Normal"})
+    End Function
+
     Private Shared Function ClipDisplayName(c As ResolvedAnimationClip) As String
         If Not String.IsNullOrWhiteSpace(c.ClipName) Then Return c.ClipName
         Return System.IO.Path.GetFileNameWithoutExtension(c.AnimationFile)
     End Function
+    Private Shared Function LeafLabel(c As ResolvedAnimationClip) As String
+        Dim g = If(c.RequiresFemale, " ♀", "")
+        ' Muestra el PATH resuelto en cada hoja para verificar que el clip es del actor correcto (no mis-resuelto).
+        Return $"{ClipDisplayName(c)}  [{c.PlaybackSpeed:0.##}x]{g}   →   {c.AnimationFile}"
+    End Function
 
-    Private Shared Function RolesText(c As ResolvedAnimationClip) As String
-        Return String.Join(",", c.Roles)
+    ' Role: orden + nombre "humano". El clip trae MT/Weapon/Furniture/Idle/Pipboy/Core/Other.
+    Private Shared Function RoleOrder(r As String) As Integer
+        Select Case r
+            Case "Core" : Return 0
+            Case "MT" : Return 1
+            Case "Weapon" : Return 2
+            Case "Furniture" : Return 3
+            Case "Idle" : Return 4
+            Case "Pipboy" : Return 5
+            Case Else : Return 9
+        End Select
+    End Function
+    Private Shared Function RoleDisplay(r As String) As String
+        Select Case r
+            Case "Core" : Return "Core (death / get-up / swim)"
+            Case "MT" : Return "Locomotion (MT)"
+            Case "Weapon" : Return "Weapon / combat"
+            Case "Furniture" : Return "Furniture"
+            Case "Idle" : Return "Idle"
+            Case "Pipboy" : Return "Pipboy"
+            Case Else : Return r
+        End Select
+    End Function
+
+    ' Eje de estado: "Normal" primero, luego el resto alfabético. Nombre sin el prefijo "Anim ".
+    Private Shared Function AxisOrder(a As String) As Integer
+        Return If(a = "Normal", 0, 1)
+    End Function
+    Private Shared Function AxisDisplay(a As String) As String
+        If a = "Normal" Then Return "Normal"
+        Return a.Replace("Anim ", "")   ' "Anim Injured" → "Injured", "Anim Archetype" → "Archetype"
     End Function
 End Class
