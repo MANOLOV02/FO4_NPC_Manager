@@ -1186,6 +1186,15 @@ Module Program
         Dim b = LoadAnimCand(path)
         If b Is Nothing Then Console.WriteLine($"[dumpbeh] '{path}' no carga") : Return
         Dim g = HkxObjectGraphParser_Class.BuildGraph(HkxPackfileParser_Class.Parse(b))
+        ' hkaAnimationBinding crudo (si el archivo es una ANIMACIÓN): el blendHint canónico vive acá.
+        For Each o In g.GetObjectsByClassName("hkaAnimationBinding")
+            Dim bytes As New System.Text.StringBuilder()
+            For off = 0 To Math.Min(o.Size - 1, &H4F)
+                If off Mod 16 = 0 Then bytes.Append($"{Environment.NewLine}       +{off:X2}: ")
+                bytes.Append($"{g.ReadByte(o.RelativeOffset + off):X2} ")
+            Next
+            Console.WriteLine($"   [hkaAnimationBinding] size={o.Size}{bytes}")
+        Next
         Dim cgs = g.GetObjectsByClassName("hkbClipGenerator").Select(Function(o) g.ParseClipGenerator(o)).Where(Function(c) c IsNot Nothing).ToList()
         Dim refs = g.GetObjectsByClassName("hkbBehaviorReferenceGenerator").Select(Function(o) g.ResolveLocalString(o.RelativeOffset + &H88)).Where(Function(s) Not String.IsNullOrEmpty(s)).Distinct().ToList()
         Console.WriteLine($"[dumpbeh] {path}: clipGenerators={cgs.Count} behaviorRefs={refs.Count}")
@@ -1211,6 +1220,32 @@ Module Program
                 bytes.Append($"{g.ReadByte(o.RelativeOffset + off):X2} ")
             Next
             Console.WriteLine($"   [DATG] '{nm}' size={o.Size}{bytes}")
+        Next
+        ' hkbBlenderGenerator / hkbLayerGenerator / hkbLayer: hex + qué clips alcanza cada uno
+        ' (vía sus children) — para ubicar el campo ADDITIVE binario por diff additive-vs-normal.
+        Dim describeReach = Function(o As HkxVirtualObjectGraph_Class) As String
+                                Dim reach As New List(Of String)
+                                For Each gf In g.GetGlobalFixupsInRange(o.RelativeOffset, o.Size)
+                                    Dim t1 = g.GetObject(gf.TargetRelativeOffset)
+                                    If t1 Is Nothing Then Continue For
+                                    If t1.ClassName = "hkbClipGenerator" Then reach.Add(g.ReadNodeName(t1))
+                                    For Each gf2 In g.GetGlobalFixupsInRange(t1.RelativeOffset, t1.Size)
+                                        Dim t2 = g.GetObject(gf2.TargetRelativeOffset)
+                                        If t2 IsNot Nothing AndAlso t2.ClassName = "hkbClipGenerator" Then reach.Add(g.ReadNodeName(t2))
+                                    Next
+                                Next
+                                Return String.Join(",", reach.Distinct().Take(6))
+                            End Function
+        For Each cls In {"hkbBlenderGenerator", "hkbLayerGenerator", "hkbLayer"}
+            For Each o In g.GetObjectsByClassName(cls)
+                Dim nm = g.ReadNodeName(o)
+                Dim bytes As New System.Text.StringBuilder()
+                For off = &H30 To Math.Min(o.Size - 1, &H9F)
+                    If (off - &H30) Mod 16 = 0 Then bytes.Append($"{Environment.NewLine}       +{off:X2}: ")
+                    bytes.Append($"{g.ReadByte(o.RelativeOffset + off):X2} ")
+                Next
+                Console.WriteLine($"   [{cls}] '{nm}' size={o.Size} reach=[{describeReach(o)}]{bytes}")
+            Next
         Next
         Console.WriteLine("   ── referenciadores de clip generators (padre → clip) ──")
         Dim cgByOffset = cgs.Where(Function(x) x.SourceObject IsNot Nothing).ToDictionary(Function(x) x.SourceObject.RelativeOffset, Function(x) x)
