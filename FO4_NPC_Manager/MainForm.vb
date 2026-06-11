@@ -1123,7 +1123,7 @@ Public Class MainForm
             Return
         End If
         Try
-            _animSession = HkxPoseImportSession.Create(clipSkelBytes, clipBytes, _renderHost.LastSkeletonInstance, clip.AnimationFile, clip.SourceSkeletonPath)
+            _animSession = HkxPoseImportSession.Create(clipSkelBytes, clipBytes, _renderHost.LastSkeletonInstance, clip.AnimationFile, clip.SourceSkeletonPath, additiveHint:=clip.IsAdditive)
             _animPlayer = New HkxAnimationPlayer(_animSession) With {.PoseName = "Animation"}
             Logger.LogLazy(Function() $"[ANIM-BAR] session OK frames={_animSession.FrameCount} tracks={_animSession.TrackCount} frameDur={_animSession.FrameDuration:0.####} skelSrc={_animSession.SkeletonSource}")
         Catch ex As Exception
@@ -9388,6 +9388,32 @@ Public Class MainForm
                             safetyHops_mod += 1
                         End While
                     Next
+                    ' [CHUNK-TREE-FULL] El árbol del chunk COMPLETO define la distribución de Bethesda:
+                    ' además de los skinned bones + sus cadenas, escribir TODO NiNode del chunk NIF que
+                    ' exista en el actor (ramas hermanas y el propio C-X). Caso probado: TorsoAssaultron
+                    ' trae LClavicle/RClavicle como nodos NO skinneados (ramas de Chest, fuera de las
+                    ' cadenas de Spine) con el local DESPLEGADO (5.942,−4.773,2.658) == la constante que
+                    ' juegan los clips; sin escribirlos, el despliegue entero del brazo caía como mount
+                    ' sobre el primer skinned del chunk de brazo (LClavicleTwist +18.59) — distribución
+                    ' que NO es la de Bethesda y dobla la cadena al animar. El C-X (W = A×G_CX = socket
+                    ' publicado, ej. P-Head==(12.391,−3.921)==constante del clip) también se escribe:
+                    ' el hueso socket VIVE donde su P-X lo publica.
+                    For Each blk_mod In shape.NifContent.Blocks
+                        Dim treeNode_mod = TryCast(blk_mod, NiflySharp.Blocks.NiNode)
+                        If treeNode_mod Is Nothing OrElse treeNode_mod.Name Is Nothing Then Continue For
+                        Dim treeNm_mod = If(treeNode_mod.Name.String, "")
+                        If String.IsNullOrEmpty(treeNm_mod) Then Continue For
+                        ' ⛔ Nodos con sufijo de instancia '|N' EXCLUIDOS del tree-walk: los chunks
+                        ' multi-instancia (ModTorsoHandyEye/ArmsTypeA1 ×3) comparten UN NIF cuyos nodos
+                        ' se llaman '...|0' FIJO — escribirlos por nombre apila las 3 instancias en el
+                        ' socket |0 (regresión: ojos mezclados, brazos corridos). Esos huesos los maneja
+                        ' el path skinned+cadenas, que sí tiene el mapeo apIdx por instancia.
+                        If treeNm_mod.IndexOf("|"c) >= 0 Then Continue For
+                        Dim treeHb_mod As HierarchiBone_class = Nothing
+                        If targetSkel.SkeletonDictionary.TryGetValue(treeNm_mod, treeHb_mod) AndAlso seenBones_mod.Add(treeNm_mod) Then
+                            boneList_mod.Add(Tuple.Create(-1, treeNode_mod, treeHb_mod, GetBoneHierarchyDepth(treeHb_mod)))
+                        End If
+                    Next
                     boneList_mod.Sort(Function(x_sort2, y_sort2) x_sort2.Item4.CompareTo(y_sort2.Item4))
                     For Each entry_mod In boneList_mod
                         Dim sbi = entry_mod.Item1
@@ -9570,6 +9596,11 @@ Public Class MainForm
         Dim writtenCount As Integer = 0
         Dim skippedNoBone As Integer = 0
         Dim skippedScopeMismatch As Integer = 0
+        ' [DEPTH-ORDER GLOBAL] Aplicar PADRE-PRIMERO sobre el plan entero: con entradas cross-shape
+        ' (el árbol del torso trae LClavicle, el chunk de brazo trae sus huesos) el orden de colección
+        ' no garantiza topología. OverrideActorBoneWorld computa el local contra el world ACTUAL del
+        ' parent: si un hijo se aplica antes que su padre, el cascade posterior del padre lo corre.
+        Dim applyList As New List(Of (Entry As MountDesiredWorldEntry, Bone As HierarchiBone_class, Depth As Integer))
         For Each entry In renderData.MountDesiredWorlds
             If entry Is Nothing OrElse String.IsNullOrEmpty(entry.BoneName) Then Continue For
             If entry.TargetSkel IsNot Nothing AndAlso entry.TargetSkel IsNot inst Then
@@ -9581,7 +9612,13 @@ Public Class MainForm
                 skippedNoBone += 1
                 Continue For
             End If
-            OverrideActorBoneWorld(hb, entry.DesiredWorld, entry.ContextLabel & "-APPLY")
+            applyList.Add((entry, hb, GetBoneHierarchyDepth(hb)))
+        Next
+        ' Sort ESTABLE por depth: entre entradas del mismo bone (last-write-wins del plan) se
+        ' conserva el orden de colección.
+        Dim applyOrdered = applyList.OrderBy(Function(x) x.Depth).ToList()
+        For Each item In applyOrdered
+            OverrideActorBoneWorld(item.Bone, item.Entry.DesiredWorld, item.Entry.ContextLabel & "-APPLY")
             writtenCount += 1
         Next
 

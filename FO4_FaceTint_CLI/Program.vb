@@ -47,6 +47,7 @@ Module Program
         Public HkxBone As String = ""             ' --hkxbone "<hkxPath>|<boneSubstr>": local+world del hueso en el hkaSkeleton (rig canónico)
         Public ClipBase As String = ""            ' --clipbase "<rigHkx>|<clipHkx>[|boneFilter[|chunkNif;...]]": frame-0 del clip vs rig refPose vs assembled (skin binds del chunk)
         Public FindFile As String = ""            ' --findfile <substr>: lista keys del FilesDictionary que matchean (cualquier extensión)
+        Public NifDump As String = ""             ' --nifdump <nif>: árbol de nodos (local+world) + skin binds (inv(bind)) por shape
         Public RankBy As String = "n"   ' canal por el que rankea el sweep: n (default) / d / s
     End Class
 
@@ -124,7 +125,7 @@ Module Program
 
         ' --- 3. Lista de trabajo (esp, edid) ---
         Dim work = BuildWorkList(opt)
-        If work.Count = 0 AndAlso Not opt.TtedScan AndAlso Not opt.RaceAnim AndAlso Not opt.MountValidate AndAlso opt.FindHkx = "" AndAlso opt.ChunkCompare = "" AndAlso opt.DumpBehavior = "" AndAlso Not opt.HkxCoverage AndAlso opt.KwType = "" AndAlso Not opt.StateMap AndAlso Not opt.ClipResolve AndAlso opt.HkxBone = "" AndAlso opt.ClipBase = "" AndAlso opt.FindFile = "" Then
+        If work.Count = 0 AndAlso Not opt.TtedScan AndAlso Not opt.RaceAnim AndAlso Not opt.MountValidate AndAlso opt.FindHkx = "" AndAlso opt.ChunkCompare = "" AndAlso opt.DumpBehavior = "" AndAlso Not opt.HkxCoverage AndAlso opt.KwType = "" AndAlso Not opt.StateMap AndAlso Not opt.ClipResolve AndAlso opt.HkxBone = "" AndAlso opt.ClipBase = "" AndAlso opt.FindFile = "" AndAlso opt.NifDump = "" Then
             Console.Error.WriteLine("No hay NPCs para procesar (revisa --edid / --list).") : Environment.ExitCode = 1 : Return
         End If
 
@@ -232,6 +233,12 @@ Module Program
         ' --- FINDFILE: lista keys del FilesDictionary (cualquier extensión) que matchean substr.
         If opt.FindFile <> "" Then
             FindFileScan(opt.FindFile)
+            Return
+        End If
+
+        ' --- NIFDUMP: árbol de nodos (local+world) + skin binds (inv(bind)) por shape de un NIF.
+        If opt.NifDump <> "" Then
+            NifDumpRun(opt.NifDump)
             Return
         End If
 
@@ -865,6 +872,71 @@ Module Program
         If keys.Count > 300 Then Console.WriteLine($"  ... ({keys.Count - 300} más)")
     End Sub
 
+    ''' <summary>Dump completo de un NIF: árbol de NiNodes (parent, local.T, world.T) + por shape
+    ''' skinneada el palette (bone, bind.T, inv(bind).T = world que el skin exige). Para auditar el
+    ''' PLACEMENT de chunks (¿el C-X interno del chunk coincide con el socket del rig? ¿inv(bind)
+    ''' coincide con el world del rig o está corrido por el local del socket = double-count?).</summary>
+    Private Sub NifDumpRun(path As String)
+        Dim nbx = LoadAnimCand(path)
+        If nbx Is Nothing Then Console.WriteLine($"[nifdump] '{path}' no carga") : Return
+        Dim nif As New Nifcontent_Class_Manolo() : nif.Load_Manolo(nbx)
+        Console.WriteLine($"[nifdump] {path}")
+        Console.WriteLine("  ── NODOS ──")
+        For Each blk In nif.Blocks
+            Dim nn = TryCast(blk, NiflySharp.Blocks.NiNode)
+            If nn Is Nothing OrElse nn.Name Is Nothing Then Continue For
+            Dim nm = If(nn.Name.String, "")
+            If nm = "" Then Continue For
+            Dim par = TryCast(nif.GetParentNode(nn), NiflySharp.Blocks.NiNode)
+            Dim pn = If(par?.Name?.String, "<root>")
+            Dim w = Transform_Class.GetGlobalTransform(nn, nif)
+            Dim lw = If(par Is Nothing, w, Transform_Class.GetGlobalTransform(par, nif).Inverse().ComposeTransforms(w))
+            Console.WriteLine($"   '{nm}' parent='{pn}'  local.T=({lw.Translation.X:F3},{lw.Translation.Y:F3},{lw.Translation.Z:F3})  world.T=({w.Translation.X:F3},{w.Translation.Y:F3},{w.Translation.Z:F3})")
+        Next
+        Console.WriteLine("  ── BSConnectPoint::Parents (sockets que PUBLICA, local al bone padre) ──")
+        For Each cp In BSConnectPointReader.ReadParents(nif)
+            Console.WriteLine($"   '{cp.Name}' parentBone='{cp.ParentBoneName}'  T=({cp.Translation.X:F3},{cp.Translation.Y:F3},{cp.Translation.Z:F3})  R=({cp.Rotation.X:F3},{cp.Rotation.Y:F3},{cp.Rotation.Z:F3},{cp.Rotation.W:F3}) scale={cp.Scale:F3}")
+        Next
+        Dim childNames = BSConnectPointReader.ReadChildrenNames(nif)
+        If childNames.Count > 0 Then Console.WriteLine($"  ── BSConnectPoint::Children (sockets que CONSUME): {String.Join(", ", childNames)}")
+        Console.WriteLine("  ── SKIN BINDS (inv(bind) = world que el skin exige, en frame del chunk) ──")
+        For blkIdx = 0 To nif.Blocks.Count - 1
+            Dim shp = TryCast(nif.Blocks(blkIdx), NiflySharp.INiShape)
+            If shp Is Nothing Then Continue For
+            Dim rs As NifRenderableShape
+            Try
+                rs = New NifRenderableShape(nif, shp, blkIdx)
+            Catch ex As Exception
+                Continue For
+            End Try
+            If rs.ShapeBones.Count = 0 Then Continue For
+            ' Bounds de la malla en frame MODEL (para saber en qué frame están autoreados los binds).
+            Dim boundsTxt = ""
+            Try
+                Dim verts = rs.Geometry?.GetVertexPositions()
+                If verts IsNot Nothing AndAlso verts.Count > 0 Then
+                    Dim mnX = Single.MaxValue, mnY = Single.MaxValue, mnZ = Single.MaxValue
+                    Dim mxX = Single.MinValue, mxY = Single.MinValue, mxZ = Single.MinValue
+                    For Each v In verts
+                        mnX = Math.Min(mnX, v.X) : mnY = Math.Min(mnY, v.Y) : mnZ = Math.Min(mnZ, v.Z)
+                        mxX = Math.Max(mxX, v.X) : mxY = Math.Max(mxY, v.Y) : mxZ = Math.Max(mxZ, v.Z)
+                    Next
+                    boundsTxt = $"  meshBounds=[({mnX:F1},{mnY:F1},{mnZ:F1})..({mxX:F1},{mxY:F1},{mxZ:F1})] center=({(mnX + mxX) / 2:F1},{(mnY + mxY) / 2:F1},{(mnZ + mxZ) / 2:F1})"
+                End If
+            Catch
+            End Try
+            Console.WriteLine($"   shape '{rs.ShapeName}': {rs.ShapeBones.Count} bones{boundsTxt}")
+            For k = 0 To Math.Min(rs.ShapeBones.Count, rs.ShapeBoneTransforms.Count) - 1
+                Dim bnNode = TryCast(rs.ShapeBones(k), NiflySharp.Blocks.NiNode)
+                Dim nm = If(bnNode?.Name?.String, "?")
+                Dim b = rs.ShapeBoneTransforms(k)
+                If b Is Nothing Then Continue For
+                Dim ib = b.Inverse()
+                Console.WriteLine($"     bone '{nm}'  bind.T=({b.Translation.X:F3},{b.Translation.Y:F3},{b.Translation.Z:F3})  inv(bind).T=({ib.Translation.X:F3},{ib.Translation.Y:F3},{ib.Translation.Z:F3})")
+            Next
+        Next
+    End Sub
+
     ''' <summary>REDISEÑO MOUNT — medición de clipBaseLocal. Por track del clip: el LOCAL que el clip
     ''' reproduce en FRAME 0 (componentes no animados resueltos del refPose del rig, igual que
     ''' HkxPoseImportSession.BuildFrameLocalTransform) comparado contra (a) el local del RIG
@@ -1120,8 +1192,36 @@ Module Program
         For Each r In refs
             Console.WriteLine($"   behaviorRef→ {r}")
         Next
-        For Each c In cgs.Select(Function(x) x.AnimationName).Distinct().Take(40)
-            Console.WriteLine($"   clip-anim: {c}")
+        For Each c In cgs.Take(80)
+            Console.WriteLine($"   clipGen '{c.Name}' anim='{c.AnimationName}' mode={c.PlaybackMode} flags=0x{c.FlagsRaw:X2}")
+        Next
+        ' Histograma de clases del grafo + QUIÉN referencia a cada clip generator (jerarquía:
+        ' la aditividad puede declararla el PADRE — layer/blender — no el clip generator).
+        Dim classHist = g.Objects.GroupBy(Function(o) o.ClassName).OrderByDescending(Function(grp) grp.Count())
+        Console.WriteLine("   ── clases del grafo ──")
+        For Each grp In classHist
+            Console.WriteLine($"     {grp.Count(),4}x {grp.Key}")
+        Next
+        ' DynamicAnimationTaggingGenerator: dump hex (para ubicar el campo additive por diff).
+        For Each o In g.GetObjectsByClassName("DynamicAnimationTaggingGenerator")
+            Dim nm = g.ReadNodeName(o)
+            Dim bytes As New System.Text.StringBuilder()
+            For off = &H38 To Math.Min(o.Size - 1, &HC7)
+                If (off - &H38) Mod 16 = 0 Then bytes.Append($"{Environment.NewLine}       +{off:X2}: ")
+                bytes.Append($"{g.ReadByte(o.RelativeOffset + off):X2} ")
+            Next
+            Console.WriteLine($"   [DATG] '{nm}' size={o.Size}{bytes}")
+        Next
+        Console.WriteLine("   ── referenciadores de clip generators (padre → clip) ──")
+        Dim cgByOffset = cgs.Where(Function(x) x.SourceObject IsNot Nothing).ToDictionary(Function(x) x.SourceObject.RelativeOffset, Function(x) x)
+        For Each o In g.Objects
+            For Each gf In g.GetGlobalFixupsInRange(o.RelativeOffset, o.Size)
+                Dim tgt As HkbClipGeneratorGraph_Class = Nothing
+                If cgByOffset.TryGetValue(gf.TargetRelativeOffset, tgt) Then
+                    Dim parentName = g.ReadNodeName(o)
+                    Console.WriteLine($"     {o.ClassName} '{parentName}' → clipGen '{tgt.Name}'")
+                End If
+            Next
         Next
         For Each o In g.GetObjectsByClassName("hkbCharacterStringData")
             Dim csd = g.ParseCharacterStringData(o)
@@ -2984,12 +3084,13 @@ Module Program
                 Case "--hkxbone" : a.HkxBone = v : i += 2
                 Case "--clipbase" : a.ClipBase = v : i += 2
                 Case "--findfile" : a.FindFile = v : i += 2
+                Case "--nifdump" : a.NifDump = v : i += 2
                 Case "-h", "--help" : PrintUsage() : Return Nothing
                 Case Else
                     Console.Error.WriteLine($"Arg desconocido: {args(i)}") : PrintUsage() : Return Nothing
             End Select
         End While
-        If a.ListPath = "" AndAlso (a.Esp = "" OrElse a.Edid = "") AndAlso Not a.TtedScan AndAlso Not a.RaceAnim AndAlso Not a.MountValidate AndAlso a.FindHkx = "" AndAlso a.ChunkCompare = "" AndAlso a.DumpBehavior = "" AndAlso Not a.HkxCoverage AndAlso a.KwType = "" AndAlso Not a.StateMap AndAlso Not a.ClipResolve AndAlso a.HkxBone = "" AndAlso a.ClipBase = "" AndAlso a.FindFile = "" Then
+        If a.ListPath = "" AndAlso (a.Esp = "" OrElse a.Edid = "") AndAlso Not a.TtedScan AndAlso Not a.RaceAnim AndAlso Not a.MountValidate AndAlso a.FindHkx = "" AndAlso a.ChunkCompare = "" AndAlso a.DumpBehavior = "" AndAlso Not a.HkxCoverage AndAlso a.KwType = "" AndAlso Not a.StateMap AndAlso Not a.ClipResolve AndAlso a.HkxBone = "" AndAlso a.ClipBase = "" AndAlso a.FindFile = "" AndAlso a.NifDump = "" Then
             Console.Error.WriteLine("Faltan --esp y --edid (o usa --list).") : PrintUsage() : Return Nothing
         End If
         Return a
