@@ -44,6 +44,9 @@ Module Program
         Public KwType As String = ""             ' --kwtype <substr>: lista KYWD (EDID + TNAM Type enum) que matchean (discriminador identidad-vs-estado)
         Public StateMap As Boolean = False       ' --statemap: por raza, clasifica subgraphs por EJE DE ESTADO (TNAM type) y muestra qué entra/queda afuera
         Public ClipResolve As Boolean = False     ' --clipresolve: valida la resolución clip→archivo por EXISTENCIA sobre rutas SAPT (cobertura % por raza)
+        Public HkxBone As String = ""             ' --hkxbone "<hkxPath>|<boneSubstr>": local+world del hueso en el hkaSkeleton (rig canónico)
+        Public ClipBase As String = ""            ' --clipbase "<rigHkx>|<clipHkx>[|boneFilter[|chunkNif;...]]": frame-0 del clip vs rig refPose vs assembled (skin binds del chunk)
+        Public FindFile As String = ""            ' --findfile <substr>: lista keys del FilesDictionary que matchean (cualquier extensión)
         Public RankBy As String = "n"   ' canal por el que rankea el sweep: n (default) / d / s
     End Class
 
@@ -121,7 +124,7 @@ Module Program
 
         ' --- 3. Lista de trabajo (esp, edid) ---
         Dim work = BuildWorkList(opt)
-        If work.Count = 0 AndAlso Not opt.TtedScan AndAlso Not opt.RaceAnim AndAlso Not opt.MountValidate AndAlso opt.FindHkx = "" AndAlso opt.ChunkCompare = "" AndAlso opt.DumpBehavior = "" AndAlso Not opt.HkxCoverage AndAlso opt.KwType = "" AndAlso Not opt.StateMap AndAlso Not opt.ClipResolve Then
+        If work.Count = 0 AndAlso Not opt.TtedScan AndAlso Not opt.RaceAnim AndAlso Not opt.MountValidate AndAlso opt.FindHkx = "" AndAlso opt.ChunkCompare = "" AndAlso opt.DumpBehavior = "" AndAlso Not opt.HkxCoverage AndAlso opt.KwType = "" AndAlso Not opt.StateMap AndAlso Not opt.ClipResolve AndAlso opt.HkxBone = "" AndAlso opt.ClipBase = "" AndAlso opt.FindFile = "" Then
             Console.Error.WriteLine("No hay NPCs para procesar (revisa --edid / --list).") : Environment.ExitCode = 1 : Return
         End If
 
@@ -216,6 +219,25 @@ Module Program
         ' --- CLIPRESOLVE: valida resolución clip→archivo por EXISTENCIA sobre rutas SAPT (cobertura por raza).
         If opt.ClipResolve Then
             ClipResolveScan(pm, opt.Edid)
+            Return
+        End If
+
+        ' --- HKXBONE: local+world de huesos del hkaSkeleton de animación (rig canónico) que matchean substr.
+        If opt.HkxBone <> "" Then
+            Dim parts = opt.HkxBone.Split("|"c)
+            HkxBoneDump(parts(0), If(parts.Length > 1, parts(1), ""))
+            Return
+        End If
+
+        ' --- FINDFILE: lista keys del FilesDictionary (cualquier extensión) que matchean substr.
+        If opt.FindFile <> "" Then
+            FindFileScan(opt.FindFile)
+            Return
+        End If
+
+        ' --- CLIPBASE: frame-0 del clip (clipBaseLocal) vs rig refPose vs assembled (skin binds chunk).
+        If opt.ClipBase <> "" Then
+            ClipBaseDump(opt.ClipBase)
             Return
         End If
 
@@ -803,6 +825,225 @@ Module Program
                 Console.WriteLine($"     '{bn}' parent='{parent}' world.T=({w.Translation.X:F1},{w.Translation.Y:F1},{w.Translation.Z:F1})")
             End If
         Next
+    End Sub
+
+    ''' <summary>Dump del hkaSkeleton de ANIMACIÓN de un .hkx: para cada hueso que matchea el substr,
+    ''' imprime índice, parent, LOCAL (referencePose) y WORLD compuesto. Para verificar si el OriginalLocaL
+    ''' del esqueleto vivo coincide con el rig canónico (la animación se autorea contra ESTE local).</summary>
+    Private Sub HkxBoneDump(hkxPath As String, boneSubstr As String)
+        Dim b = LoadAnimCand(hkxPath)
+        If b Is Nothing Then Console.WriteLine($"[hkxbone] '{hkxPath}' no carga") : Return
+        Dim g = HkxObjectGraphParser_Class.BuildGraph(HkxPackfileParser_Class.Parse(b))
+        Dim skels = g.GetObjectsByClassName("hkaSkeleton").Select(Function(o) g.ParseSkeleton(o)).Where(Function(s) s IsNot Nothing).ToList()
+        Dim skel = skels.FirstOrDefault(Function(s) Not If(s.Name, "").Contains("Ragdoll", StringComparison.OrdinalIgnoreCase))
+        If skel Is Nothing Then Console.WriteLine("[hkxbone] sin hkaSkeleton de animación") : Return
+        Console.WriteLine($"[hkxbone] '{hkxPath}' skel='{skel.Name}' bones={skel.Bones.Count} | filtro='{boneSubstr}'")
+        Dim world(skel.Bones.Count - 1) As Transform_Class
+        For i = 0 To skel.Bones.Count - 1
+            Dim loc = HkxTransformConventionHelper.ToTransform(skel.ReferencePose(i))
+            Dim p = If(i < skel.ParentIndices.Count, CInt(skel.ParentIndices(i)), -1)
+            world(i) = If(p < 0 OrElse p >= i, loc, world(p).ComposeTransforms(loc))
+            Dim nm = If(skel.Bones(i).Name, "")
+            If boneSubstr <> "" AndAlso nm.IndexOf(boneSubstr, StringComparison.OrdinalIgnoreCase) < 0 Then Continue For
+            Dim pn = If(p >= 0 AndAlso p < skel.Bones.Count, If(skel.Bones(p).Name, "?"), "<root>")
+            Dim lT = loc.Translation, wT = world(i).Translation
+            Dim lr = loc.Rotation
+            Console.WriteLine($"   [{i,3}] '{nm}' parent='{pn}'  LOCAL.T=({lT.X:F3},{lT.Y:F3},{lT.Z:F3}) R11/22/33=({lr.M11:F3},{lr.M22:F3},{lr.M33:F3})  WORLD.T=({wT.X:F3},{wT.Y:F3},{wT.Z:F3})")
+        Next
+    End Sub
+
+    ''' <summary>Lista keys del FilesDictionary que matchean un substring (cualquier extensión) — para
+    ''' localizar chunk NIFs / clips sin adivinar paths.</summary>
+    Private Sub FindFileScan(substr As String)
+        Dim keys = FilesDictionary_class.Dictionary.Keys.
+            Where(Function(k) k.IndexOf(substr, StringComparison.OrdinalIgnoreCase) >= 0).
+            OrderBy(Function(k) k, StringComparer.OrdinalIgnoreCase).ToList()
+        Console.WriteLine($"[findfile] '{substr}': {keys.Count} matches")
+        For Each k In keys.Take(300)
+            Console.WriteLine("  " & k)
+        Next
+        If keys.Count > 300 Then Console.WriteLine($"  ... ({keys.Count - 300} más)")
+    End Sub
+
+    ''' <summary>REDISEÑO MOUNT — medición de clipBaseLocal. Por track del clip: el LOCAL que el clip
+    ''' reproduce en FRAME 0 (componentes no animados resueltos del refPose del rig, igual que
+    ''' HkxPoseImportSession.BuildFrameLocalTransform) comparado contra (a) el local del RIG
+    ''' (referencePose del skeleton.hkx) y (b) el local ENSAMBLADO derivado de los skin binds del
+    ''' chunk NIF (inv(bind) = world ensamblado, hecho probado [DIAG-BIND-BAKE]≡[MOUNTDELTA-WRITE]).
+    ''' Verifica las predicciones del modelo M_b = assembledLocal × inv(clipBaseLocal):
+    '''   Assaultron montados: clip0 ≈ ASM (M≈I) · Codsworth Pelvis: clip0 ≈ RIG (M=mount) · Humano: clip0 ≈ RIG (M=I).</summary>
+    Private Sub ClipBaseDump(spec As String)
+        Dim parts = spec.Split("|"c)
+        If parts.Length < 2 Then Console.WriteLine("[clipbase] uso: --clipbase ""<rigHkx>|<clipHkx>[|boneFilter[|chunkNif;chunkNif...]]""") : Return
+        Dim rigPath = parts(0), clipPath = parts(1)
+        Dim boneFilter = If(parts.Length > 2, parts(2), "")
+        Dim chunkPaths = If(parts.Length > 3 AndAlso parts(3) <> "",
+                            parts(3).Split(";"c).Where(Function(p) p.Trim() <> "").Select(Function(p) p.Trim()).ToList(),
+                            New List(Of String))
+
+        ' ── RIG: skeleton de animación (no-Ragdoll) → locals (refPose) + parent names ──
+        Dim rb = LoadAnimCand(rigPath)
+        If rb Is Nothing Then Console.WriteLine($"[clipbase] rig '{rigPath}' no carga") : Return
+        Dim sg = HkxObjectGraphParser_Class.BuildGraph(HkxPackfileParser_Class.Parse(rb))
+        Dim skel = sg.GetObjectsByClassName("hkaSkeleton").Select(Function(o) sg.ParseSkeleton(o)).
+                      Where(Function(s) s IsNot Nothing AndAlso s.Bones IsNot Nothing AndAlso s.ParentIndices IsNot Nothing AndAlso
+                            (String.IsNullOrEmpty(s.Name) OrElse s.Name.IndexOf("Ragdoll", StringComparison.OrdinalIgnoreCase) < 0)).FirstOrDefault()
+        If skel Is Nothing Then Console.WriteLine("[clipbase] rig sin hkaSkeleton de animación") : Return
+        Dim nB = skel.Bones.Count
+        Dim rigLocal(nB - 1) As Transform_Class
+        Dim parentName(nB - 1) As String
+        For i = 0 To nB - 1
+            rigLocal(i) = HkxTransformConventionHelper.ToTransform(skel.ReferencePose(i))
+            Dim p = If(i < skel.ParentIndices.Count, CInt(skel.ParentIndices(i)), -1)
+            parentName(i) = If(p >= 0 AndAlso p < nB, If(skel.Bones(p).Name, ""), "")
+        Next
+
+        ' ── CLIP: spline o lossless; binding track→boneIdx; ¿skeleton embebido? ──
+        Dim cbts = LoadAnimCand(clipPath)
+        If cbts Is Nothing Then Console.WriteLine($"[clipbase] clip '{clipPath}' no carga") : Return
+        Dim cg = HkxObjectGraphParser_Class.BuildGraph(HkxPackfileParser_Class.Parse(cbts))
+        Dim anim = cg.ParseAnimations().FirstOrDefault()
+        If anim Is Nothing Then anim = cg.ParseLosslessAnimations().FirstOrDefault()
+        If anim Is Nothing OrElse anim.NumFrames <= 0 Then Console.WriteLine("[clipbase] clip sin animación legible") : Return
+        Dim embSkels = cg.GetObjectsByClassName("hkaSkeleton").Select(Function(o) cg.ParseSkeleton(o)).
+                          Where(Function(s) s IsNot Nothing AndAlso s.Bones IsNot Nothing AndAlso s.Bones.Count > 0).ToList()
+        Dim idxArr = If(anim.Binding?.TransformTrackToBoneIndices, New List(Of Short)())
+        Console.WriteLine($"[clipbase] rig='{rigPath}' skel='{skel.Name}' bones={nB}")
+        Console.WriteLine($"[clipbase] clip='{clipPath}' frames={anim.NumFrames} tracks={anim.NumTransformTracks} bindingTracks={idxArr.Count} blendHint={If(anim.Binding Is Nothing, "?", anim.Binding.BlendHint.ToString())} origSkel='{If(anim.Binding?.OriginalSkeletonName, "")}' embeddedSkeletons={embSkels.Count}{If(embSkels.Count > 0, " (" & String.Join(",", embSkels.Select(Function(s) $"'{s.Name}'×{s.Bones.Count}")) & ")", "")}")
+
+        ' ── CHUNKS: por chunk NIF, world ensamblado por bone vía skin binds (inv(bind)) + node tree ──
+        Dim chunkData As New List(Of (Name As String, SkinW As Dictionary(Of String, Transform_Class), NodeW As Dictionary(Of String, Transform_Class)))
+        For Each cp In chunkPaths
+            Dim nbx = LoadAnimCand(cp)
+            If nbx Is Nothing Then Console.WriteLine($"[clipbase] chunk '{cp}' no carga — SKIP") : Continue For
+            Dim nif As New Nifcontent_Class_Manolo() : nif.Load_Manolo(nbx)
+            Dim skinW As New Dictionary(Of String, Transform_Class)(StringComparer.OrdinalIgnoreCase)
+            Dim nodeW As New Dictionary(Of String, Transform_Class)(StringComparer.OrdinalIgnoreCase)
+            For blkIdx = 0 To nif.Blocks.Count - 1
+                Dim shp = TryCast(nif.Blocks(blkIdx), NiflySharp.INiShape)
+                If shp Is Nothing Then Continue For
+                Dim rs As NifRenderableShape
+                Try
+                    rs = New NifRenderableShape(nif, shp, blkIdx)
+                Catch ex As Exception
+                    Continue For
+                End Try
+                For k = 0 To Math.Min(rs.ShapeBones.Count, rs.ShapeBoneTransforms.Count) - 1
+                    Dim bnNode = TryCast(rs.ShapeBones(k), NiflySharp.Blocks.NiNode)
+                    Dim nm = If(bnNode?.Name?.String, "")
+                    If nm = "" OrElse rs.ShapeBoneTransforms(k) Is Nothing Then Continue For
+                    Dim w = rs.ShapeBoneTransforms(k).Inverse()
+                    Dim prev As Transform_Class = Nothing
+                    If skinW.TryGetValue(nm, prev) Then
+                        Dim dPrev = (prev.Translation - w.Translation).Length()
+                        If dPrev > 0.1F Then Console.WriteLine($"[clipbase] ⚠ bind CONFLICT '{nm}' en '{cp}': dT={dPrev:F3} (se queda el primero)")
+                    Else
+                        skinW(nm) = w
+                    End If
+                Next
+            Next
+            For Each blk In nif.Blocks
+                Dim nn = TryCast(blk, NiflySharp.Blocks.NiNode)
+                If nn Is Nothing OrElse nn.Name Is Nothing Then Continue For
+                Dim nm = nn.Name.String
+                If String.IsNullOrEmpty(nm) OrElse nodeW.ContainsKey(nm) Then Continue For
+                nodeW(nm) = Transform_Class.GetGlobalTransform(nn, nif)
+            Next
+            Dim shortName = cp.Substring(cp.LastIndexOf("\"c) + 1)
+            chunkData.Add((shortName, skinW, nodeW))
+            Console.WriteLine($"[clipbase] chunk '{shortName}': skinBinds={skinW.Count} nodes={nodeW.Count}")
+        Next
+
+        ' ── Por track: clip frame-0 local (mask-aware) vs rigLocal vs assembledLocal ──
+        Dim rotAngle = Function(A As Transform_Class, B As Transform_Class) As Double
+                           Dim d = A.Inverse().ComposeTransforms(B)
+                           Dim trc = CDbl(d.Rotation.M11) + CDbl(d.Rotation.M22) + CDbl(d.Rotation.M33)
+                           Return Math.Acos(Math.Max(-1.0, Math.Min(1.0, (trc - 1.0) / 2.0))) * 180.0 / Math.PI
+                       End Function
+        Const T_EPS As Single = 0.5F
+        Const R_EPS As Double = 2.0
+        Dim cntRig = 0, cntAsm = 0, cntBoth = 0, cntNeither = 0, cntNoAsm = 0
+        Dim neitherList As New List(Of String)
+        Console.WriteLine("   track bone                       mask        rig.T                clip0.T              dT_rig θ_rig | asm.T (src)            dT_asm θ_asm | veredicto")
+        For t = 0 To anim.NumTransformTracks - 1
+            Dim bi = If(idxArr.Count > 0 AndAlso t < idxArr.Count, CInt(idxArr(t)), t)
+            If bi < 0 OrElse bi >= nB Then Continue For
+            Dim nm = If(skel.Bones(bi).Name, "")
+            If nm = "" Then Continue For
+            Dim ht = anim.GetTransform(0, t)
+            If ht Is Nothing Then Continue For
+            Dim refp = skel.ReferencePose(bi)
+            ' Componentes no animados → refPose del rig (misma semántica que BuildFrameLocalTransform).
+            Dim tx = If(ht.TranslationXAnimated, If(ht.Translation IsNot Nothing, ht.Translation.X, 0.0F), If(refp.Translation IsNot Nothing, refp.Translation.X, 0.0F))
+            Dim ty = If(ht.TranslationYAnimated, If(ht.Translation IsNot Nothing, ht.Translation.Y, 0.0F), If(refp.Translation IsNot Nothing, refp.Translation.Y, 0.0F))
+            Dim tz = If(ht.TranslationZAnimated, If(ht.Translation IsNot Nothing, ht.Translation.Z, 0.0F), If(refp.Translation IsNot Nothing, refp.Translation.Z, 0.0F))
+            Dim rr = If(ht.RotationAnimated, ht.Rotation, refp.Rotation)
+            Dim sx = If(ht.ScaleXAnimated, If(ht.Scale IsNot Nothing, ht.Scale.X, 1.0F), If(refp.Scale IsNot Nothing, refp.Scale.X, 1.0F))
+            Dim sy = If(ht.ScaleYAnimated, If(ht.Scale IsNot Nothing, ht.Scale.Y, 1.0F), If(refp.Scale IsNot Nothing, refp.Scale.Y, 1.0F))
+            Dim sz = If(ht.ScaleZAnimated, If(ht.Scale IsNot Nothing, ht.Scale.Z, 1.0F), If(refp.Scale IsNot Nothing, refp.Scale.Z, 1.0F))
+            Dim clip0 = HkxTransformConventionHelper.ToTransform(tx, ty, tz, rr, sx, sy, sz)
+            Dim mask = $"T:{If(ht.TranslationXAnimated, "x", "-")}{If(ht.TranslationYAnimated, "y", "-")}{If(ht.TranslationZAnimated, "z", "-")} R:{If(ht.RotationAnimated, "a", "-")} S:{If(ht.ScaleXAnimated OrElse ht.ScaleYAnimated OrElse ht.ScaleZAnimated, "a", "-")}"
+
+            Dim rigL = rigLocal(bi)
+            Dim dTr = (clip0.Translation - rigL.Translation).Length()
+            Dim thr = rotAngle(rigL, clip0)
+
+            ' assembledLocal: bone Y parent (del RIG) presentes en el MISMO chunk (mismo frame).
+            Dim asmL As Transform_Class = Nothing
+            Dim asmSrc = ""
+            Dim pn = parentName(bi)
+            If pn <> "" Then
+                ' SOLO bind/bind en el MISMO chunk: inv(bind) está en el frame del chunk; el placement
+                ' cancela únicamente si AMBOS worlds salen de los binds del mismo NIF. El node-tree del
+                ' chunk es otro frame (probado: mezclar bind/node da locals absurdos de 60-154u).
+                For Each ch In chunkData
+                    Dim wb As Transform_Class = Nothing, wp As Transform_Class = Nothing
+                    If ch.SkinW.TryGetValue(nm, wb) AndAlso ch.SkinW.TryGetValue(pn, wp) Then
+                        asmL = wp.Inverse().ComposeTransforms(wb)
+                        asmSrc = $"bind:{ch.Name}"
+                        Exit For
+                    End If
+                Next
+            End If
+
+            Dim dTa As Single = -1.0F
+            Dim tha As Double = -1.0
+            If asmL IsNot Nothing Then
+                dTa = (clip0.Translation - asmL.Translation).Length()
+                tha = rotAngle(asmL, clip0)
+            End If
+
+            ' Veredicto por TRASLACIÓN: la rotación del frame 0 es POSE del clip (stance), no estructura;
+            ' los mounts de configuración medidos son traslacionales. θ se imprime como contexto.
+            Dim nearRig = dTr < T_EPS
+            Dim nearAsm = asmL IsNot Nothing AndAlso dTa < T_EPS
+            Dim verdict As String
+            If asmL Is Nothing Then
+                cntNoAsm += 1
+                verdict = If(nearRig, "CLIP≈RIG", "≠RIG ⚠")
+                If Not nearRig Then cntNeither += 1 : neitherList.Add($"{nm} (dT_rig={dTr:F2} θ={thr:F1}, sin asm)") Else cntRig += 1
+            ElseIf nearRig AndAlso nearAsm Then
+                cntBoth += 1 : verdict = "RIG==ASM(≈clip)"
+            ElseIf nearAsm Then
+                cntAsm += 1 : verdict = "CLIP≈ASM (M≈I)"
+            ElseIf nearRig Then
+                cntRig += 1 : verdict = "CLIP≈RIG (M=mount)"
+            Else
+                cntNeither += 1 : verdict = "NEITHER ⚠"
+                neitherList.Add($"{nm} (dT_rig={dTr:F2} θr={thr:F1} dT_asm={dTa:F2} θa={tha:F1})")
+            End If
+
+            If boneFilter <> "" AndAlso nm.IndexOf(boneFilter, StringComparison.OrdinalIgnoreCase) < 0 Then Continue For
+            Dim rT = rigL.Translation, cT = clip0.Translation
+            Dim asmStr = If(asmL Is Nothing, "—", $"({asmL.Translation.X:F2},{asmL.Translation.Y:F2},{asmL.Translation.Z:F2}) ({asmSrc})")
+            Dim dTaStr = If(asmL Is Nothing, "  —", $"{dTa,6:F2}")
+            Dim thaStr = If(asmL Is Nothing, "  —", $"{tha,5:F1}")
+            Console.WriteLine($"   [{t,3}] {nm,-26} {mask,-11} ({rT.X,7:F2},{rT.Y,7:F2},{rT.Z,7:F2}) ({cT.X,7:F2},{cT.Y,7:F2},{cT.Z,7:F2}) {dTr,6:F2} {thr,5:F1} | {asmStr,-22} {dTaStr} {thaStr} | {verdict}")
+        Next
+        Console.WriteLine($"[clipbase] RESUMEN: CLIP≈RIG={cntRig}  CLIP≈ASM={cntAsm}  RIG==ASM={cntBoth}  NEITHER={cntNeither}  (sinAsmDisponible={cntNoAsm}; umbrales dT<{T_EPS} θ<{R_EPS}°)")
+        If neitherList.Count > 0 Then
+            Console.WriteLine($"[clipbase] NEITHER ({neitherList.Count}): {String.Join("  |  ", neitherList.Take(20))}")
+        End If
     End Sub
 
     ''' <summary>Compara el LAYOUT INTERNO de un chunk-NIF (posiciones de sus bones relativas al bone-ancla
@@ -2740,12 +2981,15 @@ Module Program
                 Case "--kwtype" : a.KwType = v : i += 2
                 Case "--statemap" : a.StateMap = True : i += 1
                 Case "--clipresolve" : a.ClipResolve = True : i += 1
+                Case "--hkxbone" : a.HkxBone = v : i += 2
+                Case "--clipbase" : a.ClipBase = v : i += 2
+                Case "--findfile" : a.FindFile = v : i += 2
                 Case "-h", "--help" : PrintUsage() : Return Nothing
                 Case Else
                     Console.Error.WriteLine($"Arg desconocido: {args(i)}") : PrintUsage() : Return Nothing
             End Select
         End While
-        If a.ListPath = "" AndAlso (a.Esp = "" OrElse a.Edid = "") AndAlso Not a.TtedScan AndAlso Not a.RaceAnim AndAlso Not a.MountValidate AndAlso a.FindHkx = "" AndAlso a.ChunkCompare = "" AndAlso a.DumpBehavior = "" AndAlso Not a.HkxCoverage AndAlso a.KwType = "" AndAlso Not a.StateMap AndAlso Not a.ClipResolve Then
+        If a.ListPath = "" AndAlso (a.Esp = "" OrElse a.Edid = "") AndAlso Not a.TtedScan AndAlso Not a.RaceAnim AndAlso Not a.MountValidate AndAlso a.FindHkx = "" AndAlso a.ChunkCompare = "" AndAlso a.DumpBehavior = "" AndAlso Not a.HkxCoverage AndAlso a.KwType = "" AndAlso Not a.StateMap AndAlso Not a.ClipResolve AndAlso a.HkxBone = "" AndAlso a.ClipBase = "" AndAlso a.FindFile = "" Then
             Console.Error.WriteLine("Faltan --esp y --edid (o usa --list).") : PrintUsage() : Return Nothing
         End If
         Return a

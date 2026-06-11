@@ -574,25 +574,17 @@ Public Class MainForm
         ''' iterate model.meshes blindly and apply hair color to any palette-enabled material —
         ''' which leaked hair color into robot armor / face / body shapes with palette opt-in.</summary>
         Public ReadOnly ShapeCandidate As New Dictionary(Of IRenderableShape, MeshCandidate)
-        ''' <summary>Cache de los (boneName, desiredWorld) que V2 computó durante el shape loop.
-        ''' <para>
-        ''' Per OpenAI Vuelta 7: para que ApplyPose pueda limpiar MountDeltaTransform y
-        ''' repopular post-pose change vía ApplyMountPlanForActor pre-pass, el shape loop
-        ''' V2 ALSO escribe acá. Pre-pass re-fires desde este cache sin re-iterar el shape loop.
-        ''' </para>
-        ''' <para>List preserva orden topológico (parent-first) que V2 emite por depth-sort.
-        ''' Multi-chunk same-bone: múltiples entries con mismo BoneName → last-wins en
-        ''' OverrideActorBoneWorld vía guardrail [MOUNTDELTA-BONE-CONFLICT].
-        ''' </para></summary>
+        ''' <summary>Plan de mount: los (boneName, desiredWorld W_B) que V2 computó durante el shape
+        ''' loop. El aplicador canónico (<see cref="ApplyMountPlanForActor"/>) escribe la capa
+        ''' <c>MountDeltaTransform</c> de cada hueso (<see cref="OverrideActorBoneWorld"/>) en orden
+        ''' topológico. La animación HKX no pelea con el mount: el Δ se computa contra el clipBase
+        ''' medido del clip (HkxPoseImportSession).</summary>
         Public ReadOnly MountDesiredWorlds As New List(Of MountDesiredWorldEntry)
     End Class
 
-    ''' <summary>Cache entry para el pre-pass MountDelta. Almacena el desiredWorld que V2 computó
-    ''' por bone, plus contextLabel para diagnostic logs.
-    ''' <para><c>TargetSkel</c> ata el entry a la SkeletonInstance en la que V2 escribió. El
-    ''' replay sólo aplica si <c>inst Is TargetSkel</c> — evita que per-ARMA clones reciban
-    ''' MountDeltas de chunks que mountean al base inst, lo que las deformaría por bone-name
-    ''' collision.</para></summary>
+    ''' <summary>Entry del plan de mount: el desiredWorld (W_B) que V2 computó por bone.
+    ''' <para><c>TargetSkel</c> ata el entry a la SkeletonInstance contra la que se computó (per-ARMA
+    ''' clones no reciben entries del base por bone-name collision).</para></summary>
     Public Class MountDesiredWorldEntry
         Public BoneName As String
         Public DesiredWorld As Transform_Class
@@ -896,9 +888,8 @@ Public Class MainForm
         ' Los bone-morphs van a la capa MorphDeltaTransform (no a la pose). Así la capa Delta
         ' (pose/animación) queda libre y el morph sobrevive a un futuro ApplyPose por frame.
         host.LastSkeletonInstance.ApplyBoneMorphPose(basePose)
-        ' [MOUNTDELTA-PREPASS] Repopular MountDelta desde la cache que el shape loop V2 populated
-        ' en el render inicial. (ApplyBoneMorphPose ya no borra el mount — ResetMorph limpia solo
-        ' la capa morph — así que esto es un re-write idempotente; se mantiene por claridad.)
+        ' [MOUNTDELTA-PREPASS] Repopular MountDelta desde la cache del render inicial (re-write
+        ' idempotente; ApplyBoneMorphPose no borra el mount).
         ApplyMountPlanForActor(host.LastSkeletonInstance, host.LastRenderData)
 
         ' Lazy build / refresh of per-ARMA skeletons. Necesario cuando Sclpt arranca OFF en el
@@ -4132,9 +4123,9 @@ Public Class MainForm
                 ' [FASE 3] Criterio estructural: el chunk-mount path es 'soy attachment con
                 ' MountSocket resuelto', no 'soy de FormType X'. Antes el filtro NPC_ gateaba
                 ' biped fuera; ahora capas 1+2 (coord fix + socket disambig) son compartidas.
-                ' Capa 3 V2 SKEL-OVERRIDE aplica a robot Y biped: cualquier shape con MountSocket
-                ' recibe V2 vía MountDeltaTransform (no muta OriginalLocaLTransform). isRobotMount
-                ' quedó sólo como filtro de verbosidad de diagnósticos.
+                ' Capa 3 V2 aplica a robot Y biped: cualquier shape con MountSocket recibe el mount
+                ' vía MountDeltaTransform en los huesos (ApplyMountPlanForActor → OverrideActorBoneWorld).
+                ' isRobotMount quedó sólo como filtro de verbosidad.
                 If _cand IsNot Nothing AndAlso _cand.Kind = MeshCandidateKind.Attachment AndAlso _cand.MountSocket IsNot Nothing Then
                     EnsureChunkToActor(_cand, _candByOrdinal, renderData, targetSkel, targetWB, ensureVisiting)
                 End If
@@ -8441,8 +8432,8 @@ Public Class MainForm
         ' montan vía BSConnectPoint igual que robot chunks. Delegate al shared con
         ' formType="ARMO". Para ARMOs sin chunk-mount OMODs (solo property modifiers tipo
         ' ap_armor_Lining/Tier/Size), el shared early-returns sin emitir candidates.
-        ' Capa V2 SKEL-OVERRIDE ahora SÍ aplica a biped: el gate Fase 2.5 fue removido. Toda
-        ' shape con MountSocket recibe V2 vía MountDeltaTransform (sin mutar OriginalLocaLTransform).
+        ' Capa V2 ahora SÍ aplica a biped: el gate Fase 2.5 fue removido. Toda shape con
+        ' MountSocket recibe el mount vía RE-BIND de su skin (huesos del esqueleto intactos).
         CollectOmodChunkCandidates(omodResolution, "ARMO", state, candidates, order, warnings)
 
         Dim addonOrder As List(Of UInteger)
@@ -9532,22 +9523,12 @@ Public Class MainForm
 
     ''' <summary>Override actor bone world position to match <paramref name="desiredWorld"/>
     ''' (donde el chunk quiere el bone) escribiendo <c>MountDeltaTransform</c> sin mutar el
-    ''' bind original. Children del bone cascadean automáticamente via parent chain
-    ''' (no necesitan update explícito).
-    '''
-    ''' Reemplaza la cadena V2 bind modification + PROPAGATE-V2 + PROPAGATE-V2-ANCHOR +
-    ''' CHUNK-WINS sockets. En vez de compensar el bind del shape o el anchor del chunk,
-    ''' movemos el actor bone directamente para que su world coincida con el desiredWorld
-    ''' del chunk. Basta override del bone raíz de la cadena (override RClavicle →
-    ''' RClavicleTwist se mueve por cascade).
-    '''
-    ''' Matemática:
-    '''   newLocal  = inv(parent.OriginalGetGlobalTransform) × desiredWorld
-    '''   MountDelta = inv(OrigL) × newLocal
-    ''' Resultante: <c>LocaLTransform = OrigL × MountDelta × Delta = newLocal × Delta</c>,
-    ''' bit-equivalente al committed pre-refactor (que mutaba <c>OrigL := newLocal</c>).
-    ''' <c>parent.OriginalGetGlobalTransform</c> incluye MountDelta del parent en la cadena
-    ''' (propagación cascade depth-sorted).</summary>
+    ''' bind original. Children del bone cascadean automáticamente via parent chain.
+    ''' Matemática: <c>newLocal = inv(parent.OriginalGetGlobalTransform) × desiredWorld</c>;
+    ''' <c>MountDelta = inv(OrigL) × newLocal</c>. La ANIMACIÓN no pelea con esto:
+    ''' <c>local = M × L_anim</c> con <c>M = (O×Mount) × inv(clipBase)</c>, y HkxPoseImportSession
+    ''' mide del propio clip su frame de autoría (clips autoreados sobre el rig → M=Mount, el mount
+    ''' persiste al animar; clips autoreados sobre el ensamblado → M=I, el clip ya trae el mount).</summary>
     Private Sub OverrideActorBoneWorld(hb As HierarchiBone_class,
                                         desiredWorld As Transform_Class,
                                         contextLabel As String)
@@ -9555,13 +9536,6 @@ Public Class MainForm
         Dim currentWorld = hb.OriginalGetGlobalTransform
         Dim cT = currentWorld.Translation, dT = desiredWorld.Translation
         Dim diff = Math.Sqrt((cT.X - dT.X) ^ 2 + (cT.Y - dT.Y) ^ 2 + (cT.Z - dT.Z) ^ 2)
-        ' [MOUNTDELTA] Composición 3-layer: OrigL × MountDelta × Delta.
-        '   pre-refactor: OrigL_mutated = newLocal = inv(parent.OrigGlobal) × desiredWorld;
-        '                 LocaLTransform_old = newLocal × Delta.
-        '   post-refactor: OrigL × MountDelta × Delta = newLocal × Delta.
-        '                  ⟹ OrigL × MountDelta = newLocal
-        '                  ⟹ MountDelta = inv(OrigL) × newLocal.
-        ' OrigL no se muta; el getter cancela algebraicamente: OrigL × inv(OrigL) = I.
         Dim parentWorld As Transform_Class
         If hb.Parent IsNot Nothing Then
             parentWorld = hb.Parent.OriginalGetGlobalTransform
@@ -9570,9 +9544,7 @@ Public Class MainForm
         End If
         Dim newLocal = parentWorld.Inverse().ComposeTransforms(desiredWorld)
         Dim newMountDelta = hb.OriginalLocaLTransform.Inverse().ComposeTransforms(newLocal)
-        ' [MOUNTDELTA-BONE-CONFLICT] Guardrail: si MountDelta ya estaba set por otro chunk
-        ' previamente, last-write-wins pero loggeamos para diagnóstico (per OpenAI Vuelta 6).
-        ' Conflict = magnitud de la diferencia entre el MountDelta previo y el nuevo.
+        ' [MOUNTDELTA-BONE-CONFLICT] Guardrail: last-write-wins con log diagnóstico.
         If hb.MountDeltaTransform IsNot Nothing Then
             Dim existingT = hb.MountDeltaTransform.Translation
             Dim newT = newMountDelta.Translation
@@ -9588,25 +9560,9 @@ Public Class MainForm
     End Sub
 
     ''' <summary>Aplicador canónico ÚNICO del plan de mount. Recorre el plan
-    ''' <c>renderData.MountDesiredWorlds</c> (colectado por <see cref="CollectV2PlanForShape"/> en
-    ''' orden topológico) y escribe <c>MountDeltaTransform</c> vía <see cref="OverrideActorBoneWorld"/>.
-    ''' Fuente única de verdad: initial render (tras shape loop) y pose-dirty refresh usan ESTE mismo
-    ''' aplicador — sin segundo camino.
-    ''' <para>
-    ''' Patrón canónico: <c>ApplyPose(inst) → ApplyMountPlanForActor(inst, renderData) [→ MarkDirty(Pose)]</c>.
-    ''' ApplyPose limpia ambos deltas; el apply repopula MountDelta desde el plan.
-    ''' </para>
-    ''' <para>
-    ''' Per-instance scope: cada <c>SkeletonInstance</c> (base + clones sculpt) tiene SUS PROPIOS
-    ''' bones. El filtro TargetSkel garantiza que cada entry solo aplique a su inst (W_B es
-    ''' la posición authored por el chunk en actor world, no depende de pose o sculpt source).
-    ''' </para>
-    ''' <para>
-    ''' Iteración preserva orden topológico (el cache fue populado por shape loop V2 con
-    ''' depth-sort parent-first). Cascade parent-V2 ya resuelta al cachear — el
-    ''' <c>desiredWorld</c> del cache ya refleja las correcciones aplicadas por V2 sobre
-    ''' los parents. El replay no recomputa cascade.
-    ''' </para></summary>
+    ''' <c>renderData.MountDesiredWorlds</c> (orden topológico) y escribe <c>MountDeltaTransform</c>
+    ''' vía <see cref="OverrideActorBoneWorld"/>. Patrón: <c>ApplyPose → ApplyMountPlanForActor</c>.
+    ''' Per-instance scope vía TargetSkel.</summary>
     Private Sub ApplyMountPlanForActor(inst As SkeletonInstance, renderData As PreviewResolutionResult)
         If inst Is Nothing OrElse renderData Is Nothing Then Return
         If renderData.MountDesiredWorlds Is Nothing OrElse renderData.MountDesiredWorlds.Count = 0 Then Return
@@ -9616,9 +9572,6 @@ Public Class MainForm
         Dim skippedScopeMismatch As Integer = 0
         For Each entry In renderData.MountDesiredWorlds
             If entry Is Nothing OrElse String.IsNullOrEmpty(entry.BoneName) Then Continue For
-            ' Per-instance scope: si el entry fue escrito para otra SkeletonInstance (p.ej. base
-            ' inst) no aplica acá (p.ej. per-ARMA clone). Sin este filtro, clones reciben mount
-            ' deltas de chunks que no les pertenecen vía bone-name collision → deformación.
             If entry.TargetSkel IsNot Nothing AndAlso entry.TargetSkel IsNot inst Then
                 skippedScopeMismatch += 1
                 Continue For
