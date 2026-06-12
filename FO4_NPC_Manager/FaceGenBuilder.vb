@@ -1087,24 +1087,48 @@ Public Module FaceGenBuilder
                 ' bake conventions, not in Save_To_Shader. shad.Type was set by Save_To_Shader above,
                 ' so SetFlagSF2 resolves the FO4-specific bit correctly.
                 NiflySharp.Helpers.ShaderHelper.SetFlagSF2(bsls, CUInt(NiflySharp.Enums.Fallout4ShaderPropertyFlags2.Transform_Changed), True)
-                ' CK downgrades the eye-env shader variant to plain env-mapping in every FaceGen bake:
-                ' Eye_Environment_Mapping (F4SPF1 bit 17) = 0 on ALL baked eye shapes (measured 4 NPCs,
-                ' 2026-05-25), even the iris whose SOURCE mesh (MaleEyes.nif) ships it ON together with
-                ' the eye cubemap. In FO4 (StreamVersion 130) the block has NO ShaderType field — the
-                ' eye-vs-standard distinction lives only in the flags — and CK never keeps the eye path
-                ' for a baked static head; the cubemap reflection rides on Environment_Mapping (bit 7,
-                ' which we already match). Save_To_Shader writes bit 17 from the BGSM's legacy
-                ' bEnvironmentMappingEye (True on the shared human eye material), so without this clear
-                ' we'd set it ON for every eye — even Wet/Lashes whose source mesh has it OFF. Clearing
-                ' here (not in Save_To_Shader, which must stay faithful for normal render of the source
-                ' mesh) matches CK. Unconditional: no shape in any of the 4 reference NPCs keeps bit 17.
-
-                If bsls.ShaderType = Enums.BSLightingShaderType.EyeEnvmap Then
-                    Debugger.Break()
-                    ' TO SETTLE
-                    bsls.ShaderType = Enums.BSLightingShaderType.EnvironmentMap
-                    NiflySharp.Helpers.ShaderHelper.SetFlagSF1(bsls, CUInt(NiflySharp.Enums.Fallout4ShaderPropertyFlags1.Eye_Environment_Mapping), False)
+                ' ShaderType baked = FUNCIÓN DETERMINÍSTICA de los flags del material — PROBADO al 100%
+                ' sobre el corpus FaceGen vanilla COMPLETO (1490 NIF, 14136 lighting shapes; cross-tab en
+                ' c:\tmp\facegen_flag_to_type.txt: 8 combinaciones de flags, TODAS puras → un único tipo
+                ' cada una). CK NO preserva el tipo de la fuente: lo DERIVA. Evidencia del "por qué":
+                ' eyelashes.bgsm trae shader inline=EnvironmentMap, pero su flag Environment_Mapping=OFF,
+                ' así que CK bakea las pestañas como Default (1381/1381). iris/Wet traen EnvironmentMap con
+                ' el flag ON → lo conservan. Precedencia (load-bearing: Glow>Face; el resto nunca coexiste):
+                '   Glowmap → GlowShader · Facegen → FaceTint · SkinTint → SkinTint · Hair → HairTint ·
+                '   EnvironmentMapping → EnvironmentMap · else Default
+                ' Esto SUBSUME y reemplaza las 3 reglas ad-hoc previas (clear EyeEnv + colapso de ojo +
+                ' promoción de pelo): todas eran casos de esta única ley. El residual de la precedencia
+                ' Face-primero (DLC04 ghoul brillante, Face+Glow → GlowShader) obligó a Glow por encima de
+                ' Face. Eye_Environment_Mapping (bit 17) = 0 en 14136/14136 → clear incondicional.
+                ' UN SOLO PATH: derivamos de los BOOLS del material. Tras Create_From_Shader (que setea
+                ' los bools desde los flags) y eliminado el force, los bools YA son fieles a los flags
+                ' baked: Save escribe Glow/Env/Hair desde estos mismos bools, y Face/Skin_Tint se preservan
+                ' del shader fuente clonado que Create leyó → coinciden. (Antes leíamos bsls.ShaderFlags
+                ' como workaround contra la contaminación del force, ya eliminado.) Precedencia PROBADA al
+                ' 100% sobre el corpus FaceGen vanilla (cross-tab 14136 shapes, c:\tmp\facegen_flag_to_type.txt:
+                ' 8 combinaciones puras). CK NO preserva el tipo de la fuente: lo DERIVA. eyelashes.bgsm trae
+                ' inline=EnvironmentMap pero su flag Environment_Mapping=OFF → CK = Default (1381/1381);
+                ' iris/Wet con el flag ON conservan EnvironmentMap. Load-bearing: Glow>Face (residual DLC04
+                ' ghoul brillante Face+Glow→GlowShader); el resto no coexiste. Eye_Environment_Mapping
+                ' (bit17) = 0 en 14136/14136 → clear incondicional. Bake-only: la Derive de la librería
+                ' (editor) queda conservadora (meshes generales: bGlowmap/bEnvironmentMapping conviven con
+                ' inline Default — contexto distinto).
+                Dim bakedType As Enums.BSLightingShaderType
+                If mat.Glowmap Then
+                    bakedType = Enums.BSLightingShaderType.GlowShader
+                ElseIf mat.Facegen Then
+                    bakedType = Enums.BSLightingShaderType.FaceTint
+                ElseIf mat.SkinTint Then
+                    bakedType = Enums.BSLightingShaderType.SkinTint
+                ElseIf mat.Hair Then
+                    bakedType = Enums.BSLightingShaderType.HairTint
+                ElseIf mat.EnvironmentMapping Then
+                    bakedType = Enums.BSLightingShaderType.EnvironmentMap
+                Else
+                    bakedType = Enums.BSLightingShaderType.Default
                 End If
+                bsls.ShaderType = bakedType
+                NiflySharp.Helpers.ShaderHelper.SetFlagSF1(bsls, CUInt(NiflySharp.Enums.Fallout4ShaderPropertyFlags1.Eye_Environment_Mapping), False)
 
             Else
                 Dim bes = TryCast(shad, BSEffectShaderProperty)

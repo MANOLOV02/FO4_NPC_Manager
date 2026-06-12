@@ -11444,24 +11444,17 @@ Public Class MainForm
             ' If/ElseIf duplication and the looser parallel copy in RefreshFaceTintLivePreview.
             ApplyMaterialPaletteHairColor(material, candidate, state, hairTintColor)
 
-            Dim preSkinTint = material.SkinTint
-            Dim shouldForce = skinTintColor.HasValue AndAlso ShouldForceSkinTint(candidate, material)
-            If shouldForce Then
-                material.SkinTint = True
-            End If
-
+            ' Skin-tint FIEL al material resuelto (SIN force). El render tinta los shapes cuyo material
+            ' resolvió SkinTint=True — piel real (body/hands/rear-head) ya viene SkinTint de su fuente
+            ' (verificado en log: preST=True en todos esos). Se ELIMINÓ ShouldForceSkinTint: era
+            ' redundante para piel real y forzaba MAL a no-piel (PAFrame01/Stingwing/basesuit por el
+            ' catch-all Kind=Skin). MouthShadow/bocas humanas/ojos/lashes nunca lo necesitaron (force=False
+            ' en el log). Ahora el material resuelto manda y nada se muta para el render.
             If logEnabled Then
                 Dim shapeNameST = shape.ShapeName
-                Dim candKindST = If(candidate IsNot Nothing, candidate.Kind.ToString(), "<no-cand>")
-                Dim candUsesBodyTex = If(candidate IsNot Nothing, candidate.UsesBodyTexture.ToString(), "?")
-                Dim candHeadPartType = If(candidate IsNot Nothing, candidate.HeadPartType.ToString(), "?")
-                Dim matShader = material.NifShaderType.ToString()
-                Dim matIsBgsm = material.IsBGSM().ToString()
-                Dim preST = preSkinTint.ToString()
-                Dim postST = material.SkinTint.ToString()
-                Dim hasTintColor = skinTintColor.HasValue.ToString()
-                Dim shouldForceLog = shouldForce.ToString()
-                Logger.LogLazy(Function() $"[SKINTINT-DECISION] shape='{shapeNameST}' kind={candKindST} usesBodyTex={candUsesBodyTex} hdptType={candHeadPartType} matShader={matShader} isBGSM={matIsBgsm} hasSkinTintColor={hasTintColor} preST={preST} shouldForce={shouldForceLog} postST={postST}")
+                Dim matShaderST = material.NifShaderType.ToString()
+                Dim stVal = material.SkinTint.ToString()
+                Logger.LogLazy(Function() $"[SKINTINT-RESOLVED] shape='{shapeNameST}' matShader={matShaderST} SkinTint={stVal} (faithful, no force)")
             End If
 
             If material.SkinTint AndAlso skinTintColor.HasValue Then
@@ -11659,25 +11652,6 @@ Public Class MainForm
         If touchesBodyOrU Then Return SkinRegion.Body
         If touchesHand Then Return SkinRegion.Hand
         Return SkinRegion.Body  ' default seguro: si no toca nada conocido (raro), body.
-    End Function
-
-    Private Shared Function ShouldForceSkinTint(candidate As MeshCandidate, material As FO4UnifiedMaterial_Class) As Boolean
-        If candidate Is Nothing OrElse material Is Nothing Then Return False
-        If Not material.IsBGSM() Then Return False
-
-        Select Case material.NifShaderType
-            Case NiflySharp.Enums.BSLightingShaderType.SkinTint
-                Return True
-
-            Case NiflySharp.Enums.BSLightingShaderType.FaceTint
-                Return candidate.Kind = MeshCandidateKind.HeadPart OrElse candidate.UsesBodyTexture OrElse candidate.Kind = MeshCandidateKind.Skin
-        End Select
-
-        If candidate.Kind = MeshCandidateKind.Skin Then Return True
-        If candidate.Kind = MeshCandidateKind.HeadPart AndAlso candidate.HeadPartType = HeadPartTypeFace Then Return True
-        If candidate.UsesBodyTexture Then Return True
-
-        Return False
     End Function
 
     Private Function ResolveHeadPartSolidTintColor(candidate As MeshCandidate) As Nullable(Of Color)
