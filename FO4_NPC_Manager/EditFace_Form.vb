@@ -1140,29 +1140,43 @@ Public Class EditFace_Form
         If _mainForm IsNot Nothing AndAlso host IsNot Nothing AndAlso host.LastRenderedState IsNot Nothing Then
             raw = MainForm.ResolveHairPaletteTexture(host, host.LastRenderedState, _pluginManager)
         End If
+        ' TRANSIENT: ResolveHairPaletteTexture returns "" while the host/state (and the hair mesh
+        ' material it samples) aren't loaded yet — a construction-time paint can hit this before the
+        ' first render populates host.PreviewCtl.Model. Do NOT latch _hairPaletteResolveAttempted here;
+        ' the palette may resolve on a later Paint once the host is ready.
         If String.IsNullOrEmpty(raw) Then Return
         Dim chosen = FO4UnifiedMaterial_Class.CorrectTexturePath(raw)
-        If chosen = "" OrElse Not FilesDictionary_class.Dictionary.ContainsKey(chosen) Then Return
+        ' A resolved path that isn't in FilesDictionary: only latch as TERMINAL once the render model
+        ' is loaded, so ResolveHairPaletteTexture has had its BGSM-first chance. Before the model is up,
+        ' the RACE fallback returns a (possibly non-dictionary) lookup path that the per-mesh BGSM path
+        ' would supersede on a later Paint — latching here would leave the swatch permanently blank.
+        ' Treat the model-not-ready case as TRANSIENT and retry; latch only when the model is loaded and
+        ' the path is genuinely absent.
+        If chosen = "" OrElse Not FilesDictionary_class.Dictionary.ContainsKey(chosen) Then
+            Dim modelReady = host IsNot Nothing AndAlso host.PreviewCtl IsNot Nothing AndAlso host.PreviewCtl.Model IsNot Nothing
+            If modelReady Then _hairPaletteResolveAttempted = True
+            Return
+        End If
         Try
             Dim loc As FilesDictionary_class.File_Location = Nothing
-            If Not FilesDictionary_class.Dictionary.TryGetValue(chosen, loc) Then Return
+            If Not FilesDictionary_class.Dictionary.TryGetValue(chosen, loc) Then
+                _hairPaletteResolveAttempted = True   ' TERMINAL: ContainsKey passed but lookup failed; not transitory
+                Return
+            End If
             Dim ddsBytes = loc.GetBytes()
-            If ddsBytes Is Nothing OrElse ddsBytes.Length = 0 Then Return
-            Dim tex = DirectXTexWrapperCLI.Loader.ConvertForBitmap(ddsBytes)
-            If tex Is Nothing OrElse Not tex.Loaded OrElse tex.Levels Is Nothing OrElse tex.Levels.Count = 0 Then Return
-            Dim lvl = tex.Levels(0)
-            If lvl Is Nothing OrElse lvl.Data Is Nothing OrElse lvl.Data.Length = 0 OrElse lvl.Width <= 0 OrElse lvl.Height <= 0 Then Return
-            ' ConvertForBitmap returns BGRA byte order (GDI Format32bppArgb). Build the Bitmap
-            ' directly from the raw pixels via a pinned handle, then clone into a managed
-            ' Bitmap so the cached image survives the GCHandle release.
-            Dim handle = System.Runtime.InteropServices.GCHandle.Alloc(lvl.Data, System.Runtime.InteropServices.GCHandleType.Pinned)
-            Try
-                Using bmp As New Bitmap(lvl.Width, lvl.Height, lvl.Width * 4, System.Drawing.Imaging.PixelFormat.Format32bppArgb, handle.AddrOfPinnedObject())
-                    _hairPaletteBitmap = New Bitmap(bmp)
-                End Using
-            Finally
-                handle.Free()
-            End Try
+            If ddsBytes Is Nothing OrElse ddsBytes.Length = 0 Then
+                _hairPaletteResolveAttempted = True   ' TERMINAL: empty/unreadable DDS bytes; stop retrying
+                Return
+            End If
+            ' Decode DDS level 0 into a managed Bitmap via the shared library API (same
+            ' Loader.ConvertForBitmap path, with pixel copy + level-data release handled there).
+            ' Returns Nothing on decode failure / bad level — treated as terminal below.
+            Dim decoded = DirectXDDSLoader.CreateBitmapFromDDS(ddsBytes)
+            If decoded Is Nothing Then
+                _hairPaletteResolveAttempted = True   ' TERMINAL: decode-side failure is not transitory; stop retrying
+                Return
+            End If
+            _hairPaletteBitmap = decoded
             _hairPaletteResolveAttempted = True
         Catch ex As Exception
             _hairPaletteResolveAttempted = True   ' decode-side failures are not transitory; stop retrying
@@ -2586,6 +2600,7 @@ Public Class EditFace_Form
                     _mainForm.RefreshFaceTintLivePreview(_editorHost)
                     _editorHost.PreviewCtl.RefreshRender()
                 Catch ex As Exception
+                    Logger.LogLazy(Function() $"[EDIT-FACE] tint-only refresh failed for NPC 0x{_rootNpcFormID:X8}: {ex.GetType().Name}: {ex.Message}")
                 End Try
                 Return
             Case FaceRefreshScope.Morphs
@@ -2743,6 +2758,12 @@ Public Class EditFace_Form
             End Try
         End If
         EditPreviewControl = Nothing
+
+        ' Release the cached hair-palette LUT bitmap. EnsureHairPaletteLoaded builds it once
+        ' (DirectXDDSLoader.CreateBitmapFromDDS → a managed Bitmap owning its own pixels) and never
+        ' disposed it, leaking GDI memory each time the editor opened.
+        _hairPaletteBitmap?.Dispose()
+        _hairPaletteBitmap = Nothing
     End Sub
 
     ' =====================================================================

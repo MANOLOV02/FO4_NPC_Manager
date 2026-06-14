@@ -80,11 +80,14 @@ Public Module NpcRecordOverlay
         ApplyLmHdptReplacement(headParts, newHdptFormID, pluginManager)
     End Sub
 
+    ''' <param name="parseRace">Optional cached RACE parser (MainForm.ParseRaceCached). When Nothing,
+    ''' falls back to a direct <c>RecordParsers.ParseRACE</c> — keeps the offline bake path pure.</param>
     Public Function ApplyPresetOverlayToNpcData(raw As NPC_Data,
                                                 selectedNpcFormID As UInteger,
                                                 appliedPresets As Dictionary(Of UInteger, LooksmenuLoader.LooksmenuPreset),
                                                 pluginManager As PluginManager,
-                                                Optional lmSkinTemplateResolver As ResolveLmSkinTemplateDelegate = Nothing) As NPC_Data
+                                                Optional lmSkinTemplateResolver As ResolveLmSkinTemplateDelegate = Nothing,
+                                                Optional parseRace As Func(Of PluginRecord, RACE_Data) = Nothing) As NPC_Data
         If raw Is Nothing Then Return raw
         If appliedPresets Is Nothing Then Return raw
         Dim preset As LooksmenuLoader.LooksmenuPreset = Nothing
@@ -172,9 +175,13 @@ Public Module NpcRecordOverlay
         shadow.ObjectTemplateOMODFormIDs.AddRange(raw.ObjectTemplateOMODFormIDs)
 
         ' HeadParts: replicate engine wipe + race defaults + preset overrides.
+        ' Parse RACE ONCE here (cached via parseRace when supplied by the render path; direct parse
+        ' on the offline bake path) and reuse for both the HeadParts seed and the QNAM derivation below.
         Dim raceRec = If(raw.RaceFormID <> 0UI, pluginManager.GetRecord(raw.RaceFormID), Nothing)
-        If raceRec IsNot Nothing AndAlso raceRec.Header.Signature = "RACE" Then
-            Dim race = RecordParsers.ParseRACE(raceRec, pluginManager)
+        Dim raceIsValid As Boolean = raceRec IsNot Nothing AndAlso raceRec.Header.Signature = "RACE"
+        Dim race As RACE_Data = Nothing
+        If raceIsValid Then
+            race = If(parseRace IsNot Nothing, parseRace(raceRec), RecordParsers.ParseRACE(raceRec, pluginManager))
             Dim raceDefaults = If(raw.IsFemale, race.FemaleHeadPartFormIDs, race.MaleHeadPartFormIDs)
             If raceDefaults IsNot Nothing Then shadow.HeadPartFormIDs.AddRange(raceDefaults)
         End If
@@ -270,9 +277,8 @@ Public Module NpcRecordOverlay
         ' time so the persisted record carries the effective colour, not the original raw QNAM that
         ' the user's edits never reached. If the shadow has no SkinTone tint, leave the raw-seeded
         ' QNAM (line 122-127) untouched.
-        If raceRec IsNot Nothing AndAlso raceRec.Header.Signature = "RACE" Then
-            Dim raceParsed = RecordParsers.ParseRACE(raceRec, pluginManager)
-            Dim derivedSkinTone = DeriveSkinToneQnam(shadow, raceParsed, raw.IsFemale, pluginManager)
+        If raceIsValid Then
+            Dim derivedSkinTone = DeriveSkinToneQnam(shadow, race, raw.IsFemale, pluginManager)
             Dim tintCountLog = shadow.FaceTintLayers.Count
             Dim hasDerivedLog = derivedSkinTone.HasValue
             If derivedSkinTone.HasValue Then

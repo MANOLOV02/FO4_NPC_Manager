@@ -19,17 +19,21 @@ Public Module HeadPartResolver
     ''' type=0 entries (rare/undocumented in vanilla) are preserved as additive to avoid data loss.
     ''' HDPT spec: wbDefinitionsFO4.pas:7373-7384.
     ''' RACE.HeadParts per gender: parsed into RACE_Data.MaleHeadPartFormIDs / FemaleHeadPartFormIDs.</summary>
+    ''' <param name="parseRace">Optional cached RACE parser. <param name="parseHdpt">Optional cached
+    ''' HDPT parser. Both fall back to direct <c>RecordParsers.Parse*</c> when Nothing (offline bake path).</param>
     Public Function MergeHeadPartsWithRaceDefaults(raceFormID As UInteger,
                                                    isFemale As Boolean,
                                                    npcHeadPartFormIDs As IReadOnlyList(Of UInteger),
-                                                   pluginManager As PluginManager) As List(Of UInteger)
+                                                   pluginManager As PluginManager,
+                                                   Optional parseRace As Func(Of PluginRecord, RACE_Data) = Nothing,
+                                                   Optional parseHdpt As Func(Of PluginRecord, HDPT_Data) = Nothing) As List(Of UInteger)
         Dim safeNpcParts As IReadOnlyList(Of UInteger) = If(npcHeadPartFormIDs, CType(New List(Of UInteger)(), IReadOnlyList(Of UInteger)))
         If raceFormID = 0UI Then Return safeNpcParts.ToList()
         Dim raceRec = pluginManager.GetRecord(raceFormID)
         If raceRec Is Nothing OrElse raceRec.Header.Signature <> "RACE" Then
             Return safeNpcParts.ToList()
         End If
-        Dim race = RecordParsers.ParseRACE(raceRec, pluginManager)
+        Dim race = If(parseRace IsNot Nothing, parseRace(raceRec), RecordParsers.ParseRACE(raceRec, pluginManager))
         Dim raceDefaults = If(isFemale, race.FemaleHeadPartFormIDs, race.MaleHeadPartFormIDs)
 
         ' Build merged dict by PartType for main types (1..9).
@@ -40,7 +44,7 @@ Public Module HeadPartResolver
         For Each defFID In raceDefaults
             Dim defRec = pluginManager.GetRecord(defFID)
             If defRec Is Nothing OrElse defRec.Header.Signature <> "HDPT" Then Continue For
-            Dim hdpt = RecordParsers.ParseHDPT(defRec, pluginManager)
+            Dim hdpt = If(parseHdpt IsNot Nothing, parseHdpt(defRec), RecordParsers.ParseHDPT(defRec, pluginManager))
             If hdpt.PartType = 0 Then
                 freestandingMisc.Add(defFID)
             ElseIf hdpt.PartType >= 1 AndAlso hdpt.PartType <= 9 Then
@@ -52,7 +56,7 @@ Public Module HeadPartResolver
         For Each npcFID In safeNpcParts
             Dim npcRec = pluginManager.GetRecord(npcFID)
             If npcRec Is Nothing OrElse npcRec.Header.Signature <> "HDPT" Then Continue For
-            Dim hdpt = RecordParsers.ParseHDPT(npcRec, pluginManager)
+            Dim hdpt = If(parseHdpt IsNot Nothing, parseHdpt(npcRec), RecordParsers.ParseHDPT(npcRec, pluginManager))
             If hdpt.PartType = 0 Then
                 freestandingMisc.Add(npcFID)
             ElseIf hdpt.PartType >= 1 AndAlso hdpt.PartType <= 9 Then
@@ -97,11 +101,12 @@ Public Module HeadPartResolver
                                        pluginManager As PluginManager,
                                        flstCache As Dictionary(Of UInteger, FLST_Data),
                                        Optional raceDefaults As HashSet(Of UInteger) = Nothing,
-                                       Optional raceHasAnyHeadParts As Boolean = True) As Boolean
+                                       Optional raceHasAnyHeadParts As Boolean = True,
+                                       Optional parseHdpt As Func(Of PluginRecord, HDPT_Data) = Nothing) As Boolean
         If hdptFormID = 0UI OrElse pluginManager Is Nothing Then Return False
         Dim rec = pluginManager.GetRecord(hdptFormID)
         If rec Is Nothing OrElse rec.Header.Signature <> "HDPT" Then Return False
-        Dim hdpt = RecordParsers.ParseHDPT(rec, pluginManager)
+        Dim hdpt = If(parseHdpt IsNot Nothing, parseHdpt(rec), RecordParsers.ParseHDPT(rec, pluginManager))
         If hdpt Is Nothing Then Return False
 
         ' Path (a): no race restriction declared. Pass only if the RACE itself uses head parts
@@ -171,14 +176,15 @@ Public Module HeadPartResolver
     ''' Single source of truth shared by the render candidate walk (MainForm.CollectHeadPartCandidates)
     ''' and <see cref="EnumerateHdptChain"/>.</summary>
     Public Function BuildMiscToParentEffective(rootFormIDs As IEnumerable(Of UInteger),
-                                               pluginManager As PluginManager) As Dictionary(Of UInteger, Integer)
+                                               pluginManager As PluginManager,
+                                               Optional parseHdpt As Func(Of PluginRecord, HDPT_Data) = Nothing) As Dictionary(Of UInteger, Integer)
         Dim result As New Dictionary(Of UInteger, Integer)
         If rootFormIDs Is Nothing OrElse pluginManager Is Nothing Then Return result
         Dim parsed As New Dictionary(Of UInteger, HDPT_Data)
         For Each fid In rootFormIDs
             If fid = 0UI OrElse parsed.ContainsKey(fid) Then Continue For
             Dim rec = pluginManager.GetRecord(fid)
-            If rec IsNot Nothing AndAlso rec.Header.Signature = "HDPT" Then parsed(fid) = RecordParsers.ParseHDPT(rec, pluginManager)
+            If rec IsNot Nothing AndAlso rec.Header.Signature = "HDPT" Then parsed(fid) = If(parseHdpt IsNot Nothing, parseHdpt(rec), RecordParsers.ParseHDPT(rec, pluginManager))
         Next
         For Each parentKv In parsed
             Dim parentEff = parentKv.Value.PartType
@@ -240,12 +246,13 @@ Public Module HeadPartResolver
     ''' Callers inside NPC_Manager: <see cref="FaceGenBuilder.BuildAllowedShapeMap"/> and
     ''' <see cref="HeadPartPicker_Form"/>.</summary>
     Public Iterator Function EnumerateHdptChain(rootFormIDs As IEnumerable(Of UInteger),
-                                                pluginManager As PluginManager) As IEnumerable(Of HdptChainEntry)
+                                                pluginManager As PluginManager,
+                                                Optional parseHdpt As Func(Of PluginRecord, HDPT_Data) = Nothing) As IEnumerable(Of HdptChainEntry)
         If rootFormIDs Is Nothing OrElse pluginManager Is Nothing Then Return
         Dim roots = rootFormIDs.Where(Function(f) f <> 0UI).ToList()
 
         ' Shared precompute (also used by the render walk) so the effective-type rule lives once.
-        Dim miscToParentEffective = BuildMiscToParentEffective(roots, pluginManager)
+        Dim miscToParentEffective = BuildMiscToParentEffective(roots, pluginManager, parseHdpt)
 
         Dim visited As New HashSet(Of UInteger)
         ' Queue of (FormID, parent effective type). Roots carry parentEff = -1.
@@ -259,7 +266,7 @@ Public Module HeadPartResolver
             If Not visited.Add(fid) Then Continue While
             Dim rec = pluginManager.GetRecord(fid)
             If rec Is Nothing OrElse rec.Header.Signature <> "HDPT" Then Continue While
-            Dim hdpt = RecordParsers.ParseHDPT(rec, pluginManager)
+            Dim hdpt = If(parseHdpt IsNot Nothing, parseHdpt(rec), RecordParsers.ParseHDPT(rec, pluginManager))
             If hdpt Is Nothing Then Continue While
 
             ' Effective type via the shared rule (same one the render walk uses).

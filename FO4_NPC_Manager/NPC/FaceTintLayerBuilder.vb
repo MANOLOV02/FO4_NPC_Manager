@@ -16,6 +16,8 @@ Public Module FaceTintLayerBuilder
     ''' <paramref name="rootFormID"/>) + the RACE, then build the face tint inputs via the generic
     ''' <see cref="FaceTintInputBuilder.Build"/>. Returns an empty result when the NPC or RACE can't
     ''' be resolved. Signature is preserved verbatim so existing render/bake callers don't change.</summary>
+    ''' <param name="parseRace">Optional cached RACE parser (MainForm.ParseRaceCached). Threaded into
+    ''' the overlay + the local RACE parse; falls back to direct <c>RecordParsers.ParseRACE</c> when Nothing.</param>
     Public Function Build(modelFormID As UInteger,
                           rootFormID As UInteger,
                           raceFormID As UInteger,
@@ -26,18 +28,19 @@ Public Module FaceTintLayerBuilder
                           Optional hairLutPath As String = "",
                           Optional hairColorFormID As UInteger = 0UI,
                           Optional hasTextureLighting As Boolean = False,
-                          Optional textureLightingColorArgb As Integer = 0) As FaceTintInputBuilder.TintBuildResult
+                          Optional textureLightingColorArgb As Integer = 0,
+                          Optional parseRace As Func(Of PluginRecord, RACE_Data) = Nothing) As FaceTintInputBuilder.TintBuildResult
         If pluginManager Is Nothing Then Return New FaceTintInputBuilder.TintBuildResult()
 
         ' App-specific: NPC record + LooksMenu preset overlay -> concrete npcData.
         Dim npcData = NpcRecordOverlay.ApplyPresetOverlayToNpcData(
             NpcRecordOverlay.GetParsedNpc(modelFormID, pluginManager),
-            rootFormID, appliedPresets, pluginManager)
+            rootFormID, appliedPresets, pluginManager, Nothing, parseRace)
         If npcData Is Nothing Then Return New FaceTintInputBuilder.TintBuildResult()
 
         Dim raceRec = pluginManager.GetRecord(raceFormID)
         If raceRec Is Nothing OrElse raceRec.Header.Signature <> "RACE" Then Return New FaceTintInputBuilder.TintBuildResult()
-        Dim race = RecordParsers.ParseRACE(raceRec, pluginManager)
+        Dim race = If(parseRace IsNot Nothing, parseRace(raceRec), RecordParsers.ParseRACE(raceRec, pluginManager))
 
         ' Generic, record-driven composition lives in the library.
         Return FaceTintInputBuilder.Build(npcData, race, isFemale, pluginManager, tintBytesCache,

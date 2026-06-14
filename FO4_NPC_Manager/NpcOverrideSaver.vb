@@ -658,29 +658,34 @@ Public Module NpcOverrideSaver
             Dim presetParts = overlay.HeadPartFormIDs
             Dim mergedByType As New Dictionary(Of Integer, UInteger)
             Dim freestandingMisc As New List(Of UInteger)
+            ' Per-FormID classification → PartType slot (1-9) or freestanding misc (0).
+            ' skipExtra drops IsExtraPart HDPTs (DATA flag 0x08, xEdit wbDefinitionsFO4.pas:7369 — lashes,
+            ' hairlines, AO/wet meshes that hang off another head part via HNAM). Applied to the PRESET
+            ' loop ONLY (its long-standing behaviour). The RAW loop keeps extras verbatim:
+            ' an empirical scan of the live load order (Tools/ExtraPartFilterProbe, 4473 NPCs) found ZERO
+            ' extra-parts with a 1-9 PartType — so a raw extra can never displace a main slot, the only
+            ' case a raw guard would help — while filtering the raw loop stripped FemaleEyesHumanLashes &
+            ' co. from 2147 NPCs, 43 of them (incl. CompanionCait) with NO retained HNAM parent to
+            ' regenerate the part → lost eyelashes on save. So we preserve the raw record's head parts.
+            Dim classifyHeadPart =
+                Sub(fid As UInteger, skipExtra As Boolean)
+                    If fid = 0UI Then Return
+                    Dim hpRec = ctx.PluginManager.GetRecord(fid)
+                    If hpRec Is Nothing OrElse hpRec.Header.Signature <> "HDPT" Then Return
+                    Dim hd = RecordParsers.ParseHDPT(hpRec, ctx.PluginManager)
+                    ' IsExtraPart flag = 0x08; same value used by MainForm.HeadPartFlagIsExtra.
+                    If skipExtra AndAlso (hd.Flags And 8US) <> 0 Then Return
+                    If hd.PartType = 0 Then
+                        freestandingMisc.Add(fid)
+                    ElseIf hd.PartType >= 1 AndAlso hd.PartType <= 9 Then
+                        mergedByType(hd.PartType) = fid
+                    End If
+                End Sub
             For Each fid In rawHeadParts
-                If fid = 0UI Then Continue For
-                Dim hpRec = ctx.PluginManager.GetRecord(fid)
-                If hpRec Is Nothing OrElse hpRec.Header.Signature <> "HDPT" Then Continue For
-                Dim hd = RecordParsers.ParseHDPT(hpRec, ctx.PluginManager)
-                If hd.PartType = 0 Then
-                    freestandingMisc.Add(fid)
-                ElseIf hd.PartType >= 1 AndAlso hd.PartType <= 9 Then
-                    mergedByType(hd.PartType) = fid
-                End If
+                classifyHeadPart(fid, False)   ' raw: keep extras (round-trip faithful)
             Next
             For Each fid In presetParts
-                If fid = 0UI Then Continue For
-                Dim hpRec = ctx.PluginManager.GetRecord(fid)
-                If hpRec Is Nothing OrElse hpRec.Header.Signature <> "HDPT" Then Continue For
-                Dim hd = RecordParsers.ParseHDPT(hpRec, ctx.PluginManager)
-                ' IsExtraPart flag = 0x08; same value used by MainForm.HeadPartFlagIsExtra.
-                If (hd.Flags And 8US) <> 0 Then Continue For
-                If hd.PartType = 0 Then
-                    freestandingMisc.Add(fid)
-                ElseIf hd.PartType >= 1 AndAlso hd.PartType <= 9 Then
-                    mergedByType(hd.PartType) = fid
-                End If
+                classifyHeadPart(fid, True)    ' preset: filter extras (pre-fix behaviour)
             Next
             For Each t In mergedByType.Keys.OrderBy(Function(k) k)
                 npcSpec.HeadPartFormIDs.Add(mergedByType(t))

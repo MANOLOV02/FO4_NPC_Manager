@@ -53,9 +53,16 @@ Public Module SlotConflictResolver
         Dim res As New SlotResolution(Of T)
         Dim list = items.ToList()
 
+        ' Materialize each item's slot mask exactly once: slotMaskOf is a caller-supplied delegate
+        ' (BOD2/BODT lookup) and the original code re-invoked it per item across every pass.
+        Dim maskOf As New Dictionary(Of T, UInteger)
+        For Each it In list
+            maskOf(it) = slotMaskOf(it)
+        Next
+
         ' Slotless (mask=0) never conflict — accept verbatim, no slot contribution.
-        res.Winners.AddRange(list.Where(Function(it) slotMaskOf(it) = 0UI))
-        Dim slotted = list.Where(Function(it) slotMaskOf(it) <> 0UI).ToList()
+        res.Winners.AddRange(list.Where(Function(it) maskOf(it) = 0UI))
+        Dim slotted = list.Where(Function(it) maskOf(it) <> 0UI).ToList()
 
         Dim occupied As UInteger = 0UI
         Dim reservedA As UInteger = 0UI
@@ -63,14 +70,16 @@ Public Module SlotConflictResolver
 
         ' Pass 1a — extended underarmors (underlayer + [A] in the same piece), ascending Order.
         Dim extended = slotted.Where(Function(it)
-                                         Dim m = slotMaskOf(it)
+                                         Dim m = maskOf(it)
                                          Dim hasUnderlayer = (m And BODY_MASK) <> 0UI OrElse (m And U_MASK) <> 0UI
                                          Dim hasA = (m And A_MASK) <> 0UI
                                          Return hasUnderlayer AndAlso hasA
                                      End Function).OrderBy(orderOf).ToList()
+        ' O(1) membership for the Pass 1b "not extended" filter (was List.Contains → O(n²)).
+        Dim extendedSet As New HashSet(Of T)(extended)
         Dim acceptedExtended As New List(Of T)
         For Each it In extended
-            Dim m = slotMaskOf(it)
+            Dim m = maskOf(it)
             Dim freeBits = m And Not occupied
             If freeBits = 0UI Then
                 res.Losers.Add(it)        ' fully overlapped by an earlier extended underarmor
@@ -85,8 +94,8 @@ Public Module SlotConflictResolver
         ' Pass 1b — atomic mutex, last-equipped wins (descending Order).
         Dim acceptedReverse As New List(Of T)
         Dim pipboyDeviceOccupied As Boolean = False   ' an actual Pipboy device (slot 60, no body coverage) was kept
-        For Each it In slotted.Where(Function(x) Not extended.Contains(x)).OrderByDescending(orderOf)
-            Dim m = slotMaskOf(it)
+        For Each it In slotted.Where(Function(x) Not extendedSet.Contains(x)).OrderByDescending(orderOf)
+            Dim m = maskOf(it)
             ' [A] bits reserved by an extended underarmor → discard whole (Bridget exception).
             If (m And reservedA) <> 0UI Then res.Losers.Add(it) : Continue For
             ' Bits shielded by an extended underarmor → not displaceable.

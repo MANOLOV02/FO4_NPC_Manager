@@ -23,6 +23,10 @@ Public Class BodySlideTriResolver
     ' resolves share the cached result. SyncLock keeps it thread-safe even though
     ' typical render flow is single-threaded.
     Private Shared ReadOnly _pirtCache As New Dictionary(Of String, TriFile)(StringComparer.OrdinalIgnoreCase)
+    ' Negative cache: paths that missed in FilesDictionary, were non-PIRT magic, or failed to parse.
+    ' Without this every render re-resolves and re-decompresses BA2 bytes for an absent path. Mirrors
+    ' NpcMorphResolver._triLoadAttempted. Same normalized-path key the success cache uses.
+    Private Shared ReadOnly _pirtLoadAttempted As New HashSet(Of String)(StringComparer.OrdinalIgnoreCase)
 
     ''' <summary>Resolve the PIRT .tri path for a shape. Returns Nothing if the NIF root
     ''' has no BODYTRI extra-data. Does NOT load the file — call LoadPirt with the result.
@@ -45,10 +49,17 @@ Public Class BodySlideTriResolver
             If _pirtCache.TryGetValue(normalizedPath, cached) Then Return cached
         End SyncLock
 
-        Dim loc As FilesDictionary_class.File_Location = Nothing
-        If Not FilesDictionary_class.Dictionary.TryGetValue(normalizedPath, loc) Then Return Nothing
-        Dim bytes = loc.GetBytes()
-        If bytes Is Nothing OrElse bytes.Length < 4 Then Return Nothing
+        ' Negative cache: a prior attempt already failed (missing / non-PIRT / unparseable).
+        ' Short-circuit so we don't re-decompress BA2 bytes for an absent path every render.
+        SyncLock _pirtLoadAttempted
+            If _pirtLoadAttempted.Contains(normalizedPath) Then Return Nothing
+            _pirtLoadAttempted.Add(normalizedPath)
+        End SyncLock
+
+        ' Routed through MeshPathHelpers.TryLoadMeshBytes (minBytes:=4 preserves the PIRT-magic guard)
+        ' so the TryGetValue + GetBytes + size-check lives in one place (DUP-004).
+        Dim bytes = MeshPathHelpers.TryLoadMeshBytes(normalizedPath, minBytes:=4)
+        If bytes Is Nothing Then Return Nothing
 
         ' Only accept PIRT. FRTRI003 belongs to NpcMorphResolver's face pipeline.
         If Not (bytes(0) = &H50 AndAlso bytes(1) = &H49 AndAlso bytes(2) = &H52 AndAlso bytes(3) = &H54) Then

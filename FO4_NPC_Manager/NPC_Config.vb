@@ -16,40 +16,19 @@ Public Class NPC_Config
     ''' the form has always shown.</summary>
     Public Property RenderGore As Boolean = True
 
-    ''' <summary>BA2 header version written when packing the baked CharGen for FO4. FO4-only
-    ''' (SSE packs BSA v105, unaffected). Values:
-    '''   8 = Next Gen (default; loads only on NG Fallout4.exe 1.10.980+).
-    '''   1 = Old Gen / universal (loads on both OG and NG).
-    '''   0 = Loose-only sentinel. Skips BA2 pack entirely; the baked .nif + 3 .dds are left
-    '''       as loose files under Data\Meshes\... and Data\Textures\... where the engine
-    '''       auto-discovers them. Useful for debugging / modders who want to inspect the bake
-    '''       output without packing.
-    ''' Passed to NpcFaceGenPacker.PackBatch → PackagerRequest.Ba2Version (skipped when 0).</summary>
-    Public Property Ba2Version_FO4 As UInteger = 8UI
+    ''' <summary>BA2 header version written when packing the baked CharGen for FO4 (per-app setting).
+    ''' See Ba2VersionUI for the values. Passed to NpcFaceGenPacker.PackBatch → PackagerRequest.Ba2Version
+    ''' (skipped when 0 = Loose-only sentinel).</summary>
+    Public Property Ba2Version_FO4 As UInteger = Ba2VersionUI.NextGen
 
     Private Shared ReadOnly ConfigFilePath As String = Path.Combine(Application.StartupPath, "npc_config.json")
-    Private Shared ReadOnly SaveOptions As New JsonSerializerOptions With {.WriteIndented = True}
 
     Public Shared Sub SaveConfig()
-        Try
-            Dim jsonString As String = JsonSerializer.Serialize(Current, SaveOptions)
-            File.WriteAllText(ConfigFilePath, jsonString)
-        Catch ex As Exception
-            MessageBox.Show("Error saving NPC_Manager configuration: " & ex.Message,
-                            "Error", MessageBoxButtons.OK, MessageBoxIcon.Error)
-        End Try
+        JsonConfigIO.Save(Current, ConfigFilePath, "NPC_Manager configuration")
     End Sub
 
     Public Shared Sub LoadConfig()
-        Try
-            If File.Exists(ConfigFilePath) Then
-                Dim jsonString As String = File.ReadAllText(ConfigFilePath)
-                Dim cfg = JsonSerializer.Deserialize(Of NPC_Config)(jsonString)
-                If cfg IsNot Nothing Then Current = cfg
-            End If
-        Catch ex As Exception
-            MessageBox.Show("Error loading NPC_Manager configuration: " & ex.Message,
-                            "Error", MessageBoxButtons.OK, MessageBoxIcon.Error)
-        End Try
+        Dim cfg = JsonConfigIO.Load(Of NPC_Config)(ConfigFilePath, "NPC_Manager configuration")
+        If cfg IsNot Nothing Then Current = cfg
     End Sub
 End Class

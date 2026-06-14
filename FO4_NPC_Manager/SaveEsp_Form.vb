@@ -44,8 +44,14 @@ Public Class SaveEsp_Form
                 Dim reader As New PluginReader()
                 reader.Load(filePath)
                 Dim npcIds As New HashSet(Of UInteger)
+                ' Compute "originates a new self record" here (same pass) so the UI-thread
+                ' risky-ESL-flip check (PluginHasNewSelfRecords) is a cache hit instead of a
+                ' synchronous reader.Load. A self record's FormID high byte ≥ master count.
+                Dim masterCount = CUInt(reader.Masters.Count)
+                Dim hasNewSelf As Boolean = False
                 For Each kvp In reader.Records
                     If kvp.Value.Header.Signature = "NPC_" Then npcIds.Add(kvp.Key)
+                    If Not hasNewSelf AndAlso (kvp.Key >> 24) >= masterCount Then hasNewSelf = True
                 Next
                 Dim ep As New ExistingPlugin With {
                     .FullPath = filePath,
@@ -55,7 +61,8 @@ Public Class SaveEsp_Form
                     .ContainsTargetNpc = False,
                     .IsEsm = reader.IsESM,
                     .IsLight = reader.IsESL,
-                    .TranslatableEncoding = reader.TranslatableEncoding
+                    .TranslatableEncoding = reader.TranslatableEncoding,
+                    .HasNewSelfRecords = hasNewSelf
                 }
                 result.Add(ep)
             Catch
@@ -151,6 +158,13 @@ Public Class SaveEsp_Form
         ''' when the user picks "Update existing", so the rewrite keeps the same encoding
         ''' the file originally had unless the user explicitly changes it.</summary>
         Public TranslatableEncoding As System.Text.Encoding
+        ''' <summary>Whether the plugin ORIGINATES at least one record (a "self" record whose
+        ''' FormID high byte ≥ the plugin's master count) vs. being a pure override plugin.
+        ''' Computed during the background Preflight scan (which already loads the plugin), so the
+        ''' UI-thread risky-ESL-flip check is a cache hit instead of a synchronous reader.Load.
+        ''' Nothing when not pre-computed (e.g. a plugin added to the cache post-save by MainForm),
+        ''' in which case PluginHasNewSelfRecords falls back to an on-demand load.</summary>
+        Public HasNewSelfRecords As Boolean?
 
         Public Overrides Function ToString() As String
             Dim suffix As String = ""
@@ -406,18 +420,9 @@ Public Class SaveEsp_Form
     '''   index 2 = 0 (None / Loose) — skip BA2 pack entirely, leave the bake outputs as loose
     ''' Persists into NPC_Config.Ba2Version_FO4, read at pack time.</summary>
     Private Sub InitBa2VersionCombo()
-        ComboBoxBa2Version.Items.Clear()
-        ComboBoxBa2Version.Items.Add("8 - Next Gen (NG)")
-        ComboBoxBa2Version.Items.Add("1 - Old Gen (OG / universal)")
-        ComboBoxBa2Version.Items.Add("None - Loose files (skip BA2 pack)")
+        Ba2VersionUI.PopulateBa2VersionCombo(ComboBoxBa2Version, includeLoose:=True)
         ' Set selection BEFORE wiring the handler so this init does not write config back.
-        Dim idx As Integer
-        Select Case NPC_Config.Current.Ba2Version_FO4
-            Case 0UI : idx = 2
-            Case 1UI : idx = 1
-            Case Else : idx = 0     ' 8 / unknown -> default NG
-        End Select
-        ComboBoxBa2Version.SelectedIndex = idx
+        ComboBoxBa2Version.SelectedIndex = Ba2VersionUI.Ba2VersionToComboIndex(NPC_Config.Current.Ba2Version_FO4)
         AddHandler ComboBoxBa2Version.SelectedIndexChanged, AddressOf OnBa2VersionChanged
 
         Dim isFo4 As Boolean = (Config_App.Current.Game = Config_App.Game_Enum.Fallout4)
@@ -426,11 +431,7 @@ Public Class SaveEsp_Form
     End Sub
 
     Private Sub OnBa2VersionChanged(sender As Object, e As EventArgs)
-        Select Case ComboBoxBa2Version.SelectedIndex
-            Case 1 : NPC_Config.Current.Ba2Version_FO4 = 1UI       ' OG
-            Case 2 : NPC_Config.Current.Ba2Version_FO4 = 0UI       ' Loose-only sentinel
-            Case Else : NPC_Config.Current.Ba2Version_FO4 = 8UI    ' NG default
-        End Select
+        NPC_Config.Current.Ba2Version_FO4 = Ba2VersionUI.ComboIndexToBa2Version(ComboBoxBa2Version.SelectedIndex)
     End Sub
 
     ''' <summary>Encoding selector entries. Mirror of xEdit -cp-trans command-line param values
@@ -637,12 +638,18 @@ Public Class SaveEsp_Form
         If sel Is Nothing Then Return False
         Dim flagChanged = (CheckBoxMarkAsMaster.Checked <> sel.IsEsm) OrElse (CheckBoxLightMaster.Checked <> sel.IsLight)
         If Not flagChanged Then Return False
+        ' Prefer the value computed during the background Preflight scan (cache hit, no UI-thread
+        ' load). Only plugins added to the cache post-save by MainForm lack it; those fall back below.
+        If sel.HasNewSelfRecords.HasValue Then Return sel.HasNewSelfRecords.Value
         Return PluginHasNewSelfRecords(sel.FullPath)
     End Function
 
     ''' <summary>Whether a plugin file contains any record it ORIGINATES (a "self" record: file-local
     ''' FormID high byte ≥ the plugin's master count), as opposed to overrides of master records.
-    ''' For NPC_Manager auto-gen plugins these are the new OTFT outfits. Result cached per path.</summary>
+    ''' For NPC_Manager auto-gen plugins these are the new OTFT outfits. Result cached per path.
+    ''' <para>Fallback path only: the fast path is <see cref="ExistingPlugin.HasNewSelfRecords"/>,
+    ''' pre-computed off the UI thread during the Preflight scan. This synchronous reader.Load runs
+    ''' only for plugins that bypassed that scan (e.g. added to the cache after a save).</para></summary>
     Private Function PluginHasNewSelfRecords(path As String) As Boolean
         Dim cached As Boolean
         If _hasNewRecordsCache.TryGetValue(path, cached) Then Return cached

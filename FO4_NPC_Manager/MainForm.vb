@@ -20,7 +20,9 @@ Public Class MainForm
     Private ReadOnly _assetDictionaryLock As New Object()
     Private _previewRequestVersion As Integer = 0
     Private Shared ReadOnly _rng As New Random()
-    Private _npcByIdCache As New Dictionary(Of UInteger, NPC_Data)()
+    ' ConcurrentDictionary, not Dictionary: GetParsedNpc writes on a cache miss (12458) from the
+    ' background ResolveNPCBaseState path (Await Task.Run), which can race a concurrent render's read.
+    Private _npcByIdCache As New System.Collections.Concurrent.ConcurrentDictionary(Of UInteger, NPC_Data)()
     Private _templateDependencyMapCache As New Dictionary(Of UInteger, List(Of TemplateDependencyEdge))()
     Private _templateRootSourceIdsCache As New List(Of UInteger)()
     ''' <summary>Universe of ARMO FormIDs referenced as skin by any RACE.WNAM or NPC_.WNAM in the
@@ -152,6 +154,30 @@ Public Class MainForm
     ' re-parsed ~20×/render (skeleton setup, body-weight, skin resolution) — memoizing collapses it to one.
     Private ReadOnly _parsedRaceCache As New System.Collections.Concurrent.ConcurrentDictionary(Of UInteger, RACE_Data)()
     Private ReadOnly _parsedHdptCache As New System.Collections.Concurrent.ConcurrentDictionary(Of UInteger, HDPT_Data)()
+
+    ''' <summary>Base-skeleton BYTE caches keyed by (race, gender), shared across the per-ARMA
+    ''' PrepareSkeleton calls of a single render. PrepareSkeleton re-loads the HKX / BPTD / face
+    ''' skeleton bytes for every distinct ARMA — but those bytes depend only on (race, gender), so
+    ''' the loads are identical across ARMAs. Memoizing collapses N loads to 1. Same lifetime as the
+    ''' parse caches above (dies with the load order; cleared by <see cref="InvalidateParseCaches"/>).
+    ''' A Nothing value ("no such skeleton for this race/gender") is memoized natively by
+    ''' ConcurrentDictionary.GetOrAdd, so a miss isn't re-loaded on the next ARMA.</summary>
+    Private ReadOnly _skelHkxBytesCache As New System.Collections.Concurrent.ConcurrentDictionary(Of (Race As UInteger, Female As Boolean), Byte())()
+    Private ReadOnly _skelBptdBytesCache As New System.Collections.Concurrent.ConcurrentDictionary(Of UInteger, Byte())()
+    Private ReadOnly _skelFaceBytesCache As New System.Collections.Concurrent.ConcurrentDictionary(Of (Race As UInteger, Female As Boolean), Byte())()
+
+    ''' <summary>Clear the FormID-keyed parse caches (RACE / HDPT) and the (race,gender) skeleton-byte
+    ''' caches, plus the bulk-parsed NPC universe. Call whenever the PluginManager / FilesDictionary is
+    ''' (re)built or the plugin set changes — otherwise a stale parse from the previous load order would
+    ''' survive. The NPC cache is cleared too so a re-parse repopulates it from the current record set.</summary>
+    Private Sub InvalidateParseCaches()
+        _parsedRaceCache.Clear()
+        _parsedHdptCache.Clear()
+        _skelHkxBytesCache.Clear()
+        _skelBptdBytesCache.Clear()
+        _skelFaceBytesCache.Clear()
+        _npcByIdCache?.Clear()
+    End Sub
 
     ' _renderHost.TintGpuCache, _renderHost.PristineDiffusePixels and the PristinePixels nested class moved to
     ' NpcRenderHost so each preview surface owns its own caches.
@@ -778,6 +804,29 @@ Public Class MainForm
         RebuildAndApplyMergedPose()
     End Sub
 
+    ''' <summary>Range-Modifier clamp model for BuildBodyWeightPose. The RACE.BSMS Range Modifier
+    ''' (Min/Max Y/Z) bounds the bone-scale delta; this enum selects HOW it's applied. Only Y/Z
+    ''' (Range has no X). ARMA sculpt (Layer 4) is always applied AFTER the clamp.
+    '''   Off           = no clamp (legacy behavior).
+    '''   ClampWeightL1 = clamp the weight delta to [Min,Max] BEFORE MRSV.
+    '''   ClampFinal    = clamp the total weight+MRSV delta.
+    '''   ClampBoth     = clamp the weight delta AND the total — keeps the bone always inside the band.</summary>
+    Private Enum BodyWeightClampModel
+        Off = 0
+        ClampWeightL1 = 1
+        ClampFinal = 2
+        ClampBoth = 3
+    End Enum
+
+    ''' <summary>Active body-weight clamp model, read per-bone in BuildBodyWeightPose. Set to
+    ''' ClampBoth: honors the documented "Range clamps the weight delta" intent AND keeps the final
+    ''' bone scale inside [1+Min, 1+Max] regardless of weight/MRSV direction (see RecordParsers.vb
+    ''' RACE_BoneData docs). NOTE: chosen default pending CK confirmation on opposite-direction
+    ''' bones (e.g. ShoulderFat). The other models stay in the enum so this can be changed in the
+    ''' future by editing this one line — no re-plumbing. (The diagnostic ComboBox that exposed all
+    ''' four models was removed once ClampBoth was selected.)</summary>
+    Private Shared ReadOnly _bodyWeightClampModel As BodyWeightClampModel = BodyWeightClampModel.ClampBoth
+
     ''' <summary>Toggle BodySlide vertex morphs (BODYTRI .tri + slider dict). Same granular path
     ''' as CheckBoxApplyVertexMorphs: rebuild MorphResolver via BuildCompositeMorphResolver
     ''' (which now sees the toggle via BuildBodyMorphResolver) + MarkDirty(Morphs) + Invalidate.
@@ -960,10 +1009,12 @@ Public Class MainForm
     Private Class AnimRaceModel
         Public Clips As List(Of ResolvedAnimationClip)
         Public SkeletonBytes As Byte()
+        Public AdditiveDetected As Boolean = False
     End Class
     Private ReadOnly _animRaceCache As New Dictionary(Of String, AnimRaceModel)(StringComparer.OrdinalIgnoreCase)
     Private _animCacheKey As String = ""                ' "raceFormID|F|M" actualmente en el combo
     Private _animClips As List(Of ResolvedAnimationClip) = Nothing
+    Private _animComboClips As List(Of ResolvedAnimationClip) = Nothing  ' subconjunto del combo (gender + sin 1ª persona); el combo indexa ESTA lista
     Private _animSkeletonBytes As Byte() = Nothing
     Private _animSession As HkxPoseImportSession = Nothing
     ' Playback compartido con WM (reloj + selección de frame por FPS + caché de poses + loop
@@ -973,6 +1024,69 @@ Public Class MainForm
     Private _animSuppress As Boolean = False
     Private _animSuppressMs As Boolean = False          ' al setear NumericAnimFrameMs programáticamente
     Private _animOverBudget As Boolean = False          ' FPS en rojo = render no llega al target
+
+    ' Editor-bar gate durante playback: al pulsar Play se deshabilitan los 10 botones de acción
+    ' por-NPC (los mismos de DisableNpcActionControls) y se restauran en el ÚNICO path de stop
+    ' (StopAnimPlayback). Se captura el .Enabled de cada botón ANTES de apagarlo para restaurar el
+    ' estado exacto que tenían (algunos pueden estar deshabilitados por gating per-NPC). El guard
+    ' _editorBarCapturedDuringPlay hace que un Stop sin Play previo (ComboAnim_SelectedIndexChanged /
+    ' RefreshAnimBarForCurrentNpc llaman StopAnimPlayback incondicionalmente) sea un no-op.
+    Private _editorBarCapturedDuringPlay As Boolean = False
+    Private _savedEnabledEditFace As Boolean
+    Private _savedEnabledEditBody As Boolean
+    Private _savedEnabledEditOutfit As Boolean
+    Private _savedEnabledLoadLooksmenu As Boolean
+    Private _savedEnabledSaveLooksmenu As Boolean
+    Private _savedEnabledCopyLook As Boolean
+    Private _savedEnabledPasteLook As Boolean
+    Private _savedEnabledSavePlugin As Boolean
+    Private _savedEnabledBuildCharGen As Boolean
+    Private _savedEnabledSaveSceneNif As Boolean
+
+    ''' <summary>Deshabilita/restaura la barra de botones de acción del EDITOR mientras se reproduce
+    ''' una animación. NO toca los controles de la barra de animación (Combo/Select/Play/Slider/FPS)
+    ''' para que el usuario pueda parar/scrubear durante el playback. Al activar captura el .Enabled
+    ''' actual de los 10 botones y los apaga; al desactivar (solo si hubo captura previa) los restaura
+    ''' a su valor capturado. Idempotente: el gating per-NPC posterior (LoadNPCOnDemandAsync /
+    ''' UpdateEditBodyEnabled / UpdateEditFaceEnabled / DisableNpcActionControls) recalcula el estado
+    ''' correcto tras un cambio de selección, sobrescribiendo lo restaurado.</summary>
+    Private Sub SetEditorBarEnabledForPlayback(playing As Boolean)
+        If playing Then
+            _savedEnabledEditFace = ButtonEditFace.Enabled
+            _savedEnabledEditBody = ButtonEditBody.Enabled
+            _savedEnabledEditOutfit = ButtonEditOutfit.Enabled
+            _savedEnabledLoadLooksmenu = ButtonLoadLooksmenu.Enabled
+            _savedEnabledSaveLooksmenu = ButtonSaveLooksmenu.Enabled
+            _savedEnabledCopyLook = ButtonCopyLook.Enabled
+            _savedEnabledPasteLook = ButtonPasteLook.Enabled
+            _savedEnabledSavePlugin = ButtonSavePlugin.Enabled
+            _savedEnabledBuildCharGen = ButtonBuildCharGen.Enabled
+            _savedEnabledSaveSceneNif = ButtonSaveSceneNif.Enabled
+            _editorBarCapturedDuringPlay = True
+            ButtonEditFace.Enabled = False
+            ButtonEditBody.Enabled = False
+            ButtonEditOutfit.Enabled = False
+            ButtonLoadLooksmenu.Enabled = False
+            ButtonSaveLooksmenu.Enabled = False
+            ButtonCopyLook.Enabled = False
+            ButtonPasteLook.Enabled = False
+            ButtonSavePlugin.Enabled = False
+            ButtonBuildCharGen.Enabled = False
+            ButtonSaveSceneNif.Enabled = False
+        ElseIf _editorBarCapturedDuringPlay Then
+            ButtonEditFace.Enabled = _savedEnabledEditFace
+            ButtonEditBody.Enabled = _savedEnabledEditBody
+            ButtonEditOutfit.Enabled = _savedEnabledEditOutfit
+            ButtonLoadLooksmenu.Enabled = _savedEnabledLoadLooksmenu
+            ButtonSaveLooksmenu.Enabled = _savedEnabledSaveLooksmenu
+            ButtonCopyLook.Enabled = _savedEnabledCopyLook
+            ButtonPasteLook.Enabled = _savedEnabledPasteLook
+            ButtonSavePlugin.Enabled = _savedEnabledSavePlugin
+            ButtonBuildCharGen.Enabled = _savedEnabledBuildCharGen
+            ButtonSaveSceneNif.Enabled = _savedEnabledSaveSceneNif
+            _editorBarCapturedDuringPlay = False
+        End If
+    End Sub
 
     ''' <summary>Refresca la barra de animación al NPC actual. Se llama al INICIO de RenderCurrentStateAsync
     ''' (cubre TODOS los paths de render: wrapper, RenderFromCurrentSelection, etc. — usa CurrentBaseState,
@@ -987,7 +1101,6 @@ Public Class MainForm
         If ComboAnim.Items.Count > 0 Then ComboAnim.SelectedIndex = 0
         _animSuppress = False
         SliderAnimFrame.Enabled = False : NumericAnimFrameMs.Enabled = False : ButtonAnimPlay.Enabled = False
-        LabelAnimFrame.Text = "0 / 0"
     End Sub
 
     ' Resuelve las animaciones de la RAZA del NPC actual y puebla el combo. Cache por raza+gender:
@@ -1021,17 +1134,30 @@ Public Class MainForm
                 }
                 _animRaceCache(key) = model
                 Logger.LogLazy(Function() $"[ANIM-BAR] enumerated race {key} ({rb.RaceEditorID}): {model.Clips.Count} clips, skeletonBytes={If(model.SkeletonBytes Is Nothing, 0, model.SkeletonBytes.Length)}")
+                If Not model.AdditiveDetected Then
+                    model.AdditiveDetected = True
+                    Dim clipsRef = model.Clips
+                    System.Threading.Tasks.Task.Run(Sub()
+                                                        Try
+                                                            BehaviorClipEnumerator.DetectAdditiveFlags(clipsRef, AddressOf LoadAnimHkxBytes)
+                                                        Catch
+                                                        End Try
+                                                    End Sub)
+                End If
             End If
 
             _animClips = model.Clips
             _animSkeletonBytes = model.SkeletonBytes
             _animCacheKey = key
+            ' Combo plano = TODO (sin filtros de género/1ª-persona; el filtrado vive solo en el picker). Lista paralela
+            ' propia para que el remap de índices y el add-if-missing del picker sigan andando uniformemente.
+            _animComboClips = _animClips.ToList()
 
             _animSuppress = True
             ComboAnim.BeginUpdate()
             ComboAnim.Items.Clear()
             ComboAnim.Items.Add("(None — static)")
-            ComboAnim.Items.AddRange(_animClips.Select(Function(c) CObj(AnimClipLabel(c))).ToArray())
+            ComboAnim.Items.AddRange(_animComboClips.Select(Function(c) CObj(AnimClipLabel(c))).ToArray())
             ComboAnim.SelectedIndex = 0
             ComboAnim.EndUpdate()
             _animSuppress = False
@@ -1057,22 +1183,19 @@ Public Class MainForm
 
     ' Carga un .hkx por path lógico (Data-relativo): prueba con/sin "Meshes\" y .hkx/.hkt vía FilesDictionary.
     Private Function LoadAnimHkxBytes(path As String) As Byte()
-        If String.IsNullOrWhiteSpace(path) Then Return Nothing
-        Dim variants As New List(Of String) From {path}
-        If path.EndsWith(".hkx", StringComparison.OrdinalIgnoreCase) Then variants.Add(path.Substring(0, path.Length - 4) & ".hkt")
-        If path.EndsWith(".hkt", StringComparison.OrdinalIgnoreCase) Then variants.Add(path.Substring(0, path.Length - 4) & ".hkx")
-        For Each v In variants
-            For Each key In {v, "Meshes\" & v}
-                Dim loc As FilesDictionary_class.File_Location = Nothing
-                If FilesDictionary_class.Dictionary.TryGetValue(key, loc) AndAlso loc IsNot Nothing Then
-                    Try
-                        Dim b = loc.GetBytes()
-                        If b IsNot Nothing AndAlso b.Length > 0 Then Return b
-                    Catch
-                    End Try
-                End If
-            Next
-        Next
+        Return BehaviorClipEnumerator.LoadFirstHkxCandidate(AddressOf LoadHkxKeyBytes, path)
+    End Function
+
+    ' Loader de UNA key contra FilesDictionary (Nothing si falta/vacía/error).
+    Private Function LoadHkxKeyBytes(key As String) As Byte()
+        Dim loc As FilesDictionary_class.File_Location = Nothing
+        If FilesDictionary_class.Dictionary.TryGetValue(key, loc) AndAlso loc IsNot Nothing Then
+            Try
+                Dim b = loc.GetBytes()
+                If b IsNot Nothing AndAlso b.Length > 0 Then Return b
+            Catch
+            End Try
+        End If
         Return Nothing
     End Function
 
@@ -1081,12 +1204,20 @@ Public Class MainForm
             MsgBox("No animations resolved for the current NPC (load/render an NPC first).", vbInformation Or vbOKOnly, "Animations")
             Return
         End If
-        Dim current = TryCast(If(ComboAnim.SelectedIndex > 0, _animClips(ComboAnim.SelectedIndex - 1), Nothing), ResolvedAnimationClip)
+        Dim current = TryCast(If(ComboAnim.SelectedIndex > 0, _animComboClips(ComboAnim.SelectedIndex - 1), Nothing), ResolvedAnimationClip)
         Dim isFemale = _animCacheKey.EndsWith("|F", StringComparison.OrdinalIgnoreCase)   ' género del NPC actual (clave "raceFID|F/M")
         Using dlg As New AnimationPicker_Form(_animClips, isFemale, If(current?.AnimationFile, ""))
             If dlg.ShowDialog(Me) = DialogResult.OK AndAlso dlg.SelectedClip IsNot Nothing Then
-                Dim idx = _animClips.IndexOf(dlg.SelectedClip)
-                If idx >= 0 Then ComboAnim.SelectedIndex = idx + 1   ' +1 por el "(None)"
+                Dim picked = dlg.SelectedClip
+                Dim pos = _animComboClips.IndexOf(picked)
+                If pos < 0 Then
+                    ' el clip elegido está filtrado fuera del combo (p.ej. el usuario destildó género en el picker):
+                    ' lo agregamos al combo para poder seleccionarlo/representarlo.
+                    _animComboClips.Add(picked)
+                    ComboAnim.Items.Add(AnimClipLabel(picked))
+                    pos = _animComboClips.Count - 1
+                End If
+                ComboAnim.SelectedIndex = pos + 1
             End If
         End Using
     End Sub
@@ -1098,11 +1229,11 @@ Public Class MainForm
     Private Sub ComboAnim_SelectedIndexChanged(sender As Object, e As EventArgs) Handles ComboAnim.SelectedIndexChanged
         If _animSuppress Then Return
         StopAnimPlayback()
-        If ComboAnim.SelectedIndex <= 0 OrElse _animClips Is Nothing Then
+        If ComboAnim.SelectedIndex <= 0 OrElse _animComboClips Is Nothing Then
             ResetAnimToTPose()
             Return
         End If
-        SelectAnimationClip(_animClips(ComboAnim.SelectedIndex - 1))
+        SelectAnimationClip(_animComboClips(ComboAnim.SelectedIndex - 1))
     End Sub
 
     Private Sub SelectAnimationClip(clip As ResolvedAnimationClip)
@@ -1119,7 +1250,7 @@ Public Class MainForm
         Logger.LogLazy(Function() $"[ANIM-BAR] select clip='{clip.ClipName}' file='{clip.AnimationFile}' srcSkel='{clip.SourceSkeletonPath}'({If(clipSkelBytes Is Nothing, 0, clipSkelBytes.Length)}b) roles=[{String.Join(",", clip.Roles)}] race={_animCacheKey} liveBones={liveBones}")
         Dim clipBytes = LoadAnimHkxBytes(clip.AnimationFile)
         If clipBytes Is Nothing Then
-            SetStatus_Anim($"Clip not found: {clip.AnimationFile}")
+            Logger.LogLazy(Function() $"Clip not found: {clip.AnimationFile}")
             Return
         End If
         Try
@@ -1129,7 +1260,6 @@ Public Class MainForm
         Catch ex As Exception
             _animSession = Nothing
             Logger.LogLazy(Function() $"[ANIM-BAR] session create FAILED clip='{clip.AnimationFile}': {ex.GetType().Name}: {ex.Message}")
-            SetStatus_Anim("Animation load error: " & ex.Message)
             Return
         End Try
         ' Clip seleccionado = PAUSADO en frame 0 (no es "playing"). PlayingAnimation sigue la lógica
@@ -1144,6 +1274,14 @@ Public Class MainForm
         ButtonAnimPlay.Enabled = maxFrame > 0
         ApplyAnimPlaybackInterval()   ' setea el ms/frame por defecto desde el FrameDuration del clip (editable)
         ApplyAnimFrame(0)
+        ' Al cambiar de clip, re-encuadra la cámara RESPETANDO los flags de cámara (Settings_Camara:
+        ' FreezeCamera / ResetZoom / ResetAngles) — igual que WM/el pipeline en selección. ResetCamera()
+        ' sin Force honra esos flags (si FreezeCamera está on, no toca la cámara).
+        If _renderHost?.PreviewCtl IsNot Nothing Then
+            _renderHost.PreviewCtl.ResetCamera()
+            _renderHost.PreviewCtl.UpdateRequired = True
+            _renderHost.PreviewCtl.RefreshRender()
+        End If
     End Sub
 
     ' Default del FPS desde el FrameDuration del clip (editable por el usuario), igual que WM
@@ -1213,10 +1351,10 @@ Public Class MainForm
             ' omite reset de cámara y recompute de bounds → update eficiente como WM.
             _renderHost.PreviewCtl.Intent.MarkDirty(RenderDirtyFlags.Pose, _renderHost.LastRenderData.Shapes)
             _renderHost.PreviewCtl.InvalidateRender()
-            LabelAnimFrame.Text = $"{frame} / {Math.Max(0, _animPlayer.FrameCount - 1)}"
         Catch ex As Exception
             Logger.LogLazy(Function() $"[ANIM-BAR] ApplyAnimFrame({frame}) FAILED: {ex.GetType().Name}: {ex.Message}{Environment.NewLine}{ex.StackTrace}")
-            SetStatus_Anim($"Frame {frame} error: {ex.Message}")
+
+
         End Try
     End Sub
 
@@ -1227,7 +1365,6 @@ Public Class MainForm
         _animSession = Nothing
         _animPlayer = Nothing
         SliderAnimFrame.Enabled = False : NumericAnimFrameMs.Enabled = False : ButtonAnimPlay.Enabled = False
-        LabelAnimFrame.Text = "0 / 0"
         If _renderHost Is Nothing OrElse _renderHost.LastSkeletonInstance Is Nothing OrElse _renderHost.LastRenderData Is Nothing Then
             SetPlayingAnimation(False)
             Return
@@ -1254,6 +1391,7 @@ Public Class MainForm
             StopAnimPlayback()
         ElseIf _animPlayer IsNot Nothing AndAlso SliderAnimFrame.Maximum > 0 Then
             SetPlayingAnimation(True)
+            SetEditorBarEnabledForPlayback(True)   ' deshabilita la barra de botones del editor hasta el Stop
             Dim fps = Math.Max(1.0, CDbl(NumericAnimFrameMs.Value))
             _animPlayer.TargetFps = fps
             _animPlayer.Start(CInt(Math.Round(SliderAnimFrame.Value)))
@@ -1267,6 +1405,8 @@ Public Class MainForm
         _animPlayer?.Stop()
         ' Stop/pausa → PlayingAnimation=False (igual que WM): reactiva el RenderTimer para rotar/zoom.
         SetPlayingAnimation(False)
+        ' Restaura la barra de botones del editor (no-op si no hubo Play previo, vía el guard).
+        SetEditorBarEnabledForPlayback(False)
         If ButtonAnimPlay IsNot Nothing Then ButtonAnimPlay.Text = "▶"
         If _animOverBudget Then NumericAnimFrameMs.ForeColor = SystemColors.ControlText : _animOverBudget = False
     End Sub
@@ -1291,10 +1431,6 @@ Public Class MainForm
         End If
     End Sub
 
-    Private Sub SetStatus_Anim(msg As String)
-        Logger.LogLazy(Function() "[ANIM-BAR] " & msg)
-        LabelAnimFrame.Text = msg
-    End Sub
 #End Region
 
 
@@ -1432,6 +1568,9 @@ Public Class MainForm
 
     Private Sub ParseAllNPCs()
         _allNPCs.Clear()
+        ' Drop any parse/skeleton-byte caches from a prior load order before re-establishing the NPC
+        ' universe — they're keyed by FormID/(race,gender) which could collide across plugin sets.
+        InvalidateParseCaches()
 
         ' Bulk-parse uses the full ParseNPC. The cache (_allNPCs / _npcByIdCache) is consumed
         ' by the render path (CreateOwnTraitsState / CreateOwnInventoryState /
@@ -1511,7 +1650,8 @@ Public Class MainForm
     End Function
 
     Private Sub RebuildTreeModelCache()
-        _npcByIdCache = _allNPCs.GroupBy(Function(n) n.FormID).Select(Function(g) g.First()).ToDictionary(Function(n) n.FormID)
+        _npcByIdCache = New System.Collections.Concurrent.ConcurrentDictionary(Of UInteger, NPC_Data)(
+            _allNPCs.GroupBy(Function(n) n.FormID).Select(Function(g) g.First()).ToDictionary(Function(n) n.FormID))
         _templateDependencyMapCache = BuildTemplateDependencyMap(_npcByIdCache)
         _templateRootSourceIdsCache = BuildTemplateTreeRootSourceIds(_npcByIdCache, _templateDependencyMapCache)
         ' Pre-build per-NPC caches (searchable text + display label) en bulk una sola vez. La
@@ -3810,17 +3950,20 @@ Public Class MainForm
         ' marking in ApplyShapeGeometry which sets ShapeMeatcap=Confirmed for HDPT type=7.
         ' This loop only writes when classification != Normal so the candidate-side mark for
         ' headpart meatcaps is preserved if the geometry doesn't also flag itself.
-        Try
-            For Each sh In renderData.Shapes
+        ' Per-shape Try/Catch: one shape with bad geometry must NOT abort classification for the
+        ' rest (a single throw used to silently skip every remaining shape). Isolate per shape and
+        ' log the offender so the bad geometry is diagnosable instead of swallowed.
+        For Each sh In renderData.Shapes
+            Try
                 Dim cls = ClassifyShapeMeatcap(sh.Geometry)
                 If cls <> MeatcapClassification.Normal Then
                     renderData.ShapeMeatcap(sh) = cls
-                    Dim shapeNameCopy = sh.ShapeName
-                    Dim clsCopy = cls
                 End If
-            Next
-        Catch ex As Exception
-        End Try
+            Catch ex As Exception
+                Dim shapeNameCopy = sh.ShapeName
+                Logger.LogLazy(Function() $"[MEATCAP-CLASSIFY] shape='{shapeNameCopy}' classification failed (skipped): {ex.GetType().Name}: {ex.Message}")
+            End Try
+        Next
 
         Dim skelResolver As ISkeletonResolver = New MultiInstanceSkeletonResolver(shapeToSkel, inst)
 
@@ -5127,14 +5270,14 @@ Public Class MainForm
     End Function
 
     ''' <summary>Last step of a render — invoked by the post-texture-upload hook AFTER face tint
-    ''' bake passes have completed and the shapes have been revealed. Forces ResetCamera now
-    ''' that mesh bounds reflect the final visible pose, then triggers a repaint. Mirrors WM's
-    ''' Editor_Form Button9_Click pattern (ResetCamera(True) → RefreshRender) but moved into the
-    ''' deferred hook so it sees populated mesh bounds rather than the pre-reveal state.</summary>
+    ''' bake passes have completed and the shapes have been revealed. Resets the camera RESPECTING
+    ''' the Settings_Camara flags (FreezeCamera/ResetZoom/ResetAngles — same as WM/the render pipeline
+    ''' on selection; no Force) now that mesh bounds reflect the final visible pose, then triggers a
+    ''' repaint. Deferred into the hook so it sees populated mesh bounds rather than the pre-reveal state.</summary>
     Private Sub FinalizeRenderCamera(host As NpcRenderHost)
         If host Is Nothing OrElse host.PreviewCtl Is Nothing Then Return
         Try
-            host.PreviewCtl.ResetCamera(Force:=True)
+            host.PreviewCtl.ResetCamera()
             host.PreviewCtl.UpdateRequired = True
             host.PreviewCtl.RefreshRender()
         Catch ex As Exception
@@ -5370,7 +5513,8 @@ Public Class MainForm
             hairLutPath:=hairLutPath,
             hairColorFormID:=state.HairColorFormID,
             hasTextureLighting:=state.HasTextureLighting,
-            textureLightingColorArgb:=state.TextureLightingColor.ToArgb())
+            textureLightingColorArgb:=state.TextureLightingColor.ToArgb(),
+            parseRace:=AddressOf ParseRaceCached)
 
         Return (built.Layers, built.RegionSwaps, built.NpcData, built.Race)
     End Function
@@ -6193,7 +6337,7 @@ Public Class MainForm
             ' Same fragment as ApplyShapeMaterialOverrides body — only the diffuse/normal/spec
             ' get substituted; material params (specular, smoothness, etc.) stay from the NIF.
             If chosenTxst.MaterialPath <> "" Then
-                Dim bgsmMaterial = TryLoadMaterialFromDictionary(chosenTxst.MaterialPath, mat, shape.NifShape, shape.NifContent)
+                Dim bgsmMaterial = MaterialResolver.TryLoadMaterialFromDictionary(chosenTxst.MaterialPath, mat, shape.NifShape, shape.NifContent)
                 If bgsmMaterial IsNot Nothing Then
                     If bgsmMaterial.Diffuse_or_Base_Texture <> "" Then mat.Diffuse_or_Base_Texture = bgsmMaterial.Diffuse_or_Base_Texture
                     If bgsmMaterial.NormalTexture <> "" Then mat.NormalTexture = bgsmMaterial.NormalTexture
@@ -6241,7 +6385,7 @@ Public Class MainForm
             ' present in TXST), copy texture slots only, then apply the rest of the TXST.
             ' Material params (specular, smoothness, subsurface) stay from the NIF.
             If bodyTxst.MaterialPath <> "" Then
-                Dim bgsmMaterial = TryLoadMaterialFromDictionary(bodyTxst.MaterialPath, mat, shape.NifShape, shape.NifContent)
+                Dim bgsmMaterial = MaterialResolver.TryLoadMaterialFromDictionary(bodyTxst.MaterialPath, mat, shape.NifShape, shape.NifContent)
                 If bgsmMaterial IsNot Nothing Then
                     If bgsmMaterial.Diffuse_or_Base_Texture <> "" Then mat.Diffuse_or_Base_Texture = bgsmMaterial.Diffuse_or_Base_Texture
                     If bgsmMaterial.NormalTexture <> "" Then mat.NormalTexture = bgsmMaterial.NormalTexture
@@ -6543,7 +6687,7 @@ Public Class MainForm
         state.ObjectTemplateCombinations.AddRange(model.ObjectTemplateCombinations)
         state.HasObjectTemplate = model.HasObjectTemplate
         state.AttachParentSlotFormIDs.AddRange(model.AttachParentSlotFormIDs)
-        ApplyRaceFallbacks(state, traits, _pluginManager)
+        ApplyRaceFallbacks(state, traits, _pluginManager, AddressOf ParseRaceCached)
         state.HeadPartFormIDs = state.HeadPartFormIDs.Where(Function(id) id <> 0UI).Distinct().ToList()
 
         ' Apply per-NPC LooksMenu overlay (if any) AFTER the template chain + race fallbacks ran.
@@ -7391,6 +7535,7 @@ Public Class MainForm
         ' behavior once the discriminator is logged.
         Const DisableNnamLayer2 As Boolean = True
         Const Eps As Single = 0.001F
+        Dim clampModel = _bodyWeightClampModel
         Dim pose As New Poses_class With {
                 .Name = "MWGT Body Weight",
                 .Source = Poses_class.Pose_Source_Enum.WardrobeManager,
@@ -7401,8 +7546,12 @@ Public Class MainForm
         Dim skippedNegligibleScale As Integer = 0
         Dim unmatched As New List(Of String)
 
-        ' Diagnostic buffer: per-bone rows for a compact summary at the end.
-        Dim diag As New List(Of (Name As String, Sx As Single, Sy As Single, Sz As Single, RestY As Single, RestZ As Single, Region As Integer, Slider As Single, ArmaDX As Single, ArmaDY As Single, ArmaDZ As Single))
+        ' Diagnostic buffer: per-bone rows for the [BW-CLAMP-DIAG] summary at the end. Captures
+        ' the Layer-1 raw weight scale (SyRaw/SzRaw), the Range Modifier bounds (Min/Max Y/Z),
+        ' the final emitted scale and the MRSV/ARMA contributions — enough for the log to show
+        ' whether the weight DELTA overshoots the Range clamp the parser documents
+        ' (RecordParsers.vb:955-959), per bone.
+        Dim diag As New List(Of (Name As String, HasWS As Boolean, HasRange As Boolean, SyRaw As Single, SzRaw As Single, MinY As Single, MaxY As Single, MinZ As Single, MaxZ As Single, Region As Integer, Slider As Single, SyFinal As Single, SzFinal As Single, ArmaDY As Single, ArmaDZ As Single, RestY As Single, RestZ As Single))
 
         ' Build the bone set as union(RACE.BoneData, ARMA.BoneScaleDeltas). ARMA may cover
         ' bones that RACE doesn't list for this gender (outfit-specific bones) — we still
@@ -7484,6 +7633,14 @@ Public Class MainForm
             End If
             Dim sxR As Single = sx, syR As Single = sy, szR As Single = sz   ' snapshot post-RACE
 
+            ' --- Clamp model (diagnostic): clamp the WEIGHT delta to the Range Modifier [Min,Max]
+            ' BEFORE MRSV (Y/Z only — Range has no X). syR keeps the raw value for [BW-CLAMP-DIAG].
+            If (clampModel = BodyWeightClampModel.ClampWeightL1 OrElse clampModel = BodyWeightClampModel.ClampBoth) _
+               AndAlso bone IsNot Nothing AndAlso bone.HasRangeModifier Then
+                sy = Math.Min(Math.Max(sy, 1.0F + bone.MinY), 1.0F + bone.MaxY)
+                sz = Math.Min(Math.Max(sz, 1.0F + bone.MinZ), 1.0F + bone.MaxZ)
+            End If
+
             ' --- Layer 2: NNAM (multiplicative neck-fat adjust) — H-NNAM-1 ---
             ' NNAM ("Neck Fat Adjustments Scale" — RACE.NNAM inside the head block, xEdit spec
             ' wbDefinitionsFO4.pas:11639/11657). HIPÓTESIS H1 2026-04-19: multiplicative neck-fat
@@ -7540,6 +7697,14 @@ Public Class MainForm
                     mrsvApplied = True
                 End If
             End If
+
+            ' --- Clamp model (diagnostic): clamp the TOTAL weight+MRSV delta to [Min,Max] (Y/Z)
+            ' AFTER MRSV, BEFORE ARMA. ARMA sculpt (Layer 4) then multiplies the clamped value.
+            If (clampModel = BodyWeightClampModel.ClampFinal OrElse clampModel = BodyWeightClampModel.ClampBoth) _
+               AndAlso bone IsNot Nothing AndAlso bone.HasRangeModifier Then
+                sy = Math.Min(Math.Max(sy, 1.0F + bone.MinY), 1.0F + bone.MaxY)
+                sz = Math.Min(Math.Max(sz, 1.0F + bone.MinZ), 1.0F + bone.MaxZ)
+            End If
             Dim sxM As Single = sx, syM As Single = sy, szM As Single = sz   ' snapshot post-MRSV (= input a ARMA)
 
             ' --- Layer 4: ARMA Bone Scale Delta — H3 multiplicative HARDCODED (A REVISAR) ---
@@ -7569,7 +7734,15 @@ Public Class MainForm
                 Continue For
             End If
 
-            diag.Add((boneName, sx, sy, sz, restY, restZ, region, slider, armaDX, armaDY, armaDZ))
+            diag.Add((boneName,
+                      If(bone IsNot Nothing, bone.HasWeightScale, False),
+                      If(bone IsNot Nothing, bone.HasRangeModifier, False),
+                      syR, szR,
+                      If(bone IsNot Nothing, bone.MinY, 0.0F),
+                      If(bone IsNot Nothing, bone.MaxY, 0.0F),
+                      If(bone IsNot Nothing, bone.MinZ, 0.0F),
+                      If(bone IsNot Nothing, bone.MaxZ, 0.0F),
+                      region, slider, sy, sz, armaDY, armaDZ, restY, restZ))
 
             pose.Transforms(boneName) = New PoseTransformData With {
                     .ScaleX = sx,
@@ -7579,13 +7752,41 @@ Public Class MainForm
             affected += 1
         Next
 
-        Dim mrsvStr = If(mrsvValues Is Nothing OrElse mrsvValues.Count = 0,
-                             "null/empty",
-                             String.Join(",", mrsvValues.Select(Function(v) v.ToString("F3"))))
-        Dim armaCount = If(armaDeltas Is Nothing, 0, armaDeltas.Count)
-
-        If diag.Count > 0 Then
+        ' Body-weight summary + per-bone clamp diagnostic. Log-only: the String.Join, OrderBy and
+        ' per-row formatting are all dedicated to logging, so the whole block is guarded by
+        ' Logger.Enabled (logging convention). [BW-CLAMP-DIAG] shows, per affected bone, the
+        ' Layer-1 raw weight scale vs the Range Modifier bounds the parser documents as a CLAMP on
+        ' the weight DELTA (RecordParsers.vb:955-959): ifClampedWeight = 1 + clamp(raw-1,Min,Max),
+        ' and weightExcess = (raw-1) - clamp(...) = how far the raw weight delta overshoots the
+        ' Range. Positive weightExcess on Leg/Thigh/Calf bones is the suspected cause of legs
+        ' reading fatter than CK. mrsv/arma columns attribute any extra contribution; NOT a clamp.
+        If Logger.Enabled Then
+            Dim mrsvStr = If(mrsvValues Is Nothing OrElse mrsvValues.Count = 0,
+                                 "null/empty",
+                                 String.Join(",", mrsvValues.Select(Function(v) v.ToString("F3", CultureInfo.InvariantCulture))))
+            Dim mrsvStrLog = mrsvStr
+            Dim armaCountLog = If(armaDeltas Is Nothing, 0, armaDeltas.Count)
+            Dim affectedLog = affected
+            Dim skelLog = skippedNoSkel
+            Dim negLog = skippedNegligibleScale
+            Dim wtLog = wt, wmLog = wm, wfLog = wf
+            Logger.LogLazy(Function() $"[BW-CLAMP-DIAG] SUMMARY mwgt(t={wtLog.ToString("F3", CultureInfo.InvariantCulture)},m={wmLog.ToString("F3", CultureInfo.InvariantCulture)},f={wfLog.ToString("F3", CultureInfo.InvariantCulture)}) mrsv=[{mrsvStrLog}] armaBones={armaCountLog} affected={affectedLog} skippedNoSkel={skelLog} skippedNegligible={negLog}")
             For Each r In diag.OrderBy(Function(x) x.Name)
+                Dim row = r
+                Logger.LogLazy(Function()
+                                   Dim inv = CultureInfo.InvariantCulture
+                                   Dim cY As Single = Math.Min(Math.Max(row.SyRaw - 1.0F, row.MinY), row.MaxY)
+                                   Dim cZ As Single = Math.Min(Math.Max(row.SzRaw - 1.0F, row.MinZ), row.MaxZ)
+                                   Return $"[BW-CLAMP-DIAG] bone='{row.Name}' WS={row.HasWS} Range={row.HasRange} " &
+                                          $"L1raw(sy={row.SyRaw.ToString("F4", inv)},sz={row.SzRaw.ToString("F4", inv)}) " &
+                                          $"range(Y=[{row.MinY.ToString("F4", inv)},{row.MaxY.ToString("F4", inv)}],Z=[{row.MinZ.ToString("F4", inv)},{row.MaxZ.ToString("F4", inv)}]) " &
+                                          $"ifClampedWeight(sy={(1.0F + cY).ToString("F4", inv)},sz={(1.0F + cZ).ToString("F4", inv)}) " &
+                                          $"weightExcess(y={((row.SyRaw - 1.0F) - cY).ToString("F4", inv)},z={((row.SzRaw - 1.0F) - cZ).ToString("F4", inv)}) " &
+                                          $"mrsv(region={row.Region},slider={row.Slider.ToString("F3", inv)}) " &
+                                          $"arma(dy={row.ArmaDY.ToString("F4", inv)},dz={row.ArmaDZ.ToString("F4", inv)}) " &
+                                          $"FINAL(sy={row.SyFinal.ToString("F4", inv)},sz={row.SzFinal.ToString("F4", inv)}) " &
+                                          $"rest(y={row.RestY.ToString("F2", inv)},z={row.RestZ.ToString("F2", inv)})"
+                               End Function)
             Next
         End If
 
@@ -7620,23 +7821,35 @@ Public Class MainForm
         ' Source 1b: HKX de animación (behavior rigName) como base AUTORITATIVA — huesos compartidos al world
         ' del HKX + agrega solo-HKX (Weapon/IK, chunk-bones de robot + C-). HKX Nothing → no-op (fallback NIF).
         ' Reusa la misma resolución que la anim-bar (project→character→rigName, ver MainForm ~1029).
+        ' HKX/BPTD/face bytes depend only on (race, gender) — identical across the per-ARMA calls of
+        ' one render. Memoize the loads (caches die with the load order, see InvalidateParseCaches) so a
+        ' render with N distinct ARMAs loads each skeleton source once, not N times. The SkeletonInstance
+        ' assembly (LoadFromKey / MergeHkxSkeleton / MergeAdditionalSkeleton / PrepareForShapes) stays
+        ' per-call — only the expensive byte loads are shared.
+        Dim raceGenderKey = (state.RaceFormID, state.IsFemale)
         Try
-            Dim rbSkel = RaceBehaviorResolver.ResolveRaceBehavior(state.RaceFormID, _pluginManager)
-            If rbSkel IsNot Nothing Then
-                rbSkel.IsFemale = state.IsFemale
-                Dim hkxLoader As Func(Of String, Byte()) = AddressOf LoadAnimHkxBytes
-                Dim hkxBytes = LoadAnimHkxBytes(BehaviorClipEnumerator.ResolveHavokSkeleton(rbSkel, hkxLoader))
+            Dim hkxBytes = _skelHkxBytesCache.GetOrAdd(raceGenderKey,
+                Function(k)
+                    Dim rbSkel = RaceBehaviorResolver.ResolveRaceBehavior(k.Race, _pluginManager)
+                    If rbSkel Is Nothing Then Return Nothing
+                    rbSkel.IsFemale = k.Female
+                    Dim hkxLoader As Func(Of String, Byte()) = AddressOf LoadAnimHkxBytes
+                    Return LoadAnimHkxBytes(BehaviorClipEnumerator.ResolveHavokSkeleton(rbSkel, hkxLoader))
+                End Function)
+            If hkxBytes IsNot Nothing Then
                 Dim merged = s.MergeHkxSkeleton(hkxBytes)
-                Logger.LogLazy(Function() $"[PREP-SKEL] HKX base merge: {merged} bones (hkxBytes={If(hkxBytes Is Nothing, 0, hkxBytes.Length)})")
+                Logger.LogLazy(Function() $"[PREP-SKEL] HKX base merge: {merged} bones (hkxBytes={hkxBytes.Length})")
             End If
         Catch ex As Exception
             Logger.LogLazy(Function() $"[PREP-SKEL] HKX base merge failed (fallback NIF): {ex.GetType().Name}: {ex.Message}")
         End Try
         ' Source 2: BPTD.MODL (vía RACE.GNAM)
-        Dim bptdBytes = BodyPartSkeletonResolver.TryLoadBptdSkeletonBytes(state.RaceFormID, _pluginManager)
+        Dim bptdBytes = _skelBptdBytesCache.GetOrAdd(state.RaceFormID,
+            Function(raceFid) BodyPartSkeletonResolver.TryLoadBptdSkeletonBytes(raceFid, _pluginManager))
         If bptdBytes IsNot Nothing Then s.MergeAdditionalSkeleton(bptdBytes)
         ' Source 3: Face bones convention (chargen-only; convención filesystem, no engine record)
-        Dim faceBytes = FaceSkeletonResolver.TryLoadFaceSkeletonBytes(state.RaceFormID, state.IsFemale, _pluginManager)
+        Dim faceBytes = _skelFaceBytesCache.GetOrAdd(raceGenderKey,
+            Function(k) FaceSkeletonResolver.TryLoadFaceSkeletonBytes(k.Race, k.Female, _pluginManager))
         If faceBytes IsNot Nothing Then s.MergeAdditionalSkeleton(faceBytes)
         s.PrepareForShapes(renderData.Shapes)
         Return s
@@ -7674,6 +7887,17 @@ Public Class MainForm
         Return MeshPathHelpers.TryGetFaceBonesVariant(meshDictKey)
     End Function
 
+    ''' <summary>Local FormID used in the FaceGen file name, per CK convention. Full plugins: strip the
+    ''' high (load-order) byte (&amp; 0xFFFFFF). ESL/light plugins (high byte 0xFE): ALSO strip the 12-bit
+    ''' light slot, leaving only the 12-bit record (&amp; 0xFFF). Mirrors <c>FaceGenBuilder.FaceGenLocalId</c>
+    ''' (which is Private there, so the logic is duplicated here) — verified: ESL runtime 0xFE032800 →
+    ''' CK writes "00000800", NOT "00032800". Without the ESL mask the light slot leaks into the name and
+    ''' the game can't find the mesh/texture.</summary>
+    Private Function FaceGenLocalId(npcFormID As UInteger) As UInteger
+        If (npcFormID >> 24) = &HFEUI Then Return npcFormID And &HFFFUI
+        Return npcFormID And &HFFFFFFUI
+    End Function
+
     ''' <summary>Build the FaceGen NIF lookup path for a given NPC FormID.
     ''' Vanilla FO4 layout:
     '''   meshes\actors\character\facegendata\facegeom\&lt;plugin&gt;\&lt;formid:X8&gt;.nif   (the mesh)
@@ -7683,9 +7907,9 @@ Public Class MainForm
         If npcFormID = 0UI Then Return ""
         Dim pluginName = _pluginManager.GetOriginatingPluginName(npcFormID)
         If String.IsNullOrEmpty(pluginName) Then Return ""
-        ' FaceGen file is named with the FULL 8-hex FormID; the master byte in the FormID is always the
-        ' load-order byte, so we mask it out and zero-pad the local FormID to 8 hex chars.
-        Dim localFormID = npcFormID And &HFFFFFFUI
+        ' FaceGen file name uses the LOCAL FormID, ESL-aware (FaceGenLocalId): full plugins strip the
+        ' load-order byte, ESL plugins strip the load-order byte AND the 12-bit light slot.
+        Dim localFormID = FaceGenLocalId(npcFormID)
         Return $"meshes\actors\character\facegendata\facegeom\{pluginName}\{localFormID:X8}.nif".ToLowerInvariant()
     End Function
 
@@ -7737,6 +7961,18 @@ Public Class MainForm
                 End If
             Next
         Next
+
+        ' [SCULPT-DECISION] diag: which candidate (if any) was picked as the slot-33 global sculpt
+        ' source and which [U]-specific sources exist. Pairs with the per-candidate decision log
+        ' below to verify the underarmor→over-armor rule is gating correctly. Log-only.
+        If Logger.Enabled Then
+            Dim gs = globalSculptSource
+            Dim gsLog As String = If(gs Is Nothing, "none",
+                $"0x{gs.ArmorAddonFormID:X8} slot=0x{gs.SlotMask:X} deltas={gs.ArmaBoneScaleDeltas.Count}")
+            Dim uLog As String = String.Join(",", uSculptSourceByBit.Select(Function(kv) $"U{kv.Key}=0x{kv.Value.ArmorAddonFormID:X8}"))
+            Logger.LogLazy(Function() $"[SCULPT-DECISION] sources: global={gsLog} uSpecific=[{uLog}]")
+        End If
+
         Dim loadedNifs As New Dictionary(Of String, Nifcontent_Class_Manolo)(StringComparer.OrdinalIgnoreCase)
 
         ' Compute the over-armor [A] slot mask = bits 11..15.
@@ -7791,6 +8027,23 @@ Public Class MainForm
             ' Else: candidate is the underarmor source itself (BODY/[U] declared) or unrelated
             ' to the [U]→[A] system (hands, head, accessories) → renders on the base skeleton,
             ' never sculpted.
+
+            ' [SCULPT-DECISION] per-candidate: shows slot, whether it qualified as pure over-armor,
+            ' its own header flags (HasSculpt / NoUnderarmorScaling — the opt-out gate) and the final
+            ' decision (how many sculpt deltas applied + from which source). Lets us verify whether
+            ' the leg/torso [A] pieces SHOULD be taking the slot-33 underarmor sculpt at all. Log-only.
+            If Logger.Enabled Then
+                Dim candFidL = candidate.ArmorAddonFormID
+                Dim slotL = candidate.SlotMask
+                Dim isPOL = isPureOverArmor
+                Dim ownDeltasL = If(candidate.ArmaBoneScaleDeltas Is Nothing, 0, candidate.ArmaBoneScaleDeltas.Count)
+                Dim aaL = If(candFidL <> 0UI, GetParsedArma(candFidL), Nothing)
+                Dim noUaL = aaL IsNot Nothing AndAlso aaL.NoUnderarmorScaling
+                Dim hasSculptL = aaL IsNot Nothing AndAlso aaL.HasSculptData
+                Dim srcL = sourceFormID
+                Dim appliedL = If(sculptToApply Is Nothing, 0, sculptToApply.Count)
+                Logger.LogLazy(Function() $"[SCULPT-DECISION] cand=0x{candFidL:X8} slot=0x{slotL:X} pureOverArmor={isPOL} ownSculptDeltas={ownDeltasL} hdr(HasSculpt={hasSculptL},NoUnderarmorScaling={noUaL}) -> sculptApplied={appliedL} from=0x{srcL:X8}")
+            End If
 
             LoadNifShapes(candidate, previewVariant.State, loadedNifs, result, sculptToApply, sourceFormID)
         Next
@@ -7885,7 +8138,10 @@ Public Class MainForm
         Return clone
     End Function
 
-    Friend Shared Sub ApplyRaceFallbacks(state As NPCVisualState, traits As TraitsState, pluginManager As PluginManager)
+    ''' <param name="parseRace">Optional cached RACE parser (MainForm.ParseRaceCached). Falls back to a
+    ''' direct <c>RecordParsers.ParseRACE</c> when Nothing — keeps the offline bake path pure.</param>
+    Friend Shared Sub ApplyRaceFallbacks(state As NPCVisualState, traits As TraitsState, pluginManager As PluginManager,
+                                         Optional parseRace As Func(Of PluginRecord, RACE_Data) = Nothing)
         If state Is Nothing OrElse state.RaceFormID = 0UI Then Return
 
         Dim raceRec = pluginManager.GetRecord(state.RaceFormID)
@@ -7897,7 +8153,7 @@ Public Class MainForm
             Return
         End If
 
-        Dim race = RecordParsers.ParseRACE(raceRec, pluginManager)
+        Dim race = If(parseRace IsNot Nothing, parseRace(raceRec), RecordParsers.ParseRACE(raceRec, pluginManager))
 
         ' Materialize NPC.MWGT into final 3 floats. Substitution rule lives in ResolveBodyWeights.
         ' Done before the head/skin fallbacks so callers reading state.WeightX downstream always
@@ -8282,7 +8538,8 @@ Public Class MainForm
     ''' helper's primitive parameter list. Real implementation + logging lives in the helper module.</summary>
     Private Function MergeHeadPartsWithRaceDefaults(state As NPCVisualState) As List(Of UInteger)
         If state Is Nothing Then Return New List(Of UInteger)
-        Return HeadPartResolver.MergeHeadPartsWithRaceDefaults(state.RaceFormID, state.IsFemale, state.HeadPartFormIDs, _pluginManager)
+        Return HeadPartResolver.MergeHeadPartsWithRaceDefaults(state.RaceFormID, state.IsFemale, state.HeadPartFormIDs, _pluginManager,
+                                                               AddressOf ParseRaceCached, AddressOf ParseHdptCached)
     End Function
 
     ''' <summary>Parse (and cache) an ARMO by FormID. Returns Nothing if the FormID does not resolve
@@ -10275,7 +10532,7 @@ Public Class MainForm
         ' vanilla NPC.PNAM often lists a hairline both in the hair's HNAM and standalone in PNAM;
         ' without this map the cascade depended on visit order. Shared helper = single source of
         ' truth with the bake's EnumerateHdptChain (no duplicated rule).
-        Dim miscToParentEffective = HeadPartResolver.BuildMiscToParentEffective(headPartFormIDs, _pluginManager)
+        Dim miscToParentEffective = HeadPartResolver.BuildMiscToParentEffective(headPartFormIDs, _pluginManager, AddressOf ParseHdptCached)
 
         For Each hdptFormID In headPartFormIDs.Where(Function(id) id <> 0UI)
             CollectHeadPartCandidate(hdptFormID, visited, candidates, order, warnings, -1, state, useFaceGen, flstCache, raceDefaults, raceHasAnyHeadParts, miscToParentEffective)
@@ -10319,7 +10576,7 @@ Public Class MainForm
         ' renders no human teeth on raider dogs because RaiderDogRace declares zero head parts.
         ' Humanoid races (HumanRace, GhoulRace, etc.) keep all their RNAM=0 HDPTs as before.
         If flstCache IsNot Nothing AndAlso state IsNot Nothing AndAlso state.RaceFormID <> 0UI Then
-            Dim raceOk = HeadPartResolver.IsHdptValidForRace(hdptFormID, state.RaceFormID, state.IsFemale, _pluginManager, flstCache, raceDefaults, raceHasAnyHeadParts)
+            Dim raceOk = HeadPartResolver.IsHdptValidForRace(hdptFormID, state.RaceFormID, state.IsFemale, _pluginManager, flstCache, raceDefaults, raceHasAnyHeadParts, AddressOf ParseHdptCached)
             If Not raceOk Then
                 Return
             End If
@@ -10869,7 +11126,7 @@ Public Class MainForm
             ' TryApplyFaceTints find no FaceTint mesh after load).
             If logEnabled Then
                 For Each shape In shapes
-                    EnsureShapeMaterialResolved(shape)
+                    MaterialResolver.EnsureShapeMaterialResolved(shape)
                     Dim rawMatPath As String = ""
                     Dim rawAT As String = "?"
                     Dim rawATRef As String = "?"
@@ -11366,7 +11623,7 @@ Public Class MainForm
         End If
 
         For Each shape In shapes
-            EnsureShapeMaterialResolved(shape)
+            MaterialResolver.EnsureShapeMaterialResolved(shape)
 
             Dim relatedMaterial = shape.ShapeMaterial
             If relatedMaterial Is Nothing Then Continue For
@@ -11417,7 +11674,7 @@ Public Class MainForm
                 ' cargar el BGSM para extraer sus paths. NO copiamos otros params del BGSM (sólo
                 ' las texturas), preservando los params del material original del shape.
                 If actorBodySkinTxst.MaterialPath <> "" Then
-                    Dim bgsmMaterial = TryLoadMaterialFromDictionary(actorBodySkinTxst.MaterialPath, material, shape.NifShape, shape.NifContent)
+                    Dim bgsmMaterial = MaterialResolver.TryLoadMaterialFromDictionary(actorBodySkinTxst.MaterialPath, material, shape.NifShape, shape.NifContent)
                     If bgsmMaterial IsNot Nothing Then
                         If bgsmMaterial.Diffuse_or_Base_Texture <> "" Then material.Diffuse_or_Base_Texture = bgsmMaterial.Diffuse_or_Base_Texture
                         If bgsmMaterial.NormalTexture <> "" Then material.NormalTexture = bgsmMaterial.NormalTexture
@@ -11540,27 +11797,44 @@ Public Class MainForm
         If hairColorFormID <> 0UI Then
             Dim clfm = ResolveColorFormData(hairColorFormID)
             If clfm IsNot Nothing AndAlso clfm.HasRemappingIndex Then
-                ' Priority: BGSM's own GreyscaleTexture first (per-shape, picked by the stylist
-                ' for THIS mesh), RACE.HNAM/HLTX as fallback. The engine in-game binds the LUT
-                ' from the material's TXST slot 3 at render time (F4SE CharGenInterface.cpp:
-                ' 1106-1179, ProcessHairColor → SetTextureFilename(3, ...)). Vanilla
-                ' HumanChildRace ships without HNAM/HLTX precisely because the BGSM carries it.
-                Dim palTex As String = If(material.GreyscaleTexture, "")
-                If palTex = "" Then palTex = ResolveRaceHairLookupTexture(state, _pluginManager)
-                If palTex <> "" Then
-                    Dim oldPalColor = material.GrayscaleToPaletteColor
-                    Dim oldScale = material.GrayscaleToPaletteScale
-                    Dim oldGreyTex = If(logEnabled, If(material.GreyscaleTexture, ""), Nothing)
-                    material.GrayscaleToPaletteColor = True
-                    material.GrayscaleToPaletteScale = clfm.RemappingIndex
-                    material.GreyscaleTexture = palTex
-                    didPalette = True
-                    If logEnabled Then
-                        Dim newScale = clfm.RemappingIndex
-                        Dim hairFidL = hairColorFormID
-                        Dim palTexL = palTex
-                        Logger.LogLazy(Function() $"[PALSCALE-WRITE] branch=Hair-CLFM hdptType={candidate.HeadPartType} hairColorFid=0x{hairFidL:X8} oldPalColor={oldPalColor} oldScale={oldScale:F4} oldGreyTex='{oldGreyTex}' → newPalColor=True newScale={newScale:F4} newGreyTex='{palTexL}'")
+                ' PRESERVAR el opt-in de palette de la FUENTE (no forzarlo). Probado sobre el corpus
+                ' FaceGen vanilla (BeardRuleProbe 2026-06-13, 1100 shapes de barba, 7 diffuse): el flag
+                ' GreyscaleToPalette_Color es UNIFORME por barba (función de la barba fuente, NO del NPC,
+                ' 0 casos mix). CK lo deja como vino la fuente: barbas tintables (facialhair01/02, haircurly*)
+                ' con flag ON; stubble (hairshaved04) con flag OFF. Nuestro código forzaba ON para toda
+                ' shape Hair → rompía las OFF (88/1100). Fix: solo encender el flag + inyectar la textura
+                ' del LUT si la FUENTE ya optó por palette (flag propio o textura greyscale propia).
+                ' El SCALE (RemappingIndex) se escribe SIEMPRE — CK lo propaga uniforme por NPC, inerte
+                ' en las shapes sin flag/textura (memoria grayscale 2026-05-25).
+                Dim sourceHadPalette As Boolean = material.GrayscaleToPaletteColor OrElse Not String.IsNullOrEmpty(material.GreyscaleTexture)
+                Dim oldPalColor = material.GrayscaleToPaletteColor
+                Dim oldScale = material.GrayscaleToPaletteScale
+                Dim oldGreyTex = If(logEnabled, If(material.GreyscaleTexture, ""), Nothing)
+                material.GrayscaleToPaletteScale = clfm.RemappingIndex
+                Dim palTex As String = ""
+                If sourceHadPalette Then
+                    ' Priority: BGSM's own GreyscaleTexture first (per-shape, picked by the stylist
+                    ' for THIS mesh), RACE.HNAM/HLTX as fallback. The engine in-game binds the LUT
+                    ' from the material's TXST slot 3 at render time (F4SE CharGenInterface.cpp:
+                    ' 1106-1179, ProcessHairColor → SetTextureFilename(3, ...)). Vanilla
+                    ' HumanChildRace ships without HNAM/HLTX precisely because the BGSM carries it.
+                    palTex = If(material.GreyscaleTexture, "")
+                    If palTex = "" Then palTex = ResolveRaceHairLookupTexture(state, _pluginManager)
+                    If palTex <> "" Then
+                        material.GrayscaleToPaletteColor = True
+                        material.GreyscaleTexture = palTex
                     End If
+                End If
+                ' La rama palette manejó el material (escribió el scale) → no caer al HairTintColor
+                ' fallback, que pisaría el HairTintColor de la fuente (CK no lo cambia en barbas OFF).
+                didPalette = True
+                If logEnabled Then
+                    Dim newScale = clfm.RemappingIndex
+                    Dim hairFidL = hairColorFormID
+                    Dim palTexL = palTex
+                    Dim srcHad = sourceHadPalette
+                    Dim newPal = material.GrayscaleToPaletteColor
+                    Logger.LogLazy(Function() $"[PALSCALE-WRITE] branch=Hair-CLFM hdptType={candidate.HeadPartType} hairColorFid=0x{hairFidL:X8} sourceHadPalette={srcHad} oldPalColor={oldPalColor} oldScale={oldScale:F4} oldGreyTex='{oldGreyTex}' → newPalColor={newPal} newScale={newScale:F4} newGreyTex='{palTexL}'")
                 End If
             End If
         End If
@@ -11771,98 +12045,26 @@ Public Class MainForm
         If textureSet.MaterialPath <> "" Then
             Dim oldPath = If(relatedMaterial.path, "")
 
-            Dim overrideMaterial = TryLoadMaterialFromDictionary(textureSet.MaterialPath, material, shap, nif)
+            Dim overrideMaterial = MaterialResolver.TryLoadMaterialFromDictionary(textureSet.MaterialPath, material, shap, nif)
             If overrideMaterial IsNot Nothing Then
-                If usesBodyTexture Then
-                    relatedMaterial.material = overrideMaterial
-                    material = overrideMaterial
-                    relatedMaterial.path = FO4UnifiedMaterial_Class.CorrectMaterialPath(textureSet.MaterialPath)
-                    If logEnabled Then
-                        Dim mnamL = If(textureSet.MaterialPath, ""), ubt = usesBodyTexture
-                        Logger.LogLazy(Function() $"[TXST-MNAM] mnam='{mnamL}' usesBodyTexture={ubt} → FULL-REPLACE (D+N+S+todo del BGSM override)")
-                    End If
-                Else
-                    Dim oldDiffuse = If(material.Diffuse_or_Base_Texture, "")
-                    Dim newDiffuse = If(overrideMaterial.Diffuse_or_Base_Texture, "")
-                    If newDiffuse <> "" Then material.Diffuse_or_Base_Texture = newDiffuse
-                    relatedMaterial.path = FO4UnifiedMaterial_Class.CorrectMaterialPath(textureSet.MaterialPath)
-                    If logEnabled Then
-                        Dim mnamL = If(textureSet.MaterialPath, ""), ubt = usesBodyTexture
-                        Dim oldDiffL = oldDiffuse, newDiffL = newDiffuse
-                        Logger.LogLazy(Function() $"[TXST-MNAM] mnam='{mnamL}' usesBodyTexture={ubt} → DIFFUSE-ONLY (N/S/Env/etc del NIF inline; SKIP) oldD='{oldDiffL}' newD='{newDiffL}'")
-                    End If
+                ' EXPERIMENTO (2026-06-13): gateo DIFFUSE-ONLY DESACTIVADO — full-replace SIEMPRE
+                ' (se ignora usesBodyTexture) para medir empíricamente el delta vs CK al rebakear.
+                ' El análisis predice que ALEJA de CK (mete wrinkles/normal/spec del material MNAM que
+                ' CK NO usa — ej. Valentine slot5 ValentineCrease vs el genérico de CK) salvo el
+                ' AlphaTest; el rebake lo confirma o refuta. REVERTIR según resultado. Ver
+                ' reference_facegen_ck_must_come_from_ba2 (#e diffuse-only).
+                relatedMaterial.material = overrideMaterial
+                material = overrideMaterial
+                relatedMaterial.path = FO4UnifiedMaterial_Class.CorrectMaterialPath(textureSet.MaterialPath)
+                If logEnabled Then
+                    Dim mnamL = If(textureSet.MaterialPath, ""), ubt = usesBodyTexture
+                    Logger.LogLazy(Function() $"[TXST-MNAM] mnam='{mnamL}' usesBodyTexture={ubt} → FULL-REPLACE (EXPERIMENT: diffuse-only OFF)")
                 End If
             End If
         End If
 
         ApplyTextureSetToMaterial(material, textureSet, isHeadPartTextureSet)
     End Sub
-
-    Friend Shared Function TryLoadMaterialFromDictionary(materialPath As String, fallbackMaterial As FO4UnifiedMaterial_Class, shap As NiflySharp.INiShape, nif As Nifcontent_Class_Manolo) As FO4UnifiedMaterial_Class
-        Dim logEnabled = Logger.Enabled
-        Dim rawPathLog = If(logEnabled, If(materialPath, ""), Nothing)
-        Dim correctedPath = FO4UnifiedMaterial_Class.CorrectMaterialPath(materialPath)
-        If correctedPath = "" Then
-            If logEnabled Then
-                Logger.LogLazy(Function() $"[MAT-LOAD] rawPath='{rawPathLog}' lookupKey='' result=NULL-PATH")
-            End If
-            Return Nothing
-        End If
-        Dim containsKey = FilesDictionary_class.Dictionary.ContainsKey(correctedPath)
-        If Not containsKey Then
-            If logEnabled Then
-                Dim lookupKeyLog = correctedPath
-                Logger.LogLazy(Function() $"[MAT-LOAD] rawPath='{rawPathLog}' lookupKey='{lookupKeyLog}' containsKey=False result=NOT-FOUND")
-            End If
-            Return Nothing
-        End If
-
-        Dim materialType = GetMaterialTypeFromPath(correctedPath, fallbackMaterial)
-        If materialType Is Nothing Then
-            If logEnabled Then
-                Dim lookupKeyLog = correctedPath
-                Logger.LogLazy(Function() $"[MAT-LOAD] rawPath='{rawPathLog}' lookupKey='{lookupKeyLog}' containsKey=True result=UNKNOWN-TYPE")
-            End If
-            Return Nothing
-        End If
-
-        Try
-            Dim material As New FO4UnifiedMaterial_Class()
-            material.Deserialize(correctedPath, materialType, shap, nif)
-            If logEnabled Then
-                Dim lookupKeyLog = correctedPath
-                Dim loadedAt = material.AlphaTest.ToString()
-                Dim typeLog = materialType.Name
-                Dim palOnLoad = material.GrayscaleToPaletteColor
-                Dim palScaleLoad = material.GrayscaleToPaletteScale
-                Dim greyTexLoad = If(material.GreyscaleTexture, "")
-                Logger.LogLazy(Function() $"[MAT-LOAD] rawPath='{rawPathLog}' lookupKey='{lookupKeyLog}' containsKey=True type={typeLog} loadedAT={loadedAt} palColor={palOnLoad} palScale={palScaleLoad:F4} greyTex='{greyTexLoad}' result=OK")
-            End If
-            Return material
-        Catch ex As Exception
-            If logEnabled Then
-                Dim lookupKeyLog = correctedPath
-                Dim msg = ex.Message
-                Logger.LogLazy(Function() $"[MAT-LOAD] rawPath='{rawPathLog}' lookupKey='{lookupKeyLog}' containsKey=True result=EX msg='{msg}'")
-            End If
-            Return Nothing
-        End Try
-    End Function
-
-    Private Shared Function GetMaterialTypeFromPath(materialPath As String, fallbackMaterial As FO4UnifiedMaterial_Class) As Type
-        Select Case Path.GetExtension(materialPath).ToLowerInvariant()
-            Case ".bgsm"
-                Return GetType(BGSM)
-            Case ".bgem"
-                Return GetType(BGEM)
-        End Select
-
-        If fallbackMaterial IsNot Nothing AndAlso fallbackMaterial.Underlying_Material IsNot Nothing Then
-            Return fallbackMaterial.Underlying_Material.GetType()
-        End If
-
-        Return Nothing
-    End Function
 
     Friend Shared Sub ApplyTextureSetToMaterial(material As FO4UnifiedMaterial_Class, textureSet As TXST_Data, Optional isHeadPartTextureSet As Boolean = False)
         If material Is Nothing OrElse textureSet Is Nothing Then Return
@@ -11924,7 +12126,7 @@ Public Class MainForm
             Dim shapes = NifRenderableShape.FromNif(nif)
             If shapes Is Nothing Then Return
             For Each shape In shapes
-                EnsureShapeMaterialResolved(shape)
+                MaterialResolver.EnsureShapeMaterialResolved(shape)
                 Dim rm = shape.ShapeMaterial
                 Dim snL = shape.ShapeName, keyL = key, lblL = label
                 If rm Is Nothing OrElse rm.material Is Nothing Then
@@ -12020,9 +12222,11 @@ Public Class MainForm
         Return False
     End Function
 
-    ' ApplyMaterialSwap moved to ShapeMaterialOverrides module so it can be reused by
-    ' the upcoming NPC ObjectTemplate / OMOD path. Call sites use
-    ' `ShapeMaterialOverrides.ApplyMaterialSwap(formID, shapes, _pluginManager)`.
+    ' ApplyMaterialSwap lives in the shared ShapeMaterialOverrides module (in FO4_Base_Library)
+    ' so it can be reused by the NPC ObjectTemplate / OMOD path. The generic material-resolution
+    ' helpers (EnsureShapeMaterialResolved / TryLoadMaterialFromDictionary) now live in the lib's
+    ' MaterialResolver module and are called directly from there, e.g.
+    ' `ShapeMaterialOverrides.ApplyMaterialSwap(formID, func, shapes, _pluginManager)`.
 
     Private Function ResolveHairTintColor(candidate As MeshCandidate, state As NPCVisualState, headPartColor As Nullable(Of Color)) As Nullable(Of Color)
         ' Hair/FacialHair/Brow all read NPC.HCLF (see ApplyMaterialPaletteHairColor for the
@@ -12184,66 +12388,6 @@ Public Class MainForm
         Return RecordParsers.ParseCLFM(rec, _pluginManager)
     End Function
 
-    ''' <summary>Ensure the shape's <c>ShapeMaterial</c> is fully resolved (rebuild from the NIF
-    ''' shader when the cached material is missing or its .bgsm/.bgem path is unreachable).
-    ''' <c>Friend Shared</c> so HeadPartPicker_Form can re-use it for its NIF preview without
-    ''' needing a MainForm instance.</summary>
-    Friend Shared Sub EnsureShapeMaterialResolved(shape As IRenderableShape)
-        If shape Is Nothing Then Return
-
-        Dim logEnabled = Logger.Enabled
-        Dim relatedMaterial = shape.ShapeMaterial
-        If relatedMaterial Is Nothing Then Return
-
-        Dim rawPath = If(relatedMaterial.path, "")
-        Dim materialPath = FO4UnifiedMaterial_Class.CorrectMaterialPath(relatedMaterial.path)
-        Dim containsKey = FilesDictionary_class.Dictionary.ContainsKey(materialPath)
-        Dim hasResolvableMaterial = relatedMaterial.path <> "" AndAlso containsKey
-
-        If logEnabled Then
-            Dim hadMaterial = relatedMaterial.material IsNot Nothing
-            Dim preAT = "?"
-            If hadMaterial Then preAT = relatedMaterial.material.AlphaTest.ToString()
-            Dim shapeNameLog = shape.ShapeName
-            Dim rawPathLog = rawPath
-            Dim lookupKeyLog = materialPath
-            Dim containsKeyLog = containsKey
-            Dim hasResolvableLog = hasResolvableMaterial
-            Dim hadMaterialLog = hadMaterial
-            Dim preAtLog = preAT
-            Logger.LogLazy(Function() $"[MAT-RESOLVE] shape='{shapeNameLog}' rawPath='{rawPathLog}' lookupKey='{lookupKeyLog}' containsKey={containsKeyLog} hasResolvable={hasResolvableLog} hadMat={hadMaterialLog} preAT={preAtLog}")
-        End If
-
-        If relatedMaterial.material IsNot Nothing AndAlso (relatedMaterial.path = "" OrElse hasResolvableMaterial) Then Return
-        If shape.NifContent Is Nothing OrElse shape.NifShape Is Nothing OrElse shape.NifShader Is Nothing Then
-            If logEnabled Then
-                Dim shapeNameLog = shape.ShapeName
-                Logger.LogLazy(Function() $"[MAT-RESOLVE-SKIP] shape='{shapeNameLog}' reason='missing NifContent/Shape/Shader'")
-            End If
-            Return
-        End If
-
-        Dim rebuiltMaterial As New FO4UnifiedMaterial_Class()
-
-        Select Case shape.NifShader.GetType()
-            Case GetType(BSLightingShaderProperty)
-                rebuiltMaterial.Create_From_Shader(shape.NifContent, shape.NifShape, CType(shape.NifShader, BSLightingShaderProperty))
-            Case GetType(BSEffectShaderProperty)
-                rebuiltMaterial.Create_From_Shader(shape.NifContent, shape.NifShape, CType(shape.NifShader, BSEffectShaderProperty))
-            Case Else
-                Return
-        End Select
-
-        relatedMaterial.material = rebuiltMaterial
-        relatedMaterial.path = ""
-        If logEnabled Then
-            Dim shapeNameLog = shape.ShapeName
-            Dim rawPathLog = rawPath
-            Dim lookupKeyLog = materialPath
-            Dim postAtLog = rebuiltMaterial.AlphaTest.ToString()
-            Logger.LogLazy(Function() $"[MAT-REBUILD] shape='{shapeNameLog}' rawPath='{rawPathLog}' lookupKey='{lookupKeyLog}' → REBUILT via Create_From_Shader, postAT={postAtLog}")
-        End If
-    End Sub
     ''' <summary>Thin wrapper over <see cref="MeshPathHelpers.NormalizeMeshKey"/>; centralizes
     ''' path normalization in MeshPathHelpers so render path + offline bake never drift.</summary>
     Private Shared Function NormalizeDictionaryKeyWithMeshesPrefix(path As String) As String
@@ -12268,7 +12412,17 @@ Public Class MainForm
     ''' threads <see cref="_pluginManager"/> through. Real impl lives in the helper module
     ''' so offline bake (FaceGenBuilder) can reuse without touching MainForm.</summary>
     Private Function GetParsedNpc(formID As UInteger) As NPC_Data
-        Return NpcRecordOverlay.GetParsedNpc(formID, _pluginManager)
+        ' Route through the bulk-parse cache: _npcByIdCache holds the same full ParseNPC output the
+        ' helper would re-produce (both use RecordParsers.ParseNPC), so a hit avoids re-parsing the
+        ' record 5+ times per frame. Miss = a FormID outside the placed-NPC universe (e.g. a TPLT
+        ' model source) → parse via the helper and memoize so repeat lookups within the render are free.
+        Dim cached As NPC_Data = Nothing
+        If _npcByIdCache IsNot Nothing AndAlso _npcByIdCache.TryGetValue(formID, cached) AndAlso cached IsNot Nothing Then
+            Return cached
+        End If
+        Dim parsed = NpcRecordOverlay.GetParsedNpc(formID, _pluginManager)
+        If parsed IsNot Nothing AndAlso _npcByIdCache IsNot Nothing Then _npcByIdCache(formID) = parsed
+        Return parsed
     End Function
 
     Friend Shared Function CreateOwnTraitsState(npc As NPC_Data) As TraitsState
@@ -13083,7 +13237,8 @@ Public Class MainForm
     ''' to MainForm instance state.</summary>
     Private Function ApplyPresetOverlayToNpcData(raw As NPC_Data, selectedNpcFormID As UInteger) As NPC_Data
         Return NpcRecordOverlay.ApplyPresetOverlayToNpcData(raw, selectedNpcFormID, _appliedPresets,
-                                                            _pluginManager, AddressOf ResolveLmSkinTemplate)
+                                                            _pluginManager, AddressOf ResolveLmSkinTemplate,
+                                                            AddressOf ParseRaceCached)
     End Function
 
     ''' <summary>Resolver passed to the overlay helper so it can map an LM SkinTemplate id to
@@ -14120,6 +14275,7 @@ Public Class MainForm
                            Try
                                Dim ex = failedTask.Exception
                                Dim st = ex?.GetBaseException()?.StackTrace
+                               Logger.LogLazy(Function() $"[RELOAD] faulted: {ex?.GetBaseException()?.GetType().Name}: {ex?.GetBaseException()?.Message}{Environment.NewLine}{st}")
                            Catch
                            End Try
                        End Sub, Threading.Tasks.TaskContinuationOptions.OnlyOnFaulted)
@@ -14976,7 +15132,10 @@ Public Class MainForm
         End If
 
         Dim originPlugin = _pluginManager.GetOriginatingPluginName(bakeFormID)
-        Dim formIdLow = (bakeFormID And &HFFFFFFUI)
+        ' ESL-aware local id (FaceGenLocalId): the packed FaceGen file name MUST match the engine's
+        ' lookup name (FaceGenBuilder.ResolveFaceGenPath / ResolveFaceGenNifPath both use FaceGenLocalId),
+        ' so an ESL NPC bakes to "00000800", not "00032800" — otherwise the lookup misses the packed file.
+        Dim formIdLow = FaceGenLocalId(bakeFormID)
         Logger.LogLazy(Function() $"[CHARGEN-ID] save npcFormID=0x{npcFormID:X8} bakeFormID=0x{bakeFormID:X8} → originPlugin='{originPlugin}' formIdLow=0x{formIdLow:X8}")
 
         Dim bundle As New NpcFaceGenPacker.BakedNpcBundle With {

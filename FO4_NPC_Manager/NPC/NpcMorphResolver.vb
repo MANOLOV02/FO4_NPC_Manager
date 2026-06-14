@@ -72,78 +72,19 @@ Public Class NpcMorphResolver
         Dim triHead As TriHeadFile = Nothing
         LoadTriForShape(shape, tri, triHead)
 
-        ' Vertex count sanity check: TriHead deltas are 1:1 with NIF vertex indices.
-        ' If counts don't match, the NIF was replaced (e.g. HiPoly Faces) and applying
-        ' vanilla morph indices to a different mesh corrupts geometry. Skip in that case.
-        Dim shapeVertCount = geom.NifLocalVertices.Length
-
-        ' TRI-BASE-ALIGN-PROBE 2026-04-19: compare TRI.BaseVertices[i] vs NIF.NifLocalVertices[i]
-        ' over the overlapping range [0, min(TRI, NIF)). Runs ALWAYS (match or mismatch) so we have
-        ' female-matching reference (expected max diff ≈ 0 over full range) vs male-mismatched
-        ' (diff ≈ 0 over first 1690 if extras are appended at end, or nonzero if interleaved).
-        If triHead IsNot Nothing AndAlso shapeVertCount > 0 AndAlso triHead.BaseVertices IsNot Nothing AndAlso triHead.BaseVertices.Length > 0 Then
-            Dim overlap = Math.Min(triHead.BaseVertices.Length, shapeVertCount)
-            Dim maxMag As Double = 0
-            Dim maxIdx As Integer = -1
-            Dim nearZero As Integer = 0
-            For i = 0 To overlap - 1
-                Dim t = triHead.BaseVertices(i)
-                Dim n = geom.NifLocalVertices(i)
-                Dim dx = CDbl(t.X) - n.X
-                Dim dy = CDbl(t.Y) - n.Y
-                Dim dz = CDbl(t.Z) - n.Z
-                Dim mag = Math.Sqrt(dx * dx + dy * dy + dz * dz)
-                If mag < 0.0001 Then nearZero += 1
-                If mag > maxMag Then
-                    maxMag = mag
-                    maxIdx = i
-                End If
-            Next
-            Dim pct = (100.0 * nearZero) / overlap
-            Dim kind = If(CInt(triHead.NumVertices) = shapeVertCount, "MATCH", "MISMATCH")
-            For i = 0 To Math.Min(4, overlap - 1)
-                Dim t = triHead.BaseVertices(i)
-                Dim n = geom.NifLocalVertices(i)
-                Dim dx = CDbl(t.X) - n.X
-                Dim dy = CDbl(t.Y) - n.Y
-                Dim dz = CDbl(t.Z) - n.Z
-                Dim mag = Math.Sqrt(dx * dx + dy * dy + dz * dz)
-                Dim iLocal = i
-            Next
-            If maxIdx >= 0 AndAlso maxMag > 0.0001 Then
-                Dim t = triHead.BaseVertices(maxIdx)
-                Dim n = geom.NifLocalVertices(maxIdx)
-            End If
-            If shapeVertCount > overlap Then
-                For i = overlap To Math.Min(shapeVertCount - 1, overlap + 9)
-                    Dim n = geom.NifLocalVertices(i)
-                    Dim iLocal = i
-                Next
-            End If
-        End If
-
-        ' Vertex count sanity check. Apply semantics: final[i] = NIF.rest[i] + Σ morph.delta[i]
-        ' (verified MorphEngine.vb:86 starts from NifLocalVertices and line 137 adds deltas by index).
-        ' MorphEngine also has a safety guard (line 134: If i >= 0 AndAlso i < count) that drops
-        ' out-of-range indices. Three cases:
-        '   A) TriHead.NumVertices == NIF verts: exact match, apply all deltas.
+        ' Apply semantics: final[i] = NIF.rest[i] + Σ morph.delta[i] — TriHead deltas are 1:1 with NIF
+        ' vertex indices (verified MorphEngine.vb:86 starts from NifLocalVertices, line 137 adds deltas
+        ' by index). No resolver-side vertex-count handling is needed: MorphEngine's bounds guard
+        ' (line 134: If i >= 0 AndAlso i < count) drops out-of-range indices, covering all three count
+        ' cases without corruption:
+        '   A) TriHead.NumVertices == NIF verts: exact match, all deltas apply.
         '   B) TriHead.NumVertices <  NIF verts: NIF has appended extras (vanilla male _faceBones
-        '      = 1696 verts with TRI chargen = 1690; extras are inner-mouth/jaw rigging geometry
-        '      with no morph target in any vanilla TRI). Apply the TRI's first N deltas to
-        '      indices [0, TRI.NumVertices); extras [TRI.NumVertices, NIF) stay at NIF rest.
-        '      Empirically confirmed via TRI-BASE-ALIGN-PROBE 2026-04-19 that female (count MATCH)
-        '      has maxDiff 0.72 between TRI.BaseVertices and NIF rest at some indices yet morphs
-        '      at noise floor — proves by-index alignment is the runtime truth, not by-position.
-        '   C) TriHead.NumVertices >  NIF verts: NIF was DOWNSIZED (mod replaced with fewer verts).
-        '      Log warning; MorphEngine's bounds check will drop indices ≥ NIF count. Some morph
-        '      deltas are lost but nothing corrupts.
-        If triHead IsNot Nothing AndAlso shapeVertCount > 0 Then
-            If CInt(triHead.NumVertices) = shapeVertCount Then
-                ' Case A — nothing to log
-            ElseIf CInt(triHead.NumVertices) < shapeVertCount Then
-            Else
-            End If
-        End If
+        '      = 1696 verts vs TRI chargen 1690; extras are inner-mouth/jaw rigging with no morph
+        '      target). First N deltas apply to [0, TRI.NumVertices); extras stay at NIF rest.
+        '      By-index alignment is the runtime truth, not by-position (confirmed 2026-04-19: female
+        '      count-MATCH has maxDiff 0.72 between TRI base and NIF rest yet morphs at noise floor).
+        '   C) TriHead.NumVertices >  NIF verts: NIF was DOWNSIZED; the bounds guard drops indices
+        '      ≥ NIF count — some deltas lost but nothing corrupts.
 
         ' MWGT (NPC.MWGT Thin/Muscular/Fat) and MRSV (Body Morph Region Values) are NOT applied
         ' here. They travel through the bone-scale pose pipeline in MainForm.BuildBodyWeightPose:
@@ -161,11 +102,6 @@ Public Class NpcMorphResolver
 
         ' 2) Face morph presets (MSDK/MSDV) - via TriHead chargen .tri + RACE MSID→MSM0/MSM1
         If _npcData.MorphValues.Count > 0 Then
-            ' Raw dump of parsed MSDK→MSDV pairs for cross-reference with xEdit.
-            Dim dumpIdx As Integer = 0
-            For Each kvp In _npcData.MorphValues
-                dumpIdx += 1
-            Next
             If triHead IsNot Nothing Then AddFaceMorphPresetsFromTriHead(triHead, plan)
         End If
 
@@ -174,17 +110,6 @@ Public Class NpcMorphResolver
         ' Empirical rationale (Alijo + Cait, 2026-04-18 against CK FaceGen): vanilla RACE has
         ' multiple MPPI keys pointing to the same morph name (e.g. "DefaultFaceType0" across
         ' Nose+Cheek+Neck+Mouth groups); CK applies the SUM, not max-abs.
-
-        ' Diagnostic: log max delta magnitude per applied channel (helps spot scaling/space bugs)
-        For Each ch In plan.Channels
-            If ch.Deltas Is Nothing OrElse ch.Deltas.Count = 0 Then Continue For
-            Dim maxMag As Single = 0
-            For Each d In ch.Deltas
-                Dim m = d.PosDiff.LengthSquared
-                If m > maxMag Then maxMag = m
-            Next
-            maxMag = CSng(Math.Sqrt(maxMag))
-        Next
 
         ' 3) Face sculpting (FMRI/FMRS) — DISABLED: these are bone transforms
         '    (position/rotation/scale), not vertex morph weights.
@@ -259,9 +184,6 @@ Public Class NpcMorphResolver
                 Dim deltas = ConvertTriHeadMorphToMorphData(triMorph)
                 If deltas.Count > 0 Then
                     plan.Channels.Add(New MorphChannel(morphName, morphWeight, deltas))
-                    If logShapeName <> "" Then
-                        Dim maxDeltaStr = DescribeMaxSignedDelta(triMorph, triHead)
-                    End If
                 End If
             Next
         End If
@@ -284,9 +206,6 @@ Public Class NpcMorphResolver
                 Dim deltas = ConvertTriHeadMorphToMorphData(triMorph)
                 If deltas.Count > 0 Then
                     plan.Channels.Add(New MorphChannel(morphName, weight, deltas))
-                    If logShapeName <> "" Then
-                        Dim topDeltas = DescribeTopSignedDeltas(triMorph, triHead, 5)
-                    End If
                 End If
             Next
         End If
@@ -322,53 +241,6 @@ Public Class NpcMorphResolver
         Dim built = BuildFaceMorphPlanFromTriHead(_npcData, _morphValueDefs, _morphPresetDefs, triHead, logShapeName:="head")
         plan.Channels.AddRange(built.Channels)
     End Sub
-
-    ''' <summary>Convert PIRT TRI morph offsets (sparse) to MorphData list.</summary>
-    Private Shared Function ConvertTriOffsetsToMorphData(entry As TriMorphEntry) As List(Of MorphData)
-        Dim result As New List(Of MorphData)(entry.Offsets.Count)
-        For Each kvp In entry.Offsets
-            result.Add(New MorphData With {
-                .index = kvp.Key,
-                .PosDiff = kvp.Value
-            })
-        Next
-        Return result
-    End Function
-
-    ''' <summary>Return a string listing the top-N non-zero deltas of a TriHead morph (sorted
-    ''' by magnitude descending), each with its base position and signed delta. Useful to see
-    ''' the spatial distribution of a morph: does it push a single feature or sweep the whole
-    ''' face? And in which direction.</summary>
-    Private Shared Function DescribeTopSignedDeltas(morph As TriHeadMorph, triHead As TriHeadFile, topN As Integer) As String
-        If morph Is Nothing OrElse morph.Vertices Is Nothing OrElse morph.Vertices.Length = 0 Then Return "(none)"
-        Dim entries As New List(Of (Idx As Integer, V As Vector3, MagSq As Single))
-        For i = 0 To morph.Vertices.Length - 1
-            Dim v = morph.Vertices(i)
-            Dim m = v.X * v.X + v.Y * v.Y + v.Z * v.Z
-            If m > 0.000001F Then entries.Add((i, v, m))
-        Next
-        If entries.Count = 0 Then Return "(none)"
-        entries.Sort(Function(a, b) b.MagSq.CompareTo(a.MagSq))
-        Dim count = Math.Min(topN, entries.Count)
-        Dim sb As New System.Text.StringBuilder()
-        For k = 0 To count - 1
-            Dim e = entries(k)
-            Dim baseStr As String = "base=?"
-            If triHead IsNot Nothing AndAlso triHead.BaseVertices IsNot Nothing _
-               AndAlso e.Idx < triHead.BaseVertices.Length Then
-                Dim b = triHead.BaseVertices(e.Idx)
-                baseStr = $"base=({b.X:F2},{b.Y:F2},{b.Z:F2})"
-            End If
-            If k > 0 Then sb.Append(" | ")
-            sb.Append($"idx={e.Idx} {baseStr} delta=({e.V.X:+0.000;-0.000;0.000},{e.V.Y:+0.000;-0.000;0.000},{e.V.Z:+0.000;-0.000;0.000}) mag={Math.Sqrt(e.MagSq):F3}")
-        Next
-        Return sb.ToString()
-    End Function
-
-    ''' <summary>Single-vertex wrapper for backward compatibility with the SLIDER log (shows only the peak).</summary>
-    Private Shared Function DescribeMaxSignedDelta(morph As TriHeadMorph, triHead As TriHeadFile) As String
-        Return DescribeTopSignedDeltas(morph, triHead, 1)
-    End Function
 
     ''' <summary>Convert TriHead morph vertices (dense, all vertices) to MorphData list (only non-zero).</summary>
     Private Shared Function ConvertTriHeadMorphToMorphData(morph As TriHeadMorph) As List(Of MorphData)
@@ -513,12 +385,10 @@ Public Class NpcMorphResolver
         End Try
     End Function
 
+    ' Routed through MeshPathHelpers.TryLoadMeshBytes (minBytes:=8 preserves the TRI-magic guard)
+    ' so the TryGetValue + GetBytes + size-check lives in one place (DUP-004).
     Private Shared Function TryGetFileBytes(normalizedPath As String) As Byte()
-        Dim loc As FilesDictionary_class.File_Location = Nothing
-        If Not FilesDictionary_class.Dictionary.TryGetValue(normalizedPath, loc) Then Return Nothing
-        Dim bytes = loc.GetBytes()
-        If bytes Is Nothing OrElse bytes.Length < 8 Then Return Nothing
-        Return bytes
+        Return MeshPathHelpers.TryLoadMeshBytes(normalizedPath, minBytes:=8)
     End Function
 
 End Class

@@ -71,7 +71,23 @@ Public Class OutfitPicker_Form
     Private ReadOnly _currentEffectiveOutfitFID As UInteger
     ''' <summary>All ARMO items selectable for this race/gender (MainForm.GetArmoItemCandidates).</summary>
     Private _itemCandidates As List(Of (FormID As UInteger, DisplayName As String, SlotMask As UInteger, Plugin As String))
+    ''' <summary>FormID → candidate index built once whenever <see cref="_itemCandidates"/> is assigned,
+    ''' so per-item lookups (AddItemFidAsPiece / PrefillPiecesFromOutfit / Add-to-lvl name) are O(1)
+    ''' instead of an O(n) FirstOrDefault per item. First occurrence wins, mirroring FirstOrDefault.</summary>
+    Private _itemCandidatesByFid As Dictionary(Of UInteger, (FormID As UInteger, DisplayName As String, SlotMask As UInteger, Plugin As String))
     Private _filteredItems As List(Of (FormID As UInteger, DisplayName As String, SlotMask As UInteger, Plugin As String))
+
+    ''' <summary>Assign <see cref="_itemCandidates"/> and rebuild the FormID index in lockstep so the two
+    ''' never drift. Call this instead of assigning the field directly.</summary>
+    Private Sub SetItemCandidates(items As List(Of (FormID As UInteger, DisplayName As String, SlotMask As UInteger, Plugin As String)))
+        _itemCandidates = items
+        _itemCandidatesByFid = New Dictionary(Of UInteger, (FormID As UInteger, DisplayName As String, SlotMask As UInteger, Plugin As String))(If(items Is Nothing, 0, items.Count))
+        If items IsNot Nothing Then
+            For Each it In items
+                If Not _itemCandidatesByFid.ContainsKey(it.FormID) Then _itemCandidatesByFid(it.FormID) = it
+            Next
+        End If
+    End Sub
     ''' <summary>Pieces the user added to the outfit under construction (working set). Order = add
     ''' sequence; the slot-conflict resolver uses it for "last-added wins".</summary>
     Private ReadOnly _pieces As New List(Of PieceEntry)
@@ -147,7 +163,7 @@ Public Class OutfitPicker_Form
 
         ' --- Create tab ---
         LabelEdidPrefix.Text = "EDID: npcm_<esp>_Outfit_"
-        _itemCandidates = _mainForm.GetArmoItemCandidatesWithDrafts(_raceFormID, _isFemale)
+        SetItemCandidates(_mainForm.GetArmoItemCandidatesWithDrafts(_raceFormID, _isFemale))
         _filteredItems = New List(Of (FormID As UInteger, DisplayName As String, SlotMask As UInteger, Plugin As String))(_itemCandidates)
         RefreshItemList()
         RefreshPieces()
@@ -447,8 +463,8 @@ Public Class OutfitPicker_Form
     Private Sub AddItemFidAsPiece(fid As UInteger)
         If fid = 0UI Then Return
         If _pieces.Any(Function(p) p.FormID = fid) Then Return  ' no exact-duplicate item (ARMO or LVLI)
-        Dim it = _itemCandidates.FirstOrDefault(Function(x) x.FormID = fid)
-        If it.FormID = 0UI Then Return
+        Dim it As (FormID As UInteger, DisplayName As String, SlotMask As UInteger, Plugin As String) = Nothing
+        If Not _itemCandidatesByFid.TryGetValue(fid, it) Then Return
         _pieceOrderCounter += 1
         Dim piece As New PieceEntry With {.FormID = it.FormID, .Display = it.DisplayName, .SlotMask = it.SlotMask,
                                           .Order = _pieceOrderCounter, .Plugin = it.Plugin}
@@ -493,7 +509,7 @@ Public Class OutfitPicker_Form
     ''' <summary>Rebuild the Create item-candidate list (after a new LVL draft is created) so own LVL drafts
     ''' (🎲) appear/update, then re-apply the current filter.</summary>
     Private Sub RefreshItemCandidates()
-        _itemCandidates = _mainForm.GetArmoItemCandidatesWithDrafts(_raceFormID, _isFemale)
+        SetItemCandidates(_mainForm.GetArmoItemCandidatesWithDrafts(_raceFormID, _isFemale))
         OnItemFilterChanged(Me, EventArgs.Empty)   ' re-filters + RefreshItemList
     End Sub
 
@@ -540,7 +556,8 @@ Public Class OutfitPicker_Form
         End If
         Dim lvl = _mainForm.TryGetLeveledListDraft(target.FormID)
         If lvl Is Nothing Then Return
-        Dim itemName = _itemCandidates.Where(Function(x) x.FormID = itemFid).Select(Function(x) x.DisplayName).FirstOrDefault()
+        Dim itemCand As (FormID As UInteger, DisplayName As String, SlotMask As UInteger, Plugin As String) = Nothing
+        Dim itemName As String = If(_itemCandidatesByFid.TryGetValue(itemFid, itemCand), itemCand.DisplayName, Nothing)
         Using dlg As New LeveledEntryDialog_Form($"Add '{If(itemName, itemFid.ToString("X8"))}'  →  '{lvl.EditorID}'")
             If dlg.ShowDialog(Me) <> DialogResult.OK Then Return
             lvl.Entries.Add(New LeveledListDraft.LeveledEntry With {
@@ -796,8 +813,8 @@ Public Class OutfitPicker_Form
         _pieceOrderCounter = 0
         ' INAM items AS AUTHORED (ARMO or LVLI) — a leveled entry stays a leveled piece (not flattened).
         For Each itemFID In _mainForm.ResolveOutfitItemList(fid)
-            Dim it = _itemCandidates.FirstOrDefault(Function(x) x.FormID = itemFID)
-            If it.FormID = 0UI Then Continue For
+            Dim it As (FormID As UInteger, DisplayName As String, SlotMask As UInteger, Plugin As String) = Nothing
+            If Not _itemCandidatesByFid.TryGetValue(itemFID, it) Then Continue For
             _pieceOrderCounter += 1
             Dim piece As New PieceEntry With {.FormID = it.FormID, .Display = it.DisplayName, .SlotMask = it.SlotMask,
                                               .Order = _pieceOrderCounter, .Plugin = it.Plugin}

@@ -39,19 +39,21 @@ Public Module MeshPathHelpers
     End Function
 
     ''' <summary>Load the bytes for an already-normalized FilesDictionary key. Returns Nothing if the
-    ''' key is empty/absent, the file is empty, or reading it throws. Centralizes the
-    ''' TryGetValue + GetBytes + empty-check pattern shared by the skeleton resolvers
-    ''' (FaceSkeletonResolver, BodyPartSkeletonResolver). Normalize the path first with
-    ''' <see cref="NormalizeMeshKey"/>.</summary>
-    Public Function TryLoadMeshBytes(normalizedKey As String) As Byte()
+    ''' key is empty/absent, the file is smaller than <paramref name="minBytes"/>, or reading it throws.
+    ''' Centralizes the TryGetValue + GetBytes + size-check pattern shared by the skeleton resolvers
+    ''' (FaceSkeletonResolver, BodyPartSkeletonResolver) and the TRI resolvers. Normalize the path first
+    ''' with <see cref="NormalizeMeshKey"/>. <paramref name="minBytes"/> defaults to 1 (reject only empty
+    ''' files); pass a larger value where the caller needs a minimum header size (e.g. 8 for a TRI magic).</summary>
+    Public Function TryLoadMeshBytes(normalizedKey As String, Optional minBytes As Integer = 1) As Byte()
         If String.IsNullOrEmpty(normalizedKey) Then Return Nothing
         Dim loc As FilesDictionary_class.File_Location = Nothing
         If Not FilesDictionary_class.Dictionary.TryGetValue(normalizedKey, loc) Then Return Nothing
         Try
             Dim bytes = loc.GetBytes()
-            If bytes Is Nothing OrElse bytes.Length = 0 Then Return Nothing
+            If bytes Is Nothing OrElse bytes.Length < minBytes Then Return Nothing
             Return bytes
         Catch ex As Exception
+            Logger.LogLazy(Function() $"[MESH-LOAD] '{normalizedKey}' read failed: {ex.GetType().Name}: {ex.Message}")
             Return Nothing
         End Try
     End Function

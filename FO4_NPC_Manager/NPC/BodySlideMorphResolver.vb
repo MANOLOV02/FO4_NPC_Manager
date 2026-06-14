@@ -68,15 +68,8 @@ Public Class BodySlideMorphResolver
         ' key in the .tri?". Same outcome as LM doing nif.GetObjectByName(<.tri key>) —
         ' just driven from the NIF side because that's the iteration order of the host.
         Dim resolvedTriShapeName = ResolveTriShapeKey(pirt, shapeName)
-        Dim nifVerts = geom.NifLocalVertices.Length
-        Dim shapeKeys = pirt.ShapeMorphs.Keys.ToList()
 
         If resolvedTriShapeName Is Nothing Then
-            For Each kv In _sliders
-                If Math.Abs(kv.Value) < 0.001F Then Continue For
-                If BodySlideTriResolver.IsExcludedSliderName(kv.Key) Then Continue For
-                Dim sliderLocal = kv.Key
-            Next
             Return plan
         End If
 
@@ -88,32 +81,13 @@ Public Class BodySlideMorphResolver
 
             Dim morph = pirt.GetMorph(resolvedTriShapeName, sliderName)
             If morph Is Nothing OrElse morph.Offsets.Count = 0 Then
-                Dim sLocal = sliderName
-                Dim triKeyMiss = resolvedTriShapeName
                 Continue For
             End If
-
-            ' Index-range probe vs NIF vertex count. MorphEngine silently drops indices
-            ' >= nifVerts; high oob count means the .tri targets a body with more verts than
-            ' our NIF (CBBE Curvy build vs vanilla, etc.) and the slider will look broken.
-            Dim maxIdx As Integer = -1
-            Dim oobCount As Integer = 0
-            For Each off In morph.Offsets
-                If off.Key > maxIdx Then maxIdx = off.Key
-                If off.Key >= nifVerts Then oobCount += 1
-            Next
 
             Dim deltas As New List(Of MorphData)(morph.Offsets.Count)
             For Each off In morph.Offsets
                 deltas.Add(New MorphData With {.index = off.Key, .PosDiff = off.Value})
             Next
-
-            Dim deltaTotal = morph.Offsets.Count
-            Dim sName = sliderName
-            Dim mIdx = maxIdx
-            Dim oobC = oobCount
-            Dim w = weight
-            Dim triKey = resolvedTriShapeName
 
             plan.Channels.Add(New MorphChannel(sliderName, weight, deltas))
         Next

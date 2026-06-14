@@ -260,7 +260,7 @@ Public Class HeadPartPicker_Form
                         Dim txst = RecordParsers.ParseTXST(txstRec, _pluginManager)
                         If txst IsNot Nothing Then
                             For Each shape In shapes
-                                MainForm.EnsureShapeMaterialResolved(shape)
+                                MaterialResolver.EnsureShapeMaterialResolved(shape)
                                 Dim relatedMaterial = shape.ShapeMaterial
                                 If relatedMaterial Is Nothing Then Continue For
                                 MainForm.ApplyTextureSetOverrides(txst, relatedMaterial, hdpt.UsesBodyTexture, shape.NifShape, shape.NifContent, isHeadPartTextureSet:=True)

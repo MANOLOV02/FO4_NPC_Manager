@@ -23,6 +23,7 @@ Partial Class AnimationPicker_Form
         TextFilter = New System.Windows.Forms.TextBox()
         LabelCount = New System.Windows.Forms.Label()
         CheckFilterGender = New System.Windows.Forms.CheckBox()
+        CheckShow1stPerson = New System.Windows.Forms.CheckBox()
         TreeClips = New System.Windows.Forms.TreeView()
         ButtonRow = New System.Windows.Forms.FlowLayoutPanel()
         ButtonCancel = New System.Windows.Forms.Button()
@@ -54,6 +55,7 @@ Partial Class AnimationPicker_Form
         FilterRow.Controls.Add(LabelFilter)
         FilterRow.Controls.Add(TextFilter)
         FilterRow.Controls.Add(CheckFilterGender)
+        FilterRow.Controls.Add(CheckShow1stPerson)
         FilterRow.Controls.Add(LabelCount)
         FilterRow.Dock = System.Windows.Forms.DockStyle.Fill
         FilterRow.Location = New System.Drawing.Point(3, 3)
@@ -96,6 +98,17 @@ Partial Class AnimationPicker_Form
         CheckFilterGender.Name = "CheckFilterGender"
         CheckFilterGender.Text = "Filter by gender"
         CheckFilterGender.UseVisualStyleBackColor = True
+        '
+        ' CheckShow1stPerson
+        '
+        CheckShow1stPerson.Anchor = System.Windows.Forms.AnchorStyles.Left
+        CheckShow1stPerson.AutoSize = True
+        CheckShow1stPerson.Checked = False
+        CheckShow1stPerson.CheckState = System.Windows.Forms.CheckState.Unchecked
+        CheckShow1stPerson.Margin = New System.Windows.Forms.Padding(3, 5, 12, 0)
+        CheckShow1stPerson.Name = "CheckShow1stPerson"
+        CheckShow1stPerson.Text = "Show 1st-person/camera"
+        CheckShow1stPerson.UseVisualStyleBackColor = True
         '
         ' TreeClips
         '
@@ -160,6 +173,7 @@ Partial Class AnimationPicker_Form
     Friend WithEvents TextFilter As System.Windows.Forms.TextBox
     Friend WithEvents LabelCount As System.Windows.Forms.Label
     Friend WithEvents CheckFilterGender As System.Windows.Forms.CheckBox
+    Friend WithEvents CheckShow1stPerson As System.Windows.Forms.CheckBox
     Friend WithEvents TreeClips As System.Windows.Forms.TreeView
     Friend WithEvents ButtonRow As System.Windows.Forms.FlowLayoutPanel
     Friend WithEvents ButtonCancel As System.Windows.Forms.Button

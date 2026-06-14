@@ -265,15 +265,18 @@ Public Module FaceGenBuilder
         ' writes. withRootNode=True drops in the root NiNode the engine expects.
         Dim nif As New Nifcontent_Class_Manolo()
         Try
-            ' Shell idéntico a CK (verificado extrayendo el vanilla 0005E560.NIF del BA2, 2026-05-25):
-            ' root = BSFadeNode con nombre "" y Flags 0x2000400E — NO el NiNode "Scene Root" que deja
-            ' Create(withRootNode:=True). El loader FaceGen loose del engine exige este root. Lo
-            ' agregamos como bloque 0 para que GetRootNode()/CloneShape parenteen contra él. (Los shapes
-            ' se re-cuelgan luego bajo un nodo BSFaceGenNiNodeSkinned — ver post-proceso más abajo.)
+            ' Shell idéntico a CK (verificado con NiflySharp contra los 1094 FaceGen vanilla del BA2,
+            ' 2026-06-13): root = NiNode con nombre "" y Flags 0x0000400E — NO BSFadeNode (CK NUNCA usa
+            ' BSFadeNode como root: 0/1094) ni el NiNode "Scene Root" que deja Create(withRootNode:=True).
+            ' (La nota previa "root=BSFadeNode 0x2000400E, el loader loose lo exige" era FALSA — medida
+            ' contra <id>.NIF sueltos que eran bakes viejos nuestros, no CK; ver
+            ' reference_facegen_ck_must_come_from_ba2.) Lo agregamos como bloque 0 para que
+            ' GetRootNode()/CloneShape parenteen contra él. (Los shapes se re-cuelgan luego bajo un nodo
+            ' BSFaceGenNiNodeSkinned — ver post-proceso más abajo.)
             nif.Create(NiVersion.GetFO4(), withRootNode:=False)
-            Dim faceRoot As New NiflySharp.Blocks.BSFadeNode() With {
+            Dim faceRoot As New NiflySharp.Blocks.NiNode() With {
                 .Name = New NiflySharp.NiStringRef(""),
-                .Flags_ui = &H2000400EUI,
+                .Flags_ui = &H400EUI,
                 .Rotation = New NiflySharp.Structs.Matrix33 With {.M11 = 1.0F, .M22 = 1.0F, .M33 = 1.0F}
             }
             nif.AddBlock(faceRoot)
@@ -348,6 +351,14 @@ Public Module FaceGenBuilder
         If bakeState IsNot Nothing AndAlso bakeState.NpcData IsNot Nothing AndAlso bakeState.NpcData.TextureLightingFloats IsNot Nothing Then
             skinTintAlpha = bakeState.NpcData.TextureLightingFloats.A
         End If
+        ' Hair/helmet occlusion: NO se setea el flag hidden en el bake. La regla canónica (probada
+        ' empíricamente) es "pelo ocluido sii la ARMA del headwear cubre slot 31 HairLong / 32, no
+        ' slot 30 HairTop" — pero el residual es NO DETERMINISTA: el MISMO casco (VaultTec) sobre el
+        ' MISMO shader de pelo (GlowShader) da hidden distinto entre NPCs (000CB1BB oculta HairMale02,
+        ' 001974E5/0015384E muestran HairMale28/03) → depende del item equipado al bakear, que NO está
+        ' en el record del NPC. Decisión del usuario: preferir under-hide (mostrar el pelo) a over-hide
+        ' (ocultar de más); el engine re-evalúa la oclusión en runtime, así que el bit baked es
+        ' redundante. Ver reference_facegen_ck_must_come_from_ba2 (#3 oclusión, no-determinista).
         For Each kv In hdptMap.OrderBy(Function(p) p.Value.Hdpt.PartType).ThenBy(Function(p) p.Key)
             Dim hdptName = kv.Key
             Dim hdpt = kv.Value.Hdpt
@@ -409,6 +420,21 @@ Public Module FaceGenBuilder
             ' first lands as `<EditorID>` and the rest as `<EditorID>_<sourceName>` so they
             ' don't collide in the destination. Vanilla face HDPTs we've seen have exactly
             ' one shape per source, so the simple branch is the dominant path.
+            ' Cloth-physics bones (Hair_*_Cloth, Ponytail_*, SideTail_*) NO viven en skeleton.nif:
+            ' están en el hkaSkeleton embebido en el BSClothExtraData de ESTE NIF de pelo. Sin esto,
+            ' el filtro "unknown bone" de abajo descartaba la shape de pelo con física entera — CK la
+            ' conserva. Ver reference_facegen_ck_must_come_from_ba2 (#pelo) y arch_cloth_bones_inject.
+            Dim clothBoneNames As New HashSet(Of String)(StringComparer.OrdinalIgnoreCase)
+            Try
+                Dim srcClothSkel = SkeletonClothOverlayHelper_Class.ParseClothSkeleton(srcNif)
+                If srcClothSkel IsNot Nothing AndAlso srcClothSkel.Bones IsNot Nothing Then
+                    For Each cb In srcClothSkel.Bones
+                        If cb IsNot Nothing AndAlso Not String.IsNullOrWhiteSpace(cb.Name) Then clothBoneNames.Add(cb.Name.Trim())
+                    Next
+                End If
+            Catch ex As Exception
+            End Try
+
             Dim srcShapes = srcNif.GetShapes().ToList()
             Dim shapeIdxInThisHdpt As Integer = 0
             For Each srcShape In srcShapes
@@ -428,11 +454,14 @@ Public Module FaceGenBuilder
                     Continue For
                 End If
                 ' CK-equivalent filter: drop a source shape whose skin references a bone
-                ' that doesn't exist in the actor's face/body skeleton. Vanilla example:
-                ' MaleEyesGhoul.nif holds two shapes — the iris (skins to 'Head') and
-                ' a tear-duct sub-shape (skins to a custom 'GhoulTearDuct' bone that the
-                ' actor's skeleton.nif does not expose). CK drops the second; we mirror
-                ' that here so the bake doesn't carry an unrenderable extra shape.
+                ' that doesn't exist en el esqueleto del actor NI en los cloth-bones del NIF.
+                ' Vanilla example: MaleEyesGhoul.nif holds two shapes — the iris (skins to
+                ' 'Head') and a tear-duct sub-shape (skins to a custom 'GhoulTearDuct' bone
+                ' that the actor's skeleton.nif does not expose). CK drops the second; we
+                ' mirror that here so the bake doesn't carry an unrenderable extra shape.
+                ' EXCEPCIÓN cloth-physics (#pelo): los cloth-bones (Hair_*_Cloth, Ponytail_*,
+                ' SideTail_*) NO están en skeleton.nif pero SÍ en el BSClothExtraData del NIF
+                ' (clothBoneNames) — son legítimos y CK los conserva, así que NO se descartan.
                 Dim skipUnknownBone As String = Nothing
                 If actorBoneNames IsNot Nothing AndAlso actorBoneNames.Count > 0 Then
                     Try
@@ -445,7 +474,8 @@ Public Module FaceGenBuilder
                                     If bRef < 0 Then Continue For
                                     Dim bNode = TryCast(srcNif.Blocks(bRef), NiflySharp.Blocks.NiNode)
                                     Dim bName = bNode?.Name?.String
-                                    If Not String.IsNullOrEmpty(bName) AndAlso Not actorBoneNames.Contains(bName) Then
+                                    If Not String.IsNullOrEmpty(bName) AndAlso Not actorBoneNames.Contains(bName) _
+                                       AndAlso Not clothBoneNames.Contains(bName) Then
                                         skipUnknownBone = bName
                                         Exit For
                                     End If
@@ -467,6 +497,25 @@ Public Module FaceGenBuilder
                     If cloned IsNot Nothing Then
                         clonedShapeNames.Add(destName)
                         shapesCloned += 1
+
+                        ' Cloth-physics hair (#pelo): CK conserva el BSClothExtraData (el hkaSkeleton
+                        ' de los cloth-bones) en el root del baked NIF. CloneShape_Original NO lo
+                        ' transfiere (es extradata del ROOT, no de la shape) → lo copiamos del NIF
+                        ' source al root del bake. Idempotente: si el root ya tiene uno, no duplica.
+                        ' Los cloth-bone NiNodes los crea el clone cross-file de NiflySharp (re-mapea
+                        ' los bones del skin por nombre) y el reparent loop los cuelga flat del root.
+                        If clothBoneNames.Count > 0 Then
+                            Try
+                                nif.TransferRootClothExtraDataFrom(srcNif)
+                            Catch ex As Exception
+                                Logger.LogLazy(Function() $"[FACEBAKE] cloth extradata transfer failed for '{destName}': {ex.GetType().Name}: {ex.Message}")
+                            End Try
+                        End If
+
+                        ' (c) ECED y demás extradata de la shape: ya NO se transfiere acá. La preservación
+                        ' del ExtraDataList de la shape source (incl. BSEyeCenterExtraData) se hace de forma
+                        ' GENERAL dentro de CloneShape_Original (cross-file), así lo conservan también WM /
+                        ' SplitShape. Ver NifContent_Class.CloneShape_Original.
 
                         ' CBBE source for the female rear head ships with a malformed SSFFile
                         ' ("...\FacePssf", no extension). CK blanks SSFFile when baking; clear
@@ -622,17 +671,19 @@ Public Module FaceGenBuilder
         End Try
 
         ' --- FaceGen shell parity (Fase 1): los shapes deben colgar de un NiNode
-        ' 'BSFaceGenNiNodeSkinned' (Flags 0x2000000E, identidad), NO directo del root. El root ya es
-        ' BSFadeNode "" (creado arriba). Sin esta capa el FaceGen LOOSE no renderiza la cabeza (el
-        ' engine FaceGen exige la geometría skinneada bajo ese nodo). Verificado contra el NIF vanilla
-        ' de CK 2026-05-25. Los huesos (NiNode) quedan como hijos directos del root, igual que CK.
+        ' 'BSFaceGenNiNodeSkinned' (Flags 0x0E=14, identidad — verificado con byte-compare vs BA2,
+        ' 88/88; antes poníamos 0x2000000E con el bit 0x20000000 de más, gemelo del bug del root #1),
+        ' NO directo del root. El root ya es
+        ' NiNode "" (creado arriba; ver #1 2026-06-13). Sin esta capa el FaceGen LOOSE no renderiza la
+        ' cabeza (el engine FaceGen exige la geometría skinneada bajo ese nodo). Los huesos (NiNode)
+        ' quedan como hijos directos del root, igual que CK.
         ' Corre DESPUÉS de RemoveUnreferencedBlocks para operar sobre índices de bloque ya finales.
         Try
             Dim faceGenRoot = nif.GetRootNode()
             If faceGenRoot IsNot Nothing AndAlso faceGenRoot.Children IsNot Nothing Then
                 Dim skinnedNode As New NiflySharp.Blocks.NiNode() With {
                     .Name = New NiflySharp.NiStringRef("BSFaceGenNiNodeSkinned"),
-                    .Flags_ui = &H2000000EUI,
+                    .Flags_ui = &HEUI,
                     .Rotation = New NiflySharp.Structs.Matrix33 With {.M11 = 1.0F, .M22 = 1.0F, .M33 = 1.0F}
                 }
                 Dim skinnedIdx = nif.AddBlock(skinnedNode)
@@ -694,13 +745,15 @@ Public Module FaceGenBuilder
                             End If
                         End If
                     Else
-                        ' Bone node (flat child of root). Dos toques de paridad CK:
-                        '  - HEAD→Head: match EXACTO del nombre completo "HEAD" (no Contains/Replace,
-                        '    para no tocar "Head_skin" ni otros). CK normaliza el casing del hueso head;
-                        '    el match skin→esqueleto del actor es case-insensitive (no afecta render),
-                        '    lo igualamos por paridad byte. Fuente real del mesh/esqueleto = "HEAD".
+                        ' Bone node (flat child of root). Paridad CK:
                         '  - race height: escalar SOLO la translation del nodo por raceHeight (ver arriba).
                         '    Geometría y bind intactos.
+                        ' #2 (2026-06-13): NO renombrar "HEAD"→"Head". CK MANTIENE "HEAD" (mayúscula) en el
+                        ' nodo y en BSSkin::Instance.bones — verificado con NiflySharp contra los FaceGen del
+                        ' BA2 (47/47 = "HEAD"). La nota previa "CK normaliza a Head, igualar por paridad byte"
+                        ' era FALSA (medida contra refs contaminadas; ver reference_facegen_ck_must_come_from_ba2).
+                        ' La fuente del esqueleto ya es "HEAD" = CK → lo dejamos intacto. El skin referencia el
+                        ' nodo por puntero, así que con NO renombrar quedan iguales el nombre del nodo Y la ref.
                         Dim boneNode = TryCast(childBlk, NiflySharp.Blocks.NiNode)
                         ' Orphan-bone guard: drop this bone NiNode from root.Children iff
                         '   - no BSSkin::Instance references it (Bones[] or SkeletonRoot)
@@ -717,9 +770,6 @@ Public Module FaceGenBuilder
                         End If
                         boneChildIdx.Add(childIdx)
                         If boneNode IsNot Nothing Then
-                            If boneNode.Name IsNot Nothing AndAlso boneNode.Name.String = "HEAD" Then
-                                boneNode.Name.String = "Head"
-                            End If
                             If raceHeight <> 1.0F Then
                                 boneNode.Translation = boneNode.Translation * raceHeight
                             End If
@@ -1478,8 +1528,9 @@ Public Module FaceGenBuilder
                 Dim slotL = entry.Slot
                 Dim suffixL = entry.Suffix
                 Dim dxgiL = entry.Dxgi
-                Dim wL = w
-                Dim hL = h
+                ' Report the dims actually passed to the encode (ddW/ddH), not the source dims (w/h).
+                Dim wL = ddW
+                Dim hL = ddH
                 Dim mipsL = mipLevels
                 Dim msgL = ex.Message
                 Dim typeL = ex.GetType().Name

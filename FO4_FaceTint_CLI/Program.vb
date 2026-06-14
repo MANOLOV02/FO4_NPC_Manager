@@ -48,6 +48,7 @@ Module Program
         Public ClipBase As String = ""            ' --clipbase "<rigHkx>|<clipHkx>[|boneFilter[|chunkNif;...]]": frame-0 del clip vs rig refPose vs assembled (skin binds del chunk)
         Public FindFile As String = ""            ' --findfile <substr>: lista keys del FilesDictionary que matchean (cualquier extensión)
         Public NifDump As String = ""             ' --nifdump <nif>: árbol de nodos (local+world) + skin binds (inv(bind)) por shape
+        Public CatProfile As Boolean = False      ' --catprofile [--edid X]: perfila ejes de categoría (folder ground-truth, Perspective, STKD, BlendHint) por raza
         Public RankBy As String = "n"   ' canal por el que rankea el sweep: n (default) / d / s
     End Class
 
@@ -125,7 +126,7 @@ Module Program
 
         ' --- 3. Lista de trabajo (esp, edid) ---
         Dim work = BuildWorkList(opt)
-        If work.Count = 0 AndAlso Not opt.TtedScan AndAlso Not opt.RaceAnim AndAlso Not opt.MountValidate AndAlso opt.FindHkx = "" AndAlso opt.ChunkCompare = "" AndAlso opt.DumpBehavior = "" AndAlso Not opt.HkxCoverage AndAlso opt.KwType = "" AndAlso Not opt.StateMap AndAlso Not opt.ClipResolve AndAlso opt.HkxBone = "" AndAlso opt.ClipBase = "" AndAlso opt.FindFile = "" AndAlso opt.NifDump = "" Then
+        If work.Count = 0 AndAlso Not opt.TtedScan AndAlso Not opt.RaceAnim AndAlso Not opt.MountValidate AndAlso opt.FindHkx = "" AndAlso opt.ChunkCompare = "" AndAlso opt.DumpBehavior = "" AndAlso Not opt.HkxCoverage AndAlso opt.KwType = "" AndAlso Not opt.StateMap AndAlso Not opt.ClipResolve AndAlso opt.HkxBone = "" AndAlso opt.ClipBase = "" AndAlso opt.FindFile = "" AndAlso opt.NifDump = "" AndAlso Not opt.CatProfile Then
             Console.Error.WriteLine("No hay NPCs para procesar (revisa --edid / --list).") : Environment.ExitCode = 1 : Return
         End If
 
@@ -141,7 +142,10 @@ Module Program
         For Each esp In work.Select(Function(w) w.Esp).Distinct(StringComparer.OrdinalIgnoreCase)
             EnsureEspInLoadList(loadList, esp, dataPath)
         Next
-        pm.LoadAllPlugins(dataPath, loadList)
+        ' Carga el whitelist de render del NPC Manager + IDLE/AACT (sistema de idles/gestos: GNAM=archivo de anim,
+        ' ENAM=evento, ANAM=árbol Parent/Previous por Action) para auditar la cobertura estructural de los huérfanos PoseA.
+        Dim sigFilter As New HashSet(Of String)(SIGS_NPC_RENDERING, StringComparer.Ordinal) From {"IDLE", "AACT"}
+        pm.LoadAllPlugins(dataPath, loadList, Nothing, sigFilter)
 
         Console.WriteLine("[load] montando archivos...")
         Dim cacheDir = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Caches")
@@ -239,6 +243,12 @@ Module Program
         ' --- NIFDUMP: árbol de nodos (local+world) + skin binds (inv(bind)) por shape de un NIF.
         If opt.NifDump <> "" Then
             NifDumpRun(opt.NifDump)
+            Return
+        End If
+
+        ' --- CATPROFILE: perfila los EJES DE CATEGORÍA candidatos por raza para diseñar el selector profundo.
+        If opt.CatProfile Then
+            CatProfileScan(pm, opt.Edid)
             Return
         End If
 
@@ -872,6 +882,347 @@ Module Program
         If keys.Count > 300 Then Console.WriteLine($"  ... ({keys.Count - 300} más)")
     End Sub
 
+    ' Carpeta del clip relativa a "Animations\" (ground truth de la organización Bethesda). "(top)" si el clip
+    ' está directo bajo Animations\; "(no-anim)" si el path no contiene Animations\.
+    Private Function FolderRelOf(animFile As String) As String
+        If String.IsNullOrWhiteSpace(animFile) Then Return "(none)"
+        Dim p = animFile.Replace("/"c, "\"c)
+        Dim i = p.IndexOf("Animations\", StringComparison.OrdinalIgnoreCase)
+        If i < 0 Then Return "(no-anim)"
+        Dim rest = p.Substring(i + "Animations\".Length)
+        Dim j = rest.LastIndexOf("\"c)
+        Return If(j <= 0, "(top)", rest.Substring(0, j))
+    End Function
+
+    ' Primer segmento de la carpeta rel (la "actividad" macro: MT / 1HM / Furniture / Injured / ...).
+    Private Function TopSegOf(folderRel As String) As String
+        If folderRel.StartsWith("(") Then Return folderRel
+        Dim k = folderRel.IndexOf("\"c)
+        Return If(k < 0, folderRel, folderRel.Substring(0, k))
+    End Function
+
+    ''' <summary>--catprofile: perfila los EJES DE CATEGORÍA candidatos por raza (con --edid). Para cada raza con
+    ''' behavior: (a) histograma de carpetas resueltas = GROUND TRUTH de la organización Bethesda; (b) por Role,
+    ''' el desglose por carpeta (¿subdivide el bucket gigante "Weapon"?); (c) Perspective de los subgraphs (SRAF);
+    ''' (d) STKD (target keywords) usados; (e) BlendHint (hkaAnimationBinding) de cada archivo resuelto = aditivos.
+    ''' Solo lee API pública de la lib (no la modifica).</summary>
+    Private Sub CatProfileScan(pm As PluginManager, edidFilter As String)
+        Dim loader As Func(Of String, Byte()) = AddressOf LoadDictBytes
+        ' Set de animaciones referenciadas por records IDLE (GNAM = 'Animation File', wbDefinitionsFO4.pas:10010).
+        ' Los IDLE son el sistema de idles/gestos/diálogo (PoseA_*), SEPARADO del behavior-graph por-raza → sirve para
+        ' explicar la ORFANDAD (cuántos huérfanos son anims de IDLE que el enumerador por-raza no camina).
+        Dim idleGnam As New HashSet(Of String)(StringComparer.OrdinalIgnoreCase)
+        Dim idleGnamRaw As New HashSet(Of String)(StringComparer.OrdinalIgnoreCase)     ' GNAM crudo (con tokens $(…) y wildcards *)
+        Dim idleGnamBases As New HashSet(Of String)(StringComparer.OrdinalIgnoreCase)   ' por BASENAME (GNAM suele ser relativo)
+        Dim idleRecs = pm.GetRecordsOfType("IDLE").ToList()
+        Dim idleWithGnam = 0, idleWithEnam = 0, idleWithDnam = 0
+        Dim idleEvents As New HashSet(Of String)(StringComparer.OrdinalIgnoreCase)   ' ENAM = evento de behavior que dispara la anim
+        Dim idleDnam As New HashSet(Of String)(StringComparer.OrdinalIgnoreCase)     ' DNAM = behavior graph / nodo
+        For Each ir In idleRecs
+            For Each sr In ir.Subrecords
+                If sr.Data Is Nothing OrElse sr.Data.Length = 0 Then Continue For
+                Dim s = System.Text.Encoding.ASCII.GetString(sr.Data).TrimEnd(ChrW(0))
+                Select Case sr.Signature
+                    Case "GNAM"
+                        If Not String.IsNullOrWhiteSpace(s) Then idleGnam.Add(CanonHkx(s)) : idleGnamBases.Add(System.IO.Path.GetFileNameWithoutExtension(s)) : idleGnamRaw.Add(s) : idleWithGnam += 1
+                    Case "ENAM" : If Not String.IsNullOrWhiteSpace(s) Then idleEvents.Add(s) : idleWithEnam += 1
+                    Case "DNAM" : If Not String.IsNullOrWhiteSpace(s) Then idleDnam.Add(s) : idleWithDnam += 1
+                End Select
+            Next
+        Next
+        Console.WriteLine($"[idle] IDLE records={idleRecs.Count} | con GNAM(file)={idleWithGnam} ({idleGnamBases.Count} basenames) | con ENAM(event)={idleWithEnam} ({idleEvents.Count} eventos) | con DNAM={idleWithDnam} ({idleDnam.Count} distintos)")
+        ' IDLE records relacionados con el pool PoseA (talk/dialogue/listen/flavor/patrol/pose) — ver su estructura REAL.
+        Dim poseIdles = idleRecs.Where(Function(r) {r.EditorID}.Concat(r.Subrecords.Where(Function(s) s.Data IsNot Nothing).Select(Function(s) System.Text.Encoding.ASCII.GetString(s.Data).TrimEnd(ChrW(0)))).
+                                                Any(Function(t) t IsNot Nothing AndAlso System.Text.RegularExpressions.Regex.IsMatch(t, "(?i)posea|_talk|dialogue|listen|flavor|patrolsearch"))).Take(10).ToList()
+        Console.WriteLine($"[idle] IDLE relacionados a PoseA/talk/dialogue ({poseIdles.Count} muestra):")
+        For Each r In poseIdles
+            Dim fields = r.Subrecords.Where(Function(s) s.Data IsNot Nothing AndAlso (s.Signature = "DNAM" OrElse s.Signature = "ENAM" OrElse s.Signature = "GNAM")).
+                            Select(Function(s) s.Signature & "='" & System.Text.Encoding.ASCII.GetString(s.Data).TrimEnd(ChrW(0)) & "'")
+            Console.WriteLine($"      {r.EditorID}: {String.Join(" ", fields)}")
+        Next
+        ' Eventos ENAM relacionados a talk/dialogue (¿el behavior tiene un evento que dispare estos gestos?).
+        Dim talkEvents = idleEvents.Where(Function(e) System.Text.RegularExpressions.Regex.IsMatch(e, "(?i)talk|dialogue|gesture|pose|listen")).Take(20)
+        Console.WriteLine($"[idle] eventos ENAM talk/dialogue/gesture: {String.Join(", ", talkEvents)}")
+        ' 🔑 PATRONES GNAM: token $(Subgraph)/$(...) + wildcard * → el mecanismo ESTRUCTURAL de los gestos PoseA.
+        Dim withToken = idleGnamRaw.Where(Function(g) g.Contains("$(") OrElse g.Contains("*")).ToList()
+        Console.WriteLine($"[idle] GNAM crudos distintos={idleGnamRaw.Count} | con token/wildcard={withToken.Count}:")
+        For Each g In withToken.Take(40) : Console.WriteLine($"        GNAM-pat: {g}") : Next
+        ' Patrones IDLE relacionados a furniture-entry/exit/sync (para cazar los 291 furniture-direccional residuales).
+        Dim furnPats = idleGnamRaw.Where(Function(g) System.Text.RegularExpressions.Regex.IsMatch(g, "(?i)enter|exit|sync|furniture|sit|chair|getup|getin")).ToList()
+        Console.WriteLine($"[idle] GNAM enter/exit/sync/furniture ({furnPats.Count}):")
+        For Each g In furnPats.Take(60) : Console.WriteLine($"        FURN-pat: {g}") : Next
+        For Each rec In pm.GetRecordsOfType("RACE")
+            Dim race As RACE_Data = Nothing
+            Try : race = RecordParsers.ParseRACE(rec, pm) : Catch : Continue For : End Try
+            If race Is Nothing Then Continue For
+            If race.MaleBehaviorGraphProject = "" AndAlso race.FemaleBehaviorGraphProject = "" Then Continue For
+            If edidFilter <> "" AndAlso race.EditorID.IndexOf(edidFilter, StringComparison.OrdinalIgnoreCase) < 0 Then Continue For
+            Dim rb = RaceBehaviorResolver.ResolveRaceBehavior(race.FormID, pm)
+            If rb Is Nothing Then Continue For
+            Dim clips = BehaviorClipEnumerator.EnumerateClips(rb, loader)
+            Console.WriteLine($"===== {race.EditorID} [0x{race.FormID:X8}] | subgraphs={rb.Subgraphs.Count} | clips(dedup-file)={clips.Count} =====")
+            ' Cobertura por FUENTE: behavior-walk vs IDLE-pattern (con Category) vs folder-scan (sin Category).
+            Dim nBeh = clips.Where(Function(c) c.FromBehaviorGraph).Count()
+            Dim nIdle = clips.Where(Function(c) Not c.FromBehaviorGraph AndAlso Not String.IsNullOrEmpty(c.Category)).Count()
+            Dim nFolder = clips.Where(Function(c) Not c.FromBehaviorGraph AndAlso String.IsNullOrEmpty(c.Category)).Count()
+            Console.WriteLine($"  FUENTE: behavior-walk={nBeh} | IDLE-pattern(con categoría)={nIdle} | clip-gen-variant={nFolder} | rb.IdleAnimations(patrones)={rb.IdleAnimations.Count}")
+            ' Over-inclusion: clips cuyo path NO está bajo la carpeta propia del actor (ni _1stPerson). Para robots de
+            ' carpeta dedicada debería ser ~0 (si trae Actors\Character\… o de otro actor = bug de gating).
+            Dim ownPrefix = CanonHkx(DirNameC(rb.Project) & "\Animations\")
+            Dim foreign = clips.Where(Function(c) Not CanonHkx(c.AnimationFile).StartsWith(ownPrefix, StringComparison.OrdinalIgnoreCase) AndAlso CanonHkx(c.AnimationFile).IndexOf("\_1stperson\", StringComparison.OrdinalIgnoreCase) < 0).ToList()
+            Console.WriteLine($"  OVER-INCLUSION: clips FUERA de '{DirNameC(rb.Project)}\Animations\' = {foreign.Count}" & If(foreign.Count = 0, "", " → " & String.Join(" ; ", foreign.Take(6).Select(Function(c) TopSegOf(FolderRelOf(c.AnimationFile)) & ":" & System.IO.Path.GetFileName(c.AnimationFile)))))
+            Dim catTop = clips.Where(Function(c) Not String.IsNullOrEmpty(c.Category)).GroupBy(Function(c) c.Category).OrderByDescending(Function(g) g.Count()).Take(20)
+            Console.WriteLine($"  IDLE categorías: " & String.Join(" ; ", catTop.Select(Function(g) $"{g.Key}={g.Count()}")))
+            ' ── OUTLIERS: clips por PROFUNDIDAD de carpeta (0=cuelgan directo de Animations\; 1=directo bajo un top-seg
+            '    ej Weapon\X.hkx sin subtipo). Acá la jerarquía Role→carpeta no tiene niveles → revisar que categoricen bien.
+            Dim depthOf = Function(p As String) As Integer
+                              Dim fr = FolderRelOf(p)
+                              Return If(fr = "" OrElse fr = "(top)", 0, fr.Split("\"c).Length)
+                          End Function
+            Dim byDepth = clips.GroupBy(Function(c) depthOf(c.AnimationFile)).OrderBy(Function(g) g.Key).ToList()
+            Console.WriteLine($"  OUTLIERS profundidad: " & String.Join(" ; ", byDepth.Select(Function(g) $"depth{g.Key}={g.Count()}")))
+            Dim tops = clips.Where(Function(c) depthOf(c.AnimationFile) = 0).ToList()
+            Console.WriteLine($"  (top) cuelgan directo de Animations\\ ({tops.Count}) — roles/cat:")
+            For Each grp In tops.GroupBy(Function(c) "[" & String.Join(",", c.Roles) & "]" & If(c.Category <> "", "/" & c.Category, "")).OrderByDescending(Function(x) x.Count()).Take(10)
+                Console.WriteLine($"        {grp.Count(),4}  {grp.Key}  ej: {String.Join(", ", grp.Take(4).Select(Function(c) System.IO.Path.GetFileNameWithoutExtension(c.AnimationFile)))}")
+            Next
+            Dim d1 = clips.Where(Function(c) depthOf(c.AnimationFile) = 1).ToList()
+            Console.WriteLine($"  depth-1 (directo bajo top-seg, ej Weapon\\X.hkx) ({d1.Count}) por top-seg: " & String.Join(" ; ", d1.GroupBy(Function(c) TopSegOf(FolderRelOf(c.AnimationFile))).OrderByDescending(Function(x) x.Count()).Take(14).Select(Function(x) $"{x.Key}={x.Count()}")))
+            For Each grp In d1.GroupBy(Function(c) TopSegOf(FolderRelOf(c.AnimationFile))).Where(Function(x) {"Weapon", "Furniture", "MT"}.Contains(x.Key, StringComparer.OrdinalIgnoreCase)).Take(3)
+                Console.WriteLine($"        {grp.Key}\\ directo ej: {String.Join(", ", grp.Take(8).Select(Function(c) System.IO.Path.GetFileNameWithoutExtension(c.AnimationFile)))}")
+            Next
+
+            ' (a) GROUND TRUTH: histograma de TOP-SEG (actividad macro) + carpetas completas.
+            Dim byTop = clips.GroupBy(Function(c) TopSegOf(FolderRelOf(c.AnimationFile))).OrderByDescending(Function(g) g.Count()).ToList()
+            Console.WriteLine($"  (a) TOP-SEG (actividad macro) — {byTop.Count} distintos:")
+            For Each g In byTop : Console.WriteLine($"        {g.Count(),5}  {g.Key}") : Next
+            Dim byFolder = clips.GroupBy(Function(c) FolderRelOf(c.AnimationFile)).OrderByDescending(Function(g) g.Count()).ToList()
+            Console.WriteLine($"  (a') CARPETAS completas — {byFolder.Count} distintas (top 50):")
+            For Each g In byFolder.Take(50) : Console.WriteLine($"        {g.Count(),5}  {g.Key}") : Next
+
+            ' (b) ¿Subdivide el Role gigante? Por cada Role, su histograma de TOP-SEG.
+            Console.WriteLine($"  (b) Role × TOP-SEG:")
+            For Each role In {"Core", "MT", "Weapon", "Furniture", "Idle", "Pipboy"}
+                Dim inRole = clips.Where(Function(c) c.Roles.Contains(role)).ToList()
+                If inRole.Count = 0 Then Continue For
+                Dim segs = inRole.GroupBy(Function(c) TopSegOf(FolderRelOf(c.AnimationFile))).OrderByDescending(Function(g) g.Count()).ToList()
+                Console.WriteLine($"      Role {role} ({inRole.Count}) → {segs.Count} top-segs: " &
+                                  String.Join(" ; ", segs.Take(18).Select(Function(g) $"{g.Key}={g.Count()}")))
+            Next
+
+            ' (c) Perspective de los subgraphs aplicados (SRAF): 0=3rd 1=1st -1=none.
+            Dim persp = rb.Subgraphs.GroupBy(Function(s) s.Perspective).OrderBy(Function(g) g.Key).
+                          Select(Function(g) $"{If(g.Key = 0, "3rd", If(g.Key = 1, "1st", "none"))}={g.Count()}")
+            Console.WriteLine($"  (c) Perspective(subgraphs SRAF): {String.Join(" ; ", persp)}")
+
+            ' (d) STKD (target keywords) distintos sobre los subgraphs.
+            Dim stkd = rb.Subgraphs.SelectMany(Function(s) s.TargetKeywordFormIDs).Distinct().ToList()
+            Console.WriteLine($"  (d) STKD target-keywords distintos: {stkd.Count}" &
+                              If(stkd.Count = 0, "", " → [" & String.Join(", ", stkd.Take(30).Select(Function(k) EdidOf(pm, k))) & "]"))
+
+            ' (e) BlendHint (hkaAnimationBinding) de cada archivo resuelto → aditivos (≠0) vs normal (=0).
+            '     SOLO con --edid (carga 1 archivo por clip; muy lento si corre sobre TODAS las razas).
+            If edidFilter <> "" Then
+                Dim hintTally As New Dictionary(Of Integer, Integer)
+                Dim additiveSample As New List(Of String)
+                Dim loadedOk = 0
+                For Each c In clips
+                    Dim hb = LoadAnimCand(c.AnimationFile)
+                    If hb Is Nothing Then Continue For
+                    Dim hint As Integer = -99
+                    Try
+                        Dim g = HkxObjectGraphParser_Class.BuildGraph(HkxPackfileParser_Class.Parse(hb))
+                        Dim b = g.GetObjectsByClassName("hkaAnimationBinding").FirstOrDefault()
+                        If b IsNot Nothing Then
+                            Dim ab = g.ParseAnimationBinding(b)
+                            If ab IsNot Nothing Then hint = ab.BlendHint
+                        End If
+                    Catch
+                    End Try
+                    If hint = -99 Then Continue For
+                    loadedOk += 1
+                    hintTally(hint) = hintTally.GetValueOrDefault(hint, 0) + 1
+                    If hint <> 0 AndAlso additiveSample.Count < 25 Then additiveSample.Add($"{FolderRelOf(c.AnimationFile)}\{System.IO.Path.GetFileName(c.AnimationFile)} (hint={hint})")
+                Next
+                Console.WriteLine($"  (e) BlendHint sobre {loadedOk} archivos: " &
+                                  String.Join(" ; ", hintTally.OrderBy(Function(x) x.Key).Select(Function(x) $"{If(x.Key = 0, "normal", If(x.Key = 2, "additive", "hint" & x.Key))}={x.Value}")))
+                If additiveSample.Count > 0 Then
+                    Console.WriteLine($"      additivos (muestra): ")
+                    For Each s In additiveSample : Console.WriteLine($"        {s}") : Next
+                End If
+            End If
+
+            ' (f) ORFANDAD: .hkx que EXISTEN en la carpeta Animations\ PROPIA del actor pero NO quedaron en la lista
+            '     enumerada (ningún hkbClipGenerator alcanzable los referencia → invisibles en el selector). Esto es
+            '     COBERTURA del enumerador (independiente de mi categorización; mide si "todos los hkx de la raza entran").
+            Dim actorRoot = DirNameC(rb.Project)                          ' p.ej. "actors\Character"
+            Dim animPrefix = CanonHkx(actorRoot & "\Animations\")         ' canon (lower, sin Meshes\)
+            ' enumSet = SOLO los clips del behavior graph (FromBehaviorGraph) — para medir la orfandad REAL del walk
+            ' (no la post-cobertura, que ya rellena). La cobertura file-driven se evalúa aparte.
+            Dim behaviorClips = clips.Where(Function(c) c.FromBehaviorGraph).ToList()
+            Dim enumSet As New HashSet(Of String)(behaviorClips.Select(Function(c) CanonHkx(c.AnimationFile)), StringComparer.OrdinalIgnoreCase)
+            Dim existing = FilesDictionary_class.Dictionary.Keys.
+                Select(Function(k) CanonHkx(k)).
+                Where(Function(k) k.StartsWith(animPrefix, StringComparison.OrdinalIgnoreCase) AndAlso k.EndsWith(".hkx", StringComparison.OrdinalIgnoreCase)).
+                Distinct(StringComparer.OrdinalIgnoreCase).ToList()
+            Dim orphans = existing.Where(Function(k) Not enumSet.Contains(k)).OrderBy(Function(k) k).ToList()
+            ' [FINAL] = archivos de la carpeta NO mapeados por NINGUNA fuente (walk + IDLE + clip-gen-variant). El residuo real.
+            Dim allClipsSet As New HashSet(Of String)(clips.Select(Function(c) CanonHkx(c.AnimationFile)), StringComparer.OrdinalIgnoreCase)
+            Dim finalOrphans = existing.Where(Function(k) Not allClipsSet.Contains(k)).OrderBy(Function(k) k).ToList()
+            Console.WriteLine($"  [FINAL] carpeta='{actorRoot}\Animations\' existen={existing.Count} MAPEADOS(todas las fuentes)={existing.Count - finalOrphans.Count} | NO-MAPEADOS={finalOrphans.Count}")
+            ' Desglose de los NO-mapeados por STEM (nombre sin números/dirección) → patrón (to_mood / alt / etc.).
+            Dim stemOf = Function(p As String) As String
+                             Dim b = System.IO.Path.GetFileNameWithoutExtension(p).ToLowerInvariant()
+                             b = System.Text.RegularExpressions.Regex.Replace(b, "[0-9]+$", "")
+                             Return b
+                         End Function
+            For Each grp In finalOrphans.GroupBy(Function(o) stemOf(o)).OrderByDescending(Function(g) g.Count()).Take(18)
+                Console.WriteLine($"        NO-MAP x{grp.Count(),-3} stem='{grp.Key}'  ej: {LastTwoSeg(grp.First())}")
+            Next
+            ' ¿El huérfano es la MISMA animación (mismo nombre de archivo) que un clip YA resuelto, solo en otra carpeta
+            ' mood? (= la resolución/dedup colapsó la variante a base → estructuralmente referenciado). O es un nombre
+            ' ÚNICO que ningún clip-generator resuelve (= no referenciado por nombre, event-driven).
+            Dim resolvedBases As New HashSet(Of String)(behaviorClips.Select(Function(c) System.IO.Path.GetFileNameWithoutExtension(c.AnimationFile)), StringComparer.OrdinalIgnoreCase)
+            Dim baseOf = Function(p As String) System.IO.Path.GetFileNameWithoutExtension(p)
+            Dim orphanSameNameAsResolved = orphans.Where(Function(o) resolvedBases.Contains(baseOf(o))).ToList()
+            Dim orphanUniqueName = orphans.Where(Function(o) Not resolvedBases.Contains(baseOf(o))).ToList()
+            ' ¿Los nombre-ÚNICO (no referenciados por clip-gen) están referenciados por un IDLE.GNAM? = fuente ESTRUCTURAL
+            ' (records IDLE, no heurística de carpeta). Confirma/refuta que el pool PoseA es IDLE-driven.
+            Dim uniqueByIdle = orphanUniqueName.Where(Function(o) idleGnamBases.Contains(baseOf(o))).Count()
+            Dim sameByIdle = orphanSameNameAsResolved.Where(Function(o) idleGnamBases.Contains(baseOf(o))).Count()
+            Console.WriteLine($"      [NAME-CHECK] orphans MISMO-nombre (variante mood colapsada)={orphanSameNameAsResolved.Count} (de IDLE.GNAM-base={sameByIdle}) | nombre-ÚNICO no resuelto={orphanUniqueName.Count} (de IDLE.GNAM-base={uniqueByIdle})")
+            Dim uniqueNonIdle = orphanUniqueName.Where(Function(o) Not idleGnamBases.Contains(baseOf(o))).ToList()
+            Console.WriteLine($"      [NAME-CHECK] nombre-ÚNICO que NI IDLE referencia ({uniqueNonIdle.Count}) — el residuo verdadero:")
+            For Each o In uniqueNonIdle.Take(8) : Console.WriteLine($"        residuo: {o}") : Next
+
+            ' (h) CAZA DE LA CLAVE: escanea TODOS los .hkx de behavior bajo el actor (\Behaviors\) + project/character,
+            ' recolectando referencias de TODO tipo de generator (no solo hkbClipGenerator): clip(animationName@+0x90),
+            ' BGSGamebryoSequenceGenerator(@+0x88), hkbBehaviorReferenceGenerator(@+0x88) + animationNames del character.
+            ' ¿Cubre eso los huérfanos que ningún clip-gen-walkeado resuelve? (= el walk pierde gamebryo/otros behaviors).
+            Dim refBases As New HashSet(Of String)(StringComparer.OrdinalIgnoreCase)
+            Dim nGamebryo = 0, nClip = 0, nBehFiles = 0
+            Dim behKeys = FilesDictionary_class.Dictionary.Keys.
+                Select(Function(k) CanonHkx(k)).
+                Where(Function(k) k.StartsWith(animPrefix.Replace("\animations\", "\behaviors\"), StringComparison.OrdinalIgnoreCase) AndAlso k.EndsWith(".hkx", StringComparison.OrdinalIgnoreCase)).
+                Distinct(StringComparer.OrdinalIgnoreCase).ToList()
+            For Each bk In behKeys
+                Dim bb = LoadAnimCand(bk) : If bb Is Nothing Then Continue For
+                nBehFiles += 1
+                Try
+                    Dim g = HkxObjectGraphParser_Class.BuildGraph(HkxPackfileParser_Class.Parse(bb))
+                    For Each o In g.GetObjectsByClassName("hkbClipGenerator")
+                        Dim an = g.ParseClipGenerator(o)?.AnimationName
+                        If Not String.IsNullOrWhiteSpace(an) Then refBases.Add(System.IO.Path.GetFileNameWithoutExtension(an)) : nClip += 1
+                    Next
+                    For Each o In g.GetObjectsByClassName("BGSGamebryoSequenceGenerator")
+                        Dim gn = g.ResolveLocalString(o.RelativeOffset + &H88)
+                        If Not String.IsNullOrWhiteSpace(gn) Then refBases.Add(System.IO.Path.GetFileNameWithoutExtension(gn)) : nGamebryo += 1
+                    Next
+                Catch
+                End Try
+            Next
+            Dim uniqueByDeep = uniqueNonIdle.Where(Function(o) refBases.Contains(baseOf(o))).Count()
+            Dim deepResidual = uniqueNonIdle.Where(Function(o) Not refBases.Contains(baseOf(o))).ToList()
+            Console.WriteLine($"      (h) DEEP-SCAN behaviors={nBehFiles} clipGens={nClip} gamebryo={nGamebryo} refBases-distintos={refBases.Count} | de los {uniqueNonIdle.Count} no-IDLE: cubiertos por deep-scan={uniqueByDeep} | RESIDUO FINAL={deepResidual.Count}")
+            ' [94-CHECK] de los NO-mapeados (todas las fuentes), ¿cuántos son nombre de algún clip-gen de Character\Behaviors
+            ' (= walk-gap recuperable) vs NINGUNO (= runtime puro: mood-transition/alt elegidos por variable/azar)?
+            Dim fByRef = finalOrphans.Where(Function(o) refBases.Contains(baseOf(o))).Count()
+            Console.WriteLine($"      [94-CHECK] NO-mapeados={finalOrphans.Count} | basename ∈ clip-gen de Character\Behaviors={fByRef} (walk-gap) | NINGÚN clip-gen (runtime)={finalOrphans.Count - fByRef}")
+
+            ' (i) 🔑 EXPANSIÓN DE PATRONES IDLE.GNAM ($(Subgraph) + wildcard *) contra las carpetas SAPT aplicadas =
+            ' el mecanismo ESTRUCTURAL real de los gestos PoseA/Turn. ¿Cubre los huérfanos sin heurística de carpeta?
+            Dim kwSetI As New HashSet(Of UInteger)(rb.ActorKeywords)
+            Dim saptDirListI As New List(Of String)
+            For Each sg In rb.Subgraphs
+                Dim fidI = sg.ActorKeywordFormIDs.FirstOrDefault(Function(k) RaceBehaviorResolver.IsRaceIdentityKeyword(k) AndAlso Not kwSetI.Contains(k))
+                If fidI <> 0UI Then Continue For
+                For Each sp In sg.AnimationPaths
+                    If Not String.IsNullOrWhiteSpace(sp) Then saptDirListI.Add(CanonHkx(sp.Replace("/"c, "\"c).TrimEnd("\"c)))
+                Next
+            Next
+            saptDirListI = saptDirListI.Distinct(StringComparer.OrdinalIgnoreCase).ToList()
+            Dim existingSet As New HashSet(Of String)(existing, StringComparer.OrdinalIgnoreCase)
+            Dim idleExpanded As New HashSet(Of String)(StringComparer.OrdinalIgnoreCase)
+            For Each pat0 In idleGnamRaw
+                Dim pat = pat0.Replace("/"c, "\"c)
+                Dim tails As New List(Of String)
+                Dim tokIdx = pat.IndexOf("$(Subgraph)", StringComparison.OrdinalIgnoreCase)
+                If tokIdx >= 0 Then
+                    Dim tail = pat.Substring(tokIdx + "$(Subgraph)".Length).TrimStart("\"c)   ' p.ej. "PoseA_Talk_M*.hkx"
+                    For Each d In saptDirListI : tails.Add(d & "\" & tail) : Next
+                ElseIf pat.IndexOf("$(", StringComparison.Ordinal) >= 0 Then
+                    Continue For   ' otro token desconocido → no expandir (lo reporto aparte si queda residual)
+                Else
+                    tails.Add(CanonHkx(pat))
+                End If
+                For Each full In tails
+                    Dim cf = CanonHkx(full)
+                    Dim star = cf.IndexOf("*"c)
+                    If star < 0 Then
+                        If existingSet.Contains(cf) Then idleExpanded.Add(cf)
+                    Else
+                        Dim pre = cf.Substring(0, star)
+                        Dim suf = cf.Substring(star + 1)
+                        For Each ef In existing
+                            If ef.StartsWith(pre, StringComparison.OrdinalIgnoreCase) AndAlso ef.EndsWith(suf, StringComparison.OrdinalIgnoreCase) Then idleExpanded.Add(ef)
+                        Next
+                    End If
+                Next
+            Next
+            ' Cobertura ESTRUCTURAL total = clips behavior ∪ IDLE-pattern-expanded.
+            Dim structural As New HashSet(Of String)(enumSet, StringComparer.OrdinalIgnoreCase)
+            structural.UnionWith(idleExpanded)
+            Dim orphansAfterIdle = orphans.Where(Function(o) Not idleExpanded.Contains(o)).ToList()
+            ' Residuo VERDADERO = ni IDLE-pattern, ni mismo-nombre-que-un-clip-resuelto (= recuperable por resolución
+            ' por-subgraph sin colapsar variantes). Lo que quede acá es lo único sin fuente estructural conocida.
+            Dim trueResidual = orphansAfterIdle.Where(Function(o) Not resolvedBases.Contains(baseOf(o))).ToList()
+            Dim recoverablePerSubgraph = orphansAfterIdle.Count - trueResidual.Count
+            Console.WriteLine($"      (i) IDLE-PATTERN-EXPAND: matcheados por patrones IDLE={idleExpanded.Count} | huérfanos cubiertos por IDLE={orphans.Count - orphansAfterIdle.Count} | resto={orphansAfterIdle.Count} (de ellos mismo-nombre→recuperable por-subgraph={recoverablePerSubgraph}) | RESIDUO VERDADERO={trueResidual.Count}")
+            For Each o In trueResidual.Take(30) : Console.WriteLine($"        TRUE-residual: {o}") : Next
+            Dim enumInFolder = enumSet.Where(Function(e) e.StartsWith(animPrefix, StringComparison.OrdinalIgnoreCase)).Count()
+            Dim enumOutside = enumSet.Where(Function(e) Not e.StartsWith(animPrefix, StringComparison.OrdinalIgnoreCase)).OrderBy(Function(e) e).ToList()
+            Console.WriteLine($"  (f) ORFANDAD '{actorRoot}\Animations\': existen={existing.Count} enumSet-total={enumSet.Count} enumSet-en-esta-carpeta={enumInFolder} enumSet-FUERA={enumOutside.Count} | ORFANOS(existen∧¬enum)={orphans.Count}")
+            ' Carpetas TOP de los orphans (qué CLASE de animación queda fuera).
+            Dim orphanByTop = orphans.GroupBy(Function(o) TopSegOf(FolderRelOf(o))).OrderByDescending(Function(grp) grp.Count()).ToList()
+            Console.WriteLine($"      orphans por TOP-SEG: " & String.Join(" ; ", orphanByTop.Take(20).Select(Function(grp) $"{grp.Key}={grp.Count()}")))
+            ' Set de carpetas que las rutas SAPT declaran (canon, dir). ¿Los orphans caen en carpetas SAPT (buscadas pero
+            ' no referenciadas por ningún clip-generator) o en carpetas que NINGÚN SAPT busca?
+            ' MISMO filtro de identidad que EnumerateClips: solo subgraphs APLICADOS (excluye los que piden identidad
+            ' de OTRA raza) → para robots de carpeta compartida, su SAPT queda DENTRO de su subcarpeta (no trae Protectron).
+            Dim kwSet As New HashSet(Of UInteger)(rb.ActorKeywords)
+            Dim saptDirs As New HashSet(Of String)(StringComparer.OrdinalIgnoreCase)
+            For Each sg In rb.Subgraphs
+                Dim foreignId = sg.ActorKeywordFormIDs.FirstOrDefault(Function(k) RaceBehaviorResolver.IsRaceIdentityKeyword(k) AndAlso Not kwSet.Contains(k))
+                If foreignId <> 0UI Then Continue For
+                For Each sp In sg.AnimationPaths
+                    If String.IsNullOrWhiteSpace(sp) Then Continue For
+                    saptDirs.Add(CanonHkx(sp.Replace("/"c, "\"c).TrimEnd("\"c)))
+                Next
+            Next
+            Dim dirOf = Function(p As String) As String
+                            Dim k = p.LastIndexOf("\"c) : Return If(k > 0, p.Substring(0, k), "")
+                        End Function
+            Dim orphanInSapt = orphans.Where(Function(o) saptDirs.Contains(dirOf(o))).ToList()
+            Console.WriteLine($"      SAPT-dirs declarados={saptDirs.Count} | orphans EN carpeta-SAPT (buscada, no-referenciada)={orphanInSapt.Count} | orphans en carpeta NO-SAPT={orphans.Count - orphanInSapt.Count}")
+            ' VALIDACIÓN del scope de cobertura por SAPT-SUBTREE: el set de archivos que la raza BUSCA = todo .hkx
+            ' bajo algún SAPT-dir (o su subárbol). Si un orphan está bajo un SAPT-subtree, es recuperable como
+            ' "presente en la search-path pero no referenciado estáticamente". Para robots de carpeta compartida esto
+            ' se queda DENTRO de su subcarpeta (CreateABot\Animations\Assaultron) → NO trae anims de otras razas.
+            Dim saptDirList = saptDirs.Where(Function(d) Not String.IsNullOrEmpty(d)).ToList()
+            Dim underSapt = Function(p As String) As Boolean
+                                For Each d In saptDirList
+                                    If p.StartsWith(d & "\", StringComparison.OrdinalIgnoreCase) Then Return True
+                                Next
+                                Return False
+                            End Function
+            Dim orphansUnderSapt = orphans.Where(Function(o) underSapt(o)).ToList()
+            Dim residual = orphans.Where(Function(o) Not underSapt(o)).ToList()
+            Console.WriteLine($"      COVERAGE por SAPT-subtree: orphans recuperables(bajo SAPT)={orphansUnderSapt.Count} | residual(NO bajo SAPT)={residual.Count}")
+            Console.WriteLine($"      residual NO-SAPT (lo que ni la search-path busca) muestra:")
+            For Each o In residual.Take(20) : Console.WriteLine($"        residual: {o}") : Next
+        Next
+    End Sub
+
     ''' <summary>Dump completo de un NIF: árbol de NiNodes (parent, local.T, world.T) + por shape
     ''' skinneada el palette (bone, bind.T, inv(bind).T = world que el skin exige). Para auditar el
     ''' PLACEMENT de chunks (¿el C-X interno del chunk coincide con el socket del rig? ¿inv(bind)
@@ -1211,15 +1562,35 @@ Module Program
         For Each grp In classHist
             Console.WriteLine($"     {grp.Count(),4}x {grp.Key}")
         Next
-        ' DynamicAnimationTaggingGenerator: dump hex (para ubicar el campo additive por diff).
-        For Each o In g.GetObjectsByClassName("DynamicAnimationTaggingGenerator")
-            Dim nm = g.ReadNodeName(o)
-            Dim bytes As New System.Text.StringBuilder()
-            For off = &H38 To Math.Min(o.Size - 1, &HC7)
-                If (off - &H38) Mod 16 = 0 Then bytes.Append($"{Environment.NewLine}       +{off:X2}: ")
-                bytes.Append($"{g.ReadByte(o.RelativeOffset + off):X2} ")
+        ' Generators DINÁMICOS (DATG/BSiState/ManualSelector): qué generan (DescribeGenerator recursa a las hojas-clip)
+        ' + clases referenciadas. Para ver si LISTAN estáticamente los variantes (to_<mood>/alt_) o los arman en runtime.
+        For Each cls In {"DynamicAnimationTaggingGenerator", "BSiStateTaggingGenerator", "hkbManualSelectorGenerator"}
+            For Each o In g.GetObjectsByClassName(cls)
+                Dim nm = g.ReadNodeName(o)
+                Dim refClasses As New List(Of String)
+                For Each gf In g.GetGlobalFixupsInRange(o.RelativeOffset, o.Size)
+                    Dim t = g.GetObject(gf.TargetRelativeOffset) : If t IsNot Nothing Then refClasses.Add(t.ClassName)
+                Next
+                Dim strs As New List(Of String)
+                For Each lf In g.GetLocalFixupsInRange(o.RelativeOffset, o.Size)
+                    Dim s = g.ReadNullTerminatedString(lf.DestinationRelativeOffset)
+                    If Not String.IsNullOrWhiteSpace(s) AndAlso s.Length < 80 AndAlso s.All(Function(ch) AscW(ch) >= 32 AndAlso AscW(ch) <= 126) Then strs.Add(s)
+                Next
+                Console.WriteLine($"   [{cls}] '{nm}' → {g.DescribeGenerator(o)} | strings=[{String.Join(" | ", strs.Distinct())}] | refs=[{String.Join(",", refClasses.Distinct())}]")
+                ' Decode COMPLETO del DATG (para hallar el tag): todos los global-fixups (offset→target), int32/float por offset.
+                If cls = "DynamicAnimationTaggingGenerator" Then
+                    For Each gf In g.GetGlobalFixupsInRange(o.RelativeOffset, o.Size)
+                        Dim t = g.GetObject(gf.TargetRelativeOffset)
+                        Console.WriteLine($"        +{gf.SourceRelativeOffset - o.RelativeOffset:X2} → {If(t Is Nothing, "?", t.ClassName & " '" & g.ReadNodeName(t) & "'")}")
+                    Next
+                    Dim ascii As New System.Text.StringBuilder()
+                    For off = &H40 To o.Size - 1
+                        Dim bb = g.ReadByte(o.RelativeOffset + off)
+                        ascii.Append(If(bb >= 32 AndAlso bb <= 126, ChrW(bb), "."c))
+                    Next
+                    Console.WriteLine($"        ASCII +40..: {ascii}")
+                End If
             Next
-            Console.WriteLine($"   [DATG] '{nm}' size={o.Size}{bytes}")
         Next
         ' hkbBlenderGenerator / hkbLayerGenerator / hkbLayer: hex + qué clips alcanza cada uno
         ' (vía sus children) — para ubicar el campo ADDITIVE binario por diff additive-vs-normal.
@@ -1916,17 +2287,7 @@ Module Program
 
     ' Como MainForm.LoadAnimHkxBytes: prueba candidatos (con/sin "Meshes\", .hkx/.hkt).
     Private Function LoadAnimCand(path As String) As Byte()
-        If String.IsNullOrWhiteSpace(path) Then Return Nothing
-        Dim variants As New List(Of String) From {path}
-        If path.EndsWith(".hkx", StringComparison.OrdinalIgnoreCase) Then variants.Add(path.Substring(0, path.Length - 4) & ".hkt")
-        If path.EndsWith(".hkt", StringComparison.OrdinalIgnoreCase) Then variants.Add(path.Substring(0, path.Length - 4) & ".hkx")
-        For Each v In variants
-            For Each key In {v, "Meshes\" & v}
-                Dim b = LoadDictBytes(key)
-                If b IsNot Nothing AndAlso b.Length > 0 Then Return b
-            Next
-        Next
-        Return Nothing
+        Return BehaviorClipEnumerator.LoadFirstHkxCandidate(AddressOf LoadDictBytes, path)
     End Function
 
     ' Valida con DATOS REALES (Assaultron) el orden de composición mount/pose. Por frame de una anim real:
@@ -3120,12 +3481,13 @@ Module Program
                 Case "--clipbase" : a.ClipBase = v : i += 2
                 Case "--findfile" : a.FindFile = v : i += 2
                 Case "--nifdump" : a.NifDump = v : i += 2
+                Case "--catprofile" : a.CatProfile = True : i += 1
                 Case "-h", "--help" : PrintUsage() : Return Nothing
                 Case Else
                     Console.Error.WriteLine($"Arg desconocido: {args(i)}") : PrintUsage() : Return Nothing
             End Select
         End While
-        If a.ListPath = "" AndAlso (a.Esp = "" OrElse a.Edid = "") AndAlso Not a.TtedScan AndAlso Not a.RaceAnim AndAlso Not a.MountValidate AndAlso a.FindHkx = "" AndAlso a.ChunkCompare = "" AndAlso a.DumpBehavior = "" AndAlso Not a.HkxCoverage AndAlso a.KwType = "" AndAlso Not a.StateMap AndAlso Not a.ClipResolve AndAlso a.HkxBone = "" AndAlso a.ClipBase = "" AndAlso a.FindFile = "" AndAlso a.NifDump = "" Then
+        If a.ListPath = "" AndAlso (a.Esp = "" OrElse a.Edid = "") AndAlso Not a.TtedScan AndAlso Not a.RaceAnim AndAlso Not a.MountValidate AndAlso a.FindHkx = "" AndAlso a.ChunkCompare = "" AndAlso a.DumpBehavior = "" AndAlso Not a.HkxCoverage AndAlso a.KwType = "" AndAlso Not a.StateMap AndAlso Not a.ClipResolve AndAlso a.HkxBone = "" AndAlso a.ClipBase = "" AndAlso a.FindFile = "" AndAlso a.NifDump = "" AndAlso Not a.CatProfile Then
             Console.Error.WriteLine("Faltan --esp y --edid (o usa --list).") : PrintUsage() : Return Nothing
         End If
         Return a

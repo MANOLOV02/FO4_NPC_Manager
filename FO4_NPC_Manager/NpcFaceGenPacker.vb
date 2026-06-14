@@ -407,19 +407,20 @@ Public Module NpcFaceGenPacker
         End If
 
         ' --- Step 6: count fully-committed bundles for the summary -------------------------------
+        ' Single pass over allRefs accumulating per-bundle committed-hit counts (was O(bundles×refs):
+        ' for each bundle it re-scanned every ref). refToBundleIdx is parallel to allRefs.
         Dim committedSet As New HashSet(Of String)(committedRefs.Select(Function(r) r.SourcePath),
                                                    StringComparer.OrdinalIgnoreCase)
+        Dim bundleHitCounts(bundles.Count - 1) As Integer
+        For ri = 0 To allRefs.Count - 1
+            If committedSet.Contains(allRefs(ri).SourcePath) Then
+                bundleHitCounts(refToBundleIdx(ri)) += 1
+            End If
+        Next
         For bi = 0 To bundles.Count - 1
-            Dim allHere As Boolean = (bundleRefCounts(bi) = 4)
-            If allHere Then
-                ' Check that all 4 refs of this bundle made it into committedRefs.
-                Dim hits As Integer = 0
-                For ri = 0 To allRefs.Count - 1
-                    If refToBundleIdx(ri) = bi AndAlso committedSet.Contains(allRefs(ri).SourcePath) Then
-                        hits += 1
-                    End If
-                Next
-                If hits = 4 Then result.BundlesCommitted += 1
+            ' A bundle is fully committed when all 4 of its refs were authored AND all 4 committed.
+            If bundleRefCounts(bi) = 4 AndAlso bundleHitCounts(bi) = 4 Then
+                result.BundlesCommitted += 1
             End If
         Next
 

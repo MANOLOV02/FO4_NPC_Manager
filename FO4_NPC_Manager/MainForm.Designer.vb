@@ -81,10 +81,9 @@ Partial Class MainForm
         ComboAnim = New ComboBox()
         ButtonSelectAnim = New Button()
         ButtonAnimPlay = New Button()
-        SliderAnimFrame = New FO4_Base_Library.TinySliderTextBox()
-        NumericAnimFrameMs = New NumericUpDown()
+        SliderAnimFrame = New TinySliderTextBox()
         LabelAnimMs = New Label()
-        LabelAnimFrame = New Label()
+        NumericAnimFrameMs = New NumericUpDown()
         StatusStrip1 = New StatusStrip()
         ToolStripStatusLabel1 = New ToolStripStatusLabel()
         ToolStripProgressBar1 = New ToolStripProgressBar()
@@ -857,7 +856,7 @@ Partial Class MainForm
         PanelPreviewHost.Dock = DockStyle.Fill
         PanelPreviewHost.Location = New Point(11, 196)
         PanelPreviewHost.Name = "PanelPreviewHost"
-        PanelPreviewHost.Size = New Size(1178, 814)
+        PanelPreviewHost.Size = New Size(1178, 777)
         PanelPreviewHost.TabIndex = 0
         ' 
         ' LabelStatus
@@ -867,13 +866,13 @@ Partial Class MainForm
         LabelStatus.ForeColor = SystemColors.GrayText
         LabelStatus.Location = New Point(0, 0)
         LabelStatus.Name = "LabelStatus"
-        LabelStatus.Size = New Size(1178, 814)
+        LabelStatus.Size = New Size(1178, 777)
         LabelStatus.TabIndex = 1
         LabelStatus.Text = "Loading..."
         LabelStatus.TextAlign = ContentAlignment.MiddleCenter
-        '
+        ' 
         ' PanelAnimBar
-        '
+        ' 
         PanelAnimBar.AutoSize = True
         PanelAnimBar.Controls.Add(ComboAnim)
         PanelAnimBar.Controls.Add(ButtonSelectAnim)
@@ -881,67 +880,79 @@ Partial Class MainForm
         PanelAnimBar.Controls.Add(SliderAnimFrame)
         PanelAnimBar.Controls.Add(LabelAnimMs)
         PanelAnimBar.Controls.Add(NumericAnimFrameMs)
-        PanelAnimBar.Controls.Add(LabelAnimFrame)
         PanelAnimBar.Dock = DockStyle.Fill
+        PanelAnimBar.Location = New Point(8, 980)
         PanelAnimBar.Margin = New Padding(0, 4, 0, 0)
         PanelAnimBar.Name = "PanelAnimBar"
+        PanelAnimBar.Size = New Size(1184, 33)
+        PanelAnimBar.TabIndex = 2
         PanelAnimBar.WrapContents = False
-        '
+        ' 
         ' ComboAnim
-        '
+        ' 
         ComboAnim.DropDownStyle = ComboBoxStyle.DropDownList
+        ComboAnim.Location = New Point(3, 4)
         ComboAnim.Margin = New Padding(3, 4, 3, 3)
         ComboAnim.Name = "ComboAnim"
         ComboAnim.Size = New Size(260, 23)
         ComboAnim.TabIndex = 0
-        '
+        ' 
         ' ButtonSelectAnim
-        '
+        ' 
         ButtonSelectAnim.AutoSize = True
+        ButtonSelectAnim.Location = New Point(269, 3)
         ButtonSelectAnim.Margin = New Padding(3, 3, 12, 3)
         ButtonSelectAnim.Name = "ButtonSelectAnim"
-        ButtonSelectAnim.Size = New Size(110, 25)
+        ButtonSelectAnim.Size = New Size(116, 25)
         ButtonSelectAnim.TabIndex = 1
         ButtonSelectAnim.Text = "Select Animation…"
         ButtonSelectAnim.UseVisualStyleBackColor = True
-        '
+        ' 
         ' ButtonAnimPlay
-        '
+        ' 
         ButtonAnimPlay.Enabled = False
+        ButtonAnimPlay.Location = New Point(400, 3)
         ButtonAnimPlay.Margin = New Padding(3, 3, 8, 3)
         ButtonAnimPlay.Name = "ButtonAnimPlay"
         ButtonAnimPlay.Size = New Size(40, 25)
         ButtonAnimPlay.TabIndex = 2
         ButtonAnimPlay.Text = "▶"
         ButtonAnimPlay.UseVisualStyleBackColor = True
-        '
+        ' 
         ' SliderAnimFrame
-        '
+        ' 
         SliderAnimFrame.AccentColor = SystemColors.HotTrack
+        SliderAnimFrame.BackColor = SystemColors.Control
         SliderAnimFrame.DisplayFormat = "0"
         SliderAnimFrame.Enabled = False
+        SliderAnimFrame.Location = New Point(451, 4)
         SliderAnimFrame.Margin = New Padding(3, 4, 3, 3)
         SliderAnimFrame.Maximum = 0R
-        SliderAnimFrame.Minimum = 0R
+        SliderAnimFrame.MinimumSize = New Size(100, 24)
         SliderAnimFrame.Name = "SliderAnimFrame"
         SliderAnimFrame.ShowTicks = True
         SliderAnimFrame.Size = New Size(300, 26)
         SliderAnimFrame.TabIndex = 3
         SliderAnimFrame.TextBoxTextAlign = HorizontalAlignment.Right
+        SliderAnimFrame.ThumbColor = SystemColors.HotTrack
         SliderAnimFrame.ThumbRadius = 4F
-        SliderAnimFrame.Value = 0R
-        '
+        SliderAnimFrame.TrackColor = SystemColors.ControlDark
+        ' 
         ' LabelAnimMs
-        '
+        ' 
         LabelAnimMs.Anchor = AnchorStyles.Left
         LabelAnimMs.AutoSize = True
+        LabelAnimMs.Location = New Point(764, 13)
         LabelAnimMs.Margin = New Padding(10, 8, 1, 0)
         LabelAnimMs.Name = "LabelAnimMs"
+        LabelAnimMs.Size = New Size(29, 15)
+        LabelAnimMs.TabIndex = 4
         LabelAnimMs.Text = "FPS:"
-        '
+        ' 
         ' NumericAnimFrameMs
-        '
+        ' 
         NumericAnimFrameMs.Enabled = False
+        NumericAnimFrameMs.Location = New Point(795, 4)
         NumericAnimFrameMs.Margin = New Padding(1, 4, 3, 3)
         NumericAnimFrameMs.Maximum = New Decimal(New Integer() {120, 0, 0, 0})
         NumericAnimFrameMs.Minimum = New Decimal(New Integer() {1, 0, 0, 0})
@@ -950,17 +961,9 @@ Partial Class MainForm
         NumericAnimFrameMs.TabIndex = 5
         NumericAnimFrameMs.TextAlign = HorizontalAlignment.Right
         NumericAnimFrameMs.Value = New Decimal(New Integer() {30, 0, 0, 0})
-        '
-        ' LabelAnimFrame
-        '
-        LabelAnimFrame.Anchor = AnchorStyles.Left
-        LabelAnimFrame.AutoSize = True
-        LabelAnimFrame.Margin = New Padding(6, 8, 3, 0)
-        LabelAnimFrame.Name = "LabelAnimFrame"
-        LabelAnimFrame.Text = "0 / 0"
-        '
+        ' 
         ' StatusStrip1
-        '
+        ' 
         StatusStrip1.Items.AddRange(New ToolStripItem() {ToolStripStatusLabel1, ToolStripProgressBar1})
         StatusStrip1.Location = New Point(0, 1019)
         StatusStrip1.Name = "StatusStrip1"
@@ -1087,7 +1090,6 @@ Partial Class MainForm
     Friend WithEvents SliderAnimFrame As FO4_Base_Library.TinySliderTextBox
     Friend WithEvents NumericAnimFrameMs As System.Windows.Forms.NumericUpDown
     Friend WithEvents LabelAnimMs As System.Windows.Forms.Label
-    Friend WithEvents LabelAnimFrame As System.Windows.Forms.Label
     Friend WithEvents StatusStrip1 As System.Windows.Forms.StatusStrip
     Friend WithEvents ToolStripStatusLabel1 As System.Windows.Forms.ToolStripStatusLabel
     Friend WithEvents ToolStripProgressBar1 As System.Windows.Forms.ToolStripProgressBar
