@@ -848,7 +848,7 @@ Partial Class MainForm
         ButtonSaveSceneNif.TabIndex = 14
         ButtonSaveSceneNif.Text = "NPC Model to NIF"
         ButtonSaveSceneNif.UseVisualStyleBackColor = True
-        ' 
+        '
         ' PanelPreviewHost
         ' 
         PanelPreviewHost.BackColor = Color.FromArgb(CByte(40), CByte(40), CByte(44))
@@ -940,10 +940,10 @@ Partial Class MainForm
         ' 
         ' LabelAnimMs
         ' 
-        LabelAnimMs.Anchor = AnchorStyles.Left
+        LabelAnimMs.Anchor = AnchorStyles.None
         LabelAnimMs.AutoSize = True
         LabelAnimMs.Location = New Point(764, 13)
-        LabelAnimMs.Margin = New Padding(10, 8, 1, 0)
+        LabelAnimMs.Margin = New Padding(10, 0, 1, 0)
         LabelAnimMs.Name = "LabelAnimMs"
         LabelAnimMs.Size = New Size(29, 15)
         LabelAnimMs.TabIndex = 4
@@ -951,9 +951,10 @@ Partial Class MainForm
         ' 
         ' NumericAnimFrameMs
         ' 
+        NumericAnimFrameMs.Anchor = AnchorStyles.None
         NumericAnimFrameMs.Enabled = False
         NumericAnimFrameMs.Location = New Point(795, 4)
-        NumericAnimFrameMs.Margin = New Padding(1, 4, 3, 3)
+        NumericAnimFrameMs.Margin = New Padding(1, 0, 3, 0)
         NumericAnimFrameMs.Maximum = New Decimal(New Integer() {120, 0, 0, 0})
         NumericAnimFrameMs.Minimum = New Decimal(New Integer() {1, 0, 0, 0})
         NumericAnimFrameMs.Name = "NumericAnimFrameMs"
