@@ -412,6 +412,14 @@ Public Class MainForm
         ''' addon, no su PartType. Caso 2026-05-17: hair nuevo cuya HNAM declara una hairline raw=3
         ''' (no Misc) — sin este flag caía en la rama Hair de occlusion y la gorra la ocultaba.</summary>
         Public IsHnamExtra As Boolean = False
+        ''' <summary>Hair candidates {30,31} only: qué particiones (Top=v30−v31, Long=v31−v30) se ZAPEAN
+        ''' este render, según el modelo complementario main/hairline (ver <see cref="HairZapParts"/>).
+        ''' MAIN bajo gorra [30] → Top; MAIN bajo casco [30,31] cae en IsOccludedByHeadwear (hide entero).
+        ''' HAIRLINE bajo gorra [30] → Long (su top forehead queda); HAIRLINE bajo casco [30,31] → None
+        ''' (under-helmet, entera visible). Mutuamente excluyente con IsOccludedByHeadwear (full-mask 32
+        ''' u cobertura total del main). Plumbed a result.ShapeZapHairParts y consumido por
+        ''' HairTopZapResolver (render) + ButtonSaveSceneNif_Click (export compacta los zapeados).</summary>
+        Public ZapParts As HairZapParts = HairZapParts.None
     End Class
 
     Private Class PreviewVariantDefinition
@@ -561,6 +569,15 @@ Public Class MainForm
         ''' ApplyRenderToggleVisibility: con "Render headwear" ON el head part ocluido se oculta;
         ''' OFF lo destapa para mostrar el pelo/barba/etc bajo el headwear oculto.</summary>
         Public ReadOnly ShapeOccludedByHeadwear As New Dictionary(Of IRenderableShape, Boolean)
+        ''' <summary>Per-shape: qué particiones de un Hair {30,31} se ZAPEAN este render (Top=v30−v31,
+        ''' Long=v31−v30), según el modelo complementario main/hairline (ver <see cref="HairZapParts"/>).
+        ''' A diferencia de ShapeOccludedByHeadwear (oculta la mesh entera), esto zapea SÓLO los vértices
+        ''' de la(s) partición(es) indicada(s). Consumido por HairTopZapResolver (emite un canal de zap
+        ''' con la unión de los vertex-sets) y por ButtonSaveSceneNif_Click (compacta los vértices
+        ''' zapeados al exportar, agnóstico a la partición). Gated por "Render headwear": OFF descarta el
+        ''' zap (BuildCompositeMorphResolver no engancha el resolver) y la mesh se destapa entera, igual
+        ''' que el resto de la oclusión. Shapes ausentes / con valor None no tienen zap.</summary>
+        Public ReadOnly ShapeZapHairParts As New Dictionary(Of IRenderableShape, HairZapParts)
         ''' <summary>Per-shape: clasificación de meatcap. Confirmed (enum NIF SECTIONCAP/TORSOCAP)
         ''' o Tentative (BS-OS-only, userSlotID 100/102/103) → la shape es geometría interna del
         ''' corte que sólo se ve post-dismemberment. ApplyRenderToggleVisibility la oculta por
@@ -891,6 +908,18 @@ Public Class MainForm
     Private Sub CheckBoxRenderHeadwear_CheckedChanged(sender As Object, e As EventArgs) Handles CheckBoxRenderHeadwear.CheckedChanged
         If _renderHost Is Nothing Then Return
         _renderHost.Toggles = RenderToggles.FromMainCheckBoxes(Me)
+        ' Rebuild + re-apply morphs so the hair-top zap follows the toggle: headwear ON re-injects the
+        ' zap channel (corona zapeada), OFF drops the HairTopZapResolver and ApplyMorphPlan clears the
+        ' mask next pass (corona destapada). Same granular Intent.MarkDirty(Morphs) path the vertex-
+        ' morph checkboxes use — no full reload. ApplyRenderToggleVisibility still runs afterwards to
+        ' hide/show the headwear meshes themselves and the fully-occluded head parts.
+        If _renderHost.LastRenderedState IsNot Nothing AndAlso _renderHost.LastRenderData IsNot Nothing Then
+            Dim newResolver = BuildCompositeMorphResolver(_renderHost.LastRenderedState, _renderHost.LastRenderData)
+            Dim intent = _previewControl.Intent
+            intent.MorphResolver = newResolver
+            intent.MarkDirty(RenderDirtyFlags.Morphs, _renderHost.LastRenderData.Shapes)
+            _previewControl.InvalidateRender()
+        End If
         _renderHost.ApplyRenderToggleVisibility()
     End Sub
 
@@ -1176,9 +1205,14 @@ Public Class MainForm
         If _renderHost IsNot Nothing AndAlso _renderHost.PreviewCtl IsNot Nothing Then _renderHost.PreviewCtl.PlayingAnimation = value
     End Sub
 
+    ' Combo plano = TODO (incluye los clips de 1ª persona, que el picker oculta por defecto). Como acá NO hay
+    ' filtro, marcamos "1st-person" en el texto para distinguir los clips de cámara/viewmodel (inútiles para
+    ' preview de NPC). Sufijo, no prefijo, para no alterar el orden alfabético por nombre del combo.
     Private Shared Function AnimClipLabel(c As ResolvedAnimationClip) As String
         Dim nm = If(String.IsNullOrWhiteSpace(c.ClipName), System.IO.Path.GetFileNameWithoutExtension(c.AnimationFile), c.ClipName)
-        Return If(c.Roles.Count > 0, $"{nm}  [{String.Join(",", c.Roles)}]", nm)
+        Dim roles = If(c.Roles.Count > 0, $"  [{String.Join(",", c.Roles)}]", "")
+        Dim fp = If(c.Is1stPersonOnly, "  · 1st-person", "")
+        Return $"{nm}{roles}{fp}"
     End Function
 
     ' Carga un .hkx por path lógico (Data-relativo): prueba con/sin "Meshes\" y .hkx/.hkt vía FilesDictionary.
@@ -2521,6 +2555,27 @@ Public Class MainForm
                HasTemplateFlag(npc.TemplateFlags, NPC_TemplateCategory.ModelAnimation)
     End Function
 
+    ''' <summary>True if the NPC matches the currently-enabled Section 1 category filters.
+    ''' Additive union: the NPC shows if it matches ANY ticked category. The four flags are read
+    ''' once by the caller (PopulateNPCTree), not per-NPC. Categories:
+    ''' Unique faces = in-world AND own appearance; Generic = in-world AND inherits appearance;
+    ''' Template bases = used as a TPLT/TPTA source; Unused = not in-world, not a template source,
+    ''' and not a CharGen face preset (ACBS bit 0x04).</summary>
+    Private Function NpcMatchesCategoryFilter(n As NPC_Data, showUnique As Boolean, showGeneric As Boolean,
+                                              showTemplate As Boolean, showUnused As Boolean) As Boolean
+        ' ACBS bit 0x04 = "Is CharGen Face Preset" (xEdit wbDefinitionsFO4); same named constant the
+        ' Save-ESP / preset paths use elsewhere in this file (e.g. ~13483, ~14360, ~14586).
+        Const AcbsBitIsCharGenFacePreset As UInteger = &H4UI
+        Dim inWorld = _npcsInGameWorld.Contains(n.FormID)
+        Dim ownFace = Not NpcInheritsVisualAppearance(n)
+        If showUnique AndAlso inWorld AndAlso ownFace Then Return True
+        If showGeneric AndAlso inWorld AndAlso Not ownFace Then Return True
+        If showTemplate AndAlso _npcsUsedAsTemplates.Contains(n.FormID) Then Return True
+        If showUnused AndAlso Not inWorld AndAlso Not _npcsUsedAsTemplates.Contains(n.FormID) _
+           AndAlso (n.AcbsFlags And AcbsBitIsCharGenFacePreset) = 0UI Then Return True
+        Return False
+    End Function
+
     ''' <summary>Check if this NPC has any LVLN in its direct TPLT or TPTA references.
     ''' These NPCs produce different results each time they're resolved (different face, gender, etc).</summary>
     Private Function NpcHasLeveledTemplates(npc As NPC_Data) As Boolean
@@ -2556,26 +2611,36 @@ Public Class MainForm
         ' "Only changed" filter: when ticked, restrict the tree to NPCs in the dirty set (bold ones),
         ' combined with the text filter. Applies to both placed NPCs and LVLN leaf NPCs.
         Dim onlyChanged As Boolean = CheckBoxOnlyChanged IsNot Nothing AndAlso CheckBoxOnlyChanged.Checked
+        ' Section 1 category filters (additive union). Read once here, never inside the lambda.
+        ' Null-guarded because PopulateNPCTree can run before Designer init: "Unique faces" defaults
+        ' TRUE when its checkbox is null so very-early calls reproduce today's behavior; the others
+        ' default FALSE.
+        Dim showUnique As Boolean = CheckBoxCatUnique Is Nothing OrElse CheckBoxCatUnique.Checked
+        Dim showGeneric As Boolean = CheckBoxCatGeneric IsNot Nothing AndAlso CheckBoxCatGeneric.Checked
+        Dim showTemplate As Boolean = CheckBoxCatTemplate IsNot Nothing AndAlso CheckBoxCatTemplate.Checked
+        Dim showUnused As Boolean = CheckBoxCatUnused IsNot Nothing AndAlso CheckBoxCatUnused.Checked
 
         TreeViewNPCs.SuspendLayout()
         TreeViewNPCs.BeginUpdate()
         TreeViewNPCs.Nodes.Clear()
 
         Try
-            ' === Section 1: Placed NPCs (unique characters with ACHR in the world) ===
-            ' Only show NPCs that are directly placed AND define their own visual appearance.
-            ' NPCs that inherit Traits or ModelAnimation from ANY template are generic
-            ' (raiders, gunners, etc.) — their appearance comes from the template chain,
-            ' so they are represented by the LVLN entries in section 2.
-            Dim placedNpcs = _allNPCs.
-                Where(Function(n) _directlyPlacedNPCFormIDs.Contains(n.FormID) AndAlso
-                                   Not NpcInheritsVisualAppearance(n) AndAlso
+            ' === Section 1: NPCs grouped by plugin ===
+            ' Which NPCs appear here is now driven by the category checkboxes in the filter row
+            ' (Unique faces / Generic / Template bases / Unused), additive union — an NPC shows if it
+            ' matches ANY ticked category. Default = "Unique faces" only, which reproduces the prior
+            ' behavior: in-world NPCs that define their own visual appearance. (NPCs that inherit
+            ' Traits or ModelAnimation from a template are "Generic"; those used only as TPLT/TPTA
+            ' sources are "Template bases"; the rest are "Unused".) An own-appearance NPC reached via
+            ' an LVLN appears in BOTH this plugin group and under its LVLN node in section 2.
+            Dim pluginSectionNpcs = _allNPCs.
+                Where(Function(n) NpcMatchesCategoryFilter(n, showUnique, showGeneric, showTemplate, showUnused) AndAlso
                                    (Not onlyChanged OrElse _dirtyNpcs.Contains(n.FormID)) AndAlso
                                    (normalizedFilter.Length = 0 OrElse MatchesNpcFilter(n, Nothing, normalizedFilter))).
                 GroupBy(Function(n) If(n.PluginName, "Unknown")).
                 OrderBy(Function(g) g.Key, StringComparer.OrdinalIgnoreCase)
 
-            For Each pluginGroup In placedNpcs
+            For Each pluginGroup In pluginSectionNpcs
                 Dim pluginNode As TreeNode = Nothing
                 Dim matchCount = 0
 
@@ -4482,14 +4547,7 @@ Public Class MainForm
                         ' posición vieja). Plus cubre chunks 100% unskinned (shishkebab DLC
                         ' Mechanist Assaultron) donde InjectChunkBonesIntoLiveSkeleton
                         ' early-exits y nunca crea el synthetic anchor.
-                        Dim cxBoneName As String = ""
-                        If Not String.IsNullOrEmpty(socket.Name) AndAlso socket.Name.Length >= 2 Then
-                            If socket.Name.StartsWith("P-", StringComparison.OrdinalIgnoreCase) Then
-                                cxBoneName = String.Concat("C-", socket.Name.AsSpan(2))
-                            ElseIf socket.Name.StartsWith("P_", StringComparison.OrdinalIgnoreCase) Then
-                                cxBoneName = String.Concat("C_", socket.Name.AsSpan(2))
-                            End If
-                        End If
+                        Dim cxBoneName As String = BSConnectPointBoneInjector_Class.TryGetSocketCounterpartName(socket.Name)
                         Dim cxInDict As Boolean = Not String.IsNullOrEmpty(cxBoneName) AndAlso targetSkel.SkeletonDictionary.ContainsKey(cxBoneName)
                         ' [CAMINO C — materialización lazy on-demand del C-X] (OpenAI Vuelta 20).
                         ' Si el C-X counterpart no está en el skel (chunk unskinned puro: el injector
@@ -4612,8 +4670,7 @@ Public Class MainForm
                     If chunkParents IsNot Nothing Then
                         For Each cp In chunkParents
                             If cp Is Nothing OrElse String.IsNullOrEmpty(cp.Name) Then Continue For
-                            Dim cName = If(cp.Name.StartsWith("P-", StringComparison.OrdinalIgnoreCase),
-                                           String.Concat("C-", cp.Name.AsSpan(2)), "")
+                            Dim cName = BSConnectPointBoneInjector_Class.TryGetSocketCounterpartName(cp.Name)
                             If String.IsNullOrEmpty(cName) Then Continue For
                             Dim chunkRotMat = BSConnectPointReader.QuatToMatrix33(cp.Rotation)
                             Dim chunkT = cp.Translation, chunkS = If(cp.Scale > 0.0F, cp.Scale, 1.0F)
@@ -4879,17 +4936,7 @@ Public Class MainForm
                     ' chunk's BSConnectPoint::Children declarations. RenameShapeBoneIndices renames
                     ' shape bones |0→|N for multi-instance but NOT the Children block — so to match
                     ' both base (|0) and renamed (|1, |2) instances we strip any trailing |<digits>
-                    ' from BOTH sides before comparing.
-                    Dim StripInstanceSuffix = Function(s As String) As String
-                                                  If String.IsNullOrEmpty(s) Then Return s
-                                                  Dim pipeIdx = s.LastIndexOf("|"c)
-                                                  If pipeIdx <= 0 OrElse pipeIdx >= s.Length - 1 Then Return s
-                                                  Dim tail = s.Substring(pipeIdx + 1)
-                                                  For Each c In tail
-                                                      If Not Char.IsDigit(c) Then Return s
-                                                  Next
-                                                  Return s.Substring(0, pipeIdx)
-                                              End Function
+                    ' from BOTH sides antes de comparar (via el helper Private Shared StripInstanceSuffix).
                     Dim childrenInfoSim = BSConnectPointReader.ReadChildren(sh.NifContent)
                     Dim cxBind As Transform_Class = Nothing
                     Dim cxBoneName As String = ""
@@ -7145,10 +7192,55 @@ Public Class MainForm
         Dim face As IMorphResolver = Nothing
         If host.Toggles.ApplyVertexMorphs Then face = BuildFaceMorphResolver(state, renderData, host)
         Dim body = BuildBodyMorphResolver(state, renderData, host)
-        If face Is Nothing AndAlso body Is Nothing Then Return Nothing
-        If face IsNot Nothing AndAlso body Is Nothing Then Return face
-        If body IsNot Nothing AndAlso face Is Nothing Then Return body
-        Return New MultiMorphResolver(face, body)
+        ' Hair zap resolver: emite el/los canal(es) de zap para las shapes Hair {30,31} marcadas con
+        ' ZapParts (Top/Long/Both) según el modelo complementario main/hairline. Gated por "Render
+        ' headwear": OFF → no se engancha → la mesh se destapa en el próximo pase de morphs (igual que la
+        ' oclusión de la mesh entera). Se incluye INDEPENDIENTE de los morphs face/body (un NPC con ambos
+        ' morphs OFF igual debe zapear bajo gorra), y debe ser el ÚLTIMO delegate del composite así su
+        ' canal de zap se agrega después de los canales de posición — el orden no afecta el resultado
+        ' (zap = mask, position = vertex) pero mantiene el zap visible al final del plan.
+        Dim hairTopZap = BuildHairTopZapResolver(renderData, host)
+
+        ' Junta los delegates no-nulos. MultiMorphResolver filtra nulls, así que paso los tres.
+        Dim delegates = New IMorphResolver() {face, body, hairTopZap}.Where(Function(r) r IsNot Nothing).ToArray()
+        If delegates.Length = 0 Then Return Nothing
+        If delegates.Length = 1 Then Return delegates(0)
+        Return New MultiMorphResolver(delegates)
+    End Function
+
+    ''' <summary>Build the hair zap resolver from the per-shape ShapeZapHairParts map, gated on the
+    ''' "Render headwear" toggle. Returns Nothing when headwear rendering is OFF (the zap must lift so the
+    ''' mesh shows whole) or when no shape carries a non-None ZapParts. Also flips shape.ApplyZaps for the
+    ''' flagged shapes so the renderer honours the VertexMask=-1 the resolver's zap channel sets.</summary>
+    Private Function BuildHairTopZapResolver(renderData As PreviewResolutionResult, host As NpcRenderHost) As HairTopZapResolver
+        If renderData Is Nothing Then Return Nothing
+        Dim zapParts As New Dictionary(Of IRenderableShape, HairZapParts)()
+        ' Render headwear OFF → no zap (la mesh se ve entera, igual que destapar el head part ocluido).
+        If host IsNot Nothing AndAlso host.Toggles.RenderHeadwear Then
+            For Each kv In renderData.ShapeZapHairParts
+                If kv.Key IsNot Nothing AndAlso kv.Value <> HairZapParts.None Then zapParts(kv.Key) = kv.Value
+            Next
+        End If
+        ' ApplyZaps por shape: ON sólo para las shapes que zapeamos ahora. Las demás OFF para que un
+        ' toggle previo no deje el flag pegado (la mask se limpia sola en ApplyMorphPlan, pero el flag
+        ' de la shape es persistente). Aplica a TODAS las shapes flageables, no sólo las activas.
+        For Each kv In renderData.ShapeZapHairParts
+            If kv.Key IsNot Nothing Then kv.Key.ApplyZaps = zapParts.ContainsKey(kv.Key)
+        Next
+        ' [HAIRZAP-DIAG] which shapes carry a non-None ZapParts in the render data, and which made it into
+        ' the resolver's zap set (ApplyZaps). A hairline flagged at SelectWinningCandidates but missing
+        ' here would mean its shape object diverged between LoadNifShapes and the resolver.
+        If Logger.Enabled Then
+            For Each kv In renderData.ShapeZapHairParts
+                Dim shName = If(kv.Key Is Nothing, "<null>", If(kv.Key.ShapeName, "?"))
+                Dim partsVal = kv.Value
+                Dim inSet = kv.Key IsNot Nothing AndAlso zapParts.ContainsKey(kv.Key)
+                Dim applyZapsVal = kv.Key IsNot Nothing AndAlso kv.Key.ApplyZaps
+                Logger.LogLazy(Function() $"[HAIRZAP-DIAG] resolver shape='{shName}' ShapeZapParts={partsVal} inZapSet={inSet} ApplyZaps={applyZapsVal} renderHeadwear={If(host IsNot Nothing, host.Toggles.RenderHeadwear, False)}")
+            Next
+        End If
+        If zapParts.Count = 0 Then Return Nothing
+        Return New HairTopZapResolver(zapParts)
     End Function
 
     ''' <summary>Isolated bake-vs-app harness (CSV-only; zero library changes; zero global state mutation).
@@ -8627,6 +8719,8 @@ Public Class MainForm
         Dim armo = GetParsedArmo(armoFormID)
         If armo Is Nothing Then Return
 
+        Dim useFaceGen As Boolean = HasFaceGenAssets(state)
+
         ' Power-armor gate: an ArmorTypePower piece only fits an actor whose race is a power-armor race
         ' (in a frame). Drop the whole ARMO otherwise — PA armatures list HumanRace too, so the per-ARMA
         ' race check would render it on humans mounted wrong (see helper block above).
@@ -8767,6 +8861,28 @@ Public Class MainForm
                 Continue For
             End If
 
+            Dim armaDictKey As String = NormalizeDictionaryKeyWithMeshesPrefix(meshPath)
+            ' "Has FaceBones Model" (MO2F/MO3F bit 0x01): the engine swaps this model for its
+            ' <model>_faceBones.nif sibling (identical geometry, skinned to the face bones) on FaceGen
+            ' NPCs so it deforms with the head's FMRS bone pose and covers the hair. Mirror of the HDPT
+            ' face-region redirect (~line 10489). Fallback: TryGetFaceBonesVariant returns "" when the
+            ' sibling is absent from FilesDictionary, so we keep the base mesh. Render/preview only; the
+            ' bake is untouched.
+            If useFaceGen Then
+                Dim modelFlags As Byte = If(state.IsFemale, arma.FemaleModelFlags, arma.MaleModelFlags)
+                If (modelFlags And &H1) <> 0 Then
+                    Dim fbKey = TryGetFaceBonesVariant(armaDictKey, -1)
+                    If fbKey <> "" Then
+                        If Logger.Enabled Then
+                            Dim afidLog = armaFormID
+                            Dim fbLog = fbKey
+                            Logger.LogLazy(Function() $"[ARMA-FACEBONES] ARMA=0x{afidLog:X8} redirect base->_faceBones dictKey='{fbLog}'")
+                        End If
+                        armaDictKey = fbKey
+                    End If
+                End If
+            End If
+
             Dim effSlotMask As UInteger = EffectiveArmaSlotMask(arma, armo)
 
             ' Within-ARMO armature dedup. The engine processes the armature in Models order; the FIRST
@@ -8790,7 +8906,7 @@ Public Class MainForm
             coveredSlots = coveredSlots Or effSlotMask
 
             candidates.Add(New MeshCandidate With {
-                .DictKey = NormalizeDictionaryKeyWithMeshesPrefix(meshPath),
+                .DictKey = armaDictKey,
                 .SlotMask = effSlotMask,
                 .Priority = If(state.IsFemale, arma.FemalePriority, arma.MalePriority),
                 .Kind = kind,
@@ -9213,6 +9329,19 @@ Public Class MainForm
         Return depth
     End Function
 
+    ''' <summary>Quita el sufijo de instancia numérico tras el último "|" (p.ej. "C-X|2" → "C-X").
+    ''' Si no hay "|", o no hay dígitos tras el "|", o algún char tras el "|" no es dígito,
+    ''' devuelve s sin cambios.</summary>
+    Private Shared Function StripInstanceSuffix(s As String) As String
+        If String.IsNullOrEmpty(s) Then Return s
+        Dim pp = s.LastIndexOf("|"c)
+        If pp <= 0 OrElse pp >= s.Length - 1 Then Return s
+        For Each c In s.Substring(pp + 1)
+            If Not Char.IsDigit(c) Then Return s
+        Next
+        Return s.Substring(0, pp)
+    End Function
+
     ''' <summary>COLECTA el plan V2 SKEL-OVERRIDE para una shape con mount socket: computa cxNode,
     ''' G_CX, parentBoneWorld, M_mesh, y por cada bone (W_B = A × G_B, A = M_mesh × inv(G_CX)) agrega un
     ''' <see cref="MountDesiredWorldEntry"/> al plan <see cref="PreviewResolutionResult.MountDesiredWorlds"/>
@@ -9238,39 +9367,18 @@ Public Class MainForm
             ' del helmet socket) → A equivocado → casco rotado/caído. OBTE es autoritativo.
             ' Convención canónica (per BSConnectPointBoneInjector.TryGetSocketCounterpartName):
             ' "P-X" → "C-X", "P_X" → "C_X".
-            Dim cxName As String = ""
-            If socket IsNot Nothing AndAlso Not String.IsNullOrEmpty(socket.Name) AndAlso socket.Name.Length > 2 Then
-                If socket.Name.StartsWith("P-", StringComparison.OrdinalIgnoreCase) Then
-                    cxName = String.Concat("C-", socket.Name.AsSpan(2))
-                ElseIf socket.Name.StartsWith("P_", StringComparison.OrdinalIgnoreCase) Then
-                    cxName = String.Concat("C_", socket.Name.AsSpan(2))
-                Else
-                    ' Edge case: socket sin prefijo P-/P_. No conocemos caso real; queremos
-                    ' verlo si aparece. Debug break para inspección manual; en release no
-                    ' aborta (Debugger.Break solo dispara con debugger adjunto).
-                    System.Diagnostics.Debugger.Break()
-                End If
-            End If
+            Dim cxName As String = If(socket IsNot Nothing, BSConnectPointBoneInjector_Class.TryGetSocketCounterpartName(socket.Name), "")
 
             If Not String.IsNullOrEmpty(cxName) Then
                 ' Find C-X NiNode (try exact, fallback suffix strip).
                 Dim cxNode As NiflySharp.Blocks.NiNode = shape.NifContent.FindBlockByName(Of NiflySharp.Blocks.NiNode)(cxName)
                 If cxNode Is Nothing Then
-                    Dim StripSfx = Function(s As String) As String
-                                       If String.IsNullOrEmpty(s) Then Return s
-                                       Dim pp = s.LastIndexOf("|"c)
-                                       If pp <= 0 OrElse pp >= s.Length - 1 Then Return s
-                                       For Each c In s.Substring(pp + 1)
-                                           If Not Char.IsDigit(c) Then Return s
-                                       Next
-                                       Return s.Substring(0, pp)
-                                   End Function
-                    Dim cxNormSearch = StripSfx(cxName)
+                    Dim cxNormSearch = StripInstanceSuffix(cxName)
                     For Each blk In shape.NifContent.Blocks
                         Dim cand = TryCast(blk, NiflySharp.Blocks.NiNode)
                         If cand Is Nothing Then Continue For
                         Dim candNm = If(cand.Name?.String, "")
-                        If String.Equals(StripSfx(candNm), cxNormSearch, StringComparison.OrdinalIgnoreCase) Then
+                        If String.Equals(StripInstanceSuffix(candNm), cxNormSearch, StringComparison.OrdinalIgnoreCase) Then
                             cxNode = cand
                             Exit For
                         End If
@@ -9450,12 +9558,15 @@ Public Class MainForm
                         If treeNode_mod Is Nothing OrElse treeNode_mod.Name Is Nothing Then Continue For
                         Dim treeNm_mod = If(treeNode_mod.Name.String, "")
                         If String.IsNullOrEmpty(treeNm_mod) Then Continue For
-                        ' ⛔ Nodos con sufijo de instancia '|N' EXCLUIDOS del tree-walk: los chunks
+                        ' ⛔ Nodos con sufijo de instancia '|<dígitos>' EXCLUIDOS del tree-walk: los chunks
                         ' multi-instancia (ModTorsoHandyEye/ArmsTypeA1 ×3) comparten UN NIF cuyos nodos
                         ' se llaman '...|0' FIJO — escribirlos por nombre apila las 3 instancias en el
                         ' socket |0 (regresión: ojos mezclados, brazos corridos). Esos huesos los maneja
                         ' el path skinned+cadenas, que sí tiene el mapeo apIdx por instancia.
-                        If treeNm_mod.IndexOf("|"c) >= 0 Then Continue For
+                        ' Usa el MISMO discriminador '|<dígitos>' que StripInstanceSuffix / apIdx-sub (antes
+                        ' era IndexOf("|") crudo = cualquier pipe; verificado 2026-06-14: 0 nombres con
+                        ' sufijo no-numérico en toda la data → el cambio es no-regresivo y consistente).
+                        If StripInstanceSuffix(treeNm_mod) <> treeNm_mod Then Continue For
                         Dim treeHb_mod As HierarchiBone_class = Nothing
                         If targetSkel.SkeletonDictionary.TryGetValue(treeNm_mod, treeHb_mod) AndAlso seenBones_mod.Add(treeNm_mod) Then
                             boneList_mod.Add(Tuple.Create(-1, treeNode_mod, treeHb_mod, GetBoneHierarchyDepth(treeHb_mod)))
@@ -9607,20 +9718,31 @@ Public Class MainForm
         End If
         Dim newLocal = parentWorld.Inverse().ComposeTransforms(desiredWorld)
         Dim newMountDelta = hb.OriginalLocaLTransform.Inverse().ComposeTransforms(newLocal)
-        ' [MOUNTDELTA-BONE-CONFLICT] Guardrail: last-write-wins con log diagnóstico.
-        If hb.MountDeltaTransform IsNot Nothing Then
-            Dim existingT = hb.MountDeltaTransform.Translation
-            Dim newT = newMountDelta.Translation
-            Dim mdDiff = Math.Sqrt((existingT.X - newT.X) ^ 2 + (existingT.Y - newT.Y) ^ 2 + (existingT.Z - newT.Z) ^ 2)
-            If mdDiff > 0.5 Then
-                Dim bnCf = hb.BoneName, ctxCf = contextLabel, exT = existingT, nwT = newT, mdDf = mdDiff
-                Logger.LogLazy(Function() $"[MOUNTDELTA-BONE-CONFLICT] bone='{bnCf}' ctx='{ctxCf}' existing.T=({exT.X:F3},{exT.Y:F3},{exT.Z:F3}) new.T=({nwT.X:F3},{nwT.Y:F3},{nwT.Z:F3}) diff={mdDf:F3} → last-write-wins")
-            End If
-        End If
+        ' El conflicto real "2 chunks → 1 hueso" se detecta fail-loud en ApplyMountPlanForActor (duplicado
+        ' within-pass). Acá ya NO se loguea el caso cross-pase (hb.MountDeltaTransform de un render previo),
+        ' que NO es conflicto sino re-aplicación normal por pose/re-render.
         hb.MountDeltaTransform = newMountDelta
         Dim bnL = hb.BoneName, ctxL = contextLabel, ctL = cT, dL = dT, diL = diff, mdT = newMountDelta.Translation
         Logger.LogLazy(Function() $"[MOUNTDELTA-WRITE] bone='{bnL}' ctx='{ctxL}' was.world.T=({ctL.X:F3},{ctL.Y:F3},{ctL.Z:F3}) → wants.world.T=({dL.X:F3},{dL.Y:F3},{dL.Z:F3}) diff={diL:F3} MountDelta.T=({mdT.X:F3},{mdT.Y:F3},{mdT.Z:F3})")
     End Sub
+
+    ''' <summary>Nombres de los huesos que ALGUNA shape renderizada usa como skin-bone (geometría depende
+    ''' de ellos). Se usa para distinguir un conflicto de mount que IMPORTA (skin-bone con malla) de uno
+    ''' sobre un marker SIN malla (ej. ProjectileNode escrito por el tree-walk como bone[-1], que no
+    ''' afecta el render aunque varios chunks lo quieran en lugares distintos).</summary>
+    Private Shared Function BuildRenderedSkinBoneNames(renderData As PreviewResolutionResult) As HashSet(Of String)
+        Dim s As New HashSet(Of String)(StringComparer.OrdinalIgnoreCase)
+        If renderData Is Nothing OrElse renderData.Shapes Is Nothing Then Return s
+        For Each sh In renderData.Shapes
+            If sh Is Nothing OrElse sh.ShapeBones Is Nothing Then Continue For
+            For Each b In sh.ShapeBones
+                Dim niN = TryCast(b, NiflySharp.Blocks.NiNode)
+                Dim nm = niN?.Name?.String
+                If Not String.IsNullOrEmpty(nm) Then s.Add(nm)
+            Next
+        Next
+        Return s
+    End Function
 
     ''' <summary>Aplicador canónico ÚNICO del plan de mount. Recorre el plan
     ''' <c>renderData.MountDesiredWorlds</c> (orden topológico) y escribe <c>MountDeltaTransform</c>
@@ -9654,7 +9776,42 @@ Public Class MainForm
         ' Sort ESTABLE por depth: entre entradas del mismo bone (last-write-wins del plan) se
         ' conserva el orden de colección.
         Dim applyOrdered = applyList.OrderBy(Function(x) x.Depth).ToList()
+        ' [MOUNTDELTA-CONFLICT-IMPOSIBLE] Fail-loud (como Path B). Conflicto que IMPORTA = 2+ entradas del
+        ' plan quieren el mismo hueso en lugares DISTINTOS (diff>0.5) EN ESTE pase, Y el hueso tiene
+        ' GEOMETRÍA (es skin-bone de alguna shape renderizada). Dos filtros contra falsos positivos:
+        '   (1) diff>0.5  → descarta el caso benigno multi-part / multi-instancia (varias shapes del mismo
+        '       chunk al mismo hueso con el MISMO W_B, ej. Mr Handy EyeArm1|N: brazo+iris+lente → idéntico).
+        '   (2) skin-bone → descarta markers SIN malla escritos por el tree-walk como bone[-1] (ej.
+        '       ProjectileNode = boca del arma: en un CreateABot 3 armas lo quieren en 3 lugares, pero NO
+        '       hay geometría ahí → no afecta el render). Verificado 2026-06-14 con NPC 0x0100FF0A.
+        ' (within-pass Dictionary fresco por llamada → NO confunde el re-render cross-pase. last-write-wins
+        ' se sigue aplicando.)
+        Dim appliedWorlds As New Dictionary(Of String, Transform_Class)(StringComparer.OrdinalIgnoreCase)
+        Dim skinBoneNames As HashSet(Of String) = Nothing ' lazy: se construye solo en el 1er diff>0.5
         For Each item In applyOrdered
+            Dim prevDesired As Transform_Class = Nothing
+            If appliedWorlds.TryGetValue(item.Bone.BoneName, prevDesired) AndAlso prevDesired IsNot Nothing AndAlso item.Entry.DesiredWorld IsNot Nothing Then
+                Dim pT = prevDesired.Translation, nT = item.Entry.DesiredWorld.Translation
+                Dim dd As Double = Math.Sqrt((pT.X - nT.X) ^ 2 + (pT.Y - nT.Y) ^ 2 + (pT.Z - nT.Z) ^ 2)
+                If dd > 0.5 Then
+                    If skinBoneNames Is Nothing Then skinBoneNames = BuildRenderedSkinBoneNames(renderData)
+                    If skinBoneNames.Contains(item.Bone.BoneName) Then
+                        Dim bnDup As String = item.Bone.BoneName, ctxDup As String = If(item.Entry.ContextLabel, "?"), ddL As Double = dd
+                        Logger.LogLazy(Function() $"[MOUNTDELTA-CONFLICT-IMPOSIBLE] bone='{bnDup}' ctx='{ctxDup}' diff={ddL:F3} — 2 chunks quieren el mismo SKIN-BONE en lugares DISTINTOS")
+                        MessageBox.Show("MOUNTDELTA CONFLICT IMPOSIBLE — no debería pasar." & vbCrLf & vbCrLf &
+                                        "bone = " & bnDup & vbCrLf &
+                                        "ctx  = " & ctxDup & vbCrLf &
+                                        "diff = " & dd.ToString("F2") & vbCrLf & vbCrLf &
+                                        "2 chunks quieren el MISMO skin-bone (con geometría) en lugares DISTINTOS." & vbCrLf &
+                                        "Aplica last-write-wins. La regla canónica sería 'gana el host que publica el hueso'.",
+                                        "MountDelta conflict imposible — REVISAR", MessageBoxButtons.OK, MessageBoxIcon.Error)
+                    Else
+                        Dim bnMk As String = item.Bone.BoneName, ctxMk As String = If(item.Entry.ContextLabel, "?"), ddMk As Double = dd
+                        Logger.LogLazy(Function() $"[MOUNTDELTA-MARKER-CONFLICT] bone='{bnMk}' ctx='{ctxMk}' diff={ddMk:F3} — sin geometría (no skin-bone), no afecta render, silenciado")
+                    End If
+                End If
+            End If
+            appliedWorlds(item.Bone.BoneName) = item.Entry.DesiredWorld
             OverrideActorBoneWorld(item.Bone, item.Entry.DesiredWorld, item.Entry.ContextLabel & "-APPLY")
             writtenCount += 1
         Next
@@ -9872,12 +10029,7 @@ Public Class MainForm
                 Logger.LogLazy(Function() $"[A_HOST-JIT-EARLY] ord={ordL_dbg} fid=0x{fidL_dbg:X8} socket='{socketNm}' reason=socket-name-too-short")
                 Return Nothing
             End If
-            Dim cxNm As String = ""
-            If socketNm.StartsWith("P-", StringComparison.OrdinalIgnoreCase) Then
-                cxNm = String.Concat("C-", socketNm.AsSpan(2))
-            ElseIf socketNm.StartsWith("P_", StringComparison.OrdinalIgnoreCase) Then
-                cxNm = String.Concat("C_", socketNm.AsSpan(2))
-            End If
+            Dim cxNm As String = BSConnectPointBoneInjector_Class.TryGetSocketCounterpartName(socketNm)
             If String.IsNullOrEmpty(cxNm) Then
                 Dim ordL_dbg = cand.ChunkInstanceOrdinal, fidL_dbg = cand.ChunkOmodFormID
                 Logger.LogLazy(Function() $"[A_HOST-JIT-EARLY] ord={ordL_dbg} fid=0x{fidL_dbg:X8} socket='{socketNm}' reason=cxNm-empty (socket sin prefix P-/P_)")
@@ -9895,21 +10047,12 @@ Public Class MainForm
                 ' apIdx=1/2 (NIF tiene C-ModSlotB|0, socket pide |1 o |2 → strip a C-ModSlotB
                 ' en ambos lados → match). Paridad con la lógica StripSfx del V2 legacy
                 ' (líneas ~2703-2712 inline en shape loop pre-refactor).
-                Dim StripSfx = Function(s As String) As String
-                                   If String.IsNullOrEmpty(s) Then Return s
-                                   Dim pp = s.LastIndexOf("|"c)
-                                   If pp <= 0 OrElse pp >= s.Length - 1 Then Return s
-                                   For Each c In s.Substring(pp + 1)
-                                       If Not Char.IsDigit(c) Then Return s
-                                   Next
-                                   Return s.Substring(0, pp)
-                               End Function
-                Dim cxNormSearch = StripSfx(cxNm)
+                Dim cxNormSearch = StripInstanceSuffix(cxNm)
                 For Each blk In chunkNif.Blocks
                     Dim candBlk = TryCast(blk, NiflySharp.Blocks.NiNode)
                     If candBlk Is Nothing Then Continue For
                     Dim candNm = If(candBlk.Name?.String, "")
-                    If String.Equals(StripSfx(candNm), cxNormSearch, StringComparison.OrdinalIgnoreCase) Then
+                    If String.Equals(StripInstanceSuffix(candNm), cxNormSearch, StringComparison.OrdinalIgnoreCase) Then
                         cxNode = candBlk
                         Exit For
                     End If
@@ -10540,7 +10683,14 @@ Public Class MainForm
         '
         ' Occlusion matrix (head parts of type 0/1 and "extra parts" never occlude — only the
         ' four slotless visual layers below apply):
-        '   3 Hair          : hidden by HairTop or HairLong or FaceGenHead   (any headwear)
+        '   3 Hair (main+hairlines) : RENDER, GEOMÉTRICA UNIFORME (main y hairline igual). Cada pieza se
+        '                     oculta ⟺ COBERTURA TOTAL (el headwear cubre TODOS los slots que la pieza ocupa,
+        '                     {30/31}⊆occupiedSlots) O full-mask (32). Gorra [30] sin 31 NO oculta un {30,31}
+        '                     (Piper/Moe → el largo asoma, el {30}-hairline redundante sí se oculta); gorro
+        '                     [30,31] oculta todo (Caravan); full-mask 32 oculta todo (Mechanist). Las gorras
+        '                     NO traen pelo (tela: PiperCapF→PiperCap.BGSM) → el pelo bajo la gorra es del
+        '                     FaceGen. Addons NO-pelo (mouth shadow/eyes, biped 32, hairSlotMask=0): sólo
+        '                     full-mask. RENDER-ONLY; el bake usa su propia regla CK-fiel.
         '   4 FacialHair    : hidden by FaceGenHead or Beard or Mouth        (covers the beard region)
         '   6 Eyebrows      : hidden by FaceGenHead only                     (full helmet covers brows)
         '   9 HeadRear      : NUNCA se oculta. Es geometría base del cráneo (back of head) que el
@@ -10578,12 +10728,83 @@ Public Class MainForm
                 '      (no Misc) también caía bajo HairTop sin esta exención.
                 '   b) Misc top-level (raw=0, parent=-1) — addons standalone en NPC.PNAM/RACE que no
                 '      están en HNAM de ningún parent listado (mouth shadow sueltos, etc.).
-                If slotlessCandidate.IsHnamExtra OrElse slotlessCandidate.HeadPartTypeRaw = 0 Then
+                ' OCLUSIÓN DE PELO — RENDER, GEOMÉTRICA (cobertura total), UNIFORME a main Y hairline.
+                ' LÓGICA: una pieza de pelo se oculta ⟺ el headwear cubre TODAS las regiones (biped 30
+                ' HairTop / 31 HairLong) que la pieza ocupa, O es full-mask (slot 32 FaceGenHead = toda la
+                ' cabeza). Si una región que el pelo ocupa queda libre, esa parte se ve → no se puede ocultar
+                ' la malla entera. Cada pieza por sus propios slots:
+                '   {30} (top)   : oculto bajo [30] o [30,31] o 32.
+                '   {31} (largo) : oculto bajo [31] o [30,31] o 32.
+                '   {30,31} (90%): oculto SÓLO bajo [30,31] o 32. Gorra[30] → el largo asoma → SE MUESTRA.
+                ' Ej: Piper/Moe (gorra cubre 30, no 31) → su main {30,31} SE MUESTRA (su {30}-hairline se
+                ' oculta, redundante). Caravan (gorro [30,31]) → todo oculto. Mechanist (32) → todo oculto.
+                ' Las gorras NO traen pelo (son tela) → el pelo bajo la gorra es el del FaceGen. hairSlotMask
+                ' = bits {30→0x1, 31→0x2} de la mesh. Los addons NO-pelo (mouth shadow / eyes, biped 32 →
+                ' hairSlotMask=0) caen al else: sólo full-mask los tapa. RENDER-ONLY: el bake usa su regla CK.
+                Dim hairSlotMask As UInteger = CandidateHairSlotMask(slotlessCandidate)
+                If hairSlotMask <> 0UI Then
+                    ' MODELO COMPLEMENTARIO POR PARTICIÓN — pelo (under-helmet de FO4). Una pieza {30,31}
+                    ' tiene dos particiones: TOP (biped 30, corona) y LONG (biped 31, abajo). La HAIRLINE
+                    ' (HNAM-extra, IsHnamExtra) es el COMPLEMENTO INVERSO del MAIN, por partición:
+                    '   MAIN     : una partición se ZAPEA cuando su slot ESTÁ cubierto
+                    '              (top → zap si hasHairTop; long → zap si hasHairLong).
+                    '   HAIRLINE : una partición se ZAPEA cuando su slot NO está cubierto
+                    '              (top → zap si NOT hasHairTop; long → zap si NOT hasHairLong).
+                    ' FULL-MASK 32 (hasFaceGenHead): ambos (main y hairline) se ocultan ENTEROS (gana sobre
+                    ' cualquier zap parcial). Si AMBAS particiones deben zapearse (Both), la pieza desaparece
+                    ' entera: el ring compartido (v30∩v31, que NINGÚN top-/long-only set incluye) sobreviviría
+                    ' a un zap parcial, así que se oculta la mesh entera vía IsOccludedByHeadwear en vez de un
+                    ' zap Both incompleto. Resultados ({30,31}):
+                    '   sin gorro      → main entero visible; hairline Both → oculta entera.
+                    '   gorra [30]     → main zap Top (queda long); hairline zap Long (queda TOP = borde frente).
+                    '   casco [30,31]  → main Both → oculto entero; hairline None → entera visible (under-helmet).
+                    '   full-mask [32] → ambos occluded enteros.
+                    ' Piezas de UNA sola partición ({30}-only / {31}-only) no tienen complemento por partición:
+                    ' siguen la regla de cobertura total (oculto ⟺ su único slot cubierto), igual para main y
+                    ' hairline, más full-mask 32.
+                    Dim hasBothHairParts As Boolean =
+                        (hairSlotMask And SlotBitHairTop) <> 0UI AndAlso (hairSlotMask And SlotBitHairLong) <> 0UI
+                    Dim zapParts As HairZapParts = HairZapParts.None
+                    If hasFaceGenHead Then
+                        ' Full-mask: toda la cabeza tapada → pieza entera oculta, sin zap.
+                        occluded = True
+                    ElseIf hasBothHairParts Then
+                        ' Pieza {30,31} — MAIN y HAIRLINE se tratan IGUAL, por partición (la hairline COPIA
+                        ' al main, sin invertir): zap del TOP si el headwear cubre slot 30, zap del LONG si
+                        ' cubre slot 31. Saca la partición cubierta (en la hairline, el top alto que clava;
+                        ' queda el largo bajo). Si cubre AMBOS, un zap parcial dejaría el ring compartido →
+                        ' oculta entera. (El zap-only de la hairline aplica por el blindaje HasZaps.)
+                        If hasHairTop Then zapParts = zapParts Or HairZapParts.Top
+                        If hasHairLong Then zapParts = zapParts Or HairZapParts.Long
+                        If zapParts = HairZapParts.Both Then
+                            occluded = True
+                            zapParts = HairZapParts.None
+                        End If
+                    Else
+                        ' Pieza de una sola partición: cobertura total de su único slot (sin complemento).
+                        occluded = (hairSlotMask And occupiedSlots) = hairSlotMask
+                    End If
+                    slotlessCandidate.ZapParts = zapParts
+                    ' [HAIRZAP-DIAG] per hair piece: dict mesh, IsHnamExtra, computed mask, occlusion, and
+                    ' final ZapParts. Lets us see why a {30,31} hairline (HNAM-extra) diverges from the main:
+                    ' which of mask / hasBothHairParts / occluded / hasHairTop/Long drives each partition.
+                    If Logger.Enabled Then
+                        Dim dkD = slotlessCandidate.DictKey
+                        Dim hnamD = slotlessCandidate.IsHnamExtra
+                        Dim maskD = hairSlotMask
+                        Dim bothD = hasBothHairParts
+                        Dim occD = occluded
+                        Dim htD = hasHairTop
+                        Dim hlD = hasHairLong
+                        Dim occSlotsD = occupiedSlots
+                        Dim zapD = zapParts
+                        Logger.LogLazy(Function() $"[HAIRZAP-DIAG] dict='{dkD}' isHnamExtra={hnamD} hairMask=0x{maskD:X} hasBoth={bothD} occupiedSlots=0x{occSlotsD:X} hasHairTop={htD} hasHairLong={hlD} occluded={occD} -> ZapParts={zapD}")
+                    End If
+                ElseIf slotlessCandidate.IsHnamExtra OrElse slotlessCandidate.HeadPartTypeRaw = 0 Then
+                    ' Addon NO-pelo (mouth shadow / eye AO-wet, biped 32): sólo full-mask lo tapa.
                     occluded = hasFaceGenHead
                 Else
                     Select Case slotlessCandidate.HeadPartType
-                        Case HeadPartTypeHair
-                            occluded = hasHairTop OrElse hasHairLong OrElse hasFaceGenHead
                         Case HeadPartTypeFacialHair
                             occluded = hasFaceGenHead OrElse hasBeard OrElse hasMouth
                         Case 6 ' Eyebrows
@@ -10610,6 +10831,52 @@ Public Class MainForm
         Next
 
         Return selected.OrderBy(Function(c) c.Order).ToList()
+    End Function
+
+    ''' <summary>Per-mesh cache for <see cref="CandidateHairSlotMask"/>, keyed by normalized mesh key
+    ''' (candidate.DictKey, already a FilesDictionary key). Hair-slot occupancy is a property of the mesh
+    ''' file alone (its BSSubIndexTriShape segmentation), stable across NPCs sharing the same hair mesh,
+    ''' so it's worth memoizing.</summary>
+    Private ReadOnly _candidateHairSlotMaskCache As New Dictionary(Of String, UInteger)(StringComparer.OrdinalIgnoreCase)
+
+    ''' <summary>Bits {SlotBitHairTop 0x1 (biped 30), SlotBitHairLong 0x2 (biped 31)} that the candidate's
+    ''' source mesh occupies. Drives the RENDER hair-occlusion rule: a hair piece is hidden ⟺ the headwear
+    ''' covers ALL the hair slots the piece occupies (mask ⊆ occupiedSlots) OR is a full-mask (slot 32).
+    ''' Reads the mesh NIF from FilesDictionary (same path bake/render use: FilesDictionary_class.GetBytes
+    ''' on the normalized DictKey), finds each BSSubIndexTriShape, and unions its segment biped objects via
+    ''' <see cref="BSTriShapeGeometry.GetBipedObjects"/>. Works for a hair's main mesh and each hairline
+    ''' (every hairline is its own candidate/mesh). Non-hair head parts (mouth shadow / eyes → biped 32)
+    ''' return 0. If the mesh can't be read / has no segments → 0 (safe under-hide: show the hair).
+    ''' RENDER-ONLY: the bake (FaceGenBuilder) keeps its own CK-faithful biped30only rule.</summary>
+    Private Function CandidateHairSlotMask(candidate As MeshCandidate) As UInteger
+        If candidate Is Nothing Then Return 0UI
+        Dim meshKey = NormalizeDictionaryKeyWithMeshesPrefix(candidate.DictKey)
+        If String.IsNullOrEmpty(meshKey) Then Return 0UI
+
+        Dim cached As UInteger
+        If _candidateHairSlotMaskCache.TryGetValue(meshKey, cached) Then Return cached
+
+        Dim result As UInteger = 0UI
+        Try
+            Dim bytes = FilesDictionary_class.GetBytes(meshKey)
+            If bytes IsNot Nothing AndAlso bytes.Length > 0 Then
+                Dim nif As New Nifcontent_Class_Manolo()
+                nif.Load_Manolo(bytes)
+                For Each shp In nif.GetShapes()
+                    Dim subIdx = TryCast(shp, BSSubIndexTriShape)
+                    If subIdx Is Nothing Then Continue For
+                    Dim biped = BSTriShapeGeometry.GetBipedObjects(subIdx)
+                    If biped.Contains(30UI) Then result = result Or SlotBitHairTop
+                    If biped.Contains(31UI) Then result = result Or SlotBitHairLong
+                Next
+            End If
+        Catch ex As Exception
+            ' Mesh unreadable / unknown blocks / no segments → 0 (safe under-hide: show the hair).
+            result = 0UI
+        End Try
+
+        _candidateHairSlotMaskCache(meshKey) = result
+        Return result
     End Function
 
     Private Shared Function CandidateKindRank(kind As MeshCandidateKind) As Integer
@@ -10996,6 +11263,7 @@ Public Class MainForm
                 result.ShapeCategory(shape) = category
                 result.ShapeCoveredByOutfit(shape) = candidate.IsCoveredByOutfit
                 result.ShapeOccludedByHeadwear(shape) = candidate.IsOccludedByHeadwear
+                result.ShapeZapHairParts(shape) = candidate.ZapParts
                 result.ShapeUsesBodyTexture(shape) = candidate.UsesBodyTexture
                 ' HDPT type=7 Meatcaps (CK enum 7=Meatcaps, ver wbDefinitionsFO4 + comment en
                 ' CollectHeadPartCandidate). Confirmed por estar en enum oficial de Bethesda;
@@ -11429,7 +11697,8 @@ Public Class MainForm
             End If
 
             ApplyTextureSetOverrides(textureSet, relatedMaterial, candidate.UsesBodyTexture, shape.NifShape, shape.NifContent,
-                                     isHeadPartTextureSet:=(candidate IsNot Nothing AndAlso candidate.Kind = MeshCandidateKind.HeadPart))
+                                     isHeadPartTextureSet:=(candidate IsNot Nothing AndAlso candidate.Kind = MeshCandidateKind.HeadPart),
+                                     isFaceHeadPart:=(candidate IsNot Nothing AndAlso candidate.HeadPartType = HeadPartTypeFace))
 
             Dim material = relatedMaterial.material
             If material Is Nothing Then Continue For
@@ -11799,7 +12068,7 @@ Public Class MainForm
     ''' Height / Env / Multilayer / Spec). Si el TXST trae un .bgsm/.bgem en MaterialPath,
     ''' carga ese material y reemplaza el del shape. <c>Friend Shared</c> para que
     ''' HeadPartPicker_Form pueda reutilizarlo en su preview de HDPT.</summary>
-    Friend Shared Sub ApplyTextureSetOverrides(textureSet As TXST_Data, relatedMaterial As Nifcontent_Class_Manolo.RelatedMaterial_Class, usesBodyTexture As Boolean, shap As NiflySharp.INiShape, nif As Nifcontent_Class_Manolo, Optional isHeadPartTextureSet As Boolean = False)
+    Friend Shared Sub ApplyTextureSetOverrides(textureSet As TXST_Data, relatedMaterial As Nifcontent_Class_Manolo.RelatedMaterial_Class, usesBodyTexture As Boolean, shap As NiflySharp.INiShape, nif As Nifcontent_Class_Manolo, Optional isHeadPartTextureSet As Boolean = False, Optional isFaceHeadPart As Boolean = False)
         If textureSet Is Nothing OrElse relatedMaterial Is Nothing Then Return
 
         Dim logEnabled = Logger.Enabled
@@ -11823,13 +12092,18 @@ Public Class MainForm
         If textureSet.MaterialPath <> "" Then
             Dim overrideMaterial = MaterialResolver.TryLoadMaterialFromDictionary(textureSet.MaterialPath, material, shap, nif)
             If overrideMaterial IsNot Nothing Then
-                ' TEXTURES-ONLY (2026-06-14): el MNAM del TXST aporta SOLO sus paths de textura. El
-                ' shader (ShaderType/SubsurfaceRolloff/BackLight/Smoothness/Specular/alpha/flags) queda
-                ' del clon del mesh FUENTE — el .bgsm es el material runtime del engine, CK nunca lo
-                ' hornea en el shader del FaceGen NIF. Verificado por identidad contra los 10.197 shapes
-                ' de CK: donde hay MNAM, o es FaceGen=True (CK=shader del fuente) o FaceGen=False con
-                ' source==material; ninguna shape bakeada necesita el shader del material. Reemplaza el
-                ' experimento full-replace y el viejo gate usesBodyTexture.
+                ' TEXTURES-ONLY + ALPHA (2026-06-15): el MNAM del TXST aporta SOLO sus paths de textura
+                ' MÁS el alpha (AlphaTest/AlphaBlend) verbatim. El resto del shader (ShaderType/
+                ' SubsurfaceRolloff/BackLight/Smoothness/Specular/flags) queda del clon del mesh FUENTE —
+                ' el .bgsm es el material runtime del engine, CK nunca lo hornea en el shader del FaceGen
+                ' NIF. Verificado por identidad contra los 10.197 shapes de CK: donde hay MNAM, o es
+                ' FaceGen=True (CK=shader del fuente) o FaceGen=False con source==material; ninguna shape
+                ' bakeada necesita el shader del material. Reemplaza el experimento full-replace y el
+                ' viejo gate usesBodyTexture.
+                ' El alpha SÍ se toma del material override (no era así en la versión 06-14 textures-only):
+                ' CK emite un NiAlphaProperty gobernado por el alpha del material de cabeza (p.ej.
+                ' Gen2SkinHeadValentine.BGSM AlphaTest=True/Ref=128/Blend=Standard) y sin esto el NIF
+                ' bakeado perdía el NiAlphaProperty y el flag SF2 Alpha_Test. Decisión de auditoría.
                 ' Ver reference_facegen_ck_must_come_from_ba2.
                 material.Diffuse_or_Base_Texture = overrideMaterial.Diffuse_or_Base_Texture
                 material.NormalTexture = overrideMaterial.NormalTexture
@@ -11843,6 +12117,15 @@ Public Class MainForm
                 material.FlowTexture = overrideMaterial.FlowTexture
                 material.InnerLayerTexture = overrideMaterial.InnerLayerTexture
                 material.DisplacementTexture = overrideMaterial.DisplacementTexture
+                ' Alpha (AlphaTest/AlphaBlend) del material override SÓLO para el head part de cara
+                ' (PartType=Face). CK emite el NiAlphaProperty gobernado por el alpha del material de
+                ' cabeza sólo en synth con reemplazo (Valentine/DiMa). Pelo/barba/neckgore/ojos/mouth
+                ' conservan el alpha de su material fuente (= CK) y NO se tocan acá.
+                If isFaceHeadPart Then
+                    material.AlphaTest = overrideMaterial.AlphaTest
+                    material.AlphaTestRef = overrideMaterial.AlphaTestRef
+                    material.AlphaBlendMode = overrideMaterial.AlphaBlendMode
+                End If
                 relatedMaterial.path = FO4UnifiedMaterial_Class.CorrectMaterialPath(textureSet.MaterialPath)
                 If logEnabled Then
                     Dim mnamL = If(textureSet.MaterialPath, ""), ubt = usesBodyTexture
@@ -12292,6 +12575,14 @@ Public Class MainForm
     ''' <summary>"Only changed" tree filter toggle: rebuild the tree restricted to dirty NPCs (when
     ''' ticked) or back to the full set, in both cases honoring the current text filter.</summary>
     Private Sub CheckBoxOnlyChanged_CheckedChanged(sender As Object, e As EventArgs) Handles CheckBoxOnlyChanged.CheckedChanged
+        PopulateNPCTree(_pendingTreeFilter)
+    End Sub
+
+    ''' <summary>Section 1 category filter toggles (Unique faces / Generic / Template bases / Unused):
+    ''' rebuild the tree honoring the current text filter. Additive union — see NpcMatchesCategoryFilter.</summary>
+    Private Sub CategoryFilter_CheckedChanged(sender As Object, e As EventArgs) _
+            Handles CheckBoxCatUnique.CheckedChanged, CheckBoxCatGeneric.CheckedChanged,
+                    CheckBoxCatTemplate.CheckedChanged, CheckBoxCatUnused.CheckedChanged
         PopulateNPCTree(_pendingTreeFilter)
     End Sub
 
@@ -13821,7 +14112,12 @@ Public Class MainForm
         Dim shouldEnable As Boolean = False
         If _renderHost.LastRenderedState IsNot Nothing AndAlso _renderHost.LastRenderData IsNot Nothing Then
             Dim avail = ComputeFaceEditAvailability(_renderHost.LastRenderedState, _renderHost)
-            shouldEnable = avail.AnythingAvailable
+            ' Canonical race-level gate: even if the race exposes some authored content (hair colors,
+            ' tint groups, …), Edit Face is only meaningful for a FaceGen race (one with a head/face).
+            ' RaceSupportsFaceGen reads RACE.DATA bit 0x2 — the 0-exception discriminator — so non-FaceGen
+            ' races (dog/creature/robot/turret/feral-ghoul/etc.) keep the button disabled.
+            shouldEnable = avail.AnythingAvailable AndAlso
+                           RaceUtil.RaceSupportsFaceGen(_renderHost.LastRenderedState.RaceFormID, _pluginManager)
         End If
         ' Build CharGen also enables for a multi-selection: the batch resolves + skips per NPC, so it
         ' must NOT be gated on the single rendered NPC's face-edit availability (the random pick could
@@ -14754,18 +15050,41 @@ Public Class MainForm
                 End If
                 Dim n = localVerts.Length
 
-                ' Compute world-pose attributes per vertex. Position via TransformPosition;
-                ' normals/tangents/bitangents via per-vertex normal matrix (transpose of inverse
-                ' of upper-left 3x3 of the skin matrix). Same formula the renderer uses.
-                Dim worldPos As New List(Of System.Numerics.Vector3)(n)
+                ' ── Hair zap compaction map ──
+                ' If this shape had any hair partition zapped this render (ApplyZaps=True + VertexMask(i)=-1
+                ' on the zapped verts — exactly the renderer's skip predicate at Render.vb:1118), DROP those
+                ' verts from the export so the saved NIF carries the compacted mesh. AGNOSTIC to which
+                ' partition was zapped (Top / Long / Both) — it keys purely on VertexMask(i)=-1, so it works
+                ' unchanged for the main (zap Top) and the hairline (zap Long). oldToNew(i) maps a surviving
+                ' source vertex to its packed destination index; -1 = removed. When the shape is not zapped,
+                ' oldToNew is identity and nSurv == n (no behaviour change for normal shapes).
+                Dim vm = liveGeom.VertexMask
+                Dim hasZap As Boolean = srcRenderable.ApplyZaps AndAlso vm IsNot Nothing AndAlso vm.Length = n
+                Dim oldToNew(n - 1) As Integer
+                Dim nSurv As Integer = 0
+                For i = 0 To n - 1
+                    If hasZap AndAlso vm(i) = -1.0F Then
+                        oldToNew(i) = -1
+                    Else
+                        oldToNew(i) = nSurv
+                        nSurv += 1
+                    End If
+                Next
+                Dim zappedCount As Integer = n - nSurv
+
+                ' Compute world-pose attributes per SURVIVING vertex (packed in oldToNew order). Position
+                ' via TransformPosition; normals/tangents/bitangents via per-vertex normal matrix
+                ' (transpose of inverse of upper-left 3x3 of the skin matrix). Same formula the renderer uses.
+                Dim worldPos As New List(Of System.Numerics.Vector3)(nSurv)
                 Dim hasN = liveGeom.Normals IsNot Nothing AndAlso liveGeom.Normals.Length = n
                 Dim hasT = liveGeom.Tangents IsNot Nothing AndAlso liveGeom.Tangents.Length = n
                 Dim hasB = liveGeom.Bitangents IsNot Nothing AndAlso liveGeom.Bitangents.Length = n
-                Dim worldN As List(Of System.Numerics.Vector3) = If(hasN, New List(Of System.Numerics.Vector3)(n), Nothing)
-                Dim worldT As List(Of System.Numerics.Vector3) = If(hasT, New List(Of System.Numerics.Vector3)(n), Nothing)
-                Dim worldB As List(Of System.Numerics.Vector3) = If(hasB, New List(Of System.Numerics.Vector3)(n), Nothing)
+                Dim worldN As List(Of System.Numerics.Vector3) = If(hasN, New List(Of System.Numerics.Vector3)(nSurv), Nothing)
+                Dim worldT As List(Of System.Numerics.Vector3) = If(hasT, New List(Of System.Numerics.Vector3)(nSurv), Nothing)
+                Dim worldB As List(Of System.Numerics.Vector3) = If(hasB, New List(Of System.Numerics.Vector3)(nSurv), Nothing)
 
                 For i = 0 To n - 1
+                    If oldToNew(i) < 0 Then Continue For  ' zapped crown vertex — drop from export
                     Dim m4 = perVtxMat(i)
                     Dim wv = Vector3d.TransformPosition(localVerts(i), m4)
                     worldPos.Add(New System.Numerics.Vector3(CSng(wv.X), CSng(wv.Y), CSng(wv.Z)))
@@ -14812,10 +15131,74 @@ Public Class MainForm
                 ' Write world-pose attributes into the clone via its polymorphic adapter.
                 Dim cloneRenderable As New NifRenderableShape(destNif, clonedINiShape, destIdx)
                 Dim cloneAdapter = cloneRenderable.Geometry
+
+                ' When the crown was zapped, the clone still carries the SOURCE vertex count + triangles.
+                ' Resize the per-vertex storage DOWN to the survivor count BEFORE writing the (already
+                ' compacted, nSurv-long) attribute arrays, then remap + drop triangles below. Identity
+                ' case (no zap): nSurv == n, ResizeVertices is a documented no-op — skip it to keep the
+                ' normal-shape path byte-for-byte as before.
+                If hasZap AndAlso zappedCount > 0 Then cloneAdapter.ResizeVertices(nSurv)
+
                 cloneAdapter.SetVertexPositions(worldPos)
                 If hasN AndAlso cloneAdapter.HasNormals Then cloneAdapter.SetNormals(worldN)
                 If hasT AndAlso cloneAdapter.HasTangents Then cloneAdapter.SetTangents(worldT)
                 If hasB AndAlso cloneAdapter.HasTangents Then cloneAdapter.SetBitangents(worldB)
+
+                ' Remap triangles after vertex compaction. Drop any triangle that touched a zapped
+                ' (crown) vertex; reindex the survivors through oldToNew; track per-new-triangle
+                ' provenance (source triangle index) so SetTriangles(provenance) redistributes the
+                ' BSSubIndexTriShape Segments/SubSegmentDatas consistently (the same contract WM's
+                ' RemoveZaps uses → MorphingHelper.vb:226). liveGeom.Indices is in source-triangle
+                ' order (SkinningHelper.vb:412 flattens GetTriangles()), so tr = oldTriIdx.
+                Dim triCheckOk As Boolean = True
+                If hasZap AndAlso zappedCount > 0 Then
+                    Dim idxArr = liveGeom.Indices
+                    If idxArr Is Nothing Then
+                        triCheckOk = False
+                    Else
+                        Dim newTris As New List(Of NiflySharp.Structs.Triangle)(idxArr.Length \ 3)
+                        Dim provenance As New List(Of Integer)(idxArr.Length \ 3)
+                        For tr = 0 To idxArr.Length - 3 Step 3
+                            Dim a = CInt(idxArr(tr)), b = CInt(idxArr(tr + 1)), c = CInt(idxArr(tr + 2))
+                            If a < 0 OrElse a >= n OrElse b < 0 OrElse b >= n OrElse c < 0 OrElse c >= n Then Continue For
+                            Dim na = oldToNew(a), nb = oldToNew(b), nc = oldToNew(c)
+                            If na < 0 OrElse nb < 0 OrElse nc < 0 Then Continue For  ' triangle touched the crown
+                            newTris.Add(New NiflySharp.Structs.Triangle(CUShort(na), CUShort(nb), CUShort(nc)))
+                            provenance.Add(tr \ 3)
+                        Next
+                        cloneAdapter.SetTriangles(newTris, TriangleRemap.SameShape(provenance))
+
+                        ' ── Consistency verification (counts before/after) ──
+                        ' Confirm no exported triangle references a dropped vertex and the survivor count
+                        ' matches. GetTriangles()/GetVertexPositions() read back what was written.
+                        Dim writtenTris = cloneAdapter.GetTriangles()
+                        Dim writtenVerts = cloneAdapter.GetVertexPositions()
+                        Dim maxIdx As Integer = -1
+                        For Each t In writtenTris
+                            maxIdx = Math.Max(maxIdx, Math.Max(CInt(t.V1), Math.Max(CInt(t.V2), CInt(t.V3))))
+                        Next
+                        Dim shapeNameLog = shapeName
+                        Dim nLog = n, nSurvLog = nSurv, zapLog = zappedCount
+                        Dim wvCount = writtenVerts.Count, wtCount = writtenTris.Count, srcTriCount = idxArr.Length \ 3
+                        Dim newTriCount = newTris.Count, maxIdxLog = maxIdx
+                        Logger.LogLazy(Function() $"[ZAP-EXPORT] '{shapeNameLog}' verts {nLog}→{nSurvLog} (zapped {zapLog}); tris {srcTriCount}→{newTriCount}; readback verts={wvCount} tris={wtCount} maxTriVtxIdx={maxIdxLog}")
+                        If wvCount <> nSurv Then
+                            triCheckOk = False
+                            failureDetails.AppendLine($"{shapeName}: zap export vertex count mismatch (expected {nSurv}, got {wvCount})")
+                        End If
+                        If maxIdx >= nSurv Then
+                            triCheckOk = False
+                            failureDetails.AppendLine($"{shapeName}: zap export triangle references dropped vertex (maxIdx {maxIdx} >= {nSurv})")
+                        End If
+                    End If
+                End If
+
+                If hasZap AndAlso zappedCount > 0 AndAlso Not triCheckOk Then
+                    ' Compaction produced an inconsistent shape — skip it rather than write a corrupt NIF.
+                    destNif.RemoveShape_Manolo(clonedINiShape)
+                    shapesFailed += 1
+                    Continue For
+                End If
 
                 ' Strip skin on the clone. For BSTriShape this clears the VertexAttribute.Skinned
                 ' flag (FinalizeData → CalcDataSizes excludes the bone weight/index bytes from the

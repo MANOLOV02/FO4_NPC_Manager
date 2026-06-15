@@ -186,7 +186,9 @@ Public Class AnimationPicker_Form
         Dim add = If(c.IsAdditive, "⊕ ", "")   ' insignia aditivo (overlay, no pose standalone)
         Dim sp = If(c.FromBehaviorGraph, "", "° ")   ' °=presente en la search-path pero no referenciado estáticamente (evento/diálogo en runtime)
         ' Muestra el PATH resuelto en cada hoja para verificar que el clip es del actor correcto (no mis-resuelto).
-        Return $"{sp}{add}{ClipDisplayName(c)}  [{c.PlaybackSpeed:0.##}x]{g}   →   {c.AnimationFile}"
+        ' (Sin marca de PlaybackSpeed: era 1.0F en casi todos los clips ⇒ "[1x]" ruido. El frame-count NO se muestra
+        '  acá porque exigiría cargar+parsear cada .hkx; el del clip activo ya se ve en el slider de la barra de anim.)
+        Return $"{sp}{add}{ClipDisplayName(c)}{g}   →   {c.AnimationFile}"
     End Function
 
     ' Carpeta del clip relativa a "Animations\" (la taxonomía de assets de Bethesda: Weapon\Pistol, 1HM, MT\Neutral…).

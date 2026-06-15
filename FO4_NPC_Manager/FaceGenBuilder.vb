@@ -285,6 +285,21 @@ Public Module FaceGenBuilder
             Return result
         End Try
 
+        ' Preventive race-level eligibility gate (canonical FaceGen-Head flag, version-aware) — run
+        ' BEFORE BuildAllowedShapeMap. A non-FaceGen race (dog/creature/robot/turret/feral ghoul/etc.)
+        ' has no head/face to bake; without this gate a dog NPC carrying a stray human Teeth HDPT in
+        ' PNAM resolves a non-empty hdptMap (passing the Count=0 guard below) yet every shape is dropped
+        ' at clone time → an empty NIF gets written. RaceSupportsFaceGen reads RACE.DATA bit 0x2 and is
+        ' the 0-exception discriminator. Uses the same race FormID source BuildAllowedShapeMap consumes
+        ' (NPC_.RaceFormID; the LM overlay never rewrites the race).
+        Dim gateRaceFormID As UInteger = If(npcData IsNot Nothing, npcData.RaceFormID, 0UI)
+        If Not RaceUtil.RaceSupportsFaceGen(gateRaceFormID, pluginManager) Then
+            result.Skipped = True
+            result.Success = False
+            result.Summary = "Raza sin FaceGen (perro/criatura/robot/feral-ghoul/etc.) — skipped, no NIF."
+            Return result
+        End If
+
         ' Build the canonical HDPT chain for this NPC. Each entry has its MeshPath and (later)
         ' chargen TRI / FMRS info. This is the AUTHORITATIVE list — the .nif2 contains exactly
         ' the shapes that come out of these sources.
@@ -351,14 +366,26 @@ Public Module FaceGenBuilder
         If bakeState IsNot Nothing AndAlso bakeState.NpcData IsNot Nothing AndAlso bakeState.NpcData.TextureLightingFloats IsNot Nothing Then
             skinTintAlpha = bakeState.NpcData.TextureLightingFloats.A
         End If
-        ' Hair/helmet occlusion: NO se setea el flag hidden en el bake. La regla canónica (probada
-        ' empíricamente) es "pelo ocluido sii la ARMA del headwear cubre slot 31 HairLong / 32, no
-        ' slot 30 HairTop" — pero el residual es NO DETERMINISTA: el MISMO casco (VaultTec) sobre el
-        ' MISMO shader de pelo (GlowShader) da hidden distinto entre NPCs (000CB1BB oculta HairMale02,
-        ' 001974E5/0015384E muestran HairMale28/03) → depende del item equipado al bakear, que NO está
-        ' en el record del NPC. Decisión del usuario: preferir under-hide (mostrar el pelo) a over-hide
-        ' (ocultar de más); el engine re-evalúa la oclusión en runtime, así que el bit baked es
-        ' redundante. Ver reference_facegen_ck_must_come_from_ba2 (#3 oclusión, no-determinista).
+        ' Hair/helmet occlusion: SÍ se setea el flag hidden (NiAVObject Flags bit 0x1) en el bake.
+        ' La regla canónica fue PROBADA determinista (0 excepciones / 958 hair parts) y depende sólo
+        ' del record del NPC (su DEFAULT OUTFIT) + la mesh del part — no del item equipado en runtime:
+        '   • HAIR (type 3 + hairlines de hair): hidden ⟺ el shape es biped {30}-without-{31}
+        '     (ocupa HairTop 30 pero NO HairLong 31) Y la outfit cubre slot 31 (HairLong).
+        '   • FacialHair (type 4 + hairlines de barba): hidden ⟺ la outfit cubre slot 32 / 48 / 49
+        '     (FaceGenHead / Beard / Mouth).
+        '   • Eyebrows (type 6): hidden ⟺ la outfit cubre slot 32 (FaceGenHead).
+        '   • HeadRear (type 9): nunca.
+        ' Si la outfit incluye una LVLI que podría ser la pieza de cabeza, NO se aplica oclusión de
+        ' pelo/barba (el casco es randomizado → no determinista; se prefiere under-hide). Una ARMO
+        ' determinista del outfit SÍ aplica aunque otros items sean LVLI. Esto iguala la regla que el
+        ' render aplica en MainForm.SelectWinningCandidates. (Antes el bake dejaba todo visible "por
+        ' no-determinismo"; eso fue refutado.)
+        Dim outfitResolved = ResolveOutfitHeadwearSlots(npcData, pluginManager)
+        Dim outfitSlots As UInteger = outfitResolved.Slots
+        Dim outfitHasHairLong As Boolean = (outfitSlots And BakeSlotBitHairLong) <> 0UI
+        Dim outfitHasFaceGenHead As Boolean = (outfitSlots And BakeSlotBitFaceGenHead) <> 0UI
+        Dim outfitHasBeard As Boolean = (outfitSlots And BakeSlotBitBeard) <> 0UI
+        Dim outfitHasMouth As Boolean = (outfitSlots And BakeSlotBitMouth) <> 0UI
         For Each kv In hdptMap.OrderBy(Function(p) p.Value.Hdpt.PartType).ThenBy(Function(p) p.Key)
             Dim hdptName = kv.Key
             Dim hdpt = kv.Value.Hdpt
@@ -498,15 +525,46 @@ Public Module FaceGenBuilder
                         clonedShapeNames.Add(destName)
                         shapesCloned += 1
 
-                        ' Cloth-physics hair (#pelo): CK conserva el BSClothExtraData (el hkaSkeleton
-                        ' de los cloth-bones) en el root del baked NIF. CloneShape_Original NO lo
-                        ' transfiere (es extradata del ROOT, no de la shape) → lo copiamos del NIF
-                        ' source al root del bake. Idempotente: si el root ya tiene uno, no duplica.
-                        ' Los cloth-bone NiNodes los crea el clone cross-file de NiflySharp (re-mapea
-                        ' los bones del skin por nombre) y el reparent loop los cuelga flat del root.
+                        ' Oclusión de headwear (regla verificada, 0 excepciones / 958 hair parts).
+                        ' Por tipo efectivo del HDPT (Misc bajo hair → Hair=3, bajo barba → FacialHair=4):
+                        '   • Hair: hidden ⟺ shape biped {30}-without-{31} Y outfit cubre slot 31 HairLong.
+                        '   • FacialHair: hidden ⟺ outfit cubre slot 32 / 48 / 49.
+                        '   • Eyebrows(6): hidden ⟺ outfit cubre slot 32.
+                        '   • HeadRear(9): nunca.
+                        ' outfitSlots = unión de slots de ARMO DETERMINÍSTICOS del outfit (LVLI no aporta
+                        ' slots). Por eso NO se gatea por outfitHasLVLI: un outfit pure-LVLI da slots=0 →
+                        ' sin cobertura → under-hide solo; un casco ARMO fijo (p.ej. WinterHat slot 31)
+                        ' ocluye igual aunque OTRO item sea LVLI (brazo). Caso Sully (001073FC) confirmado.
+                        ' Hidden = setear NiAVObject Flags bit 0x1 sobre el 0xE (visible) del shape clonado.
+                        Try
+                            Dim occlude As Boolean = False
+                            Select Case effectiveHeadPartType
+                                Case PartTypeHair
+                                    occlude = outfitHasHairLong AndAlso ShapeBiped30Only(cloned)
+                                Case PartTypeFacialHair
+                                    occlude = (outfitHasFaceGenHead OrElse outfitHasBeard OrElse outfitHasMouth)
+                                Case PartTypeEyebrows
+                                    occlude = outfitHasFaceGenHead
+                                    ' PartTypeHeadRear (9): nunca se ocluye.
+                            End Select
+                            If occlude Then
+                                ' INiShape expone Flags_ui (NiAVObject). El shape clonado trae 0xE
+                                ' (visible); OR 0x1 lo marca hidden, igual que el render.
+                                cloned.Flags_ui = cloned.Flags_ui Or &H1UI
+                            End If
+                        Catch ex As Exception
+                        End Try
+
+                        ' Cloth-physics hair (#pelo): CK cuelga el BSClothExtraData (el hkaSkeleton
+                        ' de los cloth-bones) de la SHAPE del pelo, no del root (audit byte-fidelity:
+                        ' 256/256 NIFs FaceGen de CK lo traen en la shape; 0 en el root). CloneShape_Original
+                        ' NO transfiere el cloth extradata → lo clonamos del NIF source y lo colgamos de
+                        ' la shape clonada del pelo, replicando a CK. Idempotente: si la shape ya tiene
+                        ' uno, no duplica. Los cloth-bone NiNodes los crea el clone cross-file de NiflySharp
+                        ' (re-mapea los bones del skin por nombre) y el reparent loop los cuelga flat del root.
                         If clothBoneNames.Count > 0 Then
                             Try
-                                nif.TransferRootClothExtraDataFrom(srcNif)
+                                nif.TransferShapeClothExtraDataFrom(srcNif, cloned)
                             Catch ex As Exception
                                 Logger.LogLazy(Function() $"[FACEBAKE] cloth extradata transfer failed for '{destName}': {ex.GetType().Name}: {ex.Message}")
                             End Try
@@ -890,6 +948,77 @@ Public Module FaceGenBuilder
         Next
 
         Return allowed
+    End Function
+
+    ' Biped object slot bits (mismas que MainForm: bit n = slot 30+n). Sólo las que la oclusión
+    ' de head parts usa. Slot 31 HairLong = 0x2, 32 FaceGenHead = 0x4, 48 Beard = 0x40000,
+    ' 49 Mouth = 0x80000.
+    Private Const BakeSlotBitHairLong As UInteger = &H2UI
+    Private Const BakeSlotBitFaceGenHead As UInteger = &H4UI
+    Private Const BakeSlotBitBeard As UInteger = &H40000UI
+    Private Const BakeSlotBitMouth As UInteger = &H80000UI
+
+    ''' <summary>Slots de headwear cubiertos por la DEFAULT OUTFIT (OTFT) del NPC, de forma
+    ''' DETERMINISTA. Devuelve (slots, hasLVLI):
+    '''   • slots = unión de los biped slots de cada ARMO directamente referenciada por el OTFT
+    '''     (resolviendo la cadena de templates CNAM), uniendo por cada ARMO su SlotMask y el
+    '''     EffectiveArmaSlotMask de cada ARMA (arma.SlotMask si != 0, sino armo.SlotMask) —
+    '''     misma semántica que el render (MainForm.EffectiveArmaSlotMask / CollectArmoCandidates).
+    '''   • hasLVLI = True si ALGÚN item directo del OTFT es una LVLI. Una LVLI randomiza la pieza
+    '''     (casco) al equipar → NO determinista; el caller NO aplica oclusión de pelo/barba en ese
+    '''     caso (prefiere under-hide). OJO: una ARMO determinista del outfit SÍ aporta sus slots
+    '''     aunque OTROS items sean LVLI (p.ej. una LVLI de brazo no anula un casco ARMO fijo).
+    ''' Sin RNG: sólo mira los items DIRECTOS del OTFT (no samplea ni expande LVLIs).</summary>
+    Private Function ResolveOutfitHeadwearSlots(npcData As NPC_Data,
+                                                pluginManager As PluginManager) As (Slots As UInteger, HasLVLI As Boolean)
+        Dim slots As UInteger = 0UI
+        Dim hasLVLI As Boolean = False
+        If npcData Is Nothing OrElse npcData.DefaultOutfitFormID = 0UI OrElse pluginManager Is Nothing Then
+            Return (slots, hasLVLI)
+        End If
+
+        Dim otftRec = pluginManager.GetRecord(npcData.DefaultOutfitFormID)
+        If otftRec Is Nothing OrElse otftRec.Header.Signature <> "OTFT" Then Return (slots, hasLVLI)
+        Dim otft = RecordParsers.ParseOTFT(otftRec, pluginManager)
+
+        For Each itemFID In otft.ItemFormIDs
+            If itemFID = 0UI Then Continue For
+            Dim itemRec = pluginManager.GetRecord(itemFID)
+            If itemRec Is Nothing Then Continue For
+            Select Case itemRec.Header.Signature
+                Case "LVLI"
+                    ' Randomized head piece → non-deterministic. El caller saltea la oclusión.
+                    hasLVLI = True
+                Case "ARMO"
+                    ' ARMO determinista: aporta sus slots (resolviendo template CNAM → terminal).
+                    Dim terminalFID = OutfitResolver.ResolveTerminalArmorFormID(itemFID, pluginManager)
+                    If terminalFID = 0UI Then Continue For
+                    Dim armoRec = pluginManager.GetRecord(terminalFID)
+                    If armoRec Is Nothing OrElse armoRec.Header.Signature <> "ARMO" Then Continue For
+                    Dim armo = RecordParsers.ParseARMO(armoRec, pluginManager)
+                    slots = slots Or armo.SlotMask
+                    For Each armaFID In armo.ArmorAddonFormIDs
+                        If armaFID = 0UI Then Continue For
+                        Dim armaRec = pluginManager.GetRecord(armaFID)
+                        If armaRec Is Nothing OrElse armaRec.Header.Signature <> "ARMA" Then Continue For
+                        Dim arma = RecordParsers.ParseARMA(armaRec, pluginManager)
+                        slots = slots Or If(arma.SlotMask <> 0UI, arma.SlotMask, armo.SlotMask)
+                    Next
+            End Select
+        Next
+
+        Return (slots, hasLVLI)
+    End Function
+
+    ''' <summary>Lee si un shape clonado (BSSubIndexTriShape) es "biped30only": ocupa el biped
+    ''' object 30 (HairTop) pero NO el 31 (HairLong). Misma definición y lectura de segmentos que
+    ''' el render (BSTriShapeGeometry.GetBipedObjects). Devuelve False si el shape no es subindex o
+    ''' no tiene segmentos.</summary>
+    Private Function ShapeBiped30Only(shape As INiShape) As Boolean
+        Dim subIdx = TryCast(shape, BSSubIndexTriShape)
+        If subIdx Is Nothing Then Return False
+        Dim biped = BSTriShapeGeometry.GetBipedObjects(subIdx)
+        Return biped.Contains(30UI) AndAlso Not biped.Contains(31UI)
     End Function
 
 

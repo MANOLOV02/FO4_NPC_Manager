@@ -28,6 +28,11 @@ Partial Class MainForm
         TextBoxSearch = New TextBox()
         LabelSearch = New Label()
         CheckBoxOnlyChanged = New CheckBox()
+        LabelShowCategories = New Label()
+        CheckBoxCatUnique = New CheckBox()
+        CheckBoxCatGeneric = New CheckBox()
+        CheckBoxCatTemplate = New CheckBox()
+        CheckBoxCatUnused = New CheckBox()
         TreeViewNPCs = New BufferedTreeView()
         PanelRecordDetails = New Panel()
         TreeViewRecordDetails = New TreeView()
@@ -202,12 +207,17 @@ Partial Class MainForm
         SplitContainer2.Panel1.Controls.Add(TextBoxSearch)
         SplitContainer2.Panel1.Controls.Add(LabelSearch)
         SplitContainer2.Panel1.Controls.Add(CheckBoxOnlyChanged)
-        ' 
+        SplitContainer2.Panel1.Controls.Add(LabelShowCategories)
+        SplitContainer2.Panel1.Controls.Add(CheckBoxCatUnique)
+        SplitContainer2.Panel1.Controls.Add(CheckBoxCatGeneric)
+        SplitContainer2.Panel1.Controls.Add(CheckBoxCatTemplate)
+        SplitContainer2.Panel1.Controls.Add(CheckBoxCatUnused)
+        '
         ' SplitContainer2.Panel2
-        ' 
+        '
         SplitContainer2.Panel2.Controls.Add(TreeViewNPCs)
         SplitContainer2.Size = New Size(700, 550)
-        SplitContainer2.SplitterDistance = 49
+        SplitContainer2.SplitterDistance = 78
         SplitContainer2.TabIndex = 3
         ' 
         ' TextBoxSearch
@@ -238,9 +248,65 @@ Partial Class MainForm
         CheckBoxOnlyChanged.TabIndex = 3
         CheckBoxOnlyChanged.Text = "Only changed"
         CheckBoxOnlyChanged.UseVisualStyleBackColor = True
-        ' 
+        '
+        ' LabelShowCategories
+        '
+        LabelShowCategories.Anchor = AnchorStyles.Top Or AnchorStyles.Left
+        LabelShowCategories.AutoSize = True
+        LabelShowCategories.Location = New Point(7, 51)
+        LabelShowCategories.Name = "LabelShowCategories"
+        LabelShowCategories.Size = New Size(39, 15)
+        LabelShowCategories.TabIndex = 4
+        LabelShowCategories.Text = "Show:"
+        '
+        ' CheckBoxCatUnique
+        '
+        CheckBoxCatUnique.Anchor = AnchorStyles.Top Or AnchorStyles.Left
+        CheckBoxCatUnique.AutoSize = True
+        CheckBoxCatUnique.Checked = True
+        CheckBoxCatUnique.CheckState = CheckState.Checked
+        CheckBoxCatUnique.Location = New Point(55, 49)
+        CheckBoxCatUnique.Name = "CheckBoxCatUnique"
+        CheckBoxCatUnique.Size = New Size(95, 19)
+        CheckBoxCatUnique.TabIndex = 5
+        CheckBoxCatUnique.Text = "Unique faces"
+        CheckBoxCatUnique.UseVisualStyleBackColor = True
+        '
+        ' CheckBoxCatGeneric
+        '
+        CheckBoxCatGeneric.Anchor = AnchorStyles.Top Or AnchorStyles.Left
+        CheckBoxCatGeneric.AutoSize = True
+        CheckBoxCatGeneric.Location = New Point(156, 49)
+        CheckBoxCatGeneric.Name = "CheckBoxCatGeneric"
+        CheckBoxCatGeneric.Size = New Size(70, 19)
+        CheckBoxCatGeneric.TabIndex = 6
+        CheckBoxCatGeneric.Text = "Generic"
+        CheckBoxCatGeneric.UseVisualStyleBackColor = True
+        '
+        ' CheckBoxCatTemplate
+        '
+        CheckBoxCatTemplate.Anchor = AnchorStyles.Top Or AnchorStyles.Left
+        CheckBoxCatTemplate.AutoSize = True
+        CheckBoxCatTemplate.Location = New Point(232, 49)
+        CheckBoxCatTemplate.Name = "CheckBoxCatTemplate"
+        CheckBoxCatTemplate.Size = New Size(106, 19)
+        CheckBoxCatTemplate.TabIndex = 7
+        CheckBoxCatTemplate.Text = "Template bases"
+        CheckBoxCatTemplate.UseVisualStyleBackColor = True
+        '
+        ' CheckBoxCatUnused
+        '
+        CheckBoxCatUnused.Anchor = AnchorStyles.Top Or AnchorStyles.Left
+        CheckBoxCatUnused.AutoSize = True
+        CheckBoxCatUnused.Location = New Point(344, 49)
+        CheckBoxCatUnused.Name = "CheckBoxCatUnused"
+        CheckBoxCatUnused.Size = New Size(67, 19)
+        CheckBoxCatUnused.TabIndex = 8
+        CheckBoxCatUnused.Text = "Unused"
+        CheckBoxCatUnused.UseVisualStyleBackColor = True
+        '
         ' TreeViewNPCs
-        ' 
+        '
         TreeViewNPCs.BorderStyle = BorderStyle.FixedSingle
         TreeViewNPCs.Dock = DockStyle.Fill
         TreeViewNPCs.DrawMode = TreeViewDrawMode.OwnerDrawText
@@ -1045,6 +1111,11 @@ Partial Class MainForm
     Friend WithEvents TextBoxSearch As System.Windows.Forms.TextBox
     Friend WithEvents LabelSearch As System.Windows.Forms.Label
     Friend WithEvents CheckBoxOnlyChanged As System.Windows.Forms.CheckBox
+    Friend WithEvents LabelShowCategories As System.Windows.Forms.Label
+    Friend WithEvents CheckBoxCatUnique As System.Windows.Forms.CheckBox
+    Friend WithEvents CheckBoxCatGeneric As System.Windows.Forms.CheckBox
+    Friend WithEvents CheckBoxCatTemplate As System.Windows.Forms.CheckBox
+    Friend WithEvents CheckBoxCatUnused As System.Windows.Forms.CheckBox
     Friend WithEvents TreeViewRecordDetails As System.Windows.Forms.TreeView
     Friend WithEvents LabelRecordTitle As System.Windows.Forms.Label
     Friend WithEvents PanelPreviewToolbar As System.Windows.Forms.TableLayoutPanel
