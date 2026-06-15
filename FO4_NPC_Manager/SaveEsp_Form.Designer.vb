@@ -30,6 +30,7 @@ Partial Class SaveEsp_Form
         CheckBoxMarkAsMaster = New CheckBox()
         GroupBoxSave = New GroupBox()
         CheckBoxGenerateChargen = New CheckBox()
+        CheckBoxRemoveChargenFlag = New CheckBox()
         CheckBoxWriteBssliders = New CheckBox()
         CheckBoxEmitBodyGen = New CheckBox()
         CheckBoxSaveNewOutfits = New CheckBox()
@@ -197,12 +198,13 @@ Partial Class SaveEsp_Form
         ' GroupBoxSave
         ' 
         GroupBoxSave.Controls.Add(CheckBoxGenerateChargen)
+        GroupBoxSave.Controls.Add(CheckBoxRemoveChargenFlag)
         GroupBoxSave.Controls.Add(CheckBoxWriteBssliders)
         GroupBoxSave.Controls.Add(CheckBoxEmitBodyGen)
         GroupBoxSave.Controls.Add(CheckBoxSaveNewOutfits)
         GroupBoxSave.Location = New Point(12, 290)
         GroupBoxSave.Name = "GroupBoxSave"
-        GroupBoxSave.Size = New Size(536, 130)
+        GroupBoxSave.Size = New Size(536, 156)
         GroupBoxSave.TabIndex = 3
         GroupBoxSave.TabStop = False
         GroupBoxSave.Text = "What to save"
@@ -218,36 +220,48 @@ Partial Class SaveEsp_Form
         CheckBoxGenerateChargen.TabIndex = 0
         CheckBoxGenerateChargen.Text = "Bake CharGen (NIF + textures) → BA2 / Looses"
         CheckBoxGenerateChargen.UseVisualStyleBackColor = True
-        ' 
+        '
+        ' CheckBoxRemoveChargenFlag
+        '
+        CheckBoxRemoveChargenFlag.AutoSize = True
+        CheckBoxRemoveChargenFlag.Checked = True
+        CheckBoxRemoveChargenFlag.CheckState = CheckState.Checked
+        CheckBoxRemoveChargenFlag.Location = New Point(32, 48)
+        CheckBoxRemoveChargenFlag.Name = "CheckBoxRemoveChargenFlag"
+        CheckBoxRemoveChargenFlag.Size = New Size(330, 19)
+        CheckBoxRemoveChargenFlag.TabIndex = 1
+        CheckBoxRemoveChargenFlag.Text = "Remove 'Is CharGen Face Preset' flag from saved NPC(s)"
+        CheckBoxRemoveChargenFlag.UseVisualStyleBackColor = True
+        '
         ' CheckBoxWriteBssliders
-        ' 
+        '
         CheckBoxWriteBssliders.AutoSize = True
         CheckBoxWriteBssliders.Checked = True
         CheckBoxWriteBssliders.CheckState = CheckState.Checked
-        CheckBoxWriteBssliders.Location = New Point(12, 50)
+        CheckBoxWriteBssliders.Location = New Point(12, 76)
         CheckBoxWriteBssliders.Name = "CheckBoxWriteBssliders"
         CheckBoxWriteBssliders.Size = New Size(256, 19)
-        CheckBoxWriteBssliders.TabIndex = 1
+        CheckBoxWriteBssliders.TabIndex = 2
         CheckBoxWriteBssliders.Text = "Save BodyMorphs + Skin sidecar (.bssliders)"
         CheckBoxWriteBssliders.UseVisualStyleBackColor = True
-        ' 
+        '
         ' CheckBoxEmitBodyGen
-        ' 
+        '
         CheckBoxEmitBodyGen.AutoSize = True
-        CheckBoxEmitBodyGen.Location = New Point(12, 76)
+        CheckBoxEmitBodyGen.Location = New Point(12, 102)
         CheckBoxEmitBodyGen.Name = "CheckBoxEmitBodyGen"
         CheckBoxEmitBodyGen.Size = New Size(296, 19)
-        CheckBoxEmitBodyGen.TabIndex = 2
+        CheckBoxEmitBodyGen.TabIndex = 3
         CheckBoxEmitBodyGen.Text = "Emit BodyGen .ini (sliders on first load, new games)"
         CheckBoxEmitBodyGen.UseVisualStyleBackColor = True
-        ' 
+        '
         ' CheckBoxSaveNewOutfits
-        ' 
+        '
         CheckBoxSaveNewOutfits.AutoSize = True
-        CheckBoxSaveNewOutfits.Location = New Point(12, 102)
+        CheckBoxSaveNewOutfits.Location = New Point(12, 128)
         CheckBoxSaveNewOutfits.Name = "CheckBoxSaveNewOutfits"
         CheckBoxSaveNewOutfits.Size = New Size(112, 19)
-        CheckBoxSaveNewOutfits.TabIndex = 3
+        CheckBoxSaveNewOutfits.TabIndex = 4
         CheckBoxSaveNewOutfits.Text = "Save new outfits"
         CheckBoxSaveNewOutfits.UseVisualStyleBackColor = True
         ' 
@@ -258,7 +272,7 @@ Partial Class SaveEsp_Form
         GroupBoxEncoding.Controls.Add(LabelEncodingHint)
         GroupBoxEncoding.Controls.Add(LabelBa2Version)
         GroupBoxEncoding.Controls.Add(ComboBoxBa2Version)
-        GroupBoxEncoding.Location = New Point(12, 428)
+        GroupBoxEncoding.Location = New Point(12, 454)
         GroupBoxEncoding.Name = "GroupBoxEncoding"
         GroupBoxEncoding.Size = New Size(536, 88)
         GroupBoxEncoding.TabIndex = 4
@@ -317,7 +331,7 @@ Partial Class SaveEsp_Form
         GroupBoxLvlList.Controls.Add(RadioLvlExisting)
         GroupBoxLvlList.Controls.Add(ComboBoxLvlExisting)
         GroupBoxLvlList.Controls.Add(CheckBoxLvlNoDup)
-        GroupBoxLvlList.Location = New Point(12, 524)
+        GroupBoxLvlList.Location = New Point(12, 550)
         GroupBoxLvlList.Name = "GroupBoxLvlList"
         GroupBoxLvlList.Size = New Size(536, 124)
         GroupBoxLvlList.TabIndex = 5
@@ -395,7 +409,7 @@ Partial Class SaveEsp_Form
         ' 
         LabelWarning.Anchor = AnchorStyles.Bottom Or AnchorStyles.Left Or AnchorStyles.Right
         LabelWarning.ForeColor = Color.DarkOrange
-        LabelWarning.Location = New Point(12, 654)
+        LabelWarning.Location = New Point(12, 680)
         LabelWarning.Name = "LabelWarning"
         LabelWarning.Size = New Size(536, 34)
         LabelWarning.TabIndex = 6
@@ -403,7 +417,7 @@ Partial Class SaveEsp_Form
         ' ButtonOk
         ' 
         ButtonOk.Anchor = AnchorStyles.Bottom Or AnchorStyles.Right
-        ButtonOk.Location = New Point(392, 694)
+        ButtonOk.Location = New Point(392, 720)
         ButtonOk.Name = "ButtonOk"
         ButtonOk.Size = New Size(75, 27)
         ButtonOk.TabIndex = 7
@@ -414,7 +428,7 @@ Partial Class SaveEsp_Form
         ' 
         ButtonCancel.Anchor = AnchorStyles.Bottom Or AnchorStyles.Right
         ButtonCancel.DialogResult = DialogResult.Cancel
-        ButtonCancel.Location = New Point(473, 694)
+        ButtonCancel.Location = New Point(473, 720)
         ButtonCancel.Name = "ButtonCancel"
         ButtonCancel.Size = New Size(75, 27)
         ButtonCancel.TabIndex = 8
@@ -427,7 +441,7 @@ Partial Class SaveEsp_Form
         AutoScaleDimensions = New SizeF(7F, 15F)
         AutoScaleMode = AutoScaleMode.Font
         CancelButton = ButtonCancel
-        ClientSize = New Size(560, 733)
+        ClientSize = New Size(560, 759)
         Controls.Add(LabelHeader)
         Controls.Add(PanelScope)
         Controls.Add(GroupBoxTarget)
@@ -472,6 +486,7 @@ Partial Class SaveEsp_Form
     Friend WithEvents CheckBoxLightMaster As CheckBox
     Friend WithEvents GroupBoxSave As GroupBox
     Friend WithEvents CheckBoxGenerateChargen As CheckBox
+    Friend WithEvents CheckBoxRemoveChargenFlag As CheckBox
     Friend WithEvents CheckBoxWriteBssliders As CheckBox
     Friend WithEvents CheckBoxEmitBodyGen As CheckBox
     Friend WithEvents CheckBoxSaveNewOutfits As CheckBox

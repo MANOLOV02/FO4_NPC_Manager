@@ -114,6 +114,8 @@ Partial Class CharGenOptionsForm
         LblSkinPlacement = New Label()
         ComboSkinPlacement = New ComboBox()
         BtnSortRevert = New Button()
+        TabPageFixes = New TabPage()
+        CheckBoxApplyGhoulHeadRearFix = New CheckBox()
         TabMain.SuspendLayout()
         TabPageSize.SuspendLayout()
         GroupBoxSize.SuspendLayout()
@@ -124,6 +126,7 @@ Partial Class CharGenOptionsForm
         TabPageOrder.SuspendLayout()
         GroupTintOrder.SuspendLayout()
         GroupSwapOrder.SuspendLayout()
+        TabPageFixes.SuspendLayout()
         SuspendLayout()
         ' 
         ' TabMain
@@ -131,6 +134,7 @@ Partial Class CharGenOptionsForm
         TabMain.Controls.Add(TabPageSize)
         TabMain.Controls.Add(TabPageConv)
         TabMain.Controls.Add(TabPageOrder)
+        TabMain.Controls.Add(TabPageFixes)
         TabMain.Location = New Point(12, 12)
         TabMain.Name = "TabMain"
         TabMain.SelectedIndex = 0
@@ -1062,6 +1066,27 @@ Partial Class CharGenOptionsForm
         BtnSortRevert.Text = "Revert to default"
         BtnSortRevert.UseVisualStyleBackColor = True
         '
+        ' TabPageFixes
+        '
+        TabPageFixes.Controls.Add(CheckBoxApplyGhoulHeadRearFix)
+        TabPageFixes.Location = New Point(4, 24)
+        TabPageFixes.Name = "TabPageFixes"
+        TabPageFixes.Padding = New Padding(3)
+        TabPageFixes.Size = New Size(632, 312)
+        TabPageFixes.TabIndex = 3
+        TabPageFixes.Text = "Fixes"
+        TabPageFixes.UseVisualStyleBackColor = True
+        '
+        ' CheckBoxApplyGhoulHeadRearFix
+        '
+        CheckBoxApplyGhoulHeadRearFix.AutoSize = True
+        CheckBoxApplyGhoulHeadRearFix.Location = New Point(12, 16)
+        CheckBoxApplyGhoulHeadRearFix.Name = "CheckBoxApplyGhoulHeadRearFix"
+        CheckBoxApplyGhoulHeadRearFix.Size = New Size(200, 19)
+        CheckBoxApplyGhoulHeadRearFix.TabIndex = 0
+        CheckBoxApplyGhoulHeadRearFix.Text = "Apply fix to ghoul headrear"
+        CheckBoxApplyGhoulHeadRearFix.UseVisualStyleBackColor = True
+        '
         ' CharGenOptionsForm
         '
         AcceptButton = ButtonOK
@@ -1093,6 +1118,8 @@ Partial Class CharGenOptionsForm
         TabPageOrder.PerformLayout()
         GroupTintOrder.ResumeLayout(False)
         GroupSwapOrder.ResumeLayout(False)
+        TabPageFixes.ResumeLayout(False)
+        TabPageFixes.PerformLayout()
         ResumeLayout(False)
     End Sub
 
@@ -1189,4 +1216,6 @@ Partial Class CharGenOptionsForm
     Friend WithEvents LblSkinPlacement As System.Windows.Forms.Label
     Friend WithEvents ComboSkinPlacement As System.Windows.Forms.ComboBox
     Friend WithEvents BtnSortRevert As System.Windows.Forms.Button
+    Friend WithEvents TabPageFixes As System.Windows.Forms.TabPage
+    Friend WithEvents CheckBoxApplyGhoulHeadRearFix As System.Windows.Forms.CheckBox
 End Class

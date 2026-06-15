@@ -372,6 +372,10 @@ Public Class MainForm
         Public HeadPartTypeRaw As Integer = -1
         Public HeadPartColorFormID As UInteger
         Public TextureSetFormID As UInteger
+        ''' <summary>HeadPart only: the HDPT record FormID this candidate was collected from.
+        ''' Needed so the per-shape material pass can re-derive the ghoul head-rear bare-id gate
+        ''' (FemaleHeadHumanRearTEMP 0x0004D0E9) without a separate lookup. 0 for non-HeadPart.</summary>
+        Public HeadPartHdptFormID As UInteger
         Public UseSolidTint As Boolean
         Public UsesBodyTexture As Boolean
         Public FaceGenTexturePrefix As String = ""
@@ -1549,6 +1553,14 @@ Public Class MainForm
         ' Restore persisted UI toggles BEFORE InitializePreview (Shown handler snapshots
         ' checkbox state into _renderHost.Toggles via RenderToggles.FromMainCheckBoxes).
         CheckBoxRenderGore.Checked = NPC_Config.Current.RenderGore
+        ' "Show:" category filters (Section 1 of the tree) are likewise persisted. The CategoryFilter
+        ' CheckedChanged handler is wired via Handles, so these assignments may fire PopulateNPCTree before
+        ' LoadDataAsync has any data — harmless (it guards on _allNPCs.Count and just rebuilds an empty tree,
+        ' which LoadDataAsync repopulates with the now-seeded filter).
+        CheckBoxCatUnique.Checked = NPC_Config.Current.ShowCatUnique
+        CheckBoxCatGeneric.Checked = NPC_Config.Current.ShowCatGeneric
+        CheckBoxCatTemplate.Checked = NPC_Config.Current.ShowCatTemplate
+        CheckBoxCatUnused.Checked = NPC_Config.Current.ShowCatUnused
         LoadDataAsync()
     End Sub
 
@@ -6285,10 +6297,10 @@ Public Class MainForm
         ' LastRenderData), so we replicate the per-shape texture sub directly.
         Dim outfitSkinTintShapes = ApplyOutfitSkinTintRefreshAfterBodySkinChange(host)
 
-        ' Same idea for HeadPart shapes: HDPTs whose CK flag UsesBodyTexture=True (or whose CBBE
-        ' override fix forced it True for non-Human-Female actors) read their diffuse from the
-        ' body skin TXST. The fast-path must update those when state.SkinFormID changes too —
-        ' otherwise a ghoul → human skin swap leaves the headRear with the old ghoul diffuse.
+        ' Same idea for HeadPart shapes: HDPTs whose CK flag UsesBodyTexture=True read their diffuse
+        ' from the body skin TXST, and the ghoul-female head-rear pulls the vanilla-UV body texture
+        ' clone. The fast-path must re-derive both against the now-updated state.SkinFormID — otherwise
+        ' a ghoul → human skin swap leaves the headRear with the old diffuse.
         Dim headPartBodyTexShapes = ApplyHeadPartBodyTextureRefreshAfterBodySkinChange(host)
 
         ' [TEST: fastpath-skin-softlight] Re-bake softlight + face tints after the skin swap.
@@ -6376,12 +6388,12 @@ Public Class MainForm
         Return count
     End Function
 
-    ''' <summary>Re-apply body-skin TXST to HeadPart shapes whose owning HDPT had
-    ''' UsesBodyTexture=True (post CBBE fix). The full render's ResolveTextureSet
-    ''' (line ~7741) feeds the actor's body TXST into these HeadParts; when state.SkinFormID
-    ''' changes via the fast-path, those HeadParts must follow or they keep showing the OLD
-    ''' body diffuse (e.g. ghoul NPC + WNAM swapped to human skin → headRear mesh stays with
-    ''' the ghoul body texture). Returns the shape count touched.</summary>
+    ''' <summary>Re-apply body-skin textures to HeadPart shapes when the actor body skin changed via
+    ''' the fast-path. Two cases: (1) HDPTs with UsesBodyTexture=True get the actor's body TXST
+    ''' re-applied; (2) the ghoul-female head-rear gets its vanilla-UV body texture clone re-derived
+    ''' against the now-updated state.SkinFormID (shared MainForm helper, gated on the shape's
+    ''' candidate). Without this a ghoul → human skin swap leaves the headRear with the OLD diffuse.
+    ''' Returns the shape count touched.</summary>
     Private Function ApplyHeadPartBodyTextureRefreshAfterBodySkinChange(host As NpcRenderHost) As Integer
         Dim count As Integer = 0
         Dim renderData = host.LastRenderData
@@ -6398,14 +6410,26 @@ Public Class MainForm
             Dim cat As ShapeRenderCategory = ShapeRenderCategory.Other
             renderData.ShapeCategory.TryGetValue(shape, cat)
             If cat <> ShapeRenderCategory.HeadPart Then Continue For
-            Dim usesBody As Boolean = False
-            renderData.ShapeUsesBodyTexture.TryGetValue(shape, usesBody)
-            If Not usesBody Then Continue For
 
             Dim relMat = shape.ShapeMaterial
             If relMat Is Nothing Then Continue For
             Dim mat = relMat.material
             If mat Is Nothing Then Continue For
+
+            ' Ghoul-female head-rear: re-derive the vanilla-UV body texture clone against the
+            ' now-updated state.SkinFormID and overwrite D/N/S (same single-source helper the full
+            ' render / bake use). Gated on the shape's candidate (HDPT bare-id + race ∈ ghoul set).
+            Dim shapeCand As MeshCandidate = Nothing
+            renderData.ShapeCandidate.TryGetValue(shape, shapeCand)
+            If shapeCand IsNot Nothing AndAlso IsGhoulHeadRearCase(shapeCand.HeadPartHdptFormID, shapeCand.HeadPartType, state) Then
+                ApplyGhoulHeadRearClonedTextures(shapeCand, state, mat, shape)
+                count += 1
+                Continue For
+            End If
+
+            Dim usesBody As Boolean = False
+            renderData.ShapeUsesBodyTexture.TryGetValue(shape, usesBody)
+            If Not usesBody Then Continue For
 
             ' Same body-skin sub flow ApplyShapeMaterialOverrides uses: load BGSM (if MNAM
             ' present in TXST), copy texture slots only, then apply the rest of the TXST.
@@ -8944,41 +8968,271 @@ Public Class MainForm
         Next
     End Sub
 
-    ''' <summary>Compute the EFFECTIVE UsesBodyTexture flag for an HDPT, applying the CBBE-style
-    ''' override fix for FemaleHeadHumanRearTEMP (vanilla FormID 0x0004D0E9).
+    ' ===== Ghoul female head-rear (nape) vanilla-UV texture clone =====
+    ' Bare-id of FemaleHeadHumanRearTEMP (vanilla 0x0004D0E9, PartType 9). Load-order prefix in the
+    ' high byte differs per plugin chain (vanilla Fallout4.esm=0x00, overrides=0x01..0xFF); the
+    ' record ID is shared, so all comparisons mask the low 24 bits.
+    Private Const FemaleHeadHumanRearTEMPBareID As UInteger = &H4D0E9UI
+    Private Const HeadRearEffectivePartType As Integer = 9
+
+    ''' <summary>Bare-id (low-24-bits) set of ghoul-skinned female races. Probe-derived (GhoulMatProbe /
+    ''' WetTraceProbe walked the race→skin chain): GhoulRace 0x000EAFB6 and GhoulChildRace 0x0011EB96.
+    ''' For these races the female head-rear nape pulls the actor body-skin texture (UsesBodyTexture
+    ''' semantics) — see <see cref="ResolveGhoulHeadRearClonedTextures"/> for why a vanilla-bytes
+    ''' clone is needed instead of the live (CBBE-overridden) path. Human / all other races: unchanged.</summary>
+    Private Shared ReadOnly GhoulFemaleHeadRearRaceBareIDs As New HashSet(Of UInteger) From {
+        &HEAFB6UI,   ' GhoulRace
+        &H11EB96UI   ' GhoulChildRace
+    }
+
+    ' Dedicated loose-file clone root under the game Data dir. Keeps the cloned vanilla bytes under a
+    ' DISTINCT path key so the model-wide, path-keyed render texture cache (Render.vb Textures_Dictionary)
+    ' can hold them separately from the body's own (same-named) texture.
+    Private Const HeadRearClonedTextureRoot As String = "Textures\ManoloCloned\NpcMgrHeadRear\"
+
+    ' Per-app-session memo for ResolveGhoulHeadRearClonedTextures. The cloned-texture result depends
+    ' ONLY on the actor body-skin source identity = (RaceFormID, SkinFormID); the vanilla BA2 material +
+    ' texture bytes don't change during a session. Without this, every render of a ghoul-female head-rear
+    ' (full render, fast-path skin refresh, and bake) re-reads the BA2 BGSM and re-reads the BA2 texture
+    ' bytes (length-compare for the idempotent write). Memoizing makes the read+clone happen ONCE per key.
+    ' A Nothing result is cached too (deterministic failure shouldn't be retried every render). Session-only
+    ' (Shared, no config), reset implicitly on app restart. Renders run on background threads (Task.Run),
+    ' so the check-and-compute is held under _ghoulHeadRearMemoLock — the lock spans the compute (a one-time
+    ' fast op per key) so concurrent renders for the SAME key don't duplicate the clone write / FilesDictionary
+    ' registration. No toggle invalidation needed: the clone result is identical regardless of
+    ' ApplyGhoulHeadRearFix (the toggle only gates whether the clone is APPLIED, upstream of this resolver).
+    Private Shared ReadOnly _ghoulHeadRearMemoLock As New Object()
+    Private Shared ReadOnly _ghoulHeadRearClonedTexturesMemo As New Dictionary(Of (RaceFormID As UInteger, SkinFormID As UInteger), (Diffuse As String, Normal As String, SmoothSpec As String)?)()
+
+    ''' <summary>True when this candidate/HDPT is the ghoul-female head-rear case that needs the
+    ''' vanilla-UV body texture clone: effective PartType 9 AND HDPT bare-id = FemaleHeadHumanRearTEMP
+    ''' AND the actor race ∈ the ghoul-female race set.</summary>
+    Private Shared Function IsGhoulHeadRearCase(hdptFormID As UInteger, effectivePartType As Integer, state As NPCVisualState) As Boolean
+        If Not NPC_Config.Current.ApplyGhoulHeadRearFix Then Return False
+        If effectivePartType <> HeadRearEffectivePartType Then Return False
+        If (hdptFormID And &HFFFFFFUI) <> FemaleHeadHumanRearTEMPBareID Then Return False
+        If state Is Nothing OrElse Not state.IsFemale Then Return False
+        Return GhoulFemaleHeadRearRaceBareIDs.Contains(state.RaceFormID And &HFFFFFFUI)
+    End Function
+
+    ''' <summary>For the ghoul-female head-rear, resolve the actor body-skin D/N/S texture paths (the
+    ''' SAME paths the body shape uses — via the actor's body skin TXST + its MNAM BGSM), then for each
+    ''' produce a DISTINCT loose path under <see cref="HeadRearClonedTextureRoot"/> that contains the
+    ''' VANILLA (BA2) bytes of that texture, register it in the FilesDictionary, and return the cloned
+    ''' relative paths.
     '''
-    ''' Pure function over (hdpt, formID, sourceRecord, state). Used by:
-    ''' • CollectHeadPartCandidate during full render (to populate MeshCandidate.UsesBodyTexture).
-    ''' • RefreshBodySkinLivePreview's HeadPart refresh path during fast-path skin changes.
-    ''' Both code paths share this helper so the fix applies identically — no drift.
+    ''' Why: the vanilla-UV nape mesh needs a vanilla-UV body texture. With CBBE installed the loose
+    ''' file at the body path (e.g. GhoulFemaleBody_d.dds) is CBBE's 4096 CBBE-UV body — UV-mismatched
+    ''' against the vanilla-UV nape. The render texture cache is keyed by path string and shared model-wide,
+    ''' so the body and the nape can't get different bytes under the same path key. Clone-to-disk gives
+    ''' the nape a distinct key holding the vanilla bytes (the body keeps its own path → unaffected).
     '''
-    ''' The fix: some body replacers override this HDPT and clear UsesBodyTexture, which leaves
-    ''' the headrear stuck on the vanilla basehumanfemaleskin material — wrong for non-human
-    ''' races (ghoul/synth/etc). Rule: if HDPT is FemaleHeadHumanRearTEMP AND it comes from an
-    ''' override (originating plugin ≠ Fallout4.esm) AND the flag is False, force it True for
-    ''' any actor that is NOT Human-Female. Human-Female keeps False (vanilla path).
-    '''
-    ''' FormID compare uses low-24-bits mask: load-order prefix differs per plugin chain (vanilla
-    ''' Fallout4.esm gets 0x00, mods get 0x01..0xFF), but the bare record ID is shared.
-    '''
-    ''' <paramref name="logTag"/> distinguishes log lines coming from different call sites
-    ''' (e.g. "CBBE-HEADREAR" for full render vs "CBBE-HEADREAR-FAST" for the fast-path).</summary>
-    Private Function ComputeEffectiveUsesBodyTexture(hdpt As HDPT_Data, hdptFormID As UInteger,
-                                                       hdptRec As PluginRecord, state As NPCVisualState,
-                                                       Optional logTag As String = "CBBE-HEADREAR") As Boolean
-        Const FemaleHeadHumanRearTEMPBareID As UInteger = &H4D0E9UI
-        Const HumanRaceBareID As UInteger = &H13746UI
-        Dim effective = hdpt.UsesBodyTexture
-        If (hdptFormID And &HFFFFFFUI) = FemaleHeadHumanRearTEMPBareID AndAlso Not hdpt.UsesBodyTexture Then
-            Dim sourcePlugin As String = If(hdptRec?.SourcePluginName, "")
-            Dim isOverride = Not String.Equals(sourcePlugin, "Fallout4.esm", StringComparison.OrdinalIgnoreCase) AndAlso Not String.IsNullOrEmpty(sourcePlugin)
-            Dim raceBare As UInteger = If(state IsNot Nothing, state.RaceFormID And &HFFFFFFUI, 0UI)
-            Dim isHumanFemale = (state IsNot Nothing) AndAlso raceBare = HumanRaceBareID AndAlso state.IsFemale
-            If isOverride AndAlso Not isHumanFemale Then
-                effective = True
+    ''' Idempotent: a clone already present with the same byte length is reused (no rewrite).
+    ''' Returns Nothing when not applicable (non-ghoul-female, no body skin resolved, or no paths).
+    ''' <paramref name="shape"/> supplies the NIF shape/content needed to load the body-skin MNAM BGSM
+    ''' exactly the way the live material chain does (mirrors ApplyTextureSetOverrides + ApplyTextureSetToMaterial).</summary>
+    Private Function ResolveGhoulHeadRearClonedTextures(state As NPCVisualState, shape As IRenderableShape) As (Diffuse As String, Normal As String, SmoothSpec As String)?
+        ' Per-session memo: the result depends only on the actor body-skin identity (RaceFormID, SkinFormID).
+        ' Hold the lock across the compute so concurrent renders for the same key clone+register only once.
+        Dim memoKey = (state.RaceFormID, state.SkinFormID)
+        SyncLock _ghoulHeadRearMemoLock
+            Dim cached As (Diffuse As String, Normal As String, SmoothSpec As String)? = Nothing
+            If _ghoulHeadRearClonedTexturesMemo.TryGetValue(memoKey, cached) Then
+                Logger.LogLazy(Function() $"[DIAG-HEADREAR] memo-hit race=0x{memoKey.Item1:X8} skin=0x{memoKey.Item2:X8} → reusing session result")
+                Return cached
+            End If
+
+            Dim result = ResolveGhoulHeadRearClonedTexturesCompute(state, shape)
+            _ghoulHeadRearClonedTexturesMemo(memoKey) = result
+            Return result
+        End SyncLock
+    End Function
+
+    ''' <summary>Compute (no memo) for <see cref="ResolveGhoulHeadRearClonedTextures"/>. Reads the actor
+    ''' body-skin TXST, loads the VANILLA (BA2) body material, and clones the vanilla D/N/S texture bytes
+    ''' to distinct loose paths. Wrapped by the session memo so this runs once per (race, skin) per session.</summary>
+    Private Function ResolveGhoulHeadRearClonedTexturesCompute(state As NPCVisualState, shape As IRenderableShape) As (Diffuse As String, Normal As String, SmoothSpec As String)?
+        Dim bodyTxst = ResolveActorSkinTextureSet(state, SkinRegion.Body)
+        If bodyTxst Is Nothing Then
+            Logger.LogLazy(Function() $"[DIAG-HEADREAR] resolve: bodyTxst=Nothing (ResolveActorSkinTextureSet Body returned Nothing; state.SkinFormID=0x{If(state IsNot Nothing, state.SkinFormID, 0UI):X8}) → no clone")
+            Return Nothing
+        End If
+
+        ' Final body D/N/S exactly as the body resolves them: MNAM BGSM (if any) supplies the base
+        ' D/N/S, then the TXST's own non-empty TX## slots are layered on top (TX00 diffuse always
+        ' wins). Same precedence as ApplyTextureSetOverrides + ApplyTextureSetToMaterial.
+        Dim srcD As String = ""
+        Dim srcN As String = ""
+        Dim srcS As String = ""
+        If Not String.IsNullOrEmpty(bodyTxst.MaterialPath) Then
+            Dim bodyBgsm = LoadVanillaBodyMaterial(bodyTxst.MaterialPath, shape)
+            If bodyBgsm IsNot Nothing Then
+                srcD = If(bodyBgsm.Diffuse_or_Base_Texture, "")
+                srcN = If(bodyBgsm.NormalTexture, "")
+                srcS = If(bodyBgsm.SmoothSpecTexture, "")
             End If
         End If
-        Return effective
+        If Not String.IsNullOrEmpty(bodyTxst.DiffuseTexture) Then srcD = bodyTxst.DiffuseTexture
+        If Not String.IsNullOrEmpty(bodyTxst.NormalTexture) Then srcN = bodyTxst.NormalTexture
+        If Not String.IsNullOrEmpty(bodyTxst.SmoothSpecTexture) Then srcS = bodyTxst.SmoothSpecTexture
+
+        Logger.LogLazy(Function() $"[DIAG-HEADREAR] resolve: mnam='{If(bodyTxst.MaterialPath, "")}' srcD='{srcD}' srcN='{srcN}' srcS='{srcS}'")
+        Dim clonedD = CloneVanillaTextureToLoose(srcD)
+        Dim clonedN = CloneVanillaTextureToLoose(srcN)
+        Dim clonedS = CloneVanillaTextureToLoose(srcS)
+        Logger.LogLazy(Function() $"[DIAG-HEADREAR] resolve: clonedD='{clonedD}' clonedN='{clonedN}' clonedS='{clonedS}'")
+
+        ' Nothing cloned (no source paths or clone failed) → don't override; caller leaves the shape's
+        ' own material untouched.
+        If String.IsNullOrEmpty(clonedD) AndAlso String.IsNullOrEmpty(clonedN) AndAlso String.IsNullOrEmpty(clonedS) Then
+            Return Nothing
+        End If
+
+        Return (clonedD, clonedN, clonedS)
+    End Function
+
+    ''' <summary>Load the body material at <paramref name="materialPath"/> from its VANILLA (BA2) bytes,
+    ''' bypassing any loose override. With CBBEHeadRearFix.esp installed the loose ghoulfemalebody.BGSM
+    ''' points its diffuse at the CBBE-shaped (CBBE-UV) body; the vanilla-UV nape mesh needs the VANILLA
+    ''' body texture instead, so we must read the material that ships in the BA2, not the loose winner.
+    '''
+    ''' GetOverriddenEntries(materialKey) holds the loser(s) shadowed behind a loose override — the first
+    ''' IsLosseFile=False entry is the BA2 material. Parse those bytes with the SAME parser the live
+    ''' material chain uses (FO4UnifiedMaterial_Class.Deserialize byte overload, exactly what the normal
+    ''' Diccionario overload calls). If there is NO overridden BA2 entry (no loose override present), the
+    ''' normal resolver result is already vanilla — fall back to TryLoadMaterialFromDictionary.</summary>
+    Private Function LoadVanillaBodyMaterial(materialPath As String, shape As IRenderableShape) As FO4UnifiedMaterial_Class
+        ' Key the override-stack lookup the same way the material chain does: Materials\-prefixed,
+        ' separators corrected, lowercased (dictionary is OrdinalIgnoreCase, so case is irrelevant).
+        Dim materialKey = FO4UnifiedMaterial_Class.CorrectMaterialPath(materialPath)
+        If String.IsNullOrEmpty(materialKey) Then Return Nothing
+
+        Dim materialType As Type
+        Select Case IO.Path.GetExtension(materialKey).ToLowerInvariant()
+            Case ".bgsm" : materialType = GetType(BGSM)
+            Case ".bgem" : materialType = GetType(BGEM)
+            Case Else
+                ' Unknown extension: defer to the normal resolver (matches MaterialResolver's own
+                ' GetMaterialTypeFromPath fallback behaviour).
+                Return MaterialResolver.TryLoadMaterialFromDictionary(materialPath, Nothing, shape?.NifShape, shape?.NifContent)
+        End Select
+
+        ' Read the material's ARCHIVED (vanilla) bytes directly from the BA2, bypassing _bytesCache.
+        ' _bytesCache is keyed by FullPath, which the loose rearfix winner and the BA2 loser share, so a
+        ' prior GetBytes() of the loose winner would otherwise be handed back here (377-byte CBBE rearfix
+        ' material instead of the 416-byte vanilla one). GetArchiveOriginalBytes never touches that cache.
+        Dim vanillaBytes As Byte() = FilesDictionary_class.GetArchiveOriginalBytes(materialKey)
+
+        ' No archived (BA2) entry for this key → the live resolver's winner IS the vanilla content already.
+        If vanillaBytes Is Nothing OrElse vanillaBytes.Length = 0 Then
+            Logger.LogLazy(Function() $"[DIAG-HEADREAR] vanilla-mat: matKey='{materialKey}' no shadowed BA2 entry → using live resolver (already vanilla)")
+            Return MaterialResolver.TryLoadMaterialFromDictionary(materialPath, Nothing, shape?.NifShape, shape?.NifContent)
+        End If
+
+        Try
+            Dim mat As New FO4UnifiedMaterial_Class()
+            mat.Deserialize(vanillaBytes, materialType, shape?.NifShape, shape?.NifContent)
+            Logger.LogLazy(Function() $"[DIAG-HEADREAR] vanilla-mat: matKey='{materialKey}' parsed BA2 bytes={vanillaBytes.Length} D='{If(mat.Diffuse_or_Base_Texture, "")}'")
+            Return mat
+        Catch ex As Exception
+            Dim msgL = ex.Message
+            Logger.LogLazy(Function() $"[DIAG-HEADREAR] vanilla-mat: matKey='{materialKey}' parse FAILED → {msgL}; falling back to live resolver")
+            Return MaterialResolver.TryLoadMaterialFromDictionary(materialPath, Nothing, shape?.NifShape, shape?.NifContent)
+        End Try
+    End Function
+
+    ''' <summary>If <paramref name="candidate"/> is the ghoul-female head-rear case, resolve the
+    ''' vanilla-bytes texture clone (see <see cref="ResolveGhoulHeadRearClonedTextures"/>) and overwrite
+    ''' the head-rear material's D/N/S with the cloned distinct paths. Single source of truth for the
+    ''' full render (via ApplyShapeMaterialOverrides), the fast-path skin refresh, and the FaceGen bake
+    ''' (which calls ApplyShapeMaterialOverrides through its delegate, so the baked NIF references the
+    ''' persistent vanilla clone — fixes in-game too). No-op for every other shape.</summary>
+    Private Sub ApplyGhoulHeadRearClonedTextures(candidate As MeshCandidate, state As NPCVisualState,
+                                                 material As FO4UnifiedMaterial_Class, shape As IRenderableShape)
+        If candidate Is Nothing OrElse material Is Nothing Then Return
+        If candidate.Kind <> MeshCandidateKind.HeadPart Then Return
+        ' [DIAG-HEADREAR] TEMP: trace whenever the head-rear HDPT reaches Apply, pass or fail.
+        If Logger.Enabled AndAlso (candidate.HeadPartHdptFormID And &HFFFFFFUI) = FemaleHeadHumanRearTEMPBareID Then
+            Dim ptL = candidate.HeadPartType, fidL = candidate.HeadPartHdptFormID
+            Dim femL = state IsNot Nothing AndAlso state.IsFemale
+            Dim raceL = If(state IsNot Nothing, state.RaceFormID, 0UI)
+            Dim togL = NPC_Config.Current.ApplyGhoulHeadRearFix
+            Dim gateL = IsGhoulHeadRearCase(candidate.HeadPartHdptFormID, candidate.HeadPartType, state)
+            Logger.LogLazy(Function() $"[DIAG-HEADREAR] reached Apply: hdpt=0x{fidL:X8} effType={ptL} female={femL} race=0x{raceL:X8} toggle={togL} gatePass={gateL}")
+        End If
+        If Not IsGhoulHeadRearCase(candidate.HeadPartHdptFormID, candidate.HeadPartType, state) Then Return
+
+        Dim cloned = ResolveGhoulHeadRearClonedTextures(state, shape)
+        If Not cloned.HasValue Then Return
+
+        If Not String.IsNullOrEmpty(cloned.Value.Diffuse) Then material.Diffuse_or_Base_Texture = cloned.Value.Diffuse
+        If Not String.IsNullOrEmpty(cloned.Value.Normal) Then material.NormalTexture = cloned.Value.Normal
+        If Not String.IsNullOrEmpty(cloned.Value.SmoothSpec) Then material.SmoothSpecTexture = cloned.Value.SmoothSpec
+
+        If Logger.Enabled Then
+            Dim hdptL = candidate.HeadPartHdptFormID
+            Dim dL = cloned.Value.Diffuse, nL = cloned.Value.Normal, sL = cloned.Value.SmoothSpec
+            Logger.LogLazy(Function() $"[HEADREAR-CLONE] ghoul-female nape hdpt=0x{hdptL:X8} → vanilla-UV clone D='{dL}' N='{nL}' S='{sL}'")
+        End If
+    End Sub
+
+    ''' <summary>Resolve the VANILLA (BA2) bytes for a texture path and write them to a DISTINCT loose
+    ''' path under <see cref="HeadRearClonedTextureRoot"/> (preserving the original sub-path so each
+    ''' race's body texture clones to its own unique key), then register that loose entry so it resolves.
+    ''' Idempotent: an existing clone of the same byte length is reused. Returns the cloned RELATIVE path,
+    ''' or "" when the source path is empty / has no resolvable bytes / write fails.
+    '''
+    ''' The vanilla bytes are the BA2 content: GetOverriddenEntries(path) holds the loser(s) when a loose
+    ''' file overrides a BA2 — pick the first IsLosseFile=False entry. If nothing was overridden, the live
+    ''' GetBytes(path) already returns the BA2 content (no loose override present).</summary>
+    Private Function CloneVanillaTextureToLoose(relativeTexturePath As String) As String
+        If String.IsNullOrEmpty(relativeTexturePath) Then Return ""
+
+        ' FilesDictionary texture keys carry the "Textures\" prefix (built from Data-relative paths),
+        ' but material diffuse/normal/spec paths are stored WITHOUT it. Normalize exactly the way the
+        ' app's live texture-load path does (Render.vb GetTextureID → CorrectTexturePath): corrects
+        ' separators, strips any absolute prefix, and adds "Textures\" idempotently (case-insensitive).
+        ' Without this the GetOverriddenEntries / GetBytes lookups miss → 0 bytes → "" → no override.
+        Dim normalized = FO4UnifiedMaterial_Class.CorrectTexturePath(relativeTexturePath)
+        If String.IsNullOrEmpty(normalized) Then Return ""
+        ' Resolve vanilla (BA2) bytes directly from the archive, bypassing _bytesCache (which is keyed by
+        ' FullPath and collides with the loose winner sharing the same path — see GetArchiveOriginalBytes).
+        ' If no archived entry exists (no loose override present), the live GetBytes(normalized) winner is
+        ' already the BA2 content.
+        Dim vanillaBytes As Byte() = FilesDictionary_class.GetArchiveOriginalBytes(normalized)
+        If vanillaBytes Is Nothing OrElse vanillaBytes.Length = 0 Then
+            vanillaBytes = FilesDictionary_class.GetBytes(normalized)
+        End If
+        If vanillaBytes Is Nothing OrElse vanillaBytes.Length = 0 Then Return ""
+
+        ' Distinct clone key = dedicated root + original sub-path (minus the Textures\ prefix). Encodes
+        ' the race in the path itself (e.g. ...\Actors\Character\GhoulFemale\GhoulFemaleBody_d.dds), so
+        ' no race-name literal is needed and different races never collide.
+        Dim clonedRelPath = HeadRearClonedTextureRoot & normalized.StripPrefix(TexturesPrefix)
+        Dim clonedFullPath = IO.Path.Combine(FilesDictionary_class.FO4Path, clonedRelPath)
+
+        Try
+            Dim needWrite As Boolean = True
+            If IO.File.Exists(clonedFullPath) Then
+                Dim existingLen As Long = New IO.FileInfo(clonedFullPath).Length
+                If existingLen = vanillaBytes.LongLength Then needWrite = False
+            End If
+            If needWrite Then
+                Dim dir = IO.Path.GetDirectoryName(clonedFullPath)
+                If Not String.IsNullOrEmpty(dir) AndAlso Not IO.Directory.Exists(dir) Then IO.Directory.CreateDirectory(dir)
+                IO.File.WriteAllBytes(clonedFullPath, vanillaBytes)
+            End If
+        Catch ex As Exception
+            Dim srcL = normalized, msgL = ex.Message
+            Logger.LogLazy(Function() $"[HEADREAR-CLONE] write FAILED src='{srcL}' → {msgL}")
+            Return ""
+        End Try
+
+        ' Register the loose clone so GetBytes(clonedRelPath) reads Path.Combine(FO4Path, FullPath).
+        FilesDictionary_class.AddOrUpdateDictionaryEntry(clonedRelPath,
+            New FilesDictionary_class.File_Location With {.FullPath = clonedRelPath, .BA2File = ""})
+
+        Return clonedRelPath
     End Function
 
     ''' <summary>NPC robot path: walks NPC_.OBTE via the canonical resolver, picks ONE
@@ -10525,7 +10779,13 @@ Public Class MainForm
                 End If
             End If
 
-            Dim effectiveUsesBodyTexture = ComputeEffectiveUsesBodyTexture(hdpt, hdptFormID, hdptRec, state, logTag:="CBBE-HEADREAR")
+            ' Head-rear nape body texture: the vanilla-UV nape mesh needs a vanilla-UV body texture.
+            ' For ghoul females the live body path is CBBE's CBBE-UV body (UV-mismatched). The
+            ' clone-to-disk fix (vanilla bytes under a distinct path key, to dodge the shared
+            ' path-keyed GL texture cache) is applied per-shape in ApplyShapeMaterialOverrides via the
+            ' candidate's HeadPartHdptFormID gate. UsesBodyTexture stays the raw record value here —
+            ' the previous override-proxy forcing (HumanRace 0x13746 + is-override heuristic) is gone.
+            Dim effectiveUsesBodyTexture = hdpt.UsesBodyTexture
 
             ' Trace del candidato HeadPart: qué HDPT, tipo raw/effective, mesh ORIGINAL vs el
             ' redirect a _faceBones, el TXST (TNAM) y color. Para ojos esto deja ver de qué NIF
@@ -10563,6 +10823,7 @@ Public Class MainForm
                 .HeadPartTypeRaw = hdpt.PartType,
                 .HeadPartColorFormID = hdpt.ColorFormID,
                 .TextureSetFormID = hdpt.TextureSetFormID,
+                .HeadPartHdptFormID = hdptFormID,
                 .UseSolidTint = (hdpt.Flags And HeadPartFlagUseSolidTint) <> 0,
                 .UsesBodyTexture = effectiveUsesBodyTexture,
                 .Order = order,
@@ -11769,6 +12030,12 @@ Public Class MainForm
                 shape.TintColor = solidTintColor.Value
             End If
 
+            ' Ghoul-female head-rear: overwrite D/N/S with the vanilla-UV body texture CLONE (distinct
+            ' path key holding the BA2 vanilla bytes). Runs last so it wins over whatever the embedded
+            ' material / UsesBodyTexture path resolved. No-op for every other shape. Shared by the full
+            ' render, the fast-path skin refresh, and the FaceGen bake (delegate into this method).
+            ApplyGhoulHeadRearClonedTextures(candidate, state, material, shape)
+
             If logEnabled Then
                 Dim shapeNameFinal = shape.ShapeName
                 Dim pathFinal = If(relatedMaterial.path, "")
@@ -12945,6 +13212,10 @@ Public Class MainForm
         ' Persist UI-level config BEFORE teardown. Setting_Lightrig lives in shared Config_App
         ' (written in-memory by LightRigForm); RenderGore is NPC-only and lives in NPC_Config.
         NPC_Config.Current.RenderGore = CheckBoxRenderGore.Checked
+        NPC_Config.Current.ShowCatUnique = CheckBoxCatUnique.Checked
+        NPC_Config.Current.ShowCatGeneric = CheckBoxCatGeneric.Checked
+        NPC_Config.Current.ShowCatTemplate = CheckBoxCatTemplate.Checked
+        NPC_Config.Current.ShowCatUnused = CheckBoxCatUnused.Checked
         Config_App.SaveConfig()
         NPC_Config.SaveConfig()
 

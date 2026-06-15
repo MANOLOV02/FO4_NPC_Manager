@@ -1100,8 +1100,9 @@ Public Module FaceGenBuilder
     '''     because the shader doesn't consume them.
     ''' AlphaBlendMode Unknown→None left as-is per user; investigating separately.</summary>
     ''' <summary>Resuelve el material FINAL de un head-part igual que la ruta de render: envuelve el
-    ''' shape SOURCE como IRenderableShape, arma el MeshCandidate del HDPT (incluyendo el fix CBBE
-    ''' UsesBodyTexture) y corre el MISMO delegate <paramref name="applyMaterialOverrides"/> (cadena
+    ''' shape SOURCE como IRenderableShape, arma el MeshCandidate del HDPT (incluyendo HeadPartHdptFormID
+    ''' que gatilla el clon vanilla-UV del head-rear ghoul en ApplyShapeMaterialOverrides) y corre el
+    ''' MISMO delegate <paramref name="applyMaterialOverrides"/> (cadena
     ''' TXST/FTST + MNAM-BGSM + tints + palette) que usa el render. Devuelve el material con D/N/S ya
     ''' RESUELTOS por el FaceTextureSet del NPC — p.ej. para NPCs viejos el head OldHumanFemaleHead_d
     ''' pisa al BaseFemaleHead_d del material crudo del NIF — o Nothing si no hay resolver / falla el
@@ -1134,45 +1135,24 @@ Public Module FaceGenBuilder
             Return Nothing
         End Try
 
-        ' CBBE-style override fix mirrors MainForm.CollectHeadPartCandidate: if the HDPT is
-        ' FemaleHeadHumanRearTEMP (vanilla 0x0004D0E9), the flag is False, the record comes
-        ' from an override (originating plugin ≠ Fallout4.esm), and the actor is NOT
-        ' Human-female, force UsesBodyTexture=True so the resolver substitutes the actor's
-        ' body skin TXST. Same rule render uses; bake must mirror it because both consume
-        ' the same ApplyShapeMaterialOverrides delegate downstream.
-        ' Bare ID compare: load-order prefix in high byte differs per plugin (vanilla=0x00,
-        ' overrides=0x01..0xFF) but the record ID is shared. Mask to low 24 bits so CBBE-style
-        ' overrides (e.g. 0x0104D0E9) match the vanilla bare ID.
-        Const FemaleHeadHumanRearTEMPBareID As UInteger = &H4D0E9UI
-        Const HumanRaceBareID As UInteger = &H13746UI
-        Dim hdptFormID = hdpt.FormID
-        Dim effectiveUsesBodyTexture = hdpt.UsesBodyTexture
-        If (hdptFormID And &HFFFFFFUI) = FemaleHeadHumanRearTEMPBareID AndAlso Not hdpt.UsesBodyTexture Then
-            ' Override detection: PluginRecord.SourcePluginName carries the plugin that won the
-            ' merge for this record (last override). GetOriginatingPluginName returns the master
-            ' that owns the FormID (Fallout4.esm here) which is wrong signal for "is override".
-            Dim hdptRec = pluginManager.GetRecord(hdptFormID)
-            Dim sourcePlugin As String = If(hdptRec?.SourcePluginName, "")
-            Dim isOverride = Not String.Equals(sourcePlugin, "Fallout4.esm", StringComparison.OrdinalIgnoreCase) AndAlso Not String.IsNullOrEmpty(sourcePlugin)
-            Dim raceBare As UInteger = If(state IsNot Nothing, state.RaceFormID And &HFFFFFFUI, 0UI)
-            Dim isHumanFemale = (state IsNot Nothing) AndAlso raceBare = HumanRaceBareID AndAlso state.IsFemale
-            If isOverride AndAlso Not isHumanFemale Then
-                effectiveUsesBodyTexture = True
-            End If
-        End If
-
         ' Build a minimal MeshCandidate from the HDPT in scope. For Build CharGen the candidate
         ' chain is straightforward (HDPT → Face/Eyes/Hair/etc.) so we don't need the full
         ' Outfit/LVLN/OBTS/OMOD resolution that the live render runs.
         ' HeadPartType = EFFECTIVE type (Misc hairline under hair → Hair=3) so the shared
         ' material resolver colors sub-parts like the render does (e.g. hair palette on the
         ' hairline). HeadPartTypeRaw keeps the HDPT's own type for any raw-type logic downstream.
+        ' HeadPartHdptFormID drives MainForm's ghoul-female head-rear vanilla-UV clone gate inside
+        ' ApplyShapeMaterialOverrides (the delegate below), so the BAKED NIF references the
+        ' persistent vanilla-bytes clone (fixes in-game too). UsesBodyTexture stays the raw record
+        ' value — the previous override-proxy forcing heuristic was removed (single source of truth
+        ' now lives in MainForm.ApplyGhoulHeadRearClonedTextures).
         Dim candidate As New MainForm.MeshCandidate With {
             .Kind = MainForm.MeshCandidateKind.HeadPart,
             .HeadPartType = effectiveHeadPartType,
             .HeadPartTypeRaw = hdpt.PartType,
             .TextureSetFormID = hdpt.TextureSetFormID,
-            .UsesBodyTexture = effectiveUsesBodyTexture,
+            .HeadPartHdptFormID = hdpt.FormID,
+            .UsesBodyTexture = hdpt.UsesBodyTexture,
             .HeadPartColorFormID = hdpt.ColorFormID,
             .UseSolidTint = (hdpt.ColorFormID <> 0UI)
         }

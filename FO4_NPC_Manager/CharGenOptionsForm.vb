@@ -26,6 +26,8 @@ Public Class CharGenOptionsForm
         ComboFormatN.SelectedIndex = CInt(c.Setting_FaceGenNormalCompression)      ' Bc5=0 / Uncompressed=1
         ComboFormatS.SelectedIndex = CInt(c.Setting_FaceGenSpecularCompression)
         CheckGenerateTga.Checked = c.Setting_FaceGenGenerateTga
+        ' --- Tab "Fixes": NPC-only toggle, lives in NPC_Config (not Config_App). ---
+        CheckBoxApplyGhoulHeadRearFix.Checked = NPC_Config.Current.ApplyGhoulHeadRearFix
         If c.Setting_FaceGenPerLayerResolution Then
             RadioPerLayer.Checked = True
         Else
@@ -314,6 +316,10 @@ Public Class CharGenOptionsForm
             c.Setting_FaceGenSpecularCompression = ns
         End If
         c.Setting_FaceGenGenerateTga = CheckGenerateTga.Checked
+
+        ' --- Tab "Fixes": toggle NPC-only → NPC_Config (no Config_App). Se flushea en el cierre de la app
+        ' (MainForm_FormClosing → NPC_Config.SaveConfig()), igual que RenderGore. ---
+        NPC_Config.Current.ApplyGhoulHeadRearFix = CheckBoxApplyGhoulHeadRearFix.Checked
 
         ' --- Tab "FaceTint Conventions": persistir la convención concreta por bucket. ---
         Dim s = c.Setting_FaceTintConvention

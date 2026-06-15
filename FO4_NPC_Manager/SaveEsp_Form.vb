@@ -192,6 +192,11 @@ Public Class SaveEsp_Form
         ''' has no CharGen Face Preset flag — those NPCs the engine bakes via CK and the BA2
         ''' is the only way they render in-world without a CK pass.</summary>
         Public GenerateChargen As Boolean
+        ''' <summary>When True (and <see cref="GenerateChargen"/> is also True), the orchestrator clears the
+        ''' ACBS "Is CharGen Face Preset" flag (bit 0x04) on every saved NPC override, so the engine loads
+        ''' the freshly baked FaceGen instead of reconstructing the face at runtime. Only meaningful when the
+        ''' CharGen bake runs; the dialog disables + unchecks the option when the bake is off. Default False.</summary>
+        Public RemoveCharGenFlag As Boolean
         ''' <summary>When True the orchestrator writes (or refreshes) the BodyMorphs/Skin sidecar
         ''' (<c>&lt;plugin&gt;.bssliders</c>) next to the ESP after the plugin is written. The
         ''' sidecar carries F4SE-only fields that have no record equivalent so re-opening the
@@ -326,6 +331,16 @@ Public Class SaveEsp_Form
         ' flag, the engine reconstructs at runtime, so the bake is optional (still defaults ON).
         CheckBoxGenerateChargen.Checked = True
         RecomputeChargenForcing()
+        ' "Remove CharGen flag" is a sub-option of the bake — enabled only while the bake is on.
+        ' Seed its checked state from the persisted per-app preference (default True) BEFORE wiring the
+        ' toggle handler, so loading the saved value doesn't immediately re-persist it. RecomputeChargenForcing
+        ' may have forced the bake on/off above; sync the sub-option's enabled state now, then keep it in sync
+        ' on every bake toggle (incl. the programmatic ones from scope changes). The toggle handler persists
+        ' the user's choice in-memory (flushed to npc_config.json on app close, same as the BA2 version).
+        CheckBoxRemoveChargenFlag.Checked = NPC_Config.Current.RemoveCharGenFlagOnBake
+        AddHandler CheckBoxGenerateChargen.CheckedChanged, AddressOf OnGenerateChargenChanged
+        AddHandler CheckBoxRemoveChargenFlag.CheckedChanged, AddressOf OnRemoveChargenFlagChanged
+        UpdateRemoveChargenFlagEnabled()
 
         ' "Save new outfits": only meaningful when the Edit Outfit "Create" tab has unsaved (dirty)
         ' drafts. Auto-check + enable when there are; otherwise disable so the user isn't offered a
@@ -404,6 +419,27 @@ Public Class SaveEsp_Form
             CheckBoxGenerateChargen.Enabled = False
             CheckBoxGenerateChargen.Text = baseText & "  (required: a NPC lacks CharGen flag)"
         End If
+    End Sub
+
+    ''' <summary>The "Remove CharGen flag" option only does something when the CharGen bake runs, so it
+    ''' is enabled iff the bake checkbox is checked. The checked state is LEFT INTACT when disabling, so the
+    ''' user's persisted preference is preserved (and stays visible); the BuildTargetFromUi gate makes a
+    ''' checked-but-disabled state a no-op, so there is no need to force-uncheck (which would also clobber the
+    ''' persisted preference by firing the toggle handler with False).</summary>
+    Private Sub UpdateRemoveChargenFlagEnabled()
+        CheckBoxRemoveChargenFlag.Enabled = CheckBoxGenerateChargen.Checked
+    End Sub
+
+    ''' <summary>Bake checkbox toggled (by the user or programmatically via RecomputeChargenForcing) —
+    ''' refresh the dependent "Remove CharGen flag" sub-option's enabled state.</summary>
+    Private Sub OnGenerateChargenChanged(sender As Object, e As EventArgs)
+        UpdateRemoveChargenFlagEnabled()
+    End Sub
+
+    ''' <summary>"Remove CharGen flag" toggled — persist the choice on the in-memory NPC_Config singleton
+    ''' (flushed to npc_config.json when MainForm closes, same mechanism as the BA2 version selector).</summary>
+    Private Sub OnRemoveChargenFlagChanged(sender As Object, e As EventArgs)
+        NPC_Config.Current.RemoveCharGenFlagOnBake = CheckBoxRemoveChargenFlag.Checked
     End Sub
 
     ''' <summary>Scope radio toggle: recompute the CharGen forcing for the new scope and refresh the
@@ -678,6 +714,7 @@ Public Class SaveEsp_Form
             .MarkAsMaster = CheckBoxMarkAsMaster.Checked,
             .LightMaster = CheckBoxLightMaster.Checked,
             .GenerateChargen = CheckBoxGenerateChargen.Checked,
+            .RemoveCharGenFlag = CheckBoxGenerateChargen.Checked AndAlso CheckBoxRemoveChargenFlag.Checked,
             .WriteBssliders = CheckBoxWriteBssliders.Checked,
             .EmitBodyGen = CheckBoxEmitBodyGen.Checked,
             .SaveNewOutfits = CheckBoxSaveNewOutfits.Checked

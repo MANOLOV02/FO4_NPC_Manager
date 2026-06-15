@@ -76,10 +76,10 @@ Partial Class MainForm
         Label1 = New Label()
         ButtonSavePlugin = New Button()
         ButtonBuildCharGen = New Button()
-        ButtonCharGenOptions = New Button()
         Label2 = New Label()
         Label3 = New Label()
         ButtonSaveSceneNif = New Button()
+        ButtonCharGenOptions = New Button()
         PanelPreviewHost = New Panel()
         LabelStatus = New Label()
         PanelAnimBar = New FlowLayoutPanel()
@@ -212,9 +212,9 @@ Partial Class MainForm
         SplitContainer2.Panel1.Controls.Add(CheckBoxCatGeneric)
         SplitContainer2.Panel1.Controls.Add(CheckBoxCatTemplate)
         SplitContainer2.Panel1.Controls.Add(CheckBoxCatUnused)
-        '
+        ' 
         ' SplitContainer2.Panel2
-        '
+        ' 
         SplitContainer2.Panel2.Controls.Add(TreeViewNPCs)
         SplitContainer2.Size = New Size(700, 550)
         SplitContainer2.SplitterDistance = 78
@@ -226,7 +226,7 @@ Partial Class MainForm
         TextBoxSearch.Location = New Point(59, 17)
         TextBoxSearch.Name = "TextBoxSearch"
         TextBoxSearch.PlaceholderText = "Filter NPCs..."
-        TextBoxSearch.Size = New Size(508, 23)
+        TextBoxSearch.Size = New Size(638, 23)
         TextBoxSearch.TabIndex = 1
         ' 
         ' LabelSearch
@@ -242,78 +242,73 @@ Partial Class MainForm
         ' 
         CheckBoxOnlyChanged.Anchor = AnchorStyles.Top Or AnchorStyles.Right
         CheckBoxOnlyChanged.AutoSize = True
-        CheckBoxOnlyChanged.Location = New Point(597, 19)
+        CheckBoxOnlyChanged.Location = New Point(416, 49)
         CheckBoxOnlyChanged.Name = "CheckBoxOnlyChanged"
         CheckBoxOnlyChanged.Size = New Size(100, 19)
         CheckBoxOnlyChanged.TabIndex = 3
         CheckBoxOnlyChanged.Text = "Only changed"
         CheckBoxOnlyChanged.UseVisualStyleBackColor = True
-        '
+        ' 
         ' LabelShowCategories
-        '
-        LabelShowCategories.Anchor = AnchorStyles.Top Or AnchorStyles.Left
+        ' 
         LabelShowCategories.AutoSize = True
         LabelShowCategories.Location = New Point(7, 51)
         LabelShowCategories.Name = "LabelShowCategories"
         LabelShowCategories.Size = New Size(39, 15)
         LabelShowCategories.TabIndex = 4
         LabelShowCategories.Text = "Show:"
-        '
+        ' 
         ' CheckBoxCatUnique
-        '
-        CheckBoxCatUnique.Anchor = AnchorStyles.Top Or AnchorStyles.Left
+        ' 
         CheckBoxCatUnique.AutoSize = True
         CheckBoxCatUnique.Checked = True
         CheckBoxCatUnique.CheckState = CheckState.Checked
         CheckBoxCatUnique.Location = New Point(55, 49)
         CheckBoxCatUnique.Name = "CheckBoxCatUnique"
-        CheckBoxCatUnique.Size = New Size(95, 19)
+        CheckBoxCatUnique.Size = New Size(94, 19)
         CheckBoxCatUnique.TabIndex = 5
         CheckBoxCatUnique.Text = "Unique faces"
         CheckBoxCatUnique.UseVisualStyleBackColor = True
-        '
+        ' 
         ' CheckBoxCatGeneric
-        '
-        CheckBoxCatGeneric.Anchor = AnchorStyles.Top Or AnchorStyles.Left
+        ' 
         CheckBoxCatGeneric.AutoSize = True
         CheckBoxCatGeneric.Location = New Point(156, 49)
         CheckBoxCatGeneric.Name = "CheckBoxCatGeneric"
-        CheckBoxCatGeneric.Size = New Size(70, 19)
+        CheckBoxCatGeneric.Size = New Size(66, 19)
         CheckBoxCatGeneric.TabIndex = 6
         CheckBoxCatGeneric.Text = "Generic"
         CheckBoxCatGeneric.UseVisualStyleBackColor = True
-        '
+        ' 
         ' CheckBoxCatTemplate
-        '
-        CheckBoxCatTemplate.Anchor = AnchorStyles.Top Or AnchorStyles.Left
+        ' 
         CheckBoxCatTemplate.AutoSize = True
         CheckBoxCatTemplate.Location = New Point(232, 49)
         CheckBoxCatTemplate.Name = "CheckBoxCatTemplate"
-        CheckBoxCatTemplate.Size = New Size(106, 19)
+        CheckBoxCatTemplate.Size = New Size(107, 19)
         CheckBoxCatTemplate.TabIndex = 7
         CheckBoxCatTemplate.Text = "Template bases"
         CheckBoxCatTemplate.UseVisualStyleBackColor = True
-        '
+        ' 
         ' CheckBoxCatUnused
-        '
-        CheckBoxCatUnused.Anchor = AnchorStyles.Top Or AnchorStyles.Left
+        ' 
         CheckBoxCatUnused.AutoSize = True
         CheckBoxCatUnused.Location = New Point(344, 49)
         CheckBoxCatUnused.Name = "CheckBoxCatUnused"
-        CheckBoxCatUnused.Size = New Size(67, 19)
+        CheckBoxCatUnused.Size = New Size(66, 19)
         CheckBoxCatUnused.TabIndex = 8
         CheckBoxCatUnused.Text = "Unused"
         CheckBoxCatUnused.UseVisualStyleBackColor = True
-        '
+        ' 
         ' TreeViewNPCs
-        '
+        ' 
         TreeViewNPCs.BorderStyle = BorderStyle.FixedSingle
         TreeViewNPCs.Dock = DockStyle.Fill
         TreeViewNPCs.DrawMode = TreeViewDrawMode.OwnerDrawText
         TreeViewNPCs.HideSelection = False
         TreeViewNPCs.Location = New Point(0, 0)
         TreeViewNPCs.Name = "TreeViewNPCs"
-        TreeViewNPCs.Size = New Size(700, 497)
+        TreeViewNPCs.Size = New Size(700, 468)
         TreeViewNPCs.TabIndex = 0
         ' 
         ' PanelRecordDetails
@@ -666,10 +661,10 @@ Partial Class MainForm
         PanelActionsToolbar.Controls.Add(Label1)
         PanelActionsToolbar.Controls.Add(ButtonSavePlugin)
         PanelActionsToolbar.Controls.Add(ButtonBuildCharGen)
-        PanelActionsToolbar.Controls.Add(ButtonCharGenOptions)
         PanelActionsToolbar.Controls.Add(Label2)
         PanelActionsToolbar.Controls.Add(Label3)
         PanelActionsToolbar.Controls.Add(ButtonSaveSceneNif)
+        PanelActionsToolbar.Controls.Add(ButtonCharGenOptions)
         PanelActionsToolbar.Dock = DockStyle.Top
         PanelActionsToolbar.Location = New Point(11, 126)
         PanelActionsToolbar.Name = "PanelActionsToolbar"
@@ -869,22 +864,10 @@ Partial Class MainForm
         ButtonBuildCharGen.Text = "Build CharGen (loose)"
         ButtonBuildCharGen.UseVisualStyleBackColor = True
         ' 
-        ' ButtonCharGenOptions
-        ' 
-        ButtonCharGenOptions.AutoSize = True
-        ButtonCharGenOptions.Location = New Point(2, 34)
-        ButtonCharGenOptions.Margin = New Padding(2)
-        ButtonCharGenOptions.MinimumSize = New Size(110, 28)
-        ButtonCharGenOptions.Name = "ButtonCharGenOptions"
-        ButtonCharGenOptions.Size = New Size(120, 28)
-        ButtonCharGenOptions.TabIndex = 3
-        ButtonCharGenOptions.Text = "CharGen Options"
-        ButtonCharGenOptions.UseVisualStyleBackColor = True
-        ' 
         ' Label2
         ' 
         Label2.BorderStyle = BorderStyle.Fixed3D
-        Label2.Location = New Point(132, 36)
+        Label2.Location = New Point(1119, 4)
         Label2.Margin = New Padding(8, 4, 8, 4)
         Label2.Name = "Label2"
         Label2.Size = New Size(2, 24)
@@ -894,7 +877,7 @@ Partial Class MainForm
         ' 
         Label3.Anchor = AnchorStyles.None
         Label3.AutoSize = True
-        Label3.Location = New Point(145, 40)
+        Label3.Location = New Point(1132, 8)
         Label3.Margin = New Padding(3)
         Label3.Name = "Label3"
         Label3.Size = New Size(40, 15)
@@ -906,7 +889,7 @@ Partial Class MainForm
         ' 
         ButtonSaveSceneNif.AutoSize = True
         ButtonSaveSceneNif.Enabled = False
-        ButtonSaveSceneNif.Location = New Point(190, 34)
+        ButtonSaveSceneNif.Location = New Point(2, 34)
         ButtonSaveSceneNif.Margin = New Padding(2)
         ButtonSaveSceneNif.MinimumSize = New Size(120, 28)
         ButtonSaveSceneNif.Name = "ButtonSaveSceneNif"
@@ -914,7 +897,19 @@ Partial Class MainForm
         ButtonSaveSceneNif.TabIndex = 14
         ButtonSaveSceneNif.Text = "NPC Model to NIF"
         ButtonSaveSceneNif.UseVisualStyleBackColor = True
-        '
+        ' 
+        ' ButtonCharGenOptions
+        ' 
+        ButtonCharGenOptions.AutoSize = True
+        ButtonCharGenOptions.Location = New Point(138, 34)
+        ButtonCharGenOptions.Margin = New Padding(2)
+        ButtonCharGenOptions.MinimumSize = New Size(110, 28)
+        ButtonCharGenOptions.Name = "ButtonCharGenOptions"
+        ButtonCharGenOptions.Size = New Size(120, 28)
+        ButtonCharGenOptions.TabIndex = 3
+        ButtonCharGenOptions.Text = "CharGen Options"
+        ButtonCharGenOptions.UseVisualStyleBackColor = True
+        ' 
         ' PanelPreviewHost
         ' 
         PanelPreviewHost.BackColor = Color.FromArgb(CByte(40), CByte(40), CByte(44))
@@ -1008,7 +1003,7 @@ Partial Class MainForm
         ' 
         LabelAnimMs.Anchor = AnchorStyles.None
         LabelAnimMs.AutoSize = True
-        LabelAnimMs.Location = New Point(764, 13)
+        LabelAnimMs.Location = New Point(764, 9)
         LabelAnimMs.Margin = New Padding(10, 0, 1, 0)
         LabelAnimMs.Name = "LabelAnimMs"
         LabelAnimMs.Size = New Size(29, 15)
@@ -1019,7 +1014,7 @@ Partial Class MainForm
         ' 
         NumericAnimFrameMs.Anchor = AnchorStyles.None
         NumericAnimFrameMs.Enabled = False
-        NumericAnimFrameMs.Location = New Point(795, 4)
+        NumericAnimFrameMs.Location = New Point(795, 5)
         NumericAnimFrameMs.Margin = New Padding(1, 0, 3, 0)
         NumericAnimFrameMs.Maximum = New Decimal(New Integer() {120, 0, 0, 0})
         NumericAnimFrameMs.Minimum = New Decimal(New Integer() {1, 0, 0, 0})

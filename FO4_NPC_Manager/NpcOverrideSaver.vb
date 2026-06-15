@@ -613,6 +613,20 @@ Public Module NpcOverrideSaver
             npcSpec.Acbs = CloneAcbsWithFlags(npcSpec.Acbs, npcSpec.AcbsFlags)
         End If
 
+        ' When this save bakes CharGen AND the user asked to drop the CharGen flag, clear ACBS bit 0x04
+        ' on the written override so the engine loads the baked FaceGen instead of reconstructing the
+        ' face at runtime (CK skips FaceGen export for CharGen-preset NPCs). No-op for NPCs that don't
+        ' carry the bit. Clone the Acbs before mutating so the shared raw parse isn't corrupted.
+        If target.GenerateChargen AndAlso target.RemoveCharGenFlag Then
+            Dim strippedFlags As UInteger = npcSpec.AcbsFlags And Not AcbsBitIsCharGenFacePreset
+            If strippedFlags <> npcSpec.AcbsFlags Then
+                npcSpec.AcbsFlags = strippedFlags
+                If npcSpec.Acbs IsNot Nothing Then
+                    npcSpec.Acbs = CloneAcbsWithFlags(npcSpec.Acbs, strippedFlags)
+                End If
+            End If
+        End If
+
         Dim overlay As LooksmenuLoader.LooksmenuPreset = Nothing
         ctx.AppliedPresets.TryGetValue(npcFormID, overlay)
 
@@ -737,6 +751,12 @@ Public Module NpcOverrideSaver
     ''' injected via <see cref="ApplyEspNamespaceToEditorId"/> → final <c>npcm_&lt;ESPNAME&gt;_LVLN_&lt;name&gt;</c>.
     ''' Mirror of <see cref="OutfitDraft.EditorIdPrefix"/> / <see cref="LeveledListDraft.EditorIdPrefix"/>.</summary>
     Public Const LeveledNpcListEditorIdPrefix As String = "npcm_LVLN_"
+
+    ''' <summary>ACBS Flags bit 0x04 = "Is CharGen Face Preset" (NPC_AcbsData.IsCharGenFacePreset,
+    ''' RecordParsers.vb:134). Cleared from saved overrides when the user bakes CharGen and ticks
+    ''' "Remove CharGen flag", so the engine loads the baked FaceGen instead of reconstructing the
+    ''' face at runtime.</summary>
+    Private Const AcbsBitIsCharGenFacePreset As UInteger = &H4UI
 
     ''' <summary>LLCT is itU8 (wbDefinitionsFO4.pas:3674) → a leveled list holds at most 255 entries.</summary>
     Private Const LeveledListEntryCap As Integer = 255
