@@ -846,7 +846,10 @@ Public Class MainForm
     ''' bones (e.g. ShoulderFat). The other models stay in the enum so this can be changed in the
     ''' future by editing this one line — no re-plumbing. (The diagnostic ComboBox that exposed all
     ''' four models was removed once ClampBoth was selected.)</summary>
-    Private Shared ReadOnly _bodyWeightClampModel As BodyWeightClampModel = BodyWeightClampModel.ClampBoth
+    ' 2026-06-17: ClampBoth → Off por RE de Fallout4.exe (project_morph_clamp_re). La cadena completa
+    ' del body-weight apply (0x6E0820→0x652100→0x6517A0→0x664850) NO tiene NI UN minss/maxss: el engine
+    ' NO clampea el scale al RangeModifier. La "centralidad" la da el término K (Layer 1), no un clamp.
+    Private Shared ReadOnly _bodyWeightClampModel As BodyWeightClampModel = BodyWeightClampModel.Off
 
     ''' <summary>Toggle BodySlide vertex morphs (BODYTRI .tri + slider dict). Same granular path
     ''' as CheckBoxApplyVertexMorphs: rebuild MorphResolver via BuildCompositeMorphResolver
@@ -7350,7 +7353,35 @@ Public Class MainForm
         Dim regionsFile = GetFacialBoneRegionsForRace(race, state.IsFemale)
         If regionsFile Is Nothing Then Return Nothing
 
+        ' NNAM ("Neck Fat Adjustments Scale") is NOT part of this FMRS face-bone pose anymore — it is
+        ' a CK RUNTIME scale of the shared "Neck" bone applied to the live skeleton (head+body), now
+        ' threaded through BuildBodyWeightPose as Layer 2 (see ResolveNeckNnamScale).
         Return FaceBonePoseBuilder.BuildFaceBoneTransforms(npcData, regionsFile)
+    End Function
+
+    ''' <summary>Resolve the CK RUNTIME NNAM neck-bone scale for the NPC (the shared "Neck" bone
+    ''' scale the engine applies live to head+body — NEVER baked). Mirrors the resolution the FMRS
+    ''' wrapper does (overlay-applied NPC, cached RACE, race+gender regions JSON, RACE.{gender}NeckNNAMX/Y)
+    ''' and delegates the math to <see cref="FaceBonePoseBuilder.ComputeNeckNnamScale"/>. Returns
+    ''' (1,1) on any missing piece. Consumed by <see cref="BuildBodyWeightPose"/> (Layer 2).</summary>
+    Private Function ResolveNeckNnamScale(state As NPCVisualState) As (ScaleY As Single, ScaleZ As Single)
+        If state Is Nothing Then Return (1.0F, 1.0F)
+
+        Dim modelNpcFormID = FaceAppearanceSourceFormID(state)
+        Dim npcData = ApplyPresetOverlayToNpcData(GetParsedNpc(modelNpcFormID), state.RootNpcFormID)
+        If npcData Is Nothing Then Return (1.0F, 1.0F)
+
+        Dim raceRec = _pluginManager.GetRecord(state.RaceFormID)
+        If raceRec Is Nothing OrElse raceRec.Header.Signature <> "RACE" Then Return (1.0F, 1.0F)
+        Dim race = ParseRaceCached(raceRec)
+
+        Dim regionsFile = GetFacialBoneRegionsForRace(race, state.IsFemale)
+        If regionsFile Is Nothing Then Return (1.0F, 1.0F)
+
+        Dim neckNnamX As Single = If(state.IsFemale, race.FemaleNeckNNAMX, race.MaleNeckNNAMX)
+        Dim neckNnamY As Single = If(state.IsFemale, race.FemaleNeckNNAMY, race.MaleNeckNNAMY)
+
+        Return FaceBonePoseBuilder.ComputeNeckNnamScale(npcData, regionsFile, neckNnamX, neckNnamY)
     End Function
 
 
@@ -7371,7 +7402,7 @@ Public Class MainForm
     ''' <summary>Resolve the NPC's MWGT weights and the RACE's per-bone weight scale data for
     ''' use by the skeleton resolver. Returns Nothing if the NPC has no MWGT or the RACE has
     ''' no bone data for the NPC's gender.</summary>
-    Private Function ResolveBodyWeightData(state As NPCVisualState, renderData As PreviewResolutionResult) As (Wt As Single, Wm As Single, Wf As Single, GenderBlock As RACE_BoneDataGender, MrsvValues As List(Of Single), ArmaDeltas As Dictionary(Of String, System.Numerics.Vector3), NnamX As Single, NnamY As Single)
+    Private Function ResolveBodyWeightData(state As NPCVisualState, renderData As PreviewResolutionResult) As (Wt As Single, Wm As Single, Wf As Single, GenderBlock As RACE_BoneDataGender, MrsvValues As List(Of Single), ArmaDeltas As Dictionary(Of String, System.Numerics.Vector3))
         If state Is Nothing Then Return Nothing
 
         Dim modelNpcFormID = FaceAppearanceSourceFormID(state)
@@ -7396,22 +7427,10 @@ Public Class MainForm
 
         ' Log the FaceGen clamps for reference. TBD whether they apply to body BSMS output
         ' or only to face slider*FMIN. Not applying any clamp formula without spec.
-
-        ' Log NNAM raw (both genders) — "Neck Fat Adjustments Scale" per xEdit, 4 unknown bytes + X + Y.
-        ' Hypothesis: the 4 bytes may be (thin, musc, fat, pad) weights. Interpretation pending.
-        Dim fmtNNAM = Function(raw As Byte(), xv As Single, yv As Single) As String
-                          If raw Is Nothing Then Return "none"
-                          Return $"bytes=[{raw(0):X2} {raw(1):X2} {raw(2):X2} {raw(3):X2}] (dec={raw(0)},{raw(1)},{raw(2)},{raw(3)}) X={xv:F4} Y={yv:F4}"
-                      End Function
-
-        ' Gender-resolved NNAM ("Neck Fat Adjustments Scale" — xEdit wbDefinitionsFO4.pas:11639/11657).
-        ' Consumed by BuildBodyWeightPose as HIPÓTESIS H1 (multiplicative neck-fat modifier).
-        ' The 4-byte Unknown prefix is NOT read — HumanRace vanilla has it zero and no spec exists
-        ' to decode it. If a race ships it non-zero we flag and proceed with H1 anyway (unchanged).
-        Dim nnamX As Single = If(state.IsFemale, race.FemaleNeckNNAMX, race.MaleNeckNNAMX)
-        Dim nnamY As Single = If(state.IsFemale, race.FemaleNeckNNAMY, race.MaleNeckNNAMY)
-        Dim nnamRaw = If(state.IsFemale, race.FemaleNeckNNAMRaw, race.MaleNeckNNAMRaw)
-        Logger.LogLazy(Function() $"[NNAM-DIAG] race={race.EditorID} gender={If(state.IsFemale, "F", "M")} MWGT(t={wt.ToString("F3", CultureInfo.InvariantCulture)},m={wm.ToString("F3", CultureInfo.InvariantCulture)},f={wf.ToString("F3", CultureInfo.InvariantCulture)}) NNAM_M={fmtNNAM(race.MaleNeckNNAMRaw, race.MaleNeckNNAMX, race.MaleNeckNNAMY)} NNAM_F={fmtNNAM(race.FemaleNeckNNAMRaw, race.FemaleNeckNNAMX, race.FemaleNeckNNAMY)}")
+        ' NNAM ("Neck Fat Adjustments Scale") is resolved separately (ResolveNeckNnamScale) and
+        ' threaded into BuildBodyWeightPose as Layer 2 — the CK RUNTIME scale of the shared "Neck"
+        ' bone (head+body), NOT a per-bone BSMS/MRSV body-weight input, so it is not part of this
+        ' RACE.BoneData resolution.
 
         Dim targetGender As UInteger = If(state.IsFemale, 1UI, 0UI)
         For Each bd In race.BoneData
@@ -7423,12 +7442,12 @@ Public Class MainForm
                 For Each diagBone In diagBones
                     Dim bbb = bd.Bones.FirstOrDefault(Function(x) x.BoneName.Equals(diagBone, StringComparison.OrdinalIgnoreCase))
                 Next
-                If bd.Bones.Count > 0 Then Return (wt, wm, wf, bd, npcData.BodyMorphRegionValues, armaDeltas, nnamX, nnamY)
+                If bd.Bones.Count > 0 Then Return (wt, wm, wf, bd, npcData.BodyMorphRegionValues, armaDeltas)
                 Exit For
             End If
         Next
         If hasArmaDeltas Then
-            Return (wt, wm, wf, New RACE_BoneDataGender With {.Gender = targetGender}, npcData.BodyMorphRegionValues, armaDeltas, nnamX, nnamY)
+            Return (wt, wm, wf, New RACE_BoneDataGender With {.Gender = targetGender}, npcData.BodyMorphRegionValues, armaDeltas)
         End If
         Return Nothing
     End Function
@@ -7442,22 +7461,44 @@ Public Class MainForm
     '''   SPINE1, Pelvis, Butt (anywhere in ancestor chain) → 3 (Lower Torso)
     '''   Leg (anywhere in ancestor chain) → 4 (Legs)
     ''' This is inferred from the skeleton hierarchy, not from any Bethesda data file.</summary>
+    ''' <summary>Bone→MRSV-region map, EXACT from CreationKit.exe (fn 0xA95C70 builds this hardcoded
+    ''' table into a global map at RVA 0x3BA4330; see memory project_morph_clamp_re). The 48 body
+    ''' "_skin" bones each carry a hardcoded region index 0..4 (0=Head, 1=Upper Torso, 2=Arms,
+    ''' 3=Lower Torso, 4=Legs), matching NPC_.MRSV[0..4]. Replaces the old name-substring heuristic,
+    ''' which mis-assigned Pelvis*/ButtFat* (engine→Legs, heuristic→Lower Torso) and Neck1 (engine→
+    ''' Head, heuristic→Upper Torso). NOT data-driven in the engine — purely hardcoded.</summary>
+    Private Shared ReadOnly _mrsvRegionByBone As New Dictionary(Of String, Integer)(StringComparer.OrdinalIgnoreCase) From {
+        {"Head_skin", 0}, {"Face_skin", 0}, {"Neck1_skin", 0},
+        {"Neck_skin", 1}, {"chest_skin", 1}, {"LBreast_skin", 1}, {"RBreast_skin", 1},
+        {"Chest_Rear_Skin", 1}, {"Chest_Upper_Skin", 1}, {"Neck_Low_skin", 1},
+        {"Spine2_skin", 1}, {"UpperBelly_skin", 1}, {"Spine2_Rear_skin", 1},
+        {"Spine1_skin", 3}, {"Belly_skin", 3}, {"Spine1_Rear_skin", 3},
+        {"LArm_ForeArm3_skin", 2}, {"LArm_ForeArm2_skin", 2}, {"LArm_ForeArm1_skin", 2},
+        {"LArm_UpperTwist2_skin", 2}, {"LArm_UpperFat_skin", 2}, {"LArm_UpperTwist1_skin", 2},
+        {"LArm_UpperArm_skin", 2}, {"LArm_CollarBone_skin", 2}, {"LArm_ShoulderFat_skin", 2},
+        {"RArm_ForeArm3_skin", 2}, {"RArm_ForeArm2_skin", 2}, {"RArm_ForeArm1_skin", 2},
+        {"RArm_UpperTwist2_skin", 2}, {"RArm_UpperFat_skin", 2}, {"RArm_UpperTwist1_skin", 2},
+        {"RArm_UpperArm_skin", 2}, {"RArm_CollarBone_skin", 2}, {"RArm_ShoulderFat_skin", 2},
+        {"LLeg_Calf_skin", 4}, {"LLeg_Calf_Low_skin", 4}, {"LLeg_Thigh_skin", 4},
+        {"LLeg_Thigh_Low_skin", 4}, {"LLeg_Thigh_Fat_skin", 4},
+        {"RLeg_Calf_skin", 4}, {"RLeg_Calf_Low_skin", 4}, {"RLeg_Thigh_skin", 4},
+        {"RLeg_Thigh_Low_skin", 4}, {"RLeg_Thigh_Fat_skin", 4},
+        {"Pelvis_skin", 4}, {"Pelvis_Rear_skin", 4}, {"RButtFat_skin", 4}, {"LButtFat_skin", 4}
+    }
+
+    ''' <summary>Map a skeleton bone to its MRSV region (0..4) using the EXACT engine table
+    ''' (CreationKit.exe fn 0xA95C70, see _mrsvRegionByBone). Direct lookup on the bone's own name;
+    ''' falls back to walking the parent chain (for non-vanilla skeletons whose morph bone isn't
+    ''' itself a mapped _skin node). Returns -1 if no ancestor is a mapped body-morph bone — the
+    ''' engine applies no MRSV scaling to such bones.</summary>
     Private Shared Function ResolveMrsvRegion(bone As HierarchiBone_class) As Integer
         Dim cur = bone
         Dim depth = 0
         While cur IsNot Nothing AndAlso depth < 20
             Dim n = cur.BoneName
             If n IsNot Nothing Then
-                Dim upper = n.ToUpperInvariant()
-                If upper.Contains("LEG") OrElse upper.Contains("LLEG") OrElse upper.Contains("RLEG") Then Return 4
-                If upper.Contains("ARM") OrElse upper.Contains("LARM") OrElse upper.Contains("RARM") Then Return 2
-                If upper.Contains("BUTT") Then Return 3
-                If upper = "HEAD" OrElse upper.StartsWith("HEAD") Then Return 0
-                If upper = "SPINE1" OrElse upper = "SPINE1_OFFSET" Then Return 3
-                If upper = "PELVIS" OrElse upper = "PELVIS_OFFSET" Then Return 3
-                If upper = "SPINE2" OrElse upper = "SPINE2_OFFSET" Then Return 1
-                If upper = "CHEST" OrElse upper = "CHEST_OFFSET" Then Return 1
-                If upper = "NECK" OrElse upper = "NECK_OFFSET" Then Return 1
+                Dim region As Integer
+                If _mrsvRegionByBone.TryGetValue(n, region) Then Return region
             End If
             cur = cur.Parent
             depth += 1
@@ -7528,11 +7569,15 @@ Public Class MainForm
                 ' Sculpt formula hardcoded H3 multiplicative (closure plan P0 — A REVISAR).
                 Dim sculpt = If(armaSculptOverride, New Dictionary(Of String, System.Numerics.Vector3)(StringComparer.OrdinalIgnoreCase))
                 ' Sclpt y BW son toggles independientes. weightLayersEnabled=bodyWeightEnabled
-                ' gobierna las layers RACE.BSMS / NNAM / MRSV (1-3); la layer ARMA (4) se aplica
-                ' siempre que haya deltas. BW=OFF + Sclpt=ON → sólo capa 4 (s = 1·(1+arma_d)).
+                ' gobierna las layers RACE.BSMS / MRSV; la layer ARMA se aplica siempre que haya
+                ' deltas. BW=OFF + Sclpt=ON → sólo capa ARMA (s = 1·(1+arma_d)). NNAM (Layer 2) es
+                ' la escala RUNTIME del hueso compartido "Neck" que el engine aplica al esqueleto
+                ' vivo (cabeza+cuerpo) — se resuelve aquí y se pasa a BuildBodyWeightPose; ya NO
+                ' vive en el FMRS face-bone pose ni en el bake.
+                Dim neckScale = ResolveNeckNnamScale(state)
                 bwPose = BuildBodyWeightPose(bwData.Wt, bwData.Wm, bwData.Wf,
-                                             bwData.GenderBlock, bwData.MrsvValues, sculpt,
-                                             bwData.NnamX, bwData.NnamY,
+                                             bwData.GenderBlock, bwData.MrsvValues,
+                                             neckScale.ScaleY, neckScale.ScaleZ, sculpt,
                                              skeleton, bodyWeightEnabled)
             End If
         End If
@@ -7616,19 +7661,18 @@ Public Class MainForm
 
     ''' <summary>Build a pose of non-uniform bone-scale deltas from NPC MWGT + RACE BSMS
     ''' (weight scale layer) and NPC MRSV + RACE BSMS "Range" (region modifier layer).
+    ''' Also applies the CK RUNTIME NNAM neck-fat scale (Layer 2) as a multiplicative Y/Z scale on
+    ''' the shared "Neck" bone (neckScaleY/neckScaleZ from ResolveNeckNnamScale) — the engine applies
+    ''' this to the live skeleton (head+body) and NEVER bakes it, so it lives here, not in the FMRS
+    ''' face pose / bake.
     ''' Requires SkeletonDictionary populated (ResolveMrsvRegion walks bone.Parent chain).</summary>
     Private Shared Function BuildBodyWeightPose(wt As Single, wm As Single, wf As Single,
                                                  genderBlock As RACE_BoneDataGender,
                                                  mrsvValues As List(Of Single),
+                                                 neckScaleY As Single, neckScaleZ As Single,
                                                  armaDeltas As Dictionary(Of String, System.Numerics.Vector3),
-                                                 nnamX As Single, nnamY As Single,
                                                  skeleton As SkeletonInstance,
                                                  weightLayersEnabled As Boolean) As Poses_class
-        ' Temp toggle 2026-05-17: disables Layer 2 NNAM entirely to A/B against CK reference.
-        ' Hypothesis: Layer 1 BSMS alone matches CK for fat neck; NNAM multiplicative on top is the
-        ' source of the over-thickening user reported. Flip back to False to restore production
-        ' behavior once the discriminator is logged.
-        Const DisableNnamLayer2 As Boolean = True
         Const Eps As Single = 0.001F
         Dim clampModel = _bodyWeightClampModel
         Dim pose As New Poses_class With {
@@ -7664,21 +7708,19 @@ Public Class MainForm
                 allBoneNames.Add(kv.Key)
             Next
         End If
+        ' NNAM (Layer 2) targets the literal "Neck" bone, which RACE.BoneData / ARMA may not list.
+        ' Ensure it is in the iteration set so a Neck-only-NNAM NPC (no weight/sculpt) still emits it.
+        If neckScaleY <> 1.0F OrElse neckScaleZ <> 1.0F Then allBoneNames.Add("Neck")
 
-        ' [NNAM-DIAG] dump candidate set: every bone with "Neck" in name, tagging _skin suffix
-        ' and HasWeightScale. Lets the user see which bones the substring-match in Layer 2
-        ' selects before any scale is applied.
-        Dim neckCandidates = allBoneNames.
-            Where(Function(n) n.Contains("Neck", StringComparison.OrdinalIgnoreCase)).
-            OrderBy(Function(n) n, StringComparer.OrdinalIgnoreCase).
-            ToList()
-        Logger.LogLazy(Function() $"[NNAM-DIAG] BuildBodyWeightPose inputs: wt={wt.ToString("F3", CultureInfo.InvariantCulture)} wm={wm.ToString("F3", CultureInfo.InvariantCulture)} wf={wf.ToString("F3", CultureInfo.InvariantCulture)} nnamX={nnamX.ToString("F4", CultureInfo.InvariantCulture)} nnamY={nnamY.ToString("F4", CultureInfo.InvariantCulture)} weightLayersEnabled={weightLayersEnabled} neck-bone-count={neckCandidates.Count}")
-        For Each nc In neckCandidates
-            Dim cb As RACE_BoneData = Nothing
-            Dim hasWS As Boolean = False
-            If boneLookup.TryGetValue(nc, cb) Then hasWS = cb.HasWeightScale
-            Logger.LogLazy(Function() $"[NNAM-DIAG]   candidate bone='{nc}' isSkin={nc.EndsWith("_skin", StringComparison.OrdinalIgnoreCase)} inRaceBoneData={cb IsNot Nothing} HasWeightScale={hasWS}")
-        Next
+        ' --- Engine weight-triangle correction factor K (RE de Fallout4.exe, fn 0x6517A0/0x664850) ---
+        ' El engine NO interpola linealmente: out_a = thin_a*wt + musc_a*wm + fat_a*wf - (mean_a-1)*K,
+        ' con mean_a = (thin_a+musc_a+fat_a)/3 y K = "centralidad" del punto de peso (wt,wm,wf) en el
+        ' triángulo equilátero Thin/Musc/Fat. Constantes √3/2, 1/√3, 2/√3 verificadas en el binario.
+        ' En (⅓,⅓,⅓) → K=1 ⇒ out=1.0 (identidad). Usa los MISMOS wt/wm/wf que la parte lineal de abajo.
+        ' Ver memoria project_morph_clamp_re. weightK se calcula 1× por NPC.
+        Dim wTriX As Single = wm * 0.5F + wf - 0.5F
+        Dim wTriY As Single = (wt + wf) * 0.866025F - 0.577350F
+        Dim weightK As Single = (0.866025F - CSng(Math.Sqrt(wTriX * wTriX + wTriY * wTriY))) * 1.154701F
 
         For Each boneName In allBoneNames
             Dim skelBone As HierarchiBone_class = Nothing
@@ -7725,6 +7767,10 @@ Public Class MainForm
                 sx = bone.ThinX * wt + bone.MuscularX * wm + bone.FatX * wf
                 sy = bone.ThinY * wt + bone.MuscularY * wm + bone.FatY * wf
                 sz = bone.ThinZ * wt + bone.MuscularZ * wm + bone.FatZ * wf
+                ' Corrección de centralidad del engine (RE 0x664850): tira hacia identidad por (mean-1)*K.
+                sx -= ((bone.ThinX + bone.MuscularX + bone.FatX) / 3.0F - 1.0F) * weightK
+                sy -= ((bone.ThinY + bone.MuscularY + bone.FatY) / 3.0F - 1.0F) * weightK
+                sz -= ((bone.ThinZ + bone.MuscularZ + bone.FatZ) / 3.0F - 1.0F) * weightK
             End If
             Dim sxR As Single = sx, syR As Single = sy, szR As Single = sz   ' snapshot post-RACE
 
@@ -7736,39 +7782,15 @@ Public Class MainForm
                 sz = Math.Min(Math.Max(sz, 1.0F + bone.MinZ), 1.0F + bone.MaxZ)
             End If
 
-            ' --- Layer 2: NNAM (multiplicative neck-fat adjust) — H-NNAM-1 ---
-            ' NNAM ("Neck Fat Adjustments Scale" — RACE.NNAM inside the head block, xEdit spec
-            ' wbDefinitionsFO4.pas:11639/11657). HIPÓTESIS H1 2026-04-19: multiplicative neck-fat
-            ' modifier on RACE-declared weight-scale bones whose name contains "Neck"; driven
-            ' only by MWGT.Fat (matches the record's literal name "Neck Fat"). "Budget realloc"
-            ' model falsified 2026-04-19 (see npc_manager_closure_plan P2). The 4-byte Unknown
-            ' prefix is ignored: HumanRace vanilla has it zero, semantics unresolved. Reaches the
-            ' head-mesh neck verts via bones shared between head and body skin (Neck_skin,
-            ' Neck_Low_skin, Neck1_skin). Validate with harness [BW-only] RMS Científica < 0.10
-            ' before promoting out of hypothesis.
-            Dim isNeckCandidate As Boolean = boneName.Contains("Neck", StringComparison.OrdinalIgnoreCase)
-            Dim nnamApplied As Boolean = False
-            If weightLayersEnabled AndAlso bone IsNot Nothing AndAlso bone.HasWeightScale _
-               AndAlso isNeckCandidate _
-               AndAlso (Math.Abs(nnamX) > Single.Epsilon OrElse Math.Abs(nnamY) > Single.Epsilon) Then
-                Dim mulX As Single = (1.0F + nnamX * wf)
-                Dim mulY As Single = (1.0F + nnamY * wf)
-                Dim sxBefore As Single = sx, syBefore As Single = sy
-                If Not DisableNnamLayer2 Then
-                    sx *= mulX
-                    sy *= mulY
-                    nnamApplied = True
-                End If
-                Logger.LogLazy(Function() $"[NNAM-DIAG] {If(DisableNnamLayer2, "WOULD-APPLY", "APPLY")} bone='{boneName}' isSkin={boneName.EndsWith("_skin", StringComparison.OrdinalIgnoreCase)} preLayer1(sx={sxR.ToString("F4", CultureInfo.InvariantCulture)},sy={syR.ToString("F4", CultureInfo.InvariantCulture)},sz={szR.ToString("F4", CultureInfo.InvariantCulture)}) preLayer2(sx={sxBefore.ToString("F4", CultureInfo.InvariantCulture)},sy={syBefore.ToString("F4", CultureInfo.InvariantCulture)}) mul(x={mulX.ToString("F4", CultureInfo.InvariantCulture)},y={mulY.ToString("F4", CultureInfo.InvariantCulture)}) post(sx={sx.ToString("F4", CultureInfo.InvariantCulture)},sy={sy.ToString("F4", CultureInfo.InvariantCulture)},sz={sz.ToString("F4", CultureInfo.InvariantCulture)})")
-            ElseIf isNeckCandidate Then
-                Dim reason As String =
-                    If(Not weightLayersEnabled, "weightLayers=off",
-                    If(bone Is Nothing, "no-race-bone-data",
-                    If(Not bone.HasWeightScale, "no-WeightScale",
-                    If(Math.Abs(nnamX) < Single.Epsilon AndAlso Math.Abs(nnamY) < Single.Epsilon, "nnam-zero", "unknown"))))
-                Logger.LogLazy(Function() $"[NNAM-DIAG] SKIP  bone='{boneName}' isSkin={boneName.EndsWith("_skin", StringComparison.OrdinalIgnoreCase)} reason={reason}")
+            ' --- Layer 2: NNAM neck-fat (CK RUNTIME Neck-bone scale; applied to the live skeleton, NEVER baked) ---
+            ' Empirically validated 2026-06-17: CK does NOT bake this into FaceGeom; it is a runtime scale of the
+            ' shared "Neck" bone (affects head+body). EXACT bone name "Neck", case-insensitive (Equals,
+            ' NOT substring — so Neck1/Neckmuscle stay excluded), matching the OrdinalIgnoreCase bone set
+            ' used everywhere else in this loop.
+            If String.Equals(boneName, "Neck", StringComparison.OrdinalIgnoreCase) Then
+                sy *= neckScaleY
+                sz *= neckScaleZ
             End If
-            Dim sxN As Single = sx, syN As Single = sy, szN As Single = sz   ' snapshot post-NNAM
 
             ' --- Layer 3: MRSV (Range Modifier) — interpretación H-MRSV-2 (canal interpolado) ---
             ' BSMS RangeModifier spec has only Min/Max Y and Z (no X) — per

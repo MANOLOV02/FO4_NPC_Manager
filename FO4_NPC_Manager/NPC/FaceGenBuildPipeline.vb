@@ -62,9 +62,21 @@ Public Module FaceGenBuildPipeline
             faceSkel.ApplyBoneMorphPose(state.FmrsPose)
         End If
 
-        ' 3) Build body-skel SkeletonInstance (no pose — body bones are at canonical bind in
-        ' the bake; no MWGT/MRSV/raceHeight applied per the bake-without-bodyweight rule).
+        ' 3) Build body-skel SkeletonInstance. Body bones are at canonical bind in the bake (no
+        ' MWGT/MRSV/raceHeight per the bake-without-bodyweight rule) WITH ONE EXCEPTION: the CK
+        ' NNAM neck-fat scale targets the literal body bone "Neck", which is NOT a face bone. The
+        ' FmrsPose's "Neck" entry is dropped by the faceSkel ApplyBoneMorphPose ContainsKey guard
+        ' when the _faceBones.nif does not declare "Neck" (it is a face-bone-only rig), so the
+        ' pose-resolver below would fall back to bodySkel's *bind* "Neck" and lose the scale. Apply
+        ' the FmrsPose to bodySkel too: ApplyBoneMorphPose only writes entries whose key exists in
+        ' the target dictionary, so on bodySkel this sets exactly the "Neck" morph (the "skin_*"
+        ' face entries no-op) — matching how the render applies the same merged pose to the full
+        ' skeleton that contains "Neck". If the faceBones rig DOES declare "Neck", faceSkel (also
+        ' pose-applied, resolver-first) carries the identical scale, so the result is the same.
         Dim bodySkel = LoadBodySkeleton(state)
+        If state.FmrsPose IsNot Nothing AndAlso bodySkel IsNot Nothing AndAlso bodySkel.HasSkeleton Then
+            bodySkel.ApplyBoneMorphPose(state.FmrsPose)
+        End If
 
         ' 4) Skin shape with poseT resolved from faceSkel ∪ bodySkel ∪ shape-internal fallback.
         Dim resolver = BuildPoseResolver(faceSkel, bodySkel, facebonesNif)
@@ -111,6 +123,10 @@ Public Module FaceGenBuildPipeline
 
         Dim fmrsPose As Poses_class = Nothing
         If facialBoneRegions IsNot Nothing Then
+            ' NNAM ("Neck Fat Adjustments Scale") is deliberately NOT included in the bake. It is a
+            ' CK RUNTIME scale of the shared "Neck" bone (head+body) applied to the live skeleton —
+            ' empirically validated 2026-06-17 that CK does NOT bake it into FaceGeom. The render
+            ' path applies it via BuildBodyWeightPose (Layer 2); the bake must stay NNAM-free.
             fmrsPose = FaceBonePoseBuilder.BuildFaceBoneTransforms(npcData, facialBoneRegions)
         End If
 
@@ -429,7 +445,8 @@ Public Module FaceGenBuildPipeline
                    Dim boneName = If(boneNode.Name?.String, "")
                    If boneName = "" Then Return Nothing
 
-                   ' 1) Face skel wins (FMRS pose folded in via ApplyPose).
+                   ' 1) Face skel wins (FMRS bone-morph folded in via ApplyBoneMorphPose →
+                   ' GetGlobalTransform includes the MorphDeltaTransform layer).
                    If faceSkel IsNot Nothing AndAlso faceSkel.HasSkeleton Then
                        Dim hb As HierarchiBone_class = Nothing
                        If faceSkel.SkeletonDictionary.TryGetValue(boneName, hb) AndAlso hb IsNot Nothing Then
@@ -437,11 +454,15 @@ Public Module FaceGenBuildPipeline
                        End If
                    End If
 
-                   ' 2) Body skel fallback (canonical bind, no pose).
+                   ' 2) Body skel fallback. GetGlobalTransform (NOT OriginalGetGlobalTransform) so the
+                   ' MorphDeltaTransform layer is included: the only morph applied to bodySkel here is
+                   ' the CK NNAM neck-fat scale on the literal "Neck" bone (see ComputeWorldVerticesForShape).
+                   ' Every other body bone has MorphDeltaTransform=Nothing, so GetGlobalTransform == bind
+                   ' for them — identical to the previous OriginalGetGlobalTransform for all non-Neck bones.
                    If bodySkel IsNot Nothing AndAlso bodySkel.HasSkeleton Then
                        Dim hb As HierarchiBone_class = Nothing
                        If bodySkel.SkeletonDictionary.TryGetValue(boneName, hb) AndAlso hb IsNot Nothing Then
-                           Return hb.OriginalGetGlobalTransform
+                           Return hb.GetGlobalTransform
                        End If
                    End If
 

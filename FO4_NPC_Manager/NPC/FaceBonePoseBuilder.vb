@@ -127,7 +127,7 @@ Public Module FaceBonePoseBuilder
         Dim pose As New Poses_class With {
             .Name = "FMRS Face Morph",
             .Source = Poses_class.Pose_Source_Enum.WardrobeManager,
-            .Transforms = New Dictionary(Of String, PoseTransformData)
+            .Transforms = New Dictionary(Of String, PoseTransformData)(StringComparer.OrdinalIgnoreCase)
         }
         For Each kv In result
             Dim xform = kv.Value
@@ -153,6 +153,43 @@ Public Module FaceBonePoseBuilder
         Return pose
     End Function
 
+    ''' <summary>Compute the CK RUNTIME NNAM ("Neck Fat Adjustments Scale") neck-bone scale.
+    ''' This is a runtime scale of the shared "Neck" bone (affects head + body together) that the
+    ''' engine applies to the live skeleton — it is NEVER baked into the FaceGeom head .nif
+    ''' (empirically validated 2026-06-17: baked .nif vs CreationKit vanilla). The body-weight pose
+    ''' builder consumes this and multiplies it onto the live "Neck" bone scale.
+    '''
+    ''' Driven by the chargen neck slider (the FaceMorph PositionZ of the region the JSON flags
+    ''' IsNeckRegion), NOT by body weight. Strictly data-driven off the IsNeckRegion flag — no
+    ''' hardcoded region ID. race.NeckNNAMX → bone Y scale, race.NeckNNAMY → bone Z scale.</summary>
+    ''' <param name="npcData">Parsed NPC_Data (overlay-applied) with FaceMorphs + FacialMorphIntensity.</param>
+    ''' <param name="regionsFile">Parsed FacialBoneRegions JSON for the race+gender pair.</param>
+    ''' <param name="neckNnamX">RACE.NNAM X for the NPC's gender. Maps to the "Neck" bone's Y scale.</param>
+    ''' <param name="neckNnamY">RACE.NNAM Y for the NPC's gender. Maps to the "Neck" bone's Z scale.</param>
+    ''' <returns>(ScaleY, ScaleZ) for the "Neck" bone; (1,1) when NNAM does not contribute.</returns>
+    Public Function ComputeNeckNnamScale(npcData As NPC_Data,
+                                          regionsFile As FacialBoneRegionsFile,
+                                          neckNnamX As Single,
+                                          neckNnamY As Single) As (ScaleY As Single, ScaleZ As Single)
+        If npcData Is Nothing OrElse regionsFile Is Nothing Then Return (1.0F, 1.0F)
+        If npcData.FaceMorphs Is Nothing OrElse npcData.FaceMorphs.Count = 0 Then Return (1.0F, 1.0F)
+
+        Dim neckRegion = regionsFile.Regions.Values.FirstOrDefault(Function(r) r.IsNeckRegion)
+        If neckRegion Is Nothing Then Return (1.0F, 1.0F)
+
+        Dim block2 As Single = 0.0F
+        For Each fm In npcData.FaceMorphs
+            If fm.Index = neckRegion.ID Then
+                block2 = fm.PositionZ
+                Exit For
+            End If
+        Next
+        If block2 <= 0.0F Then Return (1.0F, 1.0F)
+
+        Dim fmin = If(npcData.FacialMorphIntensity <= 0.0F, 1.0F, npcData.FacialMorphIntensity)
+        Return (1.0F + neckNnamX * fmin * block2, 1.0F + neckNnamY * fmin * block2)
+    End Function
+
     ''' <summary>Per-axis DELTA from a FMRS-driven slider.
     ''' fmrsVal is the NPC's slider value for this axis (clamped to [-1,+1] by the engine).
     '''   fmrsVal = 0  → 0      (no morph applied)
@@ -161,11 +198,14 @@ Public Module FaceBonePoseBuilder
     ''' Negative values map toward minima, positive toward maxima. Returns the DELTA from the
     ''' rest pose (default), not the lerped absolute value.</summary>
     Public Function LerpFmrs(fmrsVal As Single, defaultVal As Single, minVal As Single, maxVal As Single) As Single
+        ' Engine-faithful (Fallout4.exe FUN_1403fd920): raw = s*max (s>=0) or |s|*min (s<0).
+        ' The engine does NOT subtract the region Default here — Min/Max are already
+        ' additive offsets (0 = no change). defaultVal kept for signature parity but unused.
         Dim s = Math.Max(-1.0F, Math.Min(1.0F, fmrsVal))
         If s >= 0 Then
-            Return s * (maxVal - defaultVal)
+            Return s * maxVal
         Else
-            Return (-s) * (minVal - defaultVal)
+            Return (-s) * minVal
         End If
     End Function
 
