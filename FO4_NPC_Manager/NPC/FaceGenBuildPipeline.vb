@@ -1,4 +1,4 @@
-Imports FO4_Base_Library
+﻿Imports FO4_Base_Library
 Imports NiflySharp
 Imports NiflySharp.Blocks
 Imports OpenTK.Mathematics

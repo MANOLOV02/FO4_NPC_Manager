@@ -22,8 +22,14 @@ Public Module FaceBonePoseBuilder
         If npcData Is Nothing OrElse regionsFile Is Nothing Then Return Nothing
         If npcData.FaceMorphs Is Nothing OrElse npcData.FaceMorphs.Count = 0 Then Return Nothing
 
-        Dim result As New Dictionary(Of String, Transform_Class)(StringComparer.OrdinalIgnoreCase)
-        Dim boneScales As New Dictionary(Of String, System.Numerics.Vector3)(StringComparer.OrdinalIgnoreCase)
+        ' CK accumulates the raw 9-float FMRS deltas ADDITIVELY across regions (decompiled
+        ' FUN_140419a30 = pure dst[i]+=src[i], per region in FUN_140a8f530), then builds ONE
+        ' transform at the end (FUN_140a96f20: Euler→matrix from the SUMMED rotation, summed
+        ' translation, summed scale). Do NOT compose rotation matrices or multiply scale per
+        ' region — that diverges (non-commutative / product vs sum) for multi-region bones.
+        Dim accPos As New Dictionary(Of String, System.Numerics.Vector3)(StringComparer.OrdinalIgnoreCase)
+        Dim accRot As New Dictionary(Of String, System.Numerics.Vector3)(StringComparer.OrdinalIgnoreCase)
+        Dim accScale As New Dictionary(Of String, System.Numerics.Vector3)(StringComparer.OrdinalIgnoreCase)
         Dim fmin = If(npcData.FacialMorphIntensity <= 0.0F, 1.0F, npcData.FacialMorphIntensity)
 
         ' Log RACE region count vs NPC FaceMorphs count, and which indices the NPC references
@@ -87,41 +93,21 @@ Public Module FaceBonePoseBuilder
                     LerpFmrs(sc, region.DefaultScale.Y, boneEntry.MinimaScale.Y, boneEntry.MaximaScale.Y) * fmin,
                     LerpFmrs(sc, region.DefaultScale.Z, boneEntry.MinimaScale.Z, boneEntry.MaximaScale.Z) * fmin)
 
-                ' Negate all three rotation angles to undo EulerXYZToMatrix33's J·R·J permutation
-                ' (FMRS JSON uses standard convention; the function expects pre-inverted angles).
-                ' Confirmado 2026-04-18 matemática + empírica en X/Y/Z.
-                Dim rotation = Transform_Class.EulerXYZToMatrix33(-deltaRot.X, -deltaRot.Y, -deltaRot.Z)
-                Dim xform As New Transform_Class With {
-                    .Rotation = rotation,
-                    .Translation = deltaPos,
-                    .Scale = 1.0F
-                }
-                Dim boneScaleVec = New System.Numerics.Vector3(
-                    1.0F + deltaScale.X, 1.0F + deltaScale.Y, 1.0F + deltaScale.Z)
+                ' Accumulate the raw 9-float deltas ADDITIVELY across regions (CK FUN_140419a30:
+                ' dst[i] += src[i]). No matrix build, no ComposeTransforms, no scale product here —
+                ' the single transform is built once after the loop from the summed deltas.
+                Dim existingPos As System.Numerics.Vector3
+                accPos(targetBoneName) = If(accPos.TryGetValue(targetBoneName, existingPos), existingPos, System.Numerics.Vector3.Zero) + deltaPos
 
-                ' Accumulate non-uniform scale per bone (multiply across regions)
+                Dim existingRot As System.Numerics.Vector3
+                accRot(targetBoneName) = If(accRot.TryGetValue(targetBoneName, existingRot), existingRot, System.Numerics.Vector3.Zero) + deltaRot
+
                 Dim existingScale As System.Numerics.Vector3
-                If boneScales.TryGetValue(targetBoneName, existingScale) Then
-                    boneScales(targetBoneName) = existingScale * boneScaleVec
-                Else
-                    boneScales(targetBoneName) = boneScaleVec
-                End If
-
-                ' Compose rotation+translation across regions
-                Dim existing As Transform_Class = Nothing
-                If result.TryGetValue(targetBoneName, existing) AndAlso existing IsNot Nothing Then
-                    result(targetBoneName) = existing.ComposeTransforms(xform)
-                Else
-                    result(targetBoneName) = xform
-                End If
-
-                Dim isAnyNonZero As Boolean = (Math.Abs(deltaPos.X) > 0.0001F OrElse Math.Abs(deltaPos.Y) > 0.0001F OrElse Math.Abs(deltaPos.Z) > 0.0001F _
-                                            OrElse Math.Abs(deltaRot.X) > 0.0001F OrElse Math.Abs(deltaRot.Y) > 0.0001F OrElse Math.Abs(deltaRot.Z) > 0.0001F _
-                                            OrElse Math.Abs(deltaScale.X) > 0.0001F OrElse Math.Abs(deltaScale.Y) > 0.0001F OrElse Math.Abs(deltaScale.Z) > 0.0001F)
+                accScale(targetBoneName) = If(accScale.TryGetValue(targetBoneName, existingScale), existingScale, System.Numerics.Vector3.Zero) + deltaScale
             Next
         Next
 
-        If result.Count = 0 Then Return Nothing
+        If accPos.Count = 0 Then Return Nothing
 
         ' Convert the Transform_Class deltas into a Poses_class with PoseTransformData entries.
         Dim pose As New Poses_class With {
@@ -129,24 +115,28 @@ Public Module FaceBonePoseBuilder
             .Source = Poses_class.Pose_Source_Enum.WardrobeManager,
             .Transforms = New Dictionary(Of String, PoseTransformData)(StringComparer.OrdinalIgnoreCase)
         }
-        For Each kv In result
-            Dim xform = kv.Value
-            Dim rotVec = Transform_Class.Matrix33ToBSRotation(xform.Rotation)
-            Dim sc As System.Numerics.Vector3
-            If Not boneScales.TryGetValue(kv.Key, sc) Then
-                sc = New System.Numerics.Vector3(1.0F, 1.0F, 1.0F)
-            End If
+        For Each kv In accPos
+            Dim sumPos = kv.Value
+            Dim sumRot = accRot(kv.Key)
+            Dim sumScale = accScale(kv.Key)
+
+            ' Build ONE transform from the SUMMED deltas (CK FUN_140a96f20). Negate all three
+            ' rotation angles to undo EulerXYZToMatrix33's J·R·J permutation (FMRS JSON uses
+            ' standard convention; the function expects pre-inverted angles). Same negation as
+            ' before — only the accumulation moved from compose/product to sum.
+            Dim rotation = Transform_Class.EulerXYZToMatrix33(-sumRot.X, -sumRot.Y, -sumRot.Z)
+            Dim rotVec = Transform_Class.Matrix33ToBSRotation(rotation)
             pose.Transforms(kv.Key) = New PoseTransformData With {
-                .X = xform.Translation.X,
-                .Y = xform.Translation.Y,
-                .Z = xform.Translation.Z,
+                .X = sumPos.X,
+                .Y = sumPos.Y,
+                .Z = sumPos.Z,
                 .Yaw = rotVec.X,
                 .Pitch = rotVec.Y,
                 .Roll = rotVec.Z,
                 .Scale = 1.0F,
-                .ScaleX = sc.X,
-                .ScaleY = sc.Y,
-                .ScaleZ = sc.Z
+                .ScaleX = 1.0F + sumScale.X,
+                .ScaleY = 1.0F + sumScale.Y,
+                .ScaleZ = 1.0F + sumScale.Z
             }
         Next
 
