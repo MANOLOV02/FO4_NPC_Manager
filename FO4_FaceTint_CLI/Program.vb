@@ -35,6 +35,7 @@ Module Program
         Public Info As Boolean = False
         Public Tints As Boolean = False
         Public TtedScan As Boolean = False
+        Public ScanDiff As Boolean = False      ' --scandiff: NPCs donde el blend-op del app difiere del CK (color-match LAST-wins)
         Public RaceAnim As Boolean = False      ' --raceanim: dump del behavior resuelto por raza (project+subgraphs+SRAC)
         Public MountValidate As Boolean = False ' --mountvalidate: valida orden mount/pose con datos reales
         Public FindHkx As String = ""           ' --findhkx <substr>: lista .hkx del load order que matchean + face-bones
@@ -47,6 +48,8 @@ Module Program
         Public HkxBone As String = ""             ' --hkxbone "<hkxPath>|<boneSubstr>": local+world del hueso en el hkaSkeleton (rig canónico)
         Public ClipBase As String = ""            ' --clipbase "<rigHkx>|<clipHkx>[|boneFilter[|chunkNif;...]]": frame-0 del clip vs rig refPose vs assembled (skin binds del chunk)
         Public FindFile As String = ""            ' --findfile <substr>: lista keys del FilesDictionary que matchean (cualquier extensión)
+        Public Provenance As Boolean = False      ' --provenance: SourcePluginName de NPC/RACE/CLFMs del dirt (chequeo vanilla-vs-vanilla)
+        Public DumpRef As String = ""             ' --dumpref "<filesDictKey>|<outFile>": vuelca GetBytes(key) crudo a outFile (ref vanilla del BA2)
         Public NifDump As String = ""             ' --nifdump <nif>: árbol de nodos (local+world) + skin binds (inv(bind)) por shape
         Public CatProfile As Boolean = False      ' --catprofile [--edid X]: perfila ejes de categoría (folder ground-truth, Perspective, STKD, BlendHint) por raza
         Public RankBy As String = "n"   ' canal por el que rankea el sweep: n (default) / d / s
@@ -126,7 +129,7 @@ Module Program
 
         ' --- 3. Lista de trabajo (esp, edid) ---
         Dim work = BuildWorkList(opt)
-        If work.Count = 0 AndAlso Not opt.TtedScan AndAlso Not opt.RaceAnim AndAlso Not opt.MountValidate AndAlso opt.FindHkx = "" AndAlso opt.ChunkCompare = "" AndAlso opt.DumpBehavior = "" AndAlso Not opt.HkxCoverage AndAlso opt.KwType = "" AndAlso Not opt.StateMap AndAlso Not opt.ClipResolve AndAlso opt.HkxBone = "" AndAlso opt.ClipBase = "" AndAlso opt.FindFile = "" AndAlso opt.NifDump = "" AndAlso Not opt.CatProfile Then
+        If work.Count = 0 AndAlso Not opt.TtedScan AndAlso Not opt.ScanDiff AndAlso Not opt.RaceAnim AndAlso Not opt.MountValidate AndAlso opt.FindHkx = "" AndAlso opt.ChunkCompare = "" AndAlso opt.DumpBehavior = "" AndAlso Not opt.HkxCoverage AndAlso opt.KwType = "" AndAlso Not opt.StateMap AndAlso Not opt.ClipResolve AndAlso opt.HkxBone = "" AndAlso opt.ClipBase = "" AndAlso opt.FindFile = "" AndAlso opt.NifDump = "" AndAlso Not opt.CatProfile AndAlso Not opt.Provenance AndAlso opt.DumpRef = "" Then
             Console.Error.WriteLine("No hay NPCs para procesar (revisa --edid / --list).") : Environment.ExitCode = 1 : Return
         End If
 
@@ -173,9 +176,30 @@ Module Program
             Return
         End If
 
+        ' --- PROVENANCE: SourcePluginName de NPC/RACE y de los CLFM del slot Dirt (chequeo vanilla-vs-vanilla).
+        If opt.Provenance Then
+            For Each w In work
+                ProvenanceNpc(pm, w.Esp, w.Edid)
+            Next
+            Return
+        End If
+
+        ' --- DUMPREF: vuelca los bytes crudos de un key del FilesDictionary (DDS de ref vanilla del BA2) a un archivo.
+        '     Reusa exactamente el mismo path de lectura que el bake (incluido el DirectXTexWrapper para DX10 BA2).
+        If opt.DumpRef <> "" Then
+            DumpRefRun(opt.DumpRef)
+            Return
+        End If
+
         ' --- 6''''. TTEDSCAN: recorre TODAS las RACE, junta los TTED, reporta distintos + no-enteros ---
         If opt.TtedScan Then
             TtedScan(pm)
+            Return
+        End If
+
+        ' --- SCANDIFF: NPCs donde el blend-op resuelto por el APP difiere del CK (color-match LAST-wins).
+        If opt.ScanDiff Then
+            ScanDiff(pm)
             Return
         End If
 
@@ -721,6 +745,72 @@ Module Program
         Next
     End Sub
 
+    ''' <summary>DIAGNOSTICO (--dumpref "&lt;key&gt;|&lt;outFile&gt;"): vuelca GetBytes(key) crudo a outFile. El key es
+    ''' una ruta del FilesDictionary (ej. textures\actors\character\facecustomization\fallout4.esm\000226DC_d.dds);
+    ''' el archivo escrito es el DDS vanilla TAL CUAL sale del BA2/loose (mismo path de lectura que el bake).</summary>
+    Private Sub DumpRefRun(spec As String)
+        Dim parts = spec.Split({"|"c}, 2)
+        If parts.Length <> 2 Then
+            Console.Error.WriteLine("[dumpref] formato: --dumpref ""<filesDictKey>|<outFile>""") : Environment.ExitCode = 1 : Return
+        End If
+        Dim key = parts(0).Trim()
+        Dim outFile = parts(1).Trim()
+        Dim bytes = FilesDictionary_class.GetBytes(key)
+        If bytes Is Nothing OrElse bytes.Length = 0 Then
+            Console.Error.WriteLine($"[dumpref] key vacio o no encontrado: '{key}'") : Environment.ExitCode = 1 : Return
+        End If
+        Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(outFile)))
+        File.WriteAllBytes(outFile, bytes)
+        Console.WriteLine($"[dumpref] {key} -> {outFile} ({bytes.Length} bytes)")
+    End Sub
+
+    ''' <summary>DIAGNOSTICO (--provenance): imprime SourcePluginName del record GANADOR para NPC + RACE +
+    ''' cada CLFM referenciado por las opciones del slot Dirt (slot 20) de la raza. Marca como [VANILLA] los
+    ''' que vienen de Fallout4.esm o DLC oficial; [MOD] cualquier otro. Para garantizar la comparacion
+    ''' vanilla-vs-vanilla: si algun record relevante esta overrideado por un mod, NO bakear.</summary>
+    Private ReadOnly VanillaPlugins As New HashSet(Of String)(StringComparer.OrdinalIgnoreCase) From {
+        "Fallout4.esm", "DLCRobot.esm", "DLCworkshop01.esm", "DLCworkshop02.esm", "DLCworkshop03.esm",
+        "DLCCoast.esm", "DLCNukaWorld.esm", "DLCUltraHighResolution.esm"}
+
+    Private Function VanillaTag(plugin As String) As String
+        Return If(VanillaPlugins.Contains(plugin), "[VANILLA]", "[MOD!!]")
+    End Function
+
+    Private Sub ProvenanceNpc(pm As PluginManager, espName As String, edid As String)
+        Dim npcFormID = ResolveEdid(pm, espName, edid)
+        If npcFormID = 0UI Then Console.WriteLine($"[prov] {edid}: no resuelto en {espName}") : Return
+        Dim npcRec = pm.GetRecord(npcFormID)
+        Dim npcSrc = npcRec.SourcePluginName
+        Dim npcData = RecordParsers.ParseNPC(npcRec, npcSrc, pm)
+        Dim raceRec = pm.GetRecord(npcData.RaceFormID)
+        Dim raceSrc = If(raceRec IsNot Nothing, raceRec.SourcePluginName, "(none)")
+        Console.WriteLine($"=== PROVENANCE {edid} 0x{npcFormID:X8} ===")
+        Console.WriteLine($"  NPC_  0x{npcFormID:X8}  src={npcSrc} {VanillaTag(npcSrc)}")
+        Console.WriteLine($"  RACE  0x{npcData.RaceFormID:X8}  src={raceSrc} {VanillaTag(raceSrc)}")
+        Dim race = RecordParsers.ParseRACE(raceRec, pm)
+        Dim isFemale = npcData.IsFemale
+        Dim groups = If(isFemale, race.FemaleTintTemplateGroups, race.MaleTintTemplateGroups)
+        Dim seenClfm As New HashSet(Of UInteger)()
+        Dim allVanilla As Boolean = VanillaPlugins.Contains(npcSrc) AndAlso VanillaPlugins.Contains(raceSrc)
+        If groups IsNot Nothing Then
+            For Each grp In groups
+                If grp.Options Is Nothing Then Continue For
+                For Each o In grp.Options
+                    If o.Slot <> 20US Then Continue For   ' Dirt
+                    If o.TemplateColors Is Nothing Then Continue For
+                    For Each tc In o.TemplateColors
+                        If tc.ColorFormID = 0UI OrElse Not seenClfm.Add(tc.ColorFormID) Then Continue For
+                        Dim crec = pm.GetRecord(tc.ColorFormID)
+                        Dim csrc = If(crec IsNot Nothing, crec.SourcePluginName, "(none)")
+                        If Not VanillaPlugins.Contains(csrc) Then allVanilla = False
+                        Console.WriteLine($"  CLFM(Dirt) 0x{tc.ColorFormID:X8}  src={csrc} {VanillaTag(csrc)}")
+                    Next
+                Next
+            Next
+        End If
+        Console.WriteLine($"  => {If(allVanilla, "TODOS VANILLA: comparacion vanilla-vs-vanilla VALIDA", "HAY OVERRIDE DE MOD: NO BAKEAR (comparacion contaminada)")}")
+    End Sub
+
     ''' <summary>DIAGNOSTICO (--ttedscan): recorre TODAS las RACE, junta el TTED Default de cada opcion de
     ''' tint (male+female), reporta el conjunto de valores distintos (histograma) y cualquier NO-entero. Si
     ''' TODOS son enteros (0,1,2,3...) => TTED es probablemente un INDICE (no una intensidad float). Test de
@@ -773,6 +863,68 @@ Module Program
         Next
         Console.WriteLine($"-- TextureSet/Mask (tc=0) CON TTED ({nonPaletteTted.Count}) --")
         For Each s In nonPaletteTted : Console.WriteLine("  " & s) : Next
+    End Sub
+
+    ''' <summary>DIAGNOSTICO (--scandiff): recorre TODOS los NPC_ y reporta los que tienen alguna Palette
+    ''' layer VISIBLE (disc=1, value>0) donde el BlendOp resuelto por el APP
+    ''' (FaceTintPaletteResolver.ResolvePaletteLayerEffective, index/alpha-closest) DIFIERE del BlendOp
+    ''' del CK (ResolveBlendOpCk: color-match exacto sobre TemplateColors, LAST gana, early-out por alpha
+    ''' exacto). Net SkinTone: ambos motores fuerzan 0->3 en slot 12. Diagnostico puro, no escribe nada.</summary>
+    Private Sub ScanDiff(pm As PluginManager)
+        Console.WriteLine("=== SCANDIFF: app (index/alpha-closest) vs CK (color-match LAST-wins) por capa Palette visible ===")
+        Dim scanned As Integer = 0      ' NPCs con FaceTintLayers (Palette visible considerada)
+        Dim withTints As Integer = 0    ' NPCs con al menos 1 FaceTintLayer (cualquiera)
+        Dim diffLines As Integer = 0
+        Dim diffNpcs As Integer = 0
+        ' Agrupado por (slot, app, ck) para el resumen del patron.
+        Dim groupCounts As New Dictionary(Of String, Integer)(StringComparer.Ordinal)
+
+        For Each kv As KeyValuePair(Of UInteger, PluginRecord) In pm.AllRecords
+            Dim rec = kv.Value
+            If rec Is Nothing OrElse rec.Header.Signature <> "NPC_" Then Continue For
+            Try
+                Dim npc = RecordParsers.ParseNPC(rec, rec.SourcePluginName, pm)
+                If npc Is Nothing OrElse npc.FaceTintLayers Is Nothing OrElse npc.FaceTintLayers.Count = 0 Then Continue For
+                withTints += 1
+                Dim raceRec = pm.GetRecord(npc.RaceFormID)
+                If raceRec Is Nothing OrElse raceRec.Header.Signature <> "RACE" Then Continue For
+                Dim race = RecordParsers.ParseRACE(raceRec, pm)
+                If race Is Nothing Then Continue For
+                scanned += 1
+                Dim isFemale = npc.IsFemale
+                Dim npcHadDiff As Boolean = False
+
+                For Each tl In npc.FaceTintLayers
+                    If tl Is Nothing OrElse tl.Discriminator <> 1US OrElse tl.Value <= 0 Then Continue For
+                    Dim opt = race.FindTintOption(tl.Index, isFemale)
+                    If opt Is Nothing Then Continue For
+                    Dim appRes = FaceTintPaletteResolver.ResolvePaletteLayerEffective(tl, opt, pm)
+                    Dim appBop As UInteger = appRes.BlendOp
+                    Dim ckBop As UInteger = FaceTintPaletteResolver.ResolveBlendOpCk(opt, appRes.Color, tl.Value, pm)
+                    ' Net SkinTone: ambos motores fuerzan 0 -> 3 en slot 12.
+                    If opt.Slot = CUShort(TintSlot.SkinTone) AndAlso ckBop = 0UI Then ckBop = 3UI
+                    If appBop <> ckBop Then
+                        Dim c = appRes.Color
+                        Console.WriteLine($"DIFF 0x{kv.Key:X8} {rec.EditorID} [{rec.SourcePluginName}] slot={opt.Slot}({SlotName(opt.Slot)}) idx={tl.Index} val={tl.Value} tplColIdx={tl.TemplateColorIndex} color={c.R},{c.G},{c.B} app={appBop}/{BlendName(appBop)} ck={ckBop}/{BlendName(ckBop)}")
+                        diffLines += 1
+                        npcHadDiff = True
+                        Dim gkey = $"slot={opt.Slot}({SlotName(opt.Slot)}) app={appBop}/{BlendName(appBop)} ck={ckBop}/{BlendName(ckBop)}"
+                        groupCounts(gkey) = If(groupCounts.ContainsKey(gkey), groupCounts(gkey) + 1, 1)
+                    End If
+                Next
+                If npcHadDiff Then diffNpcs += 1
+            Catch ex As Exception
+                Console.Error.WriteLine($"[scandiff] 0x{kv.Key:X8} {rec.EditorID}: {ex.GetType().Name}: {ex.Message}")
+            End Try
+        Next
+
+        Console.WriteLine($"=== SCANDIFF resumen: {withTints} NPCs con FaceTintLayers, {scanned} con RACE resuelta (scaneados), {diffLines} DIFF lines en {diffNpcs} NPCs ===")
+        If groupCounts.Count > 0 Then
+            Console.WriteLine("-- por (slot, app->ck) --")
+            For Each g In groupCounts.OrderByDescending(Function(x) x.Value)
+                Console.WriteLine($"  {g.Key} : {g.Value}")
+            Next
+        End If
     End Sub
 
     ''' <summary>DIAGNOSTICO (--info): vuelca la cadena de resolucion de base D/N/S de la cara para UN NPC
@@ -3468,6 +3620,7 @@ Module Program
                 Case "--info" : a.Info = True : i += 1
                 Case "--tints" : a.Tints = True : i += 1
                 Case "--ttedscan" : a.TtedScan = True : i += 1
+                Case "--scandiff" : a.ScanDiff = True : i += 1
                 Case "--raceanim" : a.RaceAnim = True : i += 1
                 Case "--mountvalidate" : a.MountValidate = True : i += 1
                 Case "--findhkx" : a.FindHkx = v : i += 2
@@ -3480,6 +3633,8 @@ Module Program
                 Case "--hkxbone" : a.HkxBone = v : i += 2
                 Case "--clipbase" : a.ClipBase = v : i += 2
                 Case "--findfile" : a.FindFile = v : i += 2
+                Case "--provenance" : a.Provenance = True : i += 1
+                Case "--dumpref" : a.DumpRef = v : i += 2
                 Case "--nifdump" : a.NifDump = v : i += 2
                 Case "--catprofile" : a.CatProfile = True : i += 1
                 Case "-h", "--help" : PrintUsage() : Return Nothing
@@ -3487,7 +3642,7 @@ Module Program
                     Console.Error.WriteLine($"Arg desconocido: {args(i)}") : PrintUsage() : Return Nothing
             End Select
         End While
-        If a.ListPath = "" AndAlso (a.Esp = "" OrElse a.Edid = "") AndAlso Not a.TtedScan AndAlso Not a.RaceAnim AndAlso Not a.MountValidate AndAlso a.FindHkx = "" AndAlso a.ChunkCompare = "" AndAlso a.DumpBehavior = "" AndAlso Not a.HkxCoverage AndAlso a.KwType = "" AndAlso Not a.StateMap AndAlso Not a.ClipResolve AndAlso a.HkxBone = "" AndAlso a.ClipBase = "" AndAlso a.FindFile = "" AndAlso a.NifDump = "" AndAlso Not a.CatProfile Then
+        If a.ListPath = "" AndAlso (a.Esp = "" OrElse a.Edid = "") AndAlso Not a.TtedScan AndAlso Not a.ScanDiff AndAlso Not a.RaceAnim AndAlso Not a.MountValidate AndAlso a.FindHkx = "" AndAlso a.ChunkCompare = "" AndAlso a.DumpBehavior = "" AndAlso Not a.HkxCoverage AndAlso a.KwType = "" AndAlso Not a.StateMap AndAlso Not a.ClipResolve AndAlso a.HkxBone = "" AndAlso a.ClipBase = "" AndAlso a.FindFile = "" AndAlso a.NifDump = "" AndAlso Not a.CatProfile AndAlso a.DumpRef = "" Then
             Console.Error.WriteLine("Faltan --esp y --edid (o usa --list).") : PrintUsage() : Return Nothing
         End If
         Return a

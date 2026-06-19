@@ -809,15 +809,14 @@ Public Class MainForm
         _previewControl.InvalidateRender()
     End Sub
 
-    ''' <summary>ARMA Bone Scale Delta application model. The xEdit field is named "Bone Scale
-    ''' <summary>ARMA Sculpt Data application formula. HARDCODED to H3 multiplicative
-    ''' (s = race_s · (1 + arma_d)) on 2026-04-27 after consolidating the slot-based per-shape
-    ''' application rule. **A REVISAR** — la fórmula matemática (cómo se combina arma_d con race_s)
-    ''' NO está confirmada experimentalmente contra CK ground truth. Es la candidata más
-    ''' conceptualmente limpia (cumple las 3 invariantes naturales: identity outfit, identity race,
-    ''' suma de volumen donde delta>0). Pero el test diferencial CK que confirme esta fórmula
-    ''' (clon ARMA con bone modificado a valor conocido) está pendiente.</summary>
-    ''' <summary>Toggle body-weight pose (MWGT × BSMS + MRSV + ARMA sculpt H3). Triggers granular
+    ''' <summary>ARMA Sculpt Data (Bone Scale Delta, xEdit "Bone Scale Delta") application formula.
+    ''' ADITIVO en los 3 ejes desde 2026-06-19: s = race_s + arma_d (componente a componente, X incluido).
+    ''' Base RE del builder del engine FUN_140652230 (combina aditivamente weight_base + sculpt_delta);
+    ''' X se aplica (no se descarta) porque el render skin usa matrices de nodo (X-capaz) y la data de
+    ''' Fallout4.esm trae DeltaX deliberado en antebrazos (BoS X=+0.20; Raider X=-0.19). Antes era H3
+    ''' multiplicativo (s = race_s·(1+arma_d), hardcoded 2026-04-27). ⚠ El test diferencial CK que
+    ''' confirme aditivo-vs-multiplicativo a nivel byte sigue PENDIENTE (consumidor del +0x50 GPU/oculto).</summary>
+    ''' <summary>Toggle body-weight pose (MWGT × BSMS + MRSV + ARMA sculpt aditivo). Triggers granular
     ''' MarkDirty(Pose) — no full reload.</summary>
     Private Sub CheckBoxApplyBodyWeight_CheckedChanged(sender As Object, e As EventArgs) Handles CheckBoxApplyBodyWeight.CheckedChanged
         If _renderHost Is Nothing Then Return
@@ -7816,7 +7815,7 @@ Public Class MainForm
             End If
 
             ' --- Clamp model (diagnostic): clamp the TOTAL weight+MRSV delta to [Min,Max] (Y/Z)
-            ' AFTER MRSV, BEFORE ARMA. ARMA sculpt (Layer 4) then multiplies the clamped value.
+            ' AFTER MRSV, BEFORE ARMA. ARMA sculpt (Layer 4) then ADDS its delta to the clamped value.
             If (clampModel = BodyWeightClampModel.ClampFinal OrElse clampModel = BodyWeightClampModel.ClampBoth) _
                AndAlso bone IsNot Nothing AndAlso bone.HasRangeModifier Then
                 sy = Math.Min(Math.Max(sy, 1.0F + bone.MinY), 1.0F + bone.MaxY)
@@ -7824,13 +7823,19 @@ Public Class MainForm
             End If
             Dim sxM As Single = sx, syM As Single = sy, szM As Single = sz   ' snapshot post-MRSV (= input a ARMA)
 
-            ' --- Layer 4: ARMA Bone Scale Delta — H3 multiplicative HARDCODED (A REVISAR) ---
-            ' Fórmula: s = race_s · (1 + arma_d). Aplicada componente a componente.
-            ' Conceptualmente la más limpia (cumple las 3 invariantes naturales) pero NO
-            ' confirmada experimentalmente vs CK ground truth. Closure plan P0.
-            ' 17 fórmulas alternativas + 2 swap conventions + worldFrame opt-in se probaron
-            ' 2026-04-29 vs Gunner — ninguna resolvió el clip motivador, que terminó siendo
-            ' por OMODs no renderizados. Dropdown experimental eliminado tras esa sesión.
+            ' --- Layer 4: ARMA Bone Scale Delta — ADITIVO en los 3 ejes, X incluido (2026-06-19) ---
+            ' Fórmula: s = race_s + arma_d (componente a componente; X NO se resetea).
+            ' Base RE (Fallout4.exe, build abril-2026, el que usa la app): el builder del
+            ' bone-scale-array [BSSkin::Instance+0x50] = FUN_140652230 combina ADITIVAMENTE
+            ' (out = weight_base + sculpt_delta por eje). En ESE array out0/X se resetea a 1.0
+            ' cuando hay sculpt — PERO el render skin (walker FUN_14040a5d0) NO lee +0x50:
+            ' cosecha node + node+0x70 (world transforms), que son X-capaces. El consumidor
+            ' real del +0x50 no se localizó estáticamente (probable GPU skin-matrix prep).
+            ' Como el render va por matrices de nodo (X-capaz) y la data de Fallout4.esm trae
+            ' DeltaX deliberado en antebrazos (BoS underarmor X=+0.20 simétrico; Raider X=-0.19
+            ' solo brazo derecho), se aplica DeltaX aditivo en vez de descartarlo.
+            ' ⚠ Aditivo-vs-multiplicativo NO byte-probado vs CK ground-truth (consumidor +0x50
+            ' GPU/oculto); pendiente test empírico in-game de un outfit con DeltaX (0x134293, 0x0AF0E1).
             Dim armaDX As Single = 0.0F, armaDY As Single = 0.0F, armaDZ As Single = 0.0F
             If armaDeltas IsNot Nothing Then
                 Dim d As System.Numerics.Vector3
@@ -7838,9 +7843,9 @@ Public Class MainForm
                     armaDX = d.X
                     armaDY = d.Y
                     armaDZ = d.Z
-                    sx = sxM * (1.0F + armaDX)
-                    sy = syM * (1.0F + armaDY)
-                    sz = szM * (1.0F + armaDZ)
+                    sx = sxM + armaDX
+                    sy = syM + armaDY
+                    sz = szM + armaDZ
                 End If
             End If
             Dim sxA As Single = sx, syA As Single = sy, szA As Single = sz   ' snapshot post-ARMA (final)

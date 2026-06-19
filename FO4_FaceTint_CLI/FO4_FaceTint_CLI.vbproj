@@ -24,4 +24,18 @@
     <ProjectReference Include="..\..\FO4_Base_Library\FO4_Base_Library.vbproj" />
   </ItemGroup>
 
+  <!-- The native DirectXTexWrapper is a C++ .vcxproj referenced transitively by the libraries.
+       When THIS exe is built directly via `MSBuild FO4_FaceTint_CLI.vbproj` (no .sln config map),
+       MSBuild builds the vcxproj at its default C++ platform = Win32 (x86) and copies that x86 DLL
+       into our x64 output. The BA2 DX10 texture extractor (Loader.EncodeDDSHeader) then throws
+       BadImageFormatException in this x64 process and every DX10 texture read returns 0 bytes.
+       Overwrite the output with the matching x64 build so face/base textures decode. -->
+  <Target Name="CopyX64DirectXTexWrapper" AfterTargets="Build;Publish" Condition="'$(PlatformTarget)'=='x64'">
+    <Copy SourceFiles="..\..\..\DirectXTextWrapper\build\x64\$(Configuration)\DirectXTexWrapper.dll"
+          DestinationFolder="$(OutDir)"
+          OverwriteReadOnlyFiles="true"
+          SkipUnchangedFiles="false"
+          Condition="Exists('..\..\..\DirectXTextWrapper\build\x64\$(Configuration)\DirectXTexWrapper.dll')" />
+  </Target>
+
 </Project>
