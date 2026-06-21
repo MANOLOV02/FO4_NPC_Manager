@@ -179,7 +179,28 @@ Public Class CharGenOptionsForm
         LoadBucket(s.Diffuse, ComboDWork, ComboDComp, ComboDSrc, ComboDOut, ComboDMask, ComboDFw, ComboDSoft)
         LoadBucket(s.NormalSpecular, ComboNWork, ComboNComp, ComboNSrc, ComboNOut, ComboNMask, ComboNFw, ComboNSoft)
         LoadBucket(s.Swap, ComboSWork, ComboSComp, ComboSSrc, ComboSOut, ComboSMask, ComboSFw, ComboSSoft)
+        LoadDWsByOp(s.DiffuseWorkingSpaceByBlend)
         CheckDSeedG22.Checked = s.SeedDiffuseG22
+    End Sub
+
+    ''' <summary>Carga los 5 working-space POR BLEND OP del diffuse (parametrizable, engine-faithful por
+    ''' default: SoftLight=G22, resto=Linear). Null-safe (config viejo sin la sección -&gt; defaults).</summary>
+    Private Sub LoadDWsByOp(w As FaceTintConvention.FaceTintBlendWorkingSpaces)
+        If w Is Nothing Then w = New FaceTintConvention.FaceTintBlendWorkingSpaces()
+        ComboDWsReplace.SelectedIndex = CInt(w.Replace)
+        ComboDWsMultiply.SelectedIndex = CInt(w.Multiply)
+        ComboDWsOverlay.SelectedIndex = CInt(w.Overlay)
+        ComboDWsSoftLight.SelectedIndex = CInt(w.SoftLight)
+        ComboDWsHardLight.SelectedIndex = CInt(w.HardLight)
+    End Sub
+
+    ''' <summary>Escribe los 5 working-space por blend op del diffuse (índice del combo = valor del enum).</summary>
+    Private Sub SaveDWsByOp(w As FaceTintConvention.FaceTintBlendWorkingSpaces)
+        w.Replace = CType(ComboDWsReplace.SelectedIndex, FaceTintConvention.FaceTintWorkingSpace)
+        w.Multiply = CType(ComboDWsMultiply.SelectedIndex, FaceTintConvention.FaceTintWorkingSpace)
+        w.Overlay = CType(ComboDWsOverlay.SelectedIndex, FaceTintConvention.FaceTintWorkingSpace)
+        w.SoftLight = CType(ComboDWsSoftLight.SelectedIndex, FaceTintConvention.FaceTintWorkingSpace)
+        w.HardLight = CType(ComboDWsHardLight.SelectedIndex, FaceTintConvention.FaceTintWorkingSpace)
     End Sub
 
     ''' <summary>Vuelca un bucket concreto a sus 7 combos (índice del combo = valor del enum, 0-based).</summary>
@@ -326,6 +347,8 @@ Public Class CharGenOptionsForm
         SaveBucket(s.Diffuse, ComboDWork, ComboDComp, ComboDSrc, ComboDOut, ComboDMask, ComboDFw, ComboDSoft)
         SaveBucket(s.NormalSpecular, ComboNWork, ComboNComp, ComboNSrc, ComboNOut, ComboNMask, ComboNFw, ComboNSoft)
         SaveBucket(s.Swap, ComboSWork, ComboSComp, ComboSSrc, ComboSOut, ComboSMask, ComboSFw, ComboSSoft)
+        If s.DiffuseWorkingSpaceByBlend Is Nothing Then s.DiffuseWorkingSpaceByBlend = New FaceTintConvention.FaceTintBlendWorkingSpaces()
+        SaveDWsByOp(s.DiffuseWorkingSpaceByBlend)
         s.SeedDiffuseG22 = CheckDSeedG22.Checked
 
         ' --- Tab "Tint Order": persistir reglas de orden + SkinTonePlacement. ---

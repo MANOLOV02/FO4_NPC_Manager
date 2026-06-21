@@ -115,7 +115,15 @@ Public Module FaceGenBuilder
             Return Logger.Enabled
         End Get
     End Property
-    Public Property WriteGPUSandboxOutput As Boolean = False
+    ''' <summary>Cuando True, el bake corre TAMBIÉN el pipeline GL y escribe el `_2b.dds` (salida GPU) al
+    ''' lado del `_2.dds` (CPU) para comparar GPU-vs-CPU. Atado a DebugMode (Logger.Enabled): en build Debug
+    ''' sale automático junto con el `_2`; en Release no corre GL (bake CPU-only). Toca GL ⇒ el caller
+    ''' (MainForm.BuildCharGenSingle) lo agenda SYNC en el hilo UI (contexto GL).</summary>
+    Public ReadOnly Property WriteGPUSandboxOutput As Boolean
+        Get
+            Return Logger.Enabled
+        End Get
+    End Property
     ''' <summary>Tilde "Generate TGA" del diálogo CharGen Options (persistido en Config). Cuando está ON,
     ''' escribe un TGA UNCOMPRESSED al lado de cada .dds (CPU y, si corrió, GPU) — lossless aunque el .dds
     ''' sea BCn. ReadOnly: lo maneja el setting, no un setter externo.</summary>
@@ -1461,9 +1469,11 @@ Public Module FaceGenBuilder
 
             Dim uploaded As Dictionary(Of String, PreviewModel.Texture_Loaded_Class) = Nothing
             Try
+                ' srgb=False para TODAS: la base del bake se carga CRUDA (el seed hace srgbToLin, base raw =
+                ' baseDiffuseIsLinearOnGpu=False); el decode lo hace el compositor por convención, no el SRV.
                 uploaded = DirectXDDSLoader.Load_And_GenerateOpenGLTextures_Memory(
                     uploadPaths.ToArray(), uploadBytes.ToArray(),
-                    useCompress:=True, forceOpenGL:=False)
+                    useCompress:=True, forceOpenGL:=False, Srgb:=New Boolean(uploadPaths.Count - 1) {})
             Catch ex As Exception
                 Logger.LogLazy(Function() $"[FACEBAKE] BAIL: GL upload threw {ex.GetType().Name}: {ex.Message} (npcFormID=0x{npcFormID:X8})")
                 Return

@@ -5358,8 +5358,9 @@ Public Class MainForm
         ' in FaceTintLayerBuilder when the NPC authors none) is composed as a normal tint layer
         ' in engine rank order INSIDE TryApplyFaceTints. Detail tints ranked after slot 12 (brow,
         ' scars) therefore compose on top of the toned skin instead of being washed out by a
-        ' separate full-face SoftLight post-pass. No face-side TryApplyFaceSkinSoftLight anymore.
-        ' Body SoftLight stays a separate pass (different meshes).
+        ' separate full-face SoftLight post-pass (there is NO face-side skin-tone post-pass — the
+        ' face skin tone lives entirely in the slot-12 composite, which mutates the face diffuse and
+        ' is why only the FACE needs the pristine snapshot for live edit).
         TryApplyFaceTints(state, host)
         ' Render-only: make body skin light like the face (subsurface scattering). Runs before
         ' the SoftLight pass and is NOT gated by its skin-tone guards — see method docs.
@@ -5644,17 +5645,22 @@ Public Class MainForm
             ' The compositor calls GL.DeleteTexture on the previous fresh ID; without these
             ' snapshots a live tint edit can't roll back to a clean baseline (every refresh
             ' would compose on top of the previous bake).
-            CapturePristineDiffusePixels(diffusePath, host)
+            CapturePristineDiffusePixels(diffusePath, diffuseEntry.IsSRGB, host)
             ' Normal/specular get pristine snapshots only when their entries are present in the
             ' dict (otherwise there's nothing to roll back from on those channels).
 
             ' Run the shared compositor pipeline (region-swap → tint compose). Single source
             ' of truth for both render and bake; this caller is responsible for the dict
             ' swap below (the bake instead reads back + encodes the result IDs).
+            ' baseDiffuseIsLinearOnGpu: el base se reusa de la textura del render (diffuseEntry). Si el render
+            ' la cargó como SRV sRGB (IsSRGB=True), el sample YA es lineal ⇒ el seed encodea-only y NO la
+            ' vuelve a srgbToLin (evita el doble-decode que introdujo el cambio de loader sRGB). El bake/CLI
+            ' cargan el base crudo y pasan False (default).
             Dim pipelineResult = FaceTintCompositor.ApplyFaceTintPipeline(
                 host.CompositorState, host.TintGpuCache,
                 diffuseEntry.Texture_ID, normalSrcId, specSrcId,
-                w, h, layerInputs, regionSwaps)
+                w, h, layerInputs, regionSwaps,
+                baseDiffuseIsLinearOnGpu:=diffuseEntry.IsSRGB)
 
             ' Swap fresh IDs into the dict and delete the IDs they replaced. IsFresh=False
             ' means the channel had no contribution and the input ID stayed in place — no
@@ -5666,9 +5672,13 @@ Public Class MainForm
                 composedAny = True
             End If
 
-            ' materialBase.SkinTint stays ENABLED. The render shader's `albedo *= tintColor`
-            ' uniform handles slot 12 SkinTone uniformly on both face and body meshes, using
-            ' the same resolved colour. Skin tone is not a FaceTint layer in our pipeline.
+            ' "Ya está": the slot-12 skin tone is now BAKED into this face mesh's diffuse (the
+            ' compositor processes it as the synthetic slot-12 layer). materialBase.SkinTint stays
+            ' ENABLED (structural NIF/BGSM flag, never mutated) — instead we flag THIS mesh so Render
+            ' makes the shader's own SkinTint soft-light a no-op for it. Without this the face gets the
+            ' tone twice (baked composite + runtime soft-light of materialBase.SkinTintColor). The FO4
+            ' body is untouched (SkinToneBaked stays False → engine-faithful runtime soft-light).
+            mesh.MeshData.Material.SkinToneBaked = True
         Next
 
         ' If we found a face mesh but its texture wasn't ready, signal "retry later".
@@ -5678,343 +5688,36 @@ Public Class MainForm
         Return True
     End Function
 
-    ''' <summary>Returns True iff the NPC has an active face tint layer at the race's SkinTone
-    ''' slot — i.e. the layer that the engine's <c>characterCreation-&gt;skinTint</c> pointer
-    ''' resolves to for this race. When such a layer exists, the face compositor processes it
-    ''' as a normal Palette layer (with its authored BlendOp, typically SoftLight) and produces
-    ''' <c>softlight(base, skinColor)</c> on the face diffuse, so the standalone QNAM SoftLight
-    ''' fallback must skip to avoid double-applying.
-    ''' <para>Detection: <c>opt.Slot == <see cref="TintSlot.SkinTone"/></c> with a non-trivial
-    ''' slider value. The Slot enum is not a hardcoded magic number — it is the schema-defined
-    ''' field name in <c>RACE.TintTemplateGroups[*].Options[*].Slot</c> (xEdit
-    ''' wbDefinitionsFO4.pas:3478). Bethesda's authoring convention places the skin-tone
-    ''' Palette template at this slot, and the engine's race-load resolves
-    ''' <c>characterCreation-&gt;skinTint</c> to that exact template. From an offline parser's
-    ''' perspective this slot is the canonical, structural anchor for the skin-tone layer —
-    ''' verified against F4SE/ScaleformNatives.cpp:860-922 (GetSkinColor uses
-    ''' <c>skinTemplate-&gt;templateIndex</c> to match NPC tint entries; that templateIndex
-    ''' originated from the slot-12 option at race-load).</para>
-    ''' <para>The TTEF 'Takes Skin Tone' flag (bit 2) is for SECONDARY layers (eye sockets,
-    ''' lips) that get tinted by the already-resolved <c>npc-&gt;skinColor</c> — it is NOT the
-    ''' dispatch for the base skin-tone layer itself, which is why AnneHargraves' 'Tono de piel'
-    ''' has flags=0x0000 yet is correctly identified by Slot=SkinTone.</para></summary>
-    Private Function NpcHasSkinToneLayer(npcData As NPC_Data, race As RACE_Data, isFemale As Boolean) As Boolean
-        If npcData Is Nothing OrElse race Is Nothing Then Return False
-        If npcData.FaceTintLayers Is Nothing OrElse npcData.FaceTintLayers.Count = 0 Then Return False
-        For Each tl In npcData.FaceTintLayers
-            Dim opt = race.FindTintOption(tl.Index, isFemale)
-            If opt Is Nothing Then Continue For
-            If opt.Slot <> CUShort(TintSlot.SkinTone) Then Continue For
-            If tl.Value <= 0 Then Continue For
-            Return True
-        Next
-        Return False
-    End Function
 
-    ''' <summary>Two-step skin tint — face FALLBACK side. Some NPCs (e.g. MayorMcDonough, Alice)
-    ''' do NOT declare a face tint layer in slot 12 SkinTone. For them the face compositor never
-    ''' runs the slot-12 Palette path, so the face misses the SoftLight that the body gets from
-    ''' TryApplyBodySkinSoftLight against QNAM. The result without this fallback: face = base *
-    ''' QNAM but body = softlight(base, qnam) * qnam — visibly mismatched.
-    '''
-    ''' This function applies the same one-shot SoftLight pre-pass to the face mesh diffuse
-    ''' (using QNAM as the colour, same as body) so both meshes end up doing
-    '''   final = softlight(base, qnam) * qnam
-    ''' even when slot 12 is absent. Symmetric with the body path.
-    '''
-    ''' MUST be called BEFORE TryApplyFaceTints (see ApplyFaceTintOverlay) so this synthetic
-    ''' slot-12 stand-in tones the BASE skin first and the detail tints (brow/scar/etc.) then
-    ''' composite ON TOP of it instead of being washed out. (Earlier this ran last, which
-    ''' whitened brow and scar layers -- the bug this ordering fixes.) Skipped silently when the
-    ''' NPC already has a slot 12 layer (compositor sequences it in-rank), when QNAM is absent,
-    ''' or when the face diffuse isn't in cache yet.
-    '''
-    ''' Pristine capture: this function calls CapturePristineDiffusePixels BEFORE the SoftLight
-    ''' upload so RefreshFaceTintLivePreview can roll back to the untinted byte image on every
-    ''' live edit. Without that capture the live refresh path has nothing to restore and each
-    ''' edit re-applies softlight on top of the previous baked result, visibly brightening the
-    ''' face on every slider tick (Alice repro). The capture happens on the very first call so
-    ''' first-render and live-edit produce the same number of softlight passes (exactly one).</summary>
-    Private Sub TryApplyFaceSkinSoftLight(state As NPCVisualState, Optional host As NpcRenderHost = Nothing)
-        If host Is Nothing Then host = _renderHost
-        If state Is Nothing Then Return
-        If Not state.HasTextureLighting Then
-            Logger.LogLazy(Function() $"[FACE-SOFTLIGHT] skip: HasTextureLighting=False")
-            Return
-        End If
-
-        Dim modelFormID = FaceAppearanceSourceFormID(state)
-        Dim npcData = ApplyPresetOverlayToNpcData(GetParsedNpc(modelFormID), state.RootNpcFormID)
-        Dim raceRec = _pluginManager.GetRecord(state.RaceFormID)
-        Dim race As RACE_Data = Nothing
-        If raceRec IsNot Nothing AndAlso raceRec.Header.Signature = "RACE" Then
-            race = ParseRaceCached(raceRec)
-        End If
-
-        ' Guard race-catalog: paralelo al de TryApplyBodySkinSoftLight. Si la raza NO declara
-        ' slot SkinTone en su TintTemplateGroups, no aplica fallback de face softlight tampoco —
-        ' synth/ghoul/robot no deberían recibirlo, sus shapes face no son SkinTint en sentido humano.
-        If race Is Nothing OrElse race.FindTintOptionsBySlot(TintSlot.SkinTone, state.IsFemale).Count = 0 Then
-            Logger.LogLazy(Function() $"[FACE-SOFTLIGHT] skip: race has no SkinTone tint catalog")
-            Return
-        End If
-
-        ' If the NPC has any active layer with TTEF 'Takes Skin Tone' (bit 2), the face compositor
-        ' already softlight-modulated the diffuse via that layer's Palette path. Don't double-apply.
-        If NpcHasSkinToneLayer(npcData, race, state.IsFemale) Then
-            Logger.LogLazy(Function() $"[FACE-SOFTLIGHT] skip: NPC has SkinTone layer (compositor already did softlight)")
-            Return
-        End If
-        Dim qnamE = state.TextureLightingColor
-        Dim qnamER = qnamE.R, qnamEG = qnamE.G, qnamEB = qnamE.B, qnamEA = qnamE.A
-        Logger.LogLazy(Function() $"[FACE-SOFTLIGHT] entry qnam=RGBA({qnamER},{qnamEG},{qnamEB},{qnamEA}) -> WILL run uniform softlight over whole face diffuse (washes brow/scar tints composited earlier)")
-
-        Dim model = host.PreviewCtl.Model
-        If model Is Nothing OrElse model.meshes Is Nothing Then Return
-
-        Dim qnam = state.TextureLightingColor
-        Dim qR As Single = CSng(qnam.R) / 255.0F
-        Dim qG As Single = CSng(qnam.G) / 255.0F
-        Dim qB As Single = CSng(qnam.B) / 255.0F
-        ' Opacity unificada con compositor face: mix(prev, SoftLight(prev, full_color), opacity)
-        ' donde opacity = qnam.A / 255 = tl.Value / 100 = intensidad authored del slot-12 SkinTone.
-        ' El shader se encarga de la interpolación; NO atenuar el color toward neutral grey acá.
-        Dim opacity As Single = CSng(qnam.A) / 255.0F
-        If opacity <= 0.001F Then Return
-
-        Const SoftLightOp As Integer = 3
-
-        Dim seen As New HashSet(Of String)(StringComparer.OrdinalIgnoreCase)
-        Dim affected As Integer = 0
-        For Each mesh In model.meshes
-            If mesh Is Nothing OrElse mesh.MeshData Is Nothing OrElse mesh.MeshData.Material Is Nothing Then Continue For
-            Dim materialBase = mesh.MeshData.Material.MaterialBase
-            If materialBase Is Nothing Then Continue For
-
-            ' Only the face mesh — the body mesh is handled by TryApplyBodySkinSoftLight.
-            If materialBase.NifShaderType <> NiflySharp.Enums.BSLightingShaderType.FaceTint Then Continue For
-
-            Dim diffusePath = FO4UnifiedMaterial_Class.CorrectTexturePath(materialBase.Diffuse_or_Base_Texture)
-            If String.IsNullOrEmpty(diffusePath) Then Continue For
-            If seen.Contains(diffusePath) Then Continue For
-            seen.Add(diffusePath)
-
-            Dim entry As PreviewModel.Texture_Loaded_Class = Nothing
-            If Not model.Textures_Dictionary.TryGetValue(diffusePath, entry) _
-               OrElse entry Is Nothing OrElse Not entry.Loaded OrElse entry.Texture_ID = 0 Then
-                Continue For
-            End If
-
-            Dim w = entry.Size.Width, h = entry.Size.Height
-            If w <= 0 OrElse h <= 0 Then
-                Continue For
-            End If
-
-            ' Snapshot pristine BEFORE the SoftLight upload destroys the original Texture_ID.
-            ' This is the contract with RefreshFaceTintLivePreview: every diffuse that we are
-            ' about to softlight here must exist in host.PristineDiffusePixels so the live edit
-            ' path can roll back to it before re-applying. CapturePristineDiffusePixels is a
-            ' no-op when the path was already captured (line 3937 ContainsKey early-out), so
-            ' calling it on every render is cheap and guarantees idempotency for the slot-12
-            ' NPCs that go through TryApplyFaceTints (the compositor captures separately) AND
-            ' for the no-slot-12 NPCs that only reach softlight via this fallback.
-            CapturePristineDiffusePixels(diffusePath, host)
-
-            Dim newTexId = FaceTintCompositor.ApplyUniformBlendOntoFaceTexture(
-                host.CompositorState, entry.Texture_ID, w, h, qR, qG, qB, SoftLightOp, opacity)
-            If newTexId = 0 OrElse newTexId = entry.Texture_ID Then
-                Continue For
-            End If
-
-            Dim oldId = entry.Texture_ID
-            entry.Texture_ID = newTexId
-            Dim diffuseLog = diffusePath
-            Logger.LogLazy(Function() $"[FACE-SOFTLIGHT] applied diffuse='{diffuseLog}' oldTex={oldId} -> newTex={newTexId}")
-            Try : OpenTK.Graphics.OpenGL4.GL.DeleteTexture(oldId) : Catch : End Try
-            affected += 1
-        Next
-
-        Dim affectedLog = affected
-        Logger.LogLazy(Function() $"[FACE-SOFTLIGHT] done affected={affectedLog}")
-    End Sub
-
-    ''' <summary>Two-step skin tint experiment — body side. Applies a one-shot SoftLight pass
-    ''' against the NPC's QNAM TextureLightingColor onto every body diffuse texture (any mesh
-    ''' with material.SkinTint = True that isn't the face mesh). The render shader still
-    ''' multiplies by material.SkinTintColor afterwards, so the body ends up doing
-    '''   final = softlight(base, qnam) * qnam
-    ''' which is symmetric with the face's
-    '''   final = softlight(base, slot12) * slot12
-    ''' (when slot 12 is composited as a Palette layer with SoftLight blend op and the render
-    ''' tint stays enabled). NO material modification — material.SkinTint and SkinTintColor
-    ''' stay exactly as set by the existing override pipeline.
-    '''
-    ''' Skipped silently when state has no QNAM, when the model has no body meshes, or when
-    ''' their diffuse textures aren't in cache yet (the post-texture-upload hook reschedules in
-    ''' that case — see RenderIntent.PostTextureUploadAction wiring at MainForm:1864).</summary>
+    ''' <summary>Records the per-actor skin tone on every body SkinTint shape (hands/neck/body, NOT the
+    ''' face) as material SkinTintColor + SkinTintAlpha. The SkinTint shader soft-lights the untoned body
+    ''' diffuse with it at render (uEffectiveType==4, engine-faithful) — nothing is baked into the texture,
+    ''' so the body needs NO pristine snapshot. Guarded by the race's SkinTone tint catalog (humans have it;
+    ''' synth/ghoul/robot don't → skip; their skin shapes aren't human skin-tone).</summary>
     Private Sub TryApplyBodySkinSoftLight(state As NPCVisualState, Optional host As NpcRenderHost = Nothing)
         If host Is Nothing Then host = _renderHost
-        If state Is Nothing Then
-            Logger.LogLazy(Function() $"[BODY-SOFTLIGHT] skip: state=Nothing")
-            Return
-        End If
-        If Not state.HasTextureLighting Then
-            Logger.LogLazy(Function() $"[BODY-SOFTLIGHT] skip: HasTextureLighting=False")
-            Return
-        End If
-
-        ' Guard race-catalog: si la raza del actor NO declara ningún TintOption de slot SkinTone
-        ' (TintSlot 12) en su MaleTintTemplateGroups / FemaleTintTemplateGroups, no debería existir
-        ' tinta de piel para este actor — el engine vanilla no la ofrece. Aplica QNAM softlight
-        ' a body skin de razas no-humanas (Synth, Feral Ghoul, Robot) generaba tinta espuria que
-        ' divergía el color entre shapes SkinTint=True vs SkinTint=False del mismo NIF
-        ' (caso 2026-05-18 SynthGen2Mech: Gen2MechNew:1 recibía softlight; G2Skin_LArm/Rleg/etc no
-        ' por SkinTint=False). HumanRace tiene el slot en el catálogo aunque el NPC no liste
-        ' tints explícitos en NPC.PNAM, así que humanos vanilla bare-NPCs siguen pasando el guard.
+        If state Is Nothing OrElse Not state.HasTextureLighting Then Return
         Dim raceRec = If(state.RaceFormID <> 0UI, _pluginManager.GetRecord(state.RaceFormID), Nothing)
         Dim race As RACE_Data = Nothing
-        If raceRec IsNot Nothing AndAlso raceRec.Header.Signature = "RACE" Then
-            race = ParseRaceCached(raceRec)
-        End If
-        If race Is Nothing OrElse race.FindTintOptionsBySlot(TintSlot.SkinTone, state.IsFemale).Count = 0 Then
-            Dim raceEdid = If(race?.EditorID, "?")
-            Logger.LogLazy(Function() $"[BODY-SOFTLIGHT] skip: race '{raceEdid}' has no SkinTone tint catalog (non-skin-tone race)")
-            Return
-        End If
-
+        If raceRec IsNot Nothing AndAlso raceRec.Header.Signature = "RACE" Then race = ParseRaceCached(raceRec)
+        If race Is Nothing OrElse race.FindTintOptionsBySlot(TintSlot.SkinTone, state.IsFemale).Count = 0 Then Return
         Dim model = host.PreviewCtl.Model
-        If model Is Nothing OrElse model.meshes Is Nothing Then
-            Logger.LogLazy(Function() $"[BODY-SOFTLIGHT] skip: model/meshes Nothing")
-            Return
-        End If
-
+        If model Is Nothing OrElse model.meshes Is Nothing Then Return
         Dim qnam = state.TextureLightingColor
-        Dim qnamLogR = qnam.R
-        Dim qnamLogG = qnam.G
-        Dim qnamLogB = qnam.B
-        Dim qnamLogA = qnam.A
-        Logger.LogLazy(Function() $"[BODY-SOFTLIGHT] entry qnam=RGBA({qnamLogR},{qnamLogG},{qnamLogB},{qnamLogA})")
-
-        ' QNAM is RGBA — the alpha channel is the body SoftLight opacity. Vanilla NPCs ship
-        ' with alpha=1.0 (byte 255) by convention, synced to the slot-12 SkinTone tint layer's
-        ' Value. When the editor lowers slot-12 %, ResolveNpcSkinToneColor packs the new %
-        ' back here as alpha so face compositor and body SoftLight stay in lockstep.
-        '
-        ' Opacity unificada con compositor face: pasamos color FULL + opacity al shader, que hace
-        ' mix(prev, SoftLight(prev, color), opacity). Misma fórmula que ComposeOntoFaceTexture
-        ' (mix(prev, blended, coverage)) — face y body matchean para cualquier opacity intermedia,
-        ' no solo en 0 y 1. La atenuación previa toward neutral grey está reemplazada por la
-        ' interpolación post-blend dentro del shader.
         Dim opacity As Single = Math.Max(0.0F, Math.Min(1.0F, CSng(qnam.A) / 255.0F))
-        If opacity <= 0.001F Then
-            Dim oLog = opacity
-            Logger.LogLazy(Function() $"[BODY-SOFTLIGHT] skip: opacity={oLog:F3} too low (no-op)")
-            Return
-        End If
-
-        Dim qR As Single = CSng(qnam.R) / 255.0F
-        Dim qG As Single = CSng(qnam.G) / 255.0F
-        Dim qB As Single = CSng(qnam.B) / 255.0F
-        Dim qrLog = qR
-        Dim qgLog = qG
-        Dim qbLog = qB
-        Dim opLog = opacity
-        Logger.LogLazy(Function() $"[BODY-SOFTLIGHT] full color q=({qrLog:F3},{qgLog:F3},{qbLog:F3}) opacity={opLog:F3}")
-
-        ' BlendOp matches the face slot 12 path: SoftLight (Photoshop / W3C SVG) so the
-        ' two meshes use the same compositing operation against the same colour.
-        Const SoftLightOp As Integer = 3
-
-        Dim seen As New HashSet(Of String)(StringComparer.OrdinalIgnoreCase)
-        Dim affected As Integer = 0
-        Dim totalMeshes As Integer = 0
-        Dim filtered_noSkinTint As Integer = 0
-        Dim filtered_faceTint As Integer = 0
-        Dim filtered_noPath As Integer = 0
-        Dim filtered_dupePath As Integer = 0
-        Dim filtered_notLoaded As Integer = 0
+        If opacity <= 0.001F Then Return
         For Each mesh In model.meshes
-            totalMeshes += 1
             If mesh Is Nothing OrElse mesh.MeshData Is Nothing OrElse mesh.MeshData.Material Is Nothing Then Continue For
             Dim materialBase = mesh.MeshData.Material.MaterialBase
             If materialBase Is Nothing Then Continue For
-
-            Dim shapeName = mesh.MeshData.Shape?.ShapeName
-            ' Body = SkinTint material that is NOT the face. Face has its own slot-12 path
-            ' running through the FaceTint compositor; touching it again here would double
-            ' the SoftLight on the diffuse.
-            If Not materialBase.SkinTint Then
-                filtered_noSkinTint += 1
-                Dim snLog = shapeName
-                Logger.LogLazy(Function() $"[BODY-SOFTLIGHT] skip shape='{snLog}' reason=SkinTint=False")
-                Continue For
-            End If
-            If materialBase.NifShaderType = NiflySharp.Enums.BSLightingShaderType.FaceTint Then
-                filtered_faceTint += 1
-                Continue For
-            End If
-
-            Dim diffusePath = FO4UnifiedMaterial_Class.CorrectTexturePath(materialBase.Diffuse_or_Base_Texture)
-            If String.IsNullOrEmpty(diffusePath) Then
-                filtered_noPath += 1
-                Continue For
-            End If
-            If seen.Contains(diffusePath) Then
-                filtered_dupePath += 1
-                Continue For
-            End If
-            seen.Add(diffusePath)
-
-            Dim entry As PreviewModel.Texture_Loaded_Class = Nothing
-            If Not model.Textures_Dictionary.TryGetValue(diffusePath, entry) _
-               OrElse entry Is Nothing OrElse Not entry.Loaded OrElse entry.Texture_ID = 0 Then
-                filtered_notLoaded += 1
-                Dim snLog2 = shapeName
-                Dim dpLog = diffusePath
-                Logger.LogLazy(Function() $"[BODY-SOFTLIGHT] skip shape='{snLog2}' diffuse='{dpLog}' reason=not-loaded")
-                Continue For
-            End If
-
-            Dim w = entry.Size.Width, h = entry.Size.Height
-            If w <= 0 OrElse h <= 0 Then
-                Continue For
-            End If
-
-            ' Snapshot pristine before SoftLight destroys the original Texture_ID.
-            CapturePristineDiffusePixels(diffusePath, host)
-
-            Dim preTexId = entry.Texture_ID
-            ' Working space del body = el que el resolver da para SkinTone (slot 12, Palette, softlight).
-            ' Single source of truth: si cambia la convencion SkinTone en FaceTintConvention, body y cara
-            ' sincronizan solos. Hoy resuelve g22.
-            Dim bodyConv = FaceTintConvention.ResolveConvention(
-                isTextureSet:=False, slot:=12US, blendOp:=SoftLightOp,
-                channel:=FaceTintChannel.Diffuse, useHairPalette:=False)
-            Dim newTexId = FaceTintCompositor.ApplyUniformBlendOntoFaceTexture(
-                host.CompositorState, entry.Texture_ID, w, h, qR, qG, qB, SoftLightOp, opacity,
-                workingSpace:=CInt(bodyConv.WorkingSpace))
-            If newTexId = 0 OrElse newTexId = entry.Texture_ID Then
-                Dim snLog3 = shapeName
-                Dim preLog = preTexId
-                Dim newLog = newTexId
-                Logger.LogLazy(Function() $"[BODY-SOFTLIGHT] compose-fail shape='{snLog3}' preTex={preLog} newTex={newLog}")
-                Continue For
-            End If
-
-            Dim oldId = entry.Texture_ID
-            entry.Texture_ID = newTexId
-            Try : OpenTK.Graphics.OpenGL4.GL.DeleteTexture(oldId) : Catch : End Try
-            affected += 1
-            Dim snLog4 = shapeName
-            Dim dpLog2 = diffusePath
-            Dim oldLog = oldId
-            Dim newLog2 = newTexId
-            Logger.LogLazy(Function() $"[BODY-SOFTLIGHT] applied shape='{snLog4}' diffuse='{dpLog2}' oldTex={oldLog} → newTex={newLog2}")
+            ' Body = SkinTint material que NO es la cara (la cara va por su propio path slot-12 del compositor).
+            If Not materialBase.SkinTint Then Continue For
+            If materialBase.NifShaderType = NiflySharp.Enums.BSLightingShaderType.FaceTint Then Continue For
+            ' Engine model: registrar el skin tone per-actor; el shader SkinTint lo soft-lightea sobre el
+            ' diffuse untoned al render (NO se hornea). SkinTintAlpha lleva la opacidad del QNAM.
+            materialBase.SkinTintColor = Color.FromArgb(qnam.R, qnam.G, qnam.B)
+            materialBase.SkinTintAlpha = opacity
         Next
-
-        Dim affectedLog = affected
-        Dim totalLog = totalMeshes
-        Logger.LogLazy(Function() $"[BODY-SOFTLIGHT] done affected={affectedLog} totalMeshes={totalLog} filtered_noSkinTint={filtered_noSkinTint} filtered_faceTint={filtered_faceTint} filtered_noPath={filtered_noPath} filtered_dupePath={filtered_dupePath} filtered_notLoaded={filtered_notLoaded}")
     End Sub
 
     ''' <summary>Apply one channel's pipeline result to the model's Textures_Dictionary: swap
@@ -6030,6 +5733,10 @@ Public Class MainForm
         Dim oldId = entry.Texture_ID
         If chResult.TextureId = 0 OrElse chResult.TextureId = oldId Then Return
         entry.Texture_ID = chResult.TextureId
+        ' The composite output is a plain RGBA8 FBO texture sampled RAW (the live path's final
+        ' G22→Linear convert leaves linear values, no sRGB SRV decode). Keep entry.IsSRGB honest so
+        ' anything that reads it post-composite (without a preceding pristine rollback) sees the truth.
+        entry.IsSRGB = False
         Try : OpenTK.Graphics.OpenGL4.GL.DeleteTexture(oldId) : Catch : End Try
     End Sub
 
@@ -6065,7 +5772,7 @@ Public Class MainForm
     ''' Called from the per-path compositor entry points before the original Texture_ID gets
     ''' destroyed. The decode happens exactly once per path per NPC; every subsequent live
     ''' tint refresh just re-uploads the cached pixels without touching the DDS again.</summary>
-    Private Sub CapturePristineDiffusePixels(diffusePath As String, Optional host As NpcRenderHost = Nothing)
+    Private Sub CapturePristineDiffusePixels(diffusePath As String, isSRGB As Boolean, Optional host As NpcRenderHost = Nothing)
         If host Is Nothing Then host = _renderHost
         If String.IsNullOrEmpty(diffusePath) Then Return
         If host.PristineDiffusePixels.ContainsKey(diffusePath) Then Return
@@ -6120,7 +5827,8 @@ Public Class MainForm
             .Width = lvl.Width,
             .Height = lvl.Height,
             .DGXFormat_Original = tex.DxgiCodeOriginal,
-            .DGXFormat_Final = tex.DxgiCodeFinal
+            .DGXFormat_Final = tex.DxgiCodeFinal,
+            .IsSRGB = isSRGB
         }
 
         ' Free the wrapper's per-level buffers ASAP — we have our own copy now.
@@ -6624,9 +6332,18 @@ Public Class MainForm
                         ' OpenGL that with PixelFormat.Bgra; the driver swaps to RGBA on upload so the
                         ' internal representation is correct. Using PixelFormat.Rgba here gave a blue
                         ' body (the body diffuse came back with R and B swapped on every live refresh).
+                        ' Re-upload in the SAME colour-space the original load used. pristine.Pixels are
+                        ' the sRGB-ENCODED (display) bytes ConvertForBitmap decoded from the DDS. If the
+                        ' original was an sRGB SRV (IsSRGB), restore it as Srgb8Alpha8 so the sample decodes
+                        ' to LINEAR on read (matching the live load); otherwise raw Rgba8. Restoring as plain
+                        ' Rgba8 while entry.IsSRGB stayed True desynced baseDiffuseIsLinearOnGpu → tone/gamma
+                        ' shift on the next composite (the "edit" regression).
+                        Dim internalFmt = If(pristine.IsSRGB,
+                            OpenTK.Graphics.OpenGL4.PixelInternalFormat.Srgb8Alpha8,
+                            OpenTK.Graphics.OpenGL4.PixelInternalFormat.Rgba8)
                         OpenTK.Graphics.OpenGL4.GL.TexImage2D(
                             OpenTK.Graphics.OpenGL4.TextureTarget.Texture2D, 0,
-                            OpenTK.Graphics.OpenGL4.PixelInternalFormat.Rgba8,
+                            internalFmt,
                             pristine.Width, pristine.Height, 0,
                             OpenTK.Graphics.OpenGL4.PixelFormat.Bgra,
                             OpenTK.Graphics.OpenGL4.PixelType.UnsignedByte,
@@ -6662,6 +6379,9 @@ Public Class MainForm
             entry.Size = New Size(pristine.Width, pristine.Height)
             entry.DGXFormat_Original = pristine.DGXFormat_Original
             entry.DGXFormat_Final = pristine.DGXFormat_Final
+            ' Restore the sRGB-ness to match the re-uploaded texture so the next composite's
+            ' baseDiffuseIsLinearOnGpu (= entry.IsSRGB) is correct.
+            entry.IsSRGB = pristine.IsSRGB
             entry.Loaded = True
             If oldId <> 0 AndAlso oldId <> newId Then
                 Try : OpenTK.Graphics.OpenGL4.GL.DeleteTexture(oldId) : Catch : End Try

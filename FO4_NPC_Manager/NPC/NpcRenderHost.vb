@@ -230,6 +230,10 @@ Friend Class NpcRenderHost
         Public Height As Integer
         Public DGXFormat_Original As Integer
         Public DGXFormat_Final As Integer
+        ''' <summary>sRGB-ness of the ORIGINAL load (captured from the dict entry). The rollback must
+        ''' re-upload in the same colour-space (sRGB SRV vs raw Rgba8) and restore entry.IsSRGB to this,
+        ''' otherwise baseDiffuseIsLinearOnGpu desyncs on the next composite → tone/gamma shift on edit.</summary>
+        Public IsSRGB As Boolean
     End Class
 
 #Region "IDisposable"

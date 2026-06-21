@@ -57,6 +57,17 @@ Partial Class CharGenOptionsForm
         LblDBlend = New Label()
         ComboDBlend = New ComboBox()
         CheckDSeedG22 = New CheckBox()
+        GroupConvDWsByOp = New GroupBox()
+        LblDWsReplace = New Label()
+        ComboDWsReplace = New ComboBox()
+        LblDWsMultiply = New Label()
+        ComboDWsMultiply = New ComboBox()
+        LblDWsOverlay = New Label()
+        ComboDWsOverlay = New ComboBox()
+        LblDWsSoftLight = New Label()
+        ComboDWsSoftLight = New ComboBox()
+        LblDWsHardLight = New Label()
+        ComboDWsHardLight = New ComboBox()
         GroupConvNormal = New GroupBox()
         LblNWork = New Label()
         ComboNWork = New ComboBox()
@@ -123,6 +134,7 @@ Partial Class CharGenOptionsForm
         GroupConvDiffuse.SuspendLayout()
         GroupConvNormal.SuspendLayout()
         GroupConvSwap.SuspendLayout()
+        GroupConvDWsByOp.SuspendLayout()
         TabPageOrder.SuspendLayout()
         GroupTintOrder.SuspendLayout()
         GroupSwapOrder.SuspendLayout()
@@ -138,7 +150,7 @@ Partial Class CharGenOptionsForm
         TabMain.Location = New Point(12, 12)
         TabMain.Name = "TabMain"
         TabMain.SelectedIndex = 0
-        TabMain.Size = New Size(640, 340)
+        TabMain.Size = New Size(640, 428)
         TabMain.TabIndex = 0
         ' 
         ' TabPageSize
@@ -310,11 +322,12 @@ Partial Class CharGenOptionsForm
         TabPageConv.Controls.Add(GroupConvDiffuse)
         TabPageConv.Controls.Add(GroupConvNormal)
         TabPageConv.Controls.Add(GroupConvSwap)
+        TabPageConv.Controls.Add(GroupConvDWsByOp)
         TabPageConv.Controls.Add(ButtonResetConv)
         TabPageConv.Location = New Point(4, 24)
         TabPageConv.Name = "TabPageConv"
         TabPageConv.Padding = New Padding(3)
-        TabPageConv.Size = New Size(632, 312)
+        TabPageConv.Size = New Size(632, 400)
         TabPageConv.TabIndex = 1
         TabPageConv.Text = "FaceTint Conventions"
         TabPageConv.UseVisualStyleBackColor = True
@@ -352,7 +365,7 @@ Partial Class CharGenOptionsForm
         LblDWork.Name = "LblDWork"
         LblDWork.Size = New Size(52, 15)
         LblDWork.TabIndex = 0
-        LblDWork.Text = "Working"
+        LblDWork.Text = "Work (ext)"
         ' 
         ' ComboDWork
         ' 
@@ -851,7 +864,7 @@ Partial Class CharGenOptionsForm
         ' 
         ' ButtonOK
         ' 
-        ButtonOK.Location = New Point(488, 362)
+        ButtonOK.Location = New Point(488, 450)
         ButtonOK.Name = "ButtonOK"
         ButtonOK.Size = New Size(78, 26)
         ButtonOK.TabIndex = 1
@@ -861,7 +874,7 @@ Partial Class CharGenOptionsForm
         ' ButtonCancel
         ' 
         ButtonCancel.DialogResult = DialogResult.Cancel
-        ButtonCancel.Location = New Point(574, 362)
+        ButtonCancel.Location = New Point(574, 450)
         ButtonCancel.Name = "ButtonCancel"
         ButtonCancel.Size = New Size(78, 26)
         ButtonCancel.TabIndex = 2
@@ -1087,13 +1100,122 @@ Partial Class CharGenOptionsForm
         CheckBoxApplyGhoulHeadRearFix.Text = "Apply fix to ghoul headrear"
         CheckBoxApplyGhoulHeadRearFix.UseVisualStyleBackColor = True
         '
+        ' GroupConvDWsByOp
+        '
+        GroupConvDWsByOp.Controls.Add(LblDWsReplace)
+        GroupConvDWsByOp.Controls.Add(ComboDWsReplace)
+        GroupConvDWsByOp.Controls.Add(LblDWsMultiply)
+        GroupConvDWsByOp.Controls.Add(ComboDWsMultiply)
+        GroupConvDWsByOp.Controls.Add(LblDWsOverlay)
+        GroupConvDWsByOp.Controls.Add(ComboDWsOverlay)
+        GroupConvDWsByOp.Controls.Add(LblDWsSoftLight)
+        GroupConvDWsByOp.Controls.Add(ComboDWsSoftLight)
+        GroupConvDWsByOp.Controls.Add(LblDWsHardLight)
+        GroupConvDWsByOp.Controls.Add(ComboDWsHardLight)
+        GroupConvDWsByOp.Location = New Point(8, 308)
+        GroupConvDWsByOp.Name = "GroupConvDWsByOp"
+        GroupConvDWsByOp.Size = New Size(616, 84)
+        GroupConvDWsByOp.TabIndex = 4
+        GroupConvDWsByOp.TabStop = False
+        GroupConvDWsByOp.Text = "Diffuse - Working Space por BlendOp (engine-faithful: SoftLight=G22, resto=Linear)"
+        '
+        ' LblDWsReplace
+        '
+        LblDWsReplace.AutoSize = True
+        LblDWsReplace.Location = New Point(8, 22)
+        LblDWsReplace.Name = "LblDWsReplace"
+        LblDWsReplace.Size = New Size(50, 15)
+        LblDWsReplace.TabIndex = 0
+        LblDWsReplace.Text = "Replace"
+        '
+        ' ComboDWsReplace
+        '
+        ComboDWsReplace.DropDownStyle = ComboBoxStyle.DropDownList
+        ComboDWsReplace.Items.AddRange(New Object() {"Linear", "Srgb", "G22", "G24"})
+        ComboDWsReplace.Location = New Point(8, 42)
+        ComboDWsReplace.Name = "ComboDWsReplace"
+        ComboDWsReplace.Size = New Size(110, 23)
+        ComboDWsReplace.TabIndex = 1
+        '
+        ' LblDWsMultiply
+        '
+        LblDWsMultiply.AutoSize = True
+        LblDWsMultiply.Location = New Point(130, 22)
+        LblDWsMultiply.Name = "LblDWsMultiply"
+        LblDWsMultiply.Size = New Size(53, 15)
+        LblDWsMultiply.TabIndex = 2
+        LblDWsMultiply.Text = "Multiply"
+        '
+        ' ComboDWsMultiply
+        '
+        ComboDWsMultiply.DropDownStyle = ComboBoxStyle.DropDownList
+        ComboDWsMultiply.Items.AddRange(New Object() {"Linear", "Srgb", "G22", "G24"})
+        ComboDWsMultiply.Location = New Point(130, 42)
+        ComboDWsMultiply.Name = "ComboDWsMultiply"
+        ComboDWsMultiply.Size = New Size(110, 23)
+        ComboDWsMultiply.TabIndex = 3
+        '
+        ' LblDWsOverlay
+        '
+        LblDWsOverlay.AutoSize = True
+        LblDWsOverlay.Location = New Point(252, 22)
+        LblDWsOverlay.Name = "LblDWsOverlay"
+        LblDWsOverlay.Size = New Size(49, 15)
+        LblDWsOverlay.TabIndex = 4
+        LblDWsOverlay.Text = "Overlay"
+        '
+        ' ComboDWsOverlay
+        '
+        ComboDWsOverlay.DropDownStyle = ComboBoxStyle.DropDownList
+        ComboDWsOverlay.Items.AddRange(New Object() {"Linear", "Srgb", "G22", "G24"})
+        ComboDWsOverlay.Location = New Point(252, 42)
+        ComboDWsOverlay.Name = "ComboDWsOverlay"
+        ComboDWsOverlay.Size = New Size(110, 23)
+        ComboDWsOverlay.TabIndex = 5
+        '
+        ' LblDWsSoftLight
+        '
+        LblDWsSoftLight.AutoSize = True
+        LblDWsSoftLight.Location = New Point(374, 22)
+        LblDWsSoftLight.Name = "LblDWsSoftLight"
+        LblDWsSoftLight.Size = New Size(55, 15)
+        LblDWsSoftLight.TabIndex = 6
+        LblDWsSoftLight.Text = "SoftLight"
+        '
+        ' ComboDWsSoftLight
+        '
+        ComboDWsSoftLight.DropDownStyle = ComboBoxStyle.DropDownList
+        ComboDWsSoftLight.Items.AddRange(New Object() {"Linear", "Srgb", "G22", "G24"})
+        ComboDWsSoftLight.Location = New Point(374, 42)
+        ComboDWsSoftLight.Name = "ComboDWsSoftLight"
+        ComboDWsSoftLight.Size = New Size(110, 23)
+        ComboDWsSoftLight.TabIndex = 7
+        '
+        ' LblDWsHardLight
+        '
+        LblDWsHardLight.AutoSize = True
+        LblDWsHardLight.Location = New Point(496, 22)
+        LblDWsHardLight.Name = "LblDWsHardLight"
+        LblDWsHardLight.Size = New Size(58, 15)
+        LblDWsHardLight.TabIndex = 8
+        LblDWsHardLight.Text = "HardLight"
+        '
+        ' ComboDWsHardLight
+        '
+        ComboDWsHardLight.DropDownStyle = ComboBoxStyle.DropDownList
+        ComboDWsHardLight.Items.AddRange(New Object() {"Linear", "Srgb", "G22", "G24"})
+        ComboDWsHardLight.Location = New Point(496, 42)
+        ComboDWsHardLight.Name = "ComboDWsHardLight"
+        ComboDWsHardLight.Size = New Size(110, 23)
+        ComboDWsHardLight.TabIndex = 9
+        '
         ' CharGenOptionsForm
         '
         AcceptButton = ButtonOK
         AutoScaleDimensions = New SizeF(7F, 15F)
         AutoScaleMode = AutoScaleMode.Font
         CancelButton = ButtonCancel
-        ClientSize = New Size(664, 400)
+        ClientSize = New Size(664, 488)
         Controls.Add(TabMain)
         Controls.Add(ButtonOK)
         Controls.Add(ButtonCancel)
@@ -1114,6 +1236,8 @@ Partial Class CharGenOptionsForm
         GroupConvNormal.PerformLayout()
         GroupConvSwap.ResumeLayout(False)
         GroupConvSwap.PerformLayout()
+        GroupConvDWsByOp.ResumeLayout(False)
+        GroupConvDWsByOp.PerformLayout()
         TabPageOrder.ResumeLayout(False)
         TabPageOrder.PerformLayout()
         GroupTintOrder.ResumeLayout(False)
@@ -1159,6 +1283,17 @@ Partial Class CharGenOptionsForm
     Friend WithEvents LblDBlend As System.Windows.Forms.Label
     Friend WithEvents ComboDBlend As System.Windows.Forms.ComboBox
     Friend WithEvents CheckDSeedG22 As System.Windows.Forms.CheckBox
+    Friend WithEvents GroupConvDWsByOp As System.Windows.Forms.GroupBox
+    Friend WithEvents LblDWsReplace As System.Windows.Forms.Label
+    Friend WithEvents ComboDWsReplace As System.Windows.Forms.ComboBox
+    Friend WithEvents LblDWsMultiply As System.Windows.Forms.Label
+    Friend WithEvents ComboDWsMultiply As System.Windows.Forms.ComboBox
+    Friend WithEvents LblDWsOverlay As System.Windows.Forms.Label
+    Friend WithEvents ComboDWsOverlay As System.Windows.Forms.ComboBox
+    Friend WithEvents LblDWsSoftLight As System.Windows.Forms.Label
+    Friend WithEvents ComboDWsSoftLight As System.Windows.Forms.ComboBox
+    Friend WithEvents LblDWsHardLight As System.Windows.Forms.Label
+    Friend WithEvents ComboDWsHardLight As System.Windows.Forms.ComboBox
     Friend WithEvents GroupConvNormal As System.Windows.Forms.GroupBox
     Friend WithEvents LblNWork As System.Windows.Forms.Label
     Friend WithEvents ComboNWork As System.Windows.Forms.ComboBox
