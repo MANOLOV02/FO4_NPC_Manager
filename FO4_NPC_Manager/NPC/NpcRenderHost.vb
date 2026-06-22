@@ -168,6 +168,37 @@ Friend Class NpcRenderHost
         Dim renderHeadwear = Toggles.RenderHeadwear
         Dim renderGore = Toggles.RenderGore
 
+        ' --- Per-segment worn-slot occlusion, recomputed from the items CURRENTLY rendered ---
+        ' Engine-faithful ORDER / other-items rule (resolver 0x14035E090, owner-slot branch 0x14035E22B),
+        ' made toggle-aware: an item hidden by a render toggle (e.g. the Pipboy when "Render armor" is OFF)
+        ' contributes NO slots, so the segments it was covering re-appear (a rolled-up sleeve drops back
+        ' down). The occluder set is NOT the static load-time union — it is rebuilt here every apply.
+        ' groupSlots[gid] = the OWN-slot mask of each rendered worn-item group (one group per candidate; its
+        ' shapes share the mask, so an item never occludes its own segments). A worn item contributes only
+        ' while its render category is shown (same condition that drives RenderHide for that category).
+        Dim groupSlots As New Dictionary(Of Integer, UInteger)
+        For Each m In PreviewCtl.Model.meshes
+            If m Is Nothing OrElse m.MeshData Is Nothing OrElse m.MeshData.Shape Is Nothing Then Continue For
+            Dim sh = m.MeshData.Shape
+            Dim own As UInteger = 0UI
+            If Not LastRenderData.ShapeOwnSlots.TryGetValue(sh, own) OrElse own = 0UI Then Continue For
+            Dim oc As MainForm.ShapeRenderCategory = MainForm.ShapeRenderCategory.Other
+            LastRenderData.ShapeCategory.TryGetValue(sh, oc)
+            Dim rendered As Boolean
+            Select Case oc
+                Case MainForm.ShapeRenderCategory.ArmorOver : rendered = renderArmor
+                Case MainForm.ShapeRenderCategory.Underarmor, MainForm.ShapeRenderCategory.GloveOutfit : rendered = renderUnderarmor
+                Case MainForm.ShapeRenderCategory.Headwear : rendered = renderHeadwear
+                Case Else : rendered = True
+            End Select
+            If Not rendered Then Continue For
+            Dim gid As Integer = 0
+            LastRenderData.ShapeSlotGroup.TryGetValue(sh, gid)
+            groupSlots(gid) = own
+        Next
+        Dim occupiedVisible As UInteger = 0UI
+        For Each kv In groupSlots : occupiedVisible = occupiedVisible Or kv.Value : Next
+
         Dim hidden As Integer = 0
         Dim shown As Integer = 0
         For Each mesh In PreviewCtl.Model.meshes
@@ -175,6 +206,27 @@ Friend Class NpcRenderHost
             Dim shape = mesh.MeshData.Shape
             Dim cat As MainForm.ShapeRenderCategory = MainForm.ShapeRenderCategory.Other
             LastRenderData.ShapeCategory.TryGetValue(shape, cat)
+            ' Push the per-segment occlusion mask the render index filter (EnsureZapIndexBuffer) consumes.
+            ' Head parts: the head-region slice (HeadwearOcclusionSlots) of the rendered worn set, GATED by
+            ' Render headwear ("Render headwear" OFF ⇒ mask 0 ⇒ head parts revealed whole). Worn items: OR
+            ' of the OTHER rendered groups' slots (own group excluded ⇒ shared-slot safe — the Pipboy's slot
+            ' 60 still hides a Pipboy-aware outfit's biped-60 forearm). Everything else: no occlusion.
+            If cat = MainForm.ShapeRenderCategory.HeadPart Then
+                shape.CoveredSlotsMask = If(renderHeadwear, occupiedVisible And MainForm.HeadwearOcclusionSlots, 0UI)
+            Else
+                Dim ownSlots As UInteger = 0UI
+                If LastRenderData.ShapeOwnSlots.TryGetValue(shape, ownSlots) AndAlso ownSlots <> 0UI Then
+                    Dim gid As Integer = 0
+                    LastRenderData.ShapeSlotGroup.TryGetValue(shape, gid)
+                    Dim others As UInteger = 0UI
+                    For Each kv In groupSlots
+                        If kv.Key <> gid Then others = others Or kv.Value
+                    Next
+                    shape.CoveredSlotsMask = others
+                Else
+                    shape.CoveredSlotsMask = 0UI
+                End If
+            End If
             Dim covered As Boolean = False
             LastRenderData.ShapeCoveredByOutfit.TryGetValue(shape, covered)
             Dim occludedByHeadwear As Boolean = False

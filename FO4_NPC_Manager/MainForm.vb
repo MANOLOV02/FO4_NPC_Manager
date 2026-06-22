@@ -198,6 +198,18 @@ Public Class MainForm
     Private Const HeadPartTypeFacialHair As Integer = 4
     Private Const HeadPartTypeHeadRear As Integer = 9
 
+    ''' <summary>Biped-slot bits (bit N-30 = slot N, the SlotConflictResolver.OccupiedSlots convention)
+    ''' of the HEAD-REGION headwear slots that occlude head parts: 30 HairTop, 31 HairLong, 32 FaceGenHead,
+    ''' 46 Headband, 48 Beard, 49 Mouth (wbDefinitionsFO4.pas:3745). The per-segment head-part occlusion
+    ''' mask is restricted to THESE only — measured: head parts tag with armor slots 30/31/32/48 (e.g.
+    ''' Face/HeadRear={32,33}, lashes/eyes={32}, hair={30,31}, beard={48}). The 33 (BODY) segment of
+    ''' Face/HeadRear is the NECK — it must NOT be hidden by the headwear filter (a body-armor collar hides
+    ''' it, gated by the body/underarmor layer, NOT headwear). Including body/[U]/[A] slots here would hide
+    ''' the neck whenever an outfit covers slot 33 and tear a hole in the head→body seam.</summary>
+    ' Friend (not Private): NpcRenderHost.ApplyRenderToggleVisibility reads it to recompute the
+    ' head-part per-segment occlusion mask from the items currently rendered.
+    Friend Const HeadwearOcclusionSlots As UInteger = (1UI << 0) Or (1UI << 1) Or (1UI << 2) Or (1UI << 16) Or (1UI << 18) Or (1UI << 19)
+
     Private Enum PreviewMode
         FullCharacter = 0
         OnlyFace = 1
@@ -573,6 +585,24 @@ Public Class MainForm
         ''' ApplyRenderToggleVisibility: con "Render headwear" ON el head part ocluido se oculta;
         ''' OFF lo destapa para mostrar el pelo/barba/etc bajo el headwear oculto.</summary>
         Public ReadOnly ShapeOccludedByHeadwear As New Dictionary(Of IRenderableShape, Boolean)
+        ''' <summary>Per-shape (Fase 2): the OWN worn biped-slot mask of the candidate this shape came from
+        ''' (bit N-30 = biped slot N, same convention as <see cref="SlotConflictResolver.OccupiedSlots"/>).
+        ''' Stored only for worn-item (Kind=Outfit) shapes; head parts / skin have no entry (own slots = 0).
+        ''' ApplyRenderToggleVisibility rebuilds the per-segment occlusion mask (IRenderableShape.CoveredSlotsMask)
+        ''' from these every apply, scoped to the items CURRENTLY rendered — so a render toggle that hides an
+        ''' item (e.g. Pipboy under "Render armor" OFF) drops its slots from the occluding set and the segments
+        ''' it covered re-appear. NOT a static covered mask: covered-by-OTHERS is recomputed at toggle time
+        ''' (ORDER / other-items rule), excluding the shape's own group via <see cref="ShapeSlotGroup"/>.</summary>
+        Public ReadOnly ShapeOwnSlots As New Dictionary(Of IRenderableShape, UInteger)
+        ''' <summary>Per-shape occlusion group id (one per candidate; all shapes of a candidate share it).
+        ''' Used by ApplyRenderToggleVisibility so an item never occludes its OWN segments: covered-by-others
+        ''' ORs the own-slot masks of rendered groups whose id differs (engine owner-slot branch 0x14035E22B).
+        ''' This is what keeps a slot SHARED by two items (Pipboy + a Pipboy-aware outfit both declaring 60)
+        ''' working — occupied&amp;~own would strip the shared bit; OR-of-other-groups keeps it.</summary>
+        Public ReadOnly ShapeSlotGroup As New Dictionary(Of IRenderableShape, Integer)
+        ''' <summary>Monotonic seed for <see cref="ShapeSlotGroup"/> ids. LoadNifShapes runs once per
+        ''' candidate; it claims one id per call via the post-increment below.</summary>
+        Public OcclusionGroupSeq As Integer = 0
         ''' <summary>Per-shape: qué particiones de un Hair {30,31} se ZAPEAN este render (Top=v30−v31,
         ''' Long=v31−v30), según el modelo complementario main/hairline (ver <see cref="HairZapParts"/>).
         ''' A diferencia de ShapeOccludedByHeadwear (oculta la mesh entera), esto zapea SÓLO los vértices
@@ -7765,6 +7795,9 @@ Public Class MainForm
         result.SkeletonKey = ResolveSkeletonKey(previewVariant.State, result.Warnings)
 
         Dim candidates = CollectMeshCandidates(previewVariant.State, result.Warnings, previewVariant.UseFaceGen, previewVariant.OnlyFaceCollect, previewVariant.OnlyOutfitCollect)
+        ' Per-segment worn-slot occlusion (Fase 2): LoadNifShapes records each worn-item shape's OWN slots
+        ' + group id (ShapeOwnSlots / ShapeSlotGroup); ApplyRenderToggleVisibility recomputes the occlusion
+        ' mask from the currently-rendered subset (a render toggle hiding an item drops its slots).
         Dim selectedCandidates = SelectWinningCandidates(candidates)
 
         ' Diagnostic toggles "Render armor" / "Render only armor" se aplican vía RenderHide en
@@ -10679,6 +10712,12 @@ Public Class MainForm
         selected.AddRange(slotResolution.Winners)
         Dim occupiedSlots As UInteger = slotResolution.OccupiedSlots
 
+        ' Per-segment "covered by OTHER items" occlusion (ORDER / other-items rule, engine owner-slot
+        ' branch 0x14035E22B) is NOT precomputed here anymore: it is rebuilt every render by
+        ' ApplyRenderToggleVisibility from the items CURRENTLY rendered, so a render toggle that hides an
+        ' item drops its slots from the occluding set. LoadNifShapes only records each shape's OWN slots +
+        ' group id (ShapeOwnSlots / ShapeSlotGroup) — the inputs that recompute reads.
+
         ' Third pass: add slotless (head parts), hiding based on occupied biped slots.
         '
         ' Slot semantics (verified wbDefinitionsFO4.pas:3745):
@@ -11265,6 +11304,10 @@ Public Class MainForm
             ' Also: shape -> sculpt source FormID + shape -> sculpt deltas (for per-skeleton sculpt).
             ' ShapeArmaFormID is the FormID of the SCULPT SOURCE (not the candidate's own ARMA),
             ' so that shapes from different candidates pointing to the same source share a skeleton.
+            ' One occlusion group id per candidate (LoadNifShapes runs once per candidate): all of this
+            ' candidate's shapes share it so an item never occludes its own segments. See ShapeSlotGroup.
+            Dim occGroupId As Integer = result.OcclusionGroupSeq
+            result.OcclusionGroupSeq += 1
             For Each shape In shapes
                 result.MeshDictKeys(shape) = dictKey
                 result.ShapeArmaFormID(shape) = sculptSourceFormID
@@ -11272,6 +11315,22 @@ Public Class MainForm
                 result.ShapeCoveredByOutfit(shape) = candidate.IsCoveredByOutfit
                 result.ShapeOccludedByHeadwear(shape) = candidate.IsOccludedByHeadwear
                 result.ShapeZapHairParts(shape) = candidate.ZapParts
+                ' Per-segment worn-slot occlusion (Fase 2): record the inputs ApplyRenderToggleVisibility
+                ' uses to rebuild IRenderableShape.CoveredSlotsMask every render. Only worn items
+                ' (Kind=Outfit) contribute — their OWN biped-slot mask + a per-candidate group id; head
+                ' parts / skin store nothing (own slots = 0). The toggle recompute derives:
+                '   • head-part mask = (OR of rendered worn items' slots) AND HeadwearOcclusionSlots
+                '     (30/31/32/46/48/49 — head region only; slot 33 NECK excluded so the head→body seam
+                '     is never torn by the headwear filter), gated by Render headwear.
+                '   • worn-item mask = OR of OTHER rendered groups' slots (ORDER / other-items rule, engine
+                '     owner-slot branch 0x14035E22B; group id excludes the item's own shapes — shared-slot
+                '     safe, so the Pipboy's slot 60 still hides the outfit's biped-60 forearm).
+                ' Recomputing from the rendered subset (not baking a static mask here) is what lets a render
+                ' toggle that hides an item (e.g. Pipboy under Render armor OFF) un-occlude its segments.
+                If candidate.Kind = MeshCandidateKind.Outfit Then
+                    result.ShapeOwnSlots(shape) = candidate.SlotMask
+                    result.ShapeSlotGroup(shape) = occGroupId
+                End If
                 result.ShapeUsesBodyTexture(shape) = candidate.UsesBodyTexture
                 ' HDPT type=7 Meatcaps (CK enum 7=Meatcaps, ver wbDefinitionsFO4 + comment en
                 ' CollectHeadPartCandidate). Confirmed por estar en enum oficial de Bethesda;
