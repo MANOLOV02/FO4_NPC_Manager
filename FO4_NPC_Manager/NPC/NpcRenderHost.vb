@@ -52,6 +52,14 @@ Friend Class NpcRenderHost
     ''' the render is using (no singleton dependency).</summary>
     Public Property LastSkeletonInstance As SkeletonInstance = Nothing
 
+    ''' <summary>Head skeleton built per NPC during the last render: SAME morph/FMRS pose as
+    ''' <see cref="LastSkeletonInstance"/> but WITHOUT the body-weight bone scaling (MWGT/MRSV/NNAM
+    ''' neck-fat). Head-part shapes (FaceGen head, hair, eyes, brows) are routed to this so the
+    ''' scaled "Neck" bone does not propagate down to Head/FaceBones and deform the head — matching
+    ''' the FaceGen bake, which excludes body weight from the head. Animation frames are applied to
+    ''' it too (same as the per-ARMA clones) so the head still follows played clips.</summary>
+    Public Property LastHeadSkeletonInstance As SkeletonInstance = Nothing
+
     ''' <summary>Per-ARMA skeleton clones built during the last render. Indexed by
     ''' ArmorAddonFormID. Persisted so the dropdown handler (RebuildAndApplyMergedPose) can
     ''' reconstruct each clone's pose when the user changes armaModel without forcing a full
@@ -176,6 +184,7 @@ Friend Class NpcRenderHost
         ' groupSlots[gid] = the OWN-slot mask of each rendered worn-item group (one group per candidate; its
         ' shapes share the mask, so an item never occludes its own segments). A worn item contributes only
         ' while its render category is shown (same condition that drives RenderHide for that category).
+        Const SLOT_PIPBOY As UInteger = &H40000000UI   ' bit 30 = biped slot 60 (Pipboy)
         Dim groupSlots As New Dictionary(Of Integer, UInteger)
         For Each m In PreviewCtl.Model.meshes
             If m Is Nothing OrElse m.MeshData Is Nothing OrElse m.MeshData.Shape Is Nothing Then Continue For
@@ -194,10 +203,30 @@ Friend Class NpcRenderHost
             If Not rendered Then Continue For
             Dim gid As Integer = 0
             LastRenderData.ShapeSlotGroup.TryGetValue(sh, gid)
-            groupSlots(gid) = own
+            ' Slot 60 (Pipboy) is COEXIST-BY-DESIGN: ~every body outfit declares it in BOD2 for the forearm
+            ' 60/160 accommodation swap (RE + ESM data 06-22), but only an ACTUAL Pipboy DEVICE (an item
+            ' whose ONLY worn slot is 60) really occupies it. The 60/160 swap must trigger on "a Pipboy
+            ' device is present", NOT on "some worn piece declared slot 60". So strip bit 60 from non-device
+            ' groups: a uniform's incidental slot-60 must NOT occlude another piece's forearm-60 segment
+            ' (Captain Cade: the gloves' forearm-60 was wrongly hidden by the uniform's BOD2 slot-60, with no
+            ' pipboy). A real Pipboy device keeps its 60 → it alone drives the swap (60 hidden, 160 shown).
+            Dim isPipboyDevice As Boolean = (own And SLOT_PIPBOY) <> 0UI AndAlso (own And (Not SLOT_PIPBOY)) = 0UI
+            groupSlots(gid) = If(isPipboyDevice, own, own And (Not SLOT_PIPBOY))
         Next
         Dim occupiedVisible As UInteger = 0UI
         For Each kv In groupSlots : occupiedVisible = occupiedVisible Or kv.Value : Next
+
+        ' [OCCL-DEBUG] gated by Logger.Enabled (zero cost when off; app-only diagnostic, B.1-compliant).
+        ' Dumps the per-actor occlusion inputs so a visual occlusion bug can be read from the log:
+        ' the rendered worn-slot union + each worn-item group's own-slot mask.
+        If Logger.Enabled Then
+            Dim grpSb As New System.Text.StringBuilder()
+            For Each kv In groupSlots : grpSb.Append($"g{kv.Key}=0x{kv.Value:X} ") : Next
+            Dim ovDbg = occupiedVisible
+            Dim grpDbg = grpSb.ToString().TrimEnd()
+            Dim rhDbg = renderHeadwear : Dim raDbg = renderArmor : Dim ruDbg = renderUnderarmor : Dim rbDbg = renderBody : Dim rgDbg = renderGore
+            Logger.LogLazy(Function() $"[OCCL] apply: headwear={rhDbg} armor={raDbg} underarmor={ruDbg} body={rbDbg} gore={rgDbg} occupiedVisible=0x{ovDbg:X} groups=[{grpDbg}]")
+        End If
 
         Dim hidden As Integer = 0
         Dim shown As Integer = 0
@@ -207,12 +236,15 @@ Friend Class NpcRenderHost
             Dim cat As MainForm.ShapeRenderCategory = MainForm.ShapeRenderCategory.Other
             LastRenderData.ShapeCategory.TryGetValue(shape, cat)
             ' Push the per-segment occlusion mask the render index filter (EnsureZapIndexBuffer) consumes.
-            ' Head parts: the head-region slice (HeadwearOcclusionSlots) of the rendered worn set, GATED by
-            ' Render headwear ("Render headwear" OFF ⇒ mask 0 ⇒ head parts revealed whole). Worn items: OR
-            ' of the OTHER rendered groups' slots (own group excluded ⇒ shared-slot safe — the Pipboy's slot
-            ' 60 still hides a Pipboy-aware outfit's biped-60 forearm). Everything else: no occlusion.
+            ' Head parts: the head-region slice of the rendered worn set, GATED by Render headwear
+            ' ("Render headwear" OFF ⇒ mask 0 ⇒ head parts revealed whole). The head-region slice is the
+            ' per-NPC, RACE-driven occlusion mask (RaceUtil.RaceHeadOcclusionMask, computed in
+            ' ResolvePreviewVariant and carried on LastRenderData.HeadOcclusionMask) — NOT the old fixed
+            ' HeadwearOcclusionSlots const, which assumed human slots {30,31,32,46,48,49} for every race.
+            ' Worn items: OR of the OTHER rendered groups' slots (own group excluded ⇒ shared-slot safe — the
+            ' Pipboy's slot 60 still hides a Pipboy-aware outfit's biped-60 forearm). Everything else: none.
             If cat = MainForm.ShapeRenderCategory.HeadPart Then
-                shape.CoveredSlotsMask = If(renderHeadwear, occupiedVisible And MainForm.HeadwearOcclusionSlots, 0UI)
+                shape.CoveredSlotsMask = If(renderHeadwear, occupiedVisible And LastRenderData.HeadOcclusionMask, 0UI)
             Else
                 Dim ownSlots As UInteger = 0UI
                 If LastRenderData.ShapeOwnSlots.TryGetValue(shape, ownSlots) AndAlso ownSlots <> 0UI Then
@@ -264,6 +296,27 @@ Friend Class NpcRenderHost
 
             shape.RenderHide = hide
             If hide Then hidden += 1 Else shown += 1
+
+            ' [OCCL-DEBUG] per-shape occlusion decision (gated; computes the predicted hidden-triangle
+            ' count via the SAME ComputeHiddenTriangles the renderer applies, so the log mirrors what the
+            ' viewport will do). Lets a visual occlusion error be read from fo4lib.log shape-by-shape.
+            If Logger.Enabled Then
+                Dim cmDbg = shape.CoveredSlotsMask
+                Dim ownDbg As UInteger = 0UI : LastRenderData.ShapeOwnSlots.TryGetValue(shape, ownDbg)
+                Dim siDbg = TryCast(shape.NifShape, NiflySharp.Blocks.BSSubIndexTriShape)
+                Dim bipedDbg As String = "-"
+                Dim hidDbg As Integer = 0, totDbg As Integer = 0
+                If siDbg IsNot Nothing Then
+                    bipedDbg = String.Join(",", BSTriShapeGeometry.GetBipedObjects(siDbg))
+                    Dim occlDbg = BSTriShapeGeometry.ComputeHiddenTriangles(siDbg, cmDbg)
+                    totDbg = occlDbg.Length
+                    For Each h In occlDbg
+                        If h Then hidDbg += 1
+                    Next
+                End If
+                Dim nmDbg = If(shape.ShapeName, "?"), catDbg = cat, hideDbg = hide
+                Logger.LogLazy(Function() $"[OCCL]   shape='{nmDbg}' cat={catDbg} own=0x{ownDbg:X} coveredMask=0x{cmDbg:X} hiddenTris={hidDbg}/{totDbg} biped={{{bipedDbg}}} renderHide={hideDbg}")
+            End If
         Next
         ' RefreshRender fuerza repaint inmediato del control GL (Invalidate). InvalidateRender
         ' va por el pipeline que requiere DirtyFlags y aquí no hay nada dirty — sólo flip de

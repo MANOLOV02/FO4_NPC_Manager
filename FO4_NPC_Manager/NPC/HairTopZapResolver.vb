@@ -2,19 +2,19 @@ Imports FO4_Base_Library
 Imports NiflySharp.Blocks
 Imports OpenTK.Mathematics
 
-''' <summary>Which FaceGen-hair partitions of a {30,31} piece get ZAPPED this render. The hairline
-''' (HNAM-extra) is the INVERSE complement of the main, per partition (modelo under-helmet de FO4):
-'''   MAIN     : una partición se zapea cuando su slot ESTÁ cubierto (top→zap si hasHairTop;
-'''              long→zap si hasHairLong).
-'''   HAIRLINE : una partición se zapea cuando su slot NO está cubierto (top→zap si NOT hasHairTop;
-'''              long→zap si NOT hasHairLong).
-'''   FULL-MASK (slot 32): la pieza entera se oculta vía IsOccludedByHeadwear, no por zap.
+''' <summary>Which FaceGen-hair partitions of a {30,31} piece get ZAPPED this render. Engine-faithful,
+''' RACE-driven, UNIFORM for the main hair AND each hairline (HNAM-extra) — they carry the same slot tags so
+''' they follow the IDENTICAL rule (NO inverse complement; the old inverse-hairline model was retired):
+'''   una partición se zapea ⟺ su slot está cubierto por el worn set Y cae dentro del canal de pelo de la
+'''   raza (RaceUtil.RaceHairMask; HumanRace = {30,31}). top→zap si slot 30 cubierto; long→zap si slot 31.
+'''   FULL-FACE CULL (face-cull slot, HumanRace 32): la pieza entera se oculta vía IsOccludedByHeadwear.
 ''' Bitmask: Top = v30−v31 (BSTriShapeGeometry.GetTopOnlyVertexIndices), Long = v31−v30
 ''' (BSTriShapeGeometry.GetLongOnlyVertexIndices). Both = unión de ambos = la pieza entera salvo el ring
-''' compartido; SelectWinningCandidates NO emite Both (la pieza entera ya cae en IsOccludedByHeadwear),
-''' pero el resolver lo soporta por completitud. Consumido por HairTopZapResolver (emite el/los canal(es)
-''' de zap) y ButtonSaveSceneNif_Click (compacta los verts con VertexMask=-1, agnóstico a la partición).
-''' </summary>
+''' compartido; SelectWinningCandidates NO emite Both (cuando ambas particiones están cubiertas la pieza ya
+''' cae en IsOccludedByHeadwear), pero el resolver lo soporta por completitud. Consumido por
+''' HairTopZapResolver (emite el/los canal(es) de zap) y ButtonSaveSceneNif_Click (compacta los verts con
+''' VertexMask=-1, agnóstico a la partición). La decisión de qué partición(es) zapear se toma en
+''' MainForm.SelectWinningCandidates (NpcMeshCollector) por la regla per-partición de arriba.</summary>
 <Flags>
 Public Enum HairZapParts
     None = 0
@@ -31,8 +31,8 @@ End Enum
 ' A FaceGen hair {30,31} mesh has two partitions: the TOP (biped 30 = crown) and the LONG (biped 31).
 ' Each piece (the main hair AND each hairline HNAM-extra) carries a per-shape HairZapParts telling this
 ' resolver WHICH partition(s) to zap this render (decided in MainForm.SelectWinningCandidates per the
-' complementary main/hairline model). The resolver emits a single zap MorphChannel whose Deltas carry the
-' UNION of the requested partitions' vertex indices:
+' RACE-driven, uniform per-partition rule — main and hairline identical). The resolver emits a single zap
+' MorphChannel whose Deltas carry the UNION of the requested partitions' vertex indices:
 '   Top  → v30 − v31 (GetTopOnlyVertexIndices)
 '   Long → v31 − v30 (GetLongOnlyVertexIndices)
 '   Both → union of the two.

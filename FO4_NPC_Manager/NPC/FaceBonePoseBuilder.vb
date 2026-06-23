@@ -16,7 +16,7 @@ Public Module FaceBonePoseBuilder
     ''' Should already have any LooksMenu overlay applied if the caller wants overlay-effective
     ''' values (FaceGenBuilder does, render path does too via ApplyPresetOverlayToNpcData).</param>
     ''' <param name="regionsFile">Parsed FacialBoneRegions JSON for the race+gender pair, e.g.
-    ''' the result of <see cref="MainForm.GetFacialBoneRegionsForRace"/>. Required.</param>
+    ''' the result of <see cref="NpcMorphPoseResolver.GetFacialBoneRegionsForRace"/>. Required.</param>
     Public Function BuildFaceBoneTransforms(npcData As NPC_Data,
                                              regionsFile As FacialBoneRegionsFile) As Poses_class
         If npcData Is Nothing OrElse regionsFile Is Nothing Then Return Nothing

@@ -31,6 +31,10 @@ Module Program
         Config_App.LoadConfig()
         NPC_Config.LoadConfig()
         Config_App.Current.Game = Config_App.Game_Enum.Fallout4
+        ' NPC render RELIES on per-segment occlusion (Pip-Boy 60/160 swap, head-part hiding). The shared
+        ' "draw hidden segments" toggle defaults True (WM inspection default) — force it OFF here so NPC
+        ' always occludes. NPC has no UI for it; this is unconditional.
+        Config_App.Current.Setting_DrawHiddenSegments = False
 
         ' Logger live BEFORE encoding init / preflight so every startup-time LogLazy is captured
         ' (encoding override INI, TES4 SNAM parse, plugin scan). Was in MainForm_Load — moved
@@ -111,6 +115,7 @@ Module Program
             Config_App.LoadConfig()
             NPC_Config.LoadConfig()
             Config_App.Current.Game = Config_App.Game_Enum.Fallout4
+            Config_App.Current.Setting_DrawHiddenSegments = False ' NPC needs per-segment occlusion (see Main path)
 
             Dim dataPath As String = If(dataOverride <> "", dataOverride, Config_App.Current.FO4EDataPath)
             If String.IsNullOrEmpty(dataPath) OrElse Not Directory.Exists(dataPath) Then

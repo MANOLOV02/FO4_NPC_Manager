@@ -6,7 +6,7 @@
 ''' NPC/ folder, not in FO4_Base_Library.
 '''
 ''' Single-source-of-truth for the orchestration "fetch NPC record → parse → apply overlay".
-''' Both the render path (MainForm.GetParsedNpc / MainForm.ApplyPresetOverlayToNpcData) and
+''' Both the render path (NpcRenderContext.GetParsedNpc / MainForm.ApplyPresetOverlayToNpcData) and
 ''' the offline bake (FaceGenBuilder) consume this module so the two views never drift.
 ''' </summary>
 Public Module NpcRecordOverlay
@@ -80,7 +80,7 @@ Public Module NpcRecordOverlay
         ApplyLmHdptReplacement(headParts, newHdptFormID, pluginManager)
     End Sub
 
-    ''' <param name="parseRace">Optional cached RACE parser (MainForm.ParseRaceCached). When Nothing,
+    ''' <param name="parseRace">Optional cached RACE parser (NpcRenderContext.ParseRaceCached). When Nothing,
     ''' falls back to a direct <c>RecordParsers.ParseRACE</c> — keeps the offline bake path pure.</param>
     Public Function ApplyPresetOverlayToNpcData(raw As NPC_Data,
                                                 selectedNpcFormID As UInteger,

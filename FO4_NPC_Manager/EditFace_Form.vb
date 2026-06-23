@@ -1138,7 +1138,7 @@ Public Class EditFace_Form
         If host Is Nothing OrElse host.LastRenderedState Is Nothing Then host = _mainForm?._renderHost
         Dim raw As String = ""
         If _mainForm IsNot Nothing AndAlso host IsNot Nothing AndAlso host.LastRenderedState IsNot Nothing Then
-            raw = MainForm.ResolveHairPaletteTexture(host, host.LastRenderedState, _pluginManager)
+            raw = NpcMaterialResolver.ResolveHairPaletteTexture(host, host.LastRenderedState, _pluginManager)
         End If
         ' TRANSIENT: ResolveHairPaletteTexture returns "" while the host/state (and the hair mesh
         ' material it samples) aren't loaded yet — a construction-time paint can hit this before the
@@ -2075,7 +2075,7 @@ Public Class EditFace_Form
         BoneRegionsContainer.Controls.Clear()
         _regionBars.Clear()
 
-        Dim regionsFile = MainForm.GetFacialBoneRegionsForRace(_race, _isFemale)
+        Dim regionsFile = NpcMorphPoseResolver.GetFacialBoneRegionsForRace(_race, _isFemale)
         If regionsFile Is Nothing OrElse regionsFile.Regions Is Nothing OrElse regionsFile.Regions.Count = 0 Then
             Dim empty As New Label() With {
                 .Text = $"No FacialBoneRegions JSON for {_race?.EditorID}/{(If(_isFemale, "Female", "Male"))}.",

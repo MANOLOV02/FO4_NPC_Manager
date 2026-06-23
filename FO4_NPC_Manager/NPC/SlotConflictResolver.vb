@@ -11,9 +11,10 @@ Imports System.Linq
 '''     6-10) AND an [A] bit (11-15) reserves its [A] bits and shields its whole mask; later pure-[A]
 '''     pieces that touch those bits are discarded (Bridget/DCGuard rule). Processed ascending Order.
 '''   • Pass 1b — atomic mutex, last-equipped wins: iterate descending Order; any-bit overlap with an
-'''     already-claimed bit discards the piece WHOLE (not partial). Pipboy bit (60) is stripped from
-'''     the conflict check (declarative tag, no geometry) but still occupies; Pipboy(60) ↔ [A] L Arm(42)
-'''     are treated as a virtual mutex.
+'''     already-claimed bit discards the piece WHOLE (not partial). Slot 60 (Pipboy) is stripped from the
+'''     conflict check — it is coexist-by-design (the engine never mutexes on it; ~all body outfits set it
+'''     for the 60/160 forearm swap, and the Pipboy device equips skip-conflict), but still occupies. There
+'''     is NO Pipboy↔[A]LArm mutex (removed 2026-06-22 — different bits, the engine coexists them).
 ''' Skin / slotless pieces do NOT belong here — the caller handles those separately (skin always
 ''' accepted, head parts occlusion-tested). Items passed with SlotMask=0 are returned as winners
 ''' untouched (no conflict), so the resolver is safe to call on a mixed list.</summary>
@@ -24,7 +25,6 @@ Public Module SlotConflictResolver
     Private ReadOnly U_MASK As UInteger = BuildRange(6, 10)   ' bits 6-10  — slots 36-40 [U] underlayer
     Private ReadOnly A_MASK As UInteger = BuildRange(11, 15)  ' bits 11-15 — slots 41-45 [A] over-armor
     Private Const SLOT_PIPBOY As UInteger = &H40000000UI   ' bit 30 — slot 60 Pipboy
-    Private Const SLOT_ALARM As UInteger = &H1000UI        ' bit 12 — slot 42 [A] L Arm
 
     Private Function BuildRange(loBit As Integer, hiBit As Integer) As UInteger
         Dim m As UInteger = 0UI
@@ -93,27 +93,27 @@ Public Module SlotConflictResolver
 
         ' Pass 1b — atomic mutex, last-equipped wins (descending Order).
         Dim acceptedReverse As New List(Of T)
-        Dim pipboyDeviceOccupied As Boolean = False   ' an actual Pipboy device (slot 60, no body coverage) was kept
         For Each it In slotted.Where(Function(x) Not extendedSet.Contains(x)).OrderByDescending(orderOf)
             Dim m = maskOf(it)
             ' [A] bits reserved by an extended underarmor → discard whole (Bridget exception).
             If (m And reservedA) <> 0UI Then res.Losers.Add(it) : Continue For
             ' Bits shielded by an extended underarmor → not displaceable.
             If (m And shielded) <> 0UI Then res.Losers.Add(it) : Continue For
-            ' Atomic any-bit overlap (Pipboy bit stripped — declarative tag, not real geometry).
+            ' Atomic any-bit overlap, last-equipped wins. Slot 60 (Pipboy) is stripped from the conflict
+            ' check because it is COEXIST-BY-DESIGN, not a competitive slot (RE Fallout4.exe + ESM data,
+            ' 2026-06-22): the engine never mutexes on slot 60. The only slot-60-ONLY item is the Pipboy
+            ' DEVICE (PipboyAA = 0x40000000), which equips via a per-instance skip-conflict flag (key-0x25,
+            ' resolver gate 0x14027FCC0); and ~every body outfit ALSO sets slot 60 (e.g. AAVTScientist =
+            ' 0x40000008 = 60+33) to carry the forearm 60/160 Pipboy-accommodation swap. Those outfits also
+            ' declare slot 33 (BODY), so two of them still mutex on 33 — only the Pipboy device's pure-60
+            ' overlap is neutralised. So "slot 60 is not a conflict bit" == the engine's net behaviour for
+            ' every reachable equip set. Slot 60 STILL flows into `occupied` below (the 60/160 segment swap
+            ' downstream reads it). There is NO engine mutex between Pipboy(60) and [A] L Arm(42): different
+            ' bits → SlotsOverlap=0 → they coexist (lab coats declare 60+[A]42 and worn with a Pipboy fine).
             Dim conflictMask = m And Not SLOT_PIPBOY
             Dim occupiedForCheck = occupied And Not SLOT_PIPBOY
             If (conflictMask And occupiedForCheck) <> 0UI Then res.Losers.Add(it) : Continue For
-            ' Virtual mutex Pipboy(60) ↔ [A] L Arm(42): the Pipboy DEVICE sits on the left forearm, same
-            ' place as [A] L Arm armor, so they can't coexist. SCOPED to an actual device — a piece that
-            ' declares the Pipboy slot but NO body coverage (BODY/[U]). An underarmor that merely lists
-            ' slot 60 as incidental coverage (e.g. raider "curtido" = BODY+[U]*+Pipboy) is NOT a device and
-            ' must not drop the left-arm over-armor (different bits → they layer normally per the canonical rule).
-            Dim mIsPipboyDevice As Boolean = (m And SLOT_PIPBOY) <> 0UI AndAlso (m And (BODY_MASK Or U_MASK)) = 0UI
-            If mIsPipboyDevice AndAlso (occupied And SLOT_ALARM) <> 0UI Then res.Losers.Add(it) : Continue For
-            If (m And SLOT_ALARM) <> 0UI AndAlso pipboyDeviceOccupied Then res.Losers.Add(it) : Continue For
             occupied = occupied Or m
-            If mIsPipboyDevice Then pipboyDeviceOccupied = True
             acceptedReverse.Add(it)
         Next
         acceptedReverse.Reverse()   ' back to chronological (ascending) order

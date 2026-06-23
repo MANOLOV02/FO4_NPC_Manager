@@ -257,7 +257,7 @@ Public Module FaceGenBuilder
             ' it ResolveActorSkinTextureSet returns Nothing for NPCs that leave WNAM=0 (e.g.
             ' vanilla children) and the bake falls through to HDPT.TNAM, which for ChildHeadRear
             ' is hardcoded SkinBodyChildMale — wrong for female actors.
-            MainForm.ApplyRaceFallbacks(state, MainForm.CreateOwnTraitsState(npcData), pluginManager)
+            NpcStateResolver.ApplyRaceFallbacks(state, NpcStateFactory.CreateOwnTraitsState(npcData), pluginManager)
         End If
         Dim result As New BuildResult()
 
@@ -355,7 +355,7 @@ Public Module FaceGenBuilder
             Dim raceRec = pluginManager.GetRecord(probeNpcRaw.RaceFormID)
             If raceRec IsNot Nothing AndAlso raceRec.Header.Signature = "RACE" Then
                 Dim raceProbe = RecordParsers.ParseRACE(raceRec, pluginManager)
-                regionsFile = MainForm.GetFacialBoneRegionsForRace(raceProbe, probeNpcRaw.IsFemale)
+                regionsFile = NpcMorphPoseResolver.GetFacialBoneRegionsForRace(raceProbe, probeNpcRaw.IsFemale)
             End If
         End If
         Dim bakeState As FaceGenBuildPipeline.BakeState =
@@ -1398,7 +1398,7 @@ Public Module FaceGenBuilder
         ' RACE-fallback rule the live render and the EditFace swatch use. Single source of truth
         ' (MainForm.ResolveHairPaletteTexture). Empty string when neither source resolves -- the
         ' builder then skips the palette branch; RGB-CLFM (HasColor) still works.
-        Dim hairLutPathBake As String = MainForm.ResolveHairPaletteTexture(host, state, pluginManager)
+        Dim hairLutPathBake As String = NpcMaterialResolver.ResolveHairPaletteTexture(host, state, pluginManager)
 
         Dim built = FaceTintLayerBuilder.Build(
             modelFormID:=npcFormID,

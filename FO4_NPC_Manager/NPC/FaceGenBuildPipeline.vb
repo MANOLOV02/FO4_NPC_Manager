@@ -6,7 +6,7 @@ Imports OpenTK.Mathematics
 ''' <summary>
 ''' Orchestrator for the FaceGen offline bake. Composes the same building blocks the runtime
 ''' renderer uses (NpcRecordOverlay, FaceSkeletonResolver, FaceBonePoseBuilder, MorphEngine,
-''' SkinBakeMath, MainForm.GetFacialBoneRegionsForRace) without ever needing a GL context or
+''' SkinBakeMath, NpcMorphPoseResolver.GetFacialBoneRegionsForRace) without ever needing a GL context or
 ''' an NpcRenderHost. Outputs per-shape "world vertices" (v_world) — the positions a vertex
 ''' would occupy after the runtime render produced it from the _facebones source mesh.
 '''

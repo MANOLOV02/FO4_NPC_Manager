@@ -16,7 +16,7 @@ Public Module FaceTintLayerBuilder
     ''' <paramref name="rootFormID"/>) + the RACE, then build the face tint inputs via the generic
     ''' <see cref="FaceTintInputBuilder.Build"/>. Returns an empty result when the NPC or RACE can't
     ''' be resolved. Signature is preserved verbatim so existing render/bake callers don't change.</summary>
-    ''' <param name="parseRace">Optional cached RACE parser (MainForm.ParseRaceCached). Threaded into
+    ''' <param name="parseRace">Optional cached RACE parser (NpcRenderContext.ParseRaceCached). Threaded into
     ''' the overlay + the local RACE parse; falls back to direct <c>RecordParsers.ParseRACE</c> when Nothing.</param>
     Public Function Build(modelFormID As UInteger,
                           rootFormID As UInteger,
