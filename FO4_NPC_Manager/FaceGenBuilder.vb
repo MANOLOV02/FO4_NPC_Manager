@@ -119,10 +119,17 @@ Public Module FaceGenBuilder
     ''' lado del `_2.dds` (CPU) para comparar GPU-vs-CPU. Atado a DebugMode (Logger.Enabled): en build Debug
     ''' sale automático junto con el `_2`; en Release no corre GL (bake CPU-only). Toca GL ⇒ el caller
     ''' (MainForm.BuildCharGenSingle) lo agenda SYNC en el hilo UI (contexto GL).</summary>
-    Public ReadOnly Property WriteGPUSandboxOutput As Boolean
+    ''' AHORA SWITCHEABLE: el CLI headless lo apaga (=False) para correr el bake 100% CPU sin GL (needGl=
+    ''' WriteGPUSandboxOutput), manteniendo el naming `_2` (DebugMode=Logger.Enabled). Default
+    ''' (override=Nothing) = comportamiento de la app (Logger.Enabled).
+    Private _gpuSandboxOverride As Boolean? = Nothing
+    Public Property WriteGPUSandboxOutput As Boolean
         Get
-            Return Logger.Enabled
+            Return If(_gpuSandboxOverride, Logger.Enabled)
         End Get
+        Set(value As Boolean)
+            _gpuSandboxOverride = value
+        End Set
     End Property
     ''' <summary>Tilde "Generate TGA" del diálogo CharGen Options (persistido en Config). Cuando está ON,
     ''' escribe un TGA UNCOMPRESSED al lado de cada .dds (CPU y, si corrió, GPU) — lossless aunque el .dds
@@ -211,7 +218,10 @@ Public Module FaceGenBuilder
         ' MakeCurrent en el hilo GL. En RELEASE el bake es 100% CPU (FaceTintCpuCompositor: decode/compose/
         ' encode por wrapper DirectXTex, sin GL) -> puede correr ASYNC en un thread de fondo, donde
         ' MakeCurrent FALLARIA (el contexto GL es per-thread, del hilo UI). Por eso se saltea fuera de debug.
-        If DebugMode Then
+        ' Gate por WriteGPUSandboxOutput (el que realmente corre GL = needGl), NO por DebugMode: el CLI
+        ' headless deja DebugMode=True (naming _2) pero WriteGPUSandboxOutput=False (sin GL) ⇒ no toca contexto.
+        ' En la app WriteGPUSandboxOutput==Logger.Enabled==DebugMode, así que el gate es idéntico al previo.
+        If WriteGPUSandboxOutput Then
             Try
                 host?.PreviewCtl?.EnsureContextCurrent()
             Catch ex As Exception
@@ -635,7 +645,11 @@ Public Module FaceGenBuilder
                         ' extension keeps us from clobbering the real CK FaceCustomization on
                         ' disk; for a real bake this would emit .dds and the engine would pick
                         ' those up directly.
-                        If hdpt.PartType = PartTypeFace AndAlso host IsNot Nothing AndAlso state IsNot Nothing Then
+                        ' Bake de texturas: corre con host (app) O headless-CPU (CLI: host=Nothing pero
+                        ' WriteGPUSandboxOutput=False ⇒ needGl=False, sólo el compositor CPU, que no necesita
+                        ' GL). El GL interno ya está gateado por needGl; ResolveHairPaletteTexture es null-safe.
+                        If hdpt.PartType = PartTypeFace AndAlso state IsNot Nothing _
+                           AndAlso (host IsNot Nothing OrElse Not WriteGPUSandboxOutput) Then
                             BakeFaceTextures(nif, cloned, srcNif, srcShape,
                                              hdpt, effectiveHeadPartType, applyMaterialOverrides,
                                              npcFormID, originPlugin,

@@ -101,6 +101,15 @@ Friend NotInheritable Class NpcStateFactory
             .TextureLightingColor = npc.TextureLightingColor
         }
         state.HeadPartFormIDs.AddRange(npc.HeadPartFormIDs)
+        ' [TEST: TPLT-traits-bucket] OBTE/OBTS rides the Traits walk (measured: inherited via Use Traits,
+        ' never Use Model/Animation — see TraitsState). Own OBTS for a non-inheriting NPC; the chain walk
+        ' replaces it with the template source's when Use Traits is set (e.g. Mr Gutsy rank variants).
+        state.ObjectTemplateOMODFormIDs.AddRange(npc.ObjectTemplateOMODFormIDs)
+        state.ObjectTemplateCombinations.AddRange(npc.ObjectTemplateCombinations)
+        state.HasObjectTemplate = npc.HasObjectTemplate
+        If npc.AttachParentSlotFormIDs IsNot Nothing Then
+            state.AttachParentSlotFormIDs.AddRange(npc.AttachParentSlotFormIDs)
+        End If
         Return state
     End Function
 
@@ -109,18 +118,6 @@ Friend NotInheritable Class NpcStateFactory
             .DefaultOutfitFormID = npc.DefaultOutfitFormID,
             .SleepOutfitFormID = npc.SleepOutfitFormID
         }
-    End Function
-
-    Public Shared Function CreateOwnModelAnimationState(npc As NPC_Data) As MainForm.ModelAnimationState
-        ' [TEST: TPLT-traits-bucket] Face-appearance fields moved to CreateOwnTraitsState.
-        Dim state As New MainForm.ModelAnimationState
-        state.ObjectTemplateOMODFormIDs.AddRange(npc.ObjectTemplateOMODFormIDs)
-        state.ObjectTemplateCombinations.AddRange(npc.ObjectTemplateCombinations)
-        state.HasObjectTemplate = npc.HasObjectTemplate
-        If npc.AttachParentSlotFormIDs IsNot Nothing Then
-            state.AttachParentSlotFormIDs.AddRange(npc.AttachParentSlotFormIDs)
-        End If
-        Return state
     End Function
 
 

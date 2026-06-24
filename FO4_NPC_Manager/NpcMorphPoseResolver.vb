@@ -337,7 +337,8 @@ Friend NotInheritable Class NpcMorphPoseResolver
                                         faceMorphsEnabled As Boolean,
                                         bodyWeightEnabled As Boolean,
                                         skeleton As SkeletonInstance,
-                                        Optional armaSculptOverride As Dictionary(Of String, System.Numerics.Vector3) = Nothing) As Poses_class
+                                        Optional armaSculptOverride As Dictionary(Of String, System.Numerics.Vector3) = Nothing,
+                                        Optional suppressNeckNnam As Boolean = False) As Poses_class
         Dim racePose = PoseMath.BuildRaceHeightPose(GetRaceHeight(state))
 
         Dim bwPose As Poses_class = Nothing
@@ -354,7 +355,13 @@ Friend NotInheritable Class NpcMorphPoseResolver
                 ' la escala RUNTIME del hueso compartido "Neck" que el engine aplica al esqueleto
                 ' vivo (cabeza+cuerpo) — se resuelve aquí y se pasa a BuildBodyWeightPose; ya NO
                 ' vive en el FMRS face-bone pose ni en el bake.
-                Dim neckScale = ResolveNeckNnamScale(state)
+                ' suppressNeckNnam (head skeleton): NNAM neck-fat scales the SHARED "Neck" ANIMATION bone,
+                ' which is an ANCESTOR of Head/face bones — scaling it propagates down the hierarchy and
+                ' balloons the whole face (ClairHutchins: SV [1.18,1.18,1.0], face +1.2u off the Neck
+                ' pivot). Body weight on the _skin LEAF bones (Layers 1/3) does NOT propagate, so the head
+                ' keeps those. Engine (project_morph_clamp_re): NNAM applies ONLY to literal "Neck".
+                Dim neckScale As (ScaleY As Single, ScaleZ As Single) = (1.0F, 1.0F)
+                If Not suppressNeckNnam Then neckScale = ResolveNeckNnamScale(state)
                 bwPose = PoseMath.BuildBodyWeightPose(bwData.Wt, bwData.Wm, bwData.Wf,
                                              bwData.GenderBlock, bwData.MrsvValues,
                                              neckScale.ScaleY, neckScale.ScaleZ, sculpt,

@@ -22,6 +22,8 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\FO4_Base_Library\FO4_Base_Library.vbproj" />
+    <!-- App: FaceGenBuilder.BuildCharGen (NIF+texturas, path CPU headless) para el bake batch del CLI. -->
+    <ProjectReference Include="..\FO4_NPC_Manager\NPC_Manager_FO4.vbproj" />
   </ItemGroup>
 
   <!-- The native DirectXTexWrapper is a C++ .vcxproj referenced transitively by the libraries.

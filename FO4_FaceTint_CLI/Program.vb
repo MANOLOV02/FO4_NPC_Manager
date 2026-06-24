@@ -32,6 +32,8 @@ Module Program
         Public OutDir As String = ""
         Public SweepDir As String = ""
         Public DumpDir As String = ""
+        Public BuildFaceGen As Boolean = False   ' --buildfacegen: bake completo (NIF + 3 DDS) headless via FaceGenBuilder (path CPU, _2 sandbox)
+        Public VanillaOnly As Boolean = False    ' --vanillaonly: con --buildfacegen, SALTEA NPCs cuyo record GANADOR no es vanilla/DLC (overridden por un mod) — para comparar fiel vs CK del BA2
         Public Info As Boolean = False
         Public Tints As Boolean = False
         Public TtedScan As Boolean = False
@@ -139,7 +141,11 @@ Module Program
 
         ' --- 5. Bootstrap headless: plugins (load order activa + TODOS los esps de la lista, aunque NO
         '        esten activos, + sus masters) + archivos (BA2+loose). Se monta UNA sola vez. ---
-        Console.WriteLine("[load] plugins...")
+        ' --vanillaonly: cargar SOLO plugins OFICIALES (vanilla+DLC+cc), excluyendo los mods del usuario
+        ' del Plugins.txt. Afecta plugins Y archivos (FilesDictionary también llama a ReadActiveLoadOrder)
+        ' ⇒ el bake sale 100% vanilla (records Y texturas), fiel al CK del BA2. Setear ANTES de cargar.
+        If opt.VanillaOnly Then PluginManager.OfficialPluginsOnly = True
+        Console.WriteLine("[load] plugins..." & If(opt.VanillaOnly, " (SOLO oficiales — vanilla/DLC/cc)", ""))
         Dim pm As New PluginManager()
         Dim loadList = PluginManager.ReadActiveLoadOrder()
         For Each esp In work.Select(Function(w) w.Esp).Distinct(StringComparer.OrdinalIgnoreCase)
@@ -299,9 +305,23 @@ Module Program
         FaceTintCpuCompositor.BeginBatchDecodeCache()
         Dim tintBytesCache As New Dictionary(Of String, Byte())(StringComparer.OrdinalIgnoreCase)
         Dim ok As Integer = 0, fail As Integer = 0
+        ' --buildfacegen: bake COMPLETO (NIF + 3 DDS) via FaceGenBuilder, headless. DebugMode=Logger.Enabled
+        ' (naming `_2` sandbox, NO pisa el CK bake del juego) + se APAGA el toggle GL (WriteGPUSandboxOutput)
+        ' para correr 100% CPU sin contexto GL. El `_2` queda en el FaceGeom/FaceCustomization del juego, que
+        ' es donde el compare tool lee "ours".
+        If opt.BuildFaceGen Then
+            Logger.Enabled = True
+            FO4_NPC_Manager.FaceGenBuilder.WriteGPUSandboxOutput = False
+        End If
         Try
             For Each w In work
-                If BakeNpc(pm, w.Esp, w.Edid, dataPath, opt.OutDir, tintBytesCache, opt.DumpDir) Then ok += 1 Else fail += 1
+                Dim okOne As Boolean
+                If opt.BuildFaceGen Then
+                    okOne = BuildFaceGenNpc(pm, w.Esp, w.Edid)
+                Else
+                    okOne = BakeNpc(pm, w.Esp, w.Edid, dataPath, opt.OutDir, tintBytesCache, opt.DumpDir)
+                End If
+                If okOne Then ok += 1 Else fail += 1
             Next
         Finally
             FaceTintCpuCompositor.EndBatchDecodeCache()
@@ -309,6 +329,40 @@ Module Program
         Console.WriteLine($"[done] {ok} ok / {fail} fail de {work.Count}")
         If ok = 0 Then Environment.ExitCode = 1
     End Sub
+
+    ''' <summary>--buildfacegen: bake COMPLETO (NIF + 3 DDS `_2` sandbox) de UN NPC via la MISMA ruta que la
+    ''' app (FaceGenBuilder.BuildCharGen), pero headless: host=Nothing (sin GL; el toggle WriteGPUSandboxOutput
+    ''' ya se apagó), appliedPresets vacío, willBePacked=False (loose), delegate de materiales = el del render
+    ''' (NpcMaterialResolver.ApplyShapeMaterialOverrides). El estado del NPC lo arma el propio BuildCharGen
+    ''' desde el record. Devuelve True si Success.</summary>
+    ''' <summary>--buildfacegen: bake COMPLETO (NIF + 3 DDS `_2` sandbox) de UN NPC headless via la MISMA
+    ''' ruta que la app (FaceGenBuilder.BuildCharGen). Con --vanillaonly el entorno ya cargó SOLO plugins
+    ''' oficiales (PluginManager.OfficialPluginsOnly), así que el record + las texturas son vanilla por
+    ''' construcción (sin override de mods). Devuelve True si Success.</summary>
+    Private Function BuildFaceGenNpc(pm As PluginManager, espName As String, edid As String) As Boolean
+        Dim npcFormID = ResolveEdid(pm, espName, edid)
+        If npcFormID = 0UI Then
+            Console.Error.WriteLine($"[skip] EDID='{edid}' no provisto por '{espName}'.") : Return False
+        End If
+        Try
+            Dim presets As New Dictionary(Of UInteger, FO4_NPC_Manager.LooksmenuLoader.LooksmenuPreset)
+            ' Resolver de materiales por-shape = el MISMO que el render (texture-paths/BGSM/tints fieles a CK).
+            ' NpcRenderContext solo necesita el PluginManager (sin GL). overlay = identidad (sin presets LM).
+            Dim ctx As New FO4_NPC_Manager.NpcRenderContext(pm)
+            Dim mres As New FO4_NPC_Manager.NpcMaterialResolver(ctx, Function(raw As NPC_Data, fid As UInteger) raw)
+            Dim res = FO4_NPC_Manager.FaceGenBuilder.BuildCharGen(
+                npcFormID, pm, presets, Nothing,
+                AddressOf mres.ApplyShapeMaterialOverrides,
+                willBePacked:=False)
+            If res Is Nothing OrElse Not res.Success Then
+                Console.Error.WriteLine($"[fail] {edid} (0x{npcFormID:X8}): {If(res Is Nothing, "null result", res.Summary)}") : Return False
+            End If
+            Console.WriteLine($"[ok] {edid} 0x{npcFormID:X8} -> {res.OutputPath} (kept={res.ShapesKept} dropped={res.ShapesDropped})")
+            Return True
+        Catch ex As Exception
+            Console.Error.WriteLine($"[fail] {edid} (0x{npcFormID:X8}): {ex.GetType().Name}: {ex.Message}") : Return False
+        End Try
+    End Function
 
     ''' <summary>Compone + escribe los TGA `_3` de UN NPC. Devuelve True si escribio. tintBytesCache es
     ''' compartido por todo el batch (bytes crudos de las texturas de layers/swaps leidos una sola vez);
@@ -3616,6 +3670,8 @@ Module Program
                 Case "--out" : a.OutDir = v : i += 2
                 Case "--sweep" : a.SweepDir = v : i += 2
                 Case "--dump" : a.DumpDir = v : i += 2
+                Case "--buildfacegen" : a.BuildFaceGen = True : i += 1
+                Case "--vanillaonly" : a.VanillaOnly = True : i += 1
                 Case "--rankby" : a.RankBy = v.ToLowerInvariant() : i += 2
                 Case "--info" : a.Info = True : i += 1
                 Case "--tints" : a.Tints = True : i += 1

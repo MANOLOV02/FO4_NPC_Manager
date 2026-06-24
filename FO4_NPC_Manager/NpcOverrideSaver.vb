@@ -447,6 +447,20 @@ Public Module NpcOverrideSaver
             For Each d In ctx.OutfitDrafts
                 If d Is Nothing OrElse d.FormID = OutfitDraft.PreviewDraftFormID Then Continue For
                 If Not (d.IsDirty OrElse referencedDoft.Contains(d.FormID)) Then Continue For
+                ' An OVERRIDE draft (user edited an existing OTFT in the Create tab) targets a real OTFT
+                ' FormID. When that OTFT was preserved from the target plugin in Phase 2a it is already in
+                ' outfitEntries with its OLD items, so the dedup below would skip the draft and silently drop
+                ' the user's edits (the stale preserved version wins). Replace the preserved entry's items
+                ' with the draft's edited items so the override is actually persisted. (A cross-plugin
+                ' override target is not in outfitEntries → falls through and is emitted as a new override.)
+                If d.IsOverride Then
+                    Dim preserved = outfitEntries.FirstOrDefault(Function(o) o.FormID = d.FormID)
+                    If preserved IsNot Nothing Then
+                        preserved.ItemArmoFormIDs.Clear()
+                        preserved.ItemArmoFormIDs.AddRange(d.ItemFormIDs)
+                        Continue For
+                    End If
+                End If
                 If Not alreadyEmitted.Add(d.FormID) Then Continue For
                 Dim oeEdid As String
                 If d.IsOverride Then

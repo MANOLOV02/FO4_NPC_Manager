@@ -46,6 +46,8 @@ Partial Class CharGenOptionsForm
         ComboDComp = New ComboBox()
         LblDSrc = New Label()
         ComboDSrc = New ComboBox()
+        LblDTexSrc = New Label()
+        ComboDTexSrc = New ComboBox()
         LblDOut = New Label()
         ComboDOut = New ComboBox()
         LblDMask = New Label()
@@ -150,7 +152,7 @@ Partial Class CharGenOptionsForm
         TabMain.Location = New Point(12, 12)
         TabMain.Name = "TabMain"
         TabMain.SelectedIndex = 0
-        TabMain.Size = New Size(640, 428)
+        TabMain.Size = New Size(640, 458)
         TabMain.TabIndex = 0
         ' 
         ' TabPageSize
@@ -327,7 +329,7 @@ Partial Class CharGenOptionsForm
         TabPageConv.Location = New Point(4, 24)
         TabPageConv.Name = "TabPageConv"
         TabPageConv.Padding = New Padding(3)
-        TabPageConv.Size = New Size(632, 400)
+        TabPageConv.Size = New Size(632, 430)
         TabPageConv.TabIndex = 1
         TabPageConv.Text = "FaceTint Conventions"
         TabPageConv.UseVisualStyleBackColor = True
@@ -340,6 +342,8 @@ Partial Class CharGenOptionsForm
         GroupConvDiffuse.Controls.Add(ComboDComp)
         GroupConvDiffuse.Controls.Add(LblDSrc)
         GroupConvDiffuse.Controls.Add(ComboDSrc)
+        GroupConvDiffuse.Controls.Add(LblDTexSrc)
+        GroupConvDiffuse.Controls.Add(ComboDTexSrc)
         GroupConvDiffuse.Controls.Add(LblDOut)
         GroupConvDiffuse.Controls.Add(ComboDOut)
         GroupConvDiffuse.Controls.Add(LblDMask)
@@ -353,7 +357,7 @@ Partial Class CharGenOptionsForm
         GroupConvDiffuse.Controls.Add(CheckDSeedG22)
         GroupConvDiffuse.Location = New Point(8, 8)
         GroupConvDiffuse.Name = "GroupConvDiffuse"
-        GroupConvDiffuse.Size = New Size(200, 292)
+        GroupConvDiffuse.Size = New Size(200, 322)
         GroupConvDiffuse.TabIndex = 0
         GroupConvDiffuse.TabStop = False
         GroupConvDiffuse.Text = "Diffuse"
@@ -401,7 +405,7 @@ Partial Class CharGenOptionsForm
         LblDSrc.Name = "LblDSrc"
         LblDSrc.Size = New Size(23, 15)
         LblDSrc.TabIndex = 4
-        LblDSrc.Text = "Src"
+        LblDSrc.Text = "Src (solid)"
         ' 
         ' ComboDSrc
         ' 
@@ -411,11 +415,29 @@ Partial Class CharGenOptionsForm
         ComboDSrc.Name = "ComboDSrc"
         ComboDSrc.Size = New Size(108, 23)
         ComboDSrc.TabIndex = 5
-        ' 
+        '
+        ' LblDTexSrc
+        '
+        LblDTexSrc.AutoSize = True
+        LblDTexSrc.Location = New Point(8, 114)
+        LblDTexSrc.Name = "LblDTexSrc"
+        LblDTexSrc.Size = New Size(23, 15)
+        LblDTexSrc.TabIndex = 6
+        LblDTexSrc.Text = "Src (texture)"
+        '
+        ' ComboDTexSrc
+        '
+        ComboDTexSrc.DropDownStyle = ComboBoxStyle.DropDownList
+        ComboDTexSrc.Items.AddRange(New Object() {"Linear", "Srgb", "G22", "G24"})
+        ComboDTexSrc.Location = New Point(84, 111)
+        ComboDTexSrc.Name = "ComboDTexSrc"
+        ComboDTexSrc.Size = New Size(108, 23)
+        ComboDTexSrc.TabIndex = 7
+        '
         ' LblDOut
         ' 
         LblDOut.AutoSize = True
-        LblDOut.Location = New Point(8, 114)
+        LblDOut.Location = New Point(8, 144)
         LblDOut.Name = "LblDOut"
         LblDOut.Size = New Size(45, 15)
         LblDOut.TabIndex = 6
@@ -425,7 +447,7 @@ Partial Class CharGenOptionsForm
         ' 
         ComboDOut.DropDownStyle = ComboBoxStyle.DropDownList
         ComboDOut.Items.AddRange(New Object() {"Linear", "Srgb", "G22", "G24"})
-        ComboDOut.Location = New Point(84, 111)
+        ComboDOut.Location = New Point(84, 141)
         ComboDOut.Name = "ComboDOut"
         ComboDOut.Size = New Size(108, 23)
         ComboDOut.TabIndex = 7
@@ -433,7 +455,7 @@ Partial Class CharGenOptionsForm
         ' LblDMask
         ' 
         LblDMask.AutoSize = True
-        LblDMask.Location = New Point(8, 144)
+        LblDMask.Location = New Point(8, 174)
         LblDMask.Name = "LblDMask"
         LblDMask.Size = New Size(35, 15)
         LblDMask.TabIndex = 8
@@ -443,7 +465,7 @@ Partial Class CharGenOptionsForm
         ' 
         ComboDMask.DropDownStyle = ComboBoxStyle.DropDownList
         ComboDMask.Items.AddRange(New Object() {"Raw", "SrgbEncode", "SrgbDecode", "G22Encode", "G22Decode", "G24Encode", "G24Decode"})
-        ComboDMask.Location = New Point(84, 141)
+        ComboDMask.Location = New Point(84, 171)
         ComboDMask.Name = "ComboDMask"
         ComboDMask.Size = New Size(108, 23)
         ComboDMask.TabIndex = 9
@@ -451,7 +473,7 @@ Partial Class CharGenOptionsForm
         ' LblDFw
         ' 
         LblDFw.AutoSize = True
-        LblDFw.Location = New Point(8, 174)
+        LblDFw.Location = New Point(8, 204)
         LblDFw.Name = "LblDFw"
         LblDFw.Size = New Size(66, 15)
         LblDFw.TabIndex = 10
@@ -461,7 +483,7 @@ Partial Class CharGenOptionsForm
         ' 
         ComboDFw.DropDownStyle = ComboBoxStyle.DropDownList
         ComboDFw.Items.AddRange(New Object() {"OverPrev", "OverBase", "AddBase", "ModSrc"})
-        ComboDFw.Location = New Point(84, 171)
+        ComboDFw.Location = New Point(84, 201)
         ComboDFw.Name = "ComboDFw"
         ComboDFw.Size = New Size(108, 23)
         ComboDFw.TabIndex = 11
@@ -469,7 +491,7 @@ Partial Class CharGenOptionsForm
         ' LblDSoft
         ' 
         LblDSoft.AutoSize = True
-        LblDSoft.Location = New Point(8, 204)
+        LblDSoft.Location = New Point(8, 234)
         LblDSoft.Name = "LblDSoft"
         LblDSoft.Size = New Size(55, 15)
         LblDSoft.TabIndex = 12
@@ -479,7 +501,7 @@ Partial Class CharGenOptionsForm
         ' 
         ComboDSoft.DropDownStyle = ComboBoxStyle.DropDownList
         ComboDSoft.Items.AddRange(New Object() {"W3C", "Gimp", "Illusions", "Pegtop"})
-        ComboDSoft.Location = New Point(84, 201)
+        ComboDSoft.Location = New Point(84, 231)
         ComboDSoft.Name = "ComboDSoft"
         ComboDSoft.Size = New Size(108, 23)
         ComboDSoft.TabIndex = 13
@@ -487,7 +509,7 @@ Partial Class CharGenOptionsForm
         ' LblDBlend
         ' 
         LblDBlend.AutoSize = True
-        LblDBlend.Location = New Point(8, 234)
+        LblDBlend.Location = New Point(8, 264)
         LblDBlend.Name = "LblDBlend"
         LblDBlend.Size = New Size(37, 15)
         LblDBlend.TabIndex = 14
@@ -498,7 +520,7 @@ Partial Class CharGenOptionsForm
         ComboDBlend.DropDownStyle = ComboBoxStyle.DropDownList
         ComboDBlend.Enabled = False
         ComboDBlend.Items.AddRange(New Object() {"From record"})
-        ComboDBlend.Location = New Point(84, 231)
+        ComboDBlend.Location = New Point(84, 261)
         ComboDBlend.Name = "ComboDBlend"
         ComboDBlend.Size = New Size(108, 23)
         ComboDBlend.TabIndex = 15
@@ -506,7 +528,7 @@ Partial Class CharGenOptionsForm
         ' CheckDSeedG22
         ' 
         CheckDSeedG22.AutoSize = True
-        CheckDSeedG22.Location = New Point(8, 264)
+        CheckDSeedG22.Location = New Point(8, 294)
         CheckDSeedG22.Name = "CheckDSeedG22"
         CheckDSeedG22.Size = New Size(126, 19)
         CheckDSeedG22.TabIndex = 16
@@ -864,7 +886,7 @@ Partial Class CharGenOptionsForm
         ' 
         ' ButtonOK
         ' 
-        ButtonOK.Location = New Point(488, 450)
+        ButtonOK.Location = New Point(488, 480)
         ButtonOK.Name = "ButtonOK"
         ButtonOK.Size = New Size(78, 26)
         ButtonOK.TabIndex = 1
@@ -874,7 +896,7 @@ Partial Class CharGenOptionsForm
         ' ButtonCancel
         ' 
         ButtonCancel.DialogResult = DialogResult.Cancel
-        ButtonCancel.Location = New Point(574, 450)
+        ButtonCancel.Location = New Point(574, 480)
         ButtonCancel.Name = "ButtonCancel"
         ButtonCancel.Size = New Size(78, 26)
         ButtonCancel.TabIndex = 2
@@ -1112,7 +1134,7 @@ Partial Class CharGenOptionsForm
         GroupConvDWsByOp.Controls.Add(ComboDWsSoftLight)
         GroupConvDWsByOp.Controls.Add(LblDWsHardLight)
         GroupConvDWsByOp.Controls.Add(ComboDWsHardLight)
-        GroupConvDWsByOp.Location = New Point(8, 308)
+        GroupConvDWsByOp.Location = New Point(8, 338)
         GroupConvDWsByOp.Name = "GroupConvDWsByOp"
         GroupConvDWsByOp.Size = New Size(616, 84)
         GroupConvDWsByOp.TabIndex = 4
@@ -1215,7 +1237,7 @@ Partial Class CharGenOptionsForm
         AutoScaleDimensions = New SizeF(7F, 15F)
         AutoScaleMode = AutoScaleMode.Font
         CancelButton = ButtonCancel
-        ClientSize = New Size(664, 488)
+        ClientSize = New Size(664, 518)
         Controls.Add(TabMain)
         Controls.Add(ButtonOK)
         Controls.Add(ButtonCancel)
@@ -1272,6 +1294,8 @@ Partial Class CharGenOptionsForm
     Friend WithEvents ComboDComp As System.Windows.Forms.ComboBox
     Friend WithEvents LblDSrc As System.Windows.Forms.Label
     Friend WithEvents ComboDSrc As System.Windows.Forms.ComboBox
+    Friend WithEvents LblDTexSrc As System.Windows.Forms.Label
+    Friend WithEvents ComboDTexSrc As System.Windows.Forms.ComboBox
     Friend WithEvents LblDOut As System.Windows.Forms.Label
     Friend WithEvents ComboDOut As System.Windows.Forms.ComboBox
     Friend WithEvents LblDMask As System.Windows.Forms.Label

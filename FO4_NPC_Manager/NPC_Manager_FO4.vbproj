@@ -23,4 +23,10 @@
     <ProjectReference Include="..\..\FO4_Base_Library\FO4_Base_Library.vbproj" />
   </ItemGroup>
 
+  <!-- El CLI headless (FO4_FaceTint_CLI) llama FaceGenBuilder.BuildCharGen + NpcMaterialResolver
+       (Friend) para bakear NIF+texturas sin GUI/GL. Sin cambiar la visibilidad del API interno. -->
+  <ItemGroup>
+    <InternalsVisibleTo Include="FO4_FaceTint_CLI" />
+  </ItemGroup>
+
 </Project>

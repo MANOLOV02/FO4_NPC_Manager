@@ -683,33 +683,27 @@ Public Class MainForm
         Public WeightThin As Single?
         Public WeightMuscular As Single?
         Public WeightFat As Single?
-        ' [TEST: TPLT-traits-bucket] Face-appearance fields moved here from ModelAnimationState.
-        ' xEdit's wbTemplateFlags lists 15 bits but doesn't pin each NPC_ subrecord to a specific
-        ' bit. The previous bucketing (HeadParts/HairColor/HeadTexture/QNAM under ModelAnimation)
-        ' was an undocumented convention. Trying these under Traits since the CK label "Use Traits"
-        ' covers the actor's visual identity (race, skin, head, hair) — same conceptual bucket as
-        ' RNAM/WNAM/MWGT. Revert by moving the 5 fields back to ModelAnimationState if any cohort
-        ' regression appears.
+        ' [TEST: TPLT-traits-bucket] Face-appearance fields live in the Traits bucket (moved here from
+        ' the former ModelAnimationState). xEdit's wbTemplateFlags lists 15 bits but doesn't pin each
+        ' NPC_ subrecord to a specific bit. These ride "Use Traits" since the CK Traits tab covers the
+        ' actor's visual identity (race, skin, head, hair) — same conceptual bucket as RNAM/WNAM/MWGT.
+        ' The OBTS fields below joined this bucket after measurement (see their note); the now-empty
+        ' Model/Animation bucket was removed, so a revert means re-introducing it.
         Public HeadTextureFormID As UInteger
         Public HairColorFormID As UInteger
         Public FacialHairColorFormID As UInteger
         Public HasTextureLighting As Boolean
         Public TextureLightingColor As Color = Color.Empty
         Public HeadPartFormIDs As New List(Of UInteger)
-    End Class
-
-    Friend Class InventoryState
-        Public DefaultOutfitFormID As UInteger
-        Public SleepOutfitFormID As UInteger
-    End Class
-
-    Friend Class ModelAnimationState
-        ' [TEST: TPLT-traits-bucket] HeadTexture/HairColor/FacialHairColor/HeadParts/QNAM moved
-        ' to TraitsState. ObjectTemplateOMODFormIDs kept here — OBTS combinations are model
-        ' assembly (robot parts), conceptually closer to Model/Animation than to Traits.
+        ' [TEST: TPLT-traits-bucket] NPC ObjectTemplate (OBTE/OBTS) MOVED here from ModelAnimationState.
+        ' The old comment claimed OBTS was "model assembly, closer to Model/Animation". MEASURED wrong:
+        ' GutsyTemplateProbe over all 4365 load-order NPC_ shows ZERO inherit OBTS via Use Model/Animation
+        ' (bit6); the rank variants (encMrGutsy02/03/04, SentryBot/Assaultron/Synth encounters) reach the
+        ' OBTS holder ONLY via Use Traits (bit0) — 225 NPCs go from empty→rendered, 0 regressions. Matches
+        ' the CK, where the "Object Template" section lives on the Traits tab. So OBTS rides the Traits walk.
         ''' <summary>Legacy flat list of OMOD FormIDs from combo #0 (kept for back-compat).</summary>
         Public ObjectTemplateOMODFormIDs As New List(Of UInteger)
-        ''' <summary>Full OBTE/OBTS combinations — used by the new robot path resolver.</summary>
+        ''' <summary>Full OBTE/OBTS combinations — used by the robot-chunk path resolver.</summary>
         Public ObjectTemplateCombinations As New List(Of FO4_Base_Library.NPC_ObjectTemplateCombination)
         ''' <summary>True when source NPC_ had an OBTE present.</summary>
         Public HasObjectTemplate As Boolean = False
@@ -717,6 +711,11 @@ Public Class MainForm
         ''' as the initial pool for OBTE OMOD AP-filter. Brahmin: [ap_HornsL, ap_HornsR, ap_PackBase];
         ''' Codsworth: presumed empty/different — AP filter only applies when NPC.APPR != empty.</summary>
         Public AttachParentSlotFormIDs As New List(Of UInteger)
+    End Class
+
+    Friend Class InventoryState
+        Public DefaultOutfitFormID As UInteger
+        Public SleepOutfitFormID As UInteger
     End Class
 
     Friend Class NPCVisualState
@@ -976,11 +975,12 @@ Public Class MainForm
         ' idempotente; ApplyBoneMorphPose no borra el mount).
         _mountingResolver.ApplyMountPlanForActor(host.LastSkeletonInstance, host.LastRenderData)
 
-        ' Head skeleton: re-pose WITHOUT body weight (False) so the neck-fat / MWGT scale never deforms the
-        ' FaceGen head + head parts (matches the bake). Separate instance from the body, so toggling body
-        ' weight only changes the body. fmrsEnabled still honored (the head keeps its FMRS face morphs).
+        ' Head skeleton: re-pose WITH body weight but NNAM neck-fat SUPPRESSED (suppressNeckNnam:=True).
+        ' Body weight scales the _skin LEAF bones (no hierarchy propagation) so the head's neck/jaw track
+        ' the body; NNAM is excluded because it scales the shared "Neck" ANCESTOR bone and would balloon
+        ' the whole face. fmrsEnabled still honored (the head keeps its FMRS face morphs).
         If host.LastHeadSkeletonInstance IsNot Nothing AndAlso Not ReferenceEquals(host.LastHeadSkeletonInstance, host.LastSkeletonInstance) Then
-            Dim headPose = _morphPoseResolver.BuildMergedNpcPose(host.LastRenderedState, host.LastRenderData, fmrsEnabled, False, host.LastHeadSkeletonInstance, Nothing)
+            Dim headPose = _morphPoseResolver.BuildMergedNpcPose(host.LastRenderedState, host.LastRenderData, fmrsEnabled, bwEnabled, host.LastHeadSkeletonInstance, Nothing, suppressNeckNnam:=True)
             host.LastHeadSkeletonInstance.ApplyBoneMorphPose(headPose)
         End If
 
@@ -4276,14 +4276,15 @@ Public Class MainForm
         ' Bone-morphs → capa MorphDeltaTransform (deja libre la capa pose/animación).
         inst.ApplyBoneMorphPose(basePose)
 
-        ' Head skeleton: SAME morph/FMRS pose as `inst` but WITHOUT body weight (bodyWeightEnabled:=False),
-        ' so the scaled "Neck" bone (NNAM neck-fat + MWGT bone scaling) does NOT propagate down to
-        ' Head/FaceBones and deform the FaceGen head + head parts. Head-part shapes are routed here (loop
-        ' below); animation frames are applied to it too (ApplyAnimFrame). Matches the FaceGen bake, which
-        ' excludes body weight from the head. Built unconditionally + separate so toggling body weight only
-        ' re-poses the BODY skeleton and the head never deforms. No chunk/pipboy injection (head parts have none).
+        ' Head skeleton: SAME morph/FMRS pose as `inst` WITH body weight, but NNAM neck-fat SUPPRESSED
+        ' (suppressNeckNnam:=True). Body weight scales the _skin LEAF bones (Head_skin/Face_skin/Neck1_skin
+        ' + shared neck/chest), which do NOT propagate down the hierarchy, so the head's neck/jaw thickness
+        ' tracks the body. NNAM is excluded because it scales the shared "Neck" ANCESTOR bone, propagating a
+        ' [1+nnam,1+nnam,1] scale into the whole face (balloons it). Head-part shapes are routed here (loop
+        ' below); animation frames are applied to it too (ApplyAnimFrame). Built unconditionally + separate
+        ' so it stays in sync with the BODY skeleton. No chunk/pipboy injection (head parts have none).
         Dim headInst = PrepareSkeleton(state, renderData)
-        Dim headPose = _morphPoseResolver.BuildMergedNpcPose(state, renderData, boneMorphsEnabled, False, headInst, Nothing)
+        Dim headPose = _morphPoseResolver.BuildMergedNpcPose(state, renderData, boneMorphsEnabled, bodyWeightEnabled, headInst, Nothing, suppressNeckNnam:=True)
         headInst.ApplyBoneMorphPose(headPose)
         Logger.LogLazy(Function() $"[PERF-BRP] initial PrepareSkeleton+BuildMergedNpcPose (+head) @ {_swBrp.ElapsedMilliseconds}ms")
 

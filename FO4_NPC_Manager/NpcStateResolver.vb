@@ -50,11 +50,9 @@ Friend NotInheritable Class NpcStateResolver
         Dim warnings As New List(Of String)
         Dim traits = ResolveTraitsStateFromNPC(npc.FormID, New HashSet(Of UInteger)(), warnings)
         Dim inventory = ResolveInventoryStateFromNPC(npc.FormID, New HashSet(Of UInteger)(), warnings)
-        Dim model = ResolveModelAnimationStateFromNPC(npc.FormID, New HashSet(Of UInteger)(), warnings)
 
         If traits Is Nothing Then traits = NpcStateFactory.CreateOwnTraitsState(npc)
         If inventory Is Nothing Then inventory = NpcStateFactory.CreateOwnInventoryState(npc)
-        If model Is Nothing Then model = NpcStateFactory.CreateOwnModelAnimationState(npc)
 
         ' [TEST: TPLT-traits-bucket] HeadTexture/HairColor/FacialHairColor/HeadParts/QNAM
         ' now sourced from `traits` (was `model`). OBTS combinations stay on `model`.
@@ -75,10 +73,13 @@ Friend NotInheritable Class NpcStateResolver
         }
 
         state.HeadPartFormIDs.AddRange(traits.HeadPartFormIDs)
-        state.ObjectTemplateOMODFormIDs.AddRange(model.ObjectTemplateOMODFormIDs)
-        state.ObjectTemplateCombinations.AddRange(model.ObjectTemplateCombinations)
-        state.HasObjectTemplate = model.HasObjectTemplate
-        state.AttachParentSlotFormIDs.AddRange(model.AttachParentSlotFormIDs)
+        ' OBTE/OBTS + APPR now ride the Traits chain (see TraitsState / CreateOwnTraitsState): inherited
+        ' via Use Traits, not Use Model/Animation. Base robot (no flags) -> own OBTS; rank variants
+        ' (Use Traits) -> template source's OBTS. Measured 225 fixes / 0 regressions across the load order.
+        state.ObjectTemplateOMODFormIDs.AddRange(traits.ObjectTemplateOMODFormIDs)
+        state.ObjectTemplateCombinations.AddRange(traits.ObjectTemplateCombinations)
+        state.HasObjectTemplate = traits.HasObjectTemplate
+        state.AttachParentSlotFormIDs.AddRange(traits.AttachParentSlotFormIDs)
         ApplyRaceFallbacks(state, traits, _ctx.PluginManager, AddressOf _ctx.ParseRaceCached)
         state.HeadPartFormIDs = state.HeadPartFormIDs.Where(Function(id) id <> 0UI).Distinct().ToList()
 
@@ -329,24 +330,11 @@ Friend NotInheritable Class NpcStateResolver
         Return own
     End Function
 
-    Private Function ResolveModelAnimationStateFromNPC(formID As UInteger, visited As HashSet(Of UInteger), warnings As List(Of String)) As MainForm.ModelAnimationState
-        Dim npc = _ctx.GetParsedNpc(formID)
-        If npc Is Nothing Then Return Nothing
-
-        Dim own = NpcStateFactory.CreateOwnModelAnimationState(npc)
-        If visited.Contains(formID) Then Return own
-        If Not NpcTemplateHelpers.HasTemplateFlag(npc.TemplateFlags, NPC_TemplateCategory.ModelAnimation) Then Return own
-
-        visited.Add(formID)
-        Dim sourceFormID = NpcTemplateHelpers.ResolveTemplateSourceFormID(npc, NPC_TemplateCategory.ModelAnimation)
-        Dim resolved = ResolveModelAnimationStateFromTemplateSource(sourceFormID, visited, warnings)
-        visited.Remove(formID)
-
-        If resolved IsNot Nothing Then Return resolved
-
-        warnings.Add($"Model/Animation template unresolved for {NpcManagerFormat.DescribeNpc(npc)}")
-        Return own
-    End Function
+    ' NOTE: the former Model/Animation bucket (ResolveModelAnimationStateFromNPC + its template-source
+    ' helper + ModelAnimationState/CreateOwnModelAnimationState) was removed: the only data it ever
+    ' carried was the NPC ObjectTemplate (OBTE/OBTS), which is inherited via Use Traits — not Use
+    ' Model/Animation — so it now rides the Traits chain (ResolveTraitsStateFromNPC). Measured across
+    ' all 4365 load-order NPC_: 225 fixes, 0 regressions (GutsyTemplateProbe).
 
     Private Function ResolveTraitsStateFromTemplateSource(sourceFormID As UInteger, visited As HashSet(Of UInteger), warnings As List(Of String)) As MainForm.TraitsState
         Dim sourceRecord = ResolveTemplateSourceRecord(sourceFormID, "Traits", visited, warnings)
@@ -358,12 +346,6 @@ Friend NotInheritable Class NpcStateResolver
         Dim sourceRecord = ResolveTemplateSourceRecord(sourceFormID, "Inventory", visited, warnings)
         If sourceRecord Is Nothing Then Return Nothing
         Return ResolveInventoryStateFromNPC(sourceRecord.Header.FormID, visited, warnings)
-    End Function
-
-    Private Function ResolveModelAnimationStateFromTemplateSource(sourceFormID As UInteger, visited As HashSet(Of UInteger), warnings As List(Of String)) As MainForm.ModelAnimationState
-        Dim sourceRecord = ResolveTemplateSourceRecord(sourceFormID, "Model/Animation", visited, warnings)
-        If sourceRecord Is Nothing Then Return Nothing
-        Return ResolveModelAnimationStateFromNPC(sourceRecord.Header.FormID, visited, warnings)
     End Function
 
     Private Function ResolveTemplateSourceRecord(sourceFormID As UInteger, categoryName As String, visited As HashSet(Of UInteger), warnings As List(Of String)) As PluginRecord

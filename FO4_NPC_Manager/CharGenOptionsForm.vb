@@ -181,6 +181,9 @@ Public Class CharGenOptionsForm
         LoadBucket(s.Swap, ComboSWork, ComboSComp, ComboSSrc, ComboSOut, ComboSMask, ComboSFw, ComboSSoft)
         LoadDWsByOp(s.DiffuseWorkingSpaceByBlend)
         CheckDSeedG22.Checked = s.SeedDiffuseG22
+        ' Src de las TEXTURAS tint del diffuse (separado del Src del color sólido = ComboDSrc). Lo consume el
+        ' resolver para isTextureSet (+ el base-seed). El Revert lo resetea (LoadConvention con un default fresco).
+        ComboDTexSrc.SelectedIndex = CInt(s.DiffuseTextureSrcSpace)
     End Sub
 
     ''' <summary>Carga los 5 working-space POR BLEND OP del diffuse (parametrizable, engine-faithful por
@@ -350,6 +353,7 @@ Public Class CharGenOptionsForm
         If s.DiffuseWorkingSpaceByBlend Is Nothing Then s.DiffuseWorkingSpaceByBlend = New FaceTintConvention.FaceTintBlendWorkingSpaces()
         SaveDWsByOp(s.DiffuseWorkingSpaceByBlend)
         s.SeedDiffuseG22 = CheckDSeedG22.Checked
+        s.DiffuseTextureSrcSpace = CType(ComboDTexSrc.SelectedIndex, FaceTintConvention.FaceTintWorkingSpace)
 
         ' --- Tab "Tint Order": persistir reglas de orden + SkinTonePlacement. ---
         Dim sortS = c.Setting_FaceTintSort
