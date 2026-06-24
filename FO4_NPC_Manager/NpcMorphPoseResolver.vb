@@ -338,7 +338,7 @@ Friend NotInheritable Class NpcMorphPoseResolver
                                         bodyWeightEnabled As Boolean,
                                         skeleton As SkeletonInstance,
                                         Optional armaSculptOverride As Dictionary(Of String, System.Numerics.Vector3) = Nothing,
-                                        Optional suppressNeckNnam As Boolean = False) As Poses_class
+                                        Optional suppressNeckNnam As Boolean = True) As Poses_class
         Dim racePose = PoseMath.BuildRaceHeightPose(GetRaceHeight(state))
 
         Dim bwPose As Poses_class = Nothing
@@ -355,11 +355,16 @@ Friend NotInheritable Class NpcMorphPoseResolver
                 ' la escala RUNTIME del hueso compartido "Neck" que el engine aplica al esqueleto
                 ' vivo (cabeza+cuerpo) — se resuelve aquí y se pasa a BuildBodyWeightPose; ya NO
                 ' vive en el FMRS face-bone pose ni en el bake.
-                ' suppressNeckNnam (head skeleton): NNAM neck-fat scales the SHARED "Neck" ANIMATION bone,
-                ' which is an ANCESTOR of Head/face bones — scaling it propagates down the hierarchy and
-                ' balloons the whole face (ClairHutchins: SV [1.18,1.18,1.0], face +1.2u off the Neck
-                ' pivot). Body weight on the _skin LEAF bones (Layers 1/3) does NOT propagate, so the head
-                ' keeps those. Engine (project_morph_clamp_re): NNAM applies ONLY to literal "Neck".
+                ' suppressNeckNnam defaults TRUE (all skeletons) — the propagating NNAM is a CONFIRMED
+                ' artifact, NOT engine-faithful. Measured on DLC03CaptainAvery (NNAM active: block2=0.539,
+                ' neckScale Y=Z=1.16) with a render-faithful per-vertex computation (FO4_FaceTint_CLI
+                ' --neckseam): NNAM scales the literal "Neck" bone, but the app applies it via the node
+                ' hierarchy, so the scale PROPAGATES through Neck → HEAD_Offset → HEAD → face bones and
+                ' shoves the whole face +0.8..+1.2 in Y (FORWARD) and −0.35 in Z. That is the "head queda
+                ' adelante / cuello se separa". The ENGINE applies NNAM per-bone (only to verts weighted
+                ' to literal "Neck"), and ~NOTHING is weighted there (head + CBBE body both use _skin/HEAD)
+                ' ⇒ NNAM is ~INERT in-game. So suppressing it everywhere MATCHES the engine. Re-enable
+                ' (pass False) only once NNAM is a true per-bone, non-propagating skin scale (deuda S2).
                 Dim neckScale As (ScaleY As Single, ScaleZ As Single) = (1.0F, 1.0F)
                 If Not suppressNeckNnam Then neckScale = ResolveNeckNnamScale(state)
                 bwPose = PoseMath.BuildBodyWeightPose(bwData.Wt, bwData.Wm, bwData.Wf,

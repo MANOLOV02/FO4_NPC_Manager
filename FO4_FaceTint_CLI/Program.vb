@@ -55,6 +55,7 @@ Module Program
         Public NifDump As String = ""             ' --nifdump <nif>: árbol de nodos (local+world) + skin binds (inv(bind)) por shape
         Public CatProfile As Boolean = False      ' --catprofile [--edid X]: perfila ejes de categoría (folder ground-truth, Perspective, STKD, BlendHint) por raza
         Public RankBy As String = "n"   ' canal por el que rankea el sweep: n (default) / d / s
+        Public NeckSeam As Boolean = False       ' --neckseam --esp X --edid Y: diagnóstico costura cuello/cabeza con body-weight (NNAM + _skin, math)
     End Class
 
     ' TETI.Slot enum (xEdit wbDefinitionsFO4.pas:3465-3491) — nombre por valor, para --tints.
@@ -170,6 +171,14 @@ Module Program
         If opt.Info Then
             For Each w In work
                 InfoNpc(pm, w.Esp, w.Edid)
+            Next
+            Return
+        End If
+
+        ' --- NECKSEAM: diagnóstico de la costura cuello/cabeza con body-weight (NNAM + _skin scale, math validada).
+        If opt.NeckSeam Then
+            For Each w In work
+                NeckSeamDiag(pm, w.Esp, w.Edid)
             Next
             Return
         End If
@@ -3554,6 +3563,308 @@ Module Program
         End If
     End Sub
 
+    ''' <summary>Diagnóstico de la costura cuello/cabeza con body-weight. Mide si la separación
+    ''' viene del NNAM (escala del hueso "Neck" que el body-skel aplica y el head-skel NO, por
+    ''' suppressNeckNnam) o de las hojas _skin. Para cada vértice del nape pegado a "Neck", computa
+    ''' el desplazamiento EXACTO que el NNAM mete (= la separación) con el MISMO compose del render
+    ''' (boneWorld ∘ shapeBind). Validación: bindWorld de un seam vert debe ≈ su pos autoreada.</summary>
+    Private Sub NeckSeamDiag(pm As PluginManager, espName As String, edid As String)
+        Dim npcFormID = ResolveEdid(pm, espName, edid)
+        If npcFormID = 0UI Then Console.WriteLine($"[neckseam] {edid}: no resuelto en {espName}") : Return
+        Dim npcRec = pm.GetRecord(npcFormID)
+        Dim npcData = RecordParsers.ParseNPC(npcRec, npcRec.SourcePluginName, pm)
+        Dim raceRec = pm.GetRecord(npcData.RaceFormID)
+        Dim race = RecordParsers.ParseRACE(raceRec, pm)
+        Dim female = npcData.IsFemale
+        Console.WriteLine($"=== NECKSEAM {edid} 0x{npcFormID:X8} race='{race.EditorID}' female={female} ===")
+
+        Dim wt = ResolveW(npcData.WeightThin, If(female, race.FemaleDefaultWeightThin, race.MaleDefaultWeightThin))
+        Dim wm = ResolveW(npcData.WeightMuscular, If(female, race.FemaleDefaultWeightMuscular, race.MaleDefaultWeightMuscular))
+        Dim wf = ResolveW(npcData.WeightFat, If(female, race.FemaleDefaultWeightFat, race.MaleDefaultWeightFat))
+        Console.WriteLine($"MWGT thin={wt:F3} musc={wm:F3} fat={wf:F3}  (npc raw: t={FmtN(npcData.WeightThin)} m={FmtN(npcData.WeightMuscular)} f={FmtN(npcData.WeightFat)})")
+
+        Dim nnamX = If(female, race.FemaleNeckNNAMX, race.MaleNeckNNAMX)
+        Dim nnamY = If(female, race.FemaleNeckNNAMY, race.MaleNeckNNAMY)
+        Console.WriteLine($"RACE NNAM (gender): X={nnamX:F4} Y={nnamY:F4}")
+
+        Dim fmin = If(npcData.FacialMorphIntensity <= 0.0F, 1.0F, npcData.FacialMorphIntensity)
+        Dim neckRegionId As Long = -1
+        Dim block2 As Single = 0.0F
+        Dim genderKey = If(female, "Female", "Male")
+        Dim frPath = $"meshes\actors\character\characterassets\{race.EditorID}FacialBoneRegions{genderKey}.txt".ToLowerInvariant()
+        Dim frLoc As FilesDictionary_class.File_Location = Nothing
+        If FilesDictionary_class.Dictionary.TryGetValue(frPath, frLoc) Then
+            Try
+                Dim fr = FacialBoneRegionsFile.ParseFromBytes(frLoc.GetBytes)
+                Dim neck = fr.Regions.FirstOrDefault(Function(kv) kv.Value.IsNeckRegion)
+                If neck.Value IsNot Nothing Then
+                    neckRegionId = neck.Key
+                    Dim fm = npcData.FaceMorphs.FirstOrDefault(Function(f) f.Index = neck.Key)
+                    If fm IsNot Nothing Then block2 = fm.PositionZ
+                End If
+            Catch ex As Exception
+                Console.WriteLine($"  [FacialBoneRegions parse fallo: {ex.Message}]")
+            End Try
+        Else
+            Console.WriteLine($"  [FacialBoneRegions no encontrado: {frPath}]")
+        End If
+        Dim neckScaleY As Single = 1.0F, neckScaleZ As Single = 1.0F
+        If block2 > 0.0F Then
+            neckScaleY = 1.0F + nnamX * fmin * block2
+            neckScaleZ = 1.0F + nnamY * fmin * block2
+        End If
+        Console.WriteLine($"FMIN={fmin:F3}  IsNeckRegion id={neckRegionId}  block2(FMRS posZ)={block2:F4}")
+        Console.WriteLine($"==> NNAM neckScale: Y={neckScaleY:F4} Z={neckScaleZ:F4}  {If(block2 > 0.0F AndAlso (nnamX <> 0 OrElse nnamY <> 0), "NNAM ACTIVO", "NNAM no-op")}")
+
+        Dim mrsv = npcData.BodyMorphRegionValues
+        Console.WriteLine($"MRSV=[{If(mrsv Is Nothing, "null", String.Join(",", mrsv.Select(Function(x) x.ToString("F3"))))}]")
+
+        Dim skelBind As New SkeletonInstance()
+        Dim skelNnam As New SkeletonInstance()
+        If Not skelBind.LoadFromKey("meshes\actors\character\characterassets\skeleton.nif") OrElse
+           Not skelNnam.LoadFromKey("meshes\actors\character\characterassets\skeleton.nif") Then
+            Console.WriteLine("[neckseam] skeleton.nif no carga -> sin math de costura.") : Return
+        End If
+        Dim neckBone As HierarchiBone_class = Nothing
+        If skelBind.SkeletonDictionary.TryGetValue("Neck", neckBone) Then
+            Dim parentName = If(neckBone.Parent IsNot Nothing, neckBone.Parent.BoneName, "<root>")
+            Dim kids = String.Join(", ", neckBone.Childrens.Select(Function(c) c.BoneName))
+            Console.WriteLine($"skel: Neck parent='{parentName}' worldT=({neckBone.GetGlobalTransform.Translation.X:F2},{neckBone.GetGlobalTransform.Translation.Y:F2},{neckBone.GetGlobalTransform.Translation.Z:F2})  children=[{kids}]")
+        End If
+        ' Pose NNAM-only sobre el literal "Neck" en skelNnam; skelBind queda sin morph. La diferencia
+        ' de GLOBALS entre ambos en CUALQUIER bone = el efecto del NNAM incl. PROPAGACIÓN a descendientes.
+        Dim pose As New Poses_class With {.Name = "nnam", .Source = Poses_class.Pose_Source_Enum.WardrobeManager, .Transforms = New Dictionary(Of String, PoseTransformData)(StringComparer.OrdinalIgnoreCase)}
+        pose.Transforms("Neck") = New PoseTransformData With {.ScaleX = 1.0F, .ScaleY = neckScaleY, .ScaleZ = neckScaleZ}
+        skelNnam.ApplyBoneMorphPose(pose)
+        Console.WriteLine("-- propagación NNAM: |Δorigin| de cada bone entre skelBind y skelNnam (>0 = el NNAM lo mueve) --")
+        For Each bn In {"Neck", "Neck1", "Neck1_skin", "Neck_skin", "Neck_Low_skin", "Chest_skin", "Chest", "Head", "HEAD", "Spine2", "Spine2_skin"}
+            Dim bbb As HierarchiBone_class = Nothing, nnn As HierarchiBone_class = Nothing
+            If skelBind.SkeletonDictionary.TryGetValue(bn, bbb) AndAlso skelNnam.SkeletonDictionary.TryGetValue(bn, nnn) Then
+                Dim tb = bbb.GetGlobalTransform.Translation, tn = nnn.GetGlobalTransform.Translation
+                Dim dx = tn.X - tb.X, dy = tn.Y - tb.Y, dz = tn.Z - tb.Z
+                Console.WriteLine($"   '{bn}': |Δorigin|={Math.Sqrt(dx * dx + dy * dy + dz * dz):F4}  Δ=({dx:F3},{dy:F3},{dz:F3})")
+            End If
+        Next
+        ' Locales de los hijos DIRECTOS de "Neck": si rotIdentity=True, la compensación S^-1 conjugada
+        ' (L_C^-1·S^-1·L_C) es una escala+traslación LIMPIA (representable); si hay rotación, da shear.
+        If neckBone IsNot Nothing Then
+            Console.WriteLine("-- hijos directos de 'Neck' (para evaluar compensación por-pose): --")
+            For Each ch In neckBone.Childrens
+                Dim lt = ch.OriginalLocaLTransform
+                If lt Is Nothing Then Continue For
+                Dim r = lt.Rotation
+                Dim isIdent = Math.Abs(r.M11 - 1) < 0.001F AndAlso Math.Abs(r.M22 - 1) < 0.001F AndAlso Math.Abs(r.M33 - 1) < 0.001F AndAlso
+                              Math.Abs(r.M12) < 0.001F AndAlso Math.Abs(r.M13) < 0.001F AndAlso Math.Abs(r.M21) < 0.001F AndAlso
+                              Math.Abs(r.M23) < 0.001F AndAlso Math.Abs(r.M31) < 0.001F AndAlso Math.Abs(r.M32) < 0.001F
+                Console.WriteLine($"   child '{ch.BoneName}': localT=({lt.Translation.X:F3},{lt.Translation.Y:F3},{lt.Translation.Z:F3}) rotIdentity={isIdent}")
+                Console.WriteLine($"      R=[{r.M11:F4},{r.M12:F4},{r.M13:F4} / {r.M21:F4},{r.M22:F4},{r.M23:F4} / {r.M31:F4},{r.M32:F4},{r.M33:F4}]")
+                ' recursar un nivel: el hijo real (HEAD/Neck_skin) bajo el _Offset
+                For Each gch In ch.Childrens
+                    Dim glt = gch.OriginalLocaLTransform
+                    If glt Is Nothing Then Continue For
+                    Dim gr = glt.Rotation
+                    Dim gIdent = Math.Abs(gr.M11 - 1) < 0.001F AndAlso Math.Abs(gr.M22 - 1) < 0.001F AndAlso Math.Abs(gr.M33 - 1) < 0.001F AndAlso
+                                 Math.Abs(gr.M12) < 0.001F AndAlso Math.Abs(gr.M13) < 0.001F AndAlso Math.Abs(gr.M21) < 0.001F AndAlso
+                                 Math.Abs(gr.M23) < 0.001F AndAlso Math.Abs(gr.M31) < 0.001F AndAlso Math.Abs(gr.M32) < 0.001F
+                    Console.WriteLine($"        grandchild '{gch.BoneName}': localT=({glt.Translation.X:F3},{glt.Translation.Y:F3},{glt.Translation.Z:F3}) rotIdentity={gIdent}")
+                Next
+            Next
+        End If
+
+        Console.WriteLine("-- HEAD PARTS: verts del nape (bottom-Z) + bones que pesan + gap NNAM por vert pegado a 'Neck' (world X/Y/Z) --")
+        If npcData.HeadPartFormIDs IsNot Nothing Then
+            For Each hpId In npcData.HeadPartFormIDs
+                Dim rec = pm.GetRecord(hpId)
+                If rec Is Nothing OrElse rec.Header.Signature <> "HDPT" Then Continue For
+                Dim hdpt = RecordParsers.ParseHDPT(rec, pm)
+                If String.IsNullOrWhiteSpace(hdpt.MeshPath) Then Continue For
+                Dim mp = hdpt.MeshPath.Replace("/"c, "\"c).TrimStart("\"c)
+                If Not mp.StartsWith("meshes\", StringComparison.OrdinalIgnoreCase) Then mp = "Meshes\" & mp
+                Dim nifBytes = FilesDictionary_class.GetBytes(mp)
+                If nifBytes Is Nothing OrElse nifBytes.Length = 0 Then Continue For
+                Dim nif As New Nifcontent_Class_Manolo() : nif.Load_Manolo(nifBytes)
+                Console.WriteLine($"  HDPT '{rec.EditorID}' mesh='{hdpt.MeshPath}'")
+                AnalyzeShapeSeam(nif, skelBind, skelNnam, False)
+            Next
+        End If
+
+        ' --- BODY side (vanilla female body como proxy del cuello del body/outfit): verts del cuello (top-Z) ---
+        Console.WriteLine("-- BODY (femalebody.nif): verts del cuello (top-Z) + bones + gap NNAM por vert pegado a 'Neck' --")
+        For Each bodyKey In {"meshes\actors\character\characterassets\femalebody.nif", "meshes\actors\character\characterassets\femalebody_0.nif", "meshes\actors\character\characterassets\femalebody_1.nif"}
+            Dim bb = FilesDictionary_class.GetBytes(bodyKey)
+            If bb Is Nothing OrElse bb.Length = 0 Then Continue For
+            Dim bnif As New Nifcontent_Class_Manolo() : bnif.Load_Manolo(bb)
+            Console.WriteLine($"  BODY mesh='{bodyKey}'")
+            AnalyzeShapeSeam(bnif, skelBind, skelNnam, True)
+            Exit For
+        Next
+
+        Console.WriteLine("-- per-bone body-weight scale (Layer1 weight K-term + Layer3 MRSV), engine region table --")
+        DumpNeckBoneScales(race, female, wt, wm, wf, mrsv)
+    End Sub
+
+    Private Function ResolveW(npcVal As Single?, raceDefault As Single?) As Single
+        If npcVal.HasValue AndAlso Not Single.IsNaN(npcVal.Value) AndAlso npcVal.Value <> Single.MaxValue Then Return npcVal.Value
+        If raceDefault.HasValue Then Return raceDefault.Value
+        Return 0.0F
+    End Function
+
+    Private Function FmtN(v As Single?) As String
+        Return If(v.HasValue, v.Value.ToString("F3"), "null")
+    End Function
+
+    ''' <summary>Por shape: verts de la costura (nape=bottom-Z para head, cuello=top-Z para body),
+    ''' bones a los que pesan, y el gap NNAM por vert = posición skinned en skelNnam menos skelBind,
+    ''' sumando TODOS los bones (captura la PROPAGACIÓN del scale de "Neck" a sus descendientes _skin).</summary>
+    Private Sub AnalyzeShapeSeam(nif As Nifcontent_Class_Manolo, skelBind As SkeletonInstance, skelNnam As SkeletonInstance, useTop As Boolean)
+        For blkIdx = 0 To nif.Blocks.Count - 1
+            Dim shp = TryCast(nif.Blocks(blkIdx), NiflySharp.INiShape)
+            If shp Is Nothing Then Continue For
+            Dim rs As NifRenderableShape
+            Try
+                rs = New NifRenderableShape(nif, shp, blkIdx)
+            Catch
+                Continue For
+            End Try
+            Dim geom = rs.Geometry
+            If geom Is Nothing OrElse Not geom.IsSkinned Then Continue For
+            Dim verts = geom.GetVertexPositions()
+            Dim skin = geom.GetSkinning()
+            If verts Is Nothing OrElse verts.Count = 0 OrElse skin.BoneIndices Is Nothing Then Continue For
+            Dim wpv = If(skin.WeightsPerVertex > 0, skin.WeightsPerVertex, 4)
+
+            ' Precompute per-palette skin matrices (bind + nnam) summing the SAME shape-bind localT
+            ' over the bind vs NNAM-posed skeleton globals. Diff != 0 sólo en bones que el NNAM mueve.
+            Dim nB = rs.ShapeBones.Count
+            Dim matBind(Math.Max(0, nB - 1)) As OpenTK.Mathematics.Matrix4d
+            Dim matNnam(Math.Max(0, nB - 1)) As OpenTK.Mathematics.Matrix4d
+            Dim hasBone(Math.Max(0, nB - 1)) As Boolean
+            Dim boneNm(Math.Max(0, nB - 1)) As String
+            For k = 0 To nB - 1
+                Dim bn = TryCast(rs.ShapeBones(k), NiflySharp.Blocks.NiNode)
+                Dim nm = If(bn?.Name?.String, "")
+                boneNm(k) = nm
+                Dim localT As Transform_Class = If(k < rs.ShapeBoneTransforms.Count, rs.ShapeBoneTransforms(k), Nothing)
+                Dim bb As HierarchiBone_class = Nothing, nnb As HierarchiBone_class = Nothing
+                If localT IsNot Nothing AndAlso skelBind.SkeletonDictionary.TryGetValue(nm, bb) AndAlso skelNnam.SkeletonDictionary.TryGetValue(nm, nnb) Then
+                    matBind(k) = bb.GetGlobalTransform.ComposeTransforms(localT).ToMatrix4d()
+                    matNnam(k) = nnb.GetGlobalTransform.ComposeTransforms(localT).ToMatrix4d()
+                    hasBone(k) = True
+                End If
+            Next
+
+            ' Full-mesh tally: ¿cuántos verts pesan al hueso LITERAL "Neck"? Decide si un NNAM per-bone
+            ' (no-propagante, como el engine) haría ALGO o sería inert. Si 0 verts -> NNAM per-bone inert.
+            Dim neckPal As Integer = -1
+            For k = 0 To nB - 1
+                If String.Equals(boneNm(k), "Neck", StringComparison.OrdinalIgnoreCase) Then neckPal = k : Exit For
+            Next
+            If neckPal >= 0 Then
+                Dim nNeck = 0
+                Dim zmin = Single.MaxValue, zmax = Single.MinValue
+                Dim wmax As Single = 0
+                Dim wsum As Double = 0
+                For i = 0 To verts.Count - 1
+                    For j = 0 To wpv - 1
+                        If CInt(skin.BoneIndices(i * wpv + j)) = neckPal Then
+                            Dim w = CType(skin.BoneWeights(i * wpv + j), Single)
+                            If w > 0 Then
+                                nNeck += 1 : wsum += w
+                                If w > wmax Then wmax = w
+                                zmin = Math.Min(zmin, verts(i).Z) : zmax = Math.Max(zmax, verts(i).Z)
+                            End If
+                        End If
+                    Next
+                Next
+                Console.WriteLine($"    [Neck-literal] verts pegados a 'Neck': {nNeck}/{verts.Count} (wmax={wmax:F2} wsum={wsum:F1} Zrange=[{zmin:F1}..{zmax:F1}])")
+            Else
+                Console.WriteLine($"    [Neck-literal] 'Neck' NO está en la palette de este shape")
+            End If
+
+            Dim minZ = Single.MaxValue, maxZ = Single.MinValue
+            For Each v In verts
+                minZ = Math.Min(minZ, v.Z) : maxZ = Math.Max(maxZ, v.Z)
+            Next
+            Dim zThresh = If(useTop, maxZ - (maxZ - minZ) * 0.08F, minZ + (maxZ - minZ) * 0.08F)
+
+            Dim seamCount = 0
+            Dim boneWeightAcc As New Dictionary(Of String, Double)(StringComparer.OrdinalIgnoreCase)
+            Dim maxGap As Double = 0
+            Dim gapAccX As Double = 0, gapAccY As Double = 0, gapAccZ As Double = 0
+            Dim nWithGap = 0
+            Dim sampleShown = 0
+            For i = 0 To verts.Count - 1
+                If useTop Then
+                    If verts(i).Z < zThresh Then Continue For
+                Else
+                    If verts(i).Z > zThresh Then Continue For
+                End If
+                seamCount += 1
+                Dim vv As New OpenTK.Mathematics.Vector3d(verts(i).X, verts(i).Y, verts(i).Z)
+                Dim sb As New OpenTK.Mathematics.Vector3d(0, 0, 0)
+                Dim sn As New OpenTK.Mathematics.Vector3d(0, 0, 0)
+                For j = 0 To wpv - 1
+                    Dim pal = CInt(skin.BoneIndices(i * wpv + j))
+                    Dim w = CType(skin.BoneWeights(i * wpv + j), Single)
+                    If w <= 0 OrElse pal >= nB Then Continue For
+                    boneWeightAcc(boneNm(pal)) = boneWeightAcc.GetValueOrDefault(boneNm(pal)) + w
+                    If hasBone(pal) Then
+                        sb += OpenTK.Mathematics.Vector3d.TransformPosition(vv, matBind(pal)) * CDbl(w)
+                        sn += OpenTK.Mathematics.Vector3d.TransformPosition(vv, matNnam(pal)) * CDbl(w)
+                    End If
+                Next
+                Dim gx = sn.X - sb.X, gy = sn.Y - sb.Y, gz = sn.Z - sb.Z
+                Dim mag = Math.Sqrt(gx * gx + gy * gy + gz * gz)
+                gapAccX += gx : gapAccY += gy : gapAccZ += gz
+                If mag > 0.0005 Then nWithGap += 1
+                If mag > maxGap Then maxGap = mag
+                If mag > 0.0005 AndAlso sampleShown < 4 Then
+                    Console.WriteLine($"      seam#{i} pos=({verts(i).X:F2},{verts(i).Y:F2},{verts(i).Z:F2}) bind=({sb.X:F2},{sb.Y:F2},{sb.Z:F2}) gap=({gx:F3},{gy:F3},{gz:F3}) |{mag:F3}|")
+                    sampleShown += 1
+                End If
+            Next
+            If seamCount = 0 Then Continue For
+            Dim topBones = boneWeightAcc.OrderByDescending(Function(kv) kv.Value).Take(6).Select(Function(kv) $"{kv.Key}={kv.Value:F1}")
+            Console.WriteLine($"    shape '{rs.ShapeName}': seamVerts={seamCount} (top={useTop}) bones: {String.Join(", ", topBones)}")
+            Console.WriteLine($"      NNAM gap @seam (propagación incl.): vertsConGap={nWithGap}/{seamCount} avg=({gapAccX / seamCount:F3},{gapAccY / seamCount:F3},{gapAccZ / seamCount:F3}) max|gap|={maxGap:F3}")
+        Next
+    End Sub
+
+    ''' <summary>Escala body-weight por hueso (Layer1 weight K-term + Layer3 MRSV), tabla engine.</summary>
+    Private Sub DumpNeckBoneScales(race As RACE_Data, female As Boolean, wt As Single, wm As Single, wf As Single, mrsv As List(Of Single))
+        Dim region As New Dictionary(Of String, Integer)(StringComparer.OrdinalIgnoreCase) From {
+            {"Head_skin", 0}, {"Face_skin", 0}, {"Neck1_skin", 0},
+            {"Neck_skin", 1}, {"chest_skin", 1}, {"Chest_Rear_Skin", 1}, {"Chest_Upper_Skin", 1}, {"Neck_Low_skin", 1}, {"Spine2_skin", 1}, {"Spine2_Rear_skin", 1}}
+        Dim tx = wm * 0.5F + wf - 0.5F
+        Dim ty = (wt + wf) * 0.866025F - 0.577350F
+        Dim kk = (0.866025F - CSng(Math.Sqrt(tx * tx + ty * ty))) * 1.154701F
+        Dim gb = race.BoneData.FirstOrDefault(Function(b) b.Gender = If(female, 1UI, 0UI))
+        If gb Is Nothing Then Console.WriteLine("   (sin BoneData para el género)") : Return
+        Dim names = {"Neck1_skin", "Neck_skin", "Neck_Low_skin", "Spine2_skin", "Chest_skin", "Chest_Upper_Skin", "Head_skin", "Face_skin"}
+        For Each nm In names
+            Dim bd = gb.Bones.FirstOrDefault(Function(x) x.BoneName.Equals(nm, StringComparison.OrdinalIgnoreCase))
+            If bd Is Nothing Then Console.WriteLine($"   {nm}: <no en RACE.BoneData>") : Continue For
+            Dim sx = 1.0F, sy = 1.0F, sz = 1.0F
+            If bd.HasWeightScale Then
+                sx = bd.ThinX * wt + bd.MuscularX * wm + bd.FatX * wf - ((bd.ThinX + bd.MuscularX + bd.FatX) / 3.0F - 1.0F) * kk
+                sy = bd.ThinY * wt + bd.MuscularY * wm + bd.FatY * wf - ((bd.ThinY + bd.MuscularY + bd.FatY) / 3.0F - 1.0F) * kk
+                sz = bd.ThinZ * wt + bd.MuscularZ * wm + bd.FatZ * wf - ((bd.ThinZ + bd.MuscularZ + bd.FatZ) / 3.0F - 1.0F) * kk
+            End If
+            Dim regIdx As Integer = -1
+            Dim tmp As Integer
+            If region.TryGetValue(nm, tmp) Then regIdx = tmp
+            If bd.HasRangeModifier AndAlso mrsv IsNot Nothing AndAlso regIdx >= 0 AndAlso regIdx < mrsv.Count Then
+                Dim slider = mrsv(regIdx)
+                If slider >= 0 Then
+                    sy += slider * bd.MaxY : sz += slider * bd.MaxZ
+                Else
+                    sy += (-slider) * bd.MinY : sz += (-slider) * bd.MinZ
+                End If
+            End If
+            Console.WriteLine($"   {nm}: region={regIdx} WS={bd.HasWeightScale} RM={bd.HasRangeModifier} -> scale=({sx:F4},{sy:F4},{sz:F4})")
+        Next
+    End Sub
+
     ''' <summary>Imprime un TXST (D/N/S + dims + MNAM/bgsm) para --info.</summary>
     Private Sub PrintTxst(pm As PluginManager, label As String, formId As UInteger)
         If formId = 0UI Then Console.WriteLine($"  {label}: 0 (none)") : Return
@@ -3693,6 +4004,7 @@ Module Program
                 Case "--dumpref" : a.DumpRef = v : i += 2
                 Case "--nifdump" : a.NifDump = v : i += 2
                 Case "--catprofile" : a.CatProfile = True : i += 1
+                Case "--neckseam" : a.NeckSeam = True : i += 1
                 Case "-h", "--help" : PrintUsage() : Return Nothing
                 Case Else
                     Console.Error.WriteLine($"Arg desconocido: {args(i)}") : PrintUsage() : Return Nothing
