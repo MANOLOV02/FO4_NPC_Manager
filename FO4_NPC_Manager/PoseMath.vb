@@ -176,15 +176,13 @@ Friend NotInheritable Class PoseMath
 
     ''' <summary>Build a pose of non-uniform bone-scale deltas from NPC MWGT + RACE BSMS
     ''' (weight scale layer) and NPC MRSV + RACE BSMS "Range" (region modifier layer).
-    ''' Also applies the CK RUNTIME NNAM neck-fat scale (Layer 2) as a multiplicative Y/Z scale on
-    ''' the shared "Neck" bone (neckScaleY/neckScaleZ from ResolveNeckNnamScale) — the engine applies
-    ''' this to the live skeleton (head+body) and NEVER bakes it, so it lives here, not in the FMRS
-    ''' face pose / bake.
+    ''' NNAM (neck-fat) NO vive aquí: es independiente del MWGT/BoneData, se emite aparte en
+    ''' <c>BuildMergedNpcPose</c> (gateado por Apply Body Weight) y su anti-propagación la hace
+    ''' <c>NpcMorphPoseResolver.ApplyNeckNnamCompensation</c>.
     ''' Requires SkeletonDictionary populated (ResolveMrsvRegion walks bone.Parent chain).</summary>
     Public Shared Function BuildBodyWeightPose(wt As Single, wm As Single, wf As Single,
                                                  genderBlock As RACE_BoneDataGender,
                                                  mrsvValues As List(Of Single),
-                                                 neckScaleY As Single, neckScaleZ As Single,
                                                  armaDeltas As Dictionary(Of String, System.Numerics.Vector3),
                                                  skeleton As SkeletonInstance,
                                                  weightLayersEnabled As Boolean) As Poses_class
@@ -223,9 +221,9 @@ Friend NotInheritable Class PoseMath
                 allBoneNames.Add(kv.Key)
             Next
         End If
-        ' NNAM (Layer 2) targets the literal "Neck" bone, which RACE.BoneData / ARMA may not list.
-        ' Ensure it is in the iteration set so a Neck-only-NNAM NPC (no weight/sculpt) still emits it.
-        If neckScaleY <> 1.0F OrElse neckScaleZ <> 1.0F Then allBoneNames.Add("Neck")
+        ' NNAM (neck-fat) NO se procesa acá — se emite aparte en BuildMergedNpcPose (gateado por
+        ' Apply Body Weight, independiente de MWGT/sculpt) y su anti-propagación la hace el post-pase
+        ' ApplyNeckNnamCompensation. "Neck" literal no tiene RACE.BoneData, así que no entra al loop.
 
         ' --- Engine weight-triangle correction factor K (RE de Fallout4.exe, fn 0x6517A0/0x664850) ---
         ' El engine NO interpola linealmente: out_a = thin_a*wt + musc_a*wm + fat_a*wf - (mean_a-1)*K,
@@ -297,15 +295,8 @@ Friend NotInheritable Class PoseMath
                 sz = Math.Min(Math.Max(sz, 1.0F + bone.MinZ), 1.0F + bone.MaxZ)
             End If
 
-            ' --- Layer 2: NNAM neck-fat (CK RUNTIME Neck-bone scale; applied to the live skeleton, NEVER baked) ---
-            ' Empirically validated 2026-06-17: CK does NOT bake this into FaceGeom; it is a runtime scale of the
-            ' shared "Neck" bone (affects head+body). EXACT bone name "Neck", case-insensitive (Equals,
-            ' NOT substring — so Neck1/Neckmuscle stay excluded), matching the OrdinalIgnoreCase bone set
-            ' used everywhere else in this loop.
-            If String.Equals(boneName, "Neck", StringComparison.OrdinalIgnoreCase) Then
-                sy *= neckScaleY
-                sz *= neckScaleZ
-            End If
+            ' --- Layer 2 (NNAM) REMOVIDA de acá: el neck-fat se emite aparte en BuildMergedNpcPose,
+            ' gateado por Apply Body Weight e independiente de MWGT/sculpt. ---
 
             ' --- Layer 3: MRSV (Range Modifier) — interpretación H-MRSV-2 (canal interpolado) ---
             ' BSMS RangeModifier spec has only Min/Max Y and Z (no X) — per

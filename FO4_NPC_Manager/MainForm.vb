@@ -971,17 +971,21 @@ Public Class MainForm
         ' Los bone-morphs van a la capa MorphDeltaTransform (no a la pose). Así la capa Delta
         ' (pose/animación) queda libre y el morph sobrevive a un futuro ApplyPose por frame.
         host.LastSkeletonInstance.ApplyBoneMorphPose(basePose)
+        ' NNAM comp anti-propagación (post-pase tras ApplyBoneMorphPose) — ver ApplyNeckNnamCompensation.
+        _morphPoseResolver.ApplyNeckNnamCompensation(host.LastSkeletonInstance)
         ' [MOUNTDELTA-PREPASS] Repopular MountDelta desde la cache del render inicial (re-write
         ' idempotente; ApplyBoneMorphPose no borra el mount).
         _mountingResolver.ApplyMountPlanForActor(host.LastSkeletonInstance, host.LastRenderData)
 
-        ' Head skeleton: re-pose WITH body weight but NNAM neck-fat SUPPRESSED (suppressNeckNnam:=True).
-        ' Body weight scales the _skin LEAF bones (no hierarchy propagation) so the head's neck/jaw track
-        ' the body; NNAM is excluded because it scales the shared "Neck" ANCESTOR bone and would balloon
-        ' the whole face. fmrsEnabled still honored (the head keeps its FMRS face morphs).
+        ' Head skeleton: re-pose WITH body weight AND NNAM neck-fat (FASE 1 2026-06-24). Antes el NNAM se
+        ' suprimía acá porque escala el hueso ANCESTRO "Neck" y propagaba la escala a toda la cara (balloon).
+        ' Ahora BuildBodyWeightPose mete la COMPENSACIÓN anti-propagación (S⁻¹ a los hijos directos de
+        ' "Neck"), así la escala queda solo en los verts del "Neck" y la cara NO se infla. fmrsEnabled
+        ' sigue honrado (la cabeza conserva sus morphs FMRS).
         If host.LastHeadSkeletonInstance IsNot Nothing AndAlso Not ReferenceEquals(host.LastHeadSkeletonInstance, host.LastSkeletonInstance) Then
-            Dim headPose = _morphPoseResolver.BuildMergedNpcPose(host.LastRenderedState, host.LastRenderData, fmrsEnabled, bwEnabled, host.LastHeadSkeletonInstance, Nothing, suppressNeckNnam:=True)
+            Dim headPose = _morphPoseResolver.BuildMergedNpcPose(host.LastRenderedState, host.LastRenderData, fmrsEnabled, bwEnabled, host.LastHeadSkeletonInstance, Nothing)
             host.LastHeadSkeletonInstance.ApplyBoneMorphPose(headPose)
+            _morphPoseResolver.ApplyNeckNnamCompensation(host.LastHeadSkeletonInstance)
         End If
 
         ' Lazy build / refresh of per-ARMA skeletons. Necesario cuando Sclpt arranca OFF en el
@@ -1014,6 +1018,7 @@ Public Class MainForm
             If sculptEnabled Then host.LastSculptByArma.TryGetValue(kv.Key, sculpt)
             Dim poseForArma = _morphPoseResolver.BuildMergedNpcPose(host.LastRenderedState, host.LastRenderData, fmrsEnabled, bwEnabled, armaSkel, sculpt)
             armaSkel.ApplyBoneMorphPose(poseForArma)
+            _morphPoseResolver.ApplyNeckNnamCompensation(armaSkel)
             ' [MOUNTDELTA-PREPASS] Per-instance MountDelta para este clone sculpt — repopula desde cache.
             _mountingResolver.ApplyMountPlanForActor(armaSkel, host.LastRenderData)
         Next
@@ -4275,17 +4280,20 @@ Public Class MainForm
                                           inst, Nothing)  ' Nothing = no sculpt → base pose
         ' Bone-morphs → capa MorphDeltaTransform (deja libre la capa pose/animación).
         inst.ApplyBoneMorphPose(basePose)
+        _morphPoseResolver.ApplyNeckNnamCompensation(inst)
 
-        ' Head skeleton: SAME morph/FMRS pose as `inst` WITH body weight, but NNAM neck-fat SUPPRESSED
-        ' (suppressNeckNnam:=True). Body weight scales the _skin LEAF bones (Head_skin/Face_skin/Neck1_skin
-        ' + shared neck/chest), which do NOT propagate down the hierarchy, so the head's neck/jaw thickness
-        ' tracks the body. NNAM is excluded because it scales the shared "Neck" ANCESTOR bone, propagating a
-        ' [1+nnam,1+nnam,1] scale into the whole face (balloons it). Head-part shapes are routed here (loop
-        ' below); animation frames are applied to it too (ApplyAnimFrame). Built unconditionally + separate
-        ' so it stays in sync with the BODY skeleton. No chunk/pipboy injection (head parts have none).
+        ' Head skeleton: SAME morph/FMRS pose as `inst` WITH body weight AND NNAM neck-fat (FASE 2
+        ' 2026-06-24). Body weight scales the _skin LEAF bones (Head_skin/Face_skin/Neck1_skin + shared
+        ' neck/chest), which do NOT propagate. El NNAM escala el hueso ANCESTRO "Neck"; antes se suprimía
+        ' acá porque propagaba [1+nnam,1+nnam,1] a toda la cara (balloon). Ahora ApplyNeckNnamCompensation
+        ' (post-pase) compensa a TODOS los hijos directos de "Neck" (comp = L_C⁻¹∘S⁻¹∘L_C ∘ FMRS, con shear),
+        ' dejando la escala solo en los verts del "Neck" → la cara NO se infla y los FMRS del cuello quedan.
+        ' Head-part shapes are routed here (loop below); animation frames applied too (ApplyAnimFrame). Built
+        ' unconditionally + separate so it stays in sync with the BODY skeleton. No chunk/pipboy injection.
         Dim headInst = PrepareSkeleton(state, renderData)
-        Dim headPose = _morphPoseResolver.BuildMergedNpcPose(state, renderData, boneMorphsEnabled, bodyWeightEnabled, headInst, Nothing, suppressNeckNnam:=True)
+        Dim headPose = _morphPoseResolver.BuildMergedNpcPose(state, renderData, boneMorphsEnabled, bodyWeightEnabled, headInst, Nothing)
         headInst.ApplyBoneMorphPose(headPose)
+        _morphPoseResolver.ApplyNeckNnamCompensation(headInst)
         Logger.LogLazy(Function() $"[PERF-BRP] initial PrepareSkeleton+BuildMergedNpcPose (+head) @ {_swBrp.ElapsedMilliseconds}ms")
 
         ' DIAG POST-PASE: dump del estado de los bones inyectados de chunks robot DESPUÉS de ApplyPose.
@@ -4296,7 +4304,8 @@ Public Class MainForm
             Dim cat As ShapeRenderCategory = ShapeRenderCategory.Other
             renderData.ShapeCategory.TryGetValue(shape, cat)
             If cat = ShapeRenderCategory.HeadPart Then
-                ' Head parts → body-weight-free skeleton (the neck scale must not deform the head).
+                ' Head parts → head skeleton (lleva body-weight en hojas _skin + NNAM compensado:
+                ' la escala del "Neck" queda en sus verts, no se propaga a la cara).
                 shapeToSkel(shape) = headInst
                 Continue For
             End If
@@ -4316,6 +4325,7 @@ Public Class MainForm
                 Dim poseForArma = _morphPoseResolver.BuildMergedNpcPose(state, renderData, boneMorphsEnabled, bodyWeightEnabled,
                                                      armaSkel, sculpt)
                 armaSkel.ApplyBoneMorphPose(poseForArma)
+                _morphPoseResolver.ApplyNeckNnamCompensation(armaSkel)
                 skelByArma(armaFormID) = armaSkel
                 sculptByArma(armaFormID) = sculpt
             End If

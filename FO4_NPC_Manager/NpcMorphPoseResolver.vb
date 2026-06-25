@@ -269,6 +269,53 @@ Friend NotInheritable Class NpcMorphPoseResolver
         Return FaceBonePoseBuilder.ComputeNeckNnamScale(npcData, regionsFile, neckNnamX, neckNnamY)
     End Function
 
+    ''' <summary>POST-PASE de la compensación NNAM anti-propagación. Llamar JUSTO DESPUÉS de
+    ''' <c>ApplyBoneMorphPose</c> sobre el MISMO skeleton (BuildBodyWeightPose ya metió el scale del
+    ''' NNAM en el hueso "Neck", Layer 2). Como <c>GetGlobalTransform</c> compone la cadena de padres,
+    ''' esa escala PROPAGARÍA a los hijos (Neck → HEAD_Offset → HEAD → cara) = el bug "cara adelante".
+    ''' Para cancelarla, a CADA hijo DIRECTO de "Neck" se le compone <c>comp = L_C⁻¹ ∘ S⁻¹ ∘ L_C</c>
+    ''' sobre su MorphDelta existente (el FMRS que ApplyBoneMorphPose ya aplicó):
+    ''' <c>MorphDelta_C' = comp ∘ FMRS_C</c>. Resultado: la escala queda SOLO en los verts pegados a
+    ''' "Neck"; cara/cuello y sus morphs FMRS intactos. <c>comp</c> puede tener SHEAR (hijos rotados,
+    ''' p.ej. skin_bone_*Neckmuscle*) → se asigna DIRECTO a <c>MorphDeltaTransform</c> (PoseTransformData
+    ''' no representa shear). Orden de composición verificado numéricamente (Tools/NifVtxCompare --verifycomp).
+    ''' <para>GATEO AUTOMÁTICO: la S se LEE de <c>neckBone.MorphDeltaTransform</c> (lo que el "Neck"
+    ''' realmente recibió), NO se re-resuelve. Si el "Neck" no escaló (body-weight OFF — el scale se emite
+    ''' solo dentro de la rama bodyWeightEnabled/hasSculpt de BuildMergedNpcPose —, NNAM inactivo, o
+    ''' suprimido) su MorphDeltaTransform es Nothing → NO-OP. Así la comp (S⁻¹) NUNCA se aplica sin la S
+    ''' correspondiente en el padre.</para>
+    ''' Idempotencia: re-correr tras cada ApplyBoneMorphPose (que resetea la capa morph) — NO llamar dos
+    ''' veces sin re-aplicar la pose (compondría la comp dos veces).</summary>
+    Friend Sub ApplyNeckNnamCompensation(skeleton As SkeletonInstance)
+        If skeleton Is Nothing OrElse Not skeleton.HasSkeleton Then Return
+        Dim neckBone As HierarchiBone_class = Nothing
+        If Not skeleton.SkeletonDictionary.TryGetValue("Neck", neckBone) OrElse neckBone Is Nothing Then Return
+
+        ' S = lo que el "Neck" REALMENTE recibió en la capa morph (= la escala NNAM), leído del estado ya
+        ' aplicado por ApplyBoneMorphPose. Derivarlo de acá (en vez de re-resolver el NNAM) AUTO-GATEA la
+        ' comp con el scale: si el "Neck" NO escaló — body-weight OFF (el scale se emite solo dentro de la
+        ' rama bodyWeightEnabled/hasSculpt de BuildMergedNpcPose), NNAM inactivo, o suprimido → sin entry en
+        ' la pose → MorphDeltaTransform = Nothing → NO se compensa nada. Evita el bug de aplicar S⁻¹ a los
+        ' hijos sin la S correspondiente en el padre (encogería la cara con body-weight destildado).
+        Dim s = neckBone.MorphDeltaTransform
+        If s Is Nothing Then Return
+        Dim sInv = s.Inverse()
+
+        Dim applied As Integer = 0
+        For Each child In neckBone.Childrens
+            If child Is Nothing OrElse child.OriginalLocaLTransform Is Nothing Then Continue For
+            Dim lc = child.OriginalLocaLTransform
+            ' comp = L_C⁻¹ ∘ S⁻¹ ∘ L_C — cancela la propagación del morph del "Neck" al subárbol del hijo.
+            Dim comp = lc.Inverse().ComposeTransforms(sInv).ComposeTransforms(lc)
+            Dim existing = child.MorphDeltaTransform
+            ' MorphDelta_C' = comp ∘ (morph previo del hijo, p.ej. FMRS) — preserva su deformación.
+            child.MorphDeltaTransform = If(existing Is Nothing, comp, comp.ComposeTransforms(existing))
+            applied += 1
+        Next
+        Dim a = applied, ev = s.EffectiveScale
+        Logger.LogLazy(Function() $"[NNAM-COMP] post-pase: comp (S_efectiva={ev}) aplicado a {a} hijo(s) directo(s) de 'Neck' (∘ morph previo).")
+    End Sub
+
     ''' <summary>Resolve the NPC's MWGT weights and the RACE's per-bone weight scale data for
     ''' use by the skeleton resolver. Returns Nothing if the NPC has no MWGT or the RACE has
     ''' no bone data for the NPC's gender.</summary>
@@ -338,39 +385,43 @@ Friend NotInheritable Class NpcMorphPoseResolver
                                         bodyWeightEnabled As Boolean,
                                         skeleton As SkeletonInstance,
                                         Optional armaSculptOverride As Dictionary(Of String, System.Numerics.Vector3) = Nothing,
-                                        Optional suppressNeckNnam As Boolean = True) As Poses_class
+                                        Optional suppressNeckNnam As Boolean = False) As Poses_class
         Dim racePose = PoseMath.BuildRaceHeightPose(GetRaceHeight(state))
 
+        ' Body-weight (RACE.BSMS/MRSV) + ARMA sculpt. Sclpt y BW son toggles independientes:
+        ' weightLayersEnabled=bodyWeightEnabled gobierna RACE.BSMS/MRSV; la capa ARMA se aplica si hay
+        ' deltas (por eso el OrElse hasSculpt: un outfit con sculpt y BW=OFF igual arma la pose).
         Dim bwPose As Poses_class = Nothing
         Dim hasSculpt = (armaSculptOverride IsNot Nothing AndAlso armaSculptOverride.Count > 0)
         If bodyWeightEnabled OrElse hasSculpt Then
             Dim bwData = ResolveBodyWeightData(state, renderData)
             If bwData.GenderBlock IsNot Nothing Then
-                ' ARMA sculpt override (if provided) is the per-skeleton-per-ARMA sculpt source.
-                ' Sculpt formula hardcoded H3 multiplicative (closure plan P0 — A REVISAR).
                 Dim sculpt = If(armaSculptOverride, New Dictionary(Of String, System.Numerics.Vector3)(StringComparer.OrdinalIgnoreCase))
-                ' Sclpt y BW son toggles independientes. weightLayersEnabled=bodyWeightEnabled
-                ' gobierna las layers RACE.BSMS / MRSV; la layer ARMA se aplica siempre que haya
-                ' deltas. BW=OFF + Sclpt=ON → sólo capa ARMA (s = 1·(1+arma_d)). NNAM (Layer 2) es
-                ' la escala RUNTIME del hueso compartido "Neck" que el engine aplica al esqueleto
-                ' vivo (cabeza+cuerpo) — se resuelve aquí y se pasa a BuildBodyWeightPose; ya NO
-                ' vive en el FMRS face-bone pose ni en el bake.
-                ' suppressNeckNnam defaults TRUE (all skeletons) — the propagating NNAM is a CONFIRMED
-                ' artifact, NOT engine-faithful. Measured on DLC03CaptainAvery (NNAM active: block2=0.539,
-                ' neckScale Y=Z=1.16) with a render-faithful per-vertex computation (FO4_FaceTint_CLI
-                ' --neckseam): NNAM scales the literal "Neck" bone, but the app applies it via the node
-                ' hierarchy, so the scale PROPAGATES through Neck → HEAD_Offset → HEAD → face bones and
-                ' shoves the whole face +0.8..+1.2 in Y (FORWARD) and −0.35 in Z. That is the "head queda
-                ' adelante / cuello se separa". The ENGINE applies NNAM per-bone (only to verts weighted
-                ' to literal "Neck"), and ~NOTHING is weighted there (head + CBBE body both use _skin/HEAD)
-                ' ⇒ NNAM is ~INERT in-game. So suppressing it everywhere MATCHES the engine. Re-enable
-                ' (pass False) only once NNAM is a true per-bone, non-propagating skin scale (deuda S2).
-                Dim neckScale As (ScaleY As Single, ScaleZ As Single) = (1.0F, 1.0F)
-                If Not suppressNeckNnam Then neckScale = ResolveNeckNnamScale(state)
                 bwPose = PoseMath.BuildBodyWeightPose(bwData.Wt, bwData.Wm, bwData.Wf,
-                                             bwData.GenderBlock, bwData.MrsvValues,
-                                             neckScale.ScaleY, neckScale.ScaleZ, sculpt,
+                                             bwData.GenderBlock, bwData.MrsvValues, sculpt,
                                              skeleton, bodyWeightEnabled)
+            End If
+        End If
+
+        ' NNAM (neck-fat) — gateado SOLO por Apply Body Weight, INDEPENDIENTE de sculpt y de
+        ' MWGT/RACE.BoneData (antes heredaba esos couplings por compartir BuildBodyWeightPose). Es el
+        ' slider de cuello del chargen: block2 = FMRS PositionZ de la región IsNeckRegion × RACE.NNAM
+        ' (ResolveNeckNnamScale). Se emite como su propio entry del hueso "Neck"; la anti-propagación a
+        ' los hijos la hace el post-pase NpcMorphPoseResolver.ApplyNeckNnamCompensation (que lee esta S
+        ' del "Neck" aplicado → auto-gateada: si acá no se emite, no hay comp).
+        ' ⚠ NO se afirma que sea el mecanismo del engine (consumidor del +0x50 nunca hallado); es la
+        ' compensación por-pose que da el resultado observable correcto (cara no se infla; escala solo
+        ' los verts pegados al "Neck").
+        Dim nnamPose As Poses_class = Nothing
+        If bodyWeightEnabled AndAlso Not suppressNeckNnam Then
+            Dim neckScale = ResolveNeckNnamScale(state)
+            If neckScale.ScaleY <> 1.0F OrElse neckScale.ScaleZ <> 1.0F Then
+                nnamPose = New Poses_class With {
+                    .Name = "NNAM Neck",
+                    .Source = Poses_class.Pose_Source_Enum.WardrobeManager,
+                    .Transforms = New Dictionary(Of String, PoseTransformData)(StringComparer.OrdinalIgnoreCase)
+                }
+                nnamPose.Transforms("Neck") = New PoseTransformData With {.ScaleX = 1.0F, .ScaleY = neckScale.ScaleY, .ScaleZ = neckScale.ScaleZ}
             End If
         End If
 
@@ -379,7 +430,7 @@ Friend NotInheritable Class NpcMorphPoseResolver
             fmrsPose = BuildFaceBoneTransforms(state)
         End If
 
-        Return PoseMath.MergePoses(racePose, bwPose, fmrsPose)
+        Return PoseMath.MergePoses(racePose, bwPose, nnamPose, fmrsPose)
     End Function
 
 End Class
