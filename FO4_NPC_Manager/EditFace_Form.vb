@@ -868,19 +868,23 @@ Public Class EditFace_Form
             Else
                 ' Non-Misc types 1..9: render's MergeHeadPartsWithRaceDefaults keeps exactly ONE
                 ' HDPT per type (last one wins, MainForm.vb:6577). Adding "Eyes blue" when the
-                ' NPC already has "Eyes green" replaces the green entry. The HNAM extras of the
-                ' old vs the new parent are NOT touched here — the render's recursive HNAM
-                ' walk in CollectHeadPartCandidate (MainForm.vb:6782) is the single source of
-                ' truth for which addons attach to which parent. Duplicating that walk in the
-                ' editor was producing parent-swap bugs; the render dedups by FormID via its
-                ' visited set so no double-draw, and addon-orphan handling (a freestanding
-                ' Misc whose old parent is gone) is the render's responsibility.
+                ' NPC already has "Eyes green" replaces the green entry. We do NOT re-ADD the new
+                ' parent's HNAM extras — the render's recursive HNAM walk in CollectHeadPartCandidate
+                ' (MainForm.vb:6782) is the single source of truth for which addons attach to which
+                ' parent, and duplicating that walk to add extras produced parent-swap bugs. But we
+                ' DO cascade-REMOVE the OLD parent's now-orphaned standalone Misc children below
+                ' (symmetric with OnRemoveHeadPart) — otherwise replacing a hair leaves its old
+                ' hairline as a Misc root with no palette.
                 Dim existingIdx = p.HeadPartFormIDs.FindIndex(Function(fid)
                                                                   Dim hd As HDPT_Data = Nothing
                                                                   Return _allHeadPartsByFid.TryGetValue(fid, hd) AndAlso hd.PartType = partType
                                                               End Function)
                 If existingIdx >= 0 Then
+                    Dim oldParentFid = p.HeadPartFormIDs(existingIdx)
                     p.HeadPartFormIDs(existingIdx) = newFid
+                    ' Set the new parent FIRST so its own HNAM protects any Misc the old and new
+                    ' parent share (a hairline declared by both stays a live HNAM child).
+                    If oldParentFid <> newFid Then CascadeRemoveOrphanedHnamMisc(p.HeadPartFormIDs, oldParentFid)
                 Else
                     p.HeadPartFormIDs.Add(newFid)
                 End If
@@ -908,44 +912,53 @@ Public Class EditFace_Form
         If idx < 0 Then Return
         p.HeadPartFormIDs.RemoveAt(idx)
 
-        ' Cascade: si el HDPT removido es un parent non-Misc con HNAM-extras, los Misc del preset
-        ' que estén declarados en su ExtraPartFormIDs quedan como orphans (effective type=0, paleta
-        ' no aplica → color BGSM default). Vanilla NPC.PNAM frecuentemente lista hairlines/etc. tanto
-        ' en HNAM del parent como standalone Misc en PNAM; cuando el usuario borra el parent, esos
-        ' standalone se vuelven huérfanos y rompen el render. Los limpiamos acá. No tocamos Misc del
-        ' preset cuyo FormID NO esté en el HNAM del parent removido — pueden ser addons legítimos
-        ' independientes (mouth shadow, AO/wet) que el usuario quiere conservar.
-        Dim removedHdpt As HDPT_Data = Nothing
-        If _allHeadPartsByFid.TryGetValue(tag.FormID, removedHdpt) AndAlso
-           removedHdpt.PartType <> HdptTypeMisc AndAlso
-           removedHdpt.ExtraPartFormIDs IsNot Nothing AndAlso
-           removedHdpt.ExtraPartFormIDs.Count > 0 Then
-            Dim extras As New HashSet(Of UInteger)(removedHdpt.ExtraPartFormIDs)
-            ' Defensive: si otra entrada del preset también declara este extra en su HNAM, NO lo
-            ' removemos — sigue siendo HNAM-child de un parent vivo. Caso raro en vanilla pero
-            ' barato cubrirlo.
-            Dim claimedByOtherParent As New HashSet(Of UInteger)
-            For Each otherFid In p.HeadPartFormIDs
-                Dim otherHdpt As HDPT_Data = Nothing
-                If Not _allHeadPartsByFid.TryGetValue(otherFid, otherHdpt) Then Continue For
-                If otherHdpt.ExtraPartFormIDs Is Nothing Then Continue For
-                For Each ex In otherHdpt.ExtraPartFormIDs
-                    If extras.Contains(ex) Then claimedByOtherParent.Add(ex)
-                Next
-            Next
-            For i = p.HeadPartFormIDs.Count - 1 To 0 Step -1
-                Dim fid = p.HeadPartFormIDs(i)
-                If Not extras.Contains(fid) Then Continue For
-                If claimedByOtherParent.Contains(fid) Then Continue For
-                Dim extraHdpt As HDPT_Data = Nothing
-                If Not _allHeadPartsByFid.TryGetValue(fid, extraHdpt) Then Continue For
-                If extraHdpt.PartType <> HdptTypeMisc Then Continue For
-                p.HeadPartFormIDs.RemoveAt(i)
-            Next
-        End If
+        ' Cascade-clean the removed parent's orphaned standalone Misc children. Vanilla NPC.PNAM
+        ' frequently lists a hairline both in the parent's HNAM and standalone in PNAM; once the
+        ' parent is gone the standalone becomes an orphan Misc root that breaks the render. Shared
+        ' with the Add/replace path so both behave identically.
+        CascadeRemoveOrphanedHnamMisc(p.HeadPartFormIDs, tag.FormID)
 
         RefreshHeadPartsList()
         _refresh?.Invoke(FaceRefreshScope.FullReload)
+    End Sub
+
+    ''' <summary>Cascade-remove the now-orphaned standalone Misc children of a parent head part that
+    ''' was just removed OR replaced. A standalone Misc entry that lived in
+    ''' <paramref name="removedParentFid"/>'s ExtraPartFormIDs (HNAM) becomes an orphan once its
+    ''' parent is gone: its effective type collapses to Misc(0), no hair/beard palette applies, and it
+    ''' renders with the BGSM-default colour while showing as a Misc root row. We drop those — EXCEPT
+    ''' any extra still claimed by another parent currently in <paramref name="headParts"/> (this
+    ''' includes the replacement parent on the Add path, so a hairline shared by the old and new hair
+    ''' survives as a live HNAM child). Non-Misc extras, and Misc the user added as independent addons
+    ''' (mouth shadow, AO/wet — not in the removed parent's HNAM), are left untouched.</summary>
+    Private Sub CascadeRemoveOrphanedHnamMisc(headParts As List(Of UInteger), removedParentFid As UInteger)
+        Dim removedHdpt As HDPT_Data = Nothing
+        If Not _allHeadPartsByFid.TryGetValue(removedParentFid, removedHdpt) Then Return
+        If removedHdpt.PartType = HdptTypeMisc Then Return
+        If removedHdpt.ExtraPartFormIDs Is Nothing OrElse removedHdpt.ExtraPartFormIDs.Count = 0 Then Return
+
+        Dim extras As New HashSet(Of UInteger)(removedHdpt.ExtraPartFormIDs)
+        ' If another preset entry also declares one of these extras in its HNAM, it's still a live
+        ' HNAM child of that parent — keep it. (Rare in vanilla but cheap to cover.)
+        Dim claimedByOtherParent As New HashSet(Of UInteger)
+        For Each otherFid In headParts
+            If otherFid = removedParentFid Then Continue For
+            Dim otherHdpt As HDPT_Data = Nothing
+            If Not _allHeadPartsByFid.TryGetValue(otherFid, otherHdpt) Then Continue For
+            If otherHdpt.ExtraPartFormIDs Is Nothing Then Continue For
+            For Each ex In otherHdpt.ExtraPartFormIDs
+                If extras.Contains(ex) Then claimedByOtherParent.Add(ex)
+            Next
+        Next
+        For i = headParts.Count - 1 To 0 Step -1
+            Dim fid = headParts(i)
+            If Not extras.Contains(fid) Then Continue For
+            If claimedByOtherParent.Contains(fid) Then Continue For
+            Dim extraHdpt As HDPT_Data = Nothing
+            If Not _allHeadPartsByFid.TryGetValue(fid, extraHdpt) Then Continue For
+            If extraHdpt.PartType <> HdptTypeMisc Then Continue For
+            headParts.RemoveAt(i)
+        Next
     End Sub
 
     ' =====================================================================

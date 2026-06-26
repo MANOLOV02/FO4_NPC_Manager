@@ -293,8 +293,10 @@ Public Module FaceGenBuilder
 
         ' Build the canonical HDPT chain for this NPC. Each entry has its MeshPath and (later)
         ' chargen TRI / FMRS info. This is the AUTHORITATIVE list — the .nif2 contains exactly
-        ' the shapes that come out of these sources.
-        Dim hdptMap = BuildAllowedShapeMap(npcFormID, pluginManager)
+        ' the shapes that come out of these sources. Seeded from `state` (= overlaid npcData +
+        ' ApplyRaceFallbacks), the SAME list the live render walks — so a modified chargen bakes
+        ' the head parts the preview shows, not the raw record's.
+        Dim hdptMap = BuildAllowedShapeMap(state, pluginManager)
 
         ' No FaceGen-eligible head parts (non-human race, robot, turret, creature, …) → nothing to
         ' bake. This is a SKIP, not a failure: don't write an empty NIF, and let the caller count it
@@ -911,27 +913,33 @@ Public Module FaceGenBuilder
     ''' structure plus the HDPT records the NPC references. No file is written.</summary>
 
     ''' <summary>Compute the map of shape names → owning HDPT_Data, allowed in the baked output.
-    ''' Seeds from <see cref="HeadPartResolver.MergeHeadPartsWithRaceDefaults"/> (NPC.PNAM ∪ RACE
-    ''' defaults per PartType, NPC override wins; freestanding type=0 misc accumulated) — same
-    ''' merge the render path uses, so RACE-default head parts like FemaleNeckGore (Meatcaps)
-    ''' are included even when NPC_.PNAM doesn't list them. Then expands recursively via
+    ''' Seeds from <see cref="HeadPartResolver.MergeHeadPartsWithRaceDefaults"/> over
+    ''' <paramref name="state"/>.HeadPartFormIDs (the OVERLAID + race-fallback list, identical to the
+    ''' render's NpcMeshCollector.MergeHeadPartsWithRaceDefaults(state) call — NOT the raw NPC.PNAM),
+    ''' so LooksMenu/Edit-Face head-part overrides bake exactly what the preview shows, and RACE-default
+    ''' head parts like FemaleNeckGore (Meatcaps) are still included when PNAM doesn't list them.
+    ''' Then expands recursively via
     ''' HDPT.ExtraPartFormIDs (HNAM) so technical sub-parts (Lashes/AO/Wet, Hairlines, etc.)
     ''' that vanilla HDPTs reference internally are also allowed. Match is case-insensitive.
     '''
     ''' Returning the HDPT_Data per name (not just the name) gives downstream the MeshPath,
     ''' RaceMorphTriPath, ChargenMorphTriPath, PartType, etc. needed to construct each shape
     ''' from records (iteration 1+ replaces "copy from baked" with "load from MeshPath").</summary>
-    Private Function BuildAllowedShapeMap(npcFormID As UInteger,
+    Private Function BuildAllowedShapeMap(state As MainForm.NPCVisualState,
                                           pluginManager As PluginManager) As Dictionary(Of String, HeadPartResolver.HdptChainEntry)
         Dim allowed As New Dictionary(Of String, HeadPartResolver.HdptChainEntry)(StringComparer.OrdinalIgnoreCase)
-        Dim npcRec = pluginManager.GetRecord(npcFormID)
-        If npcRec Is Nothing Then Return allowed
-        Dim npc = RecordParsers.ParseNPC(npcRec, npcRec.SourcePluginName, pluginManager)
-        If npc Is Nothing Then Return allowed
+        If state Is Nothing Then Return allowed
 
-        ' Use the shared resolver (NPC.PNAM ∪ RACE defaults per PartType + freestanding misc).
+        ' Seed from the SAME head-part list the live render walks: NpcMeshCollector does
+        ' MergeHeadPartsWithRaceDefaults(state) over state.HeadPartFormIDs, where `state` is the
+        ' overlaid npcData (ResolveOverlaidNpcData) + ApplyRaceFallbacks. Re-parsing the RAW NPC
+        ' record here (the previous behaviour) ignored the LooksMenu/Edit-Face overlay, so any
+        ' head-part change made before Save ESP — eye-colour Eyes HDPT (its TNAM is the eye
+        ' diffuse), hair, brows, FacialHair, scars, LM SkinTemplate head/headRear swaps — baked
+        ' vanilla while the material `state` honoured the overlay → bake diverged from the render.
+        ' Same function + same inputs as the render = bake == render by construction.
         Dim mergedRoots = HeadPartResolver.MergeHeadPartsWithRaceDefaults(
-            npc.RaceFormID, npc.IsFemale, npc.HeadPartFormIDs, pluginManager)
+            state.RaceFormID, state.IsFemale, state.HeadPartFormIDs, pluginManager)
 
         ' Walk the chain via the shared HNAM-expanding iterator (cycles guarded inside). Each
         ' entry carries the EFFECTIVE part type (Misc hairline under hair → Hair=3), the single
