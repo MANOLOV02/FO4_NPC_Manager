@@ -247,12 +247,15 @@ Module Program
     Private Function ResolveEdid(pm As PluginManager, esp As String, edid As String) As UInteger
         Dim hexId As UInteger
         If TryHexId(edid, hexId) Then
-            Dim want = hexId And &HFFFFFFUI
+            ' Match on the FaceGen-local FormID of BOTH sides so ESL (0xFE) FormIDs compare correctly:
+            ' the record key is reduced via ToFaceGenLocalFormID, so the wanted hex must be too (a plain
+            ' 24-bit mask never matches an ESL record, whose local id is the 12-bit object id).
+            Dim want = PluginManager.ToFaceGenLocalFormID(hexId)
             Dim hexFallback As UInteger = 0UI, hexFallbackCount As Integer = 0
             For Each kv As KeyValuePair(Of UInteger, PluginRecord) In pm.AllRecords
                 Dim r = kv.Value
                 If r Is Nothing OrElse r.Header.Signature <> "NPC_" Then Continue For
-                If FaceGenLocalId(kv.Key) <> want Then Continue For
+                If PluginManager.ToFaceGenLocalFormID(kv.Key) <> want Then Continue For
                 If String.Equals(r.SourcePluginName, esp, StringComparison.OrdinalIgnoreCase) Then Return kv.Key
                 hexFallback = kv.Key : hexFallbackCount += 1
             Next
@@ -292,10 +295,4 @@ Module Program
         Return True
     End Function
 
-    ''' <summary>FormID local del FaceGen segun convencion CK: full plugins & 0xFFFFFF; ESL (high byte
-    ''' 0xFE) & 0xFFF. (Copia del helper de FaceGenBuilder / FO4_FaceTint_CLI.)</summary>
-    Private Function FaceGenLocalId(npcFormID As UInteger) As UInteger
-        If (npcFormID >> 24) = &HFEUI Then Return npcFormID And &HFFFUI
-        Return npcFormID And &HFFFFFFUI
-    End Function
 End Module

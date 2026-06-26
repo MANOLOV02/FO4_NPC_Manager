@@ -373,13 +373,37 @@ Friend NotInheritable Class NpcStateResolver
 
     ''' <summary>Pick a random leaf NPC from a LVLN, using Count as weight, recursing into nested LVLNs.
     ''' Ignores Level requirements and ChanceNone for NPC leveled lists.</summary>
+    ''' <remarks>Thin entry point: acquires the PluginManager records READ lock for the whole walk,
+    ''' then allocates a per-resolution record-fetch memo and delegates to the recursive worker. Holding
+    ''' the read lock freezes <c>AllRecords</c> against the only post-load writer (the Save read-back's
+    ''' <c>MergeOverridePlugin</c>, which takes the WRITE lock) for the walk's short duration, so every
+    ''' fetch — including the memoized first-seen records and the un-memoized re-fetches an unmemoized
+    ''' walk would do — observes ONE consistent record set. That is what makes the memo provably
+    ''' identical to an unmemoized walk even under a concurrent Save: no mid-walk record swap can occur.
+    ''' Concurrent readers (the render thread's own read-locked lookups) are unaffected — only the rare
+    ''' Save writer waits. Inside the body every fetch uses the lock-free <c>GetRecordNoLock</c> via
+    ''' <see cref="GetRecordMemoized"/> (the read lock is already held), so there is no re-entrant lock
+    ''' acquisition. The memo still collapses the redundant fetches the walk would otherwise make (every
+    ''' entry re-fetched on every call; the same child records re-fetched across nested-LVLN recursion
+    ''' branches; gender-filter leaves re-fetched). RNG / eligibility / weight accumulation are
+    ''' untouched.</remarks>
     Friend Function PickWeightedRandomFromLVLN(lvlnFormID As UInteger, visited As HashSet(Of UInteger)) As UInteger
+        Return _ctx.PluginManager.RunUnderRecordsReadLock(
+            Function() PickWeightedRandomFromLVLN(lvlnFormID, visited, New Dictionary(Of UInteger, PluginRecord)()))
+    End Function
+
+    ''' <summary>Recursive worker for <see cref="PickWeightedRandomFromLVLN"/>. <paramref name="recordMemo"/>
+    ''' is threaded through the whole walk (including nested-LVLN recursion) so each FormID is fetched
+    ''' from the PluginManager at most once per top-level resolution. A FormID that resolves to Nothing
+    ''' is cached as Nothing too, preserving the original null handling without a re-fetch.</summary>
+    Private Function PickWeightedRandomFromLVLN(lvlnFormID As UInteger, visited As HashSet(Of UInteger),
+                                                recordMemo As Dictionary(Of UInteger, PluginRecord)) As UInteger
         If lvlnFormID = 0UI OrElse visited.Contains(lvlnFormID) Then Return 0UI
         visited.Add(lvlnFormID)
 
         Dim lvln As LVLN_Data = Nothing
         If Not _lvlnDataCache.TryGetValue(lvlnFormID, lvln) Then
-            Dim lvlnRec = _ctx.PluginManager.GetRecord(lvlnFormID)
+            Dim lvlnRec = GetRecordMemoized(lvlnFormID, recordMemo)
             If lvlnRec Is Nothing OrElse lvlnRec.Header.Signature <> "LVLN" Then Return 0UI
             lvln = RecordParsers.ParseLVLN(lvlnRec, _ctx.PluginManager)
         End If
@@ -389,7 +413,7 @@ Friend NotInheritable Class NpcStateResolver
 
         For Each entry In lvln.Entries
             If entry.FormID = 0UI Then Continue For
-            Dim entryRec = _ctx.PluginManager.GetRecord(entry.FormID)
+            Dim entryRec = GetRecordMemoized(entry.FormID, recordMemo)
             If entryRec Is Nothing Then Continue For
 
             Dim weight = Math.Max(CInt(entry.Count), 1)
@@ -402,7 +426,7 @@ Friend NotInheritable Class NpcStateResolver
                 Case "LVLN"
                     ' Recurse into nested LVLN: pick from sub-list, weighted by this entry's Count
                     For i = 0 To weight - 1
-                        Dim subPick = PickWeightedRandomFromLVLN(entry.FormID, New HashSet(Of UInteger)(visited))
+                        Dim subPick = PickWeightedRandomFromLVLN(entry.FormID, New HashSet(Of UInteger)(visited), recordMemo)
                         If subPick <> 0UI Then weightedLeaves.Add(subPick)
                     Next
             End Select
@@ -418,7 +442,7 @@ Friend NotInheritable Class NpcStateResolver
                                                     If _ctx.NpcCache.TryGetValue(fid, npc) Then
                                                         Return If(genderFilter = MainForm.GenderFilterMode.Female, npc.IsFemale, Not npc.IsFemale)
                                                     End If
-                                                    Dim npcRec = _ctx.PluginManager.GetRecord(fid)
+                                                    Dim npcRec = GetRecordMemoized(fid, recordMemo)
                                                     If npcRec Is Nothing OrElse npcRec.Header.Signature <> "NPC_" Then Return True
                                                     Dim parsed = RecordParsers.ParseNPC(npcRec, "", _ctx.PluginManager)
                                                     Return If(genderFilter = MainForm.GenderFilterMode.Female, parsed.IsFemale, Not parsed.IsFemale)
@@ -428,6 +452,22 @@ Friend NotInheritable Class NpcStateResolver
 
         Dim picked = weightedLeaves(_rng.Next(weightedLeaves.Count))
         Return picked
+    End Function
+
+    ''' <summary>Memoized record fetch: returns the cached record for <paramref name="formID"/> if the
+    ''' walk has fetched it already, else fetches from the PluginManager and stores the result (Nothing
+    ''' included). Uses the lock-free <c>GetRecordNoLock</c> because the caller (the
+    ''' <see cref="PickWeightedRandomFromLVLN"/> entry point) already holds the records read lock for the
+    ''' whole walk via <c>RunUnderRecordsReadLock</c> — so this returns BYTE-IDENTICALLY what the
+    ''' lock-taking <c>GetRecord</c> would (same <c>AllRecords</c>, same Nothing-on-miss) minus a
+    ''' redundant re-entrant lock acquisition, and every fetch in the walk sees the same writer-frozen
+    ''' record set.</summary>
+    Private Function GetRecordMemoized(formID As UInteger, recordMemo As Dictionary(Of UInteger, PluginRecord)) As PluginRecord
+        Dim rec As PluginRecord = Nothing
+        If recordMemo.TryGetValue(formID, rec) Then Return rec
+        rec = _ctx.PluginManager.GetRecordNoLock(formID)
+        recordMemo(formID) = rec
+        Return rec
     End Function
 
     ''' <summary>Pick a single NPC from a LVLN for template resolution. Uses Count as weight.

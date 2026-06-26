@@ -14,13 +14,14 @@ Public Module MeshPathHelpers
 
     ''' <summary>Normalize a raw mesh path for FilesDictionary lookup. Handles missing
     ''' "Meshes\" prefix, slash direction, and case. Empty/whitespace input returns "".</summary>
+    ''' <summary>Normalize a raw mesh path for FilesDictionary lookup. Delegates to the shared
+    ''' game-relative normalizer (same one behind <c>CorrectMaterialPath</c>/<c>CorrectTexturePath</c>)
+    ''' so meshes, materials and textures all strip absolute build-machine prefixes identically —
+    ''' e.g. Far Harbor's VRRetriever ARMA ships MOD2 as
+    ''' "c:\projects\fallout4\build\pc\data\meshes\actors\dlc03\vrretriever\...", which must resolve
+    ''' to "meshes\actors\dlc03\vrretriever\...". Empty/whitespace input returns "".</summary>
     Public Function NormalizeMeshKey(rawPath As String) As String
-        If String.IsNullOrWhiteSpace(rawPath) Then Return ""
-        Dim normalized = rawPath.Replace("/", "\").Trim()
-        If Not normalized.StartsWith("Meshes\", StringComparison.OrdinalIgnoreCase) Then
-            normalized = "Meshes\" & normalized
-        End If
-        Return normalized.ToLowerInvariant()
+        Return FO4UnifiedMaterial_Class.CorrectMeshPath(rawPath)
     End Function
 
     ''' <summary>Look for a `_facebones.nif` sibling of the given normalized mesh key.

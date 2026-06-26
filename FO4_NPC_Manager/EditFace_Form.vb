@@ -1931,11 +1931,7 @@ Public Class EditFace_Form
     End Function
 
     Private Function ResolveMorphValueDef(key As UInteger) As RACE_MorphValueDef
-        If _race?.MorphValues Is Nothing Then Return Nothing
-        For Each mv In _race.MorphValues
-            If mv.Index = key Then Return mv
-        Next
-        Return Nothing
+        Return _race?.MorphValues?.FirstOrDefault(Function(mv) mv.Index = key)
     End Function
 
     Private Class PresetItem
@@ -2770,12 +2766,6 @@ Public Class EditFace_Form
     ' Helpers
     ' =====================================================================
 
-    Private Shared Function ClampInt(v As Integer, lo As Integer, hi As Integer) As Integer
-        If v < lo Then Return lo
-        If v > hi Then Return hi
-        Return v
-    End Function
-
     ''' <summary>Render-gore checkbox toggle. Mutates the editor host's Toggles in place
     ''' (the only visibility flag the EditFace surface exposes — head meshes don't have
     ''' Underarmor/Armor/Headwear categories) and runs the standard visibility pass.</summary>
@@ -2786,7 +2776,4 @@ Public Class EditFace_Form
         _editorHost.ApplyRenderToggleVisibility()
     End Sub
 
-    Private Sub EditFace_Form_Load(sender As Object, e As EventArgs) Handles MyBase.Load
-
-    End Sub
 End Class

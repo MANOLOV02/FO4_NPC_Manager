@@ -184,7 +184,7 @@ Friend Class NpcRenderHost
         ' groupSlots[gid] = the OWN-slot mask of each rendered worn-item group (one group per candidate; its
         ' shapes share the mask, so an item never occludes its own segments). A worn item contributes only
         ' while its render category is shown (same condition that drives RenderHide for that category).
-        Const SLOT_PIPBOY As UInteger = &H40000000UI   ' bit 30 = biped slot 60 (Pipboy)
+        ' SLOT_PIPBOY (bit 30 = biped slot 60, Pipboy) now lives in the shared BipedSlots module.
         Dim groupSlots As New Dictionary(Of Integer, UInteger)
         For Each m In PreviewCtl.Model.meshes
             If m Is Nothing OrElse m.MeshData Is Nothing OrElse m.MeshData.Shape Is Nothing Then Continue For
@@ -210,8 +210,8 @@ Friend Class NpcRenderHost
             ' groups: a uniform's incidental slot-60 must NOT occlude another piece's forearm-60 segment
             ' (Captain Cade: the gloves' forearm-60 was wrongly hidden by the uniform's BOD2 slot-60, with no
             ' pipboy). A real Pipboy device keeps its 60 → it alone drives the swap (60 hidden, 160 shown).
-            Dim isPipboyDevice As Boolean = (own And SLOT_PIPBOY) <> 0UI AndAlso (own And (Not SLOT_PIPBOY)) = 0UI
-            groupSlots(gid) = If(isPipboyDevice, own, own And (Not SLOT_PIPBOY))
+            Dim isPipboyDevice As Boolean = (own And BipedSlots.SLOT_PIPBOY) <> 0UI AndAlso (own And (Not BipedSlots.SLOT_PIPBOY)) = 0UI
+            groupSlots(gid) = If(isPipboyDevice, own, own And (Not BipedSlots.SLOT_PIPBOY))
         Next
         Dim occupiedVisible As UInteger = 0UI
         For Each kv In groupSlots : occupiedVisible = occupiedVisible Or kv.Value : Next

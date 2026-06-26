@@ -418,7 +418,7 @@ Module Program
         Dim outDir = If(outOverride <> "", outOverride,
                         Path.Combine(dataPath, "Textures", "Actors", "Character", "FaceCustomization", originPlugin))
         Directory.CreateDirectory(outDir)
-        Dim localId = FaceGenLocalId(npcFormID)
+        Dim localId = PluginManager.ToFaceGenLocalFormID(npcFormID)
         WriteChannel(outDir, localId, "d", cpu.Diffuse)
         WriteChannel(outDir, localId, "msn", cpu.Normal)
         WriteChannel(outDir, localId, "s", cpu.Specular)
@@ -556,7 +556,7 @@ Module Program
             .HasTextureLighting = npcData.HasTextureLighting, .TextureLightingArgb = npcData.TextureLightingColor.ToArgb(),
             .DKey = dk, .NKey = nk, .SKey = sk,
             .DBytes = FilesDictionary_class.GetBytes(dk), .NBytes = FilesDictionary_class.GetBytes(nk), .SBytes = FilesDictionary_class.GetBytes(sk)}
-        Dim localId = FaceGenLocalId(fid)
+        Dim localId = PluginManager.ToFaceGenLocalFormID(fid)
         Dim ckDir = Path.Combine(dataPath, "Textures", "Actors", "Character", "FaceCustomization", originPlugin)
         ctx.CkD = LoadTgaRgb(Path.Combine(ckDir, $"{localId:X8}_d.tga"))
         ctx.CkN = LoadTgaRgb(Path.Combine(ckDir, $"{localId:X8}_msn.tga"))
@@ -687,17 +687,20 @@ Module Program
     ''' ORIGINA el record" como "el esp lo OVERRIDEA" (cargado ultimo -> gana). 0 si no hay match (con
     ''' fallback a un unico match de EDID en otro plugin).</summary>
     Private Function ResolveEdid(pm As PluginManager, esp As String, edid As String) As UInteger
-        ' Si 'edid' es un FormID hex (0x... o 8 digitos), resolver por FaceGenLocalId + plugin que
+        ' Si 'edid' es un FormID hex (0x... o 8 digitos), resolver por PluginManager.ToFaceGenLocalFormID + plugin que
         ' PROVEE el record ganador (SourcePluginName), igual que el path EDID. Asi --esp <override.esp>
         ' selecciona la version overridden (ej. NPC_BAKETEST.esp sobre Alana de Fallout4.esm), no el originante.
         Dim hexId As UInteger
         If TryHexId(edid, hexId) Then
-            Dim want = hexId And &HFFFFFFUI
+            ' Match on the FaceGen-local FormID of BOTH sides so ESL (0xFE) FormIDs compare correctly:
+            ' the record key is reduced via ToFaceGenLocalFormID, so the wanted hex must be too (a plain
+            ' 24-bit mask never matches an ESL record, whose local id is the 12-bit object id).
+            Dim want = PluginManager.ToFaceGenLocalFormID(hexId)
             Dim hexFallback As UInteger = 0UI, hexFallbackCount As Integer = 0
             For Each kv As KeyValuePair(Of UInteger, PluginRecord) In pm.AllRecords
                 Dim r = kv.Value
                 If r Is Nothing OrElse r.Header.Signature <> "NPC_" Then Continue For
-                If FaceGenLocalId(kv.Key) <> want Then Continue For
+                If PluginManager.ToFaceGenLocalFormID(kv.Key) <> want Then Continue For
                 If String.Equals(r.SourcePluginName, esp, StringComparison.OrdinalIgnoreCase) Then Return kv.Key
                 hexFallback = kv.Key : hexFallbackCount += 1
             Next
@@ -1122,7 +1125,7 @@ Module Program
     ''' (d) STKD (target keywords) usados; (e) BlendHint (hkaAnimationBinding) de cada archivo resuelto = aditivos.
     ''' Solo lee API pública de la lib (no la modifica).</summary>
     Private Sub CatProfileScan(pm As PluginManager, edidFilter As String)
-        Dim loader As Func(Of String, Byte()) = AddressOf LoadDictBytes
+        Dim loader As Func(Of String, Byte()) = Function(p) FO4_NPC_Manager.MeshPathHelpers.TryLoadMeshBytes(p, 0)
         ' Set de animaciones referenciadas por records IDLE (GNAM = 'Animation File', wbDefinitionsFO4.pas:10010).
         ' Los IDLE son el sistema de idles/gestos/diálogo (PoseA_*), SEPARADO del behavior-graph por-raza → sirve para
         ' explicar la ORFANDAD (cuántos huérfanos son anims de IDLE que el enumerador por-raza no camina).
@@ -1928,7 +1931,7 @@ Module Program
         ' (2) Conjunto REFERENCIADO: caminar todas las razas con behavior.
         Dim referenced As New HashSet(Of String)(StringComparer.OrdinalIgnoreCase)
         Dim behVisited As New HashSet(Of String)(StringComparer.OrdinalIgnoreCase)
-        Dim loader As Func(Of String, Byte()) = AddressOf LoadDictBytes
+        Dim loader As Func(Of String, Byte()) = Function(p) FO4_NPC_Manager.MeshPathHelpers.TryLoadMeshBytes(p, 0)
         Dim races = pm.GetRecordsOfType("RACE")
         Dim nRaces = 0
         For Each rec In races
@@ -2210,7 +2213,7 @@ Module Program
         Next
         Console.WriteLine($"[clipresolve] index .hkx/.hkt={animSet.Count} | identidades-raza={owner.Count} | filtro='{edidFilter}'")
 
-        Dim loader As Func(Of String, Byte()) = AddressOf LoadDictBytes
+        Dim loader As Func(Of String, Byte()) = Function(p) FO4_NPC_Manager.MeshPathHelpers.TryLoadMeshBytes(p, 0)
         Dim gTot = 0, gRes = 0, gFull = 0, gStrip = 0, gAmbig = 0, gWeColl = 0
         For Each rec In races
             Dim race As RACE_Data = Nothing
@@ -2440,7 +2443,7 @@ Module Program
             End If
 
             ' Skeleton SÓLIDO (rigName del behavior character) + enumeración de clips.
-            Dim loader As Func(Of String, Byte()) = AddressOf LoadDictBytes
+            Dim loader As Func(Of String, Byte()) = Function(p) FO4_NPC_Manager.MeshPathHelpers.TryLoadMeshBytes(p, 0)
             Dim havokSkel = BehaviorClipEnumerator.ResolveHavokSkeleton(rb, loader)
             Console.WriteLine($"  skeleton (Havok, rigName del character) = '{havokSkel}'")
             ' Comparación de SETS de huesos: NIF (render, rb.Skeleton) vs HKX (behavior, havokSkel).
@@ -2488,21 +2491,9 @@ Module Program
         Console.WriteLine($"[SKEL-CHECK] skeletons distintos verificados={gSkelSeen.Count}; con selección AMBIGUA (no hay exactamente 1 no-ragdoll): {If(gSkelAnom.Count = 0, "NINGUNO ✓ (1 anim + ragdoll en todos)", String.Join("  |  ", gSkelAnom))}")
     End Sub
 
-    ' Loader para el enumerador de behavior: busca el path en FilesDictionary (BA2+loose).
-    Private Function LoadDictBytes(path As String) As Byte()
-        Dim loc As FilesDictionary_class.File_Location = Nothing
-        If FilesDictionary_class.Dictionary.TryGetValue(path, loc) AndAlso loc IsNot Nothing Then
-            Try
-                Return loc.GetBytes()
-            Catch
-            End Try
-        End If
-        Return Nothing
-    End Function
-
     ' Como MainForm.LoadAnimHkxBytes: prueba candidatos (con/sin "Meshes\", .hkx/.hkt).
     Private Function LoadAnimCand(path As String) As Byte()
-        Return BehaviorClipEnumerator.LoadFirstHkxCandidate(AddressOf LoadDictBytes, path)
+        Return BehaviorClipEnumerator.LoadFirstHkxCandidate(Function(p) FO4_NPC_Manager.MeshPathHelpers.TryLoadMeshBytes(p, 0), path)
     End Function
 
     ' Valida con DATOS REALES (Assaultron) el orden de composición mount/pose. Por frame de una anim real:
@@ -3948,13 +3939,6 @@ Module Program
             If Not String.IsNullOrWhiteSpace(t) Then Return t
         Next
         Return ""
-    End Function
-
-    ''' <summary>FormID local del FaceGen segun CK: full plugins &amp; 0xFFFFFF; ESL (high byte 0xFE)
-    ''' &amp; 0xFFF (record de 12 bits). Espejo de FaceGenBuilder.FaceGenLocalId.</summary>
-    Private Function FaceGenLocalId(npcFormID As UInteger) As UInteger
-        If (npcFormID >> 24) = &HFEUI Then Return npcFormID And &HFFFUI
-        Return npcFormID And &HFFFFFFUI
     End Function
 
     Private Sub WriteChannel(dir As String, localId As UInteger, suffix As String, ch As FaceTintCpuCompositor.CpuChannelResult)

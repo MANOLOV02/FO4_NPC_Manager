@@ -24,7 +24,7 @@ Public Module SlotConflictResolver
     Private Const BODY_MASK As UInteger = &H8UI            ' bit 3  — slot 33 BODY
     Private ReadOnly U_MASK As UInteger = BuildRange(6, 10)   ' bits 6-10  — slots 36-40 [U] underlayer
     Private ReadOnly A_MASK As UInteger = BuildRange(11, 15)  ' bits 11-15 — slots 41-45 [A] over-armor
-    Private Const SLOT_PIPBOY As UInteger = &H40000000UI   ' bit 30 — slot 60 Pipboy
+    ' SLOT_PIPBOY (bit 30 — slot 60 Pipboy) now lives in the shared BipedSlots module.
 
     Private Function BuildRange(loBit As Integer, hiBit As Integer) As UInteger
         Dim m As UInteger = 0UI
@@ -110,8 +110,8 @@ Public Module SlotConflictResolver
             ' every reachable equip set. Slot 60 STILL flows into `occupied` below (the 60/160 segment swap
             ' downstream reads it). There is NO engine mutex between Pipboy(60) and [A] L Arm(42): different
             ' bits → SlotsOverlap=0 → they coexist (lab coats declare 60+[A]42 and worn with a Pipboy fine).
-            Dim conflictMask = m And Not SLOT_PIPBOY
-            Dim occupiedForCheck = occupied And Not SLOT_PIPBOY
+            Dim conflictMask = m And Not BipedSlots.SLOT_PIPBOY
+            Dim occupiedForCheck = occupied And Not BipedSlots.SLOT_PIPBOY
             If (conflictMask And occupiedForCheck) <> 0UI Then res.Losers.Add(it) : Continue For
             occupied = occupied Or m
             acceptedReverse.Add(it)

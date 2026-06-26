@@ -920,13 +920,9 @@ Friend NotInheritable Class NpcMountingResolver
     ''' <summary>Helper: load NIF bytes from FilesDictionary by key + index its BSConnectPoint
     ''' sockets into the target dict (last-wins on duplicate Name).</summary>
     Private Sub IndexSocketsFromSkeletonKey(skelKey As String, dict As Dictionary(Of String, BSConnectPointReader.ConnectPointInfo))
-        Dim loc As FilesDictionary_class.File_Location = Nothing
-        If Not FilesDictionary_class.Dictionary.TryGetValue(skelKey, loc) Then
-            Return
-        End If
+        Dim bytes = MeshPathHelpers.TryLoadMeshBytes(skelKey)
+        If bytes Is Nothing Then Return
         Try
-            Dim bytes = loc.GetBytes()
-            If bytes Is Nothing OrElse bytes.Length = 0 Then Return
             IndexSocketsFromBytes(bytes, skelKey, dict)
         Catch ex As Exception
         End Try
@@ -947,7 +943,7 @@ Friend NotInheritable Class NpcMountingResolver
     ''' FAKE-SKIN del Protectron HeadLight (MainForm.vb:2716-2748); root.local se excluye porque
     ''' en vanilla Bethesda authora ahí la transform de "scene viewer" del CK, no parte del attach.
     '''
-    ''' Gate: SOLO standalone Pipboy ARMO (slot==MainForm.SlotBitPipboy exacto, sólo bit 30). Outfits que
+    ''' Gate: SOLO standalone Pipboy ARMO (slot==BipedSlots.SlotBitPipboy exacto, sólo bit 30). Outfits que
     ''' declaran bit Pipboy junto con otros bits (ej. ClothesVaultTecScientist slot=0x40000008
     ''' BODY+Pipboy) NO entran — son outfits regulares con sus propios shapes skinneados, el bit
     ''' Pipboy es declarativo de slot reserve, no garantiza pipboy mesh built-in. Check IsSkinned
@@ -958,7 +954,7 @@ Friend NotInheritable Class NpcMountingResolver
     Friend Sub ApplyPipboySyntheticSkin(result As MainForm.PreviewResolutionResult, inst As SkeletonInstance)
         If result Is Nothing OrElse inst Is Nothing Then Return
 
-        Dim hasPipboyCandidate As Boolean = result.CandidateNif.Keys.Any(Function(c) c.SlotMask = MainForm.SlotBitPipboy)
+        Dim hasPipboyCandidate As Boolean = result.CandidateNif.Keys.Any(Function(c) c.SlotMask = BipedSlots.SlotBitPipboy)
         If Not hasPipboyCandidate Then Return
 
         ' Discover pipboy bone target del skeleton del actor (case-insensitive, sin hardcoding).
@@ -978,7 +974,7 @@ Friend NotInheritable Class NpcMountingResolver
         Logger.LogLazy(Function() $"[PIPBOY-DIAG] FAKE-SKIN target bone resolved: '{boneNameL}'")
 
         For Each cand In result.CandidateNif.Keys
-            If cand.SlotMask <> MainForm.SlotBitPipboy Then Continue For
+            If cand.SlotMask <> BipedSlots.SlotBitPipboy Then Continue For
             Dim pipboyNif As Nifcontent_Class_Manolo = Nothing
             If Not result.CandidateNif.TryGetValue(cand, pipboyNif) Then Continue For
             Dim rootNode = pipboyNif.GetRootNode()

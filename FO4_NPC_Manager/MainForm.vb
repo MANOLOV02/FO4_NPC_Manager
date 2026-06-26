@@ -1904,7 +1904,7 @@ Public Class MainForm
                     Continue For
                 End Try
                 If arma Is Nothing Then Continue For
-                Dim armaRaceOk = ArmorAddonMatchesRace(arma, npcRaceFID)
+                Dim armaRaceOk = ArmorAddonMatchesRace(arma, npcRaceFID, _ctx.GetEffectiveArmorRaces(npcRaceFID))
                 If armaRaceOk Then raceMatch = True
                 Dim txst = If(isFemale, arma.FemaleSkinTextureFormID, arma.MaleSkinTextureFormID)
                 If armaRaceOk AndAlso txst <> 0UI Then
@@ -2113,7 +2113,7 @@ Public Class MainForm
                     Continue For
                 End Try
                 If arma Is Nothing Then Continue For
-                Dim armaRaceOk = ArmorAddonMatchesRace(arma, npcRaceFID)
+                Dim armaRaceOk = ArmorAddonMatchesRace(arma, npcRaceFID, _ctx.GetEffectiveArmorRaces(npcRaceFID))
                 If Not armaRaceOk Then Continue For
                 If arma.FemaleMeshPath <> "" OrElse arma.MaleMeshPath <> "" Then Return True
             Next
@@ -2284,7 +2284,7 @@ Public Class MainForm
                 Continue For
             End Try
             If arma Is Nothing Then Continue For
-            If Not ArmorAddonMatchesRace(arma, npcRaceFID) Then Continue For
+            If Not ArmorAddonMatchesRace(arma, npcRaceFID, _ctx.GetEffectiveArmorRaces(npcRaceFID)) Then Continue For
             Dim genderMesh = If(isFemale, arma.FemaleMeshPath, arma.MaleMeshPath)
             If genderMesh = "" Then genderMesh = If(arma.MaleMeshPath <> "", arma.MaleMeshPath, arma.FemaleMeshPath)
             If genderMesh <> "" Then
@@ -5738,181 +5738,8 @@ Public Class MainForm
         End If
 
 
-        ' Everything below this point is debug-only asset instrumentation (TRI / mouth-NIF
-        ' enumeration) whose results are DISCARDED — pure investigation scaffolding, no functional
-        ' effect on the app. EnsureAssetDictionaryAsync is awaited at the start of EVERY NPC
-        ' selection; after the first build the awaited load task completes instantly, so this tail
-        ' runs SYNCHRONOUSLY ON THE UI THREAD on every click — BA2 decompress + TriHeadParser ×12,
-        ' four full NIF loads, and a full FilesDictionary scan. Skip it unless logging is on (drop
-        ' the progress bar first, exactly as the tail would). Re-enable by turning on the logger.
-        If Not Logger.Enabled Then
-            If InvokeRequired Then
-                BeginInvoke(Sub() ToolStripProgressBar1.Visible = False)
-            Else
-                ToolStripProgressBar1.Visible = False
-            End If
-            Return
-        End If
-
-        ' TRI-PROBE 2026-04-19: enumerate vanilla head TRIs to resolve the male _faceBones 1696
-        ' vs chargen 1690 mismatch puzzle. Loads all known head TRI variants and logs vert count
-        ' + morph names so we can decide which TRI is the correct morph source for _faceBones.
-        Dim triProbePaths = {
-            "meshes\actors\character\characterassets\basemalehead.tri",
-            "meshes\actors\character\characterassets\basemaleheadchargen.tri",
-            "meshes\actors\character\characterassets\basemaleheadold.tri",
-            "meshes\actors\character\characterassets\basefemalehead.tri",
-            "meshes\actors\character\characterassets\basefemaleheadchargen.tri",
-            "meshes\actors\character\characterassets\humanoidhead.tri"
-        }
-        For Each probePath In triProbePaths
-            Dim loc As FilesDictionary_class.File_Location = Nothing
-            If Not FilesDictionary_class.Dictionary.TryGetValue(probePath, loc) Then
-                Continue For
-            End If
-            Try
-                Dim bytes = loc.GetBytes()
-                If bytes Is Nothing OrElse bytes.Length < 64 Then
-                    Continue For
-                End If
-                ' Verify FRTRI003 magic
-                Dim magic = System.Text.Encoding.ASCII.GetString(bytes, 0, 8)
-                If Not magic.StartsWith("FRTRI") Then
-                    Continue For
-                End If
-                ' Read 14 uint32 header fields at offset 8 to expose EVERYTHING (incl. numModifiers, numModVertices, unknowns)
-                Dim h(13) As UInteger
-                For k = 0 To 13
-                    h(k) = BitConverter.ToUInt32(bytes, 8 + k * 4)
-                Next
-                Dim numVertices = h(0), numTriangles = h(1), numQuads = h(2), unk2 = h(3), unk3 = h(4)
-                Dim numUV = h(5), flags = h(6), numMorphs = h(7), numModifiers = h(8), numModVertices = h(9)
-                Dim unk7 = h(10), unk8 = h(11), unk9 = h(12), unk10 = h(13)
-                ' Now parse via library for morph names (splits regular vs mod)
-                Dim head = TriHeadParser.ParseTriHeadFromBytes(bytes)
-                If head IsNot Nothing Then
-                    Dim regularNames = head.Morphs.Where(Function(m) Not m.IsModMorph).Select(Function(m) m.Name).ToList()
-                    Dim modNames = head.Morphs.Where(Function(m) m.IsModMorph).Select(Function(m) m.Name).ToList()
-                End If
-            Catch ex As Exception
-            End Try
-        Next
-
-        ' CHILD-TRI-DUMP: enumerate every .tri entry in FilesDictionary whose path contains
-        ' "child" so we know exactly what TRIs vanilla / loaded mods ship for the Child race.
-        ' If any of them carries the Brow/Chin/EyesMove morph names that HumanChildRace.MorphValues
-        ' declares but BaseFemaleHeadChargen.tri lacks, we have a Child-specific TRI we should
-        ' be loading instead of (or in addition to) the adult chargen TRI.
-        Dim childTris = New List(Of String)
-        For Each kv In FilesDictionary_class.Dictionary
-            Dim k = kv.Key
-            If k.EndsWith(".tri", StringComparison.OrdinalIgnoreCase) AndAlso
-               k.Contains("child", StringComparison.OrdinalIgnoreCase) Then
-                childTris.Add(k)
-            End If
-        Next
-        childTris.Sort(StringComparer.OrdinalIgnoreCase)
-        For Each childTri In childTris
-            Dim probePath = childTri
-            Dim loc As FilesDictionary_class.File_Location = Nothing
-            If Not FilesDictionary_class.Dictionary.TryGetValue(probePath, loc) Then Continue For
-            Try
-                Dim bytes = loc.GetBytes()
-                If bytes Is Nothing OrElse bytes.Length < 64 Then
-                    Continue For
-                End If
-                Dim magic = System.Text.Encoding.ASCII.GetString(bytes, 0, 8)
-                If magic.StartsWith("FRTRI") Then
-                    Dim numVerts = BitConverter.ToUInt32(bytes, 8)
-                    Dim numMorphs = BitConverter.ToUInt32(bytes, 8 + 7 * 4)
-                    Try
-                        Dim head = TriHeadParser.ParseTriHeadFromBytes(bytes)
-                        If head IsNot Nothing Then
-                            Dim allNames = head.Morphs.Select(Function(m) m.Name).ToList()
-                        End If
-                    Catch
-                    End Try
-                Else
-                    ' PIRT (BodySlide) tri — different magic, just log size.
-                End If
-            Catch ex As Exception
-            End Try
-        Next
-
-        ' MOUTH-NIF-PROBE: enumerate shapes (name + vert count) inside FemaleMouth.nif and its
-        ' _faceBones variant so we know exactly what geometry the engine puts where.
-        Dim mouthNifPaths = {
-            "meshes\actors\character\characterassets\faceparts\femalemouth.nif",
-            "meshes\actors\character\characterassets\faceparts\femalemouth_facebones.nif",
-            "meshes\actors\character\characterassets\faceparts\femalemouthshadow.nif",
-            "meshes\actors\character\characterassets\faceparts\femalemouthshadow_facebones.nif"
-        }
-        For Each np In mouthNifPaths
-            Dim loc As FilesDictionary_class.File_Location = Nothing
-            If Not FilesDictionary_class.Dictionary.TryGetValue(np, loc) Then
-                Continue For
-            End If
-            Try
-                Dim nifBytes = loc.GetBytes()
-                If nifBytes Is Nothing OrElse nifBytes.Length = 0 Then
-                    Continue For
-                End If
-                Dim nif As New Nifcontent_Class_Manolo()
-                nif.Load_Manolo(nifBytes)
-                Dim shapes = nif.GetShapes()
-                For Each sh In shapes
-                    Dim shName = If(sh.Name IsNot Nothing, sh.Name.String, "<unnamed>")
-                    Dim vCount As Integer = 0
-                    Dim shKind As String = sh.GetType().Name
-                    If ShapeGeometryFactory.IsSupported(sh) Then
-                        Try
-                            Dim geom = ShapeGeometryFactory.For(sh, nif)
-                            vCount = geom.VertexCount
-                        Catch
-                        End Try
-                    End If
-                Next
-            Catch ex As Exception
-            End Try
-        Next
-
-        ' MOUTH-CHARGEN-PROBE: confirmed via .idx.bin scan that vanilla Meshes.ba2 ships
-        ' MouthHumanChargen.tri + MouthShadowChargen.tri. The HDPT FemaleMouthHumanoidDefault
-        ' does NOT declare them — only NAM0=1 → FemaleMouth.tri. Probe these two paths to see
-        ' what sculpting morphs they contain (LipFeature*?) so we can decide if the mouth
-        ' shape needs a per-shape chargen-tri override.
-        Dim mouthChargenPaths = {
-            "meshes\actors\character\characterassets\faceparts\mouthhumanchargen.tri",
-            "meshes\actors\character\characterassets\faceparts\mouthshadowchargen.tri",
-            "meshes\actors\character\characterassets\faceparts\femalemouth.tri",
-            "meshes\actors\character\characterassets\faceparts\femalemouthshadow.tri",
-            "meshes\actors\character\characterassets\faceparts\mouthhuman.tri",
-            "meshes\actors\character\characterassets\faceparts\mouthshadow.tri"
-        }
-        For Each p In mouthChargenPaths
-            Dim loc As FilesDictionary_class.File_Location = Nothing
-            If Not FilesDictionary_class.Dictionary.TryGetValue(p, loc) Then
-                Continue For
-            End If
-            Try
-                Dim bytes = loc.GetBytes()
-                If bytes Is Nothing OrElse bytes.Length < 16 Then
-                    Continue For
-                End If
-                Dim magic = System.Text.Encoding.ASCII.GetString(bytes, 0, 8)
-                If magic.StartsWith("FRTRI") Then
-                    Dim head = TriHeadParser.ParseTriHeadFromBytes(bytes)
-                    If head IsNot Nothing Then
-                        Dim regularNames = head.Morphs.Where(Function(m) Not m.IsModMorph).Select(Function(m) m.Name).ToList()
-                        Dim modNames = head.Morphs.Where(Function(m) m.IsModMorph).Select(Function(m) m.Name).ToList()
-                    Else
-                    End If
-                Else
-                End If
-            Catch ex As Exception
-            End Try
-        Next
-
+        ' Asset dictionary ready; hide the progress bar. (Debug-only TRI / mouth-NIF enumeration
+        ' scaffolding — whose results were discarded — was removed 2026-06-24.)
         If InvokeRequired Then
             BeginInvoke(Sub() ToolStripProgressBar1.Visible = False)
         Else
@@ -6083,17 +5910,6 @@ Public Class MainForm
         Return MeshPathHelpers.TryGetFaceBonesVariant(meshDictKey)
     End Function
 
-    ''' <summary>Local FormID used in the FaceGen file name, per CK convention. Full plugins: strip the
-    ''' high (load-order) byte (&amp; 0xFFFFFF). ESL/light plugins (high byte 0xFE): ALSO strip the 12-bit
-    ''' light slot, leaving only the 12-bit record (&amp; 0xFFF). Mirrors <c>FaceGenBuilder.FaceGenLocalId</c>
-    ''' (which is Private there, so the logic is duplicated here) — verified: ESL runtime 0xFE032800 →
-    ''' CK writes "00000800", NOT "00032800". Without the ESL mask the light slot leaks into the name and
-    ''' the game can't find the mesh/texture.</summary>
-    Private Function FaceGenLocalId(npcFormID As UInteger) As UInteger
-        If (npcFormID >> 24) = &HFEUI Then Return npcFormID And &HFFFUI
-        Return npcFormID And &HFFFFFFUI
-    End Function
-
     ''' <summary>Build the FaceGen NIF lookup path for a given NPC FormID.
     ''' Vanilla FO4 layout:
     '''   meshes\actors\character\facegendata\facegeom\&lt;plugin&gt;\&lt;formid:X8&gt;.nif   (the mesh)
@@ -6103,9 +5919,9 @@ Public Class MainForm
         If npcFormID = 0UI Then Return ""
         Dim pluginName = _pluginManager.GetOriginatingPluginName(npcFormID)
         If String.IsNullOrEmpty(pluginName) Then Return ""
-        ' FaceGen file name uses the LOCAL FormID, ESL-aware (FaceGenLocalId): full plugins strip the
-        ' load-order byte, ESL plugins strip the load-order byte AND the 12-bit light slot.
-        Dim localFormID = FaceGenLocalId(npcFormID)
+        ' FaceGen file name uses the LOCAL FormID, ESL-aware (PluginManager.ToFaceGenLocalFormID): full
+        ' plugins strip the load-order byte, ESL plugins strip the load-order byte AND the 12-bit light slot.
+        Dim localFormID = PluginManager.ToFaceGenLocalFormID(npcFormID)
         Return $"meshes\actors\character\facegendata\facegeom\{pluginName}\{localFormID:X8}.nif".ToLowerInvariant()
     End Function
 
@@ -6175,38 +5991,9 @@ Public Class MainForm
 
 
 
-    ' Biped object slot bits (verified from wbDefinitionsFO4.pas:3745 wbBipedObjectFlags).
-    ' Slot index = bit position + 30, so bit 0 = slot 30, bit 2 = slot 32, bit 16 = slot 46.
-    ' Only the bits we actually use for head part occlusion are defined; body / hand slots
-    ' (33/34/35) are handled implicitly by the "outfit wins over skin on same slot" loop in
-    ' SelectWinningCandidates, no constants needed there.
-    Friend Const SlotBitHairTop As UInteger = &H1UI         ' Slot 30 - Hair Top      (sombreros, gorros, cualquier headwear)
-    Friend Const SlotBitHairLong As UInteger = &H2UI        ' Slot 31 - Hair Long     (cascos que cubren el largo del pelo)
-    Friend Const SlotBitFaceGenHead As UInteger = &H4UI     ' Slot 32 - FaceGen Head  (casco integral / vault helmet — cubre LA CARA entera)
-    Private Const SlotBitHeadband As UInteger = &H10000UI    ' Slot 46 - Headband      (bandana / hairband forehead, no cubre cara)
-    Private Const SlotBitEyes As UInteger = &H20000UI        ' Slot 47 - Eyes          (glasses, goggles)
-    Friend Const SlotBitBeard As UInteger = &H40000UI       ' Slot 48 - Beard         (algo equipable que pisa la zona barba)
-    Friend Const SlotBitMouth As UInteger = &H80000UI       ' Slot 49 - Mouth         (bandana, máscara quirúrgica, gas mask boca)
-    ' Slots 50-52 — nombres canónicos en wbDefinitionsFO4.pas:3766-3768. Categorización:
-    '   • Neck (50)  → headwear: bandana de cuello, collar, bufanda. Es prenda equipable.
-    '   • Ring (51)  → body (mano): anillo, accesorio de mano. Cae en HAND_MASK.
-    '   • Scalp (52) → body (cabeza/cuello): overlay que sigue al body skin, no es prenda
-    '                  equipable. Tratado como BODY (agregado a BODY_MASK en ClassifyShapeCategory).
-    ' Slot 53 (Decapitation) NO se clasifica: es geometría de gore que aparece tras desmembrar
-    ' al actor, no una prenda equipable. Slots 54-55 son "Unnamed" en xEdit (sin uso vanilla) —
-    ' los dejamos fuera de toda máscara para no asignarlos al toggle equivocado.
-    Private Const SlotBitNeck As UInteger = &H100000UI       ' Slot 50 - Neck          (bandana cuello, collar, bufanda)
-    Friend Const SlotBitRing As UInteger = &H200000UI       ' Slot 51 - Ring          (anillo — body, va en la mano)
-    Friend Const SlotBitScalp As UInteger = &H400000UI      ' Slot 52 - Scalp         (overlay cabeza/cuello — body, no prenda)
-    Private Const SlotBitALArm As UInteger = &H1000UI        ' Slot 42 - [A] L Arm     (over-armor antebrazo izquierdo — bracer, PA L Arm)
-    Friend Const SlotBitPipboy As UInteger = &H40000000UI   ' Slot 60 - Pipboy        (atado a la muñeca/antebrazo izquierdo)
-    ''' <summary>Máscara unificada de bits "headwear": cualquier prenda de cabeza/cara/cuello.
-    ''' Usada por ClassifyShapeCategory para categoría Headwear y por ApplyRenderToggleVisibility
-    ''' para el toggle "Render headwear". Slots 30-32 (HairTop/HairLong/FaceGenHead) + 46-49
-    ''' (Headband/Eyes/Beard/Mouth) + 50 (Neck). Ring (51) y Scalp (52) NO están acá — son body.</summary>
-    Friend Const HEADWEAR_MASK As UInteger = SlotBitHairTop Or SlotBitHairLong Or SlotBitFaceGenHead Or
-                                              SlotBitHeadband Or SlotBitEyes Or SlotBitBeard Or SlotBitMouth Or
-                                              SlotBitNeck
+    ' Biped object slot bits moved to the shared module BipedSlots (NPC\BipedSlots.vb) so the
+    ' render path, the resolvers and this form all share ONE definition. Reference them as
+    ' BipedSlots.SlotBit* / BipedSlots.HEADWEAR_MASK / BipedSlots.SLOT_PIPBOY.
 
 
 
@@ -6220,11 +6007,28 @@ Public Class MainForm
     ''' 2026-05-24: a load-order sweep found 0 of 1084 ARMAs with RaceFormID=0 (all declare a race),
     ''' so the clause was dead — strict is preferred and unifies render + pickers on one rule. The
     ''' npcRaceFormID=0 guard stays: it keeps a degenerate NPC whose race didn't resolve from
-    ''' rendering naked.</summary>
-    Friend Shared Function ArmorAddonMatchesRace(arma As ARMA_Data, npcRaceFormID As UInteger) As Boolean
+    ''' rendering naked.
+    '''
+    ''' <paramref name="effectiveArmorRaces"/> (from <see cref="NpcRenderContext.GetEffectiveArmorRaces"/>)
+    ''' adds the RACE.RNAM "Armor Race" redirect: copy-races (e.g. the CC Enclave turret, whose skin ARMA is
+    ''' authored for the base TurretTripodRace) reuse a base race's armatures, and the engine matches the ARMA
+    ''' against that Armor Race chain rather than the actor's own race. The match is ADDITIVE — it only ever
+    ''' accepts armatures the engine also accepts, never hides one — so it can't regress the slot mutex.
+    ''' Nothing/legacy callers keep the strict direct-race behavior. See [[arch_armor_race_redirect]].</summary>
+    Friend Shared Function ArmorAddonMatchesRace(arma As ARMA_Data, npcRaceFormID As UInteger,
+                                                 Optional effectiveArmorRaces As ICollection(Of UInteger) = Nothing) As Boolean
         If npcRaceFormID = 0UI Then Return True
-        If arma.RaceFormID = npcRaceFormID Then Return True
-        Return arma.AdditionalRaces.Contains(npcRaceFormID)
+        If ArmaMatchesOneRace(arma, npcRaceFormID) Then Return True
+        If effectiveArmorRaces IsNot Nothing Then
+            For Each r In effectiveArmorRaces
+                If r <> npcRaceFormID AndAlso ArmaMatchesOneRace(arma, r) Then Return True
+            Next
+        End If
+        Return False
+    End Function
+
+    Private Shared Function ArmaMatchesOneRace(arma As ARMA_Data, raceFormID As UInteger) As Boolean
+        Return arma.RaceFormID = raceFormID OrElse arma.AdditionalRaces.Contains(raceFormID)
     End Function
 
 
@@ -8702,226 +8506,28 @@ Public Class MainForm
             outPath = dlg.FileName
         End Using
 
-        Dim destNif As New Nifcontent_Class_Manolo()
-        destNif.Create(NiVersion.GetFO4(), withRootNode:=True)
+        ' Build/bake/serialize is pure export domain logic — see SceneNifExporter. The handler keeps
+        ' only the SaveFileDialog + default-name plumbing (above) and the result MessageBoxes (below).
+        Dim result = SceneNifExporter.Export(_previewControl.Model.meshes, outPath)
 
-        Dim shapesWritten As Integer = 0
-        Dim shapesFailed As Integer = 0
-        Dim failureDetails As New System.Text.StringBuilder()
-        Dim destIdx As Integer = 0
-
-        For Each mesh In _previewControl.Model.meshes
-            If mesh Is Nothing OrElse mesh.MeshData Is Nothing OrElse mesh.MeshData.Shape Is Nothing Then Continue For
-            Dim srcRenderable = mesh.MeshData.Shape
-            If srcRenderable.RenderHide Then Continue For
-            Dim srcINiShape = srcRenderable.NifShape
-            Dim srcNif = srcRenderable.NifContent
-            If srcINiShape Is Nothing OrElse srcNif Is Nothing Then Continue For
-
-            Dim shapeName = If(srcINiShape.Name?.String, $"Shape_{destIdx}")
-            Try
-                Dim liveGeom = mesh.MeshData.Meshgeometry
-                Dim localVerts = liveGeom.Vertices  ' post-morph, pre-skin (shape-local).
-                Dim perVtxMat = liveGeom.PerVertexSkinMatrix
-                If localVerts Is Nothing OrElse perVtxMat Is Nothing OrElse localVerts.Length <> perVtxMat.Length Then
-                    shapesFailed += 1
-                    failureDetails.AppendLine($"{shapeName}: missing skin matrix / vertex data")
-                    Continue For
-                End If
-                Dim n = localVerts.Length
-
-                ' ── Hair zap compaction map ──
-                ' If this shape had any hair partition zapped this render (ApplyZaps=True + VertexMask(i)=-1
-                ' on the zapped verts — exactly the renderer's skip predicate at Render.vb:1118), DROP those
-                ' verts from the export so the saved NIF carries the compacted mesh. AGNOSTIC to which
-                ' partition was zapped (Top / Long / Both) — it keys purely on VertexMask(i)=-1, so it works
-                ' unchanged for the main (zap Top) and the hairline (zap Long). oldToNew(i) maps a surviving
-                ' source vertex to its packed destination index; -1 = removed. When the shape is not zapped,
-                ' oldToNew is identity and nSurv == n (no behaviour change for normal shapes).
-                Dim vm = liveGeom.VertexMask
-                Dim hasZap As Boolean = srcRenderable.ApplyZaps AndAlso vm IsNot Nothing AndAlso vm.Length = n
-                Dim oldToNew(n - 1) As Integer
-                Dim nSurv As Integer = 0
-                For i = 0 To n - 1
-                    If hasZap AndAlso vm(i) = -1.0F Then
-                        oldToNew(i) = -1
-                    Else
-                        oldToNew(i) = nSurv
-                        nSurv += 1
-                    End If
-                Next
-                Dim zappedCount As Integer = n - nSurv
-
-                ' Compute world-pose attributes per SURVIVING vertex (packed in oldToNew order). Position
-                ' via TransformPosition; normals/tangents/bitangents via per-vertex normal matrix
-                ' (transpose of inverse of upper-left 3x3 of the skin matrix). Same formula the renderer uses.
-                Dim worldPos As New List(Of System.Numerics.Vector3)(nSurv)
-                Dim hasN = liveGeom.Normals IsNot Nothing AndAlso liveGeom.Normals.Length = n
-                Dim hasT = liveGeom.Tangents IsNot Nothing AndAlso liveGeom.Tangents.Length = n
-                Dim hasB = liveGeom.Bitangents IsNot Nothing AndAlso liveGeom.Bitangents.Length = n
-                Dim worldN As List(Of System.Numerics.Vector3) = If(hasN, New List(Of System.Numerics.Vector3)(nSurv), Nothing)
-                Dim worldT As List(Of System.Numerics.Vector3) = If(hasT, New List(Of System.Numerics.Vector3)(nSurv), Nothing)
-                Dim worldB As List(Of System.Numerics.Vector3) = If(hasB, New List(Of System.Numerics.Vector3)(nSurv), Nothing)
-
-                For i = 0 To n - 1
-                    If oldToNew(i) < 0 Then Continue For  ' zapped crown vertex — drop from export
-                    Dim m4 = perVtxMat(i)
-                    Dim wv = Vector3d.TransformPosition(localVerts(i), m4)
-                    worldPos.Add(New System.Numerics.Vector3(CSng(wv.X), CSng(wv.Y), CSng(wv.Z)))
-
-                    If hasN OrElse hasT OrElse hasB Then
-                        Dim m3 As New Matrix3d(m4)
-                        Dim nm = m3.Inverted().Transposed()
-                        Dim nm4 As Matrix4d = Matrix4d.Identity
-                        nm4.M11 = nm.M11 : nm4.M12 = nm.M12 : nm4.M13 = nm.M13
-                        nm4.M21 = nm.M21 : nm4.M22 = nm.M22 : nm4.M23 = nm.M23
-                        nm4.M31 = nm.M31 : nm4.M32 = nm.M32 : nm4.M33 = nm.M33
-                        If hasN Then
-                            Dim nrm = Vector3d.Normalize(Vector3d.TransformNormal(liveGeom.Normals(i), nm4))
-                            worldN.Add(New System.Numerics.Vector3(CSng(nrm.X), CSng(nrm.Y), CSng(nrm.Z)))
-                        End If
-                        If hasT Then
-                            Dim tan = Vector3d.Normalize(Vector3d.TransformNormal(liveGeom.Tangents(i), nm4))
-                            worldT.Add(New System.Numerics.Vector3(CSng(tan.X), CSng(tan.Y), CSng(tan.Z)))
-                        End If
-                        If hasB Then
-                            Dim bit = Vector3d.Normalize(Vector3d.TransformNormal(liveGeom.Bitangents(i), nm4))
-                            worldB.Add(New System.Numerics.Vector3(CSng(bit.X), CSng(bit.Y), CSng(bit.Z)))
-                        End If
-                    End If
-                Next
-
-                Dim clonedINiShape = destNif.CloneShape_Original(srcINiShape, shapeName, srcNif)
-                If clonedINiShape Is Nothing Then
-                    shapesFailed += 1
-                    failureDetails.AppendLine($"Clone failed: {shapeName}")
-                    Continue For
-                End If
-
-                ' Reset clone's local T/R/S to identity. CloneShape_Original's unskinned branch
-                ' (NifContent_Class.vb:407+) bakes srcShape's parent_chain (without root) into
-                ' destShape.T/R/S so unskinned clones display at the right NIF-world position.
-                ' Our verts are ALREADY in world coords (via PerVertexSkinMatrix, which absorbs
-                ' parent_chain for unskinned and bone palette for skinned). Leaving the baked
-                ' T/R/S in place would double-transform the verts.
-                clonedINiShape.Translation = New System.Numerics.Vector3(0, 0, 0)
-                clonedINiShape.Rotation = New NiflySharp.Structs.Matrix33()
-                clonedINiShape.Scale = 1.0F
-
-                ' Write world-pose attributes into the clone via its polymorphic adapter.
-                Dim cloneRenderable As New NifRenderableShape(destNif, clonedINiShape, destIdx)
-                Dim cloneAdapter = cloneRenderable.Geometry
-
-                ' When the crown was zapped, the clone still carries the SOURCE vertex count + triangles.
-                ' Resize the per-vertex storage DOWN to the survivor count BEFORE writing the (already
-                ' compacted, nSurv-long) attribute arrays, then remap + drop triangles below. Identity
-                ' case (no zap): nSurv == n, ResizeVertices is a documented no-op — skip it to keep the
-                ' normal-shape path byte-for-byte as before.
-                If hasZap AndAlso zappedCount > 0 Then cloneAdapter.ResizeVertices(nSurv)
-
-                cloneAdapter.SetVertexPositions(worldPos)
-                If hasN AndAlso cloneAdapter.HasNormals Then cloneAdapter.SetNormals(worldN)
-                If hasT AndAlso cloneAdapter.HasTangents Then cloneAdapter.SetTangents(worldT)
-                If hasB AndAlso cloneAdapter.HasTangents Then cloneAdapter.SetBitangents(worldB)
-
-                ' Remap triangles after vertex compaction. Drop any triangle that touched a zapped
-                ' (crown) vertex; reindex the survivors through oldToNew; track per-new-triangle
-                ' provenance (source triangle index) so SetTriangles(provenance) redistributes the
-                ' BSSubIndexTriShape Segments/SubSegmentDatas consistently (the same contract WM's
-                ' RemoveZaps uses → MorphingHelper.vb:226). liveGeom.Indices is in source-triangle
-                ' order (SkinningHelper.vb:412 flattens GetTriangles()), so tr = oldTriIdx.
-                Dim triCheckOk As Boolean = True
-                If hasZap AndAlso zappedCount > 0 Then
-                    Dim idxArr = liveGeom.Indices
-                    If idxArr Is Nothing Then
-                        triCheckOk = False
-                    Else
-                        Dim newTris As New List(Of NiflySharp.Structs.Triangle)(idxArr.Length \ 3)
-                        Dim provenance As New List(Of Integer)(idxArr.Length \ 3)
-                        For tr = 0 To idxArr.Length - 3 Step 3
-                            Dim a = CInt(idxArr(tr)), b = CInt(idxArr(tr + 1)), c = CInt(idxArr(tr + 2))
-                            If a < 0 OrElse a >= n OrElse b < 0 OrElse b >= n OrElse c < 0 OrElse c >= n Then Continue For
-                            Dim na = oldToNew(a), nb = oldToNew(b), nc = oldToNew(c)
-                            If na < 0 OrElse nb < 0 OrElse nc < 0 Then Continue For  ' triangle touched the crown
-                            newTris.Add(New NiflySharp.Structs.Triangle(CUShort(na), CUShort(nb), CUShort(nc)))
-                            provenance.Add(tr \ 3)
-                        Next
-                        cloneAdapter.SetTriangles(newTris, TriangleRemap.SameShape(provenance))
-
-                        ' ── Consistency verification (counts before/after) ──
-                        ' Confirm no exported triangle references a dropped vertex and the survivor count
-                        ' matches. GetTriangles()/GetVertexPositions() read back what was written.
-                        Dim writtenTris = cloneAdapter.GetTriangles()
-                        Dim writtenVerts = cloneAdapter.GetVertexPositions()
-                        Dim maxIdx As Integer = -1
-                        For Each t In writtenTris
-                            maxIdx = Math.Max(maxIdx, Math.Max(CInt(t.V1), Math.Max(CInt(t.V2), CInt(t.V3))))
-                        Next
-                        Dim shapeNameLog = shapeName
-                        Dim nLog = n, nSurvLog = nSurv, zapLog = zappedCount
-                        Dim wvCount = writtenVerts.Count, wtCount = writtenTris.Count, srcTriCount = idxArr.Length \ 3
-                        Dim newTriCount = newTris.Count, maxIdxLog = maxIdx
-                        Logger.LogLazy(Function() $"[ZAP-EXPORT] '{shapeNameLog}' verts {nLog}→{nSurvLog} (zapped {zapLog}); tris {srcTriCount}→{newTriCount}; readback verts={wvCount} tris={wtCount} maxTriVtxIdx={maxIdxLog}")
-                        If wvCount <> nSurv Then
-                            triCheckOk = False
-                            failureDetails.AppendLine($"{shapeName}: zap export vertex count mismatch (expected {nSurv}, got {wvCount})")
-                        End If
-                        If maxIdx >= nSurv Then
-                            triCheckOk = False
-                            failureDetails.AppendLine($"{shapeName}: zap export triangle references dropped vertex (maxIdx {maxIdx} >= {nSurv})")
-                        End If
-                    End If
-                End If
-
-                If hasZap AndAlso zappedCount > 0 AndAlso Not triCheckOk Then
-                    ' Compaction produced an inconsistent shape — skip it rather than write a corrupt NIF.
-                    destNif.RemoveShape_Manolo(clonedINiShape)
-                    shapesFailed += 1
-                    Continue For
-                End If
-
-                ' Strip skin on the clone. For BSTriShape this clears the VertexAttribute.Skinned
-                ' flag (FinalizeData → CalcDataSizes excludes the bone weight/index bytes from the
-                ' per-vertex stream on save). For NiTriShape the setter is a no-op; the
-                ' SkinInstanceRef.Clear() below is what disables skinning in that family.
-                clonedINiShape.IsSkinned = False
-                clonedINiShape.SkinInstanceRef?.Clear()
-
-                shapesWritten += 1
-                destIdx += 1
-            Catch ex As Exception
-                shapesFailed += 1
-                failureDetails.AppendLine($"{shapeName}: {ex.Message}")
-            End Try
-        Next
-
-        If shapesWritten = 0 Then
-            MessageBox.Show("No visible shapes were exported." & vbCrLf & failureDetails.ToString(),
+        If result.ShapesWritten = 0 Then
+            MessageBox.Show("No visible shapes were exported." & vbCrLf & result.FailureDetails,
                             "NPC Model to NIF", MessageBoxButtons.OK, MessageBoxIcon.Warning)
             Return
         End If
 
-        ' Drop unreferenced BSSkin_Instance / BSSkin_BoneData / NiSkinInstance / NiSkinData /
-        ' NiSkinPartition blocks orphaned by the cleared SkinInstanceRefs.
-        Try
-            destNif.RemoveUnreferencedBlocks()
-        Catch
-        End Try
-
-        Try
-            destNif.Save_As_Manolo(outPath, Overwrite:=True)
-        Catch ex As Exception
-            MessageBox.Show($"Failed to write {outPath}: {ex.Message}",
+        If result.SaveError IsNot Nothing Then
+            MessageBox.Show($"Failed to write {outPath}: {result.SaveError}",
                             "NPC Model to NIF", MessageBoxButtons.OK, MessageBoxIcon.Error)
             Return
-        End Try
+        End If
 
-        Dim summary = $"Wrote {shapesWritten} shape{If(shapesWritten = 1, "", "s")} to {outPath}."
-        If shapesFailed > 0 Then
-            summary &= vbCrLf & $"{shapesFailed} shape{If(shapesFailed = 1, "", "s")} failed:" & vbCrLf & failureDetails.ToString()
+        Dim summary = $"Wrote {result.ShapesWritten} shape{If(result.ShapesWritten = 1, "", "s")} to {outPath}."
+        If result.ShapesFailed > 0 Then
+            summary &= vbCrLf & $"{result.ShapesFailed} shape{If(result.ShapesFailed = 1, "", "s")} failed:" & vbCrLf & result.FailureDetails
         End If
         MessageBox.Show(summary, "NPC Model to NIF", MessageBoxButtons.OK,
-                        If(shapesFailed = 0, MessageBoxIcon.Information, MessageBoxIcon.Warning))
+                        If(result.ShapesFailed = 0, MessageBoxIcon.Information, MessageBoxIcon.Warning))
     End Sub
 
     ''' <summary>Phase 4a delegate: bake one NPC's FaceGen NIF + FaceCustomization textures to
@@ -8983,10 +8589,10 @@ Public Class MainForm
         End If
 
         Dim originPlugin = _pluginManager.GetOriginatingPluginName(bakeFormID)
-        ' ESL-aware local id (FaceGenLocalId): the packed FaceGen file name MUST match the engine's
-        ' lookup name (FaceGenBuilder.ResolveFaceGenPath / ResolveFaceGenNifPath both use FaceGenLocalId),
+        ' ESL-aware local id (PluginManager.ToFaceGenLocalFormID): the packed FaceGen file name MUST match
+        ' the engine's lookup name (FaceGenBuilder.ResolveFaceGenPath / ResolveFaceGenNifPath both use it),
         ' so an ESL NPC bakes to "00000800", not "00032800" — otherwise the lookup misses the packed file.
-        Dim formIdLow = FaceGenLocalId(bakeFormID)
+        Dim formIdLow = PluginManager.ToFaceGenLocalFormID(bakeFormID)
         Logger.LogLazy(Function() $"[CHARGEN-ID] save npcFormID=0x{npcFormID:X8} bakeFormID=0x{bakeFormID:X8} → originPlugin='{originPlugin}' formIdLow=0x{formIdLow:X8}")
 
         Dim bundle As New NpcFaceGenPacker.BakedNpcBundle With {

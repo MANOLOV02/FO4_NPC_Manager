@@ -436,7 +436,7 @@ Friend NotInheritable Class NpcMeshCollector
             ' model paths, so the bombín "human + robot" duplicate can be read off the log: which
             ' addons sit at this index, which races they accept, and whether a second ARMA is
             ' pulling in a 1st-person / facebones / robot-variant model.
-            Dim raceOk As Boolean = MainForm.ArmorAddonMatchesRace(arma, state.RaceFormID)
+            Dim raceOk As Boolean = MainForm.ArmorAddonMatchesRace(arma, state.RaceFormID, _ctx.GetEffectiveArmorRaces(state.RaceFormID))
             If Logger.Enabled Then
                 Dim a = arma
                 Dim afid = armaFormID
@@ -555,7 +555,7 @@ Friend NotInheritable Class NpcMeshCollector
             Dim slotHex = effSlotMask.ToString("X8")
             Dim armoEdid = If(armo.EditorID, "")
             Dim armaEdid = If(arma.EditorID, "")
-            Dim isPipboyBit As Boolean = (effSlotMask And &H40000000UI) <> 0UI
+            Dim isPipboyBit As Boolean = (effSlotMask And BipedSlots.SlotBitPipboy) <> 0UI
             Dim tag = If(isPipboyBit, "[OUTFIT-RESOLVE PIPBOY-CANDIDATE]", "[OUTFIT-RESOLVE]")
             Dim meshPathL = meshPath
             Dim orderL = order
@@ -677,11 +677,9 @@ Friend NotInheritable Class NpcMeshCollector
             Dim omodPre = resolution.IncludedOmods(preIdx)
             If omodPre Is Nothing OrElse String.IsNullOrEmpty(omodPre.ModelPath) Then Continue For
             Dim dictKeyPre = NameUtils.NormalizeDictionaryKeyWithMeshesPrefix(omodPre.ModelPath)
-            Dim locPre As FilesDictionary_class.File_Location = Nothing
-            If Not FilesDictionary_class.Dictionary.TryGetValue(dictKeyPre, locPre) Then Continue For
+            Dim bytesPre = MeshPathHelpers.TryLoadMeshBytes(dictKeyPre)
+            If bytesPre Is Nothing Then Continue For
             Try
-                Dim bytesPre = locPre.GetBytes()
-                If bytesPre Is Nothing OrElse bytesPre.Length = 0 Then Continue For
                 Dim nifPre As New Nifcontent_Class_Manolo()
                 nifPre.Load_Manolo(bytesPre)
                 Dim chunkParents = BSConnectPointReader.ReadParents(nifPre)
@@ -1076,7 +1074,6 @@ Friend NotInheritable Class NpcMeshCollector
         ' pipeline and are marked in result.ShapeMeatcap so the "Render gore" toggle governs
         ' their visibility uniformly with the BSSubIndex SECTIONCAP/TORSOCAP shapes. The
         ' candidate.Hide flag survives through to ApplyShapeGeometry → ShapeMeatcap mapping.
-        Dim hiddenCandidates = candidates.Where(Function(c) c.Hide).ToList()
         Dim visibleCandidates = candidates.ToList()
 
         ' First pass: resolve slotted candidates.
@@ -1161,10 +1158,10 @@ Friend NotInheritable Class NpcMeshCollector
         Dim hairCovered As UInteger = occupiedSlots And hairMask
         Dim hasFaceGenHead As Boolean = (occupiedSlots And faceCullMask) <> 0UI
         ' The two hair partitions a {30,31} piece can have. Engine-faithful: the partition bits are still the
-        ' source mesh's biped-30/31 tags (SlotBitHairTop/Long); a partition is "covered" only when its slot is
+        ' source mesh's biped-30/31 tags (BipedSlots.SlotBitHairTop/Long); a partition is "covered" only when its slot is
         ' both in the worn set AND in this race's hair channel (so a non-hair race with B=None never zaps hair).
-        Dim hairTopCovered As Boolean = (hairCovered And MainForm.SlotBitHairTop) <> 0UI
-        Dim hairLongCovered As Boolean = (hairCovered And MainForm.SlotBitHairLong) <> 0UI
+        Dim hairTopCovered As Boolean = (hairCovered And BipedSlots.SlotBitHairTop) <> 0UI
+        Dim hairLongCovered As Boolean = (hairCovered And BipedSlots.SlotBitHairLong) <> 0UI
 
         ' Pasada 2 — slotless NO-Skin: HeadParts y Attachments (chunks robot/pack via socket).
         ' HeadParts ocluidos por headwear aceptado se MARCAN con flag IsOccludedByHeadwear pero
@@ -1210,7 +1207,7 @@ Friend NotInheritable Class NpcMeshCollector
                     ' cubierto gana sobre todo: pieza entera oculta. Piezas de UNA partición ({30}-only /
                     ' {31}-only) siguen la regla de su único slot (oculto ⟺ ese slot cubierto en el canal).
                     Dim hasBothHairParts As Boolean =
-                        (hairSlotMask And MainForm.SlotBitHairTop) <> 0UI AndAlso (hairSlotMask And MainForm.SlotBitHairLong) <> 0UI
+                        (hairSlotMask And BipedSlots.SlotBitHairTop) <> 0UI AndAlso (hairSlotMask And BipedSlots.SlotBitHairLong) <> 0UI
                     Dim zapParts As HairZapParts = HairZapParts.None
                     If hasFaceGenHead Then
                         ' Full-face cull: toda la cabeza tapada → pieza entera oculta, sin zap.
@@ -1281,7 +1278,7 @@ Friend NotInheritable Class NpcMeshCollector
         Return selected.OrderBy(Function(c) c.Order).ToList()
     End Function
 
-    ''' <summary>Bits {MainForm.SlotBitHairTop 0x1 (biped 30), MainForm.SlotBitHairLong 0x2 (biped 31)} that the candidate's
+    ''' <summary>Bits {BipedSlots.SlotBitHairTop 0x1 (biped 30), BipedSlots.SlotBitHairLong 0x2 (biped 31)} that the candidate's
     ''' source mesh occupies. Drives the RENDER hair-occlusion rule: a hair piece is hidden ⟺ the headwear
     ''' covers ALL the hair slots the piece occupies (mask ⊆ occupiedSlots) OR is a full-mask (slot 32).
     ''' Reads the mesh NIF from FilesDictionary (same path bake/render use: FilesDictionary_class.GetBytes
@@ -1308,8 +1305,8 @@ Friend NotInheritable Class NpcMeshCollector
                     Dim subIdx = TryCast(shp, BSSubIndexTriShape)
                     If subIdx Is Nothing Then Continue For
                     Dim biped = BSTriShapeGeometry.GetBipedObjects(subIdx)
-                    If biped.Contains(30UI) Then result = result Or MainForm.SlotBitHairTop
-                    If biped.Contains(31UI) Then result = result Or MainForm.SlotBitHairLong
+                    If biped.Contains(30UI) Then result = result Or BipedSlots.SlotBitHairTop
+                    If biped.Contains(31UI) Then result = result Or BipedSlots.SlotBitHairLong
                 Next
             End If
         Catch ex As Exception
@@ -1331,25 +1328,27 @@ Friend NotInheritable Class NpcMeshCollector
         ' sigue al body skin, no una prenda — agrupado con BODY así un Scalp Skin cae en
         ' BodySkin igual que el torso, y un Scalp Outfit cae en Underarmor. Caso real raro
         ' pero la semántica del bit es "geometría de body, no equipable".
-        Const BODY_MASK As UInteger = (1UI << 3) Or MainForm.SlotBitScalp
+        Const BODY_MASK As UInteger = (1UI << 3) Or BipedSlots.SlotBitScalp
         Dim U_MASK As UInteger = 0UI
         For b = 6 To 10 : U_MASK = U_MASK Or (1UI << b) : Next
         Dim A_MASK As UInteger = 0UI
         For b = 11 To 15 : A_MASK = A_MASK Or (1UI << b) : Next
         ' Slot 34 (L Hand) + 35 (R Hand) son las manos del actor. Slot 51 (Ring) es un accesorio
         ' que va EN la mano — categóricamente body, mismo toggle visual que glove/hand.
-        Const HAND_MASK As UInteger = (1UI << 4) Or (1UI << 5) Or MainForm.SlotBitRing
+        Const HAND_MASK As UInteger = (1UI << 4) Or (1UI << 5) Or BipedSlots.SlotBitRing
 
         Dim slot = candidate.SlotMask
         Dim touchesBody = (slot And BODY_MASK) <> 0UI
         Dim touchesU = (slot And U_MASK) <> 0UI
         Dim touchesA = (slot And A_MASK) <> 0UI
         Dim touchesHand = (slot And HAND_MASK) <> 0UI
-        Dim touchesHeadwear = (slot And MainForm.HEADWEAR_MASK) <> 0UI
+        Dim touchesHeadwear = (slot And BipedSlots.HEADWEAR_MASK) <> 0UI
         Dim touchesBodyParts = touchesBody OrElse touchesU OrElse touchesA OrElse touchesHand
 
-        ' Headwear: Kind=Outfit con bits exclusivos cabeza/cara (HairTop/HairLong/FaceGenHead/
-        ' Headband/Eyes/Beard/Mouth) y SIN tocar bits del cuerpo. Si toca bits cuerpo + cabeza
+        ' Headwear: Kind=Outfit con bits exclusivos cabeza/cara/CUELLO (HairTop/HairLong/FaceGenHead/
+        ' Headband/Eyes/Beard/Mouth/Neck) y SIN tocar bits del cuerpo. Las prendas de cuello (slot 50,
+        ' ej. goggles colgados al cuello) DEBEN ocultarse con "Render headwear" — por eso Neck está en
+        ' BipedSlots.HEADWEAR_MASK. Si toca bits cuerpo + cabeza
         ' (raro, ej. casco-cuello combinado) gana la categoría de cuerpo — el toggle headwear no
         ' debería desaparecer una pieza que también cubre torso. Evaluar antes que las otras
         ' porque las otras no chequean bits 16-19 que algunos headwear (Headband) usan en exclusiva.
@@ -1367,7 +1366,7 @@ Friend NotInheritable Class NpcMeshCollector
         ' Pipboy (slot 60 / 0x40000000) — accesorio de antebrazo izq. que el engine vanilla
         ' monta hardcoded en el player. Como NPC outfit puede aparecer y debe respetar el toggle
         ' "Render armor". No declara bits [A], por eso lo agrupamos acá explícito.
-        If (slot And &H40000000UI) <> 0UI AndAlso candidate.Kind = MainForm.MeshCandidateKind.Outfit Then Return MainForm.ShapeRenderCategory.ArmorOver
+        If (slot And BipedSlots.SlotBitPipboy) <> 0UI AndAlso candidate.Kind = MainForm.MeshCandidateKind.Outfit Then Return MainForm.ShapeRenderCategory.ArmorOver
         ' Resto (accessories 16+ raros, shapes sin slot, etc.).
         Return MainForm.ShapeRenderCategory.Other
     End Function
@@ -1452,13 +1451,10 @@ Friend NotInheritable Class NpcMeshCollector
         Dim dictKey = NameUtils.NormalizeDictionaryKeyWithMeshesPrefix(candidate.DictKey)
         If dictKey = "" Then Return
 
-        Dim loc As FilesDictionary_class.File_Location = Nothing
-        If Not FilesDictionary_class.Dictionary.TryGetValue(dictKey, loc) Then Return
+        Dim bytes = MeshPathHelpers.TryLoadMeshBytes(dictKey)
+        If bytes Is Nothing Then Return
 
         Try
-            Dim bytes = loc.GetBytes()
-            If bytes Is Nothing OrElse bytes.Length = 0 Then Return
-
             ' Parse a fresh NIF per candidate. Multi-instance robot chunks (Mr Handy 3 arms,
             ' 3 eyes) point to the same DictKey but each render-instance must own its own
             ' NIF + IRenderableShape so per-shape mutations (sculpt, morph, GPU upload) don't
@@ -1466,7 +1462,7 @@ Friend NotInheritable Class NpcMeshCollector
             Dim nif As New Nifcontent_Class_Manolo()
             nif.Load_Manolo(bytes)
             Dim trackChunkNif = candidate.ChunkOmodFormID <> 0UI
-            Dim trackCandidateNif = trackChunkNif OrElse candidate.SlotMask = MainForm.SlotBitPipboy
+            Dim trackCandidateNif = trackChunkNif OrElse candidate.SlotMask = BipedSlots.SlotBitPipboy
             If trackChunkNif Then
                 ' Keep one representative parsed NIF per DictKey only for chunk-mount consumers.
                 loadedNifs(dictKey) = nif
@@ -1499,12 +1495,9 @@ Friend NotInheritable Class NpcMeshCollector
             ' (lag bones, etc.), ahora colocados bien por InjectChunkBonesIntoLiveSkeleton (regla:
             ' A=actorWorld(huesoCompartido)×bind; privados en A×inv(bind) — ver memoria
             ' arch_injected_bone_shared_bone_inference; brahmin validado sin regresión).
-            ' Por eso ApplySocketToBindTransforms quedó comentado: aplicar el socket a shapes que
-            ' cabalgan el actor DISTORSIONA (verificado 2026-05-13: ambos órdenes rompieron todo).
+            ' Por eso NO se aplica el socket a los bind transforms de estos shapes: aplicarlo a shapes
+            ' que cabalgan el actor DISTORSIONA (verificado 2026-05-13: ambos órdenes rompieron todo).
             ' NO re-habilitar. (Pendiente: validar visualmente Mr Handy/Codsworth multi-instancia.)
-            'If candidate.MountSocket IsNot Nothing Then
-            '    ApplySocketToBindTransforms(shapes, candidate.MountSocket)
-            'End If
 
             If logEnabled Then
                 Dim candFidLog = candidate.SourceFormID
@@ -1525,7 +1518,7 @@ Friend NotInheritable Class NpcMeshCollector
             '      colapsan al origin.
             '   c) socket declarado pero el chunk-mount resolver no lo aplica (sólo lo hace para
             '      candidates con ChunkOmodFormID; outfits regulares no pasan por mount-resolver).
-            If logEnabled AndAlso (candidate.SlotMask And &H40000000UI) <> 0UI Then
+            If logEnabled AndAlso (candidate.SlotMask And BipedSlots.SlotBitPipboy) <> 0UI Then
                 Dim dkLog = dictKey
                 Dim shapesCountLog = shapes.Count
                 Dim slotL = candidate.SlotMask.ToString("X8")
@@ -1929,39 +1922,6 @@ Friend NotInheritable Class NpcMeshCollector
                     Dim socketLog = If(cp.Name?.Content, "<unnamed>")
                     Logger.LogLazy(Function() $"[SUBSOCKET-RENAME] socket='{socketLog}' ParentBone '{sLog}' → '{renamedLog}'")
                 End If
-            Next
-        Next
-    End Sub
-
-    ''' <summary>Pre-compose socket transform into the bind matrices of every bone weighted by
-    ''' the shapes. Math (row-vector convention used by the lib's Transform_Class):
-    '''   render formula:        v_out = v · inverse(bind) · boneWorld
-    '''   want with socket:      v_out = v · inverse(bind_new) · boneWorld
-    '''                                = v · inverse(bind) · socket · boneWorld
-    '''   solve:                 inverse(bind_new) = inverse(bind) · socket
-    '''                          bind_new = inverse(socket) · bind
-    '''                          (in lib API: bind.Compose(socket.Inverse()) — "apply socket.Inverse() first then bind")
-    ''' Mutates the Transform_Class instances in place. Each candidate has a fresh NIF parsed,
-    ''' so this mutation does not bleed into other instances of the same DictKey.</summary>
-    Private Sub ApplySocketToBindTransforms(shapes As IEnumerable(Of IRenderableShape),
-                                             socket As BSConnectPointReader.ConnectPointInfo)
-        If shapes Is Nothing OrElse socket Is Nothing Then Return
-        Dim socketT As New Transform_Class With {
-            .Translation = socket.Translation,
-            .Rotation = BSConnectPointReader.QuatToMatrix33(socket.Rotation),
-            .Scale = If(socket.Scale > 0.0F, socket.Scale, 1.0F)
-        }
-        Dim socketInv = socketT.Inverse()
-        For Each shape In shapes
-            If shape Is Nothing OrElse shape.ShapeBoneTransforms Is Nothing Then Continue For
-            For i = 0 To shape.ShapeBoneTransforms.Count - 1
-                Dim bind = shape.ShapeBoneTransforms(i)
-                If bind Is Nothing Then Continue For
-                Dim composed = socketInv.ComposeTransforms(bind)
-                bind.Translation = composed.Translation
-                bind.Rotation = composed.Rotation
-                bind.Scale = composed.Scale
-                bind.ScaleVector = composed.ScaleVector
             Next
         Next
     End Sub

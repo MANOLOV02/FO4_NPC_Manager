@@ -43,33 +43,6 @@ Public Module FaceGenBuilder
     Public Const PartTypeTeeth As Integer = 8
     Public Const PartTypeHeadRear As Integer = 9
 
-    Private Function PartTypeName(partType As Integer) As String
-        Select Case partType
-            Case PartTypeMisc : Return "Misc"
-            Case PartTypeFace : Return "Face"
-            Case PartTypeEyes : Return "Eyes"
-            Case PartTypeHair : Return "Hair"
-            Case PartTypeFacialHair : Return "Facial Hair"
-            Case PartTypeScar : Return "Scar"
-            Case PartTypeEyebrows : Return "Eyebrows"
-            Case PartTypeMeatcaps : Return "Meatcaps"
-            Case PartTypeTeeth : Return "Teeth"
-            Case PartTypeHeadRear : Return "Head Rear"
-            Case Else : Return $"<unknown {partType}>"
-        End Select
-    End Function
-
-    ''' <summary>FormID local del FaceGen segun convencion CK. Full plugins: stripear el high byte
-    ''' (&amp; 0xFFFFFF). ESL/light plugins (high byte 0xFE): stripear TAMBIEN el light-slot de 12 bits,
-    ''' dejando solo el record de 12 bits (&amp; 0xFFF). CK nombra el NIF FaceGen y las texturas
-    ''' FaceCustomization con este id enmascarado, zero-padded a 8 hex. Verificado: NPC ESL runtime
-    ''' 0xFE032800 -> CK escribe "00000800" (record 0x800), NO "00032800". Bug previo: usaba &amp; 0xFFFFFF
-    ''' para todos, dejando el light-slot del ESL en el nombre -> el juego no encontraba la textura.</summary>
-    Private Function FaceGenLocalId(npcFormID As UInteger) As UInteger
-        If (npcFormID >> 24) = &HFEUI Then Return npcFormID And &HFFFUI
-        Return npcFormID And &HFFFFFFUI
-    End Function
-
     ' (Removido: _srgbToG22Lut / BuildSrgbToG22Lut / ApplySrgbToGamma22Diffuse — el encode de storage
     '  sRGB->g22 del diffuse ahora nace en el SEED del path único (FaceTintCompositor.ApplyFaceTintPipeline,
     '  en float, sin tabla byte->byte). Ver el comentario del slot 0 en BakeFaceTextures.)
@@ -82,7 +55,7 @@ Public Module FaceGenBuilder
     Public Function ResolveFaceGenPath(npcFormID As UInteger, pluginManager As PluginManager) As String
         Dim originPlugin = pluginManager.GetOriginatingPluginName(npcFormID)
         If String.IsNullOrEmpty(originPlugin) Then Return ""
-        Dim formIdLow = FaceGenLocalId(npcFormID)
+        Dim formIdLow = PluginManager.ToFaceGenLocalFormID(npcFormID)
         Return $"Meshes\Actors\Character\FaceGenData\FaceGeom\{originPlugin}\{formIdLow:X8}.nif"
     End Function
 
@@ -882,7 +855,7 @@ Public Module FaceGenBuilder
         '   DebugMode=False (default): <formID>.nif → pisa el CK bake; engine usa este al cargar.
         '   DebugMode=True: <formID>_2.nif → sandbox al lado del CK bake, sin pisar; engine
         '                   sigue usando el CK; el comparator diff-ea against CK BA2 baseline.
-        Dim formIdLow = FaceGenLocalId(npcFormID)
+        Dim formIdLow = PluginManager.ToFaceGenLocalFormID(npcFormID)
         Dim dataPathForNif = Config_App.Current.DataPath
         If String.IsNullOrEmpty(dataPathForNif) Then
             result.Summary = "DataPath unset; cannot write .nif"
@@ -972,13 +945,12 @@ Public Module FaceGenBuilder
         Return allowed
     End Function
 
-    ' Biped object slot bits (mismas que MainForm: bit n = slot 30+n). Sólo las que la oclusión
-    ' de head parts usa. Slot 31 HairLong = 0x2, 32 FaceGenHead = 0x4, 48 Beard = 0x40000,
-    ' 49 Mouth = 0x80000.
-    Private Const BakeSlotBitHairLong As UInteger = &H2UI
-    Private Const BakeSlotBitFaceGenHead As UInteger = &H4UI
-    Private Const BakeSlotBitBeard As UInteger = &H40000UI
-    Private Const BakeSlotBitMouth As UInteger = &H80000UI
+    ' Biped object slot bits used by head-part occlusion, aliased to the shared BipedSlots table
+    ' (single source of truth) so a slot-value change there can't silently drift this bake path.
+    Private Const BakeSlotBitHairLong As UInteger = BipedSlots.SlotBitHairLong
+    Private Const BakeSlotBitFaceGenHead As UInteger = BipedSlots.SlotBitFaceGenHead
+    Private Const BakeSlotBitBeard As UInteger = BipedSlots.SlotBitBeard
+    Private Const BakeSlotBitMouth As UInteger = BipedSlots.SlotBitMouth
 
     ''' <summary>Slots de headwear cubiertos por la DEFAULT OUTFIT (OTFT) del NPC, de forma
     ''' DETERMINISTA. Devuelve (slots, hasLVLI):
@@ -1544,7 +1516,7 @@ Public Module FaceGenBuilder
         End If
 
         ' --- 5. Output dir + slot plan + texture-set for slot rewrites. ---
-        Dim formIdLow = FaceGenLocalId(npcFormID)
+        Dim formIdLow = PluginManager.ToFaceGenLocalFormID(npcFormID)
         Dim dataPath = Config_App.Current.DataPath
         If String.IsNullOrEmpty(dataPath) Then
             Logger.LogLazy(Function() $"[FACEBAKE] BAIL: Config_App.Current.DataPath empty (npcFormID=0x{npcFormID:X8})")

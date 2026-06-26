@@ -28,6 +28,7 @@ Friend NotInheritable Class NpcRenderContext
     Private ReadOnly _armaCache As New System.Collections.Concurrent.ConcurrentDictionary(Of UInteger, ARMA_Data)()
     Private ReadOnly _raceCache As New System.Collections.Concurrent.ConcurrentDictionary(Of UInteger, RACE_Data)()
     Private ReadOnly _hdptCache As New System.Collections.Concurrent.ConcurrentDictionary(Of UInteger, HDPT_Data)()
+    Private ReadOnly _armorRaceCache As New System.Collections.Concurrent.ConcurrentDictionary(Of UInteger, HashSet(Of UInteger))()
 
     Public Sub New(pluginManager As PluginManager)
         Me.PluginManager = pluginManager
@@ -88,6 +89,29 @@ Friend NotInheritable Class NpcRenderContext
         Return _raceCache.GetOrAdd(rRec.Header.FormID, Function(fid) RecordParsers.ParseRACE(rRec, PluginManager))
     End Function
 
+    ''' <summary>The set of races an armature (ARMA) may be authored for and still fit an actor of
+    ''' <paramref name="raceFID"/>: the race itself PLUS every race reached by following the RACE.RNAM
+    ''' "Armor Race" redirect chain. Copy-races (e.g. the CC Enclave turret) reuse a base race's armatures;
+    ''' the engine matches the ARMA against the Armor Race, not the actor's own race. Cycle-guarded via the
+    ''' HashSet (Add returns False on a revisit). Cached per race; the returned set is SHARED — callers must
+    ''' not mutate it. Empty when raceFID = 0. See [[arch_armor_race_redirect]].</summary>
+    Public Function GetEffectiveArmorRaces(raceFID As UInteger) As HashSet(Of UInteger)
+        If raceFID = 0UI Then Return New HashSet(Of UInteger)()
+        Return _armorRaceCache.GetOrAdd(raceFID,
+            Function(fid)
+                Dim races As New HashSet(Of UInteger)()
+                Dim cur = fid
+                While cur <> 0UI AndAlso races.Add(cur)
+                    Dim rec = GetRecord(cur)
+                    If rec Is Nothing OrElse rec.Header.Signature <> "RACE" Then Exit While
+                    Dim race = ParseRaceCached(rec)
+                    If race Is Nothing Then Exit While
+                    cur = race.ArmorRaceFormID
+                End While
+                Return races
+            End Function)
+    End Function
+
     ''' <summary>Parse (and cache) an HDPT from an already-fetched record, keyed by its FormID.</summary>
     Public Function ParseHdptCached(hRec As PluginRecord) As HDPT_Data
         If hRec Is Nothing Then Return Nothing
@@ -103,5 +127,6 @@ Friend NotInheritable Class NpcRenderContext
         _armaCache.Clear()
         _raceCache.Clear()
         _hdptCache.Clear()
+        _armorRaceCache.Clear()
     End Sub
 End Class
