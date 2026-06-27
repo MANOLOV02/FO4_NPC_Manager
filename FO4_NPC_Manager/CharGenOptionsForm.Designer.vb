@@ -129,6 +129,7 @@ Partial Class CharGenOptionsForm
         BtnSortRevert = New Button()
         TabPageFixes = New TabPage()
         CheckBoxApplyGhoulHeadRearFix = New CheckBox()
+        CheckBoxApplyEyebrowsFixedColor = New CheckBox()
         TabMain.SuspendLayout()
         TabPageSize.SuspendLayout()
         GroupBoxSize.SuspendLayout()
