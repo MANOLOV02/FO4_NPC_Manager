@@ -1104,6 +1104,7 @@ Partial Class CharGenOptionsForm
         ' TabPageFixes
         '
         TabPageFixes.Controls.Add(CheckBoxApplyGhoulHeadRearFix)
+        TabPageFixes.Controls.Add(CheckBoxApplyEyebrowsFixedColor)
         TabPageFixes.Location = New Point(4, 24)
         TabPageFixes.Name = "TabPageFixes"
         TabPageFixes.Padding = New Padding(3)
@@ -1121,6 +1122,16 @@ Partial Class CharGenOptionsForm
         CheckBoxApplyGhoulHeadRearFix.TabIndex = 0
         CheckBoxApplyGhoulHeadRearFix.Text = "Apply fix to ghoul headrear"
         CheckBoxApplyGhoulHeadRearFix.UseVisualStyleBackColor = True
+        '
+        ' CheckBoxApplyEyebrowsFixedColor
+        '
+        CheckBoxApplyEyebrowsFixedColor.AutoSize = True
+        CheckBoxApplyEyebrowsFixedColor.Location = New Point(12, 41)
+        CheckBoxApplyEyebrowsFixedColor.Name = "CheckBoxApplyEyebrowsFixedColor"
+        CheckBoxApplyEyebrowsFixedColor.Size = New Size(280, 19)
+        CheckBoxApplyEyebrowsFixedColor.TabIndex = 1
+        CheckBoxApplyEyebrowsFixedColor.Text = "Apply fixed color to eyebrows (SkipEyebrowsTone.ini)"
+        CheckBoxApplyEyebrowsFixedColor.UseVisualStyleBackColor = True
         '
         ' GroupConvDWsByOp
         '
@@ -1377,4 +1388,5 @@ Partial Class CharGenOptionsForm
     Friend WithEvents BtnSortRevert As System.Windows.Forms.Button
     Friend WithEvents TabPageFixes As System.Windows.Forms.TabPage
     Friend WithEvents CheckBoxApplyGhoulHeadRearFix As System.Windows.Forms.CheckBox
+    Friend WithEvents CheckBoxApplyEyebrowsFixedColor As System.Windows.Forms.CheckBox
 End Class

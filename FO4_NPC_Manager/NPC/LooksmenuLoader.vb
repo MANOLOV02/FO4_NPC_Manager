@@ -6,10 +6,11 @@ Imports FO4_Base_Library
 ''' <summary>Parser of the LooksMenu CharGen preset JSON format. Schema verified against
 ''' F4SEPlugins-master/f4ee/CharGenInterface.cpp:60-256 (SavePreset) and 259-620 (LoadPreset).
 '''
-''' Maps every JSON field that has a vanilla NPC_ subrecord equivalent. Three F4SE-only fields
-''' (Overlays / BodyMorphs / Skin) are surfaced as raw counts via <see cref="LooksmenuPreset.UnsupportedCounts"/>
-''' so the caller can warn — no attempt is made to apply them. See
-''' memory/project_npc_looksmenu_pending.md for the deferral rationale.</summary>
+''' Maps every JSON field that has a vanilla NPC_ subrecord equivalent. The F4SE-only Overlays
+''' field (body tattoos) is now fully parsed + round-tripped (see <see cref="LooksmenuPreset.Overlays"/>);
+''' it is also still surfaced as a raw count via <see cref="LooksmenuPreset.UnsupportedCounts"/> for the
+''' existing Load warning UI. BodyMorphs (BodySlide sliders) and Skin (LM skin template) are likewise
+''' parsed. See memory/project_npc_looksmenu_pending.md for the deferral rationale on render wiring.</summary>
 Public Module LooksmenuLoader
 
     ''' <summary>Output of <see cref="ParseFile"/>. All vanilla-mappable fields are pre-resolved to
@@ -92,6 +93,19 @@ Public Module LooksmenuLoader
         ''' (Save) and 560-570 (Load). NOT a vanilla record — lives only in the JSON.</summary>
         Public BodyMorphSliders As New Dictionary(Of String, Single)(StringComparer.OrdinalIgnoreCase)
 
+        ''' <summary>Body overlays (LooksMenu "tattoos") — the per-NPC list of applied overlay entries.
+        ''' Render-only F4SE field, same shape as <see cref="BodyMorphSliders"/> (lives only in the JSON,
+        ''' no vanilla NPC_ subrecord equivalent). Each entry references an <see cref="OverlayTemplate"/>
+        ''' by id plus per-instance priority and optional tint/UV transform. Schema:
+        ''' F4SEPlugins-master/f4ee/CharGenInterface.cpp:217-244 (Save) and 578-619 (Load).</summary>
+        Public Overlays As New List(Of OverlayEntry)
+
+        ''' <summary>Overlays presence — SAME semantics as the other Has* flags above. True = "this
+        ''' preset declares the Overlays field, the list (even empty) is authoritative ⇒ overlay
+        ''' treats it as a wipe". False = "field absent from this preset, preserve raw NPC".
+        ''' Set True by ParseFile when the "Overlays" key is present (regardless of array length).</summary>
+        Public HasOverlays As Boolean = False
+
         ''' <summary>Counts of F4SE-only fields the preset contains. Non-zero = the preset has
         ''' content the editor will not apply (Overlays/BodyMorphs sliders/Skin override).</summary>
         Public UnsupportedCounts As New UnsupportedFieldCounts
@@ -149,6 +163,20 @@ Public Module LooksmenuLoader
         Public Overlays As Integer
         Public BodyMorphSliders As Integer
         Public HasSkinOverride As Boolean
+    End Class
+
+    ''' <summary>One applied body overlay (a LooksMenu "tattoo") on an NPC. References an
+    ''' <see cref="OverlayTemplate"/> by id; carries per-instance priority and optional tint/UV
+    ''' transform. Schema verified against F4SEPlugins-master/f4ee/CharGenInterface.cpp:217-244
+    ''' (Save) and :578-619 (Load). The float arrays are kept at the JSON's native width (tint=4,
+    ''' UV=2) so a round-trip is byte-faithful; Nothing means the JSON key was absent (the engine
+    ''' load supplies a default — tint 0,0,0,0 / offsetUV 0,0 / scaleUV 1,1).</summary>
+    Public Class OverlayEntry
+        Public TemplateId As String = ""      ' JSON "template" — the OverlayTemplate id (CharGenInterface.cpp:586)
+        Public Priority As Integer = 0        ' JSON "priority" (SInt32, multimap render order; :585)
+        Public Tint As Single()               ' JSON "tint" [r,g,b,a] 0..1; Nothing = no tint (kHasTintColor absent, :592-597)
+        Public OffsetUV As Single()           ' JSON "offsetUV" [x,y]; Nothing = default (0,0) (:601-604)
+        Public ScaleUV As Single()            ' JSON "scaleUV" [x,y]; Nothing = default (1,1) (:608-611)
     End Class
 
     ''' <summary>Parse a LooksMenu preset JSON file. Returns Nothing if the file is unreadable
@@ -341,10 +369,59 @@ Public Module LooksmenuLoader
                 Next
             End If
 
-            ' F4SE-only fields: Overlays / Skin still unsupported. See project_npc_looksmenu_pending.md.
+            ' Overlays (body tattoos). Fully parsed into preset.Overlays. Engine semantics mirror
+            ' CharGenInterface.cpp:578-619 LoadPreset: presence of the key wipes existing overlays
+            ' (RemoveAll at :577) then applies each member. We set HasOverlays True on presence so the
+            ' overlay-apply path treats it as authoritative (Has* semantics, like the other fields).
+            ' UnsupportedCounts.Overlays is still populated (the Load warning UI reads it).
+            ' Per-entry: template(string, required — skip if missing/empty, :586), priority(int default 0,
+            ' :585), optional tint[4]/offsetUV[2]/scaleUV[2] (:592-611). Absent UV/tint left Nothing;
+            ' the engine load substitutes its defaults (tint 0,0,0,0 / offset 0,0 / scale 1,1).
             Dim ovEl As JsonElement
             If root.TryGetProperty("Overlays", ovEl) AndAlso ovEl.ValueKind = JsonValueKind.Array Then
+                preset.HasOverlays = True
                 preset.UnsupportedCounts.Overlays = ovEl.GetArrayLength()
+                For Each ov In ovEl.EnumerateArray()
+                    If ov.ValueKind <> JsonValueKind.Object Then Continue For
+
+                    ' template — required. CharGenInterface.cpp:586 reads it unconditionally; an entry
+                    ' without a template id can't reference a template, so we skip it.
+                    Dim tplEl As JsonElement
+                    If Not ov.TryGetProperty("template", tplEl) OrElse tplEl.ValueKind <> JsonValueKind.String Then Continue For
+                    Dim tplId = tplEl.GetString()
+                    If String.IsNullOrEmpty(tplId) Then Continue For
+
+                    Dim entry As New OverlayEntry With {.TemplateId = tplId}
+
+                    ' priority — default 0 (CharGenInterface.cpp:585 asInt with no default; absent key
+                    ' in jsoncpp yields 0, so default 0 matches).
+                    Dim prEl As JsonElement
+                    If ov.TryGetProperty("priority", prEl) AndAlso prEl.ValueKind = JsonValueKind.Number Then
+                        entry.Priority = prEl.GetInt32()
+                    End If
+
+                    ' tint [r,g,b,a] — optional (CharGenInterface.cpp:592-597). Only set when present.
+                    Dim tintEl As JsonElement
+                    If ov.TryGetProperty("tint", tintEl) AndAlso tintEl.ValueKind = JsonValueKind.Array Then
+                        entry.Tint = ReadFloatArray(tintEl, 4)
+                    End If
+
+                    ' offsetUV [x,y] — optional (CharGenInterface.cpp:601-604).
+                    Dim offEl As JsonElement
+                    If ov.TryGetProperty("offsetUV", offEl) AndAlso offEl.ValueKind = JsonValueKind.Array Then
+                        entry.OffsetUV = ReadFloatArray(offEl, 2)
+                    End If
+
+                    ' scaleUV [x,y] — optional (CharGenInterface.cpp:608-611). The engine SAVE has a bug
+                    ' (:238-239 appends offsetUV.x/y into the scaleUV array), but the engine LOAD reads
+                    ' scaleUV faithfully, so reading it straight is correct.
+                    Dim sclEl As JsonElement
+                    If ov.TryGetProperty("scaleUV", sclEl) AndAlso sclEl.ValueKind = JsonValueKind.Array Then
+                        entry.ScaleUV = ReadFloatArray(sclEl, 2)
+                    End If
+
+                    preset.Overlays.Add(entry)
+                Next
             End If
             Dim skEl As JsonElement
             If root.TryGetProperty("Skin", skEl) AndAlso skEl.ValueKind = JsonValueKind.String Then
@@ -417,6 +494,21 @@ Public Module LooksmenuLoader
 
             Return preset
         End Using
+    End Function
+
+    ''' <summary>Read a fixed-width float array from a JSON array element. Reads exactly
+    ''' <paramref name="count"/> slots; a short JSON array pads the tail with 0.0F (jsoncpp's
+    ''' <c>arr[i].asFloat()</c> on an out-of-range index returns 0, so the engine load — which
+    ''' indexes [0..3]/[0..1] unconditionally — sees the same value). Non-number slots also yield 0.</summary>
+    Private Function ReadFloatArray(arrEl As JsonElement, count As Integer) As Single()
+        Dim result(count - 1) As Single
+        Dim i As Integer = 0
+        For Each v In arrEl.EnumerateArray()
+            If i >= count Then Exit For
+            If v.ValueKind = JsonValueKind.Number Then result(i) = v.GetSingle()
+            i += 1
+        Next
+        Return result
     End Function
 
     ''' <summary>Resolve a "Plugin.esp|FormIDhex" identifier (LooksMenu's serialization format —
@@ -495,6 +587,20 @@ Public Module LooksmenuLoader
         c.HasHeadPartFormIDs = p.HasHeadPartFormIDs
 
         For Each kv In p.BodyMorphSliders : c.BodyMorphSliders(kv.Key) = kv.Value : Next
+
+        ' Overlays — deep-copy each entry (cloning the float arrays so the clone is independent).
+        ' HasOverlays travels with the list, same as the other Has* flags above.
+        For Each ov In p.Overlays
+            c.Overlays.Add(New OverlayEntry With {
+                .TemplateId = ov.TemplateId,
+                .Priority = ov.Priority,
+                .Tint = If(ov.Tint Is Nothing, Nothing, CType(ov.Tint.Clone(), Single())),
+                .OffsetUV = If(ov.OffsetUV Is Nothing, Nothing, CType(ov.OffsetUV.Clone(), Single())),
+                .ScaleUV = If(ov.ScaleUV Is Nothing, Nothing, CType(ov.ScaleUV.Clone(), Single()))
+            })
+        Next
+        c.HasOverlays = p.HasOverlays
+
         c.UnsupportedCounts.Overlays = p.UnsupportedCounts.Overlays
         c.UnsupportedCounts.BodyMorphSliders = p.UnsupportedCounts.BodyMorphSliders
         c.UnsupportedCounts.HasSkinOverride = p.UnsupportedCounts.HasSkinOverride
@@ -525,9 +631,9 @@ Public Module LooksmenuLoader
     End Function
 
     ''' <summary>Serialize a preset to a LooksMenu-canonical JSON string. Schema replicates
-    ''' CharGenInterface.cpp SavePreset (lines 49-256) field-by-field. Three F4SE-only fields
-    ''' (BodyMorphs / Overlays / Skin) are intentionally NOT emitted — see
-    ''' memory/project_npc_looksmenu_pending.md for the rationale.
+    ''' CharGenInterface.cpp SavePreset (lines 49-256) field-by-field. BodyMorphs, Overlays and Skin
+    ''' (the three F4SE-only fields) ARE emitted so the preset round-trips with LooksMenu in-game.
+    ''' See memory/project_npc_looksmenu_pending.md for the render-wiring deferral rationale.
     '''
     ''' Per-field semantics (matches CharGenInterface.cpp behaviour):
     '''   • Gender (line 90): always emitted as UInt.
@@ -571,8 +677,8 @@ Public Module LooksmenuLoader
                 ' Field order: alphabetical to match jsoncpp's StyledWriter, which sorts keys
                 ' alphabetically when serializing a Json::Value object. Verified empirically by
                 ' diffing a JSON saved by NPC_Manager against one re-written by LooksMenu in-game.
-                ' Canonical order: BodyMorphs → Gender → HairColor → HeadParts → Morphs → Tints
-                ' → TintOrder → Weight.
+                ' Canonical order: BodyMorphs → Gender → HairColor → HeadParts → Morphs → Overlays
+                ' → Skin → Tints → TintOrder → Weight. (Overlays sorts between Morphs and Skin: M<O<S.)
 
                 ' BodyMorphs — canonical LooksMenu BodySlide slider dict. Engine convention
                 ' (CharGenInterface.cpp:204-215): the key is emitted iff `morphMap` exists for the
@@ -676,6 +782,47 @@ Public Module LooksmenuLoader
                     End If
 
                     w.WriteEndObject()
+                End If
+
+                ' Overlays (body tattoos) — emitted when non-empty. Mirrors CharGenInterface.cpp
+                ' SavePreset:217-244: an array of objects each with template + priority, plus optional
+                ' tint[r,g,b,a] / offsetUV[x,y] / scaleUV[x,y] (only written when the corresponding
+                ' kHas* flag was set in-game — i.e. when our parsed field is non-Nothing). Sorts
+                ' alphabetically between Morphs and Skin. We keep insertion order within the array
+                ' (it's a JSON array, not an object — jsoncpp does NOT reorder array elements, and the
+                ' engine's load preserves order too; priority drives render order independently).
+                If preset.Overlays IsNot Nothing AndAlso preset.Overlays.Count > 0 Then
+                    w.WriteStartArray("Overlays")
+                    For Each ov In preset.Overlays
+                        w.WriteStartObject()
+                        ' Per-object sub-keys also alphabetical (jsoncpp sorts object members):
+                        ' offsetUV → priority → scaleUV → template → tint.
+                        If ov.OffsetUV IsNot Nothing Then
+                            w.WriteStartArray("offsetUV")
+                            For Each f In ov.OffsetUV : w.WriteNumberValue(f) : Next
+                            w.WriteEndArray()
+                        End If
+                        w.WriteNumber("priority", ov.Priority)
+                        ' scaleUV — written CORRECTLY here. The engine SAVE has a bug
+                        ' (CharGenInterface.cpp:238-239 appends offsetUV.x/y into the scaleUV array
+                        ' instead of scaleUV.x/y), which corrupts scale on re-save. We deliberately
+                        ' DO NOT replicate that bug: the engine LOAD (:608-610) reads scaleUV
+                        ' faithfully, so emitting the real scale preserves round-trip AND avoids
+                        ' corrupting the value. Conscious divergence from the engine save.
+                        If ov.ScaleUV IsNot Nothing Then
+                            w.WriteStartArray("scaleUV")
+                            For Each f In ov.ScaleUV : w.WriteNumberValue(f) : Next
+                            w.WriteEndArray()
+                        End If
+                        w.WriteString("template", ov.TemplateId)
+                        If ov.Tint IsNot Nothing Then
+                            w.WriteStartArray("tint")
+                            For Each f In ov.Tint : w.WriteNumberValue(f) : Next
+                            w.WriteEndArray()
+                        End If
+                        w.WriteEndObject()
+                    Next
+                    w.WriteEndArray()
                 End If
 
                 ' Skin — F4SE LM SkinTemplate id. Emitted only when non-empty so unset presets

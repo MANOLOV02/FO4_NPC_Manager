@@ -19,12 +19,20 @@ Friend NotInheritable Class NpcMorphPoseResolver
     Private ReadOnly _overlay As Func(Of NPC_Data, UInteger, NPC_Data)
     Private ReadOnly _hostProvider As Func(Of NpcRenderHost)
     Private ReadOnly _appliedPresets As Dictionary(Of UInteger, LooksmenuLoader.LooksmenuPreset)
+    ''' <summary>Resolve an LM body-overlay ("tattoo") template by (id, isFemale) — injected from
+    ''' MainForm.ResolveOverlayTemplate so the per-gender template cache stays in MainForm (mirrors how
+    ''' NpcStateResolver receives AddressOf ResolveLmSkinTemplate). Nothing on an unknown id ⇒ that
+    ''' overlay contributes no layer (engine parity: GetTemplateByName null → ForEachOverlayBySlot skips,
+    ''' OverlayInterface.cpp:443-448).</summary>
+    Private ReadOnly _resolveOverlayTemplate As Func(Of String, Boolean, OverlayTemplate)
     Public Sub New(ctx As NpcRenderContext, overlay As Func(Of NPC_Data, UInteger, NPC_Data), hostProvider As Func(Of NpcRenderHost),
-                   appliedPresets As Dictionary(Of UInteger, LooksmenuLoader.LooksmenuPreset))
+                   appliedPresets As Dictionary(Of UInteger, LooksmenuLoader.LooksmenuPreset),
+                   resolveOverlayTemplate As Func(Of String, Boolean, OverlayTemplate))
         _ctx = ctx
         _overlay = overlay
         _hostProvider = hostProvider
         _appliedPresets = appliedPresets
+        _resolveOverlayTemplate = resolveOverlayTemplate
     End Sub
 
     ''' <summary>Build a face morph resolver for the given NPC visual state.
@@ -135,6 +143,220 @@ Friend NotInheritable Class NpcMorphPoseResolver
         Dim sliders = GetEffectiveBodyMorphSliders(state.RootNpcFormID)
         If sliders Is Nothing OrElse sliders.Count = 0 Then Return Nothing
         Return New BodySlideMorphResolver(sliders, renderData.MeshDictKeys)
+    End Function
+
+    ''' <summary>Resolve the applied preset's LM body overlays ("tattoos") into per-shape
+    ''' <see cref="IRenderableShape.OverlayLayers"/> on the SKIN shapes of <paramref name="renderData"/>.
+    ''' This is the render integration for the overlays feature: it SETS the layers directly (unlike the
+    ''' morph resolvers, which return an IMorphResolver) because overlay layers are extra material passes,
+    ''' not vertex deltas.
+    '''
+    ''' <para><b>Engine model</b> (F4SEPlugins-master/f4ee/OverlayInterface.cpp): for a biped slot S the
+    ''' engine finds the SKIN shapes on that slot (the clones whose lighting material is kType_SkinTint,
+    ''' :104), and for each applied overlay (iterated by priority ASCENDING — a multimap, :436) it looks up
+    ''' <c>template->slotMaterial[S]</c> (ForEachOverlayBySlot :445-447); an overlay contributes a layer to
+    ''' that shape IFF its template defines a material for slot S. LoadMaterialData (:186-197) then adds the
+    ''' preset's offsetUV to the material's UV offset, multiplies scaleUV, and for a tintable BGEM sets the
+    ''' effect base color (:227). We replicate that here, pre-baking the transform/tint onto the loaded
+    ''' material per the OverlayMaterialLayer contract (the lib renders the supplied material as-is).</para>
+    '''
+    ''' <para><b>Skin shape + biped slot identification</b> (the riskiest inference): a shape is a SKIN
+    ''' shape when its owning candidate's Kind = Skin — i.e. it was collected from the skin ARMO
+    ''' (state.SkinFormID) at NpcMeshCollector.vb:276-278. That is the app's direct analogue of the engine
+    ''' "clone the skin shapes" step; the per-shape→candidate map is renderData.ShapeCandidate
+    ''' (NpcMeshCollector.vb:1862-1865). The candidate's biped slot(s) come from MeshCandidate.SlotMask,
+    ''' bit (N-30) = biped slot N (BipedSlots.vb:6-7) — body = bit 3 (slot 33), hands = bits 4/5 (34/35),
+    ''' head = bit 0 (slot 30). We additionally require the material to be skin-tinted
+    ''' (material.NifShaderType = SkinTint) to mirror the engine's kType_SkinTint gate (:104) — a skin ARMO
+    ''' NIF can carry non-skin shapes (eyes, etc.) and those must not receive body overlays.</para>
+    '''
+    ''' <para><b>Clearing</b>: when the NPC has no applied preset, or the preset has no overlays, EVERY
+    ''' shape's OverlayLayers is set to Nothing and the method returns — so switching/clearing an NPC never
+    ''' leaks a prior NPC's tattoos. (Each render plan rebuilds fresh shape instances, so a leak is already
+    ''' impossible, but the explicit clear matches the behavior contract and is cheap.)</para></summary>
+    Friend Sub ResolveOverlayLayers(state As MainForm.NPCVisualState, renderData As MainForm.PreviewResolutionResult)
+        If renderData Is Nothing OrElse renderData.Shapes Is Nothing Then Return
+
+        ' Effective overlays for this NPC. Absent preset / HasOverlays=False / empty list ⇒ no tattoos.
+        ' (HasOverlays=False means the preset never declared the Overlays field — preserve-raw semantics,
+        ' same Has* convention the rest of the preset uses; raw NPCs have no record-level overlays.)
+        Dim overlays As List(Of LooksmenuLoader.OverlayEntry) = Nothing
+        If state IsNot Nothing Then
+            Dim preset As LooksmenuLoader.LooksmenuPreset = Nothing
+            If _appliedPresets.TryGetValue(state.RootNpcFormID, preset) AndAlso preset IsNot Nothing AndAlso
+               preset.HasOverlays AndAlso preset.Overlays IsNot Nothing AndAlso preset.Overlays.Count > 0 Then
+                overlays = preset.Overlays
+            End If
+        End If
+
+        ' No overlays → clear every shape and bail (guarantees no carry-over).
+        If overlays Is Nothing OrElse _resolveOverlayTemplate Is Nothing Then
+            For Each sh In renderData.Shapes
+                If sh IsNot Nothing Then sh.OverlayLayers = Nothing
+            Next
+            Return
+        End If
+
+        ' Iterate overlays by Priority ASCENDING so a higher-priority overlay ends up LAST in each shape's
+        ' layer list = drawn on top (the lib draws layers in list order; OverlayMaterialLayer.vb:53-57).
+        ' OrderBy is a stable sort, so equal-priority entries keep preset/insertion order — matching the
+        ' engine multimap, which also preserves insertion order within a priority bucket.
+        Dim orderedOverlays = overlays.OrderBy(Function(e) e.Priority).ToList()
+
+        For Each shape In renderData.Shapes
+            If shape Is Nothing Then Continue For
+
+            ' Engine membership gate (OverlayInterface.cpp:104 kType_SkinTint, via HasSkinChildren
+            ' :832-848): an overlay applies to ANY skin-tinted shape on the matching worn biped slot —
+            ' the naked body skin AND the exposed-skin parts of an OUTFIT (e.g. an outfit that leaves
+            ' the arms bare). The ONLY membership test is "is this geometry skin-tint?"; fabric / armor
+            ' (non-skin-tint) is excluded. The previous extra Kind=Skin restriction was WRONG — it
+            ' excluded outfit skin-tint shapes (user-reported: overlays only showed on the naked skin).
+            ' The candidate is still needed, but ONLY for its worn SlotMask (which biped slot the item
+            ' occupies, so a body overlay lands on body-slot skin, a hand overlay on hand-slot skin).
+            Dim cand As MainForm.MeshCandidate = Nothing
+            Dim hasCand = renderData.ShapeCandidate.TryGetValue(shape, cand) AndAlso cand IsNot Nothing
+            If Not hasCand OrElse Not ShapeIsSkinTinted(shape) Then
+                shape.OverlayLayers = Nothing
+                If Logger.Enabled Then
+                    Dim kindS = If(cand IsNot Nothing, cand.Kind.ToString(), "<none>")
+                    Dim tinted = ShapeIsSkinTinted(shape)
+                    Logger.LogLazy(Function() $"[OVERLAY-DIAG] skip shape='{shape.ShapeName}' hasCand={hasCand} kind={kindS} skinTinted={tinted}")
+                End If
+                Continue For
+            End If
+
+            ' Biped slot INDICES (0..30 = SlotMask bit positions = overlays.json "slot" values) this skin
+            ' shape occupies. NOT slot numbers — the template keys its materials by the index (see
+            ' BipedSlotIndicesFromMask). Body=index 3, hands=index 4/5.
+            Dim slotIndices = BipedSlotIndicesFromMask(cand.SlotMask)
+            If slotIndices.Count = 0 Then
+                shape.OverlayLayers = Nothing
+                Continue For
+            End If
+
+            Dim layers As New List(Of OverlayMaterialLayer)
+            For Each entry In orderedOverlays
+                If entry Is Nothing OrElse String.IsNullOrEmpty(entry.TemplateId) Then Continue For
+                Dim tpl = _resolveOverlayTemplate(entry.TemplateId, state.IsFemale)
+                If tpl Is Nothing OrElse tpl.SlotMaterials Is Nothing Then
+                    If Logger.Enabled Then Logger.LogLazy(Function() $"[OVERLAY-DIAG] template not resolved: id='{entry.TemplateId}' female={state.IsFemale}")
+                    Continue For
+                End If
+
+                ' One layer per biped-slot-index this shape covers that the template defines a material
+                ' for. A skin shape almost always covers a single skin slot (index 3 body / 4-5 hands /
+                ' 0 head), but a multi-slot skin ARMA could legitimately add more than one — mirror the
+                ' engine, which keys slotMaterial by the (index) slot being processed.
+                For Each slotIdx In slotIndices
+                    Dim slotMatPath As String = Nothing
+                    If Not tpl.SlotMaterials.TryGetValue(slotIdx, slotMatPath) Then Continue For
+                    If String.IsNullOrEmpty(slotMatPath) Then Continue For
+
+                    Dim layer = BuildOverlayLayer(shape, slotMatPath, entry)
+                    If layer IsNot Nothing Then layers.Add(layer)
+                Next
+            Next
+
+            shape.OverlayLayers = If(layers.Count > 0, layers, Nothing)
+            If Logger.Enabled Then
+                Dim layerCount = layers.Count
+                Dim idxList = String.Join(",", slotIndices)
+                Logger.LogLazy(Function() $"[OVERLAY-DIAG] skin shape='{shape.ShapeName}' slotIdx=[{idxList}] mask=0x{cand.SlotMask:X8} overlays={orderedOverlays.Count} → layers={layerCount}")
+            End If
+        Next
+    End Sub
+
+    ''' <summary>Mirror of the engine kType_SkinTint gate (OverlayInterface.cpp:104): true when the shape's
+    ''' resolved material is a skin-tint lighting material. Uses the SAME per-shape signal the app's
+    ''' body-texture substitution keys off (NpcMaterialResolver.vb:1039, material.NifShaderType = SkinTint).
+    ''' Defensive: any missing material link ⇒ False (a shape without a resolved skin material is not a
+    ''' tattoo target).</summary>
+    Private Shared Function ShapeIsSkinTinted(shape As IRenderableShape) As Boolean
+        Dim rel = shape.ShapeMaterial
+        If rel Is Nothing OrElse rel.material Is Nothing Then Return False
+        Return rel.material.NifShaderType = NiflySharp.Enums.BSLightingShaderType.SkinTint OrElse rel.material.SkinTint
+    End Function
+
+    ''' <summary>Enumerate the biped slot INDICES (0..30) set in a SlotMask — i.e. the BIT POSITIONS,
+    ''' NOT the actual slot numbers. This is deliberate: overlay templates key their slot materials by
+    ''' the value in overlays.json's <c>"slot"</c> field, which is the biped object INDEX 0..30 (the
+    ''' engine iterates <c>for i = 0; i &lt; 31</c> and looks up <c>slotMaterial[i]</c> — F4SE
+    ''' OverlayInterface.cpp:425-454 / F4EEUpdateOverlays::Run), and that index equals the SlotMask bit
+    ''' position (BipedSlots.vb:6-7 — bit (N-30) = biped slot N). So body = bit 3 = index 3 = slot 33,
+    ''' hands = bit 4/5 = index 4/5. We MUST return the index (bit position) so it matches the template's
+    ''' SlotMaterials keys; returning bit+30 (the slot number 33) never matched key 3 ⇒ no overlay layers.</summary>
+    Private Shared Function BipedSlotIndicesFromMask(slotMask As UInteger) As List(Of Integer)
+        Dim result As New List(Of Integer)
+        For bit = 0 To 31
+            If (slotMask And (1UI << bit)) <> 0UI Then result.Add(bit)
+        Next
+        Return result
+    End Function
+
+    ''' <summary>Load an overlay template's slot material and pre-bake the LooksMenu per-instance transform
+    ''' (offsetUV/scaleUV) + tint onto it, then wrap it as an <see cref="OverlayMaterialLayer"/>.
+    '''
+    ''' <para>Material load mirrors the canonical chain (NifContent_Class.vb:216-228 / NpcMaterialResolver
+    ''' LoadVanillaBodyMaterial:73-74): normalize the path with CorrectMaterialPath, strip then re-add the
+    ''' Materials\ prefix in the Deserialize call, choosing GetType(BGEM) for .bgem (effect/tattoo) else
+    ''' GetType(BGSM). We pass the skin shape's own NifShape (INiShape) + NifContent so Deserialize can seed
+    ''' the alpha fields / resolve ShaderType from the NIF the same way the base shape's material was loaded
+    ''' (it uses them only for that seeding — safe to reuse the skin shape's pair).</para>
+    '''
+    ''' <para>Pre-bake matches LoadMaterialData (OverlayInterface.cpp:186-197):
+    ''' <c>oU += offsetUV.x; oV += offsetUV.y; sU *= scaleUV.x; sV *= scaleUV.y</c>. The renderer's overlay
+    ''' pass uploads BOTH uvOffset (UOffset/VOffset) AND uvScale (UScale/VScale) for the layer's material
+    ''' (Render.vb:3200-3201), so scaleUV is honored, not offset-only — we multiply UScale/VScale. Tint
+    ''' (entry.Tint, rgba 0..1) is set as the BGEM base color (effectMaterial->kBaseColor, :227) via
+    ''' BaseColor (System.Drawing.Color, BGEM-only; no-op on a BGSM, which matches the engine guarding the
+    ''' tint write behind the effect-material branch).</para>
+    '''
+    ''' <para>Returns Nothing on load failure (defensive — a bad overlay material must not break the render).</para></summary>
+    Private Shared Function BuildOverlayLayer(skinShape As IRenderableShape, slotMaterialPath As String,
+                                              entry As LooksmenuLoader.OverlayEntry) As OverlayMaterialLayer
+        Try
+            Dim fullpath = FO4UnifiedMaterial_Class.CorrectMaterialPath(slotMaterialPath).StripPrefix(MaterialsPrefix)
+            If String.IsNullOrEmpty(fullpath) Then Return Nothing
+            Dim matType As Type = If(fullpath.EndsWith(".bgem", StringComparison.OrdinalIgnoreCase), GetType(BGEM), GetType(BGSM))
+
+            Dim mat As New FO4UnifiedMaterial_Class()
+            mat.Deserialize(MaterialsPrefix & fullpath, matType, skinShape.NifShape, skinShape.NifContent)
+
+            ' offsetUV: add to the material's UV offset (engine :190-191). Nothing ⇒ default (0,0) = no-op.
+            If entry.OffsetUV IsNot Nothing AndAlso entry.OffsetUV.Length >= 2 Then
+                mat.UOffset += entry.OffsetUV(0)
+                mat.VOffset += entry.OffsetUV(1)
+            End If
+
+            ' scaleUV: multiply the material's UV scale (engine :193-194). Nothing ⇒ default (1,1) = no-op.
+            ' Honored by the renderer's overlay pass (Render.vb:3201 uploads uvScale from UScale/VScale).
+            If entry.ScaleUV IsNot Nothing AndAlso entry.ScaleUV.Length >= 2 Then
+                mat.UScale *= entry.ScaleUV(0)
+                mat.VScale *= entry.ScaleUV(1)
+            End If
+
+            ' tint: BGEM effect base color (engine :227, behind kHasTintColor). Nothing ⇒ no tint. BaseColor
+            ' is <BGEMOnly>, so on a BGSM the setter is a no-op — matching the engine guarding tint behind
+            ' the effect-material branch. rgba are 0..1 (preset native); clamp before the 0..255 byte cast.
+            If entry.Tint IsNot Nothing AndAlso entry.Tint.Length >= 4 Then
+                mat.BaseColor = Color.FromArgb(ClampUnitToByte(entry.Tint(3)), ClampUnitToByte(entry.Tint(0)),
+                                               ClampUnitToByte(entry.Tint(1)), ClampUnitToByte(entry.Tint(2)))
+            End If
+
+            Return New OverlayMaterialLayer With {
+                .Material = New Nifcontent_Class_Manolo.RelatedMaterial_Class With {.material = mat, .path = fullpath}
+            }
+        Catch ex As Exception
+            Logger.LogLazy(Function() $"[OVERLAY] failed to load overlay material '{slotMaterialPath}': {ex.Message}")
+            Return Nothing
+        End Try
+    End Function
+
+    ''' <summary>Map a 0..1 color component to a 0..255 byte, clamping out-of-range inputs.</summary>
+    Private Shared Function ClampUnitToByte(v As Single) As Integer
+        Dim n = CInt(Math.Round(v * 255.0F))
+        Return Math.Min(255, Math.Max(0, n))
     End Function
 
     ''' <summary>Build the hair zap resolver from the per-shape ShapeZapHairParts map, gated on the

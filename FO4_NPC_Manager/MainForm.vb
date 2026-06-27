@@ -140,6 +140,13 @@ Public Class MainForm
     ''' Mirrors the bundle structure of f4ee/SkinInterface.cpp:490-621 (id+name+gender+sort + per-gender
     ''' face TXST / head HDPT / rear HDPT + skin ARMO). Populated once after plugin load.</summary>
     Private _lmSkinTemplates As New List(Of LmSkinTemplate)()
+    ''' <summary>Parsed F4SE LooksMenu body-overlay ("tattoo") templates loaded from
+    ''' Data\F4SE\Plugins\F4EE\Overlays\&lt;mod&gt;\overlays.json + Overlays\Loose\*.json (the disk
+    ''' layout LoadOverlayMods scans — OverlayInterface.cpp:1025-1052). Gender-separated exactly like
+    ''' the engine's <c>m_overlayTemplates[isFemale?1:0]</c> (OverlayInterface.cpp:1084): index 0 = male,
+    ''' 1 = female. First-loaded-wins on a duplicate id within a gender (engine keeps the first via
+    ''' <c>emplace</c>, :1084-1090). Populated once after plugin load by <see cref="BuildOverlayTemplateCache"/>.</summary>
+    Private ReadOnly _overlayTemplates() As List(Of OverlayTemplate) = {New List(Of OverlayTemplate)(), New List(Of OverlayTemplate)()}
     ''' <summary>NPCs directly placed in the world via ACHR records (unique characters).</summary>
     Private _directlyPlacedNPCFormIDs As New HashSet(Of UInteger)()
     ''' <summary>NPCs that appear in the game world: placed in CELLs (ACHR) or in LVLN encounter lists.</summary>
@@ -1625,7 +1632,8 @@ Public Class MainForm
         _materialResolver = New NpcMaterialResolver(_ctx, AddressOf ApplyPresetOverlayToNpcData)
         _stateResolver = New NpcStateResolver(_ctx, _materialResolver, _appliedPresets, _lvlnDataCache,
                                               Function() CurrentGenderFilter, AddressOf ResolveLmSkinTemplate)
-        _morphPoseResolver = New NpcMorphPoseResolver(_ctx, AddressOf ApplyPresetOverlayToNpcData, Function() _renderHost, _appliedPresets)
+        _morphPoseResolver = New NpcMorphPoseResolver(_ctx, AddressOf ApplyPresetOverlayToNpcData, Function() _renderHost, _appliedPresets,
+                                                      AddressOf ResolveOverlayTemplate)
         _faceTintResolver = New NpcFaceTintResolver(_ctx, _materialResolver, Function() _renderHost, _appliedPresets)
         _mountingResolver = New NpcMountingResolver(_ctx, _stateResolver)
         _meshCollector = New NpcMeshCollector(_ctx, _materialResolver, _stateResolver, _mountingResolver,
@@ -1688,6 +1696,21 @@ Public Class MainForm
                 End If
                 If Not String.IsNullOrEmpty(entry.SkinTemplateId) Then
                     existing.SkinTemplateId = entry.SkinTemplateId
+                End If
+                ' Overlays (LM body tattoos) — append a deep copy (cloning the float arrays) onto
+                ' whatever the overlay already carries, same merge-not-clobber style as BodyMorphs
+                ' above. HasOverlays makes the render + editor treat the list as applied.
+                If entry.Overlays IsNot Nothing AndAlso entry.Overlays.Count > 0 Then
+                    For Each ov In entry.Overlays
+                        existing.Overlays.Add(New LooksmenuLoader.OverlayEntry With {
+                            .TemplateId = ov.TemplateId,
+                            .Priority = ov.Priority,
+                            .Tint = If(ov.Tint Is Nothing, Nothing, CType(ov.Tint.Clone(), Single())),
+                            .OffsetUV = If(ov.OffsetUV Is Nothing, Nothing, CType(ov.OffsetUV.Clone(), Single())),
+                            .ScaleUV = If(ov.ScaleUV Is Nothing, Nothing, CType(ov.ScaleUV.Clone(), Single()))
+                        })
+                    Next
+                    existing.HasOverlays = True
                 End If
             Next
         Next
@@ -1870,6 +1893,7 @@ Public Class MainForm
         BuildSkinArmoUniverse()
         BuildOutfitUniverse()
         BuildLmSkinTemplateCache()
+        BuildOverlayTemplateCache()
         For Each npc In _ctx.NpcCache.Values
             _npcSearchableCache(npc.FormID) = NpcDisplayHelpers.BuildNpcSearchableText(npc)
             _npcDisplayLabelCache(npc.FormID) = NpcDisplayHelpers.BuildNpcDisplayLabel(npc)
@@ -2558,6 +2582,83 @@ Public Class MainForm
             Next
         End If
     End Sub
+
+    ''' <summary>Build the LM body-overlay ("tattoo") template cache. Mirrors
+    ''' <see cref="BuildLmSkinTemplateCache"/> structurally, but the on-disk layout is
+    ''' <c>Data\F4SE\Plugins\F4EE\Overlays\&lt;pluginFileName&gt;\overlays.json</c> + an
+    ''' <c>Overlays\Loose\*.json</c> folder (OverlayInterface.cpp:1025-1052 LoadOverlayMods). Each file
+    ''' is parsed by <see cref="OverlayTemplateLoader.LoadFromFile"/>; the templates are then bucketed by
+    ''' gender (the engine keeps two maps, <c>m_overlayTemplates[isFemale?1:0]</c>, OverlayInterface.cpp:1084)
+    ''' with FIRST-LOADED-WINS on a duplicate id WITHIN a gender (the engine's <c>find</c>-then-<c>emplace</c>
+    ''' only inserts when the id is absent, :1084-1090; later files with the same id keep the existing
+    ''' template). The disk scan order is load-order plugins then the Loose folder, identical to the engine.</summary>
+    Private Sub BuildOverlayTemplateCache()
+        _overlayTemplates(0).Clear()
+        _overlayTemplates(1).Clear()
+        If String.IsNullOrEmpty(_dataPath) Then Return
+        Dim baseOverlayDir = Path.Combine(_dataPath, "F4SE", "Plugins", "F4EE", "Overlays")
+        If Not Directory.Exists(baseOverlayDir) Then Return
+
+        ' Per-plugin templates: Overlays\<pluginName>\overlays.json (load order = priority order).
+        For Each plugin In _pluginManager.Plugins
+            Dim p = Path.Combine(baseOverlayDir, plugin.FileName, "overlays.json")
+            If File.Exists(p) Then AddOverlayTemplatesFromFile(p)
+        Next
+        ' Loose templates: Overlays\Loose\*.json
+        Dim looseDir = Path.Combine(baseOverlayDir, "Loose")
+        If Directory.Exists(looseDir) Then
+            For Each p In Directory.EnumerateFiles(looseDir, "*.json", SearchOption.TopDirectoryOnly)
+                AddOverlayTemplatesFromFile(p)
+            Next
+        End If
+    End Sub
+
+    ''' <summary>Parse one overlays.json and append its templates into the gendered cache, keeping the
+    ''' first-loaded template on a duplicate id within the same gender bucket (engine parity —
+    ''' OverlayInterface.cpp:1084-1090). <see cref="OverlayTemplate.Gender"/> is already clamped to 0..1
+    ''' by the loader, so it indexes the two buckets directly.</summary>
+    Private Sub AddOverlayTemplatesFromFile(filePath As String)
+        For Each tpl In OverlayTemplateLoader.LoadFromFile(filePath)
+            If tpl Is Nothing OrElse String.IsNullOrEmpty(tpl.Id) Then Continue For
+            Dim bucket = _overlayTemplates(If(tpl.Gender = 1, 1, 0))
+            Dim duplicate As Boolean = False
+            For Each existing In bucket
+                If String.Equals(existing.Id, tpl.Id, StringComparison.Ordinal) Then
+                    duplicate = True
+                    Exit For
+                End If
+            Next
+            If Not duplicate Then bucket.Add(tpl)
+        Next
+    End Sub
+
+    ''' <summary>Templates for one gender, sorted by Sort then DisplayName (for the Phase 4 editor combo).
+    ''' Female NPC → gender bucket 1, male → 0 — matching the engine's per-gender map split.</summary>
+    Friend Function GetOverlayTemplateCandidates(isFemale As Boolean) As List(Of OverlayTemplate)
+        Dim bucket = _overlayTemplates(If(isFemale, 1, 0))
+        Return bucket.
+            OrderBy(Function(t) t.Sort).
+            ThenBy(Function(t) t.DisplayName, StringComparer.OrdinalIgnoreCase).
+            ToList()
+    End Function
+
+    ''' <summary>Resolve an overlay template by id within the matching gender bucket. Nothing if the id
+    ''' isn't loaded for that gender — caller treats that as "this overlay contributes no layer" (engine
+    ''' parity: <c>GetTemplateByName</c> returns null and <c>ForEachOverlayBySlot</c> simply skips it,
+    ''' OverlayInterface.cpp:443-448). Mirrors <see cref="ResolveLmSkinTemplate"/>.</summary>
+    Private Function ResolveOverlayTemplate(id As String, isFemale As Boolean) As OverlayTemplate
+        If String.IsNullOrEmpty(id) Then Return Nothing
+        For Each tpl In _overlayTemplates(If(isFemale, 1, 0))
+            If String.Equals(tpl.Id, id, StringComparison.Ordinal) Then Return tpl
+        Next
+        Return Nothing
+    End Function
+
+    ''' <summary>Friend wrapper exposing <see cref="ResolveOverlayTemplate"/> at Friend scope, mirroring
+    ''' <see cref="ResolveLmSkinTemplate_Friend"/> — lets the Phase 4 editor reuse the same resolver.</summary>
+    Friend Function ResolveOverlayTemplate_Friend(id As String, isFemale As Boolean) As OverlayTemplate
+        Return ResolveOverlayTemplate(id, isFemale)
+    End Function
 
     ''' <summary>Classify NPCs:
     ''' - _directlyPlacedNPCFormIDs: NPCs placed in CELLs via ACHR records (unique characters).
@@ -4228,6 +4329,16 @@ Public Class MainForm
             Return New RenderPlanResult With {.RenderData = renderData}
         End If
 
+        ' LM body overlays ("tattoos"): resolve the applied preset's Overlays into per-shape
+        ' IRenderableShape.OverlayLayers on the SKIN shapes. Runs HERE — on this Task.Run background
+        ' thread, after renderData is settled and before the RenderRequest captures renderData.Shapes
+        ' (line below: .Shapes = renderData.Shapes) — so the layers travel with the exact shapes that get
+        ' rendered. It loads materials via FilesDictionary, the same off-UI-thread material load the base
+        ' shapes already did during ResolvePreviewVariant, so it's thread-safe in this context. The method
+        ' clears OverlayLayers on every shape when the NPC has no overlays, so switching/clearing an NPC
+        ' never leaks a previous NPC's tattoos (and each plan rebuilds fresh shape instances anyway).
+        _morphPoseResolver.ResolveOverlayLayers(state, renderData)
+
         ' Two independent checkboxes control bone pose (FMRS) and vertex morphs (chargen TRI).
         ' Both are honored during the initial full render; individual toggles after that are
         ' handled by the CheckedChanged handlers below using the granular Intent.MarkDirty flow
@@ -5594,6 +5705,24 @@ Public Class MainForm
     ''' by the Phase 2 split.</summary>
     Friend Function RefreshBodySkinLivePreview(Optional host As NpcRenderHost = Nothing) As Boolean
         Return _skinLivePreview.RefreshBodySkinLivePreview(host)
+    End Function
+
+    ''' <summary>Re-resolve overlay layers on the host's EXISTING render data (re-bakes the new UV/tint into
+    ''' the layer materials) and repaint — WITHOUT a full BuildRenderPlan (no mesh re-collection / NIF reload).
+    ''' Used for overlay property-only edits (offset/scale/tint). Textures are unchanged (same template
+    ''' slot material) so a repaint binds them from the already-loaded set; the lib reads Shape.OverlayLayers
+    ''' live each frame (RenderAll pass 5). Returns False when the host has no render data yet (caller falls
+    ''' back to a full reload).
+    '''
+    ''' Safe for offset/scale/tint because the set of overlays and their template slot materials don't change
+    ''' — only UOffset/VOffset/UScale/VScale/BaseColor on the (re-loaded) layer material. Those textures are
+    ''' already in the GPU texture dict from the initial render, and the lib binds overlay textures by path at
+    ''' draw time, so an InvalidateRender repaint shows the new params without a texture reload or mesh rebuild.</summary>
+    Friend Function RefreshOverlayLayersLive(host As NpcRenderHost) As Boolean
+        If host Is Nothing OrElse host.LastRenderedState Is Nothing OrElse host.LastRenderData Is Nothing Then Return False
+        _morphPoseResolver.ResolveOverlayLayers(host.LastRenderedState, host.LastRenderData)
+        If host.PreviewCtl IsNot Nothing Then host.PreviewCtl.InvalidateRender()
+        Return True
     End Function
 
     ''' <summary>Build the list of region-mask TXST swaps for an NPC. For each Morph Group
@@ -7150,6 +7279,18 @@ Public Class MainForm
             For Each kv In overlay.BodyMorphSliders
                 preset.BodyMorphSliders(kv.Key) = kv.Value
             Next
+            ' Body overlays (tattoos / body paint): F4SE-only, no record-level source, same as
+            ' BodyMorphSliders above. Deep-clone each entry (cloning the float arrays so the
+            ' snapshot is independent) so Copy Look captures them and Save Looksmenu emits them.
+            For Each ov In overlay.Overlays
+                preset.Overlays.Add(New LooksmenuLoader.OverlayEntry With {
+                    .TemplateId = ov.TemplateId,
+                    .Priority = ov.Priority,
+                    .Tint = If(ov.Tint Is Nothing, Nothing, CType(ov.Tint.Clone(), Single())),
+                    .OffsetUV = If(ov.OffsetUV Is Nothing, Nothing, CType(ov.OffsetUV.Clone(), Single())),
+                    .ScaleUV = If(ov.ScaleUV Is Nothing, Nothing, CType(ov.ScaleUV.Clone(), Single()))
+                })
+            Next
             ' LM SkinTemplate id is overlay-only (no record source). Carry through so Copy Look
             ' captures it and Save Looksmenu emits it.
             preset.SkinTemplateId = If(overlay.SkinTemplateId, "")
@@ -7249,6 +7390,7 @@ Public Class MainForm
         preset.HasBodyMorphValues = True
         preset.HasFaceBoneRegions = True
         preset.HasHeadPartFormIDs = True
+        preset.HasOverlays = True
         ' Origin reset: the line above asserts authority based on "snapshot is complete",
         ' independent of the LM template. So the writer-trackable origin flag stays False —
         ' otherwise a Paste followed by an LM template change in EditBody would erroneously
@@ -7968,6 +8110,24 @@ Public Class MainForm
         ' sliders" — which is exactly what the target NPC was already showing pre-paste, since
         ' the target NPC's BodyMorphSliders only existed if a previous overlay was applied (and
         ' that overlay is being replaced wholesale by this paste). Engine-equivalent.
+
+        ' --- Body overlays (tattoos / body paint, F4SE-only — no record-level source) ---
+        ' Checked: deep-copy source.Overlays and assert HasOverlays so the apply path fully
+        ' replaces the target's overlays (cloning the float arrays so the paste is independent).
+        ' Unchecked: leave p.Overlays empty and HasOverlays False — same preserve-raw semantics
+        ' as BodyMorphSliders above (no Has* assertion => the merge keeps the target's overlays).
+        If options.Overlays Then
+            For Each ov In source.Overlays
+                p.Overlays.Add(New LooksmenuLoader.OverlayEntry With {
+                    .TemplateId = ov.TemplateId,
+                    .Priority = ov.Priority,
+                    .Tint = If(ov.Tint Is Nothing, Nothing, CType(ov.Tint.Clone(), Single())),
+                    .OffsetUV = If(ov.OffsetUV Is Nothing, Nothing, CType(ov.OffsetUV.Clone(), Single())),
+                    .ScaleUV = If(ov.ScaleUV Is Nothing, Nothing, CType(ov.ScaleUV.Clone(), Single()))
+                })
+            Next
+            p.HasOverlays = True
+        End If
 
         ' --- Skin override (NPC.WNAM) ---
         If options.SkinOverride Then

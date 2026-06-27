@@ -51,12 +51,29 @@ Public Class EditBody_Form
     Private ReadOnly _bodySlideBars As New Dictionary(Of String, FO4_Base_Library.TinySliderTextBox)(StringComparer.OrdinalIgnoreCase)
     Private ReadOnly _bodySlideRows As New Dictionary(Of String, Control)(StringComparer.OrdinalIgnoreCase)
 
+    ' Overlays tab state -------------------------------------------------------------------
+    ' Full gender-filtered template universe (display order = GetOverlayTemplateCandidates order),
+    ' captured once at construction. ListBoxOverlayAvailable's Items are a FILTERED projection of
+    ' this (the filter narrows by display name), so the list index can't be used to look up the
+    ' template directly — _availableShown maps the shown index → template instead. Mirrors the
+    ' _bodySlideRows parallel-mapping idiom: ListBox.Items hold display strings (data), the
+    ' template lives in a parallel list.
+    Private ReadOnly _overlayCandidates As New List(Of OverlayTemplate)
+    Private ReadOnly _availableShown As New List(Of OverlayTemplate)
+    ' Whether any overlay templates exist for this NPC's gender. False → UpdateOverlayPropsForSelection
+    ' shows the empty-state message in LabelOverlaySelected and disables the prop controls.
+    Private _hasOverlayTemplates As Boolean = False
+
     ' Slider drag throttle: model writes happen synchronously inside On...Changed (so Save/OK
     ' captures fresh state) but the costly _refresh callback is deferred. Same pattern as
     ' Editor_Form.vb (WM): timer fires after the user pauses; DragEnded forces an immediate flush
     ' so releasing the mouse always shows the final preview without waiting for the timer tick.
     Private WithEvents RefreshTimer As New Timer() With {.Interval = 500, .Enabled = False}
     Private _pendingRefresh As Boolean = False
+    ' Overlay edits need a FULL reload (re-resolve overlay layers), not the morph/pose-only
+    ' _refresh path. The shared throttle timer carries this separate pending flag so overlay
+    ' slider drags flush to TriggerSkinChangeReload instead of OnLocalBodyRefresh.
+    Private _pendingOverlayReload As Boolean = False
 
     ''' <summary>Initial values seeded from the live NPC (post-overlay-applied). Used to
     ''' populate sliders the very first time the editor opens against an NPC that has no
@@ -138,7 +155,30 @@ Public Class EditBody_Form
         AddHandler ComboBoxWnam.SelectedIndexChanged, AddressOf OnWnamComboChanged
         AddHandler ComboBoxLmSkinTemplate.SelectedIndexChanged, AddressOf OnLmSkinTemplateComboChanged
 
+        ' Overlays tab — handlers + initial population. The tab is ALWAYS present (unlike
+        ' Weight/MRSV which hide); when no templates exist for this gender we show the empty
+        ' legend and leave the controls inert (InitOverlaysTab handles both branches).
+        AddHandler TextBoxOverlayFilter.TextChanged, AddressOf OnOverlayFilterChanged
+        AddHandler ButtonOverlayAdd.Click, AddressOf OnOverlayAdd
+        AddHandler ButtonOverlayRemove.Click, AddressOf OnOverlayRemove
+        AddHandler ButtonOverlayUp.Click, AddressOf OnOverlayUp
+        AddHandler ButtonOverlayDown.Click, AddressOf OnOverlayDown
+        AddHandler ListBoxOverlayApplied.SelectedIndexChanged, AddressOf OnOverlayAppliedSelectionChanged
+        AddHandler SliderOverlayOffsetU.ValueChanged, AddressOf OnOverlayOffsetChanged
+        AddHandler SliderOverlayOffsetV.ValueChanged, AddressOf OnOverlayOffsetChanged
+        AddHandler SliderOverlayScaleU.ValueChanged, AddressOf OnOverlayScaleChanged
+        AddHandler SliderOverlayScaleV.ValueChanged, AddressOf OnOverlayScaleChanged
+        AddHandler SliderOverlayOffsetU.DragEnded, AddressOf OnSliderDragEnded
+        AddHandler SliderOverlayOffsetV.DragEnded, AddressOf OnSliderDragEnded
+        AddHandler SliderOverlayScaleU.DragEnded, AddressOf OnSliderDragEnded
+        AddHandler SliderOverlayScaleV.DragEnded, AddressOf OnSliderDragEnded
+        AddHandler SliderOverlayTintAlpha.ValueChanged, AddressOf OnOverlayTintAlphaChanged
+        AddHandler SliderOverlayTintAlpha.DragEnded, AddressOf OnSliderDragEnded
+        AddHandler CheckBoxOverlayTint.CheckedChanged, AddressOf OnOverlayTintToggled
+        AddHandler ButtonOverlayTintColor.Click, AddressOf OnOverlayTintColorClicked
+
         LoadValuesFromOverlay()
+        InitOverlaysTab()
     End Sub
 
     ''' <summary>Populate ComboBoxWnam from MainForm.GetSkinArmoCandidates (race+gender filter)
@@ -670,13 +710,35 @@ Public Class EditBody_Form
     End Sub
 
     ''' <summary>Force-flush any pending refresh immediately. Bound to every slider's DragEnded
-    ''' so releasing the mouse shows the final preview without waiting for the timer tick.</summary>
+    ''' so releasing the mouse shows the final preview without waiting for the timer tick.
+    ''' Two pending channels: _pendingRefresh = morph/pose-only (Weight/MRSV/BodySlide) via the
+    ''' lightweight _refresh callback; _pendingOverlayReload = a full reload (re-resolve overlay
+    ''' layers) via TriggerSkinChangeReload. Both can be pending; both flush here.</summary>
     Private Sub FlushRefresh()
         If _pendingRefresh Then
             _pendingRefresh = False
             _refresh?.Invoke()
         End If
+        If _pendingOverlayReload Then
+            _pendingOverlayReload = False
+            ' Fire-and-forget the async full reload; the embedded preview updates when it completes.
+            FlushOverlayReload()
+        End If
         RefreshTimer.Stop()
+    End Sub
+
+    ''' <summary>Await the full preview reload then swallow/log faults — separated so FlushRefresh
+    ''' stays a plain Sub (DragEnded / timer tick are sync entry points).</summary>
+    Private Async Sub FlushOverlayReload()
+        ' Lightweight path: offset/scale/alpha slider drags only change overlay material UV/tint params,
+        ' not geometry/textures, so re-resolve the layer materials on the existing render data + repaint
+        ' instead of a full RenderInHostAsync. Falls back to the full reload if the host has no render
+        ' data yet (TriggerOverlayLiveRefresh).
+        Try
+            Await TriggerOverlayLiveRefresh()
+        Catch ex As Exception
+            Logger.LogLazy(Function() $"[EDIT-BODY] overlay live refresh failed for NPC 0x{_rootNpcFormID:X8}: {ex.GetType().Name}: {ex.Message}")
+        End Try
     End Sub
 
     Private Sub RefreshTimer_Tick(sender As Object, e As EventArgs) Handles RefreshTimer.Tick
@@ -712,6 +774,8 @@ Public Class EditBody_Form
             Await ResetBodySection()
         ElseIf active Is TabPageBodySlide Then
             ResetBodySlideSection()
+        ElseIf active Is TabPageOverlays Then
+            Await ResetOverlaysSection()
         End If
     End Sub
 
@@ -782,6 +846,480 @@ Public Class EditBody_Form
             _suspendEvents = False
         End Try
         _refresh?.Invoke()
+    End Sub
+
+    ' =====================================================================
+    ' Overlays tab (body tattoos) — add/remove/reorder applied overlays + edit LooksMenu
+    ' per-overlay properties (offset/scale/tint) live against the embedded preview.
+    '
+    ' Order/priority convention (load-bearing — must match NpcMorphPoseResolver.ResolveOverlayLayers
+    ' which sorts ascending by Priority so the HIGHEST Priority is drawn LAST = on top):
+    '   ListBoxOverlayApplied index 0 = TOP of list = drawn ON TOP.
+    '   Preset.Overlays is stored in the SAME order as the list (index 0 = top).
+    '   After every add/remove/reorder we renumber: Priority(i) = (n-1) - i, so index 0 gets the
+    '   highest Priority value. The resolver's ascending sort then puts index 0 last = on top.
+    '
+    ' Refresh path: overlay changes need the render plan to re-run ResolveOverlayLayers, which only
+    ' happens on a FULL preview reload — so overlays use TriggerSkinChangeReload (NOT the lightweight
+    ' OnLocalBodyRefresh / _refresh which is morph/pose-only and does NOT re-resolve overlays).
+    ' Add/remove/reorder = immediate reload; slider drags = throttled (ScheduleRefresh → RefreshTimer,
+    ' DragEnded flushes). The throttled path is routed to the full reload via _pendingOverlayReload.
+    ' =====================================================================
+
+    ''' <summary>Populate the Available + Applied lists and set the empty-state. Called once at
+    ''' construction. When no templates exist for this NPC's gender the (now-empty) lists +
+    ''' property controls stay inert and the empty-state message is shown in LabelOverlaySelected
+    ''' (surfaced by UpdateOverlayPropsForSelection).</summary>
+    Private Sub InitOverlaysTab()
+        _overlayCandidates.Clear()
+        If _mainForm IsNot Nothing Then
+            Dim cands = _mainForm.GetOverlayTemplateCandidates(_npcIsFemale)
+            If cands IsNot Nothing Then _overlayCandidates.AddRange(cands)
+        End If
+        _hasOverlayTemplates = _overlayCandidates.Count > 0
+
+        RefreshAvailableList()
+        RefreshAppliedList(-1)
+        ' No selection yet → property controls disabled, label shows the placeholder.
+        UpdateOverlayPropsForSelection()
+    End Sub
+
+    ''' <summary>Strip a single leading "$" used by LooksMenu for localization keys, falling back
+    ''' to the template id when DisplayName is empty.</summary>
+    Private Shared Function OverlayDisplay(tpl As OverlayTemplate) As String
+        Dim s = If(tpl.DisplayName, "")
+        If s.StartsWith("$") Then s = s.Substring(1)
+        If s.Length = 0 Then s = tpl.Id
+        Return s
+    End Function
+
+    ''' <summary>Rebuild ListBoxOverlayAvailable as a filtered projection of _overlayCandidates.
+    ''' Items hold display strings; _availableShown is the parallel index→template map (the
+    ''' ListBox index can't be used directly because the filter removes rows). Mirrors the
+    ''' _bodySlideRows parallel-mapping idiom + OnBodySlideFilterChanged case-insensitive Contains.</summary>
+    Private Sub RefreshAvailableList()
+        Dim filter = TextBoxOverlayFilter.Text.Trim()
+        ListBoxOverlayAvailable.BeginUpdate()
+        Try
+            ListBoxOverlayAvailable.Items.Clear()
+            _availableShown.Clear()
+            For Each tpl In _overlayCandidates
+                Dim disp = OverlayDisplay(tpl)
+                If filter.Length = 0 OrElse disp.Contains(filter, StringComparison.OrdinalIgnoreCase) Then
+                    ListBoxOverlayAvailable.Items.Add(disp)
+                    _availableShown.Add(tpl)
+                End If
+            Next
+        Finally
+            ListBoxOverlayAvailable.EndUpdate()
+        End Try
+    End Sub
+
+    ''' <summary>Rebuild ListBoxOverlayApplied from Preset.Overlays in stored order (index 0 = top
+    ''' = on top). Preset.Overlays is kept pre-sorted in display order by RenumberOverlayPriorities,
+    ''' so this is a straight projection. Each row shows the resolved template display name (or the
+    ''' raw id when the template isn't installed, so the user still sees what's there).
+    ''' selectIndex chooses which row to re-select afterwards (-1 = none).</summary>
+    Private Sub RefreshAppliedList(selectIndex As Integer)
+        Dim p = Preset
+        _suspendEvents = True
+        Try
+            ListBoxOverlayApplied.BeginUpdate()
+            Try
+                ListBoxOverlayApplied.Items.Clear()
+                If p IsNot Nothing Then
+                    For Each ov In p.Overlays
+                        ListBoxOverlayApplied.Items.Add(AppliedOverlayLabel(ov))
+                    Next
+                End If
+            Finally
+                ListBoxOverlayApplied.EndUpdate()
+            End Try
+            Dim n = ListBoxOverlayApplied.Items.Count
+            If n > 0 Then
+                ListBoxOverlayApplied.SelectedIndex = Math.Max(0, Math.Min(selectIndex, n - 1))
+            End If
+        Finally
+            _suspendEvents = False
+        End Try
+        ' Selection (or lack of it) drives the property pane; refresh it now that suspend is lifted.
+        UpdateOverlayPropsForSelection()
+    End Sub
+
+    ''' <summary>Label for an applied overlay row: resolved template display name when installed,
+    ''' else the raw template id (so a missing/foreign template is still visible, not blank).</summary>
+    Private Function AppliedOverlayLabel(ov As LooksmenuLoader.OverlayEntry) As String
+        Dim tpl = ResolveAppliedTemplate(ov)
+        If tpl IsNot Nothing Then Return OverlayDisplay(tpl)
+        Return If(String.IsNullOrEmpty(ov.TemplateId), "(unknown)", ov.TemplateId)
+    End Function
+
+    ''' <summary>Resolve the OverlayTemplate behind an applied entry via MainForm (gender-aware).
+    ''' Returns Nothing when the template id isn't installed for this gender.</summary>
+    Private Function ResolveAppliedTemplate(ov As LooksmenuLoader.OverlayEntry) As OverlayTemplate
+        If ov Is Nothing OrElse String.IsNullOrEmpty(ov.TemplateId) OrElse _mainForm Is Nothing Then Return Nothing
+        Return _mainForm.ResolveOverlayTemplate_Friend(ov.TemplateId, _npcIsFemale)
+    End Function
+
+    ''' <summary>Renumber Preset.Overlays so list index 0 = highest Priority = drawn on top.
+    ''' Priority(i) = (n-1) - i. Keeps the stored list in display order (index 0 = top).</summary>
+    Private Sub RenumberOverlayPriorities()
+        Dim p = Preset
+        If p Is Nothing Then Return
+        Dim n = p.Overlays.Count
+        For i = 0 To n - 1
+            p.Overlays(i).Priority = (n - 1) - i
+        Next
+    End Sub
+
+    Private Sub OnOverlayFilterChanged(sender As Object, e As EventArgs)
+        RefreshAvailableList()
+    End Sub
+
+    ''' <summary>Add the selected available template to the TOP of the applied list (index 0 = on
+    ''' top), unless its TemplateId is already applied (no duplicates). Renumber + full reload.</summary>
+    Private Async Sub OnOverlayAdd(sender As Object, e As EventArgs)
+        Dim p = Preset
+        If p Is Nothing Then Return
+        Dim idx = ListBoxOverlayAvailable.SelectedIndex
+        If idx < 0 OrElse idx >= _availableShown.Count Then Return
+        Dim tpl = _availableShown(idx)
+        ' Prevent duplicate TemplateId (the engine multimap would allow it, but a single editor
+        ' row per template keeps the applied list coherent).
+        If p.Overlays.Any(Function(o) String.Equals(o.TemplateId, tpl.Id, StringComparison.OrdinalIgnoreCase)) Then Return
+        p.Overlays.Insert(0, New LooksmenuLoader.OverlayEntry With {.TemplateId = tpl.Id})
+        p.HasOverlays = True
+        RenumberOverlayPriorities()
+        RefreshAppliedList(0)
+        Await TriggerOverlayReload()
+    End Sub
+
+    ''' <summary>Remove the selected applied overlay. Renumber, keep a sensible neighbour selected,
+    ''' full reload (kept full so the texture set stays consistent: a later Reset can restore a
+    ''' removed overlay whose textures may no longer be loaded — see TriggerOverlayLiveRefresh).</summary>
+    Private Async Sub OnOverlayRemove(sender As Object, e As EventArgs)
+        Dim p = Preset
+        If p Is Nothing Then Return
+        Dim idx = ListBoxOverlayApplied.SelectedIndex
+        If idx < 0 OrElse idx >= p.Overlays.Count Then Return
+        p.Overlays.RemoveAt(idx)
+        ' Opening Edit Body declares ownership of Overlays; an emptied list must still be
+        ' authoritative (wipe), matching HasBodyMorphValues semantics.
+        p.HasOverlays = True
+        RenumberOverlayPriorities()
+        Dim newSel = If(p.Overlays.Count = 0, -1, Math.Min(idx, p.Overlays.Count - 1))
+        RefreshAppliedList(newSel)
+        Await TriggerOverlayReload()
+    End Sub
+
+    Private Async Sub OnOverlayUp(sender As Object, e As EventArgs)
+        Await MoveSelectedOverlay(-1)
+    End Sub
+
+    Private Async Sub OnOverlayDown(sender As Object, e As EventArgs)
+        Await MoveSelectedOverlay(1)
+    End Sub
+
+    ''' <summary>Move the selected applied overlay one slot (delta -1 = up/toward top,
+    ''' +1 = down). Renumber, keep it selected, lightweight refresh: reorder is a pure permutation
+    ''' of the SAME overlay set — same templates, same materials, same textures (already loaded),
+    ''' only the draw order changes — so no full reload / texture pass is needed.</summary>
+    Private Async Function MoveSelectedOverlay(delta As Integer) As Task
+        Dim p = Preset
+        If p Is Nothing Then Return
+        Dim idx = ListBoxOverlayApplied.SelectedIndex
+        Dim target = idx + delta
+        If idx < 0 OrElse target < 0 OrElse target >= p.Overlays.Count Then Return
+        Dim moved = p.Overlays(idx)
+        p.Overlays.RemoveAt(idx)
+        p.Overlays.Insert(target, moved)
+        RenumberOverlayPriorities()
+        RefreshAppliedList(target)
+        Await TriggerOverlayLiveRefresh()
+    End Function
+
+    ''' <summary>Returns the currently-selected applied OverlayEntry, or Nothing.</summary>
+    Private Function SelectedOverlay() As LooksmenuLoader.OverlayEntry
+        Dim p = Preset
+        If p Is Nothing Then Return Nothing
+        Dim idx = ListBoxOverlayApplied.SelectedIndex
+        If idx < 0 OrElse idx >= p.Overlays.Count Then Return Nothing
+        Return p.Overlays(idx)
+    End Function
+
+    Private Sub OnOverlayAppliedSelectionChanged(sender As Object, e As EventArgs)
+        If _suspendEvents Then Return
+        UpdateOverlayPropsForSelection()
+    End Sub
+
+    ''' <summary>Load the selected overlay's Offset/Scale/Tint into the property controls (under
+    ''' _suspendEvents) and enable/disable them per the template's Transformable/Tintable flags.
+    ''' Updates LabelOverlaySelected so the user sees why some controls are disabled. With no
+    ''' selection everything is disabled and the label shows the placeholder.</summary>
+    Private Sub UpdateOverlayPropsForSelection()
+        ' No templates for this gender → surface the empty-state in the selected-overlay label and
+        ' leave the prop controls disabled (the lists are empty, so there is nothing to select).
+        If Not _hasOverlayTemplates Then
+            LabelOverlaySelected.Text = "No LooksMenu overlay templates installed for this gender."
+            SetOverlayPropControlsEnabled(transformable:=False, tintable:=False)
+            Return
+        End If
+
+        Dim ov = SelectedOverlay()
+        _suspendEvents = True
+        Try
+            If ov Is Nothing Then
+                LabelOverlaySelected.Text = "(no overlay selected)"
+                SetOverlayPropControlsEnabled(transformable:=False, tintable:=False)
+                SliderOverlayOffsetU.Value = 0R
+                SliderOverlayOffsetV.Value = 0R
+                SliderOverlayScaleU.Value = 1R
+                SliderOverlayScaleV.Value = 1R
+                CheckBoxOverlayTint.Checked = False
+                SliderOverlayTintAlpha.Value = 1R
+                ButtonOverlayTintColor.BackColor = Color.White
+                Return
+            End If
+
+            Dim tpl = ResolveAppliedTemplate(ov)
+            Dim transformable = tpl IsNot Nothing AndAlso tpl.Transformable
+            Dim tintable = tpl IsNot Nothing AndAlso tpl.Tintable
+            LabelOverlaySelected.Text = BuildOverlaySelectedLabel(ov, tpl, transformable, tintable)
+
+            ' Offset (default 0,0 when array is Nothing).
+            Dim off = ov.OffsetUV
+            SliderOverlayOffsetU.Value = CDbl(If(off IsNot Nothing AndAlso off.Length > 0, off(0), 0.0F))
+            SliderOverlayOffsetV.Value = CDbl(If(off IsNot Nothing AndAlso off.Length > 1, off(1), 0.0F))
+            ' Scale (default 1,1 when array is Nothing).
+            Dim sc = ov.ScaleUV
+            SliderOverlayScaleU.Value = CDbl(If(sc IsNot Nothing AndAlso sc.Length > 0, sc(0), 1.0F))
+            SliderOverlayScaleV.Value = CDbl(If(sc IsNot Nothing AndAlso sc.Length > 1, sc(1), 1.0F))
+            ' Tint (Nothing = unchecked, white swatch, full alpha).
+            Dim tint = ov.Tint
+            If tint IsNot Nothing AndAlso tint.Length >= 3 Then
+                CheckBoxOverlayTint.Checked = True
+                ButtonOverlayTintColor.BackColor = Color.FromArgb(
+                    ClampByte(tint(0)), ClampByte(tint(1)), ClampByte(tint(2)))
+                SliderOverlayTintAlpha.Value = CDbl(If(tint.Length >= 4, tint(3), 1.0F))
+            Else
+                CheckBoxOverlayTint.Checked = False
+                ButtonOverlayTintColor.BackColor = Color.White
+                SliderOverlayTintAlpha.Value = 1R
+            End If
+
+            SetOverlayPropControlsEnabled(transformable, tintable)
+        Finally
+            _suspendEvents = False
+        End Try
+    End Sub
+
+    ''' <summary>Compose the read-only status label: template id + transformable/tintable flags,
+    ''' annotating when the template isn't installed for this gender (controls forced off).</summary>
+    Private Shared Function BuildOverlaySelectedLabel(ov As LooksmenuLoader.OverlayEntry,
+                                                      tpl As OverlayTemplate,
+                                                      transformable As Boolean,
+                                                      tintable As Boolean) As String
+        Dim id = If(String.IsNullOrEmpty(ov.TemplateId), "(unknown)", ov.TemplateId)
+        If tpl Is Nothing Then
+            Return $"{id} — template not installed for this gender (properties disabled)"
+        End If
+        Return $"{id} — transformable: {If(transformable, "yes", "no")}, tintable: {If(tintable, "yes", "no")}"
+    End Function
+
+    ''' <summary>Gate the offset/scale controls by Transformable and the tint controls by Tintable.</summary>
+    Private Sub SetOverlayPropControlsEnabled(transformable As Boolean, tintable As Boolean)
+        SliderOverlayOffsetU.Enabled = transformable
+        SliderOverlayOffsetV.Enabled = transformable
+        SliderOverlayScaleU.Enabled = transformable
+        SliderOverlayScaleV.Enabled = transformable
+        LabelOverlayOffsetU.Enabled = transformable
+        LabelOverlayOffsetV.Enabled = transformable
+        LabelOverlayScaleU.Enabled = transformable
+        LabelOverlayScaleV.Enabled = transformable
+        CheckBoxOverlayTint.Enabled = tintable
+        ' Color swatch + alpha follow Tintable AND the checkbox (no tint applied → editing the
+        ' colour is meaningless). When tint is off we leave them disabled.
+        Dim tintActive = tintable AndAlso CheckBoxOverlayTint.Checked
+        ButtonOverlayTintColor.Enabled = tintActive
+        LabelOverlayTintAlpha.Enabled = tintActive
+        SliderOverlayTintAlpha.Enabled = tintActive
+    End Sub
+
+    Private Shared Function ClampByte(f As Single) As Integer
+        Return Math.Max(0, Math.Min(255, CInt(Math.Round(f * 255.0F))))
+    End Function
+
+    ''' <summary>Offset slider edit → write OffsetUV on the selected entry (Nothing when at the
+    ''' 0,0 default to keep the JSON clean), throttled reload.</summary>
+    Private Sub OnOverlayOffsetChanged(sender As Object, e As EventArgs)
+        If _suspendEvents Then Return
+        Dim ov = SelectedOverlay()
+        If ov Is Nothing Then Return
+        Dim u = CSng(SliderOverlayOffsetU.Value)
+        Dim v = CSng(SliderOverlayOffsetV.Value)
+        If IsDefaultPair(u, v, 0.0F) Then
+            ov.OffsetUV = Nothing
+        Else
+            ov.OffsetUV = New Single() {u, v}
+        End If
+        ScheduleOverlayReload()
+    End Sub
+
+    ''' <summary>Scale slider edit → write ScaleUV (Nothing when at the 1,1 default), throttled.</summary>
+    Private Sub OnOverlayScaleChanged(sender As Object, e As EventArgs)
+        If _suspendEvents Then Return
+        Dim ov = SelectedOverlay()
+        If ov Is Nothing Then Return
+        Dim u = CSng(SliderOverlayScaleU.Value)
+        Dim v = CSng(SliderOverlayScaleV.Value)
+        If IsDefaultPair(u, v, 1.0F) Then
+            ov.ScaleUV = Nothing
+        Else
+            ov.ScaleUV = New Single() {u, v}
+        End If
+        ScheduleOverlayReload()
+    End Sub
+
+    Private Shared Function IsDefaultPair(a As Single, b As Single, def As Single) As Boolean
+        Return Math.Abs(a - def) < 0.0005F AndAlso Math.Abs(b - def) < 0.0005F
+    End Function
+
+    ''' <summary>Tint checkbox toggled → materialize or clear the entry's Tint array, re-gate the
+    ''' colour/alpha controls, immediate reload (structural change, not a drag).</summary>
+    Private Async Sub OnOverlayTintToggled(sender As Object, e As EventArgs)
+        If _suspendEvents Then Return
+        Dim ov = SelectedOverlay()
+        If ov Is Nothing Then Return
+        If CheckBoxOverlayTint.Checked Then
+            WriteOverlayTintFromControls(ov)
+        Else
+            ov.Tint = Nothing
+        End If
+        ' Re-gate swatch + alpha (they follow the checkbox). Run under suspend so the slider's
+        ' own ValueChanged doesn't re-fire while we toggle Enabled.
+        Dim tpl = ResolveAppliedTemplate(ov)
+        _suspendEvents = True
+        Try
+            SetOverlayPropControlsEnabled(tpl IsNot Nothing AndAlso tpl.Transformable,
+                                          tpl IsNot Nothing AndAlso tpl.Tintable)
+        Finally
+            _suspendEvents = False
+        End Try
+        Await TriggerOverlayLiveRefresh()
+    End Sub
+
+    ''' <summary>Colour swatch clicked → ColorDialog for RGB; paint the swatch + write Tint
+    ''' (preserving the current alpha), immediate reload.</summary>
+    Private Async Sub OnOverlayTintColorClicked(sender As Object, e As EventArgs)
+        Dim ov = SelectedOverlay()
+        If ov Is Nothing Then Return
+        Using dlg As New ColorDialog() With {.FullOpen = True, .Color = ButtonOverlayTintColor.BackColor}
+            If dlg.ShowDialog(Me) <> DialogResult.OK Then Return
+            ButtonOverlayTintColor.BackColor = dlg.Color
+        End Using
+        ' Picking a colour implies the tint is on.
+        If Not CheckBoxOverlayTint.Checked Then
+            _suspendEvents = True
+            Try
+                CheckBoxOverlayTint.Checked = True
+            Finally
+                _suspendEvents = False
+            End Try
+            SetOverlayPropControlsEnabled(True, True)
+        End If
+        WriteOverlayTintFromControls(ov)
+        Await TriggerOverlayLiveRefresh()
+    End Sub
+
+    ''' <summary>Alpha slider edit → rewrite Tint preserving RGB, throttled.</summary>
+    Private Sub OnOverlayTintAlphaChanged(sender As Object, e As EventArgs)
+        If _suspendEvents Then Return
+        Dim ov = SelectedOverlay()
+        If ov Is Nothing Then Return
+        If Not CheckBoxOverlayTint.Checked Then Return
+        WriteOverlayTintFromControls(ov)
+        ScheduleOverlayReload()
+    End Sub
+
+    ''' <summary>Compose entry.Tint = {r/255, g/255, b/255, alpha} from the swatch + alpha slider.</summary>
+    Private Sub WriteOverlayTintFromControls(ov As LooksmenuLoader.OverlayEntry)
+        Dim c = ButtonOverlayTintColor.BackColor
+        Dim a = CSng(SliderOverlayTintAlpha.Value)
+        ov.Tint = New Single() {c.R / 255.0F, c.G / 255.0F, c.B / 255.0F, a}
+    End Sub
+
+    ''' <summary>Revert Preset.Overlays to the form-open snapshot (deep-cloned from _priorPreset,
+    ''' or empty when the NPC had no prior overlay), repopulate the applied list, full reload.
+    ''' Mirrors ResetBodySection's shape but for the Overlays channel.</summary>
+    Private Async Function ResetOverlaysSection() As Task
+        Dim p = Preset
+        If p Is Nothing Then Return
+        p.Overlays.Clear()
+        If _hadPriorOverlay AndAlso _priorPreset IsNot Nothing Then
+            ' Deep-clone each entry from the snapshot so later edits don't mutate the snapshot.
+            For Each ov In _priorPreset.Overlays
+                p.Overlays.Add(New LooksmenuLoader.OverlayEntry With {
+                    .TemplateId = ov.TemplateId,
+                    .Priority = ov.Priority,
+                    .Tint = If(ov.Tint Is Nothing, Nothing, CType(ov.Tint.Clone(), Single())),
+                    .OffsetUV = If(ov.OffsetUV Is Nothing, Nothing, CType(ov.OffsetUV.Clone(), Single())),
+                    .ScaleUV = If(ov.ScaleUV Is Nothing, Nothing, CType(ov.ScaleUV.Clone(), Single()))
+                })
+            Next
+            p.HasOverlays = _priorPreset.HasOverlays
+        Else
+            p.HasOverlays = False
+        End If
+        ' Keep stored order = display order (snapshot is already priority-sorted from its own
+        ' lifetime, but re-sort defensively so index 0 = highest Priority = top).
+        SortOverlaysForDisplay()
+        RefreshAppliedList(If(p.Overlays.Count > 0, 0, -1))
+        Await TriggerOverlayReload()
+    End Function
+
+    ''' <summary>Order Preset.Overlays so index 0 = highest Priority (= top = on top), matching the
+    ''' applied-list convention, then renumber to compact the priorities. Used after a Reset where
+    ''' the snapshot's priorities may be sparse/arbitrary.</summary>
+    Private Sub SortOverlaysForDisplay()
+        Dim p = Preset
+        If p Is Nothing Then Return
+        Dim ordered = p.Overlays.OrderByDescending(Function(o) o.Priority).ToList()
+        p.Overlays.Clear()
+        p.Overlays.AddRange(ordered)
+        RenumberOverlayPriorities()
+    End Sub
+
+    ''' <summary>Immediate full preview reload after a structural overlay change (add/remove/
+    ''' reorder/tint-toggle). Overlays are re-resolved ONLY inside BuildRenderPlan
+    ''' (MainForm.ResolveOverlayLayers, MainForm.vb:4340) — which runs in RenderInHostAsync, NOT in
+    ''' the RefreshBodySkinLivePreview fast path. So we MUST do a full RenderInHostAsync and CANNOT
+    ''' route through TriggerSkinChangeReload: that helper short-circuits on the fast path when the
+    ''' skin mesh is unchanged (which it always is for an overlay-only edit), skipping
+    ''' ResolveOverlayLayers and leaving the tattoos stale.</summary>
+    Private Async Function TriggerOverlayReload() As Task
+        If _editorHost Is Nothing OrElse _mainForm Is Nothing Then Return
+        Try
+            Await _mainForm.RenderInHostAsync(_editorHost, _rootNpcFormID)
+        Catch ex As Exception
+            Logger.LogLazy(Function() $"[EDIT-BODY] overlay reload failed for NPC 0x{_rootNpcFormID:X8}: {ex.GetType().Name}: {ex.Message}")
+        End Try
+    End Function
+
+    ''' <summary>Lightweight overlay refresh for property-only edits (offset/scale/tint): re-resolve the
+    ''' layer materials on the existing render data + repaint, no full reload. Falls back to the full
+    ''' reload when the host has no render data yet.</summary>
+    Private Async Function TriggerOverlayLiveRefresh() As Task
+        If _editorHost Is Nothing OrElse _mainForm Is Nothing Then Return
+        If Not _mainForm.RefreshOverlayLayersLive(_editorHost) Then Await TriggerOverlayReload()
+    End Function
+
+    ''' <summary>Throttled overlay reload for slider drags: marks an overlay-specific pending flag
+    ''' and starts the shared RefreshTimer. FlushRefresh routes the pending flag to the full reload
+    ''' (see RefreshTimer_Tick / FlushRefresh). DragEnded → OnSliderDragEnded → FlushRefresh forces
+    ''' the final value to render immediately.</summary>
+    Private Sub ScheduleOverlayReload()
+        _pendingOverlayReload = True
+        If Not RefreshTimer.Enabled Then RefreshTimer.Start()
     End Sub
 
     Private Sub OnOk(sender As Object, e As EventArgs)

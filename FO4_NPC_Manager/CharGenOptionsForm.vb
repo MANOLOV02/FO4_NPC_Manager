@@ -28,6 +28,9 @@ Public Class CharGenOptionsForm
         CheckGenerateTga.Checked = c.Setting_FaceGenGenerateTga
         ' --- Tab "Fixes": NPC-only toggle, lives in NPC_Config (not Config_App). ---
         CheckBoxApplyGhoulHeadRearFix.Checked = NPC_Config.Current.ApplyGhoulHeadRearFix
+        ' Eyebrows fixed-color override: gate persistido en Config_App (lo lee la librería en
+        ' BuildSyntheticEyebrowLut). Requiere ESTE toggle + el archivo SkipEyebrowsTone.ini. Default True.
+        CheckBoxApplyEyebrowsFixedColor.Checked = c.Setting_ApplyEyebrowsFixedColor
         If c.Setting_FaceGenPerLayerResolution Then
             RadioPerLayer.Checked = True
         Else
@@ -344,6 +347,8 @@ Public Class CharGenOptionsForm
         ' --- Tab "Fixes": toggle NPC-only → NPC_Config (no Config_App). Se flushea en el cierre de la app
         ' (MainForm_FormClosing → NPC_Config.SaveConfig()), igual que RenderGore. ---
         NPC_Config.Current.ApplyGhoulHeadRearFix = CheckBoxApplyGhoulHeadRearFix.Checked
+        ' Eyebrows fixed-color gate → Config_App (lo lee la librería). Se persiste en el SaveConfig de abajo.
+        c.Setting_ApplyEyebrowsFixedColor = CheckBoxApplyEyebrowsFixedColor.Checked
 
         ' --- Tab "FaceTint Conventions": persistir la convención concreta por bucket. ---
         Dim s = c.Setting_FaceTintConvention

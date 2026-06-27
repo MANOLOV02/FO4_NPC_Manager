@@ -23,6 +23,7 @@ Partial Class PasteOptionsDialog
         CheckBoxBodyWeight = New CheckBox()
         CheckBoxBodyRegions = New CheckBox()
         CheckBoxBodySliders = New CheckBox()
+        CheckBoxOverlays = New CheckBox()
         CheckBoxSkinOverride = New CheckBox()
         CheckBoxLmSkinTemplate = New CheckBox()
         CheckBoxOutfit = New CheckBox()
@@ -69,12 +70,12 @@ Partial Class PasteOptionsDialog
         Root.Padding = New Padding(12)
         Root.RowCount = 6
         Root.RowStyles.Add(New RowStyle(SizeType.Absolute, 40F))
-        Root.RowStyles.Add(New RowStyle(SizeType.Absolute, 158F))
+        Root.RowStyles.Add(New RowStyle(SizeType.Absolute, 183F))
         Root.RowStyles.Add(New RowStyle(SizeType.Absolute, 155F))
         Root.RowStyles.Add(New RowStyle(SizeType.Absolute, 70F))
         Root.RowStyles.Add(New RowStyle(SizeType.Absolute, 36F))
         Root.RowStyles.Add(New RowStyle(SizeType.Percent, 100F))
-        Root.Size = New Size(480, 548)
+        Root.Size = New Size(480, 573)
         Root.TabIndex = 0
         ' 
         ' LabelHeader
@@ -94,10 +95,10 @@ Partial Class PasteOptionsDialog
         GroupBoxBody.Dock = DockStyle.Fill
         GroupBoxBody.Location = New Point(12, 52)
         GroupBoxBody.Margin = New Padding(0, 0, 0, 6)
-        GroupBoxBody.MinimumSize = New Size(0, 178)
+        GroupBoxBody.MinimumSize = New Size(0, 203)
         GroupBoxBody.Name = "GroupBoxBody"
         GroupBoxBody.Padding = New Padding(8, 4, 8, 8)
-        GroupBoxBody.Size = New Size(456, 178)
+        GroupBoxBody.Size = New Size(456, 203)
         GroupBoxBody.TabIndex = 1
         GroupBoxBody.TabStop = False
         GroupBoxBody.Text = "Body"
@@ -109,20 +110,22 @@ Partial Class PasteOptionsDialog
         BodyLayout.Controls.Add(CheckBoxBodyWeight, 0, 0)
         BodyLayout.Controls.Add(CheckBoxBodyRegions, 0, 1)
         BodyLayout.Controls.Add(CheckBoxBodySliders, 0, 2)
-        BodyLayout.Controls.Add(CheckBoxSkinOverride, 0, 3)
-        BodyLayout.Controls.Add(CheckBoxLmSkinTemplate, 0, 4)
-        BodyLayout.Controls.Add(CheckBoxOutfit, 0, 5)
+        BodyLayout.Controls.Add(CheckBoxOverlays, 0, 3)
+        BodyLayout.Controls.Add(CheckBoxSkinOverride, 0, 4)
+        BodyLayout.Controls.Add(CheckBoxLmSkinTemplate, 0, 5)
+        BodyLayout.Controls.Add(CheckBoxOutfit, 0, 6)
         BodyLayout.Dock = DockStyle.Fill
         BodyLayout.Location = New Point(8, 20)
         BodyLayout.Name = "BodyLayout"
-        BodyLayout.RowCount = 6
-        BodyLayout.RowStyles.Add(New RowStyle(SizeType.Percent, 16.66F))
-        BodyLayout.RowStyles.Add(New RowStyle(SizeType.Percent, 16.66F))
-        BodyLayout.RowStyles.Add(New RowStyle(SizeType.Percent, 16.66F))
-        BodyLayout.RowStyles.Add(New RowStyle(SizeType.Percent, 16.66F))
-        BodyLayout.RowStyles.Add(New RowStyle(SizeType.Percent, 16.66F))
-        BodyLayout.RowStyles.Add(New RowStyle(SizeType.Percent, 16.66F))
-        BodyLayout.Size = New Size(440, 150)
+        BodyLayout.RowCount = 7
+        BodyLayout.RowStyles.Add(New RowStyle(SizeType.Percent, 14.28F))
+        BodyLayout.RowStyles.Add(New RowStyle(SizeType.Percent, 14.28F))
+        BodyLayout.RowStyles.Add(New RowStyle(SizeType.Percent, 14.28F))
+        BodyLayout.RowStyles.Add(New RowStyle(SizeType.Percent, 14.28F))
+        BodyLayout.RowStyles.Add(New RowStyle(SizeType.Percent, 14.28F))
+        BodyLayout.RowStyles.Add(New RowStyle(SizeType.Percent, 14.28F))
+        BodyLayout.RowStyles.Add(New RowStyle(SizeType.Percent, 14.28F))
+        BodyLayout.Size = New Size(440, 175)
         BodyLayout.TabIndex = 0
         ' 
         ' CheckBoxBodyWeight
@@ -157,38 +160,49 @@ Partial Class PasteOptionsDialog
         CheckBoxBodySliders.Size = New Size(233, 18)
         CheckBoxBodySliders.TabIndex = 2
         CheckBoxBodySliders.Text = "Body sliders  (BodySlide vertex morphs)"
-        ' 
+        '
+        ' CheckBoxOverlays
+        '
+        CheckBoxOverlays.AutoSize = True
+        CheckBoxOverlays.Checked = True
+        CheckBoxOverlays.CheckState = CheckState.Checked
+        CheckBoxOverlays.Location = New Point(3, 75)
+        CheckBoxOverlays.Name = "CheckBoxOverlays"
+        CheckBoxOverlays.Size = New Size(200, 18)
+        CheckBoxOverlays.TabIndex = 3
+        CheckBoxOverlays.Text = "Overlays  (tattoos / body paint)"
+        '
         ' CheckBoxSkinOverride
-        ' 
+        '
         CheckBoxSkinOverride.AutoSize = True
         CheckBoxSkinOverride.Checked = True
         CheckBoxSkinOverride.CheckState = CheckState.Checked
-        CheckBoxSkinOverride.Location = New Point(3, 75)
+        CheckBoxSkinOverride.Location = New Point(3, 99)
         CheckBoxSkinOverride.Name = "CheckBoxSkinOverride"
         CheckBoxSkinOverride.Size = New Size(174, 18)
-        CheckBoxSkinOverride.TabIndex = 3
+        CheckBoxSkinOverride.TabIndex = 4
         CheckBoxSkinOverride.Text = "Skin override  (NPC.WNAM)"
-        ' 
+        '
         ' CheckBoxLmSkinTemplate
-        ' 
+        '
         CheckBoxLmSkinTemplate.AutoSize = True
         CheckBoxLmSkinTemplate.Checked = True
         CheckBoxLmSkinTemplate.CheckState = CheckState.Checked
-        CheckBoxLmSkinTemplate.Location = New Point(3, 99)
+        CheckBoxLmSkinTemplate.Location = New Point(3, 123)
         CheckBoxLmSkinTemplate.Name = "CheckBoxLmSkinTemplate"
         CheckBoxLmSkinTemplate.Size = New Size(155, 18)
-        CheckBoxLmSkinTemplate.TabIndex = 4
+        CheckBoxLmSkinTemplate.TabIndex = 5
         CheckBoxLmSkinTemplate.Text = "LM skin template  (F4SE)"
-        ' 
+        '
         ' CheckBoxOutfit
-        ' 
+        '
         CheckBoxOutfit.AutoSize = True
         CheckBoxOutfit.Checked = True
         CheckBoxOutfit.CheckState = CheckState.Checked
-        CheckBoxOutfit.Location = New Point(3, 123)
+        CheckBoxOutfit.Location = New Point(3, 147)
         CheckBoxOutfit.Name = "CheckBoxOutfit"
         CheckBoxOutfit.Size = New Size(168, 19)
-        CheckBoxOutfit.TabIndex = 5
+        CheckBoxOutfit.TabIndex = 6
         CheckBoxOutfit.Text = "Outfit  (NPC.DOFT default)"
         ' 
         ' GroupBoxFace
@@ -384,12 +398,12 @@ Partial Class PasteOptionsDialog
         ' 
         AcceptButton = ButtonOk
         CancelButton = ButtonCancel
-        ClientSize = New Size(480, 548)
+        ClientSize = New Size(480, 573)
         Controls.Add(Root)
         FormBorderStyle = FormBorderStyle.FixedDialog
         MaximizeBox = False
         MinimizeBox = False
-        MinimumSize = New Size(480, 548)
+        MinimumSize = New Size(480, 573)
         Name = "PasteOptionsDialog"
         StartPosition = FormStartPosition.CenterParent
         Text = "Paste Look — choose categories"
@@ -416,6 +430,7 @@ Partial Class PasteOptionsDialog
     Friend WithEvents CheckBoxBodyWeight As System.Windows.Forms.CheckBox
     Friend WithEvents CheckBoxBodyRegions As System.Windows.Forms.CheckBox
     Friend WithEvents CheckBoxBodySliders As System.Windows.Forms.CheckBox
+    Friend WithEvents CheckBoxOverlays As System.Windows.Forms.CheckBox
     Friend WithEvents CheckBoxSkinOverride As System.Windows.Forms.CheckBox
     Friend WithEvents CheckBoxLmSkinTemplate As System.Windows.Forms.CheckBox
     Friend WithEvents CheckBoxOutfit As System.Windows.Forms.CheckBox

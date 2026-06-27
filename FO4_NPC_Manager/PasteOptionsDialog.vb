@@ -17,6 +17,7 @@ Public Class PasteOptionsDialog
         CheckBoxBodyWeight.Checked = state
         CheckBoxBodyRegions.Checked = state
         CheckBoxBodySliders.Checked = state
+        CheckBoxOverlays.Checked = state
         CheckBoxSkinOverride.Checked = state
         CheckBoxLmSkinTemplate.Checked = state
         CheckBoxOutfit.Checked = state
@@ -35,6 +36,7 @@ Public Class PasteOptionsDialog
             .BodyWeight = CheckBoxBodyWeight.Checked,
             .BodyRegions = CheckBoxBodyRegions.Checked,
             .BodySliders = CheckBoxBodySliders.Checked,
+            .Overlays = CheckBoxOverlays.Checked,
             .SkinOverride = CheckBoxSkinOverride.Checked,
             .LmSkinTemplate = CheckBoxLmSkinTemplate.Checked,
             .Outfit = CheckBoxOutfit.Checked,
@@ -57,6 +59,7 @@ Public Structure PasteOptions
     Public BodyWeight As Boolean         ' WeightThin / WeightMuscular / WeightFat
     Public BodyRegions As Boolean        ' BodyMorphValues (MRSV)
     Public BodySliders As Boolean        ' BodyMorphSliders (BodySlide vertex morphs)
+    Public Overlays As Boolean           ' Overlays (F4SE body overlays — tattoos / body paint)
     Public SkinOverride As Boolean       ' SkinFormIDOverride (NPC.WNAM record skin)
     Public LmSkinTemplate As Boolean     ' SkinTemplateId (F4SE LM SkinInterface)
     Public Outfit As Boolean             ' DefaultOutfitFormIDOverride (NPC.DOFT record outfit)

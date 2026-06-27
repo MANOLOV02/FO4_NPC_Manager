@@ -1027,6 +1027,21 @@ Public Module NpcOverrideSaver
                 Next
             End If
             entry.SkinTemplateId = If(overlay.SkinTemplateId, "")
+            ' Overlays (LM body tattoos) — deep-copy each entry, cloning the float arrays so the
+            ' sidecar copy is independent of the live overlay. Mirrors the BodyMorphSliders copy
+            ' above and LooksmenuLoader's preset deep-copy. NOT routed to BodyGen (see
+            ' EmitBodyGenFromSidecar): overlays have no in-game file mechanism.
+            If overlay.Overlays IsNot Nothing Then
+                For Each ov In overlay.Overlays
+                    entry.Overlays.Add(New LooksmenuLoader.OverlayEntry With {
+                        .TemplateId = ov.TemplateId,
+                        .Priority = ov.Priority,
+                        .Tint = If(ov.Tint Is Nothing, Nothing, CType(ov.Tint.Clone(), Single())),
+                        .OffsetUV = If(ov.OffsetUV Is Nothing, Nothing, CType(ov.OffsetUV.Clone(), Single())),
+                        .ScaleUV = If(ov.ScaleUV Is Nothing, Nothing, CType(ov.ScaleUV.Clone(), Single()))
+                    })
+                Next
+            End If
         End If
 
         ' Always overwrite the NPC's slot — even if entry ends up empty. Write() drops empty entries

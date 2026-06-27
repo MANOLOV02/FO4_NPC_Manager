@@ -46,6 +46,38 @@ Partial Class EditBody_Form
         TextBoxBodySlideFilter = New TextBox()
         BodySlidePanel = New FlowLayoutPanel()
         LabelBodySlideEmpty = New Label()
+        TabPageOverlays = New TabPage()
+        OverlaysTabLayout = New TableLayoutPanel()
+        OverlayListsLayout = New TableLayoutPanel()
+        GroupBoxOverlayAvailable = New GroupBox()
+        OverlayAvailableLayout = New TableLayoutPanel()
+        TextBoxOverlayFilter = New TextBox()
+        ListBoxOverlayAvailable = New ListBox()
+        OverlayCenterLayout = New TableLayoutPanel()
+        ButtonOverlayAdd = New Button()
+        ButtonOverlayRemove = New Button()
+        GroupBoxOverlayApplied = New GroupBox()
+        OverlayAppliedLayout = New TableLayoutPanel()
+        ListBoxOverlayApplied = New ListBox()
+        OverlayAppliedButtons = New FlowLayoutPanel()
+        ButtonOverlayUp = New Button()
+        ButtonOverlayDown = New Button()
+        GroupBoxOverlayProps = New GroupBox()
+        OverlayPropsLayout = New TableLayoutPanel()
+        LabelOverlaySelected = New Label()
+        LabelOverlayOffsetU = New Label()
+        SliderOverlayOffsetU = New TinySliderTextBox()
+        LabelOverlayOffsetV = New Label()
+        SliderOverlayOffsetV = New TinySliderTextBox()
+        LabelOverlayScaleU = New Label()
+        SliderOverlayScaleU = New TinySliderTextBox()
+        LabelOverlayScaleV = New Label()
+        SliderOverlayScaleV = New TinySliderTextBox()
+        CheckBoxOverlayTint = New CheckBox()
+        OverlayTintRowLayout = New TableLayoutPanel()
+        ButtonOverlayTintColor = New Button()
+        LabelOverlayTintAlpha = New Label()
+        SliderOverlayTintAlpha = New TinySliderTextBox()
         BottomLayout = New FlowLayoutPanel()
         ButtonOk = New Button()
         ButtonCancel = New Button()
@@ -75,6 +107,18 @@ Partial Class EditBody_Form
         BodySlideTabLayout.SuspendLayout()
         GroupBoxBodySlide.SuspendLayout()
         BodySlideLayout.SuspendLayout()
+        TabPageOverlays.SuspendLayout()
+        OverlaysTabLayout.SuspendLayout()
+        OverlayListsLayout.SuspendLayout()
+        GroupBoxOverlayAvailable.SuspendLayout()
+        OverlayAvailableLayout.SuspendLayout()
+        OverlayCenterLayout.SuspendLayout()
+        GroupBoxOverlayApplied.SuspendLayout()
+        OverlayAppliedLayout.SuspendLayout()
+        OverlayAppliedButtons.SuspendLayout()
+        GroupBoxOverlayProps.SuspendLayout()
+        OverlayPropsLayout.SuspendLayout()
+        OverlayTintRowLayout.SuspendLayout()
         BottomLayout.SuspendLayout()
         PreviewSidebar.SuspendLayout()
         RenderTogglesPanel.SuspendLayout()
@@ -119,6 +163,7 @@ Partial Class EditBody_Form
         ' 
         TabsBody.Controls.Add(TabPageBody)
         TabsBody.Controls.Add(TabPageBodySlide)
+        TabsBody.Controls.Add(TabPageOverlays)
         TabsBody.Dock = DockStyle.Fill
         TabsBody.Location = New Point(11, 11)
         TabsBody.Name = "TabsBody"
@@ -397,7 +442,7 @@ Partial Class EditBody_Form
         GroupBoxMrsv.Dock = DockStyle.Fill
         GroupBoxMrsv.Location = New Point(3, 313)
         GroupBoxMrsv.Name = "GroupBoxMrsv"
-        GroupBoxMrsv.Size = New Size(502, 204)
+        GroupBoxMrsv.Size = New Size(502, 30)
         GroupBoxMrsv.TabIndex = 2
         GroupBoxMrsv.TabStop = False
         GroupBoxMrsv.Text = "Body Morph Regions (NPC.MRSV — vanilla 5 regions, applied via bone scaling)"
@@ -419,7 +464,7 @@ Partial Class EditBody_Form
         MrsvLayout.RowStyles.Add(New RowStyle())
         MrsvLayout.RowStyles.Add(New RowStyle())
         MrsvLayout.RowStyles.Add(New RowStyle())
-        MrsvLayout.Size = New Size(496, 182)
+        MrsvLayout.Size = New Size(496, 8)
         MrsvLayout.TabIndex = 0
         ' 
         ' TabPageBodySlide
@@ -505,6 +550,459 @@ Partial Class EditBody_Form
         LabelBodySlideEmpty.TabIndex = 1
         LabelBodySlideEmpty.Text = "This NPC has no BodySlide morph data (no BODYTRI extra-data on any body shape)."
         LabelBodySlideEmpty.Visible = False
+        ' 
+        ' TabPageOverlays
+        ' 
+        TabPageOverlays.Controls.Add(OverlaysTabLayout)
+        TabPageOverlays.Location = New Point(4, 24)
+        TabPageOverlays.Name = "TabPageOverlays"
+        TabPageOverlays.Padding = New Padding(6)
+        TabPageOverlays.Size = New Size(520, 532)
+        TabPageOverlays.TabIndex = 2
+        TabPageOverlays.Text = "Overlays"
+        ' 
+        ' OverlaysTabLayout
+        ' 
+        OverlaysTabLayout.ColumnCount = 1
+        OverlaysTabLayout.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100F))
+        OverlaysTabLayout.Controls.Add(OverlayListsLayout, 0, 0)
+        OverlaysTabLayout.Controls.Add(GroupBoxOverlayProps, 0, 1)
+        OverlaysTabLayout.Dock = DockStyle.Fill
+        OverlaysTabLayout.Location = New Point(6, 6)
+        OverlaysTabLayout.Name = "OverlaysTabLayout"
+        OverlaysTabLayout.RowCount = 2
+        OverlaysTabLayout.RowStyles.Add(New RowStyle(SizeType.Percent, 100F))
+        OverlaysTabLayout.RowStyles.Add(New RowStyle())
+        OverlaysTabLayout.Size = New Size(508, 520)
+        OverlaysTabLayout.TabIndex = 0
+        ' 
+        ' OverlayListsLayout
+        ' 
+        OverlayListsLayout.ColumnCount = 3
+        OverlayListsLayout.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 50F))
+        OverlayListsLayout.ColumnStyles.Add(New ColumnStyle())
+        OverlayListsLayout.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 50F))
+        OverlayListsLayout.Controls.Add(GroupBoxOverlayAvailable, 0, 0)
+        OverlayListsLayout.Controls.Add(OverlayCenterLayout, 1, 0)
+        OverlayListsLayout.Controls.Add(GroupBoxOverlayApplied, 2, 0)
+        OverlayListsLayout.Dock = DockStyle.Fill
+        OverlayListsLayout.Location = New Point(3, 3)
+        OverlayListsLayout.Name = "OverlayListsLayout"
+        OverlayListsLayout.RowCount = 1
+        OverlayListsLayout.RowStyles.Add(New RowStyle(SizeType.Percent, 100F))
+        OverlayListsLayout.Size = New Size(502, 289)
+        OverlayListsLayout.TabIndex = 0
+        ' 
+        ' GroupBoxOverlayAvailable
+        ' 
+        GroupBoxOverlayAvailable.Controls.Add(OverlayAvailableLayout)
+        GroupBoxOverlayAvailable.Dock = DockStyle.Fill
+        GroupBoxOverlayAvailable.Location = New Point(3, 3)
+        GroupBoxOverlayAvailable.Name = "GroupBoxOverlayAvailable"
+        GroupBoxOverlayAvailable.Size = New Size(202, 283)
+        GroupBoxOverlayAvailable.TabIndex = 0
+        GroupBoxOverlayAvailable.TabStop = False
+        GroupBoxOverlayAvailable.Text = "Available overlays"
+        ' 
+        ' OverlayAvailableLayout
+        ' 
+        OverlayAvailableLayout.ColumnCount = 1
+        OverlayAvailableLayout.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100F))
+        OverlayAvailableLayout.Controls.Add(TextBoxOverlayFilter, 0, 0)
+        OverlayAvailableLayout.Controls.Add(ListBoxOverlayAvailable, 0, 1)
+        OverlayAvailableLayout.Dock = DockStyle.Fill
+        OverlayAvailableLayout.Location = New Point(3, 19)
+        OverlayAvailableLayout.Name = "OverlayAvailableLayout"
+        OverlayAvailableLayout.Padding = New Padding(4)
+        OverlayAvailableLayout.RowCount = 2
+        OverlayAvailableLayout.RowStyles.Add(New RowStyle())
+        OverlayAvailableLayout.RowStyles.Add(New RowStyle(SizeType.Percent, 100F))
+        OverlayAvailableLayout.Size = New Size(196, 261)
+        OverlayAvailableLayout.TabIndex = 0
+        ' 
+        ' TextBoxOverlayFilter
+        ' 
+        TextBoxOverlayFilter.Dock = DockStyle.Top
+        TextBoxOverlayFilter.Location = New Point(7, 7)
+        TextBoxOverlayFilter.Name = "TextBoxOverlayFilter"
+        TextBoxOverlayFilter.PlaceholderText = "Filter overlays…"
+        TextBoxOverlayFilter.Size = New Size(182, 23)
+        TextBoxOverlayFilter.TabIndex = 0
+        ' 
+        ' ListBoxOverlayAvailable
+        ' 
+        ListBoxOverlayAvailable.Dock = DockStyle.Fill
+        ListBoxOverlayAvailable.IntegralHeight = False
+        ListBoxOverlayAvailable.ItemHeight = 15
+        ListBoxOverlayAvailable.Location = New Point(7, 36)
+        ListBoxOverlayAvailable.Name = "ListBoxOverlayAvailable"
+        ListBoxOverlayAvailable.Size = New Size(182, 218)
+        ListBoxOverlayAvailable.TabIndex = 1
+        ' 
+        ' OverlayCenterLayout
+        ' 
+        OverlayCenterLayout.Anchor = AnchorStyles.None
+        OverlayCenterLayout.AutoSize = True
+        OverlayCenterLayout.AutoSizeMode = AutoSizeMode.GrowAndShrink
+        OverlayCenterLayout.ColumnCount = 1
+        OverlayCenterLayout.ColumnStyles.Add(New ColumnStyle())
+        OverlayCenterLayout.Controls.Add(ButtonOverlayAdd, 0, 0)
+        OverlayCenterLayout.Controls.Add(ButtonOverlayRemove, 0, 1)
+        OverlayCenterLayout.Location = New Point(211, 113)
+        OverlayCenterLayout.Name = "OverlayCenterLayout"
+        OverlayCenterLayout.RowCount = 2
+        OverlayCenterLayout.RowStyles.Add(New RowStyle())
+        OverlayCenterLayout.RowStyles.Add(New RowStyle())
+        OverlayCenterLayout.Size = New Size(79, 62)
+        OverlayCenterLayout.TabIndex = 1
+        ' 
+        ' ButtonOverlayAdd
+        ' 
+        ButtonOverlayAdd.AutoSize = True
+        ButtonOverlayAdd.Location = New Point(3, 3)
+        ButtonOverlayAdd.Name = "ButtonOverlayAdd"
+        ButtonOverlayAdd.Size = New Size(73, 25)
+        ButtonOverlayAdd.TabIndex = 0
+        ButtonOverlayAdd.Text = "Add →"
+        ' 
+        ' ButtonOverlayRemove
+        ' 
+        ButtonOverlayRemove.AutoSize = True
+        ButtonOverlayRemove.Location = New Point(3, 34)
+        ButtonOverlayRemove.Name = "ButtonOverlayRemove"
+        ButtonOverlayRemove.Size = New Size(73, 25)
+        ButtonOverlayRemove.TabIndex = 1
+        ButtonOverlayRemove.Text = "← Remove"
+        ' 
+        ' GroupBoxOverlayApplied
+        ' 
+        GroupBoxOverlayApplied.Controls.Add(OverlayAppliedLayout)
+        GroupBoxOverlayApplied.Dock = DockStyle.Fill
+        GroupBoxOverlayApplied.Location = New Point(296, 3)
+        GroupBoxOverlayApplied.Name = "GroupBoxOverlayApplied"
+        GroupBoxOverlayApplied.Size = New Size(203, 283)
+        GroupBoxOverlayApplied.TabIndex = 2
+        GroupBoxOverlayApplied.TabStop = False
+        GroupBoxOverlayApplied.Text = "Applied overlays (top = drawn on top)"
+        ' 
+        ' OverlayAppliedLayout
+        ' 
+        OverlayAppliedLayout.ColumnCount = 1
+        OverlayAppliedLayout.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100F))
+        OverlayAppliedLayout.Controls.Add(ListBoxOverlayApplied, 0, 0)
+        OverlayAppliedLayout.Controls.Add(OverlayAppliedButtons, 0, 1)
+        OverlayAppliedLayout.Dock = DockStyle.Fill
+        OverlayAppliedLayout.Location = New Point(3, 19)
+        OverlayAppliedLayout.Name = "OverlayAppliedLayout"
+        OverlayAppliedLayout.Padding = New Padding(4)
+        OverlayAppliedLayout.RowCount = 2
+        OverlayAppliedLayout.RowStyles.Add(New RowStyle(SizeType.Percent, 100F))
+        OverlayAppliedLayout.RowStyles.Add(New RowStyle())
+        OverlayAppliedLayout.Size = New Size(197, 261)
+        OverlayAppliedLayout.TabIndex = 0
+        ' 
+        ' ListBoxOverlayApplied
+        ' 
+        ListBoxOverlayApplied.Dock = DockStyle.Fill
+        ListBoxOverlayApplied.IntegralHeight = False
+        ListBoxOverlayApplied.ItemHeight = 15
+        ListBoxOverlayApplied.Location = New Point(7, 7)
+        ListBoxOverlayApplied.Name = "ListBoxOverlayApplied"
+        ListBoxOverlayApplied.Size = New Size(183, 210)
+        ListBoxOverlayApplied.TabIndex = 0
+        ' 
+        ' OverlayAppliedButtons
+        ' 
+        OverlayAppliedButtons.AutoSize = True
+        OverlayAppliedButtons.AutoSizeMode = AutoSizeMode.GrowAndShrink
+        OverlayAppliedButtons.Controls.Add(ButtonOverlayUp)
+        OverlayAppliedButtons.Controls.Add(ButtonOverlayDown)
+        OverlayAppliedButtons.Dock = DockStyle.Fill
+        OverlayAppliedButtons.Location = New Point(7, 223)
+        OverlayAppliedButtons.Name = "OverlayAppliedButtons"
+        OverlayAppliedButtons.Size = New Size(183, 31)
+        OverlayAppliedButtons.TabIndex = 1
+        ' 
+        ' ButtonOverlayUp
+        ' 
+        ButtonOverlayUp.AutoSize = True
+        ButtonOverlayUp.Location = New Point(3, 3)
+        ButtonOverlayUp.Name = "ButtonOverlayUp"
+        ButtonOverlayUp.Size = New Size(60, 25)
+        ButtonOverlayUp.TabIndex = 0
+        ButtonOverlayUp.Text = "Up"
+        ' 
+        ' ButtonOverlayDown
+        ' 
+        ButtonOverlayDown.AutoSize = True
+        ButtonOverlayDown.Location = New Point(69, 3)
+        ButtonOverlayDown.Name = "ButtonOverlayDown"
+        ButtonOverlayDown.Size = New Size(60, 25)
+        ButtonOverlayDown.TabIndex = 1
+        ButtonOverlayDown.Text = "Down"
+        ' 
+        ' GroupBoxOverlayProps
+        ' 
+        GroupBoxOverlayProps.AutoSize = True
+        GroupBoxOverlayProps.AutoSizeMode = AutoSizeMode.GrowAndShrink
+        GroupBoxOverlayProps.Controls.Add(OverlayPropsLayout)
+        GroupBoxOverlayProps.Dock = DockStyle.Fill
+        GroupBoxOverlayProps.Location = New Point(3, 298)
+        GroupBoxOverlayProps.Name = "GroupBoxOverlayProps"
+        GroupBoxOverlayProps.Size = New Size(502, 219)
+        GroupBoxOverlayProps.TabIndex = 1
+        GroupBoxOverlayProps.TabStop = False
+        GroupBoxOverlayProps.Text = "Overlay properties"
+        ' 
+        ' OverlayPropsLayout
+        ' 
+        OverlayPropsLayout.AutoSize = True
+        OverlayPropsLayout.AutoSizeMode = AutoSizeMode.GrowAndShrink
+        OverlayPropsLayout.ColumnCount = 2
+        OverlayPropsLayout.ColumnStyles.Add(New ColumnStyle(SizeType.Absolute, 90F))
+        OverlayPropsLayout.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100F))
+        OverlayPropsLayout.Controls.Add(LabelOverlaySelected, 0, 0)
+        OverlayPropsLayout.Controls.Add(LabelOverlayOffsetU, 0, 1)
+        OverlayPropsLayout.Controls.Add(SliderOverlayOffsetU, 1, 1)
+        OverlayPropsLayout.Controls.Add(LabelOverlayOffsetV, 0, 2)
+        OverlayPropsLayout.Controls.Add(SliderOverlayOffsetV, 1, 2)
+        OverlayPropsLayout.Controls.Add(LabelOverlayScaleU, 0, 3)
+        OverlayPropsLayout.Controls.Add(SliderOverlayScaleU, 1, 3)
+        OverlayPropsLayout.Controls.Add(LabelOverlayScaleV, 0, 4)
+        OverlayPropsLayout.Controls.Add(SliderOverlayScaleV, 1, 4)
+        OverlayPropsLayout.Controls.Add(CheckBoxOverlayTint, 0, 5)
+        OverlayPropsLayout.Controls.Add(OverlayTintRowLayout, 1, 5)
+        OverlayPropsLayout.Dock = DockStyle.Fill
+        OverlayPropsLayout.Location = New Point(3, 19)
+        OverlayPropsLayout.Name = "OverlayPropsLayout"
+        OverlayPropsLayout.Padding = New Padding(4)
+        OverlayPropsLayout.RowCount = 6
+        OverlayPropsLayout.RowStyles.Add(New RowStyle())
+        OverlayPropsLayout.RowStyles.Add(New RowStyle())
+        OverlayPropsLayout.RowStyles.Add(New RowStyle())
+        OverlayPropsLayout.RowStyles.Add(New RowStyle())
+        OverlayPropsLayout.RowStyles.Add(New RowStyle())
+        OverlayPropsLayout.RowStyles.Add(New RowStyle())
+        OverlayPropsLayout.Size = New Size(496, 197)
+        OverlayPropsLayout.TabIndex = 0
+        ' 
+        ' LabelOverlaySelected
+        ' 
+        LabelOverlaySelected.AutoSize = True
+        OverlayPropsLayout.SetColumnSpan(LabelOverlaySelected, 2)
+        LabelOverlaySelected.ForeColor = SystemColors.GrayText
+        LabelOverlaySelected.Location = New Point(7, 8)
+        LabelOverlaySelected.Margin = New Padding(3, 4, 3, 6)
+        LabelOverlaySelected.Name = "LabelOverlaySelected"
+        LabelOverlaySelected.Size = New Size(116, 15)
+        LabelOverlaySelected.TabIndex = 0
+        LabelOverlaySelected.Text = "(no overlay selected)"
+        ' 
+        ' LabelOverlayOffsetU
+        ' 
+        LabelOverlayOffsetU.Anchor = AnchorStyles.Left
+        LabelOverlayOffsetU.AutoSize = True
+        LabelOverlayOffsetU.Location = New Point(7, 37)
+        LabelOverlayOffsetU.Name = "LabelOverlayOffsetU"
+        LabelOverlayOffsetU.Size = New Size(53, 15)
+        LabelOverlayOffsetU.TabIndex = 1
+        LabelOverlayOffsetU.Text = "Offset U:"
+        LabelOverlayOffsetU.TextAlign = ContentAlignment.MiddleLeft
+        ' 
+        ' SliderOverlayOffsetU
+        ' 
+        SliderOverlayOffsetU.AccentColor = SystemColors.HotTrack
+        SliderOverlayOffsetU.BackColor = SystemColors.Control
+        SliderOverlayOffsetU.DisplayFormat = "0.000"
+        SliderOverlayOffsetU.Dock = DockStyle.Fill
+        SliderOverlayOffsetU.FillMode = TinySliderFillMode.Center
+        SliderOverlayOffsetU.LargeChange = 0.4R
+        SliderOverlayOffsetU.Location = New Point(96, 31)
+        SliderOverlayOffsetU.Margin = New Padding(2)
+        SliderOverlayOffsetU.Maximum = 2R
+        SliderOverlayOffsetU.Minimum = -2R
+        SliderOverlayOffsetU.MinimumSize = New Size(140, 22)
+        SliderOverlayOffsetU.Name = "SliderOverlayOffsetU"
+        SliderOverlayOffsetU.Size = New Size(394, 28)
+        SliderOverlayOffsetU.SmallChange = 0.001R
+        SliderOverlayOffsetU.TabIndex = 2
+        SliderOverlayOffsetU.TextBoxTextAlign = HorizontalAlignment.Right
+        SliderOverlayOffsetU.ThumbColor = SystemColors.HotTrack
+        SliderOverlayOffsetU.ThumbRadius = 4F
+        SliderOverlayOffsetU.TrackColor = SystemColors.ControlDark
+        ' 
+        ' LabelOverlayOffsetV
+        ' 
+        LabelOverlayOffsetV.Anchor = AnchorStyles.Left
+        LabelOverlayOffsetV.AutoSize = True
+        LabelOverlayOffsetV.Location = New Point(7, 69)
+        LabelOverlayOffsetV.Name = "LabelOverlayOffsetV"
+        LabelOverlayOffsetV.Size = New Size(52, 15)
+        LabelOverlayOffsetV.TabIndex = 3
+        LabelOverlayOffsetV.Text = "Offset V:"
+        LabelOverlayOffsetV.TextAlign = ContentAlignment.MiddleLeft
+        ' 
+        ' SliderOverlayOffsetV
+        ' 
+        SliderOverlayOffsetV.AccentColor = SystemColors.HotTrack
+        SliderOverlayOffsetV.BackColor = SystemColors.Control
+        SliderOverlayOffsetV.DisplayFormat = "0.000"
+        SliderOverlayOffsetV.Dock = DockStyle.Fill
+        SliderOverlayOffsetV.FillMode = TinySliderFillMode.Center
+        SliderOverlayOffsetV.LargeChange = 0.4R
+        SliderOverlayOffsetV.Location = New Point(96, 63)
+        SliderOverlayOffsetV.Margin = New Padding(2)
+        SliderOverlayOffsetV.Maximum = 2R
+        SliderOverlayOffsetV.Minimum = -2R
+        SliderOverlayOffsetV.MinimumSize = New Size(140, 22)
+        SliderOverlayOffsetV.Name = "SliderOverlayOffsetV"
+        SliderOverlayOffsetV.Size = New Size(394, 28)
+        SliderOverlayOffsetV.SmallChange = 0.001R
+        SliderOverlayOffsetV.TabIndex = 4
+        SliderOverlayOffsetV.TextBoxTextAlign = HorizontalAlignment.Right
+        SliderOverlayOffsetV.ThumbColor = SystemColors.HotTrack
+        SliderOverlayOffsetV.ThumbRadius = 4F
+        SliderOverlayOffsetV.TrackColor = SystemColors.ControlDark
+        ' 
+        ' LabelOverlayScaleU
+        ' 
+        LabelOverlayScaleU.Anchor = AnchorStyles.Left
+        LabelOverlayScaleU.AutoSize = True
+        LabelOverlayScaleU.Location = New Point(7, 101)
+        LabelOverlayScaleU.Name = "LabelOverlayScaleU"
+        LabelOverlayScaleU.Size = New Size(48, 15)
+        LabelOverlayScaleU.TabIndex = 5
+        LabelOverlayScaleU.Text = "Scale U:"
+        LabelOverlayScaleU.TextAlign = ContentAlignment.MiddleLeft
+        ' 
+        ' SliderOverlayScaleU
+        ' 
+        SliderOverlayScaleU.AccentColor = SystemColors.HotTrack
+        SliderOverlayScaleU.BackColor = SystemColors.Control
+        SliderOverlayScaleU.DisplayFormat = "0.000"
+        SliderOverlayScaleU.Dock = DockStyle.Fill
+        SliderOverlayScaleU.LargeChange = 0.4R
+        SliderOverlayScaleU.Location = New Point(96, 95)
+        SliderOverlayScaleU.Margin = New Padding(2)
+        SliderOverlayScaleU.Maximum = 2R
+        SliderOverlayScaleU.Minimum = -2R
+        SliderOverlayScaleU.MinimumSize = New Size(140, 22)
+        SliderOverlayScaleU.Name = "SliderOverlayScaleU"
+        SliderOverlayScaleU.Size = New Size(394, 28)
+        SliderOverlayScaleU.SmallChange = 0.001R
+        SliderOverlayScaleU.TabIndex = 6
+        SliderOverlayScaleU.TextBoxTextAlign = HorizontalAlignment.Right
+        SliderOverlayScaleU.ThumbColor = SystemColors.HotTrack
+        SliderOverlayScaleU.ThumbRadius = 4F
+        SliderOverlayScaleU.TrackColor = SystemColors.ControlDark
+        SliderOverlayScaleU.Value = 1R
+        ' 
+        ' LabelOverlayScaleV
+        ' 
+        LabelOverlayScaleV.Anchor = AnchorStyles.Left
+        LabelOverlayScaleV.AutoSize = True
+        LabelOverlayScaleV.Location = New Point(7, 133)
+        LabelOverlayScaleV.Name = "LabelOverlayScaleV"
+        LabelOverlayScaleV.Size = New Size(47, 15)
+        LabelOverlayScaleV.TabIndex = 7
+        LabelOverlayScaleV.Text = "Scale V:"
+        LabelOverlayScaleV.TextAlign = ContentAlignment.MiddleLeft
+        ' 
+        ' SliderOverlayScaleV
+        ' 
+        SliderOverlayScaleV.AccentColor = SystemColors.HotTrack
+        SliderOverlayScaleV.BackColor = SystemColors.Control
+        SliderOverlayScaleV.DisplayFormat = "0.000"
+        SliderOverlayScaleV.Dock = DockStyle.Fill
+        SliderOverlayScaleV.LargeChange = 0.4R
+        SliderOverlayScaleV.Location = New Point(96, 127)
+        SliderOverlayScaleV.Margin = New Padding(2)
+        SliderOverlayScaleV.Maximum = 2R
+        SliderOverlayScaleV.Minimum = -2R
+        SliderOverlayScaleV.MinimumSize = New Size(140, 22)
+        SliderOverlayScaleV.Name = "SliderOverlayScaleV"
+        SliderOverlayScaleV.Size = New Size(394, 28)
+        SliderOverlayScaleV.SmallChange = 0.001R
+        SliderOverlayScaleV.TabIndex = 8
+        SliderOverlayScaleV.TextBoxTextAlign = HorizontalAlignment.Right
+        SliderOverlayScaleV.ThumbColor = SystemColors.HotTrack
+        SliderOverlayScaleV.ThumbRadius = 4F
+        SliderOverlayScaleV.TrackColor = SystemColors.ControlDark
+        SliderOverlayScaleV.Value = 1R
+        ' 
+        ' CheckBoxOverlayTint
+        ' 
+        CheckBoxOverlayTint.Anchor = AnchorStyles.Left
+        CheckBoxOverlayTint.AutoSize = True
+        CheckBoxOverlayTint.Location = New Point(7, 165)
+        CheckBoxOverlayTint.Name = "CheckBoxOverlayTint"
+        CheckBoxOverlayTint.Size = New Size(78, 19)
+        CheckBoxOverlayTint.TabIndex = 9
+        CheckBoxOverlayTint.Text = "Apply tint"
+        ' 
+        ' OverlayTintRowLayout
+        ' 
+        OverlayTintRowLayout.AutoSize = True
+        OverlayTintRowLayout.AutoSizeMode = AutoSizeMode.GrowAndShrink
+        OverlayTintRowLayout.ColumnCount = 3
+        OverlayTintRowLayout.ColumnStyles.Add(New ColumnStyle())
+        OverlayTintRowLayout.ColumnStyles.Add(New ColumnStyle())
+        OverlayTintRowLayout.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100F))
+        OverlayTintRowLayout.Controls.Add(ButtonOverlayTintColor, 0, 0)
+        OverlayTintRowLayout.Controls.Add(LabelOverlayTintAlpha, 1, 0)
+        OverlayTintRowLayout.Controls.Add(SliderOverlayTintAlpha, 2, 0)
+        OverlayTintRowLayout.Dock = DockStyle.Fill
+        OverlayTintRowLayout.Location = New Point(96, 159)
+        OverlayTintRowLayout.Margin = New Padding(2)
+        OverlayTintRowLayout.Name = "OverlayTintRowLayout"
+        OverlayTintRowLayout.RowCount = 1
+        OverlayTintRowLayout.RowStyles.Add(New RowStyle())
+        OverlayTintRowLayout.Size = New Size(394, 32)
+        OverlayTintRowLayout.TabIndex = 10
+        ' 
+        ' ButtonOverlayTintColor
+        ' 
+        ButtonOverlayTintColor.Anchor = AnchorStyles.Left
+        ButtonOverlayTintColor.BackColor = Color.White
+        ButtonOverlayTintColor.FlatStyle = FlatStyle.Flat
+        ButtonOverlayTintColor.Location = New Point(3, 4)
+        ButtonOverlayTintColor.Name = "ButtonOverlayTintColor"
+        ButtonOverlayTintColor.Size = New Size(40, 23)
+        ButtonOverlayTintColor.TabIndex = 0
+        ButtonOverlayTintColor.UseVisualStyleBackColor = False
+        ' 
+        ' LabelOverlayTintAlpha
+        ' 
+        LabelOverlayTintAlpha.AutoSize = True
+        LabelOverlayTintAlpha.Location = New Point(49, 6)
+        LabelOverlayTintAlpha.Margin = New Padding(3, 6, 3, 0)
+        LabelOverlayTintAlpha.Name = "LabelOverlayTintAlpha"
+        LabelOverlayTintAlpha.Size = New Size(41, 15)
+        LabelOverlayTintAlpha.TabIndex = 1
+        LabelOverlayTintAlpha.Text = "Alpha:"
+        LabelOverlayTintAlpha.TextAlign = ContentAlignment.MiddleLeft
+        ' 
+        ' SliderOverlayTintAlpha
+        ' 
+        SliderOverlayTintAlpha.AccentColor = SystemColors.HotTrack
+        SliderOverlayTintAlpha.BackColor = SystemColors.Control
+        SliderOverlayTintAlpha.DisplayFormat = "0%"
+        SliderOverlayTintAlpha.Dock = DockStyle.Fill
+        SliderOverlayTintAlpha.InputScale = 0.01R
+        SliderOverlayTintAlpha.LargeChange = 0.1R
+        SliderOverlayTintAlpha.Location = New Point(95, 2)
+        SliderOverlayTintAlpha.Margin = New Padding(2)
+        SliderOverlayTintAlpha.Maximum = 1R
+        SliderOverlayTintAlpha.MinimumSize = New Size(120, 22)
+        SliderOverlayTintAlpha.Name = "SliderOverlayTintAlpha"
+        SliderOverlayTintAlpha.Size = New Size(297, 28)
+        SliderOverlayTintAlpha.SmallChange = 0.01R
+        SliderOverlayTintAlpha.TabIndex = 2
+        SliderOverlayTintAlpha.TextBoxTextAlign = HorizontalAlignment.Right
+        SliderOverlayTintAlpha.ThumbColor = SystemColors.HotTrack
+        SliderOverlayTintAlpha.ThumbRadius = 4F
+        SliderOverlayTintAlpha.TrackColor = SystemColors.ControlDark
+        SliderOverlayTintAlpha.Value = 1R
         ' 
         ' BottomLayout
         ' 
@@ -661,6 +1159,27 @@ Partial Class EditBody_Form
         GroupBoxBodySlide.ResumeLayout(False)
         BodySlideLayout.ResumeLayout(False)
         BodySlideLayout.PerformLayout()
+        TabPageOverlays.ResumeLayout(False)
+        OverlaysTabLayout.ResumeLayout(False)
+        OverlaysTabLayout.PerformLayout()
+        OverlayListsLayout.ResumeLayout(False)
+        OverlayListsLayout.PerformLayout()
+        GroupBoxOverlayAvailable.ResumeLayout(False)
+        OverlayAvailableLayout.ResumeLayout(False)
+        OverlayAvailableLayout.PerformLayout()
+        OverlayCenterLayout.ResumeLayout(False)
+        OverlayCenterLayout.PerformLayout()
+        GroupBoxOverlayApplied.ResumeLayout(False)
+        OverlayAppliedLayout.ResumeLayout(False)
+        OverlayAppliedLayout.PerformLayout()
+        OverlayAppliedButtons.ResumeLayout(False)
+        OverlayAppliedButtons.PerformLayout()
+        GroupBoxOverlayProps.ResumeLayout(False)
+        GroupBoxOverlayProps.PerformLayout()
+        OverlayPropsLayout.ResumeLayout(False)
+        OverlayPropsLayout.PerformLayout()
+        OverlayTintRowLayout.ResumeLayout(False)
+        OverlayTintRowLayout.PerformLayout()
         BottomLayout.ResumeLayout(False)
         PreviewSidebar.ResumeLayout(False)
         PreviewSidebar.PerformLayout()
@@ -710,4 +1229,36 @@ Partial Class EditBody_Form
     Friend WithEvents ButtonCancel As System.Windows.Forms.Button
     Friend WithEvents ButtonResetSection As System.Windows.Forms.Button
     Friend WithEvents BottomLayout As System.Windows.Forms.FlowLayoutPanel
+    Friend WithEvents TabPageOverlays As System.Windows.Forms.TabPage
+    Friend WithEvents OverlaysTabLayout As System.Windows.Forms.TableLayoutPanel
+    Friend WithEvents OverlayListsLayout As System.Windows.Forms.TableLayoutPanel
+    Friend WithEvents GroupBoxOverlayAvailable As System.Windows.Forms.GroupBox
+    Friend WithEvents OverlayAvailableLayout As System.Windows.Forms.TableLayoutPanel
+    Friend WithEvents TextBoxOverlayFilter As System.Windows.Forms.TextBox
+    Friend WithEvents ListBoxOverlayAvailable As System.Windows.Forms.ListBox
+    Friend WithEvents OverlayCenterLayout As System.Windows.Forms.TableLayoutPanel
+    Friend WithEvents ButtonOverlayAdd As System.Windows.Forms.Button
+    Friend WithEvents ButtonOverlayRemove As System.Windows.Forms.Button
+    Friend WithEvents GroupBoxOverlayApplied As System.Windows.Forms.GroupBox
+    Friend WithEvents OverlayAppliedLayout As System.Windows.Forms.TableLayoutPanel
+    Friend WithEvents ListBoxOverlayApplied As System.Windows.Forms.ListBox
+    Friend WithEvents OverlayAppliedButtons As System.Windows.Forms.FlowLayoutPanel
+    Friend WithEvents ButtonOverlayUp As System.Windows.Forms.Button
+    Friend WithEvents ButtonOverlayDown As System.Windows.Forms.Button
+    Friend WithEvents GroupBoxOverlayProps As System.Windows.Forms.GroupBox
+    Friend WithEvents OverlayPropsLayout As System.Windows.Forms.TableLayoutPanel
+    Friend WithEvents LabelOverlaySelected As System.Windows.Forms.Label
+    Friend WithEvents LabelOverlayOffsetU As System.Windows.Forms.Label
+    Friend WithEvents SliderOverlayOffsetU As FO4_Base_Library.TinySliderTextBox
+    Friend WithEvents LabelOverlayOffsetV As System.Windows.Forms.Label
+    Friend WithEvents SliderOverlayOffsetV As FO4_Base_Library.TinySliderTextBox
+    Friend WithEvents LabelOverlayScaleU As System.Windows.Forms.Label
+    Friend WithEvents SliderOverlayScaleU As FO4_Base_Library.TinySliderTextBox
+    Friend WithEvents LabelOverlayScaleV As System.Windows.Forms.Label
+    Friend WithEvents SliderOverlayScaleV As FO4_Base_Library.TinySliderTextBox
+    Friend WithEvents CheckBoxOverlayTint As System.Windows.Forms.CheckBox
+    Friend WithEvents OverlayTintRowLayout As System.Windows.Forms.TableLayoutPanel
+    Friend WithEvents ButtonOverlayTintColor As System.Windows.Forms.Button
+    Friend WithEvents LabelOverlayTintAlpha As System.Windows.Forms.Label
+    Friend WithEvents SliderOverlayTintAlpha As FO4_Base_Library.TinySliderTextBox
 End Class

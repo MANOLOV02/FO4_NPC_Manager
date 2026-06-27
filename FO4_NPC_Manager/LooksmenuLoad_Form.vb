@@ -199,17 +199,18 @@ Public Class LooksmenuLoad_Form
             Return
         End If
 
-        Dim hasUnsupported =
-            preset.UnsupportedCounts.Overlays > 0 OrElse
-            preset.UnsupportedCounts.HasSkinOverride
+        ' Overlays are now supported (parse + render + round-trip), so they go in the summary line
+        ' next to BodySlide — NOT in the "will be skipped" warning. Only skin override remains F4SE
+        ' unsupported on load.
+        Dim hasUnsupported = preset.UnsupportedCounts.HasSkinOverride
 
         Dim summary = $"HeadParts: {preset.HeadPartFormIDs.Count}  •  Tints: {preset.FaceTintLayers.Count}  •  " &
                       $"Face morphs: {preset.ChargenFaceMorphs.Count}  •  Body regions: {preset.BodyMorphValues.Count}  •  " &
-                      $"Face bone regions: {preset.FaceBoneRegions.Count}  •  BodySlide: {preset.BodyMorphSliders.Count}"
+                      $"Face bone regions: {preset.FaceBoneRegions.Count}  •  BodySlide: {preset.BodyMorphSliders.Count}  •  " &
+                      $"Overlays: {preset.Overlays.Count}"
 
         If hasUnsupported Then
             Dim warnings As New List(Of String)
-            If preset.UnsupportedCounts.Overlays > 0 Then warnings.Add($"{preset.UnsupportedCounts.Overlays} overlays")
             If preset.UnsupportedCounts.HasSkinOverride Then warnings.Add("skin override")
             LabelInfo.Text = summary & vbCrLf & "Note: F4SE-only fields will be skipped (" & String.Join(", ", warnings) & ")."
             LabelInfo.ForeColor = Drawing.Color.DarkGoldenrod
