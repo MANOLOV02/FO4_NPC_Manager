@@ -8495,11 +8495,14 @@ Public Class MainForm
     End Sub
 
     ''' <summary>Post-save re-read (Step 6). Mounts the just-written plugin as the top override so
-    ''' GetRecord/GetParsedNpc return the saved state (the uncached GetParsedNpc means every later
-    ''' render reflects it). For each written NPC: strip the ESP fields from its overlay, clear its
-    ''' dirty mark (no longer bold), and move it to the saved plugin's tree group. Re-renders the
-    ''' currently-loaded NPC when it was among those saved so the preview drops the overlay and shows
-    ''' the clean saved record.</summary>
+    ''' GetRecord returns the saved state, then RE-PARSES each written NPC into _ctx.NpcCache / _allNPCs.
+    ''' That re-parse is load-bearing: GetParsedNpc memoizes per load order (only cleared on a load-order
+    ''' change, InvalidateParseCaches), so without it the render keeps resolving the STALE pre-save parse
+    ''' and the saved outfit (DOFT) / tints / morphs / headparts silently revert in the preview until the
+    ''' app is reopened — even though the ESP on disk is correct. For each written NPC: strip the ESP fields
+    ''' from its overlay, clear its dirty mark (no longer bold), refresh its cached parse, and move it to the
+    ''' saved plugin's tree group. Re-renders the currently-loaded NPC when it was among those saved so the
+    ''' preview drops the overlay and shows the clean saved record.</summary>
     Private Async Function ApplyPostSaveReadback(writtenFormIDs As List(Of UInteger), savedPluginPath As String,
                                                  draftFormIdMap As Dictionary(Of UInteger, UInteger)) As Task
         Dim mergeOk As Boolean = True
@@ -8524,11 +8527,30 @@ Public Class MainForm
         For Each fid In writtenFormIDs
             StripEspFieldsFromOverlay(fid)
             ClearNpcDirty(fid)
-            Dim cachedNpc As NPC_Data = Nothing
-            If _ctx.NpcCache.TryGetValue(fid, cachedNpc) AndAlso cachedNpc IsNot Nothing Then
-                If Not String.Equals(cachedNpc.PluginName, savedPluginName, StringComparison.OrdinalIgnoreCase) Then
-                    cachedNpc.PluginName = savedPluginName
-                    _npcSearchableCache(fid) = NpcDisplayHelpers.BuildNpcSearchableText(cachedNpc)
+
+            ' Re-parse the saved override as this NPC's new baseline. MergeOverridePlugin mounted the
+            ' written plugin on top, so GetRecord(fid) now returns the override — but _ctx.NpcCache still
+            ' memoizes the PRE-save parse (it is only cleared on a load-order change, InvalidateParseCaches).
+            ' Without refreshing it here, every later GetParsedNpc — and therefore the re-render's outfit
+            ' (DOFT) / tints / morphs / headparts resolution — reads the stale pre-edit record, so the saved
+            ' changes silently revert in the preview until the app is reopened (the reported "outfit not
+            ' saved" bug: the ESP on disk is correct, only the in-session readback was stale). Replace the
+            ' instance in BOTH _ctx.NpcCache and _allNPCs (they share NPC_Data instances) so the render and
+            ' the tree/display stay in sync, and re-derive the tree group from the freshly-parsed plugin name.
+            Dim staleNpc As NPC_Data = Nothing
+            _ctx.NpcCache.TryGetValue(fid, staleNpc)
+            Dim oldPluginName As String = If(staleNpc IsNot Nothing, staleNpc.PluginName, Nothing)
+            Dim freshNpc = NpcRecordOverlay.GetParsedNpc(fid, _pluginManager)
+            If freshNpc IsNot Nothing Then
+                _ctx.NpcCache(fid) = freshNpc
+                For i = 0 To _allNPCs.Count - 1
+                    If _allNPCs(i) IsNot Nothing AndAlso _allNPCs(i).FormID = fid Then
+                        _allNPCs(i) = freshNpc
+                        Exit For
+                    End If
+                Next
+                _npcSearchableCache(fid) = NpcDisplayHelpers.BuildNpcSearchableText(freshNpc)
+                If Not String.Equals(oldPluginName, freshNpc.PluginName, StringComparison.OrdinalIgnoreCase) Then
                     treeChanged = True
                 End If
             End If
