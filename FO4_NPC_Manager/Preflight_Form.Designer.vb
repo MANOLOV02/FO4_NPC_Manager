@@ -30,7 +30,8 @@ Partial Class Preflight_Form
         ButtonOk = New Button()
         ButtonCancel = New Button()
         LabelStatus = New Label()
-        ProgressBarLoad = New ProgressBar()
+        ProgressBarOverall = New ProgressBar()
+        ProgressBarDetail = New ProgressBar()
         LabelProgress = New Label()
         SuspendLayout()
         ' 
@@ -119,7 +120,7 @@ Partial Class Preflight_Form
         ListViewPlugins.GridLines = True
         ListViewPlugins.Location = New Point(12, 80)
         ListViewPlugins.Name = "ListViewPlugins"
-        ListViewPlugins.Size = New Size(724, 415)
+        ListViewPlugins.Size = New Size(724, 465)
         ListViewPlugins.TabIndex = 8
         ListViewPlugins.UseCompatibleStateImageBehavior = False
         ListViewPlugins.View = View.Details
@@ -133,22 +134,22 @@ Partial Class Preflight_Form
         ' 
         ColumnHeaderState.Text = "State"
         ColumnHeaderState.Width = 180
-        '
+        ' 
         ' ButtonCheckMasters
-        '
+        ' 
         ButtonCheckMasters.Anchor = AnchorStyles.Bottom Or AnchorStyles.Right
-        ButtonCheckMasters.Location = New Point(414, 505)
+        ButtonCheckMasters.Location = New Point(414, 551)
         ButtonCheckMasters.Name = "ButtonCheckMasters"
         ButtonCheckMasters.Size = New Size(130, 28)
         ButtonCheckMasters.TabIndex = 14
         ButtonCheckMasters.Text = "Check Masters"
         ButtonCheckMasters.UseVisualStyleBackColor = True
         ButtonCheckMasters.Visible = False
-        '
+        ' 
         ' ButtonOk
-        '
+        ' 
         ButtonOk.Anchor = AnchorStyles.Bottom Or AnchorStyles.Right
-        ButtonOk.Location = New Point(550, 505)
+        ButtonOk.Location = New Point(550, 551)
         ButtonOk.Name = "ButtonOk"
         ButtonOk.Size = New Size(90, 28)
         ButtonOk.TabIndex = 9
@@ -159,7 +160,7 @@ Partial Class Preflight_Form
         ' 
         ButtonCancel.Anchor = AnchorStyles.Bottom Or AnchorStyles.Right
         ButtonCancel.DialogResult = DialogResult.Cancel
-        ButtonCancel.Location = New Point(646, 505)
+        ButtonCancel.Location = New Point(646, 551)
         ButtonCancel.Name = "ButtonCancel"
         ButtonCancel.Size = New Size(90, 28)
         ButtonCancel.TabIndex = 10
@@ -169,27 +170,37 @@ Partial Class Preflight_Form
         ' LabelStatus
         ' 
         LabelStatus.Anchor = AnchorStyles.Bottom Or AnchorStyles.Left Or AnchorStyles.Right
-        LabelStatus.Location = New Point(12, 545)
+        LabelStatus.Location = New Point(12, 603)
         LabelStatus.Name = "LabelStatus"
         LabelStatus.Size = New Size(724, 21)
         LabelStatus.TabIndex = 11
         ' 
-        ' ProgressBarLoad
+        ' ProgressBarOverall
         ' 
-        ProgressBarLoad.Anchor = AnchorStyles.Bottom Or AnchorStyles.Left Or AnchorStyles.Right
-        ProgressBarLoad.Location = New Point(12, 568)
-        ProgressBarLoad.Name = "ProgressBarLoad"
-        ProgressBarLoad.Size = New Size(724, 16)
-        ProgressBarLoad.Style = ProgressBarStyle.Continuous
-        ProgressBarLoad.TabIndex = 13
-        ProgressBarLoad.Visible = False
+        ProgressBarOverall.Anchor = AnchorStyles.Bottom Or AnchorStyles.Left Or AnchorStyles.Right
+        ProgressBarOverall.Location = New Point(12, 603)
+        ProgressBarOverall.Name = "ProgressBarOverall"
+        ProgressBarOverall.Size = New Size(724, 14)
+        ProgressBarOverall.Style = ProgressBarStyle.Continuous
+        ProgressBarOverall.TabIndex = 13
+        ProgressBarOverall.Visible = False
+        ' 
+        ' ProgressBarDetail
+        ' 
+        ProgressBarDetail.Anchor = AnchorStyles.Bottom Or AnchorStyles.Left Or AnchorStyles.Right
+        ProgressBarDetail.Location = New Point(12, 621)
+        ProgressBarDetail.Name = "ProgressBarDetail"
+        ProgressBarDetail.Size = New Size(724, 14)
+        ProgressBarDetail.Style = ProgressBarStyle.Continuous
+        ProgressBarDetail.TabIndex = 14
+        ProgressBarDetail.Visible = False
         ' 
         ' LabelProgress
         ' 
         LabelProgress.Anchor = AnchorStyles.Bottom Or AnchorStyles.Left Or AnchorStyles.Right
-        LabelProgress.Location = New Point(12, 545)
+        LabelProgress.Location = New Point(12, 582)
         LabelProgress.Name = "LabelProgress"
-        LabelProgress.Size = New Size(724, 20)
+        LabelProgress.Size = New Size(724, 18)
         LabelProgress.TabIndex = 12
         LabelProgress.Visible = False
         ' 
@@ -200,8 +211,9 @@ Partial Class Preflight_Form
         AutoScaleMode = AutoScaleMode.Font
         AutoScroll = True
         CancelButton = ButtonCancel
-        ClientSize = New Size(748, 595)
-        Controls.Add(ProgressBarLoad)
+        ClientSize = New Size(748, 653)
+        Controls.Add(ProgressBarOverall)
+        Controls.Add(ProgressBarDetail)
         Controls.Add(LabelProgress)
         Controls.Add(LabelStatus)
         Controls.Add(ButtonCancel)
@@ -239,6 +251,7 @@ Partial Class Preflight_Form
     Friend WithEvents ButtonOk As Button
     Friend WithEvents ButtonCancel As Button
     Friend WithEvents LabelStatus As Label
-    Friend WithEvents ProgressBarLoad As ProgressBar
+    Friend WithEvents ProgressBarOverall As ProgressBar
+    Friend WithEvents ProgressBarDetail As ProgressBar
     Friend WithEvents LabelProgress As Label
 End Class

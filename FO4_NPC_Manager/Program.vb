@@ -1,4 +1,4 @@
-Imports System.IO
+﻿Imports System.IO
 Imports System.Linq
 Imports System.Windows.Forms
 Imports FO4_Base_Library
@@ -160,7 +160,6 @@ Module Program
             Dim cacheDir = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Caches")
             Directory.CreateDirectory(cacheDir)
             FilesDictionary_class.CacheDirectory = cacheDir
-            FilesDictionary_class.RegisterExtensions(".ssf", ".sclp", ".hkx", ".hkt")
             ' progress NO puede ser Nothing: Fill_DictionaryAsync hace progress.Report(...) sin guard.
             Dim noProg As New Progress(Of (Stepn As String, Value As Integer, Max As Integer))()
             FilesDictionary_class.Fill_DictionaryAsync(dataPath, noProg).GetAwaiter().GetResult()

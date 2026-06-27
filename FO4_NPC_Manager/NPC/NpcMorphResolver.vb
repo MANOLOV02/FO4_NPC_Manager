@@ -30,6 +30,22 @@ Public Class NpcMorphResolver
     Private Shared ReadOnly _triHeadCache As New Dictionary(Of String, TriHeadFile)(StringComparer.OrdinalIgnoreCase)
     Private Shared ReadOnly _triLoadAttempted As New HashSet(Of String)(StringComparer.OrdinalIgnoreCase)
 
+    ''' <summary>Drop the per-process TRI parse caches. Call on load-order change (FilesDictionary rebuilt):
+    ''' a path could resolve to different bytes after a reload, so the cached parse would be stale, and the
+    ''' parsed-geometry entries (potentially MBs each) are freed. Within a FIXED load order this is never
+    ''' called, so a browsed .tri is parsed at most once — no re-parse churn during a session.</summary>
+    Public Shared Sub ClearCaches()
+        SyncLock _triCache
+            _triCache.Clear()
+        End SyncLock
+        SyncLock _triHeadCache
+            _triHeadCache.Clear()
+        End SyncLock
+        SyncLock _triLoadAttempted
+            _triLoadAttempted.Clear()
+        End SyncLock
+    End Sub
+
     ' MRSV — Body Morph Region Values. Per TES5Edit/Core/wbDefinitionsFO4.pas:10793-10799,
     ' the subrecord is a fixed struct of 5 floats with these region labels in this order.
     ' Same layout in FO76 (wbDefinitionsFO76.pas:13350) and SF1 (wbDefinitionsSF1.pas:13376).

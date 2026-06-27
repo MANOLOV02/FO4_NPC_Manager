@@ -28,6 +28,19 @@ Public Class BodySlideTriResolver
     ' NpcMorphResolver._triLoadAttempted. Same normalized-path key the success cache uses.
     Private Shared ReadOnly _pirtLoadAttempted As New HashSet(Of String)(StringComparer.OrdinalIgnoreCase)
 
+    ''' <summary>Drop the per-process PIRT parse cache. Call on load-order change (FilesDictionary rebuilt) so
+    ''' a stale parse from a path that now resolves to different bytes is discarded and the parsed-geometry
+    ''' entries are freed. Within a FIXED load order it's never called, so each BodySlide .tri is parsed at
+    ''' most once — no re-parse churn during a session.</summary>
+    Public Shared Sub ClearCaches()
+        SyncLock _pirtCache
+            _pirtCache.Clear()
+        End SyncLock
+        SyncLock _pirtLoadAttempted
+            _pirtLoadAttempted.Clear()
+        End SyncLock
+    End Sub
+
     ''' <summary>Resolve the PIRT .tri path for a shape. Returns Nothing if the NIF root
     ''' has no BODYTRI extra-data. Does NOT load the file — call LoadPirt with the result.
     ''' meshDictKey is unused (kept in the signature for caller-side stability while we

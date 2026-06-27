@@ -12,6 +12,12 @@ Imports FO4_Base_Library
 ''' sin re-cargar.</summary>
 Public Class Preflight_Form
 
+    ' Fixed resolution for the byte-progress (Detail) bar in BOTH phases (plugin bytes, then mounted-
+    ' archive bytes). BytesDone/BytesTotal are Longs whose total can exceed Int32 (Fallout4.esm alone
+    ' ~300MB, full set > 2GB), so we map the ratio onto this fixed Integer scale instead of feeding raw
+    ' byte counts into ProgressBar.Value.
+    Private Const DetailBarScale As Integer = 1000
+
     Private _activeOrder As New List(Of String)()
 
     ' Master list of plugins found in Data\, in stable display order (actives first per load
@@ -459,22 +465,42 @@ Public Class Preflight_Form
         Try
             LoadedDataPath = Config_App.Current.FO4EDataPath
 
-            ' --- Plugin load: report per-plugin progress against the picked count. The lib's
-            ' LoadAllPlugins reports "Loading X (i/N)" per plugin; we surface that as label text
-            ' and tick the bar. Total = SelectedPlugins.Count (some may not exist in Data\, the
-            ' lib silently skips those — close enough for progress reporting).
-            ProgressBarLoad.Style = ProgressBarStyle.Continuous
-            ProgressBarLoad.Maximum = Math.Max(1, SelectedPlugins.Count)
-            ProgressBarLoad.Value = 0
+            ' --- Plugin load: the lib's LoadAllPlugins reports a rich PluginLoadProgress (file
+            ' count + byte-weighted progress + current plugin name) from its parallel parse, marshaled
+            ' to the UI thread via the Progress(Of T) we build here. Two bars:
+            '   Overall = per-file (FilesDone / FilesTotal).
+            '   Detail  = bytes within the whole plugin set (BytesDone / BytesTotal), mapped onto a
+            '             fixed 0..1000 scale because BytesTotal is a Long that can exceed Int32 and
+            '             ProgressBar.Value is an Integer.
+            ProgressBarOverall.Style = ProgressBarStyle.Continuous
+            ProgressBarOverall.Maximum = Math.Max(1, SelectedPlugins.Count)
+            ProgressBarOverall.Value = 0
+            ProgressBarDetail.Style = ProgressBarStyle.Continuous
+            ProgressBarDetail.Maximum = DetailBarScale   ' fixed byte-progress scale (see DetailBarScale)
+            ProgressBarDetail.Value = 0
             LabelProgress.Text = "Loading plugins..."
 
             Dim pm As New PluginManager()
-            Dim pluginIdx As Integer = 0
-            Dim pluginProgress As New Progress(Of String)(
-                Sub(msg)
-                    pluginIdx = Math.Min(pluginIdx + 1, ProgressBarLoad.Maximum)
-                    ProgressBarLoad.Value = pluginIdx
-                    LabelProgress.Text = msg
+            Dim pluginProgress As New Progress(Of PluginLoadProgress)(
+                Sub(p)
+                    ' Overall = per-file count. FilesTotal arrives with the first report; trust it
+                    ' over the pre-set SelectedPlugins.Count if they differ (lib skips missing files).
+                    If p.FilesTotal > 0 AndAlso ProgressBarOverall.Maximum <> p.FilesTotal Then
+                        ProgressBarOverall.Maximum = p.FilesTotal
+                    End If
+                    ProgressBarOverall.Value = Math.Max(0, Math.Min(p.FilesDone, ProgressBarOverall.Maximum))
+
+                    ' Detail = bytes on the fixed 0..DetailBarScale scale. Long math so the
+                    ' multiply can't overflow Int32; clamp into range.
+                    Dim detail As Integer = 0
+                    If p.BytesTotal > 0 Then
+                        detail = CInt(Math.Min(CLng(DetailBarScale), p.BytesDone * CLng(DetailBarScale) \ p.BytesTotal))
+                    End If
+                    ProgressBarDetail.Value = Math.Max(0, Math.Min(detail, ProgressBarDetail.Maximum))
+
+                    LabelProgress.Text = If(String.IsNullOrEmpty(p.CurrentName),
+                                            $"Parsing plugins — ({p.FilesDone}/{p.FilesTotal})",
+                                            $"Parsing plugins — {p.CurrentName} ({p.FilesDone}/{p.FilesTotal})")
                 End Sub)
 
             Await Task.Run(Sub() pm.LoadAllPlugins(LoadedDataPath, SelectedPlugins, pluginProgress))
@@ -482,30 +508,48 @@ Public Class Preflight_Form
             LoadedPluginManager = pm
 
             ' --- Archive load: Fill_DictionaryAsync reports (stage, value, max) and discovers the
-            ' archive count itself from the Data folder. Switch to indeterminate marquee until the
-            ' first progress tick gives us a max.
+            ' archive+loose count itself from the Data folder, emitting it on its first tick (which
+            ' arrives almost immediately). Two bars:
+            '   Overall = per-file count (archives + loose), a real value (NO marquee).
+            '   Detail  = mounted-archive bytes (BytesDone / BytesTotal) of the BA2/BSA set, mapped
+            '             onto the fixed 0..DetailBarScale scale (same Long math as the plugin phase,
+            '             since BytesTotal is a Long that can exceed Int32). Loose files aren't byte-
+            '             counted, so Detail reaches 100% when the archives finish (loose are fast).
             Dim cacheDir = IO.Path.Combine(Application.StartupPath, "Caches")
             IO.Directory.CreateDirectory(cacheDir)
             FilesDictionary_class.CacheDirectory = cacheDir
-            FilesDictionary_class.RegisterExtensions(".ssf", ".sclp")
-
-            ProgressBarLoad.Style = ProgressBarStyle.Marquee
-            ProgressBarLoad.MarqueeAnimationSpeed = 30
+            ProgressBarDetail.Visible = True
+            ProgressBarDetail.Style = ProgressBarStyle.Continuous
+            ProgressBarDetail.Maximum = DetailBarScale   ' fixed byte-progress scale (see DetailBarScale)
+            ProgressBarDetail.Value = 0
+            ProgressBarOverall.Style = ProgressBarStyle.Continuous
+            ProgressBarOverall.Maximum = 1
+            ProgressBarOverall.Value = 0
             LabelProgress.Text = "Mounting archives..."
 
             Dim archiveProgress As New Progress(Of (Stepn As String, Value As Integer, Max As Integer))(
                 Sub(info)
                     If info.Max > 0 Then
-                        If ProgressBarLoad.Style <> ProgressBarStyle.Continuous Then
-                            ProgressBarLoad.Style = ProgressBarStyle.Continuous
-                        End If
-                        ProgressBarLoad.Maximum = info.Max
-                        ProgressBarLoad.Value = Math.Max(0, Math.Min(info.Value, info.Max))
+                        ProgressBarOverall.Maximum = info.Max
+                        ProgressBarOverall.Value = Math.Max(0, Math.Min(info.Value, info.Max))
                     End If
                     If Not String.IsNullOrEmpty(info.Stepn) Then LabelProgress.Text = info.Stepn
                 End Sub)
 
-            Await FilesDictionary_class.Fill_DictionaryAsync(LoadedDataPath, archiveProgress)
+            ' Detail = mounted-archive bytes on the fixed 0..DetailBarScale scale. Long math so the
+            ' multiply can't overflow Int32; clamp into range. b.Total=0 (all loose) leaves it at 0.
+            Dim archiveByteProg As New Progress(Of (Done As Long, Total As Long))(
+                Sub(b)
+                    Dim detail As Integer = 0
+                    If b.Total > 0 Then detail = CInt(Math.Min(CLng(DetailBarScale), b.Done * CLng(DetailBarScale) \ b.Total))
+                    ProgressBarDetail.Value = Math.Max(0, Math.Min(detail, ProgressBarDetail.Maximum))
+                End Sub)
+
+            Await FilesDictionary_class.Fill_DictionaryAsync(LoadedDataPath, archiveProgress, archiveByteProgress:=archiveByteProg)
+
+            ' Archive phase done — fill both bars to their max for the final scans. Detail stays visible.
+            ProgressBarOverall.Value = ProgressBarOverall.Maximum
+            ProgressBarDetail.Value = ProgressBarDetail.Maximum
 
             ' Final preflight step: scan Data\ for existing NPC_Manager auto-generated plugins.
             ' Cheap (only opens TES4 of each plugin to read CNAM), fully loads only the few that
@@ -532,7 +576,8 @@ Public Class Preflight_Form
             ' SetLoadingMode re-enabled OK unconditionally; re-gate it against the master validation.
             RecomputeValidation()
             LabelProgress.Text = ""
-            ProgressBarLoad.Visible = False
+            ProgressBarOverall.Visible = False
+            ProgressBarDetail.Visible = False
             LabelProgress.Visible = False
             MessageBox.Show(ex.ToString(), "Load failed", MessageBoxButtons.OK, MessageBoxIcon.Error)
         End Try
@@ -571,7 +616,8 @@ Public Class Preflight_Form
         ButtonUnmarkAll.Enabled = Not loading
         ButtonCheckMasters.Enabled = Not loading
         ButtonOk.Enabled = Not loading
-        ProgressBarLoad.Visible = loading
+        ProgressBarOverall.Visible = loading
+        ProgressBarDetail.Visible = loading
         LabelProgress.Visible = loading
         LabelStatus.Visible = Not loading
         Cursor = If(loading, Cursors.WaitCursor, Cursors.Default)

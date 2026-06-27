@@ -224,6 +224,17 @@ Public Class MainForm
         _skelBptdBytesCache.Clear()
         _skelFaceBytesCache.Clear()
         _faceTriMorphNamesCache.Clear()
+        ' Anim-clip cache is keyed by race FormID (+gender) — those can collide across plugin sets, so a
+        ' reload must drop it too (consistent with the FormID-keyed caches above). This does NOT force a
+        ' synchronous re-enumeration: within a fixed load order InvalidateParseCaches never runs again, and
+        ' on an actual reload PreloadAnimRacesInBackground re-warms the distinct races OFF the UI thread
+        ' right after ParseAllNPCs — the expensive ~16 s behavior walk never blocks the user.
+        _animRaceCache.Clear()
+        ' Per-process TRI parse caches (Shared in the resolvers): same lifetime contract — kept across a
+        ' session (no re-parse while browsing) but dropped on a load-order change so a stale parse from a
+        ' path that now resolves to different bytes is discarded and the parsed geometry (MBs each) is freed.
+        NpcMorphResolver.ClearCaches()
+        BodySlideTriResolver.ClearCaches()
     End Sub
 
     ' _renderHost.TintGpuCache, _renderHost.PristineDiffusePixels and the PristinePixels nested class moved to
@@ -5846,7 +5857,6 @@ Public Class MainForm
                 ' gore-zone names for FO4 actor meshes. .sclp (ARMA Sculpt) carries per-bone
                 ' translation/scale deltas referenced by ARMA records. Both are NPC-rendering
                 ' specific so they're registered here, not in the shared library default set.
-                FilesDictionary_class.RegisterExtensions(".ssf", ".sclp")
                 _assetDictionaryLoadTask = FilesDictionary_class.Fill_DictionaryAsync(_dataPath, progress)
             End If
 
