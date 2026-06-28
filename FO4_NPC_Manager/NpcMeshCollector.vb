@@ -527,9 +527,16 @@ Friend NotInheritable Class NpcMeshCollector
             End If
             coveredSlots = coveredSlots Or effSlotMask
 
+            ' Occupancy footprint = per-ARMA mask PLUS the owning ARMO's HEAD-region bits. The engine builds
+            ' head-part occlusion (Fallout4.exe 0x14051F210 → 0x140506140) and the equip mutex from the
+            ' equipped ARMO's BOD2, so a helmet whose ARMO declares slot 31 (Hair Long) — or 32/46/48 — that
+            ' its ARMA mesh doesn't render must still occlude those head-parts. GATED to HEADWEAR_MASK: only
+            ' head/face/neck bits are added; body/hand/[A]/[U] bits the ARMO might declare are NOT (that gating
+            ' is what keeps this from over-marking body skin as covered — the earlier full-union broke hands).
+            ' The within-ARMO armature dedup above intentionally stays on the per-ARMA effSlotMask.
             candidates.Add(New MainForm.MeshCandidate With {
                 .DictKey = armaDictKey,
-                .SlotMask = effSlotMask,
+                .SlotMask = effSlotMask Or (armo.SlotMask And BipedSlots.HEADWEAR_MASK),
                 .Priority = If(state.IsFemale, arma.FemalePriority, arma.MalePriority),
                 .Kind = kind,
                 .SourceFormID = armoFormID,
@@ -1242,6 +1249,14 @@ Friend NotInheritable Class NpcMeshCollector
                         Dim zapD = zapParts
                         Logger.LogLazy(Function() $"[HAIRZAP-DIAG] dict='{dkD}' isHnamExtra={hnamD} hairSlotMask=0x{maskD:X} hasBoth={bothD} occupiedSlots=0x{occSlotsD:X} raceHairMask=0x{hairMaskD:X} topCovered={htD} longCovered={hlD} occluded={occD} -> ZapParts={zapD}")
                     End If
+                ElseIf slotlessCandidate.HeadPartType = MainForm.HeadPartTypeHair Then
+                    ' Hair (effective type 3) with NO biped segments (hairSlotMask=0): there are no partitions
+                    ' to zap per-segment, so the engine whole-node culls it when a covered hair-channel slot has
+                    ' no matching segment (Fallout4.exe 0x14064E160 fallback). Checked by EFFECTIVE type and
+                    ' BEFORE the addon branch below, so it also catches hair sub-parts that come in as rawType=0
+                    ' / HNAM-extras — e.g. KS Hairdos "Aikea" main hair (rawType=3) AND its "AikeaHeadband"
+                    ' (rawType=0, effType=3). Both are part of the hair and the helmet hides them together.
+                    occluded = (hairCovered <> 0UI) OrElse hasFaceGenHead
                 ElseIf slotlessCandidate.IsHnamExtra OrElse slotlessCandidate.HeadPartTypeRaw = 0 Then
                     ' Addon NO-pelo (mouth shadow / eye AO-wet, biped 32): sólo full-face cull lo tapa.
                     occluded = hasFaceGenHead

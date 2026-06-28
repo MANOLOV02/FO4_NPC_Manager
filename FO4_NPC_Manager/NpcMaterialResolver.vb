@@ -958,9 +958,20 @@ Friend NotInheritable Class NpcMaterialResolver
         ' (3) Texture/Skin/Hair palette overrides happen later in this method and read whatever
         ' material this pipeline left in place.
         If candidate IsNot Nothing AndAlso candidate.MaterialSwapFormID <> 0UI Then
-            ShapeMaterialOverrides.ApplyMaterialSwap(candidate.MaterialSwapFormID,
-                                                    ShapeMaterialOverrides.MaterialSwapFunction.SET,
-                                                    shapes, _ctx.PluginManager)
+            ' Draft-MSWP guard: a material-swap authored as an in-memory MSWP draft (provisional 0xFF FormID)
+            ' has NO real record, and ApplyMaterialSwap lives in the lib (must stay draft-agnostic — out of
+            ' scope to teach it about drafts). So for PREVIEW we SKIP applying a draft MSWP: the mesh +
+            ' textures still render correctly, the swap simply doesn't show until the draft is saved (the
+            ' writer assigns a real FormID then). A swap that references an EXISTING (real) MSWP — even from a
+            ' draft ARMA/ARMO — is a normal FormID and applies as usual. This also prevents a draft FormID
+            ' from reaching ParseMSWP(GetRecord(fid)=Nothing) deep in the lib.
+            If OutfitDraft.IsDraftFormID(candidate.MaterialSwapFormID) Then
+                Logger.LogLazy(Function() $"[DRAFT-MSWP] preview skips unsaved material-swap draft 0x{candidate.MaterialSwapFormID:X8} (applies after Save)")
+            Else
+                ShapeMaterialOverrides.ApplyMaterialSwap(candidate.MaterialSwapFormID,
+                                                        ShapeMaterialOverrides.MaterialSwapFunction.SET,
+                                                        shapes, _ctx.PluginManager)
+            End If
         End If
         If candidate IsNot Nothing AndAlso candidate.ColorRemapIndex.HasValue Then
             ShapeMaterialOverrides.ApplyColorRemap(candidate.ColorRemapIndex.Value, 0.0F,

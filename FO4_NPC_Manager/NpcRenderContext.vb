@@ -30,6 +30,16 @@ Friend NotInheritable Class NpcRenderContext
     Private ReadOnly _hdptCache As New System.Collections.Concurrent.ConcurrentDictionary(Of UInteger, HDPT_Data)()
     Private ReadOnly _armorRaceCache As New System.Collections.Concurrent.ConcurrentDictionary(Of UInteger, HashSet(Of UInteger))()
 
+    ''' <summary>Optional draft-resolver hook (set by MainForm). Given a FormID, returns a synthesized
+    ''' <see cref="ARMO_Data"/> when the FormID is an in-memory ARMO draft (provisional 0xFF sentinel or
+    ''' an override draft), or Nothing when it is not a draft (the real-record cache path then runs).
+    ''' Same injection contract as <c>OutfitResolver.LeveledListResolver</c>: Nothing ⇒ library/real
+    ''' behavior, a non-Nothing return ⇒ the app's live draft view. The returned object is NEVER cached
+    ''' (drafts mutate live), so a draft edit is reflected on the next render.</summary>
+    Public ArmoDraftResolver As Func(Of UInteger, ARMO_Data) = Nothing
+    ''' <summary>Optional draft-resolver hook for ARMA drafts. See <see cref="ArmoDraftResolver"/>.</summary>
+    Public ArmaDraftResolver As Func(Of UInteger, ARMA_Data) = Nothing
+
     Public Sub New(pluginManager As PluginManager)
         Me.PluginManager = pluginManager
     End Sub
@@ -62,6 +72,15 @@ Friend NotInheritable Class NpcRenderContext
     ''' their own Try/Catch.</summary>
     Public Function GetParsedArmo(formID As UInteger) As ARMO_Data
         If formID = 0UI Then Return Nothing
+        ' Draft-aware resolution: an ARMO draft (MainForm._armoDrafts, provisional 0xFF FormID or an override
+        ' draft keeping its real FormID) is NOT a real record and is NOT in this cache. Consult the app's draft
+        ' resolver FIRST (mirror of OutfitResolver.LeveledListResolver / the OTFT-draft render path). A non-Nothing
+        ' return is the live draft view — RETURN IT DIRECTLY, never store it in _armoCache: drafts mutate live and
+        ' caching would stale them. Only real (non-draft) FormIDs fall through to the cached real-record path.
+        If ArmoDraftResolver IsNot Nothing Then
+            Dim draftView = ArmoDraftResolver(formID)
+            If draftView IsNot Nothing Then Return draftView
+        End If
         Return _armoCache.GetOrAdd(formID,
             Function(fid)
                 Dim rec = PluginManager.GetRecord(fid)
@@ -73,6 +92,13 @@ Friend NotInheritable Class NpcRenderContext
     ''' <summary>Parse (and cache) an ARMA by FormID. Nothing if the FormID does not resolve to an ARMA.</summary>
     Public Function GetParsedArma(formID As UInteger) As ARMA_Data
         If formID = 0UI Then Return Nothing
+        ' Draft-aware resolution — same rule as GetParsedArmo for ARMA drafts (MainForm._armaDrafts): consult the
+        ' app's ArmaDraftResolver FIRST; a non-Nothing return is the live draft view and is RETURNED DIRECTLY,
+        ' never stored in _armaCache (drafts mutate live). Real FormIDs fall through to the cached real-record path.
+        If ArmaDraftResolver IsNot Nothing Then
+            Dim draftView = ArmaDraftResolver(formID)
+            If draftView IsNot Nothing Then Return draftView
+        End If
         Return _armaCache.GetOrAdd(formID,
             Function(fid)
                 Dim rec = PluginManager.GetRecord(fid)

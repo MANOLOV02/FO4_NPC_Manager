@@ -64,6 +64,7 @@ Partial Class MainForm
         ButtonEditFace = New Button()
         ButtonEditBody = New Button()
         ButtonEditOutfit = New Button()
+        ButtonArmorEditor = New Button()
         SeparatorActions1 = New Label()
         LabelLooksMenu = New Label()
         ButtonLoadLooksmenu = New Button()
@@ -649,6 +650,7 @@ Partial Class MainForm
         PanelActionsToolbar.Controls.Add(ButtonEditFace)
         PanelActionsToolbar.Controls.Add(ButtonEditBody)
         PanelActionsToolbar.Controls.Add(ButtonEditOutfit)
+        PanelActionsToolbar.Controls.Add(ButtonArmorEditor)
         PanelActionsToolbar.Controls.Add(SeparatorActions1)
         PanelActionsToolbar.Controls.Add(LabelLooksMenu)
         PanelActionsToolbar.Controls.Add(ButtonLoadLooksmenu)
@@ -721,6 +723,18 @@ Partial Class MainForm
         ButtonEditOutfit.TabIndex = 3
         ButtonEditOutfit.Text = "Outfit"
         ButtonEditOutfit.UseVisualStyleBackColor = True
+        '
+        ' ButtonArmorEditor
+        '
+        ButtonArmorEditor.AutoSize = True
+        ButtonArmorEditor.Location = New Point(290, 2)
+        ButtonArmorEditor.Margin = New Padding(2)
+        ButtonArmorEditor.MinimumSize = New Size(90, 28)
+        ButtonArmorEditor.Name = "ButtonArmorEditor"
+        ButtonArmorEditor.Size = New Size(90, 28)
+        ButtonArmorEditor.TabIndex = 4
+        ButtonArmorEditor.Text = "Armor Editor"
+        ButtonArmorEditor.UseVisualStyleBackColor = True
         ' 
         ' SeparatorActions1
         ' 
@@ -1131,6 +1145,7 @@ Partial Class MainForm
     Friend WithEvents ButtonSaveSceneNif As System.Windows.Forms.Button
     Friend WithEvents ButtonEditBody As System.Windows.Forms.Button
     Friend WithEvents ButtonEditOutfit As System.Windows.Forms.Button
+    Friend WithEvents ButtonArmorEditor As System.Windows.Forms.Button
     Friend WithEvents SeparatorActions1 As System.Windows.Forms.Label
     Friend WithEvents LabelLooksMenu As System.Windows.Forms.Label
     Friend WithEvents ButtonLoadLooksmenu As System.Windows.Forms.Button

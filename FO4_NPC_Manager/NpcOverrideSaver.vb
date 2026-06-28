@@ -115,6 +115,19 @@ Public Module NpcOverrideSaver
         ''' a draft LVLI that nests other draft LVLIs — never writes a dangling 0xFF reference), plus any dirty
         ''' draft the user built standalone. Nothing = none.</summary>
         Public LeveledListDrafts As List(Of LeveledListDraft) = Nothing
+        ''' <summary>All Armor (ARMO) drafts from MainForm's <c>_armoDrafts</c>. When <c>SaveNewOutfits</c> is
+        ''' True the orchestrator emits as ARMO records the TRANSITIVE CLOSURE of drafts reachable from the
+        ''' emitted OTFTs' items + leveled-list entries + WNAM skin overrides (so a saved outfit/skin that
+        ''' references a draft ARMO is self-contained), plus any dirty referenced standalone draft. Each needed
+        ''' ARMO draft pulls in its ARMA draft refs (ArmorAddons) and MSWP draft refs (material swaps). Nothing = none.</summary>
+        Public ArmoDrafts As List(Of ArmoDraft) = Nothing
+        ''' <summary>All Armor Addon (ARMA) drafts from MainForm's <c>_armaDrafts</c>. Emitted (Phase 2f) for the
+        ''' subset reachable from the needed ARMO drafts' ArmorAddons; each needed ARMA pulls in its material-swap
+        ''' MSWP draft refs. Nothing = none.</summary>
+        Public ArmaDrafts As List(Of ArmaDraft) = Nothing
+        ''' <summary>All Material Swap (MSWP) drafts from MainForm's <c>_mswpDrafts</c>. Emitted (Phase 2g) for the
+        ''' subset reachable from the needed ARMO/ARMA drafts' material-swap FormIDs. Nothing = none.</summary>
+        Public MswpDrafts As List(Of MswpDraft) = Nothing
         ''' <summary>MainForm helper: allocate the next provisional draft FormID (0xFF high byte) from the
         ''' SAME counter as OTFT/LVLI drafts, so a Leveled-NPC list (LVLN) built at save time
         ''' (<c>SaveTarget.AddToLvlList</c>) gets a sentinel that can't collide with any other draft. The
@@ -299,6 +312,13 @@ Public Module NpcOverrideSaver
         ' re-save of the same plugin doesn't choke (the writer only copy-through-preserves NPC_ records).
         ' Draft LVLIs (Phase 2d) append to this same list.
         Dim leveledEntries As New List(Of SaveNpcEspWriter.LvliRecordEntry)
+        ' Author-built ARMA/ARMO/MSWP drafts (Phases 2e/2f/2g) append to these. NEW-record only in this
+        ' task — there are no preserved existing ARMO/ARMA/MSWP entries to seed them (unlike OTFT/LVLI,
+        ' the existing-plugin sweep above doesn't re-emit those record types). The drafts themselves may
+        ' be OVERRIDE flavour (edit of a load-order record), which the writer emits via SourceRecord merge.
+        Dim armoEntries As New List(Of SaveNpcEspWriter.ArmoRecordEntry)
+        Dim armaEntries As New List(Of SaveNpcEspWriter.ArmaRecordEntry)
+        Dim mswpEntries As New List(Of SaveNpcEspWriter.MswpRecordEntry)
         ' HEDR.NextObjectID of the on-disk plugin (0 when creating fresh). Forwarded to the writer
         ' so re-save doesn't roll back the dispense counter and accidentally re-issue an ID that
         ' CK already consumed between saves (mirror of TwbFile.NewFormID at wbImplementation.pas:5083).
@@ -547,7 +567,123 @@ Public Module NpcOverrideSaver
             Next
         End If
 
-        ' Phase 2e: add the saved NPCs to a Leveled NPC list (LVLN) when requested. Each saved NPC's
+        ' Phases 2e/2f/2g: author-built ARMA/ARMO/MSWP drafts needed by this save. Emit the TRANSITIVE
+        ' CLOSURE of the armor dependency graph so a saved outfit/skin is self-contained and never writes a
+        ' dangling 0xFF provisional reference. The walk MIRRORS Phase 2d (Queue+HashSet, cycle-safe) but over
+        ' a three-record-type graph instead of LVLI→LVLI:
+        '
+        '   ARMO  --ArmorAddons[].ArmaFormID-->  ARMA  --{Male,Female}MaterialSwapFormID-->  MSWP
+        '     \--{Male,Female}MaterialSwapFormID--------------------------------------------/
+        '
+        ' Seed for neededArmo (the ROOTS) = every ARMO **draft** FormID referenced by an emitted OTFT's items
+        ' OR by an emitted leveled-list entry OR by a saved NPC's WNAM skin override (entry.Npc.SkinFormID,
+        ' which already carries the overlay's SkinFormIDOverride), PLUS every dirty standalone ARMO draft that
+        ' is ALSO referenced (mirror of Phase 2c's "skip clean AND not referenced" rule — a dirty-but-unreferenced
+        ' ARMO draft is NOT pulled in, matching the OTFT rule which only persists drafts that are dirty OR
+        ' referenced; here we additionally require referenced so an orphan ARMO never bloats the plugin). The
+        ' writer pre-assigns every draft (OTFT/LVLI/ARMO/ARMA/MSWP) its real self-index FormID, so cross-refs
+        ' resolve regardless of emit order.
+        '
+        ' EDID uniqueness: every emitted record kind (OTFT/LVLI here too) shares one used-EDID set per kind, but
+        ' ARMO/ARMA/MSWP are distinct namespaces in xEdit (keyed by signature), so each gets its own set seeded
+        ' empty (this task emits no preserved existing ARMO/ARMA/MSWP). Override drafts keep their EDID verbatim.
+        If target.SaveNewOutfits Then
+            ' Index every draft kind by FormID for O(1) closure lookups.
+            Dim armoByFid As New Dictionary(Of UInteger, ArmoDraft)
+            If ctx.ArmoDrafts IsNot Nothing Then
+                For Each d In ctx.ArmoDrafts
+                    If d IsNot Nothing Then armoByFid(d.FormID) = d
+                Next
+            End If
+            Dim armaByFid As New Dictionary(Of UInteger, ArmaDraft)
+            If ctx.ArmaDrafts IsNot Nothing Then
+                For Each d In ctx.ArmaDrafts
+                    If d IsNot Nothing Then armaByFid(d.FormID) = d
+                Next
+            End If
+            Dim mswpByFid As New Dictionary(Of UInteger, MswpDraft)
+            If ctx.MswpDrafts IsNot Nothing Then
+                For Each d In ctx.MswpDrafts
+                    If d IsNot Nothing Then mswpByFid(d.FormID) = d
+                Next
+            End If
+
+            ' Only do the walk when at least one of the three kinds has drafts.
+            If armoByFid.Count > 0 OrElse armaByFid.Count > 0 OrElse mswpByFid.Count > 0 Then
+                Dim neededArmo As New HashSet(Of UInteger)
+                Dim neededArma As New HashSet(Of UInteger)
+                Dim neededMswp As New HashSet(Of UInteger)
+                Dim armoToVisit As New Queue(Of UInteger)
+
+                ' --- Seed neededArmo: ARMO drafts referenced by an emitted OTFT's items. ---
+                For Each oe In outfitEntries
+                    For Each fid In oe.ItemArmoFormIDs
+                        If armoByFid.ContainsKey(fid) AndAlso neededArmo.Add(fid) Then armoToVisit.Enqueue(fid)
+                    Next
+                Next
+                ' --- Seed neededArmo: ARMO drafts referenced by an emitted leveled-list entry. ---
+                For Each le In leveledEntries
+                    For Each e In le.Entries
+                        If armoByFid.ContainsKey(e.RefFormID) AndAlso neededArmo.Add(e.RefFormID) Then armoToVisit.Enqueue(e.RefFormID)
+                    Next
+                Next
+                ' --- Seed neededArmo: ARMO drafts referenced by a saved NPC's WNAM skin override. The post-overlay
+                ' entry.Npc.SkinFormID already reflects the preset's SkinFormIDOverride, so a draft skin assigned to
+                ' an NPC in this batch is pulled in (self-contained skin). ---
+                For Each entry In entries
+                    If entry.Npc Is Nothing Then Continue For
+                    Dim skinFid = entry.Npc.SkinFormID
+                    If armoByFid.ContainsKey(skinFid) AndAlso neededArmo.Add(skinFid) Then armoToVisit.Enqueue(skinFid)
+                Next
+                ' --- Seed neededArmo: dirty standalone ARMO drafts that are ALSO referenced. A dirty ARMO draft only
+                ' enters the set if something in this save points at it (an emitted outfit/leveled/skin) — already
+                ' covered by the seeds above. So nothing extra to add here; the rule is "dirty AND referenced", and
+                ' "referenced" is exactly what the three seeds above test. (A dirty-but-unreferenced ARMO is dropped.) ---
+
+                ' --- Walk: each needed ARMO contributes its ARMA draft refs (ArmorAddons) to neededArma and its
+                ' MSWP draft refs (ARMO-level material swaps) to neededMswp. Cycle-safe via the visited sets. ---
+                While armoToVisit.Count > 0
+                    Dim fid = armoToVisit.Dequeue()
+                    Dim d = armoByFid(fid)
+                    For Each addon In d.ArmorAddons
+                        If armaByFid.ContainsKey(addon.ArmaFormID) Then neededArma.Add(addon.ArmaFormID)
+                    Next
+                    If mswpByFid.ContainsKey(d.MaleMaterialSwapFormID) Then neededMswp.Add(d.MaleMaterialSwapFormID)
+                    If mswpByFid.ContainsKey(d.FemaleMaterialSwapFormID) Then neededMswp.Add(d.FemaleMaterialSwapFormID)
+                    ' ARMO drafts only reference ARMA/MSWP (terminal record kinds for this graph) — no ARMO→ARMO
+                    ' edge exists, so the queue drains without re-enqueuing ARMOs.
+                End While
+
+                ' --- From each needed ARMA, collect its MSWP draft refs into neededMswp (ARMA is the only kind that
+                ' can pull additional MSWPs beyond what the ARMOs already pulled). ARMA has no draft→draft edge. ---
+                For Each fid In neededArma
+                    Dim d = armaByFid(fid)
+                    If mswpByFid.ContainsKey(d.MaleMaterialSwapFormID) Then neededMswp.Add(d.MaleMaterialSwapFormID)
+                    If mswpByFid.ContainsKey(d.FemaleMaterialSwapFormID) Then neededMswp.Add(d.FemaleMaterialSwapFormID)
+                Next
+
+                ' --- Phase 2e: build ArmoRecordEntry for each needed ARMO draft. ---
+                Dim usedArmoEdids As New HashSet(Of String)(StringComparer.OrdinalIgnoreCase)
+                For Each fid In neededArmo
+                    Dim d = armoByFid(fid)
+                    armoEntries.Add(BuildArmoEntry(d, ctx, espNameNoExt, usedArmoEdids, target))
+                Next
+                ' --- Phase 2f: build ArmaRecordEntry for each needed ARMA draft. ---
+                Dim usedArmaEdids As New HashSet(Of String)(StringComparer.OrdinalIgnoreCase)
+                For Each fid In neededArma
+                    Dim d = armaByFid(fid)
+                    armaEntries.Add(BuildArmaEntry(d, ctx, espNameNoExt, usedArmaEdids, target))
+                Next
+                ' --- Phase 2g: build MswpRecordEntry for each needed MSWP draft. ---
+                Dim usedMswpEdids As New HashSet(Of String)(StringComparer.OrdinalIgnoreCase)
+                For Each fid In neededMswp
+                    Dim d = mswpByFid(fid)
+                    mswpEntries.Add(BuildMswpEntry(d, ctx, espNameNoExt, usedMswpEdids, target))
+                Next
+            End If
+        End If
+
+        ' Phase 2h: add the saved NPCs to a Leveled NPC list (LVLN) when requested. Each saved NPC's
         ' GLOBAL FormID (inputs(i).NpcFormID is global — GetRecord-keyed) becomes one LVLO entry. We pass
         ' GLOBAL FormIDs and 0xFF provisional sentinels ONLY — the writer's remapper/draftRemap does ALL
         ' master/high-byte/ESL mapping; nothing here computes a high byte (same contract as the LVLI path).
@@ -563,7 +699,8 @@ Public Module NpcOverrideSaver
         Dim writeRes = SaveNpcEspWriter.SaveOverridePlugin(
             target.TargetPath, game, target.MarkAsMaster, target.LightMaster,
             entries, existingRecords, existingMasters, ctx.PluginManager, outfitEntries, leveledEntries,
-            existingNextObjectId)
+            existingNextObjectId,
+            armoEntries:=armoEntries, armaEntries:=armaEntries, mswpEntries:=mswpEntries)
 
         result.WriterResult = writeRes
         result.DraftFormIdMap = writeRes.DraftFormIdMap
@@ -822,6 +959,164 @@ Public Module NpcOverrideSaver
             n += 1
         Loop While Not used.Add(candidate)
         Return candidate
+    End Function
+
+    ''' <summary>Resolve a draft's final EditorID + (for OVERRIDE) its parsed SourceRecord/VCS. Shared by the
+    ''' three armor draft builders so the NEW-vs-OVERRIDE contract is identical to the OTFT draft path (Phase 2c):
+    '''   • NEW  → namespaced EDID (ApplyEspNamespaceToEditorId) made unique within <paramref name="usedEdids"/>.
+    '''   • OVERRIDE → EDID kept verbatim (targets a real record by FormID), but still seeded into the set so a
+    '''     later NEW draft of the same kind can't collide with it. SourceRecord = GetRecord(d.FormID) (the draft's
+    '''     FormID IS the real GLOBAL FormID for overrides — same key/value the OTFT override path resolves), and
+    '''     OriginalVcs1/2 come from its header. Throws if the source record can't be found / is the wrong type
+    '''     (a stale override target must fail loud, never silently emit a NEW record with a 0xFF FormID).</summary>
+    Private Sub ResolveArmorDraftHeader(formID As UInteger, isOverride As Boolean, draftEdid As String, signature As String,
+                                        espNameNoExt As String, usedEdids As HashSet(Of String), target As SaveEsp_Form.SaveTarget,
+                                        ctx As SaveContext,
+                                        ByRef finalEdid As String, ByRef src As PluginRecord,
+                                        ByRef vcs1 As UInteger, ByRef vcs2 As UShort)
+        src = Nothing
+        vcs1 = 0UI
+        vcs2 = 0US
+        If isOverride Then
+            finalEdid = draftEdid
+            usedEdids.Add(finalEdid)
+            src = ctx.PluginManager.GetRecord(formID)
+            If src Is Nothing OrElse src.Header.Signature <> signature Then
+                Throw New InvalidDataException(
+                    $"{signature} override draft targets FormID {formID:X8}, which is not a loaded {signature} record. " &
+                    "The source record must exist to emit an override (re-load the plugin or recreate the draft as new).")
+            End If
+            vcs1 = src.Header.VCS1
+            vcs2 = src.Header.VCS2
+        Else
+            Dim desired = ApplyEspNamespaceToEditorId(draftEdid, espNameNoExt)
+            Dim chosen = MakeUniqueEditorId(desired, usedEdids)
+            finalEdid = chosen
+            If Not String.Equals(chosen, desired, StringComparison.Ordinal) Then
+                ' Copy into a local: a ByRef parameter (finalEdid) can't be captured in the LogLazy lambda.
+                Logger.LogLazy(Function() $"[SAVE] {signature} EditorID '{desired}' already used in {IO.Path.GetFileName(target.TargetPath)} → renamed to '{chosen}' (FormID unchanged).")
+            End If
+        End If
+    End Sub
+
+    ''' <summary>Build an <see cref="SaveNpcEspWriter.ArmoRecordEntry"/> from an <see cref="ArmoDraft"/> (Phase 2e).
+    ''' Mirrors the OTFT draft→entry construction in Phase 2c: NEW carries the provisional FormID + IsOverride=False;
+    ''' OVERRIDE carries the real GLOBAL FormID + IsOverride=True + SourceRecord/VCS (the writer copies the
+    ''' non-owned subrecords verbatim from SourceRecord and remaps their FormIDs).</summary>
+    Private Function BuildArmoEntry(d As ArmoDraft, ctx As SaveContext, espNameNoExt As String,
+                                    usedEdids As HashSet(Of String), target As SaveEsp_Form.SaveTarget) As SaveNpcEspWriter.ArmoRecordEntry
+        Dim finalEdid As String = Nothing, src As PluginRecord = Nothing
+        Dim vcs1 As UInteger, vcs2 As UShort
+        ResolveArmorDraftHeader(d.FormID, d.IsOverride, d.EditorID, "ARMO", espNameNoExt, usedEdids, target, ctx, finalEdid, src, vcs1, vcs2)
+        Dim e As New SaveNpcEspWriter.ArmoRecordEntry With {
+            .FormID = d.FormID,
+            .EditorID = finalEdid,
+            .FullName = d.FullName,
+            .SlotMask = d.SlotMask,
+            .RaceFormID = d.RaceFormID,
+            .TemplateArmorFormID = d.TemplateArmorFormID,
+            .MaleWorldModelPath = d.MaleWorldModelPath,
+            .FemaleWorldModelPath = d.FemaleWorldModelPath,
+            .MaleMaterialSwapFormID = d.MaleMaterialSwapFormID,
+            .FemaleMaterialSwapFormID = d.FemaleMaterialSwapFormID,
+            .Value = d.Value,
+            .Weight = d.Weight,
+            .Health = d.Health,
+            .ArmorRating = d.ArmorRating,
+            .BaseAddonIndex = d.BaseAddonIndex,
+            .StaggerRating = d.StaggerRating,
+            .IsOverride = d.IsOverride,
+            .OriginalVcs1 = vcs1,
+            .OriginalVcs2 = vcs2,
+            .SourceRecord = src
+        }
+        For Each a In d.ArmorAddons
+            e.ArmorAddons.Add(New ARMO_AddonEntry With {.AddonIndex = a.AddonIndex, .ArmaFormID = a.ArmaFormID})
+        Next
+        e.KeywordFormIDs.AddRange(d.KeywordFormIDs)
+        e.AttachParentSlotFormIDs.AddRange(d.AttachParentSlotFormIDs)
+        Return e
+    End Function
+
+    ''' <summary>Build an <see cref="SaveNpcEspWriter.ArmaRecordEntry"/> from an <see cref="ArmaDraft"/> (Phase 2f).
+    ''' Same NEW/OVERRIDE contract as <see cref="BuildArmoEntry"/>.</summary>
+    Private Function BuildArmaEntry(d As ArmaDraft, ctx As SaveContext, espNameNoExt As String,
+                                    usedEdids As HashSet(Of String), target As SaveEsp_Form.SaveTarget) As SaveNpcEspWriter.ArmaRecordEntry
+        Dim finalEdid As String = Nothing, src As PluginRecord = Nothing
+        Dim vcs1 As UInteger, vcs2 As UShort
+        ResolveArmorDraftHeader(d.FormID, d.IsOverride, d.EditorID, "ARMA", espNameNoExt, usedEdids, target, ctx, finalEdid, src, vcs1, vcs2)
+        Dim e As New SaveNpcEspWriter.ArmaRecordEntry With {
+            .FormID = d.FormID,
+            .EditorID = finalEdid,
+            .SlotMask = d.SlotMask,
+            .RaceFormID = d.RaceFormID,
+            .MalePriority = d.MalePriority,
+            .FemalePriority = d.FemalePriority,
+            .MaleWeightSliderFlags = d.MaleWeightSliderFlags,
+            .FemaleWeightSliderFlags = d.FemaleWeightSliderFlags,
+            .DetectionSoundValue = d.DetectionSoundValue,
+            .WeaponAdjust = d.WeaponAdjust,
+            .MaleMeshPath = d.MaleMeshPath,
+            .FemaleMeshPath = d.FemaleMeshPath,
+            .MaleFPMeshPath = d.MaleFPMeshPath,
+            .FemaleFPMeshPath = d.FemaleFPMeshPath,
+            .MaleModelFlags = d.MaleModelFlags,
+            .FemaleModelFlags = d.FemaleModelFlags,
+            .MaleFPModelFlags = d.MaleFPModelFlags,
+            .FemaleFPModelFlags = d.FemaleFPModelFlags,
+            .MaleColorRemapIndex = d.MaleColorRemapIndex,
+            .FemaleColorRemapIndex = d.FemaleColorRemapIndex,
+            .MaleSkinTextureFormID = d.MaleSkinTextureFormID,
+            .FemaleSkinTextureFormID = d.FemaleSkinTextureFormID,
+            .MaleSkinTextureSwapListFormID = d.MaleSkinTextureSwapListFormID,
+            .FemaleSkinTextureSwapListFormID = d.FemaleSkinTextureSwapListFormID,
+            .MaleMaterialSwapFormID = d.MaleMaterialSwapFormID,
+            .FemaleMaterialSwapFormID = d.FemaleMaterialSwapFormID,
+            .NoUnderarmorScaling = d.NoUnderarmorScaling,
+            .HasSculptData = d.HasSculptData,
+            .HiRes1stPersonOnly = d.HiRes1stPersonOnly,
+            .IsOverride = d.IsOverride,
+            .OriginalVcs1 = vcs1,
+            .OriginalVcs2 = vcs2,
+            .SourceRecord = src
+        }
+        e.AdditionalRaces.AddRange(d.AdditionalRaces)
+        For Each g In d.BoneScaleData
+            Dim cg As New ARMA_BoneScaleGender With {.Gender = g.Gender}
+            For Each bd In g.Bones
+                cg.Bones.Add(New ARMA_BoneScaleDelta With {
+                    .BoneName = bd.BoneName, .DeltaX = bd.DeltaX, .DeltaY = bd.DeltaY, .DeltaZ = bd.DeltaZ})
+            Next
+            e.BoneScaleData.Add(cg)
+        Next
+        Return e
+    End Function
+
+    ''' <summary>Build an <see cref="SaveNpcEspWriter.MswpRecordEntry"/> from an <see cref="MswpDraft"/> (Phase 2g).
+    ''' Same NEW/OVERRIDE contract as <see cref="BuildArmoEntry"/>.</summary>
+    Private Function BuildMswpEntry(d As MswpDraft, ctx As SaveContext, espNameNoExt As String,
+                                    usedEdids As HashSet(Of String), target As SaveEsp_Form.SaveTarget) As SaveNpcEspWriter.MswpRecordEntry
+        Dim finalEdid As String = Nothing, src As PluginRecord = Nothing
+        Dim vcs1 As UInteger, vcs2 As UShort
+        ResolveArmorDraftHeader(d.FormID, d.IsOverride, d.EditorID, "MSWP", espNameNoExt, usedEdids, target, ctx, finalEdid, src, vcs1, vcs2)
+        Dim e As New SaveNpcEspWriter.MswpRecordEntry With {
+            .FormID = d.FormID,
+            .EditorID = finalEdid,
+            .TreeFolder = d.TreeFolder,
+            .IsOverride = d.IsOverride,
+            .OriginalVcs1 = vcs1,
+            .OriginalVcs2 = vcs2,
+            .SourceRecord = src
+        }
+        For Each s In d.Substitutions
+            e.Substitutions.Add(New MSWP_Substitution With {
+                .OriginalMaterial = s.OriginalMaterial,
+                .ReplacementMaterial = s.ReplacementMaterial,
+                .TreeFolder = s.TreeFolder,
+                .HasColorRemapIndex = s.HasColorRemapIndex,
+                .ColorRemapIndex = s.ColorRemapIndex})
+        Next
+        Return e
     End Function
 
     ''' <summary>Build (or extend) the Leveled NPC list(s) for a save where <c>AddToLvlList</c> is set, and
