@@ -53,9 +53,10 @@ Partial Class OutfitPicker_Form
         LabelEdidPrefix = New Label()
         TextBoxEdid = New TextBox()
         ModeRow = New FlowLayoutPanel()
-        RadioButtonNew = New RadioButton()
-        RadioButtonOverride = New RadioButton()
+        ButtonNewOutfit = New Button()
+        ButtonOverrideOutfit = New Button()
         LabelCreateStatus = New Label()
+        LabelCreateBanner = New Label()
         PreviewLayout = New TableLayoutPanel()
         PreviewControlPanel = New Panel()
         PreviewModeRow = New FlowLayoutPanel()
@@ -218,20 +219,22 @@ Partial Class OutfitPicker_Form
         ' 
         CreateLayout.ColumnCount = 1
         CreateLayout.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100F))
-        CreateLayout.Controls.Add(LabelItems, 0, 0)
-        CreateLayout.Controls.Add(TextBoxItemFilter, 0, 1)
-        CreateLayout.Controls.Add(ListViewItems, 0, 2)
-        CreateLayout.Controls.Add(AddButtonsRow, 0, 3)
-        CreateLayout.Controls.Add(LabelPieces, 0, 4)
-        CreateLayout.Controls.Add(ListViewPieces, 0, 5)
-        CreateLayout.Controls.Add(PiecesButtonsRow, 0, 6)
-        CreateLayout.Controls.Add(EdidRow, 0, 7)
-        CreateLayout.Controls.Add(ModeRow, 0, 8)
-        CreateLayout.Controls.Add(LabelCreateStatus, 0, 9)
+        CreateLayout.Controls.Add(LabelCreateBanner, 0, 0)
+        CreateLayout.Controls.Add(LabelItems, 0, 1)
+        CreateLayout.Controls.Add(TextBoxItemFilter, 0, 2)
+        CreateLayout.Controls.Add(ListViewItems, 0, 3)
+        CreateLayout.Controls.Add(AddButtonsRow, 0, 4)
+        CreateLayout.Controls.Add(LabelPieces, 0, 5)
+        CreateLayout.Controls.Add(ListViewPieces, 0, 6)
+        CreateLayout.Controls.Add(PiecesButtonsRow, 0, 7)
+        CreateLayout.Controls.Add(EdidRow, 0, 8)
+        CreateLayout.Controls.Add(ModeRow, 0, 9)
+        CreateLayout.Controls.Add(LabelCreateStatus, 0, 10)
         CreateLayout.Dock = DockStyle.Fill
         CreateLayout.Location = New Point(6, 6)
         CreateLayout.Name = "CreateLayout"
-        CreateLayout.RowCount = 10
+        CreateLayout.RowCount = 11
+        CreateLayout.RowStyles.Add(New RowStyle())
         CreateLayout.RowStyles.Add(New RowStyle())
         CreateLayout.RowStyles.Add(New RowStyle())
         CreateLayout.RowStyles.Add(New RowStyle(SizeType.Percent, 50F))
@@ -454,40 +457,50 @@ Partial Class OutfitPicker_Form
         ' ModeRow
         ' 
         ModeRow.AutoSize = True
-        ModeRow.Controls.Add(RadioButtonNew)
-        ModeRow.Controls.Add(RadioButtonOverride)
+        ModeRow.Controls.Add(ButtonNewOutfit)
+        ModeRow.Controls.Add(ButtonOverrideOutfit)
         ModeRow.Dock = DockStyle.Fill
         ModeRow.Location = New Point(0, 436)
         ModeRow.Margin = New Padding(0)
         ModeRow.Name = "ModeRow"
-        ModeRow.Size = New Size(719, 25)
+        ModeRow.Size = New Size(719, 31)
         ModeRow.TabIndex = 8
         ModeRow.WrapContents = False
-        ' 
-        ' RadioButtonNew
-        ' 
-        RadioButtonNew.AutoSize = True
-        RadioButtonNew.Checked = True
-        RadioButtonNew.Location = New Point(3, 3)
-        RadioButtonNew.Name = "RadioButtonNew"
-        RadioButtonNew.Size = New Size(81, 19)
-        RadioButtonNew.TabIndex = 0
-        RadioButtonNew.TabStop = True
-        RadioButtonNew.Text = "New outfit"
-        RadioButtonNew.UseVisualStyleBackColor = True
-        ' 
-        ' RadioButtonOverride
-        ' 
-        RadioButtonOverride.AutoSize = True
-        RadioButtonOverride.Location = New Point(90, 3)
-        RadioButtonOverride.Name = "RadioButtonOverride"
-        RadioButtonOverride.Size = New Size(273, 19)
-        RadioButtonOverride.TabIndex = 1
-        RadioButtonOverride.Text = "Override the selected/loaded outfit (keep EDID)"
-        RadioButtonOverride.UseVisualStyleBackColor = True
-        ' 
+        '
+        ' ButtonNewOutfit
+        '
+        ButtonNewOutfit.AutoSize = True
+        ButtonNewOutfit.Location = New Point(3, 3)
+        ButtonNewOutfit.Name = "ButtonNewOutfit"
+        ButtonNewOutfit.Size = New Size(110, 25)
+        ButtonNewOutfit.TabIndex = 0
+        ButtonNewOutfit.Text = "New outfit"
+        ButtonNewOutfit.UseVisualStyleBackColor = True
+        '
+        ' ButtonOverrideOutfit
+        '
+        ButtonOverrideOutfit.AutoSize = True
+        ButtonOverrideOutfit.Location = New Point(119, 3)
+        ButtonOverrideOutfit.Name = "ButtonOverrideOutfit"
+        ButtonOverrideOutfit.Size = New Size(200, 25)
+        ButtonOverrideOutfit.Text = "Override selected/loaded outfit…"
+        ButtonOverrideOutfit.TabIndex = 1
+        ButtonOverrideOutfit.UseVisualStyleBackColor = True
+        '
+        ' LabelCreateBanner
+        '
+        LabelCreateBanner.AutoSize = True
+        LabelCreateBanner.Dock = DockStyle.Fill
+        LabelCreateBanner.Font = New Font("Segoe UI", 9.75F, FontStyle.Bold)
+        LabelCreateBanner.Location = New Point(3, 0)
+        LabelCreateBanner.Margin = New Padding(3, 2, 3, 6)
+        LabelCreateBanner.Name = "LabelCreateBanner"
+        LabelCreateBanner.Size = New Size(713, 19)
+        LabelCreateBanner.TabIndex = 0
+        LabelCreateBanner.Text = "NEW outfit"
+        '
         ' LabelCreateStatus
-        ' 
+        '
         LabelCreateStatus.AutoSize = True
         LabelCreateStatus.ForeColor = Color.DimGray
         LabelCreateStatus.Location = New Point(0, 463)
@@ -663,8 +676,9 @@ Partial Class OutfitPicker_Form
     Friend WithEvents LabelEdidPrefix As System.Windows.Forms.Label
     Friend WithEvents TextBoxEdid As System.Windows.Forms.TextBox
     Friend WithEvents ModeRow As System.Windows.Forms.FlowLayoutPanel
-    Friend WithEvents RadioButtonNew As System.Windows.Forms.RadioButton
-    Friend WithEvents RadioButtonOverride As System.Windows.Forms.RadioButton
+    Friend WithEvents ButtonNewOutfit As System.Windows.Forms.Button
+    Friend WithEvents ButtonOverrideOutfit As System.Windows.Forms.Button
+    Friend WithEvents LabelCreateBanner As System.Windows.Forms.Label
     Friend WithEvents PreviewModeRow As System.Windows.Forms.FlowLayoutPanel
     Friend WithEvents RadioButtonRenderOutfit As System.Windows.Forms.RadioButton
     Friend WithEvents RadioButtonRenderPiece As System.Windows.Forms.RadioButton

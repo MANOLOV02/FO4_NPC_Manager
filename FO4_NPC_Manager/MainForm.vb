@@ -1523,7 +1523,9 @@ Public Class MainForm
             End If
             If _renderHost.LastSkelByArma IsNot Nothing Then
                 For Each kv In _renderHost.LastSkelByArma
-                    If kv.Value IsNot Nothing Then kv.Value.ApplyPose(pose)
+                    If kv.Value IsNot Nothing Then
+                        kv.Value.ApplyPose(pose)
+                    End If
                 Next
             End If
             ' [ANIM-BONE-DIAG] Diagnóstico (no fix): para resolver chunks (cabeza/brazos Assaultron) dumpea
@@ -1539,13 +1541,24 @@ Public Class MainForm
                               Dim r = t.Rotation, tt = t.Translation
                               Return $"R[{r.M11:F4},{r.M12:F4},{r.M13:F4}|{r.M21:F4},{r.M22:F4},{r.M23:F4}|{r.M31:F4},{r.M32:F4},{r.M33:F4}] T({tt.X:F3},{tt.Y:F3},{tt.Z:F3}) S={t.Scale:F4}"
                           End Function
-                For Each bn In {"Neck", "HeadTwist", "HeadNod", "LUPPERARM", "Chest"}
-                    Dim hb As HierarchiBone_class = Nothing
-                    If Not instD.SkeletonDictionary.TryGetValue(bn, hb) OrElse hb Is Nothing Then Continue For
+                ' TODOS los huesos del esqueleto (no un subset): ver todo para no diagnosticar a ciegas.
+                For Each kvpBone In instD.SkeletonDictionary
+                    Dim bn = kvpBone.Key
+                    Dim hb = kvpBone.Value
+                    If hb Is Nothing Then Continue For
                     Dim bnL = bn, frL = frame
                     Dim oS = fmt(hb.OriginalLocaLTransform), mS = fmt(hb.MountDeltaTransform), dS = fmt(hb.DeltaTransform), phS = fmt(hb.MorphDeltaTransform)
                     Dim bw = hb.OriginalGetGlobalTransform.Translation, pw = hb.GetGlobalTransform.Translation
-                    Logger.LogLazy(Function() $"[ANIM-BONE] f={frL} '{bnL}'{Environment.NewLine}    O    ={oS}{Environment.NewLine}    Mount={mS}{Environment.NewLine}    Morph={phS}{Environment.NewLine}    Delta={dS}{Environment.NewLine}    bindWorld.T=({bw.X:F3},{bw.Y:F3},{bw.Z:F3})  poseWorld.T=({pw.X:F3},{pw.Y:F3},{pw.Z:F3})")
+                    ' Padre: nombre + world POSE (para reconstruir la jerarquía/cascada real del app).
+                    Dim parName = "<root>"
+                    Dim parPwS = "n/a"
+                    If hb.Parent IsNot Nothing Then
+                        parName = hb.Parent.BoneName
+                        Dim ppw = hb.Parent.GetGlobalTransform.Translation
+                        parPwS = $"({ppw.X:F3},{ppw.Y:F3},{ppw.Z:F3})"
+                    End If
+                    Dim parNameL = parName, parPwSL = parPwS
+                    Logger.LogLazy(Function() $"[ANIM-BONE] f={frL} '{bnL}' parent='{parNameL}'{Environment.NewLine}    O    ={oS}{Environment.NewLine}    Mount={mS}{Environment.NewLine}    Morph={phS}{Environment.NewLine}    Delta={dS}{Environment.NewLine}    parentPoseW.T={parPwSL}  bindWorld.T=({bw.X:F3},{bw.Y:F3},{bw.Z:F3})  poseWorld.T=({pw.X:F3},{pw.Y:F3},{pw.Z:F3})")
                 Next
             End If
             ' Solo POSE dirty (no recarga geometría/materiales). Con PlayingAnimation=True el control
@@ -1661,6 +1674,7 @@ Public Class MainForm
         ' a non-draft FormID (real-record path runs) and a freshly-synthesized *_Data for a draft (never cached).
         _ctx.ArmoDraftResolver = Function(fid) BuildArmoDataFromDraft(fid)
         _ctx.ArmaDraftResolver = Function(fid) BuildArmaDataFromDraft(fid)
+        _ctx.MswpDraftResolver = Function(fid) BuildMswpDataFromDraft(fid)
         _materialResolver = New NpcMaterialResolver(_ctx, AddressOf ApplyPresetOverlayToNpcData)
         _stateResolver = New NpcStateResolver(_ctx, _materialResolver, _appliedPresets, _lvlnDataCache,
                                               Function() CurrentGenderFilter, AddressOf ResolveLmSkinTemplate)
@@ -2259,7 +2273,7 @@ Public Class MainForm
     End Function
 
     ' =====================================================================
-    ' Armor Editor (ArmorEditor_Form) — draft registrars + read access.
+    ' ARMA Editor (ArmaEditor_Form) — draft registrars + read access.
     ' Mirror of RegisterOutfitDraft/TryGetOutfitDraft (same replace-by-FormID
     ' semantics, same shared AllocateDraftFormID counter). The form mutates
     ' these lists; the existing Save ESP flow persists the transitive closure.
@@ -2345,19 +2359,14 @@ Public Class MainForm
         Return _ctx.GetParsedArma(formID)
     End Function
 
-    ''' <summary>Parsed MSWP view (real record only — drafts are read straight off the MswpDraft).
-    ''' Nothing when the FormID is not a real MSWP.</summary>
-    Friend Function GetParsedMswpForEditor(formID As UInteger) As MSWP_Data
-        Dim rec = _pluginManager.GetRecord(formID)
-        If rec Is Nothing OrElse rec.Header.Signature <> "MSWP" Then Return Nothing
-        Return RecordParsers.ParseMSWP(rec, _pluginManager)
-    End Function
-
-    ''' <summary>True when <paramref name="formID"/> is a provisional draft sentinel (0xFF high byte)
-    ''' so the editor can label "(new)" vs a real global FormID. Wraps <see cref="OutfitDraft.IsDraftFormID"/>.</summary>
-    Friend Function IsDraftFormID(formID As UInteger) As Boolean
-        Return OutfitDraft.IsDraftFormID(formID)
-    End Function
+    ''' <summary>The master plugin manager (the record source) exposed for the ARMA Editor's
+    ''' <see cref="FormIdPicker_Form"/> instances — it enumerates records of the allowed signatures
+    ''' itself. Read-only handle; the editor never mutates loaded records.</summary>
+    Friend ReadOnly Property PluginManagerForEditor As PluginManager
+        Get
+            Return _pluginManager
+        End Get
+    End Property
 
     ''' <summary>True if <paramref name="edid"/> is free for a new owned ARMO/ARMA/MSWP record: not used by
     ''' another draft (any kind) or any loaded record. EditorIDs are globally unique. Reuses the outfit-draft
@@ -2374,97 +2383,6 @@ Public Class MainForm
             If String.Equals(d.EditorID, edid, StringComparison.OrdinalIgnoreCase) Then Return False
         Next
         Return IsOutfitEditorIdAvailable(edid)
-    End Function
-
-    ''' <summary>RACE records for the Armor Editor's Race combo: (FormID, "EditorID (FullName)") sorted by
-    ''' display. Includes a synthetic "(none)" entry semantic the caller adds (FormID 0). One-time scan over
-    ''' AllRecords — the editor calls it on open.</summary>
-    Friend Function GetRaceCandidatesForEditor() As List(Of (FormID As UInteger, DisplayName As String))
-        Dim result As New List(Of (FormID As UInteger, DisplayName As String))
-        For Each kvp In _pluginManager.AllRecords
-            Dim rec = kvp.Value
-            If rec Is Nothing OrElse rec.Header.Signature <> "RACE" Then Continue For
-            Dim r = RecordParsers.ParseRACE(rec, _pluginManager)
-            If r Is Nothing Then Continue For
-            Dim disp = If(Not String.IsNullOrEmpty(r.EditorID), r.EditorID, r.FormID.ToString("X8"))
-            If Not String.IsNullOrEmpty(r.FullName) Then disp &= "  (" & r.FullName & ")"
-            result.Add((r.FormID, disp))
-        Next
-        result.Sort(Function(a, b) String.Compare(a.DisplayName, b.DisplayName, StringComparison.OrdinalIgnoreCase))
-        Return result
-    End Function
-
-    ''' <summary>KYWD records for the Armor Editor's keyword picker: (FormID, "EditorID (FullName)") sorted.
-    ''' One-time scan over AllRecords.</summary>
-    Friend Function GetKeywordCandidatesForEditor() As List(Of (FormID As UInteger, DisplayName As String))
-        Dim result As New List(Of (FormID As UInteger, DisplayName As String))
-        For Each kvp In _pluginManager.AllRecords
-            Dim rec = kvp.Value
-            If rec Is Nothing OrElse rec.Header.Signature <> "KYWD" Then Continue For
-            Dim disp = If(Not String.IsNullOrEmpty(rec.EditorID), rec.EditorID, rec.Header.FormID.ToString("X8"))
-            result.Add((rec.Header.FormID, disp))
-        Next
-        result.Sort(Function(a, b) String.Compare(a.DisplayName, b.DisplayName, StringComparison.OrdinalIgnoreCase))
-        Return result
-    End Function
-
-    ''' <summary>TXST records for the Armor Editor's skin-texture combos (ARMA NAM0/NAM1):
-    ''' (FormID, "EditorID") sorted. One-time scan over AllRecords.</summary>
-    Friend Function GetTxstCandidatesForEditor() As List(Of (FormID As UInteger, DisplayName As String))
-        Dim result As New List(Of (FormID As UInteger, DisplayName As String))
-        For Each kvp In _pluginManager.AllRecords
-            Dim rec = kvp.Value
-            If rec Is Nothing OrElse rec.Header.Signature <> "TXST" Then Continue For
-            Dim disp = If(Not String.IsNullOrEmpty(rec.EditorID), rec.EditorID, rec.Header.FormID.ToString("X8"))
-            result.Add((rec.Header.FormID, disp))
-        Next
-        result.Sort(Function(a, b) String.Compare(a.DisplayName, b.DisplayName, StringComparison.OrdinalIgnoreCase))
-        Return result
-    End Function
-
-    ''' <summary>MSWP records (real, from the load order) for the Armor Editor's material-swap combo:
-    ''' (FormID, "EditorID") sorted. The combo also appends the current <see cref="MswpDrafts"/>. One-time
-    ''' scan over AllRecords.</summary>
-    Friend Function GetMswpCandidatesForEditor() As List(Of (FormID As UInteger, DisplayName As String))
-        Dim result As New List(Of (FormID As UInteger, DisplayName As String))
-        For Each kvp In _pluginManager.AllRecords
-            Dim rec = kvp.Value
-            If rec Is Nothing OrElse rec.Header.Signature <> "MSWP" Then Continue For
-            Dim disp = If(Not String.IsNullOrEmpty(rec.EditorID), rec.EditorID, rec.Header.FormID.ToString("X8"))
-            result.Add((rec.Header.FormID, disp))
-        Next
-        result.Sort(Function(a, b) String.Compare(a.DisplayName, b.DisplayName, StringComparison.OrdinalIgnoreCase))
-        Return result
-    End Function
-
-    ''' <summary>ARMO records (real, from the load order) for the Armor Editor's "Override existing…" picker:
-    ''' (FormID, "EditorID (FullName)", Plugin) sorted. One-time scan over AllRecords.</summary>
-    Friend Function GetArmoRecordsForEditor() As List(Of (FormID As UInteger, DisplayName As String, Plugin As String))
-        Dim result As New List(Of (FormID As UInteger, DisplayName As String, Plugin As String))
-        For Each kvp In _pluginManager.AllRecords
-            Dim rec = kvp.Value
-            If rec Is Nothing OrElse rec.Header.Signature <> "ARMO" Then Continue For
-            Dim a = RecordParsers.ParseARMO(rec, _pluginManager)
-            Dim disp = If(a IsNot Nothing AndAlso Not String.IsNullOrEmpty(a.FullName), a.FullName,
-                          If(Not String.IsNullOrEmpty(rec.EditorID), rec.EditorID, rec.Header.FormID.ToString("X8")))
-            result.Add((rec.Header.FormID, disp, rec.SourcePluginName))
-        Next
-        result.Sort(Function(a, b) String.Compare(a.DisplayName, b.DisplayName, StringComparison.OrdinalIgnoreCase))
-        Return result
-    End Function
-
-    ''' <summary>ARMA records (real, from the load order) for the Armor Editor's "Override existing…" picker:
-    ''' (FormID, "EditorID", Plugin) sorted. One-time scan over AllRecords.</summary>
-    Friend Function GetArmaRecordsForEditor() As List(Of (FormID As UInteger, DisplayName As String, Plugin As String))
-        Dim result As New List(Of (FormID As UInteger, DisplayName As String, Plugin As String))
-        For Each kvp In _pluginManager.AllRecords
-            Dim rec = kvp.Value
-            If rec Is Nothing OrElse rec.Header.Signature <> "ARMA" Then Continue For
-            Dim disp = If(Not String.IsNullOrEmpty(rec.EditorID), rec.EditorID, rec.Header.FormID.ToString("X8"))
-            result.Add((rec.Header.FormID, disp, rec.SourcePluginName))
-        Next
-        result.Sort(Function(a, b) String.Compare(a.DisplayName, b.DisplayName, StringComparison.OrdinalIgnoreCase))
-        Return result
     End Function
 
     ''' <summary>Display name for any record/draft FormID used in the Armor Editor combos (MSWP/TXST/RACE/ARMO).
@@ -2570,6 +2488,29 @@ Public Class MainForm
                     .BoneName = b.BoneName, .DeltaX = b.DeltaX, .DeltaY = b.DeltaY, .DeltaZ = b.DeltaZ})
             Next
             data.BoneScaleData.Add(cg)
+        Next
+        Return data
+    End Function
+
+    ''' <summary>Synthesize an <see cref="MSWP_Data"/> from an in-memory MSWP draft, or Nothing if
+    ''' <paramref name="fid"/> is not an MSWP draft. Deep-copies the substitution pairs so the render path
+    ''' never mutates the draft. Synthesized FRESH on each call (no caching) so a live edit to the draft's
+    ''' swaps shows on the next render. Mirror of <see cref="BuildArmoDataFromDraft"/>/<see cref="BuildArmaDataFromDraft"/>.</summary>
+    Private Function BuildMswpDataFromDraft(fid As UInteger) As MSWP_Data
+        Dim d = TryGetMswpDraft(fid)
+        If d Is Nothing Then Return Nothing
+        Dim data As New MSWP_Data With {
+            .FormID = d.FormID,
+            .EditorID = d.EditorID,
+            .TreeFolder = d.TreeFolder
+        }
+        For Each s In d.Substitutions
+            data.Substitutions.Add(New MSWP_Substitution With {
+                .OriginalMaterial = s.OriginalMaterial,
+                .ReplacementMaterial = s.ReplacementMaterial,
+                .TreeFolder = s.TreeFolder,
+                .HasColorRemapIndex = s.HasColorRemapIndex,
+                .ColorRemapIndex = s.ColorRemapIndex})
         Next
         Return data
     End Function
@@ -6601,6 +6542,48 @@ Public Class MainForm
         Return arma.RaceFormID = raceFormID OrElse arma.AdditionalRaces.Contains(raceFormID)
     End Function
 
+    ''' <summary>True if an ARMA is wearable by <paramref name="raceFid"/> for the FormIdPicker race filter — the
+    ''' SAME per-ARMA race match the render/candidate paths use (<see cref="ArmorAddonMatchesRace"/> with the
+    ''' RNAM "Armor Race" redirect + AdditionalRaces, via <see cref="NpcRenderContext.GetEffectiveArmorRaces"/>).
+    ''' <paramref name="raceFid"/> = 0 (editor opened without a preview NPC) → True, i.e. no filtering. The ARMA
+    ''' is resolved through the draft-aware <see cref="NpcRenderContext.GetParsedArma"/>, so draft ARMAs are
+    ''' filtered consistently. A FormID that resolves to no ARMA returns False.</summary>
+    Friend Function IsArmaRaceCompatible(armaFid As UInteger, raceFid As UInteger) As Boolean
+        If raceFid = 0UI Then Return True
+        Dim arma As ARMA_Data
+        Try
+            arma = _ctx.GetParsedArma(armaFid)
+        Catch
+            Return False
+        End Try
+        If arma Is Nothing Then Return False
+        Return ArmorAddonMatchesRace(arma, raceFid, _ctx.GetEffectiveArmorRaces(raceFid))
+    End Function
+
+    ''' <summary>True if an ARMO is wearable by <paramref name="raceFid"/> for the FormIdPicker race filter. An
+    ''' ARMO qualifies iff at least one of its ArmorAddons ARMAs is race-compatible (<see cref="IsArmaRaceCompatible"/>)
+    ''' — the PER-ARMA match, NOT <c>ARMO.RaceFormID</c>: a clothing ARMO commonly carries RNAM=HumanRace but is
+    ''' worn by ghouls via a sub-ARMA's AdditionalRaces, so filtering by the ARMO's own race would wrongly hide it.
+    ''' This mirrors the per-ARMA OR that <see cref="ComputeArmoEffectiveSlotMask"/> / <see cref="GetArmoItemCandidates"/>
+    ''' use to decide an ARMO is valid for a race (without their extra gender-mesh/skin-TXST constraint, which would
+    ''' over-filter a generic Template picker). <paramref name="raceFid"/> = 0 → True (no filtering). The ARMO is
+    ''' resolved through the draft-aware <see cref="NpcRenderContext.GetParsedArmo"/>. <paramref name="isFemale"/> is
+    ''' accepted for parity with the candidate helpers; v1 gates on race only (per-ARMA race match is sufficient).</summary>
+    Friend Function IsArmoRaceCompatible(armoFid As UInteger, raceFid As UInteger, isFemale As Boolean) As Boolean
+        If raceFid = 0UI Then Return True
+        Dim armo As ARMO_Data
+        Try
+            armo = _ctx.GetParsedArmo(armoFid)
+        Catch
+            Return False
+        End Try
+        If armo Is Nothing Then Return False
+        For Each addon In armo.ArmorAddons
+            If IsArmaRaceCompatible(addon.ArmaFormID, raceFid) Then Return True
+        Next
+        Return False
+    End Function
+
 
 
 
@@ -8094,25 +8077,35 @@ Public Class MainForm
         End Using
     End Sub
 
-    ''' <summary>Open the standalone Armor Editor (ARMO/ARMA/MSWP authoring). The editor mutates the MainForm
-    ''' draft lists only; the existing Save ESP flow persists them. Passes the currently-rendered NPC as the
-    ''' preview context (or 0 = no preview) plus its race/gender so new drafts pre-fill the right race and the
-    ''' preview equips on the right body. After close, the drafts are already in the lists; we rebuild the
-    ''' outfit/skin universes so the OutfitPicker / EditBody pickers pick up any new ARMO drafts.</summary>
-    Private Sub ButtonArmorEditor_Click(sender As Object, e As EventArgs) Handles ButtonArmorEditor.Click
+    ''' <summary>Open the standalone ARMA Editor (Armor Addon authoring). The editor mutates the MainForm
+    ''' ARMA/MSWP draft lists only; the existing Save ESP flow persists them. Passes the currently-rendered
+    ''' NPC as the preview context (or 0 = no preview) plus its race/gender so a new ARMA pre-fills the right
+    ''' race and the WYSIWYG preview equips on the right body. After close, the drafts are already registered;
+    ''' the OutfitPicker's item list reads ARMO drafts LIVE so nothing to rebuild here.</summary>
+    Private Sub ButtonArmaEditor_Click(sender As Object, e As EventArgs) Handles ButtonArmaEditor.Click
         Dim st = _renderHost.LastRenderedState
         Dim previewNpc As UInteger = If(st IsNot Nothing, st.RootNpcFormID, 0UI)
         Dim raceFid As UInteger = If(st IsNot Nothing, st.RaceFormID, 0UI)
         Dim isFemale As Boolean = (st IsNot Nothing AndAlso st.IsFemale)
 
-        Using dlg As New ArmorEditor_Form(Me, previewNpc, raceFid, isFemale)
+        Using dlg As New ArmaEditor_Form(Me, previewNpc, raceFid, isFemale)
             dlg.ShowDialog(Me)
         End Using
+    End Sub
 
-        ' The editor's drafts are already registered on MainForm. The OutfitPicker's item list reads ARMO
-        ' drafts LIVE (GetArmoItemCandidatesWithDrafts iterates _armoDrafts on every call), so a newly-
-        ' authored ARMO draft is already selectable there with no rebuild. The OTFT/skin universes are over
-        ' REAL records and are unaffected by drafts, so nothing to rebuild here.
+    ''' <summary>Open the standalone ARMO Editor (Armor authoring). Companion to the ARMA editor — mutates the
+    ''' MainForm ARMO/ARMA/MSWP draft lists only; the existing Save ESP flow persists them. Passes the
+    ''' currently-rendered NPC as the preview context (or 0 = no preview) plus its race/gender so a new ARMO
+    ''' pre-fills the right race and the WYSIWYG preview equips on the right body.</summary>
+    Private Sub ButtonArmoEditor_Click(sender As Object, e As EventArgs) Handles ButtonArmoEditor.Click
+        Dim st = _renderHost.LastRenderedState
+        Dim previewNpc As UInteger = If(st IsNot Nothing, st.RootNpcFormID, 0UI)
+        Dim raceFid As UInteger = If(st IsNot Nothing, st.RaceFormID, 0UI)
+        Dim isFemale As Boolean = (st IsNot Nothing AndAlso st.IsFemale)
+
+        Using dlg As New ArmoEditor_Form(Me, previewNpc, raceFid, isFemale)
+            dlg.ShowDialog(Me)
+        End Using
     End Sub
 
     ' =====================================================================

@@ -312,10 +312,11 @@ Public Module NpcOverrideSaver
         ' re-save of the same plugin doesn't choke (the writer only copy-through-preserves NPC_ records).
         ' Draft LVLIs (Phase 2d) append to this same list.
         Dim leveledEntries As New List(Of SaveNpcEspWriter.LvliRecordEntry)
-        ' Author-built ARMA/ARMO/MSWP drafts (Phases 2e/2f/2g) append to these. NEW-record only in this
-        ' task — there are no preserved existing ARMO/ARMA/MSWP entries to seed them (unlike OTFT/LVLI,
-        ' the existing-plugin sweep above doesn't re-emit those record types). The drafts themselves may
-        ' be OVERRIDE flavour (edit of a load-order record), which the writer emits via SourceRecord merge.
+        ' Author-built ARMA/ARMO/MSWP drafts (Phases 2e/2f/2g) append to these. The existing-plugin sweep
+        ' below ALSO re-emits preserved ARMO/ARMA/MSWP records of the target plugin as OVERRIDE entries here
+        ' (same as OTFT/LVLI) — without that they hit SerializeExistingRecord, which only handles NPC_ and
+        ' throws. The drafts themselves may be OVERRIDE flavour (edit of a load-order record), which the writer
+        ' emits via SourceRecord merge; Phases 2e/2f/2g dedup drafts against the preserved entries by FormID/EDID.
         Dim armoEntries As New List(Of SaveNpcEspWriter.ArmoRecordEntry)
         Dim armaEntries As New List(Of SaveNpcEspWriter.ArmaRecordEntry)
         Dim mswpEntries As New List(Of SaveNpcEspWriter.MswpRecordEntry)
@@ -434,6 +435,24 @@ Public Module NpcOverrideSaver
                         le.ModelSubrecords.Add((m.Signature, m.Data))
                     Next
                     leveledEntries.Add(le)
+                    Continue For
+                End If
+                ' ARMO/ARMA/MSWP authored in a prior save are preserved as OVERRIDE entries on their
+                ' respective draft paths (the writer's SerializeArmo/Arma/MswpRecordOverride path: owned
+                ' fields from the entry, all other subrecords copied verbatim from SourceRecord with FormIDs
+                ' remapped). Without this they fell through to existingRecords → SerializeExistingRecord, which
+                ' only handles NPC_ and threw "currently only supports NPC_ records. Encountered 'ARMO'…". The
+                ' draft phases (2e/2f/2g) APPEND to these same lists and dedup against the preserved entries.
+                If rec.Header.Signature = "ARMO" Then
+                    armoEntries.Add(BuildArmoEntryFromParsed(RecordParsers.ParseARMO(rec, ctx.PluginManager), rec, ctx))
+                    Continue For
+                End If
+                If rec.Header.Signature = "ARMA" Then
+                    armaEntries.Add(BuildArmaEntryFromParsed(RecordParsers.ParseARMA(rec, ctx.PluginManager), rec, ctx))
+                    Continue For
+                End If
+                If rec.Header.Signature = "MSWP" Then
+                    mswpEntries.Add(BuildMswpEntryFromParsed(RecordParsers.ParseMSWP(rec, ctx.PluginManager), rec, ctx))
                     Continue For
                 End If
                 existingRecords.Add(rec)
@@ -585,8 +604,9 @@ Public Module NpcOverrideSaver
         ' resolve regardless of emit order.
         '
         ' EDID uniqueness: every emitted record kind (OTFT/LVLI here too) shares one used-EDID set per kind, but
-        ' ARMO/ARMA/MSWP are distinct namespaces in xEdit (keyed by signature), so each gets its own set seeded
-        ' empty (this task emits no preserved existing ARMO/ARMA/MSWP). Override drafts keep their EDID verbatim.
+        ' ARMO/ARMA/MSWP are distinct namespaces in xEdit (keyed by signature), so each gets its own set. Each set
+        ' is SEEDED from the preserved-existing OVERRIDE entries of that kind (Phase 2a re-emits them) so a NEW
+        ' draft's namespaced EDID can't collide with a preserved record. Override drafts keep their EDID verbatim.
         If target.SaveNewOutfits Then
             ' Index every draft kind by FormID for O(1) closure lookups.
             Dim armoByFid As New Dictionary(Of UInteger, ArmoDraft)
@@ -614,6 +634,25 @@ Public Module NpcOverrideSaver
                 Dim neededArma As New HashSet(Of UInteger)
                 Dim neededMswp As New HashSet(Of UInteger)
                 Dim armoToVisit As New Queue(Of UInteger)
+
+                ' Phase-2a preserved FormIDs (existing target-plugin ARMO/ARMA/MSWP re-emitted as OVERRIDE).
+                ' A draft whose FormID matches one of these OVERRIDES a record that is being written regardless,
+                ' so it must ALWAYS reconcile (replace it) even when nothing in this batch references it —
+                ' otherwise the user's standalone edit is silently dropped and the unmodified original wins.
+                ' (Distinct from the "dirty AND referenced" rule below, which governs NEW orphan drafts so an
+                ' unreferenced new record doesn't bloat the plugin.)
+                Dim armoAlreadyEmitted As New HashSet(Of UInteger)(armoEntries.Select(Function(x) x.FormID))
+                Dim armaAlreadyEmitted As New HashSet(Of UInteger)(armaEntries.Select(Function(x) x.FormID))
+                Dim mswpAlreadyEmitted As New HashSet(Of UInteger)(mswpEntries.Select(Function(x) x.FormID))
+                For Each d In armoByFid.Values
+                    If armoAlreadyEmitted.Contains(d.FormID) AndAlso neededArmo.Add(d.FormID) Then armoToVisit.Enqueue(d.FormID)
+                Next
+                For Each d In armaByFid.Values
+                    If armaAlreadyEmitted.Contains(d.FormID) Then neededArma.Add(d.FormID)
+                Next
+                For Each d In mswpByFid.Values
+                    If mswpAlreadyEmitted.Contains(d.FormID) Then neededMswp.Add(d.FormID)
+                Next
 
                 ' --- Seed neededArmo: ARMO drafts referenced by an emitted OTFT's items. ---
                 For Each oe In outfitEntries
@@ -662,22 +701,34 @@ Public Module NpcOverrideSaver
                     If mswpByFid.ContainsKey(d.FemaleMaterialSwapFormID) Then neededMswp.Add(d.FemaleMaterialSwapFormID)
                 Next
 
+                ' EDID/FormID dedup against the preserved-existing OVERRIDE entries already in each list
+                ' (Phase 2a may have re-emitted ARMO/ARMA/MSWP records of the target plugin). Mirror of the
+                ' OTFT dedup (Phase 2c):
+                '   • Seed usedEdids from the EDITORIDs already bound, so a NEW draft's namespaced EDID doesn't
+                '     collide with a preserved record's EDID (auto-suffix _2/_3 on collision).
+                '   • A DRAFT whose FormID already exists in the list is an OVERRIDE re-edit of a record that was
+                '     ALSO preserved — the DRAFT wins (newer user edit): remove the pre-existing entry first.
+                '     Provisional NEW-draft FormIDs (0xFF…) never collide with the real ones in 'alreadyEmitted'.
+
                 ' --- Phase 2e: build ArmoRecordEntry for each needed ARMO draft. ---
-                Dim usedArmoEdids As New HashSet(Of String)(StringComparer.OrdinalIgnoreCase)
+                Dim usedArmoEdids As New HashSet(Of String)(armoEntries.Select(Function(x) x.EditorID), StringComparer.OrdinalIgnoreCase)
                 For Each fid In neededArmo
                     Dim d = armoByFid(fid)
+                    If armoAlreadyEmitted.Contains(d.FormID) Then armoEntries.RemoveAll(Function(x) x.FormID = d.FormID)
                     armoEntries.Add(BuildArmoEntry(d, ctx, espNameNoExt, usedArmoEdids, target))
                 Next
                 ' --- Phase 2f: build ArmaRecordEntry for each needed ARMA draft. ---
-                Dim usedArmaEdids As New HashSet(Of String)(StringComparer.OrdinalIgnoreCase)
+                Dim usedArmaEdids As New HashSet(Of String)(armaEntries.Select(Function(x) x.EditorID), StringComparer.OrdinalIgnoreCase)
                 For Each fid In neededArma
                     Dim d = armaByFid(fid)
+                    If armaAlreadyEmitted.Contains(d.FormID) Then armaEntries.RemoveAll(Function(x) x.FormID = d.FormID)
                     armaEntries.Add(BuildArmaEntry(d, ctx, espNameNoExt, usedArmaEdids, target))
                 Next
                 ' --- Phase 2g: build MswpRecordEntry for each needed MSWP draft. ---
-                Dim usedMswpEdids As New HashSet(Of String)(StringComparer.OrdinalIgnoreCase)
+                Dim usedMswpEdids As New HashSet(Of String)(mswpEntries.Select(Function(x) x.EditorID), StringComparer.OrdinalIgnoreCase)
                 For Each fid In neededMswp
                     Dim d = mswpByFid(fid)
+                    If mswpAlreadyEmitted.Contains(d.FormID) Then mswpEntries.RemoveAll(Function(x) x.FormID = d.FormID)
                     mswpEntries.Add(BuildMswpEntry(d, ctx, espNameNoExt, usedMswpEdids, target))
                 Next
             End If
@@ -1109,6 +1160,118 @@ Public Module NpcOverrideSaver
             .SourceRecord = src
         }
         For Each s In d.Substitutions
+            e.Substitutions.Add(New MSWP_Substitution With {
+                .OriginalMaterial = s.OriginalMaterial,
+                .ReplacementMaterial = s.ReplacementMaterial,
+                .TreeFolder = s.TreeFolder,
+                .HasColorRemapIndex = s.HasColorRemapIndex,
+                .ColorRemapIndex = s.ColorRemapIndex})
+        Next
+        Return e
+    End Function
+
+    ''' <summary>Build an <see cref="SaveNpcEspWriter.ArmoRecordEntry"/> OVERRIDE entry from a record PRESERVED
+    ''' out of the target plugin (Phase 2a). Mirrors <see cref="BuildArmoEntry"/>'s field map exactly, but sources
+    ''' every owned field from the parsed <see cref="ARMO_Data"/> instead of an <see cref="ArmoDraft"/>, and resolves
+    ''' the header from <paramref name="rec"/> directly (no <see cref="ResolveArmorDraftHeader"/> — the source record
+    ''' is in hand, the EditorID is kept verbatim, and the FormID is the record's resolved GLOBAL value). The parser
+    ''' already resolves all referenced FormIDs to GLOBAL — exactly what the writer's override remapper expects.</summary>
+    Private Function BuildArmoEntryFromParsed(parsed As ARMO_Data, rec As PluginRecord, ctx As SaveContext) As SaveNpcEspWriter.ArmoRecordEntry
+        Dim e As New SaveNpcEspWriter.ArmoRecordEntry With {
+            .FormID = ctx.PluginManager.ResolveReferencedFormID(rec.SourcePluginName, rec.Header.FormID),
+            .EditorID = parsed.EditorID,
+            .FullName = parsed.FullName,
+            .SlotMask = parsed.SlotMask,
+            .RaceFormID = parsed.RaceFormID,
+            .TemplateArmorFormID = parsed.TemplateArmorFormID,
+            .MaleWorldModelPath = parsed.MaleWorldModelPath,
+            .FemaleWorldModelPath = parsed.FemaleWorldModelPath,
+            .MaleMaterialSwapFormID = parsed.MaleMaterialSwapFormID,
+            .FemaleMaterialSwapFormID = parsed.FemaleMaterialSwapFormID,
+            .Value = parsed.Value,
+            .Weight = parsed.Weight,
+            .Health = parsed.Health,
+            .ArmorRating = parsed.ArmorRating,
+            .BaseAddonIndex = If(parsed.BaseAddonIndex >= 0, CUShort(parsed.BaseAddonIndex), CUShort(0)),
+            .StaggerRating = parsed.StaggerRating,
+            .IsOverride = True,
+            .OriginalVcs1 = rec.Header.VCS1,
+            .OriginalVcs2 = rec.Header.VCS2,
+            .SourceRecord = rec
+        }
+        For Each a In parsed.ArmorAddons
+            e.ArmorAddons.Add(New ARMO_AddonEntry With {.AddonIndex = a.AddonIndex, .ArmaFormID = a.ArmaFormID})
+        Next
+        e.KeywordFormIDs.AddRange(parsed.KeywordFormIDs)
+        e.AttachParentSlotFormIDs.AddRange(parsed.AttachParentSlotFormIDs)
+        Return e
+    End Function
+
+    ''' <summary>Build an <see cref="SaveNpcEspWriter.ArmaRecordEntry"/> OVERRIDE entry from a PRESERVED record
+    ''' (Phase 2a). Mirrors <see cref="BuildArmaEntry"/>'s field map, sourcing from the parsed <see cref="ARMA_Data"/>.
+    ''' See <see cref="BuildArmoEntryFromParsed"/> for the header/FormID-resolution rationale.</summary>
+    Private Function BuildArmaEntryFromParsed(parsed As ARMA_Data, rec As PluginRecord, ctx As SaveContext) As SaveNpcEspWriter.ArmaRecordEntry
+        Dim e As New SaveNpcEspWriter.ArmaRecordEntry With {
+            .FormID = ctx.PluginManager.ResolveReferencedFormID(rec.SourcePluginName, rec.Header.FormID),
+            .EditorID = parsed.EditorID,
+            .SlotMask = parsed.SlotMask,
+            .RaceFormID = parsed.RaceFormID,
+            .MalePriority = parsed.MalePriority,
+            .FemalePriority = parsed.FemalePriority,
+            .MaleWeightSliderFlags = parsed.MaleWeightSliderFlags,
+            .FemaleWeightSliderFlags = parsed.FemaleWeightSliderFlags,
+            .DetectionSoundValue = parsed.DetectionSoundValue,
+            .WeaponAdjust = parsed.WeaponAdjust,
+            .MaleMeshPath = parsed.MaleMeshPath,
+            .FemaleMeshPath = parsed.FemaleMeshPath,
+            .MaleFPMeshPath = parsed.MaleFPMeshPath,
+            .FemaleFPMeshPath = parsed.FemaleFPMeshPath,
+            .MaleModelFlags = parsed.MaleModelFlags,
+            .FemaleModelFlags = parsed.FemaleModelFlags,
+            .MaleFPModelFlags = parsed.MaleFPModelFlags,
+            .FemaleFPModelFlags = parsed.FemaleFPModelFlags,
+            .MaleColorRemapIndex = parsed.MaleColorRemapIndex,
+            .FemaleColorRemapIndex = parsed.FemaleColorRemapIndex,
+            .MaleSkinTextureFormID = parsed.MaleSkinTextureFormID,
+            .FemaleSkinTextureFormID = parsed.FemaleSkinTextureFormID,
+            .MaleSkinTextureSwapListFormID = parsed.MaleSkinTextureSwapListFormID,
+            .FemaleSkinTextureSwapListFormID = parsed.FemaleSkinTextureSwapListFormID,
+            .MaleMaterialSwapFormID = parsed.MaleMaterialSwapFormID,
+            .FemaleMaterialSwapFormID = parsed.FemaleMaterialSwapFormID,
+            .NoUnderarmorScaling = parsed.NoUnderarmorScaling,
+            .HasSculptData = parsed.HasSculptData,
+            .HiRes1stPersonOnly = parsed.HiRes1stPersonOnly,
+            .IsOverride = True,
+            .OriginalVcs1 = rec.Header.VCS1,
+            .OriginalVcs2 = rec.Header.VCS2,
+            .SourceRecord = rec
+        }
+        e.AdditionalRaces.AddRange(parsed.AdditionalRaces)
+        For Each g In parsed.BoneScaleData
+            Dim cg As New ARMA_BoneScaleGender With {.Gender = g.Gender}
+            For Each bd In g.Bones
+                cg.Bones.Add(New ARMA_BoneScaleDelta With {
+                    .BoneName = bd.BoneName, .DeltaX = bd.DeltaX, .DeltaY = bd.DeltaY, .DeltaZ = bd.DeltaZ})
+            Next
+            e.BoneScaleData.Add(cg)
+        Next
+        Return e
+    End Function
+
+    ''' <summary>Build an <see cref="SaveNpcEspWriter.MswpRecordEntry"/> OVERRIDE entry from a PRESERVED record
+    ''' (Phase 2a). Mirrors <see cref="BuildMswpEntry"/>'s field map, sourcing from the parsed <see cref="MSWP_Data"/>.
+    ''' See <see cref="BuildArmoEntryFromParsed"/> for the header/FormID-resolution rationale.</summary>
+    Private Function BuildMswpEntryFromParsed(parsed As MSWP_Data, rec As PluginRecord, ctx As SaveContext) As SaveNpcEspWriter.MswpRecordEntry
+        Dim e As New SaveNpcEspWriter.MswpRecordEntry With {
+            .FormID = ctx.PluginManager.ResolveReferencedFormID(rec.SourcePluginName, rec.Header.FormID),
+            .EditorID = parsed.EditorID,
+            .TreeFolder = parsed.TreeFolder,
+            .IsOverride = True,
+            .OriginalVcs1 = rec.Header.VCS1,
+            .OriginalVcs2 = rec.Header.VCS2,
+            .SourceRecord = rec
+        }
+        For Each s In parsed.Substitutions
             e.Substitutions.Add(New MSWP_Substitution With {
                 .OriginalMaterial = s.OriginalMaterial,
                 .ReplacementMaterial = s.ReplacementMaterial,

@@ -168,18 +168,23 @@ Public Class OutfitPicker_Form
         RefreshItemList()
         RefreshPieces()
         AddHandler TextBoxItemFilter.TextChanged, AddressOf OnItemFilterChanged
-        AddHandler ListViewItems.DoubleClick, AddressOf OnAddItem
+        AddHandler ListViewItems.DoubleClick, AddressOf OnEditItemInArmorEditor
         AddHandler ButtonAddItem.Click, AddressOf OnAddItem
         AddHandler ButtonRemovePiece.Click, AddressOf OnRemovePiece
         AddHandler ButtonReroll.Click, AddressOf OnReroll
         AddHandler ButtonNewLvl.Click, AddressOf OnNewLvl
         AddHandler ButtonAddToLvl.Click, AddressOf OnAddToLvl
-        AddHandler RadioButtonOverride.CheckedChanged, AddressOf OnModeChanged
+        ' Explicit New-record vs Override intent for the OUTFIT (xEdit model), replacing the old New/Override radio.
+        AddHandler ButtonNewOutfit.Click, AddressOf OnActionNewOutfit
+        AddHandler ButtonOverrideOutfit.Click, AddressOf OnActionOverrideOutfit
+        AddHandler TextBoxEdid.TextChanged, AddressOf OnCreateEdidChanged
         AddHandler TabsMain.SelectedIndexChanged, AddressOf OnTabChanged
         ' Preview-mode toggle (whole outfit vs selected piece) + selection-driven piece preview.
         AddHandler RadioButtonRenderPiece.CheckedChanged, AddressOf OnCreatePreviewModeChanged
         AddHandler ListViewItems.SelectedIndexChanged, AddressOf OnCreateItemSelectionChanged
         AddHandler ListViewPieces.SelectedIndexChanged, AddressOf OnCreatePieceSelectionChanged
+        ' Double-click an ARMO (candidate OR selected piece) → open the ARMO editor with it as template (LVLs excluded).
+        AddHandler ListViewPieces.DoubleClick, AddressOf OnEditPieceInArmorEditor
         ' The "selected piece" preview follows whichever Create list has focus — track the last one entered.
         AddHandler ListViewItems.Enter, AddressOf OnItemsListEnter
         AddHandler ListViewPieces.Enter, AddressOf OnPiecesListEnter
@@ -195,6 +200,7 @@ Public Class OutfitPicker_Form
         ' accident. They can still switch to Override explicitly. With no current outfit there's nothing to
         ' copy → New starts empty. (New requires typing a name before OK, by design.)
         If _currentEffectiveOutfitFID <> 0UI Then PrefillPiecesFromOutfit(_currentEffectiveOutfitFID)
+        UpdateCreateBanner()
     End Sub
 
     Private Sub BuildCandidates(rawRecordOutfitFID As UInteger)
@@ -455,6 +461,57 @@ Public Class OutfitPicker_Form
     Private Sub OnAddItem(sender As Object, e As EventArgs)
         If ListViewItems.SelectedItems.Count = 0 Then Return
         AddItemFidAsPiece(CUInt(ListViewItems.SelectedItems(0).Tag))
+    End Sub
+
+    ''' <summary>Double-click a CANDIDATE ARMO → open the ARMO editor to OVERRIDE it (edit that record; your plugin
+    ''' replaces it). LVLI candidates are excluded. Adding to the outfit stays on the Add button; to make a NEW
+    ''' record from a copy, use the editor's "New from template…" once open.</summary>
+    Private Sub OnEditItemInArmorEditor(sender As Object, e As EventArgs)
+        If ListViewItems.SelectedItems.Count = 0 Then Return
+        Dim fid = CUInt(ListViewItems.SelectedItems(0).Tag)
+        If _mainForm.IsLeveledItem(fid) Then Return   ' exclude LVLs
+        OpenArmorEditorForTemplate(fid, asOverride:=True)
+    End Sub
+
+    ''' <summary>Double-click a SELECTED PIECE → open the ARMO editor to OVERRIDE it. LVLI pieces excluded.</summary>
+    Private Sub OnEditPieceInArmorEditor(sender As Object, e As EventArgs)
+        If ListViewPieces.SelectedItems.Count = 0 Then Return
+        Dim p = TryCast(ListViewPieces.SelectedItems(0).Tag, PieceEntry)
+        If p Is Nothing OrElse p.IsLeveled Then Return   ' exclude LVLs
+        OpenArmorEditorForTemplate(p.FormID, asOverride:=True)
+    End Sub
+
+    ''' <summary>Open the ARMO editor with <paramref name="armoFid"/> pre-loaded as its template in the requested
+    ''' mode (<paramref name="asOverride"/> → xEdit "copy as override" vs "copy as new record"), then FULLY
+    ''' refresh the Create tab ON RETURN (regardless of OK/Cancel): an edit may have added/changed a draft, and
+    ''' the editor's own GL preview host teardown leaves ours needing a re-render. RefreshItemCandidates re-fetches
+    ''' the candidate universe + rebuilds the item list; ResyncPiecesFromCandidates pulls any overridden ARMO's
+    ''' updated slots/name into its piece; clearing _lastPreviewKey forces a re-render (an override can change the
+    ''' render without changing the piece FormIDs); RefreshPieces rebuilds the pieces list + re-renders.</summary>
+    Private Sub OpenArmorEditorForTemplate(armoFid As UInteger, asOverride As Boolean)
+        Using dlg As New ArmoEditor_Form(_mainForm, _npcFormID, _raceFormID, _isFemale,
+                                         initialTemplateArmoFormID:=armoFid, templateAsOverride:=asOverride)
+            dlg.ShowDialog(Me)
+        End Using
+        RefreshItemCandidates()
+        ResyncPiecesFromCandidates()
+        _lastPreviewKey = Nothing
+        RefreshPieces()
+    End Sub
+
+    ''' <summary>Pull each concrete (non-LVLI) piece's slots/name/plugin from the refreshed candidate universe
+    ''' (an overridden ARMO's slots/name may have changed since the piece was added — the piece holds a snapshot).
+    ''' Call AFTER RefreshItemCandidates (which rebuilds _itemCandidatesByFid). LVLI pieces keep their sample.</summary>
+    Private Sub ResyncPiecesFromCandidates()
+        For Each p In _pieces
+            If p.IsLeveled Then Continue For
+            Dim it As (FormID As UInteger, DisplayName As String, SlotMask As UInteger, Plugin As String) = Nothing
+            If _itemCandidatesByFid.TryGetValue(p.FormID, it) Then
+                p.SlotMask = it.SlotMask
+                p.Display = it.DisplayName
+                p.Plugin = it.Plugin
+            End If
+        Next
     End Sub
 
     ''' <summary>Add an item (ARMO or LVLI, including an own draft LVL) to the pieces list by FormID: dedup,
@@ -765,30 +822,61 @@ Public Class OutfitPicker_Form
         End If
     End Function
 
-    ''' <summary>"New outfit" vs "Override the loaded outfit". Override keeps the current outfit's
-    ''' EditorID + FormID and pre-fills its pieces; the EDID box is locked. New uses the
-    ''' <c>npcm_Outfit_</c> prefix + a user-typed name (uniqueness-checked on commit).</summary>
-    Private Sub OnModeChanged(sender As Object, e As EventArgs)
-        If RadioButtonOverride.Checked Then
-            Dim target = ResolveOverrideTarget()
-            If target = 0UI Then
-                MessageBox.Show(Me, "Select an outfit in the Browse tab (or have one loaded) to override. Use 'New outfit' otherwise.",
-                                "Edit Outfit", MessageBoxButtons.OK, MessageBoxIcon.Information)
-                RadioButtonNew.Checked = True
-                Return
+    ''' <summary>"New outfit" action → author a brand-new OTFT (xEdit "new record"): clear any override target,
+    ''' re-enable + clear the EDID (a user-typed name, prefixed + uniqueness-checked on commit). The assembled
+    ''' pieces are kept (the user builds the new outfit from whatever is in the list). Refreshes the banner.</summary>
+    Private Sub OnActionNewOutfit(sender As Object, e As EventArgs)
+        _overrideTargetFormID = 0UI
+        _overrideTargetEditorID = ""
+        LabelEdidPrefix.Text = "EDID: npcm_<esp>_Outfit_"
+        TextBoxEdid.Enabled = True
+        TextBoxEdid.Text = ""
+        UpdateCreateBanner()
+    End Sub
+
+    ''' <summary>"Override selected/loaded outfit…" action → edit the Browse-selected (or currently-loaded) OTFT
+    ''' as an OVERRIDE (xEdit "copy as override"): keep its FormID + EditorID (EDID locked), pre-fill its pieces.
+    ''' No-op with a message when there's no concrete outfit to override. Refreshes the banner.</summary>
+    Private Sub OnActionOverrideOutfit(sender As Object, e As EventArgs)
+        Dim target = ResolveOverrideTarget()
+        If target = 0UI Then
+            MessageBox.Show(Me, "Select an outfit in the Browse tab (or have one loaded) to override. Use 'New outfit' otherwise.",
+                            "Edit Outfit", MessageBoxButtons.OK, MessageBoxIcon.Information)
+            Return
+        End If
+        _overrideTargetFormID = target
+        _overrideTargetEditorID = _mainForm.GetOutfitDisplayName(target)
+        LabelEdidPrefix.Text = "EDID (kept): "
+        TextBoxEdid.Text = _overrideTargetEditorID
+        TextBoxEdid.Enabled = False
+        PrefillPiecesFromOutfit(target)
+        UpdateCreateBanner()
+    End Sub
+
+    ''' <summary>EditorID textbox edit → keep the Create banner in sync (only meaningful in New mode; the box is
+    ''' locked in Override).</summary>
+    Private Sub OnCreateEdidChanged(sender As Object, e As EventArgs)
+        UpdateCreateBanner()
+    End Sub
+
+    ''' <summary>Persistent Create-tab status banner: states EXACTLY the outfit target + what Save will do.
+    ''' OVERRIDE (real OTFT replaced, with source plugin) / Editing draft (a draft target) / NEW outfit (a new
+    ''' FormID). Called after every target/EditorID change.</summary>
+    Private Sub UpdateCreateBanner()
+        If LabelCreateBanner Is Nothing Then Return
+        If _overrideTargetFormID <> 0UI Then
+            Dim edid = If(String.IsNullOrEmpty(_overrideTargetEditorID), TextBoxEdid.Text.Trim(), _overrideTargetEditorID)
+            If OutfitDraft.IsDraftFormID(_overrideTargetFormID) Then
+                LabelCreateBanner.Text = $"Editing draft — {edid} (new)"
+            Else
+                Dim plug = If(_mainForm.GetOutfitPluginName(_overrideTargetFormID), "")
+                Dim tail = If(String.IsNullOrEmpty(plug), "", $" · {plug} → your plugin replaces it")
+                LabelCreateBanner.Text = $"OVERRIDE — {edid} [0x{_overrideTargetFormID:X8}]{tail}"
             End If
-            _overrideTargetFormID = target
-            _overrideTargetEditorID = _mainForm.GetOutfitDisplayName(target)
-            LabelEdidPrefix.Text = "EDID (kept): "
-            TextBoxEdid.Text = _overrideTargetEditorID
-            TextBoxEdid.Enabled = False
-            PrefillPiecesFromOutfit(target)
         Else
-            _overrideTargetFormID = 0UI
-            _overrideTargetEditorID = ""
-            LabelEdidPrefix.Text = "EDID: npcm_<esp>_Outfit_"
-            TextBoxEdid.Enabled = True
-            TextBoxEdid.Text = ""
+            Dim suffix = TextBoxEdid.Text.Trim()
+            Dim edid = If(suffix.Length = 0, "(unnamed)", OutfitDraft.EditorIdPrefix & suffix)
+            LabelCreateBanner.Text = $"NEW outfit — {edid} (new FormID)"
         End If
     End Sub
 
@@ -856,7 +944,7 @@ Public Class OutfitPicker_Form
         End If
 
         Dim draft As New OutfitDraft()
-        If RadioButtonOverride.Checked AndAlso _overrideTargetFormID <> 0UI Then
+        If _overrideTargetFormID <> 0UI Then
             draft.FormID = _overrideTargetFormID
             draft.EditorID = _overrideTargetEditorID
             ' Real OTFT → write an override record (keep FormID+EDID). A draft target → re-edit that

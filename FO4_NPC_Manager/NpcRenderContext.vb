@@ -39,6 +39,11 @@ Friend NotInheritable Class NpcRenderContext
     Public ArmoDraftResolver As Func(Of UInteger, ARMO_Data) = Nothing
     ''' <summary>Optional draft-resolver hook for ARMA drafts. See <see cref="ArmoDraftResolver"/>.</summary>
     Public ArmaDraftResolver As Func(Of UInteger, ARMA_Data) = Nothing
+    ''' <summary>Optional draft-resolver hook for MSWP drafts. Given a FormID, returns a synthesized
+    ''' <see cref="MSWP_Data"/> when the FormID is an in-memory MSWP draft, or Nothing when it is not.
+    ''' Consumed by the material-override pipeline (NpcMaterialResolver) so an UNSAVED draft material-swap
+    ''' applies in the live preview (a draft has no real record for the FormID overload to resolve).</summary>
+    Public MswpDraftResolver As Func(Of UInteger, MSWP_Data) = Nothing
 
     Public Sub New(pluginManager As PluginManager)
         Me.PluginManager = pluginManager

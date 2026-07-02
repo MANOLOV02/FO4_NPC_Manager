@@ -958,15 +958,22 @@ Friend NotInheritable Class NpcMaterialResolver
         ' (3) Texture/Skin/Hair palette overrides happen later in this method and read whatever
         ' material this pipeline left in place.
         If candidate IsNot Nothing AndAlso candidate.MaterialSwapFormID <> 0UI Then
-            ' Draft-MSWP guard: a material-swap authored as an in-memory MSWP draft (provisional 0xFF FormID)
-            ' has NO real record, and ApplyMaterialSwap lives in the lib (must stay draft-agnostic — out of
-            ' scope to teach it about drafts). So for PREVIEW we SKIP applying a draft MSWP: the mesh +
-            ' textures still render correctly, the swap simply doesn't show until the draft is saved (the
-            ' writer assigns a real FormID then). A swap that references an EXISTING (real) MSWP — even from a
-            ' draft ARMA/ARMO — is a normal FormID and applies as usual. This also prevents a draft FormID
-            ' from reaching ParseMSWP(GetRecord(fid)=Nothing) deep in the lib.
+            ' Draft-MSWP handling: a material-swap authored as an in-memory MSWP draft (provisional 0xFF FormID)
+            ' has NO real record, so the lib's FormID overload (GetRecord+ParseMSWP) can't resolve it. Resolve it
+            ' via the app's MswpDraftResolver instead — it returns the draft's ALREADY-PARSED MSWP_Data, which we
+            ' hand to the parsed-data overload so an UNSAVED swap applies live in the preview. An unresolvable
+            ' draft (resolver Nothing / not registered) falls back to the skip-with-log behavior. A swap that
+            ' references an EXISTING (real) MSWP — even from a draft ARMA/ARMO — is a normal FormID and takes the
+            ' unchanged FormID overload path below.
             If OutfitDraft.IsDraftFormID(candidate.MaterialSwapFormID) Then
-                Logger.LogLazy(Function() $"[DRAFT-MSWP] preview skips unsaved material-swap draft 0x{candidate.MaterialSwapFormID:X8} (applies after Save)")
+                Dim d = _ctx.MswpDraftResolver?.Invoke(candidate.MaterialSwapFormID)
+                If d IsNot Nothing Then
+                    ShapeMaterialOverrides.ApplyMaterialSwap(d,
+                                                            ShapeMaterialOverrides.MaterialSwapFunction.SET,
+                                                            shapes)
+                Else
+                    Logger.LogLazy(Function() $"[DRAFT-MSWP] preview skips unresolvable material-swap draft 0x{candidate.MaterialSwapFormID:X8} (applies after Save)")
+                End If
             Else
                 ShapeMaterialOverrides.ApplyMaterialSwap(candidate.MaterialSwapFormID,
                                                         ShapeMaterialOverrides.MaterialSwapFunction.SET,

@@ -53,6 +53,7 @@ Module Program
         Public Provenance As Boolean = False      ' --provenance: SourcePluginName de NPC/RACE/CLFMs del dirt (chequeo vanilla-vs-vanilla)
         Public DumpRef As String = ""             ' --dumpref "<filesDictKey>|<outFile>": vuelca GetBytes(key) crudo a outFile (ref vanilla del BA2)
         Public NifDump As String = ""             ' --nifdump <nif>: árbol de nodos (local+world) + skin binds (inv(bind)) por shape
+        Public AnimSyncCheck As String = ""       ' --animsynccheck "<chunkNif>|<rigHkx>|<clipHkx>[|frame][|boneFilter]": FK del chunk BUGGY (clip full) vs HONORED (No Anim Sync) → tear
         Public CatProfile As Boolean = False      ' --catprofile [--edid X]: perfila ejes de categoría (folder ground-truth, Perspective, STKD, BlendHint) por raza
         Public RankBy As String = "n"   ' canal por el que rankea el sweep: n (default) / d / s
         Public NeckSeam As Boolean = False       ' --neckseam --esp X --edid Y: diagnóstico costura cuello/cabeza con body-weight (NNAM + _skin, math)
@@ -132,7 +133,7 @@ Module Program
 
         ' --- 3. Lista de trabajo (esp, edid) ---
         Dim work = BuildWorkList(opt)
-        If work.Count = 0 AndAlso Not opt.TtedScan AndAlso Not opt.ScanDiff AndAlso Not opt.RaceAnim AndAlso Not opt.MountValidate AndAlso opt.FindHkx = "" AndAlso opt.ChunkCompare = "" AndAlso opt.DumpBehavior = "" AndAlso Not opt.HkxCoverage AndAlso opt.KwType = "" AndAlso Not opt.StateMap AndAlso Not opt.ClipResolve AndAlso opt.HkxBone = "" AndAlso opt.ClipBase = "" AndAlso opt.FindFile = "" AndAlso opt.NifDump = "" AndAlso Not opt.CatProfile AndAlso Not opt.Provenance AndAlso opt.DumpRef = "" Then
+        If work.Count = 0 AndAlso Not opt.TtedScan AndAlso Not opt.ScanDiff AndAlso Not opt.RaceAnim AndAlso Not opt.MountValidate AndAlso opt.FindHkx = "" AndAlso opt.ChunkCompare = "" AndAlso opt.DumpBehavior = "" AndAlso Not opt.HkxCoverage AndAlso opt.KwType = "" AndAlso Not opt.StateMap AndAlso Not opt.ClipResolve AndAlso opt.HkxBone = "" AndAlso opt.ClipBase = "" AndAlso opt.FindFile = "" AndAlso opt.NifDump = "" AndAlso opt.AnimSyncCheck = "" AndAlso Not opt.CatProfile AndAlso Not opt.Provenance AndAlso opt.DumpRef = "" Then
             Console.Error.WriteLine("No hay NPCs para procesar (revisa --edid / --list).") : Environment.ExitCode = 1 : Return
         End If
 
@@ -282,6 +283,12 @@ Module Program
         ' --- NIFDUMP: árbol de nodos (local+world) + skin binds (inv(bind)) por shape de un NIF.
         If opt.NifDump <> "" Then
             NifDumpRun(opt.NifDump)
+            Return
+        End If
+
+        ' --- ANIMSYNCCHECK: valida el modelo No-Anim-Sync (rot clip + T/S estructural) vs el buggy (clip full).
+        If opt.AnimSyncCheck <> "" Then
+            AnimSyncCheck(opt.AnimSyncCheck)
             Return
         End If
 
@@ -1460,7 +1467,14 @@ Module Program
             Dim pn = If(par?.Name?.String, "<root>")
             Dim w = Transform_Class.GetGlobalTransform(nn, nif)
             Dim lw = If(par Is Nothing, w, Transform_Class.GetGlobalTransform(par, nif).Inverse().ComposeTransforms(w))
-            Console.WriteLine($"   '{nm}' parent='{pn}'  local.T=({lw.Translation.X:F3},{lw.Translation.Y:F3},{lw.Translation.Z:F3})  world.T=({w.Translation.X:F3},{w.Translation.Y:F3},{w.Translation.Z:F3})")
+            Dim fl = nn.Flags_ui
+            Dim nas = ""
+            If (fl And &H10000UI) <> 0 Then nas &= "X"
+            If (fl And &H20000UI) <> 0 Then nas &= "Y"
+            If (fl And &H40000UI) <> 0 Then nas &= "Z"
+            If (fl And &H80000UI) <> 0 Then nas &= "S"
+            Dim nasTxt = If(nas = "", "", $"  ***NoAnimSync=[{nas}]***")
+            Console.WriteLine($"   '{nm}' parent='{pn}'  flags=0x{fl:X6}{nasTxt}  local.T=({lw.Translation.X:F3},{lw.Translation.Y:F3},{lw.Translation.Z:F3})  world.T=({w.Translation.X:F3},{w.Translation.Y:F3},{w.Translation.Z:F3})")
         Next
         Console.WriteLine("  ── BSConnectPoint::Parents (sockets que PUBLICA, local al bone padre) ──")
         For Each cp In BSConnectPointReader.ReadParents(nif)
@@ -1504,6 +1518,185 @@ Module Program
                 Console.WriteLine($"     bone '{nm}'  bind.T=({b.Translation.X:F3},{b.Translation.Y:F3},{b.Translation.Z:F3})  inv(bind).T=({ib.Translation.X:F3},{ib.Translation.Y:F3},{ib.Translation.Z:F3})")
             Next
         Next
+    End Sub
+
+    ''' <summary>FK helper memoizado: world(nm) = world(parent) ∘ localFn(nm) (raíz = localFn(nm)).</summary>
+    Private Function FkWorld(nm As String, cache As Dictionary(Of String, Transform_Class),
+                             parentOf As Dictionary(Of String, String),
+                             localFn As Func(Of String, Transform_Class)) As Transform_Class
+        Dim cached As Transform_Class = Nothing
+        If cache.TryGetValue(nm, cached) Then Return cached
+        Dim p As String = ""
+        parentOf.TryGetValue(nm, p)
+        Dim w As Transform_Class
+        If Not String.IsNullOrEmpty(p) AndAlso parentOf.ContainsKey(p) Then
+            w = FkWorld(p, cache, parentOf, localFn).ComposeTransforms(localFn(nm))
+        Else
+            w = localFn(nm)   ' raíz del chunk (relativa al origen del NIF)
+        End If
+        cache(nm) = w
+        Return w
+    End Function
+
+    ''' <summary>VALIDACIÓN No-Anim-Sync (engine-exact). Para un chunk NIF montado, hace FK del árbol de bones
+    ''' dos veces sobre un frame del clip: (BUGGY) = local del clip COMPLETO (rot+T+S) = lo que hace hoy la app;
+    ''' (HONORED) = rotación del clip pero traslación/escala ESTRUCTURAL (del bind) para las componentes con el
+    ''' flag NiAVObject No Anim Sync X/Y/Z/S (bits 16-19 de Flags_ui) = lo que hace el motor (pose-writer 0x1413995D0).
+    ''' Reporta, por bone: flags, |clipT−bindT| (lo que el flag ignora), y el TEAR mundial (BUGGY vs HONORED).
+    ''' Verifica que HONORED preserva el bone-length (=bind) ⇒ brazo rígido ⇒ conectado. El T-pose (sin clip) es
+    ''' bindWorld en ambos (localFn=bindLocal) ⇒ el fix NO lo toca. spec="&lt;chunkNif&gt;|&lt;rigHkx&gt;|&lt;clipHkx&gt;[|frame][|boneFilter]".</summary>
+    Private Sub AnimSyncCheck(spec As String)
+        Dim parts = spec.Split("|"c)
+        If parts.Length < 3 Then Console.WriteLine("[animsync] uso: --animsynccheck ""<chunkNif>|<rigHkx>|<clipHkx>[|frame][|boneFilter]""") : Return
+        Dim chunkPath = parts(0).Trim(), rigPath = parts(1).Trim(), clipPath = parts(2).Trim()
+        Dim frameArg = If(parts.Length > 3 AndAlso parts(3).Trim() <> "", parts(3).Trim(), "mid")
+        Dim boneFilter = If(parts.Length > 4, parts(4).Trim(), "")
+
+        ' ── CHUNK NIF: name → bindLocal, bindWorld, parent, flags ──
+        Dim nbx = LoadAnimCand(chunkPath)
+        If nbx Is Nothing Then Console.WriteLine($"[animsync] chunk '{chunkPath}' no carga") : Return
+        Dim nif As New Nifcontent_Class_Manolo() : nif.Load_Manolo(nbx)
+        Dim bindLocal As New Dictionary(Of String, Transform_Class)(StringComparer.OrdinalIgnoreCase)
+        Dim bindWorld As New Dictionary(Of String, Transform_Class)(StringComparer.OrdinalIgnoreCase)
+        Dim parentOf As New Dictionary(Of String, String)(StringComparer.OrdinalIgnoreCase)
+        Dim flagsOf As New Dictionary(Of String, UInteger)(StringComparer.OrdinalIgnoreCase)
+        Dim order As New List(Of String)
+        For Each blk In nif.Blocks
+            Dim nn = TryCast(blk, NiflySharp.Blocks.NiNode)
+            If nn Is Nothing OrElse nn.Name Is Nothing Then Continue For
+            Dim nm = nn.Name.String
+            If String.IsNullOrEmpty(nm) OrElse bindLocal.ContainsKey(nm) Then Continue For
+            bindLocal(nm) = New Transform_Class(nn)
+            bindWorld(nm) = Transform_Class.GetGlobalTransform(nn, nif)
+            Dim par = TryCast(nif.GetParentNode(nn), NiflySharp.Blocks.NiNode)
+            parentOf(nm) = If(par?.Name?.String, "")
+            flagsOf(nm) = nn.Flags_ui
+            order.Add(nm)
+        Next
+
+        ' ── RIG (refPose) + CLIP (binding track→bone) ──
+        Dim rb = LoadAnimCand(rigPath)
+        If rb Is Nothing Then Console.WriteLine($"[animsync] rig '{rigPath}' no carga") : Return
+        Dim sg = HkxObjectGraphParser_Class.BuildGraph(HkxPackfileParser_Class.Parse(rb))
+        Dim skel = sg.GetObjectsByClassName("hkaSkeleton").Select(Function(o) sg.ParseSkeleton(o)).
+                      Where(Function(s) s IsNot Nothing AndAlso s.Bones IsNot Nothing AndAlso s.ReferencePose IsNot Nothing AndAlso
+                            (String.IsNullOrEmpty(s.Name) OrElse s.Name.IndexOf("Ragdoll", StringComparison.OrdinalIgnoreCase) < 0)).FirstOrDefault()
+        If skel Is Nothing Then Console.WriteLine("[animsync] rig sin hkaSkeleton") : Return
+        Dim nBk = skel.Bones.Count
+        Dim cbts = LoadAnimCand(clipPath)
+        If cbts Is Nothing Then Console.WriteLine($"[animsync] clip '{clipPath}' no carga") : Return
+        Dim cg = HkxObjectGraphParser_Class.BuildGraph(HkxPackfileParser_Class.Parse(cbts))
+        Dim anim = cg.ParseAnimations().FirstOrDefault()
+        If anim Is Nothing Then anim = cg.ParseLosslessAnimations().FirstOrDefault()
+        If anim Is Nothing OrElse anim.NumFrames <= 0 Then Console.WriteLine("[animsync] clip sin animación legible") : Return
+        Dim idxArr = If(anim.Binding?.TransformTrackToBoneIndices, New List(Of Short)())
+        Dim frame As Integer
+        If frameArg.Equals("mid", StringComparison.OrdinalIgnoreCase) Then
+            frame = (anim.NumFrames - 1) \ 2
+        ElseIf frameArg.Equals("last", StringComparison.OrdinalIgnoreCase) Then
+            frame = anim.NumFrames - 1
+        Else
+            Integer.TryParse(frameArg, frame) : frame = Math.Max(0, Math.Min(anim.NumFrames - 1, frame))
+        End If
+
+        ' clipLocal: valores del clip por componente (los NO animados aquí caen a refPose del rig SOLO como
+        ' relleno; el uso real gatea por 'maskOf'). Fallback app-faithful (bind) se aplica en buildLocal.
+        Dim clipLocal As New Dictionary(Of String, Transform_Class)(StringComparer.OrdinalIgnoreCase)
+        Dim maskOf As New Dictionary(Of String, (Tx As Boolean, Ty As Boolean, Tz As Boolean, R As Boolean, S As Boolean))(StringComparer.OrdinalIgnoreCase)
+        For t = 0 To anim.NumTransformTracks - 1
+            Dim bi = If(idxArr.Count > 0 AndAlso t < idxArr.Count, CInt(idxArr(t)), t)
+            If bi < 0 OrElse bi >= nBk Then Continue For
+            Dim nm = If(skel.Bones(bi).Name, "")
+            If nm = "" OrElse clipLocal.ContainsKey(nm) Then Continue For
+            Dim ht = anim.GetTransform(frame, t) : If ht Is Nothing Then Continue For
+            Dim refp = skel.ReferencePose(bi)
+            Dim tx = If(ht.TranslationXAnimated, If(ht.Translation IsNot Nothing, ht.Translation.X, 0.0F), If(refp.Translation IsNot Nothing, refp.Translation.X, 0.0F))
+            Dim ty = If(ht.TranslationYAnimated, If(ht.Translation IsNot Nothing, ht.Translation.Y, 0.0F), If(refp.Translation IsNot Nothing, refp.Translation.Y, 0.0F))
+            Dim tz = If(ht.TranslationZAnimated, If(ht.Translation IsNot Nothing, ht.Translation.Z, 0.0F), If(refp.Translation IsNot Nothing, refp.Translation.Z, 0.0F))
+            Dim rr = If(ht.RotationAnimated, ht.Rotation, refp.Rotation)
+            Dim sx = If(ht.ScaleXAnimated, If(ht.Scale IsNot Nothing, ht.Scale.X, 1.0F), If(refp.Scale IsNot Nothing, refp.Scale.X, 1.0F))
+            Dim sy = If(ht.ScaleYAnimated, If(ht.Scale IsNot Nothing, ht.Scale.Y, 1.0F), If(refp.Scale IsNot Nothing, refp.Scale.Y, 1.0F))
+            Dim sz = If(ht.ScaleZAnimated, If(ht.Scale IsNot Nothing, ht.Scale.Z, 1.0F), If(refp.Scale IsNot Nothing, refp.Scale.Z, 1.0F))
+            clipLocal(nm) = HkxTransformConventionHelper.ToTransform(tx, ty, tz, rr, sx, sy, sz)
+            maskOf(nm) = (ht.TranslationXAnimated, ht.TranslationYAnimated, ht.TranslationZAnimated, ht.RotationAnimated, ht.ScaleXAnimated OrElse ht.ScaleYAnimated OrElse ht.ScaleZAnimated)
+        Next
+
+        Console.WriteLine($"[animsync] chunk='{chunkPath}'  frame={frame}/{anim.NumFrames - 1}  nodes={order.Count}  clipBones={clipLocal.Count}")
+
+        ' ── locals reconstruidas APP-FAITHFUL: componente NO animada → bind (estructural), NO refPose del rig.
+        ' Rotación → clip si anima (la rotación NUNCA es No-Anim-Sync). ignored (app hoy): componente animada → clip.
+        ' honored (motor): idem PERO componente flagueada No-Anim-Sync → bind. Honored vs ignored SOLO difieren en
+        ' componentes {animadas ∧ flagueadas}. ⇒ el tear medido es exactamente el que el flag evita.
+        Dim buildLocal = Function(nm As String, honor As Boolean) As Transform_Class
+                             Dim bl = bindLocal(nm)
+                             ' Connect-points (C-/P-) los COLOCA el mounting (socket), NO los clip-anima la app
+                             ' (consistente con el render: el brazo NO se va 78u, se desgarra 10-17u hacia la mano).
+                             ' Anclarlos estructural en AMBOS modelos aísla el warp interno = el tear real.
+                             If nm.StartsWith("C-", StringComparison.OrdinalIgnoreCase) OrElse nm.StartsWith("P-", StringComparison.OrdinalIgnoreCase) Then Return bl
+                             Dim cl As Transform_Class = Nothing
+                             If Not clipLocal.TryGetValue(nm, cl) Then Return bl   ' bone no en el clip → estructural
+                             Dim mk As (Tx As Boolean, Ty As Boolean, Tz As Boolean, R As Boolean, S As Boolean)
+                             maskOf.TryGetValue(nm, mk)
+                             Dim fl As UInteger = 0 : flagsOf.TryGetValue(nm, fl)
+                             Dim fx = (fl And &H10000UI) <> 0, fy = (fl And &H20000UI) <> 0, fz = (fl And &H40000UI) <> 0, fs = (fl And &H80000UI) <> 0
+                             Dim bt = bl.Translation, ct = cl.Translation
+                             Dim useCx = mk.Tx AndAlso Not (honor AndAlso fx)
+                             Dim useCy = mk.Ty AndAlso Not (honor AndAlso fy)
+                             Dim useCz = mk.Tz AndAlso Not (honor AndAlso fz)
+                             Dim useCs = mk.S AndAlso Not (honor AndAlso fs)
+                             Return New Transform_Class With {
+                                 .Rotation = If(mk.R, cl.Rotation, bl.Rotation),
+                                 .Translation = New System.Numerics.Vector3(If(useCx, ct.X, bt.X), If(useCy, ct.Y, bt.Y), If(useCz, ct.Z, bt.Z)),
+                                 .Scale = If(useCs, cl.Scale, bl.Scale)
+                             }
+                         End Function
+        Dim honoredLocal As Func(Of String, Transform_Class) = Function(nm As String) buildLocal(nm, True)
+        Dim ignoredLocal As Func(Of String, Transform_Class) = Function(nm As String) buildLocal(nm, False)
+
+        ' Sanity: FK(bindLocal) reproduce bindWorld (GetGlobalTransform) — control positivo del FK.
+        Dim cBind As New Dictionary(Of String, Transform_Class)(StringComparer.OrdinalIgnoreCase)
+        Dim maxBindErr As Single = 0
+        For Each nm In order
+            Dim w = FkWorld(nm, cBind, parentOf, Function(x) bindLocal(x))
+            maxBindErr = Math.Max(maxBindErr, (w.Translation - bindWorld(nm).Translation).Length())
+        Next
+        Console.WriteLine($"[animsync] control FK vs GetGlobalTransform: maxErr={maxBindErr:F4} (debe ~0)")
+
+        Dim cHon As New Dictionary(Of String, Transform_Class)(StringComparer.OrdinalIgnoreCase)
+        Dim cIgn As New Dictionary(Of String, Transform_Class)(StringComparer.OrdinalIgnoreCase)
+
+        Console.WriteLine("   bone                         flags     NoAnimSync  animMask     inject|ign-bind|  worldTear(BUGGY-HONORED)  boneLen(hon/bind)")
+        Dim maxTear As Single = 0, maxTearBone As String = ""
+        Dim anyLenBreak As Boolean = False
+        For Each nm In order
+            If boneFilter <> "" AndAlso nm.IndexOf(boneFilter, StringComparison.OrdinalIgnoreCase) < 0 Then Continue For
+            Dim fl As UInteger = 0 : flagsOf.TryGetValue(nm, fl)
+            Dim nas = ""
+            If (fl And &H10000UI) <> 0 Then nas &= "X"
+            If (fl And &H20000UI) <> 0 Then nas &= "Y"
+            If (fl And &H40000UI) <> 0 Then nas &= "Z"
+            If (fl And &H80000UI) <> 0 Then nas &= "S"
+            Dim cl As Transform_Class = Nothing
+            Dim animated = clipLocal.TryGetValue(nm, cl)
+            Dim mk As (Tx As Boolean, Ty As Boolean, Tz As Boolean, R As Boolean, S As Boolean)
+            maskOf.TryGetValue(nm, mk)
+            Dim mkTxt = If(animated, $"T:{If(mk.Tx, "x", "-")}{If(mk.Ty, "y", "-")}{If(mk.Tz, "z", "-")} R:{If(mk.R, "a", "-")} S:{If(mk.S, "a", "-")}", "(no en clip)")
+            Dim dInj = (ignoredLocal(nm).Translation - bindLocal(nm).Translation).Length()   ' local que la app inyecta vs estructural
+            Dim wH = FkWorld(nm, cHon, parentOf, honoredLocal)
+            Dim wI = FkWorld(nm, cIgn, parentOf, ignoredLocal)
+            Dim tear = (wI.Translation - wH.Translation).Length()
+            If tear > maxTear Then maxTear = tear : maxTearBone = nm
+            Dim lenHon = honoredLocal(nm).Translation.Length()
+            Dim lenBind = bindLocal(nm).Translation.Length()
+            ' bone-length SOLO debe preservarse en bones FLAGUEADOS (para no-flag el clip legítimamente cambia el largo).
+            Dim flagged = (nas <> "")
+            Dim lenOk = (Not flagged) OrElse Math.Abs(lenHon - lenBind) < 0.01F
+            If flagged AndAlso Not lenOk Then anyLenBreak = True
+            Console.WriteLine($"   {nm,-28} 0x{fl:X6}  [{nas,-4}]     {mkTxt,-16} {dInj,10:F3}      {tear,10:F3}              {lenHon,7:F3}/{lenBind,7:F3}{If(flagged AndAlso Not lenOk, " ⚠LEN", "")}")
+        Next
+        Console.WriteLine($"[animsync] MAX TEAR (BUGGY vs HONORED) = {maxTear:F3}u en '{maxTearBone}'  |  bone-length honored preservado = {(Not anyLenBreak)}")
+        Console.WriteLine($"[animsync] ⇒ honrando No Anim Sync, la traslación/escala del clip se descarta en bones flagueados: brazo rígido (bone-len=bind) ⇒ CONECTADO. Sin honrar (app hoy): tear={maxTear:F3}u = el desgarro.")
+        Console.WriteLine($"[animsync] T-pose: sin clip ⇒ localFn=bindLocal en ambos ⇒ world=bindWorld (control maxErr={maxBindErr:F4}) ⇒ el fix NO altera el T-pose.")
     End Sub
 
     ''' <summary>REDISEÑO MOUNT — medición de clipBaseLocal. Por track del clip: el LOCAL que el clip
@@ -3987,6 +4180,7 @@ Module Program
                 Case "--provenance" : a.Provenance = True : i += 1
                 Case "--dumpref" : a.DumpRef = v : i += 2
                 Case "--nifdump" : a.NifDump = v : i += 2
+                Case "--animsynccheck" : a.AnimSyncCheck = v : i += 2
                 Case "--catprofile" : a.CatProfile = True : i += 1
                 Case "--neckseam" : a.NeckSeam = True : i += 1
                 Case "-h", "--help" : PrintUsage() : Return Nothing
@@ -3994,7 +4188,7 @@ Module Program
                     Console.Error.WriteLine($"Arg desconocido: {args(i)}") : PrintUsage() : Return Nothing
             End Select
         End While
-        If a.ListPath = "" AndAlso (a.Esp = "" OrElse a.Edid = "") AndAlso Not a.TtedScan AndAlso Not a.ScanDiff AndAlso Not a.RaceAnim AndAlso Not a.MountValidate AndAlso a.FindHkx = "" AndAlso a.ChunkCompare = "" AndAlso a.DumpBehavior = "" AndAlso Not a.HkxCoverage AndAlso a.KwType = "" AndAlso Not a.StateMap AndAlso Not a.ClipResolve AndAlso a.HkxBone = "" AndAlso a.ClipBase = "" AndAlso a.FindFile = "" AndAlso a.NifDump = "" AndAlso Not a.CatProfile AndAlso a.DumpRef = "" Then
+        If a.ListPath = "" AndAlso (a.Esp = "" OrElse a.Edid = "") AndAlso Not a.TtedScan AndAlso Not a.ScanDiff AndAlso Not a.RaceAnim AndAlso Not a.MountValidate AndAlso a.FindHkx = "" AndAlso a.ChunkCompare = "" AndAlso a.DumpBehavior = "" AndAlso Not a.HkxCoverage AndAlso a.KwType = "" AndAlso Not a.StateMap AndAlso Not a.ClipResolve AndAlso a.HkxBone = "" AndAlso a.ClipBase = "" AndAlso a.FindFile = "" AndAlso a.NifDump = "" AndAlso a.AnimSyncCheck = "" AndAlso Not a.CatProfile AndAlso a.DumpRef = "" Then
             Console.Error.WriteLine("Faltan --esp y --edid (o usa --list).") : PrintUsage() : Return Nothing
         End If
         Return a

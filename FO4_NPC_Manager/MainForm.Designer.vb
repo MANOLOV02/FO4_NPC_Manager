@@ -64,7 +64,8 @@ Partial Class MainForm
         ButtonEditFace = New Button()
         ButtonEditBody = New Button()
         ButtonEditOutfit = New Button()
-        ButtonArmorEditor = New Button()
+        ButtonArmaEditor = New Button()
+        ButtonArmoEditor = New Button()
         SeparatorActions1 = New Label()
         LabelLooksMenu = New Label()
         ButtonLoadLooksmenu = New Button()
@@ -650,7 +651,8 @@ Partial Class MainForm
         PanelActionsToolbar.Controls.Add(ButtonEditFace)
         PanelActionsToolbar.Controls.Add(ButtonEditBody)
         PanelActionsToolbar.Controls.Add(ButtonEditOutfit)
-        PanelActionsToolbar.Controls.Add(ButtonArmorEditor)
+        PanelActionsToolbar.Controls.Add(ButtonArmaEditor)
+        PanelActionsToolbar.Controls.Add(ButtonArmoEditor)
         PanelActionsToolbar.Controls.Add(SeparatorActions1)
         PanelActionsToolbar.Controls.Add(LabelLooksMenu)
         PanelActionsToolbar.Controls.Add(ButtonLoadLooksmenu)
@@ -724,18 +726,30 @@ Partial Class MainForm
         ButtonEditOutfit.Text = "Outfit"
         ButtonEditOutfit.UseVisualStyleBackColor = True
         '
-        ' ButtonArmorEditor
+        ' ButtonArmaEditor
         '
-        ButtonArmorEditor.AutoSize = True
-        ButtonArmorEditor.Location = New Point(290, 2)
-        ButtonArmorEditor.Margin = New Padding(2)
-        ButtonArmorEditor.MinimumSize = New Size(90, 28)
-        ButtonArmorEditor.Name = "ButtonArmorEditor"
-        ButtonArmorEditor.Size = New Size(90, 28)
-        ButtonArmorEditor.TabIndex = 4
-        ButtonArmorEditor.Text = "Armor Editor"
-        ButtonArmorEditor.UseVisualStyleBackColor = True
-        ' 
+        ButtonArmaEditor.AutoSize = True
+        ButtonArmaEditor.Location = New Point(290, 2)
+        ButtonArmaEditor.Margin = New Padding(2)
+        ButtonArmaEditor.MinimumSize = New Size(90, 28)
+        ButtonArmaEditor.Name = "ButtonArmaEditor"
+        ButtonArmaEditor.Size = New Size(90, 28)
+        ButtonArmaEditor.TabIndex = 4
+        ButtonArmaEditor.Text = "ARMA Editor"
+        ButtonArmaEditor.UseVisualStyleBackColor = True
+        '
+        ' ButtonArmoEditor
+        '
+        ButtonArmoEditor.AutoSize = True
+        ButtonArmoEditor.Location = New Point(382, 2)
+        ButtonArmoEditor.Margin = New Padding(2)
+        ButtonArmoEditor.MinimumSize = New Size(90, 28)
+        ButtonArmoEditor.Name = "ButtonArmoEditor"
+        ButtonArmoEditor.Size = New Size(90, 28)
+        ButtonArmoEditor.TabIndex = 5
+        ButtonArmoEditor.Text = "ARMO Editor"
+        ButtonArmoEditor.UseVisualStyleBackColor = True
+        '
         ' SeparatorActions1
         ' 
         SeparatorActions1.BorderStyle = BorderStyle.Fixed3D
@@ -1145,7 +1159,8 @@ Partial Class MainForm
     Friend WithEvents ButtonSaveSceneNif As System.Windows.Forms.Button
     Friend WithEvents ButtonEditBody As System.Windows.Forms.Button
     Friend WithEvents ButtonEditOutfit As System.Windows.Forms.Button
-    Friend WithEvents ButtonArmorEditor As System.Windows.Forms.Button
+    Friend WithEvents ButtonArmaEditor As System.Windows.Forms.Button
+    Friend WithEvents ButtonArmoEditor As System.Windows.Forms.Button
     Friend WithEvents SeparatorActions1 As System.Windows.Forms.Label
     Friend WithEvents LabelLooksMenu As System.Windows.Forms.Label
     Friend WithEvents ButtonLoadLooksmenu As System.Windows.Forms.Button

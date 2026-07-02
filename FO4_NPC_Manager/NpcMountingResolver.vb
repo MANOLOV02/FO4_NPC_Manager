@@ -453,8 +453,39 @@ Friend NotInheritable Class NpcMountingResolver
     ''' <c>renderData.MountDesiredWorlds</c> (orden topológico) y escribe <c>MountDeltaTransform</c>
     ''' vía <see cref="OverrideActorBoneWorld"/>. Patrón: <c>ApplyPose → ApplyMountPlanForActor</c>.
     ''' Per-instance scope vía TargetSkel.</summary>
+    ''' <summary>[NO-ANIM-SYNC] Copia los flags NiAVObject No Anim Sync X/Y/Z/S (bits 16-19 de Flags_ui) de CADA
+    ''' NiNode de los chunk NIFs (incluye connect-points) al hueso vivo homónimo (NoAnimSyncMask). Limpia primero
+    ''' (stale de otro NPC en el mismo SkeletonInstance). Lo lee BuildPose para honrar la traslación estructural.</summary>
+    Private Sub PlumbNoAnimSyncMasks(inst As SkeletonInstance, renderData As MainForm.PreviewResolutionResult)
+        If inst Is Nothing OrElse inst.SkeletonDictionary Is Nothing Then Return
+        For Each hb In inst.SkeletonDictionary.Values
+            If hb IsNot Nothing Then hb.NoAnimSyncMask = 0
+        Next
+        If renderData Is Nothing OrElse renderData.Shapes Is Nothing Then Return
+        For Each shape In renderData.Shapes
+            Dim nif = TryCast(shape, NifRenderableShape)
+            If nif Is Nothing OrElse nif.NifContent Is Nothing OrElse nif.NifContent.Blocks Is Nothing Then Continue For
+            For Each blk In nif.NifContent.Blocks
+                Dim ndn = TryCast(blk, NiflySharp.Blocks.NiNode)
+                Dim ndName = ndn?.Name?.String
+                If String.IsNullOrEmpty(ndName) Then Continue For
+                Dim hbN As HierarchiBone_class = Nothing
+                If Not inst.SkeletonDictionary.TryGetValue(ndName, hbN) OrElse hbN Is Nothing Then Continue For
+                Dim f = ndn.Flags_ui
+                Dim m As Byte = 0
+                If (f And &H10000UI) <> 0 Then m = CByte(m Or 1)
+                If (f And &H20000UI) <> 0 Then m = CByte(m Or 2)
+                If (f And &H40000UI) <> 0 Then m = CByte(m Or 4)
+                If (f And &H80000UI) <> 0 Then m = CByte(m Or 8)
+                hbN.NoAnimSyncMask = m
+            Next
+        Next
+    End Sub
+
     Friend Sub ApplyMountPlanForActor(inst As SkeletonInstance, renderData As MainForm.PreviewResolutionResult)
         If inst Is Nothing OrElse renderData Is Nothing Then Return
+        ' [NO-ANIM-SYNC] Plumar SIEMPRE el mask del chunk NIF → hueso vivo (BuildPose lo honra). Independiente del mount.
+        PlumbNoAnimSyncMasks(inst, renderData)
         If renderData.MountDesiredWorlds Is Nothing OrElse renderData.MountDesiredWorlds.Count = 0 Then Return
 
         Dim writtenCount As Integer = 0
