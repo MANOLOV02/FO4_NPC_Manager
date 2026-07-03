@@ -2263,6 +2263,15 @@ Public Class MainForm
         Return Nothing
     End Function
 
+    ''' <summary>Current preview context for the standalone ARMA/ARMO editors — the rendered NPC (0 = none) and its
+    ''' gender, sourced from the render host exactly like <see cref="ButtonArmaEditor_Click"/>. Used by the addon-entry
+    ''' modal's "Edit ARMA…" button so the deep ARMA editor previews on the right body.</summary>
+    Friend Sub GetEditorPreviewContext(ByRef previewNpcFormID As UInteger, ByRef isFemale As Boolean)
+        Dim st = _renderHost.LastRenderedState
+        previewNpcFormID = If(st IsNot Nothing, st.RootNpcFormID, 0UI)
+        isFemale = (st IsNot Nothing AndAlso st.IsFemale)
+    End Sub
+
     ''' <summary>The in-memory MSWP draft for <paramref name="formID"/>, or Nothing. Mirror of <see cref="TryGetArmoDraft"/>.</summary>
     Friend Function TryGetMswpDraft(formID As UInteger) As MswpDraft
         If formID = 0UI Then Return Nothing
@@ -2436,7 +2445,10 @@ Public Class MainForm
         Next
         data.KeywordFormIDs.AddRange(d.KeywordFormIDs)
         data.AttachParentSlotFormIDs.AddRange(d.AttachParentSlotFormIDs)
-        ' Combinations left empty by design: the draft authoring model carries no OBTS object-template data.
+        ' OBTS combinations: deep-copy from the draft so the render's ObjectTemplateResolver.ResolveArmoCombinations
+        ' (NpcMeshCollector.CollectArmoCandidates) applies the combination's material swap in the editor preview —
+        ' fresh copy (never aliased) so a live draft edit never corrupts the parsed cache.
+        data.Combinations.AddRange(ArmoDraft.CloneCombinations(d.Combinations))
         Return data
     End Function
 

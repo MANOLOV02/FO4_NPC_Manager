@@ -46,6 +46,12 @@ Public Class ArmoEditor_Form
     Private ReadOnly _keywords As New List(Of UInteger)
     Private ReadOnly _appr As New List(Of UInteger)
 
+    ''' <summary>The ARMO's Object Template (OBTE/OBTS) combinations, in row order. The "Object Template" grid is
+    ''' the editable view of this list; it is deep-copied from <see cref="ArmoDraft.Combinations"/> on load and
+    ''' deep-copied back on Apply (never aliased — the parsed cache must stay pristine). Every mutation marks
+    ''' <see cref="ArmoDraft.CombinationsEdited"/> and requests a debounced preview.</summary>
+    Private ReadOnly _combinations As New List(Of ARMO_Combination)
+
     ' === preview (mirror ArmaEditor) ===
     Private _preview As PreviewControl
     Private _host As NpcRenderHost
@@ -95,6 +101,7 @@ Public Class ArmoEditor_Form
 
         BuildSlotCheckBoxes()
         BuildAddonsGridColumns()
+        BuildCombinationsGridColumns()
 
         _previewDebounce = New Timer() With {.Interval = 400}
 
@@ -108,20 +115,28 @@ Public Class ArmoEditor_Form
         ' General tab.
         AddHandler ButtonPickRace.Click, AddressOf OnPickRace
 
-        ' Addons tab.
+        ' Addons tab — grid is read-only; every mutation goes through a button / the double-click modal.
         AddHandler ButtonAddArma.Click, AddressOf OnAddArma
-        AddHandler ButtonEditIndx.Click, AddressOf OnEditIndx
+        AddHandler ButtonEditIndx.Click, AddressOf OnEditAddon
         AddHandler ButtonRemoveAddon.Click, AddressOf OnRemoveAddon
         AddHandler ButtonAddonUp.Click, Sub() MoveAddon(-1)
         AddHandler ButtonAddonDown.Click, Sub() MoveAddon(1)
         AddHandler GridAddons.CellDoubleClick, AddressOf OnAddonDoubleClick
-        AddHandler GridAddons.CellEndEdit, AddressOf OnAddonCellEndEdit
 
         ' Keywords tab.
         AddHandler ButtonAddKwda.Click, AddressOf OnAddKwda
         AddHandler ButtonRemoveKwda.Click, AddressOf OnRemoveKwda
         AddHandler ButtonAddAppr.Click, AddressOf OnAddAppr
         AddHandler ButtonRemoveAppr.Click, AddressOf OnRemoveAppr
+
+        ' Object Template (OBTS) tab.
+        AddHandler ButtonAddCombo.Click, AddressOf OnAddCombo
+        AddHandler ButtonRemoveCombo.Click, AddressOf OnRemoveCombo
+        AddHandler ButtonDuplicateCombo.Click, AddressOf OnDuplicateCombo
+        AddHandler ButtonComboUp.Click, Sub() MoveCombo(-1)
+        AddHandler ButtonComboDown.Click, Sub() MoveCombo(1)
+        AddHandler ButtonEditCombo.Click, AddressOf OnEditCombo
+        AddHandler GridCombinations.CellDoubleClick, AddressOf OnComboDoubleClick
 
         ' World Model & Material tab.
         AddHandler ButtonBrowseMod2.Click, Sub() BrowseMeshInto(TextBoxMod2)
@@ -182,13 +197,35 @@ Public Class ArmoEditor_Form
     Private Sub BuildAddonsGridColumns()
         GridAddons.AutoGenerateColumns = False
         GridAddons.Columns.Clear()
-        Dim colIndx As New DataGridViewTextBoxColumn With {.HeaderText = "INDX", .FillWeight = 12, .AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill}
+        Dim colIndx As New DataGridViewTextBoxColumn With {.HeaderText = "INDX", .FillWeight = 12, .AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill, .ReadOnly = True}
         Dim colArma As New DataGridViewTextBoxColumn With {.HeaderText = "ARMA", .FillWeight = 58, .AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill, .ReadOnly = True}
         Dim colSlots As New DataGridViewTextBoxColumn With {.HeaderText = "Slots", .FillWeight = 30, .AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill, .ReadOnly = True}
         GridAddons.Columns.Add(colIndx)
         GridAddons.Columns.Add(colArma)
         GridAddons.Columns.Add(colSlots)
     End Sub
+
+    ''' <summary>Build the Object Template grid's read-only summary columns (the row is EDITED in the modal
+    ''' <see cref="ObtsCombinationEditor_Form"/>, so every column here is display-only). Order = list order.</summary>
+    Private Sub BuildCombinationsGridColumns()
+        GridCombinations.AutoGenerateColumns = False
+        GridCombinations.Columns.Clear()
+        GridCombinations.Columns.Add(NewComboCol("#", 6))
+        GridCombinations.Columns.Add(NewComboCol("Name", 26))
+        GridCombinations.Columns.Add(NewComboCol("Default", 9))
+        GridCombinations.Columns.Add(NewComboCol("Parent/Addon Idx", 13))
+        GridCombinations.Columns.Add(NewComboCol("Level Min", 9))
+        GridCombinations.Columns.Add(NewComboCol("Level Max", 9))
+        GridCombinations.Columns.Add(NewComboCol("#Incl", 6))
+        GridCombinations.Columns.Add(NewComboCol("#Props", 6))
+        GridCombinations.Columns.Add(NewComboCol("#Kwds", 6))
+        GridCombinations.Columns.Add(NewComboCol("EditorOnly", 10))
+    End Sub
+
+    Private Shared Function NewComboCol(header As String, weight As Single) As DataGridViewTextBoxColumn
+        Return New DataGridViewTextBoxColumn With {
+            .HeaderText = header, .FillWeight = weight, .AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill, .ReadOnly = True}
+    End Function
 
     ' =====================================================================
     ' Explicit intent actions (xEdit model) + status banner
@@ -364,6 +401,10 @@ Public Class ArmoEditor_Form
         Next
         d.KeywordFormIDs.AddRange(a.KeywordFormIDs)
         d.AttachParentSlotFormIDs.AddRange(a.AttachParentSlotFormIDs)
+        ' OBTS combinations: DEEP COPY (never alias the parsed cache — the draft is mutated live). Carries the
+        ' object template end-to-end so the preview applies its material swap and a NEW-from-template ARMO keeps
+        ' its OBTS on save.
+        d.Combinations.AddRange(ArmoDraft.CloneCombinations(a.Combinations))
         Return d
     End Function
 
@@ -391,6 +432,13 @@ Public Class ArmoEditor_Form
                 _addons.Add(New ARMO_AddonEntry With {.AddonIndex = ad.AddonIndex, .ArmaFormID = ad.ArmaFormID})
             Next
             RefreshAddonsGrid()
+
+            ' Object Template (OBTS): deep-copy the combinations into the working buffer (never alias the parsed
+            ' cache — the sub-editor + reorder mutate them live). Loading is not a user mutation, so it does NOT
+            ' set CombinationsEdited.
+            _combinations.Clear()
+            _combinations.AddRange(ArmoDraft.CloneCombinations(_draft.Combinations))
+            RefreshCombinationsGrid()
 
             ' Keywords + APPR: copy into the working buffers (flushed on Apply, like _addons).
             _keywords.Clear()
@@ -503,6 +551,13 @@ Public Class ArmoEditor_Form
             _draft.ArmorAddons.Add(New ARMO_AddonEntry With {.AddonIndex = ad.AddonIndex, .ArmaFormID = ad.ArmaFormID})
         Next
 
+        ' Object Template (OBTS): flush the working buffer back into the draft (deep-copied so the draft never
+        ' aliases the grid's live-edited instances). The CombinationsEdited flag is set by the mutation handlers,
+        ' not here. The current OVERRIDE save preserves the source OBTS bytes and ignores this list; the NEW-record
+        ' writer serializes it (EmitArmoObjectTemplate) — this flush feeds both the preview and that writer.
+        _draft.Combinations.Clear()
+        _draft.Combinations.AddRange(ArmoDraft.CloneCombinations(_combinations))
+
         ' World Model & Material.
         _draft.MaleWorldModelPath = TextBoxMod2.Text.Trim()
         _draft.FemaleWorldModelPath = TextBoxMod4.Text.Trim()
@@ -581,29 +636,24 @@ Public Class ArmoEditor_Form
         End Using
     End Sub
 
-    ''' <summary>Edit INDX of the selected row via a prompt (the cell is also inline-editable). u16 range.</summary>
-    Private Sub OnEditIndx(sender As Object, e As EventArgs)
-        Dim i = SelectedAddonIndex()
-        If i < 0 Then Return
-        ' Inline-edit affordance: begin editing the INDX cell of the selected row.
-        GridAddons.CurrentCell = GridAddons.Rows(i).Cells(0)
-        GridAddons.BeginEdit(True)
+    ''' <summary>Edit the selected addon row (Addon Index + ARMA reference) in the modal
+    ''' <see cref="ArmoAddonEditor_Form"/>.</summary>
+    Private Sub OnEditAddon(sender As Object, e As EventArgs)
+        EditAddonAt(SelectedAddonIndex())
     End Sub
 
-    ''' <summary>Inline INDX edit committed → parse + clamp into the model (u16), then refresh the row.</summary>
-    Private Sub OnAddonCellEndEdit(sender As Object, e As DataGridViewCellEventArgs)
-        If e.ColumnIndex <> 0 OrElse e.RowIndex < 0 OrElse e.RowIndex >= _addons.Count Then Return
-        Dim text = CStr(If(GridAddons.Rows(e.RowIndex).Cells(0).Value, "")).Trim()
-        Dim v As Integer
-        Dim idx As UShort = 0US
-        If Integer.TryParse(text, NumberStyles.Integer, CultureInfo.InvariantCulture, v) Then
-            If v < 0 Then v = 0
-            If v > UShort.MaxValue Then v = UShort.MaxValue
-            idx = CUShort(v)
-        End If
-        _addons(e.RowIndex).AddonIndex = idx
-        GridAddons.Rows(e.RowIndex).Cells(0).Value = idx.ToString(CultureInfo.InvariantCulture)
-        OnFieldEdited(Me, EventArgs.Empty)
+    ''' <summary>Open the addon-entry modal on the row at <paramref name="i"/> (deep-copied in/out); on OK
+    ''' replace the row's entry and refresh Name/Slots. Safe: the grid is read-only ⇒ no cell in edit mode ⇒
+    ''' no reentrant <c>SetCurrentCellAddressCore</c>.</summary>
+    Private Sub EditAddonAt(i As Integer)
+        If i < 0 OrElse i >= _addons.Count Then Return
+        Using dlg As New ArmoAddonEditor_Form(_mainForm, _draft.RaceFormID, _addons(i))
+            If dlg.ShowDialog(Me) = DialogResult.OK AndAlso dlg.ResultEntry IsNot Nothing Then
+                _addons(i) = dlg.ResultEntry
+                RefreshAddonsGrid()
+                OnFieldEdited(Me, EventArgs.Empty)
+            End If
+        End Using
     End Sub
 
     Private Sub OnRemoveAddon(sender As Object, e As EventArgs)
@@ -631,34 +681,11 @@ Public Class ArmoEditor_Form
         OnFieldEdited(Me, EventArgs.Empty)
     End Sub
 
-    ''' <summary>Double-click a row → open the ARMA Editor on that addon's ARMA. A DRAFT ARMA opens directly
-    ''' (editDraft); a REAL ARMA opens pre-loaded as the template (initialTemplateArmaFormID). On OK, rewire the
-    ''' row's ARMA FormID to the editor's resulting draft (so editing a real addon as "New" rewires it to the new
-    ''' draft) and refresh the row's Name/Slots.</summary>
+    ''' <summary>Double-click a row → edit that addon entry (Addon Index + ARMA reference) in the modal
+    ''' <see cref="ArmoAddonEditor_Form"/>. Same modal as the Edit button — the grid stays read-only.</summary>
     Private Sub OnAddonDoubleClick(sender As Object, e As DataGridViewCellEventArgs)
-        If e.RowIndex < 0 OrElse e.RowIndex >= _addons.Count Then Return
-        Dim row = _addons(e.RowIndex)
-        Dim armaFid = row.ArmaFormID
-
-        Dim armaDraft = _mainForm.TryGetArmaDraft(armaFid)
-        Dim dlg As ArmaEditor_Form
-        If armaDraft IsNot Nothing Then
-            dlg = New ArmaEditor_Form(_mainForm, _previewNpcFormID, _draft.RaceFormID, _isFemale, editDraft:=armaDraft)
-        ElseIf armaFid <> 0UI Then
-            dlg = New ArmaEditor_Form(_mainForm, _previewNpcFormID, _draft.RaceFormID, _isFemale,
-                                      initialTemplateArmaFormID:=armaFid)
-        Else
-            ' Empty row → just open a fresh New ARMA editor.
-            dlg = New ArmaEditor_Form(_mainForm, _previewNpcFormID, _draft.RaceFormID, _isFemale)
-        End If
-
-        Using dlg
-            If dlg.ShowDialog(Me) = DialogResult.OK AndAlso dlg.ResultArmaFormID <> 0UI Then
-                row.ArmaFormID = dlg.ResultArmaFormID
-                RefreshAddonsGrid()
-                OnFieldEdited(Me, EventArgs.Empty)
-            End If
-        End Using
+        If e.RowIndex < 0 Then Return
+        EditAddonAt(e.RowIndex)
     End Sub
 
     Private Function SelectedAddonIndex() As Integer
@@ -666,6 +693,129 @@ Public Class ArmoEditor_Form
         Dim i = GridAddons.CurrentRow.Index
         If i < 0 OrElse i >= _addons.Count Then Return -1
         Return i
+    End Function
+
+    ' =====================================================================
+    ' Object Template tab — OBTS combinations
+    ' =====================================================================
+
+    ''' <summary>Repaint the combinations grid from <see cref="_combinations"/> (read-only summary rows; a row is
+    ''' edited in the modal sub-editor). Preserves the selected row index across the refresh.</summary>
+    Private Sub RefreshCombinationsGrid()
+        Dim selIdx = If(GridCombinations.CurrentRow IsNot Nothing, GridCombinations.CurrentRow.Index, -1)
+        GridCombinations.Rows.Clear()
+        For i = 0 To _combinations.Count - 1
+            Dim c = _combinations(i)
+            Dim name = If(String.IsNullOrEmpty(c.DisplayName), "(unnamed)", c.DisplayName)
+            GridCombinations.Rows.Add((i + 1).ToString(CultureInfo.InvariantCulture),
+                                      name,
+                                      If(c.IsDefault, "Yes", ""),
+                                      c.ParentCombinationIndex.ToString(CultureInfo.InvariantCulture),
+                                      c.LevelMin.ToString(CultureInfo.InvariantCulture),
+                                      c.LevelMax.ToString(CultureInfo.InvariantCulture),
+                                      c.Includes.Count.ToString(CultureInfo.InvariantCulture),
+                                      c.Properties.Count.ToString(CultureInfo.InvariantCulture),
+                                      c.Keywords.Count.ToString(CultureInfo.InvariantCulture),
+                                      If(c.IsEditorOnly, "Yes", ""))
+        Next
+        If selIdx >= 0 AndAlso selIdx < GridCombinations.Rows.Count Then
+            GridCombinations.Rows(selIdx).Selected = True
+            GridCombinations.CurrentCell = GridCombinations.Rows(selIdx).Cells(0)
+        End If
+    End Sub
+
+    Private Function SelectedComboIndex() As Integer
+        If GridCombinations.CurrentRow Is Nothing Then Return -1
+        Dim i = GridCombinations.CurrentRow.Index
+        If i < 0 OrElse i >= _combinations.Count Then Return -1
+        Return i
+    End Function
+
+    ''' <summary>Any OBTS mutation → flag the draft as OBTS-edited (consumed by the future save-override phase; it
+    ''' does NOT affect the current save) and request a debounced live preview.</summary>
+    Private Sub MarkCombinationsEdited()
+        If _draft IsNot Nothing Then _draft.CombinationsEdited = True
+        OnFieldEdited(Me, EventArgs.Empty)
+    End Sub
+
+    ''' <summary>Add → open the sub-editor on a fresh combination; on OK append the returned (deep-copied) result.</summary>
+    Private Sub OnAddCombo(sender As Object, e As EventArgs)
+        Using dlg As New ObtsCombinationEditor_Form(_mainForm, New ARMO_Combination())
+            If dlg.ShowDialog(Me) = DialogResult.OK AndAlso dlg.ResultCombination IsNot Nothing Then
+                _combinations.Add(dlg.ResultCombination)
+                RefreshCombinationsGrid()
+                MarkCombinationsEdited()
+            End If
+        End Using
+    End Sub
+
+    Private Sub OnRemoveCombo(sender As Object, e As EventArgs)
+        Dim i = SelectedComboIndex()
+        If i < 0 Then Return
+        _combinations.RemoveAt(i)
+        RefreshCombinationsGrid()
+        MarkCombinationsEdited()
+    End Sub
+
+    ''' <summary>Duplicate → deep-copy the selected combination and insert the copy right after it.</summary>
+    Private Sub OnDuplicateCombo(sender As Object, e As EventArgs)
+        Dim i = SelectedComboIndex()
+        If i < 0 Then Return
+        Dim copy = ArmoDraft.CloneCombinations(New List(Of ARMO_Combination) From {_combinations(i)})(0)
+        _combinations.Insert(i + 1, copy)
+        RefreshCombinationsGrid()
+        MarkCombinationsEdited()
+    End Sub
+
+    Private Sub MoveCombo(delta As Integer)
+        Dim i = SelectedComboIndex()
+        If i < 0 Then Return
+        Dim j = i + delta
+        If j < 0 OrElse j >= _combinations.Count Then Return
+        Dim tmp = _combinations(i)
+        _combinations(i) = _combinations(j)
+        _combinations(j) = tmp
+        RefreshCombinationsGrid()
+        If j < GridCombinations.Rows.Count Then
+            GridCombinations.Rows(j).Selected = True
+            GridCombinations.CurrentCell = GridCombinations.Rows(j).Cells(0)
+        End If
+        MarkCombinationsEdited()
+    End Sub
+
+    Private Sub OnEditCombo(sender As Object, e As EventArgs)
+        EditComboAt(SelectedComboIndex())
+    End Sub
+
+    Private Sub OnComboDoubleClick(sender As Object, e As DataGridViewCellEventArgs)
+        If e.RowIndex < 0 Then Return
+        EditComboAt(e.RowIndex)
+    End Sub
+
+    ''' <summary>Open the modal sub-editor on the combination at <paramref name="i"/> (deep-copied in/out by the
+    ''' sub-editor); on OK replace the row's combination with the edited result.</summary>
+    Private Sub EditComboAt(i As Integer)
+        If i < 0 OrElse i >= _combinations.Count Then Return
+        Using dlg As New ObtsCombinationEditor_Form(_mainForm, _combinations(i))
+            If dlg.ShowDialog(Me) = DialogResult.OK AndAlso dlg.ResultCombination IsNot Nothing Then
+                _combinations(i) = dlg.ResultCombination
+                RefreshCombinationsGrid()
+                MarkCombinationsEdited()
+            End If
+        End Using
+    End Sub
+
+    ''' <summary>Render-relevant signature of the OBTS combinations for the preview debounce key — covers the
+    ''' fields that change what the object template applies (default flag, addon-index selector, OMOD includes and
+    ''' the direct property overrides, incl. FormID-typed Value1 material swaps). Editing OBTS thus re-renders.</summary>
+    Private Function CombinationsKey() As String
+        Dim parts As New List(Of String)
+        For Each c In _combinations
+            Dim incl = String.Join("|", c.Includes.Select(Function(i) i.ModFormID.ToString("X8") & ":" & i.AttachPointIndex.ToString(CultureInfo.InvariantCulture)))
+            Dim props = String.Join("|", c.Properties.Select(Function(p) $"{CInt(p.ValueType)}/{p.FunctionType}/{p.PropertyIndex}/{p.Value1FormID:X8}/{BitConverter.ToInt32(BitConverter.GetBytes(p.Value1), 0)}/{BitConverter.ToInt32(BitConverter.GetBytes(p.Value2), 0)}"))
+            parts.Add($"{If(c.IsDefault, 1, 0)};{c.ParentCombinationIndex};{incl};{props}")
+        Next
+        Return String.Join("~", parts)
     End Function
 
     ' =====================================================================
@@ -892,7 +1042,8 @@ Public Class ArmoEditor_Form
             _draft.RaceFormID.ToString("X8"),
             _draft.MaleWorldModelPath, _draft.FemaleWorldModelPath,
             _draft.MaleMaterialSwapFormID.ToString("X8"), _draft.FemaleMaterialSwapFormID.ToString("X8"),
-            String.Join(",", _addons.Select(Function(a) a.ArmaFormID.ToString("X8") & "#" & a.AddonIndex.ToString(CultureInfo.InvariantCulture)))})
+            String.Join(",", _addons.Select(Function(a) a.ArmaFormID.ToString("X8") & "#" & a.AddonIndex.ToString(CultureInfo.InvariantCulture))),
+            CombinationsKey()})
         If key = _lastPreviewKey Then Return
         If _previewInProgress Then Return
         _previewInProgress = True

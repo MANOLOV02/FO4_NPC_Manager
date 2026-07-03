@@ -54,6 +54,7 @@ Module Program
         Public DumpRef As String = ""             ' --dumpref "<filesDictKey>|<outFile>": vuelca GetBytes(key) crudo a outFile (ref vanilla del BA2)
         Public NifDump As String = ""             ' --nifdump <nif>: árbol de nodos (local+world) + skin binds (inv(bind)) por shape
         Public AnimSyncCheck As String = ""       ' --animsynccheck "<chunkNif>|<rigHkx>|<clipHkx>[|frame][|boneFilter]": FK del chunk BUGGY (clip full) vs HONORED (No Anim Sync) → tear
+        Public BlendHintScan As String = ""       ' --blendhintscan "<all|substr|path.bsa/.ba2>": tally blendHint (0=NORMAL,1=ADDITIVE_DEPRECATED,2=ADDITIVE) + ejemplos + flag ∉{0,1,2}; path=monta archivo (cross-game)
         Public CatProfile As Boolean = False      ' --catprofile [--edid X]: perfila ejes de categoría (folder ground-truth, Perspective, STKD, BlendHint) por raza
         Public RankBy As String = "n"   ' canal por el que rankea el sweep: n (default) / d / s
         Public NeckSeam As Boolean = False       ' --neckseam --esp X --edid Y: diagnóstico costura cuello/cabeza con body-weight (NNAM + _skin, math)
@@ -133,7 +134,7 @@ Module Program
 
         ' --- 3. Lista de trabajo (esp, edid) ---
         Dim work = BuildWorkList(opt)
-        If work.Count = 0 AndAlso Not opt.TtedScan AndAlso Not opt.ScanDiff AndAlso Not opt.RaceAnim AndAlso Not opt.MountValidate AndAlso opt.FindHkx = "" AndAlso opt.ChunkCompare = "" AndAlso opt.DumpBehavior = "" AndAlso Not opt.HkxCoverage AndAlso opt.KwType = "" AndAlso Not opt.StateMap AndAlso Not opt.ClipResolve AndAlso opt.HkxBone = "" AndAlso opt.ClipBase = "" AndAlso opt.FindFile = "" AndAlso opt.NifDump = "" AndAlso opt.AnimSyncCheck = "" AndAlso Not opt.CatProfile AndAlso Not opt.Provenance AndAlso opt.DumpRef = "" Then
+        If work.Count = 0 AndAlso Not opt.TtedScan AndAlso Not opt.ScanDiff AndAlso Not opt.RaceAnim AndAlso Not opt.MountValidate AndAlso opt.FindHkx = "" AndAlso opt.ChunkCompare = "" AndAlso opt.DumpBehavior = "" AndAlso Not opt.HkxCoverage AndAlso opt.KwType = "" AndAlso Not opt.StateMap AndAlso Not opt.ClipResolve AndAlso opt.HkxBone = "" AndAlso opt.ClipBase = "" AndAlso opt.FindFile = "" AndAlso opt.NifDump = "" AndAlso opt.AnimSyncCheck = "" AndAlso opt.BlendHintScan = "" AndAlso Not opt.CatProfile AndAlso Not opt.Provenance AndAlso opt.DumpRef = "" Then
             Console.Error.WriteLine("No hay NPCs para procesar (revisa --edid / --list).") : Environment.ExitCode = 1 : Return
         End If
 
@@ -289,6 +290,12 @@ Module Program
         ' --- ANIMSYNCCHECK: valida el modelo No-Anim-Sync (rot clip + T/S estructural) vs el buggy (clip full).
         If opt.AnimSyncCheck <> "" Then
             AnimSyncCheck(opt.AnimSyncCheck)
+            Return
+        End If
+
+        ' --- BLENDHINTSCAN: distribución de blendHint sobre todos los .hkx (casos aditivos + valores raros ∉{0,1,2}).
+        If opt.BlendHintScan <> "" Then
+            BlendHintScanRun(opt.BlendHintScan)
             Return
         End If
 
@@ -1538,6 +1545,77 @@ Module Program
         Return w
     End Function
 
+    ''' <summary>Escanea todos los .hkx del FilesDictionary y tallya el blendHint (hkaAnimationBinding). Reporta la
+    ''' distribución (0=NORMAL, 1=ADDITIVE, 2=ADDITIVE_DEPRECATED) + ejemplos por valor ≠0 + FLAGGEA cualquier valor
+    ''' ∉{0,1,2} (donde el viejo `≠0` de la app difería del motor `∈{1,2}`). filter="all"/"*" = todos; si no, substring.</summary>
+    Private Sub BlendHintScanRun(filter As String)
+        Dim substr = If(filter = "all" OrElse filter = "*", "", filter)
+        ' Cross-game: si el arg es un path a .bsa/.ba2 existente (ej. "Skyrim - Animations.bsa" de SSE), montarlo runtime
+        ' y escanear TODO lo montado (usar --data apuntando a una Data sin auto-discovery ⇒ dict arranca vacío ⇒ puro SSE).
+        For Each token In filter.Split(";"c)
+            Dim p = token.Trim()
+            If (p.EndsWith(".bsa", StringComparison.OrdinalIgnoreCase) OrElse p.EndsWith(".ba2", StringComparison.OrdinalIgnoreCase)) AndAlso System.IO.File.Exists(p) Then
+                Try
+                    FilesDictionary_class.RegisterArchive(p)
+                    Console.WriteLine($"[blendhintscan] montado: {p}")
+                    substr = ""
+                Catch ex As Exception
+                    Console.WriteLine($"[blendhintscan] NO pudo montar '{p}': {ex.Message}")
+                End Try
+            End If
+        Next
+        Dim keys = FilesDictionary_class.Dictionary.Keys.
+                       Where(Function(k) k.EndsWith(".hkx", StringComparison.OrdinalIgnoreCase) AndAlso
+                                         (substr = "" OrElse k.IndexOf(substr, StringComparison.OrdinalIgnoreCase) >= 0)).
+                       OrderBy(Function(k) k, StringComparer.OrdinalIgnoreCase).ToList()
+        Console.WriteLine($"[blendhintscan] {keys.Count} .hkx (filtro='{filter}') — parseando bindings...")
+        Dim tally As New Dictionary(Of Integer, Integer)
+        Dim examples As New Dictionary(Of Integer, List(Of String))
+        Dim fileOk = 0, parseErr = 0, noBinding = 0, done = 0
+        For Each k In keys
+            done += 1
+            If done Mod 2000 = 0 Then Console.WriteLine($"   ...{done}/{keys.Count}")
+            Dim bytes As Byte() = Nothing
+            Try
+                bytes = FilesDictionary_class.GetBytes(k)
+            Catch
+            End Try
+            If bytes Is Nothing OrElse bytes.Length = 0 Then Continue For
+            Try
+                Dim g = HkxObjectGraphParser_Class.BuildGraph(HkxPackfileParser_Class.Parse(bytes))
+                Dim bindings = g.GetObjectsByClassName("hkaAnimationBinding").ToList()
+                If bindings.Count = 0 Then noBinding += 1 : Continue For
+                Dim anyRead = False
+                For Each b In bindings
+                    Dim ab = g.ParseAnimationBinding(b)
+                    If ab Is Nothing Then Continue For
+                    anyRead = True
+                    Dim h = ab.BlendHint
+                    tally(h) = tally.GetValueOrDefault(h, 0) + 1
+                    If h <> 0 Then
+                        If Not examples.ContainsKey(h) Then examples(h) = New List(Of String)
+                        If examples(h).Count < 20 Then examples(h).Add(k)
+                    End If
+                Next
+                If anyRead Then fileOk += 1 Else noBinding += 1
+            Catch
+                parseErr += 1
+            End Try
+        Next
+        Console.WriteLine($"[blendhintscan] archivos parseOk={fileOk} parseErr={parseErr} sinBinding={noBinding}")
+        Console.WriteLine("[blendhintscan] === distribución blendHint (por binding) ===")
+        For Each kv In tally.OrderBy(Function(x) x.Key)
+            Dim label = If(kv.Key = 0, "NORMAL", If(kv.Key = 1, "ADDITIVE_DEPRECATED", If(kv.Key = 2, "ADDITIVE", "⚠ RARO ∉{0,1,2}")))
+            Console.WriteLine($"   blendHint={kv.Key,-4} {label,-22} = {kv.Value} binding(s)")
+        Next
+        For Each kv In examples.OrderBy(Function(x) x.Key)
+            Console.WriteLine($"[blendhintscan] --- ejemplos blendHint={kv.Key} ({If(kv.Key = 1, "ADDITIVE_DEPRECATED", If(kv.Key = 2, "ADDITIVE", "RARO"))}) ---")
+            For Each ex In kv.Value : Console.WriteLine($"      {ex}") : Next
+        Next
+        Dim raros = tally.Keys.Where(Function(h) h <> 0 AndAlso h <> 1 AndAlso h <> 2).ToList()
+        Console.WriteLine($"[blendhintscan] ⇒ valores ∉{{0,1,2}} = {raros.Count} ({If(raros.Count = 0, "NINGUNO ⇒ app ≠0 y motor {1,2} coinciden en TODO el contenido", String.Join(",", raros))})")
+    End Sub
+
     ''' <summary>VALIDACIÓN No-Anim-Sync (engine-exact). Para un chunk NIF montado, hace FK del árbol de bones
     ''' dos veces sobre un frame del clip: (BUGGY) = local del clip COMPLETO (rot+T+S) = lo que hace hoy la app;
     ''' (HONORED) = rotación del clip pero traslación/escala ESTRUCTURAL (del bind) para las componentes con el
@@ -1681,6 +1759,22 @@ Module Program
             Dim mk As (Tx As Boolean, Ty As Boolean, Tz As Boolean, R As Boolean, S As Boolean)
             maskOf.TryGetValue(nm, mk)
             Dim mkTxt = If(animated, $"T:{If(mk.Tx, "x", "-")}{If(mk.Ty, "y", "-")}{If(mk.Tz, "z", "-")} R:{If(mk.R, "a", "-")} S:{If(mk.S, "a", "-")}", "(no en clip)")
+            ' [ADD-ORDER DIAG] additive delta = {animado:clip, no-animado:identidad}. Comparo el effective bajo los DOS
+            ' órdenes de composición: base×additive (S∘delta, lo que hace la app HOY) vs additive×base (delta∘S, el fix).
+            ' Si additive×base deja el bone ~en rest (d≈0) y base×additive lo dispara (d grande) ⇒ el bug es el ORDEN.
+            If animated Then
+                Dim ident As New Transform_Class()
+                Dim addLoc As New Transform_Class With {
+                    .Rotation = If(mk.R, cl.Rotation, ident.Rotation),
+                    .Translation = New System.Numerics.Vector3(If(mk.Tx, cl.Translation.X, 0.0F), If(mk.Ty, cl.Translation.Y, 0.0F), If(mk.Tz, cl.Translation.Z, 0.0F)),
+                    .Scale = 1.0F
+                }
+                Dim bl2 = bindLocal(nm)
+                Dim effBA = bl2.ComposeTransforms(addLoc)       ' base × additive  (S ∘ delta) = app HOY
+                Dim effAB = addLoc.ComposeTransforms(bl2)        ' additive × base  (delta ∘ S) = fix propuesto
+                Dim rest = bl2.Translation
+                Console.WriteLine($"   [ADD-ORDER {nm}] rest=({rest.X:F1},{rest.Y:F1},{rest.Z:F1})  baseXadd=({effBA.Translation.X:F1},{effBA.Translation.Y:F1},{effBA.Translation.Z:F1}) d={(effBA.Translation - rest).Length():F1}  |  addXbase=({effAB.Translation.X:F1},{effAB.Translation.Y:F1},{effAB.Translation.Z:F1}) d={(effAB.Translation - rest).Length():F1}")
+            End If
             Dim dInj = (ignoredLocal(nm).Translation - bindLocal(nm).Translation).Length()   ' local que la app inyecta vs estructural
             Dim wH = FkWorld(nm, cHon, parentOf, honoredLocal)
             Dim wI = FkWorld(nm, cIgn, parentOf, ignoredLocal)
@@ -4176,6 +4270,7 @@ Module Program
                 Case "--clipresolve" : a.ClipResolve = True : i += 1
                 Case "--hkxbone" : a.HkxBone = v : i += 2
                 Case "--clipbase" : a.ClipBase = v : i += 2
+                Case "--blendhintscan" : a.BlendHintScan = v : i += 2
                 Case "--findfile" : a.FindFile = v : i += 2
                 Case "--provenance" : a.Provenance = True : i += 1
                 Case "--dumpref" : a.DumpRef = v : i += 2
@@ -4188,7 +4283,7 @@ Module Program
                     Console.Error.WriteLine($"Arg desconocido: {args(i)}") : PrintUsage() : Return Nothing
             End Select
         End While
-        If a.ListPath = "" AndAlso (a.Esp = "" OrElse a.Edid = "") AndAlso Not a.TtedScan AndAlso Not a.ScanDiff AndAlso Not a.RaceAnim AndAlso Not a.MountValidate AndAlso a.FindHkx = "" AndAlso a.ChunkCompare = "" AndAlso a.DumpBehavior = "" AndAlso Not a.HkxCoverage AndAlso a.KwType = "" AndAlso Not a.StateMap AndAlso Not a.ClipResolve AndAlso a.HkxBone = "" AndAlso a.ClipBase = "" AndAlso a.FindFile = "" AndAlso a.NifDump = "" AndAlso a.AnimSyncCheck = "" AndAlso Not a.CatProfile AndAlso a.DumpRef = "" Then
+        If a.ListPath = "" AndAlso (a.Esp = "" OrElse a.Edid = "") AndAlso Not a.TtedScan AndAlso Not a.ScanDiff AndAlso Not a.RaceAnim AndAlso Not a.MountValidate AndAlso a.FindHkx = "" AndAlso a.ChunkCompare = "" AndAlso a.DumpBehavior = "" AndAlso Not a.HkxCoverage AndAlso a.KwType = "" AndAlso Not a.StateMap AndAlso Not a.ClipResolve AndAlso a.HkxBone = "" AndAlso a.ClipBase = "" AndAlso a.FindFile = "" AndAlso a.NifDump = "" AndAlso a.AnimSyncCheck = "" AndAlso a.BlendHintScan = "" AndAlso Not a.CatProfile AndAlso a.DumpRef = "" Then
             Console.Error.WriteLine("Faltan --esp y --edid (o usa --list).") : PrintUsage() : Return Nothing
         End If
         Return a

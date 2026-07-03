@@ -27,8 +27,8 @@ Partial Class MswpSubEditor_Form
         GridSubs = New DataGridView()
         ButtonsRow = New FlowLayoutPanel()
         ButtonAddRow = New Button()
+        ButtonEditRow = New Button()
         ButtonRemoveRow = New Button()
-        ButtonBrowseReplacement = New Button()
         BottomLayout = New FlowLayoutPanel()
         ButtonOk = New Button()
         ButtonCancel = New Button()
@@ -100,16 +100,22 @@ Partial Class MswpSubEditor_Form
         LabelHint.Name = "LabelHint"
         LabelHint.Size = New Size(560, 15)
         LabelHint.TabIndex = 1
-        LabelHint.Text = "Original = a material referenced by the mesh; Replacement = the swapped-in material; Color Remap optional."
+        LabelHint.Text = "The grid is read-only. Use Add / Edit (or double-click a row) to edit a substitution in a dialog. Original = a mesh material; Replacement = the swapped-in material."
         '
         ' GridSubs
         '
+        GridSubs.AllowUserToAddRows = False
+        GridSubs.AllowUserToDeleteRows = False
         GridSubs.AllowUserToResizeRows = False
         GridSubs.ColumnHeadersHeightSizeMode = DataGridViewColumnHeadersHeightSizeMode.AutoSize
         GridSubs.Dock = DockStyle.Fill
+        GridSubs.EditMode = DataGridViewEditMode.EditProgrammatically
         GridSubs.Location = New Point(11, 58)
+        GridSubs.MultiSelect = False
         GridSubs.Name = "GridSubs"
+        GridSubs.ReadOnly = True
         GridSubs.RowHeadersWidth = 25
+        GridSubs.SelectionMode = DataGridViewSelectionMode.FullRowSelect
         GridSubs.Size = New Size(798, 340)
         GridSubs.TabIndex = 2
         '
@@ -117,8 +123,8 @@ Partial Class MswpSubEditor_Form
         '
         ButtonsRow.AutoSize = True
         ButtonsRow.Controls.Add(ButtonAddRow)
+        ButtonsRow.Controls.Add(ButtonEditRow)
         ButtonsRow.Controls.Add(ButtonRemoveRow)
-        ButtonsRow.Controls.Add(ButtonBrowseReplacement)
         ButtonsRow.Dock = DockStyle.Fill
         ButtonsRow.Location = New Point(8, 401)
         ButtonsRow.Margin = New Padding(0)
@@ -131,29 +137,28 @@ Partial Class MswpSubEditor_Form
         '
         ButtonAddRow.Location = New Point(3, 3)
         ButtonAddRow.Name = "ButtonAddRow"
-        ButtonAddRow.Size = New Size(80, 25)
+        ButtonAddRow.Size = New Size(90, 25)
         ButtonAddRow.TabIndex = 0
-        ButtonAddRow.Text = "Add row"
+        ButtonAddRow.Text = "Add…"
         ButtonAddRow.UseVisualStyleBackColor = True
+        '
+        ' ButtonEditRow
+        '
+        ButtonEditRow.Location = New Point(99, 3)
+        ButtonEditRow.Name = "ButtonEditRow"
+        ButtonEditRow.Size = New Size(90, 25)
+        ButtonEditRow.TabIndex = 1
+        ButtonEditRow.Text = "Edit…"
+        ButtonEditRow.UseVisualStyleBackColor = True
         '
         ' ButtonRemoveRow
         '
-        ButtonRemoveRow.Location = New Point(89, 3)
+        ButtonRemoveRow.Location = New Point(195, 3)
         ButtonRemoveRow.Name = "ButtonRemoveRow"
         ButtonRemoveRow.Size = New Size(90, 25)
-        ButtonRemoveRow.TabIndex = 1
-        ButtonRemoveRow.Text = "Remove row"
+        ButtonRemoveRow.TabIndex = 2
+        ButtonRemoveRow.Text = "Remove"
         ButtonRemoveRow.UseVisualStyleBackColor = True
-        '
-        ' ButtonBrowseReplacement
-        '
-        ButtonBrowseReplacement.Location = New Point(185, 3)
-        ButtonBrowseReplacement.Margin = New Padding(20, 3, 3, 3)
-        ButtonBrowseReplacement.Name = "ButtonBrowseReplacement"
-        ButtonBrowseReplacement.Size = New Size(190, 25)
-        ButtonBrowseReplacement.TabIndex = 2
-        ButtonBrowseReplacement.Text = "Browse replacement material…"
-        ButtonBrowseReplacement.UseVisualStyleBackColor = True
         '
         ' BottomLayout
         '
@@ -219,8 +224,8 @@ Partial Class MswpSubEditor_Form
     Friend WithEvents GridSubs As System.Windows.Forms.DataGridView
     Friend WithEvents ButtonsRow As System.Windows.Forms.FlowLayoutPanel
     Friend WithEvents ButtonAddRow As System.Windows.Forms.Button
+    Friend WithEvents ButtonEditRow As System.Windows.Forms.Button
     Friend WithEvents ButtonRemoveRow As System.Windows.Forms.Button
-    Friend WithEvents ButtonBrowseReplacement As System.Windows.Forms.Button
     Friend WithEvents BottomLayout As System.Windows.Forms.FlowLayoutPanel
     Friend WithEvents ButtonOk As System.Windows.Forms.Button
     Friend WithEvents ButtonCancel As System.Windows.Forms.Button

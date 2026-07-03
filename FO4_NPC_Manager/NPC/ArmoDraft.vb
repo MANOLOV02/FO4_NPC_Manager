@@ -42,6 +42,18 @@ Public Class ArmoDraft
     Public ReadOnly Property ArmorAddons As New List(Of ARMO_AddonEntry)
     Public ReadOnly Property KeywordFormIDs As New List(Of UInteger)        ' KWDA
     Public ReadOnly Property AttachParentSlotFormIDs As New List(Of UInteger)  ' APPR (KYWD)
+    ''' <summary>OBTE/OBTS Object Template combinations carried end-to-end so the editor preview applies the
+    ''' combination's material swap (e.g. ClothesPreWarDressBlue) and a NEW-from-template ARMO keeps its object
+    ''' template on save. Deep-copied out of the parsed cache (never aliased — the draft is mutated live) and
+    ''' deep-copied again into ARMO_Data / ArmoRecordEntry (see <see cref="CloneCombinations"/>). The OVERRIDE save
+    ''' path preserves the source OBTS bytes verbatim, so this list feeds only the NEW-record writer.</summary>
+    Public ReadOnly Property Combinations As New List(Of ARMO_Combination)
+    ''' <summary>True once the user has EDITED the Object Template (OBTS combinations) in the ARMO editor's
+    ''' "Object Template" tab (set by any add/remove/reorder/sub-editor commit). The current OVERRIDE save path
+    ''' copies the source OBTS bytes verbatim and ignores <see cref="Combinations"/>; a future save-override phase
+    ''' will consult THIS flag to decide whether to re-serialize the edited combinations instead of preserving the
+    ''' source bytes. Not part of <see cref="IsDirty"/> and never affects the current save.</summary>
+    Public Property CombinationsEdited As Boolean = False
     Public Property MaleWorldModelPath As String = ""     ' MOD2 (robots)
     Public Property FemaleWorldModelPath As String = ""   ' MOD4
     ''' <summary>MO2S at ARMO level (MSWP). May be a real FormID or an MSWP draft provisional sentinel.</summary>
@@ -77,14 +89,63 @@ Public Class ArmoDraft
             .MaleMaterialSwapFormID = MaleMaterialSwapFormID, .FemaleMaterialSwapFormID = FemaleMaterialSwapFormID,
             .Value = Value, .Weight = Weight, .Health = Health,
             .ArmorRating = ArmorRating, .BaseAddonIndex = BaseAddonIndex, .StaggerRating = StaggerRating,
-            .IsOverride = IsOverride, .IsNew = IsNew, .IsModified = IsModified
+            .IsOverride = IsOverride, .IsNew = IsNew, .IsModified = IsModified,
+            .CombinationsEdited = CombinationsEdited
         }
         For Each a In ArmorAddons
             c.ArmorAddons.Add(New ARMO_AddonEntry With {.AddonIndex = a.AddonIndex, .ArmaFormID = a.ArmaFormID})
         Next
         c.KeywordFormIDs.AddRange(KeywordFormIDs)
         c.AttachParentSlotFormIDs.AddRange(AttachParentSlotFormIDs)
+        c.Combinations.AddRange(CloneCombinations(Combinations))
         Return c
+    End Function
+
+    ''' <summary>Deep-copy an OBTS combination list (new ARMO_Combination instances with fresh Keywords/Includes/
+    ''' Properties sublists) so the live-mutated draft never aliases the parsed cache — and neither does the
+    ''' ARMO_Data / ArmoRecordEntry synthesized from it. Single source of truth for combination deep-copy shared by
+    ''' the editor (BuildDraftFromExisting), the render synthesizer (BuildArmoDataFromDraft) and the saver
+    ''' (BuildArmoEntry). Returns an empty list for a null source.</summary>
+    Public Shared Function CloneCombinations(src As List(Of ARMO_Combination)) As List(Of ARMO_Combination)
+        Dim dst As New List(Of ARMO_Combination)
+        If src Is Nothing Then Return dst
+        For Each combo In src
+            If combo Is Nothing Then Continue For
+            Dim cc As New ARMO_Combination With {
+                .IsEditorOnly = combo.IsEditorOnly,
+                .DisplayName = combo.DisplayName,
+                .IsDefault = combo.IsDefault,
+                .ParentCombinationIndex = combo.ParentCombinationIndex,
+                .LevelMin = combo.LevelMin,
+                .LevelMax = combo.LevelMax,
+                .MinLevelForRanks = combo.MinLevelForRanks,
+                .AltLevelsPerTier = combo.AltLevelsPerTier
+            }
+            If combo.Keywords IsNot Nothing Then cc.Keywords.AddRange(combo.Keywords)
+            If combo.Includes IsNot Nothing Then
+                For Each inc In combo.Includes
+                    cc.Includes.Add(New ARMO_CombinationInclude With {
+                        .ModFormID = inc.ModFormID,
+                        .AttachPointIndex = inc.AttachPointIndex,
+                        .IsOptional = inc.IsOptional,
+                        .DontUseAll = inc.DontUseAll})
+                Next
+            End If
+            If combo.Properties IsNot Nothing Then
+                For Each p In combo.Properties
+                    cc.Properties.Add(New OMOD_Property With {
+                        .ValueType = p.ValueType,
+                        .FunctionType = p.FunctionType,
+                        .PropertyIndex = p.PropertyIndex,
+                        .Value1 = p.Value1,
+                        .Value1FormID = p.Value1FormID,
+                        .Value2 = p.Value2,
+                        .StepValue = p.StepValue})
+                Next
+            End If
+            dst.Add(cc)
+        Next
+        Return dst
     End Function
 
 End Class

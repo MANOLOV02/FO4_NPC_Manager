@@ -1086,6 +1086,20 @@ Public Module NpcOverrideSaver
         Next
         e.KeywordFormIDs.AddRange(d.KeywordFormIDs)
         e.AttachParentSlotFormIDs.AddRange(d.AttachParentSlotFormIDs)
+        ' OBTS combinations:
+        '   • NEW → always emit from the model (SerializeArmoRecord builds the OBTE/OBTS block from
+        '     entry.Combinations). So a "New from template" ARMO keeps its object template on save.
+        '   • OVERRIDE + edited → author from the model: populate Combinations (deep-copy) and flag
+        '     CombinationsAuthored so SerializeArmoRecordOverride re-emits the block instead of preserving
+        '     the source OBTS verbatim (Phase 4). Without this the user's OBTS edits would be lost.
+        '   • OVERRIDE + NOT edited → leave the list empty and the flag False: the override path preserves
+        '     the source Object Template block verbatim, keeping the record byte-exact.
+        If Not d.IsOverride Then
+            e.Combinations.AddRange(ArmoDraft.CloneCombinations(d.Combinations))
+        ElseIf d.CombinationsEdited Then
+            e.Combinations.AddRange(ArmoDraft.CloneCombinations(d.Combinations))
+            e.CombinationsAuthored = True
+        End If
         Return e
     End Function
 

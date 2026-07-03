@@ -94,6 +94,18 @@ Partial Class ArmoEditor_Form
         TextBoxMo4s = New TextBox()
         ButtonPickMo4s = New Button()
         ButtonEditMo4s = New Button()
+        TabObts = New TabPage()
+        ObtsLayout = New TableLayoutPanel()
+        LabelObts = New Label()
+        GridCombinations = New DataGridView()
+        ObtsButtons = New FlowLayoutPanel()
+        ButtonAddCombo = New Button()
+        ButtonRemoveCombo = New Button()
+        ButtonDuplicateCombo = New Button()
+        ButtonComboUp = New Button()
+        ButtonComboDown = New Button()
+        ButtonEditCombo = New Button()
+        LabelObtsHint = New Label()
         PreviewLayout = New TableLayoutPanel()
         PreviewControlPanel = New Panel()
         LabelPreviewHint = New Label()
@@ -129,6 +141,10 @@ Partial Class ArmoEditor_Form
         WorldLayout.SuspendLayout()
         GroupWorld.SuspendLayout()
         WorldFieldsLayout.SuspendLayout()
+        TabObts.SuspendLayout()
+        ObtsLayout.SuspendLayout()
+        CType(GridCombinations, ComponentModel.ISupportInitialize).BeginInit()
+        ObtsButtons.SuspendLayout()
         PreviewLayout.SuspendLayout()
         BottomLayout.SuspendLayout()
         SuspendLayout()
@@ -264,6 +280,7 @@ Partial Class ArmoEditor_Form
         Tabs.Controls.Add(TabAddons)
         Tabs.Controls.Add(TabKeywords)
         Tabs.Controls.Add(TabWorld)
+        Tabs.Controls.Add(TabObts)
         Tabs.Dock = DockStyle.Fill
         Tabs.Location = New Point(0, 0)
         Tabs.Name = "Tabs"
@@ -568,8 +585,10 @@ Partial Class ArmoEditor_Form
         GridAddons.AllowUserToResizeRows = False
         GridAddons.ColumnHeadersHeightSizeMode = DataGridViewColumnHeadersHeightSizeMode.AutoSize
         GridAddons.Dock = DockStyle.Fill
+        GridAddons.EditMode = DataGridViewEditMode.EditProgrammatically
         GridAddons.MultiSelect = False
         GridAddons.Name = "GridAddons"
+        GridAddons.ReadOnly = True
         GridAddons.RowHeadersWidth = 25
         GridAddons.SelectionMode = DataGridViewSelectionMode.FullRowSelect
         GridAddons.Location = New Point(3, 18)
@@ -606,7 +625,7 @@ Partial Class ArmoEditor_Form
         ButtonEditIndx.Name = "ButtonEditIndx"
         ButtonEditIndx.Size = New Size(110, 26)
         ButtonEditIndx.TabIndex = 1
-        ButtonEditIndx.Text = "Edit INDX…"
+        ButtonEditIndx.Text = "Edit…"
         ButtonEditIndx.UseVisualStyleBackColor = True
         '
         ' ButtonRemoveAddon
@@ -1003,6 +1022,142 @@ Partial Class ArmoEditor_Form
         ButtonEditMo4s.Text = "New / Edit MSWP…"
         ButtonEditMo4s.UseVisualStyleBackColor = True
         '
+        ' TabObts
+        '
+        TabObts.Controls.Add(ObtsLayout)
+        TabObts.Location = New Point(4, 24)
+        TabObts.Name = "TabObts"
+        TabObts.Padding = New Padding(6)
+        TabObts.Size = New Size(712, 522)
+        TabObts.TabIndex = 4
+        TabObts.Text = "Object Template"
+        TabObts.UseVisualStyleBackColor = True
+        '
+        ' ObtsLayout
+        '
+        ObtsLayout.ColumnCount = 2
+        ObtsLayout.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100F))
+        ObtsLayout.ColumnStyles.Add(New ColumnStyle(SizeType.Absolute, 120F))
+        ObtsLayout.Controls.Add(LabelObts, 0, 0)
+        ObtsLayout.Controls.Add(GridCombinations, 0, 1)
+        ObtsLayout.Controls.Add(ObtsButtons, 1, 1)
+        ObtsLayout.Controls.Add(LabelObtsHint, 0, 2)
+        ObtsLayout.Dock = DockStyle.Fill
+        ObtsLayout.Location = New Point(6, 6)
+        ObtsLayout.Name = "ObtsLayout"
+        ObtsLayout.RowCount = 3
+        ObtsLayout.RowStyles.Add(New RowStyle())
+        ObtsLayout.RowStyles.Add(New RowStyle(SizeType.Percent, 100F))
+        ObtsLayout.RowStyles.Add(New RowStyle())
+        ObtsLayout.Size = New Size(700, 510)
+        ObtsLayout.TabIndex = 0
+        '
+        ' LabelObts
+        '
+        LabelObts.AutoSize = True
+        LabelObts.Location = New Point(3, 0)
+        LabelObts.Name = "LabelObts"
+        LabelObts.Size = New Size(280, 15)
+        LabelObts.TabIndex = 0
+        LabelObts.Text = "Object Template (OBTE/OBTS) — combinations, order matters:"
+        '
+        ' GridCombinations
+        '
+        GridCombinations.AllowUserToAddRows = False
+        GridCombinations.AllowUserToDeleteRows = False
+        GridCombinations.AllowUserToResizeRows = False
+        GridCombinations.ColumnHeadersHeightSizeMode = DataGridViewColumnHeadersHeightSizeMode.AutoSize
+        GridCombinations.Dock = DockStyle.Fill
+        GridCombinations.EditMode = DataGridViewEditMode.EditProgrammatically
+        GridCombinations.Location = New Point(3, 18)
+        GridCombinations.MultiSelect = False
+        GridCombinations.Name = "GridCombinations"
+        GridCombinations.ReadOnly = True
+        GridCombinations.RowHeadersWidth = 25
+        GridCombinations.SelectionMode = DataGridViewSelectionMode.FullRowSelect
+        GridCombinations.Size = New Size(574, 471)
+        GridCombinations.TabIndex = 1
+        '
+        ' ObtsButtons
+        '
+        ObtsButtons.Controls.Add(ButtonAddCombo)
+        ObtsButtons.Controls.Add(ButtonRemoveCombo)
+        ObtsButtons.Controls.Add(ButtonDuplicateCombo)
+        ObtsButtons.Controls.Add(ButtonComboUp)
+        ObtsButtons.Controls.Add(ButtonComboDown)
+        ObtsButtons.Controls.Add(ButtonEditCombo)
+        ObtsButtons.Dock = DockStyle.Fill
+        ObtsButtons.FlowDirection = FlowDirection.TopDown
+        ObtsButtons.Location = New Point(580, 18)
+        ObtsButtons.Margin = New Padding(0)
+        ObtsButtons.Name = "ObtsButtons"
+        ObtsButtons.Size = New Size(120, 471)
+        ObtsButtons.TabIndex = 2
+        '
+        ' ButtonAddCombo
+        '
+        ButtonAddCombo.Location = New Point(3, 3)
+        ButtonAddCombo.Name = "ButtonAddCombo"
+        ButtonAddCombo.Size = New Size(110, 26)
+        ButtonAddCombo.TabIndex = 0
+        ButtonAddCombo.Text = "Add…"
+        ButtonAddCombo.UseVisualStyleBackColor = True
+        '
+        ' ButtonRemoveCombo
+        '
+        ButtonRemoveCombo.Location = New Point(3, 35)
+        ButtonRemoveCombo.Name = "ButtonRemoveCombo"
+        ButtonRemoveCombo.Size = New Size(110, 26)
+        ButtonRemoveCombo.TabIndex = 1
+        ButtonRemoveCombo.Text = "Remove"
+        ButtonRemoveCombo.UseVisualStyleBackColor = True
+        '
+        ' ButtonDuplicateCombo
+        '
+        ButtonDuplicateCombo.Location = New Point(3, 67)
+        ButtonDuplicateCombo.Name = "ButtonDuplicateCombo"
+        ButtonDuplicateCombo.Size = New Size(110, 26)
+        ButtonDuplicateCombo.TabIndex = 2
+        ButtonDuplicateCombo.Text = "Duplicate"
+        ButtonDuplicateCombo.UseVisualStyleBackColor = True
+        '
+        ' ButtonComboUp
+        '
+        ButtonComboUp.Location = New Point(3, 99)
+        ButtonComboUp.Name = "ButtonComboUp"
+        ButtonComboUp.Size = New Size(110, 26)
+        ButtonComboUp.TabIndex = 3
+        ButtonComboUp.Text = "Move Up"
+        ButtonComboUp.UseVisualStyleBackColor = True
+        '
+        ' ButtonComboDown
+        '
+        ButtonComboDown.Location = New Point(3, 131)
+        ButtonComboDown.Name = "ButtonComboDown"
+        ButtonComboDown.Size = New Size(110, 26)
+        ButtonComboDown.TabIndex = 4
+        ButtonComboDown.Text = "Move Down"
+        ButtonComboDown.UseVisualStyleBackColor = True
+        '
+        ' ButtonEditCombo
+        '
+        ButtonEditCombo.Location = New Point(3, 163)
+        ButtonEditCombo.Name = "ButtonEditCombo"
+        ButtonEditCombo.Size = New Size(110, 26)
+        ButtonEditCombo.TabIndex = 5
+        ButtonEditCombo.Text = "Edit…"
+        ButtonEditCombo.UseVisualStyleBackColor = True
+        '
+        ' LabelObtsHint
+        '
+        LabelObtsHint.AutoSize = True
+        LabelObtsHint.ForeColor = Color.DimGray
+        LabelObtsHint.Location = New Point(3, 492)
+        LabelObtsHint.Name = "LabelObtsHint"
+        LabelObtsHint.Size = New Size(360, 15)
+        LabelObtsHint.TabIndex = 3
+        LabelObtsHint.Text = "Double-click or Edit… to open a combination; Add/Duplicate open the sub-editor."
+        '
         ' PreviewLayout
         '
         PreviewLayout.ColumnCount = 1
@@ -1129,6 +1284,11 @@ Partial Class ArmoEditor_Form
         GroupWorld.ResumeLayout(False)
         WorldFieldsLayout.ResumeLayout(False)
         WorldFieldsLayout.PerformLayout()
+        TabObts.ResumeLayout(False)
+        ObtsLayout.ResumeLayout(False)
+        ObtsLayout.PerformLayout()
+        CType(GridCombinations, ComponentModel.ISupportInitialize).EndInit()
+        ObtsButtons.ResumeLayout(False)
         PreviewLayout.ResumeLayout(False)
         PreviewLayout.PerformLayout()
         BottomLayout.ResumeLayout(False)
@@ -1211,6 +1371,18 @@ Partial Class ArmoEditor_Form
     Friend WithEvents TextBoxMo4s As System.Windows.Forms.TextBox
     Friend WithEvents ButtonPickMo4s As System.Windows.Forms.Button
     Friend WithEvents ButtonEditMo4s As System.Windows.Forms.Button
+    Friend WithEvents TabObts As System.Windows.Forms.TabPage
+    Friend WithEvents ObtsLayout As System.Windows.Forms.TableLayoutPanel
+    Friend WithEvents LabelObts As System.Windows.Forms.Label
+    Friend WithEvents GridCombinations As System.Windows.Forms.DataGridView
+    Friend WithEvents ObtsButtons As System.Windows.Forms.FlowLayoutPanel
+    Friend WithEvents ButtonAddCombo As System.Windows.Forms.Button
+    Friend WithEvents ButtonRemoveCombo As System.Windows.Forms.Button
+    Friend WithEvents ButtonDuplicateCombo As System.Windows.Forms.Button
+    Friend WithEvents ButtonComboUp As System.Windows.Forms.Button
+    Friend WithEvents ButtonComboDown As System.Windows.Forms.Button
+    Friend WithEvents ButtonEditCombo As System.Windows.Forms.Button
+    Friend WithEvents LabelObtsHint As System.Windows.Forms.Label
     Friend WithEvents PreviewLayout As System.Windows.Forms.TableLayoutPanel
     Friend WithEvents LabelPreviewHint As System.Windows.Forms.Label
     Friend WithEvents PreviewControlPanel As System.Windows.Forms.Panel

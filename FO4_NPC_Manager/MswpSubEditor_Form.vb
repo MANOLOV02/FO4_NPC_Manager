@@ -2,34 +2,31 @@ Imports System.Globalization
 Imports System.Linq
 Imports FO4_Base_Library
 
-''' <summary>Inline sub-editor for a Material Swap (MSWP) draft, opened from the ARMA Editor's
-''' "New / Edit MSWP…" button for a given gender. The substitutions grid's <b>Original Material</b> column
-''' is a DROPDOWN populated from THAT GENDER'S mesh NIF materials (the MOD2/MOD3 mesh's
-''' <see cref="Nifcontent_Class_Manolo.BaseMaterials"/> paths) so the user matches the swap against the
-''' material slots the mesh actually references; the <b>Replacement Material</b> is typed or picked via the
-''' library's <see cref="DictionaryFilePicker_Form"/> (Materials\ + {.bgsm,.bgem}); <b>Color Remap</b> is an
-''' optional float (CNAM). On OK the grid is written back into the passed-in <see cref="MswpDraft"/> (the
-''' caller has already allocated/registered it) and DialogResult.OK is returned.
+''' <summary>Inline sub-editor for a Material Swap (MSWP) draft, opened from the ARMA/ARMO Editor's
+''' "New / Edit MSWP…" button for a given gender. The substitutions grid is now pure READ-ONLY: each row is
+''' authored in the modal <see cref="MswpSubEntryEditor_Form"/> (Original from THAT GENDER'S mesh NIF materials
+''' + free-typed fallback, Replacement typed or picked, optional Color Remap). This kills the reentrant
+''' <c>SetCurrentCellAddressCore</c> crash the old inline combo/text cells caused.
 '''
-''' The editor does NOT touch the ESP; the MswpDraft it edits is persisted by the existing Save flow when an
-''' ARMA/ARMO draft references it.</summary>
+''' A working list (<see cref="_subs"/>) is the source of truth: populated from the draft on open, mutated by
+''' the Add / Edit / Remove buttons (and the double-click modal), and flushed back into the passed-in
+''' <see cref="MswpDraft"/> on OK. The editor does NOT touch the ESP; the MswpDraft is persisted by the
+''' existing Save flow when an ARMA/ARMO draft references it.</summary>
 Public Class MswpSubEditor_Form
 
     Private ReadOnly _mainForm As MainForm
     Private ReadOnly _draft As MswpDraft
-    ''' <summary>Material paths the gender mesh NIF references (BaseMaterials). Drives the Original combo.
-    ''' Empty when no mesh path was supplied or the mesh couldn't be loaded — the combo then falls back to a
-    ''' free-text column so the user can still author swaps.</summary>
+    ''' <summary>Material paths the gender mesh NIF references (BaseMaterials). Seeds the Original combo in the
+    ''' per-substitution modal. Empty when no mesh path was supplied or the mesh couldn't be loaded.</summary>
     Private ReadOnly _meshMaterials As New List(Of String)
-
-    Private _colOriginal As DataGridViewColumn
-    Private _colReplacement As DataGridViewTextBoxColumn
-    Private _colRemap As DataGridViewTextBoxColumn
+    ''' <summary>Working list of substitutions (source of truth). Loaded from the draft, mutated by the buttons/
+    ''' modal, flushed back into the draft on OK. Never aliased to the draft's own list (copied in and out).</summary>
+    Private ReadOnly _subs As New List(Of MSWP_Substitution)
 
     ''' <param name="mainForm">Owner — used for EditorID uniqueness checks.</param>
-    ''' <param name="draft">The MSWP draft being authored (already registered on MainForm). Edited in place.</param>
+    ''' <param name="draft">The MSWP draft being authored (already registered on MainForm). Flushed on OK.</param>
     ''' <param name="genderMeshPath">The gender's MOD2 (male) / MOD3 (female) mesh path. Its NIF materials
-    ''' source the Original-Material dropdown. Empty → free-text Original column.</param>
+    ''' seed the Original combo in the modal. Empty → free-text Original only.</param>
     ''' <param name="genderLabel">"Male"/"Female", shown in the caption.</param>
     Public Sub New(mainForm As MainForm, draft As MswpDraft, genderMeshPath As String, genderLabel As String)
         InitializeComponent()
@@ -41,49 +38,19 @@ Public Class MswpSubEditor_Form
         BuildGridColumns()
 
         TextBoxEdid.Text = If(_draft IsNot Nothing, _draft.EditorID, "")
-        LoadGridFromDraft()
+        LoadSubsFromDraft()
+        RefreshGrid()
 
-        AddHandler ButtonAddRow.Click, AddressOf OnAddRow
-        AddHandler ButtonRemoveRow.Click, AddressOf OnRemoveRow
-        AddHandler ButtonBrowseReplacement.Click, AddressOf OnBrowseReplacement
+        AddHandler ButtonAddRow.Click, AddressOf OnAddSub
+        AddHandler ButtonEditRow.Click, AddressOf OnEditSub
+        AddHandler ButtonRemoveRow.Click, AddressOf OnRemoveSub
+        AddHandler GridSubs.CellDoubleClick, AddressOf OnSubDoubleClick
         AddHandler ButtonOk.Click, AddressOf OnOk
-
-        ' Original-material combo (when the mesh exposed materials) must be FREE-TEXT editable so a swap
-        ' whose Original isn't referenced by the chosen mesh can still be authored, and an out-of-list /
-        ' empty value must never surface the default DataGridView error dialog.
-        AddHandler GridSubs.EditingControlShowing, AddressOf OnGridEditingControlShowing
-        AddHandler GridSubs.CellValidating, AddressOf OnGridCellValidating
-        AddHandler GridSubs.DataError, AddressOf OnGridDataError
-    End Sub
-
-    ''' <summary>Make the Original combo editable (ComboBoxStyle.DropDown) so a not-listed material can be
-    ''' typed — the column otherwise behaves as a DropDownList. No-op for the free-text column.</summary>
-    Private Sub OnGridEditingControlShowing(sender As Object, e As DataGridViewEditingControlShowingEventArgs)
-        If GridSubs.CurrentCell IsNot Nothing AndAlso GridSubs.CurrentCell.ColumnIndex = 0 Then
-            Dim combo = TryCast(e.Control, ComboBox)
-            If combo IsNot Nothing Then combo.DropDownStyle = ComboBoxStyle.DropDown
-        End If
-    End Sub
-
-    ''' <summary>A free-typed Original material not yet in the combo's item list would raise a DataError on
-    ''' commit; register it as an item first so the typed value is accepted (and persisted by OnOk).</summary>
-    Private Sub OnGridCellValidating(sender As Object, e As DataGridViewCellValidatingEventArgs)
-        If e.ColumnIndex <> 0 Then Return
-        Dim combo = TryCast(_colOriginal, DataGridViewComboBoxColumn)
-        If combo Is Nothing Then Return
-        Dim v = TryCast(e.FormattedValue, String)
-        If Not String.IsNullOrEmpty(v) AndAlso Not combo.Items.Contains(v) Then combo.Items.Add(v)
-    End Sub
-
-    ''' <summary>Belt-and-suspenders: never let a combo value-not-in-list bubble up as the default
-    ''' DataGridView error dialog (e.g. the empty placeholder/new row).</summary>
-    Private Sub OnGridDataError(sender As Object, e As DataGridViewDataErrorEventArgs)
-        e.ThrowException = False
     End Sub
 
     ''' <summary>Load the BaseMaterials (referenced material paths) of the gender mesh into
     ''' <see cref="_meshMaterials"/>. Resolves the mesh via FilesDictionary (loose &gt; BA2). Tolerant of a
-    ''' missing/unparseable mesh (leaves the list empty → free-text Original column).</summary>
+    ''' missing/unparseable mesh (leaves the list empty → free-text Original in the modal).</summary>
     Private Sub LoadMeshMaterials(genderMeshPath As String)
         If String.IsNullOrWhiteSpace(genderMeshPath) Then Return
         ' Records store mesh paths RELATIVE to Meshes\ (prefix-free); NormalizeMeshKey re-adds the lowercase
@@ -106,115 +73,101 @@ Public Class MswpSubEditor_Form
             Logger.LogLazy(Function() $"[MSWP-MAT] mesh material load failed for '{genderMeshPath}' (resolved key '{key}'): {ex.GetType().Name}: {ex.Message}")
         End Try
 
-        ' Empty list despite a resolvable mesh (NIF parsed but exposed no BaseMaterials) — still diagnosable.
         If _meshMaterials.Count = 0 Then
             Logger.LogLazy(Function() $"[MSWP-MAT] no NIF materials for '{genderMeshPath}' (resolved key '{key}') — Original-Material list empty (free-text fallback).")
         End If
     End Sub
 
-    ''' <summary>Build the 3 grid columns. Original is a combo when the mesh exposed materials (the dropdown
-    ''' items), else a plain text column. The combo column allows arbitrary text (DataGridViewComboBox is set
-    ''' editable) so a not-listed material can still be typed.</summary>
+    ''' <summary>Build the 3 READ-ONLY grid columns. No combo/text editable cells — the row is edited in the
+    ''' modal <see cref="MswpSubEntryEditor_Form"/>, so a not-listed / empty Original can never surface the
+    ''' default DataGridView error dialog.</summary>
     Private Sub BuildGridColumns()
         GridSubs.AutoGenerateColumns = False
         GridSubs.Columns.Clear()
-
-        If _meshMaterials.Count > 0 Then
-            Dim combo As New DataGridViewComboBoxColumn With {
-                .HeaderText = "Original Material (BNAM)",
-                .FillWeight = 42, .AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill,
-                .FlatStyle = FlatStyle.Flat, .DropDownWidth = 420}
-            For Each p In _meshMaterials
-                combo.Items.Add(p)
-            Next
-            _colOriginal = combo
-        Else
-            _colOriginal = New DataGridViewTextBoxColumn With {
-                .HeaderText = "Original Material (BNAM)",
-                .FillWeight = 42, .AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill}
-        End If
-        _colReplacement = New DataGridViewTextBoxColumn With {
-            .HeaderText = "Replacement Material (SNAM)",
-            .FillWeight = 42, .AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill}
-        _colRemap = New DataGridViewTextBoxColumn With {
-            .HeaderText = "Color Remap (optional)",
-            .FillWeight = 16, .AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill}
-
-        GridSubs.Columns.Add(_colOriginal)
-        GridSubs.Columns.Add(_colReplacement)
-        GridSubs.Columns.Add(_colRemap)
+        GridSubs.Columns.Add(NewReadOnlyCol("Original Material (BNAM)", 42))
+        GridSubs.Columns.Add(NewReadOnlyCol("Replacement Material (SNAM)", 42))
+        GridSubs.Columns.Add(NewReadOnlyCol("Color Remap", 16))
     End Sub
 
-    Private Sub LoadGridFromDraft()
-        GridSubs.Rows.Clear()
+    Private Shared Function NewReadOnlyCol(header As String, weight As Single) As DataGridViewTextBoxColumn
+        Return New DataGridViewTextBoxColumn With {
+            .HeaderText = header, .FillWeight = weight, .AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill, .ReadOnly = True}
+    End Function
+
+    Private Sub LoadSubsFromDraft()
+        _subs.Clear()
         If _draft Is Nothing Then Return
         For Each s In _draft.Substitutions
-            Dim remap = If(s.HasColorRemapIndex, s.ColorRemapIndex.ToString(CultureInfo.InvariantCulture), "")
-            AddRow(s.OriginalMaterial, s.ReplacementMaterial, remap)
+            _subs.Add(New MSWP_Substitution With {
+                .OriginalMaterial = s.OriginalMaterial, .ReplacementMaterial = s.ReplacementMaterial,
+                .TreeFolder = s.TreeFolder, .HasColorRemapIndex = s.HasColorRemapIndex, .ColorRemapIndex = s.ColorRemapIndex})
         Next
     End Sub
 
-    ''' <summary>Add a grid row. For a combo Original column, an out-of-list value would throw on assignment,
-    ''' so the item is appended to the combo's value list first.</summary>
-    Private Sub AddRow(original As String, replacement As String, remap As String)
-        Dim idx = GridSubs.Rows.Add()
-        Dim row = GridSubs.Rows(idx)
-        Dim combo = TryCast(_colOriginal, DataGridViewComboBoxColumn)
-        If combo IsNot Nothing AndAlso Not String.IsNullOrEmpty(original) AndAlso Not combo.Items.Contains(original) Then
-            combo.Items.Add(original)
-        End If
-        ' For a combo Original column an out-of-list value throws; "" is not a valid item, so an empty
-        ' Original must be the null "no selection" value (Nothing), never "". (Non-empty out-of-list
-        ' values were registered as items just above.)
-        If combo IsNot Nothing AndAlso String.IsNullOrEmpty(original) Then
-            row.Cells(0).Value = Nothing
-        Else
-            row.Cells(0).Value = If(original, "")
-        End If
-        row.Cells(1).Value = If(replacement, "")
-        row.Cells(2).Value = If(remap, "")
-    End Sub
-
-    Private Sub OnAddRow(sender As Object, e As EventArgs)
-        AddRow("", "", "")
-    End Sub
-
-    Private Sub OnRemoveRow(sender As Object, e As EventArgs)
-        If GridSubs.SelectedRows.Count > 0 Then
-            For Each row As DataGridViewRow In GridSubs.SelectedRows
-                If Not row.IsNewRow Then GridSubs.Rows.Remove(row)
-            Next
-        ElseIf GridSubs.CurrentRow IsNot Nothing AndAlso Not GridSubs.CurrentRow.IsNewRow Then
-            GridSubs.Rows.Remove(GridSubs.CurrentRow)
+    ''' <summary>Repaint the grid from <see cref="_subs"/> (read-only summary rows). Called only from load /
+    ''' button handlers — NEVER from a cell event, so no reentrant Rows.Clear.</summary>
+    Private Sub RefreshGrid()
+        Dim selIdx = If(GridSubs.CurrentRow IsNot Nothing, GridSubs.CurrentRow.Index, -1)
+        GridSubs.Rows.Clear()
+        For Each s In _subs
+            Dim remap = If(s.HasColorRemapIndex, s.ColorRemapIndex.ToString(CultureInfo.InvariantCulture), "")
+            GridSubs.Rows.Add(If(s.OriginalMaterial, ""), If(s.ReplacementMaterial, ""), remap)
+        Next
+        If selIdx >= 0 AndAlso selIdx < GridSubs.Rows.Count Then
+            GridSubs.Rows(selIdx).Selected = True
+            GridSubs.CurrentCell = GridSubs.Rows(selIdx).Cells(0)
         End If
     End Sub
 
-    ''' <summary>Pick a Materials\ file (loose+BA2, ext-filtered) via the library tree picker into the
-    ''' current row's Replacement cell.</summary>
-    Private Sub OnBrowseReplacement(sender As Object, e As EventArgs)
-        If GridSubs.CurrentRow Is Nothing OrElse GridSubs.CurrentRow.IsNewRow Then
-            MessageBox.Show(Me, "Select a row first (Add row if empty).", "Browse material",
-                            MessageBoxButtons.OK, MessageBoxIcon.Information)
-            Return
-        End If
-        Dim current = CStr(If(GridSubs.CurrentRow.Cells(1).Value, "")).Trim()
-        Dim exts As New HashSet(Of String)(StringComparer.OrdinalIgnoreCase) From {".bgsm", ".bgem"}
-        Dim keys = FilesDictionary_class.GetFilteredKeys(MaterialsPrefix, exts)
-        Using dlg As New DictionaryFilePicker_Form(keys, MaterialsPrefix, exts, current)
-            If dlg.ShowDialog(Me) = DialogResult.OK Then
-                Dim sel = dlg.DictionaryPicker_Control1.SelectedKey
-                If Not String.IsNullOrEmpty(sel) Then GridSubs.CurrentRow.Cells(1).Value = sel
+    ''' <summary>Add → open the modal on a fresh substitution; on OK append the returned copy.</summary>
+    Private Sub OnAddSub(sender As Object, e As EventArgs)
+        Using dlg As New MswpSubEntryEditor_Form(_meshMaterials, New MSWP_Substitution())
+            If dlg.ShowDialog(Me) = DialogResult.OK AndAlso dlg.ResultSub IsNot Nothing Then
+                _subs.Add(dlg.ResultSub)
+                RefreshGrid()
             End If
         End Using
     End Sub
 
-    ''' <summary>Commit the EditorID + grid into the draft. Validates the EditorID (non-empty + unique, unless
-    ''' unchanged on the same draft) and that at least one usable substitution exists. Vetoes the close
+    Private Sub OnEditSub(sender As Object, e As EventArgs)
+        EditSubAt(SelectedSubIndex())
+    End Sub
+
+    ''' <summary>Double-click a row → edit that substitution in the modal. Safe: the grid is read-only ⇒ no cell
+    ''' in edit mode ⇒ no reentrant <c>SetCurrentCellAddressCore</c>.</summary>
+    Private Sub OnSubDoubleClick(sender As Object, e As DataGridViewCellEventArgs)
+        If e.RowIndex < 0 Then Return
+        EditSubAt(e.RowIndex)
+    End Sub
+
+    Private Sub EditSubAt(i As Integer)
+        If i < 0 OrElse i >= _subs.Count Then Return
+        Using dlg As New MswpSubEntryEditor_Form(_meshMaterials, _subs(i))
+            If dlg.ShowDialog(Me) = DialogResult.OK AndAlso dlg.ResultSub IsNot Nothing Then
+                _subs(i) = dlg.ResultSub
+                RefreshGrid()
+            End If
+        End Using
+    End Sub
+
+    Private Sub OnRemoveSub(sender As Object, e As EventArgs)
+        Dim i = SelectedSubIndex()
+        If i < 0 Then Return
+        _subs.RemoveAt(i)
+        RefreshGrid()
+    End Sub
+
+    Private Function SelectedSubIndex() As Integer
+        If GridSubs.CurrentRow Is Nothing Then Return -1
+        Dim i = GridSubs.CurrentRow.Index
+        If i < 0 OrElse i >= _subs.Count Then Return -1
+        Return i
+    End Function
+
+    ''' <summary>Commit the EditorID + working list into the draft. Validates the EditorID (non-empty + unique,
+    ''' unless unchanged on the same draft) and that at least one usable substitution exists. Vetoes the close
     ''' (DialogResult.None) on a validation failure.</summary>
     Private Sub OnOk(sender As Object, e As EventArgs)
-        ' Flush any in-progress grid cell edit into the model before reading the rows.
-        GridSubs.EndEdit()
-
         If _draft Is Nothing Then
             DialogResult = DialogResult.OK
             Close()
@@ -237,24 +190,9 @@ Public Class MswpSubEditor_Form
             Return
         End If
 
-        Dim subs As New List(Of MSWP_Substitution)
-        For Each row As DataGridViewRow In GridSubs.Rows
-            If row.IsNewRow Then Continue For
-            Dim orig = CStr(If(row.Cells(0).Value, "")).Trim()
-            Dim repl = CStr(If(row.Cells(1).Value, "")).Trim()
-            If orig.Length = 0 AndAlso repl.Length = 0 Then Continue For
-            Dim sub_ As New MSWP_Substitution With {.OriginalMaterial = orig, .ReplacementMaterial = repl}
-            Dim remapText = CStr(If(row.Cells(2).Value, "")).Trim()
-            Dim remapVal As Single
-            If remapText.Length > 0 AndAlso Single.TryParse(remapText, NumberStyles.Float, CultureInfo.InvariantCulture, remapVal) Then
-                sub_.HasColorRemapIndex = True
-                sub_.ColorRemapIndex = remapVal
-            End If
-            subs.Add(sub_)
-        Next
-
-        ' A material swap with no usable substitution is a content-less record — veto the close (the
-        ' summary contract requires at least one substitution).
+        ' Drop any content-less rows (no Original AND no Replacement) defensively — the modal already rejects them.
+        Dim subs = _subs.Where(Function(s) Not (String.IsNullOrEmpty(s.OriginalMaterial) AndAlso
+                                                String.IsNullOrEmpty(s.ReplacementMaterial))).ToList()
         If subs.Count = 0 Then
             MessageBox.Show(Me, "Add at least one material substitution (Original + Replacement) before saving.",
                             "MSWP", MessageBoxButtons.OK, MessageBoxIcon.Information)
