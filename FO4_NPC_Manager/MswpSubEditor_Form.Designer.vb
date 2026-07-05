@@ -23,6 +23,7 @@ Partial Class MswpSubEditor_Form
         EdidRow = New FlowLayoutPanel()
         LabelEdid = New Label()
         TextBoxEdid = New TextBox()
+        LabelEdidPreview = New Label()
         LabelHint = New Label()
         GridSubs = New DataGridView()
         ButtonsRow = New FlowLayoutPanel()
@@ -66,6 +67,7 @@ Partial Class MswpSubEditor_Form
         EdidRow.AutoSize = True
         EdidRow.Controls.Add(LabelEdid)
         EdidRow.Controls.Add(TextBoxEdid)
+        EdidRow.Controls.Add(LabelEdidPreview)
         EdidRow.Dock = DockStyle.Fill
         EdidRow.Location = New Point(8, 8)
         EdidRow.Margin = New Padding(0)
@@ -88,9 +90,19 @@ Partial Class MswpSubEditor_Form
         '
         TextBoxEdid.Location = New Point(57, 3)
         TextBoxEdid.Name = "TextBoxEdid"
-        TextBoxEdid.PlaceholderText = "npcm_MSWP_<name>"
+        TextBoxEdid.PlaceholderText = "name"
         TextBoxEdid.Size = New Size(360, 23)
         TextBoxEdid.TabIndex = 1
+        '
+        ' LabelEdidPreview
+        '
+        LabelEdidPreview.Anchor = AnchorStyles.Left
+        LabelEdidPreview.AutoSize = True
+        LabelEdidPreview.ForeColor = SystemColors.GrayText
+        LabelEdidPreview.Location = New Point(423, 7)
+        LabelEdidPreview.Name = "LabelEdidPreview"
+        LabelEdidPreview.Size = New Size(0, 15)
+        LabelEdidPreview.TabIndex = 2
         '
         ' LabelHint
         '
@@ -164,8 +176,8 @@ Partial Class MswpSubEditor_Form
         '
         BottomLayout.AutoSize = True
         BottomLayout.AutoSizeMode = AutoSizeMode.GrowAndShrink
-        BottomLayout.Controls.Add(ButtonOk)
         BottomLayout.Controls.Add(ButtonCancel)
+        BottomLayout.Controls.Add(ButtonOk)
         BottomLayout.Dock = DockStyle.Fill
         BottomLayout.FlowDirection = FlowDirection.RightToLeft
         BottomLayout.Location = New Point(8, 436)
@@ -220,6 +232,7 @@ Partial Class MswpSubEditor_Form
     Friend WithEvents EdidRow As System.Windows.Forms.FlowLayoutPanel
     Friend WithEvents LabelEdid As System.Windows.Forms.Label
     Friend WithEvents TextBoxEdid As System.Windows.Forms.TextBox
+    Friend WithEvents LabelEdidPreview As System.Windows.Forms.Label
     Friend WithEvents LabelHint As System.Windows.Forms.Label
     Friend WithEvents GridSubs As System.Windows.Forms.DataGridView
     Friend WithEvents ButtonsRow As System.Windows.Forms.FlowLayoutPanel

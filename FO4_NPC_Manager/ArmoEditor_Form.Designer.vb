@@ -27,6 +27,7 @@ Partial Class ArmoEditor_Form
         ButtonEditDraft = New Button()
         LabelEdid = New Label()
         TextBoxEdid = New TextBox()
+        LabelEdidPreview = New Label()
         LabelStatusBanner = New Label()
         MainSplit = New SplitContainer()
         Tabs = New TabControl()
@@ -39,6 +40,9 @@ Partial Class ArmoEditor_Form
         LabelRace = New Label()
         TextBoxRace = New TextBox()
         ButtonPickRace = New Button()
+        LabelInnr = New Label()
+        TextBoxInnr = New TextBox()
+        ButtonPickInnr = New Button()
         GroupData = New GroupBox()
         DataLayout = New TableLayoutPanel()
         LabelValue = New Label()
@@ -51,6 +55,9 @@ Partial Class ArmoEditor_Form
         NumArmorRating = New NumericUpDown()
         LabelSlots = New Label()
         FlowSlots = New FlowLayoutPanel()
+        TabSlots = New TabPage()
+        SlotsLayout = New TableLayoutPanel()
+        ButtonRecalcSlots = New Button()
         TabAddons = New TabPage()
         AddonsLayout = New TableLayoutPanel()
         LabelAddons = New Label()
@@ -112,6 +119,51 @@ Partial Class ArmoEditor_Form
         BottomLayout = New FlowLayoutPanel()
         ButtonOk = New Button()
         ButtonCancel = New Button()
+        LabelEitm = New Label()
+        TextBoxEitm = New TextBox()
+        ButtonPickEitm = New Button()
+        LabelPtrn = New Label()
+        TextBoxPtrn = New TextBox()
+        ButtonPickPtrn = New Button()
+        CheckBoxNonPlayable = New CheckBox()
+        LabelDesc = New Label()
+        TextBoxDesc = New TextBox()
+        LabelBaseAddonIndex = New Label()
+        NumBaseAddonIndex = New NumericUpDown()
+        LabelStaggerRating = New Label()
+        NumStaggerRating = New NumericUpDown()
+        TabMisc = New TabPage()
+        MiscLayout = New TableLayoutPanel()
+        LabelYnam = New Label()
+        TextBoxYnam = New TextBox()
+        ButtonPickYnam = New Button()
+        LabelZnam = New Label()
+        TextBoxZnam = New TextBox()
+        ButtonPickZnam = New Button()
+        LabelEtyp = New Label()
+        TextBoxEtyp = New TextBox()
+        ButtonPickEtyp = New Button()
+        LabelBamt = New Label()
+        TextBoxBamt = New TextBox()
+        ButtonPickBamt = New Button()
+        LabelObnd = New Label()
+        FlowObnd = New FlowLayoutPanel()
+        NumObndX1 = New NumericUpDown()
+        NumObndY1 = New NumericUpDown()
+        NumObndZ1 = New NumericUpDown()
+        NumObndX2 = New NumericUpDown()
+        NumObndY2 = New NumericUpDown()
+        NumObndZ2 = New NumericUpDown()
+        ButtonRecomputeObnd = New Button()
+        LabelObndHint = New Label()
+        TabDamage = New TabPage()
+        DamageLayout = New TableLayoutPanel()
+        LabelDamage = New Label()
+        GridDamage = New DataGridView()
+        DamageButtons = New FlowLayoutPanel()
+        ButtonAddDamage = New Button()
+        ButtonEditDamage = New Button()
+        ButtonRemoveDamage = New Button()
         RootLayout.SuspendLayout()
         TopBar.SuspendLayout()
         CType(MainSplit, ComponentModel.ISupportInitialize).BeginInit()
@@ -121,6 +173,8 @@ Partial Class ArmoEditor_Form
         Tabs.SuspendLayout()
         TabGeneral.SuspendLayout()
         GeneralLayout.SuspendLayout()
+        TabSlots.SuspendLayout()
+        SlotsLayout.SuspendLayout()
         GroupIdentity.SuspendLayout()
         IdentityLayout.SuspendLayout()
         GroupData.SuspendLayout()
@@ -129,6 +183,21 @@ Partial Class ArmoEditor_Form
         CType(NumWeight, ComponentModel.ISupportInitialize).BeginInit()
         CType(NumHealth, ComponentModel.ISupportInitialize).BeginInit()
         CType(NumArmorRating, ComponentModel.ISupportInitialize).BeginInit()
+        CType(NumBaseAddonIndex, ComponentModel.ISupportInitialize).BeginInit()
+        CType(NumStaggerRating, ComponentModel.ISupportInitialize).BeginInit()
+        TabMisc.SuspendLayout()
+        MiscLayout.SuspendLayout()
+        FlowObnd.SuspendLayout()
+        CType(NumObndX1, ComponentModel.ISupportInitialize).BeginInit()
+        CType(NumObndY1, ComponentModel.ISupportInitialize).BeginInit()
+        CType(NumObndZ1, ComponentModel.ISupportInitialize).BeginInit()
+        CType(NumObndX2, ComponentModel.ISupportInitialize).BeginInit()
+        CType(NumObndY2, ComponentModel.ISupportInitialize).BeginInit()
+        CType(NumObndZ2, ComponentModel.ISupportInitialize).BeginInit()
+        TabDamage.SuspendLayout()
+        DamageLayout.SuspendLayout()
+        CType(GridDamage, ComponentModel.ISupportInitialize).BeginInit()
+        DamageButtons.SuspendLayout()
         TabAddons.SuspendLayout()
         AddonsLayout.SuspendLayout()
         CType(GridAddons, ComponentModel.ISupportInitialize).BeginInit()
@@ -179,6 +248,7 @@ Partial Class ArmoEditor_Form
         TopBar.Controls.Add(ButtonEditDraft)
         TopBar.Controls.Add(LabelEdid)
         TopBar.Controls.Add(TextBoxEdid)
+        TopBar.Controls.Add(LabelEdidPreview)
         TopBar.Dock = DockStyle.Fill
         TopBar.Location = New Point(11, 11)
         TopBar.Margin = New Padding(0)
@@ -224,7 +294,7 @@ Partial Class ArmoEditor_Form
         ButtonEditDraft.Name = "ButtonEditDraft"
         ButtonEditDraft.Size = New Size(90, 24)
         ButtonEditDraft.TabIndex = 3
-        ButtonEditDraft.Text = "Edit draft…"
+        ButtonEditDraft.Text = "Edit mine…"
         ButtonEditDraft.UseVisualStyleBackColor = True
         '
         ' LabelEdid
@@ -241,9 +311,20 @@ Partial Class ArmoEditor_Form
         '
         TextBoxEdid.Location = New Point(502, 3)
         TextBoxEdid.Name = "TextBoxEdid"
-        TextBoxEdid.PlaceholderText = "npcm_ARMO_<name>"
+        TextBoxEdid.PlaceholderText = "name"
         TextBoxEdid.Size = New Size(320, 23)
         TextBoxEdid.TabIndex = 5
+        '
+        ' LabelEdidPreview
+        '
+        LabelEdidPreview.Anchor = AnchorStyles.Left
+        LabelEdidPreview.AutoSize = True
+        LabelEdidPreview.ForeColor = System.Drawing.SystemColors.GrayText
+        LabelEdidPreview.Location = New Point(828, 7)
+        LabelEdidPreview.Margin = New Padding(8, 0, 3, 0)
+        LabelEdidPreview.Name = "LabelEdidPreview"
+        LabelEdidPreview.Size = New Size(0, 15)
+        LabelEdidPreview.TabIndex = 6
         '
         ' LabelStatusBanner
         '
@@ -278,8 +359,11 @@ Partial Class ArmoEditor_Form
         '
         Tabs.Controls.Add(TabGeneral)
         Tabs.Controls.Add(TabAddons)
+        Tabs.Controls.Add(TabSlots)
         Tabs.Controls.Add(TabKeywords)
         Tabs.Controls.Add(TabWorld)
+        Tabs.Controls.Add(TabMisc)
+        Tabs.Controls.Add(TabDamage)
         Tabs.Controls.Add(TabObts)
         Tabs.Dock = DockStyle.Fill
         Tabs.Location = New Point(0, 0)
@@ -306,13 +390,10 @@ Partial Class ArmoEditor_Form
         GeneralLayout.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100F))
         GeneralLayout.Controls.Add(GroupIdentity, 0, 0)
         GeneralLayout.Controls.Add(GroupData, 0, 1)
-        GeneralLayout.Controls.Add(LabelSlots, 0, 2)
-        GeneralLayout.Controls.Add(FlowSlots, 0, 3)
         GeneralLayout.Dock = DockStyle.Fill
         GeneralLayout.Location = New Point(6, 6)
         GeneralLayout.Name = "GeneralLayout"
-        GeneralLayout.RowCount = 4
-        GeneralLayout.RowStyles.Add(New RowStyle())
+        GeneralLayout.RowCount = 3
         GeneralLayout.RowStyles.Add(New RowStyle())
         GeneralLayout.RowStyles.Add(New RowStyle())
         GeneralLayout.RowStyles.Add(New RowStyle(SizeType.Percent, 100F))
@@ -336,7 +417,7 @@ Partial Class ArmoEditor_Form
         ' IdentityLayout
         '
         IdentityLayout.ColumnCount = 3
-        IdentityLayout.ColumnStyles.Add(New ColumnStyle(SizeType.Absolute, 110F))
+        IdentityLayout.ColumnStyles.Add(New ColumnStyle(SizeType.Absolute, 150F))
         IdentityLayout.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100F))
         IdentityLayout.ColumnStyles.Add(New ColumnStyle(SizeType.Absolute, 50F))
         IdentityLayout.Controls.Add(LabelFull, 0, 0)
@@ -344,12 +425,29 @@ Partial Class ArmoEditor_Form
         IdentityLayout.Controls.Add(LabelRace, 0, 1)
         IdentityLayout.Controls.Add(TextBoxRace, 1, 1)
         IdentityLayout.Controls.Add(ButtonPickRace, 2, 1)
+        IdentityLayout.Controls.Add(LabelInnr, 0, 2)
+        IdentityLayout.Controls.Add(TextBoxInnr, 1, 2)
+        IdentityLayout.Controls.Add(ButtonPickInnr, 2, 2)
+        IdentityLayout.Controls.Add(LabelEitm, 0, 3)
+        IdentityLayout.Controls.Add(TextBoxEitm, 1, 3)
+        IdentityLayout.Controls.Add(ButtonPickEitm, 2, 3)
+        IdentityLayout.Controls.Add(LabelPtrn, 0, 4)
+        IdentityLayout.Controls.Add(TextBoxPtrn, 1, 4)
+        IdentityLayout.Controls.Add(ButtonPickPtrn, 2, 4)
+        IdentityLayout.Controls.Add(CheckBoxNonPlayable, 1, 5)
+        IdentityLayout.Controls.Add(LabelDesc, 0, 6)
+        IdentityLayout.Controls.Add(TextBoxDesc, 1, 6)
         IdentityLayout.AutoSize = True
         IdentityLayout.AutoSizeMode = AutoSizeMode.GrowAndShrink
         IdentityLayout.Dock = DockStyle.Fill
         IdentityLayout.Location = New Point(4, 20)
         IdentityLayout.Name = "IdentityLayout"
-        IdentityLayout.RowCount = 2
+        IdentityLayout.RowCount = 7
+        IdentityLayout.RowStyles.Add(New RowStyle())
+        IdentityLayout.RowStyles.Add(New RowStyle())
+        IdentityLayout.RowStyles.Add(New RowStyle())
+        IdentityLayout.RowStyles.Add(New RowStyle())
+        IdentityLayout.RowStyles.Add(New RowStyle())
         IdentityLayout.RowStyles.Add(New RowStyle())
         IdentityLayout.RowStyles.Add(New RowStyle())
         IdentityLayout.Size = New Size(686, 66)
@@ -403,42 +501,149 @@ Partial Class ArmoEditor_Form
         ButtonPickRace.Text = "…"
         ButtonPickRace.UseVisualStyleBackColor = True
         '
+        ' LabelInnr
+        '
+        LabelInnr.Anchor = AnchorStyles.Left
+        LabelInnr.AutoSize = True
+        LabelInnr.Location = New Point(3, 70)
+        LabelInnr.Name = "LabelInnr"
+        LabelInnr.Size = New Size(105, 15)
+        LabelInnr.TabIndex = 5
+        LabelInnr.Text = "Instance Naming:"
+        '
+        ' TextBoxInnr
+        '
+        TextBoxInnr.Anchor = AnchorStyles.Left Or AnchorStyles.Right
+        TextBoxInnr.Location = New Point(113, 66)
+        TextBoxInnr.Name = "TextBoxInnr"
+        TextBoxInnr.ReadOnly = True
+        TextBoxInnr.Size = New Size(544, 23)
+        TextBoxInnr.TabIndex = 6
+        '
+        ' ButtonPickInnr
+        '
+        ButtonPickInnr.Anchor = AnchorStyles.Left
+        ButtonPickInnr.Location = New Point(663, 65)
+        ButtonPickInnr.Name = "ButtonPickInnr"
+        ButtonPickInnr.Size = New Size(34, 24)
+        ButtonPickInnr.TabIndex = 7
+        ButtonPickInnr.Text = "…"
+        ButtonPickInnr.UseVisualStyleBackColor = True
+        '
+        ' LabelEitm
+        '
+        LabelEitm.Anchor = AnchorStyles.Left
+        LabelEitm.AutoSize = True
+        LabelEitm.Name = "LabelEitm"
+        LabelEitm.Text = "Object Effect:"
+        '
+        ' TextBoxEitm
+        '
+        TextBoxEitm.Anchor = AnchorStyles.Left Or AnchorStyles.Right
+        TextBoxEitm.Name = "TextBoxEitm"
+        TextBoxEitm.ReadOnly = True
+        TextBoxEitm.Size = New Size(544, 23)
+        TextBoxEitm.TabIndex = 8
+        '
+        ' ButtonPickEitm
+        '
+        ButtonPickEitm.Anchor = AnchorStyles.Left
+        ButtonPickEitm.Name = "ButtonPickEitm"
+        ButtonPickEitm.Size = New Size(34, 24)
+        ButtonPickEitm.TabIndex = 9
+        ButtonPickEitm.Text = "…"
+        ButtonPickEitm.UseVisualStyleBackColor = True
+        '
+        ' LabelPtrn
+        '
+        LabelPtrn.Anchor = AnchorStyles.Left
+        LabelPtrn.AutoSize = True
+        LabelPtrn.Name = "LabelPtrn"
+        LabelPtrn.Text = "Transform (PTRN):"
+        '
+        ' TextBoxPtrn
+        '
+        TextBoxPtrn.Anchor = AnchorStyles.Left Or AnchorStyles.Right
+        TextBoxPtrn.Name = "TextBoxPtrn"
+        TextBoxPtrn.ReadOnly = True
+        TextBoxPtrn.Size = New Size(544, 23)
+        TextBoxPtrn.TabIndex = 10
+        '
+        ' ButtonPickPtrn
+        '
+        ButtonPickPtrn.Anchor = AnchorStyles.Left
+        ButtonPickPtrn.Name = "ButtonPickPtrn"
+        ButtonPickPtrn.Size = New Size(34, 24)
+        ButtonPickPtrn.TabIndex = 11
+        ButtonPickPtrn.Text = "…"
+        ButtonPickPtrn.UseVisualStyleBackColor = True
+        '
+        ' CheckBoxNonPlayable
+        '
+        CheckBoxNonPlayable.Anchor = AnchorStyles.Left
+        CheckBoxNonPlayable.AutoSize = True
+        CheckBoxNonPlayable.Name = "CheckBoxNonPlayable"
+        CheckBoxNonPlayable.TabIndex = 12
+        CheckBoxNonPlayable.Text = "Non-Playable"
+        CheckBoxNonPlayable.UseVisualStyleBackColor = True
+        '
+        ' LabelDesc
+        '
+        LabelDesc.Anchor = AnchorStyles.Left
+        LabelDesc.AutoSize = True
+        LabelDesc.Name = "LabelDesc"
+        LabelDesc.Text = "Description (DESC):"
+        '
+        ' TextBoxDesc
+        '
+        TextBoxDesc.Anchor = AnchorStyles.Left Or AnchorStyles.Right
+        TextBoxDesc.Name = "TextBoxDesc"
+        TextBoxDesc.Size = New Size(469, 23)
+        TextBoxDesc.TabIndex = 13
+        '
         ' GroupData
         '
+        GroupData.AutoSize = True
+        GroupData.AutoSizeMode = AutoSizeMode.GrowAndShrink
         GroupData.Controls.Add(DataLayout)
-        GroupData.Dock = DockStyle.Top
+        GroupData.Dock = DockStyle.Fill
         GroupData.Location = New Point(3, 64)
         GroupData.Name = "GroupData"
-        GroupData.Size = New Size(694, 90)
+        GroupData.Size = New Size(694, 130)
         GroupData.TabIndex = 5
         GroupData.TabStop = False
         GroupData.Text = "DATA / FNAM"
         '
         ' DataLayout
         '
-        DataLayout.ColumnCount = 8
+        DataLayout.ColumnCount = 5
+        DataLayout.ColumnStyles.Add(New ColumnStyle(SizeType.Absolute, 150F))
         DataLayout.ColumnStyles.Add(New ColumnStyle(SizeType.Absolute, 90F))
+        DataLayout.ColumnStyles.Add(New ColumnStyle(SizeType.Absolute, 150F))
         DataLayout.ColumnStyles.Add(New ColumnStyle(SizeType.Absolute, 90F))
-        DataLayout.ColumnStyles.Add(New ColumnStyle(SizeType.Absolute, 70F))
-        DataLayout.ColumnStyles.Add(New ColumnStyle(SizeType.Absolute, 90F))
-        DataLayout.ColumnStyles.Add(New ColumnStyle(SizeType.Absolute, 70F))
-        DataLayout.ColumnStyles.Add(New ColumnStyle(SizeType.Absolute, 90F))
-        DataLayout.ColumnStyles.Add(New ColumnStyle(SizeType.Absolute, 110F))
         DataLayout.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100F))
         DataLayout.Controls.Add(LabelValue, 0, 0)
         DataLayout.Controls.Add(NumValue, 1, 0)
         DataLayout.Controls.Add(LabelWeight, 2, 0)
         DataLayout.Controls.Add(NumWeight, 3, 0)
-        DataLayout.Controls.Add(LabelHealth, 4, 0)
-        DataLayout.Controls.Add(NumHealth, 5, 0)
-        DataLayout.Controls.Add(LabelArmorRating, 6, 0)
-        DataLayout.Controls.Add(NumArmorRating, 7, 0)
-        DataLayout.Dock = DockStyle.Top
+        DataLayout.Controls.Add(LabelHealth, 0, 1)
+        DataLayout.Controls.Add(NumHealth, 1, 1)
+        DataLayout.Controls.Add(LabelArmorRating, 2, 1)
+        DataLayout.Controls.Add(NumArmorRating, 3, 1)
+        DataLayout.Controls.Add(LabelBaseAddonIndex, 0, 2)
+        DataLayout.Controls.Add(NumBaseAddonIndex, 1, 2)
+        DataLayout.Controls.Add(LabelStaggerRating, 2, 2)
+        DataLayout.Controls.Add(NumStaggerRating, 3, 2)
+        DataLayout.AutoSize = True
+        DataLayout.AutoSizeMode = AutoSizeMode.GrowAndShrink
+        DataLayout.Dock = DockStyle.Fill
         DataLayout.Location = New Point(3, 19)
         DataLayout.Name = "DataLayout"
-        DataLayout.RowCount = 1
+        DataLayout.RowCount = 3
         DataLayout.RowStyles.Add(New RowStyle())
-        DataLayout.Size = New Size(688, 35)
+        DataLayout.RowStyles.Add(New RowStyle())
+        DataLayout.RowStyles.Add(New RowStyle())
+        DataLayout.Size = New Size(688, 100)
         DataLayout.TabIndex = 0
         '
         ' LabelValue
@@ -460,6 +665,7 @@ Partial Class ArmoEditor_Form
         NumValue.Name = "NumValue"
         NumValue.Size = New Size(80, 23)
         NumValue.TabIndex = 1
+        NumValue.TextAlign = System.Windows.Forms.HorizontalAlignment.Right
         '
         ' LabelWeight
         '
@@ -479,8 +685,9 @@ Partial Class ArmoEditor_Form
         NumWeight.Location = New Point(253, 6)
         NumWeight.Maximum = New Decimal(New Integer() {1000000, 0, 0, 0})
         NumWeight.Name = "NumWeight"
-        NumWeight.Size = New Size(70, 23)
+        NumWeight.Size = New Size(80, 23)
         NumWeight.TabIndex = 3
+        NumWeight.TextAlign = System.Windows.Forms.HorizontalAlignment.Right
         '
         ' LabelHealth
         '
@@ -500,6 +707,7 @@ Partial Class ArmoEditor_Form
         NumHealth.Name = "NumHealth"
         NumHealth.Size = New Size(80, 23)
         NumHealth.TabIndex = 5
+        NumHealth.TextAlign = System.Windows.Forms.HorizontalAlignment.Right
         '
         ' LabelArmorRating
         '
@@ -517,8 +725,41 @@ Partial Class ArmoEditor_Form
         NumArmorRating.Location = New Point(623, 6)
         NumArmorRating.Maximum = New Decimal(New Integer() {65535, 0, 0, 0})
         NumArmorRating.Name = "NumArmorRating"
-        NumArmorRating.Size = New Size(60, 23)
+        NumArmorRating.Size = New Size(80, 23)
         NumArmorRating.TabIndex = 7
+        NumArmorRating.TextAlign = System.Windows.Forms.HorizontalAlignment.Right
+        '
+        ' LabelBaseAddonIndex
+        '
+        LabelBaseAddonIndex.Anchor = AnchorStyles.Left
+        LabelBaseAddonIndex.AutoSize = True
+        LabelBaseAddonIndex.Name = "LabelBaseAddonIndex"
+        LabelBaseAddonIndex.Text = "Base Addon Index:"
+        '
+        ' NumBaseAddonIndex
+        '
+        NumBaseAddonIndex.Anchor = AnchorStyles.Left
+        NumBaseAddonIndex.Maximum = New Decimal(New Integer() {65535, 0, 0, 0})
+        NumBaseAddonIndex.Name = "NumBaseAddonIndex"
+        NumBaseAddonIndex.Size = New Size(80, 23)
+        NumBaseAddonIndex.TabIndex = 8
+        NumBaseAddonIndex.TextAlign = System.Windows.Forms.HorizontalAlignment.Right
+        '
+        ' LabelStaggerRating
+        '
+        LabelStaggerRating.Anchor = AnchorStyles.Left
+        LabelStaggerRating.AutoSize = True
+        LabelStaggerRating.Name = "LabelStaggerRating"
+        LabelStaggerRating.Text = "Stagger Rating:"
+        '
+        ' NumStaggerRating
+        '
+        NumStaggerRating.Anchor = AnchorStyles.Left
+        NumStaggerRating.Maximum = New Decimal(New Integer() {255, 0, 0, 0})
+        NumStaggerRating.Name = "NumStaggerRating"
+        NumStaggerRating.Size = New Size(80, 23)
+        NumStaggerRating.TabIndex = 9
+        NumStaggerRating.TextAlign = System.Windows.Forms.HorizontalAlignment.Right
         '
         ' LabelSlots
         '
@@ -538,6 +779,47 @@ Partial Class ArmoEditor_Form
         FlowSlots.Name = "FlowSlots"
         FlowSlots.Size = New Size(694, 329)
         FlowSlots.TabIndex = 7
+        '
+        ' TabSlots
+        '
+        TabSlots.AutoScroll = True
+        TabSlots.Controls.Add(SlotsLayout)
+        TabSlots.Location = New Point(4, 24)
+        TabSlots.Name = "TabSlots"
+        TabSlots.Padding = New Padding(6)
+        TabSlots.Size = New Size(712, 522)
+        TabSlots.TabIndex = 5
+        TabSlots.Text = "Slots"
+        TabSlots.UseVisualStyleBackColor = True
+        '
+        ' SlotsLayout
+        '
+        SlotsLayout.ColumnCount = 2
+        SlotsLayout.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100F))
+        SlotsLayout.ColumnStyles.Add(New ColumnStyle(SizeType.Absolute, 240F))
+        SlotsLayout.Controls.Add(LabelSlots, 0, 0)
+        SlotsLayout.Controls.Add(ButtonRecalcSlots, 1, 0)
+        SlotsLayout.Controls.Add(FlowSlots, 0, 1)
+        SlotsLayout.SetColumnSpan(FlowSlots, 2)
+        SlotsLayout.Dock = DockStyle.Fill
+        SlotsLayout.Location = New Point(6, 6)
+        SlotsLayout.Name = "SlotsLayout"
+        SlotsLayout.RowCount = 2
+        SlotsLayout.RowStyles.Add(New RowStyle())
+        SlotsLayout.RowStyles.Add(New RowStyle(SizeType.Percent, 100F))
+        SlotsLayout.Size = New Size(700, 510)
+        SlotsLayout.TabIndex = 0
+        '
+        ' ButtonRecalcSlots
+        '
+        ButtonRecalcSlots.Anchor = AnchorStyles.Right
+        ButtonRecalcSlots.AutoSize = True
+        ButtonRecalcSlots.Location = New Point(477, 3)
+        ButtonRecalcSlots.Name = "ButtonRecalcSlots"
+        ButtonRecalcSlots.Size = New Size(220, 26)
+        ButtonRecalcSlots.TabIndex = 1
+        ButtonRecalcSlots.Text = "Recalculate from ARMA addons"
+        ButtonRecalcSlots.UseVisualStyleBackColor = True
         '
         ' TabAddons
         '
@@ -1158,6 +1440,345 @@ Partial Class ArmoEditor_Form
         LabelObtsHint.TabIndex = 3
         LabelObtsHint.Text = "Double-click or Edit… to open a combination; Add/Duplicate open the sub-editor."
         '
+        ' TabMisc
+        '
+        TabMisc.AutoScroll = True
+        TabMisc.Controls.Add(MiscLayout)
+        TabMisc.Location = New Point(4, 24)
+        TabMisc.Name = "TabMisc"
+        TabMisc.Padding = New Padding(6)
+        TabMisc.Size = New Size(712, 522)
+        TabMisc.TabIndex = 6
+        TabMisc.Text = "Misc & Sounds"
+        TabMisc.UseVisualStyleBackColor = True
+        '
+        ' MiscLayout
+        '
+        MiscLayout.ColumnCount = 3
+        MiscLayout.ColumnStyles.Add(New ColumnStyle(SizeType.Absolute, 175F))
+        MiscLayout.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100F))
+        MiscLayout.ColumnStyles.Add(New ColumnStyle(SizeType.Absolute, 50F))
+        MiscLayout.Controls.Add(LabelYnam, 0, 0)
+        MiscLayout.Controls.Add(TextBoxYnam, 1, 0)
+        MiscLayout.Controls.Add(ButtonPickYnam, 2, 0)
+        MiscLayout.Controls.Add(LabelZnam, 0, 1)
+        MiscLayout.Controls.Add(TextBoxZnam, 1, 1)
+        MiscLayout.Controls.Add(ButtonPickZnam, 2, 1)
+        MiscLayout.Controls.Add(LabelEtyp, 0, 2)
+        MiscLayout.Controls.Add(TextBoxEtyp, 1, 2)
+        MiscLayout.Controls.Add(ButtonPickEtyp, 2, 2)
+        MiscLayout.Controls.Add(LabelBamt, 0, 3)
+        MiscLayout.Controls.Add(TextBoxBamt, 1, 3)
+        MiscLayout.Controls.Add(ButtonPickBamt, 2, 3)
+        MiscLayout.Controls.Add(LabelObnd, 0, 4)
+        MiscLayout.Controls.Add(FlowObnd, 0, 5)
+        MiscLayout.Controls.Add(ButtonRecomputeObnd, 0, 6)
+        MiscLayout.Controls.Add(LabelObndHint, 1, 6)
+        MiscLayout.SetColumnSpan(LabelObnd, 3)
+        MiscLayout.SetColumnSpan(FlowObnd, 3)
+        MiscLayout.SetColumnSpan(LabelObndHint, 2)
+        MiscLayout.Dock = DockStyle.Fill
+        MiscLayout.Location = New Point(6, 6)
+        MiscLayout.Name = "MiscLayout"
+        MiscLayout.RowCount = 8
+        MiscLayout.RowStyles.Add(New RowStyle())
+        MiscLayout.RowStyles.Add(New RowStyle())
+        MiscLayout.RowStyles.Add(New RowStyle())
+        MiscLayout.RowStyles.Add(New RowStyle())
+        MiscLayout.RowStyles.Add(New RowStyle())
+        MiscLayout.RowStyles.Add(New RowStyle())
+        MiscLayout.RowStyles.Add(New RowStyle())
+        MiscLayout.RowStyles.Add(New RowStyle(SizeType.Percent, 100F))
+        MiscLayout.Size = New Size(700, 510)
+        MiscLayout.TabIndex = 0
+        '
+        ' LabelYnam
+        '
+        LabelYnam.Anchor = AnchorStyles.Left
+        LabelYnam.AutoSize = True
+        LabelYnam.Name = "LabelYnam"
+        LabelYnam.Text = "Pickup Sound (YNAM):"
+        '
+        ' TextBoxYnam
+        '
+        TextBoxYnam.Anchor = AnchorStyles.Left Or AnchorStyles.Right
+        TextBoxYnam.Name = "TextBoxYnam"
+        TextBoxYnam.ReadOnly = True
+        TextBoxYnam.Size = New Size(469, 23)
+        TextBoxYnam.TabIndex = 0
+        '
+        ' ButtonPickYnam
+        '
+        ButtonPickYnam.Anchor = AnchorStyles.Left
+        ButtonPickYnam.Name = "ButtonPickYnam"
+        ButtonPickYnam.Size = New Size(34, 24)
+        ButtonPickYnam.TabIndex = 1
+        ButtonPickYnam.Text = "…"
+        ButtonPickYnam.UseVisualStyleBackColor = True
+        '
+        ' LabelZnam
+        '
+        LabelZnam.Anchor = AnchorStyles.Left
+        LabelZnam.AutoSize = True
+        LabelZnam.Name = "LabelZnam"
+        LabelZnam.Text = "Drop Sound (ZNAM):"
+        '
+        ' TextBoxZnam
+        '
+        TextBoxZnam.Anchor = AnchorStyles.Left Or AnchorStyles.Right
+        TextBoxZnam.Name = "TextBoxZnam"
+        TextBoxZnam.ReadOnly = True
+        TextBoxZnam.Size = New Size(469, 23)
+        TextBoxZnam.TabIndex = 2
+        '
+        ' ButtonPickZnam
+        '
+        ButtonPickZnam.Anchor = AnchorStyles.Left
+        ButtonPickZnam.Name = "ButtonPickZnam"
+        ButtonPickZnam.Size = New Size(34, 24)
+        ButtonPickZnam.TabIndex = 3
+        ButtonPickZnam.Text = "…"
+        ButtonPickZnam.UseVisualStyleBackColor = True
+        '
+        ' LabelEtyp
+        '
+        LabelEtyp.Anchor = AnchorStyles.Left
+        LabelEtyp.AutoSize = True
+        LabelEtyp.Name = "LabelEtyp"
+        LabelEtyp.Text = "Equip Type (ETYP):"
+        '
+        ' TextBoxEtyp
+        '
+        TextBoxEtyp.Anchor = AnchorStyles.Left Or AnchorStyles.Right
+        TextBoxEtyp.Name = "TextBoxEtyp"
+        TextBoxEtyp.ReadOnly = True
+        TextBoxEtyp.Size = New Size(469, 23)
+        TextBoxEtyp.TabIndex = 4
+        '
+        ' ButtonPickEtyp
+        '
+        ButtonPickEtyp.Anchor = AnchorStyles.Left
+        ButtonPickEtyp.Name = "ButtonPickEtyp"
+        ButtonPickEtyp.Size = New Size(34, 24)
+        ButtonPickEtyp.TabIndex = 5
+        ButtonPickEtyp.Text = "…"
+        ButtonPickEtyp.UseVisualStyleBackColor = True
+        '
+        ' LabelBamt
+        '
+        LabelBamt.Anchor = AnchorStyles.Left
+        LabelBamt.AutoSize = True
+        LabelBamt.Name = "LabelBamt"
+        LabelBamt.Text = "Block Material (BAMT):"
+        '
+        ' TextBoxBamt
+        '
+        TextBoxBamt.Anchor = AnchorStyles.Left Or AnchorStyles.Right
+        TextBoxBamt.Name = "TextBoxBamt"
+        TextBoxBamt.ReadOnly = True
+        TextBoxBamt.Size = New Size(469, 23)
+        TextBoxBamt.TabIndex = 6
+        '
+        ' ButtonPickBamt
+        '
+        ButtonPickBamt.Anchor = AnchorStyles.Left
+        ButtonPickBamt.Name = "ButtonPickBamt"
+        ButtonPickBamt.Size = New Size(34, 24)
+        ButtonPickBamt.TabIndex = 7
+        ButtonPickBamt.Text = "…"
+        ButtonPickBamt.UseVisualStyleBackColor = True
+        '
+        ' LabelObnd
+        '
+        LabelObnd.Anchor = AnchorStyles.Left
+        LabelObnd.AutoSize = True
+        LabelObnd.Margin = New Padding(3, 12, 3, 3)
+        LabelObnd.Name = "LabelObnd"
+        LabelObnd.Text = "Object Bounds (min/max X, Y, Z):"
+        '
+        ' FlowObnd
+        '
+        FlowObnd.AutoSize = True
+        FlowObnd.AutoSizeMode = AutoSizeMode.GrowAndShrink
+        FlowObnd.Controls.Add(NumObndX1)
+        FlowObnd.Controls.Add(NumObndY1)
+        FlowObnd.Controls.Add(NumObndZ1)
+        FlowObnd.Controls.Add(NumObndX2)
+        FlowObnd.Controls.Add(NumObndY2)
+        FlowObnd.Controls.Add(NumObndZ2)
+        FlowObnd.FlowDirection = FlowDirection.LeftToRight
+        FlowObnd.Location = New Point(3, 3)
+        FlowObnd.Name = "FlowObnd"
+        FlowObnd.Size = New Size(450, 30)
+        FlowObnd.TabIndex = 8
+        FlowObnd.WrapContents = False
+        '
+        ' NumObndX1
+        '
+        NumObndX1.Maximum = New Decimal(32767)
+        NumObndX1.Minimum = New Decimal(-32768)
+        NumObndX1.Name = "NumObndX1"
+        NumObndX1.Size = New Size(70, 23)
+        NumObndX1.TabIndex = 0
+        NumObndX1.TextAlign = System.Windows.Forms.HorizontalAlignment.Right
+        '
+        ' NumObndY1
+        '
+        NumObndY1.Maximum = New Decimal(32767)
+        NumObndY1.Minimum = New Decimal(-32768)
+        NumObndY1.Name = "NumObndY1"
+        NumObndY1.Size = New Size(70, 23)
+        NumObndY1.TabIndex = 1
+        NumObndY1.TextAlign = System.Windows.Forms.HorizontalAlignment.Right
+        '
+        ' NumObndZ1
+        '
+        NumObndZ1.Maximum = New Decimal(32767)
+        NumObndZ1.Minimum = New Decimal(-32768)
+        NumObndZ1.Name = "NumObndZ1"
+        NumObndZ1.Size = New Size(70, 23)
+        NumObndZ1.TabIndex = 2
+        NumObndZ1.TextAlign = System.Windows.Forms.HorizontalAlignment.Right
+        '
+        ' NumObndX2
+        '
+        NumObndX2.Maximum = New Decimal(32767)
+        NumObndX2.Minimum = New Decimal(-32768)
+        NumObndX2.Name = "NumObndX2"
+        NumObndX2.Size = New Size(70, 23)
+        NumObndX2.TabIndex = 3
+        NumObndX2.TextAlign = System.Windows.Forms.HorizontalAlignment.Right
+        '
+        ' NumObndY2
+        '
+        NumObndY2.Maximum = New Decimal(32767)
+        NumObndY2.Minimum = New Decimal(-32768)
+        NumObndY2.Name = "NumObndY2"
+        NumObndY2.Size = New Size(70, 23)
+        NumObndY2.TabIndex = 4
+        NumObndY2.TextAlign = System.Windows.Forms.HorizontalAlignment.Right
+        '
+        ' NumObndZ2
+        '
+        NumObndZ2.Maximum = New Decimal(32767)
+        NumObndZ2.Minimum = New Decimal(-32768)
+        NumObndZ2.Name = "NumObndZ2"
+        NumObndZ2.Size = New Size(70, 23)
+        NumObndZ2.TabIndex = 5
+        NumObndZ2.TextAlign = System.Windows.Forms.HorizontalAlignment.Right
+        '
+        ' ButtonRecomputeObnd
+        '
+        ButtonRecomputeObnd.Anchor = AnchorStyles.Left
+        ButtonRecomputeObnd.AutoSize = True
+        ButtonRecomputeObnd.Name = "ButtonRecomputeObnd"
+        ButtonRecomputeObnd.Size = New Size(160, 26)
+        ButtonRecomputeObnd.TabIndex = 9
+        ButtonRecomputeObnd.Text = "Recompute from mesh"
+        ButtonRecomputeObnd.UseVisualStyleBackColor = True
+        '
+        ' LabelObndHint
+        '
+        LabelObndHint.Anchor = AnchorStyles.Left
+        LabelObndHint.AutoSize = True
+        LabelObndHint.ForeColor = Color.DimGray
+        LabelObndHint.Name = "LabelObndHint"
+        LabelObndHint.Text = "Approximate AABB from mesh vertices; not identical to the CK's value — editable afterwards."
+        '
+        ' TabDamage
+        '
+        TabDamage.Controls.Add(DamageLayout)
+        TabDamage.Location = New Point(4, 24)
+        TabDamage.Name = "TabDamage"
+        TabDamage.Padding = New Padding(6)
+        TabDamage.Size = New Size(712, 522)
+        TabDamage.TabIndex = 7
+        TabDamage.Text = "Damage Resist"
+        TabDamage.UseVisualStyleBackColor = True
+        '
+        ' DamageLayout
+        '
+        DamageLayout.ColumnCount = 2
+        DamageLayout.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100F))
+        DamageLayout.ColumnStyles.Add(New ColumnStyle(SizeType.Absolute, 120F))
+        DamageLayout.Controls.Add(LabelDamage, 0, 0)
+        DamageLayout.Controls.Add(GridDamage, 0, 1)
+        DamageLayout.Controls.Add(DamageButtons, 1, 1)
+        DamageLayout.Dock = DockStyle.Fill
+        DamageLayout.Location = New Point(6, 6)
+        DamageLayout.Name = "DamageLayout"
+        DamageLayout.RowCount = 2
+        DamageLayout.RowStyles.Add(New RowStyle())
+        DamageLayout.RowStyles.Add(New RowStyle(SizeType.Percent, 100F))
+        DamageLayout.Size = New Size(700, 510)
+        DamageLayout.TabIndex = 0
+        '
+        ' LabelDamage
+        '
+        LabelDamage.AutoSize = True
+        LabelDamage.Location = New Point(3, 0)
+        LabelDamage.Name = "LabelDamage"
+        LabelDamage.Size = New Size(280, 15)
+        LabelDamage.TabIndex = 0
+        LabelDamage.Text = "Damage resistances (DAMA) — DMGT + Value:"
+        '
+        ' GridDamage
+        '
+        GridDamage.AllowUserToAddRows = False
+        GridDamage.AllowUserToDeleteRows = False
+        GridDamage.AllowUserToResizeRows = False
+        GridDamage.ColumnHeadersHeightSizeMode = DataGridViewColumnHeadersHeightSizeMode.AutoSize
+        GridDamage.Dock = DockStyle.Fill
+        GridDamage.EditMode = DataGridViewEditMode.EditProgrammatically
+        GridDamage.MultiSelect = False
+        GridDamage.Name = "GridDamage"
+        GridDamage.ReadOnly = True
+        GridDamage.RowHeadersWidth = 25
+        GridDamage.SelectionMode = DataGridViewSelectionMode.FullRowSelect
+        GridDamage.Location = New Point(3, 18)
+        GridDamage.Size = New Size(574, 489)
+        GridDamage.TabIndex = 1
+        '
+        ' DamageButtons
+        '
+        DamageButtons.Controls.Add(ButtonAddDamage)
+        DamageButtons.Controls.Add(ButtonEditDamage)
+        DamageButtons.Controls.Add(ButtonRemoveDamage)
+        DamageButtons.Dock = DockStyle.Fill
+        DamageButtons.FlowDirection = FlowDirection.TopDown
+        DamageButtons.Location = New Point(580, 18)
+        DamageButtons.Margin = New Padding(0)
+        DamageButtons.Name = "DamageButtons"
+        DamageButtons.Size = New Size(120, 489)
+        DamageButtons.TabIndex = 2
+        '
+        ' ButtonAddDamage
+        '
+        ButtonAddDamage.Location = New Point(3, 3)
+        ButtonAddDamage.Name = "ButtonAddDamage"
+        ButtonAddDamage.Size = New Size(110, 26)
+        ButtonAddDamage.TabIndex = 0
+        ButtonAddDamage.Text = "Add…"
+        ButtonAddDamage.UseVisualStyleBackColor = True
+        '
+        ' ButtonEditDamage
+        '
+        ButtonEditDamage.Location = New Point(3, 35)
+        ButtonEditDamage.Name = "ButtonEditDamage"
+        ButtonEditDamage.Size = New Size(110, 26)
+        ButtonEditDamage.TabIndex = 1
+        ButtonEditDamage.Text = "Edit…"
+        ButtonEditDamage.UseVisualStyleBackColor = True
+        '
+        ' ButtonRemoveDamage
+        '
+        ButtonRemoveDamage.Location = New Point(3, 67)
+        ButtonRemoveDamage.Name = "ButtonRemoveDamage"
+        ButtonRemoveDamage.Size = New Size(110, 26)
+        ButtonRemoveDamage.TabIndex = 2
+        ButtonRemoveDamage.Text = "Remove"
+        ButtonRemoveDamage.UseVisualStyleBackColor = True
+        '
         ' PreviewLayout
         '
         PreviewLayout.ColumnCount = 1
@@ -1254,6 +1875,9 @@ Partial Class ArmoEditor_Form
         TabGeneral.PerformLayout()
         GeneralLayout.ResumeLayout(False)
         GeneralLayout.PerformLayout()
+        TabSlots.ResumeLayout(False)
+        SlotsLayout.ResumeLayout(False)
+        SlotsLayout.PerformLayout()
         GroupIdentity.ResumeLayout(False)
         IdentityLayout.ResumeLayout(False)
         IdentityLayout.PerformLayout()
@@ -1264,6 +1888,25 @@ Partial Class ArmoEditor_Form
         CType(NumWeight, ComponentModel.ISupportInitialize).EndInit()
         CType(NumHealth, ComponentModel.ISupportInitialize).EndInit()
         CType(NumArmorRating, ComponentModel.ISupportInitialize).EndInit()
+        CType(NumBaseAddonIndex, ComponentModel.ISupportInitialize).EndInit()
+        CType(NumStaggerRating, ComponentModel.ISupportInitialize).EndInit()
+        TabMisc.ResumeLayout(False)
+        TabMisc.PerformLayout()
+        MiscLayout.ResumeLayout(False)
+        MiscLayout.PerformLayout()
+        FlowObnd.ResumeLayout(False)
+        CType(NumObndX1, ComponentModel.ISupportInitialize).EndInit()
+        CType(NumObndY1, ComponentModel.ISupportInitialize).EndInit()
+        CType(NumObndZ1, ComponentModel.ISupportInitialize).EndInit()
+        CType(NumObndX2, ComponentModel.ISupportInitialize).EndInit()
+        CType(NumObndY2, ComponentModel.ISupportInitialize).EndInit()
+        CType(NumObndZ2, ComponentModel.ISupportInitialize).EndInit()
+        TabDamage.ResumeLayout(False)
+        TabDamage.PerformLayout()
+        DamageLayout.ResumeLayout(False)
+        DamageLayout.PerformLayout()
+        CType(GridDamage, ComponentModel.ISupportInitialize).EndInit()
+        DamageButtons.ResumeLayout(False)
         TabAddons.ResumeLayout(False)
         TabAddons.PerformLayout()
         AddonsLayout.ResumeLayout(False)
@@ -1304,6 +1947,7 @@ Partial Class ArmoEditor_Form
     Friend WithEvents ButtonEditDraft As System.Windows.Forms.Button
     Friend WithEvents LabelEdid As System.Windows.Forms.Label
     Friend WithEvents TextBoxEdid As System.Windows.Forms.TextBox
+    Friend WithEvents LabelEdidPreview As System.Windows.Forms.Label
     Friend WithEvents LabelStatusBanner As System.Windows.Forms.Label
     Friend WithEvents MainSplit As System.Windows.Forms.SplitContainer
     Friend WithEvents Tabs As System.Windows.Forms.TabControl
@@ -1316,6 +1960,9 @@ Partial Class ArmoEditor_Form
     Friend WithEvents LabelRace As System.Windows.Forms.Label
     Friend WithEvents TextBoxRace As System.Windows.Forms.TextBox
     Friend WithEvents ButtonPickRace As System.Windows.Forms.Button
+    Friend WithEvents LabelInnr As System.Windows.Forms.Label
+    Friend WithEvents TextBoxInnr As System.Windows.Forms.TextBox
+    Friend WithEvents ButtonPickInnr As System.Windows.Forms.Button
     Friend WithEvents GroupData As System.Windows.Forms.GroupBox
     Friend WithEvents DataLayout As System.Windows.Forms.TableLayoutPanel
     Friend WithEvents LabelValue As System.Windows.Forms.Label
@@ -1328,6 +1975,9 @@ Partial Class ArmoEditor_Form
     Friend WithEvents NumArmorRating As System.Windows.Forms.NumericUpDown
     Friend WithEvents LabelSlots As System.Windows.Forms.Label
     Friend WithEvents FlowSlots As System.Windows.Forms.FlowLayoutPanel
+    Friend WithEvents TabSlots As System.Windows.Forms.TabPage
+    Friend WithEvents SlotsLayout As System.Windows.Forms.TableLayoutPanel
+    Friend WithEvents ButtonRecalcSlots As System.Windows.Forms.Button
     Friend WithEvents TabAddons As System.Windows.Forms.TabPage
     Friend WithEvents AddonsLayout As System.Windows.Forms.TableLayoutPanel
     Friend WithEvents LabelAddons As System.Windows.Forms.Label
@@ -1389,4 +2039,49 @@ Partial Class ArmoEditor_Form
     Friend WithEvents BottomLayout As System.Windows.Forms.FlowLayoutPanel
     Friend WithEvents ButtonOk As System.Windows.Forms.Button
     Friend WithEvents ButtonCancel As System.Windows.Forms.Button
+    Friend WithEvents LabelEitm As System.Windows.Forms.Label
+    Friend WithEvents TextBoxEitm As System.Windows.Forms.TextBox
+    Friend WithEvents ButtonPickEitm As System.Windows.Forms.Button
+    Friend WithEvents LabelPtrn As System.Windows.Forms.Label
+    Friend WithEvents TextBoxPtrn As System.Windows.Forms.TextBox
+    Friend WithEvents ButtonPickPtrn As System.Windows.Forms.Button
+    Friend WithEvents CheckBoxNonPlayable As System.Windows.Forms.CheckBox
+    Friend WithEvents LabelDesc As System.Windows.Forms.Label
+    Friend WithEvents TextBoxDesc As System.Windows.Forms.TextBox
+    Friend WithEvents LabelBaseAddonIndex As System.Windows.Forms.Label
+    Friend WithEvents NumBaseAddonIndex As System.Windows.Forms.NumericUpDown
+    Friend WithEvents LabelStaggerRating As System.Windows.Forms.Label
+    Friend WithEvents NumStaggerRating As System.Windows.Forms.NumericUpDown
+    Friend WithEvents TabMisc As System.Windows.Forms.TabPage
+    Friend WithEvents MiscLayout As System.Windows.Forms.TableLayoutPanel
+    Friend WithEvents LabelYnam As System.Windows.Forms.Label
+    Friend WithEvents TextBoxYnam As System.Windows.Forms.TextBox
+    Friend WithEvents ButtonPickYnam As System.Windows.Forms.Button
+    Friend WithEvents LabelZnam As System.Windows.Forms.Label
+    Friend WithEvents TextBoxZnam As System.Windows.Forms.TextBox
+    Friend WithEvents ButtonPickZnam As System.Windows.Forms.Button
+    Friend WithEvents LabelEtyp As System.Windows.Forms.Label
+    Friend WithEvents TextBoxEtyp As System.Windows.Forms.TextBox
+    Friend WithEvents ButtonPickEtyp As System.Windows.Forms.Button
+    Friend WithEvents LabelBamt As System.Windows.Forms.Label
+    Friend WithEvents TextBoxBamt As System.Windows.Forms.TextBox
+    Friend WithEvents ButtonPickBamt As System.Windows.Forms.Button
+    Friend WithEvents LabelObnd As System.Windows.Forms.Label
+    Friend WithEvents FlowObnd As System.Windows.Forms.FlowLayoutPanel
+    Friend WithEvents NumObndX1 As System.Windows.Forms.NumericUpDown
+    Friend WithEvents NumObndY1 As System.Windows.Forms.NumericUpDown
+    Friend WithEvents NumObndZ1 As System.Windows.Forms.NumericUpDown
+    Friend WithEvents NumObndX2 As System.Windows.Forms.NumericUpDown
+    Friend WithEvents NumObndY2 As System.Windows.Forms.NumericUpDown
+    Friend WithEvents NumObndZ2 As System.Windows.Forms.NumericUpDown
+    Friend WithEvents ButtonRecomputeObnd As System.Windows.Forms.Button
+    Friend WithEvents LabelObndHint As System.Windows.Forms.Label
+    Friend WithEvents TabDamage As System.Windows.Forms.TabPage
+    Friend WithEvents DamageLayout As System.Windows.Forms.TableLayoutPanel
+    Friend WithEvents LabelDamage As System.Windows.Forms.Label
+    Friend WithEvents GridDamage As System.Windows.Forms.DataGridView
+    Friend WithEvents DamageButtons As System.Windows.Forms.FlowLayoutPanel
+    Friend WithEvents ButtonAddDamage As System.Windows.Forms.Button
+    Friend WithEvents ButtonEditDamage As System.Windows.Forms.Button
+    Friend WithEvents ButtonRemoveDamage As System.Windows.Forms.Button
 End Class

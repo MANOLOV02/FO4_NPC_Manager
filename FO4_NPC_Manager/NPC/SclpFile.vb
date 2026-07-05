@@ -8,11 +8,12 @@ Imports FO4_Base_Library
 ''' (<see cref="ARMA_BoneScaleGender"/> / <see cref="ARMA_BoneScaleDelta"/>, which store BSMS
 ''' DELTAS = absolute − 1.0).
 '''
-''' <para>Format (verified against TES5Edit "Fallout4 - Import SCLP bone weights.pas"):
-''' a JSON array of bone entries, each
-''' <c>{ "Name": "&lt;boneName&gt;", "x": &lt;float&gt;, "y": &lt;float&gt;, "z": &lt;float&gt; }</c>
-''' where x/y/z are ABSOLUTE scale values (1.0 = unchanged). One <c>.sclp</c> file represents
-''' ONE gender (the xEdit importer prompts Male/Female on import).</para>
+''' <para>Format: a JSON array of bone entries. Vanilla Bethesda files nest the axes under a
+''' <c>"Scale"</c> object — <c>{ "Name": "&lt;boneName&gt;", "Scale": { "x":, "y":, "z": } }</c>
+''' (confirmed by dumping the shipped <c>Meshes\...\*.sclp</c> from the BA2) — while some third-party
+''' exporters put x/y/z FLAT on the entry. <see cref="Load"/> accepts BOTH; <see cref="Save"/> writes
+''' the nested (vanilla) form. x/y/z are ABSOLUTE scale values (1.0 = unchanged). One <c>.sclp</c> file
+''' represents ONE gender (the xEdit importer prompts Male/Female on import).</para>
 '''
 ''' <para>Conversion to BSMS (xEdit-faithful, see the .pas lines 56 + 82-84):
 ''' the importer SKIPS entries equal to (1.0, 1.0, 1.0), and writes
@@ -74,9 +75,20 @@ Public Module SclpFile
                     bone.Name = nameEl.GetString()
                 End If
 
-                bone.X = ReadAxis(el, "x", "X")
-                bone.Y = ReadAxis(el, "y", "Y")
-                bone.Z = ReadAxis(el, "z", "Z")
+                ' Axis source: vanilla Bethesda .sclp nests the three axes under a "Scale" object
+                ' ({ "Name":, "Scale": { "x":, "y":, "z": } }); some third-party exporters put x/y/z
+                ' FLAT on the entry. Read from the Scale sub-object when it's present and an object,
+                ' otherwise from the entry itself. (Reading flat from a nested file silently yielded
+                ' all-identity — the reason a vanilla .sclp loaded as (1,1,1) everywhere.)
+                Dim axisObj As JsonElement = el
+                Dim scaleEl As JsonElement
+                If (el.TryGetProperty("Scale", scaleEl) OrElse el.TryGetProperty("scale", scaleEl)) _
+                   AndAlso scaleEl.ValueKind = JsonValueKind.Object Then
+                    axisObj = scaleEl
+                End If
+                bone.X = ReadAxis(axisObj, "x", "X")
+                bone.Y = ReadAxis(axisObj, "y", "Y")
+                bone.Z = ReadAxis(axisObj, "z", "Z")
                 result.Add(bone)
             Next
             Return result
@@ -145,11 +157,16 @@ Public Module SclpFile
                 w.WriteStartArray()
                 For Each b In bones
                     If b Is Nothing Then Continue For
+                    ' Vanilla Bethesda format: axes nested under a "Scale" object. Load() accepts both
+                    ' this and the flat layout, but we WRITE the nested form so the output matches the
+                    ' game's own .sclp files (and whatever importer expects them).
                     w.WriteStartObject()
                     w.WriteString("Name", If(b.Name, ""))
+                    w.WriteStartObject("Scale")
                     w.WriteNumber("x", SafeAxis(b.X))
                     w.WriteNumber("y", SafeAxis(b.Y))
                     w.WriteNumber("z", SafeAxis(b.Z))
+                    w.WriteEndObject()
                     w.WriteEndObject()
                 Next
                 w.WriteEndArray()
@@ -264,11 +281,23 @@ Public Module SclpFile
             End If
             check("Save->Load round-trip preserves names + values exactly", eq)
 
-            ' Wrapped-object leniency: an object with one array property should parse.
+            ' Wrapped-object leniency: an object with one array property should parse (flat axes).
             File.WriteAllText(wrappedPath,
                 "{ ""note"": ""x"", ""bones"": [ { ""Name"": ""Spine_skin"", ""x"": 1.5, ""y"": 1.0, ""z"": 1.0 } ] }")
             Dim wrapped = Load(wrappedPath)
             check("Load tolerates object wrapping the array", wrapped.Count = 1 AndAlso wrapped(0).Name = "Spine_skin" AndAlso wrapped(0).X = 1.5F)
+
+            ' Vanilla Bethesda format: axes nested under a "Scale" object. Reading it FLAT used to
+            ' yield all-identity — the bug this test guards against.
+            Dim nestedPath = tmpPath & ".nested"
+            File.WriteAllText(nestedPath,
+                "[ { ""Name"": ""Breast_skin"", ""Scale"": { ""x"": 1.0, ""y"": 1.22, ""z"": 1.04 } } ]")
+            Dim nested = Load(nestedPath)
+            check("Load reads vanilla nested Scale object (not all-identity)",
+                  nested.Count = 1 AndAlso nested(0).Name = "Breast_skin" _
+                  AndAlso nested(0).X = 1.0F AndAlso Math.Abs(nested(0).Y - 1.22F) < 0.0001F _
+                  AndAlso Math.Abs(nested(0).Z - 1.04F) < 0.0001F)
+            Try : File.Delete(nestedPath) : Catch : End Try
 
             ' ToGenderBlock: identity skipped, real entry -> deltas (0.3, 0.0, 0.15).
             Dim block = ToGenderBlock(input, 1UI)

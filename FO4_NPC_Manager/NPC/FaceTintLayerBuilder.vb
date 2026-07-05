@@ -42,6 +42,12 @@ Public Module FaceTintLayerBuilder
         If raceRec Is Nothing OrElse raceRec.Header.Signature <> "RACE" Then Return New FaceTintInputBuilder.TintBuildResult()
         Dim race = If(parseRace IsNot Nothing, parseRace(raceRec), RecordParsers.ParseRACE(raceRec, pluginManager))
 
+        ' App-specific: fold LooksMenu CUSTOM tint templates (Data\F4SE\Plugins\F4EE\Tints\...) into the
+        ' race's tint groups so an NPC's applied tints against a mod-added template resolve + compose. This
+        ' is the SINGLE seam both live render (NpcFaceTintResolver) and the offline bake (FaceGenBuilder)
+        ' route through, so it also covers the bake. Idempotent + no-op when no custom tints exist.
+        LmCustomTintLoader.EnsureMerged(race, pluginManager)
+
         ' Generic, record-driven composition lives in the library.
         Return FaceTintInputBuilder.Build(npcData, race, isFemale, pluginManager, tintBytesCache,
                                           hairLutPath, hairColorFormID, hasTextureLighting, textureLightingColorArgb)

@@ -162,7 +162,7 @@ Public Class OutfitPicker_Form
         AddHandler ButtonOk.Click, AddressOf OnOk
 
         ' --- Create tab ---
-        LabelEdidPrefix.Text = "EDID: npcm_<esp>_Outfit_"
+        RefreshOutfitEdidField(True, OutfitDraft.EditorIdPrefix)   ' opens in "New outfit" mode (empty name)
         SetItemCandidates(_mainForm.GetArmoItemCandidatesWithDrafts(_raceFormID, _isFemale))
         _filteredItems = New List(Of (FormID As UInteger, DisplayName As String, SlotMask As UInteger, Plugin As String))(_itemCandidates)
         RefreshItemList()
@@ -188,19 +188,31 @@ Public Class OutfitPicker_Form
         ' The "selected piece" preview follows whichever Create list has focus — track the last one entered.
         AddHandler ListViewItems.Enter, AddressOf OnItemsListEnter
         AddHandler ListViewPieces.Enter, AddressOf OnPiecesListEnter
+        ' Edit the focused armor (piece OR candidate) in the ARMO editor, or author a new ARMO when nothing is focused.
+        AddHandler ButtonEditArmor.Click, AddressOf OnEditArmor
+        ' "My outfit drafts" panel: double-click loads a draft back into Create for editing; the button deletes/reverts.
+        AddHandler ListViewMyOutfits.DoubleClick, AddressOf OnMyOutfitDoubleClick
+        AddHandler ListViewMyOutfits.SelectedIndexChanged, Sub() UpdateDeleteOutfitEnabled()
+        AddHandler ButtonDeleteOutfit.Click, AddressOf OnDeleteOrRevertOutfit
 
         ' Click-to-sort on every column of all three lists (same helper EditFace uses). The sorter
         ' persists across the lists' re-populations (filter/refresh), so a user-chosen sort survives.
         SortableListView.Attach(ListViewParts)
         SortableListView.Attach(ListViewItems)
         SortableListView.Attach(ListViewPieces)
+        SortableListView.Attach(ListViewMyOutfits)
 
-        ' First open: stay in "New outfit" (the Designer default) but pre-load a COPY of the NPC's current
-        ' outfit, so the user edits a fresh, isolated record and never risks changing a shared OTFT by
-        ' accident. They can still switch to Override explicitly. With no current outfit there's nothing to
-        ' copy → New starts empty. (New requires typing a name before OK, by design.)
-        If _currentEffectiveOutfitFID <> 0UI Then PrefillPiecesFromOutfit(_currentEffectiveOutfitFID)
+        ' First open: default to OVERRIDE of the NPC's current outfit (your plugin replaces it) — the usual
+        ' intent when editing what the NPC already wears. Pre-fill its pieces and keep its EDID (read-only). The
+        ' user can switch to "New outfit" explicitly. With no current outfit → stay in the New mode set above.
+        If _currentEffectiveOutfitFID <> 0UI Then
+            _overrideTargetFormID = _currentEffectiveOutfitFID
+            _overrideTargetEditorID = _mainForm.GetOutfitDisplayName(_currentEffectiveOutfitFID)
+            RefreshOutfitEdidField(False, _overrideTargetEditorID)   ' kept EDID, read-only
+            PrefillPiecesFromOutfit(_currentEffectiveOutfitFID)
+        End If
         UpdateCreateBanner()
+        RefreshMyOutfitDrafts()
     End Sub
 
     Private Sub BuildCandidates(rawRecordOutfitFID As UInteger)
@@ -403,6 +415,9 @@ Public Class OutfitPicker_Form
         ' inside a handler is how we VETO the auto-close (validation failure).
         If TabsMain.SelectedTab Is TabPageCreate Then
             CommitCreate()
+            ' On success CommitCreate closes; on a validation veto it doesn't — keep the My-outfits list current
+            ' (it also reflects a freshly committed draft if the dialog is kept open by a later flow).
+            RefreshMyOutfitDrafts()
             Return
         End If
         If ListViewParts.SelectedItems.Count = 0 Then
@@ -493,10 +508,34 @@ Public Class OutfitPicker_Form
                                          initialTemplateArmoFormID:=armoFid, templateAsOverride:=asOverride)
             dlg.ShowDialog(Me)
         End Using
+        RefreshCreateAfterArmorEdit()
+    End Sub
+
+    ''' <summary>Post-return refresh shared by <see cref="OpenArmorEditorForTemplate"/> (template edit) and
+    ''' <see cref="OnEditArmor"/> (new-ARMO authoring): re-fetch the candidate universe + rebuild the item list,
+    ''' pull any overridden ARMO's updated slots/name into its piece, force a re-render (an override can change
+    ''' the render without changing piece FormIDs), and rebuild the pieces list + re-render.</summary>
+    Private Sub RefreshCreateAfterArmorEdit()
         RefreshItemCandidates()
         ResyncPiecesFromCandidates()
         _lastPreviewKey = Nothing
         RefreshPieces()
+    End Sub
+
+    ''' <summary>"Edit armor…" — edit the FOCUSED item (the one the piece-preview renders): a concrete ARMO
+    ''' (piece if the pieces list has focus, else the candidate selection) opens the ARMO editor as an override,
+    ''' exactly like the double-click handlers. When nothing concrete is focused (no selection, or it's a leveled
+    ''' list) it opens the ARMO editor in NEW mode instead, then runs the same post-return refresh.</summary>
+    Private Sub OnEditArmor(sender As Object, e As EventArgs)
+        Dim fid As UInteger = If(_pieceListHasPreviewFocus, If(SelectedPieceEntry()?.FormID, 0UI), SelectedItemFormID())
+        If fid <> 0UI AndAlso Not _mainForm.IsLeveledItem(fid) Then
+            OpenArmorEditorForTemplate(fid, asOverride:=True)
+        Else
+            Using dlg As New ArmoEditor_Form(_mainForm, _npcFormID, _raceFormID, _isFemale)
+                dlg.ShowDialog(Me)
+            End Using
+            RefreshCreateAfterArmorEdit()
+        End If
     End Sub
 
     ''' <summary>Pull each concrete (non-LVLI) piece's slots/name/plugin from the refreshed candidate universe
@@ -828,10 +867,20 @@ Public Class OutfitPicker_Form
     Private Sub OnActionNewOutfit(sender As Object, e As EventArgs)
         _overrideTargetFormID = 0UI
         _overrideTargetEditorID = ""
-        LabelEdidPrefix.Text = "EDID: npcm_<esp>_Outfit_"
-        TextBoxEdid.Enabled = True
-        TextBoxEdid.Text = ""
+        RefreshOutfitEdidField(True, OutfitDraft.EditorIdPrefix)   ' editable name, empty
         UpdateCreateBanner()
+    End Sub
+
+    ''' <summary>Drive the shared EditorID field (prefix label + name box + live "Saves as:" preview) uniformly for
+    ''' the Create tab: a NEW/owned record edits only the &lt;name&gt; after a fixed prefix with a live preview;
+    ''' a real OVERRIDE shows its kept EditorID read-only. <paramref name="baseOrKeptEdid"/> = the base EDID whose
+    ''' name seeds the box (New) or the verbatim EDID to keep (Override).</summary>
+    Private Sub RefreshOutfitEdidField(isNew As Boolean, baseOrKeptEdid As String)
+        If isNew Then
+            EditorIdField.ConfigureNew(LabelEdidPrefix, TextBoxEdid, LabelEdidPreview, OutfitDraft.EditorIdPrefix, baseOrKeptEdid)
+        Else
+            EditorIdField.ConfigureOverride(LabelEdidPrefix, TextBoxEdid, LabelEdidPreview, baseOrKeptEdid)
+        End If
     End Sub
 
     ''' <summary>"Override selected/loaded outfit…" action → edit the Browse-selected (or currently-loaded) OTFT
@@ -846,9 +895,7 @@ Public Class OutfitPicker_Form
         End If
         _overrideTargetFormID = target
         _overrideTargetEditorID = _mainForm.GetOutfitDisplayName(target)
-        LabelEdidPrefix.Text = "EDID (kept): "
-        TextBoxEdid.Text = _overrideTargetEditorID
-        TextBoxEdid.Enabled = False
+        RefreshOutfitEdidField(False, _overrideTargetEditorID)   ' kept EDID, read-only
         PrefillPiecesFromOutfit(target)
         UpdateCreateBanner()
     End Sub
@@ -856,6 +903,9 @@ Public Class OutfitPicker_Form
     ''' <summary>EditorID textbox edit → keep the Create banner in sync (only meaningful in New mode; the box is
     ''' locked in Override).</summary>
     Private Sub OnCreateEdidChanged(sender As Object, e As EventArgs)
+        ' Keep the live "Saves as:" preview in sync while the name is editable (New/owned draft). The box is
+        ' disabled for a real override, where the preview is hidden.
+        If TextBoxEdid.Enabled Then EditorIdField.UpdatePreview(LabelEdidPreview, OutfitDraft.EditorIdPrefix, TextBoxEdid.Text)
         UpdateCreateBanner()
     End Sub
 
@@ -924,6 +974,9 @@ Public Class OutfitPicker_Form
         PreviewModeRow.Enabled = (TabsMain.SelectedTab Is TabPageCreate)
         If TabsMain.SelectedTab Is TabPageCreate Then
             RefreshPieces()
+        ElseIf TabsMain.SelectedTab Is TabPageMyOutfits Then
+            ' Drafts tab just became active — repopulate the list so it reflects any commits/deletes.
+            RefreshMyOutfitDrafts()
         Else
             OnListSelectionChanged(Me, EventArgs.Empty)
         End If
@@ -945,11 +998,37 @@ Public Class OutfitPicker_Form
 
         Dim draft As New OutfitDraft()
         If _overrideTargetFormID <> 0UI Then
+            ' A draft target (provisional 0xFF FormID) is a NEW owned record being re-edited — RENAMEABLE: keep
+            ' its FormID but rebuild the EDID from the editable name box. A real OTFT FormID is an OVERRIDE — keep
+            ' its FormID + EditorID verbatim.
+            Dim isDraftTarget = OutfitDraft.IsDraftFormID(_overrideTargetFormID)
             draft.FormID = _overrideTargetFormID
-            draft.EditorID = _overrideTargetEditorID
-            ' Real OTFT → write an override record (keep FormID+EDID). A draft target → re-edit that
-            ' draft (still a new owned record, keep its provisional FormID+EDID).
-            draft.IsOverride = Not OutfitDraft.IsDraftFormID(_overrideTargetFormID)
+            If isDraftTarget Then
+                Dim suffix = TextBoxEdid.Text.Trim()
+                If suffix.Length = 0 Then
+                    MessageBox.Show(Me, "Enter a name for the new outfit.", "Create Outfit",
+                                    MessageBoxButtons.OK, MessageBoxIcon.Information)
+                    DialogResult = DialogResult.None
+                    Return
+                End If
+                Dim fullEdid = EditorIdField.Compose(OutfitDraft.EditorIdPrefix, suffix)
+                ' Uniqueness EXCLUDING self: keeping the same name must be allowed (the draft is still registered
+                ' under this FormID, so IsOutfitEditorIdAvailable would report its own EDID as taken).
+                Dim current = _mainForm.TryGetOutfitDraft(_overrideTargetFormID)
+                Dim currentEdid = If(current IsNot Nothing, current.EditorID, _overrideTargetEditorID)
+                If Not String.Equals(fullEdid, currentEdid, StringComparison.OrdinalIgnoreCase) _
+                   AndAlso Not _mainForm.IsOutfitEditorIdAvailable(fullEdid) Then
+                    MessageBox.Show(Me, $"EditorID '{fullEdid}' is already in use. Choose another name.",
+                                    "Create Outfit", MessageBoxButtons.OK, MessageBoxIcon.Warning)
+                    DialogResult = DialogResult.None
+                    Return
+                End If
+                draft.EditorID = fullEdid
+                draft.IsOverride = False
+            Else
+                draft.EditorID = _overrideTargetEditorID
+                draft.IsOverride = True
+            End If
         Else
             Dim suffix = TextBoxEdid.Text.Trim()
             If suffix.Length = 0 Then
@@ -958,7 +1037,7 @@ Public Class OutfitPicker_Form
                 DialogResult = DialogResult.None
                 Return
             End If
-            Dim fullEdid = OutfitDraft.EditorIdPrefix & suffix
+            Dim fullEdid = EditorIdField.Compose(OutfitDraft.EditorIdPrefix, suffix)
             If Not _mainForm.IsOutfitEditorIdAvailable(fullEdid) Then
                 MessageBox.Show(Me, $"EditorID '{fullEdid}' is already in use. Choose another name.",
                                 "Create Outfit", MessageBoxButtons.OK, MessageBoxIcon.Warning)
@@ -978,13 +1057,171 @@ Public Class OutfitPicker_Form
                 draft.LvliRealization(p.FormID) = New List(Of UInteger)(p.Realization)
             End If
         Next
-        draft.IsNew = True
-        draft.IsModified = False
+        ' Brand-new and re-edited owned drafts are NEW owned records; a real OVERRIDE is not. An override edits an
+        ' existing record → mark it modified so Save (IsDirty) emits it (matches the ARMO/ARMA editor convention).
+        draft.IsNew = Not draft.IsOverride
+        draft.IsModified = draft.IsOverride
         _mainForm.RegisterOutfitDraft(draft)
 
         SelectedOutfitOverride = draft.FormID   ' auto-select the just-created outfit as the NPC's DOFT
         DialogResult = DialogResult.OK
         Close()
+    End Sub
+
+    ' =====================================================================
+    ' "My outfit drafts" panel — the user's authored outfit drafts (new + override), with
+    ' load-for-edit (double-click) and delete/revert (button). Mutations go through MainForm's
+    ' Register/Unregister API; the list is display-only and rebuilt by ONE refresh call.
+    ' =====================================================================
+
+    ''' <summary>Clear + repopulate the My-outfits list from MainForm's outfit drafts (new + override), excluding
+    ''' the throwaway Create-tab preview draft. Row text = EditorID; Kind = Override/New; row.Tag = the draft.</summary>
+    Private Sub RefreshMyOutfitDrafts()
+        ListViewMyOutfits.BeginUpdate()
+        Try
+            ListViewMyOutfits.Items.Clear()
+            Dim draftFids As New HashSet(Of UInteger)
+            ' 1) Unsaved drafts (New / Override) — editable + deletable here. Tag = the OutfitDraft.
+            For Each d In _mainForm.OutfitDrafts()
+                If d Is Nothing OrElse d.FormID = OutfitDraft.PreviewDraftFormID Then Continue For
+                draftFids.Add(d.FormID)
+                Dim row As New ListViewItem(d.EditorID)
+                row.SubItems.Add(If(d.IsOverride OrElse Not d.IsNew, "Override (unsaved)", "New (unsaved)"))
+                row.Tag = d
+                ListViewMyOutfits.Items.Add(row)
+            Next
+            ' 2) Already-SAVED outfits this app authored (real OTFT, npcm_ EDID), minus any a draft is overriding.
+            ' Tag = a UInteger FormID (marks a real record); double-click re-opens it as an override; not deletable here.
+            For Each fid In _mainForm.GetAuthoredOutfitFormIDs()
+                If draftFids.Contains(fid) Then Continue For
+                Dim row As New ListViewItem(_mainForm.GetOutfitDisplayName(fid))
+                row.SubItems.Add("Saved")
+                row.Tag = fid
+                ListViewMyOutfits.Items.Add(row)
+            Next
+        Finally
+            ListViewMyOutfits.EndUpdate()
+        End Try
+        UpdateDeleteOutfitEnabled()
+    End Sub
+
+    ''' <summary>The selected My-outfits row's Tag: an <see cref="OutfitDraft"/> (unsaved) or a UInteger FormID
+    ''' (a saved authored OTFT). Nothing when no row is selected.</summary>
+    Private Function SelectedMyOutfitTag() As Object
+        If ListViewMyOutfits.SelectedItems.Count = 0 Then Return Nothing
+        Return ListViewMyOutfits.SelectedItems(0).Tag
+    End Function
+
+    ''' <summary>Delete / Revert applies to any selected row — an unsaved DRAFT (delete/revert the draft) or a
+    ''' SAVED record (mark it for removal on the next Save). Disabled only when nothing is selected.</summary>
+    Private Sub UpdateDeleteOutfitEnabled()
+        ButtonDeleteOutfit.Enabled = (SelectedMyOutfitTag() IsNot Nothing)
+    End Sub
+
+    ''' <summary>Re-open an already-saved authored outfit (real OTFT FormID) as an OVERRIDE in the Create tab —
+    ''' same as Browse→Override (<see cref="OnActionOverrideOutfit"/>), targeted at the given FormID.</summary>
+    Private Sub BeginOverrideOfSavedOutfit(fid As UInteger)
+        If fid = 0UI Then Return
+        _overrideTargetFormID = fid
+        _overrideTargetEditorID = _mainForm.GetOutfitDisplayName(fid)
+        RefreshOutfitEdidField(False, _overrideTargetEditorID)   ' kept EDID, read-only
+        PrefillPiecesFromOutfit(fid)
+        TabsMain.SelectedTab = TabPageCreate
+        UpdateCreateBanner()
+        RefreshPieces()
+    End Sub
+
+    ''' <summary>Double-click a My-outfits row → load that draft back into the Create tab for editing.</summary>
+    Private Sub OnMyOutfitDoubleClick(sender As Object, e As EventArgs)
+        Dim tag = SelectedMyOutfitTag()
+        If tag Is Nothing Then Return
+        Dim d = TryCast(tag, OutfitDraft)
+        If d IsNot Nothing Then
+            LoadOutfitDraftForEdit(d)               ' unsaved draft → keep editing it
+        ElseIf TypeOf tag Is UInteger Then
+            BeginOverrideOfSavedOutfit(CUInt(tag))  ' saved authored OTFT → re-open as an override
+        End If
+    End Sub
+
+    ''' <summary>Load an existing outfit draft into the Create tab so it can be edited and re-committed AS THE SAME
+    ''' draft. Mirrors the Browse→Override flow (<see cref="OnActionOverrideOutfit"/>): re-target CommitCreate at this
+    ''' draft's FormID+EditorID (so it re-saves under the same identity — see <see cref="CommitCreate"/>), lock the
+    ''' EDID box, then rebuild the working pieces from the draft's authored items the same way
+    ''' <see cref="AddItemFidAsPiece"/> does (candidate index refreshed first so the per-item lookup resolves).</summary>
+    Private Sub LoadOutfitDraftForEdit(d As OutfitDraft)
+        If d Is Nothing Then Return
+        _overrideTargetFormID = d.FormID
+        _overrideTargetEditorID = d.EditorID
+        ' A NEW owned draft is renameable (editable name, live preview, keeps its FormID on re-commit); a real
+        ' OVERRIDE draft keeps its EDID read-only. Identity for CommitCreate is carried by _overrideTargetFormID.
+        RefreshOutfitEdidField(d.IsNew, d.EditorID)
+        ' Populate _itemCandidatesByFid before the per-item lookups in AddItemFidAsPiece.
+        RefreshItemCandidates()
+        _pieces.Clear()
+        _pieceOrderCounter = 0
+        For Each fid In d.ItemFormIDs
+            AddItemFidAsPiece(fid)   ' builds the PieceEntry (samples LVLI realizations) exactly like "Add to outfit"
+        Next
+        TabsMain.SelectedTab = TabPageCreate
+        UpdateCreateBanner()
+        RefreshPieces()
+    End Sub
+
+    ''' <summary>Delete (a NEW draft) or Revert (an OVERRIDE draft) the selected My-outfits row. Override → confirm +
+    ''' unregister (the NPC falls back to the original OTFT). New → block with a referrer list if anything still
+    ''' references it, else confirm + unregister. After a successful drop, if that draft was loaded for edit, clear the
+    ''' override target so a later Commit doesn't resurrect it; then refresh the list + candidates + pieces.</summary>
+    Private Sub OnDeleteOrRevertOutfit(sender As Object, e As EventArgs)
+        Dim tag = SelectedMyOutfitTag()
+        If tag Is Nothing Then Return
+
+        ' SAVED authored outfit (UInteger FormID) → mark for removal on the next Save (a new outfit is deleted;
+        ' an override reverts to the original). Applied when the user next Saves.
+        If TypeOf tag Is UInteger Then
+            Dim fid = CUInt(tag)
+            Dim referrers = _mainForm.GetDraftReferrers(fid)
+            Dim refWarn = If(referrers.Count > 0, vbCrLf & vbCrLf & "Still referenced by:" & vbCrLf & String.Join(vbCrLf, referrers), "")
+            If MessageBox.Show(Me, $"Remove saved outfit '{_mainForm.GetOutfitDisplayName(fid)}' from your plugin on the next Save?" & refWarn,
+                               "Remove saved outfit", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) <> DialogResult.Yes Then Return
+            _mainForm.MarkRecordForRemoval(fid)
+            If _overrideTargetFormID = fid Then
+                _overrideTargetFormID = 0UI
+                _overrideTargetEditorID = ""
+            End If
+            RefreshMyOutfitDrafts()
+            RefreshItemCandidates()
+            RefreshPieces()
+            Return
+        End If
+
+        Dim d = TryCast(tag, OutfitDraft)
+        If d Is Nothing Then Return
+
+        If d.IsOverride OrElse Not d.IsNew Then
+            If MessageBox.Show(Me, $"Revert outfit '{d.EditorID}' to the original? Your changes will be discarded.",
+                               "Revert outfit", MessageBoxButtons.YesNo, MessageBoxIcon.Question) <> DialogResult.Yes Then Return
+            _mainForm.UnregisterOutfitDraft(d.FormID)
+        Else
+            Dim referrers = _mainForm.GetDraftReferrers(d.FormID)
+            If referrers.Count > 0 Then
+                MessageBox.Show(Me, "Can't delete — still referenced by:" & vbCrLf & String.Join(vbCrLf, referrers),
+                                "Delete outfit draft", MessageBoxButtons.OK, MessageBoxIcon.Information)
+                Return
+            End If
+            If MessageBox.Show(Me, $"Delete outfit draft '{d.EditorID}'?", "Delete outfit draft",
+                               MessageBoxButtons.YesNo, MessageBoxIcon.Question) <> DialogResult.Yes Then Return
+            _mainForm.UnregisterOutfitDraft(d.FormID)
+        End If
+
+        ' Was this draft the one loaded into Create for edit? Drop the override target so a later CommitCreate
+        ' doesn't re-register it under the same FormID.
+        If _overrideTargetFormID = d.FormID Then
+            _overrideTargetFormID = 0UI
+            _overrideTargetEditorID = ""
+        End If
+        RefreshMyOutfitDrafts()
+        RefreshItemCandidates()
+        RefreshPieces()
     End Sub
 
     ''' <summary>Human-readable list of the biped slots a mask occupies (FO4 slots 30-61).</summary>

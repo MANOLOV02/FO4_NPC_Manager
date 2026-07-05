@@ -36,6 +36,34 @@ Public Class ArmoDraft
     Public Property FullName As String = ""               ' FULL (optional)
     Public Property SlotMask As UInteger                  ' BOD2
     Public Property RaceFormID As UInteger                ' RNAM
+    ''' <summary>INRD — Instance Naming rules ref ([INNR]). Single owned FormID, preserved byte-exact on an
+    ''' unedited override (loaded from the source, re-emitted at its canonical position after DESC).</summary>
+    Public Property InstanceNamingFormID As UInteger      ' INRD (INNR)
+    ''' <summary>EITM — Object Effect / Enchantment ([ENCH]). Owned optional single FormID (omit when 0).</summary>
+    Public Property EnchantmentFormID As UInteger         ' EITM (ENCH)
+    ''' <summary>PTRN — Preview Transform ([TRNS]). Owned optional single FormID.</summary>
+    Public Property PatternFormID As UInteger             ' PTRN (TRNS)
+    ''' <summary>ETYP — Equip Type ([EQUP]). Owned optional single FormID.</summary>
+    Public Property EquipTypeFormID As UInteger           ' ETYP (EQUP)
+    ''' <summary>YNAM — Pickup Sound ([SNDR]). Owned optional single FormID.</summary>
+    Public Property PickupSoundFormID As UInteger         ' YNAM (SNDR)
+    ''' <summary>ZNAM — Drop Sound ([SNDR]). Owned optional single FormID.</summary>
+    Public Property DropSoundFormID As UInteger           ' ZNAM (SNDR)
+    ''' <summary>BAMT — Alternate Block Material ([MATT]). Owned optional single FormID.</summary>
+    Public Property AlternateBlockMaterialFormID As UInteger  ' BAMT (MATT)
+    ''' <summary>DESC — Description (translatable). Owned optional string (omit when empty).</summary>
+    Public Property Description As String = ""            ' DESC
+    ''' <summary>OBND — Object Bounds (required 6×i16 min/max XYZ). Editable; always emitted.</summary>
+    Public Property ObndX1 As Short
+    Public Property ObndY1 As Short
+    Public Property ObndZ1 As Short
+    Public Property ObndX2 As Short
+    Public Property ObndY2 As Short
+    Public Property ObndZ2 As Short
+    ''' <summary>Header flag bit 2 = 'Non-Playable'. Owned; part of the record header flag word.</summary>
+    Public Property NonPlayable As Boolean
+    ''' <summary>DAMA — Damage Type Array / Resistances. Owned list (omit block when empty).</summary>
+    Public ReadOnly Property DamageResistances As New List(Of ARMO_DamageResist)
     Public Property TemplateArmorFormID As UInteger       ' TNAM (ARMO)
     ''' <summary>Models: INDX + ArmaFormID. Each ArmaFormID may be a real FormID or an ARMA draft
     ''' provisional sentinel (the closure pulls in referenced ARMA drafts).</summary>
@@ -84,7 +112,14 @@ Public Class ArmoDraft
     Public Function Clone() As ArmoDraft
         Dim c As New ArmoDraft With {
             .FormID = FormID, .EditorID = EditorID, .FullName = FullName, .SlotMask = SlotMask,
-            .RaceFormID = RaceFormID, .TemplateArmorFormID = TemplateArmorFormID,
+            .RaceFormID = RaceFormID, .InstanceNamingFormID = InstanceNamingFormID,
+            .EnchantmentFormID = EnchantmentFormID, .PatternFormID = PatternFormID,
+            .EquipTypeFormID = EquipTypeFormID, .PickupSoundFormID = PickupSoundFormID,
+            .DropSoundFormID = DropSoundFormID, .AlternateBlockMaterialFormID = AlternateBlockMaterialFormID,
+            .Description = Description, .NonPlayable = NonPlayable,
+            .ObndX1 = ObndX1, .ObndY1 = ObndY1, .ObndZ1 = ObndZ1,
+            .ObndX2 = ObndX2, .ObndY2 = ObndY2, .ObndZ2 = ObndZ2,
+            .TemplateArmorFormID = TemplateArmorFormID,
             .MaleWorldModelPath = MaleWorldModelPath, .FemaleWorldModelPath = FemaleWorldModelPath,
             .MaleMaterialSwapFormID = MaleMaterialSwapFormID, .FemaleMaterialSwapFormID = FemaleMaterialSwapFormID,
             .Value = Value, .Weight = Weight, .Health = Health,
@@ -97,8 +132,66 @@ Public Class ArmoDraft
         Next
         c.KeywordFormIDs.AddRange(KeywordFormIDs)
         c.AttachParentSlotFormIDs.AddRange(AttachParentSlotFormIDs)
+        For Each dr In DamageResistances
+            c.DamageResistances.Add(New ARMO_DamageResist With {.DamageTypeFormID = dr.DamageTypeFormID, .Value = dr.Value})
+        Next
         c.Combinations.AddRange(CloneCombinations(Combinations))
         Return c
+    End Function
+
+    ''' <summary>True when every AUTHORED (save/render-relevant) field equals <paramref name="o"/>, ignoring the
+    ''' identity/status flags (FormID / IsNew / IsModified / IsOverride). Object Template combinations are
+    ''' DELIBERATELY excluded — the OVERRIDE save preserves the source OBTS bytes verbatim and edits to them are
+    ''' tracked by the separate <see cref="CombinationsEdited"/> flag, which the caller ORs in. Used by the editor
+    ''' so a preview commit only marks the override <c>IsModified</c> when the content actually changed against the
+    ''' open-time snapshot (mirror of <see cref="ArmaDraft.ContentEquals"/>).</summary>
+    Public Function ContentEquals(o As ArmoDraft) As Boolean
+        If o Is Nothing Then Return False
+        If Not String.Equals(EditorID, o.EditorID, StringComparison.Ordinal) Then Return False
+        If Not String.Equals(FullName, o.FullName, StringComparison.Ordinal) Then Return False
+        If SlotMask <> o.SlotMask Then Return False
+        If RaceFormID <> o.RaceFormID Then Return False
+        If InstanceNamingFormID <> o.InstanceNamingFormID Then Return False
+        If EnchantmentFormID <> o.EnchantmentFormID Then Return False
+        If PatternFormID <> o.PatternFormID Then Return False
+        If EquipTypeFormID <> o.EquipTypeFormID Then Return False
+        If PickupSoundFormID <> o.PickupSoundFormID Then Return False
+        If DropSoundFormID <> o.DropSoundFormID Then Return False
+        If AlternateBlockMaterialFormID <> o.AlternateBlockMaterialFormID Then Return False
+        If Not String.Equals(Description, o.Description, StringComparison.Ordinal) Then Return False
+        If NonPlayable <> o.NonPlayable Then Return False
+        If ObndX1 <> o.ObndX1 OrElse ObndY1 <> o.ObndY1 OrElse ObndZ1 <> o.ObndZ1 _
+           OrElse ObndX2 <> o.ObndX2 OrElse ObndY2 <> o.ObndY2 OrElse ObndZ2 <> o.ObndZ2 Then Return False
+        If DamageResistances.Count <> o.DamageResistances.Count Then Return False
+        For i = 0 To DamageResistances.Count - 1
+            If DamageResistances(i).DamageTypeFormID <> o.DamageResistances(i).DamageTypeFormID Then Return False
+            If DamageResistances(i).Value <> o.DamageResistances(i).Value Then Return False
+        Next
+        If TemplateArmorFormID <> o.TemplateArmorFormID Then Return False
+        If Not String.Equals(MaleWorldModelPath, o.MaleWorldModelPath, StringComparison.Ordinal) Then Return False
+        If Not String.Equals(FemaleWorldModelPath, o.FemaleWorldModelPath, StringComparison.Ordinal) Then Return False
+        If MaleMaterialSwapFormID <> o.MaleMaterialSwapFormID Then Return False
+        If FemaleMaterialSwapFormID <> o.FemaleMaterialSwapFormID Then Return False
+        If Value <> o.Value Then Return False
+        If Weight <> o.Weight Then Return False
+        If Health <> o.Health Then Return False
+        If ArmorRating <> o.ArmorRating Then Return False
+        If BaseAddonIndex <> o.BaseAddonIndex Then Return False
+        If StaggerRating <> o.StaggerRating Then Return False
+        If ArmorAddons.Count <> o.ArmorAddons.Count Then Return False
+        For i = 0 To ArmorAddons.Count - 1
+            If ArmorAddons(i).AddonIndex <> o.ArmorAddons(i).AddonIndex Then Return False
+            If ArmorAddons(i).ArmaFormID <> o.ArmorAddons(i).ArmaFormID Then Return False
+        Next
+        If KeywordFormIDs.Count <> o.KeywordFormIDs.Count Then Return False
+        For i = 0 To KeywordFormIDs.Count - 1
+            If KeywordFormIDs(i) <> o.KeywordFormIDs(i) Then Return False
+        Next
+        If AttachParentSlotFormIDs.Count <> o.AttachParentSlotFormIDs.Count Then Return False
+        For i = 0 To AttachParentSlotFormIDs.Count - 1
+            If AttachParentSlotFormIDs(i) <> o.AttachParentSlotFormIDs(i) Then Return False
+        Next
+        Return True
     End Function
 
     ''' <summary>Deep-copy an OBTS combination list (new ARMO_Combination instances with fresh Keywords/Includes/

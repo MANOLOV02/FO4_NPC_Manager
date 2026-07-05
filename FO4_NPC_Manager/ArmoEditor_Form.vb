@@ -32,6 +32,10 @@ Public Class ArmoEditor_Form
     ''' <summary>Suppresses preview re-render + dirty marking while panels are being LOADED programmatically.</summary>
     Private _loading As Boolean
 
+    ''' <summary>The fixed type prefix for this editor's stored base EditorID, driven through the shared
+    ''' <see cref="EditorIdField"/> helper (NEW = editable name under this prefix; OVERRIDE = kept verbatim).</summary>
+    Private ReadOnly _edidPrefix As String = ArmoDraft.EditorIdPrefix
+
     ''' <summary>The biped slots laid out as granular checkboxes (FO4 BOD2 bit = slot − 30), built by the
     ''' shared <see cref="BipedSlotCheckboxes"/> helper into the Designer-declared <see cref="FlowSlots"/>.</summary>
     Private _slotChecks As Dictionary(Of Integer, CheckBox)
@@ -51,6 +55,11 @@ Public Class ArmoEditor_Form
     ''' deep-copied back on Apply (never aliased — the parsed cache must stay pristine). Every mutation marks
     ''' <see cref="ArmoDraft.CombinationsEdited"/> and requests a debounced preview.</summary>
     Private ReadOnly _combinations As New List(Of ARMO_Combination)
+
+    ''' <summary>The ARMO's damage resistances (DAMA: DMGT FormID + Value), in row order. The "Damage Resist" grid
+    ''' is the read-only view of this list — deep-copied from the draft on load and flushed (deep-copied) back on
+    ''' Apply, same commit-on-Apply contract as <see cref="_addons"/>.</summary>
+    Private ReadOnly _damageResists As New List(Of ARMO_DamageResist)
 
     ' === preview (mirror ArmaEditor) ===
     Private _preview As PreviewControl
@@ -92,7 +101,7 @@ Public Class ArmoEditor_Form
     ''' no template FormID is supplied.</param>
     Public Sub New(mainForm As MainForm, previewNpcFormID As UInteger, raceFormID As UInteger, isFemale As Boolean,
                    Optional editDraft As ArmoDraft = Nothing, Optional initialTemplateArmoFormID As UInteger = 0UI,
-                   Optional templateAsOverride As Boolean = False)
+                   Optional templateAsOverride As Boolean = True)
         InitializeComponent()
         _mainForm = mainForm
         _previewNpcFormID = previewNpcFormID
@@ -102,6 +111,7 @@ Public Class ArmoEditor_Form
         BuildSlotCheckBoxes()
         BuildAddonsGridColumns()
         BuildCombinationsGridColumns()
+        BuildDamageGridColumns()
 
         _previewDebounce = New Timer() With {.Interval = 400}
 
@@ -114,6 +124,27 @@ Public Class ArmoEditor_Form
 
         ' General tab.
         AddHandler ButtonPickRace.Click, AddressOf OnPickRace
+        AddHandler ButtonPickInnr.Click, AddressOf OnPickInnr
+        AddHandler ButtonPickEitm.Click, AddressOf OnPickEitm
+        AddHandler ButtonPickPtrn.Click, AddressOf OnPickPtrn
+        AddHandler CheckBoxNonPlayable.CheckedChanged, AddressOf OnFieldEdited
+        AddHandler TextBoxDesc.TextChanged, AddressOf OnFieldEdited
+
+        ' Misc & Sounds tab.
+        AddHandler ButtonPickYnam.Click, AddressOf OnPickYnam
+        AddHandler ButtonPickZnam.Click, AddressOf OnPickZnam
+        AddHandler ButtonPickEtyp.Click, AddressOf OnPickEtyp
+        AddHandler ButtonPickBamt.Click, AddressOf OnPickBamt
+        AddHandler ButtonRecomputeObnd.Click, AddressOf OnRecomputeObnd
+
+        ' Damage Resist tab — read-only grid; mutate via buttons / the double-click modal.
+        AddHandler ButtonAddDamage.Click, AddressOf OnAddDamage
+        AddHandler ButtonEditDamage.Click, AddressOf OnEditDamage
+        AddHandler ButtonRemoveDamage.Click, AddressOf OnRemoveDamage
+        AddHandler GridDamage.CellDoubleClick, AddressOf OnDamageDoubleClick
+
+        ' Slots tab — recompute the BOD2 mask from the included ARMA addons.
+        AddHandler ButtonRecalcSlots.Click, AddressOf OnRecalcSlotsFromArma
 
         ' Addons tab — grid is read-only; every mutation goes through a button / the double-click modal.
         AddHandler ButtonAddArma.Click, AddressOf OnAddArma
@@ -227,6 +258,17 @@ Public Class ArmoEditor_Form
             .HeaderText = header, .FillWeight = weight, .AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill, .ReadOnly = True}
     End Function
 
+    ''' <summary>Build the 2 read-only Damage Resist grid columns: DMGT ("Name [0xFORMID]") + Value. The row is
+    ''' edited in the modal <see cref="ArmoDamageResistEditor_Form"/>, so both columns are display-only.</summary>
+    Private Sub BuildDamageGridColumns()
+        GridDamage.AutoGenerateColumns = False
+        GridDamage.Columns.Clear()
+        Dim colType As New DataGridViewTextBoxColumn With {.HeaderText = "Damage Type [DMGT]", .FillWeight = 70, .AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill, .ReadOnly = True}
+        Dim colValue As New DataGridViewTextBoxColumn With {.HeaderText = "Value", .FillWeight = 30, .AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill, .ReadOnly = True}
+        GridDamage.Columns.Add(colType)
+        GridDamage.Columns.Add(colValue)
+    End Sub
+
     ' =====================================================================
     ' Explicit intent actions (xEdit model) + status banner
     ' =====================================================================
@@ -274,43 +316,117 @@ Public Class ArmoEditor_Form
     ''' <summary>"Edit draft…" → pick one of the user's existing ARMO drafts (shown with "(new)") and continue
     ''' editing it directly (no re-key). No-op with a message when there are no drafts yet.</summary>
     Private Sub OnActionEditDraft(sender As Object, e As EventArgs)
-        Dim drafts = _mainForm.ArmoDrafts().Select(Function(d) New FormIdPickerEntry With {
+        ' List the user's unsaved ARMO drafts AND their already-SAVED authored ARMO records (EDID npcm_), so an
+        ' outfit/armor made here can be re-opened whether or not it's been saved to the ESP yet.
+        Dim entries = _mainForm.ArmoDrafts().Select(Function(d) New FormIdPickerEntry With {
             .FormID = d.FormID, .EditorID = d.EditorID, .DisplayName = d.EditorID, .Signature = "ARMO"}).ToList()
-        If drafts.Count = 0 Then
-            MessageBox.Show(Me, "No ARMO drafts to edit yet. Use New or New from template first.", "Edit draft",
+        Dim draftFids As New HashSet(Of UInteger)(entries.Select(Function(x) x.FormID))
+        For Each r In _mainForm.GetAuthoredRecords("ARMO")
+            If draftFids.Contains(r.FormID) Then Continue For   ' a draft overriding it already covers this FormID
+            entries.Add(New FormIdPickerEntry With {
+                .FormID = r.FormID, .EditorID = r.EditorID, .DisplayName = r.DisplayName, .Signature = "ARMO", .PluginName = "(saved)"})
+        Next
+        If entries.Count = 0 Then
+            MessageBox.Show(Me, "No ARMO drafts or saved authored ARMO yet. Use New / New from template first.", "Edit mine",
                             MessageBoxButtons.OK, MessageBoxIcon.Information)
             Return
         End If
-        ' Drafts-only picker: no real signatures enumerated (empty sigs), so only the draft entries show.
+        ' Empty sigs → the picker lists ONLY the entries we pass (no full-ARMO enumeration). "(new)" = draft, "(saved)" = real.
         Using dlg As New FormIdPicker_Form(_mainForm.PluginManagerForEditor, New String() {},
-                                           "Edit ARMO draft", _draft.FormID, allowNull:=False,
-                                           extraDraftEntries:=drafts)
+                                           "Edit my ARMO (drafts + saved)", _draft.FormID, allowNull:=False,
+                                           extraDraftEntries:=entries,
+                                           onDeleteEntry:=AddressOf OnDeleteDraftEntry)
             If dlg.ShowDialog(Me) <> DialogResult.OK OrElse dlg.SelectedFormID = 0UI Then Return
-            Dim existingDraft = _mainForm.TryGetArmoDraft(dlg.SelectedFormID)
-            If existingDraft Is Nothing Then Return
+            Dim fid = dlg.SelectedFormID
             ' Clean up the draft we're leaving BEFORE switching to the picked one.
             RevertOrDiscardCurrentDraft()
-            _draft = existingDraft
-            _templateRealFormID = 0UI
-            _templateRealEditorID = ""
-            _editingExistingDraft = True
-            LoadDraftIntoPanels()
-            SnapshotCurrentDraft()
-            UpdateStatusBanner()
-            RequestPreview()
+            Dim existingDraft = _mainForm.TryGetArmoDraft(fid)
+            If existingDraft IsNot Nothing Then
+                _draft = existingDraft
+                _templateRealFormID = 0UI
+                _templateRealEditorID = ""
+                _editingExistingDraft = True
+                LoadDraftIntoPanels()
+                SnapshotCurrentDraft()
+                UpdateStatusBanner()
+                RequestPreview()
+            ElseIf Not LoadRealArmoTemplate(fid, asOverride:=True) Then   ' a saved authored ARMO → re-open as OVERRIDE
+                MessageBox.Show(Me, "Could not parse that ARMO record.", "Edit mine",
+                                MessageBoxButtons.OK, MessageBoxIcon.Error)
+            End If
         End Using
     End Sub
+
+    ''' <summary>Delete/revert handler for the "Edit draft…" picker's "Delete / Revert…" button. Overrides
+    ''' (<c>Not IsNew</c>) revert to the original record; new drafts are deleted only when nothing references
+    ''' them. Guards the draft that's currently open. Returns True when the draft was removed (picker drops the row).</summary>
+    Private Function OnDeleteDraftEntry(entry As FormIdPickerEntry) As Boolean
+        Dim fid = entry.FormID
+        If fid = 0UI Then Return False
+        Dim isCurrent = (_draft IsNot Nothing AndAlso fid = _draft.FormID)
+        Dim d = _mainForm.TryGetArmoDraft(fid)
+        If d IsNot Nothing Then
+            If Not d.IsNew Then
+                ' OVERRIDE draft → REVERT (discard my edits; the original record wins). Allowed even when it's the
+                ' one currently open — we reload the pristine original so the editor stays in a valid state.
+                If MessageBox.Show(Me, $"Revert '{d.EditorID}' to the original record? Your edits to this draft will be discarded.",
+                                   "Revert to original", MessageBoxButtons.YesNo, MessageBoxIcon.Question) <> DialogResult.Yes Then Return False
+                _mainForm.UnregisterArmoDraft(fid)
+                If isCurrent Then LoadRealArmoTemplate(fid, asOverride:=True)   ' reload the pristine original for continued editing
+                Return True
+            End If
+            ' NEW draft → DELETE, but not the one you're currently building.
+            If isCurrent Then
+                MessageBox.Show(Me, "This is the NEW draft you're currently editing — switch to another first, then delete it.",
+                                "Delete draft", MessageBoxButtons.OK, MessageBoxIcon.Information)
+                Return False
+            End If
+            Dim referrers = _mainForm.GetDraftReferrers(fid)
+            If referrers.Count > 0 Then
+                MessageBox.Show(Me, "Can't delete — this draft is still referenced by:" & vbCrLf & vbCrLf & String.Join(vbCrLf, referrers),
+                                "Delete draft", MessageBoxButtons.OK, MessageBoxIcon.Information)
+                Return False
+            End If
+            If MessageBox.Show(Me, $"Delete draft '{d.EditorID}'? This cannot be undone.",
+                               "Delete draft", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) <> DialogResult.Yes Then Return False
+            _mainForm.UnregisterArmoDraft(fid)
+            Return True
+        End If
+        ' An already-SAVED authored record → mark it for removal on the next Save. A NEW record (npcm_ EDID)
+        ' is DELETED; an OVERRIDE (keeps the original EDID) is REVERTED (dropped → the original record wins).
+        Dim isNewRec = entry.EditorID IsNot Nothing AndAlso entry.EditorID.StartsWith("npcm_", StringComparison.OrdinalIgnoreCase)
+        Dim verb = If(isNewRec, "Delete", "Revert")
+        Dim detail = If(isNewRec, "It will be removed from your plugin on the next Save.",
+                                  "The override will be dropped on the next Save — the original record wins again.")
+        Dim savedReferrers = _mainForm.GetDraftReferrers(fid)
+        Dim refWarn = If(savedReferrers.Count > 0, vbCrLf & vbCrLf & "Still referenced by:" & vbCrLf & String.Join(vbCrLf, savedReferrers), "")
+        If MessageBox.Show(Me, $"{verb} saved record '{entry.DisplayName}'?" & vbCrLf & detail & refWarn,
+                           $"{verb} saved record", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) <> DialogResult.Yes Then Return False
+        _mainForm.MarkRecordForRemoval(fid)
+        Return True
+    End Function
 
     ''' <summary>FormIdPicker over REAL ARMO records (race/gender-filtered to the preview NPC), no draft entries.
     ''' Returns the chosen global FormID, or 0 when cancelled. Shared by New-from-template + Override.</summary>
     Private Function PickRealArmo(title As String) As UInteger
         ' Pre-select the CURRENT source record (if any) so switching Override ⇄ New-from-template keeps it selected.
         Using dlg As New FormIdPicker_Form(_mainForm.PluginManagerForEditor, {"ARMO"},
-                                           title, _templateRealFormID, allowNull:=False,
+                                           title, CurrentTemplateSelection(), allowNull:=False,
                                            formIdFilter:=Function(fid) _mainForm.IsArmoRaceCompatible(fid, _raceFormID, _isFemale))
             If dlg.ShowDialog(Me) <> DialogResult.OK Then Return 0UI
             Return dlg.SelectedFormID
         End Using
+    End Function
+
+    ''' <summary>The real global FormID the picker should PRE-SELECT: the explicitly-loaded template/override
+    ''' source (<see cref="_templateRealFormID"/>) when set this session; else the current draft's real FormID
+    ''' when it's an existing/override record (an override draft has <c>IsNew = False</c> and its FormID IS the
+    ''' real global FormID); else 0 (a blank new record — nothing to pre-select). Lets re-opening the picker
+    ''' land on the record currently being edited even when the editor was opened directly over a real ARMO.</summary>
+    Private Function CurrentTemplateSelection() As UInteger
+        If _templateRealFormID <> 0UI Then Return _templateRealFormID
+        If _draft IsNot Nothing AndAlso Not _draft.IsNew Then Return _draft.FormID
+        Return 0UI
     End Function
 
     ''' <summary>Load a REAL ARMO record as the editing target: build a draft copy (asOverride=False → NEW copy
@@ -336,7 +452,9 @@ Public Class ArmoEditor_Form
     ''' every target/EditorID change (ctor, each action, EditorID textbox edit).</summary>
     Private Sub UpdateStatusBanner()
         If _draft Is Nothing OrElse LabelStatusBanner Is Nothing Then Return
-        Dim edid = TextBoxEdid.Text.Trim()
+        ' The name box holds only the <name> for a NEW draft (the prefix is fixed) — show the composed base
+        ' EDID in the banner so it reads as the actual record identity, not just the bare name.
+        Dim edid = If(_draft.IsNew, EditorIdField.Compose(_edidPrefix, TextBoxEdid.Text), TextBoxEdid.Text.Trim())
         If edid.Length = 0 Then edid = If(_draft.EditorID, "")
         If _editingExistingDraft Then
             LabelStatusBanner.Text = $"Editing draft — {edid} ({If(_draft.IsOverride, "override", "new")})"
@@ -360,10 +478,24 @@ Public Class ArmoEditor_Form
         End Try
     End Function
 
+    ''' <summary>Present the EditorID field for the current draft's mode via the shared <see cref="EditorIdField"/>
+    ''' helper: NEW → fixed prefix label + editable name box + live "Saves as:" preview; OVERRIDE → kept EDID
+    ''' shown read-only. Setting the name box fires <see cref="OnEdidChanged"/>, which only refreshes the banner /
+    ''' preview (never recomposes), so there is no feedback loop.</summary>
+    Private Sub RefreshEditorIdField()
+        If _draft Is Nothing Then Return
+        If _draft.IsNew Then
+            EditorIdField.ConfigureNew(LabelEdid, TextBoxEdid, LabelEdidPreview, _edidPrefix, _draft.EditorID)
+        Else
+            EditorIdField.ConfigureOverride(LabelEdid, TextBoxEdid, LabelEdidPreview, _draft.EditorID)
+        End If
+    End Sub
+
     ''' <summary>EditorID textbox edit → keep the banner in sync (it echoes the current EditorID).</summary>
     Private Sub OnEdidChanged(sender As Object, e As EventArgs)
         If _loading Then Return
         UpdateStatusBanner()
+        If _draft IsNot Nothing AndAlso _draft.IsNew Then EditorIdField.UpdatePreview(LabelEdidPreview, _edidPrefix, TextBoxEdid.Text)
     End Sub
 
     ' =====================================================================
@@ -383,6 +515,17 @@ Public Class ArmoEditor_Form
             .FullName = a.FullName,
             .SlotMask = a.SlotMask,
             .RaceFormID = a.RaceFormID,
+            .InstanceNamingFormID = a.InstanceNamingFormID,
+            .EnchantmentFormID = a.EnchantmentFormID,
+            .PatternFormID = a.PatternFormID,
+            .EquipTypeFormID = a.EquipTypeFormID,
+            .PickupSoundFormID = a.PickupSoundFormID,
+            .DropSoundFormID = a.DropSoundFormID,
+            .AlternateBlockMaterialFormID = a.AlternateBlockMaterialFormID,
+            .Description = a.Description,
+            .NonPlayable = a.NonPlayable,
+            .ObndX1 = a.ObndX1, .ObndY1 = a.ObndY1, .ObndZ1 = a.ObndZ1,
+            .ObndX2 = a.ObndX2, .ObndY2 = a.ObndY2, .ObndZ2 = a.ObndZ2,
             .TemplateArmorFormID = a.TemplateArmorFormID,
             .MaleWorldModelPath = a.MaleWorldModelPath,
             .FemaleWorldModelPath = a.FemaleWorldModelPath,
@@ -401,6 +544,10 @@ Public Class ArmoEditor_Form
         Next
         d.KeywordFormIDs.AddRange(a.KeywordFormIDs)
         d.AttachParentSlotFormIDs.AddRange(a.AttachParentSlotFormIDs)
+        ' DAMA damage resistances: deep-copy (new instances) so the draft never aliases the parsed cache.
+        For Each dr In a.DamageResistances
+            d.DamageResistances.Add(New ARMO_DamageResist With {.DamageTypeFormID = dr.DamageTypeFormID, .Value = dr.Value})
+        Next
         ' OBTS combinations: DEEP COPY (never alias the parsed cache — the draft is mutated live). Carries the
         ' object template end-to-end so the preview applies its material swap and a NEW-from-template ARMO keeps
         ' its OBTS on save.
@@ -415,16 +562,42 @@ Public Class ArmoEditor_Form
     Private Sub LoadDraftIntoPanels()
         _loading = True
         Try
-            TextBoxEdid.Text = _draft.EditorID
+            RefreshEditorIdField()
 
             ' General.
             TextBoxFull.Text = _draft.FullName
             SetFidText(TextBoxRace, _draft.RaceFormID)
+            SetFidText(TextBoxInnr, _draft.InstanceNamingFormID)
+            SetFidText(TextBoxEitm, _draft.EnchantmentFormID)
+            SetFidText(TextBoxPtrn, _draft.PatternFormID)
+            CheckBoxNonPlayable.Checked = _draft.NonPlayable
+            TextBoxDesc.Text = _draft.Description
             SetSlotChecks(_draft.SlotMask)
             NumValue.Value = ClampDec(CDec(_draft.Value), NumValue)
             NumWeight.Value = ClampDec(CDec(_draft.Weight), NumWeight)
             NumHealth.Value = ClampDec(CDec(_draft.Health), NumHealth)
             NumArmorRating.Value = ClampDec(CDec(_draft.ArmorRating), NumArmorRating)
+            NumBaseAddonIndex.Value = ClampDec(CDec(_draft.BaseAddonIndex), NumBaseAddonIndex)
+            NumStaggerRating.Value = ClampDec(CDec(_draft.StaggerRating), NumStaggerRating)
+
+            ' Misc & Sounds.
+            SetFidText(TextBoxYnam, _draft.PickupSoundFormID)
+            SetFidText(TextBoxZnam, _draft.DropSoundFormID)
+            SetFidText(TextBoxEtyp, _draft.EquipTypeFormID)
+            SetFidText(TextBoxBamt, _draft.AlternateBlockMaterialFormID)
+            NumObndX1.Value = ClampDec(CDec(_draft.ObndX1), NumObndX1)
+            NumObndY1.Value = ClampDec(CDec(_draft.ObndY1), NumObndY1)
+            NumObndZ1.Value = ClampDec(CDec(_draft.ObndZ1), NumObndZ1)
+            NumObndX2.Value = ClampDec(CDec(_draft.ObndX2), NumObndX2)
+            NumObndY2.Value = ClampDec(CDec(_draft.ObndY2), NumObndY2)
+            NumObndZ2.Value = ClampDec(CDec(_draft.ObndZ2), NumObndZ2)
+
+            ' Damage Resist (DAMA): deep-copy into the working buffer, flushed on Apply.
+            _damageResists.Clear()
+            For Each dr In _draft.DamageResistances
+                _damageResists.Add(New ARMO_DamageResist With {.DamageTypeFormID = dr.DamageTypeFormID, .Value = dr.Value})
+            Next
+            RefreshDamageGrid()
 
             ' Addons.
             _addons.Clear()
@@ -513,9 +686,9 @@ Public Class ArmoEditor_Form
         ' Flush any in-progress INDX cell edit into the model first.
         GridAddons.EndEdit()
 
-        Dim edid = TextBoxEdid.Text.Trim()
+        Dim edid = If(_draft.IsNew, EditorIdField.Compose(_edidPrefix, TextBoxEdid.Text), TextBoxEdid.Text.Trim())
         If validate Then
-            If edid.Length = 0 Then
+            If edid.Length = 0 OrElse (_draft.IsNew AndAlso TextBoxEdid.Text.Trim().Length = 0) Then
                 MessageBox.Show(Me, "Enter an EditorID for the ARMO.", "Apply", MessageBoxButtons.OK, MessageBoxIcon.Information)
                 Return False
             End If
@@ -539,11 +712,36 @@ Public Class ArmoEditor_Form
         ' General.
         _draft.FullName = TextBoxFull.Text.Trim()
         _draft.RaceFormID = GetFid(TextBoxRace)
+        _draft.InstanceNamingFormID = GetFid(TextBoxInnr)
+        _draft.EnchantmentFormID = GetFid(TextBoxEitm)
+        _draft.PatternFormID = GetFid(TextBoxPtrn)
+        _draft.NonPlayable = CheckBoxNonPlayable.Checked
+        _draft.Description = TextBoxDesc.Text.Trim()
         _draft.SlotMask = ReadSlotChecks()
         _draft.Value = CInt(NumValue.Value)
         _draft.Weight = CSng(NumWeight.Value)
         _draft.Health = CUInt(NumHealth.Value)
         _draft.ArmorRating = CUShort(NumArmorRating.Value)
+        _draft.BaseAddonIndex = CUShort(NumBaseAddonIndex.Value)
+        _draft.StaggerRating = CByte(NumStaggerRating.Value)
+
+        ' Misc & Sounds.
+        _draft.PickupSoundFormID = GetFid(TextBoxYnam)
+        _draft.DropSoundFormID = GetFid(TextBoxZnam)
+        _draft.EquipTypeFormID = GetFid(TextBoxEtyp)
+        _draft.AlternateBlockMaterialFormID = GetFid(TextBoxBamt)
+        _draft.ObndX1 = CShort(NumObndX1.Value)
+        _draft.ObndY1 = CShort(NumObndY1.Value)
+        _draft.ObndZ1 = CShort(NumObndZ1.Value)
+        _draft.ObndX2 = CShort(NumObndX2.Value)
+        _draft.ObndY2 = CShort(NumObndY2.Value)
+        _draft.ObndZ2 = CShort(NumObndZ2.Value)
+
+        ' Damage Resist (DAMA): flush the working buffer (deep-copied so the draft never aliases the grid).
+        _draft.DamageResistances.Clear()
+        For Each dr In _damageResists
+            _draft.DamageResistances.Add(New ARMO_DamageResist With {.DamageTypeFormID = dr.DamageTypeFormID, .Value = dr.Value})
+        Next
 
         ' Addons (order matters — copy the working list in row order).
         _draft.ArmorAddons.Clear()
@@ -570,7 +768,14 @@ Public Class ArmoEditor_Form
         _draft.AttachParentSlotFormIDs.Clear()
         _draft.AttachParentSlotFormIDs.AddRange(_appr)
 
-        If Not _draft.IsNew Then _draft.IsModified = True
+        ' Dirty only on a REAL change (mirror of ArmaEditor). The preview commits the panels on every render, so
+        ' setting IsModified unconditionally re-emitted an identical override at save time (e.g. opening an ARMO
+        ' just to edit its ARMA marked the ARMO dirty). Compare content against the open-time snapshot instead;
+        ' OBTS edits aren't part of ContentEquals (the override save preserves source bytes) so OR in the separate
+        ' CombinationsEdited flag. Two-way so reverting a change clears it; NEW drafts are always dirty.
+        If Not _draft.IsNew Then
+            _draft.IsModified = (_openSnapshot Is Nothing) OrElse _draft.CombinationsEdited OrElse Not _draft.ContentEquals(_openSnapshot)
+        End If
         _mainForm.RegisterArmoDraft(_draft)
         Return True
     End Function
@@ -581,6 +786,182 @@ Public Class ArmoEditor_Form
 
     Private Sub OnPickRace(sender As Object, e As EventArgs)
         PickFidInto(TextBoxRace, {"RACE"}, "Select Race (RNAM)", allowNull:=True)
+    End Sub
+
+    ''' <summary>INRD Instance Naming picker (filtered to INNR records; NULL clears it).</summary>
+    Private Sub OnPickInnr(sender As Object, e As EventArgs)
+        PickFidInto(TextBoxInnr, {"INNR"}, "Select Instance Naming (INRD)", allowNull:=True)
+    End Sub
+
+    ''' <summary>EITM Object Effect picker ([ENCH]; NULL clears it).</summary>
+    Private Sub OnPickEitm(sender As Object, e As EventArgs)
+        PickFidInto(TextBoxEitm, {"ENCH"}, "Select Object Effect (EITM)", allowNull:=True)
+    End Sub
+
+    ''' <summary>PTRN Preview Transform picker ([TRNS]; NULL clears it).</summary>
+    Private Sub OnPickPtrn(sender As Object, e As EventArgs)
+        PickFidInto(TextBoxPtrn, {"TRNS"}, "Select Preview Transform (PTRN)", allowNull:=True)
+    End Sub
+
+    ' =====================================================================
+    ' Misc & Sounds tab — YNAM / ZNAM / ETYP / BAMT pickers + OBND recompute
+    ' =====================================================================
+
+    ''' <summary>YNAM Pickup Sound picker ([SNDR]; NULL clears it).</summary>
+    Private Sub OnPickYnam(sender As Object, e As EventArgs)
+        PickFidInto(TextBoxYnam, {"SNDR"}, "Select Pickup Sound (YNAM)", allowNull:=True)
+    End Sub
+
+    ''' <summary>ZNAM Drop Sound picker ([SNDR]; NULL clears it).</summary>
+    Private Sub OnPickZnam(sender As Object, e As EventArgs)
+        PickFidInto(TextBoxZnam, {"SNDR"}, "Select Drop Sound (ZNAM)", allowNull:=True)
+    End Sub
+
+    ''' <summary>ETYP Equip Type picker ([EQUP]; NULL clears it).</summary>
+    Private Sub OnPickEtyp(sender As Object, e As EventArgs)
+        PickFidInto(TextBoxEtyp, {"EQUP"}, "Select Equip Type (ETYP)", allowNull:=True)
+    End Sub
+
+    ''' <summary>BAMT Alternate Block Material picker ([MATT]; NULL clears it).</summary>
+    Private Sub OnPickBamt(sender As Object, e As EventArgs)
+        PickFidInto(TextBoxBamt, {"MATT"}, "Select Block Material (BAMT)", allowNull:=True)
+    End Sub
+
+    ''' <summary>"Recompute from mesh" → approximate the Object Bounds (OBND) AABB from the male world model
+    ''' (MOD2) mesh vertices. NOT identical to the CK's authored value (a conservative floor/ceil over every
+    ''' vertex of every shape); editable afterwards. Never crashes — every failure surfaces as a MessageBox.</summary>
+    Private Sub OnRecomputeObnd(sender As Object, e As EventArgs)
+        Try
+            Dim path = TextBoxMod2.Text.Trim()
+            If path.Length = 0 Then
+                MessageBox.Show(Me, "This ARMO has no world model (MOD2) to compute bounds from.", "Recompute bounds",
+                                MessageBoxButtons.OK, MessageBoxIcon.Information)
+                Return
+            End If
+
+            Dim key = NameUtils.NormalizeDictionaryKeyWithMeshesPrefix(path)
+            Dim loc As FilesDictionary_class.File_Location = Nothing
+            If Not FilesDictionary_class.Dictionary.TryGetValue(key, loc) OrElse loc Is Nothing Then
+                MessageBox.Show(Me, $"Mesh not found: {path}", "Recompute bounds", MessageBoxButtons.OK, MessageBoxIcon.Warning)
+                Return
+            End If
+            Dim bytes = loc.GetBytes()
+            If bytes Is Nothing OrElse bytes.Length = 0 Then
+                MessageBox.Show(Me, $"Mesh not found: {path}", "Recompute bounds", MessageBoxButtons.OK, MessageBoxIcon.Warning)
+                Return
+            End If
+
+            Dim nif As New Nifcontent_Class_Manolo()
+            nif.Load_Manolo(bytes)
+            Dim shapes = NifRenderableShape.FromNif(nif)
+
+            Dim minX As Single = Single.MaxValue, minY As Single = Single.MaxValue, minZ As Single = Single.MaxValue
+            Dim maxX As Single = Single.MinValue, maxY As Single = Single.MinValue, maxZ As Single = Single.MinValue
+            Dim any As Boolean = False
+            If shapes IsNot Nothing Then
+                For Each shape In shapes
+                    If shape Is Nothing OrElse shape.Geometry Is Nothing Then Continue For
+                    For Each v In shape.Geometry.GetVertexPositions()
+                        any = True
+                        If v.X < minX Then minX = v.X
+                        If v.Y < minY Then minY = v.Y
+                        If v.Z < minZ Then minZ = v.Z
+                        If v.X > maxX Then maxX = v.X
+                        If v.Y > maxY Then maxY = v.Y
+                        If v.Z > maxZ Then maxZ = v.Z
+                    Next
+                Next
+            End If
+            If Not any Then
+                MessageBox.Show(Me, "No vertices found in mesh.", "Recompute bounds", MessageBoxButtons.OK, MessageBoxIcon.Warning)
+                Return
+            End If
+
+            NumObndX1.Value = ClampS16(Math.Floor(minX))
+            NumObndY1.Value = ClampS16(Math.Floor(minY))
+            NumObndZ1.Value = ClampS16(Math.Floor(minZ))
+            NumObndX2.Value = ClampS16(Math.Ceiling(maxX))
+            NumObndY2.Value = ClampS16(Math.Ceiling(maxY))
+            NumObndZ2.Value = ClampS16(Math.Ceiling(maxZ))
+            OnFieldEdited(Me, EventArgs.Empty)
+        Catch ex As Exception
+            MessageBox.Show(Me, $"Could not compute bounds: {ex.Message}", "Recompute bounds",
+                            MessageBoxButtons.OK, MessageBoxIcon.Error)
+        End Try
+    End Sub
+
+    ''' <summary>Clamp a computed bound to the signed-16 OBND range [-32768, 32767] as a Decimal for the numerics.</summary>
+    Private Shared Function ClampS16(v As Double) As Decimal
+        If v < -32768.0R Then Return -32768D
+        If v > 32767.0R Then Return 32767D
+        Return CDec(v)
+    End Function
+
+    ' =====================================================================
+    ' Damage Resist tab — DAMA (DMGT FormID + Value)
+    ' =====================================================================
+
+    ''' <summary>Repaint the Damage Resist grid from <see cref="_damageResists"/> (read-only summary rows; a row is
+    ''' edited in the modal sub-editor). Preserves the selected row index across the refresh.</summary>
+    Private Sub RefreshDamageGrid()
+        Dim selIdx = If(GridDamage.CurrentRow IsNot Nothing, GridDamage.CurrentRow.Index, -1)
+        GridDamage.Rows.Clear()
+        For Each dr In _damageResists
+            GridDamage.Rows.Add($"{DisplayFor(dr.DamageTypeFormID)} [0x{dr.DamageTypeFormID:X8}]",
+                                dr.Value.ToString(CultureInfo.InvariantCulture))
+        Next
+        If selIdx >= 0 AndAlso selIdx < GridDamage.Rows.Count Then
+            GridDamage.Rows(selIdx).Selected = True
+            GridDamage.CurrentCell = GridDamage.Rows(selIdx).Cells(0)
+        End If
+    End Sub
+
+    Private Function SelectedDamageIndex() As Integer
+        If GridDamage.CurrentRow Is Nothing Then Return -1
+        Dim i = GridDamage.CurrentRow.Index
+        If i < 0 OrElse i >= _damageResists.Count Then Return -1
+        Return i
+    End Function
+
+    ''' <summary>Add → open the modal on a fresh entry; on OK append the (deep-copied) result.</summary>
+    Private Sub OnAddDamage(sender As Object, e As EventArgs)
+        Using dlg As New ArmoDamageResistEditor_Form(_mainForm, New ARMO_DamageResist())
+            If dlg.ShowDialog(Me) = DialogResult.OK AndAlso dlg.ResultEntry IsNot Nothing Then
+                _damageResists.Add(dlg.ResultEntry)
+                RefreshDamageGrid()
+                OnFieldEdited(Me, EventArgs.Empty)
+            End If
+        End Using
+    End Sub
+
+    Private Sub OnEditDamage(sender As Object, e As EventArgs)
+        EditDamageAt(SelectedDamageIndex())
+    End Sub
+
+    Private Sub OnDamageDoubleClick(sender As Object, e As DataGridViewCellEventArgs)
+        If e.RowIndex < 0 Then Return
+        EditDamageAt(e.RowIndex)
+    End Sub
+
+    ''' <summary>Open the modal sub-editor on the entry at <paramref name="i"/> (deep-copied in/out by the modal);
+    ''' on OK replace the row's entry with the edited result.</summary>
+    Private Sub EditDamageAt(i As Integer)
+        If i < 0 OrElse i >= _damageResists.Count Then Return
+        Using dlg As New ArmoDamageResistEditor_Form(_mainForm, _damageResists(i))
+            If dlg.ShowDialog(Me) = DialogResult.OK AndAlso dlg.ResultEntry IsNot Nothing Then
+                _damageResists(i) = dlg.ResultEntry
+                RefreshDamageGrid()
+                OnFieldEdited(Me, EventArgs.Empty)
+            End If
+        End Using
+    End Sub
+
+    Private Sub OnRemoveDamage(sender As Object, e As EventArgs)
+        Dim i = SelectedDamageIndex()
+        If i < 0 Then Return
+        _damageResists.RemoveAt(i)
+        RefreshDamageGrid()
+        OnFieldEdited(Me, EventArgs.Empty)
     End Sub
 
     ' =====================================================================
@@ -648,11 +1029,15 @@ Public Class ArmoEditor_Form
     Private Sub EditAddonAt(i As Integer)
         If i < 0 OrElse i >= _addons.Count Then Return
         Using dlg As New ArmoAddonEditor_Form(_mainForm, _draft.RaceFormID, _addons(i))
-            If dlg.ShowDialog(Me) = DialogResult.OK AndAlso dlg.ResultEntry IsNot Nothing Then
+            Dim ok = (dlg.ShowDialog(Me) = DialogResult.OK AndAlso dlg.ResultEntry IsNot Nothing)
+            If ok Then
                 _addons(i) = dlg.ResultEntry
-                RefreshAddonsGrid()
                 OnFieldEdited(Me, EventArgs.Empty)
             End If
+            ' Refresh regardless of OK/Cancel: the addon modal's "Edit ARMA…" can change the referenced ARMA
+            ' draft's slots/name even when the addon edit itself is cancelled, so the row's rendered Name/Slots
+            ' (draft-aware via GetParsedArmaForEditor) could otherwise show a stale pre-edit snapshot.
+            RefreshAddonsGrid()
         End Using
     End Sub
 
@@ -818,12 +1203,26 @@ Public Class ArmoEditor_Form
         Return String.Join("~", parts)
     End Function
 
+    ''' <summary>Preview-key fragment for one addon row: the ARMA FormID + index PLUS a content signature of the
+    ''' addon ARMA's referenced MSWP DRAFTS. An addon ARMA's material-swap draft keeps its FormID across an edit,
+    ''' so without this the ARMO preview key wouldn't change and the swap wouldn't re-render.</summary>
+    Private Function AddonPreviewKey(a As ARMO_AddonEntry) As String
+        Dim mswpSig As String = ""
+        Dim arma = _mainForm.GetParsedArmaForEditor(a.ArmaFormID)
+        If arma IsNot Nothing Then
+            mswpSig = _mainForm.GetMswpDraftSignature(arma.MaleMaterialSwapFormID) & "/" & _mainForm.GetMswpDraftSignature(arma.FemaleMaterialSwapFormID)
+        End If
+        Return a.ArmaFormID.ToString("X8") & "#" & a.AddonIndex.ToString(CultureInfo.InvariantCulture) & "@" & mswpSig
+    End Function
+
     ' =====================================================================
     ' Keywords tab — KWDA + APPR (both KYWD FormIDs)
     ' =====================================================================
 
     Private Sub OnAddKwda(sender As Object, e As EventArgs)
-        AddKywdInto(_keywords, "Add keyword (KWDA)")
+        ' KWDA = general armor keywords → EXCLUDE attach-point keywords (those belong in APPR, not here). By type
+        ' (KYWD.TNAM), not a name heuristic; "Show all" escapes the filter.
+        AddKywdInto(_keywords, "Add keyword (KWDA)", Function(fid) Not _mainForm.IsAttachPointKeyword(fid))
         RefreshKwdaList()
     End Sub
 
@@ -835,7 +1234,9 @@ Public Class ArmoEditor_Form
     End Sub
 
     Private Sub OnAddAppr(sender As Object, e As EventArgs)
-        AddKywdInto(_appr, "Add attach-parent-slot (APPR)")
+        ' APPR entries are ATTACH-POINT keywords — filtered by the AUTHORITATIVE KYWD.TNAM Type == 'Attach Point'
+        ' (not a name heuristic), with the picker's "Show all" checkbox to escape the filter if needed.
+        AddKywdInto(_appr, "Add attach-parent-slot (APPR)", AddressOf _mainForm.IsAttachPointKeyword)
         RefreshApprList()
     End Sub
 
@@ -847,9 +1248,12 @@ Public Class ArmoEditor_Form
     End Sub
 
     ''' <summary>FormIdPicker over KYWD → add the chosen FormID to <paramref name="list"/> (dedup). Both KWDA
-    ''' and APPR are KYWD FormID lists, so they share this helper.</summary>
-    Private Sub AddKywdInto(list As List(Of UInteger), title As String)
-        Using dlg As New FormIdPicker_Form(_mainForm.PluginManagerForEditor, {"KYWD"}, title, 0UI, allowNull:=False)
+    ''' and APPR are KYWD FormID lists, so they share this helper. <paramref name="formIdFilter"/> (optional)
+    ''' narrows the list by KYWD.TNAM type (APPR → only Attach Point; KWDA → exclude Attach Point) with the
+    ''' picker's "Show all" override.</summary>
+    Private Sub AddKywdInto(list As List(Of UInteger), title As String, Optional formIdFilter As Func(Of UInteger, Boolean) = Nothing)
+        Using dlg As New FormIdPicker_Form(_mainForm.PluginManagerForEditor, {"KYWD"}, title, 0UI, allowNull:=False,
+                                           formIdFilter:=formIdFilter)
             If dlg.ShowDialog(Me) <> DialogResult.OK OrElse dlg.SelectedFormID = 0UI Then Return
             If Not list.Contains(dlg.SelectedFormID) Then list.Add(dlg.SelectedFormID)
         End Using
@@ -901,24 +1305,41 @@ Public Class ArmoEditor_Form
     End Sub
 
     ''' <summary>"New / Edit MSWP…" for a gender: if the gender's field already points at an MSWP DRAFT, edit
-    ''' that one; otherwise create a fresh MswpDraft, register it, and set the field to it. The sub-editor
-    ''' sources its Original-Material dropdown from this gender's WORLD-MODEL mesh NIF (MOD2 male / MOD4
-    ''' female) — the ARMO's own mesh.</summary>
+    ''' that one; otherwise create a fresh MswpDraft, register it, and set the field to it. The sub-editor's
+    ''' Original-Material list now aggregates the materials of THIS gender's WORLD-MODEL mesh NIF (MOD2 male /
+    ''' MOD4 female — the ARMO's own mesh) PLUS the gender-appropriate world-model mesh of every included ARMA
+    ''' addon (MOD2 male / MOD3 female), read from the CURRENT <see cref="_addons"/> set at open time — so it
+    ''' lists every real BGSM actually in play.</summary>
     Private Sub OnNewEditMswp(isFemaleGender As Boolean)
         Dim target = If(isFemaleGender, TextBoxMo4s, TextBoxMo2s)
         Dim meshPath = If(isFemaleGender, TextBoxMod4.Text.Trim(), TextBoxMod2.Text.Trim())
         Dim genderLabel = If(isFemaleGender, "Female", "Male")
 
+        ' Gender-appropriate world-model mesh of every included ARMA addon (draft-aware parse), so the
+        ' Original-Material list also lists the addon meshes' materials. Skip unresolved ARMAs / empty paths.
+        Dim extraMeshPaths As New List(Of String)
+        For Each ad In _addons
+            Dim arma = _mainForm.GetParsedArmaForEditor(ad.ArmaFormID)
+            If arma Is Nothing Then Continue For
+            Dim armaMesh = If(isFemaleGender, arma.FemaleMeshPath, arma.MaleMeshPath)
+            If Not String.IsNullOrWhiteSpace(armaMesh) Then extraMeshPaths.Add(armaMesh)
+        Next
+
         Dim currentFid = GetFid(target)
         Dim draft = _mainForm.TryGetMswpDraft(currentFid)
         Dim isNewDraft As Boolean = (draft Is Nothing)
         If isNewDraft Then
-            draft = New MswpDraft With {.FormID = _mainForm.AllocateDraftFormID(),
-                                        .EditorID = MswpDraft.EditorIdPrefix & "new", .IsNew = True}
-            _mainForm.RegisterMswpDraft(draft)
+            ' Field already points at a REAL MSWP (from the ESP / load order) → edit it as an OVERRIDE seeded with
+            ' its existing substitutions, not a blank one. Nothing ⇒ field empty/unresolved ⇒ fresh NEW draft.
+            draft = _mainForm.BuildMswpOverrideDraftFromReal(currentFid)
+            If draft Is Nothing Then
+                draft = New MswpDraft With {.FormID = _mainForm.AllocateDraftFormID(),
+                                            .EditorID = MswpDraft.EditorIdPrefix & "new", .IsNew = True}
+                _mainForm.RegisterMswpDraft(draft)
+            End If
         End If
 
-        Using dlg As New MswpSubEditor_Form(_mainForm, draft, meshPath, genderLabel)
+        Using dlg As New MswpSubEditor_Form(_mainForm, draft, meshPath, genderLabel, extraMeshPaths)
             If dlg.ShowDialog(Me) = DialogResult.OK Then
                 _mainForm.RegisterMswpDraft(draft)
                 SetFidText(target, draft.FormID)
@@ -989,6 +1410,27 @@ Public Class ArmoEditor_Form
         Return BipedSlotCheckboxes.ReadMask(_slotChecks)
     End Function
 
+    ''' <summary>"Recalculate from ARMA addons" → set the BOD2 slot checkboxes to the UNION of the biped-slot
+    ''' masks of every included ARMA addon (draft-aware parse). No addons → leave the current checks untouched
+    ''' and inform the user. Fires the same edited-notification the checkboxes raise so the banner/preview update.</summary>
+    Private Sub OnRecalcSlotsFromArma(sender As Object, e As EventArgs)
+        If _addons.Count = 0 Then
+            MessageBox.Show(Me, "This armor has no ARMA addons to recalculate slots from.", "Recalculate slots",
+                            MessageBoxButtons.OK, MessageBoxIcon.Information)
+            Return
+        End If
+        Dim mask As UInteger = 0UI
+        For Each ad In _addons
+            Dim arma = _mainForm.GetParsedArmaForEditor(ad.ArmaFormID)
+            If arma IsNot Nothing Then mask = mask Or arma.SlotMask
+        Next
+        SetSlotChecks(mask)
+        ' Addon rows whose ARMA declares no slots render the ARMO's own mask (EffectiveSlotsText fallback), so
+        ' refresh the grid too now that the mask changed.
+        RefreshAddonsGrid()
+        OnFieldEdited(Me, EventArgs.Empty)
+    End Sub
+
     ' =====================================================================
     ' Field-edit → debounced preview
     ' =====================================================================
@@ -1042,7 +1484,8 @@ Public Class ArmoEditor_Form
             _draft.RaceFormID.ToString("X8"),
             _draft.MaleWorldModelPath, _draft.FemaleWorldModelPath,
             _draft.MaleMaterialSwapFormID.ToString("X8"), _draft.FemaleMaterialSwapFormID.ToString("X8"),
-            String.Join(",", _addons.Select(Function(a) a.ArmaFormID.ToString("X8") & "#" & a.AddonIndex.ToString(CultureInfo.InvariantCulture))),
+            _mainForm.GetMswpDraftSignature(_draft.MaleMaterialSwapFormID), _mainForm.GetMswpDraftSignature(_draft.FemaleMaterialSwapFormID),
+            String.Join(",", _addons.Select(AddressOf AddonPreviewKey)),
             CombinationsKey()})
         If key = _lastPreviewKey Then Return
         If _previewInProgress Then Return

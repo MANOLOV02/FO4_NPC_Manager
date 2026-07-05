@@ -32,8 +32,8 @@ Partial Class ObtsIncludeEditor_Form
         ButtonOk = New Button()
         ButtonCancel = New Button()
         RootLayout.SuspendLayout()
-        OmodPanel.SuspendLayout()
         CType(NumAttach, ComponentModel.ISupportInitialize).BeginInit()
+        OmodPanel.SuspendLayout()
         BottomLayout.SuspendLayout()
         SuspendLayout()
         '
@@ -113,16 +113,18 @@ Partial Class ObtsIncludeEditor_Form
         LabelAttach.Name = "LabelAttach"
         LabelAttach.Size = New Size(165, 15)
         LabelAttach.TabIndex = 2
-        LabelAttach.Text = "Attach Point Index (0-255):"
+        LabelAttach.Text = "Attach Point Index:"
         '
         ' NumAttach
         '
         NumAttach.Anchor = AnchorStyles.Left
         NumAttach.Location = New Point(185, 45)
         NumAttach.Maximum = New Decimal(New Integer() {255, 0, 0, 0})
+        NumAttach.Minimum = New Decimal(New Integer() {0, 0, 0, 0})
         NumAttach.Name = "NumAttach"
         NumAttach.Size = New Size(110, 23)
         NumAttach.TabIndex = 3
+        NumAttach.TextAlign = System.Windows.Forms.HorizontalAlignment.Right
         '
         ' CheckOptional
         '
@@ -150,8 +152,8 @@ Partial Class ObtsIncludeEditor_Form
         '
         BottomLayout.AutoSize = True
         BottomLayout.AutoSizeMode = AutoSizeMode.GrowAndShrink
-        BottomLayout.Controls.Add(ButtonOk)
         BottomLayout.Controls.Add(ButtonCancel)
+        BottomLayout.Controls.Add(ButtonOk)
         BottomLayout.Dock = DockStyle.Bottom
         BottomLayout.FlowDirection = FlowDirection.RightToLeft
         BottomLayout.Location = New Point(185, 175)
@@ -196,8 +198,8 @@ Partial Class ObtsIncludeEditor_Form
         Text = "OBTS Include (OMOD)"
         RootLayout.ResumeLayout(False)
         RootLayout.PerformLayout()
-        OmodPanel.ResumeLayout(False)
         CType(NumAttach, ComponentModel.ISupportInitialize).EndInit()
+        OmodPanel.ResumeLayout(False)
         BottomLayout.ResumeLayout(False)
         ResumeLayout(False)
     End Sub

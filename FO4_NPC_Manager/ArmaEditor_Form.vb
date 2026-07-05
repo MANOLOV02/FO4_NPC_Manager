@@ -33,6 +33,10 @@ Public Class ArmaEditor_Form
     ''' <summary>Suppresses preview re-render + dirty marking while panels are being LOADED programmatically.</summary>
     Private _loading As Boolean
 
+    ''' <summary>The fixed type prefix for this editor's stored base EditorID, driven through the shared
+    ''' <see cref="EditorIdField"/> helper (NEW = editable name under this prefix; OVERRIDE = kept verbatim).</summary>
+    Private ReadOnly _edidPrefix As String = ArmaDraft.EditorIdPrefix
+
     ''' <summary>Per-gender absolute sculpt rows held in memory while editing, keyed by gender (0=Male,1=Female).
     ''' The visible <see cref="SculptPanel"/> shows ONE gender; switching gender saves the slider rows into here
     ''' and reloads the other. Values are ABSOLUTE (1.0 = unchanged) — converted to/from BSMS deltas on load/Apply.</summary>
@@ -103,7 +107,8 @@ Public Class ArmaEditor_Form
     ''' pre-load this REAL ARMA as the template on open (same as the user clicking Template then picking it) —
     ''' used by the ARMO editor's Addons tab to "edit a real addon as New".</param>
     Public Sub New(mainForm As MainForm, previewNpcFormID As UInteger, raceFormID As UInteger, isFemale As Boolean,
-                   Optional editDraft As ArmaDraft = Nothing, Optional initialTemplateArmaFormID As UInteger = 0UI)
+                   Optional editDraft As ArmaDraft = Nothing, Optional initialTemplateArmaFormID As UInteger = 0UI,
+                   Optional templateAsOverride As Boolean = True)
         InitializeComponent()
         _mainForm = mainForm
         _previewNpcFormID = previewNpcFormID
@@ -130,6 +135,7 @@ Public Class ArmaEditor_Form
 
         ' Skin & Material tab FormID pickers.
         AddHandler ButtonPickRace.Click, AddressOf OnPickRace
+        AddHandler ButtonPickSndd.Click, Sub() PickFidInto(TextBoxSndd, {"FSTS"}, "Select Footstep (FSTS)", allowNull:=True)
         AddHandler ButtonAddRace.Click, AddressOf OnAddRace
         AddHandler ButtonRemoveRace.Click, AddressOf OnRemoveRace
         AddHandler ButtonPickNam0.Click, Sub() PickTxstInto(TextBoxNam0)
@@ -140,12 +146,16 @@ Public Class ArmaEditor_Form
         AddHandler ButtonPickMo3s.Click, Sub() PickMswpInto(TextBoxMo3s)
         AddHandler ButtonEditMo2s.Click, Sub() OnNewEditMswp(isFemaleGender:=False)
         AddHandler ButtonEditMo3s.Click, Sub() OnNewEditMswp(isFemaleGender:=True)
+        AddHandler ButtonPickOnam.Click, Sub() PickFidInto(TextBoxOnam, {"ARTO"}, "Select Art Object (ONAM)", allowNull:=True)
+        AddHandler ButtonPickMo4s.Click, Sub() PickMswpInto(TextBoxMo4s)
+        AddHandler ButtonPickMo5s.Click, Sub() PickMswpInto(TextBoxMo5s)
 
         ' Sculpt tab.
         AddHandler RadioSculptMale.CheckedChanged, AddressOf OnSculptGenderChanged
         AddHandler RadioSculptFemale.CheckedChanged, AddressOf OnSculptGenderChanged
         AddHandler ButtonSculptAddRow.Click, AddressOf OnSculptAddRow
         AddHandler ButtonSculptLoad.Click, AddressOf OnSculptLoad
+        AddHandler ButtonSculptEstimate.Click, AddressOf OnSculptEstimate
         AddHandler ButtonSculptSave.Click, AddressOf OnSculptSave
 
         ' Bottom (OK finalizes + validates + closes; Cancel discards the live-commit mutations + closes).
@@ -168,9 +178,10 @@ Public Class ArmaEditor_Form
                                          .EditorID = ArmaDraft.EditorIdPrefix & "new",
                                          .RaceFormID = _raceFormID, .IsNew = True}
             LoadDraftIntoPanels()
-            ' Optional pre-load of a real ARMA template (Addons tab "edit a real addon as New" flow) —
-            ' always a xEdit "copy as new record" (never an override on this ctor path).
-            If initialTemplateArmaFormID <> 0UI Then LoadRealArmaTemplate(initialTemplateArmaFormID, asOverride:=False)
+            ' Optional pre-load of a real ARMA template — defaults to OVERRIDE (edit the existing ARMA; your
+            ' plugin replaces it), the usual intent when editing an existing addon. Use the in-editor
+            ' "New from template…" action for a copy-as-new instead.
+            If initialTemplateArmaFormID <> 0UI Then LoadRealArmaTemplate(initialTemplateArmaFormID, asOverride:=templateAsOverride)
         End If
         UpdateStatusBanner()
 
@@ -266,43 +277,116 @@ Public Class ArmaEditor_Form
     ''' <summary>"Edit draft…" → pick one of the user's existing ARMA drafts (shown with "(new)") and continue
     ''' editing it directly (no re-key). No-op with a message when there are no drafts yet.</summary>
     Private Sub OnActionEditDraft(sender As Object, e As EventArgs)
-        Dim drafts = _mainForm.ArmaDrafts().Select(Function(d) New FormIdPickerEntry With {
+        ' List the user's unsaved ARMA drafts AND their already-SAVED authored ARMA records (EDID npcm_).
+        Dim entries = _mainForm.ArmaDrafts().Select(Function(d) New FormIdPickerEntry With {
             .FormID = d.FormID, .EditorID = d.EditorID, .DisplayName = d.EditorID, .Signature = "ARMA"}).ToList()
-        If drafts.Count = 0 Then
-            MessageBox.Show(Me, "No ARMA drafts to edit yet. Use New or New from template first.", "Edit draft",
+        Dim draftFids As New HashSet(Of UInteger)(entries.Select(Function(x) x.FormID))
+        For Each r In _mainForm.GetAuthoredRecords("ARMA")
+            If draftFids.Contains(r.FormID) Then Continue For
+            entries.Add(New FormIdPickerEntry With {
+                .FormID = r.FormID, .EditorID = r.EditorID, .DisplayName = r.DisplayName, .Signature = "ARMA", .PluginName = "(saved)"})
+        Next
+        If entries.Count = 0 Then
+            MessageBox.Show(Me, "No ARMA drafts or saved authored ARMA yet. Use New / New from template first.", "Edit mine",
                             MessageBoxButtons.OK, MessageBoxIcon.Information)
             Return
         End If
-        ' Drafts-only picker: no real signatures enumerated (empty sigs), so only the draft entries show.
+        ' Empty sigs → the picker lists ONLY the entries we pass (no full-ARMA enumeration). "(new)" = draft, "(saved)" = real.
         Using dlg As New FormIdPicker_Form(_mainForm.PluginManagerForEditor, New String() {},
-                                           "Edit ARMA draft", _draft.FormID, allowNull:=False,
-                                           extraDraftEntries:=drafts)
+                                           "Edit my ARMA (drafts + saved)", _draft.FormID, allowNull:=False,
+                                           extraDraftEntries:=entries,
+                                           onDeleteEntry:=AddressOf OnDeleteDraftEntry)
             If dlg.ShowDialog(Me) <> DialogResult.OK OrElse dlg.SelectedFormID = 0UI Then Return
-            Dim existingDraft = _mainForm.TryGetArmaDraft(dlg.SelectedFormID)
-            If existingDraft Is Nothing Then Return
+            Dim fid = dlg.SelectedFormID
             ' Clean up the draft we're leaving BEFORE switching to the picked one.
             RevertOrDiscardCurrentDraft()
-            _draft = existingDraft
-            _templateRealFormID = 0UI
-            _templateRealEditorID = ""
-            _editingExistingDraft = True
-            LoadDraftIntoPanels()
-            SnapshotCurrentDraft()
-            UpdateStatusBanner()
-            RequestPreview()
+            Dim existingDraft = _mainForm.TryGetArmaDraft(fid)
+            If existingDraft IsNot Nothing Then
+                _draft = existingDraft
+                _templateRealFormID = 0UI
+                _templateRealEditorID = ""
+                _editingExistingDraft = True
+                LoadDraftIntoPanels()
+                SnapshotCurrentDraft()
+                UpdateStatusBanner()
+                RequestPreview()
+            ElseIf Not LoadRealArmaTemplate(fid, asOverride:=True) Then   ' a saved authored ARMA → re-open as OVERRIDE
+                MessageBox.Show(Me, "Could not parse that ARMA record.", "Edit mine",
+                                MessageBoxButtons.OK, MessageBoxIcon.Error)
+            End If
         End Using
     End Sub
+
+    ''' <summary>Delete/revert handler for the "Edit draft…" picker's "Delete / Revert…" button. Overrides
+    ''' (<c>Not IsNew</c>) revert to the original record; new drafts are deleted only when nothing references
+    ''' them. Guards the draft that's currently open. Returns True when the draft was removed (picker drops the row).</summary>
+    Private Function OnDeleteDraftEntry(entry As FormIdPickerEntry) As Boolean
+        Dim fid = entry.FormID
+        If fid = 0UI Then Return False
+        Dim isCurrent = (_draft IsNot Nothing AndAlso fid = _draft.FormID)
+        Dim d = _mainForm.TryGetArmaDraft(fid)
+        If d IsNot Nothing Then
+            If Not d.IsNew Then
+                ' OVERRIDE draft → REVERT (discard my edits; the original record wins). Allowed even when it's the
+                ' one currently open — we reload the pristine original so the editor stays in a valid state.
+                If MessageBox.Show(Me, $"Revert '{d.EditorID}' to the original record? Your edits to this draft will be discarded.",
+                                   "Revert to original", MessageBoxButtons.YesNo, MessageBoxIcon.Question) <> DialogResult.Yes Then Return False
+                _mainForm.UnregisterArmaDraft(fid)
+                If isCurrent Then LoadRealArmaTemplate(fid, asOverride:=True)   ' reload the pristine original for continued editing
+                Return True
+            End If
+            ' NEW draft → DELETE, but not the one you're currently building.
+            If isCurrent Then
+                MessageBox.Show(Me, "This is the NEW draft you're currently editing — switch to another first, then delete it.",
+                                "Delete draft", MessageBoxButtons.OK, MessageBoxIcon.Information)
+                Return False
+            End If
+            Dim referrers = _mainForm.GetDraftReferrers(fid)
+            If referrers.Count > 0 Then
+                MessageBox.Show(Me, "Can't delete — this draft is still referenced by:" & vbCrLf & vbCrLf & String.Join(vbCrLf, referrers),
+                                "Delete draft", MessageBoxButtons.OK, MessageBoxIcon.Information)
+                Return False
+            End If
+            If MessageBox.Show(Me, $"Delete draft '{d.EditorID}'? This cannot be undone.",
+                               "Delete draft", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) <> DialogResult.Yes Then Return False
+            _mainForm.UnregisterArmaDraft(fid)
+            Return True
+        End If
+        ' An already-SAVED authored record → mark it for removal on the next Save. A NEW record (npcm_ EDID)
+        ' is DELETED; an OVERRIDE (keeps the original EDID) is REVERTED (dropped → the original record wins).
+        Dim isNewRec = entry.EditorID IsNot Nothing AndAlso entry.EditorID.StartsWith("npcm_", StringComparison.OrdinalIgnoreCase)
+        Dim verb = If(isNewRec, "Delete", "Revert")
+        Dim detail = If(isNewRec, "It will be removed from your plugin on the next Save.",
+                                  "The override will be dropped on the next Save — the original record wins again.")
+        Dim savedReferrers = _mainForm.GetDraftReferrers(fid)
+        Dim refWarn = If(savedReferrers.Count > 0, vbCrLf & vbCrLf & "Still referenced by:" & vbCrLf & String.Join(vbCrLf, savedReferrers), "")
+        If MessageBox.Show(Me, $"{verb} saved record '{entry.DisplayName}'?" & vbCrLf & detail & refWarn,
+                           $"{verb} saved record", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) <> DialogResult.Yes Then Return False
+        _mainForm.MarkRecordForRemoval(fid)
+        Return True
+    End Function
 
     ''' <summary>FormIdPicker over REAL ARMA records (race-filtered to the preview NPC's race), no draft entries.
     ''' Returns the chosen global FormID, or 0 when cancelled. Shared by New-from-template + Override.</summary>
     Private Function PickRealArma(title As String) As UInteger
         ' Pre-select the CURRENT source record (if any) so switching Override ⇄ New-from-template keeps it selected.
         Using dlg As New FormIdPicker_Form(_mainForm.PluginManagerForEditor, {"ARMA"},
-                                           title, _templateRealFormID, allowNull:=False,
+                                           title, CurrentTemplateSelection(), allowNull:=False,
                                            formIdFilter:=Function(fid) _mainForm.IsArmaRaceCompatible(fid, _raceFormID))
             If dlg.ShowDialog(Me) <> DialogResult.OK Then Return 0UI
             Return dlg.SelectedFormID
         End Using
+    End Function
+
+    ''' <summary>The real global FormID the picker should PRE-SELECT: the explicitly-loaded template/override
+    ''' source (<see cref="_templateRealFormID"/>) when set this session; else the current draft's real FormID
+    ''' when it's an existing/override record (an override draft has <c>IsNew = False</c> and its FormID IS the
+    ''' real global FormID); else 0 (a blank new record — nothing to pre-select). Lets re-opening the picker
+    ''' land on the record currently being edited even when the editor was opened directly over a real ARMA.</summary>
+    Private Function CurrentTemplateSelection() As UInteger
+        If _templateRealFormID <> 0UI Then Return _templateRealFormID
+        If _draft IsNot Nothing AndAlso Not _draft.IsNew Then Return _draft.FormID
+        Return 0UI
     End Function
 
     ''' <summary>Load a REAL ARMA record as the editing target: build a draft copy (asOverride=False → NEW copy
@@ -328,7 +412,9 @@ Public Class ArmaEditor_Form
     ''' every target/EditorID change (ctor, each action, EditorID textbox edit).</summary>
     Private Sub UpdateStatusBanner()
         If _draft Is Nothing OrElse LabelStatusBanner Is Nothing Then Return
-        Dim edid = TextBoxEdid.Text.Trim()
+        ' The name box holds only the <name> for a NEW draft (the prefix is fixed) — show the composed base
+        ' EDID in the banner so it reads as the actual record identity, not just the bare name.
+        Dim edid = If(_draft.IsNew, EditorIdField.Compose(_edidPrefix, TextBoxEdid.Text), TextBoxEdid.Text.Trim())
         If edid.Length = 0 Then edid = If(_draft.EditorID, "")
         If _editingExistingDraft Then
             LabelStatusBanner.Text = $"Editing draft — {edid} ({If(_draft.IsOverride, "override", "new")})"
@@ -352,10 +438,24 @@ Public Class ArmaEditor_Form
         End Try
     End Function
 
+    ''' <summary>Present the EditorID field for the current draft's mode via the shared <see cref="EditorIdField"/>
+    ''' helper: NEW → fixed prefix label + editable name box + live "Saves as:" preview; OVERRIDE → kept EDID
+    ''' shown read-only. Setting the name box fires <see cref="OnEdidChanged"/>, which only refreshes the banner /
+    ''' preview (never recomposes), so there is no feedback loop.</summary>
+    Private Sub RefreshEditorIdField()
+        If _draft Is Nothing Then Return
+        If _draft.IsNew Then
+            EditorIdField.ConfigureNew(LabelEdid, TextBoxEdid, LabelEdidPreview, _edidPrefix, _draft.EditorID)
+        Else
+            EditorIdField.ConfigureOverride(LabelEdid, TextBoxEdid, LabelEdidPreview, _draft.EditorID)
+        End If
+    End Sub
+
     ''' <summary>EditorID textbox edit → keep the banner in sync (it echoes the current EditorID).</summary>
     Private Sub OnEdidChanged(sender As Object, e As EventArgs)
         If _loading Then Return
         UpdateStatusBanner()
+        If _draft IsNot Nothing AndAlso _draft.IsNew Then EditorIdField.UpdatePreview(LabelEdidPreview, _edidPrefix, TextBoxEdid.Text)
     End Sub
 
     ' =====================================================================
@@ -373,6 +473,7 @@ Public Class ArmaEditor_Form
             .EditorID = If(Not String.IsNullOrEmpty(a.EditorID), a.EditorID, ArmaDraft.EditorIdPrefix & fid.ToString("X8")),
             .SlotMask = a.SlotMask,
             .RaceFormID = a.RaceFormID,
+            .FootstepSetFormID = a.FootstepSetFormID,
             .MalePriority = ClampByte(a.MalePriority),
             .FemalePriority = ClampByte(a.FemalePriority),
             .MaleWeightSliderFlags = a.MaleWeightSliderFlags,
@@ -395,6 +496,9 @@ Public Class ArmaEditor_Form
             .FemaleSkinTextureSwapListFormID = a.FemaleSkinTextureSwapListFormID,
             .MaleMaterialSwapFormID = a.MaleMaterialSwapFormID,
             .FemaleMaterialSwapFormID = a.FemaleMaterialSwapFormID,
+            .MaleFPMaterialSwapFormID = a.MaleFPMaterialSwapFormID,
+            .FemaleFPMaterialSwapFormID = a.FemaleFPMaterialSwapFormID,
+            .ArtObjectFormID = a.ArtObjectFormID,
             .NoUnderarmorScaling = a.NoUnderarmorScaling,
             .HasSculptData = a.HasSculptData,
             .HiRes1stPersonOnly = a.HiRes1stPersonOnly,
@@ -424,7 +528,7 @@ Public Class ArmaEditor_Form
     Private Sub LoadDraftIntoPanels()
         _loading = True
         Try
-            TextBoxEdid.Text = _draft.EditorID
+            RefreshEditorIdField()
 
             ' Models.
             TextBoxMod2.Text = _draft.MaleMeshPath
@@ -441,14 +545,20 @@ Public Class ArmaEditor_Form
 
             ' Skin & material.
             SetFidText(TextBoxRace, _draft.RaceFormID)
+            SetFidText(TextBoxSndd, _draft.FootstepSetFormID)
             SetFidText(TextBoxNam0, _draft.MaleSkinTextureFormID)
             SetFidText(TextBoxNam1, _draft.FemaleSkinTextureFormID)
             SetFidText(TextBoxNam2, _draft.MaleSkinTextureSwapListFormID)
             SetFidText(TextBoxNam3, _draft.FemaleSkinTextureSwapListFormID)
             SetFidText(TextBoxMo2s, _draft.MaleMaterialSwapFormID)
             SetFidText(TextBoxMo3s, _draft.FemaleMaterialSwapFormID)
+            SetFidText(TextBoxMo4s, _draft.MaleFPMaterialSwapFormID)
+            SetFidText(TextBoxMo5s, _draft.FemaleFPMaterialSwapFormID)
+            SetFidText(TextBoxOnam, _draft.ArtObjectFormID)
             NumMalePrio.Value = ClampDec(CDec(_draft.MalePriority), NumMalePrio)
             NumFemalePrio.Value = ClampDec(CDec(_draft.FemalePriority), NumFemalePrio)
+            NumDetectionSound.Value = ClampDec(CDec(_draft.DetectionSoundValue), NumDetectionSound)
+            NumWeaponAdjust.Value = ClampDec(CDec(_draft.WeaponAdjust), NumWeaponAdjust)
             CheckMaleWeight.Checked = (_draft.MaleWeightSliderFlags And &H2) <> 0
             CheckFemaleWeight.Checked = (_draft.FemaleWeightSliderFlags And &H2) <> 0
             RefreshAddRacesList()
@@ -530,9 +640,9 @@ Public Class ArmaEditor_Form
         ' Flush the visible sculpt grid into its gender bucket first.
         SaveSculptGrid(_sculptShownGender)
 
-        Dim edid = TextBoxEdid.Text.Trim()
+        Dim edid = If(_draft.IsNew, EditorIdField.Compose(_edidPrefix, TextBoxEdid.Text), TextBoxEdid.Text.Trim())
         If validate Then
-            If edid.Length = 0 Then
+            If edid.Length = 0 OrElse (_draft.IsNew AndAlso TextBoxEdid.Text.Trim().Length = 0) Then
                 MessageBox.Show(Me, "Enter an EditorID for the ARMA.", "Apply", MessageBoxButtons.OK, MessageBoxIcon.Information)
                 Return False
             End If
@@ -568,14 +678,20 @@ Public Class ArmaEditor_Form
 
         ' Skin & material.
         _draft.RaceFormID = GetFid(TextBoxRace)
+        _draft.FootstepSetFormID = GetFid(TextBoxSndd)
         _draft.MaleSkinTextureFormID = GetFid(TextBoxNam0)
         _draft.FemaleSkinTextureFormID = GetFid(TextBoxNam1)
         _draft.MaleSkinTextureSwapListFormID = GetFid(TextBoxNam2)
         _draft.FemaleSkinTextureSwapListFormID = GetFid(TextBoxNam3)
         _draft.MaleMaterialSwapFormID = GetFid(TextBoxMo2s)
         _draft.FemaleMaterialSwapFormID = GetFid(TextBoxMo3s)
+        _draft.MaleFPMaterialSwapFormID = GetFid(TextBoxMo4s)
+        _draft.FemaleFPMaterialSwapFormID = GetFid(TextBoxMo5s)
+        _draft.ArtObjectFormID = GetFid(TextBoxOnam)
         _draft.MalePriority = CByte(NumMalePrio.Value)
         _draft.FemalePriority = CByte(NumFemalePrio.Value)
+        _draft.DetectionSoundValue = CByte(NumDetectionSound.Value)
+        _draft.WeaponAdjust = CSng(NumWeaponAdjust.Value)
         _draft.MaleWeightSliderFlags = If(CheckMaleWeight.Checked, CByte(&H2), CByte(0))
         _draft.FemaleWeightSliderFlags = If(CheckFemaleWeight.Checked, CByte(&H2), CByte(0))
 
@@ -590,7 +706,13 @@ Public Class ArmaEditor_Form
         _draft.NoUnderarmorScaling = CheckNoUnderarmorScaling.Checked
         _draft.HasSculptData = CheckHasSculptData.Checked OrElse _draft.BoneScaleData.Count > 0
 
-        If Not _draft.IsNew Then _draft.IsModified = True
+        ' Dirty only on a REAL change. The preview commits the panels on every render, so setting IsModified
+        ' unconditionally marked an untouched OVERRIDE dirty → the saver re-emitted an identical override. Compare
+        ' the flushed content against the open-time snapshot instead (two-way: reverting a change clears it). NEW
+        ' drafts are always dirty by definition. If the snapshot is missing (shouldn't happen), fall back to dirty.
+        If Not _draft.IsNew Then
+            _draft.IsModified = (_openSnapshot Is Nothing) OrElse Not _draft.ContentEquals(_openSnapshot)
+        End If
         _mainForm.RegisterArmaDraft(_draft)
         Return True
     End Function
@@ -705,9 +827,14 @@ Public Class ArmaEditor_Form
         Dim draft = _mainForm.TryGetMswpDraft(currentFid)
         Dim isNewDraft As Boolean = (draft Is Nothing)
         If isNewDraft Then
-            draft = New MswpDraft With {.FormID = _mainForm.AllocateDraftFormID(),
-                                        .EditorID = MswpDraft.EditorIdPrefix & "new", .IsNew = True}
-            _mainForm.RegisterMswpDraft(draft)
+            ' Field already points at a REAL MSWP (from the ESP / load order) → edit it as an OVERRIDE seeded with
+            ' its existing substitutions, not a blank one. Nothing ⇒ field empty/unresolved ⇒ fresh NEW draft.
+            draft = _mainForm.BuildMswpOverrideDraftFromReal(currentFid)
+            If draft Is Nothing Then
+                draft = New MswpDraft With {.FormID = _mainForm.AllocateDraftFormID(),
+                                            .EditorID = MswpDraft.EditorIdPrefix & "new", .IsNew = True}
+                _mainForm.RegisterMswpDraft(draft)
+            End If
         End If
 
         Using dlg As New MswpSubEditor_Form(_mainForm, draft, meshPath, genderLabel)
@@ -780,22 +907,25 @@ Public Class ArmaEditor_Form
             .AutoSizeMode = AutoSizeMode.GrowAndShrink,
             .Margin = New Padding(0, 0, 0, 4)
         }
-        row.ColumnStyles.Add(New ColumnStyle(SizeType.Absolute, 200))
+        row.ColumnStyles.Add(New ColumnStyle(SizeType.Absolute, 150))
         row.ColumnStyles.Add(New ColumnStyle(SizeType.Absolute, 16))
-        row.ColumnStyles.Add(New ColumnStyle(SizeType.Absolute, 100))
+        row.ColumnStyles.Add(New ColumnStyle(SizeType.Absolute, 130))
         row.ColumnStyles.Add(New ColumnStyle(SizeType.Absolute, 16))
-        row.ColumnStyles.Add(New ColumnStyle(SizeType.Absolute, 100))
+        row.ColumnStyles.Add(New ColumnStyle(SizeType.Absolute, 130))
         row.ColumnStyles.Add(New ColumnStyle(SizeType.Absolute, 16))
-        row.ColumnStyles.Add(New ColumnStyle(SizeType.Absolute, 100))
+        row.ColumnStyles.Add(New ColumnStyle(SizeType.Absolute, 130))
         row.ColumnStyles.Add(New ColumnStyle(SizeType.Absolute, 30))
         row.RowStyles.Add(New RowStyle(SizeType.AutoSize))
 
+        ' Bone name is NOT user-editable — bones are added via the "Add bone" combo below and removed with ✕.
+        ' Read-only avoids accidental typos into a bone name that would silently drop the row on save.
         Dim nameBox As New TextBox With {
             .Text = If(boneName, ""),
+            .ReadOnly = True,
+            .TabStop = False,
             .Anchor = AnchorStyles.Left Or AnchorStyles.Right,
             .Margin = New Padding(2)
         }
-        AddHandler nameBox.TextChanged, AddressOf OnFieldEdited
 
         Dim sliderX = MakeSculptSlider(x)
         Dim sliderY = MakeSculptSlider(y)
@@ -840,7 +970,7 @@ Public Class ArmaEditor_Form
             .DisplayFormat = "0.00",
             .FillMode = TinySliderFillMode.Center,
             .Height = 28,
-            .Width = 96,
+            .Width = 126,
             .Anchor = AnchorStyles.Left Or AnchorStyles.Right,
             .Margin = New Padding(2)
         }
@@ -915,6 +1045,136 @@ Public Class ArmaEditor_Form
             End Try
         End Using
     End Sub
+
+    ''' <summary>Estimate the per-bone SCLP seed for BOTH genders from this ARMA's own underarmor meshes,
+    ''' measured against the race's naked reference body (RACE.WNAM skin ARMO → its body ARMA MOD2/MOD3).
+    ''' Fills <see cref="_sculptByGender"/> with the estimate and refreshes the grid; behaves like a Load of a
+    ''' .sclp (same dirty/preview path). A seed only — the values are approximate; the user reviews them.</summary>
+    Private Sub OnSculptEstimate(sender As Object, e As EventArgs)
+        Try
+            ' Flush ALL panel state into the draft (mesh paths, race, and the currently-shown sculpt grid) so
+            ' the estimate reads the user's latest typed values, not a stale pre-debounce snapshot.
+            CommitPanelsToDraft(validate:=False)
+
+            Dim anyEstimated As Boolean = False
+            Dim messages As New List(Of String)
+            For g As UInteger = 0UI To 1UI
+                Dim uaRaw = If(g = 0UI, _draft.MaleMeshPath, _draft.FemaleMeshPath)
+                If String.IsNullOrWhiteSpace(uaRaw) Then Continue For   ' this gender has no mesh of its own → leave as-is
+
+                Dim bodyPaths = ResolveNakedBodyMeshPaths(_draft.RaceFormID, g)
+                If bodyPaths Is Nothing OrElse bodyPaths.Count = 0 Then
+                    messages.Add($"{If(g = 0UI, "Male", "Female")}: could not resolve the naked body.")
+                    Continue For
+                End If
+
+                Dim uaBytes = MeshPathHelpers.TryLoadMeshBytes(MeshPathHelpers.NormalizeMeshKey(uaRaw))
+                If uaBytes Is Nothing Then
+                    messages.Add($"{If(g = 0UI, "Male", "Female")}: could not read the underarmor mesh.")
+                    Continue For
+                End If
+                ' All naked-skin parts (body + hands + feet) of this gender → one combined reference.
+                Dim bodyBytesList As New List(Of Byte())
+                For Each bp In bodyPaths
+                    Dim bb = MeshPathHelpers.TryLoadMeshBytes(MeshPathHelpers.NormalizeMeshKey(bp))
+                    If bb IsNot Nothing Then bodyBytesList.Add(bb)
+                Next
+                If bodyBytesList.Count = 0 Then
+                    messages.Add($"{If(g = 0UI, "Male", "Female")}: could not read the naked body mesh.")
+                    Continue For
+                End If
+
+                Dim est = SclpEstimator.EstimateSclp(uaBytes, bodyBytesList)
+                If est IsNot Nothing AndAlso est.Count > 0 Then
+                    _sculptByGender(g) = est
+                    anyEstimated = True
+                Else
+                    messages.Add($"{If(g = 0UI, "Male", "Female")}: estimate produced no bones (check the underarmor has _skin bones).")
+                End If
+            Next
+
+            LoadSculptGrid(_sculptShownGender)
+
+            If anyEstimated Then
+                CheckHasSculptData.Checked = True
+                OnFieldEdited(Me, EventArgs.Empty)   ' same dirty/preview path as OnSculptLoad
+            End If
+
+            Dim summary = If(anyEstimated,
+                             "Estimate applied — review the values (approximate seed).",
+                             "Could not estimate either gender.")
+            If messages.Count > 0 Then summary &= vbCrLf & vbCrLf & String.Join(vbCrLf, messages)
+            MessageBox.Show(Me, summary, "Estimate sculpt", MessageBoxButtons.OK,
+                            If(anyEstimated, MessageBoxIcon.Information, MessageBoxIcon.Warning))
+        Catch ex As Exception
+            MessageBox.Show(Me, $"Could not estimate sculpt:{vbCrLf}{ex.Message}", "Estimate sculpt",
+                            MessageBoxButtons.OK, MessageBoxIcon.Error)
+        End Try
+    End Sub
+
+    ''' <summary>Resolve the naked reference body NIF path (raw, un-normalized) for a race + gender:
+    ''' RACE.WNAM (skin ARMO) → its ArmorAddons → the ARMA that carries the body (skin TXST NAM0/NAM1, else the
+    ''' ALL same-gender part meshes (MOD2 male / MOD3 female). Returns an empty list when unresolved. Reuses the
+    ''' editor's draft-aware parsed views (<see cref="MainForm.GetParsedArmoForEditor"/> /
+    ''' <see cref="MainForm.GetParsedArmaForEditor"/>) and the master plugin manager for the RACE parse.</summary>
+    Private Function ResolveNakedBodyMeshPaths(raceFormID As UInteger, gender As UInteger) As List(Of String)
+        ' Symmetric per gender — does NOT branch on the NPC's own gender: always read the requested gender's body
+        ' from the NPC's resolved skin, race as fallback. So female-NPC→male and male-NPC→female work identically.
+        Dim requestedIsFemale = (gender = 1UI)
+        Dim npcSkinFid As UInteger = _mainForm.GetCurrentPreviewSkinFormID()
+        Dim raceSkinFid = ResolveRaceSkinFormID(raceFormID)
+
+        ' The body that WOULD come from THIS NPC for the requested gender = the NPC's resolved skin
+        ' (NPC.WNAM ?? RACE.WNAM) — the SAME ARMO for either gender — read for the requested gender's meshes.
+        ' Only when that skin has no mesh for this gender (e.g. a single-gender custom skin) fall back to the
+        ' race skin. So each gender is the NPC's own body re-read per gender, race as last resort.
+        Dim meshes = CollectSkinPartMeshes(npcSkinFid, requestedIsFemale)
+        If meshes.Count = 0 AndAlso raceSkinFid <> npcSkinFid Then
+            meshes = CollectSkinPartMeshes(raceSkinFid, requestedIsFemale)
+        End If
+        Return meshes
+    End Function
+
+    ''' <summary>All the naked skin's same-gender part meshes (body + hands + feet) of a skin ARMO, unioned — the
+    ''' body reference, no picking. Empty when unresolved. The estimator merges their per-bone vertices so every
+    ''' bone the underarmor touches has a body counterpart (hands/feet carry the extremity bones).</summary>
+    Private Function CollectSkinPartMeshes(skinFid As UInteger, requestedIsFemale As Boolean) As List(Of String)
+        Dim result As New List(Of String)
+        If skinFid = 0UI Then Return result
+        Dim armo = _mainForm.GetParsedArmoForEditor(skinFid)
+        If armo Is Nothing Then Return result
+
+        Dim armaFids As New List(Of UInteger)
+        If armo.ArmorAddons IsNot Nothing AndAlso armo.ArmorAddons.Count > 0 Then
+            For Each ent In armo.ArmorAddons
+                armaFids.Add(ent.ArmaFormID)
+            Next
+        ElseIf armo.ArmorAddonFormIDs IsNot Nothing Then
+            armaFids.AddRange(armo.ArmorAddonFormIDs)
+        End If
+
+        Dim seen As New HashSet(Of String)(StringComparer.OrdinalIgnoreCase)
+        For Each fid In armaFids
+            Dim arma = _mainForm.GetParsedArmaForEditor(fid)
+            If arma Is Nothing Then Continue For
+            Dim mesh = If(requestedIsFemale, arma.FemaleMeshPath, arma.MaleMeshPath)
+            If String.IsNullOrWhiteSpace(mesh) Then Continue For
+            If seen.Add(mesh) Then result.Add(mesh)
+        Next
+        Return result
+    End Function
+
+    ''' <summary>The RACE's default skin ARMO FormID (RACE.WNAM), or 0 when unresolved. Fallback body when the
+    ''' NPC's own skin has no mesh for a gender.</summary>
+    Private Function ResolveRaceSkinFormID(raceFormID As UInteger) As UInteger
+        If raceFormID = 0UI Then Return 0UI
+        Dim pm = _mainForm.PluginManagerForEditor
+        If pm Is Nothing Then Return 0UI
+        Dim raceRec = pm.GetRecord(raceFormID)
+        If raceRec Is Nothing OrElse raceRec.Header.Signature <> "RACE" Then Return 0UI
+        Dim race = RecordParsers.ParseRACE(raceRec, pm)
+        Return If(race IsNot Nothing, race.SkinFormID, 0UI)
+    End Function
 
     ' =====================================================================
     ' Slot checkbox helpers (BOD2 bit = slot − 30)
@@ -999,6 +1259,7 @@ Public Class ArmaEditor_Form
             _draft.MaleMeshPath, _draft.FemaleMeshPath,
             _draft.RaceFormID.ToString("X8"),
             _draft.MaleMaterialSwapFormID.ToString("X8"), _draft.FemaleMaterialSwapFormID.ToString("X8"),
+            _mainForm.GetMswpDraftSignature(_draft.MaleMaterialSwapFormID), _mainForm.GetMswpDraftSignature(_draft.FemaleMaterialSwapFormID),
             _draft.MaleSkinTextureFormID.ToString("X8"), _draft.FemaleSkinTextureFormID.ToString("X8"),
             _draft.MaleSkinTextureSwapListFormID.ToString("X8"), _draft.FemaleSkinTextureSwapListFormID.ToString("X8"),
             _draft.MalePriority.ToString(CultureInfo.InvariantCulture), _draft.FemalePriority.ToString(CultureInfo.InvariantCulture),

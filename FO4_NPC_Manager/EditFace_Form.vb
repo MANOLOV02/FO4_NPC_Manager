@@ -169,6 +169,9 @@ Public Class EditFace_Form
         _appliedPresets = appliedPresets
         _pluginManager = pluginManager
         _race = race
+        ' Fold LooksMenu custom tint templates into the race so the tint list shows (and can edit) any
+        ' mod-added tints the NPC applies, same as the render/bake path. Idempotent no-op without them.
+        LmCustomTintLoader.EnsureMerged(_race, _pluginManager)
         _raceFormID = raceFormID
         _isFemale = isFemale
         _refresh = AddressOf OnLocalFaceRefresh
@@ -1269,6 +1272,9 @@ Public Class EditFace_Form
                 Dim grp = DescribeTintGroup(tl)
                 Dim slot = DescribeTintSlot(tl)
                 Dim layerName = DescribeTintLayer(tl)
+                Dim optForTag = _race?.FindTintOption(tl.Index, _isFemale)
+                Dim isCustomLm As Boolean = optForTag IsNot Nothing AndAlso optForTag.IsCustomLm
+                If isCustomLm Then layerName &= "  [LM]"
                 If entry.Merged.IsRaceDefault Then layerName &= " (RACE)"
                 If filter.Length > 0 _
                    AndAlso grp.IndexOf(filter, StringComparison.OrdinalIgnoreCase) < 0 _
@@ -1286,7 +1292,11 @@ Public Class EditFace_Form
                     .IsRaceDefault = entry.Merged.IsRaceDefault,
                     .VirtualLayer = If(entry.Merged.IsRaceDefault, tl, Nothing)
                 }
-                If entry.Merged.IsRaceDefault Then row.ForeColor = SystemColors.GrayText
+                If entry.Merged.IsRaceDefault Then
+                    row.ForeColor = SystemColors.GrayText
+                ElseIf isCustomLm Then
+                    row.ForeColor = Color.FromArgb(40, 90, 200)   ' LM custom tint accent
+                End If
                 ListViewTints.Items.Add(row)
             Next
         Finally

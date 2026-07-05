@@ -72,4 +72,24 @@ Public Class MswpDraft
         Return c
     End Function
 
+    ''' <summary>True when every AUTHORED field equals <paramref name="o"/>, ignoring the identity/status flags
+    ''' (FormID / IsNew / IsModified / IsOverride). Used by the sub-editor so an OVERRIDE that was opened but not
+    ''' actually changed is not marked dirty (mirror of <see cref="ArmaDraft.ContentEquals"/>). Substitution order
+    ''' is significant (the record emits them in list order).</summary>
+    Public Function ContentEquals(o As MswpDraft) As Boolean
+        If o Is Nothing Then Return False
+        If Not String.Equals(EditorID, o.EditorID, StringComparison.Ordinal) Then Return False
+        If Not String.Equals(TreeFolder, o.TreeFolder, StringComparison.Ordinal) Then Return False
+        If Substitutions.Count <> o.Substitutions.Count Then Return False
+        For i = 0 To Substitutions.Count - 1
+            Dim a = Substitutions(i), b = o.Substitutions(i)
+            If Not String.Equals(a.OriginalMaterial, b.OriginalMaterial, StringComparison.Ordinal) Then Return False
+            If Not String.Equals(a.ReplacementMaterial, b.ReplacementMaterial, StringComparison.Ordinal) Then Return False
+            If Not String.Equals(a.TreeFolder, b.TreeFolder, StringComparison.Ordinal) Then Return False
+            If a.HasColorRemapIndex <> b.HasColorRemapIndex Then Return False
+            If a.HasColorRemapIndex AndAlso a.ColorRemapIndex <> b.ColorRemapIndex Then Return False
+        Next
+        Return True
+    End Function
+
 End Class

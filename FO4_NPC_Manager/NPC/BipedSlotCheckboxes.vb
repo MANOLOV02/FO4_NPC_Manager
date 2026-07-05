@@ -1,5 +1,7 @@
 Imports System.Windows.Forms
 Imports System.Drawing
+Imports System.Linq
+Imports System.Diagnostics
 
 ''' <summary>Shared builder for the granular FO4 biped-slot (BOD2) checkbox grid used by BOTH the ARMA
 ''' editor (<see cref="ArmaEditor_Form"/>) and the ARMO editor (<see cref="ArmoEditor_Form"/>). Holds the
@@ -20,16 +22,63 @@ Public Module BipedSlotCheckboxes
         30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45,
         46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61}
 
-    ''' <summary>Populate <paramref name="flow"/> with one AutoSize checkbox per biped slot (xEdit-named),
-    ''' wiring <paramref name="onChanged"/> to each. Returns a slot→CheckBox map for mask read/write.</summary>
+    ''' <summary>The 6 slot categories, in display order: {title, member slot numbers}. Their union is
+    ''' exactly <see cref="AllSlots"/> (30..61, each slot once) — verified at runtime in <see cref="Build"/>.</summary>
+    Private ReadOnly Categories As (Title As String, Slots As Integer())() = {
+        ("Hair && Head", New Integer() {30, 31, 32, 46, 47, 48, 49, 50, 52}),
+        ("Body (skin)", New Integer() {33, 34, 35}),
+        ("Underarmor [U]", New Integer() {36, 37, 38, 39, 40}),
+        ("Armor [A]", New Integer() {41, 42, 43, 44, 45}),
+        ("Accessories", New Integer() {51, 53, 61}),
+        ("Modular", New Integer() {54, 55, 56, 57, 58, 59, 60})}
+
+    ''' <summary>Number of columns in each category's checkbox grid. 4 keeps the wider categories (Hair &amp; Head,
+    ''' Modular) compact while staying aligned/symmetric.</summary>
+    Private Const SlotColumns As Integer = 4
+
+    ''' <summary>Populate <paramref name="flow"/> with a categorized, symmetric slot grid: 6 labeled category
+    ''' GroupBoxes stacked top-down, each holding a <see cref="SlotColumns"/>-column (aligned) grid of xEdit-named
+    ''' slot checkboxes. Wires <paramref name="onChanged"/> to each checkbox. Returns a slot→CheckBox map for mask
+    ''' read/write. The <paramref name="flow"/> is configured TopDown / no-wrap / auto-scroll so the stack scrolls
+    ''' vertically.</summary>
     Public Function Build(flow As FlowLayoutPanel, onChanged As EventHandler) As Dictionary(Of Integer, CheckBox)
+        ' Sanity: the 6 categories must cover every slot exactly once (a dropped slot would be a silent bug).
+        Dim covered = Categories.SelectMany(Function(c) c.Slots).OrderBy(Function(n) n).ToArray()
+        Debug.Assert(covered.SequenceEqual(AllSlots.OrderBy(Function(n) n)),
+                     "BipedSlotCheckboxes.Categories must cover AllSlots exactly once.")
+
+        flow.Controls.Clear()
+        flow.FlowDirection = FlowDirection.TopDown
+        flow.WrapContents = False
+        flow.AutoScroll = True
+
         Dim map As New Dictionary(Of Integer, CheckBox)
-        For Each slot In AllSlots
-            Dim cb As New CheckBox With {.AutoSize = True, .Text = SlotName(slot), .Margin = New Padding(3),
-                                         .Tag = slot, .UseVisualStyleBackColor = True, .Width = 150}
-            If onChanged IsNot Nothing Then AddHandler cb.CheckedChanged, onChanged
-            flow.Controls.Add(cb)
-            map(slot) = cb
+        For Each cat In Categories
+            Dim gb As New GroupBox With {.Text = cat.Title, .AutoSize = True,
+                                         .AutoSizeMode = AutoSizeMode.GrowAndShrink, .Margin = New Padding(3)}
+            Dim tlp As New TableLayoutPanel With {.ColumnCount = SlotColumns, .AutoSize = True,
+                                                  .AutoSizeMode = AutoSizeMode.GrowAndShrink, .Dock = DockStyle.Fill}
+            For c = 0 To SlotColumns - 1
+                tlp.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100.0F / SlotColumns))
+            Next
+            Dim rowCount = CInt(Math.Ceiling(cat.Slots.Length / CDbl(SlotColumns)))
+            For r = 0 To rowCount - 1
+                tlp.RowStyles.Add(New RowStyle(SizeType.AutoSize))
+            Next
+
+            ' Row-major fill so columns line up: index i → (col = i Mod SlotColumns, row = i \ SlotColumns).
+            For i = 0 To cat.Slots.Length - 1
+                Dim slot = cat.Slots(i)
+                Dim cb As New CheckBox With {.AutoSize = True, .Text = SlotName(slot), .Tag = slot,
+                                             .UseVisualStyleBackColor = True, .Anchor = AnchorStyles.Left,
+                                             .Width = 150, .MinimumSize = New Size(150, 0), .Margin = New Padding(3)}
+                If onChanged IsNot Nothing Then AddHandler cb.CheckedChanged, onChanged
+                tlp.Controls.Add(cb, i Mod SlotColumns, i \ SlotColumns)
+                map(slot) = cb
+            Next
+
+            gb.Controls.Add(tlp)
+            flow.Controls.Add(gb)
         Next
         Return map
     End Function

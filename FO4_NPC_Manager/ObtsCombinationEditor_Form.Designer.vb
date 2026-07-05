@@ -218,6 +218,7 @@ Partial Class ObtsCombinationEditor_Form
         NumParent.Name = "NumParent"
         NumParent.Size = New Size(90, 23)
         NumParent.TabIndex = 5
+        NumParent.TextAlign = System.Windows.Forms.HorizontalAlignment.Right
         '
         ' LabelLevelMin
         '
@@ -237,6 +238,7 @@ Partial Class ObtsCombinationEditor_Form
         NumLevelMin.Name = "NumLevelMin"
         NumLevelMin.Size = New Size(90, 23)
         NumLevelMin.TabIndex = 7
+        NumLevelMin.TextAlign = System.Windows.Forms.HorizontalAlignment.Right
         '
         ' LabelLevelMax
         '
@@ -256,6 +258,7 @@ Partial Class ObtsCombinationEditor_Form
         NumLevelMax.Name = "NumLevelMax"
         NumLevelMax.Size = New Size(90, 23)
         NumLevelMax.TabIndex = 9
+        NumLevelMax.TextAlign = System.Windows.Forms.HorizontalAlignment.Right
         '
         ' LabelMinLevelForRanks
         '
@@ -275,6 +278,7 @@ Partial Class ObtsCombinationEditor_Form
         NumMinLevelForRanks.Name = "NumMinLevelForRanks"
         NumMinLevelForRanks.Size = New Size(90, 23)
         NumMinLevelForRanks.TabIndex = 11
+        NumMinLevelForRanks.TextAlign = System.Windows.Forms.HorizontalAlignment.Right
         '
         ' LabelAltLevelsPerTier
         '
@@ -294,6 +298,7 @@ Partial Class ObtsCombinationEditor_Form
         NumAltLevelsPerTier.Name = "NumAltLevelsPerTier"
         NumAltLevelsPerTier.Size = New Size(90, 23)
         NumAltLevelsPerTier.TabIndex = 13
+        NumAltLevelsPerTier.TextAlign = System.Windows.Forms.HorizontalAlignment.Right
         '
         ' Tabs
         '

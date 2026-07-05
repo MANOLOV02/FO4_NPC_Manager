@@ -74,6 +74,7 @@ Partial Class ArmoAddonEditor_Form
         NumIndex.Name = "NumIndex"
         NumIndex.Size = New Size(110, 23)
         NumIndex.TabIndex = 1
+        NumIndex.TextAlign = System.Windows.Forms.HorizontalAlignment.Right
         '
         ' LabelArma
         '
@@ -122,8 +123,8 @@ Partial Class ArmoAddonEditor_Form
         '
         BottomLayout.AutoSize = True
         BottomLayout.AutoSizeMode = AutoSizeMode.GrowAndShrink
-        BottomLayout.Controls.Add(ButtonOk)
         BottomLayout.Controls.Add(ButtonCancel)
+        BottomLayout.Controls.Add(ButtonOk)
         BottomLayout.Controls.Add(ButtonEditArma)
         BottomLayout.Dock = DockStyle.Bottom
         BottomLayout.FlowDirection = FlowDirection.RightToLeft

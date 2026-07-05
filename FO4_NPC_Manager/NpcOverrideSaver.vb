@@ -128,6 +128,10 @@ Public Module NpcOverrideSaver
         ''' <summary>All Material Swap (MSWP) drafts from MainForm's <c>_mswpDrafts</c>. Emitted (Phase 2g) for the
         ''' subset reachable from the needed ARMO/ARMA drafts' material-swap FormIDs. Nothing = none.</summary>
         Public MswpDrafts As List(Of MswpDraft) = Nothing
+        ''' <summary>GLOBAL FormIDs the user marked for REMOVAL from their plugin (Delete of a saved NEW record /
+        ''' Revert of a saved OVERRIDE). Records with these FormIDs are NOT preserved in Phase 2a, so on re-save a
+        ''' new record vanishes and an override is dropped (the base/original record wins again). Nothing = none.</summary>
+        Public RecordsToRemove As HashSet(Of UInteger) = Nothing
         ''' <summary>MainForm helper: allocate the next provisional draft FormID (0xFF high byte) from the
         ''' SAME counter as OTFT/LVLI drafts, so a Leveled-NPC list (LVLN) built at save time
         ''' (<c>SaveTarget.AddToLvlList</c>) gets a sentinel that can't collide with any other draft. The
@@ -341,6 +345,13 @@ Public Module NpcOverrideSaver
             For Each kv In reader.Records
                 Dim rec = kv.Value
                 If skipLocalFormIDs.Contains(rec.Header.FormID) Then Continue For
+                ' Records the user marked for REMOVAL (Delete a saved NEW record / Revert a saved OVERRIDE) —
+                ' don't preserve them: a new record vanishes; an override is dropped so the original (base plugin)
+                ' wins again. Compare on the GLOBAL FormID (the removal set is keyed the way the UI sees records).
+                If ctx.RecordsToRemove IsNot Nothing AndAlso ctx.RecordsToRemove.Count > 0 Then
+                    Dim globalFid = ctx.PluginManager.ResolveReferencedFormID(rec.SourcePluginName, rec.Header.FormID)
+                    If ctx.RecordsToRemove.Contains(globalFid) Then Continue For
+                End If
                 If rec.Header.Signature = "OTFT" Then
                     Dim parsedOtft = RecordParsers.ParseOTFT(rec, ctx.PluginManager)
                     Dim oe As New SaveNpcEspWriter.OtftRecordEntry With {
@@ -493,6 +504,18 @@ Public Module NpcOverrideSaver
                 ' with the draft's edited items so the override is actually persisted. (A cross-plugin
                 ' override target is not in outfitEntries → falls through and is emitted as a new override.)
                 If d.IsOverride Then
+                    ' Skip an OVERRIDE whose item set is IDENTICAL to the outfit it overrides — writing it would
+                    ' just duplicate the original. The OutfitDraft marks every override IsModified on Create, so
+                    ' the dirty flag can't tell us "actually changed"; compare the items against the record the
+                    ' draft overrides (the current winning record = what it was loaded from) here at save time.
+                    ' Safe because the NPC's DOFT points at this same FormID, which resolves to the original (or
+                    ' this plugin's own copy preserved in Phase 2a). Mirror of the ArmA/ArmO "unchanged override
+                    ' → don't emit" rule.
+                    Dim overridden = ctx.PluginManager.GetRecord(d.FormID)
+                    If overridden IsNot Nothing AndAlso overridden.Header.Signature = "OTFT" Then
+                        Dim origItems = RecordParsers.ParseOTFT(overridden, ctx.PluginManager).ItemFormIDs
+                        If OutfitItemsEqual(d.ItemFormIDs, origItems) Then Continue For
+                    End If
                     Dim preserved = outfitEntries.FirstOrDefault(Function(o) o.FormID = d.FormID)
                     If preserved IsNot Nothing Then
                         preserved.ItemArmoFormIDs.Clear()
@@ -635,23 +658,25 @@ Public Module NpcOverrideSaver
                 Dim neededMswp As New HashSet(Of UInteger)
                 Dim armoToVisit As New Queue(Of UInteger)
 
-                ' Phase-2a preserved FormIDs (existing target-plugin ARMO/ARMA/MSWP re-emitted as OVERRIDE).
-                ' A draft whose FormID matches one of these OVERRIDES a record that is being written regardless,
-                ' so it must ALWAYS reconcile (replace it) even when nothing in this batch references it —
-                ' otherwise the user's standalone edit is silently dropped and the unmodified original wins.
-                ' (Distinct from the "dirty AND referenced" rule below, which governs NEW orphan drafts so an
-                ' unreferenced new record doesn't bloat the plugin.)
+                ' Phase-2a preserved FormIDs (existing target-plugin ARMO/ARMA/MSWP already in the entry lists) — a
+                ' draft sharing one of these FormIDs REPLACES the preserved copy at emit time (dedup, lines ~717+).
                 Dim armoAlreadyEmitted As New HashSet(Of UInteger)(armoEntries.Select(Function(x) x.FormID))
                 Dim armaAlreadyEmitted As New HashSet(Of UInteger)(armaEntries.Select(Function(x) x.FormID))
                 Dim mswpAlreadyEmitted As New HashSet(Of UInteger)(mswpEntries.Select(Function(x) x.FormID))
+                ' Emit EVERY authored draft (new + override, referenced or not). Since the user now has Delete/Revert
+                ' to remove records they don't want, an unreferenced NEW record is KEPT rather than dropped — a
+                ' record can legitimately exist in the plugin without anything pointing at it yet (the user's rule
+                ' "if they're saved they may just not be referenced"). Gated only on IsDirty (all NEW drafts are
+                ' dirty; a modified OVERRIDE is dirty; an untouched override never gets registered). The reference
+                ' seeds below (OTFT/leveled/skin) + the walk stay — they're now redundant but harmless (Add no-ops).
                 For Each d In armoByFid.Values
-                    If armoAlreadyEmitted.Contains(d.FormID) AndAlso neededArmo.Add(d.FormID) Then armoToVisit.Enqueue(d.FormID)
+                    If d.IsDirty AndAlso neededArmo.Add(d.FormID) Then armoToVisit.Enqueue(d.FormID)
                 Next
                 For Each d In armaByFid.Values
-                    If armaAlreadyEmitted.Contains(d.FormID) Then neededArma.Add(d.FormID)
+                    If d.IsDirty Then neededArma.Add(d.FormID)
                 Next
                 For Each d In mswpByFid.Values
-                    If mswpAlreadyEmitted.Contains(d.FormID) Then neededMswp.Add(d.FormID)
+                    If d.IsDirty Then neededMswp.Add(d.FormID)
                 Next
 
                 ' --- Seed neededArmo: ARMO drafts referenced by an emitted OTFT's items. ---
@@ -674,10 +699,10 @@ Public Module NpcOverrideSaver
                     Dim skinFid = entry.Npc.SkinFormID
                     If armoByFid.ContainsKey(skinFid) AndAlso neededArmo.Add(skinFid) Then armoToVisit.Enqueue(skinFid)
                 Next
-                ' --- Seed neededArmo: dirty standalone ARMO drafts that are ALSO referenced. A dirty ARMO draft only
-                ' enters the set if something in this save points at it (an emitted outfit/leveled/skin) — already
-                ' covered by the seeds above. So nothing extra to add here; the rule is "dirty AND referenced", and
-                ' "referenced" is exactly what the three seeds above test. (A dirty-but-unreferenced ARMO is dropped.) ---
+                ' --- NEW standalone ARMO drafts: only emitted if REFERENCED (an emitted outfit/leveled/skin points
+                ' at them — the three seeds above test exactly that). An unreferenced NEW draft is dropped so a
+                ' brand-new orphan record doesn't bloat the plugin. (OVERRIDE drafts are already handled above by
+                ' the `Not d.IsNew` seed and are always emitted.) So nothing extra to add here. ---
 
                 ' --- Walk: each needed ARMO contributes its ARMA draft refs (ArmorAddons) to neededArma and its
                 ' MSWP draft refs (ARMO-level material swaps) to neededMswp. Cycle-safe via the visited sets. ---
@@ -710,10 +735,16 @@ Public Module NpcOverrideSaver
                 '     ALSO preserved — the DRAFT wins (newer user edit): remove the pre-existing entry first.
                 '     Provisional NEW-draft FormIDs (0xFF…) never collide with the real ones in 'alreadyEmitted'.
 
+                ' An UNCHANGED OVERRIDE draft (referenced by a dirty parent via the walk above, but not itself
+                ' edited) must NOT be emitted: its FormID is real and resolves to the record it overrides (the
+                ' master original, or this plugin's own copy preserved in Phase 2a), so a reference never dangles.
+                ' Emitting it would just re-write an identical override. NEW drafts are always dirty (IsNew) so they
+                ' are never skipped. Mirror of the ArmA/ArmO/MSWP editor "dirty only on real change" gate.
                 ' --- Phase 2e: build ArmoRecordEntry for each needed ARMO draft. ---
                 Dim usedArmoEdids As New HashSet(Of String)(armoEntries.Select(Function(x) x.EditorID), StringComparer.OrdinalIgnoreCase)
                 For Each fid In neededArmo
                     Dim d = armoByFid(fid)
+                    If d.IsOverride AndAlso Not d.IsDirty Then Continue For
                     If armoAlreadyEmitted.Contains(d.FormID) Then armoEntries.RemoveAll(Function(x) x.FormID = d.FormID)
                     armoEntries.Add(BuildArmoEntry(d, ctx, espNameNoExt, usedArmoEdids, target))
                 Next
@@ -721,6 +752,7 @@ Public Module NpcOverrideSaver
                 Dim usedArmaEdids As New HashSet(Of String)(armaEntries.Select(Function(x) x.EditorID), StringComparer.OrdinalIgnoreCase)
                 For Each fid In neededArma
                     Dim d = armaByFid(fid)
+                    If d.IsOverride AndAlso Not d.IsDirty Then Continue For
                     If armaAlreadyEmitted.Contains(d.FormID) Then armaEntries.RemoveAll(Function(x) x.FormID = d.FormID)
                     armaEntries.Add(BuildArmaEntry(d, ctx, espNameNoExt, usedArmaEdids, target))
                 Next
@@ -728,6 +760,7 @@ Public Module NpcOverrideSaver
                 Dim usedMswpEdids As New HashSet(Of String)(mswpEntries.Select(Function(x) x.EditorID), StringComparer.OrdinalIgnoreCase)
                 For Each fid In neededMswp
                     Dim d = mswpByFid(fid)
+                    If d.IsOverride AndAlso Not d.IsDirty Then Continue For
                     If mswpAlreadyEmitted.Contains(d.FormID) Then mswpEntries.RemoveAll(Function(x) x.FormID = d.FormID)
                     mswpEntries.Add(BuildMswpEntry(d, ctx, espNameNoExt, usedMswpEdids, target))
                 Next
@@ -920,6 +953,16 @@ Public Module NpcOverrideSaver
             npcSpec.HasDefaultOutfit = rawNpcSpec.HasDefaultOutfit
         End If
 
+        ' Phase 1e: skin (WNAM) draft fallback — the exact mirror of 1d for the NPC's skin ARMO. When the user
+        ' is NOT saving new records and this NPC's skin points at an unsaved draft ARMO (provisional 0xFF FormID),
+        ' the draft is never emitted (Phase 2e skin closure is SaveNewOutfits-gated), so revert WNAM to the
+        ' original record's skin. Without this, NPC_.WNAM would be written as a DANGLING 0xFF… reference and the
+        ' custom skin armor would be absent from the plugin. Draft EMISSION (the ON case) is Phase 2e.
+        If Not target.SaveNewOutfits AndAlso OutfitDraft.IsDraftFormID(npcSpec.SkinFormID) Then
+            npcSpec.SkinFormID = rawNpcSpec.SkinFormID
+            npcSpec.HasSkin = rawNpcSpec.HasSkin
+        End If
+
         Return New SaveNpcEspWriter.NpcOverrideEntry With {
             .Npc = npcSpec,
             .SourcePluginName = npcInput.SourcePluginName,
@@ -1065,6 +1108,17 @@ Public Module NpcOverrideSaver
             .FullName = d.FullName,
             .SlotMask = d.SlotMask,
             .RaceFormID = d.RaceFormID,
+            .InstanceNamingFormID = d.InstanceNamingFormID,
+            .EnchantmentFormID = d.EnchantmentFormID,
+            .PatternFormID = d.PatternFormID,
+            .EquipTypeFormID = d.EquipTypeFormID,
+            .PickupSoundFormID = d.PickupSoundFormID,
+            .DropSoundFormID = d.DropSoundFormID,
+            .AlternateBlockMaterialFormID = d.AlternateBlockMaterialFormID,
+            .Description = d.Description,
+            .NonPlayable = d.NonPlayable,
+            .ObndX1 = d.ObndX1, .ObndY1 = d.ObndY1, .ObndZ1 = d.ObndZ1,
+            .ObndX2 = d.ObndX2, .ObndY2 = d.ObndY2, .ObndZ2 = d.ObndZ2,
             .TemplateArmorFormID = d.TemplateArmorFormID,
             .MaleWorldModelPath = d.MaleWorldModelPath,
             .FemaleWorldModelPath = d.FemaleWorldModelPath,
@@ -1086,6 +1140,9 @@ Public Module NpcOverrideSaver
         Next
         e.KeywordFormIDs.AddRange(d.KeywordFormIDs)
         e.AttachParentSlotFormIDs.AddRange(d.AttachParentSlotFormIDs)
+        For Each dr In d.DamageResistances
+            e.DamageResistances.Add(New ARMO_DamageResist With {.DamageTypeFormID = dr.DamageTypeFormID, .Value = dr.Value})
+        Next
         ' OBTS combinations:
         '   • NEW → always emit from the model (SerializeArmoRecord builds the OBTE/OBTS block from
         '     entry.Combinations). So a "New from template" ARMO keeps its object template on save.
@@ -1115,6 +1172,10 @@ Public Module NpcOverrideSaver
             .EditorID = finalEdid,
             .SlotMask = d.SlotMask,
             .RaceFormID = d.RaceFormID,
+            .FootstepSetFormID = d.FootstepSetFormID,
+            .ArtObjectFormID = d.ArtObjectFormID,
+            .MaleFPMaterialSwapFormID = d.MaleFPMaterialSwapFormID,
+            .FemaleFPMaterialSwapFormID = d.FemaleFPMaterialSwapFormID,
             .MalePriority = d.MalePriority,
             .FemalePriority = d.FemalePriority,
             .MaleWeightSliderFlags = d.MaleWeightSliderFlags,
@@ -1184,6 +1245,17 @@ Public Module NpcOverrideSaver
         Return e
     End Function
 
+    ''' <summary>Order-sensitive equality of two OTFT item (INAM) FormID lists. The engine equips items in
+    ''' INAM order, and the writer emits them in list order, so a reorder IS a content change.</summary>
+    Private Function OutfitItemsEqual(a As List(Of UInteger), b As List(Of UInteger)) As Boolean
+        If a Is Nothing OrElse b Is Nothing Then Return a Is b
+        If a.Count <> b.Count Then Return False
+        For i = 0 To a.Count - 1
+            If a(i) <> b(i) Then Return False
+        Next
+        Return True
+    End Function
+
     ''' <summary>Build an <see cref="SaveNpcEspWriter.ArmoRecordEntry"/> OVERRIDE entry from a record PRESERVED
     ''' out of the target plugin (Phase 2a). Mirrors <see cref="BuildArmoEntry"/>'s field map exactly, but sources
     ''' every owned field from the parsed <see cref="ARMO_Data"/> instead of an <see cref="ArmoDraft"/>, and resolves
@@ -1197,6 +1269,17 @@ Public Module NpcOverrideSaver
             .FullName = parsed.FullName,
             .SlotMask = parsed.SlotMask,
             .RaceFormID = parsed.RaceFormID,
+            .InstanceNamingFormID = parsed.InstanceNamingFormID,
+            .EnchantmentFormID = parsed.EnchantmentFormID,
+            .PatternFormID = parsed.PatternFormID,
+            .EquipTypeFormID = parsed.EquipTypeFormID,
+            .PickupSoundFormID = parsed.PickupSoundFormID,
+            .DropSoundFormID = parsed.DropSoundFormID,
+            .AlternateBlockMaterialFormID = parsed.AlternateBlockMaterialFormID,
+            .Description = parsed.Description,
+            .NonPlayable = parsed.NonPlayable,
+            .ObndX1 = parsed.ObndX1, .ObndY1 = parsed.ObndY1, .ObndZ1 = parsed.ObndZ1,
+            .ObndX2 = parsed.ObndX2, .ObndY2 = parsed.ObndY2, .ObndZ2 = parsed.ObndZ2,
             .TemplateArmorFormID = parsed.TemplateArmorFormID,
             .MaleWorldModelPath = parsed.MaleWorldModelPath,
             .FemaleWorldModelPath = parsed.FemaleWorldModelPath,
@@ -1218,6 +1301,9 @@ Public Module NpcOverrideSaver
         Next
         e.KeywordFormIDs.AddRange(parsed.KeywordFormIDs)
         e.AttachParentSlotFormIDs.AddRange(parsed.AttachParentSlotFormIDs)
+        For Each dr In parsed.DamageResistances
+            e.DamageResistances.Add(New ARMO_DamageResist With {.DamageTypeFormID = dr.DamageTypeFormID, .Value = dr.Value})
+        Next
         Return e
     End Function
 
@@ -1230,6 +1316,10 @@ Public Module NpcOverrideSaver
             .EditorID = parsed.EditorID,
             .SlotMask = parsed.SlotMask,
             .RaceFormID = parsed.RaceFormID,
+            .FootstepSetFormID = parsed.FootstepSetFormID,
+            .ArtObjectFormID = parsed.ArtObjectFormID,
+            .MaleFPMaterialSwapFormID = parsed.MaleFPMaterialSwapFormID,
+            .FemaleFPMaterialSwapFormID = parsed.FemaleFPMaterialSwapFormID,
             .MalePriority = parsed.MalePriority,
             .FemalePriority = parsed.FemalePriority,
             .MaleWeightSliderFlags = parsed.MaleWeightSliderFlags,

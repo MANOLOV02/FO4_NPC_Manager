@@ -342,16 +342,24 @@ Public Class SaveEsp_Form
         AddHandler CheckBoxRemoveChargenFlag.CheckedChanged, AddressOf OnRemoveChargenFlagChanged
         UpdateRemoveChargenFlagEnabled()
 
-        ' "Save new outfits": only meaningful when the Edit Outfit "Create" tab has unsaved (dirty)
-        ' drafts. Auto-check + enable when there are; otherwise disable so the user isn't offered a
-        ' no-op. (The preview sentinel draft is excluded — it's transient.)
-        Dim hasDirtyDrafts As Boolean = _saveCtx IsNot Nothing AndAlso _saveCtx.OutfitDrafts IsNot Nothing AndAlso
-            _saveCtx.OutfitDrafts.Any(Function(d) d IsNot Nothing AndAlso d.IsDirty AndAlso d.FormID <> OutfitDraft.PreviewDraftFormID)
+        ' "Save new records": meaningful when the session has ANY unsaved (dirty) author-built draft — not
+        ' only outfits, but also standalone armor (ARMO), armatures (ARMA), material swaps (MSWP) and leveled
+        ' lists (LVLI). This ONE flag gates every draft-emission phase (ExecuteWritePhases 2c/2e/2f/2g), so if
+        ' it only counted OutfitDrafts, a session that authored a skin/armor/material/leveled-list draft WITHOUT
+        ' an outfit draft would leave the box disabled+unchecked and silently drop those drafts (and dangle any
+        ' NPC.WNAM skin pointing at the dropped ARMO). Auto-check + enable when any kind is dirty. (The transient
+        ' outfit preview sentinel is excluded.)
+        Dim hasDirtyDrafts As Boolean = _saveCtx IsNot Nothing AndAlso (
+            (_saveCtx.OutfitDrafts IsNot Nothing AndAlso _saveCtx.OutfitDrafts.Any(Function(d) d IsNot Nothing AndAlso d.IsDirty AndAlso d.FormID <> OutfitDraft.PreviewDraftFormID)) OrElse
+            (_saveCtx.ArmoDrafts IsNot Nothing AndAlso _saveCtx.ArmoDrafts.Any(Function(d) d IsNot Nothing AndAlso d.IsDirty)) OrElse
+            (_saveCtx.ArmaDrafts IsNot Nothing AndAlso _saveCtx.ArmaDrafts.Any(Function(d) d IsNot Nothing AndAlso d.IsDirty)) OrElse
+            (_saveCtx.MswpDrafts IsNot Nothing AndAlso _saveCtx.MswpDrafts.Any(Function(d) d IsNot Nothing AndAlso d.IsDirty)) OrElse
+            (_saveCtx.LeveledListDrafts IsNot Nothing AndAlso _saveCtx.LeveledListDrafts.Any(Function(d) d IsNot Nothing AndAlso d.IsDirty)))
         CheckBoxSaveNewOutfits.Enabled = hasDirtyDrafts
         CheckBoxSaveNewOutfits.Checked = hasDirtyDrafts
-        If Not hasDirtyDrafts Then
-            CheckBoxSaveNewOutfits.Text = CheckBoxSaveNewOutfits.Text & "  (no new outfits)"
-        End If
+        CheckBoxSaveNewOutfits.Text = If(hasDirtyDrafts,
+            "Save new records (outfits, armor, materials, leveled lists)",
+            "Save new records  (none pending)")
 
         AddHandler RadioScopeAllChanged.CheckedChanged, AddressOf OnScopeChanged
 

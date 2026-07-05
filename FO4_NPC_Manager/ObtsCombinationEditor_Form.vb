@@ -147,8 +147,11 @@ Public Class ObtsCombinationEditor_Form
     ' =====================================================================
 
     Private Sub OnAddKeyword(sender As Object, e As EventArgs)
+        ' Combination match keywords are general → EXCLUDE attach-point keywords (KYWD.TNAM type, not a name
+        ' heuristic); the picker's "Show all" escapes the filter.
         Using dlg As New FormIdPicker_Form(_mainForm.PluginManagerForEditor, {"KYWD"},
-                                           "Add combination keyword (KYWD)", 0UI, allowNull:=False)
+                                           "Add combination keyword (KYWD)", 0UI, allowNull:=False,
+                                           formIdFilter:=Function(fid) Not _mainForm.IsAttachPointKeyword(fid))
             If dlg.ShowDialog(Me) <> DialogResult.OK OrElse dlg.SelectedFormID = 0UI Then Return
             If Not _keywords.Contains(dlg.SelectedFormID) Then _keywords.Add(dlg.SelectedFormID)
             RefreshKeywordsList()
@@ -264,7 +267,7 @@ Public Class ObtsCombinationEditor_Form
                                     p.FunctionType.ToString(CultureInfo.InvariantCulture),
                                     p.PropertyIndex.ToString(CultureInfo.InvariantCulture),
                                     Value1Display(p),
-                                    FloatText(p.Value2),
+                                    Value2Display(p),
                                     FloatText(p.StepValue))
         Next
         SelectGridRow(GridProperties, selIdx)
@@ -329,6 +332,21 @@ Public Class ObtsCombinationEditor_Form
                 Return FloatText(p.Value1)
             Case Else
                 Return BitConverter.ToInt32(BitConverter.GetBytes(p.Value1), 0).ToString(CultureInfo.InvariantCulture)
+        End Select
+    End Function
+
+    ''' <summary>Value2 shown per its ValueType (xEdit <c>wbOMODDataPropertyValue2Decider</c>): float for
+    ''' Float/FormIDFloat, the Int32 reinterpretation of the raw bits for Int/FormIDInt/Bool, "(unused)" for
+    ''' String/Enum. Mirror of <see cref="ObtsPropertyEditor_Form"/>'s RenderValue2 — Value2 is NOT always a float
+    ''' (showing an int's bits as a float gives a garbage denormal like 7.16E-43).</summary>
+    Private Shared Function Value2Display(p As OMOD_Property) As String
+        Select Case p.ValueType
+            Case OMOD_ValueType.FloatType, OMOD_ValueType.FormIDFloat
+                Return FloatText(p.Value2)
+            Case OMOD_ValueType.StringType, OMOD_ValueType.EnumType
+                Return "(unused)"
+            Case Else   ' Int, Bool, FormIDInt → the Int32 bits
+                Return BitConverter.ToInt32(BitConverter.GetBytes(p.Value2), 0).ToString(CultureInfo.InvariantCulture)
         End Select
     End Function
 

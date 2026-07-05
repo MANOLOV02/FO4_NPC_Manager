@@ -27,13 +27,18 @@ Partial Class MswpSubEntryEditor_Form
         TextBoxReplacement = New TextBox()
         ButtonBrowseReplacement = New Button()
         LabelRemap = New Label()
-        TextBoxRemap = New TextBox()
+        RemapPanel = New FlowLayoutPanel()
+        CheckRemap = New CheckBox()
+        SliderRemap = New FO4_Base_Library.TinySliderTextBox()
+        PicRemapGradient = New PictureBox()
         LabelHint = New Label()
         BottomLayout = New FlowLayoutPanel()
         ButtonOk = New Button()
         ButtonCancel = New Button()
         RootLayout.SuspendLayout()
         ReplacementPanel.SuspendLayout()
+        RemapPanel.SuspendLayout()
+        CType(PicRemapGradient, System.ComponentModel.ISupportInitialize).BeginInit()
         BottomLayout.SuspendLayout()
         SuspendLayout()
         '
@@ -47,20 +52,22 @@ Partial Class MswpSubEntryEditor_Form
         RootLayout.Controls.Add(LabelReplacement, 0, 1)
         RootLayout.Controls.Add(ReplacementPanel, 1, 1)
         RootLayout.Controls.Add(LabelRemap, 0, 2)
-        RootLayout.Controls.Add(TextBoxRemap, 1, 2)
-        RootLayout.Controls.Add(LabelHint, 1, 3)
-        RootLayout.Controls.Add(BottomLayout, 1, 4)
+        RootLayout.Controls.Add(RemapPanel, 1, 2)
+        RootLayout.Controls.Add(PicRemapGradient, 1, 3)
+        RootLayout.Controls.Add(LabelHint, 1, 4)
+        RootLayout.Controls.Add(BottomLayout, 1, 5)
         RootLayout.Dock = DockStyle.Fill
         RootLayout.Location = New Point(0, 0)
         RootLayout.Name = "RootLayout"
         RootLayout.Padding = New Padding(10)
-        RootLayout.RowCount = 5
+        RootLayout.RowCount = 6
+        RootLayout.RowStyles.Add(New RowStyle())
         RootLayout.RowStyles.Add(New RowStyle())
         RootLayout.RowStyles.Add(New RowStyle())
         RootLayout.RowStyles.Add(New RowStyle())
         RootLayout.RowStyles.Add(New RowStyle())
         RootLayout.RowStyles.Add(New RowStyle(SizeType.Percent, 100F))
-        RootLayout.Size = New Size(640, 220)
+        RootLayout.Size = New Size(640, 255)
         RootLayout.TabIndex = 0
         '
         ' LabelOriginal
@@ -129,15 +136,57 @@ Partial Class MswpSubEntryEditor_Form
         LabelRemap.Name = "LabelRemap"
         LabelRemap.Size = New Size(160, 15)
         LabelRemap.TabIndex = 4
-        LabelRemap.Text = "Color Remap (optional float):"
+        LabelRemap.Text = "Color Remap (0–1):"
         '
-        ' TextBoxRemap
+        ' RemapPanel
         '
-        TextBoxRemap.Anchor = AnchorStyles.Left
-        TextBoxRemap.Location = New Point(203, 76)
-        TextBoxRemap.Name = "TextBoxRemap"
-        TextBoxRemap.Size = New Size(150, 23)
-        TextBoxRemap.TabIndex = 5
+        RemapPanel.Anchor = AnchorStyles.Left
+        RemapPanel.AutoSize = True
+        RemapPanel.AutoSizeMode = AutoSizeMode.GrowAndShrink
+        RemapPanel.Controls.Add(CheckRemap)
+        RemapPanel.Controls.Add(SliderRemap)
+        RemapPanel.Location = New Point(203, 74)
+        RemapPanel.Margin = New Padding(0)
+        RemapPanel.Name = "RemapPanel"
+        RemapPanel.Size = New Size(300, 28)
+        RemapPanel.TabIndex = 5
+        RemapPanel.WrapContents = False
+        '
+        ' CheckRemap
+        '
+        CheckRemap.Anchor = AnchorStyles.Left
+        CheckRemap.AutoSize = True
+        CheckRemap.Margin = New Padding(3, 4, 8, 0)
+        CheckRemap.Name = "CheckRemap"
+        CheckRemap.Size = New Size(72, 19)
+        CheckRemap.TabIndex = 0
+        CheckRemap.Text = "Present"
+        CheckRemap.UseVisualStyleBackColor = True
+        '
+        ' SliderRemap
+        '
+        SliderRemap.DisplayFormat = "0.0000"
+        SliderRemap.Location = New Point(83, 0)
+        SliderRemap.Margin = New Padding(0)
+        SliderRemap.Maximum = 1.0R
+        SliderRemap.Minimum = 0.0R
+        SliderRemap.Name = "SliderRemap"
+        SliderRemap.SmallChange = 0.0001R
+        SliderRemap.Size = New Size(200, 28)
+        SliderRemap.TabIndex = 1
+        SliderRemap.Value = 0.0R
+        '
+        ' PicRemapGradient
+        '
+        PicRemapGradient.Anchor = AnchorStyles.Left Or AnchorStyles.Right
+        PicRemapGradient.BorderStyle = BorderStyle.FixedSingle
+        PicRemapGradient.Location = New Point(203, 105)
+        PicRemapGradient.Margin = New Padding(0, 3, 3, 6)
+        PicRemapGradient.Name = "PicRemapGradient"
+        PicRemapGradient.Size = New Size(414, 28)
+        PicRemapGradient.SizeMode = PictureBoxSizeMode.StretchImage
+        PicRemapGradient.TabIndex = 2
+        PicRemapGradient.TabStop = False
         '
         ' LabelHint
         '
@@ -155,8 +204,8 @@ Partial Class MswpSubEntryEditor_Form
         '
         BottomLayout.AutoSize = True
         BottomLayout.AutoSizeMode = AutoSizeMode.GrowAndShrink
-        BottomLayout.Controls.Add(ButtonOk)
         BottomLayout.Controls.Add(ButtonCancel)
+        BottomLayout.Controls.Add(ButtonOk)
         BottomLayout.Dock = DockStyle.Bottom
         BottomLayout.FlowDirection = FlowDirection.RightToLeft
         BottomLayout.Location = New Point(203, 185)
@@ -192,7 +241,7 @@ Partial Class MswpSubEntryEditor_Form
         AutoScaleDimensions = New SizeF(7F, 15F)
         AutoScaleMode = AutoScaleMode.Font
         CancelButton = ButtonCancel
-        ClientSize = New Size(640, 220)
+        ClientSize = New Size(640, 255)
         Controls.Add(RootLayout)
         Font = New Font("Segoe UI", 9F)
         MinimizeBox = False
@@ -203,6 +252,9 @@ Partial Class MswpSubEntryEditor_Form
         RootLayout.PerformLayout()
         ReplacementPanel.ResumeLayout(False)
         ReplacementPanel.PerformLayout()
+        RemapPanel.ResumeLayout(False)
+        RemapPanel.PerformLayout()
+        CType(PicRemapGradient, System.ComponentModel.ISupportInitialize).EndInit()
         BottomLayout.ResumeLayout(False)
         ResumeLayout(False)
     End Sub
@@ -215,7 +267,10 @@ Partial Class MswpSubEntryEditor_Form
     Friend WithEvents TextBoxReplacement As System.Windows.Forms.TextBox
     Friend WithEvents ButtonBrowseReplacement As System.Windows.Forms.Button
     Friend WithEvents LabelRemap As System.Windows.Forms.Label
-    Friend WithEvents TextBoxRemap As System.Windows.Forms.TextBox
+    Friend WithEvents RemapPanel As System.Windows.Forms.FlowLayoutPanel
+    Friend WithEvents CheckRemap As System.Windows.Forms.CheckBox
+    Friend WithEvents SliderRemap As FO4_Base_Library.TinySliderTextBox
+    Friend WithEvents PicRemapGradient As System.Windows.Forms.PictureBox
     Friend WithEvents LabelHint As System.Windows.Forms.Label
     Friend WithEvents BottomLayout As System.Windows.Forms.FlowLayoutPanel
     Friend WithEvents ButtonOk As System.Windows.Forms.Button

@@ -16,36 +16,73 @@ Public Class MswpSubEditor_Form
 
     Private ReadOnly _mainForm As MainForm
     Private ReadOnly _draft As MswpDraft
+    ''' <summary>Deep clone of the draft at open time — the baseline for the "dirty only on real change" rule
+    ''' (mirror of the ArmA/ArmO editors' _openSnapshot). Nothing when the passed-in draft is Nothing.</summary>
+    Private ReadOnly _openSnapshot As MswpDraft
     ''' <summary>Material paths the gender mesh NIF references (BaseMaterials). Seeds the Original combo in the
     ''' per-substitution modal. Empty when no mesh path was supplied or the mesh couldn't be loaded.</summary>
     Private ReadOnly _meshMaterials As New List(Of String)
     ''' <summary>Working list of substitutions (source of truth). Loaded from the draft, mutated by the buttons/
     ''' modal, flushed back into the draft on OK. Never aliased to the draft's own list (copied in and out).</summary>
     Private ReadOnly _subs As New List(Of MSWP_Substitution)
+    ''' <summary>Fixed type prefix for MSWP base EditorIDs ("npcm_MSWP_"). Save injects the &lt;plugin&gt; segment.</summary>
+    Private ReadOnly _edidPrefix As String = MswpDraft.EditorIdPrefix
 
     ''' <param name="mainForm">Owner — used for EditorID uniqueness checks.</param>
     ''' <param name="draft">The MSWP draft being authored (already registered on MainForm). Flushed on OK.</param>
     ''' <param name="genderMeshPath">The gender's MOD2 (male) / MOD3 (female) mesh path. Its NIF materials
     ''' seed the Original combo in the modal. Empty → free-text Original only.</param>
     ''' <param name="genderLabel">"Male"/"Female", shown in the caption.</param>
-    Public Sub New(mainForm As MainForm, draft As MswpDraft, genderMeshPath As String, genderLabel As String)
+    ''' <param name="extraMeshPaths">Optional additional mesh paths whose NIF materials are ALSO merged into the
+    ''' Original-Material list (deduped by material path). Used by the ARMO editor to seed the list from every
+    ''' included ARMA addon mesh in addition to the ARMO's own gender world-model mesh. Null → gender mesh only.</param>
+    Public Sub New(mainForm As MainForm, draft As MswpDraft, genderMeshPath As String, genderLabel As String,
+                   Optional extraMeshPaths As IEnumerable(Of String) = Nothing)
         InitializeComponent()
         _mainForm = mainForm
         _draft = draft
+        _openSnapshot = draft?.Clone()
 
         Text = $"Material Swap (MSWP) — {genderLabel}"
+        ' Original-Material list = the gender mesh's NIF materials PLUS any supplied extra meshes' materials
+        ' (LoadMeshMaterials merges into the shared _meshMaterials list, dedups by material path, and tolerates
+        ' null/empty/unloadable paths — so repeated calls are safe).
         LoadMeshMaterials(genderMeshPath)
+        If extraMeshPaths IsNot Nothing Then
+            For Each p In extraMeshPaths
+                LoadMeshMaterials(p)
+            Next
+        End If
         BuildGridColumns()
 
-        TextBoxEdid.Text = If(_draft IsNot Nothing, _draft.EditorID, "")
+        RefreshEditorIdField()
         LoadSubsFromDraft()
         RefreshGrid()
 
+        AddHandler TextBoxEdid.TextChanged, AddressOf OnEdidChanged
         AddHandler ButtonAddRow.Click, AddressOf OnAddSub
         AddHandler ButtonEditRow.Click, AddressOf OnEditSub
         AddHandler ButtonRemoveRow.Click, AddressOf OnRemoveSub
         AddHandler GridSubs.CellDoubleClick, AddressOf OnSubDoubleClick
         AddHandler ButtonOk.Click, AddressOf OnOk
+    End Sub
+
+    ''' <summary>Drive the shared EditorID field: a NEW draft edits only the &lt;name&gt; (fixed prefix + live
+    ''' "Saves as:" preview); an OVERRIDE draft keeps its record EDID read-only. A null draft behaves as NEW/empty.</summary>
+    Private Sub RefreshEditorIdField()
+        If _draft Is Nothing Then
+            EditorIdField.ConfigureNew(LabelEdid, TextBoxEdid, LabelEdidPreview, _edidPrefix, "")
+        ElseIf _draft.IsNew Then
+            EditorIdField.ConfigureNew(LabelEdid, TextBoxEdid, LabelEdidPreview, _edidPrefix, _draft.EditorID)
+        Else
+            EditorIdField.ConfigureOverride(LabelEdid, TextBoxEdid, LabelEdidPreview, _draft.EditorID)
+        End If
+    End Sub
+
+    ''' <summary>Keep the live "Saves as:" preview in sync with the name box (only while the box is editable, i.e.
+    ''' a NEW draft; an OVERRIDE keeps the box disabled and the preview hidden).</summary>
+    Private Sub OnEdidChanged(sender As Object, e As EventArgs)
+        If TextBoxEdid.Enabled Then EditorIdField.UpdatePreview(LabelEdidPreview, _edidPrefix, TextBoxEdid.Text)
     End Sub
 
     ''' <summary>Load the BaseMaterials (referenced material paths) of the gender mesh into
@@ -174,8 +211,12 @@ Public Class MswpSubEditor_Form
             Return
         End If
 
-        Dim edid = TextBoxEdid.Text.Trim()
-        If edid.Length = 0 Then
+        ' NEW draft: the box holds only the <name>; compose the stored base EDID (Save injects <plugin>). OVERRIDE:
+        ' the box holds the kept EDID verbatim (read-only). A NEW draft must still supply a non-empty name.
+        Dim edid = If(_draft IsNot Nothing AndAlso Not _draft.IsNew,
+                      TextBoxEdid.Text.Trim(),
+                      EditorIdField.Compose(_edidPrefix, TextBoxEdid.Text))
+        If TextBoxEdid.Text.Trim().Length = 0 Then
             MessageBox.Show(Me, "Enter an EditorID for the material swap.", "MSWP",
                             MessageBoxButtons.OK, MessageBoxIcon.Information)
             DialogResult = DialogResult.None
@@ -203,7 +244,11 @@ Public Class MswpSubEditor_Form
         _draft.EditorID = edid
         _draft.Substitutions.Clear()
         _draft.Substitutions.AddRange(subs)
-        If Not _draft.IsNew Then _draft.IsModified = True
+        ' Dirty only on a REAL change (mirror of ArmA/ArmO): an OVERRIDE opened and OK'd without edits is not
+        ' marked modified, so the saver won't re-emit an identical MSWP override. NEW drafts are always dirty.
+        If Not _draft.IsNew Then
+            _draft.IsModified = (_openSnapshot Is Nothing) OrElse Not _draft.ContentEquals(_openSnapshot)
+        End If
 
         DialogResult = DialogResult.OK
         Close()

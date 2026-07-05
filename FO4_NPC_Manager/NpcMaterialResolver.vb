@@ -220,9 +220,11 @@ Friend NotInheritable Class NpcMaterialResolver
             End Select
             If Not matches Then Continue For
 
+            ' Fallback EXACTO del motor (getter 0x140a90790: [arma+sex*8+0x240], null→índice0=NAM0/male):
+            ' female → NAM1, si vacío → NAM0 (male). male → NAM0 (sin fallback a female).
             Dim txstFID = If(state.IsFemale,
                              If(arma.FemaleSkinTextureFormID <> 0UI, arma.FemaleSkinTextureFormID, arma.MaleSkinTextureFormID),
-                             If(arma.MaleSkinTextureFormID <> 0UI, arma.MaleSkinTextureFormID, arma.FemaleSkinTextureFormID))
+                             arma.MaleSkinTextureFormID)
             If txstFID = 0UI Then Continue For
 
             Dim txstRec = _ctx.PluginManager.GetRecord(txstFID)
@@ -1035,9 +1037,19 @@ Friend NotInheritable Class NpcMaterialResolver
                 Logger.LogLazy(Function() $"[SHAPEMAT-PRE-TEX] shape='{shapeNamePre}' shader={shP} isBGSM={isBgsmP} (inline NIF/BGSM source, pre-TXST) D='{dP}' N='{nP}' S='{sP}' spec='{specP}' W='{wP}' env='{envP}'")
             End If
 
-            ApplyTextureSetOverrides(textureSet, relatedMaterial, candidate.UsesBodyTexture, shape.NifShape, shape.NifContent,
-                                     isHeadPartTextureSet:=(candidate IsNot Nothing AndAlso candidate.Kind = MainForm.MeshCandidateKind.HeadPart),
-                                     isFaceHeadPart:=(candidate IsNot Nothing AndAlso candidate.HeadPartType = HeadPartTypeFace))
+            ' ENGINE-FAITHFUL (Fallout4.exe, ver memoria project_arma_skin_txst_engine): la piel de un
+            ' shape SkinTint SIEMPRE sale del skin del ACTOR (WNAM del NPC ?? RACE → skin ARMO → ARMA
+            ' NAM0 male/NAM1 female por sexo), NO del NAM0/1 del ARMA del propio outfit. Un outfit trae
+            ' partes SkinTint que reemplazan el naked body — esas reciben la piel del actor abajo
+            ' (actorBodySkinTxst), y la ropa (no-SkinTint) conserva su material. Por eso el NAM0/1 del
+            ' ARMA del outfit NO debe aplicarse como override a NINGÚN shape del outfit (hacerlo pintaba
+            ' la ropa y metía el male NAM0 sobre una female). HeadPart usa HDPT.TNAM/FTST (otro
+            ' mecanismo → se mantiene). Skin (naked body) usa su ARMA, que ES el skin ARMO del WNAM.
+            If candidate Is Nothing OrElse candidate.Kind <> MainForm.MeshCandidateKind.Outfit Then
+                ApplyTextureSetOverrides(textureSet, relatedMaterial, candidate.UsesBodyTexture, shape.NifShape, shape.NifContent,
+                                         isHeadPartTextureSet:=(candidate IsNot Nothing AndAlso candidate.Kind = MainForm.MeshCandidateKind.HeadPart),
+                                         isFaceHeadPart:=(candidate IsNot Nothing AndAlso candidate.HeadPartType = HeadPartTypeFace))
+            End If
 
             Dim material = relatedMaterial.material
             If material Is Nothing Then Continue For

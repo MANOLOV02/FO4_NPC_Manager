@@ -31,6 +31,7 @@ Partial Class FormIdPicker_Form
         BottomLayout = New FlowLayoutPanel()
         ButtonOk = New Button()
         ButtonCancel = New Button()
+        ButtonDeleteEntry = New Button()
         RootLayout.SuspendLayout()
         FilterRow.SuspendLayout()
         BottomLayout.SuspendLayout()
@@ -160,8 +161,9 @@ Partial Class FormIdPicker_Form
         '
         BottomLayout.AutoSize = True
         BottomLayout.AutoSizeMode = AutoSizeMode.GrowAndShrink
-        BottomLayout.Controls.Add(ButtonOk)
         BottomLayout.Controls.Add(ButtonCancel)
+        BottomLayout.Controls.Add(ButtonOk)
+        BottomLayout.Controls.Add(ButtonDeleteEntry)
         BottomLayout.Dock = DockStyle.Fill
         BottomLayout.FlowDirection = FlowDirection.RightToLeft
         BottomLayout.Location = New Point(11, 500)
@@ -188,6 +190,17 @@ Partial Class FormIdPicker_Form
         ButtonCancel.Size = New Size(80, 23)
         ButtonCancel.TabIndex = 1
         ButtonCancel.Text = "Cancel"
+        '
+        ' ButtonDeleteEntry
+        '
+        ButtonDeleteEntry.AutoSize = True
+        ButtonDeleteEntry.Location = New Point(3, 9)
+        ButtonDeleteEntry.Margin = New Padding(3, 3, 3, 3)
+        ButtonDeleteEntry.Name = "ButtonDeleteEntry"
+        ButtonDeleteEntry.Size = New Size(110, 23)
+        ButtonDeleteEntry.TabIndex = 2
+        ButtonDeleteEntry.Text = "Delete / Revert…"
+        ButtonDeleteEntry.Visible = False
         '
         ' FormIdPicker_Form
         '
@@ -224,4 +237,5 @@ Partial Class FormIdPicker_Form
     Friend WithEvents BottomLayout As System.Windows.Forms.FlowLayoutPanel
     Friend WithEvents ButtonOk As System.Windows.Forms.Button
     Friend WithEvents ButtonCancel As System.Windows.Forms.Button
+    Friend WithEvents ButtonDeleteEntry As System.Windows.Forms.Button
 End Class

@@ -58,6 +58,12 @@ Module Program
         Public CatProfile As Boolean = False      ' --catprofile [--edid X]: perfila ejes de categoría (folder ground-truth, Perspective, STKD, BlendHint) por raza
         Public RankBy As String = "n"   ' canal por el que rankea el sweep: n (default) / d / s
         Public NeckSeam As Boolean = False       ' --neckseam --esp X --edid Y: diagnóstico costura cuello/cabeza con body-weight (NNAM + _skin, math)
+        Public EstimateSclp As String = ""        ' --estimatesclp "<underarmorNifKey>|<bodyNifKey>[|<sclpKey>]": estima SCLP por ratio de extents en espacio-hueso vs body de ref, contra el .sclp autorado
+        Public SclpDiag As String = ""            ' --sclpdiag "<uaNifKey>|<bodyNifKey>|<boneSubstr>": vuelca geometría cruda por hueso (allSet/domSet, percentiles, ratios candidatos) para derivar a mano la fórmula del SCLP
+        Public SclpBatch As String = ""           ' --sclpbatch <manifestPath>: evalúa MUCHAS combinaciones (una línea por caso: label|uaKeyOrPath|bodyKeyOrPath|authoredSclpPath) en UNA sola corrida (un solo mount); imprime medErr/meanErr/within del estNN vs SCLP autorado por caso
+        Public Ba2Extract As String = ""          ' --ba2extract "<archivePath>|<internalKey>|<outFile>": extrae UNA entry (por FullPath interno) de un BA2/BSA a un archivo de disco (ref vanilla directa, sin loose override). File-only, no monta plugins.
+        Public BindDiff As String = ""            ' --binddiff "<uaNifKey|path>|<bodyNifKey|path>|<boneSubstr opcional>": compara los binds skin→bone (SkinToBone) de cada hueso *_skin entre dos NIFs (¿la escala del SCLP vive en el bind?)
+        Public ShapeFilter As String = ""         ' --shapefilter <substr>: acompaña a --estimatesclp/--sclpdiag; restringe la malla UNDERARMOR (ua) a las shapes cuyo ShapeName contenga el substring (case-insensitive). El body de referencia NO se filtra. Sirve para excluir un cuerpo desnudo embebido (ej. BaseFemaleBody:0) y quedarse solo con la shape del outfit (ej. RaiderUnderArmorF:0).
     End Class
 
     ' TETI.Slot enum (xEdit wbDefinitionsFO4.pas:3465-3491) — nombre por valor, para --tints.
@@ -94,6 +100,11 @@ Module Program
     Private Sub Run(args As String())
         Dim opt = ParseArgs(args)
         If opt Is Nothing Then Return
+
+        ' --- BA2EXTRACT: extrae UNA entry cruda de un BA2/BSA a disco (ref vanilla directa, sin loose override).
+        '     File-only y despachado ANTES del bootstrap de plugins/FilesDictionary: es rápido y no depende
+        '     del load order. ---
+        If opt.Ba2Extract <> "" Then Ba2ExtractRun(opt.Ba2Extract) : Return
 
         ' --- 1. Config (app config.json local) ---
         Config_App.LoadConfig()
@@ -134,7 +145,7 @@ Module Program
 
         ' --- 3. Lista de trabajo (esp, edid) ---
         Dim work = BuildWorkList(opt)
-        If work.Count = 0 AndAlso Not opt.TtedScan AndAlso Not opt.ScanDiff AndAlso Not opt.RaceAnim AndAlso Not opt.MountValidate AndAlso opt.FindHkx = "" AndAlso opt.ChunkCompare = "" AndAlso opt.DumpBehavior = "" AndAlso Not opt.HkxCoverage AndAlso opt.KwType = "" AndAlso Not opt.StateMap AndAlso Not opt.ClipResolve AndAlso opt.HkxBone = "" AndAlso opt.ClipBase = "" AndAlso opt.FindFile = "" AndAlso opt.NifDump = "" AndAlso opt.AnimSyncCheck = "" AndAlso opt.BlendHintScan = "" AndAlso Not opt.CatProfile AndAlso Not opt.Provenance AndAlso opt.DumpRef = "" Then
+        If work.Count = 0 AndAlso Not opt.TtedScan AndAlso Not opt.ScanDiff AndAlso Not opt.RaceAnim AndAlso Not opt.MountValidate AndAlso opt.FindHkx = "" AndAlso opt.ChunkCompare = "" AndAlso opt.DumpBehavior = "" AndAlso Not opt.HkxCoverage AndAlso opt.KwType = "" AndAlso Not opt.StateMap AndAlso Not opt.ClipResolve AndAlso opt.HkxBone = "" AndAlso opt.ClipBase = "" AndAlso opt.FindFile = "" AndAlso opt.NifDump = "" AndAlso opt.AnimSyncCheck = "" AndAlso opt.BlendHintScan = "" AndAlso Not opt.CatProfile AndAlso Not opt.Provenance AndAlso opt.DumpRef = "" AndAlso opt.EstimateSclp = "" AndAlso opt.SclpDiag = "" AndAlso opt.SclpBatch = "" AndAlso opt.BindDiff = "" AndAlso opt.Ba2Extract = "" Then
             Console.Error.WriteLine("No hay NPCs para procesar (revisa --edid / --list).") : Environment.ExitCode = 1 : Return
         End If
 
@@ -286,6 +297,22 @@ Module Program
             NifDumpRun(opt.NifDump)
             Return
         End If
+
+        ' --- ESTIMATESCLP: estima SCLP (bone-scale por hueso *_skin) por ratio de extents en espacio-hueso
+        '     de un underarmor vs un body de referencia, y lo compara contra el .sclp autorado vanilla.
+        If opt.EstimateSclp <> "" Then EstimateSclpRun(opt.EstimateSclp, opt.ShapeFilter) : Return
+
+        ' --- SCLPDIAG: vuelca la geometría cruda por hueso (allSet/domSet, percentiles, ratios candidatos)
+        '     para analizar a mano qué fórmula recupera el SCLP autorado.
+        If opt.SclpDiag <> "" Then SclpDiagRun(opt.SclpDiag, opt.ShapeFilter) : Return
+
+        ' --- SCLPBATCH: evalúa muchas combinaciones (una línea por caso en el manifiesto) en UNA sola corrida,
+        '     reusando el mismo pipeline NN (BuildNNPairs/AccumulateNNScales) y comparando vs el SCLP autorado.
+        If opt.SclpBatch <> "" Then SclpBatchRun(opt.SclpBatch) : Return
+
+        ' --- BINDDIFF: compara los binds skin→bone (SkinToBone) de cada hueso *_skin entre dos NIFs
+        '     (underarmor vs body). Si difieren, la escala del SCLP vive en el bind; si son idénticos, no.
+        If opt.BindDiff <> "" Then BindDiffRun(opt.BindDiff) : Return
 
         ' --- ANIMSYNCCHECK: valida el modelo No-Anim-Sync (rot clip + T/S estructural) vs el buggy (clip full).
         If opt.AnimSyncCheck <> "" Then
@@ -843,6 +870,70 @@ Module Program
         File.WriteAllBytes(outFile, bytes)
         Console.WriteLine($"[dumpref] {key} -> {outFile} ({bytes.Length} bytes)")
     End Sub
+
+    ''' <summary>DIAGNOSTICO (--ba2extract "&lt;archivePath&gt;|&lt;internalKey&gt;|&lt;outFile&gt;"): abre UN BA2/BSA
+    ''' directo por ruta de disco y extrae la entry cuyo FullPath interno coincide con internalKey (exacto
+    ''' case-insensitive, o EndsWith como fallback), escribiéndola a outFile. Sirve para leer un asset VANILLA
+    ''' directo del archivo SIN pasar por el FilesDictionary (que resuelve loose &gt; BA2 y sería contaminado por
+    ''' un replacer loose). File-only: no monta plugins ni load order.</summary>
+    Private Sub Ba2ExtractRun(spec As String)
+        Dim parts = spec.Split({"|"c}, 3)
+        If parts.Length <> 3 Then
+            Console.Error.WriteLine("[ba2extract] formato: --ba2extract ""<archivePath>|<internalKey>|<outFile>""") : Environment.ExitCode = 1 : Return
+        End If
+        Dim archivePath = parts(0).Trim()
+        Dim internalKey = parts(1).Trim()
+        Dim outFile = parts(2).Trim()
+        If Not IO.File.Exists(archivePath) Then
+            Console.Error.WriteLine($"[ba2extract] archivo no existe: '{archivePath}'") : Environment.ExitCode = 1 : Return
+        End If
+        Dim k = internalKey.Replace("/"c, "\"c).Trim().ToLowerInvariant()
+        Try
+            Using fs As New IO.FileStream(archivePath, IO.FileMode.Open, IO.FileAccess.Read)
+                Using r As New BSA_BA2_Library_DLL.BethesdaArchive.Core.BethesdaReader(fs)
+                    ' Match exacto por FullPath normalizado; si no hay, la primera cuyo FullPath termina en el key.
+                    Dim hit = r.EntriesFiles.FirstOrDefault(
+                        Function(e) e.FullPath.Replace("/"c, "\"c).ToLowerInvariant() = k)
+                    If hit Is Nothing Then
+                        hit = r.EntriesFiles.FirstOrDefault(
+                            Function(e) e.FullPath.Replace("/"c, "\"c).ToLowerInvariant().EndsWith(k))
+                    End If
+                    If hit Is Nothing Then
+                        Console.Error.WriteLine($"[ba2extract] not found: '{internalKey}' en '{archivePath}' ({r.EntriesFiles.Count} entries)")
+                        ' Diagnóstico: hasta 10 entries cuyo FullPath contenga el nombre de archivo del key.
+                        Dim fname = IO.Path.GetFileName(k)
+                        If fname <> "" Then
+                            Dim near = r.EntriesFiles.
+                                Where(Function(e) e.FullPath.ToLowerInvariant().Contains(fname)).
+                                Take(10).ToList()
+                            If near.Count > 0 Then
+                                Console.Error.WriteLine($"[ba2extract] entries que contienen '{fname}':")
+                                For Each e In near
+                                    Console.Error.WriteLine($"    {e.FullPath}")
+                                Next
+                            End If
+                        End If
+                        Environment.ExitCode = 1 : Return
+                    End If
+                    Dim bytes = r.ExtractToMemory(hit.Index)
+                    Dim dir = IO.Path.GetDirectoryName(IO.Path.GetFullPath(outFile))
+                    If dir <> "" Then Directory.CreateDirectory(dir)
+                    IO.File.WriteAllBytes(outFile, bytes)
+                    Console.WriteLine($"[ba2extract] {hit.FullPath} -> {outFile} ({bytes.Length} bytes)")
+                End Using
+            End Using
+        Catch ex As Exception
+            Console.Error.WriteLine($"[ba2extract] error: {ex.Message}") : Environment.ExitCode = 1
+        End Try
+    End Sub
+
+    ''' <summary>Lee bytes de un NIF/.sclp aceptando O una ruta de disco existente (loose/extraído) O un key del
+    ''' FilesDictionary (loose &gt; BA2). Permite pasar al probe (--estimatesclp / --sclpdiag) rutas absolutas de
+    ''' assets vanilla extraídos, evitando el override loose que contamina la referencia del FilesDictionary.</summary>
+    Private Function GetNifOrFileBytes(keyOrPath As String) As Byte()
+        If IO.File.Exists(keyOrPath) Then Return IO.File.ReadAllBytes(keyOrPath)
+        Return FilesDictionary_class.GetBytes(keyOrPath)
+    End Function
 
     ''' <summary>DIAGNOSTICO (--provenance): imprime SourcePluginName del record GANADOR para NPC + RACE +
     ''' cada CLFM referenciado por las opciones del slot Dirt (slot 20) de la raza. Marca como [VANILLA] los
@@ -1525,6 +1616,1867 @@ Module Program
                 Console.WriteLine($"     bone '{nm}'  bind.T=({b.Translation.X:F3},{b.Translation.Y:F3},{b.Translation.Z:F3})  inv(bind).T=({ib.Translation.X:F3},{ib.Translation.Y:F3},{ib.Translation.Z:F3})")
             Next
         Next
+    End Sub
+
+    ' =====================================================================================
+    ' --estimatesclp : estimador APROXIMADO de valores SCLP (bone-scale por hueso *_skin)
+    ' =====================================================================================
+
+    ''' <summary>Acumulador de extents de vértices en el ESPACIO LOCAL DE UN HUESO, por eje. Se llena
+    ''' pasando cada vértice skinneado a ese hueso (con el bind skin→bone) y ponderando por el peso.
+    ''' Rms(a)=√(Σw·local_a² / Σw) y MeanAbs(a)=Σw·|local_a| / Σw dan dos medidas del "tamaño" de la
+    ''' malla vista desde el hueso, sobre el eje a (0=X,1=Y,2=Z). El ratio underarmor/body de esas
+    ''' medidas es el estimador de escala.</summary>
+    Private Class BoneAccum
+        Public SumW As Single = 0.0F
+        Public SumWsq(2) As Single    ' por eje: Σ w·local²
+        Public SumWabs(2) As Single   ' por eje: Σ w·|local|
+        Public BindT As System.Numerics.Vector3 = New System.Numerics.Vector3(0, 0, 0)  ' traslación del bind (sanity de frame)
+        Public HasBind As Boolean = False
+
+        ' --- Set DOMINADO (vértices cuyo peso DOMINANTE > 0.5 apunta a este hueso), en espacio local ---
+        ' Sin blend ni ponderación: geometría limpia. Box=(max-min)/2 por eje; RmsC=desvío alrededor del centroide.
+        Public DomCount As Integer = 0
+        Public DomMin() As Single = {Single.MaxValue, Single.MaxValue, Single.MaxValue}
+        Public DomMax() As Single = {Single.MinValue, Single.MinValue, Single.MinValue}
+        Public DomSum(2) As Single     ' por eje: Σ local
+        Public DomSumSq(2) As Single   ' por eje: Σ local²
+
+        ''' <summary>RMS ponderado del extent local sobre el eje (0=X,1=Y,2=Z). 0 si no hay peso.</summary>
+        Public Function Rms(axis As Integer) As Single
+            If SumW <= 0.0F Then Return 0.0F
+            Return CSng(Math.Sqrt(SumWsq(axis) / SumW))
+        End Function
+
+        ''' <summary>Media ponderada del |extent| local sobre el eje (0=X,1=Y,2=Z). 0 si no hay peso.</summary>
+        Public Function MeanAbs(axis As Integer) As Single
+            If SumW <= 0.0F Then Return 0.0F
+            Return SumWabs(axis) / SumW
+        End Function
+
+        ''' <summary>Agrega un vértice DOMINADO por este hueso (posición local) al set limpio (sin blend).</summary>
+        Public Sub AddDominated(lp As System.Numerics.Vector3)
+            DomCount += 1
+            Dim v0 = lp.X, v1 = lp.Y, v2 = lp.Z
+            If v0 < DomMin(0) Then DomMin(0) = v0
+            If v1 < DomMin(1) Then DomMin(1) = v1
+            If v2 < DomMin(2) Then DomMin(2) = v2
+            If v0 > DomMax(0) Then DomMax(0) = v0
+            If v1 > DomMax(1) Then DomMax(1) = v1
+            If v2 > DomMax(2) Then DomMax(2) = v2
+            DomSum(0) += v0 : DomSum(1) += v1 : DomSum(2) += v2
+            DomSumSq(0) += v0 * v0 : DomSumSq(1) += v1 * v1 : DomSumSq(2) += v2 * v2
+        End Sub
+
+        ''' <summary>Semi-rango (bounding box / 2) del set dominado sobre el eje. 0 si vacío.</summary>
+        Public Function DomHalfRange(axis As Integer) As Single
+            If DomCount <= 0 Then Return 0.0F
+            Return (DomMax(axis) - DomMin(axis)) / 2.0F
+        End Function
+
+        ''' <summary>RMS del set dominado alrededor de SU centroide sobre el eje (desvío estándar poblacional). 0 si vacío.</summary>
+        Public Function DomRmsC(axis As Integer) As Single
+            If DomCount <= 0 Then Return 0.0F
+            Dim mean = DomSum(axis) / DomCount
+            Dim varr = DomSumSq(axis) / DomCount - mean * mean
+            If varr < 0.0F Then varr = 0.0F   ' guard numérico
+            Return CSng(Math.Sqrt(varr))
+        End Function
+    End Class
+
+    ''' <summary>Acumulador de error de UNA métrica sobre los ejes que el artista MOVIÓ (authored ≠ 1.0):
+    ''' lista de |est−authored| + conteos dentro de ±0.05 y ±0.10. Usado para el RESUMEN por-métrica.</summary>
+    Private Class MetricAcc
+        Public Errs As New List(Of Single)
+        Public In05 As Integer = 0
+        Public In10 As Integer = 0
+        Public Sub Add(err As Single)
+            Errs.Add(err)
+            If err <= 0.05F Then In05 += 1
+            If err <= 0.1F Then In10 += 1
+        End Sub
+    End Class
+
+    ''' <summary>Carga un NIF del FilesDictionary y acumula, por nombre de hueso, los extents de sus
+    ''' vértices skinneados en el ESPACIO LOCAL DE CADA HUESO (aplicando el bind skin→bone del shape).
+    ''' Un vértice contribuye a un hueso solo si su peso para ese hueso ≥ <paramref name="wThreshold"/>.
+    ''' Devuelve Nothing (y avisa por consola) si el NIF no existe o no carga.</summary>
+    Private Function AccumulateBoneExtents(nifKey As String, wThreshold As Single, Optional shapeNameFilter As String = "") As Dictionary(Of String, BoneAccum)
+        Dim bytes As Byte() = Nothing
+        Try
+            bytes = GetNifOrFileBytes(nifKey)
+        Catch ex As Exception
+            Console.WriteLine($"[estimatesclp] error leyendo '{nifKey}': {ex.Message}")
+            Return Nothing
+        End Try
+        If bytes Is Nothing OrElse bytes.Length = 0 Then
+            Console.WriteLine($"[estimatesclp] '{nifKey}' no existe / vacío en el FilesDictionary")
+            Return Nothing
+        End If
+        Dim nif As New Nifcontent_Class_Manolo()
+        Try
+            nif.Load_Manolo(bytes)
+        Catch ex As Exception
+            Console.WriteLine($"[estimatesclp] '{nifKey}' no carga como NIF: {ex.Message}")
+            Return Nothing
+        End Try
+
+        Dim acc As New Dictionary(Of String, BoneAccum)(StringComparer.OrdinalIgnoreCase)
+        Dim shapesSkinned = 0
+        Dim shapesKept = 0   ' shapes que pasan el filtro por nombre (solo relevante si shapeNameFilter <> "")
+        For blkIdx = 0 To nif.Blocks.Count - 1
+            Dim shp = TryCast(nif.Blocks(blkIdx), NiflySharp.INiShape)
+            If shp Is Nothing Then Continue For
+            Dim rs As NifRenderableShape
+            Try
+                rs = New NifRenderableShape(nif, shp, blkIdx)
+            Catch
+                Continue For
+            End Try
+            If shapeNameFilter <> "" Then
+                If rs.ShapeName Is Nothing OrElse rs.ShapeName.IndexOf(shapeNameFilter, StringComparison.OrdinalIgnoreCase) < 0 Then Continue For
+                shapesKept += 1
+            End If
+            If rs.ShapeBones Is Nothing OrElse rs.ShapeBones.Count = 0 Then Continue For  ' shape sin skin
+            Dim verts As List(Of System.Numerics.Vector3) = Nothing
+            Try
+                verts = rs.Geometry?.GetVertexPositions()
+            Catch
+            End Try
+            If verts Is Nothing OrElse verts.Count = 0 Then Continue For
+            Dim skin As ShapeSkinningData
+            Try
+                skin = rs.Geometry.GetSkinning()
+            Catch
+                Continue For
+            End Try
+            Dim wpv = skin.WeightsPerVertex
+            If wpv <= 0 OrElse skin.BoneIndices Is Nothing OrElse skin.BoneWeights Is Nothing Then Continue For
+            Dim bones = rs.ShapeBones
+            Dim binds = rs.ShapeBoneTransforms
+            If binds Is Nothing Then Continue For
+            shapesSkinned += 1
+            Dim nVerts = Math.Min(verts.Count, skin.VertexCount)
+            For i = 0 To nVerts - 1
+                Dim vp = verts(i)
+
+                ' --- Slot DOMINANTE del vértice: el de mayor peso entre sus slots (para el set dominado limpio) ---
+                Dim domSlot = -1
+                Dim domW As Single = 0.0F
+                For j = 0 To wpv - 1
+                    Dim idx = i * wpv + j
+                    If idx >= skin.BoneWeights.Length Then Continue For
+                    Dim wj As Single = CType(skin.BoneWeights(idx), Single)
+                    If wj > domW Then domW = wj : domSlot = j
+                Next
+
+                ' --- Acumulación BLENDED (ponderada por peso) — sin cambios ---
+                For j = 0 To wpv - 1
+                    Dim idx = i * wpv + j
+                    If idx >= skin.BoneWeights.Length OrElse idx >= skin.BoneIndices.Length Then Continue For
+                    Dim w As Single = CType(skin.BoneWeights(idx), Single)
+                    If w < wThreshold Then Continue For
+                    Dim bi = CInt(skin.BoneIndices(idx))
+                    If bi < 0 OrElse bi >= bones.Count OrElse bi >= binds.Count Then Continue For
+                    Dim bn = TryCast(bones(bi), NiflySharp.Blocks.NiNode)?.Name?.String
+                    If String.IsNullOrEmpty(bn) Then Continue For
+                    Dim bind = binds(bi)
+                    If bind Is Nothing Then Continue For
+                    ' Bind skin→bone aplicado al vértice: componer con una traslación-pura por el punto
+                    ' (Rotation=identidad, Scale=1 por default) ⇒ .Translation = bind aplicado al punto.
+                    Dim pT As New Transform_Class With {.Translation = vp}
+                    Dim lp = bind.ComposeTransforms(pT).Translation
+                    Dim ba As BoneAccum = Nothing
+                    If Not acc.TryGetValue(bn, ba) Then
+                        ba = New BoneAccum()
+                        ba.BindT = bind.Translation
+                        ba.HasBind = True
+                        acc(bn) = ba
+                    End If
+                    ba.SumW += w
+                    ba.SumWsq(0) += w * lp.X * lp.X
+                    ba.SumWsq(1) += w * lp.Y * lp.Y
+                    ba.SumWsq(2) += w * lp.Z * lp.Z
+                    ba.SumWabs(0) += w * Math.Abs(lp.X)
+                    ba.SumWabs(1) += w * Math.Abs(lp.Y)
+                    ba.SumWabs(2) += w * Math.Abs(lp.Z)
+                Next
+
+                ' --- Acumulación del SET DOMINADO (una sola vez por vértice, al hueso dominante si domW > 0.5) ---
+                If domSlot >= 0 AndAlso domW > 0.5F Then
+                    Dim idx = i * wpv + domSlot
+                    If idx < skin.BoneIndices.Length Then
+                        Dim bi = CInt(skin.BoneIndices(idx))
+                        If bi >= 0 AndAlso bi < bones.Count AndAlso bi < binds.Count Then
+                            Dim bn = TryCast(bones(bi), NiflySharp.Blocks.NiNode)?.Name?.String
+                            Dim bind = binds(bi)
+                            If Not String.IsNullOrEmpty(bn) AndAlso bind IsNot Nothing Then
+                                Dim pT As New Transform_Class With {.Translation = vp}
+                                Dim lp = bind.ComposeTransforms(pT).Translation
+                                Dim ba As BoneAccum = Nothing
+                                If Not acc.TryGetValue(bn, ba) Then
+                                    ba = New BoneAccum()
+                                    ba.BindT = bind.Translation
+                                    ba.HasBind = True
+                                    acc(bn) = ba
+                                End If
+                                ba.AddDominated(lp)
+                            End If
+                        End If
+                    End If
+                End If
+            Next
+        Next
+        Dim filterNote = If(shapeNameFilter <> "", $" [filtro '{shapeNameFilter}': {shapesKept} shape(s) tras filtro]", "")
+        Console.WriteLine($"[estimatesclp]   '{nifKey}': {shapesSkinned} shape(s) skinneada(s), {acc.Count} hueso(s) con peso{filterNote}")
+        Return acc
+    End Function
+
+    ''' <summary>Acumulador de la regresión least-squares POR-ORIGEN de la métrica <c>estNN</c>, por eje.
+    ''' Para cada par (vértice underarmor <c>u</c> ↔ su body-match <c>p</c>) en el frame local del hueso:
+    ''' <c>Sxx(a) += w·lp.a²</c> y <c>Sxy(a) += w·lu.a·lp.a</c>. La escala estimada es <c>Sxy/Sxx</c>
+    ''' (pendiente por el origen del hueso).</summary>
+    Private Class NNAccum
+        Public Sxx(2) As Double    ' por eje: Σ w·lp²  (denominador)
+        Public Sxy(2) As Double    ' por eje: Σ w·lu·lp (numerador)
+        Public Syy(2) As Double    ' por eje: Σ w·lu²  (para el residual de reconstrucción)
+        Public NPairs As Integer = 0
+    End Class
+
+    ''' <summary>Carga un NIF del FilesDictionary y devuelve, por NOMBRE de hueso (uniendo shapes), la lista de
+    ''' vértices skinneados a ese hueso con peso &gt; <paramref name="wEps"/>: <c>model</c> = posición cruda del
+    ''' vértice (espacio modelo, sin transformar), <c>local</c> = esa posición llevada al frame local del hueso
+    ''' con el bind skin→bone del shape, y <c>w</c> = peso continuo del vértice a ese hueso. Devuelve Nothing (y
+    ''' avisa por consola) si el NIF no existe o no carga. Base de datos para el nearest-neighbor de estNN.</summary>
+    Private Function CollectBoneVertexData(nifKey As String, wEps As Single, Optional shapeNameFilter As String = "") As Dictionary(Of String, List(Of (model As System.Numerics.Vector3, local As System.Numerics.Vector3, w As Single)))
+        Dim bytes As Byte() = Nothing
+        Try
+            bytes = GetNifOrFileBytes(nifKey)
+        Catch ex As Exception
+            Console.WriteLine($"[estimatesclp] error leyendo '{nifKey}': {ex.Message}")
+            Return Nothing
+        End Try
+        If bytes Is Nothing OrElse bytes.Length = 0 Then
+            Console.WriteLine($"[estimatesclp] '{nifKey}' no existe / vacío en el FilesDictionary")
+            Return Nothing
+        End If
+        Dim nif As New Nifcontent_Class_Manolo()
+        Try
+            nif.Load_Manolo(bytes)
+        Catch ex As Exception
+            Console.WriteLine($"[estimatesclp] '{nifKey}' no carga como NIF: {ex.Message}")
+            Return Nothing
+        End Try
+
+        Dim acc As New Dictionary(Of String, List(Of (model As System.Numerics.Vector3, local As System.Numerics.Vector3, w As Single)))(StringComparer.OrdinalIgnoreCase)
+        For blkIdx = 0 To nif.Blocks.Count - 1
+            Dim shp = TryCast(nif.Blocks(blkIdx), NiflySharp.INiShape)
+            If shp Is Nothing Then Continue For
+            Dim rs As NifRenderableShape
+            Try
+                rs = New NifRenderableShape(nif, shp, blkIdx)
+            Catch
+                Continue For
+            End Try
+            If shapeNameFilter <> "" AndAlso (rs.ShapeName Is Nothing OrElse rs.ShapeName.IndexOf(shapeNameFilter, StringComparison.OrdinalIgnoreCase) < 0) Then Continue For
+            If rs.ShapeBones Is Nothing OrElse rs.ShapeBones.Count = 0 Then Continue For
+            Dim verts As List(Of System.Numerics.Vector3) = Nothing
+            Try
+                verts = rs.Geometry?.GetVertexPositions()
+            Catch
+            End Try
+            If verts Is Nothing OrElse verts.Count = 0 Then Continue For
+            Dim skin As ShapeSkinningData
+            Try
+                skin = rs.Geometry.GetSkinning()
+            Catch
+                Continue For
+            End Try
+            Dim wpv = skin.WeightsPerVertex
+            If wpv <= 0 OrElse skin.BoneIndices Is Nothing OrElse skin.BoneWeights Is Nothing Then Continue For
+            Dim bones = rs.ShapeBones
+            Dim binds = rs.ShapeBoneTransforms
+            If binds Is Nothing Then Continue For
+            Dim nVerts = Math.Min(verts.Count, skin.VertexCount)
+            For i = 0 To nVerts - 1
+                Dim vp = verts(i)
+                For j = 0 To wpv - 1
+                    Dim idx = i * wpv + j
+                    If idx >= skin.BoneWeights.Length OrElse idx >= skin.BoneIndices.Length Then Continue For
+                    Dim w As Single = CType(skin.BoneWeights(idx), Single)
+                    If w <= wEps Then Continue For   ' excluye pesos numéricamente nulos (no es heurística de dominancia)
+                    Dim bi = CInt(skin.BoneIndices(idx))
+                    If bi < 0 OrElse bi >= bones.Count OrElse bi >= binds.Count Then Continue For
+                    Dim bn = TryCast(bones(bi), NiflySharp.Blocks.NiNode)?.Name?.String
+                    If String.IsNullOrEmpty(bn) Then Continue For
+                    Dim bind = binds(bi)
+                    If bind Is Nothing Then Continue For
+                    Dim pT As New Transform_Class With {.Translation = vp}
+                    Dim lp = bind.ComposeTransforms(pT).Translation
+                    Dim lst As List(Of (model As System.Numerics.Vector3, local As System.Numerics.Vector3, w As Single)) = Nothing
+                    If Not acc.TryGetValue(bn, lst) Then
+                        lst = New List(Of (model As System.Numerics.Vector3, local As System.Numerics.Vector3, w As Single))()
+                        acc(bn) = lst
+                    End If
+                    lst.Add((vp, lp, w))
+                Next
+            Next
+        Next
+        Return acc
+    End Function
+
+    ''' <summary>Métrica <c>estNN</c>: escala por hueso y eje por NEAREST-NEIGHBOR least-squares, SIN umbral de
+    ''' dominancia (funciona también en huesos blend). La malla del underarmor = body deformado por skinning con
+    ''' los <c>_skin</c> escalados por S_b (diagonal, en frame local del hueso, alrededor del ORIGEN). Los binds
+    ''' skin→bone del underarmor y del body son IDÉNTICOS.
+    ''' <para>Para cada vértice del underarmor influido por el hueso b (peso &gt; <paramref name="wEps"/>), su
+    ''' "rest" aproximado = el vértice del BODY más cercano en ESPACIO MODELO (posición cruda) entre los vértices
+    ''' del body también influidos por b (candidatos por NOMBRE de hueso, uniendo shapes). Ambos se llevan al
+    ''' frame local del hueso; se acumula, por eje, ponderando por el peso real <c>w</c>:
+    ''' <c>Sxx += w·lp²</c>, <c>Sxy += w·lu·lp</c>. La escala = <c>Sxy/Sxx</c> (pendiente por el origen).</para>
+    ''' <para>Guard: <c>Sxx &lt; 1e-6</c> → n/a para ese eje. NIF que no carga → Nothing. Hueso solo en un NIF
+    ''' (sin candidatos body) → skip.</para></summary>
+    ''' <summary>Construcción COMPARTIDA de los pares nearest-neighbor por hueso (base de <c>estNN</c> y
+    ''' <c>estFull</c>). Para cada vértice del underarmor influido por el hueso b (peso &gt; <paramref name="wEps"/>),
+    ''' matchea el vértice del BODY más cercano en ESPACIO MODELO entre los candidatos por NOMBRE de hueso, y devuelve
+    ''' por hueso la lista de pares en frame LOCAL: <c>lu</c> = vértice del underarmor en local, <c>lp</c> = su match
+    ''' del body en local, <c>w</c> = peso continuo del vértice al hueso. Solo aparecen huesos con ≥1 par (presentes
+    ''' en AMBOS NIFs). NIF que no carga → Nothing.</summary>
+    Private Function BuildNNPairs(uaKey As String, bodyKey As String, wEps As Single, Optional uaShapeFilter As String = "") As Dictionary(Of String, List(Of (lu As System.Numerics.Vector3, lp As System.Numerics.Vector3, w As Double)))
+        Dim bodyData = CollectBoneVertexData(bodyKey, wEps)                 ' body de referencia: SIN filtro (completo)
+        If bodyData Is Nothing Then Return Nothing
+        Dim uaData = CollectBoneVertexData(uaKey, wEps, uaShapeFilter)       ' underarmor: filtro por nombre de shape (si activo)
+        If uaData Is Nothing Then Return Nothing
+
+        Dim pairs As New Dictionary(Of String, List(Of (lu As System.Numerics.Vector3, lp As System.Numerics.Vector3, w As Double)))(StringComparer.OrdinalIgnoreCase)
+        For Each kv In uaData
+            Dim bn = kv.Key
+            Dim uaList = kv.Value
+            Dim cand As List(Of (model As System.Numerics.Vector3, local As System.Numerics.Vector3, w As Single)) = Nothing
+            If Not bodyData.TryGetValue(bn, cand) OrElse cand Is Nothing OrElse cand.Count = 0 Then Continue For   ' hueso solo en un NIF → skip
+            Dim lst As List(Of (lu As System.Numerics.Vector3, lp As System.Numerics.Vector3, w As Double)) = Nothing
+            For Each u In uaList
+                ' Nearest body candidate por distancia² en espacio MODELO (naive O(n·m), cientos de verts por hueso).
+                Dim best = -1
+                Dim bestD As Single = Single.MaxValue
+                For ci = 0 To cand.Count - 1
+                    Dim d = System.Numerics.Vector3.DistanceSquared(u.model, cand(ci).model)
+                    If d < bestD Then bestD = d : best = ci
+                Next
+                If best < 0 Then Continue For
+                If lst Is Nothing Then
+                    lst = New List(Of (lu As System.Numerics.Vector3, lp As System.Numerics.Vector3, w As Double))()
+                    pairs(bn) = lst
+                End If
+                lst.Add((u.local, cand(best).local, CDbl(u.w)))   ' (lu, lp, w)
+            Next
+        Next
+        Return pairs
+    End Function
+
+    ''' <summary>Métrica <c>estNN</c>: escala diagonal por hueso y eje por least-squares POR-ORIGEN sobre los pares
+    ''' NN de <see cref="BuildNNPairs"/>. Por eje: <c>Sxx += w·lp²</c>, <c>Sxy += w·lu·lp</c>, escala = <c>Sxy/Sxx</c>.
+    ''' Guard: <c>Sxx &lt; 1e-6</c> → n/a para ese eje. <paramref name="pairs"/> Nothing → Nothing.</summary>
+    Private Function AccumulateNNScales(pairs As Dictionary(Of String, List(Of (lu As System.Numerics.Vector3, lp As System.Numerics.Vector3, w As Double)))) As Dictionary(Of String, (sx As Double, sy As Double, sz As Double, nPairs As Integer, okX As Boolean, okY As Boolean, okZ As Boolean, residX As Double, residY As Double, residZ As Double))
+        If pairs Is Nothing Then Return Nothing
+
+        ' Acumulá la regresión diagonal por hueso a partir de los pares NN ya construidos.
+        Dim acc As New Dictionary(Of String, NNAccum)(StringComparer.OrdinalIgnoreCase)
+        For Each kv In pairs
+            Dim na As New NNAccum()
+            For Each pr In kv.Value
+                Dim lu = pr.lu
+                Dim lp = pr.lp
+                Dim w As Double = pr.w
+                na.Sxx(0) += w * CDbl(lp.X) * CDbl(lp.X)
+                na.Sxx(1) += w * CDbl(lp.Y) * CDbl(lp.Y)
+                na.Sxx(2) += w * CDbl(lp.Z) * CDbl(lp.Z)
+                na.Sxy(0) += w * CDbl(lu.X) * CDbl(lp.X)
+                na.Sxy(1) += w * CDbl(lu.Y) * CDbl(lp.Y)
+                na.Sxy(2) += w * CDbl(lu.Z) * CDbl(lp.Z)
+                na.Syy(0) += w * CDbl(lu.X) * CDbl(lu.X)
+                na.Syy(1) += w * CDbl(lu.Y) * CDbl(lu.Y)
+                na.Syy(2) += w * CDbl(lu.Z) * CDbl(lu.Z)
+                na.NPairs += 1
+            Next
+            acc(kv.Key) = na
+        Next
+
+        Const SXX_EPS As Double = 0.000001
+        Dim res As New Dictionary(Of String, (sx As Double, sy As Double, sz As Double, nPairs As Integer, okX As Boolean, okY As Boolean, okZ As Boolean, residX As Double, residY As Double, residZ As Double))(StringComparer.OrdinalIgnoreCase)
+        For Each kv In acc
+            Dim a = kv.Value
+            Dim okX = a.Sxx(0) >= SXX_EPS
+            Dim okY = a.Sxx(1) >= SXX_EPS
+            Dim okZ = a.Sxx(2) >= SXX_EPS
+            Dim sx = If(okX, a.Sxy(0) / a.Sxx(0), Double.NaN)
+            Dim sy = If(okY, a.Sxy(1) / a.Sxx(1), Double.NaN)
+            Dim sz = If(okZ, a.Sxy(2) / a.Sxx(2), Double.NaN)
+            ' Residual normalizado por eje: fracción de la varianza-por-origen de lu NO explicada por s·lp.
+            ' resid = sqrt( max(0, Syy − s·Sxy) / max(1e-9, Syy) ). 0 = escala-por-hueso perfecta. NaN si el eje no cuenta.
+            Dim residX = If(okX, Math.Sqrt(Math.Max(0.0, a.Syy(0) - sx * a.Sxy(0)) / Math.Max(0.000000001, a.Syy(0))), Double.NaN)
+            Dim residY = If(okY, Math.Sqrt(Math.Max(0.0, a.Syy(1) - sy * a.Sxy(1)) / Math.Max(0.000000001, a.Syy(1))), Double.NaN)
+            Dim residZ = If(okZ, Math.Sqrt(Math.Max(0.0, a.Syy(2) - sz * a.Sxy(2)) / Math.Max(0.000000001, a.Syy(2))), Double.NaN)
+            res(kv.Key) = (sx, sy, sz, a.NPairs, okX, okY, okZ, residX, residY, residZ)
+        Next
+        Return res
+    End Function
+
+    ''' <summary>Inversa de una matriz 3×3 por cofactores/adjugada. Devuelve <c>Nothing</c> si
+    ''' <c>|det| &lt; 1e-12</c> (matriz singular). Índices [fila,columna] 0..2.</summary>
+    Private Function Inverse3x3(m(,) As Double) As Double(,)
+        Dim a = m(0, 0), b = m(0, 1), c = m(0, 2)
+        Dim d = m(1, 0), e = m(1, 1), f = m(1, 2)
+        Dim g = m(2, 0), h = m(2, 1), i = m(2, 2)
+        Dim cof00 = e * i - f * h
+        Dim cof01 = -(d * i - f * g)
+        Dim cof02 = d * h - e * g
+        Dim det = a * cof00 + b * cof01 + c * cof02
+        If Math.Abs(det) < 0.000000000001 Then Return Nothing   ' 1e-12: guard singular → L no disponible
+        Dim invDet = 1.0 / det
+        Dim inv(2, 2) As Double
+        ' inv = adjugada / det (adjugada = transpuesta de la matriz de cofactores)
+        inv(0, 0) = cof00 * invDet
+        inv(0, 1) = -(b * i - c * h) * invDet
+        inv(0, 2) = (b * f - c * e) * invDet
+        inv(1, 0) = cof01 * invDet
+        inv(1, 1) = (a * i - c * g) * invDet
+        inv(1, 2) = -(a * f - c * d) * invDet
+        inv(2, 0) = cof02 * invDet
+        inv(2, 1) = -(a * h - b * g) * invDet
+        inv(2, 2) = (a * e - b * d) * invDet
+        Return inv
+    End Function
+
+    ''' <summary>Métrica <c>estFull</c>: ajuste de la MATRIZ LINEAL 3×3 completa <c>L</c> que mejor mapea
+    ''' <c>lp → lu</c> por el origen (least-squares ponderado por <c>w</c>), sobre los MISMOS pares NN que
+    ''' <c>estNN</c> (<see cref="BuildNNPairs"/>). Acumula por hueso en frame LOCAL:
+    ''' <c>P = Σ w·(lp ⊗ lp)</c>, <c>M = Σ w·(lu ⊗ lp)</c> (M[i][j] = Σ w·lu[i]·lp[j]), <c>Syy = Σ w·|lu|²</c>.
+    ''' Resuelve <c>L = M · inv(P)</c>. Devuelve por hueso:
+    ''' <list type="bullet">
+    ''' <item><c>Lxx/Lyy/Lzz</c> = diag(L) = escala per-eje FRAME-AWARE (candidato a .sclp).</item>
+    ''' <item><c>offNorm</c> = ‖off-diagonal‖ / ‖L‖ (0 = escala de eje pura; alto = rotación/shear no representable).</item>
+    ''' <item><c>residFull</c> = sqrt(max(0, Σw|lu|² − Σ_ij L[i][j]·M[i][j]) / max(1e-9, Σw|lu|²)) — residual del ajuste
+    ''' lineal completo; debería ser ≤ el residual diagonal de estNN.</item>
+    ''' </list>
+    ''' <c>ok = False</c> (todo NaN) si <c>P</c> es singular. <paramref name="pairs"/> Nothing → Nothing.</summary>
+    Private Function AccumulateFullFit(pairs As Dictionary(Of String, List(Of (lu As System.Numerics.Vector3, lp As System.Numerics.Vector3, w As Double)))) As Dictionary(Of String, (Lxx As Double, Lyy As Double, Lzz As Double, offNorm As Double, residFull As Double, ok As Boolean))
+        If pairs Is Nothing Then Return Nothing
+        Dim res As New Dictionary(Of String, (Lxx As Double, Lyy As Double, Lzz As Double, offNorm As Double, residFull As Double, ok As Boolean))(StringComparer.OrdinalIgnoreCase)
+        For Each kv In pairs
+            Dim P(2, 2) As Double   ' Σ w·(lp ⊗ lp)  (simétrica)
+            Dim M(2, 2) As Double   ' Σ w·(lu ⊗ lp)  (M[i][j] = Σ w·lu[i]·lp[j])
+            Dim Syy As Double = 0.0 ' Σ w·|lu|²
+            For Each pr In kv.Value
+                Dim w As Double = pr.w
+                Dim px = CDbl(pr.lp.X), py = CDbl(pr.lp.Y), pz = CDbl(pr.lp.Z)
+                Dim ux = CDbl(pr.lu.X), uy = CDbl(pr.lu.Y), uz = CDbl(pr.lu.Z)
+                P(0, 0) += w * px * px : P(0, 1) += w * px * py : P(0, 2) += w * px * pz
+                P(1, 0) += w * py * px : P(1, 1) += w * py * py : P(1, 2) += w * py * pz
+                P(2, 0) += w * pz * px : P(2, 1) += w * pz * py : P(2, 2) += w * pz * pz
+                M(0, 0) += w * ux * px : M(0, 1) += w * ux * py : M(0, 2) += w * ux * pz
+                M(1, 0) += w * uy * px : M(1, 1) += w * uy * py : M(1, 2) += w * uy * pz
+                M(2, 0) += w * uz * px : M(2, 1) += w * uz * py : M(2, 2) += w * uz * pz
+                Syy += w * (ux * ux + uy * uy + uz * uz)
+            Next
+
+            Dim Pinv = Inverse3x3(P)
+            If Pinv Is Nothing Then
+                res(kv.Key) = (Double.NaN, Double.NaN, Double.NaN, Double.NaN, Double.NaN, False)
+                Continue For
+            End If
+
+            ' L = M · inv(P)  (3×3).
+            Dim L(2, 2) As Double
+            For ii = 0 To 2
+                For jj = 0 To 2
+                    Dim s As Double = 0.0
+                    For kk = 0 To 2
+                        s += M(ii, kk) * Pinv(kk, jj)
+                    Next
+                    L(ii, jj) = s
+                Next
+            Next
+
+            ' offNorm = ‖off-diagonal‖ / ‖L‖ ; residual = sqrt(max(0, Syy − Σ L·M) / max(1e-9, Syy)).
+            Dim sumOff As Double = 0.0, sumAll As Double = 0.0, dotLM As Double = 0.0
+            For ii = 0 To 2
+                For jj = 0 To 2
+                    Dim v = L(ii, jj)
+                    sumAll += v * v
+                    If ii <> jj Then sumOff += v * v
+                    dotLM += v * M(ii, jj)
+                Next
+            Next
+            Dim offNorm = If(sumAll > 0.0, Math.Sqrt(sumOff) / Math.Sqrt(sumAll), 0.0)
+            Dim residFull = Math.Sqrt(Math.Max(0.0, Syy - dotLM) / Math.Max(0.000000001, Syy))
+            res(kv.Key) = (L(0, 0), L(1, 1), L(2, 2), offNorm, residFull, True)
+        Next
+        Return res
+    End Function
+
+    ' =====================================================================================
+    ' estGlobal : SOLVE GLOBAL CONJUNTO por mínimos cuadrados de TODAS las escalas de hueso a la vez.
+    ' =====================================================================================
+
+    ''' <summary>Aplica un <see cref="Transform_Class"/> a un PUNTO: componer con una traslación-pura por el
+    ''' punto (Rotation=identidad, Scale=1) ⇒ <c>.Translation</c> = el transform aplicado al punto. Mismo patrón
+    ''' que usa el resto del archivo (<c>bind.ComposeTransforms(New Transform_Class With {.Translation=pt}).Translation</c>);
+    ''' evita tocar matrices crudas y mantiene la convención de columnas/inverse consistente.</summary>
+    Private Function ApplyT(tr As Transform_Class, pt As System.Numerics.Vector3) As System.Numerics.Vector3
+        Return tr.ComposeTransforms(New Transform_Class With {.Translation = pt}).Translation
+    End Function
+
+    ''' <summary>Resuelve el sistema lineal <c>A·x = b</c> (A cuadrada N×N, Double) por ELIMINACIÓN GAUSSIANA
+    ''' con PIVOTEO PARCIAL (Gauss-Jordan: elimina hacia arriba y abajo). Copia la matriz aumentada, no muta
+    ''' A/b. Si un pivote queda &lt; 1e-15 (columna singular pese a la regularización) esa incógnita cae al
+    ''' fallback identidad (1.0). Devuelve x (longitud N).</summary>
+    Private Function SolveLinearSystem(A(,) As Double, b() As Double) As Double()
+        Dim n = b.Length
+        Dim M(n - 1, n) As Double   ' aumentada [A | b]
+        For i = 0 To n - 1
+            For j = 0 To n - 1
+                M(i, j) = A(i, j)
+            Next
+            M(i, n) = b(i)
+        Next
+        For col = 0 To n - 1
+            ' Pivoteo parcial: fila con |M(r,col)| máximo de col..n-1.
+            Dim piv = col
+            Dim mx = Math.Abs(M(col, col))
+            For r = col + 1 To n - 1
+                Dim av = Math.Abs(M(r, col))
+                If av > mx Then mx = av : piv = r
+            Next
+            If piv <> col Then
+                For j = 0 To n
+                    Dim tmp = M(col, j) : M(col, j) = M(piv, j) : M(piv, j) = tmp
+                Next
+            End If
+            Dim d = M(col, col)
+            If Math.Abs(d) < 0.000000000000001 Then Continue For   ' 1e-15: pivote singular → se resuelve por fallback
+            For r = 0 To n - 1
+                If r = col Then Continue For
+                Dim f = M(r, col) / d
+                If f = 0.0 Then Continue For
+                For j = col To n
+                    M(r, j) -= f * M(col, j)
+                Next
+            Next
+        Next
+        Dim x(n - 1) As Double
+        For i = 0 To n - 1
+            Dim d = M(i, i)
+            x(i) = If(Math.Abs(d) < 0.000000000000001, 1.0, M(i, n) / d)   ' singular → identidad
+        Next
+        Return x
+    End Function
+
+    ''' <summary>Carga un NIF y devuelve, por VÉRTICE, su posición MODELO cruda y su lista de influencias de
+    ''' skinning <c>(boneName, w)</c> con peso &gt; <paramref name="wEps"/>. Además rellena <paramref name="binds"/>
+    ''' = por NOMBRE de hueso, el bind skin→bone (<c>ShapeBoneTransforms</c>; primero gana, uniendo shapes).
+    ''' Devuelve Nothing (y avisa) si el NIF no existe/ no carga. Base del solve conjunto <c>estGlobal</c>.</summary>
+    Private Function CollectVertsWithInfluences(nifKey As String, wEps As Single,
+                                                ByRef binds As Dictionary(Of String, Transform_Class),
+                                                Optional shapeNameFilter As String = "") As List(Of (model As System.Numerics.Vector3, infl As List(Of (bone As String, w As Double))))
+        binds = New Dictionary(Of String, Transform_Class)(StringComparer.OrdinalIgnoreCase)
+        Dim bytes As Byte() = Nothing
+        Try
+            bytes = GetNifOrFileBytes(nifKey)
+        Catch ex As Exception
+            Console.WriteLine($"[estimatesclp] error leyendo '{nifKey}': {ex.Message}")
+            Return Nothing
+        End Try
+        If bytes Is Nothing OrElse bytes.Length = 0 Then
+            Console.WriteLine($"[estimatesclp] '{nifKey}' no existe / vacío en el FilesDictionary")
+            Return Nothing
+        End If
+        Dim nif As New Nifcontent_Class_Manolo()
+        Try
+            nif.Load_Manolo(bytes)
+        Catch ex As Exception
+            Console.WriteLine($"[estimatesclp] '{nifKey}' no carga como NIF: {ex.Message}")
+            Return Nothing
+        End Try
+
+        Dim result As New List(Of (model As System.Numerics.Vector3, infl As List(Of (bone As String, w As Double))))()
+        For blkIdx = 0 To nif.Blocks.Count - 1
+            Dim shp = TryCast(nif.Blocks(blkIdx), NiflySharp.INiShape)
+            If shp Is Nothing Then Continue For
+            Dim rs As NifRenderableShape
+            Try
+                rs = New NifRenderableShape(nif, shp, blkIdx)
+            Catch
+                Continue For
+            End Try
+            If shapeNameFilter <> "" AndAlso (rs.ShapeName Is Nothing OrElse rs.ShapeName.IndexOf(shapeNameFilter, StringComparison.OrdinalIgnoreCase) < 0) Then Continue For
+            If rs.ShapeBones Is Nothing OrElse rs.ShapeBones.Count = 0 Then Continue For
+            Dim verts As List(Of System.Numerics.Vector3) = Nothing
+            Try
+                verts = rs.Geometry?.GetVertexPositions()
+            Catch
+            End Try
+            If verts Is Nothing OrElse verts.Count = 0 Then Continue For
+            Dim skin As ShapeSkinningData
+            Try
+                skin = rs.Geometry.GetSkinning()
+            Catch
+                Continue For
+            End Try
+            Dim wpv = skin.WeightsPerVertex
+            If wpv <= 0 OrElse skin.BoneIndices Is Nothing OrElse skin.BoneWeights Is Nothing Then Continue For
+            Dim bones = rs.ShapeBones
+            Dim bindsArr = rs.ShapeBoneTransforms
+            If bindsArr Is Nothing Then Continue For
+            ' Registrá el bind skin→bone por NOMBRE de hueso (primero gana; consistente con el resto del archivo).
+            For k = 0 To Math.Min(bones.Count, bindsArr.Count) - 1
+                Dim bnNode = TryCast(bones(k), NiflySharp.Blocks.NiNode)
+                Dim nm = If(bnNode?.Name?.String, "")
+                If nm = "" OrElse bindsArr(k) Is Nothing Then Continue For
+                If Not binds.ContainsKey(nm) Then binds(nm) = bindsArr(k)
+            Next
+            Dim nVerts = Math.Min(verts.Count, skin.VertexCount)
+            For i = 0 To nVerts - 1
+                Dim vp = verts(i)
+                Dim infl As New List(Of (bone As String, w As Double))()
+                For j = 0 To wpv - 1
+                    Dim idx = i * wpv + j
+                    If idx >= skin.BoneWeights.Length OrElse idx >= skin.BoneIndices.Length Then Continue For
+                    Dim w As Single = CType(skin.BoneWeights(idx), Single)
+                    If w <= wEps Then Continue For
+                    Dim bi = CInt(skin.BoneIndices(idx))
+                    If bi < 0 OrElse bi >= bones.Count Then Continue For
+                    Dim bnNode = TryCast(bones(bi), NiflySharp.Blocks.NiNode)
+                    Dim bn = If(bnNode?.Name?.String, "")
+                    If bn = "" Then Continue For
+                    infl.Add((bn, CDbl(w)))
+                Next
+                If infl.Count > 0 Then result.Add((vp, infl))
+            Next
+        Next
+        Return result
+    End Function
+
+    ''' <summary>Métrica <c>estGlobal</c>: SOLVE GLOBAL CONJUNTO por mínimos cuadrados de TODAS las escalas de
+    ''' hueso a la vez. Modelo: la malla del underarmor = body deformado por skinning con los <c>_skin</c> escalados
+    ''' por <c>S_b=diag(sx,sy,sz)</c> en el frame local del hueso (alrededor del origen):
+    ''' <c>u = Σ_b w_b · Bind_b · S_b · Bind_b⁻¹ · p</c>, LINEAL en las incógnitas. Para cada vértice <c>u</c> del
+    ''' underarmor su rest <c>p</c> = vértice del BODY más cercano en espacio MODELO (nearest-neighbor GLOBAL, un
+    ''' solo <c>p</c> por <c>u</c> sobre TODOS los verts del body). Se ensamblan las ecuaciones normales
+    ''' <c>ATA·x = ATy</c> (con regularización λ hacia identidad) y se resuelve por eliminación gaussiana con
+    ''' pivoteo parcial. Devuelve por NOMBRE de hueso <c>(sx,sy,sz)</c>. Imprime un SELF-CHECK del residual
+    ''' <c>‖A·x−y‖</c> del solve vs el de x=identidad. NIF que no carga → Nothing.</summary>
+    Private Function EstimateGlobalScales(uaKey As String, bodyKey As String, wEps As Single, Optional uaShapeFilter As String = "") As Dictionary(Of String, (sx As Double, sy As Double, sz As Double))
+        ' Regularización relativa hacia identidad: λ = LAMBDA · (traza(ATA)/N). Subilo para más pull a s=1.0.
+        Const LAMBDA As Double = 0.01
+        Dim inv = System.Globalization.CultureInfo.InvariantCulture
+
+        Dim uaBinds As Dictionary(Of String, Transform_Class) = Nothing
+        Dim bodyBinds As Dictionary(Of String, Transform_Class) = Nothing
+        Dim uaVerts = CollectVertsWithInfluences(uaKey, wEps, uaBinds, uaShapeFilter)   ' underarmor: filtro por nombre de shape (si activo)
+        If uaVerts Is Nothing Then Return Nothing
+        Dim bodyVerts = CollectVertsWithInfluences(bodyKey, wEps, bodyBinds)             ' body de referencia: SIN filtro (completo)
+        If bodyVerts Is Nothing Then Return Nothing
+        If uaVerts.Count = 0 OrElse bodyVerts.Count = 0 Then
+            Console.WriteLine("[estimatesclp] estGlobal: NIF sin vértices skinneados — abort")
+            Return Nothing
+        End If
+
+        ' Binds por NOMBRE: underarmor primero (define el frame de cada hueso); huesos solo-en-body toman el del body.
+        Dim binds As New Dictionary(Of String, Transform_Class)(uaBinds, StringComparer.OrdinalIgnoreCase)
+        For Each kv In bodyBinds
+            If Not binds.ContainsKey(kv.Key) Then binds(kv.Key) = kv.Value
+        Next
+
+        ' Posiciones MODELO de TODOS los verts del body (base del nearest-neighbor GLOBAL).
+        Dim bodyPos(bodyVerts.Count - 1) As System.Numerics.Vector3
+        For i = 0 To bodyVerts.Count - 1
+            bodyPos(i) = bodyVerts(i).model
+        Next
+
+        ' Incógnitas: por cada NOMBRE de hueso que influye algún vértice UA y tiene bind, 3 índices (sx,sy,sz).
+        Dim boneIdx As New Dictionary(Of String, Integer)(StringComparer.OrdinalIgnoreCase)
+        Dim boneList As New List(Of String)()
+        For Each vx In uaVerts
+            For Each infl In vx.infl
+                If binds.ContainsKey(infl.bone) AndAlso Not boneIdx.ContainsKey(infl.bone) Then
+                    boneIdx(infl.bone) = boneList.Count
+                    boneList.Add(infl.bone)
+                End If
+            Next
+        Next
+        Dim nBones = boneList.Count
+        If nBones = 0 Then
+            Console.WriteLine("[estimatesclp] estGlobal: 0 huesos con bind — abort")
+            Return Nothing
+        End If
+        Dim N = 3 * nBones
+
+        ' Precomputá por hueso (UNA vez): SkinToBone, t_b y las columnas de la parte lineal de Bind_b = SkinToBone⁻¹.
+        Dim skinToBone(nBones - 1) As Transform_Class
+        Dim tB(nBones - 1) As System.Numerics.Vector3
+        Dim col0(nBones - 1) As System.Numerics.Vector3
+        Dim col1(nBones - 1) As System.Numerics.Vector3
+        Dim col2(nBones - 1) As System.Numerics.Vector3
+        For bb = 0 To nBones - 1
+            Dim s2b = binds(boneList(bb))
+            skinToBone(bb) = s2b
+            Dim bindB = s2b.Inverse()
+            Dim t = ApplyT(bindB, System.Numerics.Vector3.Zero)
+            tB(bb) = t
+            col0(bb) = ApplyT(bindB, New System.Numerics.Vector3(1, 0, 0)) - t
+            col1(bb) = ApplyT(bindB, New System.Numerics.Vector3(0, 1, 0)) - t
+            col2(bb) = ApplyT(bindB, New System.Numerics.Vector3(0, 0, 1)) - t
+        Next
+
+        Console.WriteLine($"[estimatesclp] estGlobal: solve conjunto — {uaVerts.Count} verts UA × {bodyPos.Length} verts body, {nBones} huesos ({N} incógnitas). NN naive O(Nua·Nbody), puede tardar…")
+
+        ' Ensamblado de las ecuaciones normales ATA·x = ATy. Se guardan las filas dispersas para el self-check.
+        Dim ATA(N - 1, N - 1) As Double
+        Dim ATy(N - 1) As Double
+        Dim rows As New List(Of (T As System.Numerics.Vector3, ents As List(Of (idx As Integer, cx As Double, cy As Double, cz As Double))))()
+
+        For Each vx In uaVerts
+            ' p = body-vertex más cercano a u en espacio MODELO (nearest-neighbor GLOBAL, sobre TODOS los verts del body).
+            Dim u = vx.model
+            Dim best = -1
+            Dim bestD As Single = Single.MaxValue
+            For ci = 0 To bodyPos.Length - 1
+                Dim d = System.Numerics.Vector3.DistanceSquared(u, bodyPos(ci))
+                If d < bestD Then bestD = d : best = ci
+            Next
+            If best < 0 Then Continue For
+            Dim p = bodyPos(best)
+
+            ' T = u − Σ_b w_b·t_b ; coeficientes (Csx,Csy,Csz) por hueso influyente.
+            Dim T = u
+            Dim ents As New List(Of (idx As Integer, cx As Double, cy As Double, cz As Double))()
+            For Each infl In vx.infl
+                Dim bIdx As Integer
+                If Not boneIdx.TryGetValue(infl.bone, bIdx) Then Continue For
+                Dim w = infl.w
+                Dim tb0 = tB(bIdx)
+                T -= New System.Numerics.Vector3(CSng(w) * tb0.X, CSng(w) * tb0.Y, CSng(w) * tb0.Z)
+                ' localp = p en el frame local del hueso b.
+                Dim lp = ApplyT(skinToBone(bIdx), p)
+                Dim a = CDbl(lp.X), b_ = CDbl(lp.Y), c = CDbl(lp.Z)
+                Dim c0 = col0(bIdx), c1 = col1(bIdx), c2 = col2(bIdx)
+                Dim baseIx = 3 * bIdx
+                ' Csx_b = w·a·col0_b ; Csy_b = w·b_·col1_b ; Csz_b = w·c·col2_b  (Vector3 c/u → 3 componentes).
+                ents.Add((baseIx + 0, w * a * CDbl(c0.X), w * a * CDbl(c0.Y), w * a * CDbl(c0.Z)))
+                ents.Add((baseIx + 1, w * b_ * CDbl(c1.X), w * b_ * CDbl(c1.Y), w * b_ * CDbl(c1.Z)))
+                ents.Add((baseIx + 2, w * c * CDbl(c2.X), w * c * CDbl(c2.Y), w * c * CDbl(c2.Z)))
+            Next
+            If ents.Count = 0 Then Continue For
+
+            ' Cada componente d∈{X,Y,Z} es una fila del sistema: coeficientes dispersos + lado derecho T[d].
+            Dim Td = New Double() {CDbl(T.X), CDbl(T.Y), CDbl(T.Z)}
+            For d = 0 To 2
+                For ii = 0 To ents.Count - 1
+                    Dim ci = If(d = 0, ents(ii).cx, If(d = 1, ents(ii).cy, ents(ii).cz))
+                    If ci = 0.0 Then Continue For
+                    Dim gi = ents(ii).idx
+                    ATy(gi) += ci * Td(d)
+                    For jj = 0 To ents.Count - 1
+                        Dim cj = If(d = 0, ents(jj).cx, If(d = 1, ents(jj).cy, ents(jj).cz))
+                        If cj = 0.0 Then Continue For
+                        ATA(gi, ents(jj).idx) += ci * cj
+                    Next
+                Next
+            Next
+            rows.Add((T, ents))
+        Next
+
+        ' Regularización hacia identidad: minimiza λ·(s−1)² por incógnita ⇒ +λ en la diagonal de ATA y +λ·1.0 en ATy.
+        Dim trace As Double = 0.0
+        For i = 0 To N - 1
+            trace += ATA(i, i)
+        Next
+        Dim lambdaEff As Double = If(trace > 0.0, LAMBDA * (trace / N), LAMBDA)
+        For i = 0 To N - 1
+            ATA(i, i) += lambdaEff
+            ATy(i) += lambdaEff * 1.0
+        Next
+
+        Dim x = SolveLinearSystem(ATA, ATy)
+
+        ' SELF-CHECK: residual ‖A·x−y‖ del solve vs ‖A·1−y‖ (todas las incógnitas=1). Si el solve mejora → menor.
+        Dim residSolve As Double = 0.0, residId As Double = 0.0
+        For Each r In rows
+            Dim Td = New Double() {CDbl(r.T.X), CDbl(r.T.Y), CDbl(r.T.Z)}
+            For d = 0 To 2
+                Dim predSolve As Double = 0.0, predId As Double = 0.0
+                For Each e In r.ents
+                    Dim ci = If(d = 0, e.cx, If(d = 1, e.cy, e.cz))
+                    predSolve += ci * x(e.idx)
+                    predId += ci * 1.0
+                Next
+                residSolve += (predSolve - Td(d)) * (predSolve - Td(d))
+                residId += (predId - Td(d)) * (predId - Td(d))
+            Next
+        Next
+        residSolve = Math.Sqrt(residSolve)
+        residId = Math.Sqrt(residId)
+        Dim verdict = If(residSolve < residId, "solve MEJORA vs identidad", "solve NO mejora (revisar modelo/λ)")
+        Console.WriteLine($"[estimatesclp] estGlobal SELF-CHECK: ‖A·x−y‖(solve)={residSolve.ToString("F4", inv)}  vs  ‖A·1−y‖(identidad)={residId.ToString("F4", inv)}  ⇒ {verdict}   (N={N}, {rows.Count} verts, λ={lambdaEff.ToString("E3", inv)})")
+
+        ' Empaquetá la solución por NOMBRE de hueso.
+        Dim res As New Dictionary(Of String, (sx As Double, sy As Double, sz As Double))(StringComparer.OrdinalIgnoreCase)
+        For bb = 0 To nBones - 1
+            Dim baseIx = 3 * bb
+            res(boneList(bb)) = (x(baseIx + 0), x(baseIx + 1), x(baseIx + 2))
+        Next
+        Return res
+    End Function
+
+    ''' <summary>Carga un .sclp del FilesDictionary (JSON de valores ABSOLUTOS 1.0=sin cambio) y devuelve
+    ''' un dict boneName→{x,y,z}. Parseo inline con System.Text.Json (SclpFile.Load toma un PATH de disco;
+    ''' el .sclp vive en el BA2). Acepta array top-level o un objeto que envuelve un único array, y claves
+    ''' de eje "x"/"X" (lower/upper). Devuelve Nothing si el key no existe o el JSON no parsea.</summary>
+    Private Function LoadSclpAbsolute(sclpKey As String) As Dictionary(Of String, Single())
+        Dim sb As Byte() = Nothing
+        Try
+            sb = GetNifOrFileBytes(sclpKey)
+        Catch
+        End Try
+        If sb Is Nothing OrElse sb.Length = 0 Then Return Nothing
+        Dim result As New Dictionary(Of String, Single())(StringComparer.OrdinalIgnoreCase)
+        Try
+            Dim opts As New JsonDocumentOptions With {
+                .CommentHandling = JsonCommentHandling.Skip,
+                .AllowTrailingCommas = True
+            }
+            Using doc = JsonDocument.Parse(New ReadOnlyMemory(Of Byte)(sb), opts)
+                ' Localizar el array de huesos: root si es array; si es objeto, la única propiedad array.
+                Dim arr As JsonElement = doc.RootElement
+                If arr.ValueKind = JsonValueKind.Object Then
+                    Dim found As JsonElement = Nothing
+                    Dim cnt = 0
+                    For Each prop In arr.EnumerateObject()
+                        If prop.Value.ValueKind = JsonValueKind.Array Then found = prop.Value : cnt += 1
+                    Next
+                    If cnt = 1 Then arr = found
+                End If
+                If arr.ValueKind <> JsonValueKind.Array Then Return Nothing
+                For Each el In arr.EnumerateArray()
+                    If el.ValueKind <> JsonValueKind.Object Then Continue For
+                    Dim nm = ""
+                    Dim nameEl As JsonElement
+                    If el.TryGetProperty("Name", nameEl) AndAlso nameEl.ValueKind = JsonValueKind.String Then
+                        nm = nameEl.GetString()
+                    ElseIf el.TryGetProperty("name", nameEl) AndAlso nameEl.ValueKind = JsonValueKind.String Then
+                        nm = nameEl.GetString()
+                    End If
+                    If String.IsNullOrEmpty(nm) Then Continue For
+                    ' Formato vanilla REAL: los ejes van anidados bajo un objeto "Scale"
+                    ' (ej. {"Name":"Spine1_Rear_skin","Scale":{"x":1.0,"y":1.2999,"z":1.1499}}).
+                    ' Si existe "Scale" como objeto, leer x/y/z de ahí; si no, fallback al formato flat (ejes al tope).
+                    Dim axisObj As JsonElement = el
+                    Dim scaleEl As JsonElement
+                    If el.TryGetProperty("Scale", scaleEl) AndAlso scaleEl.ValueKind = JsonValueKind.Object Then
+                        axisObj = scaleEl
+                    ElseIf el.TryGetProperty("scale", scaleEl) AndAlso scaleEl.ValueKind = JsonValueKind.Object Then
+                        axisObj = scaleEl
+                    End If
+                    Dim xyz = New Single() {SclpAxis(axisObj, "x", "X"), SclpAxis(axisObj, "y", "Y"), SclpAxis(axisObj, "z", "Z")}
+                    result(nm) = xyz
+                Next
+            End Using
+        Catch ex As Exception
+            Console.WriteLine($"[estimatesclp] .sclp '{sclpKey}' no parsea: {ex.Message}")
+            Return Nothing
+        End Try
+        Return result
+    End Function
+
+    ''' <summary>Lee un eje del objeto .sclp (acepta clave lower/upper). Falta/no-numérico/NaN/Inf → 1.0.</summary>
+    Private Function SclpAxis(obj As JsonElement, lowerKey As String, upperKey As String) As Single
+        Dim el As JsonElement
+        If Not obj.TryGetProperty(lowerKey, el) Then
+            If Not obj.TryGetProperty(upperKey, el) Then Return 1.0F
+        End If
+        Dim v As Single
+        Select Case el.ValueKind
+            Case JsonValueKind.Number
+                v = el.GetSingle()
+            Case JsonValueKind.String
+                If Not Single.TryParse(el.GetString(), System.Globalization.NumberStyles.Float Or System.Globalization.NumberStyles.AllowThousands,
+                                       System.Globalization.CultureInfo.InvariantCulture, v) Then Return 1.0F
+            Case Else
+                Return 1.0F
+        End Select
+        If Single.IsNaN(v) OrElse Single.IsInfinity(v) Then Return 1.0F
+        Return v
+    End Function
+
+    ''' <summary>Mediana de una lista de Single (0 si vacía). Ordena una copia.</summary>
+    Private Function MedianOf(vals As List(Of Single)) As Single
+        If vals Is Nothing OrElse vals.Count = 0 Then Return 0.0F
+        Dim s = vals.OrderBy(Function(x) x).ToList()
+        Dim n = s.Count
+        If (n And 1) = 1 Then Return s(n \ 2)
+        Return (s(n \ 2 - 1) + s(n \ 2)) / 2.0F
+    End Function
+
+    ''' <summary>ESTIMADOR APROXIMADO de valores SCLP (bone-scale por hueso <c>*_skin</c>) de un underarmor.
+    ''' <para>MÉTODO: se cargan el NIF del underarmor y un NIF de cuerpo de REFERENCIA; para cada uno, cada
+    ''' vértice skinneado se lleva al ESPACIO LOCAL DE SU HUESO (con el bind skin→bone del shape) y se mide
+    ''' el extent por eje X/Y/Z (RMS y media-de-|·| ponderados por peso). El ratio underarmor/body de esas
+    ''' medidas, por hueso y eje, es el estimador de escala. Se compara contra el <c>.sclp</c> autorado
+    ''' vanilla (ground truth, valores ABSOLUTOS 1.0=sin cambio) y se imprime el error.</para>
+    ''' <para>NATURALEZA: es un ESTIMADOR, NO una replicación del motor. Un ratio de extents ≠ el SCLP
+    ''' autorado: el artista puede escalar un hueso sin que el extent de la malla cambie en la misma
+    ''' proporción (vértices no centrados en el hueso, solape entre huesos, pesos parciales). Sirve para
+    ''' ver CUÁNTO se acerca el probe geométrico al valor real, no para derivar el .sclp de producción.</para>
+    ''' <para>Spec: <c>--estimatesclp "&lt;underarmorNifKey&gt;|&lt;bodyNifKey&gt;[|&lt;sclpKey&gt;]"</c>. Si se omite
+    ''' sclpKey se deriva del underarmor cambiando la extensión a <c>.sclp</c>.</para></summary>
+    Private Sub EstimateSclpRun(spec As String, Optional shapeFilter As String = "")
+        ' Parámetros tuneables (constantes locales para iterar fácil sin exponerlos por CLI):
+        Const WT As Single = 0.1F     ' peso mínimo para que un vértice cuente hacia un hueso
+        Const MINW As Single = 1.0F   ' Σpeso mínimo por hueso (en AMBOS NIFs) para reportarlo — filtra ruido
+        Dim inv = System.Globalization.CultureInfo.InvariantCulture
+        Dim axisName = New String() {"X", "Y", "Z"}
+
+        Dim parts = spec.Split("|"c)
+        If parts.Length < 2 OrElse parts(0).Trim() = "" OrElse parts(1).Trim() = "" Then
+            Console.WriteLine("[estimatesclp] uso: --estimatesclp ""<underarmorNifKey>|<bodyNifKey>[|<sclpKey>]""")
+            Return
+        End If
+        Dim uaKey = parts(0).Trim()
+        Dim bodyKey = parts(1).Trim()
+        Dim sclpKey = If(parts.Length >= 3 AndAlso parts(2).Trim() <> "", parts(2).Trim(), Path.ChangeExtension(uaKey, ".sclp"))
+
+        Console.WriteLine("[estimatesclp] ESTIMADOR APROXIMADO de SCLP (ratio de extents en espacio-hueso; NO replica el motor)")
+        Console.WriteLine($"   underarmor = {uaKey}")
+        Console.WriteLine($"   body(ref)  = {bodyKey}")
+        Console.WriteLine($"   sclp(auth) = {sclpKey}")
+        Console.WriteLine($"   wThreshold = {WT.ToString(inv)}   minSumW = {MINW.ToString(inv)}")
+        If shapeFilter <> "" Then Console.WriteLine($"   shapefilter = {shapeFilter}   (solo shapes del ua cuyo nombre lo contengan; el body NO se filtra)")
+
+        Dim uaAcc = AccumulateBoneExtents(uaKey, WT, shapeFilter)
+        If uaAcc Is Nothing Then Return
+        Dim bodyAcc = AccumulateBoneExtents(bodyKey, WT)
+        If bodyAcc Is Nothing Then Return
+
+        ' estNN: nearest-neighbor least-squares (sin umbral de dominancia; cubre también huesos blend).
+        ' wEps=0.01 SOLO excluye pesos numéricamente nulos; el peso real pondera la regresión.
+        Const NN_WEPS As Single = 0.01F
+        Dim nnPairs = BuildNNPairs(uaKey, bodyKey, NN_WEPS, shapeFilter)   ' pares NN compartidos por estNN y estFull (filtro ua)
+        Dim nn = AccumulateNNScales(nnPairs)
+        If nn Is Nothing Then nn = New Dictionary(Of String, (sx As Double, sy As Double, sz As Double, nPairs As Integer, okX As Boolean, okY As Boolean, okZ As Boolean, residX As Double, residY As Double, residZ As Double))(StringComparer.OrdinalIgnoreCase)
+        Dim full = AccumulateFullFit(nnPairs)   ' estFull: ajuste de matriz 3×3 completa por hueso (frame-aware)
+        If full Is Nothing Then full = New Dictionary(Of String, (Lxx As Double, Lyy As Double, Lzz As Double, offNorm As Double, residFull As Double, ok As Boolean))(StringComparer.OrdinalIgnoreCase)
+        Console.WriteLine($"   estNN: {nn.Count} hueso(s) con estimación nearest-neighbor (wEps={NN_WEPS.ToString(inv)})   estFull: {full.Count} hueso(s) con ajuste 3×3")
+
+        ' estGlobal: solve GLOBAL CONJUNTO por mínimos cuadrados de TODAS las escalas de hueso a la vez.
+        Dim glob = EstimateGlobalScales(uaKey, bodyKey, NN_WEPS, shapeFilter)
+        If glob Is Nothing Then glob = New Dictionary(Of String, (sx As Double, sy As Double, sz As Double))(StringComparer.OrdinalIgnoreCase)
+        Console.WriteLine($"   estGlobal: {glob.Count} hueso(s) con solve conjunto")
+
+        Dim authored = LoadSclpAbsolute(sclpKey)   ' Nothing si no existe / no parsea
+        If authored Is Nothing Then
+            Console.WriteLine($"   (aviso) .sclp '{sclpKey}' no encontrado/parseable — sigo sin columna authored/error")
+        Else
+            Console.WriteLine($"   .sclp: {authored.Count} entrada(s) autorada(s)")
+        End If
+
+        ' Huesos *_skin presentes en AMBOS acumuladores con Σpeso suficiente en ambos.
+        Dim skinBones = uaAcc.Keys.
+            Where(Function(k) k.EndsWith("_skin", StringComparison.OrdinalIgnoreCase) AndAlso
+                              bodyAcc.ContainsKey(k) AndAlso
+                              uaAcc(k).SumW >= MINW AndAlso bodyAcc(k).SumW >= MINW).
+            OrderBy(Function(k) k, StringComparer.OrdinalIgnoreCase).ToList()
+
+        Const DOMMIN As Integer = 8   ' mínimo de vértices dominados (en AMBOS NIFs) para que estDomBox/estDomRms cuenten
+        Console.WriteLine("")
+        Console.WriteLine($"   {skinBones.Count} hueso(s) *_skin comparables (con Σpeso ≥ {MINW.ToString(inv)} en ambos NIFs)")
+        Console.WriteLine($"   estRMS/estMean = extent ponderado por peso (blended, con ruido).  estDomBox/estDomRms = SOLO vértices dominados (peso>0.5), geometría limpia (gate ≥{DOMMIN} verts dominados en ambos).")
+        Console.WriteLine("")
+        ' Tabla
+        Dim fmtRow = "   {0,-24} {1,-3} {2,8} {3,8} {4,8} {5,9} {6,9} {7,8} {8}"
+        Console.WriteLine("   " & New String("-"c, 108))
+        Console.WriteLine(String.Format(fmtRow,
+                                        "bone", "ax", "authored", "estRMS", "estMean", "estDomBox", "estDomRms", "bindΔT", "flag"))
+        Console.WriteLine("   " & New String("-"c, 108))
+
+        ' Acumuladores del resumen por-métrica (solo sobre ejes que el artista MOVIÓ: authored ≠ 1.0).
+        ' Para cada métrica: "All" (X/Y/Z) y "YZ" (excluye X, que el motor casi no usa — el veredicto).
+        Dim rmsAll As New MetricAcc, rmsYZ As New MetricAcc
+        Dim meanAll As New MetricAcc, meanYZ As New MetricAcc
+        Dim boxAll As New MetricAcc, boxYZ As New MetricAcc
+        Dim drmsAll As New MetricAcc, drmsYZ As New MetricAcc
+        Dim nnAll As New MetricAcc, nnYZ As New MetricAcc
+        Dim fullAll As New MetricAcc, fullYZ As New MetricAcc   ' estFull: error de diag(L) vs authored
+        Dim globAll As New MetricAcc, globYZ As New MetricAcc   ' estGlobal: error del solve conjunto vs authored
+        Dim offNormMoved As New List(Of Single)   ' offNorm de L sobre huesos con eje Y/Z movido
+        Dim residFullMoved As New List(Of Single) ' residFull del ajuste 3×3 sobre esos huesos
+        Dim movedCount = 0
+        Dim falsePos = 0, falseNeg = 0   ' probe vs authored (usando estRMS como ratio)
+        ' Coverage por HUESO (huesos con algún eje authored ≠ 1.0): cuántos cubre estNN vs estDomBox vs estGlobal.
+        Dim movedBonesTotal = 0, nnCoverBones = 0, domBoxCoverBones = 0, globCoverBones = 0
+        ' Residual de reconstrucción del ajuste NN (calidad intrínseca del modelo escala-por-hueso, indep. del authored).
+        Dim residYZ As New List(Of Single)   ' residuales de los ejes Y/Z movidos
+        Dim bigErrHiResid = 0, bigErrLoResid = 0   ' de ejes Y/Z con |estNN−authored|>0.10: residual alto (>0.25) vs bajo
+
+        ' Helper: |est−authored| si est no es NaN → alimenta la métrica (All y, si eje≠X, YZ).
+        Dim feed = Sub(est As Single, auVal As Single, axis As Integer, maAll As MetricAcc, maYZ As MetricAcc)
+                       If Single.IsNaN(est) Then Return
+                       Dim e = Math.Abs(est - auVal)
+                       maAll.Add(e)
+                       If axis > 0 Then maYZ.Add(e)
+                   End Sub
+
+        For Each bn In skinBones
+            Dim ua = uaAcc(bn)
+            Dim bd = bodyAcc(bn)
+            Dim bindDelta = (ua.BindT - bd.BindT).Length()
+            Dim frameFlag = If(bindDelta > 1.0F, "*FRAME?*", "")
+            Dim domOk = ua.DomCount >= DOMMIN AndAlso bd.DomCount >= DOMMIN   ' gate del set dominado
+
+            Dim auRow As Single() = Nothing
+            Dim hasAu = authored IsNot Nothing AndAlso authored.TryGetValue(bn, auRow)
+
+            Dim nnRow As (sx As Double, sy As Double, sz As Double, nPairs As Integer, okX As Boolean, okY As Boolean, okZ As Boolean, residX As Double, residY As Double, residZ As Double) = Nothing
+            Dim hasNN = nn.TryGetValue(bn, nnRow)
+            Dim fullRow As (Lxx As Double, Lyy As Double, Lzz As Double, offNorm As Double, residFull As Double, ok As Boolean) = Nothing
+            Dim hasFull = full.TryGetValue(bn, fullRow) AndAlso fullRow.ok
+            Dim globRow As (sx As Double, sy As Double, sz As Double) = Nothing
+            Dim hasGlob = glob.TryGetValue(bn, globRow)
+            Dim boneMoved = False, nnCov = False, boxCov = False, globCov = False   ' coverage por hueso (ejes movidos)
+            Dim boneMovedYZ = False   ' el hueso tiene algún eje Y/Z autorado ≠ 1.0 (para offNorm/residFull, que son por-hueso)
+
+            For a = 0 To 2
+                Dim rmsB = bd.Rms(a)
+                Dim meanB = bd.MeanAbs(a)
+                Dim estRms = If(rmsB > 0.0F, ua.Rms(a) / rmsB, Single.NaN)
+                Dim estMean = If(meanB > 0.0F, ua.MeanAbs(a) / meanB, Single.NaN)
+                Dim boxB = bd.DomHalfRange(a)
+                Dim drmsB = bd.DomRmsC(a)
+                Dim estDomBox = If(domOk AndAlso boxB > 0.0F, ua.DomHalfRange(a) / boxB, Single.NaN)
+                Dim estDomRms = If(domOk AndAlso drmsB > 0.0F, ua.DomRmsC(a) / drmsB, Single.NaN)
+
+                ' estNN (nearest-neighbor LSQ): disponible si el hueso tiene par NN y el eje pasó el guard Sxx≥1e-6.
+                Dim estNN As Single = Single.NaN
+                Dim residNN As Single = Single.NaN
+                If hasNN Then
+                    Select Case a
+                        Case 0 : If nnRow.okX Then estNN = CSng(nnRow.sx) : residNN = CSng(nnRow.residX)
+                        Case 1 : If nnRow.okY Then estNN = CSng(nnRow.sy) : residNN = CSng(nnRow.residY)
+                        Case 2 : If nnRow.okZ Then estNN = CSng(nnRow.sz) : residNN = CSng(nnRow.residZ)
+                    End Select
+                End If
+
+                ' estFull (ajuste 3×3): la escala FRAME-AWARE de este eje = diag(L) del hueso.
+                Dim estFull As Single = Single.NaN
+                If hasFull Then
+                    Select Case a
+                        Case 0 : estFull = CSng(fullRow.Lxx)
+                        Case 1 : estFull = CSng(fullRow.Lyy)
+                        Case 2 : estFull = CSng(fullRow.Lzz)
+                    End Select
+                End If
+
+                ' estGlobal (solve conjunto): la escala de este eje = (sx/sy/sz) del hueso en el vector solución.
+                Dim estGlobal As Single = Single.NaN
+                If hasGlob Then
+                    Select Case a
+                        Case 0 : estGlobal = CSng(globRow.sx)
+                        Case 1 : estGlobal = CSng(globRow.sy)
+                        Case 2 : estGlobal = CSng(globRow.sz)
+                    End Select
+                End If
+
+                Dim auTxt = "-"
+                If hasAu Then
+                    Dim auVal = auRow(a)
+                    auTxt = auVal.ToString("F4", inv)
+                    Dim authoredMoved = Math.Abs(auVal - 1.0F) > 0.0000001F
+                    If authoredMoved Then
+                        movedCount += 1
+                        feed(estRms, auVal, a, rmsAll, rmsYZ)
+                        feed(estMean, auVal, a, meanAll, meanYZ)
+                        feed(estDomBox, auVal, a, boxAll, boxYZ)
+                        feed(estDomRms, auVal, a, drmsAll, drmsYZ)
+                        feed(estNN, auVal, a, nnAll, nnYZ)
+                        feed(estFull, auVal, a, fullAll, fullYZ)
+                        feed(estGlobal, auVal, a, globAll, globYZ)
+                        boneMoved = True
+                        If a > 0 Then boneMovedYZ = True
+                        If Not Single.IsNaN(estNN) Then nnCov = True
+                        If Not Single.IsNaN(estDomBox) Then boxCov = True
+                        If Not Single.IsNaN(estGlobal) Then globCov = True
+                        ' Residual del ajuste NN sobre ejes Y/Z movidos + correlación error-vs-authored ↔ residual.
+                        If a > 0 AndAlso Not Single.IsNaN(residNN) Then
+                            residYZ.Add(residNN)
+                            If Not Single.IsNaN(estNN) AndAlso Math.Abs(estNN - auVal) > 0.1F Then
+                                If residNN > 0.25F Then bigErrHiResid += 1 Else bigErrLoResid += 1
+                            End If
+                        End If
+                    End If
+
+                    ' Falsos positivos/negativos del probe (ratio = estRMS) vs authored:
+                    Dim probeMoved = (Not Single.IsNaN(estRms)) AndAlso (estRms < 0.97F OrElse estRms > 1.03F)
+                    If authoredMoved Then
+                        If Not probeMoved Then falseNeg += 1   ' authored≠1 pero probe estimó ≈1
+                    Else
+                        If probeMoved Then falsePos += 1        ' authored=1 pero probe estimó movido
+                    End If
+                End If
+
+                Dim estRmsTxt = If(Single.IsNaN(estRms), "-", estRms.ToString("F4", inv))
+                Dim estMeanTxt = If(Single.IsNaN(estMean), "-", estMean.ToString("F4", inv))
+                Dim estBoxTxt = If(Single.IsNaN(estDomBox), "n/a", estDomBox.ToString("F4", inv))
+                Dim estDrmsTxt = If(Single.IsNaN(estDomRms), "n/a", estDomRms.ToString("F4", inv))
+                Dim boneCol = If(a = 0, bn, "")
+                Console.WriteLine(String.Format(fmtRow,
+                                                boneCol, axisName(a), auTxt, estRmsTxt, estMeanTxt,
+                                                estBoxTxt, estDrmsTxt, bindDelta.ToString("F3", inv), frameFlag))
+            Next
+            If boneMoved Then
+                movedBonesTotal += 1
+                If nnCov Then nnCoverBones += 1
+                If boxCov Then domBoxCoverBones += 1
+                If globCov Then globCoverBones += 1
+            End If
+            ' offNorm / residFull son POR-HUESO (no por-eje): recolectá una vez sobre huesos con eje Y/Z movido.
+            If boneMovedYZ AndAlso hasFull Then
+                offNormMoved.Add(CSng(fullRow.offNorm))
+                residFullMoved.Add(CSng(fullRow.residFull))
+            End If
+        Next
+
+        ' Resumen por-métrica
+        Console.WriteLine("   " & New String("-"c, 108))
+        Console.WriteLine("")
+        Console.WriteLine("   ── RESUMEN (solo ejes con authored ≠ 1.0 = los que el artista MOVIÓ) ──")
+        If authored Is Nothing Then
+            Console.WriteLine("   (sin .sclp autorado — no hay ground truth para computar error)")
+        ElseIf movedCount = 0 Then
+            Console.WriteLine("   0 ejes autorados ≠ 1.0 entre los huesos comparables (nada que evaluar).")
+        Else
+            Console.WriteLine($"   ejes movidos evaluados (X/Y/Z): {movedCount}")
+            Dim printMetric = Sub(label As String, ma As MetricAcc)
+                                  Dim mean = If(ma.Errs.Count > 0, ma.Errs.Average(), 0.0F)
+                                  Console.WriteLine($"   {label,-20} n={ma.Errs.Count,3}  errMedio={mean.ToString("F4", inv)}  mediana={MedianOf(ma.Errs).ToString("F4", inv)}  ±0.05={ma.In05,3}  ±0.10={ma.In10,3}")
+                              End Sub
+            printMetric("estRMS   [X/Y/Z]", rmsAll)
+            printMetric("estRMS   [Y/Z]", rmsYZ)
+            printMetric("estMean  [X/Y/Z]", meanAll)
+            printMetric("estMean  [Y/Z]", meanYZ)
+            printMetric("estDomBox[X/Y/Z]", boxAll)
+            printMetric("estDomBox[Y/Z]", boxYZ)
+            printMetric("estDomRms[X/Y/Z]", drmsAll)
+            printMetric("estDomRms[Y/Z]", drmsYZ)
+            printMetric("estNN    [X/Y/Z]", nnAll)
+            printMetric("estNN    [Y/Z]", nnYZ)
+            printMetric("estFull  [X/Y/Z]", fullAll)
+            printMetric("estFull  [Y/Z]", fullYZ)
+            printMetric("estGlobal[X/Y/Z]", globAll)
+            printMetric("estGlobal[Y/Z]", globYZ)
+            Console.WriteLine($"   coverage huesos movidos (authored≠1.0): total={movedBonesTotal}  con estNN={nnCoverBones}  con estDomBox={domBoxCoverBones}  con estGlobal={globCoverBones}  (estNN/estGlobal cubren también huesos blend)")
+            ' Residual de reconstrucción del ajuste NN (0 = escala-por-hueso perfecta; alto = la prenda NO es una escala-por-hueso pura).
+            Console.WriteLine($"   estNN residual [Y/Z]  n={residYZ.Count,3}  mediana={MedianOf(residYZ).ToString("F4", inv)}  (fracción de varianza de lu NO explicada por s·lp; calidad INTRÍNSECA, indep. del authored)")
+            Console.WriteLine($"   correlación error↔residual (ejes Y/Z con |estNN−authored|>0.10): residual alto(>0.25)={bigErrHiResid}  vs bajo={bigErrLoResid}")
+            Console.WriteLine("     └ si el error-vs-authored alto coincide con residual alto → la prenda no es escala-por-hueso pura (límite del modelo SCLP, no del estimador).")
+            ' estFull: cuán NO-diagonal es el ajuste 3×3 (offNorm) y su residual (≤ residual estNN si el ajuste diagonal perdía señal fuera de eje).
+            Console.WriteLine($"   estFull offdiag [Y/Z]  n={offNormMoved.Count,3}  mediana={MedianOf(offNormMoved).ToString("F4", inv)}  (0=escala de eje pura; alto=rotación/shear no representable como escala de eje)")
+            Console.WriteLine($"   estFull residual [Y/Z]  n={residFullMoved.Count,3}  mediana={MedianOf(residFullMoved).ToString("F4", inv)}  (residual del ajuste lineal 3×3 completo; si baja mucho vs estNN, el ajuste diagonal perdía señal a términos fuera de eje)")
+        End If
+        Console.WriteLine($"   falsos positivos (authored=1.0 pero estRMS∉[0.97,1.03]): {falsePos}")
+        Console.WriteLine($"   falsos negativos (authored≠1.0 pero estRMS∈[0.97,1.03]): {falseNeg}")
+        Console.WriteLine("")
+        Console.WriteLine("   NOTA: estimador geométrico aproximado; ratio de extents ≠ SCLP autorado (ver doc-comment).")
+        Console.WriteLine("   [Y/Z] excluye el eje X (el motor casi no lo usa) — es la fila más relevante para el veredicto.")
+    End Sub
+
+    ' =====================================================================================
+    ' --sclpdiag : VOLCADO DIAGNÓSTICO de geometría cruda por hueso (para derivar a mano la fórmula SCLP)
+    ' =====================================================================================
+
+    ''' <summary>Geometría cruda de UN hueso en su ESPACIO LOCAL, guardada como listas por eje (X/Y/Z) para
+    ''' poder computar percentiles a mano. <c>All*</c> = vértices con peso &gt; umbral hacia el hueso (con su
+    ''' peso paralelo en <c>AllW</c>); <c>Dom*</c> = vértices cuyo slot de MAYOR peso es este hueso y ese peso
+    ''' &gt; 0.5 (sin peso, geometría limpia).</summary>
+    Private Class BoneLocals
+        ' allSet (peso > umbral): valor local por eje + peso paralelo
+        Public AllX As New List(Of Single)
+        Public AllY As New List(Of Single)
+        Public AllZ As New List(Of Single)
+        Public AllW As New List(Of Single)
+        ' domSet (slot dominante > 0.5): valor local por eje, sin peso
+        Public DomX As New List(Of Single)
+        Public DomY As New List(Of Single)
+        Public DomZ As New List(Of Single)
+
+        Public ReadOnly Property NAll As Integer
+            Get
+                Return AllW.Count
+            End Get
+        End Property
+        Public ReadOnly Property NDom As Integer
+            Get
+                Return DomX.Count
+            End Get
+        End Property
+
+        Public Function AllAxis(a As Integer) As List(Of Single)
+            Select Case a
+                Case 0 : Return AllX
+                Case 1 : Return AllY
+                Case Else : Return AllZ
+            End Select
+        End Function
+        Public Function DomAxis(a As Integer) As List(Of Single)
+            Select Case a
+                Case 0 : Return DomX
+                Case 1 : Return DomY
+                Case Else : Return DomZ
+            End Select
+        End Function
+    End Class
+
+    ''' <summary>Estadísticos calculados por (hueso,eje) para UN NIF, listos para imprimir.</summary>
+    Private Class AxisStats
+        Public NAll As Integer = 0
+        Public NDom As Integer = 0
+        ' del domSet (sin peso)
+        Public DMin As Single = Single.NaN
+        Public DMax As Single = Single.NaN
+        Public DMean As Single = Single.NaN
+        Public DP05 As Single = Single.NaN
+        Public DP95 As Single = Single.NaN
+        Public DMaxAbsO As Single = Single.NaN   ' p95 de |axis| respecto al ORIGEN (domSet)
+        Public DHalfRange As Single = Single.NaN ' (max-min)/2
+        ' del allSet (ponderado por peso)
+        Public WMean As Single = Single.NaN      ' Σw·axis/Σw
+        Public WRmsO As Single = Single.NaN      ' sqrt(Σw·axis²/Σw) — RMS al ORIGEN
+        Public AP95Abs As Single = Single.NaN    ' p95 de |axis| sobre el allSet (sin peso)
+    End Class
+
+    ''' <summary>Percentil por rango-cercano simple sobre una lista YA ORDENADA ascendente: índice
+    ''' <c>floor(p·(n−1))</c>, clamp a [0,n−1]. NaN si vacía.</summary>
+    Private Function Pctl(sorted As List(Of Single), p As Single) As Single
+        If sorted Is Nothing OrElse sorted.Count = 0 Then Return Single.NaN
+        Dim n = sorted.Count
+        Dim idx = CInt(Math.Floor(p * (n - 1)))
+        If idx < 0 Then idx = 0
+        If idx >= n Then idx = n - 1
+        Return sorted(idx)
+    End Function
+
+    ''' <summary>Calcula todos los estadísticos de un (hueso,eje) a partir de sus listas crudas.</summary>
+    Private Function ComputeAxisStats(bl As BoneLocals, axis As Integer) As AxisStats
+        Dim s As New AxisStats()
+        If bl Is Nothing Then Return s
+        s.NAll = bl.NAll
+        s.NDom = bl.NDom
+
+        ' --- domSet (sin peso) ---
+        Dim dom = bl.DomAxis(axis)
+        If dom IsNot Nothing AndAlso dom.Count > 0 Then
+            Dim n = dom.Count
+            Dim sd = dom.OrderBy(Function(x) x).ToList()
+            s.DMin = sd(0)
+            s.DMax = sd(n - 1)
+            Dim sum As Double = 0.0
+            For Each v In dom : sum += v : Next
+            s.DMean = CSng(sum / n)
+            s.DP05 = Pctl(sd, 0.05F)
+            s.DP95 = Pctl(sd, 0.95F)
+            Dim sdAbs = dom.Select(Function(x) Math.Abs(x)).OrderBy(Function(x) x).ToList()
+            s.DMaxAbsO = Pctl(sdAbs, 0.95F)
+            s.DHalfRange = (s.DMax - s.DMin) / 2.0F
+        End If
+
+        ' --- allSet (ponderado por peso) ---
+        Dim allv = bl.AllAxis(axis)
+        Dim allw = bl.AllW
+        If allv IsNot Nothing AndAlso allv.Count > 0 AndAlso allw IsNot Nothing AndAlso allw.Count = allv.Count Then
+            Dim sw As Double = 0.0, swv As Double = 0.0, swv2 As Double = 0.0
+            For k = 0 To allv.Count - 1
+                Dim w As Double = allw(k)
+                Dim v As Double = allv(k)
+                sw += w
+                swv += w * v
+                swv2 += w * v * v
+            Next
+            If sw > 0.0 Then
+                s.WMean = CSng(swv / sw)
+                Dim rms = swv2 / sw
+                If rms < 0.0 Then rms = 0.0
+                s.WRmsO = CSng(Math.Sqrt(rms))
+            End If
+            Dim aAbs = allv.Select(Function(x) Math.Abs(x)).OrderBy(Function(x) x).ToList()
+            s.AP95Abs = Pctl(aAbs, 0.95F)
+        End If
+        Return s
+    End Function
+
+    ''' <summary>Carga un NIF del FilesDictionary y recolecta, por nombre de hueso, la geometría CRUDA en el
+    ''' ESPACIO LOCAL DE CADA HUESO (mismo <c>bind.ComposeTransforms(traslación-por-punto)</c> que
+    ''' <see cref="AccumulateBoneExtents"/>): <c>allSet</c> (peso &gt; <paramref name="wThreshold"/>, con peso) y
+    ''' <c>domSet</c> (slot dominante &gt; 0.5, plano). Devuelve Nothing (y avisa) si el NIF no existe/no carga.</summary>
+    Private Function AccumulateBoneLocals(nifKey As String, wThreshold As Single, Optional shapeNameFilter As String = "") As Dictionary(Of String, BoneLocals)
+        Dim bytes As Byte() = Nothing
+        Try
+            bytes = GetNifOrFileBytes(nifKey)
+        Catch ex As Exception
+            Console.WriteLine($"[sclpdiag] error leyendo '{nifKey}': {ex.Message}")
+            Return Nothing
+        End Try
+        If bytes Is Nothing OrElse bytes.Length = 0 Then
+            Console.WriteLine($"[sclpdiag] '{nifKey}' no existe / vacío en el FilesDictionary")
+            Return Nothing
+        End If
+        Dim nif As New Nifcontent_Class_Manolo()
+        Try
+            nif.Load_Manolo(bytes)
+        Catch ex As Exception
+            Console.WriteLine($"[sclpdiag] '{nifKey}' no carga como NIF: {ex.Message}")
+            Return Nothing
+        End Try
+
+        Dim acc As New Dictionary(Of String, BoneLocals)(StringComparer.OrdinalIgnoreCase)
+        Dim shapesSkinned = 0
+        Dim shapesKept = 0   ' shapes que pasan el filtro por nombre (solo relevante si shapeNameFilter <> "")
+        For blkIdx = 0 To nif.Blocks.Count - 1
+            Dim shp = TryCast(nif.Blocks(blkIdx), NiflySharp.INiShape)
+            If shp Is Nothing Then Continue For
+            Dim rs As NifRenderableShape
+            Try
+                rs = New NifRenderableShape(nif, shp, blkIdx)
+            Catch
+                Continue For
+            End Try
+            If shapeNameFilter <> "" Then
+                If rs.ShapeName Is Nothing OrElse rs.ShapeName.IndexOf(shapeNameFilter, StringComparison.OrdinalIgnoreCase) < 0 Then Continue For
+                shapesKept += 1
+            End If
+            If rs.ShapeBones Is Nothing OrElse rs.ShapeBones.Count = 0 Then Continue For
+            Dim verts As List(Of System.Numerics.Vector3) = Nothing
+            Try
+                verts = rs.Geometry?.GetVertexPositions()
+            Catch
+            End Try
+            If verts Is Nothing OrElse verts.Count = 0 Then Continue For
+            Dim skin As ShapeSkinningData
+            Try
+                skin = rs.Geometry.GetSkinning()
+            Catch
+                Continue For
+            End Try
+            Dim wpv = skin.WeightsPerVertex
+            If wpv <= 0 OrElse skin.BoneIndices Is Nothing OrElse skin.BoneWeights Is Nothing Then Continue For
+            Dim bones = rs.ShapeBones
+            Dim binds = rs.ShapeBoneTransforms
+            If binds Is Nothing Then Continue For
+            shapesSkinned += 1
+            Dim nVerts = Math.Min(verts.Count, skin.VertexCount)
+            For i = 0 To nVerts - 1
+                Dim vp = verts(i)
+
+                ' Slot dominante del vértice (mayor peso entre sus slots).
+                Dim domSlot = -1
+                Dim domW As Single = 0.0F
+                For j = 0 To wpv - 1
+                    Dim idx = i * wpv + j
+                    If idx >= skin.BoneWeights.Length Then Continue For
+                    Dim wj As Single = CType(skin.BoneWeights(idx), Single)
+                    If wj > domW Then domW = wj : domSlot = j
+                Next
+
+                ' allSet: cada slot con peso > umbral.
+                For j = 0 To wpv - 1
+                    Dim idx = i * wpv + j
+                    If idx >= skin.BoneWeights.Length OrElse idx >= skin.BoneIndices.Length Then Continue For
+                    Dim w As Single = CType(skin.BoneWeights(idx), Single)
+                    If w <= wThreshold Then Continue For
+                    Dim bi = CInt(skin.BoneIndices(idx))
+                    If bi < 0 OrElse bi >= bones.Count OrElse bi >= binds.Count Then Continue For
+                    Dim bn = TryCast(bones(bi), NiflySharp.Blocks.NiNode)?.Name?.String
+                    If String.IsNullOrEmpty(bn) Then Continue For
+                    Dim bind = binds(bi)
+                    If bind Is Nothing Then Continue For
+                    Dim pT As New Transform_Class With {.Translation = vp}
+                    Dim lp = bind.ComposeTransforms(pT).Translation
+                    Dim bl As BoneLocals = Nothing
+                    If Not acc.TryGetValue(bn, bl) Then
+                        bl = New BoneLocals()
+                        acc(bn) = bl
+                    End If
+                    bl.AllX.Add(lp.X) : bl.AllY.Add(lp.Y) : bl.AllZ.Add(lp.Z) : bl.AllW.Add(w)
+                Next
+
+                ' domSet: una vez por vértice, al hueso dominante si domW > 0.5.
+                If domSlot >= 0 AndAlso domW > 0.5F Then
+                    Dim idx = i * wpv + domSlot
+                    If idx < skin.BoneIndices.Length Then
+                        Dim bi = CInt(skin.BoneIndices(idx))
+                        If bi >= 0 AndAlso bi < bones.Count AndAlso bi < binds.Count Then
+                            Dim bn = TryCast(bones(bi), NiflySharp.Blocks.NiNode)?.Name?.String
+                            Dim bind = binds(bi)
+                            If Not String.IsNullOrEmpty(bn) AndAlso bind IsNot Nothing Then
+                                Dim pT As New Transform_Class With {.Translation = vp}
+                                Dim lp = bind.ComposeTransforms(pT).Translation
+                                Dim bl As BoneLocals = Nothing
+                                If Not acc.TryGetValue(bn, bl) Then
+                                    bl = New BoneLocals()
+                                    acc(bn) = bl
+                                End If
+                                bl.DomX.Add(lp.X) : bl.DomY.Add(lp.Y) : bl.DomZ.Add(lp.Z)
+                            End If
+                        End If
+                    End If
+                End If
+            Next
+        Next
+        Dim filterNote = If(shapeNameFilter <> "", $" [filtro '{shapeNameFilter}': {shapesKept} shape(s) tras filtro]", "")
+        Console.WriteLine($"[sclpdiag]   '{nifKey}': {shapesSkinned} shape(s) skinneada(s), {acc.Count} hueso(s) con peso{filterNote}")
+        Return acc
+    End Function
+
+    ''' <summary>Formatea un Single a ancho fijo, mostrando "n/a" si es NaN.</summary>
+    Private Function FmtStat(v As Single, inv As System.Globalization.CultureInfo) As String
+        If Single.IsNaN(v) Then Return "n/a"
+        Return v.ToString("F4", inv)
+    End Function
+
+    ''' <summary>Ratio ua/body con guardas: NaN si algún operando es NaN o el body es ~0.</summary>
+    Private Function RatioStat(ua As Single, bd As Single) As Single
+        If Single.IsNaN(ua) OrElse Single.IsNaN(bd) OrElse Math.Abs(bd) < 0.0000001F Then Return Single.NaN
+        Return ua / bd
+    End Function
+
+    ''' <summary>Parte LINEAL de un <see cref="Transform_Class"/> aplicada a un vector, a prueba de convención de
+    ''' matriz: <c>L·v = tr.ComposeTransforms(v).Translation − tr.ComposeTransforms(0).Translation</c> (mismo
+    ''' patrón applyT que ya usa el estimador). No depende de si el scale vive en Rotation, ScaleVector o Scale.</summary>
+    Private Function BindApplyLinear(tr As Transform_Class, v As System.Numerics.Vector3) As System.Numerics.Vector3
+        Dim zero = tr.ComposeTransforms(New Transform_Class With {.Translation = System.Numerics.Vector3.Zero}).Translation
+        Dim p = tr.ComposeTransforms(New Transform_Class With {.Translation = v}).Translation
+        Return New System.Numerics.Vector3(p.X - zero.X, p.Y - zero.Y, p.Z - zero.Z)
+    End Function
+
+    ''' <summary>Normas de las 3 columnas del bloque lineal 3×3 de un <see cref="Transform_Class"/>, vía
+    ''' <see cref="BindApplyLinear"/> (col j = |L·e_j|). Detecta escala horneada en la parte lineal — uniforme o
+    ''' no — sin depender de la convención de columnas de la matriz.</summary>
+    Private Function BindColNorms(tr As Transform_Class) As (n0 As Double, n1 As Double, n2 As Double)
+        Dim c0 = BindApplyLinear(tr, New System.Numerics.Vector3(1.0F, 0.0F, 0.0F))
+        Dim c1 = BindApplyLinear(tr, New System.Numerics.Vector3(0.0F, 1.0F, 0.0F))
+        Dim c2 = BindApplyLinear(tr, New System.Numerics.Vector3(0.0F, 0.0F, 1.0F))
+        Return (CDbl(c0.Length()), CDbl(c1.Length()), CDbl(c2.Length()))
+    End Function
+
+    ''' <summary>Carga un NIF (key del FilesDictionary o ruta de disco, vía <see cref="GetNifOrFileBytes"/>) y
+    ''' construye, por NOMBRE de hueso, el bind skin→bone (<c>ShapeBoneTransforms</c>; primero gana si el hueso
+    ''' aparece en varios shapes). Devuelve Nothing (y avisa) si el NIF no existe/no carga.</summary>
+    Private Function LoadBindsByBone(nifKey As String) As Dictionary(Of String, Transform_Class)
+        Dim bytes As Byte() = Nothing
+        Try
+            bytes = GetNifOrFileBytes(nifKey)
+        Catch ex As Exception
+            Console.WriteLine($"[binddiff] error leyendo '{nifKey}': {ex.Message}")
+            Return Nothing
+        End Try
+        If bytes Is Nothing OrElse bytes.Length = 0 Then
+            Console.WriteLine($"[binddiff] '{nifKey}' no existe / vacío en el FilesDictionary")
+            Return Nothing
+        End If
+        Dim nif As New Nifcontent_Class_Manolo()
+        Try
+            nif.Load_Manolo(bytes)
+        Catch ex As Exception
+            Console.WriteLine($"[binddiff] '{nifKey}' no carga como NIF: {ex.Message}")
+            Return Nothing
+        End Try
+
+        Dim acc As New Dictionary(Of String, Transform_Class)(StringComparer.OrdinalIgnoreCase)
+        Dim shapesSkinned = 0
+        For blkIdx = 0 To nif.Blocks.Count - 1
+            Dim shp = TryCast(nif.Blocks(blkIdx), NiflySharp.INiShape)
+            If shp Is Nothing Then Continue For
+            Dim rs As NifRenderableShape
+            Try
+                rs = New NifRenderableShape(nif, shp, blkIdx)
+            Catch
+                Continue For
+            End Try
+            If rs.ShapeBones Is Nothing OrElse rs.ShapeBones.Count = 0 Then Continue For
+            Dim binds = rs.ShapeBoneTransforms
+            If binds Is Nothing Then Continue For
+            shapesSkinned += 1
+            For k = 0 To Math.Min(rs.ShapeBones.Count, binds.Count) - 1
+                Dim bn = rs.ShapeBones(k)?.Name?.String
+                If String.IsNullOrEmpty(bn) Then Continue For
+                Dim bind = binds(k)
+                If bind Is Nothing Then Continue For
+                If Not acc.ContainsKey(bn) Then acc(bn) = bind   ' primero gana
+            Next
+        Next
+        Console.WriteLine($"[binddiff]   '{nifKey}': {shapesSkinned} shape(s) skinneada(s), {acc.Count} hueso(s) con bind")
+        Return acc
+    End Function
+
+    ''' <summary>DIAGNÓSTICO (--binddiff): compara los binds skin→bone (SkinToBone) de cada hueso <c>*_skin</c>
+    ''' entre dos NIFs (underarmor vs body). Objetivo: determinar si la escala del SCLP está codificada en el
+    ''' bind del NIF del underarmor. Si los binds difieren (más allá de ruido), la escala vive en el NIF; si son
+    ''' idénticos, no (está horneada en los vértices).
+    ''' <para>Spec: <c>--binddiff "&lt;uaNifKey|path&gt;|&lt;bodyNifKey|path&gt;|&lt;boneSubstr opcional&gt;"</c>.
+    ''' El 3er campo filtra huesos por substring case-insensitive; si falta, se usan todos los <c>*_skin</c>.</para></summary>
+    Private Sub BindDiffRun(spec As String)
+        Const EPS As Double = 0.0001   ' umbral de significancia (ruido por debajo)
+        Dim inv = System.Globalization.CultureInfo.InvariantCulture
+
+        Dim parts = spec.Split("|"c)
+        If parts.Length < 2 OrElse parts(0).Trim() = "" OrElse parts(1).Trim() = "" Then
+            Console.WriteLine("[binddiff] uso: --binddiff ""<uaNifKey|path>|<bodyNifKey|path>|<boneSubstr opcional>""")
+            Return
+        End If
+        Dim uaKey = parts(0).Trim()
+        Dim bodyKey = parts(1).Trim()
+        Dim boneSubstr = If(parts.Length >= 3, parts(2).Trim(), "")
+
+        Console.WriteLine("[binddiff] COMPARA los binds skin→bone (SkinToBone) de cada hueso entre dos NIFs")
+        Console.WriteLine($"   underarmor(ua) = {uaKey}")
+        Console.WriteLine($"   body           = {bodyKey}")
+        Console.WriteLine($"   filtro hueso   = {If(boneSubstr = "", "(todos *_skin)", boneSubstr)}   EPS = {EPS.ToString(inv)}")
+
+        Dim uaBinds = LoadBindsByBone(uaKey)
+        If uaBinds Is Nothing Then Return
+        Dim bodyBinds = LoadBindsByBone(bodyKey)
+        If bodyBinds Is Nothing Then Return
+
+        ' Huesos candidatos: matchean substr (o *_skin si vacío) en el underarmor Y presentes en el body.
+        Dim cand = uaBinds.Keys.
+            Where(Function(k)
+                      If boneSubstr = "" Then
+                          Return k.EndsWith("_skin", StringComparison.OrdinalIgnoreCase)
+                      End If
+                      Return k.IndexOf(boneSubstr, StringComparison.OrdinalIgnoreCase) >= 0
+                  End Function).
+            Where(Function(k) bodyBinds.ContainsKey(k)).
+            OrderBy(Function(k) k, StringComparer.OrdinalIgnoreCase).ToList()
+
+        Console.WriteLine("")
+        Console.WriteLine($"   {cand.Count} hueso(s) comparable(s) (presentes en AMBOS NIFs)")
+        Console.WriteLine("")
+
+        Dim maxDT As Double = 0.0
+        Dim maxDScale As Double = 0.0
+        Dim maxDCol As Double = 0.0
+        Dim divergBones As New List(Of String)()
+
+        For Each bn In cand
+            Dim ua = uaBinds(bn)
+            Dim bd = bodyBinds(bn)
+            Dim ucn = BindColNorms(ua)
+            Dim bcn = BindColNorms(bd)
+
+            Console.WriteLine("   " & New String("="c, 108))
+            Console.WriteLine($"   {bn}")
+            Console.WriteLine(String.Format(inv,
+                "     ua  : T=({0:F4},{1:F4},{2:F4})  scaleUniform={3:F4}  scaleVec=({4:F4},{5:F4},{6:F4})  colNorms=({7:F4},{8:F4},{9:F4})",
+                ua.Translation.X, ua.Translation.Y, ua.Translation.Z, ua.Scale,
+                ua.ScaleVector.X, ua.ScaleVector.Y, ua.ScaleVector.Z, ucn.n0, ucn.n1, ucn.n2))
+            Console.WriteLine(String.Format(inv,
+                "     body: T=({0:F4},{1:F4},{2:F4})  scaleUniform={3:F4}  scaleVec=({4:F4},{5:F4},{6:F4})  colNorms=({7:F4},{8:F4},{9:F4})",
+                bd.Translation.X, bd.Translation.Y, bd.Translation.Z, bd.Scale,
+                bd.ScaleVector.X, bd.ScaleVector.Y, bd.ScaleVector.Z, bcn.n0, bcn.n1, bcn.n2))
+
+            Dim dtx = CDbl(ua.Translation.X) - CDbl(bd.Translation.X)
+            Dim dty = CDbl(ua.Translation.Y) - CDbl(bd.Translation.Y)
+            Dim dtz = CDbl(ua.Translation.Z) - CDbl(bd.Translation.Z)
+            Dim dt = Math.Sqrt(dtx * dtx + dty * dty + dtz * dtz)
+            Dim dscale = Math.Abs(CDbl(ua.Scale) - CDbl(bd.Scale))
+            Dim d0 = Math.Abs(ucn.n0 - bcn.n0)
+            Dim d1 = Math.Abs(ucn.n1 - bcn.n1)
+            Dim d2 = Math.Abs(ucn.n2 - bcn.n2)
+            Console.WriteLine(String.Format(inv,
+                "     DELTA: |ΔT|={0:F4}  Δscale={1:F4}  Δcolnorms=({2:F4},{3:F4},{4:F4})", dt, dscale, d0, d1, d2))
+
+            maxDT = Math.Max(maxDT, dt)
+            maxDScale = Math.Max(maxDScale, dscale)
+            Dim dcolMax = Math.Max(d0, Math.Max(d1, d2))
+            maxDCol = Math.Max(maxDCol, dcolMax)
+            If dt > EPS OrElse dscale > EPS OrElse dcolMax > EPS Then divergBones.Add(bn)
+        Next
+
+        Console.WriteLine("")
+        Console.WriteLine("   " & New String("="c, 108))
+        Console.WriteLine($"   RESUMEN ({cand.Count} hueso(s) *_skin comparado(s)):")
+        Console.WriteLine($"     MAX |ΔT|       = {maxDT.ToString("F6", inv)}")
+        Console.WriteLine($"     MAX |Δscale|   = {maxDScale.ToString("F6", inv)}")
+        Console.WriteLine($"     MAX |Δcolnorm| = {maxDCol.ToString("F6", inv)}")
+        If maxDT < EPS AndAlso maxDScale < EPS AndAlso maxDCol < EPS Then
+            Console.WriteLine("     ⇒ BINDS IDÉNTICOS ua≈body → la escala NO está en el bind (horneada en vértices)")
+        Else
+            Console.WriteLine($"     ⇒ BINDS DIFIEREN → posible escala codificada en el bind; huesos: {String.Join(", ", divergBones)}")
+        End If
+    End Sub
+
+    ''' <summary>VOLCADO DIAGNÓSTICO de la geometría cruda por hueso, para analizar A MANO qué fórmula recupera
+    ''' el SCLP autorado. Para el underarmor y un body de referencia recolecta, por hueso y eje (X/Y/Z), los
+    ''' estadísticos del <c>domSet</c> (min/max/mean/p05/p95/maxAbsOrigin/halfRange) y del <c>allSet</c>
+    ''' ponderado (wMean/wRmsOrigin/p95abs), imprime ambos NIFs lado a lado y una fila de RATIOS ua/body para
+    ''' cada candidato de fórmula, con el valor <c>authored</c> del <c>.sclp</c> al lado.
+    ''' <para>Spec: <c>--sclpdiag "&lt;uaNifKey&gt;|&lt;bodyNifKey&gt;|&lt;boneSubstr&gt;"</c>. El 3er campo filtra
+    ''' huesos por substring case-insensitive; si falta, se usan todos los <c>*_skin</c>.</para></summary>
+    Private Sub SclpDiagRun(spec As String, Optional shapeFilter As String = "")
+        Const WT As Single = 0.1F     ' umbral de peso para el allSet
+        Dim inv = System.Globalization.CultureInfo.InvariantCulture
+        Dim axisName = New String() {"X", "Y", "Z"}
+
+        Dim parts = spec.Split("|"c)
+        If parts.Length < 2 OrElse parts(0).Trim() = "" OrElse parts(1).Trim() = "" Then
+            Console.WriteLine("[sclpdiag] uso: --sclpdiag ""<uaNifKey>|<bodyNifKey>|<boneSubstr>""")
+            Return
+        End If
+        Dim uaKey = parts(0).Trim()
+        Dim bodyKey = parts(1).Trim()
+        Dim boneSubstr = If(parts.Length >= 3, parts(2).Trim(), "")
+        Dim sclpKey = Path.ChangeExtension(uaKey, ".sclp")
+
+        Console.WriteLine("[sclpdiag] VOLCADO DIAGNÓSTICO de geometría cruda por hueso (para derivar a mano la fórmula SCLP)")
+        Console.WriteLine($"   underarmor = {uaKey}")
+        Console.WriteLine($"   body(ref)  = {bodyKey}")
+        Console.WriteLine($"   sclp(auth) = {sclpKey}")
+        Console.WriteLine($"   filtro hueso = {If(boneSubstr = "", "(todos *_skin)", boneSubstr)}   wThreshold(allSet) = {WT.ToString(inv)}")
+        If shapeFilter <> "" Then Console.WriteLine($"   shapefilter = {shapeFilter}   (solo shapes del ua cuyo nombre lo contengan; el body NO se filtra)")
+
+        Dim uaLoc = AccumulateBoneLocals(uaKey, WT, shapeFilter)
+        If uaLoc Is Nothing Then Return
+        Dim bodyLoc = AccumulateBoneLocals(bodyKey, WT)
+        If bodyLoc Is Nothing Then Return
+
+        ' estNN nearest-neighbor LSQ por hueso (sx/sy/sz = pendiente por origen + residual de reconstrucción).
+        ' estFull = ajuste de matriz 3×3 completa por hueso (frame-aware), sobre los MISMOS pares NN.
+        Dim nnPairs = BuildNNPairs(uaKey, bodyKey, 0.01F, shapeFilter)
+        Dim nn = AccumulateNNScales(nnPairs)
+        If nn Is Nothing Then nn = New Dictionary(Of String, (sx As Double, sy As Double, sz As Double, nPairs As Integer, okX As Boolean, okY As Boolean, okZ As Boolean, residX As Double, residY As Double, residZ As Double))(StringComparer.OrdinalIgnoreCase)
+        Dim full = AccumulateFullFit(nnPairs)
+        If full Is Nothing Then full = New Dictionary(Of String, (Lxx As Double, Lyy As Double, Lzz As Double, offNorm As Double, residFull As Double, ok As Boolean))(StringComparer.OrdinalIgnoreCase)
+
+        ' estGlobal = solve GLOBAL CONJUNTO por mínimos cuadrados de TODAS las escalas de hueso a la vez.
+        Dim glob = EstimateGlobalScales(uaKey, bodyKey, 0.01F, shapeFilter)
+        If glob Is Nothing Then glob = New Dictionary(Of String, (sx As Double, sy As Double, sz As Double))(StringComparer.OrdinalIgnoreCase)
+
+        Dim authored = LoadSclpAbsolute(sclpKey)
+        If authored Is Nothing Then
+            Console.WriteLine($"   (aviso) .sclp '{sclpKey}' no encontrado/parseable — sigo sin columna authored")
+        Else
+            Console.WriteLine($"   .sclp: {authored.Count} entrada(s) autorada(s)")
+        End If
+
+        ' Huesos candidatos: matchean substr (o *_skin si vacío) en el underarmor.
+        Dim cand = uaLoc.Keys.
+            Where(Function(k)
+                      If boneSubstr = "" Then
+                          Return k.EndsWith("_skin", StringComparison.OrdinalIgnoreCase)
+                      End If
+                      Return k.IndexOf(boneSubstr, StringComparison.OrdinalIgnoreCase) >= 0
+                  End Function).
+            OrderBy(Function(k) k, StringComparer.OrdinalIgnoreCase).ToList()
+
+        Console.WriteLine("")
+        Console.WriteLine($"   {cand.Count} hueso(s) candidato(s) en el underarmor")
+        Console.WriteLine("   Objetivo: para cada hueso/eje, ver cuál de los r_* ≈ authored.")
+        Console.WriteLine("")
+
+        Dim printed = 0
+        For Each bn In cand
+            Dim uaBl = uaLoc(bn)
+            Dim bdBl As BoneLocals = Nothing
+            If Not bodyLoc.TryGetValue(bn, bdBl) Then
+                Console.WriteLine($"   [skip] '{bn}': sin datos en el body de referencia")
+                Continue For
+            End If
+
+            Dim auRow As Single() = Nothing
+            Dim hasAu = authored IsNot Nothing AndAlso authored.TryGetValue(bn, auRow)
+
+            Console.WriteLine("   " & New String("="c, 120))
+            Dim auHdr = "-"
+            If hasAu Then auHdr = $"X={auRow(0).ToString("F4", inv)}  Y={auRow(1).ToString("F4", inv)}  Z={auRow(2).ToString("F4", inv)}"
+            Console.WriteLine($"   {bn}    authored[{auHdr}]")
+            Console.WriteLine($"     ua : nAll={uaBl.NAll,6}  nDom={uaBl.NDom,6}      body: nAll={bdBl.NAll,6}  nDom={bdBl.NDom,6}")
+
+            ' estNN (nearest-neighbor LSQ, sin umbral de dominancia): pendiente por origen sx/sy/sz + residual de reconstrucción.
+            Dim nnRow As (sx As Double, sy As Double, sz As Double, nPairs As Integer, okX As Boolean, okY As Boolean, okZ As Boolean, residX As Double, residY As Double, residZ As Double) = Nothing
+            If nn.TryGetValue(bn, nnRow) Then
+                Dim sxT = If(nnRow.okX, nnRow.sx.ToString("F4", inv), "n/a")
+                Dim syT = If(nnRow.okY, nnRow.sy.ToString("F4", inv), "n/a")
+                Dim szT = If(nnRow.okZ, nnRow.sz.ToString("F4", inv), "n/a")
+                Dim rxT = If(nnRow.okX, nnRow.residX.ToString("F4", inv), "n/a")
+                Dim ryT = If(nnRow.okY, nnRow.residY.ToString("F4", inv), "n/a")
+                Dim rzT = If(nnRow.okZ, nnRow.residZ.ToString("F4", inv), "n/a")
+                Console.WriteLine($"     estNN: sx={sxT}  sy={syT}  sz={szT}   nPairs={nnRow.nPairs}   resid[X={rxT} Y={ryT} Z={rzT}]  (0=escala-por-hueso perfecta)")
+            Else
+                Console.WriteLine("     estNN: (sin par NN para este hueso — solo en un NIF)")
+            End If
+
+            ' estFull (ajuste de matriz 3×3 completa): diag(L) = escala per-eje frame-aware; offNorm = cuán no-diagonal; resid = residual del ajuste 3×3.
+            Dim fullRow As (Lxx As Double, Lyy As Double, Lzz As Double, offNorm As Double, residFull As Double, ok As Boolean) = Nothing
+            If full.TryGetValue(bn, fullRow) AndAlso fullRow.ok Then
+                Console.WriteLine($"     estFull: Lxx={fullRow.Lxx.ToString("F4", inv)}  Lyy={fullRow.Lyy.ToString("F4", inv)}  Lzz={fullRow.Lzz.ToString("F4", inv)}  offNorm={fullRow.offNorm.ToString("F4", inv)}  resid={fullRow.residFull.ToString("F4", inv)}  (offNorm 0=escala de eje pura; resid ≤ estNN)")
+            Else
+                Console.WriteLine("     estFull: (sin ajuste 3×3 — P singular o sin par NN)")
+            End If
+
+            ' estGlobal (solve conjunto least-squares global de TODAS las escalas a la vez).
+            Dim globRow As (sx As Double, sy As Double, sz As Double) = Nothing
+            If glob.TryGetValue(bn, globRow) Then
+                Console.WriteLine($"     estGlobal: sx={globRow.sx.ToString("F4", inv)}  sy={globRow.sy.ToString("F4", inv)}  sz={globRow.sz.ToString("F4", inv)}  (solve conjunto least-squares global)")
+            Else
+                Console.WriteLine("     estGlobal: (sin solución en el solve conjunto)")
+            End If
+
+            ' Encabezado de la tabla por eje.
+            Dim hdr = "     {0,-2} {1,-4} | {2,9} {3,9} {4,9} {5,9} {6,9} {7,9} {8,9} | {9,9} {10,9} {11,9}"
+            Console.WriteLine(String.Format(hdr,
+                                            "ax", "src", "min", "max", "mean", "p05", "p95", "maxAbsO", "halfRng", "wMean", "wRmsO", "p95abs"))
+            Console.WriteLine("     " & New String("-"c, 118))
+
+            For a = 0 To 2
+                Dim su = ComputeAxisStats(uaBl, a)
+                Dim sb = ComputeAxisStats(bdBl, a)
+                ' Fila ua
+                Console.WriteLine(String.Format(hdr,
+                                                axisName(a), "ua",
+                                                FmtStat(su.DMin, inv), FmtStat(su.DMax, inv), FmtStat(su.DMean, inv),
+                                                FmtStat(su.DP05, inv), FmtStat(su.DP95, inv), FmtStat(su.DMaxAbsO, inv), FmtStat(su.DHalfRange, inv),
+                                                FmtStat(su.WMean, inv), FmtStat(su.WRmsO, inv), FmtStat(su.AP95Abs, inv)))
+                ' Fila body
+                Console.WriteLine(String.Format(hdr,
+                                                "", "body",
+                                                FmtStat(sb.DMin, inv), FmtStat(sb.DMax, inv), FmtStat(sb.DMean, inv),
+                                                FmtStat(sb.DP05, inv), FmtStat(sb.DP95, inv), FmtStat(sb.DMaxAbsO, inv), FmtStat(sb.DHalfRange, inv),
+                                                FmtStat(sb.WMean, inv), FmtStat(sb.WRmsO, inv), FmtStat(sb.AP95Abs, inv)))
+                ' Fila de RATIOS ua/body + authored
+                Dim rHalf = RatioStat(su.DHalfRange, sb.DHalfRange)
+                Dim rMaxAbs = RatioStat(su.DMaxAbsO, sb.DMaxAbsO)
+                Dim rP95abs = RatioStat(su.AP95Abs, sb.AP95Abs)
+                Dim rWrms = RatioStat(su.WRmsO, sb.WRmsO)
+                Dim uaSpan = If(Single.IsNaN(su.DP95) OrElse Single.IsNaN(su.DP05), Single.NaN, su.DP95 - su.DP05)
+                Dim bdSpan = If(Single.IsNaN(sb.DP95) OrElse Single.IsNaN(sb.DP05), Single.NaN, sb.DP95 - sb.DP05)
+                Dim rSpan = RatioStat(uaSpan, bdSpan)
+                Dim auTxt = If(hasAu, auRow(a).ToString("F4", inv), "-")
+                Console.WriteLine($"     {axisName(a),-2} RATIO| r_halfRange={FmtStat(rHalf, inv)}  r_maxAbsOrigin={FmtStat(rMaxAbs, inv)}  r_p95abs={FmtStat(rP95abs, inv)}  r_wRmsOrigin={FmtStat(rWrms, inv)}  r_span={FmtStat(rSpan, inv)}  |  authored={auTxt}")
+            Next
+            printed += 1
+        Next
+
+        Console.WriteLine("   " & New String("="c, 120))
+        Console.WriteLine("")
+        Console.WriteLine($"   {printed} hueso(s) volcado(s) con datos en ambos NIFs.")
+        Console.WriteLine("   LEYENDA: domSet=slot dominante>0.5 (geom limpia); allSet=peso>umbral (ponderado).")
+        Console.WriteLine("            maxAbsO=p95(|axis|) al ORIGEN (domSet); p95abs=p95(|axis|) al ORIGEN (allSet); wRmsO=sqrt(Σw·axis²/Σw).")
+        Console.WriteLine("            r_span=(p95−p05)_ua/body. Buscá el r_* que iguale 'authored' de cada eje.")
+    End Sub
+
+    ''' <summary>Modo BATCH del estimador SCLP: evalúa muchas combinaciones en UNA sola corrida (un solo mount ya hecho).
+    ''' Manifiesto = texto, una línea por caso: <c>label|uaKeyOrPath|bodyKeyOrPath|authoredSclpPath</c> (líneas vacías o
+    ''' que empiezan con '#' se ignoran). Por caso: construye los pares NN (<see cref="BuildNNPairs"/>, wEps=0.01) y el
+    ''' estNN (<see cref="AccumulateNNScales"/>), carga el SCLP autorado (<see cref="LoadSclpAbsolute"/>) y, para cada
+    ''' hueso *_skin en ambos, en ejes Y y Z 'movidos' (|authored−1|&gt;0.02), acumula err=|estNN_eje − authored_eje|.
+    ''' Imprime UNA línea por caso: <c>label  n=…  medErr=…  meanErr=…  within0.10=…  within0.05=…</c> (InvariantCulture).
+    ''' Cada línea va en su propio Try/Catch: un caso que falle NO aborta el batch.</summary>
+    Private Sub SclpBatchRun(manifestPath As String)
+        Const WEPS As Single = 0.01F   ' MISMO wEps que estNN (estimatesclp/sclpdiag): solo excluye pesos numéricamente nulos
+        Const MOVED As Single = 0.02F  ' |authored−1| > MOVED ⇒ el eje fue escalado (contra ruido ≈1.0)
+        Dim inv = System.Globalization.CultureInfo.InvariantCulture
+
+        If Not IO.File.Exists(manifestPath) Then
+            Console.WriteLine($"[sclpbatch] manifiesto no encontrado: {manifestPath}")
+            Return
+        End If
+
+        Dim lines As String()
+        Try
+            lines = IO.File.ReadAllLines(manifestPath)
+        Catch ex As Exception
+            Console.WriteLine($"[sclpbatch] no pude leer el manifiesto '{manifestPath}': {ex.Message}")
+            Return
+        End Try
+
+        Console.WriteLine($"[sclpbatch] {manifestPath}  ({lines.Length} línea(s))")
+        Console.WriteLine("   formato: label|uaKeyOrPath|bodyKeyOrPath|authoredSclpPath   (eje 'movido' si |authored−1|>" & MOVED.ToString(inv) & "; err=|estNN−authored| en Y,Z)")
+        Console.WriteLine("")
+
+        Dim nCases = 0
+        For Each raw In lines
+            Dim line = If(raw, "").Trim()
+            If line = "" OrElse line.StartsWith("#") Then Continue For
+            nCases += 1
+
+            Dim label = line   ' fallback para mensajes de error antes de parsear el label
+            Try
+                Dim parts = line.Split("|"c)
+                If parts.Length < 4 Then
+                    Console.WriteLine($"{label,-24}  ERROR/skip formato (se esperaban 4 campos 'label|ua|body|sclp' separados por '|')")
+                    Continue For
+                End If
+                label = parts(0).Trim()
+                Dim uaKey = parts(1).Trim()
+                Dim bodyKey = parts(2).Trim()
+                Dim sclpKey = parts(3).Trim()
+                If label = "" Then label = "(sin label)"
+                If uaKey = "" OrElse bodyKey = "" OrElse sclpKey = "" Then
+                    Console.WriteLine($"{label,-24}  ERROR/skip campos vacíos (ua/body/sclp)")
+                    Continue For
+                End If
+
+                ' Pipeline NN EXACTO de estimatesclp/sclpdiag (mismo wEps, misma métrica estNN).
+                Dim nnPairs = BuildNNPairs(uaKey, bodyKey, WEPS)   ' Nothing si ua o body no cargan
+                Dim nn = AccumulateNNScales(nnPairs)               ' Nothing si nnPairs Nothing
+                If nn Is Nothing OrElse nn.Count = 0 Then
+                    Console.WriteLine($"{label,-24}  ERROR/skip ua o body no cargan (o sin pares NN)")
+                    Continue For
+                End If
+
+                Dim authored = LoadSclpAbsolute(sclpKey)
+                If authored Is Nothing OrElse authored.Count = 0 Then
+                    Console.WriteLine($"{label,-24}  ERROR/skip .sclp no encontrado/parseable: {sclpKey}")
+                    Continue For
+                End If
+
+                ' Por hueso *_skin en AMBOS (estNN y authored), ejes Y y Z movidos → err=|estNN−authored|.
+                Dim errs As New List(Of Double)()
+                For Each kv In nn
+                    Dim bn = kv.Key
+                    If Not bn.EndsWith("_skin", StringComparison.OrdinalIgnoreCase) Then Continue For
+                    Dim au As Single() = Nothing
+                    If Not authored.TryGetValue(bn, au) OrElse au Is Nothing OrElse au.Length < 3 Then Continue For
+                    Dim r = kv.Value
+                    ' Eje Y (índice 1)
+                    If r.okY AndAlso Math.Abs(au(1) - 1.0F) > MOVED Then errs.Add(Math.Abs(r.sy - au(1)))
+                    ' Eje Z (índice 2)
+                    If r.okZ AndAlso Math.Abs(au(2) - 1.0F) > MOVED Then errs.Add(Math.Abs(r.sz - au(2)))
+                Next
+
+                If errs.Count = 0 Then
+                    Console.WriteLine($"{label,-24}  ERROR/skip sin ejes Y/Z movidos comparables (estNN válido + authored)")
+                    Continue For
+                End If
+
+                errs.Sort()
+                Dim c = errs.Count
+                Dim med As Double
+                If c Mod 2 = 1 Then
+                    med = errs((c - 1) \ 2)
+                Else
+                    med = (errs(c \ 2 - 1) + errs(c \ 2)) / 2.0
+                End If
+                Dim mean = errs.Average()
+                Dim w10 = errs.Where(Function(e) e <= 0.1).Count()
+                Dim w05 = errs.Where(Function(e) e <= 0.05).Count()
+
+                Console.WriteLine($"{label,-24}  n={c,3}  medErr={med.ToString("F4", inv)}  meanErr={mean.ToString("F4", inv)}  within0.10={w10,3}  within0.05={w05,3}")
+            Catch ex As Exception
+                Console.WriteLine($"{label,-24}  ERROR {ex.Message}")
+            End Try
+        Next
+
+        Console.WriteLine("")
+        Console.WriteLine($"[sclpbatch] {nCases} caso(s) procesado(s).")
     End Sub
 
     ''' <summary>FK helper memoizado: world(nm) = world(parent) ∘ localFn(nm) (raíz = localFn(nm)).</summary>
@@ -4275,6 +6227,12 @@ Module Program
                 Case "--provenance" : a.Provenance = True : i += 1
                 Case "--dumpref" : a.DumpRef = v : i += 2
                 Case "--nifdump" : a.NifDump = v : i += 2
+                Case "--estimatesclp" : a.EstimateSclp = v : i += 2
+                Case "--sclpdiag" : a.SclpDiag = v : i += 2
+                Case "--shapefilter" : a.ShapeFilter = v : i += 2
+                Case "--sclpbatch" : a.SclpBatch = v : i += 2
+                Case "--binddiff" : a.BindDiff = v : i += 2
+                Case "--ba2extract" : a.Ba2Extract = v : i += 2
                 Case "--animsynccheck" : a.AnimSyncCheck = v : i += 2
                 Case "--catprofile" : a.CatProfile = True : i += 1
                 Case "--neckseam" : a.NeckSeam = True : i += 1
@@ -4283,7 +6241,7 @@ Module Program
                     Console.Error.WriteLine($"Arg desconocido: {args(i)}") : PrintUsage() : Return Nothing
             End Select
         End While
-        If a.ListPath = "" AndAlso (a.Esp = "" OrElse a.Edid = "") AndAlso Not a.TtedScan AndAlso Not a.ScanDiff AndAlso Not a.RaceAnim AndAlso Not a.MountValidate AndAlso a.FindHkx = "" AndAlso a.ChunkCompare = "" AndAlso a.DumpBehavior = "" AndAlso Not a.HkxCoverage AndAlso a.KwType = "" AndAlso Not a.StateMap AndAlso Not a.ClipResolve AndAlso a.HkxBone = "" AndAlso a.ClipBase = "" AndAlso a.FindFile = "" AndAlso a.NifDump = "" AndAlso a.AnimSyncCheck = "" AndAlso a.BlendHintScan = "" AndAlso Not a.CatProfile AndAlso a.DumpRef = "" Then
+        If a.ListPath = "" AndAlso (a.Esp = "" OrElse a.Edid = "") AndAlso Not a.TtedScan AndAlso Not a.ScanDiff AndAlso Not a.RaceAnim AndAlso Not a.MountValidate AndAlso a.FindHkx = "" AndAlso a.ChunkCompare = "" AndAlso a.DumpBehavior = "" AndAlso Not a.HkxCoverage AndAlso a.KwType = "" AndAlso Not a.StateMap AndAlso Not a.ClipResolve AndAlso a.HkxBone = "" AndAlso a.ClipBase = "" AndAlso a.FindFile = "" AndAlso a.NifDump = "" AndAlso a.AnimSyncCheck = "" AndAlso a.BlendHintScan = "" AndAlso Not a.CatProfile AndAlso a.DumpRef = "" AndAlso a.EstimateSclp = "" AndAlso a.SclpDiag = "" AndAlso a.SclpBatch = "" AndAlso a.BindDiff = "" AndAlso a.Ba2Extract = "" Then
             Console.Error.WriteLine("Faltan --esp y --edid (o usa --list).") : PrintUsage() : Return Nothing
         End If
         Return a

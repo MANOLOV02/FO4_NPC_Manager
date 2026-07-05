@@ -49,14 +49,24 @@ Partial Class OutfitPicker_Form
         PiecesButtonsRow = New FlowLayoutPanel()
         ButtonNewLvl = New Button()
         ButtonRemovePiece = New Button()
+        ButtonEditArmor = New Button()
         EdidRow = New FlowLayoutPanel()
         LabelEdidPrefix = New Label()
         TextBoxEdid = New TextBox()
+        LabelEdidPreview = New Label()
         ModeRow = New FlowLayoutPanel()
         ButtonNewOutfit = New Button()
         ButtonOverrideOutfit = New Button()
         LabelCreateStatus = New Label()
         LabelCreateBanner = New Label()
+        TabPageMyOutfits = New TabPage()
+        MyOutfitsLayout = New TableLayoutPanel()
+        LabelMyOutfits = New Label()
+        ListViewMyOutfits = New ListView()
+        ColMyOutfitName = New ColumnHeader()
+        ColMyOutfitKind = New ColumnHeader()
+        MyOutfitsButtonsRow = New FlowLayoutPanel()
+        ButtonDeleteOutfit = New Button()
         PreviewLayout = New TableLayoutPanel()
         PreviewControlPanel = New Panel()
         PreviewModeRow = New FlowLayoutPanel()
@@ -79,6 +89,9 @@ Partial Class OutfitPicker_Form
         PiecesButtonsRow.SuspendLayout()
         EdidRow.SuspendLayout()
         ModeRow.SuspendLayout()
+        TabPageMyOutfits.SuspendLayout()
+        MyOutfitsLayout.SuspendLayout()
+        MyOutfitsButtonsRow.SuspendLayout()
         PreviewLayout.SuspendLayout()
         PreviewModeRow.SuspendLayout()
         BottomLayout.SuspendLayout()
@@ -121,6 +134,7 @@ Partial Class OutfitPicker_Form
         ' 
         TabsMain.Controls.Add(TabPageBrowse)
         TabsMain.Controls.Add(TabPageCreate)
+        TabsMain.Controls.Add(TabPageMyOutfits)
         TabsMain.Dock = DockStyle.Fill
         TabsMain.Location = New Point(0, 0)
         TabsMain.Name = "TabsMain"
@@ -228,12 +242,13 @@ Partial Class OutfitPicker_Form
         CreateLayout.Controls.Add(ListViewPieces, 0, 6)
         CreateLayout.Controls.Add(PiecesButtonsRow, 0, 7)
         CreateLayout.Controls.Add(EdidRow, 0, 8)
-        CreateLayout.Controls.Add(ModeRow, 0, 9)
-        CreateLayout.Controls.Add(LabelCreateStatus, 0, 10)
+        CreateLayout.Controls.Add(LabelEdidPreview, 0, 9)
+        CreateLayout.Controls.Add(ModeRow, 0, 10)
+        CreateLayout.Controls.Add(LabelCreateStatus, 0, 11)
         CreateLayout.Dock = DockStyle.Fill
         CreateLayout.Location = New Point(6, 6)
         CreateLayout.Name = "CreateLayout"
-        CreateLayout.RowCount = 11
+        CreateLayout.RowCount = 12
         CreateLayout.RowStyles.Add(New RowStyle())
         CreateLayout.RowStyles.Add(New RowStyle())
         CreateLayout.RowStyles.Add(New RowStyle())
@@ -241,6 +256,7 @@ Partial Class OutfitPicker_Form
         CreateLayout.RowStyles.Add(New RowStyle())
         CreateLayout.RowStyles.Add(New RowStyle())
         CreateLayout.RowStyles.Add(New RowStyle(SizeType.Percent, 50F))
+        CreateLayout.RowStyles.Add(New RowStyle())
         CreateLayout.RowStyles.Add(New RowStyle())
         CreateLayout.RowStyles.Add(New RowStyle())
         CreateLayout.RowStyles.Add(New RowStyle())
@@ -396,6 +412,7 @@ Partial Class OutfitPicker_Form
         PiecesButtonsRow.AutoSizeMode = AutoSizeMode.GrowAndShrink
         PiecesButtonsRow.Controls.Add(ButtonNewLvl)
         PiecesButtonsRow.Controls.Add(ButtonRemovePiece)
+        PiecesButtonsRow.Controls.Add(ButtonEditArmor)
         PiecesButtonsRow.Location = New Point(0, 373)
         PiecesButtonsRow.Margin = New Padding(0)
         PiecesButtonsRow.Name = "PiecesButtonsRow"
@@ -422,7 +439,17 @@ Partial Class OutfitPicker_Form
         ButtonRemovePiece.TabIndex = 1
         ButtonRemovePiece.Text = "Remove piece"
         ButtonRemovePiece.UseVisualStyleBackColor = True
-        ' 
+        '
+        ' ButtonEditArmor
+        '
+        ButtonEditArmor.Location = New Point(236, 3)
+        ButtonEditArmor.Margin = New Padding(8, 3, 0, 6)
+        ButtonEditArmor.Name = "ButtonEditArmor"
+        ButtonEditArmor.Size = New Size(100, 25)
+        ButtonEditArmor.TabIndex = 2
+        ButtonEditArmor.Text = "Edit armor…"
+        ButtonEditArmor.UseVisualStyleBackColor = True
+        '
         ' EdidRow
         ' 
         EdidRow.AutoSize = True
@@ -453,9 +480,19 @@ Partial Class OutfitPicker_Form
         TextBoxEdid.PlaceholderText = "name"
         TextBoxEdid.Size = New Size(220, 23)
         TextBoxEdid.TabIndex = 1
-        ' 
+        '
+        ' LabelEdidPreview
+        '
+        LabelEdidPreview.AutoSize = True
+        LabelEdidPreview.ForeColor = SystemColors.GrayText
+        LabelEdidPreview.Location = New Point(0, 439)
+        LabelEdidPreview.Margin = New Padding(0, 0, 0, 2)
+        LabelEdidPreview.Name = "LabelEdidPreview"
+        LabelEdidPreview.Size = New Size(0, 15)
+        LabelEdidPreview.TabIndex = 8
+        '
         ' ModeRow
-        ' 
+        '
         ModeRow.AutoSize = True
         ModeRow.Controls.Add(ButtonNewOutfit)
         ModeRow.Controls.Add(ButtonOverrideOutfit)
@@ -508,7 +545,90 @@ Partial Class OutfitPicker_Form
         LabelCreateStatus.Name = "LabelCreateStatus"
         LabelCreateStatus.Size = New Size(0, 15)
         LabelCreateStatus.TabIndex = 9
-        ' 
+        '
+        ' TabPageMyOutfits
+        '
+        TabPageMyOutfits.Controls.Add(MyOutfitsLayout)
+        TabPageMyOutfits.Location = New Point(4, 24)
+        TabPageMyOutfits.Name = "TabPageMyOutfits"
+        TabPageMyOutfits.Padding = New Padding(6)
+        TabPageMyOutfits.Size = New Size(731, 490)
+        TabPageMyOutfits.TabIndex = 2
+        TabPageMyOutfits.Text = "My outfit drafts"
+        TabPageMyOutfits.UseVisualStyleBackColor = True
+        '
+        ' MyOutfitsLayout
+        '
+        MyOutfitsLayout.ColumnCount = 1
+        MyOutfitsLayout.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100F))
+        MyOutfitsLayout.Controls.Add(LabelMyOutfits, 0, 0)
+        MyOutfitsLayout.Controls.Add(ListViewMyOutfits, 0, 1)
+        MyOutfitsLayout.Controls.Add(MyOutfitsButtonsRow, 0, 2)
+        MyOutfitsLayout.Dock = DockStyle.Fill
+        MyOutfitsLayout.Location = New Point(6, 6)
+        MyOutfitsLayout.Name = "MyOutfitsLayout"
+        MyOutfitsLayout.RowCount = 3
+        MyOutfitsLayout.RowStyles.Add(New RowStyle())
+        MyOutfitsLayout.RowStyles.Add(New RowStyle(SizeType.Percent, 100F))
+        MyOutfitsLayout.RowStyles.Add(New RowStyle())
+        MyOutfitsLayout.Size = New Size(719, 478)
+        MyOutfitsLayout.TabIndex = 0
+        '
+        ' LabelMyOutfits
+        '
+        LabelMyOutfits.AutoSize = True
+        LabelMyOutfits.Location = New Point(0, 0)
+        LabelMyOutfits.Margin = New Padding(0, 0, 0, 2)
+        LabelMyOutfits.Name = "LabelMyOutfits"
+        LabelMyOutfits.Size = New Size(90, 15)
+        LabelMyOutfits.TabIndex = 0
+        LabelMyOutfits.Text = "Your outfits — unsaved drafts + already-saved (double-click to edit; saved re-open as override):"
+        '
+        ' ListViewMyOutfits
+        '
+        ListViewMyOutfits.Columns.AddRange(New ColumnHeader() {ColMyOutfitName, ColMyOutfitKind})
+        ListViewMyOutfits.Dock = DockStyle.Fill
+        ListViewMyOutfits.FullRowSelect = True
+        ListViewMyOutfits.Location = New Point(3, 501)
+        ListViewMyOutfits.MultiSelect = False
+        ListViewMyOutfits.Name = "ListViewMyOutfits"
+        ListViewMyOutfits.Size = New Size(713, 74)
+        ListViewMyOutfits.TabIndex = 11
+        ListViewMyOutfits.UseCompatibleStateImageBehavior = False
+        ListViewMyOutfits.View = View.Details
+        '
+        ' ColMyOutfitName
+        '
+        ColMyOutfitName.Text = "Outfit"
+        ColMyOutfitName.Width = 480
+        '
+        ' ColMyOutfitKind
+        '
+        ColMyOutfitKind.Text = "Kind"
+        ColMyOutfitKind.Width = 100
+        '
+        ' MyOutfitsButtonsRow
+        '
+        MyOutfitsButtonsRow.AutoSize = True
+        MyOutfitsButtonsRow.AutoSizeMode = AutoSizeMode.GrowAndShrink
+        MyOutfitsButtonsRow.Controls.Add(ButtonDeleteOutfit)
+        MyOutfitsButtonsRow.Location = New Point(0, 581)
+        MyOutfitsButtonsRow.Margin = New Padding(0)
+        MyOutfitsButtonsRow.Name = "MyOutfitsButtonsRow"
+        MyOutfitsButtonsRow.Size = New Size(130, 34)
+        MyOutfitsButtonsRow.TabIndex = 12
+        MyOutfitsButtonsRow.WrapContents = False
+        '
+        ' ButtonDeleteOutfit
+        '
+        ButtonDeleteOutfit.Location = New Point(0, 3)
+        ButtonDeleteOutfit.Margin = New Padding(0, 3, 0, 6)
+        ButtonDeleteOutfit.Name = "ButtonDeleteOutfit"
+        ButtonDeleteOutfit.Size = New Size(130, 25)
+        ButtonDeleteOutfit.TabIndex = 0
+        ButtonDeleteOutfit.Text = "Delete / Revert…"
+        ButtonDeleteOutfit.UseVisualStyleBackColor = True
+        '
         ' PreviewLayout
         ' 
         PreviewLayout.ColumnCount = 1
@@ -572,8 +692,8 @@ Partial Class OutfitPicker_Form
         ' 
         BottomLayout.AutoSize = True
         BottomLayout.AutoSizeMode = AutoSizeMode.GrowAndShrink
-        BottomLayout.Controls.Add(ButtonOk)
         BottomLayout.Controls.Add(ButtonCancel)
+        BottomLayout.Controls.Add(ButtonOk)
         BottomLayout.Dock = DockStyle.Fill
         BottomLayout.FlowDirection = FlowDirection.RightToLeft
         BottomLayout.Location = New Point(11, 535)
@@ -633,6 +753,10 @@ Partial Class OutfitPicker_Form
         EdidRow.PerformLayout()
         ModeRow.ResumeLayout(False)
         ModeRow.PerformLayout()
+        TabPageMyOutfits.ResumeLayout(False)
+        MyOutfitsLayout.ResumeLayout(False)
+        MyOutfitsLayout.PerformLayout()
+        MyOutfitsButtonsRow.ResumeLayout(False)
         PreviewLayout.ResumeLayout(False)
         PreviewModeRow.ResumeLayout(False)
         PreviewModeRow.PerformLayout()
@@ -671,10 +795,12 @@ Partial Class OutfitPicker_Form
     Friend WithEvents ColPieceSlots As System.Windows.Forms.ColumnHeader
     Friend WithEvents ColPieceStatus As System.Windows.Forms.ColumnHeader
     Friend WithEvents ButtonRemovePiece As System.Windows.Forms.Button
+    Friend WithEvents ButtonEditArmor As System.Windows.Forms.Button
     Friend WithEvents PiecesButtonsRow As System.Windows.Forms.FlowLayoutPanel
     Friend WithEvents EdidRow As System.Windows.Forms.FlowLayoutPanel
     Friend WithEvents LabelEdidPrefix As System.Windows.Forms.Label
     Friend WithEvents TextBoxEdid As System.Windows.Forms.TextBox
+    Friend WithEvents LabelEdidPreview As System.Windows.Forms.Label
     Friend WithEvents ModeRow As System.Windows.Forms.FlowLayoutPanel
     Friend WithEvents ButtonNewOutfit As System.Windows.Forms.Button
     Friend WithEvents ButtonOverrideOutfit As System.Windows.Forms.Button
@@ -683,6 +809,14 @@ Partial Class OutfitPicker_Form
     Friend WithEvents RadioButtonRenderOutfit As System.Windows.Forms.RadioButton
     Friend WithEvents RadioButtonRenderPiece As System.Windows.Forms.RadioButton
     Friend WithEvents LabelCreateStatus As System.Windows.Forms.Label
+    Friend WithEvents TabPageMyOutfits As System.Windows.Forms.TabPage
+    Friend WithEvents MyOutfitsLayout As System.Windows.Forms.TableLayoutPanel
+    Friend WithEvents LabelMyOutfits As System.Windows.Forms.Label
+    Friend WithEvents ListViewMyOutfits As System.Windows.Forms.ListView
+    Friend WithEvents ColMyOutfitName As System.Windows.Forms.ColumnHeader
+    Friend WithEvents ColMyOutfitKind As System.Windows.Forms.ColumnHeader
+    Friend WithEvents MyOutfitsButtonsRow As System.Windows.Forms.FlowLayoutPanel
+    Friend WithEvents ButtonDeleteOutfit As System.Windows.Forms.Button
     Friend WithEvents PreviewLayout As System.Windows.Forms.TableLayoutPanel
     Friend WithEvents PreviewControlPanel As System.Windows.Forms.Panel
     Friend WithEvents BottomLayout As System.Windows.Forms.FlowLayoutPanel

@@ -28,7 +28,7 @@ Public Class ObtsIncludeEditor_Form
 
         Dim src = If(inc, New ARMO_CombinationInclude())
         _omodFormID = src.ModFormID
-        NumAttach.Value = ClampDec(src.AttachPointIndex, NumAttach)
+        NumAttach.Value = Math.Max(NumAttach.Minimum, Math.Min(NumAttach.Maximum, CDec(src.AttachPointIndex)))
         CheckOptional.Checked = src.IsOptional
         CheckDontUseAll.Checked = src.DontUseAll
         RenderOmod()
@@ -60,12 +60,5 @@ Public Class ObtsIncludeEditor_Form
         DialogResult = DialogResult.OK
         Close()
     End Sub
-
-    Private Shared Function ClampDec(v As Integer, num As NumericUpDown) As Decimal
-        Dim d As Decimal = CDec(v)
-        If d < num.Minimum Then Return num.Minimum
-        If d > num.Maximum Then Return num.Maximum
-        Return d
-    End Function
 
 End Class

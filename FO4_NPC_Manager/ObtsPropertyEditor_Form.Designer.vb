@@ -23,7 +23,7 @@ Partial Class ObtsPropertyEditor_Form
         LabelValueType = New Label()
         ComboValueType = New ComboBox()
         LabelFunction = New Label()
-        NumFunction = New NumericUpDown()
+        ComboFunction = New ComboBox()
         LabelIndex = New Label()
         NumIndex = New NumericUpDown()
         LabelValue1 = New Label()
@@ -40,7 +40,6 @@ Partial Class ObtsPropertyEditor_Form
         ButtonOk = New Button()
         ButtonCancel = New Button()
         RootLayout.SuspendLayout()
-        CType(NumFunction, ComponentModel.ISupportInitialize).BeginInit()
         CType(NumIndex, ComponentModel.ISupportInitialize).BeginInit()
         Value1Panel.SuspendLayout()
         BottomLayout.SuspendLayout()
@@ -54,7 +53,7 @@ Partial Class ObtsPropertyEditor_Form
         RootLayout.Controls.Add(LabelValueType, 0, 0)
         RootLayout.Controls.Add(ComboValueType, 1, 0)
         RootLayout.Controls.Add(LabelFunction, 0, 1)
-        RootLayout.Controls.Add(NumFunction, 1, 1)
+        RootLayout.Controls.Add(ComboFunction, 1, 1)
         RootLayout.Controls.Add(LabelIndex, 0, 2)
         RootLayout.Controls.Add(NumIndex, 1, 2)
         RootLayout.Controls.Add(LabelValue1, 0, 3)
@@ -108,16 +107,16 @@ Partial Class ObtsPropertyEditor_Form
         LabelFunction.Name = "LabelFunction"
         LabelFunction.Size = New Size(130, 15)
         LabelFunction.TabIndex = 2
-        LabelFunction.Text = "FunctionType (raw 0-255):"
+        LabelFunction.Text = "FunctionType:"
         '
-        ' NumFunction
+        ' ComboFunction
         '
-        NumFunction.Anchor = AnchorStyles.Left
-        NumFunction.Location = New Point(173, 44)
-        NumFunction.Maximum = New Decimal(New Integer() {255, 0, 0, 0})
-        NumFunction.Name = "NumFunction"
-        NumFunction.Size = New Size(110, 23)
-        NumFunction.TabIndex = 3
+        ComboFunction.Anchor = AnchorStyles.Left Or AnchorStyles.Right
+        ComboFunction.DropDownStyle = ComboBoxStyle.DropDownList
+        ComboFunction.Location = New Point(173, 44)
+        ComboFunction.Name = "ComboFunction"
+        ComboFunction.Size = New Size(330, 23)
+        ComboFunction.TabIndex = 3
         '
         ' LabelIndex
         '
@@ -137,6 +136,7 @@ Partial Class ObtsPropertyEditor_Form
         NumIndex.Name = "NumIndex"
         NumIndex.Size = New Size(110, 23)
         NumIndex.TabIndex = 5
+        NumIndex.TextAlign = System.Windows.Forms.HorizontalAlignment.Right
         '
         ' LabelValue1
         '
@@ -198,7 +198,7 @@ Partial Class ObtsPropertyEditor_Form
         LabelValue2.Name = "LabelValue2"
         LabelValue2.Size = New Size(90, 15)
         LabelValue2.TabIndex = 8
-        LabelValue2.Text = "Value2 (float):"
+        LabelValue2.Text = "Value2:"
         '
         ' TextBoxValue2
         '
@@ -242,8 +242,8 @@ Partial Class ObtsPropertyEditor_Form
         '
         BottomLayout.AutoSize = True
         BottomLayout.AutoSizeMode = AutoSizeMode.GrowAndShrink
-        BottomLayout.Controls.Add(ButtonOk)
         BottomLayout.Controls.Add(ButtonCancel)
+        BottomLayout.Controls.Add(ButtonOk)
         BottomLayout.Dock = DockStyle.Bottom
         BottomLayout.FlowDirection = FlowDirection.RightToLeft
         BottomLayout.Location = New Point(170, 285)
@@ -288,7 +288,6 @@ Partial Class ObtsPropertyEditor_Form
         Text = "OBTS Property"
         RootLayout.ResumeLayout(False)
         RootLayout.PerformLayout()
-        CType(NumFunction, ComponentModel.ISupportInitialize).EndInit()
         CType(NumIndex, ComponentModel.ISupportInitialize).EndInit()
         Value1Panel.ResumeLayout(False)
         Value1Panel.PerformLayout()
@@ -300,7 +299,7 @@ Partial Class ObtsPropertyEditor_Form
     Friend WithEvents LabelValueType As System.Windows.Forms.Label
     Friend WithEvents ComboValueType As System.Windows.Forms.ComboBox
     Friend WithEvents LabelFunction As System.Windows.Forms.Label
-    Friend WithEvents NumFunction As System.Windows.Forms.NumericUpDown
+    Friend WithEvents ComboFunction As System.Windows.Forms.ComboBox
     Friend WithEvents LabelIndex As System.Windows.Forms.Label
     Friend WithEvents NumIndex As System.Windows.Forms.NumericUpDown
     Friend WithEvents LabelValue1 As System.Windows.Forms.Label

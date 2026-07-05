@@ -35,12 +35,36 @@ Public Class FormIdPicker_Form
     Private ReadOnly _entries As New List(Of Entry)
     Private _filtered As List(Of Entry)
 
+    ''' <summary>Process-wide cache of the REAL-RECORD <see cref="Entry"/> rows per signature, so the
+    ''' expensive <see cref="PluginManager.GetRecordsOfType"/> enumeration + FULL/plugin resolution runs
+    ''' once per signature across ALL dialog opens (ARMA/ARMO/KYWD are large). Keyed by signature only —
+    ''' safe because every call site passes the same master manager (MainForm.PluginManagerForEditor) and
+    ''' the cache is invalidated whenever records change (<see cref="InvalidateSignatureCache"/>, called on
+    ''' plugin (re)load and after a Save promotes drafts to real records). The pinned NULL row and the
+    ''' per-instance drafts are NOT cached here — they stay per-open. The filter/allowNull are applied at
+    ''' DISPLAY time, so the raw cached list is reusable across callers with different filters.</summary>
+    Private Shared ReadOnly _sigEntryCache As New Dictionary(Of String, List(Of Entry))(StringComparer.Ordinal)
+
+    ''' <summary>Drop the process-wide per-signature real-record cache. Call from MainForm whenever the
+    ''' record universe the picker enumerates changes (plugin (re)load; draft→real promotion on Save).</summary>
+    Public Shared Sub InvalidateSignatureCache()
+        _sigEntryCache.Clear()
+    End Sub
+
     ''' <summary>Optional per-row predicate the CALLER supplies (e.g. "is this ARMA race-compatible with the
     ''' preview NPC's race"). Nothing → no row gating (every record passes). When set, the display filter ALSO
     ''' gates each non-NULL row by this predicate UNLESS "Show all" is checked. The predicate runs in the
     ''' display filter over the cached <see cref="_entries"/> — toggling "Show all" or typing only re-filters
     ''' the cache, it never re-enumerates records.</summary>
     Private ReadOnly _formIdFilter As Func(Of UInteger, Boolean)
+
+    ''' <summary>Optional caller-supplied delete/revert handler. Nothing (default) → the "Delete / Revert…"
+    ''' button stays HIDDEN and every existing (real-record) caller is unaffected. When supplied, the button
+    ''' appears; clicking it invokes the handler with the selected row's <see cref="FormIdPickerEntry"/> and, if
+    ''' the handler returns True (the caller performed the real removal, incl. any confirm/reference-check), the
+    ''' picker drops the matching row from its per-instance <see cref="_entries"/> and repaints. The shared
+    ''' <see cref="_sigEntryCache"/> is NEVER mutated here — this button is meant for drafts-only pickers.</summary>
+    Private ReadOnly _onDeleteEntry As Func(Of FormIdPickerEntry, Boolean)
 
     ''' <summary>The chosen record's GLOBAL FormID after <c>DialogResult.OK</c>. 0 = the pinned
     ''' "(none / NULL)" row was chosen (only possible when <c>allowNull</c> was True).</summary>
@@ -83,17 +107,23 @@ Public Class FormIdPicker_Form
     ''' <param name="formIdFilter">Optional per-FormID predicate (e.g. race-compatibility for ARMA/ARMO pickers).
     ''' When supplied, the "Show all" checkbox is shown/enabled and each non-NULL row is gated by this predicate
     ''' unless "Show all" is checked. Nothing → no gating and the checkbox stays hidden/disabled.</param>
+    ''' <param name="onDeleteEntry">Optional delete/revert handler. Nothing (default) → the "Delete / Revert…"
+    ''' button stays hidden and existing callers are unaffected. When supplied, the button is shown; clicking it
+    ''' passes the selected row as a <see cref="FormIdPickerEntry"/> and, if the handler returns True, the picker
+    ''' drops that row and repaints. Intended for drafts-only pickers — the shared cache is never mutated.</param>
     Public Sub New(pluginManager As PluginManager,
                    allowedSignatures As IEnumerable(Of String),
                    Optional title As String = Nothing,
                    Optional currentFormID As UInteger = 0UI,
                    Optional allowNull As Boolean = True,
                    Optional extraDraftEntries As IEnumerable(Of FormIdPickerEntry) = Nothing,
-                   Optional formIdFilter As Func(Of UInteger, Boolean) = Nothing)
+                   Optional formIdFilter As Func(Of UInteger, Boolean) = Nothing,
+                   Optional onDeleteEntry As Func(Of FormIdPickerEntry, Boolean) = Nothing)
         InitializeComponent()
         _pluginManager = pluginManager
         _allowNull = allowNull
         _formIdFilter = formIdFilter
+        _onDeleteEntry = onDeleteEntry
 
         ' "Show all" only makes sense when a filter was supplied — otherwise nothing to override.
         ' Hidden (not just disabled) when no filter, so an unfiltered picker shows no stray control.
@@ -127,6 +157,13 @@ Public Class FormIdPicker_Form
         AddHandler ListViewRecords.KeyDown, AddressOf OnListKeyDown
         AddHandler ButtonOk.Click, AddressOf OnOk
 
+        ' Optional delete/revert affordance: HIDDEN unless the caller supplied a handler, so real-record pickers
+        ' (no handler) are visually and behaviorally unchanged. Enabled only while a non-NULL row is selected.
+        ButtonDeleteEntry.Visible = (_onDeleteEntry IsNot Nothing)
+        AddHandler ButtonDeleteEntry.Click, AddressOf OnDeleteEntryClick
+        AddHandler ListViewRecords.SelectedIndexChanged, AddressOf OnDeleteSelectionChanged
+        OnDeleteSelectionChanged(Me, EventArgs.Empty)
+
         ' Click-to-sort on every column (same shared helper EditFace / OutfitPicker / HeadPartPicker use).
         ' Numeric-aware comparer sorts the hex FormID column lexicographically, which keeps "0x000xxxxx"
         ' visually grouped. The sorter survives list re-population (filter changes), so a chosen sort sticks.
@@ -145,11 +182,19 @@ Public Class FormIdPicker_Form
 
         If _pluginManager IsNot Nothing Then
             For Each sig In sigs
+                ' Cross-open cache: reuse the previously-built real-record rows for this signature (shared
+                ' instances are safe — Entry is read-only after build and nothing mutates it post-build).
+                Dim cachedSig As List(Of Entry) = Nothing
+                If _sigEntryCache.TryGetValue(sig, cachedSig) Then
+                    _entries.AddRange(cachedSig)
+                    Continue For
+                End If
                 Dim recs = _pluginManager.GetRecordsOfType(sig)
                 If recs Is Nothing Then Continue For
+                Dim built As New List(Of Entry)
                 For Each rec In recs
                     If rec Is Nothing Then Continue For
-                    _entries.Add(New Entry With {
+                    built.Add(New Entry With {
                         .FormID = rec.Header.FormID,
                         .EditorID = If(rec.EditorID, ""),
                         .DisplayName = ResolveDisplayName(rec),
@@ -157,20 +202,28 @@ Public Class FormIdPicker_Form
                         .PluginName = ResolvePluginName(rec)
                     })
                 Next
+                _sigEntryCache(sig) = built
+                _entries.AddRange(built)
             Next
         End If
 
-        ' Drafts AFTER the real records, marked Plugin="(new)" unless the caller set a name.
+        ' Drafts AFTER the real records, marked Plugin="(new)" unless the caller set a name. An OVERRIDE draft
+        ' shares the FormID of a real record already listed above — REPLACE that real row in place (not append)
+        ' so the FormID shows ONCE as the edited "(new)" draft, never a stale duplicate the user could pick. A
+        ' NEW draft (provisional FormID) has no real match → appends. (Replacing an index in the per-instance
+        ' _entries only swaps that reference; the shared _sigEntryCache list is untouched.)
         If extraDraftEntries IsNot Nothing Then
             For Each d In extraDraftEntries
                 If d Is Nothing Then Continue For
-                _entries.Add(New Entry With {
+                Dim draftEntry As New Entry With {
                     .FormID = d.FormID,
                     .EditorID = If(d.EditorID, ""),
                     .DisplayName = If(String.IsNullOrEmpty(d.DisplayName), If(d.EditorID, ""), d.DisplayName),
                     .Signature = If(d.Signature, ""),
                     .PluginName = If(String.IsNullOrEmpty(d.PluginName), NewDraftPluginLabel, d.PluginName)
-                })
+                }
+                Dim existingIdx = _entries.FindIndex(Function(en) Not en.IsNullRow AndAlso en.FormID = d.FormID)
+                If existingIdx >= 0 Then _entries(existingIdx) = draftEntry Else _entries.Add(draftEntry)
             Next
         End If
     End Sub
@@ -240,6 +293,19 @@ Public Class FormIdPicker_Form
             ListViewRecords.Items(idx).Selected = True
             ListViewRecords.Items(idx).EnsureVisible()
         End If
+        _preselectIndex = idx
+    End Sub
+
+    ''' <summary>Index of the preselected row (from <see cref="PreselectCurrent"/>), re-scrolled into view on
+    ''' Shown — the ctor's EnsureVisible runs before the ListView has a realized handle, so it doesn't scroll.</summary>
+    Private _preselectIndex As Integer = -1
+
+    Private Sub FormIdPicker_Form_Shown(sender As Object, e As EventArgs) Handles Me.Shown
+        If _preselectIndex >= 0 AndAlso _preselectIndex < ListViewRecords.Items.Count Then
+            ListViewRecords.Items(_preselectIndex).EnsureVisible()
+        ElseIf ListViewRecords.SelectedItems.Count > 0 Then
+            ListViewRecords.SelectedItems(0).EnsureVisible()
+        End If
     End Sub
 
     ''' <summary>Live display filter, run on every keystroke AND on a "Show all" toggle. A row passes iff it
@@ -305,6 +371,40 @@ Public Class FormIdPicker_Form
         _selectedFormID = If(en.IsNullRow, 0UI, en.FormID)
         DialogResult = DialogResult.OK
         Close()
+    End Sub
+
+    ''' <summary>Keep the "Delete / Revert…" button enabled only while a real (non-NULL) row is selected. Only
+    ''' matters when the button is visible (a delete handler was supplied); harmless no-op otherwise.</summary>
+    Private Sub OnDeleteSelectionChanged(sender As Object, e As EventArgs)
+        Dim en As Entry = Nothing
+        If ListViewRecords.SelectedItems.Count > 0 Then en = TryCast(ListViewRecords.SelectedItems(0).Tag, Entry)
+        ButtonDeleteEntry.Enabled = (en IsNot Nothing AndAlso Not en.IsNullRow)
+    End Sub
+
+    ''' <summary>Delete/revert the selected row via the caller's handler. The handler does the REAL removal
+    ''' (draft registry + any confirm/reference-check) and returns True on success; on True the picker drops the
+    ''' matching row from its per-instance <see cref="_entries"/> and rebuilds the filtered view. The shared
+    ''' <see cref="_sigEntryCache"/> is never touched.</summary>
+    Private Sub OnDeleteEntryClick(sender As Object, e As EventArgs)
+        If _onDeleteEntry Is Nothing Then Return
+        If ListViewRecords.SelectedItems.Count = 0 Then Return
+        Dim en = TryCast(ListViewRecords.SelectedItems(0).Tag, Entry)
+        If en Is Nothing OrElse en.IsNullRow Then Return
+
+        Dim thatEntry As New FormIdPickerEntry With {
+            .FormID = en.FormID,
+            .EditorID = en.EditorID,
+            .DisplayName = en.DisplayName,
+            .Signature = en.Signature,
+            .PluginName = en.PluginName
+        }
+        Dim deleted = _onDeleteEntry(thatEntry)
+        If Not deleted Then Return
+
+        ' Reflect the caller's removal in this instance only (never mutate the shared per-signature cache),
+        ' then re-run the display filter to rebuild _filtered + repaint.
+        _entries.RemoveAll(Function(x) Not x.IsNullRow AndAlso x.FormID = en.FormID)
+        OnFilterChanged(Me, EventArgs.Empty)
     End Sub
 
 End Class

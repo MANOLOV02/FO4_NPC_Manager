@@ -117,7 +117,15 @@ Friend NotInheritable Class NpcRenderContext
     ''' collapses it to one parse.</summary>
     Public Function ParseRaceCached(rRec As PluginRecord) As RACE_Data
         If rRec Is Nothing Then Return Nothing
-        Return _raceCache.GetOrAdd(rRec.Header.FormID, Function(fid) RecordParsers.ParseRACE(rRec, PluginManager))
+        ' Merge LooksMenu custom tint templates INSIDE the factory so the RACE_Data is fully assembled
+        ' before it is published to the cache and read concurrently (the parallel preflight enumerates a
+        ' race's tint groups on other threads). No-op when no F4EE\Tints\ files match the race.
+        Return _raceCache.GetOrAdd(rRec.Header.FormID,
+            Function(fid)
+                Dim race = RecordParsers.ParseRACE(rRec, PluginManager)
+                LmCustomTintLoader.EnsureMerged(race, PluginManager)
+                Return race
+            End Function)
     End Function
 
     ''' <summary>The set of races an armature (ARMA) may be authored for and still fit an actor of

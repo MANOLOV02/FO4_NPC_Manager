@@ -38,15 +38,96 @@ Public Class MswpSubEntryEditor_Form
         If orig.Length > 0 AndAlso Not ComboOriginal.Items.Contains(orig) Then ComboOriginal.Items.Add(orig)
         ComboOriginal.Text = orig
         TextBoxReplacement.Text = If(src.ReplacementMaterial, "")
-        TextBoxRemap.Text = If(src.HasColorRemapIndex, src.ColorRemapIndex.ToString(CultureInfo.InvariantCulture), "")
 
+        ' Color remap: a checkbox marks it present/absent; the 0–1 slider (4 decimals) holds the index.
+        CheckRemap.Checked = src.HasColorRemapIndex
+        SliderRemap.Value = If(src.HasColorRemapIndex, Math.Max(0.0, Math.Min(1.0, CDbl(src.ColorRemapIndex))), 0.0)
+        SliderRemap.Enabled = CheckRemap.Checked
+
+        AddHandler CheckRemap.CheckedChanged, Sub()
+                                                  SliderRemap.Enabled = CheckRemap.Checked
+                                                  UpdateRemapGradientUi()
+                                              End Sub
+        AddHandler SliderRemap.ValueChanged, Sub() PicRemapGradient.Invalidate()   ' only the marker moves
+        AddHandler TextBoxReplacement.TextChanged, Sub() UpdateRemapGradientUi()     ' palette source changed
+        AddHandler ComboOriginal.TextChanged, Sub() UpdateRemapGradientUi()
+        AddHandler PicRemapGradient.Paint, AddressOf OnRemapGradientPaint
+        AddHandler Me.FormClosed, Sub() _gradientBmp?.Dispose()
         AddHandler ButtonBrowseReplacement.Click, AddressOf OnBrowseReplacement
         AddHandler ButtonOk.Click, AddressOf OnOk
+        UpdateRemapGradientUi()
     End Sub
 
-    ''' <summary>Pick a Materials\ file (loose+BA2, ext-filtered) via the library tree picker into Replacement.</summary>
+    Private _gradientBmp As Bitmap
+    Private _gradientSourcePath As String = Nothing
+
+    ''' <summary>The material whose color-remap PALETTE the index maps into: the Replacement when set, else the
+    ''' Original (SNAM is optional — a swap may only change the remap of the original material).</summary>
+    Private Function RemapSourceMaterial() As String
+        Dim repl = TextBoxReplacement.Text.Trim()
+        Return If(repl.Length > 0, repl, ComboOriginal.Text.Trim())
+    End Function
+
+    ''' <summary>Show the source material's greyscale palette in the gradient box (ALWAYS — the palette is visible
+    ''' whether or not the remap is enabled, so the user can preview it), reloading the bitmap when the source
+    ''' material changes. The marker is redrawn in <see cref="OnRemapGradientPaint"/>.</summary>
+    Private Sub UpdateRemapGradientUi()
+        Dim src = RemapSourceMaterial()
+        If Not String.Equals(src, _gradientSourcePath, StringComparison.OrdinalIgnoreCase) Then
+            _gradientBmp?.Dispose()
+            _gradientBmp = LoadGreyscaleBitmap(src)
+            _gradientSourcePath = src
+            PicRemapGradient.Image = _gradientBmp
+        End If
+        PicRemapGradient.Invalidate()
+    End Sub
+
+    ''' <summary>Load the material's greyscale-to-palette texture as a horizontal gradient bitmap (rotated so the
+    ''' remap axis runs along the width, mirroring Wardrobe Manager). Nothing when the material has no palette
+    ''' texture / can't be loaded — the box then shows "no palette".</summary>
+    Private Shared Function LoadGreyscaleBitmap(matPath As String) As Bitmap
+        Try
+            If String.IsNullOrWhiteSpace(matPath) Then Return Nothing
+            Dim mat = MaterialResolver.TryLoadMaterialFromDictionary(matPath, Nothing, Nothing, Nothing)
+            If mat Is Nothing OrElse String.IsNullOrEmpty(mat.GreyscaleTexture) Then Return Nothing
+            Dim bytes = FilesDictionary_class.GetBytes(FO4UnifiedMaterial_Class.CorrectTexturePath(mat.GreyscaleTexture))
+            If bytes Is Nothing Then Return Nothing
+            Dim bmp = DirectXDDSLoader.CreateBitmapFromDDS(bytes)
+            If bmp Is Nothing Then Return Nothing
+            bmp.RotateFlip(RotateFlipType.Rotate270FlipNone)
+            Return bmp
+        Catch
+            Return Nothing
+        End Try
+    End Function
+
+    ''' <summary>Draw the vertical marker line at the current remap index (0–1 → x across the gradient); when the
+    ''' material has no palette texture, a small hint instead of a blank box.</summary>
+    Private Sub OnRemapGradientPaint(sender As Object, e As PaintEventArgs)
+        Dim w = PicRemapGradient.ClientSize.Width
+        Dim h = PicRemapGradient.ClientSize.Height
+        If _gradientBmp Is Nothing Then
+            TextRenderer.DrawText(e.Graphics, "no palette", PicRemapGradient.Font, New Point(2, 2), Color.DimGray)
+            Return
+        End If
+        Dim idx = Math.Max(0.0, Math.Min(1.0, SliderRemap.Value))
+        Dim x = CInt(Math.Round(idx * (w - 1)))
+        ' Marker at the index — red when the remap is enabled (present), gray when it's off (preview only).
+        Using pen As New Pen(If(CheckRemap.Checked, Color.Red, Color.Gray), 2.0F)
+            e.Graphics.DrawLine(pen, x, 0, x, h)
+        End Using
+    End Sub
+
+    ''' <summary>Pick a Materials\ file (loose+BA2, ext-filtered) via the library tree picker into Replacement.
+    ''' Opens positioned on the current Replacement; when there's none yet, on the ORIGINAL material's folder
+    ''' (a swap usually replaces a material with one in the same directory).</summary>
     Private Sub OnBrowseReplacement(sender As Object, e As EventArgs)
         Dim current = TextBoxReplacement.Text.Trim()
+        If current.Length = 0 Then
+            ' No Replacement yet → open at the Original's folder, normalized to the picker's key format (Materials\).
+            Dim orig = ComboOriginal.Text.Trim()
+            If orig.Length > 0 Then current = MaterialsPrefix & FO4UnifiedMaterial_Class.CorrectMaterialPath(orig).StripPrefix(MaterialsPrefix)
+        End If
         Dim exts As New HashSet(Of String)(StringComparer.OrdinalIgnoreCase) From {".bgsm", ".bgem"}
         Dim keys = FilesDictionary_class.GetFilteredKeys(MaterialsPrefix, exts)
         Using dlg As New DictionaryFilePicker_Form(keys, MaterialsPrefix, exts, current)
@@ -70,11 +151,9 @@ Public Class MswpSubEntryEditor_Form
         End If
 
         Dim built As New MSWP_Substitution With {.OriginalMaterial = orig, .ReplacementMaterial = repl}
-        Dim remapText = TextBoxRemap.Text.Trim()
-        Dim remapVal As Single
-        If remapText.Length > 0 AndAlso Single.TryParse(remapText, NumberStyles.Float, CultureInfo.InvariantCulture, remapVal) Then
+        If CheckRemap.Checked Then
             built.HasColorRemapIndex = True
-            built.ColorRemapIndex = remapVal
+            built.ColorRemapIndex = CSng(SliderRemap.Value)
         End If
 
         _result = built

@@ -34,7 +34,17 @@ Public Class MeshPicker_Form
         ArgumentNullException.ThrowIfNull(keys)
         ArgumentNullException.ThrowIfNull(allowedExts)
         DictionaryPicker_Control1.Initialize(keys, rootPrefix, allowedExts)
-        DictionaryPicker_Control1.Preselect(initialKey)
+        ' Model fields (ARMA MOD2/MOD3, ARMO MOD2/MOD4, …) store the path RELATIVE to Meshes\
+        ' (prefix-free), but the picker's dictionary keys — and therefore Preselect/SelectFileByKey —
+        ' carry the root prefix. Re-add it when missing so an already-populated field opens the picker
+        ' AT that mesh's folder/file instead of the tree root. (Same shape as the material picker at
+        ' MswpSubEntryEditor_Form.)
+        Dim seed As String = If(initialKey, "").Trim()
+        If seed.Length > 0 AndAlso Not String.IsNullOrEmpty(rootPrefix) AndAlso
+           Not seed.StartsWith(rootPrefix, StringComparison.OrdinalIgnoreCase) Then
+            seed = rootPrefix & seed
+        End If
+        DictionaryPicker_Control1.Preselect(seed)
     End Sub
 
     ''' <summary>The dictionary key the user picked (full key, INCLUDING the root prefix), or Nothing.

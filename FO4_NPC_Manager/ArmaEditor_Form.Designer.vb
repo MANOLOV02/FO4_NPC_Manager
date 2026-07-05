@@ -27,6 +27,7 @@ Partial Class ArmaEditor_Form
         ButtonEditDraft = New Button()
         LabelEdid = New Label()
         TextBoxEdid = New TextBox()
+        LabelEdidPreview = New Label()
         LabelStatusBanner = New Label()
         MainSplit = New SplitContainer()
         Tabs = New TabControl()
@@ -54,6 +55,8 @@ Partial Class ArmaEditor_Form
         CheckMo3f1stPerson = New CheckBox()
         LabelMo2f = New Label()
         LabelMo3f = New Label()
+        GroupModelExtras = New GroupBox()
+        ModelExtrasLayout = New TableLayoutPanel()
         TabSlots = New TabPage()
         SlotsLayout = New TableLayoutPanel()
         LabelSlots = New Label()
@@ -93,6 +96,18 @@ Partial Class ArmaEditor_Form
         TextBoxMo3s = New TextBox()
         ButtonPickMo3s = New Button()
         ButtonEditMo3s = New Button()
+        LabelSndd = New Label()
+        TextBoxSndd = New TextBox()
+        ButtonPickSndd = New Button()
+        LabelOnam = New Label()
+        TextBoxOnam = New TextBox()
+        ButtonPickOnam = New Button()
+        LabelMo4s = New Label()
+        TextBoxMo4s = New TextBox()
+        ButtonPickMo4s = New Button()
+        LabelMo5s = New Label()
+        TextBoxMo5s = New TextBox()
+        ButtonPickMo5s = New Button()
         GroupPriorities = New GroupBox()
         PrioritiesLayout = New TableLayoutPanel()
         LabelMalePrio = New Label()
@@ -101,6 +116,12 @@ Partial Class ArmaEditor_Form
         LabelFemalePrio = New Label()
         NumFemalePrio = New NumericUpDown()
         CheckFemaleWeight = New CheckBox()
+        LabelDetectionSound = New Label()
+        NumDetectionSound = New NumericUpDown()
+        LabelWeaponAdjust = New Label()
+        NumWeaponAdjust = New NumericUpDown()
+        TabData = New TabPage()
+        DataLayout = New TableLayoutPanel()
         TabSculpt = New TabPage()
         SculptLayout = New TableLayoutPanel()
         SculptTopRow = New FlowLayoutPanel()
@@ -119,6 +140,7 @@ Partial Class ArmaEditor_Form
         ComboSculptAddBone = New ComboBox()
         ButtonSculptAddRow = New Button()
         ButtonSculptLoad = New Button()
+        ButtonSculptEstimate = New Button()
         ButtonSculptSave = New Button()
         TabFlags = New TabPage()
         FlagsLayout = New TableLayoutPanel()
@@ -143,6 +165,8 @@ Partial Class ArmaEditor_Form
         MeshesLayout.SuspendLayout()
         GroupModelFlags.SuspendLayout()
         ModelFlagsLayout.SuspendLayout()
+        GroupModelExtras.SuspendLayout()
+        ModelExtrasLayout.SuspendLayout()
         TabSlots.SuspendLayout()
         SlotsLayout.SuspendLayout()
         TabSkin.SuspendLayout()
@@ -156,6 +180,10 @@ Partial Class ArmaEditor_Form
         PrioritiesLayout.SuspendLayout()
         CType(NumMalePrio, ComponentModel.ISupportInitialize).BeginInit()
         CType(NumFemalePrio, ComponentModel.ISupportInitialize).BeginInit()
+        CType(NumDetectionSound, ComponentModel.ISupportInitialize).BeginInit()
+        CType(NumWeaponAdjust, ComponentModel.ISupportInitialize).BeginInit()
+        TabData.SuspendLayout()
+        DataLayout.SuspendLayout()
         TabSculpt.SuspendLayout()
         SculptLayout.SuspendLayout()
         SculptTopRow.SuspendLayout()
@@ -197,6 +225,7 @@ Partial Class ArmaEditor_Form
         TopBar.Controls.Add(ButtonEditDraft)
         TopBar.Controls.Add(LabelEdid)
         TopBar.Controls.Add(TextBoxEdid)
+        TopBar.Controls.Add(LabelEdidPreview)
         TopBar.Dock = DockStyle.Fill
         TopBar.Location = New Point(11, 11)
         TopBar.Margin = New Padding(0)
@@ -242,7 +271,7 @@ Partial Class ArmaEditor_Form
         ButtonEditDraft.Name = "ButtonEditDraft"
         ButtonEditDraft.Size = New Size(90, 24)
         ButtonEditDraft.TabIndex = 3
-        ButtonEditDraft.Text = "Edit draft…"
+        ButtonEditDraft.Text = "Edit mine…"
         ButtonEditDraft.UseVisualStyleBackColor = True
         '
         ' LabelEdid
@@ -259,9 +288,20 @@ Partial Class ArmaEditor_Form
         '
         TextBoxEdid.Location = New Point(502, 3)
         TextBoxEdid.Name = "TextBoxEdid"
-        TextBoxEdid.PlaceholderText = "npcm_ARMA_<name>"
+        TextBoxEdid.PlaceholderText = "name"
         TextBoxEdid.Size = New Size(320, 23)
         TextBoxEdid.TabIndex = 5
+        '
+        ' LabelEdidPreview
+        '
+        LabelEdidPreview.Anchor = AnchorStyles.Left
+        LabelEdidPreview.AutoSize = True
+        LabelEdidPreview.ForeColor = System.Drawing.SystemColors.GrayText
+        LabelEdidPreview.Location = New Point(828, 7)
+        LabelEdidPreview.Margin = New Padding(8, 0, 3, 0)
+        LabelEdidPreview.Name = "LabelEdidPreview"
+        LabelEdidPreview.Size = New Size(0, 15)
+        LabelEdidPreview.TabIndex = 6
         '
         ' LabelStatusBanner
         '
@@ -297,6 +337,7 @@ Partial Class ArmaEditor_Form
         Tabs.Controls.Add(TabModels)
         Tabs.Controls.Add(TabSlots)
         Tabs.Controls.Add(TabSkin)
+        Tabs.Controls.Add(TabData)
         Tabs.Controls.Add(TabSculpt)
         Tabs.Controls.Add(TabFlags)
         Tabs.Dock = DockStyle.Fill
@@ -323,10 +364,12 @@ Partial Class ArmaEditor_Form
         ModelsLayout.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100F))
         ModelsLayout.Controls.Add(GroupMeshes, 0, 0)
         ModelsLayout.Controls.Add(GroupModelFlags, 0, 1)
+        ModelsLayout.Controls.Add(GroupModelExtras, 0, 2)
         ModelsLayout.Dock = DockStyle.Fill
         ModelsLayout.Location = New Point(6, 6)
         ModelsLayout.Name = "ModelsLayout"
-        ModelsLayout.RowCount = 3
+        ModelsLayout.RowCount = 4
+        ModelsLayout.RowStyles.Add(New RowStyle())
         ModelsLayout.RowStyles.Add(New RowStyle())
         ModelsLayout.RowStyles.Add(New RowStyle())
         ModelsLayout.RowStyles.Add(New RowStyle(SizeType.Percent, 100F))
@@ -350,7 +393,7 @@ Partial Class ArmaEditor_Form
         ' MeshesLayout
         '
         MeshesLayout.ColumnCount = 3
-        MeshesLayout.ColumnStyles.Add(New ColumnStyle(SizeType.Absolute, 150F))
+        MeshesLayout.ColumnStyles.Add(New ColumnStyle(SizeType.Absolute, 175F))
         MeshesLayout.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100F))
         MeshesLayout.ColumnStyles.Add(New ColumnStyle(SizeType.Absolute, 90F))
         MeshesLayout.Controls.Add(LabelMod2, 0, 0)
@@ -496,11 +539,13 @@ Partial Class ArmaEditor_Form
         '
         ' GroupModelFlags
         '
+        GroupModelFlags.AutoSize = True
+        GroupModelFlags.AutoSizeMode = AutoSizeMode.GrowAndShrink
         GroupModelFlags.Controls.Add(ModelFlagsLayout)
         GroupModelFlags.Dock = DockStyle.Fill
         GroupModelFlags.Location = New Point(3, 131)
         GroupModelFlags.Name = "GroupModelFlags"
-        GroupModelFlags.Size = New Size(694, 376)
+        GroupModelFlags.Size = New Size(694, 90)
         GroupModelFlags.TabIndex = 12
         GroupModelFlags.TabStop = False
         GroupModelFlags.Text = "Model flags (MO2F male / MO3F female)"
@@ -517,7 +562,9 @@ Partial Class ArmaEditor_Form
         ModelFlagsLayout.Controls.Add(LabelMo3f, 0, 1)
         ModelFlagsLayout.Controls.Add(CheckMo3fFaceBones, 1, 1)
         ModelFlagsLayout.Controls.Add(CheckMo3f1stPerson, 2, 1)
-        ModelFlagsLayout.Dock = DockStyle.Top
+        ModelFlagsLayout.AutoSize = True
+        ModelFlagsLayout.AutoSizeMode = AutoSizeMode.GrowAndShrink
+        ModelFlagsLayout.Dock = DockStyle.Fill
         ModelFlagsLayout.Location = New Point(3, 19)
         ModelFlagsLayout.Name = "ModelFlagsLayout"
         ModelFlagsLayout.RowCount = 2
@@ -590,6 +637,43 @@ Partial Class ArmaEditor_Form
         CheckMo3f1stPerson.Text = "Has 1st-Person Model (0x02)"
         CheckMo3f1stPerson.UseVisualStyleBackColor = True
         '
+        ' GroupModelExtras
+        '
+        GroupModelExtras.AutoSize = True
+        GroupModelExtras.AutoSizeMode = AutoSizeMode.GrowAndShrink
+        GroupModelExtras.Controls.Add(ModelExtrasLayout)
+        GroupModelExtras.Dock = DockStyle.Fill
+        GroupModelExtras.Location = New Point(3, 227)
+        GroupModelExtras.Name = "GroupModelExtras"
+        GroupModelExtras.Padding = New Padding(4)
+        GroupModelExtras.Size = New Size(694, 90)
+        GroupModelExtras.TabIndex = 13
+        GroupModelExtras.TabStop = False
+        GroupModelExtras.Text = "Sounds & art (Footstep FSTS + Art Object ONAM)"
+        '
+        ' ModelExtrasLayout
+        '
+        ModelExtrasLayout.ColumnCount = 3
+        ModelExtrasLayout.ColumnStyles.Add(New ColumnStyle(SizeType.Absolute, 175F))
+        ModelExtrasLayout.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100F))
+        ModelExtrasLayout.ColumnStyles.Add(New ColumnStyle(SizeType.Absolute, 40F))
+        ModelExtrasLayout.Controls.Add(LabelSndd, 0, 0)
+        ModelExtrasLayout.Controls.Add(TextBoxSndd, 1, 0)
+        ModelExtrasLayout.Controls.Add(ButtonPickSndd, 2, 0)
+        ModelExtrasLayout.Controls.Add(LabelOnam, 0, 1)
+        ModelExtrasLayout.Controls.Add(TextBoxOnam, 1, 1)
+        ModelExtrasLayout.Controls.Add(ButtonPickOnam, 2, 1)
+        ModelExtrasLayout.AutoSize = True
+        ModelExtrasLayout.AutoSizeMode = AutoSizeMode.GrowAndShrink
+        ModelExtrasLayout.Dock = DockStyle.Fill
+        ModelExtrasLayout.Location = New Point(4, 20)
+        ModelExtrasLayout.Name = "ModelExtrasLayout"
+        ModelExtrasLayout.RowCount = 2
+        ModelExtrasLayout.RowStyles.Add(New RowStyle())
+        ModelExtrasLayout.RowStyles.Add(New RowStyle())
+        ModelExtrasLayout.Size = New Size(686, 66)
+        ModelExtrasLayout.TabIndex = 0
+        '
         ' TabSlots
         '
         TabSlots.Controls.Add(SlotsLayout)
@@ -636,7 +720,6 @@ Partial Class ArmaEditor_Form
         '
         ' TabSkin
         '
-        TabSkin.AutoScroll = True
         TabSkin.Controls.Add(SkinLayout)
         TabSkin.Location = New Point(4, 24)
         TabSkin.Name = "TabSkin"
@@ -652,12 +735,10 @@ Partial Class ArmaEditor_Form
         SkinLayout.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100F))
         SkinLayout.Controls.Add(GroupRace, 0, 0)
         SkinLayout.Controls.Add(GroupSkinTextures, 0, 1)
-        SkinLayout.Controls.Add(GroupPriorities, 0, 2)
         SkinLayout.Dock = DockStyle.Fill
         SkinLayout.Location = New Point(6, 6)
         SkinLayout.Name = "SkinLayout"
-        SkinLayout.RowCount = 4
-        SkinLayout.RowStyles.Add(New RowStyle())
+        SkinLayout.RowCount = 3
         SkinLayout.RowStyles.Add(New RowStyle())
         SkinLayout.RowStyles.Add(New RowStyle())
         SkinLayout.RowStyles.Add(New RowStyle(SizeType.Percent, 100F))
@@ -713,12 +794,12 @@ Partial Class ArmaEditor_Form
         GroupSkinTextures.Size = New Size(694, 150)
         GroupSkinTextures.TabIndex = 1
         GroupSkinTextures.TabStop = False
-        GroupSkinTextures.Text = "Skin textures & material swaps (NAM0–3, MO2S/MO3S)"
+        GroupSkinTextures.Text = "Skin textures & material swaps (NAM0–3, MO2S–5S)"
         '
         ' SkinTexturesLayout
         '
         SkinTexturesLayout.ColumnCount = 4
-        SkinTexturesLayout.ColumnStyles.Add(New ColumnStyle(SizeType.Absolute, 175F))
+        SkinTexturesLayout.ColumnStyles.Add(New ColumnStyle(SizeType.Absolute, 210F))
         SkinTexturesLayout.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100F))
         SkinTexturesLayout.ColumnStyles.Add(New ColumnStyle(SizeType.Absolute, 40F))
         SkinTexturesLayout.ColumnStyles.Add(New ColumnStyle(SizeType.Absolute, 110F))
@@ -742,12 +823,20 @@ Partial Class ArmaEditor_Form
         SkinTexturesLayout.Controls.Add(TextBoxMo3s, 1, 5)
         SkinTexturesLayout.Controls.Add(ButtonPickMo3s, 2, 5)
         SkinTexturesLayout.Controls.Add(ButtonEditMo3s, 3, 5)
+        SkinTexturesLayout.Controls.Add(LabelMo4s, 0, 6)
+        SkinTexturesLayout.Controls.Add(TextBoxMo4s, 1, 6)
+        SkinTexturesLayout.Controls.Add(ButtonPickMo4s, 2, 6)
+        SkinTexturesLayout.Controls.Add(LabelMo5s, 0, 7)
+        SkinTexturesLayout.Controls.Add(TextBoxMo5s, 1, 7)
+        SkinTexturesLayout.Controls.Add(ButtonPickMo5s, 2, 7)
         SkinTexturesLayout.AutoSize = True
         SkinTexturesLayout.AutoSizeMode = AutoSizeMode.GrowAndShrink
         SkinTexturesLayout.Dock = DockStyle.Fill
         SkinTexturesLayout.Location = New Point(4, 20)
         SkinTexturesLayout.Name = "SkinTexturesLayout"
-        SkinTexturesLayout.RowCount = 6
+        SkinTexturesLayout.RowCount = 8
+        SkinTexturesLayout.RowStyles.Add(New RowStyle())
+        SkinTexturesLayout.RowStyles.Add(New RowStyle())
         SkinTexturesLayout.RowStyles.Add(New RowStyle())
         SkinTexturesLayout.RowStyles.Add(New RowStyle())
         SkinTexturesLayout.RowStyles.Add(New RowStyle())
@@ -1038,16 +1127,134 @@ Partial Class ArmaEditor_Form
         ButtonEditMo3s.Text = "New / Edit MSWP…"
         ButtonEditMo3s.UseVisualStyleBackColor = True
         '
+        ' LabelSndd
+        '
+        LabelSndd.Anchor = AnchorStyles.Left
+        LabelSndd.AutoSize = True
+        LabelSndd.Location = New Point(3, 327)
+        LabelSndd.Name = "LabelSndd"
+        LabelSndd.Size = New Size(105, 15)
+        LabelSndd.TabIndex = 26
+        LabelSndd.Text = "Footstep (FSTS):"
+        '
+        ' TextBoxSndd
+        '
+        TextBoxSndd.Anchor = AnchorStyles.Left Or AnchorStyles.Right
+        TextBoxSndd.Location = New Point(178, 323)
+        TextBoxSndd.Name = "TextBoxSndd"
+        TextBoxSndd.ReadOnly = True
+        TextBoxSndd.Size = New Size(469, 23)
+        TextBoxSndd.TabIndex = 27
+        '
+        ' ButtonPickSndd
+        '
+        ButtonPickSndd.Anchor = AnchorStyles.Left
+        ButtonPickSndd.Location = New Point(653, 322)
+        ButtonPickSndd.Name = "ButtonPickSndd"
+        ButtonPickSndd.Size = New Size(34, 24)
+        ButtonPickSndd.TabIndex = 28
+        ButtonPickSndd.Text = "…"
+        ButtonPickSndd.UseVisualStyleBackColor = True
+        '
+        ' LabelOnam
+        '
+        LabelOnam.Anchor = AnchorStyles.Left
+        LabelOnam.AutoSize = True
+        LabelOnam.Location = New Point(3, 357)
+        LabelOnam.Name = "LabelOnam"
+        LabelOnam.Size = New Size(110, 15)
+        LabelOnam.TabIndex = 29
+        LabelOnam.Text = "Art Object (ONAM):"
+        '
+        ' TextBoxOnam
+        '
+        TextBoxOnam.Anchor = AnchorStyles.Left Or AnchorStyles.Right
+        TextBoxOnam.Location = New Point(178, 353)
+        TextBoxOnam.Name = "TextBoxOnam"
+        TextBoxOnam.ReadOnly = True
+        TextBoxOnam.Size = New Size(469, 23)
+        TextBoxOnam.TabIndex = 30
+        '
+        ' ButtonPickOnam
+        '
+        ButtonPickOnam.Anchor = AnchorStyles.Left
+        ButtonPickOnam.Location = New Point(653, 352)
+        ButtonPickOnam.Name = "ButtonPickOnam"
+        ButtonPickOnam.Size = New Size(34, 24)
+        ButtonPickOnam.TabIndex = 31
+        ButtonPickOnam.Text = "…"
+        ButtonPickOnam.UseVisualStyleBackColor = True
+        '
+        ' LabelMo4s
+        '
+        LabelMo4s.Anchor = AnchorStyles.Left
+        LabelMo4s.AutoSize = True
+        LabelMo4s.Location = New Point(3, 387)
+        LabelMo4s.Name = "LabelMo4s"
+        LabelMo4s.Size = New Size(175, 15)
+        LabelMo4s.TabIndex = 32
+        LabelMo4s.Text = "Male 1st-p material swap (MO4S):"
+        '
+        ' TextBoxMo4s
+        '
+        TextBoxMo4s.Anchor = AnchorStyles.Left Or AnchorStyles.Right
+        TextBoxMo4s.Location = New Point(178, 383)
+        TextBoxMo4s.Name = "TextBoxMo4s"
+        TextBoxMo4s.ReadOnly = True
+        TextBoxMo4s.Size = New Size(469, 23)
+        TextBoxMo4s.TabIndex = 33
+        '
+        ' ButtonPickMo4s
+        '
+        ButtonPickMo4s.Anchor = AnchorStyles.Left
+        ButtonPickMo4s.Location = New Point(653, 382)
+        ButtonPickMo4s.Name = "ButtonPickMo4s"
+        ButtonPickMo4s.Size = New Size(34, 24)
+        ButtonPickMo4s.TabIndex = 34
+        ButtonPickMo4s.Text = "…"
+        ButtonPickMo4s.UseVisualStyleBackColor = True
+        '
+        ' LabelMo5s
+        '
+        LabelMo5s.Anchor = AnchorStyles.Left
+        LabelMo5s.AutoSize = True
+        LabelMo5s.Location = New Point(3, 417)
+        LabelMo5s.Name = "LabelMo5s"
+        LabelMo5s.Size = New Size(185, 15)
+        LabelMo5s.TabIndex = 35
+        LabelMo5s.Text = "Female 1st-p material swap (MO5S):"
+        '
+        ' TextBoxMo5s
+        '
+        TextBoxMo5s.Anchor = AnchorStyles.Left Or AnchorStyles.Right
+        TextBoxMo5s.Location = New Point(178, 413)
+        TextBoxMo5s.Name = "TextBoxMo5s"
+        TextBoxMo5s.ReadOnly = True
+        TextBoxMo5s.Size = New Size(469, 23)
+        TextBoxMo5s.TabIndex = 36
+        '
+        ' ButtonPickMo5s
+        '
+        ButtonPickMo5s.Anchor = AnchorStyles.Left
+        ButtonPickMo5s.Location = New Point(653, 412)
+        ButtonPickMo5s.Name = "ButtonPickMo5s"
+        ButtonPickMo5s.Size = New Size(34, 24)
+        ButtonPickMo5s.TabIndex = 37
+        ButtonPickMo5s.Text = "…"
+        ButtonPickMo5s.UseVisualStyleBackColor = True
+        '
         ' GroupPriorities
         '
+        GroupPriorities.AutoSize = True
+        GroupPriorities.AutoSizeMode = AutoSizeMode.GrowAndShrink
         GroupPriorities.Controls.Add(PrioritiesLayout)
-        GroupPriorities.Dock = DockStyle.Top
+        GroupPriorities.Dock = DockStyle.Fill
         GroupPriorities.Location = New Point(3, 322)
         GroupPriorities.Name = "GroupPriorities"
-        GroupPriorities.Size = New Size(694, 90)
+        GroupPriorities.Size = New Size(694, 160)
         GroupPriorities.TabIndex = 26
         GroupPriorities.TabStop = False
-        GroupPriorities.Text = "Priorities & weight slider (DNAM)"
+        GroupPriorities.Text = "Priorities, weight slider & detection/weapon (DNAM)"
         '
         ' PrioritiesLayout
         '
@@ -1061,13 +1268,21 @@ Partial Class ArmaEditor_Form
         PrioritiesLayout.Controls.Add(LabelFemalePrio, 0, 1)
         PrioritiesLayout.Controls.Add(NumFemalePrio, 1, 1)
         PrioritiesLayout.Controls.Add(CheckFemaleWeight, 2, 1)
-        PrioritiesLayout.Dock = DockStyle.Top
+        PrioritiesLayout.Controls.Add(LabelDetectionSound, 0, 2)
+        PrioritiesLayout.Controls.Add(NumDetectionSound, 1, 2)
+        PrioritiesLayout.Controls.Add(LabelWeaponAdjust, 0, 3)
+        PrioritiesLayout.Controls.Add(NumWeaponAdjust, 1, 3)
+        PrioritiesLayout.AutoSize = True
+        PrioritiesLayout.AutoSizeMode = AutoSizeMode.GrowAndShrink
+        PrioritiesLayout.Dock = DockStyle.Fill
         PrioritiesLayout.Location = New Point(3, 19)
         PrioritiesLayout.Name = "PrioritiesLayout"
-        PrioritiesLayout.RowCount = 2
+        PrioritiesLayout.RowCount = 4
         PrioritiesLayout.RowStyles.Add(New RowStyle())
         PrioritiesLayout.RowStyles.Add(New RowStyle())
-        PrioritiesLayout.Size = New Size(688, 60)
+        PrioritiesLayout.RowStyles.Add(New RowStyle())
+        PrioritiesLayout.RowStyles.Add(New RowStyle())
+        PrioritiesLayout.Size = New Size(688, 120)
         PrioritiesLayout.TabIndex = 0
         '
         ' LabelMalePrio
@@ -1088,6 +1303,7 @@ Partial Class ArmaEditor_Form
         NumMalePrio.Name = "NumMalePrio"
         NumMalePrio.Size = New Size(80, 23)
         NumMalePrio.TabIndex = 1
+        NumMalePrio.TextAlign = System.Windows.Forms.HorizontalAlignment.Right
         '
         ' CheckMaleWeight
         '
@@ -1118,6 +1334,7 @@ Partial Class ArmaEditor_Form
         NumFemalePrio.Name = "NumFemalePrio"
         NumFemalePrio.Size = New Size(80, 23)
         NumFemalePrio.TabIndex = 4
+        NumFemalePrio.TextAlign = System.Windows.Forms.HorizontalAlignment.Right
         '
         ' CheckFemaleWeight
         '
@@ -1129,6 +1346,74 @@ Partial Class ArmaEditor_Form
         CheckFemaleWeight.TabIndex = 5
         CheckFemaleWeight.Text = "Weight slider enabled (0x02)"
         CheckFemaleWeight.UseVisualStyleBackColor = True
+        '
+        ' LabelDetectionSound
+        '
+        LabelDetectionSound.Anchor = AnchorStyles.Left
+        LabelDetectionSound.AutoSize = True
+        LabelDetectionSound.Location = New Point(3, 66)
+        LabelDetectionSound.Name = "LabelDetectionSound"
+        LabelDetectionSound.Size = New Size(140, 15)
+        LabelDetectionSound.TabIndex = 6
+        LabelDetectionSound.Text = "Detection Sound Value:"
+        '
+        ' NumDetectionSound
+        '
+        NumDetectionSound.Anchor = AnchorStyles.Left
+        NumDetectionSound.Location = New Point(173, 63)
+        NumDetectionSound.Maximum = New Decimal(New Integer() {255, 0, 0, 0})
+        NumDetectionSound.Name = "NumDetectionSound"
+        NumDetectionSound.Size = New Size(80, 23)
+        NumDetectionSound.TabIndex = 7
+        NumDetectionSound.TextAlign = System.Windows.Forms.HorizontalAlignment.Right
+        '
+        ' LabelWeaponAdjust
+        '
+        LabelWeaponAdjust.Anchor = AnchorStyles.Left
+        LabelWeaponAdjust.AutoSize = True
+        LabelWeaponAdjust.Location = New Point(3, 96)
+        LabelWeaponAdjust.Name = "LabelWeaponAdjust"
+        LabelWeaponAdjust.Size = New Size(140, 15)
+        LabelWeaponAdjust.TabIndex = 8
+        LabelWeaponAdjust.Text = "Weapon Adjust:"
+        '
+        ' NumWeaponAdjust
+        '
+        NumWeaponAdjust.Anchor = AnchorStyles.Left
+        NumWeaponAdjust.DecimalPlaces = 2
+        NumWeaponAdjust.Increment = New Decimal(New Integer() {1, 0, 0, 65536})
+        NumWeaponAdjust.Location = New Point(173, 93)
+        NumWeaponAdjust.Maximum = New Decimal(New Integer() {100000, 0, 0, 0})
+        NumWeaponAdjust.Minimum = New Decimal(New Integer() {100000, 0, 0, -2147483648})
+        NumWeaponAdjust.Name = "NumWeaponAdjust"
+        NumWeaponAdjust.Size = New Size(100, 23)
+        NumWeaponAdjust.TabIndex = 9
+        NumWeaponAdjust.TextAlign = System.Windows.Forms.HorizontalAlignment.Right
+        '
+        ' TabData
+        '
+        TabData.Controls.Add(DataLayout)
+        TabData.Location = New Point(4, 24)
+        TabData.Name = "TabData"
+        TabData.Padding = New Padding(6)
+        TabData.Size = New Size(712, 522)
+        TabData.TabIndex = 5
+        TabData.Text = "Data (DNAM)"
+        TabData.UseVisualStyleBackColor = True
+        '
+        ' DataLayout
+        '
+        DataLayout.ColumnCount = 1
+        DataLayout.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100F))
+        DataLayout.Controls.Add(GroupPriorities, 0, 0)
+        DataLayout.Dock = DockStyle.Fill
+        DataLayout.Location = New Point(6, 6)
+        DataLayout.Name = "DataLayout"
+        DataLayout.RowCount = 2
+        DataLayout.RowStyles.Add(New RowStyle())
+        DataLayout.RowStyles.Add(New RowStyle(SizeType.Percent, 100F))
+        DataLayout.Size = New Size(700, 510)
+        DataLayout.TabIndex = 0
         '
         ' TabSculpt
         '
@@ -1211,13 +1496,13 @@ Partial Class ArmaEditor_Form
         ' SculptHeaderRow
         '
         SculptHeaderRow.ColumnCount = 8
-        SculptHeaderRow.ColumnStyles.Add(New ColumnStyle(SizeType.Absolute, 200F))
+        SculptHeaderRow.ColumnStyles.Add(New ColumnStyle(SizeType.Absolute, 150F))
         SculptHeaderRow.ColumnStyles.Add(New ColumnStyle(SizeType.Absolute, 16F))
-        SculptHeaderRow.ColumnStyles.Add(New ColumnStyle(SizeType.Absolute, 100F))
+        SculptHeaderRow.ColumnStyles.Add(New ColumnStyle(SizeType.Absolute, 130F))
         SculptHeaderRow.ColumnStyles.Add(New ColumnStyle(SizeType.Absolute, 16F))
-        SculptHeaderRow.ColumnStyles.Add(New ColumnStyle(SizeType.Absolute, 100F))
+        SculptHeaderRow.ColumnStyles.Add(New ColumnStyle(SizeType.Absolute, 130F))
         SculptHeaderRow.ColumnStyles.Add(New ColumnStyle(SizeType.Absolute, 16F))
-        SculptHeaderRow.ColumnStyles.Add(New ColumnStyle(SizeType.Absolute, 100F))
+        SculptHeaderRow.ColumnStyles.Add(New ColumnStyle(SizeType.Absolute, 130F))
         SculptHeaderRow.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100F))
         SculptHeaderRow.Controls.Add(LabelSculptColBone, 0, 0)
         SculptHeaderRow.Controls.Add(LabelSculptColX, 2, 0)
@@ -1306,6 +1591,7 @@ Partial Class ArmaEditor_Form
         SculptButtons.Controls.Add(ComboSculptAddBone)
         SculptButtons.Controls.Add(ButtonSculptAddRow)
         SculptButtons.Controls.Add(ButtonSculptLoad)
+        SculptButtons.Controls.Add(ButtonSculptEstimate)
         SculptButtons.Controls.Add(ButtonSculptSave)
         SculptButtons.Dock = DockStyle.Fill
         SculptButtons.Location = New Point(0, 478)
@@ -1355,12 +1641,21 @@ Partial Class ArmaEditor_Form
         ButtonSculptLoad.Text = "Load .sclp…"
         ButtonSculptLoad.UseVisualStyleBackColor = True
         '
+        ' ButtonSculptEstimate
+        '
+        ButtonSculptEstimate.Location = New Point(441, 3)
+        ButtonSculptEstimate.Name = "ButtonSculptEstimate"
+        ButtonSculptEstimate.Size = New Size(90, 25)
+        ButtonSculptEstimate.TabIndex = 4
+        ButtonSculptEstimate.Text = "Estimate"
+        ButtonSculptEstimate.UseVisualStyleBackColor = True
+        '
         ' ButtonSculptSave
         '
-        ButtonSculptSave.Location = New Point(441, 3)
+        ButtonSculptSave.Location = New Point(537, 3)
         ButtonSculptSave.Name = "ButtonSculptSave"
         ButtonSculptSave.Size = New Size(90, 25)
-        ButtonSculptSave.TabIndex = 4
+        ButtonSculptSave.TabIndex = 5
         ButtonSculptSave.Text = "Save .sclp…"
         ButtonSculptSave.UseVisualStyleBackColor = True
         '
@@ -1512,6 +1807,9 @@ Partial Class ArmaEditor_Form
         GroupModelFlags.ResumeLayout(False)
         ModelFlagsLayout.ResumeLayout(False)
         ModelFlagsLayout.PerformLayout()
+        GroupModelExtras.ResumeLayout(False)
+        ModelExtrasLayout.ResumeLayout(False)
+        ModelExtrasLayout.PerformLayout()
         TabSlots.ResumeLayout(False)
         TabSlots.PerformLayout()
         SlotsLayout.ResumeLayout(False)
@@ -1531,6 +1829,11 @@ Partial Class ArmaEditor_Form
         PrioritiesLayout.PerformLayout()
         CType(NumMalePrio, ComponentModel.ISupportInitialize).EndInit()
         CType(NumFemalePrio, ComponentModel.ISupportInitialize).EndInit()
+        CType(NumDetectionSound, ComponentModel.ISupportInitialize).EndInit()
+        CType(NumWeaponAdjust, ComponentModel.ISupportInitialize).EndInit()
+        TabData.ResumeLayout(False)
+        DataLayout.ResumeLayout(False)
+        DataLayout.PerformLayout()
         TabSculpt.ResumeLayout(False)
         SculptLayout.ResumeLayout(False)
         SculptLayout.PerformLayout()
@@ -1559,6 +1862,7 @@ Partial Class ArmaEditor_Form
     Friend WithEvents ButtonEditDraft As System.Windows.Forms.Button
     Friend WithEvents LabelEdid As System.Windows.Forms.Label
     Friend WithEvents TextBoxEdid As System.Windows.Forms.TextBox
+    Friend WithEvents LabelEdidPreview As System.Windows.Forms.Label
     Friend WithEvents LabelStatusBanner As System.Windows.Forms.Label
     Friend WithEvents MainSplit As System.Windows.Forms.SplitContainer
     Friend WithEvents Tabs As System.Windows.Forms.TabControl
@@ -1586,6 +1890,8 @@ Partial Class ArmaEditor_Form
     Friend WithEvents LabelMo3f As System.Windows.Forms.Label
     Friend WithEvents CheckMo3fFaceBones As System.Windows.Forms.CheckBox
     Friend WithEvents CheckMo3f1stPerson As System.Windows.Forms.CheckBox
+    Friend WithEvents GroupModelExtras As System.Windows.Forms.GroupBox
+    Friend WithEvents ModelExtrasLayout As System.Windows.Forms.TableLayoutPanel
     Friend WithEvents TabSlots As System.Windows.Forms.TabPage
     Friend WithEvents SlotsLayout As System.Windows.Forms.TableLayoutPanel
     Friend WithEvents LabelSlots As System.Windows.Forms.Label
@@ -1621,6 +1927,18 @@ Partial Class ArmaEditor_Form
     Friend WithEvents TextBoxMo2s As System.Windows.Forms.TextBox
     Friend WithEvents ButtonPickMo2s As System.Windows.Forms.Button
     Friend WithEvents ButtonEditMo2s As System.Windows.Forms.Button
+    Friend WithEvents LabelSndd As System.Windows.Forms.Label
+    Friend WithEvents TextBoxSndd As System.Windows.Forms.TextBox
+    Friend WithEvents ButtonPickSndd As System.Windows.Forms.Button
+    Friend WithEvents LabelOnam As System.Windows.Forms.Label
+    Friend WithEvents TextBoxOnam As System.Windows.Forms.TextBox
+    Friend WithEvents ButtonPickOnam As System.Windows.Forms.Button
+    Friend WithEvents LabelMo4s As System.Windows.Forms.Label
+    Friend WithEvents TextBoxMo4s As System.Windows.Forms.TextBox
+    Friend WithEvents ButtonPickMo4s As System.Windows.Forms.Button
+    Friend WithEvents LabelMo5s As System.Windows.Forms.Label
+    Friend WithEvents TextBoxMo5s As System.Windows.Forms.TextBox
+    Friend WithEvents ButtonPickMo5s As System.Windows.Forms.Button
     Friend WithEvents LabelMo3s As System.Windows.Forms.Label
     Friend WithEvents TextBoxMo3s As System.Windows.Forms.TextBox
     Friend WithEvents ButtonPickMo3s As System.Windows.Forms.Button
@@ -1633,6 +1951,12 @@ Partial Class ArmaEditor_Form
     Friend WithEvents LabelFemalePrio As System.Windows.Forms.Label
     Friend WithEvents NumFemalePrio As System.Windows.Forms.NumericUpDown
     Friend WithEvents CheckFemaleWeight As System.Windows.Forms.CheckBox
+    Friend WithEvents LabelDetectionSound As System.Windows.Forms.Label
+    Friend WithEvents NumDetectionSound As System.Windows.Forms.NumericUpDown
+    Friend WithEvents LabelWeaponAdjust As System.Windows.Forms.Label
+    Friend WithEvents NumWeaponAdjust As System.Windows.Forms.NumericUpDown
+    Friend WithEvents TabData As System.Windows.Forms.TabPage
+    Friend WithEvents DataLayout As System.Windows.Forms.TableLayoutPanel
     Friend WithEvents TabSculpt As System.Windows.Forms.TabPage
     Friend WithEvents SculptLayout As System.Windows.Forms.TableLayoutPanel
     Friend WithEvents SculptTopRow As System.Windows.Forms.FlowLayoutPanel
@@ -1651,6 +1975,7 @@ Partial Class ArmaEditor_Form
     Friend WithEvents ComboSculptAddBone As System.Windows.Forms.ComboBox
     Friend WithEvents ButtonSculptAddRow As System.Windows.Forms.Button
     Friend WithEvents ButtonSculptLoad As System.Windows.Forms.Button
+    Friend WithEvents ButtonSculptEstimate As System.Windows.Forms.Button
     Friend WithEvents ButtonSculptSave As System.Windows.Forms.Button
     Friend WithEvents TabFlags As System.Windows.Forms.TabPage
     Friend WithEvents FlagsLayout As System.Windows.Forms.TableLayoutPanel
