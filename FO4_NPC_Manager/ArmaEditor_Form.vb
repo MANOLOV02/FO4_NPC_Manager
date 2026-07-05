@@ -27,6 +27,23 @@ Public Class ArmaEditor_Form
     Private ReadOnly _raceFormID As UInteger
     Private ReadOnly _isFemale As Boolean
 
+    ''' <summary>The ARMO that CONTAINS the ARMA being edited (real record FormID for an override, or the
+    ''' provisional FormID of an ARMO draft), threaded in from the ARMO editor's Addons tab so the
+    ''' "Full armor" preview mode can render the whole parent ARMO with this ARMA applied. 0 = no parent
+    ''' in context (standalone "Edit mine…") ⇒ "Full armor" falls back to "Only Model" (the synthetic
+    ''' single-addon wrapper). The draft-aware resolver handles both real and draft parents: an OVERRIDE
+    ''' ARMA shares the parent addon's FormID, so ArmaDraftResolver returns the edited draft and the parent
+    ''' renders with the edit.</summary>
+    Private ReadOnly _parentArmoFormID As UInteger
+
+    ''' <summary>The OTFT of the outfit being assembled in the OutfitPicker's Create tab (a stable throwaway
+    ''' draft the picker registers for this purpose), threaded down OutfitPicker → ArmoEditor → ArmoAddonEditor
+    ''' → here. Enables the "Full Outfit" preview mode to render that whole outfit with THIS ARMA's edit
+    ''' substituted (the parent ARMO is one of the outfit's pieces; the draft-aware resolver swaps in the edited
+    ''' version by shared FormID). 0 = no outfit in context (standalone open) ⇒ "Full Outfit" falls back to the
+    ''' single-item throwaway over the actor.</summary>
+    Private ReadOnly _outfitContextFormID As UInteger
+
     ''' <summary>The ARMA draft currently being edited (the authoring model). Always non-Nothing after the
     ''' constructor: either the passed-in editDraft, or a fresh empty draft seeded with the preview race.</summary>
     Private _draft As ArmaDraft
@@ -106,14 +123,23 @@ Public Class ArmaEditor_Form
     ''' <param name="initialTemplateArmaFormID">When nonzero AND no <paramref name="editDraft"/> is given,
     ''' pre-load this REAL ARMA as the template on open (same as the user clicking Template then picking it) —
     ''' used by the ARMO editor's Addons tab to "edit a real addon as New".</param>
+    ''' <param name="parentArmoFormID">The ARMO that contains this ARMA (real FormID for an override, or an
+    ''' ARMO draft's provisional FormID). Enables the "Full armor" preview mode to render the whole parent
+    ''' ARMO with this ARMA applied. 0 (default, standalone open) ⇒ "Full armor" falls back to "Only Model".</param>
+    ''' <param name="outfitContextFormID">The OTFT of the outfit being assembled in the OutfitPicker. Enables
+    ''' "Full Outfit" to render that outfit with this ARMA's edit substituted. 0 ⇒ fallback to the single-item
+    ''' throwaway over the actor.</param>
     Public Sub New(mainForm As MainForm, previewNpcFormID As UInteger, raceFormID As UInteger, isFemale As Boolean,
                    Optional editDraft As ArmaDraft = Nothing, Optional initialTemplateArmaFormID As UInteger = 0UI,
-                   Optional templateAsOverride As Boolean = True)
+                   Optional templateAsOverride As Boolean = True, Optional parentArmoFormID As UInteger = 0UI,
+                   Optional outfitContextFormID As UInteger = 0UI)
         InitializeComponent()
         _mainForm = mainForm
         _previewNpcFormID = previewNpcFormID
         _raceFormID = raceFormID
         _isFemale = isFemale
+        _parentArmoFormID = parentArmoFormID
+        _outfitContextFormID = outfitContextFormID
 
         BuildSlotCheckBoxes()
         SeedSculptBoneCombo()
@@ -332,6 +358,12 @@ Public Class ArmaEditor_Form
                 If MessageBox.Show(Me, $"Revert '{d.EditorID}' to the original record? Your edits to this draft will be discarded.",
                                    "Revert to original", MessageBoxButtons.YesNo, MessageBoxIcon.Question) <> DialogResult.Yes Then Return False
                 _mainForm.UnregisterArmaDraft(fid)
+                ' Dropping the in-memory draft is NOT enough: if this override was ALREADY SAVED into the plugin, the
+                ' saver's Phase 2a re-preserves it (re-emits every target-plugin ARMA as an OVERRIDE entry unless it's
+                ' in RecordsToRemove), so the reverted record would keep getting written. Mark it for removal so Phase 2a
+                ' drops it and the true parent wins. No-op when no saved copy exists (removal only drops target-plugin
+                ' records); when isCurrent reloads a pristine override draft it stays Not-IsDirty and is never re-emitted.
+                _mainForm.MarkRecordForRemoval(fid)
                 If isCurrent Then LoadRealArmaTemplate(fid, asOverride:=True)   ' reload the pristine original for continued editing
                 Return True
             End If
@@ -1230,6 +1262,48 @@ Public Class ArmaEditor_Form
         _previewDebounce.Start()
     End Sub
 
+    ''' <summary>Push the preview-mode controls (scope radios / Include Body / Show other gender) onto the
+    ''' render host BEFORE each render. Called at the top of <see cref="RenderPreviewAsync"/> so the knobs
+    ''' and the preview cache key are always in sync with the UI.
+    '''
+    ''' Scope → <c>OnlyOutfitCollect</c>: Only Model / Full armor collect just the edited piece; Full Outfit
+    ''' collects the full actor. Include Body forces the body into collection (OnlyOutfitCollect skips Skin),
+    ''' so <c>OnlyOutfitCollect = pieceScope AndAlso NOT IncludeBody</c>. RenderBody visibility mirrors
+    ''' Include Body. Show other gender maps to a target-gender DEFAULT actor via <c>PreviewGenderOverride</c>
+    ''' (opposite of the preview NPC's own gender).</summary>
+    Private Sub ApplyPreviewControlsToHost()
+        If _host Is Nothing Then Return
+        ' "Full armor" renders the PARENT ARMO (its whole set) when one is threaded in (_parentArmoFormID<>0,
+        ' from the ARMO editor's Addons tab); with no parent in context (standalone open) it falls back to
+        ' "Only Model" (the ARMA alone). Either way it is PIECE-SCOPE: OnlyOutfitCollect collects just that
+        ' ARMO/ARMA, not the whole outfit. The parent/outfit substitution happens in RenderPreviewAsync (which
+        ' picks the OTFT); here we only set the collection scope. Both piece-scope radios ⇒ collect the piece.
+        Dim pieceScope As Boolean = RadioOnlyModel.Checked OrElse RadioFullArmor.Checked
+        Dim includeBody As Boolean = CheckIncludeBody.Checked
+        _host.OnlyOutfitCollect = pieceScope AndAlso Not includeBody
+        _host.Toggles.RenderBody = includeBody
+        _host.PreviewGenderOverride = If(CheckShowOtherGender.Checked, CType(Not _isFemale, Boolean?), Nothing)
+    End Sub
+
+    ' Scope radios + "Show other gender" change COLLECTION / gender resolution ⇒ full (debounced) re-render.
+    Private Sub OnPreviewModeChanged(sender As Object, e As EventArgs) _
+        Handles RadioOnlyModel.CheckedChanged, RadioFullArmor.CheckedChanged, RadioFullOutfit.CheckedChanged,
+                CheckShowOtherGender.CheckedChanged
+        If _loading Then Return
+        RequestPreview()
+    End Sub
+
+    ' "Include Body" is visibility (RenderBody) → apply instantly like EditBody, THEN request a debounced
+    ' re-render so collection catches up when it flips OnlyOutfitCollect (only re-renders if the key changed).
+    Private Sub OnIncludeBodyChanged(sender As Object, e As EventArgs) Handles CheckIncludeBody.CheckedChanged
+        If _loading Then Return
+        If _host IsNot Nothing Then
+            _host.Toggles.RenderBody = CheckIncludeBody.Checked
+            _host.ApplyRenderToggleVisibility()
+        End If
+        RequestPreview()
+    End Sub
+
     Private Async Sub PreviewDebounce_Tick(sender As Object, e As EventArgs) Handles _previewDebounce.Tick
         _previewDebounce.Stop()
         ' A render is still in flight: re-arm and retry rather than committing now and dropping this edit
@@ -1253,9 +1327,14 @@ Public Class ArmaEditor_Form
     ''' edit that changes the equipped result (mesh, slots, race, material swaps, skin TXST/FLST, priorities,
     ''' model flags, no-underarmor-scaling) re-renders. Earlier the key only covered mesh+slots, so material-
     ''' swap / skin / race edits silently left a stale preview.</summary>
-    Private Function BuildPreviewKey(armoFid As UInteger) As String
+    ''' <summary>Cache key: the effective preview OTFT + its single throwaway item + the threaded scope
+    ''' context (parent ARMO / outfit context), so a scope-mode switch that changes WHAT gets rendered
+    ''' re-renders. <paramref name="throwawayItemFid"/> is 0 in the Full-Outfit-with-context path.</summary>
+    Private Function BuildPreviewKey(previewOtftFid As UInteger, throwawayItemFid As UInteger) As String
         Return String.Join(":", {
-            armoFid.ToString("X8"), _draft.FormID.ToString("X8"), _draft.SlotMask.ToString("X8"),
+            previewOtftFid.ToString("X8"), throwawayItemFid.ToString("X8"),
+            _parentArmoFormID.ToString("X8"), _outfitContextFormID.ToString("X8"),
+            _draft.FormID.ToString("X8"), _draft.SlotMask.ToString("X8"),
             _draft.MaleMeshPath, _draft.FemaleMeshPath,
             _draft.RaceFormID.ToString("X8"),
             _draft.MaleMaterialSwapFormID.ToString("X8"), _draft.FemaleMaterialSwapFormID.ToString("X8"),
@@ -1264,7 +1343,9 @@ Public Class ArmaEditor_Form
             _draft.MaleSkinTextureSwapListFormID.ToString("X8"), _draft.FemaleSkinTextureSwapListFormID.ToString("X8"),
             _draft.MalePriority.ToString(CultureInfo.InvariantCulture), _draft.FemalePriority.ToString(CultureInfo.InvariantCulture),
             _draft.MaleModelFlags.ToString(CultureInfo.InvariantCulture), _draft.FemaleModelFlags.ToString(CultureInfo.InvariantCulture),
-            If(_draft.NoUnderarmorScaling, "1", "0")})
+            If(_draft.NoUnderarmorScaling, "1", "0"),
+            If(_host IsNot Nothing AndAlso _host.OnlyOutfitCollect, "oc1", "oc0"),
+            If(_host IsNot Nothing AndAlso _host.PreviewGenderOverride.HasValue, "g" & _host.PreviewGenderOverride.Value.ToString(), "g-")})
     End Function
 
     Private Async Function RenderPreviewAsync() As Task
@@ -1278,20 +1359,44 @@ Public Class ArmaEditor_Form
         ' draft is always registered; the key is computed from _draft AFTER this so it stays correct.
         CommitPanelsToDraft(validate:=False)
 
-        Dim armoFid = EnsureArmaPreviewWrapper(_draft.FormID)
-        Dim key As String = BuildPreviewKey(armoFid)
+        ' Push the preview-mode controls onto the host BEFORE the key is built so a scope / Include Body /
+        ' gender change is reflected in both the render knobs and the cache key (else the key match early-returns).
+        ApplyPreviewControlsToHost()
+
+        ' Resolve which OTFT the preview renders as the actor's outfit, from the scope mode + threaded context:
+        '  • Full Outfit + outfit context ⇒ render the whole outfit being assembled in the OutfitPicker; the
+        '    edited ARMA rides its parent ARMO (a piece of that outfit) and the draft-aware resolver swaps in the
+        '    edited version. No throwaway needed.
+        '  • Full armor + parent ARMO ⇒ throwaway single-item OTFT holding the PARENT ARMO (renders the whole
+        '    ARMO with this ARMA applied via the draft-aware resolver).
+        '  • Only Model, or Full armor / Full Outfit with NO context ⇒ throwaway single-item OTFT holding the
+        '    synthetic ARMA wrapper (this ARMA alone) — the existing fallback.
+        Dim fullOutfitWithContext As Boolean = RadioFullOutfit.Checked AndAlso _outfitContextFormID <> 0UI
+        Dim fullArmorWithParent As Boolean = RadioFullArmor.Checked AndAlso _parentArmoFormID <> 0UI
+        Dim throwawayItemFid As UInteger = 0UI
+        Dim previewOtftFid As UInteger
+        If fullOutfitWithContext Then
+            previewOtftFid = _outfitContextFormID
+        Else
+            throwawayItemFid = If(fullArmorWithParent, _parentArmoFormID, EnsureArmaPreviewWrapper(_draft.FormID))
+            previewOtftFid = OutfitDraft.PreviewDraftFormID
+        End If
+
+        Dim key As String = BuildPreviewKey(previewOtftFid, throwawayItemFid)
         If key = _lastPreviewKey Then Return
         If _previewInProgress Then Return
         _previewInProgress = True
         Try
-            Dim otft As New OutfitDraft With {.FormID = OutfitDraft.PreviewDraftFormID,
-                                              .EditorID = OutfitDraft.EditorIdPrefix & "(armapreview)"}
-            otft.ItemFormIDs.Add(armoFid)
-            _mainForm.RegisterOutfitDraft(otft)
-            _previewDraftRegistered = True
+            If Not fullOutfitWithContext Then
+                Dim otft As New OutfitDraft With {.FormID = OutfitDraft.PreviewDraftFormID,
+                                                  .EditorID = OutfitDraft.EditorIdPrefix & "(armapreview)"}
+                otft.ItemFormIDs.Add(throwawayItemFid)
+                _mainForm.RegisterOutfitDraft(otft)
+                _previewDraftRegistered = True
+            End If
 
             Try
-                Await _mainForm.PreviewOutfitInHostAsync(_host, _previewNpcFormID, OutfitDraft.PreviewDraftFormID)
+                Await _mainForm.PreviewOutfitInHostAsync(_host, _previewNpcFormID, previewOtftFid)
                 _lastPreviewKey = key
             Catch
                 ' A failed preview render must not break the dialog.

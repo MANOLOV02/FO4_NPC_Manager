@@ -48,8 +48,12 @@ Partial Class OutfitPicker_Form
         Plugin = New ColumnHeader()
         PiecesButtonsRow = New FlowLayoutPanel()
         ButtonNewLvl = New Button()
+        ButtonOverrideLvl = New Button()
         ButtonRemovePiece = New Button()
         ButtonEditArmor = New Button()
+        ButtonEditEntry = New Button()
+        ButtonNewArmor = New Button()
+        ButtonBackLevel = New Button()
         EdidRow = New FlowLayoutPanel()
         LabelEdidPrefix = New Label()
         TextBoxEdid = New TextBox()
@@ -411,8 +415,12 @@ Partial Class OutfitPicker_Form
         PiecesButtonsRow.AutoSize = True
         PiecesButtonsRow.AutoSizeMode = AutoSizeMode.GrowAndShrink
         PiecesButtonsRow.Controls.Add(ButtonNewLvl)
+        PiecesButtonsRow.Controls.Add(ButtonOverrideLvl)
         PiecesButtonsRow.Controls.Add(ButtonRemovePiece)
         PiecesButtonsRow.Controls.Add(ButtonEditArmor)
+        PiecesButtonsRow.Controls.Add(ButtonEditEntry)
+        PiecesButtonsRow.Controls.Add(ButtonNewArmor)
+        PiecesButtonsRow.Controls.Add(ButtonBackLevel)
         PiecesButtonsRow.Location = New Point(0, 373)
         PiecesButtonsRow.Margin = New Padding(0)
         PiecesButtonsRow.Name = "PiecesButtonsRow"
@@ -429,6 +437,15 @@ Partial Class OutfitPicker_Form
         ButtonNewLvl.TabIndex = 0
         ButtonNewLvl.Text = "New LVL…"
         ButtonNewLvl.UseVisualStyleBackColor = True
+        '
+        ' ButtonOverrideLvl
+        '
+        ButtonOverrideLvl.Margin = New Padding(8, 3, 0, 6)
+        ButtonOverrideLvl.Name = "ButtonOverrideLvl"
+        ButtonOverrideLvl.Size = New Size(110, 25)
+        ButtonOverrideLvl.TabIndex = 7
+        ButtonOverrideLvl.Text = "Override LVL…"
+        ButtonOverrideLvl.UseVisualStyleBackColor = True
         ' 
         ' ButtonRemovePiece
         ' 
@@ -450,8 +467,37 @@ Partial Class OutfitPicker_Form
         ButtonEditArmor.Text = "Edit armor…"
         ButtonEditArmor.UseVisualStyleBackColor = True
         '
+        ' ButtonEditEntry
+        '
+        ButtonEditEntry.Margin = New Padding(8, 3, 0, 6)
+        ButtonEditEntry.Name = "ButtonEditEntry"
+        ButtonEditEntry.Size = New Size(95, 25)
+        ButtonEditEntry.TabIndex = 9
+        ButtonEditEntry.Text = "Edit entry…"
+        ButtonEditEntry.UseVisualStyleBackColor = True
+        ButtonEditEntry.Visible = False
+        '
+        ' ButtonNewArmor
+        '
+        ButtonNewArmor.Margin = New Padding(6, 3, 0, 6)
+        ButtonNewArmor.Name = "ButtonNewArmor"
+        ButtonNewArmor.Size = New Size(100, 25)
+        ButtonNewArmor.TabIndex = 3
+        ButtonNewArmor.Text = "New armor…"
+        ButtonNewArmor.UseVisualStyleBackColor = True
+        '
+        ' ButtonBackLevel
+        '
+        ButtonBackLevel.Margin = New Padding(8, 3, 0, 6)
+        ButtonBackLevel.Name = "ButtonBackLevel"
+        ButtonBackLevel.Size = New Size(90, 25)
+        ButtonBackLevel.TabIndex = 8
+        ButtonBackLevel.Text = "▲ Back"
+        ButtonBackLevel.UseVisualStyleBackColor = True
+        ButtonBackLevel.Visible = False
+        '
         ' EdidRow
-        ' 
+        '
         EdidRow.AutoSize = True
         EdidRow.Controls.Add(LabelEdidPrefix)
         EdidRow.Controls.Add(TextBoxEdid)
@@ -726,7 +772,7 @@ Partial Class OutfitPicker_Form
         AutoScaleDimensions = New SizeF(7F, 15F)
         AutoScaleMode = AutoScaleMode.Font
         CancelButton = ButtonCancel
-        ClientSize = New Size(1244, 581)
+        ClientSize = New Size(1264, 681)
         Controls.Add(RootLayout)
         Font = New Font("Segoe UI", 9F)
         MaximizeBox = False
@@ -796,6 +842,10 @@ Partial Class OutfitPicker_Form
     Friend WithEvents ColPieceStatus As System.Windows.Forms.ColumnHeader
     Friend WithEvents ButtonRemovePiece As System.Windows.Forms.Button
     Friend WithEvents ButtonEditArmor As System.Windows.Forms.Button
+    Friend WithEvents ButtonNewArmor As System.Windows.Forms.Button
+    Friend WithEvents ButtonOverrideLvl As System.Windows.Forms.Button
+    Friend WithEvents ButtonEditEntry As System.Windows.Forms.Button
+    Friend WithEvents ButtonBackLevel As System.Windows.Forms.Button
     Friend WithEvents PiecesButtonsRow As System.Windows.Forms.FlowLayoutPanel
     Friend WithEvents EdidRow As System.Windows.Forms.FlowLayoutPanel
     Friend WithEvents LabelEdidPrefix As System.Windows.Forms.Label

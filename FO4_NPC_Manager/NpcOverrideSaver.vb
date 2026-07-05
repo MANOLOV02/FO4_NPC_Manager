@@ -585,8 +585,37 @@ Public Module NpcOverrideSaver
             ' bound for this plugin (preserved existing + earlier drafts), auto-suffixing _2/_3 on collision.
             Dim usedLeveledEdids As New HashSet(Of String)(leveledEntries.Select(Function(l) l.EditorID), StringComparer.OrdinalIgnoreCase)
             For Each fid In needed
-                If Not alreadyLeveled.Add(fid) Then Continue For
                 Dim d = draftByFid(fid)
+                ' OVERRIDE draft (re-edit of an existing LVLI): keep its real FormID + EDID verbatim. An UNCHANGED
+                ' override (pulled in by a reference but not itself edited) is skipped — its FormID resolves to the
+                ' record it overrides (the master original, or this plugin's copy preserved in Phase 2a), so no
+                ' reference dangles. A dirty override REPLACES the preserved Phase 2a copy in place (keeping the
+                ' source's OBND/LLKC/LVLG/LVSG/ONAM/VCS, only the edited LVLD/LVLM/LVLF + LVLO entries change); when
+                ' the target is a vanilla/master LVLI not yet in this plugin (no preserved copy), a full override
+                ' entry is built from the source record so those non-owned subrecords still survive. Mirror of the
+                ' OTFT override handling (Phase 2c) + the ARMO "unchanged override → don't emit" gate (Phase 2e).
+                If d.IsOverride Then
+                    If Not d.IsDirty Then Continue For
+                    If Not alreadyLeveled.Add(fid) Then
+                        Dim preserved = leveledEntries.FirstOrDefault(Function(x) x.FormID = fid)
+                        If preserved IsNot Nothing Then
+                            preserved.ChanceNone = d.ChanceNone
+                            preserved.MaxCount = d.MaxCount
+                            preserved.Flags = d.FlagsByte()
+                            preserved.IsOverride = True
+                            preserved.Entries.Clear()
+                            For Each e In d.Entries
+                                If e.RefFormID <> 0UI Then preserved.Entries.Add(New SaveNpcEspWriter.LvliEntryData With {
+                                    .Level = e.Level, .RefFormID = e.RefFormID, .Count = e.Count, .ChanceNone = e.ChanceNone})
+                            Next
+                        End If
+                    Else
+                        leveledEntries.Add(BuildLvliOverrideEntryFromSource(d, ctx))
+                    End If
+                    usedLeveledEdids.Add(d.EditorID)
+                    Continue For
+                End If
+                If Not alreadyLeveled.Add(fid) Then Continue For
                 Dim desiredLvliEdid = ApplyEspNamespaceToEditorId(d.EditorID, espNameNoExt)
                 Dim finalLvliEdid = MakeUniqueEditorId(desiredLvliEdid, usedLeveledEdids)
                 If Not String.Equals(finalLvliEdid, desiredLvliEdid, StringComparison.Ordinal) Then
@@ -1262,6 +1291,43 @@ Public Module NpcOverrideSaver
     ''' the header from <paramref name="rec"/> directly (no <see cref="ResolveArmorDraftHeader"/> — the source record
     ''' is in hand, the EditorID is kept verbatim, and the FormID is the record's resolved GLOBAL value). The parser
     ''' already resolves all referenced FormIDs to GLOBAL — exactly what the writer's override remapper expects.</summary>
+    ''' <summary>Build a full OVERRIDE <see cref="SaveNpcEspWriter.LvliRecordEntry"/> for an LVLI draft whose target
+    ''' record is NOT preserved in this plugin's Phase 2a sweep (a vanilla/master LVLI overridden for the first time).
+    ''' The edited fields (LVLD/LVLM/LVLF + LVLO entries) come from the draft; the non-owned subrecords
+    ''' (OBND/LLKC/LVLG/LVSG/ONAM + VCS) are copied from the SOURCE record so the override stays byte-faithful for
+    ''' everything the user didn't touch. Mirror of the ARMO/ARMA override "owned from draft, rest from source" rule.
+    ''' The entry FormID is the draft's real GLOBAL FormID (the writer master-remaps it on emit).</summary>
+    Private Function BuildLvliOverrideEntryFromSource(d As LeveledListDraft, ctx As SaveContext) As SaveNpcEspWriter.LvliRecordEntry
+        Dim le As New SaveNpcEspWriter.LvliRecordEntry With {
+            .FormID = d.FormID, .EditorID = d.EditorID, .IsOverride = True,
+            .ChanceNone = d.ChanceNone, .MaxCount = d.MaxCount, .Flags = d.FlagsByte()}
+        Dim src = ctx.PluginManager.GetRecord(d.FormID)
+        If src IsNot Nothing AndAlso src.Header.Signature = "LVLI" Then
+            Dim p = RecordParsers.ParseLVLI(src, ctx.PluginManager)
+            If p IsNot Nothing Then
+                le.ObjectBoundsRaw = p.ObjectBoundsRaw
+                le.HasUseGlobal = p.HasUseGlobal
+                le.UseGlobalFormID = p.UseGlobalFormID
+                le.HasEpicLootChance = p.HasEpicLootChance
+                le.EpicLootChanceFormID = p.EpicLootChanceFormID
+                le.HasOverrideName = p.HasOverrideName
+                le.OverrideName = p.OverrideName
+                le.OriginalVcs1 = src.Header.VCS1
+                le.OriginalVcs2 = src.Header.VCS2
+                For Each fk In p.FilterKeywords
+                    le.FilterKeywords.Add(New SaveNpcEspWriter.LvliFilterKeywordData With {
+                        .KeywordFormID = fk.KeywordFormID, .Chance = fk.Chance})
+                Next
+            End If
+        End If
+        For Each e In d.Entries
+            If e.RefFormID = 0UI Then Continue For
+            le.Entries.Add(New SaveNpcEspWriter.LvliEntryData With {
+                .Level = e.Level, .RefFormID = e.RefFormID, .Count = e.Count, .ChanceNone = e.ChanceNone})
+        Next
+        Return le
+    End Function
+
     Private Function BuildArmoEntryFromParsed(parsed As ARMO_Data, rec As PluginRecord, ctx As SaveContext) As SaveNpcEspWriter.ArmoRecordEntry
         Dim e As New SaveNpcEspWriter.ArmoRecordEntry With {
             .FormID = ctx.PluginManager.ResolveReferencedFormID(rec.SourcePluginName, rec.Header.FormID),

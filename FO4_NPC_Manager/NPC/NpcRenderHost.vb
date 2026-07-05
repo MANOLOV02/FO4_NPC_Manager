@@ -121,6 +121,18 @@ Friend Class NpcRenderHost
     ''' that the old RenderBody=False only hid post-collection.</summary>
     Public Property OnlyOutfitCollect As Boolean = False
 
+    ''' <summary>Preview-only gender override for the ARMA/ARMO editors' "Show other gender" toggle.
+    ''' Nothing = render the NPC's own gender (default, main render path). True/False = force the preview
+    ''' to a DEFAULT actor of that gender for the NPC's race (True=female, False=male) — NOT the source NPC
+    ''' flipped: <see cref="NpcStateResolver.ResolveNPCBaseState"/> wipes the source NPC's gender-specific
+    ''' identity (head parts, face texture, hair color, skin, body weights) so <c>ApplyRaceFallbacks</c>
+    ''' repopulates them from the RACE defaults for the target gender, and gender-specific face morphs
+    ''' (chargen MSDK/MSDV + FMRS face bones) + the NPC FaceGen head are suppressed downstream. Body mesh
+    ''' (MOD2/MOD3), skin TXST (NAM0/NAM1), material swaps (MO2S/MO3S), skeleton, height and body-weight
+    ''' bone-scaling all follow the flipped <c>state.IsFemale</c>. Host-scoped so the main render (Nothing)
+    ''' is completely inert.</summary>
+    Public Property PreviewGenderOverride As Boolean?
+
     ''' <summary>Deferred face-tint polling timer. The texture cache is async (Render.vb
     ''' <summary>Current NPC visual state being previewed (without outfit — outfit applied
     ''' on-demand from combo). The Save / Copy snapshot reads from this; the render reads

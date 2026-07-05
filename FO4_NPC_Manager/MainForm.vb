@@ -2876,7 +2876,14 @@ Public Class MainForm
             If armo Is Nothing Then Continue For
             If ArmoIsPowerArmor(d.FormID) AndAlso Not RaceIsPowerArmor(npcRaceFID) Then Continue For
             Dim armoSlot = ComputeArmoEffectiveSlotMask(armo, npcRaceFID, isFemale)
-            If Not armoSlot.Valid Then Continue For
+            ' Own ARMO drafts are the user's OWN creations (few, hand-authored) — ALWAYS list them, even when no addon
+            ' matches this NPC's race/gender (armoSlot.Valid=False). Hiding a just-created armor was the reported bug
+            ' ("New armor doesn't show up"): a brand-new ARMO has no race-matching addon yet, so the old
+            ' `If Not armoSlot.Valid Then Continue For` gate dropped it silently. Real vanilla candidates KEEP the race
+            ' filter (thousands of records) — that gate lives in GetArmoItemCandidates and is untouched. For a not-valid
+            ' draft the mask falls back to the ARMO's own BOD2 (ComputeArmoEffectiveSlotMask) so it still occupies slots
+            ' in the conflict resolver; the label flags WHY it may not render on this NPC.
+            Dim newTag As String = If(armoSlot.Valid, "  (new)", "  (new · sin addon para esta raza/género)")
             Dim disp As String = If(Not String.IsNullOrEmpty(armo.FullName), armo.FullName,
                                     If(Not String.IsNullOrEmpty(armo.EditorID), armo.EditorID, d.FormID.ToString("X8")))
             ' An OVERRIDE draft shares the real record's FormID, which is already in baseList — REPLACE that
@@ -2884,7 +2891,7 @@ Public Class MainForm
             ' would leave the stale real entry first, and the FormID→candidate index (first-wins) would shadow
             ' the draft — the outfit's selected piece would keep resolving to the OLD data. A NEW draft (its
             ' provisional FormID isn't in baseList) simply appends.
-            Dim entry = (d.FormID, disp & "  (new)", armoSlot.Mask, "(new)")
+            Dim entry = (d.FormID, disp & newTag, armoSlot.Mask, "(new)")
             Dim existingIdx = result.FindIndex(Function(x) x.FormID = d.FormID)
             If existingIdx >= 0 Then result(existingIdx) = entry Else result.Add(entry)
         Next
@@ -2921,6 +2928,23 @@ Public Class MainForm
         Next
         If slotMask = 0UI Then slotMask = armo.SlotMask
         Return (slotMask, valid)
+    End Function
+
+    ''' <summary>Slot footprint of ANY outfit reference (ARMO or LVLI) for a race/gender — robust for references
+    ''' OUTSIDE the (race-filtered, bounded) candidate universe, so the leveled-list drill-down can show real slots
+    ''' for every LVLO entry instead of "(none)". LVLI → UNION of its terminals' effective masks (stable, not a
+    ''' random sample); ARMO → its effective mask (addon union race-valid, falling back to BOD2). Draft-aware via
+    ''' <see cref="_ctx"/>. Mirror of the slot computation in <see cref="GetArmoItemCandidatesWithDrafts"/>.</summary>
+    Friend Function GetReferenceSlotMask(fid As UInteger, npcRaceFID As UInteger, isFemale As Boolean) As UInteger
+        If fid = 0UI Then Return 0UI
+        If IsLeveledItem(fid) Then
+            Dim unionMask As UInteger = 0UI
+            For Each t In EnumerateLeveledTerminalsAll(fid)
+                unionMask = unionMask Or ComputeArmoEffectiveSlotMask(_ctx.GetParsedArmo(t), npcRaceFID, isFemale).Mask
+            Next
+            Return unionMask
+        End If
+        Return ComputeArmoEffectiveSlotMask(_ctx.GetParsedArmo(fid), npcRaceFID, isFemale).Mask
     End Function
 
     ''' <summary>The set of LVLI FormIDs referenced directly by any OTFT's INAM — i.e. the leveled lists that
@@ -3119,6 +3143,37 @@ Public Class MainForm
         If existing IsNot Nothing Then _leveledListDrafts.Remove(existing)
         _leveledListDrafts.Add(d)
     End Sub
+
+    ''' <summary>If <paramref name="fid"/> is a REAL (non-draft) LVLI record, build + register an OVERRIDE
+    ''' <see cref="LeveledListDraft"/> seeded with its parsed header (EditorID/flags/ChanceNone/MaxCount) and its
+    ''' LVLO entries (each RefFormID is the parser's already-resolved GLOBAL FormID), so "Override LVL…" edits the
+    ''' EXISTING list in place (same FormID) instead of authoring a blank one. Mirrors
+    ''' <see cref="BuildMswpOverrideDraftFromReal"/>. Returns Nothing when <paramref name="fid"/> is 0, a draft
+    ''' sentinel, or does not resolve to an LVLI; the caller then falls back to a fresh NEW draft. If an override
+    ''' draft for this FormID already exists it is returned as-is (don't clobber in-progress edits). On Cancel the
+    ''' caller unregisters this draft, reverting the field to referencing the real record.</summary>
+    Friend Function BuildLeveledOverrideDraftFromReal(fid As UInteger) As LeveledListDraft
+        If fid = 0UI OrElse OutfitDraft.IsDraftFormID(fid) Then Return Nothing
+        Dim already = TryGetLeveledListDraft(fid)
+        If already IsNot Nothing Then Return already
+        Dim rec = _pluginManager.GetRecord(fid)
+        If rec Is Nothing OrElse rec.Header.Signature <> "LVLI" Then Return Nothing
+        Dim parsed = RecordParsers.ParseLVLI(rec, _pluginManager)
+        If parsed Is Nothing Then Return Nothing
+        Dim d As New LeveledListDraft With {
+            .FormID = fid, .EditorID = parsed.EditorID,
+            .ChanceNone = parsed.ChanceNone, .MaxCount = parsed.MaxCount,
+            .CalcAllLevels = (parsed.Flags And &H1) <> 0,
+            .CalcEachInCount = (parsed.Flags And &H2) <> 0,
+            .UseAll = (parsed.Flags And &H4) <> 0,
+            .IsOverride = True, .IsNew = False, .IsModified = False}
+        For Each en In parsed.Entries
+            d.Entries.Add(New LeveledListDraft.LeveledEntry With {
+                .RefFormID = en.FormID, .Level = en.Level, .Count = en.Count, .ChanceNone = en.ChanceNone})
+        Next
+        RegisterLeveledListDraft(d)
+        Return d
+    End Function
 
     ''' <summary>The in-memory LVLI draft for <paramref name="formID"/>, or Nothing.</summary>
     Friend Function TryGetLeveledListDraft(formID As UInteger) As LeveledListDraft
@@ -4730,7 +4785,10 @@ Public Class MainForm
             state.LoadoutArmorContextKeywords(kvCtx.Key) = kvCtx.Value
         Next
 
-        Dim useFaceGen = HasFaceGenAssets(state)
+        ' "Show other gender" (ARMA/ARMO editors): render a race-default head for the target gender, NOT
+        ' the source NPC's baked FaceGen head (which is the ORIGINAL gender's face). Suppressing FaceGen
+        ' makes the collector fall back to the race default head parts resolved in ResolveNPCBaseState.
+        Dim useFaceGen = HasFaceGenAssets(state) AndAlso Not host.PreviewGenderOverride.HasValue
 
         ' OnlyFace collect-time filter: editor hosts set host.OnlyFaceCollect=True so their
         ' embedded preview matches MainForm's "Only Face" PreviewMode (skin + outfit skipped at
@@ -4949,7 +5007,11 @@ Public Class MainForm
         ' Granular toggles inside BuildCompositeMorphResolver: face = CheckBoxApplyVertexMorphs,
         ' body = CheckBoxBodyTri. No master-AND gate here — composite returns Nothing on its own
         ' when both subsections are unchecked.
-        Dim boneMorphsEnabled = host.Toggles.ApplyBoneMorphs
+        ' boneMorphsEnabled feeds ONLY the FMRS face-bone pose (faceMorphsEnabled arg of BuildMergedNpcPose);
+        ' body-weight bone-scaling is the separate bodyWeightEnabled toggle. Under "Show other gender" the
+        ' FMRS deltas are the source NPC's own-gender facial-bone morphs, which don't belong on a default
+        ' target-gender head, so suppress them (body weight stays on).
+        Dim boneMorphsEnabled = host.Toggles.ApplyBoneMorphs AndAlso Not host.PreviewGenderOverride.HasValue
         Dim morphResolver = BuildCompositeMorphResolver(state, renderData, host)
         Logger.LogLazy(Function() $"[PERF-BRP] morphResolver @ {_swBrp.ElapsedMilliseconds}ms")
 
@@ -9082,6 +9144,13 @@ Public Class MainForm
         ' in load order), strip the now-persisted ESP fields from each overlay (keeping non-ESP
         ' BodyMorphs/Skin), clear the dirty marks, regroup in the tree, and re-render the loaded NPC.
         Await ApplyPostSaveReadback(execResult.WrittenNpcFormIDs, target.TargetPath, execResult.DraftFormIdMap)
+
+        ' Removal intents were applied by the saver's Phase 2a (it dropped every target-plugin record whose GLOBAL
+        ' FormID is in this set). Clear it now so a stale mark can't re-drop a record the user later re-authors: e.g.
+        ' revert-then-re-edit-then-save re-emits the override in Phase 2e/2f this save, but an uncleared mark would
+        ' make the NEXT save's Phase 2a delete the freshly-written record again. Fids that pointed at a record in a
+        ' DIFFERENT plugin were no-ops here and are dropped too — the user re-marks before saving that plugin.
+        _recordsToRemove.Clear()
 
         Dim savedCount = execResult.WrittenNpcFormIDs.Count
         Dim what = If(savedCount = 1, $"{If(selectedInput.Npc?.EditorID, selectedFormID.ToString("X8"))}", $"{savedCount} NPCs")

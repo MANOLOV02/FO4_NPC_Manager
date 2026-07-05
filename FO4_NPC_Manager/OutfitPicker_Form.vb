@@ -92,6 +92,23 @@ Public Class OutfitPicker_Form
     ''' sequence; the slot-conflict resolver uses it for "last-added wins".</summary>
     Private ReadOnly _pieces As New List(Of PieceEntry)
     Private _pieceOrderCounter As Integer = 0
+
+    ''' <summary>Leveled-list DRILL-DOWN navigation stack (in-situ recursive editing). EMPTY = TOP level: the bottom
+    ''' list shows the outfit's own pieces (<see cref="_pieces"/>) with slot-conflict resolution + preview, exactly
+    ''' as before. NON-EMPTY = drilled into a chain of LVLI drafts; the last FormID is the list currently being
+    ''' edited, and the bottom list shows THAT list's LVLO entries (<see cref="_levelView"/>) instead. Double-click
+    ''' a leveled row pushes; the "▲ Back" button (or a leveled parent row) pops. Every FormID here is an OWN
+    ''' <see cref="LeveledListDraft"/> (a vanilla LVLI is auto-promoted to an OVERRIDE draft on first drill so it
+    ''' becomes editable). The outfit's <see cref="_pieces"/> are NEVER mutated while nested — commit/preview/save
+    ''' always read <see cref="_pieces"/>, so drilling can't corrupt the outfit being authored.</summary>
+    Private ReadOnly _lvlNavStack As New List(Of UInteger)
+    ''' <summary>The current nested level's rows (rebuilt on each drill/refresh) — one <see cref="PieceEntry"/> per
+    ''' LVLO entry of <see cref="CurrentLevelDraft"/>, each carrying its <see cref="PieceEntry.SourceEntry"/>. Only
+    ''' populated while <see cref="_lvlNavStack"/> is non-empty.</summary>
+    Private ReadOnly _levelView As New List(Of PieceEntry)
+    ''' <summary>Set when a nested LVLI edit (add/edit/remove entry) changed a list — so the next TOP-level render
+    ''' re-samples the leveled pieces' realizations to reflect it. Cleared after that one re-sample.</summary>
+    Private _lvlDirtyResample As Boolean = False
     ''' <summary>Which of the two Create lists the user last worked in — drives the "selected piece"
     ''' preview so it follows the FOCUSED list (False = top candidate-items list, True = bottom
     ''' chosen-pieces list). Set on each list's Enter. Defaults to the top list (the first populated).</summary>
@@ -112,6 +129,11 @@ Public Class OutfitPicker_Form
         ''' rendered + conflict-checked). Re-sampled by Reroll. Nothing for a plain ARMO piece. The draft
         ''' persists the LVLI FormID, not this — so the saved outfit stays leveled.</summary>
         Public Realization As List(Of UInteger)
+        ''' <summary>NESTED-LEVEL rows only (the leveled-list drill-down): the backing LVLO entry inside the LVLI
+        ''' draft currently open, so Edit/Remove at that level mutate the real draft. Nothing for TOP-LEVEL outfit
+        ''' pieces (which are the outfit's own items, not entries of a parent list). Its Level/Count/ChanceNone are
+        ''' shown in the row and edited in place.</summary>
+        Public SourceEntry As LeveledListDraft.LeveledEntry
     End Class
 
     Private Class Candidate
@@ -188,8 +210,18 @@ Public Class OutfitPicker_Form
         ' The "selected piece" preview follows whichever Create list has focus — track the last one entered.
         AddHandler ListViewItems.Enter, AddressOf OnItemsListEnter
         AddHandler ListViewPieces.Enter, AddressOf OnPiecesListEnter
-        ' Edit the focused armor (piece OR candidate) in the ARMO editor, or author a new ARMO when nothing is focused.
+        ' "Edit armor…" edits the focused concrete ARMO (disabled when nothing concrete is focused); "New armor…"
+        ' always authors a brand-new ARMO from scratch.
         AddHandler ButtonEditArmor.Click, AddressOf OnEditArmor
+        AddHandler ButtonNewArmor.Click, AddressOf OnNewArmor
+        ' Recursive leveled-list drill-down: "Override LVL…" picks a real LVLI to edit as an override; "▲ Back"
+        ' pops one nested level. Double-click on a leveled row drills IN (wired via the existing pieces double-click).
+        AddHandler ButtonOverrideLvl.Click, AddressOf OnOverrideLvl
+        AddHandler ButtonBackLevel.Click, AddressOf OnBackLevel
+        ' Nested-only "Edit entry…" edits the selected LVLO entry's Level/Count/ChanceNone (distinct from
+        ' "Edit armor…", which stays and opens the ARMO editor when the entry references a concrete armor).
+        AddHandler ButtonEditEntry.Click, Sub() EditSelectedEntry()
+        UpdateEditArmorEnabled()   ' initial state: disabled until a concrete ARMO is focused
         ' "My outfit drafts" panel: double-click loads a draft back into Create for editing; the button deletes/reverts.
         AddHandler ListViewMyOutfits.DoubleClick, AddressOf OnMyOutfitDoubleClick
         AddHandler ListViewMyOutfits.SelectedIndexChanged, Sub() UpdateDeleteOutfitEnabled()
@@ -490,10 +522,223 @@ Public Class OutfitPicker_Form
 
     ''' <summary>Double-click a SELECTED PIECE → open the ARMO editor to OVERRIDE it. LVLI pieces excluded.</summary>
     Private Sub OnEditPieceInArmorEditor(sender As Object, e As EventArgs)
-        If ListViewPieces.SelectedItems.Count = 0 Then Return
-        Dim p = TryCast(ListViewPieces.SelectedItems(0).Tag, PieceEntry)
-        If p Is Nothing OrElse p.IsLeveled Then Return   ' exclude LVLs
+        Dim p = SelectedPieceEntry()
+        If p Is Nothing Then Return
+        ' A LEVELED row (top piece OR nested entry) → DRILL IN (recursive): its own draft, or a vanilla LVLI
+        ' auto-promoted to an override draft, becomes the current level.
+        If p.IsLeveled Then
+            DrillIntoLeveled(p.FormID)
+            Return
+        End If
+        ' A CONCRETE (ARMO) row → open the ARMO editor as override, at BOTH levels (double-click a nested armor
+        ' entry edits the armor itself; its Level/Count/Chance are edited via the separate "Edit entry…" button).
         OpenArmorEditorForTemplate(p.FormID, asOverride:=True)
+    End Sub
+
+    ' ============================ Leveled-list recursive drill-down (in-situ) ============================
+
+    ''' <summary>True at the outfit ROOT (nav stack empty): the bottom list shows the outfit's pieces. False while
+    ''' drilled into a chain of leveled lists.</summary>
+    Private Function IsAtTopLevel() As Boolean
+        Return _lvlNavStack.Count = 0
+    End Function
+
+    ''' <summary>The LVLI draft currently drilled into (top of the nav stack), or Nothing at the root / if the draft
+    ''' was removed. Every stack FormID is an own draft (a vanilla list is promoted to an override on first drill).</summary>
+    Private Function CurrentLevelDraft() As LeveledListDraft
+        If _lvlNavStack.Count = 0 Then Return Nothing
+        Return _mainForm.TryGetLeveledListDraft(_lvlNavStack(_lvlNavStack.Count - 1))
+    End Function
+
+    ''' <summary>Breadcrumb for <see cref="LabelPieces"/>: "Outfit ▸ LVL_A ▸ LVL_B:" over the nav chain.</summary>
+    Private Function BuildBreadcrumb() As String
+        Dim sb As New System.Text.StringBuilder("Outfit")
+        For Each fid In _lvlNavStack
+            Dim d = _mainForm.TryGetLeveledListDraft(fid)
+            sb.Append("  ▸  ").Append(If(d IsNot Nothing, StripLvlPrefix(d.EditorID), fid.ToString("X8")))
+        Next
+        sb.Append(":")
+        Return sb.ToString()
+    End Function
+
+    ''' <summary>Drop the "npcm_LVLI_" type prefix for a compact breadcrumb/label name.</summary>
+    Private Shared Function StripLvlPrefix(edid As String) As String
+        If String.IsNullOrEmpty(edid) Then Return ""
+        If edid.StartsWith(LeveledListDraft.EditorIdPrefix, StringComparison.Ordinal) Then Return edid.Substring(LeveledListDraft.EditorIdPrefix.Length)
+        Return edid
+    End Function
+
+    ''' <summary>Show TOP (outfit) vs NESTED (leveled-entry) button chrome. Nested REUSES Remove/Edit/Add-to-lvl for
+    ''' entry ops (relabeled) and shows "▲ Back"; the outfit-authoring buttons are hidden. Called by both renders.</summary>
+    Private Sub UpdateLevelChrome()
+        Dim nested = Not IsAtTopLevel()
+        ButtonBackLevel.Visible = nested
+        ButtonEditEntry.Visible = nested        ' nested-only: edits the LVLO entry's Level/Count/Chance
+        ButtonOverrideLvl.Visible = Not nested
+        ButtonNewLvl.Visible = Not nested
+        ButtonNewArmor.Visible = Not nested
+        ButtonAddItem.Visible = Not nested
+        ButtonReroll.Visible = Not nested
+        ButtonRemovePiece.Text = If(nested, "Remove entry", "Remove piece")
+        ButtonAddToLvl.Text = If(nested, "Add item ▼", "Add to lvl ▼")
+        ' ButtonEditArmor stays visible + labelled "Edit armor…" at BOTH levels: it edits the focused concrete
+        ' ARMO (a top piece OR a nested armor entry). Enable state is set by UpdateEditArmorEnabled.
+    End Sub
+
+    ''' <summary>Resolve a reference (ARMO or LVLI) FormID to a display name from the draft-aware candidate universe,
+    ''' falling back to a leveled draft's (prefix-stripped) EditorID or the record's editor display name.</summary>
+    Private Function ResolveRefDisplay(fid As UInteger) As String
+        Dim it As (FormID As UInteger, DisplayName As String, SlotMask As UInteger, Plugin As String) = Nothing
+        If _itemCandidatesByFid.TryGetValue(fid, it) Then Return it.DisplayName
+        Dim d = _mainForm.TryGetLeveledListDraft(fid)
+        If d IsNot Nothing Then Return StripLvlPrefix(d.EditorID) & "  [LVL]"
+        Return _mainForm.GetRecordDisplayNameForEditor(fid)
+    End Function
+
+    ''' <summary>Drill INTO a leveled reference: resolve it to an editable own draft (promoting a vanilla/loaded LVLI
+    ''' to an OVERRIDE draft on first entry), push it on the nav stack, and render its entries. No-op with a message
+    ''' when the FormID isn't an editable leveled list; guarded against re-entering a list already in the chain.</summary>
+    Private Sub DrillIntoLeveled(fid As UInteger)
+        If fid = 0UI Then Return
+        Dim d = _mainForm.TryGetLeveledListDraft(fid)
+        If d Is Nothing Then d = _mainForm.BuildLeveledOverrideDraftFromReal(fid)
+        If d Is Nothing Then
+            MessageBox.Show(Me, "That item isn't an editable leveled list.", "Open leveled list",
+                            MessageBoxButtons.OK, MessageBoxIcon.Information)
+            Return
+        End If
+        If _lvlNavStack.Contains(d.FormID) Then Return   ' already open in this chain — avoid a navigation cycle
+        _lvlNavStack.Add(d.FormID)
+        RefreshItemCandidates()   ' a just-promoted override draft now appears as an addable candidate
+        RefreshPieces()
+    End Sub
+
+    ''' <summary>"▲ Back": pop one nested level (RefreshPieces restores the outfit view at the root).</summary>
+    Private Sub OnBackLevel(sender As Object, e As EventArgs)
+        If _lvlNavStack.Count > 0 Then _lvlNavStack.RemoveAt(_lvlNavStack.Count - 1)
+        RefreshPieces()
+    End Sub
+
+    ''' <summary>Render the current nested LVLI draft's LVLO entries into the pieces list (one row per entry, with
+    ''' the resolved ref name + 🎲 for a leveled ref, sampled slots, and a "Lvl N · ×C · cn X" column). Slot-conflict
+    ''' resolution + outfit preview are TOP-LEVEL only, so they're skipped here. Updates breadcrumb + chrome.</summary>
+    Private Sub RenderLeveledLevel()
+        Dim d = CurrentLevelDraft()
+        If d Is Nothing Then   ' the draft vanished (reverted elsewhere) — bail to the outfit root
+            _lvlNavStack.Clear()
+            RefreshPieces()
+            Return
+        End If
+        Dim keep As UInteger = If(SelectedPieceEntry()?.FormID, 0UI)
+        _levelView.Clear()
+        Dim ord As Integer = 0
+        For Each en In d.Entries
+            ord += 1
+            Dim isLvl = _mainForm.IsLeveledItem(en.RefFormID)
+            ' Robust slot footprint for ANY reference (in or out of the candidate universe) so the column never
+            ' spuriously shows "(none)" for an item that has slots. LVLI → union of terminals; ARMO → effective mask.
+            Dim slot = _mainForm.GetReferenceSlotMask(en.RefFormID, _raceFormID, _isFemale)
+            _levelView.Add(New PieceEntry With {
+                .FormID = en.RefFormID, .Display = ResolveRefDisplay(en.RefFormID), .SlotMask = slot,
+                .Order = ord, .IsLeveled = isLvl, .SourceEntry = en})
+        Next
+        ListViewPieces.BeginUpdate()
+        Try
+            ListViewPieces.Items.Clear()
+            For Each p In _levelView
+                Dim en = p.SourceEntry
+                Dim row As New ListViewItem(If(p.IsLeveled, "🎲 " & p.Display, p.Display))
+                row.SubItems.Add(DescribeSlotMask(p.SlotMask))
+                row.SubItems.Add($"Lvl {en.Level} · ×{en.Count}" & If(en.ChanceNone > 0, $" · cn {en.ChanceNone}", ""))
+                row.SubItems.Add("")
+                row.Tag = p
+                If keep <> 0UI AndAlso p.FormID = keep Then row.Selected = True
+                ListViewPieces.Items.Add(row)
+            Next
+        Finally
+            ListViewPieces.EndUpdate()
+        End Try
+        LabelPieces.Text = BuildBreadcrumb()
+        LabelCreateStatus.Text = $"{d.Entries.Count} entry(ies) in '{StripLvlPrefix(d.EditorID)}'" & If(d.IsOverride, "  ·  override", "  ·  new")
+        ButtonReroll.Enabled = False
+        UpdateLevelChrome()
+        UpdateAddToLvlEnabled()
+        UpdateEditArmorEnabled()
+    End Sub
+
+    ''' <summary>Nested "Add item": put the top candidate list's selected item into the CURRENT leveled draft
+    ''' (Level/Count/ChanceNone dialog), guarding self-insert + cycles. Mirror of the top-level "Add to lvl".</summary>
+    Private Sub AddEntryToCurrentLevel()
+        Dim d = CurrentLevelDraft()
+        If d Is Nothing Then Return
+        Dim itemFid = SelectedItemFormID()
+        If itemFid = 0UI Then
+            MessageBox.Show(Me, "Select an item in the top list to add into this leveled list.", "Add item",
+                            MessageBoxButtons.OK, MessageBoxIcon.Information)
+            Return
+        End If
+        If itemFid = d.FormID OrElse _mainForm.WouldCreateLeveledCycle(d.FormID, itemFid) Then
+            MessageBox.Show(Me, "That would create a leveled-list cycle (the list would end up containing itself).",
+                            "Add item", MessageBoxButtons.OK, MessageBoxIcon.Warning)
+            Return
+        End If
+        Using dlg As New LeveledEntryDialog_Form($"Add '{ResolveRefDisplay(itemFid)}'  →  '{StripLvlPrefix(d.EditorID)}'")
+            If dlg.ShowDialog(Me) <> DialogResult.OK Then Return
+            d.Entries.Add(New LeveledListDraft.LeveledEntry With {
+                .RefFormID = itemFid, .Level = dlg.LevelValue, .Count = dlg.CountValue, .ChanceNone = dlg.ChanceNoneValue})
+            d.IsModified = True
+        End Using
+        _lvlDirtyResample = True
+        RefreshPieces()
+    End Sub
+
+    ''' <summary>Edit the selected nested entry's Level/Count/ChanceNone in place (the LVLO fields).</summary>
+    Private Sub EditSelectedEntry()
+        Dim d = CurrentLevelDraft()
+        If d Is Nothing Then Return
+        Dim p = SelectedPieceEntry()
+        If p Is Nothing OrElse p.SourceEntry Is Nothing Then Return
+        Dim en = p.SourceEntry
+        Using dlg As New LeveledEntryDialog_Form($"Edit '{ResolveRefDisplay(en.RefFormID)}'", en.Level, en.Count, en.ChanceNone)
+            If dlg.ShowDialog(Me) <> DialogResult.OK Then Return
+            en.Level = dlg.LevelValue
+            en.Count = dlg.CountValue
+            en.ChanceNone = dlg.ChanceNoneValue
+            d.IsModified = True
+        End Using
+        _lvlDirtyResample = True
+        RefreshPieces()
+    End Sub
+
+    ''' <summary>Remove the selected nested entry from the current leveled draft.</summary>
+    Private Sub RemoveSelectedEntry()
+        Dim d = CurrentLevelDraft()
+        If d Is Nothing Then Return
+        Dim p = SelectedPieceEntry()
+        If p Is Nothing OrElse p.SourceEntry Is Nothing Then Return
+        d.Entries.Remove(p.SourceEntry)
+        d.IsModified = True
+        _lvlDirtyResample = True
+        RefreshPieces()
+    End Sub
+
+    ''' <summary>"Override LVL…" (top level): pick a real LVLI, promote it to an editable OVERRIDE draft, add it as an
+    ''' outfit piece, then drill straight in so the user edits its entries. The saver writes it as an override
+    ''' (Phase 2d), replacing the vanilla/preserved record and keeping its non-owned subrecords.</summary>
+    Private Sub OnOverrideLvl(sender As Object, e As EventArgs)
+        Using dlg As New FormIdPicker_Form(_mainForm.PluginManagerForEditor, New String() {"LVLI"},
+                                           "Override a leveled list", 0UI, allowNull:=False)
+            If dlg.ShowDialog(Me) <> DialogResult.OK OrElse dlg.SelectedFormID = 0UI Then Return
+            Dim d = _mainForm.BuildLeveledOverrideDraftFromReal(dlg.SelectedFormID)
+            If d Is Nothing Then
+                MessageBox.Show(Me, "Could not open that leveled list.", "Override LVL",
+                                MessageBoxButtons.OK, MessageBoxIcon.Error)
+                Return
+            End If
+            RefreshItemCandidates()
+            AddItemFidAsPiece(d.FormID)
+            DrillIntoLeveled(d.FormID)
+        End Using
     End Sub
 
     ''' <summary>Open the ARMO editor with <paramref name="armoFid"/> pre-loaded as its template in the requested
@@ -504,11 +749,51 @@ Public Class OutfitPicker_Form
     ''' updated slots/name into its piece; clearing _lastPreviewKey forces a re-render (an override can change the
     ''' render without changing the piece FormIDs); RefreshPieces rebuilds the pieces list + re-renders.</summary>
     Private Sub OpenArmorEditorForTemplate(armoFid As UInteger, asOverride As Boolean)
-        Using dlg As New ArmoEditor_Form(_mainForm, _npcFormID, _raceFormID, _isFemale,
-                                         initialTemplateArmoFormID:=armoFid, templateAsOverride:=asOverride)
-            dlg.ShowDialog(Me)
-        End Using
+        Dim outfitCtx = RegisterOutfitContextDraft()
+        Try
+            Using dlg As New ArmoEditor_Form(_mainForm, _npcFormID, _raceFormID, _isFemale,
+                                             initialTemplateArmoFormID:=armoFid, templateAsOverride:=asOverride,
+                                             outfitContextFormID:=outfitCtx)
+                dlg.ShowDialog(Me)
+            End Using
+        Finally
+            UnregisterOutfitContextDraft()
+        End Try
         RefreshCreateAfterArmorEdit()
+    End Sub
+
+    ''' <summary>Stable throwaway OTFT sentinel for the "outfit context" threaded into the ARMO/ARMA editors'
+    ''' "Full Outfit" preview mode. DISTINCT from <see cref="OutfitDraft.PreviewDraftFormID"/> (which those
+    ''' editors overwrite for their OWN single-item preview) and from the ARMA editor's ARMO wrapper sentinel.</summary>
+    Private Const OutfitContextFormID As UInteger = &HFF0007FDUI
+    Private _outfitContextRegistered As Boolean
+
+    ''' <summary>Register a STABLE OTFT holding the Create tab's currently-assembled winners (slot-conflict
+    ''' resolved + flattened, same set the Create preview draws), under a dedicated sentinel FormID so it
+    ''' survives the ARMO/ARMA editor modals (which register their own preview draft at the shared sentinel).
+    ''' Threaded to those editors as the "Full Outfit" preview context. Returns 0 when the Create tab has no
+    ''' pieces (⇒ the editors fall back to their single-item throwaway).</summary>
+    Private Function RegisterOutfitContextDraft() As UInteger
+        Dim res = SlotConflictResolver.ResolveSlotWinners(_pieces, Function(p) p.SlotMask, Function(p) p.Order)
+        Dim winners = FlattenPieces(res.Winners)
+        If winners.Count = 0 Then Return 0UI
+        Dim d As New OutfitDraft With {.FormID = OutfitContextFormID,
+                                       .EditorID = OutfitDraft.EditorIdPrefix & "(outfitcontext)"}
+        d.ItemFormIDs.AddRange(winners)
+        _mainForm.RegisterOutfitDraft(d)
+        _outfitContextRegistered = True
+        Return OutfitContextFormID
+    End Function
+
+    ''' <summary>Drop the outfit-context OTFT registered by <see cref="RegisterOutfitContextDraft"/> (after the
+    ''' editor modal returns) so it never leaks into Browse / the save set.</summary>
+    Private Sub UnregisterOutfitContextDraft()
+        If Not _outfitContextRegistered Then Return
+        Try
+            _mainForm.UnregisterOutfitDraft(OutfitContextFormID)
+        Catch
+        End Try
+        _outfitContextRegistered = False
     End Sub
 
     ''' <summary>Post-return refresh shared by <see cref="OpenArmorEditorForTemplate"/> (template edit) and
@@ -522,20 +807,48 @@ Public Class OutfitPicker_Form
         RefreshPieces()
     End Sub
 
-    ''' <summary>"Edit armor…" — edit the FOCUSED item (the one the piece-preview renders): a concrete ARMO
-    ''' (piece if the pieces list has focus, else the candidate selection) opens the ARMO editor as an override,
-    ''' exactly like the double-click handlers. When nothing concrete is focused (no selection, or it's a leveled
-    ''' list) it opens the ARMO editor in NEW mode instead, then runs the same post-return refresh.</summary>
-    Private Sub OnEditArmor(sender As Object, e As EventArgs)
+    ''' <summary>The FOCUSED concrete (non-leveled) ARMO FormID: the selected piece when the pieces list has
+    ''' preview focus, else the selected candidate item. 0 when nothing concrete is focused (empty selection or a
+    ''' leveled list). Drives both <see cref="OnEditArmor"/> and <see cref="UpdateEditArmorEnabled"/>.</summary>
+    Private Function FocusedConcreteArmoFid() As UInteger
         Dim fid As UInteger = If(_pieceListHasPreviewFocus, If(SelectedPieceEntry()?.FormID, 0UI), SelectedItemFormID())
-        If fid <> 0UI AndAlso Not _mainForm.IsLeveledItem(fid) Then
-            OpenArmorEditorForTemplate(fid, asOverride:=True)
-        Else
-            Using dlg As New ArmoEditor_Form(_mainForm, _npcFormID, _raceFormID, _isFemale)
+        If fid = 0UI OrElse _mainForm.IsLeveledItem(fid) Then Return 0UI
+        Return fid
+    End Function
+
+    ''' <summary>"Edit armor…" — open the ARMO editor (as an override) on the FOCUSED concrete ARMO. Disabled by
+    ''' <see cref="UpdateEditArmorEnabled"/> when nothing concrete is focused, so this is a no-op then. Authoring a
+    ''' brand-new ARMO is the separate "New armor…" button.</summary>
+    Private Sub OnEditArmor(sender As Object, e As EventArgs)
+        ' Works at BOTH levels: FocusedConcreteArmoFid resolves the selected concrete ARMO — a top-level piece OR
+        ' a nested LVLO entry whose reference is an armor — so "Edit armor…" opens the ARMO editor either way.
+        Dim fid = FocusedConcreteArmoFid()
+        If fid = 0UI Then Return
+        OpenArmorEditorForTemplate(fid, asOverride:=True)
+    End Sub
+
+    ''' <summary>"New armor…" — always open the ARMO editor in NEW (blank) mode to author a brand-new ARMO from
+    ''' scratch, then run the same post-return Create refresh as an edit.</summary>
+    Private Sub OnNewArmor(sender As Object, e As EventArgs)
+        Dim outfitCtx = RegisterOutfitContextDraft()
+        Try
+            Using dlg As New ArmoEditor_Form(_mainForm, _npcFormID, _raceFormID, _isFemale,
+                                             outfitContextFormID:=outfitCtx)
                 dlg.ShowDialog(Me)
             End Using
-            RefreshCreateAfterArmorEdit()
-        End If
+        Finally
+            UnregisterOutfitContextDraft()
+        End Try
+        RefreshCreateAfterArmorEdit()
+    End Sub
+
+    ''' <summary>"Edit armor…" is enabled only when a concrete (non-leveled) ARMO is focused in the Create lists.
+    ''' Mirror of <see cref="UpdateAddToLvlEnabled"/>; called from the selection/focus handlers + after refresh.</summary>
+    Private Sub UpdateEditArmorEnabled()
+        ' "Edit armor…" is enabled whenever a concrete ARMO is focused — a top-level piece OR a nested armor entry.
+        ButtonEditArmor.Enabled = (FocusedConcreteArmoFid() <> 0UI)
+        ' "Edit entry…" (nested only) is enabled whenever any LVLO entry row is selected.
+        ButtonEditEntry.Enabled = (Not IsAtTopLevel() AndAlso SelectedPieceEntry() IsNot Nothing)
     End Sub
 
     ''' <summary>Pull each concrete (non-LVLI) piece's slots/name/plugin from the refreshed candidate universe
@@ -578,6 +891,10 @@ Public Class OutfitPicker_Form
     End Sub
 
     Private Sub OnRemovePiece(sender As Object, e As EventArgs)
+        If Not IsAtTopLevel() Then   ' nested: "Remove entry" drops the selected LVLO entry from the current list
+            RemoveSelectedEntry()
+            Return
+        End If
         If ListViewPieces.SelectedItems.Count = 0 Then Return
         Dim p = TryCast(ListViewPieces.SelectedItems(0).Tag, PieceEntry)
         If p Is Nothing Then Return
@@ -588,6 +905,7 @@ Public Class OutfitPicker_Form
     ''' <summary>Reroll: re-sample every LVLI piece's realization (new terminals + slot), then refresh the
     ''' list + preview. Only meaningful when a leveled piece is present (the button is enabled accordingly).</summary>
     Private Sub OnReroll(sender As Object, e As EventArgs)
+        If Not IsAtTopLevel() Then Return   ' Reroll is a top-level (outfit) action; hidden while nested
         Dim any As Boolean = False
         For Each p In _pieces
             If p.IsLeveled Then
@@ -637,6 +955,10 @@ Public Class OutfitPicker_Form
     ''' piece selected in the pieces list (bottom), prompting for the entry Level/Count/ChanceNone. Blocks
     ''' self-insert and cycles (lvl1→lvl2→lvl1).</summary>
     Private Sub OnAddToLvl(sender As Object, e As EventArgs)
+        If Not IsAtTopLevel() Then   ' nested: "Add item" puts the top-selected candidate into the CURRENT list
+            AddEntryToCurrentLevel()
+            Return
+        End If
         Dim target = SelectedPieceEntry()
         If target Is Nothing OrElse Not _mainForm.IsOwnLeveledDraft(target.FormID) Then Return
         Dim itemFid = SelectedItemFormID()
@@ -672,6 +994,10 @@ Public Class OutfitPicker_Form
     ''' <summary>"Add to lvl" is enabled only when the selected piece (bottom) is an OWN leveled-list draft
     ''' (not a vanilla/loaded LVLI, not an ARMO).</summary>
     Private Sub UpdateAddToLvlEnabled()
+        If Not IsAtTopLevel() Then
+            ButtonAddToLvl.Enabled = True   ' nested: always addable into the current list (validated on click)
+            Return
+        End If
         Dim p = SelectedPieceEntry()
         ButtonAddToLvl.Enabled = (p IsNot Nothing AndAlso _mainForm.IsOwnLeveledDraft(p.FormID))
     End Sub
@@ -681,6 +1007,28 @@ Public Class OutfitPicker_Form
     ''' status line. Losers stay visible so the user sees what got eliminated and can remove a winner
     ''' to promote a loser; only winners are saved into the outfit (the resolved, conflict-free set).</summary>
     Private Async Sub RefreshPieces()
+        ' Drilled into a leveled list → render THAT list's entries instead of the outfit pieces (the outfit's own
+        ' _pieces are untouched; slot-conflict + preview are top-level only). Early-return keeps the top-level path
+        ' below byte-identical when at the outfit root.
+        If Not IsAtTopLevel() Then
+            RenderLeveledLevel()
+            Return
+        End If
+        ' Returning to the outfit root after editing a nested list: re-sample every leveled piece's realization once
+        ' so the top view reflects the edited list contents (added/removed/edited entries). Cleared after one pass.
+        If _lvlDirtyResample Then
+            _lvlDirtyResample = False
+            For Each p In _pieces
+                If p.IsLeveled Then
+                    Dim rr = _mainForm.SampleLeveledRealization(p.FormID, _raceFormID, _isFemale)
+                    p.Realization = rr.Terminals
+                    p.SlotMask = rr.SlotMask
+                End If
+            Next
+            _lastPreviewKey = Nothing
+        End If
+        LabelPieces.Text = "Outfit pieces:"
+        UpdateLevelChrome()
         ' Remember the selected piece so a rebuild (add item, add-to-lvl, reroll) doesn't drop the
         ' selection — the user can keep acting on the same piece (e.g. add several items into the same
         ' leveled list) without re-selecting it every time. No-op if that piece is gone (e.g. Remove).
@@ -711,6 +1059,7 @@ Public Class OutfitPicker_Form
         ' Reroll only makes sense (and is only enabled) when there's a leveled list among the pieces.
         ButtonReroll.Enabled = _pieces.Any(Function(x) x.IsLeveled)
         UpdateAddToLvlEnabled()   ' reflects the (preserved) selection
+        UpdateEditArmorEnabled()  ' reflects the (preserved) selection
 
         Dim losers = res.Losers.Count
         LabelCreateStatus.Text = $"{res.Winners.Count} piece(s) in outfit" & If(losers > 0, $"  ·  {losers} eliminated by slot conflict", "")
@@ -793,12 +1142,14 @@ Public Class OutfitPicker_Form
     ' Both list selections route through the single RefreshCreatePreview decision point, which previews the
     ' focused list's selection (Enter sets _pieceListHasPreviewFocus first, before SelectedIndexChanged).
     Private Async Sub OnCreateItemSelectionChanged(sender As Object, e As EventArgs)
+        UpdateEditArmorEnabled()   ' item focus changed → refresh Edit-armor enable (independent of preview mode)
         If TabsMain.SelectedTab IsNot TabPageCreate OrElse Not RadioButtonRenderPiece.Checked Then Return
         Await RefreshCreatePreview()
     End Sub
 
     Private Async Sub OnCreatePieceSelectionChanged(sender As Object, e As EventArgs)
         UpdateAddToLvlEnabled()   ' applies regardless of preview mode
+        UpdateEditArmorEnabled()  ' piece focus changed → refresh Edit-armor enable
         If TabsMain.SelectedTab IsNot TabPageCreate OrElse Not RadioButtonRenderPiece.Checked Then Return
         Await RefreshCreatePreview()
     End Sub
@@ -808,11 +1159,13 @@ Public Class OutfitPicker_Form
     ' the render would stay on the other list's item. Only relevant in "selected piece only" mode on Create.
     Private Async Sub OnItemsListEnter(sender As Object, e As EventArgs)
         _pieceListHasPreviewFocus = False   ' top list (candidate items) now drives the piece preview
+        UpdateEditArmorEnabled()            ' focus moved to the candidate list → its selection drives Edit-armor
         If RadioButtonRenderPiece.Checked AndAlso TabsMain.SelectedTab Is TabPageCreate Then Await RefreshCreatePreview()
     End Sub
 
     Private Async Sub OnPiecesListEnter(sender As Object, e As EventArgs)
         _pieceListHasPreviewFocus = True    ' bottom list (chosen pieces) now drives the piece preview
+        UpdateEditArmorEnabled()            ' focus moved to the pieces list → its selection drives Edit-armor
         If RadioButtonRenderPiece.Checked AndAlso TabsMain.SelectedTab Is TabPageCreate Then Await RefreshCreatePreview()
     End Sub
 
@@ -1201,6 +1554,12 @@ Public Class OutfitPicker_Form
             If MessageBox.Show(Me, $"Revert outfit '{d.EditorID}' to the original? Your changes will be discarded.",
                                "Revert outfit", MessageBoxButtons.YesNo, MessageBoxIcon.Question) <> DialogResult.Yes Then Return
             _mainForm.UnregisterOutfitDraft(d.FormID)
+            ' Dropping the in-memory draft is NOT enough: if this override was ALREADY SAVED into the plugin, the
+            ' saver's Phase 2a re-preserves it (re-emits every target-plugin OTFT as an OVERRIDE entry unless it's in
+            ' RecordsToRemove), so the reverted outfit would keep getting written. Mark it for removal so Phase 2a drops
+            ' it and the original wins. No-op when no saved copy exists (removal only drops target-plugin records). The
+            ' revert branch (IsOverride OrElse Not IsNew) always carries a real FormID, never a 0xFF draft sentinel.
+            _mainForm.MarkRecordForRemoval(d.FormID)
         Else
             Dim referrers = _mainForm.GetDraftReferrers(d.FormID)
             If referrers.Count > 0 Then
@@ -1308,6 +1667,10 @@ Public Class OutfitPicker_Form
             End Try
             _previewDraftRegistered = False
         End If
+
+        ' Defensive: the outfit-context draft is normally dropped in the editor-open Finally; unregister here
+        ' too in case the form closes while one is still registered.
+        UnregisterOutfitContextDraft()
 
         ' Quiesce the render loop before tearing down GL state — same ordering rationale as EditBody:
         ' control teardown → host Dispose → control Clean/Dispose (host must release its GL compositor

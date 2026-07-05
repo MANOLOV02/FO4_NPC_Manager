@@ -80,6 +80,34 @@ Friend NotInheritable Class NpcStateResolver
         state.ObjectTemplateCombinations.AddRange(traits.ObjectTemplateCombinations)
         state.HasObjectTemplate = traits.HasObjectTemplate
         state.AttachParentSlotFormIDs.AddRange(traits.AttachParentSlotFormIDs)
+
+        ' "Show other gender" preview (ARMA/ARMO editors): render a DEFAULT actor of the target gender
+        ' for this NPC's race — NOT the source NPC with a flipped bit. The source NPC's head parts, face
+        ' texture, hair color, skin ARMO and body weights are gender-specific identity baked/authored for
+        ' its ORIGINAL gender, so wipe them here and let ApplyRaceFallbacks (below) repopulate all of them
+        ' from the RACE defaults for the TARGET gender. Downstream, everything gender-dependent keys off
+        ' state.IsFemale: skeleton (ResolveSkeletonKey), height + body-weight bone-scaling (GetRaceHeight /
+        ' ResolveBodyWeightData pick the RACE Male/Female block), body mesh (MOD2/MOD3), skin TXST
+        ' (NAM0/NAM1) and material swaps (MO2S/MO3S). Gender-specific face morphs (chargen MSDK/MSDV +
+        ' FMRS face bones) and the NPC FaceGen head are suppressed in the render orchestrator when the
+        ' override is active (RenderCurrentStateAsync useFaceGen gate, BuildRenderPlan boneMorphsEnabled
+        ' gate, BuildFaceMorphResolver early-return), so the head shows the race default without the
+        ' original gender's baked face. HOST-SCOPED: the main render leaves PreviewGenderOverride Nothing,
+        ' so this whole block is inert there.
+        Dim genderOverrideActive As Boolean = host IsNot Nothing AndAlso host.PreviewGenderOverride.HasValue
+        If genderOverrideActive Then
+            state.IsFemale = host.PreviewGenderOverride.Value
+            state.HeadPartFormIDs.Clear()
+            state.HeadTextureFormID = 0UI
+            state.HairColorFormID = 0UI
+            state.SkinFormID = 0UI
+            ' Null the NPC's MWGT so ResolveBodyWeights (inside ApplyRaceFallbacks) falls back to the
+            ' RACE default weights for the target gender instead of reusing the source gender's values.
+            traits.WeightThin = Nothing
+            traits.WeightMuscular = Nothing
+            traits.WeightFat = Nothing
+        End If
+
         ApplyRaceFallbacks(state, traits, _ctx.PluginManager, AddressOf _ctx.ParseRaceCached)
         state.HeadPartFormIDs = state.HeadPartFormIDs.Where(Function(id) id <> 0UI).Distinct().ToList()
 
@@ -88,8 +116,11 @@ Friend NotInheritable Class NpcStateResolver
         ' the state would otherwise come from the model/traits template source. The morph and tint
         ' overlays live in ApplyPresetOverlayToNpcData (consumed by BuildFaceMorphResolver and
         ' TryApplyFaceTints) — same mechanism, different access point.
+        ' Skipped entirely under a gender override: the LM overlay is the source actor's own-gender
+        ' identity (head parts / weights / skin / tint), which would re-inject exactly what the block
+        ' above wiped for the "other gender" default-actor preview.
         Dim overlayPreset As LooksmenuLoader.LooksmenuPreset = Nothing
-        If _appliedPresets.TryGetValue(state.RootNpcFormID, overlayPreset) Then
+        If Not genderOverrideActive AndAlso _appliedPresets.TryGetValue(state.RootNpcFormID, overlayPreset) Then
             If overlayPreset.HeadPartFormIDs.Count > 0 Then
                 state.HeadPartFormIDs = overlayPreset.HeadPartFormIDs.Where(Function(id) id <> 0UI).Distinct().ToList()
             End If

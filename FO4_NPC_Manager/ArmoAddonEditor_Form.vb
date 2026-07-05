@@ -14,6 +14,14 @@ Public Class ArmoAddonEditor_Form
     Private ReadOnly _raceFormID As UInteger
     Private _armaFormID As UInteger
 
+    ''' <summary>The ARMO that owns this addon (the ARMO being edited in the parent ArmoEditor), threaded to the
+    ''' ARMA editor so its "Full armor" preview renders the whole parent ARMO. 0 = no parent in context.</summary>
+    Private ReadOnly _parentArmoFormID As UInteger
+
+    ''' <summary>The OTFT of the outfit being assembled in the OutfitPicker, threaded to the ARMA editor so its
+    ''' "Full Outfit" preview renders that outfit. 0 = no outfit in context.</summary>
+    Private ReadOnly _outfitContextFormID As UInteger
+
     ''' <summary>The edited addon entry, valid only after <c>DialogResult.OK</c>. A fresh copy — caller owns it.</summary>
     Public ReadOnly Property ResultEntry As ARMO_AddonEntry
         Get
@@ -25,10 +33,17 @@ Public Class ArmoAddonEditor_Form
     ''' <param name="mainForm">Owner — supplies the PluginManager for the ARMA picker + display names + drafts.</param>
     ''' <param name="raceFormID">The editing ARMO's race — race-filters the ARMA picker like "Add ARMA".</param>
     ''' <param name="entry">The addon entry to edit. DEEP-COPIED in (never aliased); Nothing starts empty.</param>
-    Public Sub New(mainForm As MainForm, raceFormID As UInteger, entry As ARMO_AddonEntry)
+    ''' <param name="parentArmoFormID">The owning ARMO's FormID — threaded to the ARMA editor's "Full armor"
+    ''' preview. 0 = none.</param>
+    ''' <param name="outfitContextFormID">The assembled-outfit OTFT — threaded to the ARMA editor's "Full Outfit"
+    ''' preview. 0 = none.</param>
+    Public Sub New(mainForm As MainForm, raceFormID As UInteger, entry As ARMO_AddonEntry,
+                   Optional parentArmoFormID As UInteger = 0UI, Optional outfitContextFormID As UInteger = 0UI)
         InitializeComponent()
         _mainForm = mainForm
         _raceFormID = raceFormID
+        _parentArmoFormID = parentArmoFormID
+        _outfitContextFormID = outfitContextFormID
 
         Dim src = If(entry, New ARMO_AddonEntry())
         _armaFormID = src.ArmaFormID
@@ -61,10 +76,12 @@ Public Class ArmoAddonEditor_Form
         Dim armaDraft = _mainForm.TryGetArmaDraft(_armaFormID)
         Dim dlg As ArmaEditor_Form
         If armaDraft IsNot Nothing Then
-            dlg = New ArmaEditor_Form(_mainForm, previewNpc, _raceFormID, isFemale, editDraft:=armaDraft)
+            dlg = New ArmaEditor_Form(_mainForm, previewNpc, _raceFormID, isFemale, editDraft:=armaDraft,
+                                      parentArmoFormID:=_parentArmoFormID, outfitContextFormID:=_outfitContextFormID)
         Else
             dlg = New ArmaEditor_Form(_mainForm, previewNpc, _raceFormID, isFemale,
-                                      initialTemplateArmaFormID:=_armaFormID)
+                                      initialTemplateArmaFormID:=_armaFormID,
+                                      parentArmoFormID:=_parentArmoFormID, outfitContextFormID:=_outfitContextFormID)
         End If
 
         Using dlg

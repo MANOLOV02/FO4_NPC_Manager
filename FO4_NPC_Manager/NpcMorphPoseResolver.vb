@@ -43,6 +43,11 @@ Friend NotInheritable Class NpcMorphPoseResolver
         If host Is Nothing Then host = _hostProvider()
         If state Is Nothing Then Return Nothing
 
+        ' "Show other gender" preview: the NPC's chargen (MSDK/MSDV) vertex morphs are gender-specific
+        ' (baked against its own BaseMale/BaseFemaleHeadChargen.tri) and don't apply to a default target-
+        ' gender head, so emit no face morphs — the race default head renders un-morphed.
+        If host IsNot Nothing AndAlso host.PreviewGenderOverride.HasValue Then Return Nothing
+
         ' Get the full NPC_Data for the model source (the NPC whose face we're rendering)
         Dim modelNpcFormID = NpcStateFactory.FaceAppearanceSourceFormID(state)
         Dim npcData = _overlay(_ctx.GetParsedNpc(modelNpcFormID), state.RootNpcFormID)

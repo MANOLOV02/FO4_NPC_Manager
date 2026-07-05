@@ -36,6 +36,13 @@ Public Class LeveledListDraft
     ''' <summary>LVLO entries — each references an ARMO or another LVLI, with per-entry level/count/chance.</summary>
     Public ReadOnly Property Entries As New List(Of LeveledEntry)
 
+    ''' <summary>True = OVERRIDE an existing LVLI (keep its EditorID + real GLOBAL FormID). False = brand-new LVLI.
+    ''' Mirrors <see cref="OutfitDraft.IsOverride"/>/<see cref="ArmoDraft.IsOverride"/>: an override draft's
+    ''' <see cref="FormID"/> is the load-order record's real FormID; the saver preserves it from the target plugin in
+    ''' Phase 2a and the Phase 2d draft REPLACES that preserved copy (edited entries win). A NEW draft carries a
+    ''' provisional 0xFF sentinel and the writer assigns the real self-index FormID at save.</summary>
+    Public Property IsOverride As Boolean = False
+
     Public Property IsNew As Boolean = True
     Public Property IsModified As Boolean = False
 
@@ -59,7 +66,7 @@ Public Class LeveledListDraft
         Dim c As New LeveledListDraft With {
             .FormID = FormID, .EditorID = EditorID, .ChanceNone = ChanceNone, .MaxCount = MaxCount,
             .CalcAllLevels = CalcAllLevels, .CalcEachInCount = CalcEachInCount, .UseAll = UseAll,
-            .IsNew = IsNew, .IsModified = IsModified
+            .IsOverride = IsOverride, .IsNew = IsNew, .IsModified = IsModified
         }
         For Each e In Entries
             c.Entries.Add(New LeveledEntry With {.RefFormID = e.RefFormID, .Level = e.Level, .Count = e.Count, .ChanceNone = e.ChanceNone})

@@ -44,7 +44,10 @@ Partial Public Class MeshPicker_Form
         ' SplitMain.Panel2
         '
         SplitMain.Panel2.Controls.Add(PreviewHostPanel)
-        SplitMain.Size = New Size(1041, 589)
+        SplitMain.Size = New Size(1264, 681)
+        ' SplitterDistance AFTER Size so the SplitContainer validates against the final width (else it throws /
+        ' clamps against a transient small size). Tree+files (Panel1) get ~800px; the preview (Panel2) keeps ~460.
+        SplitMain.SplitterDistance = 800
         SplitMain.TabIndex = 0
         '
         ' DictionaryPicker_Control1
@@ -52,7 +55,7 @@ Partial Public Class MeshPicker_Form
         DictionaryPicker_Control1.Dock = DockStyle.Fill
         DictionaryPicker_Control1.Location = New Point(0, 0)
         DictionaryPicker_Control1.Name = "DictionaryPicker_Control1"
-        DictionaryPicker_Control1.Size = New Size(468, 589)
+        DictionaryPicker_Control1.Size = New Size(800, 681)
         DictionaryPicker_Control1.TabIndex = 0
         '
         ' PreviewHostPanel
@@ -61,18 +64,18 @@ Partial Public Class MeshPicker_Form
         PreviewHostPanel.Dock = DockStyle.Fill
         PreviewHostPanel.Location = New Point(0, 0)
         PreviewHostPanel.Name = "PreviewHostPanel"
-        PreviewHostPanel.Size = New Size(569, 589)
+        PreviewHostPanel.Size = New Size(460, 681)
         PreviewHostPanel.TabIndex = 0
         '
         ' MeshPicker_Form
         '
         AutoScaleDimensions = New SizeF(7F, 15F)
         AutoScaleMode = AutoScaleMode.Font
-        ClientSize = New Size(1041, 589)
+        ClientSize = New Size(1264, 681)
         Controls.Add(SplitMain)
-        MaximizeBox = False
+        MaximizeBox = True
         MinimizeBox = False
-        MinimumSize = New Size(700, 350)
+        MinimumSize = New Size(900, 500)
         Name = "MeshPicker_Form"
         ShowInTaskbar = False
         StartPosition = FormStartPosition.CenterParent

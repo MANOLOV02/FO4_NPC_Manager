@@ -116,6 +116,11 @@ Partial Class ArmoEditor_Form
         PreviewLayout = New TableLayoutPanel()
         PreviewControlPanel = New Panel()
         LabelPreviewHint = New Label()
+        PreviewModePanel = New FlowLayoutPanel()
+        RadioOnlyArmor = New RadioButton()
+        RadioFullOutfit = New RadioButton()
+        CheckIncludeBody = New CheckBox()
+        CheckShowOtherGender = New CheckBox()
         BottomLayout = New FlowLayoutPanel()
         ButtonOk = New Button()
         ButtonCancel = New Button()
@@ -215,6 +220,7 @@ Partial Class ArmoEditor_Form
         CType(GridCombinations, ComponentModel.ISupportInitialize).BeginInit()
         ObtsButtons.SuspendLayout()
         PreviewLayout.SuspendLayout()
+        PreviewModePanel.SuspendLayout()
         BottomLayout.SuspendLayout()
         SuspendLayout()
         '
@@ -1785,12 +1791,14 @@ Partial Class ArmoEditor_Form
         PreviewLayout.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100F))
         PreviewLayout.Controls.Add(LabelPreviewHint, 0, 0)
         PreviewLayout.Controls.Add(PreviewControlPanel, 0, 1)
+        PreviewLayout.Controls.Add(PreviewModePanel, 0, 2)
         PreviewLayout.Dock = DockStyle.Fill
         PreviewLayout.Location = New Point(0, 0)
         PreviewLayout.Name = "PreviewLayout"
-        PreviewLayout.RowCount = 2
+        PreviewLayout.RowCount = 3
         PreviewLayout.RowStyles.Add(New RowStyle())
         PreviewLayout.RowStyles.Add(New RowStyle(SizeType.Percent, 100F))
+        PreviewLayout.RowStyles.Add(New RowStyle())
         PreviewLayout.Size = New Size(498, 550)
         PreviewLayout.TabIndex = 0
         '
@@ -1814,6 +1822,66 @@ Partial Class ArmoEditor_Form
         PreviewControlPanel.Name = "PreviewControlPanel"
         PreviewControlPanel.Size = New Size(498, 531)
         PreviewControlPanel.TabIndex = 1
+        '
+        ' PreviewModePanel
+        '
+        PreviewModePanel.AutoSize = True
+        PreviewModePanel.AutoSizeMode = AutoSizeMode.GrowAndShrink
+        PreviewModePanel.Controls.Add(RadioOnlyArmor)
+        PreviewModePanel.Controls.Add(RadioFullOutfit)
+        PreviewModePanel.Controls.Add(CheckIncludeBody)
+        PreviewModePanel.Controls.Add(CheckShowOtherGender)
+        PreviewModePanel.Dock = DockStyle.Fill
+        PreviewModePanel.Location = New Point(0, 553)
+        PreviewModePanel.Margin = New Padding(0)
+        PreviewModePanel.Name = "PreviewModePanel"
+        PreviewModePanel.Size = New Size(498, 25)
+        PreviewModePanel.TabIndex = 2
+        PreviewModePanel.WrapContents = True
+        '
+        ' RadioOnlyArmor
+        '
+        RadioOnlyArmor.AutoSize = True
+        RadioOnlyArmor.Checked = True
+        RadioOnlyArmor.Margin = New Padding(3, 3, 8, 3)
+        RadioOnlyArmor.Name = "RadioOnlyArmor"
+        RadioOnlyArmor.Size = New Size(84, 19)
+        RadioOnlyArmor.TabIndex = 0
+        RadioOnlyArmor.TabStop = True
+        RadioOnlyArmor.Text = "Only Armor"
+        RadioOnlyArmor.UseVisualStyleBackColor = True
+        '
+        ' RadioFullOutfit
+        '
+        RadioFullOutfit.AutoSize = True
+        RadioFullOutfit.Margin = New Padding(3, 3, 12, 3)
+        RadioFullOutfit.Name = "RadioFullOutfit"
+        RadioFullOutfit.Size = New Size(80, 19)
+        RadioFullOutfit.TabIndex = 1
+        RadioFullOutfit.Text = "Full Outfit"
+        RadioFullOutfit.UseVisualStyleBackColor = True
+        '
+        ' CheckIncludeBody
+        '
+        CheckIncludeBody.AutoSize = True
+        CheckIncludeBody.Checked = True
+        CheckIncludeBody.CheckState = CheckState.Checked
+        CheckIncludeBody.Margin = New Padding(3, 3, 12, 3)
+        CheckIncludeBody.Name = "CheckIncludeBody"
+        CheckIncludeBody.Size = New Size(97, 19)
+        CheckIncludeBody.TabIndex = 2
+        CheckIncludeBody.Text = "Include Body"
+        CheckIncludeBody.UseVisualStyleBackColor = True
+        '
+        ' CheckShowOtherGender
+        '
+        CheckShowOtherGender.AutoSize = True
+        CheckShowOtherGender.Margin = New Padding(3, 3, 3, 3)
+        CheckShowOtherGender.Name = "CheckShowOtherGender"
+        CheckShowOtherGender.Size = New Size(127, 19)
+        CheckShowOtherGender.TabIndex = 3
+        CheckShowOtherGender.Text = "Switch gender"
+        CheckShowOtherGender.UseVisualStyleBackColor = True
         '
         ' BottomLayout
         '
@@ -1855,7 +1923,7 @@ Partial Class ArmoEditor_Form
         CancelButton = ButtonCancel
         AutoScaleDimensions = New SizeF(7F, 15F)
         AutoScaleMode = AutoScaleMode.Font
-        ClientSize = New Size(1244, 640)
+        ClientSize = New Size(1264, 681)
         Controls.Add(RootLayout)
         Font = New Font("Segoe UI", 9F)
         MinimizeBox = False
@@ -1932,6 +2000,8 @@ Partial Class ArmoEditor_Form
         ObtsLayout.PerformLayout()
         CType(GridCombinations, ComponentModel.ISupportInitialize).EndInit()
         ObtsButtons.ResumeLayout(False)
+        PreviewModePanel.ResumeLayout(False)
+        PreviewModePanel.PerformLayout()
         PreviewLayout.ResumeLayout(False)
         PreviewLayout.PerformLayout()
         BottomLayout.ResumeLayout(False)
@@ -2034,6 +2104,11 @@ Partial Class ArmoEditor_Form
     Friend WithEvents ButtonEditCombo As System.Windows.Forms.Button
     Friend WithEvents LabelObtsHint As System.Windows.Forms.Label
     Friend WithEvents PreviewLayout As System.Windows.Forms.TableLayoutPanel
+    Friend WithEvents PreviewModePanel As System.Windows.Forms.FlowLayoutPanel
+    Friend WithEvents RadioOnlyArmor As System.Windows.Forms.RadioButton
+    Friend WithEvents RadioFullOutfit As System.Windows.Forms.RadioButton
+    Friend WithEvents CheckIncludeBody As System.Windows.Forms.CheckBox
+    Friend WithEvents CheckShowOtherGender As System.Windows.Forms.CheckBox
     Friend WithEvents LabelPreviewHint As System.Windows.Forms.Label
     Friend WithEvents PreviewControlPanel As System.Windows.Forms.Panel
     Friend WithEvents BottomLayout As System.Windows.Forms.FlowLayoutPanel
