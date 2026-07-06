@@ -9531,6 +9531,12 @@ Public Class MainForm
             RevertAppOverrideInMemory(fid)   ' PluginManager: drop NEW / revert OVERRIDE + targeted parse-cache invalidate
             _dirtyNpcs.Remove(fid)
             _npcRecordOverrides.Remove(fid)
+            ' Drop the LooksMenu overlay too. The saver's Phase 3b already PRUNED this NPC from the .bssliders
+            ' sidecar + BodyGen .ini on disk (via _recordsToRemove), but the overlay is the in-memory SOURCE the
+            ' sidecar is built from (MergeOneNpcIntoSidecar reads _appliedPresets). Leaving it behind desyncs
+            ' memory from disk and would RESURRECT the pruned sidecar entry on the next save. A deleted NEW record
+            ' / reverted OVERRIDE discards all authored appearance, so the whole overlay goes.
+            _appliedPresets.Remove(fid)
             Dim baseRec = _pluginManager.GetRecord(fid)
             If baseRec Is Nothing OrElse baseRec.Header.Signature <> "NPC_" Then
                 ' NEW authored record → gone from the load order. Drop every model entry for it.
