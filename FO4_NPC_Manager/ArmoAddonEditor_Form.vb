@@ -84,12 +84,17 @@ Public Class ArmoAddonEditor_Form
                                       parentArmoFormID:=_parentArmoFormID, outfitContextFormID:=_outfitContextFormID)
         End If
 
+        Dim armaCommitted As Boolean = False
         Using dlg
             If dlg.ShowDialog(Me) = DialogResult.OK AndAlso dlg.ResultArmaFormID <> 0UI Then
                 _armaFormID = dlg.ResultArmaFormID
-                RenderArma()
+                armaCommitted = True
             End If
         End Using
+        ' The user OK'd the ARMA editor → AUTO-ACCEPT this addon modal too, so the edited ARMA flows straight back
+        ' to the ARMO editor without a redundant second OK click. (Cancel/close of the ARMA editor leaves
+        ' ResultArmaFormID = 0 → we stay open so the user can still tweak the Addon Index or Cancel.)
+        If armaCommitted Then OnOk(sender, e)
     End Sub
 
     ''' <summary>ARMA picker — race-filtered (+ ARMA drafts), same contract as ArmoEditor's "Add ARMA".</summary>

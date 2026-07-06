@@ -388,7 +388,8 @@ Public Class ArmoEditor_Form
                 ' drops it and the true parent wins. No-op when no saved copy exists (removal only drops target-plugin
                 ' records); when isCurrent reloads a pristine override draft it stays Not-IsDirty and is never re-emitted.
                 _mainForm.MarkRecordForRemoval(fid)
-                If isCurrent Then LoadRealArmoTemplate(fid, asOverride:=True)   ' reload the pristine original for continued editing
+                _mainForm.RevertAppOverrideInMemory(fid)   ' restore the mod's winning record in memory (not the ESP override)
+                If isCurrent Then LoadRealArmoTemplate(fid, asOverride:=True)   ' reloads the now-restored original for continued editing
                 Return True
             End If
             ' NEW draft → DELETE, but not the one you're currently building.
@@ -419,6 +420,7 @@ Public Class ArmoEditor_Form
         If MessageBox.Show(Me, $"{verb} saved record '{entry.DisplayName}'?" & vbCrLf & detail & refWarn,
                            $"{verb} saved record", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) <> DialogResult.Yes Then Return False
         _mainForm.MarkRecordForRemoval(fid)
+        _mainForm.RevertAppOverrideInMemory(fid)   ' in-memory: restore the mod's winning record (override) / drop it (new)
         Return True
     End Function
 

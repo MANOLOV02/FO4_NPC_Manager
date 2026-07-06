@@ -113,6 +113,9 @@ Public Class OutfitPicker_Form
     ''' preview so it follows the FOCUSED list (False = top candidate-items list, True = bottom
     ''' chosen-pieces list). Set on each list's Enter. Defaults to the top list (the first populated).</summary>
     Private _pieceListHasPreviewFocus As Boolean = False
+    ''' <summary>Tooltip host for the piece-reorder (▲/▼) buttons — explains that piece Order is the equip
+    ''' sequence (last-equipped wins slot conflicts), which the two glyph buttons aren't self-evident about.</summary>
+    Private ReadOnly _pieceReorderTip As New ToolTip()
     ''' <summary>When the user committed an Override, the FormID + EditorID to keep.</summary>
     Private _overrideTargetFormID As UInteger = 0UI
     Private _overrideTargetEditorID As String = ""
@@ -193,6 +196,12 @@ Public Class OutfitPicker_Form
         AddHandler ListViewItems.DoubleClick, AddressOf OnEditItemInArmorEditor
         AddHandler ButtonAddItem.Click, AddressOf OnAddItem
         AddHandler ButtonRemovePiece.Click, AddressOf OnRemovePiece
+        ' Reorder the selected piece in equip sequence (Order). INAM ascending = equip order; last-equipped
+        ' wins slot conflicts, so ▼ (later) promotes a piece over an overlapping one. Top-level only.
+        AddHandler ButtonMovePieceUp.Click, AddressOf OnMovePieceUp
+        AddHandler ButtonMovePieceDown.Click, AddressOf OnMovePieceDown
+        _pieceReorderTip.SetToolTip(ButtonMovePieceUp, "Move piece earlier in equip order")
+        _pieceReorderTip.SetToolTip(ButtonMovePieceDown, "Move piece later (equipped last → wins slot conflicts)")
         AddHandler ButtonReroll.Click, AddressOf OnReroll
         AddHandler ButtonNewLvl.Click, AddressOf OnNewLvl
         AddHandler ButtonAddToLvl.Click, AddressOf OnAddToLvl
@@ -579,6 +588,10 @@ Public Class OutfitPicker_Form
         ButtonNewArmor.Visible = Not nested
         ButtonAddItem.Visible = Not nested
         ButtonReroll.Visible = Not nested
+        ' Piece reorder is a top-level (outfit) action — hidden while drilled into a leveled list, where the
+        ' rows are LVLO entries (their order isn't the equip sequence). Enable state set by UpdateMovePieceEnabled.
+        ButtonMovePieceUp.Visible = Not nested
+        ButtonMovePieceDown.Visible = Not nested
         ButtonRemovePiece.Text = If(nested, "Remove entry", "Remove piece")
         ButtonAddToLvl.Text = If(nested, "Add item ▼", "Add to lvl ▼")
         ' ButtonEditArmor stays visible + labelled "Edit armor…" at BOTH levels: it edits the focused concrete
@@ -902,6 +915,50 @@ Public Class OutfitPicker_Form
         RefreshPieces()
     End Sub
 
+    Private Sub OnMovePieceUp(sender As Object, e As EventArgs)
+        MoveSelectedPiece(-1)
+    End Sub
+
+    Private Sub OnMovePieceDown(sender As Object, e As EventArgs)
+        MoveSelectedPiece(1)
+    End Sub
+
+    ''' <summary>Reorder the selected top-level piece one slot up/down in equip sequence by SWAPPING its Order
+    ''' with the adjacent piece (Order is the INAM/equip sequence — later = equipped last = wins slot conflicts,
+    ''' so ▼ promotes a piece over an overlapping one). No-op when nested (LVLO rows aren't equip-ordered),
+    ''' nothing selected, or already at the edge. RefreshPieces re-sorts by Order, repaints ✓/✗, preserves the
+    ''' selection by FormID, and re-previews.</summary>
+    Private Sub MoveSelectedPiece(delta As Integer)
+        If Not IsAtTopLevel() Then Return
+        Dim sel = SelectedPieceEntry()
+        If sel Is Nothing Then Return
+        Dim ordered = _pieces.OrderBy(Function(p) p.Order).ToList()
+        Dim i = ordered.IndexOf(sel)
+        Dim j = i + delta
+        If i < 0 OrElse j < 0 OrElse j >= ordered.Count Then Return
+        Dim neighbor = ordered(j)
+        Dim tmp = sel.Order
+        sel.Order = neighbor.Order
+        neighbor.Order = tmp
+        RefreshPieces()
+    End Sub
+
+    ''' <summary>Enable ▲/▼ only when a top-level piece is selected and has a neighbor in that direction
+    ''' (disabled at the edges / when nested / with no selection). Mirror of UpdateEditArmorEnabled; called
+    ''' from the piece selection + focus handlers and after every RefreshPieces.</summary>
+    Private Sub UpdateMovePieceEnabled()
+        Dim sel = If(IsAtTopLevel(), SelectedPieceEntry(), Nothing)
+        If sel Is Nothing Then
+            ButtonMovePieceUp.Enabled = False
+            ButtonMovePieceDown.Enabled = False
+            Return
+        End If
+        Dim ordered = _pieces.OrderBy(Function(p) p.Order).ToList()
+        Dim i = ordered.IndexOf(sel)
+        ButtonMovePieceUp.Enabled = (i > 0)
+        ButtonMovePieceDown.Enabled = (i >= 0 AndAlso i < ordered.Count - 1)
+    End Sub
+
     ''' <summary>Reroll: re-sample every LVLI piece's realization (new terminals + slot), then refresh the
     ''' list + preview. Only meaningful when a leveled piece is present (the button is enabled accordingly).</summary>
     Private Sub OnReroll(sender As Object, e As EventArgs)
@@ -1060,6 +1117,7 @@ Public Class OutfitPicker_Form
         ButtonReroll.Enabled = _pieces.Any(Function(x) x.IsLeveled)
         UpdateAddToLvlEnabled()   ' reflects the (preserved) selection
         UpdateEditArmorEnabled()  ' reflects the (preserved) selection
+        UpdateMovePieceEnabled()  ' ▲/▼ enable per selection + edges
 
         Dim losers = res.Losers.Count
         LabelCreateStatus.Text = $"{res.Winners.Count} piece(s) in outfit" & If(losers > 0, $"  ·  {losers} eliminated by slot conflict", "")
@@ -1150,6 +1208,7 @@ Public Class OutfitPicker_Form
     Private Async Sub OnCreatePieceSelectionChanged(sender As Object, e As EventArgs)
         UpdateAddToLvlEnabled()   ' applies regardless of preview mode
         UpdateEditArmorEnabled()  ' piece focus changed → refresh Edit-armor enable
+        UpdateMovePieceEnabled()  ' ▲/▼ enable follows the piece selection
         If TabsMain.SelectedTab IsNot TabPageCreate OrElse Not RadioButtonRenderPiece.Checked Then Return
         Await RefreshCreatePreview()
     End Sub
@@ -1340,9 +1399,17 @@ Public Class OutfitPicker_Form
     ''' New → prefix+name EDID (uniqueness-checked) + provisional FormID. Override → keep the existing
     ''' OTFT's FormID + EditorID. Vetoes the close (DialogResult.None) on validation failure.</summary>
     Private Sub CommitCreate()
-        Dim res = SlotConflictResolver.ResolveSlotWinners(_pieces, Function(p) p.SlotMask, Function(p) p.Order)
-        Dim winnerFIDs = res.Winners.Select(Function(p) p.FormID).ToList()
-        If winnerFIDs.Count = 0 Then
+        ' Persist ALL assembled pieces, NOT just the slot-conflict winners. The "✗ eliminated" tag in the
+        ' pieces list is a LIVE PREVIEW of what the render won't show right now (slot overlap, last-equipped-
+        ' wins) — never a reason to drop the item from the outfit. A vanilla OTFT lists every item and the
+        ' engine resolves overlaps at EQUIP time; our render (CollectMeshCandidates → SelectWinningCandidates,
+        ' per-ARMO) re-resolves from the full INAM set and shows the same winner, so keeping the loser is
+        ' render- AND game-faithful and non-destructive: remove the winner (or edit a slot) later and the
+        ' previously-eliminated piece re-appears without having to re-add it. Safe only because the render
+        ' now eliminates the whole losing ARMO (per-ARMO grouping fix) — a per-ARMA render would leave a
+        ' cut-hand orphan ARMA. Order = authored piece Order (INAM ascending = equip sequence).
+        Dim allPieces = _pieces.OrderBy(Function(p) p.Order).ToList()
+        If allPieces.Count = 0 Then
             MessageBox.Show(Me, "Add at least one item to the outfit.", "Create Outfit",
                             MessageBoxButtons.OK, MessageBoxIcon.Information)
             DialogResult = DialogResult.None
@@ -1401,11 +1468,12 @@ Public Class OutfitPicker_Form
             draft.EditorID = fullEdid
             draft.IsOverride = False
         End If
-        ' INAM = the winning piece FormIDs as authored — ARMO or LVLI (LVLIs persist as leveled entries).
-        draft.ItemFormIDs.AddRange(winnerFIDs)
+        ' INAM = EVERY assembled piece FormID as authored — ARMO or LVLI (LVLIs persist as leveled entries).
+        ' Slot conflicts are resolved at render/equip time, never dropped at save (see the header comment).
+        draft.ItemFormIDs.AddRange(allPieces.Select(Function(p) p.FormID))
         ' Carry each LVLI piece's current realization to the draft so the committed render matches the
         ' picker's preview (until rerolled later). The draft still saves the LVLI ref in INAM.
-        For Each p In res.Winners
+        For Each p In allPieces
             If p.IsLeveled AndAlso p.Realization IsNot Nothing Then
                 draft.LvliRealization(p.FormID) = New List(Of UInteger)(p.Realization)
             End If
@@ -1537,6 +1605,7 @@ Public Class OutfitPicker_Form
             If MessageBox.Show(Me, $"Remove saved outfit '{_mainForm.GetOutfitDisplayName(fid)}' from your plugin on the next Save?" & refWarn,
                                "Remove saved outfit", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) <> DialogResult.Yes Then Return
             _mainForm.MarkRecordForRemoval(fid)
+            _mainForm.RevertAppOverrideInMemory(fid)   ' in-memory: restore the mod's winning OTFT (override) / drop it (new)
             If _overrideTargetFormID = fid Then
                 _overrideTargetFormID = 0UI
                 _overrideTargetEditorID = ""
@@ -1560,6 +1629,7 @@ Public Class OutfitPicker_Form
             ' it and the original wins. No-op when no saved copy exists (removal only drops target-plugin records). The
             ' revert branch (IsOverride OrElse Not IsNew) always carries a real FormID, never a 0xFF draft sentinel.
             _mainForm.MarkRecordForRemoval(d.FormID)
+            _mainForm.RevertAppOverrideInMemory(d.FormID)   ' in-memory: restore the mod's winning OTFT so it shows immediately
         Else
             Dim referrers = _mainForm.GetDraftReferrers(d.FormID)
             If referrers.Count > 0 Then

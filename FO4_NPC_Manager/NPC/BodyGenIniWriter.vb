@@ -52,6 +52,16 @@ Public Module BodyGenIniWriter
     '''
     ''' <para>Atomic writes via .tmp + rename; partial files are not left behind on
     ''' exceptions.</para></summary>
+    ''' <summary>True when a BodyGen .ini pair already exists on disk for <paramref name="targetPluginBaseName"/>
+    ''' (templates.ini or morphs.ini under <c>Data\F4SE\Plugins\F4EE\BodyGen\&lt;base&gt;\</c>). Lets the
+    ''' mark-to-delete flow re-emit (to DROP a removed NPC) only when there is an .ini to update — never
+    ''' creating one the user didn't ask for.</summary>
+    Public Function IniExists(dataPath As String, targetPluginBaseName As String) As Boolean
+        If String.IsNullOrEmpty(dataPath) OrElse String.IsNullOrEmpty(targetPluginBaseName) Then Return False
+        Dim bodyGenDir = Path.Combine(dataPath, "F4SE", "Plugins", "F4EE", "BodyGen", targetPluginBaseName)
+        Return File.Exists(Path.Combine(bodyGenDir, "templates.ini")) OrElse File.Exists(Path.Combine(bodyGenDir, "morphs.ini"))
+    End Function
+
     Public Sub Emit(dataPath As String, targetPluginBaseName As String, entries As List(Of NpcEntry))
         If String.IsNullOrEmpty(dataPath) OrElse String.IsNullOrEmpty(targetPluginBaseName) Then Return
 

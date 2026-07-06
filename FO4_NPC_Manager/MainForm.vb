@@ -1141,6 +1141,7 @@ Public Class MainForm
     Private _savedEnabledEditFace As Boolean
     Private _savedEnabledEditBody As Boolean
     Private _savedEnabledEditOutfit As Boolean
+    Private _savedEnabledEditNpc As Boolean
     Private _savedEnabledLoadLooksmenu As Boolean
     Private _savedEnabledSaveLooksmenu As Boolean
     Private _savedEnabledCopyLook As Boolean
@@ -1161,6 +1162,7 @@ Public Class MainForm
             _savedEnabledEditFace = ButtonEditFace.Enabled
             _savedEnabledEditBody = ButtonEditBody.Enabled
             _savedEnabledEditOutfit = ButtonEditOutfit.Enabled
+            _savedEnabledEditNpc = ButtonEditNpc.Enabled
             _savedEnabledLoadLooksmenu = ButtonLoadLooksmenu.Enabled
             _savedEnabledSaveLooksmenu = ButtonSaveLooksmenu.Enabled
             _savedEnabledCopyLook = ButtonCopyLook.Enabled
@@ -1172,6 +1174,7 @@ Public Class MainForm
             ButtonEditFace.Enabled = False
             ButtonEditBody.Enabled = False
             ButtonEditOutfit.Enabled = False
+            ButtonEditNpc.Enabled = False
             ButtonLoadLooksmenu.Enabled = False
             ButtonSaveLooksmenu.Enabled = False
             ButtonCopyLook.Enabled = False
@@ -1183,6 +1186,7 @@ Public Class MainForm
             ButtonEditFace.Enabled = _savedEnabledEditFace
             ButtonEditBody.Enabled = _savedEnabledEditBody
             ButtonEditOutfit.Enabled = _savedEnabledEditOutfit
+            ButtonEditNpc.Enabled = _savedEnabledEditNpc
             ButtonLoadLooksmenu.Enabled = _savedEnabledLoadLooksmenu
             ButtonSaveLooksmenu.Enabled = _savedEnabledSaveLooksmenu
             ButtonCopyLook.Enabled = _savedEnabledCopyLook
@@ -2406,6 +2410,18 @@ Public Class MainForm
     ''' <summary>Mark a SAVED authored record for removal on the next Save.</summary>
     Friend Sub MarkRecordForRemoval(formID As UInteger)
         If formID <> 0UI Then _recordsToRemove.Add(formID)
+    End Sub
+
+    ''' <summary>Revert an app override IN MEMORY so the editor/render/pickers immediately resolve the FormID to the
+    ''' mod's WINNING record again (the last non-app override) instead of the just-reverted app override — or drop it
+    ''' when the app created it new. Pairs with <see cref="MarkRecordForRemoval"/> (which drops it from the FILE on the
+    ''' next Save): together, revert is consistent in memory AND on disk without a full reload. Clears the render
+    ''' context's parse caches so the next parse/render reflects the restored record. No-op when nothing changed.</summary>
+    Friend Sub RevertAppOverrideInMemory(formID As UInteger)
+        If formID = 0UI Then Return
+        ' TARGETED invalidation (only the reverted record) — NOT InvalidateParseCaches(): a full Clear() mid-session
+        ' races in-flight background renders and blanks the whole scene intermittently.
+        If _pluginManager.RevertAppOverride(formID) Then _ctx.InvalidateRecord(formID)
     End Sub
 
     ''' <summary>Snapshot of the FormIDs marked for removal — passed to the save via SaveContext.RecordsToRemove.</summary>
@@ -4032,6 +4048,14 @@ Public Class MainForm
             nodeFont = _dirtyNodeFont
         End If
 
+        ' Marked-to-delete NPCs render struck-through + firebrick (overrides the dirty-bold style, since a
+        ' record about to be dropped from the plugin shouldn't also read as a pending edit).
+        If npc IsNot Nothing AndAlso _recordsToRemove.Contains(npc.FormID) Then
+            If _deleteNodeFont Is Nothing Then _deleteNodeFont = New Font(TreeViewNPCs.Font, FontStyle.Strikeout)
+            nodeFont = _deleteNodeFont
+            textColor = Color.Firebrick
+        End If
+
         ' Selection highlight. With manual multi-select the framework only marks SelectedNode, so we
         ' paint every node whose NPC FormID is in _selectedNpcFormIDs. The member actually being
         ' rendered (_currentRandomPickFormID) gets the full system highlight; the rest of a
@@ -4108,7 +4132,34 @@ Public Class MainForm
         ' Reset is only meaningful when at least one target has something to discard.
         MenuItemResetOverlay.Enabled = _contextMenuTargets.Any(
             Function(fid) _appliedPresets.ContainsKey(fid) OrElse _dirtyNpcs.Contains(fid))
+
+        ' Mark-to-delete toggle: label flips to "Unmark delete" only when EVERY target is already marked,
+        ' so a mixed selection re-marks the un-marked ones (idempotent) rather than un-marking all.
+        Dim allMarked = _contextMenuTargets.Count > 0 AndAlso _contextMenuTargets.All(AddressOf _recordsToRemove.Contains)
+        MenuItemMarkToDelete.Text = If(allMarked, "Unmark delete", "Mark to delete (on Save)")
+
         TreeViewNpcsContextMenu.Show(TreeViewNPCs, e.Location)
+    End Sub
+
+    ''' <summary>Right-click "Mark to delete (on Save)" — toggle every context target in
+    ''' <see cref="_recordsToRemove"/>. On the next Save the writer's Phase 2a drops these records from the
+    ''' plugin (a saved NEW record vanishes, an OVERRIDE reverts to the base) — and if the FormID is NOT in
+    ''' the target ESP it is simply never written, so this is a safe no-op for base records with no override.
+    ''' Marked nodes render struck-through (see <see cref="TreeViewNPCs_DrawNode"/>). The label flipped to
+    ''' "Unmark delete" when all targets were already marked, so this un-marks in that case.</summary>
+    Private Sub MenuItemMarkToDelete_Click(sender As Object, e As EventArgs) Handles MenuItemMarkToDelete.Click
+        If _contextMenuTargets.Count = 0 Then Return
+        Dim allMarked = _contextMenuTargets.All(AddressOf _recordsToRemove.Contains)
+        For Each fid In _contextMenuTargets
+            If allMarked Then
+                _recordsToRemove.Remove(fid)
+            Else
+                _recordsToRemove.Add(fid)
+            End If
+        Next
+        TreeViewNPCs.Invalidate()
+        ' A pending deletion is savable work → enable Save even when no NPC is selected.
+        If _recordsToRemove.Count > 0 Then ButtonSavePlugin.Enabled = True
     End Sub
 
     ''' <summary>Apply a LEFT-click to the multi-selection per the held modifier. Only NPC leaf nodes
@@ -4434,11 +4485,14 @@ Public Class MainForm
         ButtonEditFace.Enabled = False
         ButtonEditBody.Enabled = False
         ButtonEditOutfit.Enabled = False
+        ButtonEditNpc.Enabled = False
         ButtonLoadLooksmenu.Enabled = False
         ButtonSaveLooksmenu.Enabled = False
         ButtonCopyLook.Enabled = False
         ButtonPasteLook.Enabled = False
-        ButtonSavePlugin.Enabled = False
+        ' Save stays available when there is pending work to write even with no NPC selected — dirty NPCs
+        ' OR records marked for deletion (a mark-to-delete alone must still let the user Save to drop them).
+        ButtonSavePlugin.Enabled = (_dirtyNpcs.Count > 0 OrElse _recordsToRemove.Count > 0)
         ButtonBuildCharGen.Enabled = False
         ButtonSaveSceneNif.Enabled = False
     End Sub
@@ -4952,6 +5006,8 @@ Public Class MainForm
         ' Gate the Edit Outfit button: enabled when an NPC with a race is loaded and the load order
         ' has any outfit. The per-race candidate filter is deferred to picker-open (GetOutfitCandidates).
         UpdateEditOutfitEnabled()
+        ' Gate the NPC (Traits) editor: enabled whenever a real NPC with a FormID is loaded.
+        UpdateEditNpcEnabled()
 
         ' Face tint compositing + RevealAllShapes are sequenced by the PostTextureUploadAction
         ' wired before RenderShapes (above). The library invokes them on the GL thread once the
@@ -7307,6 +7363,11 @@ Public Class MainForm
             _dirtyNodeFont = Nothing
         End If
 
+        If _deleteNodeFont IsNot Nothing Then
+            _deleteNodeFont.Dispose()
+            _deleteNodeFont = Nothing
+        End If
+
         Try
             _selectionDebounceTimer.Stop()
             _selectionDebounceTimer.Dispose()
@@ -7332,6 +7393,13 @@ Public Class MainForm
     ''' values when present.</summary>
     Private ReadOnly _appliedPresets As New Dictionary(Of UInteger, LooksmenuLoader.LooksmenuPreset)
 
+    ''' <summary>NPC-record scalar/list overrides authored in the NPC Editor (Name/ACBS/identity FormIDs/
+    ''' keywords/factions/inventory/OBTS), keyed by NPC global FormID. Mirror of <see cref="_appliedPresets"/>
+    ''' for the record fields the LooksMenu overlay does NOT carry. Consulted at Save time via the
+    ''' <see cref="NpcOverrideSaver.SaveContext.ApplyNpcRecordOverride"/> delegate (applied AFTER the round-trip
+    ''' copy so the edit wins). Cleared per-NPC after a successful Save (the values are now in the saved plugin).</summary>
+    Private ReadOnly _npcRecordOverrides As New Dictionary(Of UInteger, NpcRecordOverride)
+
     ''' <summary>NPCs the user has changed this session — drives the bold rendering in
     ''' <see cref="TreeViewNPCs_DrawNode"/>. Set on each editor commit (Load LM / Edit Face /
     ''' Edit Body / Edit Outfit / Paste) and on the context-menu "Mark as changed"; cleared on a
@@ -7345,6 +7413,9 @@ Public Class MainForm
     ''' <summary>Bold font for dirty NPC nodes, lazily derived from the tree's font on first dirty
     ''' paint and reused (one allocation, not per-paint). Disposed in <see cref="MainForm_FormClosing"/>.</summary>
     Private _dirtyNodeFont As Font
+    ''' <summary>Strikeout font for NPC nodes marked-to-delete (in <see cref="_recordsToRemove"/>), lazily
+    ''' derived once from the tree's font. Disposed in <see cref="MainForm_FormClosing"/>.</summary>
+    Private _deleteNodeFont As Font
 
     ''' <summary>FormID of the NPC node the tree context menu was opened on. Set in
     ''' <see cref="TreeViewNPCs_NodeMouseClick"/>, consumed by the Mark/Reset menu handlers.</summary>
@@ -7768,10 +7839,10 @@ Public Class MainForm
         shadow.HasMwgt = raw.HasMwgt
         shadow.HasFull = raw.HasFull
         shadow.HasTemplate = raw.HasTemplate
-        ' HasDefaultOutfit is owned by ApplyPresetOverlayToNpcData (it derives the DOFT-emission gate
-        ' from the outfit override). Copying it from raw here would clobber an override that added an
-        ' outfit to an NPC whose raw record had none. SleepOutfit is not overridden → still copied.
-        shadow.HasSleepOutfit = raw.HasSleepOutfit
+        ' HasDefaultOutfit / HasSleepOutfit are owned by ApplyPresetOverlayToNpcData (it derives the DOFT/SOFT
+        ' emission gate from the outfit overrides). Copying them from raw here would clobber an override that
+        ' added an outfit to an NPC whose raw record had none. The overlay returns raw unchanged when no preset
+        ' is applied, so the flags still round-trip verbatim on the non-overlay path.
         shadow.HasHairColor = raw.HasHairColor
         shadow.HasFacialHairColor = raw.HasFacialHairColor
         shadow.HasHeadTexture = raw.HasHeadTexture
@@ -7798,6 +7869,227 @@ Public Class MainForm
         ' DIFFERENT tints, count match but content differs → writer emits raw tints instead
         ' of the overlay's. Trust only the renderer-side list.
     End Sub
+
+    ' =====================================================================
+    ' NPC-record scalar/list override (NPC Editor) — storage + save apply
+    ' =====================================================================
+
+    ''' <summary>Return the NPC's authored record override, or Nothing when none exists. Used by the NPC Editor
+    ''' to MERGE a new edit into the accumulated override (so successive edits latch, e.g. TraitsChanged).</summary>
+    Friend Function TryGetNpcRecordOverride(npcFormID As UInteger) As NpcRecordOverride
+        Dim ov As NpcRecordOverride = Nothing
+        _npcRecordOverrides.TryGetValue(npcFormID, ov)
+        Return ov
+    End Function
+
+    ''' <summary>True when a LooksMenu overlay (face/body/skin) is applied for this NPC. Lets the NPC Editor's
+    ''' in-memory Traits materialization use the SAME skip-overlay-owned rule as the save apply, so the preview
+    ''' matches the written record exactly (overlay-owned fields come from the overlay, not the template).</summary>
+    Friend Function NpcHasOverlay(npcFormID As UInteger) As Boolean
+        Return _appliedPresets.ContainsKey(npcFormID)
+    End Function
+
+    ''' <summary>Store (or replace) the NPC's authored record override. An empty override is dropped so it never
+    ''' reaches the save apply. Called by the NPC Editor on OK.</summary>
+    Friend Sub SetNpcRecordOverride(npcFormID As UInteger, ov As NpcRecordOverride)
+        If ov Is Nothing OrElse ov.IsEmpty Then
+            _npcRecordOverrides.Remove(npcFormID)
+        Else
+            _npcRecordOverrides(npcFormID) = ov
+        End If
+    End Sub
+
+    ''' <summary>Seed the NPC Editor's Inventory-tab outfit fields with the EFFECTIVE Default/Sleep outfit
+    ''' FormIDs — the LooksMenu overlay override when one is set (e.g. a prior Edit Outfit pick), else the raw
+    ''' record value the caller passes in. Outfit edits live in the same overlay as the Edit Outfit picker, so
+    ''' the editor must show the overlaid value, not the stale raw DOFT/SOFT. Out params default to the raws.</summary>
+    Friend Sub GetEffectiveNpcOutfitsForEditor(npcFormID As UInteger, rawDefault As UInteger, rawSleep As UInteger,
+                                               ByRef effectiveDefault As UInteger, ByRef effectiveSleep As UInteger)
+        effectiveDefault = rawDefault
+        effectiveSleep = rawSleep
+        Dim p As LooksmenuLoader.LooksmenuPreset = Nothing
+        If _appliedPresets.TryGetValue(npcFormID, p) AndAlso p IsNot Nothing Then
+            If p.DefaultOutfitFormIDOverride.HasValue Then effectiveDefault = p.DefaultOutfitFormIDOverride.Value
+            If p.SleepOutfitFormIDOverride.HasValue Then effectiveSleep = p.SleepOutfitFormIDOverride.Value
+        End If
+    End Sub
+
+    ''' <summary>Commit a Default (DOFT) outfit override from the NPC Editor onto the LooksMenu overlay — the SAME
+    ''' path the Edit Outfit picker uses, so the preview, outfit combo and Save all resolve it once.
+    ''' <paramref name="value"/>: Nothing = clear the override (preserve raw NPC.DOFT); 0 = no outfit; other =
+    ''' OTFT FormID. Creates the overlay preset on demand when setting a value; clearing with no preset is a
+    ''' no-op. Only call when the field actually changed, so an untouched outfit never clobbers a prior pick.</summary>
+    Friend Sub SetNpcDefaultOutfitOverrideFromEditor(npcFormID As UInteger, value As UInteger?)
+        Dim p = EnsureOverlayPresetForOutfit(npcFormID, value)
+        If p IsNot Nothing Then p.DefaultOutfitFormIDOverride = value
+    End Sub
+
+    ''' <summary>Commit a Sleep (SOFT) outfit override from the NPC Editor onto the LooksMenu overlay. Same shape
+    ''' and semantics as <see cref="SetNpcDefaultOutfitOverrideFromEditor"/> but for NPC.SOFT.</summary>
+    Friend Sub SetNpcSleepOutfitOverrideFromEditor(npcFormID As UInteger, value As UInteger?)
+        Dim p = EnsureOverlayPresetForOutfit(npcFormID, value)
+        If p IsNot Nothing Then p.SleepOutfitFormIDOverride = value
+    End Sub
+
+    ''' <summary>Return the overlay preset for this NPC, creating one when we're about to STORE an override value
+    ''' (HasValue). When clearing (value = Nothing) and no preset exists, return Nothing — there's nothing to
+    ''' clear, and we must not conjure an empty overlay that would spuriously flag the NPC as changed.</summary>
+    Private Function EnsureOverlayPresetForOutfit(npcFormID As UInteger, value As UInteger?) As LooksmenuLoader.LooksmenuPreset
+        Dim p As LooksmenuLoader.LooksmenuPreset = Nothing
+        If _appliedPresets.TryGetValue(npcFormID, p) AndAlso p IsNot Nothing Then Return p
+        If Not value.HasValue Then Return Nothing
+        p = New LooksmenuLoader.LooksmenuPreset()
+        _appliedPresets(npcFormID) = p
+        Return p
+    End Function
+
+    ''' <summary>Apply the authored NPC-record override onto the post-round-trip save shadow (the
+    ''' <see cref="NpcOverrideSaver.SaveContext.ApplyNpcRecordOverride"/> delegate). For each edited
+    ''' template-inheriting category the Use-X flag is cleared FIRST (so the engine's CopyFromTemplate does not
+    ''' overwrite the edit), then the override values are written. Only fields the user changed are applied; the
+    ''' rest round-trip verbatim from the source record. No-op when the NPC has no authored override.</summary>
+    ''' <remarks>Traits caveat: for a Traits-INHERITING NPC that ALSO carries a LooksMenu overlay (face/skin),
+    ''' we only CLEAR the Use-Traits flag (not full <see cref="NpcTemplateMaterializer.MakeCategoryOwn"/>
+    ''' materialization) so the overlay's already-applied face/skin/morphs are preserved; the edited
+    ''' Race/Voice/OBTS are written below. For a Traits-inheriting NPC with NO overlay we run the full
+    ''' materializer (materialize template traits → clear flag) so the record is self-consistent.</remarks>
+    Private Sub ApplyNpcRecordOverrideToSpec(npcSpec As NPC_Data, npcFormID As UInteger)
+        Dim ov As NpcRecordOverride = Nothing
+        If Not _npcRecordOverrides.TryGetValue(npcFormID, ov) OrElse ov Is Nothing Then Return
+        Dim resolver As Func(Of UInteger, NPC_Data) = AddressOf _ctx.GetParsedNpc
+
+        ' Isolate the ACBS struct from the shared raw parse before any flag/struct mutation.
+        If npcSpec.Acbs IsNot Nothing Then npcSpec.Acbs = CloneAcbsStruct(npcSpec.Acbs)
+
+        ' --- Template-flag hook (materialize → clear Use-X) for each edited category the NPC still inherits. ---
+        ' Non-Traits categories: MakeCategoryOwn is clear-only (safe — no overlay collision).
+        If ov.Keywords IsNot Nothing Then NpcTemplateMaterializer.MakeCategoryOwn(npcSpec, NPC_TemplateCategory.Keywords, resolver)
+        If ov.Factions IsNot Nothing Then NpcTemplateMaterializer.MakeCategoryOwn(npcSpec, NPC_TemplateCategory.Factions, resolver)
+        If ov.Inventory IsNot Nothing Then NpcTemplateMaterializer.MakeCategoryOwn(npcSpec, NPC_TemplateCategory.Inventory, resolver)
+        ' Actor Effects (SPLO) belong to the SpellList category; Perks (PRKR) and Properties (PRPS) have no
+        ' template category (engine copies them under other buckets), so they are just replaced below.
+        If ov.ActorEffects IsNot Nothing Then NpcTemplateMaterializer.MakeCategoryOwn(npcSpec, NPC_TemplateCategory.SpellList, resolver)
+        ' Traits (Race/Voice/OBTS): materialize the template Traits set + clear Use-Traits. When a LooksMenu
+        ' overlay is applied for this NPC, skip the overlay-OWNED appearance fields (skin/hair/headparts/morphs/
+        ' tints/weight) so the overlay's already-applied values win — the template still fills the non-overlaid,
+        ' non-edited Traits fields (Race/DeathItem/FarAwayModel/Height/OBTS), so nothing falls back to the record's
+        ' empty own-value. The user's Race/Voice/OBTS edits are written below, on top of the materialized set.
+        If ov.TraitsChanged AndAlso NpcTemplateHelpers.HasTemplateFlag(npcSpec.TemplateFlags, NPC_TemplateCategory.Traits) Then
+            Dim hasOverlay = _appliedPresets.ContainsKey(npcFormID)
+            NpcTemplateMaterializer.MakeCategoryOwn(npcSpec, NPC_TemplateCategory.Traits, resolver, skipOverlayOwned:=hasOverlay)
+        End If
+
+        ' --- Scalars. ---
+        If ov.FullName IsNot Nothing Then
+            npcSpec.FullName = ov.FullName
+            npcSpec.HasFull = npcSpec.HasFull OrElse ov.FullName.Length > 0
+        End If
+        If ov.ShortName IsNot Nothing Then
+            npcSpec.ShortName = ov.ShortName
+            npcSpec.HasShortName = npcSpec.HasShortName OrElse ov.ShortName.Length > 0
+        End If
+        If ov.RaceFormID.HasValue Then
+            npcSpec.RaceFormID = ov.RaceFormID.Value
+            npcSpec.HasRace = ov.RaceFormID.Value <> 0UI
+        End If
+        If ov.VoiceFormID.HasValue Then
+            npcSpec.VoiceFormID = ov.VoiceFormID.Value
+            npcSpec.HasVoice = ov.VoiceFormID.Value <> 0UI
+        End If
+        If ov.ClassFormID.HasValue Then
+            npcSpec.ClassFormID = ov.ClassFormID.Value
+            npcSpec.HasClass = ov.ClassFormID.Value <> 0UI
+        End If
+        If ov.CombatStyleFormID.HasValue Then
+            npcSpec.CombatStyleFormID = ov.CombatStyleFormID.Value
+            npcSpec.HasCombatStyle = ov.CombatStyleFormID.Value <> 0UI
+        End If
+
+        ' --- ACBS struct (flags/xp/level/calc/disposition) on the isolated clone. ---
+        If npcSpec.Acbs Is Nothing AndAlso (ov.AcbsFlags.HasValue OrElse ov.XpValueOffset.HasValue OrElse ov.Level.HasValue OrElse
+                                            ov.CalcMinLevel.HasValue OrElse ov.CalcMaxLevel.HasValue OrElse
+                                            ov.DispositionBase.HasValue OrElse ov.TemplateFlags.HasValue) Then
+            npcSpec.Acbs = New NPC_AcbsData()
+        End If
+        If npcSpec.Acbs IsNot Nothing Then
+            If ov.AcbsFlags.HasValue Then
+                npcSpec.Acbs.Flags = ov.AcbsFlags.Value
+                npcSpec.AcbsFlags = ov.AcbsFlags.Value
+                npcSpec.IsFemale = (ov.AcbsFlags.Value And &H1UI) <> 0UI
+            End If
+            If ov.XpValueOffset.HasValue Then npcSpec.Acbs.XpValueOffset = ov.XpValueOffset.Value
+            If ov.Level.HasValue Then npcSpec.Acbs.LevelOrLevelMult = ov.Level.Value
+            If ov.CalcMinLevel.HasValue Then npcSpec.Acbs.CalcMinLevel = ov.CalcMinLevel.Value
+            If ov.CalcMaxLevel.HasValue Then npcSpec.Acbs.CalcMaxLevel = ov.CalcMaxLevel.Value
+            If ov.DispositionBase.HasValue Then npcSpec.Acbs.DispositionBase = ov.DispositionBase.Value
+            If ov.TemplateFlags.HasValue Then
+                npcSpec.Acbs.TemplateFlags = ov.TemplateFlags.Value
+                npcSpec.TemplateFlags = ov.TemplateFlags.Value
+            End If
+        End If
+
+        ' --- Lists (deep-copy out so the saved entry never aliases the stored override). ---
+        If ov.Keywords IsNot Nothing Then
+            npcSpec.KeywordFormIDs = New List(Of UInteger)(ov.Keywords)
+            npcSpec.HasKsizCounter = npcSpec.HasKsizCounter OrElse ov.Keywords.Count > 0
+        End If
+        If ov.AttachParentSlots IsNot Nothing Then
+            npcSpec.AttachParentSlotFormIDs = New List(Of UInteger)(ov.AttachParentSlots)
+        End If
+        If ov.Factions IsNot Nothing Then
+            npcSpec.Factions = ov.Factions.Select(Function(f) New NPC_FactionEntry With {.FactionFormID = f.FactionFormID, .Rank = f.Rank}).ToList()
+        End If
+        If ov.Inventory IsNot Nothing Then
+            npcSpec.Inventory = ov.Inventory.Select(Function(it) New NPC_InventoryItem With {
+                .ItemFormID = it.ItemFormID, .Count = it.Count, .HasCoed = it.HasCoed,
+                .CoedOwnerFormID = it.CoedOwnerFormID, .CoedOwnerExtra = it.CoedOwnerExtra,
+                .CoedExtraIsFormID = it.CoedExtraIsFormID, .CoedItemCondition = it.CoedItemCondition}).ToList()
+            npcSpec.HasCoctCounter = npcSpec.HasCoctCounter OrElse ov.Inventory.Count > 0
+        End If
+        If ov.Perks IsNot Nothing Then
+            npcSpec.Perks = ov.Perks.Select(Function(p) New NPC_PerkEntry With {.PerkFormID = p.PerkFormID, .Rank = p.Rank}).ToList()
+            npcSpec.HasPrkzCounter = npcSpec.HasPrkzCounter OrElse ov.Perks.Count > 0
+        End If
+        If ov.ActorEffects IsNot Nothing Then
+            npcSpec.ActorEffectFormIDs = New List(Of UInteger)(ov.ActorEffects)
+            npcSpec.HasSpctCounter = npcSpec.HasSpctCounter OrElse ov.ActorEffects.Count > 0
+        End If
+        If ov.Properties IsNot Nothing Then
+            npcSpec.Properties = ov.Properties.Select(Function(p) New NPC_PropertyEntry With {.ActorValueFormID = p.ActorValueFormID, .Value = p.Value}).ToList()
+        End If
+        If ov.ObjectTemplateCombinations IsNot Nothing Then
+            npcSpec.ObjectTemplateCombinations = CloneNpcObjectTemplateCombinations(ov.ObjectTemplateCombinations)
+            npcSpec.HasObjectTemplate = npcSpec.HasObjectTemplate OrElse ov.ObjectTemplateCombinations.Count > 0
+        End If
+    End Sub
+
+    ''' <summary>Deep-copy an NPC_AcbsData so a save-time flag/struct edit never mutates the shared raw parse.</summary>
+    Private Shared Function CloneAcbsStruct(a As NPC_AcbsData) As NPC_AcbsData
+        Return New NPC_AcbsData With {
+            .Flags = a.Flags, .XpValueOffset = a.XpValueOffset, .LevelOrLevelMult = a.LevelOrLevelMult,
+            .CalcMinLevel = a.CalcMinLevel, .CalcMaxLevel = a.CalcMaxLevel, .DispositionBase = a.DispositionBase,
+            .TemplateFlags = a.TemplateFlags, .BleedoutOverride = a.BleedoutOverride,
+            .Unknown18 = If(a.Unknown18 Is Nothing, Nothing, CType(a.Unknown18.Clone(), Byte())),
+            .TrailingBytes = If(a.TrailingBytes Is Nothing, Nothing, CType(a.TrailingBytes.Clone(), Byte()))}
+    End Function
+
+    ''' <summary>Deep-copy an NPC OBTS wrapper list (inner ARMO_Combination via ArmoDraft.CloneCombinations, raw
+    ''' bytes cloned) so the saved entry never aliases the stored override's instances.</summary>
+    Private Shared Function CloneNpcObjectTemplateCombinations(src As List(Of NPC_ObjectTemplateCombination)) As List(Of NPC_ObjectTemplateCombination)
+        Dim dst As New List(Of NPC_ObjectTemplateCombination)
+        If src Is Nothing Then Return dst
+        For Each w In src
+            If w Is Nothing Then Continue For
+            Dim innerCopy As ARMO_Combination = Nothing
+            If w.Combination IsNot Nothing Then
+                innerCopy = ArmoDraft.CloneCombinations(New List(Of ARMO_Combination) From {w.Combination})(0)
+            End If
+            dst.Add(New NPC_ObjectTemplateCombination With {
+                .IsEditorOnly = w.IsEditorOnly, .DisplayName = w.DisplayName, .Combination = innerCopy,
+                .RawObtsBytes = If(w.RawObtsBytes Is Nothing, Nothing, CType(w.RawObtsBytes.Clone(), Byte()))})
+        Next
+        Return dst
+    End Function
 
     ''' <summary>Rebuild the parallel collections (TintLayerStructs, FaceMorphTrailingBytes,
     ''' MorphKeysOrdered) from the renderer-side lists. Runs ALWAYS, not just on count
@@ -8184,6 +8476,45 @@ Public Class MainForm
         End If
     End Sub
 
+    ''' <summary>Gate the NPC (Traits) editor button: enabled whenever a real NPC with a FormID is the currently
+    ''' rendered subject (LVLN sub-actors and empty selections leave it off). Unlike the outfit/face/body gates
+    ''' there is no per-race content requirement — every NPC record has editable Name/flags/factions/etc.</summary>
+    Private Sub UpdateEditNpcEnabled()
+        Dim st = _renderHost.LastRenderedState
+        Dim shouldEnable As Boolean = st IsNot Nothing AndAlso st.RootNpcFormID <> 0UI
+        If InvokeRequired Then
+            Invoke(Sub() ButtonEditNpc.Enabled = shouldEnable)
+        Else
+            ButtonEditNpc.Enabled = shouldEnable
+        End If
+    End Sub
+
+    ''' <summary>Open the multi-tab NPC (Traits) editor over the currently rendered NPC. The editor mutates the
+    ''' LIVE in-memory NPC_Data (the render cache instance) only on OK, then we re-render + mark it dirty so the
+    ''' preview reflects the edit. See <see cref="NpcEditor_Form"/> for the persistence caveat (ESP write-back is
+    ''' a scoped follow-up — the current Save path re-parses the record fresh and would drop these scalar edits).</summary>
+    Private Async Sub ButtonEditNpc_Click(sender As Object, e As EventArgs) Handles ButtonEditNpc.Click
+        If _renderHost.LastRenderedState Is Nothing Then Return
+        Dim st = _renderHost.LastRenderedState
+        Dim npcFormID = st.RootNpcFormID
+        If npcFormID = 0UI Then Return
+        Dim npc As NPC_Data = Nothing
+        If Not _ctx.NpcCache.TryGetValue(npcFormID, npc) OrElse npc Is Nothing Then Return
+
+        Using dlg As New NpcEditor_Form(Me, npc, npcFormID, st.RaceFormID, st.IsFemale, AddressOf _ctx.GetParsedNpc)
+            If dlg.ShowDialog(Me) <> DialogResult.OK OrElse Not dlg.HasChanges Then Return
+            ' OK with real changes: the live NPC_Data was mutated in place — re-render + mark dirty.
+            Try
+                Dim requestVersion = Interlocked.Increment(_previewRequestVersion)
+                Await LoadNPCOnDemandAsyncFromExisting(npc, requestVersion)
+                MarkNpcDirty(npcFormID)
+            Catch ex As Exception
+                MessageBox.Show($"Failed to render NPC edit: {ex.Message}", "NPC Editor",
+                                MessageBoxButtons.OK, MessageBoxIcon.Error)
+            End Try
+        End Using
+    End Sub
+
     ''' <summary>What the body editor can offer for this NPC, given the RACE record and the
     ''' loaded body shapes. Each section is gated independently: a race like Ghoul or
     ''' PowerArmorRace may declare no BSMS WeightScale / RangeModifier on any bone, in which
@@ -8337,28 +8668,50 @@ Public Class MainForm
             ' touched, so there is nothing to undo.
             If dlg.ShowDialog(Me) <> DialogResult.OK Then Return
 
-            ' OK: commit the chosen value to the overlay and reload the MAIN preview.
+            ' OK: reload the MAIN preview to reflect whatever changed in the picker, then mark the NPC
+            ' dirty ONLY when its effective outfit actually changed.
             Dim result As UInteger? = dlg.SelectedOutfitOverride
             Dim previousOverlay As LooksmenuLoader.LooksmenuPreset = Nothing
             Dim hadOverlay = _appliedPresets.TryGetValue(npcFormID, previousOverlay) AndAlso previousOverlay IsNot Nothing
-            Dim p As LooksmenuLoader.LooksmenuPreset
-            If hadOverlay Then
-                p = previousOverlay
-            Else
-                p = New LooksmenuLoader.LooksmenuPreset()
-                _appliedPresets(npcFormID) = p
+            Dim priorOutfitOverride As UInteger? = If(hadOverlay, previousOverlay.DefaultOutfitFormIDOverride, Nothing)
+
+            ' The NPC_ record only stores the DOFT FormID, so "did the NPC change?" = "did the effective outfit
+            ' change?". Effective outfit = override value when set, else the raw record DOFT — so Nothing↔Some(
+            ' rawOutfit) counts as no change. The picker's "Edit armor…" authors ARMA/ARMO DRAFTS without changing
+            ' which outfit is worn; those drafts persist via their own IsDirty, so an unchanged pick must NOT mark
+            ' the NPC dirty (it would write a no-op NPC_ override on Save) — but it DOES still need a re-render,
+            ' because the drafts are read live and a draft edit changes how the SAME outfit looks. So the dirty
+            ' mark is gated on outfitChanged while the re-render below is unconditional.
+            Dim effectiveBefore As UInteger = If(priorOutfitOverride.HasValue, priorOutfitOverride.Value, rawOutfit)
+            Dim effectiveAfter As UInteger = If(result.HasValue, result.Value, rawOutfit)
+            Dim outfitChanged As Boolean = (effectiveBefore <> effectiveAfter)
+
+            ' Commit the outfit override to the overlay only when it actually changed, so an unchanged pick
+            ' doesn't leave a spurious empty overlay behind (which would flag the NPC as changed via
+            ' _appliedPresets.ContainsKey). When unchanged, any pre-existing overlay is left exactly as-is and the
+            ' re-render below re-resolves its (possibly edited) draft outfit live.
+            Dim p As LooksmenuLoader.LooksmenuPreset = Nothing
+            If outfitChanged Then
+                If hadOverlay Then
+                    p = previousOverlay
+                Else
+                    p = New LooksmenuLoader.LooksmenuPreset()
+                    _appliedPresets(npcFormID) = p
+                End If
+                p.DefaultOutfitFormIDOverride = result
             End If
-            Dim priorOutfitOverride = p.DefaultOutfitFormIDOverride
-            p.DefaultOutfitFormIDOverride = result
 
             Try
                 Dim requestVersion = Interlocked.Increment(_previewRequestVersion)
                 Await LoadNPCOnDemandAsyncFromExisting(npc, requestVersion)
-                MarkNpcDirty(npcFormID)
+                If outfitChanged Then MarkNpcDirty(npcFormID)
             Catch ex As Exception
-                ' Revert just the outfit field; don't clobber other overlay edits.
-                p.DefaultOutfitFormIDOverride = priorOutfitOverride
-                If Not hadOverlay Then _appliedPresets.Remove(npcFormID)
+                ' Revert just the outfit field; don't clobber other overlay edits. Only meaningful when we
+                ' committed a change above (p is Nothing on the unchanged path).
+                If p IsNot Nothing Then
+                    p.DefaultOutfitFormIDOverride = priorOutfitOverride
+                    If Not hadOverlay Then _appliedPresets.Remove(npcFormID)
+                End If
                 MessageBox.Show($"Failed to render outfit: {ex.Message}{vbCrLf}Outfit reverted.",
                                 "Edit Outfit", MessageBoxButtons.OK, MessageBoxIcon.Error)
             End Try
@@ -8858,13 +9211,15 @@ Public Class MainForm
             p.SkinFormIDOverride = Nothing
         End If
 
-        ' --- Default outfit (NPC.DOFT) ---
+        ' --- Default + Sleep outfit (NPC.DOFT / NPC.SOFT) ---
         If options.Outfit Then
             p.DefaultOutfitFormIDOverride = source.DefaultOutfitFormIDOverride
+            p.SleepOutfitFormIDOverride = source.SleepOutfitFormIDOverride
         Else
-            ' Don't touch — overlay merge falls back to targetRaw.DefaultOutfitFormID (raw DOFT)
-            ' when DefaultOutfitFormIDOverride is Nothing.
+            ' Don't touch — overlay merge falls back to targetRaw.DefaultOutfitFormID / SleepOutfitFormID
+            ' (raw DOFT/SOFT) when the override is Nothing.
             p.DefaultOutfitFormIDOverride = Nothing
+            p.SleepOutfitFormIDOverride = Nothing
         End If
 
         ' --- LM skin template (F4SE SkinInterface, separate from NPC.WNAM record skin) ---
@@ -9096,6 +9451,7 @@ Public Class MainForm
             .ApplyPresetOverlayToNpcData = AddressOf ApplyPresetOverlayToNpcData,
             .CopyRoundTripOnlyFieldsFromRaw = AddressOf CopyRoundTripOnlyFieldsFromRaw,
             .SyncParallelCollectionsAfterOverlay = AddressOf SyncParallelCollectionsAfterOverlay,
+            .ApplyNpcRecordOverride = AddressOf ApplyNpcRecordOverrideToSpec,
             .RunChargenBake = Function(npcFid As UInteger, anchor As String, srcPlugin As String,
                                         prog As IProgress(Of NpcOverrideSaver.SaveProgress)) _
                                    As Task(Of (Success As Boolean, Skipped As Boolean, Bundle As NpcFaceGenPacker.BakedNpcBundle, FailureMessage As String))
@@ -9103,9 +9459,10 @@ Public Class MainForm
                               End Function,
             .RunChargenPackBatch = Function(anchor As String,
                                              bundles As IReadOnlyList(Of NpcFaceGenPacker.BakedNpcBundle),
+                                             excludeEntries As IReadOnlyList(Of String),
                                              prog As IProgress(Of NpcOverrideSaver.SaveProgress)) _
                                         As Task(Of (Summary As String, Success As Boolean))
-                                       Return RunChargenPackBatch(anchor, bundles, prog)
+                                       Return RunChargenPackBatch(anchor, bundles, excludeEntries, prog)
                                    End Function,
             .OutfitDrafts = New List(Of OutfitDraft)(_outfitDrafts),
             .LeveledListDrafts = New List(Of LeveledListDraft)(_leveledListDrafts),
@@ -9140,10 +9497,67 @@ Public Class MainForm
             RefreshSavedPluginInCache(target.TargetPath, execResult.SavedFormIDs, target.MarkAsMaster, target.LightMaster)
         End If
 
+        ' Mark-to-delete post-save: BEFORE the readback re-mounts anything, snapshot which marked FormIDs were
+        ' actually dropped from THIS save's target (their winning record is currently sourced from the target
+        ' plugin) plus their CharGen bake loose paths (origin/local FormID resolve cleanly here, before Part 2
+        ' reverts them). Marks pointing at a record in a DIFFERENT plugin were no-ops on disk (saver Phase 2a) and
+        ' are left to the in-memory model untouched — the user re-marks before saving that plugin.
+        Dim targetBaseName = IO.Path.GetFileName(target.TargetPath)
+        Dim droppedFromTarget As New List(Of UInteger)
+        Dim faceGenLooseToDelete As New List(Of String)
+        For Each fid In _recordsToRemove
+            Dim rec = _pluginManager.GetRecord(fid)
+            If rec IsNot Nothing AndAlso String.Equals(rec.SourcePluginName, targetBaseName, StringComparison.OrdinalIgnoreCase) Then
+                droppedFromTarget.Add(fid)
+                faceGenLooseToDelete.AddRange(ResolveNpcFaceGenLoosePaths(fid))
+            End If
+        Next
+
         ' Step 6: re-read the just-saved records as the new baseline (mount the written plugin last
         ' in load order), strip the now-persisted ESP fields from each overlay (keeping non-ESP
         ' BodyMorphs/Skin), clear the dirty marks, regroup in the tree, and re-render the loaded NPC.
         Await ApplyPostSaveReadback(execResult.WrittenNpcFormIDs, target.TargetPath, execResult.DraftFormIdMap)
+
+        ' Part 3 — delete the removed NPCs' CharGen bake LOOSE files (NIF + _d/_msn/_s DDS, incl. debug _2 variants).
+        ' Safe (disk-only). The BA2-packed bakes are left as a TODO (see DeleteFaceGenLooseFiles remarks).
+        DeleteFaceGenLooseFiles(faceGenLooseToDelete)
+
+        ' Part 2 — make the dropped records DISAPPEAR from the in-memory model (they were preserved by an earlier
+        ' in-session mount, so the readback's re-mount can't remove them). Revert each (NEW app record → drop;
+        ' OVERRIDE → restore the base), fix _allNPCs, then rebuild the tree model + repopulate so the node vanishes
+        ' (NEW) or reappears under the base plugin group (OVERRIDE).
+        Dim removedAny As Boolean = False
+        For Each fid In droppedFromTarget
+            RevertAppOverrideInMemory(fid)   ' PluginManager: drop NEW / revert OVERRIDE + targeted parse-cache invalidate
+            _dirtyNpcs.Remove(fid)
+            _npcRecordOverrides.Remove(fid)
+            Dim baseRec = _pluginManager.GetRecord(fid)
+            If baseRec Is Nothing OrElse baseRec.Header.Signature <> "NPC_" Then
+                ' NEW authored record → gone from the load order. Drop every model entry for it.
+                _allNPCs.RemoveAll(Function(n) n IsNot Nothing AndAlso n.FormID = fid)
+            Else
+                ' OVERRIDE reverted → re-parse the now-winning base record and replace it in the model.
+                Dim baseNpc = NpcRecordOverlay.GetParsedNpc(fid, _pluginManager)
+                If baseNpc IsNot Nothing Then
+                    Dim replaced = False
+                    For i = 0 To _allNPCs.Count - 1
+                        If _allNPCs(i) IsNot Nothing AndAlso _allNPCs(i).FormID = fid Then
+                            _allNPCs(i) = baseNpc
+                            replaced = True
+                            Exit For
+                        End If
+                    Next
+                    If Not replaced Then _allNPCs.Add(baseNpc)
+                End If
+            End If
+            removedAny = True
+        Next
+        If removedAny Then
+            ' Rebuild the model caches from the mutated _allNPCs (drops the NEW record from NpcCache/searchable/
+            ' display too), then repopulate the tree so the phantom node is gone.
+            RebuildTreeModelCache()
+            PopulateNPCTree(_pendingTreeFilter)
+        End If
 
         ' Removal intents were applied by the saver's Phase 2a (it dropped every target-plugin record whose GLOBAL
         ' FormID is in this set). Clear it now so a stale mark can't re-drop a record the user later re-authors: e.g.
@@ -9157,6 +9571,46 @@ Public Class MainForm
         MessageBox.Show($"Saved {what} to {IO.Path.GetFileName(execResult.WriterResult.OutputPath)}.{execResult.ChargenSummary}{execResult.VerifierSummary}",
                         "Save ESP/ESM", MessageBoxButtons.OK, execResult.VerifierIcon)
     End Function
+
+    ''' <summary>Loose FaceGen bake files the app could have written for <paramref name="npcFormID"/>: the
+    ''' FaceGeom NIF (release + <c>_2</c> debug) and the FaceCustomization <c>_d/_msn/_s</c> DDS (release +
+    ''' <c>_2</c> debug), under Data\ keyed by the record's ORIGIN plugin + FaceGen-local FormID — the exact
+    ''' paths <see cref="FaceGenBuilder.ResolveFaceGenPath"/> / the texture bake emit (Meshes\…\FaceGeom and
+    ''' Textures\…\FaceCustomization, filename <c>{formIdLow:X8}</c>). Best-effort: returns every candidate;
+    ''' the caller deletes those that exist. Empty when origin plugin or DataPath can't be resolved.</summary>
+    Private Function ResolveNpcFaceGenLoosePaths(npcFormID As UInteger) As List(Of String)
+        Dim paths As New List(Of String)
+        If String.IsNullOrEmpty(_dataPath) Then Return paths
+        Dim originPlugin = _pluginManager.GetOriginatingPluginName(npcFormID)
+        If String.IsNullOrEmpty(originPlugin) Then Return paths
+        Dim idHex = PluginManager.ToFaceGenLocalFormID(npcFormID).ToString("X8")
+
+        Dim geomDir = IO.Path.Combine(_dataPath, "Meshes", "Actors", "Character", "FaceGenData", "FaceGeom", originPlugin)
+        paths.Add(IO.Path.Combine(geomDir, idHex & ".nif"))
+        paths.Add(IO.Path.Combine(geomDir, idHex & "_2.nif"))
+
+        Dim texDir = IO.Path.Combine(_dataPath, "Textures", "Actors", "Character", "FaceCustomization", originPlugin)
+        For Each suffix In {"_d.dds", "_msn.dds", "_s.dds", "_d_2.dds", "_msn_2.dds", "_s_2.dds"}
+            paths.Add(IO.Path.Combine(texDir, idHex & suffix))
+        Next
+        Return paths
+    End Function
+
+    ''' <summary>Delete the given loose FaceGen bake files, each best-effort: skip if absent, swallow IO errors
+    ''' so a single locked/missing file can't abort the batch. BA2-PACKED bakes are NOT touched here — removing
+    ''' an entry from a shared FaceGen BA2 needs a full repack, out of scope for the delete path (TODO): a
+    ''' deleted NPC whose bake lives only inside a BA2 keeps that entry until the archive is rebuilt.</summary>
+    Private Sub DeleteFaceGenLooseFiles(paths As IEnumerable(Of String))
+        If paths Is Nothing Then Return
+        For Each p In paths
+            If String.IsNullOrEmpty(p) Then Continue For
+            Try
+                If IO.File.Exists(p) Then IO.File.Delete(p)
+            Catch ex As Exception
+                Logger.LogLazy(Function() $"[MARK-DELETE] could not delete FaceGen loose '{p}': {ex.GetType().Name}: {ex.Message}")
+            End Try
+        Next
+    End Sub
 
     ''' <summary>Build the per-NPC save input from a FormID: fetch + type-safe parse the raw record,
     ''' resolve its source plugin, and read the CharGen Face Preset flag. Returns Nothing when the
@@ -9279,6 +9733,10 @@ Public Class MainForm
 
         For Each fid In writtenFormIDs
             StripEspFieldsFromOverlay(fid)
+            ' The authored NPC-record override is now in the saved plugin (re-read as this NPC's new baseline
+            ' below), so drop it — leaving it would just re-apply identical values on the next save. Mirror of
+            ' StripEspFieldsFromOverlay for the record-field overrides.
+            _npcRecordOverrides.Remove(fid)
             ClearNpcDirty(fid)
 
             ' Re-parse the saved override as this NPC's new baseline. MergeOverridePlugin mounted the
@@ -9587,21 +10045,30 @@ Public Class MainForm
     ''' Never throws — pack failures surface via Success=False + Summary.</summary>
     Private Async Function RunChargenPackBatch(anchorPluginPath As String,
                                                 bundles As IReadOnlyList(Of NpcFaceGenPacker.BakedNpcBundle),
+                                                excludeEntries As IReadOnlyList(Of String),
                                                 progress As IProgress(Of NpcOverrideSaver.SaveProgress)) As Task(Of (Summary As String, Success As Boolean))
-        If bundles Is Nothing OrElse bundles.Count = 0 Then
+        Dim hasBundles = bundles IsNot Nothing AndAlso bundles.Count > 0
+        Dim hasExcludes = excludeEntries IsNot Nothing AndAlso excludeEntries.Count > 0
+        ' Nothing to pack AND nothing to strip → no-op.
+        If Not hasBundles AndAlso Not hasExcludes Then
             Return ("", True)
         End If
+        Dim bundlesToPack As IReadOnlyList(Of NpcFaceGenPacker.BakedNpcBundle) =
+            If(bundles, CType(New List(Of NpcFaceGenPacker.BakedNpcBundle)(), IReadOnlyList(Of NpcFaceGenPacker.BakedNpcBundle)))
 
         ' Capture config on the UI thread before going to the worker — same pattern the original
         ' RunChargenBakeAndPack used.
         Dim dataPath = _dataPath
         Dim game = Config_App.Current.Game
         Dim ba2Version = NPC_Config.Current.Ba2Version_FO4
+        Dim excludeList As List(Of String) = If(hasExcludes, New List(Of String)(excludeEntries), Nothing)
 
         ' Loose-only sentinel: skip the pack. The 4 loose files per NPC stay on disk where the
         ' engine auto-discovers them at runtime. Matches the user's intent for the
-        ' "None - Loose files" option in the SaveEsp BA2 version combo.
+        ' "None - Loose files" option in the SaveEsp BA2 version combo. (Mark-to-delete: there is no BA2 to
+        ' strip in loose mode — the removed NPC's loose were already deleted by DeleteFaceGenLooseFiles.)
         If ba2Version = 0UI Then
+            If Not hasBundles Then Return ("", True)
             Dim n = bundles.Count
             Return ($"BA2 pack skipped — {n} NPC{If(n = 1, "", "s")} left as loose files (None - Loose mode).", True)
         End If
@@ -9610,7 +10077,7 @@ Public Class MainForm
             Dim packResult = Await Task.Run(
                 Function()
                     Return NpcFaceGenPacker.PackBatch(
-                        anchorPluginPath, dataPath, game, ba2Version, bundles,
+                        anchorPluginPath, dataPath, game, ba2Version, bundlesToPack,
                         Sub(p As NpcFaceGenPacker.PackProgress)
                             Select Case p.Phase
                                 Case NpcFaceGenPacker.PackPhase.BuildingBundle
@@ -9622,7 +10089,8 @@ Public Class MainForm
                                 Case NpcFaceGenPacker.PackPhase.Done
                                     ReportSaveProgress(progress, "Done.", "", False, 0, 0)
                             End Select
-                        End Sub)
+                        End Sub,
+                        excludeEntries:=excludeList)
                 End Function)
 
             If Not packResult.Success Then
@@ -9638,7 +10106,7 @@ Public Class MainForm
             Dim wrote = distinctWritten.Count
             Dim skipped = distinctSkipped.Count
             Dim committed = packResult.BundlesCommitted
-            Dim total = bundles.Count
+            Dim total = bundlesToPack.Count
             Dim flushes = packResult.FlushesCommitted
             Dim missingSources = packResult.MissingSources.Count
             Dim missingBundles = total - committed
@@ -9650,7 +10118,12 @@ Public Class MainForm
             ' made it through) — saying "BA2 unchanged" in that case is a half-truth that hides
             ' the failure. Branch order matters: success/unchanged use committed; failure uses
             ' missingBundles.
-            If committed = 0 Then
+            If total = 0 Then
+                ' Delete-only pack (mark-to-delete): no new bakes — only stripped removed NPCs' stale entries.
+                summary = If(wrote > 0,
+                             $"BA2 updated — stripped deleted NPC bake(s) from {wrote} archive{If(wrote = 1, "", "s")}.",
+                             "BA2 unchanged — no deleted NPC bakes were present.")
+            ElseIf committed = 0 Then
                 summary = $"BA2 pack: 0/{total} NPC{If(total = 1, "", "s")} packed."
             ElseIf wrote = 0 AndAlso skipped > 0 Then
                 ' Byte-identical: every entry of every committed bundle matched existing CRC32 →

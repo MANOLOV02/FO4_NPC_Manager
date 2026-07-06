@@ -47,6 +47,8 @@ Partial Class OutfitPicker_Form
         ColPieceStatus = New ColumnHeader()
         Plugin = New ColumnHeader()
         PiecesButtonsRow = New FlowLayoutPanel()
+        ButtonMovePieceUp = New Button()
+        ButtonMovePieceDown = New Button()
         ButtonNewLvl = New Button()
         ButtonOverrideLvl = New Button()
         ButtonRemovePiece = New Button()
@@ -414,6 +416,8 @@ Partial Class OutfitPicker_Form
         ' 
         PiecesButtonsRow.AutoSize = True
         PiecesButtonsRow.AutoSizeMode = AutoSizeMode.GrowAndShrink
+        PiecesButtonsRow.Controls.Add(ButtonMovePieceUp)
+        PiecesButtonsRow.Controls.Add(ButtonMovePieceDown)
         PiecesButtonsRow.Controls.Add(ButtonNewLvl)
         PiecesButtonsRow.Controls.Add(ButtonOverrideLvl)
         PiecesButtonsRow.Controls.Add(ButtonRemovePiece)
@@ -427,11 +431,31 @@ Partial Class OutfitPicker_Form
         PiecesButtonsRow.Size = New Size(228, 34)
         PiecesButtonsRow.TabIndex = 6
         PiecesButtonsRow.WrapContents = False
-        ' 
+        '
+        ' ButtonMovePieceUp
+        '
+        ButtonMovePieceUp.Enabled = False
+        ButtonMovePieceUp.Margin = New Padding(0, 3, 0, 6)
+        ButtonMovePieceUp.Name = "ButtonMovePieceUp"
+        ButtonMovePieceUp.Size = New Size(34, 25)
+        ButtonMovePieceUp.TabIndex = 10
+        ButtonMovePieceUp.Text = "▲"
+        ButtonMovePieceUp.UseVisualStyleBackColor = True
+        '
+        ' ButtonMovePieceDown
+        '
+        ButtonMovePieceDown.Enabled = False
+        ButtonMovePieceDown.Margin = New Padding(2, 3, 0, 6)
+        ButtonMovePieceDown.Name = "ButtonMovePieceDown"
+        ButtonMovePieceDown.Size = New Size(34, 25)
+        ButtonMovePieceDown.TabIndex = 11
+        ButtonMovePieceDown.Text = "▼"
+        ButtonMovePieceDown.UseVisualStyleBackColor = True
+        '
         ' ButtonNewLvl
-        ' 
+        '
         ButtonNewLvl.Location = New Point(0, 3)
-        ButtonNewLvl.Margin = New Padding(0, 3, 0, 6)
+        ButtonNewLvl.Margin = New Padding(12, 3, 0, 6)
         ButtonNewLvl.Name = "ButtonNewLvl"
         ButtonNewLvl.Size = New Size(90, 25)
         ButtonNewLvl.TabIndex = 0
@@ -846,6 +870,8 @@ Partial Class OutfitPicker_Form
     Friend WithEvents ButtonOverrideLvl As System.Windows.Forms.Button
     Friend WithEvents ButtonEditEntry As System.Windows.Forms.Button
     Friend WithEvents ButtonBackLevel As System.Windows.Forms.Button
+    Friend WithEvents ButtonMovePieceUp As System.Windows.Forms.Button
+    Friend WithEvents ButtonMovePieceDown As System.Windows.Forms.Button
     Friend WithEvents PiecesButtonsRow As System.Windows.Forms.FlowLayoutPanel
     Friend WithEvents EdidRow As System.Windows.Forms.FlowLayoutPanel
     Friend WithEvents LabelEdidPrefix As System.Windows.Forms.Label

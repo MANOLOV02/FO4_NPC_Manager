@@ -174,6 +174,11 @@ Friend NotInheritable Class NpcStateResolver
             If overlayPreset.DefaultOutfitFormIDOverride.HasValue Then
                 state.DefaultOutfitFormID = overlayPreset.DefaultOutfitFormIDOverride.Value
             End If
+            ' Sleep outfit (NPC.SOFT) override — set by the NPC Editor's Inventory tab. Applied at the state
+            ' level so BuildOutfitComboEntries re-samples the chosen OTFT into the outfit combo (mirror of DOFT).
+            If overlayPreset.SleepOutfitFormIDOverride.HasValue Then
+                state.SleepOutfitFormID = overlayPreset.SleepOutfitFormIDOverride.Value
+            End If
 
             ' Body/face skin-tone parity. The face compositor consumes overlay tint layers via
             ' ApplyPresetOverlayToNpcData, so the face picks up the preset's skin tone. The body

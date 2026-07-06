@@ -132,6 +132,14 @@ Public Module LooksmenuLoader
         ''' NOT a vanilla LooksMenu field — LM in-game ignores the <c>_npcm_</c> key.</summary>
         Public DefaultOutfitFormIDOverride As UInteger?
 
+        ''' <summary>Editor-only override of NPC.SOFT (Sleep Outfit → OTFT FormID). Same three-state shape as
+        ''' <see cref="DefaultOutfitFormIDOverride"/>: lives in the in-memory overlay, round-trips through the
+        ''' <c>_npcm_SleepOutfit</c> JSON extension and Copy/Paste, and persists to ESP via Save ESP (NPC_.SOFT).
+        ''' Set by the NPC Editor's Inventory tab.
+        ''' Nothing = preserve raw NPC.SOFT; 0 = no sleep outfit; other = OTFT FormID.
+        ''' NOT a vanilla LooksMenu field — LM in-game ignores the <c>_npcm_</c> key.</summary>
+        Public SleepOutfitFormIDOverride As UInteger?
+
         ''' <summary>F4SE LM Skin override — the string id of a SkinTemplate registered via
         ''' <c>F4SEPlugins-master/f4ee/SkinInterface.cpp</c>. The template bundles ARMO + face TXST +
         ''' head/headRear HDPT (see <see cref="LmSkinTemplate"/> for the full layout) and is applied
@@ -486,6 +494,16 @@ Public Module LooksmenuLoader
                     preset.DefaultOutfitFormIDOverride = ResolveFormIdentifier(ofStr, pluginManager)
                 End If
             End If
+            Dim sleepFidEl As JsonElement
+            If root.TryGetProperty("_npcm_SleepOutfit", sleepFidEl) AndAlso sleepFidEl.ValueKind = JsonValueKind.String Then
+                Dim sofStr = sleepFidEl.GetString()
+                If String.IsNullOrEmpty(sofStr) Then
+                    ' Empty string = "no sleep outfit". Equivale a Some(0). (mismo criterio que _npcm_DefaultOutfit)
+                    preset.SleepOutfitFormIDOverride = 0UI
+                Else
+                    preset.SleepOutfitFormIDOverride = ResolveFormIdentifier(sofStr, pluginManager)
+                End If
+            End If
             Dim cgpEl As JsonElement
             If root.TryGetProperty("_npcm_IsCharGenPreset", cgpEl) AndAlso
                (cgpEl.ValueKind = JsonValueKind.True OrElse cgpEl.ValueKind = JsonValueKind.False) Then
@@ -609,6 +627,7 @@ Public Module LooksmenuLoader
         c.IsCharGenFacePreset = p.IsCharGenFacePreset
         c.SkinFormIDOverride = p.SkinFormIDOverride
         c.DefaultOutfitFormIDOverride = p.DefaultOutfitFormIDOverride
+        c.SleepOutfitFormIDOverride = p.SleepOutfitFormIDOverride
         c.SkinTemplateId = p.SkinTemplateId
         For Each fid In p.LmTemplateInjectedHdptFormIDs : c.LmTemplateInjectedHdptFormIDs.Add(fid) : Next
         c.HasHeadPartFormIDsSetByTemplate = p.HasHeadPartFormIDsSetByTemplate
@@ -911,6 +930,12 @@ Public Module LooksmenuLoader
                     ' Empty string = "no outfit" (Some(0)). String siempre presente cuando HasValue=True
                     ' para distinguir de "key absent" = preserve raw NPC.DOFT.
                     w.WriteString("_npcm_DefaultOutfit", ofId)
+                End If
+                If preset.SleepOutfitFormIDOverride.HasValue Then
+                    Dim sofId = FormatFormIdentifier(preset.SleepOutfitFormIDOverride.Value, pluginManager)
+                    ' Empty string = "no sleep outfit" (Some(0)). String siempre presente cuando HasValue=True
+                    ' para distinguir de "key absent" = preserve raw NPC.SOFT.
+                    w.WriteString("_npcm_SleepOutfit", sofId)
                 End If
                 If preset.IsCharGenFacePreset.HasValue Then
                     w.WriteBoolean("_npcm_IsCharGenPreset", preset.IsCharGenFacePreset.Value)

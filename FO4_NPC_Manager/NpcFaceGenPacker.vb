@@ -53,6 +53,24 @@ Public Module NpcFaceGenPacker
         Public Property DebugSandbox As Boolean
     End Class
 
+    ''' <summary>The 4 CANONICAL archive entry paths (as stored inside the BA2 — no _2 debug suffix) for one
+    ''' NPC's FaceGen bake: the FaceGeom NIF (→ Main.ba2) + the 3 FaceCustomization DDS _d/_msn/_s (→ Textures.ba2).
+    ''' Same layout <see cref="PackBatch"/> uses for its bundleSpec. Used by the "mark to delete" flow to build the
+    ''' ExcludePaths passed to <see cref="PackBatch"/>. Empty when the origin plugin can't be resolved.</summary>
+    Public Function CanonicalFaceGenEntryPathsForNpc(npcFormID As UInteger, pluginManager As PluginManager) As List(Of String)
+        Dim origin = pluginManager.GetOriginatingPluginName(npcFormID)
+        If String.IsNullOrEmpty(origin) Then Return New List(Of String)()
+        Dim hex = PluginManager.ToFaceGenLocalFormID(npcFormID).ToString("X8")
+        Dim geomDir = "Meshes\Actors\Character\FaceGenData\FaceGeom\" & origin & "\"
+        Dim texDir = "Textures\Actors\Character\FaceCustomization\" & origin & "\"
+        Return New List(Of String) From {
+            geomDir & hex & ".nif",
+            texDir & hex & "_d.dds",
+            texDir & hex & "_msn.dds",
+            texDir & hex & "_s.dds"
+        }
+    End Function
+
     ''' <summary>Aggregate result of <see cref="PackBatch"/> across one or more flushes.</summary>
     Friend Class PackResult
         Public Property Success As Boolean
@@ -146,14 +164,28 @@ Public Module NpcFaceGenPacker
     ''' thread; the caller's IProgress(Of T) wrapper marshals back to the UI thread.</param>
     ''' <param name="ct">Cancellation token. Checked at safe checkpoints (between micro-batches
     ''' and before each flush) — never mid-flush, so the on-disk archive stays consistent.</param>
+    ''' <param name="excludeEntries">Optional canonical archive entry paths (as stored inside the BA2, e.g.
+    ''' "Meshes\Actors\Character\FaceGenData\FaceGeom\&lt;plugin&gt;\&lt;id&gt;.nif") to REMOVE from the app's
+    ''' target archive set — the "mark to delete" flow strips a removed NPC's stale FaceGen bake. Applied on
+    ''' the same Pack calls that write new bakes; when there are NO new bakes (delete-only) a single removal-only
+    ''' Pack runs so the drop still happens. Nothing/empty = no removals (existing callers unaffected).</param>
     Friend Function PackBatch(anchorPluginPath As String,
                               dataDir As String,
                               game As Config_App.Game_Enum,
                               ba2Version As UInteger,
                               bundles As IReadOnlyList(Of BakedNpcBundle),
                               Optional progress As Action(Of PackProgress) = Nothing,
-                              Optional ct As CancellationToken = Nothing) As PackResult
+                              Optional ct As CancellationToken = Nothing,
+                              Optional excludeEntries As IEnumerable(Of String) = Nothing) As PackResult
         Dim result As New PackResult()
+
+        ' Canonical entry paths to strip from the target archive set (mark-to-delete). Empty = no removals.
+        Dim excludeSet As New HashSet(Of String)(StringComparer.OrdinalIgnoreCase)
+        If excludeEntries IsNot Nothing Then
+            For Each e In excludeEntries
+                If Not String.IsNullOrEmpty(e) Then excludeSet.Add(e)
+            Next
+        End If
 
         If String.IsNullOrEmpty(anchorPluginPath) OrElse Not File.Exists(anchorPluginPath) Then
             result.ErrorMessage = $"Anchor plugin not found: '{anchorPluginPath}'."
@@ -163,11 +195,13 @@ Public Module NpcFaceGenPacker
             result.ErrorMessage = $"Data folder not found: '{dataDir}'."
             Return result
         End If
-        If bundles Is Nothing OrElse bundles.Count = 0 Then
+        ' Nothing to pack AND nothing to remove → true no-op. With exclusions we still proceed (delete-only).
+        If (bundles Is Nothing OrElse bundles.Count = 0) AndAlso excludeSet.Count = 0 Then
             result.Success = True
             Report(progress, PackPhase.Done, "No bundles to pack.", 0, 0)
             Return result
         End If
+        If bundles Is Nothing Then bundles = New List(Of BakedNpcBundle)()
 
         ' --- Step 1: walk bundles → flat LooseFileRef list -----------------------------------
         ' One bundle = 4 refs (NIF first, then 3 DDS in stable order). Refs whose source is
@@ -224,7 +258,9 @@ Public Module NpcFaceGenPacker
             Logger.LogLazy(Function() $"[PACK-BATCH] {missingSources.Count} expected loose file(s) missing on disk before pack — first: '{missingSources(0)}'")
         End If
 
-        If allRefs.Count = 0 Then
+        ' No bake outputs to pack. If there is also nothing to remove, that's the "bake reported Success but
+        ' produced no files" error. With exclusions we proceed to the removal-only pack below (delete-only save).
+        If allRefs.Count = 0 AndAlso excludeSet.Count = 0 Then
             Dim msg = "No bake outputs found on disk for any of the requested bundles."
             If missingSources.Count > 0 Then msg &= $" First missing: '{missingSources(0)}'."
             result.ErrorMessage = msg
@@ -320,7 +356,7 @@ Public Module NpcFaceGenPacker
                     Try
                         FlushChunk(dataDir, modBaseName, game, ba2Version,
                                    chunkEntries, chunkRefs, chunkCompBytes,
-                                   result, committedRefs, progress, entriesDone, totalEntries, ct)
+                                   result, committedRefs, progress, entriesDone, totalEntries, ct, excludeSet)
                     Catch ex As Exception
                         packFailureMessage = $"BA2 packer failed mid-flush: {ex.GetType().Name}: {ex.Message}"
                         Exit For
@@ -348,15 +384,28 @@ Public Module NpcFaceGenPacker
                    idx, totalEntries)
         End While
 
-        ' Final flush of whatever survived.
+        ' Final flush of whatever survived (carries the exclusions so both buckets get stripped even if the
+        ' surviving entries only touch one).
         If packFailureMessage = "" AndAlso Not cancelled AndAlso chunkEntries.Count > 0 Then
             Try
                 FlushChunk(dataDir, modBaseName, game, ba2Version,
                            chunkEntries, chunkRefs, chunkCompBytes,
-                           result, committedRefs, progress, entriesDone, totalEntries, ct)
+                           result, committedRefs, progress, entriesDone, totalEntries, ct, excludeSet)
                 entriesDone += chunkEntries.Count
             Catch ex As Exception
                 packFailureMessage = $"BA2 packer failed on final flush: {ex.GetType().Name}: {ex.Message}"
+            End Try
+        End If
+
+        ' Delete-only (or all-excluded) case: no flush ran the exclusions yet → do one removal-only Pack so the
+        ' removed NPCs' bake entries are stripped from the target archive set while every other entry is preserved.
+        If packFailureMessage = "" AndAlso Not cancelled AndAlso excludeSet.Count > 0 AndAlso result.FlushesCommitted = 0 Then
+            Try
+                FlushChunk(dataDir, modBaseName, game, ba2Version,
+                           New List(Of VirtualEntry)(), New List(Of LooseFileRef)(), 0L,
+                           result, committedRefs, progress, entriesDone, totalEntries, ct, excludeSet)
+            Catch ex As Exception
+                packFailureMessage = $"BA2 packer failed on removal flush: {ex.GetType().Name}: {ex.Message}"
             End Try
         End If
 
@@ -459,8 +508,11 @@ Public Module NpcFaceGenPacker
                            progress As Action(Of PackProgress),
                            entriesDone As Integer,
                            totalEntries As Integer,
-                           ct As CancellationToken)
-        If chunkEntries.Count = 0 Then Return
+                           ct As CancellationToken,
+                           Optional excludeSet As HashSet(Of String) = Nothing)
+        ' Proceed with 0 entries only when there are exclusions to apply (delete-only removal pass).
+        Dim hasExclusions = excludeSet IsNot Nothing AndAlso excludeSet.Count > 0
+        If chunkEntries.Count = 0 AndAlso Not hasExclusions Then Return
         If ct.IsCancellationRequested Then Return
 
         Report(progress, PackPhase.WritingArchive,
@@ -477,6 +529,7 @@ Public Module NpcFaceGenPacker
             .MaxArchiveBytes = MAX_ARCHIVE_BYTES,
             .Overflow = ArchiveOverflowPolicy.ThrowOnExceed,
             .SingleAnchorOnly = True,
+            .ExcludePaths = If(hasExclusions, excludeSet, Nothing),
             .PluginWriter = Sub(p As String, g As GameKind)
                                 ' Anchor plugin already exists (Save ESP wrote it before we got
                                 ' called). This callback would only fire if the packer split into

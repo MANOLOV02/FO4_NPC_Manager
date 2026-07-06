@@ -131,7 +131,15 @@ Public Module NpcRecordOverlay
         ' write time (CopyRoundTripOnlyFieldsFromRaw no longer copies HasDefaultOutfit — this owns it).
         ' Nothing → preserve raw flag.
         shadow.HasDefaultOutfit = If(preset.DefaultOutfitFormIDOverride.HasValue, preset.DefaultOutfitFormIDOverride.Value <> 0UI, raw.HasDefaultOutfit)
-        shadow.SleepOutfitFormID = raw.SleepOutfitFormID
+        ' NPC.SOFT (sleep outfit → OTFT). Same three states as DOFT (set by the NPC Editor's Inventory tab):
+        '   Nothing    → preserve raw NPC.SOFT
+        '   value <> 0 → OTFT override
+        '   value = 0  → explicit "no sleep outfit"
+        shadow.SleepOutfitFormID = If(preset.SleepOutfitFormIDOverride, raw.SleepOutfitFormID)
+        ' SOFT emission gate, mirror of HasDefaultOutfit: when the override is active the flag is derived from
+        ' it (value<>0 → emit SOFT; value=0 → omit); Nothing → preserve raw flag. CopyRoundTripOnlyFieldsFromRaw
+        ' no longer copies HasSleepOutfit — this owns it (same as HasDefaultOutfit).
+        shadow.HasSleepOutfit = If(preset.SleepOutfitFormIDOverride.HasValue, preset.SleepOutfitFormIDOverride.Value <> 0UI, raw.HasSleepOutfit)
         ' HeadTextureFormID: LM template face TXST overrides if present (mirrors
         ' SkinInterface.cpp:307-313 — overlay sets npc->headData->faceTextures = template.face[gender]).
         Dim lmFaceTxst As UInteger = 0UI

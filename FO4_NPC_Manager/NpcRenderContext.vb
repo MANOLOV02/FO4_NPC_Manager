@@ -168,4 +168,17 @@ Friend NotInheritable Class NpcRenderContext
         _hdptCache.Clear()
         _armorRaceCache.Clear()
     End Sub
+
+    ''' <summary>Drop the SINGLE record <paramref name="fid"/> from the parse caches (after an in-memory override
+    ''' revert) so the next render re-parses it from the now-updated PluginManager. Deliberately NOT
+    ''' <see cref="InvalidateParseCaches"/>: that <c>Clear()</c>s EVERY cache (incl. the current NPC + all races),
+    ''' and doing so MID-SESSION races the background render threads reading those caches — blanking the whole scene
+    ''' until a later render self-heals. A per-key <c>TryRemove</c> is atomic + leaves every other record intact, so
+    ''' the reverted armor updates on the next render without breaking anything else. Covers the ARMO/ARMA record
+    ''' types a revert touches (OTFT/LVLI aren't cached here — parsed on demand, so a revert already resolves fresh).</summary>
+    Public Sub InvalidateRecord(fid As UInteger)
+        If fid = 0UI Then Return
+        Dim armo As ARMO_Data = Nothing : _armoCache.TryRemove(fid, armo)
+        Dim arma As ARMA_Data = Nothing : _armaCache.TryRemove(fid, arma)
+    End Sub
 End Class

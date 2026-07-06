@@ -92,17 +92,23 @@ Public Module NpcOverrideSaver
         ''' <summary>MainForm helper: rebuild the parser's parallel collections (TintLayerStructs,
         ''' FaceMorphTrailingBytes, MorphKeysOrdered) on the shadow after overlay copy.</summary>
         Public SyncParallelCollectionsAfterOverlay As Action(Of NPC_Data)
+        ''' <summary>MainForm helper (optional): apply the NPC-record scalar/list override authored in the NPC
+        ''' Editor onto the post-round-trip shadow. Args = (shadow NPC_Data, NPC global FormID). Invoked in
+        ''' <see cref="BuildOverrideEntry"/> JUST AFTER the round-trip copy so the user's Name/flags/keywords/
+        ''' factions/inventory/OBTS edits win over the source record. Nothing = no NPC-record overrides authored
+        ''' (existing callers / no-op).</summary>
+        Public ApplyNpcRecordOverride As Action(Of NPC_Data, UInteger) = Nothing
         ''' <summary>FaceGen bake delegate: invoked once per NPC during Phase 4a. Writes the 4 loose
         ''' files (NIF + 3 DDS) on the UI thread (GL-bound), returns a <see cref="NpcFaceGenPacker.BakedNpcBundle"/>
         ''' identifying that NPC's bake outputs so the orchestrator can batch them into one pack call.
         ''' Bundle is Nothing when the bake was skipped (no FaceGen head parts) or failed.</summary>
         Public RunChargenBake As Func(Of UInteger, String, String, IProgress(Of SaveProgress), Task(Of (Success As Boolean, Skipped As Boolean, Bundle As NpcFaceGenPacker.BakedNpcBundle, FailureMessage As String)))
 
-        ''' <summary>BA2 pack delegate: invoked ONCE in Phase 4b with the bundles collected from all
-        ''' successful Phase 4a bakes. Honors the loose-only sentinel (NPC_Config.Ba2Version_FO4 = 0)
-        ''' by skipping the pack and leaving the loose on disk. Returns a single summary the orchestrator
-        ''' appends to the user-facing message.</summary>
-        Public RunChargenPackBatch As Func(Of String, IReadOnlyList(Of NpcFaceGenPacker.BakedNpcBundle), IProgress(Of SaveProgress), Task(Of (Summary As String, Success As Boolean)))
+        ''' <summary>BA2 pack delegate: invoked in Phase 4b with the bundles collected from all successful Phase 4a
+        ''' bakes PLUS the canonical FaceGen entry paths to REMOVE from the target archive set (mark-to-delete).
+        ''' Honors the loose-only sentinel (NPC_Config.Ba2Version_FO4 = 0) by skipping the pack. Returns a single
+        ''' summary the orchestrator appends to the user-facing message. The excludeEntries arg is the 3rd param.</summary>
+        Public RunChargenPackBatch As Func(Of String, IReadOnlyList(Of NpcFaceGenPacker.BakedNpcBundle), IReadOnlyList(Of String), IProgress(Of SaveProgress), Task(Of (Summary As String, Success As Boolean)))
         ''' <summary>All outfit drafts authored in the Edit Outfit "Create" tab (MainForm's
         ''' <c>_outfitDrafts</c>, minus the throwaway preview sentinel). When the save target's
         ''' <c>SaveNewOutfits</c> is True, the orchestrator emits as OTFT records every draft that is
@@ -173,6 +179,16 @@ Public Module NpcOverrideSaver
             '       (typically K=1 for normal save sizes). When NPC_Config.Ba2Version_FO4=0
             '       (loose-only sentinel), the PackBatch delegate skips the pack entirely and the
             '       loose stay on disk.
+            ' Mark-to-delete: canonical FaceGen entry paths of every removed NPC, to STRIP from the target BA2
+            ' set (only the app's own archives are touched; a path not present is a no-op). Built regardless of
+            ' GenerateChargen so a delete-only save still cleans the BA2 (see the removal-only pack below).
+            Dim faceGenExcludeEntries As New List(Of String)
+            If ctx.RecordsToRemove IsNot Nothing Then
+                For Each remFid In ctx.RecordsToRemove
+                    faceGenExcludeEntries.AddRange(NpcFaceGenPacker.CanonicalFaceGenEntryPathsForNpc(remFid, ctx.PluginManager))
+                Next
+            End If
+
             If target.GenerateChargen Then
                 Dim totalBakes = inputs.Count
                 Dim bakedOk = 0
@@ -185,6 +201,12 @@ Public Module NpcOverrideSaver
                         Exit For
                     End If
                     Dim npcInput = inputs(i)
+                    ' MARK-TO-DELETE: never bake a CharGen NIF/textures for an NPC that is being removed this
+                    ' save (it isn't written as an override, and its bakes are deleted in post-save cleanup).
+                    If ctx.RecordsToRemove IsNot Nothing AndAlso ctx.RecordsToRemove.Contains(npcInput.NpcFormID) Then
+                        bakedSkip += 1
+                        Continue For
+                    End If
                     Dim label = If(npcInput.Npc IsNot Nothing AndAlso Not String.IsNullOrEmpty(npcInput.Npc.EditorID),
                                    npcInput.Npc.EditorID, npcInput.NpcFormID.ToString("X8"))
                     progress?.Report(New SaveProgress With {
@@ -219,11 +241,12 @@ Public Module NpcOverrideSaver
                     End If
                 Next
 
-                ' Phase 4b: single PackBatch call with all successful bundles.
+                ' Phase 4b: single PackBatch call with all successful bundles PLUS the mark-to-delete exclusions.
+                ' Runs when there are new bakes OR entries to strip (delete-only save with existing target bakes).
                 Dim packSummary As String = ""
                 Dim packSuccess As Boolean = True
-                If bundles.Count > 0 Then
-                    Dim packRes = Await ctx.RunChargenPackBatch(target.TargetPath, bundles, progress)
+                If bundles.Count > 0 OrElse faceGenExcludeEntries.Count > 0 Then
+                    Dim packRes = Await ctx.RunChargenPackBatch(target.TargetPath, bundles, faceGenExcludeEntries, progress)
                     packSummary = If(packRes.Summary, "")
                     packSuccess = packRes.Success
                 End If
@@ -242,6 +265,12 @@ Public Module NpcOverrideSaver
                 If packSummary <> "" Then result.ChargenSummary &= vbCrLf & packSummary
                 result.ChargenSuccess = (bakedFail = 0) AndAlso packSuccess
                 If Not result.ChargenSuccess Then result.VerifierIcon = MessageBoxIcon.Warning
+            ElseIf faceGenExcludeEntries.Count > 0 Then
+                ' Delete-only save with CharGen bake OFF: still strip the removed NPCs' stale bakes from the
+                ' target BA2 (removal-only Pack; a no-op when the entries aren't present / loose-only mode).
+                Dim packRes = Await ctx.RunChargenPackBatch(target.TargetPath, New List(Of NpcFaceGenPacker.BakedNpcBundle)(), faceGenExcludeEntries, progress)
+                If Not String.IsNullOrEmpty(packRes.Summary) Then result.ChargenSummary &= vbCrLf & packRes.Summary
+                If Not packRes.Success Then result.VerifierIcon = MessageBoxIcon.Warning
             End If
 
             result.Success = True
@@ -295,9 +324,17 @@ Public Module NpcOverrideSaver
         ' the destination plugin name. Injected into every NEW author record → npcm_<ESPNAME>_<TYPE>_<name>.
         Dim espNameNoExt = IO.Path.GetFileNameWithoutExtension(target.TargetPath)
 
-        ' Phase 1: build one override entry per NPC. outfitEntries is shared and deduped at the end.
+        ' MARK-TO-DELETE wins over dirty: an NPC marked for removal is NEVER (re)written as an override — only
+        ' the Phase 2a drop applies. This single choke point covers every scope (selected / all-dirty): the
+        ' removal set is subtracted from the inputs the writer actually serializes, the sidecar merges, and the
+        ' WrittenNpcFormIDs post-save readback re-reads. The FULL `inputs` list is still used for the Phase 2a
+        ' skipLocalFormIDs sweep (so a marked NPC's existing copy is dropped there too, belt-and-suspenders).
+        Dim removeSet As HashSet(Of UInteger) = If(ctx.RecordsToRemove, New HashSet(Of UInteger)())
+        Dim writeInputs = inputs.Where(Function(ni) Not removeSet.Contains(ni.NpcFormID)).ToList()
+
+        ' Phase 1: build one override entry per NON-removed NPC. outfitEntries is shared and deduped at the end.
         Dim entries As New List(Of SaveNpcEspWriter.NpcOverrideEntry)
-        For Each npcInput In inputs
+        For Each npcInput In writeInputs
             Dim entry = BuildOverrideEntry(npcInput, ctx, target)
             ' Encoding-conflict check for the edited NPC (per-NPC FULL/SHRT/ATTX vs encoding).
             Dim editedConflict = FindEncodingConflict(entry.Npc, "")
@@ -803,7 +840,7 @@ Public Module NpcOverrideSaver
         ' Standard "pick one" semantics (LVLF=0). On overflow (>255, the LLCT u8 cap) the list is split into
         ' FLAT siblings: the first keeps the base name, the rest get _1, _2, … (no parent — chosen topology).
         If target.AddToLvlList Then
-            BuildLeveledNpcListEntries(target, inputs, ctx, leveledEntries)
+            BuildLeveledNpcListEntries(target, writeInputs, ctx, leveledEntries)
         End If
 
         ' Phase 3: write the plugin (all entries in one pass).
@@ -820,28 +857,55 @@ Public Module NpcOverrideSaver
         For Each existingRec In existingRecords
             result.SavedFormIDs.Add(existingRec.Header.FormID)
         Next
-        For Each npcInput In inputs
+        For Each npcInput In writeInputs
             result.SavedFormIDs.Add(npcInput.NpcFormID)
             result.WrittenNpcFormIDs.Add(npcInput.NpcFormID)
         Next
 
-        ' Phase 3b: refresh the BodyMorphs/Skin sidecar (default ON). Read once, merge every NPC in
-        ' the batch, write once. The BodyGen emitter consumes the post-merge dict so its .ini
-        ' reflects all NPCs of the plugin (this batch + any pre-existing entries from prior saves).
-        If target.WriteBssliders OrElse target.EmitBodyGen Then
+        ' Phase 3b: refresh + PRUNE the BodyMorphs/Skin sidecar (default ON). Read once (preserving every other
+        ' NPC), merge the saved NPCs, drop the mark-to-delete NPCs, write once. The BodyGen emitter consumes the
+        ' post-merge dict so its .ini reflects all NPCs of the plugin. Runs for body-write saves AND for a
+        ' delete-only save that must strip a removed NPC already present in the sidecar/.ini — WITHOUT creating a
+        ' sidecar or .ini when nothing existed.
+        Dim wantBodyWork = target.WriteBssliders OrElse target.EmitBodyGen
+        Dim haveRemovals = ctx.RecordsToRemove IsNot Nothing AndAlso ctx.RecordsToRemove.Count > 0
+        If wantBodyWork OrElse haveRemovals Then
             Dim sidecarPath = BssliderSidecar.BuildPath(target.TargetPath)
-            Dim mergedSidecar = BssliderSidecar.Read(sidecarPath)
-            If mergedSidecar Is Nothing Then mergedSidecar = New BssliderSidecar.SidecarFile()
+            Dim existingSidecar = BssliderSidecar.Read(sidecarPath)
+            Dim sidecarExisted = existingSidecar IsNot Nothing
+            Dim mergedSidecar = If(existingSidecar, New BssliderSidecar.SidecarFile())
             mergedSidecar.Plugin = IO.Path.GetFileName(target.TargetPath)
-            ' entries are built in input order in Phase 1, so entries(i) ↔ inputs(i).
-            For i = 0 To inputs.Count - 1
-                MergeOneNpcIntoSidecar(mergedSidecar, inputs(i).NpcFormID, entries(i).Npc, ctx)
-            Next
-            If target.WriteBssliders Then
+
+            ' Merge the saved NPCs only when the user asked to persist body data (writeInputs already excludes the
+            ' removed ones). entries are built in writeInputs order in Phase 1, so entries(i) ↔ writeInputs(i).
+            If wantBodyWork Then
+                For i = 0 To writeInputs.Count - 1
+                    MergeOneNpcIntoSidecar(mergedSidecar, writeInputs(i).NpcFormID, entries(i).Npc, ctx)
+                Next
+            End If
+
+            ' Mark-to-delete: drop each removed NPC from the sidecar (and thus the BodyGen .ini). Identifier =
+            ' BuildIdentifier(origin master, FormID) — the exact key MergeOneNpcIntoSidecar used. Preserves all
+            ' other NPCs. GetOriginatingPluginName resolves here (in-save, before MainForm's post-save revert).
+            Dim removedFromSidecar As Boolean = False
+            If haveRemovals Then
+                For Each remFid In ctx.RecordsToRemove
+                    Dim ident = BssliderSidecar.BuildIdentifier(ctx.PluginManager.GetOriginatingPluginName(remFid), remFid)
+                    If mergedSidecar.Npcs.Remove(ident) Then removedFromSidecar = True
+                Next
+            End If
+
+            ' Write the sidecar when the user asked OR a removal changed a sidecar that ALREADY existed (never
+            ' create a fresh sidecar just to prune an entry that wasn't there).
+            If target.WriteBssliders OrElse (removedFromSidecar AndAlso sidecarExisted) Then
                 ReportPhase(progress, "Writing .bssliders sidecar…", IO.Path.GetFileName(target.TargetPath))
                 BssliderSidecar.Write(sidecarPath, mergedSidecar)
             End If
-            If target.EmitBodyGen Then
+
+            ' Re-emit BodyGen when the user asked OR a removal must drop the NPC from an EXISTING .ini (Emit
+            ' rewrites without the removed NPC, or wipes the .ini when it was the last one). Never creates one.
+            Dim iniBaseName = IO.Path.GetFileNameWithoutExtension(target.TargetPath)
+            If target.EmitBodyGen OrElse (removedFromSidecar AndAlso BodyGenIniWriter.IniExists(ctx.DataPath, iniBaseName)) Then
                 ReportPhase(progress, "Writing BodyGen .ini…", IO.Path.GetFileName(target.TargetPath))
                 EmitBodyGenFromSidecar(target, mergedSidecar, ctx)
             End If
@@ -867,6 +931,11 @@ Public Module NpcOverrideSaver
             ctx.CopyRoundTripOnlyFieldsFromRaw(rawNpcSpec, npcSpec)
             ctx.SyncParallelCollectionsAfterOverlay(npcSpec)
         End If
+
+        ' Phase 1a': apply the NPC-record scalar/list override (NPC Editor) ON TOP of the round-trip copy, so
+        ' the user's Name/ACBS/identity/keyword/faction/inventory/OBTS edits win over the source record without
+        ' the round-trip copy above being altered. No-op when no override was authored for this NPC.
+        ctx.ApplyNpcRecordOverride?.Invoke(npcSpec, npcFormID)
 
         ' Reconcile the IsCharGenFacePreset overlay edit into the ACBS struct the writer emits.
         ' ApplyPresetOverlayToNpcData sets only the AcbsFlags mirror; EmitAcbs writes Acbs.Flags, and

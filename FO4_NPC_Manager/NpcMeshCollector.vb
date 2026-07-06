@@ -1125,9 +1125,43 @@ Friend NotInheritable Class NpcMeshCollector
         ' Outfit "Create" tab share the SAME engine rules. Winners append to `selected` (skin was
         ' already added above, outside the tournament); occupiedSlots feeds the head-part occlusion
         ' (pass 2) + skin coverage (pass 3) below.
+        '
+        ' Resolve at the EQUIPPED-ARMO level, NOT per-ARMA. The engine mutexes on the equipped item's
+        ' BOD2 as a unit (the whole ARMO wins or loses); CollectArmoCandidates emits ONE candidate per
+        ' race-valid ARMA (each with its own effSlotMask + its own incrementing Order). Feeding those
+        ' straight to the resolver lets a PARTIALLY-conflicting ARMO keep the ARMAs whose own slots don't
+        ' overlap the winner — e.g. a "skin outfit" that loses BODY to an underwear still keeps its
+        ' hand ARMA (slots 34/35 have no competitor), so its gloves render (and then occlude the naked
+        ' hands' forearm seam). That diverges from BOTH the game and the Create tab, which resolves one
+        ' union-masked piece per ARMO (GetArmoItemCandidates → ComputeArmoEffectiveSlotMask). Fix: group
+        ' the ARMA candidates by owning ARMO (SourceFormID — all ARMAs of one ARMO share it, and different
+        ' equipped ARMOs get disjoint Order ranges since `order` is ByRef-continuous), resolve with the
+        ' group's UNION slot mask (== the ARMO's BOD2 footprint, same as the Create tab) and its EARLIEST
+        ' Order, then expand each winning group back to its ARMAs. A SourceFormID of 0 (no owning ARMO)
+        ' is its own singleton group → identical to the old per-item behaviour. Within-ARMO slot dedup
+        ' already ran in CollectArmoCandidates, so no ARMA ever conflicts with its own siblings here.
+        Dim armoGroups As New List(Of List(Of MainForm.MeshCandidate))
+        Dim groupByArmo As New Dictionary(Of UInteger, List(Of MainForm.MeshCandidate))
+        For Each c In slottedCandidates
+            If c.SourceFormID = 0UI Then
+                armoGroups.Add(New List(Of MainForm.MeshCandidate) From {c})
+            Else
+                Dim grp As List(Of MainForm.MeshCandidate) = Nothing
+                If Not groupByArmo.TryGetValue(c.SourceFormID, grp) Then
+                    grp = New List(Of MainForm.MeshCandidate)
+                    groupByArmo(c.SourceFormID) = grp
+                    armoGroups.Add(grp)
+                End If
+                grp.Add(c)
+            End If
+        Next
         Dim slotResolution = SlotConflictResolver.ResolveSlotWinners(
-            slottedCandidates, Function(c) c.SlotMask, Function(c) c.Order)
-        selected.AddRange(slotResolution.Winners)
+            armoGroups,
+            Function(g) g.Aggregate(0UI, Function(acc, c) acc Or c.SlotMask),
+            Function(g) g.Min(Function(c) c.Order))
+        For Each g In slotResolution.Winners
+            selected.AddRange(g)
+        Next
         Dim occupiedSlots As UInteger = slotResolution.OccupiedSlots
 
         ' Per-segment "covered by OTHER items" occlusion (ORDER / other-items rule, engine owner-slot

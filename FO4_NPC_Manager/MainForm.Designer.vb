@@ -21,6 +21,7 @@ Partial Class MainForm
         MenuItemResetOverlay = New ToolStripMenuItem()
         MenuItemSaveSelected = New ToolStripMenuItem()
         MenuItemBuildChargen = New ToolStripMenuItem()
+        MenuItemMarkToDelete = New ToolStripMenuItem()
         SplitContainer1 = New SplitContainer()
         SplitContainerLeft = New SplitContainer()
         PanelNpcList = New Panel()
@@ -64,6 +65,7 @@ Partial Class MainForm
         ButtonEditFace = New Button()
         ButtonEditBody = New Button()
         ButtonEditOutfit = New Button()
+        ButtonEditNpc = New Button()
         SeparatorActions1 = New Label()
         LabelLooksMenu = New Label()
         ButtonLoadLooksmenu = New Button()
@@ -118,7 +120,7 @@ Partial Class MainForm
         ' 
         ' TreeViewNpcsContextMenu
         ' 
-        TreeViewNpcsContextMenu.Items.AddRange(New ToolStripItem() {MenuItemMarkChanged, MenuItemResetOverlay, MenuItemSaveSelected, MenuItemBuildChargen})
+        TreeViewNpcsContextMenu.Items.AddRange(New ToolStripItem() {MenuItemMarkChanged, MenuItemResetOverlay, MenuItemSaveSelected, MenuItemBuildChargen, MenuItemMarkToDelete})
         TreeViewNpcsContextMenu.Name = "TreeViewNpcsContextMenu"
         TreeViewNpcsContextMenu.Size = New Size(213, 92)
         ' 
@@ -145,7 +147,13 @@ Partial Class MainForm
         MenuItemBuildChargen.Name = "MenuItemBuildChargen"
         MenuItemBuildChargen.Size = New Size(212, 22)
         MenuItemBuildChargen.Text = "Build CharGen (loose)"
-        ' 
+        '
+        ' MenuItemMarkToDelete
+        '
+        MenuItemMarkToDelete.Name = "MenuItemMarkToDelete"
+        MenuItemMarkToDelete.Size = New Size(212, 22)
+        MenuItemMarkToDelete.Text = "Mark to delete (on Save)"
+        '
         ' SplitContainer1
         ' 
         SplitContainer1.Dock = DockStyle.Fill
@@ -649,6 +657,7 @@ Partial Class MainForm
         PanelActionsToolbar.Controls.Add(ButtonEditFace)
         PanelActionsToolbar.Controls.Add(ButtonEditBody)
         PanelActionsToolbar.Controls.Add(ButtonEditOutfit)
+        PanelActionsToolbar.Controls.Add(ButtonEditNpc)
         PanelActionsToolbar.Controls.Add(SeparatorActions1)
         PanelActionsToolbar.Controls.Add(LabelLooksMenu)
         PanelActionsToolbar.Controls.Add(ButtonLoadLooksmenu)
@@ -721,6 +730,19 @@ Partial Class MainForm
         ButtonEditOutfit.TabIndex = 3
         ButtonEditOutfit.Text = "Outfit"
         ButtonEditOutfit.UseVisualStyleBackColor = True
+        '
+        ' ButtonEditNpc
+        '
+        ButtonEditNpc.AutoSize = True
+        ButtonEditNpc.Enabled = False
+        ButtonEditNpc.Location = New Point(288, 2)
+        ButtonEditNpc.Margin = New Padding(2)
+        ButtonEditNpc.MinimumSize = New Size(80, 28)
+        ButtonEditNpc.Name = "ButtonEditNpc"
+        ButtonEditNpc.Size = New Size(80, 28)
+        ButtonEditNpc.TabIndex = 4
+        ButtonEditNpc.Text = "NPC…"
+        ButtonEditNpc.UseVisualStyleBackColor = True
         '
         ' SeparatorActions1
         ' 
@@ -1103,6 +1125,7 @@ Partial Class MainForm
     Friend WithEvents MenuItemResetOverlay As System.Windows.Forms.ToolStripMenuItem
     Friend WithEvents MenuItemSaveSelected As System.Windows.Forms.ToolStripMenuItem
     Friend WithEvents MenuItemBuildChargen As System.Windows.Forms.ToolStripMenuItem
+    Friend WithEvents MenuItemMarkToDelete As System.Windows.Forms.ToolStripMenuItem
     Friend WithEvents TextBoxSearch As System.Windows.Forms.TextBox
     Friend WithEvents LabelSearch As System.Windows.Forms.Label
     Friend WithEvents CheckBoxOnlyChanged As System.Windows.Forms.CheckBox
@@ -1131,6 +1154,7 @@ Partial Class MainForm
     Friend WithEvents ButtonSaveSceneNif As System.Windows.Forms.Button
     Friend WithEvents ButtonEditBody As System.Windows.Forms.Button
     Friend WithEvents ButtonEditOutfit As System.Windows.Forms.Button
+    Friend WithEvents ButtonEditNpc As System.Windows.Forms.Button
     Friend WithEvents SeparatorActions1 As System.Windows.Forms.Label
     Friend WithEvents LabelLooksMenu As System.Windows.Forms.Label
     Friend WithEvents ButtonLoadLooksmenu As System.Windows.Forms.Button
