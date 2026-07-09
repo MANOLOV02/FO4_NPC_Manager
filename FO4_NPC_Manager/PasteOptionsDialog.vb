@@ -7,10 +7,29 @@
 ''' </summary>
 Public Class PasteOptionsDialog
 
-    Public Sub New()
+    ''' <param name="isSse">True when the current session is a Skyrim (SSE) game. The dialog then hides
+    ''' the FO4-only categories that have no SSE equivalent (MRSV body regions, FMRS face bone regions,
+    ''' F4SE LM skin template), relabels the head-morph category to "Face Morphs (NAM9)", and reveals the
+    ''' SSE-only "Sculpt (per-vertex)" category. FO4 sessions (default) render byte-identically to before.</param>
+    Public Sub New(Optional isSse As Boolean = False)
         InitializeComponent()
         AddHandler ButtonSelectAll.Click, Sub(s, e) SetAll(True)
         AddHandler ButtonDeselectAll.Click, Sub(s, e) SetAll(False)
+
+        If isSse Then
+            ' FO4-only categories with no SSE record/source — hide them. Their (still-True) Checked
+            ' state is irrelevant: the SSE BuildFilteredPaste branch never reads MRSV/FMRS/LmSkin.
+            CheckBoxBodyRegions.Visible = False    ' MRSV — FO4-only
+            CheckBoxFaceBoneRegions.Visible = False ' FMRS — FO4-only
+            CheckBoxLmSkinTemplate.Visible = False  ' F4SE LM skin template — FO4-only
+            ' Under SSE this category carries the NAM9/NAMA head morphs (+ custom morphs), not MSDV.
+            CheckBoxFaceVertexMorphs.Text = "Face Morphs (NAM9)"
+            ' SSE-only per-vertex sculpt category.
+            CheckBoxSculpt.Visible = True
+        Else
+            ' Sculpt is SSE-only — never shown under FO4 (keeps the FO4 dialog byte-identical).
+            CheckBoxSculpt.Visible = False
+        End If
     End Sub
 
     Private Sub SetAll(state As Boolean)
@@ -26,6 +45,7 @@ Public Class PasteOptionsDialog
         CheckBoxFaceTints.Checked = state
         CheckBoxFaceVertexMorphs.Checked = state
         CheckBoxFaceBoneRegions.Checked = state
+        CheckBoxSculpt.Checked = state
         CheckBoxIsCharGenPreset.Checked = state
     End Sub
 
@@ -45,6 +65,7 @@ Public Class PasteOptionsDialog
             .FaceTints = CheckBoxFaceTints.Checked,
             .FaceVertexMorphs = CheckBoxFaceVertexMorphs.Checked,
             .FaceBoneRegions = CheckBoxFaceBoneRegions.Checked,
+            .Sculpt = CheckBoxSculpt.Checked,
             .IsCharGenPreset = CheckBoxIsCharGenPreset.Checked
         }
     End Function
@@ -66,7 +87,8 @@ Public Structure PasteOptions
     Public FaceParts As Boolean          ' HeadPartFormIDs
     Public HairColor As Boolean          ' HairColorFormID
     Public FaceTints As Boolean          ' FaceTintLayers
-    Public FaceVertexMorphs As Boolean   ' ChargenFaceMorphs (MSDV)
+    Public FaceVertexMorphs As Boolean   ' ChargenFaceMorphs (MSDV) — under SSE: SseNam9+SseNama+SseCustomMorphs
     Public FaceBoneRegions As Boolean    ' FaceBoneRegions (FMRS) + FacialMorphIntensity
+    Public Sculpt As Boolean             ' SSE per-vertex sculpt (SseSculptHead) — SSE-only
     Public IsCharGenPreset As Boolean    ' ACBS bit 0x04
 End Structure

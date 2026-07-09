@@ -984,6 +984,10 @@ Friend NotInheritable Class NpcMountingResolver
     ''' renderiza al origin igual que sin fix (no es regresión, sólo no-op).</summary>
     Friend Sub ApplyPipboySyntheticSkin(result As MainForm.PreviewResolutionResult, inst As SkeletonInstance)
         If result Is Nothing OrElse inst Is Nothing Then Return
+        ' Pipboy (slot 60) es EXCLUSIVO de FO4. En Skyrim slot 60 es un slot modular genérico (xEdit
+        ' wbBipedObjectFlags: '60 - Unnamed'), así que un ítem SSE con slot 60 NO debe recibir el
+        ' fake-skin mount del Pipboy. Gate explícito FO4-only.
+        If Config_App.Current IsNot Nothing AndAlso Config_App.Current.Game = Config_App.Game_Enum.Skyrim Then Return
 
         Dim hasPipboyCandidate As Boolean = result.CandidateNif.Keys.Any(Function(c) c.SlotMask = BipedSlots.SlotBitPipboy)
         If Not hasPipboyCandidate Then Return

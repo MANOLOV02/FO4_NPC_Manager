@@ -47,12 +47,13 @@ Public Module FaceGenBuildPipeline
     Public Function ComputeWorldVerticesForShape(state As BakeState,
                                                   facebonesNif As Nifcontent_Class_Manolo,
                                                   facebonesShape As INiShape,
-                                                  chargenTriPath As String) As WorldVertResult
+                                                  chargenTriPath As String,
+                                                  Optional raceMorphTriPath As String = Nothing) As WorldVertResult
         If state Is Nothing OrElse facebonesShape Is Nothing OrElse facebonesNif Is Nothing Then Return Nothing
 
         ' 1) Apply chargen TRI morphs to the facebones shape's vertex array (in place; the
         ' caller passes a freshly-loaded NIF that nobody else reads).
-        ApplyChargenMorphsInPlace(facebonesNif, facebonesShape, chargenTriPath, state)
+        ApplyChargenMorphsInPlace(facebonesNif, facebonesShape, chargenTriPath, raceMorphTriPath, state)
 
         ' 2) Build face-skel SkeletonInstance with FMRS bone-morph applied. Va a la capa
         ' MorphDeltaTransform (igual que el render en vivo); el bake lee GetGlobalTransform, que
@@ -186,12 +187,13 @@ Public Module FaceGenBuildPipeline
                                facebonesShape As INiShape,
                                chargenTriPath As String,
                                Optional srcNif As Nifcontent_Class_Manolo = Nothing,
-                               Optional srcShape As INiShape = Nothing) As Boolean
+                               Optional srcShape As INiShape = Nothing,
+                               Optional raceMorphTriPath As String = Nothing) As Boolean
         If state Is Nothing OrElse destNif Is Nothing OrElse clonedOrigShape Is Nothing Then Return False
         If facebonesNif Is Nothing OrElse facebonesShape Is Nothing Then Return False
 
         ' 1) v_world via FBNS skin with FMRS pose applied + chargen morphs.
-        Dim wr = ComputeWorldVerticesForShape(state, facebonesNif, facebonesShape, chargenTriPath)
+        Dim wr = ComputeWorldVerticesForShape(state, facebonesNif, facebonesShape, chargenTriPath, raceMorphTriPath)
         If wr Is Nothing OrElse wr.WorldVertices Is Nothing Then
             Return False
         End If
@@ -345,32 +347,55 @@ Public Module FaceGenBuildPipeline
         Return ""
     End Function
 
-    ' --- private helpers ---
-
-    Private Sub ApplyChargenMorphsInPlace(nif As Nifcontent_Class_Manolo,
+    ''' <summary>Apply the chargen (+ SSE race) TRI vertex morphs to <paramref name="shape"/>'s vertex array
+    ''' IN PLACE, using the SAME morph plan the live render builds (NpcMorphResolver: FO4 MSDK/MSDV+MPPI, SSE
+    ''' NAM9/NAMA over the merged race+chargen TriHead) + the SSE head-weight delta. Friend so the SSE bake
+    ''' path (which has no <c>_faceBones</c> rig, so it never enters <see cref="BakeShape"/>) can morph the
+    ''' cloned head shape directly — a pure per-vertex morph, no FMRS/skin-rebind. FO4 keeps using it via
+    ''' <see cref="ComputeWorldVerticesForShape"/> on the FBNS shape. No-op when the shape's HDPT declares no
+    ''' chargen tri or the plan has no matching morph channels.</summary>
+    Friend Sub ApplyChargenMorphsInPlace(nif As Nifcontent_Class_Manolo,
                                            shape As INiShape,
                                            chargenTriPath As String,
-                                           state As BakeState)
-        If String.IsNullOrEmpty(chargenTriPath) Then Return
-        Dim triKey = MeshPathHelpers.NormalizeMeshKey(chargenTriPath)
-        Dim triHead As TriHeadFile = Nothing
-        If Not state.TriHeadCache.TryGetValue(triKey, triHead) Then
-            Dim triBytes = FilesDictionary_class.GetBytes(triKey)
-            If triBytes Is Nothing OrElse triBytes.Length = 0 Then
-                Return
-            End If
-            Try
-                triHead = TriHeadParser.ParseTriHeadFromBytes(triBytes)
-            Catch ex As Exception
-                Return
-            End Try
-            state.TriHeadCache(triKey) = triHead
+                                           raceMorphTriPath As String,
+                                           state As BakeState,
+                                           Optional headMeshTriPath As String = Nothing)
+        Dim isSse = state.NpcData IsNot Nothing AndAlso state.NpcData.Game = Config_App.Game_Enum.Skyrim
+
+        ' Build the TriHead the morph plan reads from. The RUNTIME resolver
+        ' (NpcMorphResolver.LoadTriForShape) merges the HDPT race-morph tri (NAM0=0, e.g.
+        ' FemaleHeadRaces.tri) WITH the chargen tri (NAM0=2) into ONE TriHead. The bake MUST do the
+        ' same for SSE or it silently drops the racial base face morph — BuildFaceMorphPlanFromNam9
+        ' applies it by RACE EditorID at weight 1, but that morph lives ONLY in the race tri, so a
+        ' chargen-only TriHead makes GetMorph(EditorID) return Nothing and the channel no-ops. That
+        ' is exactly why the live render (which merges) looked right while the baked NIF did not.
+        ' FO4 stays chargen-only (validated byte-exact vs CK; its plan requests MSM/MPPM sculpt names
+        ' that all live in the chargen tri, and the render's FO4 merge adds only unused expression
+        ' morphs) — merging the race tri for FO4 is intentionally skipped to protect that path.
+        Dim triHead As TriHeadFile
+        If isSse Then
+            ' SSE merges race (NAM0=0) + chargen (NAM0=2) + the head MESH tri (SkinnyMorph weight morph). The
+            ' mesh tri is per-part and RACE-AWARE by construction: headMeshTriPath is ChangeExtension of THIS
+            ' head-part's own mesh (femalehead / ...argonian / ...khajiit / hairNN — each ships its own SkinnyMorph
+            ' at its own vertex count), so no race table or vertex-count gate is needed.
+            triHead = LoadMergedHeadTri(raceMorphTriPath, chargenTriPath, state, headMeshTriPath)
+        Else
+            triHead = LoadHeadTriCached(chargenTriPath, state)
         End If
         If triHead Is Nothing Then
             Return
         End If
 
-        Dim plan = NpcMorphResolver.BuildFaceMorphPlanFromTriHead(state.NpcData, state.RaceMorphValueDefs, state.RaceMorphPresetDefs, triHead, logShapeName:=If(shape.Name?.String, ""))
+        If Environment.GetEnvironmentVariable("SKINNY_DEBUG") = "1" AndAlso state.Race IsNot Nothing AndAlso state.Race.EditorID IsNot Nothing AndAlso state.Race.EditorID.ToLowerInvariant().Contains("dremora") Then
+            Console.Error.WriteLine($"[race] shape='{If(shape?.Name?.String, "")}' raceEID='{state.Race.EditorID}' armorRaceFID=0x{state.Race.ArmorRaceFormID:X8} triHasDremora={triHead.GetMorph("DremoraRace") IsNot Nothing} triHasDarkElf={triHead.GetMorph("DarkElfRace") IsNot Nothing}")
+        End If
+
+        ' Single per-game morph plan — the SAME builder the live render calls (NpcMorphResolver.
+        ' BuildFaceMorphPlan): FO4 = MSDK/MSDV+MPPI via RACE defs; SSE = race base + NAM9 + NAMA + RaceMenu.
+        ' One path per game, no divergence between render and bake.
+        Dim plan = NpcMorphResolver.BuildFaceMorphPlan(state.NpcData, triHead,
+                                                       If(state.Race IsNot Nothing, state.Race.EditorID, ""),
+                                                       state.RaceMorphValueDefs, state.RaceMorphPresetDefs)
         If plan Is Nothing OrElse Not plan.HasMorphs Then Return
 
         Dim geom = ShapeGeometryFactory.[For](shape, nif)
@@ -381,6 +406,9 @@ Public Module FaceGenBuildPipeline
         For i = 0 To count - 1
             positionsDouble(i) = New Vector3d(positionsFloat(i).X, positionsFloat(i).Y, positionsFloat(i).Z)
         Next
+        ' The SSE actor-weight head/hair morph is now a normal channel INSIDE the plan (SkinnyMorph, added by
+        ' BuildFaceMorphPlanFromNam9 from the merged head MESH tri) — no separate table pass. Render and bake
+        ' therefore weight-morph through this single MorphEngine call, per-part and race-aware.
         Dim morphed = MorphEngine.ApplyChannelsToVertexArray(positionsDouble, plan)
         Dim outFloat As New List(Of System.Numerics.Vector3)(count)
         For i = 0 To count - 1
@@ -388,6 +416,62 @@ Public Module FaceGenBuildPipeline
         Next
         geom.SetVertexPositions(outFloat)
     End Sub
+
+    ''' <summary>Load+parse a head TriHead by mesh path, cached per-BakeState (Nothing is cached too so a
+    ''' missing/broken path is not re-attempted for every shape). Returns Nothing on miss/parse-fail.</summary>
+    Private Function LoadHeadTriCached(triPath As String, state As BakeState) As TriHeadFile
+        If String.IsNullOrEmpty(triPath) Then Return Nothing
+        Dim key = MeshPathHelpers.NormalizeMeshKey(triPath)
+        Dim head As TriHeadFile = Nothing
+        If state.TriHeadCache.TryGetValue(key, head) Then Return head
+        head = ParseHeadTri(key)
+        state.TriHeadCache(key) = head
+        Return head
+    End Function
+
+    ''' <summary>Parse a TriHead from a normalized FilesDictionary key. Nothing on missing bytes / parse error.</summary>
+    Private Function ParseHeadTri(normalizedKey As String) As TriHeadFile
+        Dim bytes = FilesDictionary_class.GetBytes(normalizedKey)
+        If bytes Is Nothing OrElse bytes.Length = 0 Then Return Nothing
+        Try
+            Return TriHeadParser.ParseTriHeadFromBytes(bytes)
+        Catch ex As Exception
+            Return Nothing
+        End Try
+    End Function
+
+    ''' <summary>Load the race-morph tri (HDPT NAM0=0) merged with the chargen tri (NAM0=2) into a single
+    ''' TriHead, mirroring NpcMorphResolver.LoadTriForShape: race morphs first, chargen morphs added only
+    ''' when the race tri does not already carry that name (race wins name collisions). The merge is cached
+    ''' per-BakeState under a composite key so it (and its parses) happen once per race/chargen pair. The
+    ''' race side is parsed FRESH (not the shared per-path cache) so mutating it with the chargen morphs can
+    ''' never corrupt a TriHead reused elsewhere. Falls back to whichever side is present when one is missing.</summary>
+    Private Function LoadMergedHeadTri(raceMorphTriPath As String, chargenTriPath As String, state As BakeState,
+                                       Optional headMeshTriPath As String = Nothing) As TriHeadFile
+        Dim raceKey = If(String.IsNullOrEmpty(raceMorphTriPath), "", MeshPathHelpers.NormalizeMeshKey(raceMorphTriPath))
+        Dim chargenKey = If(String.IsNullOrEmpty(chargenTriPath), "", MeshPathHelpers.NormalizeMeshKey(chargenTriPath))
+        Dim meshKey = If(String.IsNullOrEmpty(headMeshTriPath), "", MeshPathHelpers.NormalizeMeshKey(headMeshTriPath))
+        Dim comboKey = "merged:" & raceKey & "|" & chargenKey & "|" & meshKey
+        Dim merged As TriHeadFile = Nothing
+        If state.TriHeadCache.TryGetValue(comboKey, merged) Then Return merged
+
+        ' Parse ALL THREE sides FRESH (owned copies) so the merge base is never a shared per-path cache object —
+        ' MergeChargenIntoRaceTriHead mutates its first arg, and folding into a shared TriHead would corrupt it for
+        ' other consumers. Precedence race > chargen > mesh (add-if-absent). Merging the head MESH tri LAST is what
+        ' brings "SkinnyMorph" (the actor-weight head/hair morph) into the plan's TriHead — the SAME source the live
+        ' render picks up in LoadTriForShape. CRUCIAL for HAIR/hairline/beard parts: they have NO race/chargen tri
+        ' at all, only their own mesh tri (hairNN.tri = a single SkinnyMorph), so the base ends up BEING that fresh
+        ' mesh TriHead and the weight morph still applies. The comboKey includes meshKey so distinct meshes don't alias.
+        Dim raceHead As TriHeadFile = If(raceKey = "", Nothing, ParseHeadTri(raceKey))
+        Dim chargenHead As TriHeadFile = If(chargenKey = "", Nothing, ParseHeadTri(chargenKey))
+        Dim meshHead As TriHeadFile = If(meshKey = "", Nothing, ParseHeadTri(meshKey))
+        Dim baseTri As TriHeadFile = raceHead
+        NpcMorphResolver.MergeChargenIntoRaceTriHead(baseTri, chargenHead)
+        NpcMorphResolver.MergeChargenIntoRaceTriHead(baseTri, meshHead)
+        merged = baseTri
+        state.TriHeadCache(comboKey) = merged
+        Return merged
+    End Function
 
     ''' <summary>Returns the union of bone names from the actor's face + body skeletons.
     ''' Used by the bake to drop source shapes that skin to bones outside this set

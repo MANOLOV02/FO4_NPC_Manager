@@ -159,8 +159,26 @@ Public Class NpcEditor_Form
         AddHandler ButtonOk.Click, AddressOf OnOk
         AddHandler ButtonCancel.Click, AddressOf OnCancel
 
+        ApplyGameGating()
         LoadNpcIntoPanels(raceFormID)
         SnapshotOpenState()
+    End Sub
+
+    ''' <summary>Hide the NPC_ subrecords that exist only in Fallout 4 when editing a Skyrim NPC, so the user
+    ''' can't author subrecords the Skyrim engine/record has no slot for (which the FO4-shaped writer would emit
+    ''' into a Skyrim NPC): OBTS/OBTE object-template combinations, PRPS properties, and APPR attach-parent slots.
+    ''' Skyrim NPCs never carry these, so removing the tabs/section is loss-free (untouched categories round-trip
+    ''' verbatim regardless). FO4 keeps everything.</summary>
+    Private Sub ApplyGameGating()
+        If Config_App.Current.Game <> Config_App.Game_Enum.Skyrim Then Return
+        If Tabs.TabPages.Contains(TabObts) Then Tabs.TabPages.Remove(TabObts)
+        If Tabs.TabPages.Contains(TabProps) Then Tabs.TabPages.Remove(TabProps)
+        For Each c As Control In New Control() {LabelAppr, ListAppr, ButtonAddAppr, ButtonRemoveAppr}
+            If c IsNot Nothing Then c.Visible = False
+        Next
+        ' 0x800000 = "No Activation / Hellos" in FO4 but an unused/unknown bit in Skyrim (see BuildFlagChecks):
+        ' hide the checkbox; its bit is already excluded from _managedFlagMask on Skyrim so it round-trips verbatim.
+        If ChkNoActHellos IsNot Nothing Then ChkNoActHellos.Visible = False
     End Sub
 
     ' =====================================================================
@@ -168,9 +186,13 @@ Public Class NpcEditor_Form
     ' =====================================================================
 
     Private Sub BuildFlagChecks()
-        ' Bit values from NPC_AcbsData.Flags (wbDefinitionsFO4). The union mask preserves un-surfaced bits.
-        ' Note: ACBS bit 0x04 (Is CharGen Face Preset) is intentionally NOT surfaced here — it is owned by the
-        ' Face editor. It is preserved verbatim by ComposeFlags (it isn't in _managedFlagMask, so it survives).
+        ' ACBS Flags bit values. VERIFIED identical between FO4 (wbDefinitionsFO4) and Skyrim (wbDefinitionsTES5,
+        ' the ACBS 'Flags' wbFlags block) for EVERY surfaced flag EXCEPT bit 0x800000: FO4 = "No Activation /
+        ' Hellos", Skyrim = "Unknown 23" (unused). So ChkNoActHellos is added ONLY on FO4 — on Skyrim its bit stays
+        ' OUT of _managedFlagMask and is preserved verbatim by ComposeFlags (the checkbox is hidden in
+        ' ApplyGameGating). Note: ACBS bit 0x04 (Is CharGen Face Preset) is intentionally NOT surfaced here (both
+        ' games) — owned by the Face editor, preserved verbatim.
+        Dim isSkyrim = (Config_App.Current.Game = Config_App.Game_Enum.Skyrim)
         _flagChecks.Add((ChkFemale, &H1UI))
         _flagChecks.Add((ChkEssential, &H2UI))
         _flagChecks.Add((ChkRespawn, &H8UI))
@@ -183,7 +205,7 @@ Public Class NpcEditor_Form
         _flagChecks.Add((ChkDoesntBleed, &H10000UI))
         _flagChecks.Add((ChkOppositeGender, &H80000UI))
         _flagChecks.Add((ChkSimpleActor, &H100000UI))
-        _flagChecks.Add((ChkNoActHellos, &H800000UI))
+        If Not isSkyrim Then _flagChecks.Add((ChkNoActHellos, &H800000UI))
         _flagChecks.Add((ChkGhost, &H20000000UI))
         _flagChecks.Add((ChkInvulnerable, &H80000000UI))
         _managedFlagMask = 0UI

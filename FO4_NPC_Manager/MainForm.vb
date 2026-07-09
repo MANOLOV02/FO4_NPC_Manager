@@ -1768,13 +1768,48 @@ Public Class MainForm
                     Next
                     existing.HasOverlays = True
                 End If
+                ' SSE body overlays (path-based RaceMenu tattoos) — deep-copy onto the overlay. SSE-only:
+                ' FO4 sidecars leave sseBodyOverlays = Nothing, so this no-ops on FO4.
+                If entry.SseBodyOverlays IsNot Nothing AndAlso entry.SseBodyOverlays.Count > 0 Then
+                    existing.SseBodyOverlays = LooksmenuLoader.CloneSseBodyOverlays(entry.SseBodyOverlays)
+                End If
+                ' SSE node scales (body-scale) — rebuild the carrier from the stored node→scale map.
+                If entry.SseNodeScales IsNot Nothing AndAlso entry.SseNodeScales.Count > 0 Then
+                    Dim nts As New List(Of RaceMenuJslot.JslotNodeTransform)(entry.SseNodeScales.Count)
+                    For Each ns In entry.SseNodeScales
+                        nts.Add(RaceMenuJslot.MakeScaleTransform(ns.Key, ns.Value))
+                    Next
+                    existing.SseNodeTransforms = nts
+                End If
+                ' SSE skin overrides (body-paint per slot) — deep-copy onto the overlay. SSE-only.
+                If entry.SseSkinOverrides IsNot Nothing AndAlso entry.SseSkinOverrides.Count > 0 Then
+                    existing.SseSkinOverrides = LooksmenuLoader.CloneSseSkinOverrides(entry.SseSkinOverrides)
+                End If
+                ' SSE custom face morphs — rebuild onto the overlay so they auto-resolve after reload (SSE-only).
+                If entry.SseCustomMorphs IsNot Nothing AndAlso entry.SseCustomMorphs.Count > 0 Then
+                    Dim cms As New List(Of NPC_CustomMorph)(entry.SseCustomMorphs.Count)
+                    For Each cm In entry.SseCustomMorphs : cms.Add(New NPC_CustomMorph With {.Name = cm.Name, .Value = cm.Value}) : Next
+                    existing.SseCustomMorphs = cms
+                End If
+                ' SSE per-vertex head sculpt — rebuild onto the overlay so it survives reload (SSE-only).
+                If entry.SseSculptHead IsNot Nothing AndAlso entry.SseSculptHead.Count > 0 Then
+                    Dim sc As New List(Of NPC_SculptVert)(entry.SseSculptHead.Count)
+                    For Each sv In entry.SseSculptHead : sc.Add(New NPC_SculptVert With {.Index = sv.Index, .Dx = sv.Dx, .Dy = sv.Dy, .Dz = sv.Dz}) : Next
+                    existing.SseSculptHead = sc
+                End If
+                ' SSE per-layer custom tint mask textures — rebuild onto the overlay so they survive reload (SSE-only).
+                If entry.SseTintTexOverride IsNot Nothing AndAlso entry.SseTintTexOverride.Count > 0 Then
+                    existing.SseTintTexOverride = New Dictionary(Of Integer, String)(entry.SseTintTexOverride)
+                End If
             Next
         Next
     End Sub
 
     Private Sub MainForm_Load(sender As Object, e As EventArgs) Handles MyBase.Load
         SearchDebounceTimer.Interval = 250
-        Config_App.Current.Game = Config_App.Game_Enum.Fallout4
+        ' Game is NOT re-pinned here anymore — Preflight_Form's selector already set Config_App.Current.Game
+        ' (and re-initialized the plugin encoding for it) before this form was constructed. Forcing FO4 here
+        ' would silently override an SSE session picked in the preflight.
         ' NOTE: plugin text encoding (InitializeForGame + SetLanguage + ApplyOverrideIni) AND the
         ' Logger init both live in Program.Main, BEFORE the preflight loads any plugin — mirror
         ' of xEdit's "configure → load → edit" order. Do NOT re-init either here; that would run
@@ -2937,9 +2972,12 @@ Public Class MainForm
             If genderMesh <> "" Then
                 valid = True
                 ' Mirror the render's per-candidate occupancy (NpcMeshCollector): per-ARMA mask plus the
-                ' owning ARMO's HEAD-region bits (HEADWEAR_MASK-gated), so the Create-tab slot-conflict
-                ' marking matches what the render resolves for head-occluding headwear.
-                slotMask = slotMask Or EffectiveArmaSlotMask(arma, armo) Or (armo.SlotMask And BipedSlots.HEADWEAR_MASK)
+                ' owning ARMO's HEAD-region bits (headwear-gated), so the Create-tab slot-conflict
+                ' marking matches what the render resolves for head-occluding headwear. GAME-AWARE:
+                ' HeadwearMaskForGame() (= HEADWEAR_MASK under FO4, byte-identical; SSE excludes slot 32=Body)
+                ' — matches NpcMeshCollector.vb:361 exactly. Antes usaba el const FO4 → en SSE marcaba
+                ' slot 32 (Body) como headwear, divergiendo del render.
+                slotMask = slotMask Or EffectiveArmaSlotMask(arma, armo) Or (armo.SlotMask And BipedSlots.HeadwearMaskForGame())
             End If
         Next
         If slotMask = 0UI Then slotMask = armo.SlotMask
@@ -4404,6 +4442,7 @@ Public Class MainForm
     ''' NPC. One NPC → blocking msgbox (same as the toolbar single path); many → a determinate progress
     ''' dialog (see <see cref="BuildCharGenForSelectionAsync"/>).</summary>
     Private Async Sub MenuItemBuildChargen_Click(sender As Object, e As EventArgs) Handles MenuItemBuildChargen.Click
+        ' Game-aware bake (no blocking gate).
         Dim targets = If(_contextMenuTargets.Count > 0, _contextMenuTargets.Distinct().ToList(), New List(Of UInteger))
         If targets.Count = 0 Then Return
         If targets.Count = 1 Then
@@ -4420,9 +4459,9 @@ Public Class MainForm
     ''' vanilla. Destructive (drops BodyMorphs/Skin edits too) → confirmation first.</summary>
     Private Async Sub MenuItemResetOverlay_Click(sender As Object, e As EventArgs) Handles MenuItemResetOverlay.Click
         Dim sourceTargets = If(_contextMenuTargets.Count > 0, _contextMenuTargets, New List(Of UInteger) From {_contextMenuNpcFormID})
-        ' Only NPCs that actually have something to discard (overlay or dirty mark).
+        ' Only NPCs that actually have something to discard (LM overlay, NPC-record override, or dirty mark).
         Dim targets = sourceTargets.
-            Where(Function(fid) fid <> 0UI AndAlso (_appliedPresets.ContainsKey(fid) OrElse _dirtyNpcs.Contains(fid))).
+            Where(Function(fid) fid <> 0UI AndAlso (_appliedPresets.ContainsKey(fid) OrElse _npcRecordOverrides.ContainsKey(fid) OrElse _dirtyNpcs.Contains(fid))).
             Distinct().ToList()
         If targets.Count = 0 Then Return
 
@@ -4441,15 +4480,24 @@ Public Class MainForm
         Dim mustReRender As Boolean = False
         For Each fid In targets
             _appliedPresets.Remove(fid)
+            ' NPC-record edits (name/flags/race/keywords/factions/… from NpcEditor_Form) are an authored overlay
+            ' too — clear them here so "revert to record" actually reverts them like every other overlay does.
+            _npcRecordOverrides.Remove(fid)
+            ' NpcEditor_Form applies its edit by mutating the LIVE parse-cache instance for immediate preview, so
+            ' clearing the override bag alone would NOT undo the visible edit. Drop the mutated instance from the
+            ' cache; the re-render below re-parses the base record fresh (GetParsedNpc), giving the pristine NPC.
+            Dim discardedNpc As NPC_Data = Nothing
+            _ctx.NpcCache.TryRemove(fid, discardedNpc)
             _dirtyNpcs.Remove(fid)
             If fid = shownFormID Then mustReRender = True
         Next
         RefreshTreeAfterDirtyChange()
 
-        ' Re-render from the baseline only if the currently-shown NPC was among those reset.
+        ' Re-render from the baseline only if the currently-shown NPC was among those reset. GetParsedNpc re-parses
+        ' on the miss we just created above, so the preview shows the pristine record, not the mutated cache instance.
         If mustReRender AndAlso shownFormID <> 0UI Then
-            Dim npc As NPC_Data = Nothing
-            If _ctx.NpcCache.TryGetValue(shownFormID, npc) AndAlso npc IsNot Nothing Then
+            Dim npc As NPC_Data = _ctx.GetParsedNpc(shownFormID)
+            If npc IsNot Nothing Then
                 Try
                     Dim version = Interlocked.Increment(_previewRequestVersion)
                     Await LoadNPCOnDemandAsyncFromExisting(npc, version)
@@ -6587,6 +6635,23 @@ Public Class MainForm
         End If
 
 
+        ' RaceMenu EXTENDED face-slider catalog — SKYRIM ONLY (RaceMenu is a Skyrim mod; FO4 has no analogue, so
+        ' this stays Nothing on FO4 and the custom-morph path falls back to direct-name application). Built ONCE
+        ' here, after the asset dictionary is ready (it reads the .slider config through FilesDictionary), from the
+        ' loaded plugin filenames (skee64 scans Meshes\actors\character\FaceGenMorphs\<pluginName>\races.ini per mod
+        ' — LoadMods→ForEachMod). Feeds the shared render/bake morph path via NpcMorphResolver.SliderCatalog.
+        If Config_App.Current.Game = Config_App.Game_Enum.Skyrim AndAlso NpcMorphResolver.SliderCatalog Is Nothing Then
+            Try
+                Dim modNames = _pluginManager.Plugins.Select(Function(pl) pl.FileName).Where(Function(n) Not String.IsNullOrEmpty(n)).ToList()
+                Dim cat As New FO4_Base_Library.RaceMenuSliderCatalog()
+                cat.Load(modNames)
+                NpcMorphResolver.SliderCatalog = cat
+                Logger.LogLazy(Function() $"[RACEMENU-CATALOG] scanned {modNames.Count} mod folders for FaceGenMorphs\...\races.ini; hasAny={cat.HasAny()}")
+            Catch ex As Exception
+                Logger.LogLazy(Function() $"[RACEMENU-CATALOG] load failed: {ex.Message}")
+            End Try
+        End If
+
         ' Asset dictionary ready; hide the progress bar. (Debug-only TRI / mouth-NIF enumeration
         ' scaffolding — whose results were discarded — was removed 2026-06-24.)
         If InvokeRequired Then
@@ -6612,6 +6677,12 @@ Public Class MainForm
         Dim face As IMorphResolver = Nothing
         If host.Toggles.ApplyVertexMorphs Then face = _morphPoseResolver.BuildFaceMorphResolver(state, renderData, host)
         Dim body = _morphPoseResolver.BuildBodyMorphResolver(state, renderData, host)
+        ' SSE vanilla body-weight (_0/_1) vertex LERP. SSE-only (Nothing on FO4), so this is inert for
+        ' FO4 and MultiMorphResolver filters the null. Ordered after face, before BodySlide.
+        Dim sseBodyWeight = _morphPoseResolver.BuildSseBodyWeightResolver(state, renderData, host)
+        ' SSE HEAD/HAIR weight morph is now folded into the FACE resolver's plan (SkinnyMorph channel added by
+        ' BuildFaceMorphPlanFromNam9 from each shape's own mesh tri), so head+hair track the body neck across
+        ' weight per-part and race-aware — no separate head-weight resolver / hardcoded delta table.
         ' Hair zap resolver: emite el/los canal(es) de zap para las shapes Hair {30,31} marcadas con
         ' ZapParts (Top/Long/Both) según el modelo complementario main/hairline. Gated por "Render
         ' headwear": OFF → no se engancha → la mesh se destapa en el próximo pase de morphs (igual que la
@@ -6622,7 +6693,7 @@ Public Class MainForm
         Dim hairTopZap = _morphPoseResolver.BuildHairTopZapResolver(renderData, host)
 
         ' Junta los delegates no-nulos. MultiMorphResolver filtra nulls, así que paso los tres.
-        Dim delegates = New IMorphResolver() {face, body, hairTopZap}.Where(Function(r) r IsNot Nothing).ToArray()
+        Dim delegates = New IMorphResolver() {face, sseBodyWeight, body, hairTopZap}.Where(Function(r) r IsNot Nothing).ToArray()
         If delegates.Length = 0 Then Return Nothing
         If delegates.Length = 1 Then Return delegates(0)
         Return New MultiMorphResolver(delegates)
@@ -7447,6 +7518,13 @@ Public Class MainForm
     ''' the preset as a per-NPC overlay and re-renders. The underlying NPC_Data records are NOT
     ''' mutated — see <see cref="_appliedPresets"/>.</summary>
     Private Async Sub ButtonLoadLooksmenu_Click(sender As Object, e As EventArgs) Handles ButtonLoadLooksmenu.Click
+        ' LooksMenu presets are the FO4 f4ee format (F4SE\Plugins\F4EE). SSE uses RaceMenu (.jslot): map the
+        ' loaded .jslot onto a per-NPC overlay preset (RaceMenuPresetMapper.ApplyJslotToPreset) and re-render
+        ' through the SAME overlay funnel the FO4 path uses (_appliedPresets + LoadNPCOnDemandAsyncFromExisting).
+        If Config_App.Current.Game = Config_App.Game_Enum.Skyrim Then
+            Await LoadRaceMenuPresetForSseAsync()
+            Return
+        End If
         If _renderHost.CurrentBaseState Is Nothing Then Return
 
         Dim npcFormID = _renderHost.CurrentBaseState.RootNpcFormID
@@ -7540,6 +7618,96 @@ Public Class MainForm
         End If
 
     End Sub
+
+    ''' <summary>SSE counterpart of <see cref="ButtonLoadLooksmenu_Click"/>: pick a RaceMenu <c>.jslot</c>,
+    ''' map it onto the current NPC's overlay preset via <see cref="RaceMenuPresetMapper.ApplyJslotToPreset"/>,
+    ''' and re-render through the same overlay funnel the FO4 path uses (_appliedPresets +
+    ''' LoadNPCOnDemandAsyncFromExisting). The applied .jslot is mapped onto a CLONE of any pre-existing
+    ''' overlay so we can restore the prior state on failure.</summary>
+    Private Async Function LoadRaceMenuPresetForSseAsync() As Task
+        If _renderHost.CurrentBaseState Is Nothing Then Return
+
+        Dim npcFormID = _renderHost.CurrentBaseState.RootNpcFormID
+        Dim npc As NPC_Data = Nothing
+        If Not _ctx.NpcCache.TryGetValue(npcFormID, npc) OrElse npc Is Nothing Then
+            MessageBox.Show("Could not find NPC record in cache.", "Load RaceMenu",
+                            MessageBoxButtons.OK, MessageBoxIcon.Error)
+            Return
+        End If
+
+        ' Resolve race for the header AND the race-compatibility filter (same as the FO4 Load path). RaceMenu is
+        ' race-aware too: HeadPartResolver.IsPresetCompatibleWithRace validates the preset's headParts against the
+        ' NPC's RACE the same way. (SSE armor uses a flat per-race ARMA list; that governs skin/armor RESOLUTION,
+        ' not preset compatibility — the headPart/RACE check here is the right race gate for the preset browser.)
+        Dim raceFormID As UInteger = _renderHost.CurrentBaseState.RaceFormID
+        Dim raceDisplay As String = $"0x{raceFormID:X8}"
+        Dim race As RACE_Data = Nothing
+        Dim raceRec = _pluginManager.GetRecord(raceFormID)
+        If raceRec IsNot Nothing Then
+            race = _ctx.ParseRaceCached(raceRec)
+            If race IsNot Nothing AndAlso Not String.IsNullOrEmpty(race.EditorID) Then raceDisplay = race.EditorID
+        End If
+        Dim gender As Byte = If(_renderHost.CurrentBaseState.IsFemale, CByte(1), CByte(0))
+        Dim raceDefaultsForLm As IEnumerable(Of UInteger) =
+            If(_renderHost.CurrentBaseState.IsFemale, race?.FemaleHeadPartFormIDs, race?.MaleHeadPartFormIDs)
+
+        ' RaceMenu preset directory (skee64 PapyrusCharGen.cpp): Data\SKSE\Plugins\CharGen\Presets. Same
+        ' _dataPath Data-root the FO4 Save path composes its F4SE\Plugins\F4EE\Presets path from.
+        Dim presetsDir = IO.Path.Combine(_dataPath, "SKSE", "Plugins", "CharGen", "Presets")
+
+        ' Snapshot the overlay state *before* the dialog opens so we can roll back on Cancel. The browser drives a
+        ' live preview via PreviewRequested on every selection change (same funnel as FO4); Cancel restores this.
+        Dim hadPriorOverlay As Boolean = _appliedPresets.TryGetValue(npcFormID, Nothing)
+        Dim priorOverlay As LooksmenuLoader.LooksmenuPreset = Nothing
+        _appliedPresets.TryGetValue(npcFormID, priorOverlay)
+
+        ' Mapper the browser calls per .jslot file: load it and map onto a CLONE of the pre-dialog overlay (so
+        ' prior NPC-specific fields survive) → a full LooksmenuPreset for display + live preview. Returns Nothing
+        ' on a bad/unreadable file (the browser skips it). SourcePath/Gender are stamped for the list + summary.
+        Dim mapper As Func(Of String, LooksmenuLoader.LooksmenuPreset) =
+            Function(fp As String) As LooksmenuLoader.LooksmenuPreset
+                Try
+                    Dim j = RaceMenuJslot.Load(IO.File.ReadAllBytes(fp))
+                    If j Is Nothing Then Return Nothing
+                    Dim preset = If(priorOverlay IsNot Nothing, LooksmenuLoader.ClonePreset(priorOverlay),
+                                                                New LooksmenuLoader.LooksmenuPreset() With {.Gender = gender})
+                    RaceMenuPresetMapper.ApplyJslotToPreset(j, preset, _pluginManager)   ' pluginManager → resolve headParts/headTexture identity
+                    preset.SourcePath = fp
+                    preset.Gender = gender
+                    Return preset
+                Catch
+                    Return Nothing
+                End Try
+            End Function
+
+        Dim npcHasBodyTri = NpcHasAnyBodyTri()
+        Dim selected As LooksmenuLoader.LooksmenuPreset = Nothing
+        Dim dialogResult As DialogResult
+        Using dlg As New LooksmenuLoad_Form(_pluginManager, _dataPath, gender, raceDisplay, npcHasBodyTri,
+                                            raceFormID, race, raceDefaultsForLm,
+                                            isSse:=True, ssePresetsDir:=presetsDir, sseMapper:=mapper)
+            AddHandler dlg.PreviewRequested, Sub(s, args) PreviewLooksmenuOverlay(npcFormID, npc, args.Preset, args.ApplyBodySliders)
+            dialogResult = dlg.ShowDialog(Me)
+            selected = dlg.SelectedPreset
+        End Using
+
+        If dialogResult <> DialogResult.OK Then
+            ' Cancel / [X] / Esc → restore pre-dialog overlay state and re-render.
+            If hadPriorOverlay Then _appliedPresets(npcFormID) = priorOverlay Else _appliedPresets.Remove(npcFormID)
+            Try
+                Dim restoreVersion = Interlocked.Increment(_previewRequestVersion)
+                Await LoadNPCOnDemandAsyncFromExisting(npc, restoreVersion)
+            Catch ex As Exception
+                MessageBox.Show($"Failed to restore preview after cancel: {ex.Message}",
+                                "Load RaceMenu", MessageBoxButtons.OK, MessageBoxIcon.Error)
+            End Try
+            Return
+        End If
+
+        If selected Is Nothing Then Return
+        ' OK: the live preview already left `selected` applied in _appliedPresets and rendered. Just mark dirty.
+        MarkNpcDirty(npcFormID)
+    End Function
 
     ''' <summary>Live-preview handler invoked by <see cref="LooksmenuLoad_Form.PreviewRequested"/>
     ''' on every selection change. Applies (or removes) the overlay and triggers a non-blocking
@@ -7739,6 +7907,23 @@ Public Class MainForm
         Return LooksmenuLoader.CloneFaceTintLayer(tl)
     End Function
 
+    ''' <summary>Deep-copy a flat SSE tint subrecord list (TINI/TINC/TINV/TIAS) so the snapshot's
+    ''' SseTintRawOverride is independent of the overlay/record source it was captured from (the byte
+    ''' arrays are cloned). Nothing in → Nothing out.</summary>
+    Private Shared Function CloneSseTintRaw(src As List(Of NPC_RawSubrecord)) As List(Of NPC_RawSubrecord)
+        If src Is Nothing Then Return Nothing
+        Dim copy As New List(Of NPC_RawSubrecord)(src.Count)
+        For Each sr In src
+            If sr Is Nothing Then Continue For
+            copy.Add(New NPC_RawSubrecord With {
+                .Sig = sr.Sig,
+                .Data = If(sr.Data Is Nothing, Nothing, CType(sr.Data.Clone(), Byte())),
+                .IsFormId = sr.IsFormId
+            })
+        Next
+        Return copy
+    End Function
+
     ''' <summary>Copy the round-trip-only NPC_Data fields from the raw parse to the shadow
     ''' produced by ApplyPresetOverlayToNpcData. The shadow only carries renderer-relevant
     ''' state (tints, morphs, headparts, etc.); fields like Vmad raw bytes, ACBS struct,
@@ -7812,7 +7997,10 @@ Public Class MainForm
         shadow.Nam5Raw = raw.Nam5Raw
         shadow.HeightMin = raw.HeightMin
         shadow.HasHeightMin = raw.HasHeightMin
-        shadow.Nam7Raw = raw.Nam7Raw
+        ' NAM7 (SSE body weight) may already be set by ApplyPresetOverlayToNpcData from the preset's
+        ' SseWeight override — preserve it. Only fall back to raw when the overlay left it unset (FO4, or
+        ' an SSE NPC with no weight edit gets raw carried through by the overlay anyway → byte-identical).
+        If shadow.Nam7Raw Is Nothing Then shadow.Nam7Raw = raw.Nam7Raw
         shadow.HeightMax = raw.HeightMax
         shadow.HasHeightMax = raw.HasHeightMax
         shadow.SoundLevel = raw.SoundLevel
@@ -8385,6 +8573,97 @@ Public Class MainForm
             preset.FaceTintLayers.Add(cloned)
         Next
 
+        ' SSE (Skyrim) capture. All FO4 capture above is game-agnostic and untouched; this branch ONLY runs
+        ' under Skyrim so FO4 Copy/Save snapshots stay byte-identical. It populates the preset's SSE carriers
+        ' (weight / body morphs / body overlays / NAM9-NAMA head morphs / sculpt / custom morphs / tints) so
+        ' Copy and Save capture the FULL effective SSE state, exactly as the render+bake read it.
+        '
+        ' Source priority per field: the existing overlay `_appliedPresets(RootNpcFormID)` (fetched as `overlay`
+        ' at :8298) wins because it holds live edits; record-backed fields fall back to the parsed NPC (`raw`)
+        ' when the overlay is absent or hasn't set them. Body morphs / sculpt / custom morphs / body overlays
+        ' have NO record source (F4SE/RaceMenu-only) → left empty when there is no overlay.
+        If Config_App.Current IsNot Nothing AndAlso Config_App.Current.Game = Config_App.Game_Enum.Skyrim Then
+            ' --- Vanilla body weight (NAM7): overlay SseWeight else record NAM7 (default 100). ---
+            If overlay IsNot Nothing AndAlso overlay.SseWeight.HasValue Then
+                preset.SseWeight = overlay.SseWeight.Value
+            ElseIf raw.Nam7Raw IsNot Nothing AndAlso raw.Nam7Raw.Length >= 4 Then
+                preset.SseWeight = BitConverter.ToSingle(raw.Nam7Raw, 0)
+            Else
+                preset.SseWeight = 100.0F
+            End If
+
+            ' --- Head morphs (NAM9 18 floats + NAMA 4 type uints): overlay if set, else parse the record. ---
+            If overlay IsNot Nothing AndAlso overlay.HasSseMorphs AndAlso overlay.SseNam9 IsNot Nothing Then
+                preset.SseNam9 = DirectCast(overlay.SseNam9.Clone(), Single())
+                preset.SseNama = If(overlay.SseNama Is Nothing, New UInteger(SseNam9MorphMap.NamaFamilyCount - 1) {}, DirectCast(overlay.SseNama.Clone(), UInteger()))
+                preset.HasSseMorphs = True
+            Else
+                Dim nam9(SseNam9MorphMap.Nam9SliderCount - 1) As Single
+                For i = 0 To SseNam9MorphMap.Nam9SliderCount - 1
+                    If raw.Nam9Raw IsNot Nothing AndAlso raw.Nam9Raw.Length >= (i + 1) * 4 Then
+                        Dim v = BitConverter.ToSingle(raw.Nam9Raw, i * 4)
+                        If Single.IsNaN(v) OrElse Single.IsInfinity(v) Then v = 0.0F
+                        nam9(i) = v
+                    End If
+                Next
+                Dim nama(SseNam9MorphMap.NamaFamilyCount - 1) As UInteger
+                For f = 0 To SseNam9MorphMap.NamaFamilyCount - 1
+                    If raw.NamaRaw IsNot Nothing AndAlso raw.NamaRaw.Length >= (f + 1) * 4 Then
+                        Dim tv = BitConverter.ToUInt32(raw.NamaRaw, f * 4)
+                        If tv = SseNam9MorphMap.NamaUnset Then tv = 0UI
+                        nama(f) = tv
+                    End If
+                Next
+                preset.SseNam9 = nam9
+                preset.SseNama = nama
+                preset.HasSseMorphs = (raw.Nam9Raw IsNot Nothing OrElse raw.NamaRaw IsNot Nothing)
+            End If
+
+            ' --- Face tints (TINI/TINC/TINV/TIAS): overlay if set, else the record's authored list. ---
+            If overlay IsNot Nothing AndAlso overlay.HasSseTints AndAlso overlay.SseTintRawOverride IsNot Nothing Then
+                preset.SseTintRawOverride = CloneSseTintRaw(overlay.SseTintRawOverride)
+                preset.HasSseTints = True
+            ElseIf raw.SseTintRaw IsNot Nothing AndAlso raw.SseTintRaw.Count > 0 Then
+                preset.SseTintRawOverride = CloneSseTintRaw(raw.SseTintRaw)
+                preset.HasSseTints = True
+            End If
+
+            ' --- F4SE/RaceMenu-only carriers (no record source): overlay only, else leave empty. ---
+            If overlay IsNot Nothing Then
+                If overlay.BodyMorphsKeyed IsNot Nothing Then
+                    Dim bmk As New Dictionary(Of String, Dictionary(Of String, Single))(StringComparer.OrdinalIgnoreCase)
+                    For Each kv In overlay.BodyMorphsKeyed
+                        Dim inner As New Dictionary(Of String, Single)(StringComparer.OrdinalIgnoreCase)
+                        If kv.Value IsNot Nothing Then
+                            For Each ik In kv.Value : inner(ik.Key) = ik.Value : Next
+                        End If
+                        bmk(kv.Key) = inner
+                    Next
+                    preset.BodyMorphsKeyed = bmk
+                End If
+                preset.SseBodyOverlays = LooksmenuLoader.CloneSseBodyOverlays(overlay.SseBodyOverlays)
+                preset.SseNodeTransforms = LooksmenuLoader.CloneSseNodeTransforms(overlay.SseNodeTransforms)
+                preset.SseSkinOverrides = LooksmenuLoader.CloneSseSkinOverrides(overlay.SseSkinOverrides)
+                If overlay.SseSculptHead IsNot Nothing Then
+                    Dim sc As New List(Of NPC_SculptVert)(overlay.SseSculptHead.Count)
+                    For Each sv In overlay.SseSculptHead
+                        sc.Add(New NPC_SculptVert With {.Index = sv.Index, .Dx = sv.Dx, .Dy = sv.Dy, .Dz = sv.Dz})
+                    Next
+                    preset.SseSculptHead = sc
+                End If
+                If overlay.SseCustomMorphs IsNot Nothing Then
+                    Dim cms As New List(Of NPC_CustomMorph)(overlay.SseCustomMorphs.Count)
+                    For Each cm In overlay.SseCustomMorphs
+                        cms.Add(New NPC_CustomMorph With {.Name = cm.Name, .Value = cm.Value})
+                    Next
+                    preset.SseCustomMorphs = cms
+                End If
+                If overlay.SseTintTexOverride IsNot Nothing AndAlso overlay.SseTintTexOverride.Count > 0 Then
+                    preset.SseTintTexOverride = New Dictionary(Of Integer, String)(overlay.SseTintTexOverride)
+                End If
+            End If
+        End If
+
         ' BuildPresetFromState produces a complete snapshot of the rendered NPC. By definition
         ' every overlay-replaceable field is "present" in this snapshot, so all Has* flags are
         ' True — the resulting preset, when applied as overlay, fully replaces those fields on
@@ -8529,10 +8808,14 @@ Public Class MainForm
     Private Structure BodyEditAvailability
         Public HasMwgt As Boolean
         Public HasMrsv As Boolean
+        ' SSE-only: the vanilla body weight (NAM7 → _0/_1 LERP) is always editable on a Skyrim NPC even when
+        ' the FO4 MWGT/MRSV BSMS channels are absent. Lets the Edit Body button enable so the SSE weight
+        ' editor is reachable. Always False on FO4 (the FO4 gate is unchanged).
+        Public HasSseWeight As Boolean
         Public BodySlideSliders As List(Of String)
         Public ReadOnly Property AnythingAvailable As Boolean
             Get
-                Return HasMwgt OrElse HasMrsv OrElse (BodySlideSliders IsNot Nothing AndAlso BodySlideSliders.Count > 0)
+                Return HasMwgt OrElse HasMrsv OrElse HasSseWeight OrElse (BodySlideSliders IsNot Nothing AndAlso BodySlideSliders.Count > 0)
             End Get
         End Property
     End Structure
@@ -8567,6 +8850,12 @@ Public Class MainForm
         If renderData IsNot Nothing AndAlso renderData.Shapes IsNot Nothing Then
             avail.BodySlideSliders = BodySlideTriResolver.EnumerateSliderNames(
                 renderData.Shapes, renderData.MeshDictKeys)
+        End If
+
+        ' SSE: body weight (NAM7) is always an editable channel — surface the editor even for races
+        ' with no BSMS MWGT/MRSV and no BodySlide .tri. Gated on the session game (mirror the _isSSE idiom).
+        If Config_App.Current IsNot Nothing AndAlso Config_App.Current.Game = Config_App.Game_Enum.Skyrim Then
+            avail.HasSseWeight = True
         End If
 
         Return avail
@@ -8604,6 +8893,12 @@ Public Class MainForm
                     initial.Mrsv(i) = effectiveNpc.BodyMorphRegionValues(i)
                 End If
             Next
+        End If
+        ' SSE body weight (NAM7). Read the overlay-applied effective weight so the editor's SSE weight
+        ' slider opens at the NPC's current value (default 100 when unset / not SSE). Harmless on FO4
+        ' (NAM7 Unused there; the editor's SSE section is never built).
+        If effectiveNpc IsNot Nothing AndAlso effectiveNpc.Nam7Raw IsNot Nothing AndAlso effectiveNpc.Nam7Raw.Length >= 4 Then
+            initial.SseWeight = BitConverter.ToSingle(effectiveNpc.Nam7Raw, 0)
         End If
         ' BodySlide sliders that the overlay (or a previously loaded preset) already carries —
         ' open at those values; otherwise zero. There is no record-level source for these.
@@ -8807,16 +9102,37 @@ Public Class MainForm
     ''' race has no head parts, no hair colors, no morph presets backed by the loaded TRI, no
     ''' tint groups, and no FacialBoneRegions JSON, the editor would be entirely empty — same
     ''' rule Edit Body uses to skip a useless picker.</summary>
+    ''' <summary>Game-aware guard for features whose Skyrim/SSE path is not implemented yet. When the
+    ''' active game is Skyrim it shows a standard notice and returns True (caller must Return); for
+    ''' Fallout 4 it returns False (proceed). Per user decision 2026-07-08 the FO4-model buttons stay
+    ''' ENABLED for SSE (no game-based disabling) — the click surfaces this notice instead of running
+    ''' FO4-only logic that would misbehave. Drop the guard from a handler once its SSE path lands.</summary>
+    Private Function SseFeatureNotImplemented(featureName As String) As Boolean
+        If Config_App.Current.Game <> Config_App.Game_Enum.Skyrim Then Return False
+        MessageBox.Show(Me, $"{featureName} is not implemented for Skyrim (SSE) yet.",
+                        featureName, MessageBoxButtons.OK, MessageBoxIcon.Information)
+        Return True
+    End Function
+
     Private Sub UpdateEditFaceEnabled()
         Dim shouldEnable As Boolean = False
         If _renderHost.LastRenderedState IsNot Nothing AndAlso _renderHost.LastRenderData IsNot Nothing Then
-            Dim avail = ComputeFaceEditAvailability(_renderHost.LastRenderedState, _renderHost)
-            ' Canonical race-level gate: even if the race exposes some authored content (hair colors,
-            ' tint groups, …), Edit Face is only meaningful for a FaceGen race (one with a head/face).
-            ' RaceSupportsFaceGen reads RACE.DATA bit 0x2 — the 0-exception discriminator — so non-FaceGen
-            ' races (dog/creature/robot/turret/feral-ghoul/etc.) keep the button disabled.
-            shouldEnable = avail.AnythingAvailable AndAlso
-                           RaceUtil.RaceSupportsFaceGen(_renderHost.LastRenderedState.RaceFormID, _pluginManager)
+            If Config_App.Current.Game = Config_App.Game_Enum.Skyrim Then
+                ' SSE: the FO4 availability model (tint template groups, RACE morph groups, FacialBoneRegions
+                ' JSON) doesn't apply, and the Edit Face editor + FaceGen texture bake aren't ported to Skyrim
+                ' yet. Per user decision 2026-07-08, do NOT disable by game — keep the buttons reachable on any
+                ' rendered NPC so the click surfaces the "not implemented for Skyrim" notice
+                ' (SseFeatureNotImplemented at the handlers).
+                shouldEnable = True
+            Else
+                Dim avail = ComputeFaceEditAvailability(_renderHost.LastRenderedState, _renderHost)
+                ' Canonical race-level gate: even if the race exposes some authored content (hair colors,
+                ' tint groups, …), Edit Face is only meaningful for a FaceGen race (one with a head/face).
+                ' RaceSupportsFaceGen reads RACE.DATA bit 0x2 — the 0-exception discriminator — so non-FaceGen
+                ' races (dog/creature/robot/turret/feral-ghoul/etc.) keep the button disabled.
+                shouldEnable = avail.AnythingAvailable AndAlso
+                               RaceUtil.RaceSupportsFaceGen(_renderHost.LastRenderedState.RaceFormID, _pluginManager)
+            End If
         End If
         ' Build CharGen also enables for a multi-selection: the batch resolves + skips per NPC, so it
         ' must NOT be gated on the single rendered NPC's face-edit availability (the random pick could
@@ -8834,6 +9150,8 @@ Public Class MainForm
     End Sub
 
     Private Async Sub ButtonEditFace_Click(sender As Object, e As EventArgs) Handles ButtonEditFace.Click
+        ' Game-gated inside EditFace_Form (_isSSE): SSE drives the NAM9/NAMA + sculpt + tint + .jslot path,
+        ' FO4 the LooksMenu path. No blocking gate — the editor is game-aware.
         If _renderHost.LastRenderedState Is Nothing Then Return
         Dim raceFormID = _renderHost.LastRenderedState.RaceFormID
         If raceFormID = 0UI Then
@@ -8904,6 +9222,8 @@ Public Class MainForm
     End Sub
 
     Private Async Sub ButtonBuildCharGen_Click(sender As Object, e As EventArgs) Handles ButtonBuildCharGen.Click
+        ' Game-aware: geometry morph is game-aware (FaceGenBuildPipeline); SSE texture/facetint is handled by
+        ' the SSE bake path. No blocking gate.
         ' Multi-selection → batch build with a determinate progress dialog. Otherwise the single
         ' currently-rendered NPC, reported via a blocking message box (unchanged behaviour).
         If _selectedNpcFormIDs.Count >= 2 Then
@@ -9102,7 +9422,7 @@ Public Class MainForm
         ' nothing changes on the target NPC. The dialog defaults all checkboxes to True so the
         ' "select OK without thinking" path matches the legacy "paste everything" behavior.
         Dim options As PasteOptions
-        Using dlg As New PasteOptionsDialog()
+        Using dlg As New PasteOptionsDialog(Config_App.Current IsNot Nothing AndAlso Config_App.Current.Game = Config_App.Game_Enum.Skyrim)
             If dlg.ShowDialog(Me) <> DialogResult.OK Then Return
             options = dlg.BuildOptions()
         End Using
@@ -9146,6 +9466,15 @@ Public Class MainForm
     Private Function BuildFilteredPaste(source As LooksmenuLoader.LooksmenuPreset,
                                          targetRaw As NPC_Data,
                                          options As PasteOptions) As LooksmenuLoader.LooksmenuPreset
+        ' Game gate: under Skyrim the categories carry SSE fields (SseWeight / BodyMorphsKeyed /
+        ' SseBodyOverlays / SseTintRawOverride / NAM9-NAMA / sculpt / custom morphs) and the FO4-only
+        ' categories (MRSV / FMRS / LM skin template) are absent. Dispatch to the SSE builder so the FO4
+        ' path below stays byte-identical. Shared record fields (skin / outfit / head parts / hair color /
+        ' ACBS flag) are handled the same way in both builders.
+        If Config_App.Current IsNot Nothing AndAlso Config_App.Current.Game = Config_App.Game_Enum.Skyrim Then
+            Return BuildFilteredPasteSse(source, targetRaw, options)
+        End If
+
         Dim p As New LooksmenuLoader.LooksmenuPreset With {
             .SourcePath = source.SourcePath,
             .Gender = source.Gender
@@ -9322,10 +9651,243 @@ Public Class MainForm
         Return p
     End Function
 
+    ''' <summary>SSE (Skyrim) counterpart of <see cref="BuildFilteredPaste"/>. Same contract — for each
+    ''' category whose flag is set, take the SOURCE clipboard value; otherwise PRESERVE the target NPC's
+    ''' current value — but the categories map to the SSE carriers instead of the FO4 fields:
+    ''' <list type="bullet">
+    ''' <item>BodyWeight → SseWeight (NAM7)</item>
+    ''' <item>BodySliders → BodyMorphsKeyed (+ flat BodyMorphSliders so the render dict is consistent)</item>
+    ''' <item>Overlays → SseBodyOverlays (path-based RaceMenu tattoos)</item>
+    ''' <item>FaceTints → SseTintRawOverride + HasSseTints</item>
+    ''' <item>FaceVertexMorphs → SseNam9 + SseNama + HasSseMorphs + SseCustomMorphs</item>
+    ''' <item>Sculpt → SseSculptHead (per-vertex)</item>
+    ''' </list>
+    ''' Shared record fields (SkinOverride / Outfit / FaceParts / HairColor / IsCharGenPreset) are handled
+    ''' identically to the FO4 path (game-agnostic record fields). MRSV / FMRS / LM skin template have no SSE
+    ''' equivalent and are never copied. The preserve reads mirror the SSE capture in
+    ''' <see cref="BuildPresetFromState"/>: record-backed fields fall back to the parsed record when the
+    ''' target has no overlay; F4SE/RaceMenu-only carriers are overlay-only (empty when there is no overlay).
+    ''' </summary>
+    Private Function BuildFilteredPasteSse(source As LooksmenuLoader.LooksmenuPreset,
+                                            targetRaw As NPC_Data,
+                                            options As PasteOptions) As LooksmenuLoader.LooksmenuPreset
+        Dim p As New LooksmenuLoader.LooksmenuPreset With {
+            .SourcePath = source.SourcePath,
+            .Gender = source.Gender
+        }
+
+        ' The target NPC's live overlay (if any) holds edits that win over the parsed record for the
+        ' "preserve" branches — same source priority BuildPresetFromState uses (overlay else record).
+        Dim tOverlay As LooksmenuLoader.LooksmenuPreset = Nothing
+        _appliedPresets.TryGetValue(targetRaw.FormID, tOverlay)
+
+        ' --- Body weight (NAM7 float) ---
+        If options.BodyWeight AndAlso source.SseWeight.HasValue Then
+            p.SseWeight = source.SseWeight.Value
+        Else
+            If tOverlay IsNot Nothing AndAlso tOverlay.SseWeight.HasValue Then
+                p.SseWeight = tOverlay.SseWeight.Value
+            ElseIf targetRaw.Nam7Raw IsNot Nothing AndAlso targetRaw.Nam7Raw.Length >= 4 Then
+                p.SseWeight = BitConverter.ToSingle(targetRaw.Nam7Raw, 0)
+            Else
+                p.SseWeight = 100.0F
+            End If
+        End If
+
+        ' --- Body sliders (BodyMorphsKeyed + flat render dict). F4SE/RaceMenu-only, no record source. ---
+        If options.BodySliders Then
+            p.BodyMorphsKeyed = CloneBodyMorphsKeyed(source.BodyMorphsKeyed)
+            If source.BodyMorphSliders IsNot Nothing Then
+                For Each kv In source.BodyMorphSliders : p.BodyMorphSliders(kv.Key) = kv.Value : Next
+            End If
+        ElseIf tOverlay IsNot Nothing Then
+            p.BodyMorphsKeyed = CloneBodyMorphsKeyed(tOverlay.BodyMorphsKeyed)
+            If tOverlay.BodyMorphSliders IsNot Nothing Then
+                For Each kv In tOverlay.BodyMorphSliders : p.BodyMorphSliders(kv.Key) = kv.Value : Next
+            End If
+        End If
+
+        ' --- Body overlays (path-based RaceMenu tattoos). F4SE/RaceMenu-only, no record source. ---
+        If options.Overlays Then
+            p.SseBodyOverlays = LooksmenuLoader.CloneSseBodyOverlays(source.SseBodyOverlays)
+        ElseIf tOverlay IsNot Nothing Then
+            p.SseBodyOverlays = LooksmenuLoader.CloneSseBodyOverlays(tOverlay.SseBodyOverlays)
+        End If
+
+        ' --- Body scale (RaceMenu NiOverride node transforms). Carried with the BodySliders category
+        ' (both are body-shape); persists through Paste rather than being dropped. ---
+        If options.BodySliders Then
+            p.SseNodeTransforms = LooksmenuLoader.CloneSseNodeTransforms(source.SseNodeTransforms)
+        ElseIf tOverlay IsNot Nothing Then
+            p.SseNodeTransforms = LooksmenuLoader.CloneSseNodeTransforms(tOverlay.SseNodeTransforms)
+        End If
+
+        ' --- Skin overrides (RaceMenu NiOverride body-paint per slot). Texture-appearance layers on the
+        ' body → carried with the Overlays category (same conceptual group as the tattoo overlays). ---
+        If options.Overlays Then
+            p.SseSkinOverrides = LooksmenuLoader.CloneSseSkinOverrides(source.SseSkinOverrides)
+        ElseIf tOverlay IsNot Nothing Then
+            p.SseSkinOverrides = LooksmenuLoader.CloneSseSkinOverrides(tOverlay.SseSkinOverrides)
+        End If
+
+        ' --- Face tints (TINI/TINC/TINV/TIAS raw list + RaceMenu per-layer custom mask textures) ---
+        Dim tintSrc As LooksmenuLoader.LooksmenuPreset = If(options.FaceTints, source, Nothing)
+        If tintSrc IsNot Nothing AndAlso tintSrc.HasSseTints AndAlso tintSrc.SseTintRawOverride IsNot Nothing Then
+            p.SseTintRawOverride = CloneSseTintRaw(tintSrc.SseTintRawOverride)
+            p.HasSseTints = True
+            If tintSrc.SseTintTexOverride IsNot Nothing Then p.SseTintTexOverride = New Dictionary(Of Integer, String)(tintSrc.SseTintTexOverride)
+        ElseIf tOverlay IsNot Nothing AndAlso tOverlay.HasSseTints AndAlso tOverlay.SseTintRawOverride IsNot Nothing Then
+            p.SseTintRawOverride = CloneSseTintRaw(tOverlay.SseTintRawOverride)
+            p.HasSseTints = True
+            If tOverlay.SseTintTexOverride IsNot Nothing Then p.SseTintTexOverride = New Dictionary(Of Integer, String)(tOverlay.SseTintTexOverride)
+        ElseIf targetRaw.SseTintRaw IsNot Nothing AndAlso targetRaw.SseTintRaw.Count > 0 Then
+            p.SseTintRawOverride = CloneSseTintRaw(targetRaw.SseTintRaw)
+            p.HasSseTints = True
+        End If
+
+        ' --- Face morphs (NAM9 18 floats + NAMA 4 type uints) + custom morphs (NiOverride) ---
+        If options.FaceVertexMorphs AndAlso source.HasSseMorphs AndAlso source.SseNam9 IsNot Nothing Then
+            p.SseNam9 = DirectCast(source.SseNam9.Clone(), Single())
+            p.SseNama = If(source.SseNama Is Nothing, New UInteger(SseNam9MorphMap.NamaFamilyCount - 1) {}, DirectCast(source.SseNama.Clone(), UInteger()))
+            p.HasSseMorphs = True
+            p.SseCustomMorphs = CloneSseCustomMorphs(source.SseCustomMorphs)
+        Else
+            ' Preserve target: overlay morphs if set, else parse the record's NAM9/NAMA.
+            If tOverlay IsNot Nothing AndAlso tOverlay.HasSseMorphs AndAlso tOverlay.SseNam9 IsNot Nothing Then
+                p.SseNam9 = DirectCast(tOverlay.SseNam9.Clone(), Single())
+                p.SseNama = If(tOverlay.SseNama Is Nothing, New UInteger(SseNam9MorphMap.NamaFamilyCount - 1) {}, DirectCast(tOverlay.SseNama.Clone(), UInteger()))
+                p.HasSseMorphs = True
+            Else
+                Dim nam9(SseNam9MorphMap.Nam9SliderCount - 1) As Single
+                For i = 0 To SseNam9MorphMap.Nam9SliderCount - 1
+                    If targetRaw.Nam9Raw IsNot Nothing AndAlso targetRaw.Nam9Raw.Length >= (i + 1) * 4 Then
+                        Dim v = BitConverter.ToSingle(targetRaw.Nam9Raw, i * 4)
+                        If Single.IsNaN(v) OrElse Single.IsInfinity(v) Then v = 0.0F
+                        nam9(i) = v
+                    End If
+                Next
+                Dim nama(SseNam9MorphMap.NamaFamilyCount - 1) As UInteger
+                For f = 0 To SseNam9MorphMap.NamaFamilyCount - 1
+                    If targetRaw.NamaRaw IsNot Nothing AndAlso targetRaw.NamaRaw.Length >= (f + 1) * 4 Then
+                        Dim tv = BitConverter.ToUInt32(targetRaw.NamaRaw, f * 4)
+                        If tv = SseNam9MorphMap.NamaUnset Then tv = 0UI
+                        nama(f) = tv
+                    End If
+                Next
+                p.SseNam9 = nam9
+                p.SseNama = nama
+                p.HasSseMorphs = (targetRaw.Nam9Raw IsNot Nothing OrElse targetRaw.NamaRaw IsNot Nothing)
+            End If
+            ' Custom morphs are overlay-only (no record source) — preserve the target overlay's.
+            If tOverlay IsNot Nothing Then p.SseCustomMorphs = CloneSseCustomMorphs(tOverlay.SseCustomMorphs)
+        End If
+
+        ' --- Sculpt (per-vertex head sculpt). F4SE/RaceMenu-only, no record source. ---
+        If options.Sculpt Then
+            p.SseSculptHead = CloneSseSculptHead(source.SseSculptHead)
+        ElseIf tOverlay IsNot Nothing Then
+            p.SseSculptHead = CloneSseSculptHead(tOverlay.SseSculptHead)
+        End If
+
+        ' ===== Shared record fields — identical handling to the FO4 BuildFilteredPaste path. =====
+
+        ' --- Skin override (NPC.WNAM) ---
+        If options.SkinOverride Then
+            p.SkinFormIDOverride = source.SkinFormIDOverride
+        Else
+            p.SkinFormIDOverride = Nothing
+        End If
+
+        ' --- Default + Sleep outfit (NPC.DOFT / NPC.SOFT) ---
+        If options.Outfit Then
+            p.DefaultOutfitFormIDOverride = source.DefaultOutfitFormIDOverride
+            p.SleepOutfitFormIDOverride = source.SleepOutfitFormIDOverride
+        Else
+            p.DefaultOutfitFormIDOverride = Nothing
+            p.SleepOutfitFormIDOverride = Nothing
+        End If
+
+        ' --- Face parts (HeadParts / PNAM) ---
+        If options.FaceParts Then
+            p.HeadPartFormIDs.AddRange(source.HeadPartFormIDs)
+        Else
+            p.HeadPartFormIDs.AddRange(targetRaw.HeadPartFormIDs)
+        End If
+        p.HasHeadPartFormIDs = True
+
+        ' --- Face texture (RaceMenu head FTST override) — travels with Face parts (both are face identity that
+        ' RaceMenu ApplyPreset sets together). Copy the source's override when pasting parts and it has one; else
+        ' preserve the target overlay's. 0 = fall back to the record's own FTST (NpcRecordOverlay resolves that).
+        If options.FaceParts AndAlso source.SseHeadTextureFormID <> 0UI Then
+            p.SseHeadTextureFormID = source.SseHeadTextureFormID
+        ElseIf tOverlay IsNot Nothing Then
+            p.SseHeadTextureFormID = tOverlay.SseHeadTextureFormID
+        End If
+
+        ' --- Hair color (HCLF) ---
+        If options.HairColor Then
+            p.HairColorFormID = source.HairColorFormID
+        Else
+            p.HairColorFormID = targetRaw.HairColorFormID
+        End If
+
+        ' --- IsCharGenFacePreset flag (ACBS bit 0x04) ---
+        Const AcbsBitIsCharGenFacePreset As UInteger = &H4UI
+        If options.IsCharGenPreset Then
+            p.IsCharGenFacePreset = source.IsCharGenFacePreset
+        Else
+            p.IsCharGenFacePreset = ((targetRaw.AcbsFlags And AcbsBitIsCharGenFacePreset) <> 0UI)
+        End If
+
+        Return p
+    End Function
+
+    ''' <summary>Deep-copy an SSE keyed body-morph dict (morph name → BodySlide key → value). Nothing in,
+    ''' Nothing out; the clone is independent so paste edits never mutate the source/target overlay.</summary>
+    Private Shared Function CloneBodyMorphsKeyed(src As Dictionary(Of String, Dictionary(Of String, Single))) As Dictionary(Of String, Dictionary(Of String, Single))
+        If src Is Nothing Then Return Nothing
+        Dim c As New Dictionary(Of String, Dictionary(Of String, Single))(StringComparer.OrdinalIgnoreCase)
+        For Each kv In src
+            Dim inner As New Dictionary(Of String, Single)(StringComparer.OrdinalIgnoreCase)
+            If kv.Value IsNot Nothing Then
+                For Each ik In kv.Value : inner(ik.Key) = ik.Value : Next
+            End If
+            c(kv.Key) = inner
+        Next
+        Return c
+    End Function
+
+    ''' <summary>Deep-copy the SSE per-vertex head sculpt list. Nothing in, Nothing out.</summary>
+    Private Shared Function CloneSseSculptHead(src As List(Of NPC_SculptVert)) As List(Of NPC_SculptVert)
+        If src Is Nothing Then Return Nothing
+        Dim c As New List(Of NPC_SculptVert)(src.Count)
+        For Each sv In src
+            c.Add(New NPC_SculptVert With {.Index = sv.Index, .Dx = sv.Dx, .Dy = sv.Dy, .Dz = sv.Dz})
+        Next
+        Return c
+    End Function
+
+    ''' <summary>Deep-copy the SSE NiOverride custom-morph list. Nothing in, Nothing out.</summary>
+    Private Shared Function CloneSseCustomMorphs(src As List(Of NPC_CustomMorph)) As List(Of NPC_CustomMorph)
+        If src Is Nothing Then Return Nothing
+        Dim c As New List(Of NPC_CustomMorph)(src.Count)
+        For Each cm In src
+            c.Add(New NPC_CustomMorph With {.Name = cm.Name, .Value = cm.Value})
+        Next
+        Return c
+    End Function
+
     ''' <summary>Capture the current rendered state into a LooksMenu preset and save it to a JSON
     ''' file. Default location is Data\F4SE\Plugins\F4EE\Presets\ — the same folder
     ''' Load LooksMenu reads from. Default filename is the NPC's EditorID.</summary>
     Private Sub ButtonSaveLooksmenu_Click(sender As Object, e As EventArgs) Handles ButtonSaveLooksmenu.Click
+        ' LooksMenu presets are the FO4 f4ee format (F4SE\Plugins\F4EE). SSE writes a RaceMenu (.jslot):
+        ' capture the same preset the FO4 path does (BuildPresetFromState now carries the SSE fields), map
+        ' it to a jslot via RaceMenuPresetMapper.ToJslot, and write it under Data\SKSE\Plugins\CharGen\Presets.
+        If Config_App.Current.Game = Config_App.Game_Enum.Skyrim Then
+            SaveRaceMenuPresetForSse()
+            Return
+        End If
         If _renderHost.CurrentBaseState Is Nothing Then Return
 
         Dim npcFormID = _renderHost.CurrentBaseState.RootNpcFormID
@@ -9368,6 +9930,59 @@ Public Class MainForm
                 IO.File.WriteAllText(dlg.FileName, json, New System.Text.UTF8Encoding(False))
             Catch ex As Exception
                 MessageBox.Show($"Failed to write preset: {ex.Message}", "Save LooksMenu",
+                                MessageBoxButtons.OK, MessageBoxIcon.Error)
+            End Try
+        End Using
+    End Sub
+
+    ''' <summary>SSE counterpart of <see cref="ButtonSaveLooksmenu_Click"/>: capture the current rendered
+    ''' state into a preset (the FO4 <see cref="BuildPresetFromState"/> now carries SSE fields), map it to a
+    ''' RaceMenu <c>.jslot</c> via <see cref="RaceMenuPresetMapper.ToJslot"/>, and write it to
+    ''' Data\SKSE\Plugins\CharGen\Presets (skee64 PapyrusCharGen.cpp). Default filename is the NPC EditorID.</summary>
+    Private Sub SaveRaceMenuPresetForSse()
+        If _renderHost.CurrentBaseState Is Nothing Then Return
+
+        Dim npcFormID = _renderHost.CurrentBaseState.RootNpcFormID
+        Dim npc As NPC_Data = Nothing
+        If Not _ctx.NpcCache.TryGetValue(npcFormID, npc) OrElse npc Is Nothing Then
+            MessageBox.Show("Could not find NPC record in cache.", "Save RaceMenu",
+                            MessageBoxButtons.OK, MessageBoxIcon.Error)
+            Return
+        End If
+
+        Dim preset = BuildPresetFromState(_renderHost.CurrentBaseState)
+        If preset Is Nothing Then
+            MessageBox.Show("Could not capture the current NPC state.", "Save RaceMenu",
+                            MessageBoxButtons.OK, MessageBoxIcon.Warning)
+            Return
+        End If
+        Dim j = RaceMenuPresetMapper.ToJslot(preset, _pluginManager)
+
+        ' Same _dataPath Data-root the FO4 Save uses; RaceMenu presets live under SKSE\Plugins\CharGen\Presets.
+        Dim defaultDir = IO.Path.Combine(_dataPath, "SKSE", "Plugins", "CharGen", "Presets")
+        Try
+            If Not IO.Directory.Exists(defaultDir) Then IO.Directory.CreateDirectory(defaultDir)
+        Catch
+            ' Fall back to the data root if we can't create the default folder.
+            defaultDir = _dataPath
+        End Try
+
+        Dim defaultName = If(String.IsNullOrEmpty(npc.EditorID), $"NPC_{npc.FormID:X8}", npc.EditorID) & ".jslot"
+
+        Using dlg As New SaveFileDialog()
+            dlg.Title = "Save RaceMenu Preset"
+            dlg.Filter = "RaceMenu preset (*.jslot)|*.jslot"
+            dlg.InitialDirectory = defaultDir
+            dlg.FileName = defaultName
+            dlg.OverwritePrompt = True
+            dlg.AddExtension = True
+            dlg.DefaultExt = "jslot"
+            If dlg.ShowDialog(Me) <> DialogResult.OK Then Return
+
+            Try
+                IO.File.WriteAllBytes(dlg.FileName, j.Save())
+            Catch ex As Exception
+                MessageBox.Show($"Failed to write preset: {ex.Message}", "Save RaceMenu",
                                 MessageBoxButtons.OK, MessageBoxIcon.Error)
             End Try
         End Using
@@ -9685,6 +10300,22 @@ Public Class MainForm
                 })
             Next
             residual.HasOverlays = True
+            keptAnything = True
+        End If
+        ' SSE body overlays (path-based RaceMenu tattoos) — keep across Save (no ESP equivalent; sidecar-
+        ' persisted like BodyMorphs/Overlays). SSE-only; FO4 overlays leave this Nothing.
+        If overlay.SseBodyOverlays IsNot Nothing AndAlso overlay.SseBodyOverlays.Count > 0 Then
+            residual.SseBodyOverlays = LooksmenuLoader.CloneSseBodyOverlays(overlay.SseBodyOverlays)
+            keptAnything = True
+        End If
+        ' SSE node transforms (body-scale) — keep across Save (no ESP equivalent; .jslot/sidecar-persisted).
+        If overlay.SseNodeTransforms IsNot Nothing AndAlso overlay.SseNodeTransforms.Count > 0 Then
+            residual.SseNodeTransforms = LooksmenuLoader.CloneSseNodeTransforms(overlay.SseNodeTransforms)
+            keptAnything = True
+        End If
+        ' SSE skin overrides (body-paint per slot) — keep across Save (no ESP equivalent; .jslot/sidecar-persisted).
+        If overlay.SseSkinOverrides IsNot Nothing AndAlso overlay.SseSkinOverrides.Count > 0 Then
+            residual.SseSkinOverrides = LooksmenuLoader.CloneSseSkinOverrides(overlay.SseSkinOverrides)
             keptAnything = True
         End If
 
@@ -10073,10 +10704,10 @@ Public Class MainForm
         ' engine auto-discovers them at runtime. Matches the user's intent for the
         ' "None - Loose files" option in the SaveEsp BA2 version combo. (Mark-to-delete: there is no BA2 to
         ' strip in loose mode — the removed NPC's loose were already deleted by DeleteFaceGenLooseFiles.)
-        If ba2Version = 0UI Then
+        If NPC_Config.IsLooseOnly(game) Then
             If Not hasBundles Then Return ("", True)
             Dim n = bundles.Count
-            Return ($"BA2 pack skipped — {n} NPC{If(n = 1, "", "s")} left as loose files (None - Loose mode).", True)
+            Return ($"Archive pack skipped — {n} NPC{If(n = 1, "", "s")} left as loose files (None - Loose mode).", True)
         End If
 
         Try

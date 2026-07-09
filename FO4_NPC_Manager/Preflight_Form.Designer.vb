@@ -15,6 +15,8 @@ Partial Class Preflight_Form
     End Sub
 
     Private Sub InitializeComponent()
+        LabelGame = New Label()
+        ComboBoxGame = New ComboBox()
         LabelExePath = New Label()
         TextBoxExePath = New TextBox()
         ButtonBrowse = New Button()
@@ -34,25 +36,43 @@ Partial Class Preflight_Form
         ProgressBarDetail = New ProgressBar()
         LabelProgress = New Label()
         SuspendLayout()
-        ' 
+        '
+        ' LabelGame
+        '
+        LabelGame.AutoSize = True
+        LabelGame.Location = New Point(12, 15)
+        LabelGame.Name = "LabelGame"
+        LabelGame.Size = New Size(41, 15)
+        LabelGame.TabIndex = 0
+        LabelGame.Text = "Game:"
+        '
+        ' ComboBoxGame
+        '
+        ComboBoxGame.DropDownStyle = ComboBoxStyle.DropDownList
+        ComboBoxGame.Items.AddRange(New Object() {"Fallout 4", "Skyrim SE"})
+        ComboBoxGame.Location = New Point(57, 12)
+        ComboBoxGame.Name = "ComboBoxGame"
+        ComboBoxGame.Size = New Size(120, 23)
+        ComboBoxGame.TabIndex = 1
+        '
         ' LabelExePath
-        ' 
+        '
         LabelExePath.AutoSize = True
-        LabelExePath.Location = New Point(12, 15)
+        LabelExePath.Location = New Point(183, 15)
         LabelExePath.Name = "LabelExePath"
-        LabelExePath.Size = New Size(72, 15)
-        LabelExePath.TabIndex = 0
-        LabelExePath.Text = "Fallout4.exe:"
-        ' 
+        LabelExePath.Size = New Size(30, 15)
+        LabelExePath.TabIndex = 2
+        LabelExePath.Text = "Exe:"
+        '
         ' TextBoxExePath
-        ' 
+        '
         TextBoxExePath.Anchor = AnchorStyles.Top Or AnchorStyles.Left Or AnchorStyles.Right
-        TextBoxExePath.Location = New Point(107, 12)
+        TextBoxExePath.Location = New Point(220, 12)
         TextBoxExePath.Name = "TextBoxExePath"
         TextBoxExePath.ReadOnly = True
-        TextBoxExePath.Size = New Size(489, 23)
-        TextBoxExePath.TabIndex = 1
-        ' 
+        TextBoxExePath.Size = New Size(376, 23)
+        TextBoxExePath.TabIndex = 3
+        '
         ' ButtonBrowse
         ' 
         ButtonBrowse.Anchor = AnchorStyles.Top Or AnchorStyles.Right
@@ -228,6 +248,8 @@ Partial Class Preflight_Form
         Controls.Add(ButtonBrowse)
         Controls.Add(TextBoxExePath)
         Controls.Add(LabelExePath)
+        Controls.Add(ComboBoxGame)
+        Controls.Add(LabelGame)
         MinimumSize = New Size(640, 480)
         Name = "Preflight_Form"
         StartPosition = FormStartPosition.CenterScreen
@@ -236,6 +258,8 @@ Partial Class Preflight_Form
         PerformLayout()
     End Sub
 
+    Friend WithEvents LabelGame As Label
+    Friend WithEvents ComboBoxGame As ComboBox
     Friend WithEvents LabelExePath As Label
     Friend WithEvents TextBoxExePath As TextBox
     Friend WithEvents ButtonBrowse As Button

@@ -79,6 +79,10 @@ Partial Class EditFace_Form
         TabPageBoneRegions = New TabPage()
         BoneRegionsRoot = New TableLayoutPanel()
         BoneRegionsContainer = New Panel()
+        TabPageSseMorphs = New TabPage()
+        PanelSseMorphs = New Panel()
+        TabPageSseTints = New TabPage()
+        PanelSseTints = New Panel()
         GroupBoxFmin = New GroupBox()
         FminLayout = New TableLayoutPanel()
         LabelFminCaption = New Label()
@@ -159,9 +163,33 @@ Partial Class EditFace_Form
         ' TabsFace
         ' 
         TabsFace.Controls.Add(TabPageFaceParts)
+        TabsFace.Controls.Add(TabPageSseMorphs)
+        TabsFace.Controls.Add(TabPageSseTints)
         TabsFace.Controls.Add(TabPageTints)
         TabsFace.Controls.Add(TabPageVertex)
         TabsFace.Controls.Add(TabPageBoneRegions)
+        '
+        ' TabPageSseMorphs (SSE) — content filled in code (PopulateSseMorphTab)
+        '
+        TabPageSseMorphs.Controls.Add(PanelSseMorphs)
+        TabPageSseMorphs.Location = New Point(4, 24)
+        TabPageSseMorphs.Name = "TabPageSseMorphs"
+        TabPageSseMorphs.Padding = New Padding(6)
+        TabPageSseMorphs.Size = New Size(720, 560)
+        TabPageSseMorphs.Text = "Morphs (SSE)"
+        PanelSseMorphs.Dock = DockStyle.Fill
+        PanelSseMorphs.Name = "PanelSseMorphs"
+        '
+        ' TabPageSseTints (SSE) — content filled in code (PopulateSseTintTab)
+        '
+        TabPageSseTints.Controls.Add(PanelSseTints)
+        TabPageSseTints.Location = New Point(4, 24)
+        TabPageSseTints.Name = "TabPageSseTints"
+        TabPageSseTints.Padding = New Padding(6)
+        TabPageSseTints.Size = New Size(720, 560)
+        TabPageSseTints.Text = "Tints (SSE)"
+        PanelSseTints.Dock = DockStyle.Fill
+        PanelSseTints.Name = "PanelSseTints"
         TabsFace.Dock = DockStyle.Fill
         TabsFace.Location = New Point(11, 11)
         TabsFace.Name = "TabsFace"
@@ -1046,6 +1074,10 @@ Partial Class EditFace_Form
     Friend WithEvents TabPageTints As System.Windows.Forms.TabPage
     Friend WithEvents TabPageVertex As System.Windows.Forms.TabPage
     Friend WithEvents TabPageBoneRegions As System.Windows.Forms.TabPage
+    Friend WithEvents TabPageSseMorphs As System.Windows.Forms.TabPage
+    Friend WithEvents PanelSseMorphs As System.Windows.Forms.Panel
+    Friend WithEvents TabPageSseTints As System.Windows.Forms.TabPage
+    Friend WithEvents PanelSseTints As System.Windows.Forms.Panel
     Friend WithEvents BottomLayout As System.Windows.Forms.FlowLayoutPanel
     Friend WithEvents ButtonOk As System.Windows.Forms.Button
     Friend WithEvents ButtonCancel As System.Windows.Forms.Button

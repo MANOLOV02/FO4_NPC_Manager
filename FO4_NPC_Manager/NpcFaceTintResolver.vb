@@ -232,7 +232,9 @@ Friend NotInheritable Class NpcFaceTintResolver
         Dim regionSwaps = built.regionSwaps
         Dim npcData = built.npcData
         Dim race = built.race
-        If layerInputs.Count = 0 Then Return True
+        ' SSE composes the facetint from the NPC record directly (no FO4 tint-template layers), so an empty
+        ' FO4 layer list must NOT short-circuit -- fall through to the mesh loop where the SSE branch runs.
+        If layerInputs.Count = 0 AndAlso Config_App.Current.Game <> Config_App.Game_Enum.Skyrim Then Return True
 
         ' Find the face mesh in the model, get its diffuse texture cache entry, and call the
         ' compositor on a copy. Then mutate the cache entry's GL Texture_ID so the existing
@@ -263,6 +265,15 @@ Friend NotInheritable Class NpcFaceTintResolver
             ' EnvMap. Filtering by shader type avoids touching the headrear / mouth diffuses.
             If materialBase.NifShaderType <> NiflySharp.Enums.BSLightingShaderType.FaceTint Then
                 shaderInventoryForDiag.Add($"shape='{shape.ShapeName}' shader={materialBase.NifShaderType}")
+                Continue For
+            End If
+
+            ' SSE: unlike FO4 (which bakes the facetint INTO the diffuse), the SSE engine keeps the facetint as
+            ' a SEPARATE texture-set slot 6 that the FaceTint PS multiplies onto the albedo (verified
+            ' sse_facegen_skin.asm t4). So compose the per-NPC facetint and install it as InnerLayerTexture; the
+            ' shared render (bFacetintAlbedo -> texGlowmap) then applies it. Game-gated; FO4 keeps the path below.
+            If Config_App.Current.Game = Config_App.Game_Enum.Skyrim Then
+                If ApplySseFacetint(materialBase, npcData, race, model) Then composedAny = True
                 Continue For
             End If
 
@@ -345,6 +356,92 @@ Friend NotInheritable Class NpcFaceTintResolver
         Return True
     End Function
 
+    ''' <summary>SSE: compose the per-NPC facetint (engine-exact, SseFaceTintComposer) and install it as the
+    ''' FaceTint mesh's InnerLayerTexture (texture-set slot 6). The shared render multiplies it onto the albedo
+    ''' (bFacetintAlbedo -> texGlowmap), matching the engine FaceTint PS (sse_facegen_skin.asm t4). NOT baked
+    ''' into the diffuse (that is the FO4 path). Returns True when installed. SSE-only; the FO4 path is untouched.</summary>
+    Private Function ApplySseFacetint(materialBase As FO4UnifiedMaterial_Class, npcData As NPC_Data, race As RACE_Data, model As PreviewModel) As Boolean
+        If npcData Is Nothing Then Return False
+        ' race may be Nothing for SSE (the FO4 layer builder can return it unset); parse it from RaceFormID.
+        If race Is Nothing AndAlso npcData.RaceFormID <> 0UI Then
+            Dim rr = _ctx.PluginManager.GetRecord(npcData.RaceFormID)
+            If rr IsNot Nothing AndAlso rr.Header.Signature = "RACE" Then race = _ctx.ParseRaceCached(rr)
+        End If
+        If race Is Nothing Then Return False
+        Dim npcRec = _ctx.PluginManager.GetRecord(npcData.FormID)
+        If npcRec Is Nothing Then Return False
+        Const W As Integer = 512, H As Integer = 512
+        ' DEFINITIVE WYSIWYG: run the EXACT bake pipeline for the facetint _d — compose + RaceMenu overlays +
+        ' BC3 encode (SseFaceGenBaker.BakeFaceTintDds, the same function the on-disk bake calls) — then DECODE
+        ' the BC3 result for the preview. So the editor shows precisely the baked+compressed texture the engine
+        ' loads (including DXT5 loss and overlays), not an idealized pre-encode compose.
+        ' npcData is the OVERLAID shadow — SseTintRaw carries any Edit Face tint edit (else raw); SseOverlays
+        ' carries any RaceMenu overlay. Both feed compose+overlay exactly like the bake.
+        Dim overlays = ResolveSseOverlays(npcData)
+        Dim dds = SseFaceGenBaker.BakeFaceTintDds(_ctx.PluginManager, npcRec, race, npcData.RaceFormID, npcData.IsFemale, W, H, overlays, npcData.SseTintRaw, npcData.SseTintTexOverride)
+        If dds Is Nothing Then Return False
+        Dim dec = FaceTintCpuCompositor.DecodeDds(dds, W, H)
+        If dec.Rgba Is Nothing Then Return False
+        Dim bgra(W * H * 4 - 1) As Byte
+        For i = 0 To W * H - 1
+            bgra(i * 4) = ClampByte255(dec.Rgba(i * 4 + 2))       ' B
+            bgra(i * 4 + 1) = ClampByte255(dec.Rgba(i * 4 + 1))   ' G
+            bgra(i * 4 + 2) = ClampByte255(dec.Rgba(i * 4))       ' R
+            bgra(i * 4 + 3) = 255
+        Next
+        Dim newId = UploadRgba8Linear(bgra, W, H)
+        If newId = 0 Then Return False
+        Dim origin = _ctx.PluginManager.GetOriginatingPluginName(npcData.FormID)
+        Dim fg = PluginManager.ToFaceGenLocalFormID(npcData.FormID)
+        ' The engine facetint path (also what CK writes to NIF slot 6). Register the composed GL texture under
+        ' this key so InnerLayerTexture_ID (GetTextureID) resolves it; it is linear, not sRGB.
+        Dim facetintPath = $"textures\actors\character\facegendata\facetint\{origin}\{fg:X8}.dds"
+        Dim key = FO4UnifiedMaterial_Class.CorrectTexturePath(facetintPath)
+        Dim entry As PreviewModel.Texture_Loaded_Class = Nothing
+        If model.Textures_Dictionary.TryGetValue(key, entry) AndAlso entry IsNot Nothing Then
+            If entry.Texture_ID <> 0 AndAlso entry.Texture_ID <> newId Then OpenTK.Graphics.OpenGL4.GL.DeleteTexture(entry.Texture_ID)
+            entry.Texture_ID = newId : entry.Loaded = True : entry.Size = New System.Drawing.Size(W, H) : entry.IsSRGB = False
+        Else
+            model.Textures_Dictionary(key) = New PreviewModel.Texture_Loaded_Class With {.Texture_ID = newId, .Loaded = True, .Size = New System.Drawing.Size(W, H), .IsSRGB = False}
+        End If
+        materialBase.InnerLayerTexture = facetintPath
+        Return True
+    End Function
+
+    ''' <summary>RaceMenu overlay layers (from the .jslot tintInfo overlay entries) for the compose — the same
+    ''' list the bake passes so preview == bake. npcData carries them via the overlay; Nothing for vanilla NPCs
+    ''' (ApplyOverlays no-ops), so the bake pipeline still runs identically.</summary>
+    Private Function ResolveSseOverlays(npcData As NPC_Data) As IList(Of SseOverlayCompositor.SseOverlay)
+        Return If(npcData IsNot Nothing, npcData.SseOverlays, Nothing)
+    End Function
+
+    Private Shared Function ClampByte255(v As Double) As Byte
+        Return CByte(Math.Max(0.0, Math.Min(255.0, Math.Round(v * 255.0))))
+    End Function
+
+    ''' <summary>Upload a BGRA byte buffer to a fresh GL Rgba8 (linear, non-sRGB) 2D texture. Mirrors the
+    ''' pristine-restore upload; BGRA source order + PixelFormat.Bgra so the driver stores RGBA correctly.</summary>
+    Private Shared Function UploadRgba8Linear(bgra As Byte(), w As Integer, h As Integer) As Integer
+        Dim id = OpenTK.Graphics.OpenGL4.GL.GenTexture()
+        If id = 0 Then Return 0
+        OpenTK.Graphics.OpenGL4.GL.BindTexture(OpenTK.Graphics.OpenGL4.TextureTarget.Texture2D, id)
+        OpenTK.Graphics.OpenGL4.GL.TexParameter(OpenTK.Graphics.OpenGL4.TextureTarget.Texture2D, OpenTK.Graphics.OpenGL4.TextureParameterName.TextureMinFilter, CInt(OpenTK.Graphics.OpenGL4.TextureMinFilter.Linear))
+        OpenTK.Graphics.OpenGL4.GL.TexParameter(OpenTK.Graphics.OpenGL4.TextureTarget.Texture2D, OpenTK.Graphics.OpenGL4.TextureParameterName.TextureMagFilter, CInt(OpenTK.Graphics.OpenGL4.TextureMagFilter.Linear))
+        OpenTK.Graphics.OpenGL4.GL.TexParameter(OpenTK.Graphics.OpenGL4.TextureTarget.Texture2D, OpenTK.Graphics.OpenGL4.TextureParameterName.TextureWrapS, CInt(OpenTK.Graphics.OpenGL4.TextureWrapMode.ClampToEdge))
+        OpenTK.Graphics.OpenGL4.GL.TexParameter(OpenTK.Graphics.OpenGL4.TextureTarget.Texture2D, OpenTK.Graphics.OpenGL4.TextureParameterName.TextureWrapT, CInt(OpenTK.Graphics.OpenGL4.TextureWrapMode.ClampToEdge))
+        Dim handle = System.Runtime.InteropServices.GCHandle.Alloc(bgra, System.Runtime.InteropServices.GCHandleType.Pinned)
+        Try
+            OpenTK.Graphics.OpenGL4.GL.TexImage2D(OpenTK.Graphics.OpenGL4.TextureTarget.Texture2D, 0,
+                OpenTK.Graphics.OpenGL4.PixelInternalFormat.Rgba8, w, h, 0,
+                OpenTK.Graphics.OpenGL4.PixelFormat.Bgra, OpenTK.Graphics.OpenGL4.PixelType.UnsignedByte,
+                handle.AddrOfPinnedObject())
+        Finally
+            handle.Free()
+        End Try
+        OpenTK.Graphics.OpenGL4.GL.BindTexture(OpenTK.Graphics.OpenGL4.TextureTarget.Texture2D, 0)
+        Return id
+    End Function
+
     ''' <summary>Records the per-actor skin tone on every body SkinTint shape (hands/neck/body, NOT the
     ''' face) as material SkinTintColor + SkinTintAlpha. The SkinTint shader soft-lights the untoned body
     ''' diffuse with it at render (uEffectiveType==4, engine-faithful) — nothing is baked into the texture,
@@ -352,16 +449,39 @@ Friend NotInheritable Class NpcFaceTintResolver
     ''' synth/ghoul/robot don't → skip; their skin shapes aren't human skin-tone).</summary>
     Private Sub TryApplyBodySkinSoftLight(state As MainForm.NPCVisualState, Optional host As NpcRenderHost = Nothing)
         If host Is Nothing Then host = _hostProvider()
-        If state Is Nothing OrElse Not state.HasTextureLighting Then Return
+        If state Is Nothing OrElse Not state.HasTextureLighting Then
+            If Logger.Enabled Then
+                Dim hasSt = (state IsNot Nothing AndAlso state.HasTextureLighting)
+                Logger.LogLazy(Function() $"[SSE-BODY] EARLY-RETURN state Nothing or HasTextureLighting=False (hasTL={hasSt}) → body skin tone NOT applied")
+            End If
+            Return
+        End If
         Dim raceRec = If(state.RaceFormID <> 0UI, _ctx.PluginManager.GetRecord(state.RaceFormID), Nothing)
         Dim race As RACE_Data = Nothing
         If raceRec IsNot Nothing AndAlso raceRec.Header.Signature = "RACE" Then race = _ctx.ParseRaceCached(raceRec)
-        If race Is Nothing OrElse race.FindTintOptionsBySlot(TintSlot.SkinTone, state.IsFemale).Count = 0 Then Return
+        ' Game-aware skin-tone catalog guard. FO4: race's slot-12 SkinTone tint options. SSE: no slot-12 —
+        ' the race's tint layer whose TINP mask type == 6 (RaceHasSkinToneLayer). FO4 branch unchanged.
+        If Config_App.Current IsNot Nothing AndAlso Config_App.Current.Game = Config_App.Game_Enum.Skyrim Then
+            If Not SseFaceTintComposer.RaceHasSkinToneLayer(_ctx.PluginManager, state.RaceFormID, state.IsFemale) Then
+                If Logger.Enabled Then
+                    Dim rfL = state.RaceFormID
+                    Logger.LogLazy(Function() $"[SSE-BODY] EARLY-RETURN race 0x{rfL:X8} has NO skin-tone layer (TINP=6) → body skin tone NOT applied")
+                End If
+                Return
+            End If
+        Else
+            If race Is Nothing OrElse race.FindTintOptionsBySlot(TintSlot.SkinTone, state.IsFemale).Count = 0 Then Return
+        End If
         Dim model = host.PreviewCtl.Model
         If model Is Nothing OrElse model.meshes Is Nothing Then Return
         Dim qnam = state.TextureLightingColor
         Dim opacity As Single = Math.Max(0.0F, Math.Min(1.0F, CSng(qnam.A) / 255.0F))
+        If Logger.Enabled Then
+            Dim qr = qnam.R, qg = qnam.G, qb = qnam.B, qa = qnam.A, opL = opacity
+            Logger.LogLazy(Function() $"[SSE-BODY] guard OK. QNAM=({qr},{qg},{qb},A={qa}) opacity={opL:F3} → applying to body SkinTint shapes")
+        End If
         If opacity <= 0.001F Then Return
+        Dim appliedCount As Integer = 0
         For Each mesh In model.meshes
             If mesh Is Nothing OrElse mesh.MeshData Is Nothing OrElse mesh.MeshData.Material Is Nothing Then Continue For
             Dim materialBase = mesh.MeshData.Material.MaterialBase
@@ -373,7 +493,19 @@ Friend NotInheritable Class NpcFaceTintResolver
             ' diffuse untoned al render (NO se hornea). SkinTintAlpha lleva la opacidad del QNAM.
             materialBase.SkinTintColor = Color.FromArgb(qnam.R, qnam.G, qnam.B)
             materialBase.SkinTintAlpha = opacity
+            appliedCount += 1
+            If Logger.Enabled Then
+                Dim shTy = materialBase.NifShaderType.ToString()
+                Dim msn = materialBase.ModelSpaceNormals
+                Dim nrm = If(materialBase.NormalTexture, "")
+                Dim qr = qnam.R, qg = qnam.G, qb = qnam.B
+                Logger.LogLazy(Function() $"[SSE-BODY] applied SkinTintColor=({qr},{qg},{qb}) to body shape shader={shTy} MSN={msn} normal='{nrm}'")
+            End If
         Next
+        If Logger.Enabled Then
+            Dim ac = appliedCount
+            Logger.LogLazy(Function() $"[SSE-BODY] total body SkinTint shapes tinted = {ac}")
+        End If
     End Sub
 
     ''' <summary>Apply one channel's pipeline result to the model's Textures_Dictionary: swap

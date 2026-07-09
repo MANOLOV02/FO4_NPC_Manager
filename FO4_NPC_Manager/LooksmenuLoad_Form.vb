@@ -24,6 +24,14 @@ Public Class LooksmenuLoad_Form
     Private ReadOnly _gender As Byte
     Private ReadOnly _allPresets As New List(Of LooksmenuLoader.LooksmenuPreset)
 
+    ' SSE (RaceMenu) mode: instead of scanning F4EE\Presets\*.json, scan the RaceMenu preset dir for *.jslot
+    ' and map each to a LooksmenuPreset via the host-supplied mapper (which loads the .jslot + maps it onto a
+    ' clone of the pre-dialog overlay so prior NPC fields survive). Everything else — list, filter, race-compat,
+    ' live preview, OK — is shared with the FO4 path. Game-aware, NOT a separate window (user: reuse FO4 UI).
+    Private ReadOnly _isSse As Boolean
+    Private ReadOnly _ssePresetsDir As String
+    Private ReadOnly _sseMapper As Func(Of String, LooksmenuLoader.LooksmenuPreset)
+
     ' Race-compatibility filter inputs (optional — Nothing means race info wasn't supplied
     ' and the checkbox stays disabled because we can't compute compatibility).
     Private ReadOnly _raceFormID As UInteger
@@ -70,11 +78,17 @@ Public Class LooksmenuLoad_Form
                    npcHasBodyTri As Boolean,
                    Optional raceFormID As UInteger = 0UI,
                    Optional race As RACE_Data = Nothing,
-                   Optional raceDefaultHeadPartFormIDs As IEnumerable(Of UInteger) = Nothing)
+                   Optional raceDefaultHeadPartFormIDs As IEnumerable(Of UInteger) = Nothing,
+                   Optional isSse As Boolean = False,
+                   Optional ssePresetsDir As String = Nothing,
+                   Optional sseMapper As Func(Of String, LooksmenuLoader.LooksmenuPreset) = Nothing)
         InitializeComponent()
         _pluginManager = pluginManager
         _dataPath = dataPath
         _gender = gender
+        _isSse = isSse
+        _ssePresetsDir = ssePresetsDir
+        _sseMapper = sseMapper
         _raceFormID = raceFormID
         _race = race
         _raceDefaults = New HashSet(Of UInteger)
@@ -88,8 +102,9 @@ Public Class LooksmenuLoad_Form
         ' file-system level, but the engine silently drops HDPTs / tints whose RACE doesn't accept
         ' them. The "Show only race-compatible" checkbox lets the user hide presets that would
         ' partially-apply for this NPC.
-        LabelHeader.Text = $"Target NPC race: {raceDisplayName}  •  Gender: {If(gender = 1, "Female", "Male")}" & vbCrLf &
-                           "Listing all presets from Data\F4SE\Plugins\F4EE\Presets\."
+        Dim presetsFolderText As String = If(_isSse, "Listing all RaceMenu presets from Data\SKSE\Plugins\CharGen\Presets\.",
+                                                       "Listing all presets from Data\F4SE\Plugins\F4EE\Presets\.")
+        LabelHeader.Text = $"Target NPC race: {raceDisplayName}  •  Gender: {If(gender = 1, "Female", "Male")}" & vbCrLf & presetsFolderText
 
         ' Default the checkbox to whether the NPC's NIF can actually consume BodySlide sliders.
         ' If there's no BODYTRI on the root NiNode the engine wouldn't apply them in-game either,
@@ -119,16 +134,30 @@ Public Class LooksmenuLoad_Form
         _allPresets.Clear()
         ListBoxPresets.Items.Clear()
 
-        Dim files = LooksmenuLoader.EnumeratePresetFiles(_dataPath)
-        For Each fp In files
-            Dim parsed = LooksmenuLoader.ParseFile(fp, _pluginManager)
-            If parsed Is Nothing Then Continue For
-            ' Skip presets whose declared gender doesn't match the NPC. CharGenInterface.cpp:301
-            ' rejects mismatched gender at LoadPreset time — same rule here so the user only sees
-            ' presets that will actually apply cleanly.
-            If parsed.Gender <> _gender Then Continue For
-            _allPresets.Add(parsed)
-        Next
+        If _isSse Then
+            ' RaceMenu: scan Data\SKSE\Plugins\CharGen\Presets\*.jslot, map each via the host mapper (which
+            ' loads the .jslot + maps it onto a clone of the pre-dialog overlay + sets SourcePath/Gender). RaceMenu
+            ' presets carry no gender flag → no gender filter (the mapper stamps Gender = the NPC's so any later
+            ' gender logic stays consistent); race-compat filtering still applies (headParts vs RACE).
+            If Not String.IsNullOrEmpty(_ssePresetsDir) AndAlso Directory.Exists(_ssePresetsDir) AndAlso _sseMapper IsNot Nothing Then
+                For Each fp In Directory.GetFiles(_ssePresetsDir, "*.jslot")
+                    Dim mapped = _sseMapper(fp)
+                    If mapped Is Nothing Then Continue For
+                    _allPresets.Add(mapped)
+                Next
+            End If
+        Else
+            Dim files = LooksmenuLoader.EnumeratePresetFiles(_dataPath)
+            For Each fp In files
+                Dim parsed = LooksmenuLoader.ParseFile(fp, _pluginManager)
+                If parsed Is Nothing Then Continue For
+                ' Skip presets whose declared gender doesn't match the NPC. CharGenInterface.cpp:301
+                ' rejects mismatched gender at LoadPreset time — same rule here so the user only sees
+                ' presets that will actually apply cleanly.
+                If parsed.Gender <> _gender Then Continue For
+                _allPresets.Add(parsed)
+            Next
+        End If
 
         _allPresets.Sort(Function(a, b) String.Compare(Path.GetFileName(a.SourcePath), Path.GetFileName(b.SourcePath), StringComparison.OrdinalIgnoreCase))
         ApplyFilter()
@@ -192,10 +221,27 @@ Public Class LooksmenuLoad_Form
 
     Private Sub UpdateInfo(preset As LooksmenuLoader.LooksmenuPreset)
         If preset Is Nothing Then
+            Dim emptyFolder = If(_isSse, "Data\SKSE\Plugins\CharGen\Presets\", "Data\F4SE\Plugins\F4EE\Presets\")
             LabelInfo.Text = If(_allPresets.Count = 0,
-                                $"No {If(_gender = 1, "female", "male")} presets found in Data\F4SE\Plugins\F4EE\Presets\.",
+                                If(_isSse, $"No RaceMenu (.jslot) presets found in {emptyFolder}.",
+                                           $"No {If(_gender = 1, "female", "male")} presets found in {emptyFolder}."),
                                 "Select a preset to see details.")
             LabelInfo.ForeColor = SystemColors.GrayText
+            Return
+        End If
+
+        If _isSse Then
+            ' RaceMenu summary: everything the SSE overlay carries (all supported — full round-trip via .jslot +
+            ' sidecar). Body weight, head/face morphs, body morphs (BodySlide), overlays, node scales, skin overrides.
+            Dim nodeScales = If(preset.SseNodeTransforms IsNot Nothing, preset.SseNodeTransforms.Count, 0)
+            Dim skinOv = If(preset.SseSkinOverrides IsNot Nothing, preset.SseSkinOverrides.Count, 0)
+            Dim bodyOv = If(preset.SseBodyOverlays IsNot Nothing, preset.SseBodyOverlays.Count, 0)
+            Dim weightTxt = If(preset.SseWeight.HasValue, $"{preset.SseWeight.Value:0}", "—")
+            LabelInfo.Text = $"HeadParts: {preset.HeadPartFormIDs.Count}  •  Tints: {preset.FaceTintLayers.Count}  •  " &
+                             $"Face morphs: {preset.ChargenFaceMorphs.Count}  •  Weight: {weightTxt}  •  " &
+                             $"BodySlide: {preset.BodyMorphSliders.Count}  •  Overlays: {bodyOv}  •  " &
+                             $"Body scale: {nodeScales}  •  Skin overrides: {skinOv}"
+            LabelInfo.ForeColor = SystemColors.ControlText
             Return
         End If
 

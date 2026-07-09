@@ -187,6 +187,9 @@ Friend Class NpcRenderHost
         Dim renderBody = Toggles.RenderBody
         Dim renderHeadwear = Toggles.RenderHeadwear
         Dim renderGore = Toggles.RenderGore
+        ' SSE occludes skin PER-PARTITION (BSDismemberSkinInstance), FO4 whole-shape (System-A displacement).
+        ' Byte-level RE both engines: reference_sse_engine_occlusion_re. Gates the skin-occlusion branches below.
+        Dim isSse As Boolean = (Config_App.Current.Game = Config_App.Game_Enum.Skyrim)
 
         ' --- Per-segment worn-slot occlusion, recomputed from the items CURRENTLY rendered ---
         ' Engine-faithful ORDER / other-items rule (resolver 0x14035E090, owner-slot branch 0x14035E22B),
@@ -222,8 +225,14 @@ Friend Class NpcRenderHost
             ' groups: a uniform's incidental slot-60 must NOT occlude another piece's forearm-60 segment
             ' (Captain Cade: the gloves' forearm-60 was wrongly hidden by the uniform's BOD2 slot-60, with no
             ' pipboy). A real Pipboy device keeps its 60 → it alone drives the swap (60 hidden, 160 shown).
-            Dim isPipboyDevice As Boolean = (own And BipedSlots.SLOT_PIPBOY) <> 0UI AndAlso (own And (Not BipedSlots.SLOT_PIPBOY)) = 0UI
-            groupSlots(gid) = If(isPipboyDevice, own, own And (Not BipedSlots.SLOT_PIPBOY))
+            ' Slot-60 strip is FO4-ONLY (Pipboy coexist-by-design). In Skyrim slot 60 is a generic MOD slot
+            ' and the engine's worn-mask builder (0x140225CB0) strips NO bit — so pass the raw own-mask.
+            If isSse Then
+                groupSlots(gid) = own
+            Else
+                Dim isPipboyDevice As Boolean = (own And BipedSlots.SLOT_PIPBOY) <> 0UI AndAlso (own And (Not BipedSlots.SLOT_PIPBOY)) = 0UI
+                groupSlots(gid) = If(isPipboyDevice, own, own And (Not BipedSlots.SLOT_PIPBOY))
+            End If
         Next
         Dim occupiedVisible As UInteger = 0UI
         For Each kv In groupSlots : occupiedVisible = occupiedVisible Or kv.Value : Next
@@ -255,8 +264,18 @@ Friend Class NpcRenderHost
             ' HeadwearOcclusionSlots const, which assumed human slots {30,31,32,46,48,49} for every race.
             ' Worn items: OR of the OTHER rendered groups' slots (own group excluded ⇒ shared-slot safe — the
             ' Pipboy's slot 60 still hides a Pipboy-aware outfit's biped-60 forearm). Everything else: none.
+            shape.OwnSlotsMask = 0UI   ' default; set to the item's BOD2 only on the FO4 worn branch below
             If cat = MainForm.ShapeRenderCategory.HeadPart Then
                 shape.CoveredSlotsMask = If(renderHeadwear, occupiedVisible And LastRenderData.HeadOcclusionMask, 0UI)
+            ElseIf isSse AndAlso (cat = MainForm.ShapeRenderCategory.BodySkin OrElse cat = MainForm.ShapeRenderCategory.NakedHands) Then
+                ' SSE naked SKIN is occluded PER-PARTITION on its REAL mesh SBP slot (engine
+                ' ApplyOcclusionToGeometry) — feed the full worn-slot union; EnsureZapIndexBuffer hides
+                ' only the partitions whose SBP slot is covered. This avoids the whole-shape over-hide
+                ' where a body's incidental BOD2 slot (e.g. calves 38 shared with boots) erased the whole
+                ' torso. Outfits get CoveredSlotsMask=0 below (no per-partition zap on SSE outfits).
+                shape.CoveredSlotsMask = occupiedVisible
+            ElseIf isSse Then
+                shape.CoveredSlotsMask = 0UI
             Else
                 Dim ownSlots As UInteger = 0UI
                 If LastRenderData.ShapeOwnSlots.TryGetValue(shape, ownSlots) AndAlso ownSlots <> 0UI Then
@@ -267,6 +286,9 @@ Friend Class NpcRenderHost
                         If kv.Key <> gid Then others = others Or kv.Value
                     Next
                     shape.CoveredSlotsMask = others
+                    ' Own BOD2 footprint of this worn item, so ComputeHiddenTriangles can tell a SELF-tagged
+                    ' segment (slot the item occupies) from a FOREIGN one (engine coverage-key companion).
+                    shape.OwnSlotsMask = ownSlots
                 Else
                     shape.CoveredSlotsMask = 0UI
                 End If
@@ -300,7 +322,11 @@ Friend Class NpcRenderHost
             ' evita z-fighting). Cuando Render underarmor=OFF el outfit se oculta arriba y el Skin
             ' subyacente queda visible (no se aplica este hide). Solo afecta a Skin candidates
             ' (BodySkin/NakedHands); las otras categorías no setean ShapeCoveredByOutfit.
-            If covered AndAlso renderUnderarmor AndAlso (cat = MainForm.ShapeRenderCategory.BodySkin OrElse cat = MainForm.ShapeRenderCategory.NakedHands) Then hide = True
+            ' FO4: skin covered by outfit → whole-shape hide (its dismember tags 1-5 aren't biped-slot
+            ' tagged). SSE: skin is occluded PER-PARTITION via CoveredSlotsMask above (keyed on the real
+            ' mesh SBP slot), so do NOT whole-hide here — a body whose BOD2 incidentally lists calves(38)
+            ' no longer vanishes under boots; only the partitions whose SBP slot is actually covered go.
+            If Not isSse AndAlso covered AndAlso renderUnderarmor AndAlso (cat = MainForm.ShapeRenderCategory.BodySkin OrElse cat = MainForm.ShapeRenderCategory.NakedHands) Then hide = True
             ' HeadPart ocluido por headwear + Render headwear ON → hide (replica occlusion matrix
             ' vanilla pelo-bajo-casco, etc). Render headwear=OFF destapa el head part para mostrar
             ' lo que estaba debajo del casco/glasses/etc.

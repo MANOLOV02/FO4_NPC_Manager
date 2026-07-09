@@ -19,6 +19,36 @@ Imports FO4_Base_Library
 ''' </summary>
 Public Class EditBody_Form
 
+    ' SSE (Skyrim) body editing mirrors the EditFace idiom (EditFace_Form.vb:54): under _isSSE the FO4-only
+    ' sections (MWGT 3-axis triangle, MRSV, LM Skin template) are hidden and their FO4 seed/build paths are
+    ' skipped; a code-built single 0-100 weight slider (BuildSseWeightSection, mirror BuildSseMorphTab) drives
+    ' the vanilla body weight (NAM7 → _0/_1 LERP) plus Load/Save .jslot. Everything game-gated so FO4 is
+    ' byte-identical.
+    Private ReadOnly _isSSE As Boolean = (Config_App.Current IsNot Nothing AndAlso Config_App.Current.Game = Config_App.Game_Enum.Skyrim)
+    ' SSE weight section control (built in code under _isSSE; Nothing on FO4). A TinySliderTextBox — the
+    ' same slider style the BodySlide / MRSV rows use — replacing the earlier raw TrackBar.
+    Private _sseWeightSlider As FO4_Base_Library.TinySliderTextBox = Nothing
+    ' SSE overlays REUSE the FO4 overlay controls (ListBoxOverlayApplied + Add/Remove/Up/Down + the tint
+    ' controls in GroupBoxOverlayProps); the only SSE-specific additions are the direct diffuse/normal
+    ' texture-path fields below (RaceMenu overlays carry texture paths instead of an f4ee template).
+    Private _sseTexDiffuse As TextBox = Nothing
+    Private _sseTexNormal As TextBox = Nothing
+    Private _sseTexBrowseDiffuse As Button = Nothing
+    Private _sseTexBrowseNormal As Button = Nothing
+    ' SSE "Skin Overrides" tab controls (RaceMenu NiOverride body-paint per slot; SSE-only, code-built).
+    Private _sseSkinList As ListBox = Nothing
+    Private _sseSkinSlot As ComboBox = Nothing
+    Private _sseSkinDiffuse As TextBox = Nothing
+    Private _sseSkinNormal As TextBox = Nothing
+    Private _sseSkinTintEnable As CheckBox = Nothing
+    Private _sseSkinTintColor As Button = Nothing
+    Private _sseSkinTintAlpha As FO4_Base_Library.TinySliderTextBox = Nothing
+    ' Curated RaceMenu skin-override slots (friendly label → NiOverride slot mask, bit = slot−30).
+    Private Shared ReadOnly _sseSkinSlots As (Label As String, Mask As UInteger)() = {
+        ("Body (32)", CUInt(1UI << 2)), ("Hands (33)", CUInt(1UI << 3)), ("Feet (37)", CUInt(1UI << 7))}
+    ' The NPC's effective NAM7 weight captured at open time (for the Body-tab Reset).
+    Private _initialSseWeight As Single = 100.0F
+
     Private ReadOnly _rootNpcFormID As UInteger
     Private ReadOnly _appliedPresets As Dictionary(Of UInteger, LooksmenuLoader.LooksmenuPreset)
     Private ReadOnly _refresh As Action
@@ -84,6 +114,9 @@ Public Class EditBody_Form
         Public Fat As Single
         Public Mrsv As Single() = New Single() {0, 0, 0, 0, 0}
         Public BodySlide As New Dictionary(Of String, Single)(StringComparer.OrdinalIgnoreCase)
+        ''' <summary>SSE-only: the NPC's current effective body weight (NAM7 float, 0..100, default 100).
+        ''' Seeds the SSE weight slider. Unused on FO4 (the SSE section is never built).</summary>
+        Public SseWeight As Single = 100.0F
     End Class
 
     ' NPC race/gender + currently-effective WNAM (post-overlay), captured from MainForm at open
@@ -143,9 +176,29 @@ Public Class EditBody_Form
 
         ApplyAvailability(hasMwgt, hasMrsv, _availableSliders.Count > 0)
 
-        If hasMrsv Then CreateMrsvRows()
+        ' MRSV is an FO4-only channel (SSE has no MRSV) — skip the row build under _isSSE (mirror
+        ' EditFace_Form's FO4 seed gating). The SSE weight section replaces the MWGT triangle.
+        If Not _isSSE AndAlso hasMrsv Then CreateMrsvRows()
         CreateBodySlideRows()
         PopulateSkinCombos()
+
+        ' SSE (Skyrim) body editing — mirror EditFace_Form.vb:221-232. Build the code-built weight slider,
+        ' hide the FO4-only controls, and re-source the Overlays tab from the RaceMenu (path-based) carrier
+        ' (Phase 3). The BodySlide tab + Skin(WNAM) group are game-agnostic and stay as-is.
+        If _isSSE Then
+            _initialSseWeight = If(initial IsNot Nothing, initial.SseWeight, 100.0F)
+            ' Seed the overlay's SSE weight from the NPC's current effective NAM7 (unless a prior preset
+            ' already carries one), so the slider opens at the real value and edits ride on top.
+            If Not p.SseWeight.HasValue Then p.SseWeight = _initialSseWeight
+            BuildSseWeightSection()
+            BuildSseBodyScaleTab()   ' RaceMenu NiOverride node-scale sliders (SSE-only tab; FO4 has no analogue)
+            BuildSseSkinOverridesTab()  ' RaceMenu NiOverride skin body-paint per slot (SSE-only tab; FO4 has no analogue)
+            GroupBoxWeight.Visible = False    ' FO4 MWGT 3-axis triangle
+            GroupBoxMrsv.Visible = False      ' FO4 MRSV 5 regions
+            ComboBoxLmSkinTemplate.Visible = False : LabelLmSkinTemplate.Visible = False  ' F4SE-only
+            ' Overlays: reuse the FO4 controls (set up in BuildSseOverlaysSection AFTER InitOverlaysTab, so the
+            ' FO4 init doesn't overwrite the SSE-populated applied list). See below.
+        End If
 
         AddHandler WeightTriangle.WeightChanged, AddressOf OnWeightTriangleChanged
         AddHandler ButtonOk.Click, AddressOf OnOk
@@ -179,6 +232,8 @@ Public Class EditBody_Form
 
         LoadValuesFromOverlay()
         InitOverlaysTab()
+        ' SSE: after the FO4 InitOverlaysTab, re-point the reused overlay controls at the RaceMenu carrier.
+        If _isSSE Then BuildSseOverlaysSection()
     End Sub
 
     ''' <summary>Populate ComboBoxWnam from MainForm.GetSkinArmoCandidates (race+gender filter)
@@ -210,15 +265,17 @@ Public Class EditBody_Form
                 _wnamComboFormIDs.Add(cand.FormID)
             Next
 
-            ' LM Skin template combo
+            ' LM Skin template combo — F4SE-only (FO4). Skip populating under SSE (the control is hidden).
             ComboBoxLmSkinTemplate.Items.Clear()
             _lmTemplateComboIds.Clear()
             ComboBoxLmSkinTemplate.Items.Add("(none)")
             _lmTemplateComboIds.Add("")
-            For Each tpl In _mainForm.GetLmSkinTemplateCandidates(_npcIsFemale)
-                ComboBoxLmSkinTemplate.Items.Add(tpl.DisplayName)
-                _lmTemplateComboIds.Add(tpl.Id)
-            Next
+            If Not _isSSE Then
+                For Each tpl In _mainForm.GetLmSkinTemplateCandidates(_npcIsFemale)
+                    ComboBoxLmSkinTemplate.Items.Add(tpl.DisplayName)
+                    _lmTemplateComboIds.Add(tpl.Id)
+                Next
+            End If
 
             ' Initialize the selections from the overlay preset.
             Dim p = Preset
@@ -776,8 +833,31 @@ Public Class EditBody_Form
             ResetBodySlideSection()
         ElseIf active Is TabPageOverlays Then
             Await ResetOverlaysSection()
+        ElseIf active IsNot Nothing AndAlso active.Name = "TabPageSseBodyScale" Then
+            ResetSseBodyScaleSection()
+        ElseIf active IsNot Nothing AndAlso active.Name = "TabPageSseSkinOverrides" Then
+            Await ResetSseSkinOverridesSection()
         End If
     End Sub
+
+    ''' <summary>SSE: revert RaceMenu body-scale node transforms to the pre-edit snapshot and re-apply the pose.</summary>
+    Private Sub ResetSseBodyScaleSection()
+        Dim p = Preset
+        If p Is Nothing Then Return
+        p.SseNodeTransforms = LooksmenuLoader.CloneSseNodeTransforms(If(_priorPreset Is Nothing, Nothing, _priorPreset.SseNodeTransforms))
+        RefreshSseBodyScaleBars()
+        _mainForm.RebuildAndApplyMergedPose(_editorHost)
+        _editorHost.PreviewCtl.InvalidateRender()
+    End Sub
+
+    ''' <summary>SSE: revert RaceMenu skin overrides (body-paint) to the pre-edit snapshot and re-render.</summary>
+    Private Async Function ResetSseSkinOverridesSection() As Task
+        Dim p = Preset
+        If p Is Nothing Then Return
+        p.SseSkinOverrides = LooksmenuLoader.CloneSseSkinOverrides(If(_priorPreset Is Nothing, Nothing, _priorPreset.SseSkinOverrides))
+        RefreshSseSkinList(-1)
+        Await TriggerOverlayReload()
+    End Function
 
     ''' <summary>Revert MWGT (Weight triangle + 3 sliders), MRSV (5 region bars), and Skin combos
     ''' (NPC.WNAM + LM template) to the snapshot taken at form-open time. The combos go back to
@@ -787,6 +867,14 @@ Public Class EditBody_Form
         Dim p = Preset
         _suspendEvents = True
         Try
+            ' SSE weight — revert NAM7 to the value captured at open time. (MWGT/MRSV below are hidden
+            ' under _isSSE but their reverts are harmless: WeightTriangle is hidden, _mrsvBars are Nothing.)
+            If _isSSE Then
+                p.SseWeight = _initialSseWeight
+                If _sseWeightSlider IsNot Nothing Then
+                    _sseWeightSlider.Value = Math.Max(0.0R, Math.Min(100.0R, Math.Round(CDbl(_initialSseWeight))))
+                End If
+            End If
             ' MWGT — back to initial values seeded from the live NPC at open time.
             If _initialSeed IsNot Nothing Then
                 p.WeightThin = _initialSeed.Thin
@@ -826,6 +914,9 @@ Public Class EditBody_Form
         Finally
             _suspendEvents = False
         End Try
+        ' SSE weight is a morph channel — the skin fast-path may not re-run morphs, so rebuild the
+        ' morph resolver explicitly (OnLocalBodyRefresh) so the weight revert lands. Harmless on FO4.
+        If _isSSE Then _refresh?.Invoke()
         ' Skin change requires a full reload (mesh + TXST + MSWP resolve from state.SkinFormID),
         ' which TriggerSkinChangeReload handles. It also re-runs MWGT / MRSV pose so the weight
         ' + region revert lands in the same render pass.
@@ -846,6 +937,733 @@ Public Class EditBody_Form
             _suspendEvents = False
         End Try
         _refresh?.Invoke()
+    End Sub
+
+    ' =====================================================================
+    ' SSE (Skyrim) body weight — code-built single 0-100 slider + Load/Save .jslot.
+    ' Mirror EditFace_Form.BuildSseMorphTab / OnLoadJslot / OnSaveJslot. Game-gated: only built /
+    ' called under _isSSE. The weight lives on the overlay preset (SseWeight); the SSE vanilla _0/_1
+    ' LERP resolver reads the overlay-applied NAM7, so slider edits render live through the SAME cheap
+    ' morph-dirty path (OnLocalBodyRefresh) the BodySlide sliders use.
+    ' =====================================================================
+
+    ''' <summary>Build the code-built SSE weight section into the Body tab: a top bar with Load/Save
+    ''' .jslot buttons and a single 0..100 <see cref="FO4_Base_Library.TinySliderTextBox"/> (the same slider
+    ''' style the BodySlide / MRSV rows use), in the cell GroupBoxWeight occupied (GroupBoxWeight is hidden
+    ''' under _isSSE). Mirrors BuildSseMorphTab.</summary>
+    Private Sub BuildSseWeightSection()
+        Dim grp As New GroupBox() With {
+            .Text = "Weight (NPC.NAM7 — SSE _0 / _1 body morph)",
+            .Dock = DockStyle.Fill,
+            .AutoSize = True,
+            .AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            .TabStop = False
+        }
+        Dim layout As New TableLayoutPanel() With {
+            .Dock = DockStyle.Fill,
+            .ColumnCount = 2,
+            .RowCount = 2,
+            .AutoSize = True,
+            .AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            .Padding = New Padding(4)
+        }
+        layout.ColumnStyles.Add(New ColumnStyle())
+        layout.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100.0F))
+        layout.RowStyles.Add(New RowStyle())
+        layout.RowStyles.Add(New RowStyle())
+
+        Dim topBar As New FlowLayoutPanel() With {
+            .Dock = DockStyle.Fill, .AutoSize = True, .FlowDirection = FlowDirection.LeftToRight, .Margin = New Padding(0, 0, 0, 4)
+        }
+        Dim btnLoad As New Button() With {.Text = "Load .jslot", .AutoSize = True, .Height = 26}
+        Dim btnSave As New Button() With {.Text = "Save .jslot", .AutoSize = True, .Height = 26}
+        AddHandler btnLoad.Click, AddressOf OnLoadJslot
+        AddHandler btnSave.Click, AddressOf OnSaveJslot
+        topBar.Controls.Add(btnLoad) : topBar.Controls.Add(btnSave)
+        layout.Controls.Add(topBar, 0, 0)
+        layout.SetColumnSpan(topBar, 2)
+
+        Dim lbl As New Label() With {
+            .Text = "Weight (NPC.NAM7)", .AutoSize = True, .Anchor = AnchorStyles.Left,
+            .TextAlign = ContentAlignment.MiddleLeft, .Margin = New Padding(2, 6, 8, 2)
+        }
+        layout.Controls.Add(lbl, 0, 1)
+        ' Same TinySliderTextBox the BodySlide / MRSV rows use (0..100, integer display), replacing the raw
+        ' TrackBar so the SSE weight matches the app's slider style.
+        _sseWeightSlider = New FO4_Base_Library.TinySliderTextBox() With {
+            .Minimum = 0R,
+            .Maximum = 100.0R,
+            .DisplayFormat = "0",
+            .SmallChange = 1.0R,
+            .LargeChange = 10.0R,
+            .Height = 28,
+            .Value = 100.0R,
+            .Dock = DockStyle.Fill,
+            .Margin = New Padding(2)
+        }
+        AddHandler _sseWeightSlider.ValueChanged, AddressOf OnSseWeightChanged
+        AddHandler _sseWeightSlider.DragEnded, AddressOf OnSliderDragEnded
+        layout.Controls.Add(_sseWeightSlider, 1, 1)
+
+        grp.Controls.Add(layout)
+        BodyTabLayout.Controls.Add(grp, 0, 0)   ' same cell as the hidden GroupBoxWeight
+
+        ' Seed the slider from the overlay's SseWeight (already seeded in the ctor from the effective NAM7).
+        Dim p = Preset
+        Dim w As Single = If(p IsNot Nothing AndAlso p.SseWeight.HasValue, p.SseWeight.Value, _initialSseWeight)
+        Dim iv As Double = Math.Max(0.0R, Math.Min(100.0R, Math.Round(CDbl(w))))
+        _suspendEvents = True
+        Try
+            _sseWeightSlider.Value = iv
+        Finally
+            _suspendEvents = False
+        End Try
+    End Sub
+
+    ''' <summary>SSE weight slider moved → write preset.SseWeight and schedule the throttled morph
+    ''' refresh. The SSE _0/_1 LERP is a morph channel: OnLocalBodyRefresh rebuilds the composite morph
+    ''' resolver, which reads the overlay-applied NAM7 (preset.SseWeight → shadow.Nam7Raw). DragEnded
+    ''' (OnSliderDragEnded → FlushRefresh) forces the final value to render immediately.</summary>
+    Private Sub OnSseWeightChanged(sender As Object, e As EventArgs)
+        If _suspendEvents Then Return
+        If _sseWeightSlider Is Nothing Then Return
+        Dim v As Single = CSng(_sseWeightSlider.Value)
+        Dim p = Preset
+        If p IsNot Nothing Then p.SseWeight = v
+        ScheduleRefresh()
+    End Sub
+
+    ' Curated common RaceMenu body-scale nodes (present in most CBBE/XPMSE skeletons): friendly label + skeleton node.
+    Private Shared ReadOnly _sseBodyScaleNodes As (Label As String, Node As String)() = {
+        ("Breast L", "NPC L Breast"), ("Breast R", "NPC R Breast"),
+        ("Butt L", "NPC L Butt"), ("Butt R", "NPC R Butt"),
+        ("Belly", "NPC Belly")}
+    Private ReadOnly _sseBodyScaleBars As New Dictionary(Of String, FO4_Base_Library.TinySliderTextBox)(StringComparer.OrdinalIgnoreCase)
+
+    ''' <summary>SSE-only "Body Scale" tab: one 0..2 slider per RaceMenu NiOverride node scale. Rows = the
+    ''' curated common nodes UNION any nodes the loaded preset carries. Editing writes Preset.SseNodeTransforms
+    ''' and re-applies the merged pose live (node scale is a BONE pose, not a vertex morph). FO4 has no node-
+    ''' scale system → this is a game-specific tab (built only under _isSSE), as full as the other tabs.</summary>
+    Private Sub BuildSseBodyScaleTab()
+        Dim tab As New TabPage("Body Scale") With {.Name = "TabPageSseBodyScale", .Padding = New Padding(6), .AutoScroll = True}
+        Dim header As New Label With {.Dock = DockStyle.Top, .AutoSize = False, .Height = 34, .Padding = New Padding(6),
+            .Text = "RaceMenu body scale (NiOverride node transforms). Scales skeleton bones; loaded/saved with the .jslot + sidecar."}
+        Dim panel As New TableLayoutPanel With {.Dock = DockStyle.Fill, .AutoScroll = True, .ColumnCount = 2}
+        panel.ColumnStyles.Add(New ColumnStyle(SizeType.Absolute, 130))
+        panel.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100))
+        Dim p = Preset
+        Dim nodes As New List(Of (Label As String, Node As String))(_sseBodyScaleNodes)
+        If p IsNot Nothing AndAlso p.SseNodeTransforms IsNot Nothing Then
+            For Each nt In p.SseNodeTransforms
+                If nt Is Nothing OrElse String.IsNullOrEmpty(nt.NodeName) Then Continue For
+                If Not nodes.Any(Function(x) String.Equals(x.Node, nt.NodeName, StringComparison.OrdinalIgnoreCase)) Then nodes.Add((nt.NodeName, nt.NodeName))
+            Next
+        End If
+        Dim row = 0
+        For Each n In nodes
+            panel.RowStyles.Add(New RowStyle(SizeType.Absolute, 32))
+            panel.Controls.Add(New Label With {.Text = n.Label, .Anchor = AnchorStyles.Left, .AutoSize = True, .Margin = New Padding(3, 8, 3, 0)}, 0, row)
+            Dim node = n.Node
+            Dim bar As New FO4_Base_Library.TinySliderTextBox With {
+                .Minimum = 0.0R, .Maximum = 2.0R, .DisplayFormat = "0.00", .SmallChange = 0.01R, .LargeChange = 0.1R,
+                .Height = 26, .Dock = DockStyle.Fill, .Value = CurrentSseNodeScale(node)}
+            AddHandler bar.ValueChanged, Sub(s, e) OnSseBodyScaleChanged(node, bar)
+            AddHandler bar.DragEnded, AddressOf OnSliderDragEnded
+            panel.Controls.Add(bar, 1, row)
+            _sseBodyScaleBars(node) = bar
+            row += 1
+        Next
+        tab.Controls.Add(panel)
+        tab.Controls.Add(header)
+        TabsBody.TabPages.Add(tab)
+    End Sub
+
+    Private Function CurrentSseNodeScale(node As String) As Double
+        Dim p = Preset
+        If p Is Nothing OrElse p.SseNodeTransforms Is Nothing Then Return 1.0R
+        Dim nt = p.SseNodeTransforms.FirstOrDefault(Function(x) x IsNot Nothing AndAlso String.Equals(x.NodeName, node, StringComparison.OrdinalIgnoreCase))
+        Return If(nt IsNot Nothing AndAlso nt.HasScale, CDbl(nt.Scale), 1.0R)
+    End Function
+
+    Private Sub OnSseBodyScaleChanged(node As String, bar As FO4_Base_Library.TinySliderTextBox)
+        If _suspendEvents Then Return
+        Dim p = Preset
+        If p Is Nothing Then Return
+        If p.SseNodeTransforms Is Nothing Then p.SseNodeTransforms = New List(Of RaceMenuJslot.JslotNodeTransform)()
+        Dim scale = CSng(bar.Value)
+        Dim nt = p.SseNodeTransforms.FirstOrDefault(Function(x) x IsNot Nothing AndAlso String.Equals(x.NodeName, node, StringComparison.OrdinalIgnoreCase))
+        If nt Is Nothing Then
+            p.SseNodeTransforms.Add(RaceMenuJslot.MakeScaleTransform(node, scale))
+        Else
+            nt.Scale = scale : nt.HasScale = True
+        End If
+        ' Node scale is a BONE pose (not a vertex morph) → rebuild + re-apply the merged pose on the editor host.
+        _mainForm.RebuildAndApplyMergedPose(_editorHost)
+        _editorHost.PreviewCtl.InvalidateRender()
+    End Sub
+
+    ''' <summary>Reflect the preset's current node scales onto the Body-Scale sliders (after a .jslot load).</summary>
+    Private Sub RefreshSseBodyScaleBars()
+        _suspendEvents = True
+        Try
+            For Each kv In _sseBodyScaleBars
+                kv.Value.Value = CurrentSseNodeScale(kv.Key)
+            Next
+        Finally
+            _suspendEvents = False
+        End Try
+    End Sub
+
+    ''' <summary>SSE-only "Skin Overrides" tab: RaceMenu NiOverride body-paint per biped slot (diffuse/normal
+    ''' texture + tint that replace/tint the worn skin). FO4 has no analogue → code-built SSE tab, as full as the
+    ''' others: a list of overrides (left) with Add/Remove, and a detail panel (right) with slot + diffuse/normal
+    ''' Browse fields + tint enable/color/alpha. Editing writes Preset.SseSkinOverrides and live re-renders (the
+    ''' render composes them under the tattoo overlays in ResolveSseOverlayLayers).</summary>
+    Private Sub BuildSseSkinOverridesTab()
+        Dim tab As New TabPage("Skin Overrides") With {.Name = "TabPageSseSkinOverrides", .Padding = New Padding(6)}
+        Dim root As New TableLayoutPanel With {.Dock = DockStyle.Fill, .ColumnCount = 2, .RowCount = 2}
+        root.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 42))
+        root.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 58))
+        root.RowStyles.Add(New RowStyle(SizeType.Absolute, 34))
+        root.RowStyles.Add(New RowStyle(SizeType.Percent, 100))
+        Dim header As New Label With {.Dock = DockStyle.Fill, .AutoSize = False, .Padding = New Padding(3, 6, 3, 0),
+            .Text = "RaceMenu skin overrides (NiOverride body-paint per slot). Loaded/saved with the .jslot + sidecar."}
+        root.Controls.Add(header, 0, 0) : root.SetColumnSpan(header, 2)
+
+        ' Left: list + Add/Remove.
+        Dim leftPanel As New TableLayoutPanel With {.Dock = DockStyle.Fill, .ColumnCount = 1, .RowCount = 2}
+        leftPanel.RowStyles.Add(New RowStyle(SizeType.Percent, 100))
+        leftPanel.RowStyles.Add(New RowStyle(SizeType.Absolute, 34))
+        _sseSkinList = New ListBox With {.Dock = DockStyle.Fill, .IntegralHeight = False}
+        AddHandler _sseSkinList.SelectedIndexChanged, AddressOf OnSseSkinSelChanged
+        leftPanel.Controls.Add(_sseSkinList, 0, 0)
+        Dim btnRow As New FlowLayoutPanel With {.Dock = DockStyle.Fill, .FlowDirection = FlowDirection.LeftToRight, .WrapContents = False, .Margin = New Padding(0, 3, 0, 0)}
+        Dim btnAdd As New Button With {.Text = "Add", .AutoSize = True}
+        Dim btnRemove As New Button With {.Text = "Remove", .AutoSize = True}
+        AddHandler btnAdd.Click, AddressOf OnSseSkinAdd
+        AddHandler btnRemove.Click, AddressOf OnSseSkinRemove
+        btnRow.Controls.Add(btnAdd) : btnRow.Controls.Add(btnRemove)
+        leftPanel.Controls.Add(btnRow, 0, 1)
+        root.Controls.Add(leftPanel, 0, 1)
+
+        ' Right: detail.
+        Dim detail As New TableLayoutPanel With {.Dock = DockStyle.Fill, .ColumnCount = 2, .AutoScroll = True}
+        detail.ColumnStyles.Add(New ColumnStyle(SizeType.Absolute, 70))
+        detail.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100))
+        Dim rr = 0
+        detail.Controls.Add(New Label With {.Text = "Slot:", .AutoSize = True, .Anchor = AnchorStyles.Left, .Margin = New Padding(3, 8, 3, 0)}, 0, rr)
+        _sseSkinSlot = New ComboBox With {.DropDownStyle = ComboBoxStyle.DropDownList, .Width = 160}
+        For Each s In _sseSkinSlots : _sseSkinSlot.Items.Add(s.Label) : Next
+        AddHandler _sseSkinSlot.SelectedIndexChanged, AddressOf OnSseSkinSlotChanged
+        detail.Controls.Add(_sseSkinSlot, 1, rr) : rr += 1
+        detail.Controls.Add(New Label With {.Text = "Diffuse:", .AutoSize = True, .Anchor = AnchorStyles.Left, .Margin = New Padding(3, 8, 3, 0)}, 0, rr)
+        _sseSkinDiffuse = New TextBox With {.Width = 300}
+        Dim brDiff As New Button With {.Text = "Browse…", .AutoSize = True}
+        AddHandler _sseSkinDiffuse.TextChanged, Sub(s, e) OnSseSkinTexChanged(diffuse:=True)
+        AddHandler brDiff.Click, Sub(s, e) BrowseSseSkinTexture(_sseSkinDiffuse)
+        detail.Controls.Add(SseTexFlow(_sseSkinDiffuse, brDiff), 1, rr) : rr += 1
+        detail.Controls.Add(New Label With {.Text = "Normal:", .AutoSize = True, .Anchor = AnchorStyles.Left, .Margin = New Padding(3, 8, 3, 0)}, 0, rr)
+        _sseSkinNormal = New TextBox With {.Width = 300}
+        Dim brNorm As New Button With {.Text = "Browse…", .AutoSize = True}
+        AddHandler _sseSkinNormal.TextChanged, Sub(s, e) OnSseSkinTexChanged(diffuse:=False)
+        AddHandler brNorm.Click, Sub(s, e) BrowseSseSkinTexture(_sseSkinNormal)
+        detail.Controls.Add(SseTexFlow(_sseSkinNormal, brNorm), 1, rr) : rr += 1
+        _sseSkinTintEnable = New CheckBox With {.Text = "Tint", .AutoSize = True, .Margin = New Padding(3, 8, 3, 0)}
+        AddHandler _sseSkinTintEnable.CheckedChanged, AddressOf OnSseSkinTintToggled
+        detail.Controls.Add(_sseSkinTintEnable, 0, rr)
+        _sseSkinTintColor = New Button With {.Text = "Color…", .AutoSize = True}
+        AddHandler _sseSkinTintColor.Click, AddressOf OnSseSkinTintColor
+        detail.Controls.Add(_sseSkinTintColor, 1, rr) : rr += 1
+        detail.Controls.Add(New Label With {.Text = "Alpha:", .AutoSize = True, .Anchor = AnchorStyles.Left, .Margin = New Padding(3, 8, 3, 0)}, 0, rr)
+        _sseSkinTintAlpha = New FO4_Base_Library.TinySliderTextBox With {
+            .Minimum = 0.0R, .Maximum = 1.0R, .DisplayFormat = "0.00", .SmallChange = 0.01R, .LargeChange = 0.1R,
+            .Height = 26, .Dock = DockStyle.Fill, .Value = 1.0R}
+        AddHandler _sseSkinTintAlpha.ValueChanged, AddressOf OnSseSkinTintAlpha
+        AddHandler _sseSkinTintAlpha.DragEnded, AddressOf OnSliderDragEnded
+        detail.Controls.Add(_sseSkinTintAlpha, 1, rr) : rr += 1
+        root.Controls.Add(detail, 1, 1)
+
+        tab.Controls.Add(root)
+        TabsBody.TabPages.Add(tab)
+        RefreshSseSkinList(-1)
+    End Sub
+
+    ''' <summary>The skin override selected in the list, or Nothing.</summary>
+    Private Function SelectedSseSkinOverride() As RaceMenuJslot.JslotSkinOverride
+        Dim p = Preset
+        If p Is Nothing OrElse p.SseSkinOverrides Is Nothing Then Return Nothing
+        Dim idx = _sseSkinList.SelectedIndex
+        If idx < 0 OrElse idx >= p.SseSkinOverrides.Count Then Return Nothing
+        Return p.SseSkinOverrides(idx)
+    End Function
+
+    Private Shared Function SseSkinLabel(sk As RaceMenuJslot.JslotSkinOverride) As String
+        Dim slot = _sseSkinSlots.FirstOrDefault(Function(s) s.Mask = sk.SlotMask)
+        Dim slotLbl = If(slot.Label IsNot Nothing, slot.Label, $"mask 0x{sk.SlotMask:X}")
+        Dim diff = If(String.IsNullOrEmpty(sk.DiffusePath), "(no texture)", IO.Path.GetFileName(sk.DiffusePath))
+        Return $"{slotLbl} — {diff}{If(sk.HasTint, "  ●", "")}"
+    End Function
+
+    Private Sub RefreshSseSkinList(selectIndex As Integer)
+        _suspendEvents = True
+        Try
+            _sseSkinList.BeginUpdate()
+            Try
+                _sseSkinList.Items.Clear()
+                Dim p = Preset
+                If p IsNot Nothing AndAlso p.SseSkinOverrides IsNot Nothing Then
+                    For Each sk In p.SseSkinOverrides
+                        If sk Is Nothing Then Continue For
+                        _sseSkinList.Items.Add(SseSkinLabel(sk))
+                    Next
+                End If
+            Finally
+                _sseSkinList.EndUpdate()
+            End Try
+            Dim n = _sseSkinList.Items.Count
+            If n > 0 Then _sseSkinList.SelectedIndex = Math.Max(0, Math.Min(selectIndex, n - 1))
+        Finally
+            _suspendEvents = False
+        End Try
+        UpdateSseSkinDetail()
+    End Sub
+
+    Private Sub UpdateSseSkinDetail()
+        Dim sk = SelectedSseSkinOverride()
+        _suspendEvents = True
+        Try
+            Dim has = sk IsNot Nothing
+            _sseSkinSlot.Enabled = has
+            _sseSkinDiffuse.Enabled = has : _sseSkinNormal.Enabled = has
+            _sseSkinTintEnable.Enabled = has
+            _sseSkinTintColor.Enabled = has AndAlso sk.HasTint
+            _sseSkinTintAlpha.Enabled = has AndAlso sk.HasTint
+            If has Then
+                Dim slotIdx = Array.FindIndex(_sseSkinSlots, Function(s) s.Mask = sk.SlotMask)
+                _sseSkinSlot.SelectedIndex = If(slotIdx >= 0, slotIdx, 0)
+                _sseSkinDiffuse.Text = If(sk.DiffusePath, "")
+                _sseSkinNormal.Text = If(sk.NormalPath, "")
+                _sseSkinTintEnable.Checked = sk.HasTint
+                If sk.HasTint Then
+                    _sseSkinTintColor.BackColor = Color.FromArgb(ClampByte(sk.TintR), ClampByte(sk.TintG), ClampByte(sk.TintB))
+                    _sseSkinTintAlpha.Value = CDbl(Math.Max(0.0F, Math.Min(1.0F, sk.TintA)))
+                Else
+                    _sseSkinTintColor.BackColor = Color.White : _sseSkinTintAlpha.Value = 1.0R
+                End If
+            Else
+                _sseSkinDiffuse.Text = "" : _sseSkinNormal.Text = ""
+                _sseSkinTintEnable.Checked = False
+                _sseSkinTintColor.BackColor = Color.White : _sseSkinTintAlpha.Value = 1.0R
+            End If
+        Finally
+            _suspendEvents = False
+        End Try
+    End Sub
+
+    Private Sub OnSseSkinSelChanged(sender As Object, e As EventArgs)
+        If _suspendEvents Then Return
+        UpdateSseSkinDetail()
+    End Sub
+
+    Private Async Sub OnSseSkinAdd(sender As Object, e As EventArgs)
+        Dim p = Preset
+        If p Is Nothing Then Return
+        If p.SseSkinOverrides Is Nothing Then p.SseSkinOverrides = New List(Of RaceMenuJslot.JslotSkinOverride)()
+        p.SseSkinOverrides.Insert(0, New RaceMenuJslot.JslotSkinOverride With {
+            .SlotMask = _sseSkinSlots(0).Mask, .DiffusePath = "", .NormalPath = "", .TintR = 1, .TintG = 1, .TintB = 1, .TintA = 1, .HasTint = False})
+        RefreshSseSkinList(0)
+        Await TriggerOverlayReload()
+    End Sub
+
+    Private Async Sub OnSseSkinRemove(sender As Object, e As EventArgs)
+        Dim p = Preset
+        Dim idx = _sseSkinList.SelectedIndex
+        If p Is Nothing OrElse p.SseSkinOverrides Is Nothing OrElse idx < 0 OrElse idx >= p.SseSkinOverrides.Count Then Return
+        p.SseSkinOverrides.RemoveAt(idx)
+        RefreshSseSkinList(If(p.SseSkinOverrides.Count = 0, -1, Math.Min(idx, p.SseSkinOverrides.Count - 1)))
+        Await TriggerOverlayReload()
+    End Sub
+
+    Private Sub OnSseSkinSlotChanged(sender As Object, e As EventArgs)
+        If _suspendEvents Then Return
+        Dim sk = SelectedSseSkinOverride()
+        If sk Is Nothing OrElse _sseSkinSlot.SelectedIndex < 0 Then Return
+        sk.SlotMask = _sseSkinSlots(_sseSkinSlot.SelectedIndex).Mask
+        Dim i = _sseSkinList.SelectedIndex
+        If i >= 0 Then _sseSkinList.Items(i) = SseSkinLabel(sk)
+        TriggerSseOverlayLive()
+    End Sub
+
+    Private Sub OnSseSkinTexChanged(diffuse As Boolean)
+        If _suspendEvents Then Return
+        Dim sk = SelectedSseSkinOverride()
+        If sk Is Nothing Then Return
+        If diffuse Then sk.DiffusePath = _sseSkinDiffuse.Text.Trim() Else sk.NormalPath = _sseSkinNormal.Text.Trim()
+        Dim i = _sseSkinList.SelectedIndex
+        If i >= 0 Then _sseSkinList.Items(i) = SseSkinLabel(sk)
+        TriggerSseOverlayLive()
+    End Sub
+
+    Private Sub BrowseSseSkinTexture(target As TextBox)
+        If target Is Nothing Then Return
+        Using dlg As New OpenFileDialog() With {.Title = "Select skin texture (.dds)", .Filter = "DDS texture (*.dds)|*.dds|All files (*.*)|*.*"}
+            If dlg.ShowDialog(Me) = DialogResult.OK Then target.Text = dlg.FileName
+        End Using
+    End Sub
+
+    Private Sub OnSseSkinTintToggled(sender As Object, e As EventArgs)
+        If _suspendEvents Then Return
+        Dim sk = SelectedSseSkinOverride()
+        If sk Is Nothing Then Return
+        sk.HasTint = _sseSkinTintEnable.Checked
+        _sseSkinTintColor.Enabled = sk.HasTint : _sseSkinTintAlpha.Enabled = sk.HasTint
+        Dim i = _sseSkinList.SelectedIndex
+        If i >= 0 Then _sseSkinList.Items(i) = SseSkinLabel(sk)
+        TriggerSseOverlayLive()
+    End Sub
+
+    Private Sub OnSseSkinTintColor(sender As Object, e As EventArgs)
+        Dim sk = SelectedSseSkinOverride()
+        If sk Is Nothing Then Return
+        Using dlg As New ColorDialog() With {.Color = Color.FromArgb(ClampByte(sk.TintR), ClampByte(sk.TintG), ClampByte(sk.TintB))}
+            If dlg.ShowDialog(Me) = DialogResult.OK Then
+                sk.TintR = dlg.Color.R / 255.0F : sk.TintG = dlg.Color.G / 255.0F : sk.TintB = dlg.Color.B / 255.0F
+                sk.HasTint = True
+                _sseSkinTintColor.BackColor = dlg.Color
+                TriggerSseOverlayLive()
+            End If
+        End Using
+    End Sub
+
+    Private Sub OnSseSkinTintAlpha(sender As Object, e As EventArgs)
+        If _suspendEvents Then Return
+        Dim sk = SelectedSseSkinOverride()
+        If sk Is Nothing Then Return
+        sk.TintA = CSng(_sseSkinTintAlpha.Value)
+        TriggerSseOverlayLive()
+    End Sub
+
+    ''' <summary>SSE overlays REUSE the FO4 overlay controls (ListBoxOverlayApplied + Add/Remove/Up/Down +
+    ''' the tint controls in GroupBoxOverlayProps). Only the f4ee-specific parts diverge: the template
+    ''' catalog (GroupBoxOverlayAvailable) and the UV offset/scale sliders are hidden (RaceMenu body overlays
+    ''' have neither), and two SSE-only texture-path fields (diffuse/normal) are appended to the props layout
+    ''' (RaceMenu overlays carry a direct texture path where FO4 gets it from a template). The FO4 overlay
+    ''' handlers branch on _isSSE to this path-based carrier (Preset.SseBodyOverlays). Run AFTER InitOverlaysTab.</summary>
+    Private Sub BuildSseOverlaysSection()
+        ' RaceMenu has no template catalog (you add overlay slots directly), so repurpose the 3-column lists
+        ' layout: move the "Applied overlays" list to the LEFT (col 0, where the FO4 catalog used to sit), keep
+        ' the Add/Remove buttons in the middle (col 1), and collapse the now-unused catalog column (col 2). This
+        ' fills the tab with the applied list instead of leaving an empty left half.
+        OverlayListsLayout.SuspendLayout()
+        GroupBoxOverlayAvailable.Visible = False
+        OverlayListsLayout.Controls.Add(GroupBoxOverlayAvailable, 2, 0)   ' park the hidden catalog in the collapsed col
+        OverlayListsLayout.Controls.Add(GroupBoxOverlayApplied, 0, 0)     ' applied list → LEFT
+        OverlayListsLayout.Controls.Add(OverlayCenterLayout, 1, 0)        ' Add/Remove buttons → middle
+        OverlayListsLayout.ColumnStyles(0).SizeType = SizeType.Percent : OverlayListsLayout.ColumnStyles(0).Width = 100.0F
+        OverlayListsLayout.ColumnStyles(2).SizeType = SizeType.Absolute : OverlayListsLayout.ColumnStyles(2).Width = 0.0F
+        OverlayListsLayout.ResumeLayout(True)
+        ' Hide the UV offset/scale rows (no RaceMenu analogue).
+        For Each c As Control In New Control() {LabelOverlayOffsetU, SliderOverlayOffsetU, LabelOverlayOffsetV, SliderOverlayOffsetV,
+                                                LabelOverlayScaleU, SliderOverlayScaleU, LabelOverlayScaleV, SliderOverlayScaleV}
+            If c IsNot Nothing Then c.Visible = False
+        Next
+        ' Append SSE diffuse/normal texture-path rows to the (AutoSize) props layout.
+        Dim r0 = OverlayPropsLayout.RowCount
+        OverlayPropsLayout.RowStyles.Add(New RowStyle(SizeType.AutoSize))
+        OverlayPropsLayout.RowStyles.Add(New RowStyle(SizeType.AutoSize))
+        OverlayPropsLayout.RowCount = r0 + 2
+        OverlayPropsLayout.Controls.Add(New Label With {.Text = "Diffuse:", .AutoSize = True, .Anchor = AnchorStyles.Left, .Margin = New Padding(3, 6, 3, 0)}, 0, r0)
+        _sseTexDiffuse = New TextBox With {.Width = 300}
+        _sseTexBrowseDiffuse = New Button With {.Text = "Browse…", .AutoSize = True}
+        AddHandler _sseTexDiffuse.TextChanged, Sub(s, e) OnSseOverlayTexChanged(diffuse:=True)
+        AddHandler _sseTexBrowseDiffuse.Click, Sub(s, e) BrowseSseOverlayTexture(_sseTexDiffuse)
+        OverlayPropsLayout.Controls.Add(SseTexFlow(_sseTexDiffuse, _sseTexBrowseDiffuse), 1, r0)
+        OverlayPropsLayout.Controls.Add(New Label With {.Text = "Normal:", .AutoSize = True, .Anchor = AnchorStyles.Left, .Margin = New Padding(3, 6, 3, 0)}, 0, r0 + 1)
+        _sseTexNormal = New TextBox With {.Width = 300}
+        _sseTexBrowseNormal = New Button With {.Text = "Browse…", .AutoSize = True}
+        AddHandler _sseTexNormal.TextChanged, Sub(s, e) OnSseOverlayTexChanged(diffuse:=False)
+        AddHandler _sseTexBrowseNormal.Click, Sub(s, e) BrowseSseOverlayTexture(_sseTexNormal)
+        OverlayPropsLayout.Controls.Add(SseTexFlow(_sseTexNormal, _sseTexBrowseNormal), 1, r0 + 1)
+        RefreshSseOverlayList()
+    End Sub
+
+    Private Function SseTexFlow(tb As TextBox, br As Button) As Control
+        Dim p As New FlowLayoutPanel With {.AutoSize = True, .FlowDirection = FlowDirection.LeftToRight, .Margin = New Padding(0), .WrapContents = False}
+        p.Controls.Add(tb) : p.Controls.Add(br)
+        Return p
+    End Function
+
+    ''' <summary>The SSE overlay selected in the reused ListBoxOverlayApplied, or Nothing.</summary>
+    Private Function SelectedSseOverlay() As RaceMenuJslot.JslotOverlayNode
+        Dim p = Preset
+        If p Is Nothing OrElse p.SseBodyOverlays Is Nothing Then Return Nothing
+        Dim idx = ListBoxOverlayApplied.SelectedIndex
+        If idx < 0 OrElse idx >= p.SseBodyOverlays.Count Then Return Nothing
+        Return p.SseBodyOverlays(idx)
+    End Function
+
+    ''' <summary>Repopulate the reused ListBoxOverlayApplied from the SSE carrier, keeping selection.</summary>
+    Private Sub RefreshSseOverlayList()
+        RefreshSseAppliedList(ListBoxOverlayApplied.SelectedIndex)
+    End Sub
+
+    Private Sub RefreshSseAppliedList(selectIndex As Integer)
+        _suspendEvents = True
+        Try
+            ListBoxOverlayApplied.BeginUpdate()
+            Try
+                ListBoxOverlayApplied.Items.Clear()
+                Dim p = Preset
+                If p IsNot Nothing AndAlso p.SseBodyOverlays IsNot Nothing Then
+                    For Each ov In p.SseBodyOverlays
+                        If ov Is Nothing Then Continue For
+                        ListBoxOverlayApplied.Items.Add(SseOverlayLabel(ov))
+                    Next
+                End If
+            Finally
+                ListBoxOverlayApplied.EndUpdate()
+            End Try
+            Dim n = ListBoxOverlayApplied.Items.Count
+            If n > 0 Then ListBoxOverlayApplied.SelectedIndex = Math.Max(0, Math.Min(selectIndex, n - 1))
+        Finally
+            _suspendEvents = False
+        End Try
+        UpdateSseOverlayDetail()
+    End Sub
+
+    Private Shared Function SseOverlayLabel(ov As RaceMenuJslot.JslotOverlayNode) As String
+        Dim diff = If(String.IsNullOrEmpty(ov.DiffusePath), "(no texture)", IO.Path.GetFileName(ov.DiffusePath))
+        Return $"{ov.NodeName} — {diff}{If(ov.HasTint, "  ●", "")}"
+    End Function
+
+    ''' <summary>Load the selected SSE overlay into the reused FO4 tint controls + the SSE texture fields.</summary>
+    Private Sub UpdateSseOverlayDetail()
+        Dim ov = SelectedSseOverlay()
+        _suspendEvents = True
+        Try
+            Dim has = ov IsNot Nothing
+            LabelOverlaySelected.Text = If(has, $"Overlay: {ov.NodeName}", "(no overlay selected — Add one)")
+            If _sseTexDiffuse IsNot Nothing Then
+                _sseTexDiffuse.Text = If(has, If(ov.DiffusePath, ""), "") : _sseTexDiffuse.Enabled = has
+            End If
+            If _sseTexNormal IsNot Nothing Then
+                _sseTexNormal.Text = If(has, If(ov.NormalPath, ""), "") : _sseTexNormal.Enabled = has
+            End If
+            If _sseTexBrowseDiffuse IsNot Nothing Then _sseTexBrowseDiffuse.Enabled = has
+            If _sseTexBrowseNormal IsNot Nothing Then _sseTexBrowseNormal.Enabled = has
+            CheckBoxOverlayTint.Checked = has AndAlso ov.HasTint
+            CheckBoxOverlayTint.Enabled = has
+            ButtonOverlayTintColor.Enabled = has AndAlso ov.HasTint
+            SliderOverlayTintAlpha.Enabled = has AndAlso ov.HasTint
+            If has AndAlso ov.HasTint Then
+                ButtonOverlayTintColor.BackColor = Color.FromArgb(ClampByte(ov.TintR), ClampByte(ov.TintG), ClampByte(ov.TintB))
+                SliderOverlayTintAlpha.Value = CDbl(Math.Max(0.0F, Math.Min(1.0F, ov.TintA)))
+            Else
+                ButtonOverlayTintColor.BackColor = Color.White
+                SliderOverlayTintAlpha.Value = 1.0R
+            End If
+        Finally
+            _suspendEvents = False
+        End Try
+    End Sub
+
+    Private Sub OnSseOverlayTexChanged(diffuse As Boolean)
+        If _suspendEvents Then Return
+        Dim ov = SelectedSseOverlay()
+        If ov Is Nothing Then Return
+        If diffuse Then ov.DiffusePath = _sseTexDiffuse.Text.Trim() Else ov.NormalPath = _sseTexNormal.Text.Trim()
+        Dim i = ListBoxOverlayApplied.SelectedIndex
+        If i >= 0 Then ListBoxOverlayApplied.Items(i) = SseOverlayLabel(ov)
+        TriggerSseOverlayLive()
+    End Sub
+
+    Private Sub BrowseSseOverlayTexture(target As TextBox)
+        If target Is Nothing Then Return
+        Using dlg As New OpenFileDialog() With {.Title = "Select overlay texture (.dds)", .Filter = "DDS texture (*.dds)|*.dds|All files (*.*)|*.*"}
+            If dlg.ShowDialog(Me) <> DialogResult.OK Then Return
+            ' Store the path relative to Data\ (engine convention textures\...) — how the render normalizes it.
+            Dim full = dlg.FileName, rel = full
+            Dim marker = IO.Path.DirectorySeparatorChar & "textures" & IO.Path.DirectorySeparatorChar
+            Dim pos = full.IndexOf(marker, StringComparison.OrdinalIgnoreCase)
+            If pos >= 0 Then rel = full.Substring(pos + 1)
+            target.Text = rel   ' fires TextChanged → OnSseOverlayTexChanged
+        End Using
+    End Sub
+
+    ''' <summary>Write the SSE overlay tint from the reused FO4 swatch + alpha slider.</summary>
+    Private Sub WriteSseOverlayTint(ov As RaceMenuJslot.JslotOverlayNode)
+        Dim c = ButtonOverlayTintColor.BackColor
+        ov.TintR = c.R / 255.0F : ov.TintG = c.G / 255.0F : ov.TintB = c.B / 255.0F
+        ov.TintA = CSng(SliderOverlayTintAlpha.Value)
+    End Sub
+
+    ''' <summary>Add a new Body overlay in the next free [Ovl n] slot at the TOP; select it to browse a texture.</summary>
+    Private Async Function SseAddOverlay() As Task
+        Dim p = Preset
+        If p Is Nothing Then Return
+        If p.SseBodyOverlays Is Nothing Then p.SseBodyOverlays = New List(Of RaceMenuJslot.JslotOverlayNode)()
+        Dim used As New HashSet(Of Integer)
+        For Each o In p.SseBodyOverlays
+            If o Is Nothing OrElse o.NodeName Is Nothing Then Continue For
+            If o.NodeName.StartsWith("Body [Ovl", StringComparison.OrdinalIgnoreCase) Then
+                Dim a = o.NodeName.IndexOf("["c), b = o.NodeName.IndexOf("]"c), num As Integer
+                If a >= 0 AndAlso b > a AndAlso Integer.TryParse(o.NodeName.Substring(a + 5, b - a - 5).Trim(), num) Then used.Add(num)
+            End If
+        Next
+        Dim n = 0
+        While used.Contains(n) : n += 1 : End While
+        p.SseBodyOverlays.Insert(0, New RaceMenuJslot.JslotOverlayNode With {.NodeName = $"Body [Ovl{n}]", .DiffusePath = "", .TintR = 1, .TintG = 1, .TintB = 1, .TintA = 1, .HasTint = False})
+        p.HasOverlays = True
+        RefreshSseAppliedList(0)
+        Await TriggerOverlayReload()
+    End Function
+
+    Private Async Function SseRemoveOverlay() As Task
+        Dim p = Preset
+        Dim idx = ListBoxOverlayApplied.SelectedIndex
+        If p Is Nothing OrElse p.SseBodyOverlays Is Nothing OrElse idx < 0 OrElse idx >= p.SseBodyOverlays.Count Then Return
+        p.SseBodyOverlays.RemoveAt(idx)
+        p.HasOverlays = True
+        RefreshSseAppliedList(If(p.SseBodyOverlays.Count = 0, -1, Math.Min(idx, p.SseBodyOverlays.Count - 1)))
+        Await TriggerOverlayReload()
+    End Function
+
+    Private Async Function SseMoveOverlay(delta As Integer) As Task
+        Dim p = Preset
+        Dim idx = ListBoxOverlayApplied.SelectedIndex
+        Dim target = idx + delta
+        If p Is Nothing OrElse p.SseBodyOverlays Is Nothing OrElse idx < 0 OrElse target < 0 OrElse target >= p.SseBodyOverlays.Count Then Return
+        Dim moved = p.SseBodyOverlays(idx)
+        p.SseBodyOverlays.RemoveAt(idx)
+        p.SseBodyOverlays.Insert(target, moved)
+        RefreshSseAppliedList(target)
+        Await TriggerOverlayReload()
+    End Function
+
+    ''' <summary>Re-resolve the SSE overlay layers + re-render (live).</summary>
+    Private Async Sub TriggerSseOverlayLive()
+        Try
+            Await TriggerOverlayReload()
+        Catch
+        End Try
+    End Sub
+
+    ''' <summary>Load a RaceMenu .jslot onto this SSE NPC: actor.weight → SSE body weight (NAM7),
+    ''' bodyMorphs → BodySlide render dict (flat, summed) + keyed sidecar source. Reflects the weight
+    ''' slider + BodySlide rows, then live re-renders. Mirrors EditFace_Form.OnLoadJslot.</summary>
+    Private Async Sub OnLoadJslot(sender As Object, e As EventArgs)
+        Using dlg As New OpenFileDialog() With {.Filter = "RaceMenu preset (*.jslot)|*.jslot|All files (*.*)|*.*"}
+            If dlg.ShowDialog(Me) <> DialogResult.OK Then Return
+            Dim j As RaceMenuJslot
+            Try
+                j = RaceMenuJslot.Load(IO.File.ReadAllBytes(dlg.FileName))
+            Catch ex As Exception
+                MessageBox.Show(Me, "No se pudo leer el .jslot: " & ex.Message) : Return
+            End Try
+            If j Is Nothing Then MessageBox.Show(Me, "No se pudo interpretar el .jslot.") : Return
+            Dim p = Preset
+            If p Is Nothing Then Return
+
+            ' actor.weight → SSE body weight (clamp 0..100).
+            Dim w As Single = CSng(Math.Max(0.0, Math.Min(100.0, j.Weight)))
+            p.SseWeight = w
+            ' bodyMorphs → the render slider dict (BodySlideMorphResolver consumes it) + keyed for round-trip.
+            p.BodyMorphSliders = j.BodyMorphsToFlatSliderDict()
+            p.BodyMorphsKeyed = JslotBodyMorphsToKeyed(j)
+            ' overrides (RaceMenu body overlays/tattoos) → SSE carrier (render + save). A loaded preset is
+            ' authoritative for overlays (empty list = no tattoos), mirroring the weight/bodyMorph replace.
+            p.SseBodyOverlays = LooksmenuLoader.CloneSseBodyOverlays(j.Overlays)
+
+            _suspendEvents = True
+            Try
+                Dim iv As Integer = Math.Max(0, Math.Min(100, CInt(Math.Round(w))))
+                If _sseWeightSlider IsNot Nothing Then _sseWeightSlider.Value = CDbl(iv)
+                ' Reflect BodySlide rows (a loaded preset replaces the slider set: zero-then-apply).
+                For Each kv In _bodySlideBars : kv.Value.Value = 0R : Next
+                For Each kv In p.BodyMorphSliders
+                    Dim bar As FO4_Base_Library.TinySliderTextBox = Nothing
+                    If _bodySlideBars.TryGetValue(kv.Key, bar) Then bar.Value = kv.Value * 100.0R
+                Next
+            Finally
+                _suspendEvents = False
+            End Try
+            RefreshSseOverlayList()
+            RefreshSseBodyScaleBars()   ' reflect loaded node scales onto the Body-Scale sliders
+            RefreshSseSkinList(-1)      ' reflect loaded skin overrides onto the Skin Overrides tab
+            ' Full reload: overlays are re-resolved only inside BuildRenderPlan (ResolveOverlayLayers), which
+            ' the lightweight _refresh path skips. TriggerOverlayReload re-runs the whole pipeline (weight +
+            ' BodySlide morphs + overlay layers), so it also lands the weight/slider changes above.
+            Await TriggerOverlayReload()
+        End Using
+    End Sub
+
+    ''' <summary>Save the current SSE body edit as a RaceMenu .jslot: actor.weight ← SseWeight,
+    ''' bodyMorphs ← BodyMorphsKeyed (or the flat sliders under a single synthetic key when keyed data
+    ''' is absent, e.g. sliders authored in the editor). Mirrors EditFace_Form.OnSaveJslot.</summary>
+    Private Sub OnSaveJslot(sender As Object, e As EventArgs)
+        Using dlg As New SaveFileDialog() With {.Filter = "RaceMenu preset (*.jslot)|*.jslot", .FileName = "body.jslot"}
+            If dlg.ShowDialog(Me) <> DialogResult.OK Then Return
+            Dim p = Preset
+            Dim j As New RaceMenuJslot()
+            j.Weight = CDbl(If(p IsNot Nothing AndAlso p.SseWeight.HasValue, p.SseWeight.Value, _initialSseWeight))
+            If p IsNot Nothing Then BuildJslotBodyMorphs(j, p)
+            ' overrides (RaceMenu body overlays) ← SSE carrier, so a load→save round-trips the tattoos.
+            If p IsNot Nothing AndAlso p.SseBodyOverlays IsNot Nothing Then
+                j.Overlays.AddRange(LooksmenuLoader.CloneSseBodyOverlays(p.SseBodyOverlays))
+            End If
+            Try
+                IO.File.WriteAllBytes(dlg.FileName, j.Save())
+            Catch ex As Exception
+                MessageBox.Show(Me, "No se pudo guardar el .jslot: " & ex.Message)
+            End Try
+        End Using
+    End Sub
+
+    ''' <summary>Decode a .jslot's bodyMorphs into the keyed sidecar shape (name → {key → value}).
+    ''' Nothing when the preset carries no body morphs. Preserves per-key contributions (the render
+    ''' dict sums them; the keyed form is kept for faithful .jslot / BodyGen round-trip).</summary>
+    Private Shared Function JslotBodyMorphsToKeyed(j As RaceMenuJslot) As Dictionary(Of String, Dictionary(Of String, Single))
+        If j Is Nothing OrElse j.BodyMorphs Is Nothing OrElse j.BodyMorphs.Count = 0 Then Return Nothing
+        Dim d As New Dictionary(Of String, Dictionary(Of String, Single))(StringComparer.OrdinalIgnoreCase)
+        For Each bm In j.BodyMorphs
+            If bm Is Nothing OrElse String.IsNullOrEmpty(bm.Name) Then Continue For
+            Dim inner As Dictionary(Of String, Single) = Nothing
+            If Not d.TryGetValue(bm.Name, inner) Then
+                inner = New Dictionary(Of String, Single)(StringComparer.OrdinalIgnoreCase)
+                d(bm.Name) = inner
+            End If
+            If bm.Keys IsNot Nothing Then
+                For Each k In bm.Keys
+                    If String.IsNullOrEmpty(k.Key) Then Continue For
+                    inner(k.Key) = k.Value
+                Next
+            End If
+        Next
+        Return d
+    End Function
+
+    ''' <summary>Populate a .jslot's bodyMorphs from the preset: keyed data when present, otherwise
+    ''' each flat slider under one synthetic key (the engine nets the keyed values, so a single key
+    ''' reproduces the flat value on reload).</summary>
+    Private Shared Sub BuildJslotBodyMorphs(j As RaceMenuJslot, p As LooksmenuLoader.LooksmenuPreset)
+        If p.BodyMorphsKeyed IsNot Nothing AndAlso p.BodyMorphsKeyed.Count > 0 Then
+            For Each kv In p.BodyMorphsKeyed
+                Dim entry As New RaceMenuJslot.JslotBodyMorph With {.Name = kv.Key}
+                If kv.Value IsNot Nothing Then
+                    For Each ik In kv.Value
+                        entry.Keys.Add(New RaceMenuJslot.JslotBodyMorphKey With {.Key = ik.Key, .Value = ik.Value})
+                    Next
+                End If
+                j.BodyMorphs.Add(entry)
+            Next
+        ElseIf p.BodyMorphSliders IsNot Nothing Then
+            For Each kv In p.BodyMorphSliders
+                If Math.Abs(kv.Value) < 0.0001F Then Continue For
+                Dim entry As New RaceMenuJslot.JslotBodyMorph With {.Name = kv.Key}
+                entry.Keys.Add(New RaceMenuJslot.JslotBodyMorphKey With {.Key = "NPCManager", .Value = kv.Value})
+                j.BodyMorphs.Add(entry)
+            Next
+        End If
     End Sub
 
     ' =====================================================================
@@ -921,6 +1739,7 @@ Public Class EditBody_Form
     ''' raw id when the template isn't installed, so the user still sees what's there).
     ''' selectIndex chooses which row to re-select afterwards (-1 = none).</summary>
     Private Sub RefreshAppliedList(selectIndex As Integer)
+        If _isSSE Then RefreshSseAppliedList(selectIndex) : Return
         Dim p = Preset
         _suspendEvents = True
         Try
@@ -979,6 +1798,7 @@ Public Class EditBody_Form
     ''' <summary>Add the selected available template to the TOP of the applied list (index 0 = on
     ''' top), unless its TemplateId is already applied (no duplicates). Renumber + full reload.</summary>
     Private Async Sub OnOverlayAdd(sender As Object, e As EventArgs)
+        If _isSSE Then Await SseAddOverlay() : Return
         Dim p = Preset
         If p Is Nothing Then Return
         Dim idx = ListBoxOverlayAvailable.SelectedIndex
@@ -998,6 +1818,7 @@ Public Class EditBody_Form
     ''' full reload (kept full so the texture set stays consistent: a later Reset can restore a
     ''' removed overlay whose textures may no longer be loaded — see TriggerOverlayLiveRefresh).</summary>
     Private Async Sub OnOverlayRemove(sender As Object, e As EventArgs)
+        If _isSSE Then Await SseRemoveOverlay() : Return
         Dim p = Preset
         If p Is Nothing Then Return
         Dim idx = ListBoxOverlayApplied.SelectedIndex
@@ -1025,6 +1846,7 @@ Public Class EditBody_Form
     ''' of the SAME overlay set — same templates, same materials, same textures (already loaded),
     ''' only the draw order changes — so no full reload / texture pass is needed.</summary>
     Private Async Function MoveSelectedOverlay(delta As Integer) As Task
+        If _isSSE Then Await SseMoveOverlay(delta) : Return
         Dim p = Preset
         If p Is Nothing Then Return
         Dim idx = ListBoxOverlayApplied.SelectedIndex
@@ -1057,6 +1879,7 @@ Public Class EditBody_Form
     ''' Updates LabelOverlaySelected so the user sees why some controls are disabled. With no
     ''' selection everything is disabled and the label shows the placeholder.</summary>
     Private Sub UpdateOverlayPropsForSelection()
+        If _isSSE Then UpdateSseOverlayDetail() : Return
         ' No templates for this gender → surface the empty-state in the selected-overlay label and
         ' leave the prop controls disabled (the lists are empty, so there is nothing to select).
         If Not _hasOverlayTemplates Then
@@ -1073,10 +1896,10 @@ Public Class EditBody_Form
                 SetOverlayPropControlsEnabled(transformable:=False, tintable:=False)
                 SliderOverlayOffsetU.Value = 0R
                 SliderOverlayOffsetV.Value = 0R
-                SliderOverlayScaleU.Value = 1R
-                SliderOverlayScaleV.Value = 1R
+                SliderOverlayScaleU.Value = 1.0R
+                SliderOverlayScaleV.Value = 1.0R
                 CheckBoxOverlayTint.Checked = False
-                SliderOverlayTintAlpha.Value = 1R
+                SliderOverlayTintAlpha.Value = 1.0R
                 ButtonOverlayTintColor.BackColor = Color.White
                 Return
             End If
@@ -1104,7 +1927,7 @@ Public Class EditBody_Form
             Else
                 CheckBoxOverlayTint.Checked = False
                 ButtonOverlayTintColor.BackColor = Color.White
-                SliderOverlayTintAlpha.Value = 1R
+                SliderOverlayTintAlpha.Value = 1.0R
             End If
 
             SetOverlayPropControlsEnabled(transformable, tintable)
@@ -1188,6 +2011,23 @@ Public Class EditBody_Form
     ''' colour/alpha controls, immediate reload (structural change, not a drag).</summary>
     Private Async Sub OnOverlayTintToggled(sender As Object, e As EventArgs)
         If _suspendEvents Then Return
+        If _isSSE Then
+            Dim sov = SelectedSseOverlay()
+            If sov IsNot Nothing Then
+                sov.HasTint = CheckBoxOverlayTint.Checked
+                If sov.HasTint Then WriteSseOverlayTint(sov)
+                _suspendEvents = True
+                Try
+                    ButtonOverlayTintColor.Enabled = sov.HasTint : SliderOverlayTintAlpha.Enabled = sov.HasTint
+                Finally
+                    _suspendEvents = False
+                End Try
+                Dim si = ListBoxOverlayApplied.SelectedIndex
+                If si >= 0 Then ListBoxOverlayApplied.Items(si) = SseOverlayLabel(sov)
+                Await TriggerOverlayReload()
+            End If
+            Return
+        End If
         Dim ov = SelectedOverlay()
         If ov Is Nothing Then Return
         If CheckBoxOverlayTint.Checked Then
@@ -1211,6 +2051,26 @@ Public Class EditBody_Form
     ''' <summary>Colour swatch clicked → ColorDialog for RGB; paint the swatch + write Tint
     ''' (preserving the current alpha), immediate reload.</summary>
     Private Async Sub OnOverlayTintColorClicked(sender As Object, e As EventArgs)
+        If _isSSE Then
+            Dim sov = SelectedSseOverlay()
+            If sov Is Nothing Then Return
+            Using dlg As New ColorDialog() With {.FullOpen = True, .Color = ButtonOverlayTintColor.BackColor}
+                If dlg.ShowDialog(Me) <> DialogResult.OK Then Return
+                ButtonOverlayTintColor.BackColor = dlg.Color
+            End Using
+            sov.HasTint = True
+            _suspendEvents = True
+            Try
+                CheckBoxOverlayTint.Checked = True : ButtonOverlayTintColor.Enabled = True : SliderOverlayTintAlpha.Enabled = True
+            Finally
+                _suspendEvents = False
+            End Try
+            WriteSseOverlayTint(sov)
+            Dim si = ListBoxOverlayApplied.SelectedIndex
+            If si >= 0 Then ListBoxOverlayApplied.Items(si) = SseOverlayLabel(sov)
+            Await TriggerOverlayReload()
+            Return
+        End If
         Dim ov = SelectedOverlay()
         If ov Is Nothing Then Return
         Using dlg As New ColorDialog() With {.FullOpen = True, .Color = ButtonOverlayTintColor.BackColor}
@@ -1234,6 +2094,14 @@ Public Class EditBody_Form
     ''' <summary>Alpha slider edit → rewrite Tint preserving RGB, throttled.</summary>
     Private Sub OnOverlayTintAlphaChanged(sender As Object, e As EventArgs)
         If _suspendEvents Then Return
+        If _isSSE Then
+            Dim sov = SelectedSseOverlay()
+            If sov IsNot Nothing AndAlso CheckBoxOverlayTint.Checked Then
+                WriteSseOverlayTint(sov)
+                ScheduleOverlayReload()
+            End If
+            Return
+        End If
         Dim ov = SelectedOverlay()
         If ov Is Nothing Then Return
         If Not CheckBoxOverlayTint.Checked Then Return
@@ -1254,6 +2122,15 @@ Public Class EditBody_Form
     Private Async Function ResetOverlaysSection() As Task
         Dim p = Preset
         If p Is Nothing Then Return
+        ' SSE: revert the path-based RaceMenu overlay carrier to the form-open snapshot, refresh the list,
+        ' full reload. The FO4 template-overlay logic below is skipped (its controls are hidden under SSE).
+        If _isSSE Then
+            p.SseBodyOverlays = If(_hadPriorOverlay AndAlso _priorPreset IsNot Nothing,
+                                   LooksmenuLoader.CloneSseBodyOverlays(_priorPreset.SseBodyOverlays), Nothing)
+            RefreshSseOverlayList()
+            Await TriggerOverlayReload()
+            Return
+        End If
         p.Overlays.Clear()
         If _hadPriorOverlay AndAlso _priorPreset IsNot Nothing Then
             ' Deep-clone each entry from the snapshot so later edits don't mutate the snapshot.

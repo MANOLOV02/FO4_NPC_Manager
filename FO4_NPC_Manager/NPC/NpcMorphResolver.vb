@@ -15,6 +15,9 @@ Public Class NpcMorphResolver
     Implements IMorphResolver
 
     Private ReadOnly _npcData As NPC_Data
+    ''' <summary>SSE only: the NPC's RACE EditorID (e.g. "ImperialRace"). Names the race-morph in the merged
+    ''' head TriHead (FemaleHeadRaces.tri) — the racial base face applied before NAM9/NAMA. Empty = skip.</summary>
+    Private ReadOnly _raceEditorId As String
     Private ReadOnly _meshDictKeys As Dictionary(Of IRenderableShape, String)
     Private ReadOnly _shapeChargenTriPaths As Dictionary(Of IRenderableShape, String)
     Private ReadOnly _shapeRaceMorphTriPaths As Dictionary(Of IRenderableShape, String)
@@ -67,13 +70,15 @@ Public Class NpcMorphResolver
                    Optional morphPresetDefs As List(Of RACE_MorphPresetDef) = Nothing,
                    Optional meshDictKeys As Dictionary(Of IRenderableShape, String) = Nothing,
                    Optional shapeChargenTriPaths As Dictionary(Of IRenderableShape, String) = Nothing,
-                   Optional shapeRaceMorphTriPaths As Dictionary(Of IRenderableShape, String) = Nothing)
+                   Optional shapeRaceMorphTriPaths As Dictionary(Of IRenderableShape, String) = Nothing,
+                   Optional raceEditorId As String = "")
         _npcData = npcData
         _morphValueDefs = morphValueDefs
         _morphPresetDefs = morphPresetDefs
         _meshDictKeys = meshDictKeys
         _shapeChargenTriPaths = shapeChargenTriPaths
         _shapeRaceMorphTriPaths = shapeRaceMorphTriPaths
+        _raceEditorId = raceEditorId
     End Sub
 
     Public Function ResolveMorphPlan(shape As IRenderableShape, geom As SkinnedGeometry) As MorphPlan Implements IMorphResolver.ResolveMorphPlan
@@ -116,9 +121,14 @@ Public Class NpcMorphResolver
         ' weightLayersEnabled), once via vertex morph. Removed 2026-05-02 to keep MWGT consistent
         ' with the canonical engine path (bone scaling).
 
-        ' 2) Face morph presets (MSDK/MSDV) - via TriHead chargen .tri + RACE MSID→MSM0/MSM1
-        If _npcData.MorphValues.Count > 0 Then
-            If triHead IsNot Nothing Then AddFaceMorphPresetsFromTriHead(triHead, plan)
+        ' 2) Face morph presets - GAME-AWARE:
+        '  • FO4  = MSDK/MSDV sliders via RACE MSID→MSM0/MSM1 + MPPI presets (RACE-defined name map).
+        '  • SSE  = NAM9 (18 signed sliders) + NAMA (Nose/Eyes/Mouth type) via a FIXED engine name
+        '           table (no RACE defs) — byte-verified from SkyrimSE.exe @0x1ff92a0. See
+        '           project_sse_nam9_morph_map. Same chargen .tri, same TriHead.GetMorph mechanism.
+        If triHead IsNot Nothing Then
+            ' Single per-game builder — the SAME one the offline bake calls, so render and bake never diverge.
+            plan.Channels.AddRange(BuildFaceMorphPlan(_npcData, triHead, _raceEditorId, _morphValueDefs, _morphPresetDefs).Channels)
         End If
 
         ' Channel dedup-by-name with SUMMED weights now lives inside
@@ -170,6 +180,45 @@ Public Class NpcMorphResolver
     ''' <param name="morphPresetDefs">RACE.MorphPresets gendered (MPPI → MPPM).</param>
     ''' <param name="triHead">Chargen FRTRI003 file already parsed for the target shape.</param>
     ''' <param name="logShapeName">Optional shape name for log lines; empty disables logging.</param>
+    ''' <summary>THE single per-GAME face morph plan builder. The live render (<see cref="ResolveMorphPlan"/>)
+    ''' and the offline FaceGen bake (FaceGenBuildPipeline.ApplyChargenMorphsInPlace) BOTH call this, so there
+    ''' is exactly ONE morph path per game with no divergence. Dispatches on <paramref name="npcData"/>.Game
+    ''' over the SAME merged race+chargen TriHead and assembles ALL face morphs:
+    '''   • FO4    → MSDK/MSDV sliders + MPPI presets (RACE defs). LooksMenu face edits are already folded into
+    '''              npcData.MorphValues by NpcRecordOverlay before this runs.
+    '''   • Skyrim → race base + NAM9 sliders + NAMA type presets + RaceMenu custom morphs + RaceMenu per-vertex
+    '''              sculpt (all inside <see cref="BuildFaceMorphPlanFromNam9"/>; the RaceMenu data is folded
+    '''              into npcData by NpcRecordOverlay before this runs).
+    ''' The SSE head/hair actor-WEIGHT morph is folded into this same plan (the "SkinnyMorph" channel in
+    ''' BuildFaceMorphPlanFromNam9, read from each shape's own mesh .tri at frac = 1 - NAM7/100) — one source,
+    ''' render + bake, per-part and race-aware; there is no separate weight resolver or delta table.</summary>
+    Public Shared Function BuildFaceMorphPlan(npcData As NPC_Data, triHead As TriHeadFile,
+                                              raceEditorId As String,
+                                              morphValueDefs As List(Of RACE_MorphValueDef),
+                                              morphPresetDefs As List(Of RACE_MorphPresetDef)) As MorphPlan
+        Dim plan As New MorphPlan()
+        If npcData Is Nothing OrElse triHead Is Nothing Then Return plan
+        If npcData.Game = Config_App.Game_Enum.Skyrim Then
+            plan.Channels.AddRange(BuildFaceMorphPlanFromNam9(npcData, triHead, raceEditorId).Channels)
+        ElseIf npcData.MorphValues IsNot Nothing AndAlso npcData.MorphValues.Count > 0 Then
+            plan.Channels.AddRange(BuildFaceMorphPlanFromTriHead(npcData, morphValueDefs, morphPresetDefs, triHead).Channels)
+        End If
+        Return plan
+    End Function
+
+    ''' <summary>Merge the CHARGEN TriHead's morphs into the RACE TriHead in place — race morphs win on name
+    ''' collision (race is loaded first; a chargen morph is added only when the race head lacks that name). THE
+    ''' single merge used by both the render (<see cref="LoadTriForShape"/>) and the bake (FaceGenBuildPipeline)
+    ''' so the head TriHead they feed <see cref="BuildFaceMorphPlan"/> is assembled identically. When
+    ''' <paramref name="triHead"/> is Nothing it becomes the chargen head; when chargen is Nothing it is a no-op.</summary>
+    Public Shared Sub MergeChargenIntoRaceTriHead(ByRef triHead As TriHeadFile, chargenHead As TriHeadFile)
+        If chargenHead Is Nothing Then Return
+        If triHead Is Nothing Then triHead = chargenHead : Return
+        For Each morph In chargenHead.Morphs
+            If triHead.GetMorph(morph.Name) Is Nothing Then triHead.Morphs.Add(morph)
+        Next
+    End Sub
+
     Public Shared Function BuildFaceMorphPlanFromTriHead(npcData As NPC_Data,
                                                         morphValueDefs As List(Of RACE_MorphValueDef),
                                                         morphPresetDefs As List(Of RACE_MorphPresetDef),
@@ -247,6 +296,202 @@ Public Class NpcMorphResolver
 
         Return plan
     End Function
+
+    ''' <summary>SSE NAM9→chargen morph-name table, byte-verified from SkyrimSE.exe engine table
+    ''' @RVA 0x1ff92a0 (stride 0x18, record {flag,negName,posName}; accessor 0x1403B8360). Index =
+    ''' NAM9 slider index (0..17); PosName applied when the signed slider value ≥ 0, NegName when &lt; 0,
+    ''' both with weight = abs(value). Index 18 (VampireMorph) is unidirectional and handled separately.
+    ''' See project_sse_nam9_morph_map. The pos/neg split matters because the .tri stores SEPARATE
+    ''' morphs per direction (independent deltas — NOT the negation of each other).</summary>
+    Private Shared ReadOnly _sseNam9Morphs As (Pos As String, Neg As String)() = {
+        ("NoseLong", "NoseShort"),       ' 0  Nose Long/Short
+        ("NoseUp", "NoseDown"),          ' 1  Nose Up/Down
+        ("JawDown", "JawUp"),            ' 2  Jaw Up/Down          (engine pos = JawDown)
+        ("JawWide", "JawNarrow"),        ' 3  Jaw Narrow/Wide
+        ("JawForward", "JawBack"),       ' 4  Jaw Forward/Back
+        ("CheeksUp", "CheeksDown"),      ' 5  Cheeks Up/Down
+        ("CheeksOut", "CheeksIn"),       ' 6  Cheeks In/Out        (xEdit label "Fwd/Back" is wrong)
+        ("EyesMoveUp", "EyesMoveDown"),  ' 7  Eyes Up/Down
+        ("EyesMoveOut", "EyesMoveIn"),   ' 8  Eyes In/Out
+        ("BrowUp", "BrowDown"),          ' 9  Brows Up/Down
+        ("BrowOut", "BrowIn"),           ' 10 Brows In/Out
+        ("BrowForward", "BrowBack"),     ' 11 Brows Forward/Back
+        ("LipMoveUp", "LipMoveDown"),    ' 12 Lips Up/Down
+        ("LipMoveOut", "LipMoveIn"),     ' 13 Lips In/Out
+        ("ChinWide", "ChinThin"),        ' 14 Chin Narrow/Wide
+        ("ChinMoveDown", "ChinMoveUp"),  ' 15 Chin Up/Down         (engine pos = ChinMoveDown)
+        ("Underbite", "Overbite"),       ' 16 Chin Underbite/Overbite
+        ("EyesForward", "EyesBack")      ' 17 Eyes Forward/Back
+    }
+
+    ''' <summary>Build the face MorphPlan for a SKYRIM NPC from its NAM9 (18 signed directional
+    ''' sliders + VampireMorph) and NAMA (Nose/Eyes/Mouth type presets), applied against the chargen
+    ''' TriHead by morph NAME. This is the SSE analogue of <see cref="BuildFaceMorphPlanFromTriHead"/>
+    ''' — no RACE MorphValues/Presets are consulted because Skyrim's slider→morph map is a FIXED engine
+    ''' table (byte-verified, see <see cref="_sseNam9Morphs"/> / project_sse_nam9_morph_map), not
+    ''' RACE-authored. Mechanism mirrors the engine (= RaceMenu TRIFile::Apply): head += triMorph.deltas
+    ''' * abs(sliderValue). Channels are deduped-by-name with summed weights, same as the FO4 path.</summary>
+    Public Shared Function BuildFaceMorphPlanFromNam9(npcData As NPC_Data, triHead As TriHeadFile,
+                                                      Optional raceEditorId As String = "") As MorphPlan
+        Dim plan As New MorphPlan()
+        If npcData Is Nothing OrElse triHead Is Nothing Then Return plan
+
+        ' 0) RACE MORPH — the racial base face. HDPT.RaceMorphTri (NAM0=0, e.g. FemaleHeadRaces.tri) carries
+        ' one morph per race NAMED BY THE RACE EDITORID ("ImperialRace", "NordRace", ...). CK applies it at
+        ' weight 1 BEFORE the chargen sliders — it establishes the racial skull/face shape the NPC's NAM9
+        ' then adjusts. Byte/geometry-validated: adding it drops the CK FaceGeom residual from 0.168→0.075
+        ' RMS and makes every NAM9/NAMA channel's least-squares weight match its value (project_sse_nam9_morph_map).
+        ' The merged chargen TriHead already contains these race morphs (LoadTriForShape merges NAM0=0+NAM0=2).
+        If Not String.IsNullOrEmpty(raceEditorId) Then
+            AddNam9Channel(plan, triHead, raceEditorId, 1.0F)
+        End If
+
+        ' 1) NAM9 directional sliders (19 floats: 18 usable + [18] VampireMorph).
+        Dim nam9 = npcData.Nam9Raw
+        If nam9 IsNot Nothing AndAlso nam9.Length >= 76 Then
+            For i = 0 To _sseNam9Morphs.Length - 1
+                Dim v = BitConverter.ToSingle(nam9, i * 4)
+                If Single.IsNaN(v) OrElse Single.IsInfinity(v) OrElse Math.Abs(v) < 0.001F Then Continue For
+                Dim morphName = If(v >= 0, _sseNam9Morphs(i).Pos, _sseNam9Morphs(i).Neg)
+                AddNam9Channel(plan, triHead, morphName, Math.Abs(v))
+            Next
+            ' [18] VampireMorph — unidirectional; vanilla NPCs carry FLT_MAX = "not a vampire".
+            ' Only apply when it is a normal finite value.
+            Dim vamp = BitConverter.ToSingle(nam9, 18 * 4)
+            If Not Single.IsNaN(vamp) AndAlso Not Single.IsInfinity(vamp) AndAlso Math.Abs(vamp) >= 0.001F AndAlso Math.Abs(vamp) < 3.0E+38F Then
+                AddNam9Channel(plan, triHead, "VampireMorph", Math.Abs(vamp))
+            End If
+        End If
+
+        ' 2) NAMA type presets. NAMA = {Nose, "Unknown", Eyes, Mouth} (u32×4). Byte-verified against
+        ' SkyrimSE.exe: the 4 fields map 1:1 to the engine's face-part family table @0x1ff9470
+        ' {NoseType, BrowType, EyesType, LipType} — i.e. the xEdit "Unknown" field IS the BROW type.
+        ' The engine builds the morph name via sprintf("%s%d", family, N) (builder 0x1403B83F0) and
+        ' looks it up by NAME (the ordinal/valid-bitmask path 0x3e1420 is chargen-UI navigation, not the
+        ' bake): N==0 → "Default", N>0 → family&N, 0xFFFFFFFF → no preset. Applied at full weight.
+        Dim nama = npcData.NamaRaw
+        If nama IsNot Nothing AndAlso nama.Length >= 16 Then
+            AddNamaTypePreset(plan, triHead, "NoseType", BitConverter.ToUInt32(nama, 0))
+            AddNamaTypePreset(plan, triHead, "BrowType", BitConverter.ToUInt32(nama, 4))
+            AddNamaTypePreset(plan, triHead, "EyesType", BitConverter.ToUInt32(nama, 8))
+            AddNamaTypePreset(plan, triHead, "LipType", BitConverter.ToUInt32(nama, 12))
+        End If
+
+        ' 2b) RaceMenu EXTENDED custom morphs (NiOverride ValueSet) — layered on top of the vanilla NAM9/NAMA.
+        ' The ValueSet is keyed by the SLIDER NAME (skee64 FaceMorphInterface LoadSliders:1315), NOT the TRI morph
+        ' name. Applied faithfully per ApplyMorphs (:1229-1247): resolve the slider in the per-race catalog, then
+        '   • Slider   : value V<0 ⇒ lowerBound morph at |V|; V>0 ⇒ upperBound morph at V (TRIFile::Apply is linear
+        '                in the weight, so |V|>1 collapses to a single channel at weight |V|).
+        '   • Preset   : morph (lowerBound & int(V)) at 1.0.
+        '   • HeadPart : a head-part selection, not a morph — skipped here.
+        ' No catalog / unknown slider ⇒ apply the name directly (covers simple name==morph sliders + keeps working
+        ' when the RaceMenu slider config isn't installed).
+        If npcData.SseCustomMorphs IsNot Nothing Then
+            For Each cm In npcData.SseCustomMorphs
+                If cm Is Nothing OrElse String.IsNullOrEmpty(cm.Name) OrElse Math.Abs(cm.Value) < 0.0001F Then Continue For
+                AddCustomMorphChannel(plan, triHead, raceEditorId, npcData.IsFemale, cm.Name, cm.Value)
+            Next
+        End If
+
+        ' 2c) RaceMenu (.jslot) per-vertex SCULPT — a direct delta channel (weight 1) on the HEAD verts, applied
+        ' AFTER the slider/type morphs (RaceMenu sculpt is the final free-form adjustment). Deltas are already
+        ' world-space (the loader divided by sculptDivisor). Kept as its own channel so it isn't name-deduped.
+        If npcData.SseSculptHead IsNot Nothing AndAlso npcData.SseSculptHead.Count > 0 Then
+            Dim ds As New List(Of MorphData)(npcData.SseSculptHead.Count)
+            For Each sv In npcData.SseSculptHead
+                ds.Add(New MorphData With {.index = CUInt(sv.Index), .PosDiff = New Vector3(sv.Dx, sv.Dy, sv.Dz)})
+            Next
+            plan.Channels.Add(New MorphChannel("RaceMenuSculpt", 1.0F, ds))
+        End If
+
+        ' 2d) HEAD WEIGHT morph (SSE) — engine-derived, replaces the former hardcoded SseHeadWeightDelta table.
+        ' SkyrimSE.exe applies the actor weight to the head as an ORDINARY morph channel: applier 0x1403B90D0
+        ' reads the weight at actor+0x1FC, computes frac = 1 - weight*0.01, then calls the standard int16-RLE
+        ' delta morph applier (0x140430FE0 → 0x140430190) for the morph named "SkinnyMorph", which lives in the
+        ' head MESH .tri (femalehead.tri / malehead.tri) — NOT in the HDPT race-morph (NAM0=0) or chargen (NAM0=2)
+        ' tris. frac = 1 at weight 0 (full thin/skinny) → 0 at weight 100 (neutral/full). Byte-verified: the
+        ' SkinnyMorph deltas reproduce the deleted baked table index-for-index (RMS 1.5e-3, 0 missing verts), which
+        ' also proves the tri's vertex order equals the head shape's. Reading it from the tri is AGNOSTIC (a modded
+        ' head ships its own SkinnyMorph) and unifies render+bake on this one plan — no table, no separate resolver.
+        ' The mesh .tri is merged into triHead by the callers (render: LoadTriForShape; bake: LoadMergedHeadTri),
+        ' so on a non-head shape GetMorph("SkinnyMorph") is Nothing and AddNam9Channel no-ops (natural gating).
+        Dim nam7 = npcData.Nam7Raw
+        Dim weightVal As Single = If(nam7 IsNot Nothing AndAlso nam7.Length >= 4, BitConverter.ToSingle(nam7, 0), 100.0F)
+        Dim skinnyFrac As Single = 1.0F - Math.Max(0.0F, Math.Min(1.0F, weightVal / 100.0F))
+        If skinnyFrac > 0.0000001F Then AddNam9Channel(plan, triHead, "SkinnyMorph", skinnyFrac)
+
+        ' 3) Dedup channels by name SUMMING weights (same convention as the FO4 path — a slider and a
+        ' type preset could both resolve to the same morph name; the engine applies the sum). The sculpt
+        ' channel has a unique name so it survives dedup as a distinct additive layer.
+        DedupSumChannelsByName(plan)
+        Return plan
+    End Function
+
+    ''' <summary>Look up <paramref name="morphName"/> in the chargen TriHead and, if present with
+    ''' non-empty deltas, add a MorphChannel at <paramref name="weight"/>. No-op for missing morphs.</summary>
+    ''' <summary>The RaceMenu EXTENDED face-slider catalog (per-race .slider config), built once by the app from
+    ''' the loaded plugins and read by the shared render/bake morph path to resolve a custom-morph SLIDER NAME to
+    ''' its actual TRI morph(s). Nothing until the app populates it (e.g. FO4 sessions never set it) → the custom
+    ''' morph loop falls back to applying the name directly.</summary>
+    Public Shared Property SliderCatalog As FO4_Base_Library.RaceMenuSliderCatalog
+
+    ''' <summary>Apply one RaceMenu extended custom morph (slider name → value) faithfully to the plan via the
+    ''' catalog. See caller comment / skee64 ApplyMorphs:1229-1247.</summary>
+    Private Shared Sub AddCustomMorphChannel(plan As MorphPlan, triHead As TriHeadFile, raceEditorId As String, isFemale As Boolean, sliderName As String, value As Single)
+        Dim def As FO4_Base_Library.RaceMenuSliderCatalog.SliderDef = Nothing
+        If SliderCatalog IsNot Nothing Then def = SliderCatalog.GetSlider(raceEditorId, isFemale, sliderName)
+        If def Is Nothing Then
+            AddNam9Channel(plan, triHead, sliderName, value)   ' unknown slider / no catalog → best-effort direct
+            Return
+        End If
+        Select Case def.Type
+            Case FO4_Base_Library.RaceMenuSliderCatalog.SliderType.Preset
+                Dim n = CInt(Math.Truncate(CDbl(value)))
+                If n > 0 AndAlso Not String.IsNullOrEmpty(def.LowerBound) Then AddNam9Channel(plan, triHead, def.LowerBound & n.ToString(), 1.0F)
+            Case FO4_Base_Library.RaceMenuSliderCatalog.SliderType.Slider
+                Dim morphName = If(value < 0, def.LowerBound, def.UpperBound)
+                If Not String.IsNullOrEmpty(morphName) Then AddNam9Channel(plan, triHead, morphName, Math.Abs(value))
+            Case FO4_Base_Library.RaceMenuSliderCatalog.SliderType.HeadPart
+                ' Head-part selection, not a morph — no plan channel.
+        End Select
+    End Sub
+
+    Private Shared Sub AddNam9Channel(plan As MorphPlan, triHead As TriHeadFile, morphName As String, weight As Single)
+        If String.IsNullOrEmpty(morphName) Then Return
+        Dim triMorph = triHead.GetMorph(morphName)
+        If triMorph Is Nothing OrElse triMorph.Vertices Is Nothing OrElse triMorph.Vertices.Length = 0 Then Return
+        Dim deltas = ConvertTriHeadMorphToMorphData(triMorph)
+        If deltas.Count > 0 Then plan.Channels.Add(New MorphChannel(morphName, weight, deltas))
+    End Sub
+
+    ''' <summary>Apply a NAMA face-part type preset, engine-faithful (SkyrimSE.exe name builder
+    ''' 0x1403B83F0): 0xFFFFFFFF → no preset; 0 → the "Default" morph; N&gt;0 → "&lt;family&gt;&lt;N&gt;"
+    ''' (e.g. NoseType3, EyesType18, LipType11). Matched by name in the chargen .tri, at full weight.
+    ''' A missing morph (e.g. the vanilla femaleheadchargen quirk with no "NoseType10") is silently
+    ''' skipped — the engine's by-name lookup does the same.</summary>
+    Private Shared Sub AddNamaTypePreset(plan As MorphPlan, triHead As TriHeadFile, family As String, typeIndex As UInteger)
+        If typeIndex = UInteger.MaxValue Then Return          ' 0xFFFFFFFF = no preset
+        Dim morphName = If(typeIndex = 0UI, "Default", family & typeIndex.ToString())
+        AddNam9Channel(plan, triHead, morphName, 1.0F)
+    End Sub
+
+    ''' <summary>Dedup a plan's channels by morph name, summing weights (shared FO4/SSE convention).</summary>
+    Private Shared Sub DedupSumChannelsByName(plan As MorphPlan)
+        If plan.Channels.Count <= 1 Then Return
+        Dim summedByName As New Dictionary(Of String, MorphChannel)(StringComparer.OrdinalIgnoreCase)
+        For Each ch In plan.Channels
+            Dim existing As MorphChannel = Nothing
+            If summedByName.TryGetValue(ch.Name, existing) Then
+                existing.Weight += ch.Weight
+            Else
+                summedByName(ch.Name) = ch
+            End If
+        Next
+        If summedByName.Count <> plan.Channels.Count Then
+            plan.Channels.Clear()
+            plan.Channels.AddRange(summedByName.Values)
+        End If
+    End Sub
 
     ''' <summary>
     ''' Add face morph presets from MSDK/MSDV using TriHead (Bethesda format) + RACE Morph Values.
@@ -336,16 +581,21 @@ Public Class NpcMorphResolver
         If Not String.IsNullOrEmpty(chargenPath) Then
             Dim normChargen = MeshPathHelpers.NormalizeMeshKey(chargenPath)
             Dim chargenHead = TryLoadTriHead(normChargen)
-            If chargenHead IsNot Nothing Then
-                If triHead Is Nothing Then
-                    triHead = chargenHead
-                Else
-                    For Each morph In chargenHead.Morphs
-                        If triHead.GetMorph(morph.Name) Is Nothing Then
-                            triHead.Morphs.Add(morph)
-                        End If
-                    Next
-                End If
+            MergeChargenIntoRaceTriHead(triHead, chargenHead)
+        End If
+
+        ' SSE HEAD WEIGHT source: the "SkinnyMorph" channel (the actor-weight head morph, applied by
+        ' BuildFaceMorphPlanFromNam9 as frac=1-NAM7/100) lives in the head MESH .tri — femalehead.tri /
+        ' malehead.tri = ChangeExtension(meshKey,".tri") — which is NEITHER the HDPT race-morph tri (NAM0=0)
+        ' NOR the chargen tri (NAM0=2). Merge it so the single face MorphPlan can apply the weight morph
+        ' engine-faithfully instead of a hardcoded table. SSE-only; race/chargen names already loaded win the
+        ' collision (merge adds only absent names → only SkinnyMorph + unused expression morphs join). Per-shape
+        ' and AGNOSTIC: each shape merges its OWN mesh tri, so a modded head/hair with its own SkinnyMorph works.
+        If _npcData IsNot Nothing AndAlso _npcData.Game = Config_App.Game_Enum.Skyrim AndAlso Not String.IsNullOrEmpty(meshKey) Then
+            Dim meshTriPath = Path.ChangeExtension(meshKey, ".tri")
+            If Not String.IsNullOrEmpty(meshTriPath) Then
+                Dim meshTriHead = TryLoadTriHead(MeshPathHelpers.NormalizeMeshKey(meshTriPath))
+                MergeChargenIntoRaceTriHead(triHead, meshTriHead)
             End If
         End If
     End Sub

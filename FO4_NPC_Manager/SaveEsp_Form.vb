@@ -457,25 +457,40 @@ Public Class SaveEsp_Form
         UpdateWarning()
     End Sub
 
-    ''' <summary>FO4-only BA2 header version selector. Hidden for SSE (which packs BSA v105 — no
-    ''' version choice). Three options:
-    '''   index 0 = v8 (Next Gen, default)
-    '''   index 1 = v1 (Old Gen / universal)
+    ''' <summary>Game-aware archive-target selector for the baked CharGen output. Both games show the
+    ''' combo + label (SSE was previously hidden here).
+    ''' FO4 — "BA2 version:", three options:
+    '''   index 0 = v8 (Next Gen, default) · index 1 = v1 (Old Gen / universal)
     '''   index 2 = 0 (None / Loose) — skip BA2 pack entirely, leave the bake outputs as loose
-    ''' Persists into NPC_Config.Ba2Version_FO4, read at pack time.</summary>
+    '''   Persists into NPC_Config.Ba2Version_FO4.
+    ''' SSE — "Archive:", two options: index 0 = BSA (v105), index 1 = None / Loose.
+    '''   Persists into NPC_Config.Archive_SSE (0 = Loose, 1 = BSA).
+    ''' The loose-vs-pack decision is read game-aware at pack time via NPC_Config.IsLooseOnly.</summary>
     Private Sub InitBa2VersionCombo()
-        Ba2VersionUI.PopulateBa2VersionCombo(ComboBoxBa2Version, includeLoose:=True)
-        ' Set selection BEFORE wiring the handler so this init does not write config back.
-        ComboBoxBa2Version.SelectedIndex = Ba2VersionUI.Ba2VersionToComboIndex(NPC_Config.Current.Ba2Version_FO4)
+        Dim isSSE As Boolean = (Config_App.Current IsNot Nothing AndAlso Config_App.Current.Game = Config_App.Game_Enum.Skyrim)
+        ' Populate + set selection BEFORE wiring the handler so this init does not write config back.
+        If isSSE Then
+            Ba2VersionUI.PopulateArchiveComboSSE(ComboBoxBa2Version)
+            ComboBoxBa2Version.SelectedIndex = Ba2VersionUI.ArchiveSseToComboIndex(NPC_Config.Current.Archive_SSE)
+            LabelBa2Version.Text = "Archive:"
+        Else
+            Ba2VersionUI.PopulateBa2VersionCombo(ComboBoxBa2Version, includeLoose:=True)
+            ComboBoxBa2Version.SelectedIndex = Ba2VersionUI.Ba2VersionToComboIndex(NPC_Config.Current.Ba2Version_FO4)
+            LabelBa2Version.Text = "BA2 version:"
+        End If
         AddHandler ComboBoxBa2Version.SelectedIndexChanged, AddressOf OnBa2VersionChanged
 
-        Dim isFo4 As Boolean = (Config_App.Current.Game = Config_App.Game_Enum.Fallout4)
-        LabelBa2Version.Visible = isFo4
-        ComboBoxBa2Version.Visible = isFo4
+        ' Both games: combo + label visible.
+        LabelBa2Version.Visible = True
+        ComboBoxBa2Version.Visible = True
     End Sub
 
     Private Sub OnBa2VersionChanged(sender As Object, e As EventArgs)
-        NPC_Config.Current.Ba2Version_FO4 = Ba2VersionUI.ComboIndexToBa2Version(ComboBoxBa2Version.SelectedIndex)
+        If Config_App.Current IsNot Nothing AndAlso Config_App.Current.Game = Config_App.Game_Enum.Skyrim Then
+            NPC_Config.Current.Archive_SSE = Ba2VersionUI.ComboIndexToArchiveSse(ComboBoxBa2Version.SelectedIndex)
+        Else
+            NPC_Config.Current.Ba2Version_FO4 = Ba2VersionUI.ComboIndexToBa2Version(ComboBoxBa2Version.SelectedIndex)
+        End If
     End Sub
 
     ''' <summary>Encoding selector entries. Mirror of xEdit -cp-trans command-line param values

@@ -17,6 +17,15 @@ Module Program
             Return
         End If
 
+        ' --- HEADLESS slot-classification diagnostic (instrument-before-code, no render needed) ------
+        ' NPC_Manager_FO4.exe --slot-diag  → runs the REAL NpcMeshCollector.ClassifyShapeCategory over
+        ' synthetic per-slot masks for BOTH games, printing the resulting render category. Proves whether
+        ' the FO4-hardcoded slot semantics misclassify SSE slots (e.g. Skyrim body slot 32 → Headwear).
+        If args IsNot Nothing AndAlso args.Any(Function(a) String.Equals(a, "--slot-diag", StringComparison.OrdinalIgnoreCase)) Then
+            RunSlotDiag()
+            Return
+        End If
+
         ' HighDpiMode = DpiUnaware: Windows hace bitmap-scaling de la ventana
         ' al DPI del monitor. UI luce algo blurry a >100% pero el LAYOUT es
         ' idéntico a cualquier DPI — fonts/controles no se reescalan, así
@@ -30,7 +39,10 @@ Module Program
 
         Config_App.LoadConfig()
         NPC_Config.LoadConfig()
-        Config_App.Current.Game = Config_App.Game_Enum.Fallout4
+        ' Game is NO LONGER pinned to Fallout4 here — it comes from the persisted config (last session's
+        ' choice) and is finalized by the user in Preflight_Form's game selector. The encoding init below
+        ' uses this persisted default; Preflight re-initializes encoding for the chosen game before it
+        ' loads any plugin (see Preflight_Form.ButtonOk_Click), so a mid-dialog game switch stays correct.
         ' NPC render RELIES on per-segment occlusion (Pip-Boy 60/160 swap, head-part hiding). The shared
         ' "draw hidden segments" toggle defaults True (WM inspection default) — force it OFF here so NPC
         ' always occludes. NPC has no UI for it; this is unconditional.
@@ -66,6 +78,35 @@ Module Program
                                          preflight.LoadedAutoGenPlugins,
                                          preflight.LoadedSidecars))
         End Using
+    End Sub
+
+    ''' <summary>Headless classification diagnostic. For each game, runs the REAL
+    ''' <see cref="NpcMeshCollector.ClassifyShapeCategory"/> over one-bit slot masks (and a realistic
+    ''' multi-slot cuirass) so the FO4-vs-SSE slot-semantic mismatch is observable without a render.
+    ''' Expected SSE (xEdit): 30=Head,31=Hair,32=Body,33=Hands,34=Forearms,37=Feet,41=LongHair,42=Circlet.</summary>
+    Private Sub RunSlotDiag()
+        Config_App.LoadConfig()
+        NPC_Config.LoadConfig()
+        Dim cases = New (Name As String, SlotN As Integer)() {
+            ("head", 30), ("hair", 31), ("body", 32), ("hands", 33), ("forearms", 34),
+            ("amulet", 35), ("ring", 36), ("feet", 37), ("calves", 38), ("longhair", 41), ("circlet", 42), ("ears", 43)
+        }
+        For Each game In {Config_App.Game_Enum.Fallout4, Config_App.Game_Enum.Skyrim}
+            Config_App.Current.Game = game
+            Console.WriteLine($"===================== {game} =====================")
+            For Each cse In cases
+                Dim mask As UInteger = 1UI << (cse.SlotN - 30)
+                Dim outfitCat = NpcMeshCollector.ClassifyShapeCategory(New MainForm.MeshCandidate With {.SlotMask = mask, .Kind = MainForm.MeshCandidateKind.Outfit})
+                Dim skinCat = NpcMeshCollector.ClassifyShapeCategory(New MainForm.MeshCandidate With {.SlotMask = mask, .Kind = MainForm.MeshCandidateKind.Skin})
+                Console.WriteLine($"  slot {cse.SlotN,2} ({cse.Name,-9}) bit{cse.SlotN - 30,2}  Outfit->{outfitCat,-11}  Skin->{skinCat}")
+            Next
+            ' Realistic Skyrim full-body cuirass: covers body(32)+hands(33)+forearms(34) = bits 2,3,4.
+            Dim cuirass As UInteger = (1UI << 2) Or (1UI << 3) Or (1UI << 4)
+            Console.WriteLine($"  Skyrim cuirass 32+33+34   Outfit->{NpcMeshCollector.ClassifyShapeCategory(New MainForm.MeshCandidate With {.SlotMask = cuirass, .Kind = MainForm.MeshCandidateKind.Outfit})}")
+            ' Body skin (naked body) SSE = slot 32; naked hands SSE = slot 33.
+            Console.WriteLine($"  SSE naked body   (32)     Skin->{NpcMeshCollector.ClassifyShapeCategory(New MainForm.MeshCandidate With {.SlotMask = 1UI << 2, .Kind = MainForm.MeshCandidateKind.Skin})}")
+            Console.WriteLine($"  SSE naked hands  (33)     Skin->{NpcMeshCollector.ClassifyShapeCategory(New MainForm.MeshCandidate With {.SlotMask = 1UI << 3, .Kind = MainForm.MeshCandidateKind.Skin})}")
+        Next
     End Sub
 
     ' ============================================================================================

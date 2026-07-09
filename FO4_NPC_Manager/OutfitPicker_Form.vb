@@ -230,6 +230,10 @@ Public Class OutfitPicker_Form
         ' Nested-only "Edit entry…" edits the selected LVLO entry's Level/Count/ChanceNone (distinct from
         ' "Edit armor…", which stays and opens the ARMO editor when the entry references a concrete armor).
         AddHandler ButtonEditEntry.Click, Sub() EditSelectedEntry()
+        ' ARMA/ARMO record authoring is FO4-only (Skyrim serializers not implemented — see SkyrimArmorAuthoringBlocked).
+        ' Disable "New armor…" on Skyrim; "Edit armor…" is force-disabled in UpdateEditArmorEnabled. Assigning an
+        ' existing outfit and assembling one from existing armors stay available.
+        If Config_App.Current.Game = Config_App.Game_Enum.Skyrim Then ButtonNewArmor.Enabled = False
         UpdateEditArmorEnabled()   ' initial state: disabled until a concrete ARMO is focused
         ' "My outfit drafts" panel: double-click loads a draft back into Create for editing; the button deletes/reverts.
         AddHandler ListViewMyOutfits.DoubleClick, AddressOf OnMyOutfitDoubleClick
@@ -761,7 +765,22 @@ Public Class OutfitPicker_Form
     ''' the candidate universe + rebuilds the item list; ResyncPiecesFromCandidates pulls any overridden ARMO's
     ''' updated slots/name into its piece; clearing _lastPreviewKey forces a re-render (an override can change the
     ''' render without changing the piece FormIDs); RefreshPieces rebuilds the pieces list + re-renders.</summary>
+    ''' <summary>ARMA/ARMO record authoring (create/override) is Fallout-4-only: the record serializers emit
+    ''' FO4-shaped bodies (BOD2/OBTS/DNAM/object-templates), which have no Skyrim equivalent and would corrupt a
+    ''' Skyrim ARMA/ARMO. Assigning an existing outfit and building an OTFT from existing armors stay available
+    ''' (OTFT is a portable EDID+INAM FormID list, serialized game-aware). Returns True (and warns) on Skyrim so
+    ''' the armor-editor entry points bail out instead of writing invalid records.</summary>
+    Private Function SkyrimArmorAuthoringBlocked() As Boolean
+        If Config_App.Current.Game <> Config_App.Game_Enum.Skyrim Then Return False
+        MessageBox.Show(Me,
+            "Editing or creating ARMA/ARMO records is currently Fallout 4 only — the Skyrim armor-record serializers are not implemented, and writing Fallout-4-shaped armor into a Skyrim plugin would corrupt it." & vbCrLf & vbCrLf &
+            "You can still assign an existing outfit to this NPC and assemble an outfit from existing armors.",
+            "Skyrim armor authoring not available", MessageBoxButtons.OK, MessageBoxIcon.Information)
+        Return True
+    End Function
+
     Private Sub OpenArmorEditorForTemplate(armoFid As UInteger, asOverride As Boolean)
+        If SkyrimArmorAuthoringBlocked() Then Return
         Dim outfitCtx = RegisterOutfitContextDraft()
         Try
             Using dlg As New ArmoEditor_Form(_mainForm, _npcFormID, _raceFormID, _isFemale,
@@ -843,6 +862,7 @@ Public Class OutfitPicker_Form
     ''' <summary>"New armor…" — always open the ARMO editor in NEW (blank) mode to author a brand-new ARMO from
     ''' scratch, then run the same post-return Create refresh as an edit.</summary>
     Private Sub OnNewArmor(sender As Object, e As EventArgs)
+        If SkyrimArmorAuthoringBlocked() Then Return
         Dim outfitCtx = RegisterOutfitContextDraft()
         Try
             Using dlg As New ArmoEditor_Form(_mainForm, _npcFormID, _raceFormID, _isFemale,
@@ -859,7 +879,8 @@ Public Class OutfitPicker_Form
     ''' Mirror of <see cref="UpdateAddToLvlEnabled"/>; called from the selection/focus handlers + after refresh.</summary>
     Private Sub UpdateEditArmorEnabled()
         ' "Edit armor…" is enabled whenever a concrete ARMO is focused — a top-level piece OR a nested armor entry.
-        ButtonEditArmor.Enabled = (FocusedConcreteArmoFid() <> 0UI)
+        ' Force-disabled on Skyrim: ARMA/ARMO record authoring is FO4-only (SkyrimArmorAuthoringBlocked).
+        ButtonEditArmor.Enabled = (Config_App.Current.Game <> Config_App.Game_Enum.Skyrim) AndAlso (FocusedConcreteArmoFid() <> 0UI)
         ' "Edit entry…" (nested only) is enabled whenever any LVLO entry row is selected.
         ButtonEditEntry.Enabled = (Not IsAtTopLevel() AndAlso SelectedPieceEntry() IsNot Nothing)
     End Sub
@@ -1653,54 +1674,16 @@ Public Class OutfitPicker_Form
         RefreshPieces()
     End Sub
 
-    ''' <summary>Human-readable list of the biped slots a mask occupies (FO4 slots 30-61).</summary>
+    ''' <summary>Human-readable list of the biped slots a mask occupies, GAME-AWARE: names come from the
+    ''' shared <see cref="BipedSlotCheckboxes.SlotName"/> table (FO4/SSE per current game). No per-game
+    ''' slot-name table is duplicated here — single source of truth.</summary>
     Private Shared Function DescribeSlotMask(mask As UInteger) As String
         If mask = 0UI Then Return "(none)"
         Dim names As New List(Of String)
         For bit = 0 To 31
-            If (mask And (1UI << bit)) <> 0UI Then names.Add(SlotName(30 + bit))
+            If (mask And (1UI << bit)) <> 0UI Then names.Add(BipedSlotCheckboxes.SlotName(30 + bit))
         Next
         Return String.Join(", ", names)
-    End Function
-
-    Private Shared Function SlotName(slot As Integer) As String
-        Select Case slot
-            Case 30 : Return "HairTop"
-            Case 31 : Return "HairLong"
-            Case 32 : Return "FaceHead"
-            Case 33 : Return "BODY"
-            Case 34 : Return "LHand"
-            Case 35 : Return "RHand"
-            Case 36 : Return "[U]Torso"
-            Case 37 : Return "[U]LArm"
-            Case 38 : Return "[U]RArm"
-            Case 39 : Return "[U]LLeg"
-            Case 40 : Return "[U]RLeg"
-            Case 41 : Return "[A]Torso"
-            Case 42 : Return "[A]LArm"
-            Case 43 : Return "[A]RArm"
-            Case 44 : Return "[A]LLeg"
-            Case 45 : Return "[A]RLeg"
-            Case 46 : Return "Headband"
-            Case 47 : Return "Eyes"
-            Case 48 : Return "Beard"
-            Case 49 : Return "Mouth"
-            Case 50 : Return "Neck"
-            Case 51 : Return "Ring"
-            Case 52 : Return "Scalp"
-            Case 53 : Return "Decap"
-            ' 54-58 are "Unnamed" in vanilla FO4 (reserved/unused biped slots; mods repurpose them
-            ' for custom gear to avoid clashing with vanilla equipment). wbDefinitionsFO4.pas:3770-3774.
-            Case 54 : Return "Unnamed54"
-            Case 55 : Return "Unnamed55"
-            Case 56 : Return "Unnamed56"
-            Case 57 : Return "Unnamed57"
-            Case 58 : Return "Unnamed58"
-            Case 59 : Return "Shield"
-            Case 60 : Return "Pipboy"
-            Case 61 : Return "FX"
-            Case Else : Return "s" & slot.ToString()
-        End Select
     End Function
 
     Private Sub OutfitPicker_Form_Shown(sender As Object, e As EventArgs) Handles Me.Shown

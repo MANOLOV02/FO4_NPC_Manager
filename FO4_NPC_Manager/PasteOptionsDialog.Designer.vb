@@ -34,6 +34,7 @@ Partial Class PasteOptionsDialog
         CheckBoxFaceTints = New CheckBox()
         CheckBoxFaceVertexMorphs = New CheckBox()
         CheckBoxFaceBoneRegions = New CheckBox()
+        CheckBoxSculpt = New CheckBox()
         GroupBoxFlags = New GroupBox()
         FlagsLayout = New TableLayoutPanel()
         CheckBoxIsCharGenPreset = New CheckBox()
@@ -71,11 +72,11 @@ Partial Class PasteOptionsDialog
         Root.RowCount = 6
         Root.RowStyles.Add(New RowStyle(SizeType.Absolute, 40F))
         Root.RowStyles.Add(New RowStyle(SizeType.Absolute, 183F))
-        Root.RowStyles.Add(New RowStyle(SizeType.Absolute, 155F))
+        Root.RowStyles.Add(New RowStyle(SizeType.Absolute, 179F))
         Root.RowStyles.Add(New RowStyle(SizeType.Absolute, 70F))
         Root.RowStyles.Add(New RowStyle(SizeType.Absolute, 36F))
         Root.RowStyles.Add(New RowStyle(SizeType.Percent, 100F))
-        Root.Size = New Size(480, 573)
+        Root.Size = New Size(480, 597)
         Root.TabIndex = 0
         ' 
         ' LabelHeader
@@ -211,10 +212,10 @@ Partial Class PasteOptionsDialog
         GroupBoxFace.Dock = DockStyle.Fill
         GroupBoxFace.Location = New Point(12, 210)
         GroupBoxFace.Margin = New Padding(0, 0, 0, 6)
-        GroupBoxFace.MinimumSize = New Size(0, 145)
+        GroupBoxFace.MinimumSize = New Size(0, 169)
         GroupBoxFace.Name = "GroupBoxFace"
         GroupBoxFace.Padding = New Padding(8, 4, 8, 8)
-        GroupBoxFace.Size = New Size(456, 149)
+        GroupBoxFace.Size = New Size(456, 173)
         GroupBoxFace.TabIndex = 2
         GroupBoxFace.TabStop = False
         GroupBoxFace.Text = "Face"
@@ -228,16 +229,18 @@ Partial Class PasteOptionsDialog
         FaceLayout.Controls.Add(CheckBoxFaceTints, 0, 2)
         FaceLayout.Controls.Add(CheckBoxFaceVertexMorphs, 0, 3)
         FaceLayout.Controls.Add(CheckBoxFaceBoneRegions, 0, 4)
+        FaceLayout.Controls.Add(CheckBoxSculpt, 0, 5)
         FaceLayout.Dock = DockStyle.Fill
         FaceLayout.Location = New Point(8, 20)
         FaceLayout.Name = "FaceLayout"
-        FaceLayout.RowCount = 5
-        FaceLayout.RowStyles.Add(New RowStyle(SizeType.Percent, 20F))
-        FaceLayout.RowStyles.Add(New RowStyle(SizeType.Percent, 20F))
-        FaceLayout.RowStyles.Add(New RowStyle(SizeType.Percent, 20F))
-        FaceLayout.RowStyles.Add(New RowStyle(SizeType.Percent, 20F))
-        FaceLayout.RowStyles.Add(New RowStyle(SizeType.Percent, 20F))
-        FaceLayout.Size = New Size(440, 121)
+        FaceLayout.RowCount = 6
+        FaceLayout.RowStyles.Add(New RowStyle(SizeType.Percent, 16.66F))
+        FaceLayout.RowStyles.Add(New RowStyle(SizeType.Percent, 16.66F))
+        FaceLayout.RowStyles.Add(New RowStyle(SizeType.Percent, 16.66F))
+        FaceLayout.RowStyles.Add(New RowStyle(SizeType.Percent, 16.66F))
+        FaceLayout.RowStyles.Add(New RowStyle(SizeType.Percent, 16.66F))
+        FaceLayout.RowStyles.Add(New RowStyle(SizeType.Percent, 16.66F))
+        FaceLayout.Size = New Size(440, 145)
         FaceLayout.TabIndex = 0
         ' 
         ' CheckBoxFaceParts
@@ -294,9 +297,21 @@ Partial Class PasteOptionsDialog
         CheckBoxFaceBoneRegions.Size = New Size(300, 19)
         CheckBoxFaceBoneRegions.TabIndex = 4
         CheckBoxFaceBoneRegions.Text = "Face bone regions  (FMRS sliders + morph intensity)"
-        ' 
+        '
+        ' CheckBoxSculpt
+        '
+        CheckBoxSculpt.AutoSize = True
+        CheckBoxSculpt.Checked = True
+        CheckBoxSculpt.CheckState = CheckState.Checked
+        CheckBoxSculpt.Location = New Point(3, 123)
+        CheckBoxSculpt.Name = "CheckBoxSculpt"
+        CheckBoxSculpt.Size = New Size(140, 18)
+        CheckBoxSculpt.TabIndex = 5
+        CheckBoxSculpt.Text = "Sculpt (per-vertex)"
+        CheckBoxSculpt.Visible = False
+        '
         ' GroupBoxFlags
-        ' 
+        '
         GroupBoxFlags.Controls.Add(FlagsLayout)
         GroupBoxFlags.Dock = DockStyle.Fill
         GroupBoxFlags.Location = New Point(12, 365)
@@ -398,12 +413,12 @@ Partial Class PasteOptionsDialog
         ' 
         AcceptButton = ButtonOk
         CancelButton = ButtonCancel
-        ClientSize = New Size(480, 573)
+        ClientSize = New Size(480, 597)
         Controls.Add(Root)
         FormBorderStyle = FormBorderStyle.FixedDialog
         MaximizeBox = False
         MinimizeBox = False
-        MinimumSize = New Size(480, 573)
+        MinimumSize = New Size(480, 597)
         Name = "PasteOptionsDialog"
         StartPosition = FormStartPosition.CenterParent
         Text = "Paste Look — choose categories"
@@ -441,6 +456,7 @@ Partial Class PasteOptionsDialog
     Friend WithEvents CheckBoxFaceTints As System.Windows.Forms.CheckBox
     Friend WithEvents CheckBoxFaceVertexMorphs As System.Windows.Forms.CheckBox
     Friend WithEvents CheckBoxFaceBoneRegions As System.Windows.Forms.CheckBox
+    Friend WithEvents CheckBoxSculpt As System.Windows.Forms.CheckBox
     Friend WithEvents GroupBoxFlags As System.Windows.Forms.GroupBox
     Friend WithEvents FlagsLayout As System.Windows.Forms.TableLayoutPanel
     Friend WithEvents CheckBoxIsCharGenPreset As System.Windows.Forms.CheckBox

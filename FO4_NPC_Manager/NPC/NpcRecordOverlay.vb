@@ -217,6 +217,11 @@ Public Module NpcRecordOverlay
         ' HairColor: preset 0 means "not in JSON, preserve" (engine behaviour: nullptr form skips).
         shadow.HairColorFormID = If(preset.HairColorFormID <> 0UI, preset.HairColorFormID, raw.HairColorFormID)
 
+        ' Face texture set (FTST): a RaceMenu preset (.jslot actor.headTexture) can override the NPC's face TXST —
+        ' skee64 ApplyPreset sets npc->headData->headTexture (PresetInterface.cpp:158-160). 0 = not carried →
+        ' preserve raw. Feeds state.HeadTextureFormID → NpcMaterialResolver's face material (:344).
+        shadow.HeadTextureFormID = If(preset.SseHeadTextureFormID <> 0UI, preset.SseHeadTextureFormID, raw.HeadTextureFormID)
+
         ' Weight: preserve raw when preset doesn't carry a value.
         shadow.WeightThin = If(preset.WeightThin.HasValue, preset.WeightThin, raw.WeightThin)
         shadow.WeightMuscular = If(preset.WeightMuscular.HasValue, preset.WeightMuscular, raw.WeightMuscular)
@@ -232,6 +237,61 @@ Public Module NpcRecordOverlay
                 shadow.MorphValues(kv.Key) = kv.Value
             Next
         End If
+
+        ' SSE (Skyrim) head morphs (NAM9 18 floats / NAMA 4 type uints). The shadow drops any field it
+        ' doesn't explicitly copy, so it MUST carry these from raw — otherwise merely registering an overlay
+        ' (which opening Edit Face does) would blank the NPC's face morphs. Override with the edited sliders
+        ' when the preset carries them. The SSE morph resolver (BuildFaceMorphPlanFromNam9) reads these.
+        If preset.HasSseMorphs AndAlso preset.SseNam9 IsNot Nothing Then
+            Dim n9 = If(raw.Nam9Raw IsNot Nothing AndAlso raw.Nam9Raw.Length >= 76, DirectCast(raw.Nam9Raw.Clone(), Byte()), New Byte(75) {})
+            For i = 0 To Math.Min(preset.SseNam9.Length, SseNam9MorphMap.Nam9SliderCount) - 1
+                BitConverter.GetBytes(preset.SseNam9(i)).CopyTo(n9, i * 4)
+            Next
+            shadow.Nam9Raw = n9
+        Else
+            shadow.Nam9Raw = raw.Nam9Raw
+        End If
+        If preset.HasSseMorphs AndAlso preset.SseNama IsNot Nothing Then
+            Dim na = If(raw.NamaRaw IsNot Nothing AndAlso raw.NamaRaw.Length >= 16, DirectCast(raw.NamaRaw.Clone(), Byte()), New Byte(15) {})
+            For f = 0 To Math.Min(preset.SseNama.Length, SseNam9MorphMap.NamaFamilyCount) - 1
+                BitConverter.GetBytes(preset.SseNama(f)).CopyTo(na, f * 4)
+            Next
+            shadow.NamaRaw = na
+        Else
+            shadow.NamaRaw = raw.NamaRaw
+        End If
+        ' SSE tint RArrayS (TINI/TINC/TINV/TIAS) — the shadow must carry these too, else opening Edit Face
+        ' (which registers an overlay) would blank the NPC's face tint on both render and Save ESP
+        ' (NpcSubrecordWriter.EmitSseFaceTail emits them from SseTintRaw). The editor's Face Tints edit
+        ' overrides the whole list; otherwise carry raw verbatim.
+        If preset.HasSseTints AndAlso preset.SseTintRawOverride IsNot Nothing Then
+            shadow.SseTintRaw = preset.SseTintRawOverride
+        ElseIf raw.SseTintRaw IsNot Nothing Then
+            shadow.SseTintRaw = raw.SseTintRaw
+        End If
+        ' RaceMenu-only per-layer custom tint mask texture (index → path). No ESP home (TINI/TINC/TINV/TIAS carry
+        ' no path) → carried on the shadow so the composer (render + bake) composites the custom mask instead of
+        ' the RACE layer's default for that index. Absent = the RACE layer's own mask.
+        If preset.SseTintTexOverride IsNot Nothing AndAlso preset.SseTintTexOverride.Count > 0 Then
+            shadow.SseTintTexOverride = preset.SseTintTexOverride
+        End If
+        ' SSE (Skyrim) vanilla body weight (NPC.NAM7 = 4-byte float). The shadow drops any field it doesn't
+        ' explicitly copy, so it MUST carry NAM7 from raw (else registering an overlay would blank the weight
+        ' → the _0/_1 LERP resolver would default to 100). Override with the edited SseWeight when the preset
+        ' carries one (Edit Body SSE weight slider). FO4 leaves SseWeight unset → raw carry-through (NAM7 Unused
+        ' there, byte-identical). Save ESP reads shadow.Nam7Raw (CopyRoundTripOnlyFieldsFromRaw preserves this
+        ' override — it only copies raw.Nam7Raw when the shadow hasn't already set it).
+        If preset.SseWeight.HasValue Then
+            shadow.Nam7Raw = BitConverter.GetBytes(preset.SseWeight.Value)
+        Else
+            shadow.Nam7Raw = raw.Nam7Raw
+        End If
+
+        ' RaceMenu .jslot sculpt + custom morphs — sidecar-only (raw NPC has none). Carried from the preset so
+        ' the SSE morph resolver (BuildFaceMorphPlanFromNam9) applies them in render + bake.
+        shadow.SseSculptHead = preset.SseSculptHead
+        shadow.SseCustomMorphs = preset.SseCustomMorphs
+        shadow.SseOverlays = preset.SseOverlays
 
         ' Morphs.Values (MRSV body region morphs).
         If preset.HasBodyMorphValues Then
@@ -326,6 +386,15 @@ Public Module NpcRecordOverlay
     ''' <para>The Slot enum value is a schema-defined field name (xEdit wbDefinitionsFO4.pas:3478),
     ''' NOT a hardcoded magic number — this is the canonical lookup for "skin tint layer".</para></summary>
     Public Function DeriveSkinToneQnam(npc As NPC_Data, race As RACE_Data, isFemale As Boolean, pluginManager As PluginManager) As Nullable(Of Color)
+        ' SSE (Skyrim): no slot-12; the skin tone is the RACE tint layer whose TINP mask type == 6, with the
+        ' intensity FOLDED into the QNAM colour (SSE QNAM has no alpha). Game-gated so FO4 stays byte-identical.
+        ' This single source of truth feeds both the save-overlay QNAM (above) and the render body (via
+        ' ResolveNpcSkinToneColor), so face and body match on SSE.
+        If Config_App.Current IsNot Nothing AndAlso Config_App.Current.Game = Config_App.Game_Enum.Skyrim Then
+            If npc Is Nothing Then Return Nothing
+            Return SseFaceTintComposer.ResolveSkinToneQnam(pluginManager, npc, race, npc.RaceFormID, isFemale)
+        End If
+
         If npc Is Nothing OrElse race Is Nothing Then Return Nothing
 
         ' Iterar las capas MERGED (autoradas + defaults HEREDADOS de RACE), NO solo npc.FaceTintLayers.

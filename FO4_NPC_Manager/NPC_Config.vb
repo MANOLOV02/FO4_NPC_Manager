@@ -21,6 +21,22 @@ Public Class NPC_Config
     ''' (skipped when 0 = Loose-only sentinel).</summary>
     Public Property Ba2Version_FO4 As UInteger = Ba2VersionUI.NextGen
 
+    ''' <summary>Archive target for the baked CharGen under Skyrim (SSE, per-app setting). SSE has no BA2
+    ''' header-version choice — it either packs a BSA (v105) or leaves the bake outputs loose. Values:
+    ''' 0 = Loose (skip BSA pack), 1 = BSA (default). Serializes automatically via JSON (see SaveConfig /
+    ''' LoadConfig); old configs without the key default to 1 = BSA. The game-aware loose decision routes
+    ''' through <see cref="IsLooseOnly"/>; the FO4 side keeps reading <see cref="Ba2Version_FO4"/>.</summary>
+    Public Property Archive_SSE As UInteger = 1
+
+    ''' <summary>Game-aware "leave the CharGen bake outputs loose (skip archive pack)" decision. For FO4 this
+    ''' is exactly the historical <c>Ba2Version_FO4 = 0</c> sentinel (byte-identical behavior); for SSE it is
+    ''' <c>Archive_SSE = 0</c>. Null-guards <see cref="Current"/> (returns True — stays loose — when config is
+    ''' unavailable, matching the prior FaceGenBuilder.OutputStaysLoose guard).</summary>
+    Public Shared Function IsLooseOnly(game As Config_App.Game_Enum) As Boolean
+        If Current Is Nothing Then Return True
+        Return If(game = Config_App.Game_Enum.Skyrim, Current.Archive_SSE = 0, Current.Ba2Version_FO4 = 0)
+    End Function
+
     ''' <summary>"Remove 'Is CharGen Face Preset' flag" option in the Save ESP dialog (sub-option of the
     ''' CharGen bake). When True (default) the saved NPC overrides get ACBS bit 0x04 cleared so the engine
     ''' loads the baked FaceGen instead of reconstructing the face at runtime. Persisted per-app: the dialog

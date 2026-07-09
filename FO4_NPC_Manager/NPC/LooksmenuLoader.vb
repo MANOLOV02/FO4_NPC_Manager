@@ -27,6 +27,10 @@ Public Module LooksmenuLoader
         ''' presets-mod ESP that isn't in Plugins.txt.</summary>
         Public UnresolvedHeadParts As New List(Of String)
         Public HairColorFormID As UInteger
+        ''' <summary>SSE-ONLY RaceMenu face texture set (FTST) override from a loaded .jslot's actor.headTexture
+        ''' (skee64 sets npc->headData->headTexture, PresetInterface.cpp:158-160). 0 = none. The render uses it as
+        ''' the explicit face TXST (NpcMaterialResolver reads state.ExplicitHeadTextureFormID). SSE-only; Nothing/0 on FO4.</summary>
+        Public SseHeadTextureFormID As UInteger
         Public WeightThin As Single?
         Public WeightMuscular As Single?
         Public WeightFat As Single?
@@ -78,6 +82,34 @@ Public Module LooksmenuLoader
         ''' Count=0+Has=False ⇒ preserve raw (current behaviour for absent fields).</summary>
         Public HasFaceTintLayers As Boolean = False
         Public HasChargenFaceMorphs As Boolean = False
+        ' SSE (Skyrim) head morphs: the edited NAM9 (18 floats) + NAMA (4 type uints). When HasSseMorphs,
+        ' the overlay writes these into shadow.Nam9Raw/NamaRaw so the live render + bake reflect the edit
+        ' (the SSE morph resolver reads Nam9Raw/NamaRaw). FO4 leaves these unset (no-op).
+        Public SseNam9 As Single() = Nothing
+        Public SseNama As UInteger() = Nothing
+        Public HasSseMorphs As Boolean = False
+        ' SSE (Skyrim) face tints: the edited flat TINI/TINC/TINV/TIAS subrecord list. When HasSseTints, the
+        ' overlay swaps it into shadow.SseTintRaw so the composer (render + bake) uses the edit, and Save ESP
+        ' emits it. FO4 leaves these unset (no-op; FO4 tints live in FaceTintLayers).
+        Public SseTintRawOverride As List(Of NPC_RawSubrecord) = Nothing
+        Public HasSseTints As Boolean = False
+        ' RaceMenu-only per-layer CUSTOM tint mask texture (index → texture path). PresetInterface.cpp:203 does
+        ' tintMask->texture->str = tint.name — i.e. a .jslot tint can OVERRIDE the RACE layer's mask texture by
+        ' index to an arbitrary path (shared warpaint/tattoo presets). No vanilla NPC record home (TINI/TINC/TINV/
+        ' TIAS carry no path) → carried here, composited by SseFaceTintComposer (render + bake), persisted in the
+        ' .bssliders sidecar. Empty/absent index = use the RACE layer's own TINT path. FO4 leaves unset.
+        Public SseTintTexOverride As Dictionary(Of Integer, String) = Nothing
+        ' RaceMenu .jslot sidecar (per-vertex sculpt + NiOverride custom morphs). Applied on top of NAM9/NAMA in
+        ' render + bake; saved to the .jslot alongside the ESP. FO4 leaves unset.
+        Public SseSculptHead As List(Of NPC_SculptVert) = Nothing
+        Public SseCustomMorphs As List(Of NPC_CustomMorph) = Nothing
+        Public SseOverlays As List(Of SseOverlayCompositor.SseOverlay) = Nothing
+        ' SSE (Skyrim) vanilla body weight (NPC.NAM7). Nothing = preserve raw NPC.NAM7; a value overrides
+        ' it (0..100). The overlay writes BitConverter.GetBytes(SseWeight) into shadow.Nam7Raw so the SSE
+        ' body-weight (_0/_1) LERP resolver reads the edited weight live and Save ESP persists it. Editor-only
+        ' (Edit Body SSE weight slider) — not serialized to the FO4 f4ee JSON; the .jslot carries it as
+        ' actor.weight. FO4 leaves this unset (NAM7 is Unused there).
+        Public SseWeight As Single? = Nothing
         Public HasBodyMorphValues As Boolean = False
         Public HasFaceBoneRegions As Boolean = False
         ''' <summary>HeadParts presence — same semantics as the four list flags above.
@@ -93,6 +125,14 @@ Public Module LooksmenuLoader
         ''' (Save) and 560-570 (Load). NOT a vanilla record — lives only in the JSON.</summary>
         Public BodyMorphSliders As New Dictionary(Of String, Single)(StringComparer.OrdinalIgnoreCase)
 
+        ''' <summary>SSE-ONLY keyed body morphs: morph name → (BodySlide key → value). RaceMenu body
+        ''' sliders accumulate one keyed contribution per BodySlide source; the engine nets (sums) the
+        ''' per-key values, so the flat render dict is derived by summing. Kept keyed here (nullable —
+        ''' Nothing on FO4 and on SSE presets without body morphs) so a .jslot/BodyGen save round-trips
+        ''' faithfully instead of collapsing to the summed <see cref="BodyMorphSliders"/>. Not serialized
+        ''' to the FO4 f4ee preset JSON — persistence is the SSE .bssliders sidecar (BodyMorphsKeyed).</summary>
+        Public BodyMorphsKeyed As Dictionary(Of String, Dictionary(Of String, Single)) = Nothing
+
         ''' <summary>Body overlays (LooksMenu "tattoos") — the per-NPC list of applied overlay entries.
         ''' Render-only F4SE field, same shape as <see cref="BodyMorphSliders"/> (lives only in the JSON,
         ''' no vanilla NPC_ subrecord equivalent). Each entry references an <see cref="OverlayTemplate"/>
@@ -105,6 +145,25 @@ Public Module LooksmenuLoader
         ''' treats it as a wipe". False = "field absent from this preset, preserve raw NPC".
         ''' Set True by ParseFile when the "Overlays" key is present (regardless of array length).</summary>
         Public HasOverlays As Boolean = False
+
+        ''' <summary>SSE-ONLY RaceMenu body overlays (tattoos) — PATH-based (node + diffuse/normal path +
+        ''' tint), decoded from a <c>.jslot</c>'s <c>overrides</c> array (<see cref="RaceMenuJslot.Overlays"/>).
+        ''' Distinct carrier from the FO4 template-based <see cref="Overlays"/>: RaceMenu overlays have no
+        ''' f4ee catalog, so they can't be an <see cref="OverlayEntry"/> (TemplateId). Nullable — Nothing on
+        ''' FO4 and on SSE presets without overlays; persistence is the <c>.jslot</c> + the <c>.bssliders</c>
+        ''' sidecar (<c>sseBodyOverlays</c>). The render sources it under the game gate; FO4 never reads it.</summary>
+        Public SseBodyOverlays As List(Of RaceMenuJslot.JslotOverlayNode) = Nothing
+
+        ''' <summary>SSE RaceMenu NiOverride node transforms (body-scale sliders — e.g. scale of "NPC L Breast").
+        ''' Nothing on FO4 / SSE presets without transforms. Persistence: <c>.jslot</c> (transforms) + the
+        ''' <c>.bssliders</c> sidecar; also flows through Copy/Paste. The render applies the per-node scale to
+        ''' the skeleton under the game gate; FO4 never reads it.</summary>
+        Public SseNodeTransforms As List(Of RaceMenuJslot.JslotNodeTransform) = Nothing
+
+        ''' <summary>SSE RaceMenu NiOverride SKIN overrides (body-paint / skin texture-tint per biped slot).
+        ''' Nothing on FO4 / SSE presets without skin overrides. Persistence: <c>.jslot</c> (skinOverrides) + the
+        ''' <c>.bssliders</c> sidecar; also flows through Copy/Paste. FO4 never reads it.</summary>
+        Public SseSkinOverrides As List(Of RaceMenuJslot.JslotSkinOverride) = Nothing
 
         ''' <summary>Counts of F4SE-only fields the preset contains. Non-zero = the preset has
         ''' content the editor will not apply (Overlays/BodyMorphs sliders/Skin override).</summary>
@@ -582,6 +641,7 @@ Public Module LooksmenuLoader
         c.HeadPartFormIDs.AddRange(p.HeadPartFormIDs)
         c.UnresolvedHeadParts.AddRange(p.UnresolvedHeadParts)
         c.HairColorFormID = p.HairColorFormID
+        c.SseHeadTextureFormID = p.SseHeadTextureFormID
         c.WeightThin = p.WeightThin
         c.WeightMuscular = p.WeightMuscular
         c.WeightFat = p.WeightFat
@@ -606,6 +666,18 @@ Public Module LooksmenuLoader
 
         For Each kv In p.BodyMorphSliders : c.BodyMorphSliders(kv.Key) = kv.Value : Next
 
+        ' BodyMorphsKeyed (SSE-only, nullable) — deep-copy the nested dict so the clone is independent.
+        If p.BodyMorphsKeyed IsNot Nothing Then
+            c.BodyMorphsKeyed = New Dictionary(Of String, Dictionary(Of String, Single))(StringComparer.OrdinalIgnoreCase)
+            For Each kv In p.BodyMorphsKeyed
+                Dim inner As New Dictionary(Of String, Single)(StringComparer.OrdinalIgnoreCase)
+                If kv.Value IsNot Nothing Then
+                    For Each ik In kv.Value : inner(ik.Key) = ik.Value : Next
+                End If
+                c.BodyMorphsKeyed(kv.Key) = inner
+            Next
+        End If
+
         ' Overlays — deep-copy each entry (cloning the float arrays so the clone is independent).
         ' HasOverlays travels with the list, same as the other Has* flags above.
         For Each ov In p.Overlays
@@ -619,6 +691,14 @@ Public Module LooksmenuLoader
         Next
         c.HasOverlays = p.HasOverlays
 
+        ' SSE body overlays (path-based RaceMenu tattoos) — deep-copy (SSE-only, nullable). FO4 leaves
+        ' SseBodyOverlays = Nothing so this no-ops on FO4.
+        c.SseBodyOverlays = CloneSseBodyOverlays(p.SseBodyOverlays)
+        ' SSE RaceMenu node transforms (body-scale) — deep-copy (SSE-only, nullable).
+        c.SseNodeTransforms = CloneSseNodeTransforms(p.SseNodeTransforms)
+        ' SSE RaceMenu skin overrides (body-paint) — deep-copy (SSE-only, nullable).
+        c.SseSkinOverrides = CloneSseSkinOverrides(p.SseSkinOverrides)
+
         c.UnsupportedCounts.Overlays = p.UnsupportedCounts.Overlays
         c.UnsupportedCounts.BodyMorphSliders = p.UnsupportedCounts.BodyMorphSliders
         c.UnsupportedCounts.HasSkinOverride = p.UnsupportedCounts.HasSkinOverride
@@ -629,9 +709,97 @@ Public Module LooksmenuLoader
         c.DefaultOutfitFormIDOverride = p.DefaultOutfitFormIDOverride
         c.SleepOutfitFormIDOverride = p.SleepOutfitFormIDOverride
         c.SkinTemplateId = p.SkinTemplateId
+        c.SseWeight = p.SseWeight
+
+        ' SSE head morphs (NAM9 18 floats + NAMA 4 type uints) — deep-copy the arrays so the clone is
+        ' independent; carry HasSseMorphs with them. FO4 leaves these Nothing/False so this no-ops there.
+        c.SseNam9 = If(p.SseNam9 Is Nothing, Nothing, CType(p.SseNam9.Clone(), Single()))
+        c.SseNama = If(p.SseNama Is Nothing, Nothing, CType(p.SseNama.Clone(), UInteger()))
+        c.HasSseMorphs = p.HasSseMorphs
+
+        ' SSE face tints (flat TINI/TINC/TINV/TIAS list) — deep-copy each subrecord (cloning its byte array).
+        If p.SseTintRawOverride IsNot Nothing Then
+            Dim tints As New List(Of NPC_RawSubrecord)(p.SseTintRawOverride.Count)
+            For Each sr In p.SseTintRawOverride
+                If sr Is Nothing Then Continue For
+                tints.Add(New NPC_RawSubrecord With {
+                    .Sig = sr.Sig,
+                    .Data = If(sr.Data Is Nothing, Nothing, CType(sr.Data.Clone(), Byte())),
+                    .IsFormId = sr.IsFormId
+                })
+            Next
+            c.SseTintRawOverride = tints
+        End If
+        c.HasSseTints = p.HasSseTints
+        ' Per-layer custom tint mask texture override (index → path) — copy the map.
+        If p.SseTintTexOverride IsNot Nothing Then
+            c.SseTintTexOverride = New Dictionary(Of Integer, String)(p.SseTintTexOverride)
+        End If
+
+        ' SSE RaceMenu sidecar (per-vertex sculpt + NiOverride custom morphs) — deep-copy (SSE-only, nullable).
+        If p.SseSculptHead IsNot Nothing Then
+            Dim sc As New List(Of NPC_SculptVert)(p.SseSculptHead.Count)
+            For Each sv In p.SseSculptHead
+                If sv Is Nothing Then Continue For
+                sc.Add(New NPC_SculptVert With {.Index = sv.Index, .Dx = sv.Dx, .Dy = sv.Dy, .Dz = sv.Dz})
+            Next
+            c.SseSculptHead = sc
+        End If
+        If p.SseCustomMorphs IsNot Nothing Then
+            Dim cms As New List(Of NPC_CustomMorph)(p.SseCustomMorphs.Count)
+            For Each cm In p.SseCustomMorphs
+                If cm Is Nothing Then Continue For
+                cms.Add(New NPC_CustomMorph With {.Name = cm.Name, .Value = cm.Value})
+            Next
+            c.SseCustomMorphs = cms
+        End If
+
         For Each fid In p.LmTemplateInjectedHdptFormIDs : c.LmTemplateInjectedHdptFormIDs.Add(fid) : Next
         c.HasHeadPartFormIDsSetByTemplate = p.HasHeadPartFormIDsSetByTemplate
         Return c
+    End Function
+
+    ''' <summary>Deep-clone a list of SSE RaceMenu body-overlay nodes (path-based tattoos). Nothing in →
+    ''' Nothing out (preserves the "no overlays" nullable state). Single source of truth for copying this
+    ''' SSE-only carrier across ClonePreset / sidecar hydrate / save-residual / editor snapshot.</summary>
+    Public Function CloneSseBodyOverlays(src As List(Of RaceMenuJslot.JslotOverlayNode)) As List(Of RaceMenuJslot.JslotOverlayNode)
+        If src Is Nothing Then Return Nothing
+        Dim copy As New List(Of RaceMenuJslot.JslotOverlayNode)(src.Count)
+        For Each ov In src
+            If ov Is Nothing Then Continue For
+            copy.Add(New RaceMenuJslot.JslotOverlayNode With {
+                .NodeName = ov.NodeName,
+                .DiffusePath = ov.DiffusePath,
+                .NormalPath = ov.NormalPath,
+                .TintR = ov.TintR, .TintG = ov.TintG, .TintB = ov.TintB, .TintA = ov.TintA,
+                .HasTint = ov.HasTint
+            })
+        Next
+        Return copy
+    End Function
+
+    ''' <summary>Deep-clone the SSE node-transform carrier (RaceMenu body-scale). Nothing → Nothing.
+    ''' Single source of truth for copying across ClonePreset / sidecar / Copy-Paste / editor snapshot.</summary>
+    Public Function CloneSseNodeTransforms(src As List(Of RaceMenuJslot.JslotNodeTransform)) As List(Of RaceMenuJslot.JslotNodeTransform)
+        If src Is Nothing Then Return Nothing
+        Dim copy As New List(Of RaceMenuJslot.JslotNodeTransform)(src.Count)
+        For Each nt In src
+            If nt Is Nothing Then Continue For
+            copy.Add(nt.Clone())
+        Next
+        Return copy
+    End Function
+
+    ''' <summary>Deep-clone the SSE skin-override carrier (RaceMenu body-paint). Nothing → Nothing.
+    ''' Single source of truth for copying across ClonePreset / sidecar / Copy-Paste / editor snapshot.</summary>
+    Public Function CloneSseSkinOverrides(src As List(Of RaceMenuJslot.JslotSkinOverride)) As List(Of RaceMenuJslot.JslotSkinOverride)
+        If src Is Nothing Then Return Nothing
+        Dim copy As New List(Of RaceMenuJslot.JslotSkinOverride)(src.Count)
+        For Each sk In src
+            If sk Is Nothing Then Continue For
+            copy.Add(sk.Clone())
+        Next
+        Return copy
     End Function
 
     ''' <summary>Deep-clone a single tint layer. Used by ClonePreset and by call sites that
@@ -988,7 +1156,7 @@ Public Module LooksmenuLoader
 
     ''' <summary>Inverse of ResolveFormIdentifier: take a global FormID, find its owning plugin
     ''' in the load order, and emit "Plugin.esp|HEX" with the local 24-bit FormID.</summary>
-    Private Function FormatFormIdentifier(globalFormID As UInteger, pluginManager As PluginManager) As String
+    Friend Function FormatFormIdentifier(globalFormID As UInteger, pluginManager As PluginManager) As String
         If globalFormID = 0UI Then Return ""
         ' GetOriginatingPluginName handles both full (high byte = full slot) and ESL (0xFE light) globals.
         Dim pluginName = pluginManager.GetOriginatingPluginName(globalFormID)

@@ -20,19 +20,11 @@ Imports System.Linq
 ''' untouched (no conflict), so the resolver is safe to call on a mixed list.</summary>
 Public Module SlotConflictResolver
 
-    ' FO4 biped slot bitmasks (format spec, wbDefinitionsFO4.pas:3745-3778 — NOT game data).
-    Private Const BODY_MASK As UInteger = &H8UI            ' bit 3  — slot 33 BODY
-    Private ReadOnly U_MASK As UInteger = BuildRange(6, 10)   ' bits 6-10  — slots 36-40 [U] underlayer
-    Private ReadOnly A_MASK As UInteger = BuildRange(11, 15)  ' bits 11-15 — slots 41-45 [A] over-armor
-    ' SLOT_PIPBOY (bit 30 — slot 60 Pipboy) now lives in the shared BipedSlots module.
-
-    Private Function BuildRange(loBit As Integer, hiBit As Integer) As UInteger
-        Dim m As UInteger = 0UI
-        For b = loBit To hiBit
-            m = m Or (1UI << b)
-        Next
-        Return m
-    End Function
+    ' Biped slot region masks are now GAME-AWARE and sourced from the authoritative per-game slot→region
+    ' table (BipedSlots.RegionMask, derived from xEdit wbBipedObjectFlags — NOT heuristic). Computed
+    ' per-call in ResolveSlotWinners because the game can change at runtime. Skyrim has NO [U]/[A] layers
+    ' (RegionMask(Under)/RegionMask(Over) = 0), so the extended-underarmor exception below is a no-op there;
+    ' the byte-level engine RE (reference_sse_engine_occlusion_re Q4) also confirmed Skyrim strips no bit.
 
     ''' <summary>Outcome of a resolution: the kept pieces (Winners), the eliminated ones (Losers),
     ''' and the final occupied slot bitmask (so the render path can run head-part occlusion / skin
@@ -52,6 +44,17 @@ Public Module SlotConflictResolver
                                              orderOf As Func(Of T, Integer)) As SlotResolution(Of T)
         Dim res As New SlotResolution(Of T)
         Dim list = items.ToList()
+
+        ' Game-aware region masks from the authoritative xEdit slot table. Skyrim → Under/Over = 0,
+        ' so the extended-underarmor exception (Pass 1a) is inert there; strip-60 (Pipboy coexist) is
+        ' FO4-only (Skyrim slot 60 is a generic MOD slot; engine strips nothing — RE Q4).
+        ' BODY_MASK stays the exact FO4 bit-3 const (slot 33): it only matters in the [A]-gated extended
+        ' -underarmor check, which SSE never triggers (A_MASK=0), so this keeps FO4 byte-identical.
+        Const BODY_MASK As UInteger = &H8UI
+        Dim U_MASK As UInteger = BipedSlots.RegionMask(BipedSlots.BipedRegion.Under)
+        Dim A_MASK As UInteger = BipedSlots.RegionMask(BipedSlots.BipedRegion.Over)
+        Dim stripPipboy As Boolean = (Config_App.Current.Game = Config_App.Game_Enum.Fallout4)
+        Dim isSse As Boolean = (Config_App.Current.Game = Config_App.Game_Enum.Skyrim)
 
         ' Materialize each item's slot mask exactly once: slotMaskOf is a caller-supplied delegate
         ' (BOD2/BODT lookup) and the original code re-invoked it per item across every pass.
@@ -110,10 +113,27 @@ Public Module SlotConflictResolver
             ' every reachable equip set. Slot 60 STILL flows into `occupied` below (the 60/160 segment swap
             ' downstream reads it). There is NO engine mutex between Pipboy(60) and [A] L Arm(42): different
             ' bits → SlotsOverlap=0 → they coexist (lab coats declare 60+[A]42 and worn with a Pipboy fine).
-            Dim conflictMask = m And Not BipedSlots.SLOT_PIPBOY
-            Dim occupiedForCheck = occupied And Not BipedSlots.SLOT_PIPBOY
-            If (conflictMask And occupiedForCheck) <> 0UI Then res.Losers.Add(it) : Continue For
-            occupied = occupied Or m
+            ' ⭐ Conflict rule is GAME-SPECIFIC (byte-level RE of BOTH engines):
+            '  • FO4 = atomic ANY-BIT last-equipped-wins (verified resolver 0x1409889C0): any shared bit
+            '    unequips the older piece WHOLE. FO4 armor has clean, non-overlapping slots ([A] Torso vs
+            '    [A] Legs), so this is correct.
+            '  • Skyrim = KEEP ALL, drop none (verified SkyrimSE.exe): the equip path EquipObject 0x1406C9820
+            '    does NO biped-slot arbitration, and outfits equip each ARMO sequentially via 0x1402E1B00 →
+            '    EquipObject, so every piece survives regardless of BOD2 overlap. The only raw any-bit AND
+            '    (SlotsOverlap 0x1401CCA90, single caller 0x1403BD5A2) is render-side display de-dup, NOT an
+            '    inventory rule. This is what makes cuirass(32,34,38)+boots(37,38)+gloves(33,34) coexist —
+            '    they share calves(38)/forearms(34) but the engine drops none. (An earlier any-bit rule
+            '    eliminated the cuirass; claim-free-bits was a wrong guess — see reference_sse_engine_occlusion_re.)
+            Dim isConflict As Boolean
+            If isSse Then
+                isConflict = False   ' Skyrim never drops a piece for a shared BOD2 bit
+            Else
+                Dim conflictMask = If(stripPipboy, m And Not BipedSlots.SLOT_PIPBOY, m)
+                Dim occupiedForCheck = If(stripPipboy, occupied And Not BipedSlots.SLOT_PIPBOY, occupied)
+                isConflict = ((conflictMask And occupiedForCheck) <> 0UI)
+            End If
+            If isConflict Then res.Losers.Add(it) : Continue For
+            occupied = occupied Or m   ' still accumulate the covered-slot union (drives skin occlusion)
             acceptedReverse.Add(it)
         Next
         acceptedReverse.Reverse()   ' back to chronological (ascending) order

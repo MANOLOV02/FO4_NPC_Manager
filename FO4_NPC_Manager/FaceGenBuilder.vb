@@ -150,7 +150,9 @@ Public Module FaceGenBuilder
     ''' únicamente NIF + 3 DDS por nombre, así que un .tga/_2b en un BA2-save quedaría huérfano loose.</summary>
     Private Function OutputStaysLoose(willBePacked As Boolean) As Boolean
         If Not willBePacked Then Return True
-        Return NPC_Config.Current Is Nothing OrElse NPC_Config.Current.Ba2Version_FO4 = 0
+        ' Game-aware loose sentinel: FO4 = Ba2Version_FO4 = 0 (byte-identical to the old check), SSE = Archive_SSE = 0.
+        ' IsLooseOnly null-guards NPC_Config.Current (returns True → stays loose), preserving the prior guard.
+        Return NPC_Config.IsLooseOnly(If(Config_App.Current IsNot Nothing, Config_App.Current.Game, Config_App.Game_Enum.Fallout4))
     End Function
 
     ''' <summary>Build a baked FaceGen NIF for this NPC. See module-level summary for the
@@ -254,6 +256,9 @@ Public Module FaceGenBuilder
         ' a base mesh ([OutfitProject.cpp:515-531] calls workNif.Create(NiVersion::getFO4())).
         ' NiVersion.GetFO4() = (V20_2_0_7, user=12, stream=130), the canonical FO4 framing CK
         ' writes. withRootNode=True drops in the root NiNode the engine expects.
+        ' Game-aware bake: SSE (Skyrim) difiere de FO4 en root del shell, zeroing de bounds y tipo de skin
+        ' (NiSkinInstance/BSDismember vs BSSkin::Instance). Declarado a scope de metodo para gatear el reparent.
+        Dim isSSEBake As Boolean = (Config_App.Current IsNot Nothing AndAlso Config_App.Current.Game = Config_App.Game_Enum.Skyrim)
         Dim nif As New Nifcontent_Class_Manolo()
         Try
             ' Shell idéntico a CK (verificado con NiflySharp contra los 1094 FaceGen vanilla del BA2,
@@ -264,13 +269,28 @@ Public Module FaceGenBuilder
             ' reference_facegen_ck_must_come_from_ba2.) Lo agregamos como bloque 0 para que
             ' GetRootNode()/CloneShape parenteen contra él. (Los shapes se re-cuelgan luego bajo un nodo
             ' BSFaceGenNiNodeSkinned — ver post-proceso más abajo.)
-            nif.Create(NiVersion.GetFO4(), withRootNode:=False)
-            Dim faceRoot As New NiflySharp.Blocks.NiNode() With {
-                .Name = New NiflySharp.NiStringRef(""),
-                .Flags_ui = &H400EUI,
-                .Rotation = New NiflySharp.Structs.Matrix33 With {.M11 = 1.0F, .M22 = 1.0F, .M33 = 1.0F}
-            }
-            nif.AddBlock(faceRoot)
+            ' GAME-AWARE shell. SSE y FO4 difieren en el FaceGeom root (medido byte-a-byte contra los BA2
+            ' vanilla, verificado con --nifraw independiente de nifly):
+            '   FO4  = NiVersion stream 130, root = NiNode name "" Flags 0x400E   (CK FO4 NUNCA usa BSFadeNode: 0/1094)
+            '   SSE  = NiVersion stream 100, root = BSFadeNode name "<localId>.NIF" Flags 0x000E  (SSE SIEMPRE BSFadeNode)
+            ' Todo lo demas (clone de shapes, morph, skin/bounds copiados del source) es game-agnostico.
+            If isSSEBake Then
+                nif.Create(NiVersion.GetSSE(), withRootNode:=False)
+                Dim faceRootSse As New NiflySharp.Blocks.BSFadeNode() With {
+                    .Name = New NiflySharp.NiStringRef($"{PluginManager.ToFaceGenLocalFormID(npcFormID):X8}.NIF"),
+                    .Flags_ui = &HEUI,
+                    .Rotation = New NiflySharp.Structs.Matrix33 With {.M11 = 1.0F, .M22 = 1.0F, .M33 = 1.0F}
+                }
+                nif.AddBlock(faceRootSse)
+            Else
+                nif.Create(NiVersion.GetFO4(), withRootNode:=False)
+                Dim faceRoot As New NiflySharp.Blocks.NiNode() With {
+                    .Name = New NiflySharp.NiStringRef(""),
+                    .Flags_ui = &H400EUI,
+                    .Rotation = New NiflySharp.Structs.Matrix33 With {.M11 = 1.0F, .M22 = 1.0F, .M33 = 1.0F}
+                }
+                nif.AddBlock(faceRoot)
+            End If
         Catch ex As Exception
             result.Summary = $"Failed to create FaceGen NIF shell: {ex.Message}"
             Return result
@@ -623,14 +643,20 @@ Public Module FaceGenBuilder
                         ' Bake de texturas: corre con host (app) O headless-CPU (CLI: host=Nothing pero
                         ' WriteGPUSandboxOutput=False ⇒ needGl=False, sólo el compositor CPU, que no necesita
                         ' GL). El GL interno ya está gateado por needGl; ResolveHairPaletteTexture es null-safe.
-                        If hdpt.PartType = PartTypeFace AndAlso state IsNot Nothing _
-                           AndAlso (host IsNot Nothing OrElse Not WriteGPUSandboxOutput) Then
-                            BakeFaceTextures(nif, cloned, srcNif, srcShape,
-                                             hdpt, effectiveHeadPartType, applyMaterialOverrides,
-                                             npcFormID, originPlugin,
-                                             pluginManager, appliedPresets, host,
-                                             state, willBePacked,
-                                             lmSkinTemplateResolver)
+                        If hdpt.PartType = PartTypeFace AndAlso state IsNot Nothing Then
+                            If isSSEBake Then
+                                ' SSE bakes a single facetint _d DDS (CPU compose, no GL) to NIF slot 6, NOT
+                                ' the FO4 FaceCustomization D/N/S. Uses the overlaid tints so an Edit Face tint
+                                ' edit bakes WYSIWYG.
+                                WriteSseFacetintDds(nif, cloned, npcFormID, originPlugin, pluginManager, npcData)
+                            ElseIf host IsNot Nothing OrElse Not WriteGPUSandboxOutput Then
+                                BakeFaceTextures(nif, cloned, srcNif, srcShape,
+                                                 hdpt, effectiveHeadPartType, applyMaterialOverrides,
+                                                 npcFormID, originPlugin,
+                                                 pluginManager, appliedPresets, host,
+                                                 state, willBePacked,
+                                                 lmSkinTemplateResolver)
+                            End If
                         End If
 
                         ' MATERIAL DIAG moved to AFTER Save_As_Manolo (disk write). Comparing
@@ -702,21 +728,63 @@ Public Module FaceGenBuilder
                                     fbnsShape = fbnsShapes(0)
                                 End If
                                 If fbnsShape IsNot Nothing Then
-                                    Dim baked = FaceGenBuildPipeline.BakeShape(bakeState, nif, cloned, fbnsNif, fbnsShape, hdpt.ChargenMorphTriPath, srcNif:=srcNif, srcShape:=srcShape)
+                                    Dim baked = FaceGenBuildPipeline.BakeShape(bakeState, nif, cloned, fbnsNif, fbnsShape, hdpt.ChargenMorphTriPath, srcNif:=srcNif, srcShape:=srcShape, raceMorphTriPath:=hdpt.RaceMorphTriPath)
                                     If baked Then
                                         shapesMorphed += 1
                                     End If
                                 Else
                                 End If
                             End If
+                        ElseIf bakeState IsNot Nothing AndAlso isSSEBake Then
+                            ' SSE has no `_faceBones` rig / FMRS / skin-rebind: the CK FaceGeom head is a PURE
+                            ' per-vertex morph of the neutral mesh (measured: neutral-vs-CK RMS 0.275 collapses
+                            ' to 0.046 once the NAM9/NAMA+race morph is applied). The FO4 BakeShape branch above
+                            ' never runs (no FBNS), so without this the SSE head shipped NEUTRAL — that is why
+                            ' the baked NIF diverged from the live render, which morphs via the same builder.
+                            ' Apply that exact plan to the cloned shape in place (reuses ApplyChargenMorphsInPlace
+                            ' → NpcMorphResolver.BuildFaceMorphPlanFromNam9 + MorphEngine; no second morph impl).
+                            ' Pass THIS head-part's own mesh tri (femalehead.tri / ...argonian / hairNN.tri, etc.)
+                            ' so its SkinnyMorph (the actor-weight morph) is applied per-part and race-aware.
+                            Dim hdptMeshTri As String = If(String.IsNullOrEmpty(hdpt.MeshPath), Nothing, IO.Path.ChangeExtension(hdpt.MeshPath, ".tri"))
+                            FaceGenBuildPipeline.ApplyChargenMorphsInPlace(nif, cloned, hdpt.ChargenMorphTriPath, hdpt.RaceMorphTriPath, bakeState, hdptMeshTri)
+                            shapesMorphed += 1
                         End If
-                    Else
                     End If
                 Catch ex As Exception
                 End Try
             Next
             hdptProcessed += 1
         Next
+
+        ' PENDIENTE (pelo/body-weight): el diff de posiciones del pelo vs CK ES el head-weight (NAM7) — el pelo
+        ' ENTERO sigue el peso (verts lejanos incluidos: un gate de distancia EMPEORA), el skin (weights/índices)
+        ' == CK y solo los verts crudos difieren → CK skinnea el pelo con un hueso weight-ajustado y lo hornea en
+        ' la geometría. NO es surface-conform. Los intentos heurísticos (nearest-vert / barycentric / gate) son
+        ' PARCHES y se descartaron. Falta el MECANISMO EXACTO del CK — pendiente RE (ver memoria).
+
+        ' ⭐ CK comparte UN BSShaderTextureSet entre shapes cuyas 8 texturas son idénticas (medido en Narri:
+        ' HairLine + Hair usan el mismo texset del pelo → CK escribe 5 texsets para 6 shapes; nosotros escribíamos
+        ' 6). Aplica a AMBOS juegos (CK deduplica en FO4 también). Es SAFE por construcción: solo mergea texsets
+        ' con las 8 texturas IDÉNTICAS (byte-igual, case-insensitive) → el contenido visible no cambia; repunta el
+        ' ref del duplicado al primer bloque con esa combinación y RemoveUnreferencedBlocks (abajo) evicta el
+        ' huérfano. Verificado que no regresiona FO4 (block-histogram sigue matcheando CK).
+        Try
+            Dim seenTexset As New Dictionary(Of String, Integer)()
+            For Each sh In nif.NifShapes.ToList()
+                Dim lsp = TryCast(nif.GetShader(sh), NiflySharp.Blocks.BSLightingShaderProperty)
+                If lsp Is Nothing OrElse lsp.TextureSetRef Is Nothing OrElse lsp.TextureSetRef.Index < 0 Then Continue For
+                Dim ts = TryCast(nif.Blocks(lsp.TextureSetRef.Index), NiflySharp.Blocks.BSShaderTextureSet)
+                If ts Is Nothing OrElse ts.Textures Is Nothing Then Continue For
+                Dim key = String.Join("|", ts.Textures.Select(Function(t) If(t?.Content, "").ToLowerInvariant()))
+                Dim canonIdx As Integer
+                If seenTexset.TryGetValue(key, canonIdx) Then
+                    lsp.TextureSetRef = New NiflySharp.NiBlockRef(Of NiflySharp.Blocks.BSShaderTextureSet) With {.Index = canonIdx}
+                Else
+                    seenTexset(key) = lsp.TextureSetRef.Index
+                End If
+            Next
+        Catch ex As Exception
+        End Try
 
         ' Drop any blocks left orphan after the strip+clone passes (e.g. the baked shell's
         ' shader properties / texture sets that were rooted only by the now-removed shapes).
@@ -775,6 +843,19 @@ Public Module FaceGenBuilder
                             referencedBones.Add(si.SkeletonRoot.Index)
                         End If
                     End If
+                    ' SSE: skin es NiSkinInstance / BSDismemberSkinInstance (hereda de NiSkinInstance),
+                    ' no BSSkin::Instance. Sin esto referencedBones queda vacio y el guard dropea todos
+                    ' los huesos. Bones = NiBlockPtrArray<NiNode>, SkeletonRoot = NiBlockPtr<NiNode>.
+                    Dim niSi = TryCast(anyBlk, NiflySharp.Blocks.NiSkinInstance)
+                    If niSi IsNot Nothing Then
+                        If niSi.Bones IsNot Nothing Then
+                            For bi As Integer = 0 To niSi.Bones.Count - 1
+                                Dim bRef = niSi.Bones.GetBlockRef(bi)
+                                If bRef >= 0 Then referencedBones.Add(bRef)
+                            Next
+                        End If
+                        If niSi.SkeletonRoot IsNot Nothing AndAlso niSi.SkeletonRoot.Index >= 0 Then referencedBones.Add(niSi.SkeletonRoot.Index)
+                    End If
                 Next
 
                 Dim droppedOrphanBones As Integer = 0
@@ -784,18 +865,25 @@ Public Module FaceGenBuilder
                         shapeChildIdx.Add(childIdx)
                         Dim triShape = TryCast(childBlk, NiflySharp.Blocks.BSTriShape)
                         If triShape IsNot Nothing Then
-                            ' #2 BoundingSphere → (0,0,0,0) como CK: el FaceGen vanilla deja la esfera
-                            ' en cero y el engine computa los bounds del skinned desde los huesos.
-                            ' Nosotros calculábamos valores reales (deriva de culling). Igualar a CK.
-                            triShape.Bounds = New NiflySharp.Structs.BoundingSphere(System.Numerics.Vector3.Zero, 0.0F)
-                            ' #1 skin.SkeletonRoot → BSFaceGenNiNodeSkinned. CK apunta el SkeletonRoot
-                            ' (NiBlockPtr) del BSSkin::Instance al nodo skinned; nosotros lo dejábamos
-                            ' null(-1). Lo seteamos al índice del nodo creado arriba.
+                            ' BoundingSphere: FO4 CK deja la esfera en (0,0,0,0) (el engine la computa del
+                            ' skinned desde los huesos). SSE CK, en cambio, COPIA el bounds real del head base
+                            ' (verificado --ckdelta: CK==base, non-zero). Game-aware: solo FO4 pone cero.
+                            If Not isSSEBake Then
+                                triShape.Bounds = New NiflySharp.Structs.BoundingSphere(System.Numerics.Vector3.Zero, 0.0F)
+                            End If
+                            ' skin.SkeletonRoot → BSFaceGenNiNodeSkinned. FO4 = BSSkin::Instance;
+                            ' SSE = NiSkinInstance / BSDismemberSkinInstance (hereda). Game-aware.
                             Dim skinRef = triShape.SkinInstanceRef
                             If skinRef IsNot Nothing AndAlso skinRef.Index >= 0 AndAlso skinRef.Index < nif.Blocks.Count Then
-                                Dim si = TryCast(nif.Blocks(skinRef.Index), NiflySharp.Blocks.BSSkin_Instance)
+                                Dim skBlk = nif.Blocks(skinRef.Index)
+                                Dim si = TryCast(skBlk, NiflySharp.Blocks.BSSkin_Instance)
                                 If si IsNot Nothing Then
                                     si.SkeletonRoot = New NiflySharp.NiBlockPtr(Of NiflySharp.Blocks.NiAVObject)(skinnedIdx)
+                                Else
+                                    Dim niSi = TryCast(skBlk, NiflySharp.Blocks.NiSkinInstance)
+                                    If niSi IsNot Nothing Then
+                                        niSi.SkeletonRoot = New NiflySharp.NiBlockPtr(Of NiflySharp.Blocks.NiNode)(skinnedIdx)
+                                    End If
                                 End If
                             End If
                         End If
@@ -1247,7 +1335,12 @@ Public Module FaceGenBuilder
                 ' not a material field (absent from the BGSM), so it belongs here with the other CK
                 ' bake conventions, not in Save_To_Shader. shad.Type was set by Save_To_Shader above,
                 ' so SetFlagSF2 resolves the FO4-specific bit correctly.
-                NiflySharp.Helpers.ShaderHelper.SetFlagSF2(bsls, CUInt(NiflySharp.Enums.Fallout4ShaderPropertyFlags2.Transform_Changed), True)
+                ' ⭐ GAME-GATED: esta es una convención del bake CK de FO4 (Transform_Changed = F4SPF2 bit 7).
+                ' En un shader SK ese MISMO bit 7 es Assume_Shadowmask → aplicarlo a SSE corrompía el shader
+                ' (medido: head/mouth/hair ganaban 0x80 vs CK). CK SSE NO lo setea (SSPF2 del CK == source).
+                If Not nif.Header.Version.IsSSE Then
+                    NiflySharp.Helpers.ShaderHelper.SetFlagSF2(bsls, CUInt(NiflySharp.Enums.Fallout4ShaderPropertyFlags2.Transform_Changed), True)
+                End If
                 ' ShaderType baked = FUNCIÓN DETERMINÍSTICA de los flags del material — PROBADO al 100%
                 ' sobre el corpus FaceGen vanilla COMPLETO (1490 NIF, 14136 lighting shapes; cross-tab en
                 ' c:\tmp\facegen_flag_to_type.txt: 8 combinaciones de flags, TODAS puras → un único tipo
@@ -1274,22 +1367,30 @@ Public Module FaceGenBuilder
                 ' (bit17) = 0 en 14136/14136 → clear incondicional. Bake-only: la Derive de la librería
                 ' (editor) queda conservadora (meshes generales: bGlowmap/bEnvironmentMapping conviven con
                 ' inline Default — contexto distinto).
-                Dim bakedType As Enums.BSLightingShaderType
-                If mat.Glowmap Then
-                    bakedType = Enums.BSLightingShaderType.GlowShader
-                ElseIf mat.Facegen Then
-                    bakedType = Enums.BSLightingShaderType.FaceTint
-                ElseIf mat.SkinTint Then
-                    bakedType = Enums.BSLightingShaderType.SkinTint
-                ElseIf mat.Hair Then
-                    bakedType = Enums.BSLightingShaderType.HairTint
-                ElseIf mat.EnvironmentMapping Then
-                    bakedType = Enums.BSLightingShaderType.EnvironmentMap
-                Else
-                    bakedType = Enums.BSLightingShaderType.Default
+                ' ⭐ GAME-GATED: derivar el ShaderType de los bools + clear de Eye_Environment_Mapping son
+                ' convenciones del bake CK de FO4 (probadas sobre el corpus FaceGen FO4, 14136 shapes). En SSE
+                ' NO aplican: CK SSE PRESERVA el shader type + flags del source (medido: EyesFemale=EyeEnvmap con
+                ' Eye_Environment_Mapping ON, tanto en source como en CK). Derivar aquí colapsaba los ojos a
+                ' Default y borraba el bit 17 → shader roto. Para SSE dejamos lo que Save_To_Shader escribió
+                ' (type = mat.NifShaderType del source; flags = del source clonado), que coincide con CK.
+                If Not nif.Header.Version.IsSSE Then
+                    Dim bakedType As Enums.BSLightingShaderType
+                    If mat.Glowmap Then
+                        bakedType = Enums.BSLightingShaderType.GlowShader
+                    ElseIf mat.Facegen Then
+                        bakedType = Enums.BSLightingShaderType.FaceTint
+                    ElseIf mat.SkinTint Then
+                        bakedType = Enums.BSLightingShaderType.SkinTint
+                    ElseIf mat.Hair Then
+                        bakedType = Enums.BSLightingShaderType.HairTint
+                    ElseIf mat.EnvironmentMapping Then
+                        bakedType = Enums.BSLightingShaderType.EnvironmentMap
+                    Else
+                        bakedType = Enums.BSLightingShaderType.Default
+                    End If
+                    bsls.ShaderType = bakedType
+                    NiflySharp.Helpers.ShaderHelper.SetFlagSF1(bsls, CUInt(NiflySharp.Enums.Fallout4ShaderPropertyFlags1.Eye_Environment_Mapping), False)
                 End If
-                bsls.ShaderType = bakedType
-                NiflySharp.Helpers.ShaderHelper.SetFlagSF1(bsls, CUInt(NiflySharp.Enums.Fallout4ShaderPropertyFlags1.Eye_Environment_Mapping), False)
 
             Else
                 Dim bes = TryCast(shad, BSEffectShaderProperty)
@@ -1340,6 +1441,65 @@ Public Module FaceGenBuilder
     ''' encoded, and persisted. Both temporaries and pipeline outputs are deleted before return
     ''' (host's CompositorState + TintGpuCache are reused but never observed mutating any
     ''' caller-owned state).</summary>
+    ''' <summary>SSE facetint bake: compose the per-NPC facetint _d (CPU, engine-exact, WYSIWYG with the
+    ''' overlaid tint edit), write it to &lt;DataPath&gt;\Textures\Actors\Character\FaceGenData\FaceTint\&lt;plugin&gt;\
+    ''' &lt;formID&gt;.dds, and point the cloned Face shape's texture-set slot 6 at it. SSE-only (game-gated);
+    ''' replaces the FO4 FaceCustomization D/N/S bake.</summary>
+    Private Sub WriteSseFacetintDds(nif As Nifcontent_Class_Manolo, cloned As INiShape, npcFormID As UInteger,
+                                    originPlugin As String, pluginManager As PluginManager,
+                                    npcData As NPC_Data)
+        Try
+            If npcData Is Nothing Then Return
+            Dim npcRec = pluginManager.GetRecord(npcFormID)
+            If npcRec Is Nothing Then Return
+            Dim raceFid As UInteger = npcData.RaceFormID
+            Dim race As RACE_Data = Nothing
+            If raceFid <> 0UI Then
+                Dim rr = pluginManager.GetRecord(raceFid)
+                If rr IsNot Nothing AndAlso rr.Header.Signature = "RACE" Then race = RecordParsers.ParseRACE(rr, pluginManager)
+            End If
+            If race Is Nothing Then Return
+            ' Overlaid tints + RaceMenu overlays (Edit Face edits) so the bake is byte-WYSIWYG with the live
+            ' preview (both call BakeFaceTintDds with the same tint override + overlays).
+            Dim tintOverride As IList(Of NPC_RawSubrecord) = npcData.SseTintRaw
+            Dim dds = SseFaceGenBaker.BakeFaceTintDds(pluginManager, npcRec, race, raceFid, npcData.IsFemale, 512, 512, npcData.SseOverlays, tintOverride, npcData.SseTintTexOverride)
+            If dds Is Nothing Then Return
+            Dim fgLocal = PluginManager.ToFaceGenLocalFormID(npcFormID)
+            Dim rel = $"Textures\Actors\Character\FaceGenData\FaceTint\{originPlugin}\{fgLocal:X8}.dds"
+            Dim outFile = IO.Path.Combine(Config_App.Current.DataPath, rel)
+            IO.Directory.CreateDirectory(IO.Path.GetDirectoryName(outFile))
+            IO.File.WriteAllBytes(outFile, dds)
+            ' Point the head shape's texture-set slot 6 (facetint) at the engine path (Data-relative).
+            Dim spr = cloned.ShaderPropertyRef
+            If spr IsNot Nothing AndAlso spr.Index >= 0 Then
+                Dim lsp = TryCast(nif.Blocks(spr.Index), NiflySharp.Blocks.BSLightingShaderProperty)
+                If lsp IsNot Nothing AndAlso lsp.TextureSetRef IsNot Nothing AndAlso lsp.TextureSetRef.Index >= 0 Then
+                    Dim ts = TryCast(nif.Blocks(lsp.TextureSetRef.Index), NiflySharp.Blocks.BSShaderTextureSet)
+                    If ts IsNot Nothing AndAlso ts.Textures IsNot Nothing AndAlso ts.Textures.Count > 6 Then
+                        ts.Textures(6).Content = "Textures\Actors\Character\FaceGenData\FaceTint\" & originPlugin & "\" & $"{fgLocal:X8}.dds"
+                        ' CK convention (medido): la complexion de PIEL del head — diffuse (slot 0) y specular
+                        ' (slot 7) — se escribe con prefijo "textures\" (son paths resueltos del skin/FTST TXST,
+                        ' Textures-relativos, que CK prefija al bakear). Los demás slots (normal/sk/detail slot
+                        ' 1/2/3) vienen del mesh source y CK los deja SIN prefijo → no se tocan. Head-only (esta
+                        ' función corre solo para PartTypeFace) + SSE-only.
+                        For Each si In {0, 7}
+                            If ts.Textures.Count > si Then
+                                Dim c = ts.Textures(si)?.Content
+                                If Not String.IsNullOrEmpty(c) Then
+                                    Dim cn = c.Replace("/"c, "\"c).TrimStart("\"c)
+                                    If Not cn.StartsWith("textures\", StringComparison.OrdinalIgnoreCase) Then ts.Textures(si).Content = "Textures\" & cn
+                                End If
+                            End If
+                        Next
+                    End If
+                End If
+            End If
+            Logger.LogLazy(Function() $"[FACEBAKE][SSE] facetint _d -> {rel} ({dds.Length}b)")
+        Catch ex As Exception
+            Logger.LogLazy(Function() $"[FACEBAKE][SSE] facetint bake failed: {ex.GetType().Name}: {ex.Message}")
+        End Try
+    End Sub
+
     Private Sub BakeFaceTextures(nif As Nifcontent_Class_Manolo,
                                  cloned As INiShape,
                                  srcNif As Nifcontent_Class_Manolo,

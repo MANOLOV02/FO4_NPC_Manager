@@ -179,9 +179,22 @@ Friend NotInheritable Class NpcMaterialResolver
             End If
             If effectiveHairColor.HasValue Then
                 Dim oldHairCol = material.HairTintColor
-                material.HairTintColor = effectiveHairColor.Value
+                Dim resolvedHair = effectiveHairColor.Value
+                ' ⭐ SSE hair-tint convention: el FaceGeom (y el engine) usan el color del CLFM DOBLADO
+                ' (clamp 255). Medido byte-exacto vs CK sobre el corpus vanilla: CK.HairTintColor == 2×CLFM.Color
+                ' (p.ej. Narri CLFM=(48,35,33) → CK=(96,70,66)). Sin el ×2 el render Y el bake muestran el pelo
+                ' a la mitad (más apagado). Es un ÚNICO punto de resolución que consumen render y bake, así que
+                ' arregla los dos a la vez. FO4 usa el path de grayscale-palette (rama HasRemappingIndex de
+                ' arriba), NO este HairTintColor, así que queda intacto (validado byte-exact).
+                If Config_App.Current IsNot Nothing AndAlso Config_App.Current.Game = Config_App.Game_Enum.Skyrim Then
+                    resolvedHair = Color.FromArgb(resolvedHair.A,
+                                                  Math.Min(255, CInt(resolvedHair.R) * 2),
+                                                  Math.Min(255, CInt(resolvedHair.G) * 2),
+                                                  Math.Min(255, CInt(resolvedHair.B) * 2))
+                End If
+                material.HairTintColor = resolvedHair
                 If logEnabled Then
-                    Dim newColLog = effectiveHairColor.Value
+                    Dim newColLog = resolvedHair
                     Logger.LogLazy(Function() $"[HAIRTINT-WRITE] hdptType={candidate.HeadPartType} oldRGB=({oldHairCol.R},{oldHairCol.G},{oldHairCol.B}) → newRGB=({newColLog.R},{newColLog.G},{newColLog.B})")
                 End If
             End If
@@ -202,21 +215,31 @@ Friend NotInheritable Class NpcMaterialResolver
         Dim armo = _ctx.GetParsedArmo(state.SkinFormID)
         If armo Is Nothing Then Return Nothing
 
-        Const BODY_BIT As UInteger = 1UI << 3
-        Const HAND_MASK As UInteger = (1UI << 4) Or (1UI << 5)
+        ' Máscaras de slot GAME-AWARE (FO4 vs SSE difieren: FO4 Body=slot33/bit3, Hands=slots34-35;
+        ' SSE Body=slot32/bit2, Hands=slot33/bit3). Fuente única = BipedSlots._fo4Regions/_sseRegions.
+        ' Sin esto, en SSE el bit3 (=Hands) matcheaba el viejo BODY_BIT → la ARMA de MANOS se elegía
+        ' para la región Body y el cuerpo del outfit recibía la textura de manos.
+        Dim bodyMask As UInteger = BipedSlots.RegionMask(BipedSlots.BipedRegion.Body)
+        Dim handMask As UInteger = BipedSlots.RegionMask(BipedSlots.BipedRegion.Hands)
 
         ' Iterar las ARMAs del Skin ARMO; elegir la que cubra la región pedida.
         For Each entry In armo.ArmorAddons
             Dim arma = _ctx.GetParsedArma(entry.ArmaFormID)
             If arma Is Nothing Then Continue For
+            ' FILTRO POR RAZA (motor-fiel: Armor Race = RNAM redirect + AdditionalRaces, vía
+            ' GetEffectiveArmorRaces) — mismo que NpcMeshCollector.vb:472 para skin candidates. El skin ARMO
+            ' puede referenciar ARMAs de VARIAS razas (adulto/niño/...); sin este filtro se elegía la de
+            ' NIÑO (SkinBodyFemaleChild) para el parche de piel del outfit → naranja/oscuro. El body desnudo
+            ' no pasaba por acá (usa su ARMA directo), por eso se veía bien.
+            If Not MainForm.ArmorAddonMatchesRace(arma, state.RaceFormID, _ctx.GetEffectiveArmorRaces(state.RaceFormID)) Then Continue For
             Dim armaSlot = arma.SlotMask
 
             Dim matches As Boolean = False
             Select Case region
                 Case MainForm.SkinRegion.Body
-                    matches = (armaSlot And BODY_BIT) <> 0UI
+                    matches = (armaSlot And bodyMask) <> 0UI
                 Case MainForm.SkinRegion.Hand
-                    matches = (armaSlot And HAND_MASK) <> 0UI AndAlso (armaSlot And BODY_BIT) = 0UI
+                    matches = (armaSlot And handMask) <> 0UI AndAlso (armaSlot And bodyMask) = 0UI
             End Select
             If Not matches Then Continue For
 
@@ -242,14 +265,16 @@ Friend NotInheritable Class NpcMaterialResolver
     ''' indica qué cubre — si toca BODY/[U] usar Body; si sólo [A]/hand → Hand.</summary>
     Friend Shared Function ResolveSkinRegionForOutfit(candidate As MainForm.MeshCandidate) As MainForm.SkinRegion
         If candidate Is Nothing Then Return MainForm.SkinRegion.Body
-        Const BODY_BIT As UInteger = 1UI << 3
-        Const HAND_MASK As UInteger = (1UI << 4) Or (1UI << 5)
-        Dim U_MASK As UInteger = 0UI
-        For b = 6 To 10 : U_MASK = U_MASK Or (1UI << b) : Next
+        ' Máscaras GAME-AWARE (BipedSlots._fo4Regions/_sseRegions). FO4 Body=slot33/bit3 + [U] slots36-40;
+        ' SSE Body=slot32/bit2 (+feet/calves), Hands=slot33/bit3, sin [U]. Antes bits FO4 fijos → en SSE
+        ' un outfit de cuerpo (slot32/bit2) no matcheaba Body y bit3 (=Hands SSE) se leía como Body.
+        Dim bodyMask As UInteger = BipedSlots.RegionMask(BipedSlots.BipedRegion.Body)
+        Dim handMask As UInteger = BipedSlots.RegionMask(BipedSlots.BipedRegion.Hands)
+        Dim underMask As UInteger = BipedSlots.RegionMask(BipedSlots.BipedRegion.Under)
 
         Dim slot = candidate.SlotMask
-        Dim touchesBodyOrU = (slot And BODY_BIT) <> 0UI OrElse (slot And U_MASK) <> 0UI
-        Dim touchesHand = (slot And HAND_MASK) <> 0UI
+        Dim touchesBodyOrU = (slot And bodyMask) <> 0UI OrElse (slot And underMask) <> 0UI
+        Dim touchesHand = (slot And handMask) <> 0UI
 
         ' Body/[U] tiene precedencia sobre hand: outfits tipo "all-in-one" con BODY+hands
         ' (ej. AAClothesCait slot 33+34+35) usan body skin para la zona de torso/brazos.
@@ -450,7 +475,18 @@ Friend NotInheritable Class NpcMaterialResolver
         If TxstSlotDecision(txstFid, "Diffuse", textureSet.DiffuseTexture, material.Diffuse_or_Base_Texture, gatedSlot:=False, diffuseOnly:=diffuseOnly) Then material.Diffuse_or_Base_Texture = textureSet.DiffuseTexture
         If TxstSlotDecision(txstFid, "Normal", textureSet.NormalTexture, material.NormalTexture, gatedSlot:=True, diffuseOnly:=diffuseOnly) Then material.NormalTexture = textureSet.NormalTexture
         If TxstSlotDecision(txstFid, "Wrinkles", textureSet.WrinklesTexture, material.WrinklesTexture, gatedSlot:=True, diffuseOnly:=diffuseOnly) Then material.WrinklesTexture = textureSet.WrinklesTexture
-        If TxstSlotDecision(txstFid, "Glow", textureSet.GlowTexture, material.GlowTexture, gatedSlot:=True, diffuseOnly:=diffuseOnly) Then material.GlowTexture = textureSet.GlowTexture
+        ' Glow slot (TXST TX03). FO4 = emissive glow. SSE = "Glow/Detail Map" (wbDefinitionsTES5.pas:5588) que
+        ' para piel/cara ES el _sk (subsurface). Debe ir a LightingTexture (subsurface, engine t12), NO al slot
+        ' emisivo — espejo EXACTO de FO4UnifiedMaterial.ReadBgsmTexturesFromTextureSet (game-aware). FO4 sin cambios.
+        If TxstSlotDecision(txstFid, "Glow", textureSet.GlowTexture, material.GlowTexture, gatedSlot:=True, diffuseOnly:=diffuseOnly) Then
+            Dim isSseTxst As Boolean = (Config_App.Current IsNot Nothing AndAlso Config_App.Current.Game = Config_App.Game_Enum.Skyrim)
+            If isSseTxst AndAlso Not material.Glowmap AndAlso (material.SubsurfaceLighting OrElse material.RimLighting OrElse material.Facegen OrElse material.SkinTint) Then
+                material.LightingTexture = textureSet.GlowTexture
+                material.GlowTexture = ""
+            Else
+                material.GlowTexture = textureSet.GlowTexture
+            End If
+        End If
         If TxstSlotDecision(txstFid, "Height", textureSet.HeightTexture, material.DisplacementTexture, gatedSlot:=True, diffuseOnly:=diffuseOnly) Then material.DisplacementTexture = textureSet.HeightTexture
         If TxstSlotDecision(txstFid, "Envmap", textureSet.EnvironmentTexture, material.EnvmapTexture, gatedSlot:=True, diffuseOnly:=diffuseOnly) Then material.EnvmapTexture = textureSet.EnvironmentTexture
         If TxstSlotDecision(txstFid, "InnerLayer", textureSet.MultilayerTexture, material.InnerLayerTexture, gatedSlot:=True, diffuseOnly:=diffuseOnly) Then material.InnerLayerTexture = textureSet.MultilayerTexture
@@ -1091,6 +1127,19 @@ Friend NotInheritable Class NpcMaterialResolver
                 ApplyTextureSetToMaterial(material, actorBodySkinTxst)
             End If
 
+            ' [SSE-MSN diagnostic] Para CADA shape de outfit con shader SkinTint: si el render lo tratará
+            ' como model-space o tangent (materialBase.ModelSpaceNormals) + la normal que quedó. Cubre
+            ' también el caso en que la piel del actor no resolvió (skinSubstituted=False).
+            If logEnabled AndAlso candidate IsNot Nothing AndAlso candidate.Kind = MainForm.MeshCandidateKind.Outfit _
+               AndAlso material.NifShaderType = NiflySharp.Enums.BSLightingShaderType.SkinTint Then
+                Dim shN = shape.ShapeName
+                Dim msnF = material.ModelSpaceNormals
+                Dim stF = material.SkinTint
+                Dim nrmF = If(material.NormalTexture, "")
+                Dim subbed = (actorBodySkinTxst IsNot Nothing)
+                Logger.LogLazy(Function() $"[SSE-MSN] outfit SkinTint shape='{shN}' SkinTint={stF} ModelSpaceNormals={msnF} normal='{nrmF}' skinSubstituted={subbed}")
+            End If
+
             ' Hair/Palette + HairTintColor: shared with RefreshFaceTintLivePreview via helper.
             ' Pre-resolved hairTintColor (incl. solidTintColor head-part color) passed as override
             ' so the helper can short-circuit ResolveColorFormColor for hair HeadParts whose
@@ -1148,6 +1197,22 @@ Friend NotInheritable Class NpcMaterialResolver
                 Dim texTintMask = If(material.TintMaskTexture, "")
                 Logger.LogLazy(Function() $"[SHAPEMAT-FINAL] shape='{shapeNameFinal}' path='{pathFinal}' root='{rootFinal}' shader={shaderFinal} isBGSM={isBgsmFinal} palette={palOnFinal} palScale={palScaleFinal:F4}")
                 Logger.LogLazy(Function() $"[SHAPEMAT-FINAL-TEX] shape='{shapeNameFinal}' diff='{texDiff}' norm='{texNorm}' glow='{texGlow}' grey='{texGrey}' spec='{texSpec}' smSpec='{texSmSpec}' env='{texEnv}' envMask='{texEnvMask}' light='{texLight}' wrink='{texWrink}' inner='{texInner}' tintMask='{texTintMask}'")
+
+                ' [SHADER-CMP] Dump COMPLETO del shader/material por shape para comparar outfit-SkinTint vs body.
+                ' Incluye Kind (Outfit/Skin/HeadPart), TODOS los flags de shader y los colores/escalares. Standalone
+                ' en WM se ve bien → comparar estos campos body-vs-outfit revela qué mete distinto nuestro proceso.
+                Dim kindCmp = If(candidate IsNot Nothing, candidate.Kind.ToString(), "?")
+                Dim shN2 = shapeNameFinal
+                Dim fSkin = material.SkinTint, fFace = material.Facegen, fHair = material.Hair
+                Dim fGlow = material.Glowmap, fSss = material.SubsurfaceLighting, fRim = material.RimLighting
+                Dim fBack = material.BackLighting, fMsn = material.ModelSpaceNormals, fTwo = material.TwoSided
+                Dim fSpecEn = material.SpecularEnabled, fEnv = material.EnvironmentMapping, fEyeEnv = material.EyeEnvironmentMapping
+                Dim cSkinR = material.SkinTintColor.R, cSkinG = material.SkinTintColor.G, cSkinB = material.SkinTintColor.B, cSkinA = material.SkinTintAlpha
+                Dim cHair = material.HairTintColor, cEmit = material.EmittanceColor, cEmitM = material.EmittanceMult
+                Dim cSpec = material.SpecularColor, cSpecM = material.SpecularMult
+                Dim sGloss = material.Smoothness, sSssRoll = material.SubsurfaceLightingRolloff, sPalScale = palScaleFinal
+                Logger.LogLazy(Function() $"[SHADER-CMP] shape='{shN2}' KIND={kindCmp} shader={shaderFinal} | SkinTint={fSkin} Facegen={fFace} Hair={fHair} Glowmap={fGlow} Sss={fSss} Rim={fRim} Back={fBack} MSN={fMsn} TwoSided={fTwo} SpecEn={fSpecEn} EnvMap={fEnv} EyeEnv={fEyeEnv}")
+                Logger.LogLazy(Function() $"[SHADER-CMP] shape='{shN2}' KIND={kindCmp} | SkinTintColor=({cSkinR},{cSkinG},{cSkinB}) SkinTintAlpha={cSkinA:F3} HairTint=({cHair.R},{cHair.G},{cHair.B}) Emit=({cEmit.R},{cEmit.G},{cEmit.B})x{cEmitM:F2} Spec=({cSpec.R},{cSpec.G},{cSpec.B})x{cSpecM:F2} gloss={sGloss:F2} sssRoll={sSssRoll:F3}")
             End If
         Next
     End Sub

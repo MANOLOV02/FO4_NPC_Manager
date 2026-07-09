@@ -82,22 +82,53 @@ Public Class Preflight_Form
     Public Property LoadedSidecars As Dictionary(Of String, BssliderSidecar.SidecarFile)
 
     Private Sub Preflight_Form_Load(sender As Object, e As EventArgs) Handles MyBase.Load
+        ' Seed the game selector from the persisted config, then let an already-configured exe filename
+        ' auto-correct it (Fallout4.exe → FO4, SkyrimSE.exe → Skyrim). This keeps returning FO4 users on
+        ' FO4 even though the shared library's Game default is Skyrim. SelectedIndexChanged persists the
+        ' choice back into Config_App.Current.Game.
+        ComboBoxGame.SelectedIndex = CInt(Config_App.Current.Game)
+        AutoDetectGameFromExe(Config_App.Current.FO4ExePath)
         TextBoxExePath.Text = Config_App.Current.FO4ExePath
         RefreshPluginList()
     End Sub
 
     Private Sub ButtonBrowse_Click(sender As Object, e As EventArgs) Handles ButtonBrowse.Click
-        Dim chosen = BrowseForExe(IO.Path.GetDirectoryName(TextBoxExePath.Text))
+        Dim chosen = BrowseForExe(IO.Path.GetDirectoryName(TextBoxExePath.Text), Config_App.Current.Game)
         If String.IsNullOrEmpty(chosen) Then Return
         Config_App.Current.FO4ExePath = chosen
         TextBoxExePath.Text = chosen
+        ' Sync the game combo to the exe the user just picked (a Skyrim exe flips the selector to SSE).
+        AutoDetectGameFromExe(chosen)
         RefreshPluginList()
     End Sub
 
-    Private Shared Function BrowseForExe(initialDir As String) As String
+    ''' <summary>Game selector changed: persist the choice into Config_App.Current.Game. The plugin list
+    ''' depends on the Data folder (derived from the exe path), not the game, so it is NOT re-enumerated
+    ''' here — a game switch on the same exe keeps the list; picking the other game's exe re-lists via
+    ''' ButtonBrowse. The final encoding init for the chosen game happens in ButtonOk before loading.</summary>
+    Private Sub ComboBoxGame_SelectedIndexChanged(sender As Object, e As EventArgs) Handles ComboBoxGame.SelectedIndexChanged
+        If ComboBoxGame.SelectedIndex < 0 Then Return
+        Config_App.Current.Game = CType(ComboBoxGame.SelectedIndex, Config_App.Game_Enum)
+    End Sub
+
+    ''' <summary>Set the game combo from an exe filename: contains "fallout4" → FO4, "skyrim"/"sse" →
+    ''' Skyrim. No-op when the name matches neither, so a non-standard exe name leaves the current
+    ''' selection intact. Mirror of Wardrobe_Manager Config_Form's exe→game auto-detect.</summary>
+    Private Sub AutoDetectGameFromExe(exePath As String)
+        If String.IsNullOrEmpty(exePath) Then Return
+        Dim name = IO.Path.GetFileName(exePath).ToLowerInvariant()
+        If name.Contains("fallout4") Then
+            ComboBoxGame.SelectedIndex = CInt(Config_App.Game_Enum.Fallout4)
+        ElseIf name.Contains("skyrim") OrElse name.Contains("sse") Then
+            ComboBoxGame.SelectedIndex = CInt(Config_App.Game_Enum.Skyrim)
+        End If
+    End Sub
+
+    Private Shared Function BrowseForExe(initialDir As String, game As Config_App.Game_Enum) As String
+        Dim exeName = If(game = Config_App.Game_Enum.Skyrim, "SkyrimSE.exe", "Fallout4.exe")
         Using dlg As New OpenFileDialog()
-            dlg.Title = "Select Fallout4.exe"
-            dlg.Filter = "Fallout4.exe|Fallout4.exe|EXE files (*.exe)|*.exe"
+            dlg.Title = $"Select {exeName}"
+            dlg.Filter = $"{exeName}|{exeName}|EXE files (*.exe)|*.exe"
             dlg.CheckFileExists = True
             dlg.CheckPathExists = True
             dlg.Multiselect = False
@@ -125,7 +156,7 @@ Public Class Preflight_Form
         LabelStatus.Text = ""
 
         If Not Config_App.Check_FOFolder() Then
-            LabelStatus.Text = "Pick Fallout4.exe to enumerate plugins."
+            LabelStatus.Text = "Pick the game .exe to enumerate plugins."
             Return
         End If
 
@@ -445,9 +476,46 @@ Public Class Preflight_Form
 
     Private Async Sub ButtonOk_Click(sender As Object, e As EventArgs) Handles ButtonOk.Click
         If Not Config_App.Check_FOFolder() Then
-            MessageBox.Show("Pick a valid Fallout4.exe before continuing.", "Setup",
+            MessageBox.Show("Pick a valid game .exe before continuing.", "Setup",
                             MessageBoxButtons.OK, MessageBoxIcon.Warning)
             Return
+        End If
+
+        ' Guard the silent-corruption trap: the selected game must match the exe/Data we're about to
+        ' parse. NPC_/RACE byte layouts (ACBS offsets, tint, sounds) differ between FO4 and SSE, so
+        ' loading a Skyrim Data folder while "Fallout 4" is selected (or vice-versa) mis-reads records.
+        ' Warn on an obvious filename mismatch but let the user proceed (non-standard exe names exist).
+        Dim exeLower = IO.Path.GetFileName(Config_App.Current.FO4ExePath).ToLowerInvariant()
+        Dim wantSkyrim = (Config_App.Current.Game = Config_App.Game_Enum.Skyrim)
+        Dim looksSkyrim = exeLower.Contains("skyrim") OrElse exeLower.Contains("sse")
+        Dim looksFo4 = exeLower.Contains("fallout4")
+        If (wantSkyrim AndAlso looksFo4) OrElse (Not wantSkyrim AndAlso looksSkyrim) Then
+            Dim gameName = If(wantSkyrim, "Skyrim SE", "Fallout 4")
+            If MessageBox.Show(
+                $"You selected {gameName} but the executable is '{IO.Path.GetFileName(Config_App.Current.FO4ExePath)}'." & vbCrLf & vbCrLf &
+                "This usually means the game selector and the Data folder don't match, which corrupts record parsing. Continue anyway?",
+                "Game / executable mismatch", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) <> DialogResult.Yes Then
+                Return
+            End If
+        End If
+
+        ' Skyrim support is still under construction (beta). Warn on OK whenever it's the selected game.
+        ' In a Debug build the user may proceed anyway (dev testing); in Release the load is hard-blocked.
+        If Config_App.Current.Game = Config_App.Game_Enum.Skyrim Then
+#If DEBUG Then
+            If MessageBox.Show(
+                "Skyrim support is still under construction (beta). Many features are not yet tested and may not work correctly." & vbCrLf & vbCrLf &
+                "This is a Debug build, so you can continue for testing. Proceed anyway?",
+                "Skyrim support is in beta", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) <> DialogResult.Yes Then
+                Return
+            End If
+#Else
+            MessageBox.Show(
+                "Skyrim support is still under construction (beta) and is not available in this build." & vbCrLf & vbCrLf &
+                "Please select Fallout 4 to continue.",
+                "Skyrim support is in beta", MessageBoxButtons.OK, MessageBoxIcon.Warning)
+            Return
+#End If
         End If
 
         ' Iterate _allRows (master, load-order-preserving) instead of ListViewPlugins.Items —
@@ -459,6 +527,13 @@ Public Class Preflight_Form
         Next
 
         Config_App.SaveConfig()
+
+        ' Finalize plugin text encoding for the game the user settled on. Program.Main ran this once at
+        ' startup against the persisted default; the user may have switched games in this dialog, so redo
+        ' it here — BEFORE LoadAllPlugins below — mirroring xEdit's "configure encoding → load → edit" order.
+        PluginEncodingSettings.InitializeForGame(Config_App.Current.Game)
+        PluginEncodingSettings.SetLanguage(PluginEncodingSettings.ReadLanguageFromIni())
+        PluginEncodingSettings.ApplyOverrideIni(AppDomain.CurrentDomain.BaseDirectory)
 
         SetLoadingMode(True)
 

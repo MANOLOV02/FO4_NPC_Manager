@@ -108,17 +108,23 @@ Friend NotInheritable Class NpcMeshCollector
 
         Dim globalSculptSource As MainForm.MeshCandidate = Nothing
         Dim uSculptSourceByBit As New Dictionary(Of Integer, MainForm.MeshCandidate)
-        For Each c In selectedCandidates
-            If c.ArmaBoneScaleDeltas Is Nothing OrElse c.ArmaBoneScaleDeltas.Count = 0 Then Continue For
-            If (c.SlotMask And BODY_MASK) <> 0 Then
-                If globalSculptSource Is Nothing Then globalSculptSource = c
-            End If
-            For b = U_BIT_FIRST To U_BIT_LAST
-                If (c.SlotMask And (1UI << b)) <> 0 Then
-                    If Not uSculptSourceByBit.ContainsKey(b) Then uSculptSourceByBit(b) = c
+        ' SCULPT (ARMA BSMS bone-scale) es un mecanismo EXCLUSIVO de FO4: Skyrim ARMA no tiene NINGÚN
+        ' subrecord BSMP/BSMB/BSMS (verificado: wbDefinitionsTES5.pas no los define) → ArmaBoneScaleDeltas
+        ' siempre vacío en SSE. Gate EXPLÍCITO FO4-only para que los bits de slot FO4 de abajo nunca se
+        ' ejerzan bajo Skyrim (defensivo; el bloque ya era no-op data-driven). FO4 sin cambios.
+        If Config_App.Current Is Nothing OrElse Config_App.Current.Game <> Config_App.Game_Enum.Skyrim Then
+            For Each c In selectedCandidates
+                If c.ArmaBoneScaleDeltas Is Nothing OrElse c.ArmaBoneScaleDeltas.Count = 0 Then Continue For
+                If (c.SlotMask And BODY_MASK) <> 0 Then
+                    If globalSculptSource Is Nothing Then globalSculptSource = c
                 End If
+                For b = U_BIT_FIRST To U_BIT_LAST
+                    If (c.SlotMask And (1UI << b)) <> 0 Then
+                        If Not uSculptSourceByBit.ContainsKey(b) Then uSculptSourceByBit(b) = c
+                    End If
+                Next
             Next
-        Next
+        End If
 
         ' [SCULPT-DECISION] diag: which candidate (if any) was picked as the slot-33 global sculpt
         ' source and which [U]-specific sources exist. Pairs with the per-candidate decision log
@@ -341,6 +347,25 @@ Friend NotInheritable Class NpcMeshCollector
         Dim armo = _ctx.GetParsedArmo(armoFormID)
         If armo Is Nothing Then Return
 
+        ' Head-occlusion slots THIS NPC's race actually declares (RACE.DATA A/B/C via RaceUtil), so an
+        ' ARMO that occludes a head-part on a NON-standard biped slot (modded races — e.g. hair on 41)
+        ' still contributes it to the head-part occupancy footprint below. Body/hand slots are excluded so
+        ' this can NEVER re-mark body skin as covered (the exact regression the static HEADWEAR gate at
+        ' .SlotMask below was added to prevent — "broke hands"). For vanilla FO4/SSE races
+        ' RaceHeadOcclusionMask is a subset of HeadwearMaskForGame(), so this union is a byte-for-byte
+        ' no-op (verified: vanilla FO4 A/B/C use only slots {30,31,32,48}). Engine parity: Fallout4.exe
+        ' 0x14051F210 ORs the ARMO's full BOD2 and 0x140506140 tests it against the race's A/B/C fields —
+        ' this restores that data-driven behaviour without the full-union skin-coverage regression.
+        Dim raceHeadOcclSlots As UInteger = 0UI
+        If state.RaceFormID <> 0UI Then
+            Dim hdRaceRec = _ctx.PluginManager.GetRecord(state.RaceFormID)
+            If hdRaceRec IsNot Nothing AndAlso hdRaceRec.Header.Signature = "RACE" Then
+                raceHeadOcclSlots = RaceUtil.RaceHeadOcclusionMask(_ctx.ParseRaceCached(hdRaceRec))
+            End If
+        End If
+        Dim skinSlots As UInteger = BipedSlots.RegionMask(BipedSlots.BipedRegion.Body) Or BipedSlots.RegionMask(BipedSlots.BipedRegion.Hands)
+        Dim headOcclGate As UInteger = BipedSlots.HeadwearMaskForGame() Or (raceHeadOcclSlots And (Not skinSlots))
+
         Dim useFaceGen As Boolean = _hasFaceGenAssets(state)
 
         ' Power-armor gate: an ArmorTypePower piece only fits an actor whose race is a power-armor race
@@ -389,7 +414,15 @@ Friend NotInheritable Class NpcMeshCollector
         CollectOmodChunkCandidates(omodResolution, "ARMO", state, candidates, order, warnings)
 
         Dim addonOrder As List(Of UInteger)
-        If armo.ArmorAddons.Count >= 1 Then
+        If Config_App.Current.Game = Config_App.Game_Enum.Skyrim Then
+            ' ⭐ Skyrim ARMO Armature = RArray PLANO de MODL (ARMA FormIDs), SIN INDX/Addon-Index
+            ' (verificado: SkinNaked 0x00000D64 = 25×MODL, 0×INDX). TODOS los armatures aplican
+            ' (torso/hands/feet + variantes por raza/bestia/niño); el filtro de raza (raceOk) de abajo
+            ' elige los que matchean al NPC. El INDX-variant grouping de FO4 NO existe en Skyrim, y
+            ' aplicarlo tomaba sólo el armature en posición 0 (el parser da índice posicional sin INDX)
+            ' → una skin multi-armature perdía body/hands/feet = "sin manos"/"sin cuerpo".
+            addonOrder = armo.ArmorAddonFormIDs.ToList()
+        ElseIf armo.ArmorAddons.Count >= 1 Then
             ' Resolve effective AddonIndex. ResolveEffectiveAddonIndex ahora devuelve Integer? —
             ' HasValue=True cuando hay OMOD override keyword-driven; sino Nothing → usar
             ' BaseAddonIndex (FNAM) si está, sino 0 (vanilla default).
@@ -536,7 +569,7 @@ Friend NotInheritable Class NpcMeshCollector
             ' The within-ARMO armature dedup above intentionally stays on the per-ARMA effSlotMask.
             candidates.Add(New MainForm.MeshCandidate With {
                 .DictKey = armaDictKey,
-                .SlotMask = effSlotMask Or (armo.SlotMask And BipedSlots.HEADWEAR_MASK),
+                .SlotMask = effSlotMask Or (armo.SlotMask And headOcclGate),
                 .Priority = If(state.IsFemale, arma.FemalePriority, arma.MalePriority),
                 .Kind = kind,
                 .SourceFormID = armoFormID,
@@ -1370,28 +1403,28 @@ Friend NotInheritable Class NpcMeshCollector
     ''' <summary>Categoriza un MainForm.MeshCandidate per los toggles diagnósticos de visibilidad.
     ''' Usa el slot mask del candidate (de BOD2/BODT) y su Kind. La categoría se mapea a
     ''' RenderHide en ApplyRenderToggleVisibility según el estado de los CheckBoxes.</summary>
-    Private Shared Function ClassifyShapeCategory(candidate As MainForm.MeshCandidate) As MainForm.ShapeRenderCategory
+    ''' <summary>Friend (was Private) so the headless <c>--slot-diag</c> mode (Program.vb) can run the
+    ''' REAL classification over Skyrim.esm ARMOs to confirm/verify the game-aware slot mapping without
+    ''' rendering. Pure function of (SlotMask, Kind).</summary>
+    Friend Shared Function ClassifyShapeCategory(candidate As MainForm.MeshCandidate) As MainForm.ShapeRenderCategory
         If candidate.Kind = MainForm.MeshCandidateKind.HeadPart Then Return MainForm.ShapeRenderCategory.HeadPart
 
-        ' BODY_BIT cubre el torso (slot 33). Scalp (slot 52) es overlay de cabeza/cuello que
-        ' sigue al body skin, no una prenda — agrupado con BODY así un Scalp Skin cae en
-        ' BodySkin igual que el torso, y un Scalp Outfit cae en Underarmor. Caso real raro
-        ' pero la semántica del bit es "geometría de body, no equipable".
-        Const BODY_MASK As UInteger = (1UI << 3) Or BipedSlots.SlotBitScalp
-        Dim U_MASK As UInteger = 0UI
-        For b = 6 To 10 : U_MASK = U_MASK Or (1UI << b) : Next
-        Dim A_MASK As UInteger = 0UI
-        For b = 11 To 15 : A_MASK = A_MASK Or (1UI << b) : Next
-        ' Slot 34 (L Hand) + 35 (R Hand) son las manos del actor. Slot 51 (Ring) es un accesorio
-        ' que va EN la mano — categóricamente body, mismo toggle visual que glove/hand.
-        Const HAND_MASK As UInteger = (1UI << 4) Or (1UI << 5) Or BipedSlots.SlotBitRing
+        ' ⭐ Máscaras derivadas de la TABLA AUTORITATIVA por-juego (BipedSlots.RegionMask, sourced de
+        ' los nombres de biped-object flags de xEdit wbDefinitionsFO4/TES5 — NO heurística). Aplicar la
+        ' semántica FO4 sobre datos SSE clasificaba mal TODO (medido con --slot-diag): armadura de cuerpo
+        ' Skyrim (slot 32) → Headwear → auto-oclusión = "armadura oculta"; cuerpo desnudo (32) → Other.
+        Dim BODY_MASK As UInteger = BipedSlots.RegionMask(BipedSlots.BipedRegion.Body)
+        Dim HAND_MASK As UInteger = BipedSlots.RegionMask(BipedSlots.BipedRegion.Hands)
+        Dim U_MASK As UInteger = BipedSlots.RegionMask(BipedSlots.BipedRegion.Under)
+        Dim A_MASK As UInteger = BipedSlots.RegionMask(BipedSlots.BipedRegion.Over)
+        Dim HEADWEAR As UInteger = BipedSlots.RegionMask(BipedSlots.BipedRegion.Headwear)
 
         Dim slot = candidate.SlotMask
         Dim touchesBody = (slot And BODY_MASK) <> 0UI
         Dim touchesU = (slot And U_MASK) <> 0UI
         Dim touchesA = (slot And A_MASK) <> 0UI
         Dim touchesHand = (slot And HAND_MASK) <> 0UI
-        Dim touchesHeadwear = (slot And BipedSlots.HEADWEAR_MASK) <> 0UI
+        Dim touchesHeadwear = (slot And HEADWEAR) <> 0UI
         Dim touchesBodyParts = touchesBody OrElse touchesU OrElse touchesA OrElse touchesHand
 
         ' Headwear: Kind=Outfit con bits exclusivos cabeza/cara/CUELLO (HairTop/HairLong/FaceGenHead/
@@ -1414,8 +1447,10 @@ Friend NotInheritable Class NpcMeshCollector
         If touchesA Then Return MainForm.ShapeRenderCategory.ArmorOver
         ' Pipboy (slot 60 / 0x40000000) — accesorio de antebrazo izq. que el engine vanilla
         ' monta hardcoded en el player. Como NPC outfit puede aparecer y debe respetar el toggle
-        ' "Render armor". No declara bits [A], por eso lo agrupamos acá explícito.
-        If (slot And BipedSlots.SlotBitPipboy) <> 0UI AndAlso candidate.Kind = MainForm.MeshCandidateKind.Outfit Then Return MainForm.ShapeRenderCategory.ArmorOver
+        ' "Render armor". No declara bits [A], por eso lo agrupamos acá explícito. FO4-ONLY: en SSE
+        ' slot 60 es un slot modular genérico (xEdit '60 - Unnamed'), no un Pipboy → no forzar ArmorOver.
+        If (Config_App.Current Is Nothing OrElse Config_App.Current.Game <> Config_App.Game_Enum.Skyrim) _
+           AndAlso (slot And BipedSlots.SlotBitPipboy) <> 0UI AndAlso candidate.Kind = MainForm.MeshCandidateKind.Outfit Then Return MainForm.ShapeRenderCategory.ArmorOver
         ' Resto (accessories 16+ raros, shapes sin slot, etc.).
         Return MainForm.ShapeRenderCategory.Other
     End Function

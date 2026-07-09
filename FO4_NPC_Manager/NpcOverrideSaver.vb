@@ -905,7 +905,11 @@ Public Module NpcOverrideSaver
             ' Re-emit BodyGen when the user asked OR a removal must drop the NPC from an EXISTING .ini (Emit
             ' rewrites without the removed NPC, or wipes the .ini when it was the last one). Never creates one.
             Dim iniBaseName = IO.Path.GetFileNameWithoutExtension(target.TargetPath)
-            If target.EmitBodyGen OrElse (removedFromSidecar AndAlso BodyGenIniWriter.IniExists(ctx.DataPath, iniBaseName)) Then
+            Dim isSseSave As Boolean = (Config_App.Current IsNot Nothing AndAlso Config_App.Current.Game = Config_App.Game_Enum.Skyrim)
+            Dim iniExists As Boolean = If(isSseSave,
+                                          SseBodyGenIniWriter.IniExists(ctx.DataPath, iniBaseName),
+                                          BodyGenIniWriter.IniExists(ctx.DataPath, iniBaseName))
+            If target.EmitBodyGen OrElse (removedFromSidecar AndAlso iniExists) Then
                 ReportPhase(progress, "Writing BodyGen .ini…", IO.Path.GetFileName(target.TargetPath))
                 EmitBodyGenFromSidecar(target, mergedSidecar, ctx)
             End If
@@ -1723,6 +1727,23 @@ Public Module NpcOverrideSaver
                     entry.BodyMorphs(kv.Key) = kv.Value
                 Next
             End If
+            ' SSE keyed body morphs — deep-copy the nested dict so the sidecar copy is independent of the
+            ' live overlay (mirrors the flat BodyMorphSliders copy above and LooksmenuLoader's preset
+            ' deep-copy). FO4 presets leave BodyMorphsKeyed = Nothing, so this block no-ops on FO4 and
+            ' the sidecar entry keeps BodyMorphsKeyed = Nothing (FO4 behavior identical).
+            If overlay.BodyMorphsKeyed IsNot Nothing Then
+                Dim keyedCopy As New Dictionary(Of String, Dictionary(Of String, Single))(StringComparer.OrdinalIgnoreCase)
+                For Each kv In overlay.BodyMorphsKeyed
+                    Dim inner As New Dictionary(Of String, Single)(StringComparer.OrdinalIgnoreCase)
+                    If kv.Value IsNot Nothing Then
+                        For Each ikv In kv.Value
+                            inner(ikv.Key) = ikv.Value
+                        Next
+                    End If
+                    keyedCopy(kv.Key) = inner
+                Next
+                entry.BodyMorphsKeyed = keyedCopy
+            End If
             entry.SkinTemplateId = If(overlay.SkinTemplateId, "")
             ' Overlays (LM body tattoos) — deep-copy each entry, cloning the float arrays so the
             ' sidecar copy is independent of the live overlay. Mirrors the BodyMorphSliders copy
@@ -1739,6 +1760,39 @@ Public Module NpcOverrideSaver
                     })
                 Next
             End If
+            ' SSE body overlays (path-based RaceMenu tattoos) — deep-copy onto the sidecar entry (SSE-only,
+            ' nullable). FO4 presets leave SseBodyOverlays = Nothing so this no-ops on FO4.
+            If overlay.SseBodyOverlays IsNot Nothing AndAlso overlay.SseBodyOverlays.Count > 0 Then
+                entry.SseBodyOverlays = LooksmenuLoader.CloneSseBodyOverlays(overlay.SseBodyOverlays)
+            End If
+            ' SSE node scales (body-scale) — store node→scale on the sidecar entry (the .jslot keeps full fidelity).
+            If overlay.SseNodeTransforms IsNot Nothing AndAlso overlay.SseNodeTransforms.Count > 0 Then
+                Dim d As New Dictionary(Of String, Single)(StringComparer.OrdinalIgnoreCase)
+                For Each nt In overlay.SseNodeTransforms
+                    If nt IsNot Nothing AndAlso nt.HasScale AndAlso Not String.IsNullOrEmpty(nt.NodeName) Then d(nt.NodeName) = nt.Scale
+                Next
+                If d.Count > 0 Then entry.SseNodeScales = d
+            End If
+            ' SSE skin overrides (body-paint per slot) — deep-copy onto the sidecar entry (SSE-only, nullable).
+            If overlay.SseSkinOverrides IsNot Nothing AndAlso overlay.SseSkinOverrides.Count > 0 Then
+                entry.SseSkinOverrides = LooksmenuLoader.CloneSseSkinOverrides(overlay.SseSkinOverrides)
+            End If
+            ' SSE custom face morphs (RaceMenu NiOverride named morphs) — co-save data, persist so they survive reload.
+            If overlay.SseCustomMorphs IsNot Nothing AndAlso overlay.SseCustomMorphs.Count > 0 Then
+                Dim cms As New List(Of NPC_CustomMorph)(overlay.SseCustomMorphs.Count)
+                For Each cm In overlay.SseCustomMorphs : cms.Add(New NPC_CustomMorph With {.Name = cm.Name, .Value = cm.Value}) : Next
+                entry.SseCustomMorphs = cms
+            End If
+            ' SSE per-vertex head sculpt — co-save data, persist so it survives reload.
+            If overlay.SseSculptHead IsNot Nothing AndAlso overlay.SseSculptHead.Count > 0 Then
+                Dim sc As New List(Of NPC_SculptVert)(overlay.SseSculptHead.Count)
+                For Each sv In overlay.SseSculptHead : sc.Add(New NPC_SculptVert With {.Index = sv.Index, .Dx = sv.Dx, .Dy = sv.Dy, .Dz = sv.Dz}) : Next
+                entry.SseSculptHead = sc
+            End If
+            ' SSE per-layer custom tint mask textures (RaceMenu co-save) — no ESP home, persist so they survive reload.
+            If overlay.SseTintTexOverride IsNot Nothing AndAlso overlay.SseTintTexOverride.Count > 0 Then
+                entry.SseTintTexOverride = New Dictionary(Of Integer, String)(overlay.SseTintTexOverride)
+            End If
         End If
 
         ' Always overwrite the NPC's slot — even if entry ends up empty. Write() drops empty entries
@@ -1753,6 +1807,16 @@ Public Module NpcOverrideSaver
     Private Sub EmitBodyGenFromSidecar(target As SaveEsp_Form.SaveTarget,
                                        sidecar As BssliderSidecar.SidecarFile,
                                        ctx As SaveContext)
+        Dim baseName = IO.Path.GetFileNameWithoutExtension(target.TargetPath)
+
+        ' Branch the BodyGen writer by game: SSE writes the skee64 pair under
+        ' Meshes\actors\character\BodyGenData\<plugin>\ and sources values from the keyed sidecar
+        ' morphs (flattened by summing); FO4 keeps the existing F4SE\...\BodyGen\ path + flat morphs.
+        If Config_App.Current IsNot Nothing AndAlso Config_App.Current.Game = Config_App.Game_Enum.Skyrim Then
+            EmitSseBodyGenFromSidecar(baseName, sidecar, ctx)
+            Return
+        End If
+
         Dim entries As New List(Of BodyGenIniWriter.NpcEntry)
         For Each kv In sidecar.Npcs
             Dim e = kv.Value
@@ -1773,8 +1837,57 @@ Public Module NpcOverrideSaver
             })
         Next
 
-        Dim baseName = IO.Path.GetFileNameWithoutExtension(target.TargetPath)
         BodyGenIniWriter.Emit(ctx.DataPath, baseName, entries)
+    End Sub
+
+    ''' <summary>SSE branch of <see cref="EmitBodyGenFromSidecar"/>: translate the merged sidecar into
+    ''' <see cref="SseBodyGenIniWriter"/> entries and emit the skee64 .ini pair. Morph values come from
+    ''' the entry's SSE-only <c>BodyMorphsKeyed</c>, flattened by summing each morph's keyed
+    ''' contributions (the engine nets keyed values — RaceMenuJslot.BodyMorphsToFlatSliderDict does the
+    ''' same). Falls back to the flat <c>BodyMorphs</c> dict when a row has no keyed data. SkinTemplate-only
+    ''' rows (no morphs) are skipped, as in the FO4 path.</summary>
+    Private Sub EmitSseBodyGenFromSidecar(baseName As String,
+                                          sidecar As BssliderSidecar.SidecarFile,
+                                          ctx As SaveContext)
+        Dim entries As New List(Of SseBodyGenIniWriter.NpcEntry)
+        For Each kv In sidecar.Npcs
+            Dim e = kv.Value
+            If e Is Nothing Then Continue For
+
+            ' Flat (summed) render values: prefer the keyed dict, fall back to the flat BodyMorphs.
+            Dim flat As Dictionary(Of String, Single) = Nothing
+            If e.BodyMorphsKeyed IsNot Nothing AndAlso e.BodyMorphsKeyed.Count > 0 Then
+                flat = New Dictionary(Of String, Single)(StringComparer.OrdinalIgnoreCase)
+                For Each mk In e.BodyMorphsKeyed
+                    If String.IsNullOrEmpty(mk.Key) Then Continue For
+                    Dim sum As Single = 0.0F
+                    If mk.Value IsNot Nothing Then
+                        For Each ikv In mk.Value : sum += ikv.Value : Next
+                    End If
+                    Dim existing As Single
+                    If flat.TryGetValue(mk.Key, existing) Then flat(mk.Key) = existing + sum Else flat(mk.Key) = sum
+                Next
+            ElseIf e.BodyMorphs IsNot Nothing AndAlso e.BodyMorphs.Count > 0 Then
+                flat = New Dictionary(Of String, Single)(e.BodyMorphs, StringComparer.OrdinalIgnoreCase)
+            End If
+            If flat Is Nothing OrElse flat.Count = 0 Then Continue For  ' SkinTemplate-only / no morphs → skip
+
+            Dim masterName As String = ""
+            Dim localFid As UInteger = 0UI
+            If Not BssliderSidecar.TryParseIdentifier(kv.Key, masterName, localFid) Then Continue For
+
+            Dim editorId = If(e.EditorId, "")
+            Dim templateName = "NPCM_" & SseBodyGenIniWriter.SanitizeTemplateName(editorId)
+            entries.Add(New SseBodyGenIniWriter.NpcEntry With {
+                .TemplateName = templateName,
+                .MasterPluginFileName = masterName,
+                .LocalFormIDHex = localFid.ToString("X6"),
+                .Gender = If(e.Gender, ""),
+                .BodyMorphs = flat
+            })
+        Next
+
+        SseBodyGenIniWriter.Emit(ctx.DataPath, baseName, entries)
     End Sub
 
 End Module
