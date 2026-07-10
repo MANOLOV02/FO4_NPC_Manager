@@ -290,6 +290,7 @@ Public Module NpcRecordOverlay
         ' RaceMenu .jslot sculpt + custom morphs — sidecar-only (raw NPC has none). Carried from the preset so
         ' the SSE morph resolver (BuildFaceMorphPlanFromNam9) applies them in render + bake.
         shadow.SseSculptHead = preset.SseSculptHead
+        shadow.SseSculptParts = preset.SseSculptParts
         shadow.SseCustomMorphs = preset.SseCustomMorphs
         shadow.SseOverlays = preset.SseOverlays
 

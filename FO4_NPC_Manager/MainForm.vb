@@ -474,6 +474,9 @@ Public Class MainForm
         ' From HDPT NAM0/NAM1 pairs (face head parts only, normally empty otherwise)
         Public RaceMorphTriPath As String = ""
         Public ChargenMorphTriPath As String = ""
+        ' HDPT NAM0=1 "Tri" — the mesh's own morph tri (SkinnyMorph weight source). Its basename does NOT
+        ' always match the mesh NIF (Hair08.nif → Elf\Male\ElfHair08.tri), so the record path is authoritative.
+        Public MeshMorphTriPath As String = ""
         ''' <summary>Per-bone scale deltas from the ARMA's BSMP/BSMB/BSMS block (matching this
         ''' NPC's gender). Engine-side these are added on top of RACE.BSMS to shape the outfit
         ''' (cinched waist, wider hips, etc.). Nothing when the ARMA has no BSMS or gender mismatch.</summary>
@@ -600,6 +603,9 @@ Public Class MainForm
         Public ReadOnly ShapeChargenTriPaths As New Dictionary(Of IRenderableShape, String)
         ''' <summary>Shape reference -> race morph TRI path (from HDPT NAM0=0/NAM1, expression file).</summary>
         Public ReadOnly ShapeRaceMorphTriPaths As New Dictionary(Of IRenderableShape, String)
+        ''' <summary>Shape reference -> mesh morph TRI path (from HDPT NAM0=1/NAM1). SkinnyMorph weight source;
+        ''' basename may differ from the mesh NIF, so this is the authoritative path (vs ChangeExtension guess).</summary>
+        Public ReadOnly ShapeMeshMorphTriPaths As New Dictionary(Of IRenderableShape, String)
         ''' <summary>Per-shape ARMA sculpt data lookup. Key = shape reference, Value = bone-name → Vec3 delta
         ''' (delta = sclp_absolute - 1.0). Each shape carries the sculpt of ITS ARMA owner only — there is
         ''' no cross-ARMA aggregation. Shapes whose ARMA has no sculpt data are absent from this dictionary.
@@ -1802,6 +1808,10 @@ Public Class MainForm
                     Dim sc As New List(Of NPC_SculptVert)(entry.SseSculptHead.Count)
                     For Each sv In entry.SseSculptHead : sc.Add(New NPC_SculptVert With {.Index = sv.Index, .Dx = sv.Dx, .Dy = sv.Dy, .Dz = sv.Dz}) : Next
                     existing.SseSculptHead = sc
+                End If
+                ' SSE per-SHAPE sculpt (head+brows+eyes+mouth) — full-fidelity superset; rebuild onto the overlay too.
+                If entry.SseSculptParts IsNot Nothing AndAlso entry.SseSculptParts.Count > 0 Then
+                    existing.SseSculptParts = LooksmenuLoader.CloneSseSculptParts(entry.SseSculptParts)
                 End If
                 ' SSE per-layer custom tint mask textures — rebuild onto the overlay so they survive reload (SSE-only).
                 If entry.SseTintTexOverride IsNot Nothing AndAlso entry.SseTintTexOverride.Count > 0 Then
@@ -8690,6 +8700,7 @@ Public Class MainForm
                     Next
                     preset.SseSculptHead = sc
                 End If
+                preset.SseSculptParts = LooksmenuLoader.CloneSseSculptParts(overlay.SseSculptParts)
                 If overlay.SseCustomMorphs IsNot Nothing Then
                     Dim cms As New List(Of NPC_CustomMorph)(overlay.SseCustomMorphs.Count)
                     For Each cm In overlay.SseCustomMorphs
@@ -9836,8 +9847,10 @@ Public Class MainForm
         ' --- Sculpt (per-vertex head sculpt). F4SE/RaceMenu-only, no record source. ---
         If options.Sculpt Then
             p.SseSculptHead = CloneSseSculptHead(source.SseSculptHead)
+            p.SseSculptParts = LooksmenuLoader.CloneSseSculptParts(source.SseSculptParts)
         ElseIf tOverlay IsNot Nothing Then
             p.SseSculptHead = CloneSseSculptHead(tOverlay.SseSculptHead)
+            p.SseSculptParts = LooksmenuLoader.CloneSseSculptParts(tOverlay.SseSculptParts)
         End If
 
         ' ================================================================================

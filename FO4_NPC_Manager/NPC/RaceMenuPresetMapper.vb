@@ -42,6 +42,17 @@ Public Module RaceMenuPresetMapper
                 j.HeadParts.Add(New RaceMenuJslot.JslotHeadPart With {.FormId = fid, .FormIdentifier = ident, .Type = ptype})
             Next
         End If
+        ' Re-emit the head parts that ApplyJslotToPreset couldn't resolve (owning mod absent from THIS load
+        ' order) exactly as they came in. Without this, saving a preset that was loaded while its mod was
+        ' missing would silently erase that hair/eyes entry from the .jslot — the user would lose the part the
+        ' moment they saved on a machine that doesn't have the mod. Skee behaves the same: it skips the head
+        ' part it can't apply but leaves the preset's stored entry intact.
+        If preset.SseUnresolvedHeadParts IsNot Nothing Then
+            For Each h In preset.SseUnresolvedHeadParts
+                If h Is Nothing Then Continue For
+                j.HeadParts.Add(New RaceMenuJslot.JslotHeadPart With {.FormId = h.FormId, .FormIdentifier = h.FormIdentifier, .Type = h.Type})
+            Next
+        End If
         If preset.SseHeadTextureFormID <> 0UI AndAlso pluginManager IsNot Nothing Then
             j.HeadTexture = LooksmenuLoader.FormatFormIdentifier(preset.SseHeadTextureFormID, pluginManager)
         End If
@@ -55,16 +66,25 @@ Public Module RaceMenuPresetMapper
         Next
         j.SliderMorphs.Add(3.402823466E+38F)   ' VampireMorph sentinel (= not a vampire), EditFace_Form.vb:603.
 
-        ' ---- FACE: sculpt (head part 0), world delta × SculptDivisor (EditFace_Form.vb:605-614).
-        If preset.SseSculptHead IsNot Nothing AndAlso preset.SseSculptHead.Count > 0 Then
-            Dim part As New RaceMenuJslot.JslotSculptPart
-            For Each sv In preset.SseSculptHead
-                part.Indices.Add(sv.Index)
-                part.Dx.Add(CInt(Math.Round(sv.Dx * j.SculptDivisor)))
-                part.Dy.Add(CInt(Math.Round(sv.Dy * j.SculptDivisor)))
-                part.Dz.Add(CInt(Math.Round(sv.Dz * j.SculptDivisor)))
+        ' ---- FACE: sculpt, world delta × SculptDivisor. Emit ALL per-shape blocks (head + brows + eyes + mouth)
+        ' with their Host chargen tri, so a load→save round-trip preserves the full preset (not just the head).
+        ' Falls back to the head-only SseSculptHead when SseSculptParts is absent (older editor-authored overlays).
+        Dim sculptSource As List(Of NPC_SculptPart) = preset.SseSculptParts
+        If (sculptSource Is Nothing OrElse sculptSource.Count = 0) AndAlso preset.SseSculptHead IsNot Nothing AndAlso preset.SseSculptHead.Count > 0 Then
+            sculptSource = New List(Of NPC_SculptPart) From {New NPC_SculptPart With {.Host = "", .Verts = preset.SseSculptHead}}
+        End If
+        If sculptSource IsNot Nothing Then
+            For Each blk In sculptSource
+                If blk Is Nothing OrElse blk.Verts Is Nothing OrElse blk.Verts.Count = 0 Then Continue For
+                Dim part As New RaceMenuJslot.JslotSculptPart With {.Host = If(blk.Host, ""), .Vertices = 0}
+                For Each sv In blk.Verts
+                    part.Indices.Add(sv.Index)
+                    part.Dx.Add(CInt(Math.Round(sv.Dx * j.SculptDivisor)))
+                    part.Dy.Add(CInt(Math.Round(sv.Dy * j.SculptDivisor)))
+                    part.Dz.Add(CInt(Math.Round(sv.Dz * j.SculptDivisor)))
+                Next
+                j.Sculpt.Add(part)
             Next
-            j.Sculpt.Add(part)
         End If
 
         ' ---- FACE: NiOverride custom morphs (EditFace_Form.vb:615-617).
@@ -121,15 +141,44 @@ Public Module RaceMenuPresetMapper
         ' ---- FACE IDENTITY: headParts (hair/eyes/brows/…) → preset.HeadPartFormIDs. skee64 ApplyPreset applies
         ' the preset's head parts (ChangeHeadPart, PresetInterface.cpp:1580); without this a loaded .jslot changed
         ' the morphs/tints but NOT the actual hair/eyes. The portable id is the "formIdentifier" ("Plugin|FormID");
-        ' resolve it against the current load order (LooksmenuLoader.ResolveFormIdentifier). Falls back to the raw
-        ' FormId only when there's no identifier. Requires the PluginManager; skipped (identity untouched) without it.
+        ' resolve it against the current load order (LooksmenuLoader.ResolveFormIdentifier). Requires the
+        ' PluginManager; skipped (identity untouched) without it.
+        '
+        ' When the identifier does NOT resolve (fid=0, the owning mod isn't in this load order) we do NOT fall
+        ' back to h.FormId: that FormId is the absolute id from the AUTHOR's load order, whose master-index high
+        ' byte is meaningless here — it would inject a garbage FormID that the race gate can't resolve and that
+        ' (measured) makes HeadPartResolver discard the WHOLE preset. Instead we SKIP the part and PRESERVE it
+        ' verbatim: parity with the FO4 path (LooksmenuLoader.ParseFile routes unresolved entries into
+        ' UnresolvedHeadParts, keeping the rest), and parity with skee itself (PresetInterface.cpp skips a head
+        ' part it can't resolve and applies the rest). The NPC then keeps its own parts for the skipped slot, and
+        ' the verbatim entry (SseUnresolvedHeadParts) lets ToJslot re-emit it on save without loss. Only when
+        ' there is NO identifier (an old .jslot with no portable id) do we use h.FormId — it's all we have.
         If pluginManager IsNot Nothing AndAlso j.HeadParts IsNot Nothing AndAlso j.HeadParts.Count > 0 Then
             Dim hp As New List(Of UInteger)
             For Each h In j.HeadParts
                 If h Is Nothing Then Continue For
-                Dim fid As UInteger = 0UI
-                If Not String.IsNullOrEmpty(h.FormIdentifier) Then fid = LooksmenuLoader.ResolveFormIdentifier(h.FormIdentifier, pluginManager)
-                If fid = 0UI Then fid = h.FormId
+                Dim fid As UInteger
+                If Not String.IsNullOrEmpty(h.FormIdentifier) Then
+                    fid = LooksmenuLoader.ResolveFormIdentifier(h.FormIdentifier, pluginManager)
+                    If fid = 0UI Then
+                        ' Unresolved: skip + preserve verbatim (both the diagnostic string and the full entry).
+                        ' Dedup like the `hp` list below: ApplyJslotToPreset can run more than once against the same
+                        ' preset object (preview re-apply), and ToJslot would then emit the part twice.
+                        If Not preset.UnresolvedHeadParts.Contains(h.FormIdentifier, StringComparer.OrdinalIgnoreCase) Then
+                            preset.UnresolvedHeadParts.Add(h.FormIdentifier)
+                            preset.SseUnresolvedHeadParts.Add(h)
+                        End If
+                        If Logger.Enabled Then
+                            Dim srcName As String = System.IO.Path.GetFileName(If(preset.SourcePath, ""))
+                            Dim ident As String = h.FormIdentifier
+                            Logger.LogLazy(Function() $"[LMLoad] '{srcName}': head part '{ident}' unresolved (plugin not in load order) -> skipped, preserved verbatim.")
+                        End If
+                        Continue For
+                    End If
+                Else
+                    ' No portable id (older .jslot): the raw FormId is all we have.
+                    fid = h.FormId
+                End If
                 If fid <> 0UI AndAlso Not hp.Contains(fid) Then hp.Add(fid)
             Next
             If hp.Count > 0 Then
@@ -161,14 +210,27 @@ Public Module RaceMenuPresetMapper
         If preset.SseNama Is Nothing Then preset.SseNama = New UInteger(SseNam9MorphMap.NamaFamilyCount - 1) {}
         preset.HasSseMorphs = True
 
-        ' ---- FACE: sculpt(0) ÷ divisor → world deltas (EditFace_Form.vb:571-578).
+        ' ---- FACE: sculpt ÷ divisor → world deltas. A RaceMenu preset sculpts head + brows + eyes + mouth as
+        ' SEPARATE blocks, each tagged with its Host chargen tri (HDPT NAM0=2). Parse ALL blocks into
+        ' SseSculptParts so render/bake route each to its shape by Host (brows/eyes/mouth were previously dropped
+        ' — only Sculpt(0)=head survived, so those parts ignored the preset). SseSculptHead stays = the head block
+        ' (Host base-head chargen, no "Brows") for the editor/save back-compat that reads the head-only field.
         If j.Sculpt.Count > 0 Then
-            Dim head = j.Sculpt(0), div = Math.Max(1, j.SculptDivisor)
-            Dim sc As New List(Of NPC_SculptVert)(head.Indices.Count)
-            For k = 0 To head.Indices.Count - 1
-                sc.Add(New NPC_SculptVert With {.Index = head.Indices(k), .Dx = head.Dx(k) / div, .Dy = head.Dy(k) / div, .Dz = head.Dz(k) / div})
+            Dim div = Math.Max(1, j.SculptDivisor)
+            Dim parts As New List(Of NPC_SculptPart)(j.Sculpt.Count)
+            For Each blk In j.Sculpt
+                Dim verts As New List(Of NPC_SculptVert)(blk.Indices.Count)
+                For k = 0 To blk.Indices.Count - 1
+                    verts.Add(New NPC_SculptVert With {.Index = blk.Indices(k), .Dx = blk.Dx(k) / div, .Dy = blk.Dy(k) / div, .Dz = blk.Dz(k) / div})
+                Next
+                parts.Add(New NPC_SculptPart With {.Host = If(blk.Host, ""), .Verts = verts})
             Next
-            preset.SseSculptHead = sc
+            preset.SseSculptParts = parts
+            ' Head block for SseSculptHead: the base-head chargen host ("...HeadCharGen"/"...HeadCustomizations"
+            ' but NOT "...Brows..."). Fall back to block 0 if none matches (mirrors the prior Sculpt(0) behaviour).
+            Dim headBlk = parts.FirstOrDefault(Function(p) p.Host.IndexOf("Head", StringComparison.OrdinalIgnoreCase) >= 0 AndAlso p.Host.IndexOf("Brows", StringComparison.OrdinalIgnoreCase) < 0)
+            If headBlk Is Nothing Then headBlk = parts(0)
+            preset.SseSculptHead = headBlk.Verts
         End If
 
         ' ---- FACE: custom morphs → preset (EditFace_Form.vb:580-584).

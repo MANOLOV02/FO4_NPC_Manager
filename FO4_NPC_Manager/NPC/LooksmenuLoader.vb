@@ -26,6 +26,16 @@ Public Module LooksmenuLoader
         ''' the cause when a preset's pelo/ojos visually don't apply: the HDPT lives in a
         ''' presets-mod ESP that isn't in Plugins.txt.</summary>
         Public UnresolvedHeadParts As New List(Of String)
+        ''' <summary>SSE-ONLY companion to <see cref="UnresolvedHeadParts"/>: the same unresolved
+        ''' <c>headParts</c> entries from a <c>.jslot</c> (whose <c>formIdentifier</c> didn't resolve
+        ''' against the current load order), kept VERBATIM as the parsed
+        ''' <see cref="RaceMenuJslot.JslotHeadPart"/> (FormId + FormIdentifier + Type) rather than just
+        ''' the diagnostic string. This lets <see cref="RaceMenuPresetMapper.ToJslot"/> re-emit them
+        ''' without loss when a preset loaded while the owning mod was absent is saved back — otherwise a
+        ''' load→save round-trip would silently drop those head parts from the <c>.jslot</c>.
+        ''' <see cref="UnresolvedHeadParts"/> (List(Of String)) stays the UI/log list, shared with the
+        ''' FO4 path. Nothing populates this on FO4 (FO4 loads from f4ee JSON, not .jslot).</summary>
+        Public SseUnresolvedHeadParts As New List(Of RaceMenuJslot.JslotHeadPart)
         Public HairColorFormID As UInteger
         ''' <summary>SSE-ONLY RaceMenu face texture set (FTST) override from a loaded .jslot's actor.headTexture
         ''' (skee64 sets npc->headData->headTexture, PresetInterface.cpp:158-160). 0 = none. The render uses it as
@@ -102,6 +112,9 @@ Public Module LooksmenuLoader
         ' RaceMenu .jslot sidecar (per-vertex sculpt + NiOverride custom morphs). Applied on top of NAM9/NAMA in
         ' render + bake; saved to the .jslot alongside the ESP. FO4 leaves unset.
         Public SseSculptHead As List(Of NPC_SculptVert) = Nothing
+        ' All per-shape sculpt blocks (head + brows + eyes + mouth), each tagged with its Host chargen tri.
+        ' Render/bake route by Host so brows/eyes/mouth get their sculpt too (SseSculptHead is head-only).
+        Public SseSculptParts As List(Of NPC_SculptPart) = Nothing
         Public SseCustomMorphs As List(Of NPC_CustomMorph) = Nothing
         Public SseOverlays As List(Of SseOverlayCompositor.SseOverlay) = Nothing
         ' SSE (Skyrim) vanilla body weight (NPC.NAM7). Nothing = preserve raw NPC.NAM7; a value overrides
@@ -667,6 +680,9 @@ Public Module LooksmenuLoader
         }
         c.HeadPartFormIDs.AddRange(p.HeadPartFormIDs)
         c.UnresolvedHeadParts.AddRange(p.UnresolvedHeadParts)
+        ' SSE-only verbatim unresolved head parts must travel with the clone too — otherwise a
+        ' load→(copy/snapshot)→save would drop the preserved parts that ToJslot re-emits.
+        c.SseUnresolvedHeadParts.AddRange(p.SseUnresolvedHeadParts)
         c.HairColorFormID = p.HairColorFormID
         c.SseHeadTextureFormID = p.SseHeadTextureFormID
         c.WeightThin = p.WeightThin
@@ -774,6 +790,7 @@ Public Module LooksmenuLoader
             Next
             c.SseSculptHead = sc
         End If
+        c.SseSculptParts = CloneSseSculptParts(p.SseSculptParts)
         If p.SseCustomMorphs IsNot Nothing Then
             Dim cms As New List(Of NPC_CustomMorph)(p.SseCustomMorphs.Count)
             For Each cm In p.SseCustomMorphs
@@ -827,6 +844,24 @@ Public Module LooksmenuLoader
         For Each sk In src
             If sk Is Nothing Then Continue For
             copy.Add(sk.Clone())
+        Next
+        Return copy
+    End Function
+
+    ''' <summary>Deep-clone the SSE per-SHAPE sculpt blocks (host + per-vertex deltas). Nothing in, Nothing out.</summary>
+    Public Function CloneSseSculptParts(src As List(Of NPC_SculptPart)) As List(Of NPC_SculptPart)
+        If src Is Nothing Then Return Nothing
+        Dim copy As New List(Of NPC_SculptPart)(src.Count)
+        For Each p In src
+            If p Is Nothing Then Continue For
+            Dim verts As New List(Of NPC_SculptVert)(If(p.Verts IsNot Nothing, p.Verts.Count, 0))
+            If p.Verts IsNot Nothing Then
+                For Each sv In p.Verts
+                    If sv Is Nothing Then Continue For
+                    verts.Add(New NPC_SculptVert With {.Index = sv.Index, .Dx = sv.Dx, .Dy = sv.Dy, .Dz = sv.Dz})
+                Next
+            End If
+            copy.Add(New NPC_SculptPart With {.Host = If(p.Host, ""), .Verts = verts})
         Next
         Return copy
     End Function

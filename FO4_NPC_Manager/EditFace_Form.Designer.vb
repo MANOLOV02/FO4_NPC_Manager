@@ -83,6 +83,8 @@ Partial Class EditFace_Form
         PanelSseMorphs = New Panel()
         TabPageSseTints = New TabPage()
         PanelSseTints = New Panel()
+        TabPageSseSculpt = New TabPage()
+        ListSseSculpt = New ListView()
         GroupBoxFmin = New GroupBox()
         FminLayout = New TableLayoutPanel()
         LabelFminCaption = New Label()
@@ -165,6 +167,7 @@ Partial Class EditFace_Form
         TabsFace.Controls.Add(TabPageFaceParts)
         TabsFace.Controls.Add(TabPageSseMorphs)
         TabsFace.Controls.Add(TabPageSseTints)
+        TabsFace.Controls.Add(TabPageSseSculpt)
         TabsFace.Controls.Add(TabPageTints)
         TabsFace.Controls.Add(TabPageVertex)
         TabsFace.Controls.Add(TabPageBoneRegions)
@@ -190,6 +193,21 @@ Partial Class EditFace_Form
         TabPageSseTints.Text = "Tints (SSE)"
         PanelSseTints.Dock = DockStyle.Fill
         PanelSseTints.Name = "PanelSseTints"
+        '
+        ' TabPageSseSculpt (SSE) — read-only list of RaceMenu per-shape sculpt blocks (PopulateSseSculptTab)
+        '
+        TabPageSseSculpt.Controls.Add(ListSseSculpt)
+        TabPageSseSculpt.Location = New Point(4, 24)
+        TabPageSseSculpt.Name = "TabPageSseSculpt"
+        TabPageSseSculpt.Padding = New Padding(6)
+        TabPageSseSculpt.Size = New Size(720, 560)
+        TabPageSseSculpt.Text = "Sculpt (SSE)"
+        ListSseSculpt.Dock = DockStyle.Fill
+        ListSseSculpt.FullRowSelect = True
+        ListSseSculpt.HideSelection = False
+        ListSseSculpt.Name = "ListSseSculpt"
+        ListSseSculpt.UseCompatibleStateImageBehavior = False
+        ListSseSculpt.View = View.Details
         TabsFace.Dock = DockStyle.Fill
         TabsFace.Location = New Point(11, 11)
         TabsFace.Name = "TabsFace"
@@ -1076,6 +1094,8 @@ Partial Class EditFace_Form
     Friend WithEvents TabPageBoneRegions As System.Windows.Forms.TabPage
     Friend WithEvents TabPageSseMorphs As System.Windows.Forms.TabPage
     Friend WithEvents PanelSseMorphs As System.Windows.Forms.Panel
+    Friend WithEvents TabPageSseSculpt As System.Windows.Forms.TabPage
+    Friend WithEvents ListSseSculpt As System.Windows.Forms.ListView
     Friend WithEvents TabPageSseTints As System.Windows.Forms.TabPage
     Friend WithEvents PanelSseTints As System.Windows.Forms.Panel
     Friend WithEvents BottomLayout As System.Windows.Forms.FlowLayoutPanel

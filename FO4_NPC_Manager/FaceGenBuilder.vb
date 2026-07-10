@@ -743,9 +743,17 @@ Public Module FaceGenBuilder
                             ' the baked NIF diverged from the live render, which morphs via the same builder.
                             ' Apply that exact plan to the cloned shape in place (reuses ApplyChargenMorphsInPlace
                             ' → NpcMorphResolver.BuildFaceMorphPlanFromNam9 + MorphEngine; no second morph impl).
-                            ' Pass THIS head-part's own mesh tri (femalehead.tri / ...argonian / hairNN.tri, etc.)
+                            ' Pass THIS head-part's own mesh tri (MaleHead.tri / ...argonian / ElfHair08.tri, etc.)
                             ' so its SkinnyMorph (the actor-weight morph) is applied per-part and race-aware.
-                            Dim hdptMeshTri As String = If(String.IsNullOrEmpty(hdpt.MeshPath), Nothing, IO.Path.ChangeExtension(hdpt.MeshPath, ".tri"))
+                            ' AUTHORITATIVE and ONLY source = HDPT NAM0=1 "Tri" (hdpt.TriPath): the CK applies the
+                            ' mesh weight morph IFF the record declares it here. The NIF and its tri do NOT always
+                            ' share a basename (Hair08.nif → Elf\Male\ElfHair08.tri), so the old ChangeExtension(MeshPath)
+                            ' guess both MISSED the correct tri (elf/nord hair shipped un-weighted) AND, worse, wrongly
+                            ' applied a same-named tri the CK ignores — e.g. HairMaleDarkElf02 has NO NAM0=1 yet
+                            ' MaleDarkElfHair02.tri exists on disk; the CK leaves that hair un-weighted, so the guess
+                            ' over-morphed it (+0.57 RMS vs CK). Dropping the guess makes both cases match CK: NAM0=1
+                            ' parts get their SkinnyMorph, NAM0-less parts stay neutral. Verified vs vanilla SSE FaceGeom.
+                            Dim hdptMeshTri As String = hdpt.TriPath
                             FaceGenBuildPipeline.ApplyChargenMorphsInPlace(nif, cloned, hdpt.ChargenMorphTriPath, hdpt.RaceMorphTriPath, bakeState, hdptMeshTri)
                             shapesMorphed += 1
                         End If

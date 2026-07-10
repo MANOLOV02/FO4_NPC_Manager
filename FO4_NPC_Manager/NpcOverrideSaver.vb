@@ -1810,6 +1810,10 @@ Public Module NpcOverrideSaver
                 For Each sv In overlay.SseSculptHead : sc.Add(New NPC_SculptVert With {.Index = sv.Index, .Dx = sv.Dx, .Dy = sv.Dy, .Dz = sv.Dz}) : Next
                 entry.SseSculptHead = sc
             End If
+            ' SSE per-SHAPE sculpt (head+brows+eyes+mouth) — full-fidelity co-save superset; persist so all four parts survive reload.
+            If overlay.SseSculptParts IsNot Nothing AndAlso overlay.SseSculptParts.Count > 0 Then
+                entry.SseSculptParts = LooksmenuLoader.CloneSseSculptParts(overlay.SseSculptParts)
+            End If
             ' SSE per-layer custom tint mask textures (RaceMenu co-save) — no ESP home, persist so they survive reload.
             If overlay.SseTintTexOverride IsNot Nothing AndAlso overlay.SseTintTexOverride.Count > 0 Then
                 entry.SseTintTexOverride = New Dictionary(Of Integer, String)(overlay.SseTintTexOverride)

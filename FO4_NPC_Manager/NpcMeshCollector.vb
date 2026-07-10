@@ -37,6 +37,11 @@ Friend NotInheritable Class NpcMeshCollector
     ''' so it's worth memoizing. (Owner moved from MainForm._candidateHairSlotMaskCache.)</summary>
     Private ReadOnly _candidateHairSlotMaskCache As New Dictionary(Of String, UInteger)(StringComparer.OrdinalIgnoreCase)
 
+    ''' <summary>Per-mesh cache for CandidatePartitionSlotMask (Skyrim head-part occlusion). Same shape/
+    ''' lifetime as <see cref="_candidateHairSlotMaskCache"/>: the BSDismemberSkinInstance partition set is a
+    ''' property of the mesh file alone, stable across NPCs sharing the mesh.</summary>
+    Private ReadOnly _candidatePartitionSlotMaskCache As New Dictionary(Of String, UInteger)(StringComparer.OrdinalIgnoreCase)
+
     Public Sub New(ctx As NpcRenderContext, materialResolver As NpcMaterialResolver,
                    stateResolver As NpcStateResolver, mountingResolver As NpcMountingResolver,
                    hasFaceGenAssets As Func(Of MainForm.NPCVisualState, Boolean),
@@ -1088,6 +1093,7 @@ Friend NotInheritable Class NpcMeshCollector
                 .Order = order,
                 .RaceMorphTriPath = hdpt.RaceMorphTriPath,
                 .ChargenMorphTriPath = hdpt.ChargenMorphTriPath,
+                .MeshMorphTriPath = hdpt.TriPath,
                 .Hide = (effectivePartType = 7),
                 .IsHnamExtra = (parentPartType >= 0)
             })
@@ -1254,6 +1260,62 @@ Friend NotInheritable Class NpcMeshCollector
         For Each slotlessCandidate In visibleCandidates.Where(Function(c) c.SlotMask = 0UI AndAlso c.Kind <> MainForm.MeshCandidateKind.Skin).OrderBy(Function(c) c.Order)
             If slotlessCandidate.Kind = MainForm.MeshCandidateKind.HeadPart Then
                 Dim occluded As Boolean = False
+                ' Skyrim head-part occlusion (RE-verificado, engine base 0x140000000). La RACE declara DOS
+                ' "biped objects" (no los tres A/B/C de FO4): A = Head (RACE +0x12C, DATA+0x44) y
+                ' B = Hair (RACE +0x130, DATA+0x48). NordRace/Imperial/Breton: A=0 → slot 30, B=1 → slot 31.
+                ' faceCullMask (A) y hairCovered (worn ∩ canal de pelo de esta raza) ya están arriba.
+                '   • A cubierto → whole-node cull de la cabeza (or [geom+0xF4],1). Cascadea a TODO
+                '     head-part (eyes, brows, scars, etc.), no sólo al pelo.
+                '   • si no, SÓLO el canal de pelo (B) pasa por el hider: per-partición
+                '     ApplyOcclusionToGeometry 0x1403C56B0 oculta SOLO la partición BSDismember cuyo slot
+                '     plegado (1xx/2xx → 30..61) es igual a un slot de pelo cubierto; las hermanas quedan
+                '     visibles. Ese zap per-partición lo hace el RENDER (CoveredSlotsMask →
+                '     ComputeHiddenTrianglesDismember, Render.vb), no acá.
+                '   • el fallback whole-node SetAppCulled aplica SÓLO a la geometría de pelo SIN
+                '     BSDismemberSkinInstance — NO a toda la cabeza. Medido (Tools/SseHairlineOcclusionProbe
+                '     sobre Skyrim.esm+DLC): eyes(161)/eyebrows(28)/scars(32)/misc(48) vanilla NO traen
+                '     dismember; si el fallback los tapara, cualquier casco [31,42] (502 ARMO) haría
+                '     desaparecer ojos y cejas — no pasa en el juego. Por eso los no-pelo sólo caen por A.
+                If Config_App.Current.Game = Config_App.Game_Enum.Skyrim Then
+                    ' 0 fuera de la rama de pelo: los no-pelo no leen el NIF (no lo necesitan).
+                    Dim partitionMask As UInteger = 0UI
+                    If hasFaceGenHead Then
+                        ' A (Head, RACE +0x12C) cubierto → whole-node cull de la cabeza; eyes/brows/etc. cascadean.
+                        occluded = True
+                    ElseIf slotlessCandidate.HeadPartType = MainForm.HeadPartTypeHair Then
+                        ' Sólo el canal de pelo (B, RACE +0x130) pasa por el hider per-partición 0x1403C56B0.
+                        ' Las hairline vanilla llegan como HDPT rawType=0 (Misc) extras de un padre type=3;
+                        ' effectivePartType las promueve a Hair, así que HeadPartTypeHair las agarra.
+                        partitionMask = CandidatePartitionSlotMask(slotlessCandidate)
+                        If partitionMask = 0UI Then
+                            occluded = (hairCovered <> 0UI)          ' sin dismember → fallback SetAppCulled del engine
+                        ElseIf (partitionMask And (Not hairCovered)) = 0UI Then
+                            occluded = True                           ' todas las particiones cubiertas → no renderiza nada
+                        Else
+                            occluded = False                          ' sobreviven hermanas → el render zapea per-partición
+                        End If
+                    Else
+                        ' Eyes / Eyebrows / Scar / Face / Misc no-pelo: en SSE sólo los tapa el face-cull (A),
+                        ' ya resuelto arriba. No hay canal propio (la RACE de Skyrim no declara facial-hair
+                        ' biped object) y su geometría vanilla no trae BSDismember, así que NO cascadean con el pelo.
+                        occluded = False
+                    End If
+                    ' ZapParts (Top/Long) es un mecanismo FO4; en SSE el zap es per-partición BSDismember en el render.
+                    slotlessCandidate.ZapParts = HairZapParts.None
+                    If Logger.Enabled Then
+                        Dim dkD = slotlessCandidate.DictKey
+                        Dim effTypeD = slotlessCandidate.HeadPartType
+                        Dim rawTypeD = slotlessCandidate.HeadPartTypeRaw
+                        Dim hnamD = slotlessCandidate.IsHnamExtra
+                        Dim faceGenD = hasFaceGenHead
+                        Dim partMaskD = partitionMask
+                        Dim occSlotsD = occupiedSlots
+                        Dim faceMaskD = faceCullMask
+                        Dim hairCovD = hairCovered
+                        Dim occD = occluded
+                        Logger.LogLazy(Function() $"[SSE-HEADPART-OCCL] dict='{dkD}' effType={effTypeD} rawType={rawTypeD} isHnamExtra={hnamD} hasFaceGenHead={faceGenD} partitionMask=0x{partMaskD:X} occupiedSlots=0x{occSlotsD:X} faceCullMask=0x{faceMaskD:X} hairCovered=0x{hairCovD:X} occluded={occD}")
+                    End If
+                Else
                 ' Addons (HNAM-extras del parent O Misc top-level raw=0) son siempre exentos de la
                 ' occlusion de headwear normal — sólo FaceGenHead (slot 32, casco full-face) los tapa.
                 ' Cubre los dos caminos por los que un addon llega al render:
@@ -1340,6 +1402,7 @@ Friend NotInheritable Class NpcMeshCollector
                             ' Type 9 HeadRear: nunca se ocluye por headwear (es base skull geometry).
                     End Select
                 End If
+                End If
                 If occluded Then
                     slotlessCandidate.IsOccludedByHeadwear = True
                 End If
@@ -1398,6 +1461,52 @@ Friend NotInheritable Class NpcMeshCollector
         End Try
 
         _candidateHairSlotMaskCache(meshKey) = result
+        Return result
+    End Function
+
+    ''' <summary>Slot-30-relative mask (bit i = biped slot 30+i) of every BSDismemberSkinInstance partition
+    ''' across all shapes of the candidate's mesh. Drives the Skyrim head-part occlusion rule: the engine's
+    ''' per-partition ApplyOcclusionToGeometry (0x1403C56B0) hides only the partition whose folded slot is
+    ''' covered, so we need the mesh's full partition slot set to know whether ANY partition survives the
+    ''' worn set. Each partition BodyPart is folded 1xx/2xx → base (v>=200 -> v-200 ; v>=100 -> v-100) and
+    ''' accepted only in [30,61]. In Skyrim meshes are BSTriShape/BSDynamicTriShape with a
+    ''' BSDismemberSkinInstance (not the FO4 BSSubIndexTriShape that CandidateHairSlotMask reads).
+    ''' 0 = no dismember on any shape (ambiguous with "no valid partitions" — both fall back to whole-node
+    ''' cull, exactly as the engine's SetAppCulled fallback does). If the mesh can't be read → 0.</summary>
+    Private Function CandidatePartitionSlotMask(candidate As MainForm.MeshCandidate) As UInteger
+        If candidate Is Nothing Then Return 0UI
+        Dim meshKey = NameUtils.NormalizeDictionaryKeyWithMeshesPrefix(candidate.DictKey)
+        If String.IsNullOrEmpty(meshKey) Then Return 0UI
+
+        Dim cached As UInteger
+        If _candidatePartitionSlotMaskCache.TryGetValue(meshKey, cached) Then Return cached
+
+        Dim result As UInteger = 0UI
+        Try
+            Dim bytes = FilesDictionary_class.GetBytes(meshKey)
+            If bytes IsNot Nothing AndAlso bytes.Length > 0 Then
+                Dim nif As New Nifcontent_Class_Manolo()
+                nif.Load_Manolo(bytes)
+                For Each shp In nif.GetShapes()
+                    Dim dism = TryCast(nif.GetBlock(Of NiSkinInstance)(shp.SkinInstanceRef), BSDismemberSkinInstance)
+                    If dism Is Nothing OrElse dism.Partitions Is Nothing Then Continue For
+                    For Each p In dism.Partitions
+                        Dim v = CInt(p.BodyPart)
+                        If v >= 200 Then
+                            v -= 200
+                        ElseIf v >= 100 Then
+                            v -= 100
+                        End If
+                        If v >= 30 AndAlso v <= 61 Then result = result Or (1UI << (v - 30))
+                    Next
+                Next
+            End If
+        Catch ex As Exception
+            ' Mesh unreadable / unknown blocks → 0 (fallback whole-node cull, matches engine SetAppCulled).
+            result = 0UI
+        End Try
+
+        _candidatePartitionSlotMaskCache(meshKey) = result
         Return result
     End Function
 
@@ -1866,6 +1975,9 @@ Friend NotInheritable Class NpcMeshCollector
                     End If
                     If Not String.IsNullOrEmpty(candidate.RaceMorphTriPath) Then
                         result.ShapeRaceMorphTriPaths(shape) = candidate.RaceMorphTriPath
+                    End If
+                    If Not String.IsNullOrEmpty(candidate.MeshMorphTriPath) Then
+                        result.ShapeMeshMorphTriPaths(shape) = candidate.MeshMorphTriPath
                     End If
                 End If
             Next

@@ -241,11 +241,60 @@ Module Program
             End If
             If bytes Is Nothing OrElse bytes.Length = 0 Then Console.WriteLine($"[posdump] sin bytes: {src}") : Return
             Dim nif As New Nifcontent_Class_Manolo() : nif.Load_Manolo(bytes)
+            ' --nodes: vuelca TODOS los NiNode (nombre + global transform) — para el esqueleto real.
+            Dim nodesc = outc & ".nodes.csv"
+            Try
+                Dim invn = System.Globalization.CultureInfo.InvariantCulture
+                Using nw = New IO.StreamWriter(nodesc, False)
+                    nw.WriteLine("node,tx,ty,tz,m11,m12,m13,m21,m22,m23,m31,m32,m33,scale")
+                    For Each blk In nif.Blocks
+                        Dim nn = TryCast(blk, NiflySharp.Blocks.NiNode)
+                        If nn Is Nothing OrElse nn.Name Is Nothing Then Continue For
+                        Dim nm2 = If(nn.Name.String, "") : If nm2 = "" Then Continue For
+                        Dim gt = Transform_Class.GetGlobalTransform(nn, nif)
+                        If gt Is Nothing Then Continue For
+                        Dim rr = gt.Rotation
+                        nw.WriteLine($"{nm2},{gt.Translation.X.ToString("R", invn)},{gt.Translation.Y.ToString("R", invn)},{gt.Translation.Z.ToString("R", invn)}," &
+                                     $"{rr.M11.ToString("R", invn)},{rr.M12.ToString("R", invn)},{rr.M13.ToString("R", invn)},{rr.M21.ToString("R", invn)},{rr.M22.ToString("R", invn)},{rr.M23.ToString("R", invn)}," &
+                                     $"{rr.M31.ToString("R", invn)},{rr.M32.ToString("R", invn)},{rr.M33.ToString("R", invn)},{gt.Scale.ToString("R", invn)}")
+                    Next
+                End Using
+            Catch : End Try
             Dim skinc = outc & ".skin.csv"
-            Using w = New IO.StreamWriter(outc, False), sw = New IO.StreamWriter(skinc, False)
+            Dim bonesc = outc & ".bones.csv"
+            Dim fmtT = Function(t As Transform_Class) As String
+                           Dim r = t.Rotation
+                           Return $"{t.Translation.X.ToString("R", invp)},{t.Translation.Y.ToString("R", invp)},{t.Translation.Z.ToString("R", invp)}," &
+                                  $"{r.M11.ToString("R", invp)},{r.M12.ToString("R", invp)},{r.M13.ToString("R", invp)}," &
+                                  $"{r.M21.ToString("R", invp)},{r.M22.ToString("R", invp)},{r.M23.ToString("R", invp)}," &
+                                  $"{r.M31.ToString("R", invp)},{r.M32.ToString("R", invp)},{r.M33.ToString("R", invp)},{t.Scale.ToString("R", invp)}"
+                       End Function
+            Dim trisc = outc & ".tris.csv"
+            Using w = New IO.StreamWriter(outc, False), sw = New IO.StreamWriter(skinc, False), bw = New IO.StreamWriter(bonesc, False), tw = New IO.StreamWriter(trisc, False)
                 w.WriteLine("shape,vidx,x,y,z")
                 sw.WriteLine("shape,vidx,bone,weight")
+                bw.WriteLine("shape,bone,kind,tx,ty,tz,m11,m12,m13,m21,m22,m23,m31,m32,m33,scale")
+                tw.WriteLine("shape,v1,v2,v3")
                 For Each shp In nif.NifShapes.ToList()
+                    Try
+                        Dim gt2 = ShapeGeometryFactory.[For](shp, nif).GetTriangles()
+                        If gt2 IsNot Nothing Then
+                            Dim snm = If(shp.Name?.String, "")
+                            For Each tri In gt2 : tw.WriteLine($"{snm},{tri.V1},{tri.V2},{tri.V3}") : Next
+                        End If
+                    Catch : End Try
+                    ' --- bones: bind (skin-to-bone) + node global transform por hueso ---
+                    Try
+                        Dim rs As New NifRenderableShape(nif, shp, 0)
+                        Dim bns = rs.ShapeBones.ToArray()
+                        Dim bts = rs.ShapeBoneTransforms.ToArray()
+                        For bi = 0 To bns.Length - 1
+                            Dim bnm = If(bns(bi)?.Name?.String, $"#{bi}")
+                            If bi < bts.Length AndAlso bts(bi) IsNot Nothing Then bw.WriteLine($"{If(shp.Name?.String, "")},{bnm},bind,{fmtT(bts(bi))}")
+                            Dim gw = Transform_Class.GetGlobalTransform(bns(bi), nif)
+                            If gw IsNot Nothing Then bw.WriteLine($"{If(shp.Name?.String, "")},{bnm},nodeworld,{fmtT(gw)}")
+                        Next
+                    Catch : End Try
                     Dim nm = If(shp.Name?.String, "")
                     Dim g = ShapeGeometryFactory.[For](shp, nif)
                     Dim vp = g.GetVertexPositions()

@@ -21,6 +21,8 @@ Public Class NpcMorphResolver
     Private ReadOnly _meshDictKeys As Dictionary(Of IRenderableShape, String)
     Private ReadOnly _shapeChargenTriPaths As Dictionary(Of IRenderableShape, String)
     Private ReadOnly _shapeRaceMorphTriPaths As Dictionary(Of IRenderableShape, String)
+    Private ReadOnly _shapeMeshMorphTriPaths As Dictionary(Of IRenderableShape, String)  ' HDPT NAM0=1 (SkinnyMorph source)
+    Private ReadOnly _raceKeywordEditorIds As List(Of String)   ' race KWDA EditorIDs → "<kw>Morph"@1.0 (race-agnostic)
     Private ReadOnly _morphValueDefs As List(Of RACE_MorphValueDef)      ' MSID -> MSM0/MSM1 from RACE
     Private ReadOnly _morphPresetDefs As List(Of RACE_MorphPresetDef)   ' MPPI -> MPPM from RACE Morph Groups
     ' Per-process (Shared) TRI caches: a given chargen/race .tri is parsed at most once for the
@@ -71,14 +73,18 @@ Public Class NpcMorphResolver
                    Optional meshDictKeys As Dictionary(Of IRenderableShape, String) = Nothing,
                    Optional shapeChargenTriPaths As Dictionary(Of IRenderableShape, String) = Nothing,
                    Optional shapeRaceMorphTriPaths As Dictionary(Of IRenderableShape, String) = Nothing,
-                   Optional raceEditorId As String = "")
+                   Optional raceEditorId As String = "",
+                   Optional shapeMeshMorphTriPaths As Dictionary(Of IRenderableShape, String) = Nothing,
+                   Optional raceKeywordEditorIds As List(Of String) = Nothing)
         _npcData = npcData
         _morphValueDefs = morphValueDefs
         _morphPresetDefs = morphPresetDefs
         _meshDictKeys = meshDictKeys
         _shapeChargenTriPaths = shapeChargenTriPaths
         _shapeRaceMorphTriPaths = shapeRaceMorphTriPaths
+        _shapeMeshMorphTriPaths = shapeMeshMorphTriPaths
         _raceEditorId = raceEditorId
+        _raceKeywordEditorIds = raceKeywordEditorIds
     End Sub
 
     Public Function ResolveMorphPlan(shape As IRenderableShape, geom As SkinnedGeometry) As MorphPlan Implements IMorphResolver.ResolveMorphPlan
@@ -128,7 +134,10 @@ Public Class NpcMorphResolver
         '           project_sse_nam9_morph_map. Same chargen .tri, same TriHead.GetMorph mechanism.
         If triHead IsNot Nothing Then
             ' Single per-game builder — the SAME one the offline bake calls, so render and bake never diverge.
-            plan.Channels.AddRange(BuildFaceMorphPlan(_npcData, triHead, _raceEditorId, _morphValueDefs, _morphPresetDefs).Channels)
+            ' Pass this shape's chargen tri (NAM0=2) so RaceMenu per-shape sculpt routes to it by Host.
+            Dim shapeChargen As String = Nothing
+            If _shapeChargenTriPaths IsNot Nothing Then _shapeChargenTriPaths.TryGetValue(shape, shapeChargen)
+            plan.Channels.AddRange(BuildFaceMorphPlan(_npcData, triHead, _raceEditorId, _morphValueDefs, _morphPresetDefs, _raceKeywordEditorIds, shapeChargen).Channels)
         End If
 
         ' Channel dedup-by-name with SUMMED weights now lives inside
@@ -195,11 +204,13 @@ Public Class NpcMorphResolver
     Public Shared Function BuildFaceMorphPlan(npcData As NPC_Data, triHead As TriHeadFile,
                                               raceEditorId As String,
                                               morphValueDefs As List(Of RACE_MorphValueDef),
-                                              morphPresetDefs As List(Of RACE_MorphPresetDef)) As MorphPlan
+                                              morphPresetDefs As List(Of RACE_MorphPresetDef),
+                                              Optional raceKeywordEditorIds As List(Of String) = Nothing,
+                                              Optional shapeChargenTriPath As String = "") As MorphPlan
         Dim plan As New MorphPlan()
         If npcData Is Nothing OrElse triHead Is Nothing Then Return plan
         If npcData.Game = Config_App.Game_Enum.Skyrim Then
-            plan.Channels.AddRange(BuildFaceMorphPlanFromNam9(npcData, triHead, raceEditorId).Channels)
+            plan.Channels.AddRange(BuildFaceMorphPlanFromNam9(npcData, triHead, raceEditorId, raceKeywordEditorIds, shapeChargenTriPath).Channels)
         ElseIf npcData.MorphValues IsNot Nothing AndAlso npcData.MorphValues.Count > 0 Then
             plan.Channels.AddRange(BuildFaceMorphPlanFromTriHead(npcData, morphValueDefs, morphPresetDefs, triHead).Channels)
         End If
@@ -332,7 +343,9 @@ Public Class NpcMorphResolver
     ''' RACE-authored. Mechanism mirrors the engine (= RaceMenu TRIFile::Apply): head += triMorph.deltas
     ''' * abs(sliderValue). Channels are deduped-by-name with summed weights, same as the FO4 path.</summary>
     Public Shared Function BuildFaceMorphPlanFromNam9(npcData As NPC_Data, triHead As TriHeadFile,
-                                                      Optional raceEditorId As String = "") As MorphPlan
+                                                      Optional raceEditorId As String = "",
+                                                      Optional raceKeywordEditorIds As List(Of String) = Nothing,
+                                                      Optional shapeChargenTriPath As String = "") As MorphPlan
         Dim plan As New MorphPlan()
         If npcData Is Nothing OrElse triHead Is Nothing Then Return plan
 
@@ -355,11 +368,21 @@ Public Class NpcMorphResolver
                 Dim morphName = If(v >= 0, _sseNam9Morphs(i).Pos, _sseNam9Morphs(i).Neg)
                 AddNam9Channel(plan, triHead, morphName, Math.Abs(v))
             Next
-            ' [18] VampireMorph — unidirectional; vanilla NPCs carry FLT_MAX = "not a vampire".
-            ' Only apply when it is a normal finite value.
+            ' [18] is the per-actor CHARGEN slider for the "VampireMorph" name in the fixed NAM9 engine table
+            ' (byte-verified index→name). It drives that morph when finite (the player's progressive vampirism);
+            ' vanilla pre-placed NPCs carry FLT_MAX = "not slider-driven". In that case the morph is driven by the
+            ' RACE instead, RACE-AGNOSTICALLY: for each of the race's KWDA keywords, apply the chargen morph named
+            ' "<keyword>Morph" at full weight. A race with the "Vampire" keyword thus gets "VampireMorph"; a race
+            ' whose keywords name no morph gets nothing (AddNam9Channel no-ops on GetMorph miss — every vanilla
+            ' non-vampire race). No vampire special-casing here: the rule is keyword→morph, driven purely by data.
+            ' Measured: reproduces the CK FaceGeom for pre-placed *Vampire NPCs across races; zero effect elsewhere.
             Dim vamp = BitConverter.ToSingle(nam9, 18 * 4)
             If Not Single.IsNaN(vamp) AndAlso Not Single.IsInfinity(vamp) AndAlso Math.Abs(vamp) >= 0.001F AndAlso Math.Abs(vamp) < 3.0E+38F Then
                 AddNam9Channel(plan, triHead, "VampireMorph", Math.Abs(vamp))
+            ElseIf raceKeywordEditorIds IsNot Nothing Then
+                For Each kw In raceKeywordEditorIds
+                    If Not String.IsNullOrEmpty(kw) Then AddNam9Channel(plan, triHead, kw & "Morph", 1.0F)
+                Next
             End If
         End If
 
@@ -393,12 +416,30 @@ Public Class NpcMorphResolver
             Next
         End If
 
-        ' 2c) RaceMenu (.jslot) per-vertex SCULPT — a direct delta channel (weight 1) on the HEAD verts, applied
-        ' AFTER the slider/type morphs (RaceMenu sculpt is the final free-form adjustment). Deltas are already
-        ' world-space (the loader divided by sculptDivisor). Kept as its own channel so it isn't name-deduped.
-        If npcData.SseSculptHead IsNot Nothing AndAlso npcData.SseSculptHead.Count > 0 Then
-            Dim ds As New List(Of MorphData)(npcData.SseSculptHead.Count)
-            For Each sv In npcData.SseSculptHead
+        ' 2c) RaceMenu (.jslot) per-vertex SCULPT — a direct delta channel (weight 1), applied AFTER the slider/
+        ' type morphs (RaceMenu sculpt is the final free-form adjustment). Deltas are already world-space (the
+        ' loader divided by sculptDivisor). A preset sculpts head + brows + eyes + mouth as SEPARATE blocks; route
+        ' the block whose Host == THIS shape's chargen tri (NAM0=2) to this shape — that's the geometry identity
+        ' skee serializes, so brows/eyes/mouth get their own sculpt instead of only the head (the old code applied
+        ' Sculpt(0) to every shape → brows/eyes/mouth ignored the preset AND the head block bled onto them by index).
+        ' Fall back to the head-only SseSculptHead when the overlay predates per-shape parsing (editor-authored).
+        Dim sculptVerts As List(Of NPC_SculptVert) = Nothing
+        If npcData.SseSculptParts IsNot Nothing AndAlso npcData.SseSculptParts.Count > 0 Then
+            If Not String.IsNullOrEmpty(shapeChargenTriPath) Then
+                Dim wantKey = MeshPathHelpers.NormalizeMeshKey(shapeChargenTriPath)
+                For Each p In npcData.SseSculptParts
+                    If p IsNot Nothing AndAlso Not String.IsNullOrEmpty(p.Host) AndAlso
+                       String.Equals(MeshPathHelpers.NormalizeMeshKey(p.Host), wantKey, StringComparison.OrdinalIgnoreCase) Then
+                        sculptVerts = p.Verts : Exit For
+                    End If
+                Next
+            End If
+        ElseIf npcData.SseSculptHead IsNot Nothing AndAlso npcData.SseSculptHead.Count > 0 Then
+            sculptVerts = npcData.SseSculptHead
+        End If
+        If sculptVerts IsNot Nothing AndAlso sculptVerts.Count > 0 Then
+            Dim ds As New List(Of MorphData)(sculptVerts.Count)
+            For Each sv In sculptVerts
                 ds.Add(New MorphData With {.index = CUInt(sv.Index), .PosDiff = New Vector3(sv.Dx, sv.Dy, sv.Dz)})
             Next
             plan.Channels.Add(New MorphChannel("RaceMenuSculpt", 1.0F, ds))
@@ -591,11 +632,39 @@ Public Class NpcMorphResolver
         ' engine-faithfully instead of a hardcoded table. SSE-only; race/chargen names already loaded win the
         ' collision (merge adds only absent names → only SkinnyMorph + unused expression morphs join). Per-shape
         ' and AGNOSTIC: each shape merges its OWN mesh tri, so a modded head/hair with its own SkinnyMorph works.
-        If _npcData IsNot Nothing AndAlso _npcData.Game = Config_App.Game_Enum.Skyrim AndAlso Not String.IsNullOrEmpty(meshKey) Then
-            Dim meshTriPath = Path.ChangeExtension(meshKey, ".tri")
+        If _npcData IsNot Nothing AndAlso _npcData.Game = Config_App.Game_Enum.Skyrim Then
+            ' AUTHORITATIVE and ONLY mesh-tri path = HDPT NAM0=1 (ShapeMeshMorphTriPaths). The engine/CK apply the
+            ' mesh weight morph IFF the record declares it here. The NIF and its weight tri do NOT always share a
+            ' basename (Hair08.nif → Elf\Male\ElfHair08.tri), so the old ChangeExtension(meshKey) guess both MISSED
+            ' the real tri (elf/nord hair rendered un-weighted) AND wrongly applied a same-named tri the CK ignores
+            ' (HairMaleDarkElf02 has no NAM0=1 yet MaleDarkElfHair02.tri exists → over-morphed). Using only NAM0=1
+            ' makes the render match the CK bake for both cases (render == bake). See FaceGenBuilder for the twin.
+            Dim meshTriPath As String = Nothing
+            If _shapeMeshMorphTriPaths IsNot Nothing Then _shapeMeshMorphTriPaths.TryGetValue(shape, meshTriPath)
             If Not String.IsNullOrEmpty(meshTriPath) Then
                 Dim meshTriHead = TryLoadTriHead(MeshPathHelpers.NormalizeMeshKey(meshTriPath))
                 MergeChargenIntoRaceTriHead(triHead, meshTriHead)
+            End If
+
+            ' [SSE-TRI] Per-shape trace of the weight-morph inputs: which .tri each SSE head-part shape
+            ' resolved (HDPT NAM0=0/1/2 vs the mesh-name fallback), whether the merged TriHead ended up
+            ' carrying "SkinnyMorph", and the frac the plan will apply (1 - NAM7/100). A hair shape logging
+            ' hasSkinnyMorph=False or skinnyFrac=0 means it renders un-weighted while the head is weighted —
+            ' the head-part occlusion is NOT involved in that.
+            If Logger.Enabled Then
+                Dim shName = If(shape.ShapeName, "?")
+                Dim meshKeyD = If(meshKey, "")
+                Dim raceD = If(raceMorphPath, "")
+                Dim chargenD = If(chargenPath, "")
+                Dim meshTriD = If(meshTriPath, "")
+                Dim triHeadD = triHead
+                Dim vertsD = If(triHeadD Is Nothing, 0UI, triHeadD.NumVertices)
+                Dim morphsD = If(triHeadD Is Nothing, 0, triHeadD.Morphs.Count)
+                Dim hasSkinnyD = triHeadD IsNot Nothing AndAlso triHeadD.GetMorph("SkinnyMorph") IsNot Nothing
+                Dim nam7D = _npcData.Nam7Raw
+                Dim weightD As Single = If(nam7D IsNot Nothing AndAlso nam7D.Length >= 4, BitConverter.ToSingle(nam7D, 0), 100.0F)
+                Dim fracD As Single = 1.0F - Math.Max(0.0F, Math.Min(1.0F, weightD / 100.0F))
+                Logger.LogLazy(Function() $"[SSE-TRI] shape='{shName}' mesh='{meshKeyD}' raceTri='{raceD}' chargenTri='{chargenD}' meshTri(NAM0=1)='{meshTriD}' triHead={(triHeadD IsNot Nothing)} triVerts={vertsD} morphs={morphsD} hasSkinnyMorph={hasSkinnyD} nam7Weight={weightD} skinnyFrac={fracD}")
             End If
         End If
     End Sub

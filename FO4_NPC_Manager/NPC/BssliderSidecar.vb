@@ -42,7 +42,7 @@ Public Module BssliderSidecar
     ''' fields (RaceMenu co-save face data); v7 added the SSE-only <c>sseTintTextures</c> field (RaceMenu per-layer
     ''' custom tint mask paths). All additive — the loader tolerates their absence, so older files still load and
     ''' older readers ignore the fields.</summary>
-    Public Const SchemaVersion As Integer = 7
+    Public Const SchemaVersion As Integer = 8
 
     Public Class SidecarFile
         Public Version As Integer = SchemaVersion
@@ -88,6 +88,11 @@ Public Module BssliderSidecar
         ''' NPC record (RaceMenu co-save) → persisted here so the sculpt survives a reload. Serialized under
         ''' <c>sseSculpt</c> (schema v6).</summary>
         Public SseSculptHead As List(Of NPC_SculptVert) = Nothing
+        ''' <summary>SSE-ONLY RaceMenu per-SHAPE sculpt blocks (head + brows + eyes + mouth), each tagged with its
+        ''' Host chargen tri (HDPT NAM0=2). The full-fidelity superset of <see cref="SseSculptHead"/> (head-only):
+        ''' render/bake route each block to its shape by Host so all four parts get their sculpt. Serialized under
+        ''' <c>sseSculptParts</c> (schema v8). Absent = fall back to the head-only sseSculpt.</summary>
+        Public SseSculptParts As List(Of NPC_SculptPart) = Nothing
         ''' <summary>SSE-ONLY RaceMenu per-layer CUSTOM tint mask texture override (tint layer index → texture path).
         ''' RaceMenu co-save data with no vanilla NPC record home (TINI/TINC/TINV/TIAS carry no path) → persisted here
         ''' so a custom warpaint/tattoo mask survives a reload. Serialized under <c>sseTintTextures</c> (schema v7).</summary>
@@ -113,6 +118,7 @@ Public Module BssliderSidecar
                 If SseSkinOverrides IsNot Nothing AndAlso SseSkinOverrides.Count > 0 Then Return True
                 If SseCustomMorphs IsNot Nothing AndAlso SseCustomMorphs.Count > 0 Then Return True
                 If SseSculptHead IsNot Nothing AndAlso SseSculptHead.Count > 0 Then Return True
+                If SseSculptParts IsNot Nothing AndAlso SseSculptParts.Count > 0 Then Return True
                 If SseTintTexOverride IsNot Nothing AndAlso SseTintTexOverride.Count > 0 Then Return True
                 Return False
             End Get
@@ -318,6 +324,33 @@ Public Module BssliderSidecar
             Next
             If list.Count > 0 Then entry.SseSculptHead = list
         End If
+        ' sseSculptParts — SSE-only, optional (schema v8). Per-shape sculpt: array of { host, verts:[{index,dx,dy,dz}] }.
+        ' Full-fidelity superset of sseSculpt (head-only). Tolerant of absence (older sidecars only have sseSculpt).
+        If el.TryGetProperty("sseSculptParts", child) AndAlso child.ValueKind = JsonValueKind.Array Then
+            Dim parts As New List(Of NPC_SculptPart)
+            For Each pe In child.EnumerateArray()
+                If pe.ValueKind <> JsonValueKind.Object Then Continue For
+                Dim host As String = ""
+                Dim hostEl As JsonElement
+                If pe.TryGetProperty("host", hostEl) AndAlso hostEl.ValueKind = JsonValueKind.String Then host = hostEl.GetString()
+                Dim verts As New List(Of NPC_SculptVert)
+                Dim vertsEl As JsonElement
+                If pe.TryGetProperty("verts", vertsEl) AndAlso vertsEl.ValueKind = JsonValueKind.Array Then
+                    For Each sv In vertsEl.EnumerateArray()
+                        If sv.ValueKind <> JsonValueKind.Object Then Continue For
+                        Dim ix As JsonElement
+                        If Not sv.TryGetProperty("index", ix) OrElse ix.ValueKind <> JsonValueKind.Number Then Continue For
+                        Dim dx As Single = 0, dy As Single = 0, dz As Single = 0, tmp As JsonElement
+                        If sv.TryGetProperty("dx", tmp) AndAlso tmp.ValueKind = JsonValueKind.Number Then dx = tmp.GetSingle()
+                        If sv.TryGetProperty("dy", tmp) AndAlso tmp.ValueKind = JsonValueKind.Number Then dy = tmp.GetSingle()
+                        If sv.TryGetProperty("dz", tmp) AndAlso tmp.ValueKind = JsonValueKind.Number Then dz = tmp.GetSingle()
+                        verts.Add(New NPC_SculptVert With {.Index = CUInt(ix.GetInt64() And &HFFFFFFFFL), .Dx = dx, .Dy = dy, .Dz = dz})
+                    Next
+                End If
+                If verts.Count > 0 Then parts.Add(New NPC_SculptPart With {.Host = host, .Verts = verts})
+            Next
+            If parts.Count > 0 Then entry.SseSculptParts = parts
+        End If
         ' sseTintTextures — SSE-only, optional (schema v7). Array of { index, texture } (custom tint mask paths).
         If el.TryGetProperty("sseTintTextures", child) AndAlso child.ValueKind = JsonValueKind.Array Then
             Dim map As New Dictionary(Of Integer, String)
@@ -504,6 +537,26 @@ Public Module BssliderSidecar
                             w.WriteStartObject()
                             w.WriteNumber("index", CLng(sv.Index))
                             w.WriteNumber("dx", sv.Dx) : w.WriteNumber("dy", sv.Dy) : w.WriteNumber("dz", sv.Dz)
+                            w.WriteEndObject()
+                        Next
+                        w.WriteEndArray()
+                    End If
+                    ' sseSculptParts — SSE-only, emitted when non-empty (schema v8). Per-shape: { host, verts:[{index,dx,dy,dz}] }.
+                    If kv.Value.SseSculptParts IsNot Nothing AndAlso kv.Value.SseSculptParts.Count > 0 Then
+                        w.WriteStartArray("sseSculptParts")
+                        For Each pt In kv.Value.SseSculptParts
+                            If pt Is Nothing OrElse pt.Verts Is Nothing OrElse pt.Verts.Count = 0 Then Continue For
+                            w.WriteStartObject()
+                            w.WriteString("host", If(pt.Host, ""))
+                            w.WriteStartArray("verts")
+                            For Each sv In pt.Verts
+                                If sv Is Nothing Then Continue For
+                                w.WriteStartObject()
+                                w.WriteNumber("index", CLng(sv.Index))
+                                w.WriteNumber("dx", sv.Dx) : w.WriteNumber("dy", sv.Dy) : w.WriteNumber("dz", sv.Dz)
+                                w.WriteEndObject()
+                            Next
+                            w.WriteEndArray()
                             w.WriteEndObject()
                         Next
                         w.WriteEndArray()

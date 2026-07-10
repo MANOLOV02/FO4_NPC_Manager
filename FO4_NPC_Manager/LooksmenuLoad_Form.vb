@@ -208,12 +208,16 @@ Public Class LooksmenuLoad_Form
     Private Function IsCompatibleWithTargetRace(preset As LooksmenuLoader.LooksmenuPreset) As Boolean
         Dim cached As Boolean
         If _compatibilityCache.TryGetValue(preset, cached) Then Return cached
-        ' On SSE, ignore the preset's race-specific base head (Face) part in the gate — RaceMenu
-        ' presets carry the author's race base head and skee re-sculpts over the NPC's own. FO4
-        ' keeps the strict gate (ignoreFaceBaseHeadPart:=False). See IsPresetCompatibleWithRace.
+        ' The base head (Face, PartType=1) gates like every other part — no exemption. skee applies the
+        ' SAME race check to every head part, the face included (PresetInterface.cpp ApplyPresetData:165-175:
+        ' gender flag, then `if (part->validRaces) if (part->validRaces->Visit(ValidRaceFinder(race)))
+        ' ChangeHeadPart(part)`), so a preset carrying FemaleHeadBreton simply never applies it to a Nord.
+        ' The old ignoreFaceBaseHeadPart:=_isSse exemption let that cross-race head through the browser and
+        ' into HeadPartFormIDs, where the render's own race filter dropped it — leaving the NPC with NO head
+        ' at all (measured: 18 of 25 vanilla-adjacent presets carry a foreign base head).
+        ' Unticking "Show only race-compatible" still lists every preset — the filter is the user's choice.
         Dim result = HeadPartResolver.IsPresetCompatibleWithRace(
-            preset, _raceFormID, _gender = 1, _pluginManager, _race, _flstCache, _raceDefaults,
-            ignoreFaceBaseHeadPart:=_isSse)
+            preset, _raceFormID, _gender = 1, _pluginManager, _race, _flstCache, _raceDefaults)
         _compatibilityCache(preset) = result
         Return result
     End Function

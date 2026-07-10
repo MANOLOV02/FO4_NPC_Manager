@@ -250,6 +250,7 @@ Public Class EditFace_Form
         If _isSSE Then
             PopulateSseMorphTab()
             PopulateSseTintTab()
+            PopulateSseSculptTab()  ' read-only list of RaceMenu per-shape sculpt blocks (head/brows/eyes/mouth)
             BuildSseRaceMenuTab()   ' RaceMenu EXTENDED sliders (per-race .slider catalog) — separate from vanilla NAM9/NAMA
             BuildSseFaceOverlaysTab()   ' RaceMenu "Face [Ovl]" face-paint overlays
             If TabsFace.TabPages.Contains(TabPageTints) Then TabsFace.TabPages.Remove(TabPageTints)
@@ -537,6 +538,47 @@ Public Class EditFace_Form
     ''' <summary>SSE: fill the Designer's "Morphs (SSE)" tab panel — 18 NAM9 sliders + 4 NAMA type combos +
     ''' Load/Save .jslot, seeded from the NPC's NAM9/NAMA. The tab itself lives in the Designer (shown/hidden
     ''' by game); this only populates PanelSseMorphs.</summary>
+    ''' <summary>Read-only view of the NPC's RaceMenu per-shape sculpt blocks (head + brows + eyes + mouth). Each
+    ''' block is routed to its shape at render/bake by Host (the chargen tri). This tab exists so the sculpt data is
+    ''' VISIBLE (that it's there and which shapes it covers) even though the app has no 3D sculpt brush yet — you
+    ''' can't edit here, only confirm presence. Falls back to the head-only SseSculptHead for legacy overlays.</summary>
+    Private Sub PopulateSseSculptTab()
+        If ListSseSculpt Is Nothing Then Return
+        ListSseSculpt.BeginUpdate()
+        ListSseSculpt.Columns.Clear()
+        ListSseSculpt.Items.Clear()
+        ListSseSculpt.Columns.Add("Shape (host chargen tri)", 360)
+        ListSseSculpt.Columns.Add("Sculpted vertices", 140)
+        ListSseSculpt.Columns.Add("Source", 120)
+        Dim p = Preset
+        Dim parts As List(Of NPC_SculptPart) = If(p IsNot Nothing, p.SseSculptParts, Nothing)
+        If parts IsNot Nothing AndAlso parts.Count > 0 Then
+            For Each blk In parts
+                If blk Is Nothing Then Continue For
+                Dim host = If(blk.Host, "")
+                Dim shapeName = If(String.IsNullOrEmpty(host), "(no host)", IO.Path.GetFileName(host))
+                Dim it As New ListViewItem(shapeName)
+                it.SubItems.Add(If(blk.Verts IsNot Nothing, blk.Verts.Count, 0).ToString())
+                it.SubItems.Add("per-shape")
+                it.ToolTipText = host
+                ListSseSculpt.Items.Add(it)
+            Next
+        ElseIf p IsNot Nothing AndAlso p.SseSculptHead IsNot Nothing AndAlso p.SseSculptHead.Count > 0 Then
+            Dim it As New ListViewItem("Head (legacy, head-only)")
+            it.SubItems.Add(p.SseSculptHead.Count.ToString())
+            it.SubItems.Add("head-only")
+            ListSseSculpt.Items.Add(it)
+        Else
+            Dim it As New ListViewItem("(no RaceMenu sculpt)")
+            it.SubItems.Add("0")
+            it.SubItems.Add("—")
+            it.ForeColor = SystemColors.GrayText
+            ListSseSculpt.Items.Add(it)
+        End If
+        ListSseSculpt.ShowItemToolTips = True
+        ListSseSculpt.EndUpdate()
+    End Sub
+
     Private Sub PopulateSseMorphTab()
         ' Flat vertical TableLayoutPanel (proven layout) with a bold CK-category HEADER row before each group's
         ' NAM9 sliders + NAMA "type" combos: Nose/Jaw/Cheeks/Eyes/Brow/Mouth/Chin. Matches the Creation Kit
@@ -939,6 +981,7 @@ Public Class EditFace_Form
             _suspendEvents = False
             RefreshHeadPartsList()         ' reflect the loaded head parts (hair / eyes / brows)
             PopulateSseTintTab()           ' reflect the loaded tints + custom tint textures
+            PopulateSseSculptTab()         ' reflect the loaded per-shape sculpt blocks
             RefreshSseRaceMenuControls()   ' reflect the loaded custom morphs onto the RaceMenu tab
             RefreshFaceOvList(-1)          ' reflect the loaded face overlays onto the Face Overlays tab
             ApplySseMorphOverlay()

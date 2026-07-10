@@ -129,7 +129,9 @@ Friend NotInheritable Class NpcMorphPoseResolver
             meshDictKeys:=renderData.MeshDictKeys,
             shapeChargenTriPaths:=renderData.ShapeChargenTriPaths,
             shapeRaceMorphTriPaths:=renderData.ShapeRaceMorphTriPaths,
-            raceEditorId:=RecordParsers.ResolveMorphRaceEditorId(race, _ctx.PluginManager))
+            shapeMeshMorphTriPaths:=renderData.ShapeMeshMorphTriPaths,
+            raceEditorId:=RecordParsers.ResolveMorphRaceEditorId(race, _ctx.PluginManager),
+            raceKeywordEditorIds:=RecordParsers.GetRaceKeywordEditorIds(race, _ctx.PluginManager))
     End Function
 
     ''' <summary>Returns the effective BodySlide slider dict for an NPC: the overlay preset's

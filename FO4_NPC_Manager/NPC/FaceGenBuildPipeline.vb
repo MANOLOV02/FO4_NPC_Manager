@@ -393,7 +393,9 @@ Public Module FaceGenBuildPipeline
         ' every *Vampire→base race), not the actor's raw race — see RecordParsers.ResolveMorphRaceEditorId.
         Dim plan = NpcMorphResolver.BuildFaceMorphPlan(state.NpcData, triHead,
                                                        RecordParsers.ResolveMorphRaceEditorId(state.Race, state.PluginManager),
-                                                       state.RaceMorphValueDefs, state.RaceMorphPresetDefs)
+                                                       state.RaceMorphValueDefs, state.RaceMorphPresetDefs,
+                                                       raceKeywordEditorIds:=RecordParsers.GetRaceKeywordEditorIds(state.Race, state.PluginManager),
+                                                       shapeChargenTriPath:=chargenTriPath)
         If plan Is Nothing OrElse Not plan.HasMorphs Then Return
 
         Dim geom = ShapeGeometryFactory.[For](shape, nif)
