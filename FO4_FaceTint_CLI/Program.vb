@@ -36,6 +36,10 @@ Module Program
         Public CompareCk As Boolean = False      ' --compareck: tras --buildfacegen, diff del NIF baked REAL (on-disk) + facetint DDS vs la ref del CK (BSA/loose)
         Public SseCompareBatch As Boolean = False ' --ssecomparebatch [N]: barrido 100% — bakea+compara TODOS los NPC_ vanilla con FaceGeom, agrega diffs por categoría
         Public SseCompareBatchLimit As Integer = 0
+        Public VertexBatch As Boolean = False    ' --vertexbatch [N]: game-aware (usa --game); bakea TODOS los vanilla con FaceGeom y reporta max vertex diff + outliers (posición)
+        Public VertexBatchLimit As Integer = 0
+        Public VertexBatchOut As String = ""     ' --vbout <csv>: CSV resumible del batch (append+flush por NPC; sentinel .cur para saltear el NPC que crashea el proceso)
+        Public PosDump As String = ""            ' --posdump <nifPath|key>|<outcsv>: vuelca posiciones por-vértice de cada shape (para analizar deformación CK vs fuente)
         Public MeshShaders As String = ""        ' --meshshaders <meshkey>: dump SSPF1/2 + type de cada shape del mesh source
         Public BuildFaceGen As Boolean = False   ' --buildfacegen: bake completo (NIF + 3 DDS) headless via FaceGenBuilder (path CPU, _2 sandbox)
         Public VanillaOnly As Boolean = False    ' --vanillaonly: con --buildfacegen, SALTEA NPCs cuyo record GANADOR no es vanilla/DLC (overridden por un mod) — para comparar fiel vs CK del BA2
@@ -150,7 +154,7 @@ Module Program
 
         ' --- 3. Lista de trabajo (esp, edid) ---
         Dim work = BuildWorkList(opt)
-        If work.Count = 0 AndAlso Not opt.TtedScan AndAlso Not opt.ScanDiff AndAlso Not opt.RaceAnim AndAlso Not opt.MountValidate AndAlso opt.FindHkx = "" AndAlso opt.ChunkCompare = "" AndAlso opt.DumpBehavior = "" AndAlso Not opt.HkxCoverage AndAlso opt.KwType = "" AndAlso Not opt.StateMap AndAlso Not opt.ClipResolve AndAlso opt.HkxBone = "" AndAlso opt.ClipBase = "" AndAlso opt.FindFile = "" AndAlso opt.NifDump = "" AndAlso opt.AnimSyncCheck = "" AndAlso opt.BlendHintScan = "" AndAlso Not opt.CatProfile AndAlso Not opt.Provenance AndAlso opt.DumpRef = "" AndAlso opt.EstimateSclp = "" AndAlso opt.SclpDiag = "" AndAlso opt.SclpBatch = "" AndAlso opt.BindDiff = "" AndAlso opt.Ba2Extract = "" AndAlso Not opt.SseCompareBatch AndAlso opt.MeshShaders = "" Then
+        If work.Count = 0 AndAlso Not opt.TtedScan AndAlso Not opt.ScanDiff AndAlso Not opt.RaceAnim AndAlso Not opt.MountValidate AndAlso opt.FindHkx = "" AndAlso opt.ChunkCompare = "" AndAlso opt.DumpBehavior = "" AndAlso Not opt.HkxCoverage AndAlso opt.KwType = "" AndAlso Not opt.StateMap AndAlso Not opt.ClipResolve AndAlso opt.HkxBone = "" AndAlso opt.ClipBase = "" AndAlso opt.FindFile = "" AndAlso opt.NifDump = "" AndAlso opt.AnimSyncCheck = "" AndAlso opt.BlendHintScan = "" AndAlso Not opt.CatProfile AndAlso Not opt.Provenance AndAlso opt.DumpRef = "" AndAlso opt.EstimateSclp = "" AndAlso opt.SclpDiag = "" AndAlso opt.SclpBatch = "" AndAlso opt.BindDiff = "" AndAlso opt.Ba2Extract = "" AndAlso Not opt.SseCompareBatch AndAlso Not opt.VertexBatch AndAlso opt.PosDump = "" AndAlso opt.MeshShaders = "" Then
             Console.Error.WriteLine("No hay NPCs para procesar (revisa --edid / --list).") : Environment.ExitCode = 1 : Return
         End If
 
@@ -223,11 +227,73 @@ Module Program
             Return
         End If
 
+        ' --- POSDUMP: vuelca posiciones por-vértice de cada shape de un NIF (file o key BSA) a CSV ---
+        If opt.PosDump <> "" Then
+            Dim invp = System.Globalization.CultureInfo.InvariantCulture
+            Dim parts = opt.PosDump.Split({"|"c}, 2)
+            Dim src = parts(0).Trim()
+            Dim outc = If(parts.Length > 1, parts(1).Trim(), "posdump.csv")
+            Dim bytes As Byte()
+            If IO.File.Exists(src) Then
+                bytes = IO.File.ReadAllBytes(src)
+            Else
+                bytes = FilesDictionary_class.GetBytes(src.Replace("/"c, "\"c).ToLowerInvariant())
+            End If
+            If bytes Is Nothing OrElse bytes.Length = 0 Then Console.WriteLine($"[posdump] sin bytes: {src}") : Return
+            Dim nif As New Nifcontent_Class_Manolo() : nif.Load_Manolo(bytes)
+            Dim skinc = outc & ".skin.csv"
+            Using w = New IO.StreamWriter(outc, False), sw = New IO.StreamWriter(skinc, False)
+                w.WriteLine("shape,vidx,x,y,z")
+                sw.WriteLine("shape,vidx,bone,weight")
+                For Each shp In nif.NifShapes.ToList()
+                    Dim nm = If(shp.Name?.String, "")
+                    Dim g = ShapeGeometryFactory.[For](shp, nif)
+                    Dim vp = g.GetVertexPositions()
+                    If vp Is Nothing Then Continue For
+                    For i = 0 To vp.Count - 1
+                        w.WriteLine($"{nm},{i},{vp(i).X.ToString("R", invp)},{vp(i).Y.ToString("R", invp)},{vp(i).Z.ToString("R", invp)}")
+                    Next
+                    ' --- skin: nombre de hueso + peso por vértice (slots no-cero) ---
+                    Try
+                        Dim sk = g.GetSkinning()
+                        If sk.BoneWeights IsNot Nothing AndAlso sk.WeightsPerVertex > 0 AndAlso sk.BoneRefIndices IsNot Nothing Then
+                            Dim wpv = sk.WeightsPerVertex
+                            Dim names(sk.BoneRefIndices.Length - 1) As String
+                            For p = 0 To sk.BoneRefIndices.Length - 1
+                                Dim bn = TryCast(nif.Blocks(sk.BoneRefIndices(p)), NiflySharp.Blocks.NiNode)
+                                names(p) = If(bn?.Name?.String, $"#{sk.BoneRefIndices(p)}")
+                            Next
+                            For i = 0 To vp.Count - 1
+                                For k = 0 To wpv - 1
+                                    Dim idx = i * wpv + k
+                                    Dim wt = CSng(sk.BoneWeights(idx))
+                                    If wt <= 0.0001F Then Continue For
+                                    Dim pal = sk.BoneIndices(idx)
+                                    Dim bnm = If(pal < names.Length, names(pal), $"pal{pal}")
+                                    sw.WriteLine($"{nm},{i},{bnm},{wt.ToString("R", invp)}")
+                                Next
+                            Next
+                        End If
+                    Catch : End Try
+                Next
+            End Using
+            Console.WriteLine($"[posdump] {nif.NifShapes.Count()} shapes -> {outc} (+ {skinc})")
+            Return
+        End If
+
         ' --- BATCH 100%: bakea+compara TODOS los NPC_ vanilla con FaceGeom vs CK, agrega diffs por categoría ---
         If opt.SseCompareBatch Then
             FO4_NPC_Manager.FaceGenBuilder.WriteGPUSandboxOutput = False
             Logger.Enabled = True
             RunSseCompareBatch(pm, opt.SseCompareBatchLimit)
+            Return
+        End If
+
+        ' --- VERTEXBATCH: game-aware; bakea todos los vanilla con FaceGeom y reporta max vertex diff + outliers (posición) ---
+        If opt.VertexBatch Then
+            FO4_NPC_Manager.FaceGenBuilder.WriteGPUSandboxOutput = False
+            Logger.Enabled = True
+            RunVertexOutlierBatch(pm, opt.VertexBatchLimit, opt.VertexBatchOut)
             Return
         End If
 
@@ -593,7 +659,10 @@ Module Program
             If Not bethMasters.Contains(origin) Then Continue For
             Dim fgL = PluginManager.ToFaceGenLocalFormID(kv.Key)
             Dim ckKey = ($"meshes\actors\character\facegendata\facegeom\{origin}\{fgL:X8}.nif").ToLowerInvariant()
-            If FilesDictionary_class.GetBytes(ckKey) IsNot Nothing Then cands.Add(kv.Key)
+            Dim ckb = FilesDictionary_class.GetBytes(ckKey)
+            ' Length>0: GetBytes devuelve un array VACÍO (no Nothing) para claves sin archivo real — p.ej. NPCs
+            ' templated/genéricos y el jugador que NO tienen FaceGeom horneado por el CK. Esos no son comparables.
+            If ckb IsNot Nothing AndAlso ckb.Length > 0 Then cands.Add(kv.Key)
         Next
         Console.WriteLine($"[batch] {cands.Count} NPCs vanilla SSE con FaceGeom CK")
         If limit > 0 AndAlso cands.Count > limit Then cands = cands.Take(limit).ToList()
@@ -649,6 +718,192 @@ Module Program
             Console.WriteLine($"        ej: {catExample(kv.Key)}")
         Next
         Console.WriteLine($"======== FIN BATCH ({catNpcs.Count} categorías distintas) ========")
+    End Sub
+
+    ''' <summary>BATCH game-aware (--vertexbatch): bakea TODOS los NPC_ vanilla (IsOfficialPlugin = vanilla+DLC+cc,
+    ''' sin mods) con FaceGeom horneado por el CK y mide, por NPC, la mayor diferencia de POSICIÓN de vértice
+    ''' (maxΔ + RMS) sobre la peor shape emparejada por nombre. Reporta el máximo global, la distribución por
+    ''' umbral y el ranking de outliers. Sirve para AMBOS juegos (FO4 y SSE, según --game) — solo geometría de
+    ''' posición, agnóstico de facetint/DDS. La ref CK sale del FilesDictionary (BA2/loose).</summary>
+    Private Sub RunVertexOutlierBatch(pm As PluginManager, limit As Integer, csvPath As String)
+        Dim inv = System.Globalization.CultureInfo.InvariantCulture
+        Dim gameTag = If(Config_App.Current.Game = Config_App.Game_Enum.Skyrim, "SSE", "FO4")
+        If String.IsNullOrEmpty(csvPath) Then csvPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, $"vbatch_{gameTag}.csv")
+        Dim curPath = csvPath & ".cur"
+
+        Dim cands As New List(Of UInteger)()
+        For Each kv As KeyValuePair(Of UInteger, PluginRecord) In pm.AllRecords
+            Dim r = kv.Value
+            If r Is Nothing OrElse r.Header.Signature <> "NPC_" Then Continue For
+            Dim origin = pm.GetOriginatingPluginName(kv.Key)
+            If Not PluginManager.IsOfficialPlugin(origin) Then Continue For
+            Dim fgL = PluginManager.ToFaceGenLocalFormID(kv.Key)
+            Dim ckKey = ($"meshes\actors\character\facegendata\facegeom\{origin}\{fgL:X8}.nif").ToLowerInvariant()
+            Dim ckb = FilesDictionary_class.GetBytes(ckKey)
+            ' Length>0: GetBytes devuelve un array VACÍO (no Nothing) para claves sin archivo real — p.ej. NPCs
+            ' templated/genéricos y el jugador que NO tienen FaceGeom horneado por el CK. Esos no son comparables.
+            If ckb IsNot Nothing AndAlso ckb.Length > 0 Then cands.Add(kv.Key)
+        Next
+        cands = cands.OrderBy(Function(x) x).ToList()   ' orden estable para resume determinista
+        If limit > 0 AndAlso cands.Count > limit Then cands = cands.Take(limit).ToList()
+        Console.WriteLine($"[vbatch {gameTag}] {cands.Count} NPCs vanilla con FaceGeom CK  csv={csvPath}")
+
+        ' ----- resume: leer CSV existente + marcar el NPC que crasheó el proceso anterior (sentinel .cur) -----
+        Dim done As New HashSet(Of UInteger)()
+        If File.Exists(csvPath) Then
+            For Each ln In File.ReadAllLines(csvPath)
+                If ln.StartsWith("fid", StringComparison.OrdinalIgnoreCase) OrElse ln.Trim() = "" Then Continue For
+                Dim f = ln.Split(","c)(0).Trim()
+                Dim v As UInteger
+                If UInteger.TryParse(f, Globalization.NumberStyles.HexNumber, inv, v) Then done.Add(v)
+            Next
+        End If
+        If File.Exists(curPath) Then
+            Dim crashedHex = File.ReadAllText(curPath).Trim()
+            Dim cv As UInteger
+            If UInteger.TryParse(crashedHex, Globalization.NumberStyles.HexNumber, inv, cv) AndAlso Not done.Contains(cv) Then
+                File.AppendAllText(csvPath, $"{cv:X8},,,,0,0,CRASH" & Environment.NewLine)
+                done.Add(cv)
+                Console.WriteLine($"[vbatch {gameTag}] NPC 0x{cv:X8} crasheó el proceso anterior -> marcado CRASH, salteado")
+            End If
+            Try : File.Delete(curPath) : Catch : End Try
+        End If
+        If Not File.Exists(csvPath) Then File.WriteAllText(csvPath, "fid,origin,shape,maxD,rms,verts,status" & Environment.NewLine)
+
+        Dim remaining = cands.Where(Function(f) Not done.Contains(f)).ToList()
+        Console.WriteLine($"[vbatch {gameTag}] ya hechos={done.Count}  faltan={remaining.Count}")
+
+        Dim presets As New Dictionary(Of UInteger, FO4_NPC_Manager.LooksmenuLoader.LooksmenuPreset)
+        Dim savedOut = Console.Out
+        Dim processed = 0
+        For Each fid In remaining
+            processed += 1
+            ' sentinel: escribir el fid ANTES de procesarlo. Si el proceso muere (crash nativo no atrapable),
+            ' el .cur sobrevive y el próximo arranque lo marca CRASH y lo saltea.
+            Try : File.WriteAllText(curPath, $"{fid:X8}") : Catch : End Try
+            Dim line As String = Nothing
+            Try
+                Console.SetOut(IO.TextWriter.Null)   ' silenciar el ruido del bake
+                ' Resolver FRESCO por NPC: reusar un NpcMaterialResolver/NpcRenderContext entre bakes acumula
+                ' estado y CORROMPE la geometría de NPCs posteriores (medido: outlier 0x1995C daba 3.46 en batch
+                ' compartido vs 0.033 con resolver fresco). El path --list ya crea uno por NPC — lo replicamos.
+                Dim ctx As New FO4_NPC_Manager.NpcRenderContext(pm)
+                Dim mres As New FO4_NPC_Manager.NpcMaterialResolver(ctx, Function(raw As NPC_Data, fid2 As UInteger) raw)
+                Dim res = FO4_NPC_Manager.FaceGenBuilder.BuildCharGen(fid, pm, presets, Nothing, AddressOf mres.ApplyShapeMaterialOverrides, willBePacked:=False)
+                Console.SetOut(savedOut)
+                Dim origin = pm.GetOriginatingPluginName(fid)
+                If res Is Nothing OrElse Not res.Success OrElse String.IsNullOrEmpty(res.OutputPath) OrElse Not File.Exists(res.OutputPath) Then
+                    line = $"{fid:X8},{origin},,,0,0,SKIP"   ' sin FaceGen (criatura/robot) o bake falló
+                Else
+                    Dim fgL = PluginManager.ToFaceGenLocalFormID(fid)
+                    Dim ckKey = ($"meshes\actors\character\facegendata\facegeom\{origin}\{fgL:X8}.nif").ToLowerInvariant()
+                    Dim ckBytes = FilesDictionary_class.GetBytes(ckKey)
+                    If ckBytes Is Nothing OrElse ckBytes.Length = 0 Then
+                        line = $"{fid:X8},{origin},,,0,0,NOCK"   ' NPC sin FaceGeom vanilla (templated/genérico/jugador)
+                    Else
+                        ' --- CK load (referencia vanilla) en su propio try para localizar el EndOfStream ---
+                        Dim ckNif As Nifcontent_Class_Manolo = Nothing
+                        Try
+                            ckNif = New Nifcontent_Class_Manolo() : ckNif.Load_Manolo(ckBytes)
+                        Catch exck As Exception
+                            line = $"{fid:X8},{origin},CKLEN{ckBytes.Length},,0,0,EXC_CK" : GoTo persist
+                        End Try
+                        ' --- baked load (nuestro output on-disk) en su propio try ---
+                        Dim myNif As Nifcontent_Class_Manolo = Nothing
+                        Dim bakedBytes = File.ReadAllBytes(res.OutputPath)
+                        Try
+                            myNif = New Nifcontent_Class_Manolo() : myNif.Load_Manolo(bakedBytes)
+                        Catch exbk As Exception
+                            line = $"{fid:X8},{origin},BAKEDLEN{bakedBytes.Length},,0,0,EXC_BAKED" : GoTo persist
+                        End Try
+                        Dim myShapes = myNif.NifShapes.ToList()
+                        Dim wMax As Double = 0, wRms As Double = 0, wVerts As Integer = 0, wShape As String = ""
+                        For Each cs In ckNif.NifShapes.ToList()
+                            Dim nm = If(cs.Name?.String, "")
+                            Dim ms = myShapes.FirstOrDefault(Function(s) String.Equals(If(s.Name?.String, ""), nm, StringComparison.OrdinalIgnoreCase))
+                            If ms Is Nothing Then Continue For
+                            Dim cg = ShapeGeometryFactory.[For](cs, ckNif), mg = ShapeGeometryFactory.[For](ms, myNif)
+                            Dim cvp = cg.GetVertexPositions(), mvp = mg.GetVertexPositions()
+                            If cvp Is Nothing OrElse mvp Is Nothing OrElse cvp.Count = 0 OrElse cvp.Count <> mvp.Count Then Continue For
+                            Dim pr = MaxRmsVec(cvp, mvp)
+                            If pr.Max > wMax Then wMax = pr.Max : wRms = pr.Rms : wShape = nm : wVerts = cvp.Count
+                        Next
+                        If wShape = "" Then
+                            line = $"{fid:X8},{origin},,,0,0,NOMATCH"
+                        Else
+                            line = $"{fid:X8},{origin},{wShape},{wMax.ToString("F5", inv)},{wRms.ToString("F5", inv)},{wVerts},OK"
+                        End If
+                    End If
+                End If
+            Catch ex As Exception
+                Console.SetOut(savedOut)
+                line = $"{fid:X8},{pm.GetOriginatingPluginName(fid)},{ex.GetType().Name},,0,0,EXC"
+            End Try
+persist:
+            ' persistir el resultado (append+flush) y limpiar el sentinel
+            Try : File.AppendAllText(csvPath, line & Environment.NewLine) : Catch : End Try
+            Try : File.Delete(curPath) : Catch : End Try
+            If processed Mod 100 = 0 Then Console.WriteLine($"[vbatch {gameTag}] {processed}/{remaining.Count} (total done={done.Count + processed}/{cands.Count})")
+        Next
+        Console.SetOut(savedOut)
+
+        ' ----- reporte (lee el CSV COMPLETO — incluye lo hecho en corridas anteriores) -----
+        ReportVertexBatchCsv(csvPath, gameTag, cands.Count)
+        Console.WriteLine("VBATCH_COMPLETE")
+    End Sub
+
+    ''' <summary>Lee el CSV del vertexbatch y emite el reporte agregado: máximo global de posición, distribución
+    ''' por umbral, top-40 outliers y peor maxΔ por shape (nombre). Solo cuenta filas status=OK.</summary>
+    Private Sub ReportVertexBatchCsv(csvPath As String, gameTag As String, totalCands As Integer)
+        Dim inv = System.Globalization.CultureInfo.InvariantCulture
+        Dim rows As New List(Of (Fid As UInteger, Origin As String, Shape As String, MaxD As Double, Rms As Double, Verts As Integer))()
+        Dim nSkip = 0, nExc = 0, nCrash = 0, nOther = 0, nRows = 0
+        For Each ln In File.ReadAllLines(csvPath)
+            If ln.StartsWith("fid", StringComparison.OrdinalIgnoreCase) OrElse ln.Trim() = "" Then Continue For
+            nRows += 1
+            Dim p = ln.Split(","c)
+            If p.Length < 7 Then Continue For
+            Dim status = p(6).Trim()
+            Select Case status
+                Case "OK"
+                    Dim fid As UInteger, mx As Double, rm As Double, vt As Integer
+                    UInteger.TryParse(p(0), Globalization.NumberStyles.HexNumber, inv, fid)
+                    Double.TryParse(p(3), Globalization.NumberStyles.Float, inv, mx)
+                    Double.TryParse(p(4), Globalization.NumberStyles.Float, inv, rm)
+                    Integer.TryParse(p(5), vt)
+                    rows.Add((fid, p(1), p(2), mx, rm, vt))
+                Case "SKIP", "NOCK", "NOMATCH" : nSkip += 1
+                Case "EXC" : nExc += 1
+                Case "CRASH" : nCrash += 1
+                Case Else : nOther += 1
+            End Select
+        Next
+
+        Console.WriteLine($"======== VERTEX BATCH {gameTag}: {rows.Count} NPCs comparados (OK)  |  skip/no-facegen={nSkip} exc={nExc} crash={nCrash} otros={nOther}  |  candidatos={totalCands} filas-csv={nRows} ========")
+        If rows.Count = 0 Then Console.WriteLine("  (sin filas OK comparables)") : Return
+        Dim sorted = rows.OrderByDescending(Function(x) x.MaxD).ToList()
+        Dim g = sorted(0)
+        Console.WriteLine($"  MAX vertex diff GLOBAL: maxΔ={g.MaxD.ToString("F4", inv)}  (NPC 0x{g.Fid:X8} [{g.Origin}] shape '{g.Shape}' RMS={g.Rms.ToString("F4", inv)} verts={g.Verts})")
+        Console.WriteLine($"  media(maxΔ por NPC)={rows.Average(Function(x) x.MaxD).ToString("F4", inv)}  mediana={sorted(sorted.Count \ 2).MaxD.ToString("F4", inv)}")
+        For Each t In {0.01, 0.05, 0.1, 0.25, 0.5, 1.0, 2.0}
+            Dim c = rows.Where(Function(x) x.MaxD > t).Count()
+            Console.WriteLine($"    NPCs con maxΔ > {t.ToString("F2", inv)}: {c} ({(100.0 * c / rows.Count).ToString("F1", inv)}%)")
+        Next
+        Console.WriteLine($"  ---- TOP 40 OUTLIERS (por maxΔ de posición) ----")
+        For Each x In sorted.Take(40)
+            Console.WriteLine($"    0x{x.Fid:X8} [{x.Origin}] maxΔ={x.MaxD.ToString("F4", inv)} RMS={x.Rms.ToString("F4", inv)}  shape '{x.Shape}' ({x.Verts}v)")
+        Next
+        ' peor maxΔ por shape-name (usando la peor-shape de cada NPC)
+        Dim shapeWorst As New Dictionary(Of String, (MaxD As Double, Fid As UInteger))(StringComparer.OrdinalIgnoreCase)
+        For Each x In rows
+            Dim prev As (MaxD As Double, Fid As UInteger) = Nothing
+            If Not shapeWorst.TryGetValue(x.Shape, prev) OrElse x.MaxD > prev.MaxD Then shapeWorst(x.Shape) = (x.MaxD, x.Fid)
+        Next
+        Console.WriteLine($"  ---- Peor maxΔ por SHAPE (nombre, sobre la peor-shape de cada NPC) ----")
+        For Each kv In shapeWorst.OrderByDescending(Function(k) k.Value.MaxD).Take(25)
+            Console.WriteLine($"    '{kv.Key}': maxΔ={kv.Value.MaxD.ToString("F4", inv)} (0x{kv.Value.Fid:X8})")
+        Next
+        Console.WriteLine($"======== FIN VERTEX BATCH {gameTag} ========")
     End Sub
 
     ''' <summary>Compara TODAS las props de un shape emparejado (posiciones, index, normals, tangents,
@@ -6716,6 +6971,11 @@ Module Program
                 Case "--ssecomparebatch"
                     a.SseCompareBatch = True
                     If i + 1 < args.Length AndAlso Integer.TryParse(args(i + 1), a.SseCompareBatchLimit) Then i += 2 Else i += 1
+                Case "--vertexbatch"
+                    a.VertexBatch = True
+                    If i + 1 < args.Length AndAlso Integer.TryParse(args(i + 1), a.VertexBatchLimit) Then i += 2 Else i += 1
+                Case "--vbout" : a.VertexBatchOut = v : i += 2
+                Case "--posdump" : a.PosDump = v : i += 2
                 Case "--meshshaders" : a.MeshShaders = v : i += 2
                 Case "--buildfacegen" : a.BuildFaceGen = True : i += 1
                 Case "--vanillaonly" : a.VanillaOnly = True : i += 1
@@ -6754,7 +7014,7 @@ Module Program
                     Console.Error.WriteLine($"Arg desconocido: {args(i)}") : PrintUsage() : Return Nothing
             End Select
         End While
-        If a.ListPath = "" AndAlso (a.Esp = "" OrElse a.Edid = "") AndAlso Not a.TtedScan AndAlso Not a.ScanDiff AndAlso Not a.RaceAnim AndAlso Not a.MountValidate AndAlso a.FindHkx = "" AndAlso a.ChunkCompare = "" AndAlso a.DumpBehavior = "" AndAlso Not a.HkxCoverage AndAlso a.KwType = "" AndAlso Not a.StateMap AndAlso Not a.ClipResolve AndAlso a.HkxBone = "" AndAlso a.ClipBase = "" AndAlso a.FindFile = "" AndAlso a.NifDump = "" AndAlso a.AnimSyncCheck = "" AndAlso a.BlendHintScan = "" AndAlso Not a.CatProfile AndAlso a.DumpRef = "" AndAlso a.EstimateSclp = "" AndAlso a.SclpDiag = "" AndAlso a.SclpBatch = "" AndAlso a.BindDiff = "" AndAlso a.Ba2Extract = "" AndAlso Not a.SseCompareBatch AndAlso a.MeshShaders = "" Then
+        If a.ListPath = "" AndAlso (a.Esp = "" OrElse a.Edid = "") AndAlso Not a.TtedScan AndAlso Not a.ScanDiff AndAlso Not a.RaceAnim AndAlso Not a.MountValidate AndAlso a.FindHkx = "" AndAlso a.ChunkCompare = "" AndAlso a.DumpBehavior = "" AndAlso Not a.HkxCoverage AndAlso a.KwType = "" AndAlso Not a.StateMap AndAlso Not a.ClipResolve AndAlso a.HkxBone = "" AndAlso a.ClipBase = "" AndAlso a.FindFile = "" AndAlso a.NifDump = "" AndAlso a.AnimSyncCheck = "" AndAlso a.BlendHintScan = "" AndAlso Not a.CatProfile AndAlso a.DumpRef = "" AndAlso a.EstimateSclp = "" AndAlso a.SclpDiag = "" AndAlso a.SclpBatch = "" AndAlso a.BindDiff = "" AndAlso a.Ba2Extract = "" AndAlso Not a.SseCompareBatch AndAlso Not a.VertexBatch AndAlso a.PosDump = "" AndAlso a.MeshShaders = "" Then
             Console.Error.WriteLine("Faltan --esp y --edid (o usa --list).") : PrintUsage() : Return Nothing
         End If
         Return a

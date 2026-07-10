@@ -1329,6 +1329,11 @@ Public Class EditFace_Form
                     p.HeadPartFormIDs.Add(mergedByType(t))
                 Next
                 p.HeadPartFormIDs.AddRange(freestandingMisc)
+                ' This list is a COMPLETE superset of the raw PNAM (extras included — see the
+                ' "We do NOT filter by IsExtra here" note above). Mark it so Save treats it as
+                ' authoritative and does NOT union the raw record back in — otherwise a freestanding
+                ' Misc the user later removes (an orphan hairline) gets resurrected from raw.
+                p.HeadPartFormIDsIncludeRawExtras = True
             End If
             ' Editor takes ownership: from now on the user's edits (incl. removing all parts) are
             ' authoritative. Without HasHeadPartFormIDs=True, a wipe would look like "preset never
@@ -1744,34 +1749,17 @@ Public Class EditFace_Form
     ''' includes the replacement parent on the Add path, so a hairline shared by the old and new hair
     ''' survives as a live HNAM child). Non-Misc extras, and Misc the user added as independent addons
     ''' (mouth shadow, AO/wet — not in the removed parent's HNAM), are left untouched.</summary>
+    ''' <summary>Thin wrapper over the shared <see cref="HeadPartResolver.CascadeRemoveOrphanedHnamMisc"/>
+    ''' (single source of truth, also used by NpcOverrideSaver's preset-load orphan suppression) resolving
+    ''' HDPTs through this form's <c>_allHeadPartsByFid</c> cache. Behaviour is unchanged from the former
+    ''' private implementation.</summary>
     Private Sub CascadeRemoveOrphanedHnamMisc(headParts As List(Of UInteger), removedParentFid As UInteger)
-        Dim removedHdpt As HDPT_Data = Nothing
-        If Not _allHeadPartsByFid.TryGetValue(removedParentFid, removedHdpt) Then Return
-        If removedHdpt.PartType = HdptTypeMisc Then Return
-        If removedHdpt.ExtraPartFormIDs Is Nothing OrElse removedHdpt.ExtraPartFormIDs.Count = 0 Then Return
-
-        Dim extras As New HashSet(Of UInteger)(removedHdpt.ExtraPartFormIDs)
-        ' If another preset entry also declares one of these extras in its HNAM, it's still a live
-        ' HNAM child of that parent — keep it. (Rare in vanilla but cheap to cover.)
-        Dim claimedByOtherParent As New HashSet(Of UInteger)
-        For Each otherFid In headParts
-            If otherFid = removedParentFid Then Continue For
-            Dim otherHdpt As HDPT_Data = Nothing
-            If Not _allHeadPartsByFid.TryGetValue(otherFid, otherHdpt) Then Continue For
-            If otherHdpt.ExtraPartFormIDs Is Nothing Then Continue For
-            For Each ex In otherHdpt.ExtraPartFormIDs
-                If extras.Contains(ex) Then claimedByOtherParent.Add(ex)
-            Next
-        Next
-        For i = headParts.Count - 1 To 0 Step -1
-            Dim fid = headParts(i)
-            If Not extras.Contains(fid) Then Continue For
-            If claimedByOtherParent.Contains(fid) Then Continue For
-            Dim extraHdpt As HDPT_Data = Nothing
-            If Not _allHeadPartsByFid.TryGetValue(fid, extraHdpt) Then Continue For
-            If extraHdpt.PartType <> HdptTypeMisc Then Continue For
-            headParts.RemoveAt(i)
-        Next
+        HeadPartResolver.CascadeRemoveOrphanedHnamMisc(headParts, removedParentFid,
+            Function(fid As UInteger) As HDPT_Data
+                Dim hd As HDPT_Data = Nothing
+                _allHeadPartsByFid.TryGetValue(fid, hd)
+                Return hd
+            End Function)
     End Sub
 
     ' =====================================================================
@@ -2083,8 +2071,21 @@ Public Class EditFace_Form
                 Dim slot = DescribeTintSlot(tl)
                 Dim layerName = DescribeTintLayer(tl)
                 Dim optForTag = _race?.FindTintOption(tl.Index, _isFemale)
+                ' Missing tint (2026-07-09): an NPC-authored layer whose Index doesn't resolve against
+                ' this race (e.g. a LooksMenu custom tint whose mod isn't installed) is SHOWN but tagged
+                ' "Missing". It stays inert: preserved verbatim in p.FaceTintLayers (round-trips on Save),
+                ' the compositor skips it (FindTintOption Nothing) so it never paints, and UpdateTintDetail
+                ' keeps its editors disabled. Race-default rows always resolve, so this only tags orphan
+                ' NPC-authored layers.
+                Dim isMissing As Boolean = Not entry.Merged.IsRaceDefault AndAlso optForTag Is Nothing
+                If isMissing Then
+                    Dim idxLocal = tl.Index
+                    Logger.LogLazy(Function() $"[LMLoad] Face editor shows tint layer Index {idxLocal} as MISSING (no option in race for this gender) — preserved verbatim, not applied.")
+                    grp = "Missing"
+                End If
                 Dim isCustomLm As Boolean = optForTag IsNot Nothing AndAlso optForTag.IsCustomLm
                 If isCustomLm Then layerName &= "  [LM]"
+                If isMissing Then layerName &= " (MISSING — not applied)"
                 If entry.Merged.IsRaceDefault Then layerName &= " (RACE)"
                 If filter.Length > 0 _
                    AndAlso grp.IndexOf(filter, StringComparison.OrdinalIgnoreCase) < 0 _
@@ -2102,7 +2103,9 @@ Public Class EditFace_Form
                     .IsRaceDefault = entry.Merged.IsRaceDefault,
                     .VirtualLayer = If(entry.Merged.IsRaceDefault, tl, Nothing)
                 }
-                If entry.Merged.IsRaceDefault Then
+                If isMissing Then
+                    row.ForeColor = Color.FromArgb(180, 60, 40)   ' missing/orphan tint accent (muted red)
+                ElseIf entry.Merged.IsRaceDefault Then
                     row.ForeColor = SystemColors.GrayText
                 ElseIf isCustomLm Then
                     row.ForeColor = Color.FromArgb(40, 90, 200)   ' LM custom tint accent
@@ -2129,7 +2132,7 @@ Public Class EditFace_Form
 
     Private Function DescribeTintLayer(tl As NPC_FaceTintLayerData) As String
         Dim opt = _race?.FindTintOption(tl.Index, _isFemale)
-        If opt Is Nothing Then Return "(unknown option)"
+        If opt Is Nothing Then Return $"(missing tint #{tl.Index})"
         Return If(String.IsNullOrEmpty(opt.Name), $"option {opt.Index}", opt.Name)
     End Function
 
@@ -2261,7 +2264,10 @@ Public Class EditFace_Form
             ' TextureSet and Mask entries: leave swatch blank (no visual preview here).
             PanelTintColorSwatch.BackColor = If(isPalette, Color.FromArgb(255, tl.Color.R, tl.Color.G, tl.Color.B), SystemColors.Control)
 
-            TrackBarTintPercent.Enabled = True
+            ' A missing tint (opt Is Nothing, not a race default) is read-only: it can't be
+            ' composited so there's nothing meaningful to edit. It stays in p.FaceTintLayers
+            ' verbatim regardless. Palette/RGB are already gated off by isPalette above.
+            TrackBarTintPercent.Enabled = (opt IsNot Nothing)
             TrackBarTintPercent.Value = tl.Value
         Finally
             _suspendEvents = False

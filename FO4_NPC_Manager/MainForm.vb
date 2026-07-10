@@ -342,6 +342,12 @@ Public Class MainForm
     Friend Class MeshCandidate
         Public DictKey As String = ""
         Public SlotMask As UInteger
+        ''' <summary>The ARMA's OWN biped-slot footprint (EffectiveArmaSlotMask), WITHOUT the owning ARMO's
+        ''' head-occlusion gate bits that <see cref="SlotMask"/> also carries. The SSE skin-ARMA BOD2-ownership
+        ''' de-dup keys on THIS, so a Feet(37) skin candidate isn't credited slot 30 just because its ARMO
+        ''' (SkinNaked) declares head-occlusion bits — otherwise childfeet's EyesChild (partition 30) survives the
+        ''' drop. 0 for non-ARMA candidates (heads/chunks/attachments).</summary>
+        Public ArmaOwnSlotMask As UInteger
         Public Priority As Integer
         Public Kind As MeshCandidateKind
         Public SourceFormID As UInteger
@@ -2956,8 +2962,21 @@ Public Class MainForm
     ''' LVLI-terminal paths of <see cref="GetArmoItemCandidates"/> so both compute the slot identically.</summary>
     Private Function ComputeArmoEffectiveSlotMask(armo As ARMO_Data, npcRaceFID As UInteger, isFemale As Boolean) As (Mask As UInteger, Valid As Boolean)
         If armo Is Nothing Then Return (0UI, False)
-        Dim slotMask As UInteger = 0UI
+        ' UNIFIED game-aware slot source (2026-07-09, user directive). The slot FOOTPRINT is a record
+        ' property (BOD2 of the ARMAs, or the ARMO's own BOD2) and must NEVER read as (none) just because
+        ' the race/gender gate fails — that was the bug where the render saw slot 0x2802 (per-ARMA
+        ' EffectiveArmaSlotMask) but the outfit editor showed NONE for the SAME item. We compute two things
+        ' from ONE walk:
+        '   • recordSlot = union of EVERY addon's EffectiveArmaSlotMask (+ the ARMO's headwear bits). The
+        '     item's true slot footprint, independent of race/gender — this drives display and, when the
+        '     race-valid set is empty, the conflict mask, so the item always occupies its real slots.
+        '   • raceSlot   = the same union but only over addons that match this race AND carry a gender mesh
+        '     (what the render actually collects). Preferred when non-empty so the resolver sees exactly the
+        '     worn footprint. `valid` = whether any such addon exists (drives the editor's "shows on this NPC").
+        Dim recordSlot As UInteger = 0UI
+        Dim raceSlot As UInteger = 0UI
         Dim valid As Boolean = False
+        Dim headwearBits As UInteger = armo.SlotMask And BipedSlots.HeadwearMaskForGame()
         For Each addon In armo.ArmorAddons
             Dim arma As ARMA_Data
             Try
@@ -2966,21 +2985,19 @@ Public Class MainForm
                 Continue For
             End Try
             If arma Is Nothing Then Continue For
+            Dim armaSlot As UInteger = EffectiveArmaSlotMask(arma, armo) Or headwearBits
+            recordSlot = recordSlot Or armaSlot
             If Not ArmorAddonMatchesRace(arma, npcRaceFID, _ctx.GetEffectiveArmorRaces(npcRaceFID)) Then Continue For
             Dim genderMesh = If(isFemale, arma.FemaleMeshPath, arma.MaleMeshPath)
             If genderMesh = "" Then genderMesh = If(arma.MaleMeshPath <> "", arma.MaleMeshPath, arma.FemaleMeshPath)
             If genderMesh <> "" Then
                 valid = True
-                ' Mirror the render's per-candidate occupancy (NpcMeshCollector): per-ARMA mask plus the
-                ' owning ARMO's HEAD-region bits (headwear-gated), so the Create-tab slot-conflict
-                ' marking matches what the render resolves for head-occluding headwear. GAME-AWARE:
-                ' HeadwearMaskForGame() (= HEADWEAR_MASK under FO4, byte-identical; SSE excludes slot 32=Body)
-                ' — matches NpcMeshCollector.vb:361 exactly. Antes usaba el const FO4 → en SSE marcaba
-                ' slot 32 (Body) como headwear, divergiendo del render.
-                slotMask = slotMask Or EffectiveArmaSlotMask(arma, armo) Or (armo.SlotMask And BipedSlots.HeadwearMaskForGame())
+                raceSlot = raceSlot Or armaSlot
             End If
         Next
-        If slotMask = 0UI Then slotMask = armo.SlotMask
+        ' Prefer the race-valid footprint (what the render collects); else the full record footprint; else
+        ' the ARMO's own BOD2. Never (none) when the record actually declares any biped slot.
+        Dim slotMask As UInteger = If(raceSlot <> 0UI, raceSlot, If(recordSlot <> 0UI, recordSlot, armo.SlotMask))
         Return (slotMask, valid)
     End Function
 
@@ -5155,6 +5172,8 @@ Public Class MainForm
         ' dinámicamente del SkeletonDictionary (case-insensitive match contra "pipboy"). Sin
         ' hardcoding: razas distintas (Ghoul, Child, Synth) pueden traer otro nombre o ninguno.
         _mountingResolver.ApplyPipboySyntheticSkin(renderData, inst)
+        ' SSE: rigid biped items (shield slot 39, etc.) anchored to their Prn-named skeleton node.
+        _mountingResolver.ApplyPrnRigidAttach(renderData, inst)
 
         Dim basePose = _morphPoseResolver.BuildMergedNpcPose(state, renderData, boneMorphsEnabled, bodyWeightEnabled,
                                           inst, Nothing)  ' Nothing = no sculpt → base pose
@@ -7740,6 +7759,14 @@ Public Class MainForm
                 raceForTintNorm = _ctx.ParseRaceCached(raceRecForTintNorm)
             End If
             NormalizePresetTintTemplateColorIds(toApply, raceForTintNorm, npc.IsFemale)
+
+            ' Record which raw Misc (hairlines) this preset orphans by REPLACING a main-type parent
+            ' (e.g. a hair swap): compute it HERE, at the apply point, so Save drops them the same way
+            ' Edit Face does — the decision lives where the swap happens, not lazily at bake. No-op
+            ' (empty set) when no parent was replaced, so lashes/AO/wet on untouched parents are safe.
+            toApply.SuppressedRawHeadPartFormIDs = HeadPartResolver.ComputeReplacedParentOrphanMisc(
+                npc.HeadPartFormIDs, toApply.HeadPartFormIDs, ResolveHdptForOrphanCascade())
+
             _appliedPresets(npcFormID) = toApply
         End If
         Dim previewVersion = Interlocked.Increment(_previewRequestVersion)
@@ -7760,6 +7787,18 @@ Public Class MainForm
         Dim c = LooksmenuLoader.ClonePreset(p)
         If c IsNot Nothing Then c.BodyMorphSliders.Clear()
         Return c
+    End Function
+
+    ''' <summary>FormID → parsed HDPT resolver (cached via <c>_ctx.ParseHdptCached</c>) for the
+    ''' head-part orphan-cascade helpers in <see cref="HeadPartResolver"/>. Returns Nothing for
+    ''' non-HDPT or unresolved FormIDs.</summary>
+    Private Function ResolveHdptForOrphanCascade() As Func(Of UInteger, HDPT_Data)
+        Return Function(fid As UInteger) As HDPT_Data
+                   If fid = 0UI Then Return Nothing
+                   Dim r = _pluginManager.GetRecord(fid)
+                   If r IsNot Nothing AndAlso r.Header.Signature = "HDPT" Then Return _ctx.ParseHdptCached(r)
+                   Return Nothing
+               End Function
     End Function
 
     ''' <summary>True if any shape of the currently rendered NPC carries BODYTRI extra-data on
@@ -9531,6 +9570,13 @@ Public Class MainForm
             p.HasOverlays = True
         End If
 
+        ' ================================================================================
+        ' This section is DUPLICATED with the sibling paste builder BuildFilteredPasteSse.
+        ' ⚠ SYNC OBLIGATION: before changing anything below, READ AND ANALYZE the other builder
+        '   and apply the equivalent change there. Some fields are shared verbatim and some
+        '   differ per game — decide per field, game-aware, and never let the two drift silently.
+        ' ================================================================================
+
         ' --- Skin override (NPC.WNAM) ---
         If options.SkinOverride Then
             p.SkinFormIDOverride = source.SkinFormIDOverride
@@ -9569,6 +9615,11 @@ Public Class MainForm
             p.HeadPartFormIDs.AddRange(targetRaw.HeadPartFormIDs)
         End If
         p.HasHeadPartFormIDs = True
+        ' Pasting the source's face parts can REPLACE the target's hair (etc.): record the target's raw
+        ' Misc (hairlines) thereby orphaned so Save drops them the way Edit Face does — decided HERE, at
+        ' the paste. Empty when parts were preserved (Else branch) or nothing was replaced → lashes safe.
+        p.SuppressedRawHeadPartFormIDs = HeadPartResolver.ComputeReplacedParentOrphanMisc(
+            targetRaw.HeadPartFormIDs, p.HeadPartFormIDs, ResolveHdptForOrphanCascade())
 
         ' --- Hair color (HCLF) ---
         If options.HairColor Then
@@ -9789,7 +9840,12 @@ Public Class MainForm
             p.SseSculptHead = CloneSseSculptHead(tOverlay.SseSculptHead)
         End If
 
-        ' ===== Shared record fields — identical handling to the FO4 BuildFilteredPaste path. =====
+        ' ================================================================================
+        ' This section is DUPLICATED with the sibling paste builder BuildFilteredPaste (FO4).
+        ' ⚠ SYNC OBLIGATION: before changing anything below, READ AND ANALYZE the other builder
+        '   and apply the equivalent change there. Some fields are shared verbatim and some
+        '   differ per game — decide per field, game-aware, and never let the two drift silently.
+        ' ================================================================================
 
         ' --- Skin override (NPC.WNAM) ---
         If options.SkinOverride Then
@@ -9814,6 +9870,11 @@ Public Class MainForm
             p.HeadPartFormIDs.AddRange(targetRaw.HeadPartFormIDs)
         End If
         p.HasHeadPartFormIDs = True
+        ' Pasting the source's face parts can REPLACE the target's hair (etc.): record the target's raw
+        ' Misc (hairlines) thereby orphaned so Save drops them the way Edit Face does — decided HERE, at
+        ' the paste. Empty when parts were preserved (Else branch) or nothing was replaced → lashes safe.
+        p.SuppressedRawHeadPartFormIDs = HeadPartResolver.ComputeReplacedParentOrphanMisc(
+            targetRaw.HeadPartFormIDs, p.HeadPartFormIDs, ResolveHdptForOrphanCascade())
 
         ' --- Face texture (RaceMenu head FTST override) — travels with Face parts (both are face identity that
         ' RaceMenu ApplyPreset sets together). Copy the source's override when pasting parts and it has one; else

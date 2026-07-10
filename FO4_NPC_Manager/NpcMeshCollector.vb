@@ -570,6 +570,7 @@ Friend NotInheritable Class NpcMeshCollector
             candidates.Add(New MainForm.MeshCandidate With {
                 .DictKey = armaDictKey,
                 .SlotMask = effSlotMask Or (armo.SlotMask And headOcclGate),
+                .ArmaOwnSlotMask = effSlotMask,
                 .Priority = If(state.IsFemale, arma.FemalePriority, arma.MalePriority),
                 .Kind = kind,
                 .SourceFormID = armoFormID,
@@ -1451,6 +1452,13 @@ Friend NotInheritable Class NpcMeshCollector
         ' slot 60 es un slot modular genérico (xEdit '60 - Unnamed'), no un Pipboy → no forzar ArmorOver.
         If (Config_App.Current Is Nothing OrElse Config_App.Current.Game <> Config_App.Game_Enum.Skyrim) _
            AndAlso (slot And BipedSlots.SlotBitPipboy) <> 0UI AndAlso candidate.Kind = MainForm.MeshCandidateKind.Outfit Then Return MainForm.ShapeRenderCategory.ArmorOver
+        ' Shield (SSE slot 39 = bit 9 = 0x200) — accesorio rígido del antebrazo izq (Prn='SHIELD'),
+        ' anclado por ApplyPrnRigidAttach. Debe respetar el toggle "Render armor" IGUAL que el Pipboy:
+        ' lo agrupamos ArmorOver (no declara bits [A], por eso explícito). SSE-only: en FO4 slot 39 es
+        ' '[U] R Leg', otra cosa → no forzar (gate Skyrim). Usuario 2026-07-09: "cablea el shield al
+        ' toggle show armor como el pipboy".
+        If Config_App.Current IsNot Nothing AndAlso Config_App.Current.Game = Config_App.Game_Enum.Skyrim _
+           AndAlso (slot And &H200UI) <> 0UI AndAlso candidate.Kind = MainForm.MeshCandidateKind.Outfit Then Return MainForm.ShapeRenderCategory.ArmorOver
         ' Resto (accessories 16+ raros, shapes sin slot, etc.).
         Return MainForm.ShapeRenderCategory.Other
     End Function
@@ -1559,6 +1567,80 @@ Friend NotInheritable Class NpcMeshCollector
 
             Dim shapes = NifRenderableShape.FromNif(nif)
             Dim logEnabled = Logger.Enabled
+
+            ' ── SSE skin-ARMA BOD2-ownership de-dup (2026-07-09) ─────────────────────────────────────────────
+            ' RULE (record-faithful, NOT an engine replica): a naked-skin ARMA renders only the shapes whose
+            ' BSDismember partition falls within the slot(s) its OWN BOD2 declares. A shape whose partitions are
+            ' ALL outside this ARMA's BOD2 is redundant asset-reuse — it is provided by the dedicated ARMA for
+            ' that slot (or by the FaceGen head) — and is dropped.
+            '
+            ' WHY: a handful of vanilla SSE skin meshes are all-in-one bundles. childfeet.nif (ARMA
+            ' 'NakedFeetChild' 0x0006C5FA, BOD2=Feet(37)) carries 6 shapes on partitions {37,32,33,30,1,0}: the
+            ' real Feet PLUS body(32)/hands(33) — already owned by NakedTorsoChild→childbody.nif and
+            ' NakedHandsChild→childhands.nif — and head/eyes/mouth(0/1/30) owned by the FaceGen HDPT head. The
+            ' app's skin-TXST override (WNAM NAM0/1) then paints the feet-ARMA's UpperBodyFemale onto the
+            ' bundled ChildHead, z-fighting the FaceGen head. Honoring each ARMA's declared BOD2 leaves head←
+            ' FaceGen, body←childbody, hands←childhands, feet←childfeet — each part once, its own texture.
+            '
+            ' BLAST RADIUS — MEASURED (Tools/ChildSkinNifProbe DUMP 5/8, whole load order): of the 120 Kind=Skin
+            ' ARMAs (SkinNaked + every RACE.WNAM), exactly ONE drops a shape — childfeet. The other 78 with a
+            ' dismember mesh are clean; 41 creatures have no partitions. So this is a general rule that currently
+            ' fires ONLY on childfeet (5 child races). It is NOT a childfeet hardcode; a future all-in-one skin
+            ' mod is handled the same way, and every drop is logged.
+            '
+            ' WHY Kind=Skin GATE IS ESSENTIAL (also measured): 14 NON-skin ARMAs (boots with leg geometry on
+            ' part 32, farm clothes with shoes on part 37, armor mods with EnvironmentMap partitions ≠ BOD2)
+            ' WOULD wrongly drop shapes if the rule applied to them — "partition ∉ BOD2" is common and LEGIT for
+            ' outfits/armor. The gate keeps the rule off all of those. Also SSE-only + never drops on unreadable/
+            ' no-dismember (keep-on-doubt), so FO4 and every ambiguous case are untouched.
+            Const EnableSseSkinPartitionDedup As Boolean = True
+            If EnableSseSkinPartitionDedup AndAlso Config_App.Current IsNot Nothing _
+               AndAlso Config_App.Current.Game = Config_App.Game_Enum.Skyrim _
+               AndAlso candidate IsNot Nothing AndAlso candidate.Kind = MainForm.MeshCandidateKind.Skin _
+               AndAlso candidate.ArmaOwnSlotMask <> 0UI Then
+                ' Key on the ARMA's OWN footprint (ArmaOwnSlotMask), NOT candidate.SlotMask — the latter is
+                ' OR'd with the owning ARMO's head-occlusion bits (SkinNaked declares slot 30), which would
+                ' credit a Feet(37) candidate slot 30 and wrongly KEEP childfeet's EyesChild (partition 30).
+                Dim armaSlots As New HashSet(Of Integer)
+                For bit = 0 To 31
+                    If (candidate.ArmaOwnSlotMask And (1UI << bit)) <> 0UI Then armaSlots.Add(30 + bit)
+                Next
+                Dim kept As New List(Of NifRenderableShape)
+                For Each sh In shapes
+                    Dim parts As New List(Of Integer)
+                    Try
+                        Dim shp = sh.NifShape
+                        Dim sir = If(shp IsNot Nothing, shp.SkinInstanceRef, Nothing)
+                        If sir IsNot Nothing AndAlso sir.Index >= 0 Then
+                            Dim dism = TryCast(nif.Blocks(sir.Index), NiflySharp.Blocks.BSDismemberSkinInstance)
+                            If dism IsNot Nothing AndAlso dism.Partitions IsNot Nothing Then
+                                For Each p In dism.Partitions
+                                    Dim bp As Integer = CInt(p.BodyPart)
+                                    If bp >= 200 Then           ' fold SBP_2xx/1xx → base slot
+                                        bp -= 200
+                                    ElseIf bp >= 100 Then
+                                        bp -= 100
+                                    End If
+                                    parts.Add(bp)
+                                Next
+                            End If
+                        End If
+                    Catch
+                        ' Unreadable dismember → treat as no partitions (keep the shape; never drop on error).
+                    End Try
+                    ' Keep if the shape has no dismember (can't classify → don't drop) or ANY partition is a slot this ARMA owns.
+                    Dim keep As Boolean = (parts.Count = 0) OrElse parts.Any(Function(pp) armaSlots.Contains(pp))
+                    If keep Then
+                        kept.Add(sh)
+                    Else
+                        Dim shN = sh.ShapeName
+                        Dim pj = String.Join(",", parts)
+                        Dim sj = String.Join(",", armaSlots)
+                        Logger.LogLazy(Function() $"[SSE-SKIN-DEDUP] drop shape='{shN}' parts=[{pj}] not in ARMA own-slots [{sj}] (bundled out-of-slot geometry, provided by the dedicated ARMA / FaceGen head).")
+                    End If
+                Next
+                shapes = kept
+            End If
 
             ' Multi-instance bone rename: chunks robot mounteados en P-X|<apIdx> traen
             ' bone references al set |0 nativo del NIF. Cuando MountApIdx > 0, hay que

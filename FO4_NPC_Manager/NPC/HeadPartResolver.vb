@@ -131,42 +131,69 @@ Public Module HeadPartResolver
         Return False
     End Function
 
-    ''' <summary>Whether a LooksMenu preset is fully race-compatible with the target NPC's race.
-    ''' Strict: every preset.HeadPartFormIDs must pass <see cref="IsHdptValidForRace"/>, AND every
-    ''' preset.FaceTintLayer.Index must resolve to a tint option in RACE's gender-appropriate
-    ''' TintTemplateGroups. Empty-set head parts and empty-set tints are vacuously OK.
+    ''' <summary>Whether a LooksMenu preset is race-compatible with the target NPC's race.
+    ''' Compatibility is decided by HEAD PARTS ONLY: every preset.HeadPartFormIDs must pass
+    ''' <see cref="IsHdptValidForRace"/>. Empty-set head parts are vacuously OK.
+    '''
+    ''' FaceTint layers do NOT gate compatibility (user rule, 2026-07-09): a tint whose Index
+    ''' doesn't resolve against this race is NOT a reason to hide/drop the whole preset. Such a
+    ''' tint is preserved verbatim in the NPC's FaceTintLayers (round-trips on Save) but is inert:
+    ''' the compositor skips it (FaceTintInputBuilder: FindTintOption Nothing -> Continue) and the
+    ''' Face editor hides its row (EditFace_Form.RefreshTintsList). So it is neither applied nor
+    ''' editable, just carried. Head parts still gate because a wrong-race HDPT would visually
+    ''' swap a whole mesh (hair/eyes) — a partial-apply the user does want hidden.
     '''
     ''' Used by <see cref="LooksmenuLoad_Form"/> to optionally hide presets the engine would
-    ''' partially-apply against this NPC's race (LM itself doesn't enforce race; the engine
-    ''' just silently drops the incompatible HDPT/tint references).</summary>
+    ''' partially-apply against this NPC's race (LM itself doesn't enforce race).
+    '''
+    ''' <paramref name="ignoreFaceBaseHeadPart"/> (SSE path, user rule 2026-07-09): skip the base
+    ''' HEAD part (PNAM PartType=1, "Face") from the gate. RaceMenu .jslot presets carry the preset
+    ''' author's race-specific base head (e.g. FemaleHeadRedguard, whose Valid-Races FLST lists only
+    ''' Redguard+Vampire), which legitimately fails a Nord NPC. But skee applies the preset's sculpt
+    ''' over whatever race's own base head, so a mismatched base head must NOT drop the whole preset
+    ''' — otherwise ~all cross-race presets vanish from the SSE browser. Hair/eyes/brows still gate.
+    ''' FO4 leaves this False (unchanged behaviour).</summary>
     Public Function IsPresetCompatibleWithRace(preset As LooksmenuLoader.LooksmenuPreset,
                                                raceFormID As UInteger,
                                                isFemale As Boolean,
                                                pluginManager As PluginManager,
                                                race As RACE_Data,
                                                flstCache As Dictionary(Of UInteger, FLST_Data),
-                                               raceDefaults As HashSet(Of UInteger)) As Boolean
+                                               raceDefaults As HashSet(Of UInteger),
+                                               Optional ignoreFaceBaseHeadPart As Boolean = False) As Boolean
         If preset Is Nothing OrElse pluginManager Is Nothing Then Return False
 
+        ' Diagnostic: when the logger is on, record the concrete reason a preset is judged
+        ' race-incompatible (which HDPT). Gated + lazy so it's a no-op with logging off.
+        ' presetName is captured once for the lambdas below.
+        Dim presetName As String = IO.Path.GetFileName(preset.SourcePath)
+
         ' HeadPart compatibility — every declared HDPT must be valid for the target race.
+        ' (Tints are deliberately NOT checked here — see the summary above.)
         If preset.HeadPartFormIDs IsNot Nothing Then
             For Each fid In preset.HeadPartFormIDs
                 If fid = 0UI Then Continue For
-                If Not IsHdptValidForRace(fid, raceFormID, isFemale, pluginManager, flstCache, raceDefaults) Then Return False
+                ' SSE: don't let the race-specific base HEAD (Face, PartType=1) gate the preset.
+                If ignoreFaceBaseHeadPart Then
+                    Dim hrec = pluginManager.GetRecord(fid)
+                    If hrec IsNot Nothing AndAlso hrec.Header.Signature = "HDPT" Then
+                        Dim hd = RecordParsers.ParseHDPT(hrec, pluginManager)
+                        If hd IsNot Nothing AndAlso hd.PartType = 1 Then
+                            Dim fidFace = fid
+                            Logger.LogLazy(Function() $"[LMLoad] '{presetName}': skipping base-head (Face) HDPT 0x{fidFace:X8} from race-compat gate (SSE — skee applies the preset sculpt over the NPC's own base head).")
+                            Continue For
+                        End If
+                    End If
+                End If
+                If Not IsHdptValidForRace(fid, raceFormID, isFemale, pluginManager, flstCache, raceDefaults) Then
+                    Dim fidLocal = fid
+                    Logger.LogLazy(Function() $"[LMLoad] DROP '{presetName}' as race-incompatible: HDPT 0x{fidLocal:X8} not valid for race 0x{raceFormID:X8} (gender={If(isFemale, "F", "M")}). HDPT's RACE/FLST does not list this race and it is not a race gender-default.")
+                    Return False
+                End If
             Next
         End If
 
-        ' FaceTint compatibility — every layer's Index must resolve in the target race's
-        ' gender-appropriate TintTemplateGroups. NPC face tint Index is the TINI/Index
-        ' subrecord that points into the RACE template tree.
-        If race IsNot Nothing AndAlso preset.FaceTintLayers IsNot Nothing Then
-            For Each layer In preset.FaceTintLayers
-                If layer Is Nothing Then Continue For
-                Dim opt = race.FindTintOption(layer.Index, isFemale)
-                If opt Is Nothing Then Return False
-            Next
-        End If
-
+        Logger.LogLazy(Function() $"[LMLoad] KEEP '{presetName}' as race-compatible for race 0x{raceFormID:X8} (gender={If(isFemale, "F", "M")}). (HeadParts OK; unresolved tint layers, if any, are preserved verbatim but not applied/editable.)")
         Return True
     End Function
 
@@ -215,6 +242,126 @@ Public Module HeadPartResolver
             If miscToParentEffective.TryGetValue(hdptFormID, promoted) Then Return promoted
         End If
         Return ownPartType
+    End Function
+
+    ''' <summary>Cascade-remove the now-orphaned standalone Misc(0) children of a head part that was
+    ''' REMOVED or REPLACED. A standalone Misc that lived in <paramref name="removedParentFid"/>'s
+    ''' ExtraPartFormIDs (HNAM) becomes an orphan once its parent is gone: its effective type collapses
+    ''' to Misc(0), no hair/beard palette applies, and it renders with the BGSM-default colour as a Misc
+    ''' root. We drop those — EXCEPT any extra still claimed by another parent currently in
+    ''' <paramref name="headParts"/> (this includes a replacement parent that shares the extra, so a
+    ''' hairline declared by both the old and new hair survives as a live HNAM child). Non-Misc extras,
+    ''' and Misc that were never in the removed parent's HNAM (independent addons: mouth shadow, AO/wet),
+    ''' are left untouched.
+    '''
+    ''' Single source of truth shared by two callers, so a preset-load hair swap drops the old hairline
+    ''' EXACTLY the way the manual editor does:
+    '''   • <c>EditFace_Form.OnRemoveHeadPart</c> / <c>OnAddHeadPart</c> (manual remove / replace).
+    '''   • <c>NpcOverrideSaver</c> Phase 1c (a filtered preset that replaced a main-type parent).
+    ''' The saver caller MUST gate the call on "the parent's PartType was actually replaced by the
+    ''' preset" — passing an unchanged parent here would (correctly) do nothing, but the gate keeps a raw
+    ''' extra whose parent type is untouched (eyelashes on untouched eyes) from ever being considered.
+    '''
+    ''' <paramref name="resolveHdpt"/> maps a FormID to its parsed <see cref="HDPT_Data"/> (or Nothing);
+    ''' callers pass their own cache (EditFace's _allHeadPartsByFid, the saver's parse cache).</summary>
+    Public Sub CascadeRemoveOrphanedHnamMisc(headParts As List(Of UInteger),
+                                             removedParentFid As UInteger,
+                                             resolveHdpt As Func(Of UInteger, HDPT_Data))
+        If headParts Is Nothing OrElse resolveHdpt Is Nothing Then Return
+        Dim removedHdpt = resolveHdpt(removedParentFid)
+        If removedHdpt Is Nothing Then Return
+        If removedHdpt.PartType = 0 Then Return   ' a Misc has no HNAM children to orphan
+        If removedHdpt.ExtraPartFormIDs Is Nothing OrElse removedHdpt.ExtraPartFormIDs.Count = 0 Then Return
+
+        Dim extras As New HashSet(Of UInteger)(removedHdpt.ExtraPartFormIDs)
+        ' If another head part still in the list declares one of these extras in its HNAM, it's a live
+        ' HNAM child of that parent — keep it (covers a hairline shared by the old and new hair).
+        Dim claimedByOtherParent As New HashSet(Of UInteger)
+        For Each otherFid In headParts
+            If otherFid = removedParentFid Then Continue For
+            Dim otherHdpt = resolveHdpt(otherFid)
+            If otherHdpt Is Nothing OrElse otherHdpt.ExtraPartFormIDs Is Nothing Then Continue For
+            For Each ex In otherHdpt.ExtraPartFormIDs
+                If extras.Contains(ex) Then claimedByOtherParent.Add(ex)
+            Next
+        Next
+        For i = headParts.Count - 1 To 0 Step -1
+            Dim fid = headParts(i)
+            If Not extras.Contains(fid) Then Continue For
+            If claimedByOtherParent.Contains(fid) Then Continue For
+            Dim extraHdpt = resolveHdpt(fid)
+            If extraHdpt Is Nothing OrElse extraHdpt.PartType <> 0 Then Continue For
+            headParts.RemoveAt(i)
+        Next
+    End Sub
+
+    ''' <summary>Given the raw NPC.PNAM head parts and a preset's head parts, return the raw standalone
+    ''' Misc FormIDs that become ORPHANS because the preset replaced their parent — i.e. the set an
+    ''' apply (Load LooksMenu/RaceMenu, Copy/Paste) must record in
+    ''' <see cref="LooksmenuLoader.LooksmenuPreset.SuppressedRawHeadPartFormIDs"/> so the save-time raw
+    ''' union drops them, dropping the old hairline exactly the way Edit Face does on a manual hair swap.
+    '''
+    ''' Merges raw ∪ preset the same way NpcOverrideSaver Phase 1c persists (one HDPT per main type,
+    ''' preset wins; Misc(0) accumulated), then for every main-type parent the preset REPLACED with a
+    ''' different HDPT (any type — hair, eyes, brows, …) collects that raw parent's orphaned Misc HNAM
+    ''' children via the shared <see cref="CascadeRemoveOrphanedHnamMisc"/> (diffed before/after). This
+    ''' makes Save agree with the render, which already rebuilds head parts as race-defaults + preset
+    ''' (raw wiped) so a replaced parent's old raw extras never show. NOT the Cait-class lash regression:
+    ''' that came from UNCONDITIONALLY filtering raw extras, whereas this only fires on an actual
+    ''' replacement (a parent the preset left untouched suppresses nothing), and the cascade keeps any
+    ''' extra still claimed by a surviving parent's HNAM (vanilla new eyes re-declare their lashes → kept).
+    ''' <paramref name="resolveHdpt"/> maps FormID → parsed HDPT (or Nothing).</summary>
+    Public Function ComputeReplacedParentOrphanMisc(rawParts As IEnumerable(Of UInteger),
+                                                    presetParts As IEnumerable(Of UInteger),
+                                                    resolveHdpt As Func(Of UInteger, HDPT_Data)) As HashSet(Of UInteger)
+        Dim result As New HashSet(Of UInteger)
+        If rawParts Is Nothing OrElse presetParts Is Nothing OrElse resolveHdpt Is Nothing Then Return result
+
+        Dim rawByType As New Dictionary(Of Integer, UInteger)
+        Dim mergedByType As New Dictionary(Of Integer, UInteger)
+        Dim miscList As New List(Of UInteger)
+        Dim seenMisc As New HashSet(Of UInteger)
+        Dim classify = Sub(fid As UInteger, isRaw As Boolean)
+                           If fid = 0UI Then Return
+                           Dim hd = resolveHdpt(fid)
+                           If hd Is Nothing Then Return
+                           If hd.PartType = 0 Then
+                               If seenMisc.Add(fid) Then miscList.Add(fid)
+                           ElseIf hd.PartType >= 1 AndAlso hd.PartType <= 9 Then
+                               mergedByType(hd.PartType) = fid   ' preset (classified 2nd) wins per type
+                               If isRaw Then rawByType(hd.PartType) = fid
+                           End If
+                       End Sub
+        For Each fid In rawParts : classify(fid, True) : Next
+        For Each fid In presetParts : classify(fid, False) : Next
+
+        ' Flat merged list the saver would persist (main types ordered, then Misc) — the context the
+        ' orphan check runs against so a Misc still claimed by a surviving parent is NOT suppressed.
+        Dim finalFlat As New List(Of UInteger)
+        For Each t In mergedByType.Keys.OrderBy(Function(k) k) : finalFlat.Add(mergedByType(t)) : Next
+        finalFlat.AddRange(miscList)
+
+        For Each kv In rawByType
+            Dim finalParent As UInteger = 0
+            If mergedByType.TryGetValue(kv.Key, finalParent) AndAlso finalParent <> kv.Value Then
+                ' This main-type parent was REPLACED by the preset with a different HDPT (hair→hair,
+                ' eyes→eyes, …). Drop its orphaned standalone Misc children, matching what the render
+                ' already shows: BuildShadow rebuilds head parts as race-defaults + preset (raw WIPED),
+                ' so a replaced parent's old raw extras never render — suppressing them just makes Save
+                ' agree with the preview. Two guards keep this from over-reaching:
+                '   • REPLACEMENT-gated (finalParent <> raw): a parent the preset didn't touch (e.g. a
+                '     plain re-save that keeps the NPC's own eyes) suppresses nothing — so this is NOT the
+                '     Cait-class regression, which came from UNCONDITIONALLY filtering raw extras.
+                '   • CascadeRemoveOrphanedHnamMisc keeps any extra still claimed by a surviving parent's
+                '     HNAM (vanilla new eyes re-declare the lashes → they stay; the old HAIR's hairline is
+                '     not claimed by the new hair → it goes). Diff before/after to collect exactly what dropped.
+                Dim before As New HashSet(Of UInteger)(finalFlat)
+                CascadeRemoveOrphanedHnamMisc(finalFlat, kv.Value, resolveHdpt)
+                before.ExceptWith(finalFlat)
+                result.UnionWith(before)
+            End If
+        Next
+        Return result
     End Function
 
     ''' <summary>One yielded entry of <see cref="EnumerateHdptChain"/>: the parsed HDPT plus the

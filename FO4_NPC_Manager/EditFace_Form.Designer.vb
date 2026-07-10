@@ -135,13 +135,13 @@ Partial Class EditFace_Form
         ' PreviewSplit.Panel1
         ' 
         PreviewSplit.Panel1.Controls.Add(RootLayout)
-        PreviewSplit.Panel1MinSize = 750
+        PreviewSplit.Panel1MinSize = 860
         ' 
         ' PreviewSplit.Panel2
         ' 
         PreviewSplit.Panel2.Controls.Add(PreviewSidebar)
         PreviewSplit.Size = New Size(1384, 651)
-        PreviewSplit.SplitterDistance = 750
+        PreviewSplit.SplitterDistance = 860
         PreviewSplit.TabIndex = 0
         ' 
         ' RootLayout
@@ -1011,9 +1011,9 @@ Partial Class EditFace_Form
         ' 
         AcceptButton = ButtonOk
         CancelButton = ButtonCancel
-        ClientSize = New Size(1384, 651)
+        ClientSize = New Size(1560, 780)
         Controls.Add(PreviewSplit)
-        MinimumSize = New Size(1200, 690)
+        MinimumSize = New Size(1340, 820)
         Name = "EditFace_Form"
         StartPosition = FormStartPosition.CenterScreen
         Text = "Edit Face"

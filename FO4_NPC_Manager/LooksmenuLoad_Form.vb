@@ -106,10 +106,11 @@ Public Class LooksmenuLoad_Form
                                                        "Listing all presets from Data\F4SE\Plugins\F4EE\Presets\.")
         LabelHeader.Text = $"Target NPC race: {raceDisplayName}  •  Gender: {If(gender = 1, "Female", "Male")}" & vbCrLf & presetsFolderText
 
-        ' Default the checkbox to whether the NPC's NIF can actually consume BodySlide sliders.
-        ' If there's no BODYTRI on the root NiNode the engine wouldn't apply them in-game either,
-        ' so we default to unchecked — but leave the choice to the user.
-        CheckBoxApplyBodySliders.Checked = npcHasBodyTri
+        ' Default the checkbox to ON (user request 2026-07-09): apply BodySlide sliders by default.
+        ' npcHasBodyTri is still surfaced as a tooltip hint below — when the NPC's NIF root has no
+        ' BODYTRI the sliders won't visibly do anything in-game, but the user can leave it ticked
+        ' harmlessly or untick it. Previously defaulted to npcHasBodyTri.
+        CheckBoxApplyBodySliders.Checked = True
 
         ' Race-compatibility checkbox: only meaningful when caller supplied race data. Without
         ' RACE_Data we can't validate tints, and without raceFormID we can't validate HDPTs —
@@ -142,7 +143,11 @@ Public Class LooksmenuLoad_Form
             If Not String.IsNullOrEmpty(_ssePresetsDir) AndAlso Directory.Exists(_ssePresetsDir) AndAlso _sseMapper IsNot Nothing Then
                 For Each fp In Directory.GetFiles(_ssePresetsDir, "*.jslot")
                     Dim mapped = _sseMapper(fp)
-                    If mapped Is Nothing Then Continue For
+                    If mapped Is Nothing Then
+                        Dim fpLocal = fp
+                        Logger.LogLazy(Function() $"[LMLoad] DROP '{Path.GetFileName(fpLocal)}': RaceMenu mapper returned Nothing (jslot failed to load/map).")
+                        Continue For
+                    End If
                     _allPresets.Add(mapped)
                 Next
             End If
@@ -150,11 +155,20 @@ Public Class LooksmenuLoad_Form
             Dim files = LooksmenuLoader.EnumeratePresetFiles(_dataPath)
             For Each fp In files
                 Dim parsed = LooksmenuLoader.ParseFile(fp, _pluginManager)
-                If parsed Is Nothing Then Continue For
+                If parsed Is Nothing Then
+                    Dim fpLocal = fp
+                    Logger.LogLazy(Function() $"[LMLoad] DROP '{Path.GetFileName(fpLocal)}': failed to parse (invalid/unsupported JSON).")
+                    Continue For
+                End If
                 ' Skip presets whose declared gender doesn't match the NPC. CharGenInterface.cpp:301
                 ' rejects mismatched gender at LoadPreset time — same rule here so the user only sees
                 ' presets that will actually apply cleanly.
-                If parsed.Gender <> _gender Then Continue For
+                If parsed.Gender <> _gender Then
+                    Dim fpLocal = fp
+                    Dim g = parsed.Gender
+                    Logger.LogLazy(Function() $"[LMLoad] DROP '{Path.GetFileName(fpLocal)}': gender mismatch (preset gender={If(g = 1, "Female", "Male")} ({g}), target NPC gender={If(_gender = 1, "Female", "Male")} ({_gender})).")
+                    Continue For
+                End If
                 _allPresets.Add(parsed)
             Next
         End If
@@ -194,8 +208,12 @@ Public Class LooksmenuLoad_Form
     Private Function IsCompatibleWithTargetRace(preset As LooksmenuLoader.LooksmenuPreset) As Boolean
         Dim cached As Boolean
         If _compatibilityCache.TryGetValue(preset, cached) Then Return cached
+        ' On SSE, ignore the preset's race-specific base head (Face) part in the gate — RaceMenu
+        ' presets carry the author's race base head and skee re-sculpts over the NPC's own. FO4
+        ' keeps the strict gate (ignoreFaceBaseHeadPart:=False). See IsPresetCompatibleWithRace.
         Dim result = HeadPartResolver.IsPresetCompatibleWithRace(
-            preset, _raceFormID, _gender = 1, _pluginManager, _race, _flstCache, _raceDefaults)
+            preset, _raceFormID, _gender = 1, _pluginManager, _race, _flstCache, _raceDefaults,
+            ignoreFaceBaseHeadPart:=_isSse)
         _compatibilityCache(preset) = result
         Return result
     End Function

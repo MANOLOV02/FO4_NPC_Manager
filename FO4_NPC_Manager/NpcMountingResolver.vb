@@ -1064,6 +1064,93 @@ Friend NotInheritable Class NpcMountingResolver
         Next
     End Sub
 
+    ''' <summary>SSE: attach de items biped RÍGIDOS (sin skin) al nodo del skeleton nombrado por su
+    ''' NiStringExtraData "Prn" — el escudo (slot 39, Prn='SHIELD') y cualquier rígido con Prn
+    ''' (WeaponBack/WeaponSword/…). Engine (byte, GetObjectByName 0x140E18620 + tabla interned "Prn"@+0xa8
+    ''' "Shield"@+0xd8): el root del NIF rígido lleva Prn=nombreNodo; el engine lo busca por nombre en el
+    ''' skeleton y lo cuelga ahí con bind = su transform NIF-local. Sin esto el shape rígido cae al ORIGEN
+    ''' del actor (SkinningHelper Case Else → GetGlobalTransform NIF-local = (0,0,0) = suelo). Clona el
+    ''' fake-skin del Pipboy pero data-driven por Prn (no hardcodea el bone), reusando ApplySyntheticAnchorSkin.
+    ''' VALIDADO 100% (ShieldRigidProbe): nodo 'SHIELD' en skeleton.nif/skeletonbeast.nif @world
+    ''' (-28.86,4.93,65.91) sobre NPC L Forearm; mesh en espacio SHIELD-local (verts centrados ~origen);
+    ''' Prn='SHIELD' en el root de ElvenShield/HideShield. SSE-only (FO4 no tiene shields/slot-39; su render
+    ''' rígido no regresiona). Si el nodo Prn NO existe en el skeleton del actor → RenderHide (mejor sin item
+    ''' que en el suelo). Guard: NIFs con BSConnectPoint::Children usan socket-mounting → no tocar.</summary>
+    Friend Sub ApplyPrnRigidAttach(result As MainForm.PreviewResolutionResult, inst As SkeletonInstance)
+        If result Is Nothing OrElse inst Is Nothing Then Return
+        If Config_App.Current Is Nothing OrElse Config_App.Current.Game <> Config_App.Game_Enum.Skyrim Then Return
+
+        For Each shape In result.Shapes
+            If shape Is Nothing OrElse shape.IsSkinned Then Continue For
+            Dim nif = shape.NifContent
+            If nif Is Nothing Then Continue For
+            Dim asOverride = TryCast(shape, IRuntimeSkinOverride)
+            If asOverride Is Nothing Then Continue For
+            Dim rootNode = nif.GetRootNode()
+            If rootNode Is Nothing Then Continue For
+
+            ' Guard: si el NIF declara BSConnectPoint::Children, es un mount por socket (P-/C- match) →
+            ' no aplicar el fake-skin por Prn para no doblar el montaje.
+            Try
+                Dim childrenInfo = BSConnectPointReader.ReadChildren(nif)
+                If childrenInfo.PointNames IsNot Nothing AndAlso childrenInfo.PointNames.Count > 0 Then Continue For
+            Catch
+            End Try
+
+            Dim prn As String = ReadPrnExtraData(nif, rootNode)
+            If String.IsNullOrEmpty(prn) Then Continue For
+            Dim prnL = prn
+
+            ' Nodo del skeleton nombrado por Prn (case-insensitive, sin hardcoding).
+            Dim prnBone As String = inst.SkeletonDictionary.Keys.FirstOrDefault(
+                Function(k) String.Equals(k, prn, StringComparison.OrdinalIgnoreCase))
+            If prnBone Is Nothing Then
+                shape.RenderHide = True
+                Dim shH = shape.ShapeName
+                Logger.LogLazy(Function() $"[PRN-ATTACH] skip-render shape='{shH}' Prn='{prnL}' — nodo ausente en skeleton (mejor sin item que en el suelo)")
+                Continue For
+            End If
+
+            Try
+                Dim backing = shape.Geometry.BackingShape
+                Dim bindMatrix As New Transform_Class(backing)
+                Dim curNode As NiflySharp.Blocks.NiNode = TryCast(nif.GetParentNode(backing), NiflySharp.Blocks.NiNode)
+                While curNode IsNot Nothing AndAlso Not ReferenceEquals(curNode, rootNode)
+                    bindMatrix = New Transform_Class(curNode).ComposeTransforms(bindMatrix)
+                    curNode = TryCast(nif.GetParentNode(curNode), NiflySharp.Blocks.NiNode)
+                End While
+
+                Dim placeholder As New NiflySharp.Blocks.NiNode With {
+                    .Name = New NiflySharp.NiStringRef(prnBone)
+                }
+                asOverride.ApplySyntheticAnchorSkin(placeholder, bindMatrix)
+
+                Dim shL = shape.ShapeName, boneL = prnBone
+                Dim bT = bindMatrix.Translation
+                Logger.LogLazy(Function() $"[PRN-ATTACH] shape='{shL}' Prn='{prnL}' anchor='{boneL}' bind.T=({bT.X:F3},{bT.Y:F3},{bT.Z:F3})")
+            Catch ex As Exception
+                Dim shL = shape.ShapeName, exL = ex
+                Logger.LogLazy(Function() $"[PRN-ATTACH] shape='{shL}' EXCEPTION: {exL.GetType().Name}: {exL.Message}")
+            End Try
+        Next
+    End Sub
+
+    ''' <summary>Valor del NiStringExtraData "Prn" del root del NIF (nombre del nodo de attach para un
+    ''' item rígido). Nothing si no hay Prn. Mismo patrón de lectura de ExtraDataList que BSConnectPointReader.</summary>
+    Private Function ReadPrnExtraData(nif As Nifcontent_Class_Manolo, rootNode As NiflySharp.Blocks.NiNode) As String
+        Try
+            If rootNode Is Nothing OrElse rootNode.ExtraDataList Is Nothing Then Return Nothing
+            For Each ref In rootNode.ExtraDataList.References
+                Dim sed = TryCast(nif.Blocks(ref.Index), NiflySharp.Blocks.NiStringExtraData)
+                If sed IsNot Nothing AndAlso String.Equals(sed.Name?.String, "Prn", StringComparison.OrdinalIgnoreCase) Then
+                    Return sed.StringData?.String
+                End If
+            Next
+        Catch
+        End Try
+        Return Nothing
+    End Function
+
     ''' <summary>Mount-resolve pass for robot chunks. Delegates al
     ''' <see cref="ConnectPointMountResolver"/> de la lib (engine-canónica P-/C- match).
     '''

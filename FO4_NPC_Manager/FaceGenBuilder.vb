@@ -1311,6 +1311,10 @@ Public Module FaceGenBuilder
                 ' tone COLOR which the resolver puts in HairTintColor and the library writes).
                 mat.SkinTintAlpha = skinTintAlpha
                 mat.Save_To_Shader(nif, cloned, bsls, mat.NifShaderType, slot5Path)
+                ' NOTA: el specular del head (texset slot 7) queda como lo resuelve el skin-resolver
+                ' (PascalCase-sin-prefijo). CK lo deja crudo del source ('textures\...' minúscula), pero es la
+                ' MISMA textura (engine normaliza "textures\" + case-insensitive) → no-op visual. NO se fuerza a
+                ' matchear CK: hacerlo sería una heurística de path sin efecto (decisión del usuario 2026-07-09).
                 ' CK al bakear el FaceGen deja shad.Name vacío en el shader inline (no
                 ' linkea al BGSM external). Replicamos eso para que el .nif2 sea standalone
                 ' (todos los datos del material viven embedded en el shader, sin depender
@@ -1477,20 +1481,11 @@ Public Module FaceGenBuilder
                     Dim ts = TryCast(nif.Blocks(lsp.TextureSetRef.Index), NiflySharp.Blocks.BSShaderTextureSet)
                     If ts IsNot Nothing AndAlso ts.Textures IsNot Nothing AndAlso ts.Textures.Count > 6 Then
                         ts.Textures(6).Content = "Textures\Actors\Character\FaceGenData\FaceTint\" & originPlugin & "\" & $"{fgLocal:X8}.dds"
-                        ' CK convention (medido): la complexion de PIEL del head — diffuse (slot 0) y specular
-                        ' (slot 7) — se escribe con prefijo "textures\" (son paths resueltos del skin/FTST TXST,
-                        ' Textures-relativos, que CK prefija al bakear). Los demás slots (normal/sk/detail slot
-                        ' 1/2/3) vienen del mesh source y CK los deja SIN prefijo → no se tocan. Head-only (esta
-                        ' función corre solo para PartTypeFace) + SSE-only.
-                        For Each si In {0, 7}
-                            If ts.Textures.Count > si Then
-                                Dim c = ts.Textures(si)?.Content
-                                If Not String.IsNullOrEmpty(c) Then
-                                    Dim cn = c.Replace("/"c, "\"c).TrimStart("\"c)
-                                    If Not cn.StartsWith("textures\", StringComparison.OrdinalIgnoreCase) Then ts.Textures(si).Content = "Textures\" & cn
-                                End If
-                            End If
-                        Next
+                        ' NOTE: NO "Textures\" prefix on the skin slots 0/7. MEDIDO vs BSA CK (batch SSE): CK escribe
+                        ' el head diffuse SIN prefijo (p.ej. 'Actors\Character\Male\MaleHead.dds'), byte-igual al
+                        ' valor ya resuelto del skin TXST. Un intento anterior de prefijar 0/7 fue medido contra un
+                        ' FaceGeom LOOSE (mi propio bake ya prefijado ⇒ circular, gotcha
+                        ' reference_facegen_ck_must_come_from_ba2) y RETRACTADO: prefijar rompía la paridad.
                     End If
                 End If
             End If

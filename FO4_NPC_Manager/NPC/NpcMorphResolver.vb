@@ -623,14 +623,18 @@ Public Class NpcMorphResolver
     End Function
 
     Private Function TryLoadTriHead(normalizedPath As String) As TriHeadFile
+        ' Key the cache on the mouth-fix state so the vanilla and the fixed BaseFemaleHeadChargen.tri head
+        ' live under distinct keys — toggling Setting_ApplyMouthVanillaFix then re-reads the right one
+        ' instead of serving a stale (fixed/vanilla) cached head. Suffix is "" for every other file.
+        Dim cacheKey = normalizedPath & ChargenMouthFix.CacheKeySuffix(normalizedPath)
         SyncLock _triHeadCache
             Dim cached As TriHeadFile = Nothing
-            If _triHeadCache.TryGetValue(normalizedPath, cached) Then Return cached
+            If _triHeadCache.TryGetValue(cacheKey, cached) Then Return cached
         End SyncLock
 
         SyncLock _triLoadAttempted
-            If _triLoadAttempted.Contains(normalizedPath) Then Return Nothing
-            _triLoadAttempted.Add(normalizedPath)
+            If _triLoadAttempted.Contains(cacheKey) Then Return Nothing
+            _triLoadAttempted.Add(cacheKey)
         End SyncLock
 
         Dim bytes = TryGetFileBytes(normalizedPath)
@@ -641,8 +645,11 @@ Public Class NpcMorphResolver
         Try
             Dim head = TriHeadParser.ParseTriHeadFromBytes(bytes)
             If head IsNot Nothing Then
+                ' Zero the 22 vanilla mouth deltas iff the toggle is on and this is the female chargen tri
+                ' (no-op otherwise). Done on the fresh parse before caching, so the merge downstream sees it.
+                ChargenMouthFix.MaybeApplyInPlace(normalizedPath, head)
                 SyncLock _triHeadCache
-                    _triHeadCache(normalizedPath) = head
+                    _triHeadCache(cacheKey) = head
                 End SyncLock
             End If
             Return head

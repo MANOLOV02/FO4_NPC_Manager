@@ -197,6 +197,12 @@ Friend NotInheritable Class NpcMaterialResolver
                     Dim newColLog = resolvedHair
                     Logger.LogLazy(Function() $"[HAIRTINT-WRITE] hdptType={candidate.HeadPartType} oldRGB=({oldHairCol.R},{oldHairCol.G},{oldHairCol.B}) → newRGB=({newColLog.R},{newColLog.G},{newColLog.B})")
                 End If
+            ElseIf hairColorFormID = 0UI AndAlso Config_App.Current IsNot Nothing AndAlso Config_App.Current.Game = Config_App.Game_Enum.Skyrim Then
+                ' NPC without a hair color (HCLF absent) — CK writes HairTintColor=(0,0,0) instead of keeping the
+                ' source hair mesh's tint. MEDIDO vs BSA CK: the 3 vanilla Dremora with HCLF=None bake (0,0,0),
+                ' while the source hairline mesh carries a non-zero tint; without this the baked hair keeps that
+                ' stray source color. SSE-only, hair/facialhair/brow-only (IsHairHeadPart gate above).
+                material.HairTintColor = Color.FromArgb(material.HairTintColor.A, 0, 0, 0)
             End If
         End If
     End Sub
@@ -791,6 +797,9 @@ Friend NotInheritable Class NpcMaterialResolver
     ''' vanilla-UV body texture clone: effective PartType 9 AND HDPT bare-id = FemaleHeadHumanRearTEMP
     ''' AND the actor race ∈ the ghoul-female race set.</summary>
     Friend Shared Function IsGhoulHeadRearCase(hdptFormID As UInteger, effectivePartType As Integer, state As MainForm.NPCVisualState) As Boolean
+        ' FO4-only (ghoul races / GhoulFemaleBody / FemaleHeadHumanRearTEMP son conceptos FO4). El race-set
+        ' de abajo ya no matchearía en SSE, pero el gate explícito lo deja inequívoco y evita cualquier clone.
+        If Config_App.Current.Game <> Config_App.Game_Enum.Fallout4 Then Return False
         If Not NPC_Config.Current.ApplyGhoulHeadRearFix Then Return False
         If effectivePartType <> HeadRearEffectivePartType Then Return False
         If (hdptFormID And &HFFFFFFUI) <> FemaleHeadHumanRearTEMPBareID Then Return False
@@ -1082,9 +1091,25 @@ Friend NotInheritable Class NpcMaterialResolver
             ' la ropa y metía el male NAM0 sobre una female). HeadPart usa HDPT.TNAM/FTST (otro
             ' mecanismo → se mantiene). Skin (naked body) usa su ARMA, que ES el skin ARMO del WNAM.
             If candidate Is Nothing OrElse candidate.Kind <> MainForm.MeshCandidateKind.Outfit Then
-                ApplyTextureSetOverrides(textureSet, relatedMaterial, candidate.UsesBodyTexture, shape.NifShape, shape.NifContent,
-                                         isHeadPartTextureSet:=(candidate IsNot Nothing AndAlso candidate.Kind = MainForm.MeshCandidateKind.HeadPart),
-                                         isFaceHeadPart:=(candidate IsNot Nothing AndAlso candidate.HeadPartType = HeadPartTypeFace))
+                ' Skin (naked body) candidate: the body-skin TXST (ARMA NAM0/NAM1) must ONLY replace
+                ' shapes whose shader is SkinTint — the engine only skins SkinTint geometry (both games,
+                ' user rule 2026-07-09). Non-SkinTint shapes bundled inside a body mesh (e.g. CBBE
+                ' Bra/Panty underwear = Default shader, or the eyes/mouth in the vanilla all-in-one
+                ' childfeet.nif = EyeEnvmap/Default) keep their OWN material — painting them with the
+                ' body diffuse was the "skin on underwear / body texture on eyes" bug. FO4 body meshes
+                ' are all-SkinTint so this is a no-op there (no FO4 regression). HeadPart candidates are
+                ' unaffected: their HDPT.TNAM legitimately applies to the head part regardless of shader.
+                Dim isSkinCand As Boolean = (candidate IsNot Nothing AndAlso candidate.Kind = MainForm.MeshCandidateKind.Skin)
+                Dim shaderIsSkinTint As Boolean = (matPre IsNot Nothing AndAlso matPre.NifShaderType = NiflySharp.Enums.BSLightingShaderType.SkinTint)
+                If (Not isSkinCand) OrElse shaderIsSkinTint Then
+                    ApplyTextureSetOverrides(textureSet, relatedMaterial, candidate.UsesBodyTexture, shape.NifShape, shape.NifContent,
+                                             isHeadPartTextureSet:=(candidate IsNot Nothing AndAlso candidate.Kind = MainForm.MeshCandidateKind.HeadPart),
+                                             isFaceHeadPart:=(candidate IsNot Nothing AndAlso candidate.HeadPartType = HeadPartTypeFace))
+                ElseIf logEnabled Then
+                    Dim shN = shape.ShapeName
+                    Dim shTy = If(matPre IsNot Nothing, matPre.NifShaderType.ToString(), "?")
+                    Logger.LogLazy(Function() $"[SKIN-SHADER-GATE] Skin candidate: shape='{shN}' shader={shTy} (not SkinTint) → body TXST NOT applied (keeps own material).")
+                End If
             End If
 
             Dim material = relatedMaterial.material

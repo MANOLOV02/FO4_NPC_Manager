@@ -31,6 +31,17 @@ Public Class CharGenOptionsForm
         ' Eyebrows fixed-color override: gate persistido en Config_App (lo lee la librería en
         ' BuildSyntheticEyebrowLut). Requiere ESTE toggle + el archivo SkipEyebrowsTone.ini. Default True.
         CheckBoxApplyEyebrowsFixedColor.Checked = c.Setting_ApplyEyebrowsFixedColor
+        ' Mouth vanilla fix gate → Config_App (lo lee la librería ChargenMouthFix en los parse-sites de
+        ' render/bake). Aplica SOLO a BaseFemaleHeadChargen.tri. Default False = vanilla puro.
+        CheckBoxApplyMouthVanillaFix.Checked = c.Setting_ApplyMouthVanillaFix
+        ' Los 3 fixes de este tab son FO4-only. Deshabilitar (sin tocar el valor persistido, que se
+        ' round-trip-ea intacto en OK) cuando el juego activo no es Fallout4. El gate REAL vive también
+        ' en la app (ChargenMouthFix.IsActiveFor / IsGhoulHeadRearCase / BuildSyntheticEyebrowLut); esto
+        ' es la señal visual coherente en la UI.
+        Dim isFo4 = (c.Game = Config_App.Game_Enum.Fallout4)
+        CheckBoxApplyGhoulHeadRearFix.Enabled = isFo4
+        CheckBoxApplyEyebrowsFixedColor.Enabled = isFo4
+        CheckBoxApplyMouthVanillaFix.Enabled = isFo4
         If c.Setting_FaceGenPerLayerResolution Then
             RadioPerLayer.Checked = True
         Else
@@ -349,6 +360,9 @@ Public Class CharGenOptionsForm
         NPC_Config.Current.ApplyGhoulHeadRearFix = CheckBoxApplyGhoulHeadRearFix.Checked
         ' Eyebrows fixed-color gate → Config_App (lo lee la librería). Se persiste en el SaveConfig de abajo.
         c.Setting_ApplyEyebrowsFixedColor = CheckBoxApplyEyebrowsFixedColor.Checked
+        ' Mouth vanilla fix gate → Config_App. Al volver el OK, MainForm re-renderiza el NPC actual; como la
+        ' cache de TriHead está keyed por este flag, el re-render re-lee vanilla o fixed según corresponda.
+        c.Setting_ApplyMouthVanillaFix = CheckBoxApplyMouthVanillaFix.Checked
 
         ' --- Tab "FaceTint Conventions": persistir la convención concreta por bucket. ---
         Dim s = c.Setting_FaceTintConvention

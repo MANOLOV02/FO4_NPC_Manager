@@ -345,12 +345,30 @@ Friend Class NpcRenderHost
                 Dim bipedDbg As String = "-"
                 Dim hidDbg As Integer = 0, totDbg As Integer = 0
                 If siDbg IsNot Nothing Then
+                    ' FO4: segmented BSSubIndexTriShape.
                     bipedDbg = String.Join(",", BSTriShapeGeometry.GetBipedObjects(siDbg))
                     Dim occlDbg = BSTriShapeGeometry.ComputeHiddenTriangles(siDbg, cmDbg)
                     totDbg = occlDbg.Length
                     For Each h In occlDbg
                         If h Then hidDbg += 1
                     Next
+                ElseIf isSse AndAlso shape.NifContent IsNot Nothing AndAlso shape.NifShape IsNot Nothing Then
+                    ' SSE: mirror the REAL render path (BSDismember partitions) so the log tells the truth.
+                    ' The old code only cast to BSSubIndexTriShape (an FO4 type) → SSE shapes always logged
+                    ' biped={-} hiddenTris=0/0 even when occlusion ran. This computes the actual SSE result.
+                    Dim bps = shape.NifContent.GetTriangleBodyParts(shape.NifShape)
+                    If bps IsNot Nothing AndAlso bps.Count > 0 Then
+                        bipedDbg = String.Join(",", bps.Where(Function(v) v >= 0).Distinct().OrderBy(Function(v) v))
+                        Dim occlDbg = shape.NifContent.ComputeHiddenTrianglesDismember(shape.NifShape, cmDbg)
+                        If occlDbg IsNot Nothing Then
+                            totDbg = occlDbg.Length
+                            For Each h In occlDbg
+                                If h Then hidDbg += 1
+                            Next
+                        End If
+                    Else
+                        bipedDbg = "no-dismember-parts"
+                    End If
                 End If
                 Dim nmDbg = If(shape.ShapeName, "?"), catDbg = cat, hideDbg = hide
                 Logger.LogLazy(Function() $"[OCCL]   shape='{nmDbg}' cat={catDbg} own=0x{ownDbg:X} coveredMask=0x{cmDbg:X} hiddenTris={hidDbg}/{totDbg} biped={{{bipedDbg}}} renderHide={hideDbg}")

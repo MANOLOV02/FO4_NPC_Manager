@@ -118,6 +118,33 @@ Public Module LooksmenuLoader
         ''' subrecords (engine then falls back to RACE.HEAD only).</summary>
         Public HasHeadPartFormIDs As Boolean = False
 
+        ''' <summary>True when <see cref="HeadPartFormIDs"/> is a COMPLETE superset seeded from the
+        ''' raw NPC.PNAM including its IsExtraPart addons (lashes/AO/wet/hairlines) — i.e. the list is
+        ''' faithful and authoritative, and any raw part it OMITS was deleted on purpose.
+        '''
+        ''' Only Edit Face produces such a list (EditFace_Form.SeedFromOverlayOrRaw seeds from the raw
+        ''' PNAM without the IsExtraPart filter). Filtered sources leave this False: LooksMenu JSON,
+        ''' SavePreset/BuildPresetFromState and Paste all DROP IsExtraPart addons, so their list is a
+        ''' subset that still needs the raw record unioned back in at save to restore those extras.
+        '''
+        ''' Reader: NpcOverrideSaver Phase 1c. True ⇒ do NOT union the raw record's head parts (the
+        ''' preset already carries the extras it keeps, and a raw union would resurrect user-deleted
+        ''' freestanding Misc parts — the orphan-hairline bug — since a raw Misc has no PartType slot
+        ''' to be overridden and always re-accumulates). False ⇒ raw ∪ preset (long-standing behaviour).</summary>
+        Public HeadPartFormIDsIncludeRawExtras As Boolean = False
+
+        ''' <summary>Raw NPC.PNAM head parts to SUPPRESS from the save-time raw union: the orphaned
+        ''' standalone Misc (hairline, orphaned eye lashes, …) left behind when this preset/paste REPLACED
+        ''' a main-type parent. Computed at APPLY time — Load LooksMenu/RaceMenu + Copy/Paste — via
+        ''' <see cref="HeadPartResolver.ComputeReplacedParentOrphanMisc"/>, so the decision lives where
+        ''' the hair swap happens; NpcOverrideSaver Phase 1c merely skips these FormIDs when unioning the
+        ''' raw record. Gated on an actual REPLACEMENT (a parent the preset left untouched suppresses
+        ''' nothing) and the cascade keeps extras a surviving parent still claims — so no Cait-class lash loss.
+        ''' Empty for EditFace (a complete superset — <see cref="HeadPartFormIDsIncludeRawExtras"/> — that
+        ''' already reflects deletions) and for any apply that didn't replace a parent. Does NOT affect
+        ''' render: the render reads <see cref="HeadPartFormIDs"/> directly, not this set.</summary>
+        Public SuppressedRawHeadPartFormIDs As New HashSet(Of UInteger)
+
         ''' <summary>BodySlide vertex morph sliders ("BodyMorphs" in JSON). Dict keyed by slider
         ''' name (e.g. "BigBelly", "ChubbyButt"); the resolver looks each name up in the PIRT .tri
         ''' of every shape and applies wherever defined. Empty = no overlay; the NPC's body renders
@@ -663,6 +690,8 @@ Public Module LooksmenuLoader
         c.HasBodyMorphValues = p.HasBodyMorphValues
         c.HasFaceBoneRegions = p.HasFaceBoneRegions
         c.HasHeadPartFormIDs = p.HasHeadPartFormIDs
+        c.HeadPartFormIDsIncludeRawExtras = p.HeadPartFormIDsIncludeRawExtras
+        c.SuppressedRawHeadPartFormIDs = New HashSet(Of UInteger)(p.SuppressedRawHeadPartFormIDs)
 
         For Each kv In p.BodyMorphSliders : c.BodyMorphSliders(kv.Key) = kv.Value : Next
 

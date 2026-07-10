@@ -996,7 +996,9 @@ Public Module NpcOverrideSaver
             npcSpec.HasMwgt = True
         End If
 
-        ' Phase 1c: rebuild HeadPartFormIDs from raw NPC PNAM ∪ preset, dedup by PartType.
+        ' Phase 1c: rebuild HeadPartFormIDs, dedup main types (1-9) by PartType. For a FILTERED preset
+        ' the source is raw NPC PNAM ∪ preset (union restores IsExtraPart addons the preset dropped);
+        ' for a COMPLETE superset preset (Edit Face) the preset alone is authoritative (see below).
         ' Snapshot the raw head parts FIRST. When no overlay is applied, ApplyPresetOverlayToNpcData returns
         ' the SAME instance (npcSpec IS rawNpcSpec), so clearing npcSpec.HeadPartFormIDs would also empty
         ' rawNpcSpec.HeadPartFormIDs — and the rebuild below would then read an empty list, WIPING every head
@@ -1032,11 +1034,30 @@ Public Module NpcOverrideSaver
                         mergedByType(hd.PartType) = fid
                     End If
                 End Sub
-            For Each fid In rawHeadParts
-                classifyHeadPart(fid, False)   ' raw: keep extras (round-trip faithful)
-            Next
+            ' A COMPLETE superset preset (Edit Face — seeded from the raw record's PNAM including its
+            ' IsExtraPart addons, then edited) is AUTHORITATIVE: it already carries every raw extra it
+            ' means to keep, so we must NOT union the raw record back in. Doing so would (a) resurrect
+            ' freestanding Misc parts the user explicitly deleted — the orphan-hairline bug — because a
+            ' raw Misc has no PartType slot to be overridden and always re-accumulates into
+            ' freestandingMisc, and (b) duplicate any Misc present in both lists (freestandingMisc is
+            ' not deduped). Filtered presets (LooksMenu JSON / SavePreset / Paste) DROP IsExtraPart
+            ' addons, so they still need the raw union to restore lashes/AO/wet the preset omitted.
+            Dim presetIsCompleteSuperset As Boolean = overlay.HeadPartFormIDsIncludeRawExtras
+            If Not presetIsCompleteSuperset Then
+                ' Skip raw parts the APPLY step flagged as orphaned by a parent replacement (an old
+                ' hairline / eye-lash left over after a preset/paste swapped that parent). Decided at Load/Paste
+                ' (HeadPartResolver.ComputeReplacedParentOrphanMisc → overlay.SuppressedRawHeadPartFormIDs);
+                ' the saver just obeys it. Empty set for any apply that didn't replace a parent.
+                Dim suppressedRaw = overlay.SuppressedRawHeadPartFormIDs
+                For Each fid In rawHeadParts
+                    If suppressedRaw IsNot Nothing AndAlso suppressedRaw.Contains(fid) Then Continue For
+                    classifyHeadPart(fid, False)   ' raw: keep extras (round-trip faithful)
+                Next
+            End If
             For Each fid In presetParts
-                classifyHeadPart(fid, True)    ' preset: filter extras (pre-fix behaviour)
+                ' Complete superset already holds raw extras verbatim → keep them (skipExtra:=False).
+                ' Filtered preset keeps its long-standing extra filter (the raw union above restores them).
+                classifyHeadPart(fid, Not presetIsCompleteSuperset)
             Next
             For Each t In mergedByType.Keys.OrderBy(Function(k) k)
                 npcSpec.HeadPartFormIDs.Add(mergedByType(t))

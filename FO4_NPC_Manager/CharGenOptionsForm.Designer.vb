@@ -130,6 +130,7 @@ Partial Class CharGenOptionsForm
         TabPageFixes = New TabPage()
         CheckBoxApplyGhoulHeadRearFix = New CheckBox()
         CheckBoxApplyEyebrowsFixedColor = New CheckBox()
+        CheckBoxApplyMouthVanillaFix = New CheckBox()
         TabMain.SuspendLayout()
         TabPageSize.SuspendLayout()
         GroupBoxSize.SuspendLayout()
@@ -1106,6 +1107,7 @@ Partial Class CharGenOptionsForm
         '
         TabPageFixes.Controls.Add(CheckBoxApplyGhoulHeadRearFix)
         TabPageFixes.Controls.Add(CheckBoxApplyEyebrowsFixedColor)
+        TabPageFixes.Controls.Add(CheckBoxApplyMouthVanillaFix)
         TabPageFixes.Location = New Point(4, 24)
         TabPageFixes.Name = "TabPageFixes"
         TabPageFixes.Padding = New Padding(3)
@@ -1133,6 +1135,16 @@ Partial Class CharGenOptionsForm
         CheckBoxApplyEyebrowsFixedColor.TabIndex = 1
         CheckBoxApplyEyebrowsFixedColor.Text = "Apply fixed color to eyebrows (SkipEyebrowsTone.ini)"
         CheckBoxApplyEyebrowsFixedColor.UseVisualStyleBackColor = True
+        '
+        ' CheckBoxApplyMouthVanillaFix
+        '
+        CheckBoxApplyMouthVanillaFix.AutoSize = True
+        CheckBoxApplyMouthVanillaFix.Location = New Point(12, 66)
+        CheckBoxApplyMouthVanillaFix.Name = "CheckBoxApplyMouthVanillaFix"
+        CheckBoxApplyMouthVanillaFix.Size = New Size(280, 19)
+        CheckBoxApplyMouthVanillaFix.TabIndex = 2
+        CheckBoxApplyMouthVanillaFix.Text = "Fix mouth vanilla error (BaseFemaleHeadChargen.tri)"
+        CheckBoxApplyMouthVanillaFix.UseVisualStyleBackColor = True
         '
         ' GroupConvDWsByOp
         '
@@ -1390,4 +1402,5 @@ Partial Class CharGenOptionsForm
     Friend WithEvents TabPageFixes As System.Windows.Forms.TabPage
     Friend WithEvents CheckBoxApplyGhoulHeadRearFix As System.Windows.Forms.CheckBox
     Friend WithEvents CheckBoxApplyEyebrowsFixedColor As System.Windows.Forms.CheckBox
+    Friend WithEvents CheckBoxApplyMouthVanillaFix As System.Windows.Forms.CheckBox
 End Class

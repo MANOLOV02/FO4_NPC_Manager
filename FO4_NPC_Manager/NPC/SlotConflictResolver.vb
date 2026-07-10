@@ -126,7 +126,16 @@ Public Module SlotConflictResolver
             '    eliminated the cuirass; claim-free-bits was a wrong guess — see reference_sse_engine_occlusion_re.)
             Dim isConflict As Boolean
             If isSse Then
-                isConflict = False   ' Skyrim never drops a piece for a shared BOD2 bit
+                ' Skyrim resolves by SLOT (user directive 2026-07-09; the old "keep-all" drew BOTH of
+                ' two same-slot hats). Pass 1b runs descending Order (last-equipped first), so each biped
+                ' slot is owned by the last-equipped item that claims it. PER-SLOT, not FO4's whole-item
+                ' any-bit: an item is dropped ONLY when EVERY slot it occupies was already claimed by a
+                ' later item; if it keeps ≥1 free slot it still renders. Validated vs real Skyrim.esm BOD2:
+                '   • two hats (both 0x2802 = slots 31/41/43) → the earlier keeps no slot → DROPPED (fix).
+                '   • cuirass(0x114=32,34,38) + boots(0x180=37,38) share only calves-38 → each keeps its
+                '     primary slot → BOTH survive (whole-item any-bit would have wrongly dropped the boots).
+                ' This supersedes the byte-RE "keep-all" note in reference_sse_engine_occlusion_re.
+                isConflict = ((m And (Not occupied)) = 0UI)
             Else
                 Dim conflictMask = If(stripPipboy, m And Not BipedSlots.SLOT_PIPBOY, m)
                 Dim occupiedForCheck = If(stripPipboy, occupied And Not BipedSlots.SLOT_PIPBOY, occupied)

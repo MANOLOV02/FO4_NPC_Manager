@@ -1770,7 +1770,13 @@ Public Class EditBody_Form
     Private Function AppliedOverlayLabel(ov As LooksmenuLoader.OverlayEntry) As String
         Dim tpl = ResolveAppliedTemplate(ov)
         If tpl IsNot Nothing Then Return OverlayDisplay(tpl)
-        Return If(String.IsNullOrEmpty(ov.TemplateId), "(unknown)", ov.TemplateId)
+        ' Missing overlay (2026-07-09, same rule as missing tints): the template mod isn't installed
+        ' / not for this gender. Kept verbatim in p.Overlays (round-trips on Save), the render can't
+        ' resolve it so it's never applied, and the props pane stays disabled. Shown with a MISSING
+        ' marker so the user can still identify and remove it.
+        Dim id = If(String.IsNullOrEmpty(ov.TemplateId), "(unknown)", ov.TemplateId)
+        Logger.LogLazy(Function() $"[LMLoad] Overlay '{id}' shown as MISSING (template not installed for this gender) — preserved verbatim, not applied.")
+        Return $"[MISSING] {id}"
     End Function
 
     ''' <summary>Resolve the OverlayTemplate behind an applied entry via MainForm (gender-aware).
@@ -1944,7 +1950,7 @@ Public Class EditBody_Form
                                                       tintable As Boolean) As String
         Dim id = If(String.IsNullOrEmpty(ov.TemplateId), "(unknown)", ov.TemplateId)
         If tpl Is Nothing Then
-            Return $"{id} — template not installed for this gender (properties disabled)"
+            Return $"[MISSING] {id} — template not installed for this gender; preserved verbatim, not applied (properties disabled)"
         End If
         Return $"{id} — transformable: {If(transformable, "yes", "no")}, tintable: {If(tintable, "yes", "no")}"
     End Function

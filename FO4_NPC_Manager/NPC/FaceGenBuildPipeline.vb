@@ -386,15 +386,13 @@ Public Module FaceGenBuildPipeline
             Return
         End If
 
-        If Environment.GetEnvironmentVariable("SKINNY_DEBUG") = "1" AndAlso state.Race IsNot Nothing AndAlso state.Race.EditorID IsNot Nothing AndAlso state.Race.EditorID.ToLowerInvariant().Contains("dremora") Then
-            Console.Error.WriteLine($"[race] shape='{If(shape?.Name?.String, "")}' raceEID='{state.Race.EditorID}' armorRaceFID=0x{state.Race.ArmorRaceFormID:X8} triHasDremora={triHead.GetMorph("DremoraRace") IsNot Nothing} triHasDarkElf={triHead.GetMorph("DarkElfRace") IsNot Nothing}")
-        End If
-
         ' Single per-game morph plan — the SAME builder the live render calls (NpcMorphResolver.
         ' BuildFaceMorphPlan): FO4 = MSDK/MSDV+MPPI via RACE defs; SSE = race base + NAM9 + NAMA + RaceMenu.
         ' One path per game, no divergence between render and bake.
+        ' Race base morph is looked up by the MORPH-race EditorID (RACE.NAM8 redirect: e.g. Dremora→DarkElf,
+        ' every *Vampire→base race), not the actor's raw race — see RecordParsers.ResolveMorphRaceEditorId.
         Dim plan = NpcMorphResolver.BuildFaceMorphPlan(state.NpcData, triHead,
-                                                       If(state.Race IsNot Nothing, state.Race.EditorID, ""),
+                                                       RecordParsers.ResolveMorphRaceEditorId(state.Race, state.PluginManager),
                                                        state.RaceMorphValueDefs, state.RaceMorphPresetDefs)
         If plan Is Nothing OrElse Not plan.HasMorphs Then Return
 
@@ -414,6 +412,14 @@ Public Module FaceGenBuildPipeline
         For i = 0 To count - 1
             outFloat.Add(New System.Numerics.Vector3(CSng(morphed(i).X), CSng(morphed(i).Y), CSng(morphed(i).Z)))
         Next
+        ' NOTA VertexDesc (SSE): las shapes FaceGeom son BSDynamicTriShape que CK guarda COMPACTAS — posiciones
+        ' solo en el array dinámico, BSVertexDesc "Vertex" attribute OFF (VertSize=6). SetVertexPositions setea ese
+        ' bit y DUPLICA las posiciones al buffer estático (VertSize=10) → único diff de desc vs CK. Es solo encoding
+        ' (Full_Precision está en AMBOS; las posiciones son idénticas → render idéntico). Probado 2026-07-09:
+        ' escribir dynShape.Vertices directo arregla el desc PERO el save regenera el dinámico desde el estático y
+        ' PIERDE el morph (solo SetVertexPositions actualiza el estado que serializa). El fix limpio (SetVertexPositions
+        ' BSDynamicTriShape-aware: dinámico sin setear el bit ni duplicar al estático) vive DENTRO de NiflySharp →
+        ' NO se toca por orden del usuario ("NO TOCAR NIFLYSHARP"). Diff cosmético aceptado.
         geom.SetVertexPositions(outFloat)
     End Sub
 
@@ -434,7 +440,11 @@ Public Module FaceGenBuildPipeline
         Dim bytes = FilesDictionary_class.GetBytes(normalizedKey)
         If bytes Is Nothing OrElse bytes.Length = 0 Then Return Nothing
         Try
-            Return TriHeadParser.ParseTriHeadFromBytes(bytes)
+            Dim head = TriHeadParser.ParseTriHeadFromBytes(bytes)
+            ' Apply the vanilla mouth fix (22 mouth deltas zeroed) iff the toggle is on and this is the
+            ' female chargen tri — so a bake matches the live render WYSIWYG. No-op for every other file.
+            ChargenMouthFix.MaybeApplyInPlace(normalizedKey, head)
+            Return head
         Catch ex As Exception
             Return Nothing
         End Try
