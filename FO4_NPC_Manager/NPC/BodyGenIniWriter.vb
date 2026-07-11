@@ -9,9 +9,10 @@ Imports System.Text
 ''' <para>Convention chosen for NPC_Manager (single owner of these files): one template per NPC
 ''' named <c>NPCM_&lt;EditorID&gt;</c> (sanitized), one row in <c>morphs.ini</c> per NPC. Values
 ''' are fixed (no random ranges, no alternative sets). The directory is anchored to the
-''' OVERRIDE plugin's basename (not the NPC's master plugin) because the engine discovers all
-''' subdirs under <c>BodyGen\</c>; ownership of these files by the override plugin lets a
-''' user remove the override + .ini together cleanly.</para>
+''' OVERRIDE plugin's filename (not the NPC's master plugin) WITH its extension (e.g.
+''' <c>NPC_Manager.esp</c>): the engine does a targeted per-mod lookup <c>BodyGen\&lt;modInfo-&gt;name&gt;\</c>
+''' (BodyGenInterface.cpp:534; name resolved via GetLoadedModIndex, which expects the extension) — it does
+''' NOT enumerate subdirs. Ownership by the override plugin lets a user remove the override + .ini cleanly.</para>
 '''
 ''' <para>Caveat (must be surfaced in UI): the engine evaluates BodyGen only on the actor's
 ''' first load. NPCs already spawned in a saved game keep whatever BodyMorphs were persisted to

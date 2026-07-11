@@ -1,4 +1,4 @@
-Imports System.IO
+﻿Imports System.IO
 Imports OpenTK.Mathematics
 Imports FO4_Base_Library
 
@@ -623,6 +623,21 @@ Public Class NpcMorphResolver
             Dim normChargen = MeshPathHelpers.NormalizeMeshKey(chargenPath)
             Dim chargenHead = TryLoadTriHead(normChargen)
             MergeChargenIntoRaceTriHead(triHead, chargenHead)
+
+            ' RaceMenu EXTENDED morphs. A .slider bound — and therefore a .jslot custom morph — is a morph NAME
+            ' whose geometry lives in a SEPARATE .tri, not in the chargen tri: morphs.ini maps this shape's chargen
+            ' tri to a list of extended tris, and skee64 applies the named morph out of each one
+            ' (MorphVisitor::Accept, SKEEHooks.cpp:687-696, via GetExtendedModelTri). Merging them here is the same
+            ' composition, so every downstream consumer — NAM9/NAMA channels, custom-morph channels, render AND
+            ' bake — resolves the name with no special case. Chargen/race morphs merged above win a name collision.
+            ' Without this, every extended slider silently moved nothing.
+            Dim catalog = SliderCatalog
+            If catalog IsNot Nothing Then
+                For Each extTriPath In catalog.GetExtendedMorphTris(chargenPath)
+                    Dim extHead = TryLoadTriHead(MeshPathHelpers.NormalizeMeshKey(extTriPath))
+                    If extHead IsNot Nothing Then MergeChargenIntoRaceTriHead(triHead, extHead)
+                Next
+            End If
         End If
 
         ' SSE HEAD WEIGHT source: the "SkinnyMorph" channel (the actor-weight head morph, applied by
@@ -682,9 +697,11 @@ Public Class NpcMorphResolver
 
         Try
             Dim pirt = TriFileParser.ParseTriFromBytes(bytes)
-            SyncLock _triCache
-                _triCache(normalizedPath) = pirt
-            End SyncLock
+            If Not IsNothing(pirt) Then
+                SyncLock _triCache
+                    _triCache(normalizedPath) = pirt
+                End SyncLock
+            End If
             Return pirt
         Catch
             Return Nothing

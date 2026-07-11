@@ -57,7 +57,11 @@ Public Module BipedSlotCheckboxes
     ''' slot checkboxes. Wires <paramref name="onChanged"/> to each checkbox. Returns a slot→CheckBox map for mask
     ''' read/write. The <paramref name="flow"/> is configured TopDown / no-wrap / auto-scroll so the stack scrolls
     ''' vertically.</summary>
-    Public Function Build(flow As FlowLayoutPanel, onChanged As EventHandler) As Dictionary(Of Integer, CheckBox)
+    ''' <summary><paramref name="columns"/> sets the checkbox grid width (default <see cref="SlotColumns"/> = 4 for
+    ''' the ARMA/ARMO editors). A caller in a narrow column (e.g. the Skin-Overrides tab) can pass 2 so the grid
+    ''' fits without horizontal scroll.</summary>
+    Public Function Build(flow As FlowLayoutPanel, onChanged As EventHandler, Optional columns As Integer = SlotColumns) As Dictionary(Of Integer, CheckBox)
+        Dim cols = Math.Max(1, columns)
         ' Sanity: the categories must cover every slot exactly once (a dropped slot would be a silent bug).
         Dim cats = CategoriesForGame()
         Dim covered = cats.SelectMany(Function(c) c.Slots).OrderBy(Function(n) n).ToArray()
@@ -73,24 +77,24 @@ Public Module BipedSlotCheckboxes
         For Each cat In cats
             Dim gb As New GroupBox With {.Text = cat.Title, .AutoSize = True,
                                          .AutoSizeMode = AutoSizeMode.GrowAndShrink, .Margin = New Padding(3)}
-            Dim tlp As New TableLayoutPanel With {.ColumnCount = SlotColumns, .AutoSize = True,
+            Dim tlp As New TableLayoutPanel With {.ColumnCount = cols, .AutoSize = True,
                                                   .AutoSizeMode = AutoSizeMode.GrowAndShrink, .Dock = DockStyle.Fill}
-            For c = 0 To SlotColumns - 1
-                tlp.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100.0F / SlotColumns))
+            For c = 0 To cols - 1
+                tlp.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100.0F / cols))
             Next
-            Dim rowCount = CInt(Math.Ceiling(cat.Slots.Length / CDbl(SlotColumns)))
+            Dim rowCount = CInt(Math.Ceiling(cat.Slots.Length / CDbl(cols)))
             For r = 0 To rowCount - 1
                 tlp.RowStyles.Add(New RowStyle(SizeType.AutoSize))
             Next
 
-            ' Row-major fill so columns line up: index i → (col = i Mod SlotColumns, row = i \ SlotColumns).
+            ' Row-major fill so columns line up: index i → (col = i Mod cols, row = i \ cols).
             For i = 0 To cat.Slots.Length - 1
                 Dim slot = cat.Slots(i)
                 Dim cb As New CheckBox With {.AutoSize = True, .Text = SlotName(slot), .Tag = slot,
                                              .UseVisualStyleBackColor = True, .Anchor = AnchorStyles.Left,
                                              .Width = 150, .MinimumSize = New Size(150, 0), .Margin = New Padding(3)}
                 If onChanged IsNot Nothing Then AddHandler cb.CheckedChanged, onChanged
-                tlp.Controls.Add(cb, i Mod SlotColumns, i \ SlotColumns)
+                tlp.Controls.Add(cb, i Mod cols, i \ cols)
                 map(slot) = cb
             Next
 

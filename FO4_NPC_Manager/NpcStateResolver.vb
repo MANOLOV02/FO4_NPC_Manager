@@ -127,6 +127,9 @@ Friend NotInheritable Class NpcStateResolver
             If overlayPreset.HairColorFormID <> 0UI Then
                 state.HairColorFormID = overlayPreset.HairColorFormID
             End If
+            ' SSE RaceMenu absolute hair tint (packed RGB from the .jslot) — precedence over the CLFM at
+            ' hair-material resolution (ResolveHairTintColor). SSE-only; Nothing on FO4 / presets without hairColor.
+            If overlayPreset.SseHairColorRgb.HasValue Then state.SseHairColorRgb = overlayPreset.SseHairColorRgb
             If overlayPreset.WeightThin.HasValue Then state.WeightThin = overlayPreset.WeightThin.Value
             If overlayPreset.WeightMuscular.HasValue Then state.WeightMuscular = overlayPreset.WeightMuscular.Value
             If overlayPreset.WeightFat.HasValue Then state.WeightFat = overlayPreset.WeightFat.Value

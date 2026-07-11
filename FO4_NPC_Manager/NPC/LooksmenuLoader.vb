@@ -41,6 +41,11 @@ Public Module LooksmenuLoader
         ''' (skee64 sets npc->headData->headTexture, PresetInterface.cpp:158-160). 0 = none. The render uses it as
         ''' the explicit face TXST (NpcMaterialResolver reads state.ExplicitHeadTextureFormID). SSE-only; Nothing/0 on FO4.</summary>
         Public SseHeadTextureFormID As UInteger
+        ''' <summary>SSE-ONLY RaceMenu absolute hair tint from a loaded .jslot's actor.hairColor (packed 0xRRGGBB).
+        ''' skee writes it straight onto the hair shape's BSLightingShaderMaterialHairTint.tintColor (unpacked /255,
+        ''' ×2, PresetInterface.cpp:112-116), taking precedence over the NPC's CLFM/HCLF colour. Nothing = the preset
+        ''' carried no hairColor → render falls back to the CLFM. SSE-only; Nothing on FO4.</summary>
+        Public SseHairColorRgb As Integer?
         Public WeightThin As Single?
         Public WeightMuscular As Single?
         Public WeightFat As Single?
@@ -685,6 +690,7 @@ Public Module LooksmenuLoader
         c.SseUnresolvedHeadParts.AddRange(p.SseUnresolvedHeadParts)
         c.HairColorFormID = p.HairColorFormID
         c.SseHeadTextureFormID = p.SseHeadTextureFormID
+        c.SseHairColorRgb = p.SseHairColorRgb
         c.WeightThin = p.WeightThin
         c.WeightMuscular = p.WeightMuscular
         c.WeightFat = p.WeightFat
@@ -813,13 +819,8 @@ Public Module LooksmenuLoader
         Dim copy As New List(Of RaceMenuJslot.JslotOverlayNode)(src.Count)
         For Each ov In src
             If ov Is Nothing Then Continue For
-            copy.Add(New RaceMenuJslot.JslotOverlayNode With {
-                .NodeName = ov.NodeName,
-                .DiffusePath = ov.DiffusePath,
-                .NormalPath = ov.NormalPath,
-                .TintR = ov.TintR, .TintG = ov.TintG, .TintB = ov.TintB, .TintA = ov.TintA,
-                .HasTint = ov.HasTint
-            })
+            ' Clone() (not a field-by-field copy) so the unmodeled-key preservation (RawValues) rides along.
+            copy.Add(ov.Clone())
         Next
         Return copy
     End Function

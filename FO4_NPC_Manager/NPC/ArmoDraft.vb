@@ -91,7 +91,10 @@ Public Class ArmoDraft
     Public Property Value As Integer = 0                  ' DATA Value (s32)
     Public Property Weight As Single = 0.0F               ' DATA Weight
     Public Property Health As UInteger = 0UI              ' DATA Health
-    Public Property ArmorRating As UShort = 0US           ' FNAM
+    Public Property ArmorRating As UShort = 0US           ' FNAM (FO4)
+    ''' <summary>SKYRIM DNAM 'Armor Rating' (itS32, wire value = rating×100). Distinct from the FO4 <see cref="ArmorRating"/>
+    ''' (u16 FNAM). Threaded so a Skyrim ARMO override preserves its rating on save. 0 for FO4 drafts.</summary>
+    Public Property SkyrimArmorRating As Integer = 0
     Public Property BaseAddonIndex As UShort = 0US        ' FNAM (0 = load addon group 0)
     Public Property StaggerRating As Byte = 0             ' FNAM
 
@@ -123,7 +126,8 @@ Public Class ArmoDraft
             .MaleWorldModelPath = MaleWorldModelPath, .FemaleWorldModelPath = FemaleWorldModelPath,
             .MaleMaterialSwapFormID = MaleMaterialSwapFormID, .FemaleMaterialSwapFormID = FemaleMaterialSwapFormID,
             .Value = Value, .Weight = Weight, .Health = Health,
-            .ArmorRating = ArmorRating, .BaseAddonIndex = BaseAddonIndex, .StaggerRating = StaggerRating,
+            .ArmorRating = ArmorRating, .SkyrimArmorRating = SkyrimArmorRating,
+            .BaseAddonIndex = BaseAddonIndex, .StaggerRating = StaggerRating,
             .IsOverride = IsOverride, .IsNew = IsNew, .IsModified = IsModified,
             .CombinationsEdited = CombinationsEdited
         }
@@ -176,6 +180,7 @@ Public Class ArmoDraft
         If Weight <> o.Weight Then Return False
         If Health <> o.Health Then Return False
         If ArmorRating <> o.ArmorRating Then Return False
+        If SkyrimArmorRating <> o.SkyrimArmorRating Then Return False
         If BaseAddonIndex <> o.BaseAddonIndex Then Return False
         If StaggerRating <> o.StaggerRating Then Return False
         If ArmorAddons.Count <> o.ArmorAddons.Count Then Return False

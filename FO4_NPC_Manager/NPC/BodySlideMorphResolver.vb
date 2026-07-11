@@ -46,6 +46,7 @@ Public Class BodySlideMorphResolver
 
         Dim pirt = BodySlideTriResolver.ResolveAndLoad(shape, meshKey)
         If pirt Is Nothing Then
+            If Logger.Enabled Then Logger.LogLazy(Function() $"[BODYSLIDE] shape='{shapeName}' → NO PIRT (BODYTRI unresolved / missing / non-PIRT). sliders={_sliders.Count}")
             Return plan
         End If
 
@@ -70,6 +71,10 @@ Public Class BodySlideMorphResolver
         Dim resolvedTriShapeName = ResolveTriShapeKey(pirt, shapeName)
 
         If resolvedTriShapeName Is Nothing Then
+            If Logger.Enabled Then
+                Dim triKeys = String.Join(", ", pirt.ShapeMorphs.Keys)
+                Logger.LogLazy(Function() $"[BODYSLIDE] shape='{shapeName}' PIRT loaded but shape-name NOT in .tri (case-sensitive). .tri keys=[{triKeys}]")
+            End If
             Return plan
         End If
 
@@ -92,6 +97,10 @@ Public Class BodySlideMorphResolver
             plan.Channels.Add(New MorphChannel(sliderName, weight, deltas))
         Next
 
+        If Logger.Enabled Then
+            Dim chCount = plan.Channels.Count
+            Logger.LogLazy(Function() $"[BODYSLIDE] shape='{shapeName}' matched .tri key='{resolvedTriShapeName}' → channels emitted={chCount} (of {_sliders.Count} sliders)")
+        End If
         Return plan
     End Function
 

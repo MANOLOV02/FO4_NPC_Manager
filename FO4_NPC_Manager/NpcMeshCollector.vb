@@ -81,12 +81,27 @@ Friend NotInheritable Class NpcMeshCollector
         Dim faceCullMask As UInteger = RaceUtil.RaceFaceCullMask(raceData)
         Dim hairMask As UInteger = RaceUtil.RaceHairMask(raceData)
         Dim facialHairMask As UInteger = RaceUtil.RaceFacialHairMask(raceData)
-        result.HeadOcclusionMask = faceCullMask Or hairMask Or facialHairMask
+        ' A (face-cull, whole-node) y B (hair slot) crudos, para que el render (SSE) reconstruya la máscara
+        ' per-partición engine-fiel desde los BOD2 de los ítems ACTUALMENTE renderizados (attach 0x140218200
+        ' fase 2). result.HeadOcclusionMask se fija abajo, ya con los winners resueltos (máscara EFECTIVA).
+        result.HeadFaceCullMask = faceCullMask
+        result.HeadHairSlotMask = hairMask
 
         ' Per-segment worn-slot occlusion (Fase 2): LoadNifShapes records each worn-item shape's OWN slots
         ' + group id (ShapeOwnSlots / ShapeSlotGroup); ApplyRenderToggleVisibility recomputes the occlusion
         ' mask from the currently-rendered subset (a render toggle hiding an item drops its slots).
-        Dim selectedCandidates = SelectWinningCandidates(candidates, faceCullMask, hairMask, facialHairMask)
+        Dim wornItemMasks As List(Of UInteger) = Nothing
+        Dim wornSlotMask As UInteger = 0UI
+        Dim selectedCandidates = SelectWinningCandidates(candidates, faceCullMask, hairMask, facialHairMask, wornItemMasks, wornSlotMask)
+
+        ' Máscara EFECTIVA de oclusión de head-parts para consumidores legacy de HeadOcclusionMask.
+        ' SSE: bit del slot de pelo del worn mask (mecanismo a) + BOD2 del ARMA que lo ocupa (mecanismo b),
+        ' más el face-cull A (whole-node). FO4: sin cambios (unión de los tres canales A/B/C).
+        If Config_App.Current.Game = Config_App.Game_Enum.Skyrim Then
+            result.HeadOcclusionMask = HeadPartHideMask(hairMask, wornSlotMask, wornItemMasks) Or faceCullMask
+        Else
+            result.HeadOcclusionMask = faceCullMask Or hairMask Or facialHairMask
+        End If
 
         ' Diagnostic toggles "Render armor" / "Render only armor" se aplican vía RenderHide en
         ' el draw loop (sin re-resolver candidates). Cada shape se categoriza a la salida del
@@ -576,6 +591,7 @@ Friend NotInheritable Class NpcMeshCollector
                 .DictKey = armaDictKey,
                 .SlotMask = effSlotMask Or (armo.SlotMask And headOcclGate),
                 .ArmaOwnSlotMask = effSlotMask,
+                .ArmoOwnSlotMask = armo.SlotMask,
                 .Priority = If(state.IsFemale, arma.FemalePriority, arma.MalePriority),
                 .Kind = kind,
                 .SourceFormID = armoFormID,
@@ -1107,14 +1123,59 @@ Friend NotInheritable Class NpcMeshCollector
         Next
     End Sub
 
+    ''' <summary>Particiones de head-part a ocultar por headwear en Skyrim (SkyrimSE.exe, base 0x140000000).
+    ''' DOS mecanismos, y cada uno lee una máscara DISTINTA — no confundirlos:
+    '''
+    '''  (a) Master 0x1403BB880 → ApplyOcclusionToGeometry 0x1403C56B0. Oculta la partición del slot de pelo
+    '''      (30+B, B = RACE +0x130) del head-part tipo 3 y sus extras. El flag `hide` sale del WORN MASK
+    '''      (GetWornMask 0x140225CB0), que es la OR de los BOD2 de los ARMO equipados (`[ARMO+0x1B8]`).
+    '''      ⇒ el bit del slot de pelo se decide con el BOD2 del ARMO.
+    '''
+    '''  (b) Attach de biped 0x140218200 fase 2 (@0x14021844a-0x1402184c2). Corre para el ítem cuyo ownerSlot
+    '''      es el slot de pelo, y oculta en el subárbol del nodo de cabeza (walker 0x140218640 →
+    '''      SetPartitionVisible(...,0)) toda partición cuyo slot plegado sea uno de los slots agrupados con él.
+    '''      Agrupa por `cmp [entry[edi]+0x18], [entry[owner]+0x18]`, y el writer (@0x1402134E0
+    '''      `mov [rsi], rbp`) guarda ahí SIEMPRE el ARMATURE (ARMA), recorriendo los bits del BOD2 del ARMA
+    '''      (`IsSlotOccupied(ARMA+0x30, slot)` @0x140213437). Un slot que declara SÓLO el ARMO deja `+0x18`
+    '''      sin escribir (@0x1402134FA-0x14021351E: escribe `+0x10` = ARMO, nunca `+0x18`) ⇒ NO agrupa.
+    '''      ⇒ las particiones que se ocultan salen del BOD2 del ARMA, no del ARMO ni de la unión de ARMAs.
+    '''
+    ''' Medido sobre el load order del usuario: 741/1075 head-gear ARMOs declaran bits que sólo tiene el ARMA
+    ''' (típicamente 41 LongHair y 43 Ears). Capucha FarmClothes03: ARMO=[31,42] pero su ARMA de slot 31 es
+    ''' [31,41,43] ⇒ oculta particiones 31, 41 y 43 ⇒ un pelo {31,41} desaparece entero y las orejas de
+    ''' femalehead (partición 43) también. El 42 (Circlet), declarado sólo por el ARMO, NO oculta nada.
+    '''
+    ''' <paramref name="wornMask"/> = OR de los BOD2 de los ARMO equipados (mecanismo a).
+    ''' <paramref name="armatureMasks"/> = BOD2 de cada ARMA adjunta (mecanismo b).
+    ''' NO incluye el bit A (face-cull es whole-node, no per-partición). Friend Shared: un único sitio con la
+    ''' regla, compartido por SelectWinningCandidates y NpcRenderHost (mismo assembly).</summary>
+    Friend Shared Function HeadPartHideMask(hairSlotMask As UInteger, wornMask As UInteger,
+                                            armatureMasks As IEnumerable(Of UInteger)) As UInteger
+        If hairSlotMask = 0UI Then Return 0UI
+        ' (a) el slot de pelo, si algún ARMO equipado lo declara.
+        Dim hide As UInteger = wornMask And hairSlotMask
+        ' (b) los demás slots del ARMA que quedó adjunta en el slot de pelo.
+        If armatureMasks IsNot Nothing Then
+            For Each m In armatureMasks
+                If (m And hairSlotMask) <> 0UI Then hide = hide Or m
+            Next
+        End If
+        Return hide
+    End Function
+
     ''' <summary>Resolve which candidates win their biped-slot tournament and which head parts the worn set
     ''' occludes. The head-part occlusion is RACE-driven (engine-faithful): the caller passes the slot-30-
     ''' relative masks derived from this NPC's RACE.DATA biped objects — <paramref name="faceCullMask"/> (A,
     ''' full-face cull), <paramref name="hairMask"/> (B, the hair channel = 30+B and 30+B+1), and
-    ''' <paramref name="facialHairMask"/> (C, the beard slot). 0 mask = that channel occludes nothing.</summary>
+    ''' <paramref name="facialHairMask"/> (C, the beard slot). 0 mask = that channel occludes nothing.
+    ''' <paramref name="wornItemMasks"/> devuelve (out) el BOD2 del ARMA de cada pieza ganadora (mecanismo b
+    ''' del attach 0x140218200) y <paramref name="wornSlotMask"/> el worn mask agregado (mecanismo a), para
+    ''' que ResolvePreviewVariant arme la máscara efectiva sin recomputar el torneo.</summary>
     Private Function SelectWinningCandidates(candidates As List(Of MainForm.MeshCandidate),
                                              faceCullMask As UInteger, hairMask As UInteger,
-                                             facialHairMask As UInteger) As List(Of MainForm.MeshCandidate)
+                                             facialHairMask As UInteger,
+                                             ByRef wornItemMasks As List(Of UInteger),
+                                             ByRef wornSlotMask As UInteger) As List(Of MainForm.MeshCandidate)
         Dim selected As New List(Of MainForm.MeshCandidate)
 
         ' HDPT type=7 Meatcaps used to be filtered here. Now they pass through to the render
@@ -1195,14 +1256,28 @@ Friend NotInheritable Class NpcMeshCollector
                 grp.Add(c)
             End If
         Next
+        ' conflictMaskOf (SSE): el BOD2 CRUDO del ARMO del grupo — la máscara con la que el engine decide el
+        ' conflicto de equip (0x1403BD39E + SlotsOverlap). Todas las candidates de un grupo comparten ARMO,
+        ' así que basta la primera. Ignorado en FO4 (rama any-bit last-wins sobre SlotMask).
         Dim slotResolution = SlotConflictResolver.ResolveSlotWinners(
             armoGroups,
             Function(g) g.Aggregate(0UI, Function(acc, c) acc Or c.SlotMask),
-            Function(g) g.Min(Function(c) c.Order))
+            Function(g) g.Min(Function(c) c.Order),
+            Function(g) g.First().ArmoOwnSlotMask)
         For Each g In slotResolution.Winners
             selected.AddRange(g)
         Next
         Dim occupiedSlots As UInteger = slotResolution.OccupiedSlots
+        ' Máscaras que consume HeadPartHideMask (mecanismo b): el BOD2 del ARMA de cada pieza renderizada,
+        ' NO su SlotMask (que es ARMA ∪ bits headwear del ARMO). El writer de la tabla del biped
+        ' (@0x1402134E0) guarda el ARMATURE en `entry+0x18` recorriendo los bits del ARMA; un bit que sólo
+        ' declara el ARMO nunca escribe `+0x18` y por lo tanto no agrupa ni oculta nada.
+        ' Cada candidate ya es un armature filtrado por raza/género = el que el engine adjuntaría.
+        wornItemMasks = slotResolution.Winners.SelectMany(Function(grp) grp).
+            Select(Function(c) c.ArmaOwnSlotMask).Where(Function(m) m <> 0UI).ToList()
+        ' Worn mask (mecanismo a): la OR de los slots de los ítems equipados. Aproxima GetWornMask
+        ' (0x140225CB0, que OR-ea `[ARMO+0x1B8]`): acá SlotMask = ARMA ∪ bits headwear del ARMO.
+        wornSlotMask = occupiedSlots
 
         ' Per-segment "covered by OTHER items" occlusion (ORDER / other-items rule, engine owner-slot
         ' branch 0x14035E22B) is NOT precomputed here anymore: it is rebuilt every render by
@@ -1234,9 +1309,17 @@ Friend NotInheritable Class NpcMeshCollector
         '   6 Eyebrows      : hidden iff worn covers the face-cull slot.
         '   9 HeadRear      : NUNCA se oculta. Es geometría base del cráneo (back of head) que el
         '                     engine renderiza siempre.
-        ' Hair-channel coverage of THIS race, intersected with the worn set. hairMask carries up to two bits
-        ' (30+B, 30+B+1); whether a specific partition is occluded is tested per-partition against this.
-        Dim hairCovered As UInteger = occupiedSlots And hairMask
+        ' Hair-channel coverage of THIS race. FO4: la intersección directa worn ∩ canal de pelo (30+B[,+1]);
+        ' hairMask lleva hasta dos bits y cada partición se testea contra esto. SSE: engine attach 0x140218200
+        ' fase 2 — NO es la unión de todos los equipados, es el BOD2 COMPLETO del ítem que ocupa el slot de
+        ' pelo (30+B); HeadPartHideMask lo devuelve (p.ej. capucha [31,41,42,43] → oculta particiones 31 y 41,
+        ' no sólo la 31). Rama por juego: FO4 byte-idéntico.
+        Dim hairCovered As UInteger
+        If Config_App.Current.Game = Config_App.Game_Enum.Skyrim Then
+            hairCovered = HeadPartHideMask(hairMask, occupiedSlots, wornItemMasks)
+        Else
+            hairCovered = occupiedSlots And hairMask
+        End If
         Dim hasFaceGenHead As Boolean = (occupiedSlots And faceCullMask) <> 0UI
         ' The two hair partitions a {30,31} piece can have. Engine-faithful: the partition bits are still the
         ' source mesh's biped-30/31 tags (BipedSlots.SlotBitHairTop/Long); a partition is "covered" only when its slot is
@@ -1311,9 +1394,10 @@ Friend NotInheritable Class NpcMeshCollector
                         Dim partMaskD = partitionMask
                         Dim occSlotsD = occupiedSlots
                         Dim faceMaskD = faceCullMask
+                        Dim hairSlotD = hairMask
                         Dim hairCovD = hairCovered
                         Dim occD = occluded
-                        Logger.LogLazy(Function() $"[SSE-HEADPART-OCCL] dict='{dkD}' effType={effTypeD} rawType={rawTypeD} isHnamExtra={hnamD} hasFaceGenHead={faceGenD} partitionMask=0x{partMaskD:X} occupiedSlots=0x{occSlotsD:X} faceCullMask=0x{faceMaskD:X} hairCovered=0x{hairCovD:X} occluded={occD}")
+                        Logger.LogLazy(Function() $"[SSE-HEADPART-OCCL] dict='{dkD}' effType={effTypeD} rawType={rawTypeD} isHnamExtra={hnamD} hasFaceGenHead={faceGenD} partitionMask=0x{partMaskD:X} occupiedSlots=0x{occSlotsD:X} faceCullMask=0x{faceMaskD:X} hairSlotMask=0x{hairSlotD:X} hairCovered=0x{hairCovD:X} occluded={occD}")
                     End If
                 Else
                 ' Addons (HNAM-extras del parent O Misc top-level raw=0) son siempre exentos de la
@@ -1953,6 +2037,10 @@ Friend NotInheritable Class NpcMeshCollector
                 ' toggle that hides an item (e.g. Pipboy under Render armor OFF) un-occlude its segments.
                 If candidate.Kind = MainForm.MeshCandidateKind.Outfit Then
                     result.ShapeOwnSlots(shape) = candidate.SlotMask
+                    result.ShapeArmaOwnSlots(shape) = candidate.ArmaOwnSlotMask
+                    ' DNAM priority del ARMA (gender-resuelto). SSE: desempata quién POSEE un slot compartido
+                    ' para la oclusión per-partición por-dueño (fase 1 de 0x140218200, owner en entry+0x18).
+                    result.ShapePriority(shape) = candidate.Priority
                     result.ShapeSlotGroup(shape) = occGroupId
                 End If
                 result.ShapeUsesBodyTexture(shape) = candidate.UsesBodyTexture

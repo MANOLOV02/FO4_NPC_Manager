@@ -72,7 +72,18 @@ Public Module FaceGenBuilder
         Public Property Summary As String = ""
         Public Property ShapesKept As Integer
         Public Property ShapesDropped As Integer
+        ''' <summary>SSE only: True when this NPC's facetint was folded into the head diffuse and its
+        ''' NIF slot 6 was pointed at the plugin's SHARED neutral gray (facetintneutral.dds) instead of
+        ''' a per-NPC &lt;id&gt;.dds. Signals the packer (via <see cref="NpcFaceGenPacker.BakedNpcBundle"/>)
+        ''' to pack the single shared neutral for this NPC rather than a per-NPC facetint.</summary>
+        Public Property UsedSharedNeutralFacetint As Boolean
     End Class
+
+    ''' <summary>SSE fold scratch flag: set by <c>WriteSseFaceDiffuseWithOverlays</c> (non-forced path) when it
+    ''' points the head NIF's slot 6 at the plugin's shared neutral gray. Reset immediately before the SSE bake
+    ''' call and read immediately after — both synchronous within one <c>BuildCharGen</c> (no await between), so
+    ''' the module-level scratch is race-free (bakes run sequentially on the awaited UI thread).</summary>
+    Private _sseFoldUsedSharedNeutral As Boolean
 
     ''' <summary>Dual-mode bake toggle, DRIVEN BY THE LOGGER. ON only when
     ''' <see cref="Logger.Enabled"/> is True (diagnostic session); OFF (release) otherwise.
@@ -123,25 +134,41 @@ Public Module FaceGenBuilder
     Public ReadOnly Property OutputSettings As FaceTintConvention.FaceTintResolutionSettings
         Get
             Dim c = Config_App.Current
+            Dim isSse = (c.Game = Config_App.Game_Enum.Skyrim)
             Dim d = c.Setting_FaceGenDiffuseResolution
             Dim perLayer = c.Setting_FaceGenPerLayerResolution
-            Dim dc = c.Setting_FaceGenDiffuseCompression
+            ' Compresión PER-GAME (set del juego activo → sin leak entre juegos). All-mode: FO4 deriva N del D
+            ' (NsCompressionFromDiffuse → BC5 tangent-space); SSE el N sigue al D (model-space, "All uniforme").
+            ' Per-layer: cada canal el suyo. Specular = FO4-only (SSE no lo bakea).
+            Dim dc = If(isSse, c.Setting_FaceGenDiffuseCompression_SSE, c.Setting_FaceGenDiffuseCompression)
+            Dim nc = If(isSse, c.Setting_FaceGenNormalCompression_SSE, c.Setting_FaceGenNormalCompression)
             Return New FaceTintConvention.FaceTintResolutionSettings With {
                 .Diffuse = d,
                 .Normal = If(perLayer, c.Setting_FaceGenNormalResolution, d),
                 .Specular = If(perLayer, c.Setting_FaceGenSpecularResolution, d),
                 .DiffuseCompression = dc,
-                .NormalCompression = If(perLayer, c.Setting_FaceGenNormalCompression, NsCompressionFromDiffuse(dc)),
+                .NormalCompression = If(perLayer, nc, If(isSse, NormalFromDiffuseSse(dc), NsCompressionFromDiffuse(dc))),
                 .SpecularCompression = If(perLayer, c.Setting_FaceGenSpecularCompression, NsCompressionFromDiffuse(dc))
             }
         End Get
     End Property
 
-    ''' <summary>Modo All: N/S siguen al Diffuse -> Uncompressed si el Diffuse es Uncompressed, sino BC5.</summary>
+    ''' <summary>Modo All FO4: N/S siguen al Diffuse -> Uncompressed si el Diffuse es Uncompressed, sino BC5
+    ''' (el _n de FaceCustomization es tangent-space 2-canales ⇒ BC5).</summary>
     Private Function NsCompressionFromDiffuse(d As FaceTintConvention.FaceTintDiffuseCompression) As FaceTintConvention.FaceTintNormalSpecularCompression
         Return If(d = FaceTintConvention.FaceTintDiffuseCompression.Uncompressed,
                   FaceTintConvention.FaceTintNormalSpecularCompression.Uncompressed,
                   FaceTintConvention.FaceTintNormalSpecularCompression.Bc5)
+    End Function
+
+    ''' <summary>Modo All SSE: el normal (model-space _msn, 3 canales) sigue el FORMATO del diffuse (no BC5, que es
+    ''' 2-canales y perdería el 3er canal): BC7→BC7, Uncompressed→Uncompressed, BC3→BC3. Default (diffuse BC3) ⇒ BC3.</summary>
+    Private Function NormalFromDiffuseSse(d As FaceTintConvention.FaceTintDiffuseCompression) As FaceTintConvention.FaceTintNormalSpecularCompression
+        Select Case d
+            Case FaceTintConvention.FaceTintDiffuseCompression.Bc7 : Return FaceTintConvention.FaceTintNormalSpecularCompression.Bc7
+            Case FaceTintConvention.FaceTintDiffuseCompression.Uncompressed : Return FaceTintConvention.FaceTintNormalSpecularCompression.Uncompressed
+            Case Else : Return FaceTintConvention.FaceTintNormalSpecularCompression.Bc3
+        End Select
     End Function
 
     ''' <summary>True si el output del bake queda LOOSE en disco (no se empaqueta a un BA2): Build CharGen
@@ -399,6 +426,10 @@ Public Module FaceGenBuilder
         Dim outfitHasFaceGenHead As Boolean = (outfitSlots And BakeSlotBitFaceGenHead) <> 0UI
         Dim outfitHasBeard As Boolean = (outfitSlots And BakeSlotBitBeard) <> 0UI
         Dim outfitHasMouth As Boolean = (outfitSlots And BakeSlotBitMouth) <> 0UI
+        ' Captura para el sandbox FORZADO _2c (debug+sandbox): head shape + complexion/normal ORIGINALES (antes de
+        ' que el pass normal mute los slots), para correr el replacer completo en cualquier NPC y salvar _2c.NIF.
+        Dim sseForcedHead As INiShape = Nothing
+        Dim sseForcedComplexion As String = Nothing, sseForcedNormal As String = Nothing, sseForcedDetail As String = Nothing
         For Each kv In hdptMap.OrderBy(Function(p) p.Value.Hdpt.PartType).ThenBy(Function(p) p.Key)
             Dim hdptName = kv.Key
             Dim hdpt = kv.Value.Hdpt
@@ -648,7 +679,20 @@ Public Module FaceGenBuilder
                                 ' SSE bakes a single facetint _d DDS (CPU compose, no GL) to NIF slot 6, NOT
                                 ' the FO4 FaceCustomization D/N/S. Uses the overlaid tints so an Edit Face tint
                                 ' edit bakes WYSIWYG.
-                                WriteSseFacetintDds(nif, cloned, npcFormID, originPlugin, pluginManager, npcData)
+                                ' Captura para el _2c forzado (SOLO debug): head + complexion/normal ORIGINALES
+                                ' ANTES de que el pass normal pueda mutar los slots (evita doble-pliegue). La captura
+                                ' y el forzado son 100% CPU (fold+neutral+normal), NO tocan GL ⇒ gate = DebugMode a
+                                ' secas (NO WriteGPUSandboxOutput: eso apagaba el _2c en el bake loose async).
+                                If DebugMode Then
+                                    Dim sp = GetSseHeadSlotPaths(nif, cloned)
+                                    sseForcedHead = cloned : sseForcedComplexion = sp.Slot0 : sseForcedNormal = sp.Slot1 : sseForcedDetail = sp.Slot3
+                                End If
+                                WriteSseFacetintDds(nif, cloned, npcFormID, originPlugin, pluginManager, npcData, willBePacked, host:=host)
+                                ' Bake RaceMenu FACE overlays into a per-NPC diffuse (slot 0). Gated + no-op for
+                                ' vanilla NPCs (no face overlays) ⇒ the facetint-only path above is unchanged.
+                                _sseFoldUsedSharedNeutral = False
+                                WriteSseFaceDiffuseWithOverlays(nif, cloned, npcFormID, originPlugin, pluginManager, npcData, appliedPresets, willBePacked, host:=host)
+                                result.UsedSharedNeutralFacetint = result.UsedSharedNeutralFacetint OrElse _sseFoldUsedSharedNeutral
                             ElseIf host IsNot Nothing OrElse Not WriteGPUSandboxOutput Then
                                 BakeFaceTextures(nif, cloned, srcNif, srcShape,
                                                  hdpt, effectiveHeadPartType, applyMaterialOverrides,
@@ -972,6 +1016,53 @@ Public Module FaceGenBuilder
             result.Summary = $"Failed to write {nifFileName}: {ex.Message}"
             Return result
         End Try
+
+        ' === SANDBOX FORZADO _2c (SSE, SOLO debug) ===: tras el _2.NIF, forzar el replacer COMPLETO _d/_n
+        ' (pliegue + neutralizar slot6 + normal) AUNQUE el NPC no tenga tints/overlays, sobre el complexion/normal
+        ' ORIGINALES (capturados antes del pass normal ⇒ sin doble-pliegue), y salvar un FaceGeom _2c.NIF paralelo.
+        ' Nunca en release (gate DebugMode). 100% CPU ⇒ NO exige WriteGPUSandboxOutput (antes lo exigía y el _2c
+        ' desaparecía en el bake loose async). No toca el _2/_2b.
+        If isSSEBake AndAlso DebugMode AndAlso sseForcedHead IsNot Nothing Then
+            Try
+                Logger.LogLazy(Function() $"[FACEBAKE][SSE] _2c ENTER: complexion='{sseForcedComplexion}' normal='{sseForcedNormal}'")
+                WriteSseFaceDiffuseWithOverlays(nif, sseForcedHead, npcFormID, originPlugin, pluginManager, npcData,
+                                                appliedPresets, willBePacked:=False, forcedSuffix:="_2c",
+                                                complexionPathOverride:=sseForcedComplexion, normalPathOverride:=sseForcedNormal,
+                                                detailPathOverride:=sseForcedDetail)
+                Dim nif2c = Path.Combine(dataPathForNif, "Meshes", "Actors", "Character", "FaceGenData", "FaceGeom",
+                                         originPlugin, $"{formIdLow:X8}_2c.NIF")
+                nif.Save_As_Manolo(nif2c, Overwrite:=True)
+                Logger.LogLazy(Function() $"[FACEBAKE][SSE] forced replacer sandbox -> {formIdLow:X8}_2c.NIF (+ _2c textures)")
+
+                ' _2d = MISMO pliegue pero desde GPU (complexion × fgTint por el shader), para confirmar CPU(_2c)==GPU(_2d).
+                ' Requiere host GL (solo app). Usa el complexion ORIGINAL capturado (= el que pliega el _2c) + las capas
+                ' de tint del NPC. Es puro GPU (recompone el facetint + pliega en GPU), no copia el _2c CPU.
+                If host IsNot Nothing AndAlso WriteGPUSandboxOutput Then
+                    Dim npcRec2d = pluginManager.GetRecord(npcFormID)
+                    Dim raceFid2d As UInteger = If(npcData IsNot Nothing, npcData.RaceFormID, 0UI)
+                    Dim race2d As RACE_Data = Nothing
+                    If npcRec2d IsNot Nothing AndAlso raceFid2d <> 0UI Then
+                        Dim rr2d = pluginManager.GetRecord(raceFid2d)
+                        If rr2d IsNot Nothing AndAlso rr2d.Header.Signature = "RACE" Then race2d = RecordParsers.ParseRACE(rr2d, pluginManager)
+                    End If
+                    Dim cplx = If(Not String.IsNullOrEmpty(sseForcedComplexion), sseForcedComplexion, GetSseHeadSlotPaths(nif, sseForcedHead).Slot0)
+                    If npcRec2d IsNot Nothing AndAlso race2d IsNot Nothing AndAlso Not String.IsNullOrEmpty(cplx) Then
+                        Dim glayers2d = SseFaceTintComposer.BuildLayerInputs(pluginManager, npcRec2d, race2d, raceFid2d, npcData.IsFemale,
+                                                                            npcData.SseTintRaw, npcData.SseTintTexOverride)
+                        If glayers2d IsNot Nothing AndAlso glayers2d.Count > 0 Then
+                            ' Los MISMOS Face* overlays que el _2c/_2 componen en CPU, para que el _2d (GPU) sea el replacer
+                            ' COMPLETO (fold + overlays) y matchee el facepaint. Preset del NPC (SseBodyOverlays).
+                            Dim preset2d As LooksmenuLoader.LooksmenuPreset = Nothing
+                            If appliedPresets IsNot Nothing Then appliedPresets.TryGetValue(npcFormID, preset2d)
+                            Dim overlays2d = If(preset2d IsNot Nothing, preset2d.SseBodyOverlays, Nothing)
+                            WriteSseFacetint2dGpu(glayers2d, cplx, sseForcedDetail, overlays2d, formIdLow, originPlugin, host)
+                        End If
+                    End If
+                End If
+            Catch ex2c As Exception
+                Logger.LogLazy(Function() $"[FACEBAKE][SSE] _2c sandbox failed: {ex2c.GetType().Name}: {ex2c.Message}")
+            End Try
+        End If
 
         result.Success = True
         result.OutputPath = outAbs
@@ -1456,10 +1547,19 @@ Public Module FaceGenBuilder
     ''' <summary>SSE facetint bake: compose the per-NPC facetint _d (CPU, engine-exact, WYSIWYG with the
     ''' overlaid tint edit), write it to &lt;DataPath&gt;\Textures\Actors\Character\FaceGenData\FaceTint\&lt;plugin&gt;\
     ''' &lt;formID&gt;.dds, and point the cloned Face shape's texture-set slot 6 at it. SSE-only (game-gated);
-    ''' replaces the FO4 FaceCustomization D/N/S bake.</summary>
+    ''' replaces the FO4 FaceCustomization D/N/S bake.
+    '''
+    ''' Debug naming = SAME logic as the FO4 bake (see <see cref="BakeFaceTextures"/>): in DebugMode the DDS
+    ''' lands as <c>&lt;formID&gt;_2.dds</c> (sandbox next to CK's, never clobbering it), and the suffix embedded
+    ''' into the NIF depends on the consumer — canonical when <paramref name="willBePacked"/> (the packer
+    ''' renames the _2 loose to canonical entries), the actual on-disk _2 name otherwise ("Build CharGen
+    ''' (loose)"), so the standalone NIF references a file that exists. En debug+sandbox además emite el <c>_2b</c>
+    ''' (recompose GPU del MISMO facetint vía <see cref="WriteSseFacetint2bGpu"/>) para medir paridad CPU==GPU, y un
+    ''' TGA lossless por cada .dds cuando "Generate TGA" está marcado (igual que el bake FO4).</summary>
     Private Sub WriteSseFacetintDds(nif As Nifcontent_Class_Manolo, cloned As INiShape, npcFormID As UInteger,
                                     originPlugin As String, pluginManager As PluginManager,
-                                    npcData As NPC_Data)
+                                    npcData As NPC_Data, willBePacked As Boolean,
+                                    Optional host As NpcRenderHost = Nothing)
         Try
             If npcData Is Nothing Then Return
             Dim npcRec = pluginManager.GetRecord(npcFormID)
@@ -1474,13 +1574,25 @@ Public Module FaceGenBuilder
             ' Overlaid tints + RaceMenu overlays (Edit Face edits) so the bake is byte-WYSIWYG with the live
             ' preview (both call BakeFaceTintDds with the same tint override + overlays).
             Dim tintOverride As IList(Of NPC_RawSubrecord) = npcData.SseTintRaw
-            Dim dds = SseFaceGenBaker.BakeFaceTintDds(pluginManager, npcRec, race, raceFid, npcData.IsFemale, 512, 512, npcData.SseOverlays, tintOverride, npcData.SseTintTexOverride)
+            ' Tamaño del facetint = propiedad Setting_FaceGenDiffuseResolution (Inherit→512 vanilla = default byte-inerte;
+            ' 1024/2048/… si el usuario lo sube). NO hardcodeado. El facetint es el "diffuse" del facegen SSE.
+            Dim fSz = FaceTintConvention.ResolveResolutionSize(OutputSettings.Diffuse, 512)
+            Dim dds = SseFaceGenBaker.BakeFaceTintDds(pluginManager, npcRec, race, raceFid, npcData.IsFemale, fSz, fSz, npcData.SseOverlays, tintOverride, npcData.SseTintTexOverride)
             If dds Is Nothing Then Return
             Dim fgLocal = PluginManager.ToFaceGenLocalFormID(npcFormID)
-            Dim rel = $"Textures\Actors\Character\FaceGenData\FaceTint\{originPlugin}\{fgLocal:X8}.dds"
+            Dim tintDir = $"Textures\Actors\Character\FaceGenData\FaceTint\{originPlugin}\"
+            Dim suffix = If(DebugMode, "_2.dds", ".dds")          ' on-disk name (sandbox in DebugMode)
+            Dim embeddedSuffix = If(willBePacked, ".dds", suffix) ' the packer renames _2 → canonical
+            Dim rel = tintDir & $"{fgLocal:X8}{suffix}"
             Dim outFile = IO.Path.Combine(Config_App.Current.DataPath, rel)
             IO.Directory.CreateDirectory(IO.Path.GetDirectoryName(outFile))
             IO.File.WriteAllBytes(outFile, dds)
+            ' TGA lossless del _2 (CPU) cuando "Generate TGA" está marcado (= FO4). Recompone el acc SOLO en ese
+            ' caso (no re-decodea el BC3) para dumpear el buffer pre-encode, byte-igual al que se encodeó.
+            If WriteTGASandboxOutput Then
+                Dim accT = SseFaceGenBaker.ComposeFacetintAcc(pluginManager, npcRec, race, raceFid, npcData.IsFemale, fSz, fSz, npcData.SseOverlays, tintOverride, npcData.SseTintTexOverride)
+                If accT IsNot Nothing Then MaybeWriteTgaBeside(outFile, fSz, fSz, SseFaceGenBaker.LinearRgbaToBgra(accT, fSz, fSz))
+            End If
             ' Point the head shape's texture-set slot 6 (facetint) at the engine path (Data-relative).
             Dim spr = cloned.ShaderPropertyRef
             If spr IsNot Nothing AndAlso spr.Index >= 0 Then
@@ -1488,7 +1600,7 @@ Public Module FaceGenBuilder
                 If lsp IsNot Nothing AndAlso lsp.TextureSetRef IsNot Nothing AndAlso lsp.TextureSetRef.Index >= 0 Then
                     Dim ts = TryCast(nif.Blocks(lsp.TextureSetRef.Index), NiflySharp.Blocks.BSShaderTextureSet)
                     If ts IsNot Nothing AndAlso ts.Textures IsNot Nothing AndAlso ts.Textures.Count > 6 Then
-                        ts.Textures(6).Content = "Textures\Actors\Character\FaceGenData\FaceTint\" & originPlugin & "\" & $"{fgLocal:X8}.dds"
+                        ts.Textures(6).Content = tintDir & $"{fgLocal:X8}{embeddedSuffix}"
                         ' NOTE: NO "Textures\" prefix on the skin slots 0/7. MEDIDO vs BSA CK (batch SSE): CK escribe
                         ' el head diffuse SIN prefijo (p.ej. 'Actors\Character\Male\MaleHead.dds'), byte-igual al
                         ' valor ya resuelto del skin TXST. Un intento anterior de prefijar 0/7 fue medido contra un
@@ -1498,10 +1610,660 @@ Public Module FaceGenBuilder
                 End If
             End If
             Logger.LogLazy(Function() $"[FACEBAKE][SSE] facetint _d -> {rel} ({dds.Length}b)")
+
+            ' === _2b GPU SANDBOX del facetint BASE (debug+sandbox, requiere host GL) ===
+            ' Contraparte GPU del _2 (CPU): compone PURO GPU las MISMAS capas de tint (BuildLayerInputs) sobre un
+            ' base PLANO = seed(0.5) vía ApplyFaceTintPipeline y hace readback → _2b. NO sube el resultado CPU (eso
+            ' sería trampa y no mediría nada): RECOMPONE en GPU para medir la paridad CPU==GPU del facetint base.
+            ' Espejo exacto del _2b de FO4 y del _2b de overlays. Sólo app (host); la paridad la confirma el usuario.
+            If host IsNot Nothing AndAlso DebugMode AndAlso WriteGPUSandboxOutput Then
+                Try
+                    Dim glayers = SseFaceTintComposer.BuildLayerInputs(pluginManager, npcRec, race, raceFid, npcData.IsFemale,
+                                                                       npcData.SseTintRaw, npcData.SseTintTexOverride)
+                    If glayers IsNot Nothing AndAlso glayers.Count > 0 Then WriteSseFacetint2bGpu(glayers, fSz, fSz, fgLocal, originPlugin, host)
+                Catch ex2b As Exception
+                    Logger.LogLazy(Function() $"[FACEBAKE][SSE] facetint _2b GPU failed: {ex2b.GetType().Name}: {ex2b.Message}")
+                End Try
+            End If
         Catch ex As Exception
             Logger.LogLazy(Function() $"[FACEBAKE][SSE] facetint bake failed: {ex.GetType().Name}: {ex.Message}")
         End Try
     End Sub
+
+    ''' <summary>_2b GPU del facetint BASE: recompone las capas de tint del NPC (PaletteMask, canal R, ley SSE) sobre
+    ''' un base PLANO = seed(0.5) por GL (<see cref="FaceTintCompositor.ApplyFaceTintPipeline"/>), readback → encode →
+    ''' <c>FaceTint\&lt;plugin&gt;\&lt;id&gt;_2b.dds</c> (BC3, = formato del <c>_2</c>). Compose PURO GPU (NO sube el
+    ''' resultado CPU del <c>_2</c>): el par <c>_2</c>/<c>_2b</c> mide la paridad CPU==GPU del facetint. Base subido
+    ''' como LINEAL (<c>baseDiffuseIsLinearOnGpu:=True</c>) para que el seed 0.5 GL coincida con el 0.5-lin del CPU.
+    ''' GL-bound (corre en el hilo del host). SSE-only, debug sandbox. Espejo de <see cref="WriteSseFaceDiffuse2bGpu"/>.</summary>
+    Private Sub WriteSseFacetint2bGpu(layers As IList(Of FaceTintLayerInput), w As Integer, h As Integer,
+                                      fgLocal As UInteger, originPlugin As String, host As NpcRenderHost)
+        Dim gbra = ComposeSseFacetintBgraOnGpu(layers, w, h, host)
+        If gbra Is Nothing Then Return
+        Dim mips = CInt(Math.Floor(Math.Log(Math.Min(w, h), 2))) + 1
+        Dim dds = DirectXTextureConversionHelper.Bgra32BytesToDdsBytes(w, h, gbra, DirectXTextureConversionHelper.DxgiFormatBc3Unorm, generateMipMaps:=True, generatedMipLevels:=mips)
+        If dds Is Nothing Then Return
+        Dim rel = $"Textures\Actors\Character\FaceGenData\FaceTint\{originPlugin}\{fgLocal:X8}_2b.dds"
+        Dim outFile = IO.Path.Combine(Config_App.Current.DataPath, rel)
+        IO.Directory.CreateDirectory(IO.Path.GetDirectoryName(outFile))
+        IO.File.WriteAllBytes(outFile, dds)
+        MaybeWriteTgaBeside(outFile, w, h, gbra)
+        Logger.LogLazy(Function() $"[FACEBAKE][SSE] facetint _2b GPU -> {rel} ({dds.Length}b)")
+    End Sub
+
+    ''' <summary>Compone las capas de tint SSE (PaletteMask, ley SSE all-linear) sobre un base PLANO = seed(0.5) por
+    ''' GL (<see cref="FaceTintCompositor.ApplyFaceTintPipeline"/>) y hace readback → BGRA lineal (W·H·4). Base subido
+    ''' como LINEAL (baseDiffuseIsLinearOnGpu) para que el seed 0.5 GL == el 0.5-lin del CPU. Nothing si falla.
+    ''' Contraparte GPU del compose CPU del facetint (SseFaceTintComposer.ComposeLinearRgba). GL-bound (host).</summary>
+    Private Function ComposeSseFacetintBgraOnGpu(layers As IList(Of FaceTintLayerInput), w As Integer, h As Integer, host As NpcRenderHost) As Byte()
+        If host Is Nothing OrElse layers Is Nothing OrElse layers.Count = 0 OrElse w <= 0 OrElse h <= 0 Then Return Nothing
+        Dim npix = w * h
+        Const seedByte As Byte = 128   ' round(0.5*255) = seed constante SSE (ActiveSettings.SeedConstant)
+        Dim baseBgra(npix * 4 - 1) As Byte
+        For i = 0 To npix - 1
+            baseBgra(i * 4) = seedByte : baseBgra(i * 4 + 1) = seedByte : baseBgra(i * 4 + 2) = seedByte : baseBgra(i * 4 + 3) = 255
+        Next
+        Dim baseTex = UploadBgraToGl(baseBgra, w, h)
+        If baseTex = 0 Then Return Nothing
+        Dim pr = FaceTintCompositor.ApplyFaceTintPipeline(host.CompositorState, host.TintGpuCache,
+                                                          baseTex, 0, 0, w, h, layers, New List(Of FaceRegionSwapInput)(),
+                                                          baseDiffuseIsLinearOnGpu:=True)
+        Dim resultId = If(pr IsNot Nothing AndAlso pr.Diffuse IsNot Nothing AndAlso pr.Diffuse.IsFresh, pr.Diffuse.TextureId, baseTex)
+        Dim gbuf = ReadbackGlBgra(resultId, npix)
+        If resultId <> baseTex Then Try : OpenTK.Graphics.OpenGL4.GL.DeleteTexture(resultId) : Catch : End Try
+        Try : OpenTK.Graphics.OpenGL4.GL.DeleteTexture(baseTex) : Catch : End Try
+        Return gbuf
+    End Function
+
+    ''' <summary>_2d = pliegue desde GPU: <c>complexion × fgTint(facetint)</c> hecho 100% en GPU (contraparte del
+    ''' pliegue CPU del <c>_2c</c>, <see cref="SseFaceGenBaker.FoldFacetintIntoDiffuse"/>). Dos pases GPU: (1) compone
+    ''' el facetint sobre 0.5 (<see cref="ComposeSseFacetintBgraOnGpu"/>), (2) siembra el complexion y aplica el
+    ''' facetint como capa FOLD (<c>FgTintFold</c>: src=(d+off)·amp, multiply de cara completa) → readback → encode →
+    ''' <c>FaceDiffuse\&lt;plugin&gt;\&lt;id&gt;_2d.dds</c>. El facetint viaja como DDS uncompressed entre pases (transporte,
+    ''' NO cómputo CPU). Comparar <c>_2c</c> (CPU fold) vs <c>_2d</c> (GPU fold) confirma la paridad del pliegue.
+    ''' GL-bound (host). SSE-only, debug sandbox.</summary>
+    Private Sub WriteSseFacetint2dGpu(layers As IList(Of FaceTintLayerInput), complexionPath As String, detailPath As String,
+                                      overlays As IList(Of RaceMenuJslot.JslotOverlayNode),
+                                      fgLocal As UInteger, originPlugin As String, host As NpcRenderHost)
+        If host Is Nothing OrElse layers Is Nothing OrElse layers.Count = 0 OrElse String.IsNullOrEmpty(complexionPath) Then Return
+        ' complexion (slot 0) decodeado a LINEAL, a su tamaño nativo (= tamaño al que el _2c pliega en CPU).
+        Dim srcBytes = FilesDictionary_class.GetBytes(FO4UnifiedMaterial_Class.CorrectTexturePath(complexionPath))
+        If srcBytes Is Nothing Then Return
+        Dim dec = FaceTintCpuCompositor.DecodeDds(srcBytes)
+        If dec Is Nothing OrElse dec.Rgba Is Nothing OrElse dec.Width <= 0 OrElse dec.Height <= 0 Then Return
+        Dim w = dec.Width, h = dec.Height, npix = w * h
+        ' Detail mask (slot 3) para el softlight del base (= el _2c). Nothing ⇒ b=0.5 ⇒ identidad.
+        Dim det As Double() = If(Not String.IsNullOrEmpty(detailPath), SseFaceTintComposer.DecodeTextureRgba(detailPath, w, h), Nothing)
+
+        ' Pase 1: facetint por GPU al tamaño del complexion (= lo que el _2c compone en CPU antes de plegar).
+        Dim fBgra = ComposeSseFacetintBgraOnGpu(layers, w, h, host)
+        If fBgra Is Nothing Then Return
+        ' facetint GPU → DDS uncompressed (transporte a capa; sin mips) para alimentarlo como layer del fold.
+        Dim fDds = DirectXTextureConversionHelper.Bgra32BytesToDdsBytes(w, h, fBgra, DirectXTextureConversionHelper.DxgiFormatB8G8R8A8Unorm, generateMipMaps:=False)
+        If fDds Is Nothing Then Return
+
+        ' Pase 2: base = softlight(sRGBtoLin(complexion), detail) — MISMO que el fold CPU (engine hace softlight ANTES
+        ' del fgTint). Se sube como lineal; la capa FOLD multiplica ×fgTint; el readback se sRGB-encodea abajo. _2d==_2c.
+        Dim baseBgra(npix * 4 - 1) As Byte
+        Dim sl2d = Function(srgb As Double, b As Double) As Byte
+                       Dim c2 = SseFaceGenBaker.Srgb2Lin(srgb)
+                       Return ClampByte255((c2 * c2 + 2.0 * c2 * b * (1.0 - c2)) * 255.0)
+                   End Function
+        For i = 0 To npix - 1
+            Dim bR = If(det IsNot Nothing, det(i * 4), 0.5), bG = If(det IsNot Nothing, det(i * 4 + 1), 0.5), bB = If(det IsNot Nothing, det(i * 4 + 2), 0.5)
+            baseBgra(i * 4) = sl2d(dec.Rgba(i * 4 + 2), bB)      ' B
+            baseBgra(i * 4 + 1) = sl2d(dec.Rgba(i * 4 + 1), bG)  ' G
+            baseBgra(i * 4 + 2) = sl2d(dec.Rgba(i * 4), bR)      ' R
+            baseBgra(i * 4 + 3) = 255
+        Next
+        Dim baseTex = UploadBgraToGl(baseBgra, w, h)
+        If baseTex = 0 Then Return
+        Dim foldLayer As New List(Of FaceTintLayerInput) From {
+            New FaceTintLayerInput With {
+                .Kind = FaceTintLayerKind.TextureSetDiffuse,
+                .LayerDdsBytes = fDds, .LayerCacheKey = Nothing,
+                .FgTintFold = True,
+                .FgTintOffR = CSng(1.0 / 255.0), .FgTintOffG = 0F, .FgTintOffB = CSng(1.0 / 255.0),
+                .FgTintAmp = CSng(255.0 / 64.0),
+                .Opacity = 1.0F, .Slot = 0US, .IsTextureSet = True, .DebugName = "sse-fgtint-fold"}}
+        Dim pr = FaceTintCompositor.ApplyFaceTintPipeline(host.CompositorState, host.TintGpuCache,
+                                                          baseTex, 0, 0, w, h, foldLayer, New List(Of FaceRegionSwapInput)(),
+                                                          baseDiffuseIsLinearOnGpu:=True)
+        Dim foldedId = If(pr IsNot Nothing AndAlso pr.Diffuse IsNot Nothing AndAlso pr.Diffuse.IsFresh, pr.Diffuse.TextureId, baseTex)
+        Dim gbuf = ReadbackGlBgra(foldedId, npix)
+        If foldedId <> baseTex Then Try : OpenTK.Graphics.OpenGL4.GL.DeleteTexture(foldedId) : Catch : End Try
+        Try : OpenTK.Graphics.OpenGL4.GL.DeleteTexture(baseTex) : Catch : End Try
+        If gbuf Is Nothing Then Return
+        ' El fold GPU corrió en LINEAR (base sRGB→lin × fgTint); el readback es lineal. Se sRGB-encodea = fold CPU
+        ' (Lin2Srgb) ⇒ este base sRGB es idéntico al _2c ANTES de overlays.
+        For i = 0 To npix - 1
+            gbuf(i * 4) = ClampByte255(SseFaceGenBaker.Lin2Srgb(gbuf(i * 4) / 255.0) * 255.0)          ' B
+            gbuf(i * 4 + 1) = ClampByte255(SseFaceGenBaker.Lin2Srgb(gbuf(i * 4 + 1) / 255.0) * 255.0)  ' G
+            gbuf(i * 4 + 2) = ClampByte255(SseFaceGenBaker.Lin2Srgb(gbuf(i * 4 + 2) / 255.0) * 255.0)  ' R
+        Next
+        ' Overlays Face* SOBRE el base sRGB (MISMO que _2b/_2c). ⛔ El alpha-over del overlay ocurre en sRGB, NO en linear:
+        ' si se compone en linear y LUEGO se Lin2Srgb (1ª versión de este fix), el color del overlay se ACLARA (Lin2Srgb
+        ' sube los medios) ⇒ facepaint MÁS BRILLANTE en _2d (medido). Se compone en sRGB, sin re-encode (= _2b). Todo GPU.
+        Dim ovlLayers = BuildSseFaceOverlayGpuLayers(overlays)
+        If ovlLayers.Count > 0 Then
+            Dim srgbBase = UploadBgraToGl(gbuf, w, h)
+            If srgbBase <> 0 Then
+                Dim pr2 = FaceTintCompositor.ApplyFaceTintPipeline(host.CompositorState, host.TintGpuCache,
+                                                                   srgbBase, 0, 0, w, h, ovlLayers, New List(Of FaceRegionSwapInput)(),
+                                                                   baseDiffuseIsLinearOnGpu:=True)
+                Dim ovId = If(pr2 IsNot Nothing AndAlso pr2.Diffuse IsNot Nothing AndAlso pr2.Diffuse.IsFresh, pr2.Diffuse.TextureId, srgbBase)
+                Dim ovBuf = ReadbackGlBgra(ovId, npix)
+                If ovId <> srgbBase Then Try : OpenTK.Graphics.OpenGL4.GL.DeleteTexture(ovId) : Catch : End Try
+                Try : OpenTK.Graphics.OpenGL4.GL.DeleteTexture(srgbBase) : Catch : End Try
+                If ovBuf IsNot Nothing Then gbuf = ovBuf   ' resultado con overlays YA en sRGB (sin re-encode)
+            End If
+        End If
+
+        ' Resolución de salida = Setting_FaceGenDiffuseResolution (Inherit→nativo no-op; resample filtro FO4 = release/_2c).
+        Dim gpW = w, gpH = h, gpBuf = gbuf
+        If OutputSettings.Diffuse <> FaceTintConvention.FaceTintChannelResolution.Inherit Then
+            Dim gt = FaceTintConvention.ResolveResolutionSize(OutputSettings.Diffuse, Math.Min(w, h))
+            gpBuf = FaceTintCpuCompositor.ResampleBgra(gbuf, w, h, gt, gt) : gpW = gt : gpH = gt
+        End If
+        Dim mips = CInt(Math.Floor(Math.Log(Math.Min(gpW, gpH), 2))) + 1
+        Dim dds = DirectXTextureConversionHelper.Bgra32BytesToDdsBytes(gpW, gpH, gpBuf, DiffuseDxgiFromSetting(), generateMipMaps:=True, generatedMipLevels:=mips)
+        If dds Is Nothing Then Return
+        Dim rel = $"Textures\Actors\Character\FaceGenData\FaceDiffuse\{originPlugin}\{fgLocal:X8}_2d.dds"
+        Dim outFile = IO.Path.Combine(Config_App.Current.DataPath, rel)
+        IO.Directory.CreateDirectory(IO.Path.GetDirectoryName(outFile))
+        IO.File.WriteAllBytes(outFile, dds)
+        MaybeWriteTgaBeside(outFile, gpW, gpH, gpBuf)
+        Logger.LogLazy(Function() $"[FACEBAKE][SSE] facetint _2d GPU fold -> {rel} ({dds.Length}b, {w}x{h})")
+    End Sub
+
+    ''' <summary>Cuando "Generate TGA" está marcado (<see cref="WriteTGASandboxOutput"/>, = FO4), escribe un TGA
+    ''' UNCOMPRESSED lossless al lado del .dds indicado, desde el MISMO BGRA que se encodeó (no re-decodea el BCn).
+    ''' No-op si el toggle está off o el BGRA es Nothing. Espejo del dump TGA del bake FO4 (BakeFaceTextures).</summary>
+    Private Sub MaybeWriteTgaBeside(ddsAbsPath As String, w As Integer, h As Integer, bgra As Byte())
+        If Not WriteTGASandboxOutput OrElse bgra Is Nothing OrElse String.IsNullOrEmpty(ddsAbsPath) OrElse w <= 0 OrElse h <= 0 Then Return
+        Try
+            Dim tga = IO.Path.ChangeExtension(ddsAbsPath, "tga")
+            FaceTintCompositor.WriteBgraToTga(tga, bgra, w, h)
+            Logger.LogLazy(Function() $"[FACEBAKE][SSE] wrote TGA '{tga}'")
+        Catch ex As Exception
+            Logger.LogLazy(Function() $"[FACEBAKE][SSE] TGA write failed: {ex.GetType().Name}: {ex.Message}")
+        End Try
+    End Sub
+
+    ''' <summary>Readback de una textura GL RGBA8 a BGRA (W·H·4 bytes). Nothing si falla. GL-bound.</summary>
+    Private Function ReadbackGlBgra(texId As Integer, npix As Integer) As Byte()
+        If texId = 0 OrElse npix <= 0 Then Return Nothing
+        Dim gbuf(npix * 4 - 1) As Byte
+        OpenTK.Graphics.OpenGL4.GL.BindTexture(OpenTK.Graphics.OpenGL4.TextureTarget.Texture2D, texId)
+        Dim handle = Runtime.InteropServices.GCHandle.Alloc(gbuf, Runtime.InteropServices.GCHandleType.Pinned)
+        Try
+            OpenTK.Graphics.OpenGL4.GL.GetTexImage(OpenTK.Graphics.OpenGL4.TextureTarget.Texture2D, 0, OpenTK.Graphics.OpenGL4.PixelFormat.Bgra, OpenTK.Graphics.OpenGL4.PixelType.UnsignedByte, handle.AddrOfPinnedObject())
+        Finally
+            handle.Free()
+        End Try
+        OpenTK.Graphics.OpenGL4.GL.BindTexture(OpenTK.Graphics.OpenGL4.TextureTarget.Texture2D, 0)
+        Return gbuf
+    End Function
+
+    ''' <summary>SSE: when the NPC has RaceMenu FACE overlays (Face [Ovl] face-paint), bake them INTO a per-NPC
+    ''' head diffuse and repoint the head shape's texture-set slot 0 at it — the engine renders these live and
+    ''' never bakes them, so this is the "bake RaceMenu options into the texture" fix (SSE, gated by
+    ''' <see cref="Config_App.Setting_BakeSseRaceMenuOverlays"/>, default on). GATED: NPCs with NO bakeable face
+    ''' overlay get NOTHING (slot 0 keeps the shared vanilla complexion) — so vanilla output is byte-unchanged.
+    ''' The overlays come from the applied preset's <see cref="LooksmenuLoader.LooksmenuPreset.SseBodyOverlays"/>
+    ''' (the SAME list the editor edits and the render draws as decals — single source, no dead SseOverlay
+    ''' struct). Composite = <see cref="SseOverlayCompositor.ComposeFaceOverlaysIntoDiffuse"/> (skee normal.fx
+    ''' alpha-over). Debug naming mirrors the facetint (_2 in DebugMode; embedded slot 0 uses canonical when
+    ''' willBePacked, else the on-disk _2 name).</summary>
+    ''' <param name="forcedSuffix">Cuando NO es Nothing (p.ej. "_2c"), corre en modo SANDBOX FORZADO (debug):
+    ''' pliega+reemplaza el _d/_n AUNQUE el NPC no tenga overlays/tints (bypass del gate), escribe las texturas con
+    ''' ESE sufijo, y embebe ESE sufijo en los slots (nunca se packea). Sirve para ejercitar el replacer completo en
+    ''' cualquier NPC. Nothing = comportamiento normal (gateado por overlays, naming _2/canónico).</param>
+    Private Sub WriteSseFaceDiffuseWithOverlays(nif As Nifcontent_Class_Manolo, cloned As INiShape, npcFormID As UInteger,
+                                                originPlugin As String, pluginManager As PluginManager, npcData As NPC_Data,
+                                                appliedPresets As Dictionary(Of UInteger, LooksmenuLoader.LooksmenuPreset),
+                                                willBePacked As Boolean, Optional forcedSuffix As String = Nothing,
+                                                Optional complexionPathOverride As String = Nothing,
+                                                Optional normalPathOverride As String = Nothing,
+                                                Optional detailPathOverride As String = Nothing,
+                                                Optional host As NpcRenderHost = Nothing)
+        Try
+            Dim forced = Not String.IsNullOrEmpty(forcedSuffix)
+            ' El toggle "Bake RaceMenu overlays" NO aplica al forzado (_2c): el _2c ejercita el replacer completo
+            ' aunque el usuario tenga el bake de overlays apagado. Sólo gatea el path normal (gateado por overlays).
+            If Config_App.Current Is Nothing Then Return
+            If Not forced AndAlso Not Config_App.Current.Setting_BakeSseRaceMenuOverlays Then Return
+            ' Fuentes a bakear: (a) RaceMenu Face [Ovl] overlays del preset (si hay) + (b) skee MASKT masks del
+            ' head shape. Gate BARATO (sin decode): salir solo si NINGUNA de las dos aporta → vanilla intacto.
+            ' En modo FORZADO (_2c) el gate NO aplica: se corre el replacer completo igual.
+            Dim preset As LooksmenuLoader.LooksmenuPreset = Nothing
+            If appliedPresets IsNot Nothing Then appliedPresets.TryGetValue(npcFormID, preset)
+            Dim overlays = If(preset IsNot Nothing, preset.SseBodyOverlays, Nothing)
+            Dim hasOverlays = SseOverlayCompositor.HasBakeableFaceOverlays(overlays)
+            Dim hasSkee = SseSkeeMaskReader.HasMaskLayers(nif, cloned)
+            If Not forced AndAlso Not (hasOverlays OrElse hasSkee) Then Return   ' vanilla → nada, slot 0 intacto
+
+            ' Head shape's resolved slot-0 diffuse (the complexion base we overlay ONTO).
+            Dim spr = cloned.ShaderPropertyRef
+            If spr Is Nothing OrElse spr.Index < 0 Then
+                If forced Then Logger.LogLazy(Function() "[FACEBAKE][SSE] _2c ABORT: ShaderPropertyRef null")
+                Return
+            End If
+            Dim lsp = TryCast(nif.Blocks(spr.Index), NiflySharp.Blocks.BSLightingShaderProperty)
+            If lsp Is Nothing OrElse lsp.TextureSetRef Is Nothing OrElse lsp.TextureSetRef.Index < 0 Then
+                If forced Then Logger.LogLazy(Function() "[FACEBAKE][SSE] _2c ABORT: BSLightingShaderProperty/TextureSetRef null")
+                Return
+            End If
+            Dim ts = TryCast(nif.Blocks(lsp.TextureSetRef.Index), NiflySharp.Blocks.BSShaderTextureSet)
+            If ts Is Nothing OrElse ts.Textures Is Nothing OrElse ts.Textures.Count < 1 Then
+                If forced Then Logger.LogLazy(Function() "[FACEBAKE][SSE] _2c ABORT: BSShaderTextureSet null/empty")
+                Return
+            End If
+            ' Complexion base = slot 0, SALVO override (forzado _2c: el pass normal ya pudo mutar slot0 a un diffuse
+            ' plegado ⇒ para NO doble-plegar, el forzado recibe el complexion ORIGINAL capturado antes de mutar).
+            Dim diffPath = If(forced AndAlso Not String.IsNullOrEmpty(complexionPathOverride), complexionPathOverride, ts.Textures(0).Content)
+            If String.IsNullOrEmpty(diffPath) Then
+                If forced Then Logger.LogLazy(Function() $"[FACEBAKE][SSE] _2c ABORT: complexion path empty (override='{complexionPathOverride}', slot0='{ts.Textures(0).Content}')")
+                Return
+            End If
+
+            ' Decode the complexion at its native size (mip0).
+            Dim srcBytes = FilesDictionary_class.GetBytes(FO4UnifiedMaterial_Class.CorrectTexturePath(diffPath))
+            If srcBytes Is Nothing Then
+                If forced Then Logger.LogLazy(Function() $"[FACEBAKE][SSE] _2c ABORT: complexion bytes not found for '{diffPath}'")
+                Return
+            End If
+            Dim decoded = FaceTintCpuCompositor.DecodeDds(srcBytes)
+            If decoded Is Nothing OrElse decoded.Rgba Is Nothing OrElse decoded.Width <= 0 OrElse decoded.Height <= 0 Then
+                If forced Then Logger.LogLazy(Function() $"[FACEBAKE][SSE] _2c ABORT: complexion decode failed for '{diffPath}'")
+                Return
+            End If
+            Dim w = decoded.Width, h = decoded.Height
+            Dim npix = w * h
+            Dim acc(npix * 4 - 1) As Double
+            Array.Copy(decoded.Rgba, acc, acc.Length)
+
+            ' === PLIEGUE (orden fiel a RaceMenu) ===
+            ' El overlay va DESPUÉS del skin tint. El engine hace albedo *= fgTint(facetint_d). Para que el overlay
+            ' NO quede teñido por el skin tint, plegamos el facetint DENTRO del diffuse (base = complexion × fgTint),
+            ' y neutralizamos el slot 6 (así el engine no re-aplica). base ES el albedo skin-tinted; overlays encima.
+            Dim npcRec = pluginManager.GetRecord(npcFormID)
+            Dim raceFid As UInteger = npcData.RaceFormID
+            Dim race As RACE_Data = Nothing
+            If npcRec IsNot Nothing AndAlso raceFid <> 0UI Then
+                Dim rr = pluginManager.GetRecord(raceFid)
+                If rr IsNot Nothing AndAlso rr.Header.Signature = "RACE" Then race = RecordParsers.ParseRACE(rr, pluginManager)
+            End If
+            If npcRec IsNot Nothing AndAlso race IsNot Nothing Then
+                ' facetint _d LINEAL al tamaño del complexion (misma resolución que el diffuse que multiplica).
+                ' Es SOLO los tints de RACE (skin tone + warpaint) — los overlays de cara NO van acá (van sobre el
+                ' base DESPUÉS del pliegue, ese es el orden de RaceMenu). Mismo _d que WriteSseFacetintDds compone.
+                Dim facetint = SseFaceTintComposer.ComposeLinearRgba(pluginManager, npcRec, race, raceFid, npcData.IsFemale, w, h,
+                                                                     Nothing, npcData.SseTintRaw, npcData.SseTintTexOverride)
+                ' Detail mask (slot 3 / DisplacementTexture): el engine hace softlight(complexion, detail) ANTES del
+                ' fgTint (Shader_Class 1864→1878). Se pliega ACÁ y se NEUTRALIZA el slot 3 abajo (si no, el engine lo
+                ' re-aplica sobre el _2c). Detail crudo (no está en color textures). Si no hay, softlight identidad.
+                ' En FORZADO (_2c) el slot 3 del head clonado YA lo neutralizo el pass non-forced (se comparte el mismo
+                ' `cloned`) ⇒ leerlo en vivo daria "" y el fold saltearia el softlight del detail (→ _2c MAS CLARO que
+                ' _2/_2d, bug medido). Usar el detail ORIGINAL capturado antes de mutar (detailPathOverride), igual que
+                ' el complexion. En non-forced el slot 3 se lee en vivo (aun sin neutralizar en este punto) = correcto.
+                Dim detailPath = If(forced, If(detailPathOverride, ""), If(ts.Textures.Count > 3, ts.Textures(3).Content, ""))
+                Dim detailAcc As Double() = If(Not String.IsNullOrEmpty(detailPath), SseFaceTintComposer.DecodeTextureRgba(detailPath, w, h), Nothing)
+                If facetint IsNot Nothing Then SseFaceGenBaker.FoldFacetintIntoDiffuse(acc, facetint, npix, detailAcc)   ' albedo = fgTint × softlight(complexion, detail)
+            End If
+
+            ' Snapshot del BASE PLEGADO (antes de overlays) para el _2b GPU (compara overlay-compose CPU vs GPU).
+            Dim foldedBase As Double() = Nothing
+            If host IsNot Nothing AndAlso DebugMode AndAlso WriteGPUSandboxOutput AndAlso Not forced Then
+                foldedBase = New Double(npix * 4 - 1) {}
+                Array.Copy(acc, foldedBase, acc.Length)
+            End If
+
+            ' (a) skee MASKT masks (dyeable heads) sobre el base plegado, luego (b) los Face [Ovl] overlays
+            ' (orden por índice de nodo, = skee/render). Cualquiera puede faltar; OR de las dos.
+            Dim skinRgb = SseSkinRgbForNpc(pluginManager, npcData, npcFormID)
+            Dim anySkee = SseSkeeMaskReader.ComposeNifMaskLayersIntoDiffuse(nif, cloned, w, h, AddressOf SseFaceTintComposer.DecodeTextureRgba, skinRgb, Nothing, acc)
+            Dim anyOvl = SseOverlayCompositor.ComposeFaceOverlaysIntoDiffuse(acc, overlays, w, h, AddressOf SseFaceTintComposer.DecodeTextureRgba)
+            ' En modo FORZADO igual escribimos (el pliegue solo ya es el replacer, aunque no haya overlays).
+            If Not forced AndAlso Not (anySkee OrElse anyOvl) Then Return
+
+            Dim bgra(w * h * 4 - 1) As Byte
+            For i = 0 To w * h - 1
+                bgra(i * 4) = ClampByte255(acc(i * 4 + 2) * 255.0)      ' B
+                bgra(i * 4 + 1) = ClampByte255(acc(i * 4 + 1) * 255.0)  ' G
+                bgra(i * 4 + 2) = ClampByte255(acc(i * 4) * 255.0)      ' R
+                bgra(i * 4 + 3) = ClampByte255(acc(i * 4 + 3) * 255.0)  ' A
+            Next
+            ' Resolución de salida = Setting_FaceGenDiffuseResolution (Inherit→nativo = no-op byte-inerte; 1024/2048/…
+            ' resamplea con el MISMO filtro bilineal GL_LINEAR+clamp que el compositor FO4 → matchea el per-layer FO4).
+            Dim dOutW = w, dOutH = h, dOutBgra = bgra
+            If OutputSettings.Diffuse <> FaceTintConvention.FaceTintChannelResolution.Inherit Then
+                Dim t = FaceTintConvention.ResolveResolutionSize(OutputSettings.Diffuse, Math.Min(w, h))
+                dOutBgra = FaceTintCpuCompositor.ResampleBgra(bgra, w, h, t, t) : dOutW = t : dOutH = t
+            End If
+            Dim mipLevels = CInt(Math.Floor(Math.Log(Math.Min(dOutW, dOutH), 2))) + 1
+            ' MISMA compresión del diffuse que elige el usuario en CharGen Options (Setting_FaceGenDiffuseCompression):
+            ' BC3 (default SSE) / BC7 / Uncompressed. No hardcode.
+            Dim outDds = DirectXTextureConversionHelper.Bgra32BytesToDdsBytes(
+                width:=dOutW, height:=dOutH, bgraPixels:=dOutBgra,
+                outputDxgiFormat:=DiffuseDxgiFromSetting(),
+                generateMipMaps:=True, generatedMipLevels:=mipLevels)
+            If outDds Is Nothing Then
+                If forced Then Logger.LogLazy(Function() $"[FACEBAKE][SSE] _2c ABORT: encode returned Nothing ({w}x{h}, dxgi={DiffuseDxgiFromSetting()})")
+                Return
+            End If
+
+            Dim fgLocal = PluginManager.ToFaceGenLocalFormID(npcFormID)
+            Dim dir = $"Textures\Actors\Character\FaceGenData\FaceDiffuse\{originPlugin}\"
+            ' Naming: forzado (_2c) usa ESE sufijo en disco Y embebido (nunca packea); normal = _2/canónico.
+            Dim suffix = If(forced, forcedSuffix & ".dds", If(DebugMode, "_2.dds", ".dds"))
+            Dim embeddedSuffix = If(forced, suffix, If(willBePacked, ".dds", suffix))
+            Dim rel = dir & $"{fgLocal:X8}{suffix}"
+            Dim outFile = IO.Path.Combine(Config_App.Current.DataPath, rel)
+            IO.Directory.CreateDirectory(IO.Path.GetDirectoryName(outFile))
+            IO.File.WriteAllBytes(outFile, outDds)
+            MaybeWriteTgaBeside(outFile, dOutW, dOutH, dOutBgra)
+            ts.Textures(0).Content = dir & $"{fgLocal:X8}{embeddedSuffix}"
+
+            ' NEUTRALIZAR slot 3 (detail/Displacement): el softlight(complexion, detail) YA se plegó en el diffuse;
+            ' si dejamos el detail, el engine lo re-aplica encima del _2c (Shader 1864). Limpiar ⇒ bHasDetailMask=False.
+            If ts.Textures.Count > 3 Then ts.Textures(3).Content = ""
+
+            ' NEUTRALIZAR slot 6: el facetint se plegó en el diffuse → gris neutral (fgTint=1) → engine albedo*=1.
+            ' Normal: sobrescribe el _d de facetint (_2) que WriteSseFacetintDds escribió, slot6 sigue ahí.
+            ' Forzado (_2c): escribe un facetint neutral SEPARADO (_2c) y apunta slot6 ahí — NO pisa el _2 real.
+            Try
+                Dim tintDir = $"Textures\Actors\Character\FaceGenData\FaceTint\{originPlugin}\"
+                Dim neutral = SseFaceGenBaker.NeutralFacetintDds(512, 512)
+                If forced Then
+                    ' El neutral es una CONSTANTE (gris (63,64,63)/255) idéntica para TODOS los NPC. En vez de duplicar
+                    ' un DDS por NPC (<id>_2c.dds), se escribe UN ÚNICO archivo COMPARTIDO por plugin y todos los
+                    ' _2c.NIF apuntan ahí. Se RE-ESCRIBE en cada bake (no skip-if-exists): si algún día cambiamos el gris,
+                    ' el archivo no queda stale. Es un facetint REAL que da fgTint=1 en el juego (seguro, no vacía el slot).
+                    Dim sharedNeutral = tintDir & "facetintneutral" & forcedSuffix & ".dds"   ' facetintneutral_2c.dds, compartido
+                    Dim ntFile = IO.Path.Combine(Config_App.Current.DataPath, sharedNeutral)
+                    IO.Directory.CreateDirectory(IO.Path.GetDirectoryName(ntFile))
+                    If neutral IsNot Nothing Then IO.File.WriteAllBytes(ntFile, neutral)
+                    If ts.Textures.Count > 6 Then ts.Textures(6).Content = sharedNeutral
+                Else
+                    ' RELEASE / Save ESP: el facetint se plego en el diffuse (slot 0). En vez de sobrescribir el
+                    ' <id>.dds per-NPC con el gris (duplicandolo una vez por NPC-con-overlay), apuntamos slot 6 al
+                    ' UNICO facetintneutral.dds del plugin y BORRAMOS el <id>.dds per-NPC (real facetint, ya sin uso).
+                    ' El packer empaqueta el gris UNA sola vez (ArchivePackager deduplica entries por path) porque
+                    ' el bundle lo declara via UsesSharedNeutralFacetint. Se re-escribe siempre (no stale). El
+                    ' delete-flow NUNCA marca el compartido (lo usan varios NPC): CanonicalFaceGenEntryPathsForNpc
+                    ' lista el <id>.dds per-NPC (no-op inofensivo, ya borrado), nunca el neutral compartido.
+                    ' ⛔ ATOMICIDAD: repuntar slot 6 al gris, borrar el <id>.dds per-NPC y marcar el flag SOLO si el gris
+                    ' se escribió OK. Si NeutralFacetintDds fallara (neutral Is Nothing) y repuntáramos igual, el NIF
+                    ' quedaría apuntando a un facetintneutral.dds inexistente con el facetint real ya borrado (ref rota,
+                    ' inconsistente en release). Si no se escribe: slot 6 queda en el <id>.dds real (WriteSseFacetintDds),
+                    ' no se borra nada, flag=False ⇒ el packer empaqueta el <id>.dds per-NPC = fallback consistente.
+                    If neutral IsNot Nothing Then
+                        Dim sharedLooseName = "facetintneutral" & suffix          ' facetintneutral_2.dds (debug) / .dds (release)
+                        Dim sharedEmbedName = "facetintneutral" & embeddedSuffix  ' canonico .dds cuando willBePacked
+                        Dim ntFile = IO.Path.Combine(Config_App.Current.DataPath, tintDir & sharedLooseName)
+                        IO.Directory.CreateDirectory(IO.Path.GetDirectoryName(ntFile))
+                        IO.File.WriteAllBytes(ntFile, neutral)
+                        If ts.Textures.Count > 6 Then ts.Textures(6).Content = tintDir & sharedEmbedName
+                        ' Borrar el <id>.dds per-NPC huerfano (real facetint escrito por WriteSseFacetintDds, ya reemplazado).
+                        Dim perNpcTint = IO.Path.Combine(Config_App.Current.DataPath, tintDir & $"{fgLocal:X8}{suffix}")
+                        Try
+                            If IO.File.Exists(perNpcTint) Then IO.File.Delete(perNpcTint)
+                        Catch
+                        End Try
+                        _sseFoldUsedSharedNeutral = True
+                    End If
+                End If
+            Catch exN As Exception
+                Logger.LogLazy(Function() $"[FACEBAKE][SSE] slot6 neutralize failed: {exN.Message}")
+            End Try
+            Logger.LogLazy(Function() $"[FACEBAKE][SSE] face diffuse+overlays -> {rel} ({outDds.Length}b, {w}x{h}); facetint slot6 neutralized")
+
+            ' === NORMALES: en el _msn del head (slot 1). Non-forced: SOLO si un overlay aporta normal (compone
+            ' decode→lerp cobertura→RENORMALIZE→encode). FORZADO (_2c): SIEMPRE se emite el _n (re-encodea el _msn del
+            ' head, con overlays si los hay) para que el replacer sea completo _d+_n. Formato = la propiedad
+            ' Setting_FaceGenNormalCompression (NormalDxgiFromSetting), DEFAULT Uncompressed = formato VANILLA del _msn
+            ' de SSE (32bpp RGBA8, MEDIDO del BSA) — NO BC7 (los _msn BC7 sueltos son mods; y BC7 crasheaba el encode). ===
+            If ts.Textures.Count > 1 AndAlso (forced OrElse SseOverlayCompositor.HasFaceOverlayNormals(overlays)) Then
+                Try
+                    Dim msnPath = If(forced AndAlso Not String.IsNullOrEmpty(normalPathOverride), normalPathOverride, ts.Textures(1).Content)
+                    If Not String.IsNullOrEmpty(msnPath) Then
+                        Dim msnBytes = FilesDictionary_class.GetBytes(FO4UnifiedMaterial_Class.CorrectTexturePath(msnPath))
+                        If msnBytes IsNot Nothing Then
+                            Dim mDec = FaceTintCpuCompositor.DecodeDds(msnBytes)
+                            If mDec IsNot Nothing AndAlso mDec.Rgba IsNot Nothing AndAlso mDec.Width > 0 AndAlso mDec.Height > 0 Then
+                                Dim mw = mDec.Width, mh = mDec.Height
+                                Dim macc(mw * mh * 4 - 1) As Double
+                                Array.Copy(mDec.Rgba, macc, macc.Length)
+                                ' Compone overlay-normals si los hay (in-place). En forced sin overlays queda el head
+                                ' normal tal cual → se re-encodea igual (replacer _n self-contained).
+                                Dim composedN = SseOverlayCompositor.ComposeFaceOverlayNormalsIntoMsn(macc, overlays, mw, mh, AddressOf SseFaceTintComposer.DecodeTextureRgba)
+                                If composedN OrElse forced Then
+                                    Dim mbgra(mw * mh * 4 - 1) As Byte
+                                    For i = 0 To mw * mh - 1
+                                        mbgra(i * 4) = ClampByte255(macc(i * 4 + 2) * 255.0)      ' B
+                                        mbgra(i * 4 + 1) = ClampByte255(macc(i * 4 + 1) * 255.0)  ' G
+                                        mbgra(i * 4 + 2) = ClampByte255(macc(i * 4) * 255.0)      ' R
+                                        mbgra(i * 4 + 3) = ClampByte255(macc(i * 4 + 3) * 255.0)  ' A
+                                    Next
+                                    ' Resolución = Setting_FaceGenNormalResolution (Inherit→nativo no-op; resample filtro FO4).
+                                    Dim nOutW = mw, nOutH = mh, nOutBgra = mbgra
+                                    If OutputSettings.Normal <> FaceTintConvention.FaceTintChannelResolution.Inherit Then
+                                        Dim t = FaceTintConvention.ResolveResolutionSize(OutputSettings.Normal, Math.Min(mw, mh))
+                                        nOutBgra = FaceTintCpuCompositor.ResampleBgra(mbgra, mw, mh, t, t) : nOutW = t : nOutH = t
+                                    End If
+                                    Dim mmips = CInt(Math.Floor(Math.Log(Math.Min(nOutW, nOutH), 2))) + 1
+                                    ' Formato = propiedad Setting_FaceGenNormalCompression. NO hardcodeado.
+                                    Dim mDds = DirectXTextureConversionHelper.Bgra32BytesToDdsBytes(
+                                        width:=nOutW, height:=nOutH, bgraPixels:=nOutBgra,
+                                        outputDxgiFormat:=NormalDxgiFromSetting(),
+                                        generateMipMaps:=True, generatedMipLevels:=mmips)
+                                    If mDds IsNot Nothing Then
+                                        Dim ndir = $"Textures\Actors\Character\FaceGenData\FaceNormal\{originPlugin}\"
+                                        Dim nRel = ndir & $"{fgLocal:X8}{suffix}"
+                                        Dim nFile = IO.Path.Combine(Config_App.Current.DataPath, nRel)
+                                        IO.Directory.CreateDirectory(IO.Path.GetDirectoryName(nFile))
+                                        IO.File.WriteAllBytes(nFile, mDds)
+                                        MaybeWriteTgaBeside(nFile, nOutW, nOutH, nOutBgra)
+                                        ts.Textures(1).Content = ndir & $"{fgLocal:X8}{embeddedSuffix}"
+                                        Logger.LogLazy(Function() $"[FACEBAKE][SSE] face normal+overlays -> {nRel} ({mDds.Length}b, {mw}x{mh})")
+                                    End If
+                                End If
+                            End If
+                        End If
+                    End If
+                Catch exM As Exception
+                    Logger.LogLazy(Function() $"[FACEBAKE][SSE] face normal bake failed: {exM.GetType().Name}: {exM.Message}")
+                End Try
+            End If
+
+            ' === _2b GPU SANDBOX (debug+sandbox, requiere contexto GL = host) ===: compone los overlays sobre el
+            ' base PLEGADO por GL (ApplyFaceTintPipeline, tex×uColor) y lo escribe como _2b, al lado del _2 (CPU),
+            ' para comparar paridad overlay-compose CPU-vs-GPU. El pliegue es CPU en ambos (multiply determinista).
+            ' ⚠️ GL: solo corre en la app (host); la paridad _2==_2b la verifica el usuario en el batch de debug.
+            If foldedBase IsNot Nothing AndAlso host IsNot Nothing AndAlso anyOvl Then
+                Try
+                    WriteSseFaceDiffuse2bGpu(foldedBase, overlays, w, h, fgLocal, originPlugin, host)
+                Catch ex2b As Exception
+                    Logger.LogLazy(Function() $"[FACEBAKE][SSE] _2b GPU sandbox failed: {ex2b.GetType().Name}: {ex2b.Message}")
+                End Try
+            End If
+        Catch ex As Exception
+            Logger.LogLazy(Function() $"[FACEBAKE][SSE] face diffuse+overlays bake failed: {ex.GetType().Name}: {ex.Message}")
+        End Try
+    End Sub
+
+    ''' <summary>_2b GPU: compone los Face overlays sobre el <paramref name="foldedBase"/> (linear RGBA) por GL vía
+    ''' <see cref="FaceTintCompositor.ApplyFaceTintPipeline"/> (capas TextureSet tex×uColor, orden por índice, ley SSE)
+    ''' y escribe el resultado readback como <c>FaceDiffuse\&lt;plugin&gt;\&lt;id&gt;_2b.dds</c>. Corre en el hilo GL (host).
+    ''' Es la contraparte GPU del compose CPU del <c>_2</c>: comparar los dos verifica la paridad overlay CPU==GPU.</summary>
+    ''' <summary>Construye las capas GPU (TextureSetDiffuse tex×uColor, orden por índice de nodo Ovl = CPU/skee/render) de
+    ''' los Face* overlays de un preset, para componerlas sobre un base plegado vía <see cref="FaceTintCompositor.ApplyFaceTintPipeline"/>.
+    ''' Cobertura = ALPHA (skee normal.fx alpha-over). Compartido por los sandboxes _2b (<see cref="WriteSseFaceDiffuse2bGpu"/>)
+    ''' y _2d (<see cref="WriteSseFacetint2dGpu"/>). Vacía si <paramref name="overlays"/> Is Nothing.</summary>
+    Private Function BuildSseFaceOverlayGpuLayers(overlays As IList(Of RaceMenuJslot.JslotOverlayNode)) As List(Of FaceTintLayerInput)
+        Dim layers As New List(Of FaceTintLayerInput)
+        If overlays Is Nothing Then Return layers
+        ' Orden = el MISMO sort configurable que el compose CPU (SseOverlayCompositor.SortFaceOverlays,
+        ' default Ovl_Index = skee) ⇒ GPU (_2b/_2d) y CPU (_2/_2c) componen los overlays en el mismo orden.
+        Dim ordered = SseOverlayCompositor.SortFaceOverlays(
+            overlays.Where(Function(o) o IsNot Nothing AndAlso Not String.IsNullOrEmpty(o.NodeName) AndAlso
+                                       o.NodeName.TrimStart().StartsWith("Face", StringComparison.OrdinalIgnoreCase) AndAlso
+                                       Not String.IsNullOrEmpty(o.DiffusePath)).ToList())
+        For Each ov In ordered
+            Dim texBytes = FilesDictionary_class.GetBytes(FO4UnifiedMaterial_Class.CorrectTexturePath(ov.DiffusePath))
+            If texBytes Is Nothing Then Continue For
+            layers.Add(New FaceTintLayerInput With {
+                .Kind = FaceTintLayerKind.TextureSetDiffuse,
+                .LayerDdsBytes = texBytes, .LayerCacheKey = ov.DiffusePath,
+                .MultiplyTextureByColor = ov.HasTint,
+                .R = ClampByte255(ov.TintR * 255.0), .G = ClampByte255(ov.TintG * 255.0), .B = ClampByte255(ov.TintB * 255.0),
+                .Opacity = CSng(If(ov.HasAlpha, ov.Alpha, 1.0)),
+                .BlendOp = 0})   ' skee overlay = normal.fx alpha-over (Replace/over por la ley SSE)
+        Next
+        Return layers
+    End Function
+
+    Private Sub WriteSseFaceDiffuse2bGpu(foldedBase As Double(), overlays As IList(Of RaceMenuJslot.JslotOverlayNode),
+                                         w As Integer, h As Integer, fgLocal As UInteger, originPlugin As String, host As NpcRenderHost)
+        Dim npix = w * h
+        ' 1) base plegado → BGRA lineal → textura GL.
+        Dim baseBgra(npix * 4 - 1) As Byte
+        For i = 0 To npix - 1
+            baseBgra(i * 4) = ClampByte255(foldedBase(i * 4 + 2) * 255.0)
+            baseBgra(i * 4 + 1) = ClampByte255(foldedBase(i * 4 + 1) * 255.0)
+            baseBgra(i * 4 + 2) = ClampByte255(foldedBase(i * 4) * 255.0)
+            baseBgra(i * 4 + 3) = 255
+        Next
+        Dim baseTex = UploadBgraToGl(baseBgra, w, h)
+        If baseTex = 0 Then Return
+
+        ' 2) overlays Face* → capas TextureSet tex×uColor, orden por índice (= CPU/skee). Helper compartido con _2d.
+        Dim layers = BuildSseFaceOverlayGpuLayers(overlays)
+        If layers.Count = 0 Then
+            OpenTK.Graphics.OpenGL4.GL.DeleteTexture(baseTex) : Return
+        End If
+
+        ' 3) compose GL sobre el base plegado.
+        Dim pr = FaceTintCompositor.ApplyFaceTintPipeline(host.CompositorState, host.TintGpuCache,
+                                                          baseTex, 0, 0, w, h, layers, New List(Of FaceRegionSwapInput)(),
+                                                          baseDiffuseIsLinearOnGpu:=True)
+        Dim resultId = If(pr IsNot Nothing AndAlso pr.Diffuse IsNot Nothing AndAlso pr.Diffuse.IsFresh, pr.Diffuse.TextureId, baseTex)
+
+        ' 4) readback → BGRA → encode _2b.
+        Dim gbuf(npix * 4 - 1) As Byte
+        OpenTK.Graphics.OpenGL4.GL.BindTexture(OpenTK.Graphics.OpenGL4.TextureTarget.Texture2D, resultId)
+        Dim handle = Runtime.InteropServices.GCHandle.Alloc(gbuf, Runtime.InteropServices.GCHandleType.Pinned)
+        Try
+            OpenTK.Graphics.OpenGL4.GL.GetTexImage(OpenTK.Graphics.OpenGL4.TextureTarget.Texture2D, 0, OpenTK.Graphics.OpenGL4.PixelFormat.Bgra, OpenTK.Graphics.OpenGL4.PixelType.UnsignedByte, handle.AddrOfPinnedObject())
+        Finally
+            handle.Free()
+        End Try
+        OpenTK.Graphics.OpenGL4.GL.BindTexture(OpenTK.Graphics.OpenGL4.TextureTarget.Texture2D, 0)
+        If resultId <> baseTex Then Try : OpenTK.Graphics.OpenGL4.GL.DeleteTexture(resultId) : Catch : End Try
+        Try : OpenTK.Graphics.OpenGL4.GL.DeleteTexture(baseTex) : Catch : End Try
+
+        ' Resolución de salida = Setting_FaceGenDiffuseResolution (Inherit→nativo no-op; resample filtro FO4 = release/_2c).
+        Dim gpW = w, gpH = h, gpBuf = gbuf
+        If OutputSettings.Diffuse <> FaceTintConvention.FaceTintChannelResolution.Inherit Then
+            Dim gt = FaceTintConvention.ResolveResolutionSize(OutputSettings.Diffuse, Math.Min(w, h))
+            gpBuf = FaceTintCpuCompositor.ResampleBgra(gbuf, w, h, gt, gt) : gpW = gt : gpH = gt
+        End If
+        Dim mips = CInt(Math.Floor(Math.Log(Math.Min(gpW, gpH), 2))) + 1
+        Dim dds = DirectXTextureConversionHelper.Bgra32BytesToDdsBytes(gpW, gpH, gpBuf, DiffuseDxgiFromSetting(), generateMipMaps:=True, generatedMipLevels:=mips)
+        If dds Is Nothing Then Return
+        Dim rel = $"Textures\Actors\Character\FaceGenData\FaceDiffuse\{originPlugin}\{fgLocal:X8}_2b.dds"
+        Dim outFile = IO.Path.Combine(Config_App.Current.DataPath, rel)
+        IO.Directory.CreateDirectory(IO.Path.GetDirectoryName(outFile))
+        IO.File.WriteAllBytes(outFile, dds)
+        MaybeWriteTgaBeside(outFile, gpW, gpH, gpBuf)   ' TGA lossless como _2/_2c/_2d (regla: todo output su TGA cuando marcado)
+        Logger.LogLazy(Function() $"[FACEBAKE][SSE] _2b GPU overlay compose -> {rel} ({dds.Length}b)")
+    End Sub
+
+    ''' <summary>Sube un BGRA a una textura GL RGBA8 (linear, clamp). Devuelve 0 si falla. GL-bound.</summary>
+    Private Function UploadBgraToGl(bgra As Byte(), w As Integer, h As Integer) As Integer
+        Dim id = OpenTK.Graphics.OpenGL4.GL.GenTexture()
+        If id = 0 Then Return 0
+        OpenTK.Graphics.OpenGL4.GL.BindTexture(OpenTK.Graphics.OpenGL4.TextureTarget.Texture2D, id)
+        OpenTK.Graphics.OpenGL4.GL.TexParameter(OpenTK.Graphics.OpenGL4.TextureTarget.Texture2D, OpenTK.Graphics.OpenGL4.TextureParameterName.TextureMinFilter, CInt(OpenTK.Graphics.OpenGL4.TextureMinFilter.Linear))
+        OpenTK.Graphics.OpenGL4.GL.TexParameter(OpenTK.Graphics.OpenGL4.TextureTarget.Texture2D, OpenTK.Graphics.OpenGL4.TextureParameterName.TextureMagFilter, CInt(OpenTK.Graphics.OpenGL4.TextureMagFilter.Linear))
+        Dim handle = Runtime.InteropServices.GCHandle.Alloc(bgra, Runtime.InteropServices.GCHandleType.Pinned)
+        Try
+            OpenTK.Graphics.OpenGL4.GL.TexImage2D(OpenTK.Graphics.OpenGL4.TextureTarget.Texture2D, 0, OpenTK.Graphics.OpenGL4.PixelInternalFormat.Rgba8, w, h, 0,
+                OpenTK.Graphics.OpenGL4.PixelFormat.Bgra, OpenTK.Graphics.OpenGL4.PixelType.UnsignedByte, handle.AddrOfPinnedObject())
+        Finally
+            handle.Free()
+        End Try
+        OpenTK.Graphics.OpenGL4.GL.BindTexture(OpenTK.Graphics.OpenGL4.TextureTarget.Texture2D, 0)
+        Return id
+    End Function
+
+    Private Function ClampByte255(v As Double) As Byte
+        Return CByte(Math.Max(0.0, Math.Min(255.0, Math.Round(v))))
+    End Function
+
+    ''' <summary>Lee el content de los slots 0 (diffuse/complexion) y 1 (normal/_msn) del texture-set del head
+    ''' shape. Para capturar los paths ORIGINALES antes de que el bake los mute (sandbox _2c). ("","") si no resuelve.</summary>
+    Private Function GetSseHeadSlotPaths(nif As Nifcontent_Class_Manolo, cloned As INiShape) As (Slot0 As String, Slot1 As String, Slot3 As String)
+        Try
+            Dim spr = cloned.ShaderPropertyRef
+            If spr Is Nothing OrElse spr.Index < 0 Then Return ("", "", "")
+            Dim lsp = TryCast(nif.Blocks(spr.Index), NiflySharp.Blocks.BSLightingShaderProperty)
+            If lsp Is Nothing OrElse lsp.TextureSetRef Is Nothing OrElse lsp.TextureSetRef.Index < 0 Then Return ("", "", "")
+            Dim ts = TryCast(nif.Blocks(lsp.TextureSetRef.Index), NiflySharp.Blocks.BSShaderTextureSet)
+            If ts Is Nothing OrElse ts.Textures Is Nothing Then Return ("", "", "")
+            Dim s0 = If(ts.Textures.Count > 0, ts.Textures(0).Content, "")
+            Dim s1 = If(ts.Textures.Count > 1, ts.Textures(1).Content, "")
+            Dim s3 = If(ts.Textures.Count > 3, ts.Textures(3).Content, "")   ' detail/Displacement (softlight)
+            Return (s0, s1, s3)
+        Catch
+            Return ("", "", "")
+        End Try
+    End Function
+
+    ''' <summary>NPC skin colour (linear RGB [0,1]) for the skee −2 skin-preset. Reuses the SAME QNAM the SSE
+    ''' facetint + body use (SseFaceTintComposer.ResolveSkinToneQnam), so a skee mask tinted "skin" matches the
+    ''' rest. Nothing when unresolved (BuildSkeeMaskLayer then falls back to the literal colour).</summary>
+    Private Function SseSkinRgbForNpc(pluginManager As PluginManager, npcData As NPC_Data, npcFormID As UInteger) As Double()
+        Try
+            If pluginManager Is Nothing OrElse npcData Is Nothing OrElse npcData.RaceFormID = 0UI Then Return Nothing
+            Dim rr = pluginManager.GetRecord(npcData.RaceFormID)
+            If rr Is Nothing OrElse rr.Header.Signature <> "RACE" Then Return Nothing
+            Dim race = RecordParsers.ParseRACE(rr, pluginManager)
+            Dim q = SseFaceTintComposer.ResolveSkinToneQnam(pluginManager, npcData, race, npcData.RaceFormID, npcData.IsFemale)
+            If Not q.HasValue Then Return Nothing
+            Return New Double() {q.Value.R / 255.0, q.Value.G / 255.0, q.Value.B / 255.0}
+        Catch
+            Return Nothing
+        End Try
+    End Function
+
+    ''' <summary>DXGI del diffuse de salida según el setting del usuario (CharGen Options → Format del Diffuse):
+    ''' BC3 (default) / BC7 / Uncompressed (B8G8R8A8). Misma tabla que el bake FO4 (BakeFaceTextures).</summary>
+    Private Function DiffuseDxgiFromSetting() As Integer
+        ' Via OutputSettings ⇒ per-game (SSE vs FO4) y All/per-layer aware, como el bake FO4 (BakeFaceTextures).
+        Dim os = If(Config_App.Current IsNot Nothing, OutputSettings, Nothing)
+        Dim dc = If(os IsNot Nothing, os.DiffuseCompression, FaceTintConvention.FaceTintDiffuseCompression.Bc3)
+        Select Case dc
+            Case FaceTintConvention.FaceTintDiffuseCompression.Bc7 : Return DirectXTextureConversionHelper.DxgiFormatBc7Unorm
+            Case FaceTintConvention.FaceTintDiffuseCompression.Uncompressed : Return DirectXTextureConversionHelper.DxgiFormatB8G8R8A8Unorm
+            Case Else : Return DirectXTextureConversionHelper.DxgiFormatBc3Unorm
+        End Select
+    End Function
+
+    ''' <summary>DXGI del NORMAL facegen según <see cref="Config_Class.Setting_FaceGenNormalCompression"/>
+    ''' (CharGenOptions). Default BC7 = formato vanilla del _msn de SSE (model-space, 3 canales). NO hardcodea.</summary>
+    Private Function NormalDxgiFromSetting() As Integer
+        ' Via OutputSettings ⇒ per-game + All/per-layer (SSE All: sigue el diffuse; per-layer: Setting_..._SSE).
+        Dim os = If(Config_App.Current IsNot Nothing, OutputSettings, Nothing)
+        Dim nc = If(os IsNot Nothing, os.NormalCompression, FaceTintConvention.FaceTintNormalSpecularCompression.Bc3)
+        Select Case nc
+            Case FaceTintConvention.FaceTintNormalSpecularCompression.Bc5 : Return DirectXTextureConversionHelper.DxgiFormatBc5Unorm
+            Case FaceTintConvention.FaceTintNormalSpecularCompression.Uncompressed : Return DirectXTextureConversionHelper.DxgiFormatB8G8R8A8Unorm
+            Case FaceTintConvention.FaceTintNormalSpecularCompression.Bc7 : Return DirectXTextureConversionHelper.DxgiFormatBc7Unorm
+            Case Else : Return DirectXTextureConversionHelper.DxgiFormatBc3Unorm   ' Bc3 (default)
+        End Select
+    End Function
 
     Private Sub BakeFaceTextures(nif As Nifcontent_Class_Manolo,
                                  cloned As INiShape,

@@ -131,6 +131,7 @@ Partial Class CharGenOptionsForm
         CheckBoxApplyGhoulHeadRearFix = New CheckBox()
         CheckBoxApplyEyebrowsFixedColor = New CheckBox()
         CheckBoxApplyMouthVanillaFix = New CheckBox()
+        CheckBoxBakeSseRaceMenuOverlays = New CheckBox()
         TabMain.SuspendLayout()
         TabPageSize.SuspendLayout()
         GroupBoxSize.SuspendLayout()
@@ -287,7 +288,7 @@ Partial Class CharGenOptionsForm
         ' ComboFormatN
         '
         ComboFormatN.DropDownStyle = ComboBoxStyle.DropDownList
-        ComboFormatN.Items.AddRange(New Object() {"BC5 (default)", "Uncompressed"})
+        ComboFormatN.Items.AddRange(New Object() {"BC5", "Uncompressed", "BC7", "BC3 (default)"})
         ComboFormatN.Location = New Point(410, 87)
         ComboFormatN.Name = "ComboFormatN"
         ComboFormatN.Size = New Size(190, 23)
@@ -1108,6 +1109,7 @@ Partial Class CharGenOptionsForm
         TabPageFixes.Controls.Add(CheckBoxApplyGhoulHeadRearFix)
         TabPageFixes.Controls.Add(CheckBoxApplyEyebrowsFixedColor)
         TabPageFixes.Controls.Add(CheckBoxApplyMouthVanillaFix)
+        TabPageFixes.Controls.Add(CheckBoxBakeSseRaceMenuOverlays)
         TabPageFixes.Location = New Point(4, 24)
         TabPageFixes.Name = "TabPageFixes"
         TabPageFixes.Padding = New Padding(3)
@@ -1145,6 +1147,16 @@ Partial Class CharGenOptionsForm
         CheckBoxApplyMouthVanillaFix.TabIndex = 2
         CheckBoxApplyMouthVanillaFix.Text = "Fix mouth vanilla error (BaseFemaleHeadChargen.tri)"
         CheckBoxApplyMouthVanillaFix.UseVisualStyleBackColor = True
+        '
+        ' CheckBoxBakeSseRaceMenuOverlays
+        '
+        CheckBoxBakeSseRaceMenuOverlays.AutoSize = True
+        CheckBoxBakeSseRaceMenuOverlays.Location = New Point(12, 96)
+        CheckBoxBakeSseRaceMenuOverlays.Name = "CheckBoxBakeSseRaceMenuOverlays"
+        CheckBoxBakeSseRaceMenuOverlays.Size = New Size(320, 19)
+        CheckBoxBakeSseRaceMenuOverlays.TabIndex = 3
+        CheckBoxBakeSseRaceMenuOverlays.Text = "Bake RaceMenu face overlays into the diffuse (SSE)"
+        CheckBoxBakeSseRaceMenuOverlays.UseVisualStyleBackColor = True
         '
         ' GroupConvDWsByOp
         '
@@ -1403,4 +1415,5 @@ Partial Class CharGenOptionsForm
     Friend WithEvents CheckBoxApplyGhoulHeadRearFix As System.Windows.Forms.CheckBox
     Friend WithEvents CheckBoxApplyEyebrowsFixedColor As System.Windows.Forms.CheckBox
     Friend WithEvents CheckBoxApplyMouthVanillaFix As System.Windows.Forms.CheckBox
+    Friend WithEvents CheckBoxBakeSseRaceMenuOverlays As System.Windows.Forms.CheckBox
 End Class

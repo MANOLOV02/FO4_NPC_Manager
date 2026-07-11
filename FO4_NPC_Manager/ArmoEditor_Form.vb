@@ -38,6 +38,10 @@ Public Class ArmoEditor_Form
     ''' <summary>Suppresses preview re-render + dirty marking while panels are being LOADED programmatically.</summary>
     Private _loading As Boolean
 
+    ''' <summary>True when authoring for Skyrim (SSE). Set by <see cref="ConfigureForGame"/> at construction. Drives
+    ''' the armor-rating field binding (DNAM ×100 vs FO4 FNAM u16) and the hiding of FO4-only editor surfaces.</summary>
+    Private _isSkyrim As Boolean
+
     ''' <summary>The fixed type prefix for this editor's stored base EditorID, driven through the shared
     ''' <see cref="EditorIdField"/> helper (NEW = editable name under this prefix; OVERRIDE = kept verbatim).</summary>
     Private ReadOnly _edidPrefix As String = ArmoDraft.EditorIdPrefix
@@ -197,6 +201,10 @@ Public Class ArmoEditor_Form
         AddHandler TextBoxMo2s.TextChanged, AddressOf OnFieldEdited
         AddHandler TextBoxMo4s.TextChanged, AddressOf OnFieldEdited
 
+        ' Game-gate the editor surface BEFORE loading panels (LoadDraftIntoPanels reads _isSkyrim to bind the
+        ' armor-rating field to the right record field).
+        ConfigureForGame()
+
         ' Seed the draft: edit the passed one, else a fresh empty draft (NEW) seeded with the preview race.
         If editDraft IsNot Nothing Then
             _draft = editDraft
@@ -231,6 +239,40 @@ Public Class ArmoEditor_Form
 
     Private Sub BuildSlotCheckBoxes()
         _slotChecks = BipedSlotCheckboxes.Build(FlowSlots, AddressOf OnFieldEdited)
+    End Sub
+
+    ''' <summary>Game-gate the editor UI. Under SKYRIM: relabel + rescale the Armor Rating field to DNAM (s32,
+    ''' stored ×100, shown ÷100 with 2 decimals) and HIDE every FO4-only surface — a control the Skyrim
+    ''' serializer never reads must not be on screen at all, since a visible-but-inert field reads as "this
+    ''' setting applies and did nothing". Nothing here is merely disabled.
+    ''' Hidden: FNAM (Base Addon Index / Stagger Rating), the DATA Health field, the Object Template (OBTS) tab,
+    ''' the Damage Resist (DAMA) tab, the PTRN transform, the APPR attach-parent-slots block, the MO2S/MO4S
+    ''' material-swap pickers (Skyrim's MO2S/MO4S are Alternate-Textures arrays, not an MSWP FormID — they are
+    ''' preserved verbatim, never authored here), and the Armature grid's INDX column (Skyrim's armature is a
+    ''' plain MODL list with no INDX). FO4 is unchanged.</summary>
+    Private Sub ConfigureForGame()
+        _isSkyrim = (Config_App.Current.Game = Config_App.Game_Enum.Skyrim)
+        If Not _isSkyrim Then Return
+        LabelArmorRating.Text = "Armor Rating (DNAM):"
+        NumArmorRating.DecimalPlaces = 2
+        LabelHealth.Visible = False : NumHealth.Visible = False
+        LabelBaseAddonIndex.Visible = False : NumBaseAddonIndex.Visible = False
+        LabelStaggerRating.Visible = False : NumStaggerRating.Visible = False
+        ' PTRN (Transform) — FO4-only.
+        LabelPtrn.Visible = False : TextBoxPtrn.Visible = False : ButtonPickPtrn.Visible = False
+        ' APPR (Attach Parent Slots) — FO4-only.
+        LabelAppr.Visible = False : ListAppr.Visible = False : ApprButtons.Visible = False
+        ' MO2S / MO4S material swaps — FO4-only (Skyrim uses Alternate Textures, preserved verbatim).
+        LabelMo2s.Visible = False : TextBoxMo2s.Visible = False
+        ButtonPickMo2s.Visible = False : ButtonEditMo2s.Visible = False
+        LabelMo4s.Visible = False : TextBoxMo4s.Visible = False
+        ButtonPickMo4s.Visible = False : ButtonEditMo4s.Visible = False
+        ' Armature grid: INDX exists only in the Fallout 4 entry (INDX + MODL). Skyrim's Armature is a plain
+        ' RArray of MODL FormIDs. Hidden here (not in BuildAddonsGridColumns) because the columns are built
+        ' before this runs.
+        If GridAddons.Columns.Count > 0 Then GridAddons.Columns(0).Visible = False
+        If Tabs.TabPages.Contains(TabObts) Then Tabs.TabPages.Remove(TabObts)
+        If Tabs.TabPages.Contains(TabDamage) Then Tabs.TabPages.Remove(TabDamage)
     End Sub
 
     ''' <summary>Build the 3 Addons grid columns: INDX (editable u16), ARMA (read-only "Name [0xFORMID]"),
@@ -553,6 +595,7 @@ Public Class ArmoEditor_Form
             .Weight = a.Weight,
             .Health = a.Health,
             .ArmorRating = a.ArmorRating,
+            .SkyrimArmorRating = a.SkyrimArmorRating,
             .BaseAddonIndex = If(a.BaseAddonIndex >= 0, CUShort(a.BaseAddonIndex), CUShort(0)),
             .StaggerRating = a.StaggerRating,
             .IsOverride = asOverride, .IsNew = Not asOverride, .IsModified = False
@@ -594,7 +637,13 @@ Public Class ArmoEditor_Form
             NumValue.Value = ClampDec(CDec(_draft.Value), NumValue)
             NumWeight.Value = ClampDec(CDec(_draft.Weight), NumWeight)
             NumHealth.Value = ClampDec(CDec(_draft.Health), NumHealth)
-            NumArmorRating.Value = ClampDec(CDec(_draft.ArmorRating), NumArmorRating)
+            ' Armor Rating: FO4 = FNAM u16 (integer); SKYRIM = DNAM s32 stored ×100 (xEdit shows ÷100). Bind to the
+            ' game's field. ApplyArmorRatingFieldMode() (called once at init) relabels DNAM/FNAM and sets decimals.
+            If _isSkyrim Then
+                NumArmorRating.Value = ClampDec(CDec(_draft.SkyrimArmorRating) / 100D, NumArmorRating)
+            Else
+                NumArmorRating.Value = ClampDec(CDec(_draft.ArmorRating), NumArmorRating)
+            End If
             NumBaseAddonIndex.Value = ClampDec(CDec(_draft.BaseAddonIndex), NumBaseAddonIndex)
             NumStaggerRating.Value = ClampDec(CDec(_draft.StaggerRating), NumStaggerRating)
 
@@ -739,7 +788,11 @@ Public Class ArmoEditor_Form
         _draft.Value = CInt(NumValue.Value)
         _draft.Weight = CSng(NumWeight.Value)
         _draft.Health = CUInt(NumHealth.Value)
-        _draft.ArmorRating = CUShort(NumArmorRating.Value)
+        If _isSkyrim Then
+            _draft.SkyrimArmorRating = CInt(Math.Round(NumArmorRating.Value * 100D, MidpointRounding.AwayFromZero))
+        Else
+            _draft.ArmorRating = CUShort(NumArmorRating.Value)
+        End If
         _draft.BaseAddonIndex = CUShort(NumBaseAddonIndex.Value)
         _draft.StaggerRating = CByte(NumStaggerRating.Value)
 

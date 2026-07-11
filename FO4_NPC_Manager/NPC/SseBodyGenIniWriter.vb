@@ -54,7 +54,8 @@ Public Module SseBodyGenIniWriter
 
     ''' <summary>Emit <c>Data\Meshes\actors\character\BodyGenData\&lt;targetPluginBaseName&gt;\</c>
     ''' with <c>templates.ini</c> + <c>morphs.ini</c>. <paramref name="targetPluginBaseName"/> is the
-    ''' override plugin filename WITHOUT extension. Merge-safe like the FO4 writer: the caller passes
+    ''' override plugin filename WITH extension (== the plugin's modInfo->name; skee64 looks up
+    ''' <c>BodyGenData\&lt;modInfo-&gt;name&gt;\</c> at BodyMorphInterface.cpp:132). Merge-safe like the FO4 writer: the caller passes
     ''' the FULL entry list (built from the whole sidecar), so a full rewrite preserves every other
     ''' NPC's row and replaces this NPC's. If the filtered list is empty BOTH files are deleted.
     ''' Atomic writes via .tmp + rename.</summary>

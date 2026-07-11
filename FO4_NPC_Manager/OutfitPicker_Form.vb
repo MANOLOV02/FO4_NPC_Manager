@@ -230,10 +230,9 @@ Public Class OutfitPicker_Form
         ' Nested-only "Edit entry…" edits the selected LVLO entry's Level/Count/ChanceNone (distinct from
         ' "Edit armor…", which stays and opens the ARMO editor when the entry references a concrete armor).
         AddHandler ButtonEditEntry.Click, Sub() EditSelectedEntry()
-        ' ARMA/ARMO record authoring is FO4-only (Skyrim serializers not implemented — see SkyrimArmorAuthoringBlocked).
-        ' Disable "New armor…" on Skyrim; "Edit armor…" is force-disabled in UpdateEditArmorEnabled. Assigning an
-        ' existing outfit and assembling one from existing armors stay available.
-        If Config_App.Current.Game = Config_App.Game_Enum.Skyrim Then ButtonNewArmor.Enabled = False
+        ' ARMA/ARMO record authoring now works on BOTH games — the Skyrim serializers are implemented and proven
+        ' byte-exact (Tools\ArmoArmaSseRoundtripProbe: ARMA 766/766, ARMO 2762/2762). "New armor…" / "Edit armor…"
+        ' are enabled for Skyrim too; "Edit armor…" state is driven purely by focus (UpdateEditArmorEnabled).
         UpdateEditArmorEnabled()   ' initial state: disabled until a concrete ARMO is focused
         ' "My outfit drafts" panel: double-click loads a draft back into Create for editing; the button deletes/reverts.
         AddHandler ListViewMyOutfits.DoubleClick, AddressOf OnMyOutfitDoubleClick
@@ -765,22 +764,7 @@ Public Class OutfitPicker_Form
     ''' the candidate universe + rebuilds the item list; ResyncPiecesFromCandidates pulls any overridden ARMO's
     ''' updated slots/name into its piece; clearing _lastPreviewKey forces a re-render (an override can change the
     ''' render without changing the piece FormIDs); RefreshPieces rebuilds the pieces list + re-renders.</summary>
-    ''' <summary>ARMA/ARMO record authoring (create/override) is Fallout-4-only: the record serializers emit
-    ''' FO4-shaped bodies (BOD2/OBTS/DNAM/object-templates), which have no Skyrim equivalent and would corrupt a
-    ''' Skyrim ARMA/ARMO. Assigning an existing outfit and building an OTFT from existing armors stay available
-    ''' (OTFT is a portable EDID+INAM FormID list, serialized game-aware). Returns True (and warns) on Skyrim so
-    ''' the armor-editor entry points bail out instead of writing invalid records.</summary>
-    Private Function SkyrimArmorAuthoringBlocked() As Boolean
-        If Config_App.Current.Game <> Config_App.Game_Enum.Skyrim Then Return False
-        MessageBox.Show(Me,
-            "Editing or creating ARMA/ARMO records is currently Fallout 4 only — the Skyrim armor-record serializers are not implemented, and writing Fallout-4-shaped armor into a Skyrim plugin would corrupt it." & vbCrLf & vbCrLf &
-            "You can still assign an existing outfit to this NPC and assemble an outfit from existing armors.",
-            "Skyrim armor authoring not available", MessageBoxButtons.OK, MessageBoxIcon.Information)
-        Return True
-    End Function
-
     Private Sub OpenArmorEditorForTemplate(armoFid As UInteger, asOverride As Boolean)
-        If SkyrimArmorAuthoringBlocked() Then Return
         Dim outfitCtx = RegisterOutfitContextDraft()
         Try
             Using dlg As New ArmoEditor_Form(_mainForm, _npcFormID, _raceFormID, _isFemale,
@@ -805,8 +789,34 @@ Public Class OutfitPicker_Form
     ''' survives the ARMO/ARMA editor modals (which register their own preview draft at the shared sentinel).
     ''' Threaded to those editors as the "Full Outfit" preview context. Returns 0 when the Create tab has no
     ''' pieces (⇒ the editors fall back to their single-item throwaway).</summary>
+    ''' <summary>BOD2 CRUDO del ARMO de la pieza — la máscara con la que el engine decide el conflicto de
+    ''' EQUIP en Skyrim (0x1403BD39E castea el ítem con AsBipedObjectForm y lo compara contra lo ya equipado
+    ''' con SlotsOverlap 0x1401CCA90, any-bit). <see cref="PieceEntry.SlotMask"/> NO sirve: es la unión de los
+    ''' BOD2 de los ARMA más los bits headwear del ARMO, y esos bits extra (34 Forearms, 38 Calves, 41, 43…)
+    ''' gobiernan particiones, no el equip — usarlos hacía chocar las botas [37,38] con la túnica [32,34,38]
+    ''' y las botas desaparecían. Piezas LVLI: se queda la máscara que ya traen (sus ARMO terminales se
+    ''' muestrean aparte). Cacheado por FormID. El resolver lo ignora en FO4.</summary>
+    Private ReadOnly _armoConflictMaskCache As New Dictionary(Of UInteger, UInteger)
+    Private Function ArmoConflictMask(p As PieceEntry) As UInteger
+        If p Is Nothing Then Return 0UI
+        If p.IsLeveled Then Return p.SlotMask
+        Dim cached As UInteger
+        If _armoConflictMaskCache.TryGetValue(p.FormID, cached) Then Return cached
+        Dim mask As UInteger = p.SlotMask
+        Dim pm = _mainForm.PluginManagerForEditor
+        If pm IsNot Nothing Then
+            Dim rec = pm.GetRecord(p.FormID)
+            If rec IsNot Nothing AndAlso rec.Header.Signature = "ARMO" Then
+                Dim armo = RecordParsers.ParseARMO(rec, pm)
+                If armo IsNot Nothing AndAlso armo.SlotMask <> 0UI Then mask = armo.SlotMask
+            End If
+        End If
+        _armoConflictMaskCache(p.FormID) = mask
+        Return mask
+    End Function
+
     Private Function RegisterOutfitContextDraft() As UInteger
-        Dim res = SlotConflictResolver.ResolveSlotWinners(_pieces, Function(p) p.SlotMask, Function(p) p.Order)
+        Dim res = SlotConflictResolver.ResolveSlotWinners(_pieces, Function(p) p.SlotMask, Function(p) p.Order, AddressOf ArmoConflictMask)
         Dim winners = FlattenPieces(res.Winners)
         If winners.Count = 0 Then Return 0UI
         Dim d As New OutfitDraft With {.FormID = OutfitContextFormID,
@@ -862,7 +872,6 @@ Public Class OutfitPicker_Form
     ''' <summary>"New armor…" — always open the ARMO editor in NEW (blank) mode to author a brand-new ARMO from
     ''' scratch, then run the same post-return Create refresh as an edit.</summary>
     Private Sub OnNewArmor(sender As Object, e As EventArgs)
-        If SkyrimArmorAuthoringBlocked() Then Return
         Dim outfitCtx = RegisterOutfitContextDraft()
         Try
             Using dlg As New ArmoEditor_Form(_mainForm, _npcFormID, _raceFormID, _isFemale,
@@ -879,8 +888,8 @@ Public Class OutfitPicker_Form
     ''' Mirror of <see cref="UpdateAddToLvlEnabled"/>; called from the selection/focus handlers + after refresh.</summary>
     Private Sub UpdateEditArmorEnabled()
         ' "Edit armor…" is enabled whenever a concrete ARMO is focused — a top-level piece OR a nested armor entry.
-        ' Force-disabled on Skyrim: ARMA/ARMO record authoring is FO4-only (SkyrimArmorAuthoringBlocked).
-        ButtonEditArmor.Enabled = (Config_App.Current.Game <> Config_App.Game_Enum.Skyrim) AndAlso (FocusedConcreteArmoFid() <> 0UI)
+        ' Enabled on BOTH games now that the Skyrim ARMA/ARMO serializers are implemented (proven byte-exact).
+        ButtonEditArmor.Enabled = (FocusedConcreteArmoFid() <> 0UI)
         ' "Edit entry…" (nested only) is enabled whenever any LVLO entry row is selected.
         ButtonEditEntry.Enabled = (Not IsAtTopLevel() AndAlso SelectedPieceEntry() IsNot Nothing)
     End Sub
@@ -1112,7 +1121,7 @@ Public Class OutfitPicker_Form
         ' leveled list) without re-selecting it every time. No-op if that piece is gone (e.g. Remove).
         Dim keepSelectedFid As UInteger = If(SelectedPieceEntry()?.FormID, 0UI)
 
-        Dim res = SlotConflictResolver.ResolveSlotWinners(_pieces, Function(p) p.SlotMask, Function(p) p.Order)
+        Dim res = SlotConflictResolver.ResolveSlotWinners(_pieces, Function(p) p.SlotMask, Function(p) p.Order, AddressOf ArmoConflictMask)
         Dim winners As New HashSet(Of PieceEntry)(res.Winners)
         ListViewPieces.BeginUpdate()
         Try
@@ -1166,7 +1175,7 @@ Public Class OutfitPicker_Form
                 ClearPreview()
             End If
         Else
-            Dim res = SlotConflictResolver.ResolveSlotWinners(_pieces, Function(p) p.SlotMask, Function(p) p.Order)
+            Dim res = SlotConflictResolver.ResolveSlotWinners(_pieces, Function(p) p.SlotMask, Function(p) p.Order, AddressOf ArmoConflictMask)
             ' Flatten to terminal ARMOs (LVLI winners → their cached realization) so the preview draft is
             ' the concrete sample currently shown in the list (Reroll changes it).
             Await PreviewCreateAssemblyAsync(FlattenPieces(res.Winners))

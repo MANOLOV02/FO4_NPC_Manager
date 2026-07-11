@@ -21,7 +21,8 @@ Public Module RaceMenuPresetMapper
     ''' mapping (EditBody_Form.OnSaveJslot + BuildJslotBodyMorphs). Never returns Nothing; a Nothing/empty preset
     ''' yields an all-default jslot.</summary>
     Public Function ToJslot(preset As LooksmenuLoader.LooksmenuPreset,
-                            Optional pluginManager As PluginManager = Nothing) As RaceMenuJslot
+                            Optional pluginManager As PluginManager = Nothing,
+                            Optional raceFid As UInteger = 0UI, Optional isFemale As Boolean = False) As RaceMenuJslot
         Dim j As New RaceMenuJslot()
         If preset Is Nothing Then Return j
 
@@ -56,6 +57,12 @@ Public Module RaceMenuPresetMapper
         If preset.SseHeadTextureFormID <> 0UI AndAlso pluginManager IsNot Nothing Then
             j.HeadTexture = LooksmenuLoader.FormatFormIdentifier(preset.SseHeadTextureFormID, pluginManager)
         End If
+        ' Hair colour: round-trip the packed RGB the preset carries (actor.hairColor). j.Save always emits the key,
+        ' so set the value and the present-flag when the preset has an override.
+        If preset.SseHairColorRgb.HasValue Then
+            j.HairColor = preset.SseHairColorRgb.Value
+            j.HadHairColor = True
+        End If
 
         ' ---- FACE: sliders (NAM9) → morphs.default.morphs + [18] VampireMorph sentinel (EditFace_Form.vb:602-603).
         Dim nam9 = preset.SseNam9
@@ -65,6 +72,14 @@ Public Module RaceMenuPresetMapper
             j.SliderMorphs.Add(v)
         Next
         j.SliderMorphs.Add(3.402823466E+38F)   ' VampireMorph sentinel (= not a vampire), EditFace_Form.vb:603.
+
+        ' ---- FACE: NAMA face-part presets → morphs.default.presets (symmetric with ApplyJslotToPreset). Emitted
+        ' only when the preset carries NAMA; preserves the 0xFFFFFFFF unset sentinel per family.
+        If preset.SseNama IsNot Nothing Then
+            For i = 0 To SseNam9MorphMap.NamaFamilyCount - 1
+                j.NamaPresets.Add(If(i < preset.SseNama.Length, preset.SseNama(i), &HFFFFFFFFUI))
+            Next
+        End If
 
         ' ---- FACE: sculpt, world delta × SculptDivisor. Emit ALL per-shape blocks (head + brows + eyes + mouth)
         ' with their Host chargen tri, so a load→save round-trip preserves the full preset (not just the head).
@@ -103,7 +118,10 @@ Public Module RaceMenuPresetMapper
             Dim col As UInteger = (aCov << 24) Or (CUInt(t.R) << 16) Or (CUInt(t.G) << 8) Or CUInt(t.B)
             Dim texPath As String = ""
             If preset.SseTintTexOverride IsNot Nothing Then preset.SseTintTexOverride.TryGetValue(t.Index, texPath)
-            j.TintInfo.Add(New RaceMenuJslot.JslotTint With {.Color = col, .Index = t.Index, .Texture = If(texPath, "")})
+            ' t.Index is the record TINI value → the .jslot needs the POSITIONAL index (inverse of the load-side
+            ' translation), so a save→load round-trips to the same layer on every race.
+            Dim jslotIndex As Integer = TiniToJslotIndex(pluginManager, raceFid, isFemale, t.Index)
+            j.TintInfo.Add(New RaceMenuJslot.JslotTint With {.Color = col, .Index = jslotIndex, .Texture = If(texPath, "")})
         Next
 
         ' ---- BODY: actor.weight ← SseWeight (EditBody_Form.vb:1085).
@@ -134,8 +152,11 @@ Public Module RaceMenuPresetMapper
     ''' <summary>Inverse of <see cref="ToJslot"/>: apply a <c>.jslot</c> onto an existing preset in place. Combines
     ''' EditFace_Form.OnLoadJslot (FACE) and EditBody_Form.OnLoadJslot (BODY). Sets the relevant Has* authority flags
     ''' so the resulting preset applies as an overlay.</summary>
+    ''' <param name="raceFid">The NPC's RACE FormID (+ <paramref name="isFemale"/>) — needed to translate the
+    ''' .jslot's POSITIONAL tint index to the record's TINI value (see JslotIndexToTini). 0 = identity fallback.</param>
     Public Sub ApplyJslotToPreset(j As RaceMenuJslot, preset As LooksmenuLoader.LooksmenuPreset,
-                                  Optional pluginManager As PluginManager = Nothing)
+                                  Optional pluginManager As PluginManager = Nothing,
+                                  Optional raceFid As UInteger = 0UI, Optional isFemale As Boolean = False)
         If j Is Nothing OrElse preset Is Nothing Then Return
 
         ' ---- FACE IDENTITY: headParts (hair/eyes/brows/…) → preset.HeadPartFormIDs. skee64 ApplyPreset applies
@@ -187,9 +208,12 @@ Public Module RaceMenuPresetMapper
                 preset.HasHeadPartFormIDs = True
             End If
         End If
-        ' ---- FACE IDENTITY: hair color. The .jslot stores actor.hairColor as a packed RGB int (PresetInterface.cpp:677
-        ' color.red<<16|green<<8|blue), NOT a CLFM FormID — so it can't be mapped to preset.HairColorFormID (a CLFM
-        ' ref) without a matching Color record. Left for a dedicated RGB-hair-tint path (documented, not guessed).
+        ' ---- FACE IDENTITY: hair color. actor.hairColor is a packed RGB (PresetInterface.cpp:677
+        ' color.red<<16|green<<8|blue), NOT a CLFM FormID. skee applies it straight onto the hair shape's
+        ' BSLightingShaderMaterialHairTint.tintColor (PresetInterface.cpp:112-116), taking precedence over the NPC's
+        ' CLFM. We carry the packed RGB on the preset (→ state.SseHairColorRgb → ResolveHairTintColor); Nothing when
+        ' the preset had no hairColor so the render falls back to the CLFM.
+        preset.SseHairColorRgb = If(j.HadHairColor, CType(j.HairColor, Integer?), Nothing)
         ' ---- FACE IDENTITY: headTexture (face FTST FormID) — see SseHeadTextureFormID handling below (render override).
         If pluginManager IsNot Nothing AndAlso Not String.IsNullOrEmpty(j.HeadTexture) Then
             preset.SseHeadTextureFormID = LooksmenuLoader.ResolveFormIdentifier(j.HeadTexture, pluginManager)
@@ -207,7 +231,18 @@ Public Module RaceMenuPresetMapper
             nam9(i) = j.SliderMorphs(i)
         Next
         preset.SseNam9 = nam9
-        If preset.SseNama Is Nothing Then preset.SseNama = New UInteger(SseNam9MorphMap.NamaFamilyCount - 1) {}
+        ' NAMA face-part presets (nose/brow/eyes/lip TYPE) → the NPC's NAMA vector. skee applies
+        ' morphs.default.presets (PresetInterface.cpp:1540-1543); previously the jslot value was preserved in Raw but
+        ' never applied. 0xFFFFFFFF = "unset/default" per family, preserved (never forced to a real type 0).
+        Dim nama(SseNam9MorphMap.NamaFamilyCount - 1) As UInteger
+        For i = 0 To nama.Length - 1 : nama(i) = &HFFFFFFFFUI : Next
+        If preset.SseNama IsNot Nothing Then
+            For i = 0 To Math.Min(preset.SseNama.Length, nama.Length) - 1 : nama(i) = preset.SseNama(i) : Next
+        End If
+        For i = 0 To Math.Min(j.NamaPresets.Count, SseNam9MorphMap.NamaFamilyCount) - 1
+            nama(i) = j.NamaPresets(i)
+        Next
+        preset.SseNama = nama
         preset.HasSseMorphs = True
 
         ' ---- FACE: sculpt ÷ divisor → world deltas. A RaceMenu preset sculpts head + brows + eyes + mouth as
@@ -255,13 +290,18 @@ Public Module RaceMenuPresetMapper
                 Dim g As Byte = CByte((ti.Color >> 8) And &HFFUI)
                 Dim b As Byte = CByte(ti.Color And &HFFUI)
                 Dim tinv As UInteger = CUInt(Math.Round(a / 255.0 * 100.0))
-                outList.Add(New NPC_RawSubrecord With {.Sig = "TINI", .Data = BitConverter.GetBytes(CUShort(ti.Index))})
+                ' ti.Index is the .jslot POSITIONAL index → the record needs the RACE layer's TINI value. For most
+                ' vanilla base races TINI == position so this is a no-op, but for the 71 divergent races it is the
+                ' difference between binding to the right layer (incl. the position-0 skin tone that drives QNAM)
+                ' and dropping the tint onto a TINI the race doesn't have.
+                Dim tini As Integer = JslotIndexToTini(pluginManager, raceFid, isFemale, ti.Index)
+                outList.Add(New NPC_RawSubrecord With {.Sig = "TINI", .Data = BitConverter.GetBytes(CUShort(tini))})
                 outList.Add(New NPC_RawSubrecord With {.Sig = "TINC", .Data = New Byte() {r, g, b, 255}})
                 outList.Add(New NPC_RawSubrecord With {.Sig = "TINV", .Data = BitConverter.GetBytes(tinv)})
                 outList.Add(New NPC_RawSubrecord With {.Sig = "TIAS", .Data = BitConverter.GetBytes(CShort(0))})
                 If Not String.IsNullOrEmpty(ti.Texture) Then
                     If texMap Is Nothing Then texMap = New Dictionary(Of Integer, String)
-                    texMap(ti.Index) = ti.Texture
+                    texMap(tini) = ti.Texture
                 End If
             Next
             preset.SseTintRawOverride = outList
@@ -384,5 +424,40 @@ Public Module RaceMenuPresetMapper
             Next
         End If
     End Sub
+
+    ' =====================================================================
+    ' RaceMenu tint INDEX semantics — positional (.jslot) ↔ TINI value (record).
+    '
+    ' A .jslot tintInfo[].index is POSITIONAL: RaceMenu exports it as the loop counter over the actor's ordered
+    ' tint-mask array (PresetInterface.cpp:383) and applies it with tintMasks.GetNthItem(index) (:197). The NPC_
+    ' record instead references a RACE tint mask by its TINI *value*, which is NOT the position — measured across
+    ' Skyrim.esm, 71 races have TINI != position (e.g. WoodElfRace female position 0 → TINI 24), and the skin-tone
+    ' layer (TINP mask type 6) is always at position 0 but with a race-specific TINI. Treating the jslot index as a
+    ' TINI value therefore bound the color/texture (and the index-0 skin tone that must match the body QNAM) to the
+    ' wrong layer on those races. These two helpers translate at the .jslot boundary, using the SAME ordered race
+    ' layer list the game builds (SseFaceTintComposer.GetRaceLayersOrdered = RACE subrecord order, gender-filtered).
+    ' =====================================================================
+
+    ''' <summary>.jslot positional index → RACE tint-mask TINI value for this race+gender. Returns the index
+    ''' unchanged when the race is unknown or the position is out of range (identity fallback = old behaviour).</summary>
+    Private Function JslotIndexToTini(pm As PluginManager, raceFid As UInteger, isFemale As Boolean, jslotIndex As Integer) As Integer
+        If pm Is Nothing OrElse raceFid = 0UI OrElse jslotIndex < 0 Then Return jslotIndex
+        Dim layers = SseFaceTintComposer.GetRaceLayersOrdered(pm, raceFid, isFemale)
+        If layers Is Nothing OrElse jslotIndex >= layers.Count Then Return jslotIndex
+        Return layers(jslotIndex).Index
+    End Function
+
+    ''' <summary>RACE tint-mask TINI value → .jslot positional index for this race+gender (inverse of
+    ''' <see cref="JslotIndexToTini"/>). Returns the TINI unchanged when the race is unknown or no layer carries
+    ''' that TINI (identity fallback).</summary>
+    Private Function TiniToJslotIndex(pm As PluginManager, raceFid As UInteger, isFemale As Boolean, tini As Integer) As Integer
+        If pm Is Nothing OrElse raceFid = 0UI Then Return tini
+        Dim layers = SseFaceTintComposer.GetRaceLayersOrdered(pm, raceFid, isFemale)
+        If layers Is Nothing Then Return tini
+        For pos = 0 To layers.Count - 1
+            If layers(pos).Index = tini Then Return pos
+        Next
+        Return tini
+    End Function
 
 End Module

@@ -185,7 +185,7 @@ Public Module NpcOverrideSaver
             Dim faceGenExcludeEntries As New List(Of String)
             If ctx.RecordsToRemove IsNot Nothing Then
                 For Each remFid In ctx.RecordsToRemove
-                    faceGenExcludeEntries.AddRange(NpcFaceGenPacker.CanonicalFaceGenEntryPathsForNpc(remFid, ctx.PluginManager))
+                    faceGenExcludeEntries.AddRange(NpcFaceGenPacker.CanonicalFaceGenEntryPathsForNpc(remFid, ctx.PluginManager, Config_App.Current.Game))
                 Next
             End If
 
@@ -904,7 +904,11 @@ Public Module NpcOverrideSaver
 
             ' Re-emit BodyGen when the user asked OR a removal must drop the NPC from an EXISTING .ini (Emit
             ' rewrites without the removed NPC, or wipes the .ini when it was the last one). Never creates one.
-            Dim iniBaseName = IO.Path.GetFileNameWithoutExtension(target.TargetPath)
+            ' BodyGen folder = the plugin's modInfo->name, which INCLUDES the extension: both f4ee
+            ' (BodyGenInterface.cpp:534, GetLoadedModIndex("Name.esp")) and skee64 (BodyMorphInterface.cpp:132)
+            ' look up BodyGen\<Name.esp>\. GetFileName keeps the extension; GetFileNameWithoutExtension (old)
+            ' wrote to a folder the engine never scans, so BodyGen never applied in-game (both games).
+            Dim iniBaseName = IO.Path.GetFileName(target.TargetPath)
             Dim isSseSave As Boolean = (Config_App.Current IsNot Nothing AndAlso Config_App.Current.Game = Config_App.Game_Enum.Skyrim)
             Dim iniExists As Boolean = If(isSseSave,
                                           SseBodyGenIniWriter.IniExists(ctx.DataPath, iniBaseName),
@@ -1251,6 +1255,7 @@ Public Module NpcOverrideSaver
             .Weight = d.Weight,
             .Health = d.Health,
             .ArmorRating = d.ArmorRating,
+            .SkyrimArmorRating = d.SkyrimArmorRating,
             .BaseAddonIndex = d.BaseAddonIndex,
             .StaggerRating = d.StaggerRating,
             .IsOverride = d.IsOverride,
@@ -1449,6 +1454,7 @@ Public Module NpcOverrideSaver
             .Weight = parsed.Weight,
             .Health = parsed.Health,
             .ArmorRating = parsed.ArmorRating,
+            .SkyrimArmorRating = parsed.SkyrimArmorRating,
             .BaseAddonIndex = If(parsed.BaseAddonIndex >= 0, CUShort(parsed.BaseAddonIndex), CUShort(0)),
             .StaggerRating = parsed.StaggerRating,
             .IsOverride = True,
@@ -1786,14 +1792,17 @@ Public Module NpcOverrideSaver
             If overlay.SseBodyOverlays IsNot Nothing AndAlso overlay.SseBodyOverlays.Count > 0 Then
                 entry.SseBodyOverlays = LooksmenuLoader.CloneSseBodyOverlays(overlay.SseBodyOverlays)
             End If
-            ' SSE node scales (body-scale) — store node→scale on the sidecar entry (the .jslot keeps full fidelity).
+            ' SSE node transforms (body-scale/position/rotation) — deep-copy the full per-node TRS onto the sidecar
+            ' entry so an edited position/rotation survives a reload, not just the scale (SSE-only, nullable).
             If overlay.SseNodeTransforms IsNot Nothing AndAlso overlay.SseNodeTransforms.Count > 0 Then
-                Dim d As New Dictionary(Of String, Single)(StringComparer.OrdinalIgnoreCase)
+                Dim list As New List(Of RaceMenuJslot.JslotNodeTransform)(overlay.SseNodeTransforms.Count)
                 For Each nt In overlay.SseNodeTransforms
-                    If nt IsNot Nothing AndAlso nt.HasScale AndAlso Not String.IsNullOrEmpty(nt.NodeName) Then d(nt.NodeName) = nt.Scale
+                    If nt IsNot Nothing AndAlso Not String.IsNullOrEmpty(nt.NodeName) AndAlso Not nt.IsIdentity Then list.Add(nt.Clone())
                 Next
-                If d.Count > 0 Then entry.SseNodeScales = d
+                If list.Count > 0 Then entry.SseNodeTransforms = list
             End If
+            ' SSE RaceMenu absolute hair tint (packed RGB) — co-save data, persist so it survives a reload.
+            If overlay.SseHairColorRgb.HasValue Then entry.SseHairColorRgb = overlay.SseHairColorRgb
             ' SSE skin overrides (body-paint per slot) — deep-copy onto the sidecar entry (SSE-only, nullable).
             If overlay.SseSkinOverrides IsNot Nothing AndAlso overlay.SseSkinOverrides.Count > 0 Then
                 entry.SseSkinOverrides = LooksmenuLoader.CloneSseSkinOverrides(overlay.SseSkinOverrides)
@@ -1832,7 +1841,10 @@ Public Module NpcOverrideSaver
     Private Sub EmitBodyGenFromSidecar(target As SaveEsp_Form.SaveTarget,
                                        sidecar As BssliderSidecar.SidecarFile,
                                        ctx As SaveContext)
-        Dim baseName = IO.Path.GetFileNameWithoutExtension(target.TargetPath)
+        ' Folder name = the plugin's modInfo->name (WITH extension) — the engine looks up
+        ' BodyGen\<Name.esp>\ (f4ee BodyGenInterface.cpp:534 / skee64 BodyMorphInterface.cpp:132). Must match
+        ' the IniExists() name above (also GetFileName) so delete/update finds the same folder.
+        Dim baseName = IO.Path.GetFileName(target.TargetPath)
 
         ' Branch the BodyGen writer by game: SSE writes the skee64 pair under
         ' Meshes\actors\character\BodyGenData\<plugin>\ and sources values from the keyed sidecar

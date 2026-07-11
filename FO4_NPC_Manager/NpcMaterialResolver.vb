@@ -19,10 +19,62 @@ Friend NotInheritable Class NpcMaterialResolver
     ''' <summary>Overlay resolver injected from MainForm (ApplyPresetOverlayToNpcData) so the
     ''' skin-tone path stays decoupled from MainForm's preset/LM-template machinery.</summary>
     Private ReadOnly _overlayResolver As Func(Of NPC_Data, UInteger, NPC_Data)
-    Public Sub New(ctx As NpcRenderContext, overlayResolver As Func(Of NPC_Data, UInteger, NPC_Data))
+    ''' <summary>Shared preset overlays (keyed by root NPC FormID) — the source of SSE RaceMenu skin overrides, which
+    ''' are applied as an in-place texture-set slot replacement on the skin shape's material (see
+    ''' <see cref="ApplySseSkinOverrideToMaterial"/>). Skyrim only; Nothing/absent on FO4.</summary>
+    Private ReadOnly _appliedPresets As Dictionary(Of UInteger, LooksmenuLoader.LooksmenuPreset)
+    Public Sub New(ctx As NpcRenderContext, overlayResolver As Func(Of NPC_Data, UInteger, NPC_Data),
+                   Optional appliedPresets As Dictionary(Of UInteger, LooksmenuLoader.LooksmenuPreset) = Nothing)
         _ctx = ctx
         _overlayResolver = overlayResolver
+        _appliedPresets = appliedPresets
     End Sub
+
+    ''' <summary>Apply a RaceMenu skin override IN PLACE onto a skin shape's material — faithful to skee's
+    ''' NIOVTaskUpdateTexture + GetTextureFromIndex (ShaderUtilities.cpp:161-180, 388-480). Skin overrides only
+    ''' target <c>kShaderType_FaceGenRGBTint</c> geometries (OverrideInterface.cpp:1096), and for that material
+    ''' <c>GetTextureFromIndex</c> maps ONLY four slots — 0→texture1 (diffuse), 1→texture2 (normal), 2→texture3
+    ''' (subsurface _sk), 7→texture4 (specular/backlight); indices 3,4,5,6 return nullptr, i.e. do nothing. So we
+    ''' replace exactly those four (present-only, keeping the skin's own texture in the rest), then key 7 tint
+    ''' (NiColor, RGB only) → <c>SkinTintColor</c> and key 8 alpha → material <c>Alpha</c>. (Slots 3-6 are preserved
+    ''' in the model for round-trip but are engine no-ops on a skin, so they are not applied.)</summary>
+    Private Shared Sub ApplySseSkinOverrideToMaterial(material As FO4UnifiedMaterial_Class, sk As RaceMenuJslot.JslotSkinOverride)
+        If material Is Nothing OrElse sk Is Nothing Then Return
+        If sk.Slots IsNot Nothing Then
+            For Each kvp In sk.Slots
+                Dim path = kvp.Value
+                If String.IsNullOrEmpty(path) Then Continue For   ' present-only: an empty/absent slot keeps the skin's own
+                Select Case kvp.Key
+                    Case 0 : material.Diffuse_or_Base_Texture = path   ' skee texture1 = texture-set slot 0
+                    Case 1 : material.NormalTexture = path             ' skee texture2 = texture-set slot 1
+                    Case 2
+                        ' skee texture3 = texture-set slot 2. Route it EXACTLY as the engine-faithful reader
+                        ' FO4UnifiedMaterial_Class.ReadBgsmTexturesFromTextureSet: for a skin material (Facegen /
+                        ' SubsurfaceLighting / RimLighting, not Glowmap) slot 2 is the _sk subsurface on
+                        ' LightingTexture; otherwise it is the glow map. (We gate to skin shapes, so normally the
+                        ' subsurface.)
+                        If Not material.Glowmap AndAlso (material.SubsurfaceLighting OrElse material.RimLighting OrElse material.Facegen) Then
+                            material.LightingTexture = path
+                        Else
+                            material.GlowTexture = path
+                        End If
+                    Case 7 : material.SmoothSpecTexture = path         ' skee texture4 = texture-set slot 7 (specular/backlight)
+                    ' 3,4,5,6: GetTextureFromIndex returns nullptr for a FaceGenRGBTint skin → engine no-op; skip.
+                End Select
+            Next
+        End If
+        If sk.HasTint Then
+            material.SkinTintColor = Color.FromArgb(255, ClampUnitByte(sk.TintR), ClampUnitByte(sk.TintG), ClampUnitByte(sk.TintB))
+            ' Mark it so the QNAM skin-tone pass (NpcFaceTintResolver) doesn't overwrite this explicit override tint;
+            ' skee replays the override over the base tone, so the override wins.
+            material.SkinTintFromOverride = True
+        End If
+        If sk.HasAlpha Then material.Alpha = Math.Max(0.0F, Math.Min(1.0F, sk.Alpha))
+    End Sub
+
+    Private Shared Function ClampUnitByte(v As Single) As Integer
+        Return Math.Max(0, Math.Min(255, CInt(Math.Round(v * 255.0F))))
+    End Function
 
     ' HDPT PNAM Type values (same wbDefinitionsFO4 mapping as MainForm).
     Private Const HeadPartTypeFace As Integer = 1
@@ -621,6 +673,14 @@ Friend NotInheritable Class NpcMaterialResolver
         ' rationale: BCLF ignored at render/bake, preserved untouched in the ESP).
         Select Case candidate.HeadPartType
             Case HeadPartTypeHair, HeadPartTypeFacialHair, 6
+                ' SSE RaceMenu absolute hair tint (packed 0xRRGGBB from the applied .jslot) — precedence over the
+                ' CLFM, matching skee's ApplyMappedPreset which writes the preset's hairColor straight onto the hair
+                ' shader material. The ×2 SSE doubling is applied downstream in ApplyMaterialPaletteHairColor, exactly
+                ' as it is for the CLFM colour, so this stays a single hair-tint resolution point.
+                If state IsNot Nothing AndAlso state.SseHairColorRgb.HasValue Then
+                    Dim rgb = state.SseHairColorRgb.Value
+                    Return Color.FromArgb((rgb >> 16) And &HFF, (rgb >> 8) And &HFF, rgb And &HFF)
+                End If
                 Dim hairColor = ResolveColorFormColor(state.HairColorFormID)
                 If hairColor.HasValue Then Return hairColor
         End Select
@@ -996,6 +1056,18 @@ Friend NotInheritable Class NpcMaterialResolver
             Logger.LogLazy(Function() $"[SHAPEMAT-ENTRY] cand=0x{candFidLog:X8} kind={candKindLog} chunkOmod=0x{chunkOmodLog:X8} ctxFormType='{ctxLog}' shapes={shapeCountLog} armaMSWP=0x{mswpLog:X8} armaColorRemap={cremapLog} hasOmodResolution={hasOmodResLog}")
         End If
 
+        ' RaceMenu skin overrides (Skyrim only) — resolved once for this candidate and applied IN PLACE to each
+        ' skin shape at the tail of the loop below (skee NIOVTaskUpdateTexture: replace only the override's slots).
+        ' Nothing on FO4 (SseSkinOverrides is never populated there), so the FO4 path is untouched.
+        Dim sseSkinOverrides As List(Of RaceMenuJslot.JslotSkinOverride) = Nothing
+        If _appliedPresets IsNot Nothing AndAlso state IsNot Nothing AndAlso Config_App.Current.Game = Config_App.Game_Enum.Skyrim Then
+            Dim ssePreset As LooksmenuLoader.LooksmenuPreset = Nothing
+            If _appliedPresets.TryGetValue(state.RootNpcFormID, ssePreset) AndAlso ssePreset IsNot Nothing _
+               AndAlso ssePreset.SseSkinOverrides IsNot Nothing AndAlso ssePreset.SseSkinOverrides.Count > 0 Then
+                sseSkinOverrides = ssePreset.SseSkinOverrides
+            End If
+        End If
+
         ' Material override pipeline order (matches engine application order):
         '   1. ARMA-direct base swap (MaterialSwapFormID + ColorRemapIndex per gender on the ARMA
         '      record itself — semantically SET).
@@ -1199,6 +1271,21 @@ Friend NotInheritable Class NpcMaterialResolver
             ' material / UsesBodyTexture path resolved. No-op for every other shape. Shared by the full
             ' render, the fast-path skin refresh, and the FaceGen bake (delegate into this method).
             ApplyGhoulHeadRearClonedTextures(candidate, state, material, shape)
+
+            ' RaceMenu skin override — in-place per-slot texture-set replacement on the skin shape. Runs LAST so a
+            ' deliberate user override wins. Membership mirrors the render's decal check: a skin shape (SkinTint /
+            ' FaceGen) whose worn biped SlotMask intersects the override's slotMask. Faithful to skee's
+            ' NIOVTaskUpdateTexture (replace only the override's slots; key 7 tint → SkinTintColor; key 8 → Alpha).
+            If sseSkinOverrides IsNot Nothing AndAlso candidate IsNot Nothing _
+               AndAlso (material.NifShaderType = NiflySharp.Enums.BSLightingShaderType.SkinTint OrElse material.SkinTint) Then
+                For Each sk In sseSkinOverrides
+                    If sk Is Nothing OrElse sk.SlotMask = 0UI Then Continue For
+                    ' skee SkinOverrideApplicator (OverrideInterface.cpp:1080): the shape's biped slot mask must
+                    ' CONTAIN every bit of the override's slotMask (superset), not merely intersect.
+                    If (candidate.SlotMask And sk.SlotMask) <> sk.SlotMask Then Continue For
+                    ApplySseSkinOverrideToMaterial(material, sk)
+                Next
+            End If
 
             If logEnabled Then
                 Dim shapeNameFinal = shape.ShapeName

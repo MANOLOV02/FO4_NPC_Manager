@@ -60,9 +60,14 @@ Public Class EditFace_Form
     ' Preset.SseCustomMorphs; the render applies them by name via the chargen TriHead (NpcMorphResolver).
     ' RaceMenu tab controls, keyed by slider name (TinySliderTextBox for Slider / ComboBox for Preset).
     Private _sseRaceMenuControls As New Dictionary(Of String, Control)(StringComparer.OrdinalIgnoreCase)
+    ''' <summary>Label showing the effective face TextureSet (NPC_.FTST) on the SSE Face Parts tab.</summary>
+    Private _sseHeadTexLabel As Label = Nothing
     ' Face overlays (RaceMenu "Face [Ovl{n}]" face-paint) editor controls. The overlays live in Preset.SseBodyOverlays
     ' (the whole .jslot "overrides" array); this tab filters to the Face nodes. Body/Hands/Feet ones stay in Edit Body.
     Private _sseFaceOvList As ListBox = Nothing
+    Private _sseFaceOvCatalog As ListBox = Nothing
+    Private _sseFaceOvFilter As TextBox = Nothing
+    Private ReadOnly _sseFacePaintShown As New List(Of FO4_Base_Library.RaceMenuPaintCatalog.Entry)
     Private _sseFaceOvDiffuse As TextBox = Nothing
     Private _sseFaceOvNormal As TextBox = Nothing
     Private _sseFaceOvTintEnable As CheckBox = Nothing
@@ -89,6 +94,8 @@ Public Class EditFace_Form
         Public Authored As Boolean ' True = the NPC authors this layer (emit TINI/TINC/TINV/TIAS); False = RACE default only
         Public MaskName As String  ' TINT mask filename, for the UI label
         Public MaskPathOverride As String ' RaceMenu-only custom mask texture path (Nothing/empty = use the RACE layer's own mask)
+        Public MaskPath As String  ' effective full mask path (override if set, else the RACE layer's TINT) — for the missing-texture check
+        Public Customized As Boolean ' came from a preset/NPC AND differs from the RACE default (colour, coverage, or a custom mask) — UI highlight
     End Structure
     Private _sseTintLayers As New List(Of SseTintEdit)
     Private _sseTintColorBtns As New List(Of System.Windows.Forms.Button)
@@ -253,6 +260,13 @@ Public Class EditFace_Form
             PopulateSseSculptTab()  ' read-only list of RaceMenu per-shape sculpt blocks (head/brows/eyes/mouth)
             BuildSseRaceMenuTab()   ' RaceMenu EXTENDED sliders (per-race .slider catalog) — separate from vanilla NAM9/NAMA
             BuildSseFaceOverlaysTab()   ' RaceMenu "Face [Ovl]" face-paint overlays
+            BuildSseHeadTextureSection()   ' vanilla NPC_.FTST — RaceMenu applies it too (PresetInterface.cpp:160)
+            ' Tab names carry the SYSTEM, not the game: unprefixed tabs are vanilla data written to the NPC_
+            ' record in the ESP; "RaceMenu ·" tabs are skee64 co-save data (.jslot + sidecar) that needs
+            ' RaceMenu installed to show in-game. "(SSE)" told the user nothing — every tab here is SSE.
+            TabPageSseMorphs.Text = "Face Morphs"
+            TabPageSseTints.Text = "Tints"
+            TabPageSseSculpt.Text = "RaceMenu · Sculpt"
             If TabsFace.TabPages.Contains(TabPageTints) Then TabsFace.TabPages.Remove(TabPageTints)
             If TabsFace.TabPages.Contains(TabPageVertex) Then TabsFace.TabPages.Remove(TabPageVertex)
             If TabsFace.TabPages.Contains(TabPageBoneRegions) Then TabsFace.TabPages.Remove(TabPageBoneRegions)
@@ -264,6 +278,9 @@ Public Class EditFace_Form
         Else
             If TabsFace.TabPages.Contains(TabPageSseMorphs) Then TabsFace.TabPages.Remove(TabPageSseMorphs)
             If TabsFace.TabPages.Contains(TabPageSseTints) Then TabsFace.TabPages.Remove(TabPageSseTints)
+            ' Sculpt is a RaceMenu (skee64) subsystem — it has no Fallout 4 analogue and its tab is never
+            ' populated here, so it must be removed alongside the other SSE-only tabs.
+            If TabsFace.TabPages.Contains(TabPageSseSculpt) Then TabsFace.TabPages.Remove(TabPageSseSculpt)
             BuildMorphGroupSections()
             BuildBoneRegionsUI()
             BuildTintGroupRanks()
@@ -630,6 +647,66 @@ Public Class EditFace_Form
         LoadSseMorphValues()
     End Sub
 
+    ''' <summary>SSE-only "Head texture" row on the (vanilla) Face Parts tab: the NPC's face TextureSet override,
+    ''' <c>NPC_.FTST</c>. It is vanilla record data — but it had no UI, so until now it could only be set by
+    ''' importing a preset. RaceMenu writes the same field when a preset is applied
+    ''' (<c>npc-&gt;headData-&gt;headTexture = presetData-&gt;headTexture</c>, PresetInterface.cpp:160).
+    ''' Empty (FormID 0) = the head keeps the texture set its race/head-part declares.</summary>
+    Private Sub BuildSseHeadTextureSection()
+        Dim grp As New GroupBox With {.Text = "Head texture (FTST)", .Dock = DockStyle.Fill, .AutoSize = True,
+                                      .AutoSizeMode = AutoSizeMode.GrowAndShrink, .Margin = New Padding(3, 3, 3, 3)}
+        Dim flow As New FlowLayoutPanel With {.Dock = DockStyle.Fill, .AutoSize = True, .FlowDirection = FlowDirection.LeftToRight,
+                                              .WrapContents = False, .Padding = New Padding(4)}
+        _sseHeadTexLabel = New Label With {.AutoSize = True, .Margin = New Padding(3, 9, 12, 3)}
+        Dim btnPick As New Button With {.Text = "Change…", .AutoSize = True}
+        Dim btnClear As New Button With {.Text = "Use record default", .AutoSize = True}
+        AddHandler btnPick.Click, AddressOf OnPickSseHeadTexture
+        AddHandler btnClear.Click, Sub(s, e) SetSseHeadTexture(0UI)
+        flow.Controls.Add(_sseHeadTexLabel) : flow.Controls.Add(btnPick) : flow.Controls.Add(btnClear)
+        grp.Controls.Add(flow)
+
+        FacePartsLayout.RowCount += 1
+        FacePartsLayout.RowStyles.Add(New RowStyle(SizeType.AutoSize))
+        FacePartsLayout.Controls.Add(grp, 0, FacePartsLayout.RowCount - 1)
+        UpdateSseHeadTextureLabel()
+    End Sub
+
+    ''' <summary>Effective face TextureSet: the overlay's override when set, else the NPC record's own FTST.</summary>
+    Private Function EffectiveSseHeadTextureFormID() As UInteger
+        Dim p = Preset
+        If p IsNot Nothing AndAlso p.SseHeadTextureFormID <> 0UI Then Return p.SseHeadTextureFormID
+        Dim raw = TryGetRawNpc()
+        Return If(raw IsNot Nothing, raw.HeadTextureFormID, 0UI)
+    End Function
+
+    Private Sub UpdateSseHeadTextureLabel()
+        If _sseHeadTexLabel Is Nothing Then Return
+        Dim fid = EffectiveSseHeadTextureFormID()
+        If fid = 0UI Then
+            _sseHeadTexLabel.Text = "(none — race / head part default)"
+            Return
+        End If
+        Dim rec = _pluginManager.GetRecord(fid)
+        Dim edid = If(rec IsNot Nothing AndAlso Not String.IsNullOrEmpty(rec.EditorID), rec.EditorID, "?")
+        _sseHeadTexLabel.Text = $"{edid}  [{fid:X8}]"
+    End Sub
+
+    Private Sub OnPickSseHeadTexture(sender As Object, e As EventArgs)
+        Using dlg As New FormIdPicker_Form(_pluginManager, {"TXST"}, "Head texture (TXST)",
+                                           EffectiveSseHeadTextureFormID(), allowNull:=True)
+            If dlg.ShowDialog(Me) <> DialogResult.OK Then Return
+            SetSseHeadTexture(dlg.SelectedFormID)
+        End Using
+    End Sub
+
+    Private Sub SetSseHeadTexture(fid As UInteger)
+        Dim p = Preset
+        If p Is Nothing Then Return
+        p.SseHeadTextureFormID = fid
+        UpdateSseHeadTextureLabel()
+        ScheduleRefresh(FaceRefreshScope.FullReload)
+    End Sub
+
     ''' <summary>SSE-only "RaceMenu" tab — the EXTENDED face sliders from RaceMenu's per-race .slider catalog
     ''' (RaceMenuSliderCatalog, faithful to skee64 FaceMorphInterface), kept SEPARATE from the vanilla NAM9/NAMA
     ''' "Morphs (SSE)" tab. Each slider's value lives in the NiOverride ValueSet keyed by the SLIDER NAME =
@@ -637,20 +714,38 @@ Public Class EditFace_Form
     ''' Only added when the loaded RaceMenu config actually declares extended sliders for this race+gender.</summary>
     Private Sub BuildSseRaceMenuTab()
         _sseRaceMenuControls.Clear()
-        Dim tab As New TabPage("RaceMenu") With {.Name = "TabPageSseRaceMenu", .Padding = New Padding(6)}
+        Dim tab As New TabPage("RaceMenu · Sliders") With {.Name = "TabPageSseRaceMenu", .Padding = New Padding(6)}
         TabsFace.TabPages.Add(tab)   ' always present under SSE so the section is visible (empty ⇒ shows why)
 
         Dim cat = NpcMorphResolver.SliderCatalog
         Dim sliders As List(Of FO4_Base_Library.RaceMenuSliderCatalog.SliderDef) =
             If(cat IsNot Nothing AndAlso _race IsNot Nothing, cat.GetSliders(_race.EditorID, _isFemale), Nothing)
-        If sliders Is Nothing OrElse sliders.Count = 0 Then
+        If sliders Is Nothing Then sliders = New List(Of FO4_Base_Library.RaceMenuSliderCatalog.SliderDef)()
+
+        ' Morphs the PRESET carries that the installed catalog does not describe. This is the normal case, not an
+        ' edge case: a .jslot records custom morphs by bare name (e.g. "CME_EyeballUpDown", "EFM_Chin_Shape") and
+        ' the slider definitions that name them live in a separate mod's races.ini/.slider, which the user may not
+        ' have installed. The resolver still applies them — AddCustomMorphChannel falls back to a direct
+        ' name→TRI-morph lookup (NpcMorphResolver.vb:484-486) — so without these rows the morphs would deform the
+        ' face while being invisible and uneditable here.
+        Dim catalogued As New HashSet(Of String)(sliders.Select(Function(s) s.Name), StringComparer.OrdinalIgnoreCase)
+        Dim extras As New List(Of String)
+        If Preset IsNot Nothing AndAlso Preset.SseCustomMorphs IsNot Nothing Then
+            For Each cm In Preset.SseCustomMorphs
+                If cm Is Nothing OrElse String.IsNullOrEmpty(cm.Name) Then Continue For
+                If Not catalogued.Contains(cm.Name) Then extras.Add(cm.Name)
+            Next
+            extras.Sort(StringComparer.OrdinalIgnoreCase)
+        End If
+
+        If sliders.Count = 0 AndAlso extras.Count = 0 Then
             Dim msg As String
             If cat Is Nothing Then
                 msg = "RaceMenu extended-slider catalog not loaded (only built on a Skyrim session, after game data finishes loading)."
             Else
-                msg = $"No RaceMenu extended sliders are installed for this race ({If(_race?.EditorID, "?")}, {If(_isFemale, "Female", "Male")})." & vbCrLf & vbCrLf &
-                      "These come from a RaceMenu slider config (Meshes\actors\character\FaceGenMorphs\<mod>\races.ini + .slider). " &
-                      "The vanilla nose/jaw/eyes/… sliders live in the ""Morphs (SSE)"" tab (they go to the NPC record)."
+                msg = $"No RaceMenu extended sliders are installed for this race ({If(_race?.EditorID, "?")}, {If(_isFemale, "Female", "Male")}), and this NPC carries no custom morphs." & vbCrLf & vbCrLf &
+                      "Extended sliders come from a RaceMenu slider config (Meshes\actors\character\FaceGenMorphs\<mod>\races.ini + .slider). " &
+                      "The vanilla nose/jaw/eyes/… sliders live in the ""Face Morphs"" tab (they go to the NPC record)."
             End If
             tab.Controls.Add(New Label With {.Text = msg, .Dock = DockStyle.Fill, .Padding = New Padding(10), .AutoSize = False, .ForeColor = SystemColors.GrayText})
             Return
@@ -697,6 +792,32 @@ Public Class EditFace_Form
                 row += 1
             Next
         Next
+
+        ' Uncatalogued custom morphs carried by this NPC's preset (see the comment above). RaceMenu stores a
+        ' custom morph as a plain name→value pair with no declared bounds, and skee64 applies negative values to
+        ' the slider's lower morph and positive to the upper (ApplyMorphs), so −1..1 is the faithful range.
+        If extras.Count > 0 Then
+            panel.RowStyles.Add(New RowStyle(SizeType.Absolute, 28))
+            Dim hdr As New Label With {.Text = If(sliders.Count = 0, "Custom morphs (from this NPC)", "Custom morphs (no slider definition installed)"),
+                                       .Dock = DockStyle.Fill, .TextAlign = ContentAlignment.MiddleLeft,
+                                       .Font = New Font(Me.Font, FontStyle.Bold), .ForeColor = SystemColors.HotTrack, .Margin = New Padding(0, 8, 0, 0)}
+            panel.Controls.Add(hdr, 0, row) : panel.SetColumnSpan(hdr, 2) : row += 1
+            For Each name0 In extras
+                Dim nm = name0
+                panel.RowStyles.Add(New RowStyle(SizeType.Absolute, 30))
+                panel.Controls.Add(New Label With {.Text = nm, .Anchor = AnchorStyles.Left, .AutoSize = True, .Margin = New Padding(14, 8, 3, 0)}, 0, row)
+                Dim tb As New FO4_Base_Library.TinySliderTextBox With {
+                    .Minimum = -1.0R, .Maximum = 1.0R, .DisplayFormat = "0.00", .SmallChange = 0.01R, .LargeChange = 0.1R,
+                    .Height = 26, .Dock = DockStyle.Fill, .Margin = New Padding(3, 3, 8, 3),
+                    .Value = Math.Max(-1.0R, Math.Min(1.0R, CDbl(GetSseCustomValue(nm))))}
+                AddHandler tb.ValueChanged, Sub(s, e) OnSseRaceMenuChanged(nm, CSng(tb.Value))
+                AddHandler tb.DragEnded, AddressOf OnSliderDragEnded
+                panel.Controls.Add(tb, 1, row)
+                _sseRaceMenuControls(nm) = tb
+                row += 1
+            Next
+        End If
+
         tab.Controls.Add(panel)   ' tab was already added to TabsFace above
     End Sub
 
@@ -753,65 +874,187 @@ Public Class EditFace_Form
     ''' whole .jslot "overrides" array); this tab filters to the FACE nodes and the render composites them on the
     ''' FaceTint head shape (ResolveSseOverlayLayers). Generic (apply any texture to any NPC), not authored-only.</summary>
     Private Sub BuildSseFaceOverlaysTab()
-        Dim tab As New TabPage("Face Overlays") With {.Name = "TabPageSseFaceOverlays", .Padding = New Padding(6)}
-        Dim root As New TableLayoutPanel With {.Dock = DockStyle.Fill, .ColumnCount = 2, .RowCount = 2}
-        root.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 42)) : root.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 58))
+        Dim tab As New TabPage("RaceMenu · Face Paint") With {.Name = "TabPageSseFaceOverlays", .Padding = New Padding(6)}
+        Dim root As New TableLayoutPanel With {.Dock = DockStyle.Fill, .ColumnCount = 1, .RowCount = 2}
+        root.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100))
         root.RowStyles.Add(New RowStyle(SizeType.Absolute, 30)) : root.RowStyles.Add(New RowStyle(SizeType.Percent, 100))
-        Dim header As New Label With {.Dock = DockStyle.Fill, .Text = "RaceMenu face paint (Face [Ovl]). Loaded/saved with the .jslot + sidecar.", .Padding = New Padding(3, 6, 3, 0)}
-        root.Controls.Add(header, 0, 0) : root.SetColumnSpan(header, 2)
-        ' Left: list + Add/Remove.
-        Dim left As New TableLayoutPanel With {.Dock = DockStyle.Fill, .ColumnCount = 1, .RowCount = 2}
-        left.RowStyles.Add(New RowStyle(SizeType.Percent, 100)) : left.RowStyles.Add(New RowStyle(SizeType.Absolute, 34))
-        _sseFaceOvList = New ListBox With {.Dock = DockStyle.Fill, .IntegralHeight = False}
+        Dim header As New Label With {.Dock = DockStyle.Fill, .Text = "Face paint overlays. Choose a paint on the left, then Add → to apply it to this NPC.", .Padding = New Padding(3, 6, 3, 0)}
+        root.Controls.Add(header, 0, 0)
+
+        ' Two-list body (same paradigm as the FO4 / EditBody overlay editor): catalog | buttons | applied+detail.
+        Dim body As New TableLayoutPanel With {.Dock = DockStyle.Fill, .ColumnCount = 3, .RowCount = 1}
+        body.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 42))
+        body.ColumnStyles.Add(New ColumnStyle(SizeType.AutoSize))
+        body.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 58))
+        body.RowStyles.Add(New RowStyle(SizeType.Percent, 100))
+
+        ' Col 0: the FACE paint catalog (filter + list) — the union of mods' AddFacePaint registrations.
+        Dim catBox As New GroupBox With {.Dock = DockStyle.Fill, .Text = "Face paints (RaceMenu)"}
+        Dim catLay As New TableLayoutPanel With {.Dock = DockStyle.Fill, .ColumnCount = 1, .RowCount = 2}
+        catLay.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100))
+        catLay.RowStyles.Add(New RowStyle(SizeType.Absolute, 28)) : catLay.RowStyles.Add(New RowStyle(SizeType.Percent, 100))
+        _sseFaceOvFilter = New TextBox With {.Dock = DockStyle.Fill, .Margin = New Padding(3)}
+        _sseFaceOvFilter.PlaceholderText = "Filter paints…"
+        AddHandler _sseFaceOvFilter.TextChanged, Sub(s, e) RefreshSseFacePaintCatalog()
+        catLay.Controls.Add(_sseFaceOvFilter, 0, 0)
+        _sseFaceOvCatalog = New ListBox With {.Dock = DockStyle.Fill, .IntegralHeight = False, .DrawMode = DrawMode.OwnerDrawFixed}
+        AddHandler _sseFaceOvCatalog.DoubleClick, AddressOf OnFaceOvAdd
+        AddHandler _sseFaceOvCatalog.DrawItem, AddressOf DrawFacePaintCatalogItem
+        catLay.Controls.Add(_sseFaceOvCatalog, 0, 1)
+        catBox.Controls.Add(catLay)
+        body.Controls.Add(catBox, 0, 0)
+
+        ' Col 1: Add →/← Remove + Up/Down (reorder the Ovl{n} draw order).
+        Dim mid As New FlowLayoutPanel With {.Dock = DockStyle.Fill, .FlowDirection = FlowDirection.TopDown, .WrapContents = False, .AutoSize = True, .Margin = New Padding(4, 40, 4, 0)}
+        Dim bAdd As New Button With {.Text = "Add →", .AutoSize = True, .Margin = New Padding(2)}
+        Dim bRem As New Button With {.Text = "← Remove", .AutoSize = True, .Margin = New Padding(2)}
+        Dim bUp As New Button With {.Text = "Up", .AutoSize = True, .Margin = New Padding(2, 14, 2, 2)}
+        Dim bDown As New Button With {.Text = "Down", .AutoSize = True, .Margin = New Padding(2)}
+        AddHandler bAdd.Click, AddressOf OnFaceOvAdd
+        AddHandler bRem.Click, AddressOf OnFaceOvRemove
+        AddHandler bUp.Click, Sub(s, e) OnFaceOvMove(-1)
+        AddHandler bDown.Click, Sub(s, e) OnFaceOvMove(1)
+        mid.Controls.Add(bAdd) : mid.Controls.Add(bRem) : mid.Controls.Add(bUp) : mid.Controls.Add(bDown)
+        body.Controls.Add(mid, 1, 0)
+
+        ' Col 2: applied face overlays (top) + the selected overlay's tint/opacity detail (below).
+        Dim rightBox As New GroupBox With {.Dock = DockStyle.Fill, .Text = "Applied face overlays"}
+        Dim rightLay As New TableLayoutPanel With {.Dock = DockStyle.Fill, .ColumnCount = 1, .RowCount = 2}
+        rightLay.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100))
+        rightLay.RowStyles.Add(New RowStyle(SizeType.Percent, 45)) : rightLay.RowStyles.Add(New RowStyle(SizeType.Percent, 55))
+        _sseFaceOvList = New ListBox With {.Dock = DockStyle.Fill, .IntegralHeight = False, .DrawMode = DrawMode.OwnerDrawFixed}
         AddHandler _sseFaceOvList.SelectedIndexChanged, Sub(s, e) UpdateFaceOvDetail()
-        left.Controls.Add(_sseFaceOvList, 0, 0)
-        Dim btns As New FlowLayoutPanel With {.Dock = DockStyle.Fill, .FlowDirection = FlowDirection.LeftToRight, .Margin = New Padding(0, 3, 0, 0)}
-        Dim bAdd As New Button With {.Text = "Add", .AutoSize = True} : Dim bRem As New Button With {.Text = "Remove", .AutoSize = True}
-        AddHandler bAdd.Click, AddressOf OnFaceOvAdd : AddHandler bRem.Click, AddressOf OnFaceOvRemove
-        btns.Controls.Add(bAdd) : btns.Controls.Add(bRem) : left.Controls.Add(btns, 0, 1)
-        root.Controls.Add(left, 0, 1)
-        ' Right: detail.
-        Dim d As New TableLayoutPanel With {.Dock = DockStyle.Fill, .ColumnCount = 2, .AutoScroll = True}
-        d.ColumnStyles.Add(New ColumnStyle(SizeType.Absolute, 70)) : d.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100))
+        AddHandler _sseFaceOvList.DrawItem, AddressOf DrawFaceAppliedOverlayItem
+        rightLay.Controls.Add(_sseFaceOvList, 0, 0)
+
+        ' Detail: texture is READ-ONLY display (chosen from the catalog at Add time); tint + opacity are editable.
+        Dim d As New TableLayoutPanel With {.Dock = DockStyle.Fill, .ColumnCount = 2, .RowCount = 5, .AutoScroll = True}
+        d.ColumnStyles.Add(New ColumnStyle(SizeType.Absolute, 62)) : d.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100))
+        For k = 0 To 3 : d.RowStyles.Add(New RowStyle(SizeType.AutoSize)) : Next
+        d.RowStyles.Add(New RowStyle(SizeType.Percent, 100))   ' filler
         Dim rr = 0
-        d.Controls.Add(New Label With {.Text = "Diffuse:", .AutoSize = True, .Anchor = AnchorStyles.Left, .Margin = New Padding(3, 8, 3, 0)}, 0, rr)
-        _sseFaceOvDiffuse = New TextBox With {.Width = 300}
-        Dim brD As New Button With {.Text = "Browse…", .AutoSize = True}
-        AddHandler _sseFaceOvDiffuse.TextChanged, Sub(s, e) OnFaceOvTexChanged(True)
-        AddHandler brD.Click, Sub(s, e) BrowseFaceOvTexture(_sseFaceOvDiffuse)
-        d.Controls.Add(FaceOvFlow(_sseFaceOvDiffuse, brD), 1, rr) : rr += 1
-        d.Controls.Add(New Label With {.Text = "Normal:", .AutoSize = True, .Anchor = AnchorStyles.Left, .Margin = New Padding(3, 8, 3, 0)}, 0, rr)
-        _sseFaceOvNormal = New TextBox With {.Width = 300}
-        Dim brN As New Button With {.Text = "Browse…", .AutoSize = True}
-        AddHandler _sseFaceOvNormal.TextChanged, Sub(s, e) OnFaceOvTexChanged(False)
-        AddHandler brN.Click, Sub(s, e) BrowseFaceOvTexture(_sseFaceOvNormal)
-        d.Controls.Add(FaceOvFlow(_sseFaceOvNormal, brN), 1, rr) : rr += 1
-        _sseFaceOvTintEnable = New CheckBox With {.Text = "Tint", .AutoSize = True, .Margin = New Padding(3, 8, 3, 0)}
+        d.Controls.Add(New Label With {.Text = "Texture:", .AutoSize = True, .Anchor = AnchorStyles.Left, .Margin = New Padding(3, 9, 3, 0)}, 0, rr)
+        _sseFaceOvDiffuse = New TextBox With {.ReadOnly = True}
+        d.Controls.Add(FaceOvFlow(_sseFaceOvDiffuse), 1, rr) : rr += 1
+        d.Controls.Add(New Label With {.Text = "Normal:", .AutoSize = True, .Anchor = AnchorStyles.Left, .Margin = New Padding(3, 9, 3, 0)}, 0, rr)
+        _sseFaceOvNormal = New TextBox With {.ReadOnly = True}
+        d.Controls.Add(FaceOvFlow(_sseFaceOvNormal), 1, rr) : rr += 1
+        _sseFaceOvTintEnable = New CheckBox With {.Text = "Tint", .AutoSize = True, .Margin = New Padding(3, 9, 3, 0)}
         AddHandler _sseFaceOvTintEnable.CheckedChanged, AddressOf OnFaceOvTintToggled
         d.Controls.Add(_sseFaceOvTintEnable, 0, rr)
-        _sseFaceOvTintColor = New Button With {.Text = "Color…", .AutoSize = True} : AddHandler _sseFaceOvTintColor.Click, AddressOf OnFaceOvTintColor
+        _sseFaceOvTintColor = New Button With {.Text = "Color…", .AutoSize = True, .Anchor = AnchorStyles.Left} : AddHandler _sseFaceOvTintColor.Click, AddressOf OnFaceOvTintColor
         d.Controls.Add(_sseFaceOvTintColor, 1, rr) : rr += 1
-        d.Controls.Add(New Label With {.Text = "Alpha:", .AutoSize = True, .Anchor = AnchorStyles.Left, .Margin = New Padding(3, 8, 3, 0)}, 0, rr)
-        _sseFaceOvTintAlpha = New FO4_Base_Library.TinySliderTextBox With {.Minimum = 0.0R, .Maximum = 1.0R, .DisplayFormat = "0.00", .SmallChange = 0.01R, .LargeChange = 0.1R, .Height = 26, .Dock = DockStyle.Fill, .Value = 1.0R}
+        ' skee64 kParam_ShaderAlpha (key 8) — the overlay's opacity, independent of the tint colour.
+        d.Controls.Add(New Label With {.Text = "Opacity:", .AutoSize = True, .Anchor = AnchorStyles.Left, .Margin = New Padding(3, 9, 3, 0)}, 0, rr)
+        _sseFaceOvTintAlpha = New FO4_Base_Library.TinySliderTextBox With {.Minimum = 0.0R, .Maximum = 1.0R, .DisplayFormat = "0.00", .SmallChange = 0.01R, .LargeChange = 0.1R, .Height = 26, .Anchor = AnchorStyles.Left Or AnchorStyles.Right, .Margin = New Padding(3, 4, 8, 3), .Value = 1.0R}
         AddHandler _sseFaceOvTintAlpha.ValueChanged, AddressOf OnFaceOvTintAlpha
         d.Controls.Add(_sseFaceOvTintAlpha, 1, rr) : rr += 1
-        root.Controls.Add(d, 1, 1)
+        rightLay.Controls.Add(d, 0, 1)
+        rightBox.Controls.Add(rightLay)
+        body.Controls.Add(rightBox, 2, 0)
+
+        root.Controls.Add(body, 0, 1)
         tab.Controls.Add(root)
         TabsFace.TabPages.Add(tab)
         RefreshFaceOvList(-1)
+        RefreshSseFacePaintCatalog()
     End Sub
 
-    Private Function FaceOvFlow(tb As TextBox, br As Button) As Control
-        Dim p As New FlowLayoutPanel With {.AutoSize = True, .FlowDirection = FlowDirection.LeftToRight, .Margin = New Padding(0), .WrapContents = False}
-        p.Controls.Add(tb) : p.Controls.Add(br) : Return p
+    ''' <summary>Owner-draw a face-paint catalog row red when its texture is not in the load order (the renderer
+    ''' would skip it — a mod may register a paint whose .dds it doesn't ship).</summary>
+    Private Sub DrawFacePaintCatalogItem(sender As Object, e As DrawItemEventArgs)
+        e.DrawBackground()
+        If e.Index >= 0 AndAlso e.Index < _sseFaceOvCatalog.Items.Count Then
+            Dim missing As Boolean = e.Index < _sseFacePaintShown.Count AndAlso Not SseCatalogs.TextureResolves(_sseFacePaintShown(e.Index).Path)
+            Dim fore = If(missing, SseCatalogs.MissingTextureColor,
+                          If((e.State And DrawItemState.Selected) <> 0, SystemColors.HighlightText, e.ForeColor))
+            TextRenderer.DrawText(e.Graphics, _sseFaceOvCatalog.Items(e.Index).ToString(), e.Font, e.Bounds, fore,
+                                  TextFormatFlags.Left Or TextFormatFlags.VerticalCenter)
+        End If
+        e.DrawFocusRectangle()
+    End Sub
+
+    ''' <summary>Owner-draw an applied face-overlay row red when its diffuse texture is missing from the load order.</summary>
+    Private Sub DrawFaceAppliedOverlayItem(sender As Object, e As DrawItemEventArgs)
+        e.DrawBackground()
+        Dim lst = FaceOverlaysList()
+        If e.Index >= 0 AndAlso e.Index < _sseFaceOvList.Items.Count Then
+            Dim missing As Boolean = e.Index < lst.Count AndAlso Not SseCatalogs.TextureResolves(lst(e.Index).DiffusePath)
+            Dim fore = If(missing, SseCatalogs.MissingTextureColor,
+                          If((e.State And DrawItemState.Selected) <> 0, SystemColors.HighlightText, e.ForeColor))
+            TextRenderer.DrawText(e.Graphics, _sseFaceOvList.Items(e.Index).ToString(), e.Font, e.Bounds, fore,
+                                  TextFormatFlags.Left Or TextFormatFlags.VerticalCenter)
+        End If
+        e.DrawFocusRectangle()
+    End Sub
+
+    ''' <summary>Fill the LEFT face-paint catalog from RaceMenuPaintCatalog (Face category), honouring the filter.
+    ''' Parallel <see cref="_sseFacePaintShown"/> maps a shown row back to its entry.</summary>
+    Private Sub RefreshSseFacePaintCatalog()
+        If _sseFaceOvCatalog Is Nothing Then Return
+        _sseFacePaintShown.Clear()
+        _sseFaceOvCatalog.BeginUpdate()
+        Try
+            _sseFaceOvCatalog.Items.Clear()
+            Dim cat = FO4_Base_Library.RaceMenuPaintCatalog.Current
+            If cat Is Nothing Then Return
+            Dim filter = If(_sseFaceOvFilter Is Nothing, "", _sseFaceOvFilter.Text.Trim())
+            For Each en In cat.Entries(FO4_Base_Library.RaceMenuPaintCatalog.PaintCategory.Face)
+                If filter.Length = 0 OrElse en.DisplayName.IndexOf(filter, StringComparison.OrdinalIgnoreCase) >= 0 Then
+                    _sseFaceOvCatalog.Items.Add(en.DisplayName)
+                    _sseFacePaintShown.Add(en)
+                End If
+            Next
+        Finally
+            _sseFaceOvCatalog.EndUpdate()
+        End Try
+    End Sub
+
+    ''' <summary>One "textbox + buttons" row that stretches to its cell: the textbox fills the remaining width and
+    ''' each button is auto-sized on the right, so nothing clips regardless of panel width.</summary>
+    Private Function FaceOvFlow(tb As TextBox, ParamArray buttons As Button()) As Control
+        Dim p As New TableLayoutPanel With {.Dock = DockStyle.Fill, .AutoSize = True, .Margin = New Padding(0, 4, 6, 0),
+                                            .ColumnCount = 1 + buttons.Length, .RowCount = 1}
+        p.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100))
+        tb.Dock = DockStyle.Fill
+        p.Controls.Add(tb, 0, 0)
+        Dim c = 1
+        For Each b In buttons
+            b.Anchor = AnchorStyles.Left
+            p.ColumnStyles.Add(New ColumnStyle(SizeType.AutoSize))
+            p.Controls.Add(b, c, 0) : c += 1
+        Next
+        Return p
     End Function
 
     ''' <summary>The Face-node overlays inside Preset.SseBodyOverlays (the whole .jslot overrides array).</summary>
+    ''' <summary>Face overlays (Face [Ovl{n}] nodes) in DRAW ORDER — highest Ovl index first, since skee64 draws
+    ''' higher indices on top, so top-of-list = on top and Up/Down are intuitive.</summary>
     Private Function FaceOverlaysList() As List(Of RaceMenuJslot.JslotOverlayNode)
         Dim p = Preset
         If p Is Nothing OrElse p.SseBodyOverlays Is Nothing Then Return New List(Of RaceMenuJslot.JslotOverlayNode)
-        Return p.SseBodyOverlays.Where(Function(o) o IsNot Nothing AndAlso Not String.IsNullOrEmpty(o.NodeName) AndAlso o.NodeName.TrimStart().StartsWith("Face", StringComparison.OrdinalIgnoreCase)).ToList()
+        Return p.SseBodyOverlays.
+            Where(Function(o) o IsNot Nothing AndAlso SseCatalogs.ZoneOfNode(o.NodeName).HasValue AndAlso
+                              SseCatalogs.ZoneOfNode(o.NodeName).Value = SseCatalogs.OverlayZone.Face).
+            OrderByDescending(Function(o) SseCatalogs.IndexOfNode(o.NodeName)).ToList()
     End Function
+
+    ''' <summary>Reorder face paint by swapping two overlays' Ovl{n} node indices (RaceMenu's draw order). All face
+    ''' overlays share the Face zone, so any list neighbour is a valid swap.</summary>
+    Private Sub OnFaceOvMove(delta As Integer)
+        Dim l = FaceOverlaysList()
+        Dim row = _sseFaceOvList.SelectedIndex
+        Dim targetRow = row + delta
+        If row < 0 OrElse row >= l.Count OrElse targetRow < 0 OrElse targetRow >= l.Count Then Return
+        Dim ov = l(row), neighbour = l(targetRow)
+        Dim ni = SseCatalogs.IndexOfNode(ov.NodeName), nj = SseCatalogs.IndexOfNode(neighbour.NodeName)
+        If ni < 0 OrElse nj < 0 Then Return
+        ov.NodeName = SseCatalogs.OverlayNodeName(SseCatalogs.OverlayZone.Face, nj)
+        neighbour.NodeName = SseCatalogs.OverlayNodeName(SseCatalogs.OverlayZone.Face, ni)
+        p_HasOverlaysTrue()
+        RefreshFaceOvList(targetRow)
+        ScheduleRefresh(FaceRefreshScope.FullReload)
+    End Sub
 
     Private Function SelectedFaceOverlay() As RaceMenuJslot.JslotOverlayNode
         Dim l = FaceOverlaysList()
@@ -820,8 +1063,19 @@ Public Class EditFace_Form
         Return l(i)
     End Function
 
+    ''' <summary>List label for an applied face overlay: node identity plus the RaceMenu face-paint NAME re-derived
+    ''' from the catalog by the stored texture path (the only link the <c>.jslot</c> keeps), so a registered texture
+    ''' shows its friendly name rather than the anonymous file name. Falls back to the file name when unregistered.</summary>
     Private Shared Function FaceOvLabel(ov As RaceMenuJslot.JslotOverlayNode) As String
-        Dim diff = If(String.IsNullOrEmpty(ov.DiffusePath), "(no texture)", IO.Path.GetFileName(ov.DiffusePath))
+        Dim diff As String
+        If String.IsNullOrEmpty(ov.DiffusePath) Then
+            diff = "(no texture)"
+        Else
+            Dim name As String = Nothing
+            Dim z = SseCatalogs.ZoneOfNode(ov.NodeName)
+            If z.HasValue Then name = SseCatalogs.PaintNameForPath(z.Value, ov.DiffusePath)
+            diff = If(Not String.IsNullOrEmpty(name), name, IO.Path.GetFileName(ov.DiffusePath))
+        End If
         Return $"{ov.NodeName} — {diff}{If(ov.HasTint, "  ●", "")}"
     End Function
 
@@ -846,16 +1100,15 @@ Public Class EditFace_Form
         Try
             Dim has = ov IsNot Nothing
             _sseFaceOvDiffuse.Enabled = has : _sseFaceOvNormal.Enabled = has : _sseFaceOvTintEnable.Enabled = has
-            _sseFaceOvTintColor.Enabled = has AndAlso ov.HasTint : _sseFaceOvTintAlpha.Enabled = has AndAlso ov.HasTint
+            _sseFaceOvTintColor.Enabled = has AndAlso ov.HasTint
             _sseFaceOvDiffuse.Text = If(has, If(ov.DiffusePath, ""), "")
             _sseFaceOvNormal.Text = If(has, If(ov.NormalPath, ""), "")
             _sseFaceOvTintEnable.Checked = has AndAlso ov.HasTint
-            If has AndAlso ov.HasTint Then
-                _sseFaceOvTintColor.BackColor = Color.FromArgb(FaceClampByte(ov.TintR), FaceClampByte(ov.TintG), FaceClampByte(ov.TintB))
-                _sseFaceOvTintAlpha.Value = CDbl(Math.Max(0.0F, Math.Min(1.0F, ov.TintA)))
-            Else
-                _sseFaceOvTintColor.BackColor = Color.White : _sseFaceOvTintAlpha.Value = 1.0R
-            End If
+            _sseFaceOvTintColor.BackColor = If(has AndAlso ov.HasTint,
+                Color.FromArgb(FaceClampByte(ov.TintR), FaceClampByte(ov.TintG), FaceClampByte(ov.TintB)), Color.White)
+            ' Opacity (key 8) is independent of the tint colour (key 7).
+            _sseFaceOvTintAlpha.Enabled = has
+            _sseFaceOvTintAlpha.Value = If(has, CDbl(Math.Max(0.0F, Math.Min(1.0F, If(ov.HasAlpha, ov.Alpha, 1.0F)))), 1.0R)
         Finally
             _suspendEvents = False
         End Try
@@ -865,20 +1118,48 @@ Public Class EditFace_Form
         Return Math.Min(255, Math.Max(0, CInt(Math.Round(v * 255.0F))))
     End Function
 
+    ''' <summary>Add a face overlay in the next free <c>Face [Ovl n]</c> slot. Bounded by
+    ''' <c>[Overlays/Face] iNumOverlays</c> in skee64.ini: the engine instantiates exactly that many face
+    ''' overlay nodes, so anything beyond would render here and be ignored in-game.</summary>
     Private Sub OnFaceOvAdd(sender As Object, e As EventArgs)
         Dim p = Preset
         If p Is Nothing Then Return
         If p.SseBodyOverlays Is Nothing Then p.SseBodyOverlays = New List(Of RaceMenuJslot.JslotOverlayNode)()
+        ' The face paint chosen from the LEFT catalog (like the FO4 overlay editor: Add moves the selected entry in).
+        Dim ai = _sseFaceOvCatalog.SelectedIndex
+        If ai < 0 OrElse ai >= _sseFacePaintShown.Count Then
+            MessageBox.Show(Me, "Choose a face paint from the list on the left, then press Add →.",
+                            "No paint selected", MessageBoxButtons.OK, MessageBoxIcon.Information)
+            Return
+        End If
+        Dim entry = _sseFacePaintShown(ai)
         Dim used As New HashSet(Of Integer)
         For Each o In p.SseBodyOverlays
-            If o Is Nothing OrElse o.NodeName Is Nothing Then Continue For
-            If o.NodeName.StartsWith("Face [Ovl", StringComparison.OrdinalIgnoreCase) Then
-                Dim a = o.NodeName.IndexOf("["c), b = o.NodeName.IndexOf("]"c), num As Integer
-                If a >= 0 AndAlso b > a AndAlso Integer.TryParse(o.NodeName.Substring(a + 5, b - a - 5).Trim(), num) Then used.Add(num)
+            If o Is Nothing Then Continue For
+            Dim z = SseCatalogs.ZoneOfNode(o.NodeName)
+            If z.HasValue AndAlso z.Value = SseCatalogs.OverlayZone.Face Then
+                Dim n0 = SseCatalogs.IndexOfNode(o.NodeName)
+                If n0 >= 0 Then used.Add(n0)
             End If
         Next
+        Dim limit = SseCatalogs.OverlayCount(SseCatalogs.OverlayZone.Face)
         Dim k = 0 : While used.Contains(k) : k += 1 : End While
-        p.SseBodyOverlays.Add(New RaceMenuJslot.JslotOverlayNode With {.NodeName = $"Face [Ovl{k}]", .DiffusePath = "", .TintR = 1, .TintG = 1, .TintB = 1, .TintA = 1, .HasTint = False})
+        If k >= limit Then
+            MessageBox.Show(Me,
+                $"RaceMenu only creates {limit} face overlay slot(s) ([Ovl0]…[Ovl{limit - 1}]), per iNumOverlays in skee64.ini." & vbCrLf & vbCrLf &
+                "Remove one, or raise iNumOverlays in skee64.ini and reopen the editor.",
+                "No free overlay slot", MessageBoxButtons.OK, MessageBoxIcon.Information)
+            Return
+        End If
+        Dim nrm As String = ""
+        If entry.Slots IsNot Nothing AndAlso entry.Slots.Length > 1 Then
+            Dim s1 = entry.Slots(1)
+            If Not String.IsNullOrEmpty(s1) AndAlso Not s1.Equals("ignore", StringComparison.OrdinalIgnoreCase) Then nrm = s1
+        End If
+        p.SseBodyOverlays.Add(New RaceMenuJslot.JslotOverlayNode With {
+            .NodeName = SseCatalogs.OverlayNodeName(SseCatalogs.OverlayZone.Face, k), .DiffusePath = entry.Path, .NormalPath = nrm,
+            .TintR = 1, .TintG = 1, .TintB = 1, .TintA = 1, .HasTint = False,
+            .Alpha = 1.0F, .HasAlpha = True})
         p.HasOverlays = True
         RefreshFaceOvList(_sseFaceOvList.Items.Count)
         ScheduleRefresh(FaceRefreshScope.FullReload)
@@ -894,30 +1175,13 @@ Public Class EditFace_Form
         ScheduleRefresh(FaceRefreshScope.FullReload)
     End Sub
 
-    Private Sub OnFaceOvTexChanged(diffuse As Boolean)
-        If _suspendEvents Then Return
-        Dim ov = SelectedFaceOverlay()
-        If ov Is Nothing Then Return
-        If diffuse Then ov.DiffusePath = _sseFaceOvDiffuse.Text.Trim() Else ov.NormalPath = _sseFaceOvNormal.Text.Trim()
-        Dim i = _sseFaceOvList.SelectedIndex
-        If i >= 0 Then _sseFaceOvList.Items(i) = FaceOvLabel(ov)
-        p_HasOverlaysTrue()
-        ScheduleRefresh(FaceRefreshScope.FullReload)
-    End Sub
-
-    Private Sub BrowseFaceOvTexture(target As TextBox)
-        If target Is Nothing Then Return
-        Using dlg As New OpenFileDialog() With {.Title = "Select face overlay texture (.dds)", .Filter = "DDS texture (*.dds)|*.dds|All files (*.*)|*.*"}
-            If dlg.ShowDialog(Me) = DialogResult.OK Then target.Text = dlg.FileName
-        End Using
-    End Sub
-
     Private Sub OnFaceOvTintToggled(sender As Object, e As EventArgs)
         If _suspendEvents Then Return
         Dim ov = SelectedFaceOverlay()
         If ov Is Nothing Then Return
         ov.HasTint = _sseFaceOvTintEnable.Checked
-        _sseFaceOvTintColor.Enabled = ov.HasTint : _sseFaceOvTintAlpha.Enabled = ov.HasTint
+        ' Opacity stays editable regardless of the tint colour (different skee64 override key).
+        _sseFaceOvTintColor.Enabled = ov.HasTint
         Dim i = _sseFaceOvList.SelectedIndex
         If i >= 0 Then _sseFaceOvList.Items(i) = FaceOvLabel(ov)
         p_HasOverlaysTrue()
@@ -937,11 +1201,13 @@ Public Class EditFace_Form
         End Using
     End Sub
 
+    ''' <summary>Opacity slider → skee64's kParam_ShaderAlpha (key 8), not the tint colour's alpha byte.</summary>
     Private Sub OnFaceOvTintAlpha(sender As Object, e As EventArgs)
         If _suspendEvents Then Return
         Dim ov = SelectedFaceOverlay()
         If ov Is Nothing Then Return
-        ov.TintA = CSng(_sseFaceOvTintAlpha.Value)
+        ov.Alpha = CSng(_sseFaceOvTintAlpha.Value)
+        ov.HasAlpha = True
         p_HasOverlaysTrue()
         ScheduleRefresh(FaceRefreshScope.FullReload)
     End Sub
@@ -951,63 +1217,6 @@ Public Class EditFace_Form
         If p IsNot Nothing Then p.HasOverlays = True
     End Sub
 
-    ''' <summary>Load a RaceMenu .jslot preset onto this NPC: sliders (NAM9), per-vertex sculpt, NiOverride
-    ''' custom morphs and tint layers → overlay → live render. The ESP fields (NAM9/NAMA/tints) and the sidecar
-    ''' (sculpt/custom) both update so Save writes ESP + .jslot.</summary>
-    Private Sub OnLoadJslot(sender As Object, e As EventArgs)
-        Using dlg As New OpenFileDialog() With {.Filter = "RaceMenu preset (*.jslot)|*.jslot|All files (*.*)|*.*"}
-            If dlg.ShowDialog(Me) <> DialogResult.OK Then Return
-            Dim j As RaceMenuJslot
-            Try
-                j = RaceMenuJslot.Load(IO.File.ReadAllBytes(dlg.FileName))
-            Catch ex As Exception
-                MessageBox.Show(Me, "No se pudo leer el .jslot: " & ex.Message) : Return
-            End Try
-            If j Is Nothing Then MessageBox.Show(Me, "No se pudo interpretar el .jslot.") : Return
-            Dim p = Preset
-            If p Is Nothing Then Return
-            ' Canonical full-preset apply — the SAME single-source-of-truth path RaceMenu Load / Copy / Paste use
-            ' (headParts + headTexture + sliders + sculpt + custom morphs + tints + custom tint textures + body/
-            ' overlays). Replaces the old partial inline copy that silently dropped tints and headParts on load.
-            RaceMenuPresetMapper.ApplyJslotToPreset(j, p, _pluginManager)
-            ' Mirror the applied preset into the local slider array, then reflect every tab.
-            If p.SseNam9 IsNot Nothing Then
-                For i = 0 To Math.Min(p.SseNam9.Length, SseNam9MorphMap.Nam9SliderCount) - 1 : _sseNam9(i) = p.SseNam9(i) : Next
-            End If
-            _suspendEvents = True
-            For i = 0 To SseNam9MorphMap.Nam9SliderCount - 1
-                If _sseNam9Sliders(i) IsNot Nothing Then _sseNam9Sliders(i).Value = Math.Max(-1.0R, Math.Min(1.0R, CDbl(_sseNam9(i))))
-            Next
-            _suspendEvents = False
-            RefreshHeadPartsList()         ' reflect the loaded head parts (hair / eyes / brows)
-            PopulateSseTintTab()           ' reflect the loaded tints + custom tint textures
-            PopulateSseSculptTab()         ' reflect the loaded per-shape sculpt blocks
-            RefreshSseRaceMenuControls()   ' reflect the loaded custom morphs onto the RaceMenu tab
-            RefreshFaceOvList(-1)          ' reflect the loaded face overlays onto the Face Overlays tab
-            ApplySseMorphOverlay()
-            ScheduleRefresh(FaceRefreshScope.FullReload)
-        End Using
-    End Sub
-
-    ''' <summary>Save the current SSE face edit as a RaceMenu .jslot. Routes through the single-source-of-truth
-    ''' <see cref="RaceMenuPresetMapper.ToJslot"/> (sliders + sculpt + custom morphs + tints + custom tint textures +
-    ''' headParts + headTexture + body/overlays) so Save mirrors exactly what Load/Copy/Paste round-trip — instead of
-    ''' a partial inline copy. The live edits are pushed into the preset first (ApplySseMorphOverlay / ApplySseTintOverlay).</summary>
-    Private Sub OnSaveJslot(sender As Object, e As EventArgs)
-        Using dlg As New SaveFileDialog() With {.Filter = "RaceMenu preset (*.jslot)|*.jslot", .FileName = "preset.jslot"}
-            If dlg.ShowDialog(Me) <> DialogResult.OK Then Return
-            ' Sync the live UI edits into the preset so ToJslot sees them (sliders → SseNam9, tints + custom textures
-            ' → SseTintRawOverride/SseTintTexOverride).
-            ApplySseMorphOverlay()
-            ApplySseTintOverlay()
-            Dim j = RaceMenuPresetMapper.ToJslot(Preset, _pluginManager)
-            Try
-                IO.File.WriteAllBytes(dlg.FileName, j.Save())
-            Catch ex As Exception
-                MessageBox.Show(Me, "No se pudo guardar el .jslot: " & ex.Message)
-            End Try
-        End Using
-    End Sub
 
     ''' <summary>SSE: seed the morph sliders/combos. Source = the overlay's authored NAM9/NAMA when it has taken
     ''' ownership (a loaded .jslot / Paste / a prior committed Edit Face set them via ApplySseMorphOverlay), else
@@ -1130,6 +1339,12 @@ Public Class EditFace_Form
                 Dim ovr As String = Nothing
                 If p IsNot Nothing AndAlso p.SseTintTexOverride IsNot Nothing Then p.SseTintTexOverride.TryGetValue(lay.Index, ovr)
                 e.MaskPathOverride = ovr
+                e.MaskPath = If(Not String.IsNullOrEmpty(ovr), ovr, lay.Path)
+                ' Blue = the MASK (.dds) differs from the RACE's own mask, i.e. a custom mask override (only a
+                ' preset / RaceMenu can set one; the NPC record can't). A layer where only the colour/coverage
+                ' value differs is NOT blue — that's an ordinary authored value (black), per the user's rule.
+                e.Customized = Not String.IsNullOrEmpty(ovr) AndAlso
+                               Not String.Equals(ovr, lay.Path, StringComparison.OrdinalIgnoreCase)
                 _sseTintLayers.Add(e)
             Next
         Else
@@ -1156,17 +1371,31 @@ Public Class EditFace_Form
         Return If(i >= 0, p.Substring(i + 1), p)
     End Function
 
+    ''' <summary>Does this tint mask .dds exist in the load order (loose + BSA)? Uses the SAME normalisation the
+    ''' compositor's mask loader does (SseFaceTintComposer.DecodeMask: lowercase, backslashes, prepend "textures\"),
+    ''' so a label flagged missing here is exactly a mask the render couldn't load. An empty path is "present"
+    ''' (nothing to load), so it isn't flagged red.</summary>
+    Private Shared Function TintMaskExists(maskPath As String) As Boolean
+        If String.IsNullOrEmpty(maskPath) Then Return True
+        Dim key = maskPath.Replace("/"c, "\"c).ToLowerInvariant()
+        If Not key.StartsWith("textures\") Then key = "textures\" & key
+        Return FO4_Base_Library.FilesDictionary_class.Dictionary.ContainsKey(key)
+    End Function
+
     ''' <summary>SSE: fill the Designer's "Tints (SSE)" tab panel — one row per authored tint layer (color
     ''' button + coverage slider). The tab lives in the Designer (shown/hidden by game); this only populates
     ''' PanelSseTints. Edits rebuild SseTintRaw and push it through the overlay so the composer (render + bake)
     ''' and Save ESP reflect them.</summary>
     Private Sub PopulateSseTintTab()
         ParseSseTintLayers()
+        ' Layout: a WIDE label column (the mask name — filename only, no path) then swatch, a coverage slider that
+        ' fills the remaining width, and the Tex… button. The slider is Percent so it uses the whole row instead of
+        ' leaving dead space on the right.
         Dim panel As New TableLayoutPanel With {.Dock = DockStyle.Fill, .AutoScroll = True, .ColumnCount = 4}
-        panel.ColumnStyles.Add(New ColumnStyle(SizeType.Absolute, 150))
-        panel.ColumnStyles.Add(New ColumnStyle(SizeType.Absolute, 90))
-        panel.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100))
-        panel.ColumnStyles.Add(New ColumnStyle(SizeType.Absolute, 44))
+        panel.ColumnStyles.Add(New ColumnStyle(SizeType.Absolute, 260))   ' 0: mask name (long)
+        panel.ColumnStyles.Add(New ColumnStyle(SizeType.Absolute, 90))    ' 1: colour swatch
+        panel.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100))    ' 2: coverage slider (fills)
+        panel.ColumnStyles.Add(New ColumnStyle(SizeType.Absolute, 52))    ' 3: Tex… button
         _sseTintColorBtns.Clear() : _sseTintValTracks.Clear()
         If _sseTintLayers.Count = 0 Then
             panel.Controls.Add(New Label With {.Text = "(la RACE no declara tint layers para este genero)", .AutoSize = True}, 0, 0)
@@ -1179,7 +1408,19 @@ Public Class EditFace_Form
             Dim nm = If(String.IsNullOrEmpty(_sseTintLayers(i).MaskPathOverride), baseNm, "* " & MaskFileName(_sseTintLayers(i).MaskPathOverride))
             Dim tag = If(_sseTintLayers(i).Authored, "", "  (default)")
             Dim lblTip = If(String.IsNullOrEmpty(_sseTintLayers(i).MaskPathOverride), baseNm, _sseTintLayers(i).MaskPathOverride)
-            Dim lbl As New Label With {.Text = nm & tag, .Anchor = AnchorStyles.Left, .AutoSize = True, .Margin = New Padding(3, 8, 3, 0)}
+            ' LooksMenu-style label colour, by priority:
+            '   RED   — the mask .dds is missing from the load order (loose+BSA); it would render nothing.
+            '   BLUE  — the MASK differs from the race's (a custom .dds override). Mask-only; a differing
+            '           colour/coverage value alone does NOT turn it blue.
+            '   normal— authored (colour/coverage value set) but using the race's own mask.
+            '   GRAY  — the race default, untouched by this NPC.
+            Dim isMissing = Not TintMaskExists(_sseTintLayers(i).MaskPath)
+            Dim foreCol As System.Drawing.Color =
+                If(isMissing, System.Drawing.Color.FromArgb(200, 40, 40),
+                   If(_sseTintLayers(i).Customized, System.Drawing.Color.FromArgb(40, 100, 210),
+                      If(Not _sseTintLayers(i).Authored, SystemColors.GrayText, SystemColors.ControlText)))
+            Dim lbl As New Label With {.Text = nm & tag, .Anchor = AnchorStyles.Left, .AutoSize = True, .Margin = New Padding(3, 8, 3, 0), .ForeColor = foreCol}
+            If isMissing Then lblTip = "Missing texture (not in load order): " & If(_sseTintLayers(i).MaskPath, "")
             _sseTintToolTip.SetToolTip(lbl, lblTip)
             panel.Controls.Add(lbl, 0, i)
             Dim cbtn As New Button With {.Width = 70, .Height = 26, .BackColor = System.Drawing.Color.FromArgb(_sseTintLayers(i).R, _sseTintLayers(i).G, _sseTintLayers(i).B)}
@@ -1193,7 +1434,7 @@ Public Class EditFace_Form
             panel.Controls.Add(tb, 2, i)
             ' Custom mask texture (RaceMenu-only) — pick/clear a mask path that overrides the RACE layer's own.
             Dim texBtn As New Button With {.Text = "Tex…", .Width = 40, .Height = 26, .Margin = New Padding(1, 4, 1, 0)}
-            _sseTintToolTip.SetToolTip(texBtn, "Textura de máscara personalizada (RaceMenu). Vacío = usa la de la RACE.")
+            _sseTintToolTip.SetToolTip(texBtn, "Warpaint (RaceMenu): elige una máscara de tint registrada por un mod. Vacío = usa la de la RACE.")
             AddHandler texBtn.Click, Sub(sender, e) OnSseTintTextureClick(idx)
             panel.Controls.Add(texBtn, 3, i)
             _sseTintColorBtns.Add(cbtn) : _sseTintValTracks.Add(tb)
@@ -1201,6 +1442,16 @@ Public Class EditFace_Form
         PanelSseTints.Controls.Clear()
         PanelSseTints.Controls.Add(panel)
     End Sub
+
+    ''' <summary>Normalise a warpaint path to the textures-relative form the RACE TINT convention (and the composer)
+    ''' expect: backslashes, no leading <c>textures\</c>. Warpaint registrations are usually already in this form
+    ''' (e.g. <c>Actors\Character\...\x.dds</c>), but a mod may prefix it.</summary>
+    Private Function NormalizeTintMaskRel(p As String) As String
+        If String.IsNullOrEmpty(p) Then Return p
+        Dim s = p.Replace("/"c, "\"c)
+        If s.StartsWith("textures\", StringComparison.OrdinalIgnoreCase) Then s = s.Substring("textures\".Length)
+        Return s.TrimStart("\"c)
+    End Function
 
     Private Sub OnSseTintColorClick(idx As Integer)
         If idx < 0 OrElse idx >= _sseTintLayers.Count Then Return
@@ -1228,33 +1479,24 @@ Public Class EditFace_Form
         ScheduleRefresh(FaceRefreshScope.TexturesOnly)
     End Sub
 
-    ''' <summary>Set/clear a RaceMenu-only custom mask texture for a tint layer. Faithful to PresetInterface.cpp:203
-    ''' (tintMask-&gt;texture-&gt;str = tint.name): the path overrides the RACE layer's own TINT mask by index and is
-    ''' composited (render + bake) + persisted (.bssliders + .jslot). Uses the shared FilesDictionary texture picker
-    ''' (same control Wardrobe Manager uses — <c>DictionaryFilePicker_Form</c> over <c>TexturesDictionary_Filter</c>),
-    ''' with the current mask path (RACE default or a prior override) pre-selected. The stored path is textures-relative
-    ''' (no <c>textures\</c> prefix), matching the RACE TINT convention the composer expects.</summary>
+    ''' <summary>Set/clear a RaceMenu WARPAINT (custom tint mask) for a tint layer. Faithful to
+    ''' PresetInterface.cpp:203 (tintMask-&gt;texture-&gt;str = tint.name): the path overrides the RACE layer's own TINT
+    ''' mask by index and is composited as a red-channel mask (render + bake) + persisted (.bssliders + .jslot).
+    ''' The texture is chosen from RaceMenu's named WARPAINT list — the union of mods' <c>AddWarpaint(name,path)</c>
+    ''' registrations (RaceMenuPaintCatalog) — NOT a file browser: RaceMenu never lets you browse a .dds. Picking a
+    ''' warpaint the app couldn't otherwise resolve is what fixes the black-face case. The stored path is
+    ''' textures-relative (no <c>textures\</c> prefix), matching the RACE TINT convention the composer expects.</summary>
     Private Sub OnSseTintTextureClick(idx As Integer)
         If idx < 0 OrElse idx >= _sseTintLayers.Count Then Return
         Dim t0 = _sseTintLayers(idx)
         ' Pre-select the effective mask for this layer: the current override if any, else the RACE layer's own path.
         Dim curRel As String = If(Not String.IsNullOrEmpty(t0.MaskPathOverride), t0.MaskPathOverride, ResolveRaceLayerMaskPath(t0.Index))
-        Dim initialKey As String = FO4UnifiedMaterial_Class.CorrectTexturePath(curRel)
 
-        Dim filtered = FilesDictionary_class.GetFilteredKeys(FilesDictionary_class.TexturesDictionary_Filter)
-        Dim prefix = FilesDictionary_class.TexturesDictionary_Filter.RootPrefix
+        Dim res = SseCatalogs.PickPaint(Me, RaceMenuPaintCatalog.PaintCategory.Warpaint, curRel, allowNone:=True)
+        If res.Kind = SseCatalogs.PaintPickKind.Cancel Then Return
         Dim chosenRel As String = Nothing
-        Dim cleared As Boolean = False
-        Using frm As New DictionaryFilePicker_Form(filtered, prefix, FilesDictionary_class.TexturesDictionary_Filter.AllowedExtensions, initialKey)
-            Dim dr = frm.ShowDialog(Me)
-            If dr <> DialogResult.OK Then Return
-            Dim sel = frm.DictionaryPicker_Control1.SelectedKey
-            If String.IsNullOrEmpty(sel) Then
-                cleared = True   ' picked nothing → clear the override back to the RACE default mask
-            Else
-                chosenRel = IO.Path.GetRelativePath(prefix, sel).Replace("/"c, "\"c)
-            End If
-        End Using
+        Dim cleared As Boolean = (res.Kind = SseCatalogs.PaintPickKind.Clear)
+        If Not cleared Then chosenRel = NormalizeTintMaskRel(res.Entry.Path)
 
         Dim t = _sseTintLayers(idx)
         ' A pick equal to the RACE default mask = no override (keeps the .jslot/sidecar clean).

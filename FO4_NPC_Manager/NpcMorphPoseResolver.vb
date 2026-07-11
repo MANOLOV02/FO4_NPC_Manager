@@ -326,11 +326,42 @@ Friend NotInheritable Class NpcMorphPoseResolver
         Return rel.material.NifShaderType = NiflySharp.Enums.BSLightingShaderType.SkinTint OrElse rel.material.SkinTint
     End Function
 
+    ''' <summary>Distinct worn SlotMask of every body-skin shape this NPC actually renders — the set of targets a
+    ''' RaceMenu skin override can bind to (a skin override applies to a body-skin shape whose SlotMask intersects
+    ''' the override's, ResolveSseOverlayLayers:472). On an all-in-one body (one CBBE mesh covering slots
+    ''' 32/33/37) this is a single combined mask, which is why picking Body vs Hands vs Feet all hit the same
+    ''' shape; on separate body/hands/feet meshes it is one mask each. The Skin-Overrides editor builds its slot
+    ''' picker from this so the choice maps to a real, distinct skin shape instead of a fixed guess.</summary>
+    Friend Shared Function BodySkinSlotMasks(renderData As MainForm.PreviewResolutionResult) As List(Of UInteger)
+        Dim result As New List(Of UInteger)
+        If renderData Is Nothing OrElse renderData.Shapes Is Nothing Then Return result
+        Dim seen As New HashSet(Of UInteger)
+        For Each shape In renderData.Shapes
+            If shape Is Nothing OrElse Not ShapeIsSkinTinted(shape) Then Continue For
+            Dim cand As MainForm.MeshCandidate = Nothing
+            If Not renderData.ShapeCandidate.TryGetValue(shape, cand) OrElse cand Is Nothing Then Continue For
+            If cand.SlotMask = 0UI Then Continue For
+            If seen.Add(cand.SlotMask) Then result.Add(cand.SlotMask)
+        Next
+        Return result
+    End Function
+
     ''' <summary>True for the head (FaceTint shader) — the target of RaceMenu "Face [Ovl{n}]" face-paint overlays.</summary>
     Private Shared Function ShapeIsFace(shape As IRenderableShape) As Boolean
         Dim rel = shape.ShapeMaterial
         If rel Is Nothing OrElse rel.material Is Nothing Then Return False
         Return rel.material.NifShaderType = NiflySharp.Enums.BSLightingShaderType.FaceTint
+    End Function
+
+    ''' <summary>Is this overlay/skin-override texture present in the load order (loose + BSA)? Uses the same
+    ''' normalisation the material loader does (lowercase, backslashes, prepend "textures\") so "present" here
+    ''' matches what the renderer can actually load. A missing texture ⇒ skip the overlay instead of flat-filling
+    ''' the skin with the missing-texture placeholder.</summary>
+    Private Shared Function SseTextureExists(path As String) As Boolean
+        If String.IsNullOrWhiteSpace(path) Then Return False
+        Dim key = path.Replace("/"c, "\"c).ToLowerInvariant()
+        If Not key.StartsWith("textures\") Then key = "textures\" & key
+        Return FO4_Base_Library.FilesDictionary_class.Dictionary.ContainsKey(key)
     End Function
 
     ''' <summary>True when a RaceMenu overlay node name is a FACE overlay ("Face [Ovl{n}]" / "Face [SOvl{n}]").</summary>
@@ -428,18 +459,19 @@ Friend NotInheritable Class NpcMorphPoseResolver
     ''' <para>Blend is the SAME coplanar alpha-over decal as FO4 (Option B) — no per-mode Pegtop (the blend
     ''' mode is not in the .jslot, §3.1/§3.2). Absent preset / empty carrier ⇒ every shape cleared.</para></summary>
     Private Sub ResolveSseOverlayLayers(state As MainForm.NPCVisualState, renderData As MainForm.PreviewResolutionResult)
+        ' Overlays (tattoos / body-hand-feet-face paint) become alpha-over decal layers here. Skin overrides do NOT:
+        ' they are a per-slot texture-set REPLACEMENT on the skin material (skee NIOVTaskUpdateTexture), applied
+        ' in place by NpcMaterialResolver.ApplyShapeMaterialOverrides — not a decal on top.
         Dim overlays As List(Of FO4_Base_Library.RaceMenuJslot.JslotOverlayNode) = Nothing
-        Dim skinOverrides As List(Of FO4_Base_Library.RaceMenuJslot.JslotSkinOverride) = Nothing
         If state IsNot Nothing Then
             Dim preset As LooksmenuLoader.LooksmenuPreset = Nothing
             If _appliedPresets.TryGetValue(state.RootNpcFormID, preset) AndAlso preset IsNot Nothing Then
                 If preset.SseBodyOverlays IsNot Nothing AndAlso preset.SseBodyOverlays.Count > 0 Then overlays = preset.SseBodyOverlays
-                If preset.SseSkinOverrides IsNot Nothing AndAlso preset.SseSkinOverrides.Count > 0 Then skinOverrides = preset.SseSkinOverrides
             End If
         End If
 
-        ' Nothing at all (no tattoos AND no skin overrides) → clear every shape and bail (no carry-over).
-        If overlays Is Nothing AndAlso skinOverrides Is Nothing Then
+        ' No overlay decals → clear every shape's overlay layers and bail (skin overrides live on the material now).
+        If overlays Is Nothing Then
             For Each sh In renderData.Shapes
                 If sh IsNot Nothing Then sh.OverlayLayers = Nothing
             Next
@@ -461,28 +493,17 @@ Friend NotInheritable Class NpcMorphPoseResolver
             End If
 
             Dim layers As New List(Of OverlayMaterialLayer)
-            If isBodySkin Then
-                ' Skin overrides (RaceMenu body-paint replacing the skin texture) drawn FIRST = UNDER the tattoos.
-                ' Membership = raw NiOverride slot-mask intersect (the .jslot slotMask uses the same bit=slot−30
-                ' convention as the mesh candidate's worn SlotMask). Tint-only overrides (no diffuse) are persisted
-                ' but not rendered here (a coplanar decal can't multiply the base skin — would flat-fill it).
-                If skinOverrides IsNot Nothing Then
-                    For Each sk In skinOverrides
-                        If sk Is Nothing OrElse String.IsNullOrEmpty(sk.DiffusePath) Then Continue For
-                        If (cand.SlotMask And sk.SlotMask) = 0UI Then Continue For
-                        Dim layer = BuildSseSkinOverrideLayer(shape, sk)
-                        If layer IsNot Nothing Then layers.Add(layer)
-                    Next
-                End If
-            End If
-            ' Overlays ON TOP. Iterate the applied list in REVERSE so the LAST list entry is drawn first (bottom)
-            ' and the FIRST entry is drawn last (on top) — matching the "top of the list = drawn on top" UI + the
-            ' skee node order (Ovl0 bottom → OvlN top). Body/Hands/Feet overlays go on the matching worn-slot skin
-            ' shape; Face overlays go on the FaceTint head shape.
+            ' Overlays ON TOP, en ORDEN DE ÍNDICE DE NODO Ovl{n} ASCENDENTE (Ovl0 abajo → OvlN arriba) — el orden
+            ' de skee (OverlayInterface for i=0..N + AttachChild), NO la posición en la lista (el jslot puede venir
+            ' en cualquier orden). El lib dibuja layers en orden de lista (primero=abajo), así que agrego Ovl0
+            ' primero. IDÉNTICO al bake (SseOverlayCompositor.ComposeFaceOverlaysIntoDiffuse) ⇒ render==bake==skee.
+            ' Body/Hands/Feet van en el shape de slot; Face en el head FaceTint.
             If overlays IsNot Nothing Then
-                For oi = overlays.Count - 1 To 0 Step -1
-                    Dim ov = overlays(oi)
-                    If ov Is Nothing OrElse String.IsNullOrEmpty(ov.DiffusePath) Then Continue For
+                For Each ov In overlays.OrderBy(Function(o) SseOverlayCompositor.ParseOvlIndex(If(o IsNot Nothing, o.NodeName, Nothing)))
+                    ' Skip an overlay with no texture OR whose texture is not in the load order (loose+BSA): with no
+                    ' resolvable diffuse there is nothing to composite, and rendering it would flat-fill the skin
+                    ' with the "missing texture" placeholder. Same rule for face and body overlays.
+                    If ov Is Nothing OrElse String.IsNullOrEmpty(ov.DiffusePath) OrElse Not SseTextureExists(ov.DiffusePath) Then Continue For
                     Dim applies As Boolean
                     If SseOverlayIsFaceNode(ov.NodeName) Then
                         applies = isFace
@@ -499,36 +520,10 @@ Friend NotInheritable Class NpcMorphPoseResolver
             If Logger.Enabled Then
                 Dim layerCount = layers.Count
                 Dim ovN = If(overlays IsNot Nothing, overlays.Count, 0)
-                Dim skN = If(skinOverrides IsNot Nothing, skinOverrides.Count, 0)
-                Logger.LogLazy(Function() $"[OVERLAY-SSE] shape='{shape.ShapeName}' mask=0x{cand.SlotMask:X8} overlays={ovN} skinOverrides={skN} → layers={layerCount}")
+                Logger.LogLazy(Function() $"[OVERLAY-SSE] shape='{shape.ShapeName}' mask=0x{cand.SlotMask:X8} overlays={ovN} → layers={layerCount}")
             End If
         Next
     End Sub
-
-    ''' <summary>Synthesize an <see cref="OverlayMaterialLayer"/> for a RaceMenu SKIN override (body-paint):
-    ''' identical decal machinery to <see cref="BuildSseOverlayLayer"/> (opaque alpha-over decal fully covers
-    ''' the skin region = visually replaces the skin diffuse, which is the NiOverride texture-override effect),
-    ''' but the diffuse/normal/tint come from the per-slot <see cref="RaceMenuJslot.JslotSkinOverride"/> instead
-    ''' of a tattoo node.</summary>
-    Private Shared Function BuildSseSkinOverrideLayer(skinShape As IRenderableShape, sk As FO4_Base_Library.RaceMenuJslot.JslotSkinOverride) As OverlayMaterialLayer
-        Try
-            Dim mat As New FO4UnifiedMaterial_Class()   ' fresh wrapper = normalized BGEM (effect material)
-            mat.Diffuse_or_Base_Texture = If(sk.DiffusePath, "")
-            If Not String.IsNullOrEmpty(sk.NormalPath) Then mat.NormalTexture = sk.NormalPath
-            mat.AlphaBlendEnabled = True
-            mat.Decal = True
-            If sk.HasTint Then
-                mat.BaseColor = Color.FromArgb(ClampUnitToByte(sk.TintA), ClampUnitToByte(sk.TintR),
-                                               ClampUnitToByte(sk.TintG), ClampUnitToByte(sk.TintB))
-            End If
-            Return New OverlayMaterialLayer With {
-                .Material = New Nifcontent_Class_Manolo.RelatedMaterial_Class With {.material = mat, .path = If(sk.DiffusePath, "")}
-            }
-        Catch ex As Exception
-            Logger.LogLazy(Function() $"[OVERLAY-SSE] failed to synthesize skin override (slotMask=0x{sk.SlotMask:X8}, {sk.DiffusePath}): {ex.Message}")
-            Return Nothing
-        End Try
-    End Function
 
     ''' <summary>SSE biped-slot bitmask (bit = slot−30) that a RaceMenu overlay node covers. AUTHORITATIVE per
     ''' skee64 (RaceMenu source), NOT reasoned from the slot table: overlays install on the FIXED biped parts
@@ -564,9 +559,16 @@ Friend NotInheritable Class NpcMorphPoseResolver
             ' Coplanar alpha-over decal (Option B). Blend funcs default to SRC_ALPHA / INV_SRC_ALPHA.
             mat.AlphaBlendEnabled = True
             mat.Decal = True
+            ' Opacity is skee64's kParam_ShaderAlpha (key 8 → BSShaderMaterial::alpha, ShaderUtilities.cpp:98),
+            ' NOT the alpha byte of the tint colour: kParam_ShaderTintColor unpacks into an NiColor — RGB only
+            ' (ShaderUtilities.cpp:119-125) — and only on FaceGenRGBTint/HairTint materials. An overlay with no
+            ' alpha override is fully opaque.
+            Dim opacity As Single = If(ov.HasAlpha, ov.Alpha, 1.0F)
             If ov.HasTint Then
-                mat.BaseColor = Color.FromArgb(ClampUnitToByte(ov.TintA), ClampUnitToByte(ov.TintR),
+                mat.BaseColor = Color.FromArgb(ClampUnitToByte(opacity), ClampUnitToByte(ov.TintR),
                                                ClampUnitToByte(ov.TintG), ClampUnitToByte(ov.TintB))
+            Else
+                mat.BaseColor = Color.FromArgb(ClampUnitToByte(opacity), 255, 255, 255)
             End If
             Return New OverlayMaterialLayer With {
                 .Material = New Nifcontent_Class_Manolo.RelatedMaterial_Class With {.material = mat, .path = If(ov.DiffusePath, "")}
@@ -884,8 +886,13 @@ Friend NotInheritable Class NpcMorphPoseResolver
         Return PoseMath.MergePoses(racePose, bwPose, nnamPose, fmrsPose, sseNodePose)
     End Function
 
-    ''' <summary>Build the SSE RaceMenu node-scale pose from the applied preset's SseNodeTransforms: one
-    ''' uniform-scale PoseTransformData per named skeleton bone. Nothing on FO4 / when no transforms.</summary>
+    ''' <summary>Build the SSE RaceMenu node-transform pose from the applied preset's SseNodeTransforms: one
+    ''' PoseTransformData per named skeleton bone carrying the full TRS — uniform scale (key 30), translation
+    ''' (key 31 → X/Y/Z) and rotation (key 32 → the axis-angle Yaw/Pitch/Roll the WardrobeManager pose source
+    ''' feeds straight into BSRotationToMatrix33, reproducing the .jslot's 3×3 matrix exactly). This matches
+    ''' skee's Impl_UpdateNodeAllTransforms, which composes finalLocal = baseTransform · (pos·scale·rot) — the
+    ''' render's MorphDeltaTransform layer is exactly that override transform. Nothing on FO4 / when no
+    ''' non-identity transforms.</summary>
     Private Function BuildSseNodeScalePose(state As MainForm.NPCVisualState) As Poses_class
         If state Is Nothing OrElse Config_App.Current Is Nothing OrElse Config_App.Current.Game <> Config_App.Game_Enum.Skyrim Then Return Nothing
         Dim preset As LooksmenuLoader.LooksmenuPreset = Nothing
@@ -893,15 +900,19 @@ Friend NotInheritable Class NpcMorphPoseResolver
         Dim nts = preset.SseNodeTransforms
         If nts Is Nothing OrElse nts.Count = 0 Then Return Nothing
         Dim pose As New Poses_class With {
-            .Name = "SSE Node Scale",
+            .Name = "SSE Node Transform",
             .Source = Poses_class.Pose_Source_Enum.WardrobeManager,
             .Transforms = New Dictionary(Of String, PoseTransformData)(StringComparer.OrdinalIgnoreCase)
         }
         For Each nt In nts
-            If nt Is Nothing OrElse Not nt.HasScale OrElse String.IsNullOrEmpty(nt.NodeName) Then Continue For
-            ' RaceMenu body-scale is a uniform node scale. 1.0 = unchanged; skip no-ops.
-            If Math.Abs(nt.Scale - 1.0F) < 0.00001F Then Continue For
-            pose.Transforms(nt.NodeName) = New PoseTransformData With {.ScaleX = nt.Scale, .ScaleY = nt.Scale, .ScaleZ = nt.Scale}
+            If nt Is Nothing OrElse String.IsNullOrEmpty(nt.NodeName) Then Continue For
+            ' Skip a node whose whole TRS is identity (1.0 scale / 0 offset / 0 rotation) — a no-op layer.
+            If nt.IsIdentity Then Continue For
+            Dim td As New PoseTransformData()
+            If nt.HasScale Then td.Scale = nt.Scale                       ' uniform scale (key 30)
+            If nt.HasPosition Then td.X = nt.PosX : td.Y = nt.PosY : td.Z = nt.PosZ   ' translation (key 31)
+            If nt.HasRotation Then td.Yaw = nt.RotX : td.Pitch = nt.RotY : td.Roll = nt.RotZ  ' rotation axis-angle (key 32)
+            pose.Transforms(nt.NodeName) = td
         Next
         If pose.Transforms.Count = 0 Then Return Nothing
         Return pose

@@ -1219,6 +1219,11 @@ persist:
             Console.Error.WriteLine($"[skip] {edid}: RACE 0x{npcData.RaceFormID:X8} no resuelta.") : Return False
         End If
         Dim race = RecordParsers.ParseRACE(raceRec, pm)
+        ' Merge any LooksMenu custom face-tint templates (Data\F4SE\Plugins\F4EE\Tints\) into the RACE
+        ' before compositing, exactly as the GUI does via FaceTintLayerBuilder — otherwise an NPC using a
+        ' mod-added tint index resolves to no option and the layer is silently dropped in the headless
+        ' bake. Pass the CLI's own dataPath so --data overrides are honoured. No-op when there are none.
+        FO4_NPC_Manager.LmCustomTintLoader.EnsureMerged(race, pm, dataPath)
 
         Dim dPath As String = "", nPath As String = "", sPath As String = ""
         ResolveFaceSkin(npcData, race, pm, dPath, nPath, sPath)

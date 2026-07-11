@@ -38,10 +38,14 @@ Public Module SlotConflictResolver
     ''' <summary>Resolve slot conflicts over <paramref name="items"/>. <paramref name="slotMaskOf"/>
     ''' returns each item's BOD2/BODT slot mask; <paramref name="orderOf"/> returns its equip order
     ''' (ascending = earlier; descending order is "last equipped wins"). Winners are returned sorted
-    ''' ascending by Order; the caller can re-sort if needed.</summary>
+    ''' ascending by Order; the caller can re-sort if needed.
+    ''' <paramref name="conflictMaskOf"/> (SSE only) = el BOD2 CRUDO del ARMO, que es la máscara con la
+    ''' que el engine decide el conflicto de equip (0x1403BD39E + SlotsOverlap 0x1401CCA90). Nothing ⇒ se usa
+    ''' <paramref name="slotMaskOf"/> (el editor de outfits ya trabaja con ARMOs). Ignorado en FO4.</summary>
     Public Function ResolveSlotWinners(Of T)(items As IEnumerable(Of T),
                                              slotMaskOf As Func(Of T, UInteger),
-                                             orderOf As Func(Of T, Integer)) As SlotResolution(Of T)
+                                             orderOf As Func(Of T, Integer),
+                                             Optional conflictMaskOf As Func(Of T, UInteger) = Nothing) As SlotResolution(Of T)
         Dim res As New SlotResolution(Of T)
         Dim list = items.ToList()
 
@@ -66,6 +70,40 @@ Public Module SlotConflictResolver
         ' Slotless (mask=0) never conflict — accept verbatim, no slot contribution.
         res.Winners.AddRange(list.Where(Function(it) maskOf(it) = 0UI))
         Dim slotted = list.Where(Function(it) maskOf(it) <> 0UI).ToList()
+
+        ' ⭐ SKYRIM — el conflicto es de EQUIP, y va sobre el BOD2 del ARMO (no el del ARMA, no la unión).
+        ' `0x1403BD39E` recorre las piezas del outfit; por cada una la castea con `AsBipedObjectForm`
+        ' (`0x1401CCAF0`: ARMO → +0x1B0, máscara +0x1B8) y la compara contra CADA ítem ya equipado con
+        ' `SlotsOverlap 0x1401CCA90` (`test [rcx+8], [rdx+8]` = any-bit). Si solapa en cualquier bit
+        ' (`0x1403BD5A2` → `r12b=1`), NO llama al equip (`0x1402E1B00`): gana el que ya está puesto, y la pieza
+        ' nueva se cae ENTERA. Ese mismo BOD2 del ARMO es el que alimenta `GetWornMask 0x140225CB0`.
+        ' Los bits que sólo declara el ARMA (34 Forearms, 38 Calves, 41 LongHair, 43 Ears…) NUNCA entran acá:
+        ' gobiernan particiones, no el equip. Datos reales: túnica `ClothesFarmClothes03` ARMO=[32] y botas
+        ' ARMO=[37] → no solapan → ambas se equipan (usar la unión de ARMAs, 0x114 vs 0x180, borraba las botas);
+        ' dos cascos ARMO=[31,42] → solapan en 31 → el segundo no se equipa.
+        If isSse Then
+            Dim occupiedArmo As UInteger = 0UI
+            For Each it In slotted.OrderBy(orderOf)
+                Dim armoMask As UInteger = If(conflictMaskOf Is Nothing, maskOf(it), conflictMaskOf(it))
+                If armoMask = 0UI Then armoMask = maskOf(it)   ' sin ARMO a mano (editor) ⇒ la máscara que haya
+                If (armoMask And occupiedArmo) <> 0UI Then
+                    res.Losers.Add(it)
+                    Continue For
+                End If
+                occupiedArmo = occupiedArmo Or armoMask
+                res.Winners.Add(it)
+            Next
+            ' OccupiedSlots sigue siendo la unión de las máscaras completas de los ganadores: aguas abajo la
+            ' usan la oclusión de piel y la de head-parts, que razonan sobre particiones (bits del ARMA), no
+            ' sobre el equip. El worn mask del engine (sólo ARMO) se pasa aparte donde hace falta.
+            Dim occupiedSse As UInteger = 0UI
+            For Each w In res.Winners : occupiedSse = occupiedSse Or maskOf(w) : Next
+            res.OccupiedSlots = occupiedSse
+            Dim sseWinners = res.Winners.OrderBy(orderOf).ToList()
+            res.Winners.Clear()
+            res.Winners.AddRange(sseWinners)
+            Return res
+        End If
 
         Dim occupied As UInteger = 0UI
         Dim reservedA As UInteger = 0UI
@@ -124,23 +162,10 @@ Public Module SlotConflictResolver
             '    inventory rule. This is what makes cuirass(32,34,38)+boots(37,38)+gloves(33,34) coexist —
             '    they share calves(38)/forearms(34) but the engine drops none. (An earlier any-bit rule
             '    eliminated the cuirass; claim-free-bits was a wrong guess — see reference_sse_engine_occlusion_re.)
-            Dim isConflict As Boolean
-            If isSse Then
-                ' Skyrim resolves by SLOT (user directive 2026-07-09; the old "keep-all" drew BOTH of
-                ' two same-slot hats). Pass 1b runs descending Order (last-equipped first), so each biped
-                ' slot is owned by the last-equipped item that claims it. PER-SLOT, not FO4's whole-item
-                ' any-bit: an item is dropped ONLY when EVERY slot it occupies was already claimed by a
-                ' later item; if it keeps ≥1 free slot it still renders. Validated vs real Skyrim.esm BOD2:
-                '   • two hats (both 0x2802 = slots 31/41/43) → the earlier keeps no slot → DROPPED (fix).
-                '   • cuirass(0x114=32,34,38) + boots(0x180=37,38) share only calves-38 → each keeps its
-                '     primary slot → BOTH survive (whole-item any-bit would have wrongly dropped the boots).
-                ' This supersedes the byte-RE "keep-all" note in reference_sse_engine_occlusion_re.
-                isConflict = ((m And (Not occupied)) = 0UI)
-            Else
-                Dim conflictMask = If(stripPipboy, m And Not BipedSlots.SLOT_PIPBOY, m)
-                Dim occupiedForCheck = If(stripPipboy, occupied And Not BipedSlots.SLOT_PIPBOY, occupied)
-                isConflict = ((conflictMask And occupiedForCheck) <> 0UI)
-            End If
+            ' Sólo FO4 llega acá: la rama Skyrim (propiedad de slot por priority) retornó arriba.
+            Dim conflictMask = If(stripPipboy, m And Not BipedSlots.SLOT_PIPBOY, m)
+            Dim occupiedForCheck = If(stripPipboy, occupied And Not BipedSlots.SLOT_PIPBOY, occupied)
+            Dim isConflict As Boolean = ((conflictMask And occupiedForCheck) <> 0UI)
             If isConflict Then res.Losers.Add(it) : Continue For
             occupied = occupied Or m   ' still accumulate the covered-slot union (drives skin occlusion)
             acceptedReverse.Add(it)

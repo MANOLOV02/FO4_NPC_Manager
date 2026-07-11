@@ -480,6 +480,18 @@ Public Module FaceGenBuildPipeline
         Dim baseTri As TriHeadFile = raceHead
         NpcMorphResolver.MergeChargenIntoRaceTriHead(baseTri, chargenHead)
         NpcMorphResolver.MergeChargenIntoRaceTriHead(baseTri, meshHead)
+
+        ' RaceMenu extended morphs — the SAME merge the live render does (NpcMorphResolver.LoadTriForShape).
+        ' A .jslot custom morph names a morph that lives in an extended .tri mapped from the chargen tri by
+        ' morphs.ini. Without merging them the bake would silently drop every extended slider while the render
+        ' showed it, breaking render == bake.
+        Dim catalog = NpcMorphResolver.SliderCatalog
+        If catalog IsNot Nothing AndAlso Not String.IsNullOrEmpty(chargenTriPath) Then
+            For Each extTriPath In catalog.GetExtendedMorphTris(chargenTriPath)
+                Dim extHead = ParseHeadTri(MeshPathHelpers.NormalizeMeshKey(extTriPath))
+                If extHead IsNot Nothing Then NpcMorphResolver.MergeChargenIntoRaceTriHead(baseTri, extHead)
+            Next
+        End If
         merged = baseTri
         state.TriHeadCache(comboKey) = merged
         Return merged

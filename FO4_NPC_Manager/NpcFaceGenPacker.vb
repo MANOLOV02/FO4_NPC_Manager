@@ -5,8 +5,9 @@ Imports BSA_BA2_Library_DLL.BethesdaArchive.Core
 Imports FO4_Base_Library
 
 ''' <summary>
-''' Batches the FaceGen loose files (1 NIF + 3 DDS per NPC) produced by
-''' <c>FaceGenBuilder.BuildCharGen</c> into the BA2 archive set anchored to the Save ESP plugin.
+''' Batches the FaceGen loose files produced by <c>FaceGenBuilder.BuildCharGen</c> (FO4: 1 NIF + 3
+''' FaceCustomization DDS per NPC; SSE: 1 NIF + 1 FaceTint DDS — see <see cref="FaceGenFileSpecs"/>)
+''' into the archive set anchored to the Save ESP plugin.
 '''
 ''' Pattern mirrors Wardrobe_Manager.WM_PackUnpack.Pack (the proven shape):
 '''   1) Walk the bundles → flat list of <see cref="LooseFileRef"/> (sourcePath + canonical entryPath
@@ -35,8 +36,8 @@ Imports FO4_Base_Library
 ''' </summary>
 Public Module NpcFaceGenPacker
 
-    ''' <summary>One baked NPC's identity. The packer derives the 4 loose paths (NIF + 3 DDS)
-    ''' from these three fields via the same naming FaceGenBuilder used to write them.
+    ''' <summary>One baked NPC's identity. The packer derives the loose paths from these three
+    ''' fields via <see cref="FaceGenFileSpecs"/>, the same naming FaceGenBuilder used to write them.
     ''' Public (not Friend) so it can be exposed through the Public SaveContext delegates
     ''' (NpcOverrideSaver.SaveContext.RunChargenBake / RunChargenPackBatch).</summary>
     Public Class BakedNpcBundle
@@ -51,24 +52,105 @@ Public Module NpcFaceGenPacker
         ''' names. The _2 sources are deleted after a successful pack just like canonical ones
         ''' (2026-05-26 change — BA2 is the post-pack source of truth).</summary>
         Public Property DebugSandbox As Boolean
+        ''' <summary>SSE only: True when this NPC's facetint was folded into its head diffuse and its NIF slot 6
+        ''' points at the plugin's SHARED neutral gray (Textures\...\FaceTint\&lt;plugin&gt;\facetintneutral.dds)
+        ''' instead of a per-NPC &lt;id&gt;.dds. The facetint spec then resolves to that shared file, so N folded
+        ''' NPCs of the plugin all reference ONE entry — <see cref="Ba2_Bsa_Library.ArchivePackager"/> dedups it to
+        ''' a single BA2 record. Set from <see cref="FaceGenBuilder.BuildResult.UsedSharedNeutralFacetint"/>.</summary>
+        Public Property UsesSharedNeutralFacetint As Boolean
     End Class
 
-    ''' <summary>The 4 CANONICAL archive entry paths (as stored inside the BA2 — no _2 debug suffix) for one
-    ''' NPC's FaceGen bake: the FaceGeom NIF (→ Main.ba2) + the 3 FaceCustomization DDS _d/_msn/_s (→ Textures.ba2).
-    ''' Same layout <see cref="PackBatch"/> uses for its bundleSpec. Used by the "mark to delete" flow to build the
-    ''' ExcludePaths passed to <see cref="PackBatch"/>. Empty when the origin plugin can't be resolved.</summary>
-    Public Function CanonicalFaceGenEntryPathsForNpc(npcFormID As UInteger, pluginManager As PluginManager) As List(Of String)
+    ''' <summary>One file of an NPC's FaceGen bake, as Data-relative paths. <c>Source</c> carries the
+    ''' _2 debug suffix when the bake ran in DebugMode; <c>Entry</c> is always the canonical name the
+    ''' engine (and the archive) expects.</summary>
+    Friend Structure FaceGenFileSpec
+        Public Source As String
+        Public Entry As String
+        Public IsTexture As Boolean
+        ''' <summary>True = the bake emits this file only conditionally (e.g. the SSE per-NPC diffuse, written
+        ''' only for NPCs with RaceMenu face overlays). When the source is absent on disk it is SILENTLY skipped
+        ''' — not counted as a missing source and not counted toward the bundle's expected file count — so a
+        ''' vanilla NPC (no diffuse) still commits fully. Required files (False) that are missing = a bake bug.</summary>
+        Public IsOptional As Boolean
+    End Structure
+
+    ''' <summary>Data-relative file specs for one NPC's FaceGen bake, GAME-AWARE — the single source of
+    ''' truth for what <c>FaceGenBuilder</c> wrote and what the packer / delete flow must look for:
+    '''   FO4: FaceGeom NIF + 3 FaceCustomization DDS (_d/_msn/_s), all with a _2 debug variant.
+    '''   SSE: FaceGeom NIF + 1 FaceGenData\FaceTint DDS, also with a _2 debug variant. Matches the vanilla
+    '''        CK layout in the BSA (textures\actors\character\facegendata\facetint\&lt;plugin&gt;\&lt;id&gt;.dds,
+    '''        512² DXT5, _d only) and what <c>FaceGenBuilder.WriteSseFacetintDds</c> writes.
+    ''' The _2b GPU-sandbox dumps are deliberately absent: they never enter an archive and are not deleted
+    ''' with the bake — they exist for CPU-vs-GPU inspection.</summary>
+    Friend Function FaceGenFileSpecs(game As Config_App.Game_Enum, originPlugin As String,
+                                     formIdLow As UInteger, debugSandbox As Boolean,
+                                     Optional usesSharedNeutral As Boolean = False) As List(Of FaceGenFileSpec)
+        Dim specs As New List(Of FaceGenFileSpec)
+        If String.IsNullOrEmpty(originPlugin) Then Return specs
+        Dim hex = formIdLow.ToString("X8")
+
+        Dim geomDir = "Meshes\Actors\Character\FaceGenData\FaceGeom\" & originPlugin & "\"
+        specs.Add(New FaceGenFileSpec With {
+            .Source = geomDir & hex & If(debugSandbox, "_2.nif", ".nif"),
+            .Entry = geomDir & hex & ".nif",
+            .IsTexture = False})
+
+        If game = Config_App.Game_Enum.Skyrim Then
+            Dim tintDir = "Textures\Actors\Character\FaceGenData\FaceTint\" & originPlugin & "\"
+            If usesSharedNeutral Then
+                ' Folded NPC: slot 6 points at the plugin's SHARED neutral gray, NOT a per-NPC <id>.dds. Every
+                ' folded NPC of this plugin emits the SAME Entry → ArchivePackager dedups to one BA2 record.
+                ' Source carries the _2 debug suffix like any other bake output (FaceGenBuilder writes
+                ' facetintneutral_2.dds in DebugMode, facetintneutral.dds in release).
+                specs.Add(New FaceGenFileSpec With {
+                    .Source = tintDir & "facetintneutral" & If(debugSandbox, "_2.dds", ".dds"),
+                    .Entry = tintDir & "facetintneutral.dds",
+                    .IsTexture = True})
+            Else
+                specs.Add(New FaceGenFileSpec With {
+                    .Source = tintDir & hex & If(debugSandbox, "_2.dds", ".dds"),
+                    .Entry = tintDir & hex & ".dds",
+                    .IsTexture = True})
+            End If
+            ' OPTIONAL per-NPC head diffuse — emitted only when the NPC has RaceMenu face overlays/skee masks baked
+            ' in (FaceGenBuilder.WriteSseFaceDiffuseWithOverlays). Absent for vanilla NPCs → silently skipped.
+            Dim diffDir = "Textures\Actors\Character\FaceGenData\FaceDiffuse\" & originPlugin & "\"
+            specs.Add(New FaceGenFileSpec With {
+                .Source = diffDir & hex & If(debugSandbox, "_2.dds", ".dds"),
+                .Entry = diffDir & hex & ".dds",
+                .IsTexture = True,
+                .IsOptional = True})
+            ' OPTIONAL per-NPC head normal (_msn) — emitted only when a face overlay carries a normal map.
+            Dim normDir = "Textures\Actors\Character\FaceGenData\FaceNormal\" & originPlugin & "\"
+            specs.Add(New FaceGenFileSpec With {
+                .Source = normDir & hex & If(debugSandbox, "_2.dds", ".dds"),
+                .Entry = normDir & hex & ".dds",
+                .IsTexture = True,
+                .IsOptional = True})
+        Else
+            Dim texDir = "Textures\Actors\Character\FaceCustomization\" & originPlugin & "\"
+            For Each suffix In {"_d", "_msn", "_s"}
+                specs.Add(New FaceGenFileSpec With {
+                    .Source = texDir & hex & suffix & If(debugSandbox, "_2.dds", ".dds"),
+                    .Entry = texDir & hex & suffix & ".dds",
+                    .IsTexture = True})
+            Next
+        End If
+        Return specs
+    End Function
+
+    ''' <summary>The CANONICAL archive entry paths (as stored inside the archive — no _2 debug suffix) for one
+    ''' NPC's FaceGen bake: the FaceGeom NIF (→ Main archive) + the texture(s) (→ Textures archive). Count and
+    ''' texture layout are game-aware — see <see cref="FaceGenFileSpecs"/>, the same source <see cref="PackBatch"/>
+    ''' uses for its bundle spec. Used by the "mark to delete" flow to build the ExcludePaths passed to
+    ''' <see cref="PackBatch"/>. Empty when the origin plugin can't be resolved.</summary>
+    Public Function CanonicalFaceGenEntryPathsForNpc(npcFormID As UInteger, pluginManager As PluginManager,
+                                                     game As Config_App.Game_Enum) As List(Of String)
         Dim origin = pluginManager.GetOriginatingPluginName(npcFormID)
         If String.IsNullOrEmpty(origin) Then Return New List(Of String)()
-        Dim hex = PluginManager.ToFaceGenLocalFormID(npcFormID).ToString("X8")
-        Dim geomDir = "Meshes\Actors\Character\FaceGenData\FaceGeom\" & origin & "\"
-        Dim texDir = "Textures\Actors\Character\FaceCustomization\" & origin & "\"
-        Return New List(Of String) From {
-            geomDir & hex & ".nif",
-            texDir & hex & "_d.dds",
-            texDir & hex & "_msn.dds",
-            texDir & hex & "_s.dds"
-        }
+        Dim local = PluginManager.ToFaceGenLocalFormID(npcFormID)
+        Return FaceGenFileSpecs(game, origin, local, debugSandbox:=False).
+               Select(Function(s) s.Entry).ToList()
     End Function
 
     ''' <summary>Aggregate result of <see cref="PackBatch"/> across one or more flushes.</summary>
@@ -85,11 +167,11 @@ Public Module NpcFaceGenPacker
         ''' <summary>How many flushes were committed to disk (one ArchivePackager.Pack call each).</summary>
         Public Property FlushesCommitted As Integer
         ''' <summary>How many input bundles produced at least one VirtualEntry that landed in a flush.
-        ''' A bundle is "committed" iff all 4 of its loose existed on disk AND its 4 entries were
-        ''' part of a successful flush.</summary>
+        ''' A bundle is "committed" iff every loose file its game's layout calls for existed on disk
+        ''' AND all of its entries were part of a successful flush.</summary>
         Public Property BundlesCommitted As Integer
         ''' <summary>Loose source paths that the packer expected (from bundles) but did not find
-        ''' on disk. Each missing source = one of the 4 bake outputs (NIF + 3 DDS) for some NPC
+        ''' on disk. Each missing source = one of the bake outputs (see FaceGenFileSpecs) for some NPC
         ''' that <c>FaceGenBuilder.BuildCharGen</c> reported as Success but did not actually produce.
         ''' Surfacing the count in the summary helps the user see how many bundles were dropped
         ''' before flush.</summary>
@@ -158,8 +240,9 @@ Public Module NpcFaceGenPacker
     ''' for parity with WM_PackUnpack and uses BSA / LZ4 frame.</param>
     ''' <param name="ba2Version">Header version for the FO4 BA2 writer. Caller must NOT pass 0
     ''' (the loose-only sentinel); that case is decided at the orchestrator level (no PackBatch call).</param>
-    ''' <param name="bundles">One entry per baked NPC. The packer derives the 4 loose paths from
-    ''' (OriginPlugin, FormIdLow, DebugSandbox) using the same naming FaceGenBuilder applied at bake.</param>
+    ''' <param name="bundles">One entry per baked NPC. The packer derives the loose paths from
+    ''' (game, OriginPlugin, FormIdLow, DebugSandbox) via <see cref="FaceGenFileSpecs"/> — the same
+    ''' naming FaceGenBuilder applied at bake.</param>
     ''' <param name="progress">Optional progress callback. Invoked synchronously on the worker
     ''' thread; the caller's IProgress(Of T) wrapper marshals back to the UI thread.</param>
     ''' <param name="ct">Cancellation token. Checked at safe checkpoints (between micro-batches
@@ -204,48 +287,36 @@ Public Module NpcFaceGenPacker
         If bundles Is Nothing Then bundles = New List(Of BakedNpcBundle)()
 
         ' --- Step 1: walk bundles → flat LooseFileRef list -----------------------------------
-        ' One bundle = 4 refs (NIF first, then 3 DDS in stable order). Refs whose source is
-        ' missing on disk are dropped with a warning into the result; missing sources are a
-        ' bake-phase bug (FaceGenBuilder should always produce the 4 files), surfaced here so
-        ' the user sees it but the rest of the batch still ships.
+        ' One bundle = the game's FaceGenFileSpecs refs (NIF first, then the DDS in stable order).
+        ' Refs whose source is missing on disk are dropped with a warning into the result; missing
+        ' sources are a bake-phase bug (FaceGenBuilder should always produce every file), surfaced
+        ' here so the user sees it but the rest of the batch still ships.
         Dim allRefs As New List(Of LooseFileRef)
         Dim refToBundleIdx As New List(Of Integer)
-        Dim bundleRefCounts(bundles.Count - 1) As Integer  ' how many refs per bundle made it in
+        Dim bundleRefCounts(bundles.Count - 1) As Integer   ' how many refs per bundle made it in
+        Dim bundleExpected(bundles.Count - 1) As Integer    ' how many the game's layout calls for
         Dim missingSources As New List(Of String)
 
         For bi = 0 To bundles.Count - 1
             Dim b = bundles(bi)
-            Dim formIdHex = b.FormIdLow.ToString("X8")
-            Dim faceGeomDir = Path.Combine(dataDir,
-                "Meshes", "Actors", "Character", "FaceGenData", "FaceGeom", b.OriginPlugin)
-            Dim ddsBase = Path.Combine(dataDir,
-                "Textures", "Actors", "Character", "FaceCustomization", b.OriginPlugin)
-
-            Dim nifSuffix = If(b.DebugSandbox, "_2.nif", ".nif")
-            Dim dSuffix = If(b.DebugSandbox, "_d_2.dds", "_d.dds")
-            Dim nSuffix = If(b.DebugSandbox, "_msn_2.dds", "_msn.dds")
-            Dim sSuffix = If(b.DebugSandbox, "_s_2.dds", "_s.dds")
-
-            Dim bundleSpec As (Source As String, Entry As String, IsTex As Boolean)() = {
-                (Path.Combine(faceGeomDir, formIdHex & nifSuffix),
-                 Path.Combine(faceGeomDir, formIdHex & ".nif"), False),
-                (Path.Combine(ddsBase, formIdHex & dSuffix),
-                 Path.Combine(ddsBase, formIdHex & "_d.dds"), True),
-                (Path.Combine(ddsBase, formIdHex & nSuffix),
-                 Path.Combine(ddsBase, formIdHex & "_msn.dds"), True),
-                (Path.Combine(ddsBase, formIdHex & sSuffix),
-                 Path.Combine(ddsBase, formIdHex & "_s.dds"), True)
-            }
+            Dim bundleSpec = FaceGenFileSpecs(game, b.OriginPlugin, b.FormIdLow, b.DebugSandbox, b.UsesSharedNeutralFacetint)
 
             For Each spec In bundleSpec
-                If Not File.Exists(spec.Source) Then
-                    missingSources.Add(spec.Source)
+                Dim sourcePath = Path.Combine(dataDir, spec.Source)
+                If Not File.Exists(sourcePath) Then
+                    ' Optional (per-NPC diffuse): absent = the NPC has no face overlays → silently skip.
+                    ' Required: absent = a bake bug → surface it, and it counts against the bundle (never commits).
+                    If Not spec.IsOptional Then
+                        missingSources.Add(sourcePath)
+                        bundleExpected(bi) += 1
+                    End If
                     Continue For
                 End If
+                bundleExpected(bi) += 1
                 allRefs.Add(New LooseFileRef With {
-                    .SourcePath = spec.Source,
-                    .EntryPath = spec.Entry,
-                    .IsTexture = spec.IsTex,
+                    .SourcePath = sourcePath,
+                    .EntryPath = Path.Combine(dataDir, spec.Entry),
+                    .IsTexture = spec.IsTexture,
                     .DebugSandbox = b.DebugSandbox
                 })
                 refToBundleIdx.Add(bi)
@@ -467,8 +538,10 @@ Public Module NpcFaceGenPacker
             End If
         Next
         For bi = 0 To bundles.Count - 1
-            ' A bundle is fully committed when all 4 of its refs were authored AND all 4 committed.
-            If bundleRefCounts(bi) = 4 AndAlso bundleHitCounts(bi) = 4 Then
+            ' A bundle is fully committed when every file the game's layout calls for (4 on FO4,
+            ' 2 on SSE — see FaceGenFileSpecs) was authored AND committed.
+            If bundleExpected(bi) > 0 AndAlso bundleRefCounts(bi) = bundleExpected(bi) AndAlso
+               bundleHitCounts(bi) = bundleExpected(bi) Then
                 result.BundlesCommitted += 1
             End If
         Next

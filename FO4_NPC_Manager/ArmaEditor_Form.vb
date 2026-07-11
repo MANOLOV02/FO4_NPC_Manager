@@ -143,6 +143,7 @@ Public Class ArmaEditor_Form
 
         BuildSlotCheckBoxes()
         SeedSculptBoneCombo()
+        ConfigureForGame()
 
         _previewDebounce = New Timer() With {.Interval = 400}
 
@@ -227,6 +228,32 @@ Public Class ArmaEditor_Form
 
     Private Sub BuildSlotCheckBoxes()
         _slotChecks = BipedSlotCheckboxes.Build(FlowSlots, AddressOf OnFieldEdited)
+    End Sub
+
+    ''' <summary>Game-gate the ARMA editor. Under SKYRIM every FO4-only surface is HIDDEN, never merely disabled:
+    ''' the Skyrim serializer does not read these fields, and a visible-but-inert control reads as a setting that
+    ''' applied and silently did nothing. Hidden/removed:
+    '''   • Sculpt tab (BSMP/BSMB/BSMS bone-scale) — FO4-only.
+    '''   • Flags tab (No-Underarmor-Scaling, Has-Sculpt-Data) — FO4-only ARMA header flags. Skyrim's ARMA has no
+    '''     named header flags, so its source flags are preserved verbatim.
+    '''   • The whole MO2F/MO3F model-flags rows — those subrecords do not exist in Skyrim's ARMA
+    '''     (wbDefinitionsTES5.pas:4409-4446).
+    '''   • The MO2S/MO3S/MO4S/MO5S material-swap pickers — in Skyrim those subrecords are Alternate-Textures
+    '''     arrays, not an MSWP FormID (Skyrim has no MSWP record at all). They round-trip verbatim and are
+    '''     never authored here.
+    ''' FO4 is unchanged.</summary>
+    Private Sub ConfigureForGame()
+        If Config_App.Current.Game <> Config_App.Game_Enum.Skyrim Then Return
+        If Tabs.TabPages.Contains(TabSculpt) Then Tabs.TabPages.Remove(TabSculpt)
+        If Tabs.TabPages.Contains(TabFlags) Then Tabs.TabPages.Remove(TabFlags)
+        For Each c As Control In New Control() {LabelMo2f, CheckMo2fFaceBones, CheckMo2f1stPerson,
+                                                LabelMo3f, CheckMo3fFaceBones, CheckMo3f1stPerson,
+                                                LabelMo2s, TextBoxMo2s, ButtonPickMo2s, ButtonEditMo2s,
+                                                LabelMo3s, TextBoxMo3s, ButtonPickMo3s, ButtonEditMo3s,
+                                                LabelMo4s, TextBoxMo4s, ButtonPickMo4s,
+                                                LabelMo5s, TextBoxMo5s, ButtonPickMo5s}
+            If c IsNot Nothing Then c.Visible = False
+        Next
     End Sub
 
     ''' <summary>Seed the "Add bone…" combo with the common vanilla sculpt bone names (DropDown style → the

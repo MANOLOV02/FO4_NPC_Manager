@@ -134,13 +134,13 @@ Partial Class EditBody_Form
         ' PreviewSplit.Panel1
         ' 
         PreviewSplit.Panel1.Controls.Add(RootLayout)
-        PreviewSplit.Panel1MinSize = 650
+        PreviewSplit.Panel1MinSize = 860
         ' 
         ' PreviewSplit.Panel2
         ' 
         PreviewSplit.Panel2.Controls.Add(PreviewSidebar)
         PreviewSplit.Size = New Size(1084, 621)
-        PreviewSplit.SplitterDistance = 650
+        PreviewSplit.SplitterDistance = 860
         PreviewSplit.TabIndex = 0
         ' 
         ' RootLayout
@@ -1125,9 +1125,9 @@ Partial Class EditBody_Form
         ' 
         AcceptButton = ButtonOk
         CancelButton = ButtonCancel
-        ClientSize = New Size(1240, 760)
+        ClientSize = New Size(1560, 780)
         Controls.Add(PreviewSplit)
-        MinimumSize = New Size(1120, 800)
+        MinimumSize = New Size(1340, 820)
         Name = "EditBody_Form"
         StartPosition = FormStartPosition.CenterParent
         Text = "Edit Body"

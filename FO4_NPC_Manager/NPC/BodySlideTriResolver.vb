@@ -1,4 +1,4 @@
-Imports FO4_Base_Library
+﻿Imports FO4_Base_Library
 Imports NiflySharp.Blocks
 
 ' ==========================================================================
@@ -46,7 +46,29 @@ Public Class BodySlideTriResolver
     ''' meshDictKey is unused (kept in the signature for caller-side stability while we
     ''' migrate; LM doesn't consult the mesh path at all).</summary>
     Public Shared Function ResolvePirtPath(shape As IRenderableShape, meshDictKey As String) As String
-        Dim bodyTri = MeshPathHelpers.ReadBodyTriPath(shape, includeShapeLevel:=False)
+        ' GAME-AWARE BODYTRI resolution — BodySlide/OutfitStudio marks the .tri path in a DIFFERENT place
+        ' per game (BodySlideApp.cpp AddTriData): FO4/FO4VR/FO76 → root NiNode; Skyrim/SSE → a NiShape.
+        ' So we mirror each engine's reader:
+        '   • FO4  (F4EE BodyMorphProcessor::Process, BodyMorphInterface.cpp:1356): root->GetExtraData → root only.
+        '   • SSE  (skee64 MorphCache::ApplyMorphs, BodyMorphInterface.cpp:690): VisitObjects → whole subtree.
+        ' Reading root-only under SSE misses outfit .tri files whose BODYTRI sits on the shape → no morphs
+        ' (the observed "BodySlide works on the body but not the outfit" bug).
+        Dim isSse = (Config_App.Current IsNot Nothing AndAlso Config_App.Current.Game = Config_App.Game_Enum.Skyrim)
+        Dim bodyTri As String
+        Dim foundOwner As String = ""
+        If isSse Then
+            bodyTri = MeshPathHelpers.ScanBodyTriAnywhere(shape, foundOwner)
+        Else
+            bodyTri = MeshPathHelpers.ReadBodyTriPath(shape, includeShapeLevel:=False)
+        End If
+
+        If Logger.Enabled Then
+            Dim shName = If(shape Is Nothing, "<null>", If(shape.ShapeName, "?"))
+            Dim rawTri = If(bodyTri, "")
+            Dim ownerS = foundOwner
+            Logger.LogLazy(Function() $"[BODYSLIDE-TRI] shape='{shName}' game={If(isSse, "SSE", "FO4")} meshKey='{If(meshDictKey, "")}' bodyTriRaw='{rawTri}' foundAt='{ownerS}'")
+        End If
+
         If String.IsNullOrEmpty(bodyTri) Then Return Nothing
         Return MeshPathHelpers.NormalizeMeshKey(bodyTri)
     End Function
@@ -81,9 +103,11 @@ Public Class BodySlideTriResolver
 
         Try
             Dim parsed = TriFileParser.ParseTriFromBytes(bytes)
-            SyncLock _pirtCache
-                _pirtCache(normalizedPath) = parsed
-            End SyncLock
+            If Not IsNothing(parsed) Then
+                SyncLock _pirtCache
+                    _pirtCache(normalizedPath) = parsed
+                End SyncLock
+            End If
             Return parsed
         Catch
             Return Nothing

@@ -93,4 +93,70 @@ Public Module MeshPathHelpers
         End If
         Return ""
     End Function
+
+    ''' <summary>Scan the ENTIRE NIF block list for the first <c>NiStringExtraData</c> named "BODYTRI" and
+    ''' return its stored path ("" if none). This is the SSE (RaceMenu / skee64) resolution: skee64's
+    ''' <c>MorphCache::ApplyMorphs</c> (SKSE64Plugins skee64/BodyMorphInterface.cpp:690) does
+    ''' <c>VisitObjects(rootNode, …)</c> — it walks the WHOLE subtree and takes the FIRST object carrying a
+    ''' BODYTRI extra-data, NOT just the root. This is required because BodySlide/OutfitStudio attaches
+    ''' BODYTRI to a NiShape (not the root) for Skyrim/SSE builds, while it uses the root only for
+    ''' FO4/FO4VR/FO76 (BodySlideApp.cpp: AddTriData toRoot=true for FO4, per-shape for SSE). A BodySlide
+    ''' NIF carries exactly ONE BODYTRI, so "first anywhere" == "the one BODYTRI" — traversal order is
+    ''' immaterial. FO4 (F4EE BodyMorphProcessor::Process, root->GetExtraData) stays root-only via
+    ''' <see cref="ReadBodyTriPath"/>; this method is the SSE-faithful counterpart.
+    '''
+    ''' <paramref name="foundOwner"/> receives a short description of where the BODYTRI was found
+    ''' (block index + owning shape name if it sits on a shape, "&lt;root&gt;" if on the root node) for
+    ''' diagnostics; "" when none was found.</summary>
+    Public Function ScanBodyTriAnywhere(shape As IRenderableShape, ByRef foundOwner As String) As String
+        foundOwner = ""
+        If shape Is Nothing OrElse shape.NifContent Is Nothing OrElse shape.NifContent.Blocks Is Nothing Then Return ""
+        Dim blocks = shape.NifContent.Blocks
+
+        ' Find the first BODYTRI string-extra anywhere, and (for the diagnostic) which AVObject owns it.
+        Dim edIndex As Integer = -1
+        Dim bodyTri As String = ""
+        For i = 0 To blocks.Count - 1
+            Dim ed = TryCast(blocks(i), NiflySharp.Blocks.NiStringExtraData)
+            If ed IsNot Nothing AndAlso ed.Name IsNot Nothing AndAlso ed.Name.String = "BODYTRI" Then
+                edIndex = i
+                bodyTri = If(ed.StringData?.String, "")
+                Exit For
+            End If
+        Next
+        If edIndex < 0 Then Return ""
+
+        ' Owner classification (diagnostics only): does this extra-data ref hang off the root node or off a
+        ' shape? Root → "<root>"; a shape → the shape's name. Uses GetShapes (INiShape exposes ExtraDataList
+        ' + Name) so we avoid fragile concrete NiflySharp type refs. Gated behind Logger.Enabled.
+        If Logger.Enabled Then
+            Dim owner As String = "<orphan/unref>"
+            ' Root NiNode first.
+            Dim rootNode As NiflySharp.Blocks.NiNode = Nothing
+            For Each blk In blocks
+                Dim nn = TryCast(blk, NiflySharp.Blocks.NiNode)
+                If nn IsNot Nothing Then rootNode = nn : Exit For
+            Next
+            If rootNode IsNot Nothing AndAlso rootNode.ExtraDataList IsNot Nothing Then
+                For Each edRef In rootNode.ExtraDataList.References
+                    If edRef.Index = edIndex Then owner = "<root>" : Exit For
+                Next
+            End If
+            ' Then shapes.
+            If owner = "<orphan/unref>" AndAlso shape.NifContent IsNot Nothing Then
+                Try
+                    For Each sh In shape.NifContent.GetShapes()
+                        If sh Is Nothing OrElse sh.ExtraDataList Is Nothing Then Continue For
+                        For Each edRef In sh.ExtraDataList.References
+                            If edRef.Index = edIndex Then owner = $"shape '{If(sh.Name?.String, "")}'" : Exit For
+                        Next
+                        If owner <> "<orphan/unref>" Then Exit For
+                    Next
+                Catch
+                End Try
+            End If
+            foundOwner = $"block#{edIndex} on {owner}"
+        End If
+        Return bodyTri
+    End Function
 End Module

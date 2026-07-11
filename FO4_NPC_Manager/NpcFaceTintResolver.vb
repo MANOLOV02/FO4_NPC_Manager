@@ -273,7 +273,7 @@ Friend NotInheritable Class NpcFaceTintResolver
             ' sse_facegen_skin.asm t4). So compose the per-NPC facetint and install it as InnerLayerTexture; the
             ' shared render (bFacetintAlbedo -> texGlowmap) then applies it. Game-gated; FO4 keeps the path below.
             If Config_App.Current.Game = Config_App.Game_Enum.Skyrim Then
-                If ApplySseFacetint(materialBase, npcData, race, model) Then composedAny = True
+                If ApplySseFacetint(materialBase, npcData, race, model, host) Then composedAny = True
                 Continue For
             End If
 
@@ -324,20 +324,32 @@ Friend NotInheritable Class NpcFaceTintResolver
             ' la cargó como SRV sRGB (IsSRGB=True), el sample YA es lineal ⇒ el seed encodea-only y NO la
             ' vuelve a srgbToLin (evita el doble-decode que introdujo el cambio de loader sRGB). El bake/CLI
             ' cargan el base crudo y pasan False (default).
-            Dim pipelineResult = FaceTintCompositor.ApplyFaceTintPipeline(
-                host.CompositorState, host.TintGpuCache,
-                diffuseEntry.Texture_ID, normalSrcId, specSrcId,
-                w, h, layerInputs, regionSwaps,
-                baseDiffuseIsLinearOnGpu:=diffuseEntry.IsSRGB)
+            ' COMPOSITE = ESPEJO DEL SKINNING (Setting_GPUSkinning): GPU-skinning → composite GL
+            ' (ApplyFaceTintPipeline); CPU-skinning → composite CPU (ComposeCpuPipeline, el MISMO que el bake, con
+            ' paridad probada) + upload. El modo GPU queda IDÉNTICO al comportamiento previo (sin regresión).
+            If Config_App.Current.Setting_GPUSkinning Then
+                Dim pipelineResult = FaceTintCompositor.ApplyFaceTintPipeline(
+                    host.CompositorState, host.TintGpuCache,
+                    diffuseEntry.Texture_ID, normalSrcId, specSrcId,
+                    w, h, layerInputs, regionSwaps,
+                    baseDiffuseIsLinearOnGpu:=diffuseEntry.IsSRGB)
 
-            ' Swap fresh IDs into the dict and delete the IDs they replaced. IsFresh=False
-            ' means the channel had no contribution and the input ID stayed in place — no
-            ' dict mutation, no delete.
-            ApplyPipelineResultToDict(model, diffusePath, diffuseEntry, pipelineResult.Diffuse)
-            If normalEntry IsNot Nothing Then ApplyPipelineResultToDict(model, normalPath, normalEntry, pipelineResult.Normal)
-            If specEntry IsNot Nothing Then ApplyPipelineResultToDict(model, specPath, specEntry, pipelineResult.Specular)
-            If pipelineResult.Diffuse.IsFresh OrElse pipelineResult.Normal.IsFresh OrElse pipelineResult.Specular.IsFresh Then
-                composedAny = True
+                ' Swap fresh IDs into the dict and delete the IDs they replaced. IsFresh=False
+                ' means the channel had no contribution and the input ID stayed in place — no
+                ' dict mutation, no delete.
+                ApplyPipelineResultToDict(model, diffusePath, diffuseEntry, pipelineResult.Diffuse)
+                If normalEntry IsNot Nothing Then ApplyPipelineResultToDict(model, normalPath, normalEntry, pipelineResult.Normal)
+                If specEntry IsNot Nothing Then ApplyPipelineResultToDict(model, specPath, specEntry, pipelineResult.Specular)
+                If pipelineResult.Diffuse.IsFresh OrElse pipelineResult.Normal.IsFresh OrElse pipelineResult.Specular.IsFresh Then
+                    composedAny = True
+                End If
+            Else
+                ' CPU-skinning: compose por CPU (mismos layers) desde los bytes source, y subir el resultado a GL.
+                ' El diffuse sale g22 (formato bake); el render espera LINEAR (el path GL hace G22→Linear final),
+                ' así que lo convertimos antes de subir. N/S ya son lineales. ⚠️ paridad GL==CPU en el render:
+                ' verificar IN-APP (no testeable headless); si hay gamma, es este convert.
+                If ApplyCpuComposeToDict(model, diffusePath, diffuseEntry, normalPath, normalEntry, specPath, specEntry,
+                                         layerInputs, regionSwaps) Then composedAny = True
             End If
 
             ' "Ya está": the slot-12 skin tone is now BAKED into this face mesh's diffuse (the
@@ -360,7 +372,8 @@ Friend NotInheritable Class NpcFaceTintResolver
     ''' FaceTint mesh's InnerLayerTexture (texture-set slot 6). The shared render multiplies it onto the albedo
     ''' (bFacetintAlbedo -> texGlowmap), matching the engine FaceTint PS (sse_facegen_skin.asm t4). NOT baked
     ''' into the diffuse (that is the FO4 path). Returns True when installed. SSE-only; the FO4 path is untouched.</summary>
-    Private Function ApplySseFacetint(materialBase As FO4UnifiedMaterial_Class, npcData As NPC_Data, race As RACE_Data, model As PreviewModel) As Boolean
+    Private Function ApplySseFacetint(materialBase As FO4UnifiedMaterial_Class, npcData As NPC_Data, race As RACE_Data, model As PreviewModel,
+                                      Optional host As NpcRenderHost = Nothing) As Boolean
         If npcData Is Nothing Then Return False
         ' race may be Nothing for SSE (the FO4 layer builder can return it unset); parse it from RaceFormID.
         If race Is Nothing AndAlso npcData.RaceFormID <> 0UI Then
@@ -371,24 +384,34 @@ Friend NotInheritable Class NpcFaceTintResolver
         Dim npcRec = _ctx.PluginManager.GetRecord(npcData.FormID)
         If npcRec Is Nothing Then Return False
         Const W As Integer = 512, H As Integer = 512
-        ' DEFINITIVE WYSIWYG: run the EXACT bake pipeline for the facetint _d — compose + RaceMenu overlays +
-        ' BC3 encode (SseFaceGenBaker.BakeFaceTintDds, the same function the on-disk bake calls) — then DECODE
-        ' the BC3 result for the preview. So the editor shows precisely the baked+compressed texture the engine
-        ' loads (including DXT5 loss and overlays), not an idealized pre-encode compose.
-        ' npcData is the OVERLAID shadow — SseTintRaw carries any Edit Face tint edit (else raw); SseOverlays
-        ' carries any RaceMenu overlay. Both feed compose+overlay exactly like the bake.
         Dim overlays = ResolveSseOverlays(npcData)
-        Dim dds = SseFaceGenBaker.BakeFaceTintDds(_ctx.PluginManager, npcRec, race, npcData.RaceFormID, npcData.IsFemale, W, H, overlays, npcData.SseTintRaw, npcData.SseTintTexOverride)
-        If dds Is Nothing Then Return False
-        Dim dec = FaceTintCpuCompositor.DecodeDds(dds, W, H)
-        If dec.Rgba Is Nothing Then Return False
-        Dim bgra(W * H * 4 - 1) As Byte
-        For i = 0 To W * H - 1
-            bgra(i * 4) = ClampByte255(dec.Rgba(i * 4 + 2))       ' B
-            bgra(i * 4 + 1) = ClampByte255(dec.Rgba(i * 4 + 1))   ' G
-            bgra(i * 4 + 2) = ClampByte255(dec.Rgba(i * 4))       ' R
-            bgra(i * 4 + 3) = 255
-        Next
+        Dim hasOverlays = overlays IsNot Nothing AndAlso overlays.Count > 0
+
+        ' COMPOSITE = ESPEJO DEL SKINNING (Setting_GPUSkinning), IGUAL QUE FO4: GPU-skinning → compose GPU PURO
+        ' (ApplyFaceTintPipeline sobre base plano 0.5 = el mismo del _2b); CPU-skinning → compose CPU (BakeFaceTintDds,
+        ' WYSIWYG con el bake). NO se mezcla CPU↔GPU: el GPU corre SOLO cuando el facetint es tint-only (sin overlays,
+        ' que hoy sólo tienen álgebra CPU en ApplyOverlays) — con overlays se compone TODO por CPU (puro CPU). Si el
+        ' GPU falla, cae a CPU (nunca queda a medias). La paridad GPU==CPU del render la confirma el usuario in-app.
+        Dim bgra As Byte() = Nothing
+        If Config_App.Current.Setting_GPUSkinning AndAlso host IsNot Nothing AndAlso Not hasOverlays Then
+            bgra = ComposeSseFacetintBgraGpu(npcRec, race, npcData, W, H, host)
+        End If
+        If bgra Is Nothing Then
+            ' CPU (WYSIWYG con el bake): compose + RaceMenu overlays + BC3 encode (misma fn que el bake on-disk) y
+            ' DECODE del BC3, así el preview muestra la textura baked+compressed exacta (incluye pérdida DXT5+overlays).
+            Dim dds = SseFaceGenBaker.BakeFaceTintDds(_ctx.PluginManager, npcRec, race, npcData.RaceFormID, npcData.IsFemale, W, H, overlays, npcData.SseTintRaw, npcData.SseTintTexOverride)
+            If dds Is Nothing Then Return False
+            Dim dec = FaceTintCpuCompositor.DecodeDds(dds, W, H)
+            If dec.Rgba Is Nothing Then Return False
+            Dim b(W * H * 4 - 1) As Byte
+            For i = 0 To W * H - 1
+                b(i * 4) = ClampByte255(dec.Rgba(i * 4 + 2))       ' B
+                b(i * 4 + 1) = ClampByte255(dec.Rgba(i * 4 + 1))   ' G
+                b(i * 4 + 2) = ClampByte255(dec.Rgba(i * 4))       ' R
+                b(i * 4 + 3) = 255
+            Next
+            bgra = b
+        End If
         Dim newId = UploadRgba8Linear(bgra, W, H)
         If newId = 0 Then Return False
         Dim origin = _ctx.PluginManager.GetOriginatingPluginName(npcData.FormID)
@@ -413,6 +436,40 @@ Friend NotInheritable Class NpcFaceTintResolver
     ''' (ApplyOverlays no-ops), so the bake pipeline still runs identically.</summary>
     Private Function ResolveSseOverlays(npcData As NPC_Data) As IList(Of SseOverlayCompositor.SseOverlay)
         Return If(npcData IsNot Nothing, npcData.SseOverlays, Nothing)
+    End Function
+
+    ''' <summary>Rama GPU del render espejo del skinning: compone el facetint SSE (tint-only) PURO GPU — las MISMAS
+    ''' capas que el CPU (<see cref="SseFaceTintComposer.BuildLayerInputs"/>) sobre un base PLANO = seed(0.5) vía
+    ''' <see cref="FaceTintCompositor.ApplyFaceTintPipeline"/> (ley SSE all-linear), readback → BGRA lineal 512².
+    ''' Es el MISMO compose que el <c>_2b</c> del bake. Base subido LINEAL (baseDiffuseIsLinearOnGpu) = seed 0.5-lin.
+    ''' Sin capas (raza sin tints) → 0.5 plano. Nothing si el host/upload falla → el caller cae a CPU. GL-bound.</summary>
+    Private Function ComposeSseFacetintBgraGpu(npcRec As PluginRecord, race As RACE_Data, npcData As NPC_Data, w As Integer, h As Integer, host As NpcRenderHost) As Byte()
+        If host Is Nothing Then Return Nothing
+        Dim npix = w * h
+        Dim baseBgra(npix * 4 - 1) As Byte
+        For i = 0 To npix - 1
+            baseBgra(i * 4) = 128 : baseBgra(i * 4 + 1) = 128 : baseBgra(i * 4 + 2) = 128 : baseBgra(i * 4 + 3) = 255   ' seed 0.5
+        Next
+        Dim layers = SseFaceTintComposer.BuildLayerInputs(_ctx.PluginManager, npcRec, race, npcData.RaceFormID, npcData.IsFemale, npcData.SseTintRaw, npcData.SseTintTexOverride)
+        If layers Is Nothing OrElse layers.Count = 0 Then Return baseBgra   ' sin tints → 0.5 plano (= seed)
+        Dim baseTex = UploadRgba8Linear(baseBgra, w, h)
+        If baseTex = 0 Then Return Nothing
+        Dim pr = FaceTintCompositor.ApplyFaceTintPipeline(host.CompositorState, host.TintGpuCache,
+                                                          baseTex, 0, 0, w, h, layers, New List(Of FaceRegionSwapInput)(),
+                                                          baseDiffuseIsLinearOnGpu:=True)
+        Dim resultId = If(pr IsNot Nothing AndAlso pr.Diffuse IsNot Nothing AndAlso pr.Diffuse.IsFresh, pr.Diffuse.TextureId, baseTex)
+        Dim gbuf(npix * 4 - 1) As Byte
+        OpenTK.Graphics.OpenGL4.GL.BindTexture(OpenTK.Graphics.OpenGL4.TextureTarget.Texture2D, resultId)
+        Dim handle = System.Runtime.InteropServices.GCHandle.Alloc(gbuf, System.Runtime.InteropServices.GCHandleType.Pinned)
+        Try
+            OpenTK.Graphics.OpenGL4.GL.GetTexImage(OpenTK.Graphics.OpenGL4.TextureTarget.Texture2D, 0, OpenTK.Graphics.OpenGL4.PixelFormat.Bgra, OpenTK.Graphics.OpenGL4.PixelType.UnsignedByte, handle.AddrOfPinnedObject())
+        Finally
+            handle.Free()
+        End Try
+        OpenTK.Graphics.OpenGL4.GL.BindTexture(OpenTK.Graphics.OpenGL4.TextureTarget.Texture2D, 0)
+        If resultId <> baseTex Then Try : OpenTK.Graphics.OpenGL4.GL.DeleteTexture(resultId) : Catch : End Try
+        Try : OpenTK.Graphics.OpenGL4.GL.DeleteTexture(baseTex) : Catch : End Try
+        Return gbuf
     End Function
 
     Private Shared Function ClampByte255(v As Double) As Byte
@@ -489,6 +546,9 @@ Friend NotInheritable Class NpcFaceTintResolver
             ' Body = SkinTint material que NO es la cara (la cara va por su propio path slot-12 del compositor).
             If Not materialBase.SkinTint Then Continue For
             If materialBase.NifShaderType = NiflySharp.Enums.BSLightingShaderType.FaceTint Then Continue For
+            ' A RaceMenu skin override with a key-7 tint already set this shape's SkinTintColor; skee replays the
+            ' override over the base skin tone, so the override wins — don't overwrite it with the QNAM tone.
+            If materialBase.SkinTintFromOverride Then Continue For
             ' Engine model: registrar el skin tone per-actor; el shader SkinTint lo soft-lightea sobre el
             ' diffuse untoned al render (NO se hornea). SkinTintAlpha lleva la opacidad del QNAM.
             materialBase.SkinTintColor = Color.FromArgb(qnam.R, qnam.G, qnam.B)
@@ -512,6 +572,58 @@ Friend NotInheritable Class NpcFaceTintResolver
     ''' the fresh GL texture ID into the cache entry and delete the ID it replaced. No-op when
     ''' the pipeline reported IsFresh=False (channel had no contribution; input ID stayed in
     ''' place).</summary>
+    ''' <summary>Composite CPU-skinning path (espejo del GL ApplyFaceTintPipeline): compone por CPU con los MISMOS
+    ''' layers desde los bytes source (FilesDictionary), y sube cada canal a GL, swapeando el dict. El diffuse se
+    ''' convierte g22→linear antes de subir (el render GL deja el output en linear; ver comentario del caller).
+    ''' N/S se suben tal cual (ya lineales). Returns True si algún canal se compuso. GL-bound (corre en el hilo GL).</summary>
+    Private Function ApplyCpuComposeToDict(model As PreviewModel,
+                                           diffusePath As String, diffuseEntry As PreviewModel.Texture_Loaded_Class,
+                                           normalPath As String, normalEntry As PreviewModel.Texture_Loaded_Class,
+                                           specPath As String, specEntry As PreviewModel.Texture_Loaded_Class,
+                                           layerInputs As IList(Of FaceTintLayerInput),
+                                           regionSwaps As IList(Of FaceRegionSwapInput)) As Boolean
+        Dim dB = FilesDictionary_class.GetBytes(diffusePath)
+        If dB Is Nothing Then Return False
+        Dim nB = If(Not String.IsNullOrEmpty(normalPath), FilesDictionary_class.GetBytes(normalPath), Nothing)
+        Dim sB = If(Not String.IsNullOrEmpty(specPath), FilesDictionary_class.GetBytes(specPath), Nothing)
+        Dim cpu As FaceTintCpuCompositor.CpuPipelineResult
+        Try
+            cpu = FaceTintCpuCompositor.ComposeCpuPipeline(dB, nB, sB, layerInputs, regionSwaps, Nothing, diffusePath, normalPath, specPath)
+        Catch ex As Exception
+            Dim m = ex.Message
+            Logger.LogLazy(Function() $"[FACETINT-CPU-RENDER] compose failed: {m}")
+            Return False
+        End Try
+        If cpu Is Nothing Then Return False
+        Dim any = False
+        ' Diffuse: g22 → linear antes de subir (paridad con el output linear del path GL).
+        If cpu.Diffuse IsNot Nothing AndAlso cpu.Diffuse.Bgra IsNot Nothing AndAlso diffuseEntry IsNot Nothing Then
+            FaceTintCpuCompositor.G22DiffuseBgraToLinearInPlace(cpu.Diffuse.Bgra)
+            SwapCpuChannelIntoDict(diffuseEntry, cpu.Diffuse.Bgra, cpu.Diffuse.Width, cpu.Diffuse.Height) : any = True
+        End If
+        ' N/S: ya lineales, subir tal cual.
+        If cpu.Normal IsNot Nothing AndAlso cpu.Normal.Bgra IsNot Nothing AndAlso normalEntry IsNot Nothing Then
+            SwapCpuChannelIntoDict(normalEntry, cpu.Normal.Bgra, cpu.Normal.Width, cpu.Normal.Height) : any = True
+        End If
+        If cpu.Specular IsNot Nothing AndAlso cpu.Specular.Bgra IsNot Nothing AndAlso specEntry IsNot Nothing Then
+            SwapCpuChannelIntoDict(specEntry, cpu.Specular.Bgra, cpu.Specular.Width, cpu.Specular.Height) : any = True
+        End If
+        Return any
+    End Function
+
+    ''' <summary>Sube un BGRA compuesto por CPU a una textura GL nueva y la swapea en el dict entry (borra la vieja).
+    ''' Mismo contrato que ApplyPipelineResultToDict pero desde bytes CPU (linear, IsSRGB=False).</summary>
+    Private Sub SwapCpuChannelIntoDict(entry As PreviewModel.Texture_Loaded_Class, bgra As Byte(), w As Integer, h As Integer)
+        If entry Is Nothing OrElse bgra Is Nothing OrElse w <= 0 OrElse h <= 0 Then Return
+        Dim newId = UploadRgba8Linear(bgra, w, h)
+        If newId = 0 Then Return
+        Dim oldId = entry.Texture_ID
+        entry.Texture_ID = newId
+        entry.IsSRGB = False
+        entry.Size = New System.Drawing.Size(w, h)
+        If oldId <> 0 AndAlso oldId <> newId Then Try : OpenTK.Graphics.OpenGL4.GL.DeleteTexture(oldId) : Catch : End Try
+    End Sub
+
     Private Sub ApplyPipelineResultToDict(model As PreviewModel,
                                           texPath As String,
                                           entry As PreviewModel.Texture_Loaded_Class,
@@ -706,7 +818,8 @@ Friend NotInheritable Class NpcFaceTintResolver
             If relatedMaterial Is Nothing OrElse relatedMaterial.material Is Nothing Then Continue For
             Dim mat = relatedMaterial.material
 
-            If mat.SkinTint AndAlso skinTone.HasValue Then
+            ' Don't overwrite a RaceMenu skin-override tint (key 7) with the actor skin tone — the override wins.
+            If mat.SkinTint AndAlso skinTone.HasValue AndAlso Not mat.SkinTintFromOverride Then
                 mat.SkinTintColor = skinTone.Value
             End If
 

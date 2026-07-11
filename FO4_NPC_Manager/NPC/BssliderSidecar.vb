@@ -40,9 +40,13 @@ Public Module BssliderSidecar
     ''' field (RaceMenu body-scale node transforms); v5 added the SSE-only <c>sseSkinOverrides</c> field
     ''' (RaceMenu NiOverride skin body-paint); v6 added the SSE-only <c>sseCustomMorphs</c> + <c>sseSculpt</c>
     ''' fields (RaceMenu co-save face data); v7 added the SSE-only <c>sseTintTextures</c> field (RaceMenu per-layer
-    ''' custom tint mask paths). All additive — the loader tolerates their absence, so older files still load and
-    ''' older readers ignore the fields.</summary>
-    Public Const SchemaVersion As Integer = 8
+    ''' custom tint mask paths); v9 added the per-overlay <c>alpha</c> field (skee64 kParam_ShaderAlpha, key 8 —
+    ''' the overlay's opacity, distinct from the tint colour); v10 replaced the scale-only <c>sseNodeScales</c> map
+    ''' with the full-TRS <c>sseNodeTransforms</c> array (scale + position + rotation + scaleMode), still reading the
+    ''' legacy map for back-compat; v11 added the SSE-only <c>sseHairColor</c> field (RaceMenu absolute hair tint,
+    ''' packed 0xRRGGBB). All additive — the loader tolerates their absence, so older files still load and older
+    ''' readers ignore the fields.</summary>
+    Public Const SchemaVersion As Integer = 11
 
     Public Class SidecarFile
         Public Version As Integer = SchemaVersion
@@ -70,11 +74,16 @@ Public Module BssliderSidecar
         ''' <see cref="LooksmenuLoader.LooksmenuPreset.SseBodyOverlays"/>). Nullable — Nothing on FO4 and on
         ''' SSE entries without overlays; serialized under the <c>sseBodyOverlays</c> key (schema v3).</summary>
         Public SseBodyOverlays As List(Of RaceMenuJslot.JslotOverlayNode) = Nothing
-        ''' <summary>SSE-ONLY RaceMenu NiOverride node scales (body-scale sliders): node name → uniform scale.
-        ''' Nullable — Nothing on FO4 / SSE entries without transforms; serialized under <c>sseNodeScales</c>
-        ''' (schema v4). The full .jslot keeps position/rotation fidelity; the sidecar stores the editable
-        ''' scale so the preview survives a reload.</summary>
-        Public SseNodeScales As Dictionary(Of String, Single) = Nothing
+        ''' <summary>SSE-ONLY RaceMenu NiOverride node transforms (body-scale/position/rotation sliders): the full
+        ''' per-node TRS (scale key 30, position key 31, rotation key 32 as axis-angle, scaleMode key 33). Nullable —
+        ''' Nothing on FO4 / SSE entries without transforms; serialized under <c>sseNodeTransforms</c> (schema v10).
+        ''' Superseded the scale-only <c>sseNodeScales</c> map (schema v4) so an edited position/rotation survives a
+        ''' reload, not just the scale; a legacy <c>sseNodeScales</c> object is still read and migrated on load.</summary>
+        Public SseNodeTransforms As List(Of RaceMenuJslot.JslotNodeTransform) = Nothing
+        ''' <summary>SSE-ONLY RaceMenu absolute hair tint (packed 0xRRGGBB) from a loaded .jslot's actor.hairColor.
+        ''' RaceMenu co-save data (not the NPC record) → persisted so the hair colour survives a reload. Nullable —
+        ''' Nothing on FO4 / presets without hairColor; serialized under <c>sseHairColor</c> (schema v11).</summary>
+        Public SseHairColorRgb As Integer? = Nothing
         ''' <summary>SSE-ONLY RaceMenu NiOverride SKIN overrides (body-paint per biped slot): slotMask +
         ''' diffuse/normal path + tint. Nullable — Nothing on FO4 / SSE entries without skin overrides;
         ''' serialized under <c>sseSkinOverrides</c> (schema v5). See
@@ -114,7 +123,8 @@ Public Module BssliderSidecar
                 If Not String.IsNullOrEmpty(SkinTemplateId) Then Return True
                 If Overlays IsNot Nothing AndAlso Overlays.Count > 0 Then Return True
                 If SseBodyOverlays IsNot Nothing AndAlso SseBodyOverlays.Count > 0 Then Return True
-                If SseNodeScales IsNot Nothing AndAlso SseNodeScales.Count > 0 Then Return True
+                If SseNodeTransforms IsNot Nothing AndAlso SseNodeTransforms.Count > 0 Then Return True
+                If SseHairColorRgb.HasValue Then Return True
                 If SseSkinOverrides IsNot Nothing AndAlso SseSkinOverrides.Count > 0 Then Return True
                 If SseCustomMorphs IsNot Nothing AndAlso SseCustomMorphs.Count > 0 Then Return True
                 If SseSculptHead IsNot Nothing AndAlso SseSculptHead.Count > 0 Then Return True
@@ -262,17 +272,53 @@ Public Module BssliderSidecar
                     node.TintR = t(0) : node.TintG = t(1) : node.TintB = t(2) : node.TintA = t(3)
                     node.HasTint = True
                 End If
+                ' alpha — schema v9. skee64's kParam_ShaderAlpha (key 8) = the overlay's OPACITY, a separate
+                ' override from the tint colour. Absent in v1-v8 files, which then reload fully opaque — exactly
+                ' how they already rendered before the key was modelled, so no silent change of appearance.
+                Dim alphaEl As JsonElement
+                If ov.TryGetProperty("alpha", alphaEl) AndAlso alphaEl.ValueKind = JsonValueKind.Number Then
+                    node.Alpha = alphaEl.GetSingle() : node.HasAlpha = True
+                End If
                 list.Add(node)
             Next
             If list.Count > 0 Then entry.SseBodyOverlays = list
         End If
-        ' sseNodeScales — SSE-only, optional (schema v4). Object { nodeName: scale }. Tolerant of absence.
-        If el.TryGetProperty("sseNodeScales", child) AndAlso child.ValueKind = JsonValueKind.Object Then
-            Dim d As New Dictionary(Of String, Single)(StringComparer.OrdinalIgnoreCase)
-            For Each prop In child.EnumerateObject()
-                If prop.Value.ValueKind = JsonValueKind.Number Then d(prop.Name) = prop.Value.GetSingle()
+        ' sseNodeTransforms — SSE-only, optional (schema v10). Array of { node, s?, sm?, p:[x,y,z]?, r:[ax,ay,az]? }
+        ' — the full per-node TRS (rotation as axis-angle radians, the model's canonical form). Raw stays Nothing so a
+        ' later .jslot export rebuilds the element from these fields.
+        If el.TryGetProperty("sseNodeTransforms", child) AndAlso child.ValueKind = JsonValueKind.Array Then
+            Dim list As New List(Of RaceMenuJslot.JslotNodeTransform)
+            For Each te In child.EnumerateArray()
+                If te.ValueKind <> JsonValueKind.Object Then Continue For
+                Dim nameEl As JsonElement
+                If Not te.TryGetProperty("node", nameEl) OrElse nameEl.ValueKind <> JsonValueKind.String Then Continue For
+                Dim nt As New RaceMenuJslot.JslotNodeTransform With {.NodeName = nameEl.GetString()}
+                Dim f As JsonElement
+                If te.TryGetProperty("s", f) AndAlso f.ValueKind = JsonValueKind.Number Then nt.Scale = f.GetSingle() : nt.HasScale = True
+                If te.TryGetProperty("sm", f) AndAlso f.ValueKind = JsonValueKind.Number Then nt.ScaleMode = f.GetInt32() : nt.HasScaleMode = True
+                If te.TryGetProperty("p", f) AndAlso f.ValueKind = JsonValueKind.Array AndAlso f.GetArrayLength() = 3 Then
+                    nt.PosX = f(0).GetSingle() : nt.PosY = f(1).GetSingle() : nt.PosZ = f(2).GetSingle() : nt.HasPosition = True
+                End If
+                If te.TryGetProperty("r", f) AndAlso f.ValueKind = JsonValueKind.Array AndAlso f.GetArrayLength() = 3 Then
+                    nt.RotX = f(0).GetSingle() : nt.RotY = f(1).GetSingle() : nt.RotZ = f(2).GetSingle() : nt.HasRotation = True
+                End If
+                list.Add(nt)
             Next
-            If d.Count > 0 Then entry.SseNodeScales = d
+            If list.Count > 0 Then entry.SseNodeTransforms = list
+        ElseIf el.TryGetProperty("sseNodeScales", child) AndAlso child.ValueKind = JsonValueKind.Object Then
+            ' Legacy scale-only map (schema v4-v9). Object { nodeName: scale } → migrate to scale-only transforms.
+            Dim list As New List(Of RaceMenuJslot.JslotNodeTransform)
+            For Each prop In child.EnumerateObject()
+                If prop.Value.ValueKind = JsonValueKind.Number Then
+                    list.Add(New RaceMenuJslot.JslotNodeTransform With {.NodeName = prop.Name, .Scale = prop.Value.GetSingle(), .HasScale = True})
+                End If
+            Next
+            If list.Count > 0 Then entry.SseNodeTransforms = list
+        End If
+        ' sseHairColor — SSE-only, optional (schema v11). Packed 0xRRGGBB int (RaceMenu absolute hair tint).
+        Dim hairEl As JsonElement
+        If el.TryGetProperty("sseHairColor", hairEl) AndAlso hairEl.ValueKind = JsonValueKind.Number Then
+            entry.SseHairColorRgb = hairEl.GetInt32()
         End If
         ' sseSkinOverrides — SSE-only, optional (schema v5). Array of { slotMask, diffuse?, normal?, tint?[r,g,b,a] }.
         ' Tolerant of absence (FO4 / v1-v4 files) — left Nothing.
@@ -486,18 +532,38 @@ Public Module BssliderSidecar
                                 w.WriteNumberValue(ov.TintB) : w.WriteNumberValue(ov.TintA)
                                 w.WriteEndArray()
                             End If
+                            If ov.HasAlpha Then w.WriteNumber("alpha", ov.Alpha)   ' opacity (skee64 key 8), schema v9
                             w.WriteEndObject()
                         Next
                         w.WriteEndArray()
                     End If
-                    ' sseNodeScales — SSE-only, emitted when non-empty. Object { nodeName: scale }.
-                    If kv.Value.SseNodeScales IsNot Nothing AndAlso kv.Value.SseNodeScales.Count > 0 Then
-                        w.WriteStartObject("sseNodeScales")
-                        For Each ns In kv.Value.SseNodeScales
-                            w.WriteNumber(ns.Key, ns.Value)
+                    ' sseNodeTransforms — SSE-only, emitted when non-empty. Array of { node, s?, sm?, p:[x,y,z]?,
+                    ' r:[ax,ay,az]? } — the full per-node TRS (rotation as axis-angle radians). Only the present
+                    ' components are written, so a scale-only override stays compact.
+                    If kv.Value.SseNodeTransforms IsNot Nothing AndAlso kv.Value.SseNodeTransforms.Count > 0 Then
+                        w.WriteStartArray("sseNodeTransforms")
+                        For Each nt In kv.Value.SseNodeTransforms
+                            If nt Is Nothing OrElse String.IsNullOrEmpty(nt.NodeName) Then Continue For
+                            w.WriteStartObject()
+                            w.WriteString("node", nt.NodeName)
+                            If nt.HasScale Then w.WriteNumber("s", nt.Scale)
+                            If nt.HasScaleMode Then w.WriteNumber("sm", nt.ScaleMode)
+                            If nt.HasPosition Then
+                                w.WriteStartArray("p")
+                                w.WriteNumberValue(nt.PosX) : w.WriteNumberValue(nt.PosY) : w.WriteNumberValue(nt.PosZ)
+                                w.WriteEndArray()
+                            End If
+                            If nt.HasRotation Then
+                                w.WriteStartArray("r")
+                                w.WriteNumberValue(nt.RotX) : w.WriteNumberValue(nt.RotY) : w.WriteNumberValue(nt.RotZ)
+                                w.WriteEndArray()
+                            End If
+                            w.WriteEndObject()
                         Next
-                        w.WriteEndObject()
+                        w.WriteEndArray()
                     End If
+                    ' sseHairColor — SSE-only, emitted when present. Packed 0xRRGGBB int (RaceMenu absolute hair tint).
+                    If kv.Value.SseHairColorRgb.HasValue Then w.WriteNumber("sseHairColor", kv.Value.SseHairColorRgb.Value)
                     ' sseSkinOverrides — SSE-only, emitted when non-empty. Array of { slotMask, diffuse, normal?, tint? }.
                     If kv.Value.SseSkinOverrides IsNot Nothing AndAlso kv.Value.SseSkinOverrides.Count > 0 Then
                         w.WriteStartArray("sseSkinOverrides")

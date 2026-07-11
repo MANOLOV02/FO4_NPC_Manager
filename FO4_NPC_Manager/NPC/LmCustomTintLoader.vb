@@ -77,12 +77,20 @@ Public Module LmCustomTintLoader
 
     ''' <summary>Idempotently append this race's LooksMenu custom tint templates into its tint groups.
     ''' No-op when the race has no custom tints, when it was already merged, or when there are no
-    ''' Tints\ files on disk. Safe to call from multiple threads on the shared cached instance.</summary>
+    ''' Tints\ files on disk. Safe to call from multiple threads on the shared cached instance.
+    ''' App overload — resolves the Data\ path from the global <see cref="Config_App"/>.</summary>
     Public Sub EnsureMerged(race As RACE_Data, pluginManager As PluginManager)
+        EnsureMerged(race, pluginManager, Config_App.Current?.DataPath)
+    End Sub
+
+    ''' <summary>Explicit-<paramref name="dataPath"/> overload — used by the headless FO4_FaceTint_CLI,
+    ''' which threads its own Data\ path (honouring the <c>--data</c> flag) instead of relying on the
+    ''' app-only <see cref="Config_App"/> global, which the CLI does not populate the same way.</summary>
+    Public Sub EnsureMerged(race As RACE_Data, pluginManager As PluginManager, dataPath As String)
         If race Is Nothing OrElse pluginManager Is Nothing Then Return
         If race.CustomLmTintsMerged Then Return
 
-        EnsureLoaded(pluginManager)   ' guarded internally; does file IO OUTSIDE the per-race lock
+        EnsureLoaded(pluginManager, dataPath)   ' guarded internally; does file IO OUTSIDE the per-race lock
 
         SyncLock race
             If race.CustomLmTintsMerged Then Return
@@ -139,14 +147,13 @@ Public Module LmCustomTintLoader
         Next
     End Sub
 
-    Private Sub EnsureLoaded(pluginManager As PluginManager)
+    Private Sub EnsureLoaded(pluginManager As PluginManager, dataPath As String)
         If _loaded Then Return
         SyncLock _lock
             If _loaded Then Return
 
             Dim idx As New Dictionary(Of String, RaceCustomTints)(StringComparer.OrdinalIgnoreCase)
             Try
-                Dim dataPath As String = Config_App.Current?.DataPath
                 If Not String.IsNullOrEmpty(dataPath) Then
                     Dim baseDir = Path.Combine(dataPath, "F4SE", "Plugins", "F4EE", "Tints")
                     If Directory.Exists(baseDir) Then

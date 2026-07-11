@@ -348,6 +348,13 @@ Public Class MainForm
         ''' (SkinNaked) declares head-occlusion bits — otherwise childfeet's EyesChild (partition 30) survives the
         ''' drop. 0 for non-ARMA candidates (heads/chunks/attachments).</summary>
         Public ArmaOwnSlotMask As UInteger
+        ''' <summary>BOD2 del ARMO dueño, crudo. SSE: es la máscara que el engine usa para el conflicto de
+        ''' EQUIP entre ítems del outfit — `0x1403BD39E` castea el ítem con `AsBipedObjectForm` (ARMO+0x1B0)
+        ''' y compara con `SlotsOverlap 0x1401CCA90` (any-bit) contra lo ya equipado; si solapa, no lo equipa.
+        ''' También es la que alimenta `GetWornMask 0x140225CB0` (OR de `[ARMO+0x1B8]`). NO confundir con
+        ''' <see cref="ArmaOwnSlotMask"/> (los bits del armature, que gobiernan particiones) ni con
+        ''' <see cref="SlotMask"/> (la mezcla de ambos). 0 para candidates sin ARMO.</summary>
+        Public ArmoOwnSlotMask As UInteger
         Public Priority As Integer
         Public Kind As MeshCandidateKind
         Public SourceFormID As UInteger
@@ -638,6 +645,16 @@ Public Class MainForm
         ''' it covered re-appear. NOT a static covered mask: covered-by-OTHERS is recomputed at toggle time
         ''' (ORDER / other-items rule), excluding the shape's own group via <see cref="ShapeSlotGroup"/>.</summary>
         Public ReadOnly ShapeOwnSlots As New Dictionary(Of IRenderableShape, UInteger)
+        ''' <summary>Per-shape BOD2 del ARMATURE (ARMA) dueño, sin los bits que sólo declara el ARMO. SSE:
+        ''' es la máscara que gobierna qué particiones de cabeza oculta el ítem del slot de pelo — el writer
+        ''' de la tabla del biped (0x1402134E0) guarda el ARMA en `entry+0x18` recorriendo los bits del ARMA,
+        ''' y la fase 2 de 0x140218200 agrupa por ese puntero. Ver NpcMeshCollector.HeadPartHideMask.</summary>
+        Public ReadOnly ShapeArmaOwnSlots As New Dictionary(Of IRenderableShape, UInteger)
+        ''' <summary>Per-shape DNAM priority (Male/Female, gender-resuelto) del ARMA dueño. SSE: en empate de
+        ''' biped-slot decide qué ítem lo POSEE para la oclusión per-partición (fase 1 de 0x140218200 — el
+        ''' owner de cada slot en `entry+0x18`). Seteado sólo para worn items (Kind=Outfit), igual que
+        ''' ShapeArmaOwnSlots. Ver NpcRenderHost.ApplyRenderToggleVisibility (mapa de dueños por-slot SSE).</summary>
+        Public ReadOnly ShapePriority As New Dictionary(Of IRenderableShape, Integer)
         ''' <summary>Per-shape occlusion group id (one per candidate; all shapes of a candidate share it).
         ''' Used by ApplyRenderToggleVisibility so an item never occludes its OWN segments: covered-by-others
         ''' ORs the own-slot masks of rendered groups whose id differs (engine owner-slot branch 0x14035E22B).
@@ -654,6 +671,15 @@ Public Class MainForm
         ''' worn-slot set down to the head region (replaces the old fixed HeadwearOcclusionSlots const, which
         ''' was wrong for non-human races). For HumanRace this resolves to {30,31,32,48}.</summary>
         Public HeadOcclusionMask As UInteger = 0UI
+        ''' <summary>A: face-cull biped object [race+0x12C] (RACE DATA+0x44, engine master 0x1403BB880). Si el
+        ''' worn set cubre este slot ⇒ whole-node cull de la cabeza (`or [headNode+0xF4],1`) — cascadea a TODO
+        ''' head-part. NO es per-partición, así que NO forma parte de la máscara CoveredSlotsMask del render.</summary>
+        Public HeadFaceCullMask As UInteger = 0UI
+        ''' <summary>B: hair biped object [race+0x130] (RACE DATA+0x48, engine 0x1403BB880 / attach 0x140218200
+        ''' fase 2). Es el slot de pelo (bit único en SSE). El ítem que ocupa este slot oculta, en el subárbol
+        ''' de la cabeza, las particiones de TODO su BOD2 (ver NpcMeshCollector.HeadPartHideMask). Se combina
+        ''' render-time con los BOD2 de los ítems renderizados para producir la máscara per-partición.</summary>
+        Public HeadHairSlotMask As UInteger = 0UI
         ''' <summary>Per-shape: qué particiones de un Hair {30,31} se ZAPEAN este render (Top=v30−v31,
         ''' Long=v31−v30), según el modelo complementario main/hairline (ver <see cref="HairZapParts"/>).
         ''' A diferencia de ShapeOccludedByHeadwear (oculta la mesh entera), esto zapea SÓLO los vértices
@@ -787,6 +813,10 @@ Public Class MainForm
         ' precedencia FTST > HDPT.TNAM > DFTM en ResolveTextureSet. 0 = el NPC no tiene FTST propio.
         Public ExplicitHeadTextureFormID As UInteger
         Public HairColorFormID As UInteger
+        ''' <summary>SSE-ONLY RaceMenu absolute hair tint (packed 0xRRGGBB) from an applied .jslot's actor.hairColor.
+        ''' When set it takes precedence over <see cref="HairColorFormID"/> (the CLFM) at hair-material resolution
+        ''' (ResolveHairTintColor), matching skee's ApplyMappedPreset. Nothing = fall back to the CLFM. SSE-only.</summary>
+        Public SseHairColorRgb As Integer?
         Public FacialHairColorFormID As UInteger
         Public HasTextureLighting As Boolean
         ''' <summary>QNAM RGBA. Alpha is the body SoftLight intensity (vanilla = 1.0 by convention,
@@ -1697,7 +1727,7 @@ Public Class MainForm
         _ctx.ArmoDraftResolver = Function(fid) BuildArmoDataFromDraft(fid)
         _ctx.ArmaDraftResolver = Function(fid) BuildArmaDataFromDraft(fid)
         _ctx.MswpDraftResolver = Function(fid) BuildMswpDataFromDraft(fid)
-        _materialResolver = New NpcMaterialResolver(_ctx, AddressOf ApplyPresetOverlayToNpcData)
+        _materialResolver = New NpcMaterialResolver(_ctx, AddressOf ApplyPresetOverlayToNpcData, _appliedPresets)
         _stateResolver = New NpcStateResolver(_ctx, _materialResolver, _appliedPresets, _lvlnDataCache,
                                               Function() CurrentGenderFilter, AddressOf ResolveLmSkinTemplate)
         _morphPoseResolver = New NpcMorphPoseResolver(_ctx, AddressOf ApplyPresetOverlayToNpcData, Function() _renderHost, _appliedPresets,
@@ -1785,14 +1815,17 @@ Public Class MainForm
                 If entry.SseBodyOverlays IsNot Nothing AndAlso entry.SseBodyOverlays.Count > 0 Then
                     existing.SseBodyOverlays = LooksmenuLoader.CloneSseBodyOverlays(entry.SseBodyOverlays)
                 End If
-                ' SSE node scales (body-scale) — rebuild the carrier from the stored node→scale map.
-                If entry.SseNodeScales IsNot Nothing AndAlso entry.SseNodeScales.Count > 0 Then
-                    Dim nts As New List(Of RaceMenuJslot.JslotNodeTransform)(entry.SseNodeScales.Count)
-                    For Each ns In entry.SseNodeScales
-                        nts.Add(RaceMenuJslot.MakeScaleTransform(ns.Key, ns.Value))
+                ' SSE node transforms (body-scale/position/rotation) — deep-copy the full per-node TRS onto the
+                ' carrier (Raw stays Nothing → a later .jslot export rebuilds each element from the modeled fields).
+                If entry.SseNodeTransforms IsNot Nothing AndAlso entry.SseNodeTransforms.Count > 0 Then
+                    Dim nts As New List(Of RaceMenuJslot.JslotNodeTransform)(entry.SseNodeTransforms.Count)
+                    For Each nt In entry.SseNodeTransforms
+                        If nt IsNot Nothing Then nts.Add(nt.Clone())
                     Next
                     existing.SseNodeTransforms = nts
                 End If
+                ' SSE RaceMenu absolute hair tint (packed RGB) — rebuild onto the carrier from the sidecar.
+                If entry.SseHairColorRgb.HasValue Then existing.SseHairColorRgb = entry.SseHairColorRgb
                 ' SSE skin overrides (body-paint per slot) — deep-copy onto the overlay. SSE-only.
                 If entry.SseSkinOverrides IsNot Nothing AndAlso entry.SseSkinOverrides.Count > 0 Then
                     existing.SseSkinOverrides = LooksmenuLoader.CloneSseSkinOverrides(entry.SseSkinOverrides)
@@ -2689,6 +2722,7 @@ Public Class MainForm
             .Weight = d.Weight,
             .Health = d.Health,
             .ArmorRating = d.ArmorRating,
+            .SkyrimArmorRating = d.SkyrimArmorRating,
             .StaggerRating = d.StaggerRating,
             .BaseAddonIndex = CInt(d.BaseAddonIndex)
         }
@@ -6644,6 +6678,9 @@ Public Class MainForm
                 ' gore-zone names for FO4 actor meshes. .sclp (ARMA Sculpt) carries per-bone
                 ' translation/scale deltas referenced by ARMA records. Both are NPC-rendering
                 ' specific so they're registered here, not in the shared library default set.
+                ' (RaceMenu/LooksMenu config — .ini/.jslot/.slot, and Papyrus .pex/.psc — lives in the library's
+                ' DEFAULT set: both plugins read it through the game's archive layer, so it is not
+                ' NPC-Manager-specific. Only the SSE editors PARSE the .pex, via RaceMenuPaintCatalog below.)
                 _assetDictionaryLoadTask = FilesDictionary_class.Fill_DictionaryAsync(_dataPath, progress)
             End If
 
@@ -6678,6 +6715,33 @@ Public Class MainForm
                 Logger.LogLazy(Function() $"[RACEMENU-CATALOG] scanned {modNames.Count} mod folders for FaceGenMorphs\...\races.ini; hasAny={cat.HasAny()}")
             Catch ex As Exception
                 Logger.LogLazy(Function() $"[RACEMENU-CATALOG] load failed: {ex.Message}")
+            End Try
+        End If
+
+        ' RaceMenu PAINT lists — SKYRIM ONLY. Warpaints (face tint masks) and body/hand/feet/face paints
+        ' (overlays) are named (name;;path) lists RaceMenu accumulates from every mod's On*PaintRequest Papyrus
+        ' handler; there is no static catalog and no file browser. Reconstruct the same union by reading the
+        ' shipped scripts (scripts\*.pex, loose + BSA) — the compiled artifact the game actually loads. Feeds the
+        ' SSE editors' texture pickers (SseCatalogs) so they present RaceMenu's lists, not a raw file browser.
+        If Config_App.Current.Game = Config_App.Game_Enum.Skyrim AndAlso FO4_Base_Library.RaceMenuPaintCatalog.Current Is Nothing Then
+            Try
+                Dim paintCat As New FO4_Base_Library.RaceMenuPaintCatalog()
+                paintCat.Load()
+                FO4_Base_Library.RaceMenuPaintCatalog.Current = paintCat
+            Catch ex As Exception
+                Logger.LogLazy(Function() $"[PAINT-CATALOG] load failed: {ex.Message}")
+            End Try
+        End If
+        ' Same idea for the RaceMenu node-transform (body-scale) slider list: RaceMenu has no skeleton scan — its
+        ' node list is the union of what RaceMenuPlugin/XPMSE/… register via NiOverride.AddNodeTransform*. Rebuild
+        ' it from the shipped scripts so the Body Scale tab offers RaceMenu's real set, not a raw bone dump.
+        If Config_App.Current.Game = Config_App.Game_Enum.Skyrim AndAlso FO4_Base_Library.RaceMenuNodeCatalog.Current Is Nothing Then
+            Try
+                Dim nodeCat As New FO4_Base_Library.RaceMenuNodeCatalog()
+                nodeCat.Load()
+                FO4_Base_Library.RaceMenuNodeCatalog.Current = nodeCat
+            Catch ex As Exception
+                Logger.LogLazy(Function() $"[NODE-CATALOG] load failed: {ex.Message}")
             End Try
         End If
 
@@ -7700,7 +7764,10 @@ Public Class MainForm
                     If j Is Nothing Then Return Nothing
                     Dim preset = If(priorOverlay IsNot Nothing, LooksmenuLoader.ClonePreset(priorOverlay),
                                                                 New LooksmenuLoader.LooksmenuPreset() With {.Gender = gender})
-                    RaceMenuPresetMapper.ApplyJslotToPreset(j, preset, _pluginManager)   ' pluginManager → resolve headParts/headTexture identity
+                    ' raceFormID + gender → translate the .jslot POSITIONAL tint index to the record TINI value
+                    ' (RaceMenuPresetMapper.JslotIndexToTini). Without it the skin tone / per-layer texture bind to the
+                    ' wrong RACE layer on races whose TINI != position (incl. the body-QNAM skin tone at position 0).
+                    RaceMenuPresetMapper.ApplyJslotToPreset(j, preset, _pluginManager, raceFormID, gender = CByte(1))
                     preset.SourcePath = fp
                     preset.Gender = gender
                     Return preset
@@ -8038,7 +8105,13 @@ Public Class MainForm
         shadow.ShortName = raw.ShortName
         shadow.HasShortName = raw.HasShortName
         shadow.HasDataMarker = raw.HasDataMarker
+        ' DNAM — game-aware: FO4 = 8-byte Calculated Stats struct; SSE = 52-byte Player Skills block
+        ' preserved verbatim in DnamRawSse. The shadow must carry BOTH, else the SSE writeback
+        ' (NpcSubrecordWriter.EmitDnam re-emits from DnamRawSse) drops the whole DNAM Player Skills
+        ' subrecord on Save ESP whenever an overlay is applied. FO4 was fine (CalculatedStats copied);
+        ' the SSE branch was simply missing here — same class of bug the SSE tint carry-over fixed.
         shadow.CalculatedStats = raw.CalculatedStats
+        shadow.DnamRawSse = raw.DnamRawSse
         shadow.CombatStyleFormID = raw.CombatStyleFormID
         shadow.HasCombatStyle = raw.HasCombatStyle
         shadow.GiftFilterFormID = raw.GiftFilterFormID
@@ -8097,6 +8170,11 @@ Public Class MainForm
         shadow.AttachParentSlotFormIDs = raw.AttachParentSlotFormIDs
         shadow.ObjectTemplateCombinations = raw.ObjectTemplateCombinations
         shadow.ActorSounds = raw.ActorSounds
+        ' SSE actor sounds (CSDT/CSDI/CSDC) live in a SEPARATE game-aware collection — the writer's
+        ' EmitActorSounds Skyrim branch re-emits from SseActorSounds, not ActorSounds. Same round-trip
+        ' carry the FO4 ActorSounds gets, else Save ESP drops the whole Actor Sounds block on any SSE
+        ' NPC saved with an overlay. Same bug class as the DnamRawSse / CalculatedStats pair above.
+        shadow.SseActorSounds = raw.SseActorSounds
 
         ' Parallel/derived collections (TintLayerStructs, FaceMorphTrailingBytes,
         ' MorphKeysOrdered) are NOT copied here. They're rebuilt by
@@ -8692,6 +8770,7 @@ Public Class MainForm
                 End If
                 preset.SseBodyOverlays = LooksmenuLoader.CloneSseBodyOverlays(overlay.SseBodyOverlays)
                 preset.SseNodeTransforms = LooksmenuLoader.CloneSseNodeTransforms(overlay.SseNodeTransforms)
+                preset.SseHairColorRgb = overlay.SseHairColorRgb
                 preset.SseSkinOverrides = LooksmenuLoader.CloneSseSkinOverrides(overlay.SseSkinOverrides)
                 If overlay.SseSculptHead IsNot Nothing Then
                     Dim sc As New List(Of NPC_SculptVert)(overlay.SseSculptHead.Count)
@@ -9152,18 +9231,6 @@ Public Class MainForm
     ''' race has no head parts, no hair colors, no morph presets backed by the loaded TRI, no
     ''' tint groups, and no FacialBoneRegions JSON, the editor would be entirely empty — same
     ''' rule Edit Body uses to skip a useless picker.</summary>
-    ''' <summary>Game-aware guard for features whose Skyrim/SSE path is not implemented yet. When the
-    ''' active game is Skyrim it shows a standard notice and returns True (caller must Return); for
-    ''' Fallout 4 it returns False (proceed). Per user decision 2026-07-08 the FO4-model buttons stay
-    ''' ENABLED for SSE (no game-based disabling) — the click surfaces this notice instead of running
-    ''' FO4-only logic that would misbehave. Drop the guard from a handler once its SSE path lands.</summary>
-    Private Function SseFeatureNotImplemented(featureName As String) As Boolean
-        If Config_App.Current.Game <> Config_App.Game_Enum.Skyrim Then Return False
-        MessageBox.Show(Me, $"{featureName} is not implemented for Skyrim (SSE) yet.",
-                        featureName, MessageBoxButtons.OK, MessageBoxIcon.Information)
-        Return True
-    End Function
-
     Private Sub UpdateEditFaceEnabled()
         Dim shouldEnable As Boolean = False
         If _renderHost.LastRenderedState IsNot Nothing AndAlso _renderHost.LastRenderData IsNot Nothing Then
@@ -10030,7 +10097,10 @@ Public Class MainForm
                             MessageBoxButtons.OK, MessageBoxIcon.Warning)
             Return
         End If
-        Dim j = RaceMenuPresetMapper.ToJslot(preset, _pluginManager)
+        ' race + gender → translate each record TINI back to the .jslot POSITIONAL index (inverse of load).
+        Dim jRaceFid As UInteger = If(_renderHost.CurrentBaseState IsNot Nothing, _renderHost.CurrentBaseState.RaceFormID, 0UI)
+        Dim jFemale As Boolean = _renderHost.CurrentBaseState IsNot Nothing AndAlso _renderHost.CurrentBaseState.IsFemale
+        Dim j = RaceMenuPresetMapper.ToJslot(preset, _pluginManager, jRaceFid, jFemale)
 
         ' Same _dataPath Data-root the FO4 Save uses; RaceMenu presets live under SKSE\Plugins\CharGen\Presets.
         Dim defaultDir = IO.Path.Combine(_dataPath, "SKSE", "Plugins", "CharGen", "Presets")
@@ -10267,26 +10337,26 @@ Public Class MainForm
                         "Save ESP/ESM", MessageBoxButtons.OK, execResult.VerifierIcon)
     End Function
 
-    ''' <summary>Loose FaceGen bake files the app could have written for <paramref name="npcFormID"/>: the
-    ''' FaceGeom NIF (release + <c>_2</c> debug) and the FaceCustomization <c>_d/_msn/_s</c> DDS (release +
-    ''' <c>_2</c> debug), under Data\ keyed by the record's ORIGIN plugin + FaceGen-local FormID — the exact
-    ''' paths <see cref="FaceGenBuilder.ResolveFaceGenPath"/> / the texture bake emit (Meshes\…\FaceGeom and
-    ''' Textures\…\FaceCustomization, filename <c>{formIdLow:X8}</c>). Best-effort: returns every candidate;
-    ''' the caller deletes those that exist. Empty when origin plugin or DataPath can't be resolved.</summary>
+    ''' <summary>Loose FaceGen bake files the app could have written for <paramref name="npcFormID"/>, under
+    ''' Data\ keyed by the record's ORIGIN plugin + FaceGen-local FormID. GAME-AWARE via
+    ''' <see cref="NpcFaceGenPacker.FaceGenFileSpecs"/> (FO4: FaceGeom NIF + FaceCustomization _d/_msn/_s;
+    ''' SSE: FaceGeom NIF + FaceGenData\FaceTint DDS), covering both the release and the <c>_2</c> debug
+    ''' variant of every file that has one. Best-effort: returns every candidate; the caller deletes those
+    ''' that exist. Empty when origin plugin or DataPath can't be resolved.</summary>
     Private Function ResolveNpcFaceGenLoosePaths(npcFormID As UInteger) As List(Of String)
         Dim paths As New List(Of String)
         If String.IsNullOrEmpty(_dataPath) Then Return paths
         Dim originPlugin = _pluginManager.GetOriginatingPluginName(npcFormID)
         If String.IsNullOrEmpty(originPlugin) Then Return paths
-        Dim idHex = PluginManager.ToFaceGenLocalFormID(npcFormID).ToString("X8")
+        Dim idLow = PluginManager.ToFaceGenLocalFormID(npcFormID)
+        Dim game = Config_App.Current.Game
 
-        Dim geomDir = IO.Path.Combine(_dataPath, "Meshes", "Actors", "Character", "FaceGenData", "FaceGeom", originPlugin)
-        paths.Add(IO.Path.Combine(geomDir, idHex & ".nif"))
-        paths.Add(IO.Path.Combine(geomDir, idHex & "_2.nif"))
-
-        Dim texDir = IO.Path.Combine(_dataPath, "Textures", "Actors", "Character", "FaceCustomization", originPlugin)
-        For Each suffix In {"_d.dds", "_msn.dds", "_s.dds", "_d_2.dds", "_msn_2.dds", "_s_2.dds"}
-            paths.Add(IO.Path.Combine(texDir, idHex & suffix))
+        ' Release names (debugSandbox:=False) + the debug _2 names — the bake may have written either.
+        For Each debugSandbox In {False, True}
+            For Each spec In NpcFaceGenPacker.FaceGenFileSpecs(game, originPlugin, idLow, debugSandbox)
+                Dim full = IO.Path.Combine(_dataPath, spec.Source)
+                If Not paths.Contains(full, StringComparer.OrdinalIgnoreCase) Then paths.Add(full)
+            Next
         Next
         Return paths
     End Function
@@ -10385,6 +10455,11 @@ Public Class MainForm
         ' SSE node transforms (body-scale) — keep across Save (no ESP equivalent; .jslot/sidecar-persisted).
         If overlay.SseNodeTransforms IsNot Nothing AndAlso overlay.SseNodeTransforms.Count > 0 Then
             residual.SseNodeTransforms = LooksmenuLoader.CloneSseNodeTransforms(overlay.SseNodeTransforms)
+            keptAnything = True
+        End If
+        ' SSE RaceMenu hair tint (packed RGB) — keep across Save (co-save data; .jslot/sidecar-persisted).
+        If overlay.SseHairColorRgb.HasValue Then
+            residual.SseHairColorRgb = overlay.SseHairColorRgb
             keptAnything = True
         End If
         ' SSE skin overrides (body-paint per slot) — keep across Save (no ESP equivalent; .jslot/sidecar-persisted).
@@ -10742,7 +10817,8 @@ Public Class MainForm
         Dim bundle As New NpcFaceGenPacker.BakedNpcBundle With {
             .OriginPlugin = originPlugin,
             .FormIdLow = formIdLow,
-            .DebugSandbox = FaceGenBuilder.DebugMode
+            .DebugSandbox = FaceGenBuilder.DebugMode,
+            .UsesSharedNeutralFacetint = bakeResult.UsedSharedNeutralFacetint
         }
         Return (True, False, bundle, "")
     End Function
