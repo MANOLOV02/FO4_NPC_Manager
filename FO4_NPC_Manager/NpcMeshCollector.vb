@@ -65,7 +65,8 @@ Friend NotInheritable Class NpcMeshCollector
         result.Warnings.AddRange(previewVariant.Warnings)
         result.SkeletonKey = _stateResolver.ResolveSkeletonKey(previewVariant.State, result.Warnings)
 
-        Dim candidates = CollectMeshCandidates(previewVariant.State, result.Warnings, previewVariant.UseFaceGen, previewVariant.OnlyFaceCollect, previewVariant.OnlyOutfitCollect)
+        Dim candidates = CollectMeshCandidates(previewVariant.State, result.Warnings, previewVariant.UseFaceGen, previewVariant.OnlyFaceCollect, previewVariant.OnlyOutfitCollect,
+                                               previewVariant.RaceFilterBypassArmaFormID)
 
         ' Engine-faithful, per-RACE head-part occlusion: RACE.DATA declares which worn biped slot hides each
         ' head-part channel (face-cull A, hair B, facial-hair C). Resolve the NPC's race once (cached parse;
@@ -288,7 +289,8 @@ Friend NotInheritable Class NpcMeshCollector
         Return result
     End Function
 
-    Private Function CollectMeshCandidates(state As MainForm.NPCVisualState, warnings As List(Of String), Optional useFaceGen As Boolean = False, Optional onlyFaceCollect As Boolean = False, Optional onlyOutfitCollect As Boolean = False) As List(Of MainForm.MeshCandidate)
+    Private Function CollectMeshCandidates(state As MainForm.NPCVisualState, warnings As List(Of String), Optional useFaceGen As Boolean = False, Optional onlyFaceCollect As Boolean = False, Optional onlyOutfitCollect As Boolean = False,
+                                           Optional raceFilterBypassArmaFormID As UInteger = 0UI) As List(Of MainForm.MeshCandidate)
         Dim candidates As New List(Of MainForm.MeshCandidate)
         Dim order As Integer = 0
 
@@ -300,7 +302,7 @@ Friend NotInheritable Class NpcMeshCollector
         ' OnlyFaceCollect: editor host / MainForm "Only Face" ComboBox. OnlyOutfitCollect: the Edit Outfit
         ' picker's "selected piece only". Both funnel here via MainForm.PreviewVariantDefinition — no parallel paths.
         If Not onlyFaceCollect AndAlso Not onlyOutfitCollect AndAlso state.SkinFormID <> 0UI Then
-            CollectArmoCandidates(state.SkinFormID, state, MainForm.MeshCandidateKind.Skin, candidates, order, warnings)
+            CollectArmoCandidates(state.SkinFormID, state, MainForm.MeshCandidateKind.Skin, candidates, order, warnings, raceFilterBypassArmaFormID)
         End If
 
         If Not onlyFaceCollect Then
@@ -308,7 +310,7 @@ Friend NotInheritable Class NpcMeshCollector
             ' These are the final ARMO FormIDs for this specific variant.
             If state.LoadoutArmorFormIDs.Count > 0 Then
                 For Each armoFormID In state.LoadoutArmorFormIDs
-                    CollectArmoCandidates(armoFormID, state, MainForm.MeshCandidateKind.Outfit, candidates, order, warnings)
+                    CollectArmoCandidates(armoFormID, state, MainForm.MeshCandidateKind.Outfit, candidates, order, warnings, raceFilterBypassArmaFormID)
                 Next
             ElseIf state.DefaultOutfitFormID <> 0UI Then
                 ' Fallback: read OTFT directly (for NPCs without leveled expansion)
@@ -318,7 +320,7 @@ Friend NotInheritable Class NpcMeshCollector
                 Else
                     Dim outfit = RecordParsers.ParseOTFT(outfitRec, _ctx.PluginManager)
                     For Each itemFormID In outfit.ItemFormIDs
-                        CollectArmoCandidates(itemFormID, state, MainForm.MeshCandidateKind.Outfit, candidates, order, warnings)
+                        CollectArmoCandidates(itemFormID, state, MainForm.MeshCandidateKind.Outfit, candidates, order, warnings, raceFilterBypassArmaFormID)
                     Next
                 End If
             End If
@@ -358,12 +360,16 @@ Friend NotInheritable Class NpcMeshCollector
                                                                AddressOf _ctx.ParseRaceCached, AddressOf _ctx.ParseHdptCached)
     End Function
 
+    ''' <param name="raceFilterBypassArmaFormID">Preview-only: the ONE ARMA (the ARMA editor's "Only Model"
+    ''' subject) that is collected even when the engine's per-ARMA race match rejects it. 0 = engine rule for
+    ''' every ARMA. See <see cref="NpcRenderHost.RaceFilterBypassArmaFormID"/>.</param>
     Friend Sub CollectArmoCandidates(armoFormID As UInteger,
                                       state As MainForm.NPCVisualState,
                                       kind As MainForm.MeshCandidateKind,
                                       candidates As List(Of MainForm.MeshCandidate),
                                       ByRef order As Integer,
-                                      warnings As List(Of String))
+                                      warnings As List(Of String),
+                                      Optional raceFilterBypassArmaFormID As UInteger = 0UI)
         Dim armo = _ctx.GetParsedArmo(armoFormID)
         If armo Is Nothing Then Return
 
@@ -489,7 +495,12 @@ Friend NotInheritable Class NpcMeshCollector
             ' model paths, so the bombín "human + robot" duplicate can be read off the log: which
             ' addons sit at this index, which races they accept, and whether a second ARMA is
             ' pulling in a 1st-person / facebones / robot-variant model.
-            Dim raceOk As Boolean = MainForm.ArmorAddonMatchesRace(arma, state.RaceFormID, _ctx.GetEffectiveArmorRaces(state.RaceFormID))
+            ' Engine rule, both games (RNAM + AdditionalRaces + the RACE.RNAM Armor-Race chain) — EXCEPT for the
+            ' one ARMA the ARMA editor is previewing in "Only Model" scope, which is shown regardless of race so
+            ' the user can see the mesh they're editing (see NpcRenderHost.RaceFilterBypassArmaFormID). No render
+            ' path outside that editor scope passes a nonzero bypass.
+            Dim raceOk As Boolean = MainForm.ArmorAddonMatchesRace(arma, state.RaceFormID, _ctx.GetEffectiveArmorRaces(state.RaceFormID)) _
+                                    OrElse (raceFilterBypassArmaFormID <> 0UI AndAlso armaFormID = raceFilterBypassArmaFormID)
             If Logger.Enabled Then
                 Dim a = arma
                 Dim afid = armaFormID

@@ -162,6 +162,9 @@ Public Class ArmaEditor_Form
 
         ' Skin & Material tab FormID pickers.
         AddHandler ButtonPickRace.Click, AddressOf OnPickRace
+        ' RNAM edited (picker or typed) ⇒ the race match can flip ⇒ re-gate the preview scopes. The Additional
+        ' Races list re-gates from RefreshAddRacesList.
+        AddHandler TextBoxRace.TextChanged, Sub() UpdatePreviewScopeGating()
         AddHandler ButtonPickSndd.Click, Sub() PickFidInto(TextBoxSndd, {"FSTS"}, "Select Footstep (FSTS)", allowNull:=True)
         AddHandler ButtonAddRace.Click, AddressOf OnAddRace
         AddHandler ButtonRemoveRace.Click, AddressOf OnRemoveRace
@@ -212,9 +215,8 @@ Public Class ArmaEditor_Form
         End If
         UpdateStatusBanner()
 
-        LabelPreviewHint.Text = If(_previewNpcFormID = 0UI,
-                                   "Select an NPC in the main window to preview.",
-                                   "Preview: this ARMA equipped on the current NPC.")
+        ' Preview hint + which scopes are offered both follow the race match — set together, from one place.
+        UpdatePreviewScopeGating()
 
         ' Snapshot the draft AS OPENED (pre-edit state) so a not-OK'd close can revert the live-commit mutations
         ' that the debounced preview writes back into the registered draft. Remember whether it's brand-new.
@@ -636,6 +638,7 @@ Public Class ArmaEditor_Form
         Finally
             _loading = False
         End Try
+        UpdatePreviewScopeGating()
     End Sub
 
     ''' <summary>Absolute sculpt rows for a gender, from the draft's BSMS delta block (delta + 1.0).</summary>
@@ -874,6 +877,41 @@ Public Class ArmaEditor_Form
         Finally
             ListAddRaces.EndUpdate()
         End Try
+        UpdatePreviewScopeGating()
+    End Sub
+
+    ''' <summary>True when the ARMA AS EDITED (RNAM + Additional Races straight off the panels, uncommitted)
+    ''' passes the engine's per-ARMA race match against the race the preview actor is actually rendered as
+    ''' (<see cref="MainForm.GetCurrentPreviewRaceFormID"/> — NOT <see cref="_raceFormID"/>, which is the owning
+    ''' ARMO's RNAM and can differ). Same rule in FO4 and Skyrim; nothing here is game-gated. No preview NPC ⇒
+    ''' race 0 ⇒ True (nothing to filter against).</summary>
+    Private Function ArmaFitsPreviewRace() As Boolean
+        Return _mainForm.IsArmaRaceCompatible(GetFid(TextBoxRace), _draft.AdditionalRaces, _mainForm.GetCurrentPreviewRaceFormID())
+    End Function
+
+    ''' <summary>Gate every preview control that composes the edited ARMA with the ACTOR on the race match.
+    ''' "Full armor" and "Full Outfit" render the ARMA the way an actor would wear it, so when the edited ARMA's
+    ''' race doesn't cover the preview NPC's race the engine (and our collector) drops it and both scopes render
+    ''' an ARMA-less body — nothing to see, no reason to offer them. "Include Body" is gated for the opposite
+    ''' reason: it would still draw a body, but the body comes from the preview NPC's SKIN (its own race), so the
+    ''' user would be looking at this ARMA's mesh sitting on ANOTHER race's body — a composite that exists nowhere
+    ''' in the game and reads as if the fit were valid. All three are disabled (Include Body also unchecked) and the
+    ''' scope snaps back to "Only Model", which bypasses the race filter for this one ARMA
+    ''' (<see cref="NpcRenderHost.RaceFilterBypassArmaFormID"/>) so the mesh being edited is always visible — alone.
+    ''' Re-evaluated on every race edit (RNAM field + Additional Races list), so fixing the race re-enables them.</summary>
+    Private Sub UpdatePreviewScopeGating()
+        Dim fits = ArmaFitsPreviewRace()
+        RadioFullArmor.Enabled = fits
+        RadioFullOutfit.Enabled = fits
+        CheckIncludeBody.Enabled = fits
+        If Not fits AndAlso Not RadioOnlyModel.Checked Then RadioOnlyModel.Checked = True
+        If Not fits AndAlso CheckIncludeBody.Checked Then CheckIncludeBody.Checked = False
+        LabelPreviewHint.Text = If(_previewNpcFormID = 0UI,
+                                   "Select an NPC in the main window to preview.",
+                                   If(fits,
+                                      "Preview: this ARMA equipped on the current NPC.",
+                                      "Preview: model only — this ARMA's race doesn't cover the current NPC's race, " &
+                                      "so the engine would not equip it (Full armor / Full Outfit / Include Body disabled)."))
     End Sub
 
     ''' <summary>"New / Edit MSWP…" for a gender: if the gender's field already points at an MSWP DRAFT, edit
@@ -1312,6 +1350,11 @@ Public Class ArmaEditor_Form
         _host.OnlyOutfitCollect = pieceScope AndAlso Not includeBody
         _host.Toggles.RenderBody = includeBody
         _host.PreviewGenderOverride = If(CheckShowOtherGender.Checked, CType(Not _isFemale, Boolean?), Nothing)
+        ' "Only Model" = show me THIS mesh: collect the edited ARMA even when its race doesn't cover the preview
+        ' actor's (otherwise an ARMA authored for another race renders nothing at all and there is no way to see
+        ' it). The engine-faithful scopes never bypass — and they're disabled outright when the race doesn't
+        ' match (UpdatePreviewScopeGating), so this is the only scope reachable in that state.
+        _host.RaceFilterBypassArmaFormID = If(RadioOnlyModel.Checked, _draft.FormID, 0UI)
     End Sub
 
     ' Scope radios + "Show other gender" change COLLECTION / gender resolution ⇒ full (debounced) re-render.
@@ -1374,6 +1417,7 @@ Public Class ArmaEditor_Form
             _draft.MaleModelFlags.ToString(CultureInfo.InvariantCulture), _draft.FemaleModelFlags.ToString(CultureInfo.InvariantCulture),
             If(_draft.NoUnderarmorScaling, "1", "0"),
             If(_host IsNot Nothing AndAlso _host.OnlyOutfitCollect, "oc1", "oc0"),
+            If(_host IsNot Nothing, "rb" & _host.RaceFilterBypassArmaFormID.ToString("X8"), "rb-"),
             If(_host IsNot Nothing AndAlso _host.PreviewGenderOverride.HasValue, "g" & _host.PreviewGenderOverride.Value.ToString(), "g-")})
     End Function
 

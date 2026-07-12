@@ -981,10 +981,20 @@ Public Class ArmoEditor_Form
             GridDamage.Rows.Add($"{DisplayFor(dr.DamageTypeFormID)} [0x{dr.DamageTypeFormID:X8}]",
                                 dr.Value.ToString(CultureInfo.InvariantCulture))
         Next
-        If selIdx >= 0 AndAlso selIdx < GridDamage.Rows.Count Then
-            GridDamage.Rows(selIdx).Selected = True
-            GridDamage.CurrentCell = GridDamage.Rows(selIdx).Cells(0)
-        End If
+        SelectGridRow(GridDamage, selIdx)
+    End Sub
+
+    ''' <summary>Restore a row selection after a Rows.Clear + re-add. The current cell MUST land on a VISIBLE
+    ''' column: <see cref="ConfigureForGame"/> hides the Addons grid's INDX column under Skyrim, and assigning
+    ''' CurrentCell to a cell in a hidden column throws InvalidOperationException ("Current cell cannot be set
+    ''' to an invisible cell"). FullRowSelect + read-only grids ⇒ any visible column is equivalent.
+    ''' No visible column at all ⇒ leave CurrentCell alone (the row still shows as selected).</summary>
+    Private Shared Sub SelectGridRow(grid As DataGridView, idx As Integer)
+        If idx < 0 OrElse idx >= grid.Rows.Count Then Return
+        grid.Rows(idx).Selected = True
+        Dim col = grid.Columns.GetFirstColumn(DataGridViewElementStates.Visible)
+        If col Is Nothing Then Return
+        grid.CurrentCell = grid.Rows(idx).Cells(col.Index)
     End Sub
 
     Private Function SelectedDamageIndex() As Integer
@@ -1047,10 +1057,7 @@ Public Class ArmoEditor_Form
                                 $"{DisplayFor(ad.ArmaFormID)} [0x{ad.ArmaFormID:X8}]",
                                 EffectiveSlotsText(ad.ArmaFormID))
         Next
-        If selIdx >= 0 AndAlso selIdx < GridAddons.Rows.Count Then
-            GridAddons.Rows(selIdx).Selected = True
-            GridAddons.CurrentCell = GridAddons.Rows(selIdx).Cells(0)
-        End If
+        SelectGridRow(GridAddons, selIdx)
     End Sub
 
     ''' <summary>The effective slot footprint shown read-only for an addon row: the ARMA's own BOD2 mask, or
@@ -1139,10 +1146,7 @@ Public Class ArmoEditor_Form
         _addons(i) = _addons(j)
         _addons(j) = tmp
         RefreshAddonsGrid()
-        If j < GridAddons.Rows.Count Then
-            GridAddons.Rows(j).Selected = True
-            GridAddons.CurrentCell = GridAddons.Rows(j).Cells(0)
-        End If
+        SelectGridRow(GridAddons, j)
         OnFieldEdited(Me, EventArgs.Empty)
     End Sub
 
@@ -1183,10 +1187,7 @@ Public Class ArmoEditor_Form
                                       c.Keywords.Count.ToString(CultureInfo.InvariantCulture),
                                       If(c.IsEditorOnly, "Yes", ""))
         Next
-        If selIdx >= 0 AndAlso selIdx < GridCombinations.Rows.Count Then
-            GridCombinations.Rows(selIdx).Selected = True
-            GridCombinations.CurrentCell = GridCombinations.Rows(selIdx).Cells(0)
-        End If
+        SelectGridRow(GridCombinations, selIdx)
     End Sub
 
     Private Function SelectedComboIndex() As Integer
@@ -1241,10 +1242,7 @@ Public Class ArmoEditor_Form
         _combinations(i) = _combinations(j)
         _combinations(j) = tmp
         RefreshCombinationsGrid()
-        If j < GridCombinations.Rows.Count Then
-            GridCombinations.Rows(j).Selected = True
-            GridCombinations.CurrentCell = GridCombinations.Rows(j).Cells(0)
-        End If
+        SelectGridRow(GridCombinations, j)
         MarkCombinationsEdited()
     End Sub
 

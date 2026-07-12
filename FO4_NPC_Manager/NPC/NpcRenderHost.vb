@@ -121,6 +121,16 @@ Friend Class NpcRenderHost
     ''' that the old RenderBody=False only hid post-collection.</summary>
     Public Property OnlyOutfitCollect As Boolean = False
 
+    ''' <summary>PREVIEW-ONLY escape hatch for the ARMA editor's "Only Model" scope: the ARMA with this FormID
+    ''' is collected even when its RNAM / AdditionalRaces don't cover the preview actor's race (the engine rule
+    ''' that <c>MainForm.ArmorAddonMatchesRace</c> enforces). Without it, editing an ARMA authored for another
+    ''' race renders NOTHING — the collector drops it before any mesh is loaded, so the user can't see the model
+    ''' they're editing. "Only Model" already renders a synthetic ARMO/OTFT that no engine ever sees, so the
+    ''' bypass changes nothing an actor would actually wear; the engine-faithful scopes ("Full armor" / "Full
+    ''' Outfit") never set this and stay strictly filtered. 0 (default, every non-editor host) = no bypass.
+    ''' Same rule in both games — the race match is not game-gated.</summary>
+    Public Property RaceFilterBypassArmaFormID As UInteger = 0UI
+
     ''' <summary>Preview-only gender override for the ARMA/ARMO editors' "Show other gender" toggle.
     ''' Nothing = render the NPC's own gender (default, main render path). True/False = force the preview
     ''' to a DEFAULT actor of that gender for the NPC's race (True=female, False=male) — NOT the source NPC

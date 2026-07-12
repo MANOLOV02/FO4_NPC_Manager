@@ -58,6 +58,7 @@ int appliedVersion = -1
 ; ApplyOverlays. (A plain variable, not a Property: Papyrus rejects doc strings on variables, hence
 ; this comment rather than a {...} block.)
 int[] myUids
+bool myUidsReady = false   ; no se puede hacer `myUids != None`: comparar un array contra None TIRA
 
 Event OnLoad()
     if appliedVersion == SchemaVersion
@@ -81,7 +82,7 @@ Function ApplyOverlays()
     ; The fix is NOT Overlays.RemoveAll(a, ...) — that would also delete overlays some OTHER mod put on
     ; this actor. Instead we remove precisely the uids we minted last time, which we remembered in the
     ; savegame. Anything anyone else added is untouched.
-    if myUids != None
+    if myUidsReady
         int u = 0
         while u < myUids.Length
             Overlays.Remove(a, IsFemale, myUids[u])
@@ -94,11 +95,9 @@ Function ApplyOverlays()
     ; and does not exist here.)
     myUids = new int[1]
     myUids.Clear()
+    myUidsReady = true
 
-    int n = 0
-    if OvlTemplate != None
-        n = OvlTemplate.Length
-    endif
+    int n = OvlTemplate.Length
     if n == 0
         Overlays.Update(a)
         return
@@ -139,50 +138,32 @@ Function ApplyOverlays()
             e.scale_u  = 1.0
             e.scale_v  = 1.0
 
-            if OvlPriority != None
-                if i < OvlPriority.Length
+            if i < OvlPriority.Length
                     e.priority = OvlPriority[i]
-                endif
             endif
-            if OvlRed != None
-                if i < OvlRed.Length
+            if i < OvlRed.Length
                     e.red = OvlRed[i]
-                endif
             endif
-            if OvlGreen != None
-                if i < OvlGreen.Length
+            if i < OvlGreen.Length
                     e.green = OvlGreen[i]
-                endif
             endif
-            if OvlBlue != None
-                if i < OvlBlue.Length
+            if i < OvlBlue.Length
                     e.blue = OvlBlue[i]
-                endif
             endif
-            if OvlAlpha != None
-                if i < OvlAlpha.Length
+            if i < OvlAlpha.Length
                     e.alpha = OvlAlpha[i]
-                endif
             endif
-            if OvlOffsetU != None
-                if i < OvlOffsetU.Length
+            if i < OvlOffsetU.Length
                     e.offset_u = OvlOffsetU[i]
-                endif
             endif
-            if OvlOffsetV != None
-                if i < OvlOffsetV.Length
+            if i < OvlOffsetV.Length
                     e.offset_v = OvlOffsetV[i]
-                endif
             endif
-            if OvlScaleU != None
-                if i < OvlScaleU.Length
+            if i < OvlScaleU.Length
                     e.scale_u = OvlScaleU[i]
-                endif
             endif
-            if OvlScaleV != None
-                if i < OvlScaleV.Length
+            if i < OvlScaleV.Length
                     e.scale_v = OvlScaleV[i]
-                endif
             endif
 
             myUids.Add(Overlays.Add(a, IsFemale, e))

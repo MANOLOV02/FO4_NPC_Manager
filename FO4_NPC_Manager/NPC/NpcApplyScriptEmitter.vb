@@ -80,37 +80,47 @@ Public Module NpcApplyScriptEmitter
         Return SseOverlayCompositor.IsFaceOverlayNodeName(nodeName)
     End Function
 
-    ''' <summary>⛔ NEVER EMIT A ZERO-LENGTH ARRAY PROPERTY. Skyrim's Papyrus has no zero-length arrays, so a
-    ''' VMAD array property with count 0 fails to initialize — the VM logs "cannot be initialized because the
-    ''' value is the incorrect type" and leaves the property None. Worse, that poisons the whole script
-    ''' instance: every other array property reads back as None too, and the apply silently does nothing.
-    ''' (MEASURED: an NPC with overlays + node transforms but no skin overrides emitted 5 empty Skin* arrays;
-    ''' the log then showed 20 "Cannot cast from None to X[]" errors and the node rotations never applied.)
+    ''' <summary>⛔⛔ UNA ARRAY-PROPERTY NUNCA VA VACÍA **NI AUSENTE**. Cuando no hay datos se emite un array de
+    ''' UN elemento CENTINELA que el script saltea solo ("" para nombres, 0 para slots/valores).
     '''
-    ''' <para>Fallout 4's arrays are resizable and tolerate empty, which is exactly why the FO4 script worked
-    ''' while the SSE one did not — but we omit empties in BOTH games, because a property that is simply
-    ''' absent is what both scripts already handle (they guard every array with <c>!= None</c>).</para>
+    ''' <para>Papyrus de Skyrim deja exactamente esa única salida, encerrado entre dos reglas — las dos MEDIDAS
+    ''' en Papyrus.0.log, no supuestas:</para>
+    ''' <list type="number">
+    ''' <item>Un array de longitud 0 es ILEGAL: la propiedad falla al inicializar ("cannot be initialized
+    ''' because the value is the incorrect type") y queda en None. Peor: envenena la instancia entera y TODAS
+    ''' las demás arrays se leen como None.</item>
+    ''' <item>Una propiedad AUSENTE también queda en None — y en Skyrim <c>if X == None</c> sobre un
+    ''' array-property en None <b>TIRA</b> ("Cannot cast from None to Int[]"). O sea: el guard con el que uno se
+    ''' protege ES lo que explota. No hay forma de chequear "está vacía" sin reventar.</item>
+    ''' </list>
     '''
-    ''' <para>These helpers are the ONLY way array properties get added. Do not call
-    ''' <c>VmadPropertySpec.From*Array</c> directly from the builders.</para></summary>
+    ''' <para>Omitir era mi fix del bug (1) y provocó el bug (2). El centinela satisface las dos: la propiedad
+    ''' SIEMPRE existe y NUNCA está vacía, así que nunca es None y nunca falla al inicializar. El script ya
+    ''' saltea esos elementos (<c>if node != ""</c>, <c>if slot != 0</c>) sin ningún código nuevo.</para>
+    '''
+    ''' <para>Fallout 4 tolera arrays vacíos (los suyos son redimensionables) — pero el centinela se emite en
+    ''' AMBOS juegos: una sola ley, y una regla menos que recordar.</para>
+    '''
+    ''' <para>Estos helpers son la ÚNICA vía por la que se agrega una array-property. NO llamar a
+    ''' <c>VmadPropertySpec.From*Array</c> directo desde los builders.</para></summary>
     Private Sub AddArray(props As List(Of NpcVmadBuilder.VmadPropertySpec), name As String, values As List(Of String))
-        If values Is Nothing OrElse values.Count = 0 Then Return
-        props.Add(NpcVmadBuilder.VmadPropertySpec.FromStringArray(name, values))
+        Dim v = If(values Is Nothing OrElse values.Count = 0, New List(Of String) From {""}, values)
+        props.Add(NpcVmadBuilder.VmadPropertySpec.FromStringArray(name, v))
     End Sub
 
     Private Sub AddArray(props As List(Of NpcVmadBuilder.VmadPropertySpec), name As String, values As List(Of Integer))
-        If values Is Nothing OrElse values.Count = 0 Then Return
-        props.Add(NpcVmadBuilder.VmadPropertySpec.FromIntArray(name, values))
+        Dim v = If(values Is Nothing OrElse values.Count = 0, New List(Of Integer) From {0}, values)
+        props.Add(NpcVmadBuilder.VmadPropertySpec.FromIntArray(name, v))
     End Sub
 
     Private Sub AddArray(props As List(Of NpcVmadBuilder.VmadPropertySpec), name As String, values As List(Of Single))
-        If values Is Nothing OrElse values.Count = 0 Then Return
-        props.Add(NpcVmadBuilder.VmadPropertySpec.FromFloatArray(name, values))
+        Dim v = If(values Is Nothing OrElse values.Count = 0, New List(Of Single) From {0.0F}, values)
+        props.Add(NpcVmadBuilder.VmadPropertySpec.FromFloatArray(name, v))
     End Sub
 
     Private Sub AddArray(props As List(Of NpcVmadBuilder.VmadPropertySpec), name As String, values As List(Of Boolean))
-        If values Is Nothing OrElse values.Count = 0 Then Return
-        props.Add(NpcVmadBuilder.VmadPropertySpec.FromBoolArray(name, values))
+        Dim v = If(values Is Nothing OrElse values.Count = 0, New List(Of Boolean) From {False}, values)
+        props.Add(NpcVmadBuilder.VmadPropertySpec.FromBoolArray(name, v))
     End Sub
 
     ''' <summary>Pack a 0..1 RGBA tint into skee's 0xAARRGGBB int (kParam_ShaderTintColor, key 7).</summary>

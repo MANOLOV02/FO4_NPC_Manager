@@ -540,6 +540,9 @@ Public Class MainForm
         ''' <summary>When True, <see cref="CollectMeshCandidates"/> collects ONLY the outfit (skips Skin,
         ''' HeadParts and robot chunks) — used by the Edit Outfit "selected piece only" preview.</summary>
         Public OnlyOutfitCollect As Boolean = False
+        ''' <summary>Preview-only: collect THIS ARMA even if its race doesn't match the actor's
+        ''' (<see cref="NpcRenderHost.RaceFilterBypassArmaFormID"/>). 0 = the engine rule applies to every ARMA.</summary>
+        Public RaceFilterBypassArmaFormID As UInteger = 0UI
         Public ReadOnly Warnings As New List(Of String)
     End Class
 
@@ -2498,6 +2501,15 @@ Public Class MainForm
     Friend Function GetCurrentPreviewSkinFormID() As UInteger
         Dim st = If(_renderHost.CurrentBaseState, _renderHost.LastRenderedState)
         Return If(st IsNot Nothing, st.SkinFormID, 0UI)
+    End Function
+
+    ''' <summary>The race the preview actor is ACTUALLY rendered as — the same <c>state.RaceFormID</c> the mesh
+    ''' collector gates every ARMA against. NOT the same as the race an editor was opened with (the ARMA/ARMO
+    ''' editors are handed the owning ARMO's RNAM, which may differ), so any UI that mirrors the render's race
+    ''' filter must read it from here. 0 when no NPC is loaded.</summary>
+    Friend Function GetCurrentPreviewRaceFormID() As UInteger
+        Dim st = If(_renderHost.CurrentBaseState, _renderHost.LastRenderedState)
+        Return If(st IsNot Nothing, st.RaceFormID, 0UI)
     End Function
 
     ''' <summary>The in-memory MSWP draft for <paramref name="formID"/>, or Nothing. Mirror of <see cref="TryGetArmoDraft"/>.</summary>
@@ -5066,7 +5078,8 @@ Public Class MainForm
             .State = state,
             .UseFaceGen = useFaceGen,
             .OnlyFaceCollect = onlyFaceCollect,
-            .OnlyOutfitCollect = onlyOutfitCollect
+            .OnlyOutfitCollect = onlyOutfitCollect,
+            .RaceFilterBypassArmaFormID = host.RaceFilterBypassArmaFormID
         }
 
         SetStatus($"Rendering {previewVariant.DisplayName}...")
@@ -7180,6 +7193,18 @@ Public Class MainForm
         End Try
         If arma Is Nothing Then Return False
         Return ArmorAddonMatchesRace(arma, raceFid, _ctx.GetEffectiveArmorRaces(raceFid))
+    End Function
+
+    ''' <summary>Same per-ARMA race rule as <see cref="IsArmaRaceCompatible"/> (RNAM + AdditionalRaces + the
+    ''' RACE.RNAM Armor-Race redirect chain, identical in FO4 and Skyrim), but evaluated over LOOSE race fields
+    ''' instead of a parsed record — for an ARMA draft whose panels are not committed yet, where the FormID would
+    ''' still resolve to the pre-edit values. <paramref name="raceFid"/> = 0 → True (no filtering).</summary>
+    Friend Function IsArmaRaceCompatible(armaRaceFormID As UInteger, additionalRaces As IEnumerable(Of UInteger),
+                                         raceFid As UInteger) As Boolean
+        If raceFid = 0UI Then Return True
+        Dim probe As New ARMA_Data With {.RaceFormID = armaRaceFormID}
+        If additionalRaces IsNot Nothing Then probe.AdditionalRaces.AddRange(additionalRaces)
+        Return ArmorAddonMatchesRace(probe, raceFid, _ctx.GetEffectiveArmorRaces(raceFid))
     End Function
 
     ''' <summary>True if an ARMO is wearable by <paramref name="raceFid"/> for the FormIdPicker race filter. An

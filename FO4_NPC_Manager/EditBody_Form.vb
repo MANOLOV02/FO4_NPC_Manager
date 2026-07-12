@@ -184,7 +184,7 @@ Public Class EditBody_Form
         ' Seed missing slots in the overlay from the NPC's current effective values, so the
         ' sliders open at the NPC's real state instead of all zeros. Only fills slots the
         ' overlay didn't already define (preserves any prior preset/edit).
-        SeedOverlayFromInitial(p, initial)
+        SeedOverlayFromInitial(p, initial, seedMrsv:=Not _isSSE)
 
 
         ApplyAvailability(hasMwgt, hasMrsv, _availableSliders.Count > 0)
@@ -386,19 +386,28 @@ Public Class EditBody_Form
     ''' Edit Body declares ownership of MRSV. If the user adjusts sliders to all zero (or starts
     ''' from an empty MRSV race) and clicks OK, the resulting overlay must wipe MRSV on the NPC,
     ''' not preserve raw — Has*=True is what tells ApplyPresetOverlayToNpcData "treat the list
-    ''' as authoritative even when empty".</summary>
-    Private Shared Sub SeedOverlayFromInitial(p As LooksmenuLoader.LooksmenuPreset, initial As InitialValues)
+    ''' as authoritative even when empty".
+    '''
+    ''' <paramref name="seedMrsv"/> = False under SKYRIM: MRSV does not exist in the TES5 NPC_ schema
+    ''' (it is FO4-only, wbDefinitionsFO4.pas:10793 'Body Morph Region Values'), and the MRSV section is
+    ''' not even built there. Seeding it anyway wrote 5 zero floats + ownership into the overlay, which the
+    ''' NPC_ writer then emitted as a real MRSV subrecord into the SSE plugin — xEdit flags the record as
+    ''' erroneous. Under Skyrim the channel is left untouched: no values, no ownership claim.</summary>
+    Private Shared Sub SeedOverlayFromInitial(p As LooksmenuLoader.LooksmenuPreset, initial As InitialValues,
+                                              seedMrsv As Boolean)
         If initial Is Nothing Then Return
         If Not p.WeightThin.HasValue Then p.WeightThin = initial.Thin
         If Not p.WeightMuscular.HasValue Then p.WeightMuscular = initial.Muscular
         If Not p.WeightFat.HasValue Then p.WeightFat = initial.Fat
-        If p.BodyMorphValues.Count = 0 AndAlso initial.Mrsv IsNot Nothing Then
-            ' Always carry exactly 5 slots (vanilla MRSV layout), zero-padding if needed.
-            For i = 0 To 4
-                p.BodyMorphValues.Add(If(i < initial.Mrsv.Length, initial.Mrsv(i), 0.0F))
-            Next
+        If seedMrsv Then
+            If p.BodyMorphValues.Count = 0 AndAlso initial.Mrsv IsNot Nothing Then
+                ' Always carry exactly 5 slots (vanilla MRSV layout), zero-padding if needed.
+                For i = 0 To 4
+                    p.BodyMorphValues.Add(If(i < initial.Mrsv.Length, initial.Mrsv(i), 0.0F))
+                Next
+            End If
+            p.HasBodyMorphValues = True
         End If
-        p.HasBodyMorphValues = True
         If p.BodyMorphSliders.Count = 0 AndAlso initial.BodySlide IsNot Nothing Then
             For Each kv In initial.BodySlide
                 p.BodyMorphSliders(kv.Key) = kv.Value
@@ -904,14 +913,17 @@ Public Class EditBody_Form
             End If
 
             ' MRSV — back to initial 5-region values. ApplyPresetOverlayToNpcData reads
-            ' BodyMorphValues positionally, so we keep exactly 5 entries.
-            p.BodyMorphValues.Clear()
-            For i = 0 To 4
-                Dim v As Single = If(_initialSeed IsNot Nothing AndAlso _initialSeed.Mrsv IsNot Nothing AndAlso i < _initialSeed.Mrsv.Length, _initialSeed.Mrsv(i), 0.0F)
-                p.BodyMorphValues.Add(v)
-                If i < _mrsvBars.Length AndAlso _mrsvBars(i) IsNot Nothing Then _mrsvBars(i).Value = v
-            Next
-            p.HasBodyMorphValues = True
+            ' BodyMorphValues positionally, so we keep exactly 5 entries. Skipped under Skyrim, where the
+            ' channel doesn't exist and must stay untouched (see SeedOverlayFromInitial's seedMrsv).
+            If Not _isSSE Then
+                p.BodyMorphValues.Clear()
+                For i = 0 To 4
+                    Dim v As Single = If(_initialSeed IsNot Nothing AndAlso _initialSeed.Mrsv IsNot Nothing AndAlso i < _initialSeed.Mrsv.Length, _initialSeed.Mrsv(i), 0.0F)
+                    p.BodyMorphValues.Add(v)
+                    If i < _mrsvBars.Length AndAlso _mrsvBars(i) IsNot Nothing Then _mrsvBars(i).Value = v
+                Next
+                p.HasBodyMorphValues = True
+            End If
 
             ' Skin combos — revert to the prior overlay's choices. Without a prior overlay the
             ' user-explicit override is cleared (Nothing) so the combo falls back to the NPC's

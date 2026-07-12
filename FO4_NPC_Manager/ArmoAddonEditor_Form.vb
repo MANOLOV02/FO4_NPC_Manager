@@ -48,11 +48,25 @@ Public Class ArmoAddonEditor_Form
         Dim src = If(entry, New ARMO_AddonEntry())
         _armaFormID = src.ArmaFormID
         NumIndex.Value = ClampDec(src.AddonIndex, NumIndex)
+        ConfigureForGame()
         RenderArma()
 
         AddHandler ButtonPickArma.Click, AddressOf OnPickArma
         AddHandler ButtonEditArma.Click, AddressOf OnEditArma
         AddHandler ButtonOk.Click, AddressOf OnOk
+    End Sub
+
+    ''' <summary>Game-gate the addon entry: under SKYRIM an ARMO's Armature is a plain RArray of MODL FormIDs —
+    ''' there is NO INDX (wbDefinitionsTES5.pas:4400), and <c>SaveNpcEspWriter.EmitArmoModels</c> never writes one.
+    ''' So the Addon Index field is hidden, exactly like the Addons grid's INDX column
+    ''' (<see cref="ArmoEditor_Form.ConfigureForGame"/>): a field the Skyrim serializer never reads must not be on
+    ''' screen, or a value typed there reads as applied when it is silently dropped. The addon entry keeps carrying
+    ''' AddonIndex in memory (0 for Skyrim ARMAs, as parsed) — this hides the AUTHORING surface, it does not change
+    ''' the model. FO4 is unchanged.</summary>
+    Private Sub ConfigureForGame()
+        If Config_App.Current.Game <> Config_App.Game_Enum.Skyrim Then Return
+        LabelIndex.Visible = False
+        NumIndex.Visible = False
     End Sub
 
     Private Sub RenderArma()
