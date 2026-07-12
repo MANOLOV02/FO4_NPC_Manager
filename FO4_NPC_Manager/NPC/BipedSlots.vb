@@ -51,8 +51,10 @@ Public Module BipedSlots
     ' Las tablas NO salen de las RACE (la RACE sólo REFERENCIA slots vía sus occlusion biped objects
     ' Head/Hair/Body — reference_sse_engine_occlusion_re); los slots los define el formato del juego.
     ' Cada slot cae en una REGIÓN según su nombre declarado: Hair/Head/Circlet/Ears→Headwear,
-    ' Body/Feet/Calves→Body, Hands/Forearms→Hands, [U]→Under, [A]→Over, Amulet/Ring/Shield→Accessory.
-    ' (FO4 conserva 2 agrupaciones de la app documentadas: Ring→Hands "va en la mano", Scalp→Body overlay.)
+    ' Body/Feet/Calves→Body, Hands/Forearms→Hands, [U]→Under, [A]→Over, Ring/Shield/Tail→Accessory.
+    ' (FO4 conserva 2 agrupaciones de la app documentadas: Ring→Hands "va en la mano", Scalp→Body overlay.
+    '  Skyrim conserva 1: Amulet→Headwear, misma regla que el Neck de FO4 — las prendas de cuello se
+    '  ocultan con "Render headwear".)
     ' ════════════════════════════════════════════════════════════════════════════════════════════
     Public Enum BipedRegion
         None = 0
@@ -104,7 +106,8 @@ Public Module BipedSlots
         r(2) = BipedRegion.Body       ' 32 Body
         r(3) = BipedRegion.Hands      ' 33 Hands
         r(4) = BipedRegion.Hands      ' 34 Forearms
-        r(5) = BipedRegion.Accessory  ' 35 Amulet
+        r(5) = BipedRegion.Headwear   ' 35 Amulet — collar/colgante: va con "Render headwear", igual que el
+                                      '    slot 50 (Neck) de FO4, que ya está en HEADWEAR_MASK por la misma razón.
         r(6) = BipedRegion.Accessory  ' 36 Ring
         r(7) = BipedRegion.Body       ' 37 Feet
         r(8) = BipedRegion.Body       ' 38 Calves

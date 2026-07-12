@@ -1,0 +1,104 @@
+# Papyrus — apply-scripts para lo que no entra en el record ni se puede hornear
+
+Un script **por juego**. No son portes uno del otro: RaceMenu (`NiOverride`, ~180 funciones) y
+LooksMenu (`Overlays` + `BodyGen`, 20) exponen APIs distintas y **capacidades distintas**.
+
+| Subsistema | SSE (RaceMenu) | FO4 (LooksMenu) |
+|---|---|---|
+| Overlays / tatuajes | ✅ textura + tint + alpha | ✅ template + tint + **UV** + **priority** |
+| Skin override | ✅ per-slot (diffuse/normal/tint) | ⚠️ **solo por id de template** (el per-slot es Scaleform-only) |
+| Node transforms | ✅ escala + posición + rotación | ❌ **no existen en FO4** (`#ifdef _TRANSFORMS`, sin API, sin co-save) |
+
+## Lo que los scripts NO hacen (a propósito — se entrega por otra vía)
+
+- **Body morphs** → ya los aplica el par BodyGen `morphs.ini`/`templates.ini` que escribe la app.
+- **Cara entera** (morphs, sculpt, tints, **face overlays**) → ya está **horneada** en el NIF/texturas
+  del FaceGen.
+
+⚠️ **El emisor debe pasar SOLO nodos de overlay Body/Hands/Feet.** Los nodos `Face [Ovl*]` ya están
+horneados en el diffuse de la cabeza (`SseOverlayCompositor.HasBakeableFaceOverlays` filtra por
+`NodeName.StartsWith("Face")`). Mandarlos también por script los aplicaría **dos veces**: horneados
+en la textura + otra vez como decal vivo encima. Salvedad: ese bake está gateado por
+`Setting_BakeSseRaceMenuOverlays`; si el usuario lo apaga, ahí sí hay que emitirlos.
+
+## Enganche
+
+El script se cuelga del record `NPC_` vía el subrecord `VMAD` (ver `NpcVmadBuilder.vb`). Un script
+en el ActorBase lo heredan todas las instancias, y como el tipo Papyrus `Actor` extiende
+`ObjectReference`, recibe eventos por-instancia — por eso `OnLoad()` corre en cada actor spawneado.
+Verificado contra vanilla: 805/5118 NPC_ de Skyrim.esm y 382/3015 de Fallout4.esm ya traen scripts
+colgados así (`defaultGhostScript`, `TeleportActorScript`, `WorkshopNPCScript`, …).
+
+Los datos por-NPC viajan como **propiedades del script dentro del mismo VMAD** (Papyrus no puede
+leer archivos). Arrays paralelos: el índice `i` de cada `Ovl*` describe el overlay `i`.
+
+## Los .pex van EMBEBIDOS en la DLL
+
+`pex_sse/NPCM_Manolov_ApplySSE.pex` y `pex_fo4/NPCM_Manolov_ApplyFO4.pex` se compilan acá y el
+`.vbproj` los mete como **EmbeddedResource** dentro de `NPC_Manager_FO4.dll`
+(`LogicalName = NpcManager.Papyrus.<script>.pex`). En el Save ESP,
+`NpcApplyScriptEmitter.InstallPex` los extrae de memoria y los escribe en `Data\Scripts\`.
+
+**No** se copian sueltos al lado del `.exe`. Dos motivos, y el segundo es el que importa:
+
+1. No hay carpeta suelta que se pierda al mover o distribuir la app.
+2. El `.pex` **no puede desincronizarse** de la build que emitió el VMAD que lo referencia. Un `.pex`
+   viejo al lado de una app nueva ignoraría en silencio las propiedades que no conoce: el script
+   correría, no aplicaría nada, y no reportaría nada. Ese es el peor modo de falla posible, así que
+   lo hacemos irrepresentable.
+
+⇒ **Después de recompilar los `.psc`, hay que rebuildear la app** para que el `.pex` nuevo entre en
+la DLL.
+
+## ⛔ NUNCA shippear los .pex de los stubs
+
+`src_sse/NiOverride.psc`, `src_fo4/Overlays.psc`, `src_fo4/BodyGen.psc` (y `ArmorAddon.psc`) son
+**stubs de compilación**: declaraciones `global native` transcritas 1:1 desde el C++ de RaceMenu/
+LooksMenu. Existen sólo para que el compilador resuelva las llamadas.
+
+**Sus `.pex` compilados NO van al usuario.** Los archivos sueltos le ganan al BSA/BA2, así que copiar
+nuestro `NiOverride.pex` pisaría la implementación real de RaceMenu y rompería el mod entero. Por eso
+el paso de compilación termina **borrando** los `.pex` de los stubs, y `pex_sse/` y `pex_fo4/`
+contienen únicamente `NPCM_Manolov_Apply*.pex` (que son los únicos dos que el `.vbproj` embebe).
+
+Lo único que se instala en el juego es:
+
+- SSE → `Data\Scripts\NPCM_Manolov_ApplySSE.pex`
+- FO4 → `Data\Scripts\NPCM_Manolov_ApplyFO4.pex`
+
+## Recompilar
+
+```powershell
+# SSE
+& "F:\SteamLibrary\steamapps\common\Skyrim Special Edition\Papyrus Compiler\PapyrusCompiler.exe" `
+  "src_sse" -f="TESV_Papyrus_Flags.flg" `
+  -i="F:\SteamLibrary\steamapps\common\Skyrim Special Edition\Data\Source\Scripts;src_sse" `
+  -o="pex_sse" -all
+
+# FO4
+& "F:\SteamLibrary\steamapps\common\Fallout 4\Papyrus Compiler\PapyrusCompiler.exe" `
+  "src_fo4" -f="Institute_Papyrus_Flags.flg" `
+  -i="F:\SteamLibrary\steamapps\common\Fallout 4\Data\Scripts\Source\Base;src_fo4" `
+  -o="pex_fo4" -all
+```
+Después **borrar los `.pex` de los stubs** de las carpetas de salida (ver arriba).
+
+## Dependencia: blanda, no dura
+
+El ESP **no lleva master** de RaceMenu/LooksMenu (no referenciamos ninguno de sus forms). Si el
+plugin SKSE/F4SE no está instalado, la clase nativa no se registra y la llamada falla: el NPC queda
+sin overlays, pero el record y el FaceGen horneado siguen intactos. No agrega ninguna dependencia
+nueva — BodyGen, que ya emitimos, también necesita el plugin.
+
+*(Pendiente de verificar: el modo de fallo exacto sin el plugin — si la VM loguea y sigue, o aborta
+el stack del script. Se comprueba corriendo sin SKSE y mirando `Papyrus.0.log`.)*
+
+## ⚠️ Pendiente antes de que el emisor use ROTACIÓN (SSE)
+
+`NiOverride.AddNodeTransformRotation` toma **3 ángulos euler en GRADOS** (heading/attitude/bank) y
+arma la matriz él mismo (`NiTransformInterface.cpp:1019-1034`) — **no** acepta la matriz de 9 floats
+que guarda el `.jslot`. Nuestro modelo guarda axis-angle y la UI muestra euler XYZ.
+
+Falta verificar que el orden euler de `NiMatrix33::SetEulerAngles(heading, attitude, bank)` coincida
+con el de nuestro `Matrix33ToEulerXYZ`. Si no coincide, la rotación sale mal. **Escala y posición no
+tienen esta ambigüedad** y se pueden emitir ya.

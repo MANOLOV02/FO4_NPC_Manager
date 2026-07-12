@@ -89,6 +89,10 @@ Public Module NpcOverrideSaver
         ''' <summary>MainForm helper: copy round-trip-only fields (Vmad, Acbs trailing, OBND,
         ''' Object Template raw, factions, AI data) from raw onto shadow.</summary>
         Public CopyRoundTripOnlyFieldsFromRaw As Action(Of NPC_Data, NPC_Data)
+        ''' <summary>Set by <see cref="BuildOverrideEntry"/> when at least one NPC got our Papyrus apply-script
+        ''' attached to its VMAD. The compiled .pex is then installed ONCE into <c>Data\Scripts\</c> — no point
+        ''' copying it when no record references it.</summary>
+        Public WroteApplyScript As Boolean
         ''' <summary>MainForm helper: rebuild the parser's parallel collections (TintLayerStructs,
         ''' FaceMorphTrailingBytes, MorphKeysOrdered) on the shadow after overlay copy.</summary>
         Public SyncParallelCollectionsAfterOverlay As Action(Of NPC_Data)
@@ -919,6 +923,24 @@ Public Module NpcOverrideSaver
             End If
         End If
 
+        ' Install the compiled apply-script, but ONLY if a record actually references it (ctx.WroteApplyScript
+        ' is set per-NPC in BuildOverrideEntry). Game-aware: NPCM_Manolov_ApplySSE.pex for Skyrim,
+        ' NPCM_Manolov_ApplyFO4.pex for FO4 — both into Data\Scripts\. NEVER the native stubs
+        ' (NiOverride/Overlays/BodyGen): a loose .pex shadows the BSA/BA2, so shipping our transcribed stub
+        ' would replace RaceMenu's/LooksMenu's real implementation. See Papyrus\README.md.
+        If ctx.WroteApplyScript Then
+            ReportPhase(progress, "Writing apply-script…", IO.Path.GetFileName(target.TargetPath))
+            Dim installed = NpcApplyScriptEmitter.InstallPex(ctx.DataPath, Config_App.Current.Game)
+            If installed Is Nothing Then
+                ' The VMAD references a script whose .pex we could not ship — the engine would log a missing
+                ' script and apply nothing. Loud, because the plugin is otherwise silently half-broken.
+                Throw New IO.FileNotFoundException(
+                    "The NPC records reference our Papyrus apply-script, but its compiled .pex is not embedded " &
+                    "in this build. Re-run the Papyrus compile step so the .pex exists before building (see " &
+                    "Papyrus\README.md), or turn off ""Emit apply-script"" in the Save ESP dialog.")
+            End If
+        End If
+
         result.VerifierIcon = MessageBoxIcon.Information
         result.ChargenSuccess = True
     End Sub
@@ -944,6 +966,19 @@ Public Module NpcOverrideSaver
         ' the user's Name/ACBS/identity/keyword/faction/inventory/OBTS edits win over the source record without
         ' the round-trip copy above being altered. No-op when no override was authored for this NPC.
         ctx.ApplyNpcRecordOverride?.Invoke(npcSpec, npcFormID)
+
+        ' Phase 1a'': attach (or strip) our Papyrus apply-script on the NPC_'s VMAD, so the engine applies on
+        ' FIRST SPAWN the RaceMenu/LooksMenu options with no other delivery route — overlays, skin overrides,
+        ' and (SSE only) node transforms. Runs AFTER the round-trip copy, which is what put the source record's
+        ' VMAD on the shadow: NpcVmadBuilder.UpsertScript preserves every vanilla / other-mod script byte-for-byte
+        ' and rewrites only ours, so this is idempotent across repeated saves. Unchecking the option strips a
+        ' previously-emitted script instead of leaving it stale. True no-op for an NPC with nothing to apply.
+        Dim lmPreset As LooksmenuLoader.LooksmenuPreset = Nothing
+        ctx.AppliedPresets?.TryGetValue(npcFormID, lmPreset)
+        If NpcApplyScriptEmitter.ApplyToNpc(npcSpec, lmPreset, Config_App.Current.Game,
+                                            target.EmitApplyScript) Then
+            ctx.WroteApplyScript = True   ' at least one NPC carries it → the .pex must be installed
+        End If
 
         ' Reconcile the IsCharGenFacePreset overlay edit into the ACBS struct the writer emits.
         ' ApplyPresetOverlayToNpcData sets only the AcbsFlags mirror; EmitAcbs writes Acbs.Flags, and
@@ -1099,16 +1134,24 @@ Public Module NpcOverrideSaver
 
     ''' <summary>Shallow copy of an <see cref="NPC_AcbsData"/> with an overridden Flags value. Used to
     ''' apply the IsCharGenFacePreset overlay edit without mutating the raw parse's shared Acbs instance.
-    ''' Byte-array fields (Unknown18/TrailingBytes) are emit-only, so sharing the references is safe.</summary>
+    ''' Byte-array fields (Unknown18/TrailingBytes) are emit-only, so sharing the references is safe.
+    ''' EVERY field must be copied, including the game's OTHER layout: ACBS is game-aware (FO4 20B has
+    ''' XpValueOffset; SSE 24B has Magicka/Stamina/Health offsets + SpeedMultiplier), and a field left out
+    ''' here is written to the ESP as 0 — e.g. a Skyrim NPC would lose its Speed Multiplier (usually 100).
+    ''' Same bug class as the DnamRawSse shadow-drop (see MainForm.CopyRoundTripOnlyFieldsFromRaw).</summary>
     Private Function CloneAcbsWithFlags(src As NPC_AcbsData, flags As UInteger) As NPC_AcbsData
         Return New NPC_AcbsData With {
             .Flags = flags,
             .XpValueOffset = src.XpValueOffset,
+            .MagickaOffset = src.MagickaOffset,
+            .StaminaOffset = src.StaminaOffset,
             .LevelOrLevelMult = src.LevelOrLevelMult,
             .CalcMinLevel = src.CalcMinLevel,
             .CalcMaxLevel = src.CalcMaxLevel,
+            .SpeedMultiplier = src.SpeedMultiplier,
             .DispositionBase = src.DispositionBase,
             .TemplateFlags = src.TemplateFlags,
+            .HealthOffset = src.HealthOffset,
             .BleedoutOverride = src.BleedoutOverride,
             .Unknown18 = src.Unknown18,
             .TrailingBytes = src.TrailingBytes

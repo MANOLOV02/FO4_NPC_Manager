@@ -202,12 +202,20 @@ Public Class SaveEsp_Form
         ''' sidecar carries F4SE-only fields that have no record equivalent so re-opening the
         ''' ESP in NPC_Manager restores the slider state. Default True.</summary>
         Public WriteBssliders As Boolean
-        ''' <summary>When True the orchestrator emits the F4SE BodyGen .ini pair
-        ''' (<c>Data\F4SE\Plugins\F4EE\BodyGen\&lt;plugin&gt;\templates.ini</c> +
-        ''' <c>morphs.ini</c>) so LooksMenu applies the sliders to NPCs on first-load in NEW
-        ''' saves. Opt-in (default False); does not apply retroactively to actors already
-        ''' spawned in a saved game.</summary>
+        ''' <summary>When True the orchestrator emits the BodyGen .ini pair (<c>templates.ini</c> +
+        ''' <c>morphs.ini</c>) so the engine applies the body sliders to NPCs on first-load. Game-aware
+        ''' output dir: FO4 → <c>Data\F4SE\Plugins\F4EE\BodyGen\&lt;plugin&gt;\</c> (LooksMenu); SSE →
+        ''' <c>Data\Meshes\actors\character\BodyGenData\&lt;plugin&gt;\</c> (RaceMenu).
+        ''' Default True (seeded from NPC_Config.EmitBodyGenIni): it is the ONLY delivery route for body
+        ''' morphs. Does not apply retroactively to actors already spawned in a saved game.</summary>
         Public EmitBodyGen As Boolean
+        ''' <summary>When True the orchestrator attaches our Papyrus apply-script to each saved NPC_ via
+        ''' VMAD (NpcVmadBuilder) and installs the compiled .pex, so the engine applies on first spawn the
+        ''' RaceMenu/LooksMenu options with no other delivery route: body/hands/feet overlays, skin
+        ''' overrides, and (SSE only) node transforms. Face overlays are NOT included — they are already
+        ''' baked into the FaceGen textures, and re-applying them would composite them twice.
+        ''' Default True (seeded from NPC_Config.EmitApplyScript).</summary>
+        Public EmitApplyScript As Boolean
         ''' <summary>When True the orchestrator emits the outfits authored in the Edit Outfit "Create"
         ''' tab as OTFT records in this plugin (every dirty draft + the one this NPC's DOFT references).
         ''' When False no outfit is written and an NPC whose DOFT points at an unsaved draft falls back
@@ -342,6 +350,15 @@ Public Class SaveEsp_Form
         AddHandler CheckBoxRemoveChargenFlag.CheckedChanged, AddressOf OnRemoveChargenFlagChanged
         UpdateRemoveChargenFlagEnabled()
 
+        ' The two "first spawn" deliveries — BodyGen .ini (body sliders) and the apply-script (overlays /
+        ' skin / node transforms). Both default True and both are REMEMBERED: seed from the persisted
+        ' preference BEFORE wiring the handlers, so loading a saved value doesn't immediately re-persist it
+        ' (same pattern as CheckBoxRemoveChargenFlag above). Flushed to npc_config.json on app close.
+        CheckBoxEmitBodyGen.Checked = NPC_Config.Current.EmitBodyGenIni
+        CheckBoxEmitApplyScript.Checked = NPC_Config.Current.EmitApplyScript
+        AddHandler CheckBoxEmitBodyGen.CheckedChanged, AddressOf OnEmitBodyGenChanged
+        AddHandler CheckBoxEmitApplyScript.CheckedChanged, AddressOf OnEmitApplyScriptChanged
+
         ' "Save new records": meaningful when the session has ANY unsaved (dirty) author-built draft — not
         ' only outfits, but also standalone armor (ARMO), armatures (ARMA), material swaps (MSWP) and leveled
         ' lists (LVLI). This ONE flag gates every draft-emission phase (ExecuteWritePhases 2c/2e/2f/2g), so if
@@ -448,6 +465,17 @@ Public Class SaveEsp_Form
     ''' (flushed to npc_config.json when MainForm closes, same mechanism as the BA2 version selector).</summary>
     Private Sub OnRemoveChargenFlagChanged(sender As Object, e As EventArgs)
         NPC_Config.Current.RemoveCharGenFlagOnBake = CheckBoxRemoveChargenFlag.Checked
+    End Sub
+
+    ''' <summary>"Emit BodyGen .ini" toggled — remember the choice (flushed to npc_config.json on app close,
+    ''' same mechanism as the CharGen flag above).</summary>
+    Private Sub OnEmitBodyGenChanged(sender As Object, e As EventArgs)
+        NPC_Config.Current.EmitBodyGenIni = CheckBoxEmitBodyGen.Checked
+    End Sub
+
+    ''' <summary>"Emit apply-script" toggled — remember the choice.</summary>
+    Private Sub OnEmitApplyScriptChanged(sender As Object, e As EventArgs)
+        NPC_Config.Current.EmitApplyScript = CheckBoxEmitApplyScript.Checked
     End Sub
 
     ''' <summary>Scope radio toggle: recompute the CharGen forcing for the new scope and refresh the
@@ -740,6 +768,7 @@ Public Class SaveEsp_Form
             .RemoveCharGenFlag = CheckBoxGenerateChargen.Checked AndAlso CheckBoxRemoveChargenFlag.Checked,
             .WriteBssliders = CheckBoxWriteBssliders.Checked,
             .EmitBodyGen = CheckBoxEmitBodyGen.Checked,
+            .EmitApplyScript = CheckBoxEmitApplyScript.Checked,
             .SaveNewOutfits = CheckBoxSaveNewOutfits.Checked
         }
 
@@ -948,6 +977,9 @@ Public Class SaveEsp_Form
         End If
         If target.EmitBodyGen Then
             n += 1 : map.Add(("Writing BodyGen", n))
+        End If
+        If target.EmitApplyScript Then
+            n += 1 : map.Add(("Writing apply-script", n))
         End If
         If target.GenerateChargen Then
             n += 1 : map.Add(("Baking CharGen", n))

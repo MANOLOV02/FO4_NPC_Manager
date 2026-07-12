@@ -136,8 +136,7 @@ Public NotInheritable Class SceneNifExporter
                     worldPos.Add(New System.Numerics.Vector3(CSng(wv.X), CSng(wv.Y), CSng(wv.Z)))
 
                     If hasN OrElse hasT OrElse hasB Then
-                        Dim m3 As New Matrix3d(m4)
-                        Dim nm = m3.Inverted().Transposed()
+                        Dim nm As Matrix3d = SkinningHelper.NormalMatrixOrIdentity(m4)
                         Dim nm4 As Matrix4d = Matrix4d.Identity
                         nm4.M11 = nm.M11 : nm4.M12 = nm.M12 : nm4.M13 = nm.M13
                         nm4.M21 = nm.M21 : nm4.M22 = nm.M22 : nm4.M23 = nm.M23

@@ -182,7 +182,7 @@ Public Module NpcRecordOverlay
         shadow.TemplateActorFormIDs = raw.TemplateActorFormIDs
         shadow.ObjectTemplateOMODFormIDs.AddRange(raw.ObjectTemplateOMODFormIDs)
 
-        ' HeadParts: replicate engine wipe + race defaults + preset overrides.
+        ' HeadParts: replicate engine wipe + race defaults + preset overrides — PERO SÓLO SI EL PRESET LOS TRAE.
         ' Parse RACE ONCE here (cached via parseRace when supplied by the render path; direct parse
         ' on the offline bake path) and reuse for both the HeadParts seed and the QNAM derivation below.
         Dim raceRec = If(raw.RaceFormID <> 0UI, pluginManager.GetRecord(raw.RaceFormID), Nothing)
@@ -190,10 +190,33 @@ Public Module NpcRecordOverlay
         Dim race As RACE_Data = Nothing
         If raceIsValid Then
             race = If(parseRace IsNot Nothing, parseRace(raceRec), RecordParsers.ParseRACE(raceRec, pluginManager))
-            Dim raceDefaults = If(raw.IsFemale, race.FemaleHeadPartFormIDs, race.MaleHeadPartFormIDs)
-            If raceDefaults IsNot Nothing Then shadow.HeadPartFormIDs.AddRange(raceDefaults)
         End If
-        shadow.HeadPartFormIDs.AddRange(preset.HeadPartFormIDs)
+
+        ' ⛔⛔ EL WIPE SE GATEA POR PRESENCIA (HasHeadPartFormIDs), igual que morphs/tints/weight.
+        ' BUG QUE ESTO ARREGLA (medido, FO4 **y** SSE — esta función no tiene gate por juego):
+        ' `HydrateAppliedPresetsFromSidecars` (MainForm ~1777) siembra, AL ABRIR LA APP, un preset SINTÉTICO y VACÍO
+        ' por cada NPC con entrada en el .bssliders (BodyMorphs / SkinTemplate). Su propio comentario dice que los
+        ' Has* quedan en False "so vanilla fields (HeadParts, tints, ...) are preserved from the raw record" — pero
+        ' acá el wipe corría IGUAL: el shadow se sembraba con los DEFAULTS DE LA RAZA y NUNCA se copiaban los
+        ' head parts del NPC (raw.HeadPartFormIDs). Resultado: abrir la app + bakear (sin tocar nada) horneaba la
+        ' cara con el pelo/cejas/ojos de la RAZA en vez de los del NPC — MEDIDO en 0008774F: el NIF salía con
+        ' HairFemaleNord04 / FemaleBrowsHuman01 / FemaleEyesHumanHazelBrown (defaults Nord♀) mientras Edit Face
+        ' mostraba los reales (HairFemaleNord07 / FemaleBrowsHuman11 / FemaleEyesHumanLightBlue).
+        ' El wipe+race-defaults ES fiel al engine (LoadPreset), pero SÓLO cuando hay un preset que de verdad toma
+        ' posesión de los head parts — que es exactamente lo que marca HasHeadPartFormIDs (lo setean Edit Face,
+        ' Load LM, Paste y el loader del .json cuando el preset trae head parts). Sin esa bandera, el record manda.
+        If preset.HasHeadPartFormIDs Then
+            If raceIsValid AndAlso race IsNot Nothing Then
+                Dim raceDefaults = If(raw.IsFemale, race.FemaleHeadPartFormIDs, race.MaleHeadPartFormIDs)
+                If raceDefaults IsNot Nothing Then shadow.HeadPartFormIDs.AddRange(raceDefaults)
+            End If
+            shadow.HeadPartFormIDs.AddRange(preset.HeadPartFormIDs)
+        Else
+            ' El preset NO toma posesión ⇒ se preservan los head parts del NPC tal cual (lo que ve el editor y lo
+            ' que el render debe dibujar). MergeHeadPartsWithRaceDefaults, aguas abajo, ya rellena los huecos por
+            ' PartType con los defaults de la raza — así que los faltantes siguen cubiertos, sin pisar los propios.
+            shadow.HeadPartFormIDs.AddRange(raw.HeadPartFormIDs)
+        End If
 
         ' LM SkinTemplate head / headRear: replace the per-PartType HDPT entry. Mirrors
         ' SkinInterface.cpp:289-303 — npc->ChangeHeadPart(template.head/rear, false, false)
@@ -292,7 +315,6 @@ Public Module NpcRecordOverlay
         shadow.SseSculptHead = preset.SseSculptHead
         shadow.SseSculptParts = preset.SseSculptParts
         shadow.SseCustomMorphs = preset.SseCustomMorphs
-        shadow.SseOverlays = preset.SseOverlays
 
         ' Morphs.Values (MRSV body region morphs).
         If preset.HasBodyMorphValues Then

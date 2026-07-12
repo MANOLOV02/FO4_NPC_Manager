@@ -499,25 +499,6 @@ Public Class Preflight_Form
             End If
         End If
 
-        ' Skyrim support is still under construction (beta). Warn on OK whenever it's the selected game.
-        ' In a Debug build the user may proceed anyway (dev testing); in Release the load is hard-blocked.
-        If Config_App.Current.Game = Config_App.Game_Enum.Skyrim Then
-#If DEBUG Then
-            If MessageBox.Show(
-                "Skyrim support is still under construction (beta). Many features are not yet tested and may not work correctly." & vbCrLf & vbCrLf &
-                "This is a Debug build, so you can continue for testing. Proceed anyway?",
-                "Skyrim support is in beta", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) <> DialogResult.Yes Then
-                Return
-            End If
-#Else
-            MessageBox.Show(
-                "Skyrim support is still under construction (beta) and is not available in this build." & vbCrLf & vbCrLf &
-                "Please select Fallout 4 to continue.",
-                "Skyrim support is in beta", MessageBoxButtons.OK, MessageBoxIcon.Warning)
-            Return
-#End If
-        End If
-
         ' Iterate _allRows (master, load-order-preserving) instead of ListViewPlugins.Items —
         ' the latter only contains rows matching the current filter, which would drop checked
         ' plugins hidden by an active filter at OK time.

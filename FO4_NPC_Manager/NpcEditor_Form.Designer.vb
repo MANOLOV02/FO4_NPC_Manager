@@ -48,6 +48,14 @@ Partial Class NpcEditor_Form
         NumCalcMax = New NumericUpDown()
         LabelDisp = New Label()
         NumDisp = New NumericUpDown()
+        LabelMagickaOff = New Label()
+        NumMagickaOff = New NumericUpDown()
+        LabelStaminaOff = New Label()
+        NumStaminaOff = New NumericUpDown()
+        LabelSpeedMult = New Label()
+        NumSpeedMult = New NumericUpDown()
+        LabelHealthOff = New Label()
+        NumHealthOff = New NumericUpDown()
         LabelFlags = New Label()
         FlowFlags = New FlowLayoutPanel()
         ChkFemale = New CheckBox()
@@ -131,6 +139,80 @@ Partial Class NpcEditor_Form
         ButtonAddProp = New Button()
         ButtonEditProp = New Button()
         ButtonRemoveProp = New Button()
+        TabStats = New TabPage()
+        StatsLayout = New TableLayoutPanel()
+        LabelSkillHdrA = New Label()
+        LabelValueHdrA = New Label()
+        LabelOffsetHdrA = New Label()
+        LabelSkillHdrB = New Label()
+        LabelValueHdrB = New Label()
+        LabelOffsetHdrB = New Label()
+        LabelSkill0 = New Label()
+        NumSkillVal0 = New NumericUpDown()
+        NumSkillOff0 = New NumericUpDown()
+        LabelSkill1 = New Label()
+        NumSkillVal1 = New NumericUpDown()
+        NumSkillOff1 = New NumericUpDown()
+        LabelSkill2 = New Label()
+        NumSkillVal2 = New NumericUpDown()
+        NumSkillOff2 = New NumericUpDown()
+        LabelSkill3 = New Label()
+        NumSkillVal3 = New NumericUpDown()
+        NumSkillOff3 = New NumericUpDown()
+        LabelSkill4 = New Label()
+        NumSkillVal4 = New NumericUpDown()
+        NumSkillOff4 = New NumericUpDown()
+        LabelSkill5 = New Label()
+        NumSkillVal5 = New NumericUpDown()
+        NumSkillOff5 = New NumericUpDown()
+        LabelSkill6 = New Label()
+        NumSkillVal6 = New NumericUpDown()
+        NumSkillOff6 = New NumericUpDown()
+        LabelSkill7 = New Label()
+        NumSkillVal7 = New NumericUpDown()
+        NumSkillOff7 = New NumericUpDown()
+        LabelSkill8 = New Label()
+        NumSkillVal8 = New NumericUpDown()
+        NumSkillOff8 = New NumericUpDown()
+        LabelSkill9 = New Label()
+        NumSkillVal9 = New NumericUpDown()
+        NumSkillOff9 = New NumericUpDown()
+        LabelSkill10 = New Label()
+        NumSkillVal10 = New NumericUpDown()
+        NumSkillOff10 = New NumericUpDown()
+        LabelSkill11 = New Label()
+        NumSkillVal11 = New NumericUpDown()
+        NumSkillOff11 = New NumericUpDown()
+        LabelSkill12 = New Label()
+        NumSkillVal12 = New NumericUpDown()
+        NumSkillOff12 = New NumericUpDown()
+        LabelSkill13 = New Label()
+        NumSkillVal13 = New NumericUpDown()
+        NumSkillOff13 = New NumericUpDown()
+        LabelSkill14 = New Label()
+        NumSkillVal14 = New NumericUpDown()
+        NumSkillOff14 = New NumericUpDown()
+        LabelSkill15 = New Label()
+        NumSkillVal15 = New NumericUpDown()
+        NumSkillOff15 = New NumericUpDown()
+        LabelSkill16 = New Label()
+        NumSkillVal16 = New NumericUpDown()
+        NumSkillOff16 = New NumericUpDown()
+        LabelSkill17 = New Label()
+        NumSkillVal17 = New NumericUpDown()
+        NumSkillOff17 = New NumericUpDown()
+        AttrLayout = New TableLayoutPanel()
+        LabelHealth = New Label()
+        NumHealth = New NumericUpDown()
+        LabelMagicka = New Label()
+        NumMagicka = New NumericUpDown()
+        LabelStamina = New Label()
+        NumStamina = New NumericUpDown()
+        LabelFarModel = New Label()
+        NumFarModel = New NumericUpDown()
+        LabelGeared = New Label()
+        NumGeared = New NumericUpDown()
+        LabelStatsNote = New Label()
         LabelPersistNote = New Label()
         BottomLayout = New FlowLayoutPanel()
         ButtonOk = New Button()
@@ -144,6 +226,10 @@ Partial Class NpcEditor_Form
         CType(NumCalcMin, ComponentModel.ISupportInitialize).BeginInit()
         CType(NumCalcMax, ComponentModel.ISupportInitialize).BeginInit()
         CType(NumDisp, ComponentModel.ISupportInitialize).BeginInit()
+        CType(NumMagickaOff, ComponentModel.ISupportInitialize).BeginInit()
+        CType(NumStaminaOff, ComponentModel.ISupportInitialize).BeginInit()
+        CType(NumSpeedMult, ComponentModel.ISupportInitialize).BeginInit()
+        CType(NumHealthOff, ComponentModel.ISupportInitialize).BeginInit()
         FlowFlags.SuspendLayout()
         TabObts.SuspendLayout()
         ObtsLayout.SuspendLayout()
@@ -173,6 +259,50 @@ Partial Class NpcEditor_Form
         PropsLayout.SuspendLayout()
         CType(GridProps, ComponentModel.ISupportInitialize).BeginInit()
         PropsButtons.SuspendLayout()
+        TabStats.SuspendLayout()
+        StatsLayout.SuspendLayout()
+        CType(NumSkillVal0, ComponentModel.ISupportInitialize).BeginInit()
+        CType(NumSkillOff0, ComponentModel.ISupportInitialize).BeginInit()
+        CType(NumSkillVal1, ComponentModel.ISupportInitialize).BeginInit()
+        CType(NumSkillOff1, ComponentModel.ISupportInitialize).BeginInit()
+        CType(NumSkillVal2, ComponentModel.ISupportInitialize).BeginInit()
+        CType(NumSkillOff2, ComponentModel.ISupportInitialize).BeginInit()
+        CType(NumSkillVal3, ComponentModel.ISupportInitialize).BeginInit()
+        CType(NumSkillOff3, ComponentModel.ISupportInitialize).BeginInit()
+        CType(NumSkillVal4, ComponentModel.ISupportInitialize).BeginInit()
+        CType(NumSkillOff4, ComponentModel.ISupportInitialize).BeginInit()
+        CType(NumSkillVal5, ComponentModel.ISupportInitialize).BeginInit()
+        CType(NumSkillOff5, ComponentModel.ISupportInitialize).BeginInit()
+        CType(NumSkillVal6, ComponentModel.ISupportInitialize).BeginInit()
+        CType(NumSkillOff6, ComponentModel.ISupportInitialize).BeginInit()
+        CType(NumSkillVal7, ComponentModel.ISupportInitialize).BeginInit()
+        CType(NumSkillOff7, ComponentModel.ISupportInitialize).BeginInit()
+        CType(NumSkillVal8, ComponentModel.ISupportInitialize).BeginInit()
+        CType(NumSkillOff8, ComponentModel.ISupportInitialize).BeginInit()
+        CType(NumSkillVal9, ComponentModel.ISupportInitialize).BeginInit()
+        CType(NumSkillOff9, ComponentModel.ISupportInitialize).BeginInit()
+        CType(NumSkillVal10, ComponentModel.ISupportInitialize).BeginInit()
+        CType(NumSkillOff10, ComponentModel.ISupportInitialize).BeginInit()
+        CType(NumSkillVal11, ComponentModel.ISupportInitialize).BeginInit()
+        CType(NumSkillOff11, ComponentModel.ISupportInitialize).BeginInit()
+        CType(NumSkillVal12, ComponentModel.ISupportInitialize).BeginInit()
+        CType(NumSkillOff12, ComponentModel.ISupportInitialize).BeginInit()
+        CType(NumSkillVal13, ComponentModel.ISupportInitialize).BeginInit()
+        CType(NumSkillOff13, ComponentModel.ISupportInitialize).BeginInit()
+        CType(NumSkillVal14, ComponentModel.ISupportInitialize).BeginInit()
+        CType(NumSkillOff14, ComponentModel.ISupportInitialize).BeginInit()
+        CType(NumSkillVal15, ComponentModel.ISupportInitialize).BeginInit()
+        CType(NumSkillOff15, ComponentModel.ISupportInitialize).BeginInit()
+        CType(NumSkillVal16, ComponentModel.ISupportInitialize).BeginInit()
+        CType(NumSkillOff16, ComponentModel.ISupportInitialize).BeginInit()
+        CType(NumSkillVal17, ComponentModel.ISupportInitialize).BeginInit()
+        CType(NumSkillOff17, ComponentModel.ISupportInitialize).BeginInit()
+        AttrLayout.SuspendLayout()
+        CType(NumHealth, ComponentModel.ISupportInitialize).BeginInit()
+        CType(NumMagicka, ComponentModel.ISupportInitialize).BeginInit()
+        CType(NumStamina, ComponentModel.ISupportInitialize).BeginInit()
+        CType(NumFarModel, ComponentModel.ISupportInitialize).BeginInit()
+        CType(NumGeared, ComponentModel.ISupportInitialize).BeginInit()
         BottomLayout.SuspendLayout()
         SuspendLayout()
         '
@@ -197,6 +327,7 @@ Partial Class NpcEditor_Form
         ' Tabs
         '
         Tabs.Controls.Add(TabGeneral)
+        Tabs.Controls.Add(TabStats)
         Tabs.Controls.Add(TabObts)
         Tabs.Controls.Add(TabKeywords)
         Tabs.Controls.Add(TabFactions)
@@ -254,8 +385,16 @@ Partial Class NpcEditor_Form
         GeneralLayout.Controls.Add(NumCalcMax, 1, 9)
         GeneralLayout.Controls.Add(LabelDisp, 0, 10)
         GeneralLayout.Controls.Add(NumDisp, 1, 10)
-        GeneralLayout.Controls.Add(LabelFlags, 0, 11)
-        GeneralLayout.Controls.Add(FlowFlags, 1, 11)
+        GeneralLayout.Controls.Add(LabelMagickaOff, 0, 11)
+        GeneralLayout.Controls.Add(NumMagickaOff, 1, 11)
+        GeneralLayout.Controls.Add(LabelStaminaOff, 0, 12)
+        GeneralLayout.Controls.Add(NumStaminaOff, 1, 12)
+        GeneralLayout.Controls.Add(LabelHealthOff, 0, 13)
+        GeneralLayout.Controls.Add(NumHealthOff, 1, 13)
+        GeneralLayout.Controls.Add(LabelSpeedMult, 0, 14)
+        GeneralLayout.Controls.Add(NumSpeedMult, 1, 14)
+        GeneralLayout.Controls.Add(LabelFlags, 0, 15)
+        GeneralLayout.Controls.Add(FlowFlags, 1, 15)
         GeneralLayout.SetColumnSpan(TextBoxFull, 2)
         GeneralLayout.SetColumnSpan(TextBoxShort, 2)
         GeneralLayout.SetColumnSpan(FlowFlags, 2)
@@ -263,7 +402,11 @@ Partial Class NpcEditor_Form
         GeneralLayout.Location = New Point(3, 3)
         GeneralLayout.Name = "GeneralLayout"
         GeneralLayout.Padding = New Padding(6)
-        GeneralLayout.RowCount = 12
+        GeneralLayout.RowCount = 16
+        GeneralLayout.RowStyles.Add(New RowStyle())
+        GeneralLayout.RowStyles.Add(New RowStyle())
+        GeneralLayout.RowStyles.Add(New RowStyle())
+        GeneralLayout.RowStyles.Add(New RowStyle())
         GeneralLayout.RowStyles.Add(New RowStyle())
         GeneralLayout.RowStyles.Add(New RowStyle())
         GeneralLayout.RowStyles.Add(New RowStyle())
@@ -484,6 +627,73 @@ Partial Class NpcEditor_Form
         NumDisp.Size = New Size(120, 23)
         NumDisp.TabIndex = 13
         NumDisp.TextAlign = System.Windows.Forms.HorizontalAlignment.Right
+        '
+        ' LabelMagickaOff — ACBS +4 s16, SKYRIM ONLY (hidden on FO4, whose 20-byte ACBS has XP Value there).
+        '
+        LabelMagickaOff.Anchor = AnchorStyles.Left
+        LabelMagickaOff.AutoSize = True
+        LabelMagickaOff.Name = "LabelMagickaOff"
+        LabelMagickaOff.Text = "Magicka Offset:"
+        '
+        ' NumMagickaOff
+        '
+        NumMagickaOff.Anchor = AnchorStyles.Left
+        NumMagickaOff.Maximum = New Decimal(32767)
+        NumMagickaOff.Minimum = New Decimal(New Integer() {32768, 0, 0, -2147483648})
+        NumMagickaOff.Name = "NumMagickaOff"
+        NumMagickaOff.Size = New Size(120, 23)
+        NumMagickaOff.TabIndex = 14
+        NumMagickaOff.TextAlign = System.Windows.Forms.HorizontalAlignment.Right
+        '
+        ' LabelStaminaOff — ACBS +6 s16, SKYRIM ONLY.
+        '
+        LabelStaminaOff.Anchor = AnchorStyles.Left
+        LabelStaminaOff.AutoSize = True
+        LabelStaminaOff.Name = "LabelStaminaOff"
+        LabelStaminaOff.Text = "Stamina Offset:"
+        '
+        ' NumStaminaOff
+        '
+        NumStaminaOff.Anchor = AnchorStyles.Left
+        NumStaminaOff.Maximum = New Decimal(32767)
+        NumStaminaOff.Minimum = New Decimal(New Integer() {32768, 0, 0, -2147483648})
+        NumStaminaOff.Name = "NumStaminaOff"
+        NumStaminaOff.Size = New Size(120, 23)
+        NumStaminaOff.TabIndex = 15
+        NumStaminaOff.TextAlign = System.Windows.Forms.HorizontalAlignment.Right
+        '
+        ' LabelHealthOff — ACBS +20 s16, SKYRIM ONLY.
+        '
+        LabelHealthOff.Anchor = AnchorStyles.Left
+        LabelHealthOff.AutoSize = True
+        LabelHealthOff.Name = "LabelHealthOff"
+        LabelHealthOff.Text = "Health Offset:"
+        '
+        ' NumHealthOff
+        '
+        NumHealthOff.Anchor = AnchorStyles.Left
+        NumHealthOff.Maximum = New Decimal(32767)
+        NumHealthOff.Minimum = New Decimal(New Integer() {32768, 0, 0, -2147483648})
+        NumHealthOff.Name = "NumHealthOff"
+        NumHealthOff.Size = New Size(120, 23)
+        NumHealthOff.TabIndex = 16
+        NumHealthOff.TextAlign = System.Windows.Forms.HorizontalAlignment.Right
+        '
+        ' LabelSpeedMult — ACBS +14 u16, SKYRIM ONLY (FO4's ACBS has no speed field).
+        '
+        LabelSpeedMult.Anchor = AnchorStyles.Left
+        LabelSpeedMult.AutoSize = True
+        LabelSpeedMult.Name = "LabelSpeedMult"
+        LabelSpeedMult.Text = "Speed Multiplier:"
+        '
+        ' NumSpeedMult
+        '
+        NumSpeedMult.Anchor = AnchorStyles.Left
+        NumSpeedMult.Maximum = New Decimal(65535)
+        NumSpeedMult.Name = "NumSpeedMult"
+        NumSpeedMult.Size = New Size(120, 23)
+        NumSpeedMult.TabIndex = 17
+        NumSpeedMult.TextAlign = System.Windows.Forms.HorizontalAlignment.Right
         '
         ' LabelFlags
         '
@@ -1301,6 +1511,521 @@ Partial Class NpcEditor_Form
         ButtonRemoveProp.Text = "Remove"
         ButtonRemoveProp.UseVisualStyleBackColor = True
         '
+        ' TabStats — DNAM "Player Skills", SKYRIM ONLY (removed from the TabControl on Fallout 4, whose DNAM
+        ' is an unrelated 8-byte Calculated-Stats struct the engine recomputes). Layout mirrors xEdit: the 18
+        ' skills in wbDefinitionsTES5 array order, each with a Value and an Offset, then the derived attributes.
+        '
+        TabStats.Controls.Add(StatsLayout)
+        TabStats.Location = New Point(4, 24)
+        TabStats.Name = "TabStats"
+        TabStats.Padding = New Padding(3)
+        TabStats.Size = New Size(690, 452)
+        TabStats.TabIndex = 8
+        TabStats.Text = "Stats"
+        TabStats.UseVisualStyleBackColor = True
+        '
+        ' StatsLayout
+        '
+        StatsLayout.ColumnCount = 6
+        StatsLayout.ColumnStyles.Add(New ColumnStyle(SizeType.Absolute, 110F))
+        StatsLayout.ColumnStyles.Add(New ColumnStyle(SizeType.Absolute, 75F))
+        StatsLayout.ColumnStyles.Add(New ColumnStyle(SizeType.Absolute, 95F))
+        StatsLayout.ColumnStyles.Add(New ColumnStyle(SizeType.Absolute, 110F))
+        StatsLayout.ColumnStyles.Add(New ColumnStyle(SizeType.Absolute, 75F))
+        StatsLayout.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100F))
+        StatsLayout.Controls.Add(LabelSkillHdrA, 0, 0)
+        StatsLayout.Controls.Add(LabelValueHdrA, 1, 0)
+        StatsLayout.Controls.Add(LabelOffsetHdrA, 2, 0)
+        StatsLayout.Controls.Add(LabelSkillHdrB, 3, 0)
+        StatsLayout.Controls.Add(LabelValueHdrB, 4, 0)
+        StatsLayout.Controls.Add(LabelOffsetHdrB, 5, 0)
+        StatsLayout.Controls.Add(LabelSkill0, 0, 1)
+        StatsLayout.Controls.Add(NumSkillVal0, 1, 1)
+        StatsLayout.Controls.Add(NumSkillOff0, 2, 1)
+        StatsLayout.Controls.Add(LabelSkill1, 0, 2)
+        StatsLayout.Controls.Add(NumSkillVal1, 1, 2)
+        StatsLayout.Controls.Add(NumSkillOff1, 2, 2)
+        StatsLayout.Controls.Add(LabelSkill2, 0, 3)
+        StatsLayout.Controls.Add(NumSkillVal2, 1, 3)
+        StatsLayout.Controls.Add(NumSkillOff2, 2, 3)
+        StatsLayout.Controls.Add(LabelSkill3, 0, 4)
+        StatsLayout.Controls.Add(NumSkillVal3, 1, 4)
+        StatsLayout.Controls.Add(NumSkillOff3, 2, 4)
+        StatsLayout.Controls.Add(LabelSkill4, 0, 5)
+        StatsLayout.Controls.Add(NumSkillVal4, 1, 5)
+        StatsLayout.Controls.Add(NumSkillOff4, 2, 5)
+        StatsLayout.Controls.Add(LabelSkill5, 0, 6)
+        StatsLayout.Controls.Add(NumSkillVal5, 1, 6)
+        StatsLayout.Controls.Add(NumSkillOff5, 2, 6)
+        StatsLayout.Controls.Add(LabelSkill6, 0, 7)
+        StatsLayout.Controls.Add(NumSkillVal6, 1, 7)
+        StatsLayout.Controls.Add(NumSkillOff6, 2, 7)
+        StatsLayout.Controls.Add(LabelSkill7, 0, 8)
+        StatsLayout.Controls.Add(NumSkillVal7, 1, 8)
+        StatsLayout.Controls.Add(NumSkillOff7, 2, 8)
+        StatsLayout.Controls.Add(LabelSkill8, 0, 9)
+        StatsLayout.Controls.Add(NumSkillVal8, 1, 9)
+        StatsLayout.Controls.Add(NumSkillOff8, 2, 9)
+        StatsLayout.Controls.Add(LabelSkill9, 3, 1)
+        StatsLayout.Controls.Add(NumSkillVal9, 4, 1)
+        StatsLayout.Controls.Add(NumSkillOff9, 5, 1)
+        StatsLayout.Controls.Add(LabelSkill10, 3, 2)
+        StatsLayout.Controls.Add(NumSkillVal10, 4, 2)
+        StatsLayout.Controls.Add(NumSkillOff10, 5, 2)
+        StatsLayout.Controls.Add(LabelSkill11, 3, 3)
+        StatsLayout.Controls.Add(NumSkillVal11, 4, 3)
+        StatsLayout.Controls.Add(NumSkillOff11, 5, 3)
+        StatsLayout.Controls.Add(LabelSkill12, 3, 4)
+        StatsLayout.Controls.Add(NumSkillVal12, 4, 4)
+        StatsLayout.Controls.Add(NumSkillOff12, 5, 4)
+        StatsLayout.Controls.Add(LabelSkill13, 3, 5)
+        StatsLayout.Controls.Add(NumSkillVal13, 4, 5)
+        StatsLayout.Controls.Add(NumSkillOff13, 5, 5)
+        StatsLayout.Controls.Add(LabelSkill14, 3, 6)
+        StatsLayout.Controls.Add(NumSkillVal14, 4, 6)
+        StatsLayout.Controls.Add(NumSkillOff14, 5, 6)
+        StatsLayout.Controls.Add(LabelSkill15, 3, 7)
+        StatsLayout.Controls.Add(NumSkillVal15, 4, 7)
+        StatsLayout.Controls.Add(NumSkillOff15, 5, 7)
+        StatsLayout.Controls.Add(LabelSkill16, 3, 8)
+        StatsLayout.Controls.Add(NumSkillVal16, 4, 8)
+        StatsLayout.Controls.Add(NumSkillOff16, 5, 8)
+        StatsLayout.Controls.Add(LabelSkill17, 3, 9)
+        StatsLayout.Controls.Add(NumSkillVal17, 4, 9)
+        StatsLayout.Controls.Add(NumSkillOff17, 5, 9)
+        StatsLayout.Controls.Add(AttrLayout, 0, 10)
+        StatsLayout.Controls.Add(LabelStatsNote, 0, 11)
+        StatsLayout.SetColumnSpan(AttrLayout, 6)
+        StatsLayout.SetColumnSpan(LabelStatsNote, 6)
+        StatsLayout.Dock = DockStyle.Fill
+        StatsLayout.Location = New Point(3, 3)
+        StatsLayout.Name = "StatsLayout"
+        StatsLayout.Padding = New Padding(6)
+        StatsLayout.RowCount = 12
+        StatsLayout.RowStyles.Add(New RowStyle())
+        StatsLayout.RowStyles.Add(New RowStyle())
+        StatsLayout.RowStyles.Add(New RowStyle())
+        StatsLayout.RowStyles.Add(New RowStyle())
+        StatsLayout.RowStyles.Add(New RowStyle())
+        StatsLayout.RowStyles.Add(New RowStyle())
+        StatsLayout.RowStyles.Add(New RowStyle())
+        StatsLayout.RowStyles.Add(New RowStyle())
+        StatsLayout.RowStyles.Add(New RowStyle())
+        StatsLayout.RowStyles.Add(New RowStyle())
+        StatsLayout.RowStyles.Add(New RowStyle())
+        StatsLayout.RowStyles.Add(New RowStyle(SizeType.Percent, 100F))
+        StatsLayout.Size = New Size(684, 446)
+        StatsLayout.TabIndex = 0
+        '
+        ' Skill column headers
+        '
+        LabelSkillHdrA.Anchor = AnchorStyles.Left
+        LabelSkillHdrA.AutoSize = True
+        LabelSkillHdrA.Name = "LabelSkillHdrA"
+        LabelSkillHdrA.Text = "Skill"
+        LabelValueHdrA.Anchor = AnchorStyles.Left
+        LabelValueHdrA.AutoSize = True
+        LabelValueHdrA.Name = "LabelValueHdrA"
+        LabelValueHdrA.Text = "Value"
+        LabelOffsetHdrA.Anchor = AnchorStyles.Left
+        LabelOffsetHdrA.AutoSize = True
+        LabelOffsetHdrA.Name = "LabelOffsetHdrA"
+        LabelOffsetHdrA.Text = "Offset"
+        LabelSkillHdrB.Anchor = AnchorStyles.Left
+        LabelSkillHdrB.AutoSize = True
+        LabelSkillHdrB.Name = "LabelSkillHdrB"
+        LabelSkillHdrB.Text = "Skill"
+        LabelValueHdrB.Anchor = AnchorStyles.Left
+        LabelValueHdrB.AutoSize = True
+        LabelValueHdrB.Name = "LabelValueHdrB"
+        LabelValueHdrB.Text = "Value"
+        LabelOffsetHdrB.Anchor = AnchorStyles.Left
+        LabelOffsetHdrB.AutoSize = True
+        LabelOffsetHdrB.Name = "LabelOffsetHdrB"
+        LabelOffsetHdrB.Text = "Offset"
+        '
+        ' Skill rows (labels carry the wbDefinitionsTES5 skill names; the code-behind asserts they match)
+        '
+        LabelSkill0.Anchor = AnchorStyles.Left
+        LabelSkill0.AutoSize = True
+        LabelSkill0.Name = "LabelSkill0"
+        LabelSkill0.Text = "One-Handed"
+        NumSkillVal0.Anchor = AnchorStyles.Left
+        NumSkillVal0.Maximum = New Decimal(255)
+        NumSkillVal0.Name = "NumSkillVal0"
+        NumSkillVal0.Size = New Size(65, 23)
+        NumSkillVal0.TabIndex = 0
+        NumSkillVal0.TextAlign = System.Windows.Forms.HorizontalAlignment.Right
+        NumSkillOff0.Anchor = AnchorStyles.Left
+        NumSkillOff0.Maximum = New Decimal(255)
+        NumSkillOff0.Name = "NumSkillOff0"
+        NumSkillOff0.Size = New Size(65, 23)
+        NumSkillOff0.TabIndex = 1
+        NumSkillOff0.TextAlign = System.Windows.Forms.HorizontalAlignment.Right
+        LabelSkill1.Anchor = AnchorStyles.Left
+        LabelSkill1.AutoSize = True
+        LabelSkill1.Name = "LabelSkill1"
+        LabelSkill1.Text = "Two-Handed"
+        NumSkillVal1.Anchor = AnchorStyles.Left
+        NumSkillVal1.Maximum = New Decimal(255)
+        NumSkillVal1.Name = "NumSkillVal1"
+        NumSkillVal1.Size = New Size(65, 23)
+        NumSkillVal1.TabIndex = 2
+        NumSkillVal1.TextAlign = System.Windows.Forms.HorizontalAlignment.Right
+        NumSkillOff1.Anchor = AnchorStyles.Left
+        NumSkillOff1.Maximum = New Decimal(255)
+        NumSkillOff1.Name = "NumSkillOff1"
+        NumSkillOff1.Size = New Size(65, 23)
+        NumSkillOff1.TabIndex = 3
+        NumSkillOff1.TextAlign = System.Windows.Forms.HorizontalAlignment.Right
+        LabelSkill2.Anchor = AnchorStyles.Left
+        LabelSkill2.AutoSize = True
+        LabelSkill2.Name = "LabelSkill2"
+        LabelSkill2.Text = "Marksman"
+        NumSkillVal2.Anchor = AnchorStyles.Left
+        NumSkillVal2.Maximum = New Decimal(255)
+        NumSkillVal2.Name = "NumSkillVal2"
+        NumSkillVal2.Size = New Size(65, 23)
+        NumSkillVal2.TabIndex = 4
+        NumSkillVal2.TextAlign = System.Windows.Forms.HorizontalAlignment.Right
+        NumSkillOff2.Anchor = AnchorStyles.Left
+        NumSkillOff2.Maximum = New Decimal(255)
+        NumSkillOff2.Name = "NumSkillOff2"
+        NumSkillOff2.Size = New Size(65, 23)
+        NumSkillOff2.TabIndex = 5
+        NumSkillOff2.TextAlign = System.Windows.Forms.HorizontalAlignment.Right
+        LabelSkill3.Anchor = AnchorStyles.Left
+        LabelSkill3.AutoSize = True
+        LabelSkill3.Name = "LabelSkill3"
+        LabelSkill3.Text = "Block"
+        NumSkillVal3.Anchor = AnchorStyles.Left
+        NumSkillVal3.Maximum = New Decimal(255)
+        NumSkillVal3.Name = "NumSkillVal3"
+        NumSkillVal3.Size = New Size(65, 23)
+        NumSkillVal3.TabIndex = 6
+        NumSkillVal3.TextAlign = System.Windows.Forms.HorizontalAlignment.Right
+        NumSkillOff3.Anchor = AnchorStyles.Left
+        NumSkillOff3.Maximum = New Decimal(255)
+        NumSkillOff3.Name = "NumSkillOff3"
+        NumSkillOff3.Size = New Size(65, 23)
+        NumSkillOff3.TabIndex = 7
+        NumSkillOff3.TextAlign = System.Windows.Forms.HorizontalAlignment.Right
+        LabelSkill4.Anchor = AnchorStyles.Left
+        LabelSkill4.AutoSize = True
+        LabelSkill4.Name = "LabelSkill4"
+        LabelSkill4.Text = "Smithing"
+        NumSkillVal4.Anchor = AnchorStyles.Left
+        NumSkillVal4.Maximum = New Decimal(255)
+        NumSkillVal4.Name = "NumSkillVal4"
+        NumSkillVal4.Size = New Size(65, 23)
+        NumSkillVal4.TabIndex = 8
+        NumSkillVal4.TextAlign = System.Windows.Forms.HorizontalAlignment.Right
+        NumSkillOff4.Anchor = AnchorStyles.Left
+        NumSkillOff4.Maximum = New Decimal(255)
+        NumSkillOff4.Name = "NumSkillOff4"
+        NumSkillOff4.Size = New Size(65, 23)
+        NumSkillOff4.TabIndex = 9
+        NumSkillOff4.TextAlign = System.Windows.Forms.HorizontalAlignment.Right
+        LabelSkill5.Anchor = AnchorStyles.Left
+        LabelSkill5.AutoSize = True
+        LabelSkill5.Name = "LabelSkill5"
+        LabelSkill5.Text = "Heavy Armor"
+        NumSkillVal5.Anchor = AnchorStyles.Left
+        NumSkillVal5.Maximum = New Decimal(255)
+        NumSkillVal5.Name = "NumSkillVal5"
+        NumSkillVal5.Size = New Size(65, 23)
+        NumSkillVal5.TabIndex = 10
+        NumSkillVal5.TextAlign = System.Windows.Forms.HorizontalAlignment.Right
+        NumSkillOff5.Anchor = AnchorStyles.Left
+        NumSkillOff5.Maximum = New Decimal(255)
+        NumSkillOff5.Name = "NumSkillOff5"
+        NumSkillOff5.Size = New Size(65, 23)
+        NumSkillOff5.TabIndex = 11
+        NumSkillOff5.TextAlign = System.Windows.Forms.HorizontalAlignment.Right
+        LabelSkill6.Anchor = AnchorStyles.Left
+        LabelSkill6.AutoSize = True
+        LabelSkill6.Name = "LabelSkill6"
+        LabelSkill6.Text = "Light Armor"
+        NumSkillVal6.Anchor = AnchorStyles.Left
+        NumSkillVal6.Maximum = New Decimal(255)
+        NumSkillVal6.Name = "NumSkillVal6"
+        NumSkillVal6.Size = New Size(65, 23)
+        NumSkillVal6.TabIndex = 12
+        NumSkillVal6.TextAlign = System.Windows.Forms.HorizontalAlignment.Right
+        NumSkillOff6.Anchor = AnchorStyles.Left
+        NumSkillOff6.Maximum = New Decimal(255)
+        NumSkillOff6.Name = "NumSkillOff6"
+        NumSkillOff6.Size = New Size(65, 23)
+        NumSkillOff6.TabIndex = 13
+        NumSkillOff6.TextAlign = System.Windows.Forms.HorizontalAlignment.Right
+        LabelSkill7.Anchor = AnchorStyles.Left
+        LabelSkill7.AutoSize = True
+        LabelSkill7.Name = "LabelSkill7"
+        LabelSkill7.Text = "Pickpocket"
+        NumSkillVal7.Anchor = AnchorStyles.Left
+        NumSkillVal7.Maximum = New Decimal(255)
+        NumSkillVal7.Name = "NumSkillVal7"
+        NumSkillVal7.Size = New Size(65, 23)
+        NumSkillVal7.TabIndex = 14
+        NumSkillVal7.TextAlign = System.Windows.Forms.HorizontalAlignment.Right
+        NumSkillOff7.Anchor = AnchorStyles.Left
+        NumSkillOff7.Maximum = New Decimal(255)
+        NumSkillOff7.Name = "NumSkillOff7"
+        NumSkillOff7.Size = New Size(65, 23)
+        NumSkillOff7.TabIndex = 15
+        NumSkillOff7.TextAlign = System.Windows.Forms.HorizontalAlignment.Right
+        LabelSkill8.Anchor = AnchorStyles.Left
+        LabelSkill8.AutoSize = True
+        LabelSkill8.Name = "LabelSkill8"
+        LabelSkill8.Text = "Lockpicking"
+        NumSkillVal8.Anchor = AnchorStyles.Left
+        NumSkillVal8.Maximum = New Decimal(255)
+        NumSkillVal8.Name = "NumSkillVal8"
+        NumSkillVal8.Size = New Size(65, 23)
+        NumSkillVal8.TabIndex = 16
+        NumSkillVal8.TextAlign = System.Windows.Forms.HorizontalAlignment.Right
+        NumSkillOff8.Anchor = AnchorStyles.Left
+        NumSkillOff8.Maximum = New Decimal(255)
+        NumSkillOff8.Name = "NumSkillOff8"
+        NumSkillOff8.Size = New Size(65, 23)
+        NumSkillOff8.TabIndex = 17
+        NumSkillOff8.TextAlign = System.Windows.Forms.HorizontalAlignment.Right
+        LabelSkill9.Anchor = AnchorStyles.Left
+        LabelSkill9.AutoSize = True
+        LabelSkill9.Name = "LabelSkill9"
+        LabelSkill9.Text = "Sneak"
+        NumSkillVal9.Anchor = AnchorStyles.Left
+        NumSkillVal9.Maximum = New Decimal(255)
+        NumSkillVal9.Name = "NumSkillVal9"
+        NumSkillVal9.Size = New Size(65, 23)
+        NumSkillVal9.TabIndex = 18
+        NumSkillVal9.TextAlign = System.Windows.Forms.HorizontalAlignment.Right
+        NumSkillOff9.Anchor = AnchorStyles.Left
+        NumSkillOff9.Maximum = New Decimal(255)
+        NumSkillOff9.Name = "NumSkillOff9"
+        NumSkillOff9.Size = New Size(65, 23)
+        NumSkillOff9.TabIndex = 19
+        NumSkillOff9.TextAlign = System.Windows.Forms.HorizontalAlignment.Right
+        LabelSkill10.Anchor = AnchorStyles.Left
+        LabelSkill10.AutoSize = True
+        LabelSkill10.Name = "LabelSkill10"
+        LabelSkill10.Text = "Alchemy"
+        NumSkillVal10.Anchor = AnchorStyles.Left
+        NumSkillVal10.Maximum = New Decimal(255)
+        NumSkillVal10.Name = "NumSkillVal10"
+        NumSkillVal10.Size = New Size(65, 23)
+        NumSkillVal10.TabIndex = 20
+        NumSkillVal10.TextAlign = System.Windows.Forms.HorizontalAlignment.Right
+        NumSkillOff10.Anchor = AnchorStyles.Left
+        NumSkillOff10.Maximum = New Decimal(255)
+        NumSkillOff10.Name = "NumSkillOff10"
+        NumSkillOff10.Size = New Size(65, 23)
+        NumSkillOff10.TabIndex = 21
+        NumSkillOff10.TextAlign = System.Windows.Forms.HorizontalAlignment.Right
+        LabelSkill11.Anchor = AnchorStyles.Left
+        LabelSkill11.AutoSize = True
+        LabelSkill11.Name = "LabelSkill11"
+        LabelSkill11.Text = "Speechcraft"
+        NumSkillVal11.Anchor = AnchorStyles.Left
+        NumSkillVal11.Maximum = New Decimal(255)
+        NumSkillVal11.Name = "NumSkillVal11"
+        NumSkillVal11.Size = New Size(65, 23)
+        NumSkillVal11.TabIndex = 22
+        NumSkillVal11.TextAlign = System.Windows.Forms.HorizontalAlignment.Right
+        NumSkillOff11.Anchor = AnchorStyles.Left
+        NumSkillOff11.Maximum = New Decimal(255)
+        NumSkillOff11.Name = "NumSkillOff11"
+        NumSkillOff11.Size = New Size(65, 23)
+        NumSkillOff11.TabIndex = 23
+        NumSkillOff11.TextAlign = System.Windows.Forms.HorizontalAlignment.Right
+        LabelSkill12.Anchor = AnchorStyles.Left
+        LabelSkill12.AutoSize = True
+        LabelSkill12.Name = "LabelSkill12"
+        LabelSkill12.Text = "Alteration"
+        NumSkillVal12.Anchor = AnchorStyles.Left
+        NumSkillVal12.Maximum = New Decimal(255)
+        NumSkillVal12.Name = "NumSkillVal12"
+        NumSkillVal12.Size = New Size(65, 23)
+        NumSkillVal12.TabIndex = 24
+        NumSkillVal12.TextAlign = System.Windows.Forms.HorizontalAlignment.Right
+        NumSkillOff12.Anchor = AnchorStyles.Left
+        NumSkillOff12.Maximum = New Decimal(255)
+        NumSkillOff12.Name = "NumSkillOff12"
+        NumSkillOff12.Size = New Size(65, 23)
+        NumSkillOff12.TabIndex = 25
+        NumSkillOff12.TextAlign = System.Windows.Forms.HorizontalAlignment.Right
+        LabelSkill13.Anchor = AnchorStyles.Left
+        LabelSkill13.AutoSize = True
+        LabelSkill13.Name = "LabelSkill13"
+        LabelSkill13.Text = "Conjuration"
+        NumSkillVal13.Anchor = AnchorStyles.Left
+        NumSkillVal13.Maximum = New Decimal(255)
+        NumSkillVal13.Name = "NumSkillVal13"
+        NumSkillVal13.Size = New Size(65, 23)
+        NumSkillVal13.TabIndex = 26
+        NumSkillVal13.TextAlign = System.Windows.Forms.HorizontalAlignment.Right
+        NumSkillOff13.Anchor = AnchorStyles.Left
+        NumSkillOff13.Maximum = New Decimal(255)
+        NumSkillOff13.Name = "NumSkillOff13"
+        NumSkillOff13.Size = New Size(65, 23)
+        NumSkillOff13.TabIndex = 27
+        NumSkillOff13.TextAlign = System.Windows.Forms.HorizontalAlignment.Right
+        LabelSkill14.Anchor = AnchorStyles.Left
+        LabelSkill14.AutoSize = True
+        LabelSkill14.Name = "LabelSkill14"
+        LabelSkill14.Text = "Destruction"
+        NumSkillVal14.Anchor = AnchorStyles.Left
+        NumSkillVal14.Maximum = New Decimal(255)
+        NumSkillVal14.Name = "NumSkillVal14"
+        NumSkillVal14.Size = New Size(65, 23)
+        NumSkillVal14.TabIndex = 28
+        NumSkillVal14.TextAlign = System.Windows.Forms.HorizontalAlignment.Right
+        NumSkillOff14.Anchor = AnchorStyles.Left
+        NumSkillOff14.Maximum = New Decimal(255)
+        NumSkillOff14.Name = "NumSkillOff14"
+        NumSkillOff14.Size = New Size(65, 23)
+        NumSkillOff14.TabIndex = 29
+        NumSkillOff14.TextAlign = System.Windows.Forms.HorizontalAlignment.Right
+        LabelSkill15.Anchor = AnchorStyles.Left
+        LabelSkill15.AutoSize = True
+        LabelSkill15.Name = "LabelSkill15"
+        LabelSkill15.Text = "Illusion"
+        NumSkillVal15.Anchor = AnchorStyles.Left
+        NumSkillVal15.Maximum = New Decimal(255)
+        NumSkillVal15.Name = "NumSkillVal15"
+        NumSkillVal15.Size = New Size(65, 23)
+        NumSkillVal15.TabIndex = 30
+        NumSkillVal15.TextAlign = System.Windows.Forms.HorizontalAlignment.Right
+        NumSkillOff15.Anchor = AnchorStyles.Left
+        NumSkillOff15.Maximum = New Decimal(255)
+        NumSkillOff15.Name = "NumSkillOff15"
+        NumSkillOff15.Size = New Size(65, 23)
+        NumSkillOff15.TabIndex = 31
+        NumSkillOff15.TextAlign = System.Windows.Forms.HorizontalAlignment.Right
+        LabelSkill16.Anchor = AnchorStyles.Left
+        LabelSkill16.AutoSize = True
+        LabelSkill16.Name = "LabelSkill16"
+        LabelSkill16.Text = "Restoration"
+        NumSkillVal16.Anchor = AnchorStyles.Left
+        NumSkillVal16.Maximum = New Decimal(255)
+        NumSkillVal16.Name = "NumSkillVal16"
+        NumSkillVal16.Size = New Size(65, 23)
+        NumSkillVal16.TabIndex = 32
+        NumSkillVal16.TextAlign = System.Windows.Forms.HorizontalAlignment.Right
+        NumSkillOff16.Anchor = AnchorStyles.Left
+        NumSkillOff16.Maximum = New Decimal(255)
+        NumSkillOff16.Name = "NumSkillOff16"
+        NumSkillOff16.Size = New Size(65, 23)
+        NumSkillOff16.TabIndex = 33
+        NumSkillOff16.TextAlign = System.Windows.Forms.HorizontalAlignment.Right
+        LabelSkill17.Anchor = AnchorStyles.Left
+        LabelSkill17.AutoSize = True
+        LabelSkill17.Name = "LabelSkill17"
+        LabelSkill17.Text = "Enchanting"
+        NumSkillVal17.Anchor = AnchorStyles.Left
+        NumSkillVal17.Maximum = New Decimal(255)
+        NumSkillVal17.Name = "NumSkillVal17"
+        NumSkillVal17.Size = New Size(65, 23)
+        NumSkillVal17.TabIndex = 34
+        NumSkillVal17.TextAlign = System.Windows.Forms.HorizontalAlignment.Right
+        NumSkillOff17.Anchor = AnchorStyles.Left
+        NumSkillOff17.Maximum = New Decimal(255)
+        NumSkillOff17.Name = "NumSkillOff17"
+        NumSkillOff17.Size = New Size(65, 23)
+        NumSkillOff17.TabIndex = 35
+        NumSkillOff17.TextAlign = System.Windows.Forms.HorizontalAlignment.Right
+        '
+        ' AttrLayout — the DNAM tail (Health/Magicka/Stamina u16, far-away model distance f32, geared-up u8)
+        '
+        AttrLayout.AutoSize = True
+        AttrLayout.ColumnCount = 4
+        AttrLayout.ColumnStyles.Add(New ColumnStyle(SizeType.Absolute, 165F))
+        AttrLayout.ColumnStyles.Add(New ColumnStyle(SizeType.Absolute, 120F))
+        AttrLayout.ColumnStyles.Add(New ColumnStyle(SizeType.Absolute, 165F))
+        AttrLayout.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100F))
+        AttrLayout.Controls.Add(LabelHealth, 0, 0)
+        AttrLayout.Controls.Add(NumHealth, 1, 0)
+        AttrLayout.Controls.Add(LabelMagicka, 0, 1)
+        AttrLayout.Controls.Add(NumMagicka, 1, 1)
+        AttrLayout.Controls.Add(LabelStamina, 0, 2)
+        AttrLayout.Controls.Add(NumStamina, 1, 2)
+        AttrLayout.Controls.Add(LabelFarModel, 2, 0)
+        AttrLayout.Controls.Add(NumFarModel, 3, 0)
+        AttrLayout.Controls.Add(LabelGeared, 2, 1)
+        AttrLayout.Controls.Add(NumGeared, 3, 1)
+        AttrLayout.Dock = DockStyle.Fill
+        AttrLayout.Margin = New Padding(0, 10, 0, 0)
+        AttrLayout.Name = "AttrLayout"
+        AttrLayout.RowCount = 3
+        AttrLayout.RowStyles.Add(New RowStyle())
+        AttrLayout.RowStyles.Add(New RowStyle())
+        AttrLayout.RowStyles.Add(New RowStyle())
+        AttrLayout.TabIndex = 36
+        '
+        LabelHealth.Anchor = AnchorStyles.Left
+        LabelHealth.AutoSize = True
+        LabelHealth.Name = "LabelHealth"
+        LabelHealth.Text = "Health:"
+        NumHealth.Anchor = AnchorStyles.Left
+        NumHealth.Maximum = New Decimal(65535)
+        NumHealth.Name = "NumHealth"
+        NumHealth.Size = New Size(100, 23)
+        NumHealth.TabIndex = 0
+        NumHealth.TextAlign = System.Windows.Forms.HorizontalAlignment.Right
+        LabelMagicka.Anchor = AnchorStyles.Left
+        LabelMagicka.AutoSize = True
+        LabelMagicka.Name = "LabelMagicka"
+        LabelMagicka.Text = "Magicka:"
+        NumMagicka.Anchor = AnchorStyles.Left
+        NumMagicka.Maximum = New Decimal(65535)
+        NumMagicka.Name = "NumMagicka"
+        NumMagicka.Size = New Size(100, 23)
+        NumMagicka.TabIndex = 1
+        NumMagicka.TextAlign = System.Windows.Forms.HorizontalAlignment.Right
+        LabelStamina.Anchor = AnchorStyles.Left
+        LabelStamina.AutoSize = True
+        LabelStamina.Name = "LabelStamina"
+        LabelStamina.Text = "Stamina:"
+        NumStamina.Anchor = AnchorStyles.Left
+        NumStamina.Maximum = New Decimal(65535)
+        NumStamina.Name = "NumStamina"
+        NumStamina.Size = New Size(100, 23)
+        NumStamina.TabIndex = 2
+        NumStamina.TextAlign = System.Windows.Forms.HorizontalAlignment.Right
+        LabelFarModel.Anchor = AnchorStyles.Left
+        LabelFarModel.AutoSize = True
+        LabelFarModel.Name = "LabelFarModel"
+        LabelFarModel.Text = "Far away model distance:"
+        NumFarModel.Anchor = AnchorStyles.Left
+        NumFarModel.DecimalPlaces = 6
+        NumFarModel.Increment = New Decimal(New Integer() {1, 0, 0, 131072})
+        NumFarModel.Maximum = New Decimal(1000000)
+        NumFarModel.Minimum = New Decimal(New Integer() {1000000, 0, 0, -2147483648})
+        NumFarModel.Name = "NumFarModel"
+        NumFarModel.Size = New Size(100, 23)
+        NumFarModel.TabIndex = 3
+        NumFarModel.TextAlign = System.Windows.Forms.HorizontalAlignment.Right
+        LabelGeared.Anchor = AnchorStyles.Left
+        LabelGeared.AutoSize = True
+        LabelGeared.Name = "LabelGeared"
+        LabelGeared.Text = "Geared up weapons:"
+        NumGeared.Anchor = AnchorStyles.Left
+        NumGeared.Maximum = New Decimal(255)
+        NumGeared.Name = "NumGeared"
+        NumGeared.Size = New Size(100, 23)
+        NumGeared.TabIndex = 4
+        NumGeared.TextAlign = System.Windows.Forms.HorizontalAlignment.Right
+        '
+        ' LabelStatsNote
+        '
+        LabelStatsNote.Anchor = AnchorStyles.Left Or AnchorStyles.Top
+        LabelStatsNote.AutoSize = True
+        LabelStatsNote.ForeColor = Color.DimGray
+        LabelStatsNote.Margin = New Padding(3, 10, 3, 3)
+        LabelStatsNote.Name = "LabelStatsNote"
+        LabelStatsNote.TabIndex = 37
+        LabelStatsNote.Text = "DNAM (Player Skills) — Skyrim only. Editing any value makes the NPC own the Stats template category."
+        '
         ' LabelPersistNote
         '
         LabelPersistNote.AutoSize = True
@@ -1364,6 +2089,10 @@ Partial Class NpcEditor_Form
         CType(NumCalcMin, ComponentModel.ISupportInitialize).EndInit()
         CType(NumCalcMax, ComponentModel.ISupportInitialize).EndInit()
         CType(NumDisp, ComponentModel.ISupportInitialize).EndInit()
+        CType(NumMagickaOff, ComponentModel.ISupportInitialize).EndInit()
+        CType(NumStaminaOff, ComponentModel.ISupportInitialize).EndInit()
+        CType(NumSpeedMult, ComponentModel.ISupportInitialize).EndInit()
+        CType(NumHealthOff, ComponentModel.ISupportInitialize).EndInit()
         FlowFlags.ResumeLayout(False)
         FlowFlags.PerformLayout()
         TabObts.ResumeLayout(False)
@@ -1410,6 +2139,52 @@ Partial Class NpcEditor_Form
         CType(GridProps, ComponentModel.ISupportInitialize).EndInit()
         PropsButtons.ResumeLayout(False)
         PropsButtons.PerformLayout()
+        TabStats.ResumeLayout(False)
+        StatsLayout.ResumeLayout(False)
+        StatsLayout.PerformLayout()
+        CType(NumSkillVal0, ComponentModel.ISupportInitialize).EndInit()
+        CType(NumSkillOff0, ComponentModel.ISupportInitialize).EndInit()
+        CType(NumSkillVal1, ComponentModel.ISupportInitialize).EndInit()
+        CType(NumSkillOff1, ComponentModel.ISupportInitialize).EndInit()
+        CType(NumSkillVal2, ComponentModel.ISupportInitialize).EndInit()
+        CType(NumSkillOff2, ComponentModel.ISupportInitialize).EndInit()
+        CType(NumSkillVal3, ComponentModel.ISupportInitialize).EndInit()
+        CType(NumSkillOff3, ComponentModel.ISupportInitialize).EndInit()
+        CType(NumSkillVal4, ComponentModel.ISupportInitialize).EndInit()
+        CType(NumSkillOff4, ComponentModel.ISupportInitialize).EndInit()
+        CType(NumSkillVal5, ComponentModel.ISupportInitialize).EndInit()
+        CType(NumSkillOff5, ComponentModel.ISupportInitialize).EndInit()
+        CType(NumSkillVal6, ComponentModel.ISupportInitialize).EndInit()
+        CType(NumSkillOff6, ComponentModel.ISupportInitialize).EndInit()
+        CType(NumSkillVal7, ComponentModel.ISupportInitialize).EndInit()
+        CType(NumSkillOff7, ComponentModel.ISupportInitialize).EndInit()
+        CType(NumSkillVal8, ComponentModel.ISupportInitialize).EndInit()
+        CType(NumSkillOff8, ComponentModel.ISupportInitialize).EndInit()
+        CType(NumSkillVal9, ComponentModel.ISupportInitialize).EndInit()
+        CType(NumSkillOff9, ComponentModel.ISupportInitialize).EndInit()
+        CType(NumSkillVal10, ComponentModel.ISupportInitialize).EndInit()
+        CType(NumSkillOff10, ComponentModel.ISupportInitialize).EndInit()
+        CType(NumSkillVal11, ComponentModel.ISupportInitialize).EndInit()
+        CType(NumSkillOff11, ComponentModel.ISupportInitialize).EndInit()
+        CType(NumSkillVal12, ComponentModel.ISupportInitialize).EndInit()
+        CType(NumSkillOff12, ComponentModel.ISupportInitialize).EndInit()
+        CType(NumSkillVal13, ComponentModel.ISupportInitialize).EndInit()
+        CType(NumSkillOff13, ComponentModel.ISupportInitialize).EndInit()
+        CType(NumSkillVal14, ComponentModel.ISupportInitialize).EndInit()
+        CType(NumSkillOff14, ComponentModel.ISupportInitialize).EndInit()
+        CType(NumSkillVal15, ComponentModel.ISupportInitialize).EndInit()
+        CType(NumSkillOff15, ComponentModel.ISupportInitialize).EndInit()
+        CType(NumSkillVal16, ComponentModel.ISupportInitialize).EndInit()
+        CType(NumSkillOff16, ComponentModel.ISupportInitialize).EndInit()
+        CType(NumSkillVal17, ComponentModel.ISupportInitialize).EndInit()
+        CType(NumSkillOff17, ComponentModel.ISupportInitialize).EndInit()
+        AttrLayout.ResumeLayout(False)
+        AttrLayout.PerformLayout()
+        CType(NumHealth, ComponentModel.ISupportInitialize).EndInit()
+        CType(NumMagicka, ComponentModel.ISupportInitialize).EndInit()
+        CType(NumStamina, ComponentModel.ISupportInitialize).EndInit()
+        CType(NumFarModel, ComponentModel.ISupportInitialize).EndInit()
+        CType(NumGeared, ComponentModel.ISupportInitialize).EndInit()
         BottomLayout.ResumeLayout(False)
         ResumeLayout(False)
     End Sub
@@ -1527,6 +2302,89 @@ Partial Class NpcEditor_Form
     Friend WithEvents ButtonAddProp As System.Windows.Forms.Button
     Friend WithEvents ButtonEditProp As System.Windows.Forms.Button
     Friend WithEvents ButtonRemoveProp As System.Windows.Forms.Button
+    ' --- Stats tab (DNAM Player Skills) + the SSE-only ACBS offsets on the General tab. Skyrim only. ---
+    Friend WithEvents TabStats As System.Windows.Forms.TabPage
+    Friend WithEvents StatsLayout As System.Windows.Forms.TableLayoutPanel
+    Friend WithEvents LabelSkillHdrA As System.Windows.Forms.Label
+    Friend WithEvents LabelValueHdrA As System.Windows.Forms.Label
+    Friend WithEvents LabelOffsetHdrA As System.Windows.Forms.Label
+    Friend WithEvents LabelSkillHdrB As System.Windows.Forms.Label
+    Friend WithEvents LabelValueHdrB As System.Windows.Forms.Label
+    Friend WithEvents LabelOffsetHdrB As System.Windows.Forms.Label
+    Friend WithEvents LabelSkill0 As System.Windows.Forms.Label
+    Friend WithEvents NumSkillVal0 As System.Windows.Forms.NumericUpDown
+    Friend WithEvents NumSkillOff0 As System.Windows.Forms.NumericUpDown
+    Friend WithEvents LabelSkill1 As System.Windows.Forms.Label
+    Friend WithEvents NumSkillVal1 As System.Windows.Forms.NumericUpDown
+    Friend WithEvents NumSkillOff1 As System.Windows.Forms.NumericUpDown
+    Friend WithEvents LabelSkill2 As System.Windows.Forms.Label
+    Friend WithEvents NumSkillVal2 As System.Windows.Forms.NumericUpDown
+    Friend WithEvents NumSkillOff2 As System.Windows.Forms.NumericUpDown
+    Friend WithEvents LabelSkill3 As System.Windows.Forms.Label
+    Friend WithEvents NumSkillVal3 As System.Windows.Forms.NumericUpDown
+    Friend WithEvents NumSkillOff3 As System.Windows.Forms.NumericUpDown
+    Friend WithEvents LabelSkill4 As System.Windows.Forms.Label
+    Friend WithEvents NumSkillVal4 As System.Windows.Forms.NumericUpDown
+    Friend WithEvents NumSkillOff4 As System.Windows.Forms.NumericUpDown
+    Friend WithEvents LabelSkill5 As System.Windows.Forms.Label
+    Friend WithEvents NumSkillVal5 As System.Windows.Forms.NumericUpDown
+    Friend WithEvents NumSkillOff5 As System.Windows.Forms.NumericUpDown
+    Friend WithEvents LabelSkill6 As System.Windows.Forms.Label
+    Friend WithEvents NumSkillVal6 As System.Windows.Forms.NumericUpDown
+    Friend WithEvents NumSkillOff6 As System.Windows.Forms.NumericUpDown
+    Friend WithEvents LabelSkill7 As System.Windows.Forms.Label
+    Friend WithEvents NumSkillVal7 As System.Windows.Forms.NumericUpDown
+    Friend WithEvents NumSkillOff7 As System.Windows.Forms.NumericUpDown
+    Friend WithEvents LabelSkill8 As System.Windows.Forms.Label
+    Friend WithEvents NumSkillVal8 As System.Windows.Forms.NumericUpDown
+    Friend WithEvents NumSkillOff8 As System.Windows.Forms.NumericUpDown
+    Friend WithEvents LabelSkill9 As System.Windows.Forms.Label
+    Friend WithEvents NumSkillVal9 As System.Windows.Forms.NumericUpDown
+    Friend WithEvents NumSkillOff9 As System.Windows.Forms.NumericUpDown
+    Friend WithEvents LabelSkill10 As System.Windows.Forms.Label
+    Friend WithEvents NumSkillVal10 As System.Windows.Forms.NumericUpDown
+    Friend WithEvents NumSkillOff10 As System.Windows.Forms.NumericUpDown
+    Friend WithEvents LabelSkill11 As System.Windows.Forms.Label
+    Friend WithEvents NumSkillVal11 As System.Windows.Forms.NumericUpDown
+    Friend WithEvents NumSkillOff11 As System.Windows.Forms.NumericUpDown
+    Friend WithEvents LabelSkill12 As System.Windows.Forms.Label
+    Friend WithEvents NumSkillVal12 As System.Windows.Forms.NumericUpDown
+    Friend WithEvents NumSkillOff12 As System.Windows.Forms.NumericUpDown
+    Friend WithEvents LabelSkill13 As System.Windows.Forms.Label
+    Friend WithEvents NumSkillVal13 As System.Windows.Forms.NumericUpDown
+    Friend WithEvents NumSkillOff13 As System.Windows.Forms.NumericUpDown
+    Friend WithEvents LabelSkill14 As System.Windows.Forms.Label
+    Friend WithEvents NumSkillVal14 As System.Windows.Forms.NumericUpDown
+    Friend WithEvents NumSkillOff14 As System.Windows.Forms.NumericUpDown
+    Friend WithEvents LabelSkill15 As System.Windows.Forms.Label
+    Friend WithEvents NumSkillVal15 As System.Windows.Forms.NumericUpDown
+    Friend WithEvents NumSkillOff15 As System.Windows.Forms.NumericUpDown
+    Friend WithEvents LabelSkill16 As System.Windows.Forms.Label
+    Friend WithEvents NumSkillVal16 As System.Windows.Forms.NumericUpDown
+    Friend WithEvents NumSkillOff16 As System.Windows.Forms.NumericUpDown
+    Friend WithEvents LabelSkill17 As System.Windows.Forms.Label
+    Friend WithEvents NumSkillVal17 As System.Windows.Forms.NumericUpDown
+    Friend WithEvents NumSkillOff17 As System.Windows.Forms.NumericUpDown
+    Friend WithEvents AttrLayout As System.Windows.Forms.TableLayoutPanel
+    Friend WithEvents LabelHealth As System.Windows.Forms.Label
+    Friend WithEvents NumHealth As System.Windows.Forms.NumericUpDown
+    Friend WithEvents LabelMagicka As System.Windows.Forms.Label
+    Friend WithEvents NumMagicka As System.Windows.Forms.NumericUpDown
+    Friend WithEvents LabelStamina As System.Windows.Forms.Label
+    Friend WithEvents NumStamina As System.Windows.Forms.NumericUpDown
+    Friend WithEvents LabelFarModel As System.Windows.Forms.Label
+    Friend WithEvents NumFarModel As System.Windows.Forms.NumericUpDown
+    Friend WithEvents LabelGeared As System.Windows.Forms.Label
+    Friend WithEvents NumGeared As System.Windows.Forms.NumericUpDown
+    Friend WithEvents LabelStatsNote As System.Windows.Forms.Label
+    Friend WithEvents LabelMagickaOff As System.Windows.Forms.Label
+    Friend WithEvents NumMagickaOff As System.Windows.Forms.NumericUpDown
+    Friend WithEvents LabelStaminaOff As System.Windows.Forms.Label
+    Friend WithEvents NumStaminaOff As System.Windows.Forms.NumericUpDown
+    Friend WithEvents LabelSpeedMult As System.Windows.Forms.Label
+    Friend WithEvents NumSpeedMult As System.Windows.Forms.NumericUpDown
+    Friend WithEvents LabelHealthOff As System.Windows.Forms.Label
+    Friend WithEvents NumHealthOff As System.Windows.Forms.NumericUpDown
     Friend WithEvents LabelPersistNote As System.Windows.Forms.Label
     Friend WithEvents BottomLayout As System.Windows.Forms.FlowLayoutPanel
     Friend WithEvents ButtonOk As System.Windows.Forms.Button

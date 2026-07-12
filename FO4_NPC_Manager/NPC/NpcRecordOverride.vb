@@ -22,12 +22,25 @@ Public Class NpcRecordOverride
     Public Property FullName As String = Nothing            ' FULL
     Public Property ShortName As String = Nothing           ' SHRT
     Public Property AcbsFlags As UInteger? = Nothing        ' ACBS Flags (u32 @+0)
-    Public Property XpValueOffset As Short? = Nothing       ' ACBS XP Value Offset (s16 @+4)
+    Public Property XpValueOffset As Short? = Nothing       ' ACBS XP Value Offset (s16 @+4) — FO4-only
     Public Property Level As UShort? = Nothing              ' ACBS Level / LevelMult (u16 @+6, raw — union gated by 0x80)
     Public Property CalcMinLevel As UShort? = Nothing       ' ACBS Calc Min Level
     Public Property CalcMaxLevel As UShort? = Nothing       ' ACBS Calc Max Level
     Public Property DispositionBase As Short? = Nothing     ' ACBS Disposition Base (s16)
     Public Property TemplateFlags As UShort? = Nothing      ' ACBS/NPC Template Flags (u16) — reserved; editor leaves it unset
+
+    ' --- ACBS fields that exist only in the 24-byte Skyrim layout (the FO4 20-byte struct has no slot for
+    ' them; its writer branch never reads them, so they are inert under FO4). ---
+    Public Property MagickaOffset As Short? = Nothing       ' ACBS Magicka Offset (s16 @+4)  — SSE-only
+    Public Property StaminaOffset As Short? = Nothing       ' ACBS Stamina Offset (s16 @+6)  — SSE-only
+    Public Property SpeedMultiplier As UShort? = Nothing    ' ACBS Speed Multiplier (u16 @+14) — SSE-only
+    Public Property HealthOffset As Short? = Nothing        ' ACBS Health Offset (s16 @+20)  — SSE-only
+
+    ''' <summary>DNAM Player Skills (SSE-only, 52-byte block). Nothing = not overridden; a set value REPLACES
+    ''' the whole struct (the editor seeds it from the record, so untouched fields keep their value — including
+    ''' the two verbatim wbUnused runs). FO4's DNAM is an unrelated Calculated-Stats struct the app never edits
+    ''' (the engine recomputes it), so there is no FO4 counterpart here.</summary>
+    Public Property SsePlayerSkills As NPC_SsePlayerSkills = Nothing
     Public Property RaceFormID As UInteger? = Nothing       ' RNAM
     Public Property VoiceFormID As UInteger? = Nothing      ' VTCK
     Public Property ClassFormID As UInteger? = Nothing      ' CNAM
@@ -54,6 +67,8 @@ Public Class NpcRecordOverride
             Return FullName Is Nothing AndAlso ShortName Is Nothing AndAlso Not AcbsFlags.HasValue AndAlso
                    Not XpValueOffset.HasValue AndAlso Not Level.HasValue AndAlso Not CalcMinLevel.HasValue AndAlso
                    Not CalcMaxLevel.HasValue AndAlso Not DispositionBase.HasValue AndAlso Not TemplateFlags.HasValue AndAlso
+                   Not MagickaOffset.HasValue AndAlso Not StaminaOffset.HasValue AndAlso
+                   Not SpeedMultiplier.HasValue AndAlso Not HealthOffset.HasValue AndAlso SsePlayerSkills Is Nothing AndAlso
                    Not RaceFormID.HasValue AndAlso Not VoiceFormID.HasValue AndAlso Not ClassFormID.HasValue AndAlso
                    Not CombatStyleFormID.HasValue AndAlso Keywords Is Nothing AndAlso AttachParentSlots Is Nothing AndAlso
                    Factions Is Nothing AndAlso Inventory Is Nothing AndAlso Perks Is Nothing AndAlso

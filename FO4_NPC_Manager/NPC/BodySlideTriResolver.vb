@@ -19,26 +19,20 @@ Imports NiflySharp.Blocks
 ' ==========================================================================
 
 Public Class BodySlideTriResolver
-    ' Per-process cache: a given .tri PIRT is loaded at most once. Concurrent shape
-    ' resolves share the cached result. SyncLock keeps it thread-safe even though
-    ' typical render flow is single-threaded.
-    Private Shared ReadOnly _pirtCache As New Dictionary(Of String, TriFile)(StringComparer.OrdinalIgnoreCase)
-    ' Negative cache: paths that missed in FilesDictionary, were non-PIRT magic, or failed to parse.
-    ' Without this every render re-resolves and re-decompresses BA2 bytes for an absent path. Mirrors
-    ' NpcMorphResolver._triLoadAttempted. Same normalized-path key the success cache uses.
-    Private Shared ReadOnly _pirtLoadAttempted As New HashSet(Of String)(StringComparer.OrdinalIgnoreCase)
+    ' Per-process cache: a given .tri PIRT is loaded at most once, and a failed load (missing in
+    ' FilesDictionary, non-PIRT magic, unparseable) is remembered as Nothing so we don't re-decompress
+    ' BA2 bytes for an absent path on every render. ResolveMorphPlan runs under Parallel.ForEach
+    ' (PipelineStep_Morphs), so several shapes hit the SAME path at once — PathLoadCache serializes
+    ' those on a per-path gate and hands them all the same result. See PathLoadCache.vb for the race
+    ' this replaced.
+    Private Shared ReadOnly _pirtCache As New PathLoadCache(Of TriFile)()
 
     ''' <summary>Drop the per-process PIRT parse cache. Call on load-order change (FilesDictionary rebuilt) so
     ''' a stale parse from a path that now resolves to different bytes is discarded and the parsed-geometry
     ''' entries are freed. Within a FIXED load order it's never called, so each BodySlide .tri is parsed at
     ''' most once — no re-parse churn during a session.</summary>
     Public Shared Sub ClearCaches()
-        SyncLock _pirtCache
-            _pirtCache.Clear()
-        End SyncLock
-        SyncLock _pirtLoadAttempted
-            _pirtLoadAttempted.Clear()
-        End SyncLock
+        _pirtCache.Clear()
     End Sub
 
     ''' <summary>Resolve the PIRT .tri path for a shape. Returns Nothing if the NIF root
@@ -79,39 +73,20 @@ Public Class BodySlideTriResolver
     Public Shared Function LoadPirt(normalizedPath As String) As TriFile
         If String.IsNullOrEmpty(normalizedPath) Then Return Nothing
 
-        SyncLock _pirtCache
-            Dim cached As TriFile = Nothing
-            If _pirtCache.TryGetValue(normalizedPath, cached) Then Return cached
-        End SyncLock
+        Return _pirtCache.GetOrLoad(normalizedPath,
+            Function() As TriFile
+                ' Routed through MeshPathHelpers.TryLoadMeshBytes (minBytes:=4 preserves the PIRT-magic guard)
+                ' so the TryGetValue + GetBytes + size-check lives in one place (DUP-004).
+                Dim bytes = MeshPathHelpers.TryLoadMeshBytes(normalizedPath, minBytes:=4)
+                If bytes Is Nothing Then Return Nothing
 
-        ' Negative cache: a prior attempt already failed (missing / non-PIRT / unparseable).
-        ' Short-circuit so we don't re-decompress BA2 bytes for an absent path every render.
-        SyncLock _pirtLoadAttempted
-            If _pirtLoadAttempted.Contains(normalizedPath) Then Return Nothing
-            _pirtLoadAttempted.Add(normalizedPath)
-        End SyncLock
+                ' Only accept PIRT. FRTRI003 belongs to NpcMorphResolver's face pipeline.
+                If Not (bytes(0) = &H50 AndAlso bytes(1) = &H49 AndAlso bytes(2) = &H52 AndAlso bytes(3) = &H54) Then
+                    Return Nothing
+                End If
 
-        ' Routed through MeshPathHelpers.TryLoadMeshBytes (minBytes:=4 preserves the PIRT-magic guard)
-        ' so the TryGetValue + GetBytes + size-check lives in one place (DUP-004).
-        Dim bytes = MeshPathHelpers.TryLoadMeshBytes(normalizedPath, minBytes:=4)
-        If bytes Is Nothing Then Return Nothing
-
-        ' Only accept PIRT. FRTRI003 belongs to NpcMorphResolver's face pipeline.
-        If Not (bytes(0) = &H50 AndAlso bytes(1) = &H49 AndAlso bytes(2) = &H52 AndAlso bytes(3) = &H54) Then
-            Return Nothing
-        End If
-
-        Try
-            Dim parsed = TriFileParser.ParseTriFromBytes(bytes)
-            If Not IsNothing(parsed) Then
-                SyncLock _pirtCache
-                    _pirtCache(normalizedPath) = parsed
-                End SyncLock
-            End If
-            Return parsed
-        Catch
-            Return Nothing
-        End Try
+                Return TriFileParser.ParseTriFromBytes(bytes)
+            End Function)
     End Function
 
     ''' <summary>Convenience: resolve and load in one call.</summary>

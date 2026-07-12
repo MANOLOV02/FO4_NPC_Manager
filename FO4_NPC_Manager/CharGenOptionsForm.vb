@@ -24,9 +24,9 @@ Public Class CharGenOptionsForm
         ComboSpecular.SelectedIndex = ResToIndex(c.Setting_FaceGenSpecularResolution)
         ' Compresiones PER-GAME (set del juego activo → sin leak al cambiar de juego). Specular = FO4-only (compartido).
         Dim isSseL = (c.Game = Config_App.Game_Enum.Skyrim)
-        ComboFormat.SelectedIndex = CInt(If(isSseL, c.Setting_FaceGenDiffuseCompression_SSE, c.Setting_FaceGenDiffuseCompression))  ' Bc3=0/Bc7=1/Uncompressed=2
-        ComboFormatN.SelectedIndex = CInt(If(isSseL, c.Setting_FaceGenNormalCompression_SSE, c.Setting_FaceGenNormalCompression))  ' Bc5=0/Unc=1/Bc7=2/Bc3=3
-        ComboFormatS.SelectedIndex = CInt(c.Setting_FaceGenSpecularCompression)
+        SetComboIndex(ComboFormat, CInt(If(isSseL, c.Setting_FaceGenDiffuseCompression_SSE, c.Setting_FaceGenDiffuseCompression)))  ' Bc3=0/Bc7=1/Uncompressed=2
+        SetComboIndex(ComboFormatN, CInt(If(isSseL, c.Setting_FaceGenNormalCompression_SSE, c.Setting_FaceGenNormalCompression)))  ' Bc5=0/Unc=1/Bc7=2/Bc3=3
+        SetComboIndex(ComboFormatS, CInt(c.Setting_FaceGenSpecularCompression))                                                    ' mismo enum que el N (4 valores)
         CheckGenerateTga.Checked = c.Setting_FaceGenGenerateTga
         ' --- Tab "Fixes": NPC-only toggle, lives in NPC_Config (not Config_App). ---
         CheckBoxApplyGhoulHeadRearFix.Checked = NPC_Config.Current.ApplyGhoulHeadRearFix
@@ -86,14 +86,15 @@ Public Class CharGenOptionsForm
         GroupConvDiffuse.Text = If(isSse, "Diffuse (SSE facegen-tint)", "Diffuse")
 
         ' Tab "Texture Size": el default del formato NORMAL difiere por juego → tag "(default)" GAME-AWARE en ComboFormatN
-        ' (FO4=BC5 idx0, SSE=BC3 idx3). El enable/disable + derivación All-vs-per-layer de N/S lo maneja UpdateEnabledState
-        ' (corre DESPUÉS, IGUAL que FO4: All deshabilita+deriva, per-layer habilita; Specular FO4-only). Acá sólo labels + tag.
+        ' (FO4=BC5 idx0 tangent-space 2-ch; SSE=Uncompressed idx1: el _msn es MODEL-SPACE 3-ch y cualquier BCn destruye la
+        ' dirección de la normal — MEDIDO: BC3 da RMS 5.07/255 y max 148/255 vs el vanilla, Uncompressed da 0.000 = exacto).
+        ' El enable/disable + derivación All-vs-per-layer de N/S lo maneja UpdateEnabledState (corre DESPUÉS). Acá labels + tag.
         LabelNormal.Enabled = True
         LabelSpecular.Enabled = Not isSse
         Dim selN = ComboFormatN.SelectedIndex
         ComboFormatN.Items.Clear()
         ComboFormatN.Items.AddRange(If(isSse,
-            New Object() {"BC5", "Uncompressed", "BC7", "BC3 (default)"},
+            New Object() {"BC5", "Uncompressed (default)", "BC7", "BC3"},
             New Object() {"BC5 (default)", "Uncompressed", "BC7", "BC3"}))
         If selN >= 0 AndAlso selN < ComboFormatN.Items.Count Then ComboFormatN.SelectedIndex = selN
     End Sub
@@ -361,25 +362,37 @@ Public Class CharGenOptionsForm
         If Not perLayer Then
             ComboNormal.SelectedIndex = ComboDiffuse.SelectedIndex
             ComboSpecular.SelectedIndex = ComboDiffuse.SelectedIndex
-            ComboFormatN.SelectedIndex = NsFormatIndexFromDiffuse()   ' All: N deriva del D (game-aware: FO4→BC5, SSE→sigue el formato del D)
-            ComboFormatS.SelectedIndex = NsFormatIndexFromDiffuse()
+            SetComboIndex(ComboFormatN, NormalFormatIndexFromDiffuse())     ' All: N deriva del D (game-aware: FO4→BC5, SSE→sigue el formato del D)
+            SetComboIndex(ComboFormatS, SpecularFormatIndexFromDiffuse())   ' All: S deriva del D con la ley FO4 SIEMPRE (specular = FO4-only)
         End If
     End Sub
 
-    ''' <summary>Modo All: índice del combo N (formato) derivado del Diffuse, GAME-AWARE. ComboFormat (diffuse):
-    ''' BC3=0/BC7=1/Uncompressed=2. Combo N (enum FaceTintNormalSpecularCompression): BC5=0/Uncompressed=1/BC7=2/BC3=3.
-    ''' FO4: _n tangent-space 2-ch ⇒ BC5(0), o Uncompressed(1) si el D lo es. SSE: _msn model-space 3-ch ⇒ sigue el
-    ''' FORMATO del D (BC3→BC3 idx3, BC7→BC7 idx2, Uncompressed→idx1); default (D=BC3) ⇒ BC3.</summary>
-    Private Function NsFormatIndexFromDiffuse() As Integer
+    ''' <summary>Fija el índice de un combo clampeando al rango de sus ítems (los combos de formato tienen distinto
+    ''' número de ítems por juego/canal; un índice fuera de rango tira ArgumentOutOfRangeException).</summary>
+    Private Shared Sub SetComboIndex(cb As ComboBox, idx As Integer)
+        If cb.Items.Count = 0 Then Return
+        cb.SelectedIndex = Math.Min(Math.Max(idx, 0), cb.Items.Count - 1)
+    End Sub
+
+    ''' <summary>Modo All: índice del combo N (formato) que el bake usará, GAME-AWARE. Combo N (enum
+    ''' FaceTintNormalSpecularCompression): BC5=0/Uncompressed=1/BC7=2/BC3=3.
+    ''' FO4: el _n es tangent-space 2-ch ⇒ deriva del Diffuse (BC5(0), o Uncompressed(1) si el D lo es).
+    ''' SSE: el _msn es MODEL-SPACE 3-ch ⇒ SIEMPRE Uncompressed(1), NO deriva del Diffuse (cualquier BCn destruye la
+    ''' dirección de la normal: MEDIDO BC3 → RMS 5.07/255, max 148/255 vs vanilla; Uncompressed → 0.000 = exacto).
+    ''' Espeja exactamente FaceGenBuilder.OutputSettings (NormalCompressionAllModeSse) ⇒ la UI no miente sobre lo que
+    ''' el bake escribe.</summary>
+    Private Function NormalFormatIndexFromDiffuse() As Integer
         Dim isSse = (Config_App.Current IsNot Nothing AndAlso Config_App.Current.Game = Config_App.Game_Enum.Skyrim)
-        If isSse Then
-            Select Case ComboFormat.SelectedIndex
-                Case 1 : Return 2   ' BC7 diffuse → BC7 normal
-                Case 2 : Return 1   ' Uncompressed → Uncompressed
-                Case Else : Return 3   ' BC3 → BC3
-            End Select
-        End If
-        Return If(ComboFormat.SelectedIndex = 2, 1, 0)   ' FO4: Uncompressed→1, sino BC5→0
+        If isSse Then Return 1   ' Uncompressed (SIEMPRE en SSE; el _msn model-space no tolera BCn)
+        Return SpecularFormatIndexFromDiffuse()   ' FO4: misma ley que el specular (Uncompressed→1, sino BC5→0)
+    End Function
+
+    ''' <summary>Modo All: índice del combo S (formato) derivado del Diffuse. El specular es FO4-only (SSE no lo bakea),
+    ''' así que usa la ley FO4 en AMBOS juegos — igual que FaceGenBuilder.OutputSettings, que en All-mode siempre
+    ''' resuelve el specular con NsCompressionFromDiffuse: Uncompressed(1) si el D lo es, sino BC5(0). Aplicarle la ley
+    ''' SSE del normal daba índice 3 (BC3), que ni existía en el combo (crash) ni es lo que el bake escribe.</summary>
+    Private Function SpecularFormatIndexFromDiffuse() As Integer
+        Return If(ComboFormat.SelectedIndex = 2, 1, 0)   ' Uncompressed→1, sino BC5→0
     End Function
 
     Private Sub RadioMode_CheckedChanged(sender As Object, e As EventArgs) Handles RadioAll.CheckedChanged, RadioPerLayer.CheckedChanged
@@ -387,9 +400,9 @@ Public Class CharGenOptionsForm
         UpdateEnabledState()
     End Sub
 
-    ''' <summary>Defaults del tab Size: All + Inherit (los 3) + Diffuse BC3 + N/S BC5 + Generate TGA off
-    ''' (= los defaults del CÓDIGO/Config). En memoria; OK persiste, Cancel descarta. Independiente de los
-    ''' Revert de Conventions/Order (no toca esos tabs).</summary>
+    ''' <summary>Defaults del tab Size: All + Inherit (los 3) + Diffuse BC3 + Normal (FO4 BC5 / SSE Uncompressed) +
+    ''' Specular BC5 + Generate TGA off (= los defaults del CÓDIGO/Config). En memoria; OK persiste, Cancel descarta.
+    ''' Independiente de los Revert de Conventions/Order (no toca esos tabs).</summary>
     Private Sub ButtonResetSize_Click(sender As Object, e As EventArgs) Handles ButtonResetSize.Click
         Dim isSse = (Config_App.Current IsNot Nothing AndAlso Config_App.Current.Game = Config_App.Game_Enum.Skyrim)
         _loading = True
@@ -398,8 +411,9 @@ Public Class CharGenOptionsForm
         ComboNormal.SelectedIndex = 0
         ComboSpecular.SelectedIndex = 0
         ComboFormat.SelectedIndex = 0       ' BC3
-        ' Normal: default del CÓDIGO = BC3 (índice 3) en SSE; BC5 (0) en FO4. En FO4 modo All lo deriva UpdateEnabledState.
-        ComboFormatN.SelectedIndex = If(isSse, 3, 0)
+        ' Normal: default del CÓDIGO = Uncompressed (índice 1) en SSE (el _msn model-space NO tolera BCn); BC5 (0) en FO4
+        ' (tangent-space 2-ch). En FO4 modo All lo deriva UpdateEnabledState; en SSE el modo All también es Uncompressed.
+        ComboFormatN.SelectedIndex = If(isSse, 1, 0)
         ComboFormatS.SelectedIndex = 0      ' BC5
         CheckGenerateTga.Checked = False
         _loading = False
@@ -414,13 +428,13 @@ Public Class CharGenOptionsForm
         End If
     End Sub
 
-    ''' <summary>En "All", el formato N/S sigue al Diffuse: Uncompressed si el Diffuse es Uncompressed, sino BC5.</summary>
+    ''' <summary>En "All", el formato N/S sigue al Diffuse. N: game-aware (FO4→BC5/Uncompressed; SSE→sigue el formato
+    ''' del D). S: ley FO4 siempre (specular = FO4-only).</summary>
     Private Sub ComboFormat_SelectedIndexChanged(sender As Object, e As EventArgs) Handles ComboFormat.SelectedIndexChanged
         If _loading Then Return
         If RadioAll.Checked Then
-            Dim ns = NsFormatIndexFromDiffuse()
-            ComboFormatN.SelectedIndex = ns
-            ComboFormatS.SelectedIndex = ns
+            SetComboIndex(ComboFormatN, NormalFormatIndexFromDiffuse())
+            SetComboIndex(ComboFormatS, SpecularFormatIndexFromDiffuse())
         End If
     End Sub
 

@@ -25,30 +25,32 @@ Public Class NpcMorphResolver
     Private ReadOnly _raceKeywordEditorIds As List(Of String)   ' race KWDA EditorIDs → "<kw>Morph"@1.0 (race-agnostic)
     Private ReadOnly _morphValueDefs As List(Of RACE_MorphValueDef)      ' MSID -> MSM0/MSM1 from RACE
     Private ReadOnly _morphPresetDefs As List(Of RACE_MorphPresetDef)   ' MPPI -> MPPM from RACE Morph Groups
+    ''' <summary>SSE-only gates (los canales que en Skyrim viven DENTRO del plan de cara y en FO4 son
+    ''' pipelines aparte): sculpt per-vértice de RaceMenu = checkbox "Sculpt", y el SkinnyMorph de la
+    ''' cabeza/pelo = checkbox "Body weight". El bake los deja en True (default del ctor) — es un toggle
+    ''' de PREVIEW, no cambia lo que se hornea. Inertes en el camino FO4 (que no emite esos canales).</summary>
+    Private ReadOnly _applySculpt As Boolean = True
+    Private ReadOnly _applyBodyWeight As Boolean = True
     ' Per-process (Shared) TRI caches: a given chargen/race .tri is parsed at most once for the
     ' lifetime of the process and shared across every NpcMorphResolver instance — the resolver is
     ' rebuilt on each render/toggle (MainForm.BuildCompositeMorphResolver), so a per-instance cache
     ' re-parsed the FRTRI003 TriHead every frame. Mirrors the existing Shared path-keyed
     ' FilesDictionary caches (BodySlideTriResolver._pirtCache, MainForm._facialBoneRegionsCache):
     ' FilesDictionary content is treated as process-stable, so no per-render invalidation.
-    Private Shared ReadOnly _triCache As New Dictionary(Of String, TriFile)(StringComparer.OrdinalIgnoreCase)
-    Private Shared ReadOnly _triHeadCache As New Dictionary(Of String, TriHeadFile)(StringComparer.OrdinalIgnoreCase)
-    Private Shared ReadOnly _triLoadAttempted As New HashSet(Of String)(StringComparer.OrdinalIgnoreCase)
+    ' PathLoadCache: load-once per path, failed loads remembered as Nothing, and concurrent callers for the
+    ' same path wait for the in-flight load instead of short-circuiting (ResolveMorphPlan runs under
+    ' Parallel.ForEach — the old attempted-HashSet was marked BEFORE the load, so a second thread could see
+    ' "attempted" with nothing cached yet and return Nothing). See PathLoadCache.vb.
+    Private Shared ReadOnly _triCache As New PathLoadCache(Of TriFile)()
+    Private Shared ReadOnly _triHeadCache As New PathLoadCache(Of TriHeadFile)()
 
     ''' <summary>Drop the per-process TRI parse caches. Call on load-order change (FilesDictionary rebuilt):
     ''' a path could resolve to different bytes after a reload, so the cached parse would be stale, and the
     ''' parsed-geometry entries (potentially MBs each) are freed. Within a FIXED load order this is never
     ''' called, so a browsed .tri is parsed at most once — no re-parse churn during a session.</summary>
     Public Shared Sub ClearCaches()
-        SyncLock _triCache
-            _triCache.Clear()
-        End SyncLock
-        SyncLock _triHeadCache
-            _triHeadCache.Clear()
-        End SyncLock
-        SyncLock _triLoadAttempted
-            _triLoadAttempted.Clear()
-        End SyncLock
+        _triCache.Clear()
+        _triHeadCache.Clear()
     End Sub
 
     ' MRSV — Body Morph Region Values. Per TES5Edit/Core/wbDefinitionsFO4.pas:10793-10799,
@@ -75,8 +77,12 @@ Public Class NpcMorphResolver
                    Optional shapeRaceMorphTriPaths As Dictionary(Of IRenderableShape, String) = Nothing,
                    Optional raceEditorId As String = "",
                    Optional shapeMeshMorphTriPaths As Dictionary(Of IRenderableShape, String) = Nothing,
-                   Optional raceKeywordEditorIds As List(Of String) = Nothing)
+                   Optional raceKeywordEditorIds As List(Of String) = Nothing,
+                   Optional applySculpt As Boolean = True,
+                   Optional applyBodyWeight As Boolean = True)
         _npcData = npcData
+        _applySculpt = applySculpt
+        _applyBodyWeight = applyBodyWeight
         _morphValueDefs = morphValueDefs
         _morphPresetDefs = morphPresetDefs
         _meshDictKeys = meshDictKeys
@@ -137,7 +143,8 @@ Public Class NpcMorphResolver
             ' Pass this shape's chargen tri (NAM0=2) so RaceMenu per-shape sculpt routes to it by Host.
             Dim shapeChargen As String = Nothing
             If _shapeChargenTriPaths IsNot Nothing Then _shapeChargenTriPaths.TryGetValue(shape, shapeChargen)
-            plan.Channels.AddRange(BuildFaceMorphPlan(_npcData, triHead, _raceEditorId, _morphValueDefs, _morphPresetDefs, _raceKeywordEditorIds, shapeChargen).Channels)
+            plan.Channels.AddRange(BuildFaceMorphPlan(_npcData, triHead, _raceEditorId, _morphValueDefs, _morphPresetDefs, _raceKeywordEditorIds, shapeChargen,
+                                                     applySculpt:=_applySculpt, applyBodyWeight:=_applyBodyWeight).Channels)
         End If
 
         ' Channel dedup-by-name with SUMMED weights now lives inside
@@ -200,17 +207,23 @@ Public Class NpcMorphResolver
     '''              into npcData by NpcRecordOverlay before this runs).
     ''' The SSE head/hair actor-WEIGHT morph is folded into this same plan (the "SkinnyMorph" channel in
     ''' BuildFaceMorphPlanFromNam9, read from each shape's own mesh .tri at frac = 1 - NAM7/100) — one source,
-    ''' render + bake, per-part and race-aware; there is no separate weight resolver or delta table.</summary>
+    ''' render + bake, per-part and race-aware; there is no separate weight resolver or delta table.
+    ''' <paramref name="applySculpt"/> / <paramref name="applyBodyWeight"/> are the SSE PREVIEW toggles for the
+    ''' two channels that live inside this plan (RaceMenu sculpt / SkinnyMorph). They default True so the offline
+    ''' bake — which must not depend on UI state — is unaffected.</summary>
     Public Shared Function BuildFaceMorphPlan(npcData As NPC_Data, triHead As TriHeadFile,
                                               raceEditorId As String,
                                               morphValueDefs As List(Of RACE_MorphValueDef),
                                               morphPresetDefs As List(Of RACE_MorphPresetDef),
                                               Optional raceKeywordEditorIds As List(Of String) = Nothing,
-                                              Optional shapeChargenTriPath As String = "") As MorphPlan
+                                              Optional shapeChargenTriPath As String = "",
+                                              Optional applySculpt As Boolean = True,
+                                              Optional applyBodyWeight As Boolean = True) As MorphPlan
         Dim plan As New MorphPlan()
         If npcData Is Nothing OrElse triHead Is Nothing Then Return plan
         If npcData.Game = Config_App.Game_Enum.Skyrim Then
-            plan.Channels.AddRange(BuildFaceMorphPlanFromNam9(npcData, triHead, raceEditorId, raceKeywordEditorIds, shapeChargenTriPath).Channels)
+            plan.Channels.AddRange(BuildFaceMorphPlanFromNam9(npcData, triHead, raceEditorId, raceKeywordEditorIds, shapeChargenTriPath,
+                                                              applySculpt, applyBodyWeight).Channels)
         ElseIf npcData.MorphValues IsNot Nothing AndAlso npcData.MorphValues.Count > 0 Then
             plan.Channels.AddRange(BuildFaceMorphPlanFromTriHead(npcData, morphValueDefs, morphPresetDefs, triHead).Channels)
         End If
@@ -345,7 +358,9 @@ Public Class NpcMorphResolver
     Public Shared Function BuildFaceMorphPlanFromNam9(npcData As NPC_Data, triHead As TriHeadFile,
                                                       Optional raceEditorId As String = "",
                                                       Optional raceKeywordEditorIds As List(Of String) = Nothing,
-                                                      Optional shapeChargenTriPath As String = "") As MorphPlan
+                                                      Optional shapeChargenTriPath As String = "",
+                                                      Optional applySculpt As Boolean = True,
+                                                      Optional applyBodyWeight As Boolean = True) As MorphPlan
         Dim plan As New MorphPlan()
         If npcData Is Nothing OrElse triHead Is Nothing Then Return plan
 
@@ -423,8 +438,12 @@ Public Class NpcMorphResolver
         ' skee serializes, so brows/eyes/mouth get their own sculpt instead of only the head (the old code applied
         ' Sculpt(0) to every shape → brows/eyes/mouth ignored the preset AND the head block bled onto them by index).
         ' Fall back to the head-only SseSculptHead when the overlay predates per-shape parsing (editor-authored).
+        ' applySculpt=False (checkbox "Sculpt" OFF en el preview) ⇒ no se emite el canal: la cara queda con los
+        ' NAM9/NAMA vanilla, sin los deltas libres del .jslot. Es el análogo SSE del toggle ARMA SCLP de FO4.
         Dim sculptVerts As List(Of NPC_SculptVert) = Nothing
-        If npcData.SseSculptParts IsNot Nothing AndAlso npcData.SseSculptParts.Count > 0 Then
+        If Not applySculpt Then
+            sculptVerts = Nothing
+        ElseIf npcData.SseSculptParts IsNot Nothing AndAlso npcData.SseSculptParts.Count > 0 Then
             If Not String.IsNullOrEmpty(shapeChargenTriPath) Then
                 Dim wantKey = MeshPathHelpers.NormalizeMeshKey(shapeChargenTriPath)
                 For Each p In npcData.SseSculptParts
@@ -456,10 +475,12 @@ Public Class NpcMorphResolver
         ' head ships its own SkinnyMorph) and unifies render+bake on this one plan — no table, no separate resolver.
         ' The mesh .tri is merged into triHead by the callers (render: LoadTriForShape; bake: LoadMergedHeadTri),
         ' so on a non-head shape GetMorph("SkinnyMorph") is Nothing and AddNam9Channel no-ops (natural gating).
+        ' applyBodyWeight=False (checkbox "Body weight" OFF en el preview) ⇒ peso neutro: no se emite el
+        ' SkinnyMorph, igual que el resolver del cuerpo (_0/_1) no se engancha. Cabeza y cuerpo apagan juntos.
         Dim nam7 = npcData.Nam7Raw
         Dim weightVal As Single = If(nam7 IsNot Nothing AndAlso nam7.Length >= 4, BitConverter.ToSingle(nam7, 0), 100.0F)
         Dim skinnyFrac As Single = 1.0F - Math.Max(0.0F, Math.Min(1.0F, weightVal / 100.0F))
-        If skinnyFrac > 0.0000001F Then AddNam9Channel(plan, triHead, "SkinnyMorph", skinnyFrac)
+        If applyBodyWeight AndAlso skinnyFrac > 0.0000001F Then AddNam9Channel(plan, triHead, "SkinnyMorph", skinnyFrac)
 
         ' 3) Dedup channels by name SUMMING weights (same convention as the FO4 path — a slider and a
         ' type preset could both resolve to the same morph name; the engine applies the sum). The sculpt
@@ -685,63 +706,37 @@ Public Class NpcMorphResolver
     End Sub
 
     Private Function TryLoadPirt(normalizedPath As String) As TriFile
-        SyncLock _triCache
-            Dim cached As TriFile = Nothing
-            If _triCache.TryGetValue(normalizedPath, cached) Then Return cached
-        End SyncLock
+        If String.IsNullOrEmpty(normalizedPath) Then Return Nothing
 
-        Dim bytes = TryGetFileBytes(normalizedPath)
-        If bytes Is Nothing Then
-            Return Nothing
-        End If
-
-        Try
-            Dim pirt = TriFileParser.ParseTriFromBytes(bytes)
-            If Not IsNothing(pirt) Then
-                SyncLock _triCache
-                    _triCache(normalizedPath) = pirt
-                End SyncLock
-            End If
-            Return pirt
-        Catch
-            Return Nothing
-        End Try
+        Return _triCache.GetOrLoad(normalizedPath,
+            Function() As TriFile
+                Dim bytes = TryGetFileBytes(normalizedPath)
+                If bytes Is Nothing Then Return Nothing
+                Return TriFileParser.ParseTriFromBytes(bytes)
+            End Function)
     End Function
 
     Private Function TryLoadTriHead(normalizedPath As String) As TriHeadFile
+        If String.IsNullOrEmpty(normalizedPath) Then Return Nothing
+
         ' Key the cache on the mouth-fix state so the vanilla and the fixed BaseFemaleHeadChargen.tri head
         ' live under distinct keys — toggling Setting_ApplyMouthVanillaFix then re-reads the right one
         ' instead of serving a stale (fixed/vanilla) cached head. Suffix is "" for every other file.
         Dim cacheKey = normalizedPath & ChargenMouthFix.CacheKeySuffix(normalizedPath)
-        SyncLock _triHeadCache
-            Dim cached As TriHeadFile = Nothing
-            If _triHeadCache.TryGetValue(cacheKey, cached) Then Return cached
-        End SyncLock
 
-        SyncLock _triLoadAttempted
-            If _triLoadAttempted.Contains(cacheKey) Then Return Nothing
-            _triLoadAttempted.Add(cacheKey)
-        End SyncLock
+        Return _triHeadCache.GetOrLoad(cacheKey,
+            Function() As TriHeadFile
+                Dim bytes = TryGetFileBytes(normalizedPath)
+                If bytes Is Nothing Then Return Nothing
 
-        Dim bytes = TryGetFileBytes(normalizedPath)
-        If bytes Is Nothing Then
-            Return Nothing
-        End If
+                Dim head = TriHeadParser.ParseTriHeadFromBytes(bytes)
+                If head Is Nothing Then Return Nothing
 
-        Try
-            Dim head = TriHeadParser.ParseTriHeadFromBytes(bytes)
-            If head IsNot Nothing Then
                 ' Zero the 22 vanilla mouth deltas iff the toggle is on and this is the female chargen tri
                 ' (no-op otherwise). Done on the fresh parse before caching, so the merge downstream sees it.
                 ChargenMouthFix.MaybeApplyInPlace(normalizedPath, head)
-                SyncLock _triHeadCache
-                    _triHeadCache(cacheKey) = head
-                End SyncLock
-            End If
-            Return head
-        Catch ex As Exception
-            Return Nothing
-        End Try
+                Return head
+            End Function)
     End Function
 
     ' Routed through MeshPathHelpers.TryLoadMeshBytes (minBytes:=8 preserves the TRI-magic guard)

@@ -920,6 +920,22 @@ Public Class MainForm
         If _renderHost Is Nothing Then Return
         _renderHost.Toggles = RenderToggles.FromMainCheckBoxes(Me)
         RebuildAndApplyMergedPose()
+        ' SSE: el peso (NAM7) NO es bone-scale sino morph de VÉRTICE — LERP _0/_1 del cuerpo +
+        ' SkinnyMorph de cabeza/pelo. Además del pase de pose hay que rearmar el composite de morphs.
+        RebuildMorphResolverIfSse()
+    End Sub
+
+    ''' <summary>Rearma el composite de morphs + MarkDirty(Morphs) SÓLO bajo Skyrim. Lo usan los toggles
+    ''' "Body weight" y "Sculpt", que en FO4 son pura pose (bone-scale) pero en SSE son canales de vértice
+    ''' dentro del plan de cara / del resolver _0/_1. En FO4 no se llama: sería recomputar morphs al pedo.</summary>
+    Private Sub RebuildMorphResolverIfSse()
+        If Not RenderToggleLabels.IsSse() Then Return
+        If _renderHost.LastRenderedState Is Nothing OrElse _renderHost.LastRenderData Is Nothing Then Return
+        Dim newResolver = BuildCompositeMorphResolver(_renderHost.LastRenderedState, _renderHost.LastRenderData)
+        Dim intent = _previewControl.Intent
+        intent.MorphResolver = newResolver
+        intent.MarkDirty(RenderDirtyFlags.Morphs, _renderHost.LastRenderData.Shapes)
+        _previewControl.InvalidateRender()
     End Sub
 
     ''' <summary>Range-Modifier clamp model for BuildBodyWeightPose. The RACE.BSMS Range Modifier
@@ -948,14 +964,16 @@ Public Class MainForm
         _previewControl.InvalidateRender()
     End Sub
 
-    ''' <summary>Toggle ARMA sculpt (SCLP per-bone scaling). When OFF, every shape — including
-    ''' [A] over-armor consumers that would normally receive the source's SCLP — falls back to
-    ''' the base skeleton (no SCLP amplifier). Diagnostic toggle to compare A/B with vs without
-    ''' sculpt on the same NPC.</summary>
+    ''' <summary>Toggle sculpt. FO4 = ARMA SCLP (per-bone scaling): OFF hace que toda shape — incluidos los
+    ''' consumidores [A] over-armor que heredarían el SCLP del source — caiga al skeleton base sin amplificador.
+    ''' SSE = sculpt per-vértice de RaceMenu (.jslot): OFF deja la cara con los NAM9/NAMA vanilla, sin los
+    ''' deltas libres del preset. Toggle diagnóstico para comparar A/B sobre el mismo NPC en los dos juegos.</summary>
     Private Sub CheckBoxApplySculpt_CheckedChanged(sender As Object, e As EventArgs) Handles CheckBoxApplySculpt.CheckedChanged
         If _renderHost Is Nothing Then Return
         _renderHost.Toggles = RenderToggles.FromMainCheckBoxes(Me)
         RebuildAndApplyMergedPose()
+        ' SSE: el sculpt de RaceMenu es un canal de VÉRTICE del plan de cara, no una capa de pose.
+        RebuildMorphResolverIfSse()
     End Sub
 
     ''' <summary>Toggle "Render armor". OFF excluye los candidates con bits [A] (41-45) del
@@ -1047,8 +1065,13 @@ Public Class MainForm
         Dim fmrsEnabled = host.Toggles.ApplyBoneMorphs
         Dim bwEnabled = host.Toggles.ApplyBodyWeight
         Dim sculptEnabled = host.Toggles.ApplySculpt
+        ' Mismo checkbox que fmrsEnabled: bajo Skyrim ese canal gatea los node transforms de RaceMenu
+        ' (no hay FMRS). Acá coincide con fmrsEnabled; en BuildRenderPlan no, porque allá fmrs trae
+        ' AND'eado el gender-override.
+        Dim nodeXfEnabled = host.Toggles.ApplyBoneMorphs
         ' Base pose (sin sculpt) → skeleton base.
-        Dim basePose = _morphPoseResolver.BuildMergedNpcPose(host.LastRenderedState, host.LastRenderData, fmrsEnabled, bwEnabled, host.LastSkeletonInstance, Nothing)
+        Dim basePose = _morphPoseResolver.BuildMergedNpcPose(host.LastRenderedState, host.LastRenderData, fmrsEnabled, bwEnabled, host.LastSkeletonInstance, Nothing,
+                                                             nodeTransformsEnabled:=nodeXfEnabled)
         ' Los bone-morphs van a la capa MorphDeltaTransform (no a la pose). Así la capa Delta
         ' (pose/animación) queda libre y el morph sobrevive a un futuro ApplyPose por frame.
         host.LastSkeletonInstance.ApplyBoneMorphPose(basePose)
@@ -1064,7 +1087,8 @@ Public Class MainForm
         ' "Neck"), así la escala queda solo en los verts del "Neck" y la cara NO se infla. fmrsEnabled
         ' sigue honrado (la cabeza conserva sus morphs FMRS).
         If host.LastHeadSkeletonInstance IsNot Nothing AndAlso Not ReferenceEquals(host.LastHeadSkeletonInstance, host.LastSkeletonInstance) Then
-            Dim headPose = _morphPoseResolver.BuildMergedNpcPose(host.LastRenderedState, host.LastRenderData, fmrsEnabled, bwEnabled, host.LastHeadSkeletonInstance, Nothing)
+            Dim headPose = _morphPoseResolver.BuildMergedNpcPose(host.LastRenderedState, host.LastRenderData, fmrsEnabled, bwEnabled, host.LastHeadSkeletonInstance, Nothing,
+                                                                 nodeTransformsEnabled:=nodeXfEnabled)
             host.LastHeadSkeletonInstance.ApplyBoneMorphPose(headPose)
             _morphPoseResolver.ApplyNeckNnamCompensation(host.LastHeadSkeletonInstance)
         End If
@@ -1097,7 +1121,8 @@ Public Class MainForm
             Dim armaSkel = kv.Value
             Dim sculpt As Dictionary(Of String, System.Numerics.Vector3) = Nothing
             If sculptEnabled Then host.LastSculptByArma.TryGetValue(kv.Key, sculpt)
-            Dim poseForArma = _morphPoseResolver.BuildMergedNpcPose(host.LastRenderedState, host.LastRenderData, fmrsEnabled, bwEnabled, armaSkel, sculpt)
+            Dim poseForArma = _morphPoseResolver.BuildMergedNpcPose(host.LastRenderedState, host.LastRenderData, fmrsEnabled, bwEnabled, armaSkel, sculpt,
+                                                                    nodeTransformsEnabled:=nodeXfEnabled)
             armaSkel.ApplyBoneMorphPose(poseForArma)
             _morphPoseResolver.ApplyNeckNnamCompensation(armaSkel)
             ' [MOUNTDELTA-PREPASS] Per-instance MountDelta para este clone sculpt — repopula desde cache.
@@ -1863,6 +1888,10 @@ Public Class MainForm
         ' Logger init both live in Program.Main, BEFORE the preflight loads any plugin — mirror
         ' of xEdit's "configure → load → edit" order. Do NOT re-init either here; that would run
         ' AFTER the preflight already loaded plugins, and would lose every startup-time log.
+        ' Rótulos + tooltips de los 10 toggles según el juego pineado en el Preflight: los canales son los
+        ' mismos, pero lo que cuelga de cada uno no (FMRS vs node transforms, MWGT vs NAM7, ARMA SCLP vs
+        ' sculpt RaceMenu, [U]/[A] vs outfit/accesorios). Ver RenderToggleLabels.
+        ApplyRenderToggleLabelsForGame()
         ' Restore persisted UI toggles BEFORE InitializePreview (Shown handler snapshots
         ' checkbox state into _renderHost.Toggles via RenderToggles.FromMainCheckBoxes).
         CheckBoxRenderGore.Checked = NPC_Config.Current.RenderGore
@@ -1874,7 +1903,76 @@ Public Class MainForm
         CheckBoxCatGeneric.Checked = NPC_Config.Current.ShowCatGeneric
         CheckBoxCatTemplate.Checked = NPC_Config.Current.ShowCatTemplate
         CheckBoxCatUnused.Checked = NPC_Config.Current.ShowCatUnused
+#If DEBUG Then
+        AddSseFoldedRenderDebugToggle()   ' ⚠️ PROVISORIO (diagnóstico) — DEBUG ONLY: en Release ni siquiera se crea
+#End If
         LoadDataAsync()
+    End Sub
+
+    ''' <summary>⚠️ PROVISORIO — herramienta de diagnóstico, a ELIMINAR junto con
+    ''' <see cref="NPC_Config.SseRenderFoldedPath"/> y <c>NpcFaceTintResolver.ApplySseFacetintFolded</c>.
+    ''' Agrega (SOLO en SSE) un checkbox a la toolbar que conmuta el render entre:
+    '''   OFF = camino normal (slot 0 complexion + slot 3 detail + slot 6 facetint; el shader hace
+    '''         <c>fgTint × softlight(complexion, detail)</c>, igual que el engine), y
+    '''   ON  = camino PLEGADO (lo que el bake escribe: el fold en el slot 0 y los slots 3/6 neutralizados,
+    '''         de modo que el shader haga la identidad y muestre el diffuse plegado).
+    ''' Si el pliegue es correcto, el TONO DE PIEL debe ser IDÉNTICO en ambos. Re-renderiza al conmutar.
+    ''' Se crea por código a propósito (no en el Designer) para que borrarlo sea trivial.</summary>
+    Private Sub AddSseFoldedRenderDebugToggle()
+        If Config_App.Current Is Nothing OrElse Config_App.Current.Game <> Config_App.Game_Enum.Skyrim Then Return
+        Dim cb As New CheckBox With {
+            .Name = "CheckBoxSseRenderFolded",
+            .Text = "SSE: render plegado (debug)",
+            .AutoSize = True,
+            .Checked = NPC_Config.Current.SseRenderFoldedPath,
+            .Margin = New Padding(12, 8, 3, 3)
+        }
+        AddHandler cb.CheckedChanged,
+            Sub()
+                ' ⛔ El propio render marca/desmarca el checkbox (UpdateSseFoldedToggleAvailability) cuando el NPC
+                ' pliega a la fuerza. Sin este guard, ese Checked=True re-entraría acá y dispararía OTRA recarga
+                ' completa ⇒ bucle infinito de renders. Sólo el click del usuario debe recargar.
+                If _suppressFoldToggleEvent Then Return
+                NPC_Config.Current.SseRenderFoldedPath = cb.Checked
+                ' ⛔ RECARGA COMPLETA (no RenderFromCurrentSelection): el camino plegado MUTA la textura del complexion
+                ' en el diccionario del modelo. Un simple re-render dejaría el plegado "pegado" al destildar. Esto
+                ' reconstruye geometría + materiales + tints desde los records ⇒ el toggle es reversible de verdad.
+                ReloadCurrentNpcFull()
+            End Sub
+        _checkBoxSseRenderFolded = cb
+        PanelActionsToolbar.Controls.Add(cb)
+    End Sub
+
+    ''' <summary>⚠️ PROVISORIO (con <see cref="AddSseFoldedRenderDebugToggle"/>). Referencia al checkbox para poder
+    ''' DESHABILITARLO cuando el NPC actual pliega SÍ O SÍ.</summary>
+    Private _checkBoxSseRenderFolded As CheckBox
+    Private _suppressFoldToggleEvent As Boolean
+
+    ''' <summary>⚠️ PROVISORIO. Refleja en el checkbox si el NPC actual PUEDE mostrarse sin plegar. Cuando el NPC
+    ''' tiene skee MASKT u overlays de cara, el render pliega OBLIGATORIAMENTE (igual que el bake) — no existe un
+    ''' "sin plegar" fiel que mostrar —, así que el checkbox se deshabilita y se marca, para que quede claro que ahí
+    ''' el fold no es una elección. En vanilla queda habilitado: ahí sí se puede comparar con y sin pliegue.</summary>
+    Friend Sub UpdateSseFoldedToggleAvailability(foldIsMandatory As Boolean)
+        Dim cb = _checkBoxSseRenderFolded
+        If cb Is Nothing Then Return
+        If cb.InvokeRequired Then
+            cb.BeginInvoke(Sub() UpdateSseFoldedToggleAvailability(foldIsMandatory))
+            Return
+        End If
+        _suppressFoldToggleEvent = True
+        Try
+            If foldIsMandatory Then
+                cb.Enabled = False
+                cb.Checked = True
+                cb.Text = "SSE: render plegado (forzado: el NPC tiene MASKT/overlays)"
+            Else
+                cb.Enabled = True
+                cb.Checked = NPC_Config.Current.SseRenderFoldedPath
+                cb.Text = "SSE: render plegado (debug)"
+            End If
+        Finally
+            _suppressFoldToggleEvent = False
+        End Try
     End Sub
 
     ''' <summary>PreviewControl initialization happens in Shown (not Load) — same pattern as
@@ -5028,6 +5126,7 @@ Public Class MainForm
                                                              If capturedHost Is Nothing OrElse capturedHost.IsDisposed Then Return
                                                              If capturedRequestVersion <> _previewRequestVersion Then Return
                                                              _faceTintResolver.ApplyFaceTintOverlay(capturedState, capturedRenderData, capturedHost)
+                                                             UpdateSseFoldedToggleAvailability(_faceTintResolver.LastSseFoldWasMandatory)
                                                              RevealAllShapes(capturedHost)
                                                              FinalizeRenderCamera(capturedHost)
                                                          End Sub
@@ -5177,6 +5276,9 @@ Public Class MainForm
         ' FMRS deltas are the source NPC's own-gender facial-bone morphs, which don't belong on a default
         ' target-gender head, so suppress them (body weight stays on).
         Dim boneMorphsEnabled = host.Toggles.ApplyBoneMorphs AndAlso Not host.PreviewGenderOverride.HasValue
+        ' Mismo checkbox, sin el AND del gender-override: bajo Skyrim ese canal gatea los node transforms de
+        ' RaceMenu (escala/pos/rot por nodo del cuerpo), que no son gender-específicos como los FMRS.
+        Dim nodeXfEnabled = host.Toggles.ApplyBoneMorphs
         Dim morphResolver = BuildCompositeMorphResolver(state, renderData, host)
         Logger.LogLazy(Function() $"[PERF-BRP] morphResolver @ {_swBrp.ElapsedMilliseconds}ms")
 
@@ -5220,7 +5322,7 @@ Public Class MainForm
         _mountingResolver.ApplyPrnRigidAttach(renderData, inst)
 
         Dim basePose = _morphPoseResolver.BuildMergedNpcPose(state, renderData, boneMorphsEnabled, bodyWeightEnabled,
-                                          inst, Nothing)  ' Nothing = no sculpt → base pose
+                                          inst, Nothing, nodeTransformsEnabled:=nodeXfEnabled)  ' Nothing = no sculpt → base pose
         ' Bone-morphs → capa MorphDeltaTransform (deja libre la capa pose/animación).
         inst.ApplyBoneMorphPose(basePose)
         _morphPoseResolver.ApplyNeckNnamCompensation(inst)
@@ -5234,7 +5336,8 @@ Public Class MainForm
         ' Head-part shapes are routed here (loop below); animation frames applied too (ApplyAnimFrame). Built
         ' unconditionally + separate so it stays in sync with the BODY skeleton. No chunk/pipboy injection.
         Dim headInst = PrepareSkeleton(state, renderData)
-        Dim headPose = _morphPoseResolver.BuildMergedNpcPose(state, renderData, boneMorphsEnabled, bodyWeightEnabled, headInst, Nothing)
+        Dim headPose = _morphPoseResolver.BuildMergedNpcPose(state, renderData, boneMorphsEnabled, bodyWeightEnabled, headInst, Nothing,
+                                                             nodeTransformsEnabled:=nodeXfEnabled)
         headInst.ApplyBoneMorphPose(headPose)
         _morphPoseResolver.ApplyNeckNnamCompensation(headInst)
         Logger.LogLazy(Function() $"[PERF-BRP] initial PrepareSkeleton+BuildMergedNpcPose (+head) @ {_swBrp.ElapsedMilliseconds}ms")
@@ -5266,7 +5369,7 @@ Public Class MainForm
             If Not skelByArma.TryGetValue(armaFormID, armaSkel) Then
                 armaSkel = PrepareSkeleton(state, renderData)
                 Dim poseForArma = _morphPoseResolver.BuildMergedNpcPose(state, renderData, boneMorphsEnabled, bodyWeightEnabled,
-                                                     armaSkel, sculpt)
+                                                     armaSkel, sculpt, nodeTransformsEnabled:=nodeXfEnabled)
                 armaSkel.ApplyBoneMorphPose(poseForArma)
                 _morphPoseResolver.ApplyNeckNnamCompensation(armaSkel)
                 skelByArma(armaFormID) = armaSkel
@@ -6468,7 +6571,18 @@ Public Class MainForm
         CheckBoxRenderUnderarmor.Enabled = enabled
         CheckBoxRenderBody.Enabled = enabled
         CheckBoxRenderHeadwear.Enabled = enabled
-        CheckBoxRenderGore.Enabled = enabled
+        ' Gore: en Skyrim queda deshabilitado SIEMPRE (no hay meatcaps que ocultar), así que el re-enable
+        ' post-render no puede resucitarlo. El valor persistido se conserva igual.
+        CheckBoxRenderGore.Enabled = enabled AndAlso RenderToggleLabels.GoreEnabledForGame()
+    End Sub
+
+    ''' <summary>Rótulos + tooltips game-aware de los 10 checkboxes de la toolbar de preview, y deshabilitado
+    ''' del gore bajo Skyrim. Se llama en Load (el juego ya viene pineado del Preflight).</summary>
+    Private Sub ApplyRenderToggleLabelsForGame()
+        RenderToggleLabels.Apply(CheckBoxApplyBoneMorphs, CheckBoxApplyVertexMorphs, CheckBoxApplyBodyWeight,
+                                 CheckBoxApplySculpt, CheckBoxBodyTri,
+                                 CheckBoxRenderBody, CheckBoxRenderUnderarmor, CheckBoxRenderArmor,
+                                 CheckBoxRenderHeadwear, CheckBoxRenderGore)
     End Sub
 
     ''' <summary>Last step of a render — invoked by the post-texture-upload hook AFTER face tint
@@ -8106,11 +8220,12 @@ Public Class MainForm
         shadow.HasShortName = raw.HasShortName
         shadow.HasDataMarker = raw.HasDataMarker
         ' DNAM — game-aware: FO4 = 8-byte Calculated Stats struct; SSE = 52-byte Player Skills block
-        ' preserved verbatim in DnamRawSse. The shadow must carry BOTH, else the SSE writeback
-        ' (NpcSubrecordWriter.EmitDnam re-emits from DnamRawSse) drops the whole DNAM Player Skills
-        ' subrecord on Save ESP whenever an overlay is applied. FO4 was fine (CalculatedStats copied);
-        ' the SSE branch was simply missing here — same class of bug the SSE tint carry-over fixed.
+        ' (SsePlayerSkills, with DnamRawSse as the verbatim fallback for a malformed short payload). The
+        ' shadow must carry BOTH games' fields, else the SSE writeback (NpcSubrecordWriter.EmitDnam) drops
+        ' the whole DNAM Player Skills subrecord on Save ESP whenever an overlay is applied. FO4 was fine
+        ' (CalculatedStats copied); the SSE branch was simply missing here.
         shadow.CalculatedStats = raw.CalculatedStats
+        shadow.SsePlayerSkills = raw.SsePlayerSkills
         shadow.DnamRawSse = raw.DnamRawSse
         shadow.CombatStyleFormID = raw.CombatStyleFormID
         shadow.HasCombatStyle = raw.HasCombatStyle
@@ -8320,10 +8435,12 @@ Public Class MainForm
             npcSpec.HasCombatStyle = ov.CombatStyleFormID.Value <> 0UI
         End If
 
-        ' --- ACBS struct (flags/xp/level/calc/disposition) on the isolated clone. ---
+        ' --- ACBS struct (flags/xp/level/calc/disposition + the SSE-only offsets) on the isolated clone. ---
         If npcSpec.Acbs Is Nothing AndAlso (ov.AcbsFlags.HasValue OrElse ov.XpValueOffset.HasValue OrElse ov.Level.HasValue OrElse
                                             ov.CalcMinLevel.HasValue OrElse ov.CalcMaxLevel.HasValue OrElse
-                                            ov.DispositionBase.HasValue OrElse ov.TemplateFlags.HasValue) Then
+                                            ov.DispositionBase.HasValue OrElse ov.TemplateFlags.HasValue OrElse
+                                            ov.MagickaOffset.HasValue OrElse ov.StaminaOffset.HasValue OrElse
+                                            ov.SpeedMultiplier.HasValue OrElse ov.HealthOffset.HasValue) Then
             npcSpec.Acbs = New NPC_AcbsData()
         End If
         If npcSpec.Acbs IsNot Nothing Then
@@ -8337,11 +8454,21 @@ Public Class MainForm
             If ov.CalcMinLevel.HasValue Then npcSpec.Acbs.CalcMinLevel = ov.CalcMinLevel.Value
             If ov.CalcMaxLevel.HasValue Then npcSpec.Acbs.CalcMaxLevel = ov.CalcMaxLevel.Value
             If ov.DispositionBase.HasValue Then npcSpec.Acbs.DispositionBase = ov.DispositionBase.Value
+            ' SSE-only ACBS offsets (the FO4 writer branch never reads them, so setting them is inert there).
+            If ov.MagickaOffset.HasValue Then npcSpec.Acbs.MagickaOffset = ov.MagickaOffset.Value
+            If ov.StaminaOffset.HasValue Then npcSpec.Acbs.StaminaOffset = ov.StaminaOffset.Value
+            If ov.SpeedMultiplier.HasValue Then npcSpec.Acbs.SpeedMultiplier = ov.SpeedMultiplier.Value
+            If ov.HealthOffset.HasValue Then npcSpec.Acbs.HealthOffset = ov.HealthOffset.Value
             If ov.TemplateFlags.HasValue Then
                 npcSpec.Acbs.TemplateFlags = ov.TemplateFlags.Value
                 npcSpec.TemplateFlags = ov.TemplateFlags.Value
             End If
         End If
+
+        ' --- DNAM Player Skills (SSE). The override carries the whole 52-byte struct (the editor seeds it from
+        ' the record, so untouched fields keep their values). Deep-copied in so the saved entry never aliases
+        ' the stored override, and so writing it never mutates the shared raw parse. ---
+        If ov.SsePlayerSkills IsNot Nothing Then npcSpec.SsePlayerSkills = ClonePlayerSkills(ov.SsePlayerSkills)
 
         ' --- Lists (deep-copy out so the saved entry never aliases the stored override). ---
         If ov.Keywords IsNot Nothing Then
@@ -8378,14 +8505,34 @@ Public Class MainForm
         End If
     End Sub
 
-    ''' <summary>Deep-copy an NPC_AcbsData so a save-time flag/struct edit never mutates the shared raw parse.</summary>
+    ''' <summary>Deep-copy an NPC_AcbsData so a save-time flag/struct edit never mutates the shared raw parse.
+    ''' Copies BOTH games' layouts: ACBS is game-aware (FO4 20B carries XpValueOffset; SSE 24B carries
+    ''' Magicka/Stamina/Health offsets + SpeedMultiplier), and a field omitted here reaches the writer as 0 —
+    ''' a Skyrim NPC would silently lose its Speed Multiplier. Same bug class as the DnamRawSse shadow-drop.</summary>
     Private Shared Function CloneAcbsStruct(a As NPC_AcbsData) As NPC_AcbsData
         Return New NPC_AcbsData With {
             .Flags = a.Flags, .XpValueOffset = a.XpValueOffset, .LevelOrLevelMult = a.LevelOrLevelMult,
+            .MagickaOffset = a.MagickaOffset, .StaminaOffset = a.StaminaOffset,
             .CalcMinLevel = a.CalcMinLevel, .CalcMaxLevel = a.CalcMaxLevel, .DispositionBase = a.DispositionBase,
+            .SpeedMultiplier = a.SpeedMultiplier, .HealthOffset = a.HealthOffset,
             .TemplateFlags = a.TemplateFlags, .BleedoutOverride = a.BleedoutOverride,
             .Unknown18 = If(a.Unknown18 Is Nothing, Nothing, CType(a.Unknown18.Clone(), Byte())),
             .TrailingBytes = If(a.TrailingBytes Is Nothing, Nothing, CType(a.TrailingBytes.Clone(), Byte()))}
+    End Function
+
+    ''' <summary>Deep-copy an SSE DNAM Player-Skills struct (arrays included — the verbatim wbUnused runs ride
+    ''' along) so a save-time edit never mutates the shared raw parse or the stored override's instance.</summary>
+    Friend Shared Function ClonePlayerSkills(p As NPC_SsePlayerSkills) As NPC_SsePlayerSkills
+        If p Is Nothing Then Return Nothing
+        Return New NPC_SsePlayerSkills With {
+            .SkillValues = CType(p.SkillValues.Clone(), Byte()),
+            .SkillOffsets = CType(p.SkillOffsets.Clone(), Byte()),
+            .Health = p.Health, .Magicka = p.Magicka, .Stamina = p.Stamina,
+            .Unused42 = CType(p.Unused42.Clone(), Byte()),
+            .FarAwayModelDistance = p.FarAwayModelDistance,
+            .GearedUpWeapons = p.GearedUpWeapons,
+            .Unused49 = CType(p.Unused49.Clone(), Byte()),
+            .TrailingBytes = If(p.TrailingBytes Is Nothing, Array.Empty(Of Byte)(), CType(p.TrailingBytes.Clone(), Byte()))}
     End Function
 
     ''' <summary>Deep-copy an NPC OBTS wrapper list (inner ARMO_Combination via ArmoDraft.CloneCombinations, raw
@@ -10818,7 +10965,7 @@ Public Class MainForm
             .OriginPlugin = originPlugin,
             .FormIdLow = formIdLow,
             .DebugSandbox = FaceGenBuilder.DebugMode,
-            .UsesSharedNeutralFacetint = bakeResult.UsedSharedNeutralFacetint
+            .UsesSharedNeutralDetail = bakeResult.UsedSharedNeutralDetail
         }
         Return (True, False, bundle, "")
     End Function

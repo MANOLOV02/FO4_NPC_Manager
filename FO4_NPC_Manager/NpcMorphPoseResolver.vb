@@ -122,6 +122,10 @@ Friend NotInheritable Class NpcMorphPoseResolver
             Next
         End If
 
+        ' GAME-AWARE toggles: en SSE dos canales viven DENTRO del plan de cara y por eso se pasan acá en vez
+        ' de gatearse en el composite — el sculpt per-vértice de RaceMenu (checkbox "Sculpt", análogo del ARMA
+        ' SCLP de FO4) y el SkinnyMorph de cabeza/pelo (checkbox "Body weight", que también gatea el _0/_1 del
+        ' cuerpo en BuildSseBodyWeightResolver). En FO4 el plan no emite esos canales → los flags son inertes.
         Return New NpcMorphResolver(
             npcData,
             morphValueDefs:=morphValueDefs,
@@ -131,7 +135,9 @@ Friend NotInheritable Class NpcMorphPoseResolver
             shapeRaceMorphTriPaths:=renderData.ShapeRaceMorphTriPaths,
             shapeMeshMorphTriPaths:=renderData.ShapeMeshMorphTriPaths,
             raceEditorId:=RecordParsers.ResolveMorphRaceEditorId(race, _ctx.PluginManager),
-            raceKeywordEditorIds:=RecordParsers.GetRaceKeywordEditorIds(race, _ctx.PluginManager))
+            raceKeywordEditorIds:=RecordParsers.GetRaceKeywordEditorIds(race, _ctx.PluginManager),
+            applySculpt:=(host Is Nothing OrElse host.Toggles Is Nothing OrElse host.Toggles.ApplySculpt),
+            applyBodyWeight:=(host Is Nothing OrElse host.Toggles Is Nothing OrElse host.Toggles.ApplyBodyWeight))
     End Function
 
     ''' <summary>Returns the effective BodySlide slider dict for an NPC: the overlay preset's
@@ -168,6 +174,10 @@ Friend NotInheritable Class NpcMorphPoseResolver
     Friend Function BuildSseBodyWeightResolver(state As MainForm.NPCVisualState, renderData As MainForm.PreviewResolutionResult, Optional host As NpcRenderHost = Nothing) As IMorphResolver
         If host Is Nothing Then host = _hostProvider()
         If state Is Nothing OrElse renderData Is Nothing Then Return Nothing
+        ' Checkbox "Body weight" — el canal SSE del peso (NAM7). Antes se agregaba SIEMPRE al composite, así
+        ' que el toggle no hacía nada en Skyrim. Apagarlo ahora deja el cuerpo en peso neutro (y el
+        ' SkinnyMorph de la cabeza tampoco se emite — mismo flag, dentro del plan de cara).
+        If Not host.Toggles.ApplyBodyWeight Then Return Nothing
         ' Weight (NAM7) rides the Traits bucket → read it from the same source the face appearance uses.
         ' Wrap in the overlay so an Edit Body SSE weight edit (preset.SseWeight → shadow.Nam7Raw) renders
         ' live — same _overlay(...) seam BuildFaceMorphResolver uses for NAM9/NAMA.
@@ -364,10 +374,12 @@ Friend NotInheritable Class NpcMorphPoseResolver
         Return FO4_Base_Library.FilesDictionary_class.Dictionary.ContainsKey(key)
     End Function
 
-    ''' <summary>True when a RaceMenu overlay node name is a FACE overlay ("Face [Ovl{n}]" / "Face [SOvl{n}]").</summary>
+    ''' <summary>True when a RaceMenu overlay node name is a FACE overlay ("Face [Ovl{n}]" / "Face [SOvl{n}]").
+    ''' Predicado ÚNICO, compartido con el bake (CPU y GPU) y el emisor del script Papyrus — ver
+    ''' <see cref="SseOverlayCompositor.IsFaceOverlayNodeName"/>. Cinco caminos decidían "es de cara" por su
+    ''' cuenta y no todos coincidían; ahora hay una sola implementación.</summary>
     Private Shared Function SseOverlayIsFaceNode(nodeName As String) As Boolean
-        If String.IsNullOrEmpty(nodeName) Then Return False
-        Return nodeName.TrimStart().StartsWith("Face", StringComparison.OrdinalIgnoreCase)
+        Return SseOverlayCompositor.IsFaceOverlayNodeName(nodeName)
     End Function
 
     ''' <summary>Enumerate the biped slot INDICES (0..30) set in a SlotMask — i.e. the BIT POSITIONS,
@@ -828,12 +840,18 @@ Friend NotInheritable Class NpcMorphPoseResolver
         Return h
     End Function
 
+    ''' <param name="faceMorphsEnabled">FO4: checkbox "Bone morphs (FMRS)" (AND "no gender override").</param>
+    ''' <param name="nodeTransformsEnabled">SSE: el MISMO checkbox — que en Skyrim rotula "Node transforms
+    ''' (RaceMenu)" y gatea los NiOverride node transforms, el único canal de deformación por-nodo que tiene ese
+    ''' juego (no hay FMRS). Va aparte de faceMorphsEnabled porque ese trae AND'eado el gender-override, que no
+    ''' aplica a una escala de nodo del cuerpo. Default True = no gateado (callers no-UI).</param>
     Friend Function BuildMergedNpcPose(state As MainForm.NPCVisualState, renderData As MainForm.PreviewResolutionResult,
                                         faceMorphsEnabled As Boolean,
                                         bodyWeightEnabled As Boolean,
                                         skeleton As SkeletonInstance,
                                         Optional armaSculptOverride As Dictionary(Of String, System.Numerics.Vector3) = Nothing,
-                                        Optional suppressNeckNnam As Boolean = False) As Poses_class
+                                        Optional suppressNeckNnam As Boolean = False,
+                                        Optional nodeTransformsEnabled As Boolean = True) As Poses_class
         Dim racePose = PoseMath.BuildRaceHeightPose(GetRaceHeight(state))
 
         ' Body-weight (RACE.BSMS/MRSV) + ARMA sculpt. Sclpt y BW son toggles independientes:
@@ -880,8 +898,9 @@ Friend NotInheritable Class NpcMorphPoseResolver
 
         ' SSE RaceMenu NiOverride node transforms (body-scale sliders) — scale the named skeleton bones by the
         ' per-node uniform scale (e.g. "NPC L Breast" → 1.15). SSE-only; FO4 leaves the carrier Nothing. Same
-        ' pose mechanism as NNAM (a PoseTransformData scale per bone), merged below.
-        Dim sseNodePose As Poses_class = BuildSseNodeScalePose(state)
+        ' pose mechanism as NNAM (a PoseTransformData scale per bone), merged below. Gateado por el checkbox
+        ' "Node transforms (RaceMenu)" — el canal ApplyBoneMorphs bajo Skyrim.
+        Dim sseNodePose As Poses_class = If(nodeTransformsEnabled, BuildSseNodeScalePose(state), Nothing)
 
         Return PoseMath.MergePoses(racePose, bwPose, nnamPose, fmrsPose, sseNodePose)
     End Function

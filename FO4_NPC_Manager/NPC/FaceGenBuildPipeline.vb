@@ -414,14 +414,15 @@ Public Module FaceGenBuildPipeline
         For i = 0 To count - 1
             outFloat.Add(New System.Numerics.Vector3(CSng(morphed(i).X), CSng(morphed(i).Y), CSng(morphed(i).Z)))
         Next
-        ' NOTA VertexDesc (SSE): las shapes FaceGeom son BSDynamicTriShape que CK guarda COMPACTAS — posiciones
-        ' solo en el array dinámico, BSVertexDesc "Vertex" attribute OFF (VertSize=6). SetVertexPositions setea ese
-        ' bit y DUPLICA las posiciones al buffer estático (VertSize=10) → único diff de desc vs CK. Es solo encoding
-        ' (Full_Precision está en AMBOS; las posiciones son idénticas → render idéntico). Probado 2026-07-09:
-        ' escribir dynShape.Vertices directo arregla el desc PERO el save regenera el dinámico desde el estático y
-        ' PIERDE el morph (solo SetVertexPositions actualiza el estado que serializa). El fix limpio (SetVertexPositions
-        ' BSDynamicTriShape-aware: dinámico sin setear el bit ni duplicar al estático) vive DENTRO de NiflySharp →
-        ' NO se toca por orden del usuario ("NO TOCAR NIFLYSHARP"). Diff cosmético aceptado.
+        ' VertexDesc (SSE): OJO al histórico. SetVertexPositions hacía HasVertices=True también en
+        ' BSDynamicTriShape, encendiendo el atributo "Vertex" y DUPLICANDO las posiciones al buffer estático
+        ' (VertSize 5→9 en el head). Una nota anterior lo dio por "diff cosmético" y era FALSO: con la posición
+        ' en el estático el motor deja de leerla del array dinámico, que es donde escribe la animación facial
+        ' ⇒ cara correcta pero CONGELADA, sin lip-sync ni expresiones (confirmado in-game 2026-07-11).
+        ' Arreglado en la raíz (NiflySharp BSTriShape.SetVertexPositions: guard `is not BSDynamicTriShape`),
+        ' así que aquí ya no hace falta nada. El estático SÍ debe seguir llevando el morph: FinalizeData llama
+        ' a CalcDynamicData, que regenera el array dinámico A PARTIR de él — por eso escribir dynShape.Vertices
+        ' directo no funciona (se machaca).
         geom.SetVertexPositions(outFloat)
     End Sub
 

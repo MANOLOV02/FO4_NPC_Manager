@@ -50,6 +50,12 @@ Partial Class EditFace_Form
         FaceFlagsLayout = New FlowLayoutPanel()
         CheckBoxIsCharGenFacePreset = New CheckBox()
         LabelCharGenHelp = New Label()
+        TabPageSseMorphs = New TabPage()
+        PanelSseMorphs = New Panel()
+        TabPageSseTints = New TabPage()
+        PanelSseTints = New Panel()
+        TabPageSseSculpt = New TabPage()
+        ListSseSculpt = New ListView()
         TabPageTints = New TabPage()
         TintsLayout = New TableLayoutPanel()
         TextBoxTintFilter = New TextBox()
@@ -79,12 +85,6 @@ Partial Class EditFace_Form
         TabPageBoneRegions = New TabPage()
         BoneRegionsRoot = New TableLayoutPanel()
         BoneRegionsContainer = New Panel()
-        TabPageSseMorphs = New TabPage()
-        PanelSseMorphs = New Panel()
-        TabPageSseTints = New TabPage()
-        PanelSseTints = New Panel()
-        TabPageSseSculpt = New TabPage()
-        ListSseSculpt = New ListView()
         GroupBoxFmin = New GroupBox()
         FminLayout = New TableLayoutPanel()
         LabelFminCaption = New Label()
@@ -112,6 +112,9 @@ Partial Class EditFace_Form
         HairColorLayout.SuspendLayout()
         GroupBoxFaceFlags.SuspendLayout()
         FaceFlagsLayout.SuspendLayout()
+        TabPageSseMorphs.SuspendLayout()
+        TabPageSseTints.SuspendLayout()
+        TabPageSseSculpt.SuspendLayout()
         TabPageTints.SuspendLayout()
         TintsLayout.SuspendLayout()
         TintsButtonRow.SuspendLayout()
@@ -142,7 +145,7 @@ Partial Class EditFace_Form
         ' PreviewSplit.Panel2
         ' 
         PreviewSplit.Panel2.Controls.Add(PreviewSidebar)
-        PreviewSplit.Size = New Size(1384, 651)
+        PreviewSplit.Size = New Size(1560, 781)
         PreviewSplit.SplitterDistance = 860
         PreviewSplit.TabIndex = 0
         ' 
@@ -159,7 +162,7 @@ Partial Class EditFace_Form
         RootLayout.RowCount = 2
         RootLayout.RowStyles.Add(New RowStyle(SizeType.Percent, 100F))
         RootLayout.RowStyles.Add(New RowStyle())
-        RootLayout.Size = New Size(750, 651)
+        RootLayout.Size = New Size(860, 781)
         RootLayout.TabIndex = 0
         ' 
         ' TabsFace
@@ -171,48 +174,11 @@ Partial Class EditFace_Form
         TabsFace.Controls.Add(TabPageTints)
         TabsFace.Controls.Add(TabPageVertex)
         TabsFace.Controls.Add(TabPageBoneRegions)
-        '
-        ' TabPageSseMorphs (SSE) — content filled in code (PopulateSseMorphTab)
-        '
-        TabPageSseMorphs.Controls.Add(PanelSseMorphs)
-        TabPageSseMorphs.Location = New Point(4, 24)
-        TabPageSseMorphs.Name = "TabPageSseMorphs"
-        TabPageSseMorphs.Padding = New Padding(6)
-        TabPageSseMorphs.Size = New Size(720, 560)
-        TabPageSseMorphs.Text = "Morphs (SSE)"
-        PanelSseMorphs.Dock = DockStyle.Fill
-        PanelSseMorphs.Name = "PanelSseMorphs"
-        '
-        ' TabPageSseTints (SSE) — content filled in code (PopulateSseTintTab)
-        '
-        TabPageSseTints.Controls.Add(PanelSseTints)
-        TabPageSseTints.Location = New Point(4, 24)
-        TabPageSseTints.Name = "TabPageSseTints"
-        TabPageSseTints.Padding = New Padding(6)
-        TabPageSseTints.Size = New Size(720, 560)
-        TabPageSseTints.Text = "Tints (SSE)"
-        PanelSseTints.Dock = DockStyle.Fill
-        PanelSseTints.Name = "PanelSseTints"
-        '
-        ' TabPageSseSculpt (SSE) — read-only list of RaceMenu per-shape sculpt blocks (PopulateSseSculptTab)
-        '
-        TabPageSseSculpt.Controls.Add(ListSseSculpt)
-        TabPageSseSculpt.Location = New Point(4, 24)
-        TabPageSseSculpt.Name = "TabPageSseSculpt"
-        TabPageSseSculpt.Padding = New Padding(6)
-        TabPageSseSculpt.Size = New Size(720, 560)
-        TabPageSseSculpt.Text = "Sculpt (SSE)"
-        ListSseSculpt.Dock = DockStyle.Fill
-        ListSseSculpt.FullRowSelect = True
-        ListSseSculpt.HideSelection = False
-        ListSseSculpt.Name = "ListSseSculpt"
-        ListSseSculpt.UseCompatibleStateImageBehavior = False
-        ListSseSculpt.View = View.Details
         TabsFace.Dock = DockStyle.Fill
         TabsFace.Location = New Point(11, 11)
         TabsFace.Name = "TabsFace"
         TabsFace.SelectedIndex = 0
-        TabsFace.Size = New Size(728, 588)
+        TabsFace.Size = New Size(838, 718)
         TabsFace.TabIndex = 0
         ' 
         ' TabPageFaceParts
@@ -221,7 +187,7 @@ Partial Class EditFace_Form
         TabPageFaceParts.Location = New Point(4, 24)
         TabPageFaceParts.Name = "TabPageFaceParts"
         TabPageFaceParts.Padding = New Padding(6)
-        TabPageFaceParts.Size = New Size(720, 560)
+        TabPageFaceParts.Size = New Size(830, 690)
         TabPageFaceParts.TabIndex = 0
         TabPageFaceParts.Text = "Face Parts"
         ' 
@@ -239,7 +205,7 @@ Partial Class EditFace_Form
         FacePartsLayout.RowStyles.Add(New RowStyle(SizeType.Percent, 60F))
         FacePartsLayout.RowStyles.Add(New RowStyle())
         FacePartsLayout.RowStyles.Add(New RowStyle())
-        FacePartsLayout.Size = New Size(708, 548)
+        FacePartsLayout.Size = New Size(818, 678)
         FacePartsLayout.TabIndex = 0
         ' 
         ' GroupBoxHeadParts
@@ -248,7 +214,7 @@ Partial Class EditFace_Form
         GroupBoxHeadParts.Dock = DockStyle.Fill
         GroupBoxHeadParts.Location = New Point(3, 3)
         GroupBoxHeadParts.Name = "GroupBoxHeadParts"
-        GroupBoxHeadParts.Size = New Size(702, 374)
+        GroupBoxHeadParts.Size = New Size(812, 504)
         GroupBoxHeadParts.TabIndex = 0
         GroupBoxHeadParts.TabStop = False
         GroupBoxHeadParts.Text = "Head Parts (NPC.PNAM — full reload on change)"
@@ -266,7 +232,7 @@ Partial Class EditFace_Form
         HeadPartsLayout.RowCount = 2
         HeadPartsLayout.RowStyles.Add(New RowStyle(SizeType.Percent, 100F))
         HeadPartsLayout.RowStyles.Add(New RowStyle(SizeType.Absolute, 56F))
-        HeadPartsLayout.Size = New Size(696, 352)
+        HeadPartsLayout.Size = New Size(806, 482)
         HeadPartsLayout.TabIndex = 0
         ' 
         ' TableLayoutPanel1
@@ -290,22 +256,22 @@ Partial Class EditFace_Form
         TableLayoutPanel1.Controls.Add(ButtonAddHair, 1, 0)
         TableLayoutPanel1.Controls.Add(ButtonAddFace, 0, 0)
         TableLayoutPanel1.Dock = DockStyle.Fill
-        TableLayoutPanel1.Location = New Point(7, 295)
+        TableLayoutPanel1.Location = New Point(7, 425)
         TableLayoutPanel1.Name = "TableLayoutPanel1"
         TableLayoutPanel1.RowCount = 2
         TableLayoutPanel1.RowStyles.Add(New RowStyle(SizeType.Absolute, 25F))
         TableLayoutPanel1.RowStyles.Add(New RowStyle(SizeType.Absolute, 25F))
-        TableLayoutPanel1.Size = New Size(682, 50)
+        TableLayoutPanel1.Size = New Size(792, 50)
         TableLayoutPanel1.TabIndex = 11
         ' 
         ' ButtonRemoveHeadPart
         ' 
         ButtonRemoveHeadPart.AutoSize = True
         ButtonRemoveHeadPart.Dock = DockStyle.Fill
-        ButtonRemoveHeadPart.Location = New Point(565, 25)
+        ButtonRemoveHeadPart.Location = New Point(660, 25)
         ButtonRemoveHeadPart.Margin = New Padding(0)
         ButtonRemoveHeadPart.Name = "ButtonRemoveHeadPart"
-        ButtonRemoveHeadPart.Size = New Size(117, 25)
+        ButtonRemoveHeadPart.Size = New Size(132, 25)
         ButtonRemoveHeadPart.TabIndex = 10
         ButtonRemoveHeadPart.Text = "-Remove"
         ' 
@@ -313,10 +279,10 @@ Partial Class EditFace_Form
         ' 
         ButtonAddMisc.AutoSize = True
         ButtonAddMisc.Dock = DockStyle.Fill
-        ButtonAddMisc.Location = New Point(339, 25)
+        ButtonAddMisc.Location = New Point(396, 25)
         ButtonAddMisc.Margin = New Padding(0)
         ButtonAddMisc.Name = "ButtonAddMisc"
-        ButtonAddMisc.Size = New Size(113, 25)
+        ButtonAddMisc.Size = New Size(132, 25)
         ButtonAddMisc.TabIndex = 9
         ButtonAddMisc.Text = "+Misc"
         ' 
@@ -324,10 +290,10 @@ Partial Class EditFace_Form
         ' 
         ButtonAddMeatcaps.AutoSize = True
         ButtonAddMeatcaps.Dock = DockStyle.Fill
-        ButtonAddMeatcaps.Location = New Point(226, 25)
+        ButtonAddMeatcaps.Location = New Point(264, 25)
         ButtonAddMeatcaps.Margin = New Padding(0)
         ButtonAddMeatcaps.Name = "ButtonAddMeatcaps"
-        ButtonAddMeatcaps.Size = New Size(113, 25)
+        ButtonAddMeatcaps.Size = New Size(132, 25)
         ButtonAddMeatcaps.TabIndex = 8
         ButtonAddMeatcaps.Text = "+Meatcaps"
         ' 
@@ -335,10 +301,10 @@ Partial Class EditFace_Form
         ' 
         ButtonAddHeadRear.AutoSize = True
         ButtonAddHeadRear.Dock = DockStyle.Fill
-        ButtonAddHeadRear.Location = New Point(113, 25)
+        ButtonAddHeadRear.Location = New Point(132, 25)
         ButtonAddHeadRear.Margin = New Padding(0)
         ButtonAddHeadRear.Name = "ButtonAddHeadRear"
-        ButtonAddHeadRear.Size = New Size(113, 25)
+        ButtonAddHeadRear.Size = New Size(132, 25)
         ButtonAddHeadRear.TabIndex = 7
         ButtonAddHeadRear.Text = "+Head Rear"
         ' 
@@ -349,7 +315,7 @@ Partial Class EditFace_Form
         ButtonAddTeeth.Location = New Point(0, 25)
         ButtonAddTeeth.Margin = New Padding(0)
         ButtonAddTeeth.Name = "ButtonAddTeeth"
-        ButtonAddTeeth.Size = New Size(113, 25)
+        ButtonAddTeeth.Size = New Size(132, 25)
         ButtonAddTeeth.TabIndex = 6
         ButtonAddTeeth.Text = "+Teeth"
         ' 
@@ -357,10 +323,10 @@ Partial Class EditFace_Form
         ' 
         ButtonAddScar.AutoSize = True
         ButtonAddScar.Dock = DockStyle.Fill
-        ButtonAddScar.Location = New Point(565, 0)
+        ButtonAddScar.Location = New Point(660, 0)
         ButtonAddScar.Margin = New Padding(0)
         ButtonAddScar.Name = "ButtonAddScar"
-        ButtonAddScar.Size = New Size(117, 25)
+        ButtonAddScar.Size = New Size(132, 25)
         ButtonAddScar.TabIndex = 5
         ButtonAddScar.Text = "+Scar"
         ' 
@@ -368,10 +334,10 @@ Partial Class EditFace_Form
         ' 
         ButtonAddEyebrows.AutoSize = True
         ButtonAddEyebrows.Dock = DockStyle.Fill
-        ButtonAddEyebrows.Location = New Point(452, 0)
+        ButtonAddEyebrows.Location = New Point(528, 0)
         ButtonAddEyebrows.Margin = New Padding(0)
         ButtonAddEyebrows.Name = "ButtonAddEyebrows"
-        ButtonAddEyebrows.Size = New Size(113, 25)
+        ButtonAddEyebrows.Size = New Size(132, 25)
         ButtonAddEyebrows.TabIndex = 4
         ButtonAddEyebrows.Text = "+Eyebrows"
         ' 
@@ -379,10 +345,10 @@ Partial Class EditFace_Form
         ' 
         ButtonAddFacialHair.AutoSize = True
         ButtonAddFacialHair.Dock = DockStyle.Fill
-        ButtonAddFacialHair.Location = New Point(339, 0)
+        ButtonAddFacialHair.Location = New Point(396, 0)
         ButtonAddFacialHair.Margin = New Padding(0)
         ButtonAddFacialHair.Name = "ButtonAddFacialHair"
-        ButtonAddFacialHair.Size = New Size(113, 25)
+        ButtonAddFacialHair.Size = New Size(132, 25)
         ButtonAddFacialHair.TabIndex = 3
         ButtonAddFacialHair.Text = "+Facial Hair"
         ' 
@@ -390,10 +356,10 @@ Partial Class EditFace_Form
         ' 
         ButtonAddEyes.AutoSize = True
         ButtonAddEyes.Dock = DockStyle.Fill
-        ButtonAddEyes.Location = New Point(226, 0)
+        ButtonAddEyes.Location = New Point(264, 0)
         ButtonAddEyes.Margin = New Padding(0)
         ButtonAddEyes.Name = "ButtonAddEyes"
-        ButtonAddEyes.Size = New Size(113, 25)
+        ButtonAddEyes.Size = New Size(132, 25)
         ButtonAddEyes.TabIndex = 2
         ButtonAddEyes.Text = "+Eyes"
         ' 
@@ -401,10 +367,10 @@ Partial Class EditFace_Form
         ' 
         ButtonAddHair.AutoSize = True
         ButtonAddHair.Dock = DockStyle.Fill
-        ButtonAddHair.Location = New Point(113, 0)
+        ButtonAddHair.Location = New Point(132, 0)
         ButtonAddHair.Margin = New Padding(0)
         ButtonAddHair.Name = "ButtonAddHair"
-        ButtonAddHair.Size = New Size(113, 25)
+        ButtonAddHair.Size = New Size(132, 25)
         ButtonAddHair.TabIndex = 1
         ButtonAddHair.Text = "+Hair"
         ' 
@@ -415,7 +381,7 @@ Partial Class EditFace_Form
         ButtonAddFace.Location = New Point(0, 0)
         ButtonAddFace.Margin = New Padding(0)
         ButtonAddFace.Name = "ButtonAddFace"
-        ButtonAddFace.Size = New Size(113, 25)
+        ButtonAddFace.Size = New Size(132, 25)
         ButtonAddFace.TabIndex = 0
         ButtonAddFace.Text = "+Face"
         ' 
@@ -427,7 +393,7 @@ Partial Class EditFace_Form
         ListViewHeadParts.Location = New Point(7, 7)
         ListViewHeadParts.MultiSelect = False
         ListViewHeadParts.Name = "ListViewHeadParts"
-        ListViewHeadParts.Size = New Size(682, 282)
+        ListViewHeadParts.Size = New Size(792, 412)
         ListViewHeadParts.TabIndex = 0
         ListViewHeadParts.UseCompatibleStateImageBehavior = False
         ListViewHeadParts.View = View.Details
@@ -463,9 +429,9 @@ Partial Class EditFace_Form
         GroupBoxHairColor.AutoSizeMode = AutoSizeMode.GrowAndShrink
         GroupBoxHairColor.Controls.Add(HairColorLayout)
         GroupBoxHairColor.Dock = DockStyle.Top
-        GroupBoxHairColor.Location = New Point(3, 383)
+        GroupBoxHairColor.Location = New Point(3, 513)
         GroupBoxHairColor.Name = "GroupBoxHairColor"
-        GroupBoxHairColor.Size = New Size(702, 86)
+        GroupBoxHairColor.Size = New Size(812, 86)
         GroupBoxHairColor.TabIndex = 1
         GroupBoxHairColor.TabStop = False
         GroupBoxHairColor.Text = "Hair Color (NPC.QNAM)"
@@ -487,7 +453,7 @@ Partial Class EditFace_Form
         HairColorLayout.RowCount = 2
         HairColorLayout.RowStyles.Add(New RowStyle(SizeType.Absolute, 36F))
         HairColorLayout.RowStyles.Add(New RowStyle(SizeType.Absolute, 20F))
-        HairColorLayout.Size = New Size(696, 64)
+        HairColorLayout.Size = New Size(806, 64)
         HairColorLayout.TabIndex = 0
         ' 
         ' ComboBoxHairColor
@@ -497,13 +463,13 @@ Partial Class EditFace_Form
         ComboBoxHairColor.Location = New Point(6, 6)
         ComboBoxHairColor.Margin = New Padding(2)
         ComboBoxHairColor.Name = "ComboBoxHairColor"
-        ComboBoxHairColor.Size = New Size(584, 23)
+        ComboBoxHairColor.Size = New Size(694, 23)
         ComboBoxHairColor.TabIndex = 0
         ' 
         ' ButtonClearHairColor
         ' 
         ButtonClearHairColor.Dock = DockStyle.Fill
-        ButtonClearHairColor.Location = New Point(594, 6)
+        ButtonClearHairColor.Location = New Point(704, 6)
         ButtonClearHairColor.Margin = New Padding(2)
         ButtonClearHairColor.MinimumSize = New Size(96, 0)
         ButtonClearHairColor.Name = "ButtonClearHairColor"
@@ -520,7 +486,7 @@ Partial Class EditFace_Form
         PanelHairColorSwatch.Location = New Point(6, 42)
         PanelHairColorSwatch.Margin = New Padding(2)
         PanelHairColorSwatch.Name = "PanelHairColorSwatch"
-        PanelHairColorSwatch.Size = New Size(584, 16)
+        PanelHairColorSwatch.Size = New Size(694, 16)
         PanelHairColorSwatch.TabIndex = 2
         ' 
         ' GroupBoxFaceFlags
@@ -529,9 +495,9 @@ Partial Class EditFace_Form
         GroupBoxFaceFlags.AutoSizeMode = AutoSizeMode.GrowAndShrink
         GroupBoxFaceFlags.Controls.Add(FaceFlagsLayout)
         GroupBoxFaceFlags.Dock = DockStyle.Top
-        GroupBoxFaceFlags.Location = New Point(3, 475)
+        GroupBoxFaceFlags.Location = New Point(3, 605)
         GroupBoxFaceFlags.Name = "GroupBoxFaceFlags"
-        GroupBoxFaceFlags.Size = New Size(702, 70)
+        GroupBoxFaceFlags.Size = New Size(812, 70)
         GroupBoxFaceFlags.TabIndex = 2
         GroupBoxFaceFlags.TabStop = False
         GroupBoxFaceFlags.Text = "FaceGen flags (ACBS)"
@@ -547,7 +513,7 @@ Partial Class EditFace_Form
         FaceFlagsLayout.Location = New Point(3, 19)
         FaceFlagsLayout.Name = "FaceFlagsLayout"
         FaceFlagsLayout.Padding = New Padding(4)
-        FaceFlagsLayout.Size = New Size(696, 48)
+        FaceFlagsLayout.Size = New Size(806, 48)
         FaceFlagsLayout.TabIndex = 0
         FaceFlagsLayout.WrapContents = False
         ' 
@@ -571,13 +537,70 @@ Partial Class EditFace_Form
         LabelCharGenHelp.TabIndex = 1
         LabelCharGenHelp.Text = "Marks the NPC as a chargen template.  The engine will remorph every time. Recommended false + build chargen"
         ' 
+        ' TabPageSseMorphs
+        ' 
+        TabPageSseMorphs.Controls.Add(PanelSseMorphs)
+        TabPageSseMorphs.Location = New Point(4, 24)
+        TabPageSseMorphs.Name = "TabPageSseMorphs"
+        TabPageSseMorphs.Padding = New Padding(6)
+        TabPageSseMorphs.Size = New Size(830, 690)
+        TabPageSseMorphs.TabIndex = 1
+        TabPageSseMorphs.Text = "Morphs (SSE)"
+        ' 
+        ' PanelSseMorphs
+        ' 
+        PanelSseMorphs.Dock = DockStyle.Fill
+        PanelSseMorphs.Location = New Point(6, 6)
+        PanelSseMorphs.Name = "PanelSseMorphs"
+        PanelSseMorphs.Size = New Size(818, 678)
+        PanelSseMorphs.TabIndex = 0
+        ' 
+        ' TabPageSseTints
+        ' 
+        TabPageSseTints.Controls.Add(PanelSseTints)
+        TabPageSseTints.Location = New Point(4, 24)
+        TabPageSseTints.Name = "TabPageSseTints"
+        TabPageSseTints.Padding = New Padding(6)
+        TabPageSseTints.Size = New Size(830, 690)
+        TabPageSseTints.TabIndex = 2
+        TabPageSseTints.Text = "Tints (SSE)"
+        ' 
+        ' PanelSseTints
+        ' 
+        PanelSseTints.Dock = DockStyle.Fill
+        PanelSseTints.Location = New Point(6, 6)
+        PanelSseTints.Name = "PanelSseTints"
+        PanelSseTints.Size = New Size(818, 678)
+        PanelSseTints.TabIndex = 0
+        ' 
+        ' TabPageSseSculpt
+        ' 
+        TabPageSseSculpt.Controls.Add(ListSseSculpt)
+        TabPageSseSculpt.Location = New Point(4, 24)
+        TabPageSseSculpt.Name = "TabPageSseSculpt"
+        TabPageSseSculpt.Padding = New Padding(6)
+        TabPageSseSculpt.Size = New Size(830, 690)
+        TabPageSseSculpt.TabIndex = 3
+        TabPageSseSculpt.Text = "Sculpt (SSE)"
+        ' 
+        ' ListSseSculpt
+        ' 
+        ListSseSculpt.Dock = DockStyle.Fill
+        ListSseSculpt.FullRowSelect = True
+        ListSseSculpt.Location = New Point(6, 6)
+        ListSseSculpt.Name = "ListSseSculpt"
+        ListSseSculpt.Size = New Size(818, 678)
+        ListSseSculpt.TabIndex = 0
+        ListSseSculpt.UseCompatibleStateImageBehavior = False
+        ListSseSculpt.View = View.Details
+        ' 
         ' TabPageTints
         ' 
         TabPageTints.Controls.Add(TintsLayout)
         TabPageTints.Location = New Point(4, 24)
         TabPageTints.Name = "TabPageTints"
         TabPageTints.Padding = New Padding(6)
-        TabPageTints.Size = New Size(720, 560)
+        TabPageTints.Size = New Size(830, 690)
         TabPageTints.TabIndex = 1
         TabPageTints.Text = "Face Tints"
         ' 
@@ -598,7 +621,7 @@ Partial Class EditFace_Form
         TintsLayout.RowStyles.Add(New RowStyle(SizeType.Percent, 100F))
         TintsLayout.RowStyles.Add(New RowStyle())
         TintsLayout.RowStyles.Add(New RowStyle())
-        TintsLayout.Size = New Size(708, 548)
+        TintsLayout.Size = New Size(818, 678)
         TintsLayout.TabIndex = 0
         ' 
         ' TextBoxTintFilter
@@ -607,7 +630,7 @@ Partial Class EditFace_Form
         TextBoxTintFilter.Location = New Point(7, 7)
         TextBoxTintFilter.Name = "TextBoxTintFilter"
         TextBoxTintFilter.PlaceholderText = "Filter by group or layer name…"
-        TextBoxTintFilter.Size = New Size(694, 23)
+        TextBoxTintFilter.Size = New Size(804, 23)
         TextBoxTintFilter.TabIndex = 0
         ' 
         ' ListViewTints
@@ -618,7 +641,7 @@ Partial Class EditFace_Form
         ListViewTints.Location = New Point(7, 36)
         ListViewTints.MultiSelect = False
         ListViewTints.Name = "ListViewTints"
-        ListViewTints.Size = New Size(694, 304)
+        ListViewTints.Size = New Size(804, 434)
         ListViewTints.TabIndex = 0
         ListViewTints.UseCompatibleStateImageBehavior = False
         ListViewTints.View = View.Details
@@ -657,9 +680,9 @@ Partial Class EditFace_Form
         TintsButtonRow.Controls.Add(ButtonRemoveAllInCategory)
         TintsButtonRow.Controls.Add(ButtonRemoveZeroedTints)
         TintsButtonRow.Dock = DockStyle.Fill
-        TintsButtonRow.Location = New Point(7, 346)
+        TintsButtonRow.Location = New Point(7, 476)
         TintsButtonRow.Name = "TintsButtonRow"
-        TintsButtonRow.Size = New Size(694, 31)
+        TintsButtonRow.Size = New Size(804, 31)
         TintsButtonRow.TabIndex = 1
         ' 
         ' ButtonAddTint
@@ -679,22 +702,22 @@ Partial Class EditFace_Form
         ButtonRemoveTint.Size = New Size(75, 25)
         ButtonRemoveTint.TabIndex = 1
         ButtonRemoveTint.Text = "Remove"
-        '
+        ' 
         ' ButtonRemoveAllInCategory
-        '
+        ' 
         ButtonRemoveAllInCategory.AutoSize = True
         ButtonRemoveAllInCategory.AutoSizeMode = AutoSizeMode.GrowAndShrink
         ButtonRemoveAllInCategory.Location = New Point(165, 3)
         ButtonRemoveAllInCategory.Name = "ButtonRemoveAllInCategory"
-        ButtonRemoveAllInCategory.Size = New Size(125, 25)
+        ButtonRemoveAllInCategory.Size = New Size(124, 25)
         ButtonRemoveAllInCategory.TabIndex = 2
         ButtonRemoveAllInCategory.Text = "Remove all category"
-        '
+        ' 
         ' ButtonRemoveZeroedTints
-        '
+        ' 
         ButtonRemoveZeroedTints.AutoSize = True
         ButtonRemoveZeroedTints.AutoSizeMode = AutoSizeMode.GrowAndShrink
-        ButtonRemoveZeroedTints.Location = New Point(296, 3)
+        ButtonRemoveZeroedTints.Location = New Point(295, 3)
         ButtonRemoveZeroedTints.Name = "ButtonRemoveZeroedTints"
         ButtonRemoveZeroedTints.Size = New Size(113, 25)
         ButtonRemoveZeroedTints.TabIndex = 3
@@ -706,9 +729,9 @@ Partial Class EditFace_Form
         PanelTintDetail.AutoSizeMode = AutoSizeMode.GrowAndShrink
         PanelTintDetail.Controls.Add(TintDetailLayout)
         PanelTintDetail.Dock = DockStyle.Fill
-        PanelTintDetail.Location = New Point(7, 383)
+        PanelTintDetail.Location = New Point(7, 513)
         PanelTintDetail.Name = "PanelTintDetail"
-        PanelTintDetail.Size = New Size(694, 158)
+        PanelTintDetail.Size = New Size(804, 158)
         PanelTintDetail.TabIndex = 2
         PanelTintDetail.TabStop = False
         PanelTintDetail.Text = "Selected layer"
@@ -738,7 +761,7 @@ Partial Class EditFace_Form
         TintDetailLayout.RowStyles.Add(New RowStyle(SizeType.Absolute, 36F))
         TintDetailLayout.RowStyles.Add(New RowStyle(SizeType.Absolute, 20F))
         TintDetailLayout.RowStyles.Add(New RowStyle(SizeType.Absolute, 36F))
-        TintDetailLayout.Size = New Size(688, 136)
+        TintDetailLayout.Size = New Size(798, 136)
         TintDetailLayout.TabIndex = 0
         ' 
         ' LabelTintLayerCaption
@@ -777,13 +800,13 @@ Partial Class EditFace_Form
         ComboBoxTintPalette.Location = New Point(67, 42)
         ComboBoxTintPalette.Margin = New Padding(2)
         ComboBoxTintPalette.Name = "ComboBoxTintPalette"
-        ComboBoxTintPalette.Size = New Size(513, 23)
+        ComboBoxTintPalette.Size = New Size(623, 23)
         ComboBoxTintPalette.TabIndex = 3
         ' 
         ' ButtonTintCustomRGB
         ' 
         ButtonTintCustomRGB.Dock = DockStyle.Fill
-        ButtonTintCustomRGB.Location = New Point(585, 43)
+        ButtonTintCustomRGB.Location = New Point(695, 43)
         ButtonTintCustomRGB.MinimumSize = New Size(96, 0)
         ButtonTintCustomRGB.Name = "ButtonTintCustomRGB"
         TintDetailLayout.SetRowSpan(ButtonTintCustomRGB, 2)
@@ -799,7 +822,7 @@ Partial Class EditFace_Form
         PanelTintColorSwatch.Location = New Point(67, 78)
         PanelTintColorSwatch.Margin = New Padding(2)
         PanelTintColorSwatch.Name = "PanelTintColorSwatch"
-        PanelTintColorSwatch.Size = New Size(513, 16)
+        PanelTintColorSwatch.Size = New Size(623, 16)
         PanelTintColorSwatch.TabIndex = 5
         ' 
         ' LabelTintPercentCaption
@@ -821,7 +844,7 @@ Partial Class EditFace_Form
         TrackBarTintPercent.Location = New Point(68, 99)
         TrackBarTintPercent.MinimumSize = New Size(100, 24)
         TrackBarTintPercent.Name = "TrackBarTintPercent"
-        TrackBarTintPercent.Size = New Size(511, 30)
+        TrackBarTintPercent.Size = New Size(621, 30)
         TrackBarTintPercent.TabIndex = 7
         TrackBarTintPercent.TextBoxTextAlign = HorizontalAlignment.Right
         TrackBarTintPercent.ThumbColor = SystemColors.HotTrack
@@ -834,7 +857,7 @@ Partial Class EditFace_Form
         TabPageVertex.Location = New Point(4, 24)
         TabPageVertex.Name = "TabPageVertex"
         TabPageVertex.Padding = New Padding(6)
-        TabPageVertex.Size = New Size(720, 560)
+        TabPageVertex.Size = New Size(830, 690)
         TabPageVertex.TabIndex = 2
         TabPageVertex.Text = "Vertex Morphs"
         ' 
@@ -843,7 +866,7 @@ Partial Class EditFace_Form
         VertexMorphsPanel.Dock = DockStyle.Fill
         VertexMorphsPanel.Location = New Point(6, 6)
         VertexMorphsPanel.Name = "VertexMorphsPanel"
-        VertexMorphsPanel.Size = New Size(708, 548)
+        VertexMorphsPanel.Size = New Size(818, 678)
         VertexMorphsPanel.TabIndex = 0
         ' 
         ' TabPageBoneRegions
@@ -852,7 +875,7 @@ Partial Class EditFace_Form
         TabPageBoneRegions.Location = New Point(4, 24)
         TabPageBoneRegions.Name = "TabPageBoneRegions"
         TabPageBoneRegions.Padding = New Padding(6)
-        TabPageBoneRegions.Size = New Size(720, 560)
+        TabPageBoneRegions.Size = New Size(830, 690)
         TabPageBoneRegions.TabIndex = 3
         TabPageBoneRegions.Text = "Bone Regions"
         ' 
@@ -868,7 +891,7 @@ Partial Class EditFace_Form
         BoneRegionsRoot.RowCount = 2
         BoneRegionsRoot.RowStyles.Add(New RowStyle(SizeType.Percent, 100F))
         BoneRegionsRoot.RowStyles.Add(New RowStyle())
-        BoneRegionsRoot.Size = New Size(708, 548)
+        BoneRegionsRoot.Size = New Size(818, 678)
         BoneRegionsRoot.TabIndex = 0
         ' 
         ' BoneRegionsContainer
@@ -876,7 +899,7 @@ Partial Class EditFace_Form
         BoneRegionsContainer.Dock = DockStyle.Fill
         BoneRegionsContainer.Location = New Point(3, 3)
         BoneRegionsContainer.Name = "BoneRegionsContainer"
-        BoneRegionsContainer.Size = New Size(702, 476)
+        BoneRegionsContainer.Size = New Size(812, 606)
         BoneRegionsContainer.TabIndex = 0
         ' 
         ' GroupBoxFmin
@@ -885,9 +908,9 @@ Partial Class EditFace_Form
         GroupBoxFmin.AutoSizeMode = AutoSizeMode.GrowAndShrink
         GroupBoxFmin.Controls.Add(FminLayout)
         GroupBoxFmin.Dock = DockStyle.Fill
-        GroupBoxFmin.Location = New Point(3, 485)
+        GroupBoxFmin.Location = New Point(3, 615)
         GroupBoxFmin.Name = "GroupBoxFmin"
-        GroupBoxFmin.Size = New Size(702, 60)
+        GroupBoxFmin.Size = New Size(812, 60)
         GroupBoxFmin.TabIndex = 1
         GroupBoxFmin.TabStop = False
         GroupBoxFmin.Text = "Facial Morph Intensity (NPC.FMIN — multiplier on FMRS deltas)"
@@ -908,7 +931,7 @@ Partial Class EditFace_Form
         FminLayout.Padding = New Padding(4)
         FminLayout.RowCount = 1
         FminLayout.RowStyles.Add(New RowStyle())
-        FminLayout.Size = New Size(696, 38)
+        FminLayout.Size = New Size(806, 38)
         FminLayout.TabIndex = 0
         ' 
         ' LabelFminCaption
@@ -933,7 +956,7 @@ Partial Class EditFace_Form
         TrackBarFmin.Maximum = 4R
         TrackBarFmin.MinimumSize = New Size(100, 24)
         TrackBarFmin.Name = "TrackBarFmin"
-        TrackBarFmin.Size = New Size(592, 24)
+        TrackBarFmin.Size = New Size(702, 24)
         TrackBarFmin.SmallChange = 0.01R
         TrackBarFmin.TabIndex = 1
         TrackBarFmin.TextBoxTextAlign = HorizontalAlignment.Right
@@ -950,15 +973,15 @@ Partial Class EditFace_Form
         BottomLayout.Controls.Add(ButtonResetSection)
         BottomLayout.Dock = DockStyle.Fill
         BottomLayout.FlowDirection = FlowDirection.RightToLeft
-        BottomLayout.Location = New Point(11, 605)
+        BottomLayout.Location = New Point(11, 735)
         BottomLayout.Name = "BottomLayout"
         BottomLayout.Padding = New Padding(0, 6, 0, 0)
-        BottomLayout.Size = New Size(728, 35)
+        BottomLayout.Size = New Size(838, 35)
         BottomLayout.TabIndex = 1
         ' 
         ' ButtonOk
         ' 
-        ButtonOk.Location = New Point(645, 9)
+        ButtonOk.Location = New Point(755, 9)
         ButtonOk.Name = "ButtonOk"
         ButtonOk.Size = New Size(80, 23)
         ButtonOk.TabIndex = 0
@@ -966,7 +989,7 @@ Partial Class EditFace_Form
         ' 
         ' ButtonCancel
         ' 
-        ButtonCancel.Location = New Point(559, 9)
+        ButtonCancel.Location = New Point(669, 9)
         ButtonCancel.Name = "ButtonCancel"
         ButtonCancel.Size = New Size(80, 23)
         ButtonCancel.TabIndex = 1
@@ -974,7 +997,7 @@ Partial Class EditFace_Form
         ' 
         ' ButtonResetSection
         ' 
-        ButtonResetSection.Location = New Point(443, 9)
+        ButtonResetSection.Location = New Point(553, 9)
         ButtonResetSection.Name = "ButtonResetSection"
         ButtonResetSection.Size = New Size(110, 23)
         ButtonResetSection.TabIndex = 2
@@ -992,7 +1015,7 @@ Partial Class EditFace_Form
         PreviewSidebar.RowCount = 2
         PreviewSidebar.RowStyles.Add(New RowStyle())
         PreviewSidebar.RowStyles.Add(New RowStyle(SizeType.Percent, 100F))
-        PreviewSidebar.Size = New Size(630, 651)
+        PreviewSidebar.Size = New Size(696, 781)
         PreviewSidebar.TabIndex = 0
         ' 
         ' RenderTogglesPanel
@@ -1004,7 +1027,7 @@ Partial Class EditFace_Form
         RenderTogglesPanel.Location = New Point(3, 3)
         RenderTogglesPanel.Name = "RenderTogglesPanel"
         RenderTogglesPanel.Padding = New Padding(2)
-        RenderTogglesPanel.Size = New Size(624, 27)
+        RenderTogglesPanel.Size = New Size(690, 27)
         RenderTogglesPanel.TabIndex = 0
         ' 
         ' CheckBoxRenderGore
@@ -1022,14 +1045,14 @@ Partial Class EditFace_Form
         PreviewHostPanel.Dock = DockStyle.Fill
         PreviewHostPanel.Location = New Point(3, 36)
         PreviewHostPanel.Name = "PreviewHostPanel"
-        PreviewHostPanel.Size = New Size(624, 612)
+        PreviewHostPanel.Size = New Size(690, 742)
         PreviewHostPanel.TabIndex = 0
         ' 
         ' EditFace_Form
         ' 
         AcceptButton = ButtonOk
         CancelButton = ButtonCancel
-        ClientSize = New Size(1560, 780)
+        ClientSize = New Size(1560, 781)
         Controls.Add(PreviewSplit)
         MinimumSize = New Size(1340, 820)
         Name = "EditFace_Form"
@@ -1056,6 +1079,9 @@ Partial Class EditFace_Form
         GroupBoxFaceFlags.PerformLayout()
         FaceFlagsLayout.ResumeLayout(False)
         FaceFlagsLayout.PerformLayout()
+        TabPageSseMorphs.ResumeLayout(False)
+        TabPageSseTints.ResumeLayout(False)
+        TabPageSseSculpt.ResumeLayout(False)
         TabPageTints.ResumeLayout(False)
         TintsLayout.ResumeLayout(False)
         TintsLayout.PerformLayout()

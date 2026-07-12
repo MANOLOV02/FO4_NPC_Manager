@@ -3869,6 +3869,10 @@ Public Class EditFace_Form
         ' Nothing, and we get GL_INVALID_VALUE on the program handle plus VAO bind errors.
         EditPreviewControl.CreateControl()
 
+        ' Tooltip game-aware + deshabilitado del gore bajo Skyrim (no hay meatcaps). Mismo criterio que
+        ' la toolbar del MainForm — ver RenderToggleLabels.
+        RenderToggleLabels.Apply(Nothing, Nothing, Nothing, Nothing, Nothing, Nothing, Nothing, Nothing, Nothing, CheckBoxRenderGore)
+
         ' Seed the per-editor gore checkbox from MainForm so the embedded preview opens with
         ' the user's global gore preference. _seedingToggles short-circuits the CheckedChanged
         ' handler during the assignment so we don't run a redundant visibility pass before the

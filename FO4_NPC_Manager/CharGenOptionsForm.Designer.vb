@@ -297,7 +297,9 @@ Partial Class CharGenOptionsForm
         ' ComboFormatS
         '
         ComboFormatS.DropDownStyle = ComboBoxStyle.DropDownList
-        ComboFormatS.Items.AddRange(New Object() {"BC5 (default)", "Uncompressed"})
+        ' Mismo dominio que ComboFormatN (enum FaceTintNormalSpecularCompression: BC5=0/Unc=1/BC7=2/BC3=3): los 4
+        ' ítems, en el MISMO orden. Con 2 ítems, cualquier índice >= 2 (p.ej. el derivado del diffuse) reventaba.
+        ComboFormatS.Items.AddRange(New Object() {"BC5 (default)", "Uncompressed", "BC7", "BC3"})
         ComboFormatS.Location = New Point(410, 119)
         ComboFormatS.Name = "ComboFormatS"
         ComboFormatS.Size = New Size(190, 23)

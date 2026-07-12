@@ -89,6 +89,8 @@ Public Class EditBody_Form
     ' _suspendEvents / _seedingToggles lifted to EditorFormBase (shared with EditFace_Form).
 
     ' Per-BodySlide-slider UI references. Key = sliderName (case-insensitive).
+    ' Rows are fixed-height (slider Height 28 + its 2px top/bottom margin) because they can't AutoSize.
+    Private Const BodySlideRowHeight As Integer = 32
     Private ReadOnly _bodySlideBars As New Dictionary(Of String, FO4_Base_Library.TinySliderTextBox)(StringComparer.OrdinalIgnoreCase)
     Private ReadOnly _bodySlideRows As New Dictionary(Of String, Control)(StringComparer.OrdinalIgnoreCase)
 
@@ -202,13 +204,11 @@ Public Class EditBody_Form
             ' already carries one), so the slider opens at the real value and edits ride on top.
             If Not p.SseWeight.HasValue Then p.SseWeight = _initialSseWeight
             BuildSseWeightSection()
-            BuildSseBodyScaleTab()   ' RaceMenu NiOverride node-scale sliders (SSE-only tab; FO4 has no analogue)
+            BuildSseBodyScaleTab()   ' RaceMenu NiOverride node transform sliders (SSE-only tab; FO4 has no analogue)
             BuildSseSkinOverridesTab()  ' RaceMenu NiOverride skin body-paint per slot (SSE-only tab; FO4 has no analogue)
-            ' Under Skyrim these two carry RaceMenu co-save data, not record data: the BodySlide sliders are the
-            ' .jslot's bodyMorphs and the overlays are its NiOverride "[Ovl]" nodes. Name them for the system that
-            ' owns them, so the only unprefixed tab is the one that reaches the ESP.
-            TabPageBodySlide.Text = "RaceMenu · Body Morphs"
-            TabPageOverlays.Text = "RaceMenu · Body Paint"
+            ' Same sliders, different carrier: under Skyrim these are the .jslot's bodyMorphs read through
+            ' skee64/RaceMenu, not F4SE's PIRT field — so the FO4 caption would be a lie here.
+            GroupBoxBodySlide.Text = "BodySlide Sliders (BODYTRI .tri — vertex morphs, RaceMenu/skee64 field)"
             GroupBoxWeight.Visible = False    ' FO4 MWGT 3-axis triangle
             GroupBoxMrsv.Visible = False      ' FO4 MRSV 5 regions
             ComboBoxLmSkinTemplate.Visible = False : LabelLmSkinTemplate.Visible = False  ' F4SE-only
@@ -492,24 +492,27 @@ Public Class EditBody_Form
             End If
             Dim rowWidth = ComputeBodySlideRowWidth()
             For Each sliderName In _availableSliders
+                ' AutoSize must stay off: with it on the layout engine shrinks the row back to its
+                ' preferred width (label + slider) and silently discards the Width we assign here and
+                ' in BodySlidePanel_Resize, so the rows never reach the panel's right edge.
                 Dim row As New TableLayoutPanel() With {
                     .ColumnCount = 2,
                     .RowCount = 1,
-                    .AutoSize = True,
-                    .AutoSizeMode = AutoSizeMode.GrowAndShrink,
+                    .AutoSize = False,
                     .Width = rowWidth,
+                    .Height = BodySlideRowHeight,
                     .Margin = New Padding(0, 0, 0, 2)
                 }
                 row.ColumnStyles.Add(New ColumnStyle(SizeType.Absolute, 180))
                 row.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100.0F))
-                row.RowStyles.Add(New RowStyle(SizeType.AutoSize))
+                row.RowStyles.Add(New RowStyle(SizeType.Percent, 100.0F))
 
                 Dim lbl As New Label() With {
                     .Text = sliderName,
                     .AutoSize = False,
                     .Width = 180,
                     .TextAlign = ContentAlignment.MiddleLeft,
-                    .Anchor = AnchorStyles.Left Or AnchorStyles.Right
+                    .Dock = DockStyle.Fill
                 }
                 Dim bar As New FO4_Base_Library.TinySliderTextBox() With {
                     .Minimum = 0R,
@@ -549,8 +552,8 @@ Public Class EditBody_Form
 
     ''' <summary>FlowLayoutPanel doesn't honour Anchor on its children, so we resize each row
     ''' manually whenever the panel changes width (form resize, splitter drag, tab activate).
-    ''' Cheap: one Width assignment per row, no relayout cascade because rows are AutoSize on
-    ''' height only.</summary>
+    ''' Cheap: one Width assignment per row, and the rows are fixed-height so nothing reflows
+    ''' vertically.</summary>
     Private Sub BodySlidePanel_Resize(sender As Object, e As EventArgs) Handles BodySlidePanel.Resize
         If _bodySlideRows.Count = 0 Then Return
         Dim w = ComputeBodySlideRowWidth()
@@ -1071,6 +1074,11 @@ Public Class EditBody_Form
     Private _sseShowAllNodes As Boolean = False
     Private _sseShowAllCheck As CheckBox
 
+    ''' <summary>Piso de la escala de un node transform. Un factor 0 deja la matriz del hueso singular
+    ''' (geometría colapsada, normal indefinida ⇒ inversa imposible), así que el editor no permite bajar
+    ''' de 0.01 — visualmente equivale a "invisible" sin producir una matriz degenerada.</summary>
+    Private Const MinNodeScale As Double = 0.01R
+
     ''' <summary>Fill <see cref="_sseNodeItems"/> for the current show-all state. Faithful to RaceMenu: the node list
     ''' is the union of what plugins REGISTER, not a skeleton scan. (1) RaceMenu's built-in body nodes (verified from
     ''' RaceMenuPlugin.pex) present on this rig; (2) the dynamic <see cref="FO4_Base_Library.RaceMenuNodeCatalog"/> —
@@ -1157,7 +1165,7 @@ Public Class EditBody_Form
     End Sub
 
     Private Sub BuildSseBodyScaleTab()
-        Dim tab As New TabPage("RaceMenu · Body Scale") With {.Name = "TabPageSseBodyScale", .Padding = New Padding(6)}
+        Dim tab As New TabPage("Body Transform") With {.Name = "TabPageSseBodyScale", .Padding = New Padding(6)}
         Dim root As New TableLayoutPanel With {.Dock = DockStyle.Fill, .ColumnCount = 2, .RowCount = 2}
         root.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 42))
         root.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 58))
@@ -1189,12 +1197,15 @@ Public Class EditBody_Form
         RebuildSseNodeItems()
 
         ' Detail: labeled TinySlider rows — Scale (0..2), Position X/Y/Z (centred), Rotation X/Y/Z in degrees
-        ' (centred), then a per-node Reset. AllowExtremeValues lets a typed value exceed the slider range.
-        Dim detail As New TableLayoutPanel With {.Dock = DockStyle.Fill, .ColumnCount = 2, .AutoScroll = True}
+        ' (centred), then a per-node Reset RIGHT under the last slider. The rows live in an AutoSize/Dock.Top
+        ' TableLayoutPanel inside a scrollable panel so the Reset button hugs the sliders instead of a stretched
+        ' filler pushing it to the bottom. AllowExtremeValues lets a typed value exceed the slider range.
+        Dim rightPanel As New Panel With {.Dock = DockStyle.Fill, .AutoScroll = True}
+        _sseNodeDetailPanel = rightPanel
+        Dim detail As New TableLayoutPanel With {.Dock = DockStyle.Top, .AutoSize = True, .ColumnCount = 2}
         detail.ColumnStyles.Add(New ColumnStyle(SizeType.Absolute, 118))
         detail.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100))
-        _sseNodeDetailPanel = detail
-        _sseNodeScaleBar = MakeNodeSlider(0.0R, 2.0R, "0.00", FO4_Base_Library.TinySliderFillMode.Left)
+        _sseNodeScaleBar = MakeNodeSlider(MinNodeScale, 2.0R, "0.00", FO4_Base_Library.TinySliderFillMode.Left)
         _sseNodePosX = MakeNodeSlider(-20.0R, 20.0R, "0.00", FO4_Base_Library.TinySliderFillMode.Center)
         _sseNodePosY = MakeNodeSlider(-20.0R, 20.0R, "0.00", FO4_Base_Library.TinySliderFillMode.Center)
         _sseNodePosZ = MakeNodeSlider(-20.0R, 20.0R, "0.00", FO4_Base_Library.TinySliderFillMode.Center)
@@ -1219,12 +1230,16 @@ Public Class EditBody_Form
         AddNodeDetailRow(detail, r, "Rotation X (°)", _sseNodeRotX) : r += 1
         AddNodeDetailRow(detail, r, "Rotation Y (°)", _sseNodeRotY) : r += 1
         AddNodeDetailRow(detail, r, "Rotation Z (°)", _sseNodeRotZ) : r += 1
-        Dim btnReset As New Button With {.Text = "Reset node", .AutoSize = True, .Anchor = AnchorStyles.Left, .Margin = New Padding(3, 6, 3, 3)}
+        Dim btnReset As New Button With {.Text = "Reset node", .AutoSize = True, .Margin = New Padding(0, 4, 3, 3)}
         AddHandler btnReset.Click, AddressOf OnSseNodeResetClick
-        detail.RowStyles.Add(New RowStyle(SizeType.Absolute, 36))
-        detail.Controls.Add(btnReset, 1, r) : r += 1
-        detail.RowStyles.Add(New RowStyle(SizeType.Percent, 100))   ' filler → rows pack at the top
-        root.Controls.Add(detail, 1, 1)
+        ' Button row sits directly below the slider grid (Dock.Top stacking: the LAST-added Dock.Top control ends up
+        ' on top, so add the button row FIRST and the slider grid second).
+        Dim btnRow As New FlowLayoutPanel With {.Dock = DockStyle.Top, .AutoSize = True,
+                                                .Padding = New Padding(118, 0, 0, 0), .Margin = New Padding(0)}
+        btnRow.Controls.Add(btnReset)
+        rightPanel.Controls.Add(btnRow)
+        rightPanel.Controls.Add(detail)
+        root.Controls.Add(rightPanel, 1, 1)
 
         tab.Controls.Add(root)
         TabsBody.TabPages.Add(tab)
@@ -1304,12 +1319,17 @@ Public Class EditBody_Form
         End Try
     End Sub
 
-    ''' <summary>The node's rotation as euler degrees for the UI: axis-angle → matrix → euler (an internally
-    ''' consistent pair; the model keeps the exact axis-angle the render uses).</summary>
+    ''' <summary>The node's rotation as STANDARD euler degrees (X = rotation about X, Y about Y, Z about Z) for the
+    ''' UI sliders. Convention taken from the app's byte-verified TRS reference <see cref="FaceBonePoseBuilder"/>
+    ''' (validated against CK FaceGen), which converts a standard euler to the render's axis-angle as
+    ''' <c>Matrix33ToBSRotation(EulerXYZToMatrix33(-x, -y, -z))</c> — the NEGATION undoes EulerXYZToMatrix33's
+    ''' J·R·J permutation, whose raw params are (yaw=Z, pitch=Y, roll=X). This function is the exact inverse of
+    ''' <see cref="OnSseNodeRotChanged"/>, so display→edit→display round-trips.</summary>
     Private Shared Function SseNodeRotDegrees(nt As RaceMenuJslot.JslotNodeTransform) As System.Numerics.Vector3
         If nt Is Nothing OrElse Not nt.HasRotation Then Return New System.Numerics.Vector3(0, 0, 0)
         Dim m = FO4_Base_Library.Transform_Class.BSRotationToMatrix33(New System.Numerics.Vector3(nt.RotX, nt.RotY, nt.RotZ))
-        Return FO4_Base_Library.Transform_Class.Matrix33ToEulerXYZ(m)
+        Dim e = FO4_Base_Library.Transform_Class.Matrix33ToEulerXYZ(m)
+        Return New System.Numerics.Vector3(-e.X, -e.Y, -e.Z)
     End Function
 
     ''' <summary>The transform for the selected node, creating a fresh (Raw-less) one if absent.</summary>
@@ -1328,6 +1348,14 @@ Public Class EditBody_Form
 
     Private Sub OnSseNodeScaleChanged()
         If _suspendEvents Then Return
+        ' Escala 0 (o negativa) hace singular la matriz del hueso: la geometría colapsa y la normal
+        ' queda indefinida. El slider ya arranca en MinNodeScale, pero AllowExtremeValues deja tipear
+        ' un valor fuera de rango, así que el piso se aplica acá también. Re-asignar Value re-entra en
+        ' este handler con el valor ya capeado (AreClose corta la recursión).
+        If _sseNodeScaleBar.Value < MinNodeScale Then
+            _sseNodeScaleBar.Value = MinNodeScale
+            Return
+        End If
         Dim nt = EnsureSseNodeTransform() : If nt Is Nothing Then Return
         nt.Scale = CSng(_sseNodeScaleBar.Value) : nt.HasScale = True
         ApplySseNodeEdit()
@@ -1344,9 +1372,13 @@ Public Class EditBody_Form
     Private Sub OnSseNodeRotChanged()
         If _suspendEvents Then Return
         Dim nt = EnsureSseNodeTransform() : If nt Is Nothing Then Return
-        ' UI euler degrees → matrix → axis-angle radians (the model/render canonical form). RotationDirty tells
-        ' Save to rebuild the key-32 matrix from this axis-angle (untouched rotations stay byte-exact from Raw).
-        Dim m = FO4_Base_Library.Transform_Class.EulerXYZToMatrix33(_sseNodeRotX.Value, _sseNodeRotY.Value, _sseNodeRotZ.Value)
+        ' STANDARD euler degrees (X/Y/Z about the X/Y/Z axes) → matrix → axis-angle radians (the model/render
+        ' canonical form). The NEGATED args are the app's established TRS convention — identical to the
+        ' byte-verified FaceBonePoseBuilder: Matrix33ToBSRotation(EulerXYZToMatrix33(-x, -y, -z)). Without the
+        ' negation the sliders would be mislabelled (raw EulerXYZToMatrix33 params are yaw=Z, pitch=Y, roll=X, so
+        ' "Rotation X" would actually rotate about Z). RotationDirty tells Save to rebuild the key-32 matrix from
+        ' this axis-angle (untouched rotations stay byte-exact from Raw).
+        Dim m = FO4_Base_Library.Transform_Class.EulerXYZToMatrix33(-_sseNodeRotX.Value, -_sseNodeRotY.Value, -_sseNodeRotZ.Value)
         Dim aa = FO4_Base_Library.Transform_Class.Matrix33ToBSRotation(m)
         nt.RotX = aa.X : nt.RotY = aa.Y : nt.RotZ = aa.Z
         nt.HasRotation = True : nt.RotationDirty = True
@@ -1401,7 +1433,7 @@ Public Class EditBody_Form
     ''' Browse fields + tint enable/color/alpha. Editing writes Preset.SseSkinOverrides and live re-renders (the
     ''' render composes them under the tattoo overlays in ResolveSseOverlayLayers).</summary>
     Private Sub BuildSseSkinOverridesTab()
-        Dim tab As New TabPage("RaceMenu · Skin Overrides") With {.Name = "TabPageSseSkinOverrides", .Padding = New Padding(6)}
+        Dim tab As New TabPage("Skin Overrides") With {.Name = "TabPageSseSkinOverrides", .Padding = New Padding(6)}
         Dim root As New TableLayoutPanel With {.Dock = DockStyle.Fill, .ColumnCount = 2, .RowCount = 3}
         root.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 50))
         root.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 50))
@@ -2683,6 +2715,11 @@ Public Class EditBody_Form
         ' so the snapshot reads the editor's own checkboxes (single source of truth from now on).
         ' _seedingToggles guards against the CheckedChanged handlers firing N times during seed —
         ' each .Checked = ... assignment would otherwise trigger a full visibility pass per box.
+        ' Rótulos + tooltips game-aware de las 4 visibilidades del editor (bajo Skyrim: "Render outfit" /
+        ' "Render accessories", y gore deshabilitado — no hay meatcaps). Mismo helper que el MainForm.
+        RenderToggleLabels.Apply(Nothing, Nothing, Nothing, Nothing, Nothing, Nothing,
+                                 CheckBoxRenderUnderarmor, CheckBoxRenderArmor, CheckBoxRenderHeadwear, CheckBoxRenderGore)
+
         _seedingToggles = True
         Try
             CheckBoxRenderUnderarmor.Checked = _mainForm.CheckBoxRenderUnderarmor.Checked

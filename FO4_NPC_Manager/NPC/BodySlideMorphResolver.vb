@@ -24,12 +24,18 @@ Public Class BodySlideMorphResolver
     Private ReadOnly _sliders As Dictionary(Of String, Single)
     Private ReadOnly _meshDictKeys As Dictionary(Of IRenderableShape, String)
 
-    ''' <summary>Create a resolver fed by an immutable slider snapshot. The dict is held
-    ''' by reference — caller is responsible for not mutating it during render. Pass a
-    ''' fresh dict for each new state.</summary>
+    ''' <summary>Create a resolver over a COPY of the caller's slider dict. The copy is deliberate:
+    ''' callers hand us the live LooksmenuPreset.BodyMorphSliders, which the UI thread mutates while
+    ''' the user drags a slider in Edit Body or applies an LM preset — and ResolveMorphPlan iterates
+    ''' it from the render pipeline's Parallel.ForEach. Holding it by reference let a concurrent
+    ''' mutation throw InvalidOperationException mid-iteration (swallowed upstream → shape rendered
+    ''' unmorphed) or observe a half-updated dict. The resolver is rebuilt on every refresh
+    ''' (BuildCompositeMorphResolver), so the snapshot is always the current state.</summary>
     Public Sub New(sliders As Dictionary(Of String, Single),
                    meshDictKeys As Dictionary(Of IRenderableShape, String))
-        _sliders = If(sliders, New Dictionary(Of String, Single)(StringComparer.OrdinalIgnoreCase))
+        _sliders = If(sliders Is Nothing,
+                      New Dictionary(Of String, Single)(StringComparer.OrdinalIgnoreCase),
+                      New Dictionary(Of String, Single)(sliders, StringComparer.OrdinalIgnoreCase))
         _meshDictKeys = meshDictKeys
     End Sub
 

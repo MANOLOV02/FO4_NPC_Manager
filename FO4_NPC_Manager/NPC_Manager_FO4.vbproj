@@ -29,4 +29,19 @@
     <InternalsVisibleTo Include="FO4_FaceTint_CLI" />
   </ItemGroup>
 
+  <!-- Compiled Papyrus apply-scripts, EMBEDDED in the assembly and extracted to Data\Scripts\ on save
+       (NpcApplyScriptEmitter.InstallPex). Embedded rather than copied loose so there is no side folder to
+       lose when the app is moved/distributed, and — the real reason — so the .pex can never drift out of
+       sync with the app version that emitted the VMAD referencing it: a stale loose .pex would silently
+       ignore properties it does not know about, applying nothing and reporting nothing.
+
+       LogicalName is pinned so the lookup does not depend on how MSBuild derives resource names from paths.
+
+       ONLY our two scripts. The native stubs (NiOverride/Overlays/BodyGen) must NEVER ship: a loose .pex
+       shadows the BSA/BA2, so ours would replace RaceMenu's / LooksMenu's real implementation.
+       See ..\Papyrus\README.md. -->
+  <ItemGroup>
+    <EmbeddedResource Include="..\Papyrus\pex_sse\NPCM_Manolov_ApplySSE.pex" LogicalName="NpcManager.Papyrus.NPCM_Manolov_ApplySSE.pex" />
+    <EmbeddedResource Include="..\Papyrus\pex_fo4\NPCM_Manolov_ApplyFO4.pex" LogicalName="NpcManager.Papyrus.NPCM_Manolov_ApplyFO4.pex" />
+  </ItemGroup>
 </Project>

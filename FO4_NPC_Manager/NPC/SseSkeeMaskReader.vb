@@ -38,11 +38,26 @@ Public Module SseSkeeMaskReader
         Return False
     End Function
 
-    Public Function ComposeNifMaskLayersIntoDiffuse(nif As Nifcontent_Class_Manolo, shape As NiflySharp.INiShape, w As Integer, h As Integer,
-                                                    decode As Func(Of String, Integer, Integer, Double()),
-                                                    skinRgb As Double(), hairRgb As Double(),
-                                                    acc As Double()) As Boolean
-        If nif Is Nothing OrElse nif.Blocks Is Nothing OrElse shape Is Nothing OrElse shape.ExtraDataList Is Nothing Then Return False
+    ''' <summary>Una capa skee CRUDA (sin texturas decodificadas): lo que se lee del NIF y se propaga al render.
+    ''' ⭐ Existe porque CPU y GPU necesitan la máscara en formatos DISTINTOS: el CPU quiere los pixels decodificados
+    ''' (<see cref="SseOverlayCompositor.SseOverlay"/>.Texture) y el GPU quiere los BYTES del DDS para subirlos como
+    ''' textura (FaceTintLayerInput.LayerDdsBytes). Propagando la capa cruda, cada camino la adapta y NINGUNO queda
+    ''' forzado — que es lo que exige la regla "el flag de la cámara es el único que decide CPU vs GPU".</summary>
+    Public Structure SkeeMaskLayerRaw
+        Public TexturePath As String
+        Public ColorArgb As UInteger       ' MASKC crudo (puede ser un sentinel skin/hair; lo resuelve BuildSkeeMaskLayer)
+        Public Opacity As Double           ' MASKA
+        Public LayerType As Integer        ' MASKT del NIF = 1 (Mask)
+        Public Blend As SseOverlayCompositor.SseBlendMode
+    End Structure
+
+    ''' <summary>Lee las capas skee del shape SIN decodificar ninguna textura (barato). Orden = índice ascendente
+    ''' (= el orden de composición de skee). Las capas con alpha<=0 se saltean (skee hace lo mismo). Vacío si el
+    ''' shape no tiene MASKT. ⭐ FUENTE ÚNICA: la usan <see cref="ComposeNifMaskLayersIntoDiffuse"/> (CPU) y el
+    ''' collector (que las propaga al render para el path GPU) ⇒ no hay dos parseos que se puedan desincronizar.</summary>
+    Public Function ReadNifMaskLayersRaw(nif As Nifcontent_Class_Manolo, shape As NiflySharp.INiShape) As List(Of SkeeMaskLayerRaw)
+        Dim outLayers As New List(Of SkeeMaskLayerRaw)
+        If nif Is Nothing OrElse nif.Blocks Is Nothing OrElse shape Is Nothing OrElse shape.ExtraDataList Is Nothing Then Return outLayers
         Dim blocks = nif.Blocks
 
         Dim maskt As NiflySharp.Blocks.NiStringsExtraData = Nothing
@@ -58,22 +73,47 @@ Public Module SseSkeeMaskReader
                 Case "MASKA" : maska = TryCast(blk, NiflySharp.Blocks.NiFloatsExtraData)
             End Select
         Next
-        If maskt Is Nothing OrElse maskt.Data Is Nothing OrElse maskt.Data.Count = 0 Then Return False
+        If maskt Is Nothing OrElse maskt.Data Is Nothing OrElse maskt.Data.Count = 0 Then Return outLayers
 
-        ' Build one SseOverlay per index (ascending = skee compose order). Raw MASKT → type Mask(1), blend normal.
-        Dim layers As New List(Of SseOverlayCompositor.SseOverlay)
         For i = 0 To maskt.Data.Count - 1
-            Dim texPath = maskt.Data(i)?.Content
-            Dim colorRaw As UInteger = If(maskc IsNot Nothing AndAlso maskc.Data IsNot Nothing AndAlso i < maskc.Data.Count, maskc.Data(i), &HFFFFFFFFUI)
             Dim opacity As Double = If(maska IsNot Nothing AndAlso maska.Data IsNot Nothing AndAlso i < maska.Data.Count, maska.Data(i), 0.0)
             If opacity <= 0.0 Then Continue For                                   ' skee skips alpha==0 layers
-            Dim texRgba As Double() = Nothing
-            If Not String.IsNullOrEmpty(texPath) AndAlso decode IsNot Nothing Then texRgba = decode(texPath, w, h)
-            ' MASKC=hair-preset (−1) collides with opaque white; skee treats the raw int as the sentinel first.
-            layers.Add(SseOverlayCompositor.BuildSkeeMaskLayer(colorRaw, opacity, texRgba,
-                                                               layerType:=1, blend:=SseOverlayCompositor.SseBlendMode.Normal,
-                                                               skinRgb:=skinRgb, hairRgb:=hairRgb))
+            ' MASKC=hair-preset (-1) collides with opaque white; skee treats the raw int as the sentinel first.
+            outLayers.Add(New SkeeMaskLayerRaw With {
+                .TexturePath = maskt.Data(i)?.Content,
+                .ColorArgb = If(maskc IsNot Nothing AndAlso maskc.Data IsNot Nothing AndAlso i < maskc.Data.Count, maskc.Data(i), &HFFFFFFFFUI),
+                .Opacity = opacity,
+                .LayerType = 1,                                                  ' MASKT del NIF = type Mask
+                .Blend = SseOverlayCompositor.SseBlendMode.Normal})              ' MASKT del NIF = blend normal
         Next
+        Return outLayers
+    End Function
+
+    ''' <summary>Resuelve capas crudas → <see cref="SseOverlayCompositor.SseOverlay"/> (decodifica las texturas y
+    ''' sustituye los sentinels skin/hair). Es el adaptador del path CPU; el GPU usa su propio adaptador (sube los
+    ''' bytes como textura) a partir de las MISMAS capas crudas.</summary>
+    Public Function ResolveLayersForCpu(raw As IList(Of SkeeMaskLayerRaw), w As Integer, h As Integer,
+                                        decode As Func(Of String, Integer, Integer, Double()),
+                                        skinRgb As Double(), hairRgb As Double()) As List(Of SseOverlayCompositor.SseOverlay)
+        Dim built As New List(Of SseOverlayCompositor.SseOverlay)
+        If raw Is Nothing Then Return built
+        For Each l In raw
+            Dim texRgba As Double() = Nothing
+            If Not String.IsNullOrEmpty(l.TexturePath) AndAlso l.LayerType <> 2 AndAlso decode IsNot Nothing Then
+                texRgba = decode(l.TexturePath, w, h)
+            End If
+            built.Add(SseOverlayCompositor.BuildSkeeMaskLayer(l.ColorArgb, l.Opacity, texRgba, l.LayerType, l.Blend, skinRgb, hairRgb))
+        Next
+        Return built
+    End Function
+
+    Public Function ComposeNifMaskLayersIntoDiffuse(nif As Nifcontent_Class_Manolo, shape As NiflySharp.INiShape, w As Integer, h As Integer,
+                                                    decode As Func(Of String, Integer, Integer, Double()),
+                                                    skinRgb As Double(), hairRgb As Double(),
+                                                    acc As Double()) As Boolean
+        Dim raw = ReadNifMaskLayersRaw(nif, shape)
+        If raw.Count = 0 Then Return False
+        Dim layers = ResolveLayersForCpu(raw, w, h, decode, skinRgb, hairRgb)
         If layers.Count = 0 Then Return False
         SseOverlayCompositor.ApplyOverlays(acc, layers, w, h)
         Return True

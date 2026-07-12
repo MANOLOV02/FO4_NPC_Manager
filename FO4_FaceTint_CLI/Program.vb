@@ -118,6 +118,20 @@ Module Program
         ' --- 1. Config (app config.json local) ---
         Config_App.LoadConfig()
         Config_App.Current.Game = opt.Game
+        ' ⛔ GAME-AWARE: el bake ESCRIBE en Config_App.Current.DataPath, que es ReadOnly y deriva de FO4ExePath
+        ' (= el exe del juego ACTIVO del config). Sin esto, `--game sk --data <SkyrimData>` montaba Skyrim para LEER
+        ' pero escribía los artefactos al Data del juego del config (p.ej. Fallout 4\Data). Con --data, se apunta el
+        ' exe al del juego elegido ⇒ DataPath == --data ⇒ lee y escribe en el MISMO Data del juego pedido.
+        If opt.DataPath <> "" Then
+            Dim gameDir = IO.Path.GetDirectoryName(opt.DataPath.TrimEnd(IO.Path.DirectorySeparatorChar, IO.Path.AltDirectorySeparatorChar))
+            Dim exeName = If(opt.Game = Config_App.Game_Enum.Skyrim, "SkyrimSE.exe", "Fallout4.exe")
+            Dim exePath = If(String.IsNullOrEmpty(gameDir), "", IO.Path.Combine(gameDir, exeName))
+            If Not String.IsNullOrEmpty(exePath) AndAlso IO.File.Exists(exePath) Then
+                Config_App.Current.FO4ExePath = exePath
+            Else
+                Console.Error.WriteLine($"[warn] no encontré '{exeName}' junto a --data ('{gameDir}'): el bake ESCRIBIRÁ en '{Config_App.Current.DataPath}' (Data del config), no en --data.")
+            End If
+        End If
         Dim dataPath = If(opt.DataPath <> "", opt.DataPath, Config_App.Current.FO4EDataPath)
         If String.IsNullOrEmpty(dataPath) OrElse Not Directory.Exists(dataPath) Then
             Console.Error.WriteLine($"Data path invalido: '{dataPath}'. Usa --data <ruta a Data\> o configura config.json.")
@@ -655,7 +669,7 @@ Module Program
         If isSse Then
             Try
                 Dim race = RecordParsers.ParseRACE(pm.GetRecord(npcData.RaceFormID), pm)
-                Dim myDds = SseFaceGenBaker.BakeFaceTintDds(pm, npcRec, race, npcData.RaceFormID, npcData.IsFemale, 512, 512, Nothing)
+                Dim myDds = SseFaceGenBaker.BakeFaceTintDds(pm, npcRec, race, npcData.RaceFormID, npcData.IsFemale, 512, 512)
                 Dim ckDdsKey = ($"textures\actors\character\facegendata\facetint\{origin}\{fgL:X8}.dds").ToLowerInvariant()
                 Dim ckDds = FilesDictionary_class.GetBytes(ckDdsKey)
                 If myDds Is Nothing Then

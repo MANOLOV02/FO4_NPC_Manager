@@ -1645,13 +1645,19 @@ Friend NotInheritable Class NpcMeshCollector
         ' slot 60 es un slot modular genérico (xEdit '60 - Unnamed'), no un Pipboy → no forzar ArmorOver.
         If (Config_App.Current Is Nothing OrElse Config_App.Current.Game <> Config_App.Game_Enum.Skyrim) _
            AndAlso (slot And BipedSlots.SlotBitPipboy) <> 0UI AndAlso candidate.Kind = MainForm.MeshCandidateKind.Outfit Then Return MainForm.ShapeRenderCategory.ArmorOver
-        ' Shield (SSE slot 39 = bit 9 = 0x200) — accesorio rígido del antebrazo izq (Prn='SHIELD'),
-        ' anclado por ApplyPrnRigidAttach. Debe respetar el toggle "Render armor" IGUAL que el Pipboy:
-        ' lo agrupamos ArmorOver (no declara bits [A], por eso explícito). SSE-only: en FO4 slot 39 es
-        ' '[U] R Leg', otra cosa → no forzar (gate Skyrim). Usuario 2026-07-09: "cablea el shield al
-        ' toggle show armor como el pipboy".
+        ' SSE — ACCESORIOS Y MOD-SLOTS → categoría ArmorOver, que en Skyrim el toggle rotula
+        ' "Render accessories" (RenderToggleLabels). Skyrim NO tiene capa [U]/[A]: el eje real es
+        ' "lo que viste" (cuerpo/manos → Underarmor/GloveOutfit, arriba) vs "lo que cuelga": anillo (36),
+        ' escudo (39, rígido al antebrazo vía Prn='SHIELD'/ApplyPrnRigidAttach), cola (40) y los slots
+        ' modulares sin nombre en xEdit (44-49 / 52-61: capas, mochilas, SOS…). Ninguno ocluye piel.
+        ' Generaliza la regla que antes era sólo del escudo (usuario 2026-07-09: "cablea el shield al
+        ' toggle show armor como el pipboy") — mismo destino, ahora para todo el grupo.
+        ' El amuleto (35) NO cae acá: está en la región Headwear (BipedSlots) y lo agarra la regla de
+        ' headwear de más arriba, igual que las prendas de cuello de FO4.
+        ' Condición: Outfit que no toca NINGÚN bit de cuerpo/manos/headwear pero sí declara algún slot.
         If Config_App.Current IsNot Nothing AndAlso Config_App.Current.Game = Config_App.Game_Enum.Skyrim _
-           AndAlso (slot And &H200UI) <> 0UI AndAlso candidate.Kind = MainForm.MeshCandidateKind.Outfit Then Return MainForm.ShapeRenderCategory.ArmorOver
+           AndAlso candidate.Kind = MainForm.MeshCandidateKind.Outfit _
+           AndAlso Not touchesBodyParts AndAlso Not touchesHeadwear AndAlso slot <> 0UI Then Return MainForm.ShapeRenderCategory.ArmorOver
         ' Resto (accessories 16+ raros, shapes sin slot, etc.).
         Return MainForm.ShapeRenderCategory.Other
     End Function

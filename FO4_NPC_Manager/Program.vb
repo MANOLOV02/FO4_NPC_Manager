@@ -87,9 +87,12 @@ Module Program
     Private Sub RunSlotDiag()
         Config_App.LoadConfig()
         NPC_Config.LoadConfig()
+        ' Skyrim: los slots 39/40 y los "unnamed" 44+ son el grupo ACCESORIOS (→ ArmorOver, rotulado
+        ' "Render accessories"); en FO4 esos mismos bits son [U] R Leg / [A] Torso / [A] L Leg → otra cosa.
         Dim cases = New (Name As String, SlotN As Integer)() {
             ("head", 30), ("hair", 31), ("body", 32), ("hands", 33), ("forearms", 34),
-            ("amulet", 35), ("ring", 36), ("feet", 37), ("calves", 38), ("longhair", 41), ("circlet", 42), ("ears", 43)
+            ("amulet", 35), ("ring", 36), ("feet", 37), ("calves", 38), ("shield", 39), ("tail", 40),
+            ("longhair", 41), ("circlet", 42), ("ears", 43), ("mod44", 44), ("mod60", 60)
         }
         For Each game In {Config_App.Game_Enum.Fallout4, Config_App.Game_Enum.Skyrim}
             Config_App.Current.Game = game

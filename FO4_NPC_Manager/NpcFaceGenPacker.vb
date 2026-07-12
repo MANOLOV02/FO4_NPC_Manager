@@ -52,12 +52,13 @@ Public Module NpcFaceGenPacker
         ''' names. The _2 sources are deleted after a successful pack just like canonical ones
         ''' (2026-05-26 change — BA2 is the post-pack source of truth).</summary>
         Public Property DebugSandbox As Boolean
-        ''' <summary>SSE only: True when this NPC's facetint was folded into its head diffuse and its NIF slot 6
-        ''' points at the plugin's SHARED neutral gray (Textures\...\FaceTint\&lt;plugin&gt;\facetintneutral.dds)
-        ''' instead of a per-NPC &lt;id&gt;.dds. The facetint spec then resolves to that shared file, so N folded
-        ''' NPCs of the plugin all reference ONE entry — <see cref="Ba2_Bsa_Library.ArchivePackager"/> dedups it to
-        ''' a single BA2 record. Set from <see cref="FaceGenBuilder.BuildResult.UsedSharedNeutralFacetint"/>.</summary>
-        Public Property UsesSharedNeutralFacetint As Boolean
+        ''' <summary>SSE only: True when this NPC's facetint was folded into its head diffuse, so its head shape's
+        ''' slot 3 points at the plugin's SHARED neutral-detail gray (Textures\...\FaceTint\&lt;plugin&gt;\facedetailneutral.dds,
+        ''' softlight identity). That shared file is added to the bundle spec, so N folded NPCs of the plugin all
+        ''' reference ONE detail entry — <see cref="Ba2_Bsa_Library.ArchivePackager"/> dedups it to a single BA2 record.
+        ''' The facetint itself stays a per-NPC canonical &lt;id&gt;.dds (the engine builds that path and ignores the
+        ''' NIF slot 6). Set from <see cref="FaceGenBuilder.BuildResult.UsedSharedNeutralDetail"/>.</summary>
+        Public Property UsesSharedNeutralDetail As Boolean
     End Class
 
     ''' <summary>One file of an NPC's FaceGen bake, as Data-relative paths. <c>Source</c> carries the
@@ -97,19 +98,20 @@ Public Module NpcFaceGenPacker
 
         If game = Config_App.Game_Enum.Skyrim Then
             Dim tintDir = "Textures\Actors\Character\FaceGenData\FaceTint\" & originPlugin & "\"
+            ' Facetint: SIEMPRE per-NPC <id>.dds canónico. El engine ARMA `FaceTint\<plugin>\<id>.dds` él mismo
+            ' (BuildFaceTintPath, RE SkyrimSE.exe) e IGNORA el slot 6 del NIF ⇒ NO se puede compartir ni omitir; si
+            ' falta, el tint del material queda NULL → cara brown. Para NPCs plegados es un gris neutral (fgTint≈1).
+            specs.Add(New FaceGenFileSpec With {
+                .Source = tintDir & hex & If(debugSandbox, "_2.dds", ".dds"),
+                .Entry = tintDir & hex & ".dds",
+                .IsTexture = True})
+            ' Folded NPC: además del <id>.dds neutral, el slot 3 (detail) del NIF apunta al detail neutral COMPARTIDO
+            ' del plugin (softlight identidad). El engine SÍ respeta el slot 3 del NIF ⇒ se puede compartir. Todos los
+            ' folded emiten el MISMO Entry → ArchivePackager dedup a un record. Source lleva el sufijo _2 en DebugMode.
             If usesSharedNeutral Then
-                ' Folded NPC: slot 6 points at the plugin's SHARED neutral gray, NOT a per-NPC <id>.dds. Every
-                ' folded NPC of this plugin emits the SAME Entry → ArchivePackager dedups to one BA2 record.
-                ' Source carries the _2 debug suffix like any other bake output (FaceGenBuilder writes
-                ' facetintneutral_2.dds in DebugMode, facetintneutral.dds in release).
                 specs.Add(New FaceGenFileSpec With {
-                    .Source = tintDir & "facetintneutral" & If(debugSandbox, "_2.dds", ".dds"),
-                    .Entry = tintDir & "facetintneutral.dds",
-                    .IsTexture = True})
-            Else
-                specs.Add(New FaceGenFileSpec With {
-                    .Source = tintDir & hex & If(debugSandbox, "_2.dds", ".dds"),
-                    .Entry = tintDir & hex & ".dds",
+                    .Source = tintDir & "facedetailneutral" & If(debugSandbox, "_2.dds", ".dds"),
+                    .Entry = tintDir & "facedetailneutral.dds",
                     .IsTexture = True})
             End If
             ' OPTIONAL per-NPC head diffuse — emitted only when the NPC has RaceMenu face overlays/skee masks baked
@@ -299,7 +301,7 @@ Public Module NpcFaceGenPacker
 
         For bi = 0 To bundles.Count - 1
             Dim b = bundles(bi)
-            Dim bundleSpec = FaceGenFileSpecs(game, b.OriginPlugin, b.FormIdLow, b.DebugSandbox, b.UsesSharedNeutralFacetint)
+            Dim bundleSpec = FaceGenFileSpecs(game, b.OriginPlugin, b.FormIdLow, b.DebugSandbox, b.UsesSharedNeutralDetail)
 
             For Each spec In bundleSpec
                 Dim sourcePath = Path.Combine(dataDir, spec.Source)

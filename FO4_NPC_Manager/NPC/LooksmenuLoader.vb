@@ -121,7 +121,6 @@ Public Module LooksmenuLoader
         ' Render/bake route by Host so brows/eyes/mouth get their sculpt too (SseSculptHead is head-only).
         Public SseSculptParts As List(Of NPC_SculptPart) = Nothing
         Public SseCustomMorphs As List(Of NPC_CustomMorph) = Nothing
-        Public SseOverlays As List(Of SseOverlayCompositor.SseOverlay) = Nothing
         ' SSE (Skyrim) vanilla body weight (NPC.NAM7). Nothing = preserve raw NPC.NAM7; a value overrides
         ' it (0..100). The overlay writes BitConverter.GetBytes(SseWeight) into shadow.Nam7Raw so the SSE
         ' body-weight (_0/_1) LERP resolver reads the edited weight live and Save ESP persists it. Editor-only

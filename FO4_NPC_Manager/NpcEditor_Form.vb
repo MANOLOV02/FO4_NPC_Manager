@@ -44,6 +44,24 @@ Public Class NpcEditor_Form
     Private ReadOnly _flagChecks As New List(Of (Chk As CheckBox, Mask As UInteger))
     Private _managedFlagMask As UInteger
 
+    ''' <summary>True when editing a Skyrim NPC — gates the Stats tab (DNAM Player Skills) and the SSE-only
+    ''' ACBS offsets, both of which have no slot in the Fallout 4 record.</summary>
+    Private ReadOnly _isSkyrim As Boolean = (Config_App.Current IsNot Nothing AndAlso
+                                             Config_App.Current.Game = Config_App.Game_Enum.Skyrim)
+
+    ' The 18 Designer spinner pairs, indexed by DNAM skill index (= NPC_SsePlayerSkills.SkillNames order).
+    ' Arrays of already-built controls, not UI construction — the tab itself lives in the Designer.
+    Private _skillVals As NumericUpDown()
+    Private _skillOffs As NumericUpDown()
+
+    ' Open-time snapshot of DNAM (SSE). The struct is cloned so an edit never mutates the live parse before OK;
+    ' the far-away-model float is also kept as the DECIMAL the spinner was seeded with, so an untouched value
+    ' re-emits its exact original float instead of a NumericUpDown round-trip of it.
+    Private _snapSkills As NPC_SsePlayerSkills
+    Private _snapFarModelDec As Decimal
+    Private _snapMagickaOff As Short, _snapStaminaOff As Short, _snapHealthOff As Short
+    Private _snapSpeedMult As UShort
+
     ''' <summary>True while NumLevel is in "Level Mult" mode (PC Level Mult flag 0x80 set) — the u16 is a mult
     ''' shown as raw/1000 with 3 decimals. False = fixed integer Level. See NPC_AcbsData.LevelOrLevelMult (+6).</summary>
     Private _levelIsMult As Boolean
@@ -91,6 +109,7 @@ Public Class NpcEditor_Form
         _npcFormID = npcFormID
         _getParsedNpc = getParsedNpc
 
+        BuildSkillControlMap()
         BuildFlagChecks()
         BuildCombosGridColumns()
         BuildFactionsGridColumns()
@@ -164,21 +183,55 @@ Public Class NpcEditor_Form
         SnapshotOpenState()
     End Sub
 
-    ''' <summary>Hide the NPC_ subrecords that exist only in Fallout 4 when editing a Skyrim NPC, so the user
-    ''' can't author subrecords the Skyrim engine/record has no slot for (which the FO4-shaped writer would emit
-    ''' into a Skyrim NPC): OBTS/OBTE object-template combinations, PRPS properties, and APPR attach-parent slots.
-    ''' Skyrim NPCs never carry these, so removing the tabs/section is loss-free (untouched categories round-trip
-    ''' verbatim regardless). FO4 keeps everything.</summary>
+    ''' <summary>Show only the subrecords the CURRENT game's record actually has a slot for, so the user can
+    ''' never author a field the writer for that game will not emit (a control that writes nowhere is worse than
+    ''' no control). Gating runs BOTH ways because ACBS/DNAM have a different layout per game:
+    '''
+    ''' Hidden on SKYRIM (Fallout 4 only): the OBTS/OBTE and PRPS tabs, the APPR attach-parent-slot section, the
+    ''' ACBS 0x800000 flag (see BuildFlagChecks), and XP Value Offset (ACBS +4 in the 20-byte FO4 struct — in the
+    ''' 24-byte Skyrim struct those bytes are the Magicka Offset instead).
+    '''
+    ''' Hidden on FALLOUT 4 (Skyrim only): the Stats tab (DNAM = 52-byte Player Skills in Skyrim; in FO4 DNAM is
+    ''' an unrelated 8-byte Calculated-Stats block the engine recomputes, so there is nothing to edit) and the
+    ''' four ACBS offsets the 24-byte Skyrim struct adds (Magicka/Stamina/Health Offset + Speed Multiplier).
+    '''
+    ''' Removing a tab / hiding a row is loss-free: a category the editor never touches round-trips verbatim from
+    ''' the source record, and the hidden rows sit in AutoSize TableLayoutPanel rows that collapse to zero height.</summary>
     Private Sub ApplyGameGating()
-        If Config_App.Current.Game <> Config_App.Game_Enum.Skyrim Then Return
-        If Tabs.TabPages.Contains(TabObts) Then Tabs.TabPages.Remove(TabObts)
-        If Tabs.TabPages.Contains(TabProps) Then Tabs.TabPages.Remove(TabProps)
-        For Each c As Control In New Control() {LabelAppr, ListAppr, ButtonAddAppr, ButtonRemoveAppr}
-            If c IsNot Nothing Then c.Visible = False
+        If _isSkyrim Then
+            If Tabs.TabPages.Contains(TabObts) Then Tabs.TabPages.Remove(TabObts)
+            If Tabs.TabPages.Contains(TabProps) Then Tabs.TabPages.Remove(TabProps)
+            For Each c As Control In New Control() {LabelAppr, ListAppr, ButtonAddAppr, ButtonRemoveAppr,
+                                                    LabelXp, NumXp}
+                If c IsNot Nothing Then c.Visible = False
+            Next
+            If ChkNoActHellos IsNot Nothing Then ChkNoActHellos.Visible = False
+        Else
+            If Tabs.TabPages.Contains(TabStats) Then Tabs.TabPages.Remove(TabStats)
+            For Each c As Control In New Control() {LabelMagickaOff, NumMagickaOff, LabelStaminaOff, NumStaminaOff,
+                                                    LabelHealthOff, NumHealthOff, LabelSpeedMult, NumSpeedMult}
+                If c IsNot Nothing Then c.Visible = False
+            Next
+        End If
+    End Sub
+
+    ''' <summary>Index the 18 Designer spinner pairs by DNAM skill index and label them from the record schema
+    ''' (<see cref="NPC_SsePlayerSkills.SkillNames"/>), which IS the byte order — index i is the value at +i and
+    ''' the offset at +18+i. Sourcing the labels from the schema (rather than trusting the Designer text) means a
+    ''' row can never drift out of sync with the byte it writes.</summary>
+    Private Sub BuildSkillControlMap()
+        _skillVals = {NumSkillVal0, NumSkillVal1, NumSkillVal2, NumSkillVal3, NumSkillVal4, NumSkillVal5,
+                      NumSkillVal6, NumSkillVal7, NumSkillVal8, NumSkillVal9, NumSkillVal10, NumSkillVal11,
+                      NumSkillVal12, NumSkillVal13, NumSkillVal14, NumSkillVal15, NumSkillVal16, NumSkillVal17}
+        _skillOffs = {NumSkillOff0, NumSkillOff1, NumSkillOff2, NumSkillOff3, NumSkillOff4, NumSkillOff5,
+                      NumSkillOff6, NumSkillOff7, NumSkillOff8, NumSkillOff9, NumSkillOff10, NumSkillOff11,
+                      NumSkillOff12, NumSkillOff13, NumSkillOff14, NumSkillOff15, NumSkillOff16, NumSkillOff17}
+        Dim labels = {LabelSkill0, LabelSkill1, LabelSkill2, LabelSkill3, LabelSkill4, LabelSkill5,
+                      LabelSkill6, LabelSkill7, LabelSkill8, LabelSkill9, LabelSkill10, LabelSkill11,
+                      LabelSkill12, LabelSkill13, LabelSkill14, LabelSkill15, LabelSkill16, LabelSkill17}
+        For i = 0 To NPC_SsePlayerSkills.SkillCount - 1
+            labels(i).Text = NPC_SsePlayerSkills.SkillNames(i) & ":"
         Next
-        ' 0x800000 = "No Activation / Hellos" in FO4 but an unused/unknown bit in Skyrim (see BuildFlagChecks):
-        ' hide the checkbox; its bit is already excluded from _managedFlagMask on Skyrim so it round-trips verbatim.
-        If ChkNoActHellos IsNot Nothing Then ChkNoActHellos.Visible = False
     End Sub
 
     ' =====================================================================
@@ -192,7 +245,7 @@ Public Class NpcEditor_Form
         ' OUT of _managedFlagMask and is preserved verbatim by ComposeFlags (the checkbox is hidden in
         ' ApplyGameGating). Note: ACBS bit 0x04 (Is CharGen Face Preset) is intentionally NOT surfaced here (both
         ' games) — owned by the Face editor, preserved verbatim.
-        Dim isSkyrim = (Config_App.Current.Game = Config_App.Game_Enum.Skyrim)
+        Dim isSkyrim = _isSkyrim
         _flagChecks.Add((ChkFemale, &H1UI))
         _flagChecks.Add((ChkEssential, &H2UI))
         _flagChecks.Add((ChkRespawn, &H8UI))
@@ -285,6 +338,14 @@ Public Class NpcEditor_Form
             NumCalcMin.Value = ClampDec(CDec(If(acbs IsNot Nothing, acbs.CalcMinLevel, 0US)), NumCalcMin)
             NumCalcMax.Value = ClampDec(CDec(If(acbs IsNot Nothing, acbs.CalcMaxLevel, 0US)), NumCalcMax)
             NumDisp.Value = ClampDec(CDec(If(acbs IsNot Nothing, acbs.DispositionBase, 0S)), NumDisp)
+            ' SSE-only ACBS offsets (hidden on FO4, whose 20-byte struct has no slot for them).
+            NumMagickaOff.Value = ClampDec(CDec(If(acbs IsNot Nothing, acbs.MagickaOffset, 0S)), NumMagickaOff)
+            NumStaminaOff.Value = ClampDec(CDec(If(acbs IsNot Nothing, acbs.StaminaOffset, 0S)), NumStaminaOff)
+            NumHealthOff.Value = ClampDec(CDec(If(acbs IsNot Nothing, acbs.HealthOffset, 0S)), NumHealthOff)
+            NumSpeedMult.Value = ClampDec(CDec(If(acbs IsNot Nothing, acbs.SpeedMultiplier, 0US)), NumSpeedMult)
+
+            ' Stats — DNAM Player Skills (SSE). The tab is removed on FO4, so this is a no-op there.
+            LoadPlayerSkills()
 
             ' Object Template — deep-copy the wrapper list into the working buffer (never alias the parse).
             _combos.Clear()
@@ -396,6 +457,74 @@ Public Class NpcEditor_Form
         End If
     End Function
 
+    ' =====================================================================
+    ' Stats tab — DNAM Player Skills (SSE)
+    ' =====================================================================
+
+    ''' <summary>Seed the Stats spinners from the NPC's DNAM. The struct is CLONED into <see cref="_snapSkills"/>
+    ''' as the open-time baseline: the edit is built by patching that clone, so every field the user did not
+    ''' touch — including the two verbatim wbUnused runs and any trailing bytes — is carried through unchanged
+    ''' and the record re-emits byte-identical. A Skyrim NPC whose DNAM was too short to model (no struct) gets a
+    ''' zeroed baseline; nothing is written back unless the user actually edits a value.</summary>
+    Private Sub LoadPlayerSkills()
+        If Not _isSkyrim Then Return
+        Dim ps = If(_npc.SsePlayerSkills, New NPC_SsePlayerSkills())
+        _snapSkills = MainForm.ClonePlayerSkills(ps)
+
+        For i = 0 To NPC_SsePlayerSkills.SkillCount - 1
+            _skillVals(i).Value = ClampDec(CDec(ps.SkillValues(i)), _skillVals(i))
+            _skillOffs(i).Value = ClampDec(CDec(ps.SkillOffsets(i)), _skillOffs(i))
+        Next
+        NumHealth.Value = ClampDec(CDec(ps.Health), NumHealth)
+        NumMagicka.Value = ClampDec(CDec(ps.Magicka), NumMagicka)
+        NumStamina.Value = ClampDec(CDec(ps.Stamina), NumStamina)
+        NumGeared.Value = ClampDec(CDec(ps.GearedUpWeapons), NumGeared)
+        NumFarModel.Value = ClampDec(CDec(ps.FarAwayModelDistance), NumFarModel)
+        _snapFarModelDec = NumFarModel.Value
+    End Sub
+
+    ''' <summary>Read the Stats panel back into a NEW struct, patched onto the open-time clone so untouched
+    ''' fields (and the unused/trailing bytes) survive verbatim. The far-away-model float is only overwritten
+    ''' when its spinner actually moved — a NumericUpDown cannot represent every float, so re-reading an
+    ''' untouched one would perturb the bytes.</summary>
+    Private Function ComposePlayerSkills() As NPC_SsePlayerSkills
+        Dim ps = MainForm.ClonePlayerSkills(_snapSkills)
+        For i = 0 To NPC_SsePlayerSkills.SkillCount - 1
+            ps.SkillValues(i) = CByte(_skillVals(i).Value)
+            ps.SkillOffsets(i) = CByte(_skillOffs(i).Value)
+        Next
+        ps.Health = CUShort(NumHealth.Value)
+        ps.Magicka = CUShort(NumMagicka.Value)
+        ps.Stamina = CUShort(NumStamina.Value)
+        ps.GearedUpWeapons = CByte(NumGeared.Value)
+        If NumFarModel.Value <> _snapFarModelDec Then ps.FarAwayModelDistance = CSng(NumFarModel.Value)
+        Return ps
+    End Function
+
+    ''' <summary>True when any Stats-tab value differs from the open-time snapshot.</summary>
+    Private Function PlayerSkillsChanged() As Boolean
+        If Not _isSkyrim OrElse _snapSkills Is Nothing Then Return False
+        For i = 0 To NPC_SsePlayerSkills.SkillCount - 1
+            If CByte(_skillVals(i).Value) <> _snapSkills.SkillValues(i) Then Return True
+            If CByte(_skillOffs(i).Value) <> _snapSkills.SkillOffsets(i) Then Return True
+        Next
+        Return CUShort(NumHealth.Value) <> _snapSkills.Health OrElse
+               CUShort(NumMagicka.Value) <> _snapSkills.Magicka OrElse
+               CUShort(NumStamina.Value) <> _snapSkills.Stamina OrElse
+               CByte(NumGeared.Value) <> _snapSkills.GearedUpWeapons OrElse
+               NumFarModel.Value <> _snapFarModelDec
+    End Function
+
+    ''' <summary>True when any SSE-only ACBS offset differs from the open-time snapshot (always False on FO4,
+    ''' where those spinners are hidden and never seeded with anything but the struct's zeroed fields).</summary>
+    Private Function SseAcbsOffsetsChanged() As Boolean
+        If Not _isSkyrim Then Return False
+        Return CShort(NumMagickaOff.Value) <> _snapMagickaOff OrElse
+               CShort(NumStaminaOff.Value) <> _snapStaminaOff OrElse
+               CShort(NumHealthOff.Value) <> _snapHealthOff OrElse
+               CUShort(NumSpeedMult.Value) <> _snapSpeedMult
+    End Function
+
     ''' <summary>Compose the ACBS flags word from the checkboxes, preserving any bit that is NOT surfaced as a
     ''' checkbox (start from the open-time word, clear the managed bits, then OR in the checked ones).</summary>
     Private Function ComposeFlags() As UInteger
@@ -419,6 +548,11 @@ Public Class NpcEditor_Form
         _snapCalcMin = CUShort(NumCalcMin.Value)
         _snapCalcMax = CUShort(NumCalcMax.Value)
         _snapDisp = CShort(NumDisp.Value)
+        _snapMagickaOff = CShort(NumMagickaOff.Value)
+        _snapStaminaOff = CShort(NumStaminaOff.Value)
+        _snapHealthOff = CShort(NumHealthOff.Value)
+        _snapSpeedMult = CUShort(NumSpeedMult.Value)
+        ' _snapSkills / _snapFarModelDec are taken in LoadPlayerSkills (it clones the struct before seeding).
         _snapKeywords = New List(Of UInteger)(_keywords)
         _snapAppr = New List(Of UInteger)(_appr)
         _snapFactions = _factions.Select(Function(f) New NPC_FactionEntry With {.FactionFormID = f.FactionFormID, .Rank = f.Rank}).ToList()
@@ -883,7 +1017,12 @@ Public Class NpcEditor_Form
                               CUShort(NumCalcMax.Value) <> _snapCalcMax OrElse CShort(NumDisp.Value) <> _snapDisp
         Dim combosChanged = Not String.Equals(CombosSignature(_combos), _snapCombosSig, StringComparison.Ordinal)
         Dim traitsChanged = (GetFid(TextBoxRace) <> _snapRace) OrElse (GetFid(TextBoxVoice) <> _snapVoice) OrElse combosChanged
-        Dim statsChanged = (GetFid(TextBoxClass) <> _snapClass) OrElse (GetFid(TextBoxZnam) <> _snapZnam)
+        ' Skills (DNAM) and the SSE-only ACBS offsets are the "Use Stats" category the engine copies from the
+        ' template (CK groups Class/Combat Style/skills/health-magicka-stamina under it), so they ride the same
+        ' statsChanged hook that already materializes → clears the Use-Stats bit. Both are False on FO4.
+        Dim skillsChanged = PlayerSkillsChanged()
+        Dim statsChanged = (GetFid(TextBoxClass) <> _snapClass) OrElse (GetFid(TextBoxZnam) <> _snapZnam) OrElse
+                           skillsChanged OrElse SseAcbsOffsetsChanged()
         Dim keywordsChanged = Not SequenceEqualU(_keywords, _snapKeywords)
         Dim apprChanged = Not SequenceEqualU(_appr, _snapAppr)
         Dim factionsChanged = Not FactionsEqual(_factions, _snapFactions)
@@ -960,6 +1099,12 @@ Public Class NpcEditor_Form
         If CUShort(NumCalcMin.Value) <> _snapCalcMin Then ov.CalcMinLevel = CUShort(NumCalcMin.Value)
         If CUShort(NumCalcMax.Value) <> _snapCalcMax Then ov.CalcMaxLevel = CUShort(NumCalcMax.Value)
         If CShort(NumDisp.Value) <> _snapDisp Then ov.DispositionBase = CShort(NumDisp.Value)
+        ' SSE-only ACBS offsets + DNAM Player Skills (both no-ops on FO4: the controls are hidden and never move).
+        If CShort(NumMagickaOff.Value) <> _snapMagickaOff Then ov.MagickaOffset = CShort(NumMagickaOff.Value)
+        If CShort(NumStaminaOff.Value) <> _snapStaminaOff Then ov.StaminaOffset = CShort(NumStaminaOff.Value)
+        If CShort(NumHealthOff.Value) <> _snapHealthOff Then ov.HealthOffset = CShort(NumHealthOff.Value)
+        If CUShort(NumSpeedMult.Value) <> _snapSpeedMult Then ov.SpeedMultiplier = CUShort(NumSpeedMult.Value)
+        If PlayerSkillsChanged() Then ov.SsePlayerSkills = ComposePlayerSkills()
         If GetFid(TextBoxRace) <> _snapRace Then ov.RaceFormID = GetFid(TextBoxRace)
         If GetFid(TextBoxVoice) <> _snapVoice Then ov.VoiceFormID = GetFid(TextBoxVoice)
         If GetFid(TextBoxClass) <> _snapClass Then ov.ClassFormID = GetFid(TextBoxClass)
@@ -1010,6 +1155,18 @@ Public Class NpcEditor_Form
         _npc.Acbs.CalcMinLevel = CUShort(NumCalcMin.Value)
         _npc.Acbs.CalcMaxLevel = CUShort(NumCalcMax.Value)
         _npc.Acbs.DispositionBase = CShort(NumDisp.Value)
+        ' SSE-only ACBS offsets. Written only under Skyrim: on FO4 the spinners are hidden (never seeded from the
+        ' record, so they read 0) and writing them would zero fields the FO4 writer ignores but a later game
+        ' switch would not — keep the parse untouched instead.
+        If _isSkyrim Then
+            _npc.Acbs.MagickaOffset = CShort(NumMagickaOff.Value)
+            _npc.Acbs.StaminaOffset = CShort(NumStaminaOff.Value)
+            _npc.Acbs.HealthOffset = CShort(NumHealthOff.Value)
+            _npc.Acbs.SpeedMultiplier = CUShort(NumSpeedMult.Value)
+            ' DNAM Player Skills — only on a real edit, so an NPC whose DNAM was too short to model keeps its
+            ' verbatim raw block instead of being silently replaced by a well-formed zeroed one.
+            If PlayerSkillsChanged() Then _npc.SsePlayerSkills = ComposePlayerSkills()
+        End If
 
         ' Keywords.
         _npc.KeywordFormIDs = New List(Of UInteger)(_keywords)
