@@ -92,6 +92,116 @@ Friend NotInheritable Class NpcManagerFormat
         End Select
     End Function
 
+    ' ========================================================================
+    ' NPC_ record-details labels. Enum names and flag bits are transcribed from the xEdit
+    ' definitions (wbDefinitionsCommon/TES5/FO4), which is the authoritative schema for both
+    ' games. Where the two engines disagree the formatter takes the game and branches — the
+    ' NPC_ record layout is NOT shared (see NPC_AcbsData / NPC_SsePlayerSkills).
+    ' ========================================================================
+
+    ''' <summary>ACBS Flags (u32). Bits 0x01..0x80, 0x800, 0x4000, 0x10000, 0x40000..0x100000,
+    ''' 0x20000000, 0x80000000 carry the same meaning in both games; four bits do not, so the
+    ''' game decides. Unnamed set bits are reported as unk0xN rather than dropped — an unknown
+    ''' bit is information, and silently hiding it would misreport the record.</summary>
+    Public Shared Function DescribeAcbsFlags(flags As UInteger, game As Config_App.Game_Enum) As String
+        If flags = 0UI Then Return "(none)"
+        Dim isSse = (game = Config_App.Game_Enum.Skyrim)
+        Dim names As New Dictionary(Of UInteger, String) From {
+            {&H1UI, "Female"},
+            {&H2UI, "Essential"},
+            {&H4UI, "Is CharGen Face Preset"},
+            {&H8UI, "Respawn"},
+            {&H10UI, "Auto-calc stats"},
+            {&H20UI, "Unique"},
+            {&H40UI, "Doesn't affect stealth meter"},
+            {&H80UI, "PC Level Mult"},
+            {&H800UI, "Protected"},
+            {&H4000UI, "Summonable"},
+            {&H10000UI, "Doesn't bleed"},
+            {&H40000UI, "Bleedout Override"},
+            {&H80000UI, "Opposite Gender Anims"},
+            {&H100000UI, "Simple Actor"},
+            {&H20000000UI, "Is Ghost"},
+            {&H80000000UI, "Invulnerable"}
+        }
+        If isSse Then
+            names.Add(&H100UI, "Use Template?")
+            names.Add(&H200000UI, "looped script?")
+            names.Add(&H10000000UI, "looped audio?")
+        Else
+            names.Add(&H200UI, "Calc For Each Template")
+            names.Add(&H800000UI, "No Activation/Hellos")
+            names.Add(&H1000000UI, "Diffuse Alpha Test")
+        End If
+
+        Dim parts As New List(Of String)
+        For bit = 0 To 31
+            Dim mask As UInteger = 1UI << bit
+            If (flags And mask) = 0UI Then Continue For
+            Dim nm As String = Nothing
+            parts.Add(If(names.TryGetValue(mask, nm), nm, $"unk0x{mask:X}"))
+        Next
+        Return String.Join(", ", parts)
+    End Function
+
+    ''' <summary>ACBS +6 (FO4) / +8 (SSE) is a union: a fixed Level, or — when the PC Level Mult
+    ''' flag (0x80) is set — a multiplier stored ×1000. Reading it as a flat level for a
+    ''' PC-levelled actor shows "Level: 1000" instead of "1.00x".</summary>
+    Public Shared Function FormatAcbsLevel(acbs As NPC_AcbsData) As String
+        If acbs Is Nothing Then Return "(none)"
+        If (acbs.Flags And &H80UI) <> 0UI Then
+            Return $"PC Level Mult: {acbs.LevelOrLevelMult / 1000.0F:F2}x  (calc {acbs.CalcMinLevel}..{acbs.CalcMaxLevel})"
+        End If
+        Return $"Level: {acbs.LevelOrLevelMult}  (calc {acbs.CalcMinLevel}..{acbs.CalcMaxLevel})"
+    End Function
+
+    Private Shared Function EnumName(names As String(), value As Integer) As String
+        If value >= 0 AndAlso value < names.Length Then Return $"{names(value)} ({value})"
+        Return value.ToString()
+    End Function
+
+    Public Shared Function AggressionName(v As Byte) As String
+        Return EnumName({"Unaggressive", "Aggressive", "Very Aggressive", "Frenzied"}, v)
+    End Function
+
+    Public Shared Function ConfidenceName(v As Byte) As String
+        Return EnumName({"Cowardly", "Cautious", "Average", "Brave", "Foolhardy"}, v)
+    End Function
+
+    Public Shared Function MoralityName(v As Byte) As String
+        Return EnumName({"Any Crime", "Violence Against Enemies", "Property Crime Only", "No Crime"}, v)
+    End Function
+
+    Public Shared Function AssistanceName(v As Byte) As String
+        Return EnumName({"Helps Nobody", "Helps Allies", "Helps Friends and Allies"}, v)
+    End Function
+
+    Public Shared Function MoodName(v As Byte) As String
+        Return EnumName({"Neutral", "Angry", "Fear", "Happy", "Sad", "Surprised", "Puzzled", "Disgusted"}, v)
+    End Function
+
+    ''' <summary>NAM8 Sound Level. FO4 appends a 5th value ('Quiet') that Skyrim does not have.</summary>
+    Public Shared Function SoundLevelName(v As UInteger, game As Config_App.Game_Enum) As String
+        Dim names As String()
+        If game = Config_App.Game_Enum.Skyrim Then
+            names = {"Loud", "Normal", "Silent", "Very Loud"}
+        Else
+            names = {"Loud", "Normal", "Silent", "Very Loud", "Quiet"}
+        End If
+        Return EnumName(names, CInt(v))
+    End Function
+
+    ''' <summary>NPC_.NAM9 slider order — SSE only. This IS the byte layout (slider i = float at +4i),
+    ''' so the order is schema, not presentation. The "Farward" spellings are xEdit's own.</summary>
+    Public Shared ReadOnly SseFaceMorphSliderNames As String() = {
+        "Nose Long/Short", "Nose Up/Down", "Jaw Up/Down", "Jaw Narrow/Wide", "Jaw Farward/Back",
+        "Cheeks Up/Down", "Cheeks Farward/Back", "Eyes Up/Down", "Eyes In/Out", "Brows Up/Down",
+        "Brows In/Out", "Brows Farward/Back", "Lips Up/Down", "Lips In/Out", "Chin Narrow/Wide",
+        "Chin Up/Down", "Chin Underbite/Overbite", "Eyes Farward/Back", "VampireMorph"}
+
+    ''' <summary>NPC_.NAMA fields — SSE only. Index 1 is unnamed in the xEdit definition.</summary>
+    Public Shared ReadOnly SseFacePartNames As String() = {"Nose", "Unknown", "Eyes", "Mouth"}
+
     Public Shared Function FormatSlotMask(mask As UInteger) As String
         If mask = 0UI Then Return "(none)"
         Dim slots As New List(Of String)

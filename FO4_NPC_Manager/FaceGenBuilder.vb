@@ -337,7 +337,7 @@ Public Module FaceGenBuilder
         If Not RaceUtil.RaceSupportsFaceGen(gateRaceFormID, pluginManager) Then
             result.Skipped = True
             result.Success = False
-            result.Summary = "Raza sin FaceGen (perro/criatura/robot/feral-ghoul/etc.) — skipped, no NIF."
+            result.Summary = "Race has no FaceGen (dog/creature/robot/feral ghoul/etc.) — skipped, no NIF."
             Return result
         End If
 

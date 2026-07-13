@@ -1,11 +1,82 @@
 ﻿Imports System.IO
 Imports System.Linq
+Imports System.Runtime.InteropServices
 Imports System.Windows.Forms
 Imports FO4_Base_Library
 
 Module Program
+
+    ' ============================================================================================
+    ' Console attach (WinExe)
+    ' ============================================================================================
+    ' The project is <OutputType>WinExe</OutputType>, so Windows gives it NO console: every
+    ' Console.WriteLine from a headless mode goes nowhere when launched from a terminal (it only
+    ' materialises if the caller redirects stdout to a file). AttachConsole(-1) binds us to the
+    ' PARENT console (the cmd/PowerShell that launched us) so the output shows up where the user is
+    ' looking. If there's no parent console (double-clicked, or launched detached), AllocConsole
+    ' gives us our own window so a headless run is never silent.
+    Private Const ATTACH_PARENT_PROCESS As Integer = -1
+
+    <DllImport("kernel32.dll", SetLastError:=True)>
+    Private Function AttachConsole(dwProcessId As Integer) As Boolean
+    End Function
+
+    <DllImport("kernel32.dll", SetLastError:=True)>
+    Private Function AllocConsole() As Boolean
+    End Function
+
+    ''' <summary>Bind stdout/stderr to a real console for the headless modes. Reopens the streams
+    ''' AFTER attaching: the BCL caches Console.Out on first touch, and a WinExe's cached handle is a
+    ''' null device, so writing without this re-open stays invisible even once attached.</summary>
+    Private Sub EnsureConsole()
+        If Not AttachConsole(ATTACH_PARENT_PROCESS) Then AllocConsole()
+        Try
+            ' The log carries non-ASCII (…, →, —) and NPC names carry accents. A fresh Windows console
+            ' is on a legacy OEM codepage (437/850), which renders UTF-8 bytes as mojibake ("ÔÇª"). Switch
+            ' the console itself to UTF-8 (this calls SetConsoleOutputCP) and write UTF-8 without a BOM —
+            ' both halves are needed: the codepage alone still leaves the writer on the default encoding.
+            Dim utf8 As New Text.UTF8Encoding(encoderShouldEmitUTF8Identifier:=False)
+            Try
+                Console.OutputEncoding = utf8
+            Catch
+                ' Some hosts refuse the codepage switch (redirected pipes, odd terminals) — keep going;
+                ' the writer below still emits valid UTF-8 bytes for anything that reads the stream.
+            End Try
+            Dim stdout = Console.OpenStandardOutput()
+            If stdout IsNot Stream.Null Then
+                Dim w As New StreamWriter(stdout, utf8) With {.AutoFlush = True}
+                Console.SetOut(w)
+            End If
+            Dim stderr = Console.OpenStandardError()
+            If stderr IsNot Stream.Null Then
+                Dim w As New StreamWriter(stderr, utf8) With {.AutoFlush = True}
+                Console.SetError(w)
+            End If
+        Catch
+            ' No console could be bound (rare: service/session-0 context). Headless still runs; the
+            ' caller just sees no output. Never fail the bake over the log sink.
+        End Try
+    End Sub
+
     <STAThread>
     Sub Main(args As String())
+        ' --- HEADLESS bake-ALL mode ----------------------------------------------------------------
+        ' NPC_Manager_FO4.exe --bake-all [--game fo4|sse] [--windowed]
+        ' Bakes loose FaceGen (NIF + face textures) for EVERY NPC_ in the active load order — the exact
+        ' equivalent of selecting every NPC in the tree and pressing "Build CharGen (loose)". Uses the
+        ' PERSISTED config (game, Data path, resolutions, DDS codecs, FaceTint convention/sort, fixes):
+        ' if that config can't be resolved, it fails loudly instead of guessing. See BakeAllRunner.
+        If HasFlag(args, "--bake-all") Then
+            HeadlessBakeAll(args)
+            Return
+        End If
+
+        If HasFlag(args, "--help") OrElse HasFlag(args, "-h") OrElse HasFlag(args, "/?") Then
+            EnsureConsole()
+            PrintUsage()
+            Return
+        End If
+
         ' --- HEADLESS FaceGeom geometry-bake mode -------------------------------------------------
         ' NPC_Manager_FO4.exe --bake-geom <espName> <edidOrFormId> [--data <DataDir>] [--out <nifPath>]
         ' Detected BEFORE any WinForms / Preflight code: when present we run the bake on the CPU and
@@ -80,11 +151,106 @@ Module Program
         End Using
     End Sub
 
+    ' ============================================================================================
+    ' HEADLESS bake-all (--bake-all)
+    ' ============================================================================================
+
+    ''' <summary>Entry for <c>--bake-all</c>. Shows the progress window by DEFAULT; <c>--windowless</c>
+    ''' runs it on the console instead. Everything that shapes the output comes from the persisted config;
+    ''' the sole override is <c>--executable</c>, which moves exe + Data + game together (they are one
+    ''' setting — see BakeAllRunner.Options). Sets <see cref="Environment.ExitCode"/> from
+    ''' <see cref="BakeAllRunner"/>: 0 = all baked (skips are not failures), 1 = config/load could not
+    ''' be resolved (nothing baked), 2 = finished with per-NPC failures, 3 = cancelled.</summary>
+    Private Sub HeadlessBakeAll(args As String())
+        Dim opt As New BakeAllRunner.Options()
+        opt.Windowless = HasFlag(args, "--windowless")
+        opt.ExecutablePath = GetFlagValue(args, "--executable")
+
+        If Not opt.Windowless Then
+            Application.SetHighDpiMode(HighDpiMode.DpiUnaware)
+            Application.EnableVisualStyles()
+            Application.SetCompatibleTextRenderingDefault(False)
+            Using f As New BakeAllProgress_Form(opt)
+                Application.Run(f)
+                Environment.ExitCode = f.ExitCode
+            End Using
+            Return
+        End If
+
+        EnsureConsole()
+        Console.WriteLine("NPC Manager — headless bake of every NPC in the load order (loose FaceGen)")
+        Console.WriteLine("=========================================================================")
+        Console.WriteLine("(Ctrl-C = stop after the current NPC. Press it twice to abort immediately.)")
+        Console.WriteLine("")
+
+        ' GRACEFUL Ctrl-C. The default handler kills the process on the spot, which can land in the middle
+        ' of writing a NIF/DDS and leave a truncated FaceGen on disk. Cancel the kill, raise the same flag
+        ' the windowed Cancel button raises, and let the bake loop finish the NPC it is on and print its
+        ' summary. A SECOND Ctrl-C is left unhandled — that's the escape hatch for a wedged run.
+        Dim cancelRequested As Integer = 0
+        AddHandler Console.CancelKeyPress,
+            Sub(sender As Object, e As ConsoleCancelEventArgs)
+                If Threading.Interlocked.Exchange(cancelRequested, 1) = 0 Then
+                    e.Cancel = True   ' first press: don't kill; the loop stops at the next NPC boundary
+                    Console.WriteLine("")
+                    Console.WriteLine("Cancelling — finishing the current NPC… (Ctrl-C again to abort now)")
+                End If
+            End Sub
+
+        Environment.ExitCode = BakeAllRunner.Run(
+            opt,
+            log:=Sub(line) Console.WriteLine(line),
+            progress:=Nothing,       ' console shows progress inline in the per-NPC lines
+            isCancelled:=Function() Threading.Volatile.Read(cancelRequested) <> 0)
+    End Sub
+
+    ''' <summary>True if <paramref name="name"/> appears in <paramref name="args"/> (case-insensitive).</summary>
+    Private Function HasFlag(args As String(), name As String) As Boolean
+        If args Is Nothing Then Return False
+        Return args.Any(Function(a) String.Equals(a, name, StringComparison.OrdinalIgnoreCase))
+    End Function
+
+    ''' <summary>Value token following <paramref name="name"/>, or "" when absent / last.</summary>
+    Private Function GetFlagValue(args As String(), name As String) As String
+        If args Is Nothing Then Return ""
+        For i = 0 To args.Length - 2
+            If String.Equals(args(i), name, StringComparison.OrdinalIgnoreCase) Then Return args(i + 1)
+        Next
+        Return ""
+    End Function
+
+    Private Sub PrintUsage()
+        Console.WriteLine("NPC_Manager_FO4.exe — command line modes")
+        Console.WriteLine("")
+        Console.WriteLine("  --bake-all [--windowless] [--executable <path to game .exe>]")
+        Console.WriteLine("      Bake loose FaceGen (NIF + face textures) for EVERY NPC in the active load")
+        Console.WriteLine("      order — same as selecting them all and pressing 'Build CharGen (loose)'.")
+        Console.WriteLine("      Shows a progress window with a live log by default.")
+        Console.WriteLine("      Everything comes from the saved config: game, Data path, resolutions, DDS")
+        Console.WriteLine("      formats, FaceTint convention and sort order, fixes. Fails loudly if the")
+        Console.WriteLine("      config can't be resolved.")
+        Console.WriteLine("      --windowless   no window: log to the console (Ctrl-C stops after the")
+        Console.WriteLine("                     current NPC; press twice to abort immediately)")
+        Console.WriteLine("      --executable   full path to a game exe (Fallout4.exe / SkyrimSE.exe). Runs")
+        Console.WriteLine("                     against THAT install: it sets the Data folder and the game")
+        Console.WriteLine("                     together, for this run only. config.json is not modified.")
+        Console.WriteLine("      Exit: 0 = all baked, 1 = config/load failed, 2 = some NPCs failed, 3 = cancelled")
+        Console.WriteLine("")
+        Console.WriteLine("  --bake-geom <espName> <edidOrFormId> [--data <Dir>] [--out <nif>]")
+        Console.WriteLine("      Bake ONE NPC's head geometry (no textures). Diagnostic.")
+        Console.WriteLine("")
+        Console.WriteLine("  --slot-diag")
+        Console.WriteLine("      Print how each body slot classifies in both games. Diagnostic.")
+        Console.WriteLine("")
+        Console.WriteLine("  (no flags)  Launch the GUI.")
+    End Sub
+
     ''' <summary>Headless classification diagnostic. For each game, runs the REAL
     ''' <see cref="NpcMeshCollector.ClassifyShapeCategory"/> over one-bit slot masks (and a realistic
     ''' multi-slot cuirass) so the FO4-vs-SSE slot-semantic mismatch is observable without a render.
     ''' Expected SSE (xEdit): 30=Head,31=Hair,32=Body,33=Hands,34=Forearms,37=Feet,41=LongHair,42=Circlet.</summary>
     Private Sub RunSlotDiag()
+        EnsureConsole()
         Config_App.LoadConfig()
         NPC_Config.LoadConfig()
         ' Skyrim: los slots 39/40 y los "unnamed" 44+ son el grupo ACCESORIOS (→ ArmorOver, rotulado
@@ -127,6 +293,8 @@ Module Program
         ' (canonical <id>.NIF, no GL readback, no comparator). Enabling it would force the GL path
         ' which needs a live OpenGL context we don't have headless. Do NOT enable it here.
         Try
+            EnsureConsole()
+
             ' --- 0. Parse args: positional <espName> <edidOrFormId> after --bake-geom, plus --data / --out.
             Dim espName As String = ""
             Dim edidOrId As String = ""
@@ -151,19 +319,23 @@ Module Program
             If positionals.Count >= 1 Then espName = positionals(0)
             If positionals.Count >= 2 Then edidOrId = positionals(1)
             If String.IsNullOrWhiteSpace(espName) OrElse String.IsNullOrWhiteSpace(edidOrId) Then
-                Console.Error.WriteLine("Uso: NPC_Manager_FO4.exe --bake-geom <espName> <edidOrFormId> [--data <DataDir>] [--out <nifPath>]")
+                Console.Error.WriteLine("Usage: NPC_Manager_FO4.exe --bake-geom <espName> <edidOrFormId> [--data <DataDir>] [--out <nifPath>]")
                 Environment.ExitCode = 1 : Return
             End If
 
-            ' --- 1. Config. Game = FO4. Data path from --data else config.json (FO4EDataPath). ---
+            ' --- 1. Config. Game = the PERSISTED selector (it used to be hard-forced to Fallout4 here,
+            '        which silently mis-read a Skyrim Data folder: NPC_/RACE byte layouts differ). There
+            '        is no --game override on purpose — the game and the exe/Data path are ONE setting
+            '        (Config_App.FO4ExePath), so overriding the game alone would just produce a
+            '        game/exe mismatch. Data path from --data else config.json (FO4EDataPath). ---
             Config_App.LoadConfig()
             NPC_Config.LoadConfig()
-            Config_App.Current.Game = Config_App.Game_Enum.Fallout4
+            Console.WriteLine($"[cfg] game={Config_App.Current.Game}")
             Config_App.Current.Setting_DrawHiddenSegments = False ' NPC needs per-segment occlusion (see Main path)
 
             Dim dataPath As String = If(dataOverride <> "", dataOverride, Config_App.Current.FO4EDataPath)
             If String.IsNullOrEmpty(dataPath) OrElse Not Directory.Exists(dataPath) Then
-                Console.Error.WriteLine($"Data path invalido: '{dataPath}'. Usa --data <ruta a Data\> o configura config.json.")
+                Console.Error.WriteLine($"FATAL: invalid Data path: '{dataPath}'. Pass --data <path to Data\> or fix config.json.")
                 Environment.ExitCode = 1 : Return
             End If
 
@@ -175,32 +347,35 @@ Module Program
             ' bake still lands under the configured Data\FaceGeom, and --out gives the caller the file
             ' wherever they want it.
             If dataOverride <> "" Then
-                Dim guessedExe = Path.Combine(Directory.GetParent(dataPath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)).FullName, "Fallout4.exe")
+                Dim exeName = If(Config_App.Current.Game = Config_App.Game_Enum.Skyrim, "SkyrimSE.exe", "Fallout4.exe")
+                Dim guessedExe = Path.Combine(Directory.GetParent(dataPath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)).FullName, exeName)
                 If File.Exists(guessedExe) Then
                     Config_App.Current.FO4ExePath = guessedExe
-                    Console.WriteLine($"[cfg] FO4ExePath -> {guessedExe} (para que DataPath = {dataPath})")
+                    Console.WriteLine($"[cfg] FO4ExePath -> {guessedExe} (so that DataPath = {dataPath})")
                 Else
-                    Console.WriteLine($"[warn] --data dado pero no hay Fallout4.exe junto a el ({guessedExe}); el NIF se escribira bajo Config_App.DataPath='{Config_App.Current.DataPath}'.")
+                    Console.WriteLine($"[warn] --data was given but there is no {exeName} next to it ({guessedExe}); the NIF will be written under Config_App.DataPath='{Config_App.Current.DataPath}'.")
                 End If
             End If
             Console.WriteLine($"[cfg] dataPath(load)={dataPath}")
             Console.WriteLine($"[cfg] DataPath(write)={Config_App.Current.DataPath}")
 
-            ' --- 2. Encoding (mismo orden que el exe / la FaceTint CLI: antes de cargar plugins). ---
+            ' --- 2. Encoding (mismo orden que el exe / la FaceTint CLI: antes de cargar plugins).
+            '        Incluye el escape hatch OverridePluginEncoding.ini que el path GUI aplica. ---
             PluginEncodingSettings.InitializeForGame(Config_App.Current.Game)
             PluginEncodingSettings.SetLanguage(PluginEncodingSettings.ReadLanguageFromIni())
+            PluginEncodingSettings.ApplyOverrideIni(AppDomain.CurrentDomain.BaseDirectory)
 
             ' --- 3. Plugins: load order activa + el esp pedido (y sus masters) si no esta activo.
             '        sigFilter = Nothing -> carga TODAS las firmas (el geometry bake necesita
             '        HDPT/RACE/ARMO/ARMA/OTFT/etc.). ---
-            Console.WriteLine("[load] plugins...")
+            Console.WriteLine("[load] parsing plugins…")
             Dim pm As New PluginManager()
             Dim loadList = PluginManager.ReadActiveLoadOrder()
             EnsureEspInLoadList(loadList, espName, dataPath)
             pm.LoadAllPlugins(dataPath, loadList, Nothing, Nothing)
 
             ' --- 4. Archivos (BA2 + loose). Cache dir bajo el exe. ---
-            Console.WriteLine("[load] montando archivos...")
+            Console.WriteLine("[load] mounting archives (BA2/BSA + loose)…")
             Dim cacheDir = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Caches")
             Directory.CreateDirectory(cacheDir)
             FilesDictionary_class.CacheDirectory = cacheDir
@@ -211,10 +386,10 @@ Module Program
             ' --- 5. Resolver el FormID del NPC desde <espName> + <edidOrFormId>. ---
             Dim npcFormID = ResolveEdid(pm, espName, edidOrId)
             If npcFormID = 0UI Then
-                Console.Error.WriteLine($"No se pudo resolver NPC '{edidOrId}' provisto por '{espName}'.")
+                Console.Error.WriteLine($"FATAL: could not resolve NPC '{edidOrId}' provided by '{espName}'.")
                 Environment.ExitCode = 1 : Return
             End If
-            Console.WriteLine($"[npc] resuelto {edidOrId} -> 0x{npcFormID:X8} (origin='{pm.GetOriginatingPluginName(npcFormID)}')")
+            Console.WriteLine($"[npc] resolved {edidOrId} -> 0x{npcFormID:X8} (origin='{pm.GetOriginatingPluginName(npcFormID)}')")
 
             ' --- 6. Bake. SAME BuildCharGen the GUI uses. host:=Nothing -> sin GL face-texture bake
             '        (la geometria es identica; solo se omite la composicion D/N/S de la cara, que es
@@ -236,11 +411,11 @@ Module Program
             Console.WriteLine($"[bake] {result.Summary}")
 
             If result.Skipped Then
-                Console.WriteLine("[bake] NPC sin head parts FaceGen — nada que hornear (skip).")
+                Console.WriteLine("[bake] NPC has no FaceGen head parts — nothing to bake (skip).")
                 Environment.ExitCode = 1 : Return
             End If
             If Not result.Success OrElse String.IsNullOrEmpty(result.OutputPath) OrElse Not File.Exists(result.OutputPath) Then
-                Console.Error.WriteLine("[bake] BuildCharGen no escribio el NIF.")
+                Console.Error.WriteLine("[bake] BuildCharGen did not write the NIF.")
                 Environment.ExitCode = 1 : Return
             End If
 
@@ -254,9 +429,9 @@ Module Program
                     Dim outDir = Path.GetDirectoryName(Path.GetFullPath(outPath))
                     If Not String.IsNullOrEmpty(outDir) Then Directory.CreateDirectory(outDir)
                     File.Copy(result.OutputPath, outPath, overwrite:=True)
-                    Console.WriteLine($"[ok] copia -> {outPath}")
+                    Console.WriteLine($"[ok] copy -> {outPath}")
                 Catch ex As Exception
-                    Console.Error.WriteLine($"[warn] no se pudo copiar a --out '{outPath}': {ex.GetType().Name}: {ex.Message}")
+                    Console.Error.WriteLine($"[warn] could not copy to --out '{outPath}': {ex.GetType().Name}: {ex.Message}")
                 End Try
             End If
 
@@ -273,14 +448,14 @@ Module Program
         If loadList.Any(Function(p) String.Equals(p, espName, StringComparison.OrdinalIgnoreCase)) Then Return
         Dim espFull = Path.Combine(dataPath, espName)
         If Not File.Exists(espFull) Then
-            Console.Error.WriteLine($"[warn] esp '{espName}' no existe en {dataPath}; se saltea.") : Return
+            Console.Error.WriteLine($"[warn] esp '{espName}' does not exist in {dataPath}; skipped.") : Return
         End If
         Dim probe As New PluginReader() : probe.Load(espFull)
         For Each m In probe.Masters
             If Not loadList.Any(Function(p) String.Equals(p, m, StringComparison.OrdinalIgnoreCase)) Then loadList.Add(m)
         Next
         loadList.Add(espName)
-        Console.WriteLine($"[load] +esp NO-activo '{espName}' (masters: {String.Join(", ", probe.Masters)})")
+        Console.WriteLine($"[load] +INACTIVE esp '{espName}' (masters: {String.Join(", ", probe.Masters)})")
     End Sub
 
     ''' <summary>Itera AllRecords (key = FormID global), filtra NPC_ por EditorID (case-insensitive) o
@@ -303,7 +478,7 @@ Module Program
                 hexFallback = kv.Key : hexFallbackCount += 1
             Next
             If hexFallbackCount = 1 Then
-                Console.WriteLine($"[warn] FormID '{edid}' no provisto por '{esp}' pero unico match en otro plugin; usando 0x{hexFallback:X8}.")
+                Console.WriteLine($"[warn] FormID '{edid}' is not provided by '{esp}' but matched exactly one record in another plugin; using 0x{hexFallback:X8}.")
                 Return hexFallback
             End If
             Return 0UI
@@ -317,7 +492,7 @@ Module Program
             fallback = kv.Key : fallbackCount += 1
         Next
         If fallbackCount = 1 Then
-            Console.WriteLine($"[warn] EDID '{edid}' no provisto por '{esp}' pero unico match en otro plugin; usando 0x{fallback:X8}.")
+            Console.WriteLine($"[warn] EDID '{edid}' is not provided by '{esp}' but matched exactly one record in another plugin; using 0x{fallback:X8}.")
             Return fallback
         End If
         Return 0UI

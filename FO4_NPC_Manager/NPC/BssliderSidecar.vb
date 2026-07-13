@@ -142,6 +142,109 @@ Public Module BssliderSidecar
         Return Path.ChangeExtension(espPath, Extension)
     End Function
 
+    ''' <summary>Translate each sidecar entry's "Master.esp|HEX6" key into a global FormID via
+    ''' the active load order and seed <paramref name="appliedPresets"/> with a minimal
+    ''' <see cref="LooksmenuLoader.LooksmenuPreset"/> carrying just the BodyMorphs + SkinTemplate
+    ''' (+ the SSE-only carriers).
+    '''
+    ''' <para>Entries whose master isn't in the load order resolve to FormID 0 and are skipped —
+    ''' same semantics as the LM JSON loader's UnresolvedHeadParts handling. Last-loaded-wins
+    ''' across sidecars (iteration order = dict order = insertion order from the preflight scan).
+    ''' The Has* flags on the synthesized presets stay False so vanilla fields (HeadParts, tints,
+    ''' weights, MRSV, FMRI/FMRS, MSDK/MSDV) are preserved from the raw record.</para>
+    '''
+    ''' <para>Shared by MainForm (GUI startup) and the headless bake (Program.HeadlessBakeAll) so
+    ''' both start from the identical overlay state.</para></summary>
+    Public Sub HydratePresets(sidecars As Dictionary(Of String, SidecarFile),
+                              pluginManager As PluginManager,
+                              appliedPresets As Dictionary(Of UInteger, LooksmenuLoader.LooksmenuPreset))
+        If sidecars Is Nothing OrElse sidecars.Count = 0 Then Return
+        If pluginManager Is Nothing OrElse appliedPresets Is Nothing Then Return
+        For Each pluginKv In sidecars
+            Dim sidecar = pluginKv.Value
+            If sidecar Is Nothing OrElse sidecar.Npcs Is Nothing Then Continue For
+            For Each entryKv In sidecar.Npcs
+                Dim entry = entryKv.Value
+                If entry Is Nothing OrElse Not entry.HasAnything Then Continue For
+
+                Dim globalFid = LooksmenuLoader.ResolveFormIdentifier(entryKv.Key, pluginManager)
+                If globalFid = 0UI Then Continue For  ' Master not in load order; nothing to apply.
+
+                ' If a later sidecar (or some other code path) already hydrated this FormID,
+                ' merge in the slider dict + SkinTemplate without clobbering whatever may
+                ' already be on the existing overlay (e.g. Has* flags from a prior hydration).
+                Dim existing As LooksmenuLoader.LooksmenuPreset = Nothing
+                If Not appliedPresets.TryGetValue(globalFid, existing) OrElse existing Is Nothing Then
+                    existing = New LooksmenuLoader.LooksmenuPreset()
+                    appliedPresets(globalFid) = existing
+                End If
+                If entry.BodyMorphs IsNot Nothing Then
+                    For Each bm In entry.BodyMorphs
+                        existing.BodyMorphSliders(bm.Key) = bm.Value
+                    Next
+                End If
+                If Not String.IsNullOrEmpty(entry.SkinTemplateId) Then
+                    existing.SkinTemplateId = entry.SkinTemplateId
+                End If
+                ' Overlays (LM body tattoos) — append a deep copy (cloning the float arrays) onto
+                ' whatever the overlay already carries, same merge-not-clobber style as BodyMorphs
+                ' above. HasOverlays makes the render + editor treat the list as applied.
+                If entry.Overlays IsNot Nothing AndAlso entry.Overlays.Count > 0 Then
+                    For Each ov In entry.Overlays
+                        existing.Overlays.Add(New LooksmenuLoader.OverlayEntry With {
+                            .TemplateId = ov.TemplateId,
+                            .Priority = ov.Priority,
+                            .Tint = If(ov.Tint Is Nothing, Nothing, CType(ov.Tint.Clone(), Single())),
+                            .OffsetUV = If(ov.OffsetUV Is Nothing, Nothing, CType(ov.OffsetUV.Clone(), Single())),
+                            .ScaleUV = If(ov.ScaleUV Is Nothing, Nothing, CType(ov.ScaleUV.Clone(), Single()))
+                        })
+                    Next
+                    existing.HasOverlays = True
+                End If
+                ' SSE body overlays (path-based RaceMenu tattoos) — deep-copy onto the overlay. SSE-only:
+                ' FO4 sidecars leave sseBodyOverlays = Nothing, so this no-ops on FO4.
+                If entry.SseBodyOverlays IsNot Nothing AndAlso entry.SseBodyOverlays.Count > 0 Then
+                    existing.SseBodyOverlays = LooksmenuLoader.CloneSseBodyOverlays(entry.SseBodyOverlays)
+                End If
+                ' SSE node transforms (body-scale/position/rotation) — deep-copy the full per-node TRS onto the
+                ' carrier (Raw stays Nothing → a later .jslot export rebuilds each element from the modeled fields).
+                If entry.SseNodeTransforms IsNot Nothing AndAlso entry.SseNodeTransforms.Count > 0 Then
+                    Dim nts As New List(Of RaceMenuJslot.JslotNodeTransform)(entry.SseNodeTransforms.Count)
+                    For Each nt In entry.SseNodeTransforms
+                        If nt IsNot Nothing Then nts.Add(nt.Clone())
+                    Next
+                    existing.SseNodeTransforms = nts
+                End If
+                ' SSE RaceMenu absolute hair tint (packed RGB) — rebuild onto the carrier from the sidecar.
+                If entry.SseHairColorRgb.HasValue Then existing.SseHairColorRgb = entry.SseHairColorRgb
+                ' SSE skin overrides (body-paint per slot) — deep-copy onto the overlay. SSE-only.
+                If entry.SseSkinOverrides IsNot Nothing AndAlso entry.SseSkinOverrides.Count > 0 Then
+                    existing.SseSkinOverrides = LooksmenuLoader.CloneSseSkinOverrides(entry.SseSkinOverrides)
+                End If
+                ' SSE custom face morphs — rebuild onto the overlay so they auto-resolve after reload (SSE-only).
+                If entry.SseCustomMorphs IsNot Nothing AndAlso entry.SseCustomMorphs.Count > 0 Then
+                    Dim cms As New List(Of NPC_CustomMorph)(entry.SseCustomMorphs.Count)
+                    For Each cm In entry.SseCustomMorphs : cms.Add(New NPC_CustomMorph With {.Name = cm.Name, .Value = cm.Value}) : Next
+                    existing.SseCustomMorphs = cms
+                End If
+                ' SSE per-vertex head sculpt — rebuild onto the overlay so it survives reload (SSE-only).
+                If entry.SseSculptHead IsNot Nothing AndAlso entry.SseSculptHead.Count > 0 Then
+                    Dim sc As New List(Of NPC_SculptVert)(entry.SseSculptHead.Count)
+                    For Each sv In entry.SseSculptHead : sc.Add(New NPC_SculptVert With {.Index = sv.Index, .Dx = sv.Dx, .Dy = sv.Dy, .Dz = sv.Dz}) : Next
+                    existing.SseSculptHead = sc
+                End If
+                ' SSE per-SHAPE sculpt (head+brows+eyes+mouth) — full-fidelity superset; rebuild onto the overlay too.
+                If entry.SseSculptParts IsNot Nothing AndAlso entry.SseSculptParts.Count > 0 Then
+                    existing.SseSculptParts = LooksmenuLoader.CloneSseSculptParts(entry.SseSculptParts)
+                End If
+                ' SSE per-layer custom tint mask textures — rebuild onto the overlay so they survive reload (SSE-only).
+                If entry.SseTintTexOverride IsNot Nothing AndAlso entry.SseTintTexOverride.Count > 0 Then
+                    existing.SseTintTexOverride = New Dictionary(Of Integer, String)(entry.SseTintTexOverride)
+                End If
+            Next
+        Next
+    End Sub
+
     ''' <summary>Read sidecar JSON from disk. Returns Nothing when the file is missing,
     ''' unreadable, or not valid JSON. Logs nothing — caller decides whether/how to surface.
     ''' Schema-mismatch fields are silently ignored (forward-compat).</summary>

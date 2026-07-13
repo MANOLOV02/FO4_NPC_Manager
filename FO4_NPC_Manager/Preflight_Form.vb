@@ -601,7 +601,16 @@ Public Class Preflight_Form
                     ProgressBarDetail.Value = Math.Max(0, Math.Min(detail, ProgressBarDetail.Maximum))
                 End Sub)
 
-            Await FilesDictionary_class.Fill_DictionaryAsync(LoadedDataPath, archiveProgress, archiveByteProgress:=archiveByteProg)
+            ' Task.Run is NOT redundant despite Fill_DictionaryAsync being Async: its first Await sits far
+            ' down the body (after the .ba2/.bsa scan, the recursive loose-file walk of the WHOLE Data tree —
+            ' once per supported extension — and BuildArchivePriority). An Async method runs SYNCHRONOUSLY
+            ' until its first await, so awaiting it directly from here executed that entire walk ON THE UI
+            ' THREAD: no message pump, so the "Mounting archives..." label set above never repainted and the
+            ' window stayed frozen on the last painted frame ("Parsing plugins — <esm> (7/7)", bar full) while
+            ' Windows marked it "Not responding". On a big modded Data folder that is minutes of dead UI.
+            ' Offloading the whole call keeps the pump alive; the progress handlers still marshal back here
+            ' because Progress(Of T) captured this SynchronizationContext at construction.
+            Await Task.Run(Function() FilesDictionary_class.Fill_DictionaryAsync(LoadedDataPath, archiveProgress, archiveByteProgress:=archiveByteProg))
 
             ' Archive phase done — fill both bars to their max for the final scans. Detail stays visible.
             ProgressBarOverall.Value = ProgressBarOverall.Maximum
@@ -644,8 +653,10 @@ Public Class Preflight_Form
     ''' result dict. Best-effort: a malformed sidecar is skipped silently (its NPCs render with
     ''' no overlay, same as if the user had never edited them). Keyed by plugin filename,
     ''' case-insensitive.</summary>
-    Private Shared Function ScanSidecarsForPlugins(dataPath As String,
-                                                   pluginNames As List(Of String)) As Dictionary(Of String, BssliderSidecar.SidecarFile)
+    ''' <remarks>Friend (not Private) so the headless bake (Program.HeadlessBakeAll) scans sidecars
+    ''' through the very same function the preflight uses.</remarks>
+    Friend Shared Function ScanSidecarsForPlugins(dataPath As String,
+                                                  pluginNames As List(Of String)) As Dictionary(Of String, BssliderSidecar.SidecarFile)
         Dim result As New Dictionary(Of String, BssliderSidecar.SidecarFile)(StringComparer.OrdinalIgnoreCase)
         If String.IsNullOrEmpty(dataPath) OrElse pluginNames Is Nothing Then Return result
         For Each pluginName In pluginNames

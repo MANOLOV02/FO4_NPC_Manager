@@ -1786,100 +1786,12 @@ Public Class MainForm
         ComboBoxGender.SelectedIndex = 0
     End Sub
 
-    ''' <summary>Translate each sidecar entry's "Master.esp|HEX6" key into a global FormID via
-    ''' the active load order and seed <see cref="_appliedPresets"/> with a minimal
-    ''' <see cref="LooksmenuLoader.LooksmenuPreset"/> carrying just the BodyMorphs + SkinTemplate.
-    '''
-    ''' <para>Entries whose master isn't in the load order resolve to FormID 0 and are skipped —
-    ''' same semantics as the LM JSON loader's UnresolvedHeadParts handling. Last-loaded-wins
-    ''' across sidecars (iteration order = dict order = insertion order from preflight). Edit
-    ''' Body / Load LM / Paste all mutate or replace the synthesized preset in-place after
-    ''' hydration, so this is just the starting state.</para></summary>
+    ''' <summary>Seed <see cref="_appliedPresets"/> from the preflight's <c>.bssliders</c> sidecars.
+    ''' The merge itself lives in <see cref="BssliderSidecar.HydratePresets"/> so the headless bake
+    ''' (<c>--bake-all</c>) starts from the identical overlay state; Edit Body / Load LM / Paste all
+    ''' mutate or replace the synthesized preset in-place afterwards, so this is just the start state.</summary>
     Private Sub HydrateAppliedPresetsFromSidecars(sidecars As Dictionary(Of String, BssliderSidecar.SidecarFile))
-        If sidecars Is Nothing OrElse sidecars.Count = 0 Then Return
-        For Each pluginKv In sidecars
-            Dim sidecar = pluginKv.Value
-            If sidecar Is Nothing OrElse sidecar.Npcs Is Nothing Then Continue For
-            For Each entryKv In sidecar.Npcs
-                Dim entry = entryKv.Value
-                If entry Is Nothing OrElse Not entry.HasAnything Then Continue For
-
-                Dim globalFid = LooksmenuLoader.ResolveFormIdentifier(entryKv.Key, _pluginManager)
-                If globalFid = 0UI Then Continue For  ' Master not in load order; nothing to apply.
-
-                ' If a later sidecar (or some other code path) already hydrated this FormID,
-                ' merge in the slider dict + SkinTemplate without clobbering whatever may
-                ' already be on the existing overlay (e.g. Has* flags from a prior hydration).
-                Dim existing As LooksmenuLoader.LooksmenuPreset = Nothing
-                If Not _appliedPresets.TryGetValue(globalFid, existing) OrElse existing Is Nothing Then
-                    existing = New LooksmenuLoader.LooksmenuPreset()
-                    _appliedPresets(globalFid) = existing
-                End If
-                If entry.BodyMorphs IsNot Nothing Then
-                    For Each bm In entry.BodyMorphs
-                        existing.BodyMorphSliders(bm.Key) = bm.Value
-                    Next
-                End If
-                If Not String.IsNullOrEmpty(entry.SkinTemplateId) Then
-                    existing.SkinTemplateId = entry.SkinTemplateId
-                End If
-                ' Overlays (LM body tattoos) — append a deep copy (cloning the float arrays) onto
-                ' whatever the overlay already carries, same merge-not-clobber style as BodyMorphs
-                ' above. HasOverlays makes the render + editor treat the list as applied.
-                If entry.Overlays IsNot Nothing AndAlso entry.Overlays.Count > 0 Then
-                    For Each ov In entry.Overlays
-                        existing.Overlays.Add(New LooksmenuLoader.OverlayEntry With {
-                            .TemplateId = ov.TemplateId,
-                            .Priority = ov.Priority,
-                            .Tint = If(ov.Tint Is Nothing, Nothing, CType(ov.Tint.Clone(), Single())),
-                            .OffsetUV = If(ov.OffsetUV Is Nothing, Nothing, CType(ov.OffsetUV.Clone(), Single())),
-                            .ScaleUV = If(ov.ScaleUV Is Nothing, Nothing, CType(ov.ScaleUV.Clone(), Single()))
-                        })
-                    Next
-                    existing.HasOverlays = True
-                End If
-                ' SSE body overlays (path-based RaceMenu tattoos) — deep-copy onto the overlay. SSE-only:
-                ' FO4 sidecars leave sseBodyOverlays = Nothing, so this no-ops on FO4.
-                If entry.SseBodyOverlays IsNot Nothing AndAlso entry.SseBodyOverlays.Count > 0 Then
-                    existing.SseBodyOverlays = LooksmenuLoader.CloneSseBodyOverlays(entry.SseBodyOverlays)
-                End If
-                ' SSE node transforms (body-scale/position/rotation) — deep-copy the full per-node TRS onto the
-                ' carrier (Raw stays Nothing → a later .jslot export rebuilds each element from the modeled fields).
-                If entry.SseNodeTransforms IsNot Nothing AndAlso entry.SseNodeTransforms.Count > 0 Then
-                    Dim nts As New List(Of RaceMenuJslot.JslotNodeTransform)(entry.SseNodeTransforms.Count)
-                    For Each nt In entry.SseNodeTransforms
-                        If nt IsNot Nothing Then nts.Add(nt.Clone())
-                    Next
-                    existing.SseNodeTransforms = nts
-                End If
-                ' SSE RaceMenu absolute hair tint (packed RGB) — rebuild onto the carrier from the sidecar.
-                If entry.SseHairColorRgb.HasValue Then existing.SseHairColorRgb = entry.SseHairColorRgb
-                ' SSE skin overrides (body-paint per slot) — deep-copy onto the overlay. SSE-only.
-                If entry.SseSkinOverrides IsNot Nothing AndAlso entry.SseSkinOverrides.Count > 0 Then
-                    existing.SseSkinOverrides = LooksmenuLoader.CloneSseSkinOverrides(entry.SseSkinOverrides)
-                End If
-                ' SSE custom face morphs — rebuild onto the overlay so they auto-resolve after reload (SSE-only).
-                If entry.SseCustomMorphs IsNot Nothing AndAlso entry.SseCustomMorphs.Count > 0 Then
-                    Dim cms As New List(Of NPC_CustomMorph)(entry.SseCustomMorphs.Count)
-                    For Each cm In entry.SseCustomMorphs : cms.Add(New NPC_CustomMorph With {.Name = cm.Name, .Value = cm.Value}) : Next
-                    existing.SseCustomMorphs = cms
-                End If
-                ' SSE per-vertex head sculpt — rebuild onto the overlay so it survives reload (SSE-only).
-                If entry.SseSculptHead IsNot Nothing AndAlso entry.SseSculptHead.Count > 0 Then
-                    Dim sc As New List(Of NPC_SculptVert)(entry.SseSculptHead.Count)
-                    For Each sv In entry.SseSculptHead : sc.Add(New NPC_SculptVert With {.Index = sv.Index, .Dx = sv.Dx, .Dy = sv.Dy, .Dz = sv.Dz}) : Next
-                    existing.SseSculptHead = sc
-                End If
-                ' SSE per-SHAPE sculpt (head+brows+eyes+mouth) — full-fidelity superset; rebuild onto the overlay too.
-                If entry.SseSculptParts IsNot Nothing AndAlso entry.SseSculptParts.Count > 0 Then
-                    existing.SseSculptParts = LooksmenuLoader.CloneSseSculptParts(entry.SseSculptParts)
-                End If
-                ' SSE per-layer custom tint mask textures — rebuild onto the overlay so they survive reload (SSE-only).
-                If entry.SseTintTexOverride IsNot Nothing AndAlso entry.SseTintTexOverride.Count > 0 Then
-                    existing.SseTintTexOverride = New Dictionary(Of Integer, String)(entry.SseTintTexOverride)
-                End If
-            Next
-        Next
+        BssliderSidecar.HydratePresets(sidecars, _pluginManager, _appliedPresets)
     End Sub
 
     Private Sub MainForm_Load(sender As Object, e As EventArgs) Handles MyBase.Load
@@ -3449,21 +3361,7 @@ Public Class MainForm
     ''' so unresolved templates are skipped silently (LM does the same).</summary>
     Private Sub BuildLmSkinTemplateCache()
         _lmSkinTemplates.Clear()
-        If String.IsNullOrEmpty(_dataPath) Then Return
-        Dim baseSkinDir = Path.Combine(_dataPath, "F4SE", "Plugins", "F4EE", "Skin")
-        If Not Directory.Exists(baseSkinDir) Then Return
-        ' Per-plugin templates: Skin\<pluginName>\skin.json
-        For Each plugin In _pluginManager.Plugins
-            Dim p = Path.Combine(baseSkinDir, plugin.FileName, "skin.json")
-            If File.Exists(p) Then LmSkinTemplateLoader.LoadFromFile(p, _pluginManager, _lmSkinTemplates)
-        Next
-        ' Loose templates: Skin\Loose\*.json
-        Dim looseDir = Path.Combine(baseSkinDir, "Loose")
-        If Directory.Exists(looseDir) Then
-            For Each p In Directory.EnumerateFiles(looseDir, "*.json", SearchOption.TopDirectoryOnly)
-                LmSkinTemplateLoader.LoadFromFile(p, _pluginManager, _lmSkinTemplates)
-            Next
-        End If
+        _lmSkinTemplates.AddRange(LmSkinTemplateLoader.BuildCache(_dataPath, _pluginManager))
     End Sub
 
     ''' <summary>Build the LM body-overlay ("tattoo") template cache. Mirrors
@@ -7305,6 +7203,12 @@ Public Class MainForm
 
 #Region "Record Details Panel"
 
+    ''' <summary>LVLN parses made while building ONE details tree. The panel resolves ten template
+    ''' categories independently, and a chain hop through the same leveled list would otherwise re-parse
+    ''' it once per category. Scoped to a single PopulateRecordDetails call — cleared on entry — so it
+    ''' cannot go stale against a plugin reload.</summary>
+    Private ReadOnly _detailsLvlnCache As New Dictionary(Of UInteger, LVLN_Data)
+
     ''' <summary>
     ''' Populates the record details TreeView for a selected NPC, showing all fields
     ''' with full inheritance resolution (which template provides each category).
@@ -7318,6 +7222,7 @@ Public Class MainForm
         TreeViewRecordDetails.SuspendLayout()
         TreeViewRecordDetails.BeginUpdate()
         TreeViewRecordDetails.Nodes.Clear()
+        _detailsLvlnCache.Clear()
 
         If npc Is Nothing Then
             TreeViewRecordDetails.EndUpdate()
@@ -7328,9 +7233,18 @@ Public Class MainForm
         Try
             LabelRecordTitle.Text = $"  {npc} [{npc.PluginName}] FormID:{npc.FormID:X8}"
 
+            ' The NPC_ record is NOT one schema across the two games. FO4 and Skyrim disagree on the ACBS
+            ' layout, on body size (MWGT thin/muscular/fat vs a single NAM7 weight float), on the stats
+            ' block (DNAM = 8-byte calculated stats vs 52-byte player skills), on face data (MSDK/TETI/FMRI
+            ' vs NAM9/NAMA/TINI) and on template resolution (FO4 caches the resolved actor per category in
+            ' TPTA; Skyrim has no TPTA and walks the TPLT chain). Gate on the record's OWN game pin, not the
+            ' session's, so a record always renders under the schema it was parsed with.
+            Dim isSse As Boolean = (npc.Game = Config_App.Game_Enum.Skyrim)
+
             ' --- Header ---
             Dim headerNode = AddNode(Nothing, $"NPC_ {npc.EditorID}  [{npc.FormID:X8}]  {npc.PluginName}")
             AddNode(headerNode, $"Full Name: {If(npc.FullName <> "", npc.FullName, "(none)")}")
+            If npc.HasShortName AndAlso npc.ShortName <> "" Then AddNode(headerNode, $"Short Name: {npc.ShortName}")
             AddNode(headerNode, $"Editor ID: {npc.EditorID}")
             AddNode(headerNode, $"Form ID: {npc.FormID:X8}")
             AddNode(headerNode, $"Plugin: {npc.PluginName}")
@@ -7343,9 +7257,15 @@ Public Class MainForm
                 If npc.TemplateFormID <> 0UI Then
                     AddNode(tplNode, $"Base Template (TPLT): {DescribeFormID(npc.TemplateFormID)}")
                 End If
-                For Each kvp In npc.TemplateActorFormIDs
-                    AddNode(tplNode, $"TPTA[{kvp.Key}] ({NpcManagerFormat.GetTemplateCategoryLabel(kvp.Key)}): {DescribeFormID(kvp.Value)}")
-                Next
+                If Not isSse Then
+                    ' TPTA + the legendary template pair are Fallout-only subrecords.
+                    For Each kvp In npc.TemplateActorFormIDs
+                        AddNode(tplNode, $"TPTA[{kvp.Key}] ({NpcManagerFormat.GetTemplateCategoryLabel(kvp.Key)}): {DescribeFormID(kvp.Value)}")
+                    Next
+                    If npc.HasLegendaryTemplate Then AddNode(tplNode, $"Legendary Template (LTPT): {DescribeFormID(npc.LegendaryTemplateFormID)}")
+                    If npc.HasLegendaryChance Then AddNode(tplNode, $"Legendary Chance (LTPC): {DescribeFormID(npc.LegendaryChanceFormID)}")
+                End If
+                ' The 13 template-flag bits are identical in both engines (shared wbTemplateFlags).
                 Dim flagList As New List(Of String)
                 For Each boxedCat In [Enum].GetValues(GetType(NPC_TemplateCategory))
                     Dim cat = CType(boxedCat, NPC_TemplateCategory)
@@ -7355,33 +7275,140 @@ Public Class MainForm
                 tplNode.Expand()
             End If
 
+            ' --- Configuration (ACBS) ---
+            ' The ACBS bytes always live on THIS record (required subrecord) — only the category VALUES
+            ' below are resolved through the template chain, so this section is never "inherited".
+            Dim acbs = npc.Acbs
+            Dim cfgNode = AddNode(Nothing, "Configuration (ACBS)")
+            AddNode(cfgNode, $"Flags: {NpcManagerFormat.DescribeAcbsFlags(If(acbs IsNot Nothing, acbs.Flags, npc.AcbsFlags), npc.Game)}")
+            If acbs IsNot Nothing Then
+                AddNode(cfgNode, NpcManagerFormat.FormatAcbsLevel(acbs))
+                If isSse Then
+                    AddNode(cfgNode, $"Offsets: Magicka={acbs.MagickaOffset}  Stamina={acbs.StaminaOffset}  Health={acbs.HealthOffset}")
+                    AddNode(cfgNode, $"Speed Multiplier: {acbs.SpeedMultiplier}%")
+                Else
+                    AddNode(cfgNode, $"XP Value Offset: {acbs.XpValueOffset}")
+                    AddNode(cfgNode, $"Disposition Base: {acbs.DispositionBase}")
+                End If
+                AddNode(cfgNode, $"Bleedout Override: {acbs.BleedoutOverride}")
+            End If
+
             ' --- Traits (with inheritance) ---
-            Dim traitsSource = ResolveInheritedSourceNpc(npc, NPC_TemplateCategory.Traits)
-            Dim traitsNpc = If(traitsSource, npc)
-            Dim traitsLabel = If(traitsSource IsNot Nothing AndAlso traitsSource.FormID <> npc.FormID,
-                                 $"Traits  (inherited from {NpcManagerFormat.DescribeNpc(traitsSource)} [{traitsSource.FormID:X8}])",
-                                 "Traits  (own)")
-            Dim traitsNode = AddNode(Nothing, traitsLabel)
+            Dim traitsNpc = ResolveSectionSource(npc, NPC_TemplateCategory.Traits)
+            Dim traitsNode = AddNode(Nothing, SectionLabel(npc, traitsNpc, "Traits"))
             AddNode(traitsNode, $"Race: {DescribeFormID(traitsNpc.RaceFormID)}")
             ExpandRaceDetails(traitsNode, traitsNpc.RaceFormID, traitsNpc.IsFemale)
             If traitsNpc.SkinFormID <> 0UI Then AddNode(traitsNode, $"Skin Armor: {DescribeFormID(traitsNpc.SkinFormID)}")
-            Dim fmtMwgt = Function(v As Single?) If(v.HasValue, v.Value.ToString("F2"), "Default")
-            AddNode(traitsNode, $"Weight: Thin={fmtMwgt(traitsNpc.WeightThin)}  Muscular={fmtMwgt(traitsNpc.WeightMuscular)}  Fat={fmtMwgt(traitsNpc.WeightFat)}")
-            If traitsNpc.BodyMorphRegionValues.Count > 0 Then
-                Dim morphNode = AddNode(traitsNode, $"Body Morph Regions ({traitsNpc.BodyMorphRegionValues.Count} values)")
-                For i = 0 To traitsNpc.BodyMorphRegionValues.Count - 1
-                    AddNode(morphNode, $"[{i}] = {traitsNpc.BodyMorphRegionValues(i):F4}")
-                Next
+            If traitsNpc.HasVoice Then AddNode(traitsNode, $"Voice: {DescribeFormID(traitsNpc.VoiceFormID)}")
+            If isSse Then
+                ' Skyrim body size = NAM6 Height + NAM7 Weight, both single floats. It has neither the MWGT
+                ' thin/muscular/fat triple nor MRSV body-morph regions. NAM7 is parsed as an opaque payload
+                ' because in FO4 the same signature is an unused field — here it carries the weight.
+                If traitsNpc.HasHeightMin Then AddNode(traitsNode, $"Height: {traitsNpc.HeightMin:F2}")
+                Dim sseWeight = ReadSingleAt(traitsNpc.Nam7Raw, 0)
+                If sseWeight.HasValue Then AddNode(traitsNode, $"Weight: {sseWeight.Value:F2}")
+            Else
+                If traitsNpc.HasHeightMin OrElse traitsNpc.HasHeightMax Then
+                    AddNode(traitsNode, $"Height: min={traitsNpc.HeightMin:F2}  max={traitsNpc.HeightMax:F2}")
+                End If
+                Dim fmtMwgt = Function(v As Single?) If(v.HasValue, v.Value.ToString("F2"), "Default")
+                AddNode(traitsNode, $"Weight: Thin={fmtMwgt(traitsNpc.WeightThin)}  Muscular={fmtMwgt(traitsNpc.WeightMuscular)}  Fat={fmtMwgt(traitsNpc.WeightFat)}")
+                If traitsNpc.BodyMorphRegionValues.Count > 0 Then
+                    Dim morphNode = AddNode(traitsNode, $"Body Morph Regions ({traitsNpc.BodyMorphRegionValues.Count} values)")
+                    For i = 0 To traitsNpc.BodyMorphRegionValues.Count - 1
+                        AddNode(morphNode, $"[{i}] = {traitsNpc.BodyMorphRegionValues(i):F4}")
+                    Next
+                End If
             End If
             traitsNode.Expand()
 
+            ' --- Stats (with inheritance) ---
+            Dim statsNpc = ResolveSectionSource(npc, NPC_TemplateCategory.Stats)
+            Dim statsNode = AddNode(Nothing, SectionLabel(npc, statsNpc, "Stats"))
+            If statsNpc.HasClass Then AddNode(statsNode, $"Class: {DescribeFormID(statsNpc.ClassFormID)}")
+            If isSse Then
+                ' DNAM = 52-byte Player Skills. Nothing when the payload was too short to model.
+                Dim skills = statsNpc.SsePlayerSkills
+                If skills IsNot Nothing Then
+                    AddNode(statsNode, $"Health {skills.Health}   Magicka {skills.Magicka}   Stamina {skills.Stamina}")
+                    Dim skillsNode = AddNode(statsNode, $"Player Skills ({NPC_SsePlayerSkills.SkillCount})")
+                    For i = 0 To NPC_SsePlayerSkills.SkillCount - 1
+                        AddNode(skillsNode, $"{NPC_SsePlayerSkills.SkillNames(i)}: {skills.SkillValues(i)}  (offset +{skills.SkillOffsets(i)})")
+                    Next
+                End If
+            Else
+                ' DNAM = 8-byte Calculated Stats. Note far-away-model distance is a u16 here, a float on SSE.
+                Dim calc = statsNpc.CalculatedStats
+                If calc IsNot Nothing Then
+                    AddNode(statsNode, $"Calculated Health: {calc.CalculatedHealth}")
+                    AddNode(statsNode, $"Calculated Action Points: {calc.CalculatedActionPoints}")
+                End If
+            End If
+
+            ' --- Factions (with inheritance) ---
+            Dim facNpc = ResolveSectionSource(npc, NPC_TemplateCategory.Factions)
+            If facNpc.Factions.Count > 0 Then
+                Dim facNode = AddNode(Nothing, SectionLabel(npc, facNpc, $"Factions ({facNpc.Factions.Count})"))
+                For Each fac In facNpc.Factions
+                    AddNode(facNode, $"{DescribeFormID(fac.FactionFormID)}  rank {fac.Rank}")
+                Next
+            End If
+
+            ' --- AI Data (with inheritance) ---
+            Dim aiNpc = ResolveSectionSource(npc, NPC_TemplateCategory.AIData)
+            Dim aiData = aiNpc.AiData
+            If aiData IsNot Nothing Then
+                Dim aiNode = AddNode(Nothing, SectionLabel(npc, aiNpc, "AI Data"))
+                AddNode(aiNode, $"Aggression: {NpcManagerFormat.AggressionName(aiData.Aggression)}")
+                AddNode(aiNode, $"Confidence: {NpcManagerFormat.ConfidenceName(aiData.Confidence)}")
+                AddNode(aiNode, $"Morality: {NpcManagerFormat.MoralityName(aiData.Morality)}")
+                AddNode(aiNode, $"Mood: {NpcManagerFormat.MoodName(aiData.Mood)}")
+                AddNode(aiNode, $"Assistance: {NpcManagerFormat.AssistanceName(aiData.Assistance)}")
+                AddNode(aiNode, $"Energy Level: {aiData.EnergyLevel}")
+                AddNode(aiNode, $"Aggro Radius Behavior: {If(aiData.AggroRadiusBehavior <> 0, "Yes", "No")}")
+                AddNode(aiNode, $"Radius: warn={aiData.WarnRadius}  warn/attack={aiData.WarnAttackRadius}  attack={aiData.AttackRadius}")
+            End If
+
+            ' --- AI Packages (with inheritance) ---
+            Dim pkgNpc = ResolveSectionSource(npc, NPC_TemplateCategory.AIPackages)
+            Dim dpltNpc = ResolveSectionSource(npc, NPC_TemplateCategory.DefaultPackageList)
+            If pkgNpc.AiPackageFormIDs.Count > 0 OrElse dpltNpc.HasDefaultPackageList Then
+                Dim pkgNode = AddNode(Nothing, SectionLabel(npc, pkgNpc, $"AI Packages ({pkgNpc.AiPackageFormIDs.Count})"))
+                For Each pkgID In pkgNpc.AiPackageFormIDs
+                    AddNode(pkgNode, DescribeFormID(pkgID))
+                Next
+                If dpltNpc.HasDefaultPackageList Then AddNode(pkgNode, $"Default Package List (DPLT): {DescribeFormID(dpltNpc.DefaultPackageListFormID)}")
+            End If
+
+            ' --- Spell List (with inheritance) ---
+            Dim spellNpc = ResolveSectionSource(npc, NPC_TemplateCategory.SpellList)
+            If spellNpc.ActorEffectFormIDs.Count > 0 Then
+                Dim spellNode = AddNode(Nothing, SectionLabel(npc, spellNpc, $"Actor Effects ({spellNpc.ActorEffectFormIDs.Count})"))
+                For Each spellID In spellNpc.ActorEffectFormIDs
+                    AddNode(spellNode, DescribeFormID(spellID))
+                Next
+            End If
+
+            ' --- Keywords (with inheritance) ---
+            Dim kwNpc = ResolveSectionSource(npc, NPC_TemplateCategory.Keywords)
+            If kwNpc.KeywordFormIDs.Count > 0 Then
+                Dim kwNode = AddNode(Nothing, SectionLabel(npc, kwNpc, $"Keywords ({kwNpc.KeywordFormIDs.Count})"))
+                For Each kwID In kwNpc.KeywordFormIDs
+                    AddNode(kwNode, DescribeFormID(kwID))
+                Next
+            End If
+
+            ' --- Perks (no template category — always the record's own) ---
+            If npc.Perks.Count > 0 Then
+                Dim perkNode = AddNode(Nothing, $"Perks ({npc.Perks.Count})")
+                For Each perk In npc.Perks
+                    AddNode(perkNode, $"{DescribeFormID(perk.PerkFormID)}  rank {perk.Rank}")
+                Next
+            End If
+
             ' --- Inventory (with inheritance) ---
-            Dim invSource = ResolveInheritedSourceNpc(npc, NPC_TemplateCategory.Inventory)
-            Dim invNpc = If(invSource, npc)
-            Dim invLabel = If(invSource IsNot Nothing AndAlso invSource.FormID <> npc.FormID,
-                              $"Inventory  (inherited from {NpcManagerFormat.DescribeNpc(invSource)} [{invSource.FormID:X8}])",
-                              "Inventory  (own)")
-            Dim invNode = AddNode(Nothing, invLabel)
+            Dim invNpc = ResolveSectionSource(npc, NPC_TemplateCategory.Inventory)
+            Dim invNode = AddNode(Nothing, SectionLabel(npc, invNpc, "Inventory"))
             If invNpc.DefaultOutfitFormID <> 0UI Then
                 Dim outfitNode = AddNode(invNode, $"Default Outfit: {DescribeFormID(invNpc.DefaultOutfitFormID)}")
                 ExpandOutfitDetails(outfitNode, invNpc.DefaultOutfitFormID)
@@ -7392,21 +7419,27 @@ Public Class MainForm
                 Dim sleepNode = AddNode(invNode, $"Sleep Outfit: {DescribeFormID(invNpc.SleepOutfitFormID)}")
                 ExpandOutfitDetails(sleepNode, invNpc.SleepOutfitFormID)
             End If
+            ' CNTO items are listed by name only — deliberately NOT expanded into their ARMO/ARMA graph
+            ' the way the outfit is, so a 40-item merchant doesn't pay for it on every selection.
+            If invNpc.Inventory.Count > 0 Then
+                Dim itemsNode = AddNode(invNode, $"Items ({invNpc.Inventory.Count})")
+                For Each item In invNpc.Inventory
+                    AddNode(itemsNode, $"{DescribeFormID(item.ItemFormID)}  x{item.Count}")
+                Next
+            End If
             invNode.Expand()
 
             ' --- Model / Appearance (with inheritance) ---
-            Dim modelSource = ResolveInheritedSourceNpc(npc, NPC_TemplateCategory.ModelAnimation)
-            Dim modelNpc = If(modelSource, npc)
-            Dim modelLabel = If(modelSource IsNot Nothing AndAlso modelSource.FormID <> npc.FormID,
-                                $"Appearance  (inherited from {NpcManagerFormat.DescribeNpc(modelSource)} [{modelSource.FormID:X8}])",
-                                "Appearance  (own)")
-            Dim modelNode = AddNode(Nothing, modelLabel)
+            Dim modelNpc = ResolveSectionSource(npc, NPC_TemplateCategory.ModelAnimation)
+            Dim modelNode = AddNode(Nothing, SectionLabel(npc, modelNpc, "Appearance"))
             If modelNpc.HeadTextureFormID <> 0UI Then AddNode(modelNode, $"Head Texture: {DescribeFormID(modelNpc.HeadTextureFormID)}")
             If modelNpc.HairColorFormID <> 0UI Then AddNode(modelNode, $"Hair Color: {DescribeFormID(modelNpc.HairColorFormID)}")
-            If modelNpc.FacialHairColorFormID <> 0UI Then AddNode(modelNode, $"Facial Hair Color: {DescribeFormID(modelNpc.FacialHairColorFormID)}")
+            ' BCLF (facial hair colour) is a Fallout-only subrecord — Skyrim tints the beard off HCLF.
+            If Not isSse AndAlso modelNpc.FacialHairColorFormID <> 0UI Then AddNode(modelNode, $"Facial Hair Color: {DescribeFormID(modelNpc.FacialHairColorFormID)}")
+            ' QNAM exists in both engines (float RGB(A)).
             If modelNpc.HasTextureLighting Then AddNode(modelNode, $"Texture Lighting: R={modelNpc.TextureLightingColor.R} G={modelNpc.TextureLightingColor.G} B={modelNpc.TextureLightingColor.B}")
 
-            ' Head Parts
+            ' Head Parts (PNAM — both engines)
             If modelNpc.HeadPartFormIDs.Count > 0 Then
                 Dim hpNode = AddNode(modelNode, $"Head Parts ({modelNpc.HeadPartFormIDs.Count})")
                 For Each hpFormID In modelNpc.HeadPartFormIDs
@@ -7430,36 +7463,130 @@ Public Class MainForm
                 hpNode.Expand()
             End If
 
-            ' Face Morphs
-            If modelNpc.MorphValues.Count > 0 Then
-                Dim morphNode = AddNode(modelNode, $"Face Morph Presets ({modelNpc.MorphValues.Count})")
-                For Each kvp In modelNpc.MorphValues
-                    AddNode(morphNode, $"Key {kvp.Key:X8} = {kvp.Value:F4}")
-                Next
-            End If
+            If isSse Then
+                AddSseFaceMorphNodes(modelNode, modelNpc.Nam9Raw)
+                AddSseFacePartNodes(modelNode, modelNpc.NamaRaw)
+                AddSseTintLayerNodes(modelNode, modelNpc.SseTintRaw)
+            Else
+                ' Face Morph Presets (MSDK/MSDV)
+                If modelNpc.MorphValues.Count > 0 Then
+                    Dim morphNode = AddNode(modelNode, $"Face Morph Presets ({modelNpc.MorphValues.Count})")
+                    For Each kvp In modelNpc.MorphValues
+                        AddNode(morphNode, $"Key {kvp.Key:X8} = {kvp.Value:F4}")
+                    Next
+                End If
 
-            ' Face Morph Sculpting
-            If modelNpc.FaceMorphs.Count > 0 Then
-                Dim fmNode = AddNode(modelNode, $"Face Morph Sculpting ({modelNpc.FaceMorphs.Count} morphs)")
-                For Each fm In modelNpc.FaceMorphs
-                    AddNode(fmNode, $"Morph {fm.Index:X8}: {fm.Values.Count} values")
-                Next
-            End If
+                ' Face Morph Sculpting (FMRI/FMRS)
+                If modelNpc.FaceMorphs.Count > 0 Then
+                    Dim fmNode = AddNode(modelNode, $"Face Morph Sculpting ({modelNpc.FaceMorphs.Count} morphs)")
+                    For Each fm In modelNpc.FaceMorphs
+                        AddNode(fmNode, $"Morph {fm.Index:X8}: {fm.Values.Count} values")
+                    Next
+                End If
+                If modelNpc.HasFmin Then AddNode(modelNode, $"Facial Morph Intensity (FMIN): {modelNpc.FacialMorphIntensity:F2}")
 
-            ' Tint Layers
-            If modelNpc.FaceTintLayers.Count > 0 Then
-                Dim tintNode = AddNode(modelNode, $"Face Tint Layers ({modelNpc.FaceTintLayers.Count})")
-                For Each tl In modelNpc.FaceTintLayers
-                    Dim colorStr = If(tl.Color <> Color.Empty, $" Color:({tl.Color.R},{tl.Color.G},{tl.Color.B},{tl.Color.A})", "")
-                    AddNode(tintNode, $"Discr:{tl.Discriminator} Index:{tl.Index} Value:{tl.Value}{colorStr}")
-                Next
+                ' Face Tint Layers (TETI/TEND)
+                If modelNpc.FaceTintLayers.Count > 0 Then
+                    Dim tintNode = AddNode(modelNode, $"Face Tint Layers ({modelNpc.FaceTintLayers.Count})")
+                    For Each tl In modelNpc.FaceTintLayers
+                        Dim colorStr = If(tl.Color <> Color.Empty, $" Color:({tl.Color.R},{tl.Color.G},{tl.Color.B},{tl.Color.A})", "")
+                        AddNode(tintNode, $"Discr:{tl.Discriminator} Index:{tl.Index} Value:{tl.Value}{colorStr}")
+                    Next
+                End If
             End If
             modelNode.Expand()
+
+            ' --- Other ---
+            Dim otherNode = AddNode(Nothing, "Other")
+            If npc.HasDeathItem Then AddNode(otherNode, $"Death Item (INAM): {DescribeFormID(npc.DeathItemFormID)}")
+            If npc.HasCombatStyle Then AddNode(otherNode, $"Combat Style (ZNAM): {DescribeFormID(npc.CombatStyleFormID)}")
+            If npc.HasCrimeFaction Then AddNode(otherNode, $"Crime Faction (CRIF): {DescribeFormID(npc.CrimeFactionFormID)}")
+            If npc.HasGiftFilter Then AddNode(otherNode, $"Gift Filter (GNAM): {DescribeFormID(npc.GiftFilterFormID)}")
+            If npc.HasFarAwayModel Then AddNode(otherNode, $"Far Away Model (ANAM): {DescribeFormID(npc.FarAwayModelFormID)}")
+            If npc.HasAttackRace Then AddNode(otherNode, $"Attack Race (ATKR): {DescribeFormID(npc.AttackRaceFormID)}")
+            If npc.HasSoundLevel Then AddNode(otherNode, $"Sound Level (NAM8): {NpcManagerFormat.SoundLevelName(npc.SoundLevel, npc.Game)}")
+            If npc.HasInheritsSoundsFrom Then AddNode(otherNode, $"Inherits Sounds From (CSCR): {DescribeFormID(npc.InheritsSoundsFromFormID)}")
+            If Not isSse Then
+                ' PFRN (power-armor stand) and NTRM (native terminal) have no Skyrim counterpart.
+                If npc.HasPowerArmorStand Then AddNode(otherNode, $"Power Armor Stand (PFRN): {DescribeFormID(npc.PowerArmorStandFormID)}")
+                If npc.HasNativeTerminal Then AddNode(otherNode, $"Native Terminal (NTRM): {DescribeFormID(npc.NativeTerminalFormID)}")
+            End If
+            If otherNode.Nodes.Count = 0 Then otherNode.Remove()
 
         Finally
             TreeViewRecordDetails.EndUpdate()
             TreeViewRecordDetails.ResumeLayout()
         End Try
+    End Sub
+
+    ''' <summary>The NPC that actually provides a template category — the terminal of the chain, or the
+    ''' record itself when the category is not inherited. Never Nothing (falls back to <paramref name="npc"/>).</summary>
+    Private Function ResolveSectionSource(npc As NPC_Data, category As NPC_TemplateCategory) As NPC_Data
+        Return If(ResolveInheritedSourceNpc(npc, category), npc)
+    End Function
+
+    ''' <summary>Section header text, tagged "(own)" or "(inherited from X)".</summary>
+    Private Shared Function SectionLabel(npc As NPC_Data, source As NPC_Data, title As String) As String
+        If source IsNot Nothing AndAlso source.FormID <> npc.FormID Then
+            Return $"{title}  (inherited from {NpcManagerFormat.DescribeNpc(source)} [{source.FormID:X8}])"
+        End If
+        Return $"{title}  (own)"
+    End Function
+
+    ''' <summary>Reads one f32 out of a verbatim-preserved subrecord payload. Nothing when the subrecord
+    ''' was absent or too short to hold one, so a malformed record degrades to a missing row, not a crash.</summary>
+    Private Shared Function ReadSingleAt(raw As Byte(), offset As Integer) As Single?
+        If raw Is Nothing OrElse raw.Length < offset + 4 Then Return Nothing
+        Return BitConverter.ToSingle(raw, offset)
+    End Function
+
+    ''' <summary>NAM9 (SSE) — 19 chargen face sliders, kept verbatim by the parser. Slider i is the f32
+    ''' at +4i; that order IS the byte layout, so the names come from the schema, not from presentation.</summary>
+    Private Sub AddSseFaceMorphNodes(parentNode As TreeNode, nam9 As Byte())
+        If nam9 Is Nothing OrElse nam9.Length < 4 Then Return
+        Dim count = Math.Min(NpcManagerFormat.SseFaceMorphSliderNames.Length, nam9.Length \ 4)
+        Dim node = AddNode(parentNode, $"Face Morph (NAM9, {count} sliders)")
+        For i = 0 To count - 1
+            AddNode(node, $"{NpcManagerFormat.SseFaceMorphSliderNames(i)}: {BitConverter.ToSingle(nam9, i * 4):F3}")
+        Next
+    End Sub
+
+    ''' <summary>NAMA (SSE) — 4×u32 face parts (Nose / Unknown / Eyes / Mouth).</summary>
+    Private Sub AddSseFacePartNodes(parentNode As TreeNode, nama As Byte())
+        If nama Is Nothing OrElse nama.Length < 16 Then Return
+        Dim node = AddNode(parentNode, "Face Parts (NAMA)")
+        For i = 0 To 3
+            AddNode(node, $"{NpcManagerFormat.SseFacePartNames(i)}: {BitConverter.ToUInt32(nama, i * 4)}")
+        Next
+    End Sub
+
+    ''' <summary>TINI/TINC/TINV/TIAS (SSE) — the face-tint layers, captured as a flat verbatim list by the
+    ''' parser. TINI opens a layer; the TINC colour / TINV interpolation / TIAS preset that follow belong to
+    ''' it. Skyrim's equivalent of Fallout's TETI/TEND pairs.</summary>
+    Private Sub AddSseTintLayerNodes(parentNode As TreeNode, tintRaw As List(Of NPC_RawSubrecord))
+        If tintRaw Is Nothing OrElse tintRaw.Count = 0 Then Return
+        Dim tintNode = AddNode(parentNode, "Face Tint Layers")
+        Dim layerNode As TreeNode = Nothing
+        Dim layerCount = 0
+        For Each sr In tintRaw
+            If sr Is Nothing OrElse sr.Data Is Nothing Then Continue For
+            Select Case sr.Sig
+                Case "TINI"
+                    If sr.Data.Length < 2 Then Continue For
+                    layerCount += 1
+                    layerNode = AddNode(tintNode, $"Layer index {BitConverter.ToUInt16(sr.Data, 0)}")
+                Case "TINC"
+                    If layerNode Is Nothing OrElse sr.Data.Length < 4 Then Continue For
+                    AddNode(layerNode, $"Color: R={sr.Data(0)} G={sr.Data(1)} B={sr.Data(2)} A={sr.Data(3)}")
+                Case "TINV"
+                    If layerNode Is Nothing OrElse sr.Data.Length < 4 Then Continue For
+                    AddNode(layerNode, $"Interpolation: {BitConverter.ToUInt32(sr.Data, 0) / 100.0F:F2}")
+                Case "TIAS"
+                    If layerNode Is Nothing OrElse sr.Data.Length < 2 Then Continue For
+                    AddNode(layerNode, $"Preset: {BitConverter.ToInt16(sr.Data, 0)}")
+            End Select
+        Next
+        tintNode.Text = $"Face Tint Layers ({layerCount})"
     End Sub
 
     ''' <summary>Follow template chain for a category and return the terminal NPC that provides the value.</summary>
@@ -7487,7 +7614,11 @@ Public Class MainForm
                 If current Is Nothing Then Return npc
             ElseIf sourceRec.Header.Signature = "LVLN" Then
                 ' Leveled NPC - get first NPC_ entry
-                Dim lvln = RecordParsers.ParseLVLN(sourceRec, _pluginManager)
+                Dim lvln As LVLN_Data = Nothing
+                If Not _detailsLvlnCache.TryGetValue(sourceFormID, lvln) Then
+                    lvln = RecordParsers.ParseLVLN(sourceRec, _pluginManager)
+                    _detailsLvlnCache(sourceFormID) = lvln
+                End If
                 Dim firstNpcId = lvln.Entries.Select(Function(e) e.FormID).
                     FirstOrDefault(Function(fid)
                                        Dim r = _pluginManager.GetRecord(fid)

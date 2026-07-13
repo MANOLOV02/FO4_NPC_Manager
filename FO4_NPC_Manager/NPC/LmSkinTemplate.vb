@@ -48,6 +48,33 @@ End Class
 ''' <c>if(form)</c> guards in SkinInterface.cpp:534-608).</summary>
 Public Module LmSkinTemplateLoader
 
+    ''' <summary>Discover and parse every F4SE LooksMenu skin template reachable from
+    ''' <paramref name="dataPath"/>. Mirrors f4ee/SkinInterface.cpp:461-488 (LoadSkinMods): each loaded
+    ''' plugin's <c>Data\F4SE\Plugins\F4EE\Skin\&lt;pluginName&gt;\skin.json</c> plus the loose
+    ''' <c>Skin\Loose\*.json</c> folder. Never Nothing — an absent Skin dir yields an empty list.
+    '''
+    ''' <para>Shared by MainForm (GUI) and the headless bake (Program.HeadlessBakeAll) so both resolve
+    ''' LM SkinTemplate ids against the identical template set.</para></summary>
+    Public Function BuildCache(dataPath As String, pluginManager As PluginManager) As List(Of LmSkinTemplate)
+        Dim result As New List(Of LmSkinTemplate)
+        If String.IsNullOrEmpty(dataPath) OrElse pluginManager Is Nothing Then Return result
+        Dim baseSkinDir = Path.Combine(dataPath, "F4SE", "Plugins", "F4EE", "Skin")
+        If Not Directory.Exists(baseSkinDir) Then Return result
+        ' Per-plugin templates: Skin\<pluginName>\skin.json
+        For Each plugin In pluginManager.Plugins
+            Dim p = Path.Combine(baseSkinDir, plugin.FileName, "skin.json")
+            If File.Exists(p) Then LoadFromFile(p, pluginManager, result)
+        Next
+        ' Loose templates: Skin\Loose\*.json
+        Dim looseDir = Path.Combine(baseSkinDir, "Loose")
+        If Directory.Exists(looseDir) Then
+            For Each p In Directory.EnumerateFiles(looseDir, "*.json", SearchOption.TopDirectoryOnly)
+                LoadFromFile(p, pluginManager, result)
+            Next
+        End If
+        Return result
+    End Function
+
     ''' <summary>Parse one JSON file and append every successfully-resolved template to <paramref name="sink"/>.
     ''' Templates with the same Id from later files DO NOT replace earlier entries (we keep first-loaded
     ''' to mirror C++ <c>m_skinTemplates.emplace</c> which only inserts when the key is missing —
