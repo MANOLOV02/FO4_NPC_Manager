@@ -972,28 +972,21 @@ Friend NotInheritable Class NpcMeshCollector
                                           warnings As List(Of String),
                                           state As MainForm.NPCVisualState,
                                           Optional useFaceGen As Boolean = False)
-        ' Per-render FLST cache so IsHdptValidForRace's race-membership checks parse each FLST
-        ' at most once across the whole HDPT chain (vanilla has 3-4 distinct FLSTs referenced
-        ' by hundreds of HDPTs).
-        Dim flstCache As New Dictionary(Of UInteger, FLST_Data)
-        ' Race defaults (gender-appropriate) so RACE-declared HDPTs always pass the check even
-        ' when their RNAM is mod-inconsistent. Mirrors HeadPartPicker_Form's seed.
-        Dim raceDefaults As New HashSet(Of UInteger)
-        ' Non-humanoid race signal: a RACE that declares NO head parts (neither Male nor Female)
-        ' is a creature/robot/dog race. RNAM=0 HDPTs only pass for humanoid races (engine drops
-        ' them on dogs/robots even when NPC.PNAM has a buggy reference, e.g. EncRaiderDog01).
-        Dim raceHasAnyHeadParts As Boolean = False
-        Dim raceRec = If(state IsNot Nothing AndAlso state.RaceFormID <> 0UI, _ctx.PluginManager.GetRecord(state.RaceFormID), Nothing)
-        If raceRec IsNot Nothing AndAlso raceRec.Header.Signature = "RACE" Then
-            Dim race = _ctx.ParseRaceCached(raceRec)
-            Dim defs = If(state.IsFemale, race?.FemaleHeadPartFormIDs, race?.MaleHeadPartFormIDs)
-            If defs IsNot Nothing Then
-                For Each fid In defs : raceDefaults.Add(fid) : Next
-            End If
-            ' Either gender having head parts is enough — the race is humanoid.
-            Dim maleCount = If(race?.MaleHeadPartFormIDs?.Count, 0)
-            Dim femaleCount = If(race?.FemaleHeadPartFormIDs?.Count, 0)
-            raceHasAnyHeadParts = (maleCount + femaleCount) > 0
+        ' THE race gate, engine-faithful: RACE.DATA bit 0x2 "FaceGen Head". A race without it builds no
+        ' facegen head at all (SSE 0x1403BCAB0 early-returns on `!(race.flags & FaceGenHead)`), so none of
+        ' its head parts render — this is what keeps human teeth/mouths off dogs, robots and creatures even
+        ' when a buggy NPC.PNAM lists one (e.g. EncRaiderDog01 → MaleMouthHumanoidDirtyTeethMissing).
+        ' It replaces the old "does the RACE declare any head parts?" proxy AND the per-HDPT RNAM check
+        ' (see CollectHeadPartCandidate): the engine applies neither of those when assembling a worn head.
+        ' Same discriminator the bake already uses (RaceUtil.RaceSupportsFaceGen), so render == bake.
+        ' (RaceUtil.RaceSupportsFaceGen is the same rule, but it re-parses the RACE; here we go through the
+        ' render's per-run race cache so this stays off the hot path of NPC selection.)
+        If state Is Nothing OrElse state.RaceFormID = 0UI Then Return
+        Dim raceRec = _ctx.PluginManager.GetRecord(state.RaceFormID)
+        If raceRec Is Nothing OrElse raceRec.Header.Signature <> "RACE" Then Return
+        If Not _ctx.ParseRaceCached(raceRec).FaceGenHead Then
+            Logger.LogLazy(Function() $"[HEADPART] race 0x{state.RaceFormID:X8} has no RACE.DATA FaceGen-Head flag — no head parts rendered (the engine builds no facegen head for it).")
+            Return
         End If
 
         ' Pre-compute Misc->parent effective-type promotion for the top-level (parent=-1) case:
@@ -1003,7 +996,7 @@ Friend NotInheritable Class NpcMeshCollector
         Dim miscToParentEffective = HeadPartResolver.BuildMiscToParentEffective(headPartFormIDs, _ctx.PluginManager, AddressOf _ctx.ParseHdptCached)
 
         For Each hdptFormID In headPartFormIDs.Where(Function(id) id <> 0UI)
-            CollectHeadPartCandidate(hdptFormID, visited, candidates, order, warnings, -1, state, useFaceGen, flstCache, raceDefaults, raceHasAnyHeadParts, miscToParentEffective)
+            CollectHeadPartCandidate(hdptFormID, visited, candidates, order, warnings, -1, state, useFaceGen, miscToParentEffective)
         Next
     End Sub
 
@@ -1015,9 +1008,6 @@ Friend NotInheritable Class NpcMeshCollector
                                          parentPartType As Integer,
                                          state As MainForm.NPCVisualState,
                                          Optional useFaceGen As Boolean = False,
-                                         Optional flstCache As Dictionary(Of UInteger, FLST_Data) = Nothing,
-                                         Optional raceDefaults As HashSet(Of UInteger) = Nothing,
-                                         Optional raceHasAnyHeadParts As Boolean = True,
                                          Optional miscToParentEffective As Dictionary(Of UInteger, Integer) = Nothing)
         If hdptFormID = 0UI Then Return
         If visited.Contains(hdptFormID) Then Return
@@ -1038,17 +1028,25 @@ Friend NotInheritable Class NpcMeshCollector
         ' Shared rule = single source of truth with the bake's EnumerateHdptChain.
         Dim effectivePartType = HeadPartResolver.ResolveEffectivePartType(hdpt.PartType, parentPartType, hdptFormID, miscToParentEffective)
 
-        ' Race-membership check: drop HDPTs the engine wouldn't render. The only practical
-        ' case this catches today is RNAM=0 HDPTs assigned (via NPC.PNAM) to a non-humanoid
-        ' race — e.g. EncRaiderDog01 lists MaleMouthHumanoidDirtyTeethMissing yet the engine
-        ' renders no human teeth on raider dogs because RaiderDogRace declares zero head parts.
-        ' Humanoid races (HumanRace, GhoulRace, etc.) keep all their RNAM=0 HDPTs as before.
-        If flstCache IsNot Nothing AndAlso state IsNot Nothing AndAlso state.RaceFormID <> 0UI Then
-            Dim raceOk = HeadPartResolver.IsHdptValidForRace(hdptFormID, state.RaceFormID, state.IsFemale, _ctx.PluginManager, flstCache, raceDefaults, raceHasAnyHeadParts, AddressOf _ctx.ParseHdptCached)
-            If Not raceOk Then
-                Return
-            End If
-        End If
+        ' NO per-HDPT race gate here. The engine does NOT filter the head parts an actor WEARS by
+        ' HDPT.RNAM ("Valid Races"): RE of both binaries shows BGSHeadPart::IsValidRace (SSE 0x140389960,
+        ' FO4 0x14061C990 — `validRaces==null -> true; else BGSListForm::IndexOf(race) >= 0`) has exactly
+        ' three call sites each, and NONE is on the head-assembly path: one is a dead function (SSE
+        ' 0x1403B8B40 / FO4 0x140655490: zero callers, zero pointers) and the rest live in the CHARGEN MENU
+        ' (the enclosing functions reference the Scaleform callbacks ChangeHeadPart/ChangeSex/…). The
+        ' head-build closure (SSE 0x1403BDD00 -> 0x1403BBA20 -> 0x1403BD380, 415 funcs at depth<=4) never
+        ' calls it, nor any caller of BGSListForm::IndexOf. RNAM is a CATALOG filter for the chargen UI —
+        ' which is why HeadPartPicker_Form / the LooksMenu preset gate DO still apply it (they are catalogs).
+        ' Enforcing it at render made us stricter than the game: any custom-race NPC (COtR & co, whose races
+        ' are injected into the vanilla head-part FormLists at RUNTIME by RaceCompatibility's proxyRaces
+        ' script — nothing of that lives in the records) rendered bald, and it also diverged from our own
+        ' bake, which never applied the gate (HeadPartResolver.EnumerateHdptChain has no race check).
+        '
+        ' The engine's real gate is at RACE level and is already collected by the caller: RACE.DATA bit 0x2
+        ' "FaceGen Head". SSE 0x1403BCAB0 (build of the actor's facegen head) opens with
+        '   mov rax,[npc+0x158] ; mov r9d,[race+0x108] ; shr r9d,1 ; test r9b,1 ; je <epilogue>
+        ' i.e. a race without that flag gets NO facegen head at all. That is what keeps human head parts off
+        ' dogs/robots (the case the old RNAM heuristic was standing in for) — see CollectHeadPartCandidates.
 
 
         If hdpt.MeshPath <> "" Then
@@ -1130,7 +1128,7 @@ Friend NotInheritable Class NpcMeshCollector
         ' Pass the effective type down so nested extras also inherit
         Dim childParentType = If(effectivePartType <> 0, effectivePartType, parentPartType)
         For Each extraPartFormID In hdpt.ExtraPartFormIDs
-            CollectHeadPartCandidate(extraPartFormID, visited, candidates, order, warnings, childParentType, state, useFaceGen, flstCache, raceDefaults, raceHasAnyHeadParts, miscToParentEffective)
+            CollectHeadPartCandidate(extraPartFormID, visited, candidates, order, warnings, childParentType, state, useFaceGen, miscToParentEffective)
         Next
     End Sub
 

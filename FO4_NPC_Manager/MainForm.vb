@@ -6770,6 +6770,27 @@ Public Class MainForm
             End Try
         End If
 
+        ' RaceCompatibility proxyRaces — SKYRIM ONLY. A custom-race mod (COtR & co) declares its races through
+        ' RaceCompatibility's GenericRaceController, whose OnInit INSERTS them into the vanilla head-part FormLists
+        ' at runtime. That mutation never reaches a plugin, so by records alone every vanilla hair looks "invalid"
+        ' for those races and the pickers would offer nothing but the mod's own parts. Reconstruct the insertion
+        ' (QUST VMAD + the mod's compiled script) and feed it to the catalog filter. Detected BY SHAPE (any QUST
+        ' carrying a GenericRaceController script), never by mod name. Rebuilt on every load so a mod
+        ' added/updated/removed is reflected without any persisted state.
+        If Config_App.Current.Game = Config_App.Game_Enum.Skyrim AndAlso HeadPartResolver.RaceCompatCatalog Is Nothing Then
+            Try
+                HeadPartResolver.RaceCompatCatalog = FO4_Base_Library.RaceCompatibilityCatalog.Load(_pluginManager, Config_App.Current.Game)
+            Catch ex As Exception
+                Logger.LogLazy(Function() $"[RACECOMPAT] load failed: {ex.Message}")
+            End Try
+        End If
+        ' QUST is loaded ONLY to feed the catalog above (the VMAD of the quests carrying GenericRaceController) and
+        ' nothing else in the app resolves a quest. Quests are heavy records, so drop them once consumed instead of
+        ' keeping thousands resident for a one-shot read. FO4 never even builds the catalog, so this frees them there
+        ' too. ⚠ A future feature that needs QUST at runtime (stages, aliases, script properties on quests) should
+        ' delete THIS call, not add a second load pass — the records are already parsed at load.
+        _pluginManager.DropRecordsOfType("QUST")
+
         ' Asset dictionary ready; hide the progress bar. (Debug-only TRI / mouth-NIF enumeration
         ' scaffolding — whose results were discarded — was removed 2026-06-24.)
         If InvokeRequired Then

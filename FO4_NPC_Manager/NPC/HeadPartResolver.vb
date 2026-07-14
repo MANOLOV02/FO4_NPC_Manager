@@ -12,6 +12,13 @@ Imports FO4_Base_Library
 ''' </summary>
 Public Module HeadPartResolver
 
+    ''' <summary>Reconstruction of RaceCompatibility's runtime FormList injection (see
+    ''' <see cref="RaceCompatibilityCatalog"/>), consulted by <see cref="IsHdptValidForRace"/> so the head-part
+    ''' CATALOGS (picker, LooksMenu preset gate) offer what the game's chargen menu would offer for a custom race.
+    ''' Built once per load order in MainForm alongside the other RaceMenu catalogs; Nothing / empty ⇒ no-op.
+    ''' NOT used by the render or the bake: the engine does not filter worn head parts by RNAM at all.</summary>
+    Public Property RaceCompatCatalog As RaceCompatibilityCatalog
+
     ''' <summary>Merge NPC.PNAM head parts with RACE.HeadParts defaults per vanilla CK semantics.
     ''' Main types (1=Face, 2=Eyes, 3=Hair, 4=FacialHair, 5=Scar, 6=Eyebrows, 7=Meatcaps, 8=Teeth, 9=HeadRear):
     ''' NPC override wins; fall back to RACE default per type (gender-specific).
@@ -124,6 +131,14 @@ Public Module HeadPartResolver
             flstCache(hdpt.ValidRacesFormID) = flst
         End If
         If flst IsNot Nothing AndAlso flst.ItemFormIDs.Contains(raceFormID) Then Return True
+
+        ' Path (b'): the FormList as the GAME would have it. RaceCompatibility's proxyRaces script INSERTS a mod's
+        ' custom races into the vanilla head-part FormLists at runtime (once, on OnInit) — nothing of that is ever
+        ' written to a plugin, so the record says "not a member" while the game's own chargen menu says it is. The
+        ' catalog reconstructs that insertion from the QUST's VMAD + the mod's compiled script. Without it every
+        ' custom-race NPC (COtR & co) would be offered ONLY its own mod's head parts and not a single vanilla hair.
+        ' Empty catalog (no such mod installed, or FO4) ⇒ this is a no-op and the filter behaves exactly as before.
+        If RaceCompatCatalog IsNot Nothing AndAlso RaceCompatCatalog.ContainsRace(hdpt.ValidRacesFormID, raceFormID) Then Return True
 
         ' Path (c): the NPC's RACE record declares this HDPT as a gender-default.
         If raceDefaults IsNot Nothing AndAlso raceDefaults.Contains(hdptFormID) Then Return True

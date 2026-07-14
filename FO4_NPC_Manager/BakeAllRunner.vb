@@ -54,6 +54,12 @@ Friend Module BakeAllRunner
         ''' persisted exe — and with it the Data folder AND the game — for this run only (never saved to
         ''' config.json). Empty = use the config as-is.</summary>
         Public ExecutablePath As String = ""
+        ''' <summary>Plugin file name (e.g. "MyFollower.esp"). When set, only NPCs whose WINNING record comes
+        ''' from that plugin are baked; every other NPC is left alone. Matching on the winner means the
+        ''' plugin's own NPCs *and* the vanilla NPCs it overrides both count — which is what "bake this mod"
+        ''' means. Empty = every NPC in the load order. The whole load order is still PARSED (a follower's
+        ''' race/head parts/armor usually live in the masters), only the bake list is narrowed.</summary>
+        Public EspTarget As String = ""
     End Class
 
     ''' <summary>Infer the game from an executable's file name — the same signal the preflight uses to warn
@@ -262,8 +268,22 @@ Friend Module BakeAllRunner
             '    skip gates inside BuildCharGen (race without FaceGen / no FaceGen head parts) decide
             '    what is bakeable, and each skip is reported with its reason.
             ' ---------------------------------------------------------------------------------
+            ' --esptarget: restrict the bake to one plugin. Validate it is actually loaded FIRST — a typo
+            ' would otherwise just bake nothing and report a cheerful "0 failed".
+            Dim espTarget = If(opt Is Nothing, "", If(opt.EspTarget, "")).Trim().Trim(""""c)
+            If espTarget <> "" Then
+                If Not pm.Plugins.Any(Function(p) String.Equals(p.FileName, espTarget, StringComparison.OrdinalIgnoreCase)) Then
+                    log($"FATAL: --esptarget '{espTarget}' is not among the {pm.Plugins.Count} loaded plugins.")
+                    log("       It must be an active plugin present in Data\ (name with extension, e.g. MyMod.esp).")
+                    Return ExitFatal
+                End If
+                log($"Target:      {espTarget} (only NPCs whose winning record comes from this plugin)")
+            End If
+
+            Dim allNpcRecords = pm.GetNPCs()
             Dim targets As New List(Of (Fid As UInteger, Name As String))
-            For Each rec In pm.GetNPCs()
+            For Each rec In allNpcRecords
+                If espTarget <> "" AndAlso Not String.Equals(rec.SourcePluginName, espTarget, StringComparison.OrdinalIgnoreCase) Then Continue For
                 Try
                     Dim npc = RecordParsers.ParseNPC(rec, If(rec.SourcePluginName <> "", rec.SourcePluginName, "Unknown"), pm)
                     If npc Is Nothing Then Continue For
@@ -273,10 +293,19 @@ Friend Module BakeAllRunner
                 End Try
             Next
             If targets.Count = 0 Then
-                log("FATAL: no NPC_ records found in the load order.")
+                If espTarget <> "" Then
+                    log($"FATAL: '{espTarget}' is loaded but wins no NPC_ record — nothing to bake.")
+                    log("       (Its NPC edits may be overridden by a plugin later in the load order.)")
+                Else
+                    log("FATAL: no NPC_ records found in the load order.")
+                End If
                 Return ExitFatal
             End If
-            log($"NPCs:        {targets.Count} NPC_ record(s) to bake")
+            If espTarget <> "" Then
+                log($"NPCs:        {targets.Count} NPC_ record(s) to bake (of {allNpcRecords.Count} in the load order)")
+            Else
+                log($"NPCs:        {targets.Count} NPC_ record(s) to bake")
+            End If
             log("")
 
             ' ---------------------------------------------------------------------------------

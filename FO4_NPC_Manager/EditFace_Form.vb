@@ -3799,7 +3799,7 @@ Public Class EditFace_Form
                     intent.MorphResolver = _mainForm.BuildCompositeMorphResolver(_editorHost.LastRenderedState, _editorHost.LastRenderData, _editorHost)
                     intent.MarkDirty(RenderDirtyFlags.Morphs, _editorHost.LastRenderData.Shapes)
                 End If
-                ' MPPI Morph Group presets like Murphy's "Arrugado" do TWO things: vertex
+                ' FO4 ONLY. MPPI Morph Group presets like Murphy's "Arrugado" do TWO things: vertex
                 ' deformation (MSDV — handled by the resolver above) AND a per-region MPPT TXST
                 ' texture swap (Wrinkled skin texture inside the Forehead/Cheeks/Neck region
                 ' mask, applied by BuildFaceRegionSwaps → ApplyRegionSwapChannelOnto inside
@@ -3807,11 +3807,20 @@ Public Class EditFace_Form
                 ' the textures stale — switching from Smooth to Wrinkled would deform the mesh
                 ' but show the previous texture. Refresh the tint pipeline too. No-op for NPCs
                 ' whose active presets carry no MPPT (BuildFaceRegionSwaps returns 0 swaps).
-                Try
-                    _mainForm.RefreshFaceTintLivePreview(_editorHost)
-                Catch ex As Exception
-                    Logger.LogLazy(Function() $"[EDIT-FACE] tint refresh failed for NPC 0x{_rootNpcFormID:X8}: {ex.GetType().Name}: {ex.Message}")
-                End Try
+                '
+                ' SKYRIM HAS NO SUCH MECHANISM: its face morphs (NAM9 / NAMA / RaceMenu custom / sculpt) are pure
+                ' vertex deformation and touch NO texture — the facetint depends only on the tint layers
+                ' (TINI/TINC/TINV), which a morph edit cannot change. So running the tint pipeline here was pure
+                ' waste, and MEASURED it is expensive: the SSE fold (complexion + facetint + detail) is per-pixel,
+                ' so a 1024² vanilla head costs ~0.4s but a 4096² modded head (COtR ships 4K faces) costs
+                ' 2.6–4.5s — i.e. every slider drag stalled the editor for seconds. Gated to FO4.
+                If Config_App.Current.Game = Config_App.Game_Enum.Fallout4 Then
+                    Try
+                        _mainForm.RefreshFaceTintLivePreview(_editorHost)
+                    Catch ex As Exception
+                        Logger.LogLazy(Function() $"[EDIT-FACE] tint refresh failed for NPC 0x{_rootNpcFormID:X8}: {ex.GetType().Name}: {ex.Message}")
+                    End Try
+                End If
                 _editorHost.PreviewCtl.InvalidateRender()
                 Return
             Case FaceRefreshScope.Pose

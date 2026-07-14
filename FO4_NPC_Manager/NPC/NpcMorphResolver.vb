@@ -593,14 +593,20 @@ Public Class NpcMorphResolver
     '''   - Chargen Morph TRI (sculpting morphs — LipFeature*, NoseFeature*, etc.)
     ''' Both are merged into a single TriHead so the morph application loop sees all morphs.
     '''
-    ''' Path resolution priority for each of the two paths:
-    '''   1. Explicit HDPT NAM0/NAM1 entry (NAM0=0 Race Morph, NAM0=2 Chargen Morph)
-    '''   2. BODYTRI NiStringExtraData (BodySlide/CBBE — only fills the race/expression slot)
-    '''   3. Mesh-name convention (vanilla Bethesda):
-    '''         &lt;mesh&gt;.tri          → race/expression
-    '''         &lt;mesh&gt;chargen.tri  → chargen sculpting
-    ''' Vanilla HDPT records only declare NAM0/NAM1 for ~half the head parts (188/396);
-    ''' the rest rely on the convention. The mouth is one such case.
+    ''' Path resolution — RECORD-DRIVEN, exactly like the bake (FaceGenBuildPipeline.LoadMergedHeadTri):
+    '''   1. HDPT NAM0/NAM1 (NAM0=0 Race Morph, NAM0=1 mesh/SkinnyMorph tri, NAM0=2 Chargen Morph)
+    '''   2. BODYTRI NiStringExtraData (BodySlide/CBBE bodies — only fills the race slot; no vanilla head part
+    '''      carries it: measured 0/792 SSE + 0/419 FO4).
+    ''' There is NO mesh-name convention fallback, because the ENGINE has none: SkyrimSE builds a .tri path in
+    ''' exactly one place (0x140435D00, the single ".tri" literal in the image) and all it does is NORMALIZE the
+    ''' path the record already declares (prefix "meshes\", force the extension). Nothing derives a .tri from the
+    ''' .nif name, and no "chargen" literal is ever used to build a path. The data agrees: of the vanilla HDPTs
+    ''' that DO declare a chargen tri, the guessed name differs from the declared one in 33% (SSE) / 55% (FO4)
+    ''' — e.g. EyeFemaleRight.nif → EyesFemaleRightCharGen.tri, SupermutantMouth.nif → MouthHumanChargen.tri.
+    ''' The old guess made the render apply morphs the CK/engine never apply: measured A/B vs the vanilla FaceGeom
+    ''' (13 NPCs / 80 shapes), it over-morphed 10 hair shapes (worst HairMaleDarkElf02 RMS 1.1476 / maxΔ 2.12)
+    ''' which are byte-exact (RMS 0.0000) with record-only resolution; 0 shapes improved. Same lesson already
+    ''' learned for the NAM0=1 slot (see FaceGenBuilder) — this closes the same hole on the race/chargen slots.
     ''' </summary>
     Private Sub LoadTriForShape(shape As IRenderableShape, ByRef tri As TriFile, ByRef triHead As TriHeadFile)
         tri = Nothing
@@ -618,19 +624,10 @@ Public Class NpcMorphResolver
             If bodyTriPath <> "" Then raceMorphPath = bodyTriPath
         End If
 
-        ' Step 3: fall back to mesh-name convention for any slot still empty
-        Dim meshKey As String = Nothing
-        If _meshDictKeys IsNot Nothing Then _meshDictKeys.TryGetValue(shape, meshKey)
-        If Not String.IsNullOrEmpty(meshKey) Then
-            If String.IsNullOrEmpty(raceMorphPath) Then
-                raceMorphPath = Path.ChangeExtension(meshKey, ".tri")
-            End If
-            If String.IsNullOrEmpty(chargenPath) Then
-                chargenPath = Path.ChangeExtension(meshKey, Nothing) & "chargen.tri"
-            End If
-        End If
+        ' No step 3: a slot the record leaves empty STAYS empty (see the summary above — the engine has no
+        ' mesh-name convention, and inventing one made the render apply morphs the CK/engine never apply).
 
-        ' Load race/expression TRI: try PIRT first (BodySlide format), then TriHead (Bethesda format)
+        ' Load race TRI: try PIRT first (BodySlide format), then TriHead (Bethesda format)
         If Not String.IsNullOrEmpty(raceMorphPath) Then
             Dim normRace = MeshPathHelpers.NormalizeMeshKey(raceMorphPath)
             tri = TryLoadPirt(normRace)
@@ -683,13 +680,15 @@ Public Class NpcMorphResolver
             End If
 
             ' [SSE-TRI] Per-shape trace of the weight-morph inputs: which .tri each SSE head-part shape
-            ' resolved (HDPT NAM0=0/1/2 vs the mesh-name fallback), whether the merged TriHead ended up
+            ' resolved (HDPT NAM0=0/1/2 — the record is the only source), whether the merged TriHead ended up
             ' carrying "SkinnyMorph", and the frac the plan will apply (1 - NAM7/100). A hair shape logging
-            ' hasSkinnyMorph=False or skinnyFrac=0 means it renders un-weighted while the head is weighted —
-            ' the head-part occlusion is NOT involved in that.
+            ' hasSkinnyMorph=False or skinnyFrac=0 renders un-weighted BY DESIGN when its HDPT declares no
+            ' NAM0=1 — that is what the CK bakes too; the head-part occlusion is NOT involved in that.
             If Logger.Enabled Then
                 Dim shName = If(shape.ShapeName, "?")
-                Dim meshKeyD = If(meshKey, "")
+                Dim meshKeyD As String = Nothing
+                If _meshDictKeys IsNot Nothing Then _meshDictKeys.TryGetValue(shape, meshKeyD)
+                meshKeyD = If(meshKeyD, "")
                 Dim raceD = If(raceMorphPath, "")
                 Dim chargenD = If(chargenPath, "")
                 Dim meshTriD = If(meshTriPath, "")

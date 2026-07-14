@@ -48,6 +48,7 @@ Module Program
         Public TtedScan As Boolean = False
         Public ScanDiff As Boolean = False      ' --scandiff: NPCs donde el blend-op del app difiere del CK (color-match LAST-wins)
         Public RaceAnim As Boolean = False      ' --raceanim: dump del behavior resuelto por raza (project+subgraphs+SRAC)
+        Public RaceCompat As Boolean = False    ' --racecompat: reconstruye proxyRaces de RaceCompatibility (VMAD+.pex) y valida el filtro de raza de los catálogos
         Public MountValidate As Boolean = False ' --mountvalidate: valida orden mount/pose con datos reales
         Public FindHkx As String = ""           ' --findhkx <substr>: lista .hkx del load order que matchean + face-bones
         Public ChunkCompare As String = ""       ' --chunkcompare <chunkNif>: layout interno del chunk vs CreateABot
@@ -168,7 +169,7 @@ Module Program
 
         ' --- 3. Lista de trabajo (esp, edid) ---
         Dim work = BuildWorkList(opt)
-        If work.Count = 0 AndAlso Not opt.TtedScan AndAlso Not opt.ScanDiff AndAlso Not opt.RaceAnim AndAlso Not opt.MountValidate AndAlso opt.FindHkx = "" AndAlso opt.ChunkCompare = "" AndAlso opt.DumpBehavior = "" AndAlso Not opt.HkxCoverage AndAlso opt.KwType = "" AndAlso Not opt.StateMap AndAlso Not opt.ClipResolve AndAlso opt.HkxBone = "" AndAlso opt.ClipBase = "" AndAlso opt.FindFile = "" AndAlso opt.NifDump = "" AndAlso opt.AnimSyncCheck = "" AndAlso opt.BlendHintScan = "" AndAlso Not opt.CatProfile AndAlso Not opt.Provenance AndAlso opt.DumpRef = "" AndAlso opt.EstimateSclp = "" AndAlso opt.SclpDiag = "" AndAlso opt.SclpBatch = "" AndAlso opt.BindDiff = "" AndAlso opt.Ba2Extract = "" AndAlso Not opt.SseCompareBatch AndAlso Not opt.VertexBatch AndAlso opt.PosDump = "" AndAlso opt.MeshShaders = "" Then
+        If work.Count = 0 AndAlso Not opt.TtedScan AndAlso Not opt.ScanDiff AndAlso Not opt.RaceAnim AndAlso Not opt.RaceCompat AndAlso Not opt.MountValidate AndAlso opt.FindHkx = "" AndAlso opt.ChunkCompare = "" AndAlso opt.DumpBehavior = "" AndAlso Not opt.HkxCoverage AndAlso opt.KwType = "" AndAlso Not opt.StateMap AndAlso Not opt.ClipResolve AndAlso opt.HkxBone = "" AndAlso opt.ClipBase = "" AndAlso opt.FindFile = "" AndAlso opt.NifDump = "" AndAlso opt.AnimSyncCheck = "" AndAlso opt.BlendHintScan = "" AndAlso Not opt.CatProfile AndAlso Not opt.Provenance AndAlso opt.DumpRef = "" AndAlso opt.EstimateSclp = "" AndAlso opt.SclpDiag = "" AndAlso opt.SclpBatch = "" AndAlso opt.BindDiff = "" AndAlso opt.Ba2Extract = "" AndAlso Not opt.SseCompareBatch AndAlso Not opt.VertexBatch AndAlso opt.PosDump = "" AndAlso opt.MeshShaders = "" Then
             Console.Error.WriteLine("No hay NPCs para procesar (revisa --edid / --list).") : Environment.ExitCode = 1 : Return
         End If
 
@@ -432,6 +433,14 @@ Module Program
         ' --- RACEANIM: resuelve el behavior por raza (project+skeleton por gender + subgraphs vía SRAC/SADD).
         If opt.RaceAnim Then
             RaceAnimScan(pm, opt.Edid)
+            Return
+        End If
+
+        ' --- RACECOMPAT: reconstruye la inyección de razas que RaceCompatibility hace EN RUNTIME sobre las
+        ' FormLists vanilla de head parts (ver RaceCompatibilityCatalog) y comprueba, contra el load order real,
+        ' que un HDPT vanilla pase a ser válido para las razas custom. Diagnóstico: no altera nada.
+        If opt.RaceCompat Then
+            RaceCompatScan(pm)
             Return
         End If
 
@@ -5560,6 +5569,72 @@ persist:
         Console.WriteLine($"[SKEL-CHECK] skeletons distintos verificados={gSkelSeen.Count}; con selección AMBIGUA (no hay exactamente 1 no-ragdoll): {If(gSkelAnom.Count = 0, "NINGUNO ✓ (1 anim + ragdoll en todos)", String.Join("  |  ", gSkelAnom))}")
     End Sub
 
+    ''' <summary>--racecompat: reconstruye la inyección de razas de RaceCompatibility (proxyRaces) desde el load
+    ''' order REAL y mide su efecto en el filtro de raza de los catálogos (picker / gate de presets): cuántos HDPT
+    ''' pasan a ser válidos para cada raza custom con el catálogo puesto vs sin él. Solo diagnóstico.</summary>
+    Private Sub RaceCompatScan(pm As PluginManager)
+        Dim game = Config_App.Current.Game
+        Console.WriteLine($"[racecompat] game={game}")
+        Dim cat = FO4_Base_Library.RaceCompatibilityCatalog.Load(pm, game)
+        Console.WriteLine($"[racecompat] FormLists aumentadas={cat.AugmentedListCount}  razas inyectadas={cat.InjectedRaceCount}")
+        If cat.AugmentedListCount = 0 Then
+            Console.WriteLine("[racecompat] no hay ningún mod que use RaceCompatibility en el load order (o no es Skyrim) → el filtro se comporta como siempre.")
+            Return
+        End If
+
+        ' Razas custom detectadas = las que el script habría insertado en alguna lista.
+        Dim races As New HashSet(Of UInteger)
+        For Each hdptRec In pm.GetRecordsOfType("HDPT")
+            Dim h = RecordParsers.ParseHDPT(hdptRec, pm)
+            If h Is Nothing OrElse h.ValidRacesFormID = 0UI Then Continue For
+        Next
+        For Each raceRec In pm.GetRecordsOfType("RACE")
+            Dim rfid = pm.ResolveReferencedFormID(raceRec.SourcePluginName, raceRec.Header.FormID)
+            Dim edid = RecordParsers.ParseRACE(raceRec, pm)?.EditorID
+            ' ¿el catálogo mete esta raza en alguna lista?
+            Dim injected = False
+            For Each flstRec In pm.GetRecordsOfType("FLST")
+                Dim ffid = pm.ResolveReferencedFormID(flstRec.SourcePluginName, flstRec.Header.FormID)
+                If cat.ContainsRace(ffid, rfid) Then injected = True : Exit For
+            Next
+            If Not injected Then Continue For
+            races.Add(rfid)
+
+            ' Efecto real en el filtro de los catálogos: HDPT válidos con y sin la reconstrucción.
+            Dim withCat = 0, withoutCat = 0
+            Dim cacheA As New Dictionary(Of UInteger, FLST_Data)
+            Dim cacheB As New Dictionary(Of UInteger, FLST_Data)
+            Dim saved = FO4_NPC_Manager.HeadPartResolver.RaceCompatCatalog
+            For Each hdptRec In pm.GetRecordsOfType("HDPT")
+                Dim hfid = pm.ResolveReferencedFormID(hdptRec.SourcePluginName, hdptRec.Header.FormID)
+                FO4_NPC_Manager.HeadPartResolver.RaceCompatCatalog = Nothing
+                If FO4_NPC_Manager.HeadPartResolver.IsHdptValidForRace(hfid, rfid, True, pm, cacheA, Nothing, True) Then withoutCat += 1
+                FO4_NPC_Manager.HeadPartResolver.RaceCompatCatalog = cat
+                If FO4_NPC_Manager.HeadPartResolver.IsHdptValidForRace(hfid, rfid, True, pm, cacheB, Nothing, True) Then withCat += 1
+            Next
+            FO4_NPC_Manager.HeadPartResolver.RaceCompatCatalog = saved
+            Console.WriteLine($"   raza {edid,-28} 0x{rfid:X8}: HDPT válidos SIN reconstrucción={withoutCat}  CON reconstrucción={withCat}  (+{withCat - withoutCat})")
+        Next
+        Console.WriteLine($"[racecompat] razas custom inyectadas: {races.Count}")
+
+        ' Control: la raza VANILLA equivalente. Si la reconstrucción es correcta, la raza custom debe ofrecer
+        ' aproximadamente el mismo catálogo que la vanilla a la que suplanta (es literalmente lo que hace el script).
+        Console.WriteLine("[racecompat] control — razas vanilla (mismo filtro, sin reconstrucción):")
+        For Each raceRec In pm.GetRecordsOfType("RACE")
+            Dim r = RecordParsers.ParseRACE(raceRec, pm)
+            If r Is Nothing Then Continue For
+            If r.EditorID <> "NordRace" AndAlso r.EditorID <> "BretonRace" AndAlso r.EditorID <> "OrcRace" AndAlso r.EditorID <> "NordRaceVampire" Then Continue For
+            Dim rfid = pm.ResolveReferencedFormID(raceRec.SourcePluginName, raceRec.Header.FormID)
+            Dim cache As New Dictionary(Of UInteger, FLST_Data)
+            Dim n = 0
+            For Each hdptRec In pm.GetRecordsOfType("HDPT")
+                Dim hfid = pm.ResolveReferencedFormID(hdptRec.SourcePluginName, hdptRec.Header.FormID)
+                If FO4_NPC_Manager.HeadPartResolver.IsHdptValidForRace(hfid, rfid, True, pm, cache, Nothing, True) Then n += 1
+            Next
+            Console.WriteLine($"   raza {r.EditorID,-28} 0x{rfid:X8}: HDPT válidos={n}")
+        Next
+    End Sub
+
     ' Como MainForm.LoadAnimHkxBytes: prueba candidatos (con/sin "Meshes\", .hkx/.hkt).
     Private Function LoadAnimCand(path As String) As Byte()
         Return BehaviorClipEnumerator.LoadFirstHkxCandidate(Function(p) FO4_NPC_Manager.MeshPathHelpers.TryLoadMeshBytes(p, 0), path)
@@ -7053,6 +7128,7 @@ persist:
                 Case "--ttedscan" : a.TtedScan = True : i += 1
                 Case "--scandiff" : a.ScanDiff = True : i += 1
                 Case "--raceanim" : a.RaceAnim = True : i += 1
+                Case "--racecompat" : a.RaceCompat = True : i += 1
                 Case "--mountvalidate" : a.MountValidate = True : i += 1
                 Case "--findhkx" : a.FindHkx = v : i += 2
                 Case "--chunkcompare" : a.ChunkCompare = v : i += 2
@@ -7082,7 +7158,7 @@ persist:
                     Console.Error.WriteLine($"Arg desconocido: {args(i)}") : PrintUsage() : Return Nothing
             End Select
         End While
-        If a.ListPath = "" AndAlso (a.Esp = "" OrElse a.Edid = "") AndAlso Not a.TtedScan AndAlso Not a.ScanDiff AndAlso Not a.RaceAnim AndAlso Not a.MountValidate AndAlso a.FindHkx = "" AndAlso a.ChunkCompare = "" AndAlso a.DumpBehavior = "" AndAlso Not a.HkxCoverage AndAlso a.KwType = "" AndAlso Not a.StateMap AndAlso Not a.ClipResolve AndAlso a.HkxBone = "" AndAlso a.ClipBase = "" AndAlso a.FindFile = "" AndAlso a.NifDump = "" AndAlso a.AnimSyncCheck = "" AndAlso a.BlendHintScan = "" AndAlso Not a.CatProfile AndAlso a.DumpRef = "" AndAlso a.EstimateSclp = "" AndAlso a.SclpDiag = "" AndAlso a.SclpBatch = "" AndAlso a.BindDiff = "" AndAlso a.Ba2Extract = "" AndAlso Not a.SseCompareBatch AndAlso Not a.VertexBatch AndAlso a.PosDump = "" AndAlso a.MeshShaders = "" Then
+        If a.ListPath = "" AndAlso (a.Esp = "" OrElse a.Edid = "") AndAlso Not a.TtedScan AndAlso Not a.ScanDiff AndAlso Not a.RaceAnim AndAlso Not a.RaceCompat AndAlso Not a.MountValidate AndAlso a.FindHkx = "" AndAlso a.ChunkCompare = "" AndAlso a.DumpBehavior = "" AndAlso Not a.HkxCoverage AndAlso a.KwType = "" AndAlso Not a.StateMap AndAlso Not a.ClipResolve AndAlso a.HkxBone = "" AndAlso a.ClipBase = "" AndAlso a.FindFile = "" AndAlso a.NifDump = "" AndAlso a.AnimSyncCheck = "" AndAlso a.BlendHintScan = "" AndAlso Not a.CatProfile AndAlso a.DumpRef = "" AndAlso a.EstimateSclp = "" AndAlso a.SclpDiag = "" AndAlso a.SclpBatch = "" AndAlso a.BindDiff = "" AndAlso a.Ba2Extract = "" AndAlso Not a.SseCompareBatch AndAlso Not a.VertexBatch AndAlso a.PosDump = "" AndAlso a.MeshShaders = "" Then
             Console.Error.WriteLine("Faltan --esp y --edid (o usa --list).") : PrintUsage() : Return Nothing
         End If
         Return a

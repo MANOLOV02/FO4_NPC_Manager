@@ -165,6 +165,7 @@ Module Program
         Dim opt As New BakeAllRunner.Options()
         opt.Windowless = HasFlag(args, "--windowless")
         opt.ExecutablePath = GetFlagValue(args, "--executable")
+        opt.EspTarget = GetFlagValue(args, "--esptarget")
 
         If Not opt.Windowless Then
             Application.SetHighDpiMode(HighDpiMode.DpiUnaware)
@@ -222,7 +223,7 @@ Module Program
     Private Sub PrintUsage()
         Console.WriteLine("NPC_Manager_FO4.exe — command line modes")
         Console.WriteLine("")
-        Console.WriteLine("  --bake-all [--windowless] [--executable <path to game .exe>]")
+        Console.WriteLine("  --bake-all [--windowless] [--executable <path to game .exe>] [--esptarget <plugin>]")
         Console.WriteLine("      Bake loose FaceGen (NIF + face textures) for EVERY NPC in the active load")
         Console.WriteLine("      order — same as selecting them all and pressing 'Build CharGen (loose)'.")
         Console.WriteLine("      Shows a progress window with a live log by default.")
@@ -234,6 +235,9 @@ Module Program
         Console.WriteLine("      --executable   full path to a game exe (Fallout4.exe / SkyrimSE.exe). Runs")
         Console.WriteLine("                     against THAT install: it sets the Data folder and the game")
         Console.WriteLine("                     together, for this run only. config.json is not modified.")
+        Console.WriteLine("      --esptarget    bake ONLY the NPCs of this plugin (e.g. MyFollower.esp) and")
+        Console.WriteLine("                     skip every other NPC. Counts the NPCs the plugin adds AND the")
+        Console.WriteLine("                     ones it overrides. The rest of the load order is still loaded.")
         Console.WriteLine("      Exit: 0 = all baked, 1 = config/load failed, 2 = some NPCs failed, 3 = cancelled")
         Console.WriteLine("")
         Console.WriteLine("  --bake-geom <espName> <edidOrFormId> [--data <Dir>] [--out <nif>]")
