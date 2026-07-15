@@ -610,7 +610,20 @@ Public Class Preflight_Form
             ' Windows marked it "Not responding". On a big modded Data folder that is minutes of dead UI.
             ' Offloading the whole call keeps the pump alive; the progress handlers still marshal back here
             ' because Progress(Of T) captured this SynchronizationContext at construction.
-            Await Task.Run(Function() FilesDictionary_class.Fill_DictionaryAsync(LoadedDataPath, archiveProgress, archiveByteProgress:=archiveByteProg))
+            ' loadedPlugins:=SelectedPlugins — ONE notion of "what is loaded" for this session, shared by records
+            ' and assets. The list is pre-checked with the active load order, so the default run is engine-faithful;
+            ' if the user unticks a plugin, its records AND its archives both drop out. Previously the archives were
+            ' keyed off Plugins.txt no matter what the user ticked, so an unticked plugin still had its assets
+            ' indexed while anything keyed off the ticked set (e.g. the RaceMenu slider config) skipped it — two
+            ' different answers to the same question, and a silently half-loaded mod.
+            Await Task.Run(Function() FilesDictionary_class.Fill_DictionaryAsync(LoadedDataPath, archiveProgress,
+                                                                                archiveByteProgress:=archiveByteProg,
+                                                                                loadedPlugins:=SelectedPlugins))
+
+            ' No-op unless the app was launched with --diagnoseLoad (see WritePreflightDiagnostics): a normal
+            ' run writes nothing at all. ⛔ NOT wired to Logger.Enabled — that flag also drives
+            ' FaceGenBuilder.DebugMode, so using it as a profiling switch would silently change FaceGen bakes.
+            WritePreflightDiagnostics(FilesDictionary_class.LastScanDiagnostics)
 
             ' Archive phase done — fill both bars to their max for the final scans. Detail stays visible.
             ProgressBarOverall.Value = ProgressBarOverall.Maximum
@@ -645,6 +658,28 @@ Public Class Preflight_Form
             ProgressBarDetail.Visible = False
             LabelProgress.Visible = False
             MessageBox.Show(ex.ToString(), "Load failed", MessageBoxButtons.OK, MessageBoxIcon.Error)
+        End Try
+    End Sub
+
+    ''' <summary>Write the last dictionary scan's phase breakdown to <c>preflight.log</c> next to the exe —
+    ''' ⛔ ONLY when the app was launched with <c>--diagnoseLoad</c>. A normal run writes NOTHING and does
+    ''' not touch the disk: shipping software does not leave logs behind, and the fix for a slow preflight
+    ''' is a fast preflight, not a log we ask the user to mail us. This exists purely as an opt-in switch we
+    ''' can drive OURSELVES when profiling a rig.
+    '''
+    ''' <para>⛔ OVERWRITE, not append: the file is FRESHLY created on every diagnosed run and holds exactly
+    ''' the last one's line — no history to grow unbounded and no stale line to be mistaken for the current
+    ''' run's. (A load reloads the dictionary at most once, so there is only ever one line to write.)</para></summary>
+    Private Shared Sub WritePreflightDiagnostics(summary As String)
+        If String.IsNullOrEmpty(summary) Then Return
+        If Not Environment.GetCommandLineArgs().
+                Any(Function(a) String.Equals(a, "--diagnoseLoad", StringComparison.OrdinalIgnoreCase)) Then Return
+
+        Try
+            IO.File.WriteAllText(IO.Path.Combine(Application.StartupPath, "preflight.log"),
+                                 $"{Date.Now:yyyy-MM-dd HH:mm:ss} [{Config_App.Current.Game}] {summary}" & Environment.NewLine)
+        Catch
+            ' Read-only install dir, locked file, whatever — diagnostics never break the load they diagnose.
         End Try
     End Sub
 

@@ -6733,11 +6733,20 @@ Public Class MainForm
         ' — LoadMods→ForEachMod). Feeds the shared render/bake morph path via NpcMorphResolver.SliderCatalog.
         If Config_App.Current.Game = Config_App.Game_Enum.Skyrim AndAlso NpcMorphResolver.SliderCatalog Is Nothing Then
             Try
+                ' Folder list = the plugins THIS SESSION LOADED, in load order — the same set Preflight fed to
+                ' FilesDictionary (loadedPlugins:=SelectedPlugins), so the config we scan and the archives we can
+                ' read it from always agree. That mirrors the engine, which iterates the mods it loaded
+                ' (FaceMorphInterface::LoadMods → ForEachMod, FaceMorphInterface.cpp:517); the Preflight list is
+                ' pre-checked with the active load order, so a default run IS the engine's list.
+                ' Scanning a set WIDER than the dictionary would be the worst option: it would list sliders whose
+                ' extended .tri lives in an archive we never indexed — visible in the UI, no-op in render and bake.
                 Dim modNames = _pluginManager.Plugins.Select(Function(pl) pl.FileName).Where(Function(n) Not String.IsNullOrEmpty(n)).ToList()
                 Dim cat As New FO4_Base_Library.RaceMenuSliderCatalog()
                 cat.Load(modNames)
                 NpcMorphResolver.SliderCatalog = cat
-                Logger.LogLazy(Function() $"[RACEMENU-CATALOG] scanned {modNames.Count} mod folders for FaceGenMorphs\...\races.ini; hasAny={cat.HasAny()}")
+                Logger.LogLazy(Function() $"[RACEMENU-CATALOG] scanned {modNames.Count} loaded mod folders " &
+                                          $"for FaceGenMorphs\...\races.ini; races={cat.RaceCount()} hasAny={cat.HasAny()} " &
+                                          $"configs={String.Join(", ", cat.LoadedConfigMods())}")
             Catch ex As Exception
                 Logger.LogLazy(Function() $"[RACEMENU-CATALOG] load failed: {ex.Message}")
             End Try

@@ -742,11 +742,22 @@ Public Class EditFace_Form
             Dim msg As String
             If cat Is Nothing Then
                 msg = "RaceMenu extended-slider catalog not loaded (only built on a Skyrim session, after game data finishes loading)."
+            ElseIf Not cat.HasAny() Then
+                ' Catalog built but EMPTY = no races.ini was found at all. That is a config/load-order problem, not a
+                ' property of this race — say so instead of blaming the race (which sent one report down the wrong path).
+                msg = "No RaceMenu slider config was found in the loaded plugins." & vbCrLf & vbCrLf &
+                      "The extended sliders live in Meshes\actors\character\FaceGenMorphs\<plugin>\races.ini (RaceMenu ships its own " &
+                      "inside RaceMenu.bsa, under the racemenu.esp folder), and are only read for plugins this session LOADED. " &
+                      "Check that RaceMenu is installed and that its plugin is ticked in the Preflight list." & vbCrLf & vbCrLf &
+                      "The vanilla nose/jaw/eyes/… sliders are unaffected — they live in the ""Face Morphs"" tab."
             Else
                 msg = $"No RaceMenu extended sliders are installed for this race ({If(_race?.EditorID, "?")}, {If(_isFemale, "Female", "Male")}), and this NPC carries no custom morphs." & vbCrLf & vbCrLf &
-                      "Extended sliders come from a RaceMenu slider config (Meshes\actors\character\FaceGenMorphs\<mod>\races.ini + .slider). " &
+                      $"The loaded config does cover {cat.RaceCount()} other race(s), so RaceMenu itself is fine — this race simply is not listed in any " &
+                      "races.ini (custom races need their mod to ship one). " & vbCrLf & vbCrLf &
                       "The vanilla nose/jaw/eyes/… sliders live in the ""Face Morphs"" tab (they go to the NPC record)."
             End If
+            Logger.LogLazy(Function() $"[RACEMENU-TAB] empty for race='{If(_race?.EditorID, "?")}' female={_isFemale} " &
+                                      $"catalog={If(cat Is Nothing, "NULL", $"races={cat.RaceCount()} configs={String.Join(", ", cat.LoadedConfigMods())}")}")
             tab.Controls.Add(New Label With {.Text = msg, .Dock = DockStyle.Fill, .Padding = New Padding(10), .AutoSize = False, .ForeColor = SystemColors.GrayText})
             Return
         End If
