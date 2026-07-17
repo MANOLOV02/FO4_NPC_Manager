@@ -346,12 +346,12 @@ Friend NotInheritable Class NpcMaterialResolver
         Return ResolveColorFormColor(candidate.HeadPartColorFormID)
     End Function
 
-    ''' <param name="isFaceTextureSource">Sale True cuando el TXST resuelto vino de NPC.FTST o del
-    ''' default de raza (DFTM/DFTF) — las dos fuentes que el motor aplica SOLO a shapes con material
-    ''' shader-type Face(4) (RE 2026-07-16: SSE RegenerateHead 0x14042BD90 gate 0x14042BF0C; FO4 CK
-    ''' resolver 0x140ED41F6 gate 0x140ED437D). False para TNAM/body (mecanismo aparte, sin gate).
-    ''' En SSE (modelo por capas) el retorno es SIEMPRE el TNAM (base) ⇒ False; la capa face va en
-    ''' <paramref name="sseFaceAuxTextureSet"/>.</param>
+    ''' <param name="isFaceTextureSource">Solo FO4: True cuando el TXST retornado es el NPC.FTST del
+    ''' camino Face. El caller lo aplica DIFFUSE-ONLY (forceDiffuseOnly) — el attach del engine
+    ''' (Fallout4.exe 0x1406EE0B2 / CK 0x140ED3807) aplica de la cadena FTST>bodyTex>TNAM únicamente
+    ''' el slot 0. En SSE es SIEMPRE False (base=TNAM; la capa face va en
+    ''' <paramref name="sseFaceAuxTextureSet"/>). RE completo 4 binarios 2026-07-16, ver memoria
+    ''' arch_engine_face_texture_pipeline_re.</param>
     ''' <param name="sseFaceAuxTextureSet">SOLO SSE + HeadPart raw=Face: el set RESUELTO
     ''' FTST ?? DFT[sexo propio] ?? TNAM que aporta ÚNICAMENTE Normal(TX01) + _sk(TX03) +
     ''' detail(TX04) POR ENCIMA de la base TNAM, gateado por material Face — modelo por capas del
@@ -422,7 +422,19 @@ Friend NotInheritable Class NpcMaterialResolver
             If candidate.Kind = MainForm.MeshCandidateKind.HeadPart AndAlso candidate.HeadPartTypeRaw = HeadPartTypeFace AndAlso state IsNot Nothing Then
                 Dim isSse As Boolean = (Config_App.Current IsNot Nothing AndAlso Config_App.Current.Game = Config_App.Game_Enum.Skyrim)
                 If isSse Then
-                    ' Capa aux SSE: FTST > DFT[sexo] > TNAM. Si coincide con el TNAM base es no-op ⇒ Nothing.
+                    ' SSE — MODELO POR SLOTS validado byte contra 2770/2770 facegeom shipped vanilla+DLC
+                    ' (RE RegenerateHead 0x14042BD90):
+                    '   D(material+0x48)  = TNAM del head part (attach 0x14042BAA0, slot0 → SOLO diffuse)
+                    '   N(material+0x58)  = resolved.TX01  (regen 0x14042C410)
+                    '   _sk(material+0xb0)= resolved.TX03  (regen 0x14042C0DD)  [→ LightingTexture, remap SSE]
+                    '   detail            = resolved.TX04  (regen 0x14042C173)  [→ DisplacementTexture]
+                    '   S(TX07) y resto   = AUTORADO del NIF (NADIE lo escribe: attach solo D, regen solo
+                    '                       N/_sk/detail; TX07 del regen solo togglea un flag, no el path).
+                    ' resolved = FTST > DFT[sexo propio]. SIN fallback a TNAM: si no hay FTST ni DFT el
+                    ' resolved NO existe ⇒ la capa aux no corre ⇒ N/_sk/detail quedan AUTORADOS (caso
+                    ' Astrid: NordRaceAstrid sin FTST/DFTF → S=femalehead_s autorado, no AstridHead_s).
+                    ' Por eso la BASE TNAM va DIFFUSE-ONLY (isFaceTextureSource=True): pisa SOLO el D; N/_sk
+                    ' los pisa la capa aux cuando hay resolved, y S/detail quedan del material autorado.
                     Dim auxFid As UInteger = 0UI
                     Dim auxSource As String = ""
                     If state.ExplicitHeadTextureFormID <> 0UI Then
@@ -436,24 +448,31 @@ Friend NotInheritable Class NpcMaterialResolver
                             sseFaceAuxTextureSet = RecordParsers.ParseTXST(auxRec, _ctx.PluginManager)
                             If logEnabled Then
                                 Dim aSrc = auxSource, aP = sseFaceAuxTextureSet
-                                Logger.LogLazy(Function() $"[TXST-RESOLVE] source={aSrc} txst=0x{aP.FormID:X8} eid='{If(aP.EditorID, "")}' → capa SSE N/_sk/detail (base sigue TNAM) N='{If(aP.NormalTexture, "")}' sk='{If(aP.GlowTexture, "")}' det='{If(aP.HeightTexture, "")}'")
+                                Logger.LogLazy(Function() $"[TXST-RESOLVE] source={aSrc} txst=0x{aP.FormID:X8} eid='{If(aP.EditorID, "")}' → capa SSE N/_sk/detail (base TNAM=diffuse-only) N='{If(aP.NormalTexture, "")}' sk='{If(aP.GlowTexture, "")}' det='{If(aP.HeightTexture, "")}'")
                             End If
                         ElseIf logEnabled Then
                             Dim aFidL = auxFid, aSrc2 = auxSource
                             Logger.LogLazy(Function() $"[TXST-RESOLVE] source={aSrc2} formID=0x{aFidL:X8} → NOT-FOUND-or-not-TXST (aux SSE descartado)")
                         End If
                     End If
-                    ' La base queda en el TNAM (textureSetFormID intacto, isFaceTextureSource=False):
-                    ' se aplica completa y sin gate como siempre.
+                    ' Base TNAM = DIFFUSE-ONLY (marca isFaceTextureSource ⇒ forceDiffuseOnly en el loop).
+                    isFaceTextureSource = True
                 Else
+                    ' FO4 — comportamiento PREVIO restaurado (2026-07-17): FTST > TNAM > DFTM(si TNAM=0),
+                    ' aplicado como SET COMPLETO en el loop. Este era el estado byte-exacto validado
+                    ' (project_facetint_texture_bake_re 0/25.082). El cambio "FTST diffuse-only + DFTM
+                    ' fuera" (basado en el RE del attach FO4, slot0) se REVIRTIÓ porque el efecto neto en
+                    ' el composite FaceCustomization (qué samplea el render MRT para _d/_msn/_s) NO está
+                    ' cerrado en el RE, y afecta 874 NPCs vanilla — no se toca sin validación dura.
+                    ' Ver arch_engine_face_texture_pipeline_re (pieza ABIERTA: render MRT FO4). isSse=False
+                    ' ⇒ isFaceTextureSource queda False, sseFaceAuxTextureSet Nothing, forceDiffuseOnly
+                    ' nunca activo ⇒ path FO4 idéntico al de antes de la sesión.
                     If state.ExplicitHeadTextureFormID <> 0UI Then
                         textureSetFormID = state.ExplicitHeadTextureFormID
                         txstSource = "NPC.FTST(Face-override)"
-                        isFaceTextureSource = True
                     ElseIf textureSetFormID = 0UI AndAlso state.HeadTextureFormID <> 0UI Then
                         textureSetFormID = state.HeadTextureFormID
                         txstSource = "RACE.DFTM(Face-fallback)"
-                        isFaceTextureSource = True
                     End If
                 End If
             End If
@@ -487,7 +506,7 @@ Friend NotInheritable Class NpcMaterialResolver
     ''' Height / Env / Multilayer / Spec). Si el TXST trae un .bgsm/.bgem en MaterialPath,
     ''' carga ese material y reemplaza el del shape. <c>Friend Shared</c> para que
     ''' HeadPartPicker_Form pueda reutilizarlo en su preview de HDPT.</summary>
-    Friend Shared Sub ApplyTextureSetOverrides(textureSet As TXST_Data, relatedMaterial As Nifcontent_Class_Manolo.RelatedMaterial_Class, usesBodyTexture As Boolean, shap As NiflySharp.INiShape, nif As Nifcontent_Class_Manolo, Optional isHeadPartTextureSet As Boolean = False, Optional isFaceHeadPart As Boolean = False)
+    Friend Shared Sub ApplyTextureSetOverrides(textureSet As TXST_Data, relatedMaterial As Nifcontent_Class_Manolo.RelatedMaterial_Class, usesBodyTexture As Boolean, shap As NiflySharp.INiShape, nif As Nifcontent_Class_Manolo, Optional isHeadPartTextureSet As Boolean = False, Optional isFaceHeadPart As Boolean = False, Optional forceDiffuseOnly As Boolean = False)
         If textureSet Is Nothing OrElse relatedMaterial Is Nothing Then Return
 
         Dim logEnabled = Logger.Enabled
@@ -508,6 +527,16 @@ Friend NotInheritable Class NpcMaterialResolver
         '     and the non-dirty SmoothSpec).
         ' The TXST's TX## slots are layered on top by ApplyTextureSetToMaterial below, so any
         ' slot the TXST explicitly sets still wins regardless of the branch above.
+        ' forceDiffuseOnly (RE 2026-07-16): la fuente FTST del camino Face FO4 se aplica como el
+        ' ATTACH del engine — GetTexturePath(slot 0) ÚNICAMENTE (game 0x1406EE0D7 / CK 0x140ED3830,
+        ' todas las llamadas con xor edx,edx). Ni MNAM ni el resto de slots: el attach no carga el
+        ' material del TXST (un FTST MNAM-only como SkinSupermutantHead da GetTexturePath(0)=vacío,
+        ' medido: el CK bakea NEGRO — experimento TestDftm v1).
+        If forceDiffuseOnly Then
+            If TxstSlotDecision(textureSet.FormID, "Diffuse", textureSet.DiffuseTexture, material.Diffuse_or_Base_Texture, gatedSlot:=False, diffuseOnly:=True) Then material.Diffuse_or_Base_Texture = textureSet.DiffuseTexture
+            Return
+        End If
+
         If textureSet.MaterialPath <> "" Then
             Dim overrideMaterial = MaterialResolver.TryLoadMaterialFromDictionary(textureSet.MaterialPath, material, shap, nif)
             If overrideMaterial IsNot Nothing Then
@@ -1247,12 +1276,14 @@ Friend NotInheritable Class NpcMaterialResolver
                     If logEnabled Then
                         Dim shN2 = shape.ShapeName
                         Dim shTy2 = If(matPre IsNot Nothing, matPre.NifShaderType.ToString(), "?")
-                        Logger.LogLazy(Function() $"[FACE-SHADER-GATE] face TXST source (FTST/DFTM): shape='{shN2}' shader={shTy2} Facegen=False → face texture set NOT applied (keeps authored material).")
+                        Logger.LogLazy(Function() $"[FACE-SHADER-GATE] face TXST source (FTST): shape='{shN2}' shader={shTy2} Facegen=False → face texture set NOT applied (keeps authored material).")
                     End If
                 ElseIf (Not isSkinCand) OrElse shaderIsSkinTint Then
+                    ' isFaceTxstSource (solo FO4, =FTST): diffuse-only per RE del attach (slot 0).
                     ApplyTextureSetOverrides(textureSet, relatedMaterial, candidate.UsesBodyTexture, shape.NifShape, shape.NifContent,
                                              isHeadPartTextureSet:=(candidate IsNot Nothing AndAlso candidate.Kind = MainForm.MeshCandidateKind.HeadPart),
-                                             isFaceHeadPart:=(candidate IsNot Nothing AndAlso candidate.HeadPartType = HeadPartTypeFace))
+                                             isFaceHeadPart:=(candidate IsNot Nothing AndAlso candidate.HeadPartType = HeadPartTypeFace),
+                                             forceDiffuseOnly:=isFaceTxstSource)
                 ElseIf logEnabled Then
                     Dim shN = shape.ShapeName
                     Dim shTy = If(matPre IsNot Nothing, matPre.NifShaderType.ToString(), "?")
