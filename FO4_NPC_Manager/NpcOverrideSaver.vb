@@ -296,16 +296,16 @@ Public Module NpcOverrideSaver
         If npc Is Nothing Then Return ""
 
         Dim checks As New List(Of (Field As String, Value As String))
-        If npc.HasFull Then checks.Add(("FULL (nombre)" & labelSuffix, npc.FullName))
-        If npc.HasShortName Then checks.Add(("SHRT (nombre corto)" & labelSuffix, npc.ShortName))
-        If npc.HasActivateTextOverride Then checks.Add(("ATTX (texto de activación)" & labelSuffix, npc.ActivateTextOverride))
+        If npc.HasFull Then checks.Add(("FULL (name)" & labelSuffix, npc.FullName))
+        If npc.HasShortName Then checks.Add(("SHRT (short name)" & labelSuffix, npc.ShortName))
+        If npc.HasActivateTextOverride Then checks.Add(("ATTX (activate text)" & labelSuffix, npc.ActivateTextOverride))
 
         For Each check In checks
             If Not String.IsNullOrEmpty(check.Value) AndAlso Not PluginEncodingSettings.CanEncodeTranslatableStrict(check.Value) Then
-                Return $"El campo {check.Field} contiene caracteres que no caben en el encoding seleccionado." & vbCrLf & vbCrLf &
-                       $"Valor: ""{check.Value}""" & vbCrLf & vbCrLf &
-                       "Esos caracteres se perderían (reemplazados por '?'). Elegí UTF-8 (recomendado) " &
-                       "o un encoding que cubra el alfabeto del nombre, y volvé a guardar."
+                Return $"Field {check.Field} contains characters that don't fit in the selected encoding." & vbCrLf & vbCrLf &
+                       $"Value: ""{check.Value}""" & vbCrLf & vbCrLf &
+                       "Those characters would be lost (replaced with '?'). Choose UTF-8 (recommended) " &
+                       "or an encoding that covers the name's alphabet, and save again."
             End If
         Next
 
@@ -517,7 +517,7 @@ Public Module NpcOverrideSaver
             Dim parsedExisting = RecordParsers.ParseNPC(existing, existing.SourcePluginName, ctx.PluginManager)
             Dim label = If(parsedExisting.HasFull AndAlso parsedExisting.FullName <> "",
                            parsedExisting.FullName, $"FormID {existing.Header.FormID:X8}")
-            Dim existingConflict = FindEncodingConflict(parsedExisting, $" del NPC [{label}]")
+            Dim existingConflict = FindEncodingConflict(parsedExisting, $" of NPC [{label}]")
             If existingConflict <> "" Then Throw New InvalidDataException(existingConflict)
         Next
 
@@ -1784,93 +1784,14 @@ Public Module NpcOverrideSaver
         If String.IsNullOrEmpty(masterName) Then masterName = "Unknown.esp"
         Dim identifier = BssliderSidecar.BuildIdentifier(masterName, npcFormID)
 
-        Dim entry As New BssliderSidecar.NpcEntry With {
-            .EditorId = If(npcSpec.EditorID, ""),
-            .Gender = If(npcSpec.IsFemale, "female", "male")
-        }
-
+        ' Overlay → entry via the ONE preset↔entry mirror (BssliderSidecar.EntryFromPreset). The field
+        ' list used to be duplicated here and in HydratePresets/StripEspFieldsFromOverlay, and the copies
+        ' drifted (2026-07-16 audit: the residual was missing 5 fields, so a second Save wiped them).
         Dim overlay As LooksmenuLoader.LooksmenuPreset = Nothing
         ctx.AppliedPresets.TryGetValue(npcFormID, overlay)
-        If overlay IsNot Nothing Then
-            If overlay.BodyMorphSliders IsNot Nothing Then
-                For Each kv In overlay.BodyMorphSliders
-                    entry.BodyMorphs(kv.Key) = kv.Value
-                Next
-            End If
-            ' SSE keyed body morphs — deep-copy the nested dict so the sidecar copy is independent of the
-            ' live overlay (mirrors the flat BodyMorphSliders copy above and LooksmenuLoader's preset
-            ' deep-copy). FO4 presets leave BodyMorphsKeyed = Nothing, so this block no-ops on FO4 and
-            ' the sidecar entry keeps BodyMorphsKeyed = Nothing (FO4 behavior identical).
-            If overlay.BodyMorphsKeyed IsNot Nothing Then
-                Dim keyedCopy As New Dictionary(Of String, Dictionary(Of String, Single))(StringComparer.OrdinalIgnoreCase)
-                For Each kv In overlay.BodyMorphsKeyed
-                    Dim inner As New Dictionary(Of String, Single)(StringComparer.OrdinalIgnoreCase)
-                    If kv.Value IsNot Nothing Then
-                        For Each ikv In kv.Value
-                            inner(ikv.Key) = ikv.Value
-                        Next
-                    End If
-                    keyedCopy(kv.Key) = inner
-                Next
-                entry.BodyMorphsKeyed = keyedCopy
-            End If
-            entry.SkinTemplateId = If(overlay.SkinTemplateId, "")
-            ' Overlays (LM body tattoos) — deep-copy each entry, cloning the float arrays so the
-            ' sidecar copy is independent of the live overlay. Mirrors the BodyMorphSliders copy
-            ' above and LooksmenuLoader's preset deep-copy. NOT routed to BodyGen (see
-            ' EmitBodyGenFromSidecar): overlays have no in-game file mechanism.
-            If overlay.Overlays IsNot Nothing Then
-                For Each ov In overlay.Overlays
-                    entry.Overlays.Add(New LooksmenuLoader.OverlayEntry With {
-                        .TemplateId = ov.TemplateId,
-                        .Priority = ov.Priority,
-                        .Tint = If(ov.Tint Is Nothing, Nothing, CType(ov.Tint.Clone(), Single())),
-                        .OffsetUV = If(ov.OffsetUV Is Nothing, Nothing, CType(ov.OffsetUV.Clone(), Single())),
-                        .ScaleUV = If(ov.ScaleUV Is Nothing, Nothing, CType(ov.ScaleUV.Clone(), Single()))
-                    })
-                Next
-            End If
-            ' SSE body overlays (path-based RaceMenu tattoos) — deep-copy onto the sidecar entry (SSE-only,
-            ' nullable). FO4 presets leave SseBodyOverlays = Nothing so this no-ops on FO4.
-            If overlay.SseBodyOverlays IsNot Nothing AndAlso overlay.SseBodyOverlays.Count > 0 Then
-                entry.SseBodyOverlays = LooksmenuLoader.CloneSseBodyOverlays(overlay.SseBodyOverlays)
-            End If
-            ' SSE node transforms (body-scale/position/rotation) — deep-copy the full per-node TRS onto the sidecar
-            ' entry so an edited position/rotation survives a reload, not just the scale (SSE-only, nullable).
-            If overlay.SseNodeTransforms IsNot Nothing AndAlso overlay.SseNodeTransforms.Count > 0 Then
-                Dim list As New List(Of RaceMenuJslot.JslotNodeTransform)(overlay.SseNodeTransforms.Count)
-                For Each nt In overlay.SseNodeTransforms
-                    If nt IsNot Nothing AndAlso Not String.IsNullOrEmpty(nt.NodeName) AndAlso Not nt.IsIdentity Then list.Add(nt.Clone())
-                Next
-                If list.Count > 0 Then entry.SseNodeTransforms = list
-            End If
-            ' SSE RaceMenu absolute hair tint (packed RGB) — co-save data, persist so it survives a reload.
-            If overlay.SseHairColorRgb.HasValue Then entry.SseHairColorRgb = overlay.SseHairColorRgb
-            ' SSE skin overrides (body-paint per slot) — deep-copy onto the sidecar entry (SSE-only, nullable).
-            If overlay.SseSkinOverrides IsNot Nothing AndAlso overlay.SseSkinOverrides.Count > 0 Then
-                entry.SseSkinOverrides = LooksmenuLoader.CloneSseSkinOverrides(overlay.SseSkinOverrides)
-            End If
-            ' SSE custom face morphs (RaceMenu NiOverride named morphs) — co-save data, persist so they survive reload.
-            If overlay.SseCustomMorphs IsNot Nothing AndAlso overlay.SseCustomMorphs.Count > 0 Then
-                Dim cms As New List(Of NPC_CustomMorph)(overlay.SseCustomMorphs.Count)
-                For Each cm In overlay.SseCustomMorphs : cms.Add(New NPC_CustomMorph With {.Name = cm.Name, .Value = cm.Value}) : Next
-                entry.SseCustomMorphs = cms
-            End If
-            ' SSE per-vertex head sculpt — co-save data, persist so it survives reload.
-            If overlay.SseSculptHead IsNot Nothing AndAlso overlay.SseSculptHead.Count > 0 Then
-                Dim sc As New List(Of NPC_SculptVert)(overlay.SseSculptHead.Count)
-                For Each sv In overlay.SseSculptHead : sc.Add(New NPC_SculptVert With {.Index = sv.Index, .Dx = sv.Dx, .Dy = sv.Dy, .Dz = sv.Dz}) : Next
-                entry.SseSculptHead = sc
-            End If
-            ' SSE per-SHAPE sculpt (head+brows+eyes+mouth) — full-fidelity co-save superset; persist so all four parts survive reload.
-            If overlay.SseSculptParts IsNot Nothing AndAlso overlay.SseSculptParts.Count > 0 Then
-                entry.SseSculptParts = LooksmenuLoader.CloneSseSculptParts(overlay.SseSculptParts)
-            End If
-            ' SSE per-layer custom tint mask textures (RaceMenu co-save) — no ESP home, persist so they survive reload.
-            If overlay.SseTintTexOverride IsNot Nothing AndAlso overlay.SseTintTexOverride.Count > 0 Then
-                entry.SseTintTexOverride = New Dictionary(Of Integer, String)(overlay.SseTintTexOverride)
-            End If
-        End If
+        Dim entry = BssliderSidecar.EntryFromPreset(overlay,
+                                                    If(npcSpec.EditorID, ""),
+                                                    If(npcSpec.IsFemale, "female", "male"))
 
         ' Always overwrite the NPC's slot — even if entry ends up empty. Write() drops empty entries
         ' so a clear-then-save round trip removes the row instead of leaving stale data on disk.

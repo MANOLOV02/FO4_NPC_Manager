@@ -300,13 +300,18 @@ Friend NotInheritable Class NpcFaceTintResolver
 #End If
                 ' ⚠️ PROVISORIO: el toggle sólo FUERZA el fold en NPCs que no lo necesitan (vanilla), para poder
                 ' comparar tono con/sin pliegue. Cuando mustFold ya es True, el fold va sí o sí (la UI lo deshabilita).
+                ' ⛔ RAZA EFECTIVA (state.RaceFormID), NO npcData.RaceFormID: npcData sale del parse crudo +
+                ' preset LM y NO lleva el override de raza del editor (NpcRecordOverride) — tras un cambio de
+                ' raza el compose de la CARA usaba el catálogo de tints de la raza VIEJA mientras el body usaba
+                ' la nueva ⇒ cara y cuerpo con tonos de razas distintas (medido: Argonian→Dremora, [SSE-QNAM]
+                ' raceFid viejo idx=38 en la cara vs nuevo idx=1 en el body).
                 If mustFold OrElse forceFoldDebug Then
-                    If ApplySseFacetintFolded(materialBase, npcData, race, model, host, skeeRaw, faceOvl) Then
+                    If ApplySseFacetintFolded(materialBase, npcData, race, model, host, skeeRaw, faceOvl, state.RaceFormID) Then
                         composedAny = True
                         Continue For
                     End If
                 End If
-                If ApplySseFacetint(materialBase, npcData, race, model, host) Then composedAny = True
+                If ApplySseFacetint(materialBase, npcData, race, model, host, state.RaceFormID) Then composedAny = True
                 Continue For
             End If
 
@@ -436,10 +441,14 @@ Friend NotInheritable Class NpcFaceTintResolver
     Private Function ApplySseFacetintFolded(materialBase As FO4UnifiedMaterial_Class, npcData As NPC_Data,
                                             race As RACE_Data, model As PreviewModel, host As NpcRenderHost,
                                             skeeRaw As IList(Of SseSkeeMaskReader.SkeeMaskLayerRaw),
-                                            faceOvl As IList(Of RaceMenuJslot.JslotOverlayNode)) As Boolean
+                                            faceOvl As IList(Of RaceMenuJslot.JslotOverlayNode),
+                                            Optional effRaceFid As UInteger = 0UI) As Boolean
         If npcData Is Nothing Then Return False
-        If race Is Nothing AndAlso npcData.RaceFormID <> 0UI Then
-            Dim rr0 = _ctx.PluginManager.GetRecord(npcData.RaceFormID)
+        ' Raza EFECTIVA: la del state (override de raza del editor incluido). npcData.RaceFormID es la
+        ' cruda del récord — sólo fallback cuando el caller no pasa la efectiva (paths sin state).
+        If effRaceFid = 0UI Then effRaceFid = npcData.RaceFormID
+        If race Is Nothing AndAlso effRaceFid <> 0UI Then
+            Dim rr0 = _ctx.PluginManager.GetRecord(effRaceFid)
             If rr0 IsNot Nothing AndAlso rr0.Header.Signature = "RACE" Then race = _ctx.ParseRaceCached(rr0)
         End If
         If race Is Nothing Then Return False
@@ -475,137 +484,113 @@ Friend NotInheritable Class NpcFaceTintResolver
         Dim acc(npix * 4 - 1) As Double
         Array.Copy(cImg.Rgba, acc, acc.Length)
 
-        ' --- 2. Facetint compuesto a la resolución del complexion (lineal), y detail (slot 3) crudo. ---
-        ' El COMPOSE del facetint también sigue el flag (es un stack de capas: tiene las dos réplicas). Decodificar el
-        ' complexion/detail NO es compose (es leer el archivo) ⇒ eso es entrada común a los dos caminos, no un cruce.
+        ' --- 2. Entradas COMUNES a los dos caminos. Decodificar el complexion/detail NO es compose (es leer el
+        ' archivo): es la entrada compartida que garantiza inputs bit-idénticos a las dos réplicas (decodificar
+        ' BCn por hardware tiene tolerancias de spec ⇒ rompería el "dan lo mismo" en el origen). ---
         Dim useGpu = Config_App.Current.Setting_GPUSkinning AndAlso host IsNot Nothing
-        Dim facetint As Double()
-        If useGpu Then
-            Dim tintLayers = SseFaceTintComposer.BuildLayerInputs(_ctx.PluginManager, npcRec, race, npcData.RaceFormID,
-                                                                  npcData.IsFemale, npcData.SseTintRaw, npcData.SseTintTexOverride)
-            facetint = SseFoldLayerStack.ComposeFacetintGpu(tintLayers, w, h, host)
-            If facetint Is Nothing Then
-                Logger.LogLazy(Function() "[SSE-FOLD] ABORT: el compose GPU del facetint falló y el flag pide GPU. NO se compone por CPU.")
-                Return False
-            End If
-        Else
-            facetint = SseFaceTintComposer.ComposeLinearRgba(_ctx.PluginManager, npcRec, race, npcData.RaceFormID,
-                                                             npcData.IsFemale, w, h, Nothing,
-                                                             npcData.SseTintRaw, npcData.SseTintTexOverride)
-            If facetint Is Nothing Then Return False
-        End If
         Dim detPath = materialBase.DisplacementTexture
         Dim detailAcc As Double() = Nothing
         If Not String.IsNullOrEmpty(detPath) Then detailAcc = SseFaceTintComposer.DecodeTextureRgba(detPath, w, h)
-
-        ' Medias de las ENTRADAS (diagnóstico): si el facetint sale ~1.0 ⇒ fgTint ≈ 4 ⇒ el albedo satura ⇒ CARA BLANCA.
-        ' El facetint _d NEUTRO es ~0.25 (64/255) y uno real ronda 0.5-0.8. El complexion es oscuro (~0.28 sRGB).
-        ' ⛔ GATEADO POR Logger.Enabled: LogLazy hace lazy el STRING, NO el CÁLCULO — y esto es un loop sobre TODA la
-        ' cara (1M px a 1024²) que se pagaba en cada render aunque el log estuviera apagado. El diagnóstico no puede
-        ' costarle nada al camino caliente cuando nadie lo está mirando.
-        If Logger.Enabled Then
-            Dim mC(2) As Double, mF(2) As Double, mD(2) As Double
-            For i = 0 To npix - 1
-                For ch = 0 To 2
-                    mC(ch) += acc(i * 4 + ch)
-                    mF(ch) += facetint(i * 4 + ch)
-                    If detailAcc IsNot Nothing Then mD(ch) += detailAcc(i * 4 + ch)
-                Next
-            Next
-            Logger.LogLazy(Function() $"[SSE-FOLD] IN: complexion(sRGB)=({mC(0) / npix:F3},{mC(1) / npix:F3},{mC(2) / npix:F3}) " &
-                                      $"facetint(lin)=({mF(0) / npix:F3},{mF(1) / npix:F3},{mF(2) / npix:F3}) " &
-                                      $"⇒ fgTint≈{(mF(0) / npix + 1.0 / 255.0) * (255.0 / 64.0):F2}  " &
-                                      $"detail={If(detailAcc Is Nothing, "NINGUNO(0.5)", $"({mD(0) / npix:F3},{mD(1) / npix:F3},{mD(2) / npix:F3})")}")
-        End If
-
-        ' --- 3. PLIEGUE: CPU o GPU SEGÚN EL FLAG DE LA CÁMARA (sin cruzar). Las dos son la MISMA ley del engine
-        ' (fgTint × softlight) y devuelven lo mismo (acc en sRGB, como el DDS que se escribe). El GPU corre TODO en
-        ' float (Rgba32f) ⇒ el transporte no degrada nada. ⛔ Si el flag pide GPU y falla ⇒ ABORT, no se cae a CPU. ---
-        If useGpu Then
-            Dim folded = SseFoldLayerStack.FoldGpu(acc, facetint, detailAcc, w, h, host)
-            If folded Is Nothing Then
-                Logger.LogLazy(Function() "[SSE-FOLD] ABORT: el pliegue GPU falló y el flag pide GPU. NO se pliega por CPU.")
-                Return False
-            End If
-            acc = folded
-        Else
-            SseFaceGenBaker.FoldFacetintIntoDiffuse(acc, facetint, npix, detailAcc)
-        End If
-
-        ' --- 3b. skee MASKT y luego Face [Ovl] overlays SOBRE EL BASE PLEGADO — MISMO ORDEN QUE EL BAKE
-        ' (WriteSseFaceDiffuseWithOverlays: primero las MASKT, después los overlays). Van sobre el albedo YA tintado:
-        ' por eso hay que plegar para poder mostrarlas (en el camino normal el albedo lo calcula el shader). ---
+        ' Skin tone (QNAM) para los sentinels de las capas skee — también común a los dos caminos.
         Dim skinRgb As Double() = Nothing
-        Dim q = SseFaceTintComposer.ResolveSkinToneQnam(_ctx.PluginManager, npcData, race, npcData.RaceFormID, npcData.IsFemale)
+        Dim q = SseFaceTintComposer.ResolveSkinToneQnam(_ctx.PluginManager, npcData, race, effRaceFid, npcData.IsFemale)
         If q.HasValue Then skinRgb = New Double() {q.Value.R / 255.0, q.Value.G / 255.0, q.Value.B / 255.0}
 
-        ' ⭐ EL FLAG DE LA CÁMARA (Setting_GPUSkinning) ES EL ÚNICO QUE DECIDE, igual que en FO4: el stack de capas
-        ' tiene las DOS réplicas (SseFoldLayerStack.ComposeCpu / ComposeGpu) y las dos devuelven lo MISMO (el acc en
-        ' sRGB), así que elegir una u otra no cambia NADA más.
-        ' ⛔ SIN FALLBACK. O TODO GPU O TODO CPU. Un fallo del GPU NO se tapa componiendo por CPU: eso ocultaría
-        ' justamente el bug que hay que ver, y dejaría al render mostrando algo que el flag no pidió. Si el GPU está
-        ' activo y falla, se ABORTA el pliegue con un log de ERROR (el caller cae al camino no plegado, que es visible)
-        ' — el usuario se entera, no se lo maquilla.
-        ' En SANDBOX (SseMeasureFoldParity) corren LAS DOS a propósito y se loguea el RMS: la paridad se MIDE.
-        Dim usedGpu As Boolean = False
-        Dim rmsLog As String = ""
-        If SseFoldLayerStack.HasWork(skeeRaw, faceOvl) Then
-            If useGpu Then   ' MISMO flag que el facetint y el pliegue: el camino entero es GPU o entero CPU, sin cruzar
-                Dim accCpu As Double() = Nothing
-                Dim measureParity As Boolean = False
+        ' --- 3. LA CADENA (facetint → fold → capas → sRGB→lin): PURA GPU o PURA CPU según el flag de la cámara.
+        ' ⭐ EL FLAG (Setting_GPUSkinning) ES EL ÚNICO QUE DECIDE, y cada camino es PURO de punta a punta:
+        '   GPU → SseFoldLayerStack.ComposeFoldedGpuResident: la cadena ENTERA corre en GL encadenando TEXTURAS
+        '         (Rgba32f), CERO readbacks en el camino caliente. El readback existe SOLO en el sandbox de
+        '         paridad (SseMeasureFoldParity) y en los stats del log (Logger.Enabled) — diagnóstico, no camino.
+        '   CPU → todo en arrays Double (ComposeLinearRgba + FoldFacetintIntoDiffuse + ComposeCpu) + upload RGBA8.
+        ' "Dan lo mismo" es requisito de RESULTADO — misma ley, mismos inputs decodificados UNA vez — y se MIDE
+        ' con el sandbox; NO es un contrato de representación (el GPU ya no baja a Double entre etapas).
+        ' ⛔ SIN FALLBACK. O TODO GPU O TODO CPU. Si el flag pide GPU y CUALQUIER etapa GL falla ⇒ ABORT con log
+        ' (el caller cae al camino no plegado, que es visible) — nunca se compone por CPU a escondidas.
+        Dim foldedId As Integer
+        If useGpu Then
+            Dim tintLayers = SseFaceTintComposer.BuildLayerInputs(_ctx.PluginManager, npcRec, race, effRaceFid,
+                                                                  npcData.IsFemale, npcData.SseTintRaw, npcData.SseTintTexOverride)
+            Dim measureParity As Boolean = False
 #If DEBUG Then
-                measureParity = NPC_Config.Current.SseMeasureFoldParity   ' sandbox: en Release ni se lee (duplica el compose)
+            measureParity = NPC_Config.Current.SseMeasureFoldParity   ' sandbox: en Release ni se lee (duplica el compose)
 #End If
-                If measureParity Then
-                    accCpu = CType(acc.Clone(), Double())
-                    SseFoldLayerStack.ComposeCpu(accCpu, skeeRaw, faceOvl, skinRgb, w, h)
-                End If
-                Dim accGpu = SseFoldLayerStack.ComposeGpu(acc, skeeRaw, faceOvl, skinRgb, w, h, host)
-                If accGpu Is Nothing Then
-                    Logger.LogLazy(Function() "[SSE-FOLD] ABORT: el compose GPU de las capas falló y el flag pide GPU. " &
-                                              "NO se compone por CPU (o todo GPU o todo CPU): se aborta el pliegue.")
-                    Return False
-                End If
-                If accCpu IsNot Nothing Then rmsLog = $" rmsCPUvsGPU={SseFoldLayerStack.RmsDiff255(accCpu, accGpu, npix):F3}/255"
-                acc = accGpu
-                usedGpu = True
-            Else
+            foldedId = SseFoldLayerStack.ComposeFoldedGpuResident(acc, tintLayers, detailAcc, skeeRaw, faceOvl,
+                                                                  skinRgb, w, h, host, measureParity)
+            If foldedId = 0 Then
+                Logger.LogLazy(Function() "[SSE-FOLD] ABORT: la cadena GPU del pliegue falló y el flag pide GPU. NO se compone por CPU.")
+                Return False
+            End If
+        Else
+            ' --- CPU PURO: facetint compuesto a la resolución del complexion (lineal). ---
+            Dim facetint = SseFaceTintComposer.ComposeLinearRgba(_ctx.PluginManager, npcRec, race, effRaceFid,
+                                                                 npcData.IsFemale, w, h, Nothing,
+                                                                 npcData.SseTintRaw, npcData.SseTintTexOverride)
+            If facetint Is Nothing Then Return False
+
+            ' Medias de las ENTRADAS (diagnóstico): si el facetint sale ~1.0 ⇒ fgTint ≈ 4 ⇒ el albedo satura ⇒ CARA
+            ' BLANCA. El facetint _d NEUTRO es ~0.25 (64/255) y uno real ronda 0.5-0.8. El complexion ~0.28 sRGB.
+            ' ⛔ GATEADO POR Logger.Enabled: LogLazy hace lazy el STRING, NO el CÁLCULO — y esto es un loop sobre
+            ' TODA la cara que se pagaba en cada render aunque el log estuviera apagado. (El camino GPU loguea lo
+            ' suyo dentro de la cadena, con readbacks igual de gateados.)
+            If Logger.Enabled Then
+                Dim mC(2) As Double, mF(2) As Double, mD(2) As Double
+                For i = 0 To npix - 1
+                    For ch = 0 To 2
+                        mC(ch) += acc(i * 4 + ch)
+                        mF(ch) += facetint(i * 4 + ch)
+                        If detailAcc IsNot Nothing Then mD(ch) += detailAcc(i * 4 + ch)
+                    Next
+                Next
+                Logger.LogLazy(Function() $"[SSE-FOLD] IN: complexion(sRGB)=({mC(0) / npix:F3},{mC(1) / npix:F3},{mC(2) / npix:F3}) " &
+                                          $"facetint(lin)=({mF(0) / npix:F3},{mF(1) / npix:F3},{mF(2) / npix:F3}) " &
+                                          $"⇒ fgTint≈{(mF(0) / npix + 1.0 / 255.0) * (255.0 / 64.0):F2}  " &
+                                          $"detail={If(detailAcc Is Nothing, "NINGUNO(0.5)", $"({mD(0) / npix:F3},{mD(1) / npix:F3},{mD(2) / npix:F3})")}")
+            End If
+
+            ' PLIEGUE (fgTint × softlight = la ley FIJA del engine), y las capas SOBRE el base plegado —
+            ' skee MASKT primero y Face [Ovl] después, MISMO ORDEN QUE EL BAKE (WriteSseFaceDiffuseWithOverlays).
+            SseFaceGenBaker.FoldFacetintIntoDiffuse(acc, facetint, npix, detailAcc)
+            If SseFoldLayerStack.HasWork(skeeRaw, faceOvl) Then
                 SseFoldLayerStack.ComposeCpu(acc, skeeRaw, faceOvl, skinRgb, w, h)
             End If
-        End If
 
-        ' Mismo gate que el IN: el loop de medias sólo se paga si alguien va a leer el log.
-        If Logger.Enabled Then
-            Dim mO(2) As Double
-            For i = 0 To npix - 1
-                For ch = 0 To 2
-                    mO(ch) += acc(i * 4 + ch)
+            ' Mismo gate que el IN: el loop de medias sólo se paga si alguien va a leer el log.
+            If Logger.Enabled Then
+                Dim mO(2) As Double
+                For i = 0 To npix - 1
+                    For ch = 0 To 2
+                        mO(ch) += acc(i * 4 + ch)
+                    Next
                 Next
-            Next
-            Dim nSkeeL = If(skeeRaw Is Nothing, 0, skeeRaw.Count)
-            Dim nOvlL = If(faceOvl Is Nothing, 0, faceOvl.Count)
-            Dim pathLog = If(usedGpu, "GPU", "CPU")
-            Dim rmsL = rmsLog
-            Logger.LogLazy(Function() $"[SSE-FOLD] OUT: folded(sRGB)=({mO(0) / npix:F3},{mO(1) / npix:F3},{mO(2) / npix:F3}) " &
-                                      $"skeeLayers={nSkeeL} faceOverlays={nOvlL} capas={pathLog}{rmsL}  (esperado ~0.35-0.45; ~1.0 = satura)")
-        End If
+                Dim nSkeeL = If(skeeRaw Is Nothing, 0, skeeRaw.Count)
+                Dim nOvlL = If(faceOvl Is Nothing, 0, faceOvl.Count)
+                Logger.LogLazy(Function() $"[SSE-FOLD] OUT: folded(sRGB)=({mO(0) / npix:F3},{mO(1) / npix:F3},{mO(2) / npix:F3}) " &
+                                          $"skeeLayers={nSkeeL} faceOverlays={nOvlL} capas=CPU  (esperado ~0.35-0.45; ~1.0 = satura)")
+            End If
 
-        ' --- 4. LOSSLESS (como FO4): NO se pasa por ningún encode/decode BCn. Esa pérdida es del ARCHIVO, no del
-        ' COMPOSE — y meterla acá haría que el CPU y el GPU nunca coincidan (el GPU no comprime). Lo que tiene que ser
-        ' agnóstico es el compose. `acc` está en sRGB; el complexion original se sube sRGB (GL lo decodifica y el shader
-        ' lo recibe LINEAL), así que para subir por el upload RGBA8 crudo se convierte sRGB→LINEAL acá.
-        ' ⛔ ClampByte255 YA multiplica ×255 (espera 0..1). Pasarle el valor ya escalado lo satura a 255 ⇒ CARA BLANCA. ---
-        Dim fb(npix * 4 - 1) As Byte
-        For i = 0 To npix - 1
-            fb(i * 4) = ClampByte255(SseFaceGenBaker.Srgb2Lin(acc(i * 4 + 2)))      ' B
-            fb(i * 4 + 1) = ClampByte255(SseFaceGenBaker.Srgb2Lin(acc(i * 4 + 1)))  ' G
-            fb(i * 4 + 2) = ClampByte255(SseFaceGenBaker.Srgb2Lin(acc(i * 4)))      ' R
-            fb(i * 4 + 3) = 255
-        Next
-        Dim foldedId = UploadRgba8Linear(fb, w, h)
-        If foldedId = 0 Then
-            Logger.LogLazy(Function() "[SSE-FOLD] ABORT: GL.GenTexture devolvió 0 (¿sin contexto GL?)")
-            Return False
+            ' --- LOSSLESS (como FO4): NO se pasa por ningún encode/decode BCn. Esa pérdida es del ARCHIVO, no del
+            ' COMPOSE. `acc` está en sRGB; el render espera LINEAL crudo ⇒ se convierte sRGB→LINEAL acá y se sube
+            ' RGBA8. (El camino GPU hace la MISMA conversión con el pase cvt del shader y queda Rgba32f, sin el
+            ' redondeo al byte — ≤ medio paso de byte más preciso, igual que el live de FO4.)
+            ' ⛔ ClampByte255 YA multiplica ×255 (espera 0..1). Pasarle el valor ya escalado satura a 255 ⇒ CARA BLANCA. ---
+            Dim fb(npix * 4 - 1) As Byte
+            ' Paralelo por rangos (por-píxel puro, escrituras disjuntas ⇒ bit-idéntico): un Math.Pow por canal a la
+            ' resolución nativa del complexion — serial era otro tramo medible del fold a 4K.
+            System.Threading.Tasks.Parallel.ForEach(
+                System.Collections.Concurrent.Partitioner.Create(0, npix),
+                Sub(range)
+                    For i = range.Item1 To range.Item2 - 1
+                        fb(i * 4) = ClampByte255(SseFaceGenBaker.Srgb2Lin(acc(i * 4 + 2)))      ' B
+                        fb(i * 4 + 1) = ClampByte255(SseFaceGenBaker.Srgb2Lin(acc(i * 4 + 1)))  ' G
+                        fb(i * 4 + 2) = ClampByte255(SseFaceGenBaker.Srgb2Lin(acc(i * 4)))      ' R
+                        fb(i * 4 + 3) = 255
+                    Next
+                End Sub)
+            foldedId = UploadRgba8Linear(fb, w, h)
+            If foldedId = 0 Then
+                Logger.LogLazy(Function() "[SSE-FOLD] ABORT: GL.GenTexture devolvió 0 (¿sin contexto GL?)")
+                Return False
+            End If
         End If
 
         ' ⛔ NO se cambia NINGÚN path del material. Apuntar el material a un path sintético (que no existe en disco)
@@ -667,16 +652,29 @@ Friend NotInheritable Class NpcFaceTintResolver
     ''' (bFacetintAlbedo -> texGlowmap), matching the engine FaceTint PS (sse_facegen_skin.asm t4). NOT baked
     ''' into the diffuse (that is the FO4 path). Returns True when installed. SSE-only; the FO4 path is untouched.</summary>
     Private Function ApplySseFacetint(materialBase As FO4UnifiedMaterial_Class, npcData As NPC_Data, race As RACE_Data, model As PreviewModel,
-                                      Optional host As NpcRenderHost = Nothing) As Boolean
+                                      Optional host As NpcRenderHost = Nothing,
+                                      Optional effRaceFid As UInteger = 0UI) As Boolean
         If npcData Is Nothing Then Return False
-        ' race may be Nothing for SSE (the FO4 layer builder can return it unset); parse it from RaceFormID.
-        If race Is Nothing AndAlso npcData.RaceFormID <> 0UI Then
-            Dim rr = _ctx.PluginManager.GetRecord(npcData.RaceFormID)
+        ' Raza EFECTIVA: la del state (override de raza del editor incluido). npcData.RaceFormID es la
+        ' cruda del récord — sólo fallback cuando el caller no pasa la efectiva (paths sin state).
+        If effRaceFid = 0UI Then effRaceFid = npcData.RaceFormID
+        ' race may be Nothing for SSE (the FO4 layer builder can return it unset); parse it from the effective race.
+        If race Is Nothing AndAlso effRaceFid <> 0UI Then
+            Dim rr = _ctx.PluginManager.GetRecord(effRaceFid)
             If rr IsNot Nothing AndAlso rr.Header.Signature = "RACE" Then race = _ctx.ParseRaceCached(rr)
         End If
-        If race Is Nothing Then Return False
+        ' ⛔ Los `Return False` de acá abajo eran SILENCIOSOS: un fallo dejaba la cara con el facetint
+        ' anterior sin ninguna traza (bug "el tint no responde" imposible de diagnosticar por log).
+        ' Cada salida temprana loguea ahora su motivo bajo [SSE-FACETINT].
+        If race Is Nothing Then
+            Logger.LogLazy(Function() $"[SSE-FACETINT] skip: RACE 0x{effRaceFid:X8} no parsea (fid=0x{npcData.FormID:X8})")
+            Return False
+        End If
         Dim npcRec = _ctx.PluginManager.GetRecord(npcData.FormID)
-        If npcRec Is Nothing Then Return False
+        If npcRec Is Nothing Then
+            Logger.LogLazy(Function() $"[SSE-FACETINT] skip: GetRecord(0x{npcData.FormID:X8}) Nothing")
+            Return False
+        End If
         Const W As Integer = 512, H As Integer = 512
 
         ' ⭐ COMPOSITE = ESPEJO DEL FLAG DE LA CÁMARA (Setting_GPUSkinning), IGUAL QUE FO4. El flag es el ÚNICO
@@ -690,19 +688,25 @@ Friend NotInheritable Class NpcFaceTintResolver
         ' coincidir. La pérdida BCn es del ARCHIVO, no del COMPOSE: lo que tiene que ser agnóstico es el compose.
         Dim bgra As Byte()
         If Config_App.Current.Setting_GPUSkinning AndAlso host IsNot Nothing Then
-            bgra = ComposeSseFacetintBgraGpu(npcRec, race, npcData, W, H, host)
+            bgra = ComposeSseFacetintBgraGpu(npcRec, race, npcData, W, H, host, effRaceFid)
             If bgra Is Nothing Then
                 Logger.LogLazy(Function() "[SSE-FACETINT] ABORT: el compose GPU falló y el flag pide GPU. NO se compone por CPU.")
                 Return False
             End If
         Else
-            Dim acc = SseFaceGenBaker.ComposeFacetintAcc(_ctx.PluginManager, npcRec, race, npcData.RaceFormID, npcData.IsFemale,
+            Dim acc = SseFaceGenBaker.ComposeFacetintAcc(_ctx.PluginManager, npcRec, race, effRaceFid, npcData.IsFemale,
                                                          W, H, npcData.SseTintRaw, npcData.SseTintTexOverride)
-            If acc Is Nothing Then Return False
+            If acc Is Nothing Then
+                Logger.LogLazy(Function() $"[SSE-FACETINT] ABORT: ComposeFacetintAcc Nothing (race=0x{effRaceFid:X8} fid=0x{npcData.FormID:X8})")
+                Return False
+            End If
             bgra = SseFaceGenBaker.LinearRgbaToBgra(acc, W, H)
         End If
         Dim newId = UploadRgba8Linear(bgra, W, H)
-        If newId = 0 Then Return False
+        If newId = 0 Then
+            Logger.LogLazy(Function() "[SSE-FACETINT] ABORT: UploadRgba8Linear devolvió 0 (sin contexto GL?)")
+            Return False
+        End If
         Dim origin = _ctx.PluginManager.GetOriginatingPluginName(npcData.FormID)
         Dim fg = PluginManager.ToFaceGenLocalFormID(npcData.FormID)
         ' The engine facetint path (also what CK writes to NIF slot 6). Register the composed GL texture under
@@ -717,6 +721,7 @@ Friend NotInheritable Class NpcFaceTintResolver
             model.Textures_Dictionary(key) = New PreviewModel.Texture_Loaded_Class With {.Texture_ID = newId, .Loaded = True, .Size = New System.Drawing.Size(W, H), .IsSRGB = False}
         End If
         materialBase.InnerLayerTexture = facetintPath
+        Logger.LogLazy(Function() $"[SSE-FACETINT] OK: compuesto e instalado slot6='{facetintPath}' texId={newId} (fid=0x{npcData.FormID:X8} race=0x{effRaceFid:X8})")
         Return True
     End Function
 
@@ -727,14 +732,16 @@ Friend NotInheritable Class NpcFaceTintResolver
     ''' Es el MISMO compose que el <c>_2b</c> del bake. Base subido LINEAL (baseDiffuseIsLinearOnGpu) = seed 0.5-lin.
     ''' Sin capas (raza sin tints) → 0.5 plano (NO es un fallo: es el facetint neutro correcto). Nothing = FALLO del
     ''' GPU ⇒ el caller ABORTA con log; NO compone por CPU (o todo GPU o todo CPU). GL-bound.</summary>
-    Private Function ComposeSseFacetintBgraGpu(npcRec As PluginRecord, race As RACE_Data, npcData As NPC_Data, w As Integer, h As Integer, host As NpcRenderHost) As Byte()
+    Private Function ComposeSseFacetintBgraGpu(npcRec As PluginRecord, race As RACE_Data, npcData As NPC_Data, w As Integer, h As Integer, host As NpcRenderHost,
+                                               Optional effRaceFid As UInteger = 0UI) As Byte()
         If host Is Nothing Then Return Nothing
+        If effRaceFid = 0UI Then effRaceFid = npcData.RaceFormID   ' raza efectiva del caller; cruda solo como fallback
         Dim npix = w * h
         Dim baseBgra(npix * 4 - 1) As Byte
         For i = 0 To npix - 1
             baseBgra(i * 4) = 128 : baseBgra(i * 4 + 1) = 128 : baseBgra(i * 4 + 2) = 128 : baseBgra(i * 4 + 3) = 255   ' seed 0.5
         Next
-        Dim layers = SseFaceTintComposer.BuildLayerInputs(_ctx.PluginManager, npcRec, race, npcData.RaceFormID, npcData.IsFemale, npcData.SseTintRaw, npcData.SseTintTexOverride)
+        Dim layers = SseFaceTintComposer.BuildLayerInputs(_ctx.PluginManager, npcRec, race, effRaceFid, npcData.IsFemale, npcData.SseTintRaw, npcData.SseTintTexOverride)
         If layers Is Nothing OrElse layers.Count = 0 Then Return baseBgra   ' sin tints → 0.5 plano (= seed)
         Dim baseTex = UploadRgba8Linear(baseBgra, w, h)
         If baseTex = 0 Then Return Nothing
@@ -826,7 +833,22 @@ Friend NotInheritable Class NpcFaceTintResolver
         Dim opacity As Single = Math.Max(0.0F, Math.Min(1.0F, CSng(qnam.A) / 255.0F))
         If Logger.Enabled Then
             Dim qr = qnam.R, qg = qnam.G, qb = qnam.B, qa = qnam.A, opL = opacity
-            Logger.LogLazy(Function() $"[SSE-BODY] guard OK. QNAM=({qr},{qg},{qb},A={qa}) opacity={opL:F3} → applying to body SkinTint shapes")
+            ' meshCount + un censo de gates: cuántas meshes tienen material, cuántas son SkinTint, cuántas
+            ' quedaron excluidas por FaceTint/override — para distinguir "el modelo del host no tiene body"
+            ' (editor preview) de "el body está pero sus materiales no pasan los gates" (bug real).
+            Dim total = model.meshes.Count
+            Dim withMat = 0, skinTintN = 0, faceN = 0, ovrN = 0
+            For Each m In model.meshes
+                Dim mb = m?.MeshData?.Material?.MaterialBase
+                If mb Is Nothing Then Continue For
+                withMat += 1
+                If mb.NifShaderType = NiflySharp.Enums.BSLightingShaderType.FaceTint Then faceN += 1
+                If mb.SkinTint Then
+                    skinTintN += 1
+                    If mb.SkinTintFromOverride Then ovrN += 1
+                End If
+            Next
+            Logger.LogLazy(Function() $"[SSE-BODY] guard OK. QNAM=({qr},{qg},{qb},A={qa}) opacity={opL:F3} → applying to body SkinTint shapes (meshes={total} conMat={withMat} skinTint={skinTintN} faceTint={faceN} skinTintFromOverride={ovrN})")
         End If
         If opacity <= 0.001F Then Return
         Dim appliedCount As Integer = 0

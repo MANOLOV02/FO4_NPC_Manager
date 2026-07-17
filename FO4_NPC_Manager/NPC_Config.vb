@@ -98,6 +98,27 @@ Public Class NPC_Config
     <Serialization.JsonIgnore>
     Public Property SseMeasureFoldParity As Boolean = False
 
+    ''' <summary>BodySlide/OutfitStudio executable chosen in the Edit Body → BodySlide tab (per-game:
+    ''' the two games have separate BodySlide installs). NPC_Manager's preflight doesn't ask for it (only
+    ''' WM's does — WM_Config.BSExePath), so the tab itself lets the user pick it; the preset combo reads
+    ''' the presets from &lt;exe dir&gt;\SliderPresets\*.xml. Flushed to npc_config.json immediately on
+    ''' change (same idiom as EmitBodyGenIni).</summary>
+    Public Property BodySlideExePath_FO4 As String = ""
+    Public Property BodySlideExePath_SSE As String = ""
+
+    ' NOTE: the SELECTED PRESET NAME is deliberately NOT persisted (unlike WM_Config.Default_Preset).
+    ' The combo always opens at "(none)": it reflects the CURRENT NPC's state, and restoring a
+    ' previously-picked name would show a preset the NPC's sliders don't actually carry (user-reported
+    ' lie: NPC saved with custom sliders opened saying "Curvy"). WM can restore it because its combo
+    ' drives a stateless preview, not per-NPC data.
+
+    ''' <summary>Size variant (0=Default, 1=Big, 2=Small — BodySlidePresetCatalog.PresetSliderSize) used
+    ''' when applying a preset, per-game like the rest. Mirrors WM_Config.Bodytipe. Only meaningful under
+    ''' SSE (FO4 presets carry no size variants — the combo is disabled there), but persisted for both so
+    ''' the accessor stays symmetric.</summary>
+    Public Property BodySlideSize_FO4 As Integer = 0
+    Public Property BodySlideSize_SSE As Integer = 0
+
     ''' <summary>"Show:" tree category-filter checkboxes (Section 1 of the NPC tree). Persisted per-app so
     ''' the filter selection survives restarts. Defaults match the WinForms Designer defaults: Unique faces
     ''' on, the rest off. Seeded into the checkboxes on MainForm load; written back in MainForm_FormClosing

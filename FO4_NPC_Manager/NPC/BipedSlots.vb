@@ -51,10 +51,11 @@ Public Module BipedSlots
     ' Las tablas NO salen de las RACE (la RACE sólo REFERENCIA slots vía sus occlusion biped objects
     ' Head/Hair/Body — reference_sse_engine_occlusion_re); los slots los define el formato del juego.
     ' Cada slot cae en una REGIÓN según su nombre declarado: Hair/Head/Circlet/Ears→Headwear,
-    ' Body/Feet/Calves→Body, Hands/Forearms→Hands, [U]→Under, [A]→Over, Ring/Shield/Tail→Accessory.
+    ' Body/Feet/Calves→Body, Hands/Forearms→Hands, [U]→Under, [A]→Over, Ring/Shield→Accessory.
     ' (FO4 conserva 2 agrupaciones de la app documentadas: Ring→Hands "va en la mano", Scalp→Body overlay.
-    '  Skyrim conserva 1: Amulet→Headwear, misma regla que el Neck de FO4 — las prendas de cuello se
-    '  ocultan con "Render headwear".)
+    '  Skyrim conserva 2: Amulet→Headwear, misma regla que el Neck de FO4 — las prendas de cuello se
+    '  ocultan con "Render headwear"; y Tail(40)→Body — la cola desnuda de raza bestia es body skin, así
+    '  que se oculta con "Render body" (un outfit que ocupe el slot cae en Underarmor y se sigue viendo).)
     ' ════════════════════════════════════════════════════════════════════════════════════════════
     Public Enum BipedRegion
         None = 0
@@ -112,7 +113,12 @@ Public Module BipedSlots
         r(7) = BipedRegion.Body       ' 37 Feet
         r(8) = BipedRegion.Body       ' 38 Calves
         r(9) = BipedRegion.Accessory  ' 39 Shield
-        r(10) = BipedRegion.Accessory ' 40 Tail
+        r(10) = BipedRegion.Body      ' 40 Tail — la cola desnuda de raza bestia sale del ARMO Skin
+                                      '    de la raza (Kind=Skin) → es body skin y debe ocultarse con
+                                      '    "Render body"/Include Body. Un outfit que ocupe el slot 40
+                                      '    (Kind=Outfit) cae en Underarmor (ClassifyShapeCategory) y se
+                                      '    sigue viendo, igual que una armadura que reemplaza el slot 32.
+                                      '    SSE-only: en FO4 el slot 40 es "[U] R Leg" (región Under, abajo).
         r(11) = BipedRegion.Headwear  ' 41 LongHair
         r(12) = BipedRegion.Headwear  ' 42 Circlet
         r(13) = BipedRegion.Headwear  ' 43 Ears

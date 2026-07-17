@@ -43,6 +43,11 @@ Partial Class EditBody_Form
         BodySlideTabLayout = New TableLayoutPanel()
         GroupBoxBodySlide = New GroupBox()
         BodySlideLayout = New TableLayoutPanel()
+        BodySlidePresetLayout = New TableLayoutPanel()
+        ComboBoxBsPreset = New ComboBox()
+        ComboBoxBsSize = New ComboBox()
+        ButtonBsPresetClear = New Button()
+        ButtonBsPresetBrowse = New Button()
         TextBoxBodySlideFilter = New TextBox()
         BodySlidePanel = New FlowLayoutPanel()
         LabelBodySlideEmpty = New Label()
@@ -107,6 +112,7 @@ Partial Class EditBody_Form
         BodySlideTabLayout.SuspendLayout()
         GroupBoxBodySlide.SuspendLayout()
         BodySlideLayout.SuspendLayout()
+        BodySlidePresetLayout.SuspendLayout()
         TabPageOverlays.SuspendLayout()
         OverlaysTabLayout.SuspendLayout()
         OverlayListsLayout.SuspendLayout()
@@ -507,20 +513,80 @@ Partial Class EditBody_Form
         ' 
         BodySlideLayout.ColumnCount = 1
         BodySlideLayout.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100F))
-        BodySlideLayout.Controls.Add(TextBoxBodySlideFilter, 0, 0)
-        BodySlideLayout.Controls.Add(BodySlidePanel, 0, 1)
+        BodySlideLayout.Controls.Add(BodySlidePresetLayout, 0, 0)
+        BodySlideLayout.Controls.Add(TextBoxBodySlideFilter, 0, 1)
+        BodySlideLayout.Controls.Add(BodySlidePanel, 0, 2)
         BodySlideLayout.Dock = DockStyle.Fill
         BodySlideLayout.Location = New Point(3, 19)
         BodySlideLayout.Name = "BodySlideLayout"
         BodySlideLayout.Padding = New Padding(4)
-        BodySlideLayout.RowCount = 2
+        BodySlideLayout.RowCount = 3
+        BodySlideLayout.RowStyles.Add(New RowStyle())
         BodySlideLayout.RowStyles.Add(New RowStyle())
         BodySlideLayout.RowStyles.Add(New RowStyle(SizeType.Percent, 100F))
         BodySlideLayout.Size = New Size(496, 469)
         BodySlideLayout.TabIndex = 0
-        ' 
+        '
+        ' BodySlidePresetLayout
+        '
+        BodySlidePresetLayout.AutoSize = True
+        BodySlidePresetLayout.ColumnCount = 4
+        BodySlidePresetLayout.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100F))
+        BodySlidePresetLayout.ColumnStyles.Add(New ColumnStyle(SizeType.Absolute, 80F))
+        BodySlidePresetLayout.ColumnStyles.Add(New ColumnStyle(SizeType.Absolute, 58F))
+        BodySlidePresetLayout.ColumnStyles.Add(New ColumnStyle(SizeType.Absolute, 92F))
+        BodySlidePresetLayout.Controls.Add(ComboBoxBsPreset, 0, 0)
+        BodySlidePresetLayout.Controls.Add(ComboBoxBsSize, 1, 0)
+        BodySlidePresetLayout.Controls.Add(ButtonBsPresetClear, 2, 0)
+        BodySlidePresetLayout.Controls.Add(ButtonBsPresetBrowse, 3, 0)
+        BodySlidePresetLayout.Dock = DockStyle.Top
+        BodySlidePresetLayout.Location = New Point(7, 7)
+        BodySlidePresetLayout.Margin = New Padding(0, 0, 0, 4)
+        BodySlidePresetLayout.Name = "BodySlidePresetLayout"
+        BodySlidePresetLayout.RowCount = 1
+        BodySlidePresetLayout.RowStyles.Add(New RowStyle())
+        BodySlidePresetLayout.Size = New Size(482, 31)
+        BodySlidePresetLayout.TabIndex = 2
+        '
+        ' ComboBoxBsPreset
+        '
+        ComboBoxBsPreset.Dock = DockStyle.Fill
+        ComboBoxBsPreset.DropDownStyle = ComboBoxStyle.DropDownList
+        ComboBoxBsPreset.Location = New Point(3, 3)
+        ComboBoxBsPreset.Name = "ComboBoxBsPreset"
+        ComboBoxBsPreset.Size = New Size(246, 23)
+        ComboBoxBsPreset.TabIndex = 0
+        '
+        ' ComboBoxBsSize
+        '
+        ComboBoxBsSize.Dock = DockStyle.Fill
+        ComboBoxBsSize.DropDownStyle = ComboBoxStyle.DropDownList
+        ComboBoxBsSize.Items.AddRange(New Object() {"Default", "Big", "Small"})
+        ComboBoxBsSize.Location = New Point(255, 3)
+        ComboBoxBsSize.Name = "ComboBoxBsSize"
+        ComboBoxBsSize.Size = New Size(74, 23)
+        ComboBoxBsSize.TabIndex = 1
+        '
+        ' ButtonBsPresetClear
+        '
+        ButtonBsPresetClear.Dock = DockStyle.Fill
+        ButtonBsPresetClear.Location = New Point(335, 3)
+        ButtonBsPresetClear.Name = "ButtonBsPresetClear"
+        ButtonBsPresetClear.Size = New Size(52, 25)
+        ButtonBsPresetClear.TabIndex = 2
+        ButtonBsPresetClear.Text = "Clear"
+        '
+        ' ButtonBsPresetBrowse
+        '
+        ButtonBsPresetBrowse.Dock = DockStyle.Fill
+        ButtonBsPresetBrowse.Location = New Point(393, 3)
+        ButtonBsPresetBrowse.Name = "ButtonBsPresetBrowse"
+        ButtonBsPresetBrowse.Size = New Size(86, 25)
+        ButtonBsPresetBrowse.TabIndex = 3
+        ButtonBsPresetBrowse.Text = "Set BS exe…"
+        '
         ' TextBoxBodySlideFilter
-        ' 
+        '
         TextBoxBodySlideFilter.Dock = DockStyle.Top
         TextBoxBodySlideFilter.Location = New Point(7, 7)
         TextBoxBodySlideFilter.Name = "TextBoxBodySlideFilter"
@@ -1159,6 +1225,7 @@ Partial Class EditBody_Form
         GroupBoxBodySlide.ResumeLayout(False)
         BodySlideLayout.ResumeLayout(False)
         BodySlideLayout.PerformLayout()
+        BodySlidePresetLayout.ResumeLayout(False)
         TabPageOverlays.ResumeLayout(False)
         OverlaysTabLayout.ResumeLayout(False)
         OverlaysTabLayout.PerformLayout()
@@ -1223,6 +1290,11 @@ Partial Class EditBody_Form
     Friend WithEvents MrsvLayout As System.Windows.Forms.TableLayoutPanel
     Friend WithEvents GroupBoxBodySlide As System.Windows.Forms.GroupBox
     Friend WithEvents BodySlideLayout As System.Windows.Forms.TableLayoutPanel
+    Friend WithEvents BodySlidePresetLayout As System.Windows.Forms.TableLayoutPanel
+    Friend WithEvents ComboBoxBsPreset As System.Windows.Forms.ComboBox
+    Friend WithEvents ComboBoxBsSize As System.Windows.Forms.ComboBox
+    Friend WithEvents ButtonBsPresetClear As System.Windows.Forms.Button
+    Friend WithEvents ButtonBsPresetBrowse As System.Windows.Forms.Button
     Friend WithEvents TextBoxBodySlideFilter As System.Windows.Forms.TextBox
     Friend WithEvents BodySlidePanel As System.Windows.Forms.FlowLayoutPanel
     Friend WithEvents ButtonOk As System.Windows.Forms.Button

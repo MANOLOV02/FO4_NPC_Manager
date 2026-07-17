@@ -256,6 +256,11 @@ Public Class MainForm
         ' path that now resolves to different bytes is discarded and the parsed geometry (MBs each) is freed.
         NpcMorphResolver.ClearCaches()
         BodySlideTriResolver.ClearCaches()
+        ' Caches del compositor de facetint SSE (capas por raza, máscaras decodificadas 512² y fuentes por
+        ' (path, target), CLFM): su propio comentario dice "call on FilesDictionary rebuild" pero NADIE lo
+        ' llamaba — un reload del load order dejaba máscaras/capas stale de la sesión anterior. Mismo contrato
+        ' que los ClearCaches de arriba.
+        SseFaceTintComposer.ClearCaches()
     End Sub
 
     ' _renderHost.TintGpuCache, _renderHost.PristineDiffusePixels and the PristinePixels nested class moved to
@@ -1219,6 +1224,7 @@ Public Class MainForm
     Private _savedEnabledSavePlugin As Boolean
     Private _savedEnabledBuildCharGen As Boolean
     Private _savedEnabledSaveSceneNif As Boolean
+    Private _savedEnabledExportFomod As Boolean
 
     ''' <summary>Deshabilita/restaura la barra de botones de acción del EDITOR mientras se reproduce
     ''' una animación. NO toca los controles de la barra de animación (Combo/Select/Play/Slider/FPS)
@@ -1240,6 +1246,7 @@ Public Class MainForm
             _savedEnabledSavePlugin = ButtonSavePlugin.Enabled
             _savedEnabledBuildCharGen = ButtonBuildCharGen.Enabled
             _savedEnabledSaveSceneNif = ButtonSaveSceneNif.Enabled
+            _savedEnabledExportFomod = ButtonExportFomod.Enabled
             _editorBarCapturedDuringPlay = True
             ButtonEditFace.Enabled = False
             ButtonEditBody.Enabled = False
@@ -1252,6 +1259,7 @@ Public Class MainForm
             ButtonSavePlugin.Enabled = False
             ButtonBuildCharGen.Enabled = False
             ButtonSaveSceneNif.Enabled = False
+            ButtonExportFomod.Enabled = False
         ElseIf _editorBarCapturedDuringPlay Then
             ButtonEditFace.Enabled = _savedEnabledEditFace
             ButtonEditBody.Enabled = _savedEnabledEditBody
@@ -1264,6 +1272,7 @@ Public Class MainForm
             ButtonSavePlugin.Enabled = _savedEnabledSavePlugin
             ButtonBuildCharGen.Enabled = _savedEnabledBuildCharGen
             ButtonSaveSceneNif.Enabled = _savedEnabledSaveSceneNif
+            ButtonExportFomod.Enabled = _savedEnabledExportFomod
             _editorBarCapturedDuringPlay = False
         End If
     End Sub
@@ -1782,9 +1791,25 @@ Public Class MainForm
         ' the Has* flags on the synthesized presets stay False so vanilla fields (HeadParts,
         ' tints, weights, MRSV, FMRI/FMRS, MSDK/MSDV) are preserved from the raw record.
         HydrateAppliedPresetsFromSidecars(sidecars)
+        ' Snapshot WHICH NPCs woke up with F4SE data persisted on disk (sidecar row → BodyGen .ini →
+        ' VMAD apply-script): before this point _appliedPresets is empty, so after hydration its keys
+        ' are exactly the sidecar-backed set. "Reset (discard changes)" consults it to keep such NPCs
+        ' dirty so the next Save prunes their disk state (WYSIWYG routing, user decision 2026-07-16);
+        ' ApplyPostSaveReadback keeps it current as saves add/remove sidecar rows.
+        For Each hydratedFid In _appliedPresets.Keys
+            _sidecarBackedNpcs.Add(hydratedFid)
+        Next
         ComboBoxPreviewMode.SelectedIndex = 0
         ComboBoxGender.SelectedIndex = 0
     End Sub
+
+    ''' <summary>NPCs whose F4SE-only edits (BodyMorphs / Skin template / Overlays / SSE co-save fields)
+    ''' are persisted on disk — a sidecar row, and with it the BodyGen .ini row and (overlays/skin/
+    ''' transforms) the VMAD apply-script in the saved plugin. Seeded in the ctor from the sidecar
+    ''' hydration; updated by <see cref="ApplyPostSaveReadback"/> when a Save writes or prunes rows.
+    ''' Consumer: <see cref="MenuItemResetOverlay_Click"/> — a reset NPC in this set stays dirty so the
+    ''' next Save propagates the revert to disk/game instead of stranding it in the preview.</summary>
+    Private ReadOnly _sidecarBackedNpcs As New HashSet(Of UInteger)
 
     ''' <summary>Seed <see cref="_appliedPresets"/> from the preflight's <c>.bssliders</c> sidecars.
     ''' The merge itself lives in <see cref="BssliderSidecar.HydratePresets"/> so the headless bake
@@ -1796,6 +1821,15 @@ Public Class MainForm
 
     Private Sub MainForm_Load(sender As Object, e As EventArgs) Handles MyBase.Load
         SearchDebounceTimer.Interval = 250
+        ' Raza EFECTIVA para el BAKE: los caminos de bake resuelven el NPC vía NpcRecordOverlay.
+        ' ResolveOverlaidNpcData (crudo + preset LM), que NO ve el NpcRecordOverride del editor. Este hook
+        ' le da la raza pisada (Edit NPC → Race) para que FaceTint/FaceGen se horneen con el MISMO catálogo
+        ' que el render (state.RaceFormID) — render == bake. CLI/probes no lo setean → no-op.
+        NpcRecordOverlay.EffectiveRaceResolver =
+            Function(fid As UInteger) As UInteger
+                Dim ov = TryGetNpcRecordOverride(fid)
+                Return If(ov IsNot Nothing AndAlso ov.RaceFormID.HasValue, ov.RaceFormID.Value, 0UI)
+            End Function
         ' Game is NOT re-pinned here anymore — Preflight_Form's selector already set Config_App.Current.Game
         ' (and re-initialized the plugin encoding for it) before this form was constructed. Forcing FO4 here
         ' would silently override an SSE session picked in the preflight.
@@ -1856,6 +1890,27 @@ Public Class MainForm
             End Sub
         _checkBoxSseRenderFolded = cb
         PanelActionsToolbar.Controls.Add(cb)
+
+        ' ⚠️ PROVISORIO (mismo contrato que el checkbox de arriba): SseMeasureFoldParity es <JsonIgnore> (no
+        ' persiste — persistirlo fue el bug del compose duplicado para siempre) y NO tenía NINGUNA UI: sólo se
+        ' podía encender desde el debugger. Este checkbox lo enciende para la corrida en la que se quiere MEDIR
+        ' (duplica el compose: +3,6 s por render a 1024², medido). Al tildar recarga el NPC ⇒ el fold re-corre
+        ' y, si el NPC pliega en modo GPU, loguea "[SSE-FOLD] PARITY (sandbox): rmsCPUvsGPU=..." en fo4lib.log.
+        Dim cbParity As New CheckBox With {
+            .Name = "CheckBoxSseMeasureFoldParity",
+            .Text = "SSE: medir paridad fold (debug)",
+            .AutoSize = True,
+            .Checked = NPC_Config.Current.SseMeasureFoldParity,
+            .Margin = New Padding(12, 8, 3, 3)
+        }
+        AddHandler cbParity.CheckedChanged,
+            Sub()
+                NPC_Config.Current.SseMeasureFoldParity = cbParity.Checked
+                ' Recarga completa por la misma razón que el toggle de arriba: el fold mutó texturas del dict,
+                ' y además queremos que la medición corra YA (no en algún render futuro).
+                ReloadCurrentNpcFull()
+            End Sub
+        PanelActionsToolbar.Controls.Add(cbParity)
     End Sub
 
     ''' <summary>⚠️ PROVISORIO (con <see cref="AddSseFoldedRenderDebugToggle"/>). Referencia al checkbox para poder
@@ -3006,7 +3061,7 @@ Public Class MainForm
             ' filter (thousands of records) — that gate lives in GetArmoItemCandidates and is untouched. For a not-valid
             ' draft the mask falls back to the ARMO's own BOD2 (ComputeArmoEffectiveSlotMask) so it still occupies slots
             ' in the conflict resolver; the label flags WHY it may not render on this NPC.
-            Dim newTag As String = If(armoSlot.Valid, "  (new)", "  (new · sin addon para esta raza/género)")
+            Dim newTag As String = If(armoSlot.Valid, "  (new)", "  (new · no addon for this race/gender)")
             Dim disp As String = If(Not String.IsNullOrEmpty(armo.FullName), armo.FullName,
                                     If(Not String.IsNullOrEmpty(armo.EditorID), armo.EditorID, d.FormID.ToString("X8")))
             ' An OVERRIDE draft shares the real record's FormID, which is already in baseList — REPLACE that
@@ -3028,17 +3083,31 @@ Public Class MainForm
     ''' LVLI-terminal paths of <see cref="GetArmoItemCandidates"/> so both compute the slot identically.</summary>
     Private Function ComputeArmoEffectiveSlotMask(armo As ARMO_Data, npcRaceFID As UInteger, isFemale As Boolean) As (Mask As UInteger, Valid As Boolean)
         If armo Is Nothing Then Return (0UI, False)
-        ' UNIFIED game-aware slot source (2026-07-09, user directive). The slot FOOTPRINT is a record
-        ' property (BOD2 of the ARMAs, or the ARMO's own BOD2) and must NEVER read as (none) just because
-        ' the race/gender gate fails — that was the bug where the render saw slot 0x2802 (per-ARMA
-        ' EffectiveArmaSlotMask) but the outfit editor showed NONE for the SAME item. We compute two things
-        ' from ONE walk:
-        '   • recordSlot = union of EVERY addon's EffectiveArmaSlotMask (+ the ARMO's headwear bits). The
-        '     item's true slot footprint, independent of race/gender — this drives display and, when the
-        '     race-valid set is empty, the conflict mask, so the item always occupies its real slots.
-        '   • raceSlot   = the same union but only over addons that match this race AND carry a gender mesh
-        '     (what the render actually collects). Preferred when non-empty so the resolver sees exactly the
-        '     worn footprint. `valid` = whether any such addon exists (drives the editor's "shows on this NPC").
+        Return ComputeArmoEffectiveSlotMaskCore(armo, npcRaceFID, isFemale,
+                                                AddressOf _ctx.GetParsedArma,
+                                                _ctx.GetEffectiveArmorRaces(npcRaceFID))
+    End Function
+
+    ''' <summary>Shared core of <see cref="ComputeArmoEffectiveSlotMask"/>. Delegate-parameterized so the
+    ''' bake's outfit headwear-slot resolution (FaceGenBuilder.ResolveOutfitHeadwearSlots, no ctx) computes
+    ''' the SAME race-valid footprint the render/Create tab compute (RENDER == BAKE). Body unchanged:
+    ''' UNIFIED game-aware slot source (2026-07-09, user directive). The slot FOOTPRINT is a record
+    ''' property (BOD2 of the ARMAs, or the ARMO's own BOD2) and must NEVER read as (none) just because
+    ''' the race/gender gate fails — that was the bug where the render saw slot 0x2802 (per-ARMA
+    ''' EffectiveArmaSlotMask) but the outfit editor showed NONE for the SAME item. We compute two things
+    ''' from ONE walk:
+    '''   • recordSlot = union of EVERY addon's EffectiveArmaSlotMask (+ the ARMO's headwear bits). The
+    '''     item's true slot footprint, independent of race/gender — this drives display and, when the
+    '''     race-valid set is empty, the conflict mask, so the item always occupies its real slots.
+    '''   • raceSlot   = the same union but only over addons that match this race AND carry a gender mesh
+    '''     (what the render actually collects). Preferred when non-empty so the resolver sees exactly the
+    '''     worn footprint. `valid` = whether any such addon exists (drives the editor's "shows on this NPC";
+    '''     occlusion callers must treat Valid=False as "contributes nothing" — the recordSlot/BOD2 fallback
+    '''     in Mask is for display/conflict marking, not for wearing).</summary>
+    Friend Shared Function ComputeArmoEffectiveSlotMaskCore(armo As ARMO_Data, npcRaceFID As UInteger, isFemale As Boolean,
+                                                            getParsedArma As Func(Of UInteger, ARMA_Data),
+                                                            effectiveArmorRaces As ICollection(Of UInteger)) As (Mask As UInteger, Valid As Boolean)
+        If armo Is Nothing Then Return (0UI, False)
         Dim recordSlot As UInteger = 0UI
         Dim raceSlot As UInteger = 0UI
         Dim valid As Boolean = False
@@ -3046,14 +3115,14 @@ Public Class MainForm
         For Each addon In armo.ArmorAddons
             Dim arma As ARMA_Data
             Try
-                arma = _ctx.GetParsedArma(addon.ArmaFormID)
+                arma = getParsedArma(addon.ArmaFormID)
             Catch
                 Continue For
             End Try
             If arma Is Nothing Then Continue For
             Dim armaSlot As UInteger = EffectiveArmaSlotMask(arma, armo) Or headwearBits
             recordSlot = recordSlot Or armaSlot
-            If Not ArmorAddonMatchesRace(arma, npcRaceFID, _ctx.GetEffectiveArmorRaces(npcRaceFID)) Then Continue For
+            If Not ArmorAddonMatchesRace(arma, npcRaceFID, effectiveArmorRaces) Then Continue For
             Dim genderMesh = If(isFemale, arma.FemaleMeshPath, arma.MaleMeshPath)
             If genderMesh = "" Then genderMesh = If(arma.MaleMeshPath <> "", arma.MaleMeshPath, arma.FemaleMeshPath)
             If genderMesh <> "" Then
@@ -3586,20 +3655,18 @@ Public Class MainForm
     ''' Additive union: the NPC shows if it matches ANY ticked category. The four flags are read
     ''' once by the caller (PopulateNPCTree), not per-NPC. Categories:
     ''' Unique faces = in-world AND own appearance; Generic = in-world AND inherits appearance;
-    ''' Template bases = used as a TPLT/TPTA source; Unused = not in-world, not a template source,
-    ''' and not a CharGen face preset (ACBS bit 0x04).</summary>
+    ''' Template bases = used as a TPLT/TPTA source; Unused = not in-world and not a template source.
+    ''' CharGen face presets (ACBS bit 0x04) land under Unused too: they were excluded until v1.1.2,
+    ''' which hid vanilla's preset sets (30 FO4 / 200 SSE, measured) but ALSO any mod whose plugin only
+    ''' ships chargen presets — those plugins listed zero editable NPCs (Nexus report, 2026-07-16).</summary>
     Private Function NpcMatchesCategoryFilter(n As NPC_Data, showUnique As Boolean, showGeneric As Boolean,
                                               showTemplate As Boolean, showUnused As Boolean) As Boolean
-        ' ACBS bit 0x04 = "Is CharGen Face Preset" (xEdit wbDefinitionsFO4); same named constant the
-        ' Save-ESP / preset paths use elsewhere in this file (e.g. ~13483, ~14360, ~14586).
-        Const AcbsBitIsCharGenFacePreset As UInteger = &H4UI
         Dim inWorld = _npcsInGameWorld.Contains(n.FormID)
         Dim ownFace = Not NpcTemplateHelpers.NpcInheritsVisualAppearance(n)
         If showUnique AndAlso inWorld AndAlso ownFace Then Return True
         If showGeneric AndAlso inWorld AndAlso Not ownFace Then Return True
         If showTemplate AndAlso _npcsUsedAsTemplates.Contains(n.FormID) Then Return True
-        If showUnused AndAlso Not inWorld AndAlso Not _npcsUsedAsTemplates.Contains(n.FormID) _
-           AndAlso (n.AcbsFlags And AcbsBitIsCharGenFacePreset) = 0UI Then Return True
+        If showUnused AndAlso Not inWorld AndAlso Not _npcsUsedAsTemplates.Contains(n.FormID) Then Return True
         Return False
     End Function
 
@@ -4204,6 +4271,9 @@ Public Class MainForm
         ' for the common single-select case — it is built twice today (once here for instant
         ' feedback, once in the render). See _detailsAfterSelectFormID.
         _detailsAfterSelectFormID = If(npc IsNot Nothing, npc.FormID, 0UI)
+        ' Export FOMOD gate is per-PLUGIN (root node or NPC leaf) — instant feedback here, and
+        ' again in the debounced RenderFromCurrentSelection (idempotent, cheap).
+        UpdateExportFomodEnabled()
     End Sub
 
     ''' <summary>Tree mouse click. LEFT click drives manual multi-select (plain = single, Ctrl =
@@ -4393,6 +4463,9 @@ Public Class MainForm
     ''' renders ONE random member (ad-hoc leveled list); an LVLN node renders its own random roll;
     ''' anything else clears the per-NPC action controls.</summary>
     Private Sub RenderFromCurrentSelection()
+        ' Per-plugin Export FOMOD gate — covers every debounced path, including the plugin-root
+        ' branch below that ends in DisableNpcActionControls (which deliberately skips this button).
+        UpdateExportFomodEnabled()
         ' Clear the viewport before the (possibly async) load so the previous NPC doesn't linger.
         ClearPreviewImmediate()
         If _selectedNpcFormIDs.Count >= 1 Then
@@ -4521,11 +4594,14 @@ Public Class MainForm
         End If
     End Sub
 
-    ''' <summary>Context-menu "Reset": discard the in-memory overlay for the NPC and clear its dirty
-    ''' flag (no longer bold). Overlay-only by design — does NOT delete any on-disk sidecar or saved
-    ''' ESP override (user decision 2026-05-24). The NPC reverts to its current baseline record: the
-    ''' saved override if it was saved this session (MergeOverridePlugin put it in GetRecord), else
-    ''' vanilla. Destructive (drops BodyMorphs/Skin edits too) → confirmation first.</summary>
+    ''' <summary>Context-menu "Reset": discard the in-memory overlay for the NPC. The NPC reverts to its
+    ''' current baseline record: the saved override if it was saved this session (MergeOverridePlugin put
+    ''' it in GetRecord), else vanilla. Does NOT touch disk itself (2026-05-24) — but an NPC with F4SE
+    ''' data persisted on disk (sidecar row → BodyGen .ini → VMAD apply-script) STAYS dirty so the next
+    ''' Save prunes that state and the game ends up matching the pristine preview (WYSIWYG routing, user
+    ''' decision 2026-07-16; before it, "Reset → Save" was a silent no-op and the game / next session
+    ''' kept showing the discarded edits). NPCs never saved just drop their dirty flag as before.
+    ''' Destructive (drops BodyMorphs/Skin edits too) → confirmation first.</summary>
     Private Async Sub MenuItemResetOverlay_Click(sender As Object, e As EventArgs) Handles MenuItemResetOverlay.Click
         Dim sourceTargets = If(_contextMenuTargets.Count > 0, _contextMenuTargets, New List(Of UInteger) From {_contextMenuNpcFormID})
         ' Only NPCs that actually have something to discard (LM overlay, NPC-record override, or dirty mark).
@@ -4539,7 +4615,9 @@ Public Class MainForm
             $"Discard all in-memory changes for the {targets.Count} selected NPCs (including BodyMorphs / Skin / Overlays edits) and revert each to its current record?")
         If MessageBox.Show(Me,
                            prompt & vbCrLf & vbCrLf &
-                           "This does NOT delete any ESP/ESM or sidecar already written to disk.",
+                           "Nothing on disk changes now. NPCs whose body edits were already saved stay marked " &
+                           "as changed: the next Save removes them from the .bssliders sidecar, re-emits the " &
+                           "BodyGen .ini and writes a cleanup apply-script, so the game matches this preview.",
                            "Reset NPC", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) <> DialogResult.Yes Then
             Return
         End If
@@ -4557,7 +4635,19 @@ Public Class MainForm
             ' cache; the re-render below re-parses the base record fresh (GetParsedNpc), giving the pristine NPC.
             Dim discardedNpc As NPC_Data = Nothing
             _ctx.NpcCache.TryRemove(fid, discardedNpc)
-            _dirtyNpcs.Remove(fid)
+            ' WYSIWYG routing (user decision 2026-07-16): when this NPC has F4SE data already persisted
+            ' (sidecar row → BodyGen .ini → VMAD apply-script), the revert only reaches the game after a
+            ' Save prunes it — so KEEP the NPC dirty and let the normal "Save (all changed)" route there:
+            ' MergeOneNpcIntoSidecar rebuilds an EMPTY row (Write() drops it), the BodyGen .ini is
+            ' re-emitted without the NPC, and NpcApplyScriptEmitter.ApplyToNpc emits the CLEANUP
+            ' apply-script that undoes the co-save state in-game. Without this the post-reset preview
+            ' showed a state that existed nowhere: not on disk, not in-game, and not on the next app
+            ' launch (sidecar hydration resurrected the edits).
+            If _sidecarBackedNpcs.Contains(fid) Then
+                _dirtyNpcs.Add(fid)
+            Else
+                _dirtyNpcs.Remove(fid)
+            End If
             If fid = shownFormID Then mustReRender = True
         Next
         RefreshTreeAfterDirtyChange()
@@ -4612,6 +4702,100 @@ Public Class MainForm
         ButtonSavePlugin.Enabled = (_dirtyNpcs.Count > 0 OrElse _recordsToRemove.Count > 0)
         ButtonBuildCharGen.Enabled = False
         ButtonSaveSceneNif.Enabled = False
+        ' ButtonExportFomod deliberately NOT touched here: its gating is per-PLUGIN, not per-NPC —
+        ' a plugin-root selection (Tag=Nothing) lands in this method and must KEEP the button
+        ' enabled. UpdateExportFomodEnabled() runs in the same selection flows and fixes it up.
+    End Sub
+
+    ''' <summary>Plugin (file name with extension) the current tree selection points at, for the
+    ''' Export FOMOD gate: an NPC leaf resolves to its winning plugin, a top-level plugin-root
+    ''' node ("PLUGIN_&lt;name&gt;", Tag=Nothing) resolves to its own name. Anything else (LVLN
+    ''' roots, group nodes, no selection) → Nothing.</summary>
+    Private Function SelectedPluginForFomodExport() As String
+        Dim node = TreeViewNPCs.SelectedNode
+        If node Is Nothing Then Return Nothing
+        Dim npc = TryCast(node.Tag, NPC_Data)
+        If npc IsNot Nothing Then Return npc.PluginName
+        If node.Parent Is Nothing AndAlso node.Name.StartsWith("PLUGIN_", StringComparison.Ordinal) Then
+            Return node.Name.Substring("PLUGIN_".Length)
+        End If
+        Return Nothing
+    End Function
+
+    ''' <summary>Export FOMOD gate: enabled ONLY when the selection resolves to a plugin AUTHORED
+    ''' by this app (TES4.CNAM marker, <see cref="PluginManager.IsNpcManagerPlugin"/>) whose file
+    ''' exists on disk. Cheap (dict lookup + File.Exists) — safe to call on every selection
+    ''' change. Called from AfterSelect + RenderFromCurrentSelection + after a Save ESP.</summary>
+    Private Sub UpdateExportFomodEnabled()
+        Dim pluginName = SelectedPluginForFomodExport()
+        ButtonExportFomod.Enabled =
+            Not String.IsNullOrEmpty(pluginName) AndAlso
+            _pluginManager IsNot Nothing AndAlso
+            _pluginManager.IsNpcManagerPlugin(pluginName) AndAlso
+            IO.File.Exists(IO.Path.Combine(_dataPath, pluginName))
+    End Sub
+
+    ''' <summary>Open the Export FOMOD dialog for the selected app-authored plugin. The dialog
+    ''' owns metadata editing (persisted to &lt;plugin&gt;.fomodmeta.json), manifest validation and
+    ''' the ZIP write; this handler only resolves the plugin, its NPC FormIDs (needed for the
+    ''' loose-only FaceGen enumeration) and whether the plugin has unsaved changes (surfaced as a
+    ''' "Save ESP first" warning inside the dialog — the ZIP always reflects DISK state).</summary>
+    Private Sub ButtonExportFomod_Click(sender As Object, e As EventArgs) Handles ButtonExportFomod.Click
+        Dim pluginName = SelectedPluginForFomodExport()
+        If String.IsNullOrEmpty(pluginName) OrElse Not _pluginManager.IsNpcManagerPlugin(pluginName) Then Return
+        Dim espFullPath = IO.Path.Combine(_dataPath, pluginName)
+        If Not IO.File.Exists(espFullPath) Then
+            MessageBox.Show(Me, $"Plugin file not found on disk: {espFullPath}", "Export FOMOD",
+                            MessageBoxButtons.OK, MessageBoxIcon.Error)
+            Return
+        End If
+
+        ' Global FormIDs of the NPC_ records whose winning version lives in this plugin (same
+        ' criterion as GetAuthoredRecords) — the exporter needs them to enumerate per-NPC FaceGen
+        ' loose files when the app is configured loose-only.
+        Dim npcFormIDs As New List(Of UInteger)
+        Dim recs = _pluginManager.GetRecordsOfType("NPC_")
+        If recs IsNot Nothing Then
+            For Each rec In recs
+                If rec IsNot Nothing AndAlso String.Equals(rec.SourcePluginName, pluginName, StringComparison.OrdinalIgnoreCase) Then
+                    npcFormIDs.Add(rec.Header.FormID)
+                End If
+            Next
+        End If
+
+        ' Unsaved-work check SCOPED to this plugin: a dirty NPC (or a mark-to-delete) whose winning
+        ' record lives here means the on-disk plugin lags the editor → the dialog shows the
+        ' "Save ESP first" warning.
+        Dim hasUnsaved As Boolean = False
+        For Each fid In _dirtyNpcs.Concat(_recordsToRemove)
+            Dim rec = _pluginManager.GetRecord(fid)
+            If rec IsNot Nothing AndAlso String.Equals(rec.SourcePluginName, pluginName, StringComparison.OrdinalIgnoreCase) Then
+                hasUnsaved = True
+                Exit For
+            End If
+        Next
+
+        ' Preview capture for the optional wizard screenshot: whatever the main viewport shows
+        ' right now (same front-buffer read the WM editor uses). Best-effort — Nothing (no GL
+        ' frame / capture failure) just disables the "Include screenshot" checkbox in the dialog.
+        Dim previewShot As Bitmap = Nothing
+        Try
+            previewShot = _renderHost?.PreviewCtl?.CaptureBitmap()
+        Catch
+            previewShot = Nothing
+        End Try
+
+        Try
+            Using dlg As New FomodExport_Form(espFullPath, pluginName, Config_App.Current.Game,
+                                              _dataPath, _pluginManager, npcFormIDs, hasUnsaved, previewShot)
+                If dlg.ShowDialog(Me) = DialogResult.OK Then
+                    SetStatus($"FOMOD exported: {dlg.ExportedZipPath}")
+                End If
+            End Using
+        Finally
+            ' The dialog only borrows the bitmap (PictureBox + PNG encode happen while it's open).
+            previewShot?.Dispose()
+        End Try
     End Sub
 
     Private Async Sub LoadNPCOnDemandAsync(npc As NPC_Data, requestVersion As Integer)
@@ -6494,6 +6678,8 @@ Public Class MainForm
                                  CheckBoxApplySculpt, CheckBoxBodyTri,
                                  CheckBoxRenderBody, CheckBoxRenderUnderarmor, CheckBoxRenderArmor,
                                  CheckBoxRenderHeadwear, CheckBoxRenderGore)
+        ' El grupo Load/Save de presets es LooksMenu (F4SE) en FO4 y RaceMenu (SKSE) en Skyrim.
+        LabelLooksMenu.Text = If(RenderToggleLabels.IsSse(), "RaceMenu:", "LooksMenu:")
     End Sub
 
     ''' <summary>Last step of a render — invoked by the post-texture-upload hook AFTER face tint
@@ -6818,12 +7004,22 @@ Public Class MainForm
     ''' merges channel lists; ApplyMorphPlan iterates them all per-shape uniformly.
     '''
     ''' Toggles are granular per-pipeline:
-    '''   • CheckBoxApplyVertexMorphs gates the face FRTRI003 resolver only.
+    '''   • CheckBoxApplyVertexMorphs gates the face-SHAPE channels (FO4: resolver entero; SSE: los canales
+    '''     de forma vía applyChargenMorphs — el SkinnyMorph del weight sigue al checkbox Body weight).
     '''   • CheckBoxBodyTri gates the body PIRT resolver only (inside BuildBodyMorphResolver).</summary>
     Friend Function BuildCompositeMorphResolver(state As NPCVisualState, renderData As PreviewResolutionResult, Optional host As NpcRenderHost = Nothing) As IMorphResolver
         If host Is Nothing Then host = _renderHost
         Dim face As IMorphResolver = Nothing
-        If host.Toggles.ApplyVertexMorphs Then face = _morphPoseResolver.BuildFaceMorphResolver(state, renderData, host)
+        ' SSE: el SkinnyMorph (weight de cabeza/pelo) vive DENTRO del plan de cara, así que el face
+        ' resolver se construye también con "Vertex morphs" OFF mientras "Body weight" esté ON — el
+        ' resolver recibe applyChargenMorphs:=Toggles.ApplyVertexMorphs y suprime la FORMA pero no el
+        ' weight (antes: OFF mataba el resolver entero ⇒ cabeza en peso neutro + cuerpo _0/_1 lerpeado
+        ' ⇒ costura de cuello). FO4: sin SkinnyMorph en el plan ⇒ gate por ApplyVertexMorphs como siempre.
+        Dim sseNeedsFaceForWeight = Config_App.Current IsNot Nothing AndAlso
+            Config_App.Current.Game = Config_App.Game_Enum.Skyrim AndAlso host.Toggles.ApplyBodyWeight
+        If host.Toggles.ApplyVertexMorphs OrElse sseNeedsFaceForWeight Then
+            face = _morphPoseResolver.BuildFaceMorphResolver(state, renderData, host)
+        End If
         Dim body = _morphPoseResolver.BuildBodyMorphResolver(state, renderData, host)
         ' SSE vanilla body-weight (_0/_1) vertex LERP. SSE-only (Nothing on FO4), so this is inert for
         ' FO4 and MultiMorphResolver filters the null. Ordered after face, before BodySlide.
@@ -7014,17 +7210,41 @@ Public Class MainForm
     Private Function ArmorTypePowerKeywordFid() As UInteger
         If Not _armorTypePowerKywdResolved Then
             _armorTypePowerKywdResolved = True
-            Dim kywds = _pluginManager.GetRecordsOfType("KYWD")
-            If kywds IsNot Nothing Then
-                For Each kw In kywds
-                    If kw IsNot Nothing AndAlso String.Equals(kw.EditorID, "ArmorTypePower", StringComparison.OrdinalIgnoreCase) Then
-                        _armorTypePowerKywdFid = kw.Header.FormID
-                        Exit For
-                    End If
-                Next
-            End If
+            _armorTypePowerKywdFid = FindArmorTypePowerKeywordFid(_pluginManager)
         End If
         Return _armorTypePowerKywdFid
+    End Function
+
+    ''' <summary>Shared core of <see cref="ArmorTypePowerKeywordFid"/>: EditorID scan for the vanilla
+    ''' ArmorTypePower KYWD. 0 when the load order has no such keyword (gate inert — e.g. Skyrim, which
+    ''' has no PA concept). Used by the cached instance resolver above AND by the bake path
+    ''' (FaceGenBuilder.ResolveOutfitHeadwearSlots) so both apply the SAME keyword rule (RENDER == BAKE).</summary>
+    Friend Shared Function FindArmorTypePowerKeywordFid(pluginManager As PluginManager) As UInteger
+        Dim kywds = pluginManager.GetRecordsOfType("KYWD")
+        If kywds IsNot Nothing Then
+            For Each kw In kywds
+                If kw IsNot Nothing AndAlso String.Equals(kw.EditorID, "ArmorTypePower", StringComparison.OrdinalIgnoreCase) Then
+                    Return kw.Header.FormID
+                End If
+            Next
+        End If
+        Return 0UI
+    End Function
+
+    ''' <summary>Shared core of the PA piece rule (see gate comment above): a piece is power armor iff
+    ''' its ARMO carries the ArmorTypePower keyword. Takes parsed data so draft-aware callers pass ctx
+    ''' parses and the bake passes RecordParsers-direct parses — single source (RENDER == BAKE).</summary>
+    Friend Shared Function IsPowerArmorArmoData(armo As ARMO_Data, armorTypePowerKywdFid As UInteger) As Boolean
+        Return armorTypePowerKywdFid <> 0UI AndAlso armo IsNot Nothing AndAlso armo.KeywordFormIDs.Contains(armorTypePowerKywdFid)
+    End Function
+
+    ''' <summary>Shared core of the PA race rule: a race is a power-armor race iff its RACE.WNAM (Skin)
+    ''' ARMO is itself power armor. <paramref name="getParsedArmo"/> resolves the skin ARMO (ctx-cached
+    ''' in the app, RecordParsers-direct in the bake) — single source (RENDER == BAKE).</summary>
+    Friend Shared Function IsPowerArmorRaceData(race As RACE_Data, armorTypePowerKywdFid As UInteger,
+                                                getParsedArmo As Func(Of UInteger, ARMO_Data)) As Boolean
+        If race Is Nothing OrElse armorTypePowerKywdFid = 0UI OrElse race.SkinFormID = 0UI Then Return False
+        Return IsPowerArmorArmoData(getParsedArmo(race.SkinFormID), armorTypePowerKywdFid)
     End Function
 
     ''' <summary>True if the ARMO is power armor — carries the ArmorTypePower keyword. Cached per ARMO.</summary>
@@ -7035,14 +7255,10 @@ Public Class MainForm
         ' Draft FormIDs are evaluated FRESH (no PA-boolean cache) so a live keyword edit to the draft is
         ' reflected immediately — same "drafts mutate live, never cache" rule the parse resolver follows.
         If OutfitDraft.IsDraftFormID(armoFID) Then
-            Dim ad = _ctx.GetParsedArmo(armoFID)
-            Return ad IsNot Nothing AndAlso ad.KeywordFormIDs.Contains(kFid)
+            Return IsPowerArmorArmoData(_ctx.GetParsedArmo(armoFID), kFid)
         End If
         Return _isPowerArmorArmoCache.GetOrAdd(armoFID,
-            Function(fid)
-                Dim a = _ctx.GetParsedArmo(fid)
-                Return a IsNot Nothing AndAlso a.KeywordFormIDs.Contains(kFid)
-            End Function)
+            Function(fid) IsPowerArmorArmoData(_ctx.GetParsedArmo(fid), kFid))
     End Function
 
     ''' <summary>True if the race is a power-armor race — its RACE.WNAM (Skin) ARMO is power armor. Covers
@@ -7053,8 +7269,9 @@ Public Class MainForm
             Function(fid)
                 Dim rRec = _pluginManager.GetRecord(fid)
                 If rRec Is Nothing OrElse rRec.Header.Signature <> "RACE" Then Return False
-                Dim race = _ctx.ParseRaceCached(rRec)
-                Return race IsNot Nothing AndAlso ArmoIsPowerArmor(race.SkinFormID)
+                ' Same shared core the bake uses; the draft-aware nuance of ArmoIsPowerArmor doesn't
+                ' apply here (a RACE.WNAM skin is never an in-memory ARMO draft).
+                Return IsPowerArmorRaceData(_ctx.ParseRaceCached(rRec), ArmorTypePowerKeywordFid(), AddressOf _ctx.GetParsedArmo)
             End Function)
     End Function
 
@@ -8130,8 +8347,14 @@ Public Class MainForm
             ' crudo del JSON, que no siempre coincide con el TemplateIndex del RACE; sin esto el resolver del
             ' render (match por TemplateIndex) no encuentra la entrada y el layer cae a su color crudo
             ' (skin-tone slot-12 -> pálido/blanco). Idempotente; no-op en no-Palette.
+            ' Raza EFECTIVA para normalizar los TemplateColorIndex: `npc` es el raw cacheado del ctx (raza
+            ' vieja tras un cambio de raza en el editor); el catálogo de tints correcto es el de la raza
+            ' pisada por el NpcRecordOverride, igual que el render/bake.
+            Dim ovForTintNorm = TryGetNpcRecordOverride(npcFormID)
+            Dim raceFidForTintNorm As UInteger = If(ovForTintNorm IsNot Nothing AndAlso ovForTintNorm.RaceFormID.HasValue AndAlso ovForTintNorm.RaceFormID.Value <> 0UI,
+                                                    ovForTintNorm.RaceFormID.Value, npc.RaceFormID)
             Dim raceForTintNorm As RACE_Data = Nothing
-            Dim raceRecForTintNorm = _pluginManager.GetRecord(npc.RaceFormID)
+            Dim raceRecForTintNorm = _pluginManager.GetRecord(raceFidForTintNorm)
             If raceRecForTintNorm IsNot Nothing AndAlso raceRecForTintNorm.Header.Signature = "RACE" Then
                 raceForTintNorm = _ctx.ParseRaceCached(raceRecForTintNorm)
             End If
@@ -10588,6 +10811,8 @@ Public Class MainForm
         Else
             RefreshSavedPluginInCache(target.TargetPath, execResult.SavedFormIDs, target.MarkAsMaster, target.LightMaster)
         End If
+        ' A just-saved plugin may enable Export FOMOD for the current selection without reselecting.
+        UpdateExportFomodEnabled()
 
         ' Mark-to-delete post-save: BEFORE the readback re-mounts anything, snapshot which marked FormIDs were
         ' actually dropped from THIS save's target (their winning record is currently sourced from the target
@@ -10608,7 +10833,8 @@ Public Class MainForm
         ' Step 6: re-read the just-saved records as the new baseline (mount the written plugin last
         ' in load order), strip the now-persisted ESP fields from each overlay (keeping non-ESP
         ' BodyMorphs/Skin), clear the dirty marks, regroup in the tree, and re-render the loaded NPC.
-        Await ApplyPostSaveReadback(execResult.WrittenNpcFormIDs, target.TargetPath, execResult.DraftFormIdMap)
+        Await ApplyPostSaveReadback(execResult.WrittenNpcFormIDs, target.TargetPath, execResult.DraftFormIdMap,
+                                    sidecarWritten:=target.WriteBssliders)
 
         ' Part 3 — delete the removed NPCs' CharGen bake LOOSE files (NIF + _d/_msn/_s DDS, incl. debug _2 variants).
         ' Safe (disk-only). The BA2-packed bakes are left as a TODO (see DeleteFaceGenLooseFiles remarks).
@@ -10745,68 +10971,28 @@ Public Class MainForm
     ''' must be structurally identical to a fresh sidecar hydration, otherwise the post-save re-render
     ''' shows different state than reopening the app would (the reported "tattoos vanish after Save"
     ''' bug: the sidecar on disk has the overlays via MergeOneNpcIntoSidecar, but the in-memory overlay
-    ''' was being rebuilt without them). If nothing non-ESP remains, the overlay is removed entirely.</summary>
-    Private Sub StripEspFieldsFromOverlay(npcFormID As UInteger)
+    ''' was being rebuilt without them). If nothing non-ESP remains, the overlay is removed entirely.
+    ''' Returns True when a residual overlay remains — i.e. the sidecar on disk keeps a row for this NPC.</summary>
+    Private Function StripEspFieldsFromOverlay(npcFormID As UInteger) As Boolean
         Dim overlay As LooksmenuLoader.LooksmenuPreset = Nothing
-        If Not _appliedPresets.TryGetValue(npcFormID, overlay) OrElse overlay Is Nothing Then Return
+        If Not _appliedPresets.TryGetValue(npcFormID, overlay) OrElse overlay Is Nothing Then Return False
 
-        Dim residual As New LooksmenuLoader.LooksmenuPreset()
-        Dim keptAnything = False
-        If overlay.BodyMorphSliders IsNot Nothing AndAlso overlay.BodyMorphSliders.Count > 0 Then
-            For Each kv In overlay.BodyMorphSliders
-                residual.BodyMorphSliders(kv.Key) = kv.Value
-            Next
-            keptAnything = True
-        End If
-        If Not String.IsNullOrEmpty(overlay.SkinTemplateId) Then
-            residual.SkinTemplateId = overlay.SkinTemplateId
-            keptAnything = True
-        End If
-        ' Overlays (LM body tattoos) — deep-copy each entry (cloning the float arrays so the residual is
-        ' independent), same idiom as MergeOneNpcIntoSidecar / HydrateAppliedPresetsFromSidecars. HasOverlays
-        ' travels with the list so the render + editor treat it as applied. Without this the just-saved NPC's
-        ' tattoos drop off the live preview even though they were written to the sidecar.
-        If overlay.Overlays IsNot Nothing AndAlso overlay.Overlays.Count > 0 Then
-            For Each ov In overlay.Overlays
-                residual.Overlays.Add(New LooksmenuLoader.OverlayEntry With {
-                    .TemplateId = ov.TemplateId,
-                    .Priority = ov.Priority,
-                    .Tint = If(ov.Tint Is Nothing, Nothing, CType(ov.Tint.Clone(), Single())),
-                    .OffsetUV = If(ov.OffsetUV Is Nothing, Nothing, CType(ov.OffsetUV.Clone(), Single())),
-                    .ScaleUV = If(ov.ScaleUV Is Nothing, Nothing, CType(ov.ScaleUV.Clone(), Single()))
-                })
-            Next
-            residual.HasOverlays = True
-            keptAnything = True
-        End If
-        ' SSE body overlays (path-based RaceMenu tattoos) — keep across Save (no ESP equivalent; sidecar-
-        ' persisted like BodyMorphs/Overlays). SSE-only; FO4 overlays leave this Nothing.
-        If overlay.SseBodyOverlays IsNot Nothing AndAlso overlay.SseBodyOverlays.Count > 0 Then
-            residual.SseBodyOverlays = LooksmenuLoader.CloneSseBodyOverlays(overlay.SseBodyOverlays)
-            keptAnything = True
-        End If
-        ' SSE node transforms (body-scale) — keep across Save (no ESP equivalent; .jslot/sidecar-persisted).
-        If overlay.SseNodeTransforms IsNot Nothing AndAlso overlay.SseNodeTransforms.Count > 0 Then
-            residual.SseNodeTransforms = LooksmenuLoader.CloneSseNodeTransforms(overlay.SseNodeTransforms)
-            keptAnything = True
-        End If
-        ' SSE RaceMenu hair tint (packed RGB) — keep across Save (co-save data; .jslot/sidecar-persisted).
-        If overlay.SseHairColorRgb.HasValue Then
-            residual.SseHairColorRgb = overlay.SseHairColorRgb
-            keptAnything = True
-        End If
-        ' SSE skin overrides (body-paint per slot) — keep across Save (no ESP equivalent; .jslot/sidecar-persisted).
-        If overlay.SseSkinOverrides IsNot Nothing AndAlso overlay.SseSkinOverrides.Count > 0 Then
-            residual.SseSkinOverrides = LooksmenuLoader.CloneSseSkinOverrides(overlay.SseSkinOverrides)
-            keptAnything = True
-        End If
-
-        If keptAnything Then
+        ' Round-trip through the sidecar's own entry type: EntryFromPreset keeps exactly the fields
+        ' MergeOneNpcIntoSidecar persists, and ApplyEntryToPreset rebuilds them exactly like a fresh
+        ' hydration — the residual is "structurally identical to a sidecar hydration" BY CONSTRUCTION,
+        ' so the mirrors can no longer drift (the 2026-07-16 audit found a hand-rolled copy here missing
+        ' BodyMorphsKeyed + SseCustomMorphs + SseSculptHead/Parts + SseTintTexOverride, which a second
+        ' Save then silently wiped from the sidecar on disk).
+        Dim entry = BssliderSidecar.EntryFromPreset(overlay, "", "")
+        If entry.HasAnything Then
+            Dim residual As New LooksmenuLoader.LooksmenuPreset()
+            BssliderSidecar.ApplyEntryToPreset(entry, residual)
             _appliedPresets(npcFormID) = residual
-        Else
-            _appliedPresets.Remove(npcFormID)
+            Return True
         End If
-    End Sub
+        _appliedPresets.Remove(npcFormID)
+        Return False
+    End Function
 
     ''' <summary>Post-save re-read (Step 6). Mounts the just-written plugin as the top override so
     ''' GetRecord returns the saved state, then RE-PARSES each written NPC into _ctx.NpcCache / _allNPCs.
@@ -10818,7 +11004,8 @@ Public Class MainForm
     ''' saved plugin's tree group. Re-renders the currently-loaded NPC when it was among those saved so the
     ''' preview drops the overlay and shows the clean saved record.</summary>
     Private Async Function ApplyPostSaveReadback(writtenFormIDs As List(Of UInteger), savedPluginPath As String,
-                                                 draftFormIdMap As Dictionary(Of UInteger, UInteger)) As Task
+                                                 draftFormIdMap As Dictionary(Of UInteger, UInteger),
+                                                 sidecarWritten As Boolean) As Task
         ' NOTE: the pending-removal marks (_recordsToRemove) are deliberately NOT cleared here. They're kept for
         ' the session so (a) a removed record never reappears in the "my records" lists even if the in-memory
         ' re-mount below leaves a stale override, and (b) every subsequent Save re-applies the removal (Phase 2a
@@ -10851,7 +11038,14 @@ Public Class MainForm
         Dim treeChanged = False
 
         For Each fid In writtenFormIDs
-            StripEspFieldsFromOverlay(fid)
+            Dim keptF4seResidual = StripEspFieldsFromOverlay(fid)
+            ' Keep the sidecar-backed set in sync with what the save just did to disk: with WriteBssliders
+            ' on, MergeOneNpcIntoSidecar rebuilt this NPC's row from the SAME overlay the residual came
+            ' from, so "residual kept" ⟺ "row on disk". With it off, the sidecar was not touched — leave
+            ' the membership alone. Consumer: MenuItemResetOverlay_Click's WYSIWYG dirty routing.
+            If sidecarWritten Then
+                If keptF4seResidual Then _sidecarBackedNpcs.Add(fid) Else _sidecarBackedNpcs.Remove(fid)
+            End If
             ' The authored NPC-record override is now in the saved plugin (re-read as this NPC's new baseline
             ' below), so drop it — leaving it would just re-apply identical values on the next save. Mirror of
             ' StripEspFieldsFromOverlay for the record-field overrides.

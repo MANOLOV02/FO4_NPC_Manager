@@ -372,13 +372,29 @@ Public Module FaceGenBuildPipeline
         ' FO4 stays chargen-only (validated byte-exact vs CK; its plan requests MSM/MPPM sculpt names
         ' that all live in the chargen tri, and the render's FO4 merge adds only unused expression
         ' morphs) — merging the race tri for FO4 is intentionally skipped to protect that path.
+        ' Shape geometry up front so its vertex count can drive the SSE High Poly Head .tri redirect (below) and be
+        ' reused for the morph write. IShapeGeometry.VertexCount is cheap (no vertex copy).
+        Dim geom = ShapeGeometryFactory.[For](shape, nif)
+        Dim shapeVerts = geom.VertexCount
+
         Dim triHead As TriHeadFile
         If isSse Then
             ' SSE merges race (NAM0=0) + chargen (NAM0=2) + the head MESH tri (SkinnyMorph weight morph). The
             ' mesh tri is per-part and RACE-AWARE by construction: headMeshTriPath is ChangeExtension of THIS
             ' head-part's own mesh (femalehead / ...argonian / ...khajiit / hairNN — each ships its own SkinnyMorph
             ' at its own vertex count), so no race table or vertex-count gate is needed.
-            triHead = LoadMergedHeadTri(raceMorphTriPath, chargenTriPath, state, headMeshTriPath)
+            '
+            ' HPH redirect — the SAME resolver the live render calls (NpcMorphResolver.ResolveHphHeadPartTriPath), so
+            ' render == bake by construction (regla de oro). Opt-in + SSE-gated; returns each record path unchanged
+            ' unless it's missing/wrong-topology/empty for a known HPH part (e.g. brows, whose HDPT ships only NAM0=1).
+            Dim vertsOf As Func(Of String, Integer) = Function(p)
+                                                          Dim h = LoadHeadTriCached(p, state)
+                                                          Return If(h Is Nothing, -1, CInt(h.NumVertices))
+                                                      End Function
+            Dim rRace = NpcMorphResolver.ResolveHphHeadPartTriPath(raceMorphTriPath, shapeVerts, NpcMorphResolver.HphTriSlot.Race, vertsOf)
+            Dim rChargen = NpcMorphResolver.ResolveHphHeadPartTriPath(chargenTriPath, shapeVerts, NpcMorphResolver.HphTriSlot.Chargen, vertsOf)
+            Dim rMesh = NpcMorphResolver.ResolveHphHeadPartTriPath(headMeshTriPath, shapeVerts, NpcMorphResolver.HphTriSlot.Mesh, vertsOf)
+            triHead = LoadMergedHeadTri(rRace, rChargen, state, rMesh)
         Else
             triHead = LoadHeadTriCached(chargenTriPath, state)
         End If
@@ -398,7 +414,6 @@ Public Module FaceGenBuildPipeline
                                                        shapeChargenTriPath:=chargenTriPath)
         If plan Is Nothing OrElse Not plan.HasMorphs Then Return
 
-        Dim geom = ShapeGeometryFactory.[For](shape, nif)
         Dim positionsFloat = geom.GetVertexPositions()
         Dim count = positionsFloat.Count
         If count = 0 Then Return

@@ -137,18 +137,27 @@ Friend NotInheritable Class NpcRenderContext
     Public Function GetEffectiveArmorRaces(raceFID As UInteger) As HashSet(Of UInteger)
         If raceFID = 0UI Then Return New HashSet(Of UInteger)()
         Return _armorRaceCache.GetOrAdd(raceFID,
-            Function(fid)
-                Dim races As New HashSet(Of UInteger)()
-                Dim cur = fid
-                While cur <> 0UI AndAlso races.Add(cur)
-                    Dim rec = GetRecord(cur)
-                    If rec Is Nothing OrElse rec.Header.Signature <> "RACE" Then Exit While
-                    Dim race = ParseRaceCached(rec)
-                    If race Is Nothing Then Exit While
-                    cur = race.ArmorRaceFormID
-                End While
-                Return races
-            End Function)
+            Function(fid) WalkArmorRaceChain(fid, AddressOf GetRecord, AddressOf ParseRaceCached))
+    End Function
+
+    ''' <summary>Shared core of <see cref="GetEffectiveArmorRaces"/>: the race itself plus every race
+    ''' reached via the RACE.RNAM "Armor Race" redirect chain, cycle-guarded (HashSet.Add returns False
+    ''' on a revisit). Delegate-parameterized so the uncached bake path
+    ''' (FaceGenBuilder.ResolveOutfitHeadwearSlots, RecordParsers-direct — no ctx there) walks the EXACT
+    ''' same chain the render walks (RENDER == BAKE). Any change to the chain rule goes HERE.</summary>
+    Friend Shared Function WalkArmorRaceChain(raceFID As UInteger,
+                                              getRecord As Func(Of UInteger, PluginRecord),
+                                              parseRace As Func(Of PluginRecord, RACE_Data)) As HashSet(Of UInteger)
+        Dim races As New HashSet(Of UInteger)()
+        Dim cur = raceFID
+        While cur <> 0UI AndAlso races.Add(cur)
+            Dim rec = getRecord(cur)
+            If rec Is Nothing OrElse rec.Header.Signature <> "RACE" Then Exit While
+            Dim race = parseRace(rec)
+            If race Is Nothing Then Exit While
+            cur = race.ArmorRaceFormID
+        End While
+        Return races
     End Function
 
     ''' <summary>Parse (and cache) an HDPT from an already-fetched record, keyed by its FormID.</summary>

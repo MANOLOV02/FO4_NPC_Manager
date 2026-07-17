@@ -91,7 +91,9 @@ Friend NotInheritable Class NpcStateResolver
         ' (NAM0/NAM1) and material swaps (MO2S/MO3S). Gender-specific face morphs (chargen MSDK/MSDV +
         ' FMRS face bones) and the NPC FaceGen head are suppressed in the render orchestrator when the
         ' override is active (RenderCurrentStateAsync useFaceGen gate, BuildRenderPlan boneMorphsEnabled
-        ' gate, BuildFaceMorphResolver early-return), so the head shows the race default without the
+        ' gate; BuildFaceMorphResolver: FO4 early-return, SSE sigue con applyChargenMorphs:=False para
+        ' que el SkinnyMorph del weight — per-actor, válido cross-gender — siga aplicando y la cabeza no
+        ' abra costura contra el cuerpo _0/_1), so the head shows the race default without the
         ' original gender's baked face. HOST-SCOPED: the main render leaves PreviewGenderOverride Nothing,
         ' so this whole block is inert there.
         Dim genderOverrideActive As Boolean = host IsNot Nothing AndAlso host.PreviewGenderOverride.HasValue
@@ -279,27 +281,31 @@ Friend NotInheritable Class NpcStateResolver
         ' Lo usa ResolveTextureSet para la precedencia FTST > HDPT.TNAM > DFTM (sin esto no se distingue FTST de DFTM).
         state.ExplicitHeadTextureFormID = state.HeadTextureFormID
 
+        ' DFTM/DFTF: SOLO el género propio — el motor NO cruza al otro género (RE 2026-07-16,
+        ' AMBOS binarios byte-verificados): SSE runtime RegenerateHead 0x14042BEDB y FO4 CK
+        ' resolver 0x140ED4244 hacen UNA sola lectura race.faceRelatedData[GetSex(npc)]
+        ' (SSE race+0x4A8+sex*8 → frd+0xA0; FO4 CK race+0xBA8+sex*8 → frd+0x10); si es null
+        ' caen a HDPT.TNAM, jamás al DFT del otro sexo. El fallback cruzado que había acá
+        ' pintaba SkinHeadFemaleNord (DFTF) en el maniquí masculino de ManakinRace (sin DFTM).
         If state.HeadPartFormIDs.Count = 0 Then
             If state.IsFemale Then
                 state.HeadPartFormIDs.AddRange(race.FemaleHeadPartFormIDs)
-                If state.HeadTextureFormID = 0UI Then state.HeadTextureFormID = If(race.FemaleDefaultFaceTextureFormID <> 0UI, race.FemaleDefaultFaceTextureFormID, race.MaleDefaultFaceTextureFormID)
+                If state.HeadTextureFormID = 0UI Then state.HeadTextureFormID = race.FemaleDefaultFaceTextureFormID
             Else
                 state.HeadPartFormIDs.AddRange(race.MaleHeadPartFormIDs)
-                If state.HeadTextureFormID = 0UI Then state.HeadTextureFormID = If(race.MaleDefaultFaceTextureFormID <> 0UI, race.MaleDefaultFaceTextureFormID, race.FemaleDefaultFaceTextureFormID)
+                If state.HeadTextureFormID = 0UI Then state.HeadTextureFormID = race.MaleDefaultFaceTextureFormID
             End If
         ElseIf state.HeadTextureFormID = 0UI Then
-            If state.IsFemale Then
-                state.HeadTextureFormID = If(race.FemaleDefaultFaceTextureFormID <> 0UI, race.FemaleDefaultFaceTextureFormID, race.MaleDefaultFaceTextureFormID)
-            Else
-                state.HeadTextureFormID = If(race.MaleDefaultFaceTextureFormID <> 0UI, race.MaleDefaultFaceTextureFormID, race.FemaleDefaultFaceTextureFormID)
-            End If
+            state.HeadTextureFormID = If(state.IsFemale, race.FemaleDefaultFaceTextureFormID, race.MaleDefaultFaceTextureFormID)
         End If
 
         ' HairColor fallback: when NPC.HCLF is absent (and the template chain didn't supply one
         ' either — Model/Animation traits already collapsed by ResolveModelAnimationStateFromNPC),
         ' the engine reads RACE.HCLF[gender] (Default Hair Colors). Mirror that here. Each gender
-        ' slot can be NULL per wbFormIDCk([NULL, CLFM]) at wbDefinitionsFO4.pas:11575 — same
-        ' "own gender first, fallback to the other" rule we use for DefaultFaceTexture above.
+        ' slot can be NULL per wbFormIDCk([NULL, CLFM]) at wbDefinitionsFO4.pas:11575.
+        ' NOTA: el cross-gender fallback de acá NO está verificado contra el motor (el análogo de
+        ' DefaultFaceTexture se RE-verificó 2026-07-16 y NO cruza género — ver arriba); se conserva
+        ' pendiente de su propio RE porque nadie midió un síntoma en su contra.
         If state.HairColorFormID = 0UI Then
             Dim ownGender = If(state.IsFemale, race.FemaleDefaultHairColorFormID, race.MaleDefaultHairColorFormID)
             Dim otherGender = If(state.IsFemale, race.MaleDefaultHairColorFormID, race.FemaleDefaultHairColorFormID)

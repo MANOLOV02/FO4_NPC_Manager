@@ -130,12 +130,12 @@ Module Program
             If Not String.IsNullOrEmpty(exePath) AndAlso IO.File.Exists(exePath) Then
                 Config_App.Current.FO4ExePath = exePath
             Else
-                Console.Error.WriteLine($"[warn] no encontré '{exeName}' junto a --data ('{gameDir}'): el bake ESCRIBIRÁ en '{Config_App.Current.DataPath}' (Data del config), no en --data.")
+                Console.Error.WriteLine($"[warn] could not find '{exeName}' next to --data ('{gameDir}'): the bake WILL WRITE to '{Config_App.Current.DataPath}' (config's Data), not to --data.")
             End If
         End If
         Dim dataPath = If(opt.DataPath <> "", opt.DataPath, Config_App.Current.FO4EDataPath)
         If String.IsNullOrEmpty(dataPath) OrElse Not Directory.Exists(dataPath) Then
-            Console.Error.WriteLine($"Data path invalido: '{dataPath}'. Usa --data <ruta a Data\> o configura config.json.")
+            Console.Error.WriteLine($"Invalid Data path: '{dataPath}'. Use --data <path to Data\> or configure config.json.")
             Environment.ExitCode = 1 : Return
         End If
 
@@ -159,18 +159,18 @@ Module Program
         If opt.ConventionPath <> "" Then
             Config_App.Current.Setting_FaceTintConvention =
                 JsonSerializer.Deserialize(Of FaceTintConvention.FaceTintConventionSettings)(File.ReadAllText(opt.ConventionPath))
-            Console.WriteLine($"[cfg] convencion <- {opt.ConventionPath}")
+            Console.WriteLine($"[cfg] convention <- {opt.ConventionPath}")
         End If
         If opt.SortPath <> "" Then
             Config_App.Current.Setting_FaceTintSort =
                 JsonSerializer.Deserialize(Of FaceTintSortSettings)(File.ReadAllText(opt.SortPath))
-            Console.WriteLine($"[cfg] orden <- {opt.SortPath}")
+            Console.WriteLine($"[cfg] order <- {opt.SortPath}")
         End If
 
         ' --- 3. Lista de trabajo (esp, edid) ---
         Dim work = BuildWorkList(opt)
         If work.Count = 0 AndAlso Not opt.TtedScan AndAlso Not opt.ScanDiff AndAlso Not opt.RaceAnim AndAlso Not opt.RaceCompat AndAlso Not opt.MountValidate AndAlso opt.FindHkx = "" AndAlso opt.ChunkCompare = "" AndAlso opt.DumpBehavior = "" AndAlso Not opt.HkxCoverage AndAlso opt.KwType = "" AndAlso Not opt.StateMap AndAlso Not opt.ClipResolve AndAlso opt.HkxBone = "" AndAlso opt.ClipBase = "" AndAlso opt.FindFile = "" AndAlso opt.NifDump = "" AndAlso opt.AnimSyncCheck = "" AndAlso opt.BlendHintScan = "" AndAlso Not opt.CatProfile AndAlso Not opt.Provenance AndAlso opt.DumpRef = "" AndAlso opt.EstimateSclp = "" AndAlso opt.SclpDiag = "" AndAlso opt.SclpBatch = "" AndAlso opt.BindDiff = "" AndAlso opt.Ba2Extract = "" AndAlso Not opt.SseCompareBatch AndAlso Not opt.VertexBatch AndAlso opt.PosDump = "" AndAlso opt.MeshShaders = "" Then
-            Console.Error.WriteLine("No hay NPCs para procesar (revisa --edid / --list).") : Environment.ExitCode = 1 : Return
+            Console.Error.WriteLine("No NPCs to process (check --edid / --list).") : Environment.ExitCode = 1 : Return
         End If
 
         ' --- 4. Encoding (mismo orden que el exe: antes de cargar plugins) ---
@@ -183,7 +183,7 @@ Module Program
         ' del Plugins.txt. Afecta plugins Y archivos (FilesDictionary también llama a ReadActiveLoadOrder)
         ' ⇒ el bake sale 100% vanilla (records Y texturas), fiel al CK del BA2. Setear ANTES de cargar.
         If opt.VanillaOnly Then PluginManager.OfficialPluginsOnly = True
-        Console.WriteLine("[load] plugins..." & If(opt.VanillaOnly, " (SOLO oficiales — vanilla/DLC/cc)", ""))
+        Console.WriteLine("[load] plugins..." & If(opt.VanillaOnly, " (ONLY official — vanilla/DLC/cc)", ""))
         Dim pm As New PluginManager()
         Dim loadList = PluginManager.ReadActiveLoadOrder()
         For Each esp In work.Select(Function(w) w.Esp).Distinct(StringComparer.OrdinalIgnoreCase)
@@ -194,7 +194,7 @@ Module Program
         Dim sigFilter As New HashSet(Of String)(SIGS_NPC_RENDERING, StringComparer.Ordinal) From {"IDLE", "AACT"}
         pm.LoadAllPlugins(dataPath, loadList, Nothing, sigFilter)
 
-        Console.WriteLine("[load] montando archivos...")
+        Console.WriteLine("[load] mounting archives...")
         Dim cacheDir = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Caches")
         Directory.CreateDirectory(cacheDir)
         FilesDictionary_class.CacheDirectory = cacheDir
@@ -214,7 +214,7 @@ Module Program
                 If Not key.StartsWith("meshes\") Then key = "meshes\" & key
                 bytes = FilesDictionary_class.GetBytes(key)
             End If
-            If bytes Is Nothing Then Console.WriteLine($"no encontrado: {opt.MeshShaders}") : Return
+            If bytes Is Nothing Then Console.WriteLine($"not found: {opt.MeshShaders}") : Return
             Dim snif As New Nifcontent_Class_Manolo() : snif.Load_Manolo(bytes)
             Console.WriteLine($"=== {opt.MeshShaders}  ({snif.NifShapes.Count()} shapes) ===")
             For Each shp In snif.NifShapes.ToList()
@@ -254,7 +254,7 @@ Module Program
             Else
                 bytes = FilesDictionary_class.GetBytes(src.Replace("/"c, "\"c).ToLowerInvariant())
             End If
-            If bytes Is Nothing OrElse bytes.Length = 0 Then Console.WriteLine($"[posdump] sin bytes: {src}") : Return
+            If bytes Is Nothing OrElse bytes.Length = 0 Then Console.WriteLine($"[posdump] no bytes: {src}") : Return
             Dim nif As New Nifcontent_Class_Manolo() : nif.Load_Manolo(bytes)
             ' --nodes: vuelca TODOS los NiNode (nombre + global transform) — para el esqueleto real.
             Dim nodesc = outc & ".nodes.csv"
@@ -565,7 +565,7 @@ Module Program
         Finally
             FaceTintCpuCompositor.EndBatchDecodeCache()
         End Try
-        Console.WriteLine($"[done] {ok} ok / {fail} fail de {work.Count}")
+        Console.WriteLine($"[done] {ok} ok / {fail} fail of {work.Count}")
         If ok = 0 Then Environment.ExitCode = 1
     End Sub
 
@@ -581,7 +581,7 @@ Module Program
     Private Function BuildFaceGenNpc(pm As PluginManager, espName As String, edid As String, Optional compareCk As Boolean = False) As Boolean
         Dim npcFormID = ResolveEdid(pm, espName, edid)
         If npcFormID = 0UI Then
-            Console.Error.WriteLine($"[skip] EDID='{edid}' no provisto por '{espName}'.") : Return False
+            Console.Error.WriteLine($"[skip] EDID='{edid}' not provided by '{espName}'.") : Return False
         End If
         Try
             Dim presets As New Dictionary(Of UInteger, FO4_NPC_Manager.LooksmenuLoader.LooksmenuPreset)
@@ -615,7 +615,7 @@ Module Program
                                       Optional verbose As Boolean = True) As (Real As List(Of String), Noop As List(Of String))
         Dim origin = pm.GetOriginatingPluginName(npcFormID)
         Dim fgL = PluginManager.ToFaceGenLocalFormID(npcFormID)
-        If verbose Then Console.WriteLine($"======== COMPARE EXHAUSTIVO vs CK  0x{npcFormID:X8}  origin='{origin}'  local=0x{fgL:X8} ========")
+        If verbose Then Console.WriteLine($"======== EXHAUSTIVE COMPARE vs CK  0x{npcFormID:X8}  origin='{origin}'  local=0x{fgL:X8} ========")
         Dim real As New List(Of String)()   ' diferencias REALES (defecto del bake)
         Dim noop As New List(Of String)()   ' diferencias esperadas / cosméticas
 
@@ -631,9 +631,9 @@ Module Program
         Dim ckKey = ($"meshes\actors\character\facegendata\facegeom\{origin}\{fgL:X8}.nif").ToLowerInvariant()
         Dim ckBytes = FilesDictionary_class.GetBytes(ckKey)
         If ckBytes Is Nothing Then
-            Console.WriteLine($"  [NIF] sin ref CK ({ckKey}) — no comparo NIF")
+            Console.WriteLine($"  [NIF] no CK ref ({ckKey}) — not comparing NIF")
         ElseIf Not File.Exists(bakedNifPath) Then
-            Console.WriteLine($"  [NIF] el NIF baked no está en disco: {bakedNifPath}")
+            Console.WriteLine($"  [NIF] the baked NIF is not on disk: {bakedNifPath}")
         Else
             Dim ckNif As New Nifcontent_Class_Manolo() : ckNif.Load_Manolo(ckBytes)
             Dim myBytes = File.ReadAllBytes(bakedNifPath)
@@ -647,7 +647,7 @@ Module Program
             If ckTypes <> myTypes Then
                 real.Add($"NIF block-type histogram DIFF:{Environment.NewLine}      CK   ={ckTypes}{Environment.NewLine}      baked={myTypes}")
             Else
-                Console.WriteLine($"  [NIF/struct] block-type histogram OK ({myNif.Blocks.Count} bloques)")
+                Console.WriteLine($"  [NIF/struct] block-type histogram OK ({myNif.Blocks.Count} blocks)")
             End If
             Dim ckRoot = TryCast(ckNif.Blocks.FirstOrDefault(), NiflySharp.Blocks.NiAVObject)
             Dim myRoot = TryCast(myNif.Blocks.FirstOrDefault(), NiflySharp.Blocks.NiAVObject)
@@ -665,12 +665,12 @@ Module Program
             For Each cs In ckShapes
                 Dim nm = If(cs.Name?.String, "")
                 Dim ms = myShapes.FirstOrDefault(Function(s) String.Equals(If(s.Name?.String, ""), nm, StringComparison.OrdinalIgnoreCase))
-                If ms Is Nothing Then real.Add($"shape '{nm}': PRESENTE en CK, AUSENTE en baked") : Continue For
+                If ms Is Nothing Then real.Add($"shape '{nm}': PRESENT in CK, ABSENT in baked") : Continue For
                 CompareShapeExhaustive(nm, cs, ckNif, ms, myNif, real, noop, normP)
             Next
             For Each ms In myShapes
                 Dim nm = If(ms.Name?.String, "")
-                If Not ckShapes.Any(Function(s) String.Equals(If(s.Name?.String, ""), nm, StringComparison.OrdinalIgnoreCase)) Then real.Add($"shape '{nm}': PRESENTE en baked, AUSENTE en CK")
+                If Not ckShapes.Any(Function(s) String.Equals(If(s.Name?.String, ""), nm, StringComparison.OrdinalIgnoreCase)) Then real.Add($"shape '{nm}': PRESENT in baked, ABSENT in CK")
             Next
         End If
 
@@ -682,9 +682,9 @@ Module Program
                 Dim ckDdsKey = ($"textures\actors\character\facegendata\facetint\{origin}\{fgL:X8}.dds").ToLowerInvariant()
                 Dim ckDds = FilesDictionary_class.GetBytes(ckDdsKey)
                 If myDds Is Nothing Then
-                    Console.WriteLine("  [DDS] compose de facetint devolvió Nothing (NPC sin tint layers)")
+                    Console.WriteLine("  [DDS] facetint compose returned Nothing (NPC without tint layers)")
                 ElseIf ckDds Is Nothing Then
-                    Console.WriteLine($"  [DDS] sin ref CK ({ckDdsKey}) — baked {myDds.Length}b")
+                    Console.WriteLine($"  [DDS] no CK ref ({ckDdsKey}) — baked {myDds.Length}b")
                 Else
                     Dim mine = FaceTintCpuCompositor.DecodeDds(myDds, 512, 512), ckd = FaceTintCpuCompositor.DecodeDds(ckDds, 512, 512)
                     Dim ss As Double = 0, byteExact As Integer = 0, mx As Double = 0
@@ -696,23 +696,23 @@ Module Program
                     Next
                     Dim rms = Math.Sqrt(ss / (3.0 * 512 * 512)) * 255
                     Console.WriteLine($"  [DDS] facetint _d 512x512  RMS={rms:F2}/255  maxΔ={mx * 255:F0}/255  byte-exact px={byteExact}/{512 * 512} ({100.0 * byteExact / (512 * 512):F1}%)  (mine={myDds.Length}b BC3, CK={ckDds.Length}b)")
-                    If rms > 2.0 Then real.Add($"DDS facetint RMS={rms:F2}/255 (>2) — revisar compose")
-                    If myDds.Length <> ckDds.Length Then noop.Add($"DDS byte-size mine={myDds.Length} vs CK={ckDds.Length} (codec BC3 nuestro vs BC1 CK — NO-OP)")
+                    If rms > 2.0 Then real.Add($"DDS facetint RMS={rms:F2}/255 (>2) — review compose")
+                    If myDds.Length <> ckDds.Length Then noop.Add($"DDS byte-size mine={myDds.Length} vs CK={ckDds.Length} (BC3 codec ours vs BC1 CK — NO-OP)")
                 End If
             Catch ex As Exception
-                Console.WriteLine($"  [DDS] compare falló: {ex.GetType().Name}: {ex.Message}")
+                Console.WriteLine($"  [DDS] compare failed: {ex.GetType().Name}: {ex.Message}")
             End Try
         Else
-            Console.WriteLine("  [DDS] FO4 — el bloque DDS de facetint es SSE-only; NIF (FaceCustomization D/N/S) fuera de este comparador")
+            Console.WriteLine("  [DDS] FO4 — the facetint DDS block is SSE-only; NIF (FaceCustomization D/N/S) outside this comparator")
         End If
 
         ' ================= RESUMEN: REAL vs NO-OP =================
         If verbose Then
-            Console.WriteLine($"  ---- DIFERENCIAS REALES: {real.Count} ----")
+            Console.WriteLine($"  ---- REAL DIFFERENCES: {real.Count} ----")
             For Each d In real : Console.WriteLine($"    [REAL] {d}") : Next
-            Console.WriteLine($"  ---- DIFERENCIAS NO-OP (esperadas): {noop.Count} ----")
+            Console.WriteLine($"  ---- NO-OP DIFFERENCES (expected): {noop.Count} ----")
             For Each d In noop : Console.WriteLine($"    [noop] {d}") : Next
-            Console.WriteLine($"======== FIN COMPARE 0x{npcFormID:X8}  (REAL={real.Count} NO-OP={noop.Count}) ========")
+            Console.WriteLine($"======== END COMPARE 0x{npcFormID:X8}  (REAL={real.Count} NO-OP={noop.Count}) ========")
         End If
         Return (real, noop)
     End Function
@@ -736,7 +736,7 @@ Module Program
             ' templated/genéricos y el jugador que NO tienen FaceGeom horneado por el CK. Esos no son comparables.
             If ckb IsNot Nothing AndAlso ckb.Length > 0 Then cands.Add(kv.Key)
         Next
-        Console.WriteLine($"[batch] {cands.Count} NPCs vanilla SSE con FaceGeom CK")
+        Console.WriteLine($"[batch] {cands.Count} vanilla SSE NPCs with CK FaceGeom")
         If limit > 0 AndAlso cands.Count > limit Then cands = cands.Take(limit).ToList()
 
         ' categoría = string de la diff con shape-name y números removidos → agrupa el TIPO de diferencia.
@@ -783,13 +783,13 @@ Module Program
         Next
         Console.SetOut(savedOut)
 
-        Console.WriteLine($"======== BATCH SSE: {okCount} NPCs comparados ({failCount} fail) ========")
-        Console.WriteLine($"  Categorías de diferencia REAL (ordenadas por # NPCs afectados):")
+        Console.WriteLine($"======== BATCH SSE: {okCount} NPCs compared ({failCount} fail) ========")
+        Console.WriteLine($"  REAL difference categories (sorted by # affected NPCs):")
         For Each kv In catNpcs.OrderByDescending(Function(x) x.Value.Count)
             Console.WriteLine($"    [{kv.Value.Count} NPCs / {catCount(kv.Key)} shapes] {kv.Key}")
-            Console.WriteLine($"        ej: {catExample(kv.Key)}")
+            Console.WriteLine($"        e.g.: {catExample(kv.Key)}")
         Next
-        Console.WriteLine($"======== FIN BATCH ({catNpcs.Count} categorías distintas) ========")
+        Console.WriteLine($"======== END BATCH ({catNpcs.Count} distinct categories) ========")
     End Sub
 
     ''' <summary>BATCH game-aware (--vertexbatch): bakea TODOS los NPC_ vanilla (IsOfficialPlugin = vanilla+DLC+cc,
@@ -818,7 +818,7 @@ Module Program
         Next
         cands = cands.OrderBy(Function(x) x).ToList()   ' orden estable para resume determinista
         If limit > 0 AndAlso cands.Count > limit Then cands = cands.Take(limit).ToList()
-        Console.WriteLine($"[vbatch {gameTag}] {cands.Count} NPCs vanilla con FaceGeom CK  csv={csvPath}")
+        Console.WriteLine($"[vbatch {gameTag}] {cands.Count} vanilla NPCs with CK FaceGeom  csv={csvPath}")
 
         ' ----- resume: leer CSV existente + marcar el NPC que crasheó el proceso anterior (sentinel .cur) -----
         Dim done As New HashSet(Of UInteger)()
@@ -836,14 +836,14 @@ Module Program
             If UInteger.TryParse(crashedHex, Globalization.NumberStyles.HexNumber, inv, cv) AndAlso Not done.Contains(cv) Then
                 File.AppendAllText(csvPath, $"{cv:X8},,,,0,0,CRASH" & Environment.NewLine)
                 done.Add(cv)
-                Console.WriteLine($"[vbatch {gameTag}] NPC 0x{cv:X8} crasheó el proceso anterior -> marcado CRASH, salteado")
+                Console.WriteLine($"[vbatch {gameTag}] NPC 0x{cv:X8} crashed the previous process -> marked CRASH, skipped")
             End If
             Try : File.Delete(curPath) : Catch : End Try
         End If
         If Not File.Exists(csvPath) Then File.WriteAllText(csvPath, "fid,origin,shape,maxD,rms,verts,status" & Environment.NewLine)
 
         Dim remaining = cands.Where(Function(f) Not done.Contains(f)).ToList()
-        Console.WriteLine($"[vbatch {gameTag}] ya hechos={done.Count}  faltan={remaining.Count}")
+        Console.WriteLine($"[vbatch {gameTag}] already done={done.Count}  remaining={remaining.Count}")
 
         Dim presets As New Dictionary(Of UInteger, FO4_NPC_Manager.LooksmenuLoader.LooksmenuPreset)
         Dim savedOut = Console.Out
@@ -951,17 +951,17 @@ persist:
             End Select
         Next
 
-        Console.WriteLine($"======== VERTEX BATCH {gameTag}: {rows.Count} NPCs comparados (OK)  |  skip/no-facegen={nSkip} exc={nExc} crash={nCrash} otros={nOther}  |  candidatos={totalCands} filas-csv={nRows} ========")
-        If rows.Count = 0 Then Console.WriteLine("  (sin filas OK comparables)") : Return
+        Console.WriteLine($"======== VERTEX BATCH {gameTag}: {rows.Count} NPCs compared (OK)  |  skip/no-facegen={nSkip} exc={nExc} crash={nCrash} others={nOther}  |  candidates={totalCands} csv-rows={nRows} ========")
+        If rows.Count = 0 Then Console.WriteLine("  (no comparable OK rows)") : Return
         Dim sorted = rows.OrderByDescending(Function(x) x.MaxD).ToList()
         Dim g = sorted(0)
         Console.WriteLine($"  MAX vertex diff GLOBAL: maxΔ={g.MaxD.ToString("F4", inv)}  (NPC 0x{g.Fid:X8} [{g.Origin}] shape '{g.Shape}' RMS={g.Rms.ToString("F4", inv)} verts={g.Verts})")
-        Console.WriteLine($"  media(maxΔ por NPC)={rows.Average(Function(x) x.MaxD).ToString("F4", inv)}  mediana={sorted(sorted.Count \ 2).MaxD.ToString("F4", inv)}")
+        Console.WriteLine($"  mean(maxΔ per NPC)={rows.Average(Function(x) x.MaxD).ToString("F4", inv)}  median={sorted(sorted.Count \ 2).MaxD.ToString("F4", inv)}")
         For Each t In {0.01, 0.05, 0.1, 0.25, 0.5, 1.0, 2.0}
             Dim c = rows.Where(Function(x) x.MaxD > t).Count()
-            Console.WriteLine($"    NPCs con maxΔ > {t.ToString("F2", inv)}: {c} ({(100.0 * c / rows.Count).ToString("F1", inv)}%)")
+            Console.WriteLine($"    NPCs with maxΔ > {t.ToString("F2", inv)}: {c} ({(100.0 * c / rows.Count).ToString("F1", inv)}%)")
         Next
-        Console.WriteLine($"  ---- TOP 40 OUTLIERS (por maxΔ de posición) ----")
+        Console.WriteLine($"  ---- TOP 40 OUTLIERS (by position maxΔ) ----")
         For Each x In sorted.Take(40)
             Console.WriteLine($"    0x{x.Fid:X8} [{x.Origin}] maxΔ={x.MaxD.ToString("F4", inv)} RMS={x.Rms.ToString("F4", inv)}  shape '{x.Shape}' ({x.Verts}v)")
         Next
@@ -971,11 +971,11 @@ persist:
             Dim prev As (MaxD As Double, Fid As UInteger) = Nothing
             If Not shapeWorst.TryGetValue(x.Shape, prev) OrElse x.MaxD > prev.MaxD Then shapeWorst(x.Shape) = (x.MaxD, x.Fid)
         Next
-        Console.WriteLine($"  ---- Peor maxΔ por SHAPE (nombre, sobre la peor-shape de cada NPC) ----")
+        Console.WriteLine($"  ---- Worst maxΔ by SHAPE (name, over each NPC's worst-shape) ----")
         For Each kv In shapeWorst.OrderByDescending(Function(k) k.Value.MaxD).Take(25)
             Console.WriteLine($"    '{kv.Key}': maxΔ={kv.Value.MaxD.ToString("F4", inv)} (0x{kv.Value.Fid:X8})")
         Next
-        Console.WriteLine($"======== FIN VERTEX BATCH {gameTag} ========")
+        Console.WriteLine($"======== END VERTEX BATCH {gameTag} ========")
     End Sub
 
     ''' <summary>Compara TODAS las props de un shape emparejado (posiciones, index, normals, tangents,
@@ -994,7 +994,7 @@ persist:
 
         ' posiciones
         Dim pr = MaxRmsVec(cvp, mvp) : line.Append($"  pos[RMS={pr.Rms:F4} max={pr.Max:F4}]")
-        If pr.Max > 0.05 Then real.Add($"shape '{nm}': posiciones maxΔ={pr.Max:F4} RMS={pr.Rms:F4}")
+        If pr.Max > 0.05 Then real.Add($"shape '{nm}': positions maxΔ={pr.Max:F4} RMS={pr.Rms:F4}")
 
         ' triangulos / index
         Dim ctr = cg.GetTriangles(), mtr = mg.GetTriangles()
@@ -1007,7 +1007,7 @@ persist:
                 If ctr(i).V1 <> mtr(i).V1 OrElse ctr(i).V2 <> mtr(i).V2 OrElse ctr(i).V3 <> mtr(i).V3 Then triDiff += 1
             Next
             line.Append($"  tris={ctr.Count}{(If(triDiff = 0, "=", $"!({triDiff})"))}")
-            If triDiff > 0 Then real.Add($"shape '{nm}': {triDiff}/{ctr.Count} triángulos con índices distintos")
+            If triDiff > 0 Then real.Add($"shape '{nm}': {triDiff}/{ctr.Count} triangles with differing indices")
         End If
 
         ' normals / tangents / bitangents
@@ -1069,7 +1069,7 @@ persist:
                 End If
                 line.Append($"  bw[max={wMax:F4}] bidx[dif={idxDiff}]")
                 If wMax > 0.004 Then real.Add($"shape '{nm}': bone weights maxΔ={wMax:F4}")
-                If idxDiff > 0 Then real.Add($"shape '{nm}': {idxDiff} bone-index slots distintos (ojo: puede ser orden de bone-list; verificar por nombre)")
+                If idxDiff > 0 Then real.Add($"shape '{nm}': {idxDiff} distinct bone-index slots (note: could be bone-list order; verify by name)")
             End If
         Catch
         End Try
@@ -1097,7 +1097,7 @@ persist:
                 ' base igual salvo sufijo _2 sandbox → NO-OP
                 Dim cB = cN.Replace("_2.dds", ".dds"), mB = mN.Replace("_2.dds", ".dds")
                 If cB = mB Then
-                    noop.Add($"shape '{nm}' texslot[{si}]: sufijo _2 sandbox (my='{mp}' ck='{cp}' — NO-OP)")
+                    noop.Add($"shape '{nm}' texslot[{si}]: _2 sandbox suffix (my='{mp}' ck='{cp}' — NO-OP)")
                 Else
                     real.Add($"shape '{nm}' texslot[{si}]: my='{mp}' ck='{cp}'")
                 End If
@@ -1230,16 +1230,16 @@ persist:
                              dumpDir As String) As Boolean
         Dim npcFormID = ResolveEdid(pm, espName, edid)
         If npcFormID = 0UI Then
-            Console.Error.WriteLine($"[skip] EDID='{edid}' no provisto por '{espName}'.") : Return False
+            Console.Error.WriteLine($"[skip] EDID='{edid}' not provided by '{espName}'.") : Return False
         End If
         Dim originPlugin = pm.GetOriginatingPluginName(npcFormID)
 
         Dim npcRec = pm.GetRecord(npcFormID)
         Dim npcData = RecordParsers.ParseNPC(npcRec, npcRec.SourcePluginName, pm)
-        If npcData Is Nothing Then Console.Error.WriteLine($"[skip] {edid}: ParseNPC fallo.") : Return False
+        If npcData Is Nothing Then Console.Error.WriteLine($"[skip] {edid}: ParseNPC failed.") : Return False
         Dim raceRec = pm.GetRecord(npcData.RaceFormID)
         If raceRec Is Nothing OrElse raceRec.Header.Signature <> "RACE" Then
-            Console.Error.WriteLine($"[skip] {edid}: RACE 0x{npcData.RaceFormID:X8} no resuelta.") : Return False
+            Console.Error.WriteLine($"[skip] {edid}: RACE 0x{npcData.RaceFormID:X8} not resolved.") : Return False
         End If
         Dim race = RecordParsers.ParseRACE(raceRec, pm)
         ' Merge any LooksMenu custom face-tint templates (Data\F4SE\Plugins\F4EE\Tints\) into the RACE
@@ -1250,14 +1250,14 @@ persist:
 
         Dim dPath As String = "", nPath As String = "", sPath As String = ""
         ResolveFaceSkin(npcData, race, pm, dPath, nPath, sPath)
-        If String.IsNullOrEmpty(dPath) Then Console.Error.WriteLine($"[skip] {edid}: sin textura diffuse de cara.") : Return False
+        If String.IsNullOrEmpty(dPath) Then Console.Error.WriteLine($"[skip] {edid}: no face diffuse texture.") : Return False
         Dim dKey = FO4UnifiedMaterial_Class.CorrectTexturePath(dPath)
         Dim nKey = FO4UnifiedMaterial_Class.CorrectTexturePath(nPath)
         Dim sKey = FO4UnifiedMaterial_Class.CorrectTexturePath(sPath)
         Dim dBytes = FilesDictionary_class.GetBytes(dKey)
         Dim nBytes = FilesDictionary_class.GetBytes(nKey)
         Dim sBytes = FilesDictionary_class.GetBytes(sKey)
-        If dBytes Is Nothing OrElse dBytes.Length = 0 Then Console.Error.WriteLine($"[skip] {edid}: diffuse bytes vacios (key='{dKey}').") : Return False
+        If dBytes Is Nothing OrElse dBytes.Length = 0 Then Console.Error.WriteLine($"[skip] {edid}: empty diffuse bytes (key='{dKey}').") : Return False
 
         Dim hairLut = ResolveHairLut(npcData, race, pm)
         ' Texture lighting (QNAM) leido del record, NO hardcodeado: el app inyecta la capa slot-12
@@ -1469,20 +1469,20 @@ persist:
     ''' Reporta el ranking por NORMAL (mean vs CK).</summary>
     Private Sub RunSweep(pm As PluginManager, work As List(Of (Esp As String, Edid As String)),
                          dataPath As String, sweepDir As String, Optional rankBy As String = "n")
-        Console.WriteLine("[sweep] resolviendo NPCs + cargando refs CK...")
+        Console.WriteLine("[sweep] resolving NPCs + loading CK refs...")
         Dim ctxs As New List(Of NpcSweepCtx)
         For Each w In work
             Dim c = ResolveSweepNpc(pm, w.Esp, w.Edid, dataPath)
             If c IsNot Nothing AndAlso c.CkN IsNot Nothing Then
                 ctxs.Add(c)
             Else
-                Console.Error.WriteLine($"[skip] {w.Edid}: sin resolver o sin ref CK _msn")
+                Console.Error.WriteLine($"[skip] {w.Edid}: unresolved or no CK ref _msn")
             End If
         Next
-        If ctxs.Count = 0 Then Console.Error.WriteLine("Ningun NPC con ref CK.") : Environment.ExitCode = 1 : Return
+        If ctxs.Count = 0 Then Console.Error.WriteLine("No NPC with CK ref.") : Environment.ExitCode = 1 : Return
         Dim configs = Directory.GetFiles(sweepDir, "*.json").OrderBy(Function(p) p).ToList()
-        If configs.Count = 0 Then Console.Error.WriteLine($"No hay *.json en {sweepDir}") : Environment.ExitCode = 1 : Return
-        Console.WriteLine($"[sweep] {ctxs.Count} NPCs x {configs.Count} convenciones (decode cacheado entre todas)")
+        If configs.Count = 0 Then Console.Error.WriteLine($"No *.json in {sweepDir}") : Environment.ExitCode = 1 : Return
+        Console.WriteLine($"[sweep] {ctxs.Count} NPCs x {configs.Count} conventions (decode cached across all)")
 
         FaceTintCpuCompositor.BeginBatchDecodeCache()
         Dim tintCache As New Dictionary(Of String, Byte())(StringComparer.OrdinalIgnoreCase)
@@ -1515,7 +1515,7 @@ persist:
 
         Dim sel = Function(x As (Name As String, Dn As Double, Dx As Integer, Nn As Double, Nx As Integer, Sn As Double, Sx As Integer)) _
                       If(rankBy = "d", x.Dn, If(rankBy = "s", x.Sn, x.Nn))
-        Console.WriteLine($"=== RANKING por {rankBy.ToUpperInvariant()} (mean vs CK, asc) | {ctxs.Count} NPCs ===")
+        Console.WriteLine($"=== RANKING by {rankBy.ToUpperInvariant()} (mean vs CK, asc) | {ctxs.Count} NPCs ===")
         For Each r In rows.OrderBy(Function(x) If(Double.IsNaN(sel(x)), Double.MaxValue, sel(x)))
             Console.WriteLine($"  {r.Name,-34} N mean={r.Nn,7:F3} max={r.Nx,3}  |  D mean={r.Dn,7:F3} max={r.Dx,3}  S mean={r.Sn,7:F3} max={r.Sx,3}")
         Next
@@ -1537,7 +1537,7 @@ persist:
                 ElseIf parts.Length = 1 AndAlso defEsp <> "" Then
                     w.Add((defEsp, parts(0).Trim()))
                 Else
-                    Console.Error.WriteLine($"[warn] linea sin esp ni --esp default: '{line}'")
+                    Console.Error.WriteLine($"[warn] line without esp or --esp default: '{line}'")
                 End If
             Next
         ElseIf opt.Edid <> "" AndAlso defEsp <> "" Then
@@ -1552,14 +1552,14 @@ persist:
         If loadList.Any(Function(p) String.Equals(p, espName, StringComparison.OrdinalIgnoreCase)) Then Return
         Dim espFull = Path.Combine(dataPath, espName)
         If Not File.Exists(espFull) Then
-            Console.Error.WriteLine($"[warn] esp '{espName}' no existe en {dataPath}; se saltea.") : Return
+            Console.Error.WriteLine($"[warn] esp '{espName}' does not exist in {dataPath}; skipping.") : Return
         End If
         Dim probe As New PluginReader() : probe.Load(espFull)
         For Each m In probe.Masters
             If Not loadList.Any(Function(p) String.Equals(p, m, StringComparison.OrdinalIgnoreCase)) Then loadList.Add(m)
         Next
         loadList.Add(espName)
-        Console.WriteLine($"[load] +esp NO-activo '{espName}' (masters: {String.Join(", ", probe.Masters)})")
+        Console.WriteLine($"[load] +esp NON-active '{espName}' (masters: {String.Join(", ", probe.Masters)})")
     End Sub
 
     ''' <summary>Itera AllRecords (key = FormID global), filtra NPC_ por EditorID (case-insensitive) y
@@ -1585,7 +1585,7 @@ persist:
                 hexFallback = kv.Key : hexFallbackCount += 1
             Next
             If hexFallbackCount = 1 Then
-                Console.WriteLine($"[warn] FormID '{edid}' no provisto por '{esp}' pero unico match en otro plugin; usando 0x{hexFallback:X8}.")
+                Console.WriteLine($"[warn] FormID '{edid}' not provided by '{esp}' but sole match in another plugin; using 0x{hexFallback:X8}.")
                 Return hexFallback
             End If
             Return 0UI
@@ -1599,7 +1599,7 @@ persist:
             fallback = kv.Key : fallbackCount += 1
         Next
         If fallbackCount = 1 Then
-            Console.WriteLine($"[warn] EDID '{edid}' no provisto por '{esp}' pero unico match en otro plugin; usando 0x{fallback:X8}.")
+            Console.WriteLine($"[warn] EDID '{edid}' not provided by '{esp}' but sole match in another plugin; using 0x{fallback:X8}.")
             Return fallback
         End If
         Return 0UI
@@ -1625,7 +1625,7 @@ persist:
     ''' TemplateColors con alpha/templateIndex/CLFM) + el merge. Para crackear la herencia de defaults vs CK.</summary>
     Private Sub TintsNpc(pm As PluginManager, espName As String, edid As String)
         Dim npcFormID = ResolveEdid(pm, espName, edid)
-        If npcFormID = 0UI Then Console.WriteLine($"[tints] {edid}: no resuelto en {espName}") : Return
+        If npcFormID = 0UI Then Console.WriteLine($"[tints] {edid}: not resolved in {espName}") : Return
         Dim npcRec = pm.GetRecord(npcFormID)
         Dim npcData = RecordParsers.ParseNPC(npcRec, npcRec.SourcePluginName, pm)
         Dim raceRec = pm.GetRecord(npcData.RaceFormID)
@@ -1641,7 +1641,7 @@ persist:
                 Console.WriteLine($"  idx={tl.Index} value={tl.Value} disc={tl.Discriminator} tplColIdx={tl.TemplateColorIndex} color=ARGB(0x{tl.Color.ToArgb():X8})")
             Next
         Else
-            Console.WriteLine("  (ninguno)")
+            Console.WriteLine("  (none)")
         End If
 
         Dim groups = If(isFemale, race.FemaleTintTemplateGroups, race.MaleTintTemplateGroups)
@@ -1673,10 +1673,10 @@ persist:
                 Next
             Next
         End If
-        Console.WriteLine($"-- TTED summary: con-TTED={nTted}, denormales(=entero leido como float)={nDenorm} -> {If(nDenorm = 0, "TODOS floats sanos", "HAY enteros/denormales")} --")
+        Console.WriteLine($"-- TTED summary: with-TTED={nTted}, denormals(=integer read as float)={nDenorm} -> {If(nDenorm = 0, "ALL healthy floats", "HAS integers/denormals")} --")
 
         Dim merged = FaceTintInputBuilder.MergeTintLayersWithRaceDefaults(npcData.FaceTintLayers, race, isFemale, pm)
-        Console.WriteLine($"-- MERGED ({merged.Count}) -- (RESOLVED = ResolvePaletteLayerEffective: que BlendOp/color usa el compositor)")
+        Console.WriteLine($"-- MERGED ({merged.Count}) -- (RESOLVED = ResolvePaletteLayerEffective: which BlendOp/color the compositor uses)")
         For Each m In merged
             Dim lyr = m.Layer
             Dim resolvedStr As String = ""
@@ -1697,13 +1697,13 @@ persist:
     Private Sub DumpRefRun(spec As String)
         Dim parts = spec.Split({"|"c}, 2)
         If parts.Length <> 2 Then
-            Console.Error.WriteLine("[dumpref] formato: --dumpref ""<filesDictKey>|<outFile>""") : Environment.ExitCode = 1 : Return
+            Console.Error.WriteLine("[dumpref] format: --dumpref ""<filesDictKey>|<outFile>""") : Environment.ExitCode = 1 : Return
         End If
         Dim key = parts(0).Trim()
         Dim outFile = parts(1).Trim()
         Dim bytes = FilesDictionary_class.GetBytes(key)
         If bytes Is Nothing OrElse bytes.Length = 0 Then
-            Console.Error.WriteLine($"[dumpref] key vacio o no encontrado: '{key}'") : Environment.ExitCode = 1 : Return
+            Console.Error.WriteLine($"[dumpref] empty or not found key: '{key}'") : Environment.ExitCode = 1 : Return
         End If
         Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(outFile)))
         File.WriteAllBytes(outFile, bytes)
@@ -1718,13 +1718,13 @@ persist:
     Private Sub Ba2ExtractRun(spec As String)
         Dim parts = spec.Split({"|"c}, 3)
         If parts.Length <> 3 Then
-            Console.Error.WriteLine("[ba2extract] formato: --ba2extract ""<archivePath>|<internalKey>|<outFile>""") : Environment.ExitCode = 1 : Return
+            Console.Error.WriteLine("[ba2extract] format: --ba2extract ""<archivePath>|<internalKey>|<outFile>""") : Environment.ExitCode = 1 : Return
         End If
         Dim archivePath = parts(0).Trim()
         Dim internalKey = parts(1).Trim()
         Dim outFile = parts(2).Trim()
         If Not IO.File.Exists(archivePath) Then
-            Console.Error.WriteLine($"[ba2extract] archivo no existe: '{archivePath}'") : Environment.ExitCode = 1 : Return
+            Console.Error.WriteLine($"[ba2extract] file does not exist: '{archivePath}'") : Environment.ExitCode = 1 : Return
         End If
         Dim k = internalKey.Replace("/"c, "\"c).Trim().ToLowerInvariant()
         Try
@@ -1738,7 +1738,7 @@ persist:
                             Function(e) e.FullPath.Replace("/"c, "\"c).ToLowerInvariant().EndsWith(k))
                     End If
                     If hit Is Nothing Then
-                        Console.Error.WriteLine($"[ba2extract] not found: '{internalKey}' en '{archivePath}' ({r.EntriesFiles.Count} entries)")
+                        Console.Error.WriteLine($"[ba2extract] not found: '{internalKey}' in '{archivePath}' ({r.EntriesFiles.Count} entries)")
                         ' Diagnóstico: hasta 10 entries cuyo FullPath contenga el nombre de archivo del key.
                         Dim fname = IO.Path.GetFileName(k)
                         If fname <> "" Then
@@ -1746,7 +1746,7 @@ persist:
                                 Where(Function(e) e.FullPath.ToLowerInvariant().Contains(fname)).
                                 Take(10).ToList()
                             If near.Count > 0 Then
-                                Console.Error.WriteLine($"[ba2extract] entries que contienen '{fname}':")
+                                Console.Error.WriteLine($"[ba2extract] entries containing '{fname}':")
                                 For Each e In near
                                     Console.Error.WriteLine($"    {e.FullPath}")
                                 Next
@@ -1788,7 +1788,7 @@ persist:
 
     Private Sub ProvenanceNpc(pm As PluginManager, espName As String, edid As String)
         Dim npcFormID = ResolveEdid(pm, espName, edid)
-        If npcFormID = 0UI Then Console.WriteLine($"[prov] {edid}: no resuelto en {espName}") : Return
+        If npcFormID = 0UI Then Console.WriteLine($"[prov] {edid}: not resolved in {espName}") : Return
         Dim npcRec = pm.GetRecord(npcFormID)
         Dim npcSrc = npcRec.SourcePluginName
         Dim npcData = RecordParsers.ParseNPC(npcRec, npcSrc, pm)
@@ -1818,7 +1818,7 @@ persist:
                 Next
             Next
         End If
-        Console.WriteLine($"  => {If(allVanilla, "TODOS VANILLA: comparacion vanilla-vs-vanilla VALIDA", "HAY OVERRIDE DE MOD: NO BAKEAR (comparacion contaminada)")}")
+        Console.WriteLine($"  => {If(allVanilla, "ALL VANILLA: vanilla-vs-vanilla comparison VALID", "MOD OVERRIDE PRESENT: DO NOT BAKE (contaminated comparison)")}")
     End Sub
 
     ''' <summary>DIAGNOSTICO (--ttedscan): recorre TODAS las RACE, junta el TTED Default de cada opcion de
@@ -1861,17 +1861,17 @@ persist:
                 Next
             Next
         Next
-        Console.WriteLine($"=== TTED SCAN: {races} RACE, {total} opciones, {withTted} con TTED ===")
-        Console.WriteLine("por raw-u32 (float / int / denormal=int-index) -> EntryType breakdown:")
+        Console.WriteLine($"=== TTED SCAN: {races} RACE, {total} options, {withTted} with TTED ===")
+        Console.WriteLine("by raw-u32 (float / int / denormal=int-index) -> EntryType breakdown:")
         For Each kv In byRaw.OrderBy(Function(x) x.Key)
             Dim raw = kv.Key
             Dim asFloat = BitConverter.ToSingle(BitConverter.GetBytes(raw), 0)
             Dim isNormalFloat = raw >= &H800000UI   ' >= smallest normal float -> es float real
-            Dim kind = If(raw = 0UI, "cero", If(isNormalFloat, $"FLOAT={asFloat:G6}", $"INT-index={raw}(denormal)"))
+            Dim kind = If(raw = 0UI, "zero", If(isNormalFloat, $"FLOAT={asFloat:G6}", $"INT-index={raw}(denormal)"))
             Dim ets = String.Join(", ", kv.Value.OrderByDescending(Function(x) x.Value).Select(Function(x) $"{x.Key}:{x.Value}"))
-            Console.WriteLine($"  raw=0x{raw:X8}  {kind,-22}  [{ets}]   ej: {examples(raw)}")
+            Console.WriteLine($"  raw=0x{raw:X8}  {kind,-22}  [{ets}]   e.g.: {examples(raw)}")
         Next
-        Console.WriteLine($"-- TextureSet/Mask (tc=0) CON TTED ({nonPaletteTted.Count}) --")
+        Console.WriteLine($"-- TextureSet/Mask (tc=0) WITH TTED ({nonPaletteTted.Count}) --")
         For Each s In nonPaletteTted : Console.WriteLine("  " & s) : Next
     End Sub
 
@@ -1881,7 +1881,7 @@ persist:
     ''' del CK (ResolveBlendOpCk: color-match exacto sobre TemplateColors, LAST gana, early-out por alpha
     ''' exacto). Net SkinTone: ambos motores fuerzan 0->3 en slot 12. Diagnostico puro, no escribe nada.</summary>
     Private Sub ScanDiff(pm As PluginManager)
-        Console.WriteLine("=== SCANDIFF: app (index/alpha-closest) vs CK (color-match LAST-wins) por capa Palette visible ===")
+        Console.WriteLine("=== SCANDIFF: app (index/alpha-closest) vs CK (color-match LAST-wins) per visible Palette layer ===")
         Dim scanned As Integer = 0      ' NPCs con FaceTintLayers (Palette visible considerada)
         Dim withTints As Integer = 0    ' NPCs con al menos 1 FaceTintLayer (cualquiera)
         Dim diffLines As Integer = 0
@@ -1928,9 +1928,9 @@ persist:
             End Try
         Next
 
-        Console.WriteLine($"=== SCANDIFF resumen: {withTints} NPCs con FaceTintLayers, {scanned} con RACE resuelta (scaneados), {diffLines} DIFF lines en {diffNpcs} NPCs ===")
+        Console.WriteLine($"=== SCANDIFF summary: {withTints} NPCs with FaceTintLayers, {scanned} with resolved RACE (scanned), {diffLines} DIFF lines in {diffNpcs} NPCs ===")
         If groupCounts.Count > 0 Then
-            Console.WriteLine("-- por (slot, app->ck) --")
+            Console.WriteLine("-- by (slot, app->ck) --")
             For Each g In groupCounts.OrderByDescending(Function(x) x.Value)
                 Console.WriteLine($"  {g.Key} : {g.Value}")
             Next
@@ -1951,11 +1951,11 @@ persist:
             Where(Function(k) (k.EndsWith(".hkx", StringComparison.OrdinalIgnoreCase) OrElse k.EndsWith(".hkt", StringComparison.OrdinalIgnoreCase)) AndAlso
                               k.IndexOf(substr, StringComparison.OrdinalIgnoreCase) >= 0).
             OrderBy(Function(k) k, StringComparer.OrdinalIgnoreCase).ToList()
-        Console.WriteLine($"[findhkx] '{substr}': {keys.Count} archivos .hkx/.hkt en el load order")
+        Console.WriteLine($"[findhkx] '{substr}': {keys.Count} .hkx/.hkt files in the load order")
         Dim parsed = 0
         For Each k In keys
             Dim bytes = FilesDictionary_class.GetBytes(k)
-            If bytes Is Nothing OrElse bytes.Length = 0 Then Console.WriteLine($"  {k}  (no carga)") : Continue For
+            If bytes Is Nothing OrElse bytes.Length = 0 Then Console.WriteLine($"  {k}  (does not load)") : Continue For
             Dim tags As New List(Of String)
             Try
                 Dim sg = HkxObjectGraphParser_Class.BuildGraph(HkxPackfileParser_Class.Parse(bytes))
@@ -1963,8 +1963,8 @@ persist:
                     Dim sk = sg.ParseSkeleton(o)
                     If sk Is Nothing OrElse sk.Bones Is Nothing Then Continue For
                     Dim faceB = sk.Bones.Select(Function(b) b.Name).Where(Function(n) Not String.IsNullOrEmpty(n) AndAlso rxFace.IsMatch(n)).Take(30).ToList()
-                    tags.Add($"hkaSkeleton '{sk.Name}' bones={sk.Bones.Count}{If(faceB.Count > 0, " FACE-BONES(" & faceB.Count & "):[" & String.Join(",", faceB) & "]", " (sin face-bones)")}")
-                    If keys.Count <= 2 Then Console.WriteLine($"     TODOS los bones [{sk.Bones.Count}]: {String.Join(", ", sk.Bones.Select(Function(b) b.Name))}")
+                    tags.Add($"hkaSkeleton '{sk.Name}' bones={sk.Bones.Count}{If(faceB.Count > 0, " FACE-BONES(" & faceB.Count & "):[" & String.Join(",", faceB) & "]", " (no face-bones)")}")
+                    If keys.Count <= 2 Then Console.WriteLine($"     ALL bones [{sk.Bones.Count}]: {String.Join(", ", sk.Bones.Select(Function(b) b.Name))}")
                 Next
                 For Each o In sg.GetObjectsByClassName("hkbCharacterStringData")
                     Dim csd = sg.ParseCharacterStringData(o)
@@ -1974,9 +1974,9 @@ persist:
                 tags.Add("(parse fail: " & ex.GetType().Name & ")")
             End Try
             parsed += 1
-            Console.WriteLine($"  {k}  →  {If(tags.Count > 0, String.Join("  |  ", tags), "(sin skeleton/character)")}")
+            Console.WriteLine($"  {k}  →  {If(tags.Count > 0, String.Join("  |  ", tags), "(no skeleton/character)")}")
         Next
-        Console.WriteLine($"[findhkx] {parsed} parseados.")
+        Console.WriteLine($"[findhkx] {parsed} parsed.")
     End Sub
 
     ''' <summary>Valida el armado del skeleton base como lo hace PrepareSkeleton: LoadFromBytes(nif) +
@@ -1986,14 +1986,14 @@ persist:
     Private Sub ValidateMergeHkx(label As String, hkxPath As String, nifPath As String)
         Dim nifBytes = LoadAnimCand(nifPath) : Dim hkxBytes = LoadAnimCand(hkxPath)
         If nifBytes Is Nothing OrElse hkxBytes Is Nothing Then
-            Console.WriteLine($"  [MERGE-VALIDATE] falta archivo (nif={nifBytes IsNot Nothing}, hkx={hkxBytes IsNot Nothing})") : Return
+            Console.WriteLine($"  [MERGE-VALIDATE] missing file (nif={nifBytes IsNot Nothing}, hkx={hkxBytes IsNot Nothing})") : Return
         End If
         Dim s As New SkeletonInstance()
-        If Not s.LoadFromBytes(nifBytes) Then Console.WriteLine("  [MERGE-VALIDATE] LoadFromBytes(nif) falló") : Return
+        If Not s.LoadFromBytes(nifBytes) Then Console.WriteLine("  [MERGE-VALIDATE] LoadFromBytes(nif) failed") : Return
         Dim pre = s.SkeletonDictionary.Count
         Dim merged = s.MergeHkxSkeleton(hkxBytes)
         Dim post = s.SkeletonDictionary.Count
-        Console.WriteLine($"  [MERGE-VALIDATE] {label}: NIF={pre} bones → +HKX merge={merged} → total={post} | InjectedBones={s.InjectedBones.Count} (esperado 0)")
+        Console.WriteLine($"  [MERGE-VALIDATE] {label}: NIF={pre} bones → +HKX merge={merged} → total={post} | InjectedBones={s.InjectedBones.Count} (expected 0)")
         ' Dump del world de bones clave (los que existan): root, locomoción, chunk-bones de robot.
         Dim probes = {"Root", "COM", "Neck", "Head", "C-BotCore", "C-BotLegs", "BUpperLeg", "LArm_UpperArm", "Camera"}
         For Each bn In probes
@@ -2011,12 +2011,12 @@ persist:
     ''' del esqueleto vivo coincide con el rig canónico (la animación se autorea contra ESTE local).</summary>
     Private Sub HkxBoneDump(hkxPath As String, boneSubstr As String)
         Dim b = LoadAnimCand(hkxPath)
-        If b Is Nothing Then Console.WriteLine($"[hkxbone] '{hkxPath}' no carga") : Return
+        If b Is Nothing Then Console.WriteLine($"[hkxbone] '{hkxPath}' does not load") : Return
         Dim g = HkxObjectGraphParser_Class.BuildGraph(HkxPackfileParser_Class.Parse(b))
         Dim skels = g.GetObjectsByClassName("hkaSkeleton").Select(Function(o) g.ParseSkeleton(o)).Where(Function(s) s IsNot Nothing).ToList()
         Dim skel = skels.FirstOrDefault(Function(s) Not If(s.Name, "").Contains("Ragdoll", StringComparison.OrdinalIgnoreCase))
-        If skel Is Nothing Then Console.WriteLine("[hkxbone] sin hkaSkeleton de animación") : Return
-        Console.WriteLine($"[hkxbone] '{hkxPath}' skel='{skel.Name}' bones={skel.Bones.Count} | filtro='{boneSubstr}'")
+        If skel Is Nothing Then Console.WriteLine("[hkxbone] no animation hkaSkeleton") : Return
+        Console.WriteLine($"[hkxbone] '{hkxPath}' skel='{skel.Name}' bones={skel.Bones.Count} | filter='{boneSubstr}'")
         Dim world(skel.Bones.Count - 1) As Transform_Class
         For i = 0 To skel.Bones.Count - 1
             Dim loc = HkxTransformConventionHelper.ToTransform(skel.ReferencePose(i))
@@ -2041,7 +2041,7 @@ persist:
         For Each k In keys.Take(300)
             Console.WriteLine("  " & k)
         Next
-        If keys.Count > 300 Then Console.WriteLine($"  ... ({keys.Count - 300} más)")
+        If keys.Count > 300 Then Console.WriteLine($"  ... ({keys.Count - 300} more)")
     End Sub
 
     ' Carpeta del clip relativa a "Animations\" (ground truth de la organización Bethesda). "(top)" si el clip
@@ -2092,11 +2092,11 @@ persist:
                 End Select
             Next
         Next
-        Console.WriteLine($"[idle] IDLE records={idleRecs.Count} | con GNAM(file)={idleWithGnam} ({idleGnamBases.Count} basenames) | con ENAM(event)={idleWithEnam} ({idleEvents.Count} eventos) | con DNAM={idleWithDnam} ({idleDnam.Count} distintos)")
+        Console.WriteLine($"[idle] IDLE records={idleRecs.Count} | with GNAM(file)={idleWithGnam} ({idleGnamBases.Count} basenames) | with ENAM(event)={idleWithEnam} ({idleEvents.Count} events) | with DNAM={idleWithDnam} ({idleDnam.Count} distinct)")
         ' IDLE records relacionados con el pool PoseA (talk/dialogue/listen/flavor/patrol/pose) — ver su estructura REAL.
         Dim poseIdles = idleRecs.Where(Function(r) {r.EditorID}.Concat(r.Subrecords.Where(Function(s) s.Data IsNot Nothing).Select(Function(s) System.Text.Encoding.ASCII.GetString(s.Data).TrimEnd(ChrW(0)))).
                                                 Any(Function(t) t IsNot Nothing AndAlso System.Text.RegularExpressions.Regex.IsMatch(t, "(?i)posea|_talk|dialogue|listen|flavor|patrolsearch"))).Take(10).ToList()
-        Console.WriteLine($"[idle] IDLE relacionados a PoseA/talk/dialogue ({poseIdles.Count} muestra):")
+        Console.WriteLine($"[idle] IDLE related to PoseA/talk/dialogue ({poseIdles.Count} sample):")
         For Each r In poseIdles
             Dim fields = r.Subrecords.Where(Function(s) s.Data IsNot Nothing AndAlso (s.Signature = "DNAM" OrElse s.Signature = "ENAM" OrElse s.Signature = "GNAM")).
                             Select(Function(s) s.Signature & "='" & System.Text.Encoding.ASCII.GetString(s.Data).TrimEnd(ChrW(0)) & "'")
@@ -2104,10 +2104,10 @@ persist:
         Next
         ' Eventos ENAM relacionados a talk/dialogue (¿el behavior tiene un evento que dispare estos gestos?).
         Dim talkEvents = idleEvents.Where(Function(e) System.Text.RegularExpressions.Regex.IsMatch(e, "(?i)talk|dialogue|gesture|pose|listen")).Take(20)
-        Console.WriteLine($"[idle] eventos ENAM talk/dialogue/gesture: {String.Join(", ", talkEvents)}")
+        Console.WriteLine($"[idle] ENAM events talk/dialogue/gesture: {String.Join(", ", talkEvents)}")
         ' 🔑 PATRONES GNAM: token $(Subgraph)/$(...) + wildcard * → el mecanismo ESTRUCTURAL de los gestos PoseA.
         Dim withToken = idleGnamRaw.Where(Function(g) g.Contains("$(") OrElse g.Contains("*")).ToList()
-        Console.WriteLine($"[idle] GNAM crudos distintos={idleGnamRaw.Count} | con token/wildcard={withToken.Count}:")
+        Console.WriteLine($"[idle] distinct raw GNAM={idleGnamRaw.Count} | with token/wildcard={withToken.Count}:")
         For Each g In withToken.Take(40) : Console.WriteLine($"        GNAM-pat: {g}") : Next
         ' Patrones IDLE relacionados a furniture-entry/exit/sync (para cazar los 291 furniture-direccional residuales).
         Dim furnPats = idleGnamRaw.Where(Function(g) System.Text.RegularExpressions.Regex.IsMatch(g, "(?i)enter|exit|sync|furniture|sit|chair|getup|getin")).ToList()
@@ -2127,14 +2127,14 @@ persist:
             Dim nBeh = clips.Where(Function(c) c.FromBehaviorGraph).Count()
             Dim nIdle = clips.Where(Function(c) Not c.FromBehaviorGraph AndAlso Not String.IsNullOrEmpty(c.Category)).Count()
             Dim nFolder = clips.Where(Function(c) Not c.FromBehaviorGraph AndAlso String.IsNullOrEmpty(c.Category)).Count()
-            Console.WriteLine($"  FUENTE: behavior-walk={nBeh} | IDLE-pattern(con categoría)={nIdle} | clip-gen-variant={nFolder} | rb.IdleAnimations(patrones)={rb.IdleAnimations.Count}")
+            Console.WriteLine($"  SOURCE: behavior-walk={nBeh} | IDLE-pattern(with category)={nIdle} | clip-gen-variant={nFolder} | rb.IdleAnimations(patterns)={rb.IdleAnimations.Count}")
             ' Over-inclusion: clips cuyo path NO está bajo la carpeta propia del actor (ni _1stPerson). Para robots de
             ' carpeta dedicada debería ser ~0 (si trae Actors\Character\… o de otro actor = bug de gating).
             Dim ownPrefix = CanonHkx(DirNameC(rb.Project) & "\Animations\")
             Dim foreign = clips.Where(Function(c) Not CanonHkx(c.AnimationFile).StartsWith(ownPrefix, StringComparison.OrdinalIgnoreCase) AndAlso CanonHkx(c.AnimationFile).IndexOf("\_1stperson\", StringComparison.OrdinalIgnoreCase) < 0).ToList()
-            Console.WriteLine($"  OVER-INCLUSION: clips FUERA de '{DirNameC(rb.Project)}\Animations\' = {foreign.Count}" & If(foreign.Count = 0, "", " → " & String.Join(" ; ", foreign.Take(6).Select(Function(c) TopSegOf(FolderRelOf(c.AnimationFile)) & ":" & System.IO.Path.GetFileName(c.AnimationFile)))))
+            Console.WriteLine($"  OVER-INCLUSION: clips OUTSIDE of '{DirNameC(rb.Project)}\Animations\' = {foreign.Count}" & If(foreign.Count = 0, "", " → " & String.Join(" ; ", foreign.Take(6).Select(Function(c) TopSegOf(FolderRelOf(c.AnimationFile)) & ":" & System.IO.Path.GetFileName(c.AnimationFile)))))
             Dim catTop = clips.Where(Function(c) Not String.IsNullOrEmpty(c.Category)).GroupBy(Function(c) c.Category).OrderByDescending(Function(g) g.Count()).Take(20)
-            Console.WriteLine($"  IDLE categorías: " & String.Join(" ; ", catTop.Select(Function(g) $"{g.Key}={g.Count()}")))
+            Console.WriteLine($"  IDLE categories: " & String.Join(" ; ", catTop.Select(Function(g) $"{g.Key}={g.Count()}")))
             ' ── OUTLIERS: clips por PROFUNDIDAD de carpeta (0=cuelgan directo de Animations\; 1=directo bajo un top-seg
             '    ej Weapon\X.hkx sin subtipo). Acá la jerarquía Role→carpeta no tiene niveles → revisar que categoricen bien.
             Dim depthOf = Function(p As String) As Integer
@@ -2142,24 +2142,24 @@ persist:
                               Return If(fr = "" OrElse fr = "(top)", 0, fr.Split("\"c).Length)
                           End Function
             Dim byDepth = clips.GroupBy(Function(c) depthOf(c.AnimationFile)).OrderBy(Function(g) g.Key).ToList()
-            Console.WriteLine($"  OUTLIERS profundidad: " & String.Join(" ; ", byDepth.Select(Function(g) $"depth{g.Key}={g.Count()}")))
+            Console.WriteLine($"  OUTLIERS depth: " & String.Join(" ; ", byDepth.Select(Function(g) $"depth{g.Key}={g.Count()}")))
             Dim tops = clips.Where(Function(c) depthOf(c.AnimationFile) = 0).ToList()
-            Console.WriteLine($"  (top) cuelgan directo de Animations\\ ({tops.Count}) — roles/cat:")
+            Console.WriteLine($"  (top) hang directly off Animations\\ ({tops.Count}) — roles/cat:")
             For Each grp In tops.GroupBy(Function(c) "[" & String.Join(",", c.Roles) & "]" & If(c.Category <> "", "/" & c.Category, "")).OrderByDescending(Function(x) x.Count()).Take(10)
-                Console.WriteLine($"        {grp.Count(),4}  {grp.Key}  ej: {String.Join(", ", grp.Take(4).Select(Function(c) System.IO.Path.GetFileNameWithoutExtension(c.AnimationFile)))}")
+                Console.WriteLine($"        {grp.Count(),4}  {grp.Key}  e.g.: {String.Join(", ", grp.Take(4).Select(Function(c) System.IO.Path.GetFileNameWithoutExtension(c.AnimationFile)))}")
             Next
             Dim d1 = clips.Where(Function(c) depthOf(c.AnimationFile) = 1).ToList()
-            Console.WriteLine($"  depth-1 (directo bajo top-seg, ej Weapon\\X.hkx) ({d1.Count}) por top-seg: " & String.Join(" ; ", d1.GroupBy(Function(c) TopSegOf(FolderRelOf(c.AnimationFile))).OrderByDescending(Function(x) x.Count()).Take(14).Select(Function(x) $"{x.Key}={x.Count()}")))
+            Console.WriteLine($"  depth-1 (directly under top-seg, e.g. Weapon\\X.hkx) ({d1.Count}) by top-seg: " & String.Join(" ; ", d1.GroupBy(Function(c) TopSegOf(FolderRelOf(c.AnimationFile))).OrderByDescending(Function(x) x.Count()).Take(14).Select(Function(x) $"{x.Key}={x.Count()}")))
             For Each grp In d1.GroupBy(Function(c) TopSegOf(FolderRelOf(c.AnimationFile))).Where(Function(x) {"Weapon", "Furniture", "MT"}.Contains(x.Key, StringComparer.OrdinalIgnoreCase)).Take(3)
-                Console.WriteLine($"        {grp.Key}\\ directo ej: {String.Join(", ", grp.Take(8).Select(Function(c) System.IO.Path.GetFileNameWithoutExtension(c.AnimationFile)))}")
+                Console.WriteLine($"        {grp.Key}\\ direct e.g.: {String.Join(", ", grp.Take(8).Select(Function(c) System.IO.Path.GetFileNameWithoutExtension(c.AnimationFile)))}")
             Next
 
             ' (a) GROUND TRUTH: histograma de TOP-SEG (actividad macro) + carpetas completas.
             Dim byTop = clips.GroupBy(Function(c) TopSegOf(FolderRelOf(c.AnimationFile))).OrderByDescending(Function(g) g.Count()).ToList()
-            Console.WriteLine($"  (a) TOP-SEG (actividad macro) — {byTop.Count} distintos:")
+            Console.WriteLine($"  (a) TOP-SEG (macro activity) — {byTop.Count} distinct:")
             For Each g In byTop : Console.WriteLine($"        {g.Count(),5}  {g.Key}") : Next
             Dim byFolder = clips.GroupBy(Function(c) FolderRelOf(c.AnimationFile)).OrderByDescending(Function(g) g.Count()).ToList()
-            Console.WriteLine($"  (a') CARPETAS completas — {byFolder.Count} distintas (top 50):")
+            Console.WriteLine($"  (a') full FOLDERS — {byFolder.Count} distinct (top 50):")
             For Each g In byFolder.Take(50) : Console.WriteLine($"        {g.Count(),5}  {g.Key}") : Next
 
             ' (b) ¿Subdivide el Role gigante? Por cada Role, su histograma de TOP-SEG.
@@ -2179,7 +2179,7 @@ persist:
 
             ' (d) STKD (target keywords) distintos sobre los subgraphs.
             Dim stkd = rb.Subgraphs.SelectMany(Function(s) s.TargetKeywordFormIDs).Distinct().ToList()
-            Console.WriteLine($"  (d) STKD target-keywords distintos: {stkd.Count}" &
+            Console.WriteLine($"  (d) STKD target-keywords distinct: {stkd.Count}" &
                               If(stkd.Count = 0, "", " → [" & String.Join(", ", stkd.Take(30).Select(Function(k) EdidOf(pm, k))) & "]"))
 
             ' (e) BlendHint (hkaAnimationBinding) de cada archivo resuelto → aditivos (≠0) vs normal (=0).
@@ -2206,10 +2206,10 @@ persist:
                     hintTally(hint) = hintTally.GetValueOrDefault(hint, 0) + 1
                     If hint <> 0 AndAlso additiveSample.Count < 25 Then additiveSample.Add($"{FolderRelOf(c.AnimationFile)}\{System.IO.Path.GetFileName(c.AnimationFile)} (hint={hint})")
                 Next
-                Console.WriteLine($"  (e) BlendHint sobre {loadedOk} archivos: " &
+                Console.WriteLine($"  (e) BlendHint over {loadedOk} files: " &
                                   String.Join(" ; ", hintTally.OrderBy(Function(x) x.Key).Select(Function(x) $"{If(x.Key = 0, "normal", If(x.Key = 2, "additive", "hint" & x.Key))}={x.Value}")))
                 If additiveSample.Count > 0 Then
-                    Console.WriteLine($"      additivos (muestra): ")
+                    Console.WriteLine($"      additives (sample): ")
                     For Each s In additiveSample : Console.WriteLine($"        {s}") : Next
                 End If
             End If
@@ -2231,7 +2231,7 @@ persist:
             ' [FINAL] = archivos de la carpeta NO mapeados por NINGUNA fuente (walk + IDLE + clip-gen-variant). El residuo real.
             Dim allClipsSet As New HashSet(Of String)(clips.Select(Function(c) CanonHkx(c.AnimationFile)), StringComparer.OrdinalIgnoreCase)
             Dim finalOrphans = existing.Where(Function(k) Not allClipsSet.Contains(k)).OrderBy(Function(k) k).ToList()
-            Console.WriteLine($"  [FINAL] carpeta='{actorRoot}\Animations\' existen={existing.Count} MAPEADOS(todas las fuentes)={existing.Count - finalOrphans.Count} | NO-MAPEADOS={finalOrphans.Count}")
+            Console.WriteLine($"  [FINAL] folder='{actorRoot}\Animations\' exist={existing.Count} MAPPED(all sources)={existing.Count - finalOrphans.Count} | NOT-MAPPED={finalOrphans.Count}")
             ' Desglose de los NO-mapeados por STEM (nombre sin números/dirección) → patrón (to_mood / alt / etc.).
             Dim stemOf = Function(p As String) As String
                              Dim b = System.IO.Path.GetFileNameWithoutExtension(p).ToLowerInvariant()
@@ -2239,7 +2239,7 @@ persist:
                              Return b
                          End Function
             For Each grp In finalOrphans.GroupBy(Function(o) stemOf(o)).OrderByDescending(Function(g) g.Count()).Take(18)
-                Console.WriteLine($"        NO-MAP x{grp.Count(),-3} stem='{grp.Key}'  ej: {LastTwoSeg(grp.First())}")
+                Console.WriteLine($"        NO-MAP x{grp.Count(),-3} stem='{grp.Key}'  e.g.: {LastTwoSeg(grp.First())}")
             Next
             ' ¿El huérfano es la MISMA animación (mismo nombre de archivo) que un clip YA resuelto, solo en otra carpeta
             ' mood? (= la resolución/dedup colapsó la variante a base → estructuralmente referenciado). O es un nombre
@@ -2252,10 +2252,10 @@ persist:
             ' (records IDLE, no heurística de carpeta). Confirma/refuta que el pool PoseA es IDLE-driven.
             Dim uniqueByIdle = orphanUniqueName.Where(Function(o) idleGnamBases.Contains(baseOf(o))).Count()
             Dim sameByIdle = orphanSameNameAsResolved.Where(Function(o) idleGnamBases.Contains(baseOf(o))).Count()
-            Console.WriteLine($"      [NAME-CHECK] orphans MISMO-nombre (variante mood colapsada)={orphanSameNameAsResolved.Count} (de IDLE.GNAM-base={sameByIdle}) | nombre-ÚNICO no resuelto={orphanUniqueName.Count} (de IDLE.GNAM-base={uniqueByIdle})")
+            Console.WriteLine($"      [NAME-CHECK] orphans SAME-name (collapsed mood variant)={orphanSameNameAsResolved.Count} (of IDLE.GNAM-base={sameByIdle}) | UNIQUE-name unresolved={orphanUniqueName.Count} (of IDLE.GNAM-base={uniqueByIdle})")
             Dim uniqueNonIdle = orphanUniqueName.Where(Function(o) Not idleGnamBases.Contains(baseOf(o))).ToList()
-            Console.WriteLine($"      [NAME-CHECK] nombre-ÚNICO que NI IDLE referencia ({uniqueNonIdle.Count}) — el residuo verdadero:")
-            For Each o In uniqueNonIdle.Take(8) : Console.WriteLine($"        residuo: {o}") : Next
+            Console.WriteLine($"      [NAME-CHECK] UNIQUE-name that NOT EVEN IDLE references ({uniqueNonIdle.Count}) — the true residual:")
+            For Each o In uniqueNonIdle.Take(8) : Console.WriteLine($"        residual: {o}") : Next
 
             ' (h) CAZA DE LA CLAVE: escanea TODOS los .hkx de behavior bajo el actor (\Behaviors\) + project/character,
             ' recolectando referencias de TODO tipo de generator (no solo hkbClipGenerator): clip(animationName@+0x90),
@@ -2285,11 +2285,11 @@ persist:
             Next
             Dim uniqueByDeep = uniqueNonIdle.Where(Function(o) refBases.Contains(baseOf(o))).Count()
             Dim deepResidual = uniqueNonIdle.Where(Function(o) Not refBases.Contains(baseOf(o))).ToList()
-            Console.WriteLine($"      (h) DEEP-SCAN behaviors={nBehFiles} clipGens={nClip} gamebryo={nGamebryo} refBases-distintos={refBases.Count} | de los {uniqueNonIdle.Count} no-IDLE: cubiertos por deep-scan={uniqueByDeep} | RESIDUO FINAL={deepResidual.Count}")
+            Console.WriteLine($"      (h) DEEP-SCAN behaviors={nBehFiles} clipGens={nClip} gamebryo={nGamebryo} refBases-distinct={refBases.Count} | of the {uniqueNonIdle.Count} non-IDLE: covered by deep-scan={uniqueByDeep} | FINAL RESIDUAL={deepResidual.Count}")
             ' [94-CHECK] de los NO-mapeados (todas las fuentes), ¿cuántos son nombre de algún clip-gen de Character\Behaviors
             ' (= walk-gap recuperable) vs NINGUNO (= runtime puro: mood-transition/alt elegidos por variable/azar)?
             Dim fByRef = finalOrphans.Where(Function(o) refBases.Contains(baseOf(o))).Count()
-            Console.WriteLine($"      [94-CHECK] NO-mapeados={finalOrphans.Count} | basename ∈ clip-gen de Character\Behaviors={fByRef} (walk-gap) | NINGÚN clip-gen (runtime)={finalOrphans.Count - fByRef}")
+            Console.WriteLine($"      [94-CHECK] NOT-mapped={finalOrphans.Count} | basename ∈ Character\Behaviors clip-gen={fByRef} (walk-gap) | NO clip-gen (runtime)={finalOrphans.Count - fByRef}")
 
             ' (i) 🔑 EXPANSIÓN DE PATRONES IDLE.GNAM ($(Subgraph) + wildcard *) contra las carpetas SAPT aplicadas =
             ' el mecanismo ESTRUCTURAL real de los gestos PoseA/Turn. ¿Cubre los huérfanos sin heurística de carpeta?
@@ -2339,14 +2339,14 @@ persist:
             ' por-subgraph sin colapsar variantes). Lo que quede acá es lo único sin fuente estructural conocida.
             Dim trueResidual = orphansAfterIdle.Where(Function(o) Not resolvedBases.Contains(baseOf(o))).ToList()
             Dim recoverablePerSubgraph = orphansAfterIdle.Count - trueResidual.Count
-            Console.WriteLine($"      (i) IDLE-PATTERN-EXPAND: matcheados por patrones IDLE={idleExpanded.Count} | huérfanos cubiertos por IDLE={orphans.Count - orphansAfterIdle.Count} | resto={orphansAfterIdle.Count} (de ellos mismo-nombre→recuperable por-subgraph={recoverablePerSubgraph}) | RESIDUO VERDADERO={trueResidual.Count}")
+            Console.WriteLine($"      (i) IDLE-PATTERN-EXPAND: matched by IDLE patterns={idleExpanded.Count} | orphans covered by IDLE={orphans.Count - orphansAfterIdle.Count} | rest={orphansAfterIdle.Count} (of which same-name→recoverable per-subgraph={recoverablePerSubgraph}) | TRUE RESIDUAL={trueResidual.Count}")
             For Each o In trueResidual.Take(30) : Console.WriteLine($"        TRUE-residual: {o}") : Next
             Dim enumInFolder = enumSet.Where(Function(e) e.StartsWith(animPrefix, StringComparison.OrdinalIgnoreCase)).Count()
             Dim enumOutside = enumSet.Where(Function(e) Not e.StartsWith(animPrefix, StringComparison.OrdinalIgnoreCase)).OrderBy(Function(e) e).ToList()
-            Console.WriteLine($"  (f) ORFANDAD '{actorRoot}\Animations\': existen={existing.Count} enumSet-total={enumSet.Count} enumSet-en-esta-carpeta={enumInFolder} enumSet-FUERA={enumOutside.Count} | ORFANOS(existen∧¬enum)={orphans.Count}")
+            Console.WriteLine($"  (f) ORPHANHOOD '{actorRoot}\Animations\': exist={existing.Count} enumSet-total={enumSet.Count} enumSet-in-this-folder={enumInFolder} enumSet-OUTSIDE={enumOutside.Count} | ORPHANS(exist∧¬enum)={orphans.Count}")
             ' Carpetas TOP de los orphans (qué CLASE de animación queda fuera).
             Dim orphanByTop = orphans.GroupBy(Function(o) TopSegOf(FolderRelOf(o))).OrderByDescending(Function(grp) grp.Count()).ToList()
-            Console.WriteLine($"      orphans por TOP-SEG: " & String.Join(" ; ", orphanByTop.Take(20).Select(Function(grp) $"{grp.Key}={grp.Count()}")))
+            Console.WriteLine($"      orphans by TOP-SEG: " & String.Join(" ; ", orphanByTop.Take(20).Select(Function(grp) $"{grp.Key}={grp.Count()}")))
             ' Set de carpetas que las rutas SAPT declaran (canon, dir). ¿Los orphans caen en carpetas SAPT (buscadas pero
             ' no referenciadas por ningún clip-generator) o en carpetas que NINGÚN SAPT busca?
             ' MISMO filtro de identidad que EnumerateClips: solo subgraphs APLICADOS (excluye los que piden identidad
@@ -2365,7 +2365,7 @@ persist:
                             Dim k = p.LastIndexOf("\"c) : Return If(k > 0, p.Substring(0, k), "")
                         End Function
             Dim orphanInSapt = orphans.Where(Function(o) saptDirs.Contains(dirOf(o))).ToList()
-            Console.WriteLine($"      SAPT-dirs declarados={saptDirs.Count} | orphans EN carpeta-SAPT (buscada, no-referenciada)={orphanInSapt.Count} | orphans en carpeta NO-SAPT={orphans.Count - orphanInSapt.Count}")
+            Console.WriteLine($"      SAPT-dirs declared={saptDirs.Count} | orphans IN SAPT-folder (searched, not-referenced)={orphanInSapt.Count} | orphans in NON-SAPT folder={orphans.Count - orphanInSapt.Count}")
             ' VALIDACIÓN del scope de cobertura por SAPT-SUBTREE: el set de archivos que la raza BUSCA = todo .hkx
             ' bajo algún SAPT-dir (o su subárbol). Si un orphan está bajo un SAPT-subtree, es recuperable como
             ' "presente en la search-path pero no referenciado estáticamente". Para robots de carpeta compartida esto
@@ -2379,8 +2379,8 @@ persist:
                             End Function
             Dim orphansUnderSapt = orphans.Where(Function(o) underSapt(o)).ToList()
             Dim residual = orphans.Where(Function(o) Not underSapt(o)).ToList()
-            Console.WriteLine($"      COVERAGE por SAPT-subtree: orphans recuperables(bajo SAPT)={orphansUnderSapt.Count} | residual(NO bajo SAPT)={residual.Count}")
-            Console.WriteLine($"      residual NO-SAPT (lo que ni la search-path busca) muestra:")
+            Console.WriteLine($"      COVERAGE by SAPT-subtree: orphans recoverable(under SAPT)={orphansUnderSapt.Count} | residual(NOT under SAPT)={residual.Count}")
+            Console.WriteLine($"      residual NON-SAPT (what not even the search-path searches) sample:")
             For Each o In residual.Take(20) : Console.WriteLine($"        residual: {o}") : Next
         Next
     End Sub
@@ -2391,10 +2391,10 @@ persist:
     ''' coincide con el world del rig o está corrido por el local del socket = double-count?).</summary>
     Private Sub NifDumpRun(path As String)
         Dim nbx = LoadAnimCand(path)
-        If nbx Is Nothing Then Console.WriteLine($"[nifdump] '{path}' no carga") : Return
+        If nbx Is Nothing Then Console.WriteLine($"[nifdump] '{path}' does not load") : Return
         Dim nif As New Nifcontent_Class_Manolo() : nif.Load_Manolo(nbx)
         Console.WriteLine($"[nifdump] {path}")
-        Console.WriteLine("  ── NODOS ──")
+        Console.WriteLine("  ── NODES ──")
         For Each blk In nif.Blocks
             Dim nn = TryCast(blk, NiflySharp.Blocks.NiNode)
             If nn Is Nothing OrElse nn.Name Is Nothing Then Continue For
@@ -2413,13 +2413,13 @@ persist:
             Dim nasTxt = If(nas = "", "", $"  ***NoAnimSync=[{nas}]***")
             Console.WriteLine($"   '{nm}' parent='{pn}'  flags=0x{fl:X6}{nasTxt}  local.T=({lw.Translation.X:F3},{lw.Translation.Y:F3},{lw.Translation.Z:F3})  world.T=({w.Translation.X:F3},{w.Translation.Y:F3},{w.Translation.Z:F3})")
         Next
-        Console.WriteLine("  ── BSConnectPoint::Parents (sockets que PUBLICA, local al bone padre) ──")
+        Console.WriteLine("  ── BSConnectPoint::Parents (sockets it PUBLISHES, local to the parent bone) ──")
         For Each cp In BSConnectPointReader.ReadParents(nif)
             Console.WriteLine($"   '{cp.Name}' parentBone='{cp.ParentBoneName}'  T=({cp.Translation.X:F3},{cp.Translation.Y:F3},{cp.Translation.Z:F3})  R=({cp.Rotation.X:F3},{cp.Rotation.Y:F3},{cp.Rotation.Z:F3},{cp.Rotation.W:F3}) scale={cp.Scale:F3}")
         Next
         Dim childNames = BSConnectPointReader.ReadChildrenNames(nif)
-        If childNames.Count > 0 Then Console.WriteLine($"  ── BSConnectPoint::Children (sockets que CONSUME): {String.Join(", ", childNames)}")
-        Console.WriteLine("  ── SKIN BINDS (inv(bind) = world que el skin exige, en frame del chunk) ──")
+        If childNames.Count > 0 Then Console.WriteLine($"  ── BSConnectPoint::Children (sockets it CONSUMES): {String.Join(", ", childNames)}")
+        Console.WriteLine("  ── SKIN BINDS (inv(bind) = world the skin requires, in the chunk frame) ──")
         For blkIdx = 0 To nif.Blocks.Count - 1
             Dim shp = TryCast(nif.Blocks(blkIdx), NiflySharp.INiShape)
             If shp Is Nothing Then Continue For
@@ -2545,18 +2545,18 @@ persist:
         Try
             bytes = GetNifOrFileBytes(nifKey)
         Catch ex As Exception
-            Console.WriteLine($"[estimatesclp] error leyendo '{nifKey}': {ex.Message}")
+            Console.WriteLine($"[estimatesclp] error reading '{nifKey}': {ex.Message}")
             Return Nothing
         End Try
         If bytes Is Nothing OrElse bytes.Length = 0 Then
-            Console.WriteLine($"[estimatesclp] '{nifKey}' no existe / vacío en el FilesDictionary")
+            Console.WriteLine($"[estimatesclp] '{nifKey}' does not exist / empty in the FilesDictionary")
             Return Nothing
         End If
         Dim nif As New Nifcontent_Class_Manolo()
         Try
             nif.Load_Manolo(bytes)
         Catch ex As Exception
-            Console.WriteLine($"[estimatesclp] '{nifKey}' no carga como NIF: {ex.Message}")
+            Console.WriteLine($"[estimatesclp] '{nifKey}' does not load as NIF: {ex.Message}")
             Return Nothing
         End Try
 
@@ -2666,8 +2666,8 @@ persist:
                 End If
             Next
         Next
-        Dim filterNote = If(shapeNameFilter <> "", $" [filtro '{shapeNameFilter}': {shapesKept} shape(s) tras filtro]", "")
-        Console.WriteLine($"[estimatesclp]   '{nifKey}': {shapesSkinned} shape(s) skinneada(s), {acc.Count} hueso(s) con peso{filterNote}")
+        Dim filterNote = If(shapeNameFilter <> "", $" [filter '{shapeNameFilter}': {shapesKept} shape(s) after filter]", "")
+        Console.WriteLine($"[estimatesclp]   '{nifKey}': {shapesSkinned} skinned shape(s), {acc.Count} bone(s) with weight{filterNote}")
         Return acc
     End Function
 
@@ -2692,18 +2692,18 @@ persist:
         Try
             bytes = GetNifOrFileBytes(nifKey)
         Catch ex As Exception
-            Console.WriteLine($"[estimatesclp] error leyendo '{nifKey}': {ex.Message}")
+            Console.WriteLine($"[estimatesclp] error reading '{nifKey}': {ex.Message}")
             Return Nothing
         End Try
         If bytes Is Nothing OrElse bytes.Length = 0 Then
-            Console.WriteLine($"[estimatesclp] '{nifKey}' no existe / vacío en el FilesDictionary")
+            Console.WriteLine($"[estimatesclp] '{nifKey}' does not exist / empty in the FilesDictionary")
             Return Nothing
         End If
         Dim nif As New Nifcontent_Class_Manolo()
         Try
             nif.Load_Manolo(bytes)
         Catch ex As Exception
-            Console.WriteLine($"[estimatesclp] '{nifKey}' no carga como NIF: {ex.Message}")
+            Console.WriteLine($"[estimatesclp] '{nifKey}' does not load as NIF: {ex.Message}")
             Return Nothing
         End Try
 
@@ -3023,18 +3023,18 @@ persist:
         Try
             bytes = GetNifOrFileBytes(nifKey)
         Catch ex As Exception
-            Console.WriteLine($"[estimatesclp] error leyendo '{nifKey}': {ex.Message}")
+            Console.WriteLine($"[estimatesclp] error reading '{nifKey}': {ex.Message}")
             Return Nothing
         End Try
         If bytes Is Nothing OrElse bytes.Length = 0 Then
-            Console.WriteLine($"[estimatesclp] '{nifKey}' no existe / vacío en el FilesDictionary")
+            Console.WriteLine($"[estimatesclp] '{nifKey}' does not exist / empty in the FilesDictionary")
             Return Nothing
         End If
         Dim nif As New Nifcontent_Class_Manolo()
         Try
             nif.Load_Manolo(bytes)
         Catch ex As Exception
-            Console.WriteLine($"[estimatesclp] '{nifKey}' no carga como NIF: {ex.Message}")
+            Console.WriteLine($"[estimatesclp] '{nifKey}' does not load as NIF: {ex.Message}")
             Return Nothing
         End Try
 
@@ -3117,7 +3117,7 @@ persist:
         Dim bodyVerts = CollectVertsWithInfluences(bodyKey, wEps, bodyBinds)             ' body de referencia: SIN filtro (completo)
         If bodyVerts Is Nothing Then Return Nothing
         If uaVerts.Count = 0 OrElse bodyVerts.Count = 0 Then
-            Console.WriteLine("[estimatesclp] estGlobal: NIF sin vértices skinneados — abort")
+            Console.WriteLine("[estimatesclp] estGlobal: NIF without skinned vertices — abort")
             Return Nothing
         End If
 
@@ -3146,7 +3146,7 @@ persist:
         Next
         Dim nBones = boneList.Count
         If nBones = 0 Then
-            Console.WriteLine("[estimatesclp] estGlobal: 0 huesos con bind — abort")
+            Console.WriteLine("[estimatesclp] estGlobal: 0 bones with bind — abort")
             Return Nothing
         End If
         Dim N = 3 * nBones
@@ -3168,7 +3168,7 @@ persist:
             col2(bb) = ApplyT(bindB, New System.Numerics.Vector3(0, 0, 1)) - t
         Next
 
-        Console.WriteLine($"[estimatesclp] estGlobal: solve conjunto — {uaVerts.Count} verts UA × {bodyPos.Length} verts body, {nBones} huesos ({N} incógnitas). NN naive O(Nua·Nbody), puede tardar…")
+        Console.WriteLine($"[estimatesclp] estGlobal: joint solve — {uaVerts.Count} verts UA × {bodyPos.Length} verts body, {nBones} bones ({N} unknowns). NN naive O(Nua·Nbody), may take a while…")
 
         ' Ensamblado de las ecuaciones normales ATA·x = ATy. Se guardan las filas dispersas para el self-check.
         Dim ATA(N - 1, N - 1) As Double
@@ -3256,8 +3256,8 @@ persist:
         Next
         residSolve = Math.Sqrt(residSolve)
         residId = Math.Sqrt(residId)
-        Dim verdict = If(residSolve < residId, "solve MEJORA vs identidad", "solve NO mejora (revisar modelo/λ)")
-        Console.WriteLine($"[estimatesclp] estGlobal SELF-CHECK: ‖A·x−y‖(solve)={residSolve.ToString("F4", inv)}  vs  ‖A·1−y‖(identidad)={residId.ToString("F4", inv)}  ⇒ {verdict}   (N={N}, {rows.Count} verts, λ={lambdaEff.ToString("E3", inv)})")
+        Dim verdict = If(residSolve < residId, "solve IMPROVES vs identity", "solve does NOT improve (review model/λ)")
+        Console.WriteLine($"[estimatesclp] estGlobal SELF-CHECK: ‖A·x−y‖(solve)={residSolve.ToString("F4", inv)}  vs  ‖A·1−y‖(identity)={residId.ToString("F4", inv)}  ⇒ {verdict}   (N={N}, {rows.Count} verts, λ={lambdaEff.ToString("E3", inv)})")
 
         ' Empaquetá la solución por NOMBRE de hueso.
         Dim res As New Dictionary(Of String, (sx As Double, sy As Double, sz As Double))(StringComparer.OrdinalIgnoreCase)
@@ -3322,7 +3322,7 @@ persist:
                 Next
             End Using
         Catch ex As Exception
-            Console.WriteLine($"[estimatesclp] .sclp '{sclpKey}' no parsea: {ex.Message}")
+            Console.WriteLine($"[estimatesclp] .sclp '{sclpKey}' does not parse: {ex.Message}")
             Return Nothing
         End Try
         Return result
@@ -3378,19 +3378,19 @@ persist:
 
         Dim parts = spec.Split("|"c)
         If parts.Length < 2 OrElse parts(0).Trim() = "" OrElse parts(1).Trim() = "" Then
-            Console.WriteLine("[estimatesclp] uso: --estimatesclp ""<underarmorNifKey>|<bodyNifKey>[|<sclpKey>]""")
+            Console.WriteLine("[estimatesclp] usage: --estimatesclp ""<underarmorNifKey>|<bodyNifKey>[|<sclpKey>]""")
             Return
         End If
         Dim uaKey = parts(0).Trim()
         Dim bodyKey = parts(1).Trim()
         Dim sclpKey = If(parts.Length >= 3 AndAlso parts(2).Trim() <> "", parts(2).Trim(), Path.ChangeExtension(uaKey, ".sclp"))
 
-        Console.WriteLine("[estimatesclp] ESTIMADOR APROXIMADO de SCLP (ratio de extents en espacio-hueso; NO replica el motor)")
+        Console.WriteLine("[estimatesclp] APPROXIMATE SCLP ESTIMATOR (ratio of extents in bone-space; does NOT replicate the engine)")
         Console.WriteLine($"   underarmor = {uaKey}")
         Console.WriteLine($"   body(ref)  = {bodyKey}")
         Console.WriteLine($"   sclp(auth) = {sclpKey}")
         Console.WriteLine($"   wThreshold = {WT.ToString(inv)}   minSumW = {MINW.ToString(inv)}")
-        If shapeFilter <> "" Then Console.WriteLine($"   shapefilter = {shapeFilter}   (solo shapes del ua cuyo nombre lo contengan; el body NO se filtra)")
+        If shapeFilter <> "" Then Console.WriteLine($"   shapefilter = {shapeFilter}   (only ua shapes whose name contains it; the body is NOT filtered)")
 
         Dim uaAcc = AccumulateBoneExtents(uaKey, WT, shapeFilter)
         If uaAcc Is Nothing Then Return
@@ -3405,18 +3405,18 @@ persist:
         If nn Is Nothing Then nn = New Dictionary(Of String, (sx As Double, sy As Double, sz As Double, nPairs As Integer, okX As Boolean, okY As Boolean, okZ As Boolean, residX As Double, residY As Double, residZ As Double))(StringComparer.OrdinalIgnoreCase)
         Dim full = AccumulateFullFit(nnPairs)   ' estFull: ajuste de matriz 3×3 completa por hueso (frame-aware)
         If full Is Nothing Then full = New Dictionary(Of String, (Lxx As Double, Lyy As Double, Lzz As Double, offNorm As Double, residFull As Double, ok As Boolean))(StringComparer.OrdinalIgnoreCase)
-        Console.WriteLine($"   estNN: {nn.Count} hueso(s) con estimación nearest-neighbor (wEps={NN_WEPS.ToString(inv)})   estFull: {full.Count} hueso(s) con ajuste 3×3")
+        Console.WriteLine($"   estNN: {nn.Count} bone(s) with nearest-neighbor estimate (wEps={NN_WEPS.ToString(inv)})   estFull: {full.Count} bone(s) with 3×3 fit")
 
         ' estGlobal: solve GLOBAL CONJUNTO por mínimos cuadrados de TODAS las escalas de hueso a la vez.
         Dim glob = EstimateGlobalScales(uaKey, bodyKey, NN_WEPS, shapeFilter)
         If glob Is Nothing Then glob = New Dictionary(Of String, (sx As Double, sy As Double, sz As Double))(StringComparer.OrdinalIgnoreCase)
-        Console.WriteLine($"   estGlobal: {glob.Count} hueso(s) con solve conjunto")
+        Console.WriteLine($"   estGlobal: {glob.Count} bone(s) with joint solve")
 
         Dim authored = LoadSclpAbsolute(sclpKey)   ' Nothing si no existe / no parsea
         If authored Is Nothing Then
-            Console.WriteLine($"   (aviso) .sclp '{sclpKey}' no encontrado/parseable — sigo sin columna authored/error")
+            Console.WriteLine($"   (warning) .sclp '{sclpKey}' not found/parseable — continuing without authored/error column")
         Else
-            Console.WriteLine($"   .sclp: {authored.Count} entrada(s) autorada(s)")
+            Console.WriteLine($"   .sclp: {authored.Count} authored entry(ies)")
         End If
 
         ' Huesos *_skin presentes en AMBOS acumuladores con Σpeso suficiente en ambos.
@@ -3428,8 +3428,8 @@ persist:
 
         Const DOMMIN As Integer = 8   ' mínimo de vértices dominados (en AMBOS NIFs) para que estDomBox/estDomRms cuenten
         Console.WriteLine("")
-        Console.WriteLine($"   {skinBones.Count} hueso(s) *_skin comparables (con Σpeso ≥ {MINW.ToString(inv)} en ambos NIFs)")
-        Console.WriteLine($"   estRMS/estMean = extent ponderado por peso (blended, con ruido).  estDomBox/estDomRms = SOLO vértices dominados (peso>0.5), geometría limpia (gate ≥{DOMMIN} verts dominados en ambos).")
+        Console.WriteLine($"   {skinBones.Count} comparable *_skin bone(s) (with Σweight ≥ {MINW.ToString(inv)} in both NIFs)")
+        Console.WriteLine($"   estRMS/estMean = weight-weighted extent (blended, with noise).  estDomBox/estDomRms = ONLY dominated vertices (weight>0.5), clean geometry (gate ≥{DOMMIN} dominated verts in both).")
         Console.WriteLine("")
         ' Tabla
         Dim fmtRow = "   {0,-24} {1,-3} {2,8} {3,8} {4,8} {5,9} {6,9} {7,8} {8}"
@@ -3587,16 +3587,16 @@ persist:
         ' Resumen por-métrica
         Console.WriteLine("   " & New String("-"c, 108))
         Console.WriteLine("")
-        Console.WriteLine("   ── RESUMEN (solo ejes con authored ≠ 1.0 = los que el artista MOVIÓ) ──")
+        Console.WriteLine("   ── SUMMARY (only axes with authored ≠ 1.0 = those the artist MOVED) ──")
         If authored Is Nothing Then
-            Console.WriteLine("   (sin .sclp autorado — no hay ground truth para computar error)")
+            Console.WriteLine("   (no authored .sclp — no ground truth to compute error)")
         ElseIf movedCount = 0 Then
-            Console.WriteLine("   0 ejes autorados ≠ 1.0 entre los huesos comparables (nada que evaluar).")
+            Console.WriteLine("   0 authored axes ≠ 1.0 among the comparable bones (nothing to evaluate).")
         Else
-            Console.WriteLine($"   ejes movidos evaluados (X/Y/Z): {movedCount}")
+            Console.WriteLine($"   moved axes evaluated (X/Y/Z): {movedCount}")
             Dim printMetric = Sub(label As String, ma As MetricAcc)
                                   Dim mean = If(ma.Errs.Count > 0, ma.Errs.Average(), 0.0F)
-                                  Console.WriteLine($"   {label,-20} n={ma.Errs.Count,3}  errMedio={mean.ToString("F4", inv)}  mediana={MedianOf(ma.Errs).ToString("F4", inv)}  ±0.05={ma.In05,3}  ±0.10={ma.In10,3}")
+                                  Console.WriteLine($"   {label,-20} n={ma.Errs.Count,3}  meanErr={mean.ToString("F4", inv)}  median={MedianOf(ma.Errs).ToString("F4", inv)}  ±0.05={ma.In05,3}  ±0.10={ma.In10,3}")
                               End Sub
             printMetric("estRMS   [X/Y/Z]", rmsAll)
             printMetric("estRMS   [Y/Z]", rmsYZ)
@@ -3612,20 +3612,20 @@ persist:
             printMetric("estFull  [Y/Z]", fullYZ)
             printMetric("estGlobal[X/Y/Z]", globAll)
             printMetric("estGlobal[Y/Z]", globYZ)
-            Console.WriteLine($"   coverage huesos movidos (authored≠1.0): total={movedBonesTotal}  con estNN={nnCoverBones}  con estDomBox={domBoxCoverBones}  con estGlobal={globCoverBones}  (estNN/estGlobal cubren también huesos blend)")
+            Console.WriteLine($"   coverage moved bones (authored≠1.0): total={movedBonesTotal}  with estNN={nnCoverBones}  with estDomBox={domBoxCoverBones}  with estGlobal={globCoverBones}  (estNN/estGlobal also cover blend bones)")
             ' Residual de reconstrucción del ajuste NN (0 = escala-por-hueso perfecta; alto = la prenda NO es una escala-por-hueso pura).
-            Console.WriteLine($"   estNN residual [Y/Z]  n={residYZ.Count,3}  mediana={MedianOf(residYZ).ToString("F4", inv)}  (fracción de varianza de lu NO explicada por s·lp; calidad INTRÍNSECA, indep. del authored)")
-            Console.WriteLine($"   correlación error↔residual (ejes Y/Z con |estNN−authored|>0.10): residual alto(>0.25)={bigErrHiResid}  vs bajo={bigErrLoResid}")
-            Console.WriteLine("     └ si el error-vs-authored alto coincide con residual alto → la prenda no es escala-por-hueso pura (límite del modelo SCLP, no del estimador).")
+            Console.WriteLine($"   estNN residual [Y/Z]  n={residYZ.Count,3}  median={MedianOf(residYZ).ToString("F4", inv)}  (fraction of lu variance NOT explained by s·lp; INTRINSIC quality, indep. of authored)")
+            Console.WriteLine($"   correlation error↔residual (Y/Z axes with |estNN−authored|>0.10): high residual(>0.25)={bigErrHiResid}  vs low={bigErrLoResid}")
+            Console.WriteLine("     └ if high error-vs-authored coincides with high residual → the garment is not pure per-bone scale (limit of the SCLP model, not the estimator).")
             ' estFull: cuán NO-diagonal es el ajuste 3×3 (offNorm) y su residual (≤ residual estNN si el ajuste diagonal perdía señal fuera de eje).
-            Console.WriteLine($"   estFull offdiag [Y/Z]  n={offNormMoved.Count,3}  mediana={MedianOf(offNormMoved).ToString("F4", inv)}  (0=escala de eje pura; alto=rotación/shear no representable como escala de eje)")
-            Console.WriteLine($"   estFull residual [Y/Z]  n={residFullMoved.Count,3}  mediana={MedianOf(residFullMoved).ToString("F4", inv)}  (residual del ajuste lineal 3×3 completo; si baja mucho vs estNN, el ajuste diagonal perdía señal a términos fuera de eje)")
+            Console.WriteLine($"   estFull offdiag [Y/Z]  n={offNormMoved.Count,3}  median={MedianOf(offNormMoved).ToString("F4", inv)}  (0=pure axis scale; high=rotation/shear not representable as axis scale)")
+            Console.WriteLine($"   estFull residual [Y/Z]  n={residFullMoved.Count,3}  median={MedianOf(residFullMoved).ToString("F4", inv)}  (residual of the full 3×3 linear fit; if it drops a lot vs estNN, the diagonal fit was losing signal to off-axis terms)")
         End If
-        Console.WriteLine($"   falsos positivos (authored=1.0 pero estRMS∉[0.97,1.03]): {falsePos}")
-        Console.WriteLine($"   falsos negativos (authored≠1.0 pero estRMS∈[0.97,1.03]): {falseNeg}")
+        Console.WriteLine($"   false positives (authored=1.0 but estRMS∉[0.97,1.03]): {falsePos}")
+        Console.WriteLine($"   false negatives (authored≠1.0 but estRMS∈[0.97,1.03]): {falseNeg}")
         Console.WriteLine("")
-        Console.WriteLine("   NOTA: estimador geométrico aproximado; ratio de extents ≠ SCLP autorado (ver doc-comment).")
-        Console.WriteLine("   [Y/Z] excluye el eje X (el motor casi no lo usa) — es la fila más relevante para el veredicto.")
+        Console.WriteLine("   NOTE: approximate geometric estimator; ratio of extents ≠ authored SCLP (see doc-comment).")
+        Console.WriteLine("   [Y/Z] excludes the X axis (the engine barely uses it) — it's the most relevant row for the verdict.")
     End Sub
 
     ' =====================================================================================
@@ -3760,18 +3760,18 @@ persist:
         Try
             bytes = GetNifOrFileBytes(nifKey)
         Catch ex As Exception
-            Console.WriteLine($"[sclpdiag] error leyendo '{nifKey}': {ex.Message}")
+            Console.WriteLine($"[sclpdiag] error reading '{nifKey}': {ex.Message}")
             Return Nothing
         End Try
         If bytes Is Nothing OrElse bytes.Length = 0 Then
-            Console.WriteLine($"[sclpdiag] '{nifKey}' no existe / vacío en el FilesDictionary")
+            Console.WriteLine($"[sclpdiag] '{nifKey}' does not exist / empty in the FilesDictionary")
             Return Nothing
         End If
         Dim nif As New Nifcontent_Class_Manolo()
         Try
             nif.Load_Manolo(bytes)
         Catch ex As Exception
-            Console.WriteLine($"[sclpdiag] '{nifKey}' no carga como NIF: {ex.Message}")
+            Console.WriteLine($"[sclpdiag] '{nifKey}' does not load as NIF: {ex.Message}")
             Return Nothing
         End Try
 
@@ -3869,8 +3869,8 @@ persist:
                 End If
             Next
         Next
-        Dim filterNote = If(shapeNameFilter <> "", $" [filtro '{shapeNameFilter}': {shapesKept} shape(s) tras filtro]", "")
-        Console.WriteLine($"[sclpdiag]   '{nifKey}': {shapesSkinned} shape(s) skinneada(s), {acc.Count} hueso(s) con peso{filterNote}")
+        Dim filterNote = If(shapeNameFilter <> "", $" [filter '{shapeNameFilter}': {shapesKept} shape(s) after filter]", "")
+        Console.WriteLine($"[sclpdiag]   '{nifKey}': {shapesSkinned} skinned shape(s), {acc.Count} bone(s) with weight{filterNote}")
         Return acc
     End Function
 
@@ -3913,18 +3913,18 @@ persist:
         Try
             bytes = GetNifOrFileBytes(nifKey)
         Catch ex As Exception
-            Console.WriteLine($"[binddiff] error leyendo '{nifKey}': {ex.Message}")
+            Console.WriteLine($"[binddiff] error reading '{nifKey}': {ex.Message}")
             Return Nothing
         End Try
         If bytes Is Nothing OrElse bytes.Length = 0 Then
-            Console.WriteLine($"[binddiff] '{nifKey}' no existe / vacío en el FilesDictionary")
+            Console.WriteLine($"[binddiff] '{nifKey}' does not exist / empty in the FilesDictionary")
             Return Nothing
         End If
         Dim nif As New Nifcontent_Class_Manolo()
         Try
             nif.Load_Manolo(bytes)
         Catch ex As Exception
-            Console.WriteLine($"[binddiff] '{nifKey}' no carga como NIF: {ex.Message}")
+            Console.WriteLine($"[binddiff] '{nifKey}' does not load as NIF: {ex.Message}")
             Return Nothing
         End Try
 
@@ -3951,7 +3951,7 @@ persist:
                 If Not acc.ContainsKey(bn) Then acc(bn) = bind   ' primero gana
             Next
         Next
-        Console.WriteLine($"[binddiff]   '{nifKey}': {shapesSkinned} shape(s) skinneada(s), {acc.Count} hueso(s) con bind")
+        Console.WriteLine($"[binddiff]   '{nifKey}': {shapesSkinned} skinned shape(s), {acc.Count} bone(s) with bind")
         Return acc
     End Function
 
@@ -3967,17 +3967,17 @@ persist:
 
         Dim parts = spec.Split("|"c)
         If parts.Length < 2 OrElse parts(0).Trim() = "" OrElse parts(1).Trim() = "" Then
-            Console.WriteLine("[binddiff] uso: --binddiff ""<uaNifKey|path>|<bodyNifKey|path>|<boneSubstr opcional>""")
+            Console.WriteLine("[binddiff] usage: --binddiff ""<uaNifKey|path>|<bodyNifKey|path>|<boneSubstr optional>""")
             Return
         End If
         Dim uaKey = parts(0).Trim()
         Dim bodyKey = parts(1).Trim()
         Dim boneSubstr = If(parts.Length >= 3, parts(2).Trim(), "")
 
-        Console.WriteLine("[binddiff] COMPARA los binds skin→bone (SkinToBone) de cada hueso entre dos NIFs")
+        Console.WriteLine("[binddiff] COMPARES the skin→bone (SkinToBone) binds of each bone between two NIFs")
         Console.WriteLine($"   underarmor(ua) = {uaKey}")
         Console.WriteLine($"   body           = {bodyKey}")
-        Console.WriteLine($"   filtro hueso   = {If(boneSubstr = "", "(todos *_skin)", boneSubstr)}   EPS = {EPS.ToString(inv)}")
+        Console.WriteLine($"   bone filter    = {If(boneSubstr = "", "(all *_skin)", boneSubstr)}   EPS = {EPS.ToString(inv)}")
 
         Dim uaBinds = LoadBindsByBone(uaKey)
         If uaBinds Is Nothing Then Return
@@ -3996,7 +3996,7 @@ persist:
             OrderBy(Function(k) k, StringComparer.OrdinalIgnoreCase).ToList()
 
         Console.WriteLine("")
-        Console.WriteLine($"   {cand.Count} hueso(s) comparable(s) (presentes en AMBOS NIFs)")
+        Console.WriteLine($"   {cand.Count} comparable bone(s) (present in BOTH NIFs)")
         Console.WriteLine("")
 
         Dim maxDT As Double = 0.0
@@ -4041,14 +4041,14 @@ persist:
 
         Console.WriteLine("")
         Console.WriteLine("   " & New String("="c, 108))
-        Console.WriteLine($"   RESUMEN ({cand.Count} hueso(s) *_skin comparado(s)):")
+        Console.WriteLine($"   SUMMARY ({cand.Count} *_skin bone(s) compared):")
         Console.WriteLine($"     MAX |ΔT|       = {maxDT.ToString("F6", inv)}")
         Console.WriteLine($"     MAX |Δscale|   = {maxDScale.ToString("F6", inv)}")
         Console.WriteLine($"     MAX |Δcolnorm| = {maxDCol.ToString("F6", inv)}")
         If maxDT < EPS AndAlso maxDScale < EPS AndAlso maxDCol < EPS Then
-            Console.WriteLine("     ⇒ BINDS IDÉNTICOS ua≈body → la escala NO está en el bind (horneada en vértices)")
+            Console.WriteLine("     ⇒ BINDS IDENTICAL ua≈body → the scale is NOT in the bind (baked into vertices)")
         Else
-            Console.WriteLine($"     ⇒ BINDS DIFIEREN → posible escala codificada en el bind; huesos: {String.Join(", ", divergBones)}")
+            Console.WriteLine($"     ⇒ BINDS DIFFER → possible scale encoded in the bind; bones: {String.Join(", ", divergBones)}")
         End If
     End Sub
 
@@ -4066,7 +4066,7 @@ persist:
 
         Dim parts = spec.Split("|"c)
         If parts.Length < 2 OrElse parts(0).Trim() = "" OrElse parts(1).Trim() = "" Then
-            Console.WriteLine("[sclpdiag] uso: --sclpdiag ""<uaNifKey>|<bodyNifKey>|<boneSubstr>""")
+            Console.WriteLine("[sclpdiag] usage: --sclpdiag ""<uaNifKey>|<bodyNifKey>|<boneSubstr>""")
             Return
         End If
         Dim uaKey = parts(0).Trim()
@@ -4074,12 +4074,12 @@ persist:
         Dim boneSubstr = If(parts.Length >= 3, parts(2).Trim(), "")
         Dim sclpKey = Path.ChangeExtension(uaKey, ".sclp")
 
-        Console.WriteLine("[sclpdiag] VOLCADO DIAGNÓSTICO de geometría cruda por hueso (para derivar a mano la fórmula SCLP)")
+        Console.WriteLine("[sclpdiag] DIAGNOSTIC DUMP of raw per-bone geometry (to derive the SCLP formula by hand)")
         Console.WriteLine($"   underarmor = {uaKey}")
         Console.WriteLine($"   body(ref)  = {bodyKey}")
         Console.WriteLine($"   sclp(auth) = {sclpKey}")
-        Console.WriteLine($"   filtro hueso = {If(boneSubstr = "", "(todos *_skin)", boneSubstr)}   wThreshold(allSet) = {WT.ToString(inv)}")
-        If shapeFilter <> "" Then Console.WriteLine($"   shapefilter = {shapeFilter}   (solo shapes del ua cuyo nombre lo contengan; el body NO se filtra)")
+        Console.WriteLine($"   bone filter = {If(boneSubstr = "", "(all *_skin)", boneSubstr)}   wThreshold(allSet) = {WT.ToString(inv)}")
+        If shapeFilter <> "" Then Console.WriteLine($"   shapefilter = {shapeFilter}   (only ua shapes whose name contains it; the body is NOT filtered)")
 
         Dim uaLoc = AccumulateBoneLocals(uaKey, WT, shapeFilter)
         If uaLoc Is Nothing Then Return
@@ -4100,9 +4100,9 @@ persist:
 
         Dim authored = LoadSclpAbsolute(sclpKey)
         If authored Is Nothing Then
-            Console.WriteLine($"   (aviso) .sclp '{sclpKey}' no encontrado/parseable — sigo sin columna authored")
+            Console.WriteLine($"   (warning) .sclp '{sclpKey}' not found/parseable — continuing without authored column")
         Else
-            Console.WriteLine($"   .sclp: {authored.Count} entrada(s) autorada(s)")
+            Console.WriteLine($"   .sclp: {authored.Count} authored entry(ies)")
         End If
 
         ' Huesos candidatos: matchean substr (o *_skin si vacío) en el underarmor.
@@ -4116,8 +4116,8 @@ persist:
             OrderBy(Function(k) k, StringComparer.OrdinalIgnoreCase).ToList()
 
         Console.WriteLine("")
-        Console.WriteLine($"   {cand.Count} hueso(s) candidato(s) en el underarmor")
-        Console.WriteLine("   Objetivo: para cada hueso/eje, ver cuál de los r_* ≈ authored.")
+        Console.WriteLine($"   {cand.Count} candidate bone(s) in the underarmor")
+        Console.WriteLine("   Objective: for each bone/axis, see which r_* ≈ authored.")
         Console.WriteLine("")
 
         Dim printed = 0
@@ -4125,7 +4125,7 @@ persist:
             Dim uaBl = uaLoc(bn)
             Dim bdBl As BoneLocals = Nothing
             If Not bodyLoc.TryGetValue(bn, bdBl) Then
-                Console.WriteLine($"   [skip] '{bn}': sin datos en el body de referencia")
+                Console.WriteLine($"   [skip] '{bn}': no data in the reference body")
                 Continue For
             End If
 
@@ -4147,25 +4147,25 @@ persist:
                 Dim rxT = If(nnRow.okX, nnRow.residX.ToString("F4", inv), "n/a")
                 Dim ryT = If(nnRow.okY, nnRow.residY.ToString("F4", inv), "n/a")
                 Dim rzT = If(nnRow.okZ, nnRow.residZ.ToString("F4", inv), "n/a")
-                Console.WriteLine($"     estNN: sx={sxT}  sy={syT}  sz={szT}   nPairs={nnRow.nPairs}   resid[X={rxT} Y={ryT} Z={rzT}]  (0=escala-por-hueso perfecta)")
+                Console.WriteLine($"     estNN: sx={sxT}  sy={syT}  sz={szT}   nPairs={nnRow.nPairs}   resid[X={rxT} Y={ryT} Z={rzT}]  (0=perfect per-bone scale)")
             Else
-                Console.WriteLine("     estNN: (sin par NN para este hueso — solo en un NIF)")
+                Console.WriteLine("     estNN: (no NN pair for this bone — only in one NIF)")
             End If
 
             ' estFull (ajuste de matriz 3×3 completa): diag(L) = escala per-eje frame-aware; offNorm = cuán no-diagonal; resid = residual del ajuste 3×3.
             Dim fullRow As (Lxx As Double, Lyy As Double, Lzz As Double, offNorm As Double, residFull As Double, ok As Boolean) = Nothing
             If full.TryGetValue(bn, fullRow) AndAlso fullRow.ok Then
-                Console.WriteLine($"     estFull: Lxx={fullRow.Lxx.ToString("F4", inv)}  Lyy={fullRow.Lyy.ToString("F4", inv)}  Lzz={fullRow.Lzz.ToString("F4", inv)}  offNorm={fullRow.offNorm.ToString("F4", inv)}  resid={fullRow.residFull.ToString("F4", inv)}  (offNorm 0=escala de eje pura; resid ≤ estNN)")
+                Console.WriteLine($"     estFull: Lxx={fullRow.Lxx.ToString("F4", inv)}  Lyy={fullRow.Lyy.ToString("F4", inv)}  Lzz={fullRow.Lzz.ToString("F4", inv)}  offNorm={fullRow.offNorm.ToString("F4", inv)}  resid={fullRow.residFull.ToString("F4", inv)}  (offNorm 0=pure axis scale; resid ≤ estNN)")
             Else
-                Console.WriteLine("     estFull: (sin ajuste 3×3 — P singular o sin par NN)")
+                Console.WriteLine("     estFull: (no 3×3 fit — P singular or no NN pair)")
             End If
 
             ' estGlobal (solve conjunto least-squares global de TODAS las escalas a la vez).
             Dim globRow As (sx As Double, sy As Double, sz As Double) = Nothing
             If glob.TryGetValue(bn, globRow) Then
-                Console.WriteLine($"     estGlobal: sx={globRow.sx.ToString("F4", inv)}  sy={globRow.sy.ToString("F4", inv)}  sz={globRow.sz.ToString("F4", inv)}  (solve conjunto least-squares global)")
+                Console.WriteLine($"     estGlobal: sx={globRow.sx.ToString("F4", inv)}  sy={globRow.sy.ToString("F4", inv)}  sz={globRow.sz.ToString("F4", inv)}  (global least-squares joint solve)")
             Else
-                Console.WriteLine("     estGlobal: (sin solución en el solve conjunto)")
+                Console.WriteLine("     estGlobal: (no solution in the joint solve)")
             End If
 
             ' Encabezado de la tabla por eje.
@@ -4205,10 +4205,10 @@ persist:
 
         Console.WriteLine("   " & New String("="c, 120))
         Console.WriteLine("")
-        Console.WriteLine($"   {printed} hueso(s) volcado(s) con datos en ambos NIFs.")
-        Console.WriteLine("   LEYENDA: domSet=slot dominante>0.5 (geom limpia); allSet=peso>umbral (ponderado).")
-        Console.WriteLine("            maxAbsO=p95(|axis|) al ORIGEN (domSet); p95abs=p95(|axis|) al ORIGEN (allSet); wRmsO=sqrt(Σw·axis²/Σw).")
-        Console.WriteLine("            r_span=(p95−p05)_ua/body. Buscá el r_* que iguale 'authored' de cada eje.")
+        Console.WriteLine($"   {printed} bone(s) dumped with data in both NIFs.")
+        Console.WriteLine("   LEGEND: domSet=dominant slot>0.5 (clean geom); allSet=weight>threshold (weighted).")
+        Console.WriteLine("            maxAbsO=p95(|axis|) at ORIGIN (domSet); p95abs=p95(|axis|) at ORIGIN (allSet); wRmsO=sqrt(Σw·axis²/Σw).")
+        Console.WriteLine("            r_span=(p95−p05)_ua/body. Look for the r_* that matches each axis's 'authored'.")
     End Sub
 
     ''' <summary>Modo BATCH del estimador SCLP: evalúa muchas combinaciones en UNA sola corrida (un solo mount ya hecho).
@@ -4224,7 +4224,7 @@ persist:
         Dim inv = System.Globalization.CultureInfo.InvariantCulture
 
         If Not IO.File.Exists(manifestPath) Then
-            Console.WriteLine($"[sclpbatch] manifiesto no encontrado: {manifestPath}")
+            Console.WriteLine($"[sclpbatch] manifest not found: {manifestPath}")
             Return
         End If
 
@@ -4232,12 +4232,12 @@ persist:
         Try
             lines = IO.File.ReadAllLines(manifestPath)
         Catch ex As Exception
-            Console.WriteLine($"[sclpbatch] no pude leer el manifiesto '{manifestPath}': {ex.Message}")
+            Console.WriteLine($"[sclpbatch] could not read manifest '{manifestPath}': {ex.Message}")
             Return
         End Try
 
-        Console.WriteLine($"[sclpbatch] {manifestPath}  ({lines.Length} línea(s))")
-        Console.WriteLine("   formato: label|uaKeyOrPath|bodyKeyOrPath|authoredSclpPath   (eje 'movido' si |authored−1|>" & MOVED.ToString(inv) & "; err=|estNN−authored| en Y,Z)")
+        Console.WriteLine($"[sclpbatch] {manifestPath}  ({lines.Length} line(s))")
+        Console.WriteLine("   format: label|uaKeyOrPath|bodyKeyOrPath|authoredSclpPath   (axis 'moved' if |authored−1|>" & MOVED.ToString(inv) & "; err=|estNN−authored| in Y,Z)")
         Console.WriteLine("")
 
         Dim nCases = 0
@@ -4250,16 +4250,16 @@ persist:
             Try
                 Dim parts = line.Split("|"c)
                 If parts.Length < 4 Then
-                    Console.WriteLine($"{label,-24}  ERROR/skip formato (se esperaban 4 campos 'label|ua|body|sclp' separados por '|')")
+                    Console.WriteLine($"{label,-24}  ERROR/skip format (expected 4 fields 'label|ua|body|sclp' separated by '|')")
                     Continue For
                 End If
                 label = parts(0).Trim()
                 Dim uaKey = parts(1).Trim()
                 Dim bodyKey = parts(2).Trim()
                 Dim sclpKey = parts(3).Trim()
-                If label = "" Then label = "(sin label)"
+                If label = "" Then label = "(no label)"
                 If uaKey = "" OrElse bodyKey = "" OrElse sclpKey = "" Then
-                    Console.WriteLine($"{label,-24}  ERROR/skip campos vacíos (ua/body/sclp)")
+                    Console.WriteLine($"{label,-24}  ERROR/skip empty fields (ua/body/sclp)")
                     Continue For
                 End If
 
@@ -4267,13 +4267,13 @@ persist:
                 Dim nnPairs = BuildNNPairs(uaKey, bodyKey, WEPS)   ' Nothing si ua o body no cargan
                 Dim nn = AccumulateNNScales(nnPairs)               ' Nothing si nnPairs Nothing
                 If nn Is Nothing OrElse nn.Count = 0 Then
-                    Console.WriteLine($"{label,-24}  ERROR/skip ua o body no cargan (o sin pares NN)")
+                    Console.WriteLine($"{label,-24}  ERROR/skip ua or body do not load (or no NN pairs)")
                     Continue For
                 End If
 
                 Dim authored = LoadSclpAbsolute(sclpKey)
                 If authored Is Nothing OrElse authored.Count = 0 Then
-                    Console.WriteLine($"{label,-24}  ERROR/skip .sclp no encontrado/parseable: {sclpKey}")
+                    Console.WriteLine($"{label,-24}  ERROR/skip .sclp not found/parseable: {sclpKey}")
                     Continue For
                 End If
 
@@ -4292,7 +4292,7 @@ persist:
                 Next
 
                 If errs.Count = 0 Then
-                    Console.WriteLine($"{label,-24}  ERROR/skip sin ejes Y/Z movidos comparables (estNN válido + authored)")
+                    Console.WriteLine($"{label,-24}  ERROR/skip no comparable moved Y/Z axes (valid estNN + authored)")
                     Continue For
                 End If
 
@@ -4315,7 +4315,7 @@ persist:
         Next
 
         Console.WriteLine("")
-        Console.WriteLine($"[sclpbatch] {nCases} caso(s) procesado(s).")
+        Console.WriteLine($"[sclpbatch] {nCases} case(s) processed.")
     End Sub
 
     ''' <summary>FK helper memoizado: world(nm) = world(parent) ∘ localFn(nm) (raíz = localFn(nm)).</summary>
@@ -4348,10 +4348,10 @@ persist:
             If (p.EndsWith(".bsa", StringComparison.OrdinalIgnoreCase) OrElse p.EndsWith(".ba2", StringComparison.OrdinalIgnoreCase)) AndAlso System.IO.File.Exists(p) Then
                 Try
                     FilesDictionary_class.RegisterArchive(p)
-                    Console.WriteLine($"[blendhintscan] montado: {p}")
+                    Console.WriteLine($"[blendhintscan] mounted: {p}")
                     substr = ""
                 Catch ex As Exception
-                    Console.WriteLine($"[blendhintscan] NO pudo montar '{p}': {ex.Message}")
+                    Console.WriteLine($"[blendhintscan] could NOT mount '{p}': {ex.Message}")
                 End Try
             End If
         Next
@@ -4359,7 +4359,7 @@ persist:
                        Where(Function(k) k.EndsWith(".hkx", StringComparison.OrdinalIgnoreCase) AndAlso
                                          (substr = "" OrElse k.IndexOf(substr, StringComparison.OrdinalIgnoreCase) >= 0)).
                        OrderBy(Function(k) k, StringComparer.OrdinalIgnoreCase).ToList()
-        Console.WriteLine($"[blendhintscan] {keys.Count} .hkx (filtro='{filter}') — parseando bindings...")
+        Console.WriteLine($"[blendhintscan] {keys.Count} .hkx (filter='{filter}') — parsing bindings...")
         Dim tally As New Dictionary(Of Integer, Integer)
         Dim examples As New Dictionary(Of Integer, List(Of String))
         Dim fileOk = 0, parseErr = 0, noBinding = 0, done = 0
@@ -4393,18 +4393,18 @@ persist:
                 parseErr += 1
             End Try
         Next
-        Console.WriteLine($"[blendhintscan] archivos parseOk={fileOk} parseErr={parseErr} sinBinding={noBinding}")
-        Console.WriteLine("[blendhintscan] === distribución blendHint (por binding) ===")
+        Console.WriteLine($"[blendhintscan] files parseOk={fileOk} parseErr={parseErr} noBinding={noBinding}")
+        Console.WriteLine("[blendhintscan] === blendHint distribution (per binding) ===")
         For Each kv In tally.OrderBy(Function(x) x.Key)
-            Dim label = If(kv.Key = 0, "NORMAL", If(kv.Key = 1, "ADDITIVE_DEPRECATED", If(kv.Key = 2, "ADDITIVE", "⚠ RARO ∉{0,1,2}")))
+            Dim label = If(kv.Key = 0, "NORMAL", If(kv.Key = 1, "ADDITIVE_DEPRECATED", If(kv.Key = 2, "ADDITIVE", "⚠ RARE ∉{0,1,2}")))
             Console.WriteLine($"   blendHint={kv.Key,-4} {label,-22} = {kv.Value} binding(s)")
         Next
         For Each kv In examples.OrderBy(Function(x) x.Key)
-            Console.WriteLine($"[blendhintscan] --- ejemplos blendHint={kv.Key} ({If(kv.Key = 1, "ADDITIVE_DEPRECATED", If(kv.Key = 2, "ADDITIVE", "RARO"))}) ---")
+            Console.WriteLine($"[blendhintscan] --- examples blendHint={kv.Key} ({If(kv.Key = 1, "ADDITIVE_DEPRECATED", If(kv.Key = 2, "ADDITIVE", "RARE"))}) ---")
             For Each ex In kv.Value : Console.WriteLine($"      {ex}") : Next
         Next
         Dim raros = tally.Keys.Where(Function(h) h <> 0 AndAlso h <> 1 AndAlso h <> 2).ToList()
-        Console.WriteLine($"[blendhintscan] ⇒ valores ∉{{0,1,2}} = {raros.Count} ({If(raros.Count = 0, "NINGUNO ⇒ app ≠0 y motor {1,2} coinciden en TODO el contenido", String.Join(",", raros))})")
+        Console.WriteLine($"[blendhintscan] ⇒ values ∉{{0,1,2}} = {raros.Count} ({If(raros.Count = 0, "NONE ⇒ app ≠0 and engine {1,2} agree on ALL content", String.Join(",", raros))})")
     End Sub
 
     ''' <summary>VALIDACIÓN No-Anim-Sync (engine-exact). Para un chunk NIF montado, hace FK del árbol de bones
@@ -4416,14 +4416,14 @@ persist:
     ''' bindWorld en ambos (localFn=bindLocal) ⇒ el fix NO lo toca. spec="&lt;chunkNif&gt;|&lt;rigHkx&gt;|&lt;clipHkx&gt;[|frame][|boneFilter]".</summary>
     Private Sub AnimSyncCheck(spec As String)
         Dim parts = spec.Split("|"c)
-        If parts.Length < 3 Then Console.WriteLine("[animsync] uso: --animsynccheck ""<chunkNif>|<rigHkx>|<clipHkx>[|frame][|boneFilter]""") : Return
+        If parts.Length < 3 Then Console.WriteLine("[animsync] usage: --animsynccheck ""<chunkNif>|<rigHkx>|<clipHkx>[|frame][|boneFilter]""") : Return
         Dim chunkPath = parts(0).Trim(), rigPath = parts(1).Trim(), clipPath = parts(2).Trim()
         Dim frameArg = If(parts.Length > 3 AndAlso parts(3).Trim() <> "", parts(3).Trim(), "mid")
         Dim boneFilter = If(parts.Length > 4, parts(4).Trim(), "")
 
         ' ── CHUNK NIF: name → bindLocal, bindWorld, parent, flags ──
         Dim nbx = LoadAnimCand(chunkPath)
-        If nbx Is Nothing Then Console.WriteLine($"[animsync] chunk '{chunkPath}' no carga") : Return
+        If nbx Is Nothing Then Console.WriteLine($"[animsync] chunk '{chunkPath}' does not load") : Return
         Dim nif As New Nifcontent_Class_Manolo() : nif.Load_Manolo(nbx)
         Dim bindLocal As New Dictionary(Of String, Transform_Class)(StringComparer.OrdinalIgnoreCase)
         Dim bindWorld As New Dictionary(Of String, Transform_Class)(StringComparer.OrdinalIgnoreCase)
@@ -4445,19 +4445,19 @@ persist:
 
         ' ── RIG (refPose) + CLIP (binding track→bone) ──
         Dim rb = LoadAnimCand(rigPath)
-        If rb Is Nothing Then Console.WriteLine($"[animsync] rig '{rigPath}' no carga") : Return
+        If rb Is Nothing Then Console.WriteLine($"[animsync] rig '{rigPath}' does not load") : Return
         Dim sg = HkxObjectGraphParser_Class.BuildGraph(HkxPackfileParser_Class.Parse(rb))
         Dim skel = sg.GetObjectsByClassName("hkaSkeleton").Select(Function(o) sg.ParseSkeleton(o)).
                       Where(Function(s) s IsNot Nothing AndAlso s.Bones IsNot Nothing AndAlso s.ReferencePose IsNot Nothing AndAlso
                             (String.IsNullOrEmpty(s.Name) OrElse s.Name.IndexOf("Ragdoll", StringComparison.OrdinalIgnoreCase) < 0)).FirstOrDefault()
-        If skel Is Nothing Then Console.WriteLine("[animsync] rig sin hkaSkeleton") : Return
+        If skel Is Nothing Then Console.WriteLine("[animsync] rig without hkaSkeleton") : Return
         Dim nBk = skel.Bones.Count
         Dim cbts = LoadAnimCand(clipPath)
-        If cbts Is Nothing Then Console.WriteLine($"[animsync] clip '{clipPath}' no carga") : Return
+        If cbts Is Nothing Then Console.WriteLine($"[animsync] clip '{clipPath}' does not load") : Return
         Dim cg = HkxObjectGraphParser_Class.BuildGraph(HkxPackfileParser_Class.Parse(cbts))
         Dim anim = cg.ParseAnimations().FirstOrDefault()
         If anim Is Nothing Then anim = cg.ParseLosslessAnimations().FirstOrDefault()
-        If anim Is Nothing OrElse anim.NumFrames <= 0 Then Console.WriteLine("[animsync] clip sin animación legible") : Return
+        If anim Is Nothing OrElse anim.NumFrames <= 0 Then Console.WriteLine("[animsync] clip without readable animation") : Return
         Dim idxArr = If(anim.Binding?.TransformTrackToBoneIndices, New List(Of Short)())
         Dim frame As Integer
         If frameArg.Equals("mid", StringComparison.OrdinalIgnoreCase) Then
@@ -4529,7 +4529,7 @@ persist:
             Dim w = FkWorld(nm, cBind, parentOf, Function(x) bindLocal(x))
             maxBindErr = Math.Max(maxBindErr, (w.Translation - bindWorld(nm).Translation).Length())
         Next
-        Console.WriteLine($"[animsync] control FK vs GetGlobalTransform: maxErr={maxBindErr:F4} (debe ~0)")
+        Console.WriteLine($"[animsync] control FK vs GetGlobalTransform: maxErr={maxBindErr:F4} (should be ~0)")
 
         Dim cHon As New Dictionary(Of String, Transform_Class)(StringComparer.OrdinalIgnoreCase)
         Dim cIgn As New Dictionary(Of String, Transform_Class)(StringComparer.OrdinalIgnoreCase)
@@ -4549,7 +4549,7 @@ persist:
             Dim animated = clipLocal.TryGetValue(nm, cl)
             Dim mk As (Tx As Boolean, Ty As Boolean, Tz As Boolean, R As Boolean, S As Boolean)
             maskOf.TryGetValue(nm, mk)
-            Dim mkTxt = If(animated, $"T:{If(mk.Tx, "x", "-")}{If(mk.Ty, "y", "-")}{If(mk.Tz, "z", "-")} R:{If(mk.R, "a", "-")} S:{If(mk.S, "a", "-")}", "(no en clip)")
+            Dim mkTxt = If(animated, $"T:{If(mk.Tx, "x", "-")}{If(mk.Ty, "y", "-")}{If(mk.Tz, "z", "-")} R:{If(mk.R, "a", "-")} S:{If(mk.S, "a", "-")}", "(not in clip)")
             ' [ADD-ORDER DIAG] additive delta = {animado:clip, no-animado:identidad}. Comparo el effective bajo los DOS
             ' órdenes de composición: base×additive (S∘delta, lo que hace la app HOY) vs additive×base (delta∘S, el fix).
             ' Si additive×base deja el bone ~en rest (d≈0) y base×additive lo dispara (d grande) ⇒ el bug es el ORDEN.
@@ -4579,9 +4579,9 @@ persist:
             If flagged AndAlso Not lenOk Then anyLenBreak = True
             Console.WriteLine($"   {nm,-28} 0x{fl:X6}  [{nas,-4}]     {mkTxt,-16} {dInj,10:F3}      {tear,10:F3}              {lenHon,7:F3}/{lenBind,7:F3}{If(flagged AndAlso Not lenOk, " ⚠LEN", "")}")
         Next
-        Console.WriteLine($"[animsync] MAX TEAR (BUGGY vs HONORED) = {maxTear:F3}u en '{maxTearBone}'  |  bone-length honored preservado = {(Not anyLenBreak)}")
-        Console.WriteLine($"[animsync] ⇒ honrando No Anim Sync, la traslación/escala del clip se descarta en bones flagueados: brazo rígido (bone-len=bind) ⇒ CONECTADO. Sin honrar (app hoy): tear={maxTear:F3}u = el desgarro.")
-        Console.WriteLine($"[animsync] T-pose: sin clip ⇒ localFn=bindLocal en ambos ⇒ world=bindWorld (control maxErr={maxBindErr:F4}) ⇒ el fix NO altera el T-pose.")
+        Console.WriteLine($"[animsync] MAX TEAR (BUGGY vs HONORED) = {maxTear:F3}u in '{maxTearBone}'  |  bone-length honored preserved = {(Not anyLenBreak)}")
+        Console.WriteLine($"[animsync] ⇒ honoring No Anim Sync, the clip's translation/scale is discarded on flagged bones: rigid arm (bone-len=bind) ⇒ CONNECTED. Without honoring (app today): tear={maxTear:F3}u = the tear.")
+        Console.WriteLine($"[animsync] T-pose: no clip ⇒ localFn=bindLocal in both ⇒ world=bindWorld (control maxErr={maxBindErr:F4}) ⇒ the fix does NOT alter the T-pose.")
     End Sub
 
     ''' <summary>REDISEÑO MOUNT — medición de clipBaseLocal. Por track del clip: el LOCAL que el clip
@@ -4593,7 +4593,7 @@ persist:
     '''   Assaultron montados: clip0 ≈ ASM (M≈I) · Codsworth Pelvis: clip0 ≈ RIG (M=mount) · Humano: clip0 ≈ RIG (M=I).</summary>
     Private Sub ClipBaseDump(spec As String)
         Dim parts = spec.Split("|"c)
-        If parts.Length < 2 Then Console.WriteLine("[clipbase] uso: --clipbase ""<rigHkx>|<clipHkx>[|boneFilter[|chunkNif;chunkNif...]]""") : Return
+        If parts.Length < 2 Then Console.WriteLine("[clipbase] usage: --clipbase ""<rigHkx>|<clipHkx>[|boneFilter[|chunkNif;chunkNif...]]""") : Return
         Dim rigPath = parts(0), clipPath = parts(1)
         Dim boneFilter = If(parts.Length > 2, parts(2), "")
         Dim chunkPaths = If(parts.Length > 3 AndAlso parts(3) <> "",
@@ -4602,12 +4602,12 @@ persist:
 
         ' ── RIG: skeleton de animación (no-Ragdoll) → locals (refPose) + parent names ──
         Dim rb = LoadAnimCand(rigPath)
-        If rb Is Nothing Then Console.WriteLine($"[clipbase] rig '{rigPath}' no carga") : Return
+        If rb Is Nothing Then Console.WriteLine($"[clipbase] rig '{rigPath}' does not load") : Return
         Dim sg = HkxObjectGraphParser_Class.BuildGraph(HkxPackfileParser_Class.Parse(rb))
         Dim skel = sg.GetObjectsByClassName("hkaSkeleton").Select(Function(o) sg.ParseSkeleton(o)).
                       Where(Function(s) s IsNot Nothing AndAlso s.Bones IsNot Nothing AndAlso s.ParentIndices IsNot Nothing AndAlso
                             (String.IsNullOrEmpty(s.Name) OrElse s.Name.IndexOf("Ragdoll", StringComparison.OrdinalIgnoreCase) < 0)).FirstOrDefault()
-        If skel Is Nothing Then Console.WriteLine("[clipbase] rig sin hkaSkeleton de animación") : Return
+        If skel Is Nothing Then Console.WriteLine("[clipbase] rig without animation hkaSkeleton") : Return
         Dim nB = skel.Bones.Count
         Dim rigLocal(nB - 1) As Transform_Class
         Dim parentName(nB - 1) As String
@@ -4619,11 +4619,11 @@ persist:
 
         ' ── CLIP: spline o lossless; binding track→boneIdx; ¿skeleton embebido? ──
         Dim cbts = LoadAnimCand(clipPath)
-        If cbts Is Nothing Then Console.WriteLine($"[clipbase] clip '{clipPath}' no carga") : Return
+        If cbts Is Nothing Then Console.WriteLine($"[clipbase] clip '{clipPath}' does not load") : Return
         Dim cg = HkxObjectGraphParser_Class.BuildGraph(HkxPackfileParser_Class.Parse(cbts))
         Dim anim = cg.ParseAnimations().FirstOrDefault()
         If anim Is Nothing Then anim = cg.ParseLosslessAnimations().FirstOrDefault()
-        If anim Is Nothing OrElse anim.NumFrames <= 0 Then Console.WriteLine("[clipbase] clip sin animación legible") : Return
+        If anim Is Nothing OrElse anim.NumFrames <= 0 Then Console.WriteLine("[clipbase] clip without readable animation") : Return
         Dim embSkels = cg.GetObjectsByClassName("hkaSkeleton").Select(Function(o) cg.ParseSkeleton(o)).
                           Where(Function(s) s IsNot Nothing AndAlso s.Bones IsNot Nothing AndAlso s.Bones.Count > 0).ToList()
         Dim idxArr = If(anim.Binding?.TransformTrackToBoneIndices, New List(Of Short)())
@@ -4634,7 +4634,7 @@ persist:
         Dim chunkData As New List(Of (Name As String, SkinW As Dictionary(Of String, Transform_Class), NodeW As Dictionary(Of String, Transform_Class)))
         For Each cp In chunkPaths
             Dim nbx = LoadAnimCand(cp)
-            If nbx Is Nothing Then Console.WriteLine($"[clipbase] chunk '{cp}' no carga — SKIP") : Continue For
+            If nbx Is Nothing Then Console.WriteLine($"[clipbase] chunk '{cp}' does not load — SKIP") : Continue For
             Dim nif As New Nifcontent_Class_Manolo() : nif.Load_Manolo(nbx)
             Dim skinW As New Dictionary(Of String, Transform_Class)(StringComparer.OrdinalIgnoreCase)
             Dim nodeW As New Dictionary(Of String, Transform_Class)(StringComparer.OrdinalIgnoreCase)
@@ -4655,7 +4655,7 @@ persist:
                     Dim prev As Transform_Class = Nothing
                     If skinW.TryGetValue(nm, prev) Then
                         Dim dPrev = (prev.Translation - w.Translation).Length()
-                        If dPrev > 0.1F Then Console.WriteLine($"[clipbase] ⚠ bind CONFLICT '{nm}' en '{cp}': dT={dPrev:F3} (se queda el primero)")
+                        If dPrev > 0.1F Then Console.WriteLine($"[clipbase] ⚠ bind CONFLICT '{nm}' in '{cp}': dT={dPrev:F3} (keeping the first)")
                     Else
                         skinW(nm) = w
                     End If
@@ -4683,7 +4683,7 @@ persist:
         Const R_EPS As Double = 2.0
         Dim cntRig = 0, cntAsm = 0, cntBoth = 0, cntNeither = 0, cntNoAsm = 0
         Dim neitherList As New List(Of String)
-        Console.WriteLine("   track bone                       mask        rig.T                clip0.T              dT_rig θ_rig | asm.T (src)            dT_asm θ_asm | veredicto")
+        Console.WriteLine("   track bone                       mask        rig.T                clip0.T              dT_rig θ_rig | asm.T (src)            dT_asm θ_asm | verdict")
         For t = 0 To anim.NumTransformTracks - 1
             Dim bi = If(idxArr.Count > 0 AndAlso t < idxArr.Count, CInt(idxArr(t)), t)
             If bi < 0 OrElse bi >= nB Then Continue For
@@ -4740,7 +4740,7 @@ persist:
             If asmL Is Nothing Then
                 cntNoAsm += 1
                 verdict = If(nearRig, "CLIP≈RIG", "≠RIG ⚠")
-                If Not nearRig Then cntNeither += 1 : neitherList.Add($"{nm} (dT_rig={dTr:F2} θ={thr:F1}, sin asm)") Else cntRig += 1
+                If Not nearRig Then cntNeither += 1 : neitherList.Add($"{nm} (dT_rig={dTr:F2} θ={thr:F1}, no asm)") Else cntRig += 1
             ElseIf nearRig AndAlso nearAsm Then
                 cntBoth += 1 : verdict = "RIG==ASM(≈clip)"
             ElseIf nearAsm Then
@@ -4759,7 +4759,7 @@ persist:
             Dim thaStr = If(asmL Is Nothing, "  —", $"{tha,5:F1}")
             Console.WriteLine($"   [{t,3}] {nm,-26} {mask,-11} ({rT.X,7:F2},{rT.Y,7:F2},{rT.Z,7:F2}) ({cT.X,7:F2},{cT.Y,7:F2},{cT.Z,7:F2}) {dTr,6:F2} {thr,5:F1} | {asmStr,-22} {dTaStr} {thaStr} | {verdict}")
         Next
-        Console.WriteLine($"[clipbase] RESUMEN: CLIP≈RIG={cntRig}  CLIP≈ASM={cntAsm}  RIG==ASM={cntBoth}  NEITHER={cntNeither}  (sinAsmDisponible={cntNoAsm}; umbrales dT<{T_EPS} θ<{R_EPS}°)")
+        Console.WriteLine($"[clipbase] SUMMARY: CLIP≈RIG={cntRig}  CLIP≈ASM={cntAsm}  RIG==ASM={cntBoth}  NEITHER={cntNeither}  (noAsmAvailable={cntNoAsm}; thresholds dT<{T_EPS} θ<{R_EPS}°)")
         If neitherList.Count > 0 Then
             Console.WriteLine($"[clipbase] NEITHER ({neitherList.Count}): {String.Join("  |  ", neitherList.Take(20))}")
         End If
@@ -4772,7 +4772,7 @@ persist:
     Private Sub ChunkLayoutCompare(chunkNifPath As String)
         Dim hkxPath = "Actors\CreateABot\CharacterAssets\skeleton.hkx"
         Dim nbx = LoadAnimCand(chunkNifPath) : Dim hbx = LoadAnimCand(hkxPath)
-        If nbx Is Nothing OrElse hbx Is Nothing Then Console.WriteLine($"[chunkcompare] falta archivo (nif={nbx IsNot Nothing}, hkx={hbx IsNot Nothing})") : Return
+        If nbx Is Nothing OrElse hbx Is Nothing Then Console.WriteLine($"[chunkcompare] missing file (nif={nbx IsNot Nothing}, hkx={hbx IsNot Nothing})") : Return
         ' Chunk NIF: nodo → world + depth.
         Dim nif As New Nifcontent_Class_Manolo() : nif.Load_Manolo(nbx)
         Dim cWorld As New Dictionary(Of String, Transform_Class)(StringComparer.OrdinalIgnoreCase)
@@ -4792,7 +4792,7 @@ persist:
         Dim skel = sg.GetObjectsByClassName("hkaSkeleton").Select(Function(o) sg.ParseSkeleton(o)).
                       Where(Function(s) s IsNot Nothing AndAlso s.Bones IsNot Nothing AndAlso s.ParentIndices IsNot Nothing AndAlso
                             (String.IsNullOrEmpty(s.Name) OrElse s.Name.IndexOf("Ragdoll", StringComparison.OrdinalIgnoreCase) < 0)).FirstOrDefault()
-        If skel Is Nothing Then Console.WriteLine("[chunkcompare] CreateABot sin skeleton anim") : Return
+        If skel Is Nothing Then Console.WriteLine("[chunkcompare] CreateABot without anim skeleton") : Return
         Dim nB = skel.Bones.Count
         Dim hWorld(nB - 1) As Transform_Class
         Dim hByName As New Dictionary(Of String, Transform_Class)(StringComparer.OrdinalIgnoreCase)
@@ -4805,10 +4805,10 @@ persist:
         Next
         ' Bones compartidos + ancla = el más root-most en el chunk.
         Dim sharedBones = cWorld.Keys.Where(Function(k) hByName.ContainsKey(k)).OrderBy(Function(k) cDepth(k)).ToList()
-        If sharedBones.Count = 0 Then Console.WriteLine("[chunkcompare] sin bones compartidos con CreateABot") : Return
+        If sharedBones.Count = 0 Then Console.WriteLine("[chunkcompare] no bones shared with CreateABot") : Return
         Dim refBone = sharedBones(0)
         Console.WriteLine($"[chunkcompare] {chunkNifPath}")
-        Console.WriteLine($"   shared con CreateABot = {sharedBones.Count} | ancla (root-most) = '{refBone}'")
+        Console.WriteLine($"   shared with CreateABot = {sharedBones.Count} | anchor (root-most) = '{refBone}'")
         Dim cRefInv = cWorld(refBone).Inverse()
         Dim hRefInv = hByName(refBone).Inverse()
         Dim maxDT = 0.0F, maxDR = 0.0F
@@ -4824,14 +4824,14 @@ persist:
             If dT > 0.1F OrElse dR > 0.02F Then Console.WriteLine($"   {b,-22}: rel-vs-CreateABot dT={dT:F2} dR={dR:F2}")
         Next
         Dim match = maxDT < 0.5F AndAlso maxDR < 0.05F
-        Console.WriteLine($"[chunkcompare] maxDT={maxDT:F2} maxDR={maxDR:F2} ⇒ {If(match, "LAYOUT == CreateABot (el offset de ensamblaje viene de la CADENA/host-P-X, NO del chunk → re-bind al HKX posible)", "LAYOUT DIFIERE de CreateABot (chunk autoreado distinto → no encastra rígido al HKX)")}")
+        Console.WriteLine($"[chunkcompare] maxDT={maxDT:F2} maxDR={maxDR:F2} ⇒ {If(match, "LAYOUT == CreateABot (the assembly offset comes from the CHAIN/host-P-X, NOT the chunk → re-bind to the HKX possible)", "LAYOUT DIFFERS from CreateABot (chunk authored differently → does not rigidly fit the HKX)")}")
     End Sub
 
     ''' <summary>Vuelca de un HKX: clip generators (Name + AnimationName) + characters (animationNames +
     ''' behaviorFilename + rigName). Para ver el linking DIRECTO clip↔anim sin heurísticas de path.</summary>
     Private Sub DumpBehaviorClips(path As String)
         Dim b = LoadAnimCand(path)
-        If b Is Nothing Then Console.WriteLine($"[dumpbeh] '{path}' no carga") : Return
+        If b Is Nothing Then Console.WriteLine($"[dumpbeh] '{path}' does not load") : Return
         Dim g = HkxObjectGraphParser_Class.BuildGraph(HkxPackfileParser_Class.Parse(b))
         ' hkaAnimationBinding crudo (si el archivo es una ANIMACIÓN): el blendHint canónico vive acá.
         For Each o In g.GetObjectsByClassName("hkaAnimationBinding")
@@ -4854,7 +4854,7 @@ persist:
         ' Histograma de clases del grafo + QUIÉN referencia a cada clip generator (jerarquía:
         ' la aditividad puede declararla el PADRE — layer/blender — no el clip generator).
         Dim classHist = g.Objects.GroupBy(Function(o) o.ClassName).OrderByDescending(Function(grp) grp.Count())
-        Console.WriteLine("   ── clases del grafo ──")
+        Console.WriteLine("   ── graph classes ──")
         For Each grp In classHist
             Console.WriteLine($"     {grp.Count(),4}x {grp.Key}")
         Next
@@ -4914,7 +4914,7 @@ persist:
                 Console.WriteLine($"   [{cls}] '{nm}' size={o.Size} reach=[{describeReach(o)}]{bytes}")
             Next
         Next
-        Console.WriteLine("   ── referenciadores de clip generators (padre → clip) ──")
+        Console.WriteLine("   ── clip generator referencers (parent → clip) ──")
         Dim cgByOffset = cgs.Where(Function(x) x.SourceObject IsNot Nothing).ToDictionary(Function(x) x.SourceObject.RelativeOffset, Function(x) x)
         For Each o In g.Objects
             For Each gf In g.GetGlobalFixupsInRange(o.RelativeOffset, o.Size)
@@ -5004,7 +5004,7 @@ persist:
             Dim c = CanonHkx(key)
             If Not allFiles.ContainsKey(c) Then allFiles(c) = HkxCategory(key)
         Next
-        Console.WriteLine($"[hkxcoverage] total .hkx/.hkt en load order (canon dedup) = {allFiles.Count}")
+        Console.WriteLine($"[hkxcoverage] total .hkx/.hkt in load order (canon dedup) = {allFiles.Count}")
 
         ' (2) Conjunto REFERENCIADO: caminar todas las razas con behavior.
         Dim referenced As New HashSet(Of String)(StringComparer.OrdinalIgnoreCase)
@@ -5034,7 +5034,7 @@ persist:
             Catch
             End Try
         Next
-        Console.WriteLine($"[hkxcoverage] razas con behavior caminadas = {nRaces} | archivos referenciados = {referenced.Count}")
+        Console.WriteLine($"[hkxcoverage] races with behavior walked = {nRaces} | referenced files = {referenced.Count}")
 
         ' (3) Reporte por categoría: referenciado vs NO-referenciado-por-raza.
         Dim allOrphans As New List(Of String)
@@ -5042,7 +5042,7 @@ persist:
             Dim inCat = allFiles.Where(Function(kv) kv.Value = cat).Select(Function(kv) kv.Key).ToList()
             Dim orph = inCat.Where(Function(k) Not referenced.Contains(k)).ToList()
             allOrphans.AddRange(orph)
-            Console.WriteLine($"  {cat,-16}: total={inCat.Count,5}  ref-por-raza={inCat.Count - orph.Count,5}  NO-ref-por-raza={orph.Count,5}")
+            Console.WriteLine($"  {cat,-16}: total={inCat.Count,5}  ref-by-race={inCat.Count - orph.Count,5}  NOT-ref-by-race={orph.Count,5}")
         Next
         ' (4) Sub-categorizar los NO-referenciados por patrón (¿no-race legítimo, o gap real de raza?).
         Dim pat = Function(p As String) As String
@@ -5055,15 +5055,15 @@ persist:
                       If p.StartsWith("pipboy\") OrElse p.Contains("\pipboy") Then Return "Pipboy"
                       If p.Contains("\_test") OrElse p.StartsWith("actors\_test") Then Return "Test"
                       If p.Contains("\critter") OrElse p.Contains("\crow\") OrElse p.Contains("\gulper\") OrElse p.Contains("\dlc03\") Then Return "Critter/Creature-DLC"
-                      If p.StartsWith("actors\") Then Return "actors\… (cuerpo de actor — REVISAR)"
-                      Return "otro"
+                      If p.StartsWith("actors\") Then Return "actors\… (actor body — REVIEW)"
+                      Return "other"
                   End Function
-        Console.WriteLine($"  --- NO-referenciados por RAZA, por patrón (total {allOrphans.Count}) ---")
+        Console.WriteLine($"  --- NOT-referenced by RACE, by pattern (total {allOrphans.Count}) ---")
         For Each grp In allOrphans.GroupBy(Function(o) pat(o)).OrderByDescending(Function(g) g.Count())
             Console.WriteLine($"     {grp.Key,-34}: {grp.Count()}")
         Next
         Dim suspect = allOrphans.Where(Function(o) pat(o).StartsWith("actors\…")).OrderBy(Function(o) o).ToList()
-        Console.WriteLine($"  --- SOSPECHOSOS (actors\… cuerpo huérfano = posible gap de raza): {suspect.Count} ---")
+        Console.WriteLine($"  --- SUSPECTS (actors\… orphan body = possible race gap): {suspect.Count} ---")
         For Each s In suspect.Take(25) : Console.WriteLine($"      {s}") : Next
     End Sub
 
@@ -5136,7 +5136,7 @@ persist:
     ''' = gates de ESTADO runtime (no filtrar por raza); 'None'(0) = keyword de identidad ('Anims&lt;X&gt;Race').</summary>
     Private Sub KwTypeScan(pm As PluginManager, substr As String)
         Dim kws = pm.GetRecordsOfType("KYWD")
-        Console.WriteLine($"[kwtype] {kws.Count} KYWD records | filtro edid='{substr}'")
+        Console.WriteLine($"[kwtype] {kws.Count} KYWD records | filter edid='{substr}'")
         Dim shown = 0
         Dim byType As New Dictionary(Of String, Integer)(StringComparer.OrdinalIgnoreCase)
         For Each rec In kws
@@ -5154,9 +5154,9 @@ persist:
             If shown < 60 Then Console.WriteLine($"   {edid,-42} TNAM={t} '{tn}'")
             shown += 1
         Next
-        Console.WriteLine($"[kwtype] matcheados={shown}")
+        Console.WriteLine($"[kwtype] matched={shown}")
         For Each kv In byType.OrderByDescending(Function(x) x.Value)
-            Console.WriteLine($"   tipo {kv.Key,-22}: {kv.Value}")
+            Console.WriteLine($"   type {kv.Key,-22}: {kv.Value}")
         Next
     End Sub
 
@@ -5190,7 +5190,7 @@ persist:
                 If tt = 0UI AndAlso Not owner.ContainsKey(k) Then owner(k) = race.EditorID  ' None-typed ∧ en KWDA = identidad
             Next
         Next
-        Console.WriteLine($"[statemap] KYWD={kwType.Count} | identidades-de-raza(None∧∈KWDA)={owner.Count} | filtro='{edidFilter}'")
+        Console.WriteLine($"[statemap] KYWD={kwType.Count} | race-identities(None∧∈KWDA)={owner.Count} | filter='{edidFilter}'")
 
         Dim isIdentity = Function(k As UInteger) owner.ContainsKey(k)               ' identidad de alguna raza
         Dim isState = Function(k As UInteger) As Boolean                           ' eje de estado = tipo ≠ None
@@ -5231,19 +5231,19 @@ persist:
                     If Not byAxis.ContainsKey(axis) Then byAxis(axis) = New List(Of RACE_SubgraphData)
                     byAxis(axis).Add(sd)
                 Else
-                    excluded.Add((sd, kwEdid.GetValueOrDefault(foreignId, $"0x{foreignId:X8}") & "(None, de " & owner.GetValueOrDefault(foreignId, "?") & ")"))
+                    excluded.Add((sd, kwEdid.GetValueOrDefault(foreignId, $"0x{foreignId:X8}") & "(None, from " & owner.GetValueOrDefault(foreignId, "?") & ")"))
                 End If
             Next
 
             Console.WriteLine($"=== {race.EditorID} [0x{race.FormID:X8}] | identidad propia=[{String.Join(", ", ownId)}] ===")
-            Console.WriteLine($"    subgraphs={rb.Subgraphs.Count} | OLD-aplica={nOld} | NEW-aplica={nNew} | RECUPERADOS(estado)={nRec} | FUERA(identidad ajena)={excluded.Count}")
+            Console.WriteLine($"    subgraphs={rb.Subgraphs.Count} | OLD-applies={nOld} | NEW-applies={nNew} | RECOVERED(state)={nRec} | OUTSIDE(foreign identity)={excluded.Count}")
             For Each kv In byAxis.OrderBy(Function(x) If(x.Key = "Normal", "", x.Key))
                 Dim saptSet = kv.Value.SelectMany(Function(s) s.AnimationPaths).Select(Function(p) LastTwoSeg(p)).Distinct().Take(6)
-                Dim tag = If(kv.Key <> "Normal" AndAlso kv.Value.Any(Function(s) Not (s.ActorKeywordFormIDs.Count = 0 OrElse s.ActorKeywordFormIDs.Any(Function(k) thisKw.Contains(k)))), "  <<< RECUPERADO", "")
+                Dim tag = If(kv.Key <> "Normal" AndAlso kv.Value.Any(Function(s) Not (s.ActorKeywordFormIDs.Count = 0 OrElse s.ActorKeywordFormIDs.Any(Function(k) thisKw.Contains(k)))), "  <<< RECOVERED", "")
                 Console.WriteLine($"      [{kv.Key,-26}] x{kv.Value.Count,-3} roles={String.Join(",", kv.Value.Select(Function(s) RoleName(s.Role)).Distinct())}  SAPT≈[{String.Join(" ; ", saptSet)}]{tag}")
             Next
             If excluded.Count > 0 Then
-                Console.WriteLine($"    FUERA por identidad AJENA:")
+                Console.WriteLine($"    OUTSIDE by FOREIGN identity:")
                 For Each e In excluded.GroupBy(Function(x) System.IO.Path.GetFileName(x.sd.BehaviourGraph) & " ⟵ " & x.needs).OrderByDescending(Function(g) g.Count()).Take(10)
                     Console.WriteLine($"       x{e.Count(),-3} {e.Key}")
                 Next
@@ -5252,8 +5252,8 @@ persist:
             gEntries += rb.Subgraphs.Count : gOld += nOld : gNew += nNew : gRecovered += nRec : gExcluded += excluded.Count
             For Each kv In byAxis : gAxisEntries(kv.Key) = gAxisEntries.GetValueOrDefault(kv.Key, 0) + kv.Value.Count : Next
         Next
-        Console.WriteLine($"[statemap-TOTAL] entries={gEntries} | OLD-aplica={gOld} | NEW-aplica={gNew} | RECUPERADOS(estado-gated)={gRecovered} | FUERA(identidad ajena)={gExcluded}")
-        Console.WriteLine($"[statemap-TOTAL] entries NEW-aplicados por EJE DE ESTADO:")
+        Console.WriteLine($"[statemap-TOTAL] entries={gEntries} | OLD-applies={gOld} | NEW-applies={gNew} | RECOVERED(state-gated)={gRecovered} | OUTSIDE(foreign identity)={gExcluded}")
+        Console.WriteLine($"[statemap-TOTAL] entries NEW-applied by STATE AXIS:")
         For Each kv In gAxisEntries.OrderByDescending(Function(x) x.Value)
             Console.WriteLine($"      [{kv.Key,-26}] {kv.Value}")
         Next
@@ -5289,7 +5289,7 @@ persist:
                 If kwType.GetValueOrDefault(k, 0UI) = 0UI Then owner.Add(k)
             Next
         Next
-        Console.WriteLine($"[clipresolve] index .hkx/.hkt={animSet.Count} | identidades-raza={owner.Count} | filtro='{edidFilter}'")
+        Console.WriteLine($"[clipresolve] index .hkx/.hkt={animSet.Count} | race-identities={owner.Count} | filter='{edidFilter}'")
 
         Dim loader As Func(Of String, Byte()) = Function(p) FO4_NPC_Manager.MeshPathHelpers.TryLoadMeshBytes(p, 0)
         Dim gTot = 0, gRes = 0, gFull = 0, gStrip = 0, gAmbig = 0, gWeColl = 0
@@ -5352,20 +5352,20 @@ persist:
                 Next
             Next
 
-            Console.WriteLine($"=== {race.EditorID,-32} repertorio={resolvedFiles.Count,5}  NO-resueltos={unresDistinct.Count,4}  ambig(fallback)={ambig,6}  weColl(full≠strip MISMA ruta)={weColl}")
-            For Each u In unresolved : Console.WriteLine($"      NO-RESUELTO {u}") : Next
+            Console.WriteLine($"=== {race.EditorID,-32} repertoire={resolvedFiles.Count,5}  NOT-resolved={unresDistinct.Count,4}  ambig(fallback)={ambig,6}  weColl(full≠strip SAME path)={weColl}")
+            For Each u In unresolved : Console.WriteLine($"      NOT-RESOLVED {u}") : Next
             For Each a In weCollSamples : Console.WriteLine($"      weColl {a}") : Next
             ' Dump del repertorio (para verificar sharing entre razas vía intersección externa) cuando hay filtro.
             If edidFilter <> "" Then
                 Dim dumpPath = System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"rep_{race.EditorID}.txt")
                 System.IO.File.WriteAllLines(dumpPath, resolvedFiles.OrderBy(Function(x) x, StringComparer.OrdinalIgnoreCase))
-                Console.WriteLine($"      [dump] repertorio → {dumpPath}")
+                Console.WriteLine($"      [dump] repertoire → {dumpPath}")
             End If
             gTot += tot : gRes += res : gFull += full : gStrip += strip : gAmbig += ambig : gWeColl += weColl
         Next
         Dim gp = If(gTot > 0, 100.0 * gRes / gTot, 100.0)
-        Console.WriteLine($"[clipresolve-TOTAL] attempts={gTot} resueltos={gRes} ({gp:F1}%) | full={gFull} strip={gStrip}")
-        Console.WriteLine($"[clipresolve-TOTAL] ambig(fallback cross-entry, benigno)={gAmbig} | weColl(full≠strip MISMA ruta = desempate propio)={gWeColl}")
+        Console.WriteLine($"[clipresolve-TOTAL] attempts={gTot} resolved={gRes} ({gp:F1}%) | full={gFull} strip={gStrip}")
+        Console.WriteLine($"[clipresolve-TOTAL] ambig(fallback cross-entry, benign)={gAmbig} | weColl(full≠strip SAME path = own tiebreak)={gWeColl}")
     End Sub
 
     ' project → CharacterFilenames → character → behaviorFilename (root behavior del actor). "" si no resuelve.
@@ -5477,7 +5477,7 @@ persist:
 
     Private Sub RaceAnimScan(pm As PluginManager, edidFilter As String)
         Dim races = pm.GetRecordsOfType("RACE")
-        Console.WriteLine($"[raceanim] {races.Count} RACE records | filtro edid='{edidFilter}'")
+        Console.WriteLine($"[raceanim] {races.Count} RACE records | filter edid='{edidFilter}'")
         Dim shown As Integer = 0
         Dim gTotClips = 0, gOk = 0, gMis = 0, gMiss = 0
         Dim gBadRaces As New List(Of String), gMissRaces As New List(Of String)
@@ -5506,41 +5506,41 @@ persist:
                 Dim roles = String.Join(",", g.Select(Function(s) RoleName(s.Role)).Distinct())
                 Console.WriteLine($"     x{g.Count(),3}  {g.Key}   [{roles}]")
             Next
-            If byGraph.Count > 8 Then Console.WriteLine($"     … (+{byGraph.Count - 8} graphs más)")
-            Console.WriteLine($"  archivos .hkx distintos a cargar: {rb.DistinctBehaviorFiles().Count}")
+            If byGraph.Count > 8 Then Console.WriteLine($"     … (+{byGraph.Count - 8} more graphs)")
+            Console.WriteLine($"  distinct .hkx files to load: {rb.DistinctBehaviorFiles().Count}")
             ' [RACE-RECORD] keywords del RACE + subgraphs (SAKD/SAPT) marcando los que matchean → filtro por raza.
             If edidFilter <> "" Then
                 Dim raceKw = String.Join(", ", race.Keywords.Select(Function(k) EdidOf(pm, k)))
-                Console.WriteLine($"  [RACE-RECORD] {race.EditorID}: Keywords=[{raceKw}] | PROPIO={race.SubgraphData.Count} SRAC=0x{race.SubgraphTemplateRaceFormID:X8}")
+                Console.WriteLine($"  [RACE-RECORD] {race.EditorID}: Keywords=[{raceKw}] | OWN={race.SubgraphData.Count} SRAC=0x{race.SubgraphTemplateRaceFormID:X8}")
                 Dim kwSet = New HashSet(Of UInteger)(race.Keywords)
                 For Each sd In rb.Subgraphs
                     Dim sakd = String.Join("+", sd.ActorKeywordFormIDs.Select(Function(k) EdidOf(pm, k)))
                     Dim apply = sd.ActorKeywordFormIDs.Count = 0 OrElse sd.ActorKeywordFormIDs.Any(Function(k) kwSet.Contains(k))
-                    Console.WriteLine($"     {If(apply, "✓APLICA", "·skip  ")} SGNM='{System.IO.Path.GetFileName(sd.BehaviourGraph)}' SAKD=[{sakd}] SAPT: {String.Join(" ; ", sd.AnimationPaths)}")
+                    Console.WriteLine($"     {If(apply, "✓APPLIES", "·skip  ")} SGNM='{System.IO.Path.GetFileName(sd.BehaviourGraph)}' SAKD=[{sakd}] SAPT: {String.Join(" ; ", sd.AnimationPaths)}")
                 Next
             End If
 
             ' Skeleton SÓLIDO (rigName del behavior character) + enumeración de clips.
             Dim loader As Func(Of String, Byte()) = Function(p) FO4_NPC_Manager.MeshPathHelpers.TryLoadMeshBytes(p, 0)
             Dim havokSkel = BehaviorClipEnumerator.ResolveHavokSkeleton(rb, loader)
-            Console.WriteLine($"  skeleton (Havok, rigName del character) = '{havokSkel}'")
+            Console.WriteLine($"  skeleton (Havok, character's rigName) = '{havokSkel}'")
             ' Comparación de SETS de huesos: NIF (render, rb.Skeleton) vs HKX (behavior, havokSkel).
             CompareNifHkxBoneSets(race.EditorID, havokSkel, rb.Skeleton)
             ComposeAndCompareSkeleton(race.EditorID, havokSkel, rb.Skeleton)
             Dim clips = BehaviorClipEnumerator.EnumerateClips(rb, loader)
-            Console.WriteLine($"  CLIPS reproducibles (dedup por archivo): {clips.Count}")
+            Console.WriteLine($"  playable CLIPS (dedup by file): {clips.Count}")
             For Each rg In clips.SelectMany(Function(c) c.Roles).GroupBy(Function(r) r).OrderByDescending(Function(g) g.Count())
-                Console.WriteLine($"     rol {rg.Key,-10} : {rg.Count()} clips")
+                Console.WriteLine($"     role {rg.Key,-10} : {rg.Count()} clips")
             Next
             For Each c In clips.Take(12)
                 Console.WriteLine($"     · {c.AnimationFile}  [{String.Join(",", c.Roles)}]  speed={c.PlaybackSpeed:0.##}")
             Next
-            If clips.Count > 12 Then Console.WriteLine($"     … (+{clips.Count - 12} clips más)")
+            If clips.Count > 12 Then Console.WriteLine($"     … (+{clips.Count - 12} more clips)")
 
             ' === VALIDACIÓN compacta (TODAS las razas): cada clip debe existir y maxBoneIdx < bones del skel.
             Dim vOk = 0, vLow = 0, vMiss = 0
             ValidateRaceClipsCompact(havokSkel, clips, vOk, vLow, vMiss, edidFilter <> "")
-            Dim badTag = If(vLow > 0, "  <<< LOW-COVERAGE(no mapea)", "") & If(vMiss > 0, "  <missing " & vMiss & ">", "")
+            Dim badTag = If(vLow > 0, "  <<< LOW-COVERAGE(no mapping)", "") & If(vMiss > 0, "  <missing " & vMiss & ">", "")
             Console.WriteLine($"  [VALIDATE] clips={clips.Count} ok={vOk} lowcov={vLow} missing={vMiss}{badTag}")
             gTotClips += clips.Count : gOk += vOk : gMis += vLow : gMiss += vMiss
             If vLow > 0 Then gBadRaces.Add($"{race.EditorID}(low={vLow})")
@@ -5562,11 +5562,11 @@ persist:
                 RaceAnimDiagnostics(havokSkel, rb.Skeleton, clips)
             End If
         Next
-        Console.WriteLine($"[raceanim] razas con behavior mostradas: {shown}")
+        Console.WriteLine($"[raceanim] races with behavior shown: {shown}")
         Console.WriteLine($"[VALIDATE-TOTAL] clips={gTotClips} ok={gOk} mismatch={gMis} missing={gMiss}")
-        Console.WriteLine($"[VALIDATE-TOTAL] razas con MISMATCH (deformarían): {If(gBadRaces.Count = 0, "NINGUNA ✓", String.Join(", ", gBadRaces))}")
-        Console.WriteLine($"[VALIDATE-TOTAL] razas con missing: {If(gMissRaces.Count = 0, "ninguna", String.Join(", ", gMissRaces))}")
-        Console.WriteLine($"[SKEL-CHECK] skeletons distintos verificados={gSkelSeen.Count}; con selección AMBIGUA (no hay exactamente 1 no-ragdoll): {If(gSkelAnom.Count = 0, "NINGUNO ✓ (1 anim + ragdoll en todos)", String.Join("  |  ", gSkelAnom))}")
+        Console.WriteLine($"[VALIDATE-TOTAL] races with MISMATCH (would deform): {If(gBadRaces.Count = 0, "NONE ✓", String.Join(", ", gBadRaces))}")
+        Console.WriteLine($"[VALIDATE-TOTAL] races with missing: {If(gMissRaces.Count = 0, "none", String.Join(", ", gMissRaces))}")
+        Console.WriteLine($"[SKEL-CHECK] distinct skeletons verified={gSkelSeen.Count}; with AMBIGUOUS selection (not exactly 1 non-ragdoll): {If(gSkelAnom.Count = 0, "NONE ✓ (1 anim + ragdoll in all)", String.Join("  |  ", gSkelAnom))}")
     End Sub
 
     ''' <summary>--racecompat: reconstruye la inyección de razas de RaceCompatibility (proxyRaces) desde el load
@@ -5576,9 +5576,9 @@ persist:
         Dim game = Config_App.Current.Game
         Console.WriteLine($"[racecompat] game={game}")
         Dim cat = FO4_Base_Library.RaceCompatibilityCatalog.Load(pm, game)
-        Console.WriteLine($"[racecompat] FormLists aumentadas={cat.AugmentedListCount}  razas inyectadas={cat.InjectedRaceCount}")
+        Console.WriteLine($"[racecompat] augmented FormLists={cat.AugmentedListCount}  injected races={cat.InjectedRaceCount}")
         If cat.AugmentedListCount = 0 Then
-            Console.WriteLine("[racecompat] no hay ningún mod que use RaceCompatibility en el load order (o no es Skyrim) → el filtro se comporta como siempre.")
+            Console.WriteLine("[racecompat] no mod uses RaceCompatibility in the load order (or it isn't Skyrim) → the filter behaves as usual.")
             Return
         End If
 
@@ -5613,13 +5613,13 @@ persist:
                 If FO4_NPC_Manager.HeadPartResolver.IsHdptValidForRace(hfid, rfid, True, pm, cacheB, Nothing, True) Then withCat += 1
             Next
             FO4_NPC_Manager.HeadPartResolver.RaceCompatCatalog = saved
-            Console.WriteLine($"   raza {edid,-28} 0x{rfid:X8}: HDPT válidos SIN reconstrucción={withoutCat}  CON reconstrucción={withCat}  (+{withCat - withoutCat})")
+            Console.WriteLine($"   race {edid,-28} 0x{rfid:X8}: valid HDPT WITHOUT reconstruction={withoutCat}  WITH reconstruction={withCat}  (+{withCat - withoutCat})")
         Next
-        Console.WriteLine($"[racecompat] razas custom inyectadas: {races.Count}")
+        Console.WriteLine($"[racecompat] custom races injected: {races.Count}")
 
         ' Control: la raza VANILLA equivalente. Si la reconstrucción es correcta, la raza custom debe ofrecer
         ' aproximadamente el mismo catálogo que la vanilla a la que suplanta (es literalmente lo que hace el script).
-        Console.WriteLine("[racecompat] control — razas vanilla (mismo filtro, sin reconstrucción):")
+        Console.WriteLine("[racecompat] control — vanilla races (same filter, no reconstruction):")
         For Each raceRec In pm.GetRecordsOfType("RACE")
             Dim r = RecordParsers.ParseRACE(raceRec, pm)
             If r Is Nothing Then Continue For
@@ -5631,7 +5631,7 @@ persist:
                 Dim hfid = pm.ResolveReferencedFormID(hdptRec.SourcePluginName, hdptRec.Header.FormID)
                 If FO4_NPC_Manager.HeadPartResolver.IsHdptValidForRace(hfid, rfid, True, pm, cache, Nothing, True) Then n += 1
             Next
-            Console.WriteLine($"   raza {r.EditorID,-28} 0x{rfid:X8}: HDPT válidos={n}")
+            Console.WriteLine($"   race {r.EditorID,-28} 0x{rfid:X8}: valid HDPT={n}")
         Next
     End Sub
 
@@ -5649,7 +5649,7 @@ persist:
     Private Sub CompareNifHkxBoneSets(label As String, hkxPath As String, nifPath As String)
         Dim hbx = LoadAnimCand(hkxPath) : Dim nbx = LoadAnimCand(nifPath)
         If hbx Is Nothing OrElse nbx Is Nothing Then
-            Console.WriteLine($"  [NIF-vs-HKX] falta archivo (hkx '{hkxPath}'={hbx IsNot Nothing}, nif '{nifPath}'={nbx IsNot Nothing})")
+            Console.WriteLine($"  [NIF-vs-HKX] missing file (hkx '{hkxPath}'={hbx IsNot Nothing}, nif '{nifPath}'={nbx IsNot Nothing})")
             Return
         End If
         ' HKX: bones + parent (vía ParentIndices) + world bind (compose ReferencePose).
@@ -5667,8 +5667,8 @@ persist:
                          Next
                          Return If(s.Bones.Count > 0, s.Bones(0).Name, "(none)")
                      End Function
-        Console.WriteLine($"     [SKEL-PICK] {allSk.Count} hkaSkeleton en archivo: {String.Join(" | ", allSk.Select(Function(s) $"name='{s.Name}' root='{rootOf(s)}' bones={s.Bones.Count}"))}")
-        If skel Is Nothing Then Console.WriteLine("  [NIF-vs-HKX] HKX sin skeleton de animación") : Return
+        Console.WriteLine($"     [SKEL-PICK] {allSk.Count} hkaSkeleton in file: {String.Join(" | ", allSk.Select(Function(s) $"name='{s.Name}' root='{rootOf(s)}' bones={s.Bones.Count}"))}")
+        If skel Is Nothing Then Console.WriteLine("  [NIF-vs-HKX] HKX without animation skeleton") : Return
         Dim nB = skel.Bones.Count
         Dim hWorld(nB - 1) As Transform_Class, hParent(nB - 1) As String
         For i = 0 To nB - 1
@@ -5713,25 +5713,25 @@ persist:
         Next
         Dim onlyNif = nWorld.Keys.Where(Function(k) Not skel.Bones.Any(Function(b) String.Equals(b.Name, k, StringComparison.OrdinalIgnoreCase))).ToList()
         Dim nifRoots = nParent.Where(Function(kv) kv.Value = "(root)").Select(Function(kv) kv.Key).ToList()
-        Console.WriteLine($"     [SKEL-PICK] NIF root(s): {String.Join(", ", nifRoots)}   | HKX(elegido) root='{rootOf(skel)}' name='{skel.Name}'")
-        Console.WriteLine($"     [SKEL-PICK] root∈NIF? {String.Join(" | ", allSk.Select(Function(s) $"'{rootOf(s)}'={If(nWorld.ContainsKey(rootOf(s)), "SÍ", "no")}"))}")
-        Console.WriteLine($"  [NIF-vs-HKX] {label}: HKX={nB} NIF={nWorld.Count} | both={both} | parent-mismatch={pMis} | transform-mismatch={tMis} | soloHKX={onlyHkx.Count} soloNIF={onlyNif.Count}")
-        If pMisList.Count > 0 Then Console.WriteLine($"     PARENT distinto ({pMisList.Count}): {String.Join("  |  ", pMisList.Take(12))}")
-        If tMisList.Count > 0 Then Console.WriteLine($"     TRANSFORM distinto ({tMisList.Count}): {String.Join("  |  ", tMisList.Take(12))}")
-        If onlyHkx.Count > 0 Then Console.WriteLine($"     huesos del HKX que FALTAN en el NIF ({onlyHkx.Count}): {String.Join(", ", onlyHkx.Take(25))}")
+        Console.WriteLine($"     [SKEL-PICK] NIF root(s): {String.Join(", ", nifRoots)}   | HKX(chosen) root='{rootOf(skel)}' name='{skel.Name}'")
+        Console.WriteLine($"     [SKEL-PICK] root∈NIF? {String.Join(" | ", allSk.Select(Function(s) $"'{rootOf(s)}'={If(nWorld.ContainsKey(rootOf(s)), "yes", "no")}"))}")
+        Console.WriteLine($"  [NIF-vs-HKX] {label}: HKX={nB} NIF={nWorld.Count} | both={both} | parent-mismatch={pMis} | transform-mismatch={tMis} | onlyHKX={onlyHkx.Count} onlyNIF={onlyNif.Count}")
+        If pMisList.Count > 0 Then Console.WriteLine($"     PARENT different ({pMisList.Count}): {String.Join("  |  ", pMisList.Take(12))}")
+        If tMisList.Count > 0 Then Console.WriteLine($"     TRANSFORM different ({tMisList.Count}): {String.Join("  |  ", tMisList.Take(12))}")
+        If onlyHkx.Count > 0 Then Console.WriteLine($"     HKX bones MISSING in the NIF ({onlyHkx.Count}): {String.Join(", ", onlyHkx.Take(25))}")
         If onlyNif.Count > 0 Then
             ' Categorizar los soloNIF: _Offset/_skin (estructurales descartables) vs huesos reales.
             Dim offset = onlyNif.Where(Function(n) n.IndexOf("_Offset", StringComparison.OrdinalIgnoreCase) >= 0 OrElse n.IndexOf("_skin", StringComparison.OrdinalIgnoreCase) >= 0 OrElse n.EndsWith("_Offset", StringComparison.OrdinalIgnoreCase)).ToList()
             Dim reales = onlyNif.Where(Function(n) Not offset.Contains(n)).ToList()
-            Console.WriteLine($"     soloNIF ({onlyNif.Count}): _Offset/_skin estructurales={offset.Count} | OTROS huesos reales={reales.Count}")
-            Console.WriteLine($"     OTROS (no _Offset) [{reales.Count}]: {String.Join(", ", reales)}")
+            Console.WriteLine($"     onlyNIF ({onlyNif.Count}): _Offset/_skin structural={offset.Count} | OTHER real bones={reales.Count}")
+            Console.WriteLine($"     OTHER (no _Offset) [{reales.Count}]: {String.Join(", ", reales)}")
         End If
         ' Búsqueda de nodos de REGIÓN (Torso/Upper/Lower/Leg/Arm/Limb/Region/Hip/Body) en NIF y HKX.
         Dim rxRegion = New System.Text.RegularExpressions.Regex("torso|upper|lower|leg|arm|limb|region|hip|body|skin|jaw|lip|cheek|brow|mouth|tongue|eye|face|teeth|tongue", System.Text.RegularExpressions.RegexOptions.IgnoreCase)
         Dim regNif = nWorld.Keys.Where(Function(k) rxRegion.IsMatch(k)).OrderBy(Function(k) k).ToList()
         Dim regHkx = skel.Bones.Select(Function(b) b.Name).Where(Function(n) Not String.IsNullOrEmpty(n) AndAlso rxRegion.IsMatch(n)).OrderBy(Function(n) n).ToList()
-        Console.WriteLine($"     REGIÓN en HKX ({regHkx.Count}): {String.Join(", ", regHkx)}")
-        Console.WriteLine($"     REGIÓN en NIF ({regNif.Count}): {String.Join(", ", regNif.Where(Function(k) k.IndexOf("_Offset", StringComparison.OrdinalIgnoreCase) < 0))}")
+        Console.WriteLine($"     REGION in HKX ({regHkx.Count}): {String.Join(", ", regHkx)}")
+        Console.WriteLine($"     REGION in NIF ({regNif.Count}): {String.Join(", ", regNif.Where(Function(k) k.IndexOf("_Offset", StringComparison.OrdinalIgnoreCase) < 0))}")
         ' ¿Hay mapeo TAXATIVO de regiones en el HKX? Los únicos campos candidatos del hkaSkeleton:
         ' floatSlots (canales float nombrados) y partitions (agrupaciones de huesos del solver).
         Dim fs = If(skel.FloatSlotNames, New List(Of String))
@@ -5754,7 +5754,7 @@ persist:
         Dim skel = sg.GetObjectsByClassName("hkaSkeleton").Select(Function(o) sg.ParseSkeleton(o)).
                       Where(Function(s) s IsNot Nothing AndAlso s.Bones IsNot Nothing AndAlso s.ParentIndices IsNot Nothing AndAlso
                             (String.IsNullOrEmpty(s.Name) OrElse s.Name.IndexOf("Ragdoll", StringComparison.OrdinalIgnoreCase) < 0)).FirstOrDefault()
-        If skel Is Nothing Then Console.WriteLine("  [COMPOSE] HKX sin skeleton de animación") : Return
+        If skel Is Nothing Then Console.WriteLine("  [COMPOSE] HKX without animation skeleton") : Return
         Dim nBn = skel.Bones.Count
         Dim hWorld(nBn - 1) As Transform_Class
         Dim aSet As New HashSet(Of String)(StringComparer.OrdinalIgnoreCase)
@@ -5833,10 +5833,10 @@ persist:
             End If
         End If
         Dim composedTotal = nWorld.Count + aOnly.Count + clothBones.Count
-        Console.WriteLine($"  [COMPOSE A+B+C vs NIF] {label}: composed={composedTotal} | NIF puro={nWorld.Count} | A∩NIF+B reconstruye NIF con residual={resid}/{nWorld.Count} (maxDT={maxDT:F2} maxDR={maxDR:F2}) | A-only(Weapon/IK…)={aOnly.Count} | cloth(C)={clothBones.Count}")
-        If resid > 0 Then Console.WriteLine($"     RESIDUAL (composed≠NIF) ej: {String.Join("  |  ", residList.Take(10))}")
-        If aOnly.Count > 0 Then Console.WriteLine($"     A-only (HKX, se AGREGAN al NIF): {String.Join(", ", aOnly.Take(25))}")
-        If clothBones.Count > 0 Then Console.WriteLine($"     cloth-bones (C, del BSClothExtraData): {String.Join(", ", clothBones.Take(25))}")
+        Console.WriteLine($"  [COMPOSE A+B+C vs NIF] {label}: composed={composedTotal} | NIF pure={nWorld.Count} | A∩NIF+B reconstructs NIF with residual={resid}/{nWorld.Count} (maxDT={maxDT:F2} maxDR={maxDR:F2}) | A-only(Weapon/IK…)={aOnly.Count} | cloth(C)={clothBones.Count}")
+        If resid > 0 Then Console.WriteLine($"     RESIDUAL (composed≠NIF) e.g.: {String.Join("  |  ", residList.Take(10))}")
+        If aOnly.Count > 0 Then Console.WriteLine($"     A-only (HKX, ADDED to the NIF): {String.Join(", ", aOnly.Take(25))}")
+        If clothBones.Count > 0 Then Console.WriteLine($"     cloth-bones (C, from BSClothExtraData): {String.Join(", ", clothBones.Take(25))}")
     End Sub
 
     ''' <summary>Dump de la cadena de resolución del skeleton HKX: project → hkbProjectStringData.CharacterFilenames
@@ -5847,7 +5847,7 @@ persist:
         Dim slash = proj.LastIndexOf("\"c)
         Dim actorRoot = If(slash > 0, proj.Substring(0, slash), "")
         Dim pb = LoadAnimCand(proj)
-        If pb Is Nothing Then Console.WriteLine($"  [CHAIN] project '{proj}' no carga") : Return
+        If pb Is Nothing Then Console.WriteLine($"  [CHAIN] project '{proj}' does not load") : Return
         Dim g = HkxObjectGraphParser_Class.BuildGraph(HkxPackfileParser_Class.Parse(pb))
         Dim charFiles As New List(Of String)
         Dim nPsd = 0
@@ -5862,7 +5862,7 @@ persist:
             Dim full = If(lc.StartsWith("actors\", StringComparison.OrdinalIgnoreCase) OrElse lc.StartsWith("meshes\", StringComparison.OrdinalIgnoreCase) OrElse actorRoot = "", lc, actorRoot & "\" & lc)
             Dim cb = LoadAnimCand(full)
             If cb Is Nothing Then cb = LoadAnimCand(cf)
-            If cb Is Nothing Then Console.WriteLine($"     character '{cf}' no carga") : Continue For
+            If cb Is Nothing Then Console.WriteLine($"     character '{cf}' does not load") : Continue For
             Dim gc = HkxObjectGraphParser_Class.BuildGraph(HkxPackfileParser_Class.Parse(cb))
             Dim nCsd = 0
             For Each o In gc.GetObjectsByClassName("hkbCharacterStringData")
@@ -5890,8 +5890,8 @@ persist:
     ''' <summary>Compara el live skeleton ENSAMBLADO del robot (parseado del log [BONE-WORLD]
     ''' originalGlobal = O·Mount) contra el skeleton del clip (CreateABot.hkx), hueso por hueso.</summary>
     Private Sub CompareLogLiveSkelVsHkx(logPath As String, hkxPath As String)
-        Console.WriteLine($"=== COMPARA live skeleton del robot (log) vs clip skeleton (CreateABot.hkx) ===")
-        If Not IO.File.Exists(logPath) Then Console.WriteLine($"  log no encontrado: {logPath}") : Return
+        Console.WriteLine($"=== COMPARE robot live skeleton (log) vs clip skeleton (CreateABot.hkx) ===")
+        If Not IO.File.Exists(logPath) Then Console.WriteLine($"  log not found: {logPath}") : Return
         ' Parsear [BONE-WORLD] bone='X' originalGlobal: T=(...) S=... R=[r|r|r]
         Dim live As New Dictionary(Of String, Transform_Class)(StringComparer.OrdinalIgnoreCase)
         For Each ln In IO.File.ReadLines(logPath)
@@ -5915,11 +5915,11 @@ persist:
                                                .M31 = CSng(r2(0)), .M32 = CSng(r2(1)), .M33 = CSng(r2(2))}}
             live(nm) = t
         Next
-        Console.WriteLine($"  bones parseados del log = {live.Count}")
+        Console.WriteLine($"  bones parsed from log = {live.Count}")
         If live.Count = 0 Then Return
 
         ' CreateABot.hkx world binds.
-        Dim hbx = LoadAnimCand(hkxPath) : If hbx Is Nothing Then Console.WriteLine("  hkx no encontrado") : Return
+        Dim hbx = LoadAnimCand(hkxPath) : If hbx Is Nothing Then Console.WriteLine("  hkx not found") : Return
         Dim sg = HkxObjectGraphParser_Class.BuildGraph(HkxPackfileParser_Class.Parse(hbx))
         Dim skel = sg.GetObjectsByClassName("hkaSkeleton").Select(Function(o) sg.ParseSkeleton(o)).
                       Where(Function(s) s IsNot Nothing AndAlso s.Bones IsNot Nothing AndAlso s.ParentIndices IsNot Nothing AndAlso
@@ -5937,7 +5937,7 @@ persist:
         Next
 
         ' Comparar O·Mount (live ensamblado) vs E (CreateABot).
-        Console.WriteLine($"  hueso              | dT (posición) | dR (rotación) | lectura")
+        Console.WriteLine($"  bone               | dT (position) | dR (rotation) | reading")
         Dim rows2 As New List(Of (Bone As String, dT As Double, dR As Double))
         For Each kv In live
             Dim e As Transform_Class = Nothing
@@ -5950,26 +5950,26 @@ persist:
             rows2.Add((kv.Key, dT, dR))
         Next
         For Each r In rows2.OrderByDescending(Function(x) x.dT + x.dR * 10)
-            Dim lec = If(r.dR > 0.05, "rotación distinta", If(r.dT > 1.0, "posición distinta (mount/ensamblaje)", "≈ igual"))
+            Dim lec = If(r.dR > 0.05, "different rotation", If(r.dT > 1.0, "different position (mount/assembly)", "≈ same"))
             Console.WriteLine($"    {r.Bone,-18} | {r.dT,9:F2} | {r.dR,9:F3} | {lec}")
         Next
-        Console.WriteLine($"  (O·Mount = bind ensamblado del live. dR≈0 ⇒ misma orientación que el clip; dT>0 ⇒ posición movida por el mount)")
+        Console.WriteLine($"  (O·Mount = assembled live bind. dR≈0 ⇒ same orientation as the clip; dT>0 ⇒ position moved by the mount)")
     End Sub
 
     ''' <summary>Compara el WORLD bind de cada hueso entre el skeleton.hkx (animación) y el
     ''' skeleton.nif (render), por nombre. Determina con datos si el render skeleton == el clip skeleton.</summary>
     Private Sub CompareSkeletonNifVsHkx(label As String, hkxPath As String, nifPath As String)
-        Console.WriteLine($"=== COMPARA skeleton.nif vs skeleton.hkx — {label} ===")
+        Console.WriteLine($"=== COMPARE skeleton.nif vs skeleton.hkx — {label} ===")
         Dim hkxBytesC = LoadAnimCand(hkxPath) : Dim nifBytesC = LoadAnimCand(nifPath)
-        If hkxBytesC Is Nothing Then Console.WriteLine($"  HKX no encontrado: {hkxPath}") : Return
-        If nifBytesC Is Nothing Then Console.WriteLine($"  NIF no encontrado: {nifPath}") : Return
+        If hkxBytesC Is Nothing Then Console.WriteLine($"  HKX not found: {hkxPath}") : Return
+        If nifBytesC Is Nothing Then Console.WriteLine($"  NIF not found: {nifPath}") : Return
 
         ' HKX: world binds por bone (compose ReferencePose via ParentIndices, skeleton de animación = no-ragdoll).
         Dim sg = HkxObjectGraphParser_Class.BuildGraph(HkxPackfileParser_Class.Parse(hkxBytesC))
         Dim skel = sg.GetObjectsByClassName("hkaSkeleton").Select(Function(o) sg.ParseSkeleton(o)).
                       Where(Function(s) s IsNot Nothing AndAlso s.Bones IsNot Nothing AndAlso s.ParentIndices IsNot Nothing AndAlso
                             (String.IsNullOrEmpty(s.Name) OrElse s.Name.IndexOf("Ragdoll", StringComparison.OrdinalIgnoreCase) < 0)).FirstOrDefault()
-        If skel Is Nothing Then Console.WriteLine("  sin skeleton de animación en el HKX") : Return
+        If skel Is Nothing Then Console.WriteLine("  no animation skeleton in the HKX") : Return
         Dim nB = skel.Bones.Count
         Dim bw(nB - 1) As Transform_Class
         For i = 0 To nB - 1
@@ -6009,8 +6009,8 @@ persist:
                 matched += 1
             End If
         Next
-        Console.WriteLine($"  HKX bones={hkxWorld.Count} | NIF nodes={nifWorld.Count} | matched={matched} | MISMATCH={mism} | solo-en-HKX={onlyHkx}")
-        Console.WriteLine($"  ⇒ {If(mism = 0, "skeleton.nif == skeleton.hkx (mismo bind) en los huesos compartidos", "skeleton.nif ≠ skeleton.hkx — HAY mismatch real de bind")}")
+        Console.WriteLine($"  HKX bones={hkxWorld.Count} | NIF nodes={nifWorld.Count} | matched={matched} | MISMATCH={mism} | only-in-HKX={onlyHkx}")
+        Console.WriteLine($"  ⇒ {If(mism = 0, "skeleton.nif == skeleton.hkx (same bind) in the shared bones", "skeleton.nif ≠ skeleton.hkx — there IS a real bind mismatch")}")
     End Sub
 
     Private Sub MountValidateRun()
@@ -6030,20 +6030,20 @@ persist:
         CompareLogLiveSkelVsHkx("FO4_NPC_Manager\FO4_NPC_Manager\bin\x64\Debug\net8.0-windows\win-x64\fo4lib.log", "Actors\CreateABot\CharacterAssets\skeleton.hkx")
         Console.WriteLine()
 
-        Console.WriteLine("=== VALIDACIÓN ORDEN MOUNT/POSE — Assaultron (datos reales) ===")
+        Console.WriteLine("=== MOUNT/POSE ORDER VALIDATION — Assaultron (real data) ===")
         Dim skelBytes = LoadAnimCand("Actors\CreateABot\CharacterAssets\skeleton.hkx")
-        If skelBytes Is Nothing Then Console.WriteLine("skeleton CreateABot NO encontrado") : Return
+        If skelBytes Is Nothing Then Console.WriteLine("skeleton CreateABot NOT found") : Return
         Dim sg = HkxObjectGraphParser_Class.BuildGraph(HkxPackfileParser_Class.Parse(skelBytes))
         Dim skel = sg.GetObjectsByClassName("hkaSkeleton").Select(Function(o) sg.ParseSkeleton(o)).
                       Where(Function(s) s IsNot Nothing AndAlso s.Bones IsNot Nothing AndAlso
                             (String.IsNullOrEmpty(s.Name) OrElse s.Name.IndexOf("Ragdoll", StringComparison.OrdinalIgnoreCase) < 0)).FirstOrDefault()
-        If skel Is Nothing Then Console.WriteLine("sin skeleton de animación") : Return
+        If skel Is Nothing Then Console.WriteLine("no animation skeleton") : Return
         Console.WriteLine($"skeleton='{skel.Name}' bones={skel.Bones.Count} referencePose={skel.ReferencePose.Count}")
         ' ¿CreateABot.hkx trae los huesos de connect-point C-/P-?
         Dim cBones = skel.Bones.Where(Function(b) b.Name IsNot Nothing AndAlso (b.Name.StartsWith("C-", StringComparison.OrdinalIgnoreCase) OrElse b.Name.StartsWith("C_", StringComparison.OrdinalIgnoreCase))).Select(Function(b) b.Name).ToList()
         Dim pBones = skel.Bones.Where(Function(b) b.Name IsNot Nothing AndAlso (b.Name.StartsWith("P-", StringComparison.OrdinalIgnoreCase) OrElse b.Name.StartsWith("P_", StringComparison.OrdinalIgnoreCase))).Select(Function(b) b.Name).ToList()
-        Console.WriteLine($"  C-* en CreateABot.hkx ({cBones.Count}): {String.Join(", ", cBones)}")
-        Console.WriteLine($"  P-* en CreateABot.hkx ({pBones.Count}): {String.Join(", ", pBones)}")
+        Console.WriteLine($"  C-* in CreateABot.hkx ({cBones.Count}): {String.Join(", ", cBones)}")
+        Console.WriteLine($"  P-* in CreateABot.hkx ({pBones.Count}): {String.Join(", ", pBones)}")
 
         ' Mounts REALES del log de Assaultron (MOUNTDELTA-WRITE).
         Dim mounts = New List(Of (Name As String, Tx As Single, Ty As Single, Tz As Single)) From {
@@ -6056,9 +6056,9 @@ persist:
         ' MISMO clip que usó el usuario en el render (log [ANIM-BAR] select).
         Dim clipBytes = LoadAnimCand("Actors\CreateABot\Animations\Protectron\CombatWalkBackwardRight.hkx")
         If clipBytes Is Nothing Then clipBytes = LoadAnimCand("Actors\CreateABot\Animations\Assaultron\PairedKillAssaultronRaiderLiftStab_AttackerLead.hkx")
-        If clipBytes Is Nothing Then Console.WriteLine("clip de Assaultron NO encontrado") : Return
+        If clipBytes Is Nothing Then Console.WriteLine("Assaultron clip NOT found") : Return
         Dim anim = HkxObjectGraphParser_Class.BuildGraph(HkxPackfileParser_Class.Parse(clipBytes)).ParseAnimations().FirstOrDefault()
-        If anim Is Nothing OrElse anim.Binding Is Nothing Then Console.WriteLine("anim sin binding") : Return
+        If anim Is Nothing OrElse anim.Binding Is Nothing Then Console.WriteLine("anim without binding") : Return
         Console.WriteLine($"clip frames={anim.NumFrames} tracks={anim.NumTransformTracks}")
         Dim idxArr = anim.Binding.TransformTrackToBoneIndices
 
@@ -6073,7 +6073,7 @@ persist:
         ' no se traslada — salvo root motion en Pelvis/COM). θ = ángulo del joint. Comparado con el delta
         ' viejo (vs liveBone.O) que metía traslaciones grandes (la contaminación).
         ' ════════════════════════════════════════════════════════════════════════════════════════
-        Console.WriteLine("=== PRUEBA FIX: delta(CreateABot) limpio en TODO el cuerpo y TODA la animación ===")
+        Console.WriteLine("=== FIX TEST: delta(CreateABot) clean across the WHOLE body and the WHOLE animation ===")
         Dim nfP = Math.Max(1, anim.NumFrames)
         Dim framesP = {0, nfP \ 4, nfP \ 2, (3 * nfP) \ 4, nfP - 1}.Distinct().ToArray()
         For Each bn In {"Neck", "HeadNod", "HeadTwist", "LUPPERARM", "RUPPERARM", "LForearm1", "RForearm1",
@@ -6084,7 +6084,7 @@ persist:
             For t = 0 To Math.Min(anim.NumTransformTracks, idxArr.Count) - 1
                 If idxArr(t) = bi Then tr2 = t : Exit For
             Next
-            If tr2 < 0 Then Console.WriteLine($"  {bn,-16} (no animado en este clip)") : Continue For
+            If tr2 < 0 Then Console.WriteLine($"  {bn,-16} (not animated in this clip)") : Continue For
             Dim O0 = HkxTransformConventionHelper.ToTransform(skel.ReferencePose(bi))
             Dim maxT = 0.0, sb As New System.Text.StringBuilder($"  {bn,-16}")
             For Each frame In framesP
@@ -6098,27 +6098,27 @@ persist:
                 sb.Append($" |T|={tl,5:F2} θ={th,3:F0}")
             Next
             Dim isRoot = (bn = "Pelvis" OrElse bn = "COM")
-            sb.Append($"   ⇒ {If(maxT < 2.0 OrElse isRoot, "LIMPIO", "⚠ traslación alta")}")
+            sb.Append($"   ⇒ {If(maxT < 2.0 OrElse isRoot, "CLEAN", "⚠ high translation")}")
             Console.WriteLine(sb.ToString())
         Next
-        Console.WriteLine("Lectura: |T|<2 en todos los bones no-root ⇒ el delta del fix es movimiento de joint LIMPIO (sin")
-        Console.WriteLine("  contaminación). + la comparación del live ensamblado (arriba) dio orientación = CreateABot")
-        Console.WriteLine("  (Neck dR=0, brazos ≤0.13) ⇒ ese movimiento limpio se aplica en el eje correcto. Extremidades OK.")
+        Console.WriteLine("Reading: |T|<2 in all non-root bones ⇒ the fix delta is CLEAN joint motion (no")
+        Console.WriteLine("  contamination). + the assembled-live comparison (above) gave orientation = CreateABot")
+        Console.WriteLine("  (Neck dR=0, arms ≤0.13) ⇒ that clean motion is applied on the correct axis. Limbs OK.")
 
         For Each m In mounts
             Dim boneIdx = skel.Bones.FindIndex(Function(b) String.Equals(b.Name, m.Name, StringComparison.OrdinalIgnoreCase))
-            If boneIdx < 0 Then Console.WriteLine($"--- {m.Name}: no está en el skeleton") : Continue For
+            If boneIdx < 0 Then Console.WriteLine($"--- {m.Name}: not in the skeleton") : Continue For
             Dim track = -1
             For t = 0 To Math.Min(anim.NumTransformTracks, idxArr.Count) - 1
                 If idxArr(t) = boneIdx Then track = t : Exit For
             Next
-            If track < 0 Then Console.WriteLine($"--- {m.Name}: no animado en este clip") : Continue For
+            If track < 0 Then Console.WriteLine($"--- {m.Name}: not animated in this clip") : Continue For
             Dim mountMag = Math.Sqrt(m.Tx * m.Tx + m.Ty * m.Ty + m.Tz * m.Tz)
             Dim O = HkxTransformConventionHelper.ToTransform(skel.ReferencePose(boneIdx))
             Dim Oinv = O.Inverse()
             Dim mountT As New Transform_Class With {.Translation = New System.Numerics.Vector3(m.Tx, m.Ty, m.Tz)}
-            Console.WriteLine($"--- {m.Name}  mount.T=({m.Tx:F2},{m.Ty:F2},{m.Tz:F2}) |T|={mountMag:F2}  (mount {If(mountMag < 0.001, "≈I → NO afectado", "≠I")}) ---")
-            Console.WriteLine("    frame |  θ(°) | |offNEW−Mount| (rígido⇒0) | |offOLD−Mount| (viejo deforma)")
+            Console.WriteLine($"--- {m.Name}  mount.T=({m.Tx:F2},{m.Ty:F2},{m.Tz:F2}) |T|={mountMag:F2}  (mount {If(mountMag < 0.001, "≈I → NOT affected", "≠I")}) ---")
+            Console.WriteLine("    frame |  θ(°) | |offNEW−Mount| (rigid⇒0) | |offOLD−Mount| (old deforms)")
             Dim nf = Math.Max(1, anim.NumFrames)
             For Each frame In {0, nf \ 6, nf \ 3, nf \ 2, (2 * nf) \ 3, (5 * nf) \ 6, nf - 1}.Distinct()
                 Dim ht = anim.GetTransform(frame, track)
@@ -6139,9 +6139,9 @@ persist:
                 Console.WriteLine($"    {frame,5} | {thetaDeg,5:F1} | {offNEWvsMount,24:F4} | {offOLDvsMount,22:F2}")
             Next
         Next
-        Console.WriteLine("Reposo: Delta=I es no-op ⇒ O·Δ·Mount = O·Mount = el orden viejo, byte-idéntico (símbolico, trivial).")
-        Console.WriteLine("Lectura: |offNEW−Mount|≈0 en TODOS los frames ⇒ el chunk queda RÍGIDO al bone que el clip posa (offset=Mount")
-        Console.WriteLine("         constante) = CORRECTO. |offOLD−Mount| crece con θ ⇒ el viejo deforma el offset frame a frame = el bug.")
+        Console.WriteLine("Rest: Delta=I is a no-op ⇒ O·Δ·Mount = O·Mount = the old order, byte-identical (symbolic, trivial).")
+        Console.WriteLine("Reading: |offNEW−Mount|≈0 in ALL frames ⇒ the chunk stays RIGID to the bone the clip poses (offset=Mount")
+        Console.WriteLine("         constant) = CORRECT. |offOLD−Mount| grows with θ ⇒ the old one deforms the offset frame by frame = the bug.")
 
         ' ============================================================================
         ' SANITY DEL MAPEO animación→bone (hipótesis: "la lista no matchea el skeleton").
@@ -6169,7 +6169,7 @@ persist:
     ''' (clipFrameWorld × inv(clipBindWorld)). Mide si el clip trae el ensamblaje en sus frames.</summary>
     Private Sub ClipMotionDump(skelPath As String, clipPath As String, bonesOfInterest As String())
         Console.WriteLine()
-        Console.WriteLine("=== clipMotion WORLD (mov. puro del bone relativo al bind del clip) ===")
+        Console.WriteLine("=== clipMotion WORLD (pure motion of the bone relative to the clip's bind) ===")
         Dim sb = LoadAnimCand(skelPath) : If sb Is Nothing Then Console.WriteLine("  no skel") : Return
         Dim sg = HkxObjectGraphParser_Class.BuildGraph(HkxPackfileParser_Class.Parse(sb))
         Dim skel = sg.GetObjectsByClassName("hkaSkeleton").Select(Function(o) sg.ParseSkeleton(o)).
@@ -6198,7 +6198,7 @@ persist:
         ' el log [BONE-WORLD] originalGlobal (= L·M, el live mounteado). Si E.R == (L·M).R ⇒ el mount
         ' cancela la diferencia de orientación ⇒ el fix rota bien (bone.local = L·M·J tiene la
         ' orientación de E). Log dice: Neck originalGlobal R=[0,0,1|0,1,0|-1,0,0] T=(0,-3.92,110.65).
-        Console.WriteLine("  --- bindWorld CreateABot (E) — comparar R con log [BONE-WORLD] originalGlobal (L·M) ---")
+        Console.WriteLine("  --- bindWorld CreateABot (E) — compare R with log [BONE-WORLD] originalGlobal (L·M) ---")
         For Each bn In {"Neck", "HeadNod"}
             Dim bi2 = skel.Bones.FindIndex(Function(b) String.Equals(b.Name, bn, StringComparison.OrdinalIgnoreCase))
             If bi2 < 0 Then Continue For
@@ -6232,8 +6232,8 @@ persist:
                 Console.WriteLine($"      {bn,-12} bindWorld.T=({bw.X,7:F2},{bw.Y,7:F2},{bw.Z,7:F2})  clipMotion: |T|={motion.Translation.Length(),6:F2}  θ={th,6:F1}°")
             Next
         Next
-        Console.WriteLine("  Lectura: |T| del clipMotion ≈0 ⇒ rotación pura (el bind del clip = CreateABot, modelo cierra).")
-        Console.WriteLine("           |T| grande ⇒ el clip trae traslación de ensamblaje en sus frames (neutral ≠ CreateABot).")
+        Console.WriteLine("  Reading: |T| of clipMotion ≈0 ⇒ pure rotation (the clip's bind = CreateABot, model closes).")
+        Console.WriteLine("           large |T| ⇒ the clip carries assembly translation in its frames (neutral ≠ CreateABot).")
     End Sub
 
     ''' <summary>Carga skel+clip y dumpea, por track al frame medio, el bone (nombre vía skeleton),
@@ -6241,31 +6241,31 @@ persist:
     ''' |T| grande en bone no-root ⇒ el track mapea a un bone que no corresponde / bind ≠ (skeleton malo).</summary>
     Private Sub MappingSanity(label As String, skelPath As String, clipPath As String)
         Console.WriteLine()
-        Console.WriteLine($"=== SANITY MAPEO — {label} ===")
+        Console.WriteLine($"=== MAPPING SANITY — {label} ===")
         Dim sb = LoadAnimCand(skelPath)
-        If sb Is Nothing Then Console.WriteLine($"  skeleton no encontrado: {skelPath}") : Return
+        If sb Is Nothing Then Console.WriteLine($"  skeleton not found: {skelPath}") : Return
         Dim sg = HkxObjectGraphParser_Class.BuildGraph(HkxPackfileParser_Class.Parse(sb))
         Dim skel = sg.GetObjectsByClassName("hkaSkeleton").Select(Function(o) sg.ParseSkeleton(o)).
                       Where(Function(s) s IsNot Nothing AndAlso s.Bones IsNot Nothing AndAlso
                             (String.IsNullOrEmpty(s.Name) OrElse s.Name.IndexOf("Ragdoll", StringComparison.OrdinalIgnoreCase) < 0)).FirstOrDefault()
-        If skel Is Nothing Then Console.WriteLine("  sin skeleton de animación") : Return
+        If skel Is Nothing Then Console.WriteLine("  no animation skeleton") : Return
         Dim cb = LoadAnimCand(clipPath)
-        If cb Is Nothing Then Console.WriteLine($"  clip no encontrado: {clipPath}") : Return
+        If cb Is Nothing Then Console.WriteLine($"  clip not found: {clipPath}") : Return
         Dim anim = HkxObjectGraphParser_Class.BuildGraph(HkxPackfileParser_Class.Parse(cb)).ParseAnimations().FirstOrDefault()
-        If anim Is Nothing OrElse anim.Binding Is Nothing Then Console.WriteLine("  anim sin binding") : Return
+        If anim Is Nothing OrElse anim.Binding Is Nothing Then Console.WriteLine("  anim without binding") : Return
         Dim idxArr = anim.Binding.TransformTrackToBoneIndices
         Dim maxIdx = -1
         For t = 0 To idxArr.Count - 1
             If idxArr(t) > maxIdx Then maxIdx = idxArr(t)
         Next
         Console.WriteLine($"skeleton='{skel.Name}' bones={skel.Bones.Count} | tracks={anim.NumTransformTracks} | binding idx max={maxIdx}")
-        If maxIdx >= skel.Bones.Count Then Console.WriteLine($"  ⛔ ANOMALÍA: idx binding ({maxIdx}) >= bones ({skel.Bones.Count}) → clip NO bindeado contra este skeleton.")
+        If maxIdx >= skel.Bones.Count Then Console.WriteLine($"  ⛔ ANOMALY: binding idx ({maxIdx}) >= bones ({skel.Bones.Count}) → clip NOT bound against this skeleton.")
 
         Dim midF = Math.Max(0, anim.NumFrames \ 2)
         Dim rows = New List(Of (Bone As String, Theta As Double, TMag As Double))()
         For t = 0 To Math.Min(anim.NumTransformTracks, idxArr.Count) - 1
             Dim bi = idxArr(t)
-            If bi < 0 OrElse bi >= skel.Bones.Count Then rows.Add(($"<idx {bi} fuera>", 0, 9999)) : Continue For
+            If bi < 0 OrElse bi >= skel.Bones.Count Then rows.Add(($"<idx {bi} out-of-range>", 0, 9999)) : Continue For
             Dim ht = anim.GetTransform(midF, t)
             If ht Is Nothing Then Continue For
             Dim O2 = HkxTransformConventionHelper.ToTransform(skel.ReferencePose(bi))
@@ -6277,7 +6277,7 @@ persist:
         Next
         Dim big = rows.Where(Function(x) x.TMag > 5.0).Count()
         Dim med = If(rows.Count > 0, rows.OrderBy(Function(x) x.TMag).ElementAt(rows.Count \ 2).TMag, 0)
-        Console.WriteLine($"frame medio={midF} | bones con |Tdelta|>5u: {big}/{rows.Count} | mediana |Tdelta|={med:F2}")
+        Console.WriteLine($"mid frame={midF} | bones with |Tdelta|>5u: {big}/{rows.Count} | median |Tdelta|={med:F2}")
         For Each r In rows.OrderByDescending(Function(x) x.TMag).Take(12)
             Console.WriteLine($"    {r.Bone,-28} θ={r.Theta,6:F1}°  |Tdelta|={r.TMag,7:F2}{If(r.TMag > 5.0, "  ⚠", "")}")
         Next
@@ -6326,10 +6326,10 @@ persist:
     ' Inventario CRUDO de objetos de un hkx: histograma de clases + detalle de hkaSkeleton y hkaSkeletonMapper
     ' (el dato EXACTO de retargeting entre esqueletos, si existe).
     Private Sub DumpHkxInventory(label As String, bytes As Byte())
-        If bytes Is Nothing Then Console.WriteLine($"  [INV] {label}: NO ENCONTRADO") : Return
+        If bytes Is Nothing Then Console.WriteLine($"  [INV] {label}: NOT FOUND") : Return
         Try
             Dim g = HkxObjectGraphParser_Class.BuildGraph(HkxPackfileParser_Class.Parse(bytes))
-            Console.WriteLine($"  [INV] {label}: {g.Objects.Count} objetos")
+            Console.WriteLine($"  [INV] {label}: {g.Objects.Count} objects")
             For Each h In g.Objects.GroupBy(Function(o) o.ClassName).OrderByDescending(Function(x) x.Count())
                 Console.WriteLine($"        x{h.Count(),4}  {h.Key}")
             Next
@@ -6407,13 +6407,13 @@ persist:
     ' Dump del skeleton del behavior (rigName) + por-clip: ¿existe? frames/tracks/maxBoneIdx vs bones del
     ' skeleton. Revela (A) clips sin archivo y (B) anims con más bones que el skeleton (mismatch → deforma).
     Private Sub RaceAnimDiagnostics(havokSkelPath As String, renderSkelNif As String, clips As List(Of ResolvedAnimationClip))
-        Console.WriteLine("  ---- DIAGNÓSTICO ----")
+        Console.WriteLine("  ---- DIAGNOSTIC ----")
         Console.WriteLine($"  render skeleton (RACE .nif) = '{renderSkelNif}'")
         Dim skelBoneCount As Integer = -1
         Dim skelBoneNames As New List(Of String)
         Dim skelBytes = LoadAnimCand(havokSkelPath)
         If skelBytes Is Nothing Then
-            Console.WriteLine($"  [SKEL] behavior skeleton '{havokSkelPath}' NO ENCONTRADO")
+            Console.WriteLine($"  [SKEL] behavior skeleton '{havokSkelPath}' NOT FOUND")
         Else
             Try
                 Dim sg = HkxObjectGraphParser_Class.BuildGraph(HkxPackfileParser_Class.Parse(skelBytes))
@@ -6429,7 +6429,7 @@ persist:
         End If
 
         Dim scannedRoot = ActorRootOf(renderSkelNif)   ' "Actors\Stingwing"
-        Console.WriteLine($"  [CLIPS] estado por archivo (skel {scannedRoot}={skelBoneCount} bones)  |  binding.OriginalSkeletonName  |  ¿existe variante propia {scannedRoot}\?")
+        Console.WriteLine($"  [CLIPS] status per file (skel {scannedRoot}={skelBoneCount} bones)  |  binding.OriginalSkeletonName  |  own variant exists {scannedRoot}\?")
         Dim missing = 0, mismatch = 0, ok = 0, ownVariant = 0
         For Each c In clips
             ' ¿Existe el MISMO leaf bajo el actor escaneado? (test 'elegir animación por skeleton')
@@ -6480,7 +6480,7 @@ persist:
                 Console.WriteLine($"    PARSEERR  {ex.Message}  {c.AnimationFile}")
             End Try
         Next
-        Console.WriteLine($"  [CLIPS] resumen: ok={ok} mismatch={mismatch} missing={missing}  conVariantePropia={ownVariant}  total={clips.Count}")
+        Console.WriteLine($"  [CLIPS] summary: ok={ok} mismatch={mismatch} missing={missing}  withOwnVariant={ownVariant}  total={clips.Count}")
 
         ' === COMPARACIÓN HUESO-POR-HUESO contra el skeleton de cada actor FUENTE ====================
         ' La anim no trae nombres de track (vacíos) → el binding mapea track→ÍNDICE del esqueleto del
@@ -6497,7 +6497,7 @@ persist:
             Dim srcSkelPath = srcRoot & "\CharacterAssets\Skeleton.hkx"
             Dim srcNames = LoadSkeletonBoneNames(srcSkelPath)
             If srcNames Is Nothing Then
-                Console.WriteLine($"  [CMP Stingwing vs {srcRoot}] skeleton '{srcSkelPath}' NO ENCONTRADO/parse-fail")
+                Console.WriteLine($"  [CMP Stingwing vs {srcRoot}] skeleton '{srcSkelPath}' NOT FOUND/parse-fail")
                 Continue For
             End If
             Dim n = Math.Max(skelBoneNames.Count, srcNames.Count)
@@ -6506,8 +6506,8 @@ persist:
                 If skelBoneNames(i).Equals(srcNames(i), StringComparison.OrdinalIgnoreCase) Then sameIdx += 1
             Next
             Dim common = skelBoneNames.Intersect(srcNames, StringComparer.OrdinalIgnoreCase).ToList()
-            Console.WriteLine($"  [CMP Stingwing({skelBoneNames.Count}) vs {srcRoot}({srcNames.Count})]  mismoIdx={sameIdx}/{Math.Min(skelBoneNames.Count, srcNames.Count)}  mismoNombre(set)={common.Count}")
-            Console.WriteLine($"      huesos en común (por nombre): [{String.Join(", ", common)}]")
+            Console.WriteLine($"  [CMP Stingwing({skelBoneNames.Count}) vs {srcRoot}({srcNames.Count})]  sameIdx={sameIdx}/{Math.Min(skelBoneNames.Count, srcNames.Count)}  sameName(set)={common.Count}")
+            Console.WriteLine($"      bones in common (by name): [{String.Join(", ", common)}]")
             ' Detalle de las primeras divergencias por índice (hasta 18 filas).
             Dim shownRows = 0
             For i = 0 To Math.Min(skelBoneNames.Count, srcNames.Count) - 1
@@ -6515,11 +6515,11 @@ persist:
                 If Not a.Equals(b, StringComparison.OrdinalIgnoreCase) Then
                     Console.WriteLine($"      idx {i,2}: Stingwing='{a}'  <>  {srcRoot.Replace("Actors\", "")}='{b}'")
                     shownRows += 1
-                    If shownRows >= 18 Then Console.WriteLine("      … (más divergencias)") : Exit For
+                    If shownRows >= 18 Then Console.WriteLine("      … (more divergences)") : Exit For
                 End If
             Next
             If sameIdx = Math.Min(skelBoneNames.Count, srcNames.Count) AndAlso srcNames.Count = skelBoneNames.Count Then
-                Console.WriteLine($"      → IDÉNTICO orden+nombres: las anims de {srcRoot} mapean BIEN sobre Stingwing")
+                Console.WriteLine($"      → IDENTICAL order+names: the anims of {srcRoot} map WELL onto Stingwing")
             End If
         Next
     End Sub
@@ -6528,7 +6528,7 @@ persist:
     ' animationBindingIndex y su animationName literal. Para verificar que animationNames[bindingIndex]
     ' apunta al archivo NATIVO del actor (no heurística).
     Private Sub RawClipPathDump(rb As ResolvedRaceBehavior, loader As Func(Of String, Byte()))
-        Console.WriteLine("  ---- RAW (mecanismo del engine) ----")
+        Console.WriteLine("  ---- RAW (engine mechanism) ----")
         Dim actorRoot = ActorRootOf(rb.Project)   ' "Actors\Stingwing\StingwingProject.hkx" → "Actors\Stingwing"
 
         ' 1) Project → CharacterFilenames → Character → animationNames (lista ordenada del actor).
@@ -6546,13 +6546,13 @@ persist:
                 For Each cf In charFiles
                     Dim cfp = If(cf.StartsWith("Actors\", StringComparison.OrdinalIgnoreCase), cf, actorRoot & "\" & cf.TrimStart("\"c))
                     Dim cbytes = LoadAnimCand(cfp)
-                    If cbytes Is Nothing Then Console.WriteLine($"    character '{cfp}' NO ENCONTRADO") : Continue For
+                    If cbytes Is Nothing Then Console.WriteLine($"    character '{cfp}' NOT FOUND") : Continue For
                     Dim cg = HkxObjectGraphParser_Class.BuildGraph(HkxPackfileParser_Class.Parse(cbytes))
                     For Each co In cg.GetObjectsByClassName("hkbCharacterStringData")
                         Dim csd = cg.ParseCharacterStringData(co)
                         If csd Is Nothing Then Continue For
                         charAnimNames = csd.AnimationFilenames.ToList()
-                        Console.WriteLine($"    character='{cfp}'  animationNames(filtradas)={charAnimNames.Count}  allStrings={csd.AllStrings.Count}")
+                        Console.WriteLine($"    character='{cfp}'  animationNames(filtered)={charAnimNames.Count}  allStrings={csd.AllStrings.Count}")
                         For i = 0 To Math.Min(charAnimNames.Count, 60) - 1
                             Console.WriteLine($"        [{i,3}] {charAnimNames(i)}")
                         Next
@@ -6586,10 +6586,10 @@ persist:
                 For Each o In gens
                     Dim c = bg.ParseClipGenerator(o)
                     If c Is Nothing Then Continue For
-                    Dim resolved = If(c.AnimationBindingIndex >= 0 AndAlso c.AnimationBindingIndex < charAnimNames.Count, charAnimNames(c.AnimationBindingIndex), "<idx fuera de rango>")
+                    Dim resolved = If(c.AnimationBindingIndex >= 0 AndAlso c.AnimationBindingIndex < charAnimNames.Count, charAnimNames(c.AnimationBindingIndex), "<idx out of range>")
                     Console.WriteLine($"        clip='{c.Name}' bindIdx={c.AnimationBindingIndex} rawAnimName='{c.AnimationName}'  →animNames[idx]='{resolved}'")
                     shown += 1
-                    If shown >= 10 Then Console.WriteLine("        … (más clips)") : Exit For
+                    If shown >= 10 Then Console.WriteLine("        … (more clips)") : Exit For
                 Next
             Catch ex As Exception
                 Console.WriteLine($"    RAW behavior '{bf}' error: {ex.Message}")
@@ -6648,30 +6648,30 @@ persist:
 
     Private Sub InfoNpc(pm As PluginManager, espName As String, edid As String)
         Dim npcFormID = ResolveEdid(pm, espName, edid)
-        If npcFormID = 0UI Then Console.WriteLine($"[info] {edid}: no resuelto en {espName}") : Return
+        If npcFormID = 0UI Then Console.WriteLine($"[info] {edid}: not resolved in {espName}") : Return
         Dim npcRec = pm.GetRecord(npcFormID)
         Dim npcData = RecordParsers.ParseNPC(npcRec, npcRec.SourcePluginName, pm)
         Dim raceRec = pm.GetRecord(npcData.RaceFormID)
         Dim race = RecordParsers.ParseRACE(raceRec, pm)
         Console.WriteLine($"=== INFO {edid} 0x{npcFormID:X8} src='{npcRec.SourcePluginName}' race=0x{npcData.RaceFormID:X8} female={npcData.IsFemale} ===")
 
-        Console.WriteLine("-- NPC.HeadTexture (FTST nivel-NPC, field 418) --")
+        Console.WriteLine("-- NPC.HeadTexture (FTST NPC-level, field 418) --")
         PrintTxst(pm, "NPC.HeadTexture", npcData.HeadTextureFormID)
-        Console.WriteLine("-- RACE default face TXST (por genero) --")
+        Console.WriteLine("-- RACE default face TXST (by gender) --")
         PrintTxst(pm, "RACE.default", If(npcData.IsFemale, race.FemaleDefaultFaceTextureFormID, race.MaleDefaultFaceTextureFormID))
 
-        Console.WriteLine("-- §3 ResolveFaceSkin (lo que el CLI usa HOY) --")
+        Console.WriteLine("-- §3 ResolveFaceSkin (what the CLI uses TODAY) --")
         Dim d3 As String = "", n3 As String = "", s3 As String = ""
         ResolveFaceSkin(npcData, race, pm, d3, n3, s3)
         Console.WriteLine($"      D={DdsInfo(d3)}")
         Console.WriteLine($"      N={DdsInfo(n3)}")
         Console.WriteLine($"      S={DdsInfo(s3)}")
 
-        Console.WriteLine("-- HeadParts (HDPT: PartType, HDPT.TextureSet, material inline del NIF) --")
+        Console.WriteLine("-- HeadParts (HDPT: PartType, HDPT.TextureSet, NIF inline material) --")
         If npcData.HeadPartFormIDs IsNot Nothing Then
             For Each hpId In npcData.HeadPartFormIDs
                 Dim rec = pm.GetRecord(hpId)
-                If rec Is Nothing OrElse rec.Header.Signature <> "HDPT" Then Console.WriteLine($"  HDPT 0x{hpId:X8} no resuelto") : Continue For
+                If rec Is Nothing OrElse rec.Header.Signature <> "HDPT" Then Console.WriteLine($"  HDPT 0x{hpId:X8} not resolved") : Continue For
                 Dim hdpt = RecordParsers.ParseHDPT(rec, pm)
                 Console.WriteLine($"  HDPT 0x{hpId:X8} '{rec.EditorID}' partType={hdpt.PartType} src='{rec.SourcePluginName}' mesh='{hdpt.MeshPath}'")
                 PrintTxst(pm, "    HDPT.TextureSet", hdpt.TextureSetFormID)
@@ -6679,7 +6679,7 @@ persist:
                 Dim mp = hdpt.MeshPath.Replace("/"c, "\"c).TrimStart("\"c)
                 If Not mp.StartsWith("meshes\", StringComparison.OrdinalIgnoreCase) Then mp = "Meshes\" & mp
                 Dim nifBytes = FilesDictionary_class.GetBytes(mp)
-                If nifBytes Is Nothing OrElse nifBytes.Length = 0 Then Console.WriteLine($"    NIF sin bytes (key='{mp}')") : Continue For
+                If nifBytes Is Nothing OrElse nifBytes.Length = 0 Then Console.WriteLine($"    NIF no bytes (key='{mp}')") : Continue For
                 Try
                     Dim nif As New Nifcontent_Class_Manolo() : nif.Load_Manolo(nifBytes)
                     For Each kv In nif.BaseMaterials
@@ -6692,7 +6692,7 @@ persist:
                         Console.WriteLine($"        S={DdsInfo(m.SmoothSpecTexture)}")
                     Next
                 Catch ex As Exception
-                    Console.WriteLine($"    NIF load fallo: {ex.Message}")
+                    Console.WriteLine($"    NIF load failed: {ex.Message}")
                 End Try
             Next
         End If
@@ -6705,7 +6705,7 @@ persist:
     ''' (boneWorld ∘ shapeBind). Validación: bindWorld de un seam vert debe ≈ su pos autoreada.</summary>
     Private Sub NeckSeamDiag(pm As PluginManager, espName As String, edid As String)
         Dim npcFormID = ResolveEdid(pm, espName, edid)
-        If npcFormID = 0UI Then Console.WriteLine($"[neckseam] {edid}: no resuelto en {espName}") : Return
+        If npcFormID = 0UI Then Console.WriteLine($"[neckseam] {edid}: not resolved in {espName}") : Return
         Dim npcRec = pm.GetRecord(npcFormID)
         Dim npcData = RecordParsers.ParseNPC(npcRec, npcRec.SourcePluginName, pm)
         Dim raceRec = pm.GetRecord(npcData.RaceFormID)
@@ -6738,10 +6738,10 @@ persist:
                     If fm IsNot Nothing Then block2 = fm.PositionZ
                 End If
             Catch ex As Exception
-                Console.WriteLine($"  [FacialBoneRegions parse fallo: {ex.Message}]")
+                Console.WriteLine($"  [FacialBoneRegions parse failed: {ex.Message}]")
             End Try
         Else
-            Console.WriteLine($"  [FacialBoneRegions no encontrado: {frPath}]")
+            Console.WriteLine($"  [FacialBoneRegions not found: {frPath}]")
         End If
         Dim neckScaleY As Single = 1.0F, neckScaleZ As Single = 1.0F
         If block2 > 0.0F Then
@@ -6749,7 +6749,7 @@ persist:
             neckScaleZ = 1.0F + nnamY * fmin * block2
         End If
         Console.WriteLine($"FMIN={fmin:F3}  IsNeckRegion id={neckRegionId}  block2(FMRS posZ)={block2:F4}")
-        Console.WriteLine($"==> NNAM neckScale: Y={neckScaleY:F4} Z={neckScaleZ:F4}  {If(block2 > 0.0F AndAlso (nnamX <> 0 OrElse nnamY <> 0), "NNAM ACTIVO", "NNAM no-op")}")
+        Console.WriteLine($"==> NNAM neckScale: Y={neckScaleY:F4} Z={neckScaleZ:F4}  {If(block2 > 0.0F AndAlso (nnamX <> 0 OrElse nnamY <> 0), "NNAM ACTIVE", "NNAM no-op")}")
 
         Dim mrsv = npcData.BodyMorphRegionValues
         Console.WriteLine($"MRSV=[{If(mrsv Is Nothing, "null", String.Join(",", mrsv.Select(Function(x) x.ToString("F3"))))}]")
@@ -6758,7 +6758,7 @@ persist:
         Dim skelNnam As New SkeletonInstance()
         If Not skelBind.LoadFromKey("meshes\actors\character\characterassets\skeleton.nif") OrElse
            Not skelNnam.LoadFromKey("meshes\actors\character\characterassets\skeleton.nif") Then
-            Console.WriteLine("[neckseam] skeleton.nif no carga -> sin math de costura.") : Return
+            Console.WriteLine("[neckseam] skeleton.nif does not load -> no seam math.") : Return
         End If
         Dim neckBone As HierarchiBone_class = Nothing
         If skelBind.SkeletonDictionary.TryGetValue("Neck", neckBone) Then
@@ -6771,7 +6771,7 @@ persist:
         Dim pose As New Poses_class With {.Name = "nnam", .Source = Poses_class.Pose_Source_Enum.WardrobeManager, .Transforms = New Dictionary(Of String, PoseTransformData)(StringComparer.OrdinalIgnoreCase)}
         pose.Transforms("Neck") = New PoseTransformData With {.ScaleX = 1.0F, .ScaleY = neckScaleY, .ScaleZ = neckScaleZ}
         skelNnam.ApplyBoneMorphPose(pose)
-        Console.WriteLine("-- propagación NNAM: |Δorigin| de cada bone entre skelBind y skelNnam (>0 = el NNAM lo mueve) --")
+        Console.WriteLine("-- NNAM propagation: |Δorigin| of each bone between skelBind and skelNnam (>0 = NNAM moves it) --")
         For Each bn In {"Neck", "Neck1", "Neck1_skin", "Neck_skin", "Neck_Low_skin", "Chest_skin", "Chest", "Head", "HEAD", "Spine2", "Spine2_skin"}
             Dim bbb As HierarchiBone_class = Nothing, nnn As HierarchiBone_class = Nothing
             If skelBind.SkeletonDictionary.TryGetValue(bn, bbb) AndAlso skelNnam.SkeletonDictionary.TryGetValue(bn, nnn) Then
@@ -6783,7 +6783,7 @@ persist:
         ' Locales de los hijos DIRECTOS de "Neck": si rotIdentity=True, la compensación S^-1 conjugada
         ' (L_C^-1·S^-1·L_C) es una escala+traslación LIMPIA (representable); si hay rotación, da shear.
         If neckBone IsNot Nothing Then
-            Console.WriteLine("-- hijos directos de 'Neck' (para evaluar compensación por-pose): --")
+            Console.WriteLine("-- direct children of 'Neck' (to evaluate per-pose compensation): --")
             For Each ch In neckBone.Childrens
                 Dim lt = ch.OriginalLocaLTransform
                 If lt Is Nothing Then Continue For
@@ -6806,7 +6806,7 @@ persist:
             Next
         End If
 
-        Console.WriteLine("-- HEAD PARTS: verts del nape (bottom-Z) + bones que pesan + gap NNAM por vert pegado a 'Neck' (world X/Y/Z) --")
+        Console.WriteLine("-- HEAD PARTS: nape verts (bottom-Z) + weighting bones + NNAM gap per vert attached to 'Neck' (world X/Y/Z) --")
         If npcData.HeadPartFormIDs IsNot Nothing Then
             For Each hpId In npcData.HeadPartFormIDs
                 Dim rec = pm.GetRecord(hpId)
@@ -6824,7 +6824,7 @@ persist:
         End If
 
         ' --- BODY side (vanilla female body como proxy del cuello del body/outfit): verts del cuello (top-Z) ---
-        Console.WriteLine("-- BODY (femalebody.nif): verts del cuello (top-Z) + bones + gap NNAM por vert pegado a 'Neck' --")
+        Console.WriteLine("-- BODY (femalebody.nif): neck verts (top-Z) + bones + NNAM gap per vert attached to 'Neck' --")
         For Each bodyKey In {"meshes\actors\character\characterassets\femalebody.nif", "meshes\actors\character\characterassets\femalebody_0.nif", "meshes\actors\character\characterassets\femalebody_1.nif"}
             Dim bb = FilesDictionary_class.GetBytes(bodyKey)
             If bb Is Nothing OrElse bb.Length = 0 Then Continue For
@@ -6911,9 +6911,9 @@ persist:
                         End If
                     Next
                 Next
-                Console.WriteLine($"    [Neck-literal] verts pegados a 'Neck': {nNeck}/{verts.Count} (wmax={wmax:F2} wsum={wsum:F1} Zrange=[{zmin:F1}..{zmax:F1}])")
+                Console.WriteLine($"    [Neck-literal] verts attached to 'Neck': {nNeck}/{verts.Count} (wmax={wmax:F2} wsum={wsum:F1} Zrange=[{zmin:F1}..{zmax:F1}])")
             Else
-                Console.WriteLine($"    [Neck-literal] 'Neck' NO está en la palette de este shape")
+                Console.WriteLine($"    [Neck-literal] 'Neck' is NOT in this shape's palette")
             End If
 
             Dim minZ = Single.MaxValue, maxZ = Single.MinValue
@@ -6961,7 +6961,7 @@ persist:
             If seamCount = 0 Then Continue For
             Dim topBones = boneWeightAcc.OrderByDescending(Function(kv) kv.Value).Take(6).Select(Function(kv) $"{kv.Key}={kv.Value:F1}")
             Console.WriteLine($"    shape '{rs.ShapeName}': seamVerts={seamCount} (top={useTop}) bones: {String.Join(", ", topBones)}")
-            Console.WriteLine($"      NNAM gap @seam (propagación incl.): vertsConGap={nWithGap}/{seamCount} avg=({gapAccX / seamCount:F3},{gapAccY / seamCount:F3},{gapAccZ / seamCount:F3}) max|gap|={maxGap:F3}")
+            Console.WriteLine($"      NNAM gap @seam (propagation incl.): vertsWithGap={nWithGap}/{seamCount} avg=({gapAccX / seamCount:F3},{gapAccY / seamCount:F3},{gapAccZ / seamCount:F3}) max|gap|={maxGap:F3}")
         Next
     End Sub
 
@@ -6974,11 +6974,11 @@ persist:
         Dim ty = (wt + wf) * 0.866025F - 0.577350F
         Dim kk = (0.866025F - CSng(Math.Sqrt(tx * tx + ty * ty))) * 1.154701F
         Dim gb = race.BoneData.FirstOrDefault(Function(b) b.Gender = If(female, 1UI, 0UI))
-        If gb Is Nothing Then Console.WriteLine("   (sin BoneData para el género)") : Return
+        If gb Is Nothing Then Console.WriteLine("   (no BoneData for the gender)") : Return
         Dim names = {"Neck1_skin", "Neck_skin", "Neck_Low_skin", "Spine2_skin", "Chest_skin", "Chest_Upper_Skin", "Head_skin", "Face_skin"}
         For Each nm In names
             Dim bd = gb.Bones.FirstOrDefault(Function(x) x.BoneName.Equals(nm, StringComparison.OrdinalIgnoreCase))
-            If bd Is Nothing Then Console.WriteLine($"   {nm}: <no en RACE.BoneData>") : Continue For
+            If bd Is Nothing Then Console.WriteLine($"   {nm}: <not in RACE.BoneData>") : Continue For
             Dim sx = 1.0F, sy = 1.0F, sz = 1.0F
             If bd.HasWeightScale Then
                 sx = bd.ThinX * wt + bd.MuscularX * wm + bd.FatX * wf - ((bd.ThinX + bd.MuscularX + bd.FatX) / 3.0F - 1.0F) * kk
@@ -7005,7 +7005,7 @@ persist:
         If formId = 0UI Then Console.WriteLine($"  {label}: 0 (none)") : Return
         Dim rec = pm.GetRecord(formId)
         If rec Is Nothing OrElse rec.Header.Signature <> "TXST" Then
-            Console.WriteLine($"  {label}: 0x{formId:X8} no es TXST (sig={rec?.Header.Signature})") : Return
+            Console.WriteLine($"  {label}: 0x{formId:X8} is not TXST (sig={rec?.Header.Signature})") : Return
         End If
         Dim t = RecordParsers.ParseTXST(rec, pm)
         Console.WriteLine($"  {label}: 0x{formId:X8} src='{rec.SourcePluginName}'")
@@ -7017,10 +7017,10 @@ persist:
 
     ''' <summary>Path + dims (WxH) + tamaño del DDS para --info (sin decodificar full; lee el header).</summary>
     Private Function DdsInfo(rawPath As String) As String
-        If String.IsNullOrEmpty(rawPath) Then Return "<vacio>"
+        If String.IsNullOrEmpty(rawPath) Then Return "<empty>"
         Dim key = FO4UnifiedMaterial_Class.CorrectTexturePath(rawPath)
         Dim b = FilesDictionary_class.GetBytes(key)
-        If b Is Nothing OrElse b.Length < 20 Then Return $"'{rawPath}' (sin bytes)"
+        If b Is Nothing OrElse b.Length < 20 Then Return $"'{rawPath}' (no bytes)"
         Dim h = BitConverter.ToInt32(b, 12), w = BitConverter.ToInt32(b, 16)
         Return $"'{rawPath}' {w}x{h} {b.Length}b"
     End Function
@@ -7087,7 +7087,7 @@ persist:
 
     Private Sub WriteChannel(dir As String, localId As UInteger, suffix As String, ch As FaceTintCpuCompositor.CpuChannelResult)
         If ch Is Nothing OrElse ch.Bgra Is Nothing Then
-            Console.Error.WriteLine($"[warn] {localId:X8} canal '{suffix}' vacio, skip") : Return
+            Console.Error.WriteLine($"[warn] {localId:X8} channel '{suffix}' empty, skip") : Return
         End If
         FaceTintCompositor.WriteBgraToTga(Path.Combine(dir, $"{localId:X8}_{suffix}_3.tga"), ch.Bgra, ch.Width, ch.Height)
     End Sub
@@ -7155,28 +7155,28 @@ persist:
                 Case "--neckseam" : a.NeckSeam = True : i += 1
                 Case "-h", "--help" : PrintUsage() : Return Nothing
                 Case Else
-                    Console.Error.WriteLine($"Arg desconocido: {args(i)}") : PrintUsage() : Return Nothing
+                    Console.Error.WriteLine($"Unknown arg: {args(i)}") : PrintUsage() : Return Nothing
             End Select
         End While
         If a.ListPath = "" AndAlso (a.Esp = "" OrElse a.Edid = "") AndAlso Not a.TtedScan AndAlso Not a.ScanDiff AndAlso Not a.RaceAnim AndAlso Not a.RaceCompat AndAlso Not a.MountValidate AndAlso a.FindHkx = "" AndAlso a.ChunkCompare = "" AndAlso a.DumpBehavior = "" AndAlso Not a.HkxCoverage AndAlso a.KwType = "" AndAlso Not a.StateMap AndAlso Not a.ClipResolve AndAlso a.HkxBone = "" AndAlso a.ClipBase = "" AndAlso a.FindFile = "" AndAlso a.NifDump = "" AndAlso a.AnimSyncCheck = "" AndAlso a.BlendHintScan = "" AndAlso Not a.CatProfile AndAlso a.DumpRef = "" AndAlso a.EstimateSclp = "" AndAlso a.SclpDiag = "" AndAlso a.SclpBatch = "" AndAlso a.BindDiff = "" AndAlso a.Ba2Extract = "" AndAlso Not a.SseCompareBatch AndAlso Not a.VertexBatch AndAlso a.PosDump = "" AndAlso a.MeshShaders = "" Then
-            Console.Error.WriteLine("Faltan --esp y --edid (o usa --list).") : PrintUsage() : Return Nothing
+            Console.Error.WriteLine("Missing --esp and --edid (or use --list).") : PrintUsage() : Return Nothing
         End If
         Return a
     End Function
 
     Private Sub PrintUsage()
-        Console.WriteLine("FO4_FaceTint_CLI (--esp <plugin> --edid <EditorID> | --list <file>) [opciones]")
-        Console.WriteLine("  --list <file>          una linea por NPC: 'esp|edid' o solo 'edid' (usa --esp). '#'=comentario")
-        Console.WriteLine("  --esp <plugin>         plugin del NPC (default para las lineas de --list sin esp)")
-        Console.WriteLine("  --config <config.json> leer las secciones FaceTint del config.json del app")
-        Console.WriteLine("  --convention <f.json>  override de Setting_FaceTintConvention")
-        Console.WriteLine("  --sort <f.json>        override de Setting_FaceTintSort")
-        Console.WriteLine("  --data <ruta Data\>    Data path (default: config.json)")
-        Console.WriteLine("  --out <dir>            carpeta de salida (default: FaceCustomization\<plugin>)")
-        Console.WriteLine("  --sweep <dir-configs>  barre cada config .json del dir vs CK (UNA carga) y rankea por Normal")
-        Console.WriteLine("  --dump <dir>           ademas escribe los MASKS (inputs: BASEIN + layers + swaps + regionmasks + LUT) a <dir>\<localId>")
-        Console.WriteLine("Salida por NPC: <localId>_d_3.tga / _msn_3.tga / _s_3.tga")
-        Console.WriteLine("Batch (--list): monta plugins+archivos UNA vez; cada DDS se decodifica una sola vez.")
+        Console.WriteLine("FO4_FaceTint_CLI (--esp <plugin> --edid <EditorID> | --list <file>) [options]")
+        Console.WriteLine("  --list <file>          one line per NPC: 'esp|edid' or just 'edid' (uses --esp). '#'=comment")
+        Console.WriteLine("  --esp <plugin>         NPC plugin (default for --list lines without esp)")
+        Console.WriteLine("  --config <config.json> read the FaceTint sections from the app's config.json")
+        Console.WriteLine("  --convention <f.json>  override of Setting_FaceTintConvention")
+        Console.WriteLine("  --sort <f.json>        override of Setting_FaceTintSort")
+        Console.WriteLine("  --data <Data\ path>    Data path (default: config.json)")
+        Console.WriteLine("  --out <dir>            output folder (default: FaceCustomization\<plugin>)")
+        Console.WriteLine("  --sweep <dir-configs>  sweeps each config .json in the dir vs CK (ONE load) and ranks by Normal")
+        Console.WriteLine("  --dump <dir>           also writes the MASKS (inputs: BASEIN + layers + swaps + regionmasks + LUT) to <dir>\<localId>")
+        Console.WriteLine("Output per NPC: <localId>_d_3.tga / _msn_3.tga / _s_3.tga")
+        Console.WriteLine("Batch (--list): mounts plugins+archives ONCE; each DDS is decoded only once.")
     End Sub
 
 End Module

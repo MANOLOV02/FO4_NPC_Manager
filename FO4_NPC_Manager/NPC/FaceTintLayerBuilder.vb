@@ -37,6 +37,15 @@ Public Module FaceTintLayerBuilder
             NpcRecordOverlay.GetParsedNpc(modelFormID, pluginManager),
             rootFormID, appliedPresets, pluginManager, Nothing, parseRace)
         If npcData Is Nothing Then Return New FaceTintInputBuilder.TintBuildResult()
+        ' El caller pasa la raza EFECTIVA (state.RaceFormID, con el override del editor); el npcData recién
+        ' parseado trae la cruda del récord. Alinearlas acá deja el resultado auto-consistente (built.race y
+        ' built.npcData.RaceFormID = la misma raza) — sin esto, tras un cambio de raza los consumidores que
+        ' leían npcData.RaceFormID componían la CARA con el catálogo de la raza vieja. Mutar es seguro:
+        ' GetParsedNpc parsea fresco (sin cache) y el shadow del preset también es una copia propia.
+        If raceFormID <> 0UI AndAlso npcData.RaceFormID <> raceFormID Then
+            npcData.RaceFormID = raceFormID
+            npcData.HasRace = True
+        End If
 
         Dim raceRec = pluginManager.GetRecord(raceFormID)
         If raceRec Is Nothing OrElse raceRec.Header.Signature <> "RACE" Then Return New FaceTintInputBuilder.TintBuildResult()

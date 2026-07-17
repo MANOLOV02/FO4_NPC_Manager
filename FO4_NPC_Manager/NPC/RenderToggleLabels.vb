@@ -43,50 +43,50 @@ Public Module RenderToggleLabels
 
         SetLabel(boneMorphs,
                  If(sse, "Node transforms", "Bone morphs (FMRS)"),
-                 If(sse, "RaceMenu NiOverride: escala / posición / rotación por nodo del esqueleto (.jslot). Skyrim no tiene bone-morphs faciales.",
-                         "NPC_.FMRI/FMRS — morphs de hueso faciales, aplicados como capa MorphDeltaTransform."))
+                 If(sse, "RaceMenu NiOverride: scale / position / rotation per skeleton node (.jslot). Skyrim has no facial bone-morphs.",
+                         "NPC_.FMRI/FMRS — facial bone morphs, applied as a MorphDeltaTransform layer."))
 
         SetLabel(vertexMorphs,
                  If(sse, "Face morphs (NAM9/NAMA)", "Vertex morphs (TRI)"),
-                 If(sse, "NPC_.NAM9 (18 sliders) + NAMA (Nose/Brow/Eyes/Lip type) + race base + custom morphs de RaceMenu, sobre el chargen .tri.",
-                         "NPC_.MSDK/MSDV — morphs de vértice del chargen facial sobre FRTRI003.tri."))
+                 If(sse, "NPC_.NAM9 (18 sliders) + NAMA (Nose/Brow/Eyes/Lip type) + race base + RaceMenu custom morphs, over the chargen .tri.",
+                         "NPC_.MSDK/MSDV — facial chargen vertex morphs over FRTRI003.tri."))
 
         SetLabel(bodyWeight,
                  If(sse, "Body weight (NAM7)", "Body weight (MWGT)"),
-                 If(sse, "NPC_.NAM7 — peso del actor: LERP _0/_1 del cuerpo + morph 'SkinnyMorph' de la cabeza/pelo.",
-                         "NPC_.MWGT (Thin/Muscular/Fat) — bone-scaling vía RACE.BSMS + MRSV, y el neck-fat NNAM."))
+                 If(sse, "NPC_.NAM7 — actor weight: body LERP _0/_1 + 'SkinnyMorph' morph of the head/hair.",
+                         "NPC_.MWGT (Thin/Muscular/Fat) — bone-scaling via RACE.BSMS + MRSV, and the neck-fat NNAM."))
 
         SetLabel(sculpt,
                  If(sse, "Sculpt", "Sculpt (ARMA SCLP)"),
-                 If(sse, "Sculpt per-vértice de RaceMenu (.jslot): deltas libres sobre cabeza/cejas/ojos/boca. Skyrim no tiene ARMA SCLP.",
-                         "ARMA SCLP (Bone Scale Delta) — deltas de escala por hueso, sobre esqueletos clonados por-ARMA."))
+                 If(sse, "RaceMenu per-vertex sculpt (.jslot): free deltas over head/brows/eyes/mouth. Skyrim has no ARMA SCLP.",
+                         "ARMA SCLP (Bone Scale Delta) — per-bone scale deltas, over per-ARMA cloned skeletons."))
 
         SetLabel(bodyTri,
                  If(sse, "Body sliders (BodyMorph)", "Body Sliders (Tri)"),
-                 If(sse, "BodyMorph de NiOverride/RaceMenu — morphs de vértice del cuerpo vía el BODYTRI de cada shape.",
-                         "BodySlide — morphs de vértice del cuerpo vía el .tri PIRT (campo F4SE)."))
+                 If(sse, "NiOverride/RaceMenu BodyMorph — body vertex morphs via each shape's BODYTRI.",
+                         "BodySlide — body vertex morphs via the PIRT .tri (F4SE field)."))
 
         SetLabel(renderBody, "Render body",
-                 If(sse, "Piel del NPC: cuerpo (32), manos/antebrazos (33/34), pies/pantorrillas (37/38) y head parts.",
-                         "Piel del NPC: cuerpo (33, cubre torso+piernas+pies), manos desnudas (34/35) y head parts."))
+                 If(sse, "NPC skin: body (32), hands/forearms (33/34), feet/calves (37/38) and head parts.",
+                         "NPC skin: body (33, covers torso+legs+feet), bare hands (34/35) and head parts."))
 
         SetLabel(renderUnderarmor,
                  If(sse, "Render outfit", "Render underarmor"),
-                 If(sse, "La ropa/armadura que viste el NPC (slots de cuerpo y manos). Apagarlo destapa la piel que cubría — como un `unequipall`. Skyrim no tiene capa [U]/[A].",
-                         "Ropa underarmor (Outfit con BODY/[U]) + guantes de outfit. Apagarlo destapa la piel que cubría."))
+                 If(sse, "The clothing/armor the NPC wears (body and hand slots). Turning it off uncovers the skin it hid — like an `unequipall`. Skyrim has no [U]/[A] layer.",
+                         "Underarmor clothing (Outfit with BODY/[U]) + outfit gloves. Turning it off uncovers the skin it hid."))
 
         SetLabel(renderArmor,
                  If(sse, "Render accessories", "Render armor"),
-                 If(sse, "Accesorios y piezas modulares: anillo (36), escudo (39), cola (40) y los mod-slots (44-49/52-61: capas, mochilas, SOS…). No ocluyen piel.",
-                         "Piezas [A] over-armor (slots 41-45) + Pipboy (60)."))
+                 If(sse, "Accessories and modular pieces: ring (36), shield (39), tail (40) and the mod-slots (44-49/52-61: capes, backpacks, SOS…). They don't occlude skin.",
+                         "[A] over-armor pieces (slots 41-45) + Pipboy (60)."))
 
         SetLabel(renderHeadwear, "Render headwear",
-                 If(sse, "Prendas de cabeza/cara: head (30), hair (31), long hair (41), circlet (42), ears (43) y el amuleto/collar (35). Apagarlo destapa los head parts ocluidos (pelo bajo casco, etc.).",
-                         "Prendas de cabeza/cara/cuello (slots 30-32, 46-50). Apagarlo destapa los head parts ocluidos (pelo bajo casco, barba bajo máscara)."))
+                 If(sse, "Head/face wear: head (30), hair (31), long hair (41), circlet (42), ears (43) and the amulet/necklace (35). Turning it off uncovers the occluded head parts (hair under helmet, etc.).",
+                         "Head/face/neck wear (slots 30-32, 46-50). Turning it off uncovers the occluded head parts (hair under helmet, beard under mask)."))
 
         SetLabel(renderGore, "Render gore",
-                 If(sse, "No aplica en Skyrim: no hay meatcaps (los HDPT de Skyrim no tienen tipo Meatcap y el gore son mallas de decapitación aparte, fuera del preview).",
-                         "Meatcaps: sub-segmentos SECTIONCAP/TORSOCAP de BSSubIndexTriShape y HDPT tipo 7."))
+                 If(sse, "Not applicable in Skyrim: there are no meatcaps (Skyrim's HDPT have no Meatcap type and the gore is separate decapitation meshes, outside the preview).",
+                         "Meatcaps: SECTIONCAP/TORSOCAP sub-segments of BSSubIndexTriShape and HDPT type 7."))
 
         If renderGore IsNot Nothing Then renderGore.Enabled = GoreEnabledForGame()
     End Sub

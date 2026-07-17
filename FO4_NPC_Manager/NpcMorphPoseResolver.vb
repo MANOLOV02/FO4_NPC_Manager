@@ -43,25 +43,28 @@ Friend NotInheritable Class NpcMorphPoseResolver
         If host Is Nothing Then host = _hostProvider()
         If state Is Nothing Then Return Nothing
 
-        ' "Show other gender" preview: the NPC's chargen (MSDK/MSDV) vertex morphs are gender-specific
-        ' (baked against its own BaseMale/BaseFemaleHeadChargen.tri) and don't apply to a default target-
-        ' gender head, so emit no face morphs — the race default head renders un-morphed.
-        If host IsNot Nothing AndAlso host.PreviewGenderOverride.HasValue Then Return Nothing
+        ' "Show other gender" preview: the NPC's chargen vertex morphs are gender-specific (baked against
+        ' its own gender's chargen .tri) and don't apply to a default target-gender head, so no face-SHAPE
+        ' morphs. FO4 ⇒ resolver entero afuera (su plan es solo forma). SSE ⇒ NO se puede abortar acá: el
+        ' SkinnyMorph del weight vive en este plan, es per-actor y aplica a cualquier género (el mesh tri
+        ' mergeado es el de la shape mostrada) — abortar dejaba la cabeza en peso neutro mientras el
+        ' cuerpo _0/_1 lerpaeaba ⇒ costura. Se sigue con applyChargenMorphs:=False (solo weight).
+        Dim genderOverride = host IsNot Nothing AndAlso host.PreviewGenderOverride.HasValue
 
         ' Get the full NPC_Data for the model source (the NPC whose face we're rendering)
         Dim modelNpcFormID = NpcStateFactory.FaceAppearanceSourceFormID(state)
         Dim npcData = _overlay(_ctx.GetParsedNpc(modelNpcFormID), state.RootNpcFormID)
         If npcData Is Nothing Then Return Nothing
 
-        ' No morph data at all? Skip. GAME-AWARE: FO4 face morphs live in MorphValues (MSDK/MSDV); SSE
-        ' face morphs live in NAM9 (sliders) + NAMA (types), with MorphValues empty. So for SSE gate on
-        ' Nam9Raw/NamaRaw instead (project_sse_nam9_morph_map).
+        ' No morph data at all? Skip — FO4 ONLY (face morphs live in MorphValues; empty ⇒ empty plan).
+        ' SSE has NO early-out: un NPC sin chargen (NAM9/NAMA ausentes — p.ej. Dremora) igual recibe el
+        ' RACE base morph y el "SkinnyMorph" del weight (el engine aplica ambos sin mirar el chargen:
+        ' applier 0x1403B90D0 lee actor+0x1FC incondicionalmente), y el bake (BuildFaceMorphPlan) tampoco
+        ' gatea por NAM9. Gatear acá dejaba la cabeza en peso neutro mientras el cuerpo _0/_1 sí lerpaeaba
+        ' ⇒ costura de cuello en todo weight ≠ 100 (render≠bake y render≠engine). BuildFaceMorphPlanFromNam9
+        ' no-opea por canal cuando falta el dato, así que el resolver SSE "vacío" es naturalmente barato.
         Dim isSse = (npcData.Game = Config_App.Game_Enum.Skyrim)
-        If isSse Then
-            If (npcData.Nam9Raw Is Nothing OrElse npcData.Nam9Raw.Length < 76) AndAlso (npcData.NamaRaw Is Nothing) Then Return Nothing
-        ElseIf npcData.MorphValues.Count = 0 Then
-            Return Nothing
-        End If
+        If Not isSse AndAlso (genderOverride OrElse npcData.MorphValues.Count = 0) Then Return Nothing
 
         ' Get RACE morph definitions for mapping MSDK keys ? morph names
         Dim raceRec = _ctx.PluginManager.GetRecord(state.RaceFormID)
@@ -137,7 +140,8 @@ Friend NotInheritable Class NpcMorphPoseResolver
             raceEditorId:=RecordParsers.ResolveMorphRaceEditorId(race, _ctx.PluginManager),
             raceKeywordEditorIds:=RecordParsers.GetRaceKeywordEditorIds(race, _ctx.PluginManager),
             applySculpt:=(host Is Nothing OrElse host.Toggles Is Nothing OrElse host.Toggles.ApplySculpt),
-            applyBodyWeight:=(host Is Nothing OrElse host.Toggles Is Nothing OrElse host.Toggles.ApplyBodyWeight))
+            applyBodyWeight:=(host Is Nothing OrElse host.Toggles Is Nothing OrElse host.Toggles.ApplyBodyWeight),
+            applyChargenMorphs:=(Not genderOverride) AndAlso (host Is Nothing OrElse host.Toggles Is Nothing OrElse host.Toggles.ApplyVertexMorphs))
     End Function
 
     ''' <summary>Returns the effective BodySlide slider dict for an NPC: the overlay preset's

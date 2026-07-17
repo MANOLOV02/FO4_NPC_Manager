@@ -48,6 +48,12 @@ Public Class CharGenOptionsForm
         ' a los 3 de arriba); el valor persistido se round-trip-ea intacto cuando el juego activo es FO4.
         CheckBoxBakeSseRaceMenuOverlays.Checked = c.Setting_BakeSseRaceMenuOverlays
         CheckBoxBakeSseRaceMenuOverlays.Enabled = Not isFo4
+        ' SSE-only fix: redirect head race/chargen/mesh .tri to High Poly Head when the record points at a missing
+        ' or wrong-topology tri and the head is an exact HPH head (3832 F / 3598 M). Default OFF (opt-in). Enabled
+        ' solo en Skyrim; el valor persistido se round-trip-ea intacto cuando el juego activo es FO4. Lo consume
+        ' NpcMorphResolver.LoadTriForShape (render/preview) vía Config_App.Setting_SseResolveHighPolyHeadTri.
+        CheckBoxResolveHphHeadTri.Checked = c.Setting_SseResolveHighPolyHeadTri
+        CheckBoxResolveHphHeadTri.Enabled = Not isFo4
         If c.Setting_FaceGenPerLayerResolution Then
             RadioPerLayer.Checked = True
         Else
@@ -473,6 +479,9 @@ Public Class CharGenOptionsForm
         c.Setting_ApplyMouthVanillaFix = CheckBoxApplyMouthVanillaFix.Checked
         ' SSE bake-RaceMenu-overlays gate → Config_App (lo lee FaceGenBuilder.WriteSseFaceDiffuseWithOverlays).
         c.Setting_BakeSseRaceMenuOverlays = CheckBoxBakeSseRaceMenuOverlays.Checked
+        ' SSE High Poly Head .tri redirect gate → Config_App. Al dar OK, MainForm re-renderiza el NPC actual;
+        ' NpcMorphResolver relee el tri (cache keyed por path, no por este flag) al reconstruir el resolver.
+        c.Setting_SseResolveHighPolyHeadTri = CheckBoxResolveHphHeadTri.Checked
 
         ' --- Tab "FaceTint Conventions": persistir la convención concreta por bucket, EN EL SET DEL JUEGO
         ' ACTIVO (FO4 → Setting_FaceTintConvention; SSE → Setting_FaceTintConvention_SSE). Dos configuraciones

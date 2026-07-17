@@ -82,6 +82,7 @@ Partial Class MainForm
         Label3 = New Label()
         ButtonSaveSceneNif = New Button()
         ButtonCharGenOptions = New Button()
+        ButtonExportFomod = New Button()
         PanelPreviewHost = New Panel()
         LabelStatus = New Label()
         PanelAnimBar = New FlowLayoutPanel()
@@ -122,7 +123,7 @@ Partial Class MainForm
         ' 
         TreeViewNpcsContextMenu.Items.AddRange(New ToolStripItem() {MenuItemMarkChanged, MenuItemResetOverlay, MenuItemSaveSelected, MenuItemBuildChargen, MenuItemMarkToDelete})
         TreeViewNpcsContextMenu.Name = "TreeViewNpcsContextMenu"
-        TreeViewNpcsContextMenu.Size = New Size(213, 92)
+        TreeViewNpcsContextMenu.Size = New Size(213, 114)
         ' 
         ' MenuItemMarkChanged
         ' 
@@ -147,13 +148,13 @@ Partial Class MainForm
         MenuItemBuildChargen.Name = "MenuItemBuildChargen"
         MenuItemBuildChargen.Size = New Size(212, 22)
         MenuItemBuildChargen.Text = "Build CharGen (loose)"
-        '
+        ' 
         ' MenuItemMarkToDelete
-        '
+        ' 
         MenuItemMarkToDelete.Name = "MenuItemMarkToDelete"
         MenuItemMarkToDelete.Size = New Size(212, 22)
         MenuItemMarkToDelete.Text = "Mark to delete (on Save)"
-        '
+        ' 
         ' SplitContainer1
         ' 
         SplitContainer1.Dock = DockStyle.Fill
@@ -670,10 +671,11 @@ Partial Class MainForm
         PanelActionsToolbar.Controls.Add(Label1)
         PanelActionsToolbar.Controls.Add(ButtonSavePlugin)
         PanelActionsToolbar.Controls.Add(ButtonBuildCharGen)
+        PanelActionsToolbar.Controls.Add(ButtonExportFomod)
         PanelActionsToolbar.Controls.Add(Label2)
         PanelActionsToolbar.Controls.Add(Label3)
-        PanelActionsToolbar.Controls.Add(ButtonSaveSceneNif)
         PanelActionsToolbar.Controls.Add(ButtonCharGenOptions)
+        PanelActionsToolbar.Controls.Add(ButtonSaveSceneNif)
         PanelActionsToolbar.Dock = DockStyle.Top
         PanelActionsToolbar.Location = New Point(11, 126)
         PanelActionsToolbar.Name = "PanelActionsToolbar"
@@ -730,12 +732,12 @@ Partial Class MainForm
         ButtonEditOutfit.TabIndex = 3
         ButtonEditOutfit.Text = "Outfit"
         ButtonEditOutfit.UseVisualStyleBackColor = True
-        '
+        ' 
         ' ButtonEditNpc
-        '
+        ' 
         ButtonEditNpc.AutoSize = True
         ButtonEditNpc.Enabled = False
-        ButtonEditNpc.Location = New Point(288, 2)
+        ButtonEditNpc.Location = New Point(290, 2)
         ButtonEditNpc.Margin = New Padding(2)
         ButtonEditNpc.MinimumSize = New Size(80, 28)
         ButtonEditNpc.Name = "ButtonEditNpc"
@@ -743,11 +745,11 @@ Partial Class MainForm
         ButtonEditNpc.TabIndex = 4
         ButtonEditNpc.Text = "NPC…"
         ButtonEditNpc.UseVisualStyleBackColor = True
-        '
+        ' 
         ' SeparatorActions1
         ' 
         SeparatorActions1.BorderStyle = BorderStyle.Fixed3D
-        SeparatorActions1.Location = New Point(296, 4)
+        SeparatorActions1.Location = New Point(380, 4)
         SeparatorActions1.Margin = New Padding(8, 4, 8, 4)
         SeparatorActions1.Name = "SeparatorActions1"
         SeparatorActions1.Size = New Size(2, 24)
@@ -757,7 +759,7 @@ Partial Class MainForm
         ' 
         LabelLooksMenu.Anchor = AnchorStyles.None
         LabelLooksMenu.AutoSize = True
-        LabelLooksMenu.Location = New Point(309, 8)
+        LabelLooksMenu.Location = New Point(393, 8)
         LabelLooksMenu.Margin = New Padding(3)
         LabelLooksMenu.Name = "LabelLooksMenu"
         LabelLooksMenu.Size = New Size(72, 15)
@@ -769,7 +771,7 @@ Partial Class MainForm
         ' 
         ButtonLoadLooksmenu.AutoSize = True
         ButtonLoadLooksmenu.Enabled = False
-        ButtonLoadLooksmenu.Location = New Point(386, 2)
+        ButtonLoadLooksmenu.Location = New Point(470, 2)
         ButtonLoadLooksmenu.Margin = New Padding(2)
         ButtonLoadLooksmenu.MinimumSize = New Size(80, 28)
         ButtonLoadLooksmenu.Name = "ButtonLoadLooksmenu"
@@ -782,7 +784,7 @@ Partial Class MainForm
         ' 
         ButtonSaveLooksmenu.AutoSize = True
         ButtonSaveLooksmenu.Enabled = False
-        ButtonSaveLooksmenu.Location = New Point(470, 2)
+        ButtonSaveLooksmenu.Location = New Point(554, 2)
         ButtonSaveLooksmenu.Margin = New Padding(2)
         ButtonSaveLooksmenu.MinimumSize = New Size(80, 28)
         ButtonSaveLooksmenu.Name = "ButtonSaveLooksmenu"
@@ -794,7 +796,7 @@ Partial Class MainForm
         ' SeparatorActions2
         ' 
         SeparatorActions2.BorderStyle = BorderStyle.Fixed3D
-        SeparatorActions2.Location = New Point(560, 4)
+        SeparatorActions2.Location = New Point(644, 4)
         SeparatorActions2.Margin = New Padding(8, 4, 8, 4)
         SeparatorActions2.Name = "SeparatorActions2"
         SeparatorActions2.Size = New Size(2, 24)
@@ -804,7 +806,7 @@ Partial Class MainForm
         ' 
         LabelLook.Anchor = AnchorStyles.None
         LabelLook.AutoSize = True
-        LabelLook.Location = New Point(573, 8)
+        LabelLook.Location = New Point(657, 8)
         LabelLook.Margin = New Padding(3)
         LabelLook.Name = "LabelLook"
         LabelLook.Size = New Size(36, 15)
@@ -816,7 +818,7 @@ Partial Class MainForm
         ' 
         ButtonCopyLook.AutoSize = True
         ButtonCopyLook.Enabled = False
-        ButtonCopyLook.Location = New Point(614, 2)
+        ButtonCopyLook.Location = New Point(698, 2)
         ButtonCopyLook.Margin = New Padding(2)
         ButtonCopyLook.MinimumSize = New Size(80, 28)
         ButtonCopyLook.Name = "ButtonCopyLook"
@@ -830,7 +832,7 @@ Partial Class MainForm
         ButtonPasteLook.Anchor = AnchorStyles.Left
         ButtonPasteLook.AutoSize = True
         ButtonPasteLook.Enabled = False
-        ButtonPasteLook.Location = New Point(698, 2)
+        ButtonPasteLook.Location = New Point(782, 2)
         ButtonPasteLook.Margin = New Padding(2)
         ButtonPasteLook.MinimumSize = New Size(80, 28)
         ButtonPasteLook.Name = "ButtonPasteLook"
@@ -842,7 +844,7 @@ Partial Class MainForm
         ' SeparatorActions3
         ' 
         SeparatorActions3.BorderStyle = BorderStyle.Fixed3D
-        SeparatorActions3.Location = New Point(788, 4)
+        SeparatorActions3.Location = New Point(872, 4)
         SeparatorActions3.Margin = New Padding(8, 4, 8, 4)
         SeparatorActions3.Name = "SeparatorActions3"
         SeparatorActions3.Size = New Size(2, 24)
@@ -852,7 +854,7 @@ Partial Class MainForm
         ' 
         Label1.Anchor = AnchorStyles.None
         Label1.AutoSize = True
-        Label1.Location = New Point(801, 8)
+        Label1.Location = New Point(885, 8)
         Label1.Margin = New Padding(3)
         Label1.Name = "Label1"
         Label1.Size = New Size(57, 15)
@@ -864,7 +866,7 @@ Partial Class MainForm
         ' 
         ButtonSavePlugin.AutoSize = True
         ButtonSavePlugin.Enabled = False
-        ButtonSavePlugin.Location = New Point(863, 2)
+        ButtonSavePlugin.Location = New Point(947, 2)
         ButtonSavePlugin.Margin = New Padding(2)
         ButtonSavePlugin.MinimumSize = New Size(110, 28)
         ButtonSavePlugin.Name = "ButtonSavePlugin"
@@ -877,7 +879,7 @@ Partial Class MainForm
         ' 
         ButtonBuildCharGen.AutoSize = True
         ButtonBuildCharGen.Enabled = False
-        ButtonBuildCharGen.Location = New Point(977, 2)
+        ButtonBuildCharGen.Location = New Point(2, 34)
         ButtonBuildCharGen.Margin = New Padding(2)
         ButtonBuildCharGen.MinimumSize = New Size(110, 28)
         ButtonBuildCharGen.Name = "ButtonBuildCharGen"
@@ -889,7 +891,7 @@ Partial Class MainForm
         ' Label2
         ' 
         Label2.BorderStyle = BorderStyle.Fixed3D
-        Label2.Location = New Point(1119, 4)
+        Label2.Location = New Point(258, 36)
         Label2.Margin = New Padding(8, 4, 8, 4)
         Label2.Name = "Label2"
         Label2.Size = New Size(2, 24)
@@ -899,7 +901,7 @@ Partial Class MainForm
         ' 
         Label3.Anchor = AnchorStyles.None
         Label3.AutoSize = True
-        Label3.Location = New Point(1132, 8)
+        Label3.Location = New Point(271, 40)
         Label3.Margin = New Padding(3)
         Label3.Name = "Label3"
         Label3.Size = New Size(40, 15)
@@ -911,7 +913,7 @@ Partial Class MainForm
         ' 
         ButtonSaveSceneNif.AutoSize = True
         ButtonSaveSceneNif.Enabled = False
-        ButtonSaveSceneNif.Location = New Point(2, 34)
+        ButtonSaveSceneNif.Location = New Point(440, 34)
         ButtonSaveSceneNif.Margin = New Padding(2)
         ButtonSaveSceneNif.MinimumSize = New Size(120, 28)
         ButtonSaveSceneNif.Name = "ButtonSaveSceneNif"
@@ -923,7 +925,7 @@ Partial Class MainForm
         ' ButtonCharGenOptions
         ' 
         ButtonCharGenOptions.AutoSize = True
-        ButtonCharGenOptions.Location = New Point(138, 34)
+        ButtonCharGenOptions.Location = New Point(316, 34)
         ButtonCharGenOptions.Margin = New Padding(2)
         ButtonCharGenOptions.MinimumSize = New Size(110, 28)
         ButtonCharGenOptions.Name = "ButtonCharGenOptions"
@@ -931,6 +933,19 @@ Partial Class MainForm
         ButtonCharGenOptions.TabIndex = 3
         ButtonCharGenOptions.Text = "CharGen Options"
         ButtonCharGenOptions.UseVisualStyleBackColor = True
+        ' 
+        ' ButtonExportFomod
+        ' 
+        ButtonExportFomod.AutoSize = True
+        ButtonExportFomod.Enabled = False
+        ButtonExportFomod.Location = New Point(138, 34)
+        ButtonExportFomod.Margin = New Padding(2)
+        ButtonExportFomod.MinimumSize = New Size(110, 28)
+        ButtonExportFomod.Name = "ButtonExportFomod"
+        ButtonExportFomod.Size = New Size(110, 28)
+        ButtonExportFomod.TabIndex = 18
+        ButtonExportFomod.Text = "Export FoMod"
+        ButtonExportFomod.UseVisualStyleBackColor = True
         ' 
         ' PanelPreviewHost
         ' 
@@ -1151,6 +1166,7 @@ Partial Class MainForm
     Friend WithEvents ButtonEditFace As System.Windows.Forms.Button
     Friend WithEvents ButtonBuildCharGen As System.Windows.Forms.Button
     Friend WithEvents ButtonCharGenOptions As System.Windows.Forms.Button
+    Friend WithEvents ButtonExportFomod As System.Windows.Forms.Button
     Friend WithEvents ButtonSaveSceneNif As System.Windows.Forms.Button
     Friend WithEvents ButtonEditBody As System.Windows.Forms.Button
     Friend WithEvents ButtonEditOutfit As System.Windows.Forms.Button

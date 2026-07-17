@@ -132,6 +132,7 @@ Partial Class CharGenOptionsForm
         CheckBoxApplyEyebrowsFixedColor = New CheckBox()
         CheckBoxApplyMouthVanillaFix = New CheckBox()
         CheckBoxBakeSseRaceMenuOverlays = New CheckBox()
+        CheckBoxResolveHphHeadTri = New CheckBox()
         TabMain.SuspendLayout()
         TabPageSize.SuspendLayout()
         GroupBoxSize.SuspendLayout()
@@ -1112,6 +1113,7 @@ Partial Class CharGenOptionsForm
         TabPageFixes.Controls.Add(CheckBoxApplyEyebrowsFixedColor)
         TabPageFixes.Controls.Add(CheckBoxApplyMouthVanillaFix)
         TabPageFixes.Controls.Add(CheckBoxBakeSseRaceMenuOverlays)
+        TabPageFixes.Controls.Add(CheckBoxResolveHphHeadTri)
         TabPageFixes.Location = New Point(4, 24)
         TabPageFixes.Name = "TabPageFixes"
         TabPageFixes.Padding = New Padding(3)
@@ -1159,6 +1161,16 @@ Partial Class CharGenOptionsForm
         CheckBoxBakeSseRaceMenuOverlays.TabIndex = 3
         CheckBoxBakeSseRaceMenuOverlays.Text = "Bake RaceMenu face overlays into the diffuse (SSE)"
         CheckBoxBakeSseRaceMenuOverlays.UseVisualStyleBackColor = True
+        '
+        ' CheckBoxResolveHphHeadTri
+        '
+        CheckBoxResolveHphHeadTri.AutoSize = True
+        CheckBoxResolveHphHeadTri.Location = New Point(12, 126)
+        CheckBoxResolveHphHeadTri.Name = "CheckBoxResolveHphHeadTri"
+        CheckBoxResolveHphHeadTri.Size = New Size(360, 19)
+        CheckBoxResolveHphHeadTri.TabIndex = 4
+        CheckBoxResolveHphHeadTri.Text = "Resolve missing/mismatched head .tri from High Poly Head (SSE)"
+        CheckBoxResolveHphHeadTri.UseVisualStyleBackColor = True
         '
         ' GroupConvDWsByOp
         '
@@ -1418,4 +1430,5 @@ Partial Class CharGenOptionsForm
     Friend WithEvents CheckBoxApplyEyebrowsFixedColor As System.Windows.Forms.CheckBox
     Friend WithEvents CheckBoxApplyMouthVanillaFix As System.Windows.Forms.CheckBox
     Friend WithEvents CheckBoxBakeSseRaceMenuOverlays As System.Windows.Forms.CheckBox
+    Friend WithEvents CheckBoxResolveHphHeadTri As System.Windows.Forms.CheckBox
 End Class

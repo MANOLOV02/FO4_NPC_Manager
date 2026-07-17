@@ -26,6 +26,172 @@ Imports OpenTK.Graphics.OpenGL4
 ''' </summary>
 Friend Module SseFoldLayerStack
 
+    ''' <summary>⭐⭐ RENDER PURO GPU (pedido explícito del usuario): la cadena ENTERA del pliegue —
+    ''' facetint → fold → capas (skee MASKT + Face [Ovl]) → sRGB→lin final — corre en GL encadenando
+    ''' TEXTURAS (Rgba32f, float de punta a punta), con CERO readbacks en el camino caliente. Devuelve el
+    ''' texture-id FINAL (diffuse plegado en LINEAL, listo para el dict con IsSRGB=False) o 0 si CUALQUIER
+    ''' etapa falla (el caller aborta con log: SIN fallback a CPU, como siempre).
+    '''
+    ''' "Dan lo mismo" es requisito de RESULTADO, no de representación: la réplica CPU produce lo mismo por
+    ''' construcción (misma ley, mismos inputs decodificados una vez) y se VERIFICA con el sandbox de paridad
+    ''' (<paramref name="measureParity"/>) — el ÚNICO lugar donde este camino hace readbacks, además de los
+    ''' stats del log cuando <c>Logger.Enabled</c> (diagnóstico opt-in, no camino caliente).
+    '''
+    ''' Diferencias de representación ASUMIDAS (documentadas, no bugs):
+    '''  - float32 (GPU) vs Double (CPU): la de siempre (RMS medido 0,080/255, bajo el redondeo al byte);
+    '''  - el final NO se cuantiza a 8 bits: la textura instalada queda Rgba32f LINEAL (el camino CPU
+    '''    cuantiza a byte al subir RGBA8) ⇒ el GPU es ≤ medio paso de byte MÁS preciso — igual que el live
+    '''    de FO4, que también instala la textura float del pipeline sin bajarla.
+    ''' Qué queda en CPU (y por qué es legítimo, no impureza): el DECODE de los DDS fuente — es la ENTRADA
+    ''' común a los dos caminos (leer el archivo no es compose) y garantiza inputs bit-idénticos: decodificar
+    ''' BCn por hardware tiene tolerancias de spec ⇒ rompería el "dan lo mismo" EN EL ORIGEN.
+    ''' El alpha del complexion se fuerza OPACO en el upload (el CPU escribe alpha=255 al final: misma ley).
+    '''
+    ''' El trío viejo (<see cref="ComposeFacetintGpu"/>/<see cref="FoldGpu"/>/<see cref="ComposeGpu"/>, con
+    ''' readback por etapa) queda SOLO para el sandbox <c>_2d</c> del bake (FaceGenBuilder), que necesita los
+    ''' intermedios en CPU para escribir los .dds de comparación.</summary>
+    Friend Function ComposeFoldedGpuResident(complexionSrgb As Double(),
+                                             tintLayers As IList(Of FaceTintLayerInput),
+                                             detailRaw As Double(),
+                                             skeeRaw As IList(Of SseSkeeMaskReader.SkeeMaskLayerRaw),
+                                             faceOvl As IList(Of RaceMenuJslot.JslotOverlayNode),
+                                             skinRgb As Double(),
+                                             w As Integer, h As Integer,
+                                             host As NpcRenderHost,
+                                             measureParity As Boolean) As Integer
+        If host Is Nothing OrElse complexionSrgb Is Nothing OrElse w <= 0 OrElse h <= 0 Then Return 0
+        Dim npix = w * h
+        Dim seedTex = 0, tintTex = 0, complexTex = 0, detTex = 0, foldedTex = 0, srgbTex = 0
+        Try
+            ' --- 1. FACETINT: seed plano 0.5 → capas de tint del RACE/NPC (si hay). Sin capas, el facetint
+            ' ES el seed (raza sin tints = 0.5 plano = fgTint 1, NO es un fallo; = ComposeFacetintGpu). ---
+            seedTex = UploadRgba32fFlat(0.5F, 0.5F, 0.5F, 1.0F, w, h)
+            If seedTex = 0 Then Return 0
+            If tintLayers Is Nothing OrElse tintLayers.Count = 0 Then
+                tintTex = seedTex : seedTex = 0                          ' ownership pasa a tintTex
+            Else
+                Dim prT = FaceTintCompositor.ApplyFaceTintPipeline(host.CompositorState, host.TintGpuCache,
+                                                                   seedTex, 0, 0, w, h, tintLayers,
+                                                                   New List(Of FaceRegionSwapInput)(),
+                                                                   baseDiffuseIsLinearOnGpu:=True)
+                If prT Is Nothing OrElse prT.Diffuse Is Nothing OrElse Not prT.Diffuse.IsFresh Then Return 0
+                tintTex = prT.Diffuse.TextureId
+                Try : GL.DeleteTexture(seedTex) : Catch : End Try
+                seedTex = 0
+            End If
+
+            ' Stats de entrada — SOLO si alguien mira el log (el readback del facetint es diagnóstico).
+            If Logger.Enabled Then
+                Dim mC = MeanRgb(complexionSrgb, npix)
+                Dim tintAcc = ReadbackRgba32f(tintTex, npix)
+                Dim mF = If(tintAcc IsNot Nothing, MeanRgb(tintAcc, npix), Nothing)
+                Dim mD = If(detailRaw IsNot Nothing, MeanRgb(detailRaw, npix), Nothing)
+                Logger.LogLazy(Function() $"[SSE-FOLD] IN (GPU-resident): complexion(sRGB)=({mC(0):F3},{mC(1):F3},{mC(2):F3}) " &
+                                          If(mF Is Nothing, "facetint=(sin readback) ",
+                                             $"facetint(lin)=({mF(0):F3},{mF(1):F3},{mF(2):F3}) ⇒ fgTint≈{(mF(0) + 1.0 / 255.0) * (255.0 / 64.0):F2} ") &
+                                          $"detail={If(mD Is Nothing, "NINGUNO(0.5)", $"({mD(0):F3},{mD(1):F3},{mD(2):F3})")}")
+            End If
+
+            ' --- 2. FOLD: base = complexion (sRGB, alpha forzado opaco), capa = rama uFgTintFold del shader
+            ' (fgTint × softlight, la MISMA ley fija del engine que FoldFacetintIntoDiffuse en CPU). ---
+            complexTex = UploadRgba32f(complexionSrgb, npix, w, h, forceOpaque:=True)
+            If complexTex = 0 Then Return 0
+            If detailRaw IsNot Nothing Then
+                detTex = UploadRgba32f(detailRaw, npix, w, h)
+                If detTex = 0 Then Return 0
+            End If
+            Dim foldLayer As New List(Of FaceTintLayerInput) From {
+                New FaceTintLayerInput With {
+                    .Kind = FaceTintLayerKind.TextureSetDiffuse,
+                    .LayerTextureId = tintTex,
+                    .FoldDetailTextureId = detTex,
+                    .FgTintFold = True,
+                    .FgTintOffR = CSng(1.0 / 255.0), .FgTintOffG = 0F, .FgTintOffB = CSng(1.0 / 255.0),
+                    .FgTintAmp = CSng(255.0 / 64.0),
+                    .Opacity = 1.0F, .Slot = 0US, .IsTextureSet = True, .DebugName = "sse-fold"}}
+            Dim prF = FaceTintCompositor.ApplyFaceTintPipeline(host.CompositorState, host.TintGpuCache,
+                                                               complexTex, 0, 0, w, h, foldLayer,
+                                                               New List(Of FaceRegionSwapInput)(),
+                                                               baseDiffuseIsLinearOnGpu:=True)
+            If prF Is Nothing OrElse prF.Diffuse Is Nothing OrElse Not prF.Diffuse.IsFresh Then Return 0
+            foldedTex = prF.Diffuse.TextureId
+            ' Inputs del fold ya consumidos: se liberan acá (no esperan al Finally) para no retener 3 texturas
+            ' float de w×h durante el resto de la cadena.
+            For Each t In {tintTex, complexTex, detTex}
+                If t <> 0 Then Try : GL.DeleteTexture(t) : Catch : End Try
+            Next
+            tintTex = 0 : complexTex = 0 : detTex = 0
+
+            ' --- 3. CAPAS (skee MASKT + Face [Ovl]) SOBRE el base plegado — mismo orden que el CPU/bake. ---
+            If HasWork(skeeRaw, faceOvl) Then
+                Dim stackLayers As New List(Of FaceTintLayerInput)
+                stackLayers.AddRange(BuildSkeeGpuLayers(skeeRaw, skinRgb))
+                stackLayers.AddRange(BuildFaceOverlayGpuLayers(faceOvl))
+                ' Semántica del ComposeGpu viejo, preservada: había trabajo pero NINGUNA capa GPU se pudo
+                ' armar (texturas ausentes) ⇒ FALLO (0). No se degrada en silencio.
+                If stackLayers.Count = 0 Then Return 0
+                Dim accCpu As Double() = Nothing
+                If measureParity Then
+                    ' SANDBOX (SseMeasureFoldParity, Debug opt-in): el ÚNICO readback del camino — acá se
+                    ' MIDE que las dos réplicas dan lo mismo (RMS), en vez de suponerlo.
+                    accCpu = ReadbackRgba32f(foldedTex, npix)
+                    If accCpu IsNot Nothing Then ComposeCpu(accCpu, skeeRaw, faceOvl, skinRgb, w, h)
+                End If
+                Dim prL = FaceTintCompositor.ApplyFaceTintPipeline(host.CompositorState, host.TintGpuCache,
+                                                                   foldedTex, 0, 0, w, h, stackLayers,
+                                                                   New List(Of FaceRegionSwapInput)(),
+                                                                   baseDiffuseIsLinearOnGpu:=True)
+                If prL Is Nothing OrElse prL.Diffuse Is Nothing OrElse Not prL.Diffuse.IsFresh Then Return 0
+                srgbTex = prL.Diffuse.TextureId
+                Try : GL.DeleteTexture(foldedTex) : Catch : End Try
+                foldedTex = 0
+                If accCpu IsNot Nothing Then
+                    Dim accGpu = ReadbackRgba32f(srgbTex, npix)
+                    If accGpu IsNot Nothing Then
+                        Dim rms = RmsDiff255(accCpu, accGpu, npix)
+                        Logger.LogLazy(Function() $"[SSE-FOLD] PARITY (sandbox): rmsCPUvsGPU={rms:F3}/255 (capas del stack)")
+                    End If
+                End If
+            Else
+                srgbTex = foldedTex : foldedTex = 0
+            End If
+
+            ' Stats de salida — mismo gate: readback solo con el log encendido.
+            If Logger.Enabled Then
+                Dim outAcc = ReadbackRgba32f(srgbTex, npix)
+                If outAcc IsNot Nothing Then
+                    Dim mO = MeanRgb(outAcc, npix)
+                    Dim nSkeeL = If(skeeRaw Is Nothing, 0, skeeRaw.Count)
+                    Dim nOvlL = If(faceOvl Is Nothing, 0, faceOvl.Count)
+                    Logger.LogLazy(Function() $"[SSE-FOLD] OUT (GPU-resident): folded(sRGB)=({mO(0):F3},{mO(1):F3},{mO(2):F3}) " &
+                                              $"skeeLayers={nSkeeL} faceOverlays={nOvlL}  (esperado ~0.35-0.45; ~1.0 = satura)")
+                End If
+            End If
+
+            ' --- 4. sRGB→lin FINAL por GPU (mode 2 del shader compartido, cvt srgb→linear = la MISMA curva
+            ' IEC que SseFaceGenBaker.Srgb2Lin). El resultado queda Rgba32f LINEAL y se instala directo. ---
+            Dim linTex = FaceTintCompositor.ConvertTextureSpace(host.CompositorState, srgbTex, w, h, 1, 0)
+            If linTex = 0 Then Return 0
+            Return linTex
+        Finally
+            ' Limpieza de intermedios que quedaron vivos (caminos de fallo). El id devuelto nunca está acá.
+            For Each t In {seedTex, tintTex, complexTex, detTex, foldedTex, srgbTex}
+                If t <> 0 Then Try : GL.DeleteTexture(t) : Catch : End Try
+            Next
+        End Try
+    End Function
+
+    ''' <summary>Media R/G/B de un acumulador RGBA (para los stats del log). SERIAL a propósito: una suma
+    ''' flotante es dependiente del orden ⇒ paralelizarla cambiaría el valor logueado. Solo corre gateada.</summary>
+    Private Function MeanRgb(acc As Double(), npix As Integer) As Double()
+        Dim m(2) As Double
+        For i = 0 To npix - 1
+            m(0) += acc(i * 4) : m(1) += acc(i * 4 + 1) : m(2) += acc(i * 4 + 2)
+        Next
+        m(0) /= npix : m(1) /= npix : m(2) /= npix
+        Return m
+    End Function
+
     ''' <summary>GPU: el PLIEGUE — <c>albedo = fgTint(facetint) × softlight(srgbToLin(complexion), detail)</c> — réplica
     ''' EXACTA de <see cref="SseFaceGenBaker.FoldFacetintIntoDiffuse"/> (CPU). Entra y sale lo MISMO que el CPU: el
     ''' complexion en sRGB y el resultado en sRGB (<c>Double()</c> RGBA), así que el caller elige camino por el flag y
@@ -88,9 +254,14 @@ Friend Module SseFoldLayerStack
         If host Is Nothing Then Return Nothing
         Dim npix = w * h
         Dim seed(npix * 4 - 1) As Double
-        For i = 0 To npix - 1
-            seed(i * 4) = 0.5 : seed(i * 4 + 1) = 0.5 : seed(i * 4 + 2) = 0.5 : seed(i * 4 + 3) = 1.0
-        Next
+        ' Seed plano, paralelo por rangos (escrituras disjuntas ⇒ bit-idéntico).
+        System.Threading.Tasks.Parallel.ForEach(
+            System.Collections.Concurrent.Partitioner.Create(0, npix),
+            Sub(range)
+                For i = range.Item1 To range.Item2 - 1
+                    seed(i * 4) = 0.5 : seed(i * 4 + 1) = 0.5 : seed(i * 4 + 2) = 0.5 : seed(i * 4 + 3) = 1.0
+                Next
+            End Sub)
         If tintLayers Is Nothing OrElse tintLayers.Count = 0 Then Return seed
         Dim baseTex = UploadRgba32f(seed, npix, w, h)
         If baseTex = 0 Then Return Nothing
@@ -128,7 +299,10 @@ Friend Module SseFoldLayerStack
     ''' <summary>GPU: MISMO compose por el compositor compartido. El base (<paramref name="acc"/>, sRGB) se sube como
     ''' Rgba32f — FLOAT, no 8 bits — así que el único redondeo del camino GPU es el mismo del CPU (el byte final), y no
     ''' uno extra del transporte. Devuelve un acumulador NUEVO (sRGB, w×h×4) o Nothing si el GPU no puede (el caller
-    ''' cae a CPU). No muta <paramref name="acc"/>. GL-bound: hay que llamarla con el contexto activo.</summary>
+    ''' decide; NUNCA se cae a CPU en silencio). No muta <paramref name="acc"/>. GL-bound: contexto activo.
+    ''' ⚠️ El RENDER ya NO pasa por acá (usa <see cref="ComposeFoldedGpuResident"/>, sin readbacks): este trío
+    ''' con readback por etapa queda para el sandbox <c>_2d</c> del bake (FaceGenBuilder), que necesita los
+    ''' intermedios en CPU para escribir los .dds de comparación.</summary>
     Friend Function ComposeGpu(acc As Double(), skeeRaw As IList(Of SseSkeeMaskReader.SkeeMaskLayerRaw),
                                faceOvl As IList(Of RaceMenuJslot.JslotOverlayNode),
                                skinRgb As Double(), w As Integer, h As Integer, host As NpcRenderHost) As Double()
@@ -270,11 +444,47 @@ Friend Module SseFoldLayerStack
     ''' <summary>Sube un acumulador Double RGBA como textura Rgba32f (float). ⭐ NO se cuantiza a 8 bits: si el base
     ''' del GPU entrara en bytes, el camino GPU arrastraría un redondeo que el CPU no tiene y la paridad quedaría
     ''' limitada por el TRANSPORTE en vez de por el compose (que es lo que se quiere medir).</summary>
-    Private Function UploadRgba32f(acc As Double(), npix As Integer, w As Integer, h As Integer) As Integer
+    Private Function UploadRgba32f(acc As Double(), npix As Integer, w As Integer, h As Integer,
+                                   Optional forceOpaque As Boolean = False) As Integer
         Dim f(npix * 4 - 1) As Single
-        For i = 0 To npix * 4 - 1
-            f(i) = CSng(acc(i))
-        Next
+        ' Conversión Double→Single elemento-a-elemento, paralela por rangos (disjunta ⇒ bit-idéntica).
+        System.Threading.Tasks.Parallel.ForEach(
+            System.Collections.Concurrent.Partitioner.Create(0, npix * 4),
+            Sub(range)
+                For i = range.Item1 To range.Item2 - 1
+                    f(i) = CSng(acc(i))
+                Next
+            End Sub)
+        ' forceOpaque: el camino GPU-residente fuerza alpha=1 EN EL UPLOAD del complexion — el pipeline
+        ' propaga el alpha del prev tal cual, y el camino CPU escribe alpha=255 al final ⇒ misma ley.
+        If forceOpaque Then
+            System.Threading.Tasks.Parallel.ForEach(
+                System.Collections.Concurrent.Partitioner.Create(0, npix),
+                Sub(range)
+                    For i = range.Item1 To range.Item2 - 1
+                        f(i * 4 + 3) = 1.0F
+                    Next
+                End Sub)
+        End If
+        Return UploadRgba32fFromSingles(f, w, h)
+    End Function
+
+    ''' <summary>Textura Rgba32f plana de un color constante (el seed 0.5 del facetint). Sin pasar por Double.</summary>
+    Private Function UploadRgba32fFlat(r As Single, g As Single, b As Single, a As Single, w As Integer, h As Integer) As Integer
+        Dim npix = w * h
+        Dim f(npix * 4 - 1) As Single
+        System.Threading.Tasks.Parallel.ForEach(
+            System.Collections.Concurrent.Partitioner.Create(0, npix),
+            Sub(range)
+                For i = range.Item1 To range.Item2 - 1
+                    f(i * 4) = r : f(i * 4 + 1) = g : f(i * 4 + 2) = b : f(i * 4 + 3) = a
+                Next
+            End Sub)
+        Return UploadRgba32fFromSingles(f, w, h)
+    End Function
+
+    ''' <summary>Upload GL común de un buffer Single RGBA como Rgba32f (filtros/clamp = los del pipeline).</summary>
+    Private Function UploadRgba32fFromSingles(f As Single(), w As Integer, h As Integer) As Integer
         Dim id = GL.GenTexture()
         If id = 0 Then Return 0
         GL.BindTexture(TextureTarget.Texture2D, id)
@@ -299,9 +509,14 @@ Friend Module SseFoldLayerStack
         End Try
         GL.BindTexture(TextureTarget.Texture2D, 0)
         Dim d(npix * 4 - 1) As Double
-        For i = 0 To npix * 4 - 1
-            d(i) = f(i)
-        Next
+        ' Conversión Single→Double elemento-a-elemento, paralela por rangos (disjunta ⇒ bit-idéntica).
+        System.Threading.Tasks.Parallel.ForEach(
+            System.Collections.Concurrent.Partitioner.Create(0, npix * 4),
+            Sub(range)
+                For i = range.Item1 To range.Item2 - 1
+                    d(i) = f(i)
+                Next
+            End Sub)
         Return d
     End Function
 

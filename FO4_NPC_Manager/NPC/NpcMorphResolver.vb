@@ -31,6 +31,13 @@ Public Class NpcMorphResolver
     ''' de PREVIEW, no cambia lo que se hornea. Inertes en el camino FO4 (que no emite esos canales).</summary>
     Private ReadOnly _applySculpt As Boolean = True
     Private ReadOnly _applyBodyWeight As Boolean = True
+    ''' <summary>SSE-only: emite los canales de FORMA de cara (race base + NAM9 + NAMA + custom + sculpt).
+    ''' False = solo queda el SkinnyMorph del weight (sección 2d). Lo apagan (a) el checkbox "Vertex
+    ''' morphs (TRI)" cuando "Body weight" sigue ON — antes eso mataba el resolver ENTERO y con él el
+    ''' weight de la cabeza mientras el cuerpo _0/_1 seguía lerpeando ⇒ costura de cuello — y (b) el
+    ''' preview "Show other gender" (los morphs del NPC no aplican cross-gender, el weight sí). El bake
+    ''' lo deja en True (default del ctor). Inerte en FO4 (su plan no emite SkinnyMorph).</summary>
+    Private ReadOnly _applyChargenMorphs As Boolean = True
     ' Per-process (Shared) TRI caches: a given chargen/race .tri is parsed at most once for the
     ' lifetime of the process and shared across every NpcMorphResolver instance — the resolver is
     ' rebuilt on each render/toggle (MainForm.BuildCompositeMorphResolver), so a per-instance cache
@@ -43,6 +50,31 @@ Public Class NpcMorphResolver
     ' "attempted" with nothing cached yet and return Nothing). See PathLoadCache.vb.
     Private Shared ReadOnly _triCache As New PathLoadCache(Of TriFile)()
     Private Shared ReadOnly _triHeadCache As New PathLoadCache(Of TriHeadFile)()
+
+    ' High Poly Head (KouLeifoh) redirect — see Config_App.Setting_SseResolveHighPolyHeadTri and
+    ' ResolveHphHeadPartTriPath. Measured vertex counts from HPH v1.4 (SE): a shape with one of these counts IS the
+    ' corresponding HPH head part, and its race/chargen/mesh morph tris live under HphDir (loose) or the equivalent
+    ' internal path in High Poly Head.bsa — NEVER at the vanilla `Actors\Character\Character Assets\` path.
+    '   FemaleHead 'FemaleHead_KLH' = 3832 ; MaleHead 'MaleHeadIMF_KLH' = 3598 ; FemaleBrows = 371 ; MaleBrows = 318.
+    ' The per-part triplet (races / chargen / mesh) is the MEASURED HPH filename set (⚠️ irregular: female brows race
+    ' = "femaleheadbrowsrace.tri" SINGULAR but male = "maleheadbrowsraces.tri" PLURAL; HPH ships NO male head chargen
+    ' — malehead uses maleheadcustomizations, so Male/Chargen is empty and degrades without harm).
+    Private Const HphFemaleHeadVerts As Integer = 3832
+    Private Const HphMaleHeadVerts As Integer = 3598
+    Private Const HphFemaleBrowVerts As Integer = 371
+    Private Const HphMaleBrowVerts As Integer = 318
+    Private Const HphDir As String = "meshes\KL\High Poly Head\"
+    ' Dirs probed for the basename-reuse fallback (an existing broken record path redirected to the same filename
+    ' under HPH): head tris live in the root, brows/masks/scars under faceparts\, facial hair under beards\.
+    Private Shared ReadOnly HphBasenameDirs As String() = {HphDir, HphDir & "faceparts\", HphDir & "beards\"}
+
+    ''' <summary>Which head-part morph slot a tri fills, for the HPH redirect (HDPT NAM0 codes: 0=Race, 2=Chargen,
+    ''' 1=Mesh/SkinnyMorph).</summary>
+    Public Enum HphTriSlot
+        Race
+        Chargen
+        Mesh
+    End Enum
 
     ''' <summary>Drop the per-process TRI parse caches. Call on load-order change (FilesDictionary rebuilt):
     ''' a path could resolve to different bytes after a reload, so the cached parse would be stale, and the
@@ -79,10 +111,12 @@ Public Class NpcMorphResolver
                    Optional shapeMeshMorphTriPaths As Dictionary(Of IRenderableShape, String) = Nothing,
                    Optional raceKeywordEditorIds As List(Of String) = Nothing,
                    Optional applySculpt As Boolean = True,
-                   Optional applyBodyWeight As Boolean = True)
+                   Optional applyBodyWeight As Boolean = True,
+                   Optional applyChargenMorphs As Boolean = True)
         _npcData = npcData
         _applySculpt = applySculpt
         _applyBodyWeight = applyBodyWeight
+        _applyChargenMorphs = applyChargenMorphs
         _morphValueDefs = morphValueDefs
         _morphPresetDefs = morphPresetDefs
         _meshDictKeys = meshDictKeys
@@ -144,7 +178,8 @@ Public Class NpcMorphResolver
             Dim shapeChargen As String = Nothing
             If _shapeChargenTriPaths IsNot Nothing Then _shapeChargenTriPaths.TryGetValue(shape, shapeChargen)
             plan.Channels.AddRange(BuildFaceMorphPlan(_npcData, triHead, _raceEditorId, _morphValueDefs, _morphPresetDefs, _raceKeywordEditorIds, shapeChargen,
-                                                     applySculpt:=_applySculpt, applyBodyWeight:=_applyBodyWeight).Channels)
+                                                     applySculpt:=_applySculpt, applyBodyWeight:=_applyBodyWeight,
+                                                     applyChargenMorphs:=_applyChargenMorphs).Channels)
         End If
 
         ' Channel dedup-by-name with SUMMED weights now lives inside
@@ -218,12 +253,13 @@ Public Class NpcMorphResolver
                                               Optional raceKeywordEditorIds As List(Of String) = Nothing,
                                               Optional shapeChargenTriPath As String = "",
                                               Optional applySculpt As Boolean = True,
-                                              Optional applyBodyWeight As Boolean = True) As MorphPlan
+                                              Optional applyBodyWeight As Boolean = True,
+                                              Optional applyChargenMorphs As Boolean = True) As MorphPlan
         Dim plan As New MorphPlan()
         If npcData Is Nothing OrElse triHead Is Nothing Then Return plan
         If npcData.Game = Config_App.Game_Enum.Skyrim Then
             plan.Channels.AddRange(BuildFaceMorphPlanFromNam9(npcData, triHead, raceEditorId, raceKeywordEditorIds, shapeChargenTriPath,
-                                                              applySculpt, applyBodyWeight).Channels)
+                                                              applySculpt, applyBodyWeight, applyChargenMorphs).Channels)
         ElseIf npcData.MorphValues IsNot Nothing AndAlso npcData.MorphValues.Count > 0 Then
             plan.Channels.AddRange(BuildFaceMorphPlanFromTriHead(npcData, morphValueDefs, morphPresetDefs, triHead).Channels)
         End If
@@ -360,7 +396,12 @@ Public Class NpcMorphResolver
                                                       Optional raceKeywordEditorIds As List(Of String) = Nothing,
                                                       Optional shapeChargenTriPath As String = "",
                                                       Optional applySculpt As Boolean = True,
-                                                      Optional applyBodyWeight As Boolean = True) As MorphPlan
+                                                      Optional applyBodyWeight As Boolean = True,
+                                                      Optional applyChargenMorphs As Boolean = True) As MorphPlan
+        ' applyChargenMorphs=False ⇒ se suprimen los canales de FORMA (race base, NAM9, NAMA, custom,
+        ' sculpt) y solo puede emitirse el SkinnyMorph del weight (2d). Usos: checkbox "Vertex morphs
+        ' (TRI)" OFF con "Body weight" ON, y el preview "Show other gender". El weight es per-actor e
+        ' independiente del chargen (applier 0x1403B90D0), así que NO se apaga con los morphs de forma.
         Dim plan As New MorphPlan()
         If npcData Is Nothing OrElse triHead Is Nothing Then Return plan
 
@@ -370,13 +411,13 @@ Public Class NpcMorphResolver
         ' then adjusts. Byte/geometry-validated: adding it drops the CK FaceGeom residual from 0.168→0.075
         ' RMS and makes every NAM9/NAMA channel's least-squares weight match its value (project_sse_nam9_morph_map).
         ' The merged chargen TriHead already contains these race morphs (LoadTriForShape merges NAM0=0+NAM0=2).
-        If Not String.IsNullOrEmpty(raceEditorId) Then
+        If applyChargenMorphs AndAlso Not String.IsNullOrEmpty(raceEditorId) Then
             AddNam9Channel(plan, triHead, raceEditorId, 1.0F)
         End If
 
         ' 1) NAM9 directional sliders (19 floats: 18 usable + [18] VampireMorph).
         Dim nam9 = npcData.Nam9Raw
-        If nam9 IsNot Nothing AndAlso nam9.Length >= 76 Then
+        If applyChargenMorphs AndAlso nam9 IsNot Nothing AndAlso nam9.Length >= 76 Then
             For i = 0 To _sseNam9Morphs.Length - 1
                 Dim v = BitConverter.ToSingle(nam9, i * 4)
                 If Single.IsNaN(v) OrElse Single.IsInfinity(v) OrElse Math.Abs(v) < 0.001F Then Continue For
@@ -408,7 +449,7 @@ Public Class NpcMorphResolver
         ' looks it up by NAME (the ordinal/valid-bitmask path 0x3e1420 is chargen-UI navigation, not the
         ' bake): N==0 → "Default", N>0 → family&N, 0xFFFFFFFF → no preset. Applied at full weight.
         Dim nama = npcData.NamaRaw
-        If nama IsNot Nothing AndAlso nama.Length >= 16 Then
+        If applyChargenMorphs AndAlso nama IsNot Nothing AndAlso nama.Length >= 16 Then
             AddNamaTypePreset(plan, triHead, "NoseType", BitConverter.ToUInt32(nama, 0))
             AddNamaTypePreset(plan, triHead, "BrowType", BitConverter.ToUInt32(nama, 4))
             AddNamaTypePreset(plan, triHead, "EyesType", BitConverter.ToUInt32(nama, 8))
@@ -424,7 +465,7 @@ Public Class NpcMorphResolver
         '   • HeadPart : a head-part selection, not a morph — skipped here.
         ' No catalog / unknown slider ⇒ apply the name directly (covers simple name==morph sliders + keeps working
         ' when the RaceMenu slider config isn't installed).
-        If npcData.SseCustomMorphs IsNot Nothing Then
+        If applyChargenMorphs AndAlso npcData.SseCustomMorphs IsNot Nothing Then
             For Each cm In npcData.SseCustomMorphs
                 If cm Is Nothing OrElse String.IsNullOrEmpty(cm.Name) OrElse Math.Abs(cm.Value) < 0.0001F Then Continue For
                 AddCustomMorphChannel(plan, triHead, raceEditorId, npcData.IsFemale, cm.Name, cm.Value)
@@ -441,7 +482,7 @@ Public Class NpcMorphResolver
         ' applySculpt=False (checkbox "Sculpt" OFF en el preview) ⇒ no se emite el canal: la cara queda con los
         ' NAM9/NAMA vanilla, sin los deltas libres del .jslot. Es el análogo SSE del toggle ARMA SCLP de FO4.
         Dim sculptVerts As List(Of NPC_SculptVert) = Nothing
-        If Not applySculpt Then
+        If Not applySculpt OrElse Not applyChargenMorphs Then
             sculptVerts = Nothing
         ElseIf npcData.SseSculptParts IsNot Nothing AndAlso npcData.SseSculptParts.Count > 0 Then
             If Not String.IsNullOrEmpty(shapeChargenTriPath) Then
@@ -612,6 +653,11 @@ Public Class NpcMorphResolver
         tri = Nothing
         triHead = Nothing
 
+        ' This shape's own vertex count — the per-shape guard for the SSE High Poly Head .tri redirect
+        ' (ResolveHphHeadPartTriPath accepts an HPH candidate only when its count == this). Covers head AND brows
+        ' (and any HPH part). 0 for a shape with no geometry (redirect stays off).
+        Dim shapeVerts As Integer = If(shape IsNot Nothing AndAlso shape.Geometry IsNot Nothing, shape.Geometry.VertexCount, 0)
+
         ' Step 1: pull explicit paths from HDPT (may be empty)
         Dim raceMorphPath As String = Nothing
         Dim chargenPath As String = Nothing
@@ -624,21 +670,28 @@ Public Class NpcMorphResolver
             If bodyTriPath <> "" Then raceMorphPath = bodyTriPath
         End If
 
-        ' No step 3: a slot the record leaves empty STAYS empty (see the summary above — the engine has no
-        ' mesh-name convention, and inventing one made the render apply morphs the CK/engine never apply).
+        ' No step 3: a slot the record leaves empty STAYS empty (the engine has no mesh-name convention, and inventing
+        ' one made the render apply morphs the CK/engine never apply). The opt-in SSE HPH redirect below only REDIRECTS
+        ' a declared-but-broken path (e.g. head race/chargen pointing at the vanilla 996-vert tri); it does NOT fill an
+        ' empty slot — an eyebrow HDPT ships only NAM0=1, and forcing HPH brow race/chargen onto it over-morphs the
+        ' brow into a blob (the CK baked no such morph). The brows therefore render as the mod's record actually
+        ' specifies; a record that omits their morph simply can't be fully reconstructed (that is the mod's limitation).
 
-        ' Load race TRI: try PIRT first (BodySlide format), then TriHead (Bethesda format)
-        If Not String.IsNullOrEmpty(raceMorphPath) Then
-            Dim normRace = MeshPathHelpers.NormalizeMeshKey(raceMorphPath)
+        ' Load race TRI: resolve HPH-aware (fills/redirects for a known HPH part; else returns the record path
+        ' unchanged), then try PIRT first (BodySlide body format), then TriHead (Bethesda head format).
+        Dim resolvedRace = ResolveHphHeadPartTriPath(raceMorphPath, shapeVerts, HphTriSlot.Race, AddressOf TriHeadVertsOf)
+        If Not String.IsNullOrEmpty(resolvedRace) Then
+            Dim normRace = MeshPathHelpers.NormalizeMeshKey(resolvedRace)
             tri = TryLoadPirt(normRace)
             If tri Is Nothing Then
                 triHead = TryLoadTriHead(normRace)
             End If
         End If
 
-        ' Load chargen TRI (always TriHead format) and merge into triHead
-        If Not String.IsNullOrEmpty(chargenPath) Then
-            Dim normChargen = MeshPathHelpers.NormalizeMeshKey(chargenPath)
+        ' Load chargen TRI (always TriHead format), HPH-aware, and merge into triHead
+        Dim resolvedChargen = ResolveHphHeadPartTriPath(chargenPath, shapeVerts, HphTriSlot.Chargen, AddressOf TriHeadVertsOf)
+        If Not String.IsNullOrEmpty(resolvedChargen) Then
+            Dim normChargen = MeshPathHelpers.NormalizeMeshKey(resolvedChargen)
             Dim chargenHead = TryLoadTriHead(normChargen)
             MergeChargenIntoRaceTriHead(triHead, chargenHead)
 
@@ -649,8 +702,10 @@ Public Class NpcMorphResolver
             ' composition, so every downstream consumer — NAM9/NAMA channels, custom-morph channels, render AND
             ' bake — resolves the name with no special case. Chargen/race morphs merged above win a name collision.
             ' Without this, every extended slider silently moved nothing.
+            ' Keyed on the ORIGINAL record chargenPath (RaceMenu morphs.ini references the record's chargen tri, not
+            ' an HPH-redirected one); empty when the slot was HPH-filled (brows) → no extended morphs, as expected.
             Dim catalog = SliderCatalog
-            If catalog IsNot Nothing Then
+            If catalog IsNot Nothing AndAlso Not String.IsNullOrEmpty(chargenPath) Then
                 For Each extTriPath In catalog.GetExtendedMorphTris(chargenPath)
                     Dim extHead = TryLoadTriHead(MeshPathHelpers.NormalizeMeshKey(extTriPath))
                     If extHead IsNot Nothing Then MergeChargenIntoRaceTriHead(triHead, extHead)
@@ -674,8 +729,11 @@ Public Class NpcMorphResolver
             ' makes the render match the CK bake for both cases (render == bake). See FaceGenBuilder for the twin.
             Dim meshTriPath As String = Nothing
             If _shapeMeshMorphTriPaths IsNot Nothing Then _shapeMeshMorphTriPaths.TryGetValue(shape, meshTriPath)
-            If Not String.IsNullOrEmpty(meshTriPath) Then
-                Dim meshTriHead = TryLoadTriHead(MeshPathHelpers.NormalizeMeshKey(meshTriPath))
+            ' NAM0=1 mesh tri (SkinnyMorph source), HPH-aware. A hair shape's mesh tri has a non-head vertex count so
+            ' the redirect skips it (candidate must count-match); only a known HPH head/brow shape can redirect here.
+            Dim resolvedMesh = ResolveHphHeadPartTriPath(meshTriPath, shapeVerts, HphTriSlot.Mesh, AddressOf TriHeadVertsOf)
+            If Not String.IsNullOrEmpty(resolvedMesh) Then
+                Dim meshTriHead = TryLoadTriHead(MeshPathHelpers.NormalizeMeshKey(resolvedMesh))
                 MergeChargenIntoRaceTriHead(triHead, meshTriHead)
             End If
 
@@ -736,6 +794,86 @@ Public Class NpcMorphResolver
                 ChargenMouthFix.MaybeApplyInPlace(normalizedPath, head)
                 Return head
             End Function)
+    End Function
+
+    ''' <summary>Is the SSE High Poly Head .tri redirect turned on? Gate = active game is Skyrim AND the opt-in
+    ''' Config toggle. Default-off ⇒ zero effect unless enabled in CharGen Options → Fixes. (The per-shape exactness
+    ''' is enforced in <see cref="ResolveHphHeadPartTriPath"/> by requiring the candidate's vertex count to equal the
+    ''' shape's — a stronger, per-shape guard than a hardcoded count set.)</summary>
+    Private Shared Function HphRedirectGateOn() As Boolean
+        Dim c = Config_App.Current
+        Return c IsNot Nothing AndAlso c.Game = Config_App.Game_Enum.Skyrim AndAlso c.Setting_SseResolveHighPolyHeadTri
+    End Function
+
+    ''' <summary>The MEASURED HPH tri path for a known head-part vertex count + slot, or Nothing if the count is not a
+    ''' known HPH face part (or the slot doesn't exist, e.g. Male/Chargen). Used to FILL an empty record slot (brows
+    ''' HDPTs ship only NAM0=1, no race/chargen) and to redirect a wrong-topology one, keyed by the shape's own
+    ''' geometry — no basename guess. Counts/filenames measured from HPH v1.4 (SE).</summary>
+    Private Shared Function HphTablePath(shapeVerts As Integer, slot As HphTriSlot) As String
+        Select Case shapeVerts
+            Case HphFemaleHeadVerts
+                Return HphDir & (If(slot = HphTriSlot.Race, "femaleheadraces.tri", If(slot = HphTriSlot.Chargen, "femaleheadchargen.tri", "femalehead.tri")))
+            Case HphMaleHeadVerts
+                ' HPH ships no male head chargen (malehead uses maleheadcustomizations) → Chargen = Nothing.
+                Return If(slot = HphTriSlot.Chargen, Nothing, HphDir & (If(slot = HphTriSlot.Race, "maleheadraces.tri", "malehead.tri")))
+            Case HphFemaleBrowVerts
+                Return HphDir & "faceparts\" & (If(slot = HphTriSlot.Race, "femaleheadbrowsrace.tri", If(slot = HphTriSlot.Chargen, "femaleheadbrowschargen.tri", "femaleheadbrows.tri")))
+            Case HphMaleBrowVerts
+                Return HphDir & "faceparts\" & (If(slot = HphTriSlot.Race, "maleheadbrowsraces.tri", If(slot = HphTriSlot.Chargen, "maleheadbrowschargen.tri", "maleheadbrows.tri")))
+        End Select
+        Return Nothing
+    End Function
+
+    ''' <summary>Resolve the tri path to actually use for a head-part shape's <paramref name="slot"/>, HPH-aware.
+    ''' SHARED so the live render (<see cref="LoadTriForShape"/>) and the offline bake
+    ''' (FaceGenBuildPipeline.ApplyChargenMorphsInPlace) resolve IDENTICALLY — render == bake by construction.
+    ''' Returns <paramref name="recordPath"/> unchanged unless the opt-in SSE toggle is on AND the record DECLARES a
+    ''' path that is MISSING or WRONG-TOPOLOGY for a shape matching a known HPH head part. An EMPTY slot stays empty
+    ''' (we redirect, never fill — filling a slot the CK never baked over-morphs; see the guard below). Order:
+    '''   1) record path already loads with NumVertices == shapeVerts → keep it (record-driven fidelity preserved).
+    '''   2) the MEASURED HPH table entry for (shapeVerts, slot) → use it when it matches shapeVerts (redirects the
+    '''      classic vanilla-996-tri-on-a-3832-head bug; also covers a declared-but-wrong brow race/chargen path).
+    '''   3) same basename under HPH dirs (root / faceparts / beards) → covers HPH parts not in the table (beast
+    '''      heads, masks) whose record kept the HPH basename but a wrong dir.
+    ''' The candidate is accepted ONLY when its vertex count equals the shape's — the exact, per-shape guard. A
+    ''' non-HPH shape (no count/basename match) always falls through to recordPath. <paramref name="vertsOf"/> returns
+    ''' the vertex count of the tri at a raw path (≤0 if it can't load); each caller passes its own cache-backed loader.</summary>
+    Public Shared Function ResolveHphHeadPartTriPath(recordPath As String, shapeVerts As Integer, slot As HphTriSlot, vertsOf As Func(Of String, Integer)) As String
+        If Not HphRedirectGateOn() OrElse shapeVerts <= 0 OrElse vertsOf Is Nothing Then Return recordPath
+        ' A slot the record leaves EMPTY stays empty — we only REDIRECT a declared-but-broken path, never FILL one
+        ' the record (and therefore the CK bake) never declared. Filling e.g. an eyebrow HDPT's absent race/chargen
+        ' slot (brows ship only NAM0=1) applies a racial/chargen morph the CK never baked ⇒ the brow mesh over-morphs
+        ' into a blob. Same lesson as the removed mesh-name guess: don't invent morphs the engine doesn't apply.
+        If String.IsNullOrEmpty(recordPath) Then Return recordPath
+        ' 1) record already compatible
+        If vertsOf(recordPath) = shapeVerts Then Return recordPath
+        ' 2) measured HPH table (also fills an empty record slot)
+        Dim tablePath = HphTablePath(shapeVerts, slot)
+        If Not String.IsNullOrEmpty(tablePath) AndAlso vertsOf(tablePath) = shapeVerts Then Return HphLog(recordPath, tablePath, shapeVerts, slot)
+        ' 3) basename reuse for HPH parts not in the table
+        If Not String.IsNullOrEmpty(recordPath) Then
+            Dim bn = IO.Path.GetFileName(recordPath)
+            If Not String.IsNullOrEmpty(bn) Then
+                For Each d In HphBasenameDirs
+                    Dim p = d & bn
+                    If vertsOf(p) = shapeVerts Then Return HphLog(recordPath, p, shapeVerts, slot)
+                Next
+            End If
+        End If
+        Return recordPath
+    End Function
+
+    Private Shared Function HphLog(fromPath As String, toPath As String, shapeVerts As Integer, slot As HphTriSlot) As String
+        If Logger.Enabled Then Logger.LogLazy(Function() $"[HPH-TRI] {slot} redirect '{If(fromPath, "<empty>")}' -> '{toPath}' (shape verts={shapeVerts})")
+        Return toPath
+    End Function
+
+    ''' <summary>Render-side <c>vertsOf</c> for <see cref="ResolveHphHeadPartTriPath"/>: vertex count of the TriHead
+    ''' at a raw path via the shared per-path cache, or -1 if it can't load / parse.</summary>
+    Private Function TriHeadVertsOf(rawPath As String) As Integer
+        If String.IsNullOrEmpty(rawPath) Then Return -1
+        Dim h = TryLoadTriHead(MeshPathHelpers.NormalizeMeshKey(rawPath))
+        Return If(h Is Nothing, -1, CInt(h.NumVertices))
     End Function
 
     ' Routed through MeshPathHelpers.TryLoadMeshBytes (minBytes:=8 preserves the TRI-magic guard)

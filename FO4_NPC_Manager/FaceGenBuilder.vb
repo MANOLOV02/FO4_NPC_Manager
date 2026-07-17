@@ -386,8 +386,13 @@ Public Module FaceGenBuilder
         ' HDPT to produce v_baked = inv(Mtot_orig) × v_world.
         Dim regionsFile As FacialBoneRegionsFile = Nothing
         Dim probeNpcRaw = NpcRecordOverlay.GetParsedNpc(npcFormID, pluginManager)
-        If probeNpcRaw IsNot Nothing AndAlso probeNpcRaw.RaceFormID <> 0UI Then
-            Dim raceRec = pluginManager.GetRecord(probeNpcRaw.RaceFormID)
+        ' Raza EFECTIVA para las FacialBoneRegions: preferir el npcData overlaid (ya stampado con el
+        ' override de raza del editor); probeNpcRaw es el parse crudo y tras un cambio de raza apuntaría
+        ' a las regiones de la raza vieja.
+        Dim probeRaceFid As UInteger = If(npcData IsNot Nothing AndAlso npcData.RaceFormID <> 0UI,
+                                          npcData.RaceFormID, If(probeNpcRaw IsNot Nothing, probeNpcRaw.RaceFormID, 0UI))
+        If probeNpcRaw IsNot Nothing AndAlso probeRaceFid <> 0UI Then
+            Dim raceRec = pluginManager.GetRecord(probeRaceFid)
             If raceRec IsNot Nothing AndAlso raceRec.Header.Signature = "RACE" Then
                 Dim raceProbe = RecordParsers.ParseRACE(raceRec, pluginManager)
                 regionsFile = NpcMorphPoseResolver.GetFacialBoneRegionsForRace(raceProbe, probeNpcRaw.IsFemale)
@@ -1168,10 +1173,20 @@ Public Module FaceGenBuilder
 
     ''' <summary>Slots de headwear cubiertos por la DEFAULT OUTFIT (OTFT) del NPC, de forma
     ''' DETERMINISTA. Devuelve (slots, hasLVLI):
-    '''   • slots = unión de los biped slots de cada ARMO directamente referenciada por el OTFT
-    '''     (resolviendo la cadena de templates CNAM), uniendo por cada ARMO su SlotMask y el
-    '''     EffectiveArmaSlotMask de cada ARMA (arma.SlotMask si != 0, sino armo.SlotMask) —
-    '''     misma semántica que el render (MainForm.EffectiveArmaSlotMask / CollectArmoCandidates).
+    '''   • slots = unión, por cada ARMO directamente referenciada por el OTFT (resolviendo la cadena de
+    '''     templates CNAM), de su footprint RACE-VALID: MainForm.ComputeArmoEffectiveSlotMaskCore —
+    '''     EffectiveArmaSlotMask de cada ARMA que matchea la raza del NPC (RNAM + AdditionalRaces +
+    '''     cadena RACE.RNAM Armor Race, vía NpcRenderContext.WalkArmorRaceChain) y tiene mesh de género,
+    '''     ∪ los bits headwear del ARMO. MISMO filtro que el render (CollectArmoCandidates raceOk + gate
+    '''     PA): antes se unían TODOS los ARMAs sin filtro y un ARMA de otra raza (o una pieza
+    '''     ArmorTypePower, que lista HumanRace para el modelo de inventario) aportaba slots que el engine
+    '''     nunca viste en este actor → el bake sobre-ocluía pelo/barba que el render muestra
+    '''     (violación RENDER == BAKE). Piezas PA se dropean enteras salvo raza PA (misma regla del
+    '''     render); un ARMO sin race-valid addons no aporta nada; un ARMO SIN armatures (fallback MOD2
+    '''     del render, p.ej. robots) conserva su BOD2 propio. Aproximación heredada del Create tab
+    '''     (documentada en el core): la unión corre sobre todos los addons race-valid sin resolver el
+    '''     grupo INDX efectivo de FO4 — sin contexto de keywords (OTFT directo, no LVLI) el índice
+    '''     efectivo sería BaseAddonIndex/0 igualmente y las variantes multi-INDX comparten footprint.
     '''   • hasLVLI = True si ALGÚN item directo del OTFT es una LVLI. Una LVLI randomiza la pieza
     '''     (casco) al equipar → NO determinista; el caller NO aplica oclusión de pelo/barba en ese
     '''     caso (prefiere under-hide). OJO: una ARMO determinista del outfit SÍ aporta sus slots
@@ -1189,6 +1204,32 @@ Public Module FaceGenBuilder
         If otftRec Is Nothing OrElse otftRec.Header.Signature <> "OTFT" Then Return (slots, hasLVLI)
         Dim otft = RecordParsers.ParseOTFT(otftRec, pluginManager)
 
+        ' Resolvers RecordParsers-direct (el bake no tiene NpcRenderContext; el OTFT es chico, sin cache).
+        ' La LÓGICA vive en los cores compartidos con el render — acá sólo se cablean los parsers.
+        Dim parseRace = Function(rec As PluginRecord) RecordParsers.ParseRACE(rec, pluginManager)
+        Dim parseArma = Function(fid As UInteger) As ARMA_Data
+                            If fid = 0UI Then Return Nothing
+                            Dim r = pluginManager.GetRecord(fid)
+                            If r Is Nothing OrElse r.Header.Signature <> "ARMA" Then Return Nothing
+                            Return RecordParsers.ParseARMA(r, pluginManager)
+                        End Function
+        Dim parseArmo = Function(fid As UInteger) As ARMO_Data
+                            If fid = 0UI Then Return Nothing
+                            Dim r = pluginManager.GetRecord(fid)
+                            If r Is Nothing OrElse r.Header.Signature <> "ARMO" Then Return Nothing
+                            Return RecordParsers.ParseARMO(r, pluginManager)
+                        End Function
+        Dim effectiveArmorRaces = NpcRenderContext.WalkArmorRaceChain(
+            npcData.RaceFormID, Function(fid As UInteger) pluginManager.GetRecord(fid), parseRace)
+        Dim paKywdFid As UInteger = MainForm.FindArmorTypePowerKeywordFid(pluginManager)
+        Dim raceIsPa As Boolean = False
+        If paKywdFid <> 0UI AndAlso npcData.RaceFormID <> 0UI Then
+            Dim raceRec = pluginManager.GetRecord(npcData.RaceFormID)
+            If raceRec IsNot Nothing AndAlso raceRec.Header.Signature = "RACE" Then
+                raceIsPa = MainForm.IsPowerArmorRaceData(parseRace(raceRec), paKywdFid, parseArmo)
+            End If
+        End If
+
         For Each itemFID In otft.ItemFormIDs
             If itemFID = 0UI Then Continue For
             Dim itemRec = pluginManager.GetRecord(itemFID)
@@ -1198,20 +1239,25 @@ Public Module FaceGenBuilder
                     ' Randomized head piece → non-deterministic. El caller saltea la oclusión.
                     hasLVLI = True
                 Case "ARMO"
-                    ' ARMO determinista: aporta sus slots (resolviendo template CNAM → terminal).
+                    ' ARMO determinista: aporta sus slots race-valid (resolviendo template CNAM → terminal).
                     Dim terminalFID = OutfitResolver.ResolveTerminalArmorFormID(itemFID, pluginManager)
                     If terminalFID = 0UI Then Continue For
-                    Dim armoRec = pluginManager.GetRecord(terminalFID)
-                    If armoRec Is Nothing OrElse armoRec.Header.Signature <> "ARMO" Then Continue For
-                    Dim armo = RecordParsers.ParseARMO(armoRec, pluginManager)
-                    slots = slots Or armo.SlotMask
-                    For Each armaFID In armo.ArmorAddonFormIDs
-                        If armaFID = 0UI Then Continue For
-                        Dim armaRec = pluginManager.GetRecord(armaFID)
-                        If armaRec Is Nothing OrElse armaRec.Header.Signature <> "ARMA" Then Continue For
-                        Dim arma = RecordParsers.ParseARMA(armaRec, pluginManager)
-                        slots = slots Or If(arma.SlotMask <> 0UI, arma.SlotMask, armo.SlotMask)
-                    Next
+                    Dim armo = parseArmo(terminalFID)
+                    If armo Is Nothing Then Continue For
+                    ' Gate PA — misma regla que el render (CollectArmoCandidates) y el Create tab.
+                    If MainForm.IsPowerArmorArmoData(armo, paKywdFid) AndAlso Not raceIsPa Then Continue For
+                    If armo.ArmorAddons.Count = 0 Then
+                        ' ARMO sin armatures (el render cae al mesh fallback ARMO.MOD2, p.ej. robots):
+                        ' su BOD2 propio cuenta, como antes.
+                        slots = slots Or armo.SlotMask
+                        Continue For
+                    End If
+                    Dim fp = MainForm.ComputeArmoEffectiveSlotMaskCore(
+                        armo, npcData.RaceFormID, npcData.IsFemale, parseArma, effectiveArmorRaces)
+                    ' Valid=False ⇒ ningún addon race-valid con mesh ⇒ el engine no viste nada de este
+                    ' ARMO en este actor ⇒ 0 slots (el fallback recordSlot/BOD2 del Mask es para el
+                    ' display del Create tab, no para oclusión).
+                    If fp.Valid Then slots = slots Or fp.Mask
             End Select
         Next
 
@@ -2027,8 +2073,9 @@ Public Module FaceGenBuilder
             ' NEUTRALIZAR slot 3 (detail/Displacement): el softlight(complexion, detail_real) YA se plegó en el diffuse
             ' (slot 0). El engine hace softlight(diffuse, detail) SIEMPRE; para que sea IDENTIDAD hay que dejar el slot 3
             ' en gris 0.5 (softlight(x,0.5)=x). ⛔ NO se puede VACIAR el slot 3: el engine rellena un detail vacío con su
-            ' default BSShader_DefFacegenDetail = matriz de Bayer 8×8 media ≈0.1235 (RE SkyrimSE.exe 0x140E57E30), NO 0.5
-            ' → oscurecería la cara. Se escribe un detail neutral COMPARTIDO por plugin (constante ⇒ dedup; el engine SÍ
+            ' default BSShader_DefFacegenDetail = UNIFORME 0x40 = 0.251 (RE byte-level SkyrimSE.exe 0x140E57E30 rellena
+            ' 0x40404040; = vanilla blankdetailmap; NO la Bayer 0.1235 de DitheringNoise), NO 0.5 → oscurecería la cara.
+            ' Se escribe un detail neutral COMPARTIDO por plugin (constante ⇒ dedup; el engine SÍ
             ' respeta el slot 3 del NIF, a diferencia del tint que arma por path canónico) y se apunta el slot 3 ahí.
             Try
                 If ts.Textures.Count > 3 Then
@@ -2045,7 +2092,7 @@ Public Module FaceGenBuilder
                         ' empaqueta una vez. El forced (_2c, sandbox debug) nunca packea, no marca el flag.
                         If Not forced Then _sseFoldUsedSharedNeutralDetail = True
                     Else
-                        ts.Textures(3).Content = ""   ' fallback: sin detail neutral, el engine cae al Bayer (peor, pero no rompe)
+                        ts.Textures(3).Content = ""   ' fallback: sin detail neutral, el engine cae a su default 0.251 (re-oscurece el fold: peor, pero no rompe)
                     End If
                 End If
             Catch exD As Exception

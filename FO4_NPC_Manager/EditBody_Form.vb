@@ -94,6 +94,17 @@ Public Class EditBody_Form
     Private ReadOnly _bodySlideBars As New Dictionary(Of String, FO4_Base_Library.TinySliderTextBox)(StringComparer.OrdinalIgnoreCase)
     Private ReadOnly _bodySlideRows As New Dictionary(Of String, Control)(StringComparer.OrdinalIgnoreCase)
 
+    ' BodySlide preset selector state (mirrors WM's ComboBoxPresets + ComboBoxSize —
+    ' Wardrobe_Manager_Form.vb:2649/2177). The catalog reads <BS exe dir>\SliderPresets\*.xml;
+    ' the exe path / size persist per-game in NPC_Config (npc_config.json). The preset NAME is
+    ' NOT persisted and the combo always opens at "(none)": it reflects THIS NPC's state, and a
+    ' restored name would claim a preset the NPC's sliders don't carry. Values only move on a
+    ' user pick; _seedingBsPresetCombo guards the combos while they're being (re)populated.
+    Private Const BsPresetNone As String = "(none)"
+    Private _bsPresetCatalog As BodySlidePresetCatalog = Nothing
+    Private _seedingBsPresetCombo As Boolean = False
+    Private ReadOnly _bsPresetToolTip As New ToolTip()
+
     ' Overlays tab state -------------------------------------------------------------------
     ' Full gender-filtered template universe (display order = GetOverlayTemplateCandidates order),
     ' captured once at construction. ListBoxOverlayAvailable's Items are a FILTERED projection of
@@ -221,6 +232,13 @@ Public Class EditBody_Form
         AddHandler ButtonCancel.Click, AddressOf OnCancel
         AddHandler ButtonResetSection.Click, AddressOf OnResetSection
         AddHandler TextBoxBodySlideFilter.TextChanged, AddressOf OnBodySlideFilterChanged
+        ' BodySlide preset selector — init BEFORE the handlers are attached so the initial
+        ' population/restore can't fire an apply even without the seeding guard.
+        InitBodySlidePresetSelector()
+        AddHandler ComboBoxBsPreset.SelectedIndexChanged, AddressOf OnBsPresetComboChanged
+        AddHandler ComboBoxBsSize.SelectedIndexChanged, AddressOf OnBsSizeComboChanged
+        AddHandler ButtonBsPresetClear.Click, AddressOf OnBsPresetClear
+        AddHandler ButtonBsPresetBrowse.Click, AddressOf OnBsPresetBrowseExe
         AddHandler ComboBoxWnam.SelectedIndexChanged, AddressOf OnWnamComboChanged
         AddHandler ComboBoxLmSkinTemplate.SelectedIndexChanged, AddressOf OnLmSkinTemplateComboChanged
 
@@ -846,6 +864,214 @@ Public Class EditBody_Form
         Finally
             BodySlidePanel.ResumeLayout()
         End Try
+    End Sub
+
+    ' =====================================================================
+    ' BodySlide preset selector — mirrors Wardrobe Manager's preset flow:
+    '   • combo of presets from <BS exe dir>\SliderPresets\*.xml (Relee_Presets, WM_Form.vb:2649)
+    '   • size combo Default/Big/Small (ComboBoxSize; FO4 ignores the size → disabled there)
+    '   • picking a preset moves the tab's sliders to the game-aware resolved values
+    '     (SliderSet_Class.SetPreset semantics via BodySlidePresetCatalog.ResolveValues)
+    '   • "(none)" / Clear = all sliders to 0 (the rows' baseline — no slider-set XML defaults here)
+    '   • exe path + size persist per-game in NPC_Config; the preset NAME does NOT (combo always
+    '     opens "(none)" — it reflects this NPC's state, unlike WM's stateless preview combo)
+    ' =====================================================================
+
+    Private Function BsExePathForGame() As String
+        Return If(_isSSE, NPC_Config.Current.BodySlideExePath_SSE, NPC_Config.Current.BodySlideExePath_FO4)
+    End Function
+
+    Private Sub SetBsExePathForGame(path As String)
+        If _isSSE Then
+            NPC_Config.Current.BodySlideExePath_SSE = If(path, "")
+        Else
+            NPC_Config.Current.BodySlideExePath_FO4 = If(path, "")
+        End If
+    End Sub
+
+    Private Function BsSizeForGame() As Integer
+        Return If(_isSSE, NPC_Config.Current.BodySlideSize_SSE, NPC_Config.Current.BodySlideSize_FO4)
+    End Function
+
+    Private Sub SetBsSizeForGame(idx As Integer)
+        If _isSSE Then
+            NPC_Config.Current.BodySlideSize_SSE = idx
+        Else
+            NPC_Config.Current.BodySlideSize_FO4 = idx
+        End If
+    End Sub
+
+    ''' <summary>Seed the preset selector at form open: size combo from config, exe autodetect
+    ''' when unset (game-aware <gameDir>\Data\Tools\Bodyslide (FO4) / Data\CalienteTools\BodySlide
+    ''' (SSE) — WM_Config.AutoDetectBSPaths + Config_Form's per-game folder), catalog load, combo
+    ''' population with the persisted selection restored WITHOUT applying.</summary>
+    Private Sub InitBodySlidePresetSelector()
+        ' Size combo: restore persisted index. Game-aware: FO4 presets carry no size variants
+        ' (SetPreset ignores the weight under FO4 — OSP_Clases.vb:2498), so the combo is disabled
+        ' there; under SSE, Default behaves as Big (SSE presets don't use Default entries).
+        _seedingBsPresetCombo = True
+        Try
+            Dim szIdx = BsSizeForGame()
+            ComboBoxBsSize.SelectedIndex = If(szIdx >= 0 AndAlso szIdx <= 2, szIdx, 0)
+        Finally
+            _seedingBsPresetCombo = False
+        End Try
+        ComboBoxBsSize.Enabled = _isSSE
+        _bsPresetToolTip.SetToolTip(ComboBoxBsSize, If(_isSSE,
+            "Body size variant applied with the preset (SSE Big/Small support; Default = Big).",
+            "FO4 presets have no size variants (the Default value applies) — SSE-only control."))
+        _bsPresetToolTip.SetToolTip(ComboBoxBsPreset, "BodySlide preset: picking one moves the sliders below to the preset's values. ""(none)"" sets all to 0.")
+        _bsPresetToolTip.SetToolTip(ButtonBsPresetClear, "Set every BodySlide slider to 0 (and the preset to ""(none)"").")
+        _bsPresetToolTip.SetToolTip(ButtonBsPresetBrowse, "Choose the BodySlide/OutfitStudio executable of the current game — presets are read from its SliderPresets folder.")
+
+        ' Exe: autodetect from the game folder when not configured (WM_Config.AutoDetectBSPaths
+        ' idiom; the per-game subfolder comes from WM's Config_Form: Tools vs CalienteTools).
+        If String.IsNullOrEmpty(BsExePathForGame()) Then
+            Dim gameExe = If(Config_App.Current IsNot Nothing, Config_App.Current.FO4ExePath, "")
+            If Not String.IsNullOrEmpty(gameExe) AndAlso IO.File.Exists(gameExe) Then
+                Try
+                    Dim bsDir = IO.Path.Combine(IO.Path.GetDirectoryName(gameExe),
+                                                If(_isSSE, "Data\CalienteTools\BodySlide", "Data\Tools\Bodyslide"))
+                    Dim exe = BodySlidePresetCatalog.ResolveBsSuiteExePath(bsDir, "BodySlide")
+                    If IO.File.Exists(exe) Then
+                        SetBsExePathForGame(exe)
+                        NPC_Config.SaveConfig()
+                    End If
+                Catch
+                End Try
+            End If
+        End If
+
+        ReloadBsPresetCatalog()
+    End Sub
+
+    ''' <summary>(Re)load the preset catalog from the configured exe's SliderPresets folder and
+    ''' repopulate the combo (persisted selection restored, no apply). With no valid exe the combo
+    ''' holds just "(none)" and is disabled — the "Set BS exe…" button is the way in.</summary>
+    Private Sub ReloadBsPresetCatalog()
+        _bsPresetCatalog = Nothing
+        Dim exePath = BsExePathForGame()
+        If Not String.IsNullOrEmpty(exePath) AndAlso IO.File.Exists(exePath) Then
+            Dim presetsDir = IO.Path.Combine(IO.Path.GetDirectoryName(exePath), "SliderPresets")
+            If IO.Directory.Exists(presetsDir) Then
+                Dim cat As New BodySlidePresetCatalog()
+                cat.LoadFolder(presetsDir)
+                _bsPresetCatalog = cat
+            End If
+        End If
+        PopulateBsPresetCombo()
+        ComboBoxBsPreset.Enabled = (_bsPresetCatalog IsNot Nothing)
+    End Sub
+
+    ''' <summary>Fill the preset combo: "(none)" + the catalog's presets (SortedDictionary =
+    ''' alphabetical, same as WM's Relee_Presets), selection at "(none)". The combo describes THIS
+    ''' NPC's state — it always opens at "(none)" because nothing has been applied yet; restoring a
+    ''' remembered name would claim a preset the NPC's sliders don't carry.</summary>
+    Private Sub PopulateBsPresetCombo()
+        _seedingBsPresetCombo = True
+        Try
+            ComboBoxBsPreset.BeginUpdate()
+            ComboBoxBsPreset.Items.Clear()
+            ComboBoxBsPreset.Items.Add(BsPresetNone)
+            If _bsPresetCatalog IsNot Nothing Then
+                For Each presetName In _bsPresetCatalog.Presets.Keys
+                    ComboBoxBsPreset.Items.Add(presetName)
+                Next
+            End If
+            ComboBoxBsPreset.SelectedIndex = 0
+            ComboBoxBsPreset.EndUpdate()
+        Finally
+            _seedingBsPresetCombo = False
+        End Try
+    End Sub
+
+    ''' <summary>User picked a preset (or "(none)"): move the sliders. Nothing persists here —
+    ''' the pick is an action on this NPC, not an app preference.</summary>
+    Private Sub OnBsPresetComboChanged(sender As Object, e As EventArgs)
+        If _seedingBsPresetCombo Then Return
+        If ComboBoxBsPreset.SelectedIndex < 0 Then Return
+        ApplyBsPresetSelection()
+    End Sub
+
+    ''' <summary>Size changed: persist and re-apply the current preset so the sliders reflect the
+    ''' new variant. With "(none)" selected there's nothing to re-apply — the user's manual slider
+    ''' edits must not be wiped by a size flip.</summary>
+    Private Sub OnBsSizeComboChanged(sender As Object, e As EventArgs)
+        If _seedingBsPresetCombo Then Return
+        If ComboBoxBsSize.SelectedIndex < 0 Then Return
+        SetBsSizeForGame(ComboBoxBsSize.SelectedIndex)
+        NPC_Config.SaveConfig()
+        If ComboBoxBsPreset.SelectedIndex >= 1 Then ApplyBsPresetSelection()
+    End Sub
+
+    ''' <summary>Clear: every slider to 0 (the existing per-tab wipe) and the combo back to
+    ''' "(none)".</summary>
+    Private Sub OnBsPresetClear(sender As Object, e As EventArgs)
+        _seedingBsPresetCombo = True
+        Try
+            If ComboBoxBsPreset.Items.Count > 0 Then ComboBoxBsPreset.SelectedIndex = 0
+        Finally
+            _seedingBsPresetCombo = False
+        End Try
+        ResetBodySlideSection()
+    End Sub
+
+    ''' <summary>Pick the BodySlide/OutfitStudio exe for the current game (NPC_Manager's preflight
+    ''' doesn't ask for it — only WM's config dialog does). Requires a SliderPresets sibling folder,
+    ''' the actual thing the selector consumes; both suite exes live in the same folder.</summary>
+    Private Sub OnBsPresetBrowseExe(sender As Object, e As EventArgs)
+        Using dlg As New OpenFileDialog() With {
+            .Title = "Select the BodySlide or OutfitStudio executable",
+            .Filter = "BodySlide / OutfitStudio (*.exe)|*.exe",
+            .CheckFileExists = True
+        }
+            Dim current = BsExePathForGame()
+            If Not String.IsNullOrEmpty(current) AndAlso IO.Directory.Exists(IO.Path.GetDirectoryName(current)) Then
+                dlg.InitialDirectory = IO.Path.GetDirectoryName(current)
+            End If
+            If dlg.ShowDialog(Me) <> DialogResult.OK Then Return
+            Dim presetsDir = IO.Path.Combine(IO.Path.GetDirectoryName(dlg.FileName), "SliderPresets")
+            If Not IO.Directory.Exists(presetsDir) Then
+                MsgBox("No 'SliderPresets' folder found next to the selected executable — that's where BodySlide keeps its presets. Pick the exe inside a BodySlide installation.",
+                       MsgBoxStyle.Exclamation, "BodySlide presets")
+                Return
+            End If
+            SetBsExePathForGame(dlg.FileName)
+            NPC_Config.SaveConfig()
+            ReloadBsPresetCatalog()
+        End Using
+    End Sub
+
+    ''' <summary>Move the tab's sliders to the selected preset's game-aware values: baseline 0 for
+    ''' every row (WM re-baselines to the slider-set XML defaults first — SetPreset, OSP_Clases.vb:2488;
+    ''' the PIRT rows have no XML default, so the baseline is 0), then the preset's matching values on
+    ''' top. Model + bars updated together, one refresh at the end (same shape as ResetBodySlideSection).
+    ''' "(none)" resolves to no values = all zeros.</summary>
+    Private Sub ApplyBsPresetSelection()
+        Dim values As Dictionary(Of String, Single) = Nothing   ' slider → percent (0-100)
+        If ComboBoxBsPreset.SelectedIndex >= 1 AndAlso _bsPresetCatalog IsNot Nothing Then
+            Dim def As BodySlidePresetCatalog.PresetDef = Nothing
+            If _bsPresetCatalog.Presets.TryGetValue(ComboBoxBsPreset.SelectedItem.ToString(), def) Then
+                Dim size = CType(Math.Max(0, ComboBoxBsSize.SelectedIndex), BodySlidePresetCatalog.PresetSliderSize)
+                Dim game = If(_isSSE, Config_App.Game_Enum.Skyrim, Config_App.Game_Enum.Fallout4)
+                values = BodySlidePresetCatalog.ResolveValues(def, size, game)
+            End If
+        End If
+        Dim p = Preset
+        p.BodyMorphSliders.Clear()
+        _suspendEvents = True
+        Try
+            For Each kv In _bodySlideBars
+                Dim v As Single = 0
+                If values IsNot Nothing Then values.TryGetValue(kv.Key, v)
+                kv.Value.Value = CDbl(v)
+                ' Same dead-zone the per-slider handler uses (OnBodySlideChanged): |v|<0.1% drops the key.
+                If Math.Abs(v) >= 0.1F Then p.BodyMorphSliders(kv.Key) = v / 100.0F
+            Next
+        Finally
+            _suspendEvents = False
+        End Try
+        _refresh?.Invoke()
     End Sub
 
     ''' <summary>Per-tab reset, mirroring EditFace_Form.OnResetSection. Active-tab dispatch:

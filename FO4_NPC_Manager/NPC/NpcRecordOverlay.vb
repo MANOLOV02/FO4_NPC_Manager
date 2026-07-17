@@ -21,6 +21,13 @@ Public Module NpcRecordOverlay
         Return RecordParsers.ParseNPC(rec, pluginName, pluginManager)
     End Function
 
+    ''' <summary>Hook opcional: fid → raza EFECTIVA (el <c>NpcRecordOverride.RaceFormID</c> del editor), 0 = sin
+    ''' override. Lo setea MainForm al iniciar (mirror de <c>NpcMorphResolver.SliderCatalog</c>); la CLI y los
+    ''' probes nunca lo setean → no-op. Consumido por <see cref="ResolveOverlaidNpcData"/> para que el BAKE vea la
+    ''' misma raza que el render (state.RaceFormID) — sin esto, un cambio de raza en el editor bakeaba FaceTint/
+    ''' FaceGen con el catálogo de la raza VIEJA (npcData crudo) mientras el render usaba la nueva (render==bake).</summary>
+    Public Property EffectiveRaceResolver As Func(Of UInteger, UInteger)
+
     ''' <summary>Convenience composition of <see cref="GetParsedNpc"/> + <see cref="ApplyPresetOverlayToNpcData"/>:
     ''' fetch+parse the NPC record and apply the LooksMenu preset overlay in one call. Returns Nothing if the
     ''' NPC record doesn't resolve. Single source of truth for the FaceGen bake paths (FaceGenBuilder.BuildCharGen /
@@ -31,7 +38,18 @@ Public Module NpcRecordOverlay
                                            Optional lmSkinTemplateResolver As ResolveLmSkinTemplateDelegate = Nothing) As NPC_Data
         Dim raw = GetParsedNpc(npcFormID, pluginManager)
         If raw Is Nothing Then Return Nothing
-        Return ApplyPresetOverlayToNpcData(raw, npcFormID, appliedPresets, pluginManager, lmSkinTemplateResolver)
+        Dim result = ApplyPresetOverlayToNpcData(raw, npcFormID, appliedPresets, pluginManager, lmSkinTemplateResolver)
+        ' Raza efectiva del editor (ver EffectiveRaceResolver). Mutar acá es seguro: `raw` es un parse FRESCO
+        ' (GetParsedNpc no cachea) y el shadow del overlay también — nunca es la instancia cacheada del ctx.
+        Dim effResolver = EffectiveRaceResolver
+        If result IsNot Nothing AndAlso effResolver IsNot Nothing Then
+            Dim eff = effResolver(npcFormID)
+            If eff <> 0UI AndAlso eff <> result.RaceFormID Then
+                result.RaceFormID = eff
+                result.HasRace = True
+            End If
+        End If
+        Return result
     End Function
 
     ''' <summary>If an overlay is registered for <paramref name="selectedNpcFormID"/> in
@@ -100,13 +118,26 @@ Public Module NpcRecordOverlay
         '   Nothing       → preserve raw NPC.WNAM
         '   value <> 0    → ARMO override (e.g. a custom skin pulled in via Edit Face)
         '   value = 0     → explicit clear; the renderer's resolver falls back to RACE.WNAM
+        ' Raza EFECTIVA (record override del editor, ver EffectiveRaceResolver): el shadow la lleva desde el
+        ' arranque, y TODO lo que esta función deriva de la raza (seed de head-parts, QNAM del skin-tone,
+        ' catálogo de tints) usa la efectiva — sin esto, un NPC con cambio de raza + preset LM sembraba
+        ' head-parts/QNAM del catálogo de la raza VIEJA. El camino sin preset devuelve `raw` intacto (arriba):
+        ' esa instancia puede ser la cacheada del ctx y NO se muta — los callers que necesitan la raza
+        ' efectiva en ese caso la stampan sobre su copia fresca (ResolveOverlaidNpcData, FaceTintLayerBuilder).
+        Dim effRaceFid As UInteger = raw.RaceFormID
+        Dim effResolver = EffectiveRaceResolver
+        If effResolver IsNot Nothing Then
+            Dim eff = effResolver(selectedNpcFormID)
+            If eff <> 0UI Then effRaceFid = eff
+        End If
         Dim shadow As New NPC_Data With {
             .FormID = raw.FormID,
             .EditorID = raw.EditorID,
             .FullName = raw.FullName,
-            .RaceFormID = raw.RaceFormID,
+            .RaceFormID = effRaceFid,
             .SkinFormID = If(preset.SkinFormIDOverride, raw.SkinFormID)
         }
+        If effRaceFid <> 0UI Then shadow.HasRace = True
         ' LM SkinTemplate (F4SE bundle) wins over NPC.WNAM at preview time, mirroring
         ' SkinInterface.cpp:250-332 in F4SEPlugins-master/f4ee — ApplyOverride applies the
         ' template's `skin` ARMO + face[gender] TXST + head[gender] HDPT + rear[gender] HDPT.
@@ -185,7 +216,9 @@ Public Module NpcRecordOverlay
         ' HeadParts: replicate engine wipe + race defaults + preset overrides — PERO SÓLO SI EL PRESET LOS TRAE.
         ' Parse RACE ONCE here (cached via parseRace when supplied by the render path; direct parse
         ' on the offline bake path) and reuse for both the HeadParts seed and the QNAM derivation below.
-        Dim raceRec = If(raw.RaceFormID <> 0UI, pluginManager.GetRecord(raw.RaceFormID), Nothing)
+        ' RAZA EFECTIVA (effRaceFid, no raw.RaceFormID): el seed de head-parts y el QNAM salen del catálogo
+        ' de la raza que realmente se muestra/hornea.
+        Dim raceRec = If(effRaceFid <> 0UI, pluginManager.GetRecord(effRaceFid), Nothing)
         Dim raceIsValid As Boolean = raceRec IsNot Nothing AndAlso raceRec.Header.Signature = "RACE"
         Dim race As RACE_Data = Nothing
         If raceIsValid Then
@@ -408,14 +441,18 @@ Public Module NpcRecordOverlay
     ''' truth shared by render (preview) and save (NpcRecordOverlay) so the two never drift.
     ''' <para>The Slot enum value is a schema-defined field name (xEdit wbDefinitionsFO4.pas:3478),
     ''' NOT a hardcoded magic number — this is the canonical lookup for "skin tint layer".</para></summary>
-    Public Function DeriveSkinToneQnam(npc As NPC_Data, race As RACE_Data, isFemale As Boolean, pluginManager As PluginManager) As Nullable(Of Color)
+    Public Function DeriveSkinToneQnam(npc As NPC_Data, race As RACE_Data, isFemale As Boolean, pluginManager As PluginManager,
+                                       Optional raceFormIDOverride As UInteger = 0UI) As Nullable(Of Color)
         ' SSE (Skyrim): no slot-12; the skin tone is the RACE tint layer whose TINP mask type == 6, with the
         ' intensity FOLDED into the QNAM colour (SSE QNAM has no alpha). Game-gated so FO4 stays byte-identical.
         ' This single source of truth feeds both the save-overlay QNAM (above) and the render body (via
         ' ResolveNpcSkinToneColor), so face and body match on SSE.
         If Config_App.Current IsNot Nothing AndAlso Config_App.Current.Game = Config_App.Game_Enum.Skyrim Then
             If npc Is Nothing Then Return Nothing
-            Return SseFaceTintComposer.ResolveSkinToneQnam(pluginManager, npc, race, npc.RaceFormID, isFemale)
+            ' Raza EFECTIVA cuando el caller la tiene (state.RaceFormID); npc.RaceFormID puede ser el raw
+            ' cacheado con la raza vieja tras un cambio de raza sin preset aplicado.
+            Dim raceFid = If(raceFormIDOverride <> 0UI, raceFormIDOverride, npc.RaceFormID)
+            Return SseFaceTintComposer.ResolveSkinToneQnam(pluginManager, npc, race, raceFid, isFemale)
         End If
 
         If npc Is Nothing OrElse race Is Nothing Then Return Nothing

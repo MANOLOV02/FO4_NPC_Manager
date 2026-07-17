@@ -346,7 +346,26 @@ Friend NotInheritable Class NpcMaterialResolver
         Return ResolveColorFormColor(candidate.HeadPartColorFormID)
     End Function
 
-    Friend Function ResolveTextureSet(candidate As MainForm.MeshCandidate, state As MainForm.NPCVisualState) As TXST_Data
+    ''' <param name="isFaceTextureSource">Sale True cuando el TXST resuelto vino de NPC.FTST o del
+    ''' default de raza (DFTM/DFTF) — las dos fuentes que el motor aplica SOLO a shapes con material
+    ''' shader-type Face(4) (RE 2026-07-16: SSE RegenerateHead 0x14042BD90 gate 0x14042BF0C; FO4 CK
+    ''' resolver 0x140ED41F6 gate 0x140ED437D). False para TNAM/body (mecanismo aparte, sin gate).
+    ''' En SSE (modelo por capas) el retorno es SIEMPRE el TNAM (base) ⇒ False; la capa face va en
+    ''' <paramref name="sseFaceAuxTextureSet"/>.</param>
+    ''' <param name="sseFaceAuxTextureSet">SOLO SSE + HeadPart raw=Face: el set RESUELTO
+    ''' FTST ?? DFT[sexo propio] ?? TNAM que aporta ÚNICAMENTE Normal(TX01) + _sk(TX03) +
+    ''' detail(TX04) POR ENCIMA de la base TNAM, gateado por material Face — modelo por capas del
+    ''' motor SSE medido 2026-07-16 con TRES evidencias: (1) RE RegenerateHead 0x14042BD90 (normal
+    ''' vía 0x14042C410→material+0x58; _sk/detail→material+0xB0/+0xA8; TX07 solo togglea flag
+    ''' specular, no path; el DIFFUSE jamás se toca — queda del TNAM del attach); (2) facegeom
+    ''' SHIPPED de Razhinda 0x0001B1D3 (FTST=SkinHeadMaleKhajiitOld): D y S del TNAM femenino,
+    ''' N/_sk/detail del FTST masculino — cada slot discrimina; (3) facegeom SHIPPED del Afflicted
+    ''' 0x00064A42: N=BretonMale_msn del DFT de la raza pisando el TNAM (prueba DFT>TNAM en la capa).
+    ''' Nothing en FO4 (allá el set resuelto reemplaza D/N/S completos como base del composite
+    ''' FaceCustomization — validado byte-exacto vs CK, Mitch) o si el aux coincide con el TNAM.</param>
+    Friend Function ResolveTextureSet(candidate As MainForm.MeshCandidate, state As MainForm.NPCVisualState, ByRef isFaceTextureSource As Boolean, ByRef sseFaceAuxTextureSet As TXST_Data) As TXST_Data
+        isFaceTextureSource = False
+        sseFaceAuxTextureSet = Nothing
         Dim logEnabled = Logger.Enabled
         ' Regla canónica HeadPart TXST resolution (per HDPT.DATA flags spec
         ' wbDefinitionsFO4.pas:7365-7372):
@@ -387,21 +406,55 @@ Friend NotInheritable Class NpcMaterialResolver
         If candidate IsNot Nothing Then
             textureSetFormID = candidate.TextureSetFormID
             If textureSetFormID <> 0UI Then txstSource = "HDPT.TNAM"
-            ' Precedencia de la textura base para Face head parts: FTST (propio del NPC) > HDPT.TNAM > DFTM (default
-            ' de la raza). El FTST PROPIO (state.ExplicitHeadTextureFormID, capturado ANTES del fallback DFTM en
-            ' BuildNPCVisualState) REEMPLAZA el TNAM — la cara declarada del NPC gana sobre el skin default del HDPT
-            ' (ej. Mitch FTST=SkinHeadMayor pisa MaleHeadHuman.TNAM=SkinHeadHeroMale). Si no hay FTST propio, queda el
-            ' TNAM del head part. Sólo si tampoco hay TNAM se cae a DFTM (state.HeadTextureFormID = DFTM cuando no hay
-            ' FTST propio, llenado en :7584). Guard raw=Face (HeadPartTypeRaw, NO effective) protege sub-parts Misc
-            ' heredados como Face (MouthShadow/AO/lashes/wet) que conservan su propio material. (Antes:
-            ' state.HeadTextureFormID=FTST-o-DFTM pisaba el TNAM -> DFTM le ganaba a TNAM en razas con DFTM<>TNAM; mal.)
+            ' Resolución Face por JUEGO (dos leyes distintas, ambas medidas — ver doc del parámetro
+            ' sseFaceAuxTextureSet):
+            '   FO4 — el set resuelto (FTST > TNAM > DFTM-si-no-hay-TNAM) reemplaza la BASE COMPLETA
+            '   (D/N/S) del composite FaceCustomization; ej. Mitch FTST=SkinHeadMayor pisa
+            '   MaleHeadHuman.TNAM=SkinHeadHeroMale — validado byte-exacto vs bakes reales del CK.
+            '   (El RE del resolver del CK 0x140ED4244 sugiere DFT>TNAM también con TNAM presente;
+            '   NO aplicado: cero casos vanilla para validar contra bake — pendiente experimento CK
+            '   con esp de prueba antes de cambiar la precedencia FO4.)
+            '   SSE — MODELO POR CAPAS: base = TNAM (D y S SIEMPRE del TNAM; el motor jamás pisa el
+            '   diffuse con FTST/DFT); capa aux = FTST ?? DFT[sexo propio] ?? TNAM que aporta SOLO
+            '   N/_sk/detail, aplicada gateada por material Face en el loop per-shape.
+            ' Guard raw=Face (HeadPartTypeRaw, NO effective) protege sub-parts Misc heredados como
+            ' Face (MouthShadow/AO/lashes/wet) que conservan su propio material (verificado Alijo).
             If candidate.Kind = MainForm.MeshCandidateKind.HeadPart AndAlso candidate.HeadPartTypeRaw = HeadPartTypeFace AndAlso state IsNot Nothing Then
-                If state.ExplicitHeadTextureFormID <> 0UI Then
-                    textureSetFormID = state.ExplicitHeadTextureFormID
-                    txstSource = "NPC.FTST(Face-override)"
-                ElseIf textureSetFormID = 0UI AndAlso state.HeadTextureFormID <> 0UI Then
-                    textureSetFormID = state.HeadTextureFormID
-                    txstSource = "RACE.DFTM(Face-fallback)"
+                Dim isSse As Boolean = (Config_App.Current IsNot Nothing AndAlso Config_App.Current.Game = Config_App.Game_Enum.Skyrim)
+                If isSse Then
+                    ' Capa aux SSE: FTST > DFT[sexo] > TNAM. Si coincide con el TNAM base es no-op ⇒ Nothing.
+                    Dim auxFid As UInteger = 0UI
+                    Dim auxSource As String = ""
+                    If state.ExplicitHeadTextureFormID <> 0UI Then
+                        auxFid = state.ExplicitHeadTextureFormID : auxSource = "NPC.FTST(Face-aux)"
+                    ElseIf state.HeadTextureFormID <> 0UI Then
+                        auxFid = state.HeadTextureFormID : auxSource = "RACE.DFTM(Face-aux)"
+                    End If
+                    If auxFid <> 0UI AndAlso auxFid <> textureSetFormID Then
+                        Dim auxRec = _ctx.PluginManager.GetRecord(auxFid)
+                        If auxRec IsNot Nothing AndAlso auxRec.Header.Signature = "TXST" Then
+                            sseFaceAuxTextureSet = RecordParsers.ParseTXST(auxRec, _ctx.PluginManager)
+                            If logEnabled Then
+                                Dim aSrc = auxSource, aP = sseFaceAuxTextureSet
+                                Logger.LogLazy(Function() $"[TXST-RESOLVE] source={aSrc} txst=0x{aP.FormID:X8} eid='{If(aP.EditorID, "")}' → capa SSE N/_sk/detail (base sigue TNAM) N='{If(aP.NormalTexture, "")}' sk='{If(aP.GlowTexture, "")}' det='{If(aP.HeightTexture, "")}'")
+                            End If
+                        ElseIf logEnabled Then
+                            Dim aFidL = auxFid, aSrc2 = auxSource
+                            Logger.LogLazy(Function() $"[TXST-RESOLVE] source={aSrc2} formID=0x{aFidL:X8} → NOT-FOUND-or-not-TXST (aux SSE descartado)")
+                        End If
+                    End If
+                    ' La base queda en el TNAM (textureSetFormID intacto, isFaceTextureSource=False):
+                    ' se aplica completa y sin gate como siempre.
+                Else
+                    If state.ExplicitHeadTextureFormID <> 0UI Then
+                        textureSetFormID = state.ExplicitHeadTextureFormID
+                        txstSource = "NPC.FTST(Face-override)"
+                        isFaceTextureSource = True
+                    ElseIf textureSetFormID = 0UI AndAlso state.HeadTextureFormID <> 0UI Then
+                        textureSetFormID = state.HeadTextureFormID
+                        txstSource = "RACE.DFTM(Face-fallback)"
+                        isFaceTextureSource = True
+                    End If
                 End If
             End If
         End If
@@ -814,7 +867,10 @@ Friend NotInheritable Class NpcMaterialResolver
 
         ' Single source of truth — same derivation NpcRecordOverlay uses at save time, so the
         ' preview's body skin tone and the persisted ESP's QNAM are guaranteed to agree.
-        Return NpcRecordOverlay.DeriveSkinToneQnam(npcData, race, state.IsFemale, _ctx.PluginManager)
+        ' state.RaceFormID = raza EFECTIVA (override del editor): sin él, npcData sin preset es el raw
+        ' cacheado y la rama SSE derivaría el QNAM del catálogo de la raza VIEJA tras un cambio de raza.
+        Return NpcRecordOverlay.DeriveSkinToneQnam(npcData, race, state.IsFemale, _ctx.PluginManager,
+                                                   raceFormIDOverride:=state.RaceFormID)
     End Function
 
     ' ===== Ghoul female head-rear (nape) vanilla-UV texture clone =====
@@ -1114,7 +1170,9 @@ Friend NotInheritable Class NpcMaterialResolver
         Dim solidTintColor = ResolveHeadPartSolidTintColor(candidate)
         Dim hairTintColor = ResolveHairTintColor(candidate, state, solidTintColor)
         Dim skinTintColor = ResolveSkinTintColor(candidate, state, solidTintColor)
-        Dim textureSet = ResolveTextureSet(candidate, state)
+        Dim isFaceTxstSource As Boolean = False
+        Dim sseFaceAux As TXST_Data = Nothing
+        Dim textureSet = ResolveTextureSet(candidate, state, isFaceTxstSource, sseFaceAux)
 
         ' Skin substitution per-shape para Outfit: el engine vanilla sustituye la diffuse de shapes
         ' con shader SkinTint dentro de un outfit (escote, brazos expuestos) por la del actor's body
@@ -1173,7 +1231,25 @@ Friend NotInheritable Class NpcMaterialResolver
                 ' unaffected: their HDPT.TNAM legitimately applies to the head part regardless of shader.
                 Dim isSkinCand As Boolean = (candidate IsNot Nothing AndAlso candidate.Kind = MainForm.MeshCandidateKind.Skin)
                 Dim shaderIsSkinTint As Boolean = (matPre IsNot Nothing AndAlso matPre.NifShaderType = NiflySharp.Enums.BSLightingShaderType.SkinTint)
-                If (Not isSkinCand) OrElse shaderIsSkinTint Then
+                ' ENGINE-FAITHFUL face gate (RE 2026-07-16, AMBOS binarios): el motor aplica el texture
+                ' set de cara (NPC.FTST / RACE.DFTM-DFTF) SOLO a shapes cuyo material es shader-type
+                ' Face(4) — SSE runtime RegenerateHead 0x14042BD90 (gate GetType()==4 en 0x14042BF0C) y
+                ' FO4 CK resolver de bake 0x140ED41F6 (gate sub esi,4/je en 0x140ED437D). Un HDPT Face
+                ' cuyo shape NO es material Face conserva sus texturas autoradas (caso vanilla SSE
+                ' ManakinRace: MaleHeadManekin → ManekinHead.nif shader=Default queda con su madera;
+                ' sin este gate se le pisaba el diffuse con FemaleHead.dds del DFTF). mat.Facegen es el
+                ' predicado game-aware (SSE: IsTypeFaceTint / FO4: flag Face, FO4UnifiedMaterial:3183).
+                ' HDPT.TNAM NO se gatea: el engine lo aplica al attachear el modelo del head part,
+                ' independiente del shader (ojos EnvMap, etc.). Este gate corre en render Y bake (el
+                ' bake usa este mismo Sub vía delegate — BakeAllRunner:336).
+                Dim shaderIsFace As Boolean = (matPre IsNot Nothing AndAlso matPre.Facegen)
+                If isFaceTxstSource AndAlso textureSet IsNot Nothing AndAlso Not shaderIsFace Then
+                    If logEnabled Then
+                        Dim shN2 = shape.ShapeName
+                        Dim shTy2 = If(matPre IsNot Nothing, matPre.NifShaderType.ToString(), "?")
+                        Logger.LogLazy(Function() $"[FACE-SHADER-GATE] face TXST source (FTST/DFTM): shape='{shN2}' shader={shTy2} Facegen=False → face texture set NOT applied (keeps authored material).")
+                    End If
+                ElseIf (Not isSkinCand) OrElse shaderIsSkinTint Then
                     ApplyTextureSetOverrides(textureSet, relatedMaterial, candidate.UsesBodyTexture, shape.NifShape, shape.NifContent,
                                              isHeadPartTextureSet:=(candidate IsNot Nothing AndAlso candidate.Kind = MainForm.MeshCandidateKind.HeadPart),
                                              isFaceHeadPart:=(candidate IsNot Nothing AndAlso candidate.HeadPartType = HeadPartTypeFace))
@@ -1181,6 +1257,42 @@ Friend NotInheritable Class NpcMaterialResolver
                     Dim shN = shape.ShapeName
                     Dim shTy = If(matPre IsNot Nothing, matPre.NifShaderType.ToString(), "?")
                     Logger.LogLazy(Function() $"[SKIN-SHADER-GATE] Skin candidate: shape='{shN}' shader={shTy} (not SkinTint) → body TXST NOT applied (keeps own material).")
+                End If
+
+                ' CAPA AUX SSE (modelo por capas, ver doc en ResolveTextureSet): sobre la base TNAM ya
+                ' aplicada, el set resuelto FTST??DFT??TNAM aporta SOLO Normal(TX01) + _sk(TX03→
+                ' LightingTexture, mismo remap SSE que el slot Glow en ApplyTextureSetToMaterial: en
+                ' un material Face/Facegen el TX03 es subsurface, no emisivo) + detail(TX04→
+                ' DisplacementTexture, el que consume el fold del facetint). NI diffuse NI SmoothSpec
+                ' (TX07 solo togglea el flag specular en el motor — path queda del TNAM; Razhinda
+                ' shipped: S=FemaleHead_s del TNAM). Gate por material Face(4) = mat.Facegen, igual
+                ' que RegenerateHead 0x14042BF0C. Slot vacío del aux ⇒ conserva el de la base (el
+                ' motor solo carga la textura si el path del slot resuelve — 0x14042C45C/0x14042C08E).
+                ' Corre en render Y bake (Sub compartido vía delegate).
+                If sseFaceAux IsNot Nothing AndAlso relatedMaterial.material IsNot Nothing Then
+                    Dim mAux = relatedMaterial.material
+                    Dim auxShaderIsFace As Boolean = (matPre IsNot Nothing AndAlso matPre.Facegen)
+                    If auxShaderIsFace Then
+                        Dim appliedN = False, appliedSk = False, appliedDet = False
+                        If Not String.IsNullOrEmpty(sseFaceAux.NormalTexture) Then
+                            mAux.NormalTexture = sseFaceAux.NormalTexture : appliedN = True
+                        End If
+                        If Not String.IsNullOrEmpty(sseFaceAux.GlowTexture) Then
+                            mAux.LightingTexture = sseFaceAux.GlowTexture : appliedSk = True
+                        End If
+                        If Not String.IsNullOrEmpty(sseFaceAux.HeightTexture) Then
+                            mAux.DisplacementTexture = sseFaceAux.HeightTexture : appliedDet = True
+                        End If
+                        If logEnabled Then
+                            Dim shNA = shape.ShapeName, aFid = sseFaceAux.FormID
+                            Dim aN = appliedN, aSk = appliedSk, aDet = appliedDet
+                            Logger.LogLazy(Function() $"[FACE-AUX-TXST] shape='{shNA}' aux=0x{aFid:X8} → N={aN} sk={aSk} detail={aDet} (D y S quedan de la base TNAM)")
+                        End If
+                    ElseIf logEnabled Then
+                        Dim shNA2 = shape.ShapeName
+                        Dim shTyA = If(matPre IsNot Nothing, matPre.NifShaderType.ToString(), "?")
+                        Logger.LogLazy(Function() $"[FACE-AUX-TXST] shape='{shNA2}' shader={shTyA} Facegen=False → capa aux NO aplicada (gate Face).")
+                    End If
                 End If
             End If
 

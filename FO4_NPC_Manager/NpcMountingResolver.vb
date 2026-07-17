@@ -137,12 +137,12 @@ Friend NotInheritable Class NpcMountingResolver
                         Dim pbReason As String = If(_candForShape Is Nothing, "candForShape=Nothing", "ChunkToActor=Nothing")
                         Dim pbShape As String = shape.ShapeName, pbSocket As String = If(socket.Name, "?")
                         Logger.LogLazy(Function() $"[PATH-B-IMPOSIBLE] shape='{pbShape}' socket='{pbSocket}' reason={pbReason} — ChunkToActor no resuelto, shape salteado")
-                        System.Windows.Forms.MessageBox.Show("PATH B IMPOSIBLE — no debería pasar." & vbCrLf & vbCrLf &
+                        System.Windows.Forms.MessageBox.Show("PATH B IMPOSSIBLE — should not happen." & vbCrLf & vbCrLf &
                                         "shape  = " & pbShape & vbCrLf &
                                         "socket = " & pbSocket & vbCrLf &
-                                        "razón  = " & pbReason & vbCrLf & vbCrLf &
-                                        "La cadena de hosts no resolvió ChunkToActor. Shape salteado.",
-                                        "Path B imposible", MessageBoxButtons.OK, MessageBoxIcon.Error)
+                                        "reason = " & pbReason & vbCrLf & vbCrLf &
+                                        "The host chain did not resolve ChunkToActor. Shape skipped.",
+                                        "Path B impossible", MessageBoxButtons.OK, MessageBoxIcon.Error)
                         Return
                     End If
 
@@ -534,13 +534,13 @@ Friend NotInheritable Class NpcMountingResolver
                     If skinBoneNames.Contains(item.Bone.BoneName) Then
                         Dim bnDup As String = item.Bone.BoneName, ctxDup As String = If(item.Entry.ContextLabel, "?"), ddL As Double = dd
                         Logger.LogLazy(Function() $"[MOUNTDELTA-CONFLICT-IMPOSIBLE] bone='{bnDup}' ctx='{ctxDup}' diff={ddL:F3} — 2 chunks quieren el mismo SKIN-BONE en lugares DISTINTOS")
-                        System.Windows.Forms.MessageBox.Show("MOUNTDELTA CONFLICT IMPOSIBLE — no debería pasar." & vbCrLf & vbCrLf &
+                        System.Windows.Forms.MessageBox.Show("MOUNTDELTA CONFLICT IMPOSSIBLE — should not happen." & vbCrLf & vbCrLf &
                                         "bone = " & bnDup & vbCrLf &
                                         "ctx  = " & ctxDup & vbCrLf &
                                         "diff = " & dd.ToString("F2") & vbCrLf & vbCrLf &
-                                        "2 chunks quieren el MISMO skin-bone (con geometría) en lugares DISTINTOS." & vbCrLf &
-                                        "Aplica last-write-wins. La regla canónica sería 'gana el host que publica el hueso'.",
-                                        "MountDelta conflict imposible — REVISAR", MessageBoxButtons.OK, MessageBoxIcon.Error)
+                                        "2 chunks want the SAME skin-bone (with geometry) in DIFFERENT places." & vbCrLf &
+                                        "Applying last-write-wins. The canonical rule would be 'the host that publishes the bone wins'.",
+                                        "MountDelta conflict impossible — REVIEW", MessageBoxButtons.OK, MessageBoxIcon.Error)
                     Else
                         Dim bnMk As String = item.Bone.BoneName, ctxMk As String = If(item.Entry.ContextLabel, "?"), ddMk As Double = dd
                         Logger.LogLazy(Function() $"[MOUNTDELTA-MARKER-CONFLICT] bone='{bnMk}' ctx='{ctxMk}' diff={ddMk:F3} — sin geometría (no skin-bone), no afecta render, silenciado")

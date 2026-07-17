@@ -1445,7 +1445,7 @@ Public Class EditFace_Form
             panel.Controls.Add(tb, 2, i)
             ' Custom mask texture (RaceMenu-only) — pick/clear a mask path that overrides the RACE layer's own.
             Dim texBtn As New Button With {.Text = "Tex…", .Width = 40, .Height = 26, .Margin = New Padding(1, 4, 1, 0)}
-            _sseTintToolTip.SetToolTip(texBtn, "Warpaint (RaceMenu): elige una máscara de tint registrada por un mod. Vacío = usa la de la RACE.")
+            _sseTintToolTip.SetToolTip(texBtn, "Warpaint (RaceMenu): pick a tint mask registered by a mod. Empty = uses the RACE's.")
             AddHandler texBtn.Click, Sub(sender, e) OnSseTintTextureClick(idx)
             panel.Controls.Add(texBtn, 3, i)
             _sseTintColorBtns.Add(cbtn) : _sseTintValTracks.Add(tb)
@@ -3451,7 +3451,7 @@ Public Class EditFace_Form
                         AddHandler bar.DragEnded, AddressOf OnSliderDragEnded
                         AddHandler resetBtn.Click, Sub(sndr, e) theBar.Value = 0
                     End If
-                    tip.SetToolTip(resetBtn, AxisName(ci) & If(isLive, " — reset", " — (no usado por esta región)"))
+                    tip.SetToolTip(resetBtn, AxisName(ci) & If(isLive, " — reset", " — (not used by this region)"))
                     layout.RowCount = row + 1
                     layout.RowStyles.Add(New RowStyle(SizeType.Absolute, RowH))
                     layout.Controls.Add(resetBtn, 0, row)
