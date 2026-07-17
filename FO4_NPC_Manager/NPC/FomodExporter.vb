@@ -375,7 +375,7 @@ Public Module FomodExporter
         Dim plugins = byKind(ItemKind.Plugin)
         If plugins.Count > 0 Then
             result.Add(New WizardComponent With {
-                .Title = $"Plugin — {plugins(0)}",
+                .Title = $"Plugin - {plugins(0)}",
                 .Description = $"The plugin with {npcCount} NPC record{If(npcCount = 1, "", "s")}." & vbCrLf &
                                "Enable it in your load order like any other plugin.",
                 .Files = plugins})
@@ -384,7 +384,7 @@ Public Module FomodExporter
         Dim archives = byKind(ItemKind.Archive)
         If archives.Count > 0 Then
             result.Add(New WizardComponent With {
-                .Title = If(archives.Count = 1, "Packed archive — " & archives(0), $"Packed archives ({archives.Count})"),
+                .Title = If(archives.Count = 1, "Packed archive - " & archives(0), $"Packed archives ({archives.Count})"),
                 .Description = "Bethesda archive(s) with the baked FaceGen: head meshes and face textures for every NPC in the plugin." & vbCrLf &
                                "The game loads them automatically next to the plugin.",
                 .Files = archives})
@@ -401,7 +401,7 @@ Public Module FomodExporter
         Dim sidecar = byKind(ItemKind.PresetSidecar)
         If sidecar.Count > 0 Then
             result.Add(New WizardComponent With {
-                .Title = "Character preset data — " & sidecar(0),
+                .Title = "Character preset data - " & sidecar(0),
                 .Description = "NPC_Manager preset sidecar (body sliders, overlays, skin options)." & vbCrLf &
                                "Not read by the game itself — it lets anyone with NPC_Manager re-open and edit these characters.",
                 .Files = sidecar})
@@ -426,8 +426,8 @@ Public Module FomodExporter
 
         Dim extras = byKind(ItemKind.ExtraAsset)
         If extras.Count > 0 Then
-            Dim listing = String.Join(vbCrLf, extras.Take(12).Select(Function(p) "• " & p))
-            If extras.Count > 12 Then listing &= vbCrLf & $"… and {extras.Count - 12} more"
+            Dim listing = String.Join(vbCrLf, extras.Take(12).Select(Function(p) "- " & p))
+            If extras.Count > 12 Then listing &= vbCrLf & $"... and {extras.Count - 12} more"
             result.Add(New WizardComponent With {
                 .Title = $"Extra assets ({extras.Count})",
                 .Description = "Additional files included by the author:" & vbCrLf & listing,
@@ -444,10 +444,10 @@ Public Module FomodExporter
     Public Function BuildAboutText(meta As FomodMetaSidecar.MetaFile,
                                    game As Config_App.Game_Enum,
                                    npcCount As Integer) As String
-        Const Rule As String = "────────────────────────────"
+        Const Rule As String = "----------------------------"
         Dim sb As New Text.StringBuilder()
         sb.AppendLine($"{If(meta.ModName, "")}")
-        sb.AppendLine($"v{If(meta.ModVersion, "")}{If(String.IsNullOrWhiteSpace(meta.Author), "", "  —  by " & meta.Author.Trim())}")
+        sb.AppendLine($"v{If(meta.ModVersion, "")}{If(String.IsNullOrWhiteSpace(meta.Author), "", "  -  by " & meta.Author.Trim())}")
         sb.AppendLine($"{npcCount} NPC{If(npcCount = 1, "", "s")}")
         sb.AppendLine(Rule)
         sb.AppendLine()
@@ -541,9 +541,19 @@ Public Module FomodExporter
     End Sub
 
     Private Sub WriteXmlEntry(zip As ZipArchive, entryName As String, doc As XDocument)
+        ' UTF-8 WITHOUT a BOM: the conventional form for FOMOD info.xml/ModuleConfig.xml (Vortex,
+        ' the FOMOD Creation Tool and hand-authored files all omit it). Plain doc.Save(stream)
+        ' would emit a UTF-8 BOM, which some older/stricter FOMOD readers mishandle. The XML
+        ' declaration still carries encoding="utf-8" so parsers are unambiguous.
         Dim entry = zip.CreateEntry(entryName, CompressionLevel.Optimal)
         Using dst = entry.Open()
-            doc.Save(dst)
+            Dim settings As New Xml.XmlWriterSettings With {
+                .Encoding = New Text.UTF8Encoding(encoderShouldEmitUTF8Identifier:=False),
+                .Indent = True
+            }
+            Using writer = Xml.XmlWriter.Create(dst, settings)
+                doc.Save(writer)
+            End Using
         End Using
     End Sub
 
