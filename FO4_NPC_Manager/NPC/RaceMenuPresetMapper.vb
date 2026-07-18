@@ -278,9 +278,11 @@ Public Module RaceMenuPresetMapper
         ' ---- FACE: tintInfo → SseTintRawOverride (+ HasSseTints) and the per-layer custom mask texture map.
         ' Inverse of the pack above and of RaceMenu's apply (PresetInterface.cpp:194-205): the jslot colour's ALPHA
         ' byte IS the coverage (tintMask.alpha) → TINV; RGB → TINC (its own alpha byte is unused by the SSE face
-        ' composite → 255). TIAS (preset index) is not stored in a .jslot → 0. tint.texture, when non-empty, is a
-        ' RaceMenu custom mask path (tintMask->texture->str = tint.name) → SseTintTexOverride[index], composited by
-        ' SseFaceTintComposer instead of the RACE layer's own mask.
+        ' composite → 255). TIAS (preset index) is not stored in a .jslot: RaceMenu writes a FREE RGB colour (its own
+        ' colour picker), which is exactly the vanilla "custom" case → TIAS = -1 (NOT 0; 0 is a valid preset TIRS the
+        ' CK would resolve to a race default, re-introducing the wrong-colour bug). Verified vanilla: custom colours
+        ' carry TIAS = -1. tint.texture, when non-empty, is a RaceMenu custom mask path (tintMask->texture->str =
+        ' tint.name) → SseTintTexOverride[index], composited by SseFaceTintComposer instead of the RACE layer's mask.
         If j.TintInfo.Count > 0 Then
             Dim outList As New List(Of NPC_RawSubrecord)
             Dim texMap As Dictionary(Of Integer, String) = Nothing
@@ -298,7 +300,7 @@ Public Module RaceMenuPresetMapper
                 outList.Add(New NPC_RawSubrecord With {.Sig = "TINI", .Data = BitConverter.GetBytes(CUShort(tini))})
                 outList.Add(New NPC_RawSubrecord With {.Sig = "TINC", .Data = New Byte() {r, g, b, 255}})
                 outList.Add(New NPC_RawSubrecord With {.Sig = "TINV", .Data = BitConverter.GetBytes(tinv)})
-                outList.Add(New NPC_RawSubrecord With {.Sig = "TIAS", .Data = BitConverter.GetBytes(CShort(0))})
+                outList.Add(New NPC_RawSubrecord With {.Sig = "TIAS", .Data = BitConverter.GetBytes(CShort(-1))})   ' -1 = custom RGB (RaceMenu free colour)
                 If Not String.IsNullOrEmpty(ti.Texture) Then
                     If texMap Is Nothing Then texMap = New Dictionary(Of Integer, String)
                     texMap(tini) = ti.Texture

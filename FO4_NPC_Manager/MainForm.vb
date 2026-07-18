@@ -7830,7 +7830,8 @@ Public Class MainForm
                     AddNode(layerNode, $"Interpolation: {BitConverter.ToUInt32(sr.Data, 0) / 100.0F:F2}")
                 Case "TIAS"
                     If layerNode Is Nothing OrElse sr.Data.Length < 2 Then Continue For
-                    AddNode(layerNode, $"Preset: {BitConverter.ToInt16(sr.Data, 0)}")
+                    Dim tiasVal = BitConverter.ToInt16(sr.Data, 0)
+                    AddNode(layerNode, If(tiasVal < 0, "Preset: custom (-1)", $"Preset: {tiasVal}"))
             End Select
         Next
         tintNode.Text = $"Face Tint Layers ({layerCount})"

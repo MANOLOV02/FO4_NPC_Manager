@@ -435,6 +435,11 @@ Friend NotInheritable Class NpcMaterialResolver
                     ' Astrid: NordRaceAstrid sin FTST/DFTF → S=femalehead_s autorado, no AstridHead_s).
                     ' Por eso la BASE TNAM va DIFFUSE-ONLY (isFaceTextureSource=True): pisa SOLO el D; N/_sk
                     ' los pisa la capa aux cuando hay resolved, y S/detail quedan del material autorado.
+                    ' resolved = FTST > DFT[sexo] > TNAM (RE arch_engine_face_texture_pipeline_re). La capa aux
+                    ' aporta N/_sk/detail SOLO cuando el resolved DIFIERE del TNAM (hay FTST o DFT). Si NO hay
+                    ' FTST ni DFT, resolved = TNAM ⇒ el TNAM se aplica COMPLETO (incluye TX03=_sk), NO diffuse-only.
+                    ' Ej. DATA-DRIVEN: KhajiitRace.DFTM=0 (sin DFT) + EnhancedKhajiit override del TNAM
+                    ' SkinHeadMaleKhajiit con TX03=khajiitmalehead_sk → resolved=TNAM → _sk=khajiitmalehead_sk (=CK).
                     Dim auxFid As UInteger = 0UI
                     Dim auxSource As String = ""
                     If state.ExplicitHeadTextureFormID <> 0UI Then
@@ -455,8 +460,10 @@ Friend NotInheritable Class NpcMaterialResolver
                             Logger.LogLazy(Function() $"[TXST-RESOLVE] source={aSrc2} formID=0x{aFidL:X8} → NOT-FOUND-or-not-TXST (aux SSE descartado)")
                         End If
                     End If
-                    ' Base TNAM = DIFFUSE-ONLY (marca isFaceTextureSource ⇒ forceDiffuseOnly en el loop).
-                    isFaceTextureSource = True
+                    ' Base TNAM = DIFFUSE-ONLY SOLO cuando hay aux (resolved ≠ TNAM ⇒ N/_sk/detail los pone la
+                    ' capa aux). SIN aux, resolved = TNAM ⇒ el TNAM va COMPLETO (N/_sk/detail/S incluidos, TX03=_sk).
+                    ' Antes era True SIEMPRE ⇒ descartaba el TX03 del TNAM aunque no hubiera aux (bug del _sk del mod).
+                    isFaceTextureSource = (sseFaceAuxTextureSet IsNot Nothing)
                 Else
                     ' FO4 — comportamiento PREVIO restaurado (2026-07-17): FTST > TNAM > DFTM(si TNAM=0),
                     ' aplicado como SET COMPLETO en el loop. Este era el estado byte-exacto validado

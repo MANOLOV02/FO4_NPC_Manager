@@ -481,6 +481,23 @@ Public Module FaceGenBuilder
                     Logger.LogLazy(Function() $"[FACEBAKE] source NIF failed to load: '{skLogFail}': {ex.GetType().Name}: {ex.Message}; shape skipped")
                     Continue For
                 End Try
+
+                ' SSE: un head part en formato Skyrim LE (NiTriShape) debe salir BSDynamicTriShape, igual que
+                ' el CK al hornear FaceGeom. NiflySharp.OptimizeFor(HeadPartsOnly:=True) hace exactamente esa
+                ' conversión LE→SSE (NiTriShape → BSDynamicTriShape; ver NifFile.cs:1990-1993) — no-op si el
+                ' source ya es SSE. El fix del VertexDesc dinámico vive en la raíz de NiflySharp
+                ' (BSTriShape.SetVertexPositions con guard is-not-BSDynamicTriShape), así que no hace falta
+                ' nada más acá. Sin esto, la app clonaba el NiTriShape LE crudo (pelo 'dawn' de Adisla) y el
+                ' NIF divergía del CK: 3 shapes NiTriShape vs BSDynamicTriShape + ~880KB de más.
+                Try
+                    Dim srcVer = srcNif.Header?.Version
+                    If isSSEBake AndAlso srcVer IsNot Nothing AndAlso srcVer.IsSK Then
+                        srcNif.Optimize(Config_App.Game_Enum.Skyrim, headPartsOnly:=True)
+                    End If
+                Catch exOpt As Exception
+                    Logger.LogLazy(Function() $"[FACEBAKE] OptimizeFor LE->SSE head parts failed for '{sourceKey}': {exOpt.GetType().Name}: {exOpt.Message}")
+                End Try
+
                 loadedSources(sourceKey) = srcNif
             Else
             End If
@@ -1009,6 +1026,26 @@ Public Module FaceGenBuilder
             nif.RemoveUnreferencedBlocks()
         Catch ex As Exception
         End Try
+
+        ' SSE HDT-SMP: el vínculo físico del pelo —NiStringExtraData "HDT Skinned Mesh Physics Object",
+        ' cuyo StringData es la ruta al XML de física— cuelga del ROOT del NIF fuente, no de la shape. El
+        ' shell se reconstruye desde cero, así que CloneShape_Original (que solo preserva el extradata de la
+        ' SHAPE) no lo trae y el motor nunca carga el XML → el pelo pierde la física SMP. Lo re-emitimos en
+        ' el root horneado desde cada parte fuente que lo traiga; el helper es idempotente (pelo + hairline
+        ' apuntan al mismo XML → se agrega una sola vez) y filtra por nombre (no toca BODYTRI). El nombre de
+        ' shape ya coincide con el tag del XML porque el mod nombra el HDPT.EditorID == shape == per-vertex-shape
+        ' (p.ej. KSSMP_Amor) y el bake renombra a EditorID. El XML NO se copia: ruta fija ya instalada. Solo
+        ' SSE (FO4 no usa HDT-SMP; el helper es no-op si el source no trae el bloque). Corre tras el
+        ' RemoveUnreferencedBlocks final, con el root ya finalizado, justo antes de guardar.
+        If isSSEBake Then
+            For Each srcNifForSmp In loadedSources.Values
+                Try
+                    nif.TransferRootSmpExtraDataFrom(srcNifForSmp)
+                Catch ex As Exception
+                    Logger.LogLazy(Function() $"[FACEBAKE] SMP root extradata transfer failed: {ex.GetType().Name}: {ex.Message}")
+                End Try
+            Next
+        End If
 
         result.ShapesKept = shapesCloned
         result.ShapesDropped = 0

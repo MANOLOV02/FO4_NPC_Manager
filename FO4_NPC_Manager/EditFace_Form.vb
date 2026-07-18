@@ -86,21 +86,51 @@ Public Class EditFace_Form
         ("Mouth", New Integer() {12, 13}, New Integer() {3}),
         ("Chin", New Integer() {14, 15, 16}, New Integer() {})}
     ' SSE face-tint editing: one entry per authored tint layer (TINI/TINC/TINV/TIAS).
+    ' INVARIANT (engine-faithful, measured against vanilla Skyrim.esm): R/G/B (TINC) is ALWAYS the effective colour
+    ' the engine composes (render + bake + QNAM all read TINC directly; TIAS is never consulted for colour). Tias is
+    ' the CK editor's preset selector kept CONSISTENT with the colour: Tias = a RACE preset's TIRS ⇒ TINC == that
+    ' preset's CLFM colour; Tias = -1 ⇒ custom RGB. Vanilla proof: TIAS≥0 ⟹ TINC==preset.CLFM (1673/1673), and a
+    ' custom colour stays -1 even when it coincides with a preset (284 vanilla layers) — so we NEVER re-match a
+    ' custom colour to a preset index (that is the FO4 rule; the SSE CK does not do it).
     Private Structure SseTintEdit
         Public Index As Integer
         Public R As Byte, G As Byte, B As Byte, A As Byte
         Public V As Double        ' TINV/100 (coverage 0..1)
-        Public Tias As Short      ' preset index, preserved verbatim
+        Public Tias As Short      ' preset selector: a RACE preset's TIRS (≥0) or -1 = custom RGB
         Public Authored As Boolean ' True = the NPC authors this layer (emit TINI/TINC/TINV/TIAS); False = RACE default only
         Public MaskName As String  ' TINT mask filename, for the UI label
         Public MaskPathOverride As String ' RaceMenu-only custom mask texture path (Nothing/empty = use the RACE layer's own mask)
         Public MaskPath As String  ' effective full mask path (override if set, else the RACE layer's TINT) — for the missing-texture check
         Public Customized As Boolean ' came from a preset/NPC AND differs from the RACE default (colour, coverage, or a custom mask) — UI highlight
+        Public MaskType As Integer  ' RACE TINP (mask type; 6 = SkinTone). Diagnostic/label only.
+        Public DefaultClfm As UInteger ' RACE TIND — colour of the layer's default preset (for "reset to RACE default")
+        Public DefaultValue As Double  ' RACE default coverage (for "reset to RACE default")
+        Public Presets As List(Of SseFaceTintComposer.SseTintPreset) ' the RACE dropdown swatches for this layer (may be empty)
     End Structure
     Private _sseTintLayers As New List(Of SseTintEdit)
-    Private _sseTintColorBtns As New List(Of System.Windows.Forms.Button)
-    Private _sseTintValTracks As New List(Of FO4_Base_Library.TinySliderTextBox)
     Private ReadOnly _sseTintToolTip As New ToolTip()
+    ' SSE Tints tab = master-detail (mirrors the FO4 tint tab): a list of the RACE's layers on the left, a detail
+    ' panel on the right (preset dropdown + custom colour + coverage + RaceMenu warpaint mask + reset).
+    Private _sseTintList As ListBox = Nothing
+    Private _sseTintSelIndex As Integer = -1
+    Private _sseTintPresetCombo As ComboBox = Nothing
+    Private _sseTintSwatch As Button = Nothing
+    Private _sseTintCustomBtn As Button = Nothing
+    Private _sseTintCoverage As FO4_Base_Library.TinySliderTextBox = Nothing
+    Private _sseTintMaskLabel As Label = Nothing
+    Private _sseTintMaskPick As Button = Nothing
+    Private _sseTintMaskClear As Button = Nothing
+    Private _sseTintResetBtn As Button = Nothing
+    Private _sseTintDetailHost As Panel = Nothing
+    ' Combo item for the preset dropdown: Tirs = -1 → "(custom RGB)", else a RACE preset (colour resolved for the label).
+    Private NotInheritable Class SseTintPresetItem
+        Public Tirs As Integer
+        Public Display As String
+        Public Swatch As System.Drawing.Color
+        Public Overrides Function ToString() As String
+            Return Display
+        End Function
+    End Class
 
     Private ReadOnly _rootNpcFormID As UInteger
     Private ReadOnly _appliedPresets As Dictionary(Of UInteger, LooksmenuLoader.LooksmenuPreset)
@@ -1345,6 +1375,11 @@ Public Class EditFace_Form
                     Dim rgb = ResolveClfmRgb(lay.DefaultClfm)
                     e = New SseTintEdit With {.Index = lay.Index, .R = rgb.R, .G = rgb.G, .B = rgb.B, .A = 255, .V = lay.DefaultValue, .Authored = False, .Tias = 0}
                 End If
+                ' RACE-layer context for the detail panel (preset dropdown + reset-to-default), from GetRaceLayersOrdered.
+                e.MaskType = lay.MaskType
+                e.DefaultClfm = lay.DefaultClfm
+                e.DefaultValue = lay.DefaultValue
+                e.Presets = lay.Presets
                 e.MaskName = MaskFileName(lay.Path)
                 ' RaceMenu custom mask texture override for this layer (from a loaded .jslot / Paste), if any.
                 Dim ovr As String = Nothing
@@ -1375,6 +1410,20 @@ Public Class EditFace_Form
         Return (128, 128, 128)
     End Function
 
+    ''' <summary>CLFM (color form) → a human-usable name for the preset dropdown: the FULL display name if the
+    ''' record has one (e.g. "Skin Tone 05"), else the EditorID (the identifier used in the ESP/CK), else "".</summary>
+    Private Function ResolveClfmName(clfmFid As UInteger) As String
+        If clfmFid = 0UI OrElse _pluginManager Is Nothing Then Return ""
+        Dim rec = _pluginManager.GetRecord(clfmFid)
+        If rec Is Nothing OrElse rec.Header.Signature <> "CLFM" Then Return ""
+        Dim full = rec.GetSubrecord("FULL")
+        If full.HasValue AndAlso full.Value.Data IsNot Nothing AndAlso full.Value.Data.Length > 0 Then
+            Dim s = _pluginManager.ResolveFieldString(rec, full.Value)   ' localized-string aware (FULL is translatable)
+            If Not String.IsNullOrWhiteSpace(s) Then Return s
+        End If
+        Return If(rec.EditorID, "")
+    End Function
+
     Private Shared Function MaskFileName(path As String) As String
         If String.IsNullOrEmpty(path) Then Return ""
         Dim p = path.Replace("/"c, "\"c)
@@ -1393,65 +1442,336 @@ Public Class EditFace_Form
         Return FO4_Base_Library.FilesDictionary_class.Dictionary.ContainsKey(key)
     End Function
 
-    ''' <summary>SSE: fill the Designer's "Tints (SSE)" tab panel — one row per authored tint layer (color
-    ''' button + coverage slider). The tab lives in the Designer (shown/hidden by game); this only populates
-    ''' PanelSseTints. Edits rebuild SseTintRaw and push it through the overlay so the composer (render + bake)
-    ''' and Save ESP reflect them.</summary>
+    ''' <summary>SSE: fill the Designer's "Tints (SSE)" tab panel as a MASTER-DETAIL editor (mirrors the FO4 tint
+    ''' tab): a list of every RACE tint layer on the left, and a detail panel on the right for the selected layer —
+    ''' vanilla preset dropdown (TIAS), custom RGB colour, coverage (TINV), the RaceMenu warpaint mask override, and
+    ''' a reset-to-RACE-default. Edits rebuild SseTintRaw and push it through the overlay so the composer (render +
+    ''' bake), the body skin tone (QNAM), and Save ESP all reflect them — TINC stays the effective colour, TIAS the
+    ''' consistent preset selector (a preset's TIRS, or -1 = custom).</summary>
     Private Sub PopulateSseTintTab()
+        Dim prevSel = _sseTintSelIndex
         ParseSseTintLayers()
-        ' Layout: a WIDE label column (the mask name — filename only, no path) then swatch, a coverage slider that
-        ' fills the remaining width, and the Tex… button. The slider is Percent so it uses the whole row instead of
-        ' leaving dead space on the right.
-        Dim panel As New TableLayoutPanel With {.Dock = DockStyle.Fill, .AutoScroll = True, .ColumnCount = 4}
-        panel.ColumnStyles.Add(New ColumnStyle(SizeType.Absolute, 260))   ' 0: mask name (long)
-        panel.ColumnStyles.Add(New ColumnStyle(SizeType.Absolute, 90))    ' 1: colour swatch
-        panel.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100))    ' 2: coverage slider (fills)
-        panel.ColumnStyles.Add(New ColumnStyle(SizeType.Absolute, 52))    ' 3: Tex… button
-        _sseTintColorBtns.Clear() : _sseTintValTracks.Clear()
-        If _sseTintLayers.Count = 0 Then
-            panel.Controls.Add(New Label With {.Text = "(la RACE no declara tint layers para este genero)", .AutoSize = True}, 0, 0)
-        End If
-        For i = 0 To _sseTintLayers.Count - 1
-            Dim idx = i
-            panel.RowStyles.Add(New RowStyle(SizeType.Absolute, 34))
-            Dim baseNm = If(String.IsNullOrEmpty(_sseTintLayers(i).MaskName), $"Tint {_sseTintLayers(i).Index}", _sseTintLayers(i).MaskName)
-            ' When a RaceMenu custom mask overrides this layer, show the override filename with a * marker.
-            Dim nm = If(String.IsNullOrEmpty(_sseTintLayers(i).MaskPathOverride), baseNm, "* " & MaskFileName(_sseTintLayers(i).MaskPathOverride))
-            Dim tag = If(_sseTintLayers(i).Authored, "", "  (default)")
-            Dim lblTip = If(String.IsNullOrEmpty(_sseTintLayers(i).MaskPathOverride), baseNm, _sseTintLayers(i).MaskPathOverride)
-            ' LooksMenu-style label colour, by priority:
-            '   RED   — the mask .dds is missing from the load order (loose+BSA); it would render nothing.
-            '   BLUE  — the MASK differs from the race's (a custom .dds override). Mask-only; a differing
-            '           colour/coverage value alone does NOT turn it blue.
-            '   normal— authored (colour/coverage value set) but using the race's own mask.
-            '   GRAY  — the race default, untouched by this NPC.
-            Dim isMissing = Not TintMaskExists(_sseTintLayers(i).MaskPath)
-            Dim foreCol As System.Drawing.Color =
-                If(isMissing, System.Drawing.Color.FromArgb(200, 40, 40),
-                   If(_sseTintLayers(i).Customized, System.Drawing.Color.FromArgb(40, 100, 210),
-                      If(Not _sseTintLayers(i).Authored, SystemColors.GrayText, SystemColors.ControlText)))
-            Dim lbl As New Label With {.Text = nm & tag, .Anchor = AnchorStyles.Left, .AutoSize = True, .Margin = New Padding(3, 8, 3, 0), .ForeColor = foreCol}
-            If isMissing Then lblTip = "Missing texture (not in load order): " & If(_sseTintLayers(i).MaskPath, "")
-            _sseTintToolTip.SetToolTip(lbl, lblTip)
-            panel.Controls.Add(lbl, 0, i)
-            Dim cbtn As New Button With {.Width = 70, .Height = 26, .BackColor = System.Drawing.Color.FromArgb(_sseTintLayers(i).R, _sseTintLayers(i).G, _sseTintLayers(i).B)}
-            AddHandler cbtn.Click, Sub(sender, e) OnSseTintColorClick(idx)
-            panel.Controls.Add(cbtn, 1, i)
-            Dim tb As New FO4_Base_Library.TinySliderTextBox With {
-                .Minimum = 0.0R, .Maximum = 1.0R, .DisplayFormat = "0.00", .SmallChange = 0.01R, .LargeChange = 0.1R,
-                .Height = 26, .Dock = DockStyle.Fill, .Value = Math.Max(0.0R, Math.Min(1.0R, CDbl(_sseTintLayers(i).V)))}
-            AddHandler tb.ValueChanged, Sub(sender, e) OnSseTintValueChanged(idx)
-            AddHandler tb.DragEnded, AddressOf OnSliderDragEnded
-            panel.Controls.Add(tb, 2, i)
-            ' Custom mask texture (RaceMenu-only) — pick/clear a mask path that overrides the RACE layer's own.
-            Dim texBtn As New Button With {.Text = "Tex…", .Width = 40, .Height = 26, .Margin = New Padding(1, 4, 1, 0)}
-            _sseTintToolTip.SetToolTip(texBtn, "Warpaint (RaceMenu): pick a tint mask registered by a mod. Empty = uses the RACE's.")
-            AddHandler texBtn.Click, Sub(sender, e) OnSseTintTextureClick(idx)
-            panel.Controls.Add(texBtn, 3, i)
-            _sseTintColorBtns.Add(cbtn) : _sseTintValTracks.Add(tb)
-        Next
+
+        Dim split As New TableLayoutPanel With {.Dock = DockStyle.Fill, .ColumnCount = 2, .RowCount = 1}
+        split.ColumnStyles.Add(New ColumnStyle(SizeType.Absolute, 300))   ' 0: layer list
+        split.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100))    ' 1: detail
+
+        ' --- Master list (left) ---
+        Dim listHost As New TableLayoutPanel With {.Dock = DockStyle.Fill, .ColumnCount = 1, .RowCount = 2}
+        listHost.RowStyles.Add(New RowStyle(SizeType.Absolute, 22))
+        listHost.RowStyles.Add(New RowStyle(SizeType.Percent, 100))
+        listHost.Controls.Add(New Label With {.Text = "RACE tint layers", .Dock = DockStyle.Fill, .TextAlign = ContentAlignment.MiddleLeft, .Font = New System.Drawing.Font(Me.Font, System.Drawing.FontStyle.Bold)}, 0, 0)
+        _sseTintList = New DoubleBufferedListBox With {.Dock = DockStyle.Fill, .IntegralHeight = False, .DrawMode = DrawMode.OwnerDrawFixed, .ItemHeight = 20}
+        RemoveHandler _sseTintList.DrawItem, AddressOf DrawSseTintListItem
+        AddHandler _sseTintList.DrawItem, AddressOf DrawSseTintListItem
+        AddHandler _sseTintList.SelectedIndexChanged, Sub(s, e) If Not _suspendEvents Then SelectSseTintLayer(_sseTintList.SelectedIndex)
+        listHost.Controls.Add(_sseTintList, 0, 1)
+        split.Controls.Add(listHost, 0, 0)
+
+        ' --- Detail (right) ---
+        _sseTintDetailHost = New Panel With {.Dock = DockStyle.Fill, .Padding = New Padding(10, 2, 4, 4)}
+        split.Controls.Add(_sseTintDetailHost, 1, 0)
+        BuildSseTintDetailControls()
+
         PanelSseTints.Controls.Clear()
-        PanelSseTints.Controls.Add(panel)
+        PanelSseTints.Controls.Add(split)
+
+        ' Fill list
+        _suspendEvents = True
+        _sseTintList.Items.Clear()
+        For i = 0 To _sseTintLayers.Count - 1
+            _sseTintList.Items.Add(SseTintRowLabel(i))
+        Next
+        _suspendEvents = False
+
+        If _sseTintLayers.Count = 0 Then
+            _sseTintDetailHost.Controls.Clear()
+            _sseTintDetailHost.Controls.Add(New Label With {.Text = "(this race declares no tint layers for this gender)", .AutoSize = True})
+            _sseTintSelIndex = -1
+            Return
+        End If
+        Dim sel = If(prevSel >= 0 AndAlso prevSel < _sseTintLayers.Count, prevSel, 0)
+        _sseTintList.SelectedIndex = sel   ' fires SelectSseTintLayer
+    End Sub
+
+    ''' <summary>Display label for a layer row: mask name (or custom-mask filename with a * marker) + a (default) tag
+    ''' when the NPC doesn't author it.</summary>
+    Private Function SseTintRowLabel(i As Integer) As String
+        Dim t = _sseTintLayers(i)
+        Dim baseNm = If(String.IsNullOrEmpty(t.MaskName), $"Tint {t.Index}", t.MaskName)
+        Dim nm = If(String.IsNullOrEmpty(t.MaskPathOverride), baseNm, "* " & MaskFileName(t.MaskPathOverride))
+        Return nm & If(t.Authored, "", "   (default)")
+    End Function
+
+    ''' <summary>Owner-draw the master list: LooksMenu-style colour coding (RED missing mask / BLUE custom mask /
+    ''' GRAY unauthored default / normal authored) plus a small swatch of the layer's effective colour.</summary>
+    Private Sub DrawSseTintListItem(sender As Object, e As DrawItemEventArgs)
+        e.DrawBackground()
+        If e.Index < 0 OrElse e.Index >= _sseTintLayers.Count Then Return
+        Dim t = _sseTintLayers(e.Index)
+        Dim isMissing = Not TintMaskExists(t.MaskPath)
+        Dim fore As System.Drawing.Color =
+            If(isMissing, System.Drawing.Color.FromArgb(200, 40, 40),
+               If(t.Customized, System.Drawing.Color.FromArgb(40, 100, 210),
+                  If(Not t.Authored, SystemColors.GrayText, e.ForeColor)))
+        Dim swRect As New System.Drawing.Rectangle(e.Bounds.Left + 3, e.Bounds.Top + 3, 22, e.Bounds.Height - 6)
+        Using b As New System.Drawing.SolidBrush(System.Drawing.Color.FromArgb(t.R, t.G, t.B))
+            e.Graphics.FillRectangle(b, swRect)
+        End Using
+        e.Graphics.DrawRectangle(System.Drawing.Pens.Gray, swRect)
+        Using b As New System.Drawing.SolidBrush(fore)
+            e.Graphics.DrawString(SseTintRowLabel(e.Index), e.Font, b, e.Bounds.Left + 30, e.Bounds.Top + 2)
+        End Using
+        e.DrawFocusRectangle()
+    End Sub
+
+    ''' <summary>Build the (empty) detail controls once; SelectSseTintLayer fills them per layer. Two-column grid
+    ''' (label + content) so every control and button stays inside the detail panel — never under the preview. The
+    ''' two action buttons (Custom… / Clear) share the same right-hand column so they line up (symmetric).</summary>
+    Private Sub BuildSseTintDetailControls()
+        Const LabelCol As Integer = 128
+        Const BtnCol As Integer = 92          ' width of each right-hand action button column
+        _sseTintDetailHost.Controls.Clear()
+
+        Dim lay As New TableLayoutPanel With {.Dock = DockStyle.Top, .AutoSize = True, .AutoSizeMode = AutoSizeMode.GrowAndShrink, .ColumnCount = 2, .RowCount = 6}
+        lay.ColumnStyles.Add(New ColumnStyle(SizeType.Absolute, LabelCol))
+        lay.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100))
+        For r = 0 To 5 : lay.RowStyles.Add(New RowStyle(SizeType.Absolute, 34)) : Next
+
+        ' Row 0: preset dropdown (TIAS)
+        lay.Controls.Add(SseTintDetailLabel("Color source:"), 0, 0)
+        _sseTintPresetCombo = New ComboBox With {.Dock = DockStyle.Fill, .DropDownStyle = ComboBoxStyle.DropDownList, .DrawMode = DrawMode.OwnerDrawFixed, .Margin = New Padding(3, 4, 3, 3)}
+        AddHandler _sseTintPresetCombo.DrawItem, AddressOf DrawSseTintPresetItem
+        AddHandler _sseTintPresetCombo.SelectedIndexChanged, AddressOf OnSseTintPresetChanged
+        lay.Controls.Add(_sseTintPresetCombo, 1, 0)
+
+        ' Row 1: colour swatch (fills) + Custom… (right column)
+        lay.Controls.Add(SseTintDetailLabel("Color:"), 0, 1)
+        Dim colorRow As New TableLayoutPanel With {.Dock = DockStyle.Fill, .ColumnCount = 3, .RowCount = 1, .Margin = New Padding(0)}
+        colorRow.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100))
+        colorRow.ColumnStyles.Add(New ColumnStyle(SizeType.Absolute, BtnCol))
+        colorRow.ColumnStyles.Add(New ColumnStyle(SizeType.Absolute, BtnCol))
+        _sseTintSwatch = New Button With {.Dock = DockStyle.Fill, .Height = 26, .Enabled = False, .FlatStyle = FlatStyle.Popup, .Margin = New Padding(3, 4, 3, 3)}
+        colorRow.Controls.Add(_sseTintSwatch, 0, 0)
+        _sseTintCustomBtn = New Button With {.Text = "Custom…", .Dock = DockStyle.Fill, .Height = 26, .Margin = New Padding(3, 4, 3, 3)}
+        AddHandler _sseTintCustomBtn.Click, AddressOf OnSseTintCustomColor
+        _sseTintToolTip.SetToolTip(_sseTintCustomBtn, "Pick a free RGB colour (TIAS = -1 = custom, like RaceMenu / the CK colour picker).")
+        colorRow.Controls.Add(_sseTintCustomBtn, 2, 0)   ' rightmost column → aligns with Clear below
+        lay.Controls.Add(colorRow, 1, 1)
+
+        ' Row 2: coverage (TINV)
+        lay.Controls.Add(SseTintDetailLabel("Coverage (TINV):"), 0, 2)
+        _sseTintCoverage = New FO4_Base_Library.TinySliderTextBox With {
+            .Minimum = 0.0R, .Maximum = 1.0R, .DisplayFormat = "0.00", .SmallChange = 0.01R, .LargeChange = 0.1R, .Height = 26, .Dock = DockStyle.Fill, .Margin = New Padding(3, 4, 3, 3)}
+        AddHandler _sseTintCoverage.ValueChanged, AddressOf OnSseTintCoverageChanged
+        AddHandler _sseTintCoverage.DragEnded, AddressOf OnSliderDragEnded
+        lay.Controls.Add(_sseTintCoverage, 1, 2)
+
+        ' Row 3: warpaint mask (RaceMenu) — the filename gets the FULL content width so long paths aren't cut off.
+        lay.Controls.Add(SseTintDetailLabel("Warpaint mask:"), 0, 3)
+        _sseTintMaskLabel = New Label With {.Dock = DockStyle.Fill, .AutoEllipsis = True, .TextAlign = ContentAlignment.MiddleLeft, .Margin = New Padding(3, 0, 3, 0)}
+        lay.Controls.Add(_sseTintMaskLabel, 1, 3)
+
+        ' Row 4: mask buttons UNDER the filename (Choose… / Clear, right-aligned → Clear lines up with Custom…).
+        Dim maskBtns As New TableLayoutPanel With {.Dock = DockStyle.Fill, .ColumnCount = 3, .RowCount = 1, .Margin = New Padding(0)}
+        maskBtns.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100))
+        maskBtns.ColumnStyles.Add(New ColumnStyle(SizeType.Absolute, BtnCol))
+        maskBtns.ColumnStyles.Add(New ColumnStyle(SizeType.Absolute, BtnCol))
+        ' col 0 (Percent 100) stays empty → pushes the two buttons to the right (Clear lines up with Custom…).
+        _sseTintMaskPick = New Button With {.Text = "Choose…", .Dock = DockStyle.Fill, .Height = 26, .Margin = New Padding(3, 2, 3, 3)}
+        AddHandler _sseTintMaskPick.Click, Sub(s, e) OnSseTintTextureClick(_sseTintSelIndex)
+        _sseTintToolTip.SetToolTip(_sseTintMaskPick, "Warpaint (RaceMenu): pick a tint mask registered by a mod. Empty = uses the RACE's own mask.")
+        maskBtns.Controls.Add(_sseTintMaskPick, 1, 0)
+        _sseTintMaskClear = New Button With {.Text = "Clear", .Dock = DockStyle.Fill, .Height = 26, .Margin = New Padding(3, 2, 3, 3)}
+        AddHandler _sseTintMaskClear.Click, AddressOf OnSseTintMaskClear
+        maskBtns.Controls.Add(_sseTintMaskClear, 2, 0)     ' rightmost → aligns with Custom… above
+        lay.Controls.Add(maskBtns, 1, 4)
+
+        ' Row 5: reset to RACE default (in the content column, left-aligned)
+        _sseTintResetBtn = New Button With {.Text = "Reset to RACE default", .AutoSize = True, .Height = 28, .Anchor = AnchorStyles.Left, .Margin = New Padding(3, 5, 3, 3)}
+        AddHandler _sseTintResetBtn.Click, AddressOf OnSseTintResetLayer
+        lay.Controls.Add(_sseTintResetBtn, 1, 5)
+
+        _sseTintDetailHost.Controls.Add(lay)
+    End Sub
+
+    ''' <summary>A detail-row label, vertically centred against the 34px rows (consistent column start).</summary>
+    Private Function SseTintDetailLabel(text As String) As Label
+        Return New Label With {.Text = text, .Dock = DockStyle.Fill, .TextAlign = ContentAlignment.MiddleLeft, .Margin = New Padding(3, 0, 3, 0)}
+    End Function
+
+    ''' <summary>Owner-draw a preset-dropdown item: a swatch of the preset colour + its label.</summary>
+    Private Sub DrawSseTintPresetItem(sender As Object, e As DrawItemEventArgs)
+        e.DrawBackground()
+        Dim cb = TryCast(sender, ComboBox)
+        If cb Is Nothing OrElse e.Index < 0 OrElse e.Index >= cb.Items.Count Then Return
+        Dim it = TryCast(cb.Items(e.Index), SseTintPresetItem)
+        If it Is Nothing Then Return
+        Dim swRect As New System.Drawing.Rectangle(e.Bounds.Left + 2, e.Bounds.Top + 2, 20, e.Bounds.Height - 4)
+        If it.Tirs >= 0 Then
+            Using b As New System.Drawing.SolidBrush(it.Swatch)
+                e.Graphics.FillRectangle(b, swRect)
+            End Using
+            e.Graphics.DrawRectangle(System.Drawing.Pens.Gray, swRect)
+        End If
+        Using b As New System.Drawing.SolidBrush(e.ForeColor)
+            e.Graphics.DrawString(it.Display, e.Font, b, e.Bounds.Left + 26, e.Bounds.Top + 1)
+        End Using
+        e.DrawFocusRectangle()
+    End Sub
+
+    ''' <summary>Fill the detail controls from the selected layer. Preset combo = "(custom RGB)" (Tirs -1) + the RACE
+    ''' presets for this layer; selected item = the one whose TIRS == the layer's TIAS, else "(custom RGB)".</summary>
+    Private Sub SelectSseTintLayer(i As Integer)
+        _sseTintSelIndex = i
+        If i < 0 OrElse i >= _sseTintLayers.Count OrElse _sseTintPresetCombo Is Nothing Then Return
+        Dim t = _sseTintLayers(i)
+        _suspendEvents = True
+        Try
+            ' Preset dropdown
+            _sseTintPresetCombo.Items.Clear()
+            _sseTintPresetCombo.Items.Add(New SseTintPresetItem With {.Tirs = -1, .Display = "(custom RGB)", .Swatch = System.Drawing.Color.White})
+            Dim selComboIdx As Integer = 0   ' default to custom
+            If t.Presets IsNot Nothing Then
+                For Each pr In t.Presets
+                    Dim rgb = ResolveClfmRgb(pr.Clfm)
+                    Dim sw = System.Drawing.Color.FromArgb(rgb.R, rgb.G, rgb.B)
+                    Dim nm = ResolveClfmName(pr.Clfm)
+                    Dim label = If(String.IsNullOrEmpty(nm), $"Preset {pr.Tirs}", nm)
+                    _sseTintPresetCombo.Items.Add(New SseTintPresetItem With {
+                        .Tirs = pr.Tirs, .Swatch = sw,
+                        .Display = $"{label}   ({rgb.R},{rgb.G},{rgb.B})"})
+                    If t.Authored AndAlso t.Tias >= 0 AndAlso pr.Tirs = t.Tias Then selComboIdx = _sseTintPresetCombo.Items.Count - 1
+                Next
+            End If
+            _sseTintPresetCombo.SelectedIndex = selComboIdx
+
+            _sseTintSwatch.BackColor = System.Drawing.Color.FromArgb(t.R, t.G, t.B)
+            _sseTintCoverage.Value = Math.Max(0.0R, Math.Min(1.0R, CDbl(t.V)))
+
+            ' Mask row
+            Dim raceMask = ResolveRaceLayerMaskPath(t.Index)
+            If Not String.IsNullOrEmpty(t.MaskPathOverride) Then
+                _sseTintMaskLabel.Text = "★ " & MaskFileName(t.MaskPathOverride)
+                _sseTintToolTip.SetToolTip(_sseTintMaskLabel, t.MaskPathOverride)
+            Else
+                _sseTintMaskLabel.Text = If(String.IsNullOrEmpty(raceMask), "(no mask)", MaskFileName(raceMask) & "  (RACE)")
+                _sseTintToolTip.SetToolTip(_sseTintMaskLabel, If(raceMask, ""))
+            End If
+            _sseTintMaskClear.Enabled = Not String.IsNullOrEmpty(t.MaskPathOverride)
+        Finally
+            _suspendEvents = False
+        End Try
+    End Sub
+
+    ''' <summary>Re-draw ONLY the given list row + the detail swatch after a value edit, keeping selection. The
+    ''' owner-draw reads live data straight from <c>_sseTintLayers</c> (never the <c>Items()</c> string), so we
+    ''' invalidate just that row's rectangle — NOT the whole owner-draw ListBox, which repainted every row on each
+    ''' slider tick (the slowness). We also never re-assign Items() (that too invalidates the whole control).</summary>
+    Private Sub RefreshSseTintRow(i As Integer)
+        If _sseTintList IsNot Nothing AndAlso i >= 0 AndAlso i < _sseTintList.Items.Count Then
+            _sseTintList.Invalidate(_sseTintList.GetItemRectangle(i))
+        End If
+        If _sseTintSwatch IsNot Nothing AndAlso i = _sseTintSelIndex AndAlso i >= 0 AndAlso i < _sseTintLayers.Count Then
+            Dim t = _sseTintLayers(i)
+            _sseTintSwatch.BackColor = System.Drawing.Color.FromArgb(t.R, t.G, t.B)
+        End If
+    End Sub
+
+    ''' <summary>Preset dropdown changed. Selecting a RACE preset ⇒ TIAS = its TIRS AND TINC = its CLFM colour
+    ''' (the two stay consistent, exactly as vanilla stores them). Selecting "(custom RGB)" ⇒ TIAS = -1 (custom),
+    ''' colour unchanged — the user then clicks Custom… to pick. Either way the layer becomes authored.</summary>
+    Private Sub OnSseTintPresetChanged(sender As Object, e As EventArgs)
+        If _suspendEvents Then Return
+        Dim i = _sseTintSelIndex
+        If i < 0 OrElse i >= _sseTintLayers.Count Then Return
+        Dim it = TryCast(_sseTintPresetCombo.SelectedItem, SseTintPresetItem)
+        If it Is Nothing Then Return
+        Dim t = _sseTintLayers(i)
+        If it.Tirs < 0 Then
+            ' Custom: keep the colour, mark custom. SSE rule — a custom colour keeps TIAS = -1 even if it matches a
+            ' preset (verified: 284 vanilla layers). Never re-derive an index from the colour (that is the FO4 rule).
+            t.Tias = -1S
+        Else
+            t.Tias = CShort(it.Tirs)
+            t.R = it.Swatch.R : t.G = it.Swatch.G : t.B = it.Swatch.B   ' TINC = the preset's exact CLFM colour
+        End If
+        t.Authored = True
+        _sseTintLayers(i) = t
+        ApplySseTintOverlay()
+        RefreshSseTintRow(i)
+        ScheduleRefresh(FaceRefreshScope.TexturesOnly)
+    End Sub
+
+    ''' <summary>Custom colour picker → TINC = chosen RGB, TIAS = -1 (custom). The combo snaps to "(custom RGB)".</summary>
+    Private Sub OnSseTintCustomColor(sender As Object, e As EventArgs)
+        Dim i = _sseTintSelIndex
+        If i < 0 OrElse i >= _sseTintLayers.Count Then Return
+        Using dlg As New ColorDialog()
+            dlg.FullOpen = True
+            dlg.AnyColor = True
+            dlg.Color = System.Drawing.Color.FromArgb(_sseTintLayers(i).R, _sseTintLayers(i).G, _sseTintLayers(i).B)
+            If dlg.ShowDialog(Me) <> DialogResult.OK Then Return
+            Dim t = _sseTintLayers(i)
+            t.R = dlg.Color.R : t.G = dlg.Color.G : t.B = dlg.Color.B
+            t.Tias = -1S           ' custom RGB — no preset (SSE-faithful: no colour→index re-match)
+            t.Authored = True
+            _sseTintLayers(i) = t
+            _suspendEvents = True
+            _sseTintSwatch.BackColor = dlg.Color
+            If _sseTintPresetCombo.Items.Count > 0 Then _sseTintPresetCombo.SelectedIndex = 0   ' "(custom RGB)"
+            _suspendEvents = False
+            ApplySseTintOverlay()
+            RefreshSseTintRow(i)
+            ScheduleRefresh(FaceRefreshScope.TexturesOnly)
+        End Using
+    End Sub
+
+    Private Sub OnSseTintCoverageChanged(sender As Object, e As EventArgs)
+        If _suspendEvents Then Return
+        Dim i = _sseTintSelIndex
+        If i < 0 OrElse i >= _sseTintLayers.Count Then Return
+        Dim t = _sseTintLayers(i)
+        t.V = CSng(_sseTintCoverage.Value) : t.Authored = True
+        _sseTintLayers(i) = t
+        ApplySseTintOverlay()
+        RefreshSseTintRow(i)
+        ScheduleRefresh(FaceRefreshScope.TexturesOnly)
+    End Sub
+
+    ''' <summary>Clear the RaceMenu warpaint mask override on the selected layer (revert to the RACE's own mask).</summary>
+    Private Sub OnSseTintMaskClear(sender As Object, e As EventArgs)
+        Dim i = _sseTintSelIndex
+        If i < 0 OrElse i >= _sseTintLayers.Count Then Return
+        Dim t = _sseTintLayers(i)
+        If String.IsNullOrEmpty(t.MaskPathOverride) Then Return
+        t.MaskPathOverride = Nothing
+        t.MaskPath = ResolveRaceLayerMaskPath(t.Index)
+        t.Customized = False
+        _sseTintLayers(i) = t
+        ApplySseTintOverlay()
+        SelectSseTintLayer(i)   ' refresh mask label + custom flag
+        RefreshSseTintRow(i)
+        ScheduleRefresh(FaceRefreshScope.TexturesOnly)
+    End Sub
+
+    ''' <summary>Revert the selected layer to the RACE default: unauthored (dropped from the emitted record), colour
+    ''' + coverage back to the RACE default preset, and the warpaint mask override cleared.</summary>
+    Private Sub OnSseTintResetLayer(sender As Object, e As EventArgs)
+        Dim i = _sseTintSelIndex
+        If i < 0 OrElse i >= _sseTintLayers.Count Then Return
+        Dim t = _sseTintLayers(i)
+        Dim rgb = ResolveClfmRgb(t.DefaultClfm)
+        t.R = rgb.R : t.G = rgb.G : t.B = rgb.B
+        t.V = t.DefaultValue
+        t.Tias = 0S
+        t.Authored = False
+        t.MaskPathOverride = Nothing
+        _sseTintLayers(i) = t
+        ApplySseTintOverlay()
+        SelectSseTintLayer(i)
+        RefreshSseTintRow(i)
+        ScheduleRefresh(FaceRefreshScope.TexturesOnly)
     End Sub
 
     ''' <summary>Normalise a warpaint path to the textures-relative form the RACE TINT convention (and the composer)
@@ -1463,32 +1783,6 @@ Public Class EditFace_Form
         If s.StartsWith("textures\", StringComparison.OrdinalIgnoreCase) Then s = s.Substring("textures\".Length)
         Return s.TrimStart("\"c)
     End Function
-
-    Private Sub OnSseTintColorClick(idx As Integer)
-        If idx < 0 OrElse idx >= _sseTintLayers.Count Then Return
-        Using dlg As New ColorDialog()
-            dlg.FullOpen = True
-            dlg.Color = System.Drawing.Color.FromArgb(_sseTintLayers(idx).R, _sseTintLayers(idx).G, _sseTintLayers(idx).B)
-            If dlg.ShowDialog(Me) = DialogResult.OK Then
-                Dim t = _sseTintLayers(idx)
-                t.R = dlg.Color.R : t.G = dlg.Color.G : t.B = dlg.Color.B : t.Authored = True
-                _sseTintLayers(idx) = t
-                If idx < _sseTintColorBtns.Count Then _sseTintColorBtns(idx).BackColor = dlg.Color
-                ApplySseTintOverlay()
-                ScheduleRefresh(FaceRefreshScope.TexturesOnly)
-            End If
-        End Using
-    End Sub
-
-    Private Sub OnSseTintValueChanged(idx As Integer)
-        If _suspendEvents Then Return
-        If idx < 0 OrElse idx >= _sseTintLayers.Count Then Return
-        Dim t = _sseTintLayers(idx)
-        t.V = CSng(_sseTintValTracks(idx).Value) : t.Authored = True
-        _sseTintLayers(idx) = t
-        ApplySseTintOverlay()
-        ScheduleRefresh(FaceRefreshScope.TexturesOnly)
-    End Sub
 
     ''' <summary>Set/clear a RaceMenu WARPAINT (custom tint mask) for a tint layer. Faithful to
     ''' PresetInterface.cpp:203 (tintMask-&gt;texture-&gt;str = tint.name): the path overrides the RACE layer's own TINT
@@ -1510,15 +1804,21 @@ Public Class EditFace_Form
         If Not cleared Then chosenRel = NormalizeTintMaskRel(res.Entry.Path)
 
         Dim t = _sseTintLayers(idx)
+        Dim raceMask = ResolveRaceLayerMaskPath(t.Index)
         ' A pick equal to the RACE default mask = no override (keeps the .jslot/sidecar clean).
-        If cleared OrElse String.Equals(chosenRel, ResolveRaceLayerMaskPath(t.Index), StringComparison.OrdinalIgnoreCase) Then
+        If cleared OrElse String.Equals(chosenRel, raceMask, StringComparison.OrdinalIgnoreCase) Then
             t.MaskPathOverride = Nothing
         Else
             t.MaskPathOverride = chosenRel
         End If
+        ' Recompute effective mask path + BLUE "custom mask" flag without a full re-parse (keeps selection).
+        t.MaskPath = If(Not String.IsNullOrEmpty(t.MaskPathOverride), t.MaskPathOverride, raceMask)
+        t.Customized = Not String.IsNullOrEmpty(t.MaskPathOverride) AndAlso
+                       Not String.Equals(t.MaskPathOverride, raceMask, StringComparison.OrdinalIgnoreCase)
         _sseTintLayers(idx) = t
         ApplySseTintOverlay()
-        PopulateSseTintTab()   ' relabel the row (override filename / marker)
+        SelectSseTintLayer(idx)   ' refresh mask label + clear-button state
+        RefreshSseTintRow(idx)    ' relabel the row (override filename / marker) + swatch
         ScheduleRefresh(FaceRefreshScope.TexturesOnly)
     End Sub
 
@@ -1760,6 +2060,8 @@ Public Class EditFace_Form
         AddHandler ButtonRemoveZeroedTints.Click, AddressOf OnRemoveZeroedTints
         AddHandler TextBoxTintFilter.TextChanged, AddressOf OnTintFilterChanged
         AddHandler ListViewTints.SelectedIndexChanged, AddressOf OnTintSelectionChanged
+        ComboBoxTintPalette.DrawMode = DrawMode.OwnerDrawFixed
+        AddHandler ComboBoxTintPalette.DrawItem, AddressOf DrawTintPaletteItem
         AddHandler ComboBoxTintPalette.SelectedIndexChanged, AddressOf OnTintPaletteChanged
         AddHandler ButtonTintCustomRGB.Click, AddressOf OnTintCustomRGB
         AddHandler TrackBarTintPercent.ValueChanged, AddressOf OnTintPercentChanged
@@ -2580,6 +2882,29 @@ Public Class EditFace_Form
             Return Display
         End Function
     End Class
+
+    ''' <summary>Owner-draw a FO4 tint-palette combo item: a swatch of the preset colour + its label (like the SSE
+    ''' preset dropdown). The "(custom RGB)" entry draws no swatch.</summary>
+    Private Sub DrawTintPaletteItem(sender As Object, e As DrawItemEventArgs)
+        e.DrawBackground()
+        Dim cb = TryCast(sender, ComboBox)
+        If cb Is Nothing OrElse e.Index < 0 OrElse e.Index >= cb.Items.Count Then Return
+        Dim it = TryCast(cb.Items(e.Index), TintPaletteItem)
+        If it Is Nothing Then Return
+        Dim textLeft As Integer = e.Bounds.Left + 4
+        If Not it.IsCustom AndAlso Not it.SwatchColor.IsEmpty Then
+            Dim swRect As New System.Drawing.Rectangle(e.Bounds.Left + 2, e.Bounds.Top + 2, 20, e.Bounds.Height - 4)
+            Using b As New System.Drawing.SolidBrush(it.SwatchColor)
+                e.Graphics.FillRectangle(b, swRect)
+            End Using
+            e.Graphics.DrawRectangle(System.Drawing.Pens.Gray, swRect)
+            textLeft = e.Bounds.Left + 26
+        End If
+        Using b As New System.Drawing.SolidBrush(e.ForeColor)
+            e.Graphics.DrawString(If(it.Display, ""), e.Font, b, textLeft, e.Bounds.Top + 1)
+        End Using
+        e.DrawFocusRectangle()
+    End Sub
 
     ''' <summary>If the currently selected row is a RACE default (virtual, not in
     ''' p.FaceTintLayers), materialize it as a real NPC override by appending a clone of the
