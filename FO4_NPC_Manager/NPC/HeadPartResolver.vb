@@ -60,6 +60,17 @@ Public Module HeadPartResolver
         Next
 
         ' Step 2: override with NPC.PNAM (NPC wins per main type, or accumulates for misc)
+        ' ⭐ El PNAM del NPC es una LISTA EXPLÍCITA, no un slot por tipo: puede traer VARIOS head parts del
+        ' MISMO PartType y el CK los hornea TODOS. El caso vanilla son las cicatrices (PartType=5 Scar): un
+        ' NPC con LeftGash + RightGash listaba dos HDPT tipo 5 y el `mergedByType(tipo) = fid` de acá se
+        ' quedaba SÓLO con el último ⇒ las demás nunca llegaban al hdptMap y no se clonaban nunca.
+        ' MEDIDO vanilla limpio (CK del BSA): 5 NPCs / 11 shapes 'PRESENT in CK, ABSENT in baked'
+        ' (ej. MarksFemaleHumanoid10LeftGash) + 6 NPCs con shape-count distinto, por esta misma línea.
+        ' Regla aplicada: el PRIMER part del NPC de un tipo PISA el default de la RACE (semántica de override
+        ' que este dict ya implementaba y que sigue siendo correcta); los ADICIONALES del mismo tipo se
+        ' ACUMULAN, como ya hacía freestandingMisc con los Misc(0).
+        Dim npcClaimedTypes As New HashSet(Of Integer)
+        Dim extraNpcParts As New List(Of UInteger)
         For Each npcFID In safeNpcParts
             Dim npcRec = pluginManager.GetRecord(npcFID)
             If npcRec Is Nothing OrElse npcRec.Header.Signature <> "HDPT" Then Continue For
@@ -67,7 +78,24 @@ Public Module HeadPartResolver
             If hdpt.PartType = 0 Then
                 freestandingMisc.Add(npcFID)
             ElseIf hdpt.PartType >= 1 AndAlso hdpt.PartType <= 9 Then
-                mergedByType(hdpt.PartType) = npcFID
+                If npcClaimedTypes.Add(hdpt.PartType) Then
+                    mergedByType(hdpt.PartType) = npcFID
+                ElseIf hdpt.PartType = 5 Then
+                    ' ⭐ La acumulación es SÓLO para PartType=5 (Scar). MEDIDO sobre los 3158 FaceGeom del CK,
+                    ' contando NPCs cuyo PNAM trae dos head parts del mismo tipo:
+                    '     tipo 5 (Scar) : el extra está presente en el NIF del CK en 63 casos (los 52 ausentes
+                    '                     son MarksMaleHumanoid00NoScar / …00NoGash, con MODL vacío ⇒ no emiten
+                    '                     shape en ninguno de los dos lados)
+                    '     tipo 3 (Hair) : el extra está presente en 0 casos, ausente en 1 (el nuestro)
+                    ' Y la distribución de shapes PartType=3 por NIF del CK es 1 en 3044 archivos y 0 en 114 —
+                    ' NUNCA 2. O sea el CK admite UN solo head part de pelo y descarta el resto.
+                    ' Caso que lo fija: WEAdventurerWarriorDualKhajiitM (0x00105551) lista HairKhajiit00
+                    ' (0x000EE85C, MODL VACÍO ⇒ no emite shape) y KhajiitMaleEarTufts (0x000D3371). El CK deja
+                    ' 3 shapes; sin este gate emitíamos 4, con 'KhajiitMaleEarTufts' de más — que no aparece en
+                    ' NINGUNO de los 3158 NIFs del CK. No es filtro por raza ni por sexo: el RNAM es la misma
+                    ' FLST que la del pelo aceptado y DATA=0x03 incluye Male en un NPC macho.
+                    extraNpcParts.Add(npcFID)
+                End If
             End If
         Next
 
@@ -76,6 +104,9 @@ Public Module HeadPartResolver
         For Each t In mergedByType.Keys.OrderBy(Function(k) k)
             finalList.Add(mergedByType(t))
         Next
+        ' Head parts adicionales del NPC que comparten PartType con otro ya emitido (p.ej. la 2a/3a cicatriz):
+        ' van después de los tipos principales, en el orden del PNAM (determinista).
+        finalList.AddRange(extraNpcParts)
         finalList.AddRange(freestandingMisc)
 
         Return finalList

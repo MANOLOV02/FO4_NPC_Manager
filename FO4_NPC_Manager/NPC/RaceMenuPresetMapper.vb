@@ -154,6 +154,21 @@ Public Module RaceMenuPresetMapper
     ''' so the resulting preset applies as an overlay.</summary>
     ''' <param name="raceFid">The NPC's RACE FormID (+ <paramref name="isFemale"/>) — needed to translate the
     ''' .jslot's POSITIONAL tint index to the record's TINI value (see JslotIndexToTini). 0 = identity fallback.</param>
+    ''' <summary>Bloque de cabeza para <c>SseSculptHead</c>: el host del chargen de la cabeza base
+    ''' ("...HeadCharGen" / "...HeadCustomizations") pero NO "...Brows...". Si ninguno matchea, cae al
+    ''' bloque 0 (replica el comportamiento previo de Sculpt(0)). Nothing si no hay bloques.
+    ''' <para>Public y extraída de <see cref="ApplyJslotToPreset"/> para que el reconstructor
+    ''' (SseMorphReverseEngineer), que escribe los campos del preset directamente sin pasar por un jslot,
+    ''' use ESTA MISMA regla en vez de una copia que se desincronizaría.</para></summary>
+    Public Function SelectHeadSculptBlock(parts As List(Of NPC_SculptPart)) As List(Of NPC_SculptVert)
+        If parts Is Nothing OrElse parts.Count = 0 Then Return Nothing
+        Dim headBlk = parts.FirstOrDefault(Function(p) p.Host IsNot Nothing AndAlso
+                                               p.Host.IndexOf("Head", StringComparison.OrdinalIgnoreCase) >= 0 AndAlso
+                                               p.Host.IndexOf("Brows", StringComparison.OrdinalIgnoreCase) < 0)
+        If headBlk Is Nothing Then headBlk = parts(0)
+        Return headBlk.Verts
+    End Function
+
     Public Sub ApplyJslotToPreset(j As RaceMenuJslot, preset As LooksmenuLoader.LooksmenuPreset,
                                   Optional pluginManager As PluginManager = Nothing,
                                   Optional raceFid As UInteger = 0UI, Optional isFemale As Boolean = False)
@@ -261,11 +276,7 @@ Public Module RaceMenuPresetMapper
                 parts.Add(New NPC_SculptPart With {.Host = If(blk.Host, ""), .Verts = verts})
             Next
             preset.SseSculptParts = parts
-            ' Head block for SseSculptHead: the base-head chargen host ("...HeadCharGen"/"...HeadCustomizations"
-            ' but NOT "...Brows..."). Fall back to block 0 if none matches (mirrors the prior Sculpt(0) behaviour).
-            Dim headBlk = parts.FirstOrDefault(Function(p) p.Host.IndexOf("Head", StringComparison.OrdinalIgnoreCase) >= 0 AndAlso p.Host.IndexOf("Brows", StringComparison.OrdinalIgnoreCase) < 0)
-            If headBlk Is Nothing Then headBlk = parts(0)
-            preset.SseSculptHead = headBlk.Verts
+            preset.SseSculptHead = SelectHeadSculptBlock(parts)
         End If
 
         ' ---- FACE: custom morphs → preset (EditFace_Form.vb:580-584).

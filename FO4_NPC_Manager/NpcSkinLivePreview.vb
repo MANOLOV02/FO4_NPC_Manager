@@ -1,4 +1,4 @@
-Imports System.Globalization
+﻿Imports System.Globalization
 Imports System.IO
 Imports System.Drawing
 Imports System.Linq
@@ -290,15 +290,19 @@ Friend NotInheritable Class NpcSkinLivePreview
 
             ' Same fragment as ApplyShapeMaterialOverrides body — only the diffuse/normal/spec
             ' get substituted; material params (specular, smoothness, etc.) stay from the NIF.
+            Dim mnamLoaded As Boolean = False
             If chosenTxst.MaterialPath <> "" Then
                 Dim bgsmMaterial = MaterialResolver.TryLoadMaterialFromDictionary(chosenTxst.MaterialPath, mat, shape.NifShape, shape.NifContent)
                 If bgsmMaterial IsNot Nothing Then
+                    mnamLoaded = True
                     If bgsmMaterial.Diffuse_or_Base_Texture <> "" Then mat.Diffuse_or_Base_Texture = bgsmMaterial.Diffuse_or_Base_Texture
                     If bgsmMaterial.NormalTexture <> "" Then mat.NormalTexture = bgsmMaterial.NormalTexture
                     If bgsmMaterial.SmoothSpecTexture <> "" Then mat.SmoothSpecTexture = bgsmMaterial.SmoothSpecTexture
                 End If
             End If
-            NpcMaterialResolver.ApplyTextureSetToMaterial(mat, chosenTxst)
+            ' REGLA 2 (BAKETEST2 N_S/N_S2) — MNAM cargado ⇒ los TX## del TXST NO se aplican encima.
+            ' RENDER == BAKE: idéntico a NpcMaterialResolver.ApplyTextureSetOverrides.
+            If Not mnamLoaded Then NpcMaterialResolver.ApplyTextureSetToMaterial(mat, chosenTxst)
             count += 1
         Next
         Return count
@@ -348,17 +352,20 @@ Friend NotInheritable Class NpcSkinLivePreview
             If Not usesBody Then Continue For
 
             ' Same body-skin sub flow ApplyShapeMaterialOverrides uses: load BGSM (if MNAM
-            ' present in TXST), copy texture slots only, then apply the rest of the TXST.
+            ' present in TXST), copy texture slots only. Si el MNAM cargó, es la ÚNICA fuente y los
+            ' TX## del TXST NO se aplican encima (REGLA 2, BAKETEST2 N_S/N_S2) — RENDER == BAKE.
             ' Material params (specular, smoothness, subsurface) stay from the NIF.
+            Dim bodyMnamLoaded As Boolean = False
             If bodyTxst.MaterialPath <> "" Then
                 Dim bgsmMaterial = MaterialResolver.TryLoadMaterialFromDictionary(bodyTxst.MaterialPath, mat, shape.NifShape, shape.NifContent)
                 If bgsmMaterial IsNot Nothing Then
+                    bodyMnamLoaded = True
                     If bgsmMaterial.Diffuse_or_Base_Texture <> "" Then mat.Diffuse_or_Base_Texture = bgsmMaterial.Diffuse_or_Base_Texture
                     If bgsmMaterial.NormalTexture <> "" Then mat.NormalTexture = bgsmMaterial.NormalTexture
                     If bgsmMaterial.SmoothSpecTexture <> "" Then mat.SmoothSpecTexture = bgsmMaterial.SmoothSpecTexture
                 End If
             End If
-            NpcMaterialResolver.ApplyTextureSetToMaterial(mat, bodyTxst)
+            If Not bodyMnamLoaded Then NpcMaterialResolver.ApplyTextureSetToMaterial(mat, bodyTxst)
             count += 1
         Next
         Return count

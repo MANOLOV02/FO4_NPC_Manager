@@ -639,8 +639,12 @@ Friend NotInheritable Class NpcMorphPoseResolver
     ''' <summary>Cache of parsed FacialBoneRegions files per race/gender key (e.g. "HumanRace:female").</summary>
     Private Shared ReadOnly _facialBoneRegionsCache As New Dictionary(Of String, FacialBoneRegionsFile)(StringComparer.OrdinalIgnoreCase)
 
-    ''' <summary>Load and parse the per-race HumanRaceFacialBoneRegions<Gender>.txt JSON file.
-    ''' Returns Nothing if the file doesn't exist or can't be parsed.</summary>
+    ''' <summary>Load and parse the per-race HumanRaceFacialBoneRegions<Gender>.txt JSON file
+    ''' for the NPC's OWN gender. Returns Nothing if the file doesn't exist or can't be parsed.
+    ''' <para>This is the GENDER CATALOG: the set of regions the editor offers for a race+gender.
+    ''' It is NOT the right table to resolve an NPC's FMRI values against — for that use
+    ''' <see cref="GetFacialBoneRegionsForFmriResolution"/>, which merges both gender tables
+    ''' (see the measured evidence documented there).</para></summary>
     Friend Shared Function GetFacialBoneRegionsForRace(race As RACE_Data, isFemale As Boolean) As FacialBoneRegionsFile
         If race Is Nothing OrElse String.IsNullOrEmpty(race.EditorID) Then Return Nothing
 
@@ -679,6 +683,85 @@ Friend NotInheritable Class NpcMorphPoseResolver
         End Try
     End Function
 
+    ''' <summary>Cache of the MERGED (both-gender) FacialBoneRegions table, keyed by race EditorID.</summary>
+    Private Shared ReadOnly _facialBoneRegionsMergedCache As New Dictionary(Of String, FacialBoneRegionsFile)(StringComparer.OrdinalIgnoreCase)
+
+    ''' <summary>Table to resolve an NPC's FMRI (facial bone region ID) values against: the race's
+    ''' Female AND Male FacialBoneRegions tables merged into one ID → region map.
+    ''' <para><b>WHY BOTH TABLES — the ID identifies the table, not the NPC's gender.</b> The two
+    ''' per-gender JSONs of a race use <b>DISJOINT ID NAMESPACES</b>. Measured over the vanilla
+    ''' Fallout4.esm files (HumanRace and GhoulRace, 32 regions each, set intersection = EMPTY):</para>
+    ''' <list type="bullet">
+    '''   <item>FEMALE tables: IDs <c>0x3A</c>–<c>0x186BB</c> (the 100000+ block)</item>
+    '''   <item>MALE tables:   IDs <c>0x00</c>–<c>0x3F</c> and <c>0x36EF34xx</c></item>
+    ''' </list>
+    ''' <para><b>⛔ Those ranges are EVIDENCE, NOT A SPEC — and nothing below branches on them.</b>
+    ''' They are recorded here only to justify why merging is safe; there is no range constant, no
+    ''' numeric test, no "if id &gt;= 100000" anywhere in this code. Resolution is <b>PURELY
+    ''' FILE-DRIVEN</b>: we load both tables for the race and index whatever IDs each file actually
+    ''' declares, then answer "WHICH TABLE CONTAINS THIS ID?" by dictionary lookup. A mod shipping
+    ''' its own <c>&lt;Race&gt;FacialBoneRegions&lt;Gender&gt;.txt</c> with completely different IDs
+    ''' works unchanged. This is why it is data-driven and NOT a heuristic "if the lookup misses,
+    ''' try the other file" fallback — the ID itself designates the table, so nothing is guessed.</para>
+    ''' <para><b>Why it matters (measured, 10/10 hits and 0 false positives over 895 controls):</b>
+    ''' ten Fallout4.esm NPCs carry FMRI values from the OPPOSITE gender's namespace — e.g.
+    ''' <c>00217AA0</c> MQ302Minuteman02 (male) has 28/28 IDs in the female namespace, and
+    ''' <c>0008C408</c> DN088_JacquelineSpencer (female) has 14/14 IDs in the male namespace.
+    ''' Loading only the NPC's own-gender file made EVERY lookup miss, so NO face-bone deformation
+    ''' was applied at all and our head came out exactly neutral (deviation 0.0000–0.0001 vs the
+    ''' CK's 0.068–0.290). The CK resolves these NPCs fine. Impact: 83 of 377 shapes, including
+    ''' 28/28 of all eyes, 8/8 neckgore, 16/18 mouth. No FormID is hardcoded — the union of the
+    ''' shipped tables is what does the work.</para>
+    ''' <para>RENDER == BAKE: this is the single resolution entry point used by BOTH the live render
+    ''' (<see cref="BuildFaceBoneTransforms"/>, <see cref="ResolveNeckNnamScale"/>) and the offline
+    ''' FaceGen bake (FaceGenBuilder → FaceGenBuildPipeline.BuildBakeState).</para>
+    ''' <para>GAME-AWARE: FacialBoneRegions JSONs are a FALLOUT 4 mechanism only. SSE has no
+    ''' <c>CharacterAssets\*FacialBoneRegions*.txt</c> (its face morphs come from RACE NAM9 / .tri),
+    ''' so under SSE both loads miss and this returns Nothing exactly as before — no gate needed.</para>
+    ''' <para><b>Tie-break (explicit, data-derived).</b> Disjointness is a property of the FILES, not
+    ''' something we enforce. If a modded race ever ships a race whose two tables DO share an ID, the
+    ''' entry from the NPC's OWN gender file wins — the opposite-gender table is inserted first and
+    ''' the own-gender table is inserted second, overwriting. So in the worst case behaviour degrades
+    ''' exactly to the pre-fix own-gender-only result, never to something arbitrary.</para>
+    ''' <para><b>Missing / unparsable files degrade cleanly.</b> Each side is an independent load that
+    ''' returns Nothing when the file is absent or malformed (never throws), so: both present → union;
+    ''' only one present → that one alone (e.g. vanilla PowerArmorRace ships a Male table only, so
+    ''' both genders resolve against it); neither → Nothing, and every caller already treats Nothing
+    ''' as "no face-bone pose" exactly as before. Custom races with a single table, or with none, are
+    ''' therefore handled without a special case.</para></summary>
+    Friend Shared Function GetFacialBoneRegionsForFmriResolution(race As RACE_Data, isFemale As Boolean) As FacialBoneRegionsFile
+        If race Is Nothing OrElse String.IsNullOrEmpty(race.EditorID) Then Return Nothing
+
+        Dim cacheKey = race.EditorID & ":" & If(isFemale, "Female", "Male") & ":merged"
+        Dim cached As FacialBoneRegionsFile = Nothing
+        If _facialBoneRegionsMergedCache.TryGetValue(cacheKey, cached) Then Return cached
+
+        Dim own = GetFacialBoneRegionsForRace(race, isFemale)
+        Dim other = GetFacialBoneRegionsForRace(race, Not isFemale)
+
+        Dim merged As FacialBoneRegionsFile = Nothing
+        If own Is Nothing AndAlso other Is Nothing Then
+            merged = Nothing
+        ElseIf other Is Nothing OrElse other.Regions Is Nothing OrElse other.Regions.Count = 0 Then
+            merged = own                                  ' nothing to add — reuse the parsed instance
+        Else
+            merged = New FacialBoneRegionsFile()
+            ' Opposite-gender namespace first, own gender second, so own gender wins any (unexpected)
+            ' ID collision — see the collision policy above.
+            For Each kv In other.Regions
+                merged.Regions(kv.Key) = kv.Value
+            Next
+            If own IsNot Nothing AndAlso own.Regions IsNot Nothing Then
+                For Each kv In own.Regions
+                    merged.Regions(kv.Key) = kv.Value
+                Next
+            End If
+        End If
+
+        _facialBoneRegionsMergedCache(cacheKey) = merged
+        Return merged
+    End Function
+
     ''' <summary>Build a pose of face bone deltas from the NPC's FMRI/FMRS subrecords.
     ''' For each FMRI region, look up the region in the race's FacialBoneRegions JSON, then
     ''' for each bone in the region compute a per-axis delta by signed-lerping FMRS sliders
@@ -699,7 +782,9 @@ Friend NotInheritable Class NpcMorphPoseResolver
         If raceRec Is Nothing OrElse raceRec.Header.Signature <> "RACE" Then Return Nothing
         Dim race = _ctx.ParseRaceCached(raceRec)
 
-        Dim regionsFile = GetFacialBoneRegionsForRace(race, state.IsFemale)
+        ' FMRI RESOLUTION → merged both-gender table (disjoint ID namespaces; 10 vanilla NPCs carry
+        ' opposite-gender FMRI). See GetFacialBoneRegionsForFmriResolution.
+        Dim regionsFile = GetFacialBoneRegionsForFmriResolution(race, state.IsFemale)
         If regionsFile Is Nothing Then Return Nothing
 
         ' NNAM ("Neck Fat Adjustments Scale") is NOT part of this FMRS face-bone pose anymore — it is
@@ -724,7 +809,8 @@ Friend NotInheritable Class NpcMorphPoseResolver
         If raceRec Is Nothing OrElse raceRec.Header.Signature <> "RACE" Then Return (1.0F, 1.0F)
         Dim race = _ctx.ParseRaceCached(raceRec)
 
-        Dim regionsFile = GetFacialBoneRegionsForRace(race, state.IsFemale)
+        ' Same FMRI resolution rule as BuildFaceBoneTransforms: merged both-gender table.
+        Dim regionsFile = GetFacialBoneRegionsForFmriResolution(race, state.IsFemale)
         If regionsFile Is Nothing Then Return (1.0F, 1.0F)
 
         Dim neckNnamX As Single = If(state.IsFemale, race.FemaleNeckNNAMX, race.MaleNeckNNAMX)

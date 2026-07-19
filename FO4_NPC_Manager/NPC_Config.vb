@@ -1,4 +1,4 @@
-Imports System.IO
+﻿Imports System.IO
 Imports System.Text.Json
 
 ''' <summary>
@@ -127,6 +127,43 @@ Public Class NPC_Config
     Public Property ShowCatGeneric As Boolean = False
     Public Property ShowCatTemplate As Boolean = False
     Public Property ShowCatUnused As Boolean = False
+
+    ''' <summary>Geometría de la ventana principal, persistida al cerrar y restaurada en MainForm_Load.
+    ''' Se guarda el rectángulo NORMAL (RestoreBounds), no el actual: si el usuario cierra maximizado,
+    ''' Bounds valdría el monitor entero y al des-maximizar la ventana quedaría pegada al tamaño de pantalla.
+    ''' MainWindowWidth = 0 significa "nunca se guardó" → se respeta el default del Designer
+    ''' (CenterScreen + Maximized). La restauración valida contra las pantallas ACTUALES: un monitor
+    ''' desconectado dejaría la ventana fuera de cualquier escritorio visible.</summary>
+    Public Property MainWindowLeft As Integer = 0
+    Public Property MainWindowTop As Integer = 0
+    Public Property MainWindowWidth As Integer = 0
+    Public Property MainWindowHeight As Integer = 0
+    Public Property MainWindowMaximized As Boolean = True
+
+    ''' <summary>"Replicate engine skin-weight normalization (non-renormalized)" (CharGen Options -> Fixes).
+    ''' <b>Default True</b>, gateado a FO4.
+    ''' <para>Replica la normalizacion de pesos de skin que ejecuta el MOTOR: el 4o peso no se lee, se calcula
+    ''' <c>w3 = 1 - (w0+w1+w2)</c>, y si sale <c>&lt;= 0</c> se descarta <b>sin renormalizar</b> el resto ⇒ el peso
+    ''' efectivo del vertice queda en <c>1+d</c> y la matriz de skin sale escalada. <b>No es un defecto del CK</b>:
+    ''' <c>SkinBlend</c> es la misma funcion instruccion por instruccion en <c>CreationKit.exe 0x142B73230</c> y en
+    ''' <c>Fallout4.exe 0x141837390</c> ⇒ es el comportamiento del motor, y el blend renormalizado "correcto" no lo
+    ''' ejecuta nadie. Detalle y VAs: <see cref="FO4_Base_Library.EngineSkinWeightNormalization"/>.</para>
+    ''' <para><b>False = control de regresion</b>, bit-identico al historico. Se mantiene a proposito; no eliminar.</para>
+    ''' <para><b>Solo FO4.</b> Verificado por RE unicamente en los binarios de Fallout 4; en Skyrim no esta
+    ''' verificado (ni la firma de bytes ni los strings ancla aparecen en SkyrimSE.exe / CreationKit.exe de Skyrim).
+    ''' El gate vive en <see cref="ApplyEngineSkinWeightNormalizationGate"/> — nunca escribas
+    ''' <c>EngineSkinWeightNormalization.Enabled</c> directo.</para>
+    ''' Persistido en npc_config.json.</summary>
+    Public Property ReplicateEngineSkinWeightNormalization As Boolean = True
+
+    ''' <summary>ÚNICO punto que enciende <see cref="FO4_Base_Library.EngineSkinWeightNormalization.Enabled"/>. Aplica el
+    ''' gate por juego: la ley sólo puede activarse para Fallout 4 (ver el ⛔ de
+    ''' <see cref="ReplicateEngineSkinWeightNormalization"/>). Llamar tras cargar config, al cambiar de juego y al cambiar
+    ''' el checkbox.</summary>
+    Public Shared Sub ApplyEngineSkinWeightNormalizationGate(game As FO4_Base_Library.Config_App.Game_Enum)
+        FO4_Base_Library.EngineSkinWeightNormalization.Enabled =
+            Current.ReplicateEngineSkinWeightNormalization AndAlso game = FO4_Base_Library.Config_App.Game_Enum.Fallout4
+    End Sub
 
     Private Shared ReadOnly ConfigFilePath As String = Path.Combine(Application.StartupPath, "npc_config.json")
 

@@ -443,8 +443,11 @@ Friend Module SseFoldLayerStack
 
     ''' <summary>Sube un acumulador Double RGBA como textura Rgba32f (float). ⭐ NO se cuantiza a 8 bits: si el base
     ''' del GPU entrara en bytes, el camino GPU arrastraría un redondeo que el CPU no tiene y la paridad quedaría
-    ''' limitada por el TRANSPORTE en vez de por el compose (que es lo que se quiere medir).</summary>
-    Private Function UploadRgba32f(acc As Double(), npix As Integer, w As Integer, h As Integer,
+    ''' limitada por el TRANSPORTE en vez de por el compose (que es lo que se quiere medir).
+    ''' ⭐ Friend (no Private): el camino CPU del fold (<c>ApplySseFacetintFolded</c>) sube su resultado por acá
+    ''' TAMBIÉN, para que los dos caminos instalen la MISMA representación (Rgba32f) y el transporte deje de ser
+    ''' una diferencia entre ellos. ⛔ No volver a Private ni bajar el CPU a RGBA8.</summary>
+    Friend Function UploadRgba32f(acc As Double(), npix As Integer, w As Integer, h As Integer,
                                    Optional forceOpaque As Boolean = False) As Integer
         Dim f(npix * 4 - 1) As Single
         ' Conversión Double→Single elemento-a-elemento, paralela por rangos (disjunta ⇒ bit-idéntica).
@@ -469,8 +472,11 @@ Friend Module SseFoldLayerStack
         Return UploadRgba32fFromSingles(f, w, h)
     End Function
 
-    ''' <summary>Textura Rgba32f plana de un color constante (el seed 0.5 del facetint). Sin pasar por Double.</summary>
-    Private Function UploadRgba32fFlat(r As Single, g As Single, b As Single, a As Single, w As Integer, h As Integer) As Integer
+    ''' <summary>Textura Rgba32f plana de un color constante (el seed 0.5 del facetint). Sin pasar por Double.
+    ''' ⭐ Friend (no Private): <c>ApplySseFacetint</c> siembra por acá TAMBIÉN, para que su seed sea el 0.5 EXACTO
+    ''' y no el byte 128 (=0.50196) que usaba antes — el CPU siembra 0.5 exacto y la diferencia se propaga a
+    ''' fgTint (2.00781 vs 2.01563). ⛔ No volver a sembrar por bytes.</summary>
+    Friend Function UploadRgba32fFlat(r As Single, g As Single, b As Single, a As Single, w As Integer, h As Integer) As Integer
         Dim npix = w * h
         Dim f(npix * 4 - 1) As Single
         System.Threading.Tasks.Parallel.ForEach(

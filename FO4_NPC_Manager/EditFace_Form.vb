@@ -624,7 +624,131 @@ Public Class EditFace_Form
         End If
         ListSseSculpt.ShowItemToolTips = True
         ListSseSculpt.EndUpdate()
+#If DEBUG Then
+        EnsureRegenerateMorphsDebugButton()
+#End If
     End Sub
+
+#If DEBUG Then
+    ''' <summary>⚠️ PROVISORIO (diagnóstico) — DEBUG ONLY: en Release el control ni siquiera se crea.
+    ''' Mismo patrón que MainForm.AddSseFoldedRenderDebugToggle. Se construye en código (no en el Designer)
+    ''' precisamente para que no exista fuera de debug.</summary>
+    Private _btnRegenMorphs As Button
+
+    Private Sub EnsureRegenerateMorphsDebugButton()
+        If _btnRegenMorphs IsNot Nothing Then Return
+        ' Gate por juego además del #If DEBUG (mismo patrón que MainForm.AddSseFoldedRenderDebugToggle):
+        ' el sculpt es de RaceMenu, y en FO4 este tab ni siquiera está en el TabControl.
+        If Config_App.Current.Game <> Config_App.Game_Enum.Skyrim Then Return
+        If TabPageSseSculpt Is Nothing OrElse ListSseSculpt Is Nothing Then Return
+        Dim bar As New Panel With {.Dock = DockStyle.Bottom, .Height = 34, .Padding = New Padding(0, 4, 0, 0)}
+        _btnRegenMorphs = New Button With {
+            .Text = "Regenerate morphs (debug)", .Dock = DockStyle.Left, .Width = 220, .AutoSize = False}
+        bar.Controls.Add(_btnRegenMorphs)
+        TabPageSseSculpt.Controls.Add(bar)
+        ' El Fill debe quedar al FRENTE del z-order para que ocupe lo que sobra tras el panel Bottom
+        ' (WinForms acomoda los Dock en orden INVERSO al z-order).
+        ListSseSculpt.BringToFront()
+        AddHandler _btnRegenMorphs.Click, AddressOf OnRegenerateMorphsDebug
+    End Sub
+
+    ''' <summary>Reconstruye NAM9 + sculpt desde el FaceGen YA HORNEADO y los aplica al NPC por el MISMO
+    ''' camino que un .jslot cargado de fichero (RaceMenuPresetMapper.ApplyJslotToPreset sobre la instancia
+    ''' compartida de _appliedPresets). No escribe nada a disco: queda como un preset cargado — si guardás,
+    ''' persiste; si descartás, se va. Ver SseMorphReverseEngineer para el porqué de la inversión.</summary>
+    Private Sub OnRegenerateMorphsDebug(sender As Object, e As EventArgs)
+        Dim p = Preset
+        If p Is Nothing Then
+            MessageBox.Show(Me, "This NPC has no overlay registered yet.", "Regenerate morphs",
+                            MessageBoxButtons.OK, MessageBoxIcon.Information)
+            Return
+        End If
+
+        Dim res As SseMorphReverseEngineer.Result
+        Dim oldCursor = Cursor
+        Cursor = Cursors.WaitCursor
+        Try
+            res = SseMorphReverseEngineer.Build(_rootNpcFormID, _pluginManager, _appliedPresets)
+        Catch ex As Exception
+            Cursor = oldCursor
+            MessageBox.Show(Me, "Reconstruction failed:" & vbCrLf & vbCrLf & ex.ToString(),
+                            "Regenerate morphs", MessageBoxButtons.OK, MessageBoxIcon.Error)
+            Return
+        Finally
+            Cursor = oldCursor
+        End Try
+
+        If res Is Nothing OrElse Not res.Ok Then
+            MessageBox.Show(Me, If(res Is Nothing, "No result.", res.Message),
+                            "Regenerate morphs", MessageBoxButtons.OK, MessageBoxIcon.Warning)
+            Return
+        End If
+
+        ' No-op: el record ya reproduce el horneado. Se muestra el informe igual (el usuario querrá ver
+        ' la tabla que lo respalda) pero SIN botón de aplicar: no hay nada que aplicar.
+        If res.IsNoOp Then
+            ShowRegenReport(res, applyEnabled:=False)
+            Return
+        End If
+
+        If ShowRegenReport(res) <> DialogResult.OK Then Return
+
+        ' Escribe SÓLO los cinco campos reconstruidos sobre la MISMA instancia de preset que usa MainForm.
+        ' No se pasa por ApplyJslotToPreset a propósito: ese camino es para cargar un .jslot completo y
+        ' escribe además peso/body morphs/overlays/transforms/skin overrides de forma incondicional.
+        SseMorphReverseEngineer.ApplyTo(res, p)
+
+        ' Re-seed de la UI + re-render, igual que tras mover un slider.
+        LoadSseMorphValues()
+        PopulateSseSculptTab()
+        HasUncommittedChanges = True
+        ScheduleRefresh(FaceRefreshScope.Morphs)
+    End Sub
+
+    ''' <summary>Informe modal previo a aplicar. El usuario ve los NAM9 reconstruidos y el residual POR SHAPE
+    ''' antes de decidir — sin esto la feature sería una caja negra que dice "listo" sin evidencia.</summary>
+    Private Function ShowRegenReport(res As SseMorphReverseEngineer.Result,
+                                     Optional applyEnabled As Boolean = True) As DialogResult
+        Using f As New Form With {
+            .Text = "Regenerate morphs - preview",
+            .StartPosition = FormStartPosition.CenterParent,
+            .Size = New Size(760, 560),
+            .MinimizeBox = False, .MaximizeBox = False, .ShowInTaskbar = False}
+            ' TabStop=False para que el foco inicial vaya al botón y no al TextBox: un TextBox que recibe
+            ' el foco autoselecciona TODO su contenido (comportamiento por defecto de WinForms), que es lo
+            ' que hacía aparecer el informe entero resaltado al abrir.
+            Dim txt As New TextBox With {
+                .Multiline = True, .ReadOnly = True, .Dock = DockStyle.Fill,
+                .ScrollBars = ScrollBars.Both, .WordWrap = False, .TabStop = False,
+                .Font = New Font(FontFamily.GenericMonospace, 8.5F),
+                .Text = NormalizeEol(res.Report)}
+            Dim bar As New Panel With {.Dock = DockStyle.Bottom, .Height = 40, .Padding = New Padding(6)}
+            Dim ok As New Button With {.Text = "Apply", .DialogResult = DialogResult.OK,
+                                       .Dock = DockStyle.Right, .Width = 110, .Visible = applyEnabled}
+            Dim cancel As New Button With {.Text = If(applyEnabled, "Cancel", "Close"),
+                                           .DialogResult = DialogResult.Cancel, .Dock = DockStyle.Right, .Width = 110}
+            bar.Controls.Add(ok)
+            bar.Controls.Add(cancel)
+            f.Controls.Add(txt)
+            f.Controls.Add(bar)
+            txt.BringToFront()
+            f.AcceptButton = If(applyEnabled, ok, cancel)
+            f.CancelButton = cancel
+            ' Cinturón y tirantes: aunque el foco no vaya al TextBox, colapsar la selección al abrir
+            ' garantiza que el informe se vea limpio también si el usuario lo clica después.
+            AddHandler f.Shown, Sub() txt.Select(0, 0)
+            Return f.ShowDialog(Me)
+        End Using
+    End Function
+
+    ''' <summary>Normaliza saltos de línea a CRLF SIN duplicarlos. StringBuilder.AppendLine ya emite
+    ''' Environment.NewLine (= CRLF en Windows), así que un Replace(vbLf, vbCrLf) directo convertía cada
+    ''' CRLF en CR+CRLF y metía líneas en blanco de más en el TextBox.</summary>
+    Private Shared Function NormalizeEol(s As String) As String
+        If String.IsNullOrEmpty(s) Then Return ""
+        Return s.Replace(vbCrLf, vbLf).Replace(vbCr, vbLf).Replace(vbLf, vbCrLf)
+    End Function
+#End If
 
     Private Sub PopulateSseMorphTab()
         ' Flat vertical TableLayoutPanel (proven layout) with a bold CK-category HEADER row before each group's
@@ -1469,8 +1593,14 @@ Public Class EditFace_Form
         split.Controls.Add(listHost, 0, 0)
 
         ' --- Detail (right) ---
-        _sseTintDetailHost = New Panel With {.Dock = DockStyle.Fill, .Padding = New Padding(10, 2, 4, 4)}
-        split.Controls.Add(_sseTintDetailHost, 1, 0)
+        ' The detail lives in a GroupBox whose TOP BORDER is pushed down by the 22px header row of listHost, so it
+        ' lines up with the top border of the layer list on the left. The inner Panel docks to the GroupBox's
+        ' DisplayRectangle (which already excludes the caption band), so nothing is drawn over the frame; its own
+        ' padding keeps the children clear of the left/right/bottom borders.
+        Dim detailBox As New GroupBox With {.Text = "Selected layer", .Dock = DockStyle.Fill, .Margin = New Padding(6, 22, 4, 4)}
+        _sseTintDetailHost = New Panel With {.Dock = DockStyle.Fill, .Padding = New Padding(8, 6, 8, 8), .AutoScroll = True}
+        detailBox.Controls.Add(_sseTintDetailHost)
+        split.Controls.Add(detailBox, 1, 0)
         BuildSseTintDetailControls()
 
         PanelSseTints.Controls.Clear()
@@ -1527,16 +1657,16 @@ Public Class EditFace_Form
 
     ''' <summary>Build the (empty) detail controls once; SelectSseTintLayer fills them per layer. Two-column grid
     ''' (label + content) so every control and button stays inside the detail panel — never under the preview. The
-    ''' two action buttons (Custom… / Clear) share the same right-hand column so they line up (symmetric).</summary>
+    ''' mask buttons (Choose… / Clear / Reset to RACE default) are left-aligned with the content column.</summary>
     Private Sub BuildSseTintDetailControls()
         Const LabelCol As Integer = 128
         Const BtnCol As Integer = 92          ' width of each right-hand action button column
         _sseTintDetailHost.Controls.Clear()
 
-        Dim lay As New TableLayoutPanel With {.Dock = DockStyle.Top, .AutoSize = True, .AutoSizeMode = AutoSizeMode.GrowAndShrink, .ColumnCount = 2, .RowCount = 6}
+        Dim lay As New TableLayoutPanel With {.Dock = DockStyle.Top, .AutoSize = True, .AutoSizeMode = AutoSizeMode.GrowAndShrink, .ColumnCount = 2, .RowCount = 5}
         lay.ColumnStyles.Add(New ColumnStyle(SizeType.Absolute, LabelCol))
         lay.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100))
-        For r = 0 To 5 : lay.RowStyles.Add(New RowStyle(SizeType.Absolute, 34)) : Next
+        For r = 0 To 4 : lay.RowStyles.Add(New RowStyle(SizeType.Absolute, 34)) : Next
 
         ' Row 0: preset dropdown (TIAS)
         lay.Controls.Add(SseTintDetailLabel("Color source:"), 0, 0)
@@ -1545,18 +1675,19 @@ Public Class EditFace_Form
         AddHandler _sseTintPresetCombo.SelectedIndexChanged, AddressOf OnSseTintPresetChanged
         lay.Controls.Add(_sseTintPresetCombo, 1, 0)
 
-        ' Row 1: colour swatch (fills) + Custom… (right column)
+        ' Row 1: colour swatch (stretches right up to Custom…) + Custom… button. Both use Anchor Left|Right with the
+        ' same explicit height so the swatch is a thin bar exactly as tall as the button, not a full-cell block.
+        Const RowCtlH As Integer = 26
         lay.Controls.Add(SseTintDetailLabel("Color:"), 0, 1)
-        Dim colorRow As New TableLayoutPanel With {.Dock = DockStyle.Fill, .ColumnCount = 3, .RowCount = 1, .Margin = New Padding(0)}
+        Dim colorRow As New TableLayoutPanel With {.Dock = DockStyle.Fill, .ColumnCount = 2, .RowCount = 1, .Margin = New Padding(0)}
         colorRow.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100))
         colorRow.ColumnStyles.Add(New ColumnStyle(SizeType.Absolute, BtnCol))
-        colorRow.ColumnStyles.Add(New ColumnStyle(SizeType.Absolute, BtnCol))
-        _sseTintSwatch = New Button With {.Dock = DockStyle.Fill, .Height = 26, .Enabled = False, .FlatStyle = FlatStyle.Popup, .Margin = New Padding(3, 4, 3, 3)}
+        _sseTintSwatch = New Button With {.Anchor = AnchorStyles.Left Or AnchorStyles.Right, .Height = RowCtlH, .Enabled = False, .FlatStyle = FlatStyle.Popup, .Margin = New Padding(3, 4, 3, 3)}
         colorRow.Controls.Add(_sseTintSwatch, 0, 0)
-        _sseTintCustomBtn = New Button With {.Text = "Custom…", .Dock = DockStyle.Fill, .Height = 26, .Margin = New Padding(3, 4, 3, 3)}
+        _sseTintCustomBtn = New Button With {.Text = "Custom…", .Anchor = AnchorStyles.Left Or AnchorStyles.Right, .Height = RowCtlH, .Margin = New Padding(3, 4, 3, 3)}
         AddHandler _sseTintCustomBtn.Click, AddressOf OnSseTintCustomColor
         _sseTintToolTip.SetToolTip(_sseTintCustomBtn, "Pick a free RGB colour (TIAS = -1 = custom, like RaceMenu / the CK colour picker).")
-        colorRow.Controls.Add(_sseTintCustomBtn, 2, 0)   ' rightmost column → aligns with Clear below
+        colorRow.Controls.Add(_sseTintCustomBtn, 1, 0)
         lay.Controls.Add(colorRow, 1, 1)
 
         ' Row 2: coverage (TINV)
@@ -1572,25 +1703,24 @@ Public Class EditFace_Form
         _sseTintMaskLabel = New Label With {.Dock = DockStyle.Fill, .AutoEllipsis = True, .TextAlign = ContentAlignment.MiddleLeft, .Margin = New Padding(3, 0, 3, 0)}
         lay.Controls.Add(_sseTintMaskLabel, 1, 3)
 
-        ' Row 4: mask buttons UNDER the filename (Choose… / Clear, right-aligned → Clear lines up with Custom…).
-        Dim maskBtns As New TableLayoutPanel With {.Dock = DockStyle.Fill, .ColumnCount = 3, .RowCount = 1, .Margin = New Padding(0)}
-        maskBtns.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100))
+        ' Row 4: mask buttons UNDER the filename, LEFT-aligned so Choose… starts exactly where the .dds name starts,
+        ' with Reset to RACE default immediately to their right.
+        Dim maskBtns As New TableLayoutPanel With {.Dock = DockStyle.Fill, .ColumnCount = 4, .RowCount = 1, .Margin = New Padding(0)}
         maskBtns.ColumnStyles.Add(New ColumnStyle(SizeType.Absolute, BtnCol))
         maskBtns.ColumnStyles.Add(New ColumnStyle(SizeType.Absolute, BtnCol))
-        ' col 0 (Percent 100) stays empty → pushes the two buttons to the right (Clear lines up with Custom…).
-        _sseTintMaskPick = New Button With {.Text = "Choose…", .Dock = DockStyle.Fill, .Height = 26, .Margin = New Padding(3, 2, 3, 3)}
+        maskBtns.ColumnStyles.Add(New ColumnStyle(SizeType.AutoSize))
+        maskBtns.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100))   ' trailing filler
+        _sseTintMaskPick = New Button With {.Text = "Choose…", .Anchor = AnchorStyles.Left Or AnchorStyles.Right, .Height = RowCtlH, .Margin = New Padding(3, 2, 3, 3)}
         AddHandler _sseTintMaskPick.Click, Sub(s, e) OnSseTintTextureClick(_sseTintSelIndex)
         _sseTintToolTip.SetToolTip(_sseTintMaskPick, "Warpaint (RaceMenu): pick a tint mask registered by a mod. Empty = uses the RACE's own mask.")
-        maskBtns.Controls.Add(_sseTintMaskPick, 1, 0)
-        _sseTintMaskClear = New Button With {.Text = "Clear", .Dock = DockStyle.Fill, .Height = 26, .Margin = New Padding(3, 2, 3, 3)}
+        maskBtns.Controls.Add(_sseTintMaskPick, 0, 0)
+        _sseTintMaskClear = New Button With {.Text = "Clear", .Anchor = AnchorStyles.Left Or AnchorStyles.Right, .Height = RowCtlH, .Margin = New Padding(3, 2, 3, 3)}
         AddHandler _sseTintMaskClear.Click, AddressOf OnSseTintMaskClear
-        maskBtns.Controls.Add(_sseTintMaskClear, 2, 0)     ' rightmost → aligns with Custom… above
-        lay.Controls.Add(maskBtns, 1, 4)
-
-        ' Row 5: reset to RACE default (in the content column, left-aligned)
-        _sseTintResetBtn = New Button With {.Text = "Reset to RACE default", .AutoSize = True, .Height = 28, .Anchor = AnchorStyles.Left, .Margin = New Padding(3, 5, 3, 3)}
+        maskBtns.Controls.Add(_sseTintMaskClear, 1, 0)
+        _sseTintResetBtn = New Button With {.Text = "Reset to RACE default", .AutoSize = True, .Height = RowCtlH, .Anchor = AnchorStyles.Left, .Margin = New Padding(9, 2, 3, 3)}
         AddHandler _sseTintResetBtn.Click, AddressOf OnSseTintResetLayer
-        lay.Controls.Add(_sseTintResetBtn, 1, 5)
+        maskBtns.Controls.Add(_sseTintResetBtn, 2, 0)
+        lay.Controls.Add(maskBtns, 1, 4)
 
         _sseTintDetailHost.Controls.Add(lay)
     End Sub
@@ -3646,24 +3776,32 @@ Public Class EditFace_Form
     End Function
 
     ''' <summary>Which of the 7 FMRS components (PosX/Y/Z, RotX/Y/Z, Scale) can produce a non-zero
-    ''' bone delta. An axis is live iff Maxima or Minima differ from the region's Default on that
-    ''' axis — that is exactly LerpFmrs (max-default / min-default, FaceBonePoseBuilder.vb). Comparing
-    ''' against 0 would mis-handle a non-zero Default (hide a live axis, or show a dead min=max=default
-    ''' one). Component 6 (Scale) drives all three scale axes from the single FMRS scale value, so it
-    ''' is live if any scale axis ranges off its Default.</summary>
+    ''' bone delta.
+    '''
+    ''' Delegates the rule to <see cref="FaceBonePoseBuilder.IsFmrsAxisLive"/> so the editor and the
+    ''' render/bake path share ONE convention. An axis is live iff its Minima or Maxima is non-zero.
+    '''
+    ''' ⛔ This used to compare Minima/Maxima against the region's Defaults, which contradicts the
+    ''' engine: the FMRS lerp never reads Defaults (RE — Fallout4.exe FUN_1403fd920 @0x3FD920 and
+    ''' CreationKit.exe FUN_140419CD0 @0x419CD0 receive an 18-float [Minima|Maxima] bone struct with
+    ''' no Defaults slot, and contain zero subtract instructions). The two conventions agree only
+    ''' because every vanilla region ships Defaults = 0; a modded race with Defaults ≠ 0 would have
+    ''' made this editor disagree with what the renderer actually draws.
+    '''
+    ''' Component 6 (Scale) drives all three scale axes from the single FMRS scale value, so it is
+    ''' live if any scale axis has a non-zero endpoint.</summary>
     Private Shared Function RegionLiveComponents(rd As FacialBoneRegion) As Boolean()
         Dim live(6) As Boolean
-        Dim dp = rd.DefaultPosition, dr = rd.DefaultRotation, ds = rd.DefaultScale
         For Each b In rd.Bones
-            If b.MinimaPosition.X <> dp.X OrElse b.MaximaPosition.X <> dp.X Then live(0) = True
-            If b.MinimaPosition.Y <> dp.Y OrElse b.MaximaPosition.Y <> dp.Y Then live(1) = True
-            If b.MinimaPosition.Z <> dp.Z OrElse b.MaximaPosition.Z <> dp.Z Then live(2) = True
-            If b.MinimaRotation.X <> dr.X OrElse b.MaximaRotation.X <> dr.X Then live(3) = True
-            If b.MinimaRotation.Y <> dr.Y OrElse b.MaximaRotation.Y <> dr.Y Then live(4) = True
-            If b.MinimaRotation.Z <> dr.Z OrElse b.MaximaRotation.Z <> dr.Z Then live(5) = True
-            If b.MinimaScale.X <> ds.X OrElse b.MaximaScale.X <> ds.X OrElse
-               b.MinimaScale.Y <> ds.Y OrElse b.MaximaScale.Y <> ds.Y OrElse
-               b.MinimaScale.Z <> ds.Z OrElse b.MaximaScale.Z <> ds.Z Then live(6) = True
+            If FaceBonePoseBuilder.IsFmrsAxisLive(b.MinimaPosition.X, b.MaximaPosition.X) Then live(0) = True
+            If FaceBonePoseBuilder.IsFmrsAxisLive(b.MinimaPosition.Y, b.MaximaPosition.Y) Then live(1) = True
+            If FaceBonePoseBuilder.IsFmrsAxisLive(b.MinimaPosition.Z, b.MaximaPosition.Z) Then live(2) = True
+            If FaceBonePoseBuilder.IsFmrsAxisLive(b.MinimaRotation.X, b.MaximaRotation.X) Then live(3) = True
+            If FaceBonePoseBuilder.IsFmrsAxisLive(b.MinimaRotation.Y, b.MaximaRotation.Y) Then live(4) = True
+            If FaceBonePoseBuilder.IsFmrsAxisLive(b.MinimaRotation.Z, b.MaximaRotation.Z) Then live(5) = True
+            If FaceBonePoseBuilder.IsFmrsAxisLive(b.MinimaScale.X, b.MaximaScale.X) OrElse
+               FaceBonePoseBuilder.IsFmrsAxisLive(b.MinimaScale.Y, b.MaximaScale.Y) OrElse
+               FaceBonePoseBuilder.IsFmrsAxisLive(b.MinimaScale.Z, b.MaximaScale.Z) Then live(6) = True
         Next
         Return live
     End Function
@@ -4094,20 +4232,32 @@ Public Class EditFace_Form
         Close()
     End Sub
 
+    ''' <summary>Cancel = sólo marcar el resultado y cerrar. El rollback NO va aquí: vive en
+    ''' <see cref="EditFaceForm_FormClosing"/>, que corre para CUALQUIER vía de cierre. Centralizarlo
+    ''' allí es lo que hace que la X de la ventana haga lo mismo que este botón — mismo diseño que
+    ''' ArmoEditor_Form/ArmaEditor_Form, que ya lo tenían bien.
+    ''' ⛔ Tampoco puede ir aquí por re-entrada: este handler llama a Close(), así que invocarlo desde
+    ''' FormClosing re-entraría en el cierre.</summary>
     Private Sub OnCancel(sender As Object, e As EventArgs)
-        ' Restore the snapshot taken at construction. If there was no overlay before, drop it.
+        DialogResult = DialogResult.Cancel
+        Close()
+    End Sub
+
+    ''' <summary>Deshace las ediciones en vivo restaurando el snapshot tomado en el constructor. Las
+    ''' ediciones del editor mutan _appliedPresets[npc] POR REFERENCIA durante la sesión, así que sin
+    ''' esto un cierre no-OK deja el overlay ya modificado mientras el caller —que ve DialogResult=Cancel—
+    ''' se salta MarkNpcDirty Y el re-render: un NPC editado que la app cree cancelado.
+    ''' Idempotente (asignación / Remove), y sólo toca campos ReadOnly puestos en el ctor, así que es
+    ''' seguro ejecutarlo antes o después del teardown de GL.</summary>
+    Private Sub RevertOverlay()
         If _hadPriorOverlay Then
             _appliedPresets(_rootNpcFormID) = _priorPreset
         Else
             _appliedPresets.Remove(_rootNpcFormID)
         End If
-        ' Phase D: the MainForm's preview never reflected our intermediate edits (we render into
-        ' the editor's own embedded host), so on Cancel there's nothing to repaint there. The
-        ' overlay rollback above is enough; HasUncommittedChanges stays False and ButtonEditFace
-        ' caller skips the post-modal MainForm reload.
+        ' El preview del MainForm nunca reflejó las ediciones intermedias (se renderiza en el host
+        ' embebido del editor), así que no hay nada que repintar allí: el rollback del overlay basta.
         HasUncommittedChanges = False
-        DialogResult = DialogResult.Cancel
-        Close()
     End Sub
 
     ''' <summary>Refresh dispatcher that targets the editor's embedded NpcRenderHost. The form
@@ -4258,6 +4408,14 @@ Public Class EditFace_Form
     End Sub
 
     Private Sub EditFaceForm_FormClosing(sender As Object, e As FormClosingEventArgs) Handles Me.FormClosing
+        ' ⭐ Rollback ANTES de cualquier teardown, y para CUALQUIER cierre que no sea OK: botón Cancel,
+        ' X de la ventana, Esc y Alt+F4. WinForms asigna DialogResult=Cancel solo al cerrar un modal con
+        ' la X, así que este único test cubre las cuatro vías. Sin esto, la X dejaba el overlay ya
+        ' mutado mientras el caller lo daba por cancelado (MainForm.vb:9664 exige DialogResult=OK).
+        ' Va primero por el mismo motivo que en ArmoEditor_Form.vb:1677: el revert no debe depender de
+        ' nada que el teardown haya podido destruir.
+        If DialogResult <> DialogResult.OK Then RevertOverlay()
+
         ' Quiesce the render loop FIRST so paints queued by the safety-repaint heartbeat
         ' cannot drain while the host disposes GL caches (TintGpuCache, etc.). Without
         ' this, an OnPaint between _editorHost.Dispose() and EditPreviewControl.Clean()

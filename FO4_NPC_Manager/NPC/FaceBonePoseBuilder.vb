@@ -78,20 +78,24 @@ Public Module FaceBonePoseBuilder
                 ' Empirical validation 2026-04-19 (Cient FMIN=2 / Preston FMIN=4). See
                 ' MainForm 2026-04-19 commit notes for the full rationale; the math is
                 ' centralized here so render and bake never drift.
+                ' region.Default{Position,Rotation,Scale} are deliberately NOT passed: the engine's
+                ' lerp never sees them (see LerpFmrs — the bone struct it receives is [Minima|Maxima]
+                ' only). Keeping them out of the call is what stops the "− default" convention from
+                ' creeping back in.
                 Dim deltaPos As New System.Numerics.Vector3(
-                    LerpFmrs(px, region.DefaultPosition.X, boneEntry.MinimaPosition.X, boneEntry.MaximaPosition.X) * fmin,
-                    LerpFmrs(py, region.DefaultPosition.Y, boneEntry.MinimaPosition.Y, boneEntry.MaximaPosition.Y) * fmin,
-                    LerpFmrs(pz, region.DefaultPosition.Z, boneEntry.MinimaPosition.Z, boneEntry.MaximaPosition.Z) * fmin)
+                    LerpFmrs(px, boneEntry.MinimaPosition.X, boneEntry.MaximaPosition.X) * fmin,
+                    LerpFmrs(py, boneEntry.MinimaPosition.Y, boneEntry.MaximaPosition.Y) * fmin,
+                    LerpFmrs(pz, boneEntry.MinimaPosition.Z, boneEntry.MaximaPosition.Z) * fmin)
 
                 Dim deltaRot As New System.Numerics.Vector3(
-                    LerpFmrs(rx, region.DefaultRotation.X, boneEntry.MinimaRotation.X, boneEntry.MaximaRotation.X) * fmin,
-                    LerpFmrs(ry, region.DefaultRotation.Y, boneEntry.MinimaRotation.Y, boneEntry.MaximaRotation.Y) * fmin,
-                    LerpFmrs(rz, region.DefaultRotation.Z, boneEntry.MinimaRotation.Z, boneEntry.MaximaRotation.Z) * fmin)
+                    LerpFmrs(rx, boneEntry.MinimaRotation.X, boneEntry.MaximaRotation.X) * fmin,
+                    LerpFmrs(ry, boneEntry.MinimaRotation.Y, boneEntry.MaximaRotation.Y) * fmin,
+                    LerpFmrs(rz, boneEntry.MinimaRotation.Z, boneEntry.MaximaRotation.Z) * fmin)
 
                 Dim deltaScale As New System.Numerics.Vector3(
-                    LerpFmrs(sc, region.DefaultScale.X, boneEntry.MinimaScale.X, boneEntry.MaximaScale.X) * fmin,
-                    LerpFmrs(sc, region.DefaultScale.Y, boneEntry.MinimaScale.Y, boneEntry.MaximaScale.Y) * fmin,
-                    LerpFmrs(sc, region.DefaultScale.Z, boneEntry.MinimaScale.Z, boneEntry.MaximaScale.Z) * fmin)
+                    LerpFmrs(sc, boneEntry.MinimaScale.X, boneEntry.MaximaScale.X) * fmin,
+                    LerpFmrs(sc, boneEntry.MinimaScale.Y, boneEntry.MaximaScale.Y) * fmin,
+                    LerpFmrs(sc, boneEntry.MinimaScale.Z, boneEntry.MaximaScale.Z) * fmin)
 
                 ' Accumulate the raw 9-float deltas ADDITIVELY across regions (CK FUN_140419a30:
                 ' dst[i] += src[i]). No matrix build, no ComposeTransforms, no scale product here —
@@ -164,12 +168,18 @@ Public Module FaceBonePoseBuilder
         If npcData Is Nothing OrElse regionsFile Is Nothing Then Return (1.0F, 1.0F)
         If npcData.FaceMorphs Is Nothing OrElse npcData.FaceMorphs.Count = 0 Then Return (1.0F, 1.0F)
 
-        Dim neckRegion = regionsFile.Regions.Values.FirstOrDefault(Function(r) r.IsNeckRegion)
-        If neckRegion Is Nothing Then Return (1.0F, 1.0F)
-
+        ' Pick the neck region THROUGH THE NPC'S OWN FMRI, not by scanning the table for the first
+        ' IsNeckRegion. regionsFile is now the MERGED both-gender table (see
+        ' NpcMorphPoseResolver.GetFacialBoneRegionsForFmriResolution: the two per-gender JSONs use
+        ' disjoint ID namespaces, and 10 vanilla NPCs carry opposite-gender FMRI), so it contains
+        ' TWO IsNeckRegion entries — one per gender — and a FirstOrDefault would depend on dictionary
+        ' order and could return the gender the NPC does not use, silently zeroing NNAM.
+        ' Driving off fm.Index is order-independent AND automatically gender-correct: the NPC's FMRI
+        ' identifies the table it came from, which is exactly the rule the merge is built on.
         Dim block2 As Single = 0.0F
         For Each fm In npcData.FaceMorphs
-            If fm.Index = neckRegion.ID Then
+            Dim r As FacialBoneRegion = Nothing
+            If regionsFile.Regions.TryGetValue(fm.Index, r) AndAlso r IsNot Nothing AndAlso r.IsNeckRegion Then
                 block2 = fm.PositionZ
                 Exit For
             End If
@@ -180,23 +190,61 @@ Public Module FaceBonePoseBuilder
         Return (1.0F + neckNnamX * fmin * block2, 1.0F + neckNnamY * fmin * block2)
     End Function
 
-    ''' <summary>Per-axis DELTA from a FMRS-driven slider.
-    ''' fmrsVal is the NPC's slider value for this axis (clamped to [-1,+1] by the engine).
-    '''   fmrsVal = 0  → 0      (no morph applied)
-    '''   fmrsVal = +1 → maxVal - defaultVal
-    '''   fmrsVal = -1 → minVal - defaultVal
-    ''' Negative values map toward minima, positive toward maxima. Returns the DELTA from the
-    ''' rest pose (default), not the lerped absolute value.</summary>
-    Public Function LerpFmrs(fmrsVal As Single, defaultVal As Single, minVal As Single, maxVal As Single) As Single
-        ' Engine-faithful (Fallout4.exe FUN_1403fd920): raw = s*max (s>=0) or |s|*min (s<0).
-        ' The engine does NOT subtract the region Default here — Min/Max are already
-        ' additive offsets (0 = no change). defaultVal kept for signature parity but unused.
+    ''' <summary>⭐ THE FMRS INTERPOLATION LAW — single source of truth for render AND bake.
+    '''
+    ''' Per-axis DELTA from a FMRS-driven slider:
+    '''   fmrsVal = 0  → 0        (no morph applied)
+    '''   fmrsVal = +1 → maxVal
+    '''   fmrsVal = -1 → minVal
+    ''' Two independent slopes, one per side; minVal is NOT assumed to be −maxVal.
+    '''
+    ''' ⛔ THE REGION'S "Defaults" FIELD DOES NOT PARTICIPATE. Do not re-introduce a
+    ''' `− default` term, and do not compare Min/Max against Default anywhere (see
+    ''' <see cref="IsFmrsAxisLive"/>).
+    '''
+    ''' FUENTE — RE of both binaries, disassembled and byte-verified 2026-07-19:
+    '''   Fallout4.exe  (render) FUN_1403fd920  @ RVA 0x3FD920
+    '''   CreationKit.exe (bake) FUN_140419CD0  @ RVA 0x419CD0
+    ''' Both are structurally identical and contain ZERO subtract instructions
+    ''' (no subss/subps anywhere in either function body). Per axis they emit exactly:
+    '''     comiss s, 0 ; jbe .min
+    '''     .max:  s * [rcx+0x24+4i]        ' Maxima[i]
+    '''     .min:  (s * [rcx+0x00+4i]) XOR 0x80000000   ' = |s| * Minima[i]
+    '''     out[i] = result * xmm3          ' xmm3 = FMIN
+    ''' The bone struct passed in rcx is exactly 0x48 bytes = [Minima(9 floats) @0x00..0x20 |
+    ''' Maxima(9 floats) @0x24..0x44]. There is NO Defaults slot in it: the engine could not
+    ''' subtract a Default here even in principle. "Defaults" is parsed by the CK JSON loader
+    ''' @0xAF8817 into a DIFFERENT object — the region struct, at [region+0x00..0x20] — and is
+    ''' never routed into this computation.
+    ''' Rotation's deg→rad (×0.0174533) is applied by the engine only to indices 3-5, which is
+    ''' why callers pass rotation in JSON degrees and the caller-side Euler build expects them.
+    '''
+    ''' NOTE on the s = 0 boundary: the engine's `jbe` sends s = 0 down the MIN branch, yielding
+    ''' −(0 × min) = −0.0, where this function yields +0.0. Both are zero and are subsequently
+    ''' only multiplied and summed, so the distinction is not observable.</summary>
+    Public Function LerpFmrs(fmrsVal As Single, minVal As Single, maxVal As Single) As Single
         Dim s = Math.Max(-1.0F, Math.Min(1.0F, fmrsVal))
         If s >= 0 Then
             Return s * maxVal
         Else
             Return (-s) * minVal
         End If
+    End Function
+
+    ''' <summary>Can this axis of a bone entry ever produce a non-zero delta?
+    '''
+    ''' Corollary of <see cref="LerpFmrs"/> and derived from it so the two can never drift: the
+    ''' only outputs reachable are s·max and |s|·min, so the axis is dead iff BOTH endpoints are
+    ''' zero — regardless of the region's Defaults.
+    '''
+    ''' ⛔ Do NOT compare against the region Default. That was the old editor rule
+    ''' (EditFace_Form.RegionLiveComponents) and it contradicts the engine: with a non-zero
+    ''' Default it would both hide live axes (min=max=0 but Default≠0 → reported live... and
+    ''' worse, min≠0 with min=Default → reported dead while the engine still moves the bone).
+    ''' Inert in vanilla only because all 32 regions across the 6 shipped JSONs have
+    ''' Defaults = 0 on all 9 components; modded races can break that.</summary>
+    Public Function IsFmrsAxisLive(minVal As Single, maxVal As Single) As Boolean
+        Return minVal <> 0.0F OrElse maxVal <> 0.0F
     End Function
 
 End Module

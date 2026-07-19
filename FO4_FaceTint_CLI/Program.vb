@@ -42,6 +42,16 @@ Module Program
         Public PosDump As String = ""            ' --posdump <nifPath|key>|<outcsv>: vuelca posiciones por-vértice de cada shape (para analizar deformación CK vs fuente)
         Public MeshShaders As String = ""        ' --meshshaders <meshkey>: dump SSPF1/2 + type de cada shape del mesh source
         Public BuildFaceGen As Boolean = False   ' --buildfacegen: bake completo (NIF + 3 DDS) headless via FaceGenBuilder (path CPU, _2 sandbox)
+        Public PosThresh As Double = 0.05       ' --posthresh <v>: umbral de reporte de la categoria "positions"
+                                                ' del comparador exhaustivo. Default 0,05 = el historico. Bajarlo
+                                                ' expone la banda 0,02-0,05, donde vive el grueso del drift del
+                                                ' neutral en FO4 (con 0,05 solo se ve la COLA).
+        ' --engineskinblend / --noengineskinblend: fuerza ON/OFF la replica de la normalizacion de
+        ' pesos de skin del MOTOR (w3 = 1 - Sum(w0..w2); si w3 <= 0 se descarta SIN renormalizar).
+        ' Nothing = usar el default de la app (hoy True, gateado a FO4). La rama OFF se mantiene a
+        ' proposito como control de regresion. Fuente/VAs: FO4_Base_Library.EngineSkinWeightNormalization
+        ' (CreationKit.exe 0x142B73230 y Fallout4.exe 0x141837390 son la MISMA funcion).
+        Public EngineSkinNorm As Boolean? = Nothing
         Public VanillaOnly As Boolean = False    ' --vanillaonly: con --buildfacegen, SALTEA NPCs cuyo record GANADOR no es vanilla/DLC (overridden por un mod) — para comparar fiel vs CK del BA2
         Public Info As Boolean = False
         Public Tints As Boolean = False
@@ -62,6 +72,7 @@ Module Program
         Public FindFile As String = ""            ' --findfile <substr>: lista keys del FilesDictionary que matchean (cualquier extensión)
         Public Provenance As Boolean = False      ' --provenance: SourcePluginName de NPC/RACE/CLFMs del dirt (chequeo vanilla-vs-vanilla)
         Public DumpRef As String = ""             ' --dumpref "<filesDictKey>|<outFile>": vuelca GetBytes(key) crudo a outFile (ref vanilla del BA2)
+        Public NifSlots As String = ""       ' --nifslots "<nifA>[|<nifB>]": DIAGNOSTICO shape -> shaderType + texslots
         Public NifDump As String = ""             ' --nifdump <nif>: árbol de nodos (local+world) + skin binds (inv(bind)) por shape
         Public AnimSyncCheck As String = ""       ' --animsynccheck "<chunkNif>|<rigHkx>|<clipHkx>[|frame][|boneFilter]": FK del chunk BUGGY (clip full) vs HONORED (No Anim Sync) → tear
         Public BlendHintScan As String = ""       ' --blendhintscan "<all|substr|path.bsa/.ba2>": tally blendHint (0=NORMAL,1=ADDITIVE_DEPRECATED,2=ADDITIVE) + ejemplos + flag ∉{0,1,2}; path=monta archivo (cross-game)
@@ -119,6 +130,15 @@ Module Program
         ' --- 1. Config (app config.json local) ---
         Config_App.LoadConfig()
         Config_App.Current.Game = opt.Game
+        ' Replica de la normalizacion de pesos del MOTOR. Sin flag se respeta el default de la app; con
+        ' --engineskinblend/--noengineskinblend se fuerza. El gate por juego es el MISMO que usa la app
+        ' (solo FO4), asi que el CLI no puede encenderla en un motor donde no esta verificada por RE.
+        If opt.EngineSkinNorm.HasValue Then
+            FO4_NPC_Manager.NPC_Config.Current.ReplicateEngineSkinWeightNormalization = opt.EngineSkinNorm.Value
+        End If
+        FO4_NPC_Manager.NPC_Config.ApplyEngineSkinWeightNormalizationGate(opt.Game)
+        PosReportThreshold = opt.PosThresh
+        Console.WriteLine($"[cfg] engineSkinNorm={EngineSkinWeightNormalization.Enabled} (cfg={FO4_NPC_Manager.NPC_Config.Current.ReplicateEngineSkinWeightNormalization}, override={If(opt.EngineSkinNorm.HasValue, opt.EngineSkinNorm.Value.ToString(), "none")}, game={opt.Game})")
         ' ⛔ GAME-AWARE: el bake ESCRIBE en Config_App.Current.DataPath, que es ReadOnly y deriva de FO4ExePath
         ' (= el exe del juego ACTIVO del config). Sin esto, `--game sk --data <SkyrimData>` montaba Skyrim para LEER
         ' pero escribía los artefactos al Data del juego del config (p.ej. Fallout 4\Data). Con --data, se apunta el
@@ -169,7 +189,7 @@ Module Program
 
         ' --- 3. Lista de trabajo (esp, edid) ---
         Dim work = BuildWorkList(opt)
-        If work.Count = 0 AndAlso Not opt.TtedScan AndAlso Not opt.ScanDiff AndAlso Not opt.RaceAnim AndAlso Not opt.RaceCompat AndAlso Not opt.MountValidate AndAlso opt.FindHkx = "" AndAlso opt.ChunkCompare = "" AndAlso opt.DumpBehavior = "" AndAlso Not opt.HkxCoverage AndAlso opt.KwType = "" AndAlso Not opt.StateMap AndAlso Not opt.ClipResolve AndAlso opt.HkxBone = "" AndAlso opt.ClipBase = "" AndAlso opt.FindFile = "" AndAlso opt.NifDump = "" AndAlso opt.AnimSyncCheck = "" AndAlso opt.BlendHintScan = "" AndAlso Not opt.CatProfile AndAlso Not opt.Provenance AndAlso opt.DumpRef = "" AndAlso opt.EstimateSclp = "" AndAlso opt.SclpDiag = "" AndAlso opt.SclpBatch = "" AndAlso opt.BindDiff = "" AndAlso opt.Ba2Extract = "" AndAlso Not opt.SseCompareBatch AndAlso Not opt.VertexBatch AndAlso opt.PosDump = "" AndAlso opt.MeshShaders = "" Then
+        If work.Count = 0 AndAlso Not opt.TtedScan AndAlso Not opt.ScanDiff AndAlso Not opt.RaceAnim AndAlso Not opt.RaceCompat AndAlso Not opt.MountValidate AndAlso opt.FindHkx = "" AndAlso opt.ChunkCompare = "" AndAlso opt.DumpBehavior = "" AndAlso Not opt.HkxCoverage AndAlso opt.KwType = "" AndAlso Not opt.StateMap AndAlso Not opt.ClipResolve AndAlso opt.HkxBone = "" AndAlso opt.ClipBase = "" AndAlso opt.FindFile = "" AndAlso opt.NifDump = "" AndAlso opt.NifSlots = "" AndAlso opt.AnimSyncCheck = "" AndAlso opt.BlendHintScan = "" AndAlso Not opt.CatProfile AndAlso Not opt.Provenance AndAlso opt.DumpRef = "" AndAlso opt.EstimateSclp = "" AndAlso opt.SclpDiag = "" AndAlso opt.SclpBatch = "" AndAlso opt.BindDiff = "" AndAlso opt.Ba2Extract = "" AndAlso Not opt.SseCompareBatch AndAlso Not opt.VertexBatch AndAlso opt.PosDump = "" AndAlso opt.MeshShaders = "" Then
             Console.Error.WriteLine("No NPCs to process (check --edid / --list).") : Environment.ExitCode = 1 : Return
         End If
 
@@ -348,7 +368,21 @@ Module Program
         ' --- BATCH 100%: bakea+compara TODOS los NPC_ vanilla con FaceGeom vs CK, agrega diffs por categoría ---
         If opt.SseCompareBatch Then
             FO4_NPC_Manager.FaceGenBuilder.WriteGPUSandboxOutput = False
-            Logger.Enabled = True
+            ' Compose de DDS ENCENDIDO: medido, NO era el cuello de botella (el logger sí lo era). Y apagarlo
+            ' altera el NIF — falta un BSShaderTextureSet (la cara no recibe su set propio y se deduplica),
+            ' además de dejar sin escribir el slot 6 y el fold del slot 0. Con el logger apagado el barrido
+            ' tarda minutos igual, así que se hornea completo y válido.
+            FO4_NPC_Manager.FaceGenBuilder.BakeFaceTexturesEnabled = True
+            ' Logger APAGADO a propósito. Antes se prendía sólo para que DebugMode(=Logger.Enabled) diera el
+            ' sufijo sandbox "_2", por miedo a pisar la referencia del CK. Ese miedo era infundado:
+            '   (a) la referencia sale del BA2/BSA — un loose nuestro NO puede pisar el contenido del archivo;
+            '   (b) el FilesDictionary se arma AL MONTAR (snapshot), así que los loose escritos DURANTE la
+            '       corrida no entran en él y no contaminan las lecturas de la ref en esa misma corrida.
+            ' Único cuidado REAL: contaminación ENTRE corridas (los loose de la corrida N estarían en el
+            ' snapshot de la N+1 y ahí sí taparían al BA2) ⇒ al terminar hay que MOVER el árbol de FaceGeom
+            ' generado a su carpeta (asis/ | nuevo/) y dejar Data limpio. Sin logger el barrido es órdenes de
+            ' magnitud más rápido (el log arma strings por shape/slot/decisión en todo el pipeline).
+            Logger.Enabled = False
             RunSseCompareBatch(pm, opt.SseCompareBatchLimit)
             Return
         End If
@@ -487,6 +521,12 @@ Module Program
             Return
         End If
 
+        ' DIAGNOSTICO --nifslots: shape -> shaderType + 10 texslots (file-only).
+        If opt.NifSlots <> "" Then
+            NifSlotsRun(opt.NifSlots)
+            Return
+        End If
+
         ' --- ESTIMATESCLP: estima SCLP (bone-scale por hueso *_skin) por ratio de extents en espacio-hueso
         '     de un underarmor vs un body de referencia, y lo compara contra el .sclp autorado vanilla.
         If opt.EstimateSclp <> "" Then EstimateSclpRun(opt.EstimateSclp, opt.ShapeFilter) : Return
@@ -604,6 +644,12 @@ Module Program
         End Try
     End Function
 
+    ''' <summary>Apaga el bloque de comparación del DDS facetint en CompareBakedVsCk. El barrido de NIF
+    ''' (--ssecomparebatch) lo enciende: ese bloque RE-COMPONE el facetint completo por NPC (BakeFaceTintDds)
+    ''' y además decodifica ambos DDS y los compara 512x512 píxel a píxel — es el costo dominante del barrido
+    ''' y no aporta NADA a la validación del NIF. No afecta el bake (el NIF sale idéntico).</summary>
+    Private SkipDdsCompare As Boolean = False
+
     ''' <summary>Diff EXHAUSTIVO del artefacto REAL que escribió BuildCharGen (el NIF on-disk + el facetint _d)
     ''' contra la referencia horneada por el CK (BSA/loose vía FilesDictionary). NO re-hornea geometría: lee
     ''' <paramref name="bakedNifPath"/> tal cual quedó en disco. Compara TODA propiedad por shape (posiciones,
@@ -675,7 +721,7 @@ Module Program
         End If
 
         ' ================= DDS (facetint _d) — SSE only =================
-        If isSse Then
+        If isSse AndAlso Not SkipDdsCompare Then
             Try
                 Dim race = RecordParsers.ParseRACE(pm.GetRecord(npcData.RaceFormID), pm)
                 Dim myDds = SseFaceGenBaker.BakeFaceTintDds(pm, npcRec, race, npcData.RaceFormID, npcData.IsFemale, 512, 512)
@@ -721,14 +767,16 @@ Module Program
     ''' las diferencias por CATEGORÍA (normalizando nombres de shape/valores) con conteo de NPCs afectados.
     ''' Escribe un reporte agregado. Sirve para el barrido 100% de NIF vanilla SSE.</summary>
     Private Sub RunSseCompareBatch(pm As PluginManager, limit As Integer)
-        Dim bethMasters = New HashSet(Of String)(StringComparer.OrdinalIgnoreCase) From {
-            "Skyrim.esm", "Update.esm", "Dawnguard.esm", "HearthFires.esm", "Dragonborn.esm"}
+        ' GAME-AWARE: antes la lista de masters estaba hardcodeada a Skyrim ⇒ con --game fo4 daba 0 NPCs.
+        ' PluginManager.IsOfficialPlugin cubre LOS DOS motores (Fallout4.esm+DLC, Skyrim.esm+DLC, VR y cc*),
+        ' así el barrido 100% vanilla+DLC corre igual en FO4 y SSE con el MISMO filtro (imprescindible para
+        ' que baseline y post-fix sean comparables).
         Dim cands As New List(Of UInteger)()
         For Each kv As KeyValuePair(Of UInteger, PluginRecord) In pm.AllRecords
             Dim r = kv.Value
             If r Is Nothing OrElse r.Header.Signature <> "NPC_" Then Continue For
             Dim origin = pm.GetOriginatingPluginName(kv.Key)
-            If Not bethMasters.Contains(origin) Then Continue For
+            If Not PluginManager.IsOfficialPlugin(origin) Then Continue For
             Dim fgL = PluginManager.ToFaceGenLocalFormID(kv.Key)
             Dim ckKey = ($"meshes\actors\character\facegendata\facegeom\{origin}\{fgL:X8}.nif").ToLowerInvariant()
             Dim ckb = FilesDictionary_class.GetBytes(ckKey)
@@ -736,8 +784,28 @@ Module Program
             ' templated/genéricos y el jugador que NO tienen FaceGeom horneado por el CK. Esos no son comparables.
             If ckb IsNot Nothing AndAlso ckb.Length > 0 Then cands.Add(kv.Key)
         Next
-        Console.WriteLine($"[batch] {cands.Count} vanilla SSE NPCs with CK FaceGeom")
+        Dim gameTagB = If(Config_App.Current.Game = Config_App.Game_Enum.Skyrim, "SSE", "FO4")
+        Console.WriteLine($"[batch] {cands.Count} vanilla+DLC {gameTagB} NPCs with CK FaceGeom")
+        ' ⚠️ INSTRUMENTACIÓN DE DIAGNÓSTICO (auditoría 2026-07-19) — el barrido entero muere en silencio a
+        ' mitad de camino (exit 127, sin excepción ni evento WER) con crecimiento MONÓTONO de memoria
+        ' (605 MB → 4,6 GB a los 1100 NPCs). Muere en índices DISTINTOS entre corridas ⇒ agotamiento de
+        ' recursos, no un NPC concreto. RunVertexOutlierBatch ya convivía con esto: tiene resume por CSV +
+        ' centinela .cur "el NPC que crasheó el proceso anterior". Este barrido NO tenía nada equivalente.
+        ' Dos agregados, ambos OFF por defecto (sin env var el comportamiento es idéntico al anterior):
+        '   · orden ESTABLE de candidatos (antes: orden de hash del Dictionary AllRecords) — imprescindible
+        '     para que los tramos particionen el corpus sin solaparse ni dejar huecos. NO cambia ningún
+        '     resultado agregado: las categorías se suman por NPC y por shape, que son order-independent.
+        '   · FGCMP_SKIP=<n>: saltea los primeros n candidatos ⇒ con FGCMP_SKIP + limit se corre por tramos
+        '     en procesos separados y se consolidan las tablas.
+        cands = cands.OrderBy(Function(x) x).ToList()
+        Dim skipN As Integer = 0
+        Integer.TryParse(If(Environment.GetEnvironmentVariable("FGCMP_SKIP"), "").Trim(), skipN)
+        If skipN > 0 Then
+            cands = cands.Skip(skipN).ToList()
+            Console.WriteLine($"[batch] FGCMP_SKIP={skipN} -> {cands.Count} restantes")
+        End If
         If limit > 0 AndAlso cands.Count > limit Then cands = cands.Take(limit).ToList()
+        Console.WriteLine($"[batch] CHUNK range=[{skipN}..{skipN + cands.Count - 1}] size={cands.Count}")
 
         ' categoría = string de la diff con shape-name y números removidos → agrupa el TIPO de diferencia.
         Dim catCount As New Dictionary(Of String, Integer)(StringComparer.Ordinal)
@@ -753,6 +821,16 @@ Module Program
                           Return s
                       End Function
 
+        SkipDdsCompare = True   ' barrido de NIF: sin el bloque DDS (recompone el facetint por NPC = costo dominante)
+        ' Este barrido valida el NIF, no los pixeles: se saltea el trabajo de imagen del bake en AMBOS juegos.
+        ' MEDIDO 2026-07-18 (sin esto): SSE ~237 NPC/min pero FO4 ~1,7 NPC/min = 15 h el barrido completo, porque
+        ' FO4 compone Y encodea 3 canales a resolucion nativa (1024x1024+) por NPC contra el unico 512x512 de SSE.
+        ' Ninguno de los dos flags cambia lo que el bake escribe en el NIF (ver sus docs) — validado por byte-diff.
+        FO4_NPC_Manager.FaceGenBuilder.SkipDdsEncode = True
+        FaceTintCpuCompositor.SkipPixelCompose = True
+        Dim preBaked = If(Environment.GetEnvironmentVariable("FGCMP_PREBAKED"), "").Trim()
+        If preBaked <> "" Then Console.WriteLine($"[batch] PREBAKED mode: comparing NIFs from '{preBaked}' (no bake)")
+        Dim catDetail As New Dictionary(Of String, List(Of String))(StringComparer.Ordinal)
         Dim okCount = 0, failCount = 0, processed = 0
         Dim presets As New Dictionary(Of UInteger, FO4_NPC_Manager.LooksmenuLoader.LooksmenuPreset)
         Dim ctx As New FO4_NPC_Manager.NpcRenderContext(pm)
@@ -762,11 +840,21 @@ Module Program
             processed += 1
             Try
                 Console.SetOut(IO.TextWriter.Null)   ' silenciar el ruido del bake+compare
-                Dim res = FO4_NPC_Manager.FaceGenBuilder.BuildCharGen(fid, pm, presets, Nothing, AddressOf mres.ApplyShapeMaterialOverrides, willBePacked:=False)
-                If res Is Nothing OrElse Not res.Success OrElse String.IsNullOrEmpty(res.OutputPath) Then
-                    Console.SetOut(savedOut) : failCount += 1 : Continue For
+                ' DIAGNOSTICO: FGCMP_PREBAKED=<dir> compara NIFs YA horneados (<dir>\facegeom\<origin>\<ID>.NIF)
+                ' en vez de rehornear — mismo comparador, sin el costo del bake.
+                Dim bakedPath As String
+                If preBaked <> "" Then
+                    bakedPath = IO.Path.Combine(preBaked, "facegeom", pm.GetOriginatingPluginName(fid),
+                                                $"{PluginManager.ToFaceGenLocalFormID(fid):X8}.NIF")
+                    If Not IO.File.Exists(bakedPath) Then Console.SetOut(savedOut) : failCount += 1 : Continue For
+                Else
+                    Dim res = FO4_NPC_Manager.FaceGenBuilder.BuildCharGen(fid, pm, presets, Nothing, AddressOf mres.ApplyShapeMaterialOverrides, willBePacked:=False)
+                    If res Is Nothing OrElse Not res.Success OrElse String.IsNullOrEmpty(res.OutputPath) Then
+                        Console.SetOut(savedOut) : failCount += 1 : Continue For
+                    End If
+                    bakedPath = res.OutputPath
                 End If
-                Dim rr = CompareBakedVsCk(pm, fid, res.OutputPath, verbose:=False)
+                Dim rr = CompareBakedVsCk(pm, fid, bakedPath, verbose:=False)
                 Console.SetOut(savedOut)
                 okCount += 1
                 For Each d In rr.Real
@@ -775,6 +863,12 @@ Module Program
                     If Not catNpcs.ContainsKey(cat) Then catNpcs(cat) = New HashSet(Of UInteger)()
                     catNpcs(cat).Add(fid)
                     If Not catExample.ContainsKey(cat) Then catExample(cat) = d
+                    ' DIAGNOSTICO: guarda FormID+EditorID+diff literal por categoría (para categorías chicas).
+                    If Not catDetail.ContainsKey(cat) Then catDetail(cat) = New List(Of String)()
+                    If catDetail(cat).Count < 200 Then
+                        Dim rec = pm.GetRecord(fid)
+                        catDetail(cat).Add($"0x{fid:X8} [{pm.GetOriginatingPluginName(fid)}] EDID='{If(rec IsNot Nothing, rec.EditorID, "?")}' :: {d}")
+                    End If
                 Next
             Catch ex As Exception
                 Console.SetOut(savedOut) : failCount += 1
@@ -788,7 +882,25 @@ Module Program
         For Each kv In catNpcs.OrderByDescending(Function(x) x.Value.Count)
             Console.WriteLine($"    [{kv.Value.Count} NPCs / {catCount(kv.Key)} shapes] {kv.Key}")
             Console.WriteLine($"        e.g.: {catExample(kv.Key)}")
+            ' DIAGNOSTICO: detalle FormID+EditorID por categoría cuando afecta a pocos NPCs.
+            If kv.Value.Count <= 25 AndAlso catDetail.ContainsKey(kv.Key) Then
+                For Each ln In catDetail(kv.Key) : Console.WriteLine($"        -> {ln}") : Next
+            End If
         Next
+        Console.WriteLine("  " & EngineSkinWeightNormalization.StatsLine())
+        Console.WriteLine("  ---- PER-VERTEX (metrica que discrimina esta ley) ----")
+        Console.WriteLine($"    vertices compared={VertTotal}  EXACT={VertExact}  ({(If(VertTotal > 0, 100.0 * VertExact / VertTotal, 0.0)).ToString("F2", Globalization.CultureInfo.InvariantCulture)}%)")
+        Dim ulpLbl = {"exact", "<=0.5ulp", "<=1ulp", "<=2ulp", "<=4ulp", ">4ulp"}
+        For bi = 0 To 5
+            Console.WriteLine($"    residuo {ulpLbl(bi),-9} : {UlpBins(bi)}")
+        Next
+        Console.WriteLine("  ---- POSITION maxD HISTOGRAM (shapes over threshold; una corrida, todos los umbrales) ----")
+        For hi = 0 To PosHistThresholds.Length - 1
+            Console.WriteLine($"    shapes with maxD > {PosHistThresholds(hi).ToString("F3", Globalization.CultureInfo.InvariantCulture)} : {PosHistCounts(hi)}")
+        Next
+        Console.WriteLine("  ---- POSITION EXACTNESS (independiente del umbral) ----")
+        Console.WriteLine($"    shapes compared={ShapePosTotal}  BYTE-EXACT (maxΔ=0)={ShapePosExact}  ({(If(ShapePosTotal > 0, 100.0 * ShapePosExact / ShapePosTotal, 0.0)).ToString("F2", Globalization.CultureInfo.InvariantCulture)}%)")
+        Console.WriteLine($"    posThresh usado para la categoria positions = {PosReportThreshold.ToString("F4", Globalization.CultureInfo.InvariantCulture)}")
         Console.WriteLine($"======== END BATCH ({catNpcs.Count} distinct categories) ========")
     End Sub
 
@@ -980,6 +1092,40 @@ persist:
 
     ''' <summary>Compara TODAS las props de un shape emparejado (posiciones, index, normals, tangents,
     ''' bitangents, UVs, colors, bones, VertexDesc, bounds, texture-set) acumulando en real/noop.</summary>
+    ''' <summary>Umbral de reporte de la categoria "positions" (--posthresh). Default = el historico 0,05.</summary>
+    Private PosReportThreshold As Double = 0.05
+
+    ''' <summary>Tally global de shapes comparados por posicion, para reportar cuantos son BYTE-EXACTOS
+    ''' (maxD = 0 exacto). Es la cifra que discrimina de verdad entre ramas: los conteos por categoria
+    ''' dependen del umbral, y "byte-exacto" no depende de ningun umbral.</summary>
+    Private ShapePosTotal As Integer = 0
+    Private ShapePosExact As Integer = 0
+
+    ''' <summary>Histograma de shapes por maxD de posicion, para reportar el efecto REAL a varios umbrales
+    ''' en UNA sola corrida (el grueso del drift del neutral en FO4 vive en 0,02-0,05, bajo el umbral
+    ''' historico de 0,05, asi que un solo umbral no alcanza para decidir nada).</summary>
+    Private ReadOnly PosHistThresholds As Double() = {0.0, 0.005, 0.01, 0.02, 0.03, 0.05, 0.1, 0.25}
+    Private PosHistCounts As Integer() = New Integer(7) {}
+
+    ''' <summary>Metricas POR VERTICE. "Shape byte-exacto" es un AND sobre todos sus vertices, asi que
+    ''' satura y NO discrimina esta ley (medido aparte: la simulacion IDEAL tampoco produce shapes
+    ''' byte-exactos nuevos — los unicos exactos son los de ojos, que ya tenian eps=0). Lo que si
+    ''' discrimina es la fraccion de VERTICES exactos y como se reparte el residuo en ULP de half.</summary>
+    Private VertTotal As Long = 0
+    Private VertExact As Long = 0
+    ''' <summary>Bins de |CK-nuestro| medido en ULP de half a la magnitud de la propia coordenada:
+    ''' 0 (exacto), &lt;=0,5, &lt;=1, &lt;=2, &lt;=4, &gt;4.</summary>
+    Private UlpBins As Long() = New Long(5) {}
+
+    ''' <summary>ULP de half (10 bits de mantisa) a la magnitud <paramref name="v"/>, con piso en el
+    ''' subnormal mas chico (2^-24). Es la unidad natural del residuo: los pesos de skin vienen
+    ''' cuantizados a half, asi que el error irreducible vive a esa escala.</summary>
+    Private Function HalfUlp(v As Double) As Double
+        Dim a = Math.Abs(v)
+        If a < 6.103515625E-05 Then Return 5.9604644775390625E-08
+        Return Math.Pow(2, Math.Floor(Math.Log(a, 2)) - 10)
+    End Function
+
     Private Sub CompareShapeExhaustive(nm As String, cs As NiflySharp.INiShape, ckNif As Nifcontent_Class_Manolo,
                                        ms As NiflySharp.INiShape, myNif As Nifcontent_Class_Manolo,
                                        real As List(Of String), noop As List(Of String), normP As Func(Of String, String))
@@ -994,7 +1140,38 @@ persist:
 
         ' posiciones
         Dim pr = MaxRmsVec(cvp, mvp) : line.Append($"  pos[RMS={pr.Rms:F4} max={pr.Max:F4}]")
-        If pr.Max > 0.05 Then real.Add($"shape '{nm}': positions maxΔ={pr.Max:F4} RMS={pr.Rms:F4}")
+        Threading.Interlocked.Increment(ShapePosTotal)
+        If pr.Max = 0.0 Then Threading.Interlocked.Increment(ShapePosExact)
+        ' Tally POR VERTICE (exactos + reparto del residuo en ULP de half).
+        For vi = 0 To n - 1
+            Dim dx = Math.Abs(CDbl(cvp(vi).X) - CDbl(mvp(vi).X))
+            Dim dy = Math.Abs(CDbl(cvp(vi).Y) - CDbl(mvp(vi).Y))
+            Dim dz = Math.Abs(CDbl(cvp(vi).Z) - CDbl(mvp(vi).Z))
+            Threading.Interlocked.Increment(VertTotal)
+            If dx = 0.0 AndAlso dy = 0.0 AndAlso dz = 0.0 Then
+                Threading.Interlocked.Increment(VertExact)
+                Threading.Interlocked.Increment(UlpBins(0))
+            Else
+                Dim r = Math.Max(Math.Max(dx / HalfUlp(cvp(vi).X), dy / HalfUlp(cvp(vi).Y)), dz / HalfUlp(cvp(vi).Z))
+                Dim b As Integer
+                If r <= 0.5 Then
+                    b = 1
+                ElseIf r <= 1.0 Then
+                    b = 2
+                ElseIf r <= 2.0 Then
+                    b = 3
+                ElseIf r <= 4.0 Then
+                    b = 4
+                Else
+                    b = 5
+                End If
+                Threading.Interlocked.Increment(UlpBins(b))
+            End If
+        Next
+        For hi = 0 To PosHistThresholds.Length - 1
+            If pr.Max > PosHistThresholds(hi) Then Threading.Interlocked.Increment(PosHistCounts(hi))
+        Next
+        If pr.Max > PosReportThreshold Then real.Add($"shape '{nm}': positions maxΔ={pr.Max:F4} RMS={pr.Rms:F4}")
 
         ' triangulos / index
         Dim ctr = cg.GetTriangles(), mtr = mg.GetTriangles()
@@ -1126,9 +1303,23 @@ persist:
             If (cl Is Nothing) <> (ml Is Nothing) Then real.Add($"shape '{nm}': shader presencia CK={cl IsNot Nothing} baked={ml IsNot Nothing}")
             Return
         End If
-        ' flags
-        If CUInt(cl.ShaderFlags_SSPF1) <> CUInt(ml.ShaderFlags_SSPF1) Then real.Add($"shape '{nm}' shader.SSPF1 CK=0x{CUInt(cl.ShaderFlags_SSPF1):X8} baked=0x{CUInt(ml.ShaderFlags_SSPF1):X8}")
-        If CUInt(cl.ShaderFlags_SSPF2) <> CUInt(ml.ShaderFlags_SSPF2) Then real.Add($"shape '{nm}' shader.SSPF2 CK=0x{CUInt(cl.ShaderFlags_SSPF2):X8} baked=0x{CUInt(ml.ShaderFlags_SSPF2):X8}")
+        ' shader TYPE: gobierna la ley de composición del bake (CK SSE 0x141d0ea00 dispatcha por este valor:
+        ' 4 FaceTint / 5 SkinTint / 6 HairTint / else = no escribe nada). Sin esto un cambio de tipo pasaba
+        ' invisible aunque cambie qué slots se escriben.
+        If cl.ShaderType_SK_FO4 <> ml.ShaderType_SK_FO4 Then real.Add($"shape '{nm}' shader.TYPE CK={cl.ShaderType_SK_FO4} baked={ml.ShaderType_SK_FO4}")
+        ' flags — GAME-AWARE. ⛔ BUG CORREGIDO 2026-07-18: se comparaban SIEMPRE SSPF1/SSPF2, que NiflySharp
+        ' sólo puebla con StreamVersion < 130 (= SSE). En FO4 (==130) los flags viven en F4SPF1/F4SPF2 y los
+        ' SSPF quedan en su default ⇒ MEDIDO: 0x00000000 en 284/284 shapes de AMBOS lados ⇒ estas dos líneas
+        ' eran código muerto en FO4 y el barrido NUNCA pudo detectar una divergencia de shader flags ahí.
+        ' Ver BSMain.BSLightingShaderProperty.g.cs:393-402 (el parser branchea por StreamVersion).
+        Dim isFo4Shader As Boolean = (Config_App.Current IsNot Nothing AndAlso Config_App.Current.Game <> Config_App.Game_Enum.Skyrim)
+        Dim ckF1 As UInteger = If(isFo4Shader, CUInt(cl.ShaderFlags_F4SPF1), CUInt(cl.ShaderFlags_SSPF1))
+        Dim myF1 As UInteger = If(isFo4Shader, CUInt(ml.ShaderFlags_F4SPF1), CUInt(ml.ShaderFlags_SSPF1))
+        Dim ckF2 As UInteger = If(isFo4Shader, CUInt(cl.ShaderFlags_F4SPF2), CUInt(cl.ShaderFlags_SSPF2))
+        Dim myF2 As UInteger = If(isFo4Shader, CUInt(ml.ShaderFlags_F4SPF2), CUInt(ml.ShaderFlags_SSPF2))
+        Dim f1Label = If(isFo4Shader, "F4SPF1", "SSPF1"), f2Label = If(isFo4Shader, "F4SPF2", "SSPF2")
+        If ckF1 <> myF1 Then real.Add($"shape '{nm}' shader.{f1Label} CK=0x{ckF1:X8} baked=0x{myF1:X8}")
+        If ckF2 <> myF2 Then real.Add($"shape '{nm}' shader.{f2Label} CK=0x{ckF2:X8} baked=0x{myF2:X8}")
         ' escalares
         DiffF(nm, "Alpha", cl.Alpha, ml.Alpha, 0.002F, real)
         DiffF(nm, "Glossiness", cl.Glossiness, ml.Glossiness, 0.05F, real)
@@ -1140,7 +1331,19 @@ persist:
         DiffF(nm, "SubsurfaceRolloff", cl.SubsurfaceRolloff, ml.SubsurfaceRolloff, 0.002F, real)
         DiffF(nm, "BacklightPower", cl.BacklightPower, ml.BacklightPower, 0.002F, real)
         DiffF(nm, "FresnelPower", cl.FresnelPower, ml.FresnelPower, 0.01F, real)
-        DiffF(nm, "GrayscaleToPaletteScale", cl.GrayscaleToPaletteScale, ml.GrayscaleToPaletteScale, 0.002F, real)
+        ' GrayscaleToPaletteScale: el motor SÓLO samplea este campo dentro de la rama GreyscaleToPalette
+        ' (flag Color 1<<4 = 0x10 / Alpha 1<<5 = 0x20). Con el flag APAGADO en ambos lados el valor es INERTE
+        ' y el CK escribe ahí basura no-inicializada — MEDIDO sobre 284 pares de shapes: separación perfecta,
+        ' 207/207 de los que difieren tienen el flag OFF en ambos lados, y los 77 con el flag ON coinciden
+        ' EXACTAMENTE. Además el valor del CK no es una constante (0,675 n=58 · 0,488 n=36 · 0,738 n=30 ·
+        ' 0,394 n=18 …), lo que confirma que es residuo del builder, no dato. Misma regla que ya aplica el
+        ' comparador de producción en FaceGenComparator.vb:594-598; el barrido no la tenía.
+        Const G2pMask As UInteger = &H30UI
+        If ((ckF1 And G2pMask) <> 0UI) OrElse ((myF1 And G2pMask) <> 0UI) Then
+            DiffF(nm, "GrayscaleToPaletteScale", cl.GrayscaleToPaletteScale, ml.GrayscaleToPaletteScale, 0.002F, real)
+        ElseIf Math.Abs(cl.GrayscaleToPaletteScale - ml.GrayscaleToPaletteScale) > 0.002F Then
+            noop.Add($"shape '{nm}' shader.GrayscaleToPaletteScale: CK={cl.GrayscaleToPaletteScale} baked={ml.GrayscaleToPaletteScale} (flag G2P OFF en ambos ⇒ INERTE — NO-OP)")
+        End If
         DiffF(nm, "SkinTintAlpha", cl.SkinTintAlpha, ml.SkinTintAlpha, 0.002F, real)
         ' Rimlight/Softlight suelen ser FLT_MAX (no lit) — DiffF ignora NaN pero no Inf; comparar sólo si ambos finitos
         If Not Single.IsInfinity(cl.RimlightPower) OrElse Not Single.IsInfinity(ml.RimlightPower) Then DiffF(nm, "RimlightPower", cl.RimlightPower, ml.RimlightPower, 0.01F, real)
@@ -1221,6 +1424,29 @@ persist:
         If shad Is Nothing OrElse shad.TextureSetRef Is Nothing OrElse shad.TextureSetRef.Index < 0 Then Return Nothing
         Return TryCast(nif.Blocks(shad.TextureSetRef.Index), NiflySharp.Blocks.BSShaderTextureSet)
     End Function
+
+    ''' <summary>DIAGNOSTICO (--nifslots "&lt;nifA&gt;[|&lt;nifB&gt;]"): por shape, vuelca ShaderType,
+    ''' MNAM del shader y los 10 texslots. File-only, no monta plugins.</summary>
+    Private Sub NifSlotsRun(spec As String)
+        For Each p In spec.Split("|"c)
+            p = p.Trim()
+            If p = "" Then Continue For
+            Console.WriteLine($"======== {p}")
+            If Not IO.File.Exists(p) Then Console.WriteLine("   (no existe)") : Continue For
+            Dim nif As New Nifcontent_Class_Manolo() : nif.Load_Manolo(IO.File.ReadAllBytes(p))
+            For Each shp In nif.GetShapes()
+                Dim shad = TryCast(nif.GetShader(shp), NiflySharp.Blocks.BSLightingShaderProperty)
+                Dim st = If(shad Is Nothing, "?", shad.ShaderType_SK_FO4.ToString())
+                Dim mn = If(shad Is Nothing, "", If(shad.Name?.String, ""))
+                Console.WriteLine($"  shape '{shp.Name?.String}'  shaderType={st}  shaderName='{mn}'")
+                Dim ts = GetTexSet(nif, shp)
+                If ts Is Nothing OrElse ts.Textures Is Nothing Then Console.WriteLine("     (sin texture set)") : Continue For
+                For si = 0 To ts.Textures.Count - 1
+                    Console.WriteLine($"     TX{si:D2} = '{ts.Textures(si)?.Content}'")
+                Next
+            Next
+        Next
+    End Sub
 
     ''' <summary>Compone + escribe los TGA `_3` de UN NPC. Devuelve True si escribio. tintBytesCache es
     ''' compartido por todo el batch (bytes crudos de las texturas de layers/swaps leidos una sola vez);
@@ -1727,6 +1953,28 @@ persist:
             Console.Error.WriteLine($"[ba2extract] file does not exist: '{archivePath}'") : Environment.ExitCode = 1 : Return
         End If
         Dim k = internalKey.Replace("/"c, "\"c).Trim().ToLowerInvariant()
+        ' DIAGNOSTICO bulk: si el key termina en '*', extrae TODAS las entries cuyo FullPath empieza con el
+        ' prefijo, a outFile tratado como DIRECTORIO (conserva el nombre de archivo interno).
+        If k.EndsWith("*") Then
+            Dim pref = k.Substring(0, k.Length - 1)
+            Try
+                Using fs As New IO.FileStream(archivePath, IO.FileMode.Open, IO.FileAccess.Read)
+                    Using r As New BSA_BA2_Library_DLL.BethesdaArchive.Core.BethesdaReader(fs)
+                        Directory.CreateDirectory(outFile)
+                        Dim n = 0
+                        For Each e In r.EntriesFiles
+                            If Not e.FullPath.Replace("/"c, "\"c).ToLowerInvariant().StartsWith(pref) Then Continue For
+                            IO.File.WriteAllBytes(IO.Path.Combine(outFile, IO.Path.GetFileName(e.FullPath)), r.ExtractToMemory(e.Index))
+                            n += 1
+                        Next
+                        Console.WriteLine($"[ba2extract] bulk '{pref}*' -> {outFile} ({n} entries)")
+                    End Using
+                End Using
+            Catch ex As Exception
+                Console.Error.WriteLine($"[ba2extract] error: {ex.Message}") : Environment.ExitCode = 1
+            End Try
+            Return
+        End If
         Try
             Using fs As New IO.FileStream(archivePath, IO.FileMode.Open, IO.FileAccess.Read)
                 Using r As New BSA_BA2_Library_DLL.BethesdaArchive.Core.BethesdaReader(fs)
@@ -7121,6 +7369,10 @@ persist:
                 Case "--posdump" : a.PosDump = v : i += 2
                 Case "--meshshaders" : a.MeshShaders = v : i += 2
                 Case "--buildfacegen" : a.BuildFaceGen = True : i += 1
+                Case "--posthresh"
+                    If i + 1 < args.Length AndAlso Double.TryParse(v, Globalization.NumberStyles.Float, Globalization.CultureInfo.InvariantCulture, a.PosThresh) Then i += 2 Else i += 1
+                Case "--engineskinblend" : a.EngineSkinNorm = True : i += 1
+                Case "--noengineskinblend" : a.EngineSkinNorm = False : i += 1
                 Case "--vanillaonly" : a.VanillaOnly = True : i += 1
                 Case "--rankby" : a.RankBy = v.ToLowerInvariant() : i += 2
                 Case "--info" : a.Info = True : i += 1
@@ -7144,6 +7396,7 @@ persist:
                 Case "--provenance" : a.Provenance = True : i += 1
                 Case "--dumpref" : a.DumpRef = v : i += 2
                 Case "--nifdump" : a.NifDump = v : i += 2
+                Case "--nifslots" : a.NifSlots = v : i += 2
                 Case "--estimatesclp" : a.EstimateSclp = v : i += 2
                 Case "--sclpdiag" : a.SclpDiag = v : i += 2
                 Case "--shapefilter" : a.ShapeFilter = v : i += 2
@@ -7158,7 +7411,7 @@ persist:
                     Console.Error.WriteLine($"Unknown arg: {args(i)}") : PrintUsage() : Return Nothing
             End Select
         End While
-        If a.ListPath = "" AndAlso (a.Esp = "" OrElse a.Edid = "") AndAlso Not a.TtedScan AndAlso Not a.ScanDiff AndAlso Not a.RaceAnim AndAlso Not a.RaceCompat AndAlso Not a.MountValidate AndAlso a.FindHkx = "" AndAlso a.ChunkCompare = "" AndAlso a.DumpBehavior = "" AndAlso Not a.HkxCoverage AndAlso a.KwType = "" AndAlso Not a.StateMap AndAlso Not a.ClipResolve AndAlso a.HkxBone = "" AndAlso a.ClipBase = "" AndAlso a.FindFile = "" AndAlso a.NifDump = "" AndAlso a.AnimSyncCheck = "" AndAlso a.BlendHintScan = "" AndAlso Not a.CatProfile AndAlso a.DumpRef = "" AndAlso a.EstimateSclp = "" AndAlso a.SclpDiag = "" AndAlso a.SclpBatch = "" AndAlso a.BindDiff = "" AndAlso a.Ba2Extract = "" AndAlso Not a.SseCompareBatch AndAlso Not a.VertexBatch AndAlso a.PosDump = "" AndAlso a.MeshShaders = "" Then
+        If a.ListPath = "" AndAlso (a.Esp = "" OrElse a.Edid = "") AndAlso Not a.TtedScan AndAlso Not a.ScanDiff AndAlso Not a.RaceAnim AndAlso Not a.RaceCompat AndAlso Not a.MountValidate AndAlso a.FindHkx = "" AndAlso a.ChunkCompare = "" AndAlso a.DumpBehavior = "" AndAlso Not a.HkxCoverage AndAlso a.KwType = "" AndAlso Not a.StateMap AndAlso Not a.ClipResolve AndAlso a.HkxBone = "" AndAlso a.ClipBase = "" AndAlso a.FindFile = "" AndAlso a.NifDump = "" AndAlso a.NifSlots = "" AndAlso a.AnimSyncCheck = "" AndAlso a.BlendHintScan = "" AndAlso Not a.CatProfile AndAlso a.DumpRef = "" AndAlso a.EstimateSclp = "" AndAlso a.SclpDiag = "" AndAlso a.SclpBatch = "" AndAlso a.BindDiff = "" AndAlso a.Ba2Extract = "" AndAlso Not a.SseCompareBatch AndAlso Not a.VertexBatch AndAlso a.PosDump = "" AndAlso a.MeshShaders = "" Then
             Console.Error.WriteLine("Missing --esp and --edid (or use --list).") : PrintUsage() : Return Nothing
         End If
         Return a

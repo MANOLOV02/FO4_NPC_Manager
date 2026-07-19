@@ -260,26 +260,43 @@ Public Module FaceGenBuildPipeline
 
         Dim baked As New List(Of System.Numerics.Vector3)(vCount)
         Dim singularCount As Integer = 0
+        ' Buffer reusable para la normalizacion de pesos del MOTOR (ver EngineSkinWeightNormalization). Lado INVERSO
+        ' (mundo → local del mesh destino) = el segundo SkinBlend del CK (invert=1, 142B6F91E), con
+        ' la paleta del destino. El drift ε = s_src/s_dst − 1 sólo aparece si AMBOS lados (el forward
+        ' de SkinBakeMath y este inverso) corren la misma ley. Gate apagado ⇒ bit-idéntico.
+        Dim ckW(EngineSkinWeightNormalization.Slots - 1) As Single
+
         For i = 0 To vCount - 1
             Dim Mtot As Matrix4d = Matrix4d.Zero
             Dim sumW As Double = 0
             Dim baseSlot = i * wpv
-            If flatIdx IsNot Nothing AndAlso flatWgt IsNot Nothing AndAlso i < skin.VertexCount Then
-                For j = 0 To wpv - 1
-                    Dim w = CDbl(CSng(flatWgt(baseSlot + j)))
-                    sumW += w
-                    Dim idx = CInt(flatIdx(baseSlot + j))
-                    If idx >= 0 AndAlso idx < nBones Then Mtot += precomputedOrig(idx) * w
+            Dim hasSkinRow = flatIdx IsNot Nothing AndAlso flatWgt IsNot Nothing AndAlso i < skin.VertexCount
+
+            If hasSkinRow AndAlso EngineSkinWeightNormalization.TryComputeWeights(flatWgt, baseSlot, wpv, ckW) Then
+                For j = 0 To EngineSkinWeightNormalization.Slots - 1
+                    If ckW(j) > 0.0F Then
+                        Dim idx = CInt(flatIdx(baseSlot + j))
+                        If idx >= 0 AndAlso idx < nBones Then Mtot += precomputedOrig(idx) * CDbl(ckW(j))
+                    End If
                 Next
-            End If
-            If sumW = 0 Then
-                If nBones > 0 Then
-                    Dim idx0 = If(flatIdx IsNot Nothing AndAlso flatIdx.Length > 0 AndAlso i < skin.VertexCount,
-                                  CInt(flatIdx(baseSlot)), 0)
-                    Mtot = precomputedOrig(Math.Max(0, Math.Min(idx0, nBones - 1)))
-                End If
             Else
-                Mtot = Mtot * (1.0 / sumW)
+                If hasSkinRow Then
+                    For j = 0 To wpv - 1
+                        Dim w = CDbl(CSng(flatWgt(baseSlot + j)))
+                        sumW += w
+                        Dim idx = CInt(flatIdx(baseSlot + j))
+                        If idx >= 0 AndAlso idx < nBones Then Mtot += precomputedOrig(idx) * w
+                    Next
+                End If
+                If sumW = 0 Then
+                    If nBones > 0 Then
+                        Dim idx0 = If(flatIdx IsNot Nothing AndAlso flatIdx.Length > 0 AndAlso i < skin.VertexCount,
+                                      CInt(flatIdx(baseSlot)), 0)
+                        Mtot = precomputedOrig(Math.Max(0, Math.Min(idx0, nBones - 1)))
+                    End If
+                Else
+                    Mtot = Mtot * (1.0 / sumW)
+                End If
             End If
 
             Dim vBaked As Vector3d
@@ -474,7 +491,11 @@ Public Module FaceGenBuildPipeline
     ''' per-BakeState under a composite key so it (and its parses) happen once per race/chargen pair. The
     ''' race side is parsed FRESH (not the shared per-path cache) so mutating it with the chargen morphs can
     ''' never corrupt a TriHead reused elsewhere. Falls back to whichever side is present when one is missing.</summary>
-    Private Function LoadMergedHeadTri(raceMorphTriPath As String, chargenTriPath As String, state As BakeState,
+    ''' <remarks>Friend (no Private) para que SseMorphReverseEngineer construya la MISMA base mergeada
+    ''' que usa el bake. Duplicar estas 35 líneas allá crearía una segunda fuente de verdad que se
+    ''' desincroniza en silencio (precedencia race&gt;chargen&gt;mesh, parses frescos, extended tris de
+    ''' RaceMenu, comboKey de caché).</remarks>
+    Friend Function LoadMergedHeadTri(raceMorphTriPath As String, chargenTriPath As String, state As BakeState,
                                        Optional headMeshTriPath As String = Nothing) As TriHeadFile
         Dim raceKey = If(String.IsNullOrEmpty(raceMorphTriPath), "", MeshPathHelpers.NormalizeMeshKey(raceMorphTriPath))
         Dim chargenKey = If(String.IsNullOrEmpty(chargenTriPath), "", MeshPathHelpers.NormalizeMeshKey(chargenTriPath))

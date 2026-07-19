@@ -2045,7 +2045,18 @@ Public Class EditBody_Form
         OverlayCenterLayout.SetRow(ButtonOverlayAdd, 1)
         OverlayCenterLayout.SetRow(ButtonOverlayRemove, 2)
         OverlayCenterLayout.Controls.Add(zoneRow, 0, 0)
+        ' Top-align the whole center column (default is Anchor.None = vertically centred) so the Zone row sits at the
+        ' same height as the filter box; AlignSseOverlayCenterColumn supplies the exact offset once layout is real.
+        OverlayCenterLayout.Anchor = AnchorStyles.Top
+        ' Add/Remove: drop AutoSize and stretch them to the column width (which the zone row — label + combo —
+        ' defines), so both buttons are the same width and symmetric with "Zone: [combo]" above.
+        For Each b As Button In New Button() {ButtonOverlayAdd, ButtonOverlayRemove}
+            b.AutoSize = False
+            b.Anchor = AnchorStyles.Left Or AnchorStyles.Right
+            b.Height = 25
+        Next
         OverlayCenterLayout.ResumeLayout(True)
+        AddHandler OverlayListsLayout.Layout, AddressOf OnOverlayListsLayout
 
         ' Applied-overlay texture rows: READ-ONLY display. The paint is chosen from the LEFT catalog at Add time
         ' (RaceMenu overlays have no per-overlay texture browser); Normal shows an Ex paint's slot 1 when present.
@@ -2061,6 +2072,17 @@ Public Class EditBody_Form
         OverlayPropsLayout.Controls.Add(SseTexFlow(_sseTexNormal), 1, r0 + 1)
         RefreshSseOverlayList()
         RefreshSsePaintCatalog()
+    End Sub
+
+    ''' <summary>Keep the center column's top edge level with the filter box. The offset can't be a constant (the
+    ''' GroupBox caption height is DPI/font dependent), so it is measured from the live control and applied as the
+    ''' panel's top margin. Guarded against re-entry: only writes when the value actually changes.</summary>
+    Private Sub OnOverlayListsLayout(sender As Object, e As LayoutEventArgs)
+        If Not TextBoxOverlayFilter.IsHandleCreated OrElse Not OverlayListsLayout.IsHandleCreated Then Return
+        Dim top = OverlayListsLayout.PointToClient(TextBoxOverlayFilter.PointToScreen(System.Drawing.Point.Empty)).Y
+        If top < 0 Then Return
+        If OverlayCenterLayout.Margin.Top = top Then Return
+        OverlayCenterLayout.Margin = New Padding(OverlayCenterLayout.Margin.Left, top, OverlayCenterLayout.Margin.Right, OverlayCenterLayout.Margin.Bottom)
     End Sub
 
     ''' <summary>Fill the LEFT catalog (ListBoxOverlayAvailable) with the RaceMenu paint list for the selected
@@ -2897,16 +2919,26 @@ Public Class EditBody_Form
         Close()
     End Sub
 
+    ''' <summary>Cancel = sólo marcar el resultado y cerrar. El rollback vive en
+    ''' <see cref="EditBodyForm_FormClosing"/> para que la X haga exactamente lo mismo que este botón —
+    ''' mismo diseño que ArmoEditor_Form/ArmaEditor_Form. ⛔ No puede ir aquí también: este handler
+    ''' llama a Close(), así que invocarlo desde FormClosing re-entraría en el cierre.</summary>
     Private Sub OnCancel(sender As Object, e As EventArgs)
-        ' Restore the snapshot taken when the form opened.
+        DialogResult = DialogResult.Cancel
+        Close()
+    End Sub
+
+    ''' <summary>Deshace las ediciones en vivo restaurando el snapshot del constructor. Las ediciones
+    ''' mutan _appliedPresets[npc] POR REFERENCIA, así que sin esto un cierre no-OK dejaba el overlay ya
+    ''' modificado mientras el caller (MainForm.vb:9920, exige DialogResult=OK) se saltaba MarkNpcDirty y
+    ''' el re-render. Idempotente y sólo toca campos ReadOnly del ctor ⇒ seguro respecto al teardown GL.</summary>
+    Private Sub RevertOverlay()
         If _hadPriorOverlay Then
             _appliedPresets(_rootNpcFormID) = _priorPreset
         Else
             _appliedPresets.Remove(_rootNpcFormID)
         End If
         HasUncommittedChanges = False
-        DialogResult = DialogResult.Cancel
-        Close()
     End Sub
 
     ''' <summary>Refresh dispatcher targeting the editor's embedded NpcRenderHost. MWGT and
@@ -3011,6 +3043,11 @@ Public Class EditBody_Form
     End Sub
 
     Private Sub EditBodyForm_FormClosing(sender As Object, e As System.Windows.Forms.FormClosingEventArgs) Handles Me.FormClosing
+        ' ⭐ Rollback ANTES del teardown y para CUALQUIER cierre que no sea OK: botón Cancel, X, Esc y
+        ' Alt+F4 (WinForms pone DialogResult=Cancel al cerrar un modal con la X, así que este único test
+        ' cubre las cuatro vías). Mismo diseño que ArmoEditor_Form.vb:1677 y EditFace_Form.
+        If DialogResult <> DialogResult.OK Then RevertOverlay()
+
         ' Quiesce the render loop FIRST — see EditFace_Form for the full rationale.
         ' Without this the safety-repaint heartbeat can drain a paint mid-host-Dispose
         ' against GL handles the host has already deleted.

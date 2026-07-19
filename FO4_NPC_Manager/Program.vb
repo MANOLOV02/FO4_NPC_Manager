@@ -110,6 +110,9 @@ Module Program
 
         Config_App.LoadConfig()
         NPC_Config.LoadConfig()
+        ' Ley opt-in del CK (blend de skin NO normalizado) — gate por juego. Se re-aplica al finalizar
+        ' el selector de juego del Preflight y al aceptar CharGen Options. Ver NPC_Config.ApplyEngineSkinWeightNormalizationGate.
+        NPC_Config.ApplyEngineSkinWeightNormalizationGate(Config_App.Current.Game)
         ' Game is NO LONGER pinned to Fallout4 here — it comes from the persisted config (last session's
         ' choice) and is finalized by the user in Preflight_Form's game selector. The encoding init below
         ' uses this persisted default; Preflight re-initializes encoding for the chosen game before it

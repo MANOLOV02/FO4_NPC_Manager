@@ -133,6 +133,8 @@ Partial Class CharGenOptionsForm
         CheckBoxApplyMouthVanillaFix = New CheckBox()
         CheckBoxBakeSseRaceMenuOverlays = New CheckBox()
         CheckBoxResolveHphHeadTri = New CheckBox()
+        CheckBoxReplicateEngineSkinNorm = New CheckBox()
+        BtnFixesRevert = New Button()
         TabMain.SuspendLayout()
         TabPageSize.SuspendLayout()
         GroupBoxSize.SuspendLayout()
@@ -1114,6 +1116,8 @@ Partial Class CharGenOptionsForm
         TabPageFixes.Controls.Add(CheckBoxApplyMouthVanillaFix)
         TabPageFixes.Controls.Add(CheckBoxBakeSseRaceMenuOverlays)
         TabPageFixes.Controls.Add(CheckBoxResolveHphHeadTri)
+        TabPageFixes.Controls.Add(CheckBoxReplicateEngineSkinNorm)
+        TabPageFixes.Controls.Add(BtnFixesRevert)
         TabPageFixes.Location = New Point(4, 24)
         TabPageFixes.Name = "TabPageFixes"
         TabPageFixes.Padding = New Padding(3)
@@ -1171,6 +1175,25 @@ Partial Class CharGenOptionsForm
         CheckBoxResolveHphHeadTri.TabIndex = 4
         CheckBoxResolveHphHeadTri.Text = "Resolve missing/mismatched head .tri from High Poly Head (SSE)"
         CheckBoxResolveHphHeadTri.UseVisualStyleBackColor = True
+        '
+        ' CheckBoxReplicateEngineSkinNorm
+        '
+        CheckBoxReplicateEngineSkinNorm.AutoSize = True
+        CheckBoxReplicateEngineSkinNorm.Location = New Point(12, 151)
+        CheckBoxReplicateEngineSkinNorm.Name = "CheckBoxReplicateEngineSkinNorm"
+        CheckBoxReplicateEngineSkinNorm.Size = New Size(420, 19)
+        CheckBoxReplicateEngineSkinNorm.TabIndex = 5
+        CheckBoxReplicateEngineSkinNorm.Text = "Replicate engine skin-weight normalization (non-renormalized) (FO4)"
+        CheckBoxReplicateEngineSkinNorm.UseVisualStyleBackColor = True
+        '
+        ' BtnFixesRevert
+        '
+        BtnFixesRevert.Location = New Point(470, 264)
+        BtnFixesRevert.Name = "BtnFixesRevert"
+        BtnFixesRevert.Size = New Size(146, 26)
+        BtnFixesRevert.TabIndex = 6
+        BtnFixesRevert.Text = "Revert to default"
+        BtnFixesRevert.UseVisualStyleBackColor = True
         '
         ' GroupConvDWsByOp
         '
@@ -1431,4 +1454,6 @@ Partial Class CharGenOptionsForm
     Friend WithEvents CheckBoxApplyMouthVanillaFix As System.Windows.Forms.CheckBox
     Friend WithEvents CheckBoxBakeSseRaceMenuOverlays As System.Windows.Forms.CheckBox
     Friend WithEvents CheckBoxResolveHphHeadTri As System.Windows.Forms.CheckBox
+    Friend WithEvents CheckBoxReplicateEngineSkinNorm As System.Windows.Forms.CheckBox
+    Friend WithEvents BtnFixesRevert As System.Windows.Forms.Button
 End Class

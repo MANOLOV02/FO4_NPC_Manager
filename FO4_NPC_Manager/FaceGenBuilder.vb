@@ -107,6 +107,25 @@ Public Module FaceGenBuilder
     ''' AHORA SWITCHEABLE: el CLI headless lo apaga (=False) para correr el bake 100% CPU sin GL (needGl=
     ''' WriteGPUSandboxOutput), manteniendo el naming `_2` (DebugMode=Logger.Enabled). Default
     ''' (override=Nothing) = comportamiento de la app (Logger.Enabled).
+    ''' <summary>Enciende/apaga el BAKE de texturas de cara (SSE: facetint _d + fold de overlays; FO4:
+    ''' FaceCustomization D/N/S). Default True = comportamiento normal de la app. El barrido de validación
+    ''' de NIF del CLI lo apaga para no componer DDS (es el costo dominante del batch).
+    ''' ⚠️ OJO: apagarlo NO es neutro para el NIF — esas rutinas además REESCRIBEN slots del shader
+    ''' (SSE: slot 6 facetint y el slot 0 plegado; FO4: slots 0/1/7). Con esto en False, esos slots
+    ''' quedan como los dejó la resolución de material, así que un barrido en este modo NO valida el
+    ''' slot 6 (ni el fold del slot 0). Para declarar 100% hay que correr además una pasada con DDS.</summary>
+    Public Property BakeFaceTexturesEnabled As Boolean = True
+
+    ''' <summary>Saltea el ENCODE DDS (BCn + mips) y su escritura a disco, en LOS DOS JUEGOS: FO4 (los 3 canales
+    ''' D/_msn/_s de FaceCustomization) y SSE (el facetint _d). SOLO para barridos que validan el NIF
+    ''' (--ssecomparebatch), donde los pixeles del DDS no se miran. Junto con
+    ''' <see cref="FaceTintCpuCompositor.SkipPixelCompose"/> saca el costo per-NPC dominante del barrido FO4.
+    ''' ⛔ NO cambia lo que el bake escribe en el NIF: el texture-set se crea igual y los paths de los slots se
+    ''' escriben igual (son deterministas: formID + plugin + sufijo), como si el encode hubiera salido bien.
+    ''' El decode de los sources NO se gatea: ya esta amortizado entre NPCs por BatchDecodeCache y ademas es lo
+    ''' que determina que slots existen.</summary>
+    Public Property SkipDdsEncode As Boolean = False
+
     Private _gpuSandboxOverride As Boolean? = Nothing
     Public Property WriteGPUSandboxOutput As Boolean
         Get
@@ -395,7 +414,12 @@ Public Module FaceGenBuilder
             Dim raceRec = pluginManager.GetRecord(probeRaceFid)
             If raceRec IsNot Nothing AndAlso raceRec.Header.Signature = "RACE" Then
                 Dim raceProbe = RecordParsers.ParseRACE(raceRec, pluginManager)
-                regionsFile = NpcMorphPoseResolver.GetFacialBoneRegionsForRace(raceProbe, probeNpcRaw.IsFemale)
+                ' BAKE == RENDER: resolve FMRI against the MERGED both-gender table, exactly like
+                ' NpcMorphPoseResolver.BuildFaceBoneTransforms does for the live render. The two
+                ' per-gender JSONs use disjoint ID namespaces, and 10 vanilla NPCs carry FMRI from
+                ' the opposite gender's namespace — own-gender-only lookup silently baked a neutral
+                ' head for them. See GetFacialBoneRegionsForFmriResolution for the measured evidence.
+                regionsFile = NpcMorphPoseResolver.GetFacialBoneRegionsForFmriResolution(raceProbe, probeNpcRaw.IsFemale)
             End If
         End If
         Dim bakeState As FaceGenBuildPipeline.BakeState =
@@ -711,7 +735,7 @@ Public Module FaceGenBuilder
                         ' Bake de texturas: corre con host (app) O headless-CPU (CLI: host=Nothing pero
                         ' WriteGPUSandboxOutput=False ⇒ needGl=False, sólo el compositor CPU, que no necesita
                         ' GL). El GL interno ya está gateado por needGl; ResolveHairPaletteTexture es null-safe.
-                        If hdpt.PartType = PartTypeFace AndAlso state IsNot Nothing Then
+                        If hdpt.PartType = PartTypeFace AndAlso state IsNot Nothing AndAlso BakeFaceTexturesEnabled Then
                             If isSSEBake Then
                                 ' SSE bakes a single facetint _d DDS (CPU compose, no GL) to NIF slot 6, NOT
                                 ' the FO4 FaceCustomization D/N/S. Uses the overlaid tints so an Edit Face tint
@@ -845,18 +869,44 @@ Public Module FaceGenBuilder
             hdptProcessed += 1
         Next
 
-        ' PENDIENTE (pelo/body-weight): el diff de posiciones del pelo vs CK ES el head-weight (NAM7) — el pelo
-        ' ENTERO sigue el peso (verts lejanos incluidos: un gate de distancia EMPEORA), el skin (weights/índices)
-        ' == CK y solo los verts crudos difieren → CK skinnea el pelo con un hueso weight-ajustado y lo hornea en
-        ' la geometría. NO es surface-conform. Los intentos heurísticos (nearest-vert / barycentric / gate) son
-        ' PARCHES y se descartaron. Falta el MECANISMO EXACTO del CK — pendiente RE (ver memoria).
+        ' ✅ RESUELTO 2026-07-18 (RE del CK + verificación numérica) — este comentario decía que el diff de
+        ' posiciones del pelo vs CK era NAM7 aplicado por "un hueso weight-ajustado" y que faltaba el mecanismo.
+        ' Acertaba en NAM7 y ERRABA en el vehículo: NO es skinning ni surface-conform, es un MORPH plano.
+        '   value = 1 - NAM7/100   (CK SSE 0x1418C32B0: GetWeight [TESNPC+0x204] · mulss 0.01 · subss desde 1.0)
+        '   BSFaceGenNiNode::ApplyMorph(type=3 "Custom Morph", index=0, value)  [0x141D1D6B0]
+        '   type 3 / index 0 == el morph llamado "SkinnyMorph"; deltas del .tri NAM0=1 del PROPIO head part.
+        ' Se reparte a TODOS los hijos del BSFaceGenNiNode sin filtrar por tipo, y el apply de type3/index0 va
+        ' por un camino especial [0x141D18540 → 0x141D18B10] que escribe el array de vértices BASE, que es lo
+        ' que el writer termina volcando al archivo.
+        ' VERIFICADO numéricamente sobre el pelo (fg_00013255 'HairMaleNord09' vs hair09.nif neutral):
+        '   CK == neutral + (1-NAM7/100)·SkinnyMorph  →  residual max 0,00247 rms 0,0001, con NAM7=75,00 exacto.
+        ' NUESTRO CÓDIGO YA LO HACE (NpcMorphResolver.vb, canal SkinnyMorph) ⇒ el pelo está CERRADO.
+        ' ⚠️ ABIERTO y DISTINTO: las BARBAS (head parts que declaran NAM0=0/2) siguen con residual max ~0,067
+        ' rms ~0,0096, y está PROBADO que ese residual NO es expresable como combinación lineal de sus 177
+        ' morphs ni como transformación afín, y que es INDEPENDIENTE del NPC (correlación 0,978). Es otro
+        ' mecanismo del CK, no un canal de morph que falte. NO intentar cerrarlo con morphs ni con heurísticas.
 
-        ' ⭐ CK comparte UN BSShaderTextureSet entre shapes cuyas 8 texturas son idénticas (medido en Narri:
-        ' HairLine + Hair usan el mismo texset del pelo → CK escribe 5 texsets para 6 shapes; nosotros escribíamos
-        ' 6). Aplica a AMBOS juegos (CK deduplica en FO4 también). Es SAFE por construcción: solo mergea texsets
-        ' con las 8 texturas IDÉNTICAS (byte-igual, case-insensitive) → el contenido visible no cambia; repunta el
-        ' ref del duplicado al primer bloque con esa combinación y RemoveUnreferencedBlocks (abajo) evicta el
-        ' huérfano. Verificado que no regresiona FO4 (block-histogram sigue matcheando CK).
+        ' ⭐⭐ El CK comparte un BSShaderTextureSet cuando coincide el MATERIAL, no sólo las rutas.
+        ' El dueño del texture set es el BSLightingShaderMaterial, así que la caché del CK se indexa por el
+        ' payload del material completo: los 8 paths + emissive color/multiple, alpha, refraction strength,
+        ' glossiness, specular color y specular strength. Las shader FLAGS (SSPF1/SSPF2), el nombre y el
+        ' controller viven en el shader property y NO entran en la clave.
+        ' (El texture clamp mode también forma parte del material en el CK, pero NiflySharp no lo expone
+        ' públicamente en BSLightingShaderProperty — sólo el campo protegido `_textureClampMode`. Omitirlo es
+        ' seguro: la clave mínima validada 75/75 fue "paths + specularStrength", y ésta la contiene.)
+        ' DERIVADO DE DATOS (2026-07-18, 75 FaceGeom del CK extraídos del BSA vanilla, exigiendo reproducir el
+        ' grafo de sharing exacto — mismos bloques y mismas shapes agrupadas):
+        '     sólo los 8 paths (la clave vieja) ....... 47/75
+        '     paths + payload de material ............. 75/75
+        '     paths + material + SSPF1/SSPF2 .......... 36/75   (⇒ las flags NO entran)
+        ' Y de los 28 pares que el CK dejó SEPARADOS pese a tener los 8 paths idénticos, 28/28 difieren
+        ' EXCLUSIVAMENTE en specularStrength (caso canónico: hair09.nif 2,51 vs hairline09.nif 1,82 sobre la
+        ' misma HairLong.dds ⇒ el CK escribe 2 texsets, la clave vieja escribía 1).
+        ' ⛔ CORRIGE la premisa anterior ("8 texturas idénticas", inferida del ÚNICO caso Narri): Narri es
+        ' justamente el subconjunto donde specularStrength coincide, por eso la generalización pasó
+        ' desapercibida. MEDIDO vanilla limpio: 1036 NPCs (41%) con un BSShaderTextureSet de menos, tasa
+        ' coherente con el 37% de fallo de la muestra. Ver feedback_ch_engine_source (el tamaño del diff no
+        ' valida una regla) y arch_facegen_bake_rules.
         Try
             Dim seenTexset As New Dictionary(Of String, Integer)()
             For Each sh In nif.NifShapes.ToList()
@@ -864,7 +914,23 @@ Public Module FaceGenBuilder
                 If lsp Is Nothing OrElse lsp.TextureSetRef Is Nothing OrElse lsp.TextureSetRef.Index < 0 Then Continue For
                 Dim ts = TryCast(nif.Blocks(lsp.TextureSetRef.Index), NiflySharp.Blocks.BSShaderTextureSet)
                 If ts Is Nothing OrElse ts.Textures Is Nothing Then Continue For
-                Dim key = String.Join("|", ts.Textures.Select(Function(t) If(t?.Content, "").ToLowerInvariant()))
+                ' ⭐ HairTintColor va en la clave: es la cola específica del shader type Hair Tint y forma parte
+                ' del material. MEDIDO sobre los pares que el CK dejó SEPARADOS teniendo los 8 paths Y el resto
+                ' del material idénticos (9 NPCs argonianos, ej. 0001412E 'HairArgonianMale07' vs
+                ' 'HairArgonianMale07Hairline'): el ÚNICO campo que difiere es HairTintColor
+                ' (0,290196/0,270588/0,380392 vs 0,211765/0,274510/0,376471). Sin él los mergeábamos.
+                ' El formato "R" (round-trip) es exacto a nivel bit — necesario porque en esos mismos pares
+                ' SpecularColor difiere en 1 ULP y cualquier redondeo los volvería a colapsar.
+                Dim matKey = String.Join(";",
+                    $"{lsp.EmissiveColor.R:R},{lsp.EmissiveColor.G:R},{lsp.EmissiveColor.B:R}",
+                    $"{lsp.EmissiveMultiple:R}",
+                    $"{lsp.Alpha:R}",
+                    $"{lsp.RefractionStrength:R}",
+                    $"{lsp.Glossiness:R}",
+                    $"{lsp.SpecularColor.R:R},{lsp.SpecularColor.G:R},{lsp.SpecularColor.B:R}",
+                    $"{lsp.SpecularStrength:R}",
+                    $"{lsp.HairTintColor.R:R},{lsp.HairTintColor.G:R},{lsp.HairTintColor.B:R}")
+                Dim key = String.Join("|", ts.Textures.Select(Function(t) If(t?.Content, "").ToLowerInvariant())) & "||" & matKey
                 Dim canonIdx As Integer
                 If seenTexset.TryGetValue(key, canonIdx) Then
                     lsp.TextureSetRef = New NiflySharp.NiBlockRef(Of NiflySharp.Blocks.BSShaderTextureSet) With {.Index = canonIdx}
@@ -1512,10 +1578,6 @@ Public Module FaceGenBuilder
                 ' tone COLOR which the resolver puts in HairTintColor and the library writes).
                 mat.SkinTintAlpha = skinTintAlpha
                 mat.Save_To_Shader(nif, cloned, bsls, mat.NifShaderType, slot5Path)
-                ' NOTA: el specular del head (texset slot 7) queda como lo resuelve el skin-resolver
-                ' (PascalCase-sin-prefijo). CK lo deja crudo del source ('textures\...' minúscula), pero es la
-                ' MISMA textura (engine normaliza "textures\" + case-insensitive) → no-op visual. NO se fuerza a
-                ' matchear CK: hacerlo sería una heurística de path sin efecto (decisión del usuario 2026-07-09).
                 ' CK al bakear el FaceGen deja shad.Name vacío en el shader inline (no
                 ' linkea al BGSM external). Replicamos eso para que el .nif2 sea standalone
                 ' (todos los datos del material viven embedded en el shader, sin depender
@@ -1682,16 +1744,27 @@ Public Module FaceGenBuilder
             ' Formato del facetint = el elegido por el usuario (CharGen Options → Diffuse), NO hardcodeado. Antes
             ' BakeFaceTintDds forzaba BC3, así que el facetint real y el neutral del fold podían salir con formatos
             ' distintos según el NPC estuviera plegado o no.
-            Dim dds = SseFaceGenBaker.BakeFaceTintDds(pluginManager, npcRec, race, raceFid, npcData.IsFemale, fSz, fSz, tintOverride, npcData.SseTintTexOverride, DiffuseDxgiFromSetting())
-            If dds Is Nothing Then Return
+            ' GATE del encode (ver SkipDdsEncode). ⛔ El Nothing/no-Nothing SI decide el slot 6, y sale del
+            ' COMPOSE (ComposeFacetintAcc), no del encode: un NPC sin capas de tint no tiene facetint y el bake
+            ' no le escribe el slot. Por eso en modo gateado se corre igual el compose (512x512) y se saltea
+            ' SOLO el EncodeLinearRgbaToBc3 + el File.Write ⇒ misma condicion, mismo NIF.
+            Dim dds As Byte() = Nothing
+            If SkipDdsEncode Then
+                If SseFaceGenBaker.ComposeFacetintAcc(pluginManager, npcRec, race, raceFid, npcData.IsFemale, fSz, fSz, tintOverride, npcData.SseTintTexOverride) Is Nothing Then Return
+            Else
+                dds = SseFaceGenBaker.BakeFaceTintDds(pluginManager, npcRec, race, raceFid, npcData.IsFemale, fSz, fSz, tintOverride, npcData.SseTintTexOverride, DiffuseDxgiFromSetting())
+                If dds Is Nothing Then Return
+            End If
             Dim fgLocal = PluginManager.ToFaceGenLocalFormID(npcFormID)
             Dim tintDir = $"Textures\Actors\Character\FaceGenData\FaceTint\{originPlugin}\"
             Dim suffix = If(DebugMode, "_2.dds", ".dds")          ' on-disk name (sandbox in DebugMode)
             Dim embeddedSuffix = If(willBePacked, ".dds", suffix) ' the packer renames _2 → canonical
             Dim rel = tintDir & $"{fgLocal:X8}{suffix}"
             Dim outFile = IO.Path.Combine(Config_App.Current.DataPath, rel)
-            IO.Directory.CreateDirectory(IO.Path.GetDirectoryName(outFile))
-            IO.File.WriteAllBytes(outFile, dds)
+            If Not SkipDdsEncode Then
+                IO.Directory.CreateDirectory(IO.Path.GetDirectoryName(outFile))
+                IO.File.WriteAllBytes(outFile, dds)
+            End If
             ' TGA lossless del _2 (CPU) cuando "Generate TGA" está marcado (= FO4). Recompone el acc SOLO en ese
             ' caso (no re-decodea el BC3) para dumpear el buffer pre-encode, byte-igual al que se encodeó.
             If WriteTGASandboxOutput Then
@@ -1704,7 +1777,21 @@ Public Module FaceGenBuilder
                 Dim lsp = TryCast(nif.Blocks(spr.Index), NiflySharp.Blocks.BSLightingShaderProperty)
                 If lsp IsNot Nothing AndAlso lsp.TextureSetRef IsNot Nothing AndAlso lsp.TextureSetRef.Index >= 0 Then
                     Dim ts = TryCast(nif.Blocks(lsp.TextureSetRef.Index), NiflySharp.Blocks.BSShaderTextureSet)
-                    If ts IsNot Nothing AndAlso ts.Textures IsNot Nothing AndAlso ts.Textures.Count > 6 Then
+                    ' ⭐ El slot 6 sigue la MISMA ley que el resto (bake CK 0x141d0ea00): sólo lo escribe el
+                    ' branch type 4 FaceTint. El gate del call site es por HDPT.PartType=Face, que NO es
+                    ' equivalente: un head part de cara puede tener un shape autorado con otro shader type.
+                    ' MEDIDO: 'MaleHeadManekin' (HDPT 0x1078799, PartType=Face, TNAM=0, MODL=ManekinHead.nif)
+                    ' tiene shape shType=Default(0) ⇒ el CK deja el slot 6 VACÍO, y nosotros le escribíamos el
+                    ' facetint. 8 NPCs (Dawnguard 00008B34/0000D1BE · Dragonborn 0002A378/79/7A ·
+                    ' HearthFires 00008B32/00015D5D · Skyrim 00089A85).
+                    If lsp.ShaderType_SK_FO4 <> NiflySharp.Enums.BSLightingShaderType.FaceTint Then
+                        ' Gateado por Logger.Enabled ADEMÁS del LogLazy: sin el gate se aloca la clausura en
+                        ' CADA shape de CADA NPC aunque el log esté apagado. Convención del codebase.
+                        If Logger.Enabled Then
+                            Dim stL6 = lsp.ShaderType_SK_FO4
+                            Logger.LogLazy(Function() $"[FACEBAKE][SSE] slot6 NO escrito: shape shType={stL6} (≠FaceTint) — ley CK 0x141d0ea00")
+                        End If
+                    ElseIf ts IsNot Nothing AndAlso ts.Textures IsNot Nothing AndAlso ts.Textures.Count > 6 Then
                         ts.Textures(6).Content = EmbeddedEngineTexPath(tintDir & $"{fgLocal:X8}{embeddedSuffix}")
                         ' NOTE: NO "Textures\" prefix on the skin slots 0/7. MEDIDO vs BSA CK (batch SSE): CK escribe
                         ' el head diffuse SIN prefijo (p.ej. 'Actors\Character\Male\MaleHead.dds'), byte-igual al
@@ -2585,6 +2672,40 @@ Public Module FaceGenBuilder
             Return
         End If
 
+        ' ⭐ LEY: el redirect de los slots 0/1/7 a FaceCustomization se gatea por el SHADER TYPE del
+        ' MATERIAL DEL SHAPE (Face/FaceTint = 4), NO por HDPT.PartType = Face del record.
+        ' RE CreationKit.exe (FO4) `0x140ed9020` = fn de asignación del texture-set FaceCustomization
+        ' por-shape:
+        '     0x140ed9062 mov rsi,[rbx+0x58]   ; material
+        '     0x140ed9075 call [rax+0x28]      ; material.GetType()
+        '     0x140ed9078 cmp eax,4            ; Face?
+        '     0x140ed907b jne 0x140ed9453      ; << si != 4 -> NO asigna NINGÚN slot (0, 1 ni 7)
+        ' (ver memoria project_re_facegen_composite_gate_shadertype).
+        '
+        ' MEDIDO — DLC04Oswald (DLCNukaWorld.esm 0x0601763B), shape 'DLC04MaleHeadGhoulGlowing':
+        '   material = DLC04_GhoulHeadGlowing.BGSM ⇒ Glowmap ⇒ baked type GlowShader (≠ FaceTint).
+        '   CK: TX00/01/07 = GhoulMaleHead_d/_n/_s (del TXST resuelto) y TX02 = GhoulMaleHeadGlowing_g
+        '   conservado; CERO referencias a FaceCustomization en su NIF. Su HDPT SÍ es PartType=Face,
+        '   por eso pasaba nuestro gate del call site; su material NO es Face, por eso el CK lo saltea.
+        '
+        ' ⚠️ El gate va ACÁ (redirect de slots) y NO en el call site (~:739), por evidencia medida:
+        '   el CK SÍ shippeó `0001763B_d.DDS` en el BA2 para ese mismo NPC ⇒ el CK COMPONE y EXPORTA
+        '   las texturas (fn de export `0x140ab8760`, sin gate) y sólo se saltea la ASIGNACIÓN al NIF
+        '   (`0x140ed9020`, con gate). Apagar el bake entero desde el call site además ya rompió el NIF
+        '   una vez (shape sin BSShaderTextureSet propio ⇒ la cara se deduplicaba con otra shape).
+        ' Mismo patrón que el fix ya cerrado del lado SSE para el slot 6 (ver WriteSseFacetintDds).
+        '
+        ' El tipo se lee del shader del shape CLONADO, que ApplyRenderResolvedMaterialToShape ya derivó
+        ' de los bools del material resuelto (Glow > Facegen > SkinTint > Hair > Env > Default), que es
+        ' la misma ley del bake CK de FO4. No se re-deriva acá para no duplicar la regla.
+        ' Camino Skyrim NO afectado: BakeFaceTextures sólo se llama en la rama FO4 del call site.
+        Dim shapeShaderType = bsls.ShaderType_SK_FO4
+        Dim redirectSlotsToFaceCustomization As Boolean =
+            (shapeShaderType = NiflySharp.Enums.BSLightingShaderType.FaceTint)
+        If Not redirectSlotsToFaceCustomization AndAlso Logger.Enabled Then
+            Logger.LogLazy(Function() $"[FACEBAKE] slots 0/1/7 NO redirigidos: shape shType={shapeShaderType} (≠FaceTint) — ley CK 0x140ed9020 (npcFormID=0x{npcFormID:X8})")
+        End If
+
         ' --- 6. Per-slot: readback → encode → write → rewrite slot path → diff vs CK. ---
         For Each entry In slotPlan
             Dim ddW As Integer = entry.W, ddH As Integer = entry.H
@@ -2633,6 +2754,9 @@ Public Module FaceGenBuilder
 
             Dim mipLevels = CInt(Math.Floor(Math.Log(Math.Min(ddW, ddH), 2))) + 1
             Dim ddsBytes As Byte() = Nothing
+            ' GATE del encode+escritura del DDS (ver SkipDdsEncode). Se saltea el BCn+mips y el File.Write, y se
+            ' cae DIRECTO a la reescritura del slot de abajo — igual que si el encode hubiera salido bien.
+            If Not SkipDdsEncode Then
             Try
                 ddsBytes = DirectXTextureConversionHelper.Bgra32BytesToDdsBytes(
                     width:=ddW, height:=ddH, bgraPixels:=bgra,
@@ -2660,6 +2784,7 @@ Public Module FaceGenBuilder
                 Logger.LogLazy(Function() $"[FACEBAKE] write FAILED '{outFile}': {ex.Message}")
                 Continue For
             End Try
+            End If
 
             ' TGA del CPU: copia UNCOMPRESSED (true-color) al lado del .dds, desde el buffer en memoria
             ' (bgra) -> lossless aunque el .dds sea BCn. Gateado SOLO por WriteTGASandboxOutput
@@ -2705,6 +2830,12 @@ Public Module FaceGenBuilder
                     Logger.LogLazy(Function() $"[FACEBAKE-GPU] _2b write failed slot={slotL2}: {m}")
                 End Try
             End If
+
+            ' Gate por shader-type del material (ver bloque de la ley arriba, RE CK 0x140ed9020): si el
+            ' shape no es Face/FaceTint el CK NO asigna NINGÚN slot ⇒ el shape conserva las texturas ya
+            ' transcriptas por ApplyRenderResolvedMaterialToShape. El DDS de arriba SÍ se compuso y
+            ' escribió, igual que el CK (que shippeó 0001763B_d.DDS para Oswald sin referenciarlo).
+            If Not redirectSlotsToFaceCustomization Then Continue For
 
             Dim embeddedSuffix = If(willBePacked, entry.CanonSuffix, entry.Suffix)
             ' Full "Data\Textures\..." prefix, matching CK vanilla exactly (CK's loose FaceGen renders

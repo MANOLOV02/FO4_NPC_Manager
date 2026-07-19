@@ -1841,6 +1841,7 @@ Public Class MainForm
         ' mismos, pero lo que cuelga de cada uno no (FMRS vs node transforms, MWGT vs NAM7, ARMA SCLP vs
         ' sculpt RaceMenu, [U]/[A] vs outfit/accesorios). Ver RenderToggleLabels.
         ApplyRenderToggleLabelsForGame()
+        RestoreMainWindowBounds()
         ' Restore persisted UI toggles BEFORE InitializePreview (Shown handler snapshots
         ' checkbox state into _renderHost.Toggles via RenderToggles.FromMainCheckBoxes).
         CheckBoxRenderGore.Checked = NPC_Config.Current.RenderGore
@@ -1856,6 +1857,55 @@ Public Class MainForm
         AddSseFoldedRenderDebugToggle()   ' ⚠️ PROVISORIO (diagnóstico) — DEBUG ONLY: en Release ni siquiera se crea
 #End If
         LoadDataAsync()
+    End Sub
+
+    ''' <summary>Restaura posición/tamaño/maximizado guardados en el cierre anterior (NPC_Config
+    ''' MainWindow*). Sin config previa (Width = 0) no toca nada: quedan los defaults del Designer
+    ''' (CenterScreen + Maximized). El rectángulo guardado se valida contra las pantallas ACTUALES —
+    ''' si no intersecta ninguna (monitor desconectado, resolución cambiada) se descarta y se centra,
+    ''' porque una ventana en coordenadas de un escritorio inexistente es irrecuperable con el ratón.</summary>
+    Private Sub RestoreMainWindowBounds()
+        Dim cfg = NPC_Config.Current
+        If cfg.MainWindowWidth <= 0 OrElse cfg.MainWindowHeight <= 0 Then
+            ' Nunca se guardó geometría: sólo se honra el estado maximizado.
+            WindowState = If(cfg.MainWindowMaximized, FormWindowState.Maximized, FormWindowState.Normal)
+            Return
+        End If
+
+        ' MinimumSize (1024x720) manda: un tamaño guardado menor lo pondría el propio WinForms igual,
+        ' pero clampeamos aquí para que el test de visibilidad use el rectángulo REAL.
+        Dim w = Math.Max(cfg.MainWindowWidth, MinimumSize.Width)
+        Dim h = Math.Max(cfg.MainWindowHeight, MinimumSize.Height)
+        Dim rect As New Rectangle(cfg.MainWindowLeft, cfg.MainWindowTop, w, h)
+
+        Dim visible = Screen.AllScreens.Any(Function(s) s.WorkingArea.IntersectsWith(rect))
+        If visible Then
+            StartPosition = FormStartPosition.Manual
+            Bounds = rect
+        Else
+            ' Rectángulo huérfano: conservamos el TAMAÑO (es preferencia del usuario) y centramos.
+            StartPosition = FormStartPosition.CenterScreen
+            Size = New Size(w, h)
+        End If
+
+        WindowState = If(cfg.MainWindowMaximized, FormWindowState.Maximized, FormWindowState.Normal)
+    End Sub
+
+    ''' <summary>Vuelca la geometría de la ventana a NPC_Config. Usa RestoreBounds (el rectángulo
+    ''' "normal") y NO Bounds: cerrando maximizada o minimizada, Bounds sería el del monitor entero o
+    ''' el de la barra de tareas, y al reabrir + des-maximizar la ventana quedaría con ese tamaño.
+    ''' El flush a npc_config.json lo hace el SaveConfig() del propio FormClosing.</summary>
+    Private Sub CaptureMainWindowBounds()
+        Dim r = If(WindowState = FormWindowState.Normal, Bounds, RestoreBounds)
+        ' RestoreBounds puede venir vacío si el form se maximizó sin haber estado nunca en Normal.
+        If r.Width > 0 AndAlso r.Height > 0 Then
+            NPC_Config.Current.MainWindowLeft = r.Left
+            NPC_Config.Current.MainWindowTop = r.Top
+            NPC_Config.Current.MainWindowWidth = r.Width
+            NPC_Config.Current.MainWindowHeight = r.Height
+        End If
+        ' Minimizada no es un estado que valga la pena restaurar: se trata como Normal.
+        NPC_Config.Current.MainWindowMaximized = (WindowState = FormWindowState.Maximized)
     End Sub
 
     ''' <summary>⚠️ PROVISORIO — herramienta de diagnóstico, a ELIMINAR junto con
@@ -8008,6 +8058,7 @@ Public Class MainForm
         NPC_Config.Current.ShowCatGeneric = CheckBoxCatGeneric.Checked
         NPC_Config.Current.ShowCatTemplate = CheckBoxCatTemplate.Checked
         NPC_Config.Current.ShowCatUnused = CheckBoxCatUnused.Checked
+        CaptureMainWindowBounds()
         Config_App.SaveConfig()
         NPC_Config.SaveConfig()
 
@@ -9783,30 +9834,34 @@ Public Class MainForm
         Return avail
     End Function
 
-    ''' <summary>Gate ButtonEditFace by <see cref="ComputeFaceEditAvailability"/>: the editor
-    ''' opens only when at least one section has authored content for this race+gender. If the
-    ''' race has no head parts, no hair colors, no morph presets backed by the loaded TRI, no
-    ''' tint groups, and no FacialBoneRegions JSON, the editor would be entirely empty — same
-    ''' rule Edit Body uses to skip a useless picker.</summary>
+    ''' <summary>Gate de ButtonEditFace: EXACTAMENTE el mismo que impide bakear, en los dos juegos —
+    ''' <see cref="RaceUtil.RaceSupportsFaceGen"/> (RACE.DATA bit 0x2). Si la raza bakea, se edita; si no,
+    ''' no. Una sola regla, sin rama por juego y sin condiciones extra: cualquier gate MÁS estricto que el
+    ''' del bake bloquea ediciones legítimas, y cualquiera MÁS laxo deja producir datos que el motor
+    ''' ignora.</summary>
     Private Sub UpdateEditFaceEnabled()
+        ' UNA sola regla, SIN rama por juego: si la raza bakea, se puede editar. Es literalmente el mismo
+        ' gate que impide bakear (FaceGenBuilder.vb:356) y que impide renderizar head parts
+        ' (NpcMeshCollector.vb:987) — RACE.DATA bit 0x2, el discriminador de 0 excepciones.
+        '
+        ' La fuente del FormID también coincide: el bake lee npcData.RaceFormID de ResolveOverlaidNpcData,
+        ' que aplica NpcRecordOverlay.EffectiveRaceResolver (MainForm.vb:1828) y por tanto devuelve la raza
+        ' PISADA por Edit NPC — la misma que state.RaceFormID. No hay divergencia con RaceCompatibility/COtR.
+        '
+        ' ⛔ HISTÓRICO — dos gates distintos, los dos mal por motivos opuestos:
+        '   · SSE era `True` incondicional, justificado por una decisión de 2026-07-08 que hablaba de un
+        '     aviso "SseFeatureNotImplemented" que NO EXISTE en ningún handler (el identificador sólo
+        '     aparecía en ese comentario). El efecto real era abrir el editor sobre dragones, lobos y
+        '     draugr sin facegen, donde el render ya hace early-return por este mismo bit. Y como OnOk
+        '     marca dirty siempre, esos datos —que el motor ignora— podían acabar en el ESP.
+        '   · FO4 exigía ADEMÁS ComputeFaceEditAvailability (head parts / hair colors / morph presets /
+        '     tint groups / FacialBoneRegions autorados por la RACE). Era MÁS estricto que el bake: podía
+        '     deshabilitar el editor para una raza que sí bakea. Como el editor deja añadir head parts de
+        '     TODO el load order (no sólo los defaults de la raza), "la raza no tiene contenido autorado"
+        '     no implica "no hay nada que editar".
         Dim shouldEnable As Boolean = False
         If _renderHost.LastRenderedState IsNot Nothing AndAlso _renderHost.LastRenderData IsNot Nothing Then
-            If Config_App.Current.Game = Config_App.Game_Enum.Skyrim Then
-                ' SSE: the FO4 availability model (tint template groups, RACE morph groups, FacialBoneRegions
-                ' JSON) doesn't apply, and the Edit Face editor + FaceGen texture bake aren't ported to Skyrim
-                ' yet. Per user decision 2026-07-08, do NOT disable by game — keep the buttons reachable on any
-                ' rendered NPC so the click surfaces the "not implemented for Skyrim" notice
-                ' (SseFeatureNotImplemented at the handlers).
-                shouldEnable = True
-            Else
-                Dim avail = ComputeFaceEditAvailability(_renderHost.LastRenderedState, _renderHost)
-                ' Canonical race-level gate: even if the race exposes some authored content (hair colors,
-                ' tint groups, …), Edit Face is only meaningful for a FaceGen race (one with a head/face).
-                ' RaceSupportsFaceGen reads RACE.DATA bit 0x2 — the 0-exception discriminator — so non-FaceGen
-                ' races (dog/creature/robot/turret/feral-ghoul/etc.) keep the button disabled.
-                shouldEnable = avail.AnythingAvailable AndAlso
-                               RaceUtil.RaceSupportsFaceGen(_renderHost.LastRenderedState.RaceFormID, _pluginManager)
-            End If
+            shouldEnable = RaceUtil.RaceSupportsFaceGen(_renderHost.LastRenderedState.RaceFormID, _pluginManager)
         End If
         ' Build CharGen also enables for a multi-selection: the batch resolves + skips per NPC, so it
         ' must NOT be gated on the single rendered NPC's face-edit availability (the random pick could

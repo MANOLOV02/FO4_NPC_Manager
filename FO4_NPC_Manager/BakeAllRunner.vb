@@ -1,4 +1,4 @@
-Imports System.IO
+﻿Imports System.IO
 Imports System.Linq
 Imports FO4_Base_Library
 
@@ -97,6 +97,11 @@ Friend Module BakeAllRunner
             ' ---------------------------------------------------------------------------------
             Config_App.LoadConfig()
             NPC_Config.LoadConfig()
+            ' El gate va PEGADO al LoadConfig: EngineSkinWeightNormalization.Enabled arranca en False y solo lo
+            ' enciende ApplyEngineSkinWeightNormalizationGate. Sin esta linea el bake-all corria SIEMPRE con la
+            ' ley apagada aunque el usuario la tuviera guardada en True (el valor persistia y se mostraba en la
+            ' UI, pero no se APLICABA en este camino). Se re-aplica mas abajo si --executable cambia el juego.
+            NPC_Config.ApplyEngineSkinWeightNormalizationGate(Config_App.Current.Game)
 
             ' --executable: point the whole run at another install. It rewrites Config_App.Current.FO4ExePath
             ' IN MEMORY ONLY (no SaveConfig), which moves FO4EDataPath with it, and re-derives the game from
@@ -120,6 +125,11 @@ Friend Module BakeAllRunner
             End If
 
             Dim game = Config_App.Current.Game
+
+            ' Re-aplicar el gate con el juego DEFINITIVO: --executable puede haber cambiado Current.Game arriba,
+            ' y la ley esta verificada por RE solo en FO4. Sin esta segunda llamada, un override a SkyrimSE.exe
+            ' dejaria encendida una ley que en Skyrim no esta verificada.
+            NPC_Config.ApplyEngineSkinWeightNormalizationGate(game)
 
             ' NPC render/bake relies on per-segment occlusion (head-part hiding); the shared toggle
             ' defaults True for WM inspection, so force it off exactly like Program.Main does.

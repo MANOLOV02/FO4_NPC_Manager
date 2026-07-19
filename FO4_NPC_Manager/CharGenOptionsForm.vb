@@ -53,6 +53,13 @@ Public Class CharGenOptionsForm
         ' solo en Skyrim; el valor persistido se round-trip-ea intacto cuando el juego activo es FO4. Lo consume
         ' NpcMorphResolver.LoadTriForShape (render/preview) vía Config_App.Setting_SseResolveHighPolyHeadTri.
         CheckBoxResolveHphHeadTri.Checked = c.Setting_SseResolveHighPolyHeadTri
+        ' FO4-only, DEFAULT ON: replicar la normalizacion de pesos de skin del MOTOR (w3 = 1−Σ, se descarta si ≤0).
+        ' ⚠️ Replica un DEFECTO del CK, no una ley del motor: sirve para igualar al CK byte a byte, no para
+        ' que la malla salga "mejor". Default False ⇒ camino normalizado de siempre, bit-idéntico.
+        ' Fuente/VAs del RE en FO4_Base_Library.EngineSkinWeightNormalization. Enabled solo en FO4 porque el mecanismo NO
+        ' está verificado en los binarios de Skyrim (el valor persistido se round-trip-ea intacto en SSE).
+        CheckBoxReplicateEngineSkinNorm.Checked = NPC_Config.Current.ReplicateEngineSkinWeightNormalization
+        CheckBoxReplicateEngineSkinNorm.Enabled = isFo4
         CheckBoxResolveHphHeadTri.Enabled = Not isFo4
         If c.Setting_FaceGenPerLayerResolution Then
             RadioPerLayer.Checked = True
@@ -243,6 +250,32 @@ Public Class CharGenOptionsForm
     ''' <summary>Vuelve el orden (tints/swaps/placement) a los defaults del CÓDIGO (constructor de
     ''' FaceTintSortSettings). En memoria: el OK persiste, Cancel descarta. Independiente del Revert de
     ''' Conventions (no toca nada del otro tab).</summary>
+    ''' <summary>"Revert to default" del tab Fixes. Mismo contrato que <see cref="BtnSortRevert_Click"/>:
+    ''' toca SOLO el estado de la UI (los valores se escriben al config recién en el OK) y es GAME-AWARE.
+    ''' <para><b>Los defaults NO se hardcodean acá</b>: salen de instancias frescas de las clases de config, o
+    ''' sea de la MISMA declaración de la propiedad que define el default real. Si mañana cambia un default,
+    ''' este botón lo sigue solo; una lista de literales duplicada se desincronizaría en silencio (y de hecho
+    ''' el default de la ley de skin ya cambió una vez: False → True).</para>
+    ''' <para><b>No cruza sets</b>, igual que el revert de Order: revierte únicamente las opciones del juego
+    ''' ACTIVO. Las del otro juego se dejan intactas para que hagan round-trip sin tocarse — que es justo lo
+    ''' que hace el Load/OK de esta pantalla con las opciones del juego inactivo.</para></summary>
+    Private Sub BtnFixesRevert_Click(sender As Object, e As EventArgs) Handles BtnFixesRevert.Click
+        Dim cfgDef As New Config_App()      ' defaults de Config_App tal como están declarados
+        Dim npcDef As New NPC_Config()      ' defaults de NPC_Config tal como están declarados
+        Dim isFo4 = (Config_App.Current.Game = Config_App.Game_Enum.Fallout4)
+
+        If isFo4 Then
+            CheckBoxApplyGhoulHeadRearFix.Checked = npcDef.ApplyGhoulHeadRearFix
+            CheckBoxApplyEyebrowsFixedColor.Checked = cfgDef.Setting_ApplyEyebrowsFixedColor
+            CheckBoxApplyMouthVanillaFix.Checked = cfgDef.Setting_ApplyMouthVanillaFix
+            ' Default True (FO4): replicar la normalización de pesos del motor. Ver EngineSkinWeightNormalization.
+            CheckBoxReplicateEngineSkinNorm.Checked = npcDef.ReplicateEngineSkinWeightNormalization
+        Else
+            CheckBoxBakeSseRaceMenuOverlays.Checked = cfgDef.Setting_BakeSseRaceMenuOverlays
+            CheckBoxResolveHphHeadTri.Checked = cfgDef.Setting_SseResolveHighPolyHeadTri
+        End If
+    End Sub
+
     Private Sub BtnSortRevert_Click(sender As Object, e As EventArgs) Handles BtnSortRevert.Click
         ' GAME-AWARE: SSE → DefaultsForSse() (Race_Order/Ovl_Index = RaceMenu); FO4 → New() (defaults FO4). No cruza sets.
         Dim def = NewSortDefaults()
@@ -472,6 +505,10 @@ Public Class CharGenOptionsForm
         ' --- Tab "Fixes": toggle NPC-only → NPC_Config (no Config_App). Se flushea en el cierre de la app
         ' (MainForm_FormClosing → NPC_Config.SaveConfig()), igual que RenderGore. ---
         NPC_Config.Current.ApplyGhoulHeadRearFix = CheckBoxApplyGhoulHeadRearFix.Checked
+        ' Ley del MOTOR → NPC_Config + re-aplicar el gate por juego INMEDIATAMENTE, porque el render
+        ' del NPC actual se rehace al volver del OK y tiene que usar ya el modo elegido (RENDER == BAKE).
+        NPC_Config.Current.ReplicateEngineSkinWeightNormalization = CheckBoxReplicateEngineSkinNorm.Checked
+        NPC_Config.ApplyEngineSkinWeightNormalizationGate(c.Game)
         ' Eyebrows fixed-color gate → Config_App (lo lee la librería). Se persiste en el SaveConfig de abajo.
         c.Setting_ApplyEyebrowsFixedColor = CheckBoxApplyEyebrowsFixedColor.Checked
         ' Mouth vanilla fix gate → Config_App. Al volver el OK, MainForm re-renderiza el NPC actual; como la

@@ -569,24 +569,29 @@ Friend NotInheritable Class NpcFaceTintResolver
             End If
 
             ' --- LOSSLESS (como FO4): NO se pasa por ningún encode/decode BCn. Esa pérdida es del ARCHIVO, no del
-            ' COMPOSE. `acc` está en sRGB; el render espera LINEAL crudo ⇒ se convierte sRGB→LINEAL acá y se sube
-            ' RGBA8. (El camino GPU hace la MISMA conversión con el pase cvt del shader y queda Rgba32f, sin el
-            ' redondeo al byte — ≤ medio paso de byte más preciso, igual que el live de FO4.)
-            ' ⛔ ClampByte255 YA multiplica ×255 (espera 0..1). Pasarle el valor ya escalado satura a 255 ⇒ CARA BLANCA. ---
-            Dim fb(npix * 4 - 1) As Byte
+            ' COMPOSE. `acc` está en sRGB; el render espera LINEAL crudo ⇒ se convierte sRGB→LINEAL acá.
+            ' ⭐ Se sube Rgba32f (NO RGBA8) — MISMA convención que el camino GPU-residente, que deja la textura
+            ' float sin cuantizar. Bajar a byte acá metía un redondeo que el GPU no tiene, y encima EN ESPACIO
+            ' LINEAL, donde 8 bits aplastan las sombras (el sRGB de 8 bits es perceptualmente uniforme; el lineal
+            ' NO): la paridad quedaba limitada por el TRANSPORTE en vez de por el compose. ⛔ No volver a RGBA8.
+            ' La conversión es IN-PLACE sobre `acc` (local, no se lee después del upload) ⇒ sin allocation extra,
+            ' y en orden RGBA directo — el camino de bytes tenía que swapear a BGRA, acá ese swap desaparece.
+            ' Se CONSERVA el clamp a [0,1] que hacía ClampByte255: el fold puede pasarse de 1.0 (fgTint amplifica
+            ' ×2-4) y saturar es el comportamiento previo; sacarlo sería un cambio de semántica aparte. ---
             ' Paralelo por rangos (por-píxel puro, escrituras disjuntas ⇒ bit-idéntico): un Math.Pow por canal a la
             ' resolución nativa del complexion — serial era otro tramo medible del fold a 4K.
             System.Threading.Tasks.Parallel.ForEach(
                 System.Collections.Concurrent.Partitioner.Create(0, npix),
                 Sub(range)
                     For i = range.Item1 To range.Item2 - 1
-                        fb(i * 4) = ClampByte255(SseFaceGenBaker.Srgb2Lin(acc(i * 4 + 2)))      ' B
-                        fb(i * 4 + 1) = ClampByte255(SseFaceGenBaker.Srgb2Lin(acc(i * 4 + 1)))  ' G
-                        fb(i * 4 + 2) = ClampByte255(SseFaceGenBaker.Srgb2Lin(acc(i * 4)))      ' R
-                        fb(i * 4 + 3) = 255
+                        For ch = 0 To 2
+                            Dim lin = SseFaceGenBaker.Srgb2Lin(acc(i * 4 + ch))
+                            acc(i * 4 + ch) = If(lin < 0.0, 0.0, If(lin > 1.0, 1.0, lin))
+                        Next
                     Next
                 End Sub)
-            foldedId = UploadRgba8Linear(fb, w, h)
+            ' forceOpaque:=True = el alpha 255 que escribía el camino de bytes (misma ley que el GPU-residente).
+            foldedId = SseFoldLayerStack.UploadRgba32f(acc, npix, w, h, forceOpaque:=True)
             If foldedId = 0 Then
                 Logger.LogLazy(Function() "[SSE-FOLD] ABORT: GL.GenTexture devolvió 0 (¿sin contexto GL?)")
                 Return False
@@ -630,19 +635,31 @@ Friend NotInheritable Class NpcFaceTintResolver
     End Function
 
     ''' <summary>⚠️ PROVISORIO (con <see cref="ApplySseFacetintFolded"/>). Apunta el entry del diccionario a una textura
-    ''' GL ya subida. ⛔ NO libera la textura anterior: es del LOADER (la del DDS original) y puede seguir referenciada
-    ''' en otro lado; borrarla invalida el handle y el sampler devuelve BLANCO. El toggle recarga el NPC entero
-    ''' (ReloadCurrentNpcFull), que es quien reconstruye/libera las texturas — acá sólo se re-apunta.</summary>
+    ''' GL ya subida. El toggle recarga el NPC entero (ReloadCurrentNpcFull), que es quien reconstruye/libera.
+    ''' ⛔ NUNCA libera una textura del LOADER (la del DDS original): puede seguir referenciada en otro lado y
+    ''' borrarla invalida el handle ⇒ el sampler devuelve BLANCO. Por eso el gate es
+    ''' <see cref="PreviewModel.Texture_Loaded_Class.OwnedByComposer"/> y no "prev &lt;&gt; 0".
+    ''' ⭐ SÍ libera la anterior cuando la instalamos NOSOTROS: al pisar Texture_ID nadie más conserva ese handle,
+    ''' y el fold se re-ejecuta en cada refresh de edición en vivo (NpcSkinLivePreview) y en el hook post-upload,
+    ''' así que sin este borrado cada tick deja una textura huérfana — a 4096² son 268 MB de VRAM por tick con el
+    ''' upload Rgba32f. La primera instalación NO borra (prev es del loader): el default de OwnedByComposer es False.</summary>
     Private Shared Sub InstallTexture(model As PreviewModel, key As String, id As Integer, w As Integer, h As Integer, isSrgb As Boolean)
         If id = 0 Then Return
         Dim entry As PreviewModel.Texture_Loaded_Class = Nothing
         If model.Textures_Dictionary.TryGetValue(key, entry) AndAlso entry IsNot Nothing Then
             Dim prev = entry.Texture_ID
+            Dim freedPrev = entry.OwnedByComposer AndAlso prev <> 0 AndAlso prev <> id
+            If freedPrev Then Try : OpenTK.Graphics.OpenGL4.GL.DeleteTexture(prev) : Catch : End Try
             entry.Texture_ID = id : entry.Loaded = True : entry.Size = New System.Drawing.Size(w, h) : entry.IsSRGB = isSrgb
-            Logger.LogLazy(Function() $"[SSE-FOLD]   install '{key}': id {prev} → {id} ({w}x{h}, sRGB={isSrgb})")
+            entry.OwnedByComposer = True
+            Logger.LogLazy(Function() $"[SSE-FOLD]   install '{key}': id {prev} → {id} ({w}x{h}, sRGB={isSrgb}, prevLiberada={freedPrev})")
         Else
+            ' .Path = key OBLIGATORIO: Render.CleanSingleTexture selecciona las texturas a liberar con
+            ' `pf.Path.Equals(Cual)`. Una entrada con Path vacío NO matchea ⇒ se quita del diccionario y la
+            ' textura GL queda sin borrar (fuga silenciosa).
             model.Textures_Dictionary(key) = New PreviewModel.Texture_Loaded_Class With {
-                .Texture_ID = id, .Loaded = True, .Size = New System.Drawing.Size(w, h), .IsSRGB = isSrgb}
+                .Texture_ID = id, .Loaded = True, .Size = New System.Drawing.Size(w, h), .IsSRGB = isSrgb,
+                .Path = key, .OwnedByComposer = True}
             Logger.LogLazy(Function() $"[SSE-FOLD]   install '{key}': NUEVO entry id={id} ({w}x{h}, sRGB={isSrgb})")
         End If
     End Sub
@@ -686,10 +703,13 @@ Friend NotInheritable Class NpcFaceTintResolver
         ' ⭐ LOSSLESS EN AMBOS (como FO4): ninguno pasa por un encode/decode BCn. Antes el CPU comprimía a BC3 y lo
         ' descomprimía (para que el preview mostrara el archivo bakeado) mientras el GPU no ⇒ CPU y GPU NUNCA podían
         ' coincidir. La pérdida BCn es del ARCHIVO, no del COMPOSE: lo que tiene que ser agnóstico es el compose.
-        Dim bgra As Byte()
+        ' ⭐ Y POR LO MISMO, AMBOS TERMINAN EN Rgba32f: antes los dos bajaban a Rgba8, cuantizando DENTRO del
+        ' compose y en espacio LINEAL (un paso de byte lineal ≈ 13 pasos sRGB en sombras). El destino de 8 bits es
+        ' del ARCHIVO que hornea el bake, no del preview. ⛔ No volver a UploadRgba8Linear acá.
+        Dim newId As Integer
         If Config_App.Current.Setting_GPUSkinning AndAlso host IsNot Nothing Then
-            bgra = ComposeSseFacetintBgraGpu(npcRec, race, npcData, W, H, host, effRaceFid)
-            If bgra Is Nothing Then
+            newId = ComposeSseFacetintTexGpu(npcRec, race, npcData, W, H, host, effRaceFid)
+            If newId = 0 Then
                 Logger.LogLazy(Function() "[SSE-FACETINT] ABORT: el compose GPU falló y el flag pide GPU. NO se compone por CPU.")
                 Return False
             End If
@@ -700,12 +720,24 @@ Friend NotInheritable Class NpcFaceTintResolver
                 Logger.LogLazy(Function() $"[SSE-FACETINT] ABORT: ComposeFacetintAcc Nothing (race=0x{effRaceFid:X8} fid=0x{npcData.FormID:X8})")
                 Return False
             End If
-            bgra = SseFaceGenBaker.LinearRgbaToBgra(acc, W, H)
-        End If
-        Dim newId = UploadRgba8Linear(bgra, W, H)
-        If newId = 0 Then
-            Logger.LogLazy(Function() "[SSE-FACETINT] ABORT: UploadRgba8Linear devolvió 0 (sin contexto GL?)")
-            Return False
+            ' ⛔ CLAMP [0,1] OBLIGATORIO — NO borrar. Lo hacía `LinearRgbaToBgra` de forma IMPLÍCITA (su ClampByte
+            ' por canal acota antes de escribir el byte); al dejar de pasar por bytes hay que hacerlo EXPLÍCITO o
+            ' se rompe la paridad: el GPU clampea siempre (`res_c = clamp(res_c, 0.0, 1.0)` en el fragment del
+            ' compositor) y el CPU quedaría sin acotar. Es ALCANZABLE: en SseFaceTintComposer.ComposeLayer la
+            ' cobertura es `mask × tinv` con `tinv = TINV/100` SIN acotar ⇒ el lerp puede pasarse de [0,1].
+            For i = 0 To W * H - 1
+                For ch = 0 To 2
+                    Dim v = acc(i * 4 + ch)
+                    acc(i * 4 + ch) = If(v < 0.0, 0.0, If(v > 1.0, 1.0, v))
+                Next
+            Next
+            ' Mismo destino que el GPU. (LinearRgbaToBgra sigue viva: la usa el dump TGA del bake, que SÍ escribe
+            ' un archivo de 8 bits — ahí la cuantización es del formato de salida, no del compose.)
+            newId = SseFoldLayerStack.UploadRgba32f(acc, W * H, W, H, forceOpaque:=True)
+            If newId = 0 Then
+                Logger.LogLazy(Function() "[SSE-FACETINT] ABORT: UploadRgba32f devolvió 0 (sin contexto GL?)")
+                Return False
+            End If
         End If
         Dim origin = _ctx.PluginManager.GetOriginatingPluginName(npcData.FormID)
         Dim fg = PluginManager.ToFaceGenLocalFormID(npcData.FormID)
@@ -715,10 +747,21 @@ Friend NotInheritable Class NpcFaceTintResolver
         Dim key = FO4UnifiedMaterial_Class.CorrectTexturePath(facetintPath)
         Dim entry As PreviewModel.Texture_Loaded_Class = Nothing
         If model.Textures_Dictionary.TryGetValue(key, entry) AndAlso entry IsNot Nothing Then
+            ' ⚠️ ACÁ el borrado es INCONDICIONAL, a diferencia de InstallTexture (que exige OwnedByComposer).
+            ' NO es una contradicción: son claves con riesgo de COMPARTICIÓN distinto.
+            '   · Esta clave es `facetint\<plugin>\<formid>.dds` = PER-NPC. La única textura que puede haber
+            '     debajo es el facetint vanilla de ESTE NPC (cargado por el loader) o el nuestro anterior;
+            '     ningún otro shape la referencia. Gatearla por OwnedByComposer haría que la PRIMERA
+            '     instalación no liberara la del loader ⇒ fuga garantizada en cada NPC.
+            '   · La de InstallTexture es la del COMPLEXION (`femalehead.dds`) = COMPARTIDA entre shapes y
+            '     entre NPCs de la misma raza. Borrar ahí la del loader deja a otro shape con un handle
+            '     inválido ⇒ sampler BLANCO. Por eso allá el gate SÍ es obligatorio.
             If entry.Texture_ID <> 0 AndAlso entry.Texture_ID <> newId Then OpenTK.Graphics.OpenGL4.GL.DeleteTexture(entry.Texture_ID)
             entry.Texture_ID = newId : entry.Loaded = True : entry.Size = New System.Drawing.Size(W, H) : entry.IsSRGB = False
+            entry.OwnedByComposer = True
         Else
-            model.Textures_Dictionary(key) = New PreviewModel.Texture_Loaded_Class With {.Texture_ID = newId, .Loaded = True, .Size = New System.Drawing.Size(W, H), .IsSRGB = False}
+            ' .Path = key: ver la nota en InstallTexture (CleanSingleTexture matchea por Path; vacío = fuga).
+            model.Textures_Dictionary(key) = New PreviewModel.Texture_Loaded_Class With {.Texture_ID = newId, .Loaded = True, .Size = New System.Drawing.Size(W, H), .IsSRGB = False, .Path = key, .OwnedByComposer = True}
         End If
         materialBase.InnerLayerTexture = facetintPath
         Logger.LogLazy(Function() $"[SSE-FACETINT] OK: compuesto e instalado slot6='{facetintPath}' texId={newId} (fid=0x{npcData.FormID:X8} race=0x{effRaceFid:X8})")
@@ -728,50 +771,50 @@ Friend NotInheritable Class NpcFaceTintResolver
 
     ''' <summary>Rama GPU del render espejo del skinning: compone el facetint SSE (tint-only) PURO GPU — las MISMAS
     ''' capas que el CPU (<see cref="SseFaceTintComposer.BuildLayerInputs"/>) sobre un base PLANO = seed(0.5) vía
-    ''' <see cref="FaceTintCompositor.ApplyFaceTintPipeline"/> (ley SSE all-linear), readback → BGRA lineal 512².
-    ''' Es el MISMO compose que el <c>_2b</c> del bake. Base subido LINEAL (baseDiffuseIsLinearOnGpu) = seed 0.5-lin.
-    ''' Sin capas (raza sin tints) → 0.5 plano (NO es un fallo: es el facetint neutro correcto). Nothing = FALLO del
-    ''' GPU ⇒ el caller ABORTA con log; NO compone por CPU (o todo GPU o todo CPU). GL-bound.</summary>
-    Private Function ComposeSseFacetintBgraGpu(npcRec As PluginRecord, race As RACE_Data, npcData As NPC_Data, w As Integer, h As Integer, host As NpcRenderHost,
-                                               Optional effRaceFid As UInteger = 0UI) As Byte()
-        If host Is Nothing Then Return Nothing
+    ''' <see cref="FaceTintCompositor.ApplyFaceTintPipeline"/> (ley SSE all-linear). Es el MISMO compose que el
+    ''' <c>_2b</c> del bake. Base subido LINEAL (baseDiffuseIsLinearOnGpu) = seed 0.5-lin.
+    ''' Devuelve el TEXTURE-ID Rgba32f LINEAL, <b>propiedad del CALLER</b> (él lo instala y él lo libera; mismo
+    ''' contrato que <c>ApplyPipelineResultToDict</c> y que <c>SseFoldLayerStack.ComposeFoldedGpuResident</c>:
+    ''' <c>AllocateResultTextureAndFbo</c> genera una textura fresca por llamada — sólo el FBO se reusa, la
+    ''' textura NO sale del pool de ping-pong). 0 = FALLO del GPU ⇒ el caller ABORTA con log; NO compone por CPU
+    ''' (o todo GPU o todo CPU). GL-bound.
+    ''' ⭐ GPU-RESIDENTE, SIN READBACK: antes hacía <c>GetTexImage</c> a bytes y re-subía Rgba8. Eso (a) frenaba el
+    ''' pipeline con una transferencia bloqueante en el camino caliente — el mismo patrón que
+    ''' <c>ComposeFoldedGpuResident</c> ya había eliminado — y (b) cuantizaba a 8 bits EN MEDIO del compose,
+    ''' contra la doctrina "la pérdida BCn es del ARCHIVO, no del COMPOSE", y encima en espacio LINEAL.
+    ''' ⭐ SEED EXACTA 0.5 EN FLOAT, no el byte 128 (=0.50196): el CPU (<c>ComposeFacetintAcc</c>) siembra 0.5
+    ''' exacto, así que el byte metía una divergencia CPU/GPU que el shader amplifica ×255/64 (fgTint 2.00781 vs
+    ''' 2.01563 ≈ 0,4% del multiplicador de albedo). Estaba TAPADA por la cuantización que se acaba de quitar
+    ''' (0.5×255 = 127.5 → redondeo bancario → 128 = justo el literal del GPU); al pasar a float quedaría
+    ''' EXPUESTA. ⛔ No volver a sembrar por bytes: el float y la seed exacta van juntos.
+    ''' Sin capas (raza sin tints) → la seed plana ES el facetint neutro correcto: se devuelve TAL CUAL,
+    ''' transfiriendo la propiedad (<c>seedTex = 0</c>) para que el <c>Finally</c> no libere lo que se instala.</summary>
+    Private Function ComposeSseFacetintTexGpu(npcRec As PluginRecord, race As RACE_Data, npcData As NPC_Data, w As Integer, h As Integer, host As NpcRenderHost,
+                                              Optional effRaceFid As UInteger = 0UI) As Integer
+        If host Is Nothing Then Return 0
         If effRaceFid = 0UI Then effRaceFid = npcData.RaceFormID   ' raza efectiva del caller; cruda solo como fallback
-        Dim npix = w * h
-        Dim baseBgra(npix * 4 - 1) As Byte
-        For i = 0 To npix - 1
-            baseBgra(i * 4) = 128 : baseBgra(i * 4 + 1) = 128 : baseBgra(i * 4 + 2) = 128 : baseBgra(i * 4 + 3) = 255   ' seed 0.5
-        Next
-        Dim layers = SseFaceTintComposer.BuildLayerInputs(_ctx.PluginManager, npcRec, race, effRaceFid, npcData.IsFemale, npcData.SseTintRaw, npcData.SseTintTexOverride)
-        If layers Is Nothing OrElse layers.Count = 0 Then Return baseBgra   ' sin tints → 0.5 plano (= seed)
-        Dim baseTex = UploadRgba8Linear(baseBgra, w, h)
-        If baseTex = 0 Then Return Nothing
-        Dim pr = FaceTintCompositor.ApplyFaceTintPipeline(host.CompositorState, host.TintGpuCache,
-                                                          baseTex, 0, 0, w, h, layers, New List(Of FaceRegionSwapInput)(),
-                                                          baseDiffuseIsLinearOnGpu:=True)
-        ' ⛔ Sin fallback silencioso: si HAY capas y el pipeline no devolvió una textura fresca, es un FALLO del GPU
-        ' (no "usá el base"): devolver el base plano daría un facetint neutro y el NPC saldría con el tono equivocado
-        ' sin que nadie se entere. Nothing ⇒ el caller aborta con log.
-        Dim resultId = If(pr IsNot Nothing AndAlso pr.Diffuse IsNot Nothing AndAlso pr.Diffuse.IsFresh, pr.Diffuse.TextureId, 0)
-        If resultId = 0 Then
-            Try : OpenTK.Graphics.OpenGL4.GL.DeleteTexture(baseTex) : Catch : End Try
-            Return Nothing
-        End If
-        Dim gbuf(npix * 4 - 1) As Byte
-        OpenTK.Graphics.OpenGL4.GL.BindTexture(OpenTK.Graphics.OpenGL4.TextureTarget.Texture2D, resultId)
-        Dim handle = System.Runtime.InteropServices.GCHandle.Alloc(gbuf, System.Runtime.InteropServices.GCHandleType.Pinned)
+        Dim seedTex As Integer = 0
         Try
-            OpenTK.Graphics.OpenGL4.GL.GetTexImage(OpenTK.Graphics.OpenGL4.TextureTarget.Texture2D, 0, OpenTK.Graphics.OpenGL4.PixelFormat.Bgra, OpenTK.Graphics.OpenGL4.PixelType.UnsignedByte, handle.AddrOfPinnedObject())
+            seedTex = SseFoldLayerStack.UploadRgba32fFlat(0.5F, 0.5F, 0.5F, 1.0F, w, h)
+            If seedTex = 0 Then Return 0
+            Dim layers = SseFaceTintComposer.BuildLayerInputs(_ctx.PluginManager, npcRec, race, effRaceFid, npcData.IsFemale, npcData.SseTintRaw, npcData.SseTintTexOverride)
+            If layers Is Nothing OrElse layers.Count = 0 Then
+                Dim neutral = seedTex : seedTex = 0   ' transferencia de propiedad: la seed plana ES el resultado
+                Return neutral
+            End If
+            Dim pr = FaceTintCompositor.ApplyFaceTintPipeline(host.CompositorState, host.TintGpuCache,
+                                                              seedTex, 0, 0, w, h, layers, New List(Of FaceRegionSwapInput)(),
+                                                              baseDiffuseIsLinearOnGpu:=True)
+            ' ⛔ Sin fallback silencioso: si HAY capas y el pipeline no devolvió una textura fresca, es un FALLO del GPU
+            ' (no "usá el base"): devolver la seed daría un facetint neutro y el NPC saldría con el tono equivocado
+            ' sin que nadie se entere. 0 ⇒ el caller aborta con log.
+            If pr Is Nothing OrElse pr.Diffuse Is Nothing OrElse Not pr.Diffuse.IsFresh Then Return 0
+            Return pr.Diffuse.TextureId
         Finally
-            handle.Free()
+            ' La seed ya fue consumida por el pipeline (o nunca se usó). El id DEVUELTO nunca pasa por acá: o es
+            ' la salida fresca del pipeline, o es la seed con la propiedad ya transferida (seedTex = 0).
+            If seedTex <> 0 Then Try : OpenTK.Graphics.OpenGL4.GL.DeleteTexture(seedTex) : Catch : End Try
         End Try
-        OpenTK.Graphics.OpenGL4.GL.BindTexture(OpenTK.Graphics.OpenGL4.TextureTarget.Texture2D, 0)
-        If resultId <> baseTex Then Try : OpenTK.Graphics.OpenGL4.GL.DeleteTexture(resultId) : Catch : End Try
-        Try : OpenTK.Graphics.OpenGL4.GL.DeleteTexture(baseTex) : Catch : End Try
-        Return gbuf
-    End Function
-
-    Private Shared Function ClampByte255(v As Double) As Byte
-        Return CByte(Math.Max(0.0, Math.Min(255.0, Math.Round(v * 255.0))))
     End Function
 
     ''' <summary>Upload a BGRA byte buffer to a fresh GL Rgba8 (linear, non-sRGB) 2D texture. Mirrors the

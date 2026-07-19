@@ -499,6 +499,11 @@ Public Class Preflight_Form
             End If
         End If
 
+        ' El juego queda FIJADO acá ⇒ re-aplicar el gate por juego de la ley opt-in del CK (blend de skin
+        ' NO normalizado). Sin esto, arrancar en FO4 con el toggle en True y cambiar a Skyrim en el
+        ' selector dejaría la ley encendida en un motor donde NO está verificada por RE.
+        NPC_Config.ApplyEngineSkinWeightNormalizationGate(Config_App.Current.Game)
+
         ' Iterate _allRows (master, load-order-preserving) instead of ListViewPlugins.Items —
         ' the latter only contains rows matching the current filter, which would drop checked
         ' plugins hidden by an active filter at OK time.

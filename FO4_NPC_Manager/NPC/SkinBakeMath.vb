@@ -1,4 +1,4 @@
-Imports FO4_Base_Library
+﻿Imports FO4_Base_Library
 Imports NiflySharp
 Imports OpenTK.Mathematics
 
@@ -95,26 +95,43 @@ Public Module SkinBakeMath
         Dim vCount = verts.Count
         Dim vWorld(vCount - 1) As Vector3d
 
+        ' Buffer reusable para la normalizacion de pesos del MOTOR (ver EngineSkinWeightNormalization). Gate apagado
+        ' TryComputeWeights hace early-return y este camino queda bit-idéntico al de siempre.
+        Dim ckW(EngineSkinWeightNormalization.Slots - 1) As Single
+
         For i = 0 To vCount - 1
             Dim Mtot As Matrix4d = Matrix4d.Zero
             Dim sumW As Double = 0
             Dim baseSlot = i * wpv
-            If flatIdx IsNot Nothing AndAlso flatWgt IsNot Nothing AndAlso i < skin.VertexCount Then
-                For j = 0 To wpv - 1
-                    Dim w = CDbl(CSng(flatWgt(baseSlot + j)))
-                    sumW += w
-                    Dim idx = CInt(flatIdx(baseSlot + j))
-                    If idx >= 0 AndAlso idx < nBones Then Mtot += precomputed(idx) * w
+            Dim hasSkinRow = flatIdx IsNot Nothing AndAlso flatWgt IsNot Nothing AndAlso i < skin.VertexCount
+
+            If hasSkinRow AndAlso EngineSkinWeightNormalization.TryComputeWeights(flatWgt, baseSlot, wpv, ckW) Then
+                ' Ley del MOTOR: w3 = 1−Σ, se descarta el slot con peso ≤ 0, y NO se renormaliza.
+                ' No hace falta fallback de sumW=0: si w0..w2 son 0, w3 sale 1 y el slot 3 entra.
+                For j = 0 To EngineSkinWeightNormalization.Slots - 1
+                    If ckW(j) > 0.0F Then
+                        Dim idx = CInt(flatIdx(baseSlot + j))
+                        If idx >= 0 AndAlso idx < nBones Then Mtot += precomputed(idx) * CDbl(ckW(j))
+                    End If
                 Next
-            End If
-            If sumW = 0 Then
-                If nBones > 0 Then
-                    Dim idx0 = If(flatIdx IsNot Nothing AndAlso flatIdx.Length > 0 AndAlso i < skin.VertexCount,
-                                  CInt(flatIdx(baseSlot)), 0)
-                    Mtot = precomputed(Math.Max(0, Math.Min(idx0, nBones - 1)))
-                End If
             Else
-                Mtot = Mtot * (1.0 / sumW)
+                If hasSkinRow Then
+                    For j = 0 To wpv - 1
+                        Dim w = CDbl(CSng(flatWgt(baseSlot + j)))
+                        sumW += w
+                        Dim idx = CInt(flatIdx(baseSlot + j))
+                        If idx >= 0 AndAlso idx < nBones Then Mtot += precomputed(idx) * w
+                    Next
+                End If
+                If sumW = 0 Then
+                    If nBones > 0 Then
+                        Dim idx0 = If(flatIdx IsNot Nothing AndAlso flatIdx.Length > 0 AndAlso i < skin.VertexCount,
+                                      CInt(flatIdx(baseSlot)), 0)
+                        Mtot = precomputed(Math.Max(0, Math.Min(idx0, nBones - 1)))
+                    End If
+                Else
+                    Mtot = Mtot * (1.0 / sumW)
+                End If
             End If
 
             Dim vLocal As New Vector3d(verts(i).X, verts(i).Y, verts(i).Z)

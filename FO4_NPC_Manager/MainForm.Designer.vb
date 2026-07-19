@@ -28,6 +28,7 @@ Partial Class MainForm
         SplitContainer2 = New SplitContainer()
         TextBoxSearch = New TextBox()
         LabelSearch = New Label()
+        PanelFilterRow = New TableLayoutPanel()
         CheckBoxOnlyChanged = New CheckBox()
         LabelShowCategories = New Label()
         CheckBoxCatUnique = New CheckBox()
@@ -107,6 +108,7 @@ Partial Class MainForm
         PanelNpcList.SuspendLayout()
         CType(SplitContainer2, ComponentModel.ISupportInitialize).BeginInit()
         SplitContainer2.Panel1.SuspendLayout()
+        PanelFilterRow.SuspendLayout()
         SplitContainer2.Panel2.SuspendLayout()
         SplitContainer2.SuspendLayout()
         PanelRecordDetails.SuspendLayout()
@@ -164,7 +166,14 @@ Partial Class MainForm
         ' SplitContainer1.Panel1
         ' 
         SplitContainer1.Panel1.Controls.Add(SplitContainerLeft)
-        SplitContainer1.Panel1MinSize = 220
+        ' 530 = ancho mínimo para que la fila de filtros (PanelFilterRow) entre COMPLETA y sin recortarse:
+        '   padding del panel 4+4 = 8
+        ' + anchos de los 6 controles  39 + 94 + 66 + 107 + 66 + 100 = 472
+        ' + Margin por defecto (3 izq + 3 der) × 6 controles          =  36
+        '   ------------------------------------------------------------ 516, redondeado a 530 de colchón.
+        ' Antes era 220: el splitter se podía arrastrar hasta dejar la mitad de los checkboxes fuera.
+        ' ⚠️ Si se añade/renombra un filtro, recalcular esto (los anchos están en el bloque PanelFilterRow).
+        SplitContainer1.Panel1MinSize = 530
         ' 
         ' SplitContainer1.Panel2
         ' 
@@ -215,12 +224,7 @@ Partial Class MainForm
         ' 
         SplitContainer2.Panel1.Controls.Add(TextBoxSearch)
         SplitContainer2.Panel1.Controls.Add(LabelSearch)
-        SplitContainer2.Panel1.Controls.Add(CheckBoxOnlyChanged)
-        SplitContainer2.Panel1.Controls.Add(LabelShowCategories)
-        SplitContainer2.Panel1.Controls.Add(CheckBoxCatUnique)
-        SplitContainer2.Panel1.Controls.Add(CheckBoxCatGeneric)
-        SplitContainer2.Panel1.Controls.Add(CheckBoxCatTemplate)
-        SplitContainer2.Panel1.Controls.Add(CheckBoxCatUnused)
+        SplitContainer2.Panel1.Controls.Add(PanelFilterRow)
         ' 
         ' SplitContainer2.Panel2
         ' 
@@ -246,68 +250,105 @@ Partial Class MainForm
         LabelSearch.Size = New Size(45, 15)
         LabelSearch.TabIndex = 2
         LabelSearch.Text = "Search:"
-        ' 
-        ' CheckBoxOnlyChanged
-        ' 
-        CheckBoxOnlyChanged.Anchor = AnchorStyles.Top Or AnchorStyles.Right
-        CheckBoxOnlyChanged.AutoSize = True
-        CheckBoxOnlyChanged.Location = New Point(416, 49)
-        CheckBoxOnlyChanged.Name = "CheckBoxOnlyChanged"
-        CheckBoxOnlyChanged.Size = New Size(100, 19)
-        CheckBoxOnlyChanged.TabIndex = 3
-        CheckBoxOnlyChanged.Text = "Only changed"
-        CheckBoxOnlyChanged.UseVisualStyleBackColor = True
-        ' 
+        '
+        ' PanelFilterRow
+        '
+        ' Fila de filtros del árbol ("Show:" + las 4 categorías + "Only changed"). Antes iban con Location
+        ' absoluta dentro de Panel1, así que al cambiar fuente/DPI/idioma los rótulos se solapaban y
+        ' "Only changed" (anclado a Right) se montaba encima de "Unused". Ahora es un TableLayoutPanel de
+        ' 1 fila: una columna AutoSize por control (los 6 alineados a la izquierda, seguidos) y una
+        ' columna elástica (100%) al FINAL que absorbe todo el espacio sobrante.
+        ' El ancho que esta fila necesita para NO recortarse es la cota de SplitContainer1.Panel1MinSize
+        ' (ver allí el cálculo); por eso ese mínimo y estos anchos hay que moverlos juntos.
+        PanelFilterRow.ColumnCount = 7
+        PanelFilterRow.ColumnStyles.Add(New ColumnStyle(SizeType.AutoSize))
+        PanelFilterRow.ColumnStyles.Add(New ColumnStyle(SizeType.AutoSize))
+        PanelFilterRow.ColumnStyles.Add(New ColumnStyle(SizeType.AutoSize))
+        PanelFilterRow.ColumnStyles.Add(New ColumnStyle(SizeType.AutoSize))
+        PanelFilterRow.ColumnStyles.Add(New ColumnStyle(SizeType.AutoSize))
+        PanelFilterRow.ColumnStyles.Add(New ColumnStyle(SizeType.AutoSize))
+        PanelFilterRow.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100.0F))
+        PanelFilterRow.Controls.Add(LabelShowCategories, 0, 0)
+        PanelFilterRow.Controls.Add(CheckBoxCatUnique, 1, 0)
+        PanelFilterRow.Controls.Add(CheckBoxCatGeneric, 2, 0)
+        PanelFilterRow.Controls.Add(CheckBoxCatTemplate, 3, 0)
+        PanelFilterRow.Controls.Add(CheckBoxCatUnused, 4, 0)
+        PanelFilterRow.Controls.Add(CheckBoxOnlyChanged, 5, 0)
+        PanelFilterRow.Dock = DockStyle.Bottom
+        PanelFilterRow.Location = New Point(0, 46)
+        PanelFilterRow.Name = "PanelFilterRow"
+        PanelFilterRow.Padding = New Padding(4, 0, 4, 0)
+        PanelFilterRow.RowCount = 1
+        PanelFilterRow.RowStyles.Add(New RowStyle(SizeType.Percent, 100.0F))
+        PanelFilterRow.Size = New Size(700, 32)
+        PanelFilterRow.TabIndex = 3
+        '
         ' LabelShowCategories
-        ' 
+        '
+        LabelShowCategories.Anchor = AnchorStyles.Left
         LabelShowCategories.AutoSize = True
-        LabelShowCategories.Location = New Point(7, 51)
+        LabelShowCategories.Location = New Point(7, 8)
         LabelShowCategories.Name = "LabelShowCategories"
         LabelShowCategories.Size = New Size(39, 15)
-        LabelShowCategories.TabIndex = 4
+        LabelShowCategories.TabIndex = 0
         LabelShowCategories.Text = "Show:"
-        ' 
+        '
         ' CheckBoxCatUnique
-        ' 
+        '
+        CheckBoxCatUnique.Anchor = AnchorStyles.Left
         CheckBoxCatUnique.AutoSize = True
         CheckBoxCatUnique.Checked = True
         CheckBoxCatUnique.CheckState = CheckState.Checked
-        CheckBoxCatUnique.Location = New Point(55, 49)
+        CheckBoxCatUnique.Location = New Point(52, 6)
         CheckBoxCatUnique.Name = "CheckBoxCatUnique"
         CheckBoxCatUnique.Size = New Size(94, 19)
-        CheckBoxCatUnique.TabIndex = 5
+        CheckBoxCatUnique.TabIndex = 1
         CheckBoxCatUnique.Text = "Unique faces"
         CheckBoxCatUnique.UseVisualStyleBackColor = True
-        ' 
+        '
         ' CheckBoxCatGeneric
-        ' 
+        '
+        CheckBoxCatGeneric.Anchor = AnchorStyles.Left
         CheckBoxCatGeneric.AutoSize = True
-        CheckBoxCatGeneric.Location = New Point(156, 49)
+        CheckBoxCatGeneric.Location = New Point(152, 6)
         CheckBoxCatGeneric.Name = "CheckBoxCatGeneric"
         CheckBoxCatGeneric.Size = New Size(66, 19)
-        CheckBoxCatGeneric.TabIndex = 6
+        CheckBoxCatGeneric.TabIndex = 2
         CheckBoxCatGeneric.Text = "Generic"
         CheckBoxCatGeneric.UseVisualStyleBackColor = True
-        ' 
+        '
         ' CheckBoxCatTemplate
-        ' 
+        '
+        CheckBoxCatTemplate.Anchor = AnchorStyles.Left
         CheckBoxCatTemplate.AutoSize = True
-        CheckBoxCatTemplate.Location = New Point(232, 49)
+        CheckBoxCatTemplate.Location = New Point(224, 6)
         CheckBoxCatTemplate.Name = "CheckBoxCatTemplate"
         CheckBoxCatTemplate.Size = New Size(107, 19)
-        CheckBoxCatTemplate.TabIndex = 7
+        CheckBoxCatTemplate.TabIndex = 3
         CheckBoxCatTemplate.Text = "Template bases"
         CheckBoxCatTemplate.UseVisualStyleBackColor = True
-        ' 
+        '
         ' CheckBoxCatUnused
-        ' 
+        '
+        CheckBoxCatUnused.Anchor = AnchorStyles.Left
         CheckBoxCatUnused.AutoSize = True
-        CheckBoxCatUnused.Location = New Point(344, 49)
+        CheckBoxCatUnused.Location = New Point(337, 6)
         CheckBoxCatUnused.Name = "CheckBoxCatUnused"
         CheckBoxCatUnused.Size = New Size(66, 19)
-        CheckBoxCatUnused.TabIndex = 8
+        CheckBoxCatUnused.TabIndex = 4
         CheckBoxCatUnused.Text = "Unused"
         CheckBoxCatUnused.UseVisualStyleBackColor = True
+        '
+        ' CheckBoxOnlyChanged
+        '
+        CheckBoxOnlyChanged.Anchor = AnchorStyles.Left
+        CheckBoxOnlyChanged.AutoSize = True
+        CheckBoxOnlyChanged.Location = New Point(409, 6)
+        CheckBoxOnlyChanged.Name = "CheckBoxOnlyChanged"
+        CheckBoxOnlyChanged.Size = New Size(100, 19)
+        CheckBoxOnlyChanged.TabIndex = 5
+        CheckBoxOnlyChanged.Text = "Only changed"
+        CheckBoxOnlyChanged.UseVisualStyleBackColor = True
         ' 
         ' TreeViewNPCs
         ' 
@@ -1091,6 +1132,12 @@ Partial Class MainForm
         ClientSize = New Size(1904, 1041)
         Controls.Add(SplitContainer1)
         Controls.Add(StatusStrip1)
+        ' Cota inferior REAL que impone el split principal:
+        '   Panel1MinSize 530 (fila de filtros completa) + SplitterWidth 4 + Panel2MinSize 400 = 934 de
+        '   área cliente, + ~16 de bordes de ventana = ~950. Los 1024×720 dejan colchón sobre eso y
+        '   además evitan la excepción "SplitterDistance must be between Panel1MinSize and
+        '   Width - Panel2MinSize" que salta si la ventana se encoge por debajo de la suma de mínimos.
+        ' ⚠️ Si sube Panel1MinSize o Panel2MinSize, revisar que 1024 siga por encima de la suma.
         MinimumSize = New Size(1024, 720)
         Name = "MainForm"
         StartPosition = FormStartPosition.CenterScreen
@@ -1106,6 +1153,8 @@ Partial Class MainForm
         CType(SplitContainerLeft, ComponentModel.ISupportInitialize).EndInit()
         SplitContainerLeft.ResumeLayout(False)
         PanelNpcList.ResumeLayout(False)
+        PanelFilterRow.ResumeLayout(False)
+        PanelFilterRow.PerformLayout()
         SplitContainer2.Panel1.ResumeLayout(False)
         SplitContainer2.Panel1.PerformLayout()
         SplitContainer2.Panel2.ResumeLayout(False)
@@ -1143,6 +1192,7 @@ Partial Class MainForm
     Friend WithEvents MenuItemMarkToDelete As System.Windows.Forms.ToolStripMenuItem
     Friend WithEvents TextBoxSearch As System.Windows.Forms.TextBox
     Friend WithEvents LabelSearch As System.Windows.Forms.Label
+    Friend WithEvents PanelFilterRow As System.Windows.Forms.TableLayoutPanel
     Friend WithEvents CheckBoxOnlyChanged As System.Windows.Forms.CheckBox
     Friend WithEvents LabelShowCategories As System.Windows.Forms.Label
     Friend WithEvents CheckBoxCatUnique As System.Windows.Forms.CheckBox

@@ -335,6 +335,11 @@ Public Class NpcMorphResolver
             Next
         End If
 
+        ' 2b) Ley del motor: descartar los canales con peso fuera de [-1,1] ANTES del dedup. Los canales de
+        ' este builder (MSDK sliders + MPPI presets) los aplica el applier nativo, así que van todos con
+        ' EngineApplied=True (el default). Ver DropChannelsRejectedByEngine.
+        DropChannelsRejectedByEngine(plan)
+
         ' 3) Dedup channels by name SUMMING their weights — vanilla RACE uses several MPPI
         ' keys pointing to the same morph name; CK applies the sum. Empirically validated
         ' against CK FaceGen bake (Alijo + Cait 2026-04-18).
@@ -417,6 +422,8 @@ Public Class NpcMorphResolver
 
         ' 1) NAM9 directional sliders (19 floats: 18 usable + [18] VampireMorph).
         Dim nam9 = npcData.Nam9Raw
+        ' True cuando el slider [18] manejó el morph ⇒ el fallback por keyword de raza NO debe correr.
+        Dim keywordMorphsApplied As Boolean = False
         If applyChargenMorphs AndAlso nam9 IsNot Nothing AndAlso nam9.Length >= 76 Then
             For i = 0 To _sseNam9Morphs.Length - 1
                 Dim v = BitConverter.ToSingle(nam9, i * 4)
@@ -435,11 +442,31 @@ Public Class NpcMorphResolver
             Dim vamp = BitConverter.ToSingle(nam9, 18 * 4)
             If Not Single.IsNaN(vamp) AndAlso Not Single.IsInfinity(vamp) AndAlso Math.Abs(vamp) >= 0.001F AndAlso Math.Abs(vamp) < 3.0E+38F Then
                 AddNam9Channel(plan, triHead, "VampireMorph", Math.Abs(vamp))
-            ElseIf raceKeywordEditorIds IsNot Nothing Then
-                For Each kw In raceKeywordEditorIds
-                    If Not String.IsNullOrEmpty(kw) Then AddNam9Channel(plan, triHead, kw & "Morph", 1.0F)
-                Next
+                keywordMorphsApplied = True
             End If
+        End If
+
+        ' ⭐ El fallback keyword→morph NO puede vivir dentro del guard de NAM9: un NPC SIN el subrecord NAM9
+        ' es semánticamente equivalente a NAM9[18] = FLT_MAX ("no está manejado por slider"), así que el morph
+        ' lo maneja la RACE igual. Estando adentro, el bloque entero se salteaba y el morph nunca se aplicaba.
+        ' MEDIDO (corpus SSE completo, 3104 NPCs con FaceGeom del CK — separador EXACTO, 0 FP / 0 FN):
+        '     vampiro=no · NAM9 ausente  → no falla (430 NPCs)
+        '     vampiro=no · NAM9 presente → no falla (2550)
+        '     vampiro=SÍ · NAM9 AUSENTE  → FALLA (8)   ← este caso
+        '     vampiro=sí · NAM9 presente → no falla (116; de esos 105 con [18]=FLT_MAX y 11 con 0.0, ambos
+        '                                  caen en el fallback y matchean el CK)
+        ' Los 8: SybilleStentor · Babette · EncVampire06DarkElfF · dunHaemarsShame_LvlVampireBoss ·
+        ' dunMovarthVampireBoss · DLC1FuraBloodmouth · DLC1_WESC02_VigilantVampireLeader · DLC1Modhna
+        ' (13 shapes, razas *RaceVampire de Breton/Nord/DarkElf + BretonRaceChildVampire — NO es cosa de Breton).
+        ' El residuo (CK − nuestro) proyecta sobre "VampireMorph" con peso 0,9999–1,0000 en los 13, y al
+        ' aplicarlo el máximo cae de 0,5297 a 0,00098. El conjunto de vértices movidos coincide con la
+        ' predicción de la regla de bloques (diferencia simétrica 0) ⇒ la selección ya estaba bien, faltaba
+        ' el CANAL. No es un problema de raza proxy: el NAM8 'Morph race' (xEdit wbDefinitionsTES5.pas:9850)
+        ' ya se resuelve bien en FaceGenBuildPipeline.vb:410-414.
+        If applyChargenMorphs AndAlso Not keywordMorphsApplied AndAlso raceKeywordEditorIds IsNot Nothing Then
+            For Each kw In raceKeywordEditorIds
+                If Not String.IsNullOrEmpty(kw) Then AddNam9Channel(plan, triHead, kw & "Morph", 1.0F)
+            Next
         End If
 
         ' 2) NAMA type presets. NAMA = {Nose, "Unknown", Eyes, Mouth} (u32×4). Byte-verified against
@@ -502,7 +529,8 @@ Public Class NpcMorphResolver
             For Each sv In sculptVerts
                 ds.Add(New MorphData With {.index = CUInt(sv.Index), .PosDiff = New Vector3(sv.Dx, sv.Dy, sv.Dz)})
             Next
-            plan.Channels.Add(New MorphChannel("RaceMenuSculpt", 1.0F, ds))
+            ' engineApplied:=False — el sculpt lo aplica skee64 (RaceMenu "FOD"), no el applier del motor.
+            plan.Channels.Add(New MorphChannel("RaceMenuSculpt", 1.0F, ds, engineApplied:=False))
         End If
 
         ' 2d) HEAD WEIGHT morph (SSE) — engine-derived, replaces the former hardcoded SseHeadWeightDelta table.
@@ -514,14 +542,28 @@ Public Class NpcMorphResolver
         ' SkinnyMorph deltas reproduce the deleted baked table index-for-index (RMS 1.5e-3, 0 missing verts), which
         ' also proves the tri's vertex order equals the head shape's. Reading it from the tri is AGNOSTIC (a modded
         ' head ships its own SkinnyMorph) and unifies render+bake on this one plan — no table, no separate resolver.
-        ' The mesh .tri is merged into triHead by the callers (render: LoadTriForShape; bake: LoadMergedHeadTri),
-        ' so on a non-head shape GetMorph("SkinnyMorph") is Nothing and AddNam9Channel no-ops (natural gating).
+        ' The mesh .tri is merged into triHead by the callers (render: LoadTriForShape; bake: LoadMergedHeadTri).
+        ' ⛔ CORRECCIÓN 2026-07-18 — la afirmación previa aquí ("en un shape no-cara GetMorph(\"SkinnyMorph\") es
+        ' Nothing y AddNam9Channel no-opea: natural gating") es FALSA y estuvo induciendo el diagnóstico
+        ' equivocado de la diferencia de posiciones vs CK. MEDIDO: humanbeardshort02.tri tiene 43 morphs y
+        ' SkinnyMorph es el PRIMERO; hair09.tri tiene exactamente 1 morph, que es SkinnyMorph. O sea el canal SÍ
+        ' aplica a barbas y pelo — que es lo correcto, porque el CK hace exactamente eso: aplica el morph a TODOS
+        ' los hijos del BSFaceGenNiNode sin filtrar por tipo de head part (CK SSE 0x1418C32B0 computa
+        ' 1-weight*0.01 y 0x141D1D6B0 lo reparte a cada hijo; type 3 index 0 == "SkinnyMorph").
+        ' VERIFICADO contra el CK sobre el pelo: CK == neutral + (1-NAM7/100)·SkinnyMorph con residual
+        ' max 0,00247 / rms 0,0001, recuperando NAM7=75,00 exacto por mínimos cuadrados. Este canal está BIEN.
         ' applyBodyWeight=False (checkbox "Body weight" OFF en el preview) ⇒ peso neutro: no se emite el
         ' SkinnyMorph, igual que el resolver del cuerpo (_0/_1) no se engancha. Cabeza y cuerpo apagan juntos.
         Dim nam7 = npcData.Nam7Raw
         Dim weightVal As Single = If(nam7 IsNot Nothing AndAlso nam7.Length >= 4, BitConverter.ToSingle(nam7, 0), 100.0F)
         Dim skinnyFrac As Single = 1.0F - Math.Max(0.0F, Math.Min(1.0F, weightVal / 100.0F))
         If applyBodyWeight AndAlso skinnyFrac > 0.0000001F Then AddNam9Channel(plan, triHead, "SkinnyMorph", skinnyFrac)
+
+        ' 2e) Ley del motor: descartar los canales con peso fuera de [-1,1] ANTES del dedup. Acá conviven las
+        ' dos clases: los del applier nativo (race base, NAM9, VampireMorph, keyword, NAMA, SkinnyMorph) van
+        ' con EngineApplied=True y se descartan fuera de rango; los de RaceMenu (custom morphs + sculpt) van
+        ' con EngineApplied=False y NUNCA se descartan — skee64 los aplica por su cuenta, sin validar.
+        DropChannelsRejectedByEngine(plan)
 
         ' 3) Dedup channels by name SUMMING weights (same convention as the FO4 path — a slider and a
         ' type preset could both resolve to the same morph name; the engine applies the sum). The sculpt
@@ -540,31 +582,38 @@ Public Class NpcMorphResolver
 
     ''' <summary>Apply one RaceMenu extended custom morph (slider name → value) faithfully to the plan via the
     ''' catalog. See caller comment / skee64 ApplyMorphs:1229-1247.</summary>
+    ''' <remarks>⛔ TODOS los canales que emite este método salen con <c>engineApplied:=False</c>: son de
+    ''' RaceMenu (skee64), que los aplica con su propio TRIFile::Apply, NO con el applier del motor, y sin
+    ''' validar el rango del peso. Por eso NO los toca <see cref="DropChannelsRejectedByEngine"/> — más aún,
+    ''' skee64 descompone deliberadamente |v|&gt;1 para preservar la magnitud (FaceMorphInterface.cpp:1156-1163).</remarks>
     Private Shared Sub AddCustomMorphChannel(plan As MorphPlan, triHead As TriHeadFile, raceEditorId As String, isFemale As Boolean, sliderName As String, value As Single)
         Dim def As FO4_Base_Library.RaceMenuSliderCatalog.SliderDef = Nothing
         If SliderCatalog IsNot Nothing Then def = SliderCatalog.GetSlider(raceEditorId, isFemale, sliderName)
         If def Is Nothing Then
-            AddNam9Channel(plan, triHead, sliderName, value)   ' unknown slider / no catalog → best-effort direct
+            AddNam9Channel(plan, triHead, sliderName, value, engineApplied:=False)   ' unknown slider / no catalog → best-effort direct
             Return
         End If
         Select Case def.Type
             Case FO4_Base_Library.RaceMenuSliderCatalog.SliderType.Preset
                 Dim n = CInt(Math.Truncate(CDbl(value)))
-                If n > 0 AndAlso Not String.IsNullOrEmpty(def.LowerBound) Then AddNam9Channel(plan, triHead, def.LowerBound & n.ToString(), 1.0F)
+                If n > 0 AndAlso Not String.IsNullOrEmpty(def.LowerBound) Then AddNam9Channel(plan, triHead, def.LowerBound & n.ToString(), 1.0F, engineApplied:=False)
             Case FO4_Base_Library.RaceMenuSliderCatalog.SliderType.Slider
                 Dim morphName = If(value < 0, def.LowerBound, def.UpperBound)
-                If Not String.IsNullOrEmpty(morphName) Then AddNam9Channel(plan, triHead, morphName, Math.Abs(value))
+                If Not String.IsNullOrEmpty(morphName) Then AddNam9Channel(plan, triHead, morphName, Math.Abs(value), engineApplied:=False)
             Case FO4_Base_Library.RaceMenuSliderCatalog.SliderType.HeadPart
                 ' Head-part selection, not a morph — no plan channel.
         End Select
     End Sub
 
-    Private Shared Sub AddNam9Channel(plan As MorphPlan, triHead As TriHeadFile, morphName As String, weight As Single)
+    ''' <param name="engineApplied">False SÓLO para canales de RaceMenu (skee64 los aplica con su propio
+    ''' TRIFile::Apply, sin validar el rango). Ver <see cref="MorphChannel.EngineApplied"/>.</param>
+    Private Shared Sub AddNam9Channel(plan As MorphPlan, triHead As TriHeadFile, morphName As String, weight As Single,
+                                      Optional engineApplied As Boolean = True)
         If String.IsNullOrEmpty(morphName) Then Return
         Dim triMorph = triHead.GetMorph(morphName)
         If triMorph Is Nothing OrElse triMorph.Vertices Is Nothing OrElse triMorph.Vertices.Length = 0 Then Return
         Dim deltas = ConvertTriHeadMorphToMorphData(triMorph)
-        If deltas.Count > 0 Then plan.Channels.Add(New MorphChannel(morphName, weight, deltas))
+        If deltas.Count > 0 Then plan.Channels.Add(New MorphChannel(morphName, weight, deltas, engineApplied:=engineApplied))
     End Sub
 
     ''' <summary>Apply a NAMA face-part type preset, engine-faithful (SkyrimSE.exe name builder
@@ -576,6 +625,22 @@ Public Class NpcMorphResolver
         If typeIndex = UInteger.MaxValue Then Return          ' 0xFFFFFFFF = no preset
         Dim morphName = If(typeIndex = 0UI, "Default", family & typeIndex.ToString())
         AddNam9Channel(plan, triHead, morphName, 1.0F)
+    End Sub
+
+    ''' <summary>⭐ LEY DEL MOTOR — el applier nativo valida el peso de CADA canal contra [-1,1] y, fuera de
+    ''' rango, <b>DESCARTA EL CANAL ENTERO; NO CLAMPEA</b> (el salto va al incremento del puntero del loop).
+    ''' Ver <see cref="MorphChannel.EngineApplied"/> para las direcciones verificadas por desensamblado en
+    ''' SkyrimSE.exe, Fallout4.exe y CreationKit.exe. La ley es IDÉNTICA en los dos juegos ⇒ acá NO se gatea
+    ''' por juego; el gate es por ORIGEN del canal (la propiedad EngineApplied).
+    ''' <para>⛔ Va POR CANAL INDIVIDUAL y ANTES de <see cref="DedupSumChannelsByName"/>: el motor evalúa cada
+    ''' canal ANTES de que exista suma alguna. Ponerlo DESPUÉS del dedup CREA un bug — dos presets legítimos
+    ''' de 1,0 sumarían 2,0 y se convertirían en un no-op falso.</para>
+    ''' <para>Inclusive en ±1 (el motor usa jb/ja: sólo salta estrictamente fuera). NaN se descarta, que es lo
+    ''' que hace comiss en unordered (CF=1 ⇒ jb tomado).</para></summary>
+    Private Shared Sub DropChannelsRejectedByEngine(plan As MorphPlan)
+        If plan Is Nothing OrElse plan.Channels.Count = 0 Then Return
+        plan.Channels.RemoveAll(Function(ch) ch IsNot Nothing AndAlso ch.EngineApplied AndAlso Not ch.IsZap AndAlso
+                                             Not (ch.Weight >= -1.0F AndAlso ch.Weight <= 1.0F))
     End Sub
 
     ''' <summary>Dedup a plan's channels by morph name, summing weights (shared FO4/SSE convention).</summary>
@@ -607,7 +672,10 @@ Public Class NpcMorphResolver
     End Sub
 
     ''' <summary>Convert TriHead morph vertices (dense, all vertices) to MorphData list (only non-zero).</summary>
-    Private Shared Function ConvertTriHeadMorphToMorphData(morph As TriHeadMorph) As List(Of MorphData)
+    ''' <remarks>Friend (no Private) para que SseMorphReverseEngineer construya columnas de base con
+    ''' EXACTAMENTE el mismo filtro (|v|² &gt; 1e-6) que aplica el bake antes del gate. Reimplementarlo allá
+    ''' haría que la selección de vértices de la base no coincidiera con la del pipeline real.</remarks>
+    Friend Shared Function ConvertTriHeadMorphToMorphData(morph As TriHeadMorph) As List(Of MorphData)
         Dim result As New List(Of MorphData)
         If morph.Vertices Is Nothing Then Return result
         For i = 0 To morph.Vertices.Length - 1
