@@ -37,6 +37,10 @@ Public Module FaceGenBuildPipeline
         Public Property FaceSkel As SkeletonInstance
         ''' <summary>Body skel (no pose) — fallback for bones not in face skel (HEAD, Neck_skin, ...).</summary>
         Public Property BodySkel As SkeletonInstance
+        ''' <summary>Body skel con SÓLO la pose de body-weight (sin FMRS), o Nothing si esta shape no
+        ''' lleva body-weight. Es el bind del lado DESTINO: el CK aplica el mismo array de escalas en
+        ''' las dos pasadas, así que el inverso tiene que usar la paleta escalada.</summary>
+        Public Property BwBindSkel As SkeletonInstance
     End Class
 
     ''' <summary>Compute v_world for a shape from its `_facebones` source NIF, with the
@@ -55,28 +59,51 @@ Public Module FaceGenBuildPipeline
         ' caller passes a freshly-loaded NIF that nobody else reads).
         ApplyChargenMorphsInPlace(facebonesNif, facebonesShape, chargenTriPath, raceMorphTriPath, state)
 
-        ' 2) Build face-skel SkeletonInstance with FMRS bone-morph applied. Va a la capa
-        ' MorphDeltaTransform (igual que el render en vivo); el bake lee GetGlobalTransform, que
-        ' compone todas las capas, así que el resultado es idéntico y la semántica queda uniforme.
+        ' 2) Build face + body skel. FMRS va a la capa MorphDeltaTransform (igual que el render en
+        ' vivo); el bake lee GetGlobalTransform, que compone todas las capas.
+        ' Al bodySkel se le aplica la MISMA pose que al faceSkel: ApplyBoneMorphPose sólo escribe
+        ' entradas cuya key existe en el diccionario destino, así que en bodySkel esto fija el morph
+        ' del hueso literal "Neck" (las entradas "skin_*" son no-op) — igual que el render.
         Dim faceSkel = LoadFaceSkeleton(state)
-        If state.FmrsPose IsNot Nothing AndAlso faceSkel IsNot Nothing AndAlso faceSkel.HasSkeleton Then
-            faceSkel.ApplyBoneMorphPose(state.FmrsPose)
+        Dim bodySkel = LoadBodySkeleton(state)
+
+        ' 2b) Body-weight (MWGT + MRSV) — el CK SÍ lo hornea, en las shapes que NO traen
+        ' CustomizationRemapNewBonesData. Ver reference_ck_bodyweight_skin_bone_scale_formula:
+        ' el exportador vuelve a llamar al constructor del array per-hueso del skin instance
+        ' (CreationKit.exe 0x140A8CFD0) con los mapas en NULL para las shapes que sí la traen, y
+        ' eso deja sus escalas en identidad. Medido sobre 16.438 shapes del corpus: los que pasan
+        ' de 0,05 contra la referencia del CK bajan de 324 a 3.
+        Dim bwPose As Poses_class = Nothing
+        If bodySkel IsNot Nothing AndAlso bodySkel.HasSkeleton AndAlso
+           Not ShapeHasCustomizationNewBones(facebonesNif, facebonesShape) Then
+            bwPose = BuildBakeBodyWeightPose(state, bodySkel)
         End If
 
-        ' 3) Build body-skel SkeletonInstance. Body bones are at canonical bind in the bake (no
-        ' MWGT/MRSV/raceHeight per the bake-without-bodyweight rule) WITH ONE EXCEPTION: the CK
-        ' NNAM neck-fat scale targets the literal body bone "Neck", which is NOT a face bone. The
-        ' FmrsPose's "Neck" entry is dropped by the faceSkel ApplyBoneMorphPose ContainsKey guard
-        ' when the _faceBones.nif does not declare "Neck" (it is a face-bone-only rig), so the
-        ' pose-resolver below would fall back to bodySkel's *bind* "Neck" and lose the scale. Apply
-        ' the FmrsPose to bodySkel too: ApplyBoneMorphPose only writes entries whose key exists in
-        ' the target dictionary, so on bodySkel this sets exactly the "Neck" morph (the "skin_*"
-        ' face entries no-op) — matching how the render applies the same merged pose to the full
-        ' skeleton that contains "Neck". If the faceBones rig DOES declare "Neck", faceSkel (also
-        ' pose-applied, resolver-first) carries the identical scale, so the result is the same.
-        Dim bodySkel = LoadBodySkeleton(state)
-        If state.FmrsPose IsNot Nothing AndAlso bodySkel IsNot Nothing AndAlso bodySkel.HasSkeleton Then
-            bodySkel.ApplyBoneMorphPose(state.FmrsPose)
+        ' El source lleva FMRS + body-weight mergeados: ApplyBoneMorphPose REEMPLAZA toda la capa
+        ' morph, así que aplicarlas por separado perdería la primera.
+        Dim srcPose As Poses_class = state.FmrsPose
+        If bwPose IsNot Nothing Then
+            srcPose = If(srcPose Is Nothing, bwPose, PoseMath.MergePoses(srcPose, bwPose))
+        End If
+        If srcPose IsNot Nothing Then
+            If faceSkel IsNot Nothing AndAlso faceSkel.HasSkeleton Then faceSkel.ApplyBoneMorphPose(srcPose)
+            If bodySkel IsNot Nothing AndAlso bodySkel.HasSkeleton Then bodySkel.ApplyBoneMorphPose(srcPose)
+        End If
+
+        ' 3) Esqueleto para el lado DESTINO (el inverso del bake). Lleva SÓLO el body-weight, sin
+        ' FMRS: el CK aplica el mismo array de escalas en las dos pasadas (PASS 1 = rig _faceBones,
+        ' PASS 2 = rig plano), así que la escala tiene que estar en las DOS paletas.
+        ' ⛔ Medido: meterla en un solo lado es PEOR que no meterla (Wfat max 0,5352 → 0,8153 sólo
+        ' en source, contra 0,0039 en ambas). BuildBindResolver usa OriginalGetGlobalTransform, que
+        ' por diseño excluye la capa morph, de ahí este segundo esqueleto.
+        Dim bwBindSkel As SkeletonInstance = Nothing
+        If bwPose IsNot Nothing Then
+            bwBindSkel = LoadBodySkeleton(state)
+            If bwBindSkel IsNot Nothing AndAlso bwBindSkel.HasSkeleton Then
+                bwBindSkel.ApplyBoneMorphPose(bwPose)
+            Else
+                bwBindSkel = Nothing
+            End If
         End If
 
         ' 4) Skin shape with poseT resolved from faceSkel ∪ bodySkel ∪ shape-internal fallback.
@@ -86,8 +113,66 @@ Public Module FaceGenBuildPipeline
         Return New WorldVertResult With {
             .WorldVertices = vWorld,
             .FaceSkel = faceSkel,
-            .BodySkel = bodySkel
+            .BodySkel = bodySkel,
+            .BwBindSkel = bwBindSkel
         }
+    End Function
+
+    ''' <summary>True si el shape del `_faceBones.nif` trae `CustomizationRemapNewBonesData`. Esas
+    ''' shapes (cara, neck gore, barbas, MaleHeadRear…) necesitan que el CK les inyecte un hueso que
+    ''' su rig no declara — típicamente "Neck" — y esa inyección reconstruye el array de escalas
+    ''' per-hueso del skin instance desde cero, con lo que el body-weight se pierde. NO es un filtro
+    ''' deliberado: es efecto colateral de la inyección. Medido: separación 13/13 en los shapes con
+    ''' señal, incluida la anomalía Male/FemaleHeadRear (mismo tipo de HDPT, comportamiento opuesto).</summary>
+    Private Function ShapeHasCustomizationNewBones(nif As Nifcontent_Class_Manolo, shape As INiShape) As Boolean
+        If nif Is Nothing OrElse shape Is Nothing Then Return False
+        Dim av = TryCast(shape, NiAVObject)
+        If av Is Nothing OrElse av.ExtraDataList Is Nothing Then Return False
+        For Each ref As NiRef In av.ExtraDataList.References
+            Dim ed = TryCast(nif.Blocks(ref.Index), NiBinaryExtraData)
+            If ed Is Nothing Then Continue For
+            If String.Equals(ed.Name?.String, "CustomizationRemapNewBonesData", StringComparison.OrdinalIgnoreCase) Then Return True
+        Next
+        Return False
+    End Function
+
+    ''' <summary>Pose de escalas per-hueso del body-weight para el bake (MWGT capa 1 + MRSV capa 3).
+    ''' Reusa <see cref="PoseMath.BuildBodyWeightPose"/> — la misma implementación que el render, con
+    ''' la fórmula del motor (k del triángulo baricéntrico; RE de CreationKit.exe 0x140AA8C10 y de
+    ''' Fallout4.exe 0x664850). Diferencias deliberadas contra el render, ambas MEDIDAS:
+    ''' <list type="bullet">
+    ''' <item>Sin ARMA sculpt: el FaceGeom se hornea una vez por NPC y no puede depender del outfit.
+    ''' De 1.093 ARMA de vanilla sólo 5 tienen delta en un hueso con peso real en el pelo, y 4 de
+    ''' esos 5 sólo en Neck_Low_skin (23 de 5.250 vértices, peso medio 0,0001).</item>
+    ''' <item>Un slot MWGT centinela ("Default") ⇒ SIN body-weight, en vez de la sustitución que hace
+    ''' <c>NpcStateFactory.ResolveBodyWeights</c> para el render. Medido sobre los 12 NPCs de vanilla
+    ''' que tienen slots centinela: sustituir da 24 regresiones (POIDL030_Bethany 0,0000 → 0,0279) y
+    ''' tratarlos como 0 da 2 (0,0000 → 0,0474); ignorarlos deja 1 regresión de +0,0001.</item>
+    ''' </list>
+    ''' NNAM sigue fuera del bake (ver <c>BuildBakeState</c>).</summary>
+    Private Function BuildBakeBodyWeightPose(state As BakeState, skeleton As SkeletonInstance) As Poses_class
+        If state?.NpcData Is Nothing OrElse state.Race Is Nothing Then Return Nothing
+
+        ' Slot centinela ⇒ el CK no aplica body-weight a esta cabeza.
+        Dim wt = state.NpcData.WeightThin
+        Dim wm = state.NpcData.WeightMuscular
+        Dim wf = state.NpcData.WeightFat
+        If Not wt.HasValue OrElse Not wm.HasValue OrElse Not wf.HasValue Then Return Nothing
+
+        ' Mismo gate que el render (NpcMorphPoseResolver.ResolveBodyWeightData): sin MWGT efectivo
+        ' no se emite ninguna escala. Sin él la fórmula daría escala NEGATIVA en (0,0,0).
+        If (wt.Value + wm.Value + wf.Value) < 0.001F Then Return Nothing
+
+        Dim targetGender As UInteger = If(state.IsFemale, 1UI, 0UI)
+        Dim genderBlock As RACE_BoneDataGender = Nothing
+        For Each bd In state.Race.BoneData
+            If bd.Gender = targetGender Then genderBlock = bd : Exit For
+        Next
+        If genderBlock Is Nothing Then Return Nothing
+
+        Return PoseMath.BuildBodyWeightPose(wt.Value, wm.Value, wf.Value,
+                                            genderBlock, state.NpcData.BodyMorphRegionValues,
+                                            Nothing, skeleton, True)
     End Function
 
     ''' <summary>Per-NPC bake context. Built once at the start of a BuildCharGen run and
@@ -150,11 +235,21 @@ Public Module FaceGenBuildPipeline
     ''' inverse step and by the post-write render-vs-baked comparison harness.</summary>
     Public Function BuildBindResolver(faceSkel As SkeletonInstance,
                                        bodySkel As SkeletonInstance,
-                                       shapeNif As Nifcontent_Class_Manolo) As Func(Of NiNode, Transform_Class)
+                                       shapeNif As Nifcontent_Class_Manolo,
+                                       Optional bwBindSkel As SkeletonInstance = Nothing) As Func(Of NiNode, Transform_Class)
         Return Function(boneNode As NiNode) As Transform_Class
                    If boneNode Is Nothing Then Return Nothing
                    Dim bn = If(boneNode.Name?.String, "")
                    If bn = "" Then Return Nothing
+                   ' Bind + body-weight: se consulta PRIMERO y con GetGlobalTransform (no Original),
+                   ' porque este esqueleto lleva la escala en la capa morph y Original la excluye.
+                   ' Sólo tiene la pose de body-weight, así que GetGlobalTransform = bind ∘ escala.
+                   If bwBindSkel IsNot Nothing AndAlso bwBindSkel.HasSkeleton Then
+                       Dim hbw As HierarchiBone_class = Nothing
+                       If bwBindSkel.SkeletonDictionary.TryGetValue(bn, hbw) AndAlso hbw IsNot Nothing Then
+                           Return hbw.GetGlobalTransform
+                       End If
+                   End If
                    If bodySkel IsNot Nothing AndAlso bodySkel.HasSkeleton Then
                        Dim hb As HierarchiBone_class = Nothing
                        If bodySkel.SkeletonDictionary.TryGetValue(bn, hb) AndAlso hb IsNot Nothing Then
@@ -222,7 +317,7 @@ Public Module FaceGenBuildPipeline
         ' bones (HEAD, Neck_skin, ...) + a few face hooks; CK at bake time keeps them at bind.
         ' With cloth-bone injection above, the resolver also resolves Hair_C_Cloth* etc. via the
         ' HKX reference pose instead of falling through to the NIF-crude transform.
-        Dim origResolver = BuildBindResolver(wr.FaceSkel, wr.BodySkel, destNif)
+        Dim origResolver = BuildBindResolver(wr.FaceSkel, wr.BodySkel, destNif, wr.BwBindSkel)
 
         ' Walk the cloned ORIG to compute its per-vertex Mtot at bind.
         Dim wrap As New NifRenderableShape(destNif, clonedOrigShape, 0)
