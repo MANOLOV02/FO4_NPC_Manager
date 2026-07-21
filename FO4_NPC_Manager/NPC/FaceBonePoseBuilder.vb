@@ -1,4 +1,4 @@
-Imports FO4_Base_Library
+﻿Imports FO4_Base_Library
 
 ''' <summary>
 ''' Reusable FMRS → face-bone pose builder. Builds a <see cref="Poses_class"/> of per-bone
@@ -222,8 +222,22 @@ Public Module FaceBonePoseBuilder
     ''' NOTE on the s = 0 boundary: the engine's `jbe` sends s = 0 down the MIN branch, yielding
     ''' −(0 × min) = −0.0, where this function yields +0.0. Both are zero and are subsequently
     ''' only multiplied and summed, so the distinction is not observable.</summary>
+    ''' <summary>DIAGNOSTICO de alcance del clamp (no altera el resultado): cuantas veces el clamp
+    ''' EFECTIVAMENTE cambio el valor. El motor NO clampea (no hay minss/maxss en FUN_1403fd920 ni en
+    ''' FUN_140419CD0), asi que este clamp es una divergencia nuestra; si el contador da 0 sobre el corpus,
+    ''' la divergencia es demostrablemente inerte ahi (los FMRS de vanilla estan en rango) y solo puede
+    ''' morder con mods. Medirlo asi evita una corrida A/B para una rama que quiza nunca se toma.</summary>
+    Public ClampHits As Long = 0
+    Public ReadOnly ClampSamples As New List(Of String)
+
     Public Function LerpFmrs(fmrsVal As Single, minVal As Single, maxVal As Single) As Single
         Dim s = Math.Max(-1.0F, Math.Min(1.0F, fmrsVal))
+        If s <> fmrsVal AndAlso Not Single.IsNaN(fmrsVal) Then
+            Threading.Interlocked.Increment(ClampHits)
+            SyncLock ClampSamples
+                If ClampSamples.Count < 40 Then ClampSamples.Add($"{fmrsVal:R}->{s:R}")
+            End SyncLock
+        End If
         If s >= 0 Then
             Return s * maxVal
         Else

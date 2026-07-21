@@ -283,7 +283,8 @@ Public Module FaceGenBuilder
                 .HairColorFormID = npcData.HairColorFormID,
                 .FacialHairColorFormID = npcData.FacialHairColorFormID,
                 .HasTextureLighting = npcData.HasTextureLighting,
-                .TextureLightingColor = npcData.TextureLightingColor
+                .TextureLightingColor = npcData.TextureLightingColor,
+                .HeadDiffuseAlphaTest = (npcData.Game = Config_App.Game_Enum.Fallout4) AndAlso (npcData.AcbsFlags And &H1000000UI) <> 0UI
             }
             state.HeadPartFormIDs.AddRange(npcData.HeadPartFormIDs)
             ' Engine race fallbacks: NPC.WNAM=0 → RACE.SkinFormID, NPC head parts/texture/hair
@@ -399,6 +400,10 @@ Public Module FaceGenBuilder
         Dim shapesCloned As Integer = 0
         Dim shapesSkippedDup As Integer = 0
         Dim shapesMorphed As Integer = 0
+        ''' Shapes que tenían FBNS cargado pero NINGUNA shape del FBNS matcheó ⇒ se escriben SIN morphear.
+        ''' Antes esto era un `Else` VACÍO: el batch reportaba éxito con shapes neutras. Ahora se cuenta y
+        ''' se loguea (FormID + shape) para que la caída no sea silenciosa.
+        Dim shapesFbnsUnmatched As Integer = 0
 
         ' --- ITERATION 3: build the FaceGen bake state (NPC overlay + race morph defs +
         ' FMRS pose). Single source of truth, consumed by FaceGenBuildPipeline.BakeShape per
@@ -428,6 +433,14 @@ Public Module FaceGenBuilder
         ' to drop source shapes whose skin references a bone outside this set
         ' (CK-equivalent filter — see the call site for the rationale).
         Dim actorBoneNames As HashSet(Of String) = FaceGenBuildPipeline.GetActorBoneNames(bakeState)
+        ' Desambiguación EN EL ORIGEN: GetActorBoneNames devuelve un set VACÍO si fallan las dos cargas
+        ' de esqueleto (face y body). Con el set vacío el filtro de huesos desconocidos se auto-deshabilita
+        ' aguas abajo, y hasta ahora lo hacía EN SILENCIO ⇒ "0 shapes dropeados" era ambiguo: no se podía
+        ' distinguir "no había nada que dropear" de "el filtro ni siquiera pudo correr". Se loguea una vez
+        ' por bake, acá, donde está la causa.
+        If actorBoneNames Is Nothing OrElse actorBoneNames.Count = 0 Then
+            Logger.LogLazy(Function() $"[FACEBAKE] unknown-bone filter DISABLED for npcFormID=0x{npcFormID:X8}: actor skeleton bone set is EMPTY (face+body skeleton load failed) — no source shape can be dropped in this bake")
+        End If
         ' Skin-tint strength for SkinTint shapes (shaderType=5). It's the NPC's QNAM/SkinTone-layer
         ' alpha — a SEPARATE float from the skin tone RGB (NpcRecordOverlay derives both into
         ' TextureLightingFloats: RGB from the SkinTone palette, A from the layer opacity, else the
@@ -583,27 +596,67 @@ Public Module FaceGenBuilder
                 ' SideTail_*) NO están en skeleton.nif pero SÍ en el BSClothExtraData del NIF
                 ' (clothBoneNames) — son legítimos y CK los conserva, así que NO se descartan.
                 Dim skipUnknownBone As String = Nothing
+                ' Auto-deshabilitado si no pudimos cargar NINGÚN esqueleto del actor (set vacío ⇒ no hay
+                ' contra qué contrastar). Ese caso YA se loguea una vez por bake en el ORIGEN, donde se
+                ' resuelve actorBoneNames — acá no se repite por shape para no inundar el log.
                 If actorBoneNames IsNot Nothing AndAlso actorBoneNames.Count > 0 Then
                     Try
                         Dim sti = TryCast(srcShape, NiflySharp.Blocks.BSTriShape)
                         If sti IsNot Nothing AndAlso sti.SkinInstanceRef IsNot Nothing AndAlso sti.SkinInstanceRef.Index >= 0 Then
-                            Dim srcSi = TryCast(srcNif.Blocks(sti.SkinInstanceRef.Index), NiflySharp.Blocks.BSSkin_Instance)
+                            Dim skBlk = srcNif.Blocks(sti.SkinInstanceRef.Index)
+                            ' Nombres de hueso del skin, POR JUEGO. FO4 = BSSkin::Instance;
+                            ' SSE = NiSkinInstance / BSDismemberSkinInstance (hereda de NiSkinInstance).
+                            ' Antes este sitio SÓLO hacía TryCast a BSSkin_Instance ⇒ en un bake SSE el
+                            ' cast daba Nothing siempre y el filtro era VACUO (no podía dispararse nunca).
+                            ' Mismo camino que el barrido de referencedBones más abajo (ver :1004).
+                            Dim skinBoneRefs As New List(Of Integer)
+                            Dim srcSi = TryCast(skBlk, NiflySharp.Blocks.BSSkin_Instance)
                             If srcSi IsNot Nothing AndAlso srcSi.Bones IsNot Nothing Then
                                 For bi As Integer = 0 To srcSi.Bones.Count - 1
-                                    Dim bRef = srcSi.Bones.GetBlockRef(bi)
-                                    If bRef < 0 Then Continue For
-                                    Dim bNode = TryCast(srcNif.Blocks(bRef), NiflySharp.Blocks.NiNode)
-                                    Dim bName = bNode?.Name?.String
-                                    If Not String.IsNullOrEmpty(bName) AndAlso Not actorBoneNames.Contains(bName) _
-                                       AndAlso Not clothBoneNames.Contains(bName) Then
-                                        skipUnknownBone = bName
-                                        Exit For
-                                    End If
+                                    skinBoneRefs.Add(srcSi.Bones.GetBlockRef(bi))
                                 Next
+                            Else
+                                Dim srcNiSi = TryCast(skBlk, NiflySharp.Blocks.NiSkinInstance)
+                                If srcNiSi IsNot Nothing AndAlso srcNiSi.Bones IsNot Nothing Then
+                                    For bi As Integer = 0 To srcNiSi.Bones.Count - 1
+                                        skinBoneRefs.Add(srcNiSi.Bones.GetBlockRef(bi))
+                                    Next
+                                End If
                             End If
+                            For Each bRef In skinBoneRefs
+                                If bRef < 0 Then Continue For
+                                Dim bNode = TryCast(srcNif.Blocks(bRef), NiflySharp.Blocks.NiNode)
+                                Dim bName = bNode?.Name?.String
+                                If Not String.IsNullOrEmpty(bName) AndAlso Not actorBoneNames.Contains(bName) _
+                                   AndAlso Not clothBoneNames.Contains(bName) Then
+                                    skipUnknownBone = bName
+                                    Exit For
+                                End If
+                            Next
                         End If
                     Catch ex As Exception
                     End Try
+                End If
+                ' ⚠️ SSE = DETECT-ONLY A PROPÓSITO (no es un olvido; es la parte conservadora del fix).
+                ' Hacer que el filtro ALCANCE el skin de SSE (arriba) y hacerlo DROPEAR en SSE son dos
+                ' decisiones distintas. La segunda NO está respaldada por ninguna medición y el riesgo
+                ' es asimétrico:
+                '   • La razón de ser del filtro es FO4 y está sourced: MaleEyesGhoul.nif / 'GhoulTearDuct'.
+                '     No existe ningún caso SSE documentado que el filtro deba arreglar.
+                '   • El conjunto de shapes del bake SSE ya está MEDIDO contra el CK y cerrado: baseline
+                '     7 categorías con `ausentes 5` y `count 6` → final ~0 defectos propios sobre 2800+
+                '     NPCs / 7 categorías (--ssecomparebatch vs CK del BSA, sesión 2026-07-18; ver
+                '     project_facegen_bake_closure_20260718). Ese ~0 se logró con el filtro VACUO en SSE.
+                ' ⇒ un filtro que sólo QUITA shapes no tiene nada que arreglar en SSE y sólo puede
+                ' reintroducir `ausentes`/`count`. Por eso en SSE se LOGUEA lo que se dropearía y NO se
+                ' dropea. Si el barrido muestra 0 líneas [FACEBAKE-SSE-DRYRUN], habilitarlo es un no-op
+                ' seguro; si muestra alguna, hay que justificar shape por shape ANTES de tocar esto.
+                If skipUnknownBone IsNot Nothing AndAlso isSSEBake Then
+                    Dim hnDry = hdptName
+                    Dim snDry = sourceName
+                    Dim bnDry = skipUnknownBone
+                    Logger.LogLazy(Function() $"[FACEBAKE-SSE-DRYRUN] would drop shape '{snDry}' from HDPT '{hnDry}': skins to bone '{bnDry}' not in actor skeleton nor cloth-bones — NOT dropped (SSE shape-set is measured at ~0 defects vs CK; drop not enabled without evidence)")
+                    skipUnknownBone = Nothing
                 End If
                 If skipUnknownBone IsNot Nothing Then
                     Dim hnLog = hdptName
@@ -815,29 +868,57 @@ Public Module FaceGenBuilder
                                     End If
                                 Next
                                 If fbnsShape Is Nothing Then
-                                    ' Insert "_faceBones" before the trailing ":N" suffix (or at end if absent).
-                                    Dim colonIdx = sourceName.LastIndexOf(":"c)
-                                    Dim faceBonesName As String
-                                    If colonIdx > 0 Then
-                                        faceBonesName = String.Concat(sourceName.AsSpan(0, colonIdx), "_faceBones", sourceName.AsSpan(colonIdx))
-                                    Else
-                                        faceBonesName = sourceName & "_faceBones"
-                                    End If
+                                    ' Tier 2, AHORA IGUAL AL CK. FUENTE: CreationKit.exe 0x14093C030 busca
+                                    ' "_faceBones" (string @RVA 0x3017F30) como SUBSTRING CASE-INSENSITIVE en
+                                    ' CUALQUIER POSICIÓN del nombre de la shape FBNS, y hace un splice de 10
+                                    ' chars (constante @RVA 0x3B9DE50) para recuperar el nombre base; compara
+                                    ' ESE resultado contra el nombre de la shape ORIG.
+                                    ' Lo anterior CONSTRUÍA el nombre esperado insertando "_faceBones" justo
+                                    ' antes del ":N" final — o sea, sólo reconocía UNA posición. Cualquier NIF
+                                    ' cuyo sufijo no fuera exactamente ':N' (o que llevara el token en otro
+                                    ' lado) no matcheaba, aunque el CK sí lo matchea.
+                                    Const FaceBonesToken As String = "_faceBones"
                                     For Each fs In fbnsShapes
-                                        If String.Equals(If(fs.Name?.String, ""), faceBonesName, StringComparison.OrdinalIgnoreCase) Then
+                                        Dim fsName As String = If(fs.Name?.String, "")
+                                        Dim tokIdx = fsName.IndexOf(FaceBonesToken, StringComparison.OrdinalIgnoreCase)
+                                        If tokIdx < 0 Then Continue For
+                                        Dim spliced = fsName.Remove(tokIdx, FaceBonesToken.Length)
+                                        If String.Equals(spliced, sourceName, StringComparison.OrdinalIgnoreCase) Then
                                             fbnsShape = fs : Exit For
                                         End If
                                     Next
                                 End If
+                                ' Tier 3 ("si el FBNS tiene una sola shape, usala") — SIN CONTRAPARTE EN EL CK:
+                                ' el 0x14093C030 sólo hace el match por nombre de arriba, no tiene fallback por
+                                ' cardinalidad. Sólo puede SOBRE-matchear (emparejar shapes que el CK dejaría sin
+                                ' morphear). Medido: 0 de 501 casos vanilla lo usan ⇒ no aporta cobertura real.
+                                ' Se DEJA por ahora para no cambiar dos cosas a la vez en la misma corrida, pero
+                                ' ahora es visible: cuando dispara, se loguea como tier3 (ver abajo).
+                                Dim usedTier3 As Boolean = False
                                 If fbnsShape Is Nothing AndAlso fbnsShapes.Count = 1 Then
                                     fbnsShape = fbnsShapes(0)
+                                    usedTier3 = True
                                 End If
                                 If fbnsShape IsNot Nothing Then
+                                    If usedTier3 AndAlso Logger.Enabled Then
+                                        Dim shNameT3 = sourceName
+                                        Logger.LogLazy(Function() $"[FACEGEN-FBNS] tier3 (single-shape fallback, NO tiene contraparte en el CK) npc=0x{npcFormID:X8} shape='{shNameT3}' fbns='{faceBonesKey}'")
+                                    End If
                                     Dim baked = FaceGenBuildPipeline.BakeShape(bakeState, nif, cloned, fbnsNif, fbnsShape, hdpt.ChargenMorphTriPath, srcNif:=srcNif, srcShape:=srcShape, raceMorphTriPath:=hdpt.RaceMorphTriPath)
                                     If baked Then
                                         shapesMorphed += 1
                                     End If
                                 Else
+                                    ' CAÍDA SILENCIOSA — ya no. El FBNS cargó pero ninguna de sus shapes matcheó,
+                                    ' así que esta shape se escribe SIN morphear y el batch la contaba como éxito.
+                                    ' Se contabiliza y se registra FormID + shape + los nombres candidatos.
+                                    shapesFbnsUnmatched += 1
+                                    If Logger.Enabled Then
+                                        Dim shNameU = sourceName
+                                        Dim fbKeyU = faceBonesKey
+                                        Dim candNames = String.Join(",", fbnsShapes.Select(Function(f) If(f.Name?.String, "")))
+                                        Logger.LogLazy(Function() $"[FACEGEN-FBNS] SIN MATCH — shape escrita SIN morphear. npc=0x{npcFormID:X8} shape='{shNameU}' fbns='{fbKeyU}' fbnsShapes=[{candNames}]")
+                                    End If
                                 End If
                             End If
                         ElseIf bakeState IsNot Nothing AndAlso isSSEBake Then
@@ -1194,6 +1275,11 @@ Public Module FaceGenBuilder
         result.Success = True
         result.OutputPath = outAbs
         result.Summary = $"Wrote {outAbs} ({result.ShapesKept} shapes from {hdptProcessed} HDPTs)"
+        ' Caída silenciosa del match FBNS: shapes escritas SIN morphear. Va al Summary porque si sólo
+        ' vive en el log, un batch con logging apagado reporta éxito con cabezas neutras.
+        If shapesFbnsUnmatched > 0 Then
+            result.Summary &= $" | WARNING: {shapesFbnsUnmatched} shape(s) sin match FBNS — escritas SIN morphear, ver [FACEGEN-FBNS] log"
+        End If
         If hdptSourceMissing > 0 OrElse hdptSourceLoadFail > 0 Then
             result.Summary &= $" | WARNING: {hdptSourceMissing} source mesh(es) missing, {hdptSourceLoadFail} failed to load — see [FACEBAKE] log"
         End If
@@ -1510,9 +1596,11 @@ Public Module FaceGenBuilder
             .TextureSetFormID = hdpt.TextureSetFormID,
             .HeadPartHdptFormID = hdpt.FormID,
             .UsesBodyTexture = hdpt.UsesBodyTexture,
-            .HeadPartColorFormID = hdpt.ColorFormID,
-            .UseSolidTint = (hdpt.ColorFormID <> 0UI)
+            .HeadPartColorFormID = hdpt.ColorFormID
         }
+        ' UseSolidTint ya NO se asigna acá: es propiedad calculada sobre HeadPartColorFormID, con la MISMA
+        ' definición medida (`CNAM <> 0`) que este sitio ya tenía. El render la construía distinto (flag DATA
+        ' 0x10) ⇒ divergía. Ver MainForm.MeshCandidate.UseSolidTint.
 
         ' Run the same per-shape resolver the render uses. Mutates wrapper.ShapeMaterial in-place.
         Try
@@ -1674,7 +1762,24 @@ Public Module FaceGenBuilder
                 ' effect shaders (AO/MouthShadow). El fix de lighting (bsls) lo cubría, pero esta
                 ' rama (bes) se lo saltaba → AO/MouthShadow quedaban con bit 7 = 0 vs CK 1. Mismo
                 ' tratamiento que bsls. shad.Type ya quedó seteado por Save_To_Shader arriba.
-                NiflySharp.Helpers.ShaderHelper.SetFlagSF2(bes, CUInt(NiflySharp.Enums.Fallout4ShaderPropertyFlags2.Transform_Changed), True)
+                ' ⭐ GAME-GATED (mismo guard que la rama bsls de arriba, :1610). NO es analogía: está
+                ' VERIFICADO en el formato, no inferido del caso lighting. Dos hechos de fuente:
+                '   1) nif.xml declara el bit 7 con SIGNIFICADO DISTINTO por juego —
+                '      SkyrimShaderPropertyFlags2 bit 7 = Assume_Shadowmask (nif.xml:6424) vs
+                '      Fallout4ShaderPropertyFlags2 bit 7 = Transform_Changed (nif.xml:6496).
+                '   2) BSEffectShaderProperty NO tiene un enum de flags propio: declara sus campos
+                '      `Shader Flags 1/2` con suffix SK = Skyrim*PropertyFlags* cuando la versión es
+                '      < FO4, y con suffix FO4 = Fallout4*PropertyFlags* cuando es FO4 (nif.xml:6653-6656).
+                '      Es EXACTAMENTE el mismo par de enums que usa BSLightingShaderProperty — ambos
+                '      heredan de BSShaderProperty y difieren por VERSIÓN, no por tipo de bloque.
+                ' ⇒ en un NIF SSE este SetFlagSF2 escribe Assume_Shadowmask sobre el effect shader,
+                ' el mismo modo de corrupción que ya se midió y se gateó en la rama de lighting.
+                ' Refuerzo mecánico: ShaderHelper.SetFlagSF2 despacha por `shader.Type` (ShaderGameType),
+                ' NO por la clase del bloque (ShaderHelper.cs:257-298) — con Type=SK el valor numérico
+                ' crudo (1<<7) cae en ShaderFlags_SSPF2 sin traducción alguna.
+                If Not nif.Header.Version.IsSSE Then
+                    NiflySharp.Helpers.ShaderHelper.SetFlagSF2(bes, CUInt(NiflySharp.Enums.Fallout4ShaderPropertyFlags2.Transform_Changed), True)
+                End If
             End If
         Catch ex As Exception
         End Try
@@ -2522,7 +2627,8 @@ Public Module FaceGenBuilder
         Dim cpu As FaceTintCpuCompositor.CpuPipelineResult = Nothing
 
         Try
-            cpu = FaceTintCpuCompositor.ComposeCpuPipeline(diffuseBytes, normalBytesArr, specBytesArr, built.Layers, built.RegionSwaps, OutputSettings, diffuseKey, normalKey, specKey)
+            cpu = FaceTintCpuCompositor.ComposeCpuPipeline(diffuseBytes, normalBytesArr, specBytesArr, built.Layers, built.RegionSwaps, OutputSettings, diffuseKey, normalKey, specKey,
+                                                           headDiffuseAlphaTest:=(npcData.Game = Config_App.Game_Enum.Fallout4) AndAlso (npcData.AcbsFlags And &H1000000UI) <> 0UI)
         Catch ex As Exception
             Dim m = ex.Message
             Logger.LogLazy(Function() $"[FACEBAKE-CPU] CPU compose failed: {m}")

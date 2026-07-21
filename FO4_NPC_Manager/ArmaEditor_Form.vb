@@ -1183,10 +1183,29 @@ Public Class ArmaEditor_Form
                     Continue For
                 End If
 
-                Dim est = SclpEstimator.EstimateSclp(uaBytes, bodyBytesList)
-                If est IsNot Nothing AndAlso est.Count > 0 Then
-                    _sculptByGender(g) = est
+                ' Overload DETALLADO: trae, POR EJE, si el número es una MEDICIÓN o un fallback identidad.
+                ' Antes se usaba EstimateSclp (que devuelve el Single pelado) y los cuatro casos —escala
+                ' genuina 1.0, fit rechazado, degenerado y NaN— entraban a la grilla indistinguibles, escritos
+                ' como si fueran valores autorados. Los NÚMEROS del estimador están bien; lo que faltaba era
+                ' poder decir "no pude medir". El caso peligroso es el MIXTO (un eje medido y el otro fallado):
+                ' el bone se emite igual porque el eje bueno es dato real, pero el eje fallado se REPORTA.
+                Dim estDet = SclpEstimator.EstimateSclpDetailed(uaBytes, bodyBytesList)
+                If estDet IsNot Nothing AndAlso estDet.Count > 0 Then
+                    _sculptByGender(g) = estDet.Select(Function(b) b.ToAbsolute()).ToList()
                     anyEstimated = True
+                    ' Ejes NO medidos que quedan en 1.0 en la grilla: se avisan en vez de pasar por autorados.
+                    Dim unmeasured = estDet.Where(Function(b) Not b.YMeasured OrElse Not b.ZMeasured).ToList()
+                    If unmeasured.Count > 0 Then
+                        Dim detail = String.Join(", ", unmeasured.Take(6).Select(
+                            Function(b)
+                                Dim axes As New List(Of String)
+                                If Not b.YMeasured Then axes.Add($"Y({b.YStatus})")
+                                If Not b.ZMeasured Then axes.Add($"Z({b.ZStatus})")
+                                Return $"{b.Name}:{String.Join("/", axes)}"
+                            End Function))
+                        If unmeasured.Count > 6 Then detail &= $", +{unmeasured.Count - 6} more"
+                        messages.Add($"{If(g = 0UI, "Male", "Female")}: {unmeasured.Count} bone(s) have an axis that could NOT be measured — those axes are left at 1.0 and are NOT measurements: {detail}")
+                    End If
                 Else
                     messages.Add($"{If(g = 0UI, "Male", "Female")}: estimate produced no bones (check the underarmor has _skin bones).")
                 End If

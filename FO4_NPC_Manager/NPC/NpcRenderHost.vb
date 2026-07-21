@@ -271,8 +271,19 @@ Friend Class NpcRenderHost
                     Next
                 End If
             Else
-                Dim isPipboyDevice As Boolean = (own And BipedSlots.SLOT_PIPBOY) <> 0UI AndAlso (own And (Not BipedSlots.SLOT_PIPBOY)) = 0UI
-                groupSlots(gid) = If(isPipboyDevice, own, own And (Not BipedSlots.SLOT_PIPBOY))
+                ' IDENTIDAD DE FORM, no heurística de slot. El motor reconoce el Pipboy comparando el form
+                ' contra sus default objects (PipboyCleanObject_DO @VA 0x1400F18B0, PipboyDustyObject_DO
+                ' @VA 0x1400F18F0) — resueltos en NpcRenderContext.PipboyDeviceArmoFormIDs desde los DFOB.
+                ' La regla vieja ("es Pipboy si su único slot es el 60") daba 3 falsos positivos vanilla
+                ' medidos: AssaultronShield (0022BC24), MirelurkShield (000986CA), babybundled (000F468E)
+                ' — sólo 4 de los 7 ARMO con slot-60-solo son Pipboys de verdad.
+                Dim isPipboyDevice As Boolean = False
+                LastRenderData.ShapeIsPipboyDevice.TryGetValue(sh, isPipboyDevice)
+                ' Y el slot que se strippea sale de RACE.DATA 'Pipboy Biped Object'
+                ' (wbDefinitionsFO4.pas:11538) — es dato POR RAZA, no la constante 60. Si la raza no declara
+                ' ninguno (mask 0) no hay slot de Pipboy que strippear y la máscara pasa cruda.
+                Dim pipMask As UInteger = LastRenderData.PipboySlotMask
+                groupSlots(gid) = If(isPipboyDevice OrElse pipMask = 0UI, own, own And (Not pipMask))
             End If
         Next
         Dim occupiedVisible As UInteger = 0UI

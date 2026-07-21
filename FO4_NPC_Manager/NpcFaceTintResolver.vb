@@ -370,7 +370,8 @@ Friend NotInheritable Class NpcFaceTintResolver
                     host.CompositorState, host.TintGpuCache,
                     diffuseEntry.Texture_ID, normalSrcId, specSrcId,
                     w, h, layerInputs, regionSwaps,
-                    baseDiffuseIsLinearOnGpu:=diffuseEntry.IsSRGB)
+                    baseDiffuseIsLinearOnGpu:=diffuseEntry.IsSRGB,
+                    headDiffuseAlphaTest:=(host.CurrentBaseState IsNot Nothing AndAlso host.CurrentBaseState.HeadDiffuseAlphaTest))
 
                 ' Swap fresh IDs into the dict and delete the IDs they replaced. IsFresh=False
                 ' means the channel had no contribution and the input ID stayed in place — no
@@ -387,7 +388,8 @@ Friend NotInheritable Class NpcFaceTintResolver
                 ' así que lo convertimos antes de subir. N/S ya son lineales. ⚠️ paridad GL==CPU en el render:
                 ' verificar IN-APP (no testeable headless); si hay gamma, es este convert.
                 If ApplyCpuComposeToDict(model, diffusePath, diffuseEntry, normalPath, normalEntry, specPath, specEntry,
-                                         layerInputs, regionSwaps) Then composedAny = True
+                                         layerInputs, regionSwaps,
+                                         (host.CurrentBaseState IsNot Nothing AndAlso host.CurrentBaseState.HeadDiffuseAlphaTest)) Then composedAny = True
             End If
 
             ' "Ya está": the slot-12 skin tone is now BAKED into this face mesh's diffuse (the
@@ -937,14 +939,15 @@ Friend NotInheritable Class NpcFaceTintResolver
                                            normalPath As String, normalEntry As PreviewModel.Texture_Loaded_Class,
                                            specPath As String, specEntry As PreviewModel.Texture_Loaded_Class,
                                            layerInputs As IList(Of FaceTintLayerInput),
-                                           regionSwaps As IList(Of FaceRegionSwapInput)) As Boolean
+                                           regionSwaps As IList(Of FaceRegionSwapInput),
+                                           Optional headDiffuseAlphaTest As Boolean = False) As Boolean
         Dim dB = FilesDictionary_class.GetBytes(diffusePath)
         If dB Is Nothing Then Return False
         Dim nB = If(Not String.IsNullOrEmpty(normalPath), FilesDictionary_class.GetBytes(normalPath), Nothing)
         Dim sB = If(Not String.IsNullOrEmpty(specPath), FilesDictionary_class.GetBytes(specPath), Nothing)
         Dim cpu As FaceTintCpuCompositor.CpuPipelineResult
         Try
-            cpu = FaceTintCpuCompositor.ComposeCpuPipeline(dB, nB, sB, layerInputs, regionSwaps, Nothing, diffusePath, normalPath, specPath)
+            cpu = FaceTintCpuCompositor.ComposeCpuPipeline(dB, nB, sB, layerInputs, regionSwaps, Nothing, diffusePath, normalPath, specPath, headDiffuseAlphaTest)
         Catch ex As Exception
             Dim m = ex.Message
             Logger.LogLazy(Function() $"[FACETINT-CPU-RENDER] compose failed: {m}")

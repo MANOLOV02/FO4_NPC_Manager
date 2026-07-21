@@ -87,6 +87,10 @@ Friend NotInheritable Class NpcMeshCollector
         ' fase 2). result.HeadOcclusionMask se fija abajo, ya con los winners resueltos (máscara EFECTIVA).
         result.HeadFaceCullMask = faceCullMask
         result.HeadHairSlotMask = hairMask
+        ' Slot que ESTA raza reserva para el Pipboy (RACE.DATA 'Pipboy Biped Object',
+        ' wbDefinitionsFO4.pas:11538). Es dato POR RAZA, no la constante 60 — el render lo consume para el
+        ' strip coexist-by-design. 0 en Skyrim (el campo no existe en ese layout).
+        result.PipboySlotMask = RaceUtil.RacePipboyMask(raceData)
 
         ' Per-segment worn-slot occlusion (Fase 2): LoadNifShapes records each worn-item shape's OWN slots
         ' + group id (ShapeOwnSlots / ShapeSlotGroup); ApplyRenderToggleVisibility recomputes the occlusion
@@ -1102,6 +1106,10 @@ Friend NotInheritable Class NpcMeshCollector
                 End If
             End If
 
+            ' UseSolidTint ya NO se asigna acá: es propiedad calculada sobre HeadPartColorFormID (HDPT.CNAM),
+            ' que sí se setea abajo. Este sitio usaba el flag DATA 0x10, gate que el corpus REFUTÓ (ninguna de
+            ' las 5 HDPT con CNAM lo tiene seteado y el CK usó el CNAM igual) ⇒ el render caía al HCLF mientras
+            ' el bake usaba el CNAM. Ver MainForm.MeshCandidate.UseSolidTint.
             candidates.Add(New MainForm.MeshCandidate With {
                 .DictKey = dictKey,
                 .BaseDictKeyForFaceBones = baseDictKeyForFaceBones,
@@ -1113,7 +1121,6 @@ Friend NotInheritable Class NpcMeshCollector
                 .HeadPartColorFormID = hdpt.ColorFormID,
                 .TextureSetFormID = hdpt.TextureSetFormID,
                 .HeadPartHdptFormID = hdptFormID,
-                .UseSolidTint = (hdpt.Flags And MainForm.HeadPartFlagUseSolidTint) <> 0,
                 .UsesBodyTexture = effectiveUsesBodyTexture,
                 .Order = order,
                 .RaceMorphTriPath = hdpt.RaceMorphTriPath,
@@ -2057,6 +2064,10 @@ Friend NotInheritable Class NpcMeshCollector
                     ' para la oclusión per-partición por-dueño (fase 1 de 0x140218200, owner en entry+0x18).
                     result.ShapePriority(shape) = candidate.Priority
                     result.ShapeSlotGroup(shape) = occGroupId
+                    ' Identidad de FORM del Pipboy (motor: compara el form contra los default objects
+                    ' PipboyCleanObject_DO / PipboyDustyObject_DO, VA 0x1400F18B0 / 0x1400F18F0). NO se
+                    ' deduce del slot: 3 de los 7 ARMO vanilla con slot-60-solo NO son Pipboys.
+                    result.ShapeIsPipboyDevice(shape) = _ctx.PipboyDeviceArmoFormIDs().Contains(candidate.SourceFormID)
                 End If
                 result.ShapeUsesBodyTexture(shape) = candidate.UsesBodyTexture
                 ' HDPT type=7 Meatcaps (CK enum 7=Meatcaps, ver wbDefinitionsFO4 + comment en

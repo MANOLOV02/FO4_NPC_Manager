@@ -69,7 +69,8 @@ Friend NotInheritable Class NpcStateResolver
             .FacialHairColorFormID = traits.FacialHairColorFormID,
             .HasTextureLighting = traits.HasTextureLighting,
             .TextureLightingColor = traits.TextureLightingColor,
-            .TraitsSourceFormID = traits.SourceFormID
+            .TraitsSourceFormID = traits.SourceFormID,
+            .HeadDiffuseAlphaTest = (npc.Game = Config_App.Game_Enum.Fallout4) AndAlso (npc.AcbsFlags And &H1000000UI) <> 0UI
         }
 
         state.HeadPartFormIDs.AddRange(traits.HeadPartFormIDs)
@@ -227,6 +228,7 @@ Friend NotInheritable Class NpcStateResolver
             .DefaultOutfitFormID = state.DefaultOutfitFormID,
             .SleepOutfitFormID = state.SleepOutfitFormID,
             .HeadTextureFormID = state.HeadTextureFormID,
+            .HeadDiffuseAlphaTest = state.HeadDiffuseAlphaTest,
             .HairColorFormID = state.HairColorFormID,
             .FacialHairColorFormID = state.FacialHairColorFormID,
             .HasTextureLighting = state.HasTextureLighting,

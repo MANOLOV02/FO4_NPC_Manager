@@ -44,7 +44,10 @@ Friend NotInheritable Class PoseMath
     '''   Arm (anywhere in ancestor chain) → 2 (Arms)
     '''   SPINE1, Pelvis, Butt (anywhere in ancestor chain) → 3 (Lower Torso)
     '''   Leg (anywhere in ancestor chain) → 4 (Legs)
-    ''' This is inferred from the skeleton hierarchy, not from any Bethesda data file.</summary>
+    ''' ⛔ COMENTARIO MUERTO — NO describe este código. Quedó de una heurística por substring del nombre
+    ''' que YA NO se implementa: la reemplazó la tabla EXACTA del motor declarada abajo. Esa heurística
+    ''' además asignaba MAL Pelvis*/ButtFat* (motor→Legs) y Neck1 (motor→Head). Se conserva sólo como
+    ''' registro de lo refutado; la ley vigente es la del &lt;summary&gt; siguiente.</summary>
     ''' <summary>Bone→MRSV-region map, EXACT from CreationKit.exe (fn 0xA95C70 builds this hardcoded
     ''' table into a global map at RVA 0x3BA4330; see memory project_morph_clamp_re). The 48 body
     ''' "_skin" bones each carry a hardcoded region index 0..4 (0=Head, 1=Upper Torso, 2=Arms,
@@ -330,19 +333,24 @@ Friend NotInheritable Class PoseMath
             End If
             Dim sxM As Single = sx, syM As Single = sy, szM As Single = sz   ' snapshot post-MRSV (= input a ARMA)
 
-            ' --- Layer 4: ARMA Bone Scale Delta — ADITIVO en los 3 ejes, X incluido (2026-06-19) ---
-            ' Fórmula: s = race_s + arma_d (componente a componente; X NO se resetea).
-            ' Base RE (Fallout4.exe, build abril-2026, el que usa la app): el builder del
-            ' bone-scale-array [BSSkin::Instance+0x50] = FUN_140652230 combina ADITIVAMENTE
-            ' (out = weight_base + sculpt_delta por eje). En ESE array out0/X se resetea a 1.0
-            ' cuando hay sculpt — PERO el render skin (walker FUN_14040a5d0) NO lee +0x50:
-            ' cosecha node + node+0x70 (world transforms), que son X-capaces. El consumidor
-            ' real del +0x50 no se localizó estáticamente (probable GPU skin-matrix prep).
-            ' Como el render va por matrices de nodo (X-capaz) y la data de Fallout4.esm trae
-            ' DeltaX deliberado en antebrazos (BoS underarmor X=+0.20 simétrico; Raider X=-0.19
-            ' solo brazo derecho), se aplica DeltaX aditivo en vez de descartarlo.
-            ' ⚠ Aditivo-vs-multiplicativo NO byte-probado vs CK ground-truth (consumidor +0x50
-            ' GPU/oculto); pendiente test empírico in-game de un outfit con DeltaX (0x134293, 0x0AF0E1).
+            ' --- Layer 4: ARMA Bone Scale Delta — ADITIVO en Y/Z; X = 1.0 FIJO ---
+            ' Fórmula: sx = 1.0 ; sy = race_sy + delta_y ; sz = race_sz + delta_z.
+            ' FUENTE (Fallout4.exe, el build que usa la app): el constructor del bone-scale-array
+            ' [BSSkin::Instance+0x50] = FUN_140652230. Para cada entrada del mapa delta hace
+            '   addss xmm6,[rcx+0xc]   ← Y
+            '   addss xmm7,[rcx+0x10]  ← Z
+            '   movaps xmm8,xmm9       ← X = 1.0, constante
+            ' y NUNCA lee [rcx+8], que es donde vive el DeltaX. O sea: el motor NO CONSUME el
+            ' DeltaX del record. Y no hay un solo `mulss` en toda la función ⇒ Y/Z son aditivos,
+            ' confirmado, no multiplicativos.
+            ' CORRECCIÓN de la justificación anterior: se aplicaba DeltaX "porque la data de
+            ' Fallout4.esm lo trae deliberado en antebrazos (BoS underarmor X=+0.20; Raider
+            ' X=-0.19)". El dato EXISTE, pero que exista en el record no implica que se use: el
+            ' motor no lo lee. Autoría en el ESM ≠ consumo en el motor.
+            ' ⚠ RESERVA (no probado desde el binario): el consumidor final del array +0x50 NO se
+            ' ubicó estáticamente, así que no está demostrado que este array sea el que alimenta el
+            ' render. Lo que SÍ está demostrado es cómo se CONSTRUYE. A/B en juego propuesto para
+            ' cerrarlo empíricamente: outfits 00134293 y 000AF0E1 (los que traen DeltaX no nulo).
             Dim armaDX As Single = 0.0F, armaDY As Single = 0.0F, armaDZ As Single = 0.0F
             If armaDeltas IsNot Nothing Then
                 Dim d As System.Numerics.Vector3
@@ -350,7 +358,7 @@ Friend NotInheritable Class PoseMath
                     armaDX = d.X
                     armaDY = d.Y
                     armaDZ = d.Z
-                    sx = sxM + armaDX
+                    sx = 1.0F          ' movaps xmm8,xmm9 — X fijo cuando hay entrada de sculpt
                     sy = syM + armaDY
                     sz = szM + armaDZ
                 End If

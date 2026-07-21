@@ -97,6 +97,16 @@ Module Program
             Return
         End If
 
+        ' --- HEADLESS skin-region equivalence check --------------------------------------------------
+        ' NPC_Manager_FO4.exe --skinregion-diag  → prueba EXHAUSTIVA de que la vieja heurística por
+        ' CATEGORÍA del fast-path de piel (NpcSkinLivePreview) coincide con la LEY del render completo
+        ' (NpcMaterialResolver.ResolveSkinRegionForOutfit). Exit 0 = equivalentes, 4 = hay divergencia.
+        ' Existe porque ese fast-path SÓLO lo instancia MainForm ⇒ el arnés de NIFs del CLI NO lo toca.
+        If args IsNot Nothing AndAlso args.Any(Function(a) String.Equals(a, "--skinregion-diag", StringComparison.OrdinalIgnoreCase)) Then
+            Environment.ExitCode = RunSkinRegionDiag()
+            Return
+        End If
+
         ' HighDpiMode = DpiUnaware: Windows hace bitmap-scaling de la ventana
         ' al DPI del monitor. UI luce algo blurry a >100% pero el LAYOUT es
         ' idéntico a cualquier DPI — fonts/controles no se reescalan, así
@@ -249,6 +259,10 @@ Module Program
         Console.WriteLine("  --slot-diag")
         Console.WriteLine("      Print how each body slot classifies in both games. Diagnostic.")
         Console.WriteLine("")
+        Console.WriteLine("  --skinregion-diag")
+        Console.WriteLine("      Exhaustively check that the skin fast-path's category heuristic agrees with")
+        Console.WriteLine("      ResolveSkinRegionForOutfit, both games. Exit: 0 = equivalent, 4 = divergence.")
+        Console.WriteLine("")
         Console.WriteLine("  (no flags)  Launch the GUI.")
     End Sub
 
@@ -284,6 +298,112 @@ Module Program
             Console.WriteLine($"  SSE naked hands  (33)     Skin->{NpcMeshCollector.ClassifyShapeCategory(New MainForm.MeshCandidate With {.SlotMask = 1UI << 3, .Kind = MainForm.MeshCandidateKind.Skin})}")
         Next
     End Sub
+
+    ''' <summary>Chequeo EXHAUSTIVO y reproducible de la equivalencia entre las dos formas de derivar
+    ''' la región de piel (Body vs Hand) de un shape de outfit:
+    '''   • LEY   = <see cref="NpcMaterialResolver.ResolveSkinRegionForOutfit"/>, lo que usa el render
+    '''             completo (y ahora también el fast-path del picker de piel).
+    '''   • VIEJA = la heurística por categoría que tenía NpcSkinLivePreview antes
+    '''             (GloveOutfit → Hand, cualquier otra categoría de outfit → Body).
+    '''
+    ''' POR QUÉ ESTE CHECK Y NO EL BARRIDO: el fast-path vive en NpcSkinLivePreview, que SÓLO instancia
+    ''' MainForm ⇒ es inalcanzable desde FO4_FaceTint_CLI y su efecto es sólo-render. Un barrido verde
+    ''' de NIFs no dice NADA sobre este código. Lo que sí se puede medir es que las dos derivaciones
+    ''' coinciden, porque ambas son funciones PURAS de (SlotMask, Kind).
+    '''
+    ''' POR QUÉ ES EXHAUSTIVO Y NO UN MUESTREO DE OUTFITS: las dos funciones NO miran bits sueltos.
+    ''' Sólo consultan (a) si el mask intersecta cada máscara de región (BipedSlots.RegionMask), (b) el
+    ''' bit Pipboy, y (c) si el mask es 0. Entonces su comportamiento depende ÚNICAMENTE del vector de
+    ''' "toca / no toca" por región + Pipboy + non-zero. Enumerando todos los subconjuntos de un bit
+    ''' REPRESENTATIVO por región (extraído de RegionMask en runtime — NO hardcodeado) × los 4 Kind ×
+    ''' los 2 juegos se cubre TODO ese espacio, no una muestra sesgada del corpus vanilla.
+    ''' Las regiones sin slots en un juego (p.ej. Under/[U] no existe en SSE) se saltean solas: su
+    ''' RegionMask da 0 y no aportan bit representativo.</summary>
+    ''' <returns>0 si las dos derivaciones coinciden en todos los casos; 4 si hay alguna divergencia.</returns>
+    Private Function RunSkinRegionDiag() As Integer
+        EnsureConsole()
+        Config_App.LoadConfig()
+        NPC_Config.LoadConfig()
+
+        ' Categorías de outfit sobre las que el fast-path itera (ApplyOutfitSkinTintRefreshAfterBodySkinChange).
+        ' Las de body skin (BodySkin/NakedHands) y HeadPart las manejan los otros dos pases y NO entran acá.
+        Dim outfitCats = {MainForm.ShapeRenderCategory.Underarmor, MainForm.ShapeRenderCategory.ArmorOver,
+                          MainForm.ShapeRenderCategory.GloveOutfit, MainForm.ShapeRenderCategory.Headwear}
+        Dim regions = {BipedSlots.BipedRegion.Headwear, BipedSlots.BipedRegion.Body, BipedSlots.BipedRegion.Hands,
+                       BipedSlots.BipedRegion.Under, BipedSlots.BipedRegion.Over, BipedSlots.BipedRegion.Accessory}
+        Dim kinds = {MainForm.MeshCandidateKind.Skin, MainForm.MeshCandidateKind.Outfit,
+                     MainForm.MeshCandidateKind.HeadPart, MainForm.MeshCandidateKind.Attachment}
+
+        Dim totalChecked As Integer = 0, totalReachable As Integer = 0, mismatches As Integer = 0
+        Dim savedGame = Config_App.Current.Game
+        For Each game In {Config_App.Game_Enum.Fallout4, Config_App.Game_Enum.Skyrim}
+            Config_App.Current.Game = game
+            Console.WriteLine($"===================== {game} =====================")
+
+            ' Un bit representativo por región, LEÍDO de la tabla autoritativa (bit más bajo de la
+            ' máscara). Si la región no existe en este juego su máscara es 0 → no aporta bit.
+            Dim repBits As New List(Of (Region As BipedSlots.BipedRegion, Bit As UInteger))
+            For Each rg In regions
+                Dim m = BipedSlots.RegionMask(rg)
+                If m = 0UI Then
+                    Console.WriteLine($"  (región {rg} no tiene slots en {game} — omitida)")
+                    Continue For
+                End If
+                ' Bit más bajo prendido de la máscara. Loop explícito a propósito: en VB el operador
+                ' Not tiene MENOS precedencia que la aritmética, así que el idiom `m And (Not m + 1)`
+                ' se parsea como `m And Not (m + 1)` y da cualquier cosa.
+                Dim low As UInteger = 0UI
+                For bi As Integer = 0 To 31
+                    If (m And (1UI << bi)) <> 0UI Then
+                        low = 1UI << bi
+                        Exit For
+                    End If
+                Next
+                repBits.Add((rg, low))
+            Next
+            ' El bit Pipboy es el único slot que ClassifyShapeCategory consulta INDIVIDUALMENTE
+            ' (regla FO4 slot 60), así que entra como dimensión propia del producto cartesiano.
+            repBits.Add((BipedSlots.BipedRegion.None, BipedSlots.SlotBitPipboy))
+
+            Dim combos As Integer = 1 << repBits.Count
+            For subset As Integer = 0 To combos - 1
+                Dim mask As UInteger = 0UI
+                For b As Integer = 0 To repBits.Count - 1
+                    If (subset And (1 << b)) <> 0 Then mask = mask Or repBits(b).Bit
+                Next
+                For Each kind In kinds
+                    Dim cand = New MainForm.MeshCandidate With {.SlotMask = mask, .Kind = kind}
+                    Dim cat = NpcMeshCollector.ClassifyShapeCategory(cand)
+                    totalChecked += 1
+                    ' Sólo son ALCANZABLES por el fast-path los shapes cuya categoría está en el filtro.
+                    If Not outfitCats.Contains(cat) Then Continue For
+                    totalReachable += 1
+
+                    Dim viejaHeuristica = If(cat = MainForm.ShapeRenderCategory.GloveOutfit,
+                                             MainForm.SkinRegion.Hand, MainForm.SkinRegion.Body)
+                    Dim ley = NpcMaterialResolver.ResolveSkinRegionForOutfit(cand)
+                    If viejaHeuristica <> ley Then
+                        mismatches += 1
+                        Console.WriteLine($"  MISMATCH  mask=0x{mask:X8} kind={kind,-10} cat={cat,-11} " &
+                                          $"heuristica={viejaHeuristica} LEY={ley}")
+                    End If
+                Next
+            Next
+            Console.WriteLine($"  combos de región = {combos} × {kinds.Length} kinds")
+        Next
+        Config_App.Current.Game = savedGame
+
+        Console.WriteLine("")
+        Console.WriteLine($"casos evaluados = {totalChecked} · alcanzables por el fast-path = {totalReachable} · divergencias = {mismatches}")
+        If mismatches = 0 Then
+            Console.WriteLine("OK — la heurística por categoría y ResolveSkinRegionForOutfit son EQUIVALENTES")
+            Console.WriteLine("     sobre todo el espacio alcanzable. El cambio en NpcSkinLivePreview es un")
+            Console.WriteLine("     no-op de comportamiento: elimina la ley duplicada, no arregla un defecto.")
+            Return 0
+        End If
+        Console.WriteLine("DIVERGENCIA — la heurística por categoría NO reproduce la ley. Ver líneas MISMATCH.")
+        Return 4
+    End Function
 
     ' ============================================================================================
     ' HEADLESS FaceGeom geometry bake

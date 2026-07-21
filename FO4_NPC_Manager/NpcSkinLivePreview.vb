@@ -256,8 +256,23 @@ Friend NotInheritable Class NpcSkinLivePreview
     ''' actor's body skin just changed and outfits of any category (Underarmor / Armor / Glove)
     ''' may have skin-exposed patches that need to follow.
     '''
-    ''' Region is inferred from the shape's category (GloveOutfit → Hand, everything else → Body)
-    ''' instead of from candidate.SlotMask, since we don't have outfit candidates cached.
+    ''' ⭐ RENDER == RENDER: la región de piel sale de la MISMA ley que el render completo,
+    ''' <see cref="NpcMaterialResolver.ResolveSkinRegionForOutfit"/>, alimentada con el candidate del
+    ''' shape (renderData.ShapeCandidate — SÍ está cacheado; el comentario anterior que decía "no
+    ''' tenemos los outfit candidates cacheados" era FALSO, la función de head parts de acá abajo ya
+    ''' lo venía leyendo). Antes se infería por CATEGORÍA (GloveOutfit → Hand, resto → Body): una
+    ''' SEGUNDA ley, mantenida a mano, sobre la misma entrada.
+    '''
+    ''' MEDIDO (--skinregion-diag, exhaustivo sobre el espacio de regiones × Kind × ambos juegos):
+    ''' la vieja heurística coincidía con la ley en TODOS los casos alcanzables — no había defecto
+    ''' de render. La equivalencia no era casualidad: ClassifyShapeCategory y ResolveSkinRegionForOutfit
+    ''' leen el MISMO candidate.SlotMask con las MISMAS máscaras game-aware (BipedSlots.RegionMask), y
+    ''' los predicados de la primera implican los de la segunda. El único punto donde divergen es
+    ''' Kind=Attachment con bits hand+[A] (categoría ArmorOver ⇒ heurística Body, ley Hand), que hoy no
+    ''' ocurre porque los Attachment llevan SlotMask=0 por construcción. Se cambia igual porque esa
+    ''' equivalencia es una cadena de implicaciones frágil: cualquier reordenamiento de las reglas de
+    ''' ClassifyShapeCategory la rompe en silencio, y este camino es SÓLO-RENDER e inalcanzable desde
+    ''' el CLI ⇒ el arnés de NIFs es CIEGO a él por definición. Una ley, un lugar.
     ''' Returns the shape count touched (for logging).</summary>
     Private Function ApplyOutfitSkinTintRefreshAfterBodySkinChange(host As NpcRenderHost) As Integer
         Dim count As Integer = 0
@@ -285,7 +300,16 @@ Friend NotInheritable Class NpcSkinLivePreview
             If mat Is Nothing Then Continue For
             If mat.NifShaderType <> NiflySharp.Enums.BSLightingShaderType.SkinTint Then Continue For
 
-            Dim chosenTxst = If(cat = MainForm.ShapeRenderCategory.GloveOutfit, handTxst, bodyTxst)
+            ' Región = LA LEY del render completo, no una inferencia por categoría. Si el shape no
+            ' tiene candidate (no debería pasar; ShapeCandidate se puebla junto con ShapeCategory),
+            ' ResolveSkinRegionForOutfit(Nothing) ya devuelve Body — su propio default documentado,
+            ' así que no hace falta (ni conviene) un fallback local que sería una tercera regla.
+            Dim shapeCand As MainForm.MeshCandidate = Nothing
+            renderData.ShapeCandidate.TryGetValue(shape, shapeCand)
+            ' 'skinRegion' y no 'region': System.Drawing está importado en este archivo y un local
+            ' llamado 'region' shadowea System.Drawing.Region — legal pero confuso al leer.
+            Dim skinRegion = NpcMaterialResolver.ResolveSkinRegionForOutfit(shapeCand)
+            Dim chosenTxst = If(skinRegion = MainForm.SkinRegion.Hand, handTxst, bodyTxst)
             If chosenTxst Is Nothing Then Continue For
 
             ' Same fragment as ApplyShapeMaterialOverrides body — only the diffuse/normal/spec
@@ -351,21 +375,28 @@ Friend NotInheritable Class NpcSkinLivePreview
             renderData.ShapeUsesBodyTexture.TryGetValue(shape, usesBody)
             If Not usesBody Then Continue For
 
-            ' Same body-skin sub flow ApplyShapeMaterialOverrides uses: load BGSM (if MNAM
-            ' present in TXST), copy texture slots only. Si el MNAM cargó, es la ÚNICA fuente y los
-            ' TX## del TXST NO se aplican encima (REGLA 2, BAKETEST2 N_S/N_S2) — RENDER == BAKE.
-            ' Material params (specular, smoothness, subsurface) stay from the NIF.
-            Dim bodyMnamLoaded As Boolean = False
-            If bodyTxst.MaterialPath <> "" Then
-                Dim bgsmMaterial = MaterialResolver.TryLoadMaterialFromDictionary(bodyTxst.MaterialPath, mat, shape.NifShape, shape.NifContent)
-                If bgsmMaterial IsNot Nothing Then
-                    bodyMnamLoaded = True
-                    If bgsmMaterial.Diffuse_or_Base_Texture <> "" Then mat.Diffuse_or_Base_Texture = bgsmMaterial.Diffuse_or_Base_Texture
-                    If bgsmMaterial.NormalTexture <> "" Then mat.NormalTexture = bgsmMaterial.NormalTexture
-                    If bgsmMaterial.SmoothSpecTexture <> "" Then mat.SmoothSpecTexture = bgsmMaterial.SmoothSpecTexture
-                End If
-            End If
-            If Not bodyMnamLoaded Then NpcMaterialResolver.ApplyTextureSetToMaterial(mat, bodyTxst)
+            ' ⭐ RENDER == RENDER: exactamente la MISMA llamada que el render completo hace en
+            ' NpcMaterialResolver.ApplyShapeMaterialOverrides para un head part UsesBodyTexture, con la
+            ' MISMA tupla de flags derivada del candidate por las proyecciones compartidas.
+            ' Antes acá se re-implementaba a mano el MNAM y se cerraba con ApplyTextureSetToMaterial
+            ' PELADO (isHeadPartTextureSet=False por default) ⇒ este fast path se salteaba el dispatch
+            ' SSE por shader type autorado (FaceTint → N+_sk+detail, SkinTint → sólo N, resto → nada) y
+            ' el skip de TX07 en SSE. Caso separador: SSE, head part UsesBodyTexture=True, cambio de
+            ' piel por el picker en vez de re-render completo. Es render-contra-render, así que el
+            ' arnés de NIFs es CIEGO a esto por definición.
+            ' ApplyTextureSetOverrides ya hace el MNAM internamente CON la regla medida (split por
+            ' UsesBodyTexture; REGLA 2 BAKETEST2 N_S/N_S2: si el MNAM carga, los TX## no se aplican
+            ' encima), así que la copia a mano sobraba y además era una regla distinta.
+            ' Los dos flags en False NO son un default asumido, están DERIVADOS: el render completo
+            ' resuelve este mismo TXST en el Caso C de ResolveTextureSet (UsesBodyTexture gana sobre
+            ' TNAM), que retorna ANTES de tocar isFaceTextureSource y fo4FaceComposeInputsOnly ⇒ en el
+            ' camino body-skin ambos quedan False.
+            NpcMaterialResolver.ApplyTextureSetOverrides(bodyTxst, relMat, usesBody, shape.NifShape, shape.NifContent,
+                                                         isHeadPartTextureSet:=NpcMaterialResolver.IsHeadPartTextureSetFor(shapeCand),
+                                                         isFaceHeadPart:=NpcMaterialResolver.IsFaceHeadPartFor(shapeCand),
+                                                         forceDiffuseOnly:=False,
+                                                         isNpcExplicitFaceTextureSet:=NpcMaterialResolver.IsNpcExplicitFaceTextureSetFor(state, bodyTxst),
+                                                         fo4FaceComposeInputsOnly:=False)
             count += 1
         Next
         Return count

@@ -270,6 +270,9 @@ Public Class MainForm
     ' wbFlags, no por el valor en los comentarios `{0x...}`. Posiciones reales:
     '   bit 0 (0x01) Playable, bit 1 (0x02) Male, bit 2 (0x04) Female,
     '   bit 3 (0x08) IsExtraPart, bit 4 (0x10) UseSolidTint, bit 5 (0x20) UsesBodyTexture.
+    ''' <summary>⛔ NO USAR como gate del solid tint. Se conserva sólo por documentar el mapeo posicional
+    ''' de xEdit. El gate real, MEDIDO, es `HDPT.CNAM &lt;&gt; 0`: ninguna de las 5 HDPT con CNAM en vanilla+DLC
+    ''' tiene este flag seteado y el CK usó el CNAM igual. Ver MainForm.MeshCandidate.UseSolidTint.</summary>
     Friend Const HeadPartFlagUseSolidTint As Byte = &H10
     ''' <summary>Flag bit at position 3 of HDPT.DATA — "Is Extra Part". Verified against
     ''' wbDefinitionsFO4.pas:7369 (entry 4 in the wbFlags positional array). Set on HDPTs that are
@@ -479,7 +482,20 @@ Public Class MainForm
         ''' Needed so the per-shape material pass can re-derive the ghoul head-rear bare-id gate
         ''' (FemaleHeadHumanRearTEMP 0x0004D0E9) without a separate lookup. 0 for non-HeadPart.</summary>
         Public HeadPartHdptFormID As UInteger
-        Public UseSolidTint As Boolean
+        ''' <summary>⭐ Gate del solid-tint por head part. CALCULADO sobre <see cref="HeadPartColorFormID"/>
+        ''' (HDPT.CNAM), NO asignable: render y bake construyen el candidate en sitios distintos
+        ''' (NpcMeshCollector.CollectHeadPartCandidate y FaceGenBuilder) y cada uno tenía su propia
+        ''' definición — el render usaba el flag DATA 0x10 y el bake el CNAM. RENDER ≠ BAKE.
+        ''' ⛔ El gate MEDIDO es `CNAM &lt;&gt; 0`, NO el flag DATA 0x10 "Use Solid Tint": de las 5 HDPT con
+        ''' CNAM&lt;&gt;0 en todo vanilla+DLC (pelo y hairline de Serana/Valerica) NINGUNA tiene el flag seteado
+        ''' y el CK usó el CNAM igual — el corpus REFUTÓ el gate por flag. Ver la ley completa en
+        ''' NpcMaterialResolver.ResolveHairTintColor y ResolveHeadPartSolidTintColor.
+        ''' Al ser propiedad calculada la ley existe UNA SOLA VEZ y no puede volver a driftear.</summary>
+        Public ReadOnly Property UseSolidTint As Boolean
+            Get
+                Return HeadPartColorFormID <> 0UI
+            End Get
+        End Property
         Public UsesBodyTexture As Boolean
         Public FaceGenTexturePrefix As String = ""
         Public Order As Integer
@@ -669,6 +685,20 @@ Public Class MainForm
         ''' This is what keeps a slot SHARED by two items (Pipboy + a Pipboy-aware outfit both declaring 60)
         ''' working — occupied&amp;~own would strip the shared bit; OR-of-other-groups keeps it.</summary>
         Public ReadOnly ShapeSlotGroup As New Dictionary(Of IRenderableShape, Integer)
+        ''' <summary>Per-shape: True when the shape's candidate IS the Pipboy DEVICE, by ENGINE IDENTITY —
+        ''' its ARMO FormID matches one of the Pipboy default objects (see
+        ''' <see cref="NpcRenderContext.PipboyDeviceArmoFormIDs"/>, resolved from the PipboyCleanObject_DO /
+        ''' PipboyDustyObject_DO DFOBs at VA 0x1400F18B0 / 0x1400F18F0). Replaces the old slot heuristic
+        ''' ("its only worn slot is 60"), which wrongly flagged AssaultronShield (0022BC24), MirelurkShield
+        ''' (000986CA) and babybundled (000F468E) — 3 of the 7 vanilla slot-60-only ARMOs are NOT Pipboys.
+        ''' Absent entry = not a Pipboy device.</summary>
+        Public ReadOnly ShapeIsPipboyDevice As New Dictionary(Of IRenderableShape, Boolean)
+        ''' <summary>The biped slot THIS NPC's race reserves for the Pipboy, as a slot-30-relative bit mask,
+        ''' from RACE.DATA 'Pipboy Biped Object' (wbDefinitionsFO4.pas:11538) via
+        ''' <see cref="RaceUtil.RacePipboyMask"/>. The Pipboy slot is PER-RACE data, so the coexist-by-design
+        ''' strip in NpcRenderHost.ApplyRenderToggleVisibility must strip THIS bit, not the constant slot 60.
+        ''' 0 when the race declares None, and always 0 on Skyrim (no such field; slot 60 is generic there).</summary>
+        Public PipboySlotMask As UInteger = 0UI
         ''' <summary>Monotonic seed for <see cref="ShapeSlotGroup"/> ids. LoadNifShapes runs once per
         ''' candidate; it claims one id per call via the post-increment below.</summary>
         Public OcclusionGroupSeq As Integer = 0
@@ -820,6 +850,15 @@ Public Class MainForm
         ' BuildNPCVisualState. Distingue "el NPC declara su cara" (FTST) del default de raza (DFTM), para la
         ' precedencia FTST > HDPT.TNAM > DFTM en ResolveTextureSet. 0 = el NPC no tiene FTST propio.
         Public ExplicitHeadTextureFormID As UInteger
+        ''' <summary>FO4 SÓLO. ACBS\Flags bit 0x01000000 "Diffuse Alpha Test" (wbDefinitionsFO4.pas:10655) del
+        ''' NPC. Es el ÁRBITRO record-driven del alpha de la cabeza: el CK fabrica el NiAlphaProperty (0x2EC) sii
+        ''' este flag (RE CreationKit 0x140ED41F6 → gate [npc+0x9b]&1 = bit 24 de ACBS). Reemplaza el proxy
+        ''' isNpcExplicitFaceTextureSet, que fallaba para Valentine (su material con alpha viene por MSWP, no por
+        ''' el TXST del FTST, así que el FormID no coincidía) y daba falso-positivo si el RACE.DFTM apuntaba a un
+        ''' material con alpha (DiMA: DFTM=SkinHeadValentine con alpha, PERO sin este flag ⇒ sólido, como el CK).
+        ''' Gobierna render (HasAlphaTest), bake (WriteAlphaPropertyToShape) y el compositor del _d. Ver
+        ''' reference_acbs_diffuse_alpha_test_flag. SSE: bit 24 = "Unknown 24" (sin uso) ⇒ siempre False.</summary>
+        Public HeadDiffuseAlphaTest As Boolean
         Public HairColorFormID As UInteger
         ''' <summary>SSE-ONLY RaceMenu absolute hair tint (packed 0xRRGGBB) from an applied .jslot's actor.hairColor.
         ''' When set it takes precedence over <see cref="HairColorFormID"/> (the CLFM) at hair-material resolution
@@ -5051,9 +5090,15 @@ Public Class MainForm
             End If
         End If
 
-        ' Disparar render: si hay OBTE, ResolveNpcCombinations re-rolea los modcol_* internamente
-        ' (random pick por DontUseAll=True). Si solo hay OBTE sin outfit (robots, brahmin), este
-        ' es el único re-roll que aplica.
+        ' Disparar render. OJO — esto YA NO re-rolea los modcol_*: ResolveNpcCombinations es ahora
+        ' DETERMINISTA por defecto (first-wins en los includes DontUseAll). Antes usaba
+        ' Random.Shared, lo que hacía que el MISMO NPC produjera NIFs distintos en dos corridas e
+        ' invalidaba toda comparación por hash aguas abajo.
+        ' La variación sigue disponible, pero ahora es EXPLÍCITA y reproducible: pasar `rngSeed` a
+        ' ResolveNpcCombinations / ResolveArmoCombinations (hoy los call sites de NpcMeshCollector
+        ' no lo pasan). Si se quiere recuperar el re-roll de chunks de robot en el preview, hay que
+        ' cablear un seed variable desde acá hasta esos dos call sites — cambio de app, no de lib.
+        ' Si solo hay OBTE sin outfit (robots, brahmin), hoy no aplica ningún re-roll.
         Dim requestVersion = Interlocked.Increment(_previewRequestVersion)
         RenderOnDemandAsync(requestVersion)
     End Sub
@@ -8731,7 +8776,13 @@ Public Class MainForm
         ' is applied, so the flags still round-trip verbatim on the non-overlay path.
         shadow.HasHairColor = raw.HasHairColor
         shadow.HasFacialHairColor = raw.HasFacialHairColor
-        shadow.HasHeadTexture = raw.HasHeadTexture
+        ' HasHeadTexture lo posee ApplyPresetOverlayToNpcData (deriva el gate de emisión FTST del MISMO
+        ' valor que resolvió para HeadTextureFormID: plantilla LM > preset .jslot > raw). Copiarlo de raw
+        ' acá pisaba ese resultado y dejaba el face TXST de la plantilla LM fuera del ESP para todo NPC
+        ' sin FTST propio — el bundle se veía en el preview y desaparecía al guardar (WYSIWYG roto).
+        ' Mismo razonamiento que HasDefaultOutfit / HasSleepOutfit arriba. El overlay devuelve raw sin
+        ' tocar cuando no hay preset aplicado (y entonces esta función ni corre), así que el par
+        ' HasHeadTexture/HeadTextureFormID sigue haciendo round-trip verbatim en el camino sin overlay.
         ' Collection-typed fields the overlay never touches — safe to share by reference.
         ' Writer enumerates only; if it ever starts mutating, switch to deep-copy.
         shadow.Factions = raw.Factions

@@ -178,12 +178,38 @@ Public Module NpcRecordOverlay
             Dim genderIdx As Integer = If(raw.IsFemale, 1, 0)
             If lmTemplate.FaceTxstFormID(genderIdx) <> 0UI Then lmFaceTxst = lmTemplate.FaceTxstFormID(genderIdx)
         End If
-        shadow.HeadTextureFormID = If(lmFaceTxst <> 0UI, lmFaceTxst, raw.HeadTextureFormID)
-        ' HasHeadTexture is the writer's "emit FTST subrecord" gate. When the LM template
-        ' injects a face TXST, mark Has*=True so Save ESP emits the override even if the raw
-        ' NPC didn't carry an FTST of its own. Otherwise the bundle's face[gender] would land
-        ' in the preview but disappear at ESP write time — WYSIWYG broken.
-        shadow.HasHeadTexture = raw.HasHeadTexture OrElse (lmFaceTxst <> 0UI)
+        ' ⛔ UNA SOLA ASIGNACIÓN de HeadTextureFormID en toda esta función. Antes había DOS
+        ' (acá y otra ~100 líneas abajo, en el bloque del preset .jslot headTexture); la segunda
+        ' reasignaba incondicionalmente y, con SseHeadTextureFormID = 0 (el caso normal en FO4 y
+        ' en SSE sin `headTexture` en el .jslot), REVERTÍA el TXST de la plantilla LM a raw —
+        ' exactamente lo que el comentario de este bloque prometía evitar.
+        '
+        ' PRECEDENCIA (de mayor a menor): LM SkinTemplate > preset .jslot headTexture > raw NPC.FTST
+        '   1) LM SkinTemplate face[gender] (F4SE bundle, SkinInterface.cpp:307-313 — ApplyOverride
+        '      setea npc->headData->faceTextures). Gana porque es la misma ley que YA aplican sus
+        '      campos hermanos del mismo bundle en esta función: SkinFormID (:150, pisa el override
+        '      del preset) y head/headRear HDPT (bloque ApplyLmHdptReplacement más abajo, "post-merge
+        '      override so the bundle sits on top of preset overrides"). Y sobre todo: es la del camino de
+        '      RENDER en NpcStateResolver.vb:160-172, donde el template se aplica DESPUÉS del preset
+        '      y gana. Alinear el plugin con el render es lo que mantiene el WYSIWYG.
+        '   2) Preset .jslot actor.headTexture (RaceMenu, skee64 PresetInterface.cpp:158-160).
+        '      0 = no viene en el JSON → no participa.
+        '   3) raw NPC.FTST.
+        ' Feeds state.HeadTextureFormID → NpcMaterialResolver's face material (:344).
+        Dim headTxstOverride As UInteger = 0UI
+        If lmFaceTxst <> 0UI Then
+            headTxstOverride = lmFaceTxst
+        ElseIf preset.SseHeadTextureFormID <> 0UI Then
+            headTxstOverride = preset.SseHeadTextureFormID
+        End If
+        shadow.HeadTextureFormID = If(headTxstOverride <> 0UI, headTxstOverride, raw.HeadTextureFormID)
+        ' HasHeadTexture es el gate "emitir subrecord FTST" del writer (NpcSubrecordWriter.vb:97, que
+        ' mira SÓLO la bandera; el sink de FormIDs de SaveNpcEspWriter.vb:951 además exige <> 0) y se
+        ' deriva DEL MISMO resultado de arriba — no se calcula aparte, así no pueden discrepar por
+        ' construcción. Con override activo: Has = (valor <> 0), que además hace IMPOSIBLE el par
+        ' (HasHeadTexture=True, HeadTextureFormID=0). Sin override: se preserva el par de raw verbatim
+        ' (round-trip). Mismo patrón que HasDefaultOutfit / HasSleepOutfit arriba.
+        shadow.HasHeadTexture = If(headTxstOverride <> 0UI, True, raw.HasHeadTexture)
         shadow.FacialHairColorFormID = raw.FacialHairColorFormID
         ' QNAM (TextureLighting): seeded from raw here. Post-FaceTintLayers copy below we
         ' re-derive from the preset's slot-12 SkinTone tint via DeriveSkinToneQnam so the
@@ -273,10 +299,10 @@ Public Module NpcRecordOverlay
         ' HairColor: preset 0 means "not in JSON, preserve" (engine behaviour: nullptr form skips).
         shadow.HairColorFormID = If(preset.HairColorFormID <> 0UI, preset.HairColorFormID, raw.HairColorFormID)
 
-        ' Face texture set (FTST): a RaceMenu preset (.jslot actor.headTexture) can override the NPC's face TXST —
-        ' skee64 ApplyPreset sets npc->headData->headTexture (PresetInterface.cpp:158-160). 0 = not carried →
-        ' preserve raw. Feeds state.HeadTextureFormID → NpcMaterialResolver's face material (:344).
-        shadow.HeadTextureFormID = If(preset.SseHeadTextureFormID <> 0UI, preset.SseHeadTextureFormID, raw.HeadTextureFormID)
+        ' Face texture set (FTST): preset.SseHeadTextureFormID (.jslot actor.headTexture) se resuelve
+        ' ARRIBA, junto con el face TXST de la plantilla LM y el raw, en la ÚNICA asignación de
+        ' shadow.HeadTextureFormID / shadow.HasHeadTexture de esta función. Acá había una segunda
+        ' escritura al mismo campo que pisaba la plantilla LM — no reintroducirla.
 
         ' Weight: preserve raw when preset doesn't carry a value.
         shadow.WeightThin = If(preset.WeightThin.HasValue, preset.WeightThin, raw.WeightThin)

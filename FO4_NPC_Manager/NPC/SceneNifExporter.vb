@@ -20,6 +20,13 @@ Public NotInheritable Class SceneNifExporter
     Private Sub New()
     End Sub
 
+    ''' <summary>Cantidad máxima de vértices que un shape puede tener y seguir siendo indexable por
+    ''' los triángulos del NIF. <c>NiflySharp.Structs.Triangle</c> guarda V1/V2/V3 como
+    ''' <c>UShort</c> ⇒ índices válidos 0..65535 ⇒ 65536 vértices. Por encima de esto el cast a
+    ''' UShort trunca en silencio (wraparound) y la malla sale destrozada; no hay camino de
+    ''' índices de 32 bits en este formato, así que el shape se falla explícitamente.</summary>
+    Private Const MaxUShortIndexableVerts As Integer = 65536
+
     ''' <summary>Outcome of an <see cref="Export"/> call. Carries the counts + per-shape failure
     ''' text the UI needs to build its summary MessageBox, plus a distinct save-error message for
     ''' the case where <c>Save_As_Manolo</c> threw (so the UI can show the error-icon box and
@@ -200,22 +207,52 @@ Public NotInheritable Class SceneNifExporter
                     Dim idxArr = liveGeom.Indices
                     If idxArr Is Nothing Then
                         triCheckOk = False
+                    ElseIf nSurv > MaxUShortIndexableVerts Then
+                        ' ⛔ NiflySharp.Structs.Triangle almacena V1/V2/V3 como UShort, así que sólo puede
+                        ' direccionar índices 0..65535 (⇒ como mucho 65536 vértices). Con nSurv por encima
+                        ' de eso, el CUShort(na/nb/nc) de abajo TRUNCA en silencio (wraparound) y produce
+                        ' una malla destrozada. No hay camino de índices de 32 bits en este formato/adapter,
+                        ' así que el shape se falla explícitamente en vez de escribir un NIF corrupto.
+                        ' Se chequea ANTES del loop: hacerlo después es inútil, porque los valores ya
+                        ' truncados vuelven a caer dentro del rango válido (ver nota en el bloque de
+                        ' verificación de abajo).
+                        triCheckOk = False
+                        failureDetails.AppendLine($"{shapeName}: zap export vertex count {nSurv} exceeds the {MaxUShortIndexableVerts}-vertex limit of 16-bit triangle indices — shape skipped (would corrupt the mesh)")
+                        ' Copias locales antes del lambda (mismo patrón que el log de abajo): la lambda
+                        ' captura por referencia y estas son variables del loop de shapes.
+                        Dim ovfShapeName = shapeName
+                        Dim ovfNSurv = nSurv
+                        Logger.LogLazy(Function() $"[ZAP-EXPORT] '{ovfShapeName}' SKIPPED: nSurv={ovfNSurv} > {MaxUShortIndexableVerts} (16-bit triangle index overflow)")
                     Else
                         Dim newTris As New List(Of NiflySharp.Structs.Triangle)(idxArr.Length \ 3)
                         Dim provenance As New List(Of Integer)(idxArr.Length \ 3)
+                        ' Máximo de los índices remapeados PRE-CAST. El chequeo de consistencia de abajo lee
+                        ' los triángulos ya escritos (post-CUShort) y por eso no puede ver un overflow; éste sí.
+                        Dim maxNewIdxPreCast As Integer = -1
                         For tr = 0 To idxArr.Length - 3 Step 3
                             Dim a = CInt(idxArr(tr)), b = CInt(idxArr(tr + 1)), c = CInt(idxArr(tr + 2))
                             If a < 0 OrElse a >= n OrElse b < 0 OrElse b >= n OrElse c < 0 OrElse c >= n Then Continue For
                             Dim na = oldToNew(a), nb = oldToNew(b), nc = oldToNew(c)
                             If na < 0 OrElse nb < 0 OrElse nc < 0 Then Continue For  ' triangle touched the crown
+                            maxNewIdxPreCast = Math.Max(maxNewIdxPreCast, Math.Max(na, Math.Max(nb, nc)))
                             newTris.Add(New NiflySharp.Structs.Triangle(CUShort(na), CUShort(nb), CUShort(nc)))
                             provenance.Add(tr \ 3)
                         Next
+                        ' Red de seguridad sobre los valores PRE-CAST (la guarda de nSurv de arriba ya debería
+                        ' haber cubierto esto; si dispara, oldToNew produjo un índice fuera del rango de nSurv).
+                        If maxNewIdxPreCast >= nSurv Then
+                            triCheckOk = False
+                            failureDetails.AppendLine($"{shapeName}: zap export remapped triangle index out of range before cast (maxIdx {maxNewIdxPreCast} >= {nSurv})")
+                        End If
                         cloneAdapter.SetTriangles(newTris, TriangleRemap.SameShape(provenance))
 
                         ' ── Consistency verification (counts before/after) ──
                         ' Confirm no exported triangle references a dropped vertex and the survivor count
                         ' matches. GetTriangles()/GetVertexPositions() read back what was written.
+                        ' ⚠️ OJO: este bloque lee los índices YA casteados a UShort, así que NO puede
+                        ' detectar un overflow de 16 bits — un wraparound da un maxIdx chico que pasa el
+                        ' chequeo. Eso lo cubren la guarda de nSurv y el chequeo pre-cast de arriba; esto
+                        ' valida el round-trip del writer (que lo escrito sea lo que se pidió escribir).
                         Dim writtenTris = cloneAdapter.GetTriangles()
                         Dim writtenVerts = cloneAdapter.GetVertexPositions()
                         Dim maxIdx As Integer = -1

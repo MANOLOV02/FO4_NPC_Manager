@@ -55,6 +55,44 @@ Friend NotInheritable Class NpcRenderContext
         Return PluginManager.GetRecord(formID)
     End Function
 
+    ''' <summary>EditorIDs of the DFOB (Default Object) records the engine uses to name the Pipboy DEVICE.
+    ''' SOURCE: the engine identifies the Pipboy by FORM IDENTITY, comparing the equipped form against the
+    ''' resolved default objects PipboyCleanObject_DO (@VA 0x1400F18B0) and PipboyDustyObject_DO (@VA
+    ''' 0x1400F18F0) — NOT by any biped-slot test. These are the record KEYS we look the forms up by; the
+    ''' FormIDs themselves are read from the records at load time, never hardcoded (a mod may point the same
+    ''' default object at a different ARMO, and that ARMO must then count as the Pipboy).</summary>
+    Private Shared ReadOnly PipboyDefaultObjectEditorIds As String() = {"PipboyCleanObject_DO", "PipboyDustyObject_DO"}
+
+    Private _pipboyDeviceArmos As HashSet(Of UInteger) = Nothing
+    Private ReadOnly _pipboyDeviceLock As New Object()
+
+    ''' <summary>The set of ARMO FormIDs that ARE the Pipboy device for this load order, resolved from the
+    ''' Pipboy DFOB default objects (see <see cref="PipboyDefaultObjectEditorIds"/>). This is the engine's
+    ''' identity test. It REPLACES the old "its only worn slot is 60" heuristic, which mis-classified 3 of the
+    ''' 7 vanilla slot-60-only ARMOs as Pipboys: AssaultronShield (0022BC24), MirelurkShield (000986CA) and
+    ''' babybundled (000F468E) are slot-60-only but are not Pipboys.
+    ''' Empty set (no such DFOB in the load order, e.g. Skyrim) ⇒ callers must fall back to their non-Pipboy
+    ''' branch, never to the slot heuristic. Computed once and memoized; the load order is immutable for this
+    ''' context's life (same lifetime contract as the parse caches above).</summary>
+    Public Function PipboyDeviceArmoFormIDs() As HashSet(Of UInteger)
+        If _pipboyDeviceArmos IsNot Nothing Then Return _pipboyDeviceArmos
+        SyncLock _pipboyDeviceLock
+            If _pipboyDeviceArmos IsNot Nothing Then Return _pipboyDeviceArmos
+            Dim set_ As New HashSet(Of UInteger)()
+            Dim dfobs = PluginManager.GetRecordsOfType("DFOB")
+            If dfobs IsNot Nothing Then
+                For Each rec In dfobs
+                    If rec Is Nothing OrElse String.IsNullOrEmpty(rec.EditorID) Then Continue For
+                    If Not PipboyDefaultObjectEditorIds.Any(Function(e) String.Equals(e, rec.EditorID, StringComparison.OrdinalIgnoreCase)) Then Continue For
+                    Dim d = SystemRecordParsers.ParseDFOB(rec, PluginManager)
+                    If d IsNot Nothing AndAlso d.ObjectFormID <> 0UI Then set_.Add(d.ObjectFormID)
+                Next
+            End If
+            _pipboyDeviceArmos = set_
+            Return _pipboyDeviceArmos
+        End SyncLock
+    End Function
+
     ''' <summary>The parsed NPC_ universe (shared instance). Public ReadOnly field — callers index/
     ''' mutate the contents (bulk-parse populate, GetParsedNpc memoize, tree iterate) while the
     ''' reference itself stays fixed. Not ReadOnly: VB rejects indexer-set (cache(k)=v) on a

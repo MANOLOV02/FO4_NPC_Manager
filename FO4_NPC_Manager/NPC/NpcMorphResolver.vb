@@ -637,10 +637,25 @@ Public Class NpcMorphResolver
     ''' de 1,0 sumarían 2,0 y se convertirían en un no-op falso.</para>
     ''' <para>Inclusive en ±1 (el motor usa jb/ja: sólo salta estrictamente fuera). NaN se descarta, que es lo
     ''' que hace comiss en unordered (CF=1 ⇒ jb tomado).</para></summary>
+    ''' <summary>DIAGNOSTICO de alcance (no altera el resultado): cuantos canales descarto esta ley y con que
+    ''' pesos. Es lo que permite MEDIR la regla sin una corrida A/B: la rama solo se toma con peso fuera de
+    ''' [-1,1], asi que si el contador da 0 sobre el corpus, la regla es demostrablemente inerte ahi.</summary>
+    Public Shared DroppedOutOfRangeChannels As Long = 0
+    Public Shared ReadOnly DroppedWeightSamples As New List(Of String)
+
     Private Shared Sub DropChannelsRejectedByEngine(plan As MorphPlan)
         If plan Is Nothing OrElse plan.Channels.Count = 0 Then Return
-        plan.Channels.RemoveAll(Function(ch) ch IsNot Nothing AndAlso ch.EngineApplied AndAlso Not ch.IsZap AndAlso
-                                             Not (ch.Weight >= -1.0F AndAlso ch.Weight <= 1.0F))
+        Dim rejected = Function(ch As MorphChannel) ch IsNot Nothing AndAlso ch.EngineApplied AndAlso Not ch.IsZap AndAlso
+                                             Not (ch.Weight >= -1.0F AndAlso ch.Weight <= 1.0F)
+        For Each ch In plan.Channels
+            If rejected(ch) Then
+                Threading.Interlocked.Increment(DroppedOutOfRangeChannels)
+                SyncLock DroppedWeightSamples
+                    If DroppedWeightSamples.Count < 40 Then DroppedWeightSamples.Add($"{ch.Name}={ch.Weight:R}")
+                End SyncLock
+            End If
+        Next
+        plan.Channels.RemoveAll(rejected)
     End Sub
 
     ''' <summary>Dedup a plan's channels by morph name, summing weights (shared FO4/SSE convention).</summary>

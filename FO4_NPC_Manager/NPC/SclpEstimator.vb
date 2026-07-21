@@ -1,3 +1,4 @@
+Imports System.Linq
 Imports FO4_Base_Library
 Imports NiflySharp
 Imports SysNumerics = System.Numerics
@@ -18,6 +19,61 @@ Imports SysNumerics = System.Numerics
 ''' <para>App-local on purpose (the ARMA editor's Estimate button is the single consumer). Loads NIFs the
 ''' same way the render path does — <see cref="Nifcontent_Class_Manolo.Load_Manolo"/> + <see cref="NifRenderableShape"/>.</para></summary>
 Public Module SclpEstimator
+
+    ''' <summary>Why an axis ended up with the value it has. EXISTS BECAUSE THE OLD CONTRACT WAS AMBIGUOUS:
+    ''' <see cref="EstimateAxis"/> returned the bare Single 1.0F for FOUR different situations — a genuine
+    ''' measured scale of 1.0, a fit rejected by the residual gate, a degenerate denominator, and NaN/Inf —
+    ''' so the caller could not tell "I measured 1.0" from "I could not measure". The ARMA editor then wrote
+    ''' all four into the grid as if they were authored values. The NUMBERS were never wrong (the estimator
+    ''' round-trips exactly on synthetic realistic geometry); only the contract was.</summary>
+    Public Enum SclpAxisStatus
+        ''' <summary>A real least-squares measurement that passed every gate. The value is meaningful.</summary>
+        Measured
+        ''' <summary>Sxx below 1e-6: no variance along this axis to regress against. NOT a measurement.</summary>
+        NotMeasuredDegenerate
+        ''' <summary>Normalized reconstruction residual above 0.25: the linear model does not explain the
+        ''' geometry, so the slope is not trustworthy. NOT a measurement.</summary>
+        NotMeasuredResidual
+        ''' <summary>The slope came out NaN or Infinite. NOT a measurement.</summary>
+        NotMeasuredNonFinite
+    End Enum
+
+    ''' <summary>One bone's estimate WITH its per-axis measurement status. The dangerous case this exists for is
+    ''' the MIXED bone: one axis genuinely measured and the other failed. The "both axes failed" bone is already
+    ''' dropped by the caller, but a mixed bone must still be emitted (the good axis is real data) while the
+    ''' failed axis must NOT be presented as an authored value.</summary>
+    Public NotInheritable Class SclpBoneEstimate
+        Public Property Name As String
+        ''' <summary>Always 1.0: X is never estimated (SCLP body scale is authored on Y/Z only).</summary>
+        Public ReadOnly Property X As Single
+            Get
+                Return 1.0F
+            End Get
+        End Property
+        Public Property Y As Single
+        Public Property Z As Single
+        Public Property YStatus As SclpAxisStatus
+        Public Property ZStatus As SclpAxisStatus
+        Public ReadOnly Property YMeasured As Boolean
+            Get
+                Return YStatus = SclpAxisStatus.Measured
+            End Get
+        End Property
+        Public ReadOnly Property ZMeasured As Boolean
+            Get
+                Return ZStatus = SclpAxisStatus.Measured
+            End Get
+        End Property
+        ''' <summary>True when NEITHER axis is a real measurement — nothing to show for this bone.</summary>
+        Public ReadOnly Property AnyMeasured As Boolean
+            Get
+                Return YMeasured OrElse ZMeasured
+            End Get
+        End Property
+        Public Function ToAbsolute() As SclpFile.SclpBoneAbsolute
+            Return New SclpFile.SclpBoneAbsolute With {.Name = Name, .X = 1.0F, .Y = Y, .Z = Z}
+        End Function
+    End Class
 
     ' Per-bone vertex record collected from a NIF: model = raw vertex position (model space), local = that
     ' position brought into the bone-local frame by the shape's skin→bone bind, w = the vertex's continuous
@@ -43,7 +99,16 @@ Public Module SclpEstimator
     ''' meshes (body + hands + feet) — their per-bone vertices are merged so every bone the underarmor touches has
     ''' a body counterpart, without picking a single ARMA. Malformed/empty entries are skipped.</summary>
     Public Function EstimateSclp(uaNifBytes As Byte(), bodyNifBytesList As IReadOnlyList(Of Byte()), Optional wEps As Single = 0.01F) As List(Of SclpFile.SclpBoneAbsolute)
-        Dim result As New List(Of SclpFile.SclpBoneAbsolute)
+        Return EstimateSclpDetailed(uaNifBytes, bodyNifBytesList, wEps).Select(Function(b) b.ToAbsolute()).ToList()
+    End Function
+
+    ''' <summary>Same estimate as <see cref="EstimateSclp"/> but preserving, PER AXIS, whether the number is a
+    ''' real measurement or a "could not measure" identity fallback (<see cref="SclpAxisStatus"/>). Prefer this
+    ''' overload: the plain one collapses both cases back to a bare 1.0F and loses the distinction, which is
+    ''' exactly the ambiguity this contract exists to remove. Bones where NEITHER axis measured are not
+    ''' emitted at all.</summary>
+    Public Function EstimateSclpDetailed(uaNifBytes As Byte(), bodyNifBytesList As IReadOnlyList(Of Byte()), Optional wEps As Single = 0.01F) As List(Of SclpBoneEstimate)
+        Dim result As New List(Of SclpBoneEstimate)
         If uaNifBytes Is Nothing OrElse uaNifBytes.Length = 0 Then Return result
         If bodyNifBytesList Is Nothing OrElse bodyNifBytesList.Count = 0 Then Return result
 
@@ -103,26 +168,44 @@ Public Module SclpEstimator
 
             ' X is NEVER estimated (SCLP body scale is authored on Y/Z only). Y/Z per-axis: slope by origin
             ' with a residual gate — an axis whose fit does not explain the variance (>0.25) stays at 1.0.
-            Dim yVal = EstimateAxis(sxx1, sxy1, syy1)
-            Dim zVal = EstimateAxis(sxx2, sxy2, syy2)
-            If yVal = 1.0F AndAlso zVal = 1.0F Then Continue For   ' nothing meaningful estimated → don't emit
+            Dim yStatus As SclpAxisStatus, zStatus As SclpAxisStatus
+            Dim yVal = EstimateAxis(sxx1, sxy1, syy1, yStatus)
+            Dim zVal = EstimateAxis(sxx2, sxy2, syy2, zStatus)
+            ' Emitir SÓLO si al menos un eje es MEDICIÓN REAL. El test viejo era `yVal = 1.0F AndAlso
+            ' zVal = 1.0F`, que confundía "medí exactamente 1.0 en los dos ejes" (dato legítimo, se
+            ' descartaba) con "no pude medir ninguno" (lo que se quería descartar). Ahora se pregunta por
+            ' el ESTADO, no por el valor.
+            If yStatus <> SclpAxisStatus.Measured AndAlso zStatus <> SclpAxisStatus.Measured Then Continue For
 
-            result.Add(New SclpFile.SclpBoneAbsolute With {.Name = bn, .X = 1.0F, .Y = yVal, .Z = zVal})
+            result.Add(New SclpBoneEstimate With {.Name = bn, .Y = yVal, .Z = zVal, .YStatus = yStatus, .ZStatus = zStatus})
         Next
 
         Return result
     End Function
 
     ''' <summary>Per-axis least-squares slope by the origin (<c>s = Sxy/Sxx</c>) with the estNN gating.
-    ''' Returns 1.0 (identity, "not estimated") when the denominator is degenerate (<c>Sxx &lt; 1e-6</c>) or
-    ''' the normalized reconstruction residual <c>sqrt(max(0, Syy − s·Sxy)/Syy)</c> exceeds 0.25.</summary>
-    Private Function EstimateAxis(sxx As Double, sxy As Double, syy As Double) As Single
-        If sxx < 0.000001 Then Return 1.0F
+    ''' The returned VALUE is unchanged from before (the math was never the problem); what is new is
+    ''' <paramref name="status"/>, which says WHICH of the four outcomes produced it. The 1.0F fallback is
+    ''' still returned for every failure so the value is safe to render, but the caller can now tell a
+    ''' measured 1.0 apart from an unmeasurable axis.</summary>
+    ''' <param name="status">Measured, or the specific reason the axis could not be measured.</param>
+    Private Function EstimateAxis(sxx As Double, sxy As Double, syy As Double, ByRef status As SclpAxisStatus) As Single
+        If sxx < 0.000001 Then
+            status = SclpAxisStatus.NotMeasuredDegenerate
+            Return 1.0F
+        End If
         Dim s = sxy / sxx
         Dim resid = Math.Sqrt(Math.Max(0.0, syy - s * sxy) / Math.Max(0.000000001, syy))
-        If resid > 0.25 Then Return 1.0F
+        If resid > 0.25 Then
+            status = SclpAxisStatus.NotMeasuredResidual
+            Return 1.0F
+        End If
         Dim r As Single = CSng(s)
-        If Single.IsNaN(r) OrElse Single.IsInfinity(r) Then Return 1.0F
+        If Single.IsNaN(r) OrElse Single.IsInfinity(r) Then
+            status = SclpAxisStatus.NotMeasuredNonFinite
+            Return 1.0F
+        End If
+        status = SclpAxisStatus.Measured
         Return r
     End Function
 

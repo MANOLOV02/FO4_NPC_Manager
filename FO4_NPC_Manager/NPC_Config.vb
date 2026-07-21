@@ -165,7 +165,12 @@ Public Class NPC_Config
             Current.ReplicateEngineSkinWeightNormalization AndAlso game = FO4_Base_Library.Config_App.Game_Enum.Fallout4
     End Sub
 
-    Private Shared ReadOnly ConfigFilePath As String = Path.Combine(Application.StartupPath, "npc_config.json")
+    ''' <summary>Ruta del npc_config.json que <see cref="LoadConfig"/>/<see cref="SaveConfig"/> usan.
+    ''' PUBLICA a proposito: el CLI headless imprime al arranque de DONDE salio cada opcion que afecta el
+    ''' bake (config persistida vs defaults compilados). Sin exponer la ruta ese log seria una afirmacion
+    ''' sin fuente — y el StartupPath del CLI NO es el de la GUI, asi que "el config" es ambiguo si no se
+    ''' dice cual archivo.</summary>
+    Public Shared ReadOnly ConfigFilePath As String = Path.Combine(Application.StartupPath, "npc_config.json")
 
     Public Shared Sub SaveConfig()
         JsonConfigIO.Save(Current, ConfigFilePath, "NPC_Manager configuration")
