@@ -301,7 +301,12 @@ Public Module FaceGenBuildPipeline
 
             Dim vBaked As Vector3d
             Try
-                Dim invMtot = Matrix4d.Invert(Mtot)
+                ' ⛔ ReanchorAffine ANTES de invertir, y FUERA del If/Else (las tres ramas lo necesitan).
+                ' `Mtot += mat * peso` escala los 16 elementos, asi que M44 queda en Σpesos. El forward
+                ' no lo nota (TransformPosition ignora w) pero Invert SI hace algebra homogenea y mete
+                ' un 1/Σw que cancela justo el ε de la ley del motor. El CK mezcla un 3x4 y su fila 3
+                ' queda [0,0,0,1] (SkinBlend 0x142B73230). Ver EngineSkinWeightNormalization.ReanchorAffine.
+                Dim invMtot = Matrix4d.Invert(EngineSkinWeightNormalization.ReanchorAffine(Mtot))
                 vBaked = Vector3d.TransformPosition(vWorld(i), invMtot)
             Catch
                 ' Singular Mtot — keep ORIG vertex as fallback. Should be extremely rare.

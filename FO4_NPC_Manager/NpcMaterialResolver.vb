@@ -409,12 +409,13 @@ Friend NotInheritable Class NpcMaterialResolver
         Return candidate IsNot Nothing AndAlso candidate.HeadPartType = HeadPartTypeFace
     End Function
 
-    ''' <summary>Ver <see cref="IsHeadPartTextureSetFor"/>: misma proyección compartida, para el flag
-    ''' isNpcExplicitFaceTextureSet (NPC con texture set de cara explícito).</summary>
-    Friend Shared Function IsNpcExplicitFaceTextureSetFor(state As MainForm.NPCVisualState, textureSet As TXST_Data) As Boolean
-        Return state IsNot Nothing AndAlso state.ExplicitHeadTextureFormID <> 0UI AndAlso
-               textureSet IsNot Nothing AndAlso textureSet.FormID = state.ExplicitHeadTextureFormID
-    End Function
+    ' ⛔ BORRADO 2026-07-21: IsNpcExplicitFaceTextureSetFor + el parámetro isNpcExplicitFaceTextureSet de
+    ' ApplyTextureSetOverrides. Era el PROXY REFUTADO del alpha de la cabeza ("el NPC declara su cara por
+    ' FTST"): coincidía con Valentine/DiMA por casualidad sobre un corpus de 2 casos, y el árbitro real es
+    ' el flag ACBS "Diffuse Alpha Test" (0x01000000) — RE CreationKit 0x140ED41F6, gate [npc+0x9b]&1; schema
+    ' wbDefinitionsFO4.pas:10655. Al reemplazarlo por HeadDiffuseAlphaTest quedó como parámetro que los dos
+    ' call-sites calculaban y pasaban pero que el CUERPO NO LEÍA NUNCA. Ver
+    ' reference_acbs_diffuse_alpha_test_flag.
 
     Friend Function ResolveHeadPartSolidTintColor(candidate As MainForm.MeshCandidate) As Nullable(Of Color)
         If candidate Is Nothing OrElse Not candidate.UseSolidTint Then Return Nothing
@@ -598,7 +599,7 @@ Friend NotInheritable Class NpcMaterialResolver
     ''' Height / Env / Multilayer / Spec). Si el TXST trae un .bgsm/.bgem en MaterialPath,
     ''' carga ese material y reemplaza el del shape. <c>Friend Shared</c> para que
     ''' HeadPartPicker_Form pueda reutilizarlo en su preview de HDPT.</summary>
-    Friend Shared Sub ApplyTextureSetOverrides(textureSet As TXST_Data, relatedMaterial As Nifcontent_Class_Manolo.RelatedMaterial_Class, usesBodyTexture As Boolean, shap As NiflySharp.INiShape, nif As Nifcontent_Class_Manolo, Optional isHeadPartTextureSet As Boolean = False, Optional isFaceHeadPart As Boolean = False, Optional forceDiffuseOnly As Boolean = False, Optional isNpcExplicitFaceTextureSet As Boolean = False, Optional fo4FaceComposeInputsOnly As Boolean = False, Optional headDiffuseAlphaTestFO4 As Boolean = False)
+    Friend Shared Sub ApplyTextureSetOverrides(textureSet As TXST_Data, relatedMaterial As Nifcontent_Class_Manolo.RelatedMaterial_Class, usesBodyTexture As Boolean, shap As NiflySharp.INiShape, nif As Nifcontent_Class_Manolo, Optional isHeadPartTextureSet As Boolean = False, Optional forceDiffuseOnly As Boolean = False, Optional fo4FaceComposeInputsOnly As Boolean = False, Optional alphaTestWriteDecision As Boolean? = Nothing)
         If textureSet Is Nothing OrElse relatedMaterial Is Nothing Then Return
 
         Dim logEnabled = Logger.Enabled
@@ -686,45 +687,35 @@ Friend NotInheritable Class NpcMaterialResolver
                     material.NormalTexture = overrideMaterial.NormalTexture
                     material.SmoothSpecTexture = overrideMaterial.SmoothSpecTexture
                 End If
-                ' REGLA B — QUÉ ALPHA (restaurado 2026-07-20 al comportamiento pre-48b787d).
-                ' El alpha sale del BGSM del MNAM: test + ref + blend van al material y de ahí los
-                ' toma el RENDER. El commit 48b787d borró ref y blend aplicando la ley del BAKE a
-                ' este Sub COMPARTIDO, y eso dejó la cara de Valentine SÓLIDA en el preview.
-                ' ⛔ NO volver a borrarlos: la ley del bake NO se aplica acá, se aplica en
-                ' WriteAlphaPropertyToShape (que ignora ref y blend y fabrica flags 0x02EC /
-                ' threshold 0 cuando el shape fuente no traía NiAlphaProperty — MEDIDO: el fuente
-                ' gen2 no la trae; el tipo de bloque ni figura en el archivo).
+                ' ⭐ REGLA B — QUÉ ALPHA. El alpha es PARTE DEL MATERIAL: sale del BGSM del MNAM, SIN
+                ' GATE. Resolver material = resolver material; no sabe ni tiene por qué saber si el
+                ' shape es cara, ojo, cuerpo o armadura.
+                ' FUENTE (motor): ApplyMaterialToGeometry 0x142169BB0 aplica el alpha del material sin
+                ' mirar de dónde vino el texture set ni qué parte del cuerpo es. No hay ni un gate por
+                ' anatomía en el runtime.
                 '
-                ' ⚠️ EL GATE isFaceHeadPart NO TIENE FUENTE. Viene del commit 6709323 con un
-                ' comentario que sólo afirma ("SÓLO para el head part de cara"), sin medición ni VA.
-                ' El motor no distingue por parte del cuerpo. NO se ensancha acá porque
-                ' material.AlphaTest lo comparten render y bake, así que abrirlo movería el BAKE de
-                ' shapes que no son cara ⇒ requiere su propia medición antes de tocarlo.
-                ' PENDIENTE MEDIR: cuántos shapes tienen TXST con MNAM que declare alpha y no son
-                ' head part de cara. Si es 0, sacar el gate es inerte; si es N, hoy los renderizamos mal.
-                ' RENDER = 1.3.5 (material-driven, revertido 2026-07-21). El alpha de la cabeza (AlphaTest/
-                ' AlphaBlend/Ref) sale del BGSM del material override, gateado SÓLO por isFaceHeadPart. La
-                ' transparencia de Valentine es el ALPHABLEND de su material (no alpha-test forzado). NO se toca el
-                ' compositor: el _d compuesto va OPACO como en 1.3.5.
-                ' El BAKE se desacopla: WriteAlphaPropertyToShape fabrica el NiAlphaProperty gateado por el flag
-                ' ACBS Diffuse Alpha Test (0x01000000) vía material.HeadDiffuseAlphaTestFlag — NO por material.AlphaTest
-                ' (que acá queda material-driven). Así el render es 1.3.5 y el bake NO le fabrica NiAlphaProperty a
-                ' NPCs sin el flag (DiMA: RACE.DFTM=SkinHeadValentine con alpha, pero ACBS CLEAR ⇒ CK no le da alpha).
-                ' Ver reference_acbs_diffuse_alpha_test_flag.
-                Dim isSseNif As Boolean = nif IsNot Nothing AndAlso nif.Header IsNot Nothing AndAlso nif.Header.Version.IsSSE
-                If isFaceHeadPart AndAlso (isSseNif OrElse headDiffuseAlphaTestFO4) Then
-                    ' MATERIAL-DRIVEN (no forzado): el alpha de la cabeza sale del BGSM del material override.
-                    ' Valentine: AlphaBlendMode=Standard ⇒ HasAlphaBlend ⇒ el render lo manda a BlendedMeshes
-                    ' (Render.vb:1643, blend ANTES que alpha-test) ⇒ translúcido. AlphaTest/Ref quedan del material.
-                    ' GATE (FO4): flag ACBS Diffuse Alpha Test (0x01000000) — record-driven, la autoridad del motor
-                    ' para el alpha de la cabeza. DiMA (CLEAR) ⇒ block salteado ⇒ material queda opaco del fuente
-                    ' ⇒ OpaqueMeshes ⇒ sólido (su RACE.DFTM=SkinHeadValentine tiene alpha, pero el flag dice que NO
-                    ' le corresponde, como el CK). SSE (bit 24 sin uso) ⇒ isFaceHeadPart, como 1.3.5.
-                    material.AlphaTest = overrideMaterial.AlphaTest
-                    material.AlphaTestRef = overrideMaterial.AlphaTestRef
-                    material.AlphaBlendMode = overrideMaterial.AlphaBlendMode
-                    material.AlphaTestFromNpcFtst = overrideMaterial.AlphaTest   ' bake: SF2 Alpha_Test + NiAlphaProperty (via material.AlphaTest, ya flag-gateado por el block)
-                End If
+                ' ⛔ SACADO 2026-07-21: el gate `isFaceHeadPart`. Se declaraba a sí mismo SIN FUENTE
+                ' (venía del commit 6709323 con un comentario que sólo afirmaba) y la medición lo
+                ' REFUTÓ con un contraejemplo vanilla (--alphagatescan, corpus oficial FO4):
+                '   HDPT 0x000E8D0E SynthGen1Eyes (partType=2 Eyes) → TXST 0x000E8D0D SynthEyesTextureSet
+                '   → MNAM 'actors\synths\Gen1Eyes.BGSM' con alphaTest=True ref=128.
+                ' Con el gate puesto, los ojos de los Synth Gen1 PERDÍAN el alpha-test de su propio
+                ' material sólo por no ser el head part de cara. (Referentes con alpha en vanilla:
+                ' CARA=2 — Valentine por NPC.FTST y DiMA por RACE.DFT, los dos al MISMO TXST
+                ' 0x0010C3CD — - NO-CARA=1, el de arriba.)
+                '
+                ' ⛔ NO volver a borrar ref ni blend: el commit 48b787d aplicó la ley del BAKE en este
+                ' Sub COMPARTIDO y dejó la cara de Valentine SÓLIDA en el preview. La ley del bake NO
+                ' vive acá.
+                material.AlphaTest = overrideMaterial.AlphaTest
+                material.AlphaTestRef = overrideMaterial.AlphaTestRef
+                material.AlphaBlendMode = overrideMaterial.AlphaBlendMode
+
+                ' Decisión de ESCRITURA del NIF (bake), que es OTRA cosa que la resolución del material y
+                ' por eso viaja en su propio portador. La compone el CALL SITE (que es quien conoce al
+                ' NPC y al candidate); acá sólo se transporta — este Sub no evalúa anatomía.
+                ' Ver FO4UnifiedMaterial_Class.AlphaTestWriteDecision para la semántica y la evidencia.
+                material.AlphaTestWriteDecision = alphaTestWriteDecision
                 relatedMaterial.path = FO4UnifiedMaterial_Class.CorrectMaterialPath(textureSet.MaterialPath)
                 If logEnabled Then
                     Dim mnamL = If(textureSet.MaterialPath, ""), ubt = usesBodyTexture
@@ -879,10 +870,9 @@ Friend NotInheritable Class NpcMaterialResolver
         ' otro path": NO es no-op — con cualquier TNAM que difiera del inline (mods) cambia la textura usada.
         ' Ver reference_txst_facegen_msn_not_engine_gate. Sólo SSE y sólo head parts: en FO4 el slot 7 es el
         ' _s de FaceCustomization que el CK sí escribe, y fuera de head parts (cuerpo/armadura) el TXST manda.
-        Dim sseHeadPartNoTx07 As Boolean =
-            isHeadPartTextureSet AndAlso
-            Config_App.Current IsNot Nothing AndAlso Config_App.Current.Game = Config_App.Game_Enum.Skyrim
-        If sseHeadPartNoTx07 Then
+        ' Mismo predicado que `sseHeadPart` de arriba (era una segunda copia idéntica de la expresión):
+        ' una sola definición, así no pueden divergir.
+        If sseHeadPart Then
             If logEnabled Then
                 Dim fidL7 = txstFid, curL7 = If(material.SmoothSpecTexture, ""), txL7 = If(textureSet.SmoothSpecTexture, "")
                 Logger.LogLazy(Function() $"[TXST-SLOT] txst=0x{fidL7:X8} slot=SmoothSpec txstPath='{txL7}' → skip:SSE-HEADPART-TX07-NOT-A-SLOT (kept inline='{curL7}')")
@@ -1565,13 +1555,26 @@ Friend NotInheritable Class NpcMaterialResolver
                     End If
                 ElseIf (Not isSkinCand) OrElse shaderIsSkinTint Then
                     ' isFaceTxstSource (solo FO4, =FTST): diffuse-only per RE del attach (slot 0).
+                    ' ⭐ La decisión de ESCRITURA del alpha-test se compone ACÁ, no adentro del resolver:
+                    ' es una regla del BAKE (dominio NPC), no de la resolución del material.
+                    ' Regla medida del CK (0x140ED41F6): fabrica el NiAlphaProperty 0x02EC y pone el bit
+                    ' F4SPF2 Alpha_Test SII el NPC tiene ACBS\Diffuse Alpha Test (0x01000000), y lo aplica
+                    ' al shape de la CARA. Los dos factores son de dominio y viven acá:
+                    '   · state.HeadDiffuseAlphaTest = el flag del record (FO4-only; SSE bit 24 sin uso).
+                    '   · IsFaceHeadPartFor          = a QUÉ shape se lo aplica el CK.
+                    ' False explícito (no Nothing) para todo el resto: es un VETO de fabricación, que es
+                    ' justo lo que hace falta al sacar el gate de anatomía del resolver — si no, los ojos
+                    ' Gen1 (material con alphaTest=True) ESTRENARÍAN un NiAlphaProperty que el CK no pone.
+                    ' Medido: 1 NPC de 4471 tiene el flag (Valentine) = el mismo y único shape donde el CK
+                    ' pone el bit sobre 1489 NIFs horneados.
+                    Dim bakeAlphaTestDecision As Boolean = state IsNot Nothing AndAlso
+                                                           state.HeadDiffuseAlphaTest AndAlso
+                                                           IsFaceHeadPartFor(candidate)
                     ApplyTextureSetOverrides(textureSet, relatedMaterial, candidate.UsesBodyTexture, shape.NifShape, shape.NifContent,
                                              isHeadPartTextureSet:=IsHeadPartTextureSetFor(candidate),
-                                             isFaceHeadPart:=IsFaceHeadPartFor(candidate),
                                              forceDiffuseOnly:=isFaceTxstSource,
-                                             isNpcExplicitFaceTextureSet:=IsNpcExplicitFaceTextureSetFor(state, textureSet),
                                              fo4FaceComposeInputsOnly:=fo4FaceComposeOnly,
-                                             headDiffuseAlphaTestFO4:=state.HeadDiffuseAlphaTest)
+                                             alphaTestWriteDecision:=bakeAlphaTestDecision)
                 ElseIf logEnabled Then
                     Dim shN = shape.ShapeName
                     Dim shTy = If(matPre IsNot Nothing, matPre.NifShaderType.ToString(), "?")

@@ -263,7 +263,11 @@ Public Class HeadPartPicker_Form
                                 MaterialResolver.EnsureShapeMaterialResolved(shape)
                                 Dim relatedMaterial = shape.ShapeMaterial
                                 If relatedMaterial Is Nothing Then Continue For
-                                NpcMaterialResolver.ApplyTextureSetOverrides(txst, relatedMaterial, hdpt.UsesBodyTexture, shape.NifShape, shape.NifContent, isHeadPartTextureSet:=True, isFaceHeadPart:=(hdpt.PartType = 1)) ' PartType 1 = Face
+                                ' alphaTestWriteDecision se OMITE (=Nothing): esto es el PREVIEW del picker de
+                                ' head parts, camino de render puro que no escribe NIF. El alpha del material
+                                ' ya no se gatea por parte del cuerpo (el motor no distingue), así que el
+                                ' `isFaceHeadPart:=(hdpt.PartType = 1)` que iba acá dejó de existir.
+                                NpcMaterialResolver.ApplyTextureSetOverrides(txst, relatedMaterial, hdpt.UsesBodyTexture, shape.NifShape, shape.NifContent, isHeadPartTextureSet:=True)
                             Next
                         End If
                     End If

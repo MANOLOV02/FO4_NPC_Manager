@@ -68,6 +68,33 @@ Module Program
         ' config del usuario (= la GUI y BakeAllRunner). En AMBOS casos el arranque imprime el valor
         ' efectivo + procedencia de cada opcion que afecta el bake.
         Public Defaults As Boolean = False
+        ' --rawdds: hornea los DDS SIN comprimir (B8G8R8A8). Acelera el barrido de GEOMETRIA (el encode BCn es
+        ' el grueso del texture-bake) y no altera un solo byte del NIF. Incompatible en INTENCION con
+        ' --ddscompare (cambiaria el piso de codec de la comparacion de pixeles contra el CK).
+        Public RawDds As Boolean = False
+        ' --alphagatescan: mide los DOS gates del alpha de la cabeza sobre TODO el load order, sin hornear.
+        ' (1) NPCs con ACBS\Diffuse Alpha Test (0x01000000) — decide si el bit SF2 y la fabricacion del
+        '     NiAlphaProperty pueden compartir UN interruptor (el bit SF2 esta en 1 sola shape en todo FO4).
+        ' (2) TXST con MNAM cuyo BGSM declara alpha, y QUIEN los referencia — dimensiona el gate
+        '     isFaceHeadPart (si ningun referente ajeno a un head part de cara declara alpha, sacarlo es inerte).
+        Public AlphaGateScan As Boolean = False
+        ' --tintcountscan: capas de tint efectivas por NPC. Test de FALSACION de la hipotesis "los outliers
+        ' del facetint son los NPC SIN capas": si hay NPCs sin capas que salen BIEN, la hipotesis se cae.
+        Public TintCountScan As Boolean = False
+        ' --ddsprobe <formID hex>: vuelca los VALORES DE PIXEL reales del facetint (nuestro vs CK). El RMS y
+        ' el maxD son agregados y no distinguen "plano con otro valor" de "plano + variacion espacial": con
+        ' maxD=9 y meanD=5 en el mismo caso, la unica forma de saber cual es, es mirar los pixeles.
+        Public DdsProbe As String = ""
+        ' --recscan "SIG|substr": dump generico de records por signatura + substring del EditorID.
+        Public RecScan As String = ""
+        ' --meshcollide: alcance real de la colision "dos head parts, una malla" (ver el bloque en Main).
+        Public MeshCollide As Boolean = False
+        ' --texslotdiff: (NPC, shape, slot) donde nuestro NIF difiere del del CK en un path de textura.
+        Public TexSlotDiff As Boolean = False
+        ' --dumpacc: acumulador float del facetint, para derivar la regla de redondeo del CK.
+        Public DumpAcc As String = ""
+        ' --shapeorder: compara la SECUENCIA de shapes del NIF del CK contra nuestro orden de emision.
+        Public ShapeOrder As Boolean = False
         Public EngineSkinNorm As Boolean? = Nothing
         Public VanillaOnly As Boolean = False    ' --vanillaonly: con --buildfacegen, SALTEA NPCs cuyo record GANADOR no es vanilla/DLC (overridden por un mod) — para comparar fiel vs CK del BA2
         Public Info As Boolean = False
@@ -202,10 +229,31 @@ Module Program
         FO4_NPC_Manager.NPC_Config.ApplyEngineSkinWeightNormalizationGate(opt.Game)
         PosReportThreshold = opt.PosThresh
         DdsCompareRequested = opt.DdsCompare
+        RawDdsRequested = opt.RawDds
+
+        ' --rawdds: fuerza los CINCO settings de compresion del bake a Uncompressed (B8G8R8A8). Solo cambia el
+        ' CODEC del DDS de salida: el NIF no referencia el formato de la textura, asi que un barrido de
+        ' GEOMETRIA con --rawdds es comparable byte a byte con uno sin el flag, y se ahorra el encode BCn
+        ' (la parte cara del texture-bake). ⛔ NO usar junto con --ddscompare para juzgar pixeles contra el CK:
+        ' el CK escribe BC1/BC3/BC5 y la comparacion cambiaria de piso de codec.
+        ' Se setean los CINCO (no solo el diffuse) porque en modo per-layer el N/S NO derivan del diffuse.
+        If opt.RawDds Then
+            Config_App.Current.Setting_FaceGenDiffuseCompression = FaceTintConvention.FaceTintDiffuseCompression.Uncompressed
+            Config_App.Current.Setting_FaceGenDiffuseCompression_SSE = FaceTintConvention.FaceTintDiffuseCompression.Uncompressed
+            Config_App.Current.Setting_FaceGenNormalCompression = FaceTintConvention.FaceTintNormalSpecularCompression.Uncompressed
+            Config_App.Current.Setting_FaceGenNormalCompression_SSE = FaceTintConvention.FaceTintNormalSpecularCompression.Uncompressed
+            Config_App.Current.Setting_FaceGenSpecularCompression = FaceTintConvention.FaceTintNormalSpecularCompression.Uncompressed
+        End If
 
         ' === BANNER: valor EFECTIVO de cada opcion que afecta el bake, con su procedencia. ===
         ' Requisito duro: ninguna corrida futura puede ser ambigua sobre con que opciones se horneo.
         Console.WriteLine($"[cfg] npc_config source: {npcCfgSource}")
+        ' ⛔ Config_App (compresiones del bake) NO lo cubre --defaults: sale del config.json del usuario. Se
+        ' imprime el valor efectivo para que una corrida no quede ambigua sobre con que codec se horneo.
+        Console.WriteLine($"[cfg] dds codec: D={Config_App.Current.Setting_FaceGenDiffuseCompression}/{Config_App.Current.Setting_FaceGenDiffuseCompression_SSE}(SSE)" &
+                          $" N={Config_App.Current.Setting_FaceGenNormalCompression}/{Config_App.Current.Setting_FaceGenNormalCompression_SSE}(SSE)" &
+                          $" S={Config_App.Current.Setting_FaceGenSpecularCompression}" &
+                          $"  (--rawdds={opt.RawDds})")
         ' Se imprime el valor CRUDO pedido junto al resuelto: `game=Fallout4` a secas no delataba
         ' que lo pedido habia sido `--game sse`. Con los dos, un barrido rotulado con el juego
         ' equivocado se ve en la primera linea del log.
@@ -280,7 +328,7 @@ Module Program
 
         ' --- 3. Lista de trabajo (esp, edid) ---
         Dim work = BuildWorkList(opt)
-        If work.Count = 0 AndAlso Not opt.TtedScan AndAlso Not opt.ScanDiff AndAlso Not opt.RaceAnim AndAlso Not opt.RaceCompat AndAlso Not opt.MountValidate AndAlso opt.FindHkx = "" AndAlso opt.ChunkCompare = "" AndAlso opt.DumpBehavior = "" AndAlso Not opt.HkxCoverage AndAlso opt.KwType = "" AndAlso Not opt.StateMap AndAlso Not opt.ClipResolve AndAlso opt.HkxBone = "" AndAlso opt.ClipBase = "" AndAlso opt.FindFile = "" AndAlso opt.NifDump = "" AndAlso opt.NifSlots = "" AndAlso opt.AnimSyncCheck = "" AndAlso opt.BlendHintScan = "" AndAlso Not opt.CatProfile AndAlso Not opt.Provenance AndAlso opt.DumpRef = "" AndAlso opt.EstimateSclp = "" AndAlso opt.SclpDiag = "" AndAlso opt.SclpBatch = "" AndAlso opt.BindDiff = "" AndAlso opt.Ba2Extract = "" AndAlso Not opt.SseCompareBatch AndAlso Not opt.VertexBatch AndAlso opt.PosDump = "" AndAlso opt.MeshShaders = "" Then
+        If work.Count = 0 AndAlso opt.DdsProbe = "" AndAlso opt.RecScan = "" AndAlso Not opt.MeshCollide AndAlso opt.DumpAcc = "" AndAlso Not opt.TexSlotDiff AndAlso Not opt.ShapeOrder AndAlso Not opt.TintCountScan AndAlso Not opt.AlphaGateScan AndAlso Not opt.TtedScan AndAlso Not opt.ScanDiff AndAlso Not opt.RaceAnim AndAlso Not opt.RaceCompat AndAlso Not opt.MountValidate AndAlso opt.FindHkx = "" AndAlso opt.ChunkCompare = "" AndAlso opt.DumpBehavior = "" AndAlso Not opt.HkxCoverage AndAlso opt.KwType = "" AndAlso Not opt.StateMap AndAlso Not opt.ClipResolve AndAlso opt.HkxBone = "" AndAlso opt.ClipBase = "" AndAlso opt.FindFile = "" AndAlso opt.NifDump = "" AndAlso opt.NifSlots = "" AndAlso opt.AnimSyncCheck = "" AndAlso opt.BlendHintScan = "" AndAlso Not opt.CatProfile AndAlso Not opt.Provenance AndAlso opt.DumpRef = "" AndAlso opt.EstimateSclp = "" AndAlso opt.SclpDiag = "" AndAlso opt.SclpBatch = "" AndAlso opt.BindDiff = "" AndAlso opt.Ba2Extract = "" AndAlso Not opt.SseCompareBatch AndAlso Not opt.VertexBatch AndAlso opt.PosDump = "" AndAlso opt.MeshShaders = "" Then
             Console.Error.WriteLine("No NPCs to process (check --edid / --list).") : Environment.ExitCode = 1 : Return
         End If
 
@@ -531,6 +579,617 @@ Module Program
             Return
         End If
 
+        ' --- ALPHAGATESCAN: dimensiona los DOS gates del alpha de la cabeza antes de tocarlos.
+        If opt.AlphaGateScan Then
+            AlphaGateScan(pm)
+            Return
+        End If
+
+        ' --shapeorder: ¿NUESTRO orden de emisión coincide con el del CK? Compara, por NPC, la SECUENCIA de
+        ' nombres de shape del NIF horneado por el CK (leído del BSA, no de un suelto) contra el orden que
+        ' produce el sort del bake: OrderBy(PartType).ThenBy(EditorID) — FaceGenBuilder.vb:478.
+        ' No hornea nada: el orden nuestro se computa de los records. Responde dos cosas de una:
+        '   (a) si el sort primario por PartType reproduce al CK sobre TODO el corpus (medido en 1 NPC no vale)
+        '   (b) dónde el desempate DENTRO de un mismo PartType difiere — que es el hueco que decide el fix.
+        If opt.ShapeOrder Then
+            Dim tot = 0, same = 0, diffType = 0, diffWithin = 0, noRef = 0, chainMatch = 0
+            Dim hyp As New Dictionary(Of String, Integer)
+            Dim sigToSeq As New Dictionary(Of String, String)
+            Dim sigAgree = 0, sigConflict = 0, dumped = 0
+            Dim monoA As New Dictionary(Of String, Integer)
+            Dim monoD As New Dictionary(Of String, Integer)
+            Dim ejemplos As New List(Of String)
+            For Each kv In pm.AllRecords
+                Dim rc = kv.Value
+                If rc Is Nothing OrElse rc.Header.Signature <> "NPC_" Then Continue For
+                Dim origin = pm.GetOriginatingPluginName(kv.Key)
+                If Not PluginManager.IsOfficialPlugin(origin) Then Continue For
+                Dim fgL = PluginManager.ToFaceGenLocalFormID(kv.Key)
+                Dim ckKey = ($"meshes\actors\character\facegendata\facegeom\{origin}\{fgL:X8}.nif").ToLowerInvariant()
+                Dim ckb = FilesDictionary_class.GetArchiveOriginalBytes(ckKey)
+                If ckb Is Nothing OrElse ckb.Length = 0 Then Continue For
+                Dim npc = RecordParsers.ParseNPC(rc, rc.SourcePluginName, pm)
+                If npc Is Nothing Then Continue For
+                Dim ckNames As New List(Of String)
+                Try
+                    Dim n As New Nifcontent_Class_Manolo() : n.Load_Manolo(ckb)
+                    For Each sh In n.GetShapes() : ckNames.Add(If(sh.Name?.String, "")) : Next
+                Catch : noRef += 1 : Continue For
+                End Try
+                ' NUESTRO orden, de records: misma cadena que BuildAllowedShapeMap + el sort de :478.
+                Dim roots = FO4_NPC_Manager.HeadPartResolver.MergeHeadPartsWithRaceDefaults(npc.RaceFormID, npc.IsFemale, npc.HeadPartFormIDs, pm)
+                Dim mine As New List(Of Tuple(Of Integer, String))
+                Dim mineFid As New List(Of Tuple(Of UInteger, Integer, String))
+                Dim seen As New HashSet(Of String)(StringComparer.OrdinalIgnoreCase)
+                For Each e In FO4_NPC_Manager.HeadPartResolver.EnumerateHdptChain(roots, pm)
+                    Dim eid = If(e.Hdpt.EditorID, "")
+                    If eid = "" OrElse Not seen.Add(eid) Then Continue For
+                    mine.Add(Tuple.Create(CInt(e.Hdpt.PartType), CStr(eid)))
+                    mineFid.Add(Tuple.Create(e.Hdpt.FormID, CInt(e.Hdpt.PartType), CStr(eid)))
+                Next
+                Dim mineSorted = mine.OrderBy(Function(z) z.Item1).ThenBy(Function(z) z.Item2).Select(Function(z) z.Item2).ToList()
+                ' HIPOTESIS B: el orden del motor = la lista del NPC en orden, con las extra parts expandidas
+                ' inmediatamente despues de su padre (depth-first). Es lo que hace EnumerateHdptChain SIN sort.
+                Dim mineChain = mine.Select(Function(z) z.Item2).ToList()
+                ' Sólo se comparan los nombres presentes en AMBOS lados (el CK omite shapes que no hornea).
+                Dim ckFiltered = ckNames.Where(Function(z) mineSorted.Contains(z, StringComparer.OrdinalIgnoreCase)).ToList()
+                Dim mineFiltered = mineSorted.Where(Function(z) ckFiltered.Contains(z, StringComparer.OrdinalIgnoreCase)).ToList()
+                If ckFiltered.Count < 2 Then Continue For
+                tot += 1
+                ' ⭐ BANCO DE HIPOTESIS: en vez de probar una por corrida, se evaluan TODAS contra la
+                ' secuencia real del CK. La que gane es la regla; si ninguna gana, la regla no es un orden
+                ' derivable de los records y hay que buscarla en el binario.
+                Dim cand As New Dictionary(Of String, List(Of String))
+                cand("1 PartType,EditorID (ACTUAL)") = mine.OrderBy(Function(z) z.Item1).ThenBy(Function(z) z.Item2).Select(Function(z) z.Item2).ToList()
+                cand("2 cadena PNAM+extras (chain)") = mine.Select(Function(z) z.Item2).ToList()
+                cand("3 chain INVERTIDA") = Enumerable.Reverse(mine.Select(Function(z) z.Item2).ToList()).ToList()
+                cand("4 EditorID solo") = mine.OrderBy(Function(z) z.Item2).Select(Function(z) z.Item2).ToList()
+                cand("5 PartType,chain") = mine.Select(Function(z, ix) Tuple.Create(z.Item1, ix, z.Item2)).OrderBy(Function(z) z.Item1).ThenBy(Function(z) z.Item2).Select(Function(z) z.Item3).ToList()
+                ' 11: POST-ORDEN — por cada raiz: primero sus extras (recursivo), despues ella misma.
+                Dim h11 As New List(Of String)
+                Dim visited As New HashSet(Of UInteger)
+                Dim emit As Action(Of UInteger) = Nothing
+                emit = Sub(fid As UInteger)
+                           If fid = 0UI OrElse Not visited.Add(fid) Then Return
+                           Dim hr2 = pm.GetRecord(fid)
+                           If hr2 Is Nothing OrElse hr2.Header.Signature <> "HDPT" Then Return
+                           Dim hd2 = RecordParsers.ParseHDPT(hr2, pm)
+                           If hd2 Is Nothing Then Return
+                           If hd2.ExtraPartFormIDs IsNot Nothing Then
+                               For Each ex In hd2.ExtraPartFormIDs : emit(ex) : Next
+                           End If
+                           If Not String.IsNullOrEmpty(hd2.EditorID) Then h11.Add(hd2.EditorID)
+                       End Sub
+                For Each rt In roots : emit(rt) : Next
+                cand("11 POST-ORDEN (extras ANTES del padre)") = h11
+                ' 12: post-orden pero con las raices ordenadas por PartType
+                Dim h12 As New List(Of String)
+                Dim visited2 As New HashSet(Of UInteger)
+                Dim emit2 As Action(Of UInteger) = Nothing
+                emit2 = Sub(fid As UInteger)
+                            If fid = 0UI OrElse Not visited2.Add(fid) Then Return
+                            Dim hr3 = pm.GetRecord(fid)
+                            If hr3 Is Nothing OrElse hr3.Header.Signature <> "HDPT" Then Return
+                            Dim hd3 = RecordParsers.ParseHDPT(hr3, pm)
+                            If hd3 Is Nothing Then Return
+                            If hd3.ExtraPartFormIDs IsNot Nothing Then
+                                For Each ex In hd3.ExtraPartFormIDs : emit2(ex) : Next
+                            End If
+                            If Not String.IsNullOrEmpty(hd3.EditorID) Then h12.Add(hd3.EditorID)
+                        End Sub
+                Dim rootsByType = roots.Select(Function(rf)
+                                                   Dim rr2 = pm.GetRecord(rf)
+                                                   Dim pt2 = 99
+                                                   If rr2 IsNot Nothing AndAlso rr2.Header.Signature = "HDPT" Then
+                                                       Dim hh = RecordParsers.ParseHDPT(rr2, pm)
+                                                       If hh IsNot Nothing Then pt2 = hh.PartType
+                                                   End If
+                                                   Return Tuple.Create(pt2, rf)
+                                               End Function).OrderBy(Function(z) z.Item1).Select(Function(z) z.Item2).ToList()
+                For Each rt In rootsByType : emit2(rt) : Next
+                cand("12 POST-ORDEN + raices por PartType") = h12
+                Dim rootsByTypeL = rootsByType
+                ' 13/14: POST-ORDEN con las extras en orden INVERSO al HNAM (comportamiento de PILA), que es
+                ' lo que muestra la data: MaleDremoraHair01 declara HNAM=[HairHorns,HairLine] y el CK emite
+                ' [HairLine,HairHorns,Hair]; el otro Dremora declara [HairLine,HairHorns] y emite [HairHorns,HairLine,Hair].
+                Dim buildRev = Function(rootSeq As List(Of UInteger)) As List(Of String)
+                                   Dim outL As New List(Of String)
+                                   Dim vis As New HashSet(Of UInteger)
+                                   Dim rec As Action(Of UInteger) = Nothing
+                                   rec = Sub(fid As UInteger)
+                                             If fid = 0UI OrElse Not vis.Add(fid) Then Return
+                                             Dim r4 = pm.GetRecord(fid)
+                                             If r4 Is Nothing OrElse r4.Header.Signature <> "HDPT" Then Return
+                                             Dim h4 = RecordParsers.ParseHDPT(r4, pm)
+                                             If h4 Is Nothing Then Return
+                                             If h4.ExtraPartFormIDs IsNot Nothing Then
+                                                 For Each ex In Enumerable.Reverse(h4.ExtraPartFormIDs) : rec(ex) : Next
+                                             End If
+                                             If Not String.IsNullOrEmpty(h4.EditorID) Then outL.Add(h4.EditorID)
+                                         End Sub
+                                   For Each rt In rootSeq : rec(rt) : Next
+                                   Return outL
+                               End Function
+                cand("13 POST-ORDEN + extras INVERTIDAS") = buildRev(roots.ToList())
+                cand("14 POST-ORD+extras INV, raices x tipo") = buildRev(rootsByType)
+                ' 15: ORDEN DE LA RACE. El CK recorre la lista de head parts de la RAZA en su orden, y en cada
+                ' posicion usa el override del NPC del MISMO PartType si existe. Los head parts del NPC que no
+                ' corresponden a ninguna posicion de la raza se agregan al final. Extras en post-orden.
+                Dim raceRec2 = pm.GetRecord(npc.RaceFormID)
+                Dim raceD = If(raceRec2 Is Nothing, Nothing, RecordParsers.ParseRACE(raceRec2, pm))
+                If raceD IsNot Nothing Then
+                    Dim raceList = If(npc.IsFemale, raceD.FemaleHeadPartFormIDs, raceD.MaleHeadPartFormIDs)
+                    Dim typeOfFid = Function(f As UInteger) As Integer
+                                        Dim rr3 = pm.GetRecord(f)
+                                        If rr3 Is Nothing OrElse rr3.Header.Signature <> "HDPT" Then Return 99
+                                        Dim hh3 = RecordParsers.ParseHDPT(rr3, pm)
+                                        Return If(hh3 Is Nothing, 99, hh3.PartType)
+                                    End Function
+                    Dim npcByType As New Dictionary(Of Integer, UInteger)
+                    For Each rf In If(npc.HeadPartFormIDs, New List(Of UInteger)())
+                        Dim t3 = typeOfFid(rf)
+                        If Not npcByType.ContainsKey(t3) Then npcByType(t3) = rf
+                    Next
+                    Dim ordered As New List(Of UInteger)
+                    Dim used As New HashSet(Of UInteger)
+                    For Each rf In If(raceList, New List(Of UInteger)())
+                        Dim t3 = typeOfFid(rf)
+                        Dim pick As UInteger = rf
+                        Dim ov As UInteger = 0UI
+                        If npcByType.TryGetValue(t3, ov) Then pick = ov
+                        If used.Add(pick) Then ordered.Add(pick)
+                    Next
+                    For Each rf In If(npc.HeadPartFormIDs, New List(Of UInteger)())
+                        If used.Add(rf) Then ordered.Add(rf)
+                    Next
+                    cand("15 orden de la RACE + override x tipo") = buildRev(ordered)
+                End If
+                ' ⭐ 16: defaults de la RAZA primero (en orden de la raza, salvo los que el NPC pisa por tipo),
+                ' y despues el PNAM del NPC en orden INVERSO. Extras en post-orden invertido.
+                If raceD IsNot Nothing Then
+                    Dim raceList2 = If(npc.IsFemale, raceD.FemaleHeadPartFormIDs, raceD.MaleHeadPartFormIDs)
+                    Dim tOfFid = Function(f As UInteger) As Integer
+                                     Dim rr5 = pm.GetRecord(f)
+                                     If rr5 Is Nothing OrElse rr5.Header.Signature <> "HDPT" Then Return 99
+                                     Dim hh5 = RecordParsers.ParseHDPT(rr5, pm)
+                                     Return If(hh5 Is Nothing, 99, hh5.PartType)
+                                 End Function
+                    Dim pnam = If(npc.HeadPartFormIDs, New List(Of UInteger)())
+                    Dim npcTypes As New HashSet(Of Integer)(pnam.Select(Function(f) tOfFid(f)))
+                    Dim ord2 As New List(Of UInteger)
+                    For Each rf In If(raceList2, New List(Of UInteger)())
+                        If Not npcTypes.Contains(tOfFid(rf)) Then ord2.Add(rf)
+                    Next
+                    ord2.AddRange(Enumerable.Reverse(pnam))
+                    cand("16 RACE defaults + PNAM INVERSO") = buildRev(ord2)
+                End If
+                ' 17-20: claves INTRINSECAS al head part que faltaba probar. El dato que las motiva: mismo
+                ' conjunto -> misma secuencia en 705/762, o sea el orden ES funcion del conjunto (sale de los
+                ' records), sólo que no de PartType/EditorID/FormID/PNAM.
+                Dim meshOf As New Dictionary(Of String, String)(StringComparer.OrdinalIgnoreCase)
+                For Each z In mineFid
+                    Dim r6 = pm.GetRecord(z.Item1)
+                    If r6 IsNot Nothing AndAlso r6.Header.Signature = "HDPT" Then
+                        Dim h6 = RecordParsers.ParseHDPT(r6, pm)
+                        If h6 IsNot Nothing Then meshOf(z.Item3) = If(h6.MeshPath, "")
+                    End If
+                Next
+                Dim allN = mineFid.Select(Function(z) z.Item3).ToList()
+                cand("17 MeshPath asc") = allN.OrderBy(Function(z) If(meshOf.ContainsKey(z), meshOf(z), "")).ToList()
+                cand("18 MeshPath desc") = allN.OrderByDescending(Function(z) If(meshOf.ContainsKey(z), meshOf(z), "")).ToList()
+                cand("19 PartType,MeshPath") = mineFid.OrderBy(Function(z) z.Item2).ThenBy(Function(z) If(meshOf.ContainsKey(z.Item3), meshOf(z.Item3), "")).Select(Function(z) z.Item3).ToList()
+                cand("20 nombre de malla (sin dir)") = allN.OrderBy(Function(z) IO.Path.GetFileName(If(meshOf.ContainsKey(z), meshOf(z), ""))).ToList()
+                ' ⭐ 21-24: HASH DEL PATH (idea del usuario). Un contenedor indexado por hash explica los TRES
+                ' sintomas: orden estable para el mismo conjunto (705/762), CERO monotonia en todo atributo
+                ' (<16%), y el fracaso de cualquier orden derivado de campos. Se usa el MISMO hash TES4 que
+                ' la BSA de Skyrim (Ba2_Bsa_Library.BSAWriter), no uno inventado.
+                cand("21 hash TES4 del mesh asc") = allN.OrderBy(Function(z) Tes4HashOf(If(meshOf.ContainsKey(z), meshOf(z), ""))).ToList()
+                cand("22 hash TES4 del mesh desc") = allN.OrderByDescending(Function(z) Tes4HashOf(If(meshOf.ContainsKey(z), meshOf(z), ""))).ToList()
+                cand("23 PartType,hash TES4") = mineFid.OrderBy(Function(z) z.Item2).ThenBy(Function(z) Tes4HashOf(If(meshOf.ContainsKey(z.Item3), meshOf(z.Item3), ""))).Select(Function(z) z.Item3).ToList()
+                cand("24 hash TES4 del EditorID") = allN.OrderBy(Function(z) Tes4HashOf(z)).ToList()
+                ' ⭐ 25+: BUCKET = hash mod capacidad. Si el CK recorre un hash map, el orden es por bucket,
+                ' no por el valor del hash. Se prueban capacidades tipicas; el desempate dentro de un bucket
+                ' es el orden de insercion (chaining), que aproximamos con el orden de la cadena.
+                For Each capN In New Integer() {8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096}
+                    Dim cc = capN
+                    cand($"25 bucket hash mod {cc}") = mineFid.Select(Function(z, ixx) Tuple.Create(CInt(Tes4HashOf(If(meshOf.ContainsKey(z.Item3), meshOf(z.Item3), "")) Mod CULng(cc)), ixx, z.Item3)).
+                                                              OrderBy(Function(z) z.Item1).ThenBy(Function(z) z.Item2).Select(Function(z) z.Item3).ToList()
+                Next
+                cand("7 FormID asc") = mineFid.OrderBy(Function(z) z.Item1).Select(Function(z) z.Item3).ToList()
+                cand("8 PartType,FormID asc") = mineFid.OrderBy(Function(z) z.Item2).ThenBy(Function(z) z.Item1).Select(Function(z) z.Item3).ToList()
+                cand("9 FormID desc") = mineFid.OrderByDescending(Function(z) z.Item1).Select(Function(z) z.Item3).ToList()
+                ' 10: PNAM CRUDO (sin merge ni extras) primero, extras despues en orden de aparicion
+                Dim rawRoots = If(npc.HeadPartFormIDs, New List(Of UInteger)())
+                Dim fidToName = mineFid.GroupBy(Function(z) z.Item1).ToDictionary(Function(g) g.Key, Function(g) g.First().Item3)
+                Dim h10 As New List(Of String)
+                For Each rf In rawRoots
+                    Dim nm As String = Nothing
+                    If fidToName.TryGetValue(rf, nm) Then h10.Add(nm)
+                Next
+                For Each z In mineFid
+                    If Not h10.Contains(z.Item3, StringComparer.OrdinalIgnoreCase) Then h10.Add(z.Item3)
+                Next
+                cand("10 PNAM crudo + extras al final") = h10
+                cand("6 PartType DESC,chain") = mine.Select(Function(z, ix) Tuple.Create(z.Item1, ix, z.Item2)).OrderByDescending(Function(z) z.Item1).ThenBy(Function(z) z.Item2).Select(Function(z) z.Item3).ToList()
+                For Each hk In cand.Keys.ToList()
+                    Dim seq = cand(hk).Where(Function(z) ckFiltered.Contains(z, StringComparer.OrdinalIgnoreCase)).ToList()
+                    If ckFiltered.SequenceEqual(seq, StringComparer.OrdinalIgnoreCase) Then
+                        hyp(hk) = If(hyp.ContainsKey(hk), hyp(hk), 0) + 1
+                    End If
+                Next
+                ' ¿el orden del CK es GLOBAL o POR NPC? misma firma de head parts -> ¿misma secuencia?
+                If dumped < 5 AndAlso ckFiltered.Count >= 5 Then
+                    dumped += 1
+                    Dim tmap = mineFid.GroupBy(Function(z) z.Item3, StringComparer.OrdinalIgnoreCase).ToDictionary(Function(g) g.Key, Function(g) g.First(), StringComparer.OrdinalIgnoreCase)
+                    Console.WriteLine($"--- 0x{kv.Key:X8} {npc.EditorID} ---")
+                    Console.WriteLine("   CK    : " & String.Join("  ", ckFiltered.Select(Function(z) $"{z}(t{tmap(z).Item2},0x{tmap(z).Item1:X8})")))
+                    Console.WriteLine("   chain : " & String.Join("  ", mineChain.Where(Function(z) tmap.ContainsKey(z)).Select(Function(z) $"{z}(t{tmap(z).Item2})")))
+                    Console.WriteLine("   PNAM  : " & String.Join("  ", If(npc.HeadPartFormIDs, New List(Of UInteger)()).Select(Function(z) $"0x{z:X8}")))
+                End If
+                ' ⭐ ANALISIS INVERSO: ¿que atributo es MONOTONO a lo largo de la secuencia REAL del CK?
+                ' No propone ordenes: mide, sobre la secuencia que el CK realmente produjo, si cada atributo
+                ' viene no-decreciente. El atributo que sea monotono en (casi) todos los NPC es la clave.
+                Dim attrOf As New Dictionary(Of String, Func(Of String, IComparable))(StringComparer.OrdinalIgnoreCase)
+                Dim tmap2 = mineFid.GroupBy(Function(z) z.Item3, StringComparer.OrdinalIgnoreCase).ToDictionary(Function(g) g.Key, Function(g) g.First(), StringComparer.OrdinalIgnoreCase)
+                Dim meshOf2 As New Dictionary(Of String, String)(StringComparer.OrdinalIgnoreCase)
+                Dim flagOf As New Dictionary(Of String, Integer)(StringComparer.OrdinalIgnoreCase)
+                For Each z In mineFid
+                    Dim r7 = pm.GetRecord(z.Item1)
+                    If r7 IsNot Nothing AndAlso r7.Header.Signature = "HDPT" Then
+                        Dim h7 = RecordParsers.ParseHDPT(r7, pm)
+                        If h7 IsNot Nothing Then
+                            meshOf2(z.Item3) = If(h7.MeshPath, "")
+                            flagOf(z.Item3) = h7.Flags
+                        End If
+                    End If
+                Next
+                For Each nm2 In New String() {"FormID", "PartType", "EditorID", "MeshPath", "Flags"}
+                    Dim vals As New List(Of IComparable)
+                    Dim ok2 = True
+                    For Each cn In ckFiltered
+                        If Not tmap2.ContainsKey(cn) Then ok2 = False : Exit For
+                        Select Case nm2
+                            Case "FormID" : vals.Add(tmap2(cn).Item1)
+                            Case "PartType" : vals.Add(tmap2(cn).Item2)
+                            Case "EditorID" : vals.Add(cn)
+                            Case "MeshPath" : vals.Add(If(meshOf2.ContainsKey(cn), meshOf2(cn), ""))
+                            Case "Flags" : vals.Add(If(flagOf.ContainsKey(cn), flagOf(cn), 0))
+                        End Select
+                    Next
+                    If Not ok2 Then Continue For
+                    Dim monoAsc = True, monoDesc = True
+                    For q = 1 To vals.Count - 1
+                        If vals(q).CompareTo(vals(q - 1)) < 0 Then monoAsc = False
+                        If vals(q).CompareTo(vals(q - 1)) > 0 Then monoDesc = False
+                    Next
+                    If monoAsc Then monoA(nm2) = If(monoA.ContainsKey(nm2), monoA(nm2), 0) + 1
+                    If monoDesc Then monoD(nm2) = If(monoD.ContainsKey(nm2), monoD(nm2), 0) + 1
+                Next
+                Dim sig = String.Join("|", ckFiltered.OrderBy(Function(z) z))
+                Dim seqKey = String.Join("|", ckFiltered)
+                If sigToSeq.ContainsKey(sig) Then
+                    If sigToSeq(sig) <> seqKey Then sigConflict += 1 Else sigAgree += 1
+                Else
+                    sigToSeq(sig) = seqKey
+                End If
+                Dim chainFiltered = mineChain.Where(Function(z) ckFiltered.Contains(z, StringComparer.OrdinalIgnoreCase)).ToList()
+                If ckFiltered.SequenceEqual(chainFiltered, StringComparer.OrdinalIgnoreCase) Then chainMatch += 1
+                If ckFiltered.SequenceEqual(mineFiltered, StringComparer.OrdinalIgnoreCase) Then
+                    same += 1
+                Else
+                    ' ¿la discrepancia es de TIPO o dentro del mismo tipo?
+                    Dim tOf = mine.ToDictionary(Function(z) z.Item2, Function(z) z.Item1, StringComparer.OrdinalIgnoreCase)
+                    Dim ckTypes = ckFiltered.Select(Function(z) tOf(z)).ToList()
+                    If ckTypes.SequenceEqual(ckTypes.OrderBy(Function(z) z)) Then
+                        diffWithin += 1
+                        If ejemplos.Count < 6 Then ejemplos.Add($"[dentro-de-tipo] 0x{kv.Key:X8} {npc.EditorID}: CK={String.Join(",", ckFiltered)} | NUESTRO={String.Join(",", mineFiltered)}")
+                    Else
+                        diffType += 1
+                        If ejemplos.Count < 6 Then ejemplos.Add($"[TIPO] 0x{kv.Key:X8} {npc.EditorID}: CK={String.Join(",", ckFiltered)} tipos={String.Join(",", ckTypes)}")
+                    End If
+                End If
+            Next
+            Console.WriteLine($"[shapeorder] NPCs comparables: {tot}")
+            Console.WriteLine($"[shapeorder]   orden IDENTICO al CK        : {same} ({100.0 * same / Math.Max(1, tot):F2}%)")
+            Console.WriteLine($"[shapeorder]   difiere DENTRO de un tipo   : {diffWithin}")
+            Console.WriteLine($"[shapeorder]   el CK NO ordena por PartType: {diffType}   <- si >0, el sort primario esta MAL")
+            Console.WriteLine($"[shapeorder] HIPOTESIS B (cadena PNAM + extras depth-first, SIN sort): {chainMatch} ({100.0 * chainMatch / Math.Max(1, tot):F2}%)")
+            Console.WriteLine("[shapeorder] === MONOTONIA sobre la secuencia REAL del CK ===")
+            For Each k In New String() {"FormID", "PartType", "EditorID", "MeshPath", "Flags"}
+                Dim a = If(monoA.ContainsKey(k), monoA(k), 0)
+                Dim d = If(monoD.ContainsKey(k), monoD(k), 0)
+                Console.WriteLine($"   {k,-10} ascendente {a,6} ({100.0 * a / Math.Max(1, tot):F1}%)   descendente {d,6} ({100.0 * d / Math.Max(1, tot):F1}%)")
+            Next
+            Console.WriteLine("[shapeorder] === BANCO DE HIPOTESIS (match exacto de la secuencia) ===")
+            For Each h In hyp.OrderByDescending(Function(z) z.Value)
+                Console.WriteLine($"   {h.Key,-34} {h.Value,6}  ({100.0 * h.Value / Math.Max(1, tot):F2}%)")
+            Next
+            Console.WriteLine($"[shapeorder] === GLOBAL vs POR-NPC ===")
+            Console.WriteLine($"   mismo conjunto de head parts -> MISMA secuencia: {sigAgree}   DISTINTA: {sigConflict}")
+            Console.WriteLine("   (conflictos>0 ⇒ el orden NO es funcion del conjunto: depende del NPC)")
+            For Each e In ejemplos : Console.WriteLine("   " & e) : Next
+            Return
+        End If
+
+        ' --dumpacc "<formID>|<out>": vuelca el ACUMULADOR del facetint SSE en float64 crudo (RGBA por píxel,
+        ' [0,1] lineal), ANTES de cuantizar a byte. Es el insumo para DERIVAR la regla de redondeo del CK sin
+        ' adivinarla: pareando este float con el byte del TGA del CK (lossless) hay ~786k muestras por NPC de
+        ' (valor exacto -> byte que el CK eligió). Comparar bytes contra bytes NO sirve: sólo da el delta.
+        If opt.DumpAcc <> "" Then
+            Dim pp = opt.DumpAcc.Split("|"c)
+            Dim fid = Convert.ToUInt32(pp(0).Replace("0x", ""), 16)
+            Dim rc2 = pm.GetRecord(fid)
+            Dim npc2 = RecordParsers.ParseNPC(rc2, rc2.SourcePluginName, pm)
+            Dim race2 = RecordParsers.ParseRACE(pm.GetRecord(npc2.RaceFormID), pm)
+            Dim acc = SseFaceGenBaker.ComposeFacetintAcc(pm, rc2, race2, npc2.RaceFormID, npc2.IsFemale, 512, 512)
+            If acc Is Nothing Then Console.Error.WriteLine("[dumpacc] compose devolvio Nothing") : Environment.ExitCode = 2 : Return
+            Using fs = IO.File.Create(pp(1).Trim())
+                Using bw As New IO.BinaryWriter(fs)
+                    For Each d In acc : bw.Write(d) : Next
+                End Using
+            End Using
+            Console.WriteLine($"[dumpacc] 0x{fid:X8} -> {pp(1).Trim()}  ({acc.Length} doubles = {512 * 512} px RGBA)")
+            Return
+        End If
+
+        ' --texslotdiff: lista EXACTA de (NPC, shape, slot) donde nuestro NIF horneado difiere del NIF del CK
+        ' en un path de textura. Existe porque la categoría del barrido da el CONTEO pero no los FormIDs (la
+        ' salida por NPC va a TextWriter.Null), y sin los FormIDs se investiga a ciegas: probé 3 NPCs elegidos
+        ' por heurística de nombre y los 3 coincidían con el CK. Compara el NIF SUELTO (nuestro bake) contra
+        ' GetArchiveOriginalBytes (el del CK, sólo del BSA).
+        If opt.TexSlotDiff Then
+            Dim npcs = 0, withDiff = 0, shapesDiff = 0, ovr = 0, noOvr = 0
+            Dim ckBug = 0, ckOtro = 0, nuestro = 0, ninguno = 0
+            Dim porSlot As New Dictionary(Of Integer, Integer)
+            Dim ejem As New List(Of String)
+            For Each kv In pm.AllRecords
+                Dim rc = kv.Value
+                If rc Is Nothing OrElse rc.Header.Signature <> "NPC_" Then Continue For
+                Dim origin = pm.GetOriginatingPluginName(kv.Key)
+                If Not PluginManager.IsOfficialPlugin(origin) Then Continue For
+                Dim fgL = PluginManager.ToFaceGenLocalFormID(kv.Key)
+                Dim key = ($"meshes\actors\character\facegendata\facegeom\{origin}\{fgL:X8}.nif").ToLowerInvariant()
+                Dim ckb = FilesDictionary_class.GetArchiveOriginalBytes(key)
+                If ckb Is Nothing OrElse ckb.Length = 0 Then Continue For
+                Dim minePath = IO.Path.Combine(Config_App.Current.DataPath, key.Replace("/"c, "\"c))
+                If Not IO.File.Exists(minePath) Then Continue For
+                npcs += 1
+                Dim ckN As New Nifcontent_Class_Manolo(), myN As New Nifcontent_Class_Manolo()
+                Try
+                    ckN.Load_Manolo(ckb) : myN.Load_Manolo(IO.File.ReadAllBytes(minePath))
+                Catch : Continue For
+                End Try
+                Dim slotsOf = Function(nif As Nifcontent_Class_Manolo, sh As NiflySharp.INiShape) As List(Of String)
+                                  Dim outL As New List(Of String)
+                                  Dim ts = GetTexSet(nif, sh)
+                                  If ts IsNot Nothing AndAlso ts.Textures IsNot Nothing Then
+                                      For q = 0 To ts.Textures.Count - 1
+                                          outL.Add(If(ts.Textures(q)?.Content, ""))
+                                      Next
+                                  End If
+                                  Return outL
+                              End Function
+                Dim myMap = myN.GetShapes().GroupBy(Function(sh) If(sh.Name?.String, ""), StringComparer.OrdinalIgnoreCase).
+                                            ToDictionary(Function(g) g.Key, Function(g) g.First(), StringComparer.OrdinalIgnoreCase)
+                Dim any = False
+                For Each cs In ckN.GetShapes()
+                    Dim nm = If(cs.Name?.String, "")
+                    Dim ms As NiflySharp.INiShape = Nothing
+                    If Not myMap.TryGetValue(nm, ms) Then Continue For
+                    Dim a = slotsOf(ckN, cs), b = slotsOf(myN, ms)
+                    For q = 0 To Math.Max(a.Count, b.Count) - 1
+                        Dim va = If(q < a.Count, a(q), ""), vb = If(q < b.Count, b(q), "")
+                        If Not String.Equals(va.Replace("/"c, "\"c), vb.Replace("/"c, "\"c), StringComparison.OrdinalIgnoreCase) Then
+                            any = True : shapesDiff += 1
+                            porSlot(q) = If(porSlot.ContainsKey(q), porSlot(q), 0) + 1
+                            ' ⭐ ¿La diferencia la explica un OVERRIDE de DLC? El FaceGeom del CK esta shipeado
+                            ' en el BSA del plugin que ORIGINA al NPC y se horneo con el load order de ESE
+                            ' momento. Si el HDPT que da nombre a la shape, o su TXST, los gana un plugin
+                            ' POSTERIOR, el CK no pudo verlo: su NIF quedo con el valor viejo y el nuestro
+                            ' resuelve el actual. No es defecto nuestro: es una REFERENCIA OBSOLETA.
+                            ' ⭐ CLASIFICACION COMPLETA de cada (shape,slot) divergente. Criterio explicito:
+                            '   esperado = el TNAM del HDPT cuyo EditorID ES el nombre de la shape (TX00=D, TX01=N).
+                            '   - NUESTRO == esperado  -> somos FIELES AL RECORD
+                            '   - CK      == esperado  -> el CK tambien es fiel (entonces la culpa es nuestra)
+                            '   - CK != esperado y CK == el TNAM de OTRO HDPT que comparte la MISMA malla
+                            '                          -> el CK PISO la textura entre hermanas (bug del CK)
+                            '   - si el record lo gana un plugin POSTERIOR al que shippea el FaceGeom
+                            '                          -> referencia OBSOLETA (se horneo antes del override)
+                            Dim culpa = "sin override"
+                            Dim hpRec = pm.AllRecords.Where(Function(z) z.Value IsNot Nothing AndAlso
+                                                                        z.Value.Header.Signature = "HDPT").
+                                                      Select(Function(z) z.Value).
+                                                      FirstOrDefault(Function(z)
+                                                                         Dim hh = RecordParsers.ParseHDPT(z, pm)
+                                                                         Return hh IsNot Nothing AndAlso String.Equals(hh.EditorID, nm, StringComparison.OrdinalIgnoreCase)
+                                                                     End Function)
+                            If hpRec IsNot Nothing Then
+                                Dim hh2 = RecordParsers.ParseHDPT(hpRec, pm)
+                                Dim srcHdpt = hpRec.SourcePluginName
+                                Dim srcTxst = ""
+                                If hh2 IsNot Nothing AndAlso hh2.TextureSetFormID <> 0UI Then
+                                    Dim tr2 = pm.GetRecord(hh2.TextureSetFormID)
+                                    If tr2 IsNot Nothing Then srcTxst = tr2.SourcePluginName
+                                End If
+                                Dim later = Function(pl As String) As Boolean
+                                                Return pl <> "" AndAlso Not String.Equals(pl, origin, StringComparison.OrdinalIgnoreCase)
+                                            End Function
+                                If later(srcTxst) Then
+                                    culpa = $"TXST lo gana {srcTxst} (NPC de {origin})"
+                                ElseIf later(srcHdpt) Then
+                                    culpa = $"HDPT lo gana {srcHdpt} (NPC de {origin})"
+                                End If
+                            End If
+                            ' esperado segun el record de la shape
+                            Dim esperado As String = Nothing
+                            Dim myMesh As String = Nothing
+                            If hpRec IsNot Nothing Then
+                                Dim hx = RecordParsers.ParseHDPT(hpRec, pm)
+                                If hx IsNot Nothing Then
+                                    myMesh = hx.MeshPath
+                                    If hx.TextureSetFormID <> 0UI Then
+                                        Dim txr = pm.GetRecord(hx.TextureSetFormID)
+                                        If txr IsNot Nothing AndAlso txr.Header.Signature = "TXST" Then
+                                            Dim tt = RecordParsers.ParseTXST(txr, pm)
+                                            If tt IsNot Nothing Then esperado = If(q = 0, tt.DiffuseTexture, If(q = 1, tt.NormalTexture, Nothing))
+                                        End If
+                                    End If
+                                End If
+                            End If
+                            Dim eq = Function(x As String, y As String) As Boolean
+                                         Return x IsNot Nothing AndAlso y IsNot Nothing AndAlso
+                                                String.Equals(x.Replace("/"c, "\"c), y.Replace("/"c, "\"c), StringComparison.OrdinalIgnoreCase)
+                                     End Function
+                            Dim clase As String
+                            If culpa <> "sin override" Then
+                                clase = "REFERENCIA OBSOLETA (override posterior)" : ovr += 1
+                            ElseIf eq(vb, esperado) AndAlso Not eq(va, esperado) Then
+                                ' nosotros fieles, el CK no. ¿el CK copio de una hermana de la misma malla?
+                                Dim hermana = False
+                                If myMesh IsNot Nothing Then
+                                    For Each kv2 In pm.AllRecords
+                                        If kv2.Value Is Nothing OrElse kv2.Value.Header.Signature <> "HDPT" Then Continue For
+                                        Dim ho = RecordParsers.ParseHDPT(kv2.Value, pm)
+                                        If ho Is Nothing OrElse Not String.Equals(ho.MeshPath, myMesh, StringComparison.OrdinalIgnoreCase) Then Continue For
+                                        If String.Equals(ho.EditorID, nm, StringComparison.OrdinalIgnoreCase) Then Continue For
+                                        If ho.TextureSetFormID = 0UI Then Continue For
+                                        Dim tr3 = pm.GetRecord(ho.TextureSetFormID)
+                                        If tr3 Is Nothing OrElse tr3.Header.Signature <> "TXST" Then Continue For
+                                        Dim t3d = RecordParsers.ParseTXST(tr3, pm)
+                                        If t3d Is Nothing Then Continue For
+                                        Dim otro = If(q = 0, t3d.DiffuseTexture, If(q = 1, t3d.NormalTexture, Nothing))
+                                        If eq(va, otro) Then hermana = True : Exit For
+                                    Next
+                                End If
+                                If hermana Then
+                                    clase = "BUG DEL CK (piso con la textura de una hermana de la misma malla)" : ckBug += 1
+                                Else
+                                    clase = "CK != record y NO es de una hermana" : ckOtro += 1
+                                End If
+                            ElseIf eq(va, esperado) Then
+                                clase = "⛔ NUESTRO != record  -> DEFECTO NUESTRO" : nuestro += 1
+                            Else
+                                clase = "ninguno coincide con el record" : ninguno += 1
+                            End If
+                            culpa = clase
+                            If ejem.Count < 30 Then ejem.Add($"0x{kv.Key:X8} '{nm}' TX{q:D2}  CK='{IO.Path.GetFileName(va)}'  NUESTRO='{IO.Path.GetFileName(vb)}'   [{culpa}]")
+                        End If
+                    Next
+                Next
+                If any Then withDiff += 1
+            Next
+            Console.WriteLine($"[texslotdiff] NPCs comparados: {npcs}   con alguna diferencia: {withDiff}   (slot,shape) distintos: {shapesDiff}")
+            Console.WriteLine("[texslotdiff] === CLASIFICACION de los (shape,slot) divergentes ===")
+            Console.WriteLine($"   REFERENCIA OBSOLETA (override posterior) : {ovr}")
+            Console.WriteLine($"   BUG DEL CK (piso con textura de hermana) : {ckBug}")
+            Console.WriteLine($"   CK != record, no es de hermana           : {ckOtro}")
+            Console.WriteLine($"   ⛔ DEFECTO NUESTRO                        : {nuestro}")
+            Console.WriteLine($"   ninguno coincide con el record           : {ninguno}")
+            Console.WriteLine($"[texslotdiff] por slot: {String.Join(" · ", porSlot.OrderBy(Function(z) z.Key).Select(Function(z) $"TX{z.Key:D2}={z.Value}"))}")
+            For Each e In ejem : Console.WriteLine("   " & e) : Next
+            Return
+        End If
+
+        ' --meshcollide: ¿en cuántos NPCs hay DOS O MÁS head parts que resuelven a la MISMA malla? Es el
+        ' alcance exacto de la ley del motor "cada head part aplica su propio TNAM sobre el mismo nodo, gana
+        ' el último" (SkyrimSE BSFaceGenManager::PrepareHeadPartForShaders 0x14042BD90 + el bucle 0x14042BCC0).
+        ' Sin este número, "arreglarlo" seria fitear los 2 casos que el comparador encontró.
+        If opt.MeshCollide Then
+            Dim tot = 0, colNpc = 0
+            Dim pairs As New Dictionary(Of String, Integer)(StringComparer.OrdinalIgnoreCase)
+            Dim byType As New Dictionary(Of String, Integer)(StringComparer.OrdinalIgnoreCase)
+            For Each kv In pm.AllRecords
+                Dim rc = kv.Value
+                If rc Is Nothing OrElse rc.Header.Signature <> "NPC_" Then Continue For
+                Dim npc = RecordParsers.ParseNPC(rc, rc.SourcePluginName, pm)
+                If npc Is Nothing OrElse npc.HeadPartFormIDs Is Nothing OrElse npc.HeadPartFormIDs.Count = 0 Then Continue For
+                tot += 1
+                ' malla -> lista de (hdpt, tnam). Se EXPANDEN las extra parts, que es lo que hace el motor.
+                Dim byMesh As New Dictionary(Of String, List(Of HDPT_Data))(StringComparer.OrdinalIgnoreCase)
+                Dim queue As New Queue(Of UInteger)(npc.HeadPartFormIDs)
+                Dim seenHp As New HashSet(Of UInteger)
+                While queue.Count > 0
+                    Dim fid = queue.Dequeue()
+                    If fid = 0UI OrElse Not seenHp.Add(fid) Then Continue While
+                    Dim hr = pm.GetRecord(fid)
+                    If hr Is Nothing OrElse hr.Header.Signature <> "HDPT" Then Continue While
+                    Dim h = RecordParsers.ParseHDPT(hr, pm)
+                    If h Is Nothing OrElse String.IsNullOrEmpty(h.MeshPath) Then Continue While
+                    If h.ExtraPartFormIDs IsNot Nothing Then
+                        For Each e In h.ExtraPartFormIDs : queue.Enqueue(e) : Next
+                    End If
+                    If Not byMesh.ContainsKey(h.MeshPath) Then byMesh(h.MeshPath) = New List(Of HDPT_Data)
+                    byMesh(h.MeshPath).Add(h)
+                End While
+                Dim hasCol = False
+                For Each mk In byMesh
+                    If mk.Value.Count < 2 Then Continue For
+                    ' sólo cuenta si los TNAM DIFIEREN: con el mismo TNAM el "gana el último" es inerte.
+                    Dim distinct = mk.Value.Select(Function(z) z.TextureSetFormID).Distinct().Count()
+                    If distinct < 2 Then Continue For
+                    hasCol = True
+                    Dim key = String.Join(" + ", mk.Value.Select(Function(z) z.EditorID).OrderBy(Function(z) z))
+                    pairs(key) = If(pairs.ContainsKey(key), pairs(key), 0) + 1
+                    Dim tk = String.Join("/", mk.Value.Select(Function(z) z.PartType.ToString()).Distinct().OrderBy(Function(z) z))
+                    byType(tk) = If(byType.ContainsKey(tk), byType(tk), 0) + 1
+                Next
+                If hasCol Then
+                    colNpc += 1
+                    If colNpc <= 8 Then Console.WriteLine($"   [afectado] 0x{kv.Key:X8} {npc.EditorID} origin={pm.GetOriginatingPluginName(kv.Key)}")
+                End If
+            Next
+            Console.WriteLine($"[meshcollide] NPCs con head parts: {tot}")
+            Console.WriteLine($"[meshcollide] NPCs con >=2 head parts sobre la MISMA malla y TNAM DISTINTO: {colNpc} ({100.0 * colNpc / Math.Max(1, tot):F2}%)")
+            Console.WriteLine($"[meshcollide] por PartType: {String.Join(" · ", byType.OrderByDescending(Function(z) z.Value).Select(Function(z) $"tipo {z.Key}: {z.Value}"))}")
+            Console.WriteLine("[meshcollide] combinaciones:")
+            For Each p In pairs.OrderByDescending(Function(z) z.Value).Take(15)
+                Console.WriteLine($"   x{p.Value,5}  {p.Key}")
+            Next
+            Return
+        End If
+
+        ' --recscan "SIG|substr": vuelca records de una signatura cuyo EditorID matchea, con los campos que
+        ' importan para diagnosticar (HDPT: partType/mesh/TNAM + las texturas del TNAM). Generico a proposito:
+        ' cada vez que hizo falta mirar "que dicen los records de esta familia" hubo que escribir un flag nuevo.
+        If opt.RecScan <> "" Then
+            Dim parts = opt.RecScan.Split("|"c)
+            Dim sig = parts(0).Trim().ToUpperInvariant()
+            Dim sub_ = If(parts.Length > 1, parts(1).Trim(), "")
+            Dim n = 0
+            For Each kv In pm.AllRecords
+                Dim rc = kv.Value
+                If rc Is Nothing OrElse rc.Header.Signature <> sig Then Continue For
+                If sig = "HDPT" Then
+                    Dim h = RecordParsers.ParseHDPT(rc, pm)
+                    If h Is Nothing OrElse (sub_ <> "" AndAlso h.EditorID.IndexOf(sub_, StringComparison.OrdinalIgnoreCase) < 0) Then Continue For
+                    n += 1
+                    Dim extra = If(h.ExtraPartFormIDs Is Nothing OrElse h.ExtraPartFormIDs.Count = 0, "-",
+                                   String.Join(",", h.ExtraPartFormIDs.Select(Function(e) $"0x{e:X8}")))
+                    Console.WriteLine($"HDPT 0x{kv.Key:X8}[{rc.SourcePluginName}] '{h.EditorID}' partType={h.PartType} flags=0x{h.Flags:X2} mesh='{h.MeshPath}' TNAM=0x{h.TextureSetFormID:X8} HNAM/extra={extra}")
+                    If h.TextureSetFormID <> 0UI Then
+                        Dim tr = pm.GetRecord(h.TextureSetFormID)
+                        If tr IsNot Nothing AndAlso tr.Header.Signature = "TXST" Then
+                            Dim t = RecordParsers.ParseTXST(tr, pm)
+                            Console.WriteLine($"        TNAM(gana {tr.SourcePluginName}) D='{t.DiffuseTexture}' N='{t.NormalTexture}'")
+                        End If
+                    End If
+                End If
+            Next
+            Console.WriteLine($"[recscan] {n} records {sig} matchean '{sub_}'")
+            Return
+        End If
+
+        If opt.DdsProbe <> "" Then
+            DdsProbe(pm, Convert.ToUInt32(opt.DdsProbe.Replace("0x", ""), 16))
+            Return
+        End If
+
+        ' --- TINTCOUNTSCAN: capas de tint por NPC (NPC autoradas + merge con defaults de RACE).
+        If opt.TintCountScan Then
+            TintCountScan(pm)
+            Return
+        End If
+
         ' --- SCANDIFF: NPCs donde el blend-op resuelto por el APP difiere del CK (color-match LAST-wins).
         If opt.ScanDiff Then
             ScanDiff(pm)
@@ -748,6 +1407,19 @@ Module Program
     ''' bounds, texture-set slots) + estructura del NIF (bytes, bloques, root, extradata) + el DDS (pixel+formato).
     ''' Clasifica cada diferencia como REAL (defecto del bake) o NO-OP (esperado: sufijo _2 sandbox, codec BC,
     ''' framing) y las lista por separado.</summary>
+    ''' <summary>⛔ REFERENCIA DEL CK PARA EL NIF — SIEMPRE del BSA/BA2, nunca de un suelto.
+    ''' El NIF que horneamos queda LOOSE en el mismo Data, y <c>FilesDictionary</c> hace que el suelto GANE sobre
+    ''' el archive. Con <c>GetBytes</c> la corrida siguiente se comparaba CONTRA SI MISMA y daba ~0 diferencias
+    ''' (el fallo silencioso de reference_harness_loose_files_shadow_ck_ref: termina con END BATCH y no midio nada).
+    ''' El camino del DDS ya lo hacia bien; el del NIF —el que sostiene TODAS las cifras de geometria— no.
+    ''' <paramref name="fromArchive"/> sale False solo si NO hay entrada archivada: el caller lo reporta como
+    ''' categoria REAL en vez de degradar a un PASS.</summary>
+    Private Function CkNifRefBytes(ckKey As String, ByRef fromArchive As Boolean) As Byte()
+        Dim b = FilesDictionary_class.GetArchiveOriginalBytes(ckKey)
+        fromArchive = b IsNot Nothing AndAlso b.Length > 0
+        Return b
+    End Function
+
     Private Function CompareBakedVsCk(pm As PluginManager, npcFormID As UInteger, bakedNifPath As String,
                                       Optional verbose As Boolean = True) As (Real As List(Of String), Noop As List(Of String))
         Dim origin = pm.GetOriginatingPluginName(npcFormID)
@@ -766,7 +1438,11 @@ Module Program
 
         ' ================= NIF =================
         Dim ckKey = ($"meshes\actors\character\facegendata\facegeom\{origin}\{fgL:X8}.nif").ToLowerInvariant()
-        Dim ckBytes = FilesDictionary_class.GetBytes(ckKey)
+        Dim ckNifFromArchive As Boolean
+        Dim ckBytes = CkNifRefBytes(ckKey, ckNifFromArchive)
+        If Not ckNifFromArchive AndAlso ckBytes IsNot Nothing AndAlso ckBytes.Length > 0 Then
+            real.Add($"NIF: ref del CK NO vino de un BA2/BSA (loose) — comparacion CIRCULAR contra un bake propio viejo")
+        End If
         If ckBytes Is Nothing Then
             Console.WriteLine($"  [NIF] no CK ref ({ckKey}) — not comparing NIF")
         ElseIf Not File.Exists(bakedNifPath) Then
@@ -817,7 +1493,15 @@ Module Program
         ElseIf isSse AndAlso Not SkipDdsCompare Then
             Try
                 Dim race = RecordParsers.ParseRACE(pm.GetRecord(npcData.RaceFormID), pm)
-                Dim myDds = SseFaceGenBaker.BakeFaceTintDds(pm, npcRec, race, npcData.RaceFormID, npcData.IsFemale, 512, 512)
+                ' ⛔ EL FORMATO SE PASA EXPLICITO. Este call site omitia dxgiFormat y el Optional vale -1 = BC3,
+                ' asi que la rama SSE re-horneaba SIEMPRE comprimido: --rawdds no la alcanzaba y el banner
+                ' imprimia "Uncompressed" mientras la medicion usaba BC3. Un flag que dice que hace algo y no
+                ' lo hace es peor que no tenerlo. Ahora sale de la MISMA fuente que el bake real
+                ' (FaceGenBuilder.DiffuseDxgiFromSetting, que lee el setting per-game via OutputSettings), asi
+                ' que el formato de la medicion y el del bake no pueden divergir.
+                Dim sseCmpDxgi = FO4_NPC_Manager.FaceGenBuilder.DiffuseDxgiFromSetting()
+                Dim myDds = SseFaceGenBaker.BakeFaceTintDds(pm, npcRec, race, npcData.RaceFormID, npcData.IsFemale, 512, 512,
+                                                            dxgiFormat:=sseCmpDxgi)
                 Dim ckDdsKey = ($"textures\actors\character\facegendata\facetint\{origin}\{fgL:X8}.dds").ToLowerInvariant()
                 ' ⛔ MISMA regla anti-circular que la rama FO4 (ver doc de CompareFo4FaceCustomizationDds), que
                 ' aca FALTABA. No es teorico: --ssecomparebatch corre con DebugMode=False, asi que el bake
@@ -853,8 +1537,17 @@ Module Program
                     Dim ss As Double = 0, byteExact As Integer = 0, mx As Double = 0
                     Dim mxRs As Double = 0, mxGs As Double = 0, mxBs As Double = 0
                     Dim ssAs As Double = 0, mxAs As Double = 0
+                    ' ⭐ DELTA MEDIA CON SIGNO (mine - CK), por canal. El RMS y el maxD son ambos ABSOLUTOS y
+                    ' no distinguen "toda la imagen corrida un poquito" de "una region muy distinta": las dos
+                    ' pueden dar el mismo RMS. Medido en el corpus: 84 NPCs dan RMS 7,90 con maxD 9/5/9 — un
+                    ' desvio UNIFORME, que es un offset de color, no ruido de codec. El signo dice ademas si
+                    ' quedamos por encima o por debajo del CK, que es lo que separa un problema de gamma de
+                    ' uno de tinte.
+                    Dim sR As Double = 0, sG As Double = 0, sB As Double = 0
                     For i = 0 To 512 * 512 - 1
-                        Dim dr = Math.Abs(mine.Rgba(i * 4) - ckd.Rgba(i * 4)), dg = Math.Abs(mine.Rgba(i * 4 + 1) - ckd.Rgba(i * 4 + 1)), db = Math.Abs(mine.Rgba(i * 4 + 2) - ckd.Rgba(i * 4 + 2))
+                        Dim vr = mine.Rgba(i * 4) - ckd.Rgba(i * 4), vg = mine.Rgba(i * 4 + 1) - ckd.Rgba(i * 4 + 1), vb = mine.Rgba(i * 4 + 2) - ckd.Rgba(i * 4 + 2)
+                        sR += vr : sG += vg : sB += vb
+                        Dim dr = Math.Abs(vr), dg = Math.Abs(vg), db = Math.Abs(vb)
                         Dim da = Math.Abs(mine.Rgba(i * 4 + 3) - ckd.Rgba(i * 4 + 3))
                         ss += dr * dr + dg * dg + db * db
                         ssAs += da * da
@@ -890,6 +1583,14 @@ Module Program
                     If ckVariaSse Then stS.CkVariaCount += 1
                     If mineVariaSse Then stS.MineVariaCount += 1
                     If ckVariaSse <> mineVariaSse Then stS.AlphaMismatch += 1
+                    Dim npx As Double = 512.0 * 512.0
+                    DdsCsvRows.Add(String.Format(Globalization.CultureInfo.InvariantCulture,
+                        "0x{0:X8},{1},{2},_d,{3:F4},{4:F2},{5:F0},{6:F0},{7:F0},{8:F4},{9:F0},{10},{11},512,512,{12:F3},{13:F3},{14:F3},{15}",
+                        npcFormID, CsvSafe(origin), CsvSafe(If(npcData?.EditorID, "")),
+                        rms, 100.0 * byteExact / npx,
+                        mxRs * 255, mxGs * 255, mxBs * 255, rmsAs, mxAs * 255, ckVariaSse, mineVariaSse,
+                        sR / npx * 255, sG / npx * 255, sB / npx * 255,
+                        If(npcData IsNot Nothing AndAlso npcData.IsFemale, "F", "M")))
 
                     Console.WriteLine($"  [DDS] facetint _d 512x512  RMS={rms:F2}/255  maxΔ={mx * 255:F0}/255  ALPHA rms={rmsAs:F2} maxΔ={mxAs * 255:F0} (CK varia={ckVariaSse}, nuestro varia={mineVariaSse})  byte-exact px={byteExact}/{512 * 512} ({100.0 * byteExact / (512 * 512):F1}%)  (mine={myDds.Length}b BC3, CK={ckDds.Length}b {If(ckFromArchiveSse, "BSA", "LOOSE!")})")
                     If rms > Fo4DdsRmsThreshold() Then real.Add($"DDS facetint RMS={rms:F2}/255 (>{Fo4DdsRmsThreshold():F2}) — review compose")
@@ -1110,6 +1811,13 @@ Module Program
                 Dim rms = Math.Sqrt(ss / (3.0 * n)) * 255
                 Dim rmsA = Math.Sqrt(ssA / n) * 255
 
+                DdsCsvRows.Add(String.Format(Globalization.CultureInfo.InvariantCulture,
+                    "0x{0:X8},{1},,{2},{3:F4},{4:F2},{5:F0},{6:F0},{7:F0},{8:F4},{9:F0},{10},{11},{12},{13}",
+                    npcFormID, CsvSafe(origin), suffix,
+                    rms, 100.0 * byteExact / n,
+                    mxR * 255, mxG * 255, mxB * 255, rmsA, mxA * 255, ckVaria, mineVaria,
+                    mine.Width, mine.Height))
+
                 Dim st = DdsStat(suffix)
                 st.N += 1
                 st.SumRms += rms
@@ -1155,7 +1863,10 @@ Module Program
             If Not PluginManager.IsOfficialPlugin(origin) Then Continue For
             Dim fgL = PluginManager.ToFaceGenLocalFormID(kv.Key)
             Dim ckKey = ($"meshes\actors\character\facegendata\facegeom\{origin}\{fgL:X8}.nif").ToLowerInvariant()
-            Dim ckb = FilesDictionary_class.GetBytes(ckKey)
+            ' SOLO del archive (ver CkNifRefBytes): un NIF NUESTRO suelto en el Data haria entrar al NPC como
+            ' "candidato con referencia del CK" cuando la unica referencia es nuestra propia salida previa.
+            Dim ckArch As Boolean
+            Dim ckb = CkNifRefBytes(ckKey, ckArch)
             ' Length>0: GetBytes devuelve un array VACÍO (no Nothing) para claves sin archivo real — p.ej. NPCs
             ' templated/genéricos y el jugador que NO tienen FaceGeom horneado por el CK. Esos no son comparables.
             If ckb IsNot Nothing AndAlso ckb.Length > 0 Then cands.Add(kv.Key)
@@ -1174,6 +1885,28 @@ Module Program
         '   · FGCMP_SKIP=<n>: saltea los primeros n candidatos ⇒ con FGCMP_SKIP + limit se corre por tramos
         '     en procesos separados y se consolidan las tablas.
         cands = cands.OrderBy(Function(x) x).ToList()
+        ' FGCMP_ONLY=<hex[,hex...]>: restringe el corpus a esos FormIDs. DIAGNOSTICO — sirve para partir el
+        ' residuo por CLASE de NPC (sin morph / con morph .tri / con FMRS) y ver a cuál se le atribuye, que
+        ' con el corpus completo queda promediado y es inobservable.
+        ' ⛔ Una corrida con FGCMP_ONLY NO es comparable contra el baseline: el corpus es otro. Se marca.
+        Dim onlyRaw = If(Environment.GetEnvironmentVariable("FGCMP_ONLY"), "").Trim()
+        If onlyRaw <> "" Then
+            Dim want As New HashSet(Of UInteger)()
+            For Each tok In onlyRaw.Split({","c, ";"c, " "c}, StringSplitOptions.RemoveEmptyEntries)
+                Dim t = tok.Trim().TrimStart("0"c, "x"c, "X"c)
+                Dim v As UInteger
+                If UInteger.TryParse(If(t = "", "0", t), Globalization.NumberStyles.HexNumber,
+                                     Globalization.CultureInfo.InvariantCulture, v) Then want.Add(v)
+            Next
+            Dim before = cands.Count
+            cands = cands.Where(Function(x) want.Contains(x)).ToList()
+            Console.WriteLine($"[batch] !!!! FGCMP_ONLY activo: {cands.Count} de {before} candidatos " &
+                              $"({want.Count} FormIDs pedidos). CORRIDA DIAGNOSTICA, NO comparable contra baseline.")
+            ' Un FormID pedido que no esta en el corpus es un error de la peticion, no un detalle: se lista.
+            For Each v In want
+                If Not cands.Contains(v) Then Console.WriteLine($"[batch]      pedido 0x{v:X8} NO esta en el corpus (sin FaceGeom del CK / no oficial)")
+            Next
+        End If
         Dim skipN As Integer = 0
         Integer.TryParse(If(Environment.GetEnvironmentVariable("FGCMP_SKIP"), "").Trim(), skipN)
         If skipN > 0 Then
@@ -1220,6 +1953,26 @@ Module Program
         ' lo lee como una MEJORA. Los fallos silenciosos corrompen el criterio de aceptacion del barrido.
         Dim failures As New List(Of String)()
         Dim failByRoute As New Dictionary(Of String, Integer)(StringComparer.Ordinal)
+        ' EXCLUIDOS != FALLOS. Un NPC cuya RAZA no tiene FaceGen (RACE.DATA flags bit 0x2 claro) no es un
+        ' fallo del bake: el motor tampoco le arma cabeza. Verificado por RE en LOS DOS binarios —
+        ' CreationKit.exe 0x140AAE521-52B aborta el driver del bake, y Fallout4.exe 0x1406E22AB-B9 sale del
+        ' armado de cabeza antes de las DOS ramas (FaceGeom 0x1406ED9F0 y fallback por head-parts 0x1406ED4D0).
+        ' FaceGenBuilder ya lo marca con Skipped=True (FaceGenBuilder.vb, gate RaceSupportsFaceGen); lo que
+        ' faltaba era que el batch lo LEYERA en vez de mirar solo Success.
+        ' ⛔ Van a su propio cubo, NO al corpus comparado: no se bakean ni se comparan, asi que no pueden
+        ' aparecer en ninguna categoria. Sumarlos a okCount seria mentir sobre el tamaño del corpus.
+        ' Medido sobre el corpus de referencia completo (todos los FaceGeom de los BA2 de los 7 masters,
+        ' 1490 NPCs unicos): 1487 tienen la raza con el bit puesto y EXACTAMENTE 2 lo tienen claro
+        ' (DLC05WorkshopArmorRack{Male,Female}01, raza DLC05ArmorRackRace 0x02706200). 94 de las 110 razas
+        ' tienen el bit claro, pero sus NPCs no tienen FaceGeom horneado, asi que nunca entran a `cands`.
+        Dim excluded As New List(Of String)()
+        Dim recordExcluded = Sub(fid As UInteger, detail As String)
+                                 Dim rec = pm.GetRecord(fid)
+                                 Dim edid = If(rec IsNot Nothing AndAlso Not String.IsNullOrEmpty(rec.EditorID), rec.EditorID, "?")
+                                 Dim line = $"0x{fid:X8} [{pm.GetOriginatingPluginName(fid)}] EDID='{edid}' :: {detail}"
+                                 excluded.Add(line)
+                                 Console.WriteLine($"[batch][EXCLUDED] {line}")
+                             End Sub
         Dim recordFail = Sub(fid As UInteger, route As String, detail As String)
                              failCount += 1
                              failByRoute(route) = If(failByRoute.ContainsKey(route), failByRoute(route), 0) + 1
@@ -1249,6 +2002,13 @@ Module Program
                     End If
                 Else
                     Dim res = FO4_NPC_Manager.FaceGenBuilder.BuildCharGen(fid, pm, presets, Nothing, AddressOf mres.ApplyShapeMaterialOverrides, willBePacked:=False)
+                    ' Skipped: el bake decidio a proposito no emitir NIF (raza sin FaceGen / sin head parts).
+                    ' Se contabiliza aparte ANTES del chequeo de Success — si no, cae en la rama de fallo.
+                    If res IsNot Nothing AndAlso res.Skipped Then
+                        Console.SetOut(savedOut)
+                        recordExcluded(fid, $"summary='{res.Summary}'")
+                        Continue For
+                    End If
                     If res Is Nothing OrElse Not res.Success OrElse String.IsNullOrEmpty(res.OutputPath) Then
                         Console.SetOut(savedOut)
                         ' El Summary del propio BuildCharGen dice POR QUE fallo — es el dato util, no el booleano.
@@ -1284,11 +2044,28 @@ Module Program
                 Dim at0 = If(stk.Length > 0, stk(0).Trim(), "<sin stack>")
                 recordFail(fid, "exception", $"{ex.GetType().Name}: {ex.Message} | {at0}")
             End Try
-            If processed Mod 50 = 0 Then Console.WriteLine($"[batch] {processed}/{cands.Count}  ok={okCount} fail={failCount}")
+            If processed Mod 50 = 0 Then Console.WriteLine($"[batch] {processed}/{cands.Count}  ok={okCount} fail={failCount} excl={excluded.Count}")
         Next
         Console.SetOut(savedOut)
 
-        Console.WriteLine($"======== BATCH SSE: {okCount} NPCs compared ({failCount} fail) ========")
+        Console.WriteLine($"======== BATCH SSE: {okCount} NPCs compared ({failCount} fail, {excluded.Count} excluded) ========")
+
+        ' ⛔ CONSERVACION DEL CORPUS. Todo candidato tiene que terminar en exactamente UNO de los tres cubos.
+        ' Si no cierra, algun camino esta saliendo del loop sin contabilizar y el barrido es un verde falso:
+        ' se marca fuerte y se cambia el ExitCode. Jamas se degrada a "habra sido un caso raro".
+        If okCount + failCount + excluded.Count <> cands.Count Then
+            Console.WriteLine($"  !!!! CONTABILIDAD ROTA: ok({okCount}) + fail({failCount}) + excl({excluded.Count}) = " &
+                              $"{okCount + failCount + excluded.Count} != candidatos({cands.Count}). CORRIDA INVALIDA.")
+            Environment.ExitCode = 3
+        End If
+
+        ' ==== EXCLUIDOS: no son fallos y NO invalidan la corrida, pero se listan enteros ====
+        ' Su conteo SI es parte de la firma de la corrida: si cambia entre dos barridos, cambio el corpus
+        ' efectivo y los conteos por categoria dejan de ser comparables igual que con failCount.
+        If excluded.Count > 0 Then
+            Console.WriteLine($"  ---- {excluded.Count} EXCLUIDOS (raza sin FaceGen / sin head parts): no se bakean, no se comparan, NO son fallos ----")
+            For Each ln In excluded : Console.WriteLine($"      {ln}") : Next
+        End If
 
         ' ==== FALLOS: lista completa + veredicto de VALIDEZ de la corrida ====
         ' fail > 0 INVALIDA la comparacion contra un baseline: los NPCs que fallan no se comparan, asi que
@@ -1299,7 +2076,7 @@ Module Program
         If failCount > 0 Then
             ' ASCII puro en esta linea: la consola del CLI la degrada a '??' y es la linea que un script
             ' grepea para decidir si la corrida es valida.
-            Console.WriteLine($"  !!!! {failCount} FALLOS -- corpus efectivo {okCount}/{cands.Count}. CORRIDA NO COMPARABLE CONTRA BASELINE.")
+            Console.WriteLine($"  !!!! {failCount} FALLOS -- corpus efectivo {okCount}/{cands.Count} (excl {excluded.Count}). CORRIDA NO COMPARABLE CONTRA BASELINE.")
             Console.WriteLine($"      Los conteos por categoria NO son comparables contra un baseline con otro failCount:")
             Console.WriteLine($"      un NPC que pasa de 'diferente' a 'explota' BAJA su categoria y parece una mejora.")
             Console.WriteLine($"  ---- fallos por ruta ----")
@@ -1310,7 +2087,7 @@ Module Program
             For Each ln In failures : Console.WriteLine($"      {ln}") : Next
             Environment.ExitCode = 2
         Else
-            Console.WriteLine($"  fallos: 0 — corpus completo ({okCount}/{cands.Count}), conteos comparables contra baseline.")
+            Console.WriteLine($"  fallos: 0 — corpus comparado {okCount}/{cands.Count} (excl {excluded.Count}), conteos comparables contra baseline con el MISMO conteo de excluidos.")
         End If
 
         Console.WriteLine($"  REAL difference categories (sorted by # affected NPCs):")
@@ -1359,6 +2136,42 @@ Module Program
             Else
                 Console.WriteLine("     PISO DE CODEC: el CK guarda _d y _msn en BC1 y nosotros en BC3/BC5 por default,")
                 Console.WriteLine("     asi que byte-exact=100% es inalcanzable; lo que importa es si el RMS se MUEVE entre commits.")
+            End If
+            ' ⛔ GAME-AWARE, y NO es un detalle: --rawdds cambia el codec del DDS que el bake ESCRIBE A DISCO.
+            ' · FO4: el comparador LEE ese archivo ⇒ nuestro lado sale sin comprimir ⇒ el piso de codec pasa a
+            '   ser SOLO el del CK y los RMS bajan POR CONSTRUCCION (no comparables contra baselines BC3/BC5).
+            ' · SSE: el comparador NO lee el archivo, RE-HORNEA con BakeFaceTintDds(...) sin pasar dxgiFormat,
+            '   y ese Optional vale -1 = BC3 ⇒ nuestro lado sigue comprimido pase lo que pase con --rawdds.
+            '   Los RMS de SSE SI son comparables contra baselines viejos.
+            ' Imprimir el mismo cartel en los dos juegos era declarar una advertencia FALSA en SSE.
+            If RawDdsRequested Then
+                Console.WriteLine("     ##############################################################################")
+                If isSseB Then
+                    Console.WriteLine("     ## CORRIDA CON --rawdds: la rama SSE RE-HORNEA el facetint (no lee el DDS de")
+                    Console.WriteLine("     ## disco) pero ahora pasa el formato EXPLICITO desde el mismo setting que el")
+                    Console.WriteLine("     ## bake ⇒ nuestro lado sale SIN COMPRIMIR. El piso de codec es SOLO el del CK,")
+                    Console.WriteLine("     ## asi que estos RMS NO son comparables contra baselines BC3: son mas bajos")
+                    Console.WriteLine("     ## POR CONSTRUCCION. (Corolario aparte: la rama SSE valida el COMPOSITOR, no")
+                    Console.WriteLine("     ## que el bake haya escrito ese resultado a disco.)")
+                Else
+                    Console.WriteLine("     ## CORRIDA CON --rawdds: nuestros DDS salieron SIN COMPRIMIR (B8G8R8A8) y el")
+                    Console.WriteLine("     ## comparador los LEE de disco. El piso de codec de arriba es SOLO el del CK.")
+                    Console.WriteLine("     ## Estos RMS NO son comparables contra baselines hechos con BC3/BC5: son mas")
+                    Console.WriteLine("     ## bajos POR CONSTRUCCION. Miden el COMPOSITOR, no el codec.")
+                End If
+                Console.WriteLine("     ##############################################################################")
+            End If
+            ' Volcado por NPC: sin esto una categoria de cientos de casos no se puede abrir (ver DdsCsvRows).
+            If DdsCsvRows.Count > 0 Then
+                Try
+                    Dim csvPath = IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, $"dds_{If(isSseB, "SSE", "FO4")}.csv")
+                    Dim header = "formID,origin,editorID,channel,rms255,byteExactPct,maxR,maxG,maxB,rmsAlpha,maxAlpha,ckAlphaVaria,mineAlphaVaria,width,height,meanDR,meanDG,meanDB,sex"
+                    IO.File.WriteAllLines(csvPath, New String() {header}.Concat(DdsCsvRows))
+                    Console.WriteLine($"     [csv] detalle por NPC ({DdsCsvRows.Count} filas) -> {csvPath}")
+                Catch ex As Exception
+                    ' No degradar en silencio: si el volcado falla hay que saberlo, no quedarse sin el detalle.
+                    Console.Error.WriteLine($"     [csv] FALLO el volcado por NPC: {ex.GetType().Name}: {ex.Message}")
+                End Try
             End If
         End If
 
@@ -1435,7 +2248,10 @@ Module Program
             If Not PluginManager.IsOfficialPlugin(origin) Then Continue For
             Dim fgL = PluginManager.ToFaceGenLocalFormID(kv.Key)
             Dim ckKey = ($"meshes\actors\character\facegendata\facegeom\{origin}\{fgL:X8}.nif").ToLowerInvariant()
-            Dim ckb = FilesDictionary_class.GetBytes(ckKey)
+            ' SOLO del archive (ver CkNifRefBytes): un NIF NUESTRO suelto en el Data haria entrar al NPC como
+            ' "candidato con referencia del CK" cuando la unica referencia es nuestra propia salida previa.
+            Dim ckArch As Boolean
+            Dim ckb = CkNifRefBytes(ckKey, ckArch)
             ' Length>0: GetBytes devuelve un array VACÍO (no Nothing) para claves sin archivo real — p.ej. NPCs
             ' templated/genéricos y el jugador que NO tienen FaceGeom horneado por el CK. Esos no son comparables.
             If ckb IsNot Nothing AndAlso ckb.Length > 0 Then cands.Add(kv.Key)
@@ -1493,7 +2309,8 @@ Module Program
                 Else
                     Dim fgL = PluginManager.ToFaceGenLocalFormID(fid)
                     Dim ckKey = ($"meshes\actors\character\facegendata\facegeom\{origin}\{fgL:X8}.nif").ToLowerInvariant()
-                    Dim ckBytes = FilesDictionary_class.GetBytes(ckKey)
+                    Dim ckArchV As Boolean
+                    Dim ckBytes = CkNifRefBytes(ckKey, ckArchV)
                     If ckBytes Is Nothing OrElse ckBytes.Length = 0 Then
                         line = $"{fid:X8},{origin},,,0,0,NOCK"   ' NPC sin FaceGeom vanilla (templated/genérico/jugador)
                     Else
@@ -1606,6 +2423,81 @@ persist:
     ''' bitangents, UVs, colors, bones, VertexDesc, bounds, texture-set) acumulando en real/noop.</summary>
     ''' <summary>Umbral de reporte de la categoria "positions" (--posthresh). Default = el historico 0,05.</summary>
     Private DdsCompareRequested As Boolean = False
+    ' --rawdds efectivo en ESTA corrida. Se refleja aca para que el reporte agregado del DDS pueda marcar
+    ' que el piso de codec de la corrida es SOLO el del CK (el nuestro no existe si horneamos sin comprimir).
+    Private RawDdsRequested As Boolean = False
+    ''' <summary>Una fila por (NPC, canal) del compare de DDS. EXISTE PORQUE EL AGREGADO NO ALCANZA: la
+    ''' categoria "242 NPCs con RMS > umbral" no dice QUIENES son — la salida por NPC va a TextWriter.Null
+    ''' dentro del loop del batch, asi que una categoria de cientos de casos quedaba imposible de abrir.
+    ''' Misma familia que "fail=N sin identificar el NPC". Se vuelca al terminar; agrupar/ordenar se hace
+    ''' offline sobre el CSV, sin re-correr el barrido.</summary>
+    Private DdsCsvRows As New List(Of String)
+
+    ''' <summary>Hash TES4 (el de la BSA de Skyrim) de una ruta, como UInt64. RÉPLICA EXACTA de
+    ''' <c>Ba2_Bsa_Library.BsaWriter.BASTes4Hashing</c> (que es <c>Friend</c> y no se ve desde acá) —
+    ''' incluida la LUT de extensiones. Es SÓLO para el diagnóstico <c>--shapeorder</c>: se usa para probar
+    ''' si el orden de shapes del CK corresponde al recorrido de un contenedor indexado por este hash.
+    ''' ⛔ Si alguna vez se necesita en producción, exponer el de la librería en vez de duplicar esto.</summary>
+    Private Function Crc1003F(bytes As Byte()) As UInteger
+        Dim crc As ULong = 0UL
+        If bytes IsNot Nothing Then
+            For i = 0 To bytes.Length - 1
+                crc = (crc * &H1003FUL + CULng(bytes(i))) And &HFFFFFFFFUL
+            Next
+        End If
+        Return CUInt(crc)
+    End Function
+
+    Private Function Tes4DirHash(path As String) As Byte()
+        path = If(path, "").Replace("/"c, "\"c).Trim("\"c).ToLowerInvariant()
+        If String.IsNullOrEmpty(path) Then path = "."
+        Dim b = Text.Encoding.Latin1.GetBytes(path)
+        Dim last As Byte = If(b.Length >= 1, b(b.Length - 1), CByte(0))
+        Dim last2 As Byte = If(b.Length >= 2, b(b.Length - 2), CByte(0))
+        Dim first As Byte = If(b.Length >= 1, b(0), CByte(0))
+        Dim length As Byte = CByte(Math.Min(b.Length, 255))
+        Dim crc As UInteger = 0UI
+        If b.Length > 3 Then
+            Dim sliceLen = b.Length - 3
+            Dim tmp(sliceLen - 1) As Byte
+            Array.Copy(b, 1, tmp, 0, sliceLen)
+            crc = Crc1003F(tmp)
+        End If
+        Dim outB(7) As Byte
+        outB(0) = last : outB(1) = last2 : outB(2) = length : outB(3) = first
+        Buffer.BlockCopy(BitConverter.GetBytes(crc), 0, outB, 4, 4)
+        Return outB
+    End Function
+
+    Private Function Tes4HashOf(path As String) As ULong
+        Dim p = If(path, "").Replace("/"c, "\"c).ToLowerInvariant()
+        Dim posSlash = p.LastIndexOf("\"c)
+        If posSlash >= 0 Then p = p.Substring(posSlash + 1)
+        Dim stem = p, ext = ""
+        Dim dot = p.LastIndexOf("."c)
+        If dot >= 0 Then stem = p.Substring(0, dot) : ext = p.Substring(dot)
+        If stem.Length = 0 OrElse stem.Length >= 260 OrElse ext.Length >= 16 Then Return 0UL
+        Dim h = Tes4DirHash(stem)
+        Dim crcBase = BitConverter.ToUInt32(h, 4)
+        crcBase = CUInt((CULng(crcBase) + CULng(Crc1003F(Text.Encoding.Latin1.GetBytes(ext)))) And &HFFFFFFFFUL)
+        Buffer.BlockCopy(BitConverter.GetBytes(crcBase), 0, h, 4, 4)
+        Dim lut = New String() {"", ".nif", ".kf", ".dds", ".wav", ".adp"}
+        Dim ix = Array.IndexOf(lut, ext)
+        If ix >= 0 Then
+            Dim f = CInt(h(3)), l = CInt(h(0)), l2 = CInt(h(1))
+            f = (f + 32 * (ix And &HFC)) And &HFF
+            l = (l + ((ix And &HFE) << 6)) And &HFF
+            l2 = (l2 + (ix << 7)) And &HFF
+            h(3) = CByte(f) : h(0) = CByte(l) : h(1) = CByte(l2)
+        End If
+        Return BitConverter.ToUInt64(h, 0)
+    End Function
+
+    ''' <summary>Neutraliza comas y comillas para que un EditorID raro no corra las columnas del CSV.</summary>
+    Private Function CsvSafe(s As String) As String
+        If String.IsNullOrEmpty(s) Then Return ""
+        Return s.Replace(","c, ";"c).Replace(""""c, "'"c)
+    End Function
     Private PosReportThreshold As Double = 0.05
 
     ''' <summary>Tally global de shapes comparados por posicion, para reportar cuantos son BYTE-EXACTOS
@@ -2504,7 +3396,20 @@ persist:
         End If
         Dim key = parts(0).Trim()
         Dim outFile = parts(1).Trim()
-        Dim bytes = FilesDictionary_class.GetBytes(key)
+        ' ⛔ DEL ARCHIVE PRIMERO. Esta herramienta existe para sacar la REFERENCIA DEL CK, y usaba GetBytes,
+        ' que los SUELTOS SOMBREAN: con nuestro propio bake suelto en el Data devolvía NUESTRO archivo
+        ' rotulado como "referencia del CK". Caso real 2026-07-21: se "verificó" que el CK y nosotros
+        ' coincidíamos en 0x00074F90 — mismo MD5, porque era el MISMO archivo — y se dieron por buenas tres
+        ' conclusiones falsas. Ahora se pide del archive y, si no hay entrada archivada, se AVISA en vez de
+        ' devolver el suelto en silencio.
+        Dim bytes = FilesDictionary_class.GetArchiveOriginalBytes(key)
+        If bytes Is Nothing OrElse bytes.Length = 0 Then
+            bytes = FilesDictionary_class.GetBytes(key)
+            If bytes IsNot Nothing AndAlso bytes.Length > 0 Then
+                Console.Error.WriteLine($"[dumpref] ⚠ '{key}' NO está en ningún BA2/BSA: lo que sale es el SUELTO," &
+                                        " que puede ser un bake NUESTRO. NO usarlo como referencia del CK.")
+            End If
+        End If
         If bytes Is Nothing OrElse bytes.Length = 0 Then
             Console.Error.WriteLine($"[dumpref] empty or not found key: '{key}'") : Environment.ExitCode = 1 : Return
         End If
@@ -2650,6 +3555,319 @@ persist:
     ''' tint (male+female), reporta el conjunto de valores distintos (histograma) y cualquier NO-entero. Si
     ''' TODOS son enteros (0,1,2,3...) => TTED es probablemente un INDICE (no una intensidad float). Test de
     ''' la hipotesis del usuario: TTED-como-indice apunta a la opcion default y se aplica con su alpha.</summary>
+    ''' <summary>⭐ --alphagatescan — mide los DOS gates del alpha de la cabeza sobre TODO el load order,
+    ''' SIN hornear (sólo records + BGSM del FilesDictionary). Existe porque los dos gates que hoy viven en
+    ''' <c>NpcMaterialResolver</c> están sin dimensionar y uno de ellos se declara a sí mismo SIN FUENTE:
+    '''
+    ''' (1) <b>¿Uno o dos interruptores?</b> El bit F4SPF2 Alpha_Test está puesto en EXACTAMENTE 1 shape en
+    '''     todo FO4+DLC (Valentine, medido sobre 1489 NIFs del CK). La fabricación del NiAlphaProperty la
+    '''     gobierna <c>ACBS\Diffuse Alpha Test</c> (RE CK 0x140ED41F6). Si el flag ACBS está en 1 solo NPC,
+    '''     los dos hechos son el MISMO y basta un interruptor agnóstico en la lib. Si está en N&gt;1, NO son
+    '''     el mismo gate y unificarlos pondría el bit donde el CK no lo pone.
+    '''
+    ''' (2) <b>¿El gate <c>isFaceHeadPart</c> es inerte?</b> El motor NO distingue por parte del cuerpo
+    '''     (<c>ApplyMaterialToGeometry 0x142169BB0</c>) ⇒ el gate es heurístico. Se mide su población real:
+    '''     TXST con MNAM cuyo BGSM declara alpha, y TODO referente (HDPT.TNAM, NPC.FTST, RACE.DFTM/DFTF,
+    '''     ARMA NAM0/NAM1). Si ningún referente ajeno a un head part de cara declara alpha ⇒ sacarlo es
+    '''     INERTE sobre vanilla; si hay N ⇒ hoy los renderizamos mal y el número dice cuántos.
+    '''
+    ''' ⛔ Un conteo que da 0 NO valida el gate (vanilla es corpus sesgado): sólo dimensiona el riesgo de
+    ''' sacarlo. Un conteo &gt; 0 SÍ es un contraejemplo y decide.</summary>
+    ''' <summary>--tintcountscan — capas de tint EFECTIVAS por NPC (las autoradas en el NPC_ mergeadas con
+    ''' los defaults de la RACE, que es lo que consume el compositor). Existe como TEST DE FALSACION de la
+    ''' hipotesis "los outliers del facetint SSE son exactamente los NPC sin capas de tint": si el CSV muestra
+    ''' NPCs con 0 capas que caen en el BULTO (RMS &lt; 2, byte-exact ~98%), la hipotesis queda REFUTADA y el
+    ''' predictor es otro. Un conteo que confirma no prueba; uno que refuta, si.</summary>
+    ''' <summary>--ddsprobe &lt;formID&gt; — VALORES DE PIXEL del facetint SSE, nuestro vs el del CK. Existe
+    ''' porque RMS y maxD son agregados que NO distinguen dos cosas muy distintas: "las dos imagenes son
+    ''' planas y difieren en una constante" vs "una de las dos tiene variacion espacial". En el defecto de
+    ''' raceLayers=0 el agregado daba meanD=(5,3,5) pero maxD=(9,5,9): si ambas fueran planas serian IGUALES.
+    ''' Se imprimen los colores distintos de cada lado con su frecuencia, que responde la pregunta sin
+    ''' inferir nada.</summary>
+    Private Sub DdsProbe(pm As PluginManager, npcFormID As UInteger)
+        Dim rec = pm.GetRecord(npcFormID)
+        If rec Is Nothing Then Console.Error.WriteLine($"0x{npcFormID:X8}: no existe") : Environment.ExitCode = 2 : Return
+        Dim npc = RecordParsers.ParseNPC(rec, rec.SourcePluginName, pm)
+        Dim race = RecordParsers.ParseRACE(pm.GetRecord(npc.RaceFormID), pm)
+        Dim origin = pm.GetOriginatingPluginName(npcFormID)
+        Dim fgL = PluginManager.ToFaceGenLocalFormID(npcFormID)
+        Console.WriteLine($"=== DDS PROBE 0x{npcFormID:X8} {npc.EditorID}  race=0x{npc.RaceFormID:X8} {If(npc.IsFemale, "F", "M")} ===")
+        Dim rlay = SseFaceTintComposer.GetRaceLayersOrdered(pm, npc.RaceFormID, npc.IsFemale)
+        Console.WriteLine($"  capas de la RACE = {If(rlay Is Nothing, -1, rlay.Count)}   TINI del NPC = {If(npc.SseTintRaw Is Nothing, 0, npc.SseTintRaw.Where(Function(x) x.Sig = "TINI").Count())}")
+
+        ' Capas de la RACE una por una: es donde vive el color de un NPC SIN tints autorados. Se imprime el
+        ' TIND (CLFM del preset default) y si RESUELVE, porque ResolveClfmColor DEGRADA A BLANCO en silencio
+        ' cuando el formID es 0, el record no existe, no es CLFM, o no trae CNAM — y N capas hacia blanco
+        ' saturan el acumulador a 255.
+        If rlay IsNot Nothing AndAlso rlay.Count > 0 Then
+            Console.WriteLine($"  --- capas de la RACE (TIND -> color) ---")
+            Dim nBad = 0
+            For Each L In rlay
+                Dim st = "?"
+                If L.DefaultClfm = 0UI Then
+                    st = "TIND=0 -> BLANCO"
+                Else
+                    Dim cr = pm.GetRecord(L.DefaultClfm)
+                    If cr Is Nothing Then
+                        st = "record AUSENTE -> BLANCO"
+                    ElseIf cr.Header.Signature <> "CLFM" Then
+                        st = $"sig={cr.Header.Signature} (no CLFM) -> BLANCO"
+                    Else
+                        Dim cnl = cr.Subrecords.Where(Function(s) s.Signature = "CNAM").ToList()
+                        Dim cn = If(cnl.Count > 0, cnl(0), Nothing)
+                        If cnl.Count = 0 OrElse cn.Data Is Nothing OrElse cn.Data.Length < 3 Then
+                            st = "sin CNAM -> BLANCO"
+                        Else
+                            st = $"CNAM=({cn.Data(0)},{cn.Data(1)},{cn.Data(2)})"
+                        End If
+                    End If
+                End If
+                ' Si no resuelve, probar el MISMO id local bajo el indice del plugin del propio RACE. Si ahi
+                ' SI aparece, el defecto no es "el record no existe" sino el REMAPEO del indice de master
+                ' (auto-referencia: local index == cantidad de masters ⇒ el plugin se apunta a si mismo).
+                If st.EndsWith("BLANCO") AndAlso L.DefaultClfm <> 0UI Then
+                    Dim selfIdx = npc.RaceFormID And &HFF000000UI
+                    Dim alt = selfIdx Or (L.DefaultClfm And &HFFFFFFUI)
+                    Dim ar = pm.GetRecord(alt)
+                    If ar IsNot Nothing Then
+                        Dim acn = ar.Subrecords.Where(Function(s) s.Signature = "CNAM").ToList()
+                        Dim acs = If(acn.Count > 0 AndAlso acn(0).Data IsNot Nothing AndAlso acn(0).Data.Length >= 3,
+                                     $"CNAM=({acn(0).Data(0)},{acn(0).Data(1)},{acn(0).Data(2)})", "sin CNAM")
+                        st &= $"   [!] pero 0x{alt:X8} SI existe (sig={ar.Header.Signature} {acs}) => REMAPEO"
+                    End If
+                End If
+                If st.EndsWith("BLANCO") Then nBad += 1
+                Console.WriteLine($"    idx={L.Index,3} TIND=0x{L.DefaultClfm:X8} val={L.DefaultValue:F3} presets={If(L.Presets Is Nothing, 0, L.Presets.Count),2} mask='{If(L.Path, "")}' -> {st}")
+            Next
+            Console.WriteLine($"  ==> capas que degradan a BLANCO: {nBad}/{rlay.Count}")
+        End If
+
+        ' Tints AUTORADOS del NPC (SSE = SseTintRaw: TINI/TINC/TINV/TIAS). ⛔ `--tints` los muestra vacíos
+        ' porque lee FaceTintLayers, que es el campo de FO4 — en un corpus de Skyrim da "(none)" SIEMPRE.
+        ' Sin esto no se puede ver de dónde sale la variación del composite.
+        If npc.SseTintRaw IsNot Nothing AndAlso npc.SseTintRaw.Count > 0 Then
+            Console.WriteLine("  --- tints AUTORADOS del NPC (idx -> color, cobertura) ---")
+            Dim ti As Integer = -1, tr As Integer = 0, tg As Integer = 0, tb As Integer = 0
+            Dim tv As Double = 0
+            Dim raceIdx As New HashSet(Of Integer)(If(rlay Is Nothing, New List(Of SseFaceTintComposer.SseTintMask), rlay).Select(Function(z) z.Index))
+            For Each sr In npc.SseTintRaw
+                Select Case sr.Sig
+                    Case "TINI" : If sr.Data IsNot Nothing AndAlso sr.Data.Length >= 2 Then ti = BitConverter.ToUInt16(sr.Data, 0)
+                    Case "TINC" : If sr.Data IsNot Nothing AndAlso sr.Data.Length >= 3 Then tr = sr.Data(0) : tg = sr.Data(1) : tb = sr.Data(2)
+                    Case "TINV" : If sr.Data IsNot Nothing AndAlso sr.Data.Length >= 4 Then tv = BitConverter.ToUInt32(sr.Data, 0) / 100.0
+                    Case "TIAS"
+                        Dim inRace = raceIdx.Contains(ti)
+                        Dim maskP = ""
+                        If rlay IsNot Nothing Then
+                            For Each L2 In rlay
+                                If L2.Index = ti Then maskP = IO.Path.GetFileName(If(L2.Path, "")) : Exit For
+                            Next
+                        End If
+                        Console.WriteLine($"    idx={ti,3} color=({tr},{tg},{tb}) cobertura={tv:F3}  {If(inRace, "mask=" & maskP, "⛔ INDICE NO EXISTE EN LA RAZA -> capa IGNORADA")}")
+                        ti = -1 : tr = 0 : tg = 0 : tb = 0 : tv = 0
+                End Select
+            Next
+        End If
+
+        Dim mineDds = SseFaceGenBaker.BakeFaceTintDds(pm, rec, race, npc.RaceFormID, npc.IsFemale, 512, 512,
+                                                      dxgiFormat:=FO4_NPC_Manager.FaceGenBuilder.DiffuseDxgiFromSetting())
+        Dim ckKey = ($"textures\actors\character\facegendata\facetint\{origin}\{fgL:X8}.dds").ToLowerInvariant()
+        Dim ckDds = FilesDictionary_class.GetArchiveOriginalBytes(ckKey)
+        If mineDds Is Nothing OrElse ckDds Is Nothing OrElse ckDds.Length = 0 Then
+            Console.Error.WriteLine($"  falta lado: mine={mineDds IsNot Nothing} ck={ckDds IsNot Nothing}") : Environment.ExitCode = 2 : Return
+        End If
+        Dim mine = FaceTintCpuCompositor.DecodeDds(mineDds, 512, 512), ckd = FaceTintCpuCompositor.DecodeDds(ckDds, 512, 512)
+        For Each pair In {Tuple.Create("NUESTRO", mine), Tuple.Create("CK     ", ckd)}
+            Dim t = pair.Item2
+            Dim hist As New Dictionary(Of String, Integer)
+            For i = 0 To 512 * 512 - 1
+                Dim k = $"{t.Rgba(i * 4) * 255:F1},{t.Rgba(i * 4 + 1) * 255:F1},{t.Rgba(i * 4 + 2) * 255:F1}"
+                hist(k) = If(hist.ContainsKey(k), hist(k), 0) + 1
+            Next
+            Console.WriteLine($"  {pair.Item1}: {hist.Count} colores distintos en 262144 px")
+            For Each kv In hist.OrderByDescending(Function(z) z.Value).Take(6)
+                Console.WriteLine($"      ({kv.Key})  x{kv.Value}  ({100.0 * kv.Value / 262144.0:F2}%)")
+            Next
+        Next
+    End Sub
+
+    Private Sub TintCountScan(pm As PluginManager)
+        Dim csv As New List(Of String) From {"formID,origin,editorID,race,sex,tini,merged,tinc,tias,winner"}
+        Dim n = 0, zero = 0
+        For Each kv In pm.AllRecords
+            Dim rec = kv.Value
+            If rec Is Nothing OrElse rec.Header.Signature <> "NPC_" Then Continue For
+            Dim npc = RecordParsers.ParseNPC(rec, rec.SourcePluginName, pm)
+            If npc Is Nothing Then Continue For
+            n += 1
+            Dim raceRec = pm.GetRecord(npc.RaceFormID)
+            Dim race = If(raceRec Is Nothing, Nothing, RecordParsers.ParseRACE(raceRec, pm))
+            ' ⛔ EL CAMPO CORRECTO POR JUEGO. `FaceTintLayers` es el de FO4; en SSE los tints viven en
+            ' SseTintRaw (TINI/TINC/TINV/TIAS, RecordParsers:3122). La primera version de este scan leyo
+            ' FaceTintLayers sobre un corpus de Skyrim y devolvio "0 capas en 6462/6462" — un 100% que
+            ' delataba el error, porque el compositor SI produce facetints distintos por NPC. Un scan que
+            ' mide el campo equivocado da un numero perfectamente formado y perfectamente falso.
+            Dim isSseScan = (Config_App.Current.Game = Config_App.Game_Enum.Skyrim)
+            Dim npcN As Integer, mergedN As Integer
+            If isSseScan Then
+                Dim raw = npc.SseTintRaw
+                npcN = If(raw Is Nothing, 0, raw.Where(Function(x) x.Sig = "TINI").Count())
+                mergedN = npcN   ' SSE no tiene merge con defaults de RACE por este camino
+            Else
+                npcN = If(npc.FaceTintLayers Is Nothing, 0, npc.FaceTintLayers.Count)
+                Try
+                    Dim merged = FaceTintInputBuilder.MergeTintLayersWithRaceDefaults(npc.FaceTintLayers, race, npc.IsFemale, pm)
+                    mergedN = If(merged Is Nothing, 0, merged.Count)
+                Catch ex As Exception
+                    ' No degradar a 0 en silencio: un merge que explota NO es "sin capas".
+                    mergedN = -1
+                    Console.Error.WriteLine($"[merge-FAIL] 0x{kv.Key:X8} {npc.EditorID}: {ex.GetType().Name}: {ex.Message}")
+                End Try
+            End If
+            If mergedN = 0 Then zero += 1
+            Dim nTinc = If(npc.SseTintRaw Is Nothing, 0, npc.SseTintRaw.Where(Function(x) x.Sig = "TINC").Count())
+            Dim nTias = If(npc.SseTintRaw Is Nothing, 0, npc.SseTintRaw.Where(Function(x) x.Sig = "TIAS").Count())
+            ' winner = plugin que GANA el record del NPC. Si es POSTERIOR al que shippea su FaceGeom, el NIF/
+            ' DDS del BA2 se horneo con datos VIEJOS: la referencia esta desactualizada, no nuestro bake.
+            csv.Add($"0x{kv.Key:X8},{CsvSafe(pm.GetOriginatingPluginName(kv.Key))},{CsvSafe(npc.EditorID)}," &
+                    $"0x{npc.RaceFormID:X8},{If(npc.IsFemale, "F", "M")},{npcN},{mergedN},{nTinc},{nTias},{CsvSafe(rec.SourcePluginName)}")
+        Next
+        ' ⭐ CAPAS DE LA *RACE* por (raza,sexo). Es el dato que decide: con TINI=0 el compositor compone
+        ' ENTERAMENTE desde los defaults de la RACE (SseFaceTintComposer: acc arranca en 0.5 y cada capa toma
+        ' el color autorado del NPC o, si no hay, el default TIND→CLFM). Si para una raza esto da 0, emitimos
+        ' el seed 0.5 PLANO y el CK emite el tono real de esa raza.
+        If Config_App.Current.Game = Config_App.Game_Enum.Skyrim Then
+            Dim rl As New List(Of String) From {"race,sex,raceLayers"}
+            Dim seen As New HashSet(Of String)
+            For Each line In csv.Skip(1)
+                Dim p = line.Split(","c)
+                Dim k = p(3) & p(4)
+                If Not seen.Add(k) Then Continue For
+                Dim rfid = Convert.ToUInt32(p(3).Substring(2), 16)
+                Dim n2 = SseFaceTintComposer.GetRaceLayersOrdered(pm, rfid, p(4) = "F")
+                rl.Add($"{p(3)},{p(4)},{If(n2 Is Nothing, -1, n2.Count)}")
+            Next
+            Dim rp = IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "racelayers.csv")
+            IO.File.WriteAllLines(rp, rl)
+            Console.WriteLine($"[racelayers] {rl.Count - 1} combinaciones (raza,sexo) -> {rp}")
+        End If
+
+        Dim outPath = IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "tintcount.csv")
+        IO.File.WriteAllLines(outPath, csv)
+        Console.WriteLine($"[tintcount] {n} NPC_ · con 0 capas efectivas: {zero} ({100.0 * zero / n:F1}%) -> {outPath}")
+    End Sub
+
+    Private Sub AlphaGateScan(pm As PluginManager)
+        Dim isSse = (Config_App.Current.Game = Config_App.Game_Enum.Skyrim)
+        Console.WriteLine($"===== ALPHA GATE SCAN ({If(isSse, "SSE", "FO4")}) =====")
+
+        ' ---------- (1) NPCs con ACBS\Diffuse Alpha Test (0x01000000) ----------
+        ' SSE: el bit 24 es 'Unknown 24' en el schema de Skyrim (wbDefinitionsTES5.pas:3265), sin uso — se
+        ' cuenta igual como CONTROL: si en SSE diera > 0 habría que revisar la premisa, no asumirla.
+        Dim acbsNpcs As New List(Of String)
+        Dim npcTotal = 0
+        For Each kv In pm.AllRecords
+            Dim r = kv.Value
+            If r Is Nothing OrElse r.Header.Signature <> "NPC_" Then Continue For
+            npcTotal += 1
+            Dim npc = RecordParsers.ParseNPC(r, r.SourcePluginName, pm)
+            If npc Is Nothing Then Continue For
+            If (npc.AcbsFlags And &H1000000UI) <> 0UI Then
+                acbsNpcs.Add($"0x{kv.Key:X8} {npc.EditorID} (origin={pm.GetOriginatingPluginName(kv.Key)} ACBS=0x{npc.AcbsFlags:X8})")
+            End If
+        Next
+        Console.WriteLine($"[ACBS] NPC_ con 'Diffuse Alpha Test' (0x01000000): {acbsNpcs.Count} de {npcTotal}")
+        For Each s In acbsNpcs : Console.WriteLine($"  {s}") : Next
+        Console.WriteLine("[ACBS] VEREDICTO: 1 ⇒ un solo interruptor agnostico sirve para el bit SF2 y para la" &
+                          " fabricacion del NiAlphaProperty. >1 ⇒ son gates DISTINTOS (el bit SF2 esta en 1 sola shape).")
+
+        ' ---------- (2) TXST con MNAM y su alpha ----------
+        Dim txstTotal = 0, withMnam = 0, mnamLoadFail = 0
+        Dim alphaTxst As New Dictionary(Of UInteger, String)   ' FormID -> descripcion
+        For Each kv In pm.AllRecords
+            Dim r = kv.Value
+            If r Is Nothing OrElse r.Header.Signature <> "TXST" Then Continue For
+            txstTotal += 1
+            Dim t = RecordParsers.ParseTXST(r, pm)
+            If t Is Nothing OrElse String.IsNullOrEmpty(t.MaterialPath) Then Continue For
+            withMnam += 1
+            Dim mat = MaterialResolver.TryLoadMaterialFromDictionary(t.MaterialPath, New FO4UnifiedMaterial_Class(), Nothing, Nothing)
+            If mat Is Nothing Then
+                ' ⛔ NO degradar a "sin alpha": un MNAM que no carga es un dato DESCONOCIDO, no un cero.
+                mnamLoadFail += 1
+                Console.WriteLine($"  [MNAM-FAIL] txst=0x{kv.Key:X8} {t.EditorID} mnam='{t.MaterialPath}' → NO CARGO (alpha DESCONOCIDO)")
+                Continue For
+            End If
+            ' El predicado es AlphaBlendEnabled (el booleano real), NO `AlphaBlendMode <> 0`: el enum tiene
+            ' `Unknown` como default y su setter NO deriva los campos en ese caso, asi que compararlo contra
+            ' cero mediria otra cosa. Los 3 campos que el resolver copia son AlphaTest / AlphaTestRef /
+            ' AlphaBlendMode, y los dos que hacen VISIBLE el alpha son AlphaTest y AlphaBlendEnabled.
+            If mat.AlphaTest OrElse mat.AlphaBlendEnabled Then
+                alphaTxst(kv.Key) = $"0x{kv.Key:X8} {t.EditorID} mnam='{t.MaterialPath}' alphaTest={mat.AlphaTest} ref={mat.AlphaTestRef} blendEnabled={mat.AlphaBlendEnabled} blendMode={mat.AlphaBlendMode}"
+            End If
+        Next
+        Console.WriteLine($"[TXST] total={txstTotal} conMNAM={withMnam} MNAM-no-carga={mnamLoadFail} conALPHA={alphaTxst.Count}")
+        For Each s In alphaTxst.Values : Console.WriteLine($"  {s}") : Next
+        If withMnam = 0 Then
+            Console.WriteLine("[TXST] 0 con MNAM ⇒ el bloque MNAM (y su gate de alpha) es INALCANZABLE en este juego.")
+        End If
+
+        ' ---------- (3) Quien referencia esos TXST ----------
+        ' La pregunta es la del comentario de NpcMaterialResolver: cuantos consumidores de un TXST con MNAM
+        ' que declara alpha NO son un head part de cara. PartType 0 = Face (HDPT.PartType).
+        ' ⛔ Face = 1, NO 0. La primera version de este scan puso 0 y habria mal-clasificado cualquier
+        ' HDPT de cara como NO-CARA — justo la categoria que el scan existe para contar. El valor sale del
+        ' schema xEdit (HDPT\PNAM 'Type': 0=Misc 1=Face 2=Eyes 3=Hair 4=Facial Hair 5=Scar 6=Eyebrows) y
+        ' coincide con las constantes de la app (FaceGenBuilder.PartTypeFace=1, MainForm/
+        ' NpcMaterialResolver.HeadPartTypeFace=1). El veredicto medido NO cambia: el unico referente HDPT
+        ' del corpus es partType=2 (Eyes), NO-CARA con cualquiera de los dos valores.
+        Const PartTypeFace As Integer = FO4_NPC_Manager.FaceGenBuilder.PartTypeFace
+        Dim faceRefs = 0, nonFaceRefs = 0
+        If alphaTxst.Count > 0 Then
+            Console.WriteLine("[REF] referentes de los TXST con alpha:")
+            For Each kv In pm.AllRecords
+                Dim r = kv.Value
+                If r Is Nothing Then Continue For
+                Select Case r.Header.Signature
+                    Case "HDPT"
+                        Dim h = RecordParsers.ParseHDPT(r, pm)
+                        If h Is Nothing OrElse h.TextureSetFormID = 0UI OrElse Not alphaTxst.ContainsKey(h.TextureSetFormID) Then Continue For
+                        Dim isFace = (h.PartType = PartTypeFace)
+                        If isFace Then faceRefs += 1 Else nonFaceRefs += 1
+                        Console.WriteLine($"  HDPT.TNAM 0x{kv.Key:X8} {h.EditorID} partType={h.PartType} usesBodyTex={h.UsesBodyTexture} → txst=0x{h.TextureSetFormID:X8}  [{If(isFace, "CARA", "NO-CARA")}]")
+                    Case "NPC_"
+                        Dim n = RecordParsers.ParseNPC(r, r.SourcePluginName, pm)
+                        If n Is Nothing OrElse n.HeadTextureFormID = 0UI OrElse Not alphaTxst.ContainsKey(n.HeadTextureFormID) Then Continue For
+                        faceRefs += 1   ' NPC.FTST ES la cara por definicion
+                        Console.WriteLine($"  NPC.FTST   0x{kv.Key:X8} {n.EditorID} → txst=0x{n.HeadTextureFormID:X8}  [CARA]")
+                    Case "RACE"
+                        Dim rc = RecordParsers.ParseRACE(r, pm)
+                        If rc Is Nothing Then Continue For
+                        For Each fid In {rc.MaleDefaultFaceTextureFormID, rc.FemaleDefaultFaceTextureFormID}
+                            If fid <> 0UI AndAlso alphaTxst.ContainsKey(fid) Then
+                                faceRefs += 1
+                                Console.WriteLine($"  RACE.DFT   0x{kv.Key:X8} {rc.EditorID} → txst=0x{fid:X8}  [CARA]")
+                            End If
+                        Next
+                    Case "ARMA"
+                        Dim a = RecordParsers.ParseARMA(r, pm)
+                        If a Is Nothing Then Continue For
+                        For Each fid In {a.MaleSkinTextureFormID, a.FemaleSkinTextureFormID}
+                            If fid <> 0UI AndAlso alphaTxst.ContainsKey(fid) Then
+                                nonFaceRefs += 1
+                                Console.WriteLine($"  ARMA.NAM0/1 0x{kv.Key:X8} {a.EditorID} slots=0x{a.SlotMask:X8} → txst=0x{fid:X8}  [NO-CARA]")
+                            End If
+                        Next
+                End Select
+            Next
+        End If
+        Console.WriteLine($"[REF] referentes CARA={faceRefs}  NO-CARA={nonFaceRefs}")
+        Console.WriteLine("[REF] VEREDICTO isFaceHeadPart: NO-CARA=0 ⇒ sacar el gate es INERTE sobre vanilla" &
+                          " (no lo valida: vanilla es corpus sesgado). NO-CARA>0 ⇒ contraejemplo: hoy esos shapes" &
+                          " pierden el alpha de su material.")
+        Console.WriteLine("===== FIN ALPHA GATE SCAN =====")
+    End Sub
+
     Private Sub TtedScan(pm As PluginManager)
         ' Por raw-u32 de TTED: cuenta por EntryType + ejemplos. Asi se ve si TextureSet usa int-indice o
         ' float y si Palette alguna vez usa float. raw normal (>=0x00800000) = float real; raw chico = int.
@@ -7973,6 +9191,15 @@ persist:
                 Case "--posthresh"
                     If i + 1 < args.Length AndAlso Double.TryParse(v, Globalization.NumberStyles.Float, Globalization.CultureInfo.InvariantCulture, a.PosThresh) Then i += 2 Else i += 1
                 Case "--ddscompare" : a.DdsCompare = True : i += 1
+                Case "--rawdds" : a.RawDds = True : i += 1
+                Case "--alphagatescan" : a.AlphaGateScan = True : i += 1
+                Case "--tintcountscan" : a.TintCountScan = True : i += 1
+                Case "--ddsprobe" : a.DdsProbe = v : i += 2
+                Case "--recscan" : a.RecScan = v : i += 2
+                Case "--meshcollide" : a.MeshCollide = True : i += 1
+                Case "--texslotdiff" : a.TexSlotDiff = True : i += 1
+                Case "--dumpacc" : a.DumpAcc = v : i += 2
+                Case "--shapeorder" : a.ShapeOrder = True : i += 1
                 Case "--defaults" : a.Defaults = True : i += 1
                 Case "--engineskinblend" : a.EngineSkinNorm = True : i += 1
                 Case "--noengineskinblend" : a.EngineSkinNorm = False : i += 1
@@ -8014,8 +9241,23 @@ persist:
                     Console.Error.WriteLine($"Unknown arg: {args(i)}") : PrintUsage() : Return Nothing
             End Select
         End While
-        If a.ListPath = "" AndAlso (a.Esp = "" OrElse a.Edid = "") AndAlso Not a.TtedScan AndAlso Not a.ScanDiff AndAlso Not a.RaceAnim AndAlso Not a.RaceCompat AndAlso Not a.MountValidate AndAlso a.FindHkx = "" AndAlso a.ChunkCompare = "" AndAlso a.DumpBehavior = "" AndAlso Not a.HkxCoverage AndAlso a.KwType = "" AndAlso Not a.StateMap AndAlso Not a.ClipResolve AndAlso a.HkxBone = "" AndAlso a.ClipBase = "" AndAlso a.FindFile = "" AndAlso a.NifDump = "" AndAlso a.NifSlots = "" AndAlso a.AnimSyncCheck = "" AndAlso a.BlendHintScan = "" AndAlso Not a.CatProfile AndAlso a.DumpRef = "" AndAlso a.EstimateSclp = "" AndAlso a.SclpDiag = "" AndAlso a.SclpBatch = "" AndAlso a.BindDiff = "" AndAlso a.Ba2Extract = "" AndAlso Not a.SseCompareBatch AndAlso Not a.VertexBatch AndAlso a.PosDump = "" AndAlso a.MeshShaders = "" Then
+        If a.ListPath = "" AndAlso (a.Esp = "" OrElse a.Edid = "") AndAlso a.DdsProbe = "" AndAlso a.RecScan = "" AndAlso Not a.MeshCollide AndAlso a.DumpAcc = "" AndAlso Not a.TexSlotDiff AndAlso Not a.ShapeOrder AndAlso Not a.TintCountScan AndAlso Not a.AlphaGateScan AndAlso Not a.TtedScan AndAlso Not a.ScanDiff AndAlso Not a.RaceAnim AndAlso Not a.RaceCompat AndAlso Not a.MountValidate AndAlso a.FindHkx = "" AndAlso a.ChunkCompare = "" AndAlso a.DumpBehavior = "" AndAlso Not a.HkxCoverage AndAlso a.KwType = "" AndAlso Not a.StateMap AndAlso Not a.ClipResolve AndAlso a.HkxBone = "" AndAlso a.ClipBase = "" AndAlso a.FindFile = "" AndAlso a.NifDump = "" AndAlso a.NifSlots = "" AndAlso a.AnimSyncCheck = "" AndAlso a.BlendHintScan = "" AndAlso Not a.CatProfile AndAlso a.DumpRef = "" AndAlso a.EstimateSclp = "" AndAlso a.SclpDiag = "" AndAlso a.SclpBatch = "" AndAlso a.BindDiff = "" AndAlso a.Ba2Extract = "" AndAlso Not a.SseCompareBatch AndAlso Not a.VertexBatch AndAlso a.PosDump = "" AndAlso a.MeshShaders = "" Then
             Console.Error.WriteLine("Missing --esp and --edid (or use --list).") : PrintUsage() : Return Nothing
+        End If
+        ' --rawdds + --ddscompare: COMBINACION DELIBERADA, marcada a los gritos (no abortada).
+        ' Verificado en el codigo del comparador antes de habilitarla: CompareFo4FaceCustomizationDds
+        ' DECODIFICA los dos DDS a RGBA y compara pixel a pixel; el unico abort es por DIMENSIONES, no por
+        ' formato ⇒ hornear sin comprimir NO deja la comparacion sin medir ni inventa una categoria falsa.
+        ' Lo que SI cambia es el piso: desaparece el ruido de NUESTRO codec y queda solo el del CK, asi que
+        ' el RMS resultante NO es comparable contra un baseline hecho con BC3/BC5.
+        ' Se marca en TRES lugares (aca, en el banner y en el reporte agregado) para que ningun numero pueda
+        ' leerse sin el contexto.
+        If a.RawDds AndAlso a.DdsCompare Then
+            Console.Error.WriteLine("################################################################")
+            Console.Error.WriteLine("## --rawdds + --ddscompare: los DDS se hornean SIN COMPRIMIR.")
+            Console.Error.WriteLine("## El RMS de esta corrida NO es comparable contra baselines BC3/BC5:")
+            Console.Error.WriteLine("## queda solo el ruido del codec del CK, no el nuestro.")
+            Console.Error.WriteLine("################################################################")
         End If
         Return a
     End Function

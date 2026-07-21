@@ -393,10 +393,11 @@ Friend NotInheritable Class NpcSkinLivePreview
             ' camino body-skin ambos quedan False.
             NpcMaterialResolver.ApplyTextureSetOverrides(bodyTxst, relMat, usesBody, shape.NifShape, shape.NifContent,
                                                          isHeadPartTextureSet:=NpcMaterialResolver.IsHeadPartTextureSetFor(shapeCand),
-                                                         isFaceHeadPart:=NpcMaterialResolver.IsFaceHeadPartFor(shapeCand),
                                                          forceDiffuseOnly:=False,
-                                                         isNpcExplicitFaceTextureSet:=NpcMaterialResolver.IsNpcExplicitFaceTextureSetFor(state, bodyTxst),
                                                          fo4FaceComposeInputsOnly:=False)
+            ' alphaTestWriteDecision se OMITE (=Nothing) a propósito: este es el fast path del picker de
+            ' piel, camino de RENDER puro — no escribe NIF. Sin decisión externa la lib se comporta como
+            ' siempre. Pasar False acá sería declarar un veto de bake desde un camino que no hornea.
             count += 1
         Next
         Return count
