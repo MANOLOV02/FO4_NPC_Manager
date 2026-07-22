@@ -39,6 +39,10 @@ Module Program
         Public CompareCk As Boolean = False      ' --compareck: tras --buildfacegen, diff del NIF baked REAL (on-disk) + facetint DDS vs la ref del CK (BSA/loose)
         Public SseCompareBatch As Boolean = False ' --ssecomparebatch [N]: barrido 100% — bakea+compara TODOS los NPC_ vanilla con FaceGeom, agrega diffs por categoría
         Public SseCompareBatchLimit As Integer = 0
+        ''' <summary>--headfidelity: corre el mismo barrido que --ssecomparebatch y ADEMÁS mide, por shape,
+        ''' preview-vs-juego (FaceGenBuildPipeline.CollectHeadFidelity). Implica --ssecomparebatch. Sólo
+        ''' mide: no cambia nada de lo que el bake escribe.</summary>
+        Public HeadFidelity As Boolean = False
         Public VertexBatch As Boolean = False    ' --vertexbatch [N]: game-aware (usa --game); bakea TODOS los vanilla con FaceGeom y reporta max vertex diff + outliers (posición)
         Public VertexBatchLimit As Integer = 0
         Public VertexBatchOut As String = ""     ' --vbout <csv>: CSV resumible del batch (append+flush por NPC; sentinel .cur para saltear el NPC que crashea el proceso)
@@ -522,7 +526,11 @@ Module Program
             ' generado a su carpeta (asis/ | nuevo/) y dejar Data limpio. Sin logger el barrido es órdenes de
             ' magnitud más rápido (el log arma strings por shape/slot/decisión en todo el pipeline).
             Logger.Enabled = False
+            ' --headfidelity: además de comparar contra el CK, mide preview-vs-juego por shape (ETAPA 1
+            ' del diagnóstico de fidelidad). Sólo mide; no cambia lo que el bake escribe.
+            FO4_NPC_Manager.FaceGenBuildPipeline.HeadFidelityEnabled = opt.HeadFidelity
             RunSseCompareBatch(pm, opt.SseCompareBatchLimit)
+            If opt.HeadFidelity Then ReportHeadFidelity()
             Return
         End If
 
@@ -1850,6 +1858,62 @@ Module Program
     ''' <summary>BATCH: bakea + compara TODOS los NPC_ vanilla con FaceGeom horneado por el CK, y agrega TODAS
     ''' las diferencias por CATEGORÍA (normalizando nombres de shape/valores) con conteo de NPCs afectados.
     ''' Escribe un reporte agregado. Sirve para el barrido 100% de NIF vanilla SSE.</summary>
+    ''' <summary>ETAPA 1 del diagnóstico de fidelidad del preview (<c>--headfidelity</c>). Agrega las filas
+    ''' que <see cref="FO4_NPC_Manager.FaceGenBuildPipeline.CollectHeadFidelity"/> juntó durante el barrido.
+    ''' <para>Lee así: la población SIN <c>CustomizationRemapNewBonesData</c> es el CONTROL — el bake mete el
+    ''' body-weight en sus dos pasadas, se cancela, y max tiene que dar 0 EXACTO. Si no da 0, la medición
+    ''' está mal y el resto del reporte no vale. La población CON la flag es la que mide la divergencia real
+    ''' del preview.</para></summary>
+    Private Sub ReportHeadFidelity()
+        Dim rows = FO4_NPC_Manager.FaceGenBuildPipeline.GetHeadFidelityRows()
+        Console.WriteLine()
+        Console.WriteLine("======== HEAD FIDELITY (preview vs juego) ========")
+        If rows.Count = 0 Then
+            Console.WriteLine("  (sin filas — ningun shape paso por el bake con la medicion encendida)")
+            Return
+        End If
+
+        Dim report = Sub(label As String, subset As List(Of FO4_NPC_Manager.FaceGenBuildPipeline.HeadFidelityRow))
+                         Console.WriteLine($"  ---- {label}: {subset.Count} shapes ----")
+                         If subset.Count = 0 Then Return
+                         Dim maxAll = subset.Max(Function(r) r.MaxD)
+                         Dim rmsAll = Math.Sqrt(subset.Sum(Function(r) r.Rms * r.Rms * r.VertexCount) /
+                                                Math.Max(1, subset.Sum(Function(r) CDbl(r.VertexCount))))
+                         Console.WriteLine($"      max  = {maxAll:G6}")
+                         Console.WriteLine($"      rms  = {rmsAll:G6}   (ponderado por vertices)")
+                         For Each th In {0.0, 0.005, 0.01, 0.02, 0.05, 0.1}
+                             ' .Where(...).Count() y no .Count(pred): en VB `List.Count` es propiedad y gana
+                             ' sobre la extensión de LINQ (BC32016).
+                             Console.WriteLine($"      shapes con max > {th:F3} : {subset.Where(Function(r) r.MaxD > th).Count()}")
+                         Next
+                         Dim sb = subset.Sum(Function(r) CDbl(r.SingleBoneVerts))
+                         Dim mb = subset.Sum(Function(r) CDbl(r.MultiBoneVerts))
+                         Dim tot = Math.Max(1, sb + mb)
+                         Console.WriteLine($"      vertices con UN solo hueso del rig plano : {sb:F0} ({100.0 * sb / tot:F2}%)")
+                         Console.WriteLine($"      vertices con VARIOS huesos              : {mb:F0} ({100.0 * mb / tot:F2}%)")
+                         Console.WriteLine("      peores 15 shapes:")
+                         For Each r In subset.OrderByDescending(Function(x) x.MaxD).Take(15)
+                             Console.WriteLine($"        0x{r.NpcFormID:X8} '{r.ShapeName}' max={r.MaxD:G6} rms={r.Rms:G6} verts={r.VertexCount}")
+                         Next
+                     End Sub
+
+        Dim ctrl = rows.Where(Function(r) Not r.HasRemapFlag).ToList()
+        Dim flagged = rows.Where(Function(r) r.HasRemapFlag).ToList()
+        report("CONTROL - shapes SIN CustomizationRemapNewBonesData (max DEBE ser 0)", ctrl)
+        Console.WriteLine()
+        report("MEDICION - shapes CON CustomizationRemapNewBonesData", flagged)
+        Console.WriteLine()
+        Dim ctrlMax = If(ctrl.Count > 0, ctrl.Max(Function(r) r.MaxD), 0.0)
+        If ctrlMax > 0.0000001 Then
+            Console.WriteLine($"  !!!! CONTROL ROTO: el grupo sin flag da max={ctrlMax:G6}, tendria que dar 0.")
+            Console.WriteLine("       La medicion esta mal; NO leer el grupo con flag.")
+            Environment.ExitCode = 4
+        Else
+            Console.WriteLine("  control OK (max=0 en el grupo sin flag) => el numero del grupo con flag es valido.")
+        End If
+        Console.WriteLine("======== END HEAD FIDELITY ========")
+    End Sub
+
     Private Sub RunSseCompareBatch(pm As PluginManager, limit As Integer)
         ' GAME-AWARE: antes la lista de masters estaba hardcodeada a Skyrim ⇒ con --game fo4 daba 0 NPCs.
         ' PluginManager.IsOfficialPlugin cubre LOS DOS motores (Fallout4.esm+DLC, Skyrim.esm+DLC, VR y cc*),
@@ -9179,6 +9243,12 @@ persist:
                     i += 2
                 Case "--compareck" : a.CompareCk = True : i += 1
                 Case "--ssecomparebatch"
+                    a.SseCompareBatch = True
+                    If i + 1 < args.Length AndAlso Integer.TryParse(args(i + 1), a.SseCompareBatchLimit) Then i += 2 Else i += 1
+                Case "--headfidelity"
+                    ' Implica el barrido: la medición se engancha adentro del bake, así que necesita el
+                    ' mismo corpus y el mismo recorrido.
+                    a.HeadFidelity = True
                     a.SseCompareBatch = True
                     If i + 1 < args.Length AndAlso Integer.TryParse(args(i + 1), a.SseCompareBatchLimit) Then i += 2 Else i += 1
                 Case "--vertexbatch"

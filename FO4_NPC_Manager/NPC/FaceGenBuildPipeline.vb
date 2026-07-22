@@ -52,7 +52,8 @@ Public Module FaceGenBuildPipeline
                                                   facebonesNif As Nifcontent_Class_Manolo,
                                                   facebonesShape As INiShape,
                                                   chargenTriPath As String,
-                                                  Optional raceMorphTriPath As String = Nothing) As WorldVertResult
+                                                  Optional raceMorphTriPath As String = Nothing,
+                                                  Optional srcNif As Nifcontent_Class_Manolo = Nothing) As WorldVertResult
         If state Is Nothing OrElse facebonesShape Is Nothing OrElse facebonesNif Is Nothing Then Return Nothing
 
         ' 1) Apply chargen TRI morphs to the facebones shape's vertex array (in place; the
@@ -88,6 +89,27 @@ Public Module FaceGenBuildPipeline
         If srcPose IsNot Nothing Then
             If faceSkel IsNot Nothing AndAlso faceSkel.HasSkeleton Then faceSkel.ApplyBoneMorphPose(srcPose)
             If bodySkel IsNot Nothing AndAlso bodySkel.HasSkeleton Then bodySkel.ApplyBoneMorphPose(srcPose)
+        End If
+
+        ' 2c) Huesos de cloth (pelo con BSClothExtraData) — inyectados ANTES de skinear, no después.
+        ' El inverso ya los inyectaba (ver BakeShape), pero el forward corría PRIMERO y resolvía esos
+        ' huesos por el fallback crudo del NIF (BuildPoseResolver nivel 3) ⇒ las dos mitades del bake
+        ' usaban un bind DISTINTO para el mismo hueso. MEDIDO con Tools/BakeAsymmetryProbe sobre la Data
+        ' de FO4: de 271 NIFs `_faceBones` de head parts, 14 traen cloth y 3 referencian huesos ausentes
+        ' de skeleton.nif ∪ skeleton_faceBones.nif — FemaleHair05/FemaleHair30 (Ponytail_C_Cloth01..04)
+        ' y FemaleHair32 (SideTail_BN_A/B_001..004).
+        ' El bind sale de srcNif (el NIF PLANO), la MISMA fuente que usa el inverso, así que el lado
+        ' destino queda bit-idéntico y sólo cambia el forward. La lista de huesos a inyectar la manda la
+        ' shape que se está skineando acá (la `_faceBones`), no la plana.
+        If srcNif IsNot Nothing AndAlso bodySkel IsNot Nothing AndAlso bodySkel.HasSkeleton Then
+            Try
+                Dim clothSkel = SkeletonClothOverlayHelper_Class.ParseClothSkeleton(srcNif)
+                If clothSkel IsNot Nothing Then
+                    Dim fbnsWrap As New NifRenderableShape(facebonesNif, facebonesShape, 0)
+                    SkeletonClothOverlayHelper_Class.InjectMissingBonesIntoLiveSkeleton(fbnsWrap, bodySkel, clothSkel)
+                End If
+            Catch ex As Exception
+            End Try
         End If
 
         ' 3) Esqueleto para el lado DESTINO (el inverso del bake). Lleva SÓLO el body-weight, sin
@@ -288,7 +310,8 @@ Public Module FaceGenBuildPipeline
         If facebonesNif Is Nothing OrElse facebonesShape Is Nothing Then Return False
 
         ' 1) v_world via FBNS skin with FMRS pose applied + chargen morphs.
-        Dim wr = ComputeWorldVerticesForShape(state, facebonesNif, facebonesShape, chargenTriPath, raceMorphTriPath)
+        Dim wr = ComputeWorldVerticesForShape(state, facebonesNif, facebonesShape, chargenTriPath, raceMorphTriPath,
+                                              srcNif:=srcNif)
         If wr Is Nothing OrElse wr.WorldVertices Is Nothing Then
             Return False
         End If
@@ -332,13 +355,16 @@ Public Module FaceGenBuildPipeline
         Dim shapeGlobal As Matrix4d = If(shapeNode IsNot Nothing,
                                           Transform_Class.GetGlobalTransform(shapeNode, destNif).ToMatrix4d(),
                                           Matrix4d.Identity)
+        ' Paleta del INVERSO: el motor usa la del `_faceBones` en las DOS pasadas cuando hay
+        ' CustomizationRemapData (501/501 en vanilla). Ver BuildEngineInverseBinds.
+        Dim invBinds = BuildEngineInverseBinds(shapeBones, shapeLocalTs, facebonesNif, facebonesShape)
         Dim precomputedOrig(nBones - 1) As Matrix4d
         For k = 0 To nBones - 1
             Dim bindT As Transform_Class = Nothing
             If origResolver IsNot Nothing Then bindT = origResolver(shapeBones(k))
             If bindT Is Nothing Then bindT = Transform_Class.GetGlobalTransform(shapeBones(k), destNif)
             If bindT Is Nothing Then bindT = New Transform_Class()
-            precomputedOrig(k) = shapeGlobal * bindT.ComposeTransforms(shapeLocalTs(k)).ToMatrix4d()
+            precomputedOrig(k) = shapeGlobal * bindT.ComposeTransforms(invBinds(k)).ToMatrix4d()
         Next
 
         Dim geom = ShapeGeometryFactory.[For](clonedOrigShape, destNif)
@@ -353,6 +379,19 @@ Public Module FaceGenBuildPipeline
             Return False
         End If
 
+        ' Diagnóstico de fidelidad del preview (--headfidelity). OFF por defecto ⇒ el bake no cambia.
+        If HeadFidelityEnabled Then
+            Try
+                ' invBinds (no shapeLocalTs): las DOS paletas del diagnóstico tienen que diferir SÓLO
+                ' en el body-weight, o el autochequeo del grupo de control deja de dar 0 exacto.
+                CollectHeadFidelity(state, destNif, wr, vWorld, shapeBones, invBinds, shapeGlobal,
+                                    skin, wpv, precomputedOrig,
+                                    ShapeHasCustomizationNewBones(facebonesNif, facebonesShape),
+                                    If(clonedOrigShape.Name?.String, ""))
+            Catch ex As Exception
+            End Try
+        End If
+
         Dim baked As New List(Of System.Numerics.Vector3)(vCount)
         Dim singularCount As Integer = 0
         ' Buffer reusable para la normalizacion de pesos del MOTOR (ver EngineSkinWeightNormalization). Lado INVERSO
@@ -362,37 +401,7 @@ Public Module FaceGenBuildPipeline
         Dim ckW(EngineSkinWeightNormalization.Slots - 1) As Single
 
         For i = 0 To vCount - 1
-            Dim Mtot As Matrix4d = Matrix4d.Zero
-            Dim sumW As Double = 0
-            Dim baseSlot = i * wpv
-            Dim hasSkinRow = flatIdx IsNot Nothing AndAlso flatWgt IsNot Nothing AndAlso i < skin.VertexCount
-
-            If hasSkinRow AndAlso EngineSkinWeightNormalization.TryComputeWeights(flatWgt, baseSlot, wpv, ckW) Then
-                For j = 0 To EngineSkinWeightNormalization.Slots - 1
-                    If ckW(j) > 0.0F Then
-                        Dim idx = CInt(flatIdx(baseSlot + j))
-                        If idx >= 0 AndAlso idx < nBones Then Mtot += precomputedOrig(idx) * CDbl(ckW(j))
-                    End If
-                Next
-            Else
-                If hasSkinRow Then
-                    For j = 0 To wpv - 1
-                        Dim w = CDbl(CSng(flatWgt(baseSlot + j)))
-                        sumW += w
-                        Dim idx = CInt(flatIdx(baseSlot + j))
-                        If idx >= 0 AndAlso idx < nBones Then Mtot += precomputedOrig(idx) * w
-                    Next
-                End If
-                If sumW = 0 Then
-                    If nBones > 0 Then
-                        Dim idx0 = If(flatIdx IsNot Nothing AndAlso flatIdx.Length > 0 AndAlso i < skin.VertexCount,
-                                      CInt(flatIdx(baseSlot)), 0)
-                        Mtot = precomputedOrig(Math.Max(0, Math.Min(idx0, nBones - 1)))
-                    End If
-                Else
-                    Mtot = Mtot * (1.0 / sumW)
-                End If
-            End If
+            Dim Mtot As Matrix4d = BlendMtot(precomputedOrig, skin, i, wpv, nBones, ckW)
 
             Dim vBaked As Vector3d
             Try
@@ -438,6 +447,253 @@ Public Module FaceGenBuildPipeline
         End Try
 
         Return True
+    End Function
+
+    ''' <summary>Una fila del diagnóstico de fidelidad del preview (ver <see cref="CollectHeadFidelity"/>).</summary>
+    Public Class HeadFidelityRow
+        Public Property NpcFormID As UInteger
+        Public Property ShapeName As String = ""
+        ''' <summary>El shape trae <c>CustomizationRemapNewBonesData</c> ⇒ el CK NO le hornea el
+        ''' body-weight en ninguna de las dos pasadas ⇒ es donde puede haber divergencia.</summary>
+        Public Property HasRemapFlag As Boolean
+        Public Property VertexCount As Integer
+        Public Property MaxD As Double
+        Public Property Rms As Double
+        ''' <summary>Vértices con peso en UN solo hueso del rig plano. Si dominan, la corrección
+        ''' <c>B_k·S_k·inv(B_k)</c> es POR HUESO y no hace falta ningún canal per-vértice.</summary>
+        Public Property SingleBoneVerts As Integer
+        Public Property MultiBoneVerts As Integer
+    End Class
+
+    ''' <summary>OFF por defecto. Lo enciende el CLI (<c>--headfidelity</c>). NO altera nada de lo que
+    ''' el bake escribe — sólo mide.</summary>
+    Public HeadFidelityEnabled As Boolean = False
+    Private ReadOnly _headFidelityRows As New List(Of HeadFidelityRow)
+    Private ReadOnly _headFidelityLock As New Object()
+
+    ''' <summary>Devuelve una copia de las filas acumuladas.</summary>
+    Public Function GetHeadFidelityRows() As List(Of HeadFidelityRow)
+        SyncLock _headFidelityLock
+            Return _headFidelityRows.ToList()
+        End SyncLock
+    End Function
+
+    ''' <summary>ETAPA 1 del diagnóstico de fidelidad del preview. Mide, por shape, cuánto se aparta lo
+    ''' que MUESTRA EL PREVIEW de lo que MUESTRA EL JUEGO, sin abrir la app:
+    ''' <code>
+    '''   preview = v_world                                                      (el forward del bake)
+    '''   juego   = Mtot_plano(bind∘bw_vivo) · inv(Mtot_plano(bind∘bw_ck)) · v_world
+    ''' </code>
+    ''' El render produce, por construcción, el mismo <c>v_world</c> que el forward del bake, así que la
+    ''' diferencia se puede calcular entera offline.
+    ''' <para>Las dos paletas salen de <see cref="BuildBindResolver"/>, que ya toma el esqueleto de
+    ''' body-weight como parámetro: <c>bw_ck</c> = <c>wr.BwBindSkel</c> (lo que el bake efectivamente
+    ''' invirtió — <c>Nothing</c> en las shapes con <c>CustomizationRemapNewBonesData</c>) y
+    ''' <c>bw_vivo</c> = el mismo body-weight SIN ese gate, que es lo que el motor aplica al esqueleto
+    ''' del actor tenga o no la flag (la flag sólo decide si el CK lo HORNEA).</para>
+    ''' <para>⭐ AUTOCHEQUEO: en las shapes SIN esa flag las dos paletas son idénticas ⇒ tiene que dar 0
+    ''' EXACTO. Si alguna da distinto de 0, lo que está mal es la medición, no el bake.</para></summary>
+    Private Sub CollectHeadFidelity(state As BakeState, destNif As Nifcontent_Class_Manolo,
+                                     wr As WorldVertResult, vWorld As Vector3d(),
+                                     shapeBones As NiNode(), shapeLocalTs As Transform_Class(),
+                                     shapeGlobal As Matrix4d, skin As ShapeSkinningData, wpv As Integer,
+                                     precomputedBakeBind As Matrix4d(),
+                                     hasRemapFlag As Boolean, shapeName As String)
+        Dim nBones = shapeBones.Length
+        If nBones = 0 OrElse vWorld Is Nothing OrElse vWorld.Length = 0 Then Return
+
+        ' Paleta VIVA = la del bake pero con el body-weight SIN el gate de la flag.
+        Dim bwLiveSkel As SkeletonInstance = Nothing
+        Dim bwLivePose = BuildBakeBodyWeightPose(state, wr.BodySkel)
+        If bwLivePose IsNot Nothing Then
+            bwLiveSkel = LoadBodySkeleton(state)
+            If bwLiveSkel IsNot Nothing AndAlso bwLiveSkel.HasSkeleton Then
+                bwLiveSkel.ApplyBoneMorphPose(bwLivePose)
+            Else
+                bwLiveSkel = Nothing
+            End If
+        End If
+
+        Dim liveResolver = BuildBindResolver(wr.FaceSkel, wr.BodySkel, destNif, bwLiveSkel)
+        Dim precomputedLive(nBones - 1) As Matrix4d
+        For k = 0 To nBones - 1
+            Dim t As Transform_Class = Nothing
+            If liveResolver IsNot Nothing Then t = liveResolver(shapeBones(k))
+            If t Is Nothing Then t = Transform_Class.GetGlobalTransform(shapeBones(k), destNif)
+            If t Is Nothing Then t = New Transform_Class()
+            precomputedLive(k) = shapeGlobal * t.ComposeTransforms(shapeLocalTs(k)).ToMatrix4d()
+        Next
+
+        Dim ckW(EngineSkinWeightNormalization.Slots - 1) As Single
+        Dim ssq As Double = 0, mx As Double = 0
+        Dim nSingle As Integer = 0, nMulti As Integer = 0, nUsed As Integer = 0
+        For i = 0 To vWorld.Length - 1
+            ' Cuántos huesos del rig PLANO pesan en este vértice (decide si la corrección es por-hueso).
+            Dim nb = 0
+            If skin.BoneWeights IsNot Nothing AndAlso i < skin.VertexCount Then
+                For j = 0 To wpv - 1
+                    If CSng(skin.BoneWeights(i * wpv + j)) > 0.0F Then nb += 1
+                Next
+            End If
+            If nb <= 1 Then nSingle += 1 Else nMulti += 1
+
+            Dim mBind = BlendMtot(precomputedBakeBind, skin, i, wpv, nBones, ckW)
+            Dim mLive = BlendMtot(precomputedLive, skin, i, wpv, nBones, ckW)
+            Try
+                Dim inv = Matrix4d.Invert(EngineSkinWeightNormalization.ReanchorAffine(mBind))
+                Dim vLocal = Vector3d.TransformPosition(vWorld(i), inv)
+                Dim vGame = Vector3d.TransformPosition(vLocal, EngineSkinWeightNormalization.ReanchorAffine(mLive))
+                Dim d = (vGame - vWorld(i)).Length
+                ssq += d * d
+                nUsed += 1
+                If d > mx Then mx = d
+            Catch
+                ' Mtot singular — el bake ya lo contabiliza aparte; acá simplemente no aporta a la métrica.
+            End Try
+        Next
+
+        Dim row As New HeadFidelityRow With {
+            .NpcFormID = state.NpcFormID,
+            .ShapeName = shapeName,
+            .HasRemapFlag = hasRemapFlag,
+            .VertexCount = vWorld.Length,
+            .MaxD = mx,
+            .Rms = If(nUsed > 0, Math.Sqrt(ssq / nUsed), 0.0),
+            .SingleBoneVerts = nSingle,
+            .MultiBoneVerts = nMulti
+        }
+        SyncLock _headFidelityLock
+            _headFidelityRows.Add(row)
+        End SyncLock
+    End Sub
+
+    ''' <summary>
+    ''' invBind por hueso para el lado <b>DESTINO</b> del bake (el inverso), con la paleta que usa el
+    ''' <b>MOTOR</b>: la del <c>_faceBones</c> para los huesos que ese rig declara, la del NIF plano
+    ''' para los que no.
+    '''
+    ''' <para><b>Por qué el inverso de la app estaba MAL.</b> En <c>ApplyCustomizationRemap</c> la
+    ''' segunda pasada elige paleta en <c>0x142B6F8F5</c>:</para>
+    ''' <code>
+    '''   test r13,r13        ; ¿hay CustomizationRemapData?
+    '''   je   0x142B6F90A    ; NO -> FALLBACK: pesos propios del destino + paleta del DESTINO
+    '''   ...                 ; SI -> r8 = remap + i*12 ; r9 = rbx = paleta del _faceBones
+    ''' </code>
+    ''' <para>La app reconstruía el inverso desde el skin del propio shape destino con la paleta del
+    ''' destino ⇒ <b>es literalmente la rama <c>je</c>, el fallback</b>. Y <b>501 de 501</b> shapes
+    ''' <c>_faceBones</c> de vanilla traen <c>CustomizationRemapData</c> (re-medido 2026-07-22 sobre los
+    ''' 484 NIF del BA2; <b>0 de 501</b> planos la traen) ⇒ <b>el motor NUNCA toma esa rama</b> para
+    ''' ninguna head part del juego. ⛔ El buffer dinámico NO participa de esta decisión: decide dónde se
+    ''' ESCRIBE la salida, no con qué paleta se calcula.</para>
+    '''
+    ''' <para><b>Por qué alcanza con sustituir el invBind (sin parsear el remap).</b> Los pesos del
+    ''' remap son <b>bit-idénticos</b> a los del shape plano (8660/8660 vértices en 6 pares vanilla, ver
+    ''' <c>reference_ck_customization_remap_decoded</c>); lo único que cambia son los <b>índices</b>, que
+    ''' apuntan a la paleta del source. Toda la diferencia colapsa al invBind por hueso, y el apareo del
+    ''' motor es por nombre igual que acá.</para>
+    '''
+    ''' <para><b>FUENTE (RE, CreationKit.exe, leída instrucción por instrucción).</b>
+    ''' El contexto de huesos se arma UNA vez desde <c>rdx</c> (<c>0x142B6F7A4</c> → ctx
+    ''' <c>0x142B72EE0</c>, array en <c>[ctx+0x58]</c>, <c>0x142B73030</c>) y las DOS llamadas a
+    ''' <c>SkinBlend</c> lo reciben en <c>r9</c> (<c>0x142B6F8CA</c> y <c>0x142B6F905: mov r9,rbx</c>).
+    ''' El driver <c>0x140AA31B0</c> llama <c>ApplyCustomizationRemap(rcx=hijo del árbol A,
+    ''' rdx=hijo del árbol B, r8=remap)</c> y lee remap/NewBonesData de <c>rbx</c> = árbol B ⇒
+    ''' <b>árbol B = <c>_faceBones</c></b>. El array sale de <c>[skinInst+0x40]</c> de esa geometría, y el
+    ''' append de NewBones (<c>0x142B77420</c>) hace <c>r12d = [rdx+0x10] + [rcx+0x20]</c> (nuevas +
+    ''' viejas), aloja un BoneData nuevo, swapea <c>[skinInst+0x40]</c> y <b>copia las viejas</b> en el
+    ''' bucle de <c>0x142B77510</c> ⇒ <b>los huesos compartidos conservan el invBind del
+    ''' <c>_faceBones</c></b>; los que sólo tiene el plano entran por <c>NewBonesData</c>, cuyo
+    ''' <c>Matrix4x4</c> de <c>record+0x90</c> es bit-idéntico al <c>BSSkinBoneTrans</c> del plano.</para>
+    '''
+    ''' <para><b>Magnitud — no confundir con correctitud.</b> Mueve la salida <b>max 2,97e-4 · rms
+    ''' 2,20e-5</b> (607.376 vértices / 501 shapes). Es discriminable <b>sólo donde los binds difieren</b>:
+    ''' <c>FemaleHeadHuman</c> mejora contra el CK de rms 0,000307 a <b>0,000233 (−24%)</b>, y queda
+    ''' <b>idéntico</b> en NeckGore / Hair / HeadRear / Mouth. El delta entre las dos copias del invBind es
+    ''' ruido de autoría de <b>media cero</b> (1286/2060 entradas bit-idénticas; ratio |media|/rms ≈ 1/√n
+    ''' por hueso), <b>no</b> una diferencia semántica del motor. ⛔ Que la corrección sea chica no la hace
+    ''' opcional: la hace chica.</para>
+    '''
+    ''' <para>⛔ <b>Corolario para el RENDER</b>: al DIBUJAR hay que seguir usando el invBind del NIF
+    ''' PLANO. Medido sobre 301 FaceGeom del BA2: el <c>BoneData</c> que el CK escribe a disco es el del
+    ''' plano en <b>8.186</b> entradas contra <b>0</b> del <c>_faceBones</c>, y nunca trae un hueso que
+    ''' sólo exista en el rig <c>_faceBones</c>. Esta sustitución es <b>sólo</b> del inverso del bake.</para>
+    '''
+    ''' <para><b>Degrada, no rompe</b>: sin NIF <c>_faceBones</c>, sin shape, o si un hueso del rig plano
+    ''' no aparece en el <c>_faceBones</c> (el caso ANEXADO), esa entrada se queda con el invBind del
+    ''' plano — que es exactamente lo que el motor anexa.</para>
+    ''' </summary>
+    Private Function BuildEngineInverseBinds(shapeBones As NiNode(),
+                                              flatLocalTs As Transform_Class(),
+                                              facebonesNif As Nifcontent_Class_Manolo,
+                                              facebonesShape As INiShape) As Transform_Class()
+        Dim n = shapeBones.Length
+        Dim outT(n - 1) As Transform_Class
+        Array.Copy(flatLocalTs, outT, n)
+        If facebonesNif Is Nothing OrElse facebonesShape Is Nothing Then Return outT
+        Try
+            Dim fw As New NifRenderableShape(facebonesNif, facebonesShape, 0)
+            Dim fb = fw.ShapeBones
+            Dim ft = fw.ShapeBoneTransforms
+            If fb Is Nothing OrElse ft Is Nothing OrElse fb.Count <> ft.Count Then Return outT
+            Dim byName As New Dictionary(Of String, Transform_Class)(StringComparer.OrdinalIgnoreCase)
+            For j = 0 To fb.Count - 1
+                Dim nm = If(fb(j)?.Name?.String, "")
+                If nm <> "" Then byName(nm) = ft(j)
+            Next
+            For k = 0 To n - 1
+                Dim nm = If(shapeBones(k)?.Name?.String, "")
+                If nm = "" Then Continue For
+                Dim t As Transform_Class = Nothing
+                If byName.TryGetValue(nm, t) AndAlso t IsNot Nothing Then outT(k) = t
+            Next
+        Catch ex As Exception
+            ' Cualquier fallo ⇒ se queda con el invBind del plano (comportamiento previo).
+        End Try
+        Return outT
+    End Function
+
+    ''' <summary>Mezcla per-vértice de la paleta del DESTINO: Σ w·M con la ley de pesos del MOTOR
+    ''' (<see cref="EngineSkinWeightNormalization"/>) y los mismos fallbacks (fila sin skin, Σw=0) que
+    ''' venía haciendo el inverso del bake inline. UNA sola implementación: la consumen el inverso de
+    ''' <see cref="BakeShape"/> y el diagnóstico <see cref="CollectHeadFidelity"/>, así no pueden
+    ''' divergir. <paramref name="ckW"/> es un buffer reusable del caller (evita alocar por vértice).</summary>
+    Private Function BlendMtot(precomputed As Matrix4d(), skin As ShapeSkinningData,
+                                i As Integer, wpv As Integer, nBones As Integer,
+                                ckW As Single()) As Matrix4d
+        Dim Mtot As Matrix4d = Matrix4d.Zero
+        Dim sumW As Double = 0
+        Dim baseSlot = i * wpv
+        Dim flatIdx = skin.BoneIndices
+        Dim flatWgt = skin.BoneWeights
+        Dim hasSkinRow = flatIdx IsNot Nothing AndAlso flatWgt IsNot Nothing AndAlso i < skin.VertexCount
+
+        If hasSkinRow AndAlso EngineSkinWeightNormalization.TryComputeWeights(flatWgt, baseSlot, wpv, ckW) Then
+            For j = 0 To EngineSkinWeightNormalization.Slots - 1
+                If ckW(j) > 0.0F Then
+                    Dim idx = CInt(flatIdx(baseSlot + j))
+                    If idx >= 0 AndAlso idx < nBones Then Mtot += precomputed(idx) * CDbl(ckW(j))
+                End If
+            Next
+        Else
+            If hasSkinRow Then
+                For j = 0 To wpv - 1
+                    Dim w = CDbl(CSng(flatWgt(baseSlot + j)))
+                    sumW += w
+                    Dim idx = CInt(flatIdx(baseSlot + j))
+                    If idx >= 0 AndAlso idx < nBones Then Mtot += precomputed(idx) * w
+                Next
+            End If
+            If sumW = 0 Then
+                If nBones > 0 Then
+                    Dim idx0 = If(flatIdx IsNot Nothing AndAlso flatIdx.Length > 0 AndAlso i < skin.VertexCount,
+                                  CInt(flatIdx(baseSlot)), 0)
+                    Mtot = precomputed(Math.Max(0, Math.Min(idx0, nBones - 1)))
+                End If
+            Else
+                Mtot = Mtot * (1.0 / sumW)
+            End If
+        End If
+        Return Mtot
     End Function
 
     ''' <summary>Walk the face skeleton hierarchy from <paramref name="boneName"/> upward
