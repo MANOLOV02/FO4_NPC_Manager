@@ -509,12 +509,10 @@ Public Class MainForm
         ''' NPC's gender). Engine-side these are added on top of RACE.BSMS to shape the outfit
         ''' (cinched waist, wider hips, etc.). Nothing when the ARMA has no BSMS or gender mismatch.</summary>
         Public ArmaBoneScaleDeltas As List(Of ARMA_BoneScaleDelta) = Nothing
-        ''' <summary>HeadRear only (effectivePartType=9): cuando DictKey fue redirigido al variant
-        ''' *_faceBones.nif, el _faceBones vanilla trae material genérico (basehumanfemaleskin) en
-        ''' lugar del material part-específico (basehumanfemalerear). LoadNifShapes copia el material
-        ''' del .nif base a los shapes del _faceBones (matching por nombre con sufijo "_faceBones"
-        ''' removido). Sólo se popula para HeadRear; otros HeadParts mantienen sus materiales originales.</summary>
-        Public BaseDictKeyForFaceBones As String = ""
+        ''' <summary>Head-bake: dictKey del hermano <c>_faceBones.nif</c>. <c>DictKey</c> es el NIF PLANO —que es
+        ''' el que se dibuja, igual que el motor— y esto queda como INSUMO para <see cref="HeadBakeService"/>.
+        ''' Vacío fuera de FO4 / cuando no hay <c>_faceBones</c>.</summary>
+        Public FaceBonesDictKey As String = ""
         ''' <summary>True = collect into candidates for logging/inspection but exclude from render.
         ''' Set for HDPT type=7 Meatcaps (inner-mouth geometry occluded by teeth; vanilla CK declares
         ''' them but normally not visible in static pose). Filtered out in SelectWinningCandidates.</summary>
@@ -630,6 +628,10 @@ Public Class MainForm
         Public ReadOnly Warnings As New List(Of String)
         ''' <summary>Shape reference -> mesh dictionary key path (for TRI file lookup).</summary>
         Public ReadOnly MeshDictKeys As New Dictionary(Of IRenderableShape, String)
+        ''' <summary>Camino head-bake (gate ON): shape del NIF PLANO -> dictKey de su hermano
+        ''' <c>_faceBones.nif</c>, que es el INSUMO del cálculo (nunca se dibuja, igual que en el motor).
+        ''' Vacío con el gate OFF. Lo consume <c>BuildRenderPlan</c> para armar el <see cref="HeadBakeService"/>.</summary>
+        Public ReadOnly ShapeFaceBonesKeys As New Dictionary(Of IRenderableShape, String)
         ''' <summary>Shape reference -> chargen morph TRI path (from HDPT NAM0=2/NAM1).</summary>
         Public ReadOnly ShapeChargenTriPaths As New Dictionary(Of IRenderableShape, String)
         ''' <summary>Shape reference -> race morph TRI path (from HDPT NAM0=0/NAM1, expression file).</summary>
@@ -1203,7 +1205,17 @@ Public Class MainForm
         End If
 
         Dim intent = host.PreviewCtl.Intent
-        intent.MarkDirty(RenderDirtyFlags.Pose, host.LastRenderData.Shapes)
+        ' ⛔ Camino head-bake: la deformación FMRS y el body-weight de la cabeza ya no viven en los huesos
+        ' sino en las POSICIONES horneadas ⇒ hay que refrescar los insumos del servicio (si no, conserva la
+        ' firma con la que nació y NO re-hornea) y además marcar Morphs, que es donde corre el provider.
+        ' Este es el chokepoint de los DOS caminos que cambian esos insumos sin rearmar el composite:
+        ' este mismo Sub (toggles de body-weight / sculpt / FMRS de la main form) y el slider de FMRS del
+        ' Edit Face, que llama acá justo antes de su propio MarkDirty (EditFace_Form.FaceRefreshScope.Pose).
+        ' headBakeOn = hay un servicio vivo con shapes gateadas en ESTE host (preciso: fuera de FO4 o sin
+        ' cabeza horneable el servicio es Nothing y esto queda como un MarkDirty(Pose) normal).
+        Dim headBakeOn = host.LastHeadBakeService IsNot Nothing AndAlso host.LastHeadBakeService.RegisteredCount > 0
+        If headBakeOn Then RefreshHeadBakeInputs(host)
+        intent.MarkDirty(If(headBakeOn, RenderDirtyFlags.Pose Or RenderDirtyFlags.Morphs, RenderDirtyFlags.Pose), host.LastRenderData.Shapes)
         host.PreviewCtl.InvalidateRender()
     End Sub
 
@@ -5469,6 +5481,13 @@ Public Class MainForm
         ' Mismo checkbox, sin el AND del gender-override: bajo Skyrim ese canal gatea los node transforms de
         ' RaceMenu (escala/pos/rot por nodo del cuerpo), que no son gender-específicos como los FMRS.
         Dim nodeXfEnabled = host.Toggles.ApplyBoneMorphs
+        ' "FaceGeom en memoria": con el gate ON el collector NO redirigió, así que se dibuja la malla PLANA
+        ' y hay que entregarle las posiciones horneadas como geometría base. Nothing con el gate OFF.
+        ' ⛔ ANTES del composite: BuildCompositeMorphResolver lo lee de host.LastHeadBakeService para
+        ' filtrar los canales de posición de las shapes gateadas (si no, doble aplicación del chargen).
+        Dim headBake = BuildHeadBakeService(state, renderData, host)
+        host.LastHeadBakeService = headBake
+        Logger.LogLazy(Function() $"[PERF-BRP] headBakeService @ {_swBrp.ElapsedMilliseconds}ms ({If(headBake Is Nothing, 0, headBake.RegisteredCount)} shapes)")
         Dim morphResolver = BuildCompositeMorphResolver(state, renderData, host)
         Logger.LogLazy(Function() $"[PERF-BRP] morphResolver @ {_swBrp.ElapsedMilliseconds}ms")
 
@@ -6738,6 +6757,7 @@ Public Class MainForm
             .Shapes = renderData.Shapes,
             .SkeletonResolver = skelResolver,
             .MorphResolver = morphResolver,
+            .BaseGeometryProvider = headBake,
             .RecalculateNormals = True,
             .ResetCamera = True
         }
@@ -7102,6 +7122,150 @@ Public Class MainForm
     '''   • CheckBoxApplyVertexMorphs gates the face-SHAPE channels (FO4: resolver entero; SSE: los canales
     '''     de forma vía applyChargenMorphs — el SkinnyMorph del weight sigue al checkbox Body weight).
     '''   • CheckBoxBodyTri gates the body PIRT resolver only (inside BuildBodyMorphResolver).</summary>
+    ''' <summary>Arma el <see cref="HeadBakeService"/> del NPC actual, o <c>Nothing</c> si el gate está
+    ''' apagado / no hay shapes gateadas. Cada shape del NIF PLANO que el collector dejó sin redirigir trae
+    ''' en <c>renderData.ShapeFaceBonesKeys</c> el dictKey de su hermano <c>_faceBones</c>: se carga ese NIF
+    ''' (uno por key, cacheado) y se aparea la shape por nombre normalizado + VertexCount — la MISMA regla
+    ''' que usa el driver del motor (<c>0x140AA31B0</c>: compara el puntero del BSFixedString y
+    ''' <c>word[+0x164]</c>).
+    ''' <para><b>Guarda por candidato</b>: si alguna shape del NIF no aparea, NO se registra ninguna de ese
+    ''' NIF y todas quedan como hoy — degrada, no rompe. (Medido sobre los 482 pares de vanilla: 480 aptos,
+    ''' 2 sin shapes skineadas, <b>0 mixtos</b>, así que en vanilla esta guarda no dispara.)</para>
+    ''' <para><b>Los toggles se honran acá</b>, construyendo el <c>BakeState</c> con o sin FMRS: es lo que
+    ''' hace que el checkbox de bone-morphs siga vivo ahora que la deformación vive en las posiciones
+    ''' horneadas y no en los huesos. Los otros dos (vertex-morphs, body-weight) entran por la firma y por
+    ''' los <c>.tri</c> que se pasan.</para></summary>
+    ''' <summary>Refresca los insumos del <see cref="HeadBakeService"/> vivo (si hay). Devuelve True si la
+    ''' firma cambió, o sea si el próximo paso de morphs va a re-hornear.
+    ''' <para>Hace falta en TODO camino que cambie FMRS / morphs de chargen / body-weight sin rearmar el
+    ''' composite de morphs: sin esto el servicio conserva la firma con la que nació y devuelve el horneado
+    ''' cacheado, con lo que el cambio no se ve. Los caminos que SÍ rearman el composite ya se refrescan
+    ''' dentro de <see cref="BuildCompositeMorphResolver"/>.</para></summary>
+    Friend Function RefreshHeadBakeInputs(host As NpcRenderHost) As Boolean
+        If host Is Nothing Then Return False
+        Dim hb = host.LastHeadBakeService
+        If hb Is Nothing OrElse hb.RegisteredCount = 0 Then Return False
+        Dim bs As FaceGenBuildPipeline.BakeState = Nothing
+        Dim sg As String = ""
+        Dim ac As Boolean = True
+        If Not TryBuildHeadBakeInputs(host.LastRenderedState, host, bs, sg, ac) Then Return False
+        Return hb.UpdateInputs(bs, sg, ac)
+    End Function
+
+    ''' <summary>Arma el <c>BakeState</c> + la firma del head-bake HONRANDO LOS TOGGLES. Extraído para que
+    ''' <see cref="BuildHeadBakeService"/> (render completo) y <see cref="BuildCompositeMorphResolver"/>
+    ''' (los SEIS handlers de toggle) usen exactamente los mismos insumos — si divergieran, un toggle
+    ''' cambiaría la firma pero no el estado con el que se hornea, o al revés.</summary>
+    Private Function TryBuildHeadBakeInputs(state As NPCVisualState, host As NpcRenderHost,
+                                             ByRef bakeState As FaceGenBuildPipeline.BakeState,
+                                             ByRef signature As String, ByRef applyChargen As Boolean) As Boolean
+        bakeState = Nothing : signature = "" : applyChargen = True
+        If state Is Nothing OrElse host Is Nothing Then Return False
+        applyChargen = host.Toggles Is Nothing OrElse host.Toggles.ApplyVertexMorphs
+        Dim npcData = NpcRecordOverlay.ResolveOverlaidNpcData(state.FormID, _ctx.PluginManager, _appliedPresets)
+        If npcData Is Nothing Then Return False
+
+        ' FMRS OFF ⇒ BakeState sin regiones faciales ⇒ FmrsPose = Nothing ⇒ la base sale en bind pose,
+        ' que es exactamente lo que el checkbox significa ("Off = bind pose de esos huesos").
+        Dim boneMorphsOn = host.Toggles IsNot Nothing AndAlso host.Toggles.ApplyBoneMorphs AndAlso
+                           Not host.PreviewGenderOverride.HasValue
+        Dim regionsFile As FacialBoneRegionsFile = Nothing
+        If boneMorphsOn Then
+            Dim raceRec = _ctx.PluginManager.GetRecord(npcData.RaceFormID)
+            If raceRec IsNot Nothing AndAlso raceRec.Header.Signature = "RACE" Then
+                regionsFile = NpcMorphPoseResolver.GetFacialBoneRegionsForFmriResolution(
+                    RecordParsers.ParseRACE(raceRec, _ctx.PluginManager), npcData.IsFemale)
+            End If
+        End If
+
+        bakeState = FaceGenBuildPipeline.BuildBakeState(state.FormID, _ctx.PluginManager, _appliedPresets, regionsFile)
+        If bakeState Is Nothing Then Return False
+        ' Body-weight OFF ⇒ sin MWGT/MRSV en el bake, igual que el render deja la pose sin peso.
+        ' Mutar acá es seguro: ResolveOverlaidNpcData devuelve un parse FRESCO (GetParsedNpc no cachea).
+        If host.Toggles IsNot Nothing AndAlso Not host.Toggles.ApplyBodyWeight AndAlso bakeState.NpcData IsNot Nothing Then
+            bakeState.NpcData.WeightThin = Nothing
+            bakeState.NpcData.WeightMuscular = Nothing
+            bakeState.NpcData.WeightFat = Nothing
+        End If
+        signature = HeadBakeService.BuildSignature(bakeState.NpcData, npcData.RaceFormID, host.Toggles)
+        Return True
+    End Function
+
+    Private Function BuildHeadBakeService(state As NPCVisualState, renderData As PreviewResolutionResult,
+                                           host As NpcRenderHost) As HeadBakeService
+        If Not NPC_Config.IsHeadBakeActive() Then Return Nothing
+        If renderData Is Nothing OrElse renderData.ShapeFaceBonesKeys.Count = 0 Then Return Nothing
+        If state Is Nothing OrElse host Is Nothing Then Return Nothing
+
+        Try
+            Dim bakeState As FaceGenBuildPipeline.BakeState = Nothing
+            Dim sig As String = ""
+            Dim applyChargen As Boolean = True
+            If Not TryBuildHeadBakeInputs(state, host, bakeState, sig, applyChargen) Then Return Nothing
+            Dim svc As New HeadBakeService(bakeState, sig, applyChargen)
+
+            ' Un NIF `_faceBones` por dictKey (varias shapes lo comparten).
+            Dim fbnsByKey As New Dictionary(Of String, Nifcontent_Class_Manolo)(StringComparer.OrdinalIgnoreCase)
+            ' Agrupar por key para poder aplicar la guarda "todas o ninguna".
+            For Each grp In renderData.ShapeFaceBonesKeys.GroupBy(Function(kv) kv.Value, StringComparer.OrdinalIgnoreCase)
+                Dim fbnsNif As Nifcontent_Class_Manolo = Nothing
+                If Not fbnsByKey.TryGetValue(grp.Key, fbnsNif) Then
+                    Dim bytes = MeshPathHelpers.TryLoadMeshBytes(grp.Key)
+                    If bytes IsNot Nothing Then
+                        Try
+                            fbnsNif = New Nifcontent_Class_Manolo()
+                            fbnsNif.Load_Manolo(bytes)
+                        Catch ex As Exception
+                            fbnsNif = Nothing
+                        End Try
+                    End If
+                    fbnsByKey(grp.Key) = fbnsNif
+                End If
+                If fbnsNif Is Nothing Then Continue For
+
+                ' Índice de las shapes del `_faceBones` por (nombre sin sufijo, VertexCount).
+                Dim fbnsIdx As New Dictionary(Of String, INiShape)(StringComparer.OrdinalIgnoreCase)
+                For Each fs In fbnsNif.GetShapes()
+                    Dim nm = NameUtils.StripFaceBonesSuffix(If(fs.Name?.String, ""))
+                    If nm = "" Then Continue For
+                    fbnsIdx($"{nm}|{ShapeGeometryFactory.[For](fs, fbnsNif).VertexCount}") = fs
+                Next
+
+                ' Pasada 1: aparear TODAS antes de registrar ninguna (guarda por candidato).
+                Dim pend As New List(Of (Flat As IRenderableShape, Fbns As INiShape))
+                Dim allPaired As Boolean = True
+                For Each kv In grp
+                    Dim flat = kv.Key
+                    If flat.NifShape Is Nothing OrElse flat.NifContent Is Nothing Then allPaired = False : Exit For
+                    Dim key = $"{NameUtils.StripFaceBonesSuffix(If(flat.NifShape.Name?.String, ""))}|{ShapeGeometryFactory.[For](flat.NifShape, flat.NifContent).VertexCount}"
+                    Dim fbShape As INiShape = Nothing
+                    If Not fbnsIdx.TryGetValue(key, fbShape) Then allPaired = False : Exit For
+                    pend.Add((flat, fbShape))
+                Next
+                If Not allPaired Then
+                    Dim keyLog = grp.Key
+                    Logger.LogLazy(Function() $"[HEAD-BAKE] '{keyLog}': alguna shape no aparea -> se deja como antes (sin hornear)")
+                    Continue For
+                End If
+
+                ' Pasada 2: registrar.
+                For Each pr In pend
+                    ' cg va CRUDO (el path real siempre): la decisión "aplicar o no" es VIVA en el servicio
+                    ' (_applyChargen), porque el toggle vertex-morphs se conmuta sin re-registrar las Entry.
+                    Dim cg As String = "" : renderData.ShapeChargenTriPaths.TryGetValue(pr.Flat, cg)
+                    Dim rm As String = "" : renderData.ShapeRaceMorphTriPaths.TryGetValue(pr.Flat, rm)
+                    svc.Register(pr.Flat.NifContent, pr.Flat.NifShape, fbnsNif, pr.Fbns, cg, rm)
+                Next
+            Next
+
+            If svc.RegisteredCount = 0 Then Return Nothing
+            Return svc
+        Catch ex As Exception
+            Logger.LogLazy(Function() $"[HEAD-BAKE] fallo armando el servicio: {ex.GetType().Name}: {ex.Message}")
+            Return Nothing
+        End Try
+    End Function
+
     Friend Function BuildCompositeMorphResolver(state As NPCVisualState, renderData As PreviewResolutionResult, Optional host As NpcRenderHost = Nothing) As IMorphResolver
         If host Is Nothing Then host = _renderHost
         Dim face As IMorphResolver = Nothing
@@ -7132,11 +7296,60 @@ Public Class MainForm
         Dim hairTopZap = _morphPoseResolver.BuildHairTopZapResolver(renderData, host)
 
         ' Junta los delegates no-nulos. MultiMorphResolver filtra nulls, así que paso los tres.
+        ' ⭐ Camino head-bake — REFRESCAR LOS INSUMOS PRIMERO, ANTES de cualquier early-return.
+        ' ⛔ Esto va arriba del `delegates.Length = 0` a propósito: los seis handlers de toggle rearman el
+        ' composite y marcan Morphs pero NO pasan por BuildRenderPlan, así que este es el único punto donde
+        ' el servicio se entera de que cambió un toggle. Si vive DESPUÉS del early-return, entonces cuando el
+        ' composite queda vacío (p.ej. vertex-morphs OFF y ningún otro canal — depende del estado de los
+        ' OTROS checkboxes) el refresh se saltea, el servicio conserva la firma vieja y el provider NO
+        ' re-hornea ⇒ el toggle "a veces anda a veces no". El provider (IBaseGeometryProvider) es
+        ' independiente del MorphResolver: re-hornea con sólo cambiar la firma, aunque el composite sea Nothing.
+        Dim hb = host?.LastHeadBakeService
+        Dim headBakeActive = hb IsNot Nothing AndAlso hb.RegisteredCount > 0
+        If headBakeActive Then
+            Dim bs As FaceGenBuildPipeline.BakeState = Nothing
+            Dim sg As String = ""
+            Dim ac As Boolean = True
+            If TryBuildHeadBakeInputs(state, host, bs, sg, ac) Then hb.UpdateInputs(bs, sg, ac)
+        End If
+
         Dim delegates = New IMorphResolver() {face, sseBodyWeight, body, hairTopZap}.Where(Function(r) r IsNot Nothing).ToArray()
+        ' Composite vacío ⇒ no hay canales que emitir. El provider igual re-horneó (refresh de arriba), así
+        ' que las shapes gateadas ya tienen su base correcta; devolver Nothing para el MorphResolver es sano.
         If delegates.Length = 0 Then Return Nothing
-        If delegates.Length = 1 Then Return delegates(0)
-        Return New MultiMorphResolver(delegates)
+        Dim composite As IMorphResolver = If(delegates.Length = 1, delegates(0), New MultiMorphResolver(delegates))
+
+        ' En las shapes gateadas la base YA trae los morphs de chargen (el bake los aplica, igual que el CK).
+        ' Emitirlos otra vez como canal los aplicaría DOS VECES ⇒ se filtran los canales de POSICIÓN y sólo
+        ' pasan los de ZAP.
+        If headBakeActive Then Return New HeadBakeZapOnlyResolver(composite, hb)
+        Return composite
     End Function
+
+    ''' <summary>Envoltorio del composite para el camino head-bake: en las shapes gateadas devuelve SÓLO
+    ''' los canales <c>IsZap</c>; en las demás delega tal cual. Ver el porqué en
+    ''' <see cref="HeadBakeService.IsGated"/>.
+    ''' <para>⚠️ PROVISORIO junto con el resto del gate: cuando se borre el toggle, esto se queda (el
+    ''' filtro es parte del camino definitivo), pero el <c>If hb IsNot Nothing</c> deja de hacer falta.</para></summary>
+    Private NotInheritable Class HeadBakeZapOnlyResolver
+        Implements IMorphResolver
+        Private ReadOnly _inner As IMorphResolver
+        Private ReadOnly _svc As HeadBakeService
+        Public Sub New(inner As IMorphResolver, svc As HeadBakeService)
+            _inner = inner : _svc = svc
+        End Sub
+        Public Function ResolveMorphPlan(shape As IRenderableShape, geom As SkinnedGeometry) As MorphPlan _
+            Implements IMorphResolver.ResolveMorphPlan
+            Dim plan = _inner?.ResolveMorphPlan(shape, geom)
+            If plan Is Nothing OrElse Not _svc.IsGated(shape) Then Return plan
+            If plan.Channels Is Nothing OrElse plan.Channels.Count = 0 Then Return plan
+            Dim zaps = plan.Channels.Where(Function(c) c IsNot Nothing AndAlso c.IsZap).ToList()
+            If zaps.Count = plan.Channels.Count Then Return plan
+            Dim outPlan As New MorphPlan()
+            For Each z In zaps : outPlan.Channels.Add(z) : Next
+            Return outPlan
+        End Function
+    End Class
 
 
     ''' <summary>Isolated bake-vs-app harness (CSV-only; zero library changes; zero global state mutation).

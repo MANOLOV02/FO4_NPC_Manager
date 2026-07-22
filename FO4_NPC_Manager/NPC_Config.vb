@@ -156,6 +156,21 @@ Public Class NPC_Config
     ''' Persistido en npc_config.json.</summary>
     Public Property ReplicateEngineSkinWeightNormalization As Boolean = True
 
+    ''' <summary><b>Gate del camino "FaceGeom en memoria" (head-bake).</b> El preview dibuja la malla PLANA
+    ''' y usa el <c>_faceBones</c> sólo como INSUMO (<see cref="HeadBakeService"/> hornea las posiciones y las
+    ''' entrega como geometría base vía <c>IBaseGeometryProvider</c>). Es lo que hacen el motor y el CK:
+    ''' medido sobre 251 FaceGeom del BA2, el FaceGeom usa el UV del PLANO 227 a 0 y su base material es la del
+    ''' plano con el TNAM encima; dibujar el <c>_faceBones</c> hacía además caer el body-weight sobre los 68
+    ''' huesos de cara en vez de los ~10 del rig plano (rms 0,1107 / max 2,11 con <c>--headfidelity</c>).
+    ''' <para><b>Sólo FO4.</b> El mecanismo <c>_faceBones</c> no existe en Skyrim (no tiene FMRS; RaceMenu usa
+    ''' node transforms; 0 archivos <c>*_facebones.nif</c> medidos en una instalación SSE modeada). En SSE
+    ''' <c>TryGetFaceBonesVariant</c> devuelve "" y todo esto queda inerte igual, pero se gatea explícito por
+    ''' las dudas de un mod que agregue un <c>_faceBones</c> a Skyrim.</para></summary>
+    Public Shared Function IsHeadBakeActive() As Boolean
+        Return FO4_Base_Library.Config_App.Current IsNot Nothing AndAlso
+               FO4_Base_Library.Config_App.Current.Game = FO4_Base_Library.Config_App.Game_Enum.Fallout4
+    End Function
+
     ''' <summary>ÚNICO punto que enciende <see cref="FO4_Base_Library.EngineSkinWeightNormalization.Enabled"/>. Aplica el
     ''' gate por juego: la ley sólo puede activarse para Fallout 4 (ver el ⛔ de
     ''' <see cref="ReplicateEngineSkinWeightNormalization"/>). Llamar tras cargar config, al cambiar de juego y al cambiar

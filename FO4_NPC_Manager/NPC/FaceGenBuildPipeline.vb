@@ -213,6 +213,11 @@ Public Module FaceGenBuildPipeline
         ''' <summary>Cached chargen TRI parses, keyed by normalized mesh path. The same .tri
         ''' is referenced by multiple HDPTs in some cases (rare for face).</summary>
         Public Property TriHeadCache As New Dictionary(Of String, TriHeadFile)(StringComparer.OrdinalIgnoreCase)
+        ''' <summary>⚡ Bytes del esqueleto de CARA, resueltos una vez por NPC (ver <c>LoadFaceSkeleton</c>).</summary>
+        Public Property FaceSkeletonBytes As Byte() = Nothing
+        ''' <summary>⚡ Key normalizada del esqueleto de CUERPO, resuelta una vez por NPC (ver <c>LoadBodySkeleton</c>).
+        ''' "" = todavía sin resolver; "-" = la raza no declara ninguno (negativo cacheado).</summary>
+        Public Property BodySkeletonKey As String = ""
     End Class
 
     ''' <summary>Build a BakeState for one NPC. Loads NPC, applies LooksMenu overlay, parses
@@ -306,14 +311,40 @@ Public Module FaceGenBuildPipeline
                                Optional srcNif As Nifcontent_Class_Manolo = Nothing,
                                Optional srcShape As INiShape = Nothing,
                                Optional raceMorphTriPath As String = Nothing) As Boolean
-        If state Is Nothing OrElse destNif Is Nothing OrElse clonedOrigShape Is Nothing Then Return False
-        If facebonesNif Is Nothing OrElse facebonesShape Is Nothing Then Return False
+        Dim baked = ComputeBakedVertices(state, destNif, clonedOrigShape, facebonesNif, facebonesShape,
+                                          chargenTriPath, srcNif, srcShape, raceMorphTriPath)
+        If baked Is Nothing Then Return False
+
+        Dim geomOut = ShapeGeometryFactory.[For](clonedOrigShape, destNif)
+        geomOut.SetVertexPositions(baked)
+        Try : geomOut.UpdateBounds() : Catch : End Try
+        Return True
+    End Function
+
+    ''' <summary>Devuelve las posiciones horneadas SIN escribirlas en ninguna shape. Es el cuerpo real
+    ''' del bake; <see cref="BakeShape"/> es esto + <c>SetVertexPositions</c>.
+    ''' <para>Existe separado porque el PREVIEW también las necesita: <see cref="HeadBakeService"/> las
+    ''' entrega como geometría base del shape plano (<c>IBaseGeometryProvider</c>) en vez de escribirlas
+    ''' al NIF. <b>UNA sola implementación</b> para bake y render — si divergen, el preview deja de ser
+    ''' WYSIWYG, que es justo el bug que este servicio existe para cerrar.</para>
+    ''' <para>Devuelve <c>Nothing</c> si falta cualquier insumo o el VertexCount no aparea.</para></summary>
+    Public Function ComputeBakedVertices(state As BakeState,
+                                          destNif As Nifcontent_Class_Manolo,
+                                          clonedOrigShape As INiShape,
+                                          facebonesNif As Nifcontent_Class_Manolo,
+                                          facebonesShape As INiShape,
+                                          chargenTriPath As String,
+                                          Optional srcNif As Nifcontent_Class_Manolo = Nothing,
+                                          Optional srcShape As INiShape = Nothing,
+                                          Optional raceMorphTriPath As String = Nothing) As List(Of System.Numerics.Vector3)
+        If state Is Nothing OrElse destNif Is Nothing OrElse clonedOrigShape Is Nothing Then Return Nothing
+        If facebonesNif Is Nothing OrElse facebonesShape Is Nothing Then Return Nothing
 
         ' 1) v_world via FBNS skin with FMRS pose applied + chargen morphs.
         Dim wr = ComputeWorldVerticesForShape(state, facebonesNif, facebonesShape, chargenTriPath, raceMorphTriPath,
                                               srcNif:=srcNif)
         If wr Is Nothing OrElse wr.WorldVertices Is Nothing Then
-            Return False
+            Return Nothing
         End If
         Dim vWorld = wr.WorldVertices
 
@@ -347,7 +378,7 @@ Public Module FaceGenBuildPipeline
         Dim shapeBones = wrap.ShapeBones.ToArray()
         Dim shapeLocalTs = wrap.ShapeBoneTransforms.ToArray()
         If shapeBones.Length <> shapeLocalTs.Length OrElse shapeBones.Length = 0 Then
-            Return False
+            Return Nothing
         End If
         Dim nBones = shapeBones.Length
         Dim shapeNode = TryCast(destNif.GetParentNode(clonedOrigShape), NiflySharp.Blocks.NiNode)
@@ -376,7 +407,7 @@ Public Module FaceGenBuildPipeline
         Dim vCount = positions.Count
 
         If vCount <> vWorld.Length Then
-            Return False
+            Return Nothing
         End If
 
         ' Diagnóstico de fidelidad del preview (--headfidelity). OFF por defecto ⇒ el bake no cambia.
@@ -391,6 +422,7 @@ Public Module FaceGenBuildPipeline
             Catch ex As Exception
             End Try
         End If
+
 
         Dim baked As New List(Of System.Numerics.Vector3)(vCount)
         Dim singularCount As Integer = 0
@@ -420,33 +452,7 @@ Public Module FaceGenBuildPipeline
             baked.Add(New System.Numerics.Vector3(CSng(vBaked.X), CSng(vBaked.Y), CSng(vBaked.Z)))
         Next
 
-        geom.SetVertexPositions(baked)
-        Try : geom.UpdateBounds() : Catch : End Try
-
-        ' In-memory round-trip self-check: re-skin the just-written shape against the same
-        ' bind resolver and measure RMS vs vWorld. If this is ≈0 the math is bit-exact and any
-        ' residual seen by the post-Save harness is from disk write/read or shape-partition
-        ' rewrites. If this is non-zero, the residual is float-precision in the writeback.
-        Try
-            Dim vCheck = SkinBakeMath.SkinShapeWorldVertices(clonedOrigShape, destNif, origResolver)
-            If vCheck IsNot Nothing AndAlso vCheck.Length = vCount Then
-                Dim ssq As Double = 0
-                Dim mx As Double = 0
-                For i = 0 To vCount - 1
-                    Dim dx = vWorld(i).X - vCheck(i).X
-                    Dim dy = vWorld(i).Y - vCheck(i).Y
-                    Dim dz = vWorld(i).Z - vCheck(i).Z
-                    Dim m = dx * dx + dy * dy + dz * dz
-                    ssq += m
-                    Dim mag = Math.Sqrt(m)
-                    If mag > mx Then mx = mag
-                Next
-                Dim rms = Math.Sqrt(ssq / vCount)
-            End If
-        Catch ex As Exception
-        End Try
-
-        Return True
+        Return baked
     End Function
 
     ''' <summary>Una fila del diagnóstico de fidelidad del preview (ver <see cref="CollectHeadFidelity"/>).</summary>
@@ -524,8 +530,40 @@ Public Module FaceGenBuildPipeline
             precomputedLive(k) = shapeGlobal * t.ComposeTransforms(shapeLocalTs(k)).ToMatrix4d()
         Next
 
+        Dim m = MeasureOldVsNewWorld(vWorld, shapeBones, skin, wpv, precomputedBakeBind, precomputedLive)
+
+        Dim row As New HeadFidelityRow With {
+            .NpcFormID = state.NpcFormID,
+            .ShapeName = shapeName,
+            .HasRemapFlag = hasRemapFlag,
+            .VertexCount = vWorld.Length,
+            .MaxD = m.MaxD,
+            .Rms = m.Rms,
+            .SingleBoneVerts = m.NSingle,
+            .MultiBoneVerts = m.NMulti
+        }
+        SyncLock _headFidelityLock
+            _headFidelityRows.Add(row)
+        End SyncLock
+    End Sub
+
+    ''' <summary>Divergencia de POSICIÓN EN PANTALLA (world-space) entre el camino VIEJO y el NUEVO, por
+    ''' vértice. <c>vWorld</c> = lo que dibuja el camino viejo (el <c>_faceBones</c> skineado en vivo);
+    ''' <c>vGame = M_live · inv(M_bind_ck) · vWorld</c> = lo que dibuja el nuevo (la malla plana horneada,
+    ''' re-skineada con la paleta viva). <c>d = |vGame − vWorld|</c> en unidades de juego.
+    ''' <para>Es la MISMA cuenta que valida el modo <c>--headfidelity</c> (control 8,5e-14). Extraída para
+    ''' que el batch offline (<see cref="CollectHeadFidelity"/>) y el log LIVE del toggle usen una sola
+    ''' implementación.</para></summary>
+    Private Function MeasureOldVsNewWorld(vWorld As Vector3d(), shapeBones As NiNode(),
+                                           skin As ShapeSkinningData, wpv As Integer,
+                                           precomputedBakeBind As Matrix4d(), precomputedLive As Matrix4d()) _
+                                           As (MaxD As Double, Rms As Double, WorstIdx As Integer,
+                                               WorstOld As Vector3d, WorstNew As Vector3d,
+                                               NSingle As Integer, NMulti As Integer, NUsed As Integer)
+        Dim nBones = shapeBones.Length
         Dim ckW(EngineSkinWeightNormalization.Slots - 1) As Single
-        Dim ssq As Double = 0, mx As Double = 0
+        Dim ssq As Double = 0, mx As Double = 0, worstIdx As Integer = -1
+        Dim worstOld As Vector3d = Nothing, worstNew As Vector3d = Nothing
         Dim nSingle As Integer = 0, nMulti As Integer = 0, nUsed As Integer = 0
         For i = 0 To vWorld.Length - 1
             ' Cuántos huesos del rig PLANO pesan en este vértice (decide si la corrección es por-hueso).
@@ -546,26 +584,15 @@ Public Module FaceGenBuildPipeline
                 Dim d = (vGame - vWorld(i)).Length
                 ssq += d * d
                 nUsed += 1
-                If d > mx Then mx = d
+                If d > mx Then
+                    mx = d : worstIdx = i : worstOld = vWorld(i) : worstNew = vGame
+                End If
             Catch
                 ' Mtot singular — el bake ya lo contabiliza aparte; acá simplemente no aporta a la métrica.
             End Try
         Next
-
-        Dim row As New HeadFidelityRow With {
-            .NpcFormID = state.NpcFormID,
-            .ShapeName = shapeName,
-            .HasRemapFlag = hasRemapFlag,
-            .VertexCount = vWorld.Length,
-            .MaxD = mx,
-            .Rms = If(nUsed > 0, Math.Sqrt(ssq / nUsed), 0.0),
-            .SingleBoneVerts = nSingle,
-            .MultiBoneVerts = nMulti
-        }
-        SyncLock _headFidelityLock
-            _headFidelityRows.Add(row)
-        End SyncLock
-    End Sub
+        Return (mx, If(nUsed > 0, Math.Sqrt(ssq / nUsed), 0.0), worstIdx, worstOld, worstNew, nSingle, nMulti, nUsed)
+    End Function
 
     ''' <summary>
     ''' invBind por hueso para el lado <b>DESTINO</b> del bake (el inverso), con la paleta que usa el
@@ -919,9 +946,19 @@ Public Module FaceGenBuildPipeline
         Return names
     End Function
 
+    ''' <summary>⚡ Los bytes del esqueleto se resuelven UNA vez por <see cref="BakeState"/> (= por NPC) y se
+    ''' reusan para todas sus shapes. Antes cada shape volvía a pedirlos: con el bake de disco eso era
+    ''' 2 lecturas × N shapes por NPC, y con el PREVIEW pasó a ser 2×N por cada tick de slider FMRS
+    ''' (el provider re-hornea dentro de PipelineStep_Morphs). Sigue habiendo un <c>SkeletonInstance</c>
+    ''' NUEVO por shape a propósito: el bake les aplica poses distintas (el body-weight se saltea en las
+    ''' shapes con <c>CustomizationRemapNewBonesData</c>) e inyecta huesos de cloth por shape.</summary>
     Private Function LoadFaceSkeleton(state As BakeState) As SkeletonInstance
-        Dim bytes = FaceSkeletonResolver.TryLoadFaceSkeletonBytes(state.RaceFormID, state.IsFemale, state.PluginManager)
-        If bytes Is Nothing Then Return Nothing
+        Dim bytes = state.FaceSkeletonBytes
+        If bytes Is Nothing Then
+            bytes = FaceSkeletonResolver.TryLoadFaceSkeletonBytes(state.RaceFormID, state.IsFemale, state.PluginManager)
+            If bytes Is Nothing Then Return Nothing
+            state.FaceSkeletonBytes = bytes
+        End If
         Dim skel As New SkeletonInstance()
         If Not skel.LoadFromBytes(bytes) Then Return Nothing
         Return skel
@@ -929,10 +966,19 @@ Public Module FaceGenBuildPipeline
 
     Private Function LoadBodySkeleton(state As BakeState) As SkeletonInstance
         ' Body skel path comes from RACE.ANAM (FemaleSkeletonPath / MaleSkeletonPath).
-        Dim path = If(state.IsFemale, state.Race.FemaleSkeletonPath, state.Race.MaleSkeletonPath)
-        If String.IsNullOrEmpty(path) Then path = If(state.IsFemale, state.Race.MaleSkeletonPath, state.Race.FemaleSkeletonPath)
-        If String.IsNullOrEmpty(path) Then Return Nothing
-        Dim key = MeshPathHelpers.NormalizeMeshKey(path)
+        ' ⚡ Misma razón que en LoadFaceSkeleton: la key se resuelve una vez por NPC.
+        Dim key = state.BodySkeletonKey
+        If key = "-" Then Return Nothing
+        If key = "" Then
+            Dim path = If(state.IsFemale, state.Race.FemaleSkeletonPath, state.Race.MaleSkeletonPath)
+            If String.IsNullOrEmpty(path) Then path = If(state.IsFemale, state.Race.MaleSkeletonPath, state.Race.FemaleSkeletonPath)
+            If String.IsNullOrEmpty(path) Then
+                state.BodySkeletonKey = "-"
+                Return Nothing
+            End If
+            key = MeshPathHelpers.NormalizeMeshKey(path)
+            state.BodySkeletonKey = key
+        End If
         Dim skel As New SkeletonInstance()
         If Not skel.LoadFromKey(key) Then Return Nothing
         Return skel

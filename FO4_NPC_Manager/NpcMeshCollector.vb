@@ -1,4 +1,4 @@
-Imports System.Globalization
+﻿Imports System.Globalization
 Imports System.IO
 Imports System.Drawing
 Imports System.Linq
@@ -558,17 +558,20 @@ Friend NotInheritable Class NpcMeshCollector
             ' face-region redirect (~line 10489). Fallback: TryGetFaceBonesVariant returns "" when the
             ' sibling is absent from FilesDictionary, so we keep the base mesh. Render/preview only; the
             ' bake is untouched.
-            If useFaceGen Then
+            ' Head-bake: la ARMA con "Has FaceBones Model" (MO2F/MO3F bit 0x01) se DIBUJA plana y su
+            ' `_faceBones` viaja como INSUMO (HeadBakeService). Igual que las head parts — regla única, sin
+            ' excepción para ARMA (194 NIFs, no marginal). Sólo FO4: en SSE TryGetFaceBonesVariant da "".
+            Dim armaFaceBonesInputKey As String = ""
+            If useFaceGen AndAlso NPC_Config.IsHeadBakeActive() Then
                 Dim modelFlags As Byte = If(state.IsFemale, arma.FemaleModelFlags, arma.MaleModelFlags)
                 If (modelFlags And &H1) <> 0 Then
                     Dim fbKey = MeshPathHelpers.TryGetFaceBonesVariant(armaDictKey)
                     If fbKey <> "" Then
+                        armaFaceBonesInputKey = fbKey
                         If Logger.Enabled Then
-                            Dim afidLog = armaFormID
-                            Dim fbLog = fbKey
-                            Logger.LogLazy(Function() $"[ARMA-FACEBONES] ARMA=0x{afidLog:X8} redirect base->_faceBones dictKey='{fbLog}'")
+                            Dim afidLog = armaFormID, fbLog = fbKey
+                            Logger.LogLazy(Function() $"[ARMA-FACEBONES] ARMA=0x{afidLog:X8} input (head-bake) dictKey='{fbLog}'")
                         End If
-                        armaDictKey = fbKey
                     End If
                 End If
             End If
@@ -604,6 +607,7 @@ Friend NotInheritable Class NpcMeshCollector
             ' The within-ARMO armature dedup above intentionally stays on the per-ARMA effSlotMask.
             candidates.Add(New MainForm.MeshCandidate With {
                 .DictKey = armaDictKey,
+                .FaceBonesDictKey = armaFaceBonesInputKey,
                 .SlotMask = effSlotMask Or (armo.SlotMask And headOcclGate),
                 .ArmaOwnSlotMask = effSlotMask,
                 .ArmoOwnSlotMask = armo.SlotMask,
@@ -1059,17 +1063,14 @@ Friend NotInheritable Class NpcMeshCollector
             ' bones (Jaw, LipUpper_L, Cheek_R, etc) enabling FMRS bone transforms to deform the
             ' mesh. NPCs without FaceGen use default race face — no _faceBones redirect needed.
             Dim dictKey = NameUtils.NormalizeDictionaryKeyWithMeshesPrefix(hdpt.MeshPath)
-            Dim originalDictKey = dictKey   ' antes del posible redirect a _faceBones (para log)
-            Dim baseDictKeyForFaceBones As String = ""
-            If useFaceGen Then
-                Dim faceBonesKey = MeshPathHelpers.TryGetFaceBonesVariant(dictKey)
-                If faceBonesKey <> "" Then
-                    ' Solo HeadRear necesita copia de material desde el .nif base (el _faceBones
-                    ' vanilla trae basehumanfemaleskin genérico en lugar de basehumanfemalerear).
-                    ' Otros types usan el material del _faceBones tal cual.
-                    If effectivePartType = 9 Then baseDictKeyForFaceBones = dictKey
-                    dictKey = faceBonesKey
-                End If
+            ' ⭐ Camino head-bake: NO se redirige. Se dibuja la malla PLANA — que es lo que dibujan el motor y
+            ' el CK — y el `_faceBones` queda como INSUMO para HeadBakeService. Medido: el FaceGeom del BA2 usa
+            ' el UV del PLANO 227 a 0, y su base material es la del plano con el TNAM encima; dibujar el
+            ' `_faceBones` hacía caer el body-weight sobre los 68 huesos de cara en vez de los ~10 del rig plano.
+            ' Sólo FO4 (en SSE TryGetFaceBonesVariant da "").
+            Dim faceBonesInputKey As String = ""
+            If useFaceGen AndAlso NPC_Config.IsHeadBakeActive() Then
+                faceBonesInputKey = MeshPathHelpers.TryGetFaceBonesVariant(dictKey)
             End If
 
             ' Head-rear nape body texture: the vanilla-UV nape mesh needs a vanilla-UV body texture.
@@ -1080,30 +1081,20 @@ Friend NotInheritable Class NpcMeshCollector
             ' the previous override-proxy forcing (HumanRace 0x13746 + is-override heuristic) is gone.
             Dim effectiveUsesBodyTexture = hdpt.UsesBodyTexture
 
-            ' Trace del candidato HeadPart: qué HDPT, tipo raw/effective, mesh ORIGINAL vs el
-            ' redirect a _faceBones, el TXST (TNAM) y color. Para ojos esto deja ver de qué NIF
-            ' sale el shape (femaleeyes.nif vs femaleeyes_faceBones.nif) y qué TNAM trae.
+            ' Trace del candidato HeadPart: qué HDPT, tipo raw/effective, mesh, el TXST (TNAM) y color.
+            ' Se dibuja SIEMPRE la malla plana (head-bake); el `_faceBones` es insumo, no se dibuja.
             If Logger.Enabled Then
                 Dim hdptEidC = If(hdptRec.EditorID, "")
                 Dim rawTypeC = hdpt.PartType
                 Dim effTypeC = effectivePartType
                 Dim origMeshC = If(hdpt.MeshPath, "")
                 Dim finalKeyC = dictKey
-                Dim redirectedC = Not String.Equals(originalDictKey, dictKey, StringComparison.OrdinalIgnoreCase)
+                Dim fbInputC = faceBonesInputKey
                 Dim tnamC = hdpt.TextureSetFormID
                 Dim colorC = hdpt.ColorFormID
                 Dim ubtC = effectiveUsesBodyTexture
                 Dim ufgC = useFaceGen
-                Logger.LogLazy(Function() $"[HDPT-CAND] hdpt=0x{hdptFormID:X8} eid='{hdptEidC}' rawType={rawTypeC} effType={effTypeC} useFaceGen={ufgC} TNAM=0x{tnamC:X8} color=0x{colorC:X8} usesBodyTex={ubtC} faceBonesRedirect={redirectedC} mesh='{origMeshC}' dictKey='{finalKeyC}'")
-
-                ' NOSOTROS redirigimos face→_faceBones: dumpear el material INLINE de AMBOS NIFs
-                ' (el original que CK usaría y el _faceBones que cargamos nosotros) para comparar si
-                ' difieren en shader/normal/spec. El render solo carga el _faceBones, así que el
-                ' original solo se ve acá.
-                If redirectedC Then
-                    NpcMaterialResolver.LogNifInlineMaterials(originalDictKey, $"ORIGINAL hdpt=0x{hdptFormID:X8}/{hdptEidC}")
-                    NpcMaterialResolver.LogNifInlineMaterials(dictKey, $"FACEBONES hdpt=0x{hdptFormID:X8}/{hdptEidC}")
-                End If
+                Logger.LogLazy(Function() $"[HDPT-CAND] hdpt=0x{hdptFormID:X8} eid='{hdptEidC}' rawType={rawTypeC} effType={effTypeC} useFaceGen={ufgC} TNAM=0x{tnamC:X8} color=0x{colorC:X8} usesBodyTex={ubtC} mesh='{origMeshC}' dictKey='{finalKeyC}' faceBonesInput='{fbInputC}'")
             End If
 
             ' UseSolidTint ya NO se asigna acá: es propiedad calculada sobre HeadPartColorFormID (HDPT.CNAM),
@@ -1112,7 +1103,7 @@ Friend NotInheritable Class NpcMeshCollector
             ' el bake usaba el CNAM. Ver MainForm.MeshCandidate.UseSolidTint.
             candidates.Add(New MainForm.MeshCandidate With {
                 .DictKey = dictKey,
-                .BaseDictKeyForFaceBones = baseDictKeyForFaceBones,
+                .FaceBonesDictKey = faceBonesInputKey,
                 .SlotMask = 0UI,
                 .Priority = 0,
                 .Kind = MainForm.MeshCandidateKind.HeadPart,
@@ -1976,15 +1967,10 @@ Friend NotInheritable Class NpcMeshCollector
                 Next
             End If
 
-            ' Sólo HeadRear: copia material part-específico desde el .nif base a los shapes del
-            ' _faceBones (que vanilla autoreó con material genérico basehumanfemaleskin).
-            CopyBaseMaterialsToFaceBonesShapes(candidate, shapes)
-
             _materialResolver.ApplyShapeMaterialOverrides(candidate, state, shapes)
 
-            ' Diagnostic: dump the shader AFTER both passes (CopyBaseMaterialsToFaceBonesShapes
-            ' for HeadRear + ApplyShapeMaterialOverrides for everyone). Pairing with the
-            ' [NIF-LOAD-RAW] above lets us see if either pass mutated the shader type.
+            ' Diagnostic: dump the shader AFTER ApplyShapeMaterialOverrides. Pairing with the
+            ' [NIF-LOAD-RAW] above lets us see if the pass mutated the shader type.
             If logEnabled Then
                 For Each shape In shapes
                     Dim postPath As String = ""
@@ -2040,6 +2026,8 @@ Friend NotInheritable Class NpcMeshCollector
             result.OcclusionGroupSeq += 1
             For Each shape In shapes
                 result.MeshDictKeys(shape) = dictKey
+                ' Camino head-bake: el `_faceBones` NO se dibuja, viaja como insumo por shape.
+                If candidate.FaceBonesDictKey <> "" Then result.ShapeFaceBonesKeys(shape) = candidate.FaceBonesDictKey
                 result.ShapeArmaFormID(shape) = sculptSourceFormID
                 result.ShapeCategory(shape) = category
                 result.ShapeCoveredByOutfit(shape) = candidate.IsCoveredByOutfit
@@ -2315,62 +2303,6 @@ Friend NotInheritable Class NpcMeshCollector
                     Logger.LogLazy(Function() $"[SUBSOCKET-RENAME] socket='{socketLog}' ParentBone '{sLog}' → '{renamedLog}'")
                 End If
             Next
-        Next
-    End Sub
-
-    ''' <summary>HeadRear-only: cuando el HDPT fue redirigido a su variant *_faceBones.nif (rigging
-    ''' facial para FMRS), los shapes del _faceBones traen material genérico (basehumanfemaleskin)
-    ''' en lugar del material part-específico del .nif base (basehumanfemalerear). Replicamos el
-    ''' comportamiento del engine: rigging del _faceBones + material del base. Match per-shape por
-    ''' nombre con sufijo "_faceBones" removido (case-insensitive). Sólo aplica si
-    ''' candidate.BaseDictKeyForFaceBones está poblado (= HeadRear con redirect).</summary>
-    Private Sub CopyBaseMaterialsToFaceBonesShapes(candidate As MainForm.MeshCandidate, shapes As IEnumerable(Of IRenderableShape))
-        If candidate Is Nothing OrElse shapes Is Nothing Then Return
-        If String.IsNullOrEmpty(candidate.BaseDictKeyForFaceBones) Then Return
-
-        Dim baseKey = candidate.BaseDictKeyForFaceBones
-        Dim baseLoc As FilesDictionary_class.File_Location = Nothing
-        If Not FilesDictionary_class.Dictionary.TryGetValue(baseKey, baseLoc) Then
-            Return
-        End If
-
-        Dim baseBytes = baseLoc.GetBytes()
-        If baseBytes Is Nothing OrElse baseBytes.Length = 0 Then
-            Return
-        End If
-
-        Dim baseNif As Nifcontent_Class_Manolo
-        Try
-            baseNif = New Nifcontent_Class_Manolo()
-            baseNif.Load_Manolo(baseBytes)
-        Catch ex As Exception
-            Return
-        End Try
-
-        ' Index base materials by stripped name (sin "_faceBones") para hacer match con los
-        ' shapes del _faceBones que sí tienen el sufijo. Case-insensitive.
-        Dim baseByStripped As New Dictionary(Of String, Nifcontent_Class_Manolo.RelatedMaterial_Class)(StringComparer.OrdinalIgnoreCase)
-        For Each kv In baseNif.BaseMaterials
-            baseByStripped(NameUtils.StripFaceBonesSuffix(kv.Key)) = kv.Value
-        Next
-
-        Dim copied As Integer = 0
-        Dim missed As Integer = 0
-        For Each shape In shapes
-            Dim shapeName = shape.ShapeName
-            If String.IsNullOrEmpty(shapeName) Then Continue For
-            Dim stripped = NameUtils.StripFaceBonesSuffix(shapeName)
-            Dim baseMat As Nifcontent_Class_Manolo.RelatedMaterial_Class = Nothing
-            If baseByStripped.TryGetValue(stripped, baseMat) AndAlso baseMat IsNot Nothing Then
-                Dim relMat = shape.ShapeMaterial
-                If relMat IsNot Nothing Then
-                    relMat.material = baseMat.material
-                    relMat.path = baseMat.path
-                    copied += 1
-                End If
-            Else
-                missed += 1
-            End If
         Next
     End Sub
 

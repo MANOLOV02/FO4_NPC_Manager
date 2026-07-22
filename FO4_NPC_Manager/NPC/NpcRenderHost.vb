@@ -46,6 +46,11 @@ Friend Class NpcRenderHost
     ''' key, mesh dictionary keys, chargen / race-morph TRI paths, ARMA sculpt data, etc.
     ''' Reused by partial-refresh paths that don't need to re-resolve from records.</summary>
     Public Property LastRenderData As MainForm.PreviewResolutionResult = Nothing
+    ''' <summary>Servicio de head-bake del último render (Nothing con el gate OFF). Vive acá y no en una
+    ''' local de <c>BuildRenderPlan</c> porque lo necesitan los SEIS sitios que reconstruyen el composite de
+    ''' morphs — es lo que les permite filtrar los canales de posición de las shapes gateadas sin volver a
+    ''' armar el servicio.</summary>
+    Public Property LastHeadBakeService As HeadBakeService = Nothing
 
     ''' <summary>SkeletonInstance built per NPC during the last render. Reused by the
     ''' pose-toggle handlers and the diagnostic harness so they read from the same skeleton

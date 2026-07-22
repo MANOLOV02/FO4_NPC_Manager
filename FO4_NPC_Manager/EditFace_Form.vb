@@ -4310,9 +4310,12 @@ Public Class EditFace_Form
                 _editorHost.PreviewCtl.InvalidateRender()
                 Return
             Case FaceRefreshScope.Pose
+                ' RebuildAndApplyMergedPose ya refresca el head-bake y marca Pose (+ Morphs si hay servicio
+                ' vivo). El MarkDirty de acá es el mismo criterio, por si LastRenderData cambió.
                 _mainForm.RebuildAndApplyMergedPose(_editorHost)
                 If _editorHost.LastRenderData IsNot Nothing Then
-                    _editorHost.PreviewCtl.Intent.MarkDirty(RenderDirtyFlags.Pose, _editorHost.LastRenderData.Shapes)
+                    Dim hbOn = _editorHost.LastHeadBakeService IsNot Nothing AndAlso _editorHost.LastHeadBakeService.RegisteredCount > 0
+                    _editorHost.PreviewCtl.Intent.MarkDirty(If(hbOn, RenderDirtyFlags.Pose Or RenderDirtyFlags.Morphs, RenderDirtyFlags.Pose), _editorHost.LastRenderData.Shapes)
                 End If
                 _editorHost.PreviewCtl.InvalidateRender()
                 Return
