@@ -4388,6 +4388,8 @@ Public Class EditFace_Form
         _editorHost = New NpcRenderHost(EditPreviewControl) With {
             .AppliedPresets = _appliedPresets
         }
+        ' Camera GPU/CPU toggle debe re-aplicar el face-tint de ESTE preview (no sólo la geometría). Ver MainForm.
+        _mainForm?.HookSkinningToggleRefresh(EditPreviewControl, _editorHost)
         ' Toggles baseline = OnlyFace (everything ON, gore overwritten below from the editor's
         ' own checkbox). RenderToggles.OnlyFace is now a no-op for visibility (the head-only
         ' filter happens at OnlyFaceCollect below) — see RenderToggles.vb.

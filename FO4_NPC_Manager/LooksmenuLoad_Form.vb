@@ -141,7 +141,10 @@ Public Class LooksmenuLoad_Form
             ' presets carry no gender flag → no gender filter (the mapper stamps Gender = the NPC's so any later
             ' gender logic stays consistent); race-compat filtering still applies (headParts vs RACE).
             If Not String.IsNullOrEmpty(_ssePresetsDir) AndAlso Directory.Exists(_ssePresetsDir) AndAlso _sseMapper IsNot Nothing Then
-                For Each fp In Directory.GetFiles(_ssePresetsDir, "*.jslot")
+                ' Recurse into subfolders (AllDirectories): users group .jslot presets by race/author, same as
+                ' the LooksMenu path (LooksmenuLoader.EnumeratePresetFiles). RaceMenu's own loader takes a full
+                ' path regardless of nesting, so subfoldered presets apply cleanly.
+                For Each fp In Directory.GetFiles(_ssePresetsDir, "*.jslot", SearchOption.AllDirectories)
                     Dim mapped = _sseMapper(fp)
                     If mapped Is Nothing Then
                         Dim fpLocal = fp

@@ -3009,6 +3009,8 @@ Public Class EditBody_Form
             .AppliedPresets = _appliedPresets,
             .Toggles = BuildTogglesFromEditorCheckboxes()
         }
+        ' Camera GPU/CPU toggle debe re-aplicar el tint de ESTE preview (no sólo la geometría). Ver MainForm.
+        _mainForm?.HookSkinningToggleRefresh(EditPreviewControl, _editorHost)
         ' Face tint deferral is now handled by the library's PostTextureUploadAction hook on
         ' RenderIntent — wired by RenderCurrentStateAsync inside the render dispatch path so
         ' editor hosts get the same generic post-texture sequencing the MainForm uses.

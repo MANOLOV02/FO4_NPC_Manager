@@ -1711,6 +1711,8 @@ Public Class OutfitPicker_Form
                 .AppliedPresets = _appliedPresets,
                 .Toggles = _mainForm.BuildOutfitPickerToggles()
             }
+            ' Camera GPU/CPU toggle debe re-aplicar el tint de ESTE preview (no sólo la geometría). Ver MainForm.
+            _mainForm?.HookSkinningToggleRefresh(_preview, _host)
         End If
 
         ' Form opens on Browse → the piece/outfit radios start disabled (Create-only).

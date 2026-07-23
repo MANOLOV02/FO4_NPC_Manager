@@ -78,6 +78,14 @@ Public Module FaceGenBuilder
         ''' to also pack that single shared detail. (The facetint itself stays a per-NPC canonical &lt;id&gt;.dds — the
         ''' engine builds that path itself and ignores the NIF slot 6, so it can't be shared.)</summary>
         Public Property UsedSharedNeutralDetail As Boolean
+        ''' <summary>FO4 face-texture bake: number of face-texture outputs (slots 0/1/7) that FAILED to
+        ''' encode/write, or that had no source to bake. 0 = all good. The NIF still wrote (Success stays
+        ''' True), but every missing DDS will surface as "unaccounted for" at BA2 pack time — so this count
+        ''' lets the save summary show the CAUSE instead of a silent "1 OK" followed by "0/1 packed".</summary>
+        Public Property TextureSlotsFailed As Integer
+        ''' <summary>First texture-bake failure reason (exception type + message + slot/size/format, or the
+        ''' bail reason). Representative message for the user-facing summary. Empty when TextureSlotsFailed=0.</summary>
+        Public Property TextureFailureDetail As String = ""
     End Class
 
     ''' <summary>SSE fold scratch flag: set by <c>WriteSseFaceDiffuseWithOverlays</c> (non-forced path) when it
@@ -812,7 +820,7 @@ Public Module FaceGenBuilder
                                                  hdpt, effectiveHeadPartType, applyMaterialOverrides,
                                                  npcFormID, originPlugin,
                                                  pluginManager, appliedPresets, host,
-                                                 state, willBePacked,
+                                                 state, willBePacked, result,
                                                  lmSkinTemplateResolver)
                             End If
                         End If
@@ -2534,6 +2542,15 @@ Public Module FaceGenBuilder
         End Select
     End Function
 
+    ''' <summary>Record one face-texture bake failure on the BuildResult so the save summary surfaces the
+    ''' CAUSE (a silent per-slot catch + "bake OK" otherwise hid it — the user only saw "0/1 packed, N files
+    ''' unaccounted"). Accumulates the count and keeps the FIRST detail as the representative message.</summary>
+    Private Sub RecordTextureFailure(result As BuildResult, detail As String)
+        If result Is Nothing Then Return
+        result.TextureSlotsFailed += 1
+        If String.IsNullOrEmpty(result.TextureFailureDetail) Then result.TextureFailureDetail = detail
+    End Sub
+
     Private Sub BakeFaceTextures(nif As Nifcontent_Class_Manolo,
                                  cloned As INiShape,
                                  srcNif As Nifcontent_Class_Manolo,
@@ -2548,6 +2565,7 @@ Public Module FaceGenBuilder
                                  host As NpcRenderHost,
                                  state As MainForm.NPCVisualState,
                                  willBePacked As Boolean,
+                                 result As BuildResult,
                                  Optional lmSkinTemplateResolver As NpcRecordOverlay.ResolveLmSkinTemplateDelegate = Nothing)
         Logger.LogLazy(Function() $"[FACEBAKE] enter npcFormID=0x{npcFormID:X8} originPlugin='{originPlugin}' srcShape='{srcShape?.Name?.ToString()}'")
         ' --- 1. Resolve the face source material (D/N/S texture paths) the SAME way the render does
@@ -2560,6 +2578,7 @@ Public Module FaceGenBuilder
         Dim mat = ResolveRenderResolvedShapeMaterial(srcNif, srcShape, hdpt, effectiveHeadPartType, state, pluginManager, applyMaterialOverrides)
         If mat Is Nothing Then
             Logger.LogLazy(Function() $"[FACEBAKE] BAIL: resolved source material is Nothing (npcFormID=0x{npcFormID:X8})")
+            RecordTextureFailure(result, "could not resolve the face material (no D/N/S texture paths)")
             Return
         End If
 
@@ -2568,6 +2587,7 @@ Public Module FaceGenBuilder
         Dim specPath = mat.SmoothSpecTexture
         If String.IsNullOrEmpty(diffusePath) Then
             Logger.LogLazy(Function() $"[FACEBAKE] BAIL: diffusePath empty (npcFormID=0x{npcFormID:X8})")
+            RecordTextureFailure(result, "the face material has no diffuse texture path")
             Return
         End If
 
@@ -2611,6 +2631,7 @@ Public Module FaceGenBuilder
         Dim specBytesArr = TryGetFilesDictionaryBytes(specKey)
         If diffuseBytes Is Nothing Then
             Logger.LogLazy(Function() $"[FACEBAKE] BAIL: diffuse bytes not resolved key='{diffuseKey}' (npcFormID=0x{npcFormID:X8})")
+            RecordTextureFailure(result, $"face diffuse texture not found on disk / in archives: '{diffuseKey}'")
             Return
         End If
 
@@ -2636,6 +2657,7 @@ Public Module FaceGenBuilder
 
         If (Not needGl) AndAlso (cpu Is Nothing OrElse cpu.Diffuse Is Nothing OrElse cpu.Diffuse.Bgra Is Nothing) Then
             Logger.LogLazy(Function() $"[FACEBAKE] BAIL: CPU compose produced no diffuse (npcFormID=0x{npcFormID:X8})")
+            RecordTextureFailure(result, "the CPU compositor produced no diffuse pixels (see [FACEBAKE-CPU] log for the cause)")
             Return
         End If
 
@@ -2847,6 +2869,9 @@ Public Module FaceGenBuilder
             Dim bgra As Byte() = If(cbSlot, gpuBgra)
             If bgra Is Nothing Then
                 Logger.LogLazy(Function() $"[FACEBAKE] slot {entry.Slot}{entry.Suffix}: sin textura (ni CPU ni GPU) — SKIPPED (npcFormID=0x{npcFormID:X8})")
+                ' Slot 0 (diffuse) is always expected; its absence is a real failure. Slots 1/7 (normal/spec)
+                ' are legitimately absent when the source head has none — don't flag those as failures.
+                If entry.Slot = 0 Then RecordTextureFailure(result, $"slot 0{entry.Suffix}: no composed pixels (neither CPU nor GPU produced a diffuse)")
                 Continue For
             End If
 
@@ -2879,6 +2904,7 @@ Public Module FaceGenBuilder
                 Dim msgL = ex.Message
                 Dim typeL = ex.GetType().Name
                 Logger.LogLazy(Function() $"[FACEBAKE-FAIL] DDS encode slot={slotL}{suffixL} dxgi={dxgiL} {wL}x{hL} mips={mipsL} npcFormID=0x{npcFormID:X8}: {typeL}: {msgL}")
+                RecordTextureFailure(result, $"{typeL}: {msgL} (encode slot {slotL}{suffixL}, {wL}x{hL}, dxgi={dxgiL})")
                 Continue For
             End Try
 
@@ -2887,7 +2913,11 @@ Public Module FaceGenBuilder
                 File.WriteAllBytes(outFile, ddsBytes)
                 Logger.LogLazy(Function() $"[FACEBAKE] wrote '{outFile}'")
             Catch ex As Exception
-                Logger.LogLazy(Function() $"[FACEBAKE] write FAILED '{outFile}': {ex.Message}")
+                Dim slotW = entry.Slot
+                Dim suffixW = entry.Suffix
+                Dim msgW = ex.Message
+                Logger.LogLazy(Function() $"[FACEBAKE] write FAILED '{outFile}': {msgW}")
+                RecordTextureFailure(result, $"could not write the DDS to disk (slot {slotW}{suffixW}): {msgW}")
                 Continue For
             End Try
             End If

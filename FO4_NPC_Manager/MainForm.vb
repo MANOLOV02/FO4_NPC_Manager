@@ -2077,6 +2077,40 @@ Public Class MainForm
             .AppliedPresets = _appliedPresets,
             .Toggles = RenderToggles.FromMainCheckBoxes(Me)
         }
+
+        ' Ver HookSkinningToggleRefresh: el toggle GPU/CPU de la cámara re-corre la geometría pero NO el face-tint.
+        HookSkinningToggleRefresh(_previewControl, _renderHost)
+    End Sub
+
+    ''' <summary>Cablea el refresh del face-tint para el toggle GPU↔CPU skinning del menú de cámara de CUALQUIER
+    ''' preview (main + editores + pickers). PROBLEMA: la librería, al togglear, sólo re-corre la GEOMETRÍA
+    ''' (skin + morphs, estilo WM granular, vía su MarkDirty(Shapes|Force) interno) pero NO re-aplica el
+    ''' face-tint/fold ⇒ el diffuse plegado queda "pegado" en el diccionario de texturas mientras el MaterialData
+    ''' nuevo pierde su estado per-mesh (p.ej. SseFoldDetailNeutralized) → cara oscura/incorrecta. La librería
+    ''' levanta SkinningModeToggled justo para que la app re-corra SU pipeline; nadie lo escuchaba (FO4 y SSE).
+    ''' FIX: re-armamos el hook post-upload; cuando el re-render de geometría termina con las texturas ya listas,
+    ''' la librería lo dispara SYNC (Render.vb ~870) y ahí restauramos el pristine + RE-COMPONEMOS el face-tint/fold
+    ''' sobre el MaterialData nuevo — in-place, sin recargar el NIF. Si el refresh liviano no puede (sin pristine),
+    ''' cae a una recarga completa de ESE host. Un handler por (control, host): cada preview arrastra el suyo.</summary>
+    Friend Sub HookSkinningToggleRefresh(ctl As PreviewControl, host As NpcRenderHost)
+        If ctl Is Nothing OrElse host Is Nothing Then Return
+        AddHandler ctl.SkinningModeToggled,
+            Sub(sender As PreviewControl)
+                If host.LastRenderedState Is Nothing OrElse ctl.Intent Is Nothing Then Return
+                Dim capturedVersion = _previewRequestVersion   ' in-place: NO se bumpea (no es una request nueva)
+                ctl.Intent.PostTextureUploadAction =
+                    Sub(model)
+                        If host.IsDisposed Then Return
+                        ' Si se disparó una request nueva (cambio de NPC en algún host) entretanto, no tocar nada.
+                        If capturedVersion <> _previewRequestVersion Then Return
+                        If RefreshFaceTintLivePreview(host) Then Return
+                        ' No se pudo refrescar in-place (sin estado/pristine) ⇒ recarga completa de ESTE host.
+                        Dim st = host.LastRenderedState
+                        If st Is Nothing Then Return
+                        Dim fid = If(st.ModelSourceFormID <> 0UI, st.ModelSourceFormID, st.FormID)
+                        Dim reloadTask = RenderInHostAsync(host, fid)
+                    End Sub
+            End Sub
     End Sub
 
     Private Async Sub LoadDataAsync()
@@ -11089,7 +11123,7 @@ Public Class MainForm
             .ApplyNpcRecordOverride = AddressOf ApplyNpcRecordOverrideToSpec,
             .RunChargenBake = Function(npcFid As UInteger, anchor As String, srcPlugin As String,
                                         prog As IProgress(Of NpcOverrideSaver.SaveProgress)) _
-                                   As Task(Of (Success As Boolean, Skipped As Boolean, Bundle As NpcFaceGenPacker.BakedNpcBundle, FailureMessage As String))
+                                   As Task(Of (Success As Boolean, Skipped As Boolean, Bundle As NpcFaceGenPacker.BakedNpcBundle, FailureMessage As String, TexWarning As String))
                                   Return RunChargenBake(npcFid, anchor, srcPlugin, prog)
                               End Function,
             .RunChargenPackBatch = Function(anchor As String,
@@ -11212,8 +11246,12 @@ Public Class MainForm
 
         Dim savedCount = execResult.WrittenNpcFormIDs.Count
         Dim what = If(savedCount = 1, $"{If(selectedInput.Npc?.EditorID, selectedFormID.ToString("X8"))}", $"{savedCount} NPCs")
+        ' Title reflects the icon: a texture/pack warning (VerifierIcon = Warning) says so up front instead of
+        ' a bare "Save ESP/ESM" over a body that quietly reports missing textures.
+        Dim boxTitle = If(execResult.VerifierIcon = MessageBoxIcon.Warning,
+                          "Save ESP/ESM — completed with warnings", "Save ESP/ESM")
         MessageBox.Show($"Saved {what} to {IO.Path.GetFileName(execResult.WriterResult.OutputPath)}.{execResult.ChargenSummary}{execResult.VerifierSummary}",
-                        "Save ESP/ESM", MessageBoxButtons.OK, execResult.VerifierIcon)
+                        boxTitle, MessageBoxButtons.OK, execResult.VerifierIcon)
     End Function
 
     ''' <summary>Loose FaceGen bake files the app could have written for <paramref name="npcFormID"/>, under
@@ -11603,7 +11641,7 @@ Public Class MainForm
     Private Async Function RunChargenBake(npcFormID As UInteger,
                                           anchorPluginPath As String,
                                           sourcePluginName As String,
-                                          progress As IProgress(Of NpcOverrideSaver.SaveProgress)) As Task(Of (Success As Boolean, Skipped As Boolean, Bundle As NpcFaceGenPacker.BakedNpcBundle, FailureMessage As String))
+                                          progress As IProgress(Of NpcOverrideSaver.SaveProgress)) As Task(Of (Success As Boolean, Skipped As Boolean, Bundle As NpcFaceGenPacker.BakedNpcBundle, FailureMessage As String, TexWarning As String))
         ReportSaveProgress(progress, "Baking CharGen NIF + textures…", "", False, 0, 0)
 
         ' Bake the SAME identity the "Build CharGen (loose)" button uses for the rendered NPC: its
@@ -11643,15 +11681,15 @@ Public Class MainForm
                                                          willBePacked:=True, lmSkinTemplateResolver:=AddressOf ResolveLmSkinTemplate))
             End If
         Catch ex As Exception
-            Return (False, False, Nothing, $"CharGen bake failed: {ex.Message}")
+            Return (False, False, Nothing, $"CharGen bake failed: {ex.Message}", "")
         End Try
 
         If bakeResult.Skipped Then
             ' No FaceGen head parts (non-human race, etc.) → nothing to bake/pack. SKIP, not failure.
-            Return (True, True, Nothing, "")
+            Return (True, True, Nothing, "", "")
         End If
         If Not bakeResult.Success Then
-            Return (False, False, Nothing, "CharGen bake failed")
+            Return (False, False, Nothing, "CharGen bake failed", "")
         End If
 
         Dim originPlugin = _pluginManager.GetOriginatingPluginName(bakeFormID)
@@ -11667,7 +11705,14 @@ Public Class MainForm
             .DebugSandbox = FaceGenBuilder.DebugMode,
             .UsesSharedNeutralDetail = bakeResult.UsedSharedNeutralDetail
         }
-        Return (True, False, bundle, "")
+        ' The NIF wrote (Success=True), but face-texture slots may have failed to encode/write. Surface the
+        ' cause upward: the orchestrator adds it to the save summary + flips the icon to Warning, so the user
+        ' sees WHY textures are missing instead of a silent "1 OK" followed by "0/1 packed, N unaccounted".
+        Dim texWarn As String = ""
+        If bakeResult.TextureSlotsFailed > 0 Then
+            texWarn = $"{bakeResult.TextureSlotsFailed} texture output(s) failed — {bakeResult.TextureFailureDetail}"
+        End If
+        Return (True, False, bundle, "", texWarn)
     End Function
 
     ''' <summary>Phase 4b delegate: take the bundles collected from successful per-NPC bakes and

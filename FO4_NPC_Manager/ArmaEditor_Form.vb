@@ -1529,6 +1529,8 @@ Public Class ArmaEditor_Form
                 .AppliedPresets = _mainForm.AppliedPresetsForEditor,
                 .Toggles = _mainForm.BuildOutfitPickerToggles()
             }
+            ' Camera GPU/CPU toggle debe re-aplicar el tint de ESTE preview (no sólo la geometría). Ver MainForm.
+            _mainForm?.HookSkinningToggleRefresh(_preview, _host)
         End If
 
         RequestPreview()

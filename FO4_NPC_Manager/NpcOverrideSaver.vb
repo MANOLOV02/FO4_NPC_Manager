@@ -106,7 +106,7 @@ Public Module NpcOverrideSaver
         ''' files (NIF + 3 DDS) on the UI thread (GL-bound), returns a <see cref="NpcFaceGenPacker.BakedNpcBundle"/>
         ''' identifying that NPC's bake outputs so the orchestrator can batch them into one pack call.
         ''' Bundle is Nothing when the bake was skipped (no FaceGen head parts) or failed.</summary>
-        Public RunChargenBake As Func(Of UInteger, String, String, IProgress(Of SaveProgress), Task(Of (Success As Boolean, Skipped As Boolean, Bundle As NpcFaceGenPacker.BakedNpcBundle, FailureMessage As String)))
+        Public RunChargenBake As Func(Of UInteger, String, String, IProgress(Of SaveProgress), Task(Of (Success As Boolean, Skipped As Boolean, Bundle As NpcFaceGenPacker.BakedNpcBundle, FailureMessage As String, TexWarning As String)))
 
         ''' <summary>BA2 pack delegate: invoked in Phase 4b with the bundles collected from all successful Phase 4a
         ''' bakes PLUS the canonical FaceGen entry paths to REMOVE from the target archive set (mark-to-delete).
@@ -198,6 +198,11 @@ Public Module NpcOverrideSaver
                 Dim bakedOk = 0
                 Dim bakedFail = 0
                 Dim bakedSkip = 0
+                ' NPCs whose NIF baked OK but at least one face texture (D/N/S) failed to encode/write. These
+                ' STILL count as bakedOk (the NIF is valid) but surface a warning + the first cause, because
+                ' they are exactly the NPCs the BA2 pack will later report as "files unaccounted for".
+                Dim bakedTexWarn = 0
+                Dim firstTexWarn As String = ""
                 Dim bundles As New List(Of NpcFaceGenPacker.BakedNpcBundle)
                 For i = 0 To inputs.Count - 1
                     If bakeCancel.IsCancellationRequested Then
@@ -240,6 +245,10 @@ Public Module NpcOverrideSaver
                     ElseIf bakeRes.Success AndAlso bakeRes.Bundle IsNot Nothing Then
                         bakedOk += 1
                         bundles.Add(bakeRes.Bundle)
+                        If Not String.IsNullOrEmpty(bakeRes.TexWarning) Then
+                            bakedTexWarn += 1
+                            If firstTexWarn = "" Then firstTexWarn = bakeRes.TexWarning
+                        End If
                     Else
                         bakedFail += 1
                     End If
@@ -255,19 +264,26 @@ Public Module NpcOverrideSaver
                     packSuccess = packRes.Success
                 End If
 
-                If totalBakes = 1 Then
-                    ' Single-NPC: terse summary. Only mention skip/failure when there is one (no noise).
-                    result.ChargenSummary = $"{vbCrLf}{vbCrLf}CharGen bake: {bakedOk} OK" &
-                        If(bakedSkip > 0, $", {bakedSkip} skipped", "") &
-                        If(bakedFail > 0, $", {bakedFail} failed", "") & "."
-                Else
-                    result.ChargenSummary = $"{vbCrLf}{vbCrLf}CharGen bake: {bakedOk}/{totalBakes} OK" &
-                        If(bakedSkip > 0, $", {bakedSkip} skipped", "") &
-                        If(bakedFail > 0, $", {bakedFail} failed", "") &
-                        If(result.BakeCancelled, " (cancelled — remaining NPCs not baked)", "") & "."
+                ' Clean, sectioned block (one bullet per line) instead of a run-on sentence. Reads well in the
+                ' plain MessageBox the caller shows and keeps bake / textures / pack visually separated.
+                Dim sb As New System.Text.StringBuilder()
+                sb.Append(vbCrLf & vbCrLf & "FaceGen")
+                Dim okText = If(totalBakes = 1, $"{bakedOk} OK", $"{bakedOk}/{totalBakes} OK")
+                sb.Append(vbCrLf & "  • Bake: " & okText &
+                          If(bakedSkip > 0, $", {bakedSkip} skipped", "") &
+                          If(bakedFail > 0, $", {bakedFail} failed", "") &
+                          If(result.BakeCancelled, " (cancelled — remaining NPCs not baked)", ""))
+                If bakedTexWarn > 0 Then
+                    sb.Append(vbCrLf & $"  • ⚠ Textures: {bakedTexWarn} NPC{If(bakedTexWarn = 1, "", "s")} with missing face textures")
+                    sb.Append(vbCrLf & "      " & firstTexWarn)
                 End If
-                If packSummary <> "" Then result.ChargenSummary &= vbCrLf & packSummary
-                result.ChargenSuccess = (bakedFail = 0) AndAlso packSuccess
+                If packSummary <> "" Then sb.Append(vbCrLf & "  • " & packSummary)
+                result.ChargenSummary = sb.ToString()
+
+                ' A texture failure (or a pack miss) leaves the NIF pointing at DDS that don't exist → broken
+                ' face in-game. It doesn't fail the ESP write (already on disk), but it IS a warning, so flip
+                ' the icon. bakedTexWarn is the root-cause signal; the pack "unaccounted" line is its echo.
+                result.ChargenSuccess = (bakedFail = 0) AndAlso packSuccess AndAlso (bakedTexWarn = 0)
                 If Not result.ChargenSuccess Then result.VerifierIcon = MessageBoxIcon.Warning
             ElseIf faceGenExcludeEntries.Count > 0 Then
                 ' Delete-only save with CharGen bake OFF: still strip the removed NPCs' stale bakes from the

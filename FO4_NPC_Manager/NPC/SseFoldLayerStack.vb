@@ -89,7 +89,7 @@ Friend Module SseFoldLayerStack
                 Logger.LogLazy(Function() $"[SSE-FOLD] IN (GPU-resident): complexion(sRGB)=({mC(0):F3},{mC(1):F3},{mC(2):F3}) " &
                                           If(mF Is Nothing, "facetint=(sin readback) ",
                                              $"facetint(lin)=({mF(0):F3},{mF(1):F3},{mF(2):F3}) ⇒ fgTint≈{(mF(0) + 1.0 / 255.0) * (255.0 / 64.0):F2} ") &
-                                          $"detail={If(mD Is Nothing, "NINGUNO(0.5)", $"({mD(0):F3},{mD(1):F3},{mD(2):F3})")}")
+                                          $"detail={If(mD Is Nothing, "NINGUNO(0.251=default engine)", $"({mD(0):F3},{mD(1):F3},{mD(2):F3})")}")
             End If
 
             ' --- 2. FOLD: base = complexion (sRGB, alpha forzado opaco), capa = rama uFgTintFold del shader
@@ -221,7 +221,7 @@ Friend Module SseFoldLayerStack
         Try
             tintTex = UploadRgba32f(facetintLinear, npix, w, h)        ' facetint CRUDO (lineal), sin cuantizar
             If tintTex = 0 Then Return Nothing
-            If detailRaw IsNot Nothing Then detTex = UploadRgba32f(detailRaw, npix, w, h)   ' 0 ⇒ el shader usa b=0.5
+            If detailRaw IsNot Nothing Then detTex = UploadRgba32f(detailRaw, npix, w, h)   ' 0 ⇒ el shader usa b=0.2509803922 (0.251, default engine)
 
             Dim foldLayer As New List(Of FaceTintLayerInput) From {
                 New FaceTintLayerInput With {

@@ -69,11 +69,12 @@ Friend NotInheritable Class NpcFaceTintResolver
     ''' fiel que mostrar, porque el bake también pliega.</summary>
     Friend Property LastSseFoldWasMandatory As Boolean
 
-    ''' <summary>Render-only: copy the authoritative face material's subsurface-scattering
-    ''' response onto every body skin material so face and body skin light identically. The
-    ''' face material (BSLightingShaderType.FaceTint) "wins": its SubsurfaceLighting (on/off)
-    ''' and SubsurfaceLightingRolloff are copied verbatim (including False) onto each body skin
-    ''' material (the SkinTint flag, excluding the face itself). The render shader reads both
+    ''' <summary>BOTH ENGINES: copy the authoritative face material's subsurface-scattering response
+    ''' onto every body skin material whose response DIFFERS, so face and body skin light identically.
+    ''' The face material (BSLightingShaderType.FaceTint) "wins" (is prioritized): its SubsurfaceLighting
+    ''' (on/off) and SubsurfaceLightingRolloff are copied verbatim (including False) onto each body skin
+    ''' material (the SkinTint flag, excluding the face itself) ONLY when that body's current values do
+    ''' not already match the face's (no-op when they already agree). The render shader reads both
     ''' fields per material every draw (Render.vb: bSoftlight + subsurfaceRolloff), so this
     ''' mutation takes effect on the next frame with no texture work.
     '''
@@ -92,6 +93,13 @@ Friend NotInheritable Class NpcFaceTintResolver
     ''' no such field, so both source and targets are gated to BGSM-backed materials.</summary>
     Private Sub MatchBodySkinSubsurfaceToFace(host As NpcRenderHost)
         If host Is Nothing Then host = _hostProvider()
+        ' BOTH ENGINES. Prioritize the FACE: copy its subsurface response onto body skin materials, but
+        ' ONLY where the body differs (the per-target guard below skips shapes that already match). This
+        ' pairs with the removal of the SSE facegen `bSoftlight` force in Render.vb: subsurface is now
+        ' bound per-material from each shape's own Soft_Lighting flag, and this pass reconciles the body
+        ' to the face when they diverge. (RE 2026-07-23: SSE facegen subsurface is selected by the material
+        ' SOFT_LIGHTING flag, not forced; vanilla/mod facegen heads ship it OFF. FO4 is deferred/value-driven.
+        ' Full engine parity of the FO4 path was not byte-confirmed -- see memory notes.)
         Dim model = host?.PreviewCtl?.Model
         If model Is Nothing OrElse model.meshes Is Nothing Then
             Logger.LogLazy(Function() $"[BODY-SUBSURFACE] skip: model/meshes Nothing")
@@ -137,15 +145,17 @@ Friend NotInheritable Class NpcFaceTintResolver
             Dim preRoll = mb.SubsurfaceLightingRolloff
             If preOn = faceOn AndAlso preRoll = faceRolloff Then Continue For
 
+            ' Fires ONLY when body ≠ face (guard above skipped the equal case). Log both sides before mutating.
+            Dim snLog = mesh.MeshData.Shape?.ShapeName
+            Dim faceOnL = faceOn
+            Dim faceRollL = faceRolloff
+            Dim bodyOnL = preOn
+            Dim bodyRollL = preRoll
+            Logger.LogLazy(Function() $"[BODY-SUBSURFACE] MATCH FIRED (differ) shape='{snLog}' FACE(on={faceOnL} roll={faceRollL:F4}) BODY(on={bodyOnL} roll={bodyRollL:F4}) → body set to face")
+
             mb.SubsurfaceLighting = faceOn
             mb.SubsurfaceLightingRolloff = faceRolloff
             applied += 1
-            Dim snLog = mesh.MeshData.Shape?.ShapeName
-            Dim preOnL = preOn
-            Dim preRollL = preRoll
-            Dim newOnL = faceOn
-            Dim newRollL = faceRolloff
-            Logger.LogLazy(Function() $"[BODY-SUBSURFACE] shape='{snLog}' {preOnL}/{preRollL:F4} → {newOnL}/{newRollL:F4} (from face)")
         Next
 
         Dim appliedLog = applied
@@ -307,10 +317,16 @@ Friend NotInheritable Class NpcFaceTintResolver
                 ' raceFid viejo idx=38 en la cara vs nuevo idx=1 en el body).
                 If mustFold OrElse forceFoldDebug Then
                     If ApplySseFacetintFolded(materialBase, npcData, race, model, host, skeeRaw, faceOvl, state.RaceFormID) Then
+                        ' Diffuse PLEGADO: el softlight(diffuse, detail-o-0.251) ya está horneado ⇒ si el slot 3 está
+                        ' vacío el shader debe usar 0.5 (identidad), NO el default 0.251 (re-oscurecería). Ver el flag.
+                        mesh.MeshData.Material.SseFoldDetailNeutralized = True
                         composedAny = True
                         Continue For
                     End If
                 End If
+                ' Camino NO plegado: el shader aplica el detail (real o default 0.251) UNA vez = engine. Reset del flag
+                ' por si esta malla venía de un fold en un render anterior (fold↔unfold en vivo sin recargar el modelo).
+                mesh.MeshData.Material.SseFoldDetailNeutralized = False
                 If ApplySseFacetint(materialBase, npcData, race, model, host, state.RaceFormID) Then composedAny = True
                 Continue For
             End If
@@ -546,7 +562,7 @@ Friend NotInheritable Class NpcFaceTintResolver
                 Logger.LogLazy(Function() $"[SSE-FOLD] IN: complexion(sRGB)=({mC(0) / npix:F3},{mC(1) / npix:F3},{mC(2) / npix:F3}) " &
                                           $"facetint(lin)=({mF(0) / npix:F3},{mF(1) / npix:F3},{mF(2) / npix:F3}) " &
                                           $"⇒ fgTint≈{(mF(0) / npix + 1.0 / 255.0) * (255.0 / 64.0):F2}  " &
-                                          $"detail={If(detailAcc Is Nothing, "NINGUNO(0.5)", $"({mD(0) / npix:F3},{mD(1) / npix:F3},{mD(2) / npix:F3})")}")
+                                          $"detail={If(detailAcc Is Nothing, "NINGUNO(0.251=default engine)", $"({mD(0) / npix:F3},{mD(1) / npix:F3},{mD(2) / npix:F3})")}")
             End If
 
             ' PLIEGUE (fgTint × softlight = la ley FIJA del engine), y las capas SOBRE el base plegado —
@@ -608,8 +624,13 @@ Friend NotInheritable Class NpcFaceTintResolver
 
         ' --- 5. Neutralizar slot 3 y slot 6 REEMPLAZANDO su textura (mismos keys, tampoco se tocan los paths). ---
         '   detail 0.5 → softlight identidad;  facetint (63,64,63)/255 → fgTint = 1. Ambos se samplean CRUDOS (no sRGB).
-        '   Si un slot NO tiene textura, el shader ya lo trata como identidad (bHasDetailMask / bFacetintAlbedo quedan
-        '   en False cuando el ID es 0) ⇒ no hay nada que neutralizar y se deja como está.
+        '   ⛔ ASIMETRÍA slot 3 vs slot 6 cuando el slot está VACÍO:
+        '     · slot 6 vacío ⇒ el shader SÍ lo trata como identidad (bFacetintAlbedo = InnerLayerTexture_ID<>0 = False,
+        '       Render.vb:3348) ⇒ no hay nada que neutralizar.
+        '     · slot 3 vacío ⇒ el shader NO lo saltea: bHasDetailMask es SIEMPRE True en facegen (Render.vb:3422) y
+        '       bindea defaultFacegenDetailTex (0.251) = re-oscurece el fold. Por eso el caller marca
+        '       MaterialData.SseFoldDetailNeutralized ⇒ el shader usa el neutral 0.5 en lugar del 0.251 (folded==bake).
+        '   El bake hace lo análogo escribiendo NeutralDetailDds incondicional (FaceGenBuilder:2312-2319).
         Dim detKeyLog As String = "(sin detail)"
         If Not String.IsNullOrEmpty(detPath) Then
             Dim detKey = FO4UnifiedMaterial_Class.CorrectTexturePath(detPath)

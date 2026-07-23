@@ -1239,7 +1239,7 @@ Public Module LooksmenuLoader
     ''' the file path string. The JSON itself does not store a race — only Gender — and LoadPreset
     ''' applies the preset to the current actor's race regardless of where the preset originated.
     '''
-    ''' Returns absolute paths in alphabetical order, recursing one level so user-organized
+    ''' Returns absolute paths in alphabetical order, recursing into all subfolders so user-organized
     ''' subfolders (some users group presets by race or author) are still found.</summary>
     Public Function EnumeratePresetFiles(dataPath As String) As List(Of String)
         Dim result As New List(Of String)

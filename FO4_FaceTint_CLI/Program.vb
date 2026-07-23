@@ -37,6 +37,22 @@ Module Program
         ' banner: permite ver en el log que se PIDIO, no solo que se resolvio.
         Public GameRaw As String = Nothing
         Public CompareCk As Boolean = False      ' --compareck: tras --buildfacegen, diff del NIF baked REAL (on-disk) + facetint DDS vs la ref del CK (BSA/loose)
+        ' --comparefiles "<ckNif>|<ourNif>": diff EXHAUSTIVO de DOS NIFs sueltos on-disk, SIN hornear y SIN montar plugins.
+        ' Reusa CompareShapeExhaustive/Shader/Alpha (posiciones, tris, normals/tangents/UV/vcol/skin, VertexDesc, bounds,
+        ' texslots, TODO el BSLightingShaderProperty y el NiAlphaProperty). El CK sale del path suelto que se le pasa
+        ' (NO del archive), asi que sirve para comparar contra la salida canonica del CK que el usuario dejo loose.
+        ' Requiere --game sse|fo4 (gobierna la rama de flags de shader). La textura (TGA) se compara aparte.
+        Public CompareFiles As String = ""
+        ' --dumpnif <nif>: volcado COMPLETO sin umbrales ni clasificacion, ordenado por nombre para diff limpio.
+        ' Por nodo/shape: transform (T/R/S). Por shape: vdesc/bounds + TODO el BSLightingShaderProperty (type,
+        ' flags, escalares, colores, UV), TODOS los texslots (0..N incl. vacios) y el NiAlphaProperty. Correr en
+        ' los dos NIFs y hacer `diff` revela CUALQUIER diferencia de campo que el comparador con umbral esconde.
+        Public DumpNif As String = ""
+        ' --skincheck "<ckNif>|<ourNif>": calcula la posicion RENDERIZADA en bind-pose de cada vertice
+        ' (Sum_k w_k * (boneWorld_k o skinToBone_k) * V) en LOS DOS NIFs y las diffea por shape. Es la
+        ' verdad de terreno de "se ven distintos": si el nodo rotado esta compensado por el bind, la
+        ' posicion skinneada es identica (delta ~0) y la rotacion del nodo es INERTE. Sin hornear, sin plugins.
+        Public SkinCheck As String = ""
         Public SseCompareBatch As Boolean = False ' --ssecomparebatch [N]: barrido 100% — bakea+compara TODOS los NPC_ vanilla con FaceGeom, agrega diffs por categoría
         Public SseCompareBatchLimit As Integer = 0
         ''' <summary>--headfidelity: corre el mismo barrido que --ssecomparebatch y ADEMÁS mide, por shape,
@@ -185,6 +201,22 @@ Module Program
         ' --- 1. Config (app config.json local) ---
         Config_App.LoadConfig()
         Config_App.Current.Game = opt.Game
+
+        ' --- COMPAREFILES: diff de dos NIFs sueltos on-disk, sin hornear ni montar plugins. Solo necesita
+        '     Config_App.Current.Game (rama de flags de shader). Se despacha aca para NO pagar el bootstrap. ---
+        If opt.CompareFiles <> "" Then
+            PosReportThreshold = opt.PosThresh
+            CompareLooseFilesRun(opt.CompareFiles)
+            Return
+        End If
+        If opt.DumpNif <> "" Then
+            DumpNifFull(opt.DumpNif)
+            Return
+        End If
+        If opt.SkinCheck <> "" Then
+            SkinCheckRun(opt.SkinCheck)
+            Return
+        End If
 
         ' --- 1b. NPC_Config: el MISMO camino que la GUI (Program.vb:111-112) y BakeAllRunner (:98-99). ---
         ' ⛔ BUG PREEXISTENTE (medido 2026-07-19): el CLI NUNCA llamaba a NPC_Config.LoadConfig(), asi que
@@ -1427,6 +1459,259 @@ Module Program
         fromArchive = b IsNot Nothing AndAlso b.Length > 0
         Return b
     End Function
+
+    ''' <summary>Diff EXHAUSTIVO de dos NIFs sueltos on-disk (CK canonico vs nuestro _2), SIN hornear y SIN
+    ''' montar plugins. Reusa la MISMA maquinaria por-shape que CompareBakedVsCk (CompareShapeExhaustive →
+    ''' Shader + Alpha). La ref del CK es el path suelto que se pasa (no el archive): asi compara contra la
+    ''' salida canonica que el CK dejo loose, no contra el BA2 shipped.</summary>
+    Private Sub CompareLooseFilesRun(spec As String)
+        Dim parts = spec.Split("|"c)
+        If parts.Length < 2 Then
+            Console.Error.WriteLine("--comparefiles necesita '<ckNif>|<ourNif>'") : Environment.ExitCode = 2 : Return
+        End If
+        Dim ckPath = parts(0).Trim(), myPath = parts(1).Trim()
+        If Not File.Exists(ckPath) Then Console.Error.WriteLine($"CK nif no existe: {ckPath}") : Environment.ExitCode = 2 : Return
+        If Not File.Exists(myPath) Then Console.Error.WriteLine($"our nif no existe: {myPath}") : Environment.ExitCode = 2 : Return
+
+        Dim ckBytes = File.ReadAllBytes(ckPath), myBytes = File.ReadAllBytes(myPath)
+        Dim ckNif As New Nifcontent_Class_Manolo() : ckNif.Load_Manolo(ckBytes)
+        Dim myNif As New Nifcontent_Class_Manolo() : myNif.Load_Manolo(myBytes)
+
+        Dim real As New List(Of String)()   ' diferencias REALES
+        Dim noop As New List(Of String)()   ' diferencias esperadas / cosmeticas
+        Dim normP = Function(p As String) If(p, "").Replace("/"c, "\"c).ToLowerInvariant().Replace("data\", "").TrimStart("\"c)
+
+        Console.WriteLine($"======== COMPARE LOOSE FILES (no bake, game={Config_App.Current.Game}) ========")
+        Console.WriteLine($"  CK  = {ckPath}")
+        Console.WriteLine($"  OUR = {myPath}")
+
+        ' ---- estructura NIF ----
+        Console.WriteLine($"  [NIF/struct] bytes CK={ckBytes.Length} our={myBytes.Length}  blocks CK={ckNif.Blocks.Count} our={myNif.Blocks.Count}")
+        If ckBytes.Length <> myBytes.Length Then noop.Add($"NIF byte-size CK={ckBytes.Length} vs our={myBytes.Length} (framing/orden de tablas — puede ser NO-OP)")
+        Dim ckTypes = String.Join(",", ckNif.Blocks.GroupBy(Function(b) b.GetType().Name).OrderBy(Function(g) g.Key).Select(Function(g) $"{g.Key}x{g.Count()}"))
+        Dim myTypes = String.Join(",", myNif.Blocks.GroupBy(Function(b) b.GetType().Name).OrderBy(Function(g) g.Key).Select(Function(g) $"{g.Key}x{g.Count()}"))
+        If ckTypes <> myTypes Then
+            real.Add($"NIF block-type histogram DIFF:{Environment.NewLine}      CK ={ckTypes}{Environment.NewLine}      our={myTypes}")
+        Else
+            Console.WriteLine($"  [NIF/struct] block-type histogram OK ({myNif.Blocks.Count} blocks)")
+        End If
+        Dim ckRoot = TryCast(ckNif.Blocks.FirstOrDefault(), NiflySharp.Blocks.NiAVObject)
+        Dim myRoot = TryCast(myNif.Blocks.FirstOrDefault(), NiflySharp.Blocks.NiAVObject)
+        If ckRoot IsNot Nothing AndAlso myRoot IsNot Nothing Then
+            Dim ckR = $"{ckRoot.GetType().Name} '{ckRoot.Name?.String}' flags=0x{ckRoot.Flags_ui:X4}"
+            Dim myR = $"{myRoot.GetType().Name} '{myRoot.Name?.String}' flags=0x{myRoot.Flags_ui:X4}"
+            If ckR <> myR Then real.Add($"NIF root DIFF: CK[{ckR}] vs our[{myR}]") Else Console.WriteLine($"  [NIF/struct] root OK: {myR}")
+        End If
+
+        ' ---- por shape (misma maquinaria que el comparador de produccion) ----
+        Dim ckShapes = ckNif.NifShapes.ToList()
+        Dim myShapes = myNif.NifShapes.ToList()
+        Console.WriteLine($"  [NIF] CK shapes={ckShapes.Count}  our shapes={myShapes.Count}")
+        If ckShapes.Count <> myShapes.Count Then real.Add($"NIF shape count CK={ckShapes.Count} vs our={myShapes.Count}")
+        For Each cs In ckShapes
+            Dim nm = If(cs.Name?.String, "")
+            Dim ms = myShapes.FirstOrDefault(Function(s) String.Equals(If(s.Name?.String, ""), nm, StringComparison.OrdinalIgnoreCase))
+            If ms Is Nothing Then real.Add($"shape '{nm}': PRESENT in CK, ABSENT in our") : Continue For
+            CompareShapeExhaustive(nm, cs, ckNif, ms, myNif, real, noop, normP)
+        Next
+        For Each ms In myShapes
+            Dim nm = If(ms.Name?.String, "")
+            If Not ckShapes.Any(Function(s) String.Equals(If(s.Name?.String, ""), nm, StringComparison.OrdinalIgnoreCase)) Then real.Add($"shape '{nm}': PRESENT in our, ABSENT in CK")
+        Next
+
+        Console.WriteLine()
+        Console.WriteLine($"==== REAL diffs: {real.Count} ====")
+        For Each r In real : Console.WriteLine("  [REAL] " & r) : Next
+        Console.WriteLine($"==== NO-OP / cosmetic: {noop.Count} ====")
+        For Each nn In noop : Console.WriteLine("  [noop] " & nn) : Next
+        Console.WriteLine($"======== END COMPARE  (REAL={real.Count}  NOOP={noop.Count}) ========")
+    End Sub
+
+    ''' <summary>Compara la DATA DE SKINNING que el juego realmente usa en una malla skinneada: el bind
+    ''' skinToBone (ShapeBoneTransforms) de cada hueso, emparejado por NOMBRE, mas los pesos/indices por
+    ''' vertice. La transform del NODO es INERTE en skinned (el juego usa el esqueleto del personaje), asi
+    ''' que aca NO se mira: solo el bind + pesos. Si estos son identicos, la malla skinneada renderiza igual.</summary>
+    Private Sub SkinCheckRun(spec As String)
+        Dim parts = spec.Split("|"c)
+        If parts.Length < 2 Then Console.Error.WriteLine("--skincheck necesita '<ckNif>|<ourNif>'") : Environment.ExitCode = 2 : Return
+        Dim ckPath = parts(0).Trim(), myPath = parts(1).Trim()
+        If Not File.Exists(ckPath) OrElse Not File.Exists(myPath) Then Console.Error.WriteLine("nif no existe") : Environment.ExitCode = 2 : Return
+        Dim ckNif As New Nifcontent_Class_Manolo() : ckNif.Load_Manolo(File.ReadAllBytes(ckPath))
+        Dim myNif As New Nifcontent_Class_Manolo() : myNif.Load_Manolo(File.ReadAllBytes(myPath))
+        Console.WriteLine("======== SKINNING DATA CHECK (bind skinToBone + pesos; nodo IGNORADO) ========")
+        Console.WriteLine($"  CK  = {ckPath}")
+        Console.WriteLine($"  OUR = {myPath}")
+        Dim ckMap = SkinBinds(ckNif)
+        Dim myMap = SkinBinds(myNif)
+        Dim anyDiff = False
+        For Each kv In ckMap
+            Dim nm = kv.Key
+            If Not myMap.ContainsKey(nm) Then Console.WriteLine($"  shape '{nm}': sin par en OUR") : anyDiff = True : Continue For
+            Dim a = kv.Value, b = myMap(nm)
+            Dim worstBone = "", worstT = 0.0, worstR = 0.0, worstS = 0.0
+            Dim onlyCk = 0, onlyOu = 0
+            For Each bk In a.Keys
+                If Not b.ContainsKey(bk) Then onlyCk += 1 : Continue For
+                Dim ta = a(bk), tb = b(bk)
+                Dim dt = Math.Sqrt((CDbl(ta.Translation.X) - CDbl(tb.Translation.X)) ^ 2 + (CDbl(ta.Translation.Y) - CDbl(tb.Translation.Y)) ^ 2 + (CDbl(ta.Translation.Z) - CDbl(tb.Translation.Z)) ^ 2)
+                Dim ds = Math.Abs(CDbl(ta.Scale) - CDbl(tb.Scale))
+                Dim dr = Rot33MaxDiff(ta.Rotation, tb.Rotation)
+                If dt > worstT Then worstT = dt : worstBone = bk
+                If dr > worstR Then worstR = dr
+                If ds > worstS Then worstS = ds
+            Next
+            For Each bk In b.Keys
+                If Not a.ContainsKey(bk) Then onlyOu += 1
+            Next
+            If worstT > 0.001 OrElse worstR > 0.001 OrElse worstS > 0.001 OrElse onlyCk > 0 OrElse onlyOu > 0 Then anyDiff = True
+            Console.WriteLine($"  shape '{nm}': bones CK={a.Count} OUR={b.Count} (onlyCK={onlyCk} onlyOUR={onlyOu})  bind maxΔ: T={worstT:F5}(@{worstBone}) R={worstR:F6} S={worstS:F6}")
+        Next
+        Console.WriteLine($"======== {(If(anyDiff, "LOS BINDS DIFIEREN -> la malla skinneada renderiza distinto", "BINDS IDENTICOS -> skinning identico (la diferencia visible NO viene del skinning del NIF)"))} ========")
+    End Sub
+
+    Private Function Rot33MaxDiff(a As NiflySharp.Structs.Matrix33, b As NiflySharp.Structs.Matrix33) As Double
+        Dim m = 0.0
+        m = Math.Max(m, Math.Abs(CDbl(a.M11) - CDbl(b.M11))) : m = Math.Max(m, Math.Abs(CDbl(a.M12) - CDbl(b.M12))) : m = Math.Max(m, Math.Abs(CDbl(a.M13) - CDbl(b.M13)))
+        m = Math.Max(m, Math.Abs(CDbl(a.M21) - CDbl(b.M21))) : m = Math.Max(m, Math.Abs(CDbl(a.M22) - CDbl(b.M22))) : m = Math.Max(m, Math.Abs(CDbl(a.M23) - CDbl(b.M23)))
+        m = Math.Max(m, Math.Abs(CDbl(a.M31) - CDbl(b.M31))) : m = Math.Max(m, Math.Abs(CDbl(a.M32) - CDbl(b.M32))) : m = Math.Max(m, Math.Abs(CDbl(a.M33) - CDbl(b.M33)))
+        Return m
+    End Function
+
+    ''' <summary>Por shape, el bind skinToBone (ShapeBoneTransforms) indexado por NOMBRE de hueso.</summary>
+    Private Function SkinBinds(nif As Nifcontent_Class_Manolo) As Dictionary(Of String, Dictionary(Of String, Transform_Class))
+        Dim res As New Dictionary(Of String, Dictionary(Of String, Transform_Class))(StringComparer.OrdinalIgnoreCase)
+        For blkIdx = 0 To nif.Blocks.Count - 1
+            Dim shp = TryCast(nif.Blocks(blkIdx), NiflySharp.INiShape)
+            If shp Is Nothing Then Continue For
+            Dim rs As NifRenderableShape
+            Try
+                rs = New NifRenderableShape(nif, shp, blkIdx)
+            Catch
+                Continue For
+            End Try
+            If rs.ShapeBones.Count = 0 Then Continue For
+            Dim nm = If(shp.Name?.String, "")
+            Dim d As New Dictionary(Of String, Transform_Class)(StringComparer.OrdinalIgnoreCase)
+            For k = 0 To Math.Min(rs.ShapeBones.Count, rs.ShapeBoneTransforms.Count) - 1
+                Dim bnNode = TryCast(rs.ShapeBones(k), NiflySharp.Blocks.NiNode)
+                Dim bnm = If(bnNode?.Name?.String, $"?{k}")
+                If Not d.ContainsKey(bnm) Then d(bnm) = rs.ShapeBoneTransforms(k)
+            Next
+            res(nm) = d
+        Next
+        Return res
+    End Function
+
+    Private Function SkinnedPositions(nif As Nifcontent_Class_Manolo) As Dictionary(Of String, List(Of System.Numerics.Vector3))
+        Dim res As New Dictionary(Of String, List(Of System.Numerics.Vector3))(StringComparer.OrdinalIgnoreCase)
+        For blkIdx = 0 To nif.Blocks.Count - 1
+            Dim shp = TryCast(nif.Blocks(blkIdx), NiflySharp.INiShape)
+            If shp Is Nothing Then Continue For
+            Dim rs As NifRenderableShape
+            Try
+                rs = New NifRenderableShape(nif, shp, blkIdx)
+            Catch
+                Continue For
+            End Try
+            Dim geo = rs.Geometry
+            If geo Is Nothing Then Continue For
+            Dim verts = geo.GetVertexPositions()
+            If verts Is Nothing OrElse verts.Count = 0 Then Continue For
+            Dim nm = If(shp.Name?.String, "")
+            Dim nB = Math.Min(rs.ShapeBones.Count, rs.ShapeBoneTransforms.Count)
+            If nB = 0 Then
+                ' sin skin: transform global del shape
+                Dim gt = Transform_Class.GetGlobalTransform(shp, nif)
+                Dim lst0 As New List(Of System.Numerics.Vector3)(verts.Count)
+                For Each v In verts : lst0.Add(ApplyT(gt, v)) : Next
+                res(nm) = lst0
+                Continue For
+            End If
+            ' composite por hueso: boneWorld ∘ skinToBone
+            Dim M(nB - 1) As Transform_Class
+            For k = 0 To nB - 1
+                Dim bnNode = TryCast(rs.ShapeBones(k), NiflySharp.Blocks.NiNode)
+                Dim bw = If(bnNode IsNot Nothing, Transform_Class.GetGlobalTransform(bnNode, nif), New Transform_Class())
+                M(k) = bw.ComposeTransforms(rs.ShapeBoneTransforms(k))
+            Next
+            Dim sk = geo.GetSkinning()
+            Dim wpv = sk.WeightsPerVertex
+            Dim lst As New List(Of System.Numerics.Vector3)(verts.Count)
+            For i = 0 To verts.Count - 1
+                Dim accX As Single = 0, accY As Single = 0, accZ As Single = 0, wsum As Single = 0
+                For j = 0 To wpv - 1
+                    Dim fi = i * wpv + j
+                    If fi >= sk.BoneWeights.Length Then Exit For
+                    Dim w = CSng(sk.BoneWeights(fi))
+                    If w = 0.0F Then Continue For
+                    Dim bi = CInt(sk.BoneIndices(fi))
+                    If bi < 0 OrElse bi >= nB Then Continue For
+                    Dim p = ApplyT(M(bi), verts(i))
+                    accX += w * p.X : accY += w * p.Y : accZ += w * p.Z : wsum += w
+                Next
+                If wsum > 0.0001F Then
+                    lst.Add(New System.Numerics.Vector3(accX / wsum, accY / wsum, accZ / wsum))
+                Else
+                    lst.Add(verts(i))
+                End If
+            Next
+            res(nm) = lst
+        Next
+        Return res
+    End Function
+
+    Private Function FmtRot(r As NiflySharp.Structs.Matrix33) As String
+        Return $"{r.M11:F5},{r.M12:F5},{r.M13:F5}; {r.M21:F5},{r.M22:F5},{r.M23:F5}; {r.M31:F5},{r.M32:F5},{r.M33:F5}"
+    End Function
+
+    ''' <summary>Volcado COMPLETO de un NIF, sin umbrales ni clasificacion, ordenado por nombre para que un
+    ''' `diff` de dos volcados exponga cualquier diferencia de campo (transform, shader, texslot, alpha) que el
+    ''' comparador con umbral esconde. NO hornea ni monta plugins.</summary>
+    Private Sub DumpNifFull(path As String)
+        If Not File.Exists(path) Then Console.Error.WriteLine($"nif no existe: {path}") : Environment.ExitCode = 2 : Return
+        Dim bytes = File.ReadAllBytes(path)
+        Dim nif As New Nifcontent_Class_Manolo() : nif.Load_Manolo(bytes)
+        Console.WriteLine($"# FILE {IO.Path.GetFileName(path)}  bytes={bytes.Length} blocks={nif.Blocks.Count}")
+        Dim root = TryCast(nif.Blocks.FirstOrDefault(), NiflySharp.Blocks.NiAVObject)
+        If root IsNot Nothing Then Console.WriteLine($"ROOT {root.GetType().Name} name='{root.Name?.String}' flags=0x{root.Flags_ui:X4}")
+
+        ' ---- NODOS (ordenados por nombre) ----
+        Dim nodes = nif.Blocks.OfType(Of NiflySharp.Blocks.NiNode)().OrderBy(Function(n) If(n.Name?.String, ""), StringComparer.Ordinal).ToList()
+        For Each nn In nodes
+            Dim nm = If(nn.Name?.String, "")
+            Dim t As New Transform_Class(nn)
+            Console.WriteLine($"NODE '{nm}' flags=0x{nn.Flags_ui:X4} T=({t.Translation.X:F5},{t.Translation.Y:F5},{t.Translation.Z:F5}) S={t.Scale:F6} R=[{FmtRot(t.Rotation)}]")
+        Next
+
+        ' ---- SHAPES (ordenados por nombre) ----
+        For Each s In nif.NifShapes.OrderBy(Function(x) If(x.Name?.String, ""), StringComparer.Ordinal)
+            Dim nm = If(s.Name?.String, "")
+            Dim t As New Transform_Class(s)
+            Console.WriteLine($"SHAPE '{nm}' flags=0x{s.Flags_ui:X4} T=({t.Translation.X:F5},{t.Translation.Y:F5},{t.Translation.Z:F5}) S={t.Scale:F6} R=[{FmtRot(t.Rotation)}]")
+            Dim bts = TryCast(s, NiflySharp.Blocks.BSTriShape)
+            If bts IsNot Nothing Then
+                Console.WriteLine($"SHAPE '{nm}' vdesc=0x{bts.VertexDesc.Value:X16} bounds.c=({bts.Bounds.Center.X:F4},{bts.Bounds.Center.Y:F4},{bts.Bounds.Center.Z:F4}) bounds.r={bts.Bounds.Radius:F4}")
+            End If
+            Dim sh = TryCast(nif.GetShader(s), NiflySharp.Blocks.BSLightingShaderProperty)
+            If sh IsNot Nothing Then
+                Console.WriteLine($"SHADER '{nm}' type={sh.ShaderType_SK_FO4} SSPF1=0x{CUInt(sh.ShaderFlags_SSPF1):X8} SSPF2=0x{CUInt(sh.ShaderFlags_SSPF2):X8}")
+                Console.WriteLine($"SHADER '{nm}' Alpha={sh.Alpha:F6} Gloss={sh.Glossiness:F4} SpecStr={sh.SpecularStrength:F6} Smooth={sh.Smoothness:F6} EmMul={sh.EmissiveMultiple:F6}")
+                Console.WriteLine($"SHADER '{nm}' Refr={sh.RefractionStrength:F6} Soft={sh.Softlight:F6} SSSRoll={sh.SubsurfaceRolloff:F6} Backl={sh.BacklightPower:F6} Fres={sh.FresnelPower:F6}")
+                Console.WriteLine($"SHADER '{nm}' G2P={sh.GrayscaleToPaletteScale:F6} SkinAlpha={sh.SkinTintAlpha:F6} Rim={sh.RimlightPower:F6}")
+                Console.WriteLine($"SHADER '{nm}' SpecColor=({sh.SpecularColor.R:F4},{sh.SpecularColor.G:F4},{sh.SpecularColor.B:F4}) SkinTint=({sh.SkinTintColor.R:F4},{sh.SkinTintColor.G:F4},{sh.SkinTintColor.B:F4}) HairTint=({sh.HairTintColor.R:F4},{sh.HairTintColor.G:F4},{sh.HairTintColor.B:F4})")
+                Console.WriteLine($"SHADER '{nm}' Emissive=({sh.EmissiveColor.R:F4},{sh.EmissiveColor.G:F4},{sh.EmissiveColor.B:F4},{sh.EmissiveColor.A:F4}) UVoff=({sh.UVOffset.U:F4},{sh.UVOffset.V:F4}) UVscale=({sh.UVScale.U:F4},{sh.UVScale.V:F4})")
+            End If
+            Dim ts = GetTexSet(nif, s)
+            If ts IsNot Nothing AndAlso ts.Textures IsNot Nothing Then
+                For si = 0 To ts.Textures.Count - 1
+                    Console.WriteLine($"TEX '{nm}'[{si}]='{ts.Textures(si)?.Content}'")
+                Next
+            End If
+            Dim ap As NiflySharp.Blocks.NiAlphaProperty = Nothing
+            If s.AlphaPropertyRef IsNot Nothing AndAlso s.AlphaPropertyRef.Index >= 0 Then ap = TryCast(nif.Blocks(s.AlphaPropertyRef.Index), NiflySharp.Blocks.NiAlphaProperty)
+            If ap IsNot Nothing Then Console.WriteLine($"ALPHA '{nm}' flags=0x{ap.Flags.Value:X4} threshold={ap.Threshold}")
+        Next
+    End Sub
 
     Private Function CompareBakedVsCk(pm As PluginManager, npcFormID As UInteger, bakedNifPath As String,
                                       Optional verbose As Boolean = True) As (Real As List(Of String), Noop As List(Of String))
@@ -9242,6 +9527,9 @@ persist:
                     End Select
                     i += 2
                 Case "--compareck" : a.CompareCk = True : i += 1
+                Case "--comparefiles" : a.CompareFiles = v : i += 2
+                Case "--dumpnif" : a.DumpNif = v : i += 2
+                Case "--skincheck" : a.SkinCheck = v : i += 2
                 Case "--ssecomparebatch"
                     a.SseCompareBatch = True
                     If i + 1 < args.Length AndAlso Integer.TryParse(args(i + 1), a.SseCompareBatchLimit) Then i += 2 Else i += 1
@@ -9311,7 +9599,7 @@ persist:
                     Console.Error.WriteLine($"Unknown arg: {args(i)}") : PrintUsage() : Return Nothing
             End Select
         End While
-        If a.ListPath = "" AndAlso (a.Esp = "" OrElse a.Edid = "") AndAlso a.DdsProbe = "" AndAlso a.RecScan = "" AndAlso Not a.MeshCollide AndAlso a.DumpAcc = "" AndAlso Not a.TexSlotDiff AndAlso Not a.ShapeOrder AndAlso Not a.TintCountScan AndAlso Not a.AlphaGateScan AndAlso Not a.TtedScan AndAlso Not a.ScanDiff AndAlso Not a.RaceAnim AndAlso Not a.RaceCompat AndAlso Not a.MountValidate AndAlso a.FindHkx = "" AndAlso a.ChunkCompare = "" AndAlso a.DumpBehavior = "" AndAlso Not a.HkxCoverage AndAlso a.KwType = "" AndAlso Not a.StateMap AndAlso Not a.ClipResolve AndAlso a.HkxBone = "" AndAlso a.ClipBase = "" AndAlso a.FindFile = "" AndAlso a.NifDump = "" AndAlso a.NifSlots = "" AndAlso a.AnimSyncCheck = "" AndAlso a.BlendHintScan = "" AndAlso Not a.CatProfile AndAlso a.DumpRef = "" AndAlso a.EstimateSclp = "" AndAlso a.SclpDiag = "" AndAlso a.SclpBatch = "" AndAlso a.BindDiff = "" AndAlso a.Ba2Extract = "" AndAlso Not a.SseCompareBatch AndAlso Not a.VertexBatch AndAlso a.PosDump = "" AndAlso a.MeshShaders = "" Then
+        If a.ListPath = "" AndAlso (a.Esp = "" OrElse a.Edid = "") AndAlso a.DdsProbe = "" AndAlso a.RecScan = "" AndAlso Not a.MeshCollide AndAlso a.DumpAcc = "" AndAlso Not a.TexSlotDiff AndAlso Not a.ShapeOrder AndAlso Not a.TintCountScan AndAlso Not a.AlphaGateScan AndAlso Not a.TtedScan AndAlso Not a.ScanDiff AndAlso Not a.RaceAnim AndAlso Not a.RaceCompat AndAlso Not a.MountValidate AndAlso a.FindHkx = "" AndAlso a.ChunkCompare = "" AndAlso a.DumpBehavior = "" AndAlso Not a.HkxCoverage AndAlso a.KwType = "" AndAlso Not a.StateMap AndAlso Not a.ClipResolve AndAlso a.HkxBone = "" AndAlso a.ClipBase = "" AndAlso a.FindFile = "" AndAlso a.NifDump = "" AndAlso a.NifSlots = "" AndAlso a.AnimSyncCheck = "" AndAlso a.BlendHintScan = "" AndAlso Not a.CatProfile AndAlso a.DumpRef = "" AndAlso a.EstimateSclp = "" AndAlso a.SclpDiag = "" AndAlso a.SclpBatch = "" AndAlso a.BindDiff = "" AndAlso a.Ba2Extract = "" AndAlso Not a.SseCompareBatch AndAlso Not a.VertexBatch AndAlso a.PosDump = "" AndAlso a.MeshShaders = "" AndAlso a.CompareFiles = "" AndAlso a.DumpNif = "" AndAlso a.SkinCheck = "" Then
             Console.Error.WriteLine("Missing --esp and --edid (or use --list).") : PrintUsage() : Return Nothing
         End If
         ' --rawdds + --ddscompare: COMBINACION DELIBERADA, marcada a los gritos (no abortada).
