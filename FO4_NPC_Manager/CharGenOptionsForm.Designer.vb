@@ -134,6 +134,7 @@ Partial Class CharGenOptionsForm
         CheckBoxBakeSseRaceMenuOverlays = New CheckBox()
         CheckBoxResolveHphHeadTri = New CheckBox()
         CheckBoxReplicateEngineSkinNorm = New CheckBox()
+        CheckBoxMatchSubsurfaceFlag = New CheckBox()
         BtnFixesRevert = New Button()
         TabMain.SuspendLayout()
         TabPageSize.SuspendLayout()
@@ -1117,6 +1118,7 @@ Partial Class CharGenOptionsForm
         TabPageFixes.Controls.Add(CheckBoxBakeSseRaceMenuOverlays)
         TabPageFixes.Controls.Add(CheckBoxResolveHphHeadTri)
         TabPageFixes.Controls.Add(CheckBoxReplicateEngineSkinNorm)
+        TabPageFixes.Controls.Add(CheckBoxMatchSubsurfaceFlag)
         TabPageFixes.Controls.Add(BtnFixesRevert)
         TabPageFixes.Location = New Point(4, 24)
         TabPageFixes.Name = "TabPageFixes"
@@ -1185,6 +1187,16 @@ Partial Class CharGenOptionsForm
         CheckBoxReplicateEngineSkinNorm.TabIndex = 5
         CheckBoxReplicateEngineSkinNorm.Text = "Replicate engine skin-weight normalization (non-renormalized) (FO4)"
         CheckBoxReplicateEngineSkinNorm.UseVisualStyleBackColor = True
+        '
+        ' CheckBoxMatchSubsurfaceFlag
+        '
+        CheckBoxMatchSubsurfaceFlag.AutoSize = True
+        CheckBoxMatchSubsurfaceFlag.Location = New Point(12, 176)
+        CheckBoxMatchSubsurfaceFlag.Name = "CheckBoxMatchSubsurfaceFlag"
+        CheckBoxMatchSubsurfaceFlag.Size = New Size(420, 19)
+        CheckBoxMatchSubsurfaceFlag.TabIndex = 6
+        CheckBoxMatchSubsurfaceFlag.Text = "Match head subsurface lighting flag to body"
+        CheckBoxMatchSubsurfaceFlag.UseVisualStyleBackColor = True
         '
         ' BtnFixesRevert
         '
@@ -1455,5 +1467,6 @@ Partial Class CharGenOptionsForm
     Friend WithEvents CheckBoxBakeSseRaceMenuOverlays As System.Windows.Forms.CheckBox
     Friend WithEvents CheckBoxResolveHphHeadTri As System.Windows.Forms.CheckBox
     Friend WithEvents CheckBoxReplicateEngineSkinNorm As System.Windows.Forms.CheckBox
+    Friend WithEvents CheckBoxMatchSubsurfaceFlag As System.Windows.Forms.CheckBox
     Friend WithEvents BtnFixesRevert As System.Windows.Forms.Button
 End Class

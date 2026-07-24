@@ -50,9 +50,9 @@ Friend Module SseFoldLayerStack
     ''' El trío viejo (<see cref="ComposeFacetintGpu"/>/<see cref="FoldGpu"/>/<see cref="ComposeGpu"/>, con
     ''' readback por etapa) queda SOLO para el sandbox <c>_2d</c> del bake (FaceGenBuilder), que necesita los
     ''' intermedios en CPU para escribir los .dds de comparación.</summary>
-    Friend Function ComposeFoldedGpuResident(complexionSrgb As Double(),
+    Friend Function ComposeFoldedGpuResident(complexionSrgb As Single(),
                                              tintLayers As IList(Of FaceTintLayerInput),
-                                             detailRaw As Double(),
+                                             detailRaw As Single(),
                                              skeeRaw As IList(Of SseSkeeMaskReader.SkeeMaskLayerRaw),
                                              faceOvl As IList(Of RaceMenuJslot.JslotOverlayNode),
                                              skinRgb As Double(),
@@ -130,7 +130,7 @@ Friend Module SseFoldLayerStack
                 ' Semántica del ComposeGpu viejo, preservada: había trabajo pero NINGUNA capa GPU se pudo
                 ' armar (texturas ausentes) ⇒ FALLO (0). No se degrada en silencio.
                 If stackLayers.Count = 0 Then Return 0
-                Dim accCpu As Double() = Nothing
+                Dim accCpu As Single() = Nothing
                 If measureParity Then
                     ' SANDBOX (SseMeasureFoldParity, Debug opt-in): el ÚNICO readback del camino — acá se
                     ' MIDE que las dos réplicas dan lo mismo (RMS), en vez de suponerlo.
@@ -183,7 +183,7 @@ Friend Module SseFoldLayerStack
 
     ''' <summary>Media R/G/B de un acumulador RGBA (para los stats del log). SERIAL a propósito: una suma
     ''' flotante es dependiente del orden ⇒ paralelizarla cambiaría el valor logueado. Solo corre gateada.</summary>
-    Private Function MeanRgb(acc As Double(), npix As Integer) As Double()
+    Private Function MeanRgb(acc As Single(), npix As Integer) As Double()
         Dim m(2) As Double
         For i = 0 To npix - 1
             m(0) += acc(i * 4) : m(1) += acc(i * 4 + 1) : m(2) += acc(i * 4 + 2)
@@ -211,8 +211,8 @@ Friend Module SseFoldLayerStack
     ''' complexion entra/sale sin que nadie le toque el espacio, que es lo que el fold necesita. Si alguna vez se
     ''' cambian los espacios del bucket Diffuse de SSE a algo que no sea Linear, el pliegue GPU se desviaría del CPU
     ''' (el sandbox _2c-vs-_2d lo detectaría: para eso está).</summary>
-    Friend Function FoldGpu(complexionSrgb As Double(), facetintLinear As Double(), detailRaw As Double(),
-                            w As Integer, h As Integer, host As NpcRenderHost) As Double()
+    Friend Function FoldGpu(complexionSrgb As Single(), facetintLinear As Single(), detailRaw As Single(),
+                            w As Integer, h As Integer, host As NpcRenderHost) As Single()
         If host Is Nothing OrElse complexionSrgb Is Nothing OrElse facetintLinear Is Nothing Then Return Nothing
         Dim npix = w * h
         Dim baseTex = UploadRgba32f(complexionSrgb, npix, w, h)        ' complexion en sRGB (el shader lo lineariza)
@@ -250,16 +250,16 @@ Friend Module SseFoldLayerStack
     ''' en float: el facetint alimenta el fold, que lo amplifica ×255/64, así que cuantizarlo a 8 bits acá multiplicaría
     ''' el error de redondeo por 4. Sin capas (raza sin tints) ⇒ 0.5 plano (= el seed, igual que el CPU), que NO es un
     ''' fallo. Nothing = FALLO del GPU ⇒ el caller aborta.</summary>
-    Friend Function ComposeFacetintGpu(tintLayers As IList(Of FaceTintLayerInput), w As Integer, h As Integer, host As NpcRenderHost) As Double()
+    Friend Function ComposeFacetintGpu(tintLayers As IList(Of FaceTintLayerInput), w As Integer, h As Integer, host As NpcRenderHost) As Single()
         If host Is Nothing Then Return Nothing
         Dim npix = w * h
-        Dim seed(npix * 4 - 1) As Double
+        Dim seed(npix * 4 - 1) As Single
         ' Seed plano, paralelo por rangos (escrituras disjuntas ⇒ bit-idéntico).
         System.Threading.Tasks.Parallel.ForEach(
             System.Collections.Concurrent.Partitioner.Create(0, npix),
             Sub(range)
                 For i = range.Item1 To range.Item2 - 1
-                    seed(i * 4) = 0.5 : seed(i * 4 + 1) = 0.5 : seed(i * 4 + 2) = 0.5 : seed(i * 4 + 3) = 1.0
+                    seed(i * 4) = 0.5F : seed(i * 4 + 1) = 0.5F : seed(i * 4 + 2) = 0.5F : seed(i * 4 + 3) = 1.0F
                 Next
             End Sub)
         If tintLayers Is Nothing OrElse tintLayers.Count = 0 Then Return seed
@@ -286,7 +286,7 @@ Friend Module SseFoldLayerStack
     End Function
 
     ''' <summary>CPU: compone las capas sobre <paramref name="acc"/> (sRGB, in place). Réplica exacta de skee.</summary>
-    Friend Sub ComposeCpu(acc As Double(), skeeRaw As IList(Of SseSkeeMaskReader.SkeeMaskLayerRaw),
+    Friend Sub ComposeCpu(acc As Single(), skeeRaw As IList(Of SseSkeeMaskReader.SkeeMaskLayerRaw),
                           faceOvl As IList(Of RaceMenuJslot.JslotOverlayNode),
                           skinRgb As Double(), w As Integer, h As Integer)
         If skeeRaw IsNot Nothing AndAlso skeeRaw.Count > 0 Then
@@ -303,9 +303,9 @@ Friend Module SseFoldLayerStack
     ''' ⚠️ El RENDER ya NO pasa por acá (usa <see cref="ComposeFoldedGpuResident"/>, sin readbacks): este trío
     ''' con readback por etapa queda para el sandbox <c>_2d</c> del bake (FaceGenBuilder), que necesita los
     ''' intermedios en CPU para escribir los .dds de comparación.</summary>
-    Friend Function ComposeGpu(acc As Double(), skeeRaw As IList(Of SseSkeeMaskReader.SkeeMaskLayerRaw),
+    Friend Function ComposeGpu(acc As Single(), skeeRaw As IList(Of SseSkeeMaskReader.SkeeMaskLayerRaw),
                                faceOvl As IList(Of RaceMenuJslot.JslotOverlayNode),
-                               skinRgb As Double(), w As Integer, h As Integer, host As NpcRenderHost) As Double()
+                               skinRgb As Double(), w As Integer, h As Integer, host As NpcRenderHost) As Single()
         If host Is Nothing OrElse acc Is Nothing Then Return Nothing
         Dim layers As New List(Of FaceTintLayerInput)
         layers.AddRange(BuildSkeeGpuLayers(skeeRaw, skinRgb))
@@ -315,7 +315,7 @@ Friend Module SseFoldLayerStack
         Dim npix = w * h
         Dim baseTex = UploadRgba32f(acc, npix, w, h)
         If baseTex = 0 Then Return Nothing
-        Dim outAcc As Double() = Nothing
+        Dim outAcc As Single() = Nothing
         Try
             ' baseDiffuseIsLinearOnGpu:=True ⇒ el pipeline toma el sample del base TAL CUAL (los Rgba32f no llevan
             ' decode sRGB en el sampler). El acumulador vive en el MISMO espacio que el acc del CPU: sRGB.
@@ -412,7 +412,7 @@ Friend Module SseFoldLayerStack
 
     ''' <summary>RMS por canal entre dos acumuladores (en unidades de 0..255). Es la MEDIDA de paridad CPU vs GPU:
     ''' la usa el caller para loguearla en vez de suponerla.</summary>
-    Friend Function RmsDiff255(a As Double(), b As Double(), npix As Integer) As Double
+    Friend Function RmsDiff255(a As Single(), b As Single(), npix As Integer) As Double
         If a Is Nothing OrElse b Is Nothing OrElse a.Length <> b.Length Then Return Double.NaN
         Dim s As Double = 0
         For i = 0 To npix - 1
@@ -447,15 +447,16 @@ Friend Module SseFoldLayerStack
     ''' ⭐ Friend (no Private): el camino CPU del fold (<c>ApplySseFacetintFolded</c>) sube su resultado por acá
     ''' TAMBIÉN, para que los dos caminos instalen la MISMA representación (Rgba32f) y el transporte deje de ser
     ''' una diferencia entre ellos. ⛔ No volver a Private ni bajar el CPU a RGBA8.</summary>
-    Friend Function UploadRgba32f(acc As Double(), npix As Integer, w As Integer, h As Integer,
+    Friend Function UploadRgba32f(acc As Single(), npix As Integer, w As Integer, h As Integer,
                                    Optional forceOpaque As Boolean = False) As Integer
         Dim f(npix * 4 - 1) As Single
-        ' Conversión Double→Single elemento-a-elemento, paralela por rangos (disjunta ⇒ bit-idéntica).
+        ' Copia elemento-a-elemento, paralela por rangos (disjunta ⇒ bit-idéntica). acc ya es Single (storage
+        ' float32 del compositor); se copia a un buffer local para poder forzar alpha sin mutar el del caller.
         System.Threading.Tasks.Parallel.ForEach(
             System.Collections.Concurrent.Partitioner.Create(0, npix * 4),
             Sub(range)
                 For i = range.Item1 To range.Item2 - 1
-                    f(i) = CSng(acc(i))
+                    f(i) = acc(i)
                 Next
             End Sub)
         ' forceOpaque: el camino GPU-residente fuerza alpha=1 EN EL UPLOAD del complexion — el pipeline
@@ -503,8 +504,8 @@ Friend Module SseFoldLayerStack
         Return id
     End Function
 
-    ''' <summary>Readback float del acumulador del compositor (Rgba32f) → Double RGBA, sin pasar por 8 bits.</summary>
-    Private Function ReadbackRgba32f(texId As Integer, npix As Integer) As Double()
+    ''' <summary>Readback float del acumulador del compositor (Rgba32f) → Single RGBA, sin pasar por 8 bits.</summary>
+    Private Function ReadbackRgba32f(texId As Integer, npix As Integer) As Single()
         Dim f(npix * 4 - 1) As Single
         GL.BindTexture(TextureTarget.Texture2D, texId)
         Dim handle = Runtime.InteropServices.GCHandle.Alloc(f, Runtime.InteropServices.GCHandleType.Pinned)
@@ -514,16 +515,7 @@ Friend Module SseFoldLayerStack
             handle.Free()
         End Try
         GL.BindTexture(TextureTarget.Texture2D, 0)
-        Dim d(npix * 4 - 1) As Double
-        ' Conversión Single→Double elemento-a-elemento, paralela por rangos (disjunta ⇒ bit-idéntica).
-        System.Threading.Tasks.Parallel.ForEach(
-            System.Collections.Concurrent.Partitioner.Create(0, npix * 4),
-            Sub(range)
-                For i = range.Item1 To range.Item2 - 1
-                    d(i) = f(i)
-                Next
-            End Sub)
-        Return d
+        Return f   ' el readback ya es Single (Rgba32f); el acumulador del compositor vive en float32
     End Function
 
 End Module

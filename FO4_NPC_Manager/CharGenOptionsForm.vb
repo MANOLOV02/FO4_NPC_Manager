@@ -36,6 +36,8 @@ Public Class CharGenOptionsForm
         ' Mouth vanilla fix gate → Config_App (lo lee la librería ChargenMouthFix en los parse-sites de
         ' render/bake). Aplica SOLO a BaseFemaleHeadChargen.tri. Default False = vanilla puro.
         CheckBoxApplyMouthVanillaFix.Checked = c.Setting_ApplyMouthVanillaFix
+        ' Match head subsurface FLAG to body (ambos juegos, OFF por defecto). El rolloff queda autorado.
+        CheckBoxMatchSubsurfaceFlag.Checked = c.Setting_MatchHeadSubsurfaceFlagToBody
         ' Los 3 fixes de este tab son FO4-only. Deshabilitar (sin tocar el valor persistido, que se
         ' round-trip-ea intacto en OK) cuando el juego activo no es Fallout4. El gate REAL vive también
         ' en la app (ChargenMouthFix.IsActiveFor / IsGhoulHeadRearCase / BuildSyntheticEyebrowLut); esto
@@ -268,6 +270,7 @@ Public Class CharGenOptionsForm
             CheckBoxApplyGhoulHeadRearFix.Checked = npcDef.ApplyGhoulHeadRearFix
             CheckBoxApplyEyebrowsFixedColor.Checked = cfgDef.Setting_ApplyEyebrowsFixedColor
             CheckBoxApplyMouthVanillaFix.Checked = cfgDef.Setting_ApplyMouthVanillaFix
+            CheckBoxMatchSubsurfaceFlag.Checked = cfgDef.Setting_MatchHeadSubsurfaceFlagToBody
             ' Default True (FO4): replicar la normalización de pesos del motor. Ver EngineSkinWeightNormalization.
             CheckBoxReplicateEngineSkinNorm.Checked = npcDef.ReplicateEngineSkinWeightNormalization
         Else
@@ -514,6 +517,7 @@ Public Class CharGenOptionsForm
         ' Mouth vanilla fix gate → Config_App. Al volver el OK, MainForm re-renderiza el NPC actual; como la
         ' cache de TriHead está keyed por este flag, el re-render re-lee vanilla o fixed según corresponda.
         c.Setting_ApplyMouthVanillaFix = CheckBoxApplyMouthVanillaFix.Checked
+        c.Setting_MatchHeadSubsurfaceFlagToBody = CheckBoxMatchSubsurfaceFlag.Checked
         ' SSE bake-RaceMenu-overlays gate → Config_App (lo lee FaceGenBuilder.WriteSseFaceDiffuseWithOverlays).
         c.Setting_BakeSseRaceMenuOverlays = CheckBoxBakeSseRaceMenuOverlays.Checked
         ' SSE High Poly Head .tri redirect gate → Config_App. Al dar OK, MainForm re-renderiza el NPC actual;

@@ -2004,7 +2004,7 @@ Public Module FaceGenBuilder
         Dim dec = FaceTintCpuCompositor.DecodeDds(srcBytes)
         If dec Is Nothing OrElse dec.Rgba Is Nothing OrElse dec.Width <= 0 OrElse dec.Height <= 0 Then Return
         Dim w = dec.Width, h = dec.Height, npix = w * h
-        Dim det As Double() = If(Not String.IsNullOrEmpty(detailPath), SseFaceTintComposer.DecodeTextureRgba(detailPath, w, h), Nothing)
+        Dim det As Single() = If(Not String.IsNullOrEmpty(detailPath), SseFaceTintComposer.DecodeTextureRgba(detailPath, w, h), Nothing)
 
         ' 1) facetint por GPU (float, lineal).
         Dim facetint = SseFoldLayerStack.ComposeFacetintGpu(layers, w, h, host)
@@ -2012,7 +2012,7 @@ Public Module FaceGenBuilder
             Logger.LogLazy(Function() "[FACEBAKE][SSE] _2d ABORT: el compose GPU del facetint falló.")
             Return
         End If
-        ' 2) pliegue por GPU (float). Sale en sRGB, igual que el fold CPU.
+        ' 2) pliegue por GPU (float). Sale en sRGB, igual que el fold CPU. Todo en Single (storage float32).
         Dim acc = SseFoldLayerStack.FoldGpu(dec.Rgba, facetint, det, w, h, host)
         If acc Is Nothing Then
             Logger.LogLazy(Function() "[FACEBAKE][SSE] _2d ABORT: el pliegue GPU falló.")
@@ -2229,7 +2229,7 @@ Public Module FaceGenBuilder
             End If
             Dim w = decoded.Width, h = decoded.Height
             Dim npix = w * h
-            Dim acc(npix * 4 - 1) As Double
+            Dim acc(npix * 4 - 1) As Single
             Array.Copy(decoded.Rgba, acc, acc.Length)
 
             ' === PLIEGUE (orden fiel a RaceMenu) ===
@@ -2257,7 +2257,7 @@ Public Module FaceGenBuilder
                 ' _2/_2d, bug medido). Usar el detail ORIGINAL capturado antes de mutar (detailPathOverride), igual que
                 ' el complexion. En non-forced el slot 3 se lee en vivo (aun sin neutralizar en este punto) = correcto.
                 Dim detailPath = If(forced, If(detailPathOverride, ""), If(ts.Textures.Count > 3, ts.Textures(3).Content, ""))
-                Dim detailAcc As Double() = If(Not String.IsNullOrEmpty(detailPath), SseFaceTintComposer.DecodeTextureRgba(detailPath, w, h), Nothing)
+                Dim detailAcc As Single() = If(Not String.IsNullOrEmpty(detailPath), SseFaceTintComposer.DecodeTextureRgba(detailPath, w, h), Nothing)
                 If facetint IsNot Nothing Then SseFaceGenBaker.FoldFacetintIntoDiffuse(acc, facetint, npix, detailAcc)   ' albedo = fgTint × softlight(complexion, detail)
             End If
 
@@ -2394,7 +2394,7 @@ Public Module FaceGenBuilder
                             Dim mDec = FaceTintCpuCompositor.DecodeDds(msnBytes)
                             If mDec IsNot Nothing AndAlso mDec.Rgba IsNot Nothing AndAlso mDec.Width > 0 AndAlso mDec.Height > 0 Then
                                 Dim mw = mDec.Width, mh = mDec.Height
-                                Dim macc(mw * mh * 4 - 1) As Double
+                                Dim macc(mw * mh * 4 - 1) As Single
                                 Array.Copy(mDec.Rgba, macc, macc.Length)
                                 ' Compone overlay-normals si los hay (in-place). En forced sin overlays queda el head
                                 ' normal tal cual → se re-encodea igual (replacer _n self-contained).

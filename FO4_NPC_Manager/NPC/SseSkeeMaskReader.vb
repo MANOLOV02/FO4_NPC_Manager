@@ -93,12 +93,12 @@ Public Module SseSkeeMaskReader
     ''' sustituye los sentinels skin/hair). Es el adaptador del path CPU; el GPU usa su propio adaptador (sube los
     ''' bytes como textura) a partir de las MISMAS capas crudas.</summary>
     Public Function ResolveLayersForCpu(raw As IList(Of SkeeMaskLayerRaw), w As Integer, h As Integer,
-                                        decode As Func(Of String, Integer, Integer, Double()),
+                                        decode As Func(Of String, Integer, Integer, Single()),
                                         skinRgb As Double(), hairRgb As Double()) As List(Of SseOverlayCompositor.SseOverlay)
         Dim built As New List(Of SseOverlayCompositor.SseOverlay)
         If raw Is Nothing Then Return built
         For Each l In raw
-            Dim texRgba As Double() = Nothing
+            Dim texRgba As Single() = Nothing
             If Not String.IsNullOrEmpty(l.TexturePath) AndAlso l.LayerType <> 2 AndAlso decode IsNot Nothing Then
                 texRgba = decode(l.TexturePath, w, h)
             End If
@@ -108,9 +108,9 @@ Public Module SseSkeeMaskReader
     End Function
 
     Public Function ComposeNifMaskLayersIntoDiffuse(nif As Nifcontent_Class_Manolo, shape As NiflySharp.INiShape, w As Integer, h As Integer,
-                                                    decode As Func(Of String, Integer, Integer, Double()),
+                                                    decode As Func(Of String, Integer, Integer, Single()),
                                                     skinRgb As Double(), hairRgb As Double(),
-                                                    acc As Double()) As Boolean
+                                                    acc As Single()) As Boolean
         Dim raw = ReadNifMaskLayersRaw(nif, shape)
         If raw.Count = 0 Then Return False
         Dim layers = ResolveLayersForCpu(raw, w, h, decode, skinRgb, hairRgb)
@@ -125,9 +125,9 @@ Public Module SseSkeeMaskReader
     ''' (= skee's std::map). Layer default blend = "overlay", type = "mask" (per TintMaskInterface::ParseTintData).
     ''' Returns True iff at least one layer contributed. No-op when no XML targets this mesh (the common case).</summary>
     Public Function ComposeTintDataLayersIntoDiffuse(meshPath As String, dataPath As String, w As Integer, h As Integer,
-                                                     decode As Func(Of String, Integer, Integer, Double()),
+                                                     decode As Func(Of String, Integer, Integer, Single()),
                                                      skinRgb As Double(), hairRgb As Double(),
-                                                     acc As Double()) As Boolean
+                                                     acc As Single()) As Boolean
         If String.IsNullOrEmpty(meshPath) OrElse acc Is Nothing OrElse decode Is Nothing Then Return False
         Dim map = SseTintDataXml.LoadAll(dataPath)
         If map Is Nothing OrElse map.Count = 0 Then Return False
@@ -139,7 +139,7 @@ Public Module SseSkeeMaskReader
         Dim built As New List(Of SseOverlayCompositor.SseOverlay)
         For Each l In ordered
             If l.Alpha <= 0.0 Then Continue For
-            Dim texRgba As Double() = Nothing
+            Dim texRgba As Single() = Nothing
             If Not String.IsNullOrEmpty(l.TexturePath) AndAlso l.LayerType <> 2 Then texRgba = decode(l.TexturePath, w, h)  ' type 2 = sólido
             built.Add(SseOverlayCompositor.BuildSkeeMaskLayer(l.ColorArgb, l.Alpha, texRgba, l.LayerType, l.Blend, skinRgb, hairRgb))
         Next

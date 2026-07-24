@@ -92,6 +92,10 @@ Friend NotInheritable Class NpcFaceTintResolver
     ''' hardcoded. BGSM-only: the SubsurfaceLighting getter throws on non-BGSM/BGEM and BGEM has
     ''' no such field, so both source and targets are gated to BGSM-backed materials.</summary>
     Private Sub MatchBodySkinSubsurfaceToFace(host As NpcRenderHost)
+        ' Gate persistente (CharGen Options → Fixes, OFF por defecto): cuando está OFF, cada material de
+        ' piel usa su PROPIO subsurface autorado (flag + rolloff) = engine-faithful. Cuando está ON, se
+        ' copia SOLO el FLAG on/off de la cara al cuerpo (el rolloff queda SIEMPRE autorado, nunca se copia).
+        If Not Config_App.Current.Setting_MatchHeadSubsurfaceFlagToBody Then Return
         If host Is Nothing Then host = _hostProvider()
         ' BOTH ENGINES. Prioritize the FACE: copy its subsurface response onto body skin materials, but
         ' ONLY where the body differs (the per-target guard below skips shapes that already match). This
@@ -143,7 +147,8 @@ Friend NotInheritable Class NpcFaceTintResolver
 
             Dim preOn = mb.SubsurfaceLighting
             Dim preRoll = mb.SubsurfaceLightingRolloff
-            If preOn = faceOn AndAlso preRoll = faceRolloff Then Continue For
+            ' Guard SOLO por el flag (el rolloff queda autorado, no se compara ni se copia).
+            If preOn = faceOn Then Continue For
 
             ' Fires ONLY when body ≠ face (guard above skipped the equal case). Log both sides before mutating.
             Dim snLog = mesh.MeshData.Shape?.ShapeName
@@ -153,8 +158,8 @@ Friend NotInheritable Class NpcFaceTintResolver
             Dim bodyRollL = preRoll
             Logger.LogLazy(Function() $"[BODY-SUBSURFACE] MATCH FIRED (differ) shape='{snLog}' FACE(on={faceOnL} roll={faceRollL:F4}) BODY(on={bodyOnL} roll={bodyRollL:F4}) → body set to face")
 
+            ' SOLO el flag on/off; el rolloff del cuerpo queda como viene autorado.
             mb.SubsurfaceLighting = faceOn
-            mb.SubsurfaceLightingRolloff = faceRolloff
             applied += 1
         Next
 
@@ -499,7 +504,7 @@ Friend NotInheritable Class NpcFaceTintResolver
             Return False
         End If
         Dim w = cImg.Width, h = cImg.Height, npix = w * h
-        Dim acc(npix * 4 - 1) As Double
+        Dim acc(npix * 4 - 1) As Single
         Array.Copy(cImg.Rgba, acc, acc.Length)
 
         ' --- 2. Entradas COMUNES a los dos caminos. Decodificar el complexion/detail NO es compose (es leer el
@@ -507,7 +512,7 @@ Friend NotInheritable Class NpcFaceTintResolver
         ' BCn por hardware tiene tolerancias de spec ⇒ rompería el "dan lo mismo" en el origen). ---
         Dim useGpu = Config_App.Current.Setting_GPUSkinning AndAlso host IsNot Nothing
         Dim detPath = materialBase.DisplacementTexture
-        Dim detailAcc As Double() = Nothing
+        Dim detailAcc As Single() = Nothing
         If Not String.IsNullOrEmpty(detPath) Then detailAcc = SseFaceTintComposer.DecodeTextureRgba(detPath, w, h)
         ' Skin tone (QNAM) para los sentinels de las capas skee — también común a los dos caminos.
         Dim skinRgb As Double() = Nothing
@@ -604,7 +609,7 @@ Friend NotInheritable Class NpcFaceTintResolver
                     For i = range.Item1 To range.Item2 - 1
                         For ch = 0 To 2
                             Dim lin = SseFaceGenBaker.Srgb2Lin(acc(i * 4 + ch))
-                            acc(i * 4 + ch) = If(lin < 0.0, 0.0, If(lin > 1.0, 1.0, lin))
+                            acc(i * 4 + ch) = CSng(If(lin < 0.0, 0.0, If(lin > 1.0, 1.0, lin)))
                         Next
                     Next
                 End Sub)
