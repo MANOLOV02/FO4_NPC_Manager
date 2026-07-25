@@ -1094,7 +1094,7 @@ Partial Class MainForm
         NumericAnimFrameMs.Enabled = False
         NumericAnimFrameMs.Location = New Point(795, 5)
         NumericAnimFrameMs.Margin = New Padding(1, 0, 3, 0)
-        NumericAnimFrameMs.Maximum = New Decimal(New Integer() {120, 0, 0, 0})
+        NumericAnimFrameMs.Maximum = New Decimal(New Integer() {600, 0, 0, 0})
         NumericAnimFrameMs.Minimum = New Decimal(New Integer() {1, 0, 0, 0})
         NumericAnimFrameMs.Name = "NumericAnimFrameMs"
         NumericAnimFrameMs.Size = New Size(62, 23)

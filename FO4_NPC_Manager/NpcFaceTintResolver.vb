@@ -244,30 +244,55 @@ Friend NotInheritable Class NpcFaceTintResolver
     ''' them onto the model's face textures via the compositor. Mutates Textures_Dictionary
     ''' GL Texture_IDs in place — same semantics this function had before the
     ''' BuildFaceTintLayerInputs extraction.</summary>
-    Private Function TryApplyFaceTints(state As MainForm.NPCVisualState, Optional host As NpcRenderHost = Nothing) As Boolean
+    ''' <remarks>Era una Function cuyo Boolean NADIE leia: su unico call-site (linea ~59) descarta el
+    ''' valor. Con eso `composedAny` / `faceMeshFoundButTextureNotReady` y el `retry later` que
+    ''' documentaban eran codigo muerto -- ningun llamador reintentaba nunca. Se paso a Sub y se
+    ''' borraron los dos acumuladores. Si alguna vez hace falta el reintento hay que reponer el valor
+    ''' de retorno Y un llamador que lo lea; que exista el flag no alcanza.</remarks>
+    Private Sub TryApplyFaceTints(state As MainForm.NPCVisualState, Optional host As NpcRenderHost = Nothing)
         If host Is Nothing Then host = _hostProvider()
-        If state Is Nothing Then Return False
+        If state Is Nothing Then Return
 
         Dim built = BuildFaceTintLayerInputs(state)
-        If built.npcData Is Nothing Then Return True ' no NPC / no race / no tint layers
         Dim layerInputs = built.layers
         Dim regionSwaps = built.regionSwaps
         Dim npcData = built.npcData
         Dim race = built.race
-        ' SSE composes the facetint from the NPC record directly (no FO4 tint-template layers), so an empty
-        ' FO4 layer list must NOT short-circuit -- fall through to the mesh loop where the SSE branch runs.
-        If layerInputs.Count = 0 AndAlso Config_App.Current.Game <> Config_App.Game_Enum.Skyrim Then Return True
-
         ' Find the face mesh in the model, get its diffuse texture cache entry, and call the
         ' compositor on a copy. Then mutate the cache entry's GL Texture_ID so the existing
         ' render path picks up the modified diffuse without any library changes.
-        Dim model = host.PreviewCtl.Model
+        ' El fetch del modelo SUBIO por encima de los corto-circuitos de abajo: para poder BAJAR el latch
+        ' SkinToneBaked hace falta el modelo. Reordenar es inocuo -- los tres caminos devolvian True igual --
+        ' salvo por un detalle: antes el caso `sin NPC` salia SIN tocar host.PreviewCtl, asi que se usa `?.`
+        ' para no introducir una desreferencia nueva (NpcRenderHost:199 asume que PreviewCtl puede ser Nothing).
+        Dim model = host.PreviewCtl?.Model
         If model Is Nothing OrElse model.meshes Is Nothing Then
-            Return True   ' no model — nothing we can do, don't retry forever
+            Return   ' no model — nothing we can do
         End If
 
-        Dim composedAny As Boolean = False
-        Dim faceMeshFoundButTextureNotReady As Boolean = False
+        ' SIN NADA QUE COMPONER ⇒ hay que BAJAR el latch SkinToneBaked antes de salir.
+        ' `SkinToneBaked` era un latch de UNA SOLA VIA: la asignacion del loop lo ponia en True y NADIE lo
+        ' bajaba nunca (su flag hermano SseFoldDetailNeutralized si se resetea). Camino concreto que rompia:
+        ' edicion viva de tints -> se restaura el diffuse PRISTINE -> el usuario borra todas las capas ->
+        ' se salia por aca con el flag pegado en True -> Render.vb:3590 pone hasTint=False -> bHasTintColor
+        ' =False -> el shader saltea el soft-light del tono. Resultado: esa malla se dibujaba SIN tono de
+        ' piel sobre un diffuse que tampoco lo traia horneado, y solo se recuperaba reiniciando el NPC.
+        ' SON DOS PUERTAS, NO UNA: `sin NPC/raza` (built.npcData Is Nothing) y `sin capas` (FO4). La primera
+        ' se alcanza en edicion viva cuando el rebuild no resuelve el NPC, justo despues del restore a
+        ' pristine -- mismo modo de falla. Las dos comparten el mismo bajado de flag.
+        Dim nothingToCompose As Boolean =
+            built.npcData Is Nothing OrElse
+            (layerInputs.Count = 0 AndAlso Config_App.Current.Game <> Config_App.Game_Enum.Skyrim)
+        ' (SSE compone el facetint desde el record del NPC, sin capas de plantilla FO4, asi que una lista
+        '  vacia NO puede cortar en Skyrim: tiene que caer al loop donde corre la rama SSE.)
+        If nothingToCompose Then
+            For Each mesh In model.meshes
+                If mesh Is Nothing OrElse mesh.MeshData Is Nothing OrElse mesh.MeshData.Material Is Nothing Then Continue For
+                mesh.MeshData.Material.SkinToneBaked = False
+            Next
+            Return
+        End If
+
         Dim seenFaceMeshes As New HashSet(Of String)(StringComparer.OrdinalIgnoreCase)
         ' Diagnostic: when the FaceTint shader filter rejects every mesh (typical Ghoul/Child
         ' bug — the engine uses a different BSLightingShaderType for these races), enumerate
@@ -327,14 +352,13 @@ Friend NotInheritable Class NpcFaceTintResolver
                         ' Diffuse PLEGADO: el amplify(detail-o-0.251) ya está horneado ⇒ si el slot 3 está vacío el
                         ' shader debe usar (63,64,63) (amplify identidad), NO el default 0.251 (re-aplicaría). Ver el flag.
                         mesh.MeshData.Material.SseFoldDetailNeutralized = True
-                        composedAny = True
                         Continue For
                     End If
                 End If
                 ' Camino NO plegado: el shader aplica el detail (real o default 0.251) UNA vez = engine. Reset del flag
                 ' por si esta malla venía de un fold en un render anterior (fold↔unfold en vivo sin recargar el modelo).
                 mesh.MeshData.Material.SseFoldDetailNeutralized = False
-                If ApplySseFacetint(materialBase, npcData, race, model, host, state.RaceFormID) Then composedAny = True
+                ApplySseFacetint(materialBase, npcData, race, model, host, state.RaceFormID)
                 Continue For
             End If
 
@@ -345,11 +369,10 @@ Friend NotInheritable Class NpcFaceTintResolver
 
             ' Diffuse must be ready before we attempt anything — it's the channel every layer
             ' contributes to and it's the one whose dimensions drive the FBO size. If diffuse
-            ' isn't loaded, signal "retry later".
+            ' isn't loaded, skip this mesh.
             Dim diffuseEntry As PreviewModel.Texture_Loaded_Class = Nothing
             If Not model.Textures_Dictionary.TryGetValue(diffusePath, diffuseEntry) _
                OrElse diffuseEntry Is Nothing OrElse Not diffuseEntry.Loaded OrElse diffuseEntry.Texture_ID = 0 Then
-                faceMeshFoundButTextureNotReady = True
                 Continue For
             End If
 
@@ -388,6 +411,16 @@ Friend NotInheritable Class NpcFaceTintResolver
             ' COMPOSITE = ESPEJO DEL SKINNING (Setting_GPUSkinning): GPU-skinning → composite GL
             ' (ApplyFaceTintPipeline); CPU-skinning → composite CPU (ComposeCpuPipeline, el MISMO que el bake, con
             ' paridad probada) + upload. El modo GPU queda IDÉNTICO al comportamiento previo (sin regresión).
+            ' Marca por-malla que alimenta SkinToneBaked (= `esta malla tiene el tono horneado en su
+            ' diffuse`, ver Render.vb). Los dos caminos la ponen distinto y a proposito:
+            '  - GPU: True al llegar aca, y punto. Lo derivaba de pipelineResult.Diffuse.IsFresh, pero eso
+            '    NO medía lo que parecía: IsFresh significa `el compositor devolvio una textura NUEVA en
+            '    este canal`, y en el camino vivo el diffuse SIEMPRE sale nuevo -- antes de tocar ninguna
+            '    capa el pipeline le convierte el espacio de color (lineal -> G22, porque el acumulador
+            '    trabaja en G22) y esa conversion ya crea la textura. El predicado daba True siempre:
+            '    era ceremonia y se saco.
+            '  - CPU: el Boolean de ApplyCpuComposeToDict SI puede dar False, asi que ahi se conserva.
+            Dim meshDiffuseBaked As Boolean = False
             If Config_App.Current.Setting_GPUSkinning Then
                 Dim pipelineResult = FaceTintCompositor.ApplyFaceTintPipeline(
                     host.CompositorState, host.TintGpuCache,
@@ -402,9 +435,7 @@ Friend NotInheritable Class NpcFaceTintResolver
                 ApplyPipelineResultToDict(model, diffusePath, diffuseEntry, pipelineResult.Diffuse)
                 If normalEntry IsNot Nothing Then ApplyPipelineResultToDict(model, normalPath, normalEntry, pipelineResult.Normal)
                 If specEntry IsNot Nothing Then ApplyPipelineResultToDict(model, specPath, specEntry, pipelineResult.Specular)
-                If pipelineResult.Diffuse.IsFresh OrElse pipelineResult.Normal.IsFresh OrElse pipelineResult.Specular.IsFresh Then
-                    composedAny = True
-                End If
+                meshDiffuseBaked = True
             Else
                 ' CPU-skinning: compose por CPU (mismos layers) desde los bytes source, y subir el resultado a GL.
                 ' El diffuse sale g22 (formato bake); el render espera LINEAR (el path GL hace G22→Linear final),
@@ -412,7 +443,9 @@ Friend NotInheritable Class NpcFaceTintResolver
                 ' verificar IN-APP (no testeable headless); si hay gamma, es este convert.
                 If ApplyCpuComposeToDict(model, diffusePath, diffuseEntry, normalPath, normalEntry, specPath, specEntry,
                                          layerInputs, regionSwaps,
-                                         (host.CurrentBaseState IsNot Nothing AndAlso host.CurrentBaseState.HeadDiffuseAlphaTest)) Then composedAny = True
+                                         (host.CurrentBaseState IsNot Nothing AndAlso host.CurrentBaseState.HeadDiffuseAlphaTest)) Then
+                    meshDiffuseBaked = True
+                End If
             End If
 
             ' "Ya está": the slot-12 skin tone is now BAKED into this face mesh's diffuse (the
@@ -421,15 +454,18 @@ Friend NotInheritable Class NpcFaceTintResolver
             ' makes the shader's own SkinTint soft-light a no-op for it. Without this the face gets the
             ' tone twice (baked composite + runtime soft-light of materialBase.SkinTintColor). The FO4
             ' body is untouched (SkinToneBaked stays False → engine-faithful runtime soft-light).
-            mesh.MeshData.Material.SkinToneBaked = True
+            ' AHORA ES UNA ASIGNACION, NO UN LATCH: vale exactamente `el DIFFUSE de esta malla salio
+            ' compuesto en ESTA pasada`. Antes era `= True` incondicional y sin ningun camino que lo bajara.
+            ' OJO: las salidas por `Continue For` de mas arriba (diffusePath vacio, diffuse ya visto por
+            ' otra malla, textura no lista, w/h invalidos) NO llegan aca y por lo tanto NO reasignan el
+            ' flag. En esas mallas conserva el valor de la pasada anterior. Los caminos de edicion viva
+            ' restauran el diffuse a pristine antes de re-entrar, asi que el riesgo real es un True viejo
+            ' sobre un diffuse ya restaurado; las dos puertas tempranas de mas arriba cubren los casos en
+            ' que no hay NADA que componer, que es donde eso pasaba de verdad.
+            mesh.MeshData.Material.SkinToneBaked = meshDiffuseBaked
         Next
 
-        ' If we found a face mesh but its texture wasn't ready, signal "retry later".
-        ' If we composed at least one, success. Otherwise nothing matched — give up (no retry).
-        If composedAny Then Return True
-        If faceMeshFoundButTextureNotReady Then Return False
-        Return True
-    End Function
+    End Sub
 
     ''' <summary>Los overlays de CARA (nodos <c>Face [Ovl{n}]</c>) del preset aplicado al NPC — los MISMOS que el bake
     ''' pliega (<c>WriteSseFaceDiffuseWithOverlays</c>). Vacío si el NPC no tiene preset u overlays de cara. Los del

@@ -1255,6 +1255,13 @@ Public Class MainForm
     Private _animPlayer As HkxAnimationPlayer = Nothing
     Private _animSuppress As Boolean = False
     Private _animSuppressMs As Boolean = False          ' al setear NumericAnimFrameMs programáticamente
+    ''' <summary>hkbClipGenerator::m_playbackSpeed del clip seleccionado. Se RESUELVE al cargar el
+    ''' clip (multiplica el FPS nativo) y desde ahí el usuario puede editar el numeric libremente.
+    ''' El SIGNO se guarda aparte: el numeric sólo admite FPS positivos, pero un clip autorado a -1x
+    ''' se reproduce al REVÉS (HkxAnimationPlayer.FrameForNow ya soporta TargetFps negativo: envuelve
+    ''' con 'If f &lt; 0 Then f += count'). Medido: 17,1% de los clips SSE y 5,3% de los FO4 tienen
+    ''' playbackSpeed &lt;&gt; 1.0 (0,1x, 10x, 2x, -1x…), y antes de esto TODOS se reproducían a 1x.</summary>
+    Private _animClipSpeed As Double = 1.0
     Private _animOverBudget As Boolean = False          ' FPS en rojo = render no llega al target
 
     ' Editor-bar gate durante playback: al pulsar Play se deshabilitan los 10 botones de acción
@@ -1608,7 +1615,9 @@ Public Class MainForm
         SliderAnimFrame.Enabled = maxFrame > 0
         NumericAnimFrameMs.Enabled = maxFrame > 0
         ButtonAnimPlay.Enabled = maxFrame > 0
-        ApplyAnimPlaybackInterval()   ' setea el ms/frame por defecto desde el FrameDuration del clip (editable)
+        ' Velocidad AUTORADA del clip: se resuelve acá, una vez, y entra en el FPS por defecto.
+        _animClipSpeed = If(clip.PlaybackSpeed <> 0.0F AndAlso Single.IsFinite(clip.PlaybackSpeed), CDbl(clip.PlaybackSpeed), 1.0)
+        ApplyAnimPlaybackInterval()   ' FPS por defecto = FPS nativo × playbackSpeed (editable después)
         ApplyAnimFrame(0)
         ' Al cambiar de clip, re-encuadra la cámara RESPETANDO los flags de cámara (Settings_Camara:
         ' FreezeCamera / ResetZoom / ResetAngles) — igual que WM/el pipeline en selección. ResetCamera()
@@ -1625,17 +1634,25 @@ Public Class MainForm
     Private Sub ApplyAnimPlaybackInterval()
         Dim fps As Double = 30.0
         If _animPlayer IsNot Nothing AndAlso _animPlayer.NativeFps > 0.0 Then fps = _animPlayer.NativeFps
+        ' El playbackSpeed del clip se RESUELVE acá dentro del FPS. El numeric queda con el valor ya
+        ' resuelto para que el usuario lo pueda cambiar a mano desde ahí.
+        fps = fps * Math.Abs(_animClipSpeed)
         fps = Math.Min(CDbl(NumericAnimFrameMs.Maximum), Math.Max(CDbl(NumericAnimFrameMs.Minimum), fps))
         _animSuppressMs = True
         NumericAnimFrameMs.Value = CDec(Math.Round(fps, MidpointRounding.AwayFromZero))
         _animSuppressMs = False
-        Dim appliedFps = Math.Max(1.0, CDbl(NumericAnimFrameMs.Value))
-        If _animPlayer IsNot Nothing Then _animPlayer.TargetFps = appliedFps
+        If _animPlayer IsNot Nothing Then _animPlayer.TargetFps = SignedFpsFromNumeric()
     End Sub
+
+    ''' <summary>FPS del numeric con el SIGNO del playbackSpeed autorado: negativo = el clip va al revés.</summary>
+    Private Function SignedFpsFromNumeric() As Double
+        Dim fps = Math.Max(1.0, CDbl(NumericAnimFrameMs.Value))
+        Return If(_animClipSpeed < 0.0, -fps, fps)
+    End Function
 
     Private Sub NumericAnimFrameMs_ValueChanged(sender As Object, e As EventArgs) Handles NumericAnimFrameMs.ValueChanged
         If _animSuppressMs Then Return
-        Dim fps = Math.Max(1.0, CDbl(NumericAnimFrameMs.Value))   ' el numeric ahora es FPS
+        Dim fps = SignedFpsFromNumeric()   ' el numeric es FPS; el signo sale del playbackSpeed del clip
         If _animPlayer IsNot Nothing Then
             _animPlayer.TargetFps = fps
             ' Reanclar el reloj al frame actual para que el cambio de FPS no pegue un salto.
@@ -1718,6 +1735,7 @@ Public Class MainForm
         StopAnimPlayback()
         _animSession = Nothing
         _animPlayer = Nothing
+        _animClipSpeed = 1.0
         SliderAnimFrame.Enabled = False : NumericAnimFrameMs.Enabled = False : ButtonAnimPlay.Enabled = False
         If _renderHost Is Nothing OrElse _renderHost.LastSkeletonInstance Is Nothing OrElse _renderHost.LastRenderData Is Nothing Then
             SetPlayingAnimation(False)
