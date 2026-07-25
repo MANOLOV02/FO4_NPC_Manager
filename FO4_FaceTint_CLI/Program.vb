@@ -134,6 +134,13 @@ Module Program
         Public HkxBone As String = ""             ' --hkxbone "<hkxPath>|<boneSubstr>": local+world del hueso en el hkaSkeleton (rig canónico)
         Public ClipBase As String = ""            ' --clipbase "<rigHkx>|<clipHkx>[|boneFilter[|chunkNif;...]]": frame-0 del clip vs rig refPose vs assembled (skin binds del chunk)
         Public FindFile As String = ""            ' --findfile <substr>: lista keys del FilesDictionary que matchean (cualquier extensión)
+        ''' <summary>--facegengate: mide el blast radius de haber cambiado el gate de FaceGen del render
+        ''' (de la heurística "¿existe el FaceGeom horneado?" al canónico RACE.DATA bit 0x2). Parte A =
+        ''' clasificación exhaustiva de TODOS los NPC_; parte B = A/B de geometría horneada vs cruda sobre
+        ''' una muestra de los que entran nuevos. READ-ONLY: no escribe ni un NIF.</summary>
+        Public FaceGenGate As Boolean = False
+        ''' <summary>--fggsample N: cuántos NPCs del conjunto nuevo se hornean en la parte B (0 = ninguno).</summary>
+        Public FaceGenGateSample As Integer = 40
         Public Provenance As Boolean = False      ' --provenance: SourcePluginName de NPC/RACE/CLFMs del dirt (chequeo vanilla-vs-vanilla)
         Public DumpRef As String = ""             ' --dumpref "<filesDictKey>|<outFile>": vuelca GetBytes(key) crudo a outFile (ref vanilla del BA2)
         Public NifSlots As String = ""       ' --nifslots "<nifA>[|<nifB>]": DIAGNOSTICO shape -> shaderType + texslots
@@ -364,7 +371,7 @@ Module Program
 
         ' --- 3. Lista de trabajo (esp, edid) ---
         Dim work = BuildWorkList(opt)
-        If work.Count = 0 AndAlso opt.DdsProbe = "" AndAlso opt.RecScan = "" AndAlso Not opt.MeshCollide AndAlso opt.DumpAcc = "" AndAlso Not opt.TexSlotDiff AndAlso Not opt.ShapeOrder AndAlso Not opt.TintCountScan AndAlso Not opt.AlphaGateScan AndAlso Not opt.TtedScan AndAlso Not opt.ScanDiff AndAlso Not opt.RaceAnim AndAlso Not opt.RaceCompat AndAlso Not opt.MountValidate AndAlso opt.FindHkx = "" AndAlso opt.ChunkCompare = "" AndAlso opt.DumpBehavior = "" AndAlso Not opt.HkxCoverage AndAlso opt.KwType = "" AndAlso Not opt.StateMap AndAlso Not opt.ClipResolve AndAlso opt.HkxBone = "" AndAlso opt.ClipBase = "" AndAlso opt.FindFile = "" AndAlso opt.NifDump = "" AndAlso opt.NifSlots = "" AndAlso opt.AnimSyncCheck = "" AndAlso opt.BlendHintScan = "" AndAlso Not opt.CatProfile AndAlso Not opt.Provenance AndAlso opt.DumpRef = "" AndAlso opt.EstimateSclp = "" AndAlso opt.SclpDiag = "" AndAlso opt.SclpBatch = "" AndAlso opt.BindDiff = "" AndAlso opt.Ba2Extract = "" AndAlso Not opt.SseCompareBatch AndAlso Not opt.VertexBatch AndAlso opt.PosDump = "" AndAlso opt.MeshShaders = "" Then
+        If work.Count = 0 AndAlso opt.DdsProbe = "" AndAlso opt.RecScan = "" AndAlso Not opt.MeshCollide AndAlso opt.DumpAcc = "" AndAlso Not opt.TexSlotDiff AndAlso Not opt.ShapeOrder AndAlso Not opt.TintCountScan AndAlso Not opt.AlphaGateScan AndAlso Not opt.TtedScan AndAlso Not opt.ScanDiff AndAlso Not opt.RaceAnim AndAlso Not opt.RaceCompat AndAlso Not opt.MountValidate AndAlso opt.FindHkx = "" AndAlso opt.ChunkCompare = "" AndAlso opt.DumpBehavior = "" AndAlso Not opt.HkxCoverage AndAlso opt.KwType = "" AndAlso Not opt.StateMap AndAlso Not opt.ClipResolve AndAlso opt.HkxBone = "" AndAlso opt.ClipBase = "" AndAlso opt.FindFile = "" AndAlso opt.NifDump = "" AndAlso opt.NifSlots = "" AndAlso opt.AnimSyncCheck = "" AndAlso opt.BlendHintScan = "" AndAlso Not opt.CatProfile AndAlso Not opt.Provenance AndAlso opt.DumpRef = "" AndAlso opt.EstimateSclp = "" AndAlso opt.SclpDiag = "" AndAlso opt.SclpBatch = "" AndAlso opt.BindDiff = "" AndAlso opt.Ba2Extract = "" AndAlso Not opt.SseCompareBatch AndAlso Not opt.VertexBatch AndAlso opt.PosDump = "" AndAlso opt.MeshShaders = "" AndAlso Not opt.FaceGenGate Then
             Console.Error.WriteLine("No NPCs to process (check --edid / --list).") : Environment.ExitCode = 1 : Return
         End If
 
@@ -1296,6 +1303,13 @@ Module Program
         If opt.HkxBone <> "" Then
             Dim parts = opt.HkxBone.Split("|"c)
             HkxBoneDump(parts(0), If(parts.Length > 1, parts(1), ""))
+            Return
+        End If
+
+        ' --- FACEGENGATE: blast radius del cambio de gate de FaceGen (heurística → RACE.DATA bit 0x2).
+        If opt.FaceGenGate Then
+            _fggEdidFilter = opt.Edid
+            FaceGenGateBlastRun(pm, opt.FaceGenGateSample)
             Return
         End If
 
@@ -4422,6 +4436,315 @@ persist:
             Console.WriteLine($"   [{i,3}] '{nm}' parent='{pn}'  LOCAL.T=({lT.X:F3},{lT.Y:F3},{lT.Z:F3}) R11/22/33=({lr.M11:F3},{lr.M22:F3},{lr.M33:F3})  WORLD.T=({wT.X:F3},{wT.Y:F3},{wT.Z:F3})")
         Next
     End Sub
+
+#Region "--facegengate: blast radius del cambio de gate de FaceGen"
+
+    ''' <summary>Fila por NPC de la clasificación de la parte A.</summary>
+    Private Class FggRow
+        Public Fid As UInteger                  ' NPC_ propio
+        Public SrcFid As UInteger               ' fuente de apariencia (cadena Use Traits)
+        Public Eid As String = ""
+        Public RaceFid As UInteger
+        Public RaceEid As String = ""
+        Public IsFemale As Boolean
+        Public RaceBit As Boolean               ' RACE.DATA 0x2
+        Public HasFaceGeom As Boolean           ' FaceGeom horneado presente en el árbol
+        Public HasFmrs As Boolean               ' FMRS con al menos un valor != 0
+        Public HasChargen As Boolean            ' MSDK/MSDV
+        Public HasWeight As Boolean             ' MWGT efectivo (mismo gate que BuildBakeBodyWeightPose)
+        ''' <summary>Entra NUEVO al head-bake por este cambio.</summary>
+        Public ReadOnly Property IsNew As Boolean
+            Get
+                Return RaceBit AndAlso Not HasFaceGeom
+            End Get
+        End Property
+        ''' <summary>El bake no tiene NADA que aplicar ⇒ el cambio es estructuralmente no-op para este NPC.</summary>
+        Public ReadOnly Property Inert As Boolean
+            Get
+                Return Not HasFmrs AndAlso Not HasChargen AndAlso Not HasWeight
+            End Get
+        End Property
+    End Class
+
+    ''' <summary>⭐ MEDICIÓN del blast radius de mover el gate de FaceGen del render desde la heurística
+    ''' <c>HasFaceGenAssets</c> ("¿existe el FaceGeom horneado?") al canónico <c>RACE.DATA</c> bit 0x2.
+    ''' <para><b>Parte A (exhaustiva)</b>: clasifica TODOS los NPC_ del load order. El conjunto que CAMBIA
+    ''' de comportamiento es exactamente {raza con bit 0x2} ∖ {tiene FaceGeom}: ésos antes NO recolectaban
+    ''' el insumo <c>_faceBones</c> (⇒ sin head-bake, cabeza plana cruda) y ahora sí. Se subdivide por qué
+    ''' insumos del bake tienen (FMRS / morphs de chargen / MWGT), porque sin ninguno de los tres el bake
+    ''' es identidad y el cambio es no-op ESTRUCTURAL para ese NPC, no por medición.</para>
+    ''' <para><b>Parte B (A/B de geometría)</b>: sobre una muestra de los que SÍ tienen insumos, corre el
+    ''' MISMO cálculo que el render (<see cref="FO4_NPC_Manager.FaceGenBuildPipeline.ComputeBakedVertices"/>, vía la misma
+    ''' llamada que hace <c>HeadBakeService.Bake</c>) y mide |horneado − crudo| por vértice: rms y max en
+    ''' unidades del NIF. Eso es literalmente cuánto se mueve la cabeza dibujada.</para>
+    ''' <para><b>READ-ONLY</b>: no escribe ni un NIF ni un DDS (no pasa por FaceGenBuilder.BuildCharGen),
+    ''' así que no puede ensuciar el árbol del juego con sueltos que después sombreen el BA2.</para>
+    ''' <para>⚠ Sin overlays: corre sobre el record CRUDO (no hay presets LM aplicados en headless), así que
+    ''' un NPC con FMRS sólo en un .jslot cuenta como "sin FMRS". Sesga hacia SUBestimar el conjunto que
+    ''' se mueve.</para></summary>
+    Private _fggEdidFilter As String = ""
+
+    Private Sub FaceGenGateBlastRun(pm As PluginManager, sampleN As Integer)
+        Console.WriteLine("=== --facegengate: blast radius del gate de FaceGen (heurística → RACE.DATA bit 0x2) ===")
+        Console.WriteLine("Conjunto que cambia = raza con bit 0x2 Y SIN FaceGeom horneado (antes: sin insumo _faceBones ⇒ sin head-bake).")
+        Console.WriteLine()
+
+        ' ---------------------------------------------------------------- Parte A
+        Dim rows As New List(Of FggRow)
+        Dim parseFail As Integer = 0
+        Dim npcCache As New Dictionary(Of UInteger, NPC_Data)
+
+        Dim parseNpc = Function(fid As UInteger) As NPC_Data
+                           If fid = 0UI Then Return Nothing
+                           Dim cached As NPC_Data = Nothing
+                           If npcCache.TryGetValue(fid, cached) Then Return cached
+                           Dim rec = pm.GetRecord(fid)
+                           If rec Is Nothing OrElse rec.Header.Signature <> "NPC_" Then npcCache(fid) = Nothing : Return Nothing
+                           Dim parsed As NPC_Data = Nothing
+                           Try : parsed = RecordParsers.ParseNPC(rec, rec.SourcePluginName, pm) : Catch : parsed = Nothing : End Try
+                           npcCache(fid) = parsed
+                           Return parsed
+                       End Function
+
+        For Each rec In pm.GetNPCs()
+            Dim npc = parseNpc(rec.Header.FormID)
+            If npc Is Nothing Then parseFail += 1 : Continue For
+
+            ' Fuente de apariencia = cadena "Use Traits" (misma regla que NpcStateResolver.ResolveTraitsStateFromNPC
+            ' → NpcStateFactory.FaceAppearanceSourceFormID). El FaceGeom y la raza salen de la FUENTE.
+            Dim src = npc
+            Dim visited As New HashSet(Of UInteger) From {npc.FormID}
+            Do While FO4_NPC_Manager.NpcTemplateHelpers.HasTemplateFlag(src.TemplateFlags, NPC_TemplateCategory.Traits)
+                Dim nextFid = FO4_NPC_Manager.NpcTemplateHelpers.ResolveTemplateSourceFormID(src, NPC_TemplateCategory.Traits)
+                If nextFid = 0UI OrElse visited.Contains(nextFid) Then Exit Do
+                Dim nxt = parseNpc(nextFid)
+                If nxt Is Nothing Then Exit Do          ' apunta a LVLN u otro tipo ⇒ se queda con el propio
+                visited.Add(nextFid)
+                src = nxt
+            Loop
+
+            Dim raceEid = ""
+            Dim raceRec = pm.GetRecord(src.RaceFormID)
+            If raceRec IsNot Nothing Then raceEid = If(RecordParsers.ParseRACE(raceRec, pm)?.EditorID, "")
+
+            ' FaceGeom horneado: MISMA convención de nombre que usaba HasFaceGenAssets (local FormID ESL-aware).
+            Dim geomKey = ""
+            Dim plug = pm.GetOriginatingPluginName(src.FormID)
+            If Not String.IsNullOrEmpty(plug) Then
+                geomKey = $"meshes\actors\character\facegendata\facegeom\{plug}\{PluginManager.ToFaceGenLocalFormID(src.FormID):X8}.nif".ToLowerInvariant()
+            End If
+
+            Dim wt = src.WeightThin : Dim wm = src.WeightMuscular : Dim wf = src.WeightFat
+            rows.Add(New FggRow With {
+                .Fid = npc.FormID,
+                .SrcFid = src.FormID,
+                .Eid = If(npc.EditorID, ""),
+                .RaceFid = src.RaceFormID,
+                .RaceEid = raceEid,
+                .IsFemale = src.IsFemale,
+                .RaceBit = RaceUtil.RaceSupportsFaceGen(src.RaceFormID, pm),
+                .HasFaceGeom = (geomKey <> "" AndAlso FilesDictionary_class.Dictionary.ContainsKey(geomKey)),
+                .HasFmrs = src.FaceMorphs.Any(Function(fm) fm.Values.Any(Function(x) Math.Abs(x) > 0.0001F)),
+                .HasChargen = (src.MorphValues.Count > 0),
+                .HasWeight = (wt.HasValue AndAlso wm.HasValue AndAlso wf.HasValue AndAlso (wt.Value + wm.Value + wf.Value) >= 0.001F)
+            })
+        Next
+
+        Dim newSet = rows.Where(Function(r) r.IsNew).ToList()
+        Dim movers = newSet.Where(Function(r) Not r.Inert).ToList()
+
+        Console.WriteLine($"NPC_ en el load order : {rows.Count}  (ParseNPC falló en {parseFail}, excluidos)")
+        Console.WriteLine($"  raza SIN bit 0x2                 : {rows.Where(Function(r) Not r.RaceBit).Count(),6}   sin cambio (ya salían por el early-return de head parts)")
+        Console.WriteLine($"  bit 0x2 + CON FaceGeom horneado  : {rows.Where(Function(r) r.RaceBit AndAlso r.HasFaceGeom).Count(),6}   sin cambio (ya entraban al head-bake)")
+        Console.WriteLine($"  bit 0x2 + SIN FaceGeom  = NUEVOS : {newSet.Count,6}   ⬅ el blast radius")
+        Console.WriteLine()
+        ' ⚠ CONJUNTO INVERSO: raza SIN bit 0x2 pero CON FaceGeom horneado. Bajo la regla VIEJA daban
+        ' useFaceGen=True; bajo la nueva dan False. En el camino de HEAD PARTS da igual (el early-return por
+        ' el bit ya los excluía), pero CollectArmoCandidates NO tiene ese early-return ⇒ estos PIERDEN el
+        ' insumo `_faceBones` de la ARMA. Engine-faithful: sin el bit el motor no arma cabeza facegen, así
+        ' que perderlo es correcto — pero hay que saber a cuántos toca.
+        Dim losers = rows.Where(Function(r) Not r.RaceBit AndAlso r.HasFaceGeom).ToList()
+        Console.WriteLine($"  INVERSO — raza SIN bit 0x2 pero CON FaceGeom : {losers.Count,6}   (pierden el insumo _faceBones de la ARMA)")
+        If losers.Count > 0 Then
+            For Each g In losers.GroupBy(Function(r) If(r.RaceEid, "?")).OrderByDescending(Function(g2) g2.Count()).Take(8)
+                Console.WriteLine($"        {g.Count(),6}  {g.Key}")
+            Next
+        End If
+        Console.WriteLine()
+        Console.WriteLine($"  de los NUEVOS, no-op ESTRUCTURAL (sin FMRS, sin morphs, sin MWGT): {newSet.Where(Function(r) r.Inert).Count(),6}")
+        Console.WriteLine($"  de los NUEVOS, con algún insumo del bake  = SE MUEVEN            : {movers.Count,6}")
+        Console.WriteLine($"      con FMRS   : {newSet.Where(Function(r) r.HasFmrs).Count(),6}")
+        Console.WriteLine($"      con morphs : {newSet.Where(Function(r) r.HasChargen).Count(),6}")
+        Console.WriteLine($"      con MWGT   : {newSet.Where(Function(r) r.HasWeight).Count(),6}")
+        Console.WriteLine()
+
+        Console.WriteLine("NUEVOS por raza (top 15):")
+        For Each g In newSet.GroupBy(Function(r) If(r.RaceEid, "?")).OrderByDescending(Function(g2) g2.Count()).Take(15)
+            Console.WriteLine($"   {g.Count(),6}  {g.Key}")
+        Next
+        Console.WriteLine()
+
+        ' ---------------------------------------------------------------- Parte B
+        If sampleN <= 0 OrElse movers.Count = 0 Then
+            Console.WriteLine("(parte B omitida: --fggsample 0 o no hay NPCs que se muevan)")
+            Return
+        End If
+
+        ' Muestra determinista y REPARTIDA por el conjunto (paso uniforme), no los primeros N: los primeros
+        ' N vienen ordenados por FormID y quedarían todos del mismo plugin/población.
+        Dim ordered = movers.OrderBy(Function(r) r.SrcFid).ToList()
+        Dim take = Math.Min(sampleN, ordered.Count)
+        Dim sample As New List(Of FggRow)
+        For k = 0 To take - 1
+            sample.Add(ordered(CInt(CLng(k) * (ordered.Count - 1) \ Math.Max(1, take - 1))))
+        Next
+        sample = sample.GroupBy(Function(r) r.SrcFid).Select(Function(g) g.First()).ToList()
+
+        ' --edid <substr>: fuerza a incluir en la muestra los NPCs cuyo EditorID matchea (verificación dirigida
+        ' de un caso puntual sin depender de que el paso uniforme lo agarre).
+        If _fggEdidFilter <> "" Then
+            For Each extra In movers.Where(Function(r) r.Eid.IndexOf(_fggEdidFilter, StringComparison.OrdinalIgnoreCase) >= 0)
+                If Not sample.Any(Function(x) x.SrcFid = extra.SrcFid) Then sample.Insert(0, extra)
+            Next
+        End If
+
+        Console.WriteLine($"--- Parte B: A/B de geometría sobre {sample.Count} de los {movers.Count} que se mueven ---")
+        Console.WriteLine("delta = |vértice horneado − vértice crudo| del NIF PLANO, en unidades del NIF. Es exactamente")
+        Console.WriteLine("lo que el preview pasa a mostrar de más para estos NPCs.")
+        Console.WriteLine()
+        Console.WriteLine($"{"NPC",-10} {"shapes",6} {"rms",10} {"max",10} {"ms",8}  editorID")
+
+        Dim allRms As New List(Of Double)
+        Dim allMax As New List(Of Double)
+        Dim allMs As New List(Of Double)
+        Dim allAdded As New List(Of Double)
+        Dim noInput As Integer = 0
+        Dim bakeFail As Integer = 0
+        ' NPCs donde ALGUNA shape de una malla apareó y otra NO. Importa porque la app tiene guarda
+        ' "todas o ninguna" por malla (BuildHeadBakeService pasada 1): ahí la app NO hornea esa malla,
+        ' mientras este probe sí mide las que aparean ⇒ si esto es > 0, mis rms SOBRESTIMAN a la app.
+        Dim partialPair As Integer = 0
+
+        For Each r In sample
+            Dim raceRec = pm.GetRecord(r.RaceFid)
+            If raceRec Is Nothing Then Continue For
+            Dim race = RecordParsers.ParseRACE(raceRec, pm)
+            Dim regions = FO4_NPC_Manager.NpcMorphPoseResolver.GetFacialBoneRegionsForFmriResolution(race, r.IsFemale)
+            Dim st = FO4_NPC_Manager.FaceGenBuildPipeline.BuildBakeState(r.SrcFid, pm,
+                                                         New Dictionary(Of UInteger, FO4_NPC_Manager.LooksmenuLoader.LooksmenuPreset)(), regions)
+            If st Is Nothing Then bakeFail += 1 : Continue For
+
+            Dim merged = FO4_NPC_Manager.HeadPartResolver.MergeHeadPartsWithRaceDefaults(r.RaceFid, r.IsFemale, st.NpcData.HeadPartFormIDs, pm)
+            Dim sw = System.Diagnostics.Stopwatch.StartNew()
+            Dim msAdded As Double = 0
+            Dim meshesWithFbns As Integer = 0
+            Dim meshesNoFbns As Integer = 0
+            Dim pairFails As Integer = 0
+            Dim shapesMeasured As Integer = 0
+            Dim sumSq As Double = 0 : Dim nVerts As Long = 0 : Dim maxD As Double = 0
+
+            Dim verbose As Boolean = False   ' poner True para trazar el apareo shape↔_faceBones
+            If verbose Then Console.WriteLine($"   [traza 0x{r.SrcFid:X8}] headParts={merged.Count}")
+            For Each entry In FO4_NPC_Manager.HeadPartResolver.EnumerateHdptChain(merged, pm)
+                Dim hd = entry.Hdpt
+                If hd Is Nothing OrElse String.IsNullOrEmpty(hd.MeshPath) Then Continue For
+                Dim flatKey = FO4_NPC_Manager.NameUtils.NormalizeDictionaryKeyWithMeshesPrefix(hd.MeshPath)
+                Dim fbnsKey = FO4_NPC_Manager.MeshPathHelpers.TryGetFaceBonesVariant(flatKey)
+                If verbose Then Console.WriteLine($"      hdpt='{hd.EditorID}' mesh='{hd.MeshPath}' flatKey='{flatKey}' inDict={FilesDictionary_class.Dictionary.ContainsKey(flatKey)} fbns='{fbnsKey}'")
+                If fbnsKey = "" Then meshesNoFbns += 1 : Continue For   ' sin `_faceBones` no hay insumo ⇒ sin cambio
+                meshesWithFbns += 1
+
+                Dim flatBytes = FO4_NPC_Manager.MeshPathHelpers.TryLoadMeshBytes(flatKey)
+                Dim fbnsBytes = FO4_NPC_Manager.MeshPathHelpers.TryLoadMeshBytes(fbnsKey)
+                If flatBytes Is Nothing OrElse fbnsBytes Is Nothing Then Continue For
+
+                ' El NIF PLANO se carga IGUAL hoy (es el que se dibuja) ⇒ su costo NO es agregado.
+                ' Lo AGREGADO por este cambio es: cargar el `_faceBones` + hornear.
+                Dim flatNif As New Nifcontent_Class_Manolo() : flatNif.Load_Manolo(flatBytes)
+                Dim swAdd = System.Diagnostics.Stopwatch.StartNew()
+                Dim fbnsNif As New Nifcontent_Class_Manolo() : fbnsNif.Load_Manolo(fbnsBytes)
+                swAdd.Stop() : msAdded += swAdd.Elapsed.TotalMilliseconds
+
+                ' Apareo shape plana ↔ `_faceBones` por nombre + conteo de vértices: la MISMA regla del
+                ' driver del motor (0x140AA31B0) que usa BuildHeadBakeService.
+                Dim fbnsByName As New Dictionary(Of String, NiflySharp.INiShape)(StringComparer.OrdinalIgnoreCase)
+                For Each fs In fbnsNif.GetShapes()
+                    Dim fn = FO4_NPC_Manager.NameUtils.StripFaceBonesSuffix(If(fs.Name?.String, ""))
+                    If fn = "" Then Continue For
+                    fbnsByName($"{fn}|{ShapeGeometryFactory.[For](fs, fbnsNif).VertexCount}") = fs
+                Next
+
+                For Each flatShape In flatNif.GetShapes()
+                    Dim nm = $"{FO4_NPC_Manager.NameUtils.StripFaceBonesSuffix(If(flatShape.Name?.String, ""))}|{ShapeGeometryFactory.[For](flatShape, flatNif).VertexCount}"
+                    Dim fbnsShape As NiflySharp.INiShape = Nothing
+                    If Not fbnsByName.TryGetValue(nm, fbnsShape) Then
+                        pairFails += 1
+                        If verbose Then Console.WriteLine($"         shape '{nm}': SIN par en el _faceBones")
+                        Continue For
+                    End If
+
+                    Dim origVerts = ShapeGeometryFactory.[For](flatShape, flatNif).GetVertexPositions().ToList()
+                    If origVerts.Count = 0 Then Continue For
+                    Dim fbnsCount = ShapeGeometryFactory.[For](fbnsShape, fbnsNif).GetVertexPositions().Count
+                    If fbnsCount <> origVerts.Count Then
+                        If verbose Then Console.WriteLine($"         shape '{nm}': conteo distinto plano={origVerts.Count} fbns={fbnsCount}")
+                        Continue For
+                    End If
+
+                    Dim baked As List(Of System.Numerics.Vector3) = Nothing
+                    Dim swBake = System.Diagnostics.Stopwatch.StartNew()
+                    Try
+                        baked = FO4_NPC_Manager.FaceGenBuildPipeline.ComputeBakedVertices(
+                            st, flatNif, flatShape, fbnsNif, fbnsShape,
+                            hd.ChargenMorphTriPath, srcNif:=flatNif, srcShape:=flatShape,
+                            raceMorphTriPath:=hd.RaceMorphTriPath)
+                        If verbose AndAlso baked Is Nothing Then Console.WriteLine($"         shape '{nm}': ComputeBakedVertices devolvio Nothing")
+                    Catch ex As Exception
+                        If verbose Then Console.WriteLine($"         shape '{nm}': EXCEPCION {ex.GetType().Name}: {ex.Message}")
+                        baked = Nothing
+                    End Try
+                    swBake.Stop() : msAdded += swBake.Elapsed.TotalMilliseconds
+                    If baked Is Nothing OrElse baked.Count <> origVerts.Count Then Continue For
+
+                    For i = 0 To origVerts.Count - 1
+                        Dim d As Double = (baked(i) - origVerts(i)).Length()
+                        sumSq += d * d : nVerts += 1
+                        If d > maxD Then maxD = d
+                    Next
+                    shapesMeasured += 1
+                Next
+            Next
+
+            sw.Stop()
+            If shapesMeasured = 0 Then
+                noInput += 1
+                    Continue For
+            End If
+            Dim rms = Math.Sqrt(sumSq / Math.Max(1L, nVerts))
+            allRms.Add(rms) : allMax.Add(maxD) : allMs.Add(sw.Elapsed.TotalMilliseconds) : allAdded.Add(msAdded)
+            If pairFails > 0 Then partialPair += 1
+        Next
+
+        Console.WriteLine()
+        If allRms.Count = 0 Then
+            Console.WriteLine($"Ninguna shape medida (sin `_faceBones` disponible en {noInput}, bakeState falló en {bakeFail}).")
+            Return
+        End If
+        Console.WriteLine($"Medidos {allRms.Count} NPCs · sin insumo `_faceBones` {noInput} · bakeState falló {bakeFail}")
+        Console.WriteLine($"  rms:  media {allRms.Average():F4}   mediana {allRms.OrderBy(Function(x) x).ElementAt(allRms.Count \ 2):F4}   max {allRms.Max():F4}")
+        Console.WriteLine($"  max:  media {allMax.Average():F4}   peor {allMax.Max():F4}")
+        Console.WriteLine($"  NPCs con delta ~0 (rms < 1e-4): {allRms.Where(Function(x) x < 0.0001).Count(),4} de {allRms.Count}")
+        Console.WriteLine($"  NPCs con apareo PARCIAL (la app los saltearía por su guarda todas-o-ninguna): {partialPair,4} de {allRms.Count}")
+        Dim msSorted = allMs.OrderBy(Function(x) x).ToList()
+        Console.WriteLine($"  COSTO del head-bake (carga de NIFs + horneada, offline, cache frío por NPC):")
+        Console.WriteLine($"     TOTAL del A/B (incluye cargar el NIF plano, que YA se paga hoy):")
+        Console.WriteLine($"        media {allMs.Average():F0} ms · mediana {msSorted(msSorted.Count \ 2):F0} ms · p90 {msSorted(CInt(msSorted.Count * 0.9)):F0} ms · peor {allMs.Max():F0} ms")
+        Dim addSorted = allAdded.OrderBy(Function(x) x).ToList()
+        Console.WriteLine($"     ⭐ AGREGADO por el cambio (cargar el `_faceBones` + hornear, POR NPC):")
+        Console.WriteLine($"        media {allAdded.Average():F0} ms · mediana {addSorted(addSorted.Count \ 2):F0} ms · p90 {addSorted(CInt(addSorted.Count * 0.9)):F0} ms · peor {allAdded.Max():F0} ms")
+    End Sub
+
+#End Region
 
     ''' <summary>Lista keys del FilesDictionary que matchean un substring (cualquier extensión) — para
     ''' localizar chunk NIFs / clips sin adivinar paths.</summary>
@@ -9580,6 +9903,10 @@ persist:
                 Case "--hkxbone" : a.HkxBone = v : i += 2
                 Case "--clipbase" : a.ClipBase = v : i += 2
                 Case "--blendhintscan" : a.BlendHintScan = v : i += 2
+                Case "--facegengate" : a.FaceGenGate = True : i += 1
+                Case "--fggsample"
+                    Dim n As Integer : If Integer.TryParse(v, n) Then a.FaceGenGateSample = Math.Max(0, n)
+                    i += 2
                 Case "--findfile" : a.FindFile = v : i += 2
                 Case "--provenance" : a.Provenance = True : i += 1
                 Case "--dumpref" : a.DumpRef = v : i += 2
@@ -9599,7 +9926,7 @@ persist:
                     Console.Error.WriteLine($"Unknown arg: {args(i)}") : PrintUsage() : Return Nothing
             End Select
         End While
-        If a.ListPath = "" AndAlso (a.Esp = "" OrElse a.Edid = "") AndAlso a.DdsProbe = "" AndAlso a.RecScan = "" AndAlso Not a.MeshCollide AndAlso a.DumpAcc = "" AndAlso Not a.TexSlotDiff AndAlso Not a.ShapeOrder AndAlso Not a.TintCountScan AndAlso Not a.AlphaGateScan AndAlso Not a.TtedScan AndAlso Not a.ScanDiff AndAlso Not a.RaceAnim AndAlso Not a.RaceCompat AndAlso Not a.MountValidate AndAlso a.FindHkx = "" AndAlso a.ChunkCompare = "" AndAlso a.DumpBehavior = "" AndAlso Not a.HkxCoverage AndAlso a.KwType = "" AndAlso Not a.StateMap AndAlso Not a.ClipResolve AndAlso a.HkxBone = "" AndAlso a.ClipBase = "" AndAlso a.FindFile = "" AndAlso a.NifDump = "" AndAlso a.NifSlots = "" AndAlso a.AnimSyncCheck = "" AndAlso a.BlendHintScan = "" AndAlso Not a.CatProfile AndAlso a.DumpRef = "" AndAlso a.EstimateSclp = "" AndAlso a.SclpDiag = "" AndAlso a.SclpBatch = "" AndAlso a.BindDiff = "" AndAlso a.Ba2Extract = "" AndAlso Not a.SseCompareBatch AndAlso Not a.VertexBatch AndAlso a.PosDump = "" AndAlso a.MeshShaders = "" AndAlso a.CompareFiles = "" AndAlso a.DumpNif = "" AndAlso a.SkinCheck = "" Then
+        If a.ListPath = "" AndAlso (a.Esp = "" OrElse a.Edid = "") AndAlso a.DdsProbe = "" AndAlso a.RecScan = "" AndAlso Not a.MeshCollide AndAlso a.DumpAcc = "" AndAlso Not a.TexSlotDiff AndAlso Not a.ShapeOrder AndAlso Not a.TintCountScan AndAlso Not a.AlphaGateScan AndAlso Not a.TtedScan AndAlso Not a.ScanDiff AndAlso Not a.RaceAnim AndAlso Not a.RaceCompat AndAlso Not a.MountValidate AndAlso a.FindHkx = "" AndAlso a.ChunkCompare = "" AndAlso a.DumpBehavior = "" AndAlso Not a.HkxCoverage AndAlso a.KwType = "" AndAlso Not a.StateMap AndAlso Not a.ClipResolve AndAlso a.HkxBone = "" AndAlso a.ClipBase = "" AndAlso a.FindFile = "" AndAlso a.NifDump = "" AndAlso a.NifSlots = "" AndAlso a.AnimSyncCheck = "" AndAlso a.BlendHintScan = "" AndAlso Not a.CatProfile AndAlso a.DumpRef = "" AndAlso a.EstimateSclp = "" AndAlso a.SclpDiag = "" AndAlso a.SclpBatch = "" AndAlso a.BindDiff = "" AndAlso a.Ba2Extract = "" AndAlso Not a.SseCompareBatch AndAlso Not a.VertexBatch AndAlso a.PosDump = "" AndAlso a.MeshShaders = "" AndAlso a.CompareFiles = "" AndAlso a.DumpNif = "" AndAlso a.SkinCheck = "" AndAlso Not a.FaceGenGate Then
             Console.Error.WriteLine("Missing --esp and --edid (or use --list).") : PrintUsage() : Return Nothing
         End If
         ' --rawdds + --ddscompare: COMBINACION DELIBERADA, marcada a los gritos (no abortada).

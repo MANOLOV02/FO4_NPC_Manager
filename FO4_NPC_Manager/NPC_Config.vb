@@ -73,10 +73,11 @@ Public Class NPC_Config
 
     ''' <summary>⚠️ PROVISORIO (herramienta de diagnóstico, a ELIMINAR) — "SSE: render por el camino PLEGADO".
     ''' False (default) = el render SSE normal: slot 0 = complexion, slot 3 = detail, slot 6 = facetint compuesto, y el
-    ''' shader hace <c>fgTint(slot6) × softlight(slot0, slot3)</c> (= el engine).
-    ''' True = el render replica lo que el BAKE plegado escribe: pliega <c>fgTint × softlight(complexion, detail)</c>
-    ''' en el slot 0 y NEUTRALIZA slot 3 (gris 0.5 = softlight identidad) y slot 6 (gris 63/64/63 = fgTint 1), de modo
-    ''' que el shader haga la identidad y muestre el diffuse plegado.
+    ''' shader hace <c>softlight(slot0, slot6) × amplify(slot3)</c> (= el engine).
+    ''' True = el render replica lo que el BAKE plegado escribe: pliega
+    ''' <c>softlight(complexion, facetint) × amplify(detail)</c> en el slot 0 y NEUTRALIZA slot 3
+    ''' (gris 63/64/63 = amplify 1) y slot 6 (gris 0.5 = softlight identidad), de modo que el shader haga la
+    ''' identidad y muestre el diffuse plegado.
     ''' Si el pliegue es correcto, AMBOS caminos deben dar el MISMO tono de piel. Sirve para verlo in-app sin bakear.
     ''' NO se persiste (arranca siempre en False): es un toggle de sesión para diagnóstico.
     ''' ⛔ &lt;JsonIgnore&gt; DE VERDAD: sin él SÍ se persistía (el comentario mentía — apareció en npc_config.json), y un

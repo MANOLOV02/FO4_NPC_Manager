@@ -8,11 +8,12 @@ Imports OpenTK.Graphics.OpenGL4
 ''' acumulador RGBA en sRGB, <c>Double()</c> de w×h×4 — así que el caller elige por el flag de cámara
 ''' (<c>Setting_GPUSkinning</c>) y NADA más cambia, y la paridad se mide restando los dos arrays.
 '''
-''' ⭐ QUÉ ENTRA ACÁ Y QUÉ NO. El PLIEGUE en sí (<c>albedo = fgTint(facetint) × softlight(complexion, detail)</c>,
+''' ⭐ QUÉ ENTRA ACÁ Y QUÉ NO. El PLIEGUE en sí (<c>albedo = softlight(complexion, facetint) × amplify(detail)</c>,
 ''' <see cref="SseFaceGenBaker.FoldFacetintIntoDiffuse"/>) NO es un stack de capas: es una ley FIJA del engine, sin
 ''' blend-ops ni cobertura, y se computa igual en los dos caminos (en Double, sin cuantizar). Pasarla por el GPU
-''' obligaría a mandar el facetint como TEXTURA de 8 bits, y el fgTint la amplifica ×255/64 ⇒ metería un error que
-''' hoy no existe. Lo que SÍ es un stack de capas — y por eso honra el flag — son las MASKT y los overlays.
+''' obligaría a mandar el facetint como TEXTURA de 8 bits, y la cadena la escala hasta ×255/64 por el amplify del
+''' detail ⇒ metería un error que hoy no existe. Lo que SÍ es un stack de capas — y por eso honra el flag — son
+''' las MASKT y los overlays.
 ''' (El sandbox del bake igual hornea el <c>_2d</c> = pliegue por GPU, para medir también esa variante.)
 '''
 ''' Ley CPU = <see cref="SseOverlayCompositor.ApplyOverlays"/> (decodificada del .fx de RaceMenu).
@@ -64,7 +65,8 @@ Friend Module SseFoldLayerStack
         Dim seedTex = 0, tintTex = 0, complexTex = 0, detTex = 0, foldedTex = 0, srgbTex = 0
         Try
             ' --- 1. FACETINT: seed plano 0.5 → capas de tint del RACE/NPC (si hay). Sin capas, el facetint
-            ' ES el seed (raza sin tints = 0.5 plano = fgTint 1, NO es un fallo; = ComposeFacetintGpu). ---
+            ' ES el seed (raza sin tints = 0.5 plano = soft-light IDENTIDAD, NO es un fallo; = ComposeFacetintGpu.
+            ' 0.5 es ademas el default de engine del slot 6, DefaultGreyMap). ---
             seedTex = UploadRgba32fFlat(0.5F, 0.5F, 0.5F, 1.0F, w, h)
             If seedTex = 0 Then Return 0
             If tintLayers Is Nothing OrElse tintLayers.Count = 0 Then
@@ -86,14 +88,16 @@ Friend Module SseFoldLayerStack
                 Dim tintAcc = ReadbackRgba32f(tintTex, npix)
                 Dim mF = If(tintAcc IsNot Nothing, MeanRgb(tintAcc, npix), Nothing)
                 Dim mD = If(detailRaw IsNot Nothing, MeanRgb(detailRaw, npix), Nothing)
+                Dim dMeanR = If(mD Is Nothing, SseFaceGenBaker.EngineDefaultDetail, mD(0))
                 Logger.LogLazy(Function() $"[SSE-FOLD] IN (GPU-resident): complexion(sRGB)=({mC(0):F3},{mC(1):F3},{mC(2):F3}) " &
                                           If(mF Is Nothing, "facetint=(sin readback) ",
-                                             $"facetint(lin)=({mF(0):F3},{mF(1):F3},{mF(2):F3}) ⇒ fgTint≈{(mF(0) + 1.0 / 255.0) * (255.0 / 64.0):F2} ") &
-                                          $"detail={If(mD Is Nothing, "NINGUNO(0.251=default engine)", $"({mD(0):F3},{mD(1):F3},{mD(2):F3})")}")
+                                             $"facetint/softlight-b(lin)=({mF(0):F3},{mF(1):F3},{mF(2):F3}) ") &
+                                          $"detail={If(mD Is Nothing, "NINGUNO(0.251=default engine)", $"({mD(0):F3},{mD(1):F3},{mD(2):F3})")} " &
+                                          $"⇒ amp(detail)≈{SseFaceGenBaker.FgTintChannel(dMeanR, 0):F3}")
             End If
 
             ' --- 2. FOLD: base = complexion (sRGB, alpha forzado opaco), capa = rama uFgTintFold del shader
-            ' (fgTint × softlight, la MISMA ley fija del engine que FoldFacetintIntoDiffuse en CPU). ---
+            ' (softlight con el facetint × amplify del detail: la MISMA ley fija del engine que FoldFacetintIntoDiffuse en CPU). ---
             complexTex = UploadRgba32f(complexionSrgb, npix, w, h, forceOpaque:=True)
             If complexTex = 0 Then Return 0
             If detailRaw IsNot Nothing Then
@@ -192,7 +196,7 @@ Friend Module SseFoldLayerStack
         Return m
     End Function
 
-    ''' <summary>GPU: el PLIEGUE — <c>albedo = fgTint(facetint) × softlight(srgbToLin(complexion), detail)</c> — réplica
+    ''' <summary>GPU: el PLIEGUE — <c>albedo = softlight(srgbToLin(complexion), facetint) × amplify(detail)</c> — réplica
     ''' EXACTA de <see cref="SseFaceGenBaker.FoldFacetintIntoDiffuse"/> (CPU). Entra y sale lo MISMO que el CPU: el
     ''' complexion en sRGB y el resultado en sRGB (<c>Double()</c> RGBA), así que el caller elige camino por el flag y
     ''' nada más cambia. Nothing = FALLO del GPU (el caller aborta; NO se compone por CPU).

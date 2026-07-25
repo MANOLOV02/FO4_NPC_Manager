@@ -73,8 +73,8 @@ Public Module FaceGenBuilder
         Public Property ShapesKept As Integer
         Public Property ShapesDropped As Integer
         ''' <summary>SSE only: True when this NPC's facetint was folded into the head diffuse, so the head shape's
-        ''' slot 3 (detail) was pointed at the plugin's SHARED neutral-detail gray (facedetailneutral.dds, softlight
-        ''' identity 0.5) instead of a real detail map. Signals the packer (via <see cref="NpcFaceGenPacker.BakedNpcBundle"/>)
+        ''' slot 3 (detail) was pointed at the plugin's SHARED neutral-detail gray (facedetailneutral.dds, the
+        ''' AMPLIFY identity (63,64,63)/255) instead of a real detail map. Signals the packer (via <see cref="NpcFaceGenPacker.BakedNpcBundle"/>)
         ''' to also pack that single shared detail. (The facetint itself stays a per-NPC canonical &lt;id&gt;.dds — the
         ''' engine builds that path itself and ignores the NIF slot 6, so it can't be shared.)</summary>
         Public Property UsedSharedNeutralDetail As Boolean
@@ -1246,7 +1246,7 @@ Public Module FaceGenBuilder
                 nif.Save_As_Manolo(nif2c, Overwrite:=True)
                 Logger.LogLazy(Function() $"[FACEBAKE][SSE] forced replacer sandbox -> {formIdLow:X8}_2c.NIF (+ _2c textures)")
 
-                ' _2d = MISMO pliegue pero desde GPU (complexion × fgTint por el shader), para confirmar CPU(_2c)==GPU(_2d).
+                ' _2d = MISMO pliegue pero desde GPU (la cadena facegen corrida por el shader), para confirmar CPU(_2c)==GPU(_2d).
                 ' Requiere host GL (solo app). Usa el complexion ORIGINAL capturado (= el que pliega el _2c) + las capas
                 ' de tint del NPC. Es puro GPU (recompone el facetint + pliega en GPU), no copia el _2c CPU.
                 If host IsNot Nothing AndAlso WriteGPUSandboxOutput Then
@@ -1987,12 +1987,12 @@ Public Module FaceGenBuilder
     ''' funciones que el RENDER (<see cref="SseFoldLayerStack"/>) ⇒ el sandbox mide el código que de verdad se ejecuta,
     ''' no una copia paralela que se puede desincronizar. Tres pasos, todos GPU y todos en FLOAT (Rgba32f):
     '''   1. facetint  = ComposeFacetintGpu(capas de tint sobre seed 0.5)      [lineal]
-    '''   2. pliegue   = FoldGpu(complexion, facetint, detail)                 [ley del engine: fgTint × softlight]
+    '''   2. pliegue   = FoldGpu(complexion, facetint, detail)                 [ley del engine: softlight(_,tint) x amplify(detail)]
     '''   3. capas     = ComposeGpu(skee MASKT + overlays Face[Ovl])           [stack de capas]
     ''' ⛔ NADA de intermedios en 8 bits. La versión anterior transportaba el facetint como DDS y hacía el readback en
     ''' bytes LINEALES: MEDIDO contra el _2c daba RMS 2,4/255 y máx 18, con el error concentrado en las sombras (5,7 medio
     ''' en 0..31 vs 0,3 en 128..159) — la firma de cuantizar en lineal (cerca del negro 1 nivel lineal ≈ 13 niveles sRGB),
-    ''' agravado porque el fgTint amplifica el facetint ×255/64. En float el transporte deja de limitar la paridad.
+    ''' agravado porque el amplify del detail escala la cadena hasta ×255/64. En float el transporte deja de limitar la paridad.
     ''' GL-bound (host). SSE-only, debug sandbox.</summary>
     Private Sub WriteSseFacetint2dGpu(layers As IList(Of FaceTintLayerInput), complexionPath As String, detailPath As String,
                                       overlays As IList(Of RaceMenuJslot.JslotOverlayNode),
@@ -2233,9 +2233,9 @@ Public Module FaceGenBuilder
             Array.Copy(decoded.Rgba, acc, acc.Length)
 
             ' === PLIEGUE (orden fiel a RaceMenu) ===
-            ' El overlay va DESPUÉS del skin tint. El engine hace albedo *= fgTint(facetint_d). Para que el overlay
-            ' NO quede teñido por el skin tint, plegamos el facetint DENTRO del diffuse (base = complexion × fgTint),
-            ' y neutralizamos el slot 6 (así el engine no re-aplica). base ES el albedo skin-tinted; overlays encima.
+            ' El overlay va DESPUÉS del skin tint. El engine hace albedo = softlight(diffuse, facetint_d) × amplify(detail).
+            ' Para que el overlay NO quede teñido por el skin tint, plegamos esa cadena DENTRO del diffuse, y
+            ' neutralizamos los slots 3 y 6 (así el engine no re-aplica). base ES el albedo skin-tinted; overlays encima.
             Dim npcRec = pluginManager.GetRecord(npcFormID)
             Dim raceFid As UInteger = npcData.RaceFormID
             Dim race As RACE_Data = Nothing
@@ -2249,16 +2249,18 @@ Public Module FaceGenBuilder
                 ' base DESPUÉS del pliegue, ese es el orden de RaceMenu). Mismo _d que WriteSseFacetintDds compone.
                 Dim facetint = SseFaceTintComposer.ComposeLinearRgba(pluginManager, npcRec, race, raceFid, npcData.IsFemale, w, h,
                                                                      Nothing, npcData.SseTintRaw, npcData.SseTintTexOverride)
-                ' Detail mask (slot 3 / DisplacementTexture): el engine hace softlight(complexion, detail) ANTES del
-                ' fgTint (Shader_Class 1864→1878). Se pliega ACÁ y se NEUTRALIZA el slot 3 abajo (si no, el engine lo
-                ' re-aplica sobre el _2c). Detail crudo (no está en color textures). Si no hay, softlight identidad.
+                ' Detail mask (slot 3 / DisplacementTexture): es el término AMPLIFICADO (detail+off)·255/64 que el
+                ' engine multiplica DESPUÉS del soft-light con el facetint (Shader_Class). Se pliega ACÁ y se
+                ' NEUTRALIZA el slot 3 abajo (si no, el engine lo re-aplica sobre el _2c). Detail crudo (no está en
+                ' color textures). Si no hay, el default del engine 0.251 (NO identidad).
                 ' En FORZADO (_2c) el slot 3 del head clonado YA lo neutralizo el pass non-forced (se comparte el mismo
-                ' `cloned`) ⇒ leerlo en vivo daria "" y el fold saltearia el softlight del detail (→ _2c MAS CLARO que
-                ' _2/_2d, bug medido). Usar el detail ORIGINAL capturado antes de mutar (detailPathOverride), igual que
-                ' el complexion. En non-forced el slot 3 se lee en vivo (aun sin neutralizar en este punto) = correcto.
+                ' `cloned`) ⇒ leerlo en vivo daria "" y el fold usaria el default 0.251 en vez del detail real
+                ' (→ _2c distinto de _2/_2d, bug medido). Usar el detail ORIGINAL capturado antes de mutar
+                ' (detailPathOverride), igual que el complexion. En non-forced el slot 3 se lee en vivo (aun sin
+                ' neutralizar en este punto) = correcto.
                 Dim detailPath = If(forced, If(detailPathOverride, ""), If(ts.Textures.Count > 3, ts.Textures(3).Content, ""))
                 Dim detailAcc As Single() = If(Not String.IsNullOrEmpty(detailPath), SseFaceTintComposer.DecodeTextureRgba(detailPath, w, h), Nothing)
-                If facetint IsNot Nothing Then SseFaceGenBaker.FoldFacetintIntoDiffuse(acc, facetint, npix, detailAcc)   ' albedo = fgTint × softlight(complexion, detail)
+                If facetint IsNot Nothing Then SseFaceGenBaker.FoldFacetintIntoDiffuse(acc, facetint, npix, detailAcc)   ' albedo = softlight(complexion, facetint) x amplify(detail)
             End If
 
             ' (a) skee MASKT masks (dyeable heads) sobre el base plegado, luego (b) los Face [Ovl] overlays
@@ -2307,11 +2309,15 @@ Public Module FaceGenBuilder
             MaybeWriteTgaBeside(outFile, dOutW, dOutH, dOutBgra)
             ts.Textures(0).Content = EmbeddedEngineTexPath(dir & $"{fgLocal:X8}{embeddedSuffix}")
 
-            ' NEUTRALIZAR slot 3 (detail/Displacement): el softlight(complexion, detail_real) YA se plegó en el diffuse
-            ' (slot 0). El engine hace softlight(diffuse, detail) SIEMPRE; para que sea IDENTIDAD hay que dejar el slot 3
-            ' en gris 0.5 (softlight(x,0.5)=x). ⛔ NO se puede VACIAR el slot 3: el engine rellena un detail vacío con su
-            ' default BSShader_DefFacegenDetail = UNIFORME 0x40 = 0.251 (RE byte-level SkyrimSE.exe 0x140E57E30 rellena
-            ' 0x40404040; = vanilla blankdetailmap; NO la Bayer 0.1235 de DitheringNoise), NO 0.5 → oscurecería la cara.
+            ' NEUTRALIZAR slot 3 (detail/Displacement): el AMPLIFY (detail_real + off)·255/64 YA se plegó en el diffuse
+            ' (slot 0). El engine aplica ese amplify SIEMPRE; para que sea IDENTIDAD hay que dejar el slot 3 en
+            ' (63,64,63)/255 ⇒ (v+off)·255/64 = 1 EXACTO. ⚠️ NO 0.5: 0.5 es la identidad del SOFT-LIGHT, que le toca
+            ' al slot 6. ⛔ NO se puede VACIAR el slot 3: el engine rellena un detail vacío con su default
+            ' BSShader_DefFacegenDetail = UNIFORME 0x40 = 0.251 (RE byte-level SkyrimSE.exe: la init de defaults
+            ' @0x140E57E30 lo crea con fill 0x40404040 y lo deja en manager+0x88 = 0x328CCA8; = vanilla
+            ' blankdetailmap). ⚠️ Esa MISMA función crea antes la Bayer 8×8 BSShader_DitheringNoise — por eso la nota
+            ' vieja citaba 0x140E57E30 de forma ambigua. Con 0.251 el multiplicador queda (1.015625, 1.0, 1.015625) ≠ 1
+            ' → la cara saldría ~1.5% más clara en R/B que el bake.
             ' Se escribe un detail neutral COMPARTIDO por plugin (constante ⇒ dedup; el engine SÍ
             ' respeta el slot 3 del NIF, a diferencia del tint que arma por path canónico) y se apunta el slot 3 ahí.
             Try
@@ -2323,6 +2329,24 @@ Public Module FaceGenBuilder
                         Dim detEmbed = tintDir3 & "facedetailneutral" & embeddedSuffix    ' canónico .dds cuando willBePacked
                         Dim detFile = IO.Path.Combine(Config_App.Current.DataPath, detLoose)
                         IO.Directory.CreateDirectory(IO.Path.GetDirectoryName(detFile))
+                        ' ⚠️ ARCHIVO COMPARTIDO POR PLUGIN: todos los heads plegados de este plugin apuntan a EL.
+                        ' Reescribirlo con un contenido DISTINTO al que ya estaba cambia el tono de TODOS los
+                        ' NPC ya horneados, no solo del que se esta horneando ahora. Como el contenido es una
+                        ' CONSTANTE, que difiera solo puede significar que los bakes viejos se hicieron con otra
+                        ' ley (p.ej. los anteriores al swap tint/detail, que escribian 0.5 en vez de (63,64,63)).
+                        ' Se avisa fuerte: esos NPC quedan stale y hay que re-hornearlos.
+                        Try
+                            If IO.File.Exists(detFile) Then
+                                Dim prevBytes = IO.File.ReadAllBytes(detFile)
+                                If Not prevBytes.SequenceEqual(detailNeutral) Then
+                                    Logger.LogLazy(Function() $"[FACEBAKE][SSE][STALE] '{detLoose}' COMPARTIDO cambia de contenido " &
+                                                              $"({prevBytes.Length}b -> {detailNeutral.Length}b). Los heads YA horneados de este " &
+                                                              "plugin que apuntan a el quedan con el tono equivocado: RE-HORNEAR todos los NPC plegados.")
+                                End If
+                            End If
+                        Catch exCmp As Exception
+                            Logger.LogLazy(Function() $"[FACEBAKE][SSE] no se pudo comparar el detail-neutral previo: {exCmp.Message}")
+                        End Try
                         IO.File.WriteAllBytes(detFile, detailNeutral)
                         ts.Textures(3).Content = EmbeddedEngineTexPath(detEmbed)
                         ' Non-forced (release/loose/packed) usa el detail neutral COMPARTIDO por plugin ⇒ el packer lo
@@ -2346,10 +2370,12 @@ Public Module FaceGenBuilder
                 ' hardcodeado. Default SSE = BC3 = el formato vanilla del facetint (medido en Skyrim - Textures0.bsa).
                 Dim neutral = SseFaceGenBaker.NeutralFacetintDds(512, 512, DiffuseDxgiFromSetting())
                 If forced Then
-                    ' El neutral es una CONSTANTE (gris (63,64,63)/255) idéntica para TODOS los NPC. En vez de duplicar
-                    ' un DDS por NPC (<id>_2c.dds), se escribe UN ÚNICO archivo COMPARTIDO por plugin y todos los
-                    ' _2c.NIF apuntan ahí. Se RE-ESCRIBE en cada bake (no skip-if-exists): si algún día cambiamos el gris,
-                    ' el archivo no queda stale. Es un facetint REAL que da fgTint=1 en el juego (seguro, no vacía el slot).
+                    ' El neutral es una CONSTANTE (gris 0.5 = 128, la identidad del SOFT-LIGHT) idéntica para TODOS los
+                    ' NPC. En vez de duplicar un DDS por NPC (<id>_2c.dds), se escribe UN ÚNICO archivo COMPARTIDO por
+                    ' plugin y todos los _2c.NIF apuntan ahí. Se RE-ESCRIBE en cada bake (no skip-if-exists): si algún
+                    ' día cambiamos el gris, el archivo no queda stale. Es un facetint REAL que deja el soft-light en
+                    ' identidad en el juego (seguro, no vacía el slot) y además coincide con el default de engine del
+                    ' propio slot (DefaultGreyMap).
                     Dim sharedNeutral = tintDir & "facetintneutral" & forcedSuffix & ".dds"   ' facetintneutral_2c.dds, compartido
                     Dim ntFile = IO.Path.Combine(Config_App.Current.DataPath, sharedNeutral)
                     IO.Directory.CreateDirectory(IO.Path.GetDirectoryName(ntFile))
@@ -2357,7 +2383,7 @@ Public Module FaceGenBuilder
                     If ts.Textures.Count > 6 Then ts.Textures(6).Content = EmbeddedEngineTexPath(sharedNeutral)
                 Else
                     ' RELEASE / Save ESP: el facetint se plegó en el diffuse (slot 0) ⇒ el <id>.dds canónico debe quedar
-                    ' NEUTRAL (gris (63,64,63)/255 → fgTint≈1) para que el engine multiplique por 1 y no re-aplique tint.
+                    ' NEUTRAL (gris 0.5 = 128) para que el soft-light del engine sea IDENTIDAD y no re-aplique tint.
                     ' ⛔ CRÍTICO (RE byte-exacto SkyrimSE.exe, ver reference_sse_engine_facegen_re): el engine IGNORA el
                     ' slot 6 del NIF; SIEMPRE ARMA y CARGA `FaceTint\<plugin>\<id>.dds` canónico (BuildFaceTintPath
                     ' 0x1403B8BB0 → ApplyFaceTintToHeadMaterial 0x1403BC400 → material+0xA0). Si ese archivo NO existe →

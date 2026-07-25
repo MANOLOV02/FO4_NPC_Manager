@@ -44,7 +44,7 @@ Public Class MainForm
     ''' collect ARMO/OTFT/headpart/robot-chunk candidates → slot-conflict selection + headwear occlusion →
     ''' LoadNifShapes). Pure data + NiflySharp, no GL/controls. The render orchestrator stays in MainForm
     ''' and calls _meshCollector.ResolvePreviewVariant. IoC: ctx + materialResolver + stateResolver +
-    ''' mountingResolver + Func delegates (HasFaceGenAssets, ArmoIsPowerArmor, RaceIsPowerArmor —
+    ''' mountingResolver + Func delegates (ArmoIsPowerArmor, RaceIsPowerArmor —
     ''' shared power-armor predicates kept in MainForm because the outfit/armo-universe also uses them).</summary>
     Private ReadOnly _meshCollector As NpcMeshCollector
     ''' <summary>MeshCollection Increment 3: skin-override live-preview fast-path (EditBody skin swap →
@@ -1823,7 +1823,7 @@ Public Class MainForm
         _faceTintResolver = New NpcFaceTintResolver(_ctx, _materialResolver, Function() _renderHost, _appliedPresets)
         _mountingResolver = New NpcMountingResolver(_ctx, _stateResolver)
         _meshCollector = New NpcMeshCollector(_ctx, _materialResolver, _stateResolver, _mountingResolver,
-                                              AddressOf HasFaceGenAssets, AddressOf ArmoIsPowerArmor, AddressOf RaceIsPowerArmor)
+                                              AddressOf ArmoIsPowerArmor, AddressOf RaceIsPowerArmor)
         _skinLivePreview = New NpcSkinLivePreview(_ctx, _materialResolver, _meshCollector, _faceTintResolver,
                                                  Function() _renderHost, _appliedPresets,
                                                  AddressOf ResolveLmSkinTemplate, Function() _previewRequestVersion)
@@ -1963,7 +1963,7 @@ Public Class MainForm
     ''' <see cref="NPC_Config.SseRenderFoldedPath"/> y <c>NpcFaceTintResolver.ApplySseFacetintFolded</c>.
     ''' Agrega (SOLO en SSE) un checkbox a la toolbar que conmuta el render entre:
     '''   OFF = camino normal (slot 0 complexion + slot 3 detail + slot 6 facetint; el shader hace
-    '''         <c>fgTint × softlight(complexion, detail)</c>, igual que el engine), y
+    '''         <c>softlight(complexion, facetint) × amplify(detail)</c>, igual que el engine), y
     '''   ON  = camino PLEGADO (lo que el bake escribe: el fold en el slot 0 y los slots 3/6 neutralizados,
     '''         de modo que el shader haga la identidad y muestre el diffuse plegado).
     ''' Si el pliegue es correcto, el TONO DE PIEL debe ser IDÉNTICO en ambos. Re-renderiza al conmutar.
@@ -5281,10 +5281,15 @@ Public Class MainForm
             state.LoadoutArmorContextKeywords(kvCtx.Key) = kvCtx.Value
         Next
 
-        ' "Show other gender" (ARMA/ARMO editors): render a race-default head for the target gender, NOT
-        ' the source NPC's baked FaceGen head (which is the ORIGINAL gender's face). Suppressing FaceGen
-        ' makes the collector fall back to the race default head parts resolved in ResolveNPCBaseState.
-        Dim useFaceGen = HasFaceGenAssets(state) AndAlso Not host.PreviewGenderOverride.HasValue
+        ' Gate de FaceGen = RACE.DATA bit 0x2 "FaceGen Head", el discriminador canónico de 0 excepciones
+        ' (RaceUtil.RaceSupportsFaceGen) — el MISMO que habilita el botón Edit Face (UpdateEditFaceEnabled),
+        ' que gatea el bake (FaceGenBuilder) y que deja entrar las head parts (NpcMeshCollector.
+        ' RaceBuildsFaceGenHead). ⛔ Antes era HasFaceGenAssets = "¿existe el FaceGeom horneado?", una
+        ' heurística: el motor tiene DOS ramas aguas abajo del bit (cargar el NIF horneado o armar la cabeza
+        ' desde head parts), así que la falta del NIF elige rama, no apaga el FaceGen.
+        ' "Show other gender" (editores ARMA/ARMO): se dibuja una cabeza race-default del género destino, NO
+        ' la del NPC fuente (que es la del género ORIGINAL) — ahí sí se suprime el FaceGen a mano.
+        Dim useFaceGen = RaceUtil.RaceSupportsFaceGen(state.RaceFormID, _pluginManager) AndAlso Not host.PreviewGenderOverride.HasValue
 
         ' OnlyFace collect-time filter: editor hosts set host.OnlyFaceCollect=True so their
         ' embedded preview matches MainForm's "Only Face" PreviewMode (skin + outfit skipped at
@@ -7492,47 +7497,18 @@ Public Class MainForm
         SetStatus(info.Stepn)
     End Sub
 
-    ''' <summary>Check if pre-baked FaceGen NIF exists for this NPC.
-    ''' Vanilla path: meshes\actors\character\facegendata\facegeom\&lt;plugin&gt;\&lt;formid:X8&gt;.nif
-    ''' For templated NPCs, uses the model source FormID (the NPC that owns the visual traits).</summary>
-    Private Function HasFaceGenAssets(state As NPCVisualState) As Boolean
-        If state Is Nothing Then Return False
-        Dim modelFormID = NpcStateFactory.FaceAppearanceSourceFormID(state)
-        Dim path = ResolveFaceGenNifPath(modelFormID)
-        Return path <> "" AndAlso FilesDictionary_class.Dictionary.ContainsKey(path)
-    End Function
+    ' ⛔ BORRADO 2026-07-24 — `HasFaceGenAssets` ("¿existe el FaceGeom horneado de este NPC?") + su
+    ' `ResolveFaceGenNifPath`. Era el gate del insumo `_faceBones` del head-bake y es una HEURÍSTICA:
+    ' el gate del motor es RACE.DATA bit 0x2 (RaceUtil.RaceSupportsFaceGen), y aguas abajo de ese bit
+    ' el motor tiene DOS ramas — cargar el FaceGeom horneado o armar la cabeza desde head parts — así
+    ' que la falta del NIF elige RAMA, no apaga el FaceGen. Consecuencia medida: en todo NPC sin
+    ' FaceGeom shipeado no se recolectaba el `_faceBones`, la cabeza quedaba en la malla PLANA y los
+    ' sliders de Bone Regions del Edit Face no hacían nada (MQ101PlayerSpouseFemale 0x000A7D35).
+    ' El path del FaceGeom sigue vivo donde SÍ corresponde: FaceGenBuilder.ResolveFaceGenPath.
 
-    ''' <summary>Try to find a _faceBones.nif variant of the given mesh path.
-    ''' Vanilla FO4 ships both <mesh>.nif (skinned to body bones only) and <mesh>_faceBones.nif
-    ''' (skinned to face bones like Jaw/LipUpper/Cheek). The _faceBones variant is what the engine
-    ''' uses at runtime for chargen/LooksMenu to enable FMRS bone deformation.
-    ''' Returns the normalized _faceBones path if it exists in FilesDictionary, or empty string
-    ''' if no variant exists. We do NOT filter by partType — empirically hair-region meshes
-    ''' (e.g. femalehair28_hairline2.nif ? femalehair28_hairline2_facebones.nif) DO have variants,
-    ''' so any partType filter would miss legitimate cases. Let the dictionary lookup decide.</summary>
-    ''' <summary>Thin wrapper over <see cref="MeshPathHelpers.TryGetFaceBonesVariant"/>; same
-    ''' helper module centralizes mesh path conventions for both render and offline bake.</summary>
-    Private Function TryGetFaceBonesVariant(meshDictKey As String, partType As Integer) As String
-        Return MeshPathHelpers.TryGetFaceBonesVariant(meshDictKey)
-    End Function
-
-    ''' <summary>Build the FaceGen NIF lookup path for a given NPC FormID.
-    ''' Vanilla FO4 layout:
-    '''   meshes\actors\character\facegendata\facegeom\&lt;plugin&gt;\&lt;formid:X8&gt;.nif   (the mesh)
-    '''   textures\actors\character\facecustomization\&lt;plugin&gt;\&lt;formid:X8&gt;_d.dds (the texture)
-    ''' Returns path normalized for FilesDictionary lookup, or empty if FormID can't be resolved.</summary>
-    Private Function ResolveFaceGenNifPath(npcFormID As UInteger) As String
-        If npcFormID = 0UI Then Return ""
-        Dim pluginName = _pluginManager.GetOriginatingPluginName(npcFormID)
-        If String.IsNullOrEmpty(pluginName) Then Return ""
-        ' FaceGen file name uses the LOCAL FormID, ESL-aware (PluginManager.ToFaceGenLocalFormID): full
-        ' plugins strip the load-order byte, ESL plugins strip the load-order byte AND the 12-bit light slot.
-        Dim localFormID = PluginManager.ToFaceGenLocalFormID(npcFormID)
-        Return $"meshes\actors\character\facegendata\facegeom\{pluginName}\{localFormID:X8}.nif".ToLowerInvariant()
-    End Function
-
-
-
+    ' (También borrado: el wrapper privado `TryGetFaceBonesVariant(meshDictKey, partType)` — ya no tenía
+    ' llamadores, todos usan MeshPathHelpers.TryGetFaceBonesVariant directo, que es el dueño de la
+    ' convención de paths `_faceBones` para render y bake.)
 
 
     ' === Power-armor gating (registry-derived, no hardcoded race/FormID list) ===
@@ -11694,7 +11670,7 @@ Public Class MainForm
 
         Dim originPlugin = _pluginManager.GetOriginatingPluginName(bakeFormID)
         ' ESL-aware local id (PluginManager.ToFaceGenLocalFormID): the packed FaceGen file name MUST match
-        ' the engine's lookup name (FaceGenBuilder.ResolveFaceGenPath / ResolveFaceGenNifPath both use it),
+        ' the engine's lookup name (FaceGenBuilder.ResolveFaceGenPath usa el mismo helper),
         ' so an ESL NPC bakes to "00000800", not "00032800" — otherwise the lookup misses the packed file.
         Dim formIdLow = PluginManager.ToFaceGenLocalFormID(bakeFormID)
         Logger.LogLazy(Function() $"[CHARGEN-ID] save npcFormID=0x{npcFormID:X8} bakeFormID=0x{bakeFormID:X8} → originPlugin='{originPlugin}' formIdLow=0x{formIdLow:X8}")

@@ -18,7 +18,7 @@ Imports OpenTK.Mathematics
 ''' PrepareSkeleton stay in MainForm and call this). DI: NpcRenderContext (PluginManager + parse caches),
 ''' NpcMaterialResolver (ApplyShapeMaterialOverrides), NpcStateResolver (ResolveSkeletonKey),
 ''' NpcMountingResolver (robot-chunk mount + sockets) + Func delegates for MainForm-resident helpers
-''' (HasFaceGenAssets, ArmoIsPowerArmor, RaceIsPowerArmor — shared power-armor predicates kept in
+''' (ArmoIsPowerArmor, RaceIsPowerArmor — shared power-armor predicates kept in
 ''' MainForm because the outfit/armo-universe also uses them). Shared nested types (MeshCandidate,
 ''' PreviewResolutionResult, NPCVisualState, etc.) stay nested in MainForm and are referenced as
 ''' MainForm.&lt;T&gt;. See project_mainform_split.</summary>
@@ -27,7 +27,6 @@ Friend NotInheritable Class NpcMeshCollector
     Private ReadOnly _materialResolver As NpcMaterialResolver
     Private ReadOnly _stateResolver As NpcStateResolver
     Private ReadOnly _mountingResolver As NpcMountingResolver
-    Private ReadOnly _hasFaceGenAssets As Func(Of MainForm.NPCVisualState, Boolean)
     Private ReadOnly _armoIsPowerArmor As Func(Of UInteger, Boolean)
     Private ReadOnly _raceIsPowerArmor As Func(Of UInteger, Boolean)
 
@@ -44,17 +43,41 @@ Friend NotInheritable Class NpcMeshCollector
 
     Public Sub New(ctx As NpcRenderContext, materialResolver As NpcMaterialResolver,
                    stateResolver As NpcStateResolver, mountingResolver As NpcMountingResolver,
-                   hasFaceGenAssets As Func(Of MainForm.NPCVisualState, Boolean),
                    armoIsPowerArmor As Func(Of UInteger, Boolean),
                    raceIsPowerArmor As Func(Of UInteger, Boolean))
         _ctx = ctx
         _materialResolver = materialResolver
         _stateResolver = stateResolver
         _mountingResolver = mountingResolver
-        _hasFaceGenAssets = hasFaceGenAssets
         _armoIsPowerArmor = armoIsPowerArmor
         _raceIsPowerArmor = raceIsPowerArmor
     End Sub
+
+    ''' <summary>⭐ EL discriminador de FaceGen, engine-faithful: <c>RACE.DATA</c> Flags bit 0x2
+    ''' "FaceGen Head". Con el bit CLARO ninguno de los dos motores construye cabeza:
+    ''' Fallout4.exe <c>0x1406E22B9</c> y CreationKit.exe <c>0x140AAE52B</c> hacen early-return
+    ''' (RE 2026-07-21, ver reference_facegenhead_flag_gates_both_engines); SSE <c>0x1403BCAB0</c>
+    ''' testea lo mismo.
+    ''' <para>⛔ NO confundir con "¿existe el FaceGeom horneado?". Aguas abajo de este gate el motor
+    ''' tiene DOS ramas — cargar el <c>FaceGeom\...\&lt;FormID&gt;.nif</c> (<c>0x1406ED9F0</c>) o armar
+    ''' la cabeza desde las head parts (<c>0x1406ED4D0</c>) — así que la ausencia del NIF horneado
+    ''' elige RAMA, no apaga el FaceGen. El predicado anterior (<c>MainForm.HasFaceGenAssets</c>:
+    ''' "existe el .nif en el FilesDictionary") era una heurística que confundía las dos cosas y dejaba
+    ''' el insumo <c>_faceBones</c> sin recolectar en todo NPC sin FaceGeom shipeado — con el head-bake
+    ''' activo eso deja la cabeza en la malla PLANA (rig de ~10 huesos), donde el pose FMRS
+    ''' (keys <c>skin_bone_*</c>) no aterriza: los sliders de Bone Regions del editor no hacían NADA.
+    ''' Caso testigo: MQ101PlayerSpouseFemale 0x000A7D35 (sin FaceGeom en el BA2 — su cara la arma el
+    ''' chargen), raza HumanRace con el bit puesto.</para>
+    ''' <para>Mismo discriminador que el botón Edit Face (<c>MainForm.UpdateEditFaceEnabled</c>) y que
+    ''' el bake (<c>FaceGenBuilder</c>), ambos vía <see cref="RaceUtil.RaceSupportsFaceGen"/> — misma
+    ''' regla, pero acá se pasa por el cache de razas del render (<c>ParseRaceCached</c>) para no
+    ''' re-parsear el RACE en el hot path de la selección de NPC.</para></summary>
+    Private Function RaceBuildsFaceGenHead(state As MainForm.NPCVisualState) As Boolean
+        If state Is Nothing OrElse state.RaceFormID = 0UI Then Return False
+        Dim raceRec = _ctx.PluginManager.GetRecord(state.RaceFormID)
+        If raceRec Is Nothing OrElse raceRec.Header.Signature <> "RACE" Then Return False
+        Return _ctx.ParseRaceCached(raceRec).FaceGenHead
+    End Function
 
     Friend Function ResolvePreviewVariant(previewVariant As MainForm.PreviewVariantDefinition) As MainForm.PreviewResolutionResult
         Dim result As New MainForm.PreviewResolutionResult()
@@ -396,7 +419,7 @@ Friend NotInheritable Class NpcMeshCollector
         Dim skinSlots As UInteger = BipedSlots.RegionMask(BipedSlots.BipedRegion.Body) Or BipedSlots.RegionMask(BipedSlots.BipedRegion.Hands)
         Dim headOcclGate As UInteger = BipedSlots.HeadwearMaskForGame() Or (raceHeadOcclSlots And (Not skinSlots))
 
-        Dim useFaceGen As Boolean = _hasFaceGenAssets(state)
+        Dim useFaceGen As Boolean = RaceBuildsFaceGenHead(state)
 
         ' Power-armor gate: an ArmorTypePower piece only fits an actor whose race is a power-armor race
         ' (in a frame). Drop the whole ARMO otherwise — PA armatures list HumanRace too, so the per-ARMA
@@ -980,20 +1003,14 @@ Friend NotInheritable Class NpcMeshCollector
                                           warnings As List(Of String),
                                           state As MainForm.NPCVisualState,
                                           Optional useFaceGen As Boolean = False)
-        ' THE race gate, engine-faithful: RACE.DATA bit 0x2 "FaceGen Head". A race without it builds no
-        ' facegen head at all (SSE 0x1403BCAB0 early-returns on `!(race.flags & FaceGenHead)`), so none of
-        ' its head parts render — this is what keeps human teeth/mouths off dogs, robots and creatures even
-        ' when a buggy NPC.PNAM lists one (e.g. EncRaiderDog01 → MaleMouthHumanoidDirtyTeethMissing).
+        ' THE race gate, engine-faithful: RACE.DATA bit 0x2 "FaceGen Head" (see RaceBuildsFaceGenHead).
+        ' A race without it builds no facegen head at all, so none of its head parts render — this is what
+        ' keeps human teeth/mouths off dogs, robots and creatures even when a buggy NPC.PNAM lists one
+        ' (e.g. EncRaiderDog01 → MaleMouthHumanoidDirtyTeethMissing).
         ' It replaces the old "does the RACE declare any head parts?" proxy AND the per-HDPT RNAM check
         ' (see CollectHeadPartCandidate): the engine applies neither of those when assembling a worn head.
-        ' Same discriminator the bake already uses (RaceUtil.RaceSupportsFaceGen), so render == bake.
-        ' (RaceUtil.RaceSupportsFaceGen is the same rule, but it re-parses the RACE; here we go through the
-        ' render's per-run race cache so this stays off the hot path of NPC selection.)
-        If state Is Nothing OrElse state.RaceFormID = 0UI Then Return
-        Dim raceRec = _ctx.PluginManager.GetRecord(state.RaceFormID)
-        If raceRec Is Nothing OrElse raceRec.Header.Signature <> "RACE" Then Return
-        If Not _ctx.ParseRaceCached(raceRec).FaceGenHead Then
-            Logger.LogLazy(Function() $"[HEADPART] race 0x{state.RaceFormID:X8} has no RACE.DATA FaceGen-Head flag — no head parts rendered (the engine builds no facegen head for it).")
+        If Not RaceBuildsFaceGenHead(state) Then
+            Logger.LogLazy(Function() $"[HEADPART] race 0x{If(state Is Nothing, 0UI, state.RaceFormID):X8} has no RACE.DATA FaceGen-Head flag — no head parts rendered (the engine builds no facegen head for it).")
             Return
         End If
 
@@ -1058,10 +1075,12 @@ Friend NotInheritable Class NpcMeshCollector
 
 
         If hdpt.MeshPath <> "" Then
-            ' Redirect face-region meshes to their _faceBones.nif variant only for NPCs with
-            ' a custom CharGen face (useFaceGen=True). The _faceBones variants are rigged to face
-            ' bones (Jaw, LipUpper_L, Cheek_R, etc) enabling FMRS bone transforms to deform the
-            ' mesh. NPCs without FaceGen use default race face — no _faceBones redirect needed.
+            ' El `_faceBones` (rig de los 68 huesos de cara: Jaw, LipUpper_L, Cheek_R…) es lo que permite
+            ' que el FMRS deforme la malla. Se recolecta para toda raza que construya cabeza FaceGen
+            ' (RaceBuildsFaceGenHead — el bit 0x2, ya garantizado por el early-return de
+            ' CollectHeadPartCandidates); `useFaceGen` acá sólo puede venir en False por el
+            ' PreviewGenderOverride de los editores ARMA/ARMO ("Show other gender" dibuja una cabeza
+            ' race-default del OTRO género, que no es la del NPC y no debe morfear con su FMRS).
             Dim dictKey = NameUtils.NormalizeDictionaryKeyWithMeshesPrefix(hdpt.MeshPath)
             ' ⭐ Camino head-bake: NO se redirige. Se dibuja la malla PLANA — que es lo que dibujan el motor y
             ' el CK — y el `_faceBones` queda como INSUMO para HeadBakeService. Medido: el FaceGeom del BA2 usa

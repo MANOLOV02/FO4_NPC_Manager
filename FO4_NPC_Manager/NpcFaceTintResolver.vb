@@ -291,15 +291,17 @@ Friend NotInheritable Class NpcFaceTintResolver
             End If
 
             ' SSE: unlike FO4 (which bakes the facetint INTO the diffuse), the SSE engine keeps the facetint as
-            ' a SEPARATE texture-set slot 6 that the FaceTint PS multiplies onto the albedo (verified
-            ' sse_facegen_skin.asm t4). So compose the per-NPC facetint and install it as InnerLayerTexture; the
-            ' shared render (bFacetintAlbedo -> texGlowmap) then applies it. Game-gated; FO4 keeps the path below.
+            ' a SEPARATE texture-set slot 6 (-> material+0xA0 -> PS t3) that the facegen PS SOFT-LIGHTS onto the
+            ' diffuse -- exactly like the body's skin tint (FacegenRGBTint). So compose the per-NPC facetint and
+            ' install it as InnerLayerTexture; the shared render (bHasDetailMask -> texGlowmap) then applies it.
+            ' Game-gated; FO4 keeps the path below.
             If Config_App.Current.Game = Config_App.Game_Enum.Skyrim Then
                 ' ⭐ EL RENDER PLIEGA EXACTAMENTE CUANDO PLIEGA EL BAKE (misma condición: skee MASKT u overlays de cara).
-                ' POR QUÉ: el bake compone las MASKT/overlays SOBRE EL ALBEDO YA TINTADO (fgTint × softlight), y ese
-                ' albedo sólo existe DESPUÉS de plegar. En el camino normal el albedo lo calcula el SHADER, así que no
-                ' hay dónde meterlas ⇒ para mostrar lo mismo que se hornea, hay que plegar igual que el bake.
-                '   sin MASKT/overlays → camino normal (facetint en slot 6; el shader hace fgTint × softlight = engine)
+                ' POR QUÉ: el bake compone las MASKT/overlays SOBRE EL ALBEDO YA TINTADO (softlight(diffuse,tint) ×
+                ' amplify(detail)), y ese albedo sólo existe DESPUÉS de plegar. En el camino normal el albedo lo
+                ' calcula el SHADER, así que no hay dónde meterlas ⇒ para mostrar lo mismo que se hornea, hay que
+                ' plegar igual que el bake.
+                '   sin MASKT/overlays → camino normal (facetint en slot 6; el shader corre la cadena = engine)
                 '   con MASKT/overlays → fold (slot 0 = todo compuesto; slots 3/6 neutralizados; shader = identidad)
                 ' Las MASKT salen del NIF del propio shape que se está renderizando (IRenderableShape ya expone
                 ' NifContent + NifShape) ⇒ no puede quedar desincronizado con lo que se dibuja.
@@ -322,8 +324,8 @@ Friend NotInheritable Class NpcFaceTintResolver
                 ' raceFid viejo idx=38 en la cara vs nuevo idx=1 en el body).
                 If mustFold OrElse forceFoldDebug Then
                     If ApplySseFacetintFolded(materialBase, npcData, race, model, host, skeeRaw, faceOvl, state.RaceFormID) Then
-                        ' Diffuse PLEGADO: el softlight(diffuse, detail-o-0.251) ya está horneado ⇒ si el slot 3 está
-                        ' vacío el shader debe usar 0.5 (identidad), NO el default 0.251 (re-oscurecería). Ver el flag.
+                        ' Diffuse PLEGADO: el amplify(detail-o-0.251) ya está horneado ⇒ si el slot 3 está vacío el
+                        ' shader debe usar (63,64,63) (amplify identidad), NO el default 0.251 (re-aplicaría). Ver el flag.
                         mesh.MeshData.Material.SseFoldDetailNeutralized = True
                         composedAny = True
                         Continue For
@@ -454,11 +456,11 @@ Friend NotInheritable Class NpcFaceTintResolver
     ''' tiene skee MASKT u overlays de cara (la MISMA condición que el bake), o cuando el toggle provisorio lo fuerza.
     ''' Orden de compose = EL DEL BAKE (WriteSseFaceDiffuseWithOverlays), una sola ley:
     '''   1. base = complexion (slot 0)
-    '''   2. <see cref="SseFaceGenBaker.FoldFacetintIntoDiffuse"/> ⇒ fgTint(facetint) × softlight(complexion, detail)
+    '''   2. <see cref="SseFaceGenBaker.FoldFacetintIntoDiffuse"/> ⇒ softlight(complexion, facetint) × amplify(detail)
     '''   3. skee MASKT encima (sobre el albedo YA tintado — por eso hay que plegar para poder mostrarlas)
     '''   4. Face [Ovl] overlays encima
-    '''   5. resultado → slot 0 ; slot 3 = gris 0.5 (softlight identidad) ; slot 6 = gris 63/64/63 (fgTint = 1)
-    ''' ⇒ el shader hace <c>1 × softlight(folded, 0.5) = folded</c> y muestra el plegado tal cual.
+    '''   5. resultado → slot 0 ; slot 3 = (63,64,63) (amplify identidad) ; slot 6 = gris 0.5 (softlight identidad)
+    ''' ⇒ el shader hace <c>softlight(folded, 0.5) × 1 = folded</c> y muestra el plegado tal cual.
     ''' ⭐ LOSSLESS (como FO4): no pasa por ningún encode/decode BCn — esa pérdida es del ARCHIVO, no del compose.
     ''' Devuelve False si algo falta (el caller cae al camino normal).</summary>
     Private Function ApplySseFacetintFolded(materialBase As FO4UnifiedMaterial_Class, npcData As NPC_Data,
@@ -550,8 +552,10 @@ Friend NotInheritable Class NpcFaceTintResolver
                                                                  npcData.SseTintRaw, npcData.SseTintTexOverride)
             If facetint Is Nothing Then Return False
 
-            ' Medias de las ENTRADAS (diagnóstico): si el facetint sale ~1.0 ⇒ fgTint ≈ 4 ⇒ el albedo satura ⇒ CARA
-            ' BLANCA. El facetint _d NEUTRO es ~0.25 (64/255) y uno real ronda 0.5-0.8. El complexion ~0.28 sRGB.
+            ' Medias de las ENTRADAS (diagnóstico). El facetint (slot 6) entra por SOFT-LIGHT: neutro = 0.5, y un
+            ' facetint real ronda 0.5-0.8 (>0.5 aclara, <0.5 oscurece; nunca satura). El que puede saturar es el
+            ' DETAIL (slot 3), que va amplificado ×255/64: neutro = 0.251 y el amp que se loguea abajo debería dar
+            ' ~1.0; si el detail se acerca a 1.0 el amp se va a ~4 ⇒ CARA BLANCA. El complexion ~0.28 sRGB.
             ' ⛔ GATEADO POR Logger.Enabled: LogLazy hace lazy el STRING, NO el CÁLCULO — y esto es un loop sobre
             ' TODA la cara que se pagaba en cada render aunque el log estuviera apagado. (El camino GPU loguea lo
             ' suyo dentro de la cadena, con readbacks igual de gateados.)
@@ -564,13 +568,14 @@ Friend NotInheritable Class NpcFaceTintResolver
                         If detailAcc IsNot Nothing Then mD(ch) += detailAcc(i * 4 + ch)
                     Next
                 Next
+                Dim dMeanR = If(detailAcc Is Nothing, SseFaceGenBaker.EngineDefaultDetail, mD(0) / npix)
                 Logger.LogLazy(Function() $"[SSE-FOLD] IN: complexion(sRGB)=({mC(0) / npix:F3},{mC(1) / npix:F3},{mC(2) / npix:F3}) " &
-                                          $"facetint(lin)=({mF(0) / npix:F3},{mF(1) / npix:F3},{mF(2) / npix:F3}) " &
-                                          $"⇒ fgTint≈{(mF(0) / npix + 1.0 / 255.0) * (255.0 / 64.0):F2}  " &
-                                          $"detail={If(detailAcc Is Nothing, "NINGUNO(0.251=default engine)", $"({mD(0) / npix:F3},{mD(1) / npix:F3},{mD(2) / npix:F3})")}")
+                                          $"facetint/softlight-b(lin)=({mF(0) / npix:F3},{mF(1) / npix:F3},{mF(2) / npix:F3}) " &
+                                          $"detail={If(detailAcc Is Nothing, "NINGUNO(0.251=default engine)", $"({mD(0) / npix:F3},{mD(1) / npix:F3},{mD(2) / npix:F3})")} " &
+                                          $"⇒ amp(detail)≈{SseFaceGenBaker.FgTintChannel(dMeanR, 0):F3}")
             End If
 
-            ' PLIEGUE (fgTint × softlight = la ley FIJA del engine), y las capas SOBRE el base plegado —
+            ' PLIEGUE (softlight(complexion, facetint) × amplify(detail) = la ley FIJA del engine), y las capas SOBRE el base plegado —
             ' skee MASKT primero y Face [Ovl] después, MISMO ORDEN QUE EL BAKE (WriteSseFaceDiffuseWithOverlays).
             SseFaceGenBaker.FoldFacetintIntoDiffuse(acc, facetint, npix, detailAcc)
             If SseFoldLayerStack.HasWork(skeeRaw, faceOvl) Then
@@ -599,8 +604,9 @@ Friend NotInheritable Class NpcFaceTintResolver
             ' NO): la paridad quedaba limitada por el TRANSPORTE en vez de por el compose. ⛔ No volver a RGBA8.
             ' La conversión es IN-PLACE sobre `acc` (local, no se lee después del upload) ⇒ sin allocation extra,
             ' y en orden RGBA directo — el camino de bytes tenía que swapear a BGRA, acá ese swap desaparece.
-            ' Se CONSERVA el clamp a [0,1] que hacía ClampByte255: el fold puede pasarse de 1.0 (fgTint amplifica
-            ' ×2-4) y saturar es el comportamiento previo; sacarlo sería un cambio de semántica aparte. ---
+            ' Se CONSERVA el clamp a [0,1] que hacía ClampByte255: el fold puede pasarse de 1.0 (el amplify del
+            ' detail llega a ×4 si el slot 3 trae valores altos) y saturar es el comportamiento previo; sacarlo
+            ' sería un cambio de semántica aparte. ---
             ' Paralelo por rangos (por-píxel puro, escrituras disjuntas ⇒ bit-idéntico): un Math.Pow por canal a la
             ' resolución nativa del complexion — serial era otro tramo medible del fold a 4K.
             System.Threading.Tasks.Parallel.ForEach(
@@ -628,26 +634,30 @@ Friend NotInheritable Class NpcFaceTintResolver
         InstallTexture(model, cKey, foldedId, w, h, isSrgb:=False)
 
         ' --- 5. Neutralizar slot 3 y slot 6 REEMPLAZANDO su textura (mismos keys, tampoco se tocan los paths). ---
-        '   detail 0.5 → softlight identidad;  facetint (63,64,63)/255 → fgTint = 1. Ambos se samplean CRUDOS (no sRGB).
+        '   LEY DEL ENGINE: albedo = softlight(diffuse, TINT slot6) × ((DETAIL slot3 + off)·255/64). Por lo tanto:
+        '     · slot 3 (DETAIL → amplify)   ⇒ neutro = (63,64,63)/255 ⇒ (v+off)·255/64 = 1 EXACTO
+        '     · slot 6 (TINT → soft-light)  ⇒ neutro = 0.5 (128)      ⇒ a² + 2·a·0.5·(1−a) = a
+        '   ⛔ CORREGIDO: antes estaban INTERCAMBIADOS (0.5 al detail, (63,64,63) al tint), que es el mismo bug de
+        '   roles que tenía el shader. Ambos se samplean CRUDOS (no sRGB).
         '   ⛔ ASIMETRÍA slot 3 vs slot 6 cuando el slot está VACÍO:
-        '     · slot 6 vacío ⇒ el shader SÍ lo trata como identidad (bFacetintAlbedo = InnerLayerTexture_ID<>0 = False,
-        '       Render.vb:3348) ⇒ no hay nada que neutralizar.
-        '     · slot 3 vacío ⇒ el shader NO lo saltea: bHasDetailMask es SIEMPRE True en facegen (Render.vb:3422) y
-        '       bindea defaultFacegenDetailTex (0.251) = re-oscurece el fold. Por eso el caller marca
-        '       MaterialData.SseFoldDetailNeutralized ⇒ el shader usa el neutral 0.5 en lugar del 0.251 (folded==bake).
-        '   El bake hace lo análogo escribiendo NeutralDetailDds incondicional (FaceGenBuilder:2312-2319).
+        '     · slot 6 vacío ⇒ Render.vb bindea defaultFacegenTintTex = 0.5 = el default DefaultGreyMap del engine,
+        '       que YA es la identidad del soft-light ⇒ no hay nada que neutralizar.
+        '     · slot 3 vacío ⇒ Render.vb bindea defaultFacegenDetailTex (0.251) = BSShader_DefFacegenDetail ⇒
+        '       multiplicador (1.015625, 1.0, 1.015625) ≠ 1 = RE-APLICA sobre el fold. Por eso el caller marca
+        '       MaterialData.SseFoldDetailNeutralized ⇒ el shader usa (63,64,63) en vez del 0.251 (folded==bake).
+        '   El bake hace lo análogo escribiendo NeutralDetailDds / NeutralFacetintDds (FaceGenBuilder).
         Dim detKeyLog As String = "(sin detail)"
         If Not String.IsNullOrEmpty(detPath) Then
             Dim detKey = FO4UnifiedMaterial_Class.CorrectTexturePath(detPath)
             detKeyLog = detKey
-            InstallTexture(model, detKey, UploadRgba8Linear(FlatBgra(128, 128, 128, 4, 4), 4, 4), 4, 4, isSrgb:=False)
+            InstallTexture(model, detKey, UploadRgba8Linear(FlatBgra(63, 64, 63, 4, 4), 4, 4), 4, 4, isSrgb:=False)
         End If
         Dim tintPath = materialBase.InnerLayerTexture
-        Dim tintKeyLog As String = "(sin facetint ⇒ fgTint off = identidad)"
+        Dim tintKeyLog As String = "(sin facetint ⇒ default engine 0.5 = softlight identidad)"
         If Not String.IsNullOrEmpty(tintPath) Then
             Dim tintKey = FO4UnifiedMaterial_Class.CorrectTexturePath(tintPath)
             tintKeyLog = tintKey
-            InstallTexture(model, tintKey, UploadRgba8Linear(FlatBgra(63, 64, 63, 4, 4), 4, 4), 4, 4, isSrgb:=False)
+            InstallTexture(model, tintKey, UploadRgba8Linear(FlatBgra(128, 128, 128, 4, 4), 4, 4), 4, 4, isSrgb:=False)
         End If
         Logger.LogLazy(Function() $"[SSE-FOLD] OK: diffuse '{cKey}' {w}x{h} → folded id={foldedId}; detail={detKeyLog}; facetint={tintKeyLog}")
         Return True
@@ -693,9 +703,9 @@ Friend NotInheritable Class NpcFaceTintResolver
     End Sub
 
     ''' <summary>SSE: compose the per-NPC facetint (engine-exact, SseFaceTintComposer) and install it as the
-    ''' FaceTint mesh's InnerLayerTexture (texture-set slot 6). The shared render multiplies it onto the albedo
-    ''' (bFacetintAlbedo -> texGlowmap), matching the engine FaceTint PS (sse_facegen_skin.asm t4). NOT baked
-    ''' into the diffuse (that is the FO4 path). Returns True when installed. SSE-only; the FO4 path is untouched.</summary>
+    ''' FaceTint mesh's InnerLayerTexture (texture-set slot 6). The shared render SOFT-LIGHTS it onto the diffuse
+    ''' (bHasDetailMask -> texGlowmap = PS t3), matching the engine facegen PS. NOT baked into the diffuse (that
+    ''' is the FO4 path). Returns True when installed. SSE-only; the FO4 path is untouched.</summary>
     Private Function ApplySseFacetint(materialBase As FO4UnifiedMaterial_Class, npcData As NPC_Data, race As RACE_Data, model As PreviewModel,
                                       Optional host As NpcRenderHost = Nothing,
                                       Optional effRaceFid As UInteger = 0UI) As Boolean
@@ -811,8 +821,8 @@ Friend NotInheritable Class NpcFaceTintResolver
     ''' <c>ComposeFoldedGpuResident</c> ya había eliminado — y (b) cuantizaba a 8 bits EN MEDIO del compose,
     ''' contra la doctrina "la pérdida BCn es del ARCHIVO, no del COMPOSE", y encima en espacio LINEAL.
     ''' ⭐ SEED EXACTA 0.5 EN FLOAT, no el byte 128 (=0.50196): el CPU (<c>ComposeFacetintAcc</c>) siembra 0.5
-    ''' exacto, así que el byte metía una divergencia CPU/GPU que el shader amplifica ×255/64 (fgTint 2.00781 vs
-    ''' 2.01563 ≈ 0,4% del multiplicador de albedo). Estaba TAPADA por la cuantización que se acaba de quitar
+    ''' exacto, así que el byte metía una divergencia CPU/GPU de 0.00196 en el término del soft-light del albedo
+    ''' facegen (cota del error resultante: <c>2·a·(1−a)·0.00196 ≤ 0.00098</c>). Estaba TAPADA por la cuantización que se acaba de quitar
     ''' (0.5×255 = 127.5 → redondeo bancario → 128 = justo el literal del GPU); al pasar a float quedaría
     ''' EXPUESTA. ⛔ No volver a sembrar por bytes: el float y la seed exacta van juntos.
     ''' Sin capas (raza sin tints) → la seed plana ES el facetint neutro correcto: se devuelve TAL CUAL,
