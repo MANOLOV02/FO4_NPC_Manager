@@ -585,10 +585,13 @@ Public Class EditFace_Form
     ''' <summary>SSE: fill the Designer's "Morphs (SSE)" tab panel — 18 NAM9 sliders + 4 NAMA type combos +
     ''' Load/Save .jslot, seeded from the NPC's NAM9/NAMA. The tab itself lives in the Designer (shown/hidden
     ''' by game); this only populates PanelSseMorphs.</summary>
-    ''' <summary>Read-only view of the NPC's RaceMenu per-shape sculpt blocks (head + brows + eyes + mouth). Each
-    ''' block is routed to its shape at render/bake by Host (the chargen tri). This tab exists so the sculpt data is
-    ''' VISIBLE (that it's there and which shapes it covers) even though the app has no 3D sculpt brush yet — you
-    ''' can't edit here, only confirm presence. Falls back to the head-only SseSculptHead for legacy overlays.</summary>
+    ''' <summary>View of the NPC's RaceMenu per-shape sculpt blocks (head + brows + eyes + mouth). Each block is
+    ''' routed to its shape at render/bake by Host (the chargen tri). The app has no 3D sculpt brush, so the only
+    ''' edit this tab offers is DELETING a block (see <see cref="OnDeleteSseSculpt"/>) — the rest is read-only
+    ''' presence/coverage. Falls back to the head-only SseSculptHead for legacy overlays.
+    ''' <para>Cada fila lleva en <c>Tag</c> el bloque que representa: la instancia <see cref="NPC_SculptPart"/> para
+    ''' las filas per-shape, <see cref="LegacyHeadSculptTag"/> para la fila legacy head-only, y Nothing para el
+    ''' placeholder "(no RaceMenu sculpt)" — de ahí sale el gate del botón Delete.</para></summary>
     Private Sub PopulateSseSculptTab()
         If ListSseSculpt Is Nothing Then Return
         ListSseSculpt.BeginUpdate()
@@ -608,12 +611,14 @@ Public Class EditFace_Form
                 it.SubItems.Add(If(blk.Verts IsNot Nothing, blk.Verts.Count, 0).ToString())
                 it.SubItems.Add("per-shape")
                 it.ToolTipText = host
+                it.Tag = blk
                 ListSseSculpt.Items.Add(it)
             Next
         ElseIf p IsNot Nothing AndAlso p.SseSculptHead IsNot Nothing AndAlso p.SseSculptHead.Count > 0 Then
             Dim it As New ListViewItem("Head (legacy, head-only)")
             it.SubItems.Add(p.SseSculptHead.Count.ToString())
             it.SubItems.Add("head-only")
+            it.Tag = LegacyHeadSculptTag
             ListSseSculpt.Items.Add(it)
         Else
             Dim it As New ListViewItem("(no RaceMenu sculpt)")
@@ -624,39 +629,85 @@ Public Class EditFace_Form
         End If
         ListSseSculpt.ShowItemToolTips = True
         ListSseSculpt.EndUpdate()
-#If DEBUG Then
-        EnsureRegenerateMorphsDebugButton()
-#End If
+        UpdateDeleteSseSculptEnabled()
     End Sub
 
-#If DEBUG Then
-    ''' <summary>⚠️ PROVISORIO (diagnóstico) — DEBUG ONLY: en Release el control ni siquiera se crea.
-    ''' Mismo patrón que MainForm.AddSseFoldedRenderDebugToggle. Se construye en código (no en el Designer)
-    ''' precisamente para que no exista fuera de debug.</summary>
-    Private _btnRegenMorphs As Button
+    ''' <summary>Tag sentinel de la fila legacy head-only (overlay sin SseSculptParts). No es un
+    ''' <see cref="NPC_SculptPart"/>, así que el handler de Delete lo distingue por tipo.</summary>
+    Private Const LegacyHeadSculptTag As String = "legacy-head-sculpt"
 
-    Private Sub EnsureRegenerateMorphsDebugButton()
-        If _btnRegenMorphs IsNot Nothing Then Return
-        ' Gate por juego además del #If DEBUG (mismo patrón que MainForm.AddSseFoldedRenderDebugToggle):
-        ' el sculpt es de RaceMenu, y en FO4 este tab ni siquiera está en el TabControl.
-        If Config_App.Current.Game <> Config_App.Game_Enum.Skyrim Then Return
-        If TabPageSseSculpt Is Nothing OrElse ListSseSculpt Is Nothing Then Return
-        Dim bar As New Panel With {.Dock = DockStyle.Bottom, .Height = 34, .Padding = New Padding(0, 4, 0, 0)}
-        _btnRegenMorphs = New Button With {
-            .Text = "Regenerate morphs (debug)", .Dock = DockStyle.Left, .Width = 220, .AutoSize = False}
-        bar.Controls.Add(_btnRegenMorphs)
-        TabPageSseSculpt.Controls.Add(bar)
-        ' El Fill debe quedar al FRENTE del z-order para que ocupe lo que sobra tras el panel Bottom
-        ' (WinForms acomoda los Dock en orden INVERSO al z-order).
-        ListSseSculpt.BringToFront()
-        AddHandler _btnRegenMorphs.Click, AddressOf OnRegenerateMorphsDebug
+    ''' <summary>El Delete sólo aplica a una fila que REPRESENTE un bloque de sculpt: el placeholder
+    ''' "(no RaceMenu sculpt)" no lleva Tag ⇒ botón deshabilitado (no hay set que borrar).</summary>
+    Private Sub UpdateDeleteSseSculptEnabled()
+        If ButtonDeleteSseSculpt Is Nothing OrElse ListSseSculpt Is Nothing Then Return
+        ButtonDeleteSseSculpt.Enabled = ListSseSculpt.SelectedItems.Count > 0 AndAlso
+                                        ListSseSculpt.SelectedItems(0).Tag IsNot Nothing
+    End Sub
+
+    Private Sub OnSseSculptSelectionChanged(sender As Object, e As EventArgs)
+        UpdateDeleteSseSculptEnabled()
+    End Sub
+
+    ''' <summary>Borra SÓLO el bloque de sculpt seleccionado del overlay y re-renderiza. Es la única edición
+    ''' que ofrece esta pestaña (no hay pincel de sculpt): quitar los deltas libres de RaceMenu de una shape
+    ''' —o de la cabeza legacy— y ver la cara volver a sus NAM9/NAMA.
+    ''' <para>⭐ La invariante <c>SseSculptHead == SelectHeadSculptBlock(SseSculptParts)</c> —la que establecen
+    ''' RaceMenuPresetMapper.ParseSculpt y SseMorphReverseEngineer.ApplyTo— hay que RE-ESTABLECERLA acá: el
+    ''' resolver (NpcMorphResolver:512-526) cae al head-only <c>SseSculptHead</c> cuando <c>SseSculptParts</c>
+    ''' queda vacío, así que borrar el último part sin limpiar el head-only haría REAPARECER el sculpt de la
+    ''' cabeza en el próximo render. Por eso Parts vacío ⇒ los DOS a Nothing.</para>
+    ''' <para>Se reasigna la lista (no se muta in-place) porque el preset comparte instancia con
+    ''' <c>_appliedPresets</c> y con las copias del sidecar/jslot; una lista nueva deja los snapshots de
+    ''' Cancel/Reset intactos. El shadow del overlay se re-arma en cada build del resolver
+    ''' (NpcMorphPoseResolver:56 → ResolveOverlaidNpcData), así que la reasignación SÍ llega al render.</para></summary>
+    Private Sub OnDeleteSseSculpt(sender As Object, e As EventArgs)
+        Dim p = Preset
+        If p Is Nothing OrElse ListSseSculpt Is Nothing OrElse ListSseSculpt.SelectedItems.Count = 0 Then Return
+        Dim it = ListSseSculpt.SelectedItems(0)
+        Dim part = TryCast(it.Tag, NPC_SculptPart)
+        Dim isLegacyHead = (TypeOf it.Tag Is String AndAlso CStr(it.Tag) = LegacyHeadSculptTag)
+        If part Is Nothing AndAlso Not isLegacyHead Then Return   ' placeholder row — nothing to delete
+
+        If MessageBox.Show(Me,
+                           $"Delete the RaceMenu sculpt of ""{it.Text}"" ({it.SubItems(1).Text} vertices)?" & vbCrLf & vbCrLf &
+                           "The shape falls back to its NAM9/NAMA morphs. Cancelling Edit Face still undoes this.",
+                           "Delete sculpt", MessageBoxButtons.YesNo, MessageBoxIcon.Question,
+                           MessageBoxDefaultButton.Button2) <> DialogResult.Yes Then Return
+
+        If part IsNot Nothing Then
+            Dim remaining As New List(Of NPC_SculptPart)
+            If p.SseSculptParts IsNot Nothing Then
+                For Each blk In p.SseSculptParts
+                    If blk IsNot Nothing AndAlso Not ReferenceEquals(blk, part) Then remaining.Add(blk)
+                Next
+            End If
+            If remaining.Count = 0 Then
+                p.SseSculptParts = Nothing
+                p.SseSculptHead = Nothing
+            Else
+                p.SseSculptParts = remaining
+                p.SseSculptHead = RaceMenuPresetMapper.SelectHeadSculptBlock(remaining)
+            End If
+        Else
+            p.SseSculptHead = Nothing
+            p.SseSculptParts = Nothing
+        End If
+
+        PopulateSseSculptTab()
+        HasUncommittedChanges = True
+        ' Un click no tiene DragEnded que lo drene: Schedule + Flush = re-render inmediato (rearma el
+        ' MorphResolver desde el overlay ya sin el bloque y marca Morphs sobre las shapes renderizadas).
+        ScheduleRefresh(FaceRefreshScope.Morphs)
+        FlushRefresh()
     End Sub
 
     ''' <summary>Reconstruye NAM9 + sculpt desde el FaceGen YA HORNEADO y los aplica al NPC por el MISMO
     ''' camino que un .jslot cargado de fichero (RaceMenuPresetMapper.ApplyJslotToPreset sobre la instancia
     ''' compartida de _appliedPresets). No escribe nada a disco: queda como un preset cargado — si guardás,
-    ''' persiste; si descartás, se va. Ver SseMorphReverseEngineer para el porqué de la inversión.</summary>
-    Private Sub OnRegenerateMorphsDebug(sender As Object, e As EventArgs)
+    ''' persiste; si descartás, se va. Ver SseMorphReverseEngineer para el porqué de la inversión.
+    ''' <para>Etiquetado "(Beta)" en la UI: la inversión es fiel pero deja residuo por shape (el informe modal
+    ''' lo muestra ANTES de aplicar), así que el usuario decide con la evidencia a la vista.</para></summary>
+    Private Sub OnRegenerateSseMorphs(sender As Object, e As EventArgs)
         Dim p = Preset
         If p Is Nothing Then
             MessageBox.Show(Me, "This NPC has no overlay registered yet.", "Regenerate morphs",
@@ -698,11 +749,13 @@ Public Class EditFace_Form
         ' escribe además peso/body morphs/overlays/transforms/skin overrides de forma incondicional.
         SseMorphReverseEngineer.ApplyTo(res, p)
 
-        ' Re-seed de la UI + re-render, igual que tras mover un slider.
+        ' Re-seed de la UI + re-render, igual que tras mover un slider (Flush porque un click no tiene
+        ' DragEnded que drene la cola del throttle).
         LoadSseMorphValues()
         PopulateSseSculptTab()
         HasUncommittedChanges = True
         ScheduleRefresh(FaceRefreshScope.Morphs)
+        FlushRefresh()
     End Sub
 
     ''' <summary>Informe modal previo a aplicar. El usuario ve los NAM9 reconstruidos y el residual POR SHAPE
@@ -748,7 +801,6 @@ Public Class EditFace_Form
         If String.IsNullOrEmpty(s) Then Return ""
         Return s.Replace(vbCrLf, vbLf).Replace(vbCr, vbLf).Replace(vbLf, vbCrLf)
     End Function
-#End If
 
     Private Sub PopulateSseMorphTab()
         ' Flat vertical TableLayoutPanel (proven layout) with a bold CK-category HEADER row before each group's
@@ -2196,6 +2248,12 @@ Public Class EditFace_Form
         AddHandler ButtonTintCustomRGB.Click, AddressOf OnTintCustomRGB
         AddHandler TrackBarTintPercent.ValueChanged, AddressOf OnTintPercentChanged
         AddHandler TrackBarTintPercent.DragEnded, AddressOf OnSliderDragEnded
+
+        ' RaceMenu · Sculpt tab. Los controles viven en el Designer y existen en los DOS juegos (la tab
+        ' entera se remueve del TabControl bajo FO4), así que engancharlos incondicionalmente es inerte allí.
+        AddHandler ListSseSculpt.SelectedIndexChanged, AddressOf OnSseSculptSelectionChanged
+        AddHandler ButtonRegenSseMorphs.Click, AddressOf OnRegenerateSseMorphs
+        AddHandler ButtonDeleteSseSculpt.Click, AddressOf OnDeleteSseSculpt
 
         ' Bone region slider handlers are wired per-control inside BuildBoneRegionsUI.
 
@@ -4076,7 +4134,24 @@ Public Class EditFace_Form
             ResetSseMorphsSection()
         ElseIf active Is TabPageSseTints Then
             ResetSseTintsSection()
+        ElseIf active Is TabPageSseSculpt Then
+            ResetSseSculptSection()
         End If
+    End Sub
+
+    ''' <summary>SSE: revert los bloques de sculpt borrados con "Delete selected sculpt" al snapshot de
+    ''' construcción. Sin esto el Reset de esta pestaña no hacía NADA — inofensivo mientras era read-only,
+    ''' trampa desde que tiene una acción destructiva.</summary>
+    Private Sub ResetSseSculptSection()
+        Dim p = Preset
+        If p Is Nothing Then Return
+        Dim src = _seedPreset
+        p.SseSculptParts = If(src Is Nothing, Nothing, LooksmenuLoader.CloneSseSculptParts(src.SseSculptParts))
+        p.SseSculptHead = If(src Is Nothing, Nothing, PresetCategoryFilter.CloneSseSculptHead(src.SseSculptHead))
+        PopulateSseSculptTab()
+        HasUncommittedChanges = True
+        ScheduleRefresh(FaceRefreshScope.Morphs)
+        FlushRefresh()
     End Sub
 
     ''' <summary>SSE: revert NAM9/NAMA sliders + custom morphs to the construction snapshot (_seedPreset), else

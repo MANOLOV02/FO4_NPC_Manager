@@ -1,21 +1,27 @@
-Imports System.IO
+﻿Imports System.IO
 Imports FO4_Base_Library
 
-''' <summary>Dialog for picking a LooksMenu chargen preset to apply to the currently selected NPC.
+''' <summary>Dialog for picking a LooksMenu (FO4) / RaceMenu (SSE) chargen preset to apply to the currently
+''' selected NPC, WITH a per-category control panel next to the list.
 '''
 ''' Behaviour:
-'''   - On Load: scans Data\F4SE\Plugins\F4EE\Presets\&lt;RaceEditorID&gt;\*.json, parses each (so we
-'''     can show file metadata + filter unsupported-only entries later), and populates the list
-'''     filtered by the NPC's gender. Presets that fail to parse are skipped silently.
+'''   - On Load: scans Data\F4SE\Plugins\F4EE\Presets\*.json (FO4) or Data\SKSE\Plugins\CharGen\Presets\
+'''     *.jslot (SSE), parses each and populates the list filtered by the NPC's gender (FO4 only — RaceMenu
+'''     presets carry no gender flag). Presets that fail to parse are skipped and logged.
 '''   - User types in the filter box: live-filter list by filename substring (case-insensitive).
-'''   - User selects an entry: <see cref="LabelInfo"/> shows what the preset contains
-'''     (HeadParts/morphs/tints counts) plus a warning if it has F4SE-only fields we won't apply.
-'''     The dialog also fires <see cref="PreviewRequested"/> so the caller can apply the overlay
-'''     live to the preview. The caller is responsible for snapshotting any prior overlay before
-'''     showing the dialog and restoring it on Cancel.
-'''   - OK: <see cref="SelectedPreset"/> is the parsed object; the last-previewed overlay stays.
-'''   - Cancel: caller restores its pre-dialog snapshot (the live preview is already on the wrong
-'''     preset, so the caller must explicitly roll back).
+'''   - User selects an entry: the shared <see cref="PresetCategoryPanel"/> shows what that preset carries
+'''     per category (head parts, tints, morphs, BodySlide sliders, overlays, …) and greys out the
+'''     categories it carries nothing for; <see cref="LabelInfo"/> shows provenance + warnings.
+'''     Under SSE the host mapper composes the .jslot onto a clone of the pre-dialog overlay, so there the
+'''     amounts describe what the row WOULD APPLY (the .jslot's value where it has one, the NPC's current
+'''     value otherwise) rather than the raw file contents.
+'''   - Selecting an entry OR toggling any category fires <see cref="PreviewRequested"/> so the caller can
+'''     apply the filtered overlay live to the preview. Unticked categories keep whatever the NPC shows
+'''     today — the merge is <see cref="PresetCategoryFilter.BuildFiltered"/>, the same one Paste Look uses.
+'''   - OK: <see cref="SelectedPreset"/> is the parsed object and <see cref="SelectedOptions"/> the category
+'''     selection; the last-previewed overlay stays.
+'''   - Cancel: caller restores its pre-dialog snapshot (the live preview is already on the wrong preset, so
+'''     the caller must explicitly roll back).
 ''' </summary>
 Public Class LooksmenuLoad_Form
 
@@ -27,10 +33,14 @@ Public Class LooksmenuLoad_Form
     ' SSE (RaceMenu) mode: instead of scanning F4EE\Presets\*.json, scan the RaceMenu preset dir for *.jslot
     ' and map each to a LooksmenuPreset via the host-supplied mapper (which loads the .jslot + maps it onto a
     ' clone of the pre-dialog overlay so prior NPC fields survive). Everything else — list, filter, race-compat,
-    ' live preview, OK — is shared with the FO4 path. Game-aware, NOT a separate window (user: reuse FO4 UI).
+    ' category panel, live preview, OK — is shared with the FO4 path. Game-aware, NOT a separate window.
     Private ReadOnly _isSse As Boolean
     Private ReadOnly _ssePresetsDir As String
     Private ReadOnly _sseMapper As Func(Of String, LooksmenuLoader.LooksmenuPreset)
+
+    ''' <summary>True when no shape of the NPC's body NIF carries BODYTRI extra-data: BodySlide sliders can
+    ''' still be loaded, they just won't show in-game. Surfaced as a note instead of forcing the category off.</summary>
+    Private ReadOnly _npcHasBodyTri As Boolean
 
     ' Race-compatibility filter inputs (optional — Nothing means race info wasn't supplied
     ' and the checkbox stays disabled because we can't compute compatibility).
@@ -46,28 +56,26 @@ Public Class LooksmenuLoad_Form
     ''' <summary>The preset the user picked. Nothing if the dialog was cancelled.</summary>
     Public Property SelectedPreset As LooksmenuLoader.LooksmenuPreset
 
-    ''' <summary>True if the user wants the preset's BodySlide sliders applied to the NPC. Default
-    ''' = whether the NPC's NIF root carries BODYTRI extra-data (so we'd actually be able to apply
-    ''' them in-game). User can override by clicking the checkbox.</summary>
-    Public ReadOnly Property ApplyBodySliders As Boolean
+    ''' <summary>Which categories of the picked preset the user wants applied. Categories the preset doesn't
+    ''' carry (or that don't exist in this game) come back False, so the merge preserves the NPC's value.</summary>
+    Public ReadOnly Property SelectedOptions As PresetCategoryOptions
         Get
-            Return CheckBoxApplyBodySliders.Checked
+            Return CategoryPanel.Options
         End Get
     End Property
 
-    ''' <summary>Fired on every list selection change OR checkbox toggle so the host form can apply
-    ''' the preset live as a preview. The bool is the current ApplyBodySliders state — host should
-    ''' strip BodyMorphSliders from the overlay when False. Preset is Nothing when nothing is
-    ''' selected. The host should snapshot any prior overlay state before showing the dialog so it
-    ''' can restore on Cancel.</summary>
+    ''' <summary>Fired on every list selection change OR category toggle so the host form can apply the
+    ''' preset live as a preview. Preset is Nothing when nothing is selected. The host should snapshot any
+    ''' prior overlay state before showing the dialog so it can restore on Cancel — and must use that same
+    ''' snapshot as the preserve baseline, NOT the current overlay (which this preview keeps rewriting).</summary>
     Public Event PreviewRequested As EventHandler(Of PreviewRequestArgs)
 
     Public Class PreviewRequestArgs
         Public ReadOnly Preset As LooksmenuLoader.LooksmenuPreset
-        Public ReadOnly ApplyBodySliders As Boolean
-        Public Sub New(p As LooksmenuLoader.LooksmenuPreset, applyBody As Boolean)
+        Public ReadOnly Options As PresetCategoryOptions
+        Public Sub New(p As LooksmenuLoader.LooksmenuPreset, opts As PresetCategoryOptions)
             Preset = p
-            ApplyBodySliders = applyBody
+            Options = opts
         End Sub
     End Class
 
@@ -89,6 +97,7 @@ Public Class LooksmenuLoad_Form
         _isSse = isSse
         _ssePresetsDir = ssePresetsDir
         _sseMapper = sseMapper
+        _npcHasBodyTri = npcHasBodyTri
         _raceFormID = raceFormID
         _race = race
         _raceDefaults = New HashSet(Of UInteger)
@@ -98,19 +107,21 @@ Public Class LooksmenuLoad_Form
             Next
         End If
 
+        Text = If(_isSse, "Load RaceMenu Preset", "Load LooksMenu Preset")
+
         ' Informational header. Presets live in a single flat folder and are race-agnostic at the
         ' file-system level, but the engine silently drops HDPTs / tints whose RACE doesn't accept
         ' them. The "Show only race-compatible" checkbox lets the user hide presets that would
         ' partially-apply for this NPC.
         Dim presetsFolderText As String = If(_isSse, "Listing all RaceMenu presets from Data\SKSE\Plugins\CharGen\Presets\.",
                                                        "Listing all presets from Data\F4SE\Plugins\F4EE\Presets\.")
-        LabelHeader.Text = $"Target NPC race: {raceDisplayName}  •  Gender: {If(gender = 1, "Female", "Male")}" & vbCrLf & presetsFolderText
+        LabelHeader.Text = $"Target NPC race: {raceDisplayName}  •  Gender: {If(gender = 1, "Female", "Male")}" & vbCrLf &
+                           presetsFolderText & "  Tick on the right what to take from the selected preset; unticked categories keep this NPC's current look."
 
-        ' Default the checkbox to ON (user request 2026-07-09): apply BodySlide sliders by default.
-        ' npcHasBodyTri is still surfaced as a tooltip hint below — when the NPC's NIF root has no
-        ' BODYTRI the sliders won't visibly do anything in-game, but the user can leave it ticked
-        ' harmlessly or untick it. Previously defaulted to npcHasBodyTri.
-        CheckBoxApplyBodySliders.Checked = True
+        ' Category panel: same control Paste Look hosts. Configure the game once, before any SetPreset call,
+        ' so the FO4-only / SSE-only rows collapse. Every toggle re-fires the preview.
+        CategoryPanel.ConfigureGame(_isSse)
+        AddHandler CategoryPanel.OptionsChanged, AddressOf OnCategoriesChanged
 
         ' Race-compatibility checkbox: only meaningful when caller supplied race data. Without
         ' RACE_Data we can't validate tints, and without raceFormID we can't validate HDPTs —
@@ -125,6 +136,13 @@ Public Class LooksmenuLoad_Form
 
     Private Sub OnRaceCompatibleToggled(sender As Object, e As EventArgs)
         ApplyFilter()
+    End Sub
+
+    ''' <summary>A category toggle must re-fire the preview so the host rebuilds the overlay with the new
+    ''' selection and re-renders — otherwise the checkboxes would have no visible effect until OK.</summary>
+    Private Sub OnCategoriesChanged(sender As Object, e As EventArgs)
+        Dim item = TryCast(ListBoxPresets.SelectedItem, PresetItem)
+        RaisePreview(item?.Preset)
     End Sub
 
     Private Sub LooksmenuLoad_Form_Load(sender As Object, e As EventArgs) Handles MyBase.Load
@@ -228,65 +246,57 @@ Public Class LooksmenuLoad_Form
     Private Sub ListBoxPresets_SelectedIndexChanged(sender As Object, e As EventArgs) Handles ListBoxPresets.SelectedIndexChanged
         Dim item = TryCast(ListBoxPresets.SelectedItem, PresetItem)
         ButtonOk.Enabled = item IsNot Nothing
+        ' Refresh the per-category amounts BEFORE previewing: the panel decides which categories are
+        ' selectable for this preset, and Options (read by RaisePreview) depends on that.
+        CategoryPanel.SetPreset(item?.Preset)
         UpdateInfo(item?.Preset)
         RaisePreview(item?.Preset)
     End Sub
 
-    ''' <summary>Toggling the checkbox needs to re-fire the preview so the host can rebuild the
-    ''' overlay (with or without BodyMorphSliders) and re-render — without this the checkbox
-    ''' wouldn't have visible effect until OK.</summary>
-    Private Sub CheckBoxApplyBodySliders_CheckedChanged(sender As Object, e As EventArgs) Handles CheckBoxApplyBodySliders.CheckedChanged
-        Dim item = TryCast(ListBoxPresets.SelectedItem, PresetItem)
-        RaisePreview(item?.Preset)
-    End Sub
-
     Private Sub RaisePreview(preset As LooksmenuLoader.LooksmenuPreset)
-        RaiseEvent PreviewRequested(Me, New PreviewRequestArgs(preset, CheckBoxApplyBodySliders.Checked))
+        RaiseEvent PreviewRequested(Me, New PreviewRequestArgs(preset, CategoryPanel.Options))
     End Sub
 
+    ''' <summary>Provenance + warnings for the selected preset. The per-category amounts live in the panel
+    ''' on the right, so this line carries what the panel can't: where the file came from, head parts whose
+    ''' owning plugin isn't loaded, and fields we knowingly don't apply.</summary>
     Private Sub UpdateInfo(preset As LooksmenuLoader.LooksmenuPreset)
         If preset Is Nothing Then
             Dim emptyFolder = If(_isSse, "Data\SKSE\Plugins\CharGen\Presets\", "Data\F4SE\Plugins\F4EE\Presets\")
             LabelInfo.Text = If(_allPresets.Count = 0,
                                 If(_isSse, $"No RaceMenu (.jslot) presets found in {emptyFolder}.",
                                            $"No {If(_gender = 1, "female", "male")} presets found in {emptyFolder}."),
-                                "Select a preset to see details.")
+                                "Select a preset to see what it carries.")
             LabelInfo.ForeColor = SystemColors.GrayText
             Return
         End If
 
-        If _isSse Then
-            ' RaceMenu summary: everything the SSE overlay carries (all supported — full round-trip via .jslot +
-            ' sidecar). Body weight, head/face morphs, body morphs (BodySlide), overlays, node scales, skin overrides.
-            Dim nodeScales = If(preset.SseNodeTransforms IsNot Nothing, preset.SseNodeTransforms.Count, 0)
-            Dim skinOv = If(preset.SseSkinOverrides IsNot Nothing, preset.SseSkinOverrides.Count, 0)
-            Dim bodyOv = If(preset.SseBodyOverlays IsNot Nothing, preset.SseBodyOverlays.Count, 0)
-            Dim weightTxt = If(preset.SseWeight.HasValue, $"{preset.SseWeight.Value:0}", "—")
-            LabelInfo.Text = $"HeadParts: {preset.HeadPartFormIDs.Count}  •  Tints: {preset.FaceTintLayers.Count}  •  " &
-                             $"Face morphs: {preset.ChargenFaceMorphs.Count}  •  Weight: {weightTxt}  •  " &
-                             $"BodySlide: {preset.BodyMorphSliders.Count}  •  Overlays: {bodyOv}  •  " &
-                             $"Body scale: {nodeScales}  •  Skin overrides: {skinOv}"
-            LabelInfo.ForeColor = SystemColors.ControlText
-            Return
+        Dim warnings As New List(Of String)
+        If preset.UnresolvedHeadParts.Count > 0 Then
+            warnings.Add($"{preset.UnresolvedHeadParts.Count} head part(s) reference a plugin that isn't loaded")
+        End If
+        ' Overlays are supported (parse + render + round-trip). Only the F4SE skin override remains
+        ' unsupported on load, and only under FO4.
+        If Not _isSse AndAlso preset.UnsupportedCounts.HasSkinOverride Then
+            warnings.Add("F4SE skin override will be skipped")
+        End If
+        If Not _npcHasBodyTri AndAlso preset.BodyMorphSliders.Count > 0 Then
+            warnings.Add("this NPC's body has no BODYTRI, so BodySlide sliders won't show in-game")
         End If
 
-        ' Overlays are now supported (parse + render + round-trip), so they go in the summary line
-        ' next to BodySlide — NOT in the "will be skipped" warning. Only skin override remains F4SE
-        ' unsupported on load.
-        Dim hasUnsupported = preset.UnsupportedCounts.HasSkinOverride
+        Dim src = preset.SourcePath
+        Try
+            If Not String.IsNullOrEmpty(_dataPath) AndAlso src.StartsWith(_dataPath, StringComparison.OrdinalIgnoreCase) Then
+                src = src.Substring(_dataPath.Length).TrimStart(Path.DirectorySeparatorChar)
+            End If
+        Catch
+        End Try
 
-        Dim summary = $"HeadParts: {preset.HeadPartFormIDs.Count}  •  Tints: {preset.FaceTintLayers.Count}  •  " &
-                      $"Face morphs: {preset.ChargenFaceMorphs.Count}  •  Body regions: {preset.BodyMorphValues.Count}  •  " &
-                      $"Face bone regions: {preset.FaceBoneRegions.Count}  •  BodySlide: {preset.BodyMorphSliders.Count}  •  " &
-                      $"Overlays: {preset.Overlays.Count}"
-
-        If hasUnsupported Then
-            Dim warnings As New List(Of String)
-            If preset.UnsupportedCounts.HasSkinOverride Then warnings.Add("skin override")
-            LabelInfo.Text = summary & vbCrLf & "Note: F4SE-only fields will be skipped (" & String.Join(", ", warnings) & ")."
+        If warnings.Count > 0 Then
+            LabelInfo.Text = src & vbCrLf & "Note: " & String.Join("; ", warnings) & "."
             LabelInfo.ForeColor = Drawing.Color.DarkGoldenrod
         Else
-            LabelInfo.Text = summary
+            LabelInfo.Text = src
             LabelInfo.ForeColor = SystemColors.ControlText
         End If
     End Sub

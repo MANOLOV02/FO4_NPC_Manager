@@ -56,6 +56,9 @@ Partial Class EditFace_Form
         PanelSseTints = New Panel()
         TabPageSseSculpt = New TabPage()
         ListSseSculpt = New ListView()
+        SseSculptButtonRow = New FlowLayoutPanel()
+        ButtonRegenSseMorphs = New Button()
+        ButtonDeleteSseSculpt = New Button()
         TabPageTints = New TabPage()
         TintsLayout = New TableLayoutPanel()
         TextBoxTintFilter = New TextBox()
@@ -115,6 +118,7 @@ Partial Class EditFace_Form
         TabPageSseMorphs.SuspendLayout()
         TabPageSseTints.SuspendLayout()
         TabPageSseSculpt.SuspendLayout()
+        SseSculptButtonRow.SuspendLayout()
         TabPageTints.SuspendLayout()
         TintsLayout.SuspendLayout()
         TintsButtonRow.SuspendLayout()
@@ -576,6 +580,7 @@ Partial Class EditFace_Form
         ' TabPageSseSculpt
         ' 
         TabPageSseSculpt.Controls.Add(ListSseSculpt)
+        TabPageSseSculpt.Controls.Add(SseSculptButtonRow)
         TabPageSseSculpt.Location = New Point(4, 24)
         TabPageSseSculpt.Name = "TabPageSseSculpt"
         TabPageSseSculpt.Padding = New Padding(6)
@@ -587,13 +592,50 @@ Partial Class EditFace_Form
         ' 
         ListSseSculpt.Dock = DockStyle.Fill
         ListSseSculpt.FullRowSelect = True
+        ListSseSculpt.HideSelection = False
         ListSseSculpt.Location = New Point(6, 6)
+        ListSseSculpt.MultiSelect = False
         ListSseSculpt.Name = "ListSseSculpt"
-        ListSseSculpt.Size = New Size(818, 678)
+        ListSseSculpt.Size = New Size(818, 646)
         ListSseSculpt.TabIndex = 0
         ListSseSculpt.UseCompatibleStateImageBehavior = False
         ListSseSculpt.View = View.Details
-        ' 
+        '
+        ' SseSculptButtonRow
+        '
+        SseSculptButtonRow.AutoSize = True
+        SseSculptButtonRow.AutoSizeMode = AutoSizeMode.GrowAndShrink
+        SseSculptButtonRow.Controls.Add(ButtonRegenSseMorphs)
+        SseSculptButtonRow.Controls.Add(ButtonDeleteSseSculpt)
+        SseSculptButtonRow.Dock = DockStyle.Bottom
+        SseSculptButtonRow.Location = New Point(6, 652)
+        SseSculptButtonRow.Name = "SseSculptButtonRow"
+        SseSculptButtonRow.Padding = New Padding(0, 4, 0, 0)
+        SseSculptButtonRow.Size = New Size(818, 32)
+        SseSculptButtonRow.TabIndex = 1
+        SseSculptButtonRow.WrapContents = False
+        '
+        ' ButtonRegenSseMorphs
+        '
+        ButtonRegenSseMorphs.AutoSize = True
+        ButtonRegenSseMorphs.AutoSizeMode = AutoSizeMode.GrowAndShrink
+        ButtonRegenSseMorphs.Location = New Point(3, 7)
+        ButtonRegenSseMorphs.Name = "ButtonRegenSseMorphs"
+        ButtonRegenSseMorphs.Size = New Size(190, 25)
+        ButtonRegenSseMorphs.TabIndex = 0
+        ButtonRegenSseMorphs.Text = "Regenerate morphs (Beta)"
+        '
+        ' ButtonDeleteSseSculpt
+        '
+        ButtonDeleteSseSculpt.AutoSize = True
+        ButtonDeleteSseSculpt.AutoSizeMode = AutoSizeMode.GrowAndShrink
+        ButtonDeleteSseSculpt.Enabled = False
+        ButtonDeleteSseSculpt.Location = New Point(199, 7)
+        ButtonDeleteSseSculpt.Name = "ButtonDeleteSseSculpt"
+        ButtonDeleteSseSculpt.Size = New Size(150, 25)
+        ButtonDeleteSseSculpt.TabIndex = 1
+        ButtonDeleteSseSculpt.Text = "Delete selected sculpt"
+        '
         ' TabPageTints
         ' 
         TabPageTints.Controls.Add(TintsLayout)
@@ -1082,6 +1124,9 @@ Partial Class EditFace_Form
         TabPageSseMorphs.ResumeLayout(False)
         TabPageSseTints.ResumeLayout(False)
         TabPageSseSculpt.ResumeLayout(False)
+        TabPageSseSculpt.PerformLayout()
+        SseSculptButtonRow.ResumeLayout(False)
+        SseSculptButtonRow.PerformLayout()
         TabPageTints.ResumeLayout(False)
         TintsLayout.ResumeLayout(False)
         TintsLayout.PerformLayout()
@@ -1122,6 +1167,9 @@ Partial Class EditFace_Form
     Friend WithEvents PanelSseMorphs As System.Windows.Forms.Panel
     Friend WithEvents TabPageSseSculpt As System.Windows.Forms.TabPage
     Friend WithEvents ListSseSculpt As System.Windows.Forms.ListView
+    Friend WithEvents SseSculptButtonRow As System.Windows.Forms.FlowLayoutPanel
+    Friend WithEvents ButtonRegenSseMorphs As System.Windows.Forms.Button
+    Friend WithEvents ButtonDeleteSseSculpt As System.Windows.Forms.Button
     Friend WithEvents TabPageSseTints As System.Windows.Forms.TabPage
     Friend WithEvents PanelSseTints As System.Windows.Forms.Panel
     Friend WithEvents BottomLayout As System.Windows.Forms.FlowLayoutPanel

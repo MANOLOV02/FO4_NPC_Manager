@@ -8515,14 +8515,15 @@ Public Class MainForm
         Dim npcHasBodyTri = NpcHasAnyBodyTri()
 
         Dim selected As LooksmenuLoader.LooksmenuPreset = Nothing
-        Dim applyBody As Boolean = npcHasBodyTri
         Dim dialogResult As DialogResult
         Using dlg As New LooksmenuLoad_Form(_pluginManager, _dataPath, gender, raceDisplay, npcHasBodyTri,
                                             raceFormID, race, raceDefaultsForLm)
-            AddHandler dlg.PreviewRequested, Sub(s, args) PreviewLooksmenuOverlay(npcFormID, npc, args.Preset, args.ApplyBodySliders)
+            ' priorOverlay is the preserve BASELINE for the unticked categories: the live preview keeps
+            ' rewriting _appliedPresets as the user clicks around, so reading the current overlay would
+            ' preserve the previously PREVIEWED preset instead of the NPC's own look.
+            AddHandler dlg.PreviewRequested, Sub(s, args) PreviewLooksmenuOverlay(npcFormID, npc, args.Preset, args.Options, priorOverlay)
             dialogResult = dlg.ShowDialog(Me)
             selected = dlg.SelectedPreset
-            applyBody = dlg.ApplyBodySliders
         End Using
 
         If dialogResult <> DialogResult.OK Then
@@ -8637,7 +8638,9 @@ Public Class MainForm
         Using dlg As New LooksmenuLoad_Form(_pluginManager, _dataPath, gender, raceDisplay, npcHasBodyTri,
                                             raceFormID, race, raceDefaultsForLm,
                                             isSse:=True, ssePresetsDir:=presetsDir, sseMapper:=mapper)
-            AddHandler dlg.PreviewRequested, Sub(s, args) PreviewLooksmenuOverlay(npcFormID, npc, args.Preset, args.ApplyBodySliders)
+            ' Same baseline rule as the FO4 path: preserve from the PRE-DIALOG overlay, not from the one
+            ' the live preview is currently rewriting.
+            AddHandler dlg.PreviewRequested, Sub(s, args) PreviewLooksmenuOverlay(npcFormID, npc, args.Preset, args.Options, priorOverlay)
             dialogResult = dlg.ShowDialog(Me)
             selected = dlg.SelectedPreset
         End Using
@@ -8661,18 +8664,25 @@ Public Class MainForm
     End Function
 
     ''' <summary>Live-preview handler invoked by <see cref="LooksmenuLoad_Form.PreviewRequested"/>
-    ''' on every selection change. Applies (or removes) the overlay and triggers a non-blocking
-    ''' re-render. Concurrency-safe via _previewRequestVersion: rapid clicks supersede each other,
-    ''' only the latest survives.</summary>
-    Private Sub PreviewLooksmenuOverlay(npcFormID As UInteger, npc As NPC_Data, preset As LooksmenuLoader.LooksmenuPreset, applyBodySliders As Boolean)
+    ''' on every selection change AND on every category toggle. Applies (or removes) the overlay and
+    ''' triggers a non-blocking re-render. Concurrency-safe via _previewRequestVersion: rapid clicks
+    ''' supersede each other, only the latest survives.
+    ''' <para><paramref name="baseline"/> is the PRE-DIALOG overlay: the value the unticked categories
+    ''' preserve. It must NOT be read from _appliedPresets here — this very method keeps overwriting that
+    ''' entry, so the previously previewed preset would become the "NPC's own look".</para></summary>
+    Private Sub PreviewLooksmenuOverlay(npcFormID As UInteger, npc As NPC_Data,
+                                        preset As LooksmenuLoader.LooksmenuPreset,
+                                        options As PresetCategories.PresetCategoryOptions,
+                                        baseline As LooksmenuLoader.LooksmenuPreset)
         If preset Is Nothing Then
             _appliedPresets.Remove(npcFormID)
         Else
-            ' Respect the dialog's "Apply BodySlide sliders" checkbox: when unchecked, strip the
-            ' dict before stamping the overlay so the resolver never sees them. We clone the
-            ' preset so the dialog's parsed object stays intact (in case the user toggles the
-            ' checkbox back on without re-selecting).
-            Dim toApply = If(applyBodySliders, preset, ClonePresetWithoutBodySliders(preset))
+            ' Same per-category merge Paste Look uses: ticked categories come from the preset, unticked
+            ' ones from the baseline overlay (else the raw record). BuildFiltered clones, so the dialog's
+            ' parsed object stays intact when the user toggles categories without re-selecting.
+            Dim isSseGame = (Config_App.Current IsNot Nothing AndAlso Config_App.Current.Game = Config_App.Game_Enum.Skyrim)
+            Dim toApply = PresetCategoryFilter.BuildFiltered(preset, npc, baseline, options, isSseGame,
+                                                            ResolveHdptForOrphanCascade(), AddressOf ResolveLmSkinTemplate)
             ' WYSIWYG: if the loaded JSON references an LM SkinTemplate, materialize its head/
             ' headRear HDPT swaps into preset.HeadPartFormIDs so Save ESP / Edit Face / Copy see
             ' the same picture the live render shows via ApplyPresetOverlayToNpcData. The template
@@ -8702,6 +8712,8 @@ Public Class MainForm
             ' (e.g. a hair swap): compute it HERE, at the apply point, so Save drops them the same way
             ' Edit Face does — the decision lives where the swap happens, not lazily at bake. No-op
             ' (empty set) when no parent was replaced, so lashes/AO/wet on untouched parents are safe.
+            ' Recomputed AFTER MaterializeLmTemplateBundleToPreset (which can inject head/headRear HDPTs),
+            ' so this supersedes the set BuildFiltered computed on the pre-materialize list.
             toApply.SuppressedRawHeadPartFormIDs = HeadPartResolver.ComputeReplacedParentOrphanMisc(
                 npc.HeadPartFormIDs, toApply.HeadPartFormIDs, ResolveHdptForOrphanCascade())
 
@@ -8713,19 +8725,6 @@ Public Class MainForm
         ' the user is mid-selection and a popup would be more disruptive than a stale preview.
         Dim _unused = PreviewLooksmenuOverlayAsync(npc, previewVersion)
     End Sub
-
-    ''' <summary>Deep-clone a preset and zero out BodyMorphSliders. Used by the LooksMenu Load
-    ''' preview path when the dialog's "Apply BodySlide sliders" checkbox is OFF: we drop the
-    ''' slider dict but keep every other field (tints/headparts/morphs/etc.) intact.
-    '''
-    ''' Delegates to LooksmenuLoader.ClonePreset (canonical) + then clears the slider dict.
-    ''' That guarantees Has* flags and any other future field stay in sync with the rest of
-    ''' the codebase without needing per-call-site updates.</summary>
-    Private Shared Function ClonePresetWithoutBodySliders(p As LooksmenuLoader.LooksmenuPreset) As LooksmenuLoader.LooksmenuPreset
-        Dim c = LooksmenuLoader.ClonePreset(p)
-        If c IsNot Nothing Then c.BodyMorphSliders.Clear()
-        Return c
-    End Function
 
     ''' <summary>FormID → parsed HDPT resolver (cached via <c>_ctx.ParseHdptCached</c>) for the
     ''' head-part orphan-cascade helpers in <see cref="HeadPartResolver"/>. Returns Nothing for
@@ -8882,23 +8881,6 @@ Public Class MainForm
     ''' <summary>Per-layer clone — delegates to the canonical helper.</summary>
     Private Function CloneFaceTint(tl As NPC_FaceTintLayerData) As NPC_FaceTintLayerData
         Return LooksmenuLoader.CloneFaceTintLayer(tl)
-    End Function
-
-    ''' <summary>Deep-copy a flat SSE tint subrecord list (TINI/TINC/TINV/TIAS) so the snapshot's
-    ''' SseTintRawOverride is independent of the overlay/record source it was captured from (the byte
-    ''' arrays are cloned). Nothing in → Nothing out.</summary>
-    Private Shared Function CloneSseTintRaw(src As List(Of NPC_RawSubrecord)) As List(Of NPC_RawSubrecord)
-        If src Is Nothing Then Return Nothing
-        Dim copy As New List(Of NPC_RawSubrecord)(src.Count)
-        For Each sr In src
-            If sr Is Nothing Then Continue For
-            copy.Add(New NPC_RawSubrecord With {
-                .Sig = sr.Sig,
-                .Data = If(sr.Data Is Nothing, Nothing, CType(sr.Data.Clone(), Byte())),
-                .IsFormId = sr.IsFormId
-            })
-        Next
-        Return copy
     End Function
 
     ''' <summary>Copy the round-trip-only NPC_Data fields from the raw parse to the shadow
@@ -10441,17 +10423,22 @@ Public Class MainForm
 
         ' Ask the user which categories of the clipboard preset to actually apply. Cancel = no-op,
         ' nothing changes on the target NPC. The dialog defaults all checkboxes to True so the
-        ' "select OK without thinking" path matches the legacy "paste everything" behavior.
-        Dim options As PasteOptions
-        Using dlg As New PasteOptionsDialog(Config_App.Current IsNot Nothing AndAlso Config_App.Current.Game = Config_App.Game_Enum.Skyrim)
+        ' "select OK without thinking" path matches the legacy "paste everything" behavior; the copied
+        ' preset is handed in so each row can show how much it actually carries.
+        Dim isSseGame = (Config_App.Current IsNot Nothing AndAlso Config_App.Current.Game = Config_App.Game_Enum.Skyrim)
+        Dim options As PresetCategories.PresetCategoryOptions
+        Using dlg As New PasteOptionsDialog(isSseGame, _clipboardPreset)
             If dlg.ShowDialog(Me) <> DialogResult.OK Then Return
             options = dlg.BuildOptions()
         End Using
 
-        Dim filtered = BuildFilteredPaste(_clipboardPreset, npc, options)
-
+        ' The target's live overlay serves twice: as the preserve BASELINE for the unticked categories
+        ' (what the NPC shows RIGHT NOW, editor work included, falling back to the raw record where the
+        ' overlay has nothing), and as the rollback value if the render throws.
         Dim previousOverlay As LooksmenuLoader.LooksmenuPreset = Nothing
         _appliedPresets.TryGetValue(npcFormID, previousOverlay)
+        Dim filtered = PresetCategoryFilter.BuildFiltered(_clipboardPreset, npc, previousOverlay, options, isSseGame,
+                                                          ResolveHdptForOrphanCascade(), AddressOf ResolveLmSkinTemplate)
         _appliedPresets(npcFormID) = filtered
 
         Try
@@ -10468,459 +10455,6 @@ Public Class MainForm
                             "Paste Look", MessageBoxButtons.OK, MessageBoxIcon.Error)
         End Try
     End Sub
-
-    ''' <summary>Build a partial paste preset: take the SOURCE clipboard preset and, for every
-    ''' category whose flag is False in <paramref name="options"/>, replace that category's
-    ''' value(s) with the TARGET NPC's raw record value(s). The result is a preset that, when
-    ''' applied via <see cref="ApplyPresetOverlayToNpcData"/>, leaves the unchecked categories
-    ''' visually identical to "no overlay touched them" — because the overlay's value for those
-    ''' fields IS the raw NPC's own value.
-    ''' <para>Why copy raw instead of leaving empty: the overlay merge in
-    ''' <see cref="ApplyPresetOverlayToNpcData"/> uses "Count > 0" as the gate for several
-    ''' fields (FaceTintLayers, MorphValues, FaceBoneRegions, BodyMorphRegionValues), so an
-    ''' empty list IS treated as "preserve raw" already. But for HeadParts the engine-faithful
-    ''' behavior is wipe + race defaults + preset entries — empty preset HeadParts would still
-    ''' wipe the target's NPC.PNAM. Copying the raw NPC's HeadPartFormIDs into the preset
-    ''' guarantees engine-equivalent preservation regardless of which gate the overlay merge
-    ''' uses for that field. Same principle for HairColor (0 vs raw value), Weight (Nothing vs
-    ''' raw value), and IsCharGenPreset (Nothing vs raw ACBS bit).</para></summary>
-    Private Function BuildFilteredPaste(source As LooksmenuLoader.LooksmenuPreset,
-                                         targetRaw As NPC_Data,
-                                         options As PasteOptions) As LooksmenuLoader.LooksmenuPreset
-        ' Game gate: under Skyrim the categories carry SSE fields (SseWeight / BodyMorphsKeyed /
-        ' SseBodyOverlays / SseTintRawOverride / NAM9-NAMA / sculpt / custom morphs) and the FO4-only
-        ' categories (MRSV / FMRS / LM skin template) are absent. Dispatch to the SSE builder so the FO4
-        ' path below stays byte-identical. Shared record fields (skin / outfit / head parts / hair color /
-        ' ACBS flag) are handled the same way in both builders.
-        If Config_App.Current IsNot Nothing AndAlso Config_App.Current.Game = Config_App.Game_Enum.Skyrim Then
-            Return BuildFilteredPasteSse(source, targetRaw, options)
-        End If
-
-        Dim p As New LooksmenuLoader.LooksmenuPreset With {
-            .SourcePath = source.SourcePath,
-            .Gender = source.Gender
-        }
-
-        ' --- Body weight (3 floats) ---
-        If options.BodyWeight Then
-            p.WeightThin = source.WeightThin
-            p.WeightMuscular = source.WeightMuscular
-            p.WeightFat = source.WeightFat
-        Else
-            p.WeightThin = targetRaw.WeightThin
-            p.WeightMuscular = targetRaw.WeightMuscular
-            p.WeightFat = targetRaw.WeightFat
-        End If
-
-        ' --- Body regions (MRSV) ---
-        ' Either branch leaves p.BodyMorphValues populated (from source or from targetRaw),
-        ' and either way Paste authoritatively defines this field. Has*=True for both.
-        If options.BodyRegions Then
-            p.BodyMorphValues.AddRange(source.BodyMorphValues)
-        Else
-            p.BodyMorphValues.AddRange(targetRaw.BodyMorphRegionValues)
-        End If
-        p.HasBodyMorphValues = True
-
-        ' --- Body sliders (BodySlide vertex morphs, F4SE-only — no record-level source) ---
-        If options.BodySliders Then
-            For Each kv In source.BodyMorphSliders
-                p.BodyMorphSliders(kv.Key) = kv.Value
-            Next
-        End If
-        ' If unchecked: leave p.BodyMorphSliders empty. The renderer's
-        ' GetEffectiveBodyMorphSliders treats empty-or-missing as "vanilla NPC, no overlay
-        ' sliders" — which is exactly what the target NPC was already showing pre-paste, since
-        ' the target NPC's BodyMorphSliders only existed if a previous overlay was applied (and
-        ' that overlay is being replaced wholesale by this paste). Engine-equivalent.
-
-        ' --- Body overlays (tattoos / body paint, F4SE-only — no record-level source) ---
-        ' Checked: deep-copy source.Overlays and assert HasOverlays so the apply path fully
-        ' replaces the target's overlays (cloning the float arrays so the paste is independent).
-        ' Unchecked: leave p.Overlays empty and HasOverlays False — same preserve-raw semantics
-        ' as BodyMorphSliders above (no Has* assertion => the merge keeps the target's overlays).
-        If options.Overlays Then
-            For Each ov In source.Overlays
-                p.Overlays.Add(New LooksmenuLoader.OverlayEntry With {
-                    .TemplateId = ov.TemplateId,
-                    .Priority = ov.Priority,
-                    .Tint = If(ov.Tint Is Nothing, Nothing, CType(ov.Tint.Clone(), Single())),
-                    .OffsetUV = If(ov.OffsetUV Is Nothing, Nothing, CType(ov.OffsetUV.Clone(), Single())),
-                    .ScaleUV = If(ov.ScaleUV Is Nothing, Nothing, CType(ov.ScaleUV.Clone(), Single()))
-                })
-            Next
-            p.HasOverlays = True
-        End If
-
-        ' ================================================================================
-        ' This section is DUPLICATED with the sibling paste builder BuildFilteredPasteSse.
-        ' ⚠ SYNC OBLIGATION: before changing anything below, READ AND ANALYZE the other builder
-        '   and apply the equivalent change there. Some fields are shared verbatim and some
-        '   differ per game — decide per field, game-aware, and never let the two drift silently.
-        ' ================================================================================
-
-        ' --- Skin override (NPC.WNAM) ---
-        If options.SkinOverride Then
-            p.SkinFormIDOverride = source.SkinFormIDOverride
-        Else
-            ' Don't touch — overlay merge falls back to targetRaw.SkinFormID when
-            ' SkinFormIDOverride is Nothing.
-            p.SkinFormIDOverride = Nothing
-        End If
-
-        ' --- Default + Sleep outfit (NPC.DOFT / NPC.SOFT) ---
-        If options.Outfit Then
-            p.DefaultOutfitFormIDOverride = source.DefaultOutfitFormIDOverride
-            p.SleepOutfitFormIDOverride = source.SleepOutfitFormIDOverride
-        Else
-            ' Don't touch — overlay merge falls back to targetRaw.DefaultOutfitFormID / SleepOutfitFormID
-            ' (raw DOFT/SOFT) when the override is Nothing.
-            p.DefaultOutfitFormIDOverride = Nothing
-            p.SleepOutfitFormIDOverride = Nothing
-        End If
-
-        ' --- LM skin template (F4SE SkinInterface, separate from NPC.WNAM record skin) ---
-        If options.LmSkinTemplate Then
-            p.SkinTemplateId = If(source.SkinTemplateId, "")
-        Else
-            p.SkinTemplateId = ""
-        End If
-
-        ' --- Face parts (HeadParts) ---
-        ' The overlay merge does wipe + race-defaults + preset entries. To preserve the target
-        ' NPC's HeadParts when the user unchecks this category, copy targetRaw.HeadPartFormIDs
-        ' into the preset — the merge's "preset wins per type" rule then re-establishes the
-        ' target's own selections over race defaults, exact same outcome as no overlay applied.
-        If options.FaceParts Then
-            p.HeadPartFormIDs.AddRange(source.HeadPartFormIDs)
-        Else
-            p.HeadPartFormIDs.AddRange(targetRaw.HeadPartFormIDs)
-        End If
-        p.HasHeadPartFormIDs = True
-        ' Pasting the source's face parts can REPLACE the target's hair (etc.): record the target's raw
-        ' Misc (hairlines) thereby orphaned so Save drops them the way Edit Face does — decided HERE, at
-        ' the paste. Empty when parts were preserved (Else branch) or nothing was replaced → lashes safe.
-        p.SuppressedRawHeadPartFormIDs = HeadPartResolver.ComputeReplacedParentOrphanMisc(
-            targetRaw.HeadPartFormIDs, p.HeadPartFormIDs, ResolveHdptForOrphanCascade())
-
-        ' --- Hair color (HCLF) ---
-        If options.HairColor Then
-            p.HairColorFormID = source.HairColorFormID
-        Else
-            ' Setting to 0 would also work (the merge falls back to targetRaw on 0), but
-            ' setting it explicitly keeps Save LooksMenu round-trip stable.
-            p.HairColorFormID = targetRaw.HairColorFormID
-        End If
-
-        ' --- Face tints (TETI/TEND list, includes scars/paint/skin tone palette) ---
-        If options.FaceTints Then
-            For Each tl In source.FaceTintLayers
-                p.FaceTintLayers.Add(CloneFaceTint(tl))
-            Next
-        Else
-            For Each tl In targetRaw.FaceTintLayers
-                p.FaceTintLayers.Add(CloneFaceTint(tl))
-            Next
-        End If
-        p.HasFaceTintLayers = True
-
-        ' --- Face vertex morphs (chargen MSDV) ---
-        If options.FaceVertexMorphs Then
-            For Each kv In source.ChargenFaceMorphs
-                p.ChargenFaceMorphs(kv.Key) = kv.Value
-            Next
-        Else
-            For Each kv In targetRaw.MorphValues
-                p.ChargenFaceMorphs(kv.Key) = kv.Value
-            Next
-        End If
-        p.HasChargenFaceMorphs = True
-
-        ' --- Face bone regions (FMRS) + morph intensity (FMIN) ---
-        ' The two are paired: the engine always overwrites Intensity (1.0 default if missing
-        ' in JSON), so to "preserve target" we have to copy targetRaw.FacialMorphIntensity.
-        If options.FaceBoneRegions Then
-            For Each kv In source.FaceBoneRegions
-                p.FaceBoneRegions(kv.Key) = CType(kv.Value.Clone(), Single())
-            Next
-            p.FacialMorphIntensity = source.FacialMorphIntensity
-        Else
-            For Each fm In targetRaw.FaceMorphs
-                p.FaceBoneRegions(fm.Index) = fm.Values.ToArray()
-            Next
-            p.FacialMorphIntensity = targetRaw.FacialMorphIntensity
-        End If
-        p.HasFaceBoneRegions = True
-
-        ' --- IsCharGenFacePreset flag (ACBS bit 0x04) ---
-        Const AcbsBitIsCharGenFacePreset As UInteger = &H4UI
-        If options.IsCharGenPreset Then
-            p.IsCharGenFacePreset = source.IsCharGenFacePreset
-        Else
-            ' Preserve target's existing ACBS bit. Read the raw record's ACBS and set the
-            ' preset's flag explicitly so the overlay merge writes that exact bit back.
-            p.IsCharGenFacePreset = ((targetRaw.AcbsFlags And AcbsBitIsCharGenFacePreset) <> 0UI)
-        End If
-
-        ' If the paste copied an LM SkinTemplate, populate the origin tracker so a later
-        ' Retract (e.g. user opens EditBody on the target and switches the template) can
-        ' identify exactly which HDPTs came from this template. Without this, the target's
-        ' HeadPartFormIDs would carry the template's HDPTs but Retract would find an empty
-        ' tracker and leave them stuck — a later combo change would then duplicate-by-PartType.
-        If Not String.IsNullOrEmpty(p.SkinTemplateId) Then
-            Dim tpl = ResolveLmSkinTemplate(p.SkinTemplateId)
-            If tpl IsNot Nothing Then
-                Dim genderIdx As Integer = If(p.Gender = 1, 1, 0)
-                Dim head As UInteger = tpl.HeadHdptFormID(genderIdx)
-                Dim rear As UInteger = tpl.HeadRearHdptFormID(genderIdx)
-                If head <> 0UI AndAlso p.HeadPartFormIDs.Contains(head) Then p.LmTemplateInjectedHdptFormIDs.Add(head)
-                If rear <> 0UI AndAlso p.HeadPartFormIDs.Contains(rear) Then p.LmTemplateInjectedHdptFormIDs.Add(rear)
-                ' HasHeadPartFormIDsSetByTemplate stays False: Paste's Has*=True (line 9824)
-                ' is asserted independently of the template (snapshot semantics). Retract should
-                ' remove just the template's HDPTs, not flip Has* off.
-            End If
-        End If
-
-        Return p
-    End Function
-
-    ''' <summary>SSE (Skyrim) counterpart of <see cref="BuildFilteredPaste"/>. Same contract — for each
-    ''' category whose flag is set, take the SOURCE clipboard value; otherwise PRESERVE the target NPC's
-    ''' current value — but the categories map to the SSE carriers instead of the FO4 fields:
-    ''' <list type="bullet">
-    ''' <item>BodyWeight → SseWeight (NAM7)</item>
-    ''' <item>BodySliders → BodyMorphsKeyed (+ flat BodyMorphSliders so the render dict is consistent)</item>
-    ''' <item>Overlays → SseBodyOverlays (path-based RaceMenu tattoos)</item>
-    ''' <item>FaceTints → SseTintRawOverride + HasSseTints</item>
-    ''' <item>FaceVertexMorphs → SseNam9 + SseNama + HasSseMorphs + SseCustomMorphs</item>
-    ''' <item>Sculpt → SseSculptHead (per-vertex)</item>
-    ''' </list>
-    ''' Shared record fields (SkinOverride / Outfit / FaceParts / HairColor / IsCharGenPreset) are handled
-    ''' identically to the FO4 path (game-agnostic record fields). MRSV / FMRS / LM skin template have no SSE
-    ''' equivalent and are never copied. The preserve reads mirror the SSE capture in
-    ''' <see cref="BuildPresetFromState"/>: record-backed fields fall back to the parsed record when the
-    ''' target has no overlay; F4SE/RaceMenu-only carriers are overlay-only (empty when there is no overlay).
-    ''' </summary>
-    Private Function BuildFilteredPasteSse(source As LooksmenuLoader.LooksmenuPreset,
-                                            targetRaw As NPC_Data,
-                                            options As PasteOptions) As LooksmenuLoader.LooksmenuPreset
-        Dim p As New LooksmenuLoader.LooksmenuPreset With {
-            .SourcePath = source.SourcePath,
-            .Gender = source.Gender
-        }
-
-        ' The target NPC's live overlay (if any) holds edits that win over the parsed record for the
-        ' "preserve" branches — same source priority BuildPresetFromState uses (overlay else record).
-        Dim tOverlay As LooksmenuLoader.LooksmenuPreset = Nothing
-        _appliedPresets.TryGetValue(targetRaw.FormID, tOverlay)
-
-        ' --- Body weight (NAM7 float) ---
-        If options.BodyWeight AndAlso source.SseWeight.HasValue Then
-            p.SseWeight = source.SseWeight.Value
-        Else
-            If tOverlay IsNot Nothing AndAlso tOverlay.SseWeight.HasValue Then
-                p.SseWeight = tOverlay.SseWeight.Value
-            ElseIf targetRaw.Nam7Raw IsNot Nothing AndAlso targetRaw.Nam7Raw.Length >= 4 Then
-                p.SseWeight = BitConverter.ToSingle(targetRaw.Nam7Raw, 0)
-            Else
-                p.SseWeight = 100.0F
-            End If
-        End If
-
-        ' --- Body sliders (BodyMorphsKeyed + flat render dict). F4SE/RaceMenu-only, no record source. ---
-        If options.BodySliders Then
-            p.BodyMorphsKeyed = CloneBodyMorphsKeyed(source.BodyMorphsKeyed)
-            If source.BodyMorphSliders IsNot Nothing Then
-                For Each kv In source.BodyMorphSliders : p.BodyMorphSliders(kv.Key) = kv.Value : Next
-            End If
-        ElseIf tOverlay IsNot Nothing Then
-            p.BodyMorphsKeyed = CloneBodyMorphsKeyed(tOverlay.BodyMorphsKeyed)
-            If tOverlay.BodyMorphSliders IsNot Nothing Then
-                For Each kv In tOverlay.BodyMorphSliders : p.BodyMorphSliders(kv.Key) = kv.Value : Next
-            End If
-        End If
-
-        ' --- Body overlays (path-based RaceMenu tattoos). F4SE/RaceMenu-only, no record source. ---
-        If options.Overlays Then
-            p.SseBodyOverlays = LooksmenuLoader.CloneSseBodyOverlays(source.SseBodyOverlays)
-        ElseIf tOverlay IsNot Nothing Then
-            p.SseBodyOverlays = LooksmenuLoader.CloneSseBodyOverlays(tOverlay.SseBodyOverlays)
-        End If
-
-        ' --- Body scale (RaceMenu NiOverride node transforms). Carried with the BodySliders category
-        ' (both are body-shape); persists through Paste rather than being dropped. ---
-        If options.BodySliders Then
-            p.SseNodeTransforms = LooksmenuLoader.CloneSseNodeTransforms(source.SseNodeTransforms)
-        ElseIf tOverlay IsNot Nothing Then
-            p.SseNodeTransforms = LooksmenuLoader.CloneSseNodeTransforms(tOverlay.SseNodeTransforms)
-        End If
-
-        ' --- Skin overrides (RaceMenu NiOverride body-paint per slot). Texture-appearance layers on the
-        ' body → carried with the Overlays category (same conceptual group as the tattoo overlays). ---
-        If options.Overlays Then
-            p.SseSkinOverrides = LooksmenuLoader.CloneSseSkinOverrides(source.SseSkinOverrides)
-        ElseIf tOverlay IsNot Nothing Then
-            p.SseSkinOverrides = LooksmenuLoader.CloneSseSkinOverrides(tOverlay.SseSkinOverrides)
-        End If
-
-        ' --- Face tints (TINI/TINC/TINV/TIAS raw list + RaceMenu per-layer custom mask textures) ---
-        Dim tintSrc As LooksmenuLoader.LooksmenuPreset = If(options.FaceTints, source, Nothing)
-        If tintSrc IsNot Nothing AndAlso tintSrc.HasSseTints AndAlso tintSrc.SseTintRawOverride IsNot Nothing Then
-            p.SseTintRawOverride = CloneSseTintRaw(tintSrc.SseTintRawOverride)
-            p.HasSseTints = True
-            If tintSrc.SseTintTexOverride IsNot Nothing Then p.SseTintTexOverride = New Dictionary(Of Integer, String)(tintSrc.SseTintTexOverride)
-        ElseIf tOverlay IsNot Nothing AndAlso tOverlay.HasSseTints AndAlso tOverlay.SseTintRawOverride IsNot Nothing Then
-            p.SseTintRawOverride = CloneSseTintRaw(tOverlay.SseTintRawOverride)
-            p.HasSseTints = True
-            If tOverlay.SseTintTexOverride IsNot Nothing Then p.SseTintTexOverride = New Dictionary(Of Integer, String)(tOverlay.SseTintTexOverride)
-        ElseIf targetRaw.SseTintRaw IsNot Nothing AndAlso targetRaw.SseTintRaw.Count > 0 Then
-            p.SseTintRawOverride = CloneSseTintRaw(targetRaw.SseTintRaw)
-            p.HasSseTints = True
-        End If
-
-        ' --- Face morphs (NAM9 18 floats + NAMA 4 type uints) + custom morphs (NiOverride) ---
-        If options.FaceVertexMorphs AndAlso source.HasSseMorphs AndAlso source.SseNam9 IsNot Nothing Then
-            p.SseNam9 = DirectCast(source.SseNam9.Clone(), Single())
-            p.SseNama = If(source.SseNama Is Nothing, New UInteger(SseNam9MorphMap.NamaFamilyCount - 1) {}, DirectCast(source.SseNama.Clone(), UInteger()))
-            p.HasSseMorphs = True
-            p.SseCustomMorphs = CloneSseCustomMorphs(source.SseCustomMorphs)
-        Else
-            ' Preserve target: overlay morphs if set, else parse the record's NAM9/NAMA.
-            If tOverlay IsNot Nothing AndAlso tOverlay.HasSseMorphs AndAlso tOverlay.SseNam9 IsNot Nothing Then
-                p.SseNam9 = DirectCast(tOverlay.SseNam9.Clone(), Single())
-                p.SseNama = If(tOverlay.SseNama Is Nothing, New UInteger(SseNam9MorphMap.NamaFamilyCount - 1) {}, DirectCast(tOverlay.SseNama.Clone(), UInteger()))
-                p.HasSseMorphs = True
-            Else
-                Dim nam9(SseNam9MorphMap.Nam9SliderCount - 1) As Single
-                For i = 0 To SseNam9MorphMap.Nam9SliderCount - 1
-                    If targetRaw.Nam9Raw IsNot Nothing AndAlso targetRaw.Nam9Raw.Length >= (i + 1) * 4 Then
-                        Dim v = BitConverter.ToSingle(targetRaw.Nam9Raw, i * 4)
-                        If Single.IsNaN(v) OrElse Single.IsInfinity(v) Then v = 0.0F
-                        nam9(i) = v
-                    End If
-                Next
-                Dim nama(SseNam9MorphMap.NamaFamilyCount - 1) As UInteger
-                For f = 0 To SseNam9MorphMap.NamaFamilyCount - 1
-                    If targetRaw.NamaRaw IsNot Nothing AndAlso targetRaw.NamaRaw.Length >= (f + 1) * 4 Then
-                        Dim tv = BitConverter.ToUInt32(targetRaw.NamaRaw, f * 4)
-                        If tv = SseNam9MorphMap.NamaUnset Then tv = 0UI
-                        nama(f) = tv
-                    End If
-                Next
-                p.SseNam9 = nam9
-                p.SseNama = nama
-                p.HasSseMorphs = (targetRaw.Nam9Raw IsNot Nothing OrElse targetRaw.NamaRaw IsNot Nothing)
-            End If
-            ' Custom morphs are overlay-only (no record source) — preserve the target overlay's.
-            If tOverlay IsNot Nothing Then p.SseCustomMorphs = CloneSseCustomMorphs(tOverlay.SseCustomMorphs)
-        End If
-
-        ' --- Sculpt (per-vertex head sculpt). F4SE/RaceMenu-only, no record source. ---
-        If options.Sculpt Then
-            p.SseSculptHead = CloneSseSculptHead(source.SseSculptHead)
-            p.SseSculptParts = LooksmenuLoader.CloneSseSculptParts(source.SseSculptParts)
-        ElseIf tOverlay IsNot Nothing Then
-            p.SseSculptHead = CloneSseSculptHead(tOverlay.SseSculptHead)
-            p.SseSculptParts = LooksmenuLoader.CloneSseSculptParts(tOverlay.SseSculptParts)
-        End If
-
-        ' ================================================================================
-        ' This section is DUPLICATED with the sibling paste builder BuildFilteredPaste (FO4).
-        ' ⚠ SYNC OBLIGATION: before changing anything below, READ AND ANALYZE the other builder
-        '   and apply the equivalent change there. Some fields are shared verbatim and some
-        '   differ per game — decide per field, game-aware, and never let the two drift silently.
-        ' ================================================================================
-
-        ' --- Skin override (NPC.WNAM) ---
-        If options.SkinOverride Then
-            p.SkinFormIDOverride = source.SkinFormIDOverride
-        Else
-            p.SkinFormIDOverride = Nothing
-        End If
-
-        ' --- Default + Sleep outfit (NPC.DOFT / NPC.SOFT) ---
-        If options.Outfit Then
-            p.DefaultOutfitFormIDOverride = source.DefaultOutfitFormIDOverride
-            p.SleepOutfitFormIDOverride = source.SleepOutfitFormIDOverride
-        Else
-            p.DefaultOutfitFormIDOverride = Nothing
-            p.SleepOutfitFormIDOverride = Nothing
-        End If
-
-        ' --- Face parts (HeadParts / PNAM) ---
-        If options.FaceParts Then
-            p.HeadPartFormIDs.AddRange(source.HeadPartFormIDs)
-        Else
-            p.HeadPartFormIDs.AddRange(targetRaw.HeadPartFormIDs)
-        End If
-        p.HasHeadPartFormIDs = True
-        ' Pasting the source's face parts can REPLACE the target's hair (etc.): record the target's raw
-        ' Misc (hairlines) thereby orphaned so Save drops them the way Edit Face does — decided HERE, at
-        ' the paste. Empty when parts were preserved (Else branch) or nothing was replaced → lashes safe.
-        p.SuppressedRawHeadPartFormIDs = HeadPartResolver.ComputeReplacedParentOrphanMisc(
-            targetRaw.HeadPartFormIDs, p.HeadPartFormIDs, ResolveHdptForOrphanCascade())
-
-        ' --- Face texture (RaceMenu head FTST override) — travels with Face parts (both are face identity that
-        ' RaceMenu ApplyPreset sets together). Copy the source's override when pasting parts and it has one; else
-        ' preserve the target overlay's. 0 = fall back to the record's own FTST (NpcRecordOverlay resolves that).
-        If options.FaceParts AndAlso source.SseHeadTextureFormID <> 0UI Then
-            p.SseHeadTextureFormID = source.SseHeadTextureFormID
-        ElseIf tOverlay IsNot Nothing Then
-            p.SseHeadTextureFormID = tOverlay.SseHeadTextureFormID
-        End If
-
-        ' --- Hair color (HCLF) ---
-        If options.HairColor Then
-            p.HairColorFormID = source.HairColorFormID
-        Else
-            p.HairColorFormID = targetRaw.HairColorFormID
-        End If
-
-        ' --- IsCharGenFacePreset flag (ACBS bit 0x04) ---
-        Const AcbsBitIsCharGenFacePreset As UInteger = &H4UI
-        If options.IsCharGenPreset Then
-            p.IsCharGenFacePreset = source.IsCharGenFacePreset
-        Else
-            p.IsCharGenFacePreset = ((targetRaw.AcbsFlags And AcbsBitIsCharGenFacePreset) <> 0UI)
-        End If
-
-        Return p
-    End Function
-
-    ''' <summary>Deep-copy an SSE keyed body-morph dict (morph name → BodySlide key → value). Nothing in,
-    ''' Nothing out; the clone is independent so paste edits never mutate the source/target overlay.</summary>
-    Private Shared Function CloneBodyMorphsKeyed(src As Dictionary(Of String, Dictionary(Of String, Single))) As Dictionary(Of String, Dictionary(Of String, Single))
-        If src Is Nothing Then Return Nothing
-        Dim c As New Dictionary(Of String, Dictionary(Of String, Single))(StringComparer.OrdinalIgnoreCase)
-        For Each kv In src
-            Dim inner As New Dictionary(Of String, Single)(StringComparer.OrdinalIgnoreCase)
-            If kv.Value IsNot Nothing Then
-                For Each ik In kv.Value : inner(ik.Key) = ik.Value : Next
-            End If
-            c(kv.Key) = inner
-        Next
-        Return c
-    End Function
-
-    ''' <summary>Deep-copy the SSE per-vertex head sculpt list. Nothing in, Nothing out.</summary>
-    Private Shared Function CloneSseSculptHead(src As List(Of NPC_SculptVert)) As List(Of NPC_SculptVert)
-        If src Is Nothing Then Return Nothing
-        Dim c As New List(Of NPC_SculptVert)(src.Count)
-        For Each sv In src
-            c.Add(New NPC_SculptVert With {.Index = sv.Index, .Dx = sv.Dx, .Dy = sv.Dy, .Dz = sv.Dz})
-        Next
-        Return c
-    End Function
-
-    ''' <summary>Deep-copy the SSE NiOverride custom-morph list. Nothing in, Nothing out.</summary>
-    Private Shared Function CloneSseCustomMorphs(src As List(Of NPC_CustomMorph)) As List(Of NPC_CustomMorph)
-        If src Is Nothing Then Return Nothing
-        Dim c As New List(Of NPC_CustomMorph)(src.Count)
-        For Each cm In src
-            c.Add(New NPC_CustomMorph With {.Name = cm.Name, .Value = cm.Value})
-        Next
-        Return c
-    End Function
 
     ''' <summary>Capture the current rendered state into a LooksMenu preset and save it to a JSON
     ''' file. Default location is Data\F4SE\Plugins\F4EE\Presets\ — the same folder
