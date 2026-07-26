@@ -2010,6 +2010,7 @@ Public Class MainForm
         _checkBoxSseRenderFolded = cb
         PanelActionsToolbar.Controls.Add(cb)
 
+
         ' ⚠️ PROVISORIO (mismo contrato que el checkbox de arriba): SseMeasureFoldParity es <JsonIgnore> (no
         ' persiste — persistirlo fue el bug del compose duplicado para siempre) y NO tenía NINGUNA UI: sólo se
         ' podía encender desde el debugger. Este checkbox lo enciende para la corrida en la que se quiere MEDIR
@@ -11227,8 +11228,7 @@ Public Class MainForm
         Dim bundle As New NpcFaceGenPacker.BakedNpcBundle With {
             .OriginPlugin = originPlugin,
             .FormIdLow = formIdLow,
-            .DebugSandbox = FaceGenBuilder.DebugMode,
-            .UsesSharedNeutralDetail = bakeResult.UsedSharedNeutralDetail
+            .DebugSandbox = FaceGenBuilder.DebugMode
         }
         ' The NIF wrote (Success=True), but face-texture slots may have failed to encode/write. Surface the
         ' cause upward: the orchestrator adds it to the save summary + flips the icon to Warning, so the user

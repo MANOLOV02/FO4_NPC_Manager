@@ -52,13 +52,6 @@ Public Module NpcFaceGenPacker
         ''' names. The _2 sources are deleted after a successful pack just like canonical ones
         ''' (2026-05-26 change — BA2 is the post-pack source of truth).</summary>
         Public Property DebugSandbox As Boolean
-        ''' <summary>SSE only: True when this NPC's facetint was folded into its head diffuse, so its head shape's
-        ''' slot 3 points at the plugin's SHARED neutral-detail gray (Textures\...\FaceTint\&lt;plugin&gt;\facedetailneutral.dds,
-        ''' softlight identity). That shared file is added to the bundle spec, so N folded NPCs of the plugin all
-        ''' reference ONE detail entry — <see cref="Ba2_Bsa_Library.ArchivePackager"/> dedups it to a single BA2 record.
-        ''' The facetint itself stays a per-NPC canonical &lt;id&gt;.dds (the engine builds that path and ignores the
-        ''' NIF slot 6). Set from <see cref="FaceGenBuilder.BuildResult.UsedSharedNeutralDetail"/>.</summary>
-        Public Property UsesSharedNeutralDetail As Boolean
     End Class
 
     ''' <summary>One file of an NPC's FaceGen bake, as Data-relative paths. <c>Source</c> carries the
@@ -84,8 +77,7 @@ Public Module NpcFaceGenPacker
     ''' The _2b GPU-sandbox dumps are deliberately absent: they never enter an archive and are not deleted
     ''' with the bake — they exist for CPU-vs-GPU inspection.</summary>
     Friend Function FaceGenFileSpecs(game As Config_App.Game_Enum, originPlugin As String,
-                                     formIdLow As UInteger, debugSandbox As Boolean,
-                                     Optional usesSharedNeutral As Boolean = False) As List(Of FaceGenFileSpec)
+                                     formIdLow As UInteger, debugSandbox As Boolean) As List(Of FaceGenFileSpec)
         Dim specs As New List(Of FaceGenFileSpec)
         If String.IsNullOrEmpty(originPlugin) Then Return specs
         Dim hex = formIdLow.ToString("X8")
@@ -105,15 +97,9 @@ Public Module NpcFaceGenPacker
                 .Source = tintDir & hex & If(debugSandbox, "_2.dds", ".dds"),
                 .Entry = tintDir & hex & ".dds",
                 .IsTexture = True})
-            ' Folded NPC: además del <id>.dds neutral, el slot 3 (detail) del NIF apunta al detail neutral COMPARTIDO
-            ' del plugin (softlight identidad). El engine SÍ respeta el slot 3 del NIF ⇒ se puede compartir. Todos los
-            ' folded emiten el MISMO Entry → ArchivePackager dedup a un record. Source lleva el sufijo _2 en DebugMode.
-            If usesSharedNeutral Then
-                specs.Add(New FaceGenFileSpec With {
-                    .Source = tintDir & "facedetailneutral" & If(debugSandbox, "_2.dds", ".dds"),
-                    .Entry = tintDir & "facedetailneutral.dds",
-                    .IsTexture = True})
-            End If
+            ' (Eliminado el spec del `facedetailneutral.dds` COMPARTIDO por plugin: el fold ya no neutraliza el
+            '  slot 3 — deja el detail REAL y pre-compensa el amplify en el diffuse. Ver
+            '  SseFaceGenBaker.PreCompensateDetailAmplify. Era el único artefacto compartido entre NPCs/ESPs.)
             ' OPTIONAL per-NPC head diffuse — emitted only when the NPC has RaceMenu face overlays/skee masks baked
             ' in (FaceGenBuilder.WriteSseFaceDiffuseWithOverlays). Absent for vanilla NPCs → silently skipped.
             Dim diffDir = "Textures\Actors\Character\FaceGenData\FaceDiffuse\" & originPlugin & "\"
@@ -301,7 +287,7 @@ Public Module NpcFaceGenPacker
 
         For bi = 0 To bundles.Count - 1
             Dim b = bundles(bi)
-            Dim bundleSpec = FaceGenFileSpecs(game, b.OriginPlugin, b.FormIdLow, b.DebugSandbox, b.UsesSharedNeutralDetail)
+            Dim bundleSpec = FaceGenFileSpecs(game, b.OriginPlugin, b.FormIdLow, b.DebugSandbox)
 
             For Each spec In bundleSpec
                 Dim sourcePath = Path.Combine(dataDir, spec.Source)

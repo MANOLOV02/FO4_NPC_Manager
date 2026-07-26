@@ -1,4 +1,4 @@
-Imports System.Globalization
+﻿Imports System.Globalization
 Imports System.IO
 Imports System.Drawing
 Imports System.Linq
@@ -349,9 +349,17 @@ Friend NotInheritable Class NpcFaceTintResolver
                 ' raceFid viejo idx=38 en la cara vs nuevo idx=1 en el body).
                 If mustFold OrElse forceFoldDebug Then
                     If ApplySseFacetintFolded(materialBase, npcData, race, model, host, skeeRaw, faceOvl, state.RaceFormID) Then
-                        ' Diffuse PLEGADO: el amplify(detail-o-0.251) ya está horneado ⇒ si el slot 3 está vacío el
-                        ' shader debe usar (63,64,63) (amplify identidad), NO el default 0.251 (re-aplicaría). Ver el flag.
-                        mesh.MeshData.Material.SseFoldDetailNeutralized = True
+                        ' ⛔ YA NO SE NEUTRALIZA NADA. El diffuse plegado viene PRE-COMPENSADO (la inversa de la
+                        ' cadena del engine), así que los slots 3 y 6 quedan con su contenido REAL y el shader los
+                        ' aplica normalmente: la cadena se cancela y sale este buffer. Idéntico al bake.
+                        mesh.MeshData.Material.SseFoldDetailNeutralized = False
+                        ' ⭐ IMPRESCINDIBLE: el slot 6 tiene que llevar el FACETINT REAL. El diffuse va
+                        ' pre-compensado (con el softlight ya invertido), así que el shader NECESITA re-aplicar
+                        ' softlight(slot0, facetint) para volver al buffer del fold. Sin esto el slot 6 queda sin
+                        ' textura, el shader cae al gris default y el NPC PIERDE el skin tint — que es exactamente
+                        ' lo que rompió al quitar la neutralización: antes el camino plegado instalaba él mismo un
+                        ' gris acá, así que nunca hacía falta el facetint real.
+                        ApplySseFacetint(materialBase, npcData, race, model, host, state.RaceFormID)
                         Continue For
                     End If
                 End If
@@ -617,6 +625,12 @@ Friend NotInheritable Class NpcFaceTintResolver
             If SseFoldLayerStack.HasWork(skeeRaw, faceOvl) Then
                 SseFoldLayerStack.ComposeCpu(acc, skeeRaw, faceOvl, skinRgb, w, h)
             End If
+            ' ⭐ MISMA LEY QUE EL BAKE: se invierte la cadena del engine (softlight con el facetint REAL × amplify
+            ' del detail REAL) para que el shader — que aplica esa cadena con los slots 3 y 6 INTACTOS — vuelva a
+            ' este mismo buffer. Antes el render neutralizaba los slots y el bake también; eso se cayó al medir
+            ' in-game que neutralizar el slot 6 apaga la cara (el motor deriva de él algo más que el albedo).
+            ' Render y bake tienen que hacer LO MISMO o el preview deja de predecir el juego.
+            SseFaceGenBaker.PreCompensateEngineChain(acc, facetint, detailAcc, npix)
 
             ' Mismo gate que el IN: el loop de medias sólo se paga si alguien va a leer el log.
             If Logger.Enabled Then
@@ -669,44 +683,19 @@ Friend NotInheritable Class NpcFaceTintResolver
         ' sigue apuntando al complexion, pero el sampler recibe el diffuse PLEGADO. IsSRGB=False: los bytes ya son lineales.
         InstallTexture(model, cKey, foldedId, w, h, isSrgb:=False)
 
-        ' --- 5. Neutralizar slot 3 y slot 6 REEMPLAZANDO su textura (mismos keys, tampoco se tocan los paths). ---
-        '   LEY DEL ENGINE: albedo = softlight(diffuse, TINT slot6) × ((DETAIL slot3 + off)·255/64). Por lo tanto:
-        '     · slot 3 (DETAIL → amplify)   ⇒ neutro = (63,64,63)/255 ⇒ (v+off)·255/64 = 1 EXACTO
-        '     · slot 6 (TINT → soft-light)  ⇒ neutro = 0.5 (128)      ⇒ a² + 2·a·0.5·(1−a) = a
-        '   ⛔ CORREGIDO: antes estaban INTERCAMBIADOS (0.5 al detail, (63,64,63) al tint), que es el mismo bug de
-        '   roles que tenía el shader. Ambos se samplean CRUDOS (no sRGB).
-        '   ⛔ ASIMETRÍA slot 3 vs slot 6 cuando el slot está VACÍO:
-        '     · slot 6 vacío ⇒ Render.vb bindea defaultFacegenTintTex = 0.5 = el default DefaultGreyMap del engine,
-        '       que YA es la identidad del soft-light ⇒ no hay nada que neutralizar.
-        '     · slot 3 vacío ⇒ Render.vb bindea defaultFacegenDetailTex (0.251) = BSShader_DefFacegenDetail ⇒
-        '       multiplicador (1.015625, 1.0, 1.015625) ≠ 1 = RE-APLICA sobre el fold. Por eso el caller marca
-        '       MaterialData.SseFoldDetailNeutralized ⇒ el shader usa (63,64,63) en vez del 0.251 (folded==bake).
-        '   El bake hace lo análogo escribiendo NeutralDetailDds / NeutralFacetintDds (FaceGenBuilder).
-        Dim detKeyLog As String = "(sin detail)"
-        If Not String.IsNullOrEmpty(detPath) Then
-            Dim detKey = FO4UnifiedMaterial_Class.CorrectTexturePath(detPath)
-            detKeyLog = detKey
-            InstallTexture(model, detKey, UploadRgba8Linear(FlatBgra(63, 64, 63, 4, 4), 4, 4), 4, 4, isSrgb:=False)
-        End If
-        Dim tintPath = materialBase.InnerLayerTexture
-        Dim tintKeyLog As String = "(sin facetint ⇒ default engine 0.5 = softlight identidad)"
-        If Not String.IsNullOrEmpty(tintPath) Then
-            Dim tintKey = FO4UnifiedMaterial_Class.CorrectTexturePath(tintPath)
-            tintKeyLog = tintKey
-            InstallTexture(model, tintKey, UploadRgba8Linear(FlatBgra(128, 128, 128, 4, 4), 4, 4), 4, 4, isSrgb:=False)
-        End If
-        Logger.LogLazy(Function() $"[SSE-FOLD] OK: diffuse '{cKey}' {w}x{h} → folded id={foldedId}; detail={detKeyLog}; facetint={tintKeyLog}")
+        ' --- 5. Slots 3 y 6: SE DEJAN INTACTOS. ---
+        ' Antes se les reemplazaba la textura por un neutro (detail (63,64,63) = amplify 1; tint 128 = softlight
+        ' identidad) porque el diffuse traía la cadena ya plegada. Se cayó al MEDIR in-game: con el facetint
+        ' neutralizado la cara sale oscura aunque el albedo dé aritméticamente exacto ⇒ el motor deriva del slot 6
+        ' algo MÁS que el albedo (subsurface), y eso no se puede plegar en un diffuse.
+        ' Ahora el diffuse va PRE-COMPENSADO (inversa de softlight×amplify, PreCompensateEngineChain), así que el
+        ' shader aplica la cadena con los slots reales y vuelve al mismo buffer. MISMA LEY QUE EL BAKE.
+
         Return True
     End Function
 
     ''' <summary>⚠️ PROVISORIO (con <see cref="ApplySseFacetintFolded"/>). BGRA plano de un color constante.</summary>
-    Private Shared Function FlatBgra(r As Byte, g As Byte, b As Byte, w As Integer, h As Integer) As Byte()
-        Dim px(w * h * 4 - 1) As Byte
-        For i = 0 To w * h - 1
-            px(i * 4) = b : px(i * 4 + 1) = g : px(i * 4 + 2) = r : px(i * 4 + 3) = 255
-        Next
-        Return px
-    End Function
+        ' (Eliminada FlatBgra: la usaba el install de los neutros de los slots 3/6, que ya no existe.)
 
     ''' <summary>⚠️ PROVISORIO (con <see cref="ApplySseFacetintFolded"/>). Apunta el entry del diccionario a una textura
     ''' GL ya subida. El toggle recarga el NPC entero (ReloadCurrentNpcFull), que es quien reconstruye/libera.

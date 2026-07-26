@@ -72,12 +72,6 @@ Public Module FaceGenBuilder
         Public Property Summary As String = ""
         Public Property ShapesKept As Integer
         Public Property ShapesDropped As Integer
-        ''' <summary>SSE only: True when this NPC's facetint was folded into the head diffuse, so the head shape's
-        ''' slot 3 (detail) was pointed at the plugin's SHARED neutral-detail gray (facedetailneutral.dds, the
-        ''' AMPLIFY identity (63,64,63)/255) instead of a real detail map. Signals the packer (via <see cref="NpcFaceGenPacker.BakedNpcBundle"/>)
-        ''' to also pack that single shared detail. (The facetint itself stays a per-NPC canonical &lt;id&gt;.dds — the
-        ''' engine builds that path itself and ignores the NIF slot 6, so it can't be shared.)</summary>
-        Public Property UsedSharedNeutralDetail As Boolean
         ''' <summary>FO4 face-texture bake: number of face-texture outputs (slots 0/1/7) that FAILED to
         ''' encode/write, or that had no source to bake. 0 = all good. The NIF still wrote (Success stays
         ''' True), but every missing DDS will surface as "unaccounted for" at BA2 pack time — so this count
@@ -88,11 +82,6 @@ Public Module FaceGenBuilder
         Public Property TextureFailureDetail As String = ""
     End Class
 
-    ''' <summary>SSE fold scratch flag: set by <c>WriteSseFaceDiffuseWithOverlays</c> (non-forced path) when it
-    ''' points the head NIF's slot 6 at the plugin's shared neutral gray. Reset immediately before the SSE bake
-    ''' call and read immediately after — both synchronous within one <c>BuildCharGen</c> (no await between), so
-    ''' the module-level scratch is race-free (bakes run sequentially on the awaited UI thread).</summary>
-    Private _sseFoldUsedSharedNeutralDetail As Boolean
 
     ''' <summary>Dual-mode bake toggle, DRIVEN BY THE LOGGER. ON only when
     ''' <see cref="Logger.Enabled"/> is True (diagnostic session); OFF (release) otherwise.
@@ -812,10 +801,8 @@ Public Module FaceGenBuilder
                                 WriteSseFacetintDds(nif, cloned, npcFormID, originPlugin, pluginManager, npcData, willBePacked, host:=host)
                                 ' Bake RaceMenu FACE overlays into a per-NPC diffuse (slot 0). Gated + no-op for
                                 ' vanilla NPCs (no face overlays) ⇒ the facetint-only path above is unchanged.
-                                _sseFoldUsedSharedNeutralDetail = False
                                 ' ⛔ SIN host: el fold es 100% CPU y no debe poder leer nada del render.
                                 WriteSseFaceDiffuseWithOverlays(nif, cloned, npcFormID, originPlugin, pluginManager, npcData, appliedPresets, willBePacked)
-                                result.UsedSharedNeutralDetail = result.UsedSharedNeutralDetail OrElse _sseFoldUsedSharedNeutralDetail
                             ElseIf host IsNot Nothing OrElse Not WriteGPUSandboxOutput Then
                                 BakeFaceTextures(nif, cloned, srcNif, srcShape,
                                                  hdpt, effectiveHeadPartType, applyMaterialOverrides,
@@ -2007,29 +1994,26 @@ Public Module FaceGenBuilder
         Dim w = dec.Width, h = dec.Height, npix = w * h
         Dim det As Single() = If(Not String.IsNullOrEmpty(detailPath), SseFaceTintComposer.DecodeTextureRgba(detailPath, w, h), Nothing)
 
-        ' 1) facetint por GPU (float, lineal).
-        Dim facetint = SseFoldLayerStack.ComposeFacetintGpu(layers, w, h, host)
-        If facetint Is Nothing Then
-            Logger.LogLazy(Function() "[FACEBAKE][SSE] _2d ABORT: el compose GPU del facetint falló.")
+        ' 1-4) TODO GPU, UNA sola cadena: facetint -> fold -> capas -> UNFOLD (rama uFgTintFold==2 del shader).
+        ' Es la MISMA funcion que ejecuta el render (ComposeFoldedGpuResident), asi que este sandbox mide lo que
+        ' el render corre de verdad. El unico readback es el de abajo, para encodear el DDS.
+        ' NO mezclar CPU aca: un sandbox mitad-CPU-mitad-GPU no mide NINGUN camino real -- por eso se elimino en
+        ' su momento el _2b del diffuse, y por eso el unfold NO se hace con PreCompensateEngineChain aca.
+        ' El _2d no lee MASKT del NIF (el _2c tampoco) => skeeRaw = Nothing, y sin skee no hace falta skinRgb.
+        Dim foldedId = SseFoldLayerStack.ComposeFoldedGpuResident(dec.Rgba, layers, det, Nothing, overlays,
+                                                                  Nothing, w, h, host, measureParity:=False)
+        If foldedId = 0 Then
+            Logger.LogLazy(Function() "[FACEBAKE][SSE] _2d ABORT: la cadena GPU (fold + capas + unfold) fallo.")
             Return
         End If
-        ' 2) pliegue por GPU (float). Sale en sRGB, igual que el fold CPU. Todo en Single (storage float32).
-        Dim acc = SseFoldLayerStack.FoldGpu(dec.Rgba, facetint, det, w, h, host)
+        Dim acc = SseFoldLayerStack.ReadbackRgba32f(foldedId, npix)
+        Try : OpenTK.Graphics.OpenGL4.GL.DeleteTexture(foldedId) : Catch : End Try
         If acc Is Nothing Then
-            Logger.LogLazy(Function() "[FACEBAKE][SSE] _2d ABORT: el pliegue GPU falló.")
+            Logger.LogLazy(Function() "[FACEBAKE][SSE] _2d ABORT: readback del resultado GPU fallo.")
             Return
-        End If
-        ' 3) stack de capas por GPU (overlays Face[Ovl]). El bake del _2d no lee MASKT del NIF (el _2c tampoco) ⇒ Nothing.
-        If overlays IsNot Nothing AndAlso overlays.Count > 0 Then
-            Dim withOvl = SseFoldLayerStack.ComposeGpu(acc, Nothing, overlays, Nothing, w, h, host)
-            If withOvl Is Nothing Then
-                Logger.LogLazy(Function() "[FACEBAKE][SSE] _2d ABORT: el compose GPU de los overlays falló.")
-                Return
-            End If
-            acc = withOvl
         End If
 
-        ' acc (sRGB, Double) -> BGRA. ⚠ ClampByte255 de esta clase espera 0..255 (NO multiplica).
+        ' acc (sRGB) -> BGRA. ClampByte255 de esta clase espera 0..255 (NO multiplica).
         Dim gbuf(npix * 4 - 1) As Byte
         For i = 0 To npix - 1
             gbuf(i * 4) = ClampByte255(acc(i * 4 + 2) * 255.0)      ' B
@@ -2119,7 +2103,24 @@ Public Module FaceGenBuilder
     Private Function EmbeddedEngineTexPath(relUnderData As String) As String
         If String.IsNullOrEmpty(relUnderData) Then Return relUnderData
         If Config_App.Current Is Nothing OrElse Config_App.Current.Game <> Config_App.Game_Enum.Skyrim Then Return relUnderData
-        Return "data\" & relUnderData
+        ' IDEMPOTENTE y agnóstico de la forma de entrada: se normaliza a la raíz y se reconstruye la única forma
+        ' que el motor acepta en este slot. Da igual si viene 'Textures\x', 'textures/x', '\Textures\x',
+        ' 'data\Textures\x' o 'x' — sale siempre 'data\Textures\x'. Sin esto, un cambio de call site que ya
+        ' trajera el prefijo producía 'data\data\Textures\...' en silencio.
+        Return "data\Textures\" & StripTexRoot(relUnderData)
+    End Function
+
+    ''' <summary>Normaliza un path de textura a su forma RAÍZ: separadores a <c>\</c>, sin <c>\</c> inicial, y sin
+    ''' los prefijos <c>data\</c> y/o <c>textures\</c> (en ese orden, y tolerando que vengan los dos). El resultado
+    ''' es lo que va relativo a <c>Data\Textures\</c>. Base común de <see cref="EmbeddedEngineTexPath"/> (que le
+    ''' antepone <c>data\Textures\</c>) y <see cref="EmbeddedTexSetPath"/> (que lo devuelve pelado), para que las
+    ''' dos sean IDEMPOTENTES y no dependan de cómo venga armado el path del call site.</summary>
+    Private Function StripTexRoot(p As String) As String
+        If String.IsNullOrEmpty(p) Then Return ""
+        Dim s = p.Replace("/"c, "\"c).TrimStart("\"c)
+        If s.StartsWith("data\", StringComparison.OrdinalIgnoreCase) Then s = s.Substring(5).TrimStart("\"c)
+        If s.StartsWith("textures\", StringComparison.OrdinalIgnoreCase) Then s = s.Substring(9).TrimStart("\"c)
+        Return s
     End Function
 
     ''' <summary>⭐⭐ Path embebido para los slots del texture-set que NO son el facetint: 0 (diffuse plegado),
@@ -2148,11 +2149,9 @@ Public Module FaceGenBuilder
     Private Function EmbeddedTexSetPath(relUnderData As String) As String
         If String.IsNullOrEmpty(relUnderData) Then Return relUnderData
         If Config_App.Current Is Nothing OrElse Config_App.Current.Game <> Config_App.Game_Enum.Skyrim Then Return relUnderData
-        Const texPrefix As String = "Textures\"
-        If relUnderData.StartsWith(texPrefix, StringComparison.OrdinalIgnoreCase) Then
-            Return relUnderData.Substring(texPrefix.Length)
-        End If
-        Return relUnderData
+        ' IDEMPOTENTE: entre 'Textures\x', 'textures/x', '\Textures\x', 'data\Textures\x' o 'x' devuelve siempre
+        ' 'x'. Ver StripTexRoot.
+        Return StripTexRoot(relUnderData)
     End Function
 
     ''' <summary>Borra los artefactos que SÓLO produce el camino PLEGADO — <c>FaceDiffuse\&lt;plugin&gt;\&lt;id&gt;.dds</c> y
@@ -2269,6 +2268,9 @@ Public Module FaceGenBuilder
             ' El overlay va DESPUÉS del skin tint. El engine hace albedo = softlight(diffuse, facetint_d) × amplify(detail).
             ' Para que el overlay NO quede teñido por el skin tint, plegamos esa cadena DENTRO del diffuse, y
             ' neutralizamos los slots 3 y 6 (así el engine no re-aplica). base ES el albedo skin-tinted; overlays encima.
+            ' Facetint y detail HOISTEADOS: los consume el fold y después la pre-compensación (fuera de este scope).
+            Dim detailAcc As Single() = Nothing
+            Dim facetint As Single() = Nothing
             Dim npcRec = pluginManager.GetRecord(npcFormID)
             Dim raceFid As UInteger = npcData.RaceFormID
             Dim race As RACE_Data = Nothing
@@ -2280,7 +2282,7 @@ Public Module FaceGenBuilder
                 ' facetint _d LINEAL al tamaño del complexion (misma resolución que el diffuse que multiplica).
                 ' Es SOLO los tints de RACE (skin tone + warpaint) — los overlays de cara NO van acá (van sobre el
                 ' base DESPUÉS del pliegue, ese es el orden de RaceMenu). Mismo _d que WriteSseFacetintDds compone.
-                Dim facetint = SseFaceTintComposer.ComposeLinearRgba(pluginManager, npcRec, race, raceFid, npcData.IsFemale, w, h,
+                facetint = SseFaceTintComposer.ComposeLinearRgba(pluginManager, npcRec, race, raceFid, npcData.IsFemale, w, h,
                                                                      Nothing, npcData.SseTintRaw, npcData.SseTintTexOverride)
                 ' Detail mask (slot 3 / DisplacementTexture): es el término AMPLIFICADO (detail+off)·255/64 que el
                 ' engine multiplica DESPUÉS del soft-light con el facetint (Shader_Class). Se pliega ACÁ y se
@@ -2291,8 +2293,13 @@ Public Module FaceGenBuilder
                 ' (→ _2c distinto de _2/_2d, bug medido). Usar el detail ORIGINAL capturado antes de mutar
                 ' (detailPathOverride), igual que el complexion. En non-forced el slot 3 se lee en vivo (aun sin
                 ' neutralizar en este punto) = correcto.
+                ' Detail (slot 3 / Displacement): el término AMPLIFICADO (detail+off)·255/64 que el motor
+                ' multiplica DESPUÉS del soft-light. Se pliega acá para que la BASE sobre la que van los overlays
+                ' sea el albedo completo (orden RaceMenu), y al final se PRE-COMPENSA — ver
+                ' SseFaceGenBaker.PreCompensateDetailAmplify. En FORZADO (_2c) el slot 3 del head clonado puede
+                ' haberlo tocado el pass non-forced ⇒ se usa el detail ORIGINAL capturado antes de mutar.
                 Dim detailPath = If(forced, If(detailPathOverride, ""), If(ts.Textures.Count > 3, ts.Textures(3).Content, ""))
-                Dim detailAcc As Single() = If(Not String.IsNullOrEmpty(detailPath), SseFaceTintComposer.DecodeTextureRgba(detailPath, w, h), Nothing)
+                detailAcc = If(Not String.IsNullOrEmpty(detailPath), SseFaceTintComposer.DecodeTextureRgba(detailPath, w, h), Nothing)
                 If facetint IsNot Nothing Then SseFaceGenBaker.FoldFacetintIntoDiffuse(acc, facetint, npix, detailAcc)   ' albedo = softlight(complexion, facetint) x amplify(detail)
             End If
 
@@ -2303,6 +2310,22 @@ Public Module FaceGenBuilder
             Dim anyOvl = SseOverlayCompositor.ComposeFaceOverlaysIntoDiffuse(acc, overlays, w, h, AddressOf SseFaceTintComposer.DecodeTextureRgba)
             ' En modo FORZADO igual escribimos (el pliegue solo ya es el replacer, aunque no haya overlays).
             If Not forced AndAlso Not (anySkee OrElse anyOvl) Then Return
+
+            ' ⭐⭐⭐ PRE-COMPENSACIÓN del amplify del detail — el paso que hace que el JUEGO muestre lo mismo que el
+            ' preview. Hasta acá `acc` es el albedo completo (base con tint+detail, overlays limpios encima), que
+            ' es lo que dibuja el preview. El motor va a multiplicarlo por amplify(detail) desde el slot 3, que
+            ' AHORA dejamos con el detail REAL (ya no escribimos un neutro que el motor puede pisar). Dividir acá
+            ' por ese mismo amplify cancela esa multiplicación ⇒ in-game queda `acc` exacto, con el overlay sin
+            ' teñir. Ver la nota completa en SseFaceGenBaker.PreCompensateDetailAmplify.
+            ' ⭐⭐⭐ PRE-COMPENSACIÓN DE LA CADENA COMPLETA DEL MOTOR. Hasta acá `acc` es el albedo que muestra el
+            ' preview (base con tint+detail, overlays limpios encima). El motor va a calcular
+            ' softlight(slot0, facetint_REAL) × amp(detail_REAL) — los dos slots quedan con su contenido real —,
+            ' así que acá se invierten AMBOS términos y la cadena se cancela: in-game queda `acc` exacto.
+            ' ⛔ POR QUÉ EL FACETINT YA NO SE NEUTRALIZA (MEDIDO in-game): neutralizarlo a gris daba el albedo
+            ' aritméticamente exacto (motor vs preview = +0,37%, el residuo de 8 bits del gris) y AUN ASÍ la cara
+            ' salía oscura. Con el facetint REAL en el slot 6 el oscurecimiento desaparece ⇒ el motor deriva del
+            ' slot 6 algo MÁS que el albedo (subsurface), y eso NO se puede plegar en una textura de diffuse.
+            SseFaceGenBaker.PreCompensateEngineChain(acc, facetint, detailAcc, npix)
 
             Dim bgra(w * h * 4 - 1) As Byte
             For i = 0 To w * h - 1
@@ -2343,104 +2366,27 @@ Public Module FaceGenBuilder
             ' Slot 0 = texture-set normal ⇒ SIN prefijo (ver EmbeddedTexSetPath: el `data\` es SÓLO del slot 6).
             ts.Textures(0).Content = EmbeddedTexSetPath(dir & $"{fgLocal:X8}{embeddedSuffix}")
 
-            ' NEUTRALIZAR slot 3 (detail/Displacement): el AMPLIFY (detail_real + off)·255/64 YA se plegó en el diffuse
-            ' (slot 0). El engine aplica ese amplify SIEMPRE; para que sea IDENTIDAD hay que dejar el slot 3 en
-            ' (63,64,63)/255 ⇒ (v+off)·255/64 = 1 EXACTO. ⚠️ NO 0.5: 0.5 es la identidad del SOFT-LIGHT, que le toca
-            ' al slot 6. ⛔ NO se puede VACIAR el slot 3: el engine rellena un detail vacío con su default
-            ' BSShader_DefFacegenDetail = UNIFORME 0x40 = 0.251 (RE byte-level SkyrimSE.exe: la init de defaults
-            ' @0x140E57E30 lo crea con fill 0x40404040 y lo deja en manager+0x88 = 0x328CCA8; = vanilla
-            ' blankdetailmap). ⚠️ Esa MISMA función crea antes la Bayer 8×8 BSShader_DitheringNoise — por eso la nota
-            ' vieja citaba 0x140E57E30 de forma ambigua. Con 0.251 el multiplicador queda (1.015625, 1.0, 1.015625) ≠ 1
-            ' → la cara saldría ~1.5% más clara en R/B que el bake.
-            ' Se escribe un detail neutral COMPARTIDO por plugin (constante ⇒ dedup; el engine SÍ
-            ' respeta el slot 3 del NIF, a diferencia del tint que arma por path canónico) y se apunta el slot 3 ahí.
-            Try
-                If ts.Textures.Count > 3 Then
-                    Dim tintDir3 = $"Textures\Actors\Character\FaceGenData\FaceTint\{originPlugin}\"
-                    Dim detailNeutral = SseFaceGenBaker.NeutralDetailDds(512, 512, DiffuseDxgiFromSetting())
-                    If detailNeutral IsNot Nothing Then
-                        Dim detLoose = tintDir3 & "facedetailneutral" & suffix           ' _2c/_2/.dds en disco
-                        Dim detEmbed = tintDir3 & "facedetailneutral" & embeddedSuffix    ' canónico .dds cuando willBePacked
-                        Dim detFile = IO.Path.Combine(Config_App.Current.DataPath, detLoose)
-                        IO.Directory.CreateDirectory(IO.Path.GetDirectoryName(detFile))
-                        ' ⚠️ ARCHIVO COMPARTIDO POR PLUGIN: todos los heads plegados de este plugin apuntan a EL.
-                        ' Reescribirlo con un contenido DISTINTO al que ya estaba cambia el tono de TODOS los
-                        ' NPC ya horneados, no solo del que se esta horneando ahora. Como el contenido es una
-                        ' CONSTANTE, que difiera solo puede significar que los bakes viejos se hicieron con otra
-                        ' ley (p.ej. los anteriores al swap tint/detail, que escribian 0.5 en vez de (63,64,63)).
-                        ' Se avisa fuerte: esos NPC quedan stale y hay que re-hornearlos.
-                        Try
-                            If IO.File.Exists(detFile) Then
-                                Dim prevBytes = IO.File.ReadAllBytes(detFile)
-                                If Not prevBytes.SequenceEqual(detailNeutral) Then
-                                    Logger.LogLazy(Function() $"[FACEBAKE][SSE][STALE] '{detLoose}' COMPARTIDO cambia de contenido " &
-                                                              $"({prevBytes.Length}b -> {detailNeutral.Length}b). Los heads YA horneados de este " &
-                                                              "plugin que apuntan a el quedan con el tono equivocado: RE-HORNEAR todos los NPC plegados.")
-                                End If
-                            End If
-                        Catch exCmp As Exception
-                            Logger.LogLazy(Function() $"[FACEBAKE][SSE] no se pudo comparar el detail-neutral previo: {exCmp.Message}")
-                        End Try
-                        IO.File.WriteAllBytes(detFile, detailNeutral)
-                        ' Slot 3 = texture-set normal ⇒ SIN prefijo (el CK escribe p.ej.
-                        ' 'actors\character\KhajiitMale\facedetails\scar05.dds'). Ver EmbeddedTexSetPath.
-                        ts.Textures(3).Content = EmbeddedTexSetPath(detEmbed)
-                        ' Non-forced (release/loose/packed) usa el detail neutral COMPARTIDO por plugin ⇒ el packer lo
-                        ' empaqueta una vez. El forced (_2c, sandbox debug) nunca packea, no marca el flag.
-                        If Not forced Then _sseFoldUsedSharedNeutralDetail = True
-                    Else
-                        ts.Textures(3).Content = ""   ' fallback: sin detail neutral, el engine cae a su default 0.251 (re-oscurece el fold: peor, pero no rompe)
-                    End If
-                End If
-            Catch exD As Exception
-                Logger.LogLazy(Function() $"[FACEBAKE][SSE] slot3 detail-neutral failed: {exD.Message}")
-                If ts.Textures.Count > 3 Then ts.Textures(3).Content = ""
-            End Try
+            ' ⛔⛔ EL SLOT 3 (detail) NO SE TOCA. Antes se apuntaba a un `facedetailneutral.dds` COMPARTIDO por
+            ' plugin para que el amplify del motor fuera identidad, porque el amplify venía plegado en el slot 0.
+            ' Se eliminaron LAS DOS COSAS (el pliegue del detail y su neutro) por tres razones medidas:
+            '   1) El motor puede REINSTALAR el slot 3 desde el TXST resuelto al attachear la cabeza
+            '      (RegenerateHead 0x14042BD90 → material+0xA8, ver arch_sse_face_txst_layered_law). Si lo hace, el
+            '      neutro se descarta y el amplify se aplica DOS VECES ⇒ ~2% más oscuro, verde −8%. Es el síntoma
+            '      reportado, y explica que el RENDER se viera bien (el render sí respeta su propio neutro).
+            '   2) BC3 no puede codificar (63,64,63): los endpoints RGB565 lo llevan a (66,65,66) ⇒ amplify
+            '      (1,047, 1,016, 1,047) en vez de 1,0. MEDIDO decodificando el neutro horneado.
+            '   3) Era el ÚNICO artefacto compartido por plugin: dos ESP distintos escribían el mismo path y el
+            '      load order decidía cuál servía a los NPC de ambos.
+            ' Dejando el detail REAL en el slot 3, el motor aplica amplify UNA vez — igual que en el camino NO
+            ' plegado, que es el verificado bueno in-game — y el resultado es correcto tanto si el motor respeta
+            ' el slot 3 como si lo reinstala (en ambos casos es el MISMO archivo).
 
-            ' NEUTRALIZAR slot 6: el facetint se plegó en el diffuse → gris neutral (fgTint=1) → engine albedo*=1.
-            ' Normal: sobrescribe el _d de facetint (_2) que WriteSseFacetintDds escribió, slot6 sigue ahí.
-            ' Forzado (_2c): escribe un facetint neutral SEPARADO (_2c) y apunta slot6 ahí — NO pisa el _2 real.
-            Try
-                Dim tintDir = $"Textures\Actors\Character\FaceGenData\FaceTint\{originPlugin}\"
-                ' Formato = el del Diffuse en CharGen Options (DiffuseDxgiFromSetting: per-game + All/per-layer), NO
-                ' hardcodeado. Default SSE = BC3 = el formato vanilla del facetint (medido en Skyrim - Textures0.bsa).
-                Dim neutral = SseFaceGenBaker.NeutralFacetintDds(512, 512, DiffuseDxgiFromSetting())
-                If forced Then
-                    ' El neutral es una CONSTANTE (gris 0.5 = 128, la identidad del SOFT-LIGHT) idéntica para TODOS los
-                    ' NPC. En vez de duplicar un DDS por NPC (<id>_2c.dds), se escribe UN ÚNICO archivo COMPARTIDO por
-                    ' plugin y todos los _2c.NIF apuntan ahí. Se RE-ESCRIBE en cada bake (no skip-if-exists): si algún
-                    ' día cambiamos el gris, el archivo no queda stale. Es un facetint REAL que deja el soft-light en
-                    ' identidad en el juego (seguro, no vacía el slot) y además coincide con el default de engine del
-                    ' propio slot (DefaultGreyMap).
-                    Dim sharedNeutral = tintDir & "facetintneutral" & forcedSuffix & ".dds"   ' facetintneutral_2c.dds, compartido
-                    Dim ntFile = IO.Path.Combine(Config_App.Current.DataPath, sharedNeutral)
-                    IO.Directory.CreateDirectory(IO.Path.GetDirectoryName(ntFile))
-                    If neutral IsNot Nothing Then IO.File.WriteAllBytes(ntFile, neutral)
-                    If ts.Textures.Count > 6 Then ts.Textures(6).Content = EmbeddedEngineTexPath(sharedNeutral)
-                Else
-                    ' RELEASE / Save ESP: el facetint se plegó en el diffuse (slot 0) ⇒ el <id>.dds canónico debe quedar
-                    ' NEUTRAL (gris 0.5 = 128) para que el soft-light del engine sea IDENTIDAD y no re-aplique tint.
-                    ' ⛔ CRÍTICO (RE byte-exacto SkyrimSE.exe, ver reference_sse_engine_facegen_re): el engine IGNORA el
-                    ' slot 6 del NIF; SIEMPRE ARMA y CARGA `FaceTint\<plugin>\<id>.dds` canónico (BuildFaceTintPath
-                    ' 0x1403B8BB0 → ApplyFaceTintToHeadMaterial 0x1403BC400 → material+0xA0). Si ese archivo NO existe →
-                    ' tint = NULL → CARA BROWN y el diffuse plegado (con overlay) queda aplastado. Por eso NO se puede
-                    ' borrar `<id>.dds` ni redirigir a un `facetintneutral.dds` compartido (el engine nunca lo mira):
-                    ' hay que SOBRESCRIBIR el mismo `<id>.dds` per-NPC (que WriteSseFacetintDds ya escribió con el facetint
-                    ' real y al que el slot 6 ya apunta) con el gris neutral. El slot 6 queda igual (a <id>.dds). El packer
-                    ' emite Source/Entry = <id>.dds per-NPC para el facetint (nunca dedup, igual que CK escribe un facetint
-                    ' por NPC); sólo el detail neutral (slot 3) se comparte. Si NeutralFacetintDds fallara, se deja el
-                    ' <id>.dds real intacto (fallback consistente: mejor el facetint real que un archivo faltante).
-                    If neutral IsNot Nothing Then
-                        Dim perNpcTint = IO.Path.Combine(Config_App.Current.DataPath, tintDir & $"{fgLocal:X8}{suffix}")
-                        IO.Directory.CreateDirectory(IO.Path.GetDirectoryName(perNpcTint))
-                        IO.File.WriteAllBytes(perNpcTint, neutral)
-                        If ts.Textures.Count > 6 Then ts.Textures(6).Content = EmbeddedEngineTexPath(tintDir & $"{fgLocal:X8}{embeddedSuffix}")
-                    End If
-                End If
-            Catch exN As Exception
-                Logger.LogLazy(Function() $"[FACEBAKE][SSE] slot6 neutralize failed: {exN.Message}")
-            End Try
-            Logger.LogLazy(Function() $"[FACEBAKE][SSE] face diffuse+overlays -> {rel} ({outDds.Length}b, {w}x{h}); facetint slot6 neutralized")
+            ' ⛔ EL SLOT 6 YA NO SE NEUTRALIZA — en NINGÚN camino. MEDIDO in-game: con el gris el albedo daba
+            ' aritméticamente exacto (motor vs preview = +0,37%) y AUN ASÍ la cara salía oscura; con el facetint
+            ' REAL desaparece el oscurecimiento ⇒ el motor deriva del slot 6 algo MÁS que el albedo (subsurface),
+            ' que no se puede plegar en una textura de diffuse. El slot 6 conserva el facetint real y la cadena
+            ' del motor se cancela por PreCompensateEngineChain.
+            Logger.LogLazy(Function() $"[FACEBAKE][SSE] face diffuse+overlays -> {rel} ({outDds.Length}b, {w}x{h}); slots 3/6 = REALES, cadena pre-compensada")
 
             ' === NORMALES: en el _msn del head (slot 1). Non-forced: SOLO si un overlay aporta normal (compone
             ' decode→lerp cobertura→RENORMALIZE→encode). FORZADO (_2c): SIEMPRE se emite el _n (re-encodea el _msn del

@@ -1,4 +1,4 @@
-Imports System.Linq
+﻿Imports System.Linq
 Imports FO4_Base_Library
 Imports OpenTK.Graphics.OpenGL4
 
@@ -119,12 +119,16 @@ Friend Module SseFoldLayerStack
                                                                baseDiffuseIsLinearOnGpu:=True)
             If prF Is Nothing OrElse prF.Diffuse Is Nothing OrElse Not prF.Diffuse.IsFresh Then Return 0
             foldedTex = prF.Diffuse.TextureId
-            ' Inputs del fold ya consumidos: se liberan acá (no esperan al Finally) para no retener 3 texturas
-            ' float de w×h durante el resto de la cadena.
-            For Each t In {tintTex, complexTex, detTex}
-                If t <> 0 Then Try : GL.DeleteTexture(t) : Catch : End Try
-            Next
-            tintTex = 0 : complexTex = 0 : detTex = 0
+            ' Sólo el complexion queda consumido acá. ⛔ tintTex/detTex SIGUEN VIVOS: los vuelve a necesitar el
+            ' pase de UNFOLD del final (la inversa usa el MISMO facetint y el MISMO detail que el fold, o no
+            ' cancela). Se liberan después de ese pase.
+            If complexTex <> 0 Then Try : GL.DeleteTexture(complexTex) : Catch : End Try
+            complexTex = 0
+
+            ' Replica CPU del sandbox de paridad: vive FUERA del If de capas para que la comparacion final
+            ' cubra TAMBIEN el unfold del paso 4 (antes se comparaba antes de invertir ⇒ el paso nuevo quedaba
+            ' sin medir, que es como se colo la divergencia GPU en primer lugar).
+            Dim accCpu As Single() = Nothing
 
             ' --- 3. CAPAS (skee MASKT + Face [Ovl]) SOBRE el base plegado — mismo orden que el CPU/bake. ---
             If HasWork(skeeRaw, faceOvl) Then
@@ -134,7 +138,6 @@ Friend Module SseFoldLayerStack
                 ' Semántica del ComposeGpu viejo, preservada: había trabajo pero NINGUNA capa GPU se pudo
                 ' armar (texturas ausentes) ⇒ FALLO (0). No se degrada en silencio.
                 If stackLayers.Count = 0 Then Return 0
-                Dim accCpu As Single() = Nothing
                 If measureParity Then
                     ' SANDBOX (SseMeasureFoldParity, Debug opt-in): el ÚNICO readback del camino — acá se
                     ' MIDE que las dos réplicas dan lo mismo (RMS), en vez de suponerlo.
@@ -149,16 +152,47 @@ Friend Module SseFoldLayerStack
                 srgbTex = prL.Diffuse.TextureId
                 Try : GL.DeleteTexture(foldedTex) : Catch : End Try
                 foldedTex = 0
-                If accCpu IsNot Nothing Then
-                    Dim accGpu = ReadbackRgba32f(srgbTex, npix)
-                    If accGpu IsNot Nothing Then
-                        Dim rms = RmsDiff255(accCpu, accGpu, npix)
-                        Logger.LogLazy(Function() $"[SSE-FOLD] PARITY (sandbox): rmsCPUvsGPU={rms:F3}/255 (capas del stack)")
-                    End If
-                End If
             Else
                 srgbTex = foldedTex : foldedTex = 0
             End If
+
+            ' --- 4. UNFOLD: invertir la cadena del engine sobre el resultado (base plegada + capas). Los slots 3
+            ' y 6 del material YA NO se neutralizan, así que el shader del preview (y el del juego) van a aplicar
+            ' softlight(.,facetint) × amplify(detail) encima; esto lo cancela de antemano y el resultado dibujado
+            ' vuelve a ser exactamente el buffer compuesto. MISMO facetint y MISMO detail que el fold.
+            ' Espejo GPU de SseFaceGenBaker.PreCompensateEngineChain — si tocás una, tocá la otra. ---
+            Dim unfoldLayer As New List(Of FaceTintLayerInput) From {
+                New FaceTintLayerInput With {
+                    .Kind = FaceTintLayerKind.TextureSetDiffuse,
+                    .LayerTextureId = tintTex,
+                    .FoldDetailTextureId = detTex,
+                    .FgTintFold = True, .FgTintUnfold = True,
+                    .FgTintOffR = CSng(1.0 / 255.0), .FgTintOffG = 0F, .FgTintOffB = CSng(1.0 / 255.0),
+                    .FgTintAmp = CSng(255.0 / 64.0),
+                    .Opacity = 1.0F, .Slot = 0US, .IsTextureSet = True, .DebugName = "sse-unfold"}}
+            Dim tintTexForParity = tintTex
+            Dim prU = FaceTintCompositor.ApplyFaceTintPipeline(host.CompositorState, host.TintGpuCache,
+                                                               srgbTex, 0, 0, w, h, unfoldLayer,
+                                                               New List(Of FaceRegionSwapInput)(),
+                                                               baseDiffuseIsLinearOnGpu:=True)
+            If prU Is Nothing OrElse prU.Diffuse Is Nothing OrElse Not prU.Diffuse.IsFresh Then Return 0
+            Try : GL.DeleteTexture(srgbTex) : Catch : End Try
+            srgbTex = prU.Diffuse.TextureId
+            ' Paridad CPU-vs-GPU de la cadena COMPLETA (fold + capas + unfold). La replica CPU aplica la misma
+            ' inversa con el MISMO facetint (readback) y el MISMO detail, y recien ahi se compara.
+            If accCpu IsNot Nothing Then
+                Dim tintCpu = ReadbackRgba32f(tintTexForParity, npix)
+                SseFaceGenBaker.PreCompensateEngineChain(accCpu, tintCpu, detailRaw, npix)
+                Dim accGpu = ReadbackRgba32f(srgbTex, npix)
+                If accGpu IsNot Nothing Then
+                    Dim rms = RmsDiff255(accCpu, accGpu, npix)
+                    Logger.LogLazy(Function() $"[SSE-FOLD] PARITY (sandbox): rmsCPUvsGPU={rms:F3}/255 (fold + capas + unfold)")
+                End If
+            End If
+            For Each t In {tintTex, detTex}
+                If t <> 0 Then Try : GL.DeleteTexture(t) : Catch : End Try
+            Next
+            tintTex = 0 : detTex = 0
 
             ' Stats de salida — mismo gate: readback solo con el log encendido.
             If Logger.Enabled Then
@@ -509,7 +543,9 @@ Friend Module SseFoldLayerStack
     End Function
 
     ''' <summary>Readback float del acumulador del compositor (Rgba32f) → Single RGBA, sin pasar por 8 bits.</summary>
-    Private Function ReadbackRgba32f(texId As Integer, npix As Integer) As Single()
+    ''' <summary>Friend: lo usa tambien el sandbox _2d del bake (FaceGenBuilder.WriteSseFacetint2dGpu) para el
+    ''' UNICO readback de su cadena, la que encodea el DDS. Todo el resto del _2d corre en GPU.</summary>
+    Friend Function ReadbackRgba32f(texId As Integer, npix As Integer) As Single()
         Dim f(npix * 4 - 1) As Single
         GL.BindTexture(TextureTarget.Texture2D, texId)
         Dim handle = Runtime.InteropServices.GCHandle.Alloc(f, Runtime.InteropServices.GCHandleType.Pinned)

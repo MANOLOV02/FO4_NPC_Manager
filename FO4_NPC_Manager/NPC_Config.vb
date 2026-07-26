@@ -85,6 +85,7 @@ Public Class NPC_Config
     <Serialization.JsonIgnore>
     Public Property SseRenderFoldedPath As Boolean = False
 
+
     ''' <summary>SANDBOX de paridad del pliegue SSE: cuando el stack de capas (skee MASKT + overlays de cara) se compone
     ''' por GPU, correr TAMBIÉN el CPU y loguear el RMS entre los dos (<c>[SSE-FOLD] ... rmsCPUvsGPU=</c>). Es la MEDIDA
     ''' de la paridad — sin esto la paridad sería una afirmación, no un dato.
