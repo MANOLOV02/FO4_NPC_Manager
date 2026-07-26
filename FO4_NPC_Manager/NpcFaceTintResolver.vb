@@ -332,7 +332,13 @@ Friend NotInheritable Class NpcFaceTintResolver
                 ' NifContent + NifShape) ⇒ no puede quedar desincronizado con lo que se dibuja.
                 Dim skeeRaw = SseSkeeMaskReader.ReadNifMaskLayersRaw(shape.NifContent, shape.NifShape)
                 Dim faceOvl = ResolveFaceOverlaysForNpc(npcData)
-                Dim mustFold = (skeeRaw IsNot Nothing AndAlso skeeRaw.Count > 0) OrElse (faceOvl IsNot Nothing AndAlso faceOvl.Count > 0)
+                ' ⭐ CONDICIÓN IDÉNTICA A LA DEL BAKE (FaceGenBuilder.WriteSseFaceDiffuseWithOverlays):
+                '   skee  → SseSkeeMaskReader.HasMaskLayers, que ES ReadNifMaskLayersRaw(...).Count > 0
+                '   ovl   → SseOverlayCompositor.HasAnyFoldableFaceOverlay (diffuse O normal, con opacidad > 0)
+                ' ⛔ NO usar `faceOvl.Count > 0`: un nodo Face[Ovl] sin diffuse NI normal (o con opacidad 0) no
+                ' aporta nada al compose, y hacer plegar al render por él lo desviaba del bake en el otro sentido.
+                Dim mustFold = (skeeRaw IsNot Nothing AndAlso skeeRaw.Count > 0) OrElse
+                               SseOverlayCompositor.HasAnyFoldableFaceOverlay(faceOvl)
                 If mustFold Then LastSseFoldWasMandatory = True
                 ' ⛔ El toggle de debug NO EXISTE en Release: no se lee el config siquiera. Así el pliegue forzado es
                 ' IMPOSIBLE de encender fuera de Debug, en vez de depender de que el default quede en False.
@@ -347,12 +353,39 @@ Friend NotInheritable Class NpcFaceTintResolver
                 ' raza el compose de la CARA usaba el catálogo de tints de la raza VIEJA mientras el body usaba
                 ' la nueva ⇒ cara y cuerpo con tonos de razas distintas (medido: Argonian→Dremora, [SSE-QNAM]
                 ' raceFid viejo idx=38 en la cara vs nuevo idx=1 en el body).
+                ' ⭐⭐ DEDUP DEL FOLD (R2). Si dos meshes FaceTint del MISMO NPC resuelven al MISMO complexion, el
+                ' fold de las dos es IDÉNTICO por construcción (mismo npcData, mismo complexion, misma ley) y ambas
+                ' terminan usando la MISMA textura per-NPC. Plegar dos veces era trabajo tirado y, antes de que la
+                ' clave fuera per-NPC, además hacía que el resultado dependiera del orden de iteración de
+                ' `model.meshes`. Es el mismo `seenFaceMeshes` que la rama FO4 ya tenía (:399) y que a ésta nunca se
+                ' le aplicó.
+                ' ⛔ El dedup es SÓLO del compose. La segunda mesh SÍ recibe la clave del diffuse plegado y SÍ pasa
+                ' por `ApplySseFacetint` (que instala el facetint bajo su clave per-NPC y escribe
+                ' `materialBase.InnerLayerTexture` de ESE material): saltear cualquiera de las dos cosas dejaría al
+                ' segundo shape sin diffuse plegado o sin slot 6.
+                Dim complexionKey = FO4UnifiedMaterial_Class.CorrectTexturePath(materialBase.Diffuse_or_Base_Texture)
+                Dim alreadyFolded = Not String.IsNullOrEmpty(complexionKey) AndAlso seenFaceMeshes.Contains(complexionKey)
+                If alreadyFolded Then
+                    Dim shN = shape.ShapeName, ck2 = complexionKey
+                    Logger.LogLazy(Function() $"[SSE-FOLD] shape='{shN}': compose OMITIDO, el complexion '{ck2}' ya lo plegó otra mesh de este NPC — se reusa la MISMA textura per-NPC")
+                    mesh.MeshData.Material.SseFoldedDiffuseKey = SseFoldedDiffuseKeyFor(npcData.FormID)
+                    ApplySseFacetint(materialBase, npcData, race, model, host, state.RaceFormID)
+                    Continue For
+                End If
                 If mustFold OrElse forceFoldDebug Then
-                    If ApplySseFacetintFolded(materialBase, npcData, race, model, host, skeeRaw, faceOvl, state.RaceFormID) Then
+                    Dim foldedKeyOut As String = ""
+                    If ApplySseFacetintFolded(materialBase, npcData, race, model, host, skeeRaw, faceOvl, foldedKeyOut, state.RaceFormID) Then
+                        If Not String.IsNullOrEmpty(complexionKey) Then seenFaceMeshes.Add(complexionKey)
+                        ' ⭐⭐ ACÁ se conecta el diffuse plegado con el bind: MaterialData.SseFoldedDiffuseKey es lo
+                        ' único que hace que DiffuseTexture_ID devuelva la textura per-NPC en vez de la del
+                        ' complexion compartido. Es per-mesh, así que dos NPCs con el mismo complexion no se pisan.
+                        mesh.MeshData.Material.SseFoldedDiffuseKey = foldedKeyOut
                         ' ⛔ YA NO SE NEUTRALIZA NADA. El diffuse plegado viene PRE-COMPENSADO (la inversa de la
                         ' cadena del engine), así que los slots 3 y 6 quedan con su contenido REAL y el shader los
                         ' aplica normalmente: la cadena se cancela y sale este buffer. Idéntico al bake.
-                        mesh.MeshData.Material.SseFoldDetailNeutralized = False
+                        ' (Acá se seteaba `SseFoldDetailNeutralized = False`. La propiedad se ELIMINÓ: sus dos únicas
+                        '  asignaciones la ponían en False, así que la rama del render que la consultaba era código
+                        '  muerto desde que el fold dejó de neutralizar el slot 3. Ver Render.vb, bHasDetailMask.)
                         ' ⭐ IMPRESCINDIBLE: el slot 6 tiene que llevar el FACETINT REAL. El diffuse va
                         ' pre-compensado (con el softlight ya invertido), así que el shader NECESITA re-aplicar
                         ' softlight(slot0, facetint) para volver al buffer del fold. Sin esto el slot 6 queda sin
@@ -363,9 +396,12 @@ Friend NotInheritable Class NpcFaceTintResolver
                         Continue For
                     End If
                 End If
-                ' Camino NO plegado: el shader aplica el detail (real o default 0.251) UNA vez = engine. Reset del flag
-                ' por si esta malla venía de un fold en un render anterior (fold↔unfold en vivo sin recargar el modelo).
-                mesh.MeshData.Material.SseFoldDetailNeutralized = False
+                ' Camino NO plegado: el shader aplica el detail (real o default 0.251) UNA vez = engine.
+                ' ⭐ RESET OBLIGATORIO de la clave del diffuse plegado: si esta mesh venía de un fold en un render
+                ' anterior (fold↔unfold en vivo, p.ej. el usuario borró el último overlay sin recargar el NPC), sin
+                ' esto seguiría bindeando el diffuse plegado VIEJO en vez de volver al complexion.
+                ' (Acá también se reseteaba `SseFoldDetailNeutralized`; propiedad eliminada — ver arriba.)
+                mesh.MeshData.Material.SseFoldedDiffuseKey = ""
                 ApplySseFacetint(materialBase, npcData, race, model, host, state.RaceFormID)
                 Continue For
             End If
@@ -430,10 +466,16 @@ Friend NotInheritable Class NpcFaceTintResolver
             '  - CPU: el Boolean de ApplyCpuComposeToDict SI puede dar False, asi que ahi se conserva.
             Dim meshDiffuseBaked As Boolean = False
             If Config_App.Current.Setting_GPUSkinning Then
+                ' ⭐ FaceGenBuilder.OutputSettings = la MISMA resolución/compresión por canal que usa el bake
+                ' (BakeFaceTextures se la pasa a este mismo ApplyFaceTintPipeline). ⛔ Acá NO se pasaba, así que
+                ' caía al default (Inherit = nativo) y el preview ignoraba CharGen Options: con un tamaño
+                ' explícito el bake escribía D/N/S a ESE tamaño y el preview mostraba el compose a resolución
+                ' nativa. Con Inherit es byte-inerte (era el valor efectivo anterior).
                 Dim pipelineResult = FaceTintCompositor.ApplyFaceTintPipeline(
                     host.CompositorState, host.TintGpuCache,
                     diffuseEntry.Texture_ID, normalSrcId, specSrcId,
                     w, h, layerInputs, regionSwaps,
+                    FaceGenBuilder.OutputSettings,
                     baseDiffuseIsLinearOnGpu:=diffuseEntry.IsSRGB,
                     headDiffuseAlphaTest:=(host.CurrentBaseState IsNot Nothing AndAlso host.CurrentBaseState.HeadDiffuseAlphaTest))
 
@@ -486,14 +528,32 @@ Friend NotInheritable Class NpcFaceTintResolver
     ''' DIFFUSE (ComposeCpu/ComposeGpu), no toca el normal de la cabeza. Un overlay solo-normal no tendría nada
     ''' que aportar y sólo dispararía un pliegue vacío. El bake, que sí pliega el normal, usa
     ''' <see cref="SseOverlayCompositor.HasAnyFoldableFaceOverlay"/>.</para></summary>
+    ''' <summary>⭐ Clave PER-NPC del diffuse plegado en el diccionario de texturas del modelo. Espeja la ruta que el
+    ''' bake escribe (<c>FaceGenData\FaceDiffuse\&lt;plugin&gt;\&lt;formID&gt;.dds</c>) por legibilidad en el log, pero NO
+    ''' es un path que nadie lea de disco: ningún campo del material la referencia, así que el loader nunca la pide.
+    ''' Lo único que importa es que sea ÚNICA POR NPC — que es justo lo que la clave del complexion no era.</summary>
+    Private Function SseFoldedDiffuseKeyFor(npcFormID As UInteger) As String
+        Dim origin As String = Nothing
+        If _ctx IsNot Nothing AndAlso _ctx.PluginManager IsNot Nothing Then origin = _ctx.PluginManager.GetOriginatingPluginName(npcFormID)
+        If String.IsNullOrEmpty(origin) Then origin = "unknown"
+        Dim fg = PluginManager.ToFaceGenLocalFormID(npcFormID)
+        Return FO4UnifiedMaterial_Class.CorrectTexturePath(
+            $"textures\actors\character\facegendata\facediffuse\{origin}\{fg:X8}.dds")
+    End Function
+
     Private Function ResolveFaceOverlaysForNpc(npcData As NPC_Data) As IList(Of RaceMenuJslot.JslotOverlayNode)
         If npcData Is Nothing OrElse _appliedPresets Is Nothing Then Return Nothing
         Dim preset As LooksmenuLoader.LooksmenuPreset = Nothing
         If Not _appliedPresets.TryGetValue(npcData.FormID, preset) OrElse preset Is Nothing Then Return Nothing
         If preset.SseBodyOverlays Is Nothing Then Return Nothing
-        Return preset.SseBodyOverlays.
-            Where(Function(o) SseOverlayCompositor.IsFaceOverlay(o) AndAlso
-                              Not String.IsNullOrEmpty(o.DiffusePath)).ToList()
+        ' ⭐⭐ FILTRO POR NODO Y NADA MÁS — es el MISMO predicado que usa el bake (SseOverlayCompositor.FaceOverlaysOnly).
+        ' ⛔ Antes acá se exigía además `DiffusePath`, y eso DROPEABA los overlays de cara SOLO-NORMAL: para ese NPC
+        ' el RENDER no plegaba y el BAKE sí (el bake gatea con HasAnyFoldableFaceOverlay = diffuse O normal), o sea
+        ' que el preview mostraba una cara distinta de la que se horneaba. Es exactamente el bug que
+        ' HasAnyFoldableFaceOverlay vino a arreglar en el bake, que había quedado sin aplicar de este lado.
+        ' Filtrar por textura en el CALLER es el error: cada composer se queda con lo que puede consumir (el de
+        ' diffuse quiere DiffusePath, el de normales quiere NormalPath).
+        Return SseOverlayCompositor.FaceOverlaysOnly(preset.SseBodyOverlays)
     End Function
 
     ''' <summary>SSE — camino PLEGADO del render: compone lo MISMO que el bake plegado, en vivo. Corre cuando el NPC
@@ -503,15 +563,23 @@ Friend NotInheritable Class NpcFaceTintResolver
     '''   2. <see cref="SseFaceGenBaker.FoldFacetintIntoDiffuse"/> ⇒ softlight(complexion, facetint) × amplify(detail)
     '''   3. skee MASKT encima (sobre el albedo YA tintado — por eso hay que plegar para poder mostrarlas)
     '''   4. Face [Ovl] overlays encima
-    '''   5. resultado → slot 0 ; slot 3 = (63,64,63) (amplify identidad) ; slot 6 = gris 0.5 (softlight identidad)
-    ''' ⇒ el shader hace <c>softlight(folded, 0.5) × 1 = folded</c> y muestra el plegado tal cual.
+    '''   5. <see cref="SseFaceGenBaker.PreCompensateEngineChain"/> = INVERSA de la cadena del motor. Los slots 3 y 6
+    '''      quedan con su contenido REAL y el shader los aplica normalmente ⇒ la cadena se cancela.
+    ''' ⇒ el shader hace <c>softlight(precompensado, facetint) × amp(detail) = folded</c> y muestra el plegado tal cual.
+    ''' ⛔ (El paso 5 decía "slot 3 = (63,64,63); slot 6 = gris 0.5 ⇒ softlight(folded, 0.5) × 1". Era la ley VIEJA:
+    '''  se cayó al MEDIR in-game que neutralizar el slot 6 apaga la cara aunque el albedo dé aritméticamente exacto.)
     ''' ⭐ LOSSLESS (como FO4): no pasa por ningún encode/decode BCn — esa pérdida es del ARCHIVO, no del compose.
     ''' Devuelve False si algo falta (el caller cae al camino normal).</summary>
+    ''' <param name="foldedDiffuseKey">SALIDA: la clave PER-NPC bajo la que quedó instalado el diffuse plegado. El
+    ''' caller la copia a <c>MaterialData.SseFoldedDiffuseKey</c> de la mesh, que es lo que hace que el bind del
+    ''' diffuse la use. Queda "" si la función devuelve False.</param>
     Private Function ApplySseFacetintFolded(materialBase As FO4UnifiedMaterial_Class, npcData As NPC_Data,
                                             race As RACE_Data, model As PreviewModel, host As NpcRenderHost,
                                             skeeRaw As IList(Of SseSkeeMaskReader.SkeeMaskLayerRaw),
                                             faceOvl As IList(Of RaceMenuJslot.JslotOverlayNode),
+                                            ByRef foldedDiffuseKey As String,
                                             Optional effRaceFid As UInteger = 0UI) As Boolean
+        foldedDiffuseKey = ""
         If npcData Is Nothing Then Return False
         ' Raza EFECTIVA: la del state (override de raza del editor incluido). npcData.RaceFormID es la
         ' cruda del récord — sólo fallback cuando el caller no pasa la efectiva (paths sin state).
@@ -553,6 +621,20 @@ Friend NotInheritable Class NpcFaceTintResolver
         Dim acc(npix * 4 - 1) As Single
         Array.Copy(cImg.Rgba, acc, acc.Length)
 
+        ' ⭐⭐ RESOLUCIÓN DE SALIDA = CharGen Options (Setting_FaceGenDiffuseResolution), IGUAL QUE EL BAKE.
+        ' ⛔ El render la IGNORABA: componía y subía siempre a la resolución NATIVA del complexion mientras el
+        ' bake resampleaba al target (FaceGenBuilder, `ResolveResolutionSize` + `ResampleBgra`). Con Inherit
+        ' coinciden y por eso no se notaba; con un tamaño explícito el preview mostraba MÁS detalle del que el
+        ' juego iba a tener — el DDS horneado es el que el motor samplea. Violación de RENDER == BAKE.
+        ' El resample es lo ÚLTIMO de la cadena (después del fold, las capas y la pre-compensación) y sobre los
+        ' valores sRGB, exactamente como el bake. Además ABARATA el camino cuando el target < nativo: se sube
+        ' 1024² en vez de 4096² (16× menos VRAM y menos upload).
+        Dim outW = w, outH = h
+        If FaceGenBuilder.OutputSettings.Diffuse <> FaceTintConvention.FaceTintChannelResolution.Inherit Then
+            Dim t = FaceTintConvention.ResolveResolutionSize(FaceGenBuilder.OutputSettings.Diffuse, Math.Min(w, h))
+            outW = t : outH = t
+        End If
+
         ' --- 2. Entradas COMUNES a los dos caminos. Decodificar el complexion/detail NO es compose (es leer el
         ' archivo): es la entrada compartida que garantiza inputs bit-idénticos a las dos réplicas (decodificar
         ' BCn por hardware tiene tolerancias de spec ⇒ rompería el "dan lo mismo" en el origen). ---
@@ -584,7 +666,7 @@ Friend NotInheritable Class NpcFaceTintResolver
             measureParity = NPC_Config.Current.SseMeasureFoldParity   ' sandbox: en Release ni se lee (duplica el compose)
 #End If
             foldedId = SseFoldLayerStack.ComposeFoldedGpuResident(acc, tintLayers, detailAcc, skeeRaw, faceOvl,
-                                                                  skinRgb, w, h, host, measureParity)
+                                                                  skinRgb, w, h, host, measureParity, outW, outH)
             If foldedId = 0 Then
                 Logger.LogLazy(Function() "[SSE-FOLD] ABORT: la cadena GPU del pliegue falló y el flag pide GPU. NO se compone por CPU.")
                 Return False
@@ -657,31 +739,50 @@ Friend NotInheritable Class NpcFaceTintResolver
             ' Se CONSERVA el clamp a [0,1] que hacía ClampByte255: el fold puede pasarse de 1.0 (el amplify del
             ' detail llega a ×4 si el slot 3 trae valores altos) y saturar es el comportamiento previo; sacarlo
             ' sería un cambio de semántica aparte. ---
-            ' Paralelo por rangos (por-píxel puro, escrituras disjuntas ⇒ bit-idéntico): un Math.Pow por canal a la
-            ' resolución nativa del complexion — serial era otro tramo medible del fold a 4K.
+            ' ⭐ RESAMPLE AL TARGET **ANTES** DEL sRGB→LINEAL, y en FLOAT.
+            '   · ANTES del cvt porque bilinear-en-sRGB ≠ bilinear-en-lineal, y el bake resamplea sobre los
+            '     valores sRGB (su BGRA) ⇒ hacerlo después divergiría del bake Y del camino GPU (donde el
+            '     ConvertTextureSpace final muestrea el sRGB y convierte en el mismo pase).
+            '   · EN FLOAT (ResampleRgbaFloat, mismo filtro que ResampleBgra) para no cuantizar a 8 bits en el
+            '     medio: la pérdida de bytes es del ARCHIVO, no del compose — misma regla que rige todo este path.
+            Dim accOut = FaceTintCpuCompositor.ResampleRgbaFloat(acc, w, h, outW, outH)
+            Dim outPix = outW * outH
+            ' Paralelo por rangos (por-píxel puro, escrituras disjuntas ⇒ bit-idéntico): un Math.Pow por canal.
             System.Threading.Tasks.Parallel.ForEach(
-                System.Collections.Concurrent.Partitioner.Create(0, npix),
+                System.Collections.Concurrent.Partitioner.Create(0, outPix),
                 Sub(range)
                     For i = range.Item1 To range.Item2 - 1
                         For ch = 0 To 2
-                            Dim lin = SseFaceGenBaker.Srgb2Lin(acc(i * 4 + ch))
-                            acc(i * 4 + ch) = CSng(If(lin < 0.0, 0.0, If(lin > 1.0, 1.0, lin)))
+                            Dim lin = SseFaceGenBaker.Srgb2Lin(accOut(i * 4 + ch))
+                            accOut(i * 4 + ch) = CSng(If(lin < 0.0, 0.0, If(lin > 1.0, 1.0, lin)))
                         Next
                     Next
                 End Sub)
             ' forceOpaque:=True = el alpha 255 que escribía el camino de bytes (misma ley que el GPU-residente).
-            foldedId = SseFoldLayerStack.UploadRgba32f(acc, npix, w, h, forceOpaque:=True)
+            foldedId = SseFoldLayerStack.UploadRgba32f(accOut, outPix, outW, outH, forceOpaque:=True)
             If foldedId = 0 Then
                 Logger.LogLazy(Function() "[SSE-FOLD] ABORT: GL.GenTexture devolvió 0 (¿sin contexto GL?)")
                 Return False
             End If
         End If
 
-        ' ⛔ NO se cambia NINGÚN path del material. Apuntar el material a un path sintético (que no existe en disco)
-        ' hace que el loader lo marque como no-cargado y el shape sale BLANCO. En su lugar se REEMPLAZA la textura GL
-        ' YA REGISTRADA bajo la key del complexion (mismo patrón que ApplySseFacetint con el facetint): el material
-        ' sigue apuntando al complexion, pero el sampler recibe el diffuse PLEGADO. IsSRGB=False: los bytes ya son lineales.
-        InstallTexture(model, cKey, foldedId, w, h, isSrgb:=False)
+        ' ⛔ NO se cambia NINGÚN path del material: sigue apuntando al complexion REAL. Apuntarlo a una ruta
+        ' sintética hace que Process_Textures_GL se la pida al loader (pide todo path de Textures_Path_List que no
+        ' esté ya en el diccionario), no exista en disco, y la shape salga BLANCA.
+        '
+        ' ⭐⭐ PERO LA TEXTURA VA BAJO UNA CLAVE **PER-NPC**, NO BAJO LA DEL COMPLEXION.
+        ' La del complexion (`…\female\femalehead.dds`) es COMPARTIDA entre shapes y entre NPCs de la misma raza:
+        ' instalar ahí el resultado del fold hacía que otra cabeza con el mismo complexion heredara el face-paint
+        ' de ésta. El facetint nunca tuvo el problema porque su clave ya era per-NPC — acá se aplica la MISMA ley.
+        ' El material NO referencia esta clave; el bind la alcanza por MaterialData.SseFoldedDiffuseKey, así que el
+        ' loader nunca la pide y no puede haber cara blanca. IsSRGB=False: los bytes ya son lineales.
+        Dim foldedKey = SseFoldedDiffuseKeyFor(npcData.FormID)
+        ' outW/outH (no w/h): la textura instalada es la RESAMPLEADA al tamaño de CharGen Options; el entry
+        ' tiene que declarar SU tamaño real o el resto del render lee dimensiones que no son las de la textura.
+        InstallTexture(model, foldedKey, foldedId, outW, outH, isSrgb:=False)
+        ' La consume DiffuseTexture_ID (Render.vb). Se resuelve por clave, no por id, así que un diccionario
+        ' limpiado devuelve 0 y el bind se cae solo al complexion real — sin ventana de textura colgada.
+        foldedDiffuseKey = foldedKey
 
         ' --- 5. Slots 3 y 6: SE DEJAN INTACTOS. ---
         ' Antes se les reemplazaba la textura por un neutro (detail (63,64,63) = amplify 1; tint 128 = softlight
@@ -755,7 +856,14 @@ Friend NotInheritable Class NpcFaceTintResolver
             Logger.LogLazy(Function() $"[SSE-FACETINT] skip: GetRecord(0x{npcData.FormID:X8}) Nothing")
             Return False
         End If
-        Const W As Integer = 512, H As Integer = 512
+        ' ⭐⭐ TAMAÑO DEL FACETINT = CharGen Options, IGUAL QUE EL BAKE (FaceGenBuilder: `fSz =
+        ' ResolveResolutionSize(OutputSettings.Diffuse, 512)`). ⛔ Estaba HARDCODEADO en 512²: con el setting en
+        ' 1024/2048 el bake horneaba un facetint de ESE tamaño y el preview seguía componiendo a 512² ⇒ el
+        ' preview no mostraba lo que se hornea. Es el camino NO plegado, o sea el de la mayoría de los NPC.
+        ' 512 sigue siendo el default (Inherit → 512 = el tamaño vanilla del facetint), así que sin tocar el
+        ' setting esto es byte-inerte.
+        Dim W As Integer = FaceTintConvention.ResolveResolutionSize(FaceGenBuilder.OutputSettings.Diffuse, 512)
+        Dim H As Integer = W
 
         ' ⭐ COMPOSITE = ESPEJO DEL FLAG DE LA CÁMARA (Setting_GPUSkinning), IGUAL QUE FO4. El flag es el ÚNICO
         ' criterio: GPU si está activo (y hay contexto GL), CPU si no. Ya NO hay un gate por overlays — el facetint
@@ -1008,7 +1116,11 @@ Friend NotInheritable Class NpcFaceTintResolver
         Dim sB = If(Not String.IsNullOrEmpty(specPath), FilesDictionary_class.GetBytes(specPath), Nothing)
         Dim cpu As FaceTintCpuCompositor.CpuPipelineResult
         Try
-            cpu = FaceTintCpuCompositor.ComposeCpuPipeline(dB, nB, sB, layerInputs, regionSwaps, Nothing, diffusePath, normalPath, specPath, headDiffuseAlphaTest)
+            ' ⭐ `FaceGenBuilder.OutputSettings` en vez de `Nothing` (= Inherit/nativo): el bake le pasa
+            ' EXACTAMENTE esto a este MISMO ComposeCpuPipeline, así que pasarle Nothing hacía que el preview
+            ' ignorara CharGen Options y mostrara más detalle del que el DDS horneado va a tener. Con Inherit el
+            ' valor efectivo es el de antes ⇒ byte-inerte por default.
+            cpu = FaceTintCpuCompositor.ComposeCpuPipeline(dB, nB, sB, layerInputs, regionSwaps, FaceGenBuilder.OutputSettings, diffusePath, normalPath, specPath, headDiffuseAlphaTest)
         Catch ex As Exception
             Dim m = ex.Message
             Logger.LogLazy(Function() $"[FACETINT-CPU-RENDER] compose failed: {m}")

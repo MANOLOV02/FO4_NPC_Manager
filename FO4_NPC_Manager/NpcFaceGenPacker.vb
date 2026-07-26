@@ -164,6 +164,12 @@ Public Module NpcFaceGenPacker
         ''' Surfacing the count in the summary helps the user see how many bundles were dropped
         ''' before flush.</summary>
         Public ReadOnly MissingSources As New List(Of String)
+        ''' <summary>⭐ Bundles descartados ENTEROS por faltarles un archivo REQUERIDO, ya formateados
+        ''' "&lt;plugin&gt; 0x&lt;formId&gt;: faltan N archivo(s), p.ej. '&lt;nombre&gt;'". Existe porque el mensaje al usuario
+        ''' era "⚠ N NPCs failed to pack (M files unaccounted for)" — sin decir QUÉ NPC ni QUÉ archivo — y el
+        ''' desglose por path sólo vivía en el log, que en Release no se escribe (Logger.Enabled=False). Con esto
+        ''' el MessageBox del save puede nombrarlos, como ya hace el batch loose.</summary>
+        Public ReadOnly FailedBundles As New List(Of String)
         ''' <summary>Free-form failure message when Success = False.</summary>
         Public Property ErrorMessage As String = ""
     End Class
@@ -285,28 +291,55 @@ Public Module NpcFaceGenPacker
         Dim bundleExpected(bundles.Count - 1) As Integer    ' how many the game's layout calls for
         Dim missingSources As New List(Of String)
 
+        ' ⭐⭐⭐ B1 — EL BUNDLE ES ATÓMICO: o entran TODOS sus archivos requeridos, o NO ENTRA NINGUNO.
+        ' ⛔ EL BUG: el `Continue For` de un spec requerido faltante era POR SPEC, así que los demás archivos del
+        ' MISMO NPC se empaquetaban igual. El bundle no contaba como committed, pero (a) PackResult.Success seguía
+        ' True, (b) sus refs SÍ llegaban a `committedRefs` y por lo tanto (c) sus sueltos se BORRABAN en el paso 5.
+        ' Caso concreto y medido en SSE: si WriteSseFacetintDds bailó, falta `FaceTint\<id>.dds` (spec REQUERIDO) y
+        ' el NIF entraba al BSA SIN su facetint ⇒ ApplyFaceTintToHeadMaterial (0x1403BC400) hace LoadTexture NULL,
+        ' [mat+0xA0]=NULL, CARA MARRÓN in-game. Y como los sueltos ya se borraron, tampoco se puede re-empacar.
+        ' Ahora se resuelve la lista COMPLETA de specs primero y, si falta alguno requerido, el bundle entero se
+        ' descarta ANTES de agregar un solo ref: el archive nunca queda a medias y los sueltos sobreviven para
+        ' reintentar. El save lo reporta con nombre y archivo (ver failedBundles).
         For bi = 0 To bundles.Count - 1
             Dim b = bundles(bi)
             Dim bundleSpec = FaceGenFileSpecs(game, b.OriginPlugin, b.FormIdLow, b.DebugSandbox)
 
+            Dim pending As New List(Of LooseFileRef)
+            Dim missingForThisBundle As New List(Of String)
             For Each spec In bundleSpec
                 Dim sourcePath = Path.Combine(dataDir, spec.Source)
                 If Not File.Exists(sourcePath) Then
-                    ' Optional (per-NPC diffuse): absent = the NPC has no face overlays → silently skip.
-                    ' Required: absent = a bake bug → surface it, and it counts against the bundle (never commits).
-                    If Not spec.IsOptional Then
-                        missingSources.Add(sourcePath)
-                        bundleExpected(bi) += 1
-                    End If
+                    ' Optional (per-NPC diffuse/normal): absent = the NPC has no face overlays → silently skip.
+                    ' Required: absent = a bake bug → tumba el bundle ENTERO (ver la nota de arriba).
+                    If Not spec.IsOptional Then missingForThisBundle.Add(sourcePath)
                     Continue For
                 End If
-                bundleExpected(bi) += 1
-                allRefs.Add(New LooseFileRef With {
+                pending.Add(New LooseFileRef With {
                     .SourcePath = sourcePath,
                     .EntryPath = Path.Combine(dataDir, spec.Entry),
                     .IsTexture = spec.IsTexture,
                     .DebugSandbox = b.DebugSandbox
                 })
+            Next
+
+            If missingForThisBundle.Count > 0 Then
+                ' Bundle DESCARTADO: no se agrega NINGUNO de sus refs ⇒ no se empaqueta nada suyo y, al no llegar
+                ' a committedRefs, sus sueltos NO se borran. bundleExpected queda > bundleRefCounts ⇒ tampoco
+                ' cuenta como committed en el resumen.
+                missingSources.AddRange(missingForThisBundle)
+                bundleExpected(bi) = pending.Count + missingForThisBundle.Count
+                Dim fidF = b.FormIdLow, opF = b.OriginPlugin
+                Dim firstF = Path.GetFileName(missingForThisBundle(0))
+                Dim nF = missingForThisBundle.Count
+                result.FailedBundles.Add($"{opF} 0x{fidF:X8}: faltan {nF} archivo(s) del bake, p.ej. '{firstF}'")
+                Logger.LogLazy(Function() $"[PACK-BATCH] bundle DESCARTADO ENTERO {opF} 0x{fidF:X8}: {nF} archivo(s) requeridos ausentes (primero '{firstF}'). Sus sueltos NO se borran.")
+                Continue For
+            End If
+
+            For Each rf In pending
+                bundleExpected(bi) += 1
+                allRefs.Add(rf)
                 refToBundleIdx.Add(bi)
                 bundleRefCounts(bi) += 1
             Next

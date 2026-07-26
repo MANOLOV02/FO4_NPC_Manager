@@ -2105,7 +2105,8 @@ Public Class MainForm
     ''' preview (main + editores + pickers). PROBLEMA: la librería, al togglear, sólo re-corre la GEOMETRÍA
     ''' (skin + morphs, estilo WM granular, vía su MarkDirty(Shapes|Force) interno) pero NO re-aplica el
     ''' face-tint/fold ⇒ el diffuse plegado queda "pegado" en el diccionario de texturas mientras el MaterialData
-    ''' nuevo pierde su estado per-mesh (p.ej. SseFoldDetailNeutralized) → cara oscura/incorrecta. La librería
+    ''' nuevo pierde su estado per-mesh (SkinToneBaked / FaceTintOverlay_ID) → cara oscura/incorrecta. (El ejemplo
+    ''' que citaba este comentario, `SseFoldDetailNeutralized`, ya no existe: eliminado por código muerto.) La librería
     ''' levanta SkinningModeToggled justo para que la app re-corra SU pipeline; nadie lo escuchaba (FO4 y SSE).
     ''' FIX: re-armamos el hook post-upload; cuando el re-render de geometría termina con las texturas ya listas,
     ''' la librería lo dispara SYNC (Render.vb ~870) y ahí restauramos el pristine + RE-COMPONEMOS el face-tint/fold
@@ -11189,10 +11190,19 @@ Public Class MainForm
         Await Task.Yield()
         Dim bakeResult As FaceGenBuilder.BuildResult
         Try
-            ' willBePacked:=True — Save ESP normally repacks the _2 loose into a BA2 under canonical
-            ' names (NpcFaceGenPacker), so the NIF must embed canonical texture paths. When the BA2
-            ' pack is skipped (loose-only mode, Ba2Version_FO4=0), canonical paths are STILL what the
-            ' engine looks up at runtime — _2 suffix is only the disk filename, not the NIF reference.
+            ' ⭐⭐ F6 — `willBePacked` DEBE seguir a lo que de verdad va a pasar con los archivos.
+            ' Vale True cuando NpcFaceGenPacker va a repackear los sueltos `_2` al BA2 bajo nombres canónicos (⇒ el
+            ' NIF tiene que embeber los canónicos, que son los que van a existir DENTRO del archive).
+            ' ⛔ EN MODO LOOSE-ONLY NO HAY PACKER: RunChargenPackBatch retorna antes de llamarlo
+            ' (NPC_Config.IsLooseOnly). Nadie renombra nada, así que en disco quedan `<id>_2.NIF` y `<id>_d_2.dds`
+            ' mientras el NIF apuntaba a `<id>_d.dds` — un archivo que no existe. El comentario anterior decía que
+            ' "los canónicos son igual lo que el motor busca en runtime, el _2 es sólo el nombre en disco"; eso es
+            ' cierto para lo que el motor BUSCA, y justamente por eso el resultado no servía: el motor no encuentra
+            ' NI el NIF (que también se llama `_2.NIF`) ni sus texturas. Con willBePacked:=False el NIF embebe los
+            ' nombres reales del disco y el output loose es coherente consigo mismo.
+            ' (Sólo muerde en DebugMode — `DebugMode = Logger.Enabled` — porque en release Suffix == CanonSuffix
+            '  y el flag es inerte. Pero es exactamente la combinación que usa una sesión de diagnóstico.)
+            Dim willPack As Boolean = Not NPC_Config.IsLooseOnly(Config_App.Current.Game)
             ' WriteGPUSandboxOutput corre el GL (para el _2b) -> sync en el hilo UI (contexto GL; ya estamos
             ' en él tras el Yield), INDEPENDIENTE de DebugMode. Sin ese flag (output CPU-only, sin GL) -> bake
             ' en thread de fondo (Await Task.Run). Secuencial -> sin race entre NPCs.
@@ -11200,11 +11210,11 @@ Public Class MainForm
             If FaceGenBuilder.WriteGPUSandboxOutput Then
                 bakeResult = FaceGenBuilder.BuildCharGen(fidL, _pluginManager, _appliedPresets,
                                                          _renderHost, AddressOf _materialResolver.ApplyShapeMaterialOverrides,
-                                                         willBePacked:=True, lmSkinTemplateResolver:=AddressOf ResolveLmSkinTemplate)
+                                                         willBePacked:=willPack, lmSkinTemplateResolver:=AddressOf ResolveLmSkinTemplate)
             Else
                 bakeResult = Await Task.Run(Function() FaceGenBuilder.BuildCharGen(fidL, _pluginManager, _appliedPresets,
                                                          _renderHost, AddressOf _materialResolver.ApplyShapeMaterialOverrides,
-                                                         willBePacked:=True, lmSkinTemplateResolver:=AddressOf ResolveLmSkinTemplate))
+                                                         willBePacked:=willPack, lmSkinTemplateResolver:=AddressOf ResolveLmSkinTemplate))
             End If
         Catch ex As Exception
             Return (False, False, Nothing, $"CharGen bake failed: {ex.Message}", "")
@@ -11341,11 +11351,21 @@ Public Class MainForm
             End If
             If missingBundles > 0 Then
                 ' Hard discrepancy: we baked N OK and only N - missingBundles fully landed in BA2.
-                ' Surface the count in the MessageBox; the per-path breakdown lives in the log
-                ' (Debug build only — Release has Logger.Enabled=False, so no log file is written).
-                ' Don't reference the log here so the Release message doesn't point users at a
-                ' non-existent file.
+                ' ⭐ B1: además del conteo, se NOMBRAN los NPC afectados y el primer archivo que le falta a cada uno.
+                ' Antes esto era sólo "N NPCs failed to pack (M files unaccounted for)" y el desglose vivía en el
+                ' log — que en Release no existe (Logger.Enabled=False), así que el usuario no tenía forma de saber
+                ' a qué NPC volver. Se muestran los primeros 10, como el batch loose muestra 15.
                 summary &= $" ⚠ {missingBundles} NPC{If(missingBundles = 1, "", "s")} failed to pack ({missingSources} file{If(missingSources = 1, "", "s")} unaccounted for)."
+                If packResult.FailedBundles.Count > 0 Then
+                    Dim shownFb = packResult.FailedBundles.Take(10).ToList()
+                    summary &= vbCrLf & "      " & String.Join(vbCrLf & "      ", shownFb)
+                    If packResult.FailedBundles.Count > shownFb.Count Then
+                        summary &= vbCrLf & $"      … y {packResult.FailedBundles.Count - shownFb.Count} más."
+                    End If
+                End If
+                ' Sus archivos sueltos NO se borraron (el bundle se descarta entero antes de empaquetar nada),
+                ' así que volver a guardar reintenta sin tener que re-hornear.
+                summary &= vbCrLf & "      (Los archivos sueltos de esos NPC se conservaron: se puede reintentar el guardado.)"
             End If
             Return (summary, True)
         Catch ex As Exception

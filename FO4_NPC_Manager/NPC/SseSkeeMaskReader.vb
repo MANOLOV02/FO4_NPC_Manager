@@ -25,17 +25,26 @@ Public Module SseSkeeMaskReader
     ''' Returns True iff at least one layer contributed. No-op (False) when the shape carries no MASKT — i.e.
     ''' vanilla / non-dyeable heads are byte-unchanged. Textures are decoded through <paramref name="decode"/>
     ''' (path → linear RGBA at w×h) so this stays render-agnostic.</summary>
-    ''' <summary>Cheap gate: True iff the shape carries a non-empty MASKT (skee mask layers) — WITHOUT decoding
-    ''' any texture. Lets the bake decide whether to do the expensive complexion decode+compose at all.</summary>
+    ''' <summary>Cheap gate: True iff this shape has skee mask layers que el compose VA A APLICAR — sin decodificar
+    ''' ninguna textura.
+    '''
+    ''' <para>⭐⭐ ES <see cref="ReadNifMaskLayersRaw"/>, NO una condición paralela. Antes miraba SÓLO la presencia
+    ''' de MASKT, mientras el lector descarta las capas con <c>opacity &lt;= 0</c> y el default de un MASKA AUSENTE
+    ''' es <c>0.0</c> ⇒ un shape con MASKT y sin MASKA pasaba el gate y perdía TODAS sus capas. Eso producía dos
+    ''' fallos silenciosos a la vez:
+    '''   1. el bake entraba al camino PLEGADO, no componía nada, y salía por el return de
+    '''      <c>WriteSseFaceDiffuseWithOverlays</c> SIN borrar los artefactos del fold anterior (stale al BSA);
+    '''   2. el RENDER usaba ya <c>ReadNifMaskLayersRaw(...).Count &gt; 0</c> como gate ⇒ para ESE mismo NPC el
+    '''      render NO plegaba y el bake SÍ. Violación directa de RENDER == BAKE.
+    ''' Con el gate derivado del lector, los dos caminos comparten literalmente la misma condición y no se pueden
+    ''' desincronizar. El costo sigue siendo el de leer tres bloques de extra data: cero decodes.</para>
+    '''
+    ''' <para>⚠️ RESIDUO CONOCIDO Y ACOTADO: el compose además saltea las capas cuya TEXTURA no se puede leer
+    ''' (<see cref="ResolveLayersForCpu"/>, en paridad con el GPU). Eso NO se puede saber sin tocar el disco, así que
+    ''' el gate puede dar True y el compose devolver False en ese caso. Es un ERROR real (la máscara existe y no se
+    ''' pudo cargar), y por eso el bake lo REPORTA en vez de tragárselo — ver FaceGenBuilder.RecordTextureFailure.</para></summary>
     Public Function HasMaskLayers(nif As Nifcontent_Class_Manolo, shape As NiflySharp.INiShape) As Boolean
-        If nif Is Nothing OrElse nif.Blocks Is Nothing OrElse shape Is Nothing OrElse shape.ExtraDataList Is Nothing Then Return False
-        Dim blocks = nif.Blocks
-        For Each edRef In shape.ExtraDataList.References
-            If edRef.Index < 0 OrElse edRef.Index >= blocks.Count Then Continue For
-            Dim se = TryCast(blocks(edRef.Index), NiflySharp.Blocks.NiStringsExtraData)
-            If se IsNot Nothing AndAlso se.Name?.String = "MASKT" AndAlso se.Data IsNot Nothing AndAlso se.Data.Count > 0 Then Return True
-        Next
-        Return False
+        Return ReadNifMaskLayersRaw(nif, shape).Count > 0
     End Function
 
     ''' <summary>Una capa skee CRUDA (sin texturas decodificadas): lo que se lee del NIF y se propaga al render.
@@ -46,6 +55,13 @@ Public Module SseSkeeMaskReader
     Public Structure SkeeMaskLayerRaw
         Public TexturePath As String
         Public ColorArgb As UInteger       ' MASKC crudo (puede ser un sentinel skin/hair; lo resuelve BuildSkeeMaskLayer)
+        ''' <summary>⭐ True sólo si la capa DECLARA un MASKC. False = "esta capa no trae color".
+        ''' Existe porque el valor de <see cref="ColorArgb"/> NO puede distinguir las dos cosas: el default que se
+        ''' usaba para un MASKC ausente era <c>0xFFFFFFFF</c>, que ES el sentinel <c>SkeePresetHair</c> de skee
+        ''' (SseOverlayCompositor.SkeePresetHair) ⇒ una capa sin color se interpretaba como "preset de pelo", y como
+        ''' los dos callers pasan <c>hairRgb = Nothing</c>, terminaba cayendo al decode literal de 0xFFFFFFFF =
+        ''' BLANCO OPACO pintado con la cobertura de la máscara. Un fallo de "no hay dato" disfrazado de dato.</summary>
+        Public HasColor As Boolean
         Public Opacity As Double           ' MASKA
         Public LayerType As Integer        ' MASKT del NIF = 1 (Mask)
         Public Blend As SseOverlayCompositor.SseBlendMode
@@ -78,10 +94,16 @@ Public Module SseSkeeMaskReader
         For i = 0 To maskt.Data.Count - 1
             Dim opacity As Double = If(maska IsNot Nothing AndAlso maska.Data IsNot Nothing AndAlso i < maska.Data.Count, maska.Data(i), 0.0)
             If opacity <= 0.0 Then Continue For                                   ' skee skips alpha==0 layers
-            ' MASKC=hair-preset (-1) collides with opaque white; skee treats the raw int as the sentinel first.
+            ' ⭐ MASKC AUSENTE ≠ 0xFFFFFFFF. El raw int SÍ se trata como sentinel primero (skee hace eso: -1 =
+            ' preset de pelo colisiona con blanco opaco) — pero ESO SÓLO VALE CUANDO LA CAPA DECLARA UN COLOR.
+            ' Si no hay MASKC no hay color, y eso se propaga como HasColor=False en vez de inventar un valor que
+            ' además es exactamente el sentinel. BuildSkeeMaskLayer resuelve "sin color" → blanco (mismo valor
+            ' que antes, sin fuente para otro) pero por la rama correcta y sin pasar por la resolución de presets.
+            Dim hasC As Boolean = (maskc IsNot Nothing AndAlso maskc.Data IsNot Nothing AndAlso i < maskc.Data.Count)
             outLayers.Add(New SkeeMaskLayerRaw With {
                 .TexturePath = maskt.Data(i)?.Content,
-                .ColorArgb = If(maskc IsNot Nothing AndAlso maskc.Data IsNot Nothing AndAlso i < maskc.Data.Count, maskc.Data(i), &HFFFFFFFFUI),
+                .ColorArgb = If(hasC, maskc.Data(i), &HFFFFFFFFUI),
+                .HasColor = hasC,
                 .Opacity = opacity,
                 .LayerType = 1,                                                  ' MASKT del NIF = type Mask
                 .Blend = SseOverlayCompositor.SseBlendMode.Normal})              ' MASKT del NIF = blend normal
@@ -91,7 +113,15 @@ Public Module SseSkeeMaskReader
 
     ''' <summary>Resuelve capas crudas → <see cref="SseOverlayCompositor.SseOverlay"/> (decodifica las texturas y
     ''' sustituye los sentinels skin/hair). Es el adaptador del path CPU; el GPU usa su propio adaptador (sube los
-    ''' bytes como textura) a partir de las MISMAS capas crudas.</summary>
+    ''' bytes como textura) a partir de las MISMAS capas crudas.
+    '''
+    ''' <para>⭐⭐ UNA CAPA CUYA TEXTURA NO SE PUEDE LEER SE DESCARTA — igual que el GPU
+    ''' (<c>SseFoldLayerStack.BuildSkeeGpuLayers</c>: <c>If texBytes Is Nothing Then Continue For</c>).
+    ''' ⛔ Antes se agregaba igual con <c>Texture = Nothing</c>, y eso NO era inerte: en
+    ''' <see cref="SseOverlayCompositor.ApplyOverlays"/> el sample de una capa sin textura vale <c>1.0</c> en los
+    ''' cuatro canales, así que un type-1 (Mask) daba <c>la = 1.0 × color.a</c> ⇒ COBERTURA TOTAL: el color plano
+    ''' de la capa pintaba LA CARA ENTERA. Y como el GPU sí la descartaba, el mismo NPC salía distinto según el
+    ''' flag de la cámara — o sea que además rompía la paridad CPU==GPU.</para></summary>
     Public Function ResolveLayersForCpu(raw As IList(Of SkeeMaskLayerRaw), w As Integer, h As Integer,
                                         decode As Func(Of String, Integer, Integer, Single()),
                                         skinRgb As Double(), hairRgb As Double()) As List(Of SseOverlayCompositor.SseOverlay)
@@ -99,10 +129,21 @@ Public Module SseSkeeMaskReader
         If raw Is Nothing Then Return built
         For Each l In raw
             Dim texRgba As Single() = Nothing
-            If Not String.IsNullOrEmpty(l.TexturePath) AndAlso l.LayerType <> 2 AndAlso decode IsNot Nothing Then
+            If l.LayerType <> 2 Then
+                ' Type != 2 (Solid) EXIGE textura: sin ella no hay cobertura, sólo un color plano a pantalla completa.
+                If String.IsNullOrEmpty(l.TexturePath) OrElse decode Is Nothing Then
+                    Dim lpEmpty = l.TexturePath
+                    Logger.LogLazy(Function() $"[SSE-SKEE] capa DESCARTADA (type={l.LayerType}): sin ruta de máscara ('{lpEmpty}') — sin textura la cobertura sería TOTAL")
+                    Continue For
+                End If
                 texRgba = decode(l.TexturePath, w, h)
+                If texRgba Is Nothing Then
+                    Dim lpFail = l.TexturePath
+                    Logger.LogLazy(Function() $"[SSE-SKEE] capa DESCARTADA: la máscara '{lpFail}' no se pudo leer/decodificar (= lo que hace el camino GPU)")
+                    Continue For
+                End If
             End If
-            built.Add(SseOverlayCompositor.BuildSkeeMaskLayer(l.ColorArgb, l.Opacity, texRgba, l.LayerType, l.Blend, skinRgb, hairRgb))
+            built.Add(SseOverlayCompositor.BuildSkeeMaskLayer(l.ColorArgb, l.Opacity, texRgba, l.LayerType, l.Blend, skinRgb, hairRgb, l.HasColor))
         Next
         Return built
     End Function
@@ -140,8 +181,18 @@ Public Module SseSkeeMaskReader
         For Each l In ordered
             If l.Alpha <= 0.0 Then Continue For
             Dim texRgba As Single() = Nothing
-            If Not String.IsNullOrEmpty(l.TexturePath) AndAlso l.LayerType <> 2 Then texRgba = decode(l.TexturePath, w, h)  ' type 2 = sólido
-            built.Add(SseOverlayCompositor.BuildSkeeMaskLayer(l.ColorArgb, l.Alpha, texRgba, l.LayerType, l.Blend, skinRgb, hairRgb))
+            If l.LayerType <> 2 Then                                    ' type 2 = sólido (no lleva textura)
+                ' MISMA regla que ResolveLayersForCpu: sin textura la cobertura sería TOTAL. Ver la nota ahí.
+                If String.IsNullOrEmpty(l.TexturePath) Then Continue For
+                texRgba = decode(l.TexturePath, w, h)
+                If texRgba Is Nothing Then
+                    Dim lpTd = l.TexturePath
+                    Logger.LogLazy(Function() $"[SSE-SKEE] TintData: capa DESCARTADA, máscara '{lpTd}' no decodifica")
+                    Continue For
+                End If
+            End If
+            ' hasColor:=True — el TintData XML declara el color explícitamente (a diferencia de un MASKC ausente).
+            built.Add(SseOverlayCompositor.BuildSkeeMaskLayer(l.ColorArgb, l.Alpha, texRgba, l.LayerType, l.Blend, skinRgb, hairRgb, hasColor:=True))
         Next
         If built.Count = 0 Then Return False
         SseOverlayCompositor.ApplyOverlays(acc, built, w, h)

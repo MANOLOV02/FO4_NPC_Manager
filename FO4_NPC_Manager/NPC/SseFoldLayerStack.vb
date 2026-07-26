@@ -59,8 +59,14 @@ Friend Module SseFoldLayerStack
                                              skinRgb As Double(),
                                              w As Integer, h As Integer,
                                              host As NpcRenderHost,
-                                             measureParity As Boolean) As Integer
+                                             measureParity As Boolean,
+                                             Optional outW As Integer = 0, Optional outH As Integer = 0) As Integer
         If host Is Nothing OrElse complexionSrgb Is Nothing OrElse w <= 0 OrElse h <= 0 Then Return 0
+        ' Tamaño de SALIDA (CharGen Options). 0/omitido = nativo ⇒ comportamiento previo, bit-inerte.
+        ' TODA la cadena (facetint, fold, capas, unfold) sigue corriendo a la resolución NATIVA del complexion:
+        ' el resample es lo ÚLTIMO, igual que en el bake. Bajarlo antes cambiaría el resultado del pliegue.
+        If outW <= 0 Then outW = w
+        If outH <= 0 Then outH = h
         Dim npix = w * h
         Dim seedTex = 0, tintTex = 0, complexTex = 0, detTex = 0, foldedTex = 0, srgbTex = 0
         Try
@@ -131,13 +137,27 @@ Friend Module SseFoldLayerStack
             Dim accCpu As Single() = Nothing
 
             ' --- 3. CAPAS (skee MASKT + Face [Ovl]) SOBRE el base plegado — mismo orden que el CPU/bake. ---
+            Dim stackLayers As New List(Of FaceTintLayerInput)
             If HasWork(skeeRaw, faceOvl) Then
-                Dim stackLayers As New List(Of FaceTintLayerInput)
                 stackLayers.AddRange(BuildSkeeGpuLayers(skeeRaw, skinRgb))
                 stackLayers.AddRange(BuildFaceOverlayGpuLayers(faceOvl))
-                ' Semántica del ComposeGpu viejo, preservada: había trabajo pero NINGUNA capa GPU se pudo
-                ' armar (texturas ausentes) ⇒ FALLO (0). No se degrada en silencio.
-                If stackLayers.Count = 0 Then Return 0
+                ' ⛔ ACÁ HABÍA UN `Return 0` ("había trabajo pero ninguna capa se pudo armar ⇒ FALLO, no se degrada
+                ' en silencio"). Se elimina por DOS razones:
+                '   1. TIRABA EL FOLD ENTERO ya pagado (decode del complexion a resolución nativa + detail +
+                '      facetint + pase de fold) y, como nada cachea el fallo, el render lo reintentaba en cada
+                '      refresh: el preview se quedaba "cargando". Un fallo caro y cíclico es peor que el síntoma
+                '      que quería evitar.
+                '   2. ROMPÍA LA PARIDAD CPU/GPU: `ComposeCpu` en el mismo caso NO falla — compone cero capas y
+                '      sigue. Dos caminos que deben "dar lo mismo" no pueden diferir en si abortan.
+                ' El fold de la BASE es válido y correcto por sí solo; lo que falta son las capas, y eso se
+                ' REPORTA (los composers ya loguean [SSE-OVL]/[SSE-SKEE] la textura que no pudieron leer).
+                If stackLayers.Count = 0 Then
+                    Dim nSk = If(skeeRaw Is Nothing, 0, skeeRaw.Count), nOv = If(faceOvl Is Nothing, 0, faceOvl.Count)
+                    Logger.LogLazy(Function() $"[SSE-FOLD] 0 capas GPU armadas de skee={nSk} ovl={nOv} (texturas ausentes/ilegibles) — se conserva el fold de la BASE, sin capas. Ver [SSE-OVL]/[SSE-SKEE].")
+                End If
+            End If
+
+            If stackLayers.Count > 0 Then
                 If measureParity Then
                     ' SANDBOX (SseMeasureFoldParity, Debug opt-in): el ÚNICO readback del camino — acá se
                     ' MIDE que las dos réplicas dan lo mismo (RMS), en vez de suponerlo.
@@ -206,9 +226,18 @@ Friend Module SseFoldLayerStack
                 End If
             End If
 
-            ' --- 4. sRGB→lin FINAL por GPU (mode 2 del shader compartido, cvt srgb→linear = la MISMA curva
-            ' IEC que SseFaceGenBaker.Srgb2Lin). El resultado queda Rgba32f LINEAL y se instala directo. ---
-            Dim linTex = FaceTintCompositor.ConvertTextureSpace(host.CompositorState, srgbTex, w, h, 1, 0)
+            ' --- 5. RESAMPLE al tamaño de CharGen Options + sRGB→lin FINAL, EN UN SOLO PASE. ---
+            ' El cvt (mode 2 del shader compartido, curva IEC = SseFaceGenBaker.Srgb2Lin) renderiza un quad
+            ' full-screen a un FBO de outW×outH muestreando `srgbTex` con UV normalizadas. Si outW/outH son
+            ' MENORES que w/h, ese muestreo YA ES el downsample bilineal — y las texturas del compositor se
+            ' allocan con MinFilter/MagFilter=Linear + ClampToEdge (AllocateResultTextureAndFbo), que es
+            ' EXACTAMENTE el filtro que replican FaceTintCpuCompositor.ResampleBgra (bake) y ResampleRgbaFloat
+            ' (réplica CPU de esto). No hace falta un pase aparte.
+            ' ⭐ EL ORDEN IMPORTA Y ES PARTE DEL CONTRATO: se resamplea SOBRE LOS VALORES sRGB y RECIÉN DESPUÉS
+            ' se convierte a lineal — bilinear en sRGB ≠ bilinear en lineal. Es el mismo orden que el bake
+            ' (que resamplea el BGRA sRGB antes de encodear) y el que hace la réplica CPU. Si alguna vez se
+            ' mueve el resample después del cvt, CPU, GPU y bake dejan de coincidir.
+            Dim linTex = FaceTintCompositor.ConvertTextureSpace(host.CompositorState, srgbTex, outW, outH, 1, 0)
             If linTex = 0 Then Return 0
             Return linTex
         Finally
@@ -317,10 +346,27 @@ Friend Module SseFoldLayerStack
         End Try
     End Function
 
-    ''' <summary>True si hay algo que componer (evita subir texturas al pedo).</summary>
+    ''' <summary>True si hay algo que componer (evita subir texturas al pedo).
+    '''
+    ''' <para>⭐⭐ EL PREDICADO TIENE QUE SER EL MISMO QUE CONSUMEN LOS BUILDERS, o esto se vuelve un
+    ''' "gate dice sí / compose no hace nada" con consecuencias caras. ⛔ Decía <c>faceOvl.Count &gt; 0</c>, que
+    ''' era correcto SÓLO mientras el caller le pasaba una lista ya filtrada por <c>DiffusePath</c>. Al pasar a
+    ''' mandar TODOS los nodos <c>Face [Ovl]</c> (para que un overlay solo-normal deje de desaparecer), un nodo
+    ''' sin diffuse hacía <c>HasWork</c>=True, <see cref="BuildFaceOverlayGpuLayers"/> devolvía 0 capas, y el
+    ''' <c>Return 0</c> de abajo TIRABA A LA BASURA el fold entero — después de haber pagado el decode del
+    ''' complexion a resolución NATIVA (4096² con COtR), el del detail, el compose del facetint y el pase de
+    ''' fold. Y como nada cachea el fallo, se repetía en CADA refresh del render: el preview se quedaba
+    ''' "cargando".</para>
+    '''
+    ''' <para>Ahora se pregunta exactamente lo que los builders pueden consumir: una capa skee sólida (type 2,
+    ''' no necesita textura) o con ruta de máscara, y un overlay de cara con diffuse y opacidad &gt; 0
+    ''' (<see cref="SseOverlayCompositor.HasBakeableFaceOverlays"/> = el mismo filtro de
+    ''' <see cref="BuildFaceOverlayGpuLayers"/>).</para></summary>
     Friend Function HasWork(skeeRaw As IList(Of SseSkeeMaskReader.SkeeMaskLayerRaw),
                             faceOvl As IList(Of RaceMenuJslot.JslotOverlayNode)) As Boolean
-        Return (skeeRaw IsNot Nothing AndAlso skeeRaw.Count > 0) OrElse (faceOvl IsNot Nothing AndAlso faceOvl.Count > 0)
+        Dim anySkee = skeeRaw IsNot Nothing AndAlso
+                      skeeRaw.Any(Function(l) l.LayerType = 2 OrElse Not String.IsNullOrEmpty(l.TexturePath))
+        Return anySkee OrElse SseOverlayCompositor.HasBakeableFaceOverlays(faceOvl)
     End Function
 
     ''' <summary>CPU: compone las capas sobre <paramref name="acc"/> (sRGB, in place). Réplica exacta de skee.</summary>
@@ -380,7 +426,10 @@ Friend Module SseFoldLayerStack
         If raw Is Nothing Then Return outL
         For Each l In raw
             ' Resuelve el color/sentinel con la MISMA función del CPU (no se re-implementa el ×2 del preset hair).
-            Dim cpuLayer = SseOverlayCompositor.BuildSkeeMaskLayer(l.ColorArgb, l.Opacity, Nothing, l.LayerType, l.Blend, skinRgb, Nothing)
+            ' ⭐ `l.HasColor` VA SÍ O SÍ: sin él este adaptador usaría el default True y volvería a tratar un MASKC
+            ' AUSENTE como el sentinel de pelo (0xFFFFFFFF), justo lo que el flag vino a arreglar — y el CPU, que sí
+            ' lo pasa, daría OTRO color para la misma capa. Es una divergencia CPU-vs-GPU en el VALOR, invisible.
+            Dim cpuLayer = SseOverlayCompositor.BuildSkeeMaskLayer(l.ColorArgb, l.Opacity, Nothing, l.LayerType, l.Blend, skinRgb, Nothing, l.HasColor)
             Dim cr = ClampByte(cpuLayer.Color(0)), cg = ClampByte(cpuLayer.Color(1)), cb = ClampByte(cpuLayer.Color(2))
             Dim opa = CSng(cpuLayer.Color(3))
             Dim bop = SseOverlayCompositor.BlendOpFromSseMode(l.Blend).BlendOp

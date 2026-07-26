@@ -106,10 +106,24 @@ Public Class CharGenOptionsForm
         ' El enable/disable + derivación All-vs-per-layer de N/S lo maneja UpdateEnabledState (corre DESPUÉS). Acá labels + tag.
         LabelNormal.Enabled = True
         LabelSpecular.Enabled = Not isSse
+        ' ⭐⭐ BC5 NO ES VALIDO PARA EL _msn DE SSE, pero **NO se saca de la lista**: el indice de este combo ES
+        ' el valor del enum (Bc5=0/Unc=1/Bc7=2/Bc3=3) y de esa identidad dependen Load, la derivacion del modo
+        ' All, el Reset y el Guardado. Sacar un item obliga a un mapa indice→enum y a migrar esos cuatro sitios;
+        ' si uno queda sin migrar, elegir "BC3" persiste OTRO formato EN SILENCIO. Se deja la lista intacta, se
+        ' ETIQUETA el item, y el rechazo se hace al aceptar (ver ButtonOK_Click). El invariante queda intacto.
+        '
+        ' POR QUE no es valido: BC5 es de DOS canales — no tiene B (la Z de la normal model-space) ni alpha. Y el
+        ' alpha del _msn de cabeza es la MASCARA DE SPECULAR. MEDIDO sobre los BSA vanilla de SSE (probe
+        ' --msnscan, 46 _msn, resolviendo la pila COMPLETA de overrides porque 21 de los de cara estaban
+        ' sombreados por replacers sueltos): los 24 de CABEZA son 24/24 uncompressed 32bpp CON alpha
+        ' (mask 0xFF000000); los 22 que no son de cara son 22/22 BC1, que tampoco tiene alpha. Bethesda comprime
+        ' exactamente donde no hay alpha y deja sin comprimir exactamente donde lo hay.
+        ' BC3 SI es valido: pierde calidad en el RGB (medido: RMS 5,07/255 sobre model-space) pero CONSERVA el
+        ' alpha en su bloque propio. Perder precision es una compensacion que elige el usuario; perder un canal no.
         Dim selN = ComboFormatN.SelectedIndex
         ComboFormatN.Items.Clear()
         ComboFormatN.Items.AddRange(If(isSse,
-            New Object() {"BC5", "Uncompressed (default)", "BC7", "BC3"},
+            New Object() {"BC5 (not valid for SSE)", "Uncompressed (default)", "BC7", "BC3"},
             New Object() {"BC5 (default)", "Uncompressed", "BC7", "BC3"}))
         If selN >= 0 AndAlso selN < ComboFormatN.Items.Count Then ComboFormatN.SelectedIndex = selN
     End Sub
@@ -481,6 +495,27 @@ Public Class CharGenOptionsForm
     End Sub
 
     Private Sub ButtonOK_Click(sender As Object, e As EventArgs) Handles ButtonOK.Click
+        ' ⭐ RECHAZO de BC5 para el _msn de SSE. Va ACA y no deshabilitando OK: es una sola condicion, en un solo
+        ' sitio, sin estado que mantener sincronizado con cada cambio de combo/radio. ButtonOK NO tiene
+        ' DialogResult en el Designer (lo setea el final de este handler), asi que un Return temprano NO cierra
+        ' el dialogo — el usuario se queda adentro y puede corregir.
+        ' Solo muerde en PER-LAYER: es el unico modo que persiste el formato del normal (en All se deriva a
+        ' Uncompressed dentro de OutputSettings, y el combo esta deshabilitado).
+        ' ⛔ La barrera del RUNTIME (FaceGenBuilder.ClampMsnDxgiForSse) SIGUE existiendo: cubre un config
+        ' persistido de antes de esta validacion, que esta UI no puede alcanzar. Las dos hacen falta.
+        If Config_App.Current IsNot Nothing AndAlso Config_App.Current.Game = Config_App.Game_Enum.Skyrim _
+           AndAlso RadioPerLayer.Checked AndAlso ComboFormatN.SelectedIndex = 0 Then   ' 0 = Bc5 (indice == enum)
+            MessageBox.Show(Me,
+                "BC5 cannot be used for the Skyrim head normal map (_msn)." & vbCrLf & vbCrLf &
+                "BC5 stores only 2 channels: it has no blue (the Z axis of the model-space normal) and no alpha " &
+                "(the specular mask). Measured against the vanilla Skyrim archives: all 24 head _msn textures are " &
+                "uncompressed 32-bit WITH alpha." & vbCrLf & vbCrLf &
+                "Pick Uncompressed (vanilla), BC7, or BC3. BC3 loses RGB precision but keeps the alpha.",
+                "Invalid normal format", MessageBoxButtons.OK, MessageBoxIcon.Warning)
+            ComboFormatN.Focus()
+            Return
+        End If
+
         Dim c = Config_App.Current
         c.Setting_FaceGenPerLayerResolution = RadioPerLayer.Checked
         c.Setting_FaceGenDiffuseResolution = IndexToRes(ComboDiffuse.SelectedIndex)
