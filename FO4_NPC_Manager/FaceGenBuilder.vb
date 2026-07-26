@@ -813,7 +813,8 @@ Public Module FaceGenBuilder
                                 ' Bake RaceMenu FACE overlays into a per-NPC diffuse (slot 0). Gated + no-op for
                                 ' vanilla NPCs (no face overlays) ⇒ the facetint-only path above is unchanged.
                                 _sseFoldUsedSharedNeutralDetail = False
-                                WriteSseFaceDiffuseWithOverlays(nif, cloned, npcFormID, originPlugin, pluginManager, npcData, appliedPresets, willBePacked, host:=host)
+                                ' ⛔ SIN host: el fold es 100% CPU y no debe poder leer nada del render.
+                                WriteSseFaceDiffuseWithOverlays(nif, cloned, npcFormID, originPlugin, pluginManager, npcData, appliedPresets, willBePacked)
                                 result.UsedSharedNeutralDetail = result.UsedSharedNeutralDetail OrElse _sseFoldUsedSharedNeutralDetail
                             ElseIf host IsNot Nothing OrElse Not WriteGPUSandboxOutput Then
                                 BakeFaceTextures(nif, cloned, srcNif, srcShape,
@@ -2121,6 +2122,39 @@ Public Module FaceGenBuilder
         Return "data\" & relUnderData
     End Function
 
+    ''' <summary>⭐⭐ Path embebido para los slots del texture-set que NO son el facetint: 0 (diffuse plegado),
+    ''' 1 (<c>_msn</c>) y 3 (detail). Van SIN prefijo, relativos a <c>Data\Textures\</c>.
+    '''
+    ''' <para>⛔ EL BUG QUE ESTO ARREGLA — <b>cara marrón SÓLO en el camino PLEGADO</b>. El prefijo <c>data\</c>
+    ''' de <see cref="EmbeddedEngineTexPath"/> se midió contra el <b>slot 6</b> del NIF vanilla y se aplicó a los
+    ''' SEIS call sites. Es correcto sólo para el 6: ese slot lo carga <c>ApplyFaceTintToHeadMaterial</c>
+    ''' (0x1403BC400) por un path que el motor arma él mismo con el literal <c>data\Textures\…FaceTint\%s\%08X.dds</c>
+    ''' (@0x1417E5440). Los demás slots los carga <c>OnLoadTextureSet</c>, que es RELATIVO a <c>Data\Textures\</c>
+    ''' y antepone <c>textures\</c> cuando falta ⇒ un <c>data\Textures\X</c> se resuelve como
+    ''' <c>Data\Textures\<b>data\Textures\</b>X</c> ⇒ NO EXISTE ⇒ slot NULL. Es el MISMO modo de fallo que el
+    ''' prefijo <c>Textures\</c> que aquel helper vino a corregir, trasladado a los otros slots.</para>
+    '''
+    ''' <para><b>MEDIDO</b> contra un FaceGeom horneado por el CK
+    ''' (<c>C:\tmp\_facegen_mod\CK\…\FaceGeom\nashajirr.esp\00005900.NIF</c>): el CK escribe
+    ''' <c>Data\Textures\Actors\character\FaceGenData\FaceTint\nashajirr.esp\00005900.dds</c> en el slot 6 y
+    ''' <c>Actors\Character\KhajiitMale\KhajiitMaleHead.dds</c> (slot 0),
+    ''' <c>…KhajiitMaleHead_msn.dds</c> (slot 1) y <c>actors\character\KhajiitMale\facedetails\scar05.dds</c>
+    ''' (slot 3) — los tres SIN prefijo. Por eso el bake NO plegado (que no toca 0/1/3) sale bien y el PLEGADO
+    ''' (que los reescribe) daba cara marrón: el diffuse quedaba NULL y el detail caía al default 0.251.</para>
+    '''
+    ''' <para>⛔ GAME-AWARE, mismo criterio que <see cref="EmbeddedEngineTexPath"/>: sólo SSE. En FO4 el bake
+    ''' embebe <c>Data\Textures\…</c> en los slots 0/1/7 y ESO es lo fiel al CK (ver el bloque de
+    ''' <c>canonicalNifPath</c> en BakeFaceTextures) ⇒ no se toca.</para></summary>
+    Private Function EmbeddedTexSetPath(relUnderData As String) As String
+        If String.IsNullOrEmpty(relUnderData) Then Return relUnderData
+        If Config_App.Current Is Nothing OrElse Config_App.Current.Game <> Config_App.Game_Enum.Skyrim Then Return relUnderData
+        Const texPrefix As String = "Textures\"
+        If relUnderData.StartsWith(texPrefix, StringComparison.OrdinalIgnoreCase) Then
+            Return relUnderData.Substring(texPrefix.Length)
+        End If
+        Return relUnderData
+    End Function
+
     ''' <summary>Borra los artefactos que SÓLO produce el camino PLEGADO — <c>FaceDiffuse\&lt;plugin&gt;\&lt;id&gt;.dds</c> y
     ''' <c>FaceNormal\&lt;plugin&gt;\&lt;id&gt;.dds</c> — cuando este bake NO pliega. Sin esto quedan de un bake plegado anterior
     ''' y el packer los mete al BSA (toma el Source del DISCO), aunque el NIF nuevo apunte al complexion vanilla.
@@ -2155,8 +2189,7 @@ Public Module FaceGenBuilder
                                                 willBePacked As Boolean, Optional forcedSuffix As String = Nothing,
                                                 Optional complexionPathOverride As String = Nothing,
                                                 Optional normalPathOverride As String = Nothing,
-                                                Optional detailPathOverride As String = Nothing,
-                                                Optional host As NpcRenderHost = Nothing)
+                                                Optional detailPathOverride As String = Nothing)
         Try
             Dim forced = Not String.IsNullOrEmpty(forcedSuffix)
             ' El toggle "Bake RaceMenu overlays" NO aplica al forzado (_2c): el _2c ejercita el replacer completo
@@ -2307,7 +2340,8 @@ Public Module FaceGenBuilder
             IO.Directory.CreateDirectory(IO.Path.GetDirectoryName(outFile))
             IO.File.WriteAllBytes(outFile, outDds)
             MaybeWriteTgaBeside(outFile, dOutW, dOutH, dOutBgra)
-            ts.Textures(0).Content = EmbeddedEngineTexPath(dir & $"{fgLocal:X8}{embeddedSuffix}")
+            ' Slot 0 = texture-set normal ⇒ SIN prefijo (ver EmbeddedTexSetPath: el `data\` es SÓLO del slot 6).
+            ts.Textures(0).Content = EmbeddedTexSetPath(dir & $"{fgLocal:X8}{embeddedSuffix}")
 
             ' NEUTRALIZAR slot 3 (detail/Displacement): el AMPLIFY (detail_real + off)·255/64 YA se plegó en el diffuse
             ' (slot 0). El engine aplica ese amplify SIEMPRE; para que sea IDENTIDAD hay que dejar el slot 3 en
@@ -2348,7 +2382,9 @@ Public Module FaceGenBuilder
                             Logger.LogLazy(Function() $"[FACEBAKE][SSE] no se pudo comparar el detail-neutral previo: {exCmp.Message}")
                         End Try
                         IO.File.WriteAllBytes(detFile, detailNeutral)
-                        ts.Textures(3).Content = EmbeddedEngineTexPath(detEmbed)
+                        ' Slot 3 = texture-set normal ⇒ SIN prefijo (el CK escribe p.ej.
+                        ' 'actors\character\KhajiitMale\facedetails\scar05.dds'). Ver EmbeddedTexSetPath.
+                        ts.Textures(3).Content = EmbeddedTexSetPath(detEmbed)
                         ' Non-forced (release/loose/packed) usa el detail neutral COMPARTIDO por plugin ⇒ el packer lo
                         ' empaqueta una vez. El forced (_2c, sandbox debug) nunca packea, no marca el flag.
                         If Not forced Then _sseFoldUsedSharedNeutralDetail = True
@@ -2452,7 +2488,8 @@ Public Module FaceGenBuilder
                                         IO.Directory.CreateDirectory(IO.Path.GetDirectoryName(nFile))
                                         IO.File.WriteAllBytes(nFile, mDds)
                                         MaybeWriteTgaBeside(nFile, nOutW, nOutH, nOutBgra)
-                                        ts.Textures(1).Content = EmbeddedEngineTexPath(ndir & $"{fgLocal:X8}{embeddedSuffix}")
+                                        ' Slot 1 = texture-set normal ⇒ SIN prefijo. Ver EmbeddedTexSetPath.
+                                        ts.Textures(1).Content = EmbeddedTexSetPath(ndir & $"{fgLocal:X8}{embeddedSuffix}")
                                         Logger.LogLazy(Function() $"[FACEBAKE][SSE] face normal+overlays -> {nRel} ({mDds.Length}b, {mw}x{mh})")
                                     End If
                                 End If
@@ -2632,7 +2669,14 @@ Public Module FaceGenBuilder
         ' RACE-fallback rule the live render and the EditFace swatch use. Single source of truth
         ' (MainForm.ResolveHairPaletteTexture). Empty string when neither source resolves -- the
         ' builder then skips the palette branch; RGB-CLFM (HasColor) still works.
-        Dim hairLutPathBake As String = NpcMaterialResolver.ResolveHairPaletteTexture(host, state, pluginManager)
+        ' ⛔ NUNCA DESDE EL RENDER. La variante con host (ResolveHairPaletteTexture) recorre
+        ' host.PreviewCtl.Model.meshes = las mallas del NPC EN PANTALLA, no las del que se hornea: en un batch el
+        ' preview queda fijo y todos los NPC del lote recibían SU LUT de pelo como paleta de CEJAS. Violaba el
+        ' contrato declarado en BuildCharGen ("the bake must NEVER read state from the host") y divergía del CLI
+        ' y de Bake All. ResolveHairPaletteTextureForNpc aplica la MISMA prioridad (BGSM del pelo → RACE
+        ' HNAM/HLTX) resolviendo el head part de pelo DEL PROPIO NPC ⇒ misma respuesta, origen per-NPC, y los
+        ' tres caminos de bake (GUI, batch, CLI) hornean idéntico.
+        Dim hairLutPathBake As String = NpcMaterialResolver.ResolveHairPaletteTextureForNpc(state, pluginManager)
 
         Dim built = FaceTintLayerBuilder.Build(
             modelFormID:=npcFormID,

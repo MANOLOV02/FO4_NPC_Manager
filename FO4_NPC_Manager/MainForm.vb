@@ -11172,17 +11172,14 @@ Public Class MainForm
                                           progress As IProgress(Of NpcOverrideSaver.SaveProgress)) As Task(Of (Success As Boolean, Skipped As Boolean, Bundle As NpcFaceGenPacker.BakedNpcBundle, FailureMessage As String, TexWarning As String))
         ReportSaveProgress(progress, "Baking CharGen NIF + textures…", "", False, 0, 0)
 
-        ' Bake the SAME identity the "Build CharGen (loose)" button uses for the rendered NPC: its
-        ' overlay-resolved model source (ModelSourceFormID, else FormID). But ONLY when the NPC being
-        ' baked IS the one currently rendered — in a batch ("Apply to all") save the other NPCs are
-        ' not rendered, so for those we bake their own FormID directly (FaceGenBuilder.BuildCharGen is
-        ' headless: it resolves appearance from the record + overlay, no render-host state).
+        ' ⛔ LA IDENTIDAD DEL BAKE ES EL NPC QUE SE GUARDA, PUNTO. Antes se derivaba de
+        ' `_renderHost.LastRenderedState.ModelSourceFormID` cuando el NPC horneado coincidía con el renderizado.
+        ' Era inerte (NpcStateFactory:128-129: "ModelSourceFormID was never wired in the render path" — siempre
+        ' caía al root), pero dejaba una lectura del RENDER decidiendo dos cosas críticas: qué NPC se hornea y,
+        ' vía GetOriginatingPluginName + ToFaceGenLocalFormID, LA RUTA DE SALIDA del FaceGeom y sus texturas. Si
+        ' alguien cableaba ese campo, el bake de un NPC empezaba a escribir en la ruta de OTRO, en silencio.
+        ' BuildCharGen es headless: resuelve la apariencia del record + overlay, sin estado del host.
         Dim bakeFormID As UInteger = npcFormID
-        Dim rendered = _renderHost?.LastRenderedState
-        If rendered IsNot Nothing AndAlso rendered.RootNpcFormID = npcFormID Then
-            bakeFormID = If(rendered.ModelSourceFormID <> 0UI, rendered.ModelSourceFormID,
-                            If(rendered.FormID <> 0UI, rendered.FormID, npcFormID))
-        End If
 
         ' GL-bound bake (FaceTintCompositor GPU pipeline + GL.GetTexImage readback) — MUST stay on
         ' the UI thread, which owns the OpenGL context. Runs synchronously: no await has happened
