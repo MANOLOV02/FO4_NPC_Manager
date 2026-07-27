@@ -181,10 +181,7 @@ Public Module NpcApplyScriptEmitter
         ' the script GONE, so we strip it, and whatever is already in a running save stays there.
         If spec Is Nothing AndAlso enabled AndAlso hadOurs Then
             Dim isFemaleCleanup = (npcSpec.AcbsFlags And 1UI) <> 0UI
-            spec = New NpcVmadBuilder.VmadScriptSpec With {.Name = ScriptNameFor(game)}
-            spec.Properties.Add(NpcVmadBuilder.VmadPropertySpec.FromBool("IsFemale", isFemaleCleanup))
-            spec.Properties.Add(NpcVmadBuilder.VmadPropertySpec.FromInt(VersionPropertyName, 0))
-            spec = StampVersion(spec)
+            spec = BuildCleanupSpec(game, isFemaleCleanup)
         End If
 
         ' UpsertScript(Nothing) removes ours and keeps the rest; it returns Nothing when nothing is left,
@@ -208,9 +205,51 @@ Public Module NpcApplyScriptEmitter
 
     ''' <summary>Replace the version property's placeholder with the hash of everything else in the spec, so
     ''' the number changes exactly when THIS NPC's payload changes. See <see cref="VersionPropertyName"/>.</summary>
+    ''' <summary>⭐ Revisión de la LÓGICA de los .psc. SUBIRLA cada vez que cambie el COMPORTAMIENTO de un
+    ''' apply-script (no cuando cambien los datos de un NPC: eso ya lo cubre el hash del payload).
+    '''
+    ''' <para>POR QUÉ EXISTE (medido 2026-07-26): el sello se calculaba SÓLO sobre el payload, y el script
+    ''' arranca con <c>if appliedVersion == SchemaVersion : return</c>. Entonces un arreglo del .pex no
+    ''' llegaba nunca a los actores cuyo payload no había cambiado — se salteaban en la primera línea, sin
+    ''' correr siquiera <c>RemovePrevious()</c>. Caso concreto: se le agregó al script el barrido de los
+    ''' nodos <c>Face [Ovl*]</c>/<c>Face [SOvl*]</c> y no se ejecutó en ningún actor ya aplicado.</para>
+    '''
+    ''' <para>Al subirla cambia el sello de TODOS los NPC ⇒ cada actor re-aplica UNA vez y después vuelve el
+    ''' comportamiento por-NPC de siempre. Ese re-apply global es el precio, y es intencional: es
+    ''' exactamente lo que hay que pagar para que un cambio de lógica llegue. Por eso NO se toca al editar
+    ''' un NPC — sólo al cambiar los .psc.</para>
+    '''
+    ''' <para>⚠️ ALCANCE REAL: esto sólo sirve para las instancias que de verdad releen sus propiedades del
+    ''' record. Una referencia que YA existe en el savegame del usuario conserva las propiedades que tenía
+    ''' al crearse (medido: copia vieja no cambia, copia nueva por <c>placeatme</c> sí), así que a esa NO la
+    ''' alcanza ningún sello. Ese techo es del diseño de llevar el payload en propiedades del VMAD y no se
+    ''' arregla acá.</para>
+    '''
+    ''' <para>Historial: 1 = comportamiento original. 2 = RemovePrevious barre también los nodos Face +
+    ''' AddOverlays movido al inicio de OnLoad (el registro en skee tiene que preceder al barrido).</para></summary>
+    Private Const ScriptLogicRevision As String = "2"
+
+    ''' <summary>Spec de LIMPIEZA: el NPC se quedó sin overlays/skin/transforms pero YA tenía script nuestro,
+    ''' así que hay que dejarle uno que corra <c>RemovePrevious()</c> y no aplique nada.
+    '''
+    ''' <para>⛔ NO se arma a mano. Antes se construía con SÓLO <c>IsFemale</c> + <c>SchemaVersion</c>, y eso
+    ''' ROMPÍA la garantía de la que el .psc depende explícitamente (cabecera del .psc, regla 2: «toda
+    ''' array-property existe y trae al menos 1 elemento — un CENTINELA»). Una array-property ausente le llega
+    ''' al script como <c>None</c>, y su <c>OvlNode.Length</c> revienta y aborta el stack — o sea que el spec
+    ''' que existe PARA LIMPIAR moría antes de limpiar, sin que nadie lo viera salvo en el Papyrus.log.
+    ''' Comparar contra None tampoco es salida (misma regla 2: el cast revienta igual). Por eso se construye
+    ''' con el builder normal y <c>allowEmpty:=True</c>: las arrays salen por <c>AddArray</c> y el centinela
+    ''' queda garantizado POR CONSTRUCCIÓN, sin duplicar acá la lista de nombres de propiedades.</para></summary>
+    Private Function BuildCleanupSpec(game As Config_App.Game_Enum, isFemale As Boolean) As NpcVmadBuilder.VmadScriptSpec
+        Dim emptyPreset As New LooksmenuLoader.LooksmenuPreset()
+        Return StampVersion(If(game = Config_App.Game_Enum.Skyrim,
+                               BuildSpecSse(emptyPreset, isFemale, allowEmpty:=True),
+                               BuildSpecFo4(emptyPreset, isFemale, allowEmpty:=True)))
+    End Function
+
     Private Function StampVersion(spec As NpcVmadBuilder.VmadScriptSpec) As NpcVmadBuilder.VmadScriptSpec
         If spec Is Nothing Then Return Nothing
-        Dim hash = NpcVmadBuilder.StablePayloadHash(spec, VersionPropertyName)
+        Dim hash = NpcVmadBuilder.StablePayloadHash(spec, VersionPropertyName, ScriptLogicRevision)
         For i = 0 To spec.Properties.Count - 1
             If String.Equals(spec.Properties(i).Name, VersionPropertyName, StringComparison.Ordinal) Then
                 spec.Properties(i) = NpcVmadBuilder.VmadPropertySpec.FromInt(VersionPropertyName, hash)
@@ -223,8 +262,12 @@ Public Module NpcApplyScriptEmitter
     ' ============================================================================================
     ' SSE — RaceMenu / NiOverride
     ' ============================================================================================
+    ''' <param name="allowEmpty">True ⇒ emite el spec COMPLETO (todas las array-properties, con centinela)
+    ''' aunque no haya nada que aplicar, en vez de devolver Nothing. Lo usa el spec de LIMPIEZA: ver
+    ''' <see cref="BuildCleanupSpec"/>.</param>
     Private Function BuildSpecSse(preset As LooksmenuLoader.LooksmenuPreset,
-                                  isFemale As Boolean) As NpcVmadBuilder.VmadScriptSpec
+                                  isFemale As Boolean,
+                                  Optional allowEmpty As Boolean = False) As NpcVmadBuilder.VmadScriptSpec
         ' SSE: los nodos Face se emiten SOLO si el bake NO se los queda (toggle de overlays OFF). Ver SkipFaceOverlays.
         Dim skipFace = SkipFaceOverlays(Config_App.Game_Enum.Skyrim)
 
@@ -323,7 +366,7 @@ Public Module NpcApplyScriptEmitter
             Next
         End If
 
-        If ovNode.Count = 0 AndAlso skSlot.Count = 0 AndAlso ndName.Count = 0 Then Return Nothing
+        If Not allowEmpty AndAlso ovNode.Count = 0 AndAlso skSlot.Count = 0 AndAlso ndName.Count = 0 Then Return Nothing
 
         Dim spec As New NpcVmadBuilder.VmadScriptSpec With {.Name = ScriptNameSse}
         Dim P = spec.Properties
@@ -363,8 +406,11 @@ Public Module NpcApplyScriptEmitter
     ' ============================================================================================
     ' FO4 — LooksMenu / Overlays + BodyGen
     ' ============================================================================================
+    ''' <param name="allowEmpty">Igual que en <see cref="BuildSpecSse"/>: emite el spec COMPLETO aunque no
+    ''' haya nada que aplicar, para el caso de LIMPIEZA.</param>
     Private Function BuildSpecFo4(preset As LooksmenuLoader.LooksmenuPreset,
-                                  isFemale As Boolean) As NpcVmadBuilder.VmadScriptSpec
+                                  isFemale As Boolean,
+                                  Optional allowEmpty As Boolean = False) As NpcVmadBuilder.VmadScriptSpec
         Dim tpl As New List(Of String), prio As New List(Of Integer)
         Dim r As New List(Of Single), g As New List(Of Single), b As New List(Of Single), a As New List(Of Single)
         Dim ou As New List(Of Single), ov As New List(Of Single)
@@ -397,7 +443,7 @@ Public Module NpcApplyScriptEmitter
 
         Dim skin = If(preset.SkinTemplateId, "")
 
-        If tpl.Count = 0 AndAlso skin = "" Then Return Nothing
+        If Not allowEmpty AndAlso tpl.Count = 0 AndAlso skin = "" Then Return Nothing
 
         Dim spec As New NpcVmadBuilder.VmadScriptSpec With {.Name = ScriptNameFo4}
         Dim P = spec.Properties

@@ -95,15 +95,38 @@ int[]    Property NodeScaleMode Auto
 int appliedVersion = -1
 
 Event OnLoad()
+    ; TRAZA: el script no logueaba NADA, y sin eso no se puede distinguir tres cosas que dan el MISMO
+    ; sintoma ("el NPC no cambia"): (a) OnLoad no se dispara en esa referencia, (b) se dispara y se saltea
+    ; por el sello, (c) se dispara pero con las propiedades CONGELADAS del savegame (o sea el payload viejo).
+    ; MEDIDO: una copia por placeatme toma los cambios y la referencia que ya existia no cambia nada -- las
+    ; tres explicaciones encajan con eso, asi que hay que verlas. Si aparece esta linea, (a) queda descartada;
+    ; el valor de SchemaVersion dice si el record fresco llego o no.
+    ; No se tocan los arrays aca a proposito: el spec de LIMPIEZA emite solo IsFemale y SchemaVersion, asi que
+    ; OvlNode llega None y un .Length tiraria justo en el caso que queremos observar.
+    Debug.Trace("[NPCM] OnLoad ref=" + self.GetFormID() + " appliedVersion=" + appliedVersion + " SchemaVersion=" + SchemaVersion)
+
     if appliedVersion == SchemaVersion
+        Debug.Trace("[NPCM] SKIP: sello igual, no se limpia ni se aplica nada")
         return                    ; ya aplicado a ESTE actor, y nada cambió desde entonces
     endif
     appliedVersion = SchemaVersion
+
+    ; ⭐⭐ EL REGISTRO EN SKEE VA PRIMERO, ANTES DE BORRAR. Con el default [Overlays] bPlayerOnly=1
+    ; (verificado en skee64.ini) skee sólo construye nodos de overlay para un actor que HasOverlays(), y
+    ; AddOverlays() es lo que mete al actor en ese set. Estaba DENTRO de ApplyOverlays(), o sea DESPUÉS de
+    ; RemovePrevious() ⇒ los Remove* salían contra un actor todavía sin registrar y se perdían sin error:
+    ; los overlays nuevos aparecían y los viejos no se iban nunca. Peor: si no quedaba nada que aplicar,
+    ; ApplyOverlays() retorna en su primera línea (n == 0) y el registro no ocurría NUNCA, así que "borré
+    ; todos los overlays" no borraba nada.
+    ; Es idempotente y barato, así que va incondicional: el barrido tiene que poder correr aunque el payload
+    ; nuevo esté vacío, que es justamente el caso de una limpieza.
+    NiOverride.AddOverlays(self)
 
     RemovePrevious()
     ApplyOverlays()
     ApplySkin()
     ApplyNodeTransforms()
+    Debug.Trace("[NPCM] DONE ref=" + self.GetFormID())
 EndEvent
 
 ; La "name" del transform es la KEY del override: namespacea NUESTRA capa, así RaceMenu, XPMSE y
@@ -201,11 +224,13 @@ Function ApplyOverlays()
         return
     endif
 
-    ; OBLIGATORIO Y PRIMERO. Con el default [Overlays] bPlayerOnly=true, OverlayInterface::OnAttach
-    ; sólo construye los nodos de overlay para un actor que HasOverlays() — y AddOverlays() es lo que
-    ; registra al actor en ese set (OverlayInterface.cpp:854 mete el formID; el gate de :1011 pasa).
-    ; Sin esto los overrides caen sobre nodos que nunca se crearon: sin error, invisible.
-    NiOverride.AddOverlays(self)
+    ; El registro en skee (NiOverride.AddOverlays) ya NO va acá: se MOVIÓ al principio de OnLoad().
+    ; Motivo: es igual de obligatorio para BORRAR que para aplicar, y acá corría DESPUÉS de
+    ; RemovePrevious() — con el default [Overlays] bPlayerOnly=true, OverlayInterface::OnAttach sólo
+    ; construye los nodos de overlay para un actor que HasOverlays() (OverlayInterface.cpp:854 mete el
+    ; formID; el gate de :1011 pasa), así que los Remove* caían sobre nodos que nunca se crearon: sin
+    ; error, invisible. Y con n == 0 esta función retorna arriba, así que el registro no ocurría NUNCA
+    ; justo en el caso de limpieza. Un solo dueño, y es OnLoad.
 
     int i = 0
     while i < n

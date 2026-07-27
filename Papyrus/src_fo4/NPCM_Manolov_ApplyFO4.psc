@@ -61,13 +61,27 @@ int[] myUids
 bool myUidsReady = false   ; no se puede hacer `myUids != None`: comparar un array contra None TIRA
 
 Event OnLoad()
+    ; TRAZA: misma instrumentacion que el script de SSE, a proposito -- sin ella no se puede distinguir
+    ; tres causas que dan el MISMO sintoma ("el NPC no cambia"): (a) OnLoad no se dispara en esa
+    ; referencia, (b) se dispara y se saltea por el sello, (c) se dispara pero con las propiedades
+    ; CONGELADAS del savegame, o sea leyendo el payload viejo.
+    ; MEDIDO en SSE (2026-07-26, log de Papyrus + VMAD del ESP): es (c). Dos referencias reportaban un
+    ; SchemaVersion que YA NO EXISTE en el plugin, asi que solo podia venir del savegame. La via es la
+    ; misma en los dos juegos (propiedades del VMAD), asi que aca se espera lo mismo -- pero se instrumenta
+    ; igual en vez de asumirlo, que es como se destapo en SSE.
+    ; No se tocan arrays en la traza: el spec de LIMPIEZA no emitia array alguna y un .Length sobre None
+    ; tiraria justo en el caso que interesa observar.
+    Debug.Trace("[NPCM] OnLoad ref=" + self.GetFormID() + " appliedVersion=" + appliedVersion + " SchemaVersion=" + SchemaVersion)
+
     if appliedVersion == SchemaVersion
+        Debug.Trace("[NPCM] SKIP: sello igual, no se limpia ni se aplica nada")
         return                    ; already applied to THIS actor, and nothing changed since
     endif
     appliedVersion = SchemaVersion
 
     ApplyOverlays()
     ApplySkin()
+    Debug.Trace("[NPCM] DONE ref=" + self.GetFormID())
 EndEvent
 
 Function ApplyOverlays()
