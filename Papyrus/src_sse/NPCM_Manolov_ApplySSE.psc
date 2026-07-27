@@ -134,10 +134,23 @@ EndFunction
 ; ANTERIOR (los tiene: lee el VMAD viejo antes de reescribirlo). PENDIENTE.
 ; ============================================================================================
 Function RemovePrevious()
-    ; --- overlays: los nodos son enumerables. NUNCA "Face": la cara es del bake.
+    ; --- overlays: los nodos son enumerables.
     ClearOverlayGroup("Body [Ovl", NiOverride.GetNumBodyOverlays())
     ClearOverlayGroup("Hands [Ovl", NiOverride.GetNumHandOverlays())
     ClearOverlayGroup("Feet [Ovl", NiOverride.GetNumFeetOverlays())
+    ; FACE: decia "NUNCA Face: la cara es del bake" y era cierto mientras el emisor jamas mandaba un
+    ; nodo Face. Ya no: el bake de overlays de cara esta gateado por Setting_BakeSseRaceMenuOverlays y,
+    ; con ese toggle APAGADO, el emisor SI manda los nodos Face (si no, no los aplicaba nadie y el
+    ; overlay desaparecia). Sin este barrido, cambiar el toggle de OFF a ON dejaba el override viejo
+    ; PEGADO al actor -- todo entra con persist=true, o sea al co-save -- y el overlay quedaba aplicado
+    ; DOS VECES: el que sigue vivo en el co-save mas el que ahora esta horneado en la textura.
+    ; Barrer es incondicional a proposito: es idempotente (RemoveNodeOverride de una key que no existe
+    ; es no-op) y NO puede depender del toggle, porque el toggle de HOY no dice que se aplico AYER.
+    ; Las dos familias de skee: FACE_NODE "Face [Ovl{}]" y FACE_NODE_SPELL "Face [SOvl{}]"
+    ; (OverlayInterface.h:23-24), ambas contadas por GetNumFaceOverlays (main.cpp: g_numFaceOverlays).
+    int nFace = NiOverride.GetNumFaceOverlays()
+    ClearOverlayGroup("Face [Ovl", nFace)
+    ClearOverlayGroup("Face [SOvl", nFace)
     NiOverride.ApplyNodeOverrides(self)
 
     ; --- skin: los 32 slots biped. mask arranca en 1 y se duplica; en el bit 31 "desborda" a

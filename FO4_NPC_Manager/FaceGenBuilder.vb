@@ -821,6 +821,64 @@ Public Module FaceGenBuilder
                                 ' vanilla NPCs (no face overlays) ⇒ the facetint-only path above is unchanged.
                                 ' ⛔ SIN host: el fold es 100% CPU y no debe poder leer nada del render.
                                 WriteSseFaceDiffuseWithOverlays(nif, cloned, npcFormID, originPlugin, pluginManager, npcData, appliedPresets, willBePacked, result)
+
+                                ' ⭐⭐⭐ SIEMPRE, pliegue o no. Los slots 0/1/3 son relativos a Data\Textures\ y NO
+                                ' pueden llevar el prefijo 'textures\'; el camino no plegado dejaba el valor crudo
+                                ' de la resolución de material, que a veces YA viene prefijado, y eso daba CARA
+                                ' MARRÓN (medido, npc 0x0001360B). Ver NormalizeSseHeadTexSetSlots. Va DESPUÉS de
+                                ' las dos rutinas para normalizar también lo que ellas hayan escrito — es
+                                ' idempotente, así que sobre un path ya correcto no hace nada.
+                                NormalizeSseHeadTexSetSlots(nif, cloned, npcFormID)
+
+                                ' ⭐ DIAGNOSTICO DEL RESULTADO REAL, no de la intencion. Vuelca los slots del head
+                                ' JUSTO COMO QUEDARON tras las dos rutinas, y si el archivo de cada uno EXISTE en
+                                ' disco. Existe porque el sintoma "la primera grabada no muestra el facetint" tiene
+                                ' un unico mecanismo posible: el albedo del motor es
+                                ' softlight(slot0, slot6) x amp(slot3), y el fold escribe slot0 PRE-COMPENSADO
+                                ' contando con que el motor re-aplique el facetint del slot 6. Si el slot 6 llega
+                                ' vacio (o su .dds no esta), el motor usa su gris default = identidad y se ve el
+                                ' buffer DIVIDIDO por el facetint: la cara sin tono. Con esto se distingue en UNA
+                                ' corrida si el problema es el slot, el archivo, o ninguno de los dos.
+                                If Logger.Enabled Then
+                                    Try
+                                        Dim sp6 = GetSseHeadSlotPaths(nif, cloned)
+                                        Dim tsDbg As NiflySharp.Blocks.BSShaderTextureSet = Nothing
+                                        Dim sprDbg = cloned.ShaderPropertyRef
+                                        If sprDbg IsNot Nothing AndAlso sprDbg.Index >= 0 Then
+                                            Dim lspDbg = TryCast(nif.Blocks(sprDbg.Index), NiflySharp.Blocks.BSLightingShaderProperty)
+                                            If lspDbg IsNot Nothing AndAlso lspDbg.TextureSetRef IsNot Nothing AndAlso lspDbg.TextureSetRef.Index >= 0 Then
+                                                tsDbg = TryCast(nif.Blocks(lspDbg.TextureSetRef.Index), NiflySharp.Blocks.BSShaderTextureSet)
+                                            End If
+                                        End If
+                                        Dim s6 = If(tsDbg IsNot Nothing AndAlso tsDbg.Textures IsNot Nothing AndAlso tsDbg.Textures.Count > 6, tsDbg.Textures(6).Content, "<sin slot 6>")
+                                        Dim dp = Config_App.Current.DataPath
+                                        ' ⛔ EL PATH EMBEBIDO NO ES EL NOMBRE EN DISCO. En DebugMode el bake escribe
+                                        ' `<id>_2.dds` pero, con willBePacked, EMBEBE el canónico `<id>.dds` (el packer
+                                        ' renombra al meterlo al archive). Chequear el embebido contra el disco reporta
+                                        ' "FALTA" para archivos que SÍ se escribieron — un falso positivo que casi me
+                                        ' hace diagnosticar un bug inexistente. Se prueban las DOS formas.
+                                        Dim onDisk = Function(embedded As String) As String
+                                                         If String.IsNullOrEmpty(embedded) Then Return "(vacio)"
+                                                         Dim rel = StripTexRoot(embedded)
+                                                         Dim full = IO.Path.Combine(dp, "Textures", rel)
+                                                         If IO.File.Exists(full) Then Return "EXISTE"
+                                                         Dim dbg = IO.Path.Combine(IO.Path.GetDirectoryName(full),
+                                                                                   IO.Path.GetFileNameWithoutExtension(full) & "_2" & IO.Path.GetExtension(full))
+                                                         If IO.File.Exists(dbg) Then Return "EXISTE (como _2, DebugMode)"
+                                                         Return "**FALTA** (ni canonico ni _2)"
+                                                     End Function
+                                        Dim l0 = sp6.Slot0, l1 = sp6.Slot1, l3 = sp6.Slot3, l6 = s6
+                                        Dim d0 = onDisk(l0), d6 = onDisk(l6)
+                                        Logger.LogLazy(Function() $"[FACEBAKE][SSE][SLOTS] npc=0x{npcFormID:X8}" & vbCrLf &
+                                                                  $"    slot0 (diffuse)  = '{l0}'   -> {d0}" & vbCrLf &
+                                                                  $"    slot1 (_msn)     = '{l1}'" & vbCrLf &
+                                                                  $"    slot3 (detail)   = '{l3}'" & vbCrLf &
+                                                                  $"    slot6 (facetint) = '{l6}'   -> {d6}")
+                                    Catch exDbg As Exception
+                                        Dim tDbg = exDbg.GetType().Name, mDbg = exDbg.Message
+                                        Logger.LogLazy(Function() $"[FACEBAKE][SSE][SLOTS] volcado fallo: {tDbg}: {mDbg}")
+                                    End Try
+                                End If
                             ElseIf host IsNot Nothing OrElse Not WriteGPUSandboxOutput Then
                                 ' ⭐⭐ UNA SOLA VEZ POR NPC (F4). BakeFaceTextures escribe SIEMPRE los mismos tres
                                 ' nombres (<formID>_d/_msn/_s.dds) — no dependen de la shape. Con dos shapes bajo
@@ -2123,14 +2181,30 @@ Public Module FaceGenBuilder
             Logger.LogLazy(Function() "[FACEBAKE][SSE] _2d ABORT: la cadena GPU (fold + capas + unfold) fallo.")
             Return
         End If
-        Dim acc = SseFoldLayerStack.ReadbackRgba32f(foldedId, npix)
+        ' ⭐⭐ ComposeFoldedGpuResident devuelve LINEAL A PROPOSITO (SseFoldLayerStack:240 corre un cvt sRGB->lineal
+        ' porque ESA textura alimenta al RENDER, que muestrea en lineal). El _2d, en cambio, es un artefacto de
+        ' DISCO y tiene que quedar en sRGB igual que el _2c/_2. Volcarlo tal cual era el bug: MEDIDO sobre 285.978
+        ' muestras, _2d == sRGB_to_linear(_2c) EXACTO (err medio 0,255/255, max 0,942, CERO fuera de +-2, contra un
+        ' err de control de 44,1) => el arnes que existe justamente para confirmar CPU(_2c)==GPU(_2d) daba un
+        ' desacuerdo del 99,989% de los pixeles que NO era del pliegue. No afectaba al juego (lo que se empaqueta
+        ' sale del camino CPU y es byte-identico al _2c), solo cegaba la validacion de paridad.
+        ' Se deshace con la MISMA funcion (cvt(0,1) es la inversa exacta del cvt(1,0) de la linea 240), en GPU y
+        ' ANTES del readback: nada de matematica CPU nueva que pueda derivar del shader. El orden queda igual que
+        ' el _2c/_2 (resample del BGRA en sRGB y recien despues el encode), que es el que exige la paridad.
+        Dim srgbId = FaceTintCompositor.ConvertTextureSpace(host.CompositorState, foldedId, w, h, 0, 1)
         Try : OpenTK.Graphics.OpenGL4.GL.DeleteTexture(foldedId) : Catch : End Try
+        If srgbId = 0 Then
+            Logger.LogLazy(Function() "[FACEBAKE][SSE] _2d ABORT: el cvt lineal->sRGB de salida fallo.")
+            Return
+        End If
+        Dim acc = SseFoldLayerStack.ReadbackRgba32f(srgbId, npix)
+        Try : OpenTK.Graphics.OpenGL4.GL.DeleteTexture(srgbId) : Catch : End Try
         If acc Is Nothing Then
             Logger.LogLazy(Function() "[FACEBAKE][SSE] _2d ABORT: readback del resultado GPU fallo.")
             Return
         End If
 
-        ' acc (sRGB) -> BGRA. ClampByte255 de esta clase espera 0..255 (NO multiplica).
+        ' acc (sRGB, ya convertido arriba) -> BGRA. ClampByte255 de esta clase espera 0..255 (NO multiplica).
         Dim gbuf(npix * 4 - 1) As Byte
         For i = 0 To npix - 1
             gbuf(i * 4) = ClampByte255(acc(i * 4 + 2) * 255.0)      ' B
@@ -2347,6 +2421,53 @@ Public Module FaceGenBuilder
         Next
     End Sub
 
+    ''' <summary>⭐⭐⭐ NORMALIZA LOS SLOTS 0/1/3 DEL HEAD A LA CONVENCIÓN DEL TEXTURE-SET. SIEMPRE, pliegue o no.
+    '''
+    ''' <para>⛔ EL BUG QUE ESTO ARREGLA — <b>CARA MARRÓN EN EL CAMINO NO PLEGADO</b>, MEDIDO. Los paths de un
+    ''' <c>BSShaderTextureSet</c> son RELATIVOS a <c>Data\Textures\</c>. El bake transcribe al NIF lo que resolvió
+    ''' la cadena de material (<c>ApplyRenderResolvedMaterialToShape</c> → <c>Save_To_Shader</c>) TAL CUAL, y esa
+    ''' resolución a veces devuelve el valor ya normalizado por <c>CorrectTexturePath</c> — o sea en minúsculas y
+    ''' CON el prefijo <c>textures\</c>. Medido en un bake real (npc 0x0001360B):</para>
+    ''' <code>
+    '''   slot0 = 'textures\actors\character\female\FemaleHead.dds'
+    ''' </code>
+    ''' <para>El motor lo resuelve como <c>Data\Textures\<b>textures\</b>actors\…</c> ⇒ NO EXISTE ⇒ el slot queda
+    ''' NULL ⇒ cara marrón. Es EL MISMO modo de fallo que <see cref="EmbeddedTexSetPath"/> ya venía a corregir; lo
+    ''' que faltaba es que se aplicara también cuando NO se pliega.</para>
+    '''
+    ''' <para>Hasta ahora el fold TAPABA el problema por casualidad: al escribir el diffuse plegado pisaba el
+    ''' slot 0 con un path ya normalizado. Por eso "la segunda grabada salía bien" — no porque la segunda
+    ''' estuviera bien, sino porque la primera no plegaba y dejaba el path crudo.</para>
+    '''
+    ''' <para>Idempotente: <c>EmbeddedTexSetPath</c> → <c>StripTexRoot</c> deja igual un path que ya está bien
+    ''' (<c>Actors\Character\…</c>), y en FO4 es un no-op por el guard de juego. Se aplica a 0/1/3 — el slot 6 NO,
+    ''' porque ése lleva la convención OPUESTA (prefijo <c>data\Textures\</c>) y lo escribe
+    ''' <see cref="WriteSseFacetintDds"/> con <see cref="EmbeddedEngineTexPath"/>.</para></summary>
+    Private Sub NormalizeSseHeadTexSetSlots(nif As Nifcontent_Class_Manolo, cloned As INiShape, npcFormID As UInteger)
+        Try
+            Dim spr = cloned.ShaderPropertyRef
+            If spr Is Nothing OrElse spr.Index < 0 Then Return
+            Dim lsp = TryCast(nif.Blocks(spr.Index), NiflySharp.Blocks.BSLightingShaderProperty)
+            If lsp Is Nothing OrElse lsp.TextureSetRef Is Nothing OrElse lsp.TextureSetRef.Index < 0 Then Return
+            Dim ts = TryCast(nif.Blocks(lsp.TextureSetRef.Index), NiflySharp.Blocks.BSShaderTextureSet)
+            If ts Is Nothing OrElse ts.Textures Is Nothing Then Return
+            For Each slot In {0, 1, 3}
+                If ts.Textures.Count <= slot Then Continue For
+                Dim before = If(ts.Textures(slot).Content, "")
+                If String.IsNullOrEmpty(before) Then Continue For
+                Dim after = EmbeddedTexSetPath(before)
+                If Not String.Equals(before, after, StringComparison.Ordinal) Then
+                    ts.Textures(slot).Content = after
+                    Dim sL = slot, bL = before, aL = after
+                    Logger.LogLazy(Function() $"[FACEBAKE][SSE] slot {sL} NORMALIZADO: '{bL}' -> '{aL}' (un path relativo a Data\Textures\ no puede llevar el prefijo 'textures\' ni 'data\')")
+                End If
+            Next
+        Catch ex As Exception
+            Dim tN = ex.GetType().Name, mN = ex.Message
+            Logger.LogLazy(Function() $"[FACEBAKE][SSE] no se pudieron normalizar los slots del head: {tN}: {mN}")
+        End Try
+    End Sub
+
     Private Sub WriteSseFaceDiffuseWithOverlays(nif As Nifcontent_Class_Manolo, cloned As INiShape, npcFormID As UInteger,
                                                 originPlugin As String, pluginManager As PluginManager, npcData As NPC_Data,
                                                 appliedPresets As Dictionary(Of UInteger, LooksmenuLoader.LooksmenuPreset),
@@ -2389,6 +2510,26 @@ Public Module FaceGenBuilder
             ' siempre), ese overlay no lo aplicaba nadie: desaparecía.
             Dim hasOverlays = SseOverlayCompositor.HasAnyFoldableFaceOverlay(overlays)
             Dim hasSkee = SseSkeeMaskReader.HasMaskLayers(nif, cloned)
+
+            ' ⭐ DIAGNOSTICO DEL GATE. El render y el bake leen el MISMO `appliedPresets`, así que tienen que
+            ' decidir igual — y se midió una grabada donde el render plegó (faceOverlays=1) y 16 s después el bake
+            ' NO plegó. Esto vuelca las entradas EXACTAS de la decisión para que la próxima corrida diga cuál de
+            ' las tres cosas pasó: no se resolvió el preset, el nodo no es Face, o no pasa el filtro de
+            ' diffuse/normal/opacidad. Sin esto sólo se ve el resultado, no la causa.
+            If Logger.Enabled Then
+                Dim presetOk = (preset IsNot Nothing)
+                Dim nAll = If(overlays Is Nothing, -1, overlays.Count)
+                Dim faceList = SseOverlayCompositor.FaceOverlaysOnly(overlays)
+                Dim detail As String = ""
+                For Each ov In faceList
+                    detail &= $"{vbCrLf}        nodo='{ov.NodeName}' diffuse='{If(ov.DiffusePath, "")}' normal='{If(ov.NormalPath, "")}' " &
+                              $"hasAlpha={ov.HasAlpha} alpha={If(ov.HasAlpha, ov.Alpha, 1.0F)} visible={SseOverlayCompositor.OverlayIsVisible(ov)}"
+                Next
+                If faceList.Count = 0 Then detail = vbCrLf & "        (ningun nodo Face en el preset)"
+                Dim hO = hasOverlays, hS = hasSkee, nF = faceList.Count
+                Logger.LogLazy(Function() $"[FACEBAKE][SSE][GATE] npc=0x{npcFormID:X8} presetResuelto={presetOk} overlaysEnPreset={nAll} nodosFace={nF} " &
+                                          $"hasOverlays={hO} hasSkee={hS} ⇒ {If(hO OrElse hS, "PLIEGA", "NO PLIEGA")}" & detail)
+            End If
             ' VANILLA (no se pliega): el slot 0 queda intacto y NO se produce FaceDiffuse/FaceNormal. Los stale del
             ' camino plegado ya se borraron al entrar (ver arriba), así que acá sólo hay que salir.
             If Not forced AndAlso Not (hasOverlays OrElse hasSkee) Then Return
@@ -3202,38 +3343,38 @@ Public Module FaceGenBuilder
             ' GATE del encode+escritura del DDS (ver SkipDdsEncode). Se saltea el BCn+mips y el File.Write, y se
             ' cae DIRECTO a la reescritura del slot de abajo — igual que si el encode hubiera salido bien.
             If Not SkipDdsEncode Then
-            Try
-                ddsBytes = DirectXTextureConversionHelper.Bgra32BytesToDdsBytes(
+                Try
+                    ddsBytes = DirectXTextureConversionHelper.Bgra32BytesToDdsBytes(
                     width:=ddW, height:=ddH, bgraPixels:=bgra,
                     outputDxgiFormat:=entry.Dxgi,
                     generateMipMaps:=True, generatedMipLevels:=mipLevels)
-            Catch ex As Exception
-                Dim slotL = entry.Slot
-                Dim suffixL = entry.Suffix
-                Dim dxgiL = entry.Dxgi
-                ' Report the dims actually passed to the encode (ddW/ddH), not the source dims (w/h).
-                Dim wL = ddW
-                Dim hL = ddH
-                Dim mipsL = mipLevels
-                Dim msgL = ex.Message
-                Dim typeL = ex.GetType().Name
-                Logger.LogLazy(Function() $"[FACEBAKE-FAIL] DDS encode slot={slotL}{suffixL} dxgi={dxgiL} {wL}x{hL} mips={mipsL} npcFormID=0x{npcFormID:X8}: {typeL}: {msgL}")
-                RecordTextureFailure(result, $"{typeL}: {msgL} (encode slot {slotL}{suffixL}, {wL}x{hL}, dxgi={dxgiL})")
-                Continue For
-            End Try
+                Catch ex As Exception
+                    Dim slotL = entry.Slot
+                    Dim suffixL = entry.Suffix
+                    Dim dxgiL = entry.Dxgi
+                    ' Report the dims actually passed to the encode (ddW/ddH), not the source dims (w/h).
+                    Dim wL = ddW
+                    Dim hL = ddH
+                    Dim mipsL = mipLevels
+                    Dim msgL = ex.Message
+                    Dim typeL = ex.GetType().Name
+                    Logger.LogLazy(Function() $"[FACEBAKE-FAIL] DDS encode slot={slotL}{suffixL} dxgi={dxgiL} {wL}x{hL} mips={mipsL} npcFormID=0x{npcFormID:X8}: {typeL}: {msgL}")
+                    RecordTextureFailure(result, $"{typeL}: {msgL} (encode slot {slotL}{suffixL}, {wL}x{hL}, dxgi={dxgiL})")
+                    Continue For
+                End Try
 
-            Dim outFile = Path.Combine(outDir, $"{formIdLow:X8}{entry.Suffix}")
-            Try
-                File.WriteAllBytes(outFile, ddsBytes)
-                Logger.LogLazy(Function() $"[FACEBAKE] wrote '{outFile}'")
-            Catch ex As Exception
-                Dim slotW = entry.Slot
-                Dim suffixW = entry.Suffix
-                Dim msgW = ex.Message
-                Logger.LogLazy(Function() $"[FACEBAKE] write FAILED '{outFile}': {msgW}")
-                RecordTextureFailure(result, $"could not write the DDS to disk (slot {slotW}{suffixW}): {msgW}")
-                Continue For
-            End Try
+                Dim outFile = Path.Combine(outDir, $"{formIdLow:X8}{entry.Suffix}")
+                Try
+                    File.WriteAllBytes(outFile, ddsBytes)
+                    Logger.LogLazy(Function() $"[FACEBAKE] wrote '{outFile}'")
+                Catch ex As Exception
+                    Dim slotW = entry.Slot
+                    Dim suffixW = entry.Suffix
+                    Dim msgW = ex.Message
+                    Logger.LogLazy(Function() $"[FACEBAKE] write FAILED '{outFile}': {msgW}")
+                    RecordTextureFailure(result, $"could not write the DDS to disk (slot {slotW}{suffixW}): {msgW}")
+                    Continue For
+                End Try
             End If
 
             ' TGA del CPU: copia UNCOMPRESSED (true-color) al lado del .dds, desde el buffer en memoria

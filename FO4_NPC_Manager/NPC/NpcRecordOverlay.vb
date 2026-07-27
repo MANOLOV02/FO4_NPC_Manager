@@ -264,16 +264,43 @@ Public Module NpcRecordOverlay
         ' El wipe+race-defaults ES fiel al engine (LoadPreset), pero SÓLO cuando hay un preset que de verdad toma
         ' posesión de los head parts — que es exactamente lo que marca HasHeadPartFormIDs (lo setean Edit Face,
         ' Load LM, Paste y el loader del .json cuando el preset trae head parts). Sin esa bandera, el record manda.
-        If preset.HasHeadPartFormIDs Then
-            If raceIsValid AndAlso race IsNot Nothing Then
-                Dim raceDefaults = If(raw.IsFemale, race.FemaleHeadPartFormIDs, race.MaleHeadPartFormIDs)
-                If raceDefaults IsNot Nothing Then shadow.HeadPartFormIDs.AddRange(raceDefaults)
-            End If
+        ' ⭐⭐⭐ SEGUNDA MITAD DEL MISMO BUG (2026-07-26, MEDIDO en 0001360B 'Aeri', SSE). La bandera sola NO
+        ' alcanzaba: sembrar acá los DEFAULTS DE LA RAZA **delante** de los del preset invertía la precedencia
+        ' aguas abajo. MergeHeadPartsWithRaceDefaults trata su entrada como "el PNAM del NPC" y aplica
+        ' PRIMERO-GANA por PartType (HeadPartResolver:81) ⇒ como los defaults iban primeros, GANABAN ELLOS.
+        ' Doble merge con precedencia invertida: el prepend de acá no era redundante, era ACTIVAMENTE dañino.
+        ' MEDIDO (dos grabadas consecutivas del mismo NPC, ESP byte-idéntico y las 10 texturas byte-idénticas;
+        ' la ÚNICA diferencia estaba en el FaceGeom): tras editar la cara el NIF salía con HairFemaleNord04 /
+        ' FemaleBrowsHuman01 / FemaleEyesHumanHazelBrown (defaults Nord♀) mientras el PNAM del ESP y el render
+        ' llevaban los reales (HairFemaleNord15 / FemaleBrowsHuman09 / FemaleEyesHumanIceBlue) ⇒ CARA MARRÓN en
+        ' juego, porque el NIF horneado contradice al record. Sólo se disparaba DESPUÉS de editar: abrir Edit
+        ' Face es lo único que enciende HasHeadPartFormIDs (EditFace_Form:2119), y sin esa bandera los dos
+        ' caminos leían el record y coincidían.
+        ' Por qué los OTROS dos consumidores no se veían afectados — y por qué su regla es la correcta:
+        '   · el ESP clasifica con ÚLTIMO-GANA (NpcOverrideSaver:1089) ⇒ el preset pisaba al default;
+        '   · el render REEMPLAZA la lista y exige contenido (NpcStateResolver:127) ⇒ nunca mezcla.
+        ' REGLA ÚNICA (la del render): la posesión exige CONTENIDO, y el preset REEMPLAZA — acá no se prepende
+        ' NADA. El relleno por PartType lo hace el ÚNICO merge de aguas abajo, que ya siembra la raza en su
+        ' Step 1. VERIFICADO que los dos únicos consumidores del shadow pasan por ese merge
+        ' (FaceGenBuilder:1486 vía BuildAllowedShapeMap, SseMorphReverseEngineer:180), así que ningún camino
+        ' pierde los defaults de raza por sacar el prepend.
+        If preset.HasHeadPartFormIDs AndAlso preset.HeadPartFormIDs.Count > 0 Then
             shadow.HeadPartFormIDs.AddRange(preset.HeadPartFormIDs)
         Else
-            ' El preset NO toma posesión ⇒ se preservan los head parts del NPC tal cual (lo que ve el editor y lo
-            ' que el render debe dibujar). MergeHeadPartsWithRaceDefaults, aguas abajo, ya rellena los huecos por
-            ' PartType con los defaults de la raza — así que los faltantes siguen cubiertos, sin pisar los propios.
+            ' El preset NO toma posesión — o la reclama con la lista VACÍA, que antes caía en la rama de arriba y
+            ' dejaba el shadow con SÓLO defaults de raza ⇒ se preservan los head parts del NPC tal cual (lo que ve
+            ' el editor y lo que el render debe dibujar). MergeHeadPartsWithRaceDefaults, aguas abajo, ya rellena
+            ' los huecos por PartType con los defaults de la raza — los faltantes siguen cubiertos, sin pisar los
+            ' propios. (Una lista vacía CON bandera nunca significó "cabeza pelada": daba defaults de raza.)
+            If preset.HasHeadPartFormIDs Then
+                ' Estado ANÓMALO: alguien reclamó posesión sin contenido. Ya no rompe (cae acá y manda el record),
+                ' pero es un fallo silencioso de algún productor de la bandera — Edit Face la enciende
+                ' incondicionalmente (EditFace_Form:2119) aunque su seed no haya poblado nada, y hay 4 productores
+                ' más (Load LM, Paste, RaceMenuPresetMapper, PresetCategoryFilter). Se loguea para poder ubicarlo
+                ' si aparece, en vez de que vuelva a manifestarse como una cara marrón in-game.
+                Logger.LogLazy(Function() $"[HEADPARTS] npc=0x{selectedNpcFormID:X8} HasHeadPartFormIDs=True con lista " &
+                                          $"VACIA => se preservan los {raw.HeadPartFormIDs.Count} del record (fallback)")
+            End If
             shadow.HeadPartFormIDs.AddRange(raw.HeadPartFormIDs)
         End If
 

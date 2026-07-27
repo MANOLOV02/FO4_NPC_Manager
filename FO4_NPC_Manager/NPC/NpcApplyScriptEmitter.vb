@@ -23,8 +23,9 @@ Imports FO4_Base_Library
 ''' <item>Body morphs → the BodyGen templates.ini/morphs.ini pair (BodyGenIniWriter / SseBodyGenIniWriter).</item>
 ''' <item>Face morphs / sculpt / face TINTS → baked into the FaceGen NIF + textures, in BOTH games. The
 ''' script never emits a face tint of any kind.</item>
-''' <item>FACE overlays, in SSE → the bake owns the head, ALWAYS. No Face node is ever emitted, with no
-''' condition attached. <see cref="SkipFaceOverlays"/> is the single place that says so, and
+''' <item>FACE overlays, in SSE → the bake owns the head **only while `Setting_BakeSseRaceMenuOverlays` is
+''' ON**; with that toggle OFF the bake does NOT fold them and the script IS their only route, so they ARE
+''' emitted. <see cref="SkipFaceOverlays"/> is the single place that decides it, and
 ''' <see cref="SseOverlayCompositor.IsFaceOverlayNodeName"/> is the single place that defines what "face"
 ''' means (the bake, the render and this emitter all call it — five sites used to decide on their own and
 ''' they did not agree). Fallout 4 has NO face-overlay bake, so there the script emits every overlay, face
@@ -53,25 +54,41 @@ Public Module NpcApplyScriptEmitter
     ''' cannot touch overlays another mod added.</para></summary>
     Public Const VersionPropertyName As String = "SchemaVersion"
 
-    ''' <summary>⛔⛔ EN SSE LA CARA ES DEL BAKE. SIEMPRE. El script no aplica NUNCA un nodo Face — sin
-    ''' condiciones, sin excepciones, sin "salvo que…".
+    ''' <summary>⛔ EN SSE LA CARA ES DEL BAKE **MIENTRAS EL BAKE SE LA QUEDE**. Con
+    ''' <c>Setting_BakeSseRaceMenuOverlays</c> ON el script no emite ningún nodo Face (lo hornea el bake); con ese
+    ''' toggle OFF los emite, porque si no NADIE los aplica.
     '''
-    ''' <para>Esto NO está gateado por si el bake corre o no, y es a propósito. Antes lo estaba (CharGen bake ON
-    ''' + <c>Setting_BakeSseRaceMenuOverlays</c> ON) y era una fuente inagotable de agujeros: el flag de CharGen
-    ''' es GLOBAL del guardado, pero el bake se saltea además POR NPC (raza sin FaceGen, sin HDPT de tipo Face),
-    ''' así que siempre quedaba un caso donde el emisor decía "ya lo hornea el bake" y el bake no lo horneaba.</para>
+    ''' <para>⭐ CORREGIDO — este summary decía "SIEMPRE / NUNCA, sin condiciones, sin excepciones", y era falso
+    ''' para UNA combinación, en la que los overlays quedaban SIN DUEÑO.
+    ''' El argumento que estaba escrito acá era: "sin el bake de CharGen NO llega NADA de la cara al juego — los
+    ''' morphs, el sculpt y los tints se hornean todos; un overlay de cara vivo sobre una cara vanilla sin hornear
+    ''' sería el único elemento fuera de lugar, así que que no llegue es CONSISTENTE, no una pérdida". Eso vale con
+    ''' el bake de CharGen APAGADO. NO cubre <b>CharGen bake ON + <c>Setting_BakeSseRaceMenuOverlays</c> OFF</b>:
+    ''' ahí la cara SÍ se hornea (morphs, sculpt, tints y facetint llegan) y los overlays de cara no los hornea
+    ''' nadie — y tampoco los emitía nadie. Se perdían. Para esa combinación no es consistencia, es una pérdida.</para>
     '''
-    ''' <para>Y la condición nunca tuvo sentido: sin el bake de CharGen NO llega NADA de la cara al juego — los
-    ''' morphs, el sculpt y los tints se hornean todos. Un overlay de cara aplicado como decal vivo sobre una
-    ''' cara vanilla sin hornear sería el único elemento fuera de lugar. Que no llegue es CONSISTENTE, no una
-    ''' pérdida.</para>
+    ''' <para>El gate vuelve, pero SOLO sobre el toggle de overlays, que es el que de verdad decide si el bake se
+    ''' los queda. NO se vuelve a gatear por "el bake de CharGen corre": ESE era el agujero original (el flag de
+    ''' CharGen es GLOBAL del guardado mientras el bake se saltea además POR NPC — raza sin FaceGen, sin HDPT de
+    ''' cara —, así que siempre quedaba un caso donde el emisor decía "ya lo hornea el bake" y no lo horneaba).
+    ''' Residual conocido y ACOTADO: con el toggle ON y un NPC que el bake se saltea por raza, su overlay de cara
+    ''' no se emite; pero un NPC sin FaceGen no tiene cara que pintar, así que es inerte en la práctica.</para>
+    '''
+    ''' <para>⛔ ESTO EXIGE EL BARRIDO DE <c>Face [Ovl]</c> EN EL SCRIPT, y los dos cambios van JUNTOS. Todo entra
+    ''' con <c>persist=true</c> (store de skee → co-save), así que un overlay aplicado con el toggle OFF sigue vivo
+    ''' en esa partida aunque después se grabe con el toggle ON. Sin barrerlo quedaría aplicado DOS VECES: el que
+    ''' sobrevive en el co-save + el que ahora está horneado en la textura. Ver <c>RemovePrevious()</c> en
+    ''' NPCM_Manolov_ApplySSE.psc. Emitir sin barrer es PEOR que no emitir.</para>
     '''
     ''' <para>Fallout 4 es distinto y ahí sí emitimos TODOS los overlays, cara incluida: f4ee no tiene bake de
     ''' overlays de cara (<c>WriteSseFaceDiffuseWithOverlays</c> es SSE-only y nada más compone overlays dentro
     ''' de la textura de cara de FO4), así que el script es su ÚNICA vía. Lo que sí se hornea en FO4 es el TINT
     ''' de cara — y el script no emite tints en ningún juego.</para></summary>
     Private Function SkipFaceOverlays(game As Config_App.Game_Enum) As Boolean
-        Return game = Config_App.Game_Enum.Skyrim
+        If game <> Config_App.Game_Enum.Skyrim Then Return False   ' FO4: el script es su única vía ⇒ se emiten siempre
+        ' SSE: se saltean SÓLO si el bake se los va a quedar. Config sin resolver ⇒ se conserva el comportamiento
+        ' conservador previo (saltear): no emitir nunca puede duplicar, emitir de más sí.
+        Return Config_App.Current Is Nothing OrElse Config_App.Current.Setting_BakeSseRaceMenuOverlays
     End Function
 
     ''' <summary>Predicado ÚNICO, compartido con el bake (CPU y GPU) y el render. Si el emisor y el bake no
@@ -208,7 +225,7 @@ Public Module NpcApplyScriptEmitter
     ' ============================================================================================
     Private Function BuildSpecSse(preset As LooksmenuLoader.LooksmenuPreset,
                                   isFemale As Boolean) As NpcVmadBuilder.VmadScriptSpec
-        ' SSE: los nodos Face NUNCA se emiten. La cara es del bake, siempre. Ver SkipFaceOverlays.
+        ' SSE: los nodos Face se emiten SOLO si el bake NO se los queda (toggle de overlays OFF). Ver SkipFaceOverlays.
         Dim skipFace = SkipFaceOverlays(Config_App.Game_Enum.Skyrim)
 
         ' --- overlays (Body/Hands/Feet; Face only when it is NOT being baked)
@@ -219,7 +236,7 @@ Public Module NpcApplyScriptEmitter
         If preset.SseBodyOverlays IsNot Nothing Then
             For Each ov In preset.SseBodyOverlays
                 If ov Is Nothing OrElse String.IsNullOrEmpty(ov.NodeName) Then Continue For
-                ' The face belongs to the bake — ALL Face nodes, no exceptions. See IsFaceNode.
+                ' La cara es del bake sólo cuando el bake la pliega; si no, va por acá. Ver SkipFaceOverlays.
                 If skipFace AndAlso IsFaceNode(ov.NodeName) Then Continue For
                 ' Nothing to override on this node → don't emit an empty entry.
                 If String.IsNullOrEmpty(ov.DiffusePath) AndAlso String.IsNullOrEmpty(ov.NormalPath) AndAlso
