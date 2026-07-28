@@ -1,4 +1,4 @@
-Option Strict On
+﻿Option Strict On
 Imports System.IO
 Imports System.IO.Compression
 Imports System.Xml.Linq
@@ -149,14 +149,35 @@ Public Module FomodExporter
         ' 4. Apply-script .pex, game-aware, from the EMBEDDED resource (canonical source — a loose
         '    Data\Scripts copy could be stale; see NpcApplyScriptEmitter). Ships under Scripts\ for
         '    both games (LooksMenu/F4SE on FO4, RaceMenu/SKSE on SSE).
-        Dim pexBytes = NpcApplyScriptEmitter.PexBytes(game)
+        ' EL .pex TIENE QUE SER EL MISMO QUE ESCRIBE EL SAVE ESP: nombre por plugin y MISMA generacion, que
+        ' sale del sidecar igual que en el guardado. Si el paquete llevara la plantilla SIN parchear, su .pex
+        ' declararia otros nombres de property que los que el VMAD del ESP emite, y el script leeria None.
+        Dim pexGeneration = NpcApplyScriptEmitter.BaselineGeneration
+        Dim pexSidecar = BssliderSidecar.Read(BssliderSidecar.BuildPath(IO.Path.Combine(dataPath, pluginFileName)))
+        If pexSidecar IsNot Nothing AndAlso pexSidecar.PayloadGeneration > 0 Then pexGeneration = pexSidecar.PayloadGeneration
+        Dim pexBytes = NpcApplyScriptEmitter.PatchedPexBytes(game, pluginFileName, pexGeneration)
         manifest.Add(New ManifestItem With {
             .Kind = ItemKind.ApplyScript,
-            .DataRelativePath = "Scripts\" & NpcApplyScriptEmitter.ScriptNameFor(game) & ".pex",
+            .DataRelativePath = "Scripts\" & NpcApplyScriptEmitter.ScriptNameFor(game, pluginFileName) & ".pex",
             .SourceBytes = pexBytes, .Required = True,
             .Exists = (pexBytes IsNot Nothing AndAlso pexBytes.Length > 0),
             .SizeBytes = If(pexBytes IsNot Nothing, CLng(pexBytes.Length), 0L),
             .Note = "embedded apply-script (" & If(game = Config_App.Game_Enum.Skyrim, "RaceMenu", "LooksMenu") & ")"})
+
+        ' El .pex del nombre LEGADO va TAMBIEN, sin parchear. Si falta, los saves del jugador que ya tenian
+        ' la version publicada anterior quedan con instancias de un tipo que no resuelve, y ese actor pierde la
+        ' tabla de metodos PARA TODOS LOS SCRIPTS (medido: RaceMenu fallando 17 veces sobre un NPC nuestro).
+        ' Es inerte: el .psc corta con el guard de instancia huerfana.
+        If game = Config_App.Game_Enum.Skyrim AndAlso pexBytes IsNot Nothing AndAlso pexBytes.Length > 0 Then
+            Dim legacyBytes = NpcApplyScriptEmitter.PexBytes(game)
+            manifest.Add(New ManifestItem With {
+                .Kind = ItemKind.ApplyScript,
+                .DataRelativePath = "Scripts\" & NpcApplyScriptEmitter.LegacyScriptSse & ".pex",
+                .SourceBytes = legacyBytes, .Required = True,
+                .Exists = (legacyBytes IsNot Nothing AndAlso legacyBytes.Length > 0),
+                .SizeBytes = If(legacyBytes IsNot Nothing, CLng(legacyBytes.Length), 0L),
+                .Note = "compatibilidad: resuelve el tipo en saves de la version anterior (inerte)"})
+        End If
 
         ' 5. BodyGen inis, when Save ESP emitted them. Folder name uses the plugin file name WITH
         '    extension (engine convention — see BodyGenIniWriter/SseBodyGenIniWriter).

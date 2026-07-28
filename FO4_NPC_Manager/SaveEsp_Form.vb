@@ -223,6 +223,11 @@ Public Class SaveEsp_Form
         ''' an NPC save, never on their own.</summary>
         Public SaveNewOutfits As Boolean
 
+        ''' <summary>Generacion del apply-script forzada a mano desde el dialogo. 0 = automatica (la del
+        ''' sidecar + 1). Al forzarla, ese numero va al VMAD, al .pex parcheado Y al sidecar: los tres tienen
+        ''' que ser el mismo o el script leeria properties que no existen.</summary>
+        Public ScriptVersionOverride As Integer = 0
+
         ''' <summary>When True the saved NPC(s) are added to a Leveled NPC list (LVLN) written into the SAME
         ''' target plugin. Each saved NPC's GLOBAL FormID becomes one LVLO entry. Opt-in (default False).</summary>
         Public AddToLvlList As Boolean
@@ -355,6 +360,13 @@ Public Class SaveEsp_Form
         ' preference BEFORE wiring the handlers, so loading a saved value doesn't immediately re-persist it
         ' (same pattern as CheckBoxRemoveChargenFlag above). Flushed to npc_config.json on app close.
         CheckBoxEmitBodyGen.Checked = NPC_Config.Current.EmitBodyGenIni
+
+        ' El numeric del override tiene que mostrar SIEMPRE la generacion del plugin de destino ACTUAL, asi
+        ' que se refresca con cualquier cosa que cambie ese destino, no solo al tildar el override.
+        AddHandler ListBoxExisting.SelectedIndexChanged, AddressOf OnScriptVersionTargetChanged
+        AddHandler TextBoxNewName.TextChanged, AddressOf OnScriptVersionTargetChanged
+        AddHandler RadioButtonExisting.CheckedChanged, AddressOf OnScriptVersionTargetChanged
+        RefreshScriptVersionDisplay()
         CheckBoxEmitApplyScript.Checked = NPC_Config.Current.EmitApplyScript
         AddHandler CheckBoxEmitBodyGen.CheckedChanged, AddressOf OnEmitBodyGenChanged
         AddHandler CheckBoxEmitApplyScript.CheckedChanged, AddressOf OnEmitApplyScriptChanged
@@ -769,7 +781,8 @@ Public Class SaveEsp_Form
             .WriteBssliders = CheckBoxWriteBssliders.Checked,
             .EmitBodyGen = CheckBoxEmitBodyGen.Checked,
             .EmitApplyScript = CheckBoxEmitApplyScript.Checked,
-            .SaveNewOutfits = CheckBoxSaveNewOutfits.Checked
+            .SaveNewOutfits = CheckBoxSaveNewOutfits.Checked,
+            .ScriptVersionOverride = If(CheckBoxOverrideScriptVersion.Checked, CInt(NumericUpDownScriptVersion.Value), 0)
         }
 
         If RadioButtonExisting.Checked Then
@@ -1173,5 +1186,62 @@ Public Class SaveEsp_Form
         Next
         Return True
     End Function
+
+
+    ''' <summary>Habilita el numeric y le muestra la generacion QUE SE VA A GRABAR (la del sidecar + 1), para
+    ''' que el numero que se ve sea el real antes de tocarlo. Se refresca al abrir el dialogo y al tildar el
+    ''' override — que son los dos momentos en que importa.</summary>
+    Private Sub CheckBoxOverrideScriptVersion_CheckedChanged(sender As Object, e As EventArgs) Handles CheckBoxOverrideScriptVersion.CheckedChanged
+        NumericUpDownScriptVersion.Enabled = CheckBoxOverrideScriptVersion.Checked
+        RefreshScriptVersionDisplay()
+    End Sub
+
+    Private Sub RefreshScriptVersionDisplay()
+        Try
+            Dim espPath = CurrentTargetPathOrNull()
+            Dim prev = 0
+            If Not String.IsNullOrEmpty(espPath) Then
+                Dim sc = BssliderSidecar.Read(BssliderSidecar.BuildPath(espPath))
+                If sc IsNot Nothing Then prev = sc.PayloadGeneration
+            End If
+            Dim nextGen = PexPatcher.NextGeneration(prev)
+            If nextGen < CInt(NumericUpDownScriptVersion.Minimum) Then nextGen = CInt(NumericUpDownScriptVersion.Minimum)
+            If nextGen > CInt(NumericUpDownScriptVersion.Maximum) Then nextGen = CInt(NumericUpDownScriptVersion.Maximum)
+            NumericUpDownScriptVersion.Value = nextGen
+        Catch
+            ' Informativo: si no se puede leer el sidecar el numeric queda como esta. El valor REAL lo
+            ' resuelve el guardado, salvo que el override este tildado.
+        End Try
+    End Sub
+
+    ''' <summary>Path del ESP de destino segun el estado actual del dialogo, o Nothing si todavia no se puede
+    ''' resolver. Mismo criterio que BuildTargetFromUi.</summary>
+    Private Function CurrentTargetPathOrNull() As String
+        Try
+            If RadioButtonExisting.Checked Then
+                Dim sel As ExistingPlugin = TryCast(ListBoxExisting.SelectedItem, ExistingPlugin)
+                Return If(sel Is Nothing, Nothing, sel.FullPath)
+            End If
+            Dim baseName = TextBoxNewName.Text.Trim()
+            If baseName.Length = 0 Then Return Nothing
+            If baseName.EndsWith(".esp", StringComparison.OrdinalIgnoreCase) OrElse
+               baseName.EndsWith(".esm", StringComparison.OrdinalIgnoreCase) OrElse
+               baseName.EndsWith(".esl", StringComparison.OrdinalIgnoreCase) Then
+                baseName = Path.GetFileNameWithoutExtension(baseName)
+            End If
+            Return Path.Combine(_dataPath, baseName & ".esp")
+        Catch
+            Return Nothing
+        End Try
+    End Function
+
+
+    ''' <summary>Cambio el plugin de destino ⇒ el numero mostrado ya no corresponde. Se refresca INCLUSO con el
+    ''' override tildado, a proposito: si no, un valor tipeado para el plugin A se grabaria en el B, y si B ya
+    ''' estaba en una generacion mas alta eso seria RETROCEDER — sus jugadores recibirian el payload rancio. Que
+    ''' el usuario tenga que re-tipear es molesto; escribir una generacion vieja en silencio es un bug.</summary>
+    Private Sub OnScriptVersionTargetChanged(sender As Object, e As EventArgs)
+        RefreshScriptVersionDisplay()
+    End Sub
 
 End Class

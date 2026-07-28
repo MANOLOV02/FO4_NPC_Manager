@@ -1,4 +1,4 @@
-Imports System.IO
+﻿Imports System.IO
 Imports System.Text.Json
 Imports FO4_Base_Library
 
@@ -51,6 +51,12 @@ Public Module BssliderSidecar
     Public Class SidecarFile
         Public Version As Integer = SchemaVersion
         Public Plugin As String = ""
+        ''' <summary>Generacion del payload del apply-script (el sufijo _G###### de los nombres de property
+        ''' en el VMAD). Vive ACA y no en el ESP porque el ESP solo lo lleva si algun NPC tiene el script: un
+        ''' guardado sin overlays lo perderia. Sube en CADA Save ESP que emita el script, y por eso una
+        ''' property con nombre nuevo le llega FRESCA del plugin a una instancia ya guardada en la partida
+        ''' del jugador (ver Papyrus\GENERACION_DEL_PAYLOAD.md). 0 = todavia ninguna.</summary>
+        Public PayloadGeneration As Integer = 0
         Public Npcs As New Dictionary(Of String, NpcEntry)(StringComparer.OrdinalIgnoreCase)
     End Class
 
@@ -396,6 +402,9 @@ Public Module BssliderSidecar
             If root.TryGetProperty("plugin", el) AndAlso el.ValueKind = JsonValueKind.String Then
                 result.Plugin = el.GetString()
             End If
+            If root.TryGetProperty("payloadGeneration", el) AndAlso el.ValueKind = JsonValueKind.Number Then
+                result.PayloadGeneration = el.GetInt32()
+            End If
             If root.TryGetProperty("npcs", el) AndAlso el.ValueKind = JsonValueKind.Object Then
                 For Each prop In el.EnumerateObject()
                     Dim entry = ParseNpcEntry(prop.Value)
@@ -664,7 +673,10 @@ Public Module BssliderSidecar
             OrderBy(Function(kv) kv.Key, StringComparer.OrdinalIgnoreCase).
             ToList()
 
-        If kept.Count = 0 Then
+        ' ⛔ NO borrar el archivo si guarda una GENERACION: el contador tiene que sobrevivir a un
+        ' guardado sin overlays. Si se borrara, el proximo Save ESP volveria a la generacion 1 y todo
+        ' jugador que ya tuviera esa generacion recibiria el payload rancio, en silencio.
+        If kept.Count = 0 AndAlso sidecar.PayloadGeneration <= 0 Then
             Try
                 If File.Exists(path) Then File.Delete(path)
             Catch
@@ -680,6 +692,7 @@ Public Module BssliderSidecar
                 w.WriteStartObject()
                 w.WriteNumber("version", SchemaVersion)
                 w.WriteString("plugin", If(sidecar.Plugin, ""))
+                If sidecar.PayloadGeneration > 0 Then w.WriteNumber("payloadGeneration", sidecar.PayloadGeneration)
                 w.WriteStartObject("npcs")
                 For Each kv In kept
                     w.WriteStartObject(kv.Key)

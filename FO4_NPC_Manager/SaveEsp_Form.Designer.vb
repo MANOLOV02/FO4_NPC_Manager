@@ -34,6 +34,8 @@ Partial Class SaveEsp_Form
         CheckBoxWriteBssliders = New CheckBox()
         CheckBoxEmitBodyGen = New CheckBox()
         CheckBoxEmitApplyScript = New CheckBox()
+        CheckBoxOverrideScriptVersion = New CheckBox()
+        NumericUpDownScriptVersion = New NumericUpDown()
         CheckBoxSaveNewOutfits = New CheckBox()
         GroupBoxEncoding = New GroupBox()
         LabelEncoding = New Label()
@@ -55,6 +57,7 @@ Partial Class SaveEsp_Form
         PanelScope.SuspendLayout()
         GroupBoxTarget.SuspendLayout()
         GroupBoxSave.SuspendLayout()
+        CType(NumericUpDownScriptVersion, ComponentModel.ISupportInitialize).BeginInit()
         GroupBoxEncoding.SuspendLayout()
         GroupBoxLvlList.SuspendLayout()
         SuspendLayout()
@@ -203,6 +206,8 @@ Partial Class SaveEsp_Form
         GroupBoxSave.Controls.Add(CheckBoxWriteBssliders)
         GroupBoxSave.Controls.Add(CheckBoxEmitBodyGen)
         GroupBoxSave.Controls.Add(CheckBoxEmitApplyScript)
+        GroupBoxSave.Controls.Add(CheckBoxOverrideScriptVersion)
+        GroupBoxSave.Controls.Add(NumericUpDownScriptVersion)
         GroupBoxSave.Controls.Add(CheckBoxSaveNewOutfits)
         GroupBoxSave.Location = New Point(12, 290)
         GroupBoxSave.Name = "GroupBoxSave"
@@ -270,6 +275,27 @@ Partial Class SaveEsp_Form
         CheckBoxEmitApplyScript.TabIndex = 4
         CheckBoxEmitApplyScript.Text = "Emit apply-script (overlays / skin / node scales on first spawn)"
         CheckBoxEmitApplyScript.UseVisualStyleBackColor = True
+        '
+        ' CheckBoxOverrideScriptVersion
+        '
+        CheckBoxOverrideScriptVersion.AutoSize = True
+        CheckBoxOverrideScriptVersion.Location = New Point(358, 128)
+        CheckBoxOverrideScriptVersion.Name = "CheckBoxOverrideScriptVersion"
+        CheckBoxOverrideScriptVersion.Size = New Size(112, 19)
+        CheckBoxOverrideScriptVersion.TabIndex = 6
+        CheckBoxOverrideScriptVersion.Text = "Override version"
+        CheckBoxOverrideScriptVersion.UseVisualStyleBackColor = True
+        '
+        ' NumericUpDownScriptVersion
+        '
+        NumericUpDownScriptVersion.Enabled = False
+        NumericUpDownScriptVersion.Location = New Point(472, 125)
+        NumericUpDownScriptVersion.Maximum = New Decimal(New Integer() {999999, 0, 0, 0})
+        NumericUpDownScriptVersion.Minimum = New Decimal(New Integer() {0, 0, 0, 0})
+        NumericUpDownScriptVersion.Name = "NumericUpDownScriptVersion"
+        NumericUpDownScriptVersion.Size = New Size(58, 23)
+        NumericUpDownScriptVersion.TabIndex = 7
+        NumericUpDownScriptVersion.Value = New Decimal(New Integer() {1, 0, 0, 0})
         '
         ' CheckBoxSaveNewOutfits
         '
@@ -477,6 +503,7 @@ Partial Class SaveEsp_Form
         PanelScope.PerformLayout()
         GroupBoxTarget.ResumeLayout(False)
         GroupBoxTarget.PerformLayout()
+        CType(NumericUpDownScriptVersion, ComponentModel.ISupportInitialize).EndInit()
         GroupBoxSave.ResumeLayout(False)
         GroupBoxSave.PerformLayout()
         GroupBoxEncoding.ResumeLayout(False)
@@ -506,6 +533,8 @@ Partial Class SaveEsp_Form
     Friend WithEvents CheckBoxWriteBssliders As CheckBox
     Friend WithEvents CheckBoxEmitBodyGen As CheckBox
     Friend WithEvents CheckBoxEmitApplyScript As CheckBox
+    Friend WithEvents CheckBoxOverrideScriptVersion As CheckBox
+    Friend WithEvents NumericUpDownScriptVersion As NumericUpDown
     Friend WithEvents CheckBoxSaveNewOutfits As CheckBox
     Friend WithEvents GroupBoxEncoding As GroupBox
     Friend WithEvents LabelEncoding As Label

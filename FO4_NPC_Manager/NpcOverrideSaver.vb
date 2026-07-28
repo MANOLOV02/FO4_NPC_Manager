@@ -1,4 +1,4 @@
-Imports System.IO
+﻿Imports System.IO
 Imports System.Linq
 Imports System.Threading
 Imports System.Threading.Tasks
@@ -93,6 +93,13 @@ Public Module NpcOverrideSaver
         ''' attached to its VMAD. The compiled .pex is then installed ONCE into <c>Data\Scripts\</c> — no point
         ''' copying it when no record references it.</summary>
         Public WroteApplyScript As Boolean
+
+        ''' <summary>Generacion del payload del apply-script para ESTE guardado, y nombre del plugin de destino.
+        ''' Se resuelven UNA vez (del sidecar, que es la fuente de verdad) la primera vez que un NPC lo necesita, y
+        ''' los usan TODOS los NPC y la instalacion del .pex — si no fueran el mismo numero, el VMAD y el .pex
+        ''' quedarian en generaciones distintas y el script leeria None.</summary>
+        Public ApplyScriptGeneration As Integer = 0
+        Public ApplyScriptPluginFile As String = Nothing
         ''' <summary>MainForm helper: rebuild the parser's parallel collections (TintLayerStructs,
         ''' FaceMorphTrailingBytes, MorphKeysOrdered) on the shadow after overlay copy.</summary>
         Public SyncParallelCollectionsAfterOverlay As Action(Of NPC_Data)
@@ -919,6 +926,8 @@ Public Module NpcOverrideSaver
             ' create a fresh sidecar just to prune an entry that wasn't there).
             If target.WriteBssliders OrElse (removedFromSidecar AndAlso sidecarExisted) Then
                 ReportPhase(progress, "Writing .bssliders sidecar…", IO.Path.GetFileName(target.TargetPath))
+                ' La generacion usada en ESTE guardado queda en el sidecar: es de donde sale la proxima.
+                If ctx.ApplyScriptGeneration > 0 Then mergedSidecar.PayloadGeneration = ctx.ApplyScriptGeneration
                 BssliderSidecar.Write(sidecarPath, mergedSidecar)
             End If
 
@@ -946,7 +955,8 @@ Public Module NpcOverrideSaver
         ' would replace RaceMenu's/LooksMenu's real implementation. See Papyrus\README.md.
         If ctx.WroteApplyScript Then
             ReportPhase(progress, "Writing apply-script…", IO.Path.GetFileName(target.TargetPath))
-            Dim installed = NpcApplyScriptEmitter.InstallPex(ctx.DataPath, Config_App.Current.Game)
+            Dim installed = NpcApplyScriptEmitter.InstallPex(ctx.DataPath, Config_App.Current.Game,
+                                                             ctx.ApplyScriptPluginFile, ctx.ApplyScriptGeneration)
             If installed Is Nothing Then
                 ' The VMAD references a script whose .pex we could not ship — the engine would log a missing
                 ' script and apply nothing. Loud, because the plugin is otherwise silently half-broken.
@@ -991,8 +1001,20 @@ Public Module NpcOverrideSaver
         ' previously-emitted script instead of leaving it stale. True no-op for an NPC with nothing to apply.
         Dim lmPreset As LooksmenuLoader.LooksmenuPreset = Nothing
         ctx.AppliedPresets?.TryGetValue(npcFormID, lmPreset)
+        ' Generacion: del sidecar (fuente de verdad), UNA sola vez por guardado. Ver ApplyScriptGeneration.
+        If ctx.ApplyScriptGeneration <= 0 Then
+            Dim prevSidecar = BssliderSidecar.Read(BssliderSidecar.BuildPath(target.TargetPath))
+            If target.ScriptVersionOverride > 0 Then
+                ' Forzada a mano desde el dialogo: gana sobre el contador del sidecar, y queda guardada ahi.
+                ctx.ApplyScriptGeneration = target.ScriptVersionOverride
+            Else
+                ctx.ApplyScriptGeneration = PexPatcher.NextGeneration(If(prevSidecar Is Nothing, 0, prevSidecar.PayloadGeneration))
+            End If
+            ctx.ApplyScriptPluginFile = IO.Path.GetFileName(target.TargetPath)
+        End If
         If NpcApplyScriptEmitter.ApplyToNpc(npcSpec, lmPreset, Config_App.Current.Game,
-                                            target.EmitApplyScript) Then
+                                            target.EmitApplyScript,
+                                            ctx.ApplyScriptPluginFile, ctx.ApplyScriptGeneration) Then
             ctx.WroteApplyScript = True   ' at least one NPC carries it → the .pex must be installed
         End If
 

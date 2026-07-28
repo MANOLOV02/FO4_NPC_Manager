@@ -32,12 +32,26 @@ colgados así (`defaultGhostScript`, `TeleportActorScript`, `WorkshopNPCScript`,
 Los datos por-NPC viajan como **propiedades del script dentro del mismo VMAD** (Papyrus no puede
 leer archivos). Arrays paralelos: el índice `i` de cada `Ovl*` describe el overlay `i`.
 
-## Los .pex van EMBEBIDOS en la DLL
+## Los .pex van EMBEBIDOS en la DLL — y en SSE se PARCHEAN al instalar
 
 `pex_sse/NPCM_Manolov_ApplySSE.pex` y `pex_fo4/NPCM_Manolov_ApplyFO4.pex` se compilan acá y el
-`.vbproj` los mete como **EmbeddedResource** dentro de `NPC_Manager_FO4.dll`
-(`LogicalName = NpcManager.Papyrus.<script>.pex`). En el Save ESP,
-`NpcApplyScriptEmitter.InstallPex` los extrae de memoria y los escribe en `Data\Scripts\`.
+`.vbproj` los mete como **EmbeddedResource** dentro de `NPC_Manager_FO4.dll`.
+
+⚠️ **En SSE el `.pex` compilado es una PLANTILLA, no lo que se instala.** Al guardar el ESP,
+`PexPatcher` le reescribe adentro (a nivel bytes) el nombre del script y la generación del payload:
+
+```
+plantilla:  NPCM_Manolov_ApplySSE                 _G000001
+instalado:  NPCM_Manolov_<Plugin_esp>_ApplySSE    _G000007
+```
+
+⇒ **No renombrar el `Scriptname` ni tocar el sufijo a mano.** Si se cambia alguno hay que actualizar
+`BaselineScriptSse` / `BaselineGeneration` en `NpcApplyScriptEmitter.vb`, o el parcheo falla.
+
+En SSE se instalan **dos** archivos: el activo (parcheado, con nombre por plugin) y
+`NPCM_Manolov_ApplySSE.pex` sin parchear, que queda **inerte** y existe sólo para que resuelva el tipo
+en saves de la versión publicada anterior — borrarlo le rompe el actor a todos los demás mods.
+Ver `GENERACION_DEL_PAYLOAD.md`.
 
 **No** se copian sueltos al lado del `.exe`. Dos motivos, y el segundo es el que importa:
 

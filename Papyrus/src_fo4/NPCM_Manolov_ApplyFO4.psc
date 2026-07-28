@@ -27,38 +27,47 @@ Scriptname NPCM_Manolov_ApplyFO4 extends Actor
     * Anything face — baked into the FaceGen NIF/textures.
 }
 
-bool Property IsFemale = false Auto
+bool Property IsFemale_G000001 = false Auto
 
-int Property SchemaVersion = 1 Auto
+int Property SchemaVersion_G000001 = 1 Auto
 {Bumped by the app when the authored values change, so an updated plugin re-applies to actors that
  already spawned in an existing save.}
 
+;-- ⭐⭐⭐ EL SUFIJO `_G<n>` Y EL NOMBRE POR PLUGIN — LO PONE LA APP, NO SE TOCA A MANO ------------
+;
+; Mismo esquema que SSE, por la misma ley MEDIDA (Skyrim SE 2026-07-28): al cargar la partida el motor
+; restaura del savegame la variable que ya tenia (=> RANCIA para siempre) e inicializa desde el VMAD la
+; que no tenia (=> FRESCA). Una property `Auto` se compila a variable de script, y las variables se
+; serializan: por eso el payload de una version quedaba pegado en toda referencia ya existente.
+;
+; ⚠️ ESTE ARCHIVO ES UNA PLANTILLA. Se compila con `_G000001` y con el nombre `NPCM_Manolov_ApplyFO4`, y
+;   ninguno de los dos llega al juego: al guardar el ESP la app reescribe DENTRO del .pex (PexPatcher.vb)
+;   el nombre del script y la generacion. NO subir el sufijo ni renombrar el Scriptname a mano.
+;
+; ⚠️ EN FO4 ESTO NO ESTA MEDIDO TODAVIA. Se porta con la misma forma que SSE y con trazas para
+;   confirmarlo en la primera corrida — los dos motores YA difirieron en el manejo de arrays.
+;
+; `appliedVersion` NO lleva sufijo a proposito: es el lado que tiene que persistir.
+
 ;-- overlays (parallel arrays, one entry per overlay) -------------------------------------------
-string[] Property OvlTemplate Auto
+string[] Property OvlTemplate_G000001 Auto
 {f4ee overlay template id (the `template` member of Overlays:Entry) — from the installed
  overlays.json catalog, NOT a loose texture path.}
-int[]   Property OvlPriority Auto
-float[] Property OvlRed Auto
-float[] Property OvlGreen Auto
-float[] Property OvlBlue Auto
-float[] Property OvlAlpha Auto
-float[] Property OvlOffsetU Auto
-float[] Property OvlOffsetV Auto
-float[] Property OvlScaleU Auto
-float[] Property OvlScaleV Auto
+int[]   Property OvlPriority_G000001 Auto
+float[] Property OvlRed_G000001 Auto
+float[] Property OvlGreen_G000001 Auto
+float[] Property OvlBlue_G000001 Auto
+float[] Property OvlAlpha_G000001 Auto
+float[] Property OvlOffsetU_G000001 Auto
+float[] Property OvlOffsetV_G000001 Auto
+float[] Property OvlScaleU_G000001 Auto
+float[] Property OvlScaleV_G000001 Auto
 
 ;-- skin override (single template id; "" = none) -----------------------------------------------
-string Property SkinTemplate = "" Auto
+string Property SkinTemplate_G000001 = "" Auto
 
 ;-- per-instance state (persists in the savegame, like vanilla TeleportActorScript) -------------
 int appliedVersion = -1
-
-; The uids of the overlays WE added to this actor. Script variables persist per instance in the
-; savegame, so on a re-apply we can remove exactly our own overlays and nobody else's — see
-; ApplyOverlays. (A plain variable, not a Property: Papyrus rejects doc strings on variables, hence
-; this comment rather than a {...} block.)
-int[] myUids
-bool myUidsReady = false   ; no se puede hacer `myUids != None`: comparar un array contra None TIRA
 
 Event OnLoad()
     ; TRAZA: misma instrumentacion que el script de SSE, a proposito -- sin ella no se puede distinguir
@@ -66,18 +75,40 @@ Event OnLoad()
     ; referencia, (b) se dispara y se saltea por el sello, (c) se dispara pero con las propiedades
     ; CONGELADAS del savegame, o sea leyendo el payload viejo.
     ; MEDIDO en SSE (2026-07-26, log de Papyrus + VMAD del ESP): es (c). Dos referencias reportaban un
-    ; SchemaVersion que YA NO EXISTE en el plugin, asi que solo podia venir del savegame. La via es la
+    ; SchemaVersion_G000001 que YA NO EXISTE en el plugin, asi que solo podia venir del savegame. La via es la
     ; misma en los dos juegos (propiedades del VMAD), asi que aca se espera lo mismo -- pero se instrumenta
     ; igual en vez de asumirlo, que es como se destapo en SSE.
     ; No se tocan arrays en la traza: el spec de LIMPIEZA no emitia array alguna y un .Length sobre None
     ; tiraria justo en el caso que interesa observar.
-    Debug.Trace("[NPCM] OnLoad ref=" + self.GetFormID() + " appliedVersion=" + appliedVersion + " SchemaVersion=" + SchemaVersion)
+    Debug.Trace("[NPCM] OnLoad ref=" + self.GetFormID() + " appliedVersion=" + appliedVersion + " SchemaVersion_G000001=" + SchemaVersion_G000001)
 
-    if appliedVersion == SchemaVersion
+    ; ⚠️ INSTRUMENTADO A PROPOSITO. En SSE esta medido que una array-property que el VMAD NO trae llega
+    ; con LONGITUD 0 (no None), y eso es lo que hace de senal para el guard de instancia huerfana. En FO4
+    ; NO esta medido, y los dos motores YA difirieron en el manejo de arrays (FO4 tolera arrays vacios,
+    ; Skyrim no). Si la linea "antes de tocar" sale y la siguiente NO, llego None y el .Length tiro: ahi
+    ; el guard tiene que pasar a un escalar.
+    Debug.Trace("[NPCM] antes de tocar OvlTemplate_G000001")
+    Debug.Trace("[NPCM] payload ovl=" + OvlTemplate_G000001.Length + " skin='" + SkinTemplate_G000001 + "'")
+
+    ; ⛔ INSTANCIA HUERFANA: no soy la version activa de este actor, no toco NADA.
+    ; El nombre del script lleva el del ESP; si el autor renombra su plugin, el savegame se queda con la
+    ; instancia del nombre anterior pegada al actor. Esa instancia ya no aparece en el VMAD, no recibe
+    ; ninguna property, y sin este guard correria igual, su sello no coincidiria, y su barrido se llevaria
+    ; puesto lo que el script activo acaba de aplicar. MEDIDO en SSE 2026-07-28 (dos OnLoad sobre la misma
+    ; referencia en el mismo instante).
+    ; ⛔ Y NO se borra el .pex huerfano para "arreglarlo": el script extends Actor, asi que si el tipo no
+    ; resuelve ese actor queda SIN TABLA DE METODOS PARA TODOS LOS DEMAS SCRIPTS (medido en SSE: RaceMenu
+    ; fallando 17 veces sobre un NPC nuestro). El .pex viejo se queda; este guard lo vuelve inofensivo.
+    if OvlTemplate_G000001.Length == 0
+        Debug.Trace("[NPCM] INERTE: sin payload del VMAD (instancia de un nombre de script viejo)")
+        return
+    endif
+
+    if appliedVersion == SchemaVersion_G000001
         Debug.Trace("[NPCM] SKIP: sello igual, no se limpia ni se aplica nada")
         return                    ; already applied to THIS actor, and nothing changed since
     endif
-    appliedVersion = SchemaVersion
+    appliedVersion = SchemaVersion_G000001
 
     ApplyOverlays()
     ApplySkin()
@@ -87,31 +118,31 @@ EndEvent
 Function ApplyOverlays()
     Actor a = self as Actor
 
-    ; ⚠ FO4-ONLY HAZARD, and the reason we track uids.
-    ; Overlays.Add() mints a NEW uid on every call and f4ee persists overlays in the co-save. So a
-    ; re-apply (SchemaVersion bumped because the user edited this NPC and re-saved) would STACK a second
-    ; copy of every tattoo — forever. SSE has no such problem: NiOverride node overrides are keyed by
-    ; node+key+index and simply overwrite.
+    ; ⭐⭐ BORRAR EN FO4 ES DISTINTO QUE EN SSE, Y ES MAS SIMPLE. LEIDO EN LA FUENTE DE f4ee:
     ;
-    ; The fix is NOT Overlays.RemoveAll(a, ...) — that would also delete overlays some OTHER mod put on
-    ; this actor. Instead we remove precisely the uids we minted last time, which we remembered in the
-    ; savegame. Anything anyone else added is untouched.
-    if myUidsReady
-        int u = 0
-        while u < myUids.Length
-            Overlays.Remove(a, IsFemale, myUids[u])
-            u += 1
-        endwhile
-    endif
+    ;   F4EEUpdateOverlays::Run()  (OverlayInterface.cpp:856-914)
+    ;       // Delete all overlays
+    ;       parent->RemoveChild(overlayRoot);        <- DESTRUYE el subarbol de overlays entero
+    ;       // Rebuild overlays
+    ;       for (cada slot biped) UpdateOverlays(...) <- lo reconstruye desde el mapa
+    ;
+    ; O sea: Overlays.Update() DESTRUYE Y RECONSTRUYE. Entonces RemoveAll + Update es un borrado REAL
+    ; y completo. skee no tiene nada de esto (su ApplyNodeOverrides solo empuja lo que quedo en el
+    ; store y nunca resetea un nodo), y por eso el script de SSE tiene que apagar los nodos a mano
+    ; con KEY_ALPHA=0. Aca no hace falta ningun truco.
+    ;
+    ; ⭐ Y POR ESO YA NO HAY LEDGER DE UIDS. Antes se recordaban los uids minteados por instancia,
+    ; porque Overlays.Add() mintea uno nuevo en cada llamada y re-aplicar habria apilado duplicados.
+    ; Con RemoveAll el mapa de ese actor queda VACIO y Update lo reconstruye: no queda nada que
+    ; apilar. Ademas el ledger se habria perdido igual, porque el nombre del script ahora lleva el
+    ; del plugin y una version nueva estrena instancia.
+    ;
+    ; ⚠️ RemoveAll se lleva TAMBIEN los overlays que otro mod le haya puesto a este actor. Es la
+    ; MISMA decision de producto que en SSE, tomada a proposito: el NPC muestra exactamente lo que
+    ; muestra la app. f4ee no guarda dueño (su mapa es actor+prioridad+uid).
+    Overlays.RemoveAll(a, IsFemale_G000001)
 
-    ; Start a fresh uid ledger. FO4 Papyrus arrays are resizable (Add/Clear), unlike Skyrim's — so we
-    ; grow it as we mint uids instead of pre-sizing. (Utility.CreateIntArray is a Skyrim-only function
-    ; and does not exist here.)
-    myUids = new int[1]
-    myUids.Clear()
-    myUidsReady = true
-
-    int n = OvlTemplate.Length
+    int n = OvlTemplate_G000001.Length
     if n == 0
         Overlays.Update(a)
         return
@@ -119,9 +150,9 @@ Function ApplyOverlays()
 
     int i = 0
     while i < n
-        if OvlTemplate[i] != ""
+        if OvlTemplate_G000001[i] != ""
             Overlays:Entry e = new Overlays:Entry
-            e.template = OvlTemplate[i]
+            e.template = OvlTemplate_G000001[i]
             ; ⛔ INLINE guards, never a helper taking an array parameter. Papyrus throws
             ; "Cannot cast from None to Float[]" AT THE CALL when the argument is None, so a
             ; `if a == None` inside the helper never runs. That bug took down the SSE script
@@ -152,35 +183,35 @@ Function ApplyOverlays()
             e.scale_u  = 1.0
             e.scale_v  = 1.0
 
-            if i < OvlPriority.Length
-                    e.priority = OvlPriority[i]
+            if i < OvlPriority_G000001.Length
+                    e.priority = OvlPriority_G000001[i]
             endif
-            if i < OvlRed.Length
-                    e.red = OvlRed[i]
+            if i < OvlRed_G000001.Length
+                    e.red = OvlRed_G000001[i]
             endif
-            if i < OvlGreen.Length
-                    e.green = OvlGreen[i]
+            if i < OvlGreen_G000001.Length
+                    e.green = OvlGreen_G000001[i]
             endif
-            if i < OvlBlue.Length
-                    e.blue = OvlBlue[i]
+            if i < OvlBlue_G000001.Length
+                    e.blue = OvlBlue_G000001[i]
             endif
-            if i < OvlAlpha.Length
-                    e.alpha = OvlAlpha[i]
+            if i < OvlAlpha_G000001.Length
+                    e.alpha = OvlAlpha_G000001[i]
             endif
-            if i < OvlOffsetU.Length
-                    e.offset_u = OvlOffsetU[i]
+            if i < OvlOffsetU_G000001.Length
+                    e.offset_u = OvlOffsetU_G000001[i]
             endif
-            if i < OvlOffsetV.Length
-                    e.offset_v = OvlOffsetV[i]
+            if i < OvlOffsetV_G000001.Length
+                    e.offset_v = OvlOffsetV_G000001[i]
             endif
-            if i < OvlScaleU.Length
-                    e.scale_u = OvlScaleU[i]
+            if i < OvlScaleU_G000001.Length
+                    e.scale_u = OvlScaleU_G000001[i]
             endif
-            if i < OvlScaleV.Length
-                    e.scale_v = OvlScaleV[i]
+            if i < OvlScaleV_G000001.Length
+                    e.scale_v = OvlScaleV_G000001[i]
             endif
 
-            myUids.Add(Overlays.Add(a, IsFemale, e))
+            Overlays.Add(a, IsFemale_G000001, e)
         endif
         i += 1
     endwhile
@@ -193,10 +224,10 @@ Function ApplySkin()
     ; co-save, so if the user clears the skin template in the app and re-saves, an early return would leave
     ; the OLD override applied to the actor forever — the same "never deletes" hazard the uid ledger fixes
     ; for overlays. BodyGen.RemoveSkinOverride exists precisely for this (PapyrusBodyGen.cpp:114-130).
-    if SkinTemplate == ""
+    if SkinTemplate_G000001 == ""
         BodyGen.RemoveSkinOverride(self as Actor)
         return
     endif
     ; SetSkinOverride calls UpdateSkinOverride internally (PapyrusBodyGen.cpp:109) — no refresh needed.
-    BodyGen.SetSkinOverride(self as Actor, SkinTemplate)
+    BodyGen.SetSkinOverride(self as Actor, SkinTemplate_G000001)
 EndFunction

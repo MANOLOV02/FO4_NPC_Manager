@@ -1,4 +1,4 @@
-Imports System.IO
+﻿Imports System.IO
 Imports FO4_Base_Library
 
 ''' <summary>Attaches our Papyrus apply-script to a saved NPC_ record (via VMAD) and installs the
@@ -38,8 +38,14 @@ Imports FO4_Base_Library
 Public Module NpcApplyScriptEmitter
 
     ''' <summary>Script names — must match the compiled .pex filenames in <c>Papyrus\pex_*\</c>.</summary>
-    Public Const ScriptNameSse As String = NpcVmadBuilder.ReservedScriptPrefix & "ApplySSE"
-    Public Const ScriptNameFo4 As String = NpcVmadBuilder.ReservedScriptPrefix & "ApplyFO4"
+    ''' <summary>Nombre LEGADO de SSE: el que se emitia antes del esquema por plugin, y el que declara la
+    ''' plantilla compilada. Se sigue usando para (a) limpiarlo de los VMAD viejos y (b) saber que string
+    ''' reescribir dentro del .pex. NUNCA se emite.</summary>
+    Public Const LegacyScriptSse As String = NpcVmadBuilder.ReservedScriptPrefix & "ApplySSE"
+
+    ''' <summary>Generacion que trae la plantilla compilada (el sufijo _G000001 del .psc).</summary>
+    Public Const BaselineGeneration As Integer = 1
+    Public Const LegacyScriptFo4 As String = NpcVmadBuilder.ReservedScriptPrefix & "ApplyFO4"
 
     ''' <summary>Name of the property that carries the payload version. Its value is NOT a constant: it is a
     ''' hash of THIS NPC's payload (<see cref="NpcVmadBuilder.StablePayloadHash"/>), stamped by
@@ -53,6 +59,29 @@ Public Module NpcApplyScriptEmitter
     ''' minted last time (remembered per instance) before re-adding, so a re-apply cannot stack duplicates and
     ''' cannot touch overlays another mod added.</para></summary>
     Public Const VersionPropertyName As String = "SchemaVersion"
+
+    ''' <summary>Generacion del payload (SSE). El sufijo _G<n> hace que una property tenga un NOMBRE que el
+    ''' savegame del jugador NO tiene, y por eso el motor la inicializa desde el VMAD del plugin en vez de
+    ''' restaurarla rancia del save. LEY MEDIDA en Skyrim SE 2026-07-28. Ver Papyrus\GENERACION_DEL_PAYLOAD.md.
+    ''' <para>Tiene que coincidir con el sufijo del .psc. PENDIENTE: que la app la resuelva sola por plugin
+    ''' (PexPatcher ya sabe leerla y reescribirla); hoy sigue siendo una constante.</para></summary>
+
+    ''' <summary>UNICA via para armar un nombre de property de SSE. Si alguno se arma a mano queda en la
+    ''' generacion equivocada y el motor lo sirve rancio (o None) sin decir nada.</summary>
+    Private Function GenProp(baseName As String, generation As Integer) As String
+        Return baseName & PexPatcher.GenerationSuffix(generation)
+    End Function
+
+    ''' <summary>Nombre real de la property de version. SSE lleva sufijo; FO4 todavia no.</summary>
+    Private Function VersionPropertyNameFor(game As Config_App.Game_Enum, generation As Integer) As String
+        Return GenProp(VersionPropertyName, generation)
+    End Function
+
+    ''' <summary>Nombre del script ANTES del esquema por plugin, por juego. Se limpia del VMAD, y es lo
+    ''' que PexPatcher busca dentro de la plantilla para renombrarla.</summary>
+    Private Function LegacyScriptFor(game As Config_App.Game_Enum) As String
+        Return If(game = Config_App.Game_Enum.Skyrim, LegacyScriptSse, LegacyScriptFo4)
+    End Function
 
     ''' <summary>⛔ EN SSE LA CARA ES DEL BAKE **MIENTRAS EL BAKE SE LA QUEDE**. Con
     ''' <c>Setting_BakeSseRaceMenuOverlays</c> ON el script no emite ningún nodo Face (lo hornea el bake); con ese
@@ -153,14 +182,16 @@ Public Module NpcApplyScriptEmitter
     Public Function ApplyToNpc(npcSpec As NPC_Data,
                                preset As LooksmenuLoader.LooksmenuPreset,
                                game As Config_App.Game_Enum,
-                               enabled As Boolean) As Boolean
+                               enabled As Boolean,
+                               pluginFileName As String,
+                               generation As Integer) As Boolean
         If npcSpec Is Nothing Then Return False
 
         Dim spec As NpcVmadBuilder.VmadScriptSpec = Nothing
         If enabled Then
             ' ACBS bit 0 = Female (identical in both games — verified against TES5Edit ACBS 'Flags').
             Dim isFemale = (npcSpec.AcbsFlags And 1UI) <> 0UI
-            spec = BuildSpec(preset, game, isFemale)
+            spec = BuildSpec(preset, game, isFemale, generation)
         End If
 
         ' TRUE NO-OP for the common case: nothing to write AND nothing of ours to strip. Leave the VMAD
@@ -181,12 +212,22 @@ Public Module NpcApplyScriptEmitter
         ' the script GONE, so we strip it, and whatever is already in a running save stays there.
         If spec Is Nothing AndAlso enabled AndAlso hadOurs Then
             Dim isFemaleCleanup = (npcSpec.AcbsFlags And 1UI) <> 0UI
-            spec = BuildCleanupSpec(game, isFemaleCleanup)
+            spec = BuildCleanupSpec(game, isFemaleCleanup, generation)
         End If
 
         ' UpsertScript(Nothing) removes ours and keeps the rest; it returns Nothing when nothing is left,
         ' which makes EmitVmad drop the VMAD subrecord (correct — the record had no scripts of its own).
-        npcSpec.Vmad = NpcVmadBuilder.UpsertScript(npcSpec.Vmad, spec, game)
+        ' ⛔ EL BORRADO POR PREFIJO SE ACOTA A LO NUESTRO. UpsertScript borra TODO lo que empieza con el
+        ' prefijo que se le pasa. Con el nombre por plugin, usar el prefijo generico NPCM_Manolov_ le
+        ' borraria a OTRO AUTOR su script de este mismo record. Por eso van dos pasadas:
+        '   1) limpiar el nombre LEGADO (el de antes del esquema por plugin), por prefijo EXACTO;
+        '   2) upsert del nuestro, acotado a NUESTRO nombre completo.
+        ' Que el stem del plugin vaya ANTES de 'ApplySSE' es lo que hace posible el paso 1 sin tocar la
+        ' lib: asi el nombre legado NPCM_Manolov_ApplySSE no es prefijo de ningun nombre nuevo.
+        Dim ourName = ScriptNameFor(game, pluginFileName)
+        If spec IsNot Nothing Then spec.Name = ourName
+        npcSpec.Vmad = NpcVmadBuilder.UpsertScript(npcSpec.Vmad, Nothing, game, LegacyScriptFor(game))
+        npcSpec.Vmad = NpcVmadBuilder.UpsertScript(npcSpec.Vmad, spec, game, ourName)
         Return spec IsNot Nothing
     End Function
 
@@ -195,12 +236,13 @@ Public Module NpcApplyScriptEmitter
     ''' so vanilla records stay untouched).</summary>
     Public Function BuildSpec(preset As LooksmenuLoader.LooksmenuPreset,
                               game As Config_App.Game_Enum,
-                              isFemale As Boolean) As NpcVmadBuilder.VmadScriptSpec
+                              isFemale As Boolean,
+                              generation As Integer) As NpcVmadBuilder.VmadScriptSpec
         If preset Is Nothing Then Return Nothing
         Dim spec = If(game = Config_App.Game_Enum.Skyrim,
-                      BuildSpecSse(preset, isFemale),
-                      BuildSpecFo4(preset, isFemale))
-        Return StampVersion(spec)
+                      BuildSpecSse(preset, isFemale, generation),
+                      BuildSpecFo4(preset, isFemale, generation))
+        Return StampVersion(spec, game, generation)
     End Function
 
     ''' <summary>Replace the version property's placeholder with the hash of everything else in the spec, so
@@ -225,9 +267,16 @@ Public Module NpcApplyScriptEmitter
     ''' alcanza ningún sello. Ese techo es del diseño de llevar el payload en propiedades del VMAD y no se
     ''' arregla acá.</para>
     '''
-    ''' <para>Historial: 1 = comportamiento original. 2 = RemovePrevious barre también los nodos Face +
-    ''' AddOverlays movido al inicio de OnLoad (el registro en skee tiene que preceder al barrido).</para></summary>
-    Private Const ScriptLogicRevision As String = "2"
+    ''' <para>Historial:
+    ''' 1 = comportamiento original.
+    ''' 2 = RemovePrevious barre tambien los nodos Face + AddOverlays movido al inicio de OnLoad (el registro
+    '''     en skee tiene que preceder al barrido).
+    ''' 3 = payload con sufijo de generacion _G&lt;n&gt;.
+    ''' 4 = nombre de script POR PLUGIN + guard de instancia huerfana en los dos juegos; SSE borra apagando
+    '''     el nodo con KEY_ALPHA=0 (skee no tiene deshacer); FO4 pasa a Overlays.RemoveAll + Update y pierde
+    '''     el ledger de uids (f4ee destruye y reconstruye el subarbol, asi que no hay nada que apilar).
+    ''' </para></summary>
+    Private Const ScriptLogicRevision As String = "4"
 
     ''' <summary>Spec de LIMPIEZA: el NPC se quedó sin overlays/skin/transforms pero YA tenía script nuestro,
     ''' así que hay que dejarle uno que corra <c>RemovePrevious()</c> y no aplique nada.
@@ -240,19 +289,22 @@ Public Module NpcApplyScriptEmitter
     ''' Comparar contra None tampoco es salida (misma regla 2: el cast revienta igual). Por eso se construye
     ''' con el builder normal y <c>allowEmpty:=True</c>: las arrays salen por <c>AddArray</c> y el centinela
     ''' queda garantizado POR CONSTRUCCIÓN, sin duplicar acá la lista de nombres de propiedades.</para></summary>
-    Private Function BuildCleanupSpec(game As Config_App.Game_Enum, isFemale As Boolean) As NpcVmadBuilder.VmadScriptSpec
+    Private Function BuildCleanupSpec(game As Config_App.Game_Enum, isFemale As Boolean, generation As Integer) As NpcVmadBuilder.VmadScriptSpec
         Dim emptyPreset As New LooksmenuLoader.LooksmenuPreset()
         Return StampVersion(If(game = Config_App.Game_Enum.Skyrim,
-                               BuildSpecSse(emptyPreset, isFemale, allowEmpty:=True),
-                               BuildSpecFo4(emptyPreset, isFemale, allowEmpty:=True)))
+                               BuildSpecSse(emptyPreset, isFemale, generation, allowEmpty:=True),
+                               BuildSpecFo4(emptyPreset, isFemale, generation, allowEmpty:=True)), game, generation)
     End Function
 
-    Private Function StampVersion(spec As NpcVmadBuilder.VmadScriptSpec) As NpcVmadBuilder.VmadScriptSpec
+    Private Function StampVersion(spec As NpcVmadBuilder.VmadScriptSpec,
+                                  game As Config_App.Game_Enum,
+                                  generation As Integer) As NpcVmadBuilder.VmadScriptSpec
         If spec Is Nothing Then Return Nothing
-        Dim hash = NpcVmadBuilder.StablePayloadHash(spec, VersionPropertyName, ScriptLogicRevision)
+        Dim versionProp = VersionPropertyNameFor(game, generation)
+        Dim hash = NpcVmadBuilder.StablePayloadHash(spec, versionProp, ScriptLogicRevision)
         For i = 0 To spec.Properties.Count - 1
-            If String.Equals(spec.Properties(i).Name, VersionPropertyName, StringComparison.Ordinal) Then
-                spec.Properties(i) = NpcVmadBuilder.VmadPropertySpec.FromInt(VersionPropertyName, hash)
+            If String.Equals(spec.Properties(i).Name, versionProp, StringComparison.Ordinal) Then
+                spec.Properties(i) = NpcVmadBuilder.VmadPropertySpec.FromInt(versionProp, hash)
                 Exit For
             End If
         Next
@@ -267,6 +319,7 @@ Public Module NpcApplyScriptEmitter
     ''' <see cref="BuildCleanupSpec"/>.</param>
     Private Function BuildSpecSse(preset As LooksmenuLoader.LooksmenuPreset,
                                   isFemale As Boolean,
+                                  generation As Integer,
                                   Optional allowEmpty As Boolean = False) As NpcVmadBuilder.VmadScriptSpec
         ' SSE: los nodos Face se emiten SOLO si el bake NO se los queda (toggle de overlays OFF). Ver SkipFaceOverlays.
         Dim skipFace = SkipFaceOverlays(Config_App.Game_Enum.Skyrim)
@@ -368,37 +421,37 @@ Public Module NpcApplyScriptEmitter
 
         If Not allowEmpty AndAlso ovNode.Count = 0 AndAlso skSlot.Count = 0 AndAlso ndName.Count = 0 Then Return Nothing
 
-        Dim spec As New NpcVmadBuilder.VmadScriptSpec With {.Name = ScriptNameSse}
+        Dim spec As New NpcVmadBuilder.VmadScriptSpec With {.Name = LegacyScriptSse}
         Dim P = spec.Properties
-        P.Add(NpcVmadBuilder.VmadPropertySpec.FromBool("IsFemale", isFemale))
-        P.Add(NpcVmadBuilder.VmadPropertySpec.FromInt(VersionPropertyName, 0))   ' placeholder — StampVersion overwrites it with the payload hash
+        P.Add(NpcVmadBuilder.VmadPropertySpec.FromBool(GenProp("IsFemale", generation), isFemale))
+        P.Add(NpcVmadBuilder.VmadPropertySpec.FromInt(GenProp(VersionPropertyName, generation), 0))   ' placeholder — StampVersion overwrites it with the payload hash
 
-        AddArray(P, "OvlNode", ovNode)
-        AddArray(P, "OvlDiffuse", ovDiff)
-        AddArray(P, "OvlNormal", ovNorm)
-        AddArray(P, "OvlHasTint", ovHasTint)
-        AddArray(P, "OvlTint", ovTint)
-        AddArray(P, "OvlHasAlpha", ovHasAlpha)
-        AddArray(P, "OvlAlpha", ovAlpha)
+        AddArray(P, GenProp("OvlNode", generation), ovNode)
+        AddArray(P, GenProp("OvlDiffuse", generation), ovDiff)
+        AddArray(P, GenProp("OvlNormal", generation), ovNorm)
+        AddArray(P, GenProp("OvlHasTint", generation), ovHasTint)
+        AddArray(P, GenProp("OvlTint", generation), ovTint)
+        AddArray(P, GenProp("OvlHasAlpha", generation), ovHasAlpha)
+        AddArray(P, GenProp("OvlAlpha", generation), ovAlpha)
 
-        AddArray(P, "SkinSlot", skSlot)
-        AddArray(P, "SkinDiffuse", skDiff)
-        AddArray(P, "SkinNormal", skNorm)
-        AddArray(P, "SkinHasTint", skHasTint)
-        AddArray(P, "SkinTint", skTint)
+        AddArray(P, GenProp("SkinSlot", generation), skSlot)
+        AddArray(P, GenProp("SkinDiffuse", generation), skDiff)
+        AddArray(P, GenProp("SkinNormal", generation), skNorm)
+        AddArray(P, GenProp("SkinHasTint", generation), skHasTint)
+        AddArray(P, GenProp("SkinTint", generation), skTint)
 
-        AddArray(P, "NodeName", ndName)
-        AddArray(P, "NodeHasScale", ndHasScale)
-        AddArray(P, "NodeScale", ndScale)
-        AddArray(P, "NodeHasPos", ndHasPos)
-        AddArray(P, "NodePosX", ndPosX)
-        AddArray(P, "NodePosY", ndPosY)
-        AddArray(P, "NodePosZ", ndPosZ)
-        AddArray(P, "NodeHasRot", ndHasRot)
+        AddArray(P, GenProp("NodeName", generation), ndName)
+        AddArray(P, GenProp("NodeHasScale", generation), ndHasScale)
+        AddArray(P, GenProp("NodeScale", generation), ndScale)
+        AddArray(P, GenProp("NodeHasPos", generation), ndHasPos)
+        AddArray(P, GenProp("NodePosX", generation), ndPosX)
+        AddArray(P, GenProp("NodePosY", generation), ndPosY)
+        AddArray(P, GenProp("NodePosZ", generation), ndPosZ)
+        AddArray(P, GenProp("NodeHasRot", generation), ndHasRot)
         For k = 0 To 8
-            AddArray(P, "NodeRotM" & k.ToString(Globalization.CultureInfo.InvariantCulture), ndRotM(k))
+            AddArray(P, GenProp("NodeRotM" & k.ToString(Globalization.CultureInfo.InvariantCulture), generation), ndRotM(k))
         Next
-        AddArray(P, "NodeScaleMode", ndScaleMode)
+        AddArray(P, GenProp("NodeScaleMode", generation), ndScaleMode)
 
         Return spec
     End Function
@@ -410,6 +463,7 @@ Public Module NpcApplyScriptEmitter
     ''' haya nada que aplicar, para el caso de LIMPIEZA.</param>
     Private Function BuildSpecFo4(preset As LooksmenuLoader.LooksmenuPreset,
                                   isFemale As Boolean,
+                                  generation As Integer,
                                   Optional allowEmpty As Boolean = False) As NpcVmadBuilder.VmadScriptSpec
         Dim tpl As New List(Of String), prio As New List(Of Integer)
         Dim r As New List(Of Single), g As New List(Of Single), b As New List(Of Single), a As New List(Of Single)
@@ -445,21 +499,21 @@ Public Module NpcApplyScriptEmitter
 
         If Not allowEmpty AndAlso tpl.Count = 0 AndAlso skin = "" Then Return Nothing
 
-        Dim spec As New NpcVmadBuilder.VmadScriptSpec With {.Name = ScriptNameFo4}
+        Dim spec As New NpcVmadBuilder.VmadScriptSpec With {.Name = LegacyScriptFo4}
         Dim P = spec.Properties
-        P.Add(NpcVmadBuilder.VmadPropertySpec.FromBool("IsFemale", isFemale))
-        P.Add(NpcVmadBuilder.VmadPropertySpec.FromInt(VersionPropertyName, 0))   ' placeholder — StampVersion overwrites it with the payload hash
-        AddArray(P, "OvlTemplate", tpl)
-        AddArray(P, "OvlPriority", prio)
-        AddArray(P, "OvlRed", r)
-        AddArray(P, "OvlGreen", g)
-        AddArray(P, "OvlBlue", b)
-        AddArray(P, "OvlAlpha", a)
-        AddArray(P, "OvlOffsetU", ou)
-        AddArray(P, "OvlOffsetV", ov)
-        AddArray(P, "OvlScaleU", su)
-        AddArray(P, "OvlScaleV", sv)
-        P.Add(NpcVmadBuilder.VmadPropertySpec.FromString("SkinTemplate", skin))
+        P.Add(NpcVmadBuilder.VmadPropertySpec.FromBool(GenProp("IsFemale", generation), isFemale))
+        P.Add(NpcVmadBuilder.VmadPropertySpec.FromInt(GenProp(VersionPropertyName, generation), 0))   ' placeholder — StampVersion overwrites it with the payload hash
+        AddArray(P, GenProp("OvlTemplate", generation), tpl)
+        AddArray(P, GenProp("OvlPriority", generation), prio)
+        AddArray(P, GenProp("OvlRed", generation), r)
+        AddArray(P, GenProp("OvlGreen", generation), g)
+        AddArray(P, GenProp("OvlBlue", generation), b)
+        AddArray(P, GenProp("OvlAlpha", generation), a)
+        AddArray(P, GenProp("OvlOffsetU", generation), ou)
+        AddArray(P, GenProp("OvlOffsetV", generation), ov)
+        AddArray(P, GenProp("OvlScaleU", generation), su)
+        AddArray(P, GenProp("OvlScaleV", generation), sv)
+        P.Add(NpcVmadBuilder.VmadPropertySpec.FromString(GenProp("SkinTemplate", generation), skin))
 
         Return spec
     End Function
@@ -469,8 +523,45 @@ Public Module NpcApplyScriptEmitter
     ' ============================================================================================
 
     ''' <summary>Script (and .pex file) name for this game.</summary>
-    Public Function ScriptNameFor(game As Config_App.Game_Enum) As String
-        Return If(game = Config_App.Game_Enum.Skyrim, ScriptNameSse, ScriptNameFo4)
+    ''' <summary>Nombre del script (y del .pex) PARA ESTE PLUGIN. En SSE es unico por ESP publicado, y eso es
+    ''' lo que permite que dos mods hechos con la app CONVIVAN: los sueltos de Data\Scripts no se fusionan, uno
+    ''' gana, y hasta ahora los dos shipeaban el mismo NPCM_Manolov_ApplySSE.pex — al perdedor le quedaba un
+    ''' .pex que no declara sus properties (se ignoran en silencio, o llegan None y el .Length revienta).
+    ''' <para>El stem del plugin va ANTES de 'ApplySSE' a proposito: asi el nombre legado no es prefijo de
+    ''' ningun nombre nuevo, y el borrado por prefijo de UpsertScript no toca el script de otro autor.</para>
+    ''' <para>Dos ESP con el mismo nombre vuelven a colisionar: es responsabilidad del autor darle un nombre
+    ''' unico a su plugin. Decision tomada a proposito, sin hash ni aviso.</para>
+    ''' <para>FO4 sigue con el nombre unico de siempre hasta medir la misma ley en ese motor.</para></summary>
+    Public Function ScriptNameFor(game As Config_App.Game_Enum, pluginFileName As String) As String
+        Dim tail = If(game = Config_App.Game_Enum.Skyrim, "_ApplySSE", "_ApplyFO4")
+        Return NpcVmadBuilder.ReservedScriptPrefix & SanitizeStem(pluginFileName) & tail
+    End Function
+
+    ''' <summary>Nombre de archivo del plugin -> identificador valido de Papyrus. Conserva la extension para
+    ''' que .esp/.esl/.esm del mismo nombre no colisionen: NPC_Manager2.esp -> NPC_Manager2_esp.</summary>
+    Private Function SanitizeStem(pluginFileName As String) As String
+        Dim name = Path.GetFileName(If(pluginFileName, ""))
+        Dim sb As New Text.StringBuilder(name.Length)
+        For Each c In name
+            If (c >= "a"c AndAlso c <= "z"c) OrElse (c >= "A"c AndAlso c <= "Z"c) OrElse
+               (c >= "0"c AndAlso c <= "9"c) OrElse c = "_"c Then
+                sb.Append(c)
+            Else
+                sb.Append("_"c)
+            End If
+        Next
+        Dim r = sb.ToString()
+        Return If(r.Length = 0, "Plugin", r)
+    End Function
+
+    ''' <summary>Bytes del .pex LISTOS PARA INSTALAR: la plantilla embebida con el nombre del script y la
+    ''' generacion ya reescritos. UNICA fuente para el disco Y para el FOMOD — si los dos no salen de aca, el
+    ''' paquete puede llevar un .pex que no coincide con el VMAD del ESP.</summary>
+    Public Function PatchedPexBytes(game As Config_App.Game_Enum, pluginFileName As String, generation As Integer) As Byte()
+        Dim template = PexBytes(game)
+        If template Is Nothing OrElse template.Length = 0 Then Return Nothing
+        Return PexPatcher.PatchScript(template, LegacyScriptFor(game), ScriptNameFor(game, pluginFileName),
+                                      BaselineGeneration, generation)
     End Function
 
     ''' <summary>The compiled .pex is EMBEDDED in this assembly (see the EmbeddedResource items in the
@@ -485,7 +576,10 @@ Public Module NpcApplyScriptEmitter
     ''' Returns Nothing if the resource is missing (i.e. the app was built without running the Papyrus
     ''' compile step — see Papyrus\README.md).</summary>
     Public Function PexBytes(game As Config_App.Game_Enum) As Byte()
-        Dim resourceName = "NpcManager.Papyrus." & ScriptNameFor(game) & ".pex"   ' LogicalName pinned in the .vbproj
+        ' El recurso embebido es la PLANTILLA, asi que su nombre es el de la compilacion (legado), NO el
+        ' nombre por plugin: ese lo pone PatchedPexBytes reescribiendo el .pex.
+        Dim templateName = LegacyScriptFor(game)
+        Dim resourceName = "NpcManager.Papyrus." & templateName & ".pex"   ' LogicalName pinned in the .vbproj
         Using s = Reflection.Assembly.GetExecutingAssembly().GetManifestResourceStream(resourceName)
             If s Is Nothing Then Return Nothing
             Using ms As New MemoryStream()
@@ -499,14 +593,15 @@ Public Module NpcApplyScriptEmitter
     ''' stubs (NiOverride/Overlays/BodyGen), which would SHADOW RaceMenu's/LooksMenu's real .pex, since loose
     ''' files win over the BSA/BA2. See Papyrus\README.md.
     ''' Returns the destination path, or Nothing when the embedded .pex is missing.</summary>
-    Public Function InstallPex(dataPath As String, game As Config_App.Game_Enum) As String
+    Public Function InstallPex(dataPath As String, game As Config_App.Game_Enum,
+                               pluginFileName As String, generation As Integer) As String
         If String.IsNullOrEmpty(dataPath) Then Return Nothing
-        Dim bytes = PexBytes(game)
+        Dim bytes = PatchedPexBytes(game, pluginFileName, generation)
         If bytes Is Nothing OrElse bytes.Length = 0 Then Return Nothing
 
         Dim destDir = Path.Combine(dataPath, "Scripts")
         Directory.CreateDirectory(destDir)
-        Dim dest = Path.Combine(destDir, ScriptNameFor(game) & ".pex")
+        Dim dest = Path.Combine(destDir, ScriptNameFor(game, pluginFileName) & ".pex")
 
         ' Write only when the bytes actually differ — avoids touching the file on every save (and avoids
         ' churning a mod manager's overwrite folder for a file that did not change).
@@ -519,7 +614,32 @@ Public Module NpcApplyScriptEmitter
         End If
 
         File.WriteAllBytes(dest, bytes)
+        InstallLegacyPex(destDir, game)
         Return dest
     End Function
+
+
+    ''' <summary>Instala TAMBIEN el .pex del nombre LEGADO (el publicado antes del esquema por plugin), sin
+    ''' parchear. Suena a basura; es obligatorio.
+    ''' <para>MEDIDO 2026-07-28. Si ese .pex NO esta, el savegame del jugador sigue teniendo instancias de ese
+    ''' tipo pegadas al actor, el tipo no resuelve, y —como el script extends Actor— ese actor queda SIN TABLA
+    ''' DE METODOS PARA TODOS LOS DEMAS SCRIPTS. No es que no se apliquen nuestros overlays: le rompemos el NPC
+    ''' a cualquier mod. Observado: RaceMenuHHScaleEffect fallando 17 veces sobre FF000911 con 'Method
+    ''' GetLeveledActorBase not found on NPCM_Manolov_ApplySSE' y 'Cannot call GetSex() on a None object'.</para>
+    ''' <para>Y no re-aplica nada: el .psc corta con el guard de instancia huerfana (arrays de longitud 0 = el
+    ''' VMAD no nombra a este script). Resuelve el tipo y no hace nada mas.</para>
+    ''' <para>Artefacto de MIGRACION: se puede dejar de shippear cuando ningun savegame publicado arrastre
+    ''' instancias del nombre viejo. Como eso no se puede saber, se queda.</para></summary>
+    Private Sub InstallLegacyPex(scriptsDir As String, game As Config_App.Game_Enum)
+        Dim template = PexBytes(game)
+        If template Is Nothing OrElse template.Length = 0 Then Return
+        Dim dest = Path.Combine(scriptsDir, LegacyScriptFor(game) & ".pex")
+        Try
+            If File.Exists(dest) AndAlso File.ReadAllBytes(dest).SequenceEqual(template) Then Return
+            File.WriteAllBytes(dest, template)
+        Catch
+            ' Bloqueado (juego abierto) o sin permisos. Se reintenta en el proximo Save ESP.
+        End Try
+    End Sub
 
 End Module

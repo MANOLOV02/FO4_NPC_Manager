@@ -22,6 +22,13 @@ TARGETS = [
 VMAD_T = {1:"object",2:"string",3:"int",4:"float",5:"bool",
           11:"object[]",12:"string[]",13:"int[]",14:"float[]",15:"bool[]"}
 
+# Los nombres del payload llevan sufijo de generacion (_G1, _G2, ...) porque una property que el
+# savegame YA tiene se restaura RANCIA y solo una con nombre nuevo se inicializa del VMAD. Los grupos
+# de abajo se escriben SIN sufijo y se comparan con base_name(), asi el validador no hay que tocarlo
+# en cada release. Ver la cabecera de NPCM_Manolov_ApplySSE.psc.
+def base_name(n):
+    return re.sub(r"_G\d+$", "", n)
+
 # grupos de arrays paralelos que DEBEN tener la misma longitud
 GROUPS = {
     "SSE": [("overlays", ["OvlNode","OvlDiffuse","OvlNormal","OvlHasTint","OvlTint","OvlHasAlpha","OvlAlpha"]),
@@ -130,8 +137,12 @@ for label, esp, psc in TARGETS:
                         errs.append(f"TIPO NO COINCIDE {pn}: VMAD={vt} vs .psc={decl[pn]}")
                     if n == 0:
                         errs.append(f"ARRAY VACIO (ilegal en Skyrim): {pn}")
+                # Los grupos se declaran sin sufijo de generacion; el VMAD lo trae. Indexar por base.
+                # (El chequeo `pn not in decl` de arriba SI compara con sufijo, a proposito: asi una
+                # desincronizacion entre el .psc y PayloadGeneration del emisor sale como error duro.)
+                props_by_base = {base_name(k): v for k, v in props.items()}
                 for gname, members in GROUPS[label]:
-                    lens = {m: props[m][1] for m in members if m in props}
+                    lens = {m: props_by_base[m][1] for m in members if m in props_by_base}
                     if lens and len(set(lens.values())) > 1:
                         errs.append(f"ARRAYS PARALELOS DESPAREJOS en '{gname}': {lens}")
                 # ⛔ Una ARRAY-property declarada y AUSENTE del VMAD queda en None, y en Skyrim
