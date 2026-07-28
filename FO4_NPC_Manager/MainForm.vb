@@ -8339,8 +8339,9 @@ Public Class MainForm
 #End Region
 
     Private Sub MainForm_FormClosing(sender As Object, e As FormClosingEventArgs) Handles MyBase.FormClosing
-        ' Persist UI-level config BEFORE teardown. Setting_Lightrig lives in shared Config_App
-        ' (written in-memory by LightRigForm); RenderGore is NPC-only and lives in NPC_Config.
+        ' Persist UI-level config BEFORE teardown. Los rigs de luces (uno por juego) viven en el
+        ' Config_App compartido (los escribe en memoria LightRigForm); RenderGore es NPC-only y vive
+        ' en NPC_Config.
         NPC_Config.Current.RenderGore = CheckBoxRenderGore.Checked
         NPC_Config.Current.ShowCatUnique = CheckBoxCatUnique.Checked
         NPC_Config.Current.ShowCatGeneric = CheckBoxCatGeneric.Checked
@@ -10962,15 +10963,36 @@ Public Class MainForm
                     End If
                 Next
                 _npcSearchableCache(fid) = NpcDisplayHelpers.BuildNpcSearchableText(freshNpc)
+                ' ⛔ The DISPLAY label has to be refreshed here too, not just the searchable text.
+                ' Both caches are filled together in RebuildTreeModelCache, but only the searchable one
+                ' was refreshed on this path — so after a save that changed FullName or EditorID the
+                ' filter matched the NEW name while the node stayed labelled with the OLD one, until the
+                ' next load-order reload (the only other thing that rebuilds these caches).
+                Dim oldLabel As String = Nothing
+                _npcDisplayLabelCache.TryGetValue(fid, oldLabel)
+                Dim newLabel = NpcDisplayHelpers.BuildNpcDisplayLabel(freshNpc)
+                _npcDisplayLabelCache(fid) = newLabel
+                ' Refreshing the cache is NOT enough on its own: PopulateNPCTree copied the old value
+                ' into TreeNode.Text when it built the node, so the tree has to be rebuilt for the new
+                ' label to show. Reuse the flag the plugin-name change below already uses — in the
+                ' common case a save moves the NPC into the auto-generated plugin, so that branch has
+                ' already set it and this adds no extra rebuild. Guarded on oldLabel IsNot Nothing
+                ' because a cache MISS means PopulateNPCTree built the node's text from the NPC_Data
+                ' instance directly (see its TryGetValue fallback) — and that instance was just replaced
+                ' above with freshNpc, so there is nothing stale to fix.
+                If oldLabel IsNot Nothing AndAlso Not String.Equals(oldLabel, newLabel, StringComparison.Ordinal) Then
+                    treeChanged = True
+                End If
                 If Not String.Equals(oldPluginName, freshNpc.PluginName, StringComparison.OrdinalIgnoreCase) Then
                     treeChanged = True
                 End If
             End If
         Next
 
-        ' When the tree grouping changed, rebuild it and re-select the loaded NPC — the AfterSelect
-        ' handler re-renders it from the clean record. Otherwise re-render explicitly if the loaded
-        ' NPC was saved (its overlay was just stripped and needs to drop off the preview).
+        ' When the tree grouping OR any saved NPC's display label changed, rebuild it and re-select the
+        ' loaded NPC — the AfterSelect handler re-renders it from the clean record. Otherwise re-render
+        ' explicitly if the loaded NPC was saved (its overlay was just stripped and needs to drop off
+        ' the preview).
         If treeChanged Then
             PopulateNPCTree(_pendingTreeFilter)
             If reloadFid <> 0UI Then

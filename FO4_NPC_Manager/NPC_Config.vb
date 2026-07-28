@@ -3,8 +3,8 @@ Imports System.Text.Json
 
 ''' <summary>
 ''' NPC_Manager-specific configuration. Persists to its own npc_config.json next to the
-''' executable, separate from the shared library config.json (which carries FO4ExePath +
-''' Setting_Lightrig + skinning/render options that WM also consumes). Settings only ever
+''' executable, separate from the shared library config.json (which carries FO4ExePath + the
+''' per-game light rigs + skinning/render options that WM also consumes). Settings only ever
 ''' read by NPC_Manager belong here, never in <see cref="FO4_Base_Library.Config_App"/>.
 ''' </summary>
 Public Class NPC_Config
