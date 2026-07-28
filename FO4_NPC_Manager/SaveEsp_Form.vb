@@ -197,18 +197,55 @@ Public Class SaveEsp_Form
         ''' the freshly baked FaceGen instead of reconstructing the face at runtime. Only meaningful when the
         ''' CharGen bake runs; the dialog disables + unchecks the option when the bake is off. Default False.</summary>
         Public RemoveCharGenFlag As Boolean
-        ''' <summary>When True the orchestrator writes (or refreshes) the BodyMorphs/Skin sidecar
-        ''' (<c>&lt;plugin&gt;.bssliders</c>) next to the ESP after the plugin is written. The
-        ''' sidecar carries F4SE-only fields that have no record equivalent so re-opening the
-        ''' ESP in NPC_Manager restores the slider state. Default True.</summary>
-        Public WriteBssliders As Boolean
+        ''' <summary>El sidecar <c>&lt;plugin&gt;.bssliders</c> se escribe SIEMPRE. Era un checkbox y se quitó:
+        ''' no es una opción de salida, es la BASE DE DATOS de la app, y apagarlo rompía cosas en silencio.
+        '''
+        ''' <list type="number">
+        ''' <item><b>Se perdía el contador de generación.</b> <c>payloadGeneration</c> vive en el sidecar y se
+        ''' persistía DENTRO de este gate, así que emitir el apply-script con el sidecar apagado dejaba el
+        ''' contador sin avanzar ⇒ el siguiente Save ESP reusaba el mismo <c>_G&lt;n&gt;</c> ⇒ a un jugador que ya
+        ''' tuviera esa generación le llegaban las properties RANCIAS. Es exactamente la falla que el esquema
+        ''' <c>_G&lt;n&gt;</c> existe para evitar.</item>
+        ''' <item><b>El NPC quedaba sin payload reconstruible.</b> Overlays, skin, node transforms y body morphs
+        ''' NO están en el record: el sidecar es su único hogar. Sin entrada, ni
+        ''' <see cref="BssliderSidecar.HydratePresets"/> los restaura al reabrir el plugin, ni el emisor del .ini
+        ''' los lista, ni <c>RefreshPreservedApplyScripts</c> puede re-emitir su VMAD.</item>
+        ''' </list>
+        '''
+        ''' <para>Escribirlo siempre es inocuo: <see cref="BssliderSidecar.Write"/> descarta las entradas vacías y
+        ''' no crea un archivo cuando no hay nada que guardar ni generación que recordar.</para></summary>
+        Public ReadOnly Property WriteBssliders As Boolean
+            Get
+                Return True
+            End Get
+        End Property
         ''' <summary>When True the orchestrator emits the BodyGen .ini pair (<c>templates.ini</c> +
-        ''' <c>morphs.ini</c>) so the engine applies the body sliders to NPCs on first-load. Game-aware
-        ''' output dir: FO4 → <c>Data\F4SE\Plugins\F4EE\BodyGen\&lt;plugin&gt;\</c> (LooksMenu); SSE →
+        ''' <c>morphs.ini</c>) so the engine applies the body sliders to NPCs on first-load. Game-aware output
+        ''' dir: FO4 → <c>Data\F4SE\Plugins\F4EE\BodyGen\&lt;plugin&gt;\</c> (LooksMenu); SSE →
         ''' <c>Data\Meshes\actors\character\BodyGenData\&lt;plugin&gt;\</c> (RaceMenu).
-        ''' Default True (seeded from NPC_Config.EmitBodyGenIni): it is the ONLY delivery route for body
-        ''' morphs. Does not apply retroactively to actors already spawned in a saved game.</summary>
+        '''
+        ''' <para>⭐ INDEPENDIENTE de <see cref="EmitApplyScript"/>, y las cuatro combinaciones son válidas: el
+        ''' script GANA por construcción corra antes o después que BodyGen (si va primero, BodyGen se saltea por
+        ''' su gate "este actor no tiene ningún morph"; si va segundo, el <c>.psc</c> barre la key de BodyGen —
+        ''' SSE <c>"RSMBodyGen"</c>, FO4 el keyword <c>None</c>). Con los dos tildados el .ini queda como RED para
+        ''' los NPC del plugin que el usuario no re-grabó: ésos conservan su VMAD viejo, el script les llega
+        ''' inerte, y el .ini es su única vía.</para>
+        '''
+        ''' <para>No aplica retroactivamente a actores ya spawneados — eso sólo lo alcanza el script.</para></summary>
         Public EmitBodyGen As Boolean
+
+        ''' <summary>True cuando el apply-script es el DUEÑO de los body morphs: los emite y barre la key de
+        ''' BodyGen antes de aplicar los suyos. Viaja al <c>.psc</c> como <c>MorphsOwned</c>.
+        ''' <para>Va pegado a <see cref="EmitApplyScript"/>: si el script se emite, los morphs viajan en él. No
+        ''' tiene control propio a propósito — no hay caso en que convenga emitir el script y dejarle los morphs
+        ''' al .ini, porque el script gana igual y su barrido es lo ÚNICO que limpia lo que BodyGen dejó en el
+        ''' co-save del jugador.</para>
+        ''' <para>⛔ NO borra ni excluye nada del .ini (ver el comentario en NpcOverrideSaver, fase BodyGen).</para></summary>
+        Public ReadOnly Property ScriptOwnsBodyMorphs As Boolean
+            Get
+                Return EmitApplyScript
+            End Get
+        End Property
         ''' <summary>When True the orchestrator attaches our Papyrus apply-script to each saved NPC_ via
         ''' VMAD (NpcVmadBuilder) and installs the compiled .pex, so the engine applies on first spawn the
         ''' RaceMenu/LooksMenu options with no other delivery route: body/hands/feet overlays, skin
@@ -356,9 +393,11 @@ Public Class SaveEsp_Form
         UpdateRemoveChargenFlagEnabled()
 
         ' The two "first spawn" deliveries — BodyGen .ini (body sliders) and the apply-script (overlays /
-        ' skin / node transforms). Both default True and both are REMEMBERED: seed from the persisted
-        ' preference BEFORE wiring the handlers, so loading a saved value doesn't immediately re-persist it
-        ' (same pattern as CheckBoxRemoveChargenFlag above). Flushed to npc_config.json on app close.
+        ' skin / node transforms / BODY MORPHS). Both default True, both REMEMBERED, y son INDEPENDIENTES:
+        ' desde que el script también entrega body morphs las cuatro combinaciones son válidas, porque el
+        ' script gana por construcción (barre la key de BodyGen antes de aplicar la suya). Seed ANTES de
+        ' enganchar los handlers, para que cargar un valor guardado no lo re-persista al toque
+        ' (mismo patrón que CheckBoxRemoveChargenFlag arriba). Se vuelca a npc_config.json al cerrar la app.
         CheckBoxEmitBodyGen.Checked = NPC_Config.Current.EmitBodyGenIni
 
         ' El numeric del override tiene que mostrar SIEMPRE la generacion del plugin de destino ACTUAL, asi
@@ -778,7 +817,6 @@ Public Class SaveEsp_Form
             .LightMaster = CheckBoxLightMaster.Checked,
             .GenerateChargen = CheckBoxGenerateChargen.Checked,
             .RemoveCharGenFlag = CheckBoxGenerateChargen.Checked AndAlso CheckBoxRemoveChargenFlag.Checked,
-            .WriteBssliders = CheckBoxWriteBssliders.Checked,
             .EmitBodyGen = CheckBoxEmitBodyGen.Checked,
             .EmitApplyScript = CheckBoxEmitApplyScript.Checked,
             .SaveNewOutfits = CheckBoxSaveNewOutfits.Checked,
@@ -985,9 +1023,8 @@ Public Class SaveEsp_Form
         End If
         n += 1 : map.Add(("Writing NPC override", n))
         n += 1 : map.Add(("Verifying written record", n))
-        If target.WriteBssliders Then
-            n += 1 : map.Add(("Writing .bssliders sidecar", n))
-        End If
+        ' El sidecar va SIEMPRE (ver SaveTarget.WriteBssliders): no es opcional, es la base de datos de la app.
+        n += 1 : map.Add(("Writing .bssliders sidecar", n))
         If target.EmitBodyGen Then
             n += 1 : map.Add(("Writing BodyGen", n))
         End If

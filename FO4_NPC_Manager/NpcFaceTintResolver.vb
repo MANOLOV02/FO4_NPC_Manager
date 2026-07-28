@@ -294,6 +294,10 @@ Friend NotInheritable Class NpcFaceTintResolver
         End If
 
         Dim seenFaceMeshes As New HashSet(Of String)(StringComparer.OrdinalIgnoreCase)
+        ' Dedup del pliegue del NORMAL, gemelo de seenFaceMeshes (que dedupea el del diffuse por complexion): dos
+        ' mallas FaceTint del mismo NPC que resuelven al MISMO _msn producen un pliegue IDÉNTICO por construcción,
+        ' y las dos terminan bindeando la misma textura per-NPC. Ver ApplySseFaceOverlayNormals.
+        Dim seenFaceNormals As New HashSet(Of String)(StringComparer.OrdinalIgnoreCase)
         ' Diagnostic: when the FaceTint shader filter rejects every mesh (typical Ghoul/Child
         ' bug — the engine uses a different BSLightingShaderType for these races), enumerate
         ' every mesh's shape name + shader type so we can see what we DO have vs what we look
@@ -340,6 +344,31 @@ Friend NotInheritable Class NpcFaceTintResolver
                 Dim mustFold = (skeeRaw IsNot Nothing AndAlso skeeRaw.Count > 0) OrElse
                                SseOverlayCompositor.HasAnyFoldableFaceOverlay(faceOvl)
                 If mustFold Then LastSseFoldWasMandatory = True
+
+                ' ⭐⭐ PLIEGUE DEL NORMAL (_msn). INDEPENDIENTE del pliegue del diffuse: son dos texturas distintas,
+                ' con dos gates distintos, y el bake ya las trata así (WriteSseFaceDiffuseWithOverlays gatea el
+                ' bloque de NORMALES con HasFaceOverlayNormals, aparte del gate del diffuse). Acá el render pasa a
+                ' hacer lo MISMO — antes NO componía el normal NUNCA, así que un face-paint con relieve se horneaba
+                ' y no se veía en el preview: RENDER != BAKE.
+                ' ⛔ El gate es el MISMO predicado que el bake (HasFaceOverlayNormals), no uno paralelo: sin overlay
+                ' que aporte normal la clave queda "" y el bind cae al _msn vanilla, sin componer ni instalar nada.
+                ' ⛔ Y la ASIGNACIÓN va sí o sí, en TODAS las salidas de abajo (incluida la del dedup y la del
+                ' camino no plegado): es el reset que hace que borrar el último overlay-con-normal en vivo vuelva
+                ' al _msn real, en vez de seguir bindeando el plegado viejo. Mismo motivo que el reset del diffuse.
+                Dim foldedNormalKey As String = ""
+                If SseOverlayCompositor.HasFaceOverlayNormals(faceOvl) Then
+                    Dim nKey = SseFoldedNormalKeyFor(npcData.FormID)
+                    Dim msnKey = FO4UnifiedMaterial_Class.CorrectTexturePath(materialBase.NormalTexture)
+                    If Not String.IsNullOrEmpty(msnKey) AndAlso seenFaceNormals.Contains(msnKey) Then
+                        Dim mk = msnKey
+                        Logger.LogLazy(Function() $"[SSE-FOLD] normal: compose OMITIDO, el _msn '{mk}' ya lo plegó otra mesh de este NPC — se reusa la MISMA textura per-NPC")
+                        foldedNormalKey = nKey
+                    ElseIf ApplySseFaceOverlayNormals(materialBase, model, faceOvl, nKey) Then
+                        If Not String.IsNullOrEmpty(msnKey) Then seenFaceNormals.Add(msnKey)
+                        foldedNormalKey = nKey
+                    End If
+                End If
+                mesh.MeshData.Material.SseFoldedNormalKey = foldedNormalKey
                 ' ⛔ El toggle de debug NO EXISTE en Release: no se lee el config siquiera. Así el pliegue forzado es
                 ' IMPOSIBLE de encender fuera de Debug, en vez de depender de que el default quede en False.
                 Dim forceFoldDebug As Boolean = False
@@ -539,6 +568,110 @@ Friend NotInheritable Class NpcFaceTintResolver
         Dim fg = PluginManager.ToFaceGenLocalFormID(npcFormID)
         Return FO4UnifiedMaterial_Class.CorrectTexturePath(
             $"textures\actors\character\facegendata\facediffuse\{origin}\{fg:X8}.dds")
+    End Function
+
+    ''' <summary>⭐ Clave PER-NPC del <c>_msn</c> plegado, gemela de <see cref="SseFoldedDiffuseKeyFor"/>. Espeja la
+    ''' ruta que el bake escribe (<c>FaceGenData\FaceNormal\&lt;plugin&gt;\&lt;formID&gt;.dds</c>) por legibilidad en
+    ''' el log; NO es un path que nadie lea de disco (ningún campo del material la referencia ⇒ el loader nunca la
+    ''' pide). Lo único que importa es que sea ÚNICA POR NPC: la del <c>_msn</c> real es COMPARTIDA entre NPCs de la
+    ''' misma raza, así que instalar ahí el pliegue le pasaría el relieve del tatuaje a la cabeza de al lado.</summary>
+    Private Function SseFoldedNormalKeyFor(npcFormID As UInteger) As String
+        Dim origin As String = Nothing
+        If _ctx IsNot Nothing AndAlso _ctx.PluginManager IsNot Nothing Then origin = _ctx.PluginManager.GetOriginatingPluginName(npcFormID)
+        If String.IsNullOrEmpty(origin) Then origin = "unknown"
+        Dim fg = PluginManager.ToFaceGenLocalFormID(npcFormID)
+        Return FO4UnifiedMaterial_Class.CorrectTexturePath(
+            $"textures\actors\character\facegendata\facenormal\{origin}\{fg:X8}.dds")
+    End Function
+
+    ''' <summary>SSE — pliegue del NORMAL de la cabeza en vivo: compone los normales de los overlays de cara sobre
+    ''' el <c>_msn</c> y lo instala bajo <paramref name="foldedNormalKey"/> (clave per-NPC que consume
+    ''' <c>MaterialData.SseFoldedNormalKey</c> → <c>NormalTexture_ID</c>). False ⇒ el caller deja la clave en "" y
+    ''' el bind se queda con el <c>_msn</c> real.
+    '''
+    ''' <para>⭐⭐ ES LA MISMA FUNCIÓN QUE EL BAKE, NO UNA RÉPLICA: el compose sale de
+    ''' <see cref="SseOverlayCompositor.ComposeFaceOverlayNormalsIntoMsn"/>, con los MISMOS dos decodes (el
+    ''' vectorial para el normal, el de color para la cobertura) y la MISMA textura por defecto del slot 0. Por eso
+    ''' acá no hay un par CPU/GPU que pueda desincronizarse: el pliegue del normal tiene UNA sola implementación,
+    ''' compartida por render y bake. (El flag <c>Setting_GPUSkinning</c> gobierna la cadena del DIFFUSE, que sí
+    ''' tiene dos réplicas; el normal no entra en esa cadena — es otra textura, sin blend-ops ni espacios de
+    ''' color.)</para>
+    '''
+    ''' <para>El <c>_msn</c> es MODEL-SPACE y sus 3 canales son ejes independientes, así que acá NO hay ninguna
+    ''' conversión de espacio de color (a diferencia del diffuse): entra crudo y sale crudo, <c>IsSRGB=False</c>.</para>
+    '''
+    ''' <para>⭐ EL ALPHA SE PRESERVA TAL CUAL, NO SE MEZCLA — y el upload NO fuerza opaco (el del diffuse sí).
+    ''' ⛔ NO es "porque lleva la máscara especular": en una malla MODEL-SPACE el mask especular sale del SLOT 7
+    ''' (<c>texSpecular</c> = t2 del engine), canal <c>.r</c>. El <c>normalMap.a</c> lo lee SÓLO la rama no-MSN
+    ''' (Shader_Class:2130-2155, medido sobre los 6864 PS de BSLightingShader: una malla no-MSN nunca samplea t2)
+    ''' y el envmask del cubemap (:2367), que la piel no usa. O sea: en la cabeza SSE ese alpha no lo lee NADIE, y
+    ''' mezclarlo sería inventar un canal. Corroborado en el propio source (<c>femalehead_msn_009.dds</c>: alpha
+    ''' constante 255). Y sería ACTIVAMENTE peligroso: un normal de overlay en BC5 no tiene alpha y el decode lo
+    ''' devuelve constante 1 ⇒ mezclarlo lo llevaría a blanco en toda el área cubierta, el mismo modo de falla que
+    ''' tenía la cobertura.</para></summary>
+    Private Function ApplySseFaceOverlayNormals(materialBase As FO4UnifiedMaterial_Class, model As PreviewModel,
+                                                faceOvl As IList(Of RaceMenuJslot.JslotOverlayNode),
+                                                foldedNormalKey As String) As Boolean
+        Try
+            Dim mKey = FO4UnifiedMaterial_Class.CorrectTexturePath(materialBase.NormalTexture)
+            If String.IsNullOrEmpty(mKey) Then
+                Logger.LogLazy(Function() "[SSE-FOLD] normal ABORT: el material no tiene NormalTexture")
+                Return False
+            End If
+            Dim mBytes = FilesDictionary_class.GetBytes(mKey)
+            If mBytes Is Nothing Then
+                Logger.LogLazy(Function() $"[SSE-FOLD] normal ABORT: GetBytes Nothing para '{mKey}'")
+                Return False
+            End If
+            Dim mImg = FaceTintCpuCompositor.DecodeDds(mBytes)
+            If mImg Is Nothing OrElse mImg.Rgba Is Nothing OrElse mImg.Width <= 0 OrElse mImg.Height <= 0 Then
+                Logger.LogLazy(Function() $"[SSE-FOLD] normal ABORT: no decodifica el _msn '{mKey}'")
+                Return False
+            End If
+            Dim mw = mImg.Width, mh = mImg.Height, npix = mw * mh
+            Dim acc(npix * 4 - 1) As Single
+            Array.Copy(mImg.Rgba, acc, acc.Length)
+            ' MISMA recuperación que el bake para un _msn modeado de 2 canales (ver FaceGenBuilder): sin esto el
+            ' pack de DecodeDds deja B=0 ⇒ z=−1 en toda la cabeza. Inerte con el _msn vanilla (4 canales).
+            If mImg.Channels < 3 Then
+                Dim chL = mImg.Channels
+                Logger.LogLazy(Function() $"[SSE-FOLD] el _msn '{mKey}' trae SÓLO {chL} canales (BC5/R8G8): se reconstruye el eje Z")
+                FaceTintCpuCompositor.ReconstructNormalZ(acc, npix)
+            End If
+
+            If Not SseOverlayCompositor.ComposeFaceOverlayNormalsIntoMsn(
+                    acc, faceOvl, mw, mh,
+                    AddressOf SseFaceTintComposer.DecodeTextureRgba,
+                    AddressOf SseFaceTintComposer.DecodeNormalRgba) Then
+                ' El gate dijo que sí y no aportó nada (textura ausente/ilegible, o sin cobertura legítima). Ya se
+                ' reportó con [SSE-OVL]; acá se cae al _msn real en vez de instalar una copia idéntica.
+                Logger.LogLazy(Function() "[SSE-FOLD] normal: ningún overlay aportó — se conserva el _msn vanilla (sin instalar copia)")
+                Return False
+            End If
+
+            ' Resolución de salida = la MISMA que el bake (Setting_FaceGenNormalResolution): Inherit ⇒ nativo, que
+            ' es un no-op. Sin esto el preview mostraría más relieve del que el DDS horneado va a tener.
+            Dim outW = mw, outH = mh
+            Dim accOut = acc
+            If FaceGenBuilder.OutputSettings.Normal <> FaceTintConvention.FaceTintChannelResolution.Inherit Then
+                Dim t = FaceTintConvention.ResolveResolutionSize(FaceGenBuilder.OutputSettings.Normal, Math.Min(mw, mh))
+                accOut = FaceTintCpuCompositor.ResampleRgbaFloat(acc, mw, mh, t, t) : outW = t : outH = t
+            End If
+            ' Rgba32f, igual que el diffuse plegado (sin cuantizar a 8 bits: esa pérdida es del ARCHIVO, no del
+            ' compose). forceOpaque:=False ⇒ el alpha del _msn (máscara especular) viaja intacto.
+            Dim id = SseFoldLayerStack.UploadRgba32f(accOut, outW * outH, outW, outH)
+            If id = 0 Then
+                Logger.LogLazy(Function() "[SSE-FOLD] normal ABORT: GL.GenTexture devolvió 0 (¿sin contexto GL?)")
+                Return False
+            End If
+            InstallTexture(model, foldedNormalKey, id, outW, outH, isSrgb:=False)
+            Logger.LogLazy(Function() $"[SSE-FOLD] normal plegado instalado bajo '{foldedNormalKey}' ({outW}x{outH}, desde '{mKey}')")
+            Return True
+        Catch ex As Exception
+            Dim tN = ex.GetType().Name, mN = ex.Message
+            Logger.LogLazy(Function() $"[SSE-FOLD] normal ABORT: {tN}: {mN}")
+            Return False
+        End Try
     End Function
 
     Private Function ResolveFaceOverlaysForNpc(npcData As NPC_Data) As IList(Of RaceMenuJslot.JslotOverlayNode)

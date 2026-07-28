@@ -2760,9 +2760,25 @@ Public Module FaceGenBuilder
                                 Dim mw = mDec.Width, mh = mDec.Height
                                 Dim macc(mw * mh * 4 - 1) As Single
                                 Array.Copy(mDec.Rgba, macc, macc.Length)
+                                ' El _msn vanilla es uncompressed 32bpp (4 canales) ⇒ esto NO corre en el caso normal
+                                ' y el resultado queda byte-idéntico. Sólo muerde con un _msn MODEADO de 2 canales,
+                                ' donde el pack de DecodeDds habría dado B=0 ⇒ z=−1 en TODA la cabeza. Ojo: para un
+                                ' model-space la reconstrucción no puede recuperar un z genuinamente negativo — un
+                                ' _msn en 2 canales ya es una fuente inválida (es lo que CharGen Options impide
+                                ' generar); esto es RECUPERACIÓN, no garantía. Sin esto era basura muda.
+                                If mDec.Channels < 3 Then
+                                    Logger.LogLazy(Function() $"[FACEBAKE][SSE] el _msn de la cabeza trae SÓLO {mDec.Channels} canales (BC5/R8G8): se reconstruye el eje Z. Un _msn model-space válido es de 4 canales — revisá el replacer instalado.")
+                                    FaceTintCpuCompositor.ReconstructNormalZ(macc, mw * mh)
+                                End If
                                 ' Compone overlay-normals si los hay (in-place). En forced sin overlays queda el head
                                 ' normal tal cual → se re-encodea igual (replacer _n self-contained).
-                                Dim composedN = SseOverlayCompositor.ComposeFaceOverlayNormalsIntoMsn(macc, overlays, mw, mh, AddressOf SseFaceTintComposer.DecodeTextureRgba)
+                                ' decodeNormal = el decode VECTORIAL (reconstruye Z de un BC5) — los normales de los
+                                ' face-paint de RaceMenu son tangent-space y BC5 es su formato estándar. El de color
+                                ' se sigue usando para la COBERTURA (el alpha del diffuse del overlay).
+                                Dim composedN = SseOverlayCompositor.ComposeFaceOverlayNormalsIntoMsn(
+                                    macc, overlays, mw, mh,
+                                    AddressOf SseFaceTintComposer.DecodeTextureRgba,
+                                    AddressOf SseFaceTintComposer.DecodeNormalRgba)
                                 If composedN OrElse forced Then
                                     ' Paralelo por rangos, MISMA justificación que la conversión del diffuse de
                                     ' arriba: por-píxel puro, escrituras disjuntas ⇒ bit-idéntico al serial. El

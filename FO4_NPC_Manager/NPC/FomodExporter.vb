@@ -153,9 +153,16 @@ Public Module FomodExporter
         ' sale del sidecar igual que en el guardado. Si el paquete llevara la plantilla SIN parchear, su .pex
         ' declararia otros nombres de property que los que el VMAD del ESP emite, y el script leeria None.
         Dim pexGeneration = NpcApplyScriptEmitter.BaselineGeneration
+        ' ⛔ La SAL sale del sidecar igual que la generacion. Si se sorteara una nueva aca, el .pex del paquete
+        ' declararia nombres de property distintos a los que emite el VMAD del ESP que va en el MISMO paquete,
+        ' y el script leeria None en todo, sin un solo error.
+        Dim pexSalt = NpcApplyScriptEmitter.BaselineSalt
         Dim pexSidecar = BssliderSidecar.Read(BssliderSidecar.BuildPath(IO.Path.Combine(dataPath, pluginFileName)))
-        If pexSidecar IsNot Nothing AndAlso pexSidecar.PayloadGeneration > 0 Then pexGeneration = pexSidecar.PayloadGeneration
-        Dim pexBytes = NpcApplyScriptEmitter.PatchedPexBytes(game, pluginFileName, pexGeneration)
+        If pexSidecar IsNot Nothing AndAlso pexSidecar.PayloadGeneration > 0 Then
+            pexGeneration = pexSidecar.PayloadGeneration
+            If Not String.IsNullOrEmpty(pexSidecar.PayloadSalt) Then pexSalt = pexSidecar.PayloadSalt
+        End If
+        Dim pexBytes = NpcApplyScriptEmitter.PatchedPexBytes(game, pluginFileName, pexGeneration, pexSalt)
         manifest.Add(New ManifestItem With {
             .Kind = ItemKind.ApplyScript,
             .DataRelativePath = "Scripts\" & NpcApplyScriptEmitter.ScriptNameFor(game, pluginFileName) & ".pex",

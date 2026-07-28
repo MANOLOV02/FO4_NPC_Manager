@@ -8,9 +8,13 @@ Scriptname NPCM_Manolov_ApplySSE extends Actor
   it receives per-instance events — that is why OnLoad() fires per spawned actor.
 
   WHAT THIS SCRIPT DOES *NOT* DO — on purpose, to avoid applying anything twice:
-    * Body morphs        — BodyGen morphs.ini/templates.ini (SseBodyGenIniWriter).
     * ANYTHING on the FACE — face overlays, morphs, sculpt, tints: all BAKED into the FaceGen NIF and
                            textures. The emitter never sends a Face node. No exceptions.
+
+  BODY MORPHS (BodySlide) ARE DELIVERED HERE NOW — and the BodyGen .ini is then NOT emitted for the
+  same plugin. The two CANNOT coexist: skee SUMS the per-key values of a morph by default
+  (Impl_GetBodyMorphs, BodyMorphInterface.cpp:220-240, g_bodyMorphMode = 0 in main.cpp:145), so a
+  BodyGen row plus ours would apply the slider TWICE. See ApplyBodyMorphs() below.
 }
 
 ;-- ⛔⛔ LAS DOS REGLAS DE PAPYRUS QUE ME COSTARON UNA TARDE ENTERA -----------------------------
@@ -49,11 +53,11 @@ Scriptname NPCM_Manolov_ApplySSE extends Actor
 ;
 ; ⇒ Cada version publicada emite el payload con NOMBRES NUEVOS. El sufijo es el numero de generacion.
 ;
-; ⚠️ ESTE ARCHIVO ES UNA PLANTILLA. Se compila con `_G000001` y con el nombre `NPCM_Manolov_ApplySSE`,
+; ⚠️ ESTE ARCHIVO ES UNA PLANTILLA. Se compila con `_G0000010000` y con el nombre `NPCM_Manolov_ApplySSE`,
 ;   y NINGUNO de los dos es lo que llega al juego: al guardar el ESP, la app reescribe DENTRO del .pex
 ;   (PexPatcher.vb, a nivel bytes) tanto el nombre del script como la generacion:
 ;
-;       plantilla:  NPCM_Manolov_ApplySSE                 _G000001
+;       plantilla:  NPCM_Manolov_ApplySSE                 _G0000010000
 ;       instalado:  NPCM_Manolov_<Plugin_esp>_ApplySSE    _G000007
 ;
 ;   ⇒ NO subir el sufijo a mano y NO renombrar el Scriptname. Si se cambia alguno hay que actualizar
@@ -84,56 +88,115 @@ int Property KEY_TEXTURE = 9 AutoReadOnly   ; kParam_ShaderTexture — index 0 =
 int Property IDX_DIFFUSE = 0 AutoReadOnly
 int Property IDX_NORMAL  = 1 AutoReadOnly
 
-bool Property IsFemale_G000001 = false Auto
+bool Property IsFemale_G0000010000 = false Auto
 {Género para el que se autoraron los overrides. NiOverride guarda los sets male/female por separado.}
 
-int Property SchemaVersion_G000001 = 1 Auto
+bool Property Verbose_G0000010000 = false Auto
+{DIAGNOSTICO. false (default, y lo que se publica) = el script NO traza NADA. La app lo pone en true
+ cuando ella misma esta diagnosticando (Logger.Enabled, que es Debug-only).
+
+ ⭐ NO ES SOLO PARA AHORRARSE LINEAS DE LOG. Lo que gatea es COSTO QUE HOY SE PAGA SIEMPRE:
+
+ 1) La CONCATENACION de cada traza. `"...=" + applied + " de " + n + " key=" + ovrKey` es bytecode de
+    Papyrus y se ejecuta tenga el jugador el log prendido o no — el motor solo decide si ESCRIBE.
+    Dentro del `if` no se ejecuta nada.
+ 2) ⭐⭐ LAS NATIVAS DE SONDA. GetMorphNames / GetMorphKeys / GetBodyMorph se llaman UNICAMENTE para
+    trazar. Son llamadas nativas de verdad, y en FO4 medimos que una nativa sin NoWait cuesta ~17 ms
+    (512 SetMorph = ~9 s). Ese es el gasto caro, no el Debug.Trace.
+
+ Por eso el flag envuelve los BLOQUES DE SONDA COMPLETOS, no solo las lineas de Debug.Trace.
+ ⛔ JAMAS envolver una llamada FUNCIONAL (ClearBodyMorphKeys, AddNodeOverride*, SetBodyMorph...): si el
+ flag se apagara, el script dejaria de aplicar. Solo se envuelve lo que existe para mirar.
+
+ Por que una property y no dos .pex (uno con trazas y otro sin): Papyrus no tiene preprocesador, asi
+ que dos .pex exigirian un paso de build que borre lineas por texto y compile dos veces — dos
+ artefactos que mantener sincronizados y la chance de shipear el equivocado, que es justo el modo de
+ falla contra el que el .pex se embebe en la DLL. Con la property hay UN artefacto, y ademas se puede
+ prender sin recompilar Papyrus: se pone true, se re-guarda el ESP y listo.}
+
+int Property SchemaVersion_G0000010000 = 1 Auto
 {Hash del payload de ESTE NPC. Cambia sólo si cambian sus valores ⇒ sólo ESE actor re-aplica.}
 
 ;-- overlays: Body/Hands/Feet. JAMÁS Face (la cara es del bake) ---------------------------------
-string[] Property OvlNode_G000001 Auto
-string[] Property OvlDiffuse_G000001 Auto
-string[] Property OvlNormal_G000001 Auto
-bool[]   Property OvlHasTint_G000001 Auto
-int[]    Property OvlTint_G000001 Auto
-bool[]   Property OvlHasAlpha_G000001 Auto
-float[]  Property OvlAlpha_G000001 Auto
+string[] Property OvlNode_G0000010000 Auto
+string[] Property OvlDiffuse_G0000010000 Auto
+string[] Property OvlNormal_G0000010000 Auto
+bool[]   Property OvlHasTint_G0000010000 Auto
+int[]    Property OvlTint_G0000010000 Auto
+bool[]   Property OvlHasAlpha_G0000010000 Auto
+float[]  Property OvlAlpha_G0000010000 Auto
 
 ;-- skin overrides (por slot biped) -------------------------------------------------------------
-int[]    Property SkinSlot_G000001 Auto
-string[] Property SkinDiffuse_G000001 Auto
-string[] Property SkinNormal_G000001 Auto
-bool[]   Property SkinHasTint_G000001 Auto
-int[]    Property SkinTint_G000001 Auto
+int[]    Property SkinSlot_G0000010000 Auto
+string[] Property SkinDiffuse_G0000010000 Auto
+string[] Property SkinNormal_G0000010000 Auto
+bool[]   Property SkinHasTint_G0000010000 Auto
+int[]    Property SkinTint_G0000010000 Auto
 
 ;-- node transforms -----------------------------------------------------------------------------
-string[] Property NodeName_G000001 Auto
-bool[]   Property NodeHasScale_G000001 Auto
-float[]  Property NodeScale_G000001 Auto
-bool[]   Property NodeHasPos_G000001 Auto
-float[]  Property NodePosX_G000001 Auto
-float[]  Property NodePosY_G000001 Auto
-float[]  Property NodePosZ_G000001 Auto
-bool[]   Property NodeHasRot_G000001 Auto
-float[]  Property NodeRotM0_G000001 Auto
-float[]  Property NodeRotM1_G000001 Auto
-float[]  Property NodeRotM2_G000001 Auto
-float[]  Property NodeRotM3_G000001 Auto
-float[]  Property NodeRotM4_G000001 Auto
-float[]  Property NodeRotM5_G000001 Auto
-float[]  Property NodeRotM6_G000001 Auto
-float[]  Property NodeRotM7_G000001 Auto
-float[]  Property NodeRotM8_G000001 Auto
-{La matriz 3x3 row-major, repartida en NUEVE arrays — NodeRotM<k>[i] = elemento k del nodo i. Uno por
- elemento, NO un array plano de 9xN: los arrays de Papyrus topan en 128 ELEMENTOS y un plano se
- pasaría a los 15 nodos. Así el techo son 128 NODOS, igual que el resto.
+string[] Property NodeName_G0000010000 Auto
+bool[]   Property NodeHasScale_G0000010000 Auto
+float[]  Property NodeScale_G0000010000 Auto
+bool[]   Property NodeHasPos_G0000010000 Auto
+float[]  Property NodePosX_G0000010000 Auto
+float[]  Property NodePosY_G0000010000 Auto
+float[]  Property NodePosZ_G0000010000 Auto
+bool[]   Property NodeHasRot_G0000010000 Auto
+float[]  Property NodeRotM0_G0000010000 Auto
+float[]  Property NodeRotM1_G0000010000 Auto
+float[]  Property NodeRotM2_G0000010000 Auto
+float[]  Property NodeRotM3_G0000010000 Auto
+float[]  Property NodeRotM4_G0000010000 Auto
+float[]  Property NodeRotM5_G0000010000 Auto
+float[]  Property NodeRotM6_G0000010000 Auto
+float[]  Property NodeRotM7_G0000010000 Auto
+float[]  Property NodeRotM8_G0000010000 Auto
+{La matriz 3x3 row-major, repartida en NUEVE arrays — NodeRotM<k>[i] = elemento k del nodo i.
+
+ ⛔ LA RAZON QUE DECIA ACA ERA FALSA. Decia: "no un array plano de 9xN porque los arrays de Papyrus
+ topan en 128 elementos y un plano se pasaria a los 15 nodos". MEDIDO 2026-07-28 y REFUTADO: un array
+ servido por el VMAD llega con 512 elementos sin drama en los DOS juegos. El 128 es del COMPILADOR
+ sobre `new T[n]`, y aca el compilador no interviene.
+ Se mantiene el split porque el indice i significa "nodo i" en todas las arrays del grupo — la misma
+ invariante de overlays, skin y morphs — no por un limite que no existe.
 
  NO es euler. AddNodeTransformRotation acepta 3 (euler en grados) O 9 (matriz cruda), y con 9 los
  copia directo a NiMatrix33::arr[i] (PapyrusNiOverride.cpp:1190-1193) — el mismo arr[i] que skee
  empaqueta después bajo la key 32 índice i, que es exactamente lo que guarda un .jslot. O sea que le
  devolvemos SU PROPIA secuencia de floats y no hay ninguna convención euler de por medio.}
-int[]    Property NodeScaleMode_G000001 Auto
+int[]    Property NodeScaleMode_G0000010000 Auto
 {-1 = no tocar. 0 mult / 1 avg / 2 add / 3 max (NiTransformInterface.cpp:682-707).}
+
+;-- body morphs (BodySlide) ---------------------------------------------------------------------
+bool Property MorphsOwned_G0000010000 = false Auto
+{⛔ QUIEN ES EL DUEÑO DE LOS BODY MORPHS DE ESTE NPC. false = los entrega el par BodyGen .ini y este
+ script NO TOCA NADA de morphs (ni siquiera barre, ni repinta); true = los entrega este script.
+
+ En SSE nuestro barrido es por key propia, asi que borrar de mas no puede pasar — pero el flag existe
+ igual, por dos motivos: (a) el repintado (UpdateModelWeight) tampoco tiene por que dispararse si no
+ somos el dueño, y (b) una sola ley en los dos juegos, que en FO4 SI es obligatoria (alla el slot es el
+ mismo que usa BodyGen).
+
+ ⚠️ Volver del modo script al modo .ini deja los morphs que este script ya aplico pegados al actor (con
+ morphs en el mapa, skee no re-evalua BodyGen). No es una perdida: los dos modos sacan los valores del
+ MISMO sidecar.}
+string[] Property MorphName_G0000010000 Auto
+{Nombre del morph de BodySlide (la key del .tri PIRT). Array paralelo con MorphValue.}
+float[]  Property MorphValue_G0000010000 Auto
+{Valor YA SUMADO de todas las contribuciones keyed de ese morph. Va bajo UNA sola key nuestra
+ (XformKey()), no bajo las keys de BodySlide, por dos razones MEDIDAS:
+
+ 1) skee SUMA las keys de un mismo morph (Impl_GetBodyMorphs, BodyMorphInterface.cpp:220-240, con
+    el default iBodyMorphMode=0), asi que la suma bajo una key rinde EXACTAMENTE lo mismo que las
+    keys por separado. Es ademas lo que ya hace el emisor del .ini y lo que renderiza el preview
+    de la app, asi que preview == juego.
+ 2) Da DESHACER QUIRURGICO: ClearBodyMorphKeys(ref, key) recorre todos los nombres y saca SOLO la
+    nuestra (Impl_ClearBodyMorphKeys, :262-276), asi que RSMBodyGen / XPMSE / cualquier otro mod
+    conservan las suyas. Mismo patron que los node transforms.
+
+ ⚠️ Con iBodyMorphMode 1 (promedio) o 2 (max) del skee64.ini del JUGADOR, keyed daria otro numero
+ que nuestra suma. El preview de la app tambien suma, asi que la consistencia preview<->juego se
+ mantiene igual; lo que cambia es el valor absoluto. Acotado y a proposito.}
 
 ;-- estado por instancia (persiste en el savegame, como el TeleportActorScript vanilla) ----------
 int appliedVersion = -1
@@ -144,8 +207,10 @@ Event OnLoad()
     ; por el sello, (c) se dispara pero con las propiedades CONGELADAS del savegame (o sea el payload viejo).
     ; MEDIDO: una copia por placeatme toma los cambios y la referencia que ya existia no cambia nada -- las
     ; tres explicaciones encajan con eso, asi que hay que verlas. Si aparece esta linea, (a) queda descartada;
-    ; el valor de SchemaVersion_G000001 dice si el record fresco llego o no.
-    Debug.Trace("[NPCM] OnLoad ref=" + self.GetFormID() + " appliedVersion=" + appliedVersion + " SchemaVersion_G000001=" + SchemaVersion_G000001)
+    ; el valor de SchemaVersion_G0000010000 dice si el record fresco llego o no.
+    if Verbose_G0000010000
+        Debug.Trace("[NPCM] OnLoad ref=" + self.GetFormID() + " appliedVersion=" + appliedVersion + " SchemaVersion_G0000010000=" + SchemaVersion_G0000010000)
+    endif
 
     ; TRAZA DEL PAYLOAD. Es la prueba end-to-end de la ley del sufijo: si estas lineas salen sobre una
     ; referencia que YA existia en la partida, el dato nuevo llego. Tocar los arrays aca es seguro
@@ -153,7 +218,10 @@ Event OnLoad()
     ; garantia vale TAMBIEN para el spec de limpieza, que se arma con el builder normal y allowEmpty.
     ; Una lectura por traza: indexar el mismo array dos veces en una expresion imprime N veces el
     ; ULTIMO elemento (quirk del codegen de Papyrus).
-    Debug.Trace("[NPCM] payload ovl=" + OvlNode_G000001.Length + " skin=" + SkinSlot_G000001.Length + " nodes=" + NodeName_G000001.Length)
+    if Verbose_G0000010000
+        Debug.Trace("[NPCM] payload ovl=" + OvlNode_G0000010000.Length + " skin=" + SkinSlot_G0000010000.Length + " nodes=" + NodeName_G0000010000.Length)
+        Debug.Trace("[NPCM] BM payload morphs=" + MorphName_G0000010000.Length)
+    endif
 
     ; ⛔ INSTANCIA HUERFANA: no soy la version activa de este actor, no toco NADA.
     ;
@@ -173,22 +241,28 @@ Event OnLoad()
     ; SCRIPTS. RaceMenuHHScaleEffect fallo 17 veces sobre FF000911 con "Method GetLeveledActorBase not
     ; found on NPCM_Manolov_ApplySSE" y "Cannot call GetSex() on a None object". El .pex viejo se queda
     ; donde esta; este guard lo vuelve inofensivo.
-    if OvlNode_G000001.Length == 0
-        Debug.Trace("[NPCM] INERTE: sin payload del VMAD (instancia de un nombre de script viejo)")
+    if OvlNode_G0000010000.Length == 0
+        if Verbose_G0000010000
+            Debug.Trace("[NPCM] INERTE: sin payload del VMAD (instancia de un nombre de script viejo)")
+        endif
         return
     endif
-    if OvlNode_G000001.Length > 0
-        Debug.Trace("[NPCM] payload OvlNode_G000001[0]=" + OvlNode_G000001[0])
-    endif
-    if OvlDiffuse_G000001.Length > 0
-        Debug.Trace("[NPCM] payload OvlDiffuse_G000001[0]=" + OvlDiffuse_G000001[0])
+    if Verbose_G0000010000
+        if OvlNode_G0000010000.Length > 0
+            Debug.Trace("[NPCM] payload OvlNode_G0000010000[0]=" + OvlNode_G0000010000[0])
+        endif
+        if OvlDiffuse_G0000010000.Length > 0
+            Debug.Trace("[NPCM] payload OvlDiffuse_G0000010000[0]=" + OvlDiffuse_G0000010000[0])
+        endif
     endif
 
-    if appliedVersion == SchemaVersion_G000001
-        Debug.Trace("[NPCM] SKIP: sello igual, no se limpia ni se aplica nada")
+    if appliedVersion == SchemaVersion_G0000010000
+        if Verbose_G0000010000
+            Debug.Trace("[NPCM] SKIP: sello igual, no se limpia ni se aplica nada")
+        endif
         return                    ; ya aplicado a ESTE actor, y nada cambió desde entonces
     endif
-    appliedVersion = SchemaVersion_G000001
+    appliedVersion = SchemaVersion_G0000010000
 
     ; ⭐⭐ EL REGISTRO EN SKEE VA PRIMERO, ANTES DE BORRAR. Con el default [Overlays] bPlayerOnly=1
     ; (verificado en skee64.ini) skee sólo construye nodos de overlay para un actor que HasOverlays(), y
@@ -205,7 +279,21 @@ Event OnLoad()
     ApplyOverlays()
     ApplySkin()
     ApplyNodeTransforms()
-    Debug.Trace("[NPCM] DONE ref=" + self.GetFormID())
+    ApplyBodyMorphs()
+
+    ; ⭐ EL REPINTADO DE LOS MORPHS VA ACA, UNA SOLA VEZ Y SIN CONDICION.
+    ; UpdateModelWeight recompone la malla DESDE CERO: MorphFileCache::ApplyMorph restaura el bloque de
+    ; vertices desde el backup pristine "SHAPEDATA" y recien despues re-aplica lo que quedo en el store
+    ; (BodyMorphInterface.cpp:522-535). O sea que aca SI hay deshacer de verdad, al reves que los
+    ; overlays de nodo. Por eso tiene que correr TAMBIEN cuando el payload viene vacio: ese es
+    ; justamente el caso de limpieza, donde lo unico que hay que hacer es volver al cuerpo base.
+    ; Gateado por MorphsOwned: si los morphs los entrega el .ini, este script no repinta nada.
+    if MorphsOwned_G0000010000
+        NiOverride.UpdateModelWeight(self)
+    endif
+    if Verbose_G0000010000
+        Debug.Trace("[NPCM] DONE ref=" + self.GetFormID())
+    endif
 EndEvent
 
 ; La "name" del transform es la KEY del override: namespacea NUESTRA capa, así RaceMenu, XPMSE y
@@ -214,6 +302,14 @@ EndEvent
 ; extends MiscObject` — y Papyrus rechaza una variable con nombre de tipo conocido.)
 string Function XformKey()
     return "NPCM_Manolov"
+EndFunction
+
+; La key con la que el BodyGen de skee escribe SUS body morphs:
+;   SetMorph(actor, morphName.c_str(), "RSMBodyGen", value)   -- BodyMorphInterface.cpp:1825
+; Literal del C++, y CONFIRMADA in-game (Papyrus.0.log 2026-07-28: "BM morph previo[0] key[0]=RSMBodyGen"
+; sobre un NPC que ya venia aplicado con el BodySlide viejo).
+string Function BodyGenKey()
+    return "RSMBodyGen"
 EndFunction
 
 ; ============================================================================================
@@ -257,9 +353,9 @@ Function RemovePrevious()
     int mask = 1
     int b = 0
     while b < 32
-        NiOverride.RemoveSkinOverride(self, IsFemale_G000001, false, mask, KEY_TEXTURE, IDX_DIFFUSE)
-        NiOverride.RemoveSkinOverride(self, IsFemale_G000001, false, mask, KEY_TEXTURE, IDX_NORMAL)
-        NiOverride.RemoveSkinOverride(self, IsFemale_G000001, false, mask, KEY_TINT, -1)
+        NiOverride.RemoveSkinOverride(self, IsFemale_G0000010000, false, mask, KEY_TEXTURE, IDX_DIFFUSE)
+        NiOverride.RemoveSkinOverride(self, IsFemale_G0000010000, false, mask, KEY_TEXTURE, IDX_NORMAL)
+        NiOverride.RemoveSkinOverride(self, IsFemale_G0000010000, false, mask, KEY_TINT, -1)
         mask = mask * 2
         b += 1
     endwhile
@@ -284,21 +380,131 @@ Function RemovePrevious()
     ; QUEDAN. Si no queda ninguna, el nodo vuelve a su base. Es lo contrario de los overlays, donde
     ; ApplyNodeOverrides solo empuja lo que quedo y nunca resetea.
     string ovrKey = XformKey()
-    Debug.Trace("[NPCM] antes de GetNodeTransformNames")
-    string[] xnodes = NiOverride.GetNodeTransformNames(self, false, IsFemale_G000001)
-    Debug.Trace("[NPCM] xforms previos=" + xnodes.Length)
+    string[] xnodes = NiOverride.GetNodeTransformNames(self, false, IsFemale_G0000010000)
+    if Verbose_G0000010000
+        Debug.Trace("[NPCM] xforms previos=" + xnodes.Length)
+    endif
     int i = 0
     while i < xnodes.Length
         string node = xnodes[i]
         if node != ""
-            NiOverride.RemoveNodeTransformScale(self, false, IsFemale_G000001, node, ovrKey)
-            NiOverride.RemoveNodeTransformPosition(self, false, IsFemale_G000001, node, ovrKey)
-            NiOverride.RemoveNodeTransformRotation(self, false, IsFemale_G000001, node, ovrKey)
-            NiOverride.RemoveNodeTransformScaleMode(self, false, IsFemale_G000001, node, ovrKey)
-            NiOverride.UpdateNodeTransform(self, false, IsFemale_G000001, node)
+            NiOverride.RemoveNodeTransformScale(self, false, IsFemale_G0000010000, node, ovrKey)
+            NiOverride.RemoveNodeTransformPosition(self, false, IsFemale_G0000010000, node, ovrKey)
+            NiOverride.RemoveNodeTransformRotation(self, false, IsFemale_G0000010000, node, ovrKey)
+            NiOverride.RemoveNodeTransformScaleMode(self, false, IsFemale_G0000010000, node, ovrKey)
+            NiOverride.UpdateNodeTransform(self, false, IsFemale_G0000010000, node)
         endif
         i += 1
     endwhile
+
+    ; --- body morphs: SONDA DE ORDEN + barrido de NUESTRA key.
+    ;
+    ; ⭐⭐ LA SONDA ES EL PUNTO. skee corre BodyGen en TESObjectLoadedEvent con el gate
+    ; `!HasMorphs(reference)` (ActorUpdateManager.cpp:38-40) y nosotros corremos en OnLoad; el orden
+    ; entre los dos NO esta garantizado. Estas tres lineas lo MIDEN en vez de suponerlo:
+    ;   * morphs previos = 0            -> corrimos primero (o nadie aplico nada)
+    ;   * key[0] = "RSMBodyGen"         -> BodyGen corrio ANTES; si ademas quedo un .ini instalado de
+    ;                                      una version anterior, su valor se SUMARIA al nuestro
+    ;   * key[0] = "NPCM_Manolov"       -> somos nosotros de una carga anterior (lo normal al re-aplicar)
+    ;   * cualquier otra key            -> otro mod le puso morphs a este actor
+    ; GetMorphNames/GetMorphKeys NUNCA devuelven None: construyen un VMResultArray LOCAL y lo devuelven
+    ; vacio (PapyrusNiOverride.cpp:1416-1463). Es el mismo caso que GetNodeTransformNames, sobre el que
+    ; ya se retracto una vez la creencia contraria.
+    if !MorphsOwned_G0000010000
+        if Verbose_G0000010000
+            Debug.Trace("[NPCM] BM SKIP barrido: los morphs los entrega el BodyGen .ini (MorphsOwned=false)")
+        endif
+        return
+    endif
+
+    ; ⭐ BLOQUE DE SONDA COMPLETO bajo Verbose: GetMorphNames y GetMorphKeys se llaman SOLO para trazar.
+    ; Son nativas de verdad; gatearlas es el ahorro que importa, no el Debug.Trace.
+    if Verbose_G0000010000
+        string[] pre = NiOverride.GetMorphNames(self)
+        Debug.Trace("[NPCM] BM morphs previos=" + pre.Length)
+        if pre.Length > 0
+            string pname = pre[0]
+            Debug.Trace("[NPCM] BM morph previo[0]=" + pname)
+            string[] pkeys = NiOverride.GetMorphKeys(self, pname)
+            Debug.Trace("[NPCM] BM morph previo[0] keys=" + pkeys.Length)
+            if pkeys.Length > 0
+                string pk = pkeys[0]
+                Debug.Trace("[NPCM] BM morph previo[0] key[0]=" + pk)
+            endif
+        endif
+    endif
+
+    ; ⭐ DESHACER QUIRURGICO, sin colateral: Impl_ClearBodyMorphKeys recorre TODOS los nombres de morph
+    ; del actor y borra de cada uno SOLO la key que se le pasa (BodyMorphInterface.cpp:262-276). Asi que
+    ; un morph que el usuario saco del preset desaparece de verdad, y RSMBodyGen / XPMSE / cualquier
+    ; otro mod conservan lo suyo. No hace falta enumerar nada a mano ni recordar que aplicamos.
+    ; Es idempotente: borrar una key que no existe es no-op.
+    NiOverride.ClearBodyMorphKeys(self, ovrKey)
+    if Verbose_G0000010000
+        Debug.Trace("[NPCM] BM ClearBodyMorphKeys hecho key=" + ovrKey)
+    endif
+
+    ; ⭐⭐⭐ Y TAMBIEN LA KEY DE BODYGEN. Borrar el .ini NO alcanza, y esto lo destapo la sonda de orden:
+    ; MEDIDO 2026-07-28 sobre un NPC que ya venia aplicado con el BodySlide viejo, con el .ini YA borrado
+    ; de disco y ausente de los BSA:
+    ;     BM morphs previos=39
+    ;     BM morph previo[0] key[0]=RSMBodyGen
+    ; Los morphs que BodyGen aplico en una sesion anterior estan PERSISTIDOS EN EL CO-SAVE ('MRPH'), y
+    ; skee los restaura en cada carga. Como suma las keys de un mismo morph (Impl_GetBodyMorphs,
+    ; BodyMorphInterface.cpp:220-240, default iBodyMorphMode=0), los 39 viejos se sumaban a los 19
+    ; nuestros: el cuerpo no cambiaba y parecia que el script no aplicaba.
+    ;
+    ; No se puede arreglar del lado de la app: el co-save es del jugador. Tiene que barrerlo el script.
+    ;
+    ; ⚠️ SE LLEVA TAMBIEN el BodyGen que otro mod le haya puesto a este actor. Es la MISMA decision de
+    ; producto que en los overlays, y aca ademas es obligatoria: si somos el dueño de los body morphs de
+    ; este NPC, BodyGen no puede seguir contribuyendo o el resultado nunca es determinista.
+    ; Es estable: con morphs en el mapa skee ya no re-evalua BodyGen para este actor
+    ; (ActorUpdateManager.cpp:38-40), asi que no vuelve a entrar.
+    ;
+    ; ⚠️ EN FO4 NO HACE FALTA: alla BodyGen escribe bajo el keyword None, que es EXACTAMENTE el slot que
+    ; el .psc de FO4 ya barre con RemoveMorphsByKeyword(None). La asimetria es de los motores, no nuestra.
+    ;
+    ; ⭐ ACOTADO: SOLO si de verdad vamos a aplicar morphs propios. Si el payload viene VACIO (el usuario le
+    ; saco los sliders a este NPC), lo unico que corresponde es DESHACER LO NUESTRO — sacarle ademas su
+    ; BodyGen a otro mod seria barrer por barrer, sin nada que poner en su lugar. El centinela hace el test
+    ; exacto: el emisor manda un unico "" cuando no hay datos, asi que [0] != "" significa "hay morphs reales".
+    bool haveMorphs = false
+    if MorphName_G0000010000.Length > 0
+        string m0chk = MorphName_G0000010000[0]
+        haveMorphs = (m0chk != "")
+    endif
+    if haveMorphs
+        string bgKey = BodyGenKey()
+        NiOverride.ClearBodyMorphKeys(self, bgKey)
+        if Verbose_G0000010000
+            Debug.Trace("[NPCM] BM ClearBodyMorphKeys hecho key=" + bgKey)
+        endif
+    else
+        if Verbose_G0000010000
+            Debug.Trace("[NPCM] BM payload vacio: se deshace SOLO lo nuestro, BodyGen intacto")
+        endif
+    endif
+
+    ; Sonda de control: despues de los dos barridos ningun morph deberia conservar una KEY.
+    ;
+    ; ⚠️ LEER "morphs tras barrido" NO ES LA MEDIDA — cuenta NOMBRES, no valores efectivos, y sigue dando el
+    ; mismo numero que antes del barrido. No es un bug: Impl_ClearBodyMorphKeys borra la key de cada nombre
+    ; pero DEJA la entrada del nombre con el mapa de keys vacio (BodyMorphInterface.cpp:262-276), y
+    ; GetMorphNames enumera nombres. Un nombre sin keys aporta CERO al render, porque Impl_GetBodyMorphs suma
+    ; las keys que quedan (:220-240).
+    ; ⇒ LA LINEA QUE VALE ES "tras barrido <nombre> keys=", que tiene que dar 0.
+    ; (Medido 2026-07-28: "morphs tras barrido=39" con "PushUp keys=0" — el barrido habia funcionado y el 39
+    ;  me hizo dudar. Queda escrito para no volver a leerlo mal.)
+    if Verbose_G0000010000
+        string[] post = NiOverride.GetMorphNames(self)
+        Debug.Trace("[NPCM] BM morphs tras barrido=" + post.Length)
+        if post.Length > 0
+            string qname = post[0]
+            string[] qkeys = NiOverride.GetMorphKeys(self, qname)
+            Debug.Trace("[NPCM] BM tras barrido " + qname + " keys=" + qkeys.Length)
+        endif
+    endif
 EndFunction
 
 ; ⛔⛔ BORRAR = APAGAR EL NODO. skee NO tiene "deshacer", y esto costó una tarde de "aplica lo nuevo
@@ -345,20 +551,20 @@ Function ClearOverlayGroup(string prefix, int n)
     while i < n
         string node = prefix + i + "]"
         ; 1) apagar el nodo (visual, sin persistir)
-        NiOverride.AddNodeOverrideFloat(self, IsFemale_G000001, node, KEY_ALPHA, -1, 0.0, false)
-        NiOverride.AddNodeOverrideInt(self, IsFemale_G000001, node, KEY_TINT, -1, 0, false)
+        NiOverride.AddNodeOverrideFloat(self, IsFemale_G0000010000, node, KEY_ALPHA, -1, 0.0, false)
+        NiOverride.AddNodeOverrideInt(self, IsFemale_G0000010000, node, KEY_TINT, -1, 0, false)
         ; 2) sacar del store lo que hubiera guardado
-        NiOverride.RemoveNodeOverride(self, IsFemale_G000001, node, KEY_TEXTURE, IDX_DIFFUSE)
-        NiOverride.RemoveNodeOverride(self, IsFemale_G000001, node, KEY_TEXTURE, IDX_NORMAL)
-        NiOverride.RemoveNodeOverride(self, IsFemale_G000001, node, KEY_TINT, -1)
-        NiOverride.RemoveNodeOverride(self, IsFemale_G000001, node, KEY_ALPHA, -1)
+        NiOverride.RemoveNodeOverride(self, IsFemale_G0000010000, node, KEY_TEXTURE, IDX_DIFFUSE)
+        NiOverride.RemoveNodeOverride(self, IsFemale_G0000010000, node, KEY_TEXTURE, IDX_NORMAL)
+        NiOverride.RemoveNodeOverride(self, IsFemale_G0000010000, node, KEY_TINT, -1)
+        NiOverride.RemoveNodeOverride(self, IsFemale_G0000010000, node, KEY_ALPHA, -1)
         i += 1
     endwhile
 EndFunction
 
 
 Function ApplyOverlays()
-    int n = OvlNode_G000001.Length
+    int n = OvlNode_G0000010000.Length
     if n == 0
         return
     endif
@@ -373,35 +579,35 @@ Function ApplyOverlays()
 
     int i = 0
     while i < n
-        string node = OvlNode_G000001[i]
+        string node = OvlNode_G0000010000[i]
         if node != ""
             ; persist = TRUE siempre. Con persist=false skee lo aplica visualmente pero NO lo mete en
             ; el store ⇒ no se serializa al co-save y desaparece en la próxima carga
             ; (PapyrusNiOverride.cpp:503-514).
-            if i < OvlDiffuse_G000001.Length
-                if OvlDiffuse_G000001[i] != ""
-                    NiOverride.AddNodeOverrideString(self, IsFemale_G000001, node, KEY_TEXTURE, IDX_DIFFUSE, OvlDiffuse_G000001[i], true)
+            if i < OvlDiffuse_G0000010000.Length
+                if OvlDiffuse_G0000010000[i] != ""
+                    NiOverride.AddNodeOverrideString(self, IsFemale_G0000010000, node, KEY_TEXTURE, IDX_DIFFUSE, OvlDiffuse_G0000010000[i], true)
                 endif
             endif
-            if i < OvlNormal_G000001.Length
-                if OvlNormal_G000001[i] != ""
-                    NiOverride.AddNodeOverrideString(self, IsFemale_G000001, node, KEY_TEXTURE, IDX_NORMAL, OvlNormal_G000001[i], true)
+            if i < OvlNormal_G0000010000.Length
+                if OvlNormal_G0000010000[i] != ""
+                    NiOverride.AddNodeOverrideString(self, IsFemale_G0000010000, node, KEY_TEXTURE, IDX_NORMAL, OvlNormal_G0000010000[i], true)
                 endif
             endif
-            if i < OvlHasTint_G000001.Length
-                if OvlHasTint_G000001[i]
-                    if i < OvlTint_G000001.Length
-                        NiOverride.AddNodeOverrideInt(self, IsFemale_G000001, node, KEY_TINT, -1, OvlTint_G000001[i], true)
+            if i < OvlHasTint_G0000010000.Length
+                if OvlHasTint_G0000010000[i]
+                    if i < OvlTint_G0000010000.Length
+                        NiOverride.AddNodeOverrideInt(self, IsFemale_G0000010000, node, KEY_TINT, -1, OvlTint_G0000010000[i], true)
                     endif
                 endif
             endif
             ; ⚠️ EL ALPHA SE APLICA SIEMPRE, no sólo cuando el overlay trae uno propio. NO es opcional: es el
             ; complemento obligatorio del barrido, que deja TODOS los nodos en alpha 0. Si acá se gateara por
-            ; OvlHasAlpha_G000001, un nodo que recibe textura nueva sin alpha explícito se quedaría con ese 0 e
+            ; OvlHasAlpha_G0000010000, un nodo que recibe textura nueva sin alpha explícito se quedaría con ese 0 e
             ; INVISIBLE. El emisor ya manda 1.0 cuando el overlay no define alpha, así que el valor es válido
-            ; siempre. (OvlHasAlpha_G000001 sigue declarada y emitida —la garantía 1:1 con el .psc— sin decidir nada.)
-            if i < OvlAlpha_G000001.Length
-                NiOverride.AddNodeOverrideFloat(self, IsFemale_G000001, node, KEY_ALPHA, -1, OvlAlpha_G000001[i], true)
+            ; siempre. (OvlHasAlpha_G0000010000 sigue declarada y emitida —la garantía 1:1 con el .psc— sin decidir nada.)
+            if i < OvlAlpha_G0000010000.Length
+                NiOverride.AddNodeOverrideFloat(self, IsFemale_G0000010000, node, KEY_ALPHA, -1, OvlAlpha_G0000010000[i], true)
             endif
         endif
         i += 1
@@ -411,30 +617,30 @@ Function ApplyOverlays()
 EndFunction
 
 Function ApplySkin()
-    int n = SkinSlot_G000001.Length
+    int n = SkinSlot_G0000010000.Length
     if n == 0
         return
     endif
 
     int i = 0
     while i < n
-        int slot = SkinSlot_G000001[i]
+        int slot = SkinSlot_G0000010000[i]
         if slot != 0
             ; firstPerson = false: los NPC no tienen esqueleto de primera persona.
-            if i < SkinDiffuse_G000001.Length
-                if SkinDiffuse_G000001[i] != ""
-                    NiOverride.AddSkinOverrideString(self, IsFemale_G000001, false, slot, KEY_TEXTURE, IDX_DIFFUSE, SkinDiffuse_G000001[i], true)
+            if i < SkinDiffuse_G0000010000.Length
+                if SkinDiffuse_G0000010000[i] != ""
+                    NiOverride.AddSkinOverrideString(self, IsFemale_G0000010000, false, slot, KEY_TEXTURE, IDX_DIFFUSE, SkinDiffuse_G0000010000[i], true)
                 endif
             endif
-            if i < SkinNormal_G000001.Length
-                if SkinNormal_G000001[i] != ""
-                    NiOverride.AddSkinOverrideString(self, IsFemale_G000001, false, slot, KEY_TEXTURE, IDX_NORMAL, SkinNormal_G000001[i], true)
+            if i < SkinNormal_G0000010000.Length
+                if SkinNormal_G0000010000[i] != ""
+                    NiOverride.AddSkinOverrideString(self, IsFemale_G0000010000, false, slot, KEY_TEXTURE, IDX_NORMAL, SkinNormal_G0000010000[i], true)
                 endif
             endif
-            if i < SkinHasTint_G000001.Length
-                if SkinHasTint_G000001[i]
-                    if i < SkinTint_G000001.Length
-                        NiOverride.AddSkinOverrideInt(self, IsFemale_G000001, false, slot, KEY_TINT, -1, SkinTint_G000001[i], true)
+            if i < SkinHasTint_G0000010000.Length
+                if SkinHasTint_G0000010000[i]
+                    if i < SkinTint_G0000010000.Length
+                        NiOverride.AddSkinOverrideInt(self, IsFemale_G0000010000, false, slot, KEY_TINT, -1, SkinTint_G0000010000[i], true)
                     endif
                 endif
             endif
@@ -446,7 +652,7 @@ Function ApplySkin()
 EndFunction
 
 Function ApplyNodeTransforms()
-    int n = NodeName_G000001.Length
+    int n = NodeName_G0000010000.Length
     if n == 0
         return
     endif
@@ -454,59 +660,123 @@ Function ApplyNodeTransforms()
     string ovrKey = XformKey()
     int i = 0
     while i < n
-        string node = NodeName_G000001[i]
+        string node = NodeName_G0000010000[i]
         if node != ""
 
             ; --- escala
-            if i < NodeHasScale_G000001.Length
-                if NodeHasScale_G000001[i]
-                    if i < NodeScale_G000001.Length
-                        NiOverride.AddNodeTransformScale(self, false, IsFemale_G000001, node, ovrKey, NodeScale_G000001[i])
+            if i < NodeHasScale_G0000010000.Length
+                if NodeHasScale_G0000010000[i]
+                    if i < NodeScale_G0000010000.Length
+                        NiOverride.AddNodeTransformScale(self, false, IsFemale_G0000010000, node, ovrKey, NodeScale_G0000010000[i])
                     endif
                 endif
             endif
 
             ; --- posición
-            if i < NodeHasPos_G000001.Length
-                if NodeHasPos_G000001[i]
-                    if i < NodePosX_G000001.Length
+            if i < NodeHasPos_G0000010000.Length
+                if NodeHasPos_G0000010000[i]
+                    if i < NodePosX_G0000010000.Length
                         float[] pos = new float[3]
-                        pos[0] = NodePosX_G000001[i]
-                        pos[1] = NodePosY_G000001[i]
-                        pos[2] = NodePosZ_G000001[i]
-                        NiOverride.AddNodeTransformPosition(self, false, IsFemale_G000001, node, ovrKey, pos)
+                        pos[0] = NodePosX_G0000010000[i]
+                        pos[1] = NodePosY_G0000010000[i]
+                        pos[2] = NodePosZ_G0000010000[i]
+                        NiOverride.AddNodeTransformPosition(self, false, IsFemale_G0000010000, node, ovrKey, pos)
                     endif
                 endif
             endif
 
-            ; --- rotación: 9 floats de matriz CRUDA, no euler (ver el doc de NodeRotM0_G000001..8)
-            if i < NodeHasRot_G000001.Length
-                if NodeHasRot_G000001[i]
-                    if i < NodeRotM0_G000001.Length
+            ; --- rotación: 9 floats de matriz CRUDA, no euler (ver el doc de NodeRotM0_G0000010000..8)
+            if i < NodeHasRot_G0000010000.Length
+                if NodeHasRot_G0000010000[i]
+                    if i < NodeRotM0_G0000010000.Length
                         float[] rot = new float[9]
-                        rot[0] = NodeRotM0_G000001[i]
-                        rot[1] = NodeRotM1_G000001[i]
-                        rot[2] = NodeRotM2_G000001[i]
-                        rot[3] = NodeRotM3_G000001[i]
-                        rot[4] = NodeRotM4_G000001[i]
-                        rot[5] = NodeRotM5_G000001[i]
-                        rot[6] = NodeRotM6_G000001[i]
-                        rot[7] = NodeRotM7_G000001[i]
-                        rot[8] = NodeRotM8_G000001[i]
-                        NiOverride.AddNodeTransformRotation(self, false, IsFemale_G000001, node, ovrKey, rot)
+                        rot[0] = NodeRotM0_G0000010000[i]
+                        rot[1] = NodeRotM1_G0000010000[i]
+                        rot[2] = NodeRotM2_G0000010000[i]
+                        rot[3] = NodeRotM3_G0000010000[i]
+                        rot[4] = NodeRotM4_G0000010000[i]
+                        rot[5] = NodeRotM5_G0000010000[i]
+                        rot[6] = NodeRotM6_G0000010000[i]
+                        rot[7] = NodeRotM7_G0000010000[i]
+                        rot[8] = NodeRotM8_G0000010000[i]
+                        NiOverride.AddNodeTransformRotation(self, false, IsFemale_G0000010000, node, ovrKey, rot)
                     endif
                 endif
             endif
 
             ; --- scale mode
-            if i < NodeScaleMode_G000001.Length
-                if NodeScaleMode_G000001[i] >= 0
-                    NiOverride.AddNodeTransformScaleMode(self, false, IsFemale_G000001, node, ovrKey, NodeScaleMode_G000001[i])
+            if i < NodeScaleMode_G0000010000.Length
+                if NodeScaleMode_G0000010000[i] >= 0
+                    NiOverride.AddNodeTransformScaleMode(self, false, IsFemale_G0000010000, node, ovrKey, NodeScaleMode_G0000010000[i])
                 endif
             endif
 
-            NiOverride.UpdateNodeTransform(self, false, IsFemale_G000001, node)
+            NiOverride.UpdateNodeTransform(self, false, IsFemale_G0000010000, node)
         endif
         i += 1
     endwhile
+EndFunction
+
+; ============================================================================================
+; BODY MORPHS DE BODYSLIDE (los que antes entregaba el par BodyGen morphs.ini/templates.ini).
+;
+; POR QUE SE MUDARON ACA: BodyGen se evalua UNA sola vez, en el primer load del actor, y con el gate
+; `!HasMorphs` (skee64/ActorUpdateManager.cpp:38-40). Una referencia que YA existe en la partida del
+; jugador no lo recibe NUNCA. El apply-script con el sufijo _G<n> si le llega, porque una property con
+; nombre nuevo se inicializa del VMAD en vez de restaurarse rancia del savegame. Esa es toda la ganancia.
+;
+; ⛔ POR ESO EL .ini NO SE EMITE MAS PARA ESTE PLUGIN, Y SI HABIA UNO SE BORRA. No es preferencia:
+; skee SUMA las contribuciones keyed de un mismo morph (Impl_GetBodyMorphs, BodyMorphInterface.cpp:220-240,
+; default iBodyMorphMode=0), asi que un row de BodyGen mas el nuestro aplicaria el slider DOS VECES.
+; (En FO4 el mismo choque da MAX en vez de suma — ver el .psc de alla. Son motores distintos.)
+;
+; NO hace falta registrar el actor en ningun lado antes de escribir (a diferencia de los overlays, que
+; exigen AddOverlays): Impl_SetMorph escribe directo al store (BodyMorphInterface.cpp:150-154) y
+; UpdateModelWeight no gatea por ningun set de actores.
+;
+; El barrido de la vez anterior vive en RemovePrevious() (ClearBodyMorphKeys), y el repintado
+; (UpdateModelWeight) en OnLoad: los dos tienen que correr TAMBIEN con payload vacio.
+; ============================================================================================
+Function ApplyBodyMorphs()
+    if !MorphsOwned_G0000010000
+        return                    ; el .ini es el dueño — ya se trazo en RemovePrevious()
+    endif
+
+    int n = MorphName_G0000010000.Length
+    if n == 0
+        return
+    endif
+
+    string ovrKey = XformKey()
+    int applied = 0
+    int i = 0
+    while i < n
+        string mname = MorphName_G0000010000[i]
+        if mname != ""
+            ; Guarda INLINE por .Length, jamas contra None, y jamas pasando el array a un helper
+            ; (reglas 1 y 2 de la cabecera). El emisor garantiza que las dos arrays son igual de largas,
+            ; pero el guard queda igual: es gratis y el .psc no puede depender de eso para no reventar.
+            if i < MorphValue_G0000010000.Length
+                float mval = MorphValue_G0000010000[i]
+                NiOverride.SetBodyMorph(self, mname, ovrKey, mval)
+                applied += 1
+            endif
+        endif
+        i += 1
+    endwhile
+
+    ; TRAZA DE VERIFICACION. Una lectura por linea: indexar el mismo array dos veces en UNA expresion
+    ; imprime N veces el ULTIMO elemento (quirk del codegen de Papyrus, ya mordio antes).
+    if Verbose_G0000010000
+        Debug.Trace("[NPCM] BM aplicados=" + applied + " de " + n + " key=" + ovrKey)
+        if n > 0
+            string m0 = MorphName_G0000010000[0]
+            if m0 != ""
+                ; Read-back: si esto NO devuelve lo que acabamos de escribir, la nativa no tomo el valor
+                ; (o skee no esta cargado) y hay que mirar ahi, no en el emisor.
+                float back = NiOverride.GetBodyMorph(self, m0, ovrKey)
+                Debug.Trace("[NPCM] BM readback " + m0 + " = " + back)
+            endif
+        endif
+    endif
 EndFunction

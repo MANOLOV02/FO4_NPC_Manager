@@ -6,10 +6,14 @@
 '''
 ''' <para><b>Por qué es seguro tocar sólo strings.</b> Todo lo que no es la tabla de strings referencia por
 ''' ÍNDICE, nunca por texto: el nombre del objeto, el de cada property, el de cada variable y el del archivo
-''' fuente son índices a esa tabla. Medido sobre el <c>.pex</c> real: de 209 strings, las 67 que contienen el
-''' sufijo de generación son 32 nombres de property, 32 nombres de variable (<c>::X_G000001_var</c>) y 3
-''' literales de <c>Debug.Trace</c> — ni un solo path ni dato. Cambiar el CONTENIDO de esas entradas cambia
-''' coherentemente todo lo que las referencia.</para>
+''' fuente son índices a esa tabla. Medido sobre los <c>.pex</c> reales (2026-07-28, tras agregar los body
+''' morphs): SSE 261 strings de los que 73 traen el sufijo de generación, FO4 176 de los que 34 lo traen — y
+''' en los dos casos son SÓLO nombres de property, nombres de variable (<c>::X_G000001_var</c>) y literales de
+''' <c>Debug.Trace</c> que nombran una property. Ni un path ni un dato. Cambiar el CONTENIDO de esas entradas
+''' cambia coherentemente todo lo que las referencia.</para>
+''' <para>⚠️ Corolario para quien edite los <c>.psc</c>: un literal de string que contenga <c>_G000001</c> o el
+''' nombre del script TAMBIÉN se reescribe. Es lo deseado para las trazas que nombran una property; no meter
+''' ese texto en un literal que tenga que quedar fijo.</para>
 '''
 ''' <para><b>⛔ NO SE DECODIFICAN LOS STRINGS.</b> El compilador de Papyrus no escribe UTF-8: los docstrings
 ''' con acentos salen en la codificación ANSI de la máquina. Decodificar y re-codificar los corrompería (se
@@ -35,9 +39,37 @@ Public Module PexPatcher
     ''' cargar ninguna intermedia.</summary>
     Public Const MaxGeneration As Integer = 999999
 
-    ''' <summary>Sufijo textual de una generación (<c>1</c> ⇒ <c>_G000001</c>).</summary>
-    Public Function GenerationSuffix(generation As Integer) As String
-        Return "_G" & generation.ToString("D" & GenerationDigits, Globalization.CultureInfo.InvariantCulture)
+    ''' <summary>Ancho FIJO de la SAL, en dígitos hex. Igual que el contador: fijo para que el reemplazo dentro
+    ''' del <c>.pex</c> sea byte a byte del mismo largo.</summary>
+    Public Const SaltDigits As Integer = 4
+
+    ''' <summary>Sal que trae la PLANTILLA compilada (el <c>_G0000010000</c> de los <c>.psc</c>).</summary>
+    Public Const BaselineSalt As String = "0000"
+
+    ''' <summary>⛔⛔ POR QUÉ EXISTE LA SAL, ADEMÁS DEL CONTADOR.
+    '''
+    ''' <para>El contador da ORDEN (útil para leer un log o comparar un ESP contra un <c>.pex</c>), pero depende
+    ''' de estado guardado: vive en el <c>.bssliders</c>. Si ese estado se pierde o RETROCEDE, el guardado
+    ''' siguiente reemite una generación YA PUBLICADA — y entonces el savegame del jugador, que ya tiene
+    ''' variables con esos nombres, las restaura RANCIAS y le gana al VMAD. El actor aplica el payload VIEJO
+    ''' sin un solo error en ningún log. MEDIDO 2026-07-28 (restaurar un backup del sidecar bastó).</para>
+    '''
+    ''' <para><see cref="NpcOverrideSaver"/> ya pone un piso con la generación del <c>.pex</c> instalado. La sal
+    ''' es la segunda línea: 4 hex sorteados en CADA Save ESP hacen que el nombre sea distinto aunque el número
+    ''' se repita, así que la frescura deja de depender de que sobreviva ningún archivo.</para>
+    '''
+    ''' <para>Se usa <c>Guid.NewGuid</c> y no <c>Random</c> a propósito: dos guardados en el mismo tick no
+    ''' pueden sacar la misma sal por comparti r semilla.</para></summary>
+    Public Function NewSalt() As String
+        Return Guid.NewGuid().ToString("N").Substring(0, SaltDigits).ToUpperInvariant()
+    End Function
+
+    ''' <summary>Sufijo textual de una generación: contador de ancho fijo + sal de ancho fijo.
+    ''' (<c>16</c>, <c>"A3F2"</c>) ⇒ <c>_G000016A3F2</c>.</summary>
+    Public Function GenerationSuffix(generation As Integer, salt As String) As String
+        Dim s = If(salt, "")
+        If s.Length <> SaltDigits Then s = s.PadRight(SaltDigits, "0"c).Substring(0, SaltDigits)
+        Return "_G" & generation.ToString("D" & GenerationDigits, Globalization.CultureInfo.InvariantCulture) & s
     End Function
 
     ''' <summary>Siguiente generación, con wrap. Ver <see cref="MaxGeneration"/>.</summary>
@@ -59,6 +91,9 @@ Public Module PexPatcher
         For Each s In strings
             ' ASCII puro: comparar byte a byte evita cualquier decodificación.
             Dim txt = AsciiOf(s)
+            ' ⭐ Regex A PROPOSITO TOLERANTE: matchea "_G000016" tanto si le sigue una sal ("_G000016A3F2",
+            ' formato nuevo) como si no ("_G000016", .pex instalado por una version anterior de la app). Eso es
+            ' lo que permite que el piso anti-retroceso funcione tambien al ACTUALIZAR desde una instalacion vieja.
             For Each m As Match In Regex.Matches(txt, "_G(\d{" & GenerationDigits & "})")
                 Dim v = Integer.Parse(m.Groups(1).Value, Globalization.CultureInfo.InvariantCulture)
                 If v > best Then best = v
@@ -92,7 +127,8 @@ Public Module PexPatcher
     ''' resultado sería un .pex que el motor no puede bindear. Preferimos fallar el guardado a escribir uno roto.</exception>
     Public Function PatchScript(pex As Byte(),
                           oldScriptName As String, newScriptName As String,
-                          oldGeneration As Integer, newGeneration As Integer) As Byte()
+                          oldGeneration As Integer, oldSalt As String,
+                          newGeneration As Integer, newSalt As String) As Byte()
         Dim header As List(Of Byte()) = Nothing, strings As List(Of Byte()) = Nothing
         Dim tailOffset As Integer = 0
         If Not TryParse(pex, header, strings, tailOffset) Then
@@ -103,8 +139,11 @@ Public Module PexPatcher
         If Not String.Equals(oldScriptName, newScriptName, StringComparison.Ordinal) Then
             subs.Add((AsciiBytes(oldScriptName), AsciiBytes(newScriptName)))
         End If
-        If oldGeneration <> newGeneration Then
-            subs.Add((AsciiBytes(GenerationSuffix(oldGeneration)), AsciiBytes(GenerationSuffix(newGeneration))))
+        Dim oldSuffix = GenerationSuffix(oldGeneration, oldSalt)
+        Dim newSuffix = GenerationSuffix(newGeneration, newSalt)
+        If Not String.Equals(oldSuffix, newSuffix, StringComparison.Ordinal) Then
+            ' Mismo largo por construccion (contador y sal son de ancho fijo), asi que el reemplazo no desalinea.
+            subs.Add((AsciiBytes(oldSuffix), AsciiBytes(newSuffix)))
         End If
 
         Dim hits = 0
@@ -123,7 +162,7 @@ Public Module PexPatcher
 
         If subs.Count > 0 AndAlso hits = 0 Then
             Throw New IO.InvalidDataException(
-                $"El .pex embebido no contiene '{oldScriptName}' ni '{GenerationSuffix(oldGeneration)}'. La plantilla " &
+                $"El .pex embebido no contiene '{oldScriptName}' ni '{GenerationSuffix(oldGeneration, oldSalt)}'. La plantilla " &
                 "compilada no coincide con lo que el emisor espera: el .pex resultante no bindearía. " &
                 "Recompilar los .psc y rebuildear la app (ver Papyrus\README.md).")
         End If

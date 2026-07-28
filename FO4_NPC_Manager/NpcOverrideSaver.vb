@@ -79,6 +79,10 @@ Public Module NpcOverrideSaver
     ''' <summary>Bundles the dependencies the orchestrator needs to call back into the host app.
     ''' Constructed once by MainForm and passed through. All fields are required.</summary>
     Public Class SaveContext
+        ''' <summary>Avisos del payload del apply-script acumulados durante el guardado (recortes por el tope de
+        ''' 128 elementos, VMAD cerca del techo de 64 KB). Se vuelcan al resumen post-guardado: un recorte que
+        ''' sólo va al log se ve EXACTAMENTE igual que un payload completo.</summary>
+        Public PayloadWarnings As New List(Of String)
         Public PluginManager As PluginManager
         Public AppliedPresets As Dictionary(Of UInteger, LooksmenuLoader.LooksmenuPreset)
         Public RenderHost As Object  ' NpcRenderHost — typed loosely to avoid an extra import.
@@ -99,6 +103,9 @@ Public Module NpcOverrideSaver
         ''' los usan TODOS los NPC y la instalacion del .pex — si no fueran el mismo numero, el VMAD y el .pex
         ''' quedarian en generaciones distintas y el script leeria None.</summary>
         Public ApplyScriptGeneration As Integer = 0
+        ''' <summary>SAL del sufijo de generacion, sorteada UNA vez por guardado. Va al VMAD, al .pex
+        ''' parcheado Y al sidecar: los tres tienen que llevar la misma o el script leeria None en todo.</summary>
+        Public ApplyScriptSalt As String = ""
         Public ApplyScriptPluginFile As String = Nothing
         ''' <summary>MainForm helper: rebuild the parser's parallel collections (TintLayerStructs,
         ''' FaceMorphTrailingBytes, MorphKeysOrdered) on the shadow after overlay copy.</summary>
@@ -544,6 +551,11 @@ Public Module NpcOverrideSaver
             If existingConflict <> "" Then Throw New InvalidDataException(existingConflict)
         Next
 
+        ' Phase 2b': refrescar el VMAD de los NPC del plugin que NO entran en este guardado, para que su
+        ' payload quede en la MISMA generación que el .pex que se instala. Va DESPUÉS del chequeo de encoding
+        ' de arriba a propósito: así los records que se mueven a `entries` ya pasaron por él.
+        Dim refreshedVmadFormIDs = RefreshPreservedApplyScripts(existingRecords, entries, ctx, target)
+
         ' Phase 2c: new-outfit (OTFT) drafts authored in the Edit Outfit "Create" tab. Emitted ONCE
         ' for the whole batch: every dirty draft, plus any draft referenced by a saved NPC's DOFT
         ' (so the plugin is self-contained). Deduped against the existing-OTFT entries by FormID.
@@ -884,6 +896,11 @@ Public Module NpcOverrideSaver
         For Each existingRec In existingRecords
             result.SavedFormIDs.Add(existingRec.Header.FormID)
         Next
+        ' Los preservados a los que se les refrescó el VMAD salieron de existingRecords y ahora viajan en
+        ' `entries` — se siguen contando como guardados igual (Phase 2b').
+        For Each refreshedFid In refreshedVmadFormIDs
+            result.SavedFormIDs.Add(refreshedFid)
+        Next
         For Each npcInput In writeInputs
             result.SavedFormIDs.Add(npcInput.NpcFormID)
             result.WrittenNpcFormIDs.Add(npcInput.NpcFormID)
@@ -927,7 +944,10 @@ Public Module NpcOverrideSaver
             If target.WriteBssliders OrElse (removedFromSidecar AndAlso sidecarExisted) Then
                 ReportPhase(progress, "Writing .bssliders sidecar…", IO.Path.GetFileName(target.TargetPath))
                 ' La generacion usada en ESTE guardado queda en el sidecar: es de donde sale la proxima.
-                If ctx.ApplyScriptGeneration > 0 Then mergedSidecar.PayloadGeneration = ctx.ApplyScriptGeneration
+                If ctx.ApplyScriptGeneration > 0 Then
+                    mergedSidecar.PayloadGeneration = ctx.ApplyScriptGeneration
+                    mergedSidecar.PayloadSalt = ctx.ApplyScriptSalt
+                End If
                 BssliderSidecar.Write(sidecarPath, mergedSidecar)
             End If
 
@@ -942,6 +962,19 @@ Public Module NpcOverrideSaver
             Dim iniExists As Boolean = If(isSseSave,
                                           SseBodyGenIniWriter.IniExists(ctx.DataPath, iniBaseName),
                                           BodyGenIniWriter.IniExists(ctx.DataPath, iniBaseName))
+            ' ⭐⭐⭐ EL .ini NO SE TOCA NUNCA POR LA RUTA DE ENTREGA. El script GANA por construcción, corra
+            ' antes o después que BodyGen, en los DOS juegos:
+            '   * script primero  -> el actor queda con morphs, y BodyGen se saltea (gate `!HasMorphs` /
+            '                        `!morphMap`: skee64 ActorUpdateManager.cpp:38-40, f4ee :49-54)
+            '   * BodyGen primero -> el .psc barre su key ANTES de aplicar la nuestra (SSE "RSMBodyGen",
+            '                        FO4 el keyword None) y deja sólo lo nuestro
+            ' ⇒ no hace falta borrar ni excluir NADA del .ini para que el resultado sea determinista.
+            '
+            ' ⛔ Y NO SE DEBE. El .ini es por PLUGIN y lista TODOS sus NPC. Un NPC que el usuario no re-grabó
+            ' conserva su VMAD viejo: el script le llega INERTE (sus properties no existen en el .pex nuevo) y
+            ' el .ini es su ÚNICA vía. Una versión anterior de esto borraba el par completo y le cortaba la
+            ' entrega a todos ellos. El .ini se queda, y además funciona como red: si el script no corre
+            ' (sin SKSE/F4SE, VMAD viejo), BodyGen sigue entregando.
             If target.EmitBodyGen OrElse (removedFromSidecar AndAlso iniExists) Then
                 ReportPhase(progress, "Writing BodyGen .ini…", IO.Path.GetFileName(target.TargetPath))
                 EmitBodyGenFromSidecar(target, mergedSidecar, ctx)
@@ -956,7 +989,7 @@ Public Module NpcOverrideSaver
         If ctx.WroteApplyScript Then
             ReportPhase(progress, "Writing apply-script…", IO.Path.GetFileName(target.TargetPath))
             Dim installed = NpcApplyScriptEmitter.InstallPex(ctx.DataPath, Config_App.Current.Game,
-                                                             ctx.ApplyScriptPluginFile, ctx.ApplyScriptGeneration)
+                                                             ctx.ApplyScriptPluginFile, ctx.ApplyScriptGeneration, ctx.ApplyScriptSalt)
             If installed Is Nothing Then
                 ' The VMAD references a script whose .pex we could not ship — the engine would log a missing
                 ' script and apply nothing. Loud, because the plugin is otherwise silently half-broken.
@@ -969,6 +1002,18 @@ Public Module NpcOverrideSaver
 
         result.VerifierIcon = MessageBoxIcon.Information
         result.ChargenSuccess = True
+
+        ' ⛔ LOS RECORTES DEL PAYLOAD SE MUESTRAN, no se entierran en fo4lib.log. Un payload recortado se ve
+        ' EXACTAMENTE igual que uno completo desde afuera: sin este aviso, "se aplicó todo" sería mentira y
+        ' nadie se enteraría. Se listan hasta 8 y se cuenta el resto, para que el MessageBox siga siendo legible.
+        If ctx.PayloadWarnings.Count > 0 Then
+            Dim shown = ctx.PayloadWarnings.Take(8).ToList()
+            Dim extra = ctx.PayloadWarnings.Count - shown.Count
+            result.VerifierSummary &= vbCrLf & vbCrLf &
+                "⚠ Apply-script payload:" & vbCrLf & "  • " & String.Join(vbCrLf & "  • ", shown) &
+                If(extra > 0, vbCrLf & $"  • (+{extra} more — see fo4lib.log)", "")
+            result.VerifierIcon = MessageBoxIcon.Warning
+        End If
     End Sub
 
     ''' <summary>Build a single NPC override entry: apply the overlay onto the raw parse, copy
@@ -1001,22 +1046,20 @@ Public Module NpcOverrideSaver
         ' previously-emitted script instead of leaving it stale. True no-op for an NPC with nothing to apply.
         Dim lmPreset As LooksmenuLoader.LooksmenuPreset = Nothing
         ctx.AppliedPresets?.TryGetValue(npcFormID, lmPreset)
-        ' Generacion: del sidecar (fuente de verdad), UNA sola vez por guardado. Ver ApplyScriptGeneration.
-        If ctx.ApplyScriptGeneration <= 0 Then
-            Dim prevSidecar = BssliderSidecar.Read(BssliderSidecar.BuildPath(target.TargetPath))
-            If target.ScriptVersionOverride > 0 Then
-                ' Forzada a mano desde el dialogo: gana sobre el contador del sidecar, y queda guardada ahi.
-                ctx.ApplyScriptGeneration = target.ScriptVersionOverride
-            Else
-                ctx.ApplyScriptGeneration = PexPatcher.NextGeneration(If(prevSidecar Is Nothing, 0, prevSidecar.PayloadGeneration))
-            End If
-            ctx.ApplyScriptPluginFile = IO.Path.GetFileName(target.TargetPath)
-        End If
+        EnsureApplyScriptGeneration(ctx, target)
+        ' ownBodyMorphs: el script es dueño de los body morphs SÓLO en la ruta ApplyScript. Viaja al .psc como
+        ' MorphsOwned, y no es un simple "no emitir": en FO4 nuestro barrido usa el keyword None, que es EL
+        ' MISMO SLOT que escribe BodyGen, así que con la ruta .ini el script tiene que quedarse quieto.
+        Dim applyWarnings As New List(Of String)
         If NpcApplyScriptEmitter.ApplyToNpc(npcSpec, lmPreset, Config_App.Current.Game,
                                             target.EmitApplyScript,
-                                            ctx.ApplyScriptPluginFile, ctx.ApplyScriptGeneration) Then
+                                            ctx.ApplyScriptPluginFile, ctx.ApplyScriptGeneration, ctx.ApplyScriptSalt,
+                                            target.ScriptOwnsBodyMorphs, applyWarnings) Then
             ctx.WroteApplyScript = True   ' at least one NPC carries it → the .pex must be installed
         End If
+        Dim applyLabel = NpcLabel(npcSpec, npcFormID)
+        CollectPayloadWarnings(ctx, applyLabel, applyWarnings)
+        CheckVmadSize(npcSpec, applyLabel, ctx)
 
         ' Reconcile the IsCharGenFacePreset overlay edit into the ACBS struct the writer emits.
         ' ApplyPresetOverlayToNpcData sets only the AcbsFlags mirror; EmitAcbs writes Acbs.Flags, and
@@ -1835,6 +1878,214 @@ Public Module NpcOverrideSaver
         ' so a clear-then-save round trip removes the row instead of leaving stale data on disk.
         merged.Npcs(identifier) = entry
     End Sub
+
+    ''' <summary>Etiqueta legible de un NPC para los avisos: EditorID si lo hay, si no el FormID.</summary>
+    Private Function NpcLabel(npcSpec As NPC_Data, formID As UInteger) As String
+        If npcSpec IsNot Nothing AndAlso Not String.IsNullOrEmpty(npcSpec.EditorID) Then Return npcSpec.EditorID
+        Return $"FormID {formID:X8}"
+    End Function
+
+    ''' <summary>Vuelca los avisos que el emisor dejó para UN NPC al acumulador del guardado, prefijados con su
+    ''' nombre. El emisor no conoce al NPC a propósito: emite el hecho ("12 node transform(s) DESCARTADO(S)…")
+    ''' y acá se le pone el apellido.</summary>
+    Private Sub CollectPayloadWarnings(ctx As SaveContext, label As String, warnings As List(Of String))
+        If warnings Is Nothing OrElse warnings.Count = 0 Then Return
+        For Each w In warnings
+            ctx.PayloadWarnings.Add($"{label}: {w}")
+        Next
+    End Sub
+
+    ''' <summary>⛔ TECHO DURO DEL VMAD. El campo de longitud de un subrecord es u16 y la lib no implementa la
+    ''' extensión XXXX, así que <c>PluginWriter.WriteSubrecordHeader</c> tira si se pasa — pero su mensaje NO
+    ''' dice de qué NPC se trata, y con cientos de records eso es indiagnosticable. Acá se chequea POR NPC,
+    ''' apenas se le arma el VMAD, para poder nombrarlo.
+    '''
+    ''' <para>Referencia medida (2026-07-28): un NPC con 2 overlays + 1 skin + 1 node + 22 morphs pesa 1622 B,
+    ''' o sea 2,5 % del techo. Lo que empuja el tamaño son los PATHS DE TEXTURA de overlays y skin, no los
+    ''' morphs (~22 B por morph).</para></summary>
+    Private Sub CheckVmadSize(npcSpec As NPC_Data, label As String, ctx As SaveContext)
+        If npcSpec Is Nothing OrElse npcSpec.Vmad Is Nothing OrElse npcSpec.Vmad.RawBytes Is Nothing Then Return
+        Dim n = npcSpec.Vmad.RawBytes.Length
+        If n > NpcApplyScriptEmitter.VmadHardLimitBytes Then
+            Throw New IO.InvalidDataException(
+                $"The VMAD of NPC [{label}] is {n} bytes, over the {NpcApplyScriptEmitter.VmadHardLimitBytes}-byte " &
+                "subrecord limit. Remove some of its overlays / skin overrides / node transforms " &
+                "(texture paths are what weighs most) and save again.")
+        End If
+        ' Warn at 90%: leaves room to react before a save actually fails.
+        If n > (NpcApplyScriptEmitter.VmadHardLimitBytes * 9) \ 10 Then
+            ctx.PayloadWarnings.Add($"{label}: VMAD is {n} bytes, close to the {NpcApplyScriptEmitter.VmadHardLimitBytes}-byte limit")
+        End If
+    End Sub
+
+    ''' <summary>Resuelve la generación del payload del apply-script para ESTE guardado, UNA sola vez. Sale del
+    ''' sidecar (que es su fuente de verdad) o del override manual del diálogo. Idempotente: la primera llamada
+    ''' la fija y el resto son no-op, así los NPC del guardado y los PRESERVADOS caen todos en el MISMO número
+    ''' — que es justamente lo que hace que un solo <c>.pex</c> los pueda servir a todos.</summary>
+    Private Sub EnsureApplyScriptGeneration(ctx As SaveContext, target As SaveEsp_Form.SaveTarget)
+        If ctx.ApplyScriptGeneration > 0 Then Return
+        Dim pluginFile = IO.Path.GetFileName(target.TargetPath)
+        Dim prevSidecar = BssliderSidecar.Read(BssliderSidecar.BuildPath(target.TargetPath))
+        Dim sidecarGen = If(prevSidecar Is Nothing, 0, prevSidecar.PayloadGeneration)
+
+        ' ⛔⛔ EL CONTADOR NUNCA PUEDE RETROCEDER — Y EL SIDECAR SOLO NO ALCANZA PARA GARANTIZARLO.
+        '
+        ' Reusar una generación ya publicada es la PEOR falla de este esquema: el savegame del jugador ya
+        ' tiene variables con esos nombres, así que las restaura RANCIAS y le ganan al VMAD. El actor aplica
+        ' fielmente el payload VIEJO, sin un solo error en ningún log.
+        '
+        ' MEDIDO 2026-07-28, y lo provoqué yo: restauré un backup del `.bssliders` para deshacer un
+        ' experimento, sin caer en que el sidecar es TAMBIÉN el hogar del contador. Volvió atrás, el guardado
+        ' siguiente reemitió la generación 4, y el NPC quedó con el payload de la corrida anterior — un
+        ' overlay en vez de dos — mientras el script se veía perfecto. Al usuario le pasa igual con un backup,
+        ' con un mod manager, o borrando el sidecar.
+        '
+        ' ⇒ El piso sale del MÁXIMO entre el sidecar y la generación que declara el `.pex` YA INSTALADO. Ese
+        ' `.pex` es testigo confiable porque se instala en el MISMO Save ESP que emitió el VMAD: si existe,
+        ' su número es una generación realmente publicada.
+        Dim installedGen = ReadInstalledPexGeneration(ctx.DataPath, Config_App.Current.Game, pluginFile)
+        Dim floorGen = Math.Max(sidecarGen, installedGen)
+
+        If target.ScriptVersionOverride > 0 Then
+            ' Forzada a mano desde el dialogo: gana, porque para eso existe. Pero si pisa una generación ya
+            ' publicada se AVISA — es exactamente el fallo de arriba, y en silencio es indiagnosticable.
+            ctx.ApplyScriptGeneration = target.ScriptVersionOverride
+            If target.ScriptVersionOverride <= floorGen Then
+                ctx.PayloadWarnings.Add(
+                    $"Forced script version {target.ScriptVersionOverride} is not above the last published " &
+                    $"generation ({floorGen}). Actors already in a savegame will keep the OLD payload for " &
+                    "those property names.")
+            End If
+        Else
+            ctx.ApplyScriptGeneration = PexPatcher.NextGeneration(floorGen)
+            If Logger.Enabled AndAlso installedGen > sidecarGen Then
+                Logger.LogLazy(Function() $"[NPCM-APPLY] generation floor came from the installed .pex ({installedGen}) — the sidecar said {sidecarGen}; a rollback was prevented")
+            End If
+        End If
+        ' ⭐ SEGUNDA LINEA DE DEFENSA. El piso de arriba depende de que sobreviva el sidecar o el .pex; la sal
+        ' no depende de NADA: 4 hex sorteados por guardado hacen que el nombre sea distinto aunque el numero se
+        ' repita, y un nombre nuevo el savegame NO lo tiene ⇒ llega fresco del VMAD.
+        ctx.ApplyScriptSalt = PexPatcher.NewSalt()
+        ctx.ApplyScriptPluginFile = pluginFile
+    End Sub
+
+    ''' <summary>Generación que declara el <c>.pex</c> ya instalado de ESTE plugin, o 0 si no hay ninguno /
+    ''' no se puede leer. Es el testigo que impide que el contador retroceda cuando el sidecar se pierde,
+    ''' se restaura de un backup o lo administra un mod manager. Nunca tira: un <c>.pex</c> ilegible sólo
+    ''' significa "sin piso extra", que es el comportamiento de antes.</summary>
+    Private Function ReadInstalledPexGeneration(dataPath As String, game As Config_App.Game_Enum, pluginFileName As String) As Integer
+        If String.IsNullOrEmpty(dataPath) Then Return 0
+        Try
+            Dim path = IO.Path.Combine(dataPath, "Scripts",
+                                       NpcApplyScriptEmitter.ScriptNameFor(game, pluginFileName) & ".pex")
+            If Not IO.File.Exists(path) Then Return 0
+            Dim g = PexPatcher.ReadGeneration(IO.File.ReadAllBytes(path))
+            Return If(g < 0, 0, g)
+        Catch
+            Return 0
+        End Try
+    End Function
+
+    ''' <summary>⭐⭐⭐ RE-EMITE EL VMAD DE LOS NPC DEL PLUGIN QUE **NO** ENTRAN EN ESTE GUARDADO.
+    '''
+    ''' <para><b>El problema que resuelve, MEDIDO.</b> El <c>.pex</c> es UNO por plugin y declara UNA sola
+    ''' generación de properties (<c>_G&lt;n&gt;</c>), y esa generación sube en cada Save ESP. Pero hasta acá sólo se
+    ''' re-escribía el VMAD de los NPC incluidos en el guardado: los demás se preservaban con su VMAD viejo,
+    ''' nombrando properties que el <c>.pex</c> nuevo YA NO DECLARA. Resultado: no les llega ninguna property,
+    ''' sus arrays vienen en longitud 0, el guard de instancia huérfana corta, y el actor queda INERTE — sin
+    ''' overlays, sin skin, sin node transforms y sin body morphs. Verificado sobre <c>NPC_Manager2.esp</c>
+    ''' (2026-07-28): <c>Aeri</c> en <c>_G000011</c> y <c>EncBandit04MissileKhajiitM</c> con properties SIN
+    ''' sufijo, de una versión anterior al esquema. O sea: cada guardado dejaba atrás a todos los NPC que no
+    ''' tocaste.</para>
+    '''
+    ''' <para><b>Cómo.</b> Los NPC_ preservados NO se copian byte a byte: <c>SerializeExistingRecord</c> hace
+    ''' <c>ParseNPC</c> + <c>NpcSubrecordWriter</c> completo (SaveNpcEspWriter.vb:1254-1272). Así que acá se hace
+    ''' exactamente lo mismo un paso antes —parsear, refrescar el VMAD, y mandarlo por <c>entries</c>—, que
+    ''' termina en el MISMO <c>SerializeNpcRecord</c>. El payload se reconstruye desde el sidecar vía
+    ''' <see cref="BssliderSidecar.HydratePresets"/>, que es el único espejo entry→preset del proyecto.
+    ''' Sin cambios en FO4_Base_Library.</para>
+    '''
+    ''' <para>De yapa migra el nombre LEGADO al nombre por plugin: <c>ApplyToNpc</c> ya hace el upsert de dos
+    ''' pasadas (limpia el legado, escribe el nuestro).</para>
+    '''
+    ''' <para>⛔ <b>SIN SIDECAR NO SE TOCA EL RECORD.</b> Si un NPC lleva nuestro script pero no tiene entrada en
+    ''' el sidecar, no hay con qué reconstruir su payload — y <c>ApplyToNpc</c> con preset Nothing emitiría el
+    ''' spec de LIMPIEZA, que le BORRARÍA sus overlays al actor. Se lo deja como está (inerte, que es lo que ya
+    ''' era) y se LOGUEA. Perder la entrega es malo; borrarle datos al usuario es peor.</para></summary>
+    ''' <returns>FormIDs LOCALES de los records movidos a <paramref name="entries"/>, para que el caller los
+    ''' siga contando como guardados.</returns>
+    Private Function RefreshPreservedApplyScripts(existingRecords As List(Of PluginRecord),
+                                                  entries As List(Of SaveNpcEspWriter.NpcOverrideEntry),
+                                                  ctx As SaveContext,
+                                                  target As SaveEsp_Form.SaveTarget) As List(Of UInteger)
+        Dim moved As New List(Of UInteger)
+        If Not target.EmitApplyScript OrElse existingRecords.Count = 0 Then Return moved
+
+        ' Payload de cada NPC del plugin, reconstruido desde SU sidecar. Un solo espejo (HydratePresets).
+        Dim sidecars As New Dictionary(Of String, BssliderSidecar.SidecarFile)(StringComparer.OrdinalIgnoreCase)
+        Dim sc = BssliderSidecar.Read(BssliderSidecar.BuildPath(target.TargetPath))
+        If sc IsNot Nothing Then sidecars(target.TargetPath) = sc
+        Dim presetsByFid As New Dictionary(Of UInteger, LooksmenuLoader.LooksmenuPreset)
+        BssliderSidecar.HydratePresets(sidecars, ctx.PluginManager, presetsByFid)
+
+        Dim skipped As New List(Of String)
+        ' Hacia atrás: se sacan elementos de existingRecords mientras se recorre.
+        For i = existingRecords.Count - 1 To 0 Step -1
+            Dim rec = existingRecords(i)
+            If rec.Header.Signature <> "NPC_" Then Continue For
+
+            Dim parsed = RecordParsers.ParseNPC(rec, rec.SourcePluginName, ctx.PluginManager)
+            ' Sólo los que YA llevan script nuestro. A un NPC preservado sin script no se le agrega uno: no
+            ' estaba en este guardado, así que el usuario no pidió nada sobre él.
+            If Not NpcVmadBuilder.HasAppScript(parsed.Vmad) Then Continue For
+
+            ' Mismo resolve que hace SerializeExistingRecord: el FormID del header viene LOCAL del reader y el
+            ' remapper de abajo espera GLOBAL.
+            Dim globalFid = ctx.PluginManager.ResolveReferencedFormID(rec.SourcePluginName, rec.Header.FormID)
+            parsed.FormID = globalFid
+
+            Dim preset As LooksmenuLoader.LooksmenuPreset = Nothing
+            If Not presetsByFid.TryGetValue(globalFid, preset) OrElse preset Is Nothing Then
+                skipped.Add($"{If(parsed.EditorID, "")} ({globalFid:X8})")
+                Continue For          ' ⛔ sin datos NO se re-emite: ver el remark de arriba
+            End If
+
+            ' PEREZOSA a propósito: recién acá sabemos que hay algo que refrescar. Resolverla antes haría
+            ' avanzar la generación (y crear un sidecar para guardarla) en un plugin sin scripts nuestros.
+            ' Es idempotente, así que llamarla en cada vuelta no cambia el número.
+            EnsureApplyScriptGeneration(ctx, target)
+
+            Dim refreshWarnings As New List(Of String)
+            If NpcApplyScriptEmitter.ApplyToNpc(parsed, preset, Config_App.Current.Game,
+                                                target.EmitApplyScript,
+                                                ctx.ApplyScriptPluginFile, ctx.ApplyScriptGeneration, ctx.ApplyScriptSalt,
+                                                target.ScriptOwnsBodyMorphs, refreshWarnings) Then
+                ctx.WroteApplyScript = True
+            End If
+            Dim refreshLabel = NpcLabel(parsed, globalFid)
+            CollectPayloadWarnings(ctx, refreshLabel, refreshWarnings)
+            CheckVmadSize(parsed, refreshLabel, ctx)
+
+            ' ⚠️ SE APENDEA AL FINAL, NUNCA SE INSERTA. La fase 3b aparea entries(i) con writeInputs(i) POR
+            ' ÍNDICE, así que los primeros writeInputs.Count elementos tienen que seguir siendo los del guardado.
+            entries.Add(New SaveNpcEspWriter.NpcOverrideEntry With {
+                .Npc = parsed,
+                .SourcePluginName = rec.SourcePluginName,
+                .OriginalHeader = rec.Header})
+            existingRecords.RemoveAt(i)
+            moved.Add(rec.Header.FormID)
+        Next
+
+        If Logger.Enabled Then
+            Dim movedCount = moved.Count
+            Logger.LogLazy(Function() $"[NPCM-APPLY] refreshed VMAD on {movedCount} preserved NPC(s) → generation {ctx.ApplyScriptGeneration}")
+            If skipped.Count > 0 Then
+                Dim list = String.Join(", ", skipped)
+                Logger.LogLazy(Function() $"[NPCM-APPLY] WARNING: {skipped.Count} NPC(s) carry our script but have NO sidecar entry — left with their old VMAD (inert) rather than wiping their data → {list}")
+            End If
+        End If
+        Return moved
+    End Function
 
     ''' <summary>Translate the merged sidecar into BodyGenIniWriter entries and emit the .ini
     ''' pair. Sidecar rows without BodyMorphs (SkinTemplate-only entries) are skipped — the

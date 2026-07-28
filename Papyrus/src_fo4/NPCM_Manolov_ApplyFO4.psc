@@ -22,14 +22,32 @@ Scriptname NPCM_Manolov_ApplyFO4 extends Actor
                        serialized to the co-save. There is nothing to call. (Also moot: node
                        transforms are an SSE-only feature in the app.)
 
+    * Body morphs    — DELIVERED HERE NOW (BodyGen.SetMorph), and the BodyGen .ini is then NOT emitted
+                       for the same plugin. They cannot coexist: f4ee combines the per-keyword values of
+                       a morph with MAX (UserValues::GetEffectiveValue, BodyMorphInterface.cpp:1001-1009),
+                       and BodyGen writes to the SAME keyword slot we do (nullptr / None — see
+                       BodyGenInterface.cpp:517). See ApplyBodyMorphs() below.
+
   NOT DONE HERE, on purpose (already delivered another way, would otherwise apply twice):
-    * Body morphs — the BodyGen morphs.ini/templates.ini pair (BodyGenIniWriter) already does it.
     * Anything face — baked into the FaceGen NIF/textures.
 }
 
-bool Property IsFemale_G000001 = false Auto
+bool Property IsFemale_G0000010000 = false Auto
 
-int Property SchemaVersion_G000001 = 1 Auto
+bool Property Verbose_G0000010000 = false Auto
+{DIAGNOSTICO. false (default, y lo que se publica) = el script NO traza NADA. La app lo pone en true
+ cuando ella misma esta diagnosticando (Logger.Enabled, que es Debug-only). Ver el docstring gemelo en
+ NPCM_Manolov_ApplySSE.psc para el razonamiento completo.
+
+ ⭐ Lo que gatea NO es solo el Debug.Trace: es la CONCATENACION (bytecode, se ejecuta siempre) y sobre
+ todo LAS NATIVAS DE SONDA (BodyGen.GetMorphs / GetMorph / GetKeywords), que existen unicamente para
+ trazar. Y en FO4 eso pesa MAS que en SSE: f4ee NO le pone kFunctionFlag_NoWait a la clase BodyGen
+ (solo se lo pone a Overlays), asi que cada nativa hace ceder la VM — medido: 512 SetMorph = ~9 s.
+
+ ⛔ JAMAS envolver una llamada FUNCIONAL (RemoveMorphsByKeyword, SetMorph, UpdateMorphs, Overlays.*):
+ si el flag se apagara, el script dejaria de aplicar. Solo se envuelve lo que existe para mirar.}
+
+int Property SchemaVersion_G0000010000 = 1 Auto
 {Bumped by the app when the authored values change, so an updated plugin re-applies to actors that
  already spawned in an existing save.}
 
@@ -40,7 +58,7 @@ int Property SchemaVersion_G000001 = 1 Auto
 ; que no tenia (=> FRESCA). Una property `Auto` se compila a variable de script, y las variables se
 ; serializan: por eso el payload de una version quedaba pegado en toda referencia ya existente.
 ;
-; ⚠️ ESTE ARCHIVO ES UNA PLANTILLA. Se compila con `_G000001` y con el nombre `NPCM_Manolov_ApplyFO4`, y
+; ⚠️ ESTE ARCHIVO ES UNA PLANTILLA. Se compila con `_G0000010000` y con el nombre `NPCM_Manolov_ApplyFO4`, y
 ;   ninguno de los dos llega al juego: al guardar el ESP la app reescribe DENTRO del .pex (PexPatcher.vb)
 ;   el nombre del script y la generacion. NO subir el sufijo ni renombrar el Scriptname a mano.
 ;
@@ -50,21 +68,45 @@ int Property SchemaVersion_G000001 = 1 Auto
 ; `appliedVersion` NO lleva sufijo a proposito: es el lado que tiene que persistir.
 
 ;-- overlays (parallel arrays, one entry per overlay) -------------------------------------------
-string[] Property OvlTemplate_G000001 Auto
+string[] Property OvlTemplate_G0000010000 Auto
 {f4ee overlay template id (the `template` member of Overlays:Entry) — from the installed
  overlays.json catalog, NOT a loose texture path.}
-int[]   Property OvlPriority_G000001 Auto
-float[] Property OvlRed_G000001 Auto
-float[] Property OvlGreen_G000001 Auto
-float[] Property OvlBlue_G000001 Auto
-float[] Property OvlAlpha_G000001 Auto
-float[] Property OvlOffsetU_G000001 Auto
-float[] Property OvlOffsetV_G000001 Auto
-float[] Property OvlScaleU_G000001 Auto
-float[] Property OvlScaleV_G000001 Auto
+int[]   Property OvlPriority_G0000010000 Auto
+float[] Property OvlRed_G0000010000 Auto
+float[] Property OvlGreen_G0000010000 Auto
+float[] Property OvlBlue_G0000010000 Auto
+float[] Property OvlAlpha_G0000010000 Auto
+float[] Property OvlOffsetU_G0000010000 Auto
+float[] Property OvlOffsetV_G0000010000 Auto
+float[] Property OvlScaleU_G0000010000 Auto
+float[] Property OvlScaleV_G0000010000 Auto
 
 ;-- skin override (single template id; "" = none) -----------------------------------------------
-string Property SkinTemplate_G000001 = "" Auto
+string Property SkinTemplate_G0000010000 = "" Auto
+
+;-- body morphs (BodySlide) ---------------------------------------------------------------------
+bool Property MorphsOwned_G0000010000 = false Auto
+{⛔ QUIEN ES EL DUEÑO DE LOS BODY MORPHS DE ESTE NPC. false = los entrega el par BodyGen .ini y este
+ script NO TOCA NADA de morphs (ni siquiera barre); true = los entrega este script.
+
+ NO es un lujo, es obligatorio: nuestro barrido usa el keyword None, que es EL MISMO SLOT que escribe
+ BodyGen (BodyGenInterface.cpp:517). Sin este flag, con el modo .ini activo el barrido borraria lo que
+ BodyGen acaba de aplicar — o no, segun quien corra primero, porque el orden entre el evento de f4ee y
+ el OnLoad de Papyrus NO esta garantizado. Un flag lo vuelve determinista.
+
+ ⚠️ Volver del modo script al modo .ini deja los morphs que este script ya aplico pegados al actor (el
+ mapa del actor no queda vacio, asi que BodyGen tampoco lo re-evalua). No es una perdida: los dos modos
+ sacan los valores del MISMO sidecar.}
+string[] Property MorphName_G0000010000 Auto
+{Nombre del morph de BodySlide (la key del .tri PIRT). Array paralelo con MorphValue.}
+float[]  Property MorphValue_G0000010000 Auto
+{Valor del morph. Entra bajo el keyword None, que es el MISMO slot que usa BodyGen
+ (SetMorph(actor, isFemale, name, nullptr, value) — BodyGenInterface.cpp:517) y el unico que se puede
+ usar sin agregarle un record KYWD al ESP ni un master de LooksMenu.
+
+ ⚠️ NO se emiten valores 0: UserValues::SetValue BORRA la entrada cuando el valor es exactamente
+ cero (BodyMorphInterface.cpp:983-987), asi que un 0 no seria "morph en cero" sino "morph ausente".
+ El emisor ya los filtra; esto queda escrito para que nadie lo "arregle" mandandolos.}
 
 ;-- per-instance state (persists in the savegame, like vanilla TeleportActorScript) -------------
 int appliedVersion = -1
@@ -75,20 +117,24 @@ Event OnLoad()
     ; referencia, (b) se dispara y se saltea por el sello, (c) se dispara pero con las propiedades
     ; CONGELADAS del savegame, o sea leyendo el payload viejo.
     ; MEDIDO en SSE (2026-07-26, log de Papyrus + VMAD del ESP): es (c). Dos referencias reportaban un
-    ; SchemaVersion_G000001 que YA NO EXISTE en el plugin, asi que solo podia venir del savegame. La via es la
+    ; SchemaVersion_G0000010000 que YA NO EXISTE en el plugin, asi que solo podia venir del savegame. La via es la
     ; misma en los dos juegos (propiedades del VMAD), asi que aca se espera lo mismo -- pero se instrumenta
     ; igual en vez de asumirlo, que es como se destapo en SSE.
     ; No se tocan arrays en la traza: el spec de LIMPIEZA no emitia array alguna y un .Length sobre None
     ; tiraria justo en el caso que interesa observar.
-    Debug.Trace("[NPCM] OnLoad ref=" + self.GetFormID() + " appliedVersion=" + appliedVersion + " SchemaVersion_G000001=" + SchemaVersion_G000001)
+    if Verbose_G0000010000
+        Debug.Trace("[NPCM] OnLoad ref=" + self.GetFormID() + " appliedVersion=" + appliedVersion + " SchemaVersion_G0000010000=" + SchemaVersion_G0000010000)
+    endif
 
     ; ⚠️ INSTRUMENTADO A PROPOSITO. En SSE esta medido que una array-property que el VMAD NO trae llega
     ; con LONGITUD 0 (no None), y eso es lo que hace de senal para el guard de instancia huerfana. En FO4
     ; NO esta medido, y los dos motores YA difirieron en el manejo de arrays (FO4 tolera arrays vacios,
     ; Skyrim no). Si la linea "antes de tocar" sale y la siguiente NO, llego None y el .Length tiro: ahi
     ; el guard tiene que pasar a un escalar.
-    Debug.Trace("[NPCM] antes de tocar OvlTemplate_G000001")
-    Debug.Trace("[NPCM] payload ovl=" + OvlTemplate_G000001.Length + " skin='" + SkinTemplate_G000001 + "'")
+    if Verbose_G0000010000
+        Debug.Trace("[NPCM] payload ovl=" + OvlTemplate_G0000010000.Length + " skin='" + SkinTemplate_G0000010000 + "'")
+        Debug.Trace("[NPCM] BM payload morphs=" + MorphName_G0000010000.Length)
+    endif
 
     ; ⛔ INSTANCIA HUERFANA: no soy la version activa de este actor, no toco NADA.
     ; El nombre del script lleva el del ESP; si el autor renombra su plugin, el savegame se queda con la
@@ -99,20 +145,33 @@ Event OnLoad()
     ; ⛔ Y NO se borra el .pex huerfano para "arreglarlo": el script extends Actor, asi que si el tipo no
     ; resuelve ese actor queda SIN TABLA DE METODOS PARA TODOS LOS DEMAS SCRIPTS (medido en SSE: RaceMenu
     ; fallando 17 veces sobre un NPC nuestro). El .pex viejo se queda; este guard lo vuelve inofensivo.
-    if OvlTemplate_G000001.Length == 0
-        Debug.Trace("[NPCM] INERTE: sin payload del VMAD (instancia de un nombre de script viejo)")
+    if OvlTemplate_G0000010000.Length == 0
+        if Verbose_G0000010000
+            Debug.Trace("[NPCM] INERTE: sin payload del VMAD (instancia de un nombre de script viejo)")
+        endif
         return
     endif
 
-    if appliedVersion == SchemaVersion_G000001
-        Debug.Trace("[NPCM] SKIP: sello igual, no se limpia ni se aplica nada")
+    if appliedVersion == SchemaVersion_G0000010000
+        if Verbose_G0000010000
+            Debug.Trace("[NPCM] SKIP: sello igual, no se limpia ni se aplica nada")
+        endif
         return                    ; already applied to THIS actor, and nothing changed since
     endif
-    appliedVersion = SchemaVersion_G000001
+    appliedVersion = SchemaVersion_G0000010000
 
     ApplyOverlays()
     ApplySkin()
-    Debug.Trace("[NPCM] DONE ref=" + self.GetFormID())
+    ; ⭐ VA DESPUES DE ApplyOverlays A PROPOSITO, y el orden importa. Overlays.Update solo destruye y
+    ; reconstruye el SUBARBOL de overlays (F4EEUpdateOverlays::Run, OverlayInterface.cpp:857-910): no
+    ; toca los morphs. BodyGen.UpdateMorphs, en cambio, DETACHA los slots morphables y hace
+    ; Update3DModel (BodyMorphInterface.cpp:517-556) — un rebuild del modelo que vuelve a disparar el
+    ; hook de attach y re-aplica los overlays desde el mapa, que a esta altura ya es el correcto.
+    ; Al reves (morphs primero) el rebuild de los morphs seria pisado por el de los overlays.
+    ApplyBodyMorphs()
+    if Verbose_G0000010000
+        Debug.Trace("[NPCM] DONE ref=" + self.GetFormID())
+    endif
 EndEvent
 
 Function ApplyOverlays()
@@ -140,9 +199,9 @@ Function ApplyOverlays()
     ; ⚠️ RemoveAll se lleva TAMBIEN los overlays que otro mod le haya puesto a este actor. Es la
     ; MISMA decision de producto que en SSE, tomada a proposito: el NPC muestra exactamente lo que
     ; muestra la app. f4ee no guarda dueño (su mapa es actor+prioridad+uid).
-    Overlays.RemoveAll(a, IsFemale_G000001)
+    Overlays.RemoveAll(a, IsFemale_G0000010000)
 
-    int n = OvlTemplate_G000001.Length
+    int n = OvlTemplate_G0000010000.Length
     if n == 0
         Overlays.Update(a)
         return
@@ -150,9 +209,9 @@ Function ApplyOverlays()
 
     int i = 0
     while i < n
-        if OvlTemplate_G000001[i] != ""
+        if OvlTemplate_G0000010000[i] != ""
             Overlays:Entry e = new Overlays:Entry
-            e.template = OvlTemplate_G000001[i]
+            e.template = OvlTemplate_G0000010000[i]
             ; ⛔ INLINE guards, never a helper taking an array parameter. Papyrus throws
             ; "Cannot cast from None to Float[]" AT THE CALL when the argument is None, so a
             ; `if a == None` inside the helper never runs. That bug took down the SSE script
@@ -183,35 +242,35 @@ Function ApplyOverlays()
             e.scale_u  = 1.0
             e.scale_v  = 1.0
 
-            if i < OvlPriority_G000001.Length
-                    e.priority = OvlPriority_G000001[i]
+            if i < OvlPriority_G0000010000.Length
+                    e.priority = OvlPriority_G0000010000[i]
             endif
-            if i < OvlRed_G000001.Length
-                    e.red = OvlRed_G000001[i]
+            if i < OvlRed_G0000010000.Length
+                    e.red = OvlRed_G0000010000[i]
             endif
-            if i < OvlGreen_G000001.Length
-                    e.green = OvlGreen_G000001[i]
+            if i < OvlGreen_G0000010000.Length
+                    e.green = OvlGreen_G0000010000[i]
             endif
-            if i < OvlBlue_G000001.Length
-                    e.blue = OvlBlue_G000001[i]
+            if i < OvlBlue_G0000010000.Length
+                    e.blue = OvlBlue_G0000010000[i]
             endif
-            if i < OvlAlpha_G000001.Length
-                    e.alpha = OvlAlpha_G000001[i]
+            if i < OvlAlpha_G0000010000.Length
+                    e.alpha = OvlAlpha_G0000010000[i]
             endif
-            if i < OvlOffsetU_G000001.Length
-                    e.offset_u = OvlOffsetU_G000001[i]
+            if i < OvlOffsetU_G0000010000.Length
+                    e.offset_u = OvlOffsetU_G0000010000[i]
             endif
-            if i < OvlOffsetV_G000001.Length
-                    e.offset_v = OvlOffsetV_G000001[i]
+            if i < OvlOffsetV_G0000010000.Length
+                    e.offset_v = OvlOffsetV_G0000010000[i]
             endif
-            if i < OvlScaleU_G000001.Length
-                    e.scale_u = OvlScaleU_G000001[i]
+            if i < OvlScaleU_G0000010000.Length
+                    e.scale_u = OvlScaleU_G0000010000[i]
             endif
-            if i < OvlScaleV_G000001.Length
-                    e.scale_v = OvlScaleV_G000001[i]
+            if i < OvlScaleV_G0000010000.Length
+                    e.scale_v = OvlScaleV_G0000010000[i]
             endif
 
-            Overlays.Add(a, IsFemale_G000001, e)
+            Overlays.Add(a, IsFemale_G0000010000, e)
         endif
         i += 1
     endwhile
@@ -224,10 +283,117 @@ Function ApplySkin()
     ; co-save, so if the user clears the skin template in the app and re-saves, an early return would leave
     ; the OLD override applied to the actor forever — the same "never deletes" hazard the uid ledger fixes
     ; for overlays. BodyGen.RemoveSkinOverride exists precisely for this (PapyrusBodyGen.cpp:114-130).
-    if SkinTemplate_G000001 == ""
+    if SkinTemplate_G0000010000 == ""
         BodyGen.RemoveSkinOverride(self as Actor)
         return
     endif
     ; SetSkinOverride calls UpdateSkinOverride internally (PapyrusBodyGen.cpp:109) — no refresh needed.
-    BodyGen.SetSkinOverride(self as Actor, SkinTemplate_G000001)
+    BodyGen.SetSkinOverride(self as Actor, SkinTemplate_G0000010000)
+EndFunction
+
+; ============================================================================================
+; BODY MORPHS DE BODYSLIDE (los que antes entregaba el par BodyGen morphs.ini/templates.ini).
+;
+; POR QUE SE MUDARON ACA: BodyGen se evalua UNA sola vez y con el gate `!morphMap`
+; (f4ee/ActorUpdateManager.cpp:49-54, :95-100, :121-126). Una referencia que YA existe en la partida
+; del jugador no lo recibe NUNCA. El apply-script con el sufijo _G<n> si le llega, porque una property
+; con nombre nuevo se inicializa del VMAD en vez de restaurarse rancia del savegame.
+;
+; ⛔ EL .ini NO SE EMITE MAS PARA ESTE PLUGIN, Y SI HABIA UNO SE BORRA. f4ee combina las keywords de un
+; mismo morph con MAX (UserValues::GetEffectiveValue, BodyMorphInterface.cpp:1001-1009), asi que con un
+; row de BodyGen vivo ganaria el valor mas grande de los dos en vez del que autoro el usuario.
+; (En SSE el mismo choque SUMA en vez de maxear — motores distintos, misma conclusion.)
+;
+; ⭐ EL KEYWORD ES `None`, Y ESO ES CORRECTO, NO UN ATAJO. UserValues indexa por
+; `keyword ? keyword->formID : 0` (BodyMorphInterface.cpp:970, :980, :995), y BodyGen mismo escribe con
+; nullptr. O sea que None ES el slot canonico. Emitir un KYWD propio habria sido la alternativa para
+; poder distinguir "lo nuestro" de "lo de BodyGen", pero exige un record nuevo en el ESP (el ESP no
+; lleva master de LooksMenu) y no compra nada: si el .ini no se emite, ese slot es SOLO nuestro.
+;
+; ⛔ LO QUE NO SE USA, Y POR QUE:
+;   RemoveAllMorphs      -> borra el mapa ENTERO del actor, incluidas las keywords de otros mods.
+;                           RemoveMorphsByKeyword(None) es quirurgico: saca el slot 0 de cada nombre y
+;                           deja intactas las entradas keyword-scoped ajenas.
+;   RegenerateMorphs     -> vuelve a correr BodyGen DESDE LOS .ini (PapyrusBodyGen.cpp:84-85). Es
+;                           exactamente lo contrario de lo que queremos.
+;
+; ⚠️ EFECTO PERMANENTE, ASUMIDO: RemoveMorphsByKeyword no borra la entrada del actor del mapa
+; (BodyMorphInterface.cpp:914-925 no limpia los vacios), asi que `GetMorphMap` queda no-nulo y BodyGen
+; NO vuelve a evaluar a este actor nunca mas. Es lo que queremos mientras seamos el dueño; si el usuario
+; volviera al modo .ini, un actor ya spawneado no lo tomaria.
+; ============================================================================================
+Function ApplyBodyMorphs()
+    ; ⛔ NO SOMOS EL DUEÑO: los entrega el .ini. Salir ANTES del barrido, no despues. Ver MorphsOwned.
+    if !MorphsOwned_G0000010000
+        if Verbose_G0000010000
+            Debug.Trace("[NPCM] BM SKIP: los morphs los entrega el BodyGen .ini (MorphsOwned=false)")
+        endif
+        return
+    endif
+
+    Actor a = self as Actor
+
+    ; ⭐⭐ SONDA DE ORDEN. f4ee corre BodyGen en TESObjectLoadedEvent / TESInitScriptEvent y nosotros en
+    ; OnLoad; el orden entre los dos NO esta garantizado. Estas lineas lo MIDEN:
+    ;   * morphs previos = 0     -> corrimos primero (o nadie aplico nada)
+    ;   * previos > 0 y el valor del slot None != 0 -> alguien escribio ANTES en NUESTRO slot: o quedo un
+    ;     .ini instalado de una version anterior, o BodyGen corrio primero
+    ;   * kw > 1                 -> otro mod tiene morphs keyword-scoped en este actor (los respetamos)
+    ; GetMorphs/GetKeywords NUNCA devuelven None: arman un VMArray sobre un vector LOCAL
+    ; (PapyrusBodyGen.cpp:53-65).
+    ; ⭐ BLOQUE DE SONDA COMPLETO bajo Verbose: GetMorphs / GetMorph / GetKeywords existen SOLO para
+    ; trazar, y en FO4 cada nativa hace ceder la VM (BodyGen no tiene NoWait). Es el ahorro que importa.
+    if Verbose_G0000010000
+        string[] pre = BodyGen.GetMorphs(a, IsFemale_G0000010000)
+        Debug.Trace("[NPCM] BM morphs previos=" + pre.Length)
+        if pre.Length > 0
+            string pname = pre[0]
+            Debug.Trace("[NPCM] BM morph previo[0]=" + pname)
+            float pval = BodyGen.GetMorph(a, IsFemale_G0000010000, pname, None)
+            Debug.Trace("[NPCM] BM morph previo[0] slot None = " + pval)
+            Keyword[] pkw = BodyGen.GetKeywords(a, IsFemale_G0000010000, pname)
+            Debug.Trace("[NPCM] BM morph previo[0] keywords=" + pkw.Length)
+        endif
+    endif
+
+    ; Barrido de NUESTRO slot. Idempotente (sacar una keyword que no esta es no-op) e incondicional:
+    ; tiene que correr TAMBIEN con payload vacio, que es el caso de limpieza.
+    BodyGen.RemoveMorphsByKeyword(a, IsFemale_G0000010000, None)
+    if Verbose_G0000010000
+        Debug.Trace("[NPCM] BM RemoveMorphsByKeyword(None) hecho")
+    endif
+
+    int n = MorphName_G0000010000.Length
+    int applied = 0
+    int i = 0
+    while i < n
+        string mname = MorphName_G0000010000[i]
+        if mname != ""
+            ; Guarda INLINE por .Length, jamas contra None y jamas pasando el array a un helper.
+            if i < MorphValue_G0000010000.Length
+                float mval = MorphValue_G0000010000[i]
+                BodyGen.SetMorph(a, IsFemale_G0000010000, mname, None, mval)
+                applied += 1
+            endif
+        endif
+        i += 1
+    endwhile
+
+    if Verbose_G0000010000
+        Debug.Trace("[NPCM] BM aplicados=" + applied + " de " + n)
+        if n > 0
+            string m0 = MorphName_G0000010000[0]
+            if m0 != ""
+                ; Read-back: si no devuelve lo que acabamos de escribir, la nativa no tomo el valor (o f4ee
+                ; no esta cargado) y el problema esta ahi, no en el emisor.
+                float back = BodyGen.GetMorph(a, IsFemale_G0000010000, m0, None)
+                Debug.Trace("[NPCM] BM readback " + m0 + " = " + back)
+            endif
+        endif
+    endif
+
+    ; Repintado. INCONDICIONAL, tambien con payload vacio: UpdateMorphs detacha los slots morphables y
+    ; hace Update3DModel, o sea que RECOMPONE desde el mapa. Con el mapa ya barrido, eso es exactamente
+    ; "volver al cuerpo base" — que es lo unico que hay que hacer en el caso de limpieza.
+    BodyGen.UpdateMorphs(a)
 EndFunction

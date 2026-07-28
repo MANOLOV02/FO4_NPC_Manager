@@ -46,7 +46,10 @@ Public Module BssliderSidecar
     ''' legacy map for back-compat; v11 added the SSE-only <c>sseHairColor</c> field (RaceMenu absolute hair tint,
     ''' packed 0xRRGGBB). All additive — the loader tolerates their absence, so older files still load and older
     ''' readers ignore the fields.</summary>
-    Public Const SchemaVersion As Integer = 11
+    ''' <summary>v12 agrego <c>payloadSalt</c>: la SAL del sufijo de generacion. Se persiste porque el
+    ''' FomodExporter re-parchea el .pex desde el recurso EMBEBIDO usando la generacion del sidecar; sin la sal
+    ''' sortearia otra y el .pex del paquete declararia nombres distintos a los del VMAD del ESP.</summary>
+    Public Const SchemaVersion As Integer = 12
 
     Public Class SidecarFile
         Public Version As Integer = SchemaVersion
@@ -57,6 +60,9 @@ Public Module BssliderSidecar
         ''' property con nombre nuevo le llega FRESCA del plugin a una instancia ya guardada en la partida
         ''' del jugador (ver Papyrus\GENERACION_DEL_PAYLOAD.md). 0 = todavia ninguna.</summary>
         Public PayloadGeneration As Integer = 0
+        ''' <summary>Sal del sufijo <c>_G&lt;n&gt;&lt;sal&gt;</c> usada en el ultimo guardado. Vacia = formato viejo
+        ''' (sin sal), que se sigue leyendo. Ver PexPatcher.NewSalt.</summary>
+        Public PayloadSalt As String = ""
         Public Npcs As New Dictionary(Of String, NpcEntry)(StringComparer.OrdinalIgnoreCase)
     End Class
 
@@ -402,6 +408,9 @@ Public Module BssliderSidecar
             If root.TryGetProperty("plugin", el) AndAlso el.ValueKind = JsonValueKind.String Then
                 result.Plugin = el.GetString()
             End If
+            If root.TryGetProperty("payloadSalt", el) AndAlso el.ValueKind = JsonValueKind.String Then
+                result.PayloadSalt = If(el.GetString(), "")
+            End If
             If root.TryGetProperty("payloadGeneration", el) AndAlso el.ValueKind = JsonValueKind.Number Then
                 result.PayloadGeneration = el.GetInt32()
             End If
@@ -693,6 +702,7 @@ Public Module BssliderSidecar
                 w.WriteNumber("version", SchemaVersion)
                 w.WriteString("plugin", If(sidecar.Plugin, ""))
                 If sidecar.PayloadGeneration > 0 Then w.WriteNumber("payloadGeneration", sidecar.PayloadGeneration)
+                If Not String.IsNullOrEmpty(sidecar.PayloadSalt) Then w.WriteString("payloadSalt", sidecar.PayloadSalt)
                 w.WriteStartObject("npcs")
                 For Each kv In kept
                     w.WriteStartObject(kv.Key)

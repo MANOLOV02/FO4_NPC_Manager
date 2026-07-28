@@ -31,7 +31,6 @@ Partial Class SaveEsp_Form
         GroupBoxSave = New GroupBox()
         CheckBoxGenerateChargen = New CheckBox()
         CheckBoxRemoveChargenFlag = New CheckBox()
-        CheckBoxWriteBssliders = New CheckBox()
         CheckBoxEmitBodyGen = New CheckBox()
         CheckBoxEmitApplyScript = New CheckBox()
         CheckBoxOverrideScriptVersion = New CheckBox()
@@ -203,7 +202,6 @@ Partial Class SaveEsp_Form
         ' 
         GroupBoxSave.Controls.Add(CheckBoxGenerateChargen)
         GroupBoxSave.Controls.Add(CheckBoxRemoveChargenFlag)
-        GroupBoxSave.Controls.Add(CheckBoxWriteBssliders)
         GroupBoxSave.Controls.Add(CheckBoxEmitBodyGen)
         GroupBoxSave.Controls.Add(CheckBoxEmitApplyScript)
         GroupBoxSave.Controls.Add(CheckBoxOverrideScriptVersion)
@@ -240,27 +238,15 @@ Partial Class SaveEsp_Form
         CheckBoxRemoveChargenFlag.Text = "Remove 'Is CharGen Face Preset' flag from saved NPC(s)"
         CheckBoxRemoveChargenFlag.UseVisualStyleBackColor = True
         '
-        ' CheckBoxWriteBssliders
-        '
-        CheckBoxWriteBssliders.AutoSize = True
-        CheckBoxWriteBssliders.Checked = True
-        CheckBoxWriteBssliders.CheckState = CheckState.Checked
-        CheckBoxWriteBssliders.Location = New Point(12, 76)
-        CheckBoxWriteBssliders.Name = "CheckBoxWriteBssliders"
-        CheckBoxWriteBssliders.Size = New Size(256, 19)
-        CheckBoxWriteBssliders.TabIndex = 2
-        CheckBoxWriteBssliders.Text = "Save BodyMorphs + Skin sidecar (.bssliders)"
-        CheckBoxWriteBssliders.UseVisualStyleBackColor = True
-        '
         ' CheckBoxEmitBodyGen
         '
         CheckBoxEmitBodyGen.AutoSize = True
         CheckBoxEmitBodyGen.Checked = True
         CheckBoxEmitBodyGen.CheckState = CheckState.Checked
-        CheckBoxEmitBodyGen.Location = New Point(12, 102)
+        CheckBoxEmitBodyGen.Location = New Point(12, 76)
         CheckBoxEmitBodyGen.Name = "CheckBoxEmitBodyGen"
         CheckBoxEmitBodyGen.Size = New Size(296, 19)
-        CheckBoxEmitBodyGen.TabIndex = 3
+        CheckBoxEmitBodyGen.TabIndex = 2
         CheckBoxEmitBodyGen.Text = "Emit BodyGen .ini (body sliders on first spawn)"
         CheckBoxEmitBodyGen.UseVisualStyleBackColor = True
         '
@@ -269,41 +255,41 @@ Partial Class SaveEsp_Form
         CheckBoxEmitApplyScript.AutoSize = True
         CheckBoxEmitApplyScript.Checked = True
         CheckBoxEmitApplyScript.CheckState = CheckState.Checked
-        CheckBoxEmitApplyScript.Location = New Point(12, 128)
+        CheckBoxEmitApplyScript.Location = New Point(12, 102)
         CheckBoxEmitApplyScript.Name = "CheckBoxEmitApplyScript"
         CheckBoxEmitApplyScript.Size = New Size(340, 19)
-        CheckBoxEmitApplyScript.TabIndex = 4
-        CheckBoxEmitApplyScript.Text = "Emit apply-script (overlays / skin / node scales on first spawn)"
+        CheckBoxEmitApplyScript.TabIndex = 3
+        CheckBoxEmitApplyScript.Text = "Emit apply-script (overlays / skin / node scales / body morphs)"
         CheckBoxEmitApplyScript.UseVisualStyleBackColor = True
         '
         ' CheckBoxOverrideScriptVersion
         '
         CheckBoxOverrideScriptVersion.AutoSize = True
-        CheckBoxOverrideScriptVersion.Location = New Point(358, 128)
+        CheckBoxOverrideScriptVersion.Location = New Point(32, 126)
         CheckBoxOverrideScriptVersion.Name = "CheckBoxOverrideScriptVersion"
         CheckBoxOverrideScriptVersion.Size = New Size(112, 19)
-        CheckBoxOverrideScriptVersion.TabIndex = 6
+        CheckBoxOverrideScriptVersion.TabIndex = 4
         CheckBoxOverrideScriptVersion.Text = "Override version"
         CheckBoxOverrideScriptVersion.UseVisualStyleBackColor = True
         '
         ' NumericUpDownScriptVersion
         '
         NumericUpDownScriptVersion.Enabled = False
-        NumericUpDownScriptVersion.Location = New Point(472, 125)
+        NumericUpDownScriptVersion.Location = New Point(150, 123)
         NumericUpDownScriptVersion.Maximum = New Decimal(New Integer() {999999, 0, 0, 0})
         NumericUpDownScriptVersion.Minimum = New Decimal(New Integer() {0, 0, 0, 0})
         NumericUpDownScriptVersion.Name = "NumericUpDownScriptVersion"
         NumericUpDownScriptVersion.Size = New Size(58, 23)
-        NumericUpDownScriptVersion.TabIndex = 7
+        NumericUpDownScriptVersion.TabIndex = 5
         NumericUpDownScriptVersion.Value = New Decimal(New Integer() {1, 0, 0, 0})
         '
         ' CheckBoxSaveNewOutfits
         '
         CheckBoxSaveNewOutfits.AutoSize = True
-        CheckBoxSaveNewOutfits.Location = New Point(12, 154)
+        CheckBoxSaveNewOutfits.Location = New Point(12, 152)
         CheckBoxSaveNewOutfits.Name = "CheckBoxSaveNewOutfits"
         CheckBoxSaveNewOutfits.Size = New Size(112, 19)
-        CheckBoxSaveNewOutfits.TabIndex = 5
+        CheckBoxSaveNewOutfits.TabIndex = 6
         CheckBoxSaveNewOutfits.Text = "Save new outfits"
         CheckBoxSaveNewOutfits.UseVisualStyleBackColor = True
         ' 
@@ -530,7 +516,6 @@ Partial Class SaveEsp_Form
     Friend WithEvents GroupBoxSave As GroupBox
     Friend WithEvents CheckBoxGenerateChargen As CheckBox
     Friend WithEvents CheckBoxRemoveChargenFlag As CheckBox
-    Friend WithEvents CheckBoxWriteBssliders As CheckBox
     Friend WithEvents CheckBoxEmitBodyGen As CheckBox
     Friend WithEvents CheckBoxEmitApplyScript As CheckBox
     Friend WithEvents CheckBoxOverrideScriptVersion As CheckBox

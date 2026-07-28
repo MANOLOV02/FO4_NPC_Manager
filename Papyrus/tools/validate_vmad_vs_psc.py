@@ -27,16 +27,21 @@ VMAD_T = {1:"object",2:"string",3:"int",4:"float",5:"bool",
 # de abajo se escriben SIN sufijo y se comparan con base_name(), asi el validador no hay que tocarlo
 # en cada release. Ver la cabecera de NPCM_Manolov_ApplySSE.psc.
 def base_name(n):
-    return re.sub(r"_G\d+$", "", n)
+    # El sufijo es _G<6 digitos><4 hex de sal>, p.ej. _G000016A3F2. La sal existe para que el nombre sea
+    # nuevo aunque el contador se repita (ver PexPatcher.NewSalt). Se acepta tambien el formato viejo sin
+    # sal, para poder validar un ESP emitido por una version anterior de la app.
+    return re.sub(r"_G\d{6}[0-9A-Fa-f]{4}$|_G\d+$", "", n)
 
 # grupos de arrays paralelos que DEBEN tener la misma longitud
 GROUPS = {
     "SSE": [("overlays", ["OvlNode","OvlDiffuse","OvlNormal","OvlHasTint","OvlTint","OvlHasAlpha","OvlAlpha"]),
             ("skin",     ["SkinSlot","SkinDiffuse","SkinNormal","SkinHasTint","SkinTint"]),
             ("nodes",    ["NodeName","NodeHasScale","NodeScale","NodeHasPos","NodePosX","NodePosY","NodePosZ",
-                          "NodeHasRot","NodeScaleMode"])],
+                          "NodeHasRot","NodeScaleMode"]),
+            ("morphs",   ["MorphName","MorphValue"])],
     "FO4": [("overlays", ["OvlTemplate","OvlPriority","OvlRed","OvlGreen","OvlBlue","OvlAlpha",
-                          "OvlOffsetU","OvlOffsetV","OvlScaleU","OvlScaleV"])],
+                          "OvlOffsetU","OvlOffsetV","OvlScaleU","OvlScaleV"]),
+            ("morphs",   ["MorphName","MorphValue"])],
 }
 
 def psc_properties(path):

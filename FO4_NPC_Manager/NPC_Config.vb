@@ -52,6 +52,10 @@ Public Class NPC_Config
     ''' <para>Default flipped to True: BodyGen is the ONLY delivery route for body morphs — without it the
     ''' sliders exist in our sidecar and nowhere the game can see. Persisted per-app; the dialog seeds the
     ''' checkbox from this and writes it back on toggle (flushed to npc_config.json on app close).</para></summary>
+    ''' <para>⭐ INDEPENDIENTE de <see cref="EmitApplyScript"/>: desde que el apply-script también entrega body
+    ''' morphs, las cuatro combinaciones son válidas y el script gana por construcción. Con los dos tildados el
+    ''' .ini queda como red para los NPC del plugin que no se re-grabaron (conservan su VMAD viejo, así que el
+    ''' script les llega inerte).</para></summary>
     Public Property EmitBodyGenIni As Boolean = True
 
     ''' <summary>"Emit apply-script" option in the Save ESP dialog. When True (default) the save attaches our

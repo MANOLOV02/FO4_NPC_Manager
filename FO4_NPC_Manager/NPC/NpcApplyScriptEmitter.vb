@@ -17,10 +17,18 @@ Imports FO4_Base_Library
 ''' feature in this app.</description></item>
 ''' </list>
 '''
+''' <para>⭐ BODY MORPHS (BodySlide) ALSO SHIP HERE, in both games — see <see cref="BuildMorphArrays"/>.
+''' They used to be the BodyGen <c>templates.ini</c>/<c>morphs.ini</c> pair's job exclusively; that pair is now
+''' MUTUALLY EXCLUSIVE with the script, because neither engine "skips the one that already has morphs" once
+''' both wrote: skee SUMS the per-key values of a morph (BodyMorphInterface.cpp:220-240, default
+''' <c>iBodyMorphMode = 0</c>) and f4ee takes the MAX (BodyMorphInterface.cpp:1001-1009). The reason to move
+''' them is the whole point: BodyGen is evaluated ONCE and gated on "this actor has no morphs at all"
+''' (f4ee ActorUpdateManager.cpp:49-54, skee64 ActorUpdateManager.cpp:38-40), so a reference that ALREADY
+''' exists in the player's save never gets it — while a <c>_G&lt;n&gt;</c>-suffixed property does.</para>
+'''
 ''' <para>NOT emitted here, on purpose — these already reach the game another way, and sending them
 ''' again would apply them TWICE:</para>
 ''' <list type="bullet">
-''' <item>Body morphs → the BodyGen templates.ini/morphs.ini pair (BodyGenIniWriter / SseBodyGenIniWriter).</item>
 ''' <item>Face morphs / sculpt / face TINTS → baked into the FaceGen NIF + textures, in BOTH games. The
 ''' script never emits a face tint of any kind.</item>
 ''' <item>FACE overlays, in SSE → the bake owns the head **only while `Setting_BakeSseRaceMenuOverlays` is
@@ -43,8 +51,10 @@ Public Module NpcApplyScriptEmitter
     ''' reescribir dentro del .pex. NUNCA se emite.</summary>
     Public Const LegacyScriptSse As String = NpcVmadBuilder.ReservedScriptPrefix & "ApplySSE"
 
-    ''' <summary>Generacion que trae la plantilla compilada (el sufijo _G000001 del .psc).</summary>
+    ''' <summary>Generacion y SAL que trae la plantilla compilada (el sufijo <c>_G0000010000</c> de los .psc).
+    ''' Los dos tienen que coincidir EXACTAMENTE con lo que declaran los .psc o el parcheo del .pex falla ruidoso.</summary>
     Public Const BaselineGeneration As Integer = 1
+    Public Const BaselineSalt As String = PexPatcher.BaselineSalt
     Public Const LegacyScriptFo4 As String = NpcVmadBuilder.ReservedScriptPrefix & "ApplyFO4"
 
     ''' <summary>Name of the property that carries the payload version. Its value is NOT a constant: it is a
@@ -68,13 +78,13 @@ Public Module NpcApplyScriptEmitter
 
     ''' <summary>UNICA via para armar un nombre de property de SSE. Si alguno se arma a mano queda en la
     ''' generacion equivocada y el motor lo sirve rancio (o None) sin decir nada.</summary>
-    Private Function GenProp(baseName As String, generation As Integer) As String
-        Return baseName & PexPatcher.GenerationSuffix(generation)
+    Private Function GenProp(baseName As String, generation As Integer, salt As String) As String
+        Return baseName & PexPatcher.GenerationSuffix(generation, salt)
     End Function
 
     ''' <summary>Nombre real de la property de version. SSE lleva sufijo; FO4 todavia no.</summary>
-    Private Function VersionPropertyNameFor(game As Config_App.Game_Enum, generation As Integer) As String
-        Return GenProp(VersionPropertyName, generation)
+    Private Function VersionPropertyNameFor(game As Config_App.Game_Enum, generation As Integer, salt As String) As String
+        Return GenProp(VersionPropertyName, generation, salt)
     End Function
 
     ''' <summary>Nombre del script ANTES del esquema por plugin, por juego. Se limpia del VMAD, y es lo
@@ -169,6 +179,123 @@ Public Module NpcApplyScriptEmitter
         props.Add(NpcVmadBuilder.VmadPropertySpec.FromBoolArray(name, v))
     End Sub
 
+    ''' <summary>Techo de elementos por array del payload. Se aplica a TODAS las familias de arrays paralelos y
+    ''' en los dos juegos: una sola ley.
+    '''
+    ''' <para>⭐⭐ <b>512 ESTÁ MEDIDO IN-GAME</b> (2026-07-28, SSE y FO4): un NPC con 512 body morphs en el VMAD
+    ''' reportó <c>BM payload morphs=512</c> y <c>BM aplicados=512 de 512</c> con read-back correcto y CERO
+    ''' errores en los dos juegos. Antes se probó 256 en SSE, también entero.</para>
+    '''
+    ''' <para>⛔ <b>RETRACTACIÓN</b>: este tope decía 128 "porque los arrays de Papyrus topan en 128". Eso
+    ''' MEZCLABA DOS COSAS. 128 es un límite del COMPILADOR sobre <c>new T[n]</c> — medido compilando
+    ''' <c>new float[129]</c>: SSE dice <i>"arrays must be between 1 and 128 elements in size"</i> y FO4
+    ''' <i>"Array size of 129 is invalid. Must be between 0 and 128 (inclusive)"</i> (de paso confirma que FO4
+    ''' acepta <c>[0]</c> y SSE no). Pero un array que arma el LOADER DEL VMAD no pasa por el compilador y
+    ''' <b>no tiene ese techo</b>.</para>
+    '''
+    ''' <para>Entonces 512 no es un límite del motor, es una <b>decisión de costo</b>: en FO4 cada
+    ''' <c>BodyGen.SetMorph</c> hace ceder la VM porque f4ee NO le pone <c>kFunctionFlag_NoWait</c> (sólo se lo
+    ''' pone a la clase <c>Overlays</c>), así que 512 morphs tardan ~9 s de reloj; skee sí marca
+    ''' <c>SetBodyMorph</c> como <c>NoWait</c> (PapyrusNiOverride.cpp:2556) y los mismos 512 tardan ≤2 s.
+    ''' Un preset real (16-80 sliders) cuesta menos de 1,5 s en FO4. Ningún preset se acerca a 512.</para>
+    '''
+    ''' <para>El guard duro de verdad ya no es éste sino el techo de 64 KB del subrecord — ver
+    ''' <see cref="VmadHardLimitBytes"/> y <c>NpcOverrideSaver.CheckVmadSize</c>. Con 512 morphs el VMAD pesó
+    ''' ~11,9 KB (18 % del techo).</para></summary>
+    Private Const MaxArrayElements As Integer = 512
+
+    ''' <summary>Techo DURO de un subrecord: el campo de longitud es u16 y la lib no implementa la extensión
+    ''' XXXX (<c>PluginWriter.WriteSubrecordHeader</c> tira si se pasa). El chequeo por-NPC vive en
+    ''' <c>NpcOverrideSaver.CheckVmadSize</c>, que puede nombrar al NPC; acá sólo se documenta el número.</summary>
+    Public Const VmadHardLimitBytes As Integer = 65535
+
+    ''' <summary>Registra un recorte en <paramref name="warnings"/>. Nunca en silencio: un payload recortado
+    ''' que no se reporta se ve EXACTAMENTE igual que uno completo, y "aplicó todo" cuando no es el modo de
+    ''' falla que este proyecto ya se comió dos veces.</summary>
+    Private Sub NoteTrim(warnings As List(Of String), dropped As Integer, kind As String)
+        If dropped <= 0 Then Return
+        If warnings IsNot Nothing Then
+            warnings.Add($"{dropped} {kind} DROPPED — Papyrus caps an array at {MaxArrayElements} elements")
+        End If
+        If Logger.Enabled Then
+            Logger.LogLazy(Function() $"[NPCM-APPLY] {dropped} {kind} dropped (array cap {MaxArrayElements})")
+        End If
+    End Sub
+
+    ''' <summary>Body morphs de BodySlide → los dos arrays paralelos <c>MorphName</c>/<c>MorphValue</c> que
+    ''' consumen los dos <c>.psc</c>. MISMA FORMA EN LOS DOS JUEGOS; lo único que cambia es qué hace el script
+    ''' con ellos (SSE los mete bajo una key nuestra, FO4 bajo el keyword <c>None</c>).
+    '''
+    ''' <para><b>SSE — se SUMAN las contribuciones keyed.</b> RaceMenu guarda una entrada por cada fuente de
+    ''' BodySlide (<c>BodyMorphsKeyed</c>: morph → key → valor) y skee las NETEA sumándolas al renderizar
+    ''' (<c>Impl_GetBodyMorphs</c>, BodyMorphInterface.cpp:220-240, con el default <c>iBodyMorphMode = 0</c>).
+    ''' Emitir la suma bajo UNA key nuestra rinde el mismo número y compra el deshacer quirúrgico
+    ''' (<c>ClearBodyMorphKeys</c> saca sólo la nuestra). Es además exactamente lo que ya hacía
+    ''' <c>EmitSseBodyGenFromSidecar</c> y lo que renderiza el preview, así que preview == juego.</para>
+    '''
+    ''' <para><b>FO4 — el dict plano</b> (<c>BodyMorphsKeyed</c> es SSE-only; f4ee no tiene keys de string,
+    ''' tiene Keywords).</para>
+    '''
+    ''' <para>⛔ SE FILTRAN LOS CEROS. En FO4 <c>UserValues::SetValue</c> BORRA la entrada cuando el valor es
+    ''' exactamente 0 (BodyMorphInterface.cpp:983-987), así que un 0 no significa "morph en cero" sino "morph
+    ''' ausente"; en SSE sí se guardaría, pero sumaría 0 y sólo ocuparía lugar del techo de 128. Una sola ley.</para>
+    '''
+    ''' <para>Orden ordinal por nombre: el sello (<see cref="StampVersion"/>) es un hash del payload, así que
+    ''' un orden dependiente del dict haría re-aplicar a NPCs que no cambiaron.</para>
+    '''
+    ''' <para>⚠️ Si hay más de <see cref="MaxArrayElements"/> morphs se recorta por |valor| descendente y se
+    ''' LOGUEA lo que quedó afuera. Recortar en silencio sería exactamente el modo de falla que este proyecto
+    ''' ya se comió dos veces ("aplicó todo" cuando no).</para></summary>
+    Private Sub BuildMorphArrays(preset As LooksmenuLoader.LooksmenuPreset,
+                                 game As Config_App.Game_Enum,
+                                 names As List(Of String),
+                                 values As List(Of Single),
+                                 warnings As List(Of String))
+        If preset Is Nothing Then Return
+
+        ' --- fuente: keyed (SSE, sumado) o plano.
+        Dim flat As New Dictionary(Of String, Single)(StringComparer.OrdinalIgnoreCase)
+        If game = Config_App.Game_Enum.Skyrim AndAlso
+           preset.BodyMorphsKeyed IsNot Nothing AndAlso preset.BodyMorphsKeyed.Count > 0 Then
+            For Each mk In preset.BodyMorphsKeyed
+                If String.IsNullOrEmpty(mk.Key) Then Continue For
+                Dim sum As Single = 0.0F
+                If mk.Value IsNot Nothing Then
+                    For Each ikv In mk.Value : sum += ikv.Value : Next
+                End If
+                Dim existing As Single
+                If flat.TryGetValue(mk.Key, existing) Then flat(mk.Key) = existing + sum Else flat(mk.Key) = sum
+            Next
+        ElseIf preset.BodyMorphSliders IsNot Nothing Then
+            For Each kv In preset.BodyMorphSliders
+                If String.IsNullOrEmpty(kv.Key) Then Continue For
+                Dim existing As Single
+                If flat.TryGetValue(kv.Key, existing) Then flat(kv.Key) = existing + kv.Value Else flat(kv.Key) = kv.Value
+            Next
+        End If
+
+        Dim usable = flat.Where(Function(kv) kv.Value <> 0.0F).ToList()
+        If usable.Count = 0 Then Return
+
+        If usable.Count > MaxArrayElements Then
+            ' Se conservan los de mayor |valor|: son los que más cambian el cuerpo. Los descartados van al
+            ' aviso Y al log con nombre y apellido.
+            Dim ordered = usable.OrderByDescending(Function(kv) Math.Abs(kv.Value)).ToList()
+            Dim dropped = ordered.Skip(MaxArrayElements).Select(Function(kv) kv.Key).ToList()
+            usable = ordered.Take(MaxArrayElements).ToList()
+            NoteTrim(warnings, dropped.Count, "body morph(s)")
+            If Logger.Enabled Then
+                Dim droppedList = String.Join(", ", dropped)
+                Logger.LogLazy(Function() $"[NPCM-APPLY] dropped body morphs: {droppedList}")
+            End If
+        End If
+
+        For Each kv In usable.OrderBy(Function(p) p.Key, StringComparer.Ordinal)
+            names.Add(kv.Key)
+            values.Add(kv.Value)
+        Next
+    End Sub
+
     ''' <summary>Pack a 0..1 RGBA tint into skee's 0xAARRGGBB int (kParam_ShaderTintColor, key 7).</summary>
     Private Function PackTint(r As Single, g As Single, b As Single, a As Single) As Integer
         Dim ToByte = Function(v As Single) CInt(Math.Round(Math.Max(0.0F, Math.Min(1.0F, v)) * 255.0F))
@@ -179,19 +306,28 @@ Public Module NpcApplyScriptEmitter
     ''' <paramref name="enabled"/> = False removes ours and keeps every other script — so unchecking the
     ''' option in Save ESP actually strips a previously-emitted script instead of leaving it stale.
     ''' Returns True when a script was written (the caller uses that to decide whether to install the .pex).</summary>
+    ''' <param name="ownBodyMorphs">True ⇒ el script es el DUEÑO de los body morphs de BodySlide: los emite y
+    ''' además barre los suyos antes de aplicar. False ⇒ los entrega el par BodyGen .ini y el script no toca
+    ''' morphs en absoluto. ⛔ NO es un simple "no emitir": viaja al `.psc` como <c>MorphsOwned</c> porque en
+    ''' FO4 nuestro barrido usa el keyword <c>None</c>, que es EL MISMO SLOT que escribe BodyGen — sin el flag,
+    ''' con el modo .ini activo el barrido borraría lo que BodyGen acaba de aplicar, o no, según quién corra
+    ''' primero (el orden entre el evento de f4ee y el OnLoad de Papyrus no está garantizado).</param>
     Public Function ApplyToNpc(npcSpec As NPC_Data,
                                preset As LooksmenuLoader.LooksmenuPreset,
                                game As Config_App.Game_Enum,
                                enabled As Boolean,
                                pluginFileName As String,
-                               generation As Integer) As Boolean
+                               generation As Integer,
+                               salt As String,
+                               ownBodyMorphs As Boolean,
+                               warnings As List(Of String)) As Boolean
         If npcSpec Is Nothing Then Return False
 
         Dim spec As NpcVmadBuilder.VmadScriptSpec = Nothing
         If enabled Then
             ' ACBS bit 0 = Female (identical in both games — verified against TES5Edit ACBS 'Flags').
             Dim isFemale = (npcSpec.AcbsFlags And 1UI) <> 0UI
-            spec = BuildSpec(preset, game, isFemale, generation)
+            spec = BuildSpec(preset, game, isFemale, generation, salt, ownBodyMorphs, warnings)
         End If
 
         ' TRUE NO-OP for the common case: nothing to write AND nothing of ours to strip. Leave the VMAD
@@ -212,7 +348,7 @@ Public Module NpcApplyScriptEmitter
         ' the script GONE, so we strip it, and whatever is already in a running save stays there.
         If spec Is Nothing AndAlso enabled AndAlso hadOurs Then
             Dim isFemaleCleanup = (npcSpec.AcbsFlags And 1UI) <> 0UI
-            spec = BuildCleanupSpec(game, isFemaleCleanup, generation)
+            spec = BuildCleanupSpec(game, isFemaleCleanup, generation, salt, ownBodyMorphs, warnings)
         End If
 
         ' UpsertScript(Nothing) removes ours and keeps the rest; it returns Nothing when nothing is left,
@@ -237,12 +373,15 @@ Public Module NpcApplyScriptEmitter
     Public Function BuildSpec(preset As LooksmenuLoader.LooksmenuPreset,
                               game As Config_App.Game_Enum,
                               isFemale As Boolean,
-                              generation As Integer) As NpcVmadBuilder.VmadScriptSpec
+                              generation As Integer,
+                              salt As String,
+                              ownBodyMorphs As Boolean,
+                              warnings As List(Of String)) As NpcVmadBuilder.VmadScriptSpec
         If preset Is Nothing Then Return Nothing
         Dim spec = If(game = Config_App.Game_Enum.Skyrim,
-                      BuildSpecSse(preset, isFemale, generation),
-                      BuildSpecFo4(preset, isFemale, generation))
-        Return StampVersion(spec, game, generation)
+                      BuildSpecSse(preset, isFemale, generation, salt, ownBodyMorphs, warnings),
+                      BuildSpecFo4(preset, isFemale, generation, salt, ownBodyMorphs, warnings))
+        Return StampVersion(spec, game, generation, salt)
     End Function
 
     ''' <summary>Replace the version property's placeholder with the hash of everything else in the spec, so
@@ -261,11 +400,12 @@ Public Module NpcApplyScriptEmitter
     ''' exactamente lo que hay que pagar para que un cambio de lógica llegue. Por eso NO se toca al editar
     ''' un NPC — sólo al cambiar los .psc.</para>
     '''
-    ''' <para>⚠️ ALCANCE REAL: esto sólo sirve para las instancias que de verdad releen sus propiedades del
-    ''' record. Una referencia que YA existe en el savegame del usuario conserva las propiedades que tenía
-    ''' al crearse (medido: copia vieja no cambia, copia nueva por <c>placeatme</c> sí), así que a esa NO la
-    ''' alcanza ningún sello. Ese techo es del diseño de llevar el payload en propiedades del VMAD y no se
-    ''' arregla acá.</para>
+    ''' <para>⚠️ ALCANCE — CORREGIDO. Esto decía que a una referencia que YA existe en el savegame "no la
+    ''' alcanza ningún sello", y era cierto ANTES del esquema <c>_G&lt;n&gt;</c>. Ya no: una property con NOMBRE
+    ''' NUEVO no está en el savegame, así que el motor la inicializa desde el VMAD en vez de restaurarla rancia
+    ''' (LEY MEDIDA, Skyrim SE 2026-07-28, y verificada también en FO4). Por eso el sufijo de generación sube en
+    ''' cada Save ESP. Lo que sí sigue congelado es <c>appliedVersion</c> — a propósito, es el lado que tiene que
+    ''' persistir — y de ahí que un cambio de LÓGICA necesite esta revisión.</para>
     '''
     ''' <para>Historial:
     ''' 1 = comportamiento original.
@@ -275,8 +415,22 @@ Public Module NpcApplyScriptEmitter
     ''' 4 = nombre de script POR PLUGIN + guard de instancia huerfana en los dos juegos; SSE borra apagando
     '''     el nodo con KEY_ALPHA=0 (skee no tiene deshacer); FO4 pasa a Overlays.RemoveAll + Update y pierde
     '''     el ledger de uids (f4ee destruye y reconstruye el subarbol, asi que no hay nada que apilar).
+    ''' 5 = BODY MORPHS de BodySlide entregados POR EL SCRIPT en los dos juegos (MorphName/MorphValue), con
+    '''     barrido propio (SSE ClearBodyMorphKeys de NUESTRA key; FO4 RemoveMorphsByKeyword(None)) y repintado
+    '''     incondicional (UpdateModelWeight / UpdateMorphs) para que la LIMPIEZA vuelva al cuerpo base. El par
+    '''     BodyGen .ini pasa a ser MUTUAMENTE EXCLUYENTE con el script. Trazas [NPCM] BM ... para medirlo.
+    ''' 6 = SSE barre TAMBIEN la key "RSMBodyGen". MEDIDO 2026-07-28: con el .ini ya borrado de disco Y ausente
+    '''     de los BSA, un NPC aplicado con el BodySlide viejo seguia trayendo 39 morphs bajo esa key — estan
+    '''     PERSISTIDOS EN EL CO-SAVE y skee los restaura y los SUMA a los nuestros. Borrar el .ini no alcanza
+    '''     y no hay arreglo del lado de la app: el co-save es del jugador. FO4 no lo necesita (alla BodyGen
+    '''     escribe en el slot None, que el .psc ya barria).
+    ''' 7 = las trazas de los dos .psc pasan a estar gateadas por la property <c>Verbose_G&lt;n&gt;</c>, que el
+    '''     emisor pone desde <c>Logger.Enabled</c> (Debug-only). NO gatea sólo el <c>Debug.Trace</c>: envuelve
+    '''     los BLOQUES DE SONDA completos, porque GetMorphNames/GetMorphKeys/GetBodyMorph (SSE) y
+    '''     GetMorphs/GetMorph/GetKeywords (FO4) son nativas que se llaman ÚNICAMENTE para trazar — y en FO4
+    '''     cada nativa hace ceder la VM (f4ee no le pone NoWait a la clase BodyGen).
     ''' </para></summary>
-    Private Const ScriptLogicRevision As String = "4"
+    Private Const ScriptLogicRevision As String = "7"
 
     ''' <summary>Spec de LIMPIEZA: el NPC se quedó sin overlays/skin/transforms pero YA tenía script nuestro,
     ''' así que hay que dejarle uno que corra <c>RemovePrevious()</c> y no aplique nada.
@@ -289,18 +443,23 @@ Public Module NpcApplyScriptEmitter
     ''' Comparar contra None tampoco es salida (misma regla 2: el cast revienta igual). Por eso se construye
     ''' con el builder normal y <c>allowEmpty:=True</c>: las arrays salen por <c>AddArray</c> y el centinela
     ''' queda garantizado POR CONSTRUCCIÓN, sin duplicar acá la lista de nombres de propiedades.</para></summary>
-    Private Function BuildCleanupSpec(game As Config_App.Game_Enum, isFemale As Boolean, generation As Integer) As NpcVmadBuilder.VmadScriptSpec
+    ''' <param name="ownBodyMorphs">Se propaga TAL CUAL: un spec de limpieza con <c>MorphsOwned = True</c> es
+    ''' justamente lo que hace que el script barra los body morphs que aplicó la vez anterior. Con False no
+    ''' toca morphs — correcto, porque en ese modo nunca fueron suyos.</param>
+    Private Function BuildCleanupSpec(game As Config_App.Game_Enum, isFemale As Boolean, generation As Integer,
+                                      salt As String, ownBodyMorphs As Boolean, warnings As List(Of String)) As NpcVmadBuilder.VmadScriptSpec
         Dim emptyPreset As New LooksmenuLoader.LooksmenuPreset()
         Return StampVersion(If(game = Config_App.Game_Enum.Skyrim,
-                               BuildSpecSse(emptyPreset, isFemale, generation, allowEmpty:=True),
-                               BuildSpecFo4(emptyPreset, isFemale, generation, allowEmpty:=True)), game, generation)
+                               BuildSpecSse(emptyPreset, isFemale, generation, salt, ownBodyMorphs, warnings, allowEmpty:=True),
+                               BuildSpecFo4(emptyPreset, isFemale, generation, salt, ownBodyMorphs, warnings, allowEmpty:=True)), game, generation, salt)
     End Function
 
     Private Function StampVersion(spec As NpcVmadBuilder.VmadScriptSpec,
                                   game As Config_App.Game_Enum,
-                                  generation As Integer) As NpcVmadBuilder.VmadScriptSpec
+                                  generation As Integer,
+                                  salt As String) As NpcVmadBuilder.VmadScriptSpec
         If spec Is Nothing Then Return Nothing
-        Dim versionProp = VersionPropertyNameFor(game, generation)
+        Dim versionProp = VersionPropertyNameFor(game, generation, salt)
         Dim hash = NpcVmadBuilder.StablePayloadHash(spec, versionProp, ScriptLogicRevision)
         For i = 0 To spec.Properties.Count - 1
             If String.Equals(spec.Properties(i).Name, versionProp, StringComparison.Ordinal) Then
@@ -320,6 +479,9 @@ Public Module NpcApplyScriptEmitter
     Private Function BuildSpecSse(preset As LooksmenuLoader.LooksmenuPreset,
                                   isFemale As Boolean,
                                   generation As Integer,
+                                  salt As String,
+                                  ownBodyMorphs As Boolean,
+                                  warnings As List(Of String),
                                   Optional allowEmpty As Boolean = False) As NpcVmadBuilder.VmadScriptSpec
         ' SSE: los nodos Face se emiten SOLO si el bake NO se los queda (toggle de overlays OFF). Ver SkipFaceOverlays.
         Dim skipFace = SkipFaceOverlays(Config_App.Game_Enum.Skyrim)
@@ -329,6 +491,7 @@ Public Module NpcApplyScriptEmitter
         Dim ovHasTint As New List(Of Boolean), ovTint As New List(Of Integer)
         Dim ovHasAlpha As New List(Of Boolean), ovAlpha As New List(Of Single)
 
+        Dim ovDropped = 0
         If preset.SseBodyOverlays IsNot Nothing Then
             For Each ov In preset.SseBodyOverlays
                 If ov Is Nothing OrElse String.IsNullOrEmpty(ov.NodeName) Then Continue For
@@ -337,6 +500,9 @@ Public Module NpcApplyScriptEmitter
                 ' Nothing to override on this node → don't emit an empty entry.
                 If String.IsNullOrEmpty(ov.DiffusePath) AndAlso String.IsNullOrEmpty(ov.NormalPath) AndAlso
                    Not ov.HasTint AndAlso Not ov.HasAlpha Then Continue For
+                ' ⛔ EL TOPE SE APLICA EN LA FUENTE, no recortando los arrays después: así los 7 arrays
+                ' paralelos quedan alineados POR CONSTRUCCIÓN y el índice i sigue significando "overlay i".
+                If ovNode.Count >= MaxArrayElements Then ovDropped += 1 : Continue For
 
                 ovNode.Add(ov.NodeName)
                 ovDiff.Add(If(ov.DiffusePath, ""))
@@ -352,11 +518,13 @@ Public Module NpcApplyScriptEmitter
         Dim skSlot As New List(Of Integer), skDiff As New List(Of String), skNorm As New List(Of String)
         Dim skHasTint As New List(Of Boolean), skTint As New List(Of Integer)
 
+        Dim skDropped = 0
         If preset.SseSkinOverrides IsNot Nothing Then
             For Each sk In preset.SseSkinOverrides
                 If sk Is Nothing OrElse sk.SlotMask = 0UI Then Continue For
                 If String.IsNullOrEmpty(sk.DiffusePath) AndAlso String.IsNullOrEmpty(sk.NormalPath) AndAlso
                    Not sk.HasTint Then Continue For
+                If skSlot.Count >= MaxArrayElements Then skDropped += 1 : Continue For
 
                 ' ⛔ REINTERPRET the bits, do NOT convert. SlotMask is a UInteger and comes from the .jslot
                 ' untruncated (RaceMenuJslot.vb ~:531). Skyrim biped slot 61 = bit 31 = &H80000000 = 2147483648,
@@ -380,9 +548,14 @@ Public Module NpcApplyScriptEmitter
         ' Rotation = the 3x3 matrix, row-major, split across NINE parallel arrays (element k of node i lives
         ' at ndRotM(k)(i)) — NOT one flat 9xN array.
         '
-        ' ⛔ Why split: Papyrus arrays in Skyrim are capped at 128 ELEMENTS. A flat 9xN array would overflow
-        ' that at 15 node transforms, and the editor lets the user pick far more bones than that. Nine arrays
-        ' of length N keep the ceiling at 128 NODES, same as every other array in the payload.
+        ' ⛔ POR QUÉ VAN PARTIDOS — Y LA RAZÓN ORIGINAL ERA FALSA. Acá decía: "los arrays de Papyrus topan en
+        ' 128 ELEMENTOS, así que uno plano de 9xN desbordaría a los 15 nodos". MEDIDO 2026-07-28 y REFUTADO:
+        ' un array servido por el VMAD llega con 512 elementos sin problema en los DOS juegos (ver
+        ' MaxArrayElements). El 128 es del COMPILADOR sobre `new T[n]`, que no interviene acá.
+        ' Se mantiene el split igual, por dos motivos que sí valen: el .psc los consume como nueve arrays
+        ' paralelos (cambiarlo obligaría a tocar la lógica y subir ScriptLogicRevision para nada), y con un
+        ' array por elemento el índice i significa "nodo i" en TODAS las arrays del grupo, que es la misma
+        ' invariante que sostiene overlays, skin y morphs.
         '
         ' NOT euler — AddNodeTransformRotation accepts 3 (euler degrees) OR 9 (raw matrix), and with 9 it
         ' copies them straight into NiMatrix33::arr[i] (PapyrusNiOverride.cpp:1190-1193), the same arr[i] it
@@ -393,10 +566,16 @@ Public Module NpcApplyScriptEmitter
         For k = 0 To 8 : ndRotM(k) = New List(Of Single)() : Next
         Dim ndScaleMode As New List(Of Integer)
 
+        Dim ndDropped = 0
         If preset.SseNodeTransforms IsNot Nothing Then
             For Each nt In preset.SseNodeTransforms
                 If nt Is Nothing OrElse String.IsNullOrEmpty(nt.NodeName) Then Continue For
                 If Not (nt.HasScale OrElse nt.HasPosition OrElse nt.HasRotation) Then Continue For
+                ' ⛔ ESTE ES EL ÚNICO ARRAY GENUINAMENTE ILIMITADO del payload: los overlays los acota el motor
+                ' (GetNumBodyOverlays/Hand/Feet ≈ 6/3/3) y el skin los 32 slots biped, pero acá el usuario puede
+                ' escalar CUALQUIER hueso y un esqueleto tiene 100+. Sin este tope se emitirían 17 arrays
+                ' paralelos de más de 128 elementos.
+                If ndName.Count >= MaxArrayElements Then ndDropped += 1 : Continue For
 
                 ndName.Add(nt.NodeName)
                 ndHasScale.Add(nt.HasScale)
@@ -419,39 +598,61 @@ Public Module NpcApplyScriptEmitter
             Next
         End If
 
-        If Not allowEmpty AndAlso ovNode.Count = 0 AndAlso skSlot.Count = 0 AndAlso ndName.Count = 0 Then Return Nothing
+        ' --- body morphs (BodySlide). Ver BuildMorphArrays: en SSE se suman las contribuciones keyed y van
+        ' bajo UNA key nuestra, que es lo que hace posible ClearBodyMorphKeys como deshacer quirúrgico.
+        NoteTrim(warnings, ovDropped, "overlay(s)")
+        NoteTrim(warnings, skDropped, "skin override(s)")
+        NoteTrim(warnings, ndDropped, "node transform(s)")
+
+        Dim mNames As New List(Of String), mValues As New List(Of Single)
+        If ownBodyMorphs Then BuildMorphArrays(preset, Config_App.Game_Enum.Skyrim, mNames, mValues, warnings)
+
+        ' ⛔ mNames CUENTA para "¿hay algo que aplicar?". Sin esto, un NPC cuyo ÚNICO dato son los body
+        ' morphs no recibiría script y sus sliders no llegarían por ninguna vía (el .ini ya no se emite).
+        If Not allowEmpty AndAlso ovNode.Count = 0 AndAlso skSlot.Count = 0 AndAlso ndName.Count = 0 AndAlso mNames.Count = 0 Then Return Nothing
 
         Dim spec As New NpcVmadBuilder.VmadScriptSpec With {.Name = LegacyScriptSse}
         Dim P = spec.Properties
-        P.Add(NpcVmadBuilder.VmadPropertySpec.FromBool(GenProp("IsFemale", generation), isFemale))
-        P.Add(NpcVmadBuilder.VmadPropertySpec.FromInt(GenProp(VersionPropertyName, generation), 0))   ' placeholder — StampVersion overwrites it with the payload hash
+        P.Add(NpcVmadBuilder.VmadPropertySpec.FromBool(GenProp("IsFemale", generation, salt), isFemale))
+        P.Add(NpcVmadBuilder.VmadPropertySpec.FromInt(GenProp(VersionPropertyName, generation, salt), 0))   ' placeholder — StampVersion overwrites it with the payload hash
+        ' ⭐ Verbose: el script traza SOLO cuando la app esta diagnosticando. Logger.Enabled ya es la senal
+        ' establecida de "estoy debuggeando" (es la que decide si se escribe fo4lib.log) y es Debug-only, asi
+        ' que no hace falta un control nuevo. Lo que se ahorra con false NO son lineas de log: es la
+        ' CONCATENACION de cada traza (bytecode de Papyrus, corre siempre) y sobre todo LAS NATIVAS DE SONDA
+        ' (GetMorphNames/GetMorphKeys/GetBodyMorph), que existen unicamente para trazar. Ver el docstring de
+        ' Verbose_G<n> en los .psc.
+        P.Add(NpcVmadBuilder.VmadPropertySpec.FromBool(GenProp("Verbose", generation, salt), Logger.Enabled))
 
-        AddArray(P, GenProp("OvlNode", generation), ovNode)
-        AddArray(P, GenProp("OvlDiffuse", generation), ovDiff)
-        AddArray(P, GenProp("OvlNormal", generation), ovNorm)
-        AddArray(P, GenProp("OvlHasTint", generation), ovHasTint)
-        AddArray(P, GenProp("OvlTint", generation), ovTint)
-        AddArray(P, GenProp("OvlHasAlpha", generation), ovHasAlpha)
-        AddArray(P, GenProp("OvlAlpha", generation), ovAlpha)
+        AddArray(P, GenProp("OvlNode", generation, salt), ovNode)
+        AddArray(P, GenProp("OvlDiffuse", generation, salt), ovDiff)
+        AddArray(P, GenProp("OvlNormal", generation, salt), ovNorm)
+        AddArray(P, GenProp("OvlHasTint", generation, salt), ovHasTint)
+        AddArray(P, GenProp("OvlTint", generation, salt), ovTint)
+        AddArray(P, GenProp("OvlHasAlpha", generation, salt), ovHasAlpha)
+        AddArray(P, GenProp("OvlAlpha", generation, salt), ovAlpha)
 
-        AddArray(P, GenProp("SkinSlot", generation), skSlot)
-        AddArray(P, GenProp("SkinDiffuse", generation), skDiff)
-        AddArray(P, GenProp("SkinNormal", generation), skNorm)
-        AddArray(P, GenProp("SkinHasTint", generation), skHasTint)
-        AddArray(P, GenProp("SkinTint", generation), skTint)
+        AddArray(P, GenProp("SkinSlot", generation, salt), skSlot)
+        AddArray(P, GenProp("SkinDiffuse", generation, salt), skDiff)
+        AddArray(P, GenProp("SkinNormal", generation, salt), skNorm)
+        AddArray(P, GenProp("SkinHasTint", generation, salt), skHasTint)
+        AddArray(P, GenProp("SkinTint", generation, salt), skTint)
 
-        AddArray(P, GenProp("NodeName", generation), ndName)
-        AddArray(P, GenProp("NodeHasScale", generation), ndHasScale)
-        AddArray(P, GenProp("NodeScale", generation), ndScale)
-        AddArray(P, GenProp("NodeHasPos", generation), ndHasPos)
-        AddArray(P, GenProp("NodePosX", generation), ndPosX)
-        AddArray(P, GenProp("NodePosY", generation), ndPosY)
-        AddArray(P, GenProp("NodePosZ", generation), ndPosZ)
-        AddArray(P, GenProp("NodeHasRot", generation), ndHasRot)
+        AddArray(P, GenProp("NodeName", generation, salt), ndName)
+        AddArray(P, GenProp("NodeHasScale", generation, salt), ndHasScale)
+        AddArray(P, GenProp("NodeScale", generation, salt), ndScale)
+        AddArray(P, GenProp("NodeHasPos", generation, salt), ndHasPos)
+        AddArray(P, GenProp("NodePosX", generation, salt), ndPosX)
+        AddArray(P, GenProp("NodePosY", generation, salt), ndPosY)
+        AddArray(P, GenProp("NodePosZ", generation, salt), ndPosZ)
+        AddArray(P, GenProp("NodeHasRot", generation, salt), ndHasRot)
         For k = 0 To 8
-            AddArray(P, GenProp("NodeRotM" & k.ToString(Globalization.CultureInfo.InvariantCulture), generation), ndRotM(k))
+            AddArray(P, GenProp("NodeRotM" & k.ToString(Globalization.CultureInfo.InvariantCulture), generation, salt), ndRotM(k))
         Next
-        AddArray(P, GenProp("NodeScaleMode", generation), ndScaleMode)
+        AddArray(P, GenProp("NodeScaleMode", generation, salt), ndScaleMode)
+
+        P.Add(NpcVmadBuilder.VmadPropertySpec.FromBool(GenProp("MorphsOwned", generation, salt), ownBodyMorphs))
+        AddArray(P, GenProp("MorphName", generation, salt), mNames)
+        AddArray(P, GenProp("MorphValue", generation, salt), mValues)
 
         Return spec
     End Function
@@ -464,15 +665,21 @@ Public Module NpcApplyScriptEmitter
     Private Function BuildSpecFo4(preset As LooksmenuLoader.LooksmenuPreset,
                                   isFemale As Boolean,
                                   generation As Integer,
+                                  salt As String,
+                                  ownBodyMorphs As Boolean,
+                                  warnings As List(Of String),
                                   Optional allowEmpty As Boolean = False) As NpcVmadBuilder.VmadScriptSpec
         Dim tpl As New List(Of String), prio As New List(Of Integer)
         Dim r As New List(Of Single), g As New List(Of Single), b As New List(Of Single), a As New List(Of Single)
         Dim ou As New List(Of Single), ov As New List(Of Single)
         Dim su As New List(Of Single), sv As New List(Of Single)
 
+        Dim tplDropped = 0
         If preset.Overlays IsNot Nothing Then
             For Each e In preset.Overlays
                 If e Is Nothing OrElse String.IsNullOrEmpty(e.TemplateId) Then Continue For
+                ' Tope en la fuente: mantiene alineados los 10 arrays paralelos por construcción.
+                If tpl.Count >= MaxArrayElements Then tplDropped += 1 : Continue For
                 tpl.Add(e.TemplateId)
                 prio.Add(e.Priority)
                 ' Tint / offsetUV / scaleUV are Nothing when the preset didn't carry them — mirror f4ee's
@@ -497,23 +704,43 @@ Public Module NpcApplyScriptEmitter
 
         Dim skin = If(preset.SkinTemplateId, "")
 
-        If Not allowEmpty AndAlso tpl.Count = 0 AndAlso skin = "" Then Return Nothing
+        ' --- body morphs (BodySlide). En FO4 es el dict PLANO: BodyMorphsKeyed es SSE-only (f4ee no tiene
+        ' keys de string, tiene Keywords, y el script escribe bajo el keyword None). Ver BuildMorphArrays.
+        NoteTrim(warnings, tplDropped, "overlay(s)")
+
+        Dim mNames As New List(Of String), mValues As New List(Of Single)
+        If ownBodyMorphs Then BuildMorphArrays(preset, Config_App.Game_Enum.Fallout4, mNames, mValues, warnings)
+
+        ' ⛔ mNames CUENTA para "¿hay algo que aplicar?" — mismo motivo que en SSE.
+        If Not allowEmpty AndAlso tpl.Count = 0 AndAlso skin = "" AndAlso mNames.Count = 0 Then Return Nothing
 
         Dim spec As New NpcVmadBuilder.VmadScriptSpec With {.Name = LegacyScriptFo4}
         Dim P = spec.Properties
-        P.Add(NpcVmadBuilder.VmadPropertySpec.FromBool(GenProp("IsFemale", generation), isFemale))
-        P.Add(NpcVmadBuilder.VmadPropertySpec.FromInt(GenProp(VersionPropertyName, generation), 0))   ' placeholder — StampVersion overwrites it with the payload hash
-        AddArray(P, GenProp("OvlTemplate", generation), tpl)
-        AddArray(P, GenProp("OvlPriority", generation), prio)
-        AddArray(P, GenProp("OvlRed", generation), r)
-        AddArray(P, GenProp("OvlGreen", generation), g)
-        AddArray(P, GenProp("OvlBlue", generation), b)
-        AddArray(P, GenProp("OvlAlpha", generation), a)
-        AddArray(P, GenProp("OvlOffsetU", generation), ou)
-        AddArray(P, GenProp("OvlOffsetV", generation), ov)
-        AddArray(P, GenProp("OvlScaleU", generation), su)
-        AddArray(P, GenProp("OvlScaleV", generation), sv)
-        P.Add(NpcVmadBuilder.VmadPropertySpec.FromString(GenProp("SkinTemplate", generation), skin))
+        P.Add(NpcVmadBuilder.VmadPropertySpec.FromBool(GenProp("IsFemale", generation, salt), isFemale))
+        P.Add(NpcVmadBuilder.VmadPropertySpec.FromInt(GenProp(VersionPropertyName, generation, salt), 0))   ' placeholder — StampVersion overwrites it with the payload hash
+        ' ⭐ Verbose: el script traza SOLO cuando la app esta diagnosticando. Logger.Enabled ya es la senal
+        ' establecida de "estoy debuggeando" (es la que decide si se escribe fo4lib.log) y es Debug-only, asi
+        ' que no hace falta un control nuevo. Lo que se ahorra con false NO son lineas de log: es la
+        ' CONCATENACION de cada traza (bytecode de Papyrus, corre siempre) y sobre todo LAS NATIVAS DE SONDA
+        ' (GetMorphNames/GetMorphKeys/GetBodyMorph), que existen unicamente para trazar. Ver el docstring de
+        ' Verbose_G<n> en los .psc.
+        P.Add(NpcVmadBuilder.VmadPropertySpec.FromBool(GenProp("Verbose", generation, salt), Logger.Enabled))
+
+        AddArray(P, GenProp("OvlTemplate", generation, salt), tpl)
+        AddArray(P, GenProp("OvlPriority", generation, salt), prio)
+        AddArray(P, GenProp("OvlRed", generation, salt), r)
+        AddArray(P, GenProp("OvlGreen", generation, salt), g)
+        AddArray(P, GenProp("OvlBlue", generation, salt), b)
+        AddArray(P, GenProp("OvlAlpha", generation, salt), a)
+        AddArray(P, GenProp("OvlOffsetU", generation, salt), ou)
+        AddArray(P, GenProp("OvlOffsetV", generation, salt), ov)
+        AddArray(P, GenProp("OvlScaleU", generation, salt), su)
+        AddArray(P, GenProp("OvlScaleV", generation, salt), sv)
+        P.Add(NpcVmadBuilder.VmadPropertySpec.FromString(GenProp("SkinTemplate", generation, salt), skin))
+
+        P.Add(NpcVmadBuilder.VmadPropertySpec.FromBool(GenProp("MorphsOwned", generation, salt), ownBodyMorphs))
+        AddArray(P, GenProp("MorphName", generation, salt), mNames)
+        AddArray(P, GenProp("MorphValue", generation, salt), mValues)
 
         Return spec
     End Function
@@ -557,11 +784,12 @@ Public Module NpcApplyScriptEmitter
     ''' <summary>Bytes del .pex LISTOS PARA INSTALAR: la plantilla embebida con el nombre del script y la
     ''' generacion ya reescritos. UNICA fuente para el disco Y para el FOMOD — si los dos no salen de aca, el
     ''' paquete puede llevar un .pex que no coincide con el VMAD del ESP.</summary>
-    Public Function PatchedPexBytes(game As Config_App.Game_Enum, pluginFileName As String, generation As Integer) As Byte()
+    Public Function PatchedPexBytes(game As Config_App.Game_Enum, pluginFileName As String,
+                                    generation As Integer, salt As String) As Byte()
         Dim template = PexBytes(game)
         If template Is Nothing OrElse template.Length = 0 Then Return Nothing
         Return PexPatcher.PatchScript(template, LegacyScriptFor(game), ScriptNameFor(game, pluginFileName),
-                                      BaselineGeneration, generation)
+                                      BaselineGeneration, BaselineSalt, generation, salt)
     End Function
 
     ''' <summary>The compiled .pex is EMBEDDED in this assembly (see the EmbeddedResource items in the
@@ -594,9 +822,9 @@ Public Module NpcApplyScriptEmitter
     ''' files win over the BSA/BA2. See Papyrus\README.md.
     ''' Returns the destination path, or Nothing when the embedded .pex is missing.</summary>
     Public Function InstallPex(dataPath As String, game As Config_App.Game_Enum,
-                               pluginFileName As String, generation As Integer) As String
+                               pluginFileName As String, generation As Integer, salt As String) As String
         If String.IsNullOrEmpty(dataPath) Then Return Nothing
-        Dim bytes = PatchedPexBytes(game, pluginFileName, generation)
+        Dim bytes = PatchedPexBytes(game, pluginFileName, generation, salt)
         If bytes Is Nothing OrElse bytes.Length = 0 Then Return Nothing
 
         Dim destDir = Path.Combine(dataPath, "Scripts")

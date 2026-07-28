@@ -8,10 +8,35 @@ LooksMenu (`Overlays` + `BodyGen`, 20) exponen APIs distintas y **capacidades di
 | Overlays / tatuajes | ✅ textura + tint + alpha | ✅ template + tint + **UV** + **priority** |
 | Skin override | ✅ per-slot (diffuse/normal/tint) | ⚠️ **solo por id de template** (el per-slot es Scaleform-only) |
 | Node transforms | ✅ escala + posición + rotación | ❌ **no existen en FO4** (`#ifdef _TRANSFORMS`, sin API, sin co-save) |
+| **Body morphs (BodySlide)** | ✅ `SetBodyMorph` bajo UNA key nuestra | ✅ `BodyGen.SetMorph` con keyword `None` |
+
+## ⭐ Body morphs: por script O por `.ini`, nunca los dos
+
+Los sliders de BodySlide se entregan por **una** de dos rutas, elegida en Save ESP
+("Body morphs delivery"). **Son mutuamente excluyentes por comportamiento del motor, no por gusto**:
+si las dos escriben sobre el mismo actor, ninguna saltea a la otra.
+
+| | Combinación entre keys del mismo morph | Resultado si conviven |
+|---|---|---|
+| SSE (skee) | **SUMA** (`Impl_GetBodyMorphs`, `BodyMorphInterface.cpp:220-240`, default `iBodyMorphMode=0`) | el slider se aplica **DOS VECES** |
+| FO4 (f4ee) | **MAX** (`UserValues::GetEffectiveValue`, `BodyMorphInterface.cpp:1001-1009`) | gana el mayor, no el valor autorado |
+
+**Por qué mudarlos al script**: BodyGen se evalúa **una sola vez** y con el gate "este actor no tiene
+ningún morph" (`f4ee/ActorUpdateManager.cpp:49-54`, `skee64/ActorUpdateManager.cpp:38-40`), así que una
+referencia que YA existe en la partida del jugador **no lo recibe nunca**. Una property con nombre nuevo
+(el sufijo `_G<n>`) sí le llega.
+
+- Elegir la ruta "Apply-script" **BORRA** el par `.ini` de ese plugin. Obligatorio: uno instalado de una
+  versión anterior seguiría sumando/maxeando.
+- El payload lleva un flag **`MorphsOwned`**. Con la ruta `.ini` vale `false` y el script **no toca nada**
+  de morphs (ni barre ni repinta) — en FO4 eso es obligatorio, porque nuestro barrido usa el keyword
+  `None`, que es **el mismo slot** que escribe BodyGen (`BodyGenInterface.cpp:517`).
+- El deshacer **sí existe** para morphs, al revés que para los node overrides: los dos motores
+  recomponen la malla desde cero (skee restaura el backup `SHAPEDATA`; f4ee detacha y hace
+  `Update3DModel`).
 
 ## Lo que los scripts NO hacen (a propósito — se entrega por otra vía)
 
-- **Body morphs** → ya los aplica el par BodyGen `morphs.ini`/`templates.ini` que escribe la app.
 - **Cara entera** (morphs, sculpt, tints, **face overlays**) → ya está **horneada** en el NIF/texturas
   del FaceGen.
 
