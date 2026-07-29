@@ -125,6 +125,46 @@ Public Class NPC_Config
     Public Property BodySlideSize_FO4 As Integer = 0
     Public Property BodySlideSize_SSE As Integer = 0
 
+    ''' <summary>Plugin selection the user confirmed with OK in the preflight, POR JUEGO. Reloaded as the
+    ''' pre-ticked set the next time the dialog opens, so a hand-curated selection (e.g. actives minus a
+    ''' couple of heavy mods, plus one inactive plugin) survives restarts instead of snapping back to the
+    ''' active load order every time.
+    ''' <para><b>Separado por juego a propósito</b>: los plugins de FO4 y los de Skyrim no se solapan, así
+    ''' que una lista única haría que abrir el otro juego restaurara nombres que no existen en ese Data\ —
+    ''' la restauración quedaría vacía y encima pisaría el default de "activos". Mismo criterio que
+    ''' <see cref="BodySlideExePath_FO4"/> / <see cref="BodySlideExePath_SSE"/>.</para>
+    ''' <para><b>Opt-in explícito</b>: lo gatea el checkbox "Remember this selection for this game" del
+    ''' preflight. Vacío (el default de fábrica) ⇒ el diálogo abre en el default de "activos" con el
+    ''' checkbox destildado; tildarlo + OK guarda; destildarlo + OK <b>borra</b> el slot de ESE juego (si
+    ''' no se borrara, el siguiente open restauraría igual y volvería a tildar el checkbox solo). El slot
+    ''' del otro juego nunca se toca desde acá.</para>
+    ''' <para>Guardado en el OK del preflight (antes de la carga, así una carga que falla igual conserva la
+    ''' selección para poder destildar al culpable). La restauración filtra contra los plugins presentes en
+    ''' disco; si no sobrevive ninguno se cae al default de "activos". El botón "Only actives" es la
+    ''' válvula de escape para volver al orden de carga del motor sin tocar el checkbox.</para></summary>
+    Public Property PreflightSelection_FO4 As New List(Of String)
+    Public Property PreflightSelection_SSE As New List(Of String)
+
+    ''' <summary>Selección de preflight guardada para <paramref name="game"/>. Nunca Nothing (lista vacía =
+    ''' "nunca se guardó" ⇒ el preflight usa su default de activos).</summary>
+    Public Shared Function GetPreflightSelection(game As Config_App.Game_Enum) As List(Of String)
+        If Current Is Nothing Then Return New List(Of String)
+        Dim saved = If(game = Config_App.Game_Enum.Skyrim, Current.PreflightSelection_SSE, Current.PreflightSelection_FO4)
+        Return If(saved, New List(Of String))
+    End Function
+
+    ''' <summary>Escribe la selección confirmada en el slot del juego. Copia la lista: el caller
+    ''' (Preflight_Form.SelectedPlugins) la reutiliza y limpia en el siguiente OK.</summary>
+    Public Shared Sub SetPreflightSelection(game As Config_App.Game_Enum, names As IEnumerable(Of String))
+        If Current Is Nothing Then Return
+        Dim copy = If(names Is Nothing, New List(Of String), names.ToList())
+        If game = Config_App.Game_Enum.Skyrim Then
+            Current.PreflightSelection_SSE = copy
+        Else
+            Current.PreflightSelection_FO4 = copy
+        End If
+    End Sub
+
     ''' <summary>"Show:" tree category-filter checkboxes (Section 1 of the NPC tree). Persisted per-app so
     ''' the filter selection survives restarts. Defaults match the WinForms Designer defaults: Unique faces
     ''' on, the rest off. Seeded into the checkboxes on MainForm load; written back in MainForm_FormClosing

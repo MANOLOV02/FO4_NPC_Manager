@@ -325,6 +325,16 @@ Public Module NpcRecordOverlay
 
         ' HairColor: preset 0 means "not in JSON, preserve" (engine behaviour: nullptr form skips).
         shadow.HairColorFormID = If(preset.HairColorFormID <> 0UI, preset.HairColorFormID, raw.HairColorFormID)
+        ' ⛔ HasHairColor se DERIVA del mismo resultado, no se copia del raw. El writer emite HCLF sólo si esta
+        ' bandera está (NpcSubrecordWriter.vb:80), así que copiándola del raw un NPC SIN HCLF propio al que el
+        ' usuario le elige un color se guardaba SIN el subrecord: el color se veía en el preview y desaparecía
+        ' al guardar. Mismo bug —y misma solución— que HasHeadTexture / HasDefaultOutfit / HasSleepOutfit.
+        ' (CopyRoundTripOnlyFieldsFromRaw ya no lo pisa; ver el comentario allá.)
+        shadow.HasHairColor = If(preset.HairColorFormID <> 0UI, True, raw.HasHairColor)
+        ' SSE RaceMenu absolute hair tint (.jslot actor.hairColor). Sidecar-only data — the raw record has no
+        ' field for it — so viaja en el shadow para que el bake y el render resuelvan el MISMO color. Save ESP
+        ' lo materializa en un CLFM real (NpcOverrideSaver.MaterializeSseHairColors). Nothing en FO4.
+        shadow.SseHairColorRgb = preset.SseHairColorRgb
 
         ' Face texture set (FTST): preset.SseHeadTextureFormID (.jslot actor.headTexture) se resuelve
         ' ARRIBA, junto con el face TXST de la plantilla LM y el raw, en la ÚNICA asignación de

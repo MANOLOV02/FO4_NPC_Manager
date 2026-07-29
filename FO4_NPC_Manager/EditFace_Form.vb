@@ -281,6 +281,9 @@ Public Class EditFace_Form
 
         BuildHeadPartCache()
         BuildHairColorCache()
+        ' Hair colour: the custom-RGB row is a RaceMenu concept and exists ONLY on SSE. Hidden before any
+        ' branch below runs so it can never flash on the FO4 editor.
+        PanelSseCustomHair.Visible = _isSSE
         ' Todas las tabs viven en el Designer; aca solo se MUESTRAN/OCULTAN por juego (removiendo del TabControl)
         ' y se llena el contenido data-driven. SSE: tabs "Morphs (SSE)" + "Tints (SSE)"; se ocultan las FO4-only
         ' (Face Tints FO4, Vertex Morphs LM, Bone Regions). FO4: se ocultan las SSE.
@@ -305,6 +308,9 @@ Public Class EditFace_Form
             ButtonAddMeatcaps.Visible = False
             ButtonAddTeeth.Visible = False
             ButtonAddHeadRear.Visible = False
+            ' RaceMenu custom hair colour: an ABSOLUTE RGB on top of the race's CLFM list. SSE-only —
+            ' the FO4 branch below hides the whole row (a FO4 hair CLFM is a LUT row, not an RGB).
+            RefreshSseCustomHairUi()
         Else
             If TabsFace.TabPages.Contains(TabPageSseMorphs) Then TabsFace.TabPages.Remove(TabPageSseMorphs)
             If TabsFace.TabPages.Contains(TabPageSseTints) Then TabsFace.TabPages.Remove(TabPageSseTints)
@@ -2232,6 +2238,9 @@ Public Class EditFace_Form
         AddHandler ComboBoxHairColor.SelectedIndexChanged, AddressOf OnHairColorChanged
         AddHandler ButtonClearHairColor.Click, AddressOf OnClearHairColor
         AddHandler PanelHairColorSwatch.Paint, AddressOf OnPaintHairColorSwatch
+        ' RaceMenu custom hair colour (SSE-only; the row is hidden on FO4 — see the ctor gate).
+        AddHandler ButtonSseCustomHairColor.Click, AddressOf OnSseCustomHairColor
+        AddHandler ButtonSseCustomHairClear.Click, AddressOf OnSseCustomHairClear
 
         AddHandler CheckBoxIsCharGenFacePreset.CheckedChanged, AddressOf OnIsCharGenFacePresetChanged
 
@@ -2625,6 +2634,83 @@ Public Class EditFace_Form
         ComboBoxHairColor.SelectedIndex = 0  ' (none / preserve)
     End Sub
 
+    ' ---------------------------------------------------------------------
+    ' Hair Color — RaceMenu CUSTOM (arbitrary RGB). SSE-ONLY.
+    '
+    ' RaceMenu's hair colour is not restricted to the race's CLFM list: the .jslot stores an ABSOLUTE packed
+    ' RGB (`actor.hairColor`, skee64 PresetInterface.cpp:677) and skee applies it straight onto the hair
+    ' material (:112-116, ×2), so any colour is expressible. The combo above stays the PRESET list (the race's
+    ' AHCM/AHCF CLFMs, what the game setting sRSMHairColorPresets names); this pair of buttons is the custom
+    ' colour on top of it, and it WINS over the combo when set — which is why it also has to be visible: with
+    ' a preset RGB loaded, changing the combo alone had no visible effect and nothing said why.
+    '
+    ' ⛔ NOT offered on FO4: a Fallout 4 hair CLFM carries a RemappingIndex (a ROW of the hair LUT), not an
+    ' RGB — an arbitrary colour has no field to live in and no engine path to apply it. Two games, two systems.
+    ' Save ESP materializes the chosen RGB into a real CLFM + HCLF (NpcOverrideSaver.MaterializeSseHairColors).
+    ' ---------------------------------------------------------------------
+
+    Private Sub OnSseCustomHairColor(sender As Object, e As EventArgs)
+        If Not _isSSE Then Return
+        Using dlg As New ColorDialog()
+            dlg.FullOpen = True
+            ' Seed with what the hair currently renders as, so the picker opens on the actual colour
+            ' (custom if set, else the selected/effective CLFM) instead of black.
+            Dim seed = ResolveCurrentHairSwatchColor()
+            If seed.HasValue Then dlg.Color = seed.Value
+            If dlg.ShowDialog(Me) <> DialogResult.OK Then Return
+            Preset.SseHairColorRgb = (CInt(dlg.Color.R) << 16) Or (CInt(dlg.Color.G) << 8) Or CInt(dlg.Color.B)
+        End Using
+        RefreshSseCustomHairUi()
+        UpdateHairColorSwatch()
+        _refresh?.Invoke(FaceRefreshScope.TexturesOnly)
+    End Sub
+
+    Private Sub OnSseCustomHairClear(sender As Object, e As EventArgs)
+        If Not _isSSE Then Return
+        ' Nothing = "no absolute override" → hair resolution falls back to the CLFM, exactly like an NPC that
+        ' never had a preset applied. This is a real edit, so it must survive: the sidecar stores the absence
+        ' as "field not written", and NpcRecordOverlay assigns SseHairColorRgb straight through.
+        Preset.SseHairColorRgb = Nothing
+        RefreshSseCustomHairUi()
+        UpdateHairColorSwatch()
+        _refresh?.Invoke(FaceRefreshScope.TexturesOnly)
+    End Sub
+
+    ''' <summary>Sync the custom-hair row to the preset: label text + whether "Use list colour" is even
+    ''' actionable. No-op outside SSE (the row is hidden there).</summary>
+    Private Sub RefreshSseCustomHairUi()
+        If Not _isSSE Then Return
+        Dim rgb = Preset.SseHairColorRgb
+        ButtonSseCustomHairClear.Enabled = rgb.HasValue
+        ' ⭐ Con un color custom activo la LISTA no hace nada: el RGB gana en la resolución del material
+        ' (ApplyMaterialPaletteHairColor lo resuelve antes que el CLFM), así que tocar el combo sería un
+        ' no-op silencioso. Se deshabilita —junto con su Clear, que sólo actúa sobre el combo— para que el
+        ' control refleje quién manda. "Use list colour" es la salida: borra el RGB y los reactiva.
+        ' Sólo en SSE: en FO4 no hay RGB custom y el combo nunca se toca.
+        ComboBoxHairColor.Enabled = Not rgb.HasValue
+        ButtonClearHairColor.Enabled = Not rgb.HasValue
+        If rgb.HasValue Then
+            LabelSseCustomHair.Text = $"Custom RaceMenu colour #{rgb.Value And &HFFFFFF:X6} — overrides the list above."
+        Else
+            LabelSseCustomHair.Text = "Using the colour selected above."
+        End If
+    End Sub
+
+    ''' <summary>The colour the hair currently RENDERS with, for the swatch and as the picker's seed:
+    ''' the RaceMenu custom RGB if set (it outranks the CLFM at material resolution — see
+    ''' NpcMaterialResolver.ApplyMaterialPaletteHairColor), else the selected CLFM's RGB, else Nothing.
+    ''' Deliberately does NOT apply the ×2 the engine/bake use: the swatch shows the AUTHORED colour, which is
+    ''' what the user picked and what the .jslot / the CLFM store.</summary>
+    Private Function ResolveCurrentHairSwatchColor() As Color?
+        If _isSSE AndAlso Preset.SseHairColorRgb.HasValue Then
+            Dim rgb = Preset.SseHairColorRgb.Value
+            Return Color.FromArgb((rgb >> 16) And &HFF, (rgb >> 8) And &HFF, rgb And &HFF)
+        End If
+        Dim it = TryCast(ComboBoxHairColor.SelectedItem, HairColorItem)
+        If it IsNot Nothing AndAlso it.HasColor Then Return Color.FromArgb(255, it.Color.R, it.Color.G, it.Color.B)
+        Return Nothing
+    End Function
+
     Private Sub UpdateHairColorSwatch()
         ' Swatch is repainted via the Paint handler — just invalidate so the next paint
         ' cycle re-reads the current selection. Background is always transparent-friendly
@@ -2640,10 +2726,24 @@ Public Class EditFace_Form
     ''' (b) HasColor (legacy RGB CLFM) — fill with that opaque RGB.
     ''' (c) Neither — leave the SystemColors.Control background.</summary>
     Private Sub OnPaintHairColorSwatch(sender As Object, e As PaintEventArgs)
-        Dim it = TryCast(ComboBoxHairColor.SelectedItem, HairColorItem)
-        If it Is Nothing Then Return
         Dim rect = PanelHairColorSwatch.ClientRectangle
         If rect.Width <= 0 OrElse rect.Height <= 0 Then Return
+
+        ' (0) RaceMenu custom RGB (SSE) — checked BEFORE the combo, mirroring the render precedence
+        ' (NpcMaterialResolver.ApplyMaterialPaletteHairColor resolves the preset RGB ahead of the CLFM).
+        ' Also checked before the `it Is Nothing` bail so the swatch is right even with no combo selection.
+        If _isSSE AndAlso Preset.SseHairColorRgb.HasValue Then
+            Dim custom = ResolveCurrentHairSwatchColor()
+            If custom.HasValue Then
+                Using br As New SolidBrush(custom.Value)
+                    e.Graphics.FillRectangle(br, rect)
+                End Using
+                Return
+            End If
+        End If
+
+        Dim it = TryCast(ComboBoxHairColor.SelectedItem, HairColorItem)
+        If it Is Nothing Then Return
 
         ' "(none / preserve)" selected — read the EFFECTIVE color directly from the resolved
         ' render state. ResolveNPCBaseState walks the full chain (NPC.HCLF → TPLT M/A template
@@ -4229,9 +4329,13 @@ Public Class EditFace_Form
             p.HeadPartFormIDs.Clear()
             If src IsNot Nothing Then p.HeadPartFormIDs.AddRange(src.HeadPartFormIDs)
             p.HairColorFormID = If(src IsNot Nothing, src.HairColorFormID, 0UI)
+            ' El RGB custom de RaceMenu vive en la MISMA sección (Hair Color), así que el Reset lo revierte
+            ' con ella. Sin esto el color custom sobrevivía a un Reset que ya había revertido el CLFM.
+            p.SseHairColorRgb = If(src Is Nothing, Nothing, src.SseHairColorRgb)
             p.IsCharGenFacePreset = If(src IsNot Nothing, src.IsCharGenFacePreset, CType(Nothing, Boolean?))
             RefreshHeadPartsList()
             PopulateHairColorCombo()
+            RefreshSseCustomHairUi()
             UpdateHairColorSwatch()
             CheckBoxIsCharGenFacePreset.Checked = p.IsCharGenFacePreset.GetValueOrDefault(
                 (_priorAcbsFlagsRaw And AcbsBitIsCharGenFacePreset) <> 0UI)
@@ -4485,6 +4589,15 @@ Public Class EditFace_Form
                 Logger.LogLazy(Function() $"[EDIT-FACE] initial render failed for NPC 0x{_rootNpcFormID:X8}: {ex.GetType().Name}: {ex.Message}")
             End Try
         End If
+
+        ' ⛔ El swatch de hair color se pinta durante el layout del form, o sea ANTES de que exista
+        ' `_editorHost` (se crea acá arriba) y antes del primer render que puebla `LastRenderedState`. Para la
+        ' entrada "(none / preserve)" el Paint lee justamente `_editorHost.LastRenderedState.HairColorFormID`
+        ' para mostrar el color EFECTIVO, así que en ese primer pintado se iba por el fall-through y quedaba
+        ' gris: al abrir el editor el swatch no reflejaba el color del pelo. Nadie lo re-invalidaba después.
+        ' Repintar acá, con el estado ya resuelto, es el único momento en que el dato existe.
+        UpdateHairColorSwatch()
+        RefreshSseCustomHairUi()
     End Sub
 
     Private Sub EditFaceForm_FormClosing(sender As Object, e As FormClosingEventArgs) Handles Me.FormClosing

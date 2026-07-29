@@ -44,7 +44,7 @@ bool Property Verbose_G0000010000 = false Auto
  trazar. Y en FO4 eso pesa MAS que en SSE: f4ee NO le pone kFunctionFlag_NoWait a la clase BodyGen
  (solo se lo pone a Overlays), asi que cada nativa hace ceder la VM — medido: 512 SetMorph = ~9 s.
 
- ⛔ JAMAS envolver una llamada FUNCIONAL (RemoveMorphsByKeyword, SetMorph, UpdateMorphs, Overlays.*):
+ ⛔ JAMAS envolver una llamada FUNCIONAL (RemoveAllMorphs, SetMorph, UpdateMorphs, Overlays.*):
  si el flag se apagara, el script dejaria de aplicar. Solo se envuelve lo que existe para mirar.}
 
 int Property SchemaVersion_G0000010000 = 1 Auto
@@ -134,6 +134,13 @@ Event OnLoad()
     if Verbose_G0000010000
         Debug.Trace("[NPCM] payload ovl=" + OvlTemplate_G0000010000.Length + " skin='" + SkinTemplate_G0000010000 + "'")
         Debug.Trace("[NPCM] BM payload morphs=" + MorphName_G0000010000.Length)
+        ; Identidad del primer overlay, gemela de la de SSE: sin esto el log dice CUANTOS llegaron pero no
+        ; CUALES, y un template id equivocado se ve igual que uno correcto. Una lectura por traza (quirk del
+        ; codegen: indexar el mismo array dos veces en una expresion imprime N veces el ULTIMO elemento).
+        if OvlTemplate_G0000010000.Length > 0
+            string t0 = OvlTemplate_G0000010000[0]
+            Debug.Trace("[NPCM] payload OvlTemplate_G0000010000[0]=" + t0)
+        endif
     endif
 
     ; ⛔ INSTANCIA HUERFANA: no soy la version activa de este actor, no toco NADA.
@@ -311,22 +318,22 @@ EndFunction
 ; lleva master de LooksMenu) y no compra nada: si el .ini no se emite, ese slot es SOLO nuestro.
 ;
 ; ⛔ LO QUE NO SE USA, Y POR QUE:
-;   RemoveAllMorphs      -> borra el mapa ENTERO del actor, incluidas las keywords de otros mods.
-;                           RemoveMorphsByKeyword(None) es quirurgico: saca el slot 0 de cada nombre y
-;                           deja intactas las entradas keyword-scoped ajenas.
+;   ClearAll             -> es Revert(): borra los morphs de TODOS LOS ACTORES DEL JUEGO
+;                           (PapyrusBodyGen.cpp:67-70). Nombre peligrosamente parecido a RemoveAllMorphs.
 ;   RegenerateMorphs     -> vuelve a correr BodyGen DESDE LOS .ini (PapyrusBodyGen.cpp:84-85). Es
 ;                           exactamente lo contrario de lo que queremos.
 ;
-; ⚠️ EFECTO PERMANENTE, ASUMIDO: RemoveMorphsByKeyword no borra la entrada del actor del mapa
-; (BodyMorphInterface.cpp:914-925 no limpia los vacios), asi que `GetMorphMap` queda no-nulo y BodyGen
-; NO vuelve a evaluar a este actor nunca mas. Es lo que queremos mientras seamos el dueño; si el usuario
-; volviera al modo .ini, un actor ya spawneado no lo tomaria.
+; ⚠️ CON LA PODA TOTAL EL ACTOR QUEDA SIN ENTRADA en el mapa, asi que `GetMorphMap` da null y BodyGen SI
+; podria volver a evaluarlo en la carga siguiente. En la practica no pasa: en el mismo OnLoad volvemos a
+; escribir nuestros morphs, con lo cual el mapa deja de estar vacio antes de que haya otra carga. El unico
+; caso donde queda vacio de verdad es el de LIMPIEZA (payload sin morphs) — y ahi que BodyGen aplique lo que
+; diga el .ini es exactamente lo correcto, porque el .ini se re-emite desde el mismo sidecar.
 ; ============================================================================================
 Function ApplyBodyMorphs()
     ; ⛔ NO SOMOS EL DUEÑO: los entrega el .ini. Salir ANTES del barrido, no despues. Ver MorphsOwned.
     if !MorphsOwned_G0000010000
         if Verbose_G0000010000
-            Debug.Trace("[NPCM] BM SKIP: los morphs los entrega el BodyGen .ini (MorphsOwned=false)")
+            Debug.Trace("[NPCM] BM SKIP barrido: los morphs los entrega el BodyGen .ini (MorphsOwned=false)")
         endif
         return
     endif
@@ -356,11 +363,49 @@ Function ApplyBodyMorphs()
         endif
     endif
 
-    ; Barrido de NUESTRO slot. Idempotente (sacar una keyword que no esta es no-op) e incondicional:
-    ; tiene que correr TAMBIEN con payload vacio, que es el caso de limpieza.
-    BodyGen.RemoveMorphsByKeyword(a, IsFemale_G0000010000, None)
+    ; ⭐⭐⭐ PODA TOTAL DEL ACTOR (para ESTE genero) — RemoveAllMorphs -> BodyMorphInterface::ClearMorphs
+    ; (BodyMorphInterface.cpp:927-937) hace
+    ;     m_morphMap[isFemale ? 1 : 0].erase(actor->formID)
+    ;
+    ; ⚠️⚠️ NO ES LO MISMO QUE EN SSE, Y HAY QUE SABERLO: aca el mapa es POR GENERO, asi que el clear solo
+    ; alcanza al genero que le pasamos. En SSE el store no tiene esa dimension (la clave es solo el formID)
+    ; y el clear se lleva todo. Consecuencia practica: si IsFemale_G<n> (bit 0 de ACBS) no coincidiera con
+    ; el GetSex() que usa f4ee para guardar, los morphs quedarian en el OTRO mapa, invisibles para nosotros
+    ; y sin barrer. Es el mismo IsFemale que ya usan los overlays, asi que la exposicion no es nueva.
+    ;
+    ; POR QUE PODA TOTAL Y NO POR KEYWORD. Antes se barria RemoveMorphsByKeyword(None). Funcionaba, pero
+    ; ese camino borra la KEYWORD y DEJA el NOMBRE del morph con el mapa vacio (MorphValueMap::RemoveMorphs-
+    ; ByKeyword, :1066-1073, no poda), asi que los nombres se acumulan en el co-save para siempre cada vez
+    ; que el usuario cambia a un preset con otros sliders.
+    ;
+    ; ⚠️ SE LLEVA LOS MORPHS QUE OTRO MOD LE HAYA PUESTO A ESTE ACTOR, bajo cualquier keyword. Misma
+    ; decision de producto que Overlays.RemoveAll: el NPC muestra EXACTAMENTE lo que muestra la app.
+    ;
+    ; ⛔⛔ NO CONFUNDIR CON BodyGen.ClearAll(): ese es Revert() y borra los morphs de TODOS LOS ACTORES DEL
+    ; JUEGO (PapyrusBodyGen.cpp:67-70). El nombre es peligrosamente parecido. Aca va RemoveAllMorphs, que
+    ; es por-actor.
+    ;
+    ; Incondicional: con payload vacio tambien, que es el caso de limpieza (cuerpo base).
+    BodyGen.RemoveAllMorphs(a, IsFemale_G0000010000)
+
+    ; ⭐ SONDA DE CONTROL POST-PODA, gemela de la de SSE. Gateada por Verbose porque GetMorphs es una
+    ; nativa que existe SOLO para mirar (y en FO4 cada nativa hace ceder la VM).
+    ; TIENE QUE DAR 0: ClearMorphs borra la ENTRADA DEL ACTOR entera (BodyMorphInterface.cpp:927-937), no
+    ; como el viejo RemoveMorphsByKeyword, que borraba la keyword y dejaba el NOMBRE con el mapa vacio.
+    ; Y GetMorphs NO filtra nombres vacios (:885-899), asi que si quedara alguno lo veriamos.
+    ; ⚠️ ATENCION AL LEERLO: el mapa de FO4 es POR GENERO, asi que este 0 sólo dice que quedo limpio el
+    ; genero que le pasamos (IsFemale). En SSE el 0 es absoluto porque alla el store no tiene esa dimension.
     if Verbose_G0000010000
-        Debug.Trace("[NPCM] BM RemoveMorphsByKeyword(None) hecho")
+        string[] post = BodyGen.GetMorphs(a, IsFemale_G0000010000)
+        Debug.Trace("[NPCM] BM RemoveAllMorphs (poda total del actor) hecho")
+        Debug.Trace("[NPCM] BM morphs tras barrido=" + post.Length)
+        ; Segundo nivel, gemelo del de SSE: SOLO dispara si la poda fallo, y entonces dice QUE sobrevivio.
+        ; Con la poda funcionando este bloque no corre nunca, asi que no cuesta nada.
+        if post.Length > 0
+            string qname = post[0]
+            Keyword[] qkw = BodyGen.GetKeywords(a, IsFemale_G0000010000, qname)
+            Debug.Trace("[NPCM] BM tras barrido " + qname + " keywords=" + qkw.Length)
+        endif
     endif
 
     int n = MorphName_G0000010000.Length

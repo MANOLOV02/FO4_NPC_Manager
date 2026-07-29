@@ -108,10 +108,13 @@ Partial Class PasteOptionsDialog
         CancelButton = ButtonCancel
         ClientSize = New Size(500, 600)
         Controls.Add(Root)
-        FormBorderStyle = FormBorderStyle.Sizable
+        ' Fixed frame: this is a checklist with a fixed number of rows, so resizing can only add dead space
+        ' under the buttons or squeeze the panel's own Select all row over the group frame. The exact height
+        ' is set at Load from the panel (it depends on which categories the running game shows) — hence no
+        ' MinimumSize either: it would clamp that computed height.
+        FormBorderStyle = FormBorderStyle.FixedDialog
         MaximizeBox = False
         MinimizeBox = False
-        MinimumSize = New Size(460, 520)
         Name = "PasteOptionsDialog"
         StartPosition = FormStartPosition.CenterParent
         Text = "Paste Look — choose categories"

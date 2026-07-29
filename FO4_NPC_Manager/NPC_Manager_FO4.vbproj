@@ -27,6 +27,9 @@
        (Friend) para bakear NIF+texturas sin GUI/GL. Sin cambiar la visibilidad del API interno. -->
   <ItemGroup>
     <InternalsVisibleTo Include="FO4_FaceTint_CLI" />
+    <!-- Sonda de medición (Tools/, sólo lectura): ejercita NpcTemplateMaterializer.MakeCategoryOwn REAL
+         sobre el load order en vez de reimplementar su lógica. Ver Tools/TemplateMaterializeProbe. -->
+    <InternalsVisibleTo Include="TemplateMaterializeProbe" />
   </ItemGroup>
 
   <!-- Compiled Papyrus apply-scripts, EMBEDDED in the assembly and extracted to Data\Scripts\ on save

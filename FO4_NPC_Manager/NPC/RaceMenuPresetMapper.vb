@@ -57,11 +57,28 @@ Public Module RaceMenuPresetMapper
         If preset.SseHeadTextureFormID <> 0UI AndAlso pluginManager IsNot Nothing Then
             j.HeadTexture = LooksmenuLoader.FormatFormIdentifier(preset.SseHeadTextureFormID, pluginManager)
         End If
-        ' Hair colour: round-trip the packed RGB the preset carries (actor.hairColor). j.Save always emits the key,
-        ' so set the value and the present-flag when the preset has an override.
+        ' Hair colour (actor.hairColor). ⛔ j.Save ALWAYS emits the key, so leaving it unset writes hairColor:0
+        ' — which RaceMenu applies as literal BLACK hair (PresetInterface.cpp:112-116 runs unconditionally over
+        ' every HairTint material). skee's own exporter never emits 0 for a coloured NPC: it packs the RGB of the
+        ' actor's CLFM (`headData->hairColor->color`, PresetInterface.cpp:675-677). So:
+        '   1) the preset's absolute RGB when it has one (round-trip of a loaded .jslot / a user edit), else
+        '   2) the RGB of the effective CLFM — BuildPresetFromState seeds preset.HairColorFormID from
+        '      state.HairColorFormID, i.e. post-ApplyRaceFallbacks, so it IS the colour the NPC renders with.
+        ' Only a CLFM with a real RGB qualifies: a FO4 hair CLFM carries a RemappingIndex instead (HasColor=False),
+        ' and there is no meaningful RGB to export — that path correctly leaves the key at its 0 default, exactly
+        ' as before this change (.jslot is an SSE format; the FO4 save path writes f4ee JSON, not this).
         If preset.SseHairColorRgb.HasValue Then
             j.HairColor = preset.SseHairColorRgb.Value
             j.HadHairColor = True
+        ElseIf preset.HairColorFormID <> 0UI AndAlso pluginManager IsNot Nothing Then
+            Dim clfmRec = pluginManager.GetRecord(preset.HairColorFormID)
+            If clfmRec IsNot Nothing AndAlso clfmRec.Header.Signature = "CLFM" Then
+                Dim clfm = RecordParsers.ParseCLFM(clfmRec, pluginManager)
+                If clfm IsNot Nothing AndAlso clfm.HasColor Then
+                    j.HairColor = (CInt(clfm.Color.R) << 16) Or (CInt(clfm.Color.G) << 8) Or CInt(clfm.Color.B)
+                    j.HadHairColor = True
+                End If
+            End If
         End If
 
         ' ---- FACE: sliders (NAM9) → morphs.default.morphs + [18] VampireMorph sentinel (EditFace_Form.vb:602-603).

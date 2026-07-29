@@ -29,6 +29,7 @@ Partial Class Preflight_Form
         ColumnHeaderPlugin = New ColumnHeader()
         ColumnHeaderState = New ColumnHeader()
         ButtonCheckMasters = New Button()
+        CheckBoxPersistSelection = New CheckBox()
         ButtonOk = New Button()
         ButtonCancel = New Button()
         LabelStatus = New Label()
@@ -165,9 +166,20 @@ Partial Class Preflight_Form
         ButtonCheckMasters.Text = "Check Masters"
         ButtonCheckMasters.UseVisualStyleBackColor = True
         ButtonCheckMasters.Visible = False
-        ' 
+        '
+        ' CheckBoxPersistSelection
+        '
+        CheckBoxPersistSelection.Anchor = AnchorStyles.Bottom Or AnchorStyles.Left
+        CheckBoxPersistSelection.AutoSize = True
+        CheckBoxPersistSelection.Location = New Point(12, 556)
+        CheckBoxPersistSelection.Name = "CheckBoxPersistSelection"
+        CheckBoxPersistSelection.Size = New Size(215, 19)
+        CheckBoxPersistSelection.TabIndex = 15
+        CheckBoxPersistSelection.Text = "Remember this selection for this game"
+        CheckBoxPersistSelection.UseVisualStyleBackColor = True
+        '
         ' ButtonOk
-        ' 
+        '
         ButtonOk.Anchor = AnchorStyles.Bottom Or AnchorStyles.Right
         ButtonOk.Location = New Point(550, 551)
         ButtonOk.Name = "ButtonOk"
@@ -238,6 +250,7 @@ Partial Class Preflight_Form
         Controls.Add(LabelStatus)
         Controls.Add(ButtonCancel)
         Controls.Add(ButtonOk)
+        Controls.Add(CheckBoxPersistSelection)
         Controls.Add(ButtonCheckMasters)
         Controls.Add(ListViewPlugins)
         Controls.Add(ButtonUnmarkAll)
@@ -272,6 +285,7 @@ Partial Class Preflight_Form
     Friend WithEvents ColumnHeaderPlugin As ColumnHeader
     Friend WithEvents ColumnHeaderState As ColumnHeader
     Friend WithEvents ButtonCheckMasters As Button
+    Friend WithEvents CheckBoxPersistSelection As CheckBox
     Friend WithEvents ButtonOk As Button
     Friend WithEvents ButtonCancel As Button
     Friend WithEvents LabelStatus As Label

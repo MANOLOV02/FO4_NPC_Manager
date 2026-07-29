@@ -105,7 +105,7 @@ bool Property Verbose_G0000010000 = false Auto
     (512 SetMorph = ~9 s). Ese es el gasto caro, no el Debug.Trace.
 
  Por eso el flag envuelve los BLOQUES DE SONDA COMPLETOS, no solo las lineas de Debug.Trace.
- ⛔ JAMAS envolver una llamada FUNCIONAL (ClearBodyMorphKeys, AddNodeOverride*, SetBodyMorph...): si el
+ ⛔ JAMAS envolver una llamada FUNCIONAL (ClearMorphs, AddNodeOverride*, SetBodyMorph...): si el
  flag se apagara, el script dejaria de aplicar. Solo se envuelve lo que existe para mirar.
 
  Por que una property y no dos .pex (uno con trazas y otro sin): Papyrus no tiene preprocesador, asi
@@ -190,9 +190,10 @@ float[]  Property MorphValue_G0000010000 Auto
     el default iBodyMorphMode=0), asi que la suma bajo una key rinde EXACTAMENTE lo mismo que las
     keys por separado. Es ademas lo que ya hace el emisor del .ini y lo que renderiza el preview
     de la app, asi que preview == juego.
- 2) Da DESHACER QUIRURGICO: ClearBodyMorphKeys(ref, key) recorre todos los nombres y saca SOLO la
-    nuestra (Impl_ClearBodyMorphKeys, :262-276), asi que RSMBodyGen / XPMSE / cualquier otro mod
-    conservan las suyas. Mismo patron que los node transforms.
+ 2) Con UNA sola key el payload es la unica fuente del cuerpo, que es lo que el barrido asume: antes de
+    aplicar se hace ClearMorphs (poda total del actor) y se re-escribe todo. Es WYSIWYG por construccion.
+    (Hubo una version que barria key por key para no tocar lo de otros mods; se abandono porque dejaba
+    los NOMBRES de morph huerfanos acumulandose en el co-save para siempre. Ver ApplyBodyMorphs.)
 
  ⚠️ Con iBodyMorphMode 1 (promedio) o 2 (max) del skee64.ini del JUGADOR, keyed daria otro numero
  que nuestra suma. El preview de la app tambien suma, asi que la consistencia preview<->juego se
@@ -304,13 +305,9 @@ string Function XformKey()
     return "NPCM_Manolov"
 EndFunction
 
-; La key con la que el BodyGen de skee escribe SUS body morphs:
-;   SetMorph(actor, morphName.c_str(), "RSMBodyGen", value)   -- BodyMorphInterface.cpp:1825
-; Literal del C++, y CONFIRMADA in-game (Papyrus.0.log 2026-07-28: "BM morph previo[0] key[0]=RSMBodyGen"
-; sobre un NPC que ya venia aplicado con el BodySlide viejo).
-string Function BodyGenKey()
-    return "RSMBodyGen"
-EndFunction
+; NOTA: la key con la que el BodyGen de skee escribe SUS morphs es "RSMBodyGen"
+; (SetMorph(actor, morphName, "RSMBodyGen", value) -- BodyMorphInterface.cpp:1825), y se confirmo in-game.
+; Ya no hace falta nombrarla: ClearMorphs poda el actor entero, RSMBodyGen incluido.
 
 ; ============================================================================================
 ; DESHACER LO QUE APLICAMOS LA VEZ ANTERIOR.
@@ -434,68 +431,35 @@ Function RemovePrevious()
         endif
     endif
 
-    ; ⭐ DESHACER QUIRURGICO, sin colateral: Impl_ClearBodyMorphKeys recorre TODOS los nombres de morph
-    ; del actor y borra de cada uno SOLO la key que se le pasa (BodyMorphInterface.cpp:262-276). Asi que
-    ; un morph que el usuario saco del preset desaparece de verdad, y RSMBodyGen / XPMSE / cualquier
-    ; otro mod conservan lo suyo. No hace falta enumerar nada a mano ni recordar que aplicamos.
-    ; Es idempotente: borrar una key que no existe es no-op.
-    NiOverride.ClearBodyMorphKeys(self, ovrKey)
+    ; ⭐⭐⭐ PODA TOTAL DEL ACTOR — Impl_ClearMorphs (BodyMorphInterface.cpp:312-320) hace
+    ;     actorMorphs.m_data.erase(actor->formID)
+    ; o sea BORRA LA ENTRADA ENTERA del actor. En SSE el store NO tiene dimension de genero (la clave es
+    ; solo el formID), asi que esto se lleva TODO lo que ese actor tenia. Comparar con FO4, donde el mapa
+    ; SI es por genero y el clear solo alcanza al genero que se le pasa: no son equivalentes.
+    ;
+    ; POR QUE PODA TOTAL Y NO POR KEY. Antes se barria key por key (la nuestra + "RSMBodyGen"). Funcionaba,
+    ; pero Impl_ClearBodyMorphKeys borra la KEY y DEJA el NOMBRE del morph con el mapa vacio, y en SSE nada
+    ; poda un nombre vacio: se serializan al co-save para siempre y se acumulan cada vez que el usuario
+    ; cambia a un preset con otros sliders. MEDIDO: "morphs tras barrido=39" con "keys=0" en todos.
+    ;
+    ; ⚠️ SE LLEVA LOS MORPHS QUE OTRO MOD LE HAYA PUESTO A ESTE ACTOR, bajo cualquier key. Es la MISMA
+    ; decision de producto que Overlays.RemoveAll y que el barrido de RSMBodyGen: el NPC muestra
+    ; EXACTAMENTE lo que muestra la app. Si nuestro replacer es el dueño del cuerpo de este NPC, un morph
+    ; ajeno sobre el mismo actor ya era un conflicto, no un aporte.
+    ;
+    ; ⚠️ SOLO toca body morphs: el sculpt y los morphs de CARA viven en FaceMorphInterface, otro store.
+    ;
+    ; Corre INCONDICIONAL (con payload vacio tambien): ese es justo el caso de limpieza, donde lo correcto
+    ; es dejar el cuerpo base. El repintado lo hace UpdateModelWeight al final del OnLoad.
+    NiOverride.ClearMorphs(self)
     if Verbose_G0000010000
-        Debug.Trace("[NPCM] BM ClearBodyMorphKeys hecho key=" + ovrKey)
+        Debug.Trace("[NPCM] BM ClearMorphs (poda total del actor) hecho")
     endif
 
-    ; ⭐⭐⭐ Y TAMBIEN LA KEY DE BODYGEN. Borrar el .ini NO alcanza, y esto lo destapo la sonda de orden:
-    ; MEDIDO 2026-07-28 sobre un NPC que ya venia aplicado con el BodySlide viejo, con el .ini YA borrado
-    ; de disco y ausente de los BSA:
-    ;     BM morphs previos=39
-    ;     BM morph previo[0] key[0]=RSMBodyGen
-    ; Los morphs que BodyGen aplico en una sesion anterior estan PERSISTIDOS EN EL CO-SAVE ('MRPH'), y
-    ; skee los restaura en cada carga. Como suma las keys de un mismo morph (Impl_GetBodyMorphs,
-    ; BodyMorphInterface.cpp:220-240, default iBodyMorphMode=0), los 39 viejos se sumaban a los 19
-    ; nuestros: el cuerpo no cambiaba y parecia que el script no aplicaba.
-    ;
-    ; No se puede arreglar del lado de la app: el co-save es del jugador. Tiene que barrerlo el script.
-    ;
-    ; ⚠️ SE LLEVA TAMBIEN el BodyGen que otro mod le haya puesto a este actor. Es la MISMA decision de
-    ; producto que en los overlays, y aca ademas es obligatoria: si somos el dueño de los body morphs de
-    ; este NPC, BodyGen no puede seguir contribuyendo o el resultado nunca es determinista.
-    ; Es estable: con morphs en el mapa skee ya no re-evalua BodyGen para este actor
-    ; (ActorUpdateManager.cpp:38-40), asi que no vuelve a entrar.
-    ;
-    ; ⚠️ EN FO4 NO HACE FALTA: alla BodyGen escribe bajo el keyword None, que es EXACTAMENTE el slot que
-    ; el .psc de FO4 ya barre con RemoveMorphsByKeyword(None). La asimetria es de los motores, no nuestra.
-    ;
-    ; ⭐ ACOTADO: SOLO si de verdad vamos a aplicar morphs propios. Si el payload viene VACIO (el usuario le
-    ; saco los sliders a este NPC), lo unico que corresponde es DESHACER LO NUESTRO — sacarle ademas su
-    ; BodyGen a otro mod seria barrer por barrer, sin nada que poner en su lugar. El centinela hace el test
-    ; exacto: el emisor manda un unico "" cuando no hay datos, asi que [0] != "" significa "hay morphs reales".
-    bool haveMorphs = false
-    if MorphName_G0000010000.Length > 0
-        string m0chk = MorphName_G0000010000[0]
-        haveMorphs = (m0chk != "")
-    endif
-    if haveMorphs
-        string bgKey = BodyGenKey()
-        NiOverride.ClearBodyMorphKeys(self, bgKey)
-        if Verbose_G0000010000
-            Debug.Trace("[NPCM] BM ClearBodyMorphKeys hecho key=" + bgKey)
-        endif
-    else
-        if Verbose_G0000010000
-            Debug.Trace("[NPCM] BM payload vacio: se deshace SOLO lo nuestro, BodyGen intacto")
-        endif
-    endif
-
-    ; Sonda de control: despues de los dos barridos ningun morph deberia conservar una KEY.
-    ;
-    ; ⚠️ LEER "morphs tras barrido" NO ES LA MEDIDA — cuenta NOMBRES, no valores efectivos, y sigue dando el
-    ; mismo numero que antes del barrido. No es un bug: Impl_ClearBodyMorphKeys borra la key de cada nombre
-    ; pero DEJA la entrada del nombre con el mapa de keys vacio (BodyMorphInterface.cpp:262-276), y
-    ; GetMorphNames enumera nombres. Un nombre sin keys aporta CERO al render, porque Impl_GetBodyMorphs suma
-    ; las keys que quedan (:220-240).
-    ; ⇒ LA LINEA QUE VALE ES "tras barrido <nombre> keys=", que tiene que dar 0.
-    ; (Medido 2026-07-28: "morphs tras barrido=39" con "PushUp keys=0" — el barrido habia funcionado y el 39
-    ;  me hizo dudar. Queda escrito para no volver a leerlo mal.)
+    ; Sonda de control. AHORA "morphs tras barrido" SI ES LA MEDIDA y tiene que dar 0: con la poda total se
+    ; borra la entrada del actor, nombres incluidos.
+    ; (Con el barrido por key anterior daba 39 con "keys=0" en todos, porque borraba la key y dejaba el
+    ;  nombre. Ese numero me hizo dudar una vez; ya no aplica.)
     if Verbose_G0000010000
         string[] post = NiOverride.GetMorphNames(self)
         Debug.Trace("[NPCM] BM morphs tras barrido=" + post.Length)
@@ -734,7 +698,7 @@ EndFunction
 ; exigen AddOverlays): Impl_SetMorph escribe directo al store (BodyMorphInterface.cpp:150-154) y
 ; UpdateModelWeight no gatea por ningun set de actores.
 ;
-; El barrido de la vez anterior vive en RemovePrevious() (ClearBodyMorphKeys), y el repintado
+; El barrido de la vez anterior vive en RemovePrevious() (ClearMorphs, poda total), y el repintado
 ; (UpdateModelWeight) en OnLoad: los dos tienen que correr TAMBIEN con payload vacio.
 ; ============================================================================================
 Function ApplyBodyMorphs()

@@ -175,11 +175,16 @@ Public Module FomodExporter
         ' la version publicada anterior quedan con instancias de un tipo que no resuelve, y ese actor pierde la
         ' tabla de metodos PARA TODOS LOS SCRIPTS (medido: RaceMenu fallando 17 veces sobre un NPC nuestro).
         ' Es inerte: el .psc corta con el guard de instancia huerfana.
-        If game = Config_App.Game_Enum.Skyrim AndAlso pexBytes IsNot Nothing AndAlso pexBytes.Length > 0 Then
+        ' ⭐ LOS DOS JUEGOS. Estaba gateado a Skyrim y era una ASIMETRIA sin razon: el argumento de arriba
+        ' (un save con instancias de un tipo que no resuelve deja al actor sin tabla de metodos PARA TODOS los
+        ' scripts) no tiene nada de especifico de SSE, y de hecho se vieron instancias legadas de FO4 corriendo
+        ' in-game. Ademas el Save ESP local ya lo instalaba para los dos (InstallLegacyPex no gatea por juego),
+        ' asi que el paquete quedaba INCONSISTENTE con lo que la app deja en Data\Scripts.
+        If pexBytes IsNot Nothing AndAlso pexBytes.Length > 0 Then
             Dim legacyBytes = NpcApplyScriptEmitter.PexBytes(game)
             manifest.Add(New ManifestItem With {
                 .Kind = ItemKind.ApplyScript,
-                .DataRelativePath = "Scripts\" & NpcApplyScriptEmitter.LegacyScriptSse & ".pex",
+                .DataRelativePath = "Scripts\" & NpcApplyScriptEmitter.LegacyScriptFor(game) & ".pex",
                 .SourceBytes = legacyBytes, .Required = True,
                 .Exists = (legacyBytes IsNot Nothing AndAlso legacyBytes.Length > 0),
                 .SizeBytes = If(legacyBytes IsNot Nothing, CLng(legacyBytes.Length), 0L),

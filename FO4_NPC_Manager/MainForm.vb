@@ -8519,8 +8519,13 @@ Public Class MainForm
 
         Dim selected As LooksmenuLoader.LooksmenuPreset = Nothing
         Dim dialogResult As DialogResult
+        ' The two F4SE catalogs feed the dialog's "Show incompatible" audit: an overlay/skin-template id the
+        ' preset names but no installed mod registers applies NOTHING in-game (engine parity: GetTemplateByName
+        ' → null → skipped). Passing the ids lets the report say "not installed" instead of "not checked".
         Using dlg As New LooksmenuLoad_Form(_pluginManager, _dataPath, gender, raceDisplay, npcHasBodyTri,
-                                            raceFormID, race, raceDefaultsForLm)
+                                            raceFormID, race, raceDefaultsForLm,
+                                            knownOverlayTemplateIds:=GetOverlayTemplateCandidates(gender = 1).Select(Function(t) t.Id),
+                                            knownLmSkinTemplateIds:=GetLmSkinTemplateCandidates(gender = 1).Select(Function(t) t.Id))
             ' priorOverlay is the preserve BASELINE for the unticked categories: the live preview keeps
             ' rewriting _appliedPresets as the user clicks around, so reading the current overlay would
             ' preserve the previously PREVIEWED preset instead of the NPC's own look.
@@ -8613,23 +8618,40 @@ Public Class MainForm
         Dim priorOverlay As LooksmenuLoader.LooksmenuPreset = Nothing
         _appliedPresets.TryGetValue(npcFormID, priorOverlay)
 
-        ' Mapper the browser calls per .jslot file: load it and map onto a CLONE of the pre-dialog overlay (so
-        ' prior NPC-specific fields survive) → a full LooksmenuPreset for display + live preview. Returns Nothing
-        ' on a bad/unreadable file (the browser skips it). SourcePath/Gender are stamped for the list + summary.
-        Dim mapper As Func(Of String, LooksmenuLoader.LooksmenuPreset) =
-            Function(fp As String) As LooksmenuLoader.LooksmenuPreset
+        ' Two mappings of the SAME .jslot, because the browser needs to answer two different questions and the
+        ' RaceMenu format can't answer both with one object:
+        '
+        '   • APPLY mapping (onto a CLONE of the pre-dialog overlay): what the NPC ENDS UP with. The clone is
+        '     mandatory — several .jslot fields can't express "absent" (NAM9 is a fixed 18-slot vector where 0
+        '     is a legitimate value), so the mapper seeds from the previous value and overwrites only what the
+        '     file declares. This is what feeds the live preview and what OK returns.
+        '   • DISPLAY mapping (onto an EMPTY preset): what the FILE itself carries. Feeds the category counts,
+        '     the race-compat filter and the "Show incompatible" report, so a number/finding is never the NPC's
+        '     own content misattributed to the preset (FO4 has this for free — it parses the file, period).
+        '
+        ' Both return Nothing on a bad/unreadable file (the browser skips it). SourcePath/Gender are stamped so
+        ' the list label and the report header identify the file.
+        ' ONE read + ONE parse, TWO mappings: the file is the expensive part (a .jslot carries the whole
+        ' per-vertex sculpt), while re-mapping an already-parsed jslot onto a second base is in-memory work.
+        Dim mapper As Func(Of String, LooksmenuLoad_Form.SsePresetMapping) =
+            Function(fp As String) As LooksmenuLoad_Form.SsePresetMapping
                 Try
                     Dim j = RaceMenuJslot.Load(IO.File.ReadAllBytes(fp))
                     If j Is Nothing Then Return Nothing
-                    Dim preset = If(priorOverlay IsNot Nothing, LooksmenuLoader.ClonePreset(priorOverlay),
-                                                                New LooksmenuLoader.LooksmenuPreset() With {.Gender = gender})
                     ' raceFormID + gender → translate the .jslot POSITIONAL tint index to the record TINI value
                     ' (RaceMenuPresetMapper.JslotIndexToTini). Without it the skin tone / per-layer texture bind to the
                     ' wrong RACE layer on races whose TINI != position (incl. the body-QNAM skin tone at position 0).
-                    RaceMenuPresetMapper.ApplyJslotToPreset(j, preset, _pluginManager, raceFormID, gender = CByte(1))
-                    preset.SourcePath = fp
-                    preset.Gender = gender
-                    Return preset
+                    Dim applied = If(priorOverlay IsNot Nothing, LooksmenuLoader.ClonePreset(priorOverlay),
+                                                                New LooksmenuLoader.LooksmenuPreset() With {.Gender = gender})
+                    RaceMenuPresetMapper.ApplyJslotToPreset(j, applied, _pluginManager, raceFormID, gender = CByte(1))
+                    applied.SourcePath = fp
+                    applied.Gender = gender
+
+                    Dim fileOnly As New LooksmenuLoader.LooksmenuPreset() With {.Gender = gender}
+                    RaceMenuPresetMapper.ApplyJslotToPreset(j, fileOnly, _pluginManager, raceFormID, gender = CByte(1))
+                    fileOnly.SourcePath = fp
+
+                    Return New LooksmenuLoad_Form.SsePresetMapping(applied, fileOnly)
                 Catch
                     Return Nothing
                 End Try
@@ -8881,6 +8903,32 @@ Public Class MainForm
         Return ResolveLmSkinTemplate(templateId)
     End Function
 
+    ''' <summary>Pick the leaf NPC_ to PIN an actor to when its Traits chain runs through a leveled list.
+    ''' Handed to <see cref="NpcTemplateMaterializer.MakeCategoryOwn"/> by the NPC Editor and the Save apply,
+    ''' so neither needs a PluginManager of its own.
+    '''
+    ''' <para>⭐ WYSIWYG: the leaf currently ON SCREEN wins. The preview already rolled this LVLN
+    ''' (ResolveNPCBaseState → ResolveTraitsStateFromNPC, recorded in state.TraitsSourceFormID); rolling AGAIN
+    ''' here would pin the actor to a DIFFERENT leaf than the one the user was looking at when they hit Edit —
+    ''' they would edit face A and get face B. Only when there is no live pick to honour (the rendered NPC is
+    ''' someone else, or the previewed leaf doesn't belong to this list) do we roll, using the SAME weighted
+    ''' walk the render uses so the distribution matches the engine's.</para></summary>
+    Friend Function ResolveLvlnPick_Friend(lvlnFormID As UInteger) As UInteger
+        If lvlnFormID = 0UI Then Return 0UI
+
+        Dim leaves = NpcTemplateHelpers.CollectLvlnLeafNpcFormIDs(lvlnFormID, _pluginManager)
+        If leaves Is Nothing OrElse leaves.Count = 0 Then Return 0UI
+        If leaves.Count = 1 Then Return leaves(0)
+
+        Dim shown = _renderHost?.LastRenderedState
+        If shown IsNot Nothing AndAlso shown.TraitsSourceFormID <> 0UI AndAlso leaves.Contains(shown.TraitsSourceFormID) Then
+            Return shown.TraitsSourceFormID
+        End If
+
+        Dim picked = _stateResolver.PickWeightedRandomFromLVLN(lvlnFormID, New HashSet(Of UInteger)())
+        Return If(picked <> 0UI, picked, leaves(0))
+    End Function
+
     ''' <summary>Per-layer clone — delegates to the canonical helper.</summary>
     Private Function CloneFaceTint(tl As NPC_FaceTintLayerData) As NPC_FaceTintLayerData
         Return LooksmenuLoader.CloneFaceTintLayer(tl)
@@ -9000,7 +9048,11 @@ Public Class MainForm
         ' emission gate from the outfit overrides). Copying them from raw here would clobber an override that
         ' added an outfit to an NPC whose raw record had none. The overlay returns raw unchanged when no preset
         ' is applied, so the flags still round-trip verbatim on the non-overlay path.
-        shadow.HasHairColor = raw.HasHairColor
+        ' HasHairColor lo posee ApplyPresetOverlayToNpcData (lo deriva del MISMO valor que resolvió para
+        ' HairColorFormID: preset > raw), y en SSE además lo fuerza MaterializeSseHairColors al apuntar el HCLF
+        ' al CLFM sintetizado del color de RaceMenu. Copiarlo de raw acá dejaba fuera del ESP el color elegido
+        ' para todo NPC cuyo record base no traía HCLF — se veía en el preview y se perdía al guardar.
+        ' Mismo razonamiento que HasHeadTexture / HasDefaultOutfit / HasSleepOutfit.
         shadow.HasFacialHairColor = raw.HasFacialHairColor
         ' HasHeadTexture lo posee ApplyPresetOverlayToNpcData (deriva el gate de emisión FTST del MISMO
         ' valor que resolvió para HeadTextureFormID: plantilla LM > preset .jslot > raw). Copiarlo de raw
@@ -9144,7 +9196,11 @@ Public Class MainForm
         ' empty own-value. The user's Race/Voice/OBTS edits are written below, on top of the materialized set.
         If ov.TraitsChanged AndAlso NpcTemplateHelpers.HasTemplateFlag(npcSpec.TemplateFlags, NPC_TemplateCategory.Traits) Then
             Dim hasOverlay = _appliedPresets.ContainsKey(npcFormID)
-            NpcTemplateMaterializer.MakeCategoryOwn(npcSpec, NPC_TemplateCategory.Traits, resolver, skipOverlayOwned:=hasOverlay)
+            ' resolveLvlnPick: sin esto la cadena que termina en un LVLN era irresoluble y el bit se bajaba
+            ' igual, dejando al NPC sin cara. Ver NpcTemplateMaterializer.ResolveTraitsSource.
+            NpcTemplateMaterializer.MakeCategoryOwn(npcSpec, NPC_TemplateCategory.Traits, resolver,
+                                                    skipOverlayOwned:=hasOverlay,
+                                                    resolveLvlnPick:=AddressOf ResolveLvlnPick_Friend)
         End If
 
         ' --- Scalars. ---
@@ -9514,6 +9570,11 @@ Public Class MainForm
         ' _npcm_DefaultOutfit. state.DefaultOutfitFormID ya considera el override aplicado en
         ' ResolveNPCBaseState.
         preset.DefaultOutfitFormIDOverride = state.DefaultOutfitFormID
+        ' NPC.SOFT sleep outfit: MISMO par que DOFT — la categoría Outfit del filtro de Paste revierte
+        ' LOS DOS (PresetCategoryFilter:176-177) pero acá sólo se capturaba el DOFT, así que con Outfit
+        ' tildado el sleep outfit del NPC origen no viajaba nunca (quedaba en Nothing = "preservar el del
+        ' destino"). Asimetría silenciosa entre dos campos que el resto del sistema trata como uno solo.
+        preset.SleepOutfitFormIDOverride = state.SleepOutfitFormID
 
         ' NPC.ACBS bit 0x04 "Is CharGen Face Preset": misma semántica que skin. Capturamos el
         ' valor EFECTIVO — overlay si existe, sino raw NPC.ACBS bit. BuildFilteredPaste lo
@@ -9639,6 +9700,26 @@ Public Class MainForm
                 preset.SseTintRawOverride = CloneSseTintRaw(raw.SseTintRaw)
                 preset.HasSseTints = True
             End If
+
+            ' --- Face TXST (FTST) del actor. Lo consumen NpcRecordOverlay:202 (bake + Save ESP) y
+            ' NpcStateResolver:175 (render), y el filtro de Paste ya lo transporta bajo la categoría
+            ' FaceParts (PresetCategoryFilter:188/197) — pero NADIE lo poblaba acá, así que Copy Look
+            ' se llevaba las head parts y dejaba atrás la textura de cara, y Save Looksmenu emitía
+            ' headTexture nulo (RaceMenuPresetMapper:57 lo serializa desde este campo).
+            '
+            ' SE CAPTURA `ExplicitHeadTextureFormID`, NO `HeadTextureFormID`: el primero vale 0 justamente
+            ' cuando el TXST salió del DFTM de la raza (ApplyRaceFallbacks lo fija ANTES de ese fallback).
+            ' Copiar el efectivo convertiría el default de la raza ORIGEN en un override explícito y, al
+            ' pegar sobre un NPC de otra raza, le clavaría la cara de la raza del origen. Con Explicit sólo
+            ' viaja lo que el ACTOR declara (FTST propio, .jslot del preset, o plantilla LM).
+            '
+            ' POR QUÉ VA EN LA RAMA SSE — por ORIGEN DEL DATO, no por reflejo: en FO4 la vía del override de
+            ' cara es la plantilla LM (bundle f4ee), y esta misma función YA la captura por su carrier propio
+            ' (preset.SkinTemplateId :9526 + MaterializeLmTemplateBundleToPreset :9560). Poblar además este
+            ' campo allá duplicaría el mismo dato en dos carriers y le daría precedencia al de menor rango
+            ' (NpcRecordOverlay:200-204: plantilla LM > .jslot > raw). En SSE no existen plantillas de piel
+            ' (RaceMenu no las tiene), así que este ES el único carrier y sin esta línea no hay ninguno.
+            preset.SseHeadTextureFormID = state.ExplicitHeadTextureFormID
 
             ' --- F4SE/RaceMenu-only carriers (no record source): overlay only, else leave empty. ---
             If overlay IsNot Nothing Then

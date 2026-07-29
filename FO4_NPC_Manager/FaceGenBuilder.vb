@@ -265,10 +265,34 @@ Public Module FaceGenBuilder
         ' that bundle exactly the same way the live render does — otherwise the .nif2 baked here
         ' diverges from the WNAM the writer puts in the ESP. The resolver is forwarded from the
         ' caller (MainForm) so the bake sees the same template the preview saw.
+        '
+        ' ⛔ NO SE CAMINA LA CADENA DE PLANTILLAS ACÁ, Y ESO ES CORRECTO — NO "ARREGLARLO".
+        ' ResolveOverlaidNpcData parsea el record PROPIO del NPC (GetParsedNpc(npcFormID)); el RENDER en
+        ' cambio resuelve por ResolveTraitsStateFromNPC, que sí camina el TPLT. La asimetría parece una
+        ' violación de RENDER == BAKE y no lo es. MEDIDO (TemplateTraitsProbe, load orders reales, ambos
+        ' juegos, y comprobado en los DOS sentidos — por NPC y recorriendo el corpus de FaceGeom al revés):
+        '   • FO4: 0 de 2126 NPC con "Use Traits" tienen FaceGeom en los BA2; 1489 de 2239 SIN la bandera sí.
+        '   • SSE: 0 de 2461 con la bandera; 102 de 3895 sin ella.
+        ' (Arnés validado contra un número independiente: Fallout4 - Meshes.ba2 da 1091 y el cruce por
+        '  Fallout4.esm 1095, contra los ~1094 FaceGen vanilla ya conocidos byte a byte.)
+        ' O sea: el CK NUNCA exporta FaceGen para un NPC que hereda Use Traits — su cara la resuelve el motor
+        ' desde la plantilla. Sembrar el state desde el traits-source fabricaría un FaceGeom que el CK no
+        ' produce jamás: alejaría el bake del CK en vez de acercarlo.
+        ' El flujo legítimo para darle cara propia a un NPC templado ya existe y es el inverso:
+        ' NpcTemplateMaterializer.MakeCategoryOwn(Traits) materializa la cadena EN el record propio y baja el
+        ' bit; a partir de ahí el record propio YA es el resuelto y leerlo acá es exactamente lo correcto.
+        ' Por eso el arreglo de esa función (FTST/QNAM/APPR/Has* de HCLF-BCLF, 2026-07-29) es lo que hace
+        ' que este camino sea correcto por construcción, y no un cambio en el bake.
         Dim npcData = NpcRecordOverlay.ResolveOverlaidNpcData(
             npcFormID, pluginManager, appliedPresets, lmSkinTemplateResolver)
         Dim state As MainForm.NPCVisualState = Nothing
         If npcData IsNot Nothing Then
+            ' .SseHairColorRgb = SSE RaceMenu absolute hair tint. Sin esto el bake resolvía el pelo por el
+            ' CLFM mientras el preview mostraba el RGB del preset ⇒ RENDER ≠ BAKE. Lo consume el MISMO
+            ' ApplyMaterialPaletteHairColor que corre el render (vía applyMaterialOverrides).
+            ' Nothing fuera de Skyrim: el overlay solo lo puebla en SSE.
+            ' (El comentario vive ACÁ y no entre los miembros: VB no admite comentarios dentro de un
+            '  inicializador With { } — rompe el parser con BC30985.)
             state = New MainForm.NPCVisualState With {
                 .FormID = npcFormID,
                 .RootNpcFormID = npcFormID,
@@ -278,6 +302,7 @@ Public Module FaceGenBuilder
                 .SkinFormID = npcData.SkinFormID,
                 .HeadTextureFormID = npcData.HeadTextureFormID,
                 .HairColorFormID = npcData.HairColorFormID,
+                .SseHairColorRgb = npcData.SseHairColorRgb,
                 .FacialHairColorFormID = npcData.FacialHairColorFormID,
                 .HasTextureLighting = npcData.HasTextureLighting,
                 .TextureLightingColor = npcData.TextureLightingColor,

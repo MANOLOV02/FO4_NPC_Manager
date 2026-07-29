@@ -187,6 +187,24 @@ Public Class Preflight_Form
             _allRows.Add(New PluginRow With {.Name = pluginName, .IsActive = False})
         Next
 
+        ' Last selection the user confirmed with OK for THIS game wins over the actives default (see
+        ' NPC_Config.PreflightSelection_FO4/_SSE). Filtered against what's actually in Data\ — a plugin
+        ' saved last run and since uninstalled just drops out. If nothing survives (never saved, opted
+        ' out, or the whole selection belongs to another install) we keep the actives already ticked
+        ' above, so the first run and a moved install both still open on the engine load order.
+        '
+        ' The checkbox MIRRORS what we found: ticked = "there was a stored selection and you're looking
+        ' at it" (so pressing OK keeps it up to date), unticked = "nothing stored, this is the actives
+        ' default". Unticking it and pressing OK is the opt-out — see ButtonOk_Click.
+        Dim savedSelection = NPC_Config.GetPreflightSelection(Config_App.Current.Game).
+            Where(Function(n) allPluginsSet.Contains(n)).
+            ToList()
+        If savedSelection.Count > 0 Then
+            _checkedPlugins.Clear()
+            For Each pluginName In savedSelection : _checkedPlugins.Add(pluginName) : Next
+        End If
+        CheckBoxPersistSelection.Checked = (savedSelection.Count > 0)
+
         ApplyFilter()
 
         ' Masters are needed before we can validate dependencies and enable OK. Read them off the
@@ -436,10 +454,12 @@ Public Class Preflight_Form
         SetCheckStateOnVisible(False)
     End Sub
 
-    ''' <summary>Reset selection to the default state: every active plugin checked, everything
-    ''' else unchecked. GLOBAL operation (touches _allRows, not just the filtered subset) — same
-    ''' end state as the initial post-RefreshPluginList state. ApplyFilter then re-renders the
-    ''' currently-visible subset with the new check map.</summary>
+    ''' <summary>Reset selection to the engine default: every active plugin checked, everything else
+    ''' unchecked. GLOBAL operation (touches _allRows, not just the filtered subset). This is the way
+    ''' BACK from a restored selection — the dialog now opens pre-ticked with whatever the user last
+    ''' confirmed for this game (NPC_Config.PreflightSelection_*), so "actives" is no longer necessarily
+    ''' the initial state. ApplyFilter then re-renders the currently-visible subset with the new check
+    ''' map. The reset is only persisted if the user then presses OK.</summary>
     Private Sub ButtonSelectActives_Click(sender As Object, e As EventArgs) Handles ButtonSelectActives.Click
         _checkedPlugins.Clear()
         For Each row In _allRows
@@ -513,6 +533,18 @@ Public Class Preflight_Form
         Next
 
         Config_App.SaveConfig()
+
+        ' Remember this selection for the next preflight of THIS game (npc_config.json, per-game slot),
+        ' or CLEAR that slot when the user opted out — an unticked box means "stop remembering", so the
+        ' stored list has to go, otherwise the next open would restore it and silently re-tick the box.
+        ' Only this game's slot is touched; the other game's stored selection isn't on screen and isn't
+        ' the user's to discard here.
+        ' Written BEFORE the load: if the load blows up on one of these plugins, reopening the dialog
+        ' still shows the same tick set so the user can untick the culprit instead of re-curating from
+        ' the actives default.
+        NPC_Config.SetPreflightSelection(Config_App.Current.Game,
+                                         If(CheckBoxPersistSelection.Checked, SelectedPlugins, Nothing))
+        NPC_Config.SaveConfig()
 
         ' Finalize plugin text encoding for the game the user settled on. Program.Main ran this once at
         ' startup against the persisted default; the user may have switched games in this dialog, so redo
@@ -722,6 +754,7 @@ Public Class Preflight_Form
         ButtonMarkAll.Enabled = Not loading
         ButtonUnmarkAll.Enabled = Not loading
         ButtonCheckMasters.Enabled = Not loading
+        CheckBoxPersistSelection.Enabled = Not loading
         ButtonOk.Enabled = Not loading
         ProgressBarOverall.Visible = loading
         ProgressBarDetail.Visible = loading

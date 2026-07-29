@@ -46,6 +46,10 @@ Partial Class EditFace_Form
         ComboBoxHairColor = New ComboBox()
         ButtonClearHairColor = New Button()
         PanelHairColorSwatch = New Panel()
+        PanelSseCustomHair = New FlowLayoutPanel()
+        ButtonSseCustomHairColor = New Button()
+        ButtonSseCustomHairClear = New Button()
+        LabelSseCustomHair = New Label()
         GroupBoxFaceFlags = New GroupBox()
         FaceFlagsLayout = New FlowLayoutPanel()
         CheckBoxIsCharGenFacePreset = New CheckBox()
@@ -438,7 +442,8 @@ Partial Class EditFace_Form
         GroupBoxHairColor.Size = New Size(812, 86)
         GroupBoxHairColor.TabIndex = 1
         GroupBoxHairColor.TabStop = False
-        GroupBoxHairColor.Text = "Hair Color (NPC.QNAM)"
+        ' NPC.HCLF, not QNAM — QNAM is 'Texture Lighting' (the body SoftLight RGBA), a different pipe entirely.
+        GroupBoxHairColor.Text = "Hair Color (NPC.HCLF)"
         ' 
         ' HairColorLayout
         ' 
@@ -450,15 +455,56 @@ Partial Class EditFace_Form
         HairColorLayout.Controls.Add(ComboBoxHairColor, 0, 0)
         HairColorLayout.Controls.Add(ButtonClearHairColor, 1, 0)
         HairColorLayout.Controls.Add(PanelHairColorSwatch, 0, 1)
+        HairColorLayout.Controls.Add(PanelSseCustomHair, 0, 2)
         HairColorLayout.Dock = DockStyle.Fill
         HairColorLayout.Location = New Point(3, 19)
         HairColorLayout.Name = "HairColorLayout"
         HairColorLayout.Padding = New Padding(4)
-        HairColorLayout.RowCount = 2
+        HairColorLayout.RowCount = 3
         HairColorLayout.RowStyles.Add(New RowStyle(SizeType.Absolute, 36F))
         HairColorLayout.RowStyles.Add(New RowStyle(SizeType.Absolute, 20F))
+        HairColorLayout.RowStyles.Add(New RowStyle(SizeType.AutoSize))
         HairColorLayout.Size = New Size(806, 64)
         HairColorLayout.TabIndex = 0
+        '
+        ' PanelSseCustomHair — RaceMenu custom (arbitrary RGB) hair colour. SSE-ONLY: hidden on FO4, where a
+        ' hair CLFM is a palette ROW (RemappingIndex), not an RGB, so an arbitrary colour has nothing to write to.
+        '
+        PanelSseCustomHair.AutoSize = True
+        PanelSseCustomHair.AutoSizeMode = AutoSizeMode.GrowAndShrink
+        PanelSseCustomHair.Controls.Add(ButtonSseCustomHairColor)
+        PanelSseCustomHair.Controls.Add(ButtonSseCustomHairClear)
+        PanelSseCustomHair.Controls.Add(LabelSseCustomHair)
+        PanelSseCustomHair.Dock = DockStyle.Fill
+        PanelSseCustomHair.Margin = New Padding(2)
+        PanelSseCustomHair.Name = "PanelSseCustomHair"
+        PanelSseCustomHair.TabIndex = 3
+        PanelSseCustomHair.WrapContents = False
+        '
+        ' ButtonSseCustomHairColor
+        '
+        ButtonSseCustomHairColor.AutoSize = True
+        ButtonSseCustomHairColor.Margin = New Padding(2)
+        ButtonSseCustomHairColor.Name = "ButtonSseCustomHairColor"
+        ButtonSseCustomHairColor.Size = New Size(150, 25)
+        ButtonSseCustomHairColor.TabIndex = 0
+        ButtonSseCustomHairColor.Text = "Custom colour…"
+        '
+        ' ButtonSseCustomHairClear
+        '
+        ButtonSseCustomHairClear.AutoSize = True
+        ButtonSseCustomHairClear.Margin = New Padding(2)
+        ButtonSseCustomHairClear.Name = "ButtonSseCustomHairClear"
+        ButtonSseCustomHairClear.Size = New Size(110, 25)
+        ButtonSseCustomHairClear.TabIndex = 1
+        ButtonSseCustomHairClear.Text = "Use list colour"
+        '
+        ' LabelSseCustomHair
+        '
+        LabelSseCustomHair.AutoSize = True
+        LabelSseCustomHair.Margin = New Padding(8, 7, 2, 2)
+        LabelSseCustomHair.Name = "LabelSseCustomHair"
+        LabelSseCustomHair.TabIndex = 2
         ' 
         ' ComboBoxHairColor
         ' 
@@ -1204,6 +1250,10 @@ Partial Class EditFace_Form
     Friend WithEvents ComboBoxHairColor As System.Windows.Forms.ComboBox
     Friend WithEvents PanelHairColorSwatch As System.Windows.Forms.Panel
     Friend WithEvents ButtonClearHairColor As System.Windows.Forms.Button
+    Friend WithEvents PanelSseCustomHair As System.Windows.Forms.FlowLayoutPanel
+    Friend WithEvents ButtonSseCustomHairColor As System.Windows.Forms.Button
+    Friend WithEvents ButtonSseCustomHairClear As System.Windows.Forms.Button
+    Friend WithEvents LabelSseCustomHair As System.Windows.Forms.Label
 
     Friend WithEvents GroupBoxFaceFlags As System.Windows.Forms.GroupBox
     Friend WithEvents FaceFlagsLayout As System.Windows.Forms.FlowLayoutPanel

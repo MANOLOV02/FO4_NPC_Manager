@@ -1420,6 +1420,11 @@ Friend NotInheritable Class NpcFaceTintResolver
             If overlayPreset.HairColorFormID <> 0UI Then
                 host.LastRenderedState.HairColorFormID = overlayPreset.HairColorFormID
             End If
+            ' Mismo motivo que el HCLF de arriba: el state se sembró una vez al cargar el NPC, así que sin este
+            ' re-pull una edición del RGB de pelo (SSE) no se vería hasta recargar. Se asigna DIRECTO (incluido
+            ' Nothing) porque limpiar el override es una edición válida: volver al CLFM. SSE-only por origen
+            ' (en FO4 el campo es siempre Nothing).
+            host.LastRenderedState.SseHairColorRgb = overlayPreset.SseHairColorRgb
         End If
 
         ' Stage 1: roll every face/body diffuse cache entry back to its pristine bytes. Each

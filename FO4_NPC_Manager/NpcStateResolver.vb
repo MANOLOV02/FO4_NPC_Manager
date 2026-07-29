@@ -158,6 +158,27 @@ Friend NotInheritable Class NpcStateResolver
                     End If
                 End If
             End If
+            ' Face TXST del preset (.jslot actor.headTexture, skee64 PresetInterface.cpp:158-160 escribe
+            ' npc->headData->headTexture). Sin esto el preset se HORNEABA y se escribía al ESP —el shadow lo
+            ' aplica en NpcRecordOverlay:199-205— pero NO se veía en el preview: RENDER ≠ BAKE. El comentario de
+            ' precedencia de ese shadow (:187-194) ya describía este paso como si existiera acá; ahora existe.
+            '
+            ' PRECEDENCIA idéntica a la del shadow, por construcción: se aplica ACÁ y el bloque de la plantilla
+            ' LM de abajo lo pisa ⇒ LM SkinTemplate > preset .jslot headTexture > raw NPC.FTST.
+            '
+            ' GAME-AWARENESS: el reparto es por ORIGEN DEL DATO, no por un If de juego.
+            '   • FO4 → la vía es la plantilla LM (bundle f4ee) = el bloque de abajo. `SseHeadTextureFormID`
+            '     vale 0 (LooksmenuLoader:43 lo puebla sólo desde `.jslot`), así que esta rama no corre.
+            '   • SSE → RaceMenu no tiene plantillas de piel; la vía es ésta.
+            ' ⛔ NO se agrega un gate `If isSse` a propósito: el shadow del BAKE tampoco lo tiene, y gatear un
+            ' solo lado volvería a abrir la divergencia render/bake que este mismo fix cierra.
+            If overlayPreset.SseHeadTextureFormID <> 0UI Then
+                state.HeadTextureFormID = overlayPreset.SseHeadTextureFormID
+                ' Explicit VIAJA CON el valor: declara "este face TXST es del ACTOR", que es lo que le gana al
+                ' HDPT.TNAM en ResolveTextureSet. Ver el invariante documentado en CloneVisualState.
+                state.ExplicitHeadTextureFormID = overlayPreset.SseHeadTextureFormID
+            End If
+
             If Not String.IsNullOrEmpty(overlayPreset.SkinTemplateId) Then
                 Dim tpl = _resolveLmSkinTemplate(overlayPreset.SkinTemplateId)
                 If tpl IsNot Nothing Then
@@ -165,6 +186,16 @@ Friend NotInheritable Class NpcStateResolver
                     Dim genderIdx As Integer = If(state.IsFemale, 1, 0)
                     If tpl.FaceTxstFormID(genderIdx) <> 0UI Then
                         state.HeadTextureFormID = tpl.FaceTxstFormID(genderIdx)
+                        ' ⛔ Explicit VIAJA CON el valor: es lo que declara "este face TXST es del ACTOR, no el
+                        ' default de la raza", y de eso depende que ResolveTextureSet le gane al HDPT.TNAM
+                        ' (:584). Esta línea corre DESPUÉS de ApplyRaceFallbacks —que ya fijó Explicit desde el
+                        ' FTST crudo—, así que sin actualizarlo el par queda incoherente: HeadTextureFormID =
+                        ' plantilla LM pero Explicit = FTST crudo, y el resolver aplicaría el FTST pisando la
+                        ' plantilla que el usuario acaba de elegir.
+                        ' Es lo que YA hace el BAKE: NpcRecordOverlay:205 mete el TXST de la plantilla en
+                        ' shadow.HeadTextureFormID y ApplyRaceFallbacks se lo copia a Explicit (≠0 ⇒ no entra el
+                        ' fallback DFTM) ⇒ en el bake la plantilla SIEMPRE le gana al TNAM. RENDER == BAKE.
+                        state.ExplicitHeadTextureFormID = tpl.FaceTxstFormID(genderIdx)
                     End If
                     ' HDPT replacements — the helper reads each new HDPT's own PartType to
                     ' decide which slot to replace, engine-faithful per SkinInterface.cpp:292.
@@ -214,6 +245,27 @@ Friend NotInheritable Class NpcStateResolver
         Return state
     End Function
 
+    ''' <summary>Clon del state base. ⛔ Es un clon MANUAL campo por campo: un campo nuevo de
+    ''' <see cref="MainForm.NPCVisualState"/> que no se agregue acá se pierde SILENCIOSAMENTE en TODO render —
+    ''' este clon es el que arma el state final de cada render (MainForm:5298, para sumarle el outfit), así que
+    ''' lo que no se copie no llega al resolver de materiales por más bien que lo haya resuelto
+    ''' <see cref="ResolveNPCBaseState"/>.
+    ''' <para>MEDIDO así (log del app, NPC Aeri 0x0001360B, 2026-07-29): faltaba <c>SseHairColorRgb</c> y el
+    ''' tinte absoluto de RaceMenu no llegaba nunca — al cargar un preset morado (0x30001C) el pelo se pintaba
+    ''' con el CLFM del NPC (HairColor13BrightGrey = 90,95,105, que se ve casi blanco con el ×2). Sólo el
+    ''' refresh live acertaba, porque muta <c>LastRenderedState</c> en sitio y no pasa por acá.</para>
+    ''' <para>El MISMO bug se comía <c>ExplicitHeadTextureFormID</c> (arreglado en la misma tanda). Ese alimenta
+    ''' la precedencia <b>FTST &gt; HDPT.TNAM &gt; DFTM</b> de ResolveTextureSet, y el efecto se reparte así:
+    ''' <list type="bullet">
+    ''' <item><b>FO4 — bug real y visible.</b> La rama FTST exige <c>Explicit &lt;&gt; 0</c> para pisar un TNAM
+    '''   presente; con el campo en 0 ganaba el TNAM del head part, al revés de la ley validada byte-exacta
+    '''   contra bakes del CK (NpcMaterialResolver:515-517, caso Mitch). El BAKE sí la cumplía —construye su
+    '''   state con ApplyRaceFallbacks, FaceGenBuilder:299— así que esto era RENDER ≠ BAKE.
+    '''   MEDIDO sobre Fallout4.esm: 715 NPC_ con FTST propio, de los cuales <b>422</b> tienen además una head
+    '''   part Face con TNAM ≠ 0 — ésos son exactamente los que cambian (hacia el bake).</item>
+    ''' <item><b>SSE — no-op de comportamiento.</b> Sus dos ramas (:549-552) resuelven al MISMO FormID:
+    '''   <c>HeadTextureFormID</c> ya ES el FTST cuando el NPC tiene uno (ApplyRaceFallbacks sólo lo pisa con
+    '''   DFTM si vale 0). Únicamente cambiaba la etiqueta del log.</item></list></para></summary>
     Friend Function CloneVisualState(state As MainForm.NPCVisualState) As MainForm.NPCVisualState
         Dim clone As New MainForm.NPCVisualState With {
             .FormID = state.FormID,
@@ -228,8 +280,10 @@ Friend NotInheritable Class NpcStateResolver
             .DefaultOutfitFormID = state.DefaultOutfitFormID,
             .SleepOutfitFormID = state.SleepOutfitFormID,
             .HeadTextureFormID = state.HeadTextureFormID,
+            .ExplicitHeadTextureFormID = state.ExplicitHeadTextureFormID,
             .HeadDiffuseAlphaTest = state.HeadDiffuseAlphaTest,
             .HairColorFormID = state.HairColorFormID,
+            .SseHairColorRgb = state.SseHairColorRgb,
             .FacialHairColorFormID = state.FacialHairColorFormID,
             .HasTextureLighting = state.HasTextureLighting,
             .TextureLightingColor = state.TextureLightingColor,

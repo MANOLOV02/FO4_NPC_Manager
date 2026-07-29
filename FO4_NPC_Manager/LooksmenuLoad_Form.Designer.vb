@@ -24,7 +24,9 @@ Partial Class LooksmenuLoad_Form
         TextBoxFilter = New TextBox()
         CheckBoxRaceCompatible = New CheckBox()
         ListBoxPresets = New ListBox()
+        InfoRow = New TableLayoutPanel()
         LabelInfo = New Label()
+        ButtonShowIncompatible = New Button()
         CategoriesGroup = New GroupBox()
         CategoryPanel = New PresetCategoryPanel()
         ButtonRow = New FlowLayoutPanel()
@@ -32,6 +34,7 @@ Partial Class LooksmenuLoad_Form
         ButtonCancel = New Button()
         Root.SuspendLayout()
         FilterRow.SuspendLayout()
+        InfoRow.SuspendLayout()
         CategoriesGroup.SuspendLayout()
         ButtonRow.SuspendLayout()
         SuspendLayout()
@@ -45,7 +48,7 @@ Partial Class LooksmenuLoad_Form
         Root.Controls.Add(FilterRow, 0, 1)
         Root.Controls.Add(CheckBoxRaceCompatible, 0, 2)
         Root.Controls.Add(ListBoxPresets, 0, 3)
-        Root.Controls.Add(LabelInfo, 0, 4)
+        Root.Controls.Add(InfoRow, 0, 4)
         Root.Controls.Add(CategoriesGroup, 1, 1)
         Root.Controls.Add(ButtonRow, 0, 5)
         Root.Dock = DockStyle.Fill
@@ -57,7 +60,10 @@ Partial Class LooksmenuLoad_Form
         Root.RowStyles.Add(New RowStyle(SizeType.Absolute, 32F))
         Root.RowStyles.Add(New RowStyle(SizeType.Absolute, 26F))
         Root.RowStyles.Add(New RowStyle(SizeType.Percent, 100F))
-        Root.RowStyles.Add(New RowStyle(SizeType.Absolute, 42F))
+        ' 29 = exactly one 23px button plus its 3px breathing room top and bottom. It used to be 42, and those
+        ' 13px were dead space between the list and a two-line label that no longer exists — the list (the
+        ' Percent row above) takes them now, so it reaches further down.
+        Root.RowStyles.Add(New RowStyle(SizeType.Absolute, 29F))
         Root.RowStyles.Add(New RowStyle(SizeType.Absolute, 40F))
         Root.SetColumnSpan(LabelHeader, 2)
         Root.SetColumnSpan(ButtonRow, 2)
@@ -136,16 +142,53 @@ Partial Class LooksmenuLoad_Form
         ListBoxPresets.Size = New Size(564, 356)
         ListBoxPresets.TabIndex = 3
         '
+        ' InfoRow — provenance/warning label on the left, "Show incompatible" on the right. The label only
+        ' states THAT something is missing; the button opens the exhaustive per-item report.
+        '
+        InfoRow.ColumnCount = 2
+        InfoRow.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100F))
+        InfoRow.ColumnStyles.Add(New ColumnStyle(SizeType.Absolute, 160F))
+        InfoRow.Controls.Add(LabelInfo, 0, 0)
+        InfoRow.Controls.Add(ButtonShowIncompatible, 1, 0)
+        InfoRow.Dock = DockStyle.Fill
+        InfoRow.Location = New Point(12, 466)
+        ' 6px off the list above (so the row doesn't touch its border) and the same 6px right margin the list
+        ' uses, so the button's right edge lines up with the list's instead of overhanging it.
+        InfoRow.Margin = New Padding(0, 6, 6, 0)
+        InfoRow.Name = "InfoRow"
+        InfoRow.RowCount = 1
+        InfoRow.RowStyles.Add(New RowStyle(SizeType.Percent, 100F))
+        InfoRow.Size = New Size(570, 29)
+        InfoRow.TabIndex = 4
+        '
         ' LabelInfo
         '
-        LabelInfo.Dock = DockStyle.Fill
+        ' Anchored Left|Right with NO vertical anchor: WinForms then keeps it vertically centred in the cell
+        ' and stretches it with the dialog. Same rule as the button beside it, so both share one centre line
+        ' at every window size (a vertical anchor would pin it to an edge and they'd drift apart on resize).
+        LabelInfo.Anchor = AnchorStyles.Left Or AnchorStyles.Right
         LabelInfo.ForeColor = SystemColors.GrayText
-        LabelInfo.Location = New Point(12, 466)
+        LabelInfo.Location = New Point(0, 3)
         LabelInfo.Margin = New Padding(0)
         LabelInfo.Name = "LabelInfo"
-        LabelInfo.Size = New Size(570, 42)
-        LabelInfo.TabIndex = 4
+        LabelInfo.Size = New Size(407, 23)
+        LabelInfo.TabIndex = 0
         LabelInfo.Text = ""
+        LabelInfo.TextAlign = ContentAlignment.MiddleLeft
+        '
+        ' ButtonShowIncompatible
+        '
+        ' Anchored Right only (no vertical anchor) so it stays vertically centred in the row and hugs the
+        ' right edge of the list column as the dialog is resized.
+        ButtonShowIncompatible.Anchor = AnchorStyles.Right
+        ButtonShowIncompatible.Enabled = False
+        ButtonShowIncompatible.Location = New Point(413, 3)
+        ButtonShowIncompatible.Margin = New Padding(3, 0, 0, 0)
+        ButtonShowIncompatible.Name = "ButtonShowIncompatible"
+        ButtonShowIncompatible.Size = New Size(157, 23)
+        ButtonShowIncompatible.TabIndex = 1
+        ButtonShowIncompatible.Text = "Show incompatible"
+        ButtonShowIncompatible.UseVisualStyleBackColor = True
         '
         ' CategoriesGroup
         '
@@ -220,6 +263,7 @@ Partial Class LooksmenuLoad_Form
         Root.PerformLayout()
         FilterRow.ResumeLayout(False)
         FilterRow.PerformLayout()
+        InfoRow.ResumeLayout(False)
         CategoriesGroup.ResumeLayout(False)
         ButtonRow.ResumeLayout(False)
         ResumeLayout(False)
@@ -232,7 +276,9 @@ Partial Class LooksmenuLoad_Form
     Friend WithEvents TextBoxFilter As TextBox
     Friend WithEvents CheckBoxRaceCompatible As CheckBox
     Friend WithEvents ListBoxPresets As ListBox
+    Friend WithEvents InfoRow As TableLayoutPanel
     Friend WithEvents LabelInfo As Label
+    Friend WithEvents ButtonShowIncompatible As Button
     Friend WithEvents CategoriesGroup As GroupBox
     Friend WithEvents CategoryPanel As PresetCategoryPanel
     Friend WithEvents ButtonRow As FlowLayoutPanel

@@ -89,7 +89,7 @@ Public Module NpcApplyScriptEmitter
 
     ''' <summary>Nombre del script ANTES del esquema por plugin, por juego. Se limpia del VMAD, y es lo
     ''' que PexPatcher busca dentro de la plantilla para renombrarla.</summary>
-    Private Function LegacyScriptFor(game As Config_App.Game_Enum) As String
+    Public Function LegacyScriptFor(game As Config_App.Game_Enum) As String
         Return If(game = Config_App.Game_Enum.Skyrim, LegacyScriptSse, LegacyScriptFo4)
     End Function
 
@@ -429,8 +429,20 @@ Public Module NpcApplyScriptEmitter
     '''     los BLOQUES DE SONDA completos, porque GetMorphNames/GetMorphKeys/GetBodyMorph (SSE) y
     '''     GetMorphs/GetMorph/GetKeywords (FO4) son nativas que se llaman ÚNICAMENTE para trazar — y en FO4
     '''     cada nativa hace ceder la VM (f4ee no le pone NoWait a la clase BodyGen).
+    ''' 8 = PODA TOTAL del actor antes de aplicar body morphs, en vez del barrido por key/keyword:
+    '''     SSE <c>NiOverride.ClearMorphs</c>, FO4 <c>BodyGen.RemoveAllMorphs</c>. El barrido por key dejaba los
+    '''     NOMBRES de morph huérfanos (con 0 keys) acumulándose en el co-save del jugador para siempre, porque
+    '''     ningún motor poda un nombre vacío. Se lleva los morphs de otros mods sobre ESE actor — misma decisión
+    '''     de producto que <c>Overlays.RemoveAll</c>: el NPC muestra exactamente lo que muestra la app.
+    '''     ⚠️ Los dos motores NO son equivalentes: en SSE el store no tiene dimensión de género y se borra la
+    '''     entrada entera; en FO4 el mapa es POR GÉNERO y el clear sólo alcanza al que se le pasa.
+    ''' 9 = paridad de instrumentación entre los dos .psc: FO4 gana la sonda post-poda
+    '''     (<c>BM morphs tras barrido=</c>, que ya tenía SSE y era la única forma de MEDIR la poda de frente
+    '''     en vez de deducirla) y la identidad del primer overlay (<c>payload OvlTemplate[0]=</c>, sin la cual
+    '''     el log decía cuántos overlays llegaban pero no cuáles). Sube la revisión aunque sean trazas porque
+    '''     si no, los NPC cuyo payload no cambió saltean por el sello y la sonda nueva no correría nunca.
     ''' </para></summary>
-    Private Const ScriptLogicRevision As String = "7"
+    Private Const ScriptLogicRevision As String = "9"
 
     ''' <summary>Spec de LIMPIEZA: el NPC se quedó sin overlays/skin/transforms pero YA tenía script nuestro,
     ''' así que hay que dejarle uno que corra <c>RemovePrevious()</c> y no aplique nada.

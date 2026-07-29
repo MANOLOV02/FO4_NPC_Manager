@@ -88,6 +88,8 @@ Partial Class PresetCategoryPanel
         Root.RowStyles.Add(New RowStyle(SizeType.Absolute, 226F))
         Root.RowStyles.Add(New RowStyle(SizeType.Absolute, 178F))
         Root.RowStyles.Add(New RowStyle(SizeType.Absolute, 56F))
+        ' Percent: this row absorbs whatever spare height the host gives the panel, so the action row below it
+        ' never overflows. What must NOT be read off it is its stretched height — see PreferredPanelHeight.
         Root.RowStyles.Add(New RowStyle(SizeType.Percent, 100F))
         Root.Size = New Size(460, 500)
         Root.TabIndex = 0

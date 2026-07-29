@@ -395,6 +395,9 @@ Public Module NpcOverrideSaver
         Dim armoEntries As New List(Of SaveNpcEspWriter.ArmoRecordEntry)
         Dim armaEntries As New List(Of SaveNpcEspWriter.ArmaRecordEntry)
         Dim mswpEntries As New List(Of SaveNpcEspWriter.MswpRecordEntry)
+        ' CLFM colour records: preserved ones from a prior save (Phase 2a) + the ones materialized for the SSE
+        ' RaceMenu hair tint (Phase 2h). SKYRIM-ONLY by construction — see MaterializeSseHairColors.
+        Dim clfmEntries As New List(Of SaveNpcEspWriter.ClfmRecordEntry)
         ' HEDR.NextObjectID of the on-disk plugin (0 when creating fresh). Forwarded to the writer
         ' so re-save doesn't roll back the dispense counter and accidentally re-issue an ID that
         ' CK already consumed between saves (mirror of TwbFile.NewFormID at wbImplementation.pas:5083).
@@ -535,6 +538,41 @@ Public Module NpcOverrideSaver
                 End If
                 If rec.Header.Signature = "MSWP" Then
                     mswpEntries.Add(BuildMswpEntryFromParsed(RecordParsers.ParseMSWP(rec, ctx.PluginManager), rec, ctx))
+                    Continue For
+                End If
+                ' CLFM authored by a PRIOR save (an SSE hair colour materialized from a RaceMenu preset) —
+                ' preserved as an OVERRIDE entry, same as OTFT/ARMO/MSWP. Two reasons this is mandatory:
+                ' (1) without it the record would fall through to SerializeExistingRecord, which only handles
+                '     NPC_ and throws; (2) dropping it would leave every NPC_.HCLF that points at it DANGLING.
+                ' It also feeds the reuse index below, so a re-save re-points at the SAME FormID instead of
+                ' minting a new colour record on every save.
+                If rec.Header.Signature = "CLFM" Then
+                    ' ⭐ CNAM/FNAM se copian de los BYTES del record fuente, sin pasar por ParseCLFM. Un camino de
+                    ' PRESERVACIÓN no puede depender de cómo se interprete el CNAM (en FO4 es una unión decidida
+                    ' por FNAM; en Skyrim siempre RGBA): si la interpretación fallara, la re-escritura le cambiaría
+                    ' el color al record en vez de preservarlo. Copiando los 4 bytes el round-trip es exacto por
+                    ' construcción, sea cual sea el juego y venga de donde venga el record.
+                    Dim clfmEdid As String = rec.EditorID
+                    Dim clfmRgb As Integer = 0
+                    Dim clfmAlpha As Byte = 0
+                    Dim clfmFlags As UInteger = 0UI
+                    For Each sr In rec.Subrecords
+                        If sr.Signature = "CNAM" AndAlso sr.Data IsNot Nothing AndAlso sr.Data.Length >= 4 Then
+                            clfmRgb = (CInt(sr.Data(0)) << 16) Or (CInt(sr.Data(1)) << 8) Or CInt(sr.Data(2))
+                            clfmAlpha = sr.Data(3)
+                        ElseIf sr.Signature = "FNAM" AndAlso sr.Data IsNot Nothing AndAlso sr.Data.Length >= 4 Then
+                            clfmFlags = BitConverter.ToUInt32(sr.Data, 0)
+                        End If
+                    Next
+                    clfmEntries.Add(New SaveNpcEspWriter.ClfmRecordEntry With {
+                        .FormID = ctx.PluginManager.ResolveReferencedFormID(rec.SourcePluginName, rec.Header.FormID),
+                        .EditorID = clfmEdid,
+                        .ColorRgb = clfmRgb,
+                        .ColorAlpha = clfmAlpha,
+                        .Flags = clfmFlags,
+                        .IsOverride = True,
+                        .OriginalVcs1 = rec.Header.VCS1,
+                        .OriginalVcs2 = rec.Header.VCS2})
                     Continue For
                 End If
                 existingRecords.Add(rec)
@@ -885,11 +923,19 @@ Public Module NpcOverrideSaver
         ' Phase 3: write the plugin (all entries in one pass).
         ReportPhase(progress, "Writing NPC override to plugin…", IO.Path.GetFileName(target.TargetPath))
         Dim game = Config_App.Current.Game
+
+        ' Phase 2i: materialize the SSE RaceMenu hair tint into HCLF. SKYRIM-ONLY (see the method).
+        ' Runs LAST of the entry-building phases and BEFORE the writer, because it mutates
+        ' entry.Npc.HairColorFormID — which the writer's Step 1 master walk reads (SaveNpcEspWriter.vb:937)
+        ' to pull the CLFM's defining plugin into the MAST list.
+        MaterializeSseHairColors(game, entries, clfmEntries, ctx, espNameNoExt, target)
+
         Dim writeRes = SaveNpcEspWriter.SaveOverridePlugin(
             target.TargetPath, game, target.MarkAsMaster, target.LightMaster,
             entries, existingRecords, existingMasters, ctx.PluginManager, outfitEntries, leveledEntries,
             existingNextObjectId,
-            armoEntries:=armoEntries, armaEntries:=armaEntries, mswpEntries:=mswpEntries)
+            armoEntries:=armoEntries, armaEntries:=armaEntries, mswpEntries:=mswpEntries,
+            clfmEntries:=clfmEntries)
 
         result.WriterResult = writeRes
         result.DraftFormIdMap = writeRes.DraftFormIdMap
@@ -1879,6 +1925,116 @@ Public Module NpcOverrideSaver
         merged.Npcs(identifier) = entry
     End Sub
 
+    ''' <summary>⭐ SKYRIM-ONLY. Materialize the RaceMenu absolute hair tint (<c>.jslot actor.hairColor</c>, a
+    ''' packed RGB carried on the overlay as <c>NPC_Data.SseHairColorRgb</c>) into a real <b>CLFM</b> record and
+    ''' point the NPC's <b>HCLF</b> at it. Runs after every other entry-building phase and before the writer.
+    '''
+    ''' <para><b>Why a record and not the apply-script.</b> skee only writes the preset's RGB onto the LIVE hair
+    ''' material (<c>PresetInterface.cpp:112-116</c>, ×2) — never to the record. The GAME, for its part, pushes
+    ''' the colour of <c>headData->hairColor</c> (the CLFM) onto EVERY <c>HairTint</c> material of the actor's 3D
+    ''' on each actor update; skee hooks that very function (<c>SKEEHooks.cpp:1057-1072</c>
+    ''' <c>UpdateModelHair_Hooked</c> → <c>UpdateModelColor_Recursive(..., kShaderType_HairTint)</c>), and derives
+    ''' the ×2 from the CLFM in <c>TintMaskInterface.cpp:932-935</c>. So a colour baked into the FaceGeom or set
+    ''' through a NiOverride node override is fighting the engine, while the CLFM is the value the engine itself
+    ''' reads. RaceMenu agrees: its own "apply a preset to an actor" API takes a <c>BGSColorForm</c>, stuffs the
+    ''' preset RGB into it and calls <c>npc->SetHairColor</c> (<c>PapyrusCharGen.cpp:295-301</c>).</para>
+    '''
+    ''' <para><b>Why Skyrim-only.</b> A Skyrim CLFM carries a real RGB (<c>CNAM</c> wbByteRGBA,
+    ''' wbDefinitionsTES5.pas:7946), so an arbitrary preset colour maps onto a native record 1:1. A FO4 hair CLFM
+    ''' carries a <c>RemappingIndex</c> (a LUT row) instead — a packed RGB has no meaning there, and FO4 presets
+    ''' never produce one. The gate is the game, and it is checked here, once.</para>
+    '''
+    ''' <para><b>Reuse policy (no new masters).</b> Referencing a record from another plugin makes that plugin a
+    ''' MASTER of the output ESP — the writer's master walk picks HCLF up automatically
+    ''' (SaveNpcEspWriter.vb:937). Reusing a colour-matched CLFM from an arbitrary mod would therefore add a hard
+    ''' dependency on that mod just to spell a colour, so reuse is restricted to sources that add NO dependency:
+    ''' <list type="number">
+    ''' <item>the CLFMs already emitted into THIS plugin (preserved from a prior save) — keeps the FormID stable
+    '''   across re-saves instead of minting a new record every time;</item>
+    ''' <item>the GAME MASTER (Skyrim.esm), which is a master of any NPC override anyway — this is the common
+    '''   case, since the 15 vanilla hair colours are what most presets carry.</item>
+    ''' </list>
+    ''' Anything else ⇒ emit our own CLFM, owned by this plugin.</para></summary>
+    Private Sub MaterializeSseHairColors(game As Config_App.Game_Enum,
+                                         entries As List(Of SaveNpcEspWriter.NpcOverrideEntry),
+                                         clfmEntries As List(Of SaveNpcEspWriter.ClfmRecordEntry),
+                                         ctx As SaveContext,
+                                         espNameNoExt As String,
+                                         target As SaveEsp_Form.SaveTarget)
+        If game <> Config_App.Game_Enum.Skyrim Then Return
+        If entries Is Nothing OrElse entries.Count = 0 Then Return
+        ' Nothing to do unless some NPC in this save actually carries a preset hair colour.
+        If Not entries.Any(Function(e) e.Npc IsNot Nothing AndAlso e.Npc.SseHairColorRgb.HasValue) Then Return
+
+        ' --- Reuse index, built in priority order (later Add is a no-op for an already-known colour). ---
+        Dim byRgb As New Dictionary(Of Integer, UInteger)
+        ' (1) CLFMs already bound to THIS plugin (preserved from a prior save). Their FormID is the value the
+        '     NPCs pointed at last time, so re-using it makes a re-save a no-op instead of a new record.
+        For Each ce In clfmEntries
+            If Not byRgb.ContainsKey(ce.ColorRgb) Then byRgb(ce.ColorRgb) = ce.FormID
+        Next
+        ' (2) The game master. Adds no dependency (an NPC override always masters Skyrim.esm) and covers the
+        '     15 vanilla hair colours, which is what a preset exported from a vanilla-coloured NPC carries.
+        Dim gameMasterName = SaveNpcEspWriter.MasterFileNamePublic(game)
+        Dim allClfm = ctx.PluginManager.GetRecordsOfType("CLFM")
+        If allClfm IsNot Nothing Then
+            For Each rec In allClfm
+                If Not String.Equals(ctx.PluginManager.GetOriginatingPluginName(
+                        ctx.PluginManager.ResolveReferencedFormID(rec.SourcePluginName, rec.Header.FormID)),
+                        gameMasterName, StringComparison.OrdinalIgnoreCase) Then Continue For
+                Dim parsed = RecordParsers.ParseCLFM(rec, ctx.PluginManager)
+                If parsed Is Nothing OrElse Not parsed.HasColor Then Continue For
+                Dim rgb = (CInt(parsed.Color.R) << 16) Or (CInt(parsed.Color.G) << 8) Or CInt(parsed.Color.B)
+                If Not byRgb.ContainsKey(rgb) Then
+                    byRgb(rgb) = ctx.PluginManager.ResolveReferencedFormID(rec.SourcePluginName, rec.Header.FormID)
+                End If
+            Next
+        End If
+
+        ' --- Provisional FormID allocator for the drafts we mint (shared counter, no cross-draft collision). ---
+        Dim fallbackCtr As UInteger = &HFF0C0000UI
+        Dim allocProvisional As Func(Of UInteger) =
+            Function() As UInteger
+                If ctx.AllocateDraftFormID IsNot Nothing Then Return ctx.AllocateDraftFormID()
+                fallbackCtr += 1UI
+                Return fallbackCtr
+            End Function
+        Dim usedEdids As New HashSet(Of String)(clfmEntries.Select(Function(x) If(x.EditorID, "")), StringComparer.OrdinalIgnoreCase)
+
+        For Each entry In entries
+            Dim npc = entry.Npc
+            If npc Is Nothing OrElse Not npc.SseHairColorRgb.HasValue Then Continue For
+            Dim rgb = npc.SseHairColorRgb.Value And &HFFFFFF
+
+            Dim fid As UInteger = 0UI
+            If Not byRgb.TryGetValue(rgb, fid) Then
+                ' No dependency-free match — mint our own, one per distinct colour in this save. EDID is
+                ' namespaced by ESP like every other record we author, so two plugins can't collide.
+                Dim finalEdid = MakeUniqueEditorId(ApplyEspNamespaceToEditorId($"npcm_HairColor_{rgb:X6}", espNameNoExt), usedEdids)
+                fid = allocProvisional()
+                clfmEntries.Add(New SaveNpcEspWriter.ClfmRecordEntry With {
+                    .FormID = fid,
+                    .EditorID = finalEdid,
+                    .ColorRgb = rgb,
+                    .ColorAlpha = 0,          ' measured: 178/178 CLFM in Skyrim.esm carry alpha 0
+                    .Flags = 1UI,             ' measured: the 15 vanilla hair colours carry FNAM=1 (Playable)
+                    .IsOverride = False})
+                byRgb(rgb) = fid
+                Logger.LogLazy(Function() $"[SAVE] SSE hair colour 0x{rgb:X6} → NEW CLFM '{finalEdid}' (provisional 0x{fid:X8}).")
+            Else
+                Dim fidL = fid
+                Logger.LogLazy(Function() $"[SAVE] SSE hair colour 0x{rgb:X6} → reusing CLFM 0x{fidL:X8}.")
+            End If
+
+            ' HCLF. HasHairColor must be DERIVED from the value we just resolved, never copied from the raw
+            ' record: an NPC whose base record had no HCLF would otherwise keep the flag False and the writer
+            ' would silently drop the subrecord (NpcSubrecordWriter.vb:80). Same rule the FTST/DOFT/SOFT
+            ' fields already follow.
+            npc.HairColorFormID = fid
+            npc.HasHairColor = True
+        Next
+    End Sub
+
     ''' <summary>Etiqueta legible de un NPC para los avisos: EditorID si lo hay, si no el FormID.</summary>
     Private Function NpcLabel(npcSpec As NPC_Data, formID As UInteger) As String
         If npcSpec IsNot Nothing AndAlso Not String.IsNullOrEmpty(npcSpec.EditorID) Then Return npcSpec.EditorID
@@ -1947,14 +2103,21 @@ Public Module NpcOverrideSaver
         Dim floorGen = Math.Max(sidecarGen, installedGen)
 
         If target.ScriptVersionOverride > 0 Then
-            ' Forzada a mano desde el dialogo: gana, porque para eso existe. Pero si pisa una generación ya
-            ' publicada se AVISA — es exactamente el fallo de arriba, y en silencio es indiagnosticable.
+            ' Forzada a mano desde el dialogo: gana, porque para eso existe.
+            '
+            ' ⭐ AVISO CORREGIDO 2026-07-28. Antes decía "los actores conservarán el payload VIEJO", y eso era
+            ' cierto SÓLO antes de que existiera la sal. Ahora el sufijo es <contador><sal>, así que reusar el
+            ' número NO reusa el nombre: la sal se sortea igual y las properties siguen siendo inéditas para el
+            ' savegame. MEDIDO: forzar la versión 5 sobre una 5 ya publicada aplicó perfecto, porque el sufijo
+            ' pasó de `_G000005` a `_G000005C6BC`.
+            ' Se sigue avisando porque hay algo real que se pierde —el número deja de indicar el orden de
+            ' publicación— pero el texto ya no puede afirmar una pérdida de datos que no ocurre.
             ctx.ApplyScriptGeneration = target.ScriptVersionOverride
             If target.ScriptVersionOverride <= floorGen Then
                 ctx.PayloadWarnings.Add(
-                    $"Forced script version {target.ScriptVersionOverride} is not above the last published " &
-                    $"generation ({floorGen}). Actors already in a savegame will keep the OLD payload for " &
-                    "those property names.")
+                    $"Forced script version {target.ScriptVersionOverride} does not advance past the last " &
+                    $"published generation ({floorGen}). The payload still reaches actors — the random salt " &
+                    "keeps the property names unique — but the version number no longer reflects publish order.")
             End If
         Else
             ctx.ApplyScriptGeneration = PexPatcher.NextGeneration(floorGen)

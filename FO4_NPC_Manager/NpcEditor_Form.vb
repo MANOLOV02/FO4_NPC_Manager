@@ -1043,7 +1043,15 @@ Public Class NpcEditor_Form
         ' Materialize → clear Use-X flag for each edited category BEFORE applying (engine CopyFromTemplate rule).
         ' Traits uses the SAME skip-overlay-owned rule as the save apply so the preview matches the written record
         ' (overlay-owned appearance fields come from the LM overlay at render, not the template).
-        If traitsChanged Then NpcTemplateMaterializer.MakeCategoryOwn(_npc, NPC_TemplateCategory.Traits, _getParsedNpc, skipOverlayOwned:=_mainForm.NpcHasOverlay(_npcFormID))
+        ' Traits: el resolver de LVLN es lo que evita que una cadena que termina en una lista nivelada se
+        ' quede sin materializar y ADEMÁS pierda el bit (= NPC sin cara). Con varias hojas se FIJA una —
+        ' la que se está previsualizando— y el NPC deja de re-sortear plantilla: es exactamente para lo que
+        ' está el editor (volver concreto a un NPC genérico), así que no se bloquea ni se pregunta nada.
+        If traitsChanged Then
+            NpcTemplateMaterializer.MakeCategoryOwn(_npc, NPC_TemplateCategory.Traits, _getParsedNpc,
+                                                    skipOverlayOwned:=_mainForm.NpcHasOverlay(_npcFormID),
+                                                    resolveLvlnPick:=AddressOf _mainForm.ResolveLvlnPick_Friend)
+        End If
         If baseDataChanged Then NpcTemplateMaterializer.MakeCategoryOwn(_npc, NPC_TemplateCategory.BaseData, _getParsedNpc)
         If statsChanged Then NpcTemplateMaterializer.MakeCategoryOwn(_npc, NPC_TemplateCategory.Stats, _getParsedNpc)
         If keywordsChanged Then NpcTemplateMaterializer.MakeCategoryOwn(_npc, NPC_TemplateCategory.Keywords, _getParsedNpc)
@@ -1071,6 +1079,7 @@ Public Class NpcEditor_Form
                       keywordsChanged OrElse apprChanged OrElse factionsChanged OrElse inventoryChanged OrElse
                       perksChanged OrElse actorEffectsChanged OrElse propertiesChanged OrElse
                       defaultOutfitChanged OrElse sleepOutfitChanged
+
         DialogResult = DialogResult.OK
         Close()
     End Sub

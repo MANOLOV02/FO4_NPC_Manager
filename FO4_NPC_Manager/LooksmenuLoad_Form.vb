@@ -11,10 +11,12 @@ Imports FO4_Base_Library
 '''   - User types in the filter box: live-filter list by filename substring (case-insensitive).
 '''   - User selects an entry: the shared <see cref="PresetCategoryPanel"/> shows what that preset carries
 '''     per category (head parts, tints, morphs, BodySlide sliders, overlays, …) and greys out the
-'''     categories it carries nothing for; <see cref="LabelInfo"/> shows provenance + warnings.
-'''     Under SSE the host mapper composes the .jslot onto a clone of the pre-dialog overlay, so there the
-'''     amounts describe what the row WOULD APPLY (the .jslot's value where it has one, the NPC's current
-'''     value otherwise) rather than the raw file contents.
+'''     categories it carries nothing for; <see cref="LabelInfo"/> states whether anything of it is missing
+'''     or incompatible, and "Show incompatible" opens the per-item report.
+'''     Everything the user READS goes through <see cref="FileView"/> = the FILE's own content, in both
+'''     games. That matters under SSE: the preset the list holds is the .jslot mapped onto a clone of the
+'''     pre-dialog overlay (mandatory — see <see cref="SsePresetMapping"/>), so without this the amounts and
+'''     findings would attribute the NPC's own look to the preset. Preview and OK use the merged one.
 '''   - Selecting an entry OR toggling any category fires <see cref="PreviewRequested"/> so the caller can
 '''     apply the filtered overlay live to the preview. Unticked categories keep whatever the NPC shows
 '''     today — the merge is <see cref="PresetCategoryFilter.BuildFiltered"/>, the same one Paste Look uses.
@@ -36,16 +38,52 @@ Public Class LooksmenuLoad_Form
     ' category panel, live preview, OK — is shared with the FO4 path. Game-aware, NOT a separate window.
     Private ReadOnly _isSse As Boolean
     Private ReadOnly _ssePresetsDir As String
-    Private ReadOnly _sseMapper As Func(Of String, LooksmenuLoader.LooksmenuPreset)
+    Private ReadOnly _sseMapper As Func(Of String, SsePresetMapping)
+
+    ''' <summary>The two readings of one <c>.jslot</c> the browser needs, produced from a SINGLE load of the
+    ''' file (the parse + the per-vertex sculpt conversion is the expensive part; re-mapping the parsed jslot
+    ''' onto a second base is in-memory work).</summary>
+    Public Class SsePresetMapping
+        ''' <summary>Mapped onto a clone of the pre-dialog overlay: what the NPC ENDS UP with. This is the
+        ''' object the list holds, the preview applies and OK returns. The clone is not optional — several
+        ''' .jslot fields can't express "absent" (NAM9 is a fixed 18-slot vector where 0 is a real value), so
+        ''' the mapper seeds from the previous value and overwrites only what the file declares.</summary>
+        Public ReadOnly Applied As LooksmenuLoader.LooksmenuPreset
+        ''' <summary>Mapped onto an EMPTY preset: what the FILE itself carries. Everything the user READS goes
+        ''' through this one (category amounts, race-compat filter, "Show incompatible"), so a count or a
+        ''' finding is never the NPC's own content misattributed to the preset — which is what the FO4 path
+        ''' gets for free by parsing the .json and nothing else.</summary>
+        Public ReadOnly FileOnly As LooksmenuLoader.LooksmenuPreset
+        Public Sub New(applied As LooksmenuLoader.LooksmenuPreset, fileOnly As LooksmenuLoader.LooksmenuPreset)
+            Me.Applied = applied
+            Me.FileOnly = fileOnly
+        End Sub
+    End Class
+
+    ''' <summary>Applied preset → its file-only twin. Populated at list-build time; <see cref="FileView"/> is
+    ''' the only reader. Empty under FO4 (there the preset already IS the file).</summary>
+    Private ReadOnly _fileOnlyView As New Dictionary(Of LooksmenuLoader.LooksmenuPreset, LooksmenuLoader.LooksmenuPreset)
 
     ''' <summary>True when no shape of the NPC's body NIF carries BODYTRI extra-data: BodySlide sliders can
     ''' still be loaded, they just won't show in-game. Surfaced as a note instead of forcing the category off.</summary>
     Private ReadOnly _npcHasBodyTri As Boolean
 
+    ' F4SE catalogs (FO4) the host supplies so the compatibility audit can tell "this overlay/skin template
+    ' isn't installed" apart from "not checked". Nothing = the host couldn't supply them; the report says so
+    ' instead of accusing a template of being missing.
+    Private ReadOnly _knownOverlayTemplateIds As HashSet(Of String)
+    Private ReadOnly _knownLmSkinTemplateIds As HashSet(Of String)
+
+    ''' <summary>Per-preset compatibility audit (<see cref="PresetCompatibilityReport"/>), memoized: the
+    ''' selection handler runs it on every click and the result is invariant for the dialog's lifetime
+    ''' (race + gender + NPC are fixed at construction).</summary>
+    Private ReadOnly _auditCache As New Dictionary(Of LooksmenuLoader.LooksmenuPreset, PresetCompatibilityReport.PresetAuditReport)
+
     ' Race-compatibility filter inputs (optional — Nothing means race info wasn't supplied
     ' and the checkbox stays disabled because we can't compute compatibility).
     Private ReadOnly _raceFormID As UInteger
     Private ReadOnly _race As RACE_Data
+    Private ReadOnly _raceDisplayName As String = ""
     Private ReadOnly _raceDefaults As HashSet(Of UInteger)
     ' FLST cache reused across IsHdptValidForRace calls so each FLST is parsed once per session.
     Private ReadOnly _flstCache As New Dictionary(Of UInteger, FLST_Data)
@@ -89,7 +127,9 @@ Public Class LooksmenuLoad_Form
                    Optional raceDefaultHeadPartFormIDs As IEnumerable(Of UInteger) = Nothing,
                    Optional isSse As Boolean = False,
                    Optional ssePresetsDir As String = Nothing,
-                   Optional sseMapper As Func(Of String, LooksmenuLoader.LooksmenuPreset) = Nothing)
+                   Optional sseMapper As Func(Of String, SsePresetMapping) = Nothing,
+                   Optional knownOverlayTemplateIds As IEnumerable(Of String) = Nothing,
+                   Optional knownLmSkinTemplateIds As IEnumerable(Of String) = Nothing)
         InitializeComponent()
         _pluginManager = pluginManager
         _dataPath = dataPath
@@ -100,12 +140,17 @@ Public Class LooksmenuLoad_Form
         _npcHasBodyTri = npcHasBodyTri
         _raceFormID = raceFormID
         _race = race
+        _raceDisplayName = If(raceDisplayName, "")
         _raceDefaults = New HashSet(Of UInteger)
         If raceDefaultHeadPartFormIDs IsNot Nothing Then
             For Each fid In raceDefaultHeadPartFormIDs
                 _raceDefaults.Add(fid)
             Next
         End If
+        ' Ordinal comparison on purpose: both catalogs key by an id the engine matches with a plain
+        ' string compare (OverlayInterface / SkinInterface), so case matters here too.
+        If knownOverlayTemplateIds IsNot Nothing Then _knownOverlayTemplateIds = New HashSet(Of String)(knownOverlayTemplateIds, StringComparer.Ordinal)
+        If knownLmSkinTemplateIds IsNot Nothing Then _knownLmSkinTemplateIds = New HashSet(Of String)(knownLmSkinTemplateIds, StringComparer.Ordinal)
 
         Text = If(_isSse, "Load RaceMenu Preset", "Load LooksMenu Preset")
 
@@ -146,7 +191,34 @@ Public Class LooksmenuLoad_Form
     End Sub
 
     Private Sub LooksmenuLoad_Form_Load(sender As Object, e As EventArgs) Handles MyBase.Load
+        EnsureRoomForCategoryPanel()
         LoadPresetList()
+    End Sub
+
+    ''' <summary>Grow the dialog's minimum height until the category panel actually fits.
+    '''
+    ''' <para>The panel's last row (Select all / Deselect all) is a percent-sized row: when the GroupBox is
+    ''' shorter than the panel's content, that row is squeezed to zero and the FlowLayoutPanel — AutoSize —
+    ''' still paints its buttons, OUTSIDE the panel and over the GroupBox's bottom border, which is what
+    ''' "something below the right-hand buttons is erasing the group frame" looks like. Measured: the panel
+    ''' wants ~494px (its <see cref="PresetCategoryPanel.PreferredPanelHeight"/> + the GroupBox chrome) and the
+    ''' old 620px minimum left it 477. Both games were short — FO4 by the same 17px, just less visibly.</para>
+    '''
+    ''' <para>Derived from the panel instead of hard-coded so a new category row can't silently reintroduce it.
+    ''' Width is untouched: the 900px minimum is a deliberate request (the list starts narrow).</para></summary>
+    Private Sub EnsureRoomForCategoryPanel()
+        Root.PerformLayout()
+        ' Both "chrome" terms are MEASURED, not assumed: the GroupBox's is caption + borders + padding, which
+        ' depends on the running font, and the window's is the title bar + borders. Guessing either is how the
+        ' panel ends up a few pixels short — and a few pixels short is exactly when its action row overflows.
+        Dim groupChrome As Integer = CategoriesGroup.Height - CategoriesGroup.DisplayRectangle.Height
+        Dim chrome As Integer = Height - ClientSize.Height
+        ' Rows 1..4 are the GroupBox's span; rows 0 (header) and 5 (OK/Cancel) are what it does NOT get.
+        Dim rowsOutsideGroup As Integer = CInt(Root.RowStyles(0).Height + Root.RowStyles(5).Height)
+        Dim needed As Integer = rowsOutsideGroup + groupChrome + CategoryPanel.PreferredPanelHeight +
+                                Root.Padding.Vertical + chrome
+        If MinimumSize.Height < needed Then MinimumSize = New Size(MinimumSize.Width, needed)
+        If Height < MinimumSize.Height Then Height = MinimumSize.Height
     End Sub
 
     Private Sub LoadPresetList()
@@ -163,13 +235,16 @@ Public Class LooksmenuLoad_Form
                 ' the LooksMenu path (LooksmenuLoader.EnumeratePresetFiles). RaceMenu's own loader takes a full
                 ' path regardless of nesting, so subfoldered presets apply cleanly.
                 For Each fp In Directory.GetFiles(_ssePresetsDir, "*.jslot", SearchOption.AllDirectories)
-                    Dim mapped = _sseMapper(fp)
-                    If mapped Is Nothing Then
+                    Dim mapping = _sseMapper(fp)
+                    If mapping Is Nothing OrElse mapping.Applied Is Nothing Then
                         Dim fpLocal = fp
                         Logger.LogLazy(Function() $"[LMLoad] DROP '{Path.GetFileName(fpLocal)}': RaceMenu mapper returned Nothing (jslot failed to load/map).")
                         Continue For
                     End If
-                    _allPresets.Add(mapped)
+                    ' Register the file-only twin here (not lazily on selection) because the race-compat filter
+                    ' runs over every preset before any selection exists.
+                    If mapping.FileOnly IsNot Nothing Then _fileOnlyView(mapping.Applied) = mapping.FileOnly
+                    _allPresets.Add(mapping.Applied)
                 Next
             End If
         Else
@@ -223,6 +298,17 @@ Public Class LooksmenuLoad_Form
         ButtonOk.Enabled = False
     End Sub
 
+    ''' <summary>What this preset SAYS — the file's own content. Under FO4 that is the preset itself (the
+    ''' parser reads the .json and nothing else); under SSE it is the file-only mapping, because the preset the
+    ''' list holds has the NPC's current look underneath it. Everything the user reads goes through here;
+    ''' the preview and OK deliberately do NOT (they need the merged one).</summary>
+    Private Function FileView(preset As LooksmenuLoader.LooksmenuPreset) As LooksmenuLoader.LooksmenuPreset
+        If preset Is Nothing Then Return Nothing
+        Dim v As LooksmenuLoader.LooksmenuPreset = Nothing
+        If _fileOnlyView.TryGetValue(preset, v) Then Return v
+        Return preset
+    End Function
+
     ''' <summary>Memoized wrapper so the strict HeadPart + FaceTint check runs at most once per
     ''' preset per session. Each preset's compatibility is invariant for the lifetime of this
     ''' dialog (race + gender are fixed at construction).</summary>
@@ -237,8 +323,12 @@ Public Class LooksmenuLoad_Form
         ' into HeadPartFormIDs, where the render's own race filter dropped it — leaving the NPC with NO head
         ' at all (measured: 18 of 25 vanilla-adjacent presets carry a foreign base head).
         ' Unticking "Show only race-compatible" still lists every preset — the filter is the user's choice.
+        ' Judged on the FILE's head parts: under SSE the merged preset falls back to the NPC's own parts for
+        ' every slot the .jslot doesn't fill, and hiding a preset over parts the NPC already wears would be a
+        ' verdict about the NPC, not about the preset. (Same list whenever the .jslot does declare parts — the
+        ' mapper replaces the whole list then — so this doesn't change which presets are listed today.)
         Dim result = HeadPartResolver.IsPresetCompatibleWithRace(
-            preset, _raceFormID, _gender = 1, _pluginManager, _race, _flstCache, _raceDefaults)
+            FileView(preset), _raceFormID, _gender = 1, _pluginManager, _race, _flstCache, _raceDefaults)
         _compatibilityCache(preset) = result
         Return result
     End Function
@@ -248,7 +338,11 @@ Public Class LooksmenuLoad_Form
         ButtonOk.Enabled = item IsNot Nothing
         ' Refresh the per-category amounts BEFORE previewing: the panel decides which categories are
         ' selectable for this preset, and Options (read by RaisePreview) depends on that.
-        CategoryPanel.SetPreset(item?.Preset)
+        ' Fed the FILE view: the amounts must describe what this preset brings. A category the file doesn't
+        ' carry is therefore greyed out ⇒ Options reports False ⇒ the merge preserves the NPC's current value —
+        ' which is the same value the merged preset was carrying for it anyway, so the applied result is
+        ' unchanged; only the number the user reads is now honest.
+        CategoryPanel.SetPreset(FileView(item?.Preset))
         UpdateInfo(item?.Preset)
         RaisePreview(item?.Preset)
     End Sub
@@ -257,9 +351,10 @@ Public Class LooksmenuLoad_Form
         RaiseEvent PreviewRequested(Me, New PreviewRequestArgs(preset, CategoryPanel.Options))
     End Sub
 
-    ''' <summary>Provenance + warnings for the selected preset. The per-category amounts live in the panel
-    ''' on the right, so this line carries what the panel can't: where the file came from, head parts whose
-    ''' owning plugin isn't loaded, and fields we knowingly don't apply.</summary>
+    ''' <summary>Provenance + the SHORT verdict for the selected preset. The per-category amounts live in the
+    ''' panel on the right; the exhaustive per-item breakdown lives behind "Show incompatible"
+    ''' (<see cref="PresetCompatibilityReport"/>), so this line only states THAT something is missing —
+    ''' enumerating it here never fit in two lines and hid most of it.</summary>
     Private Sub UpdateInfo(preset As LooksmenuLoader.LooksmenuPreset)
         If preset Is Nothing Then
             Dim emptyFolder = If(_isSse, "Data\SKSE\Plugins\CharGen\Presets\", "Data\F4SE\Plugins\F4EE\Presets\")
@@ -268,38 +363,103 @@ Public Class LooksmenuLoad_Form
                                            $"No {If(_gender = 1, "female", "male")} presets found in {emptyFolder}."),
                                 "Select a preset to see what it carries.")
             LabelInfo.ForeColor = SystemColors.GrayText
+            ButtonShowIncompatible.Enabled = False
             Return
         End If
 
-        Dim warnings As New List(Of String)
-        If preset.UnresolvedHeadParts.Count > 0 Then
-            warnings.Add($"{preset.UnresolvedHeadParts.Count} head part(s) reference a plugin that isn't loaded")
-        End If
-        ' Overlays are supported (parse + render + round-trip). Only the F4SE skin override remains
-        ' unsupported on load, and only under FO4.
-        If Not _isSse AndAlso preset.UnsupportedCounts.HasSkinOverride Then
-            warnings.Add("F4SE skin override will be skipped")
-        End If
-        If Not _npcHasBodyTri AndAlso preset.BodyMorphSliders.Count > 0 Then
-            warnings.Add("this NPC's body has no BODYTRI, so BodySlide sliders won't show in-game")
-        End If
-
-        Dim src = preset.SourcePath
-        Try
-            If Not String.IsNullOrEmpty(_dataPath) AndAlso src.StartsWith(_dataPath, StringComparison.OrdinalIgnoreCase) Then
-                src = src.Substring(_dataPath.Length).TrimStart(Path.DirectorySeparatorChar)
-            End If
-        Catch
-        End Try
-
-        If warnings.Count > 0 Then
-            LabelInfo.Text = src & vbCrLf & "Note: " & String.Join("; ", warnings) & "."
+        ' The file path was dropped from this line: the list already shows the preset name and the full path is
+        ' in the report header, so all this line has to carry is the verdict — which the button then expands.
+        Dim audit = GetAudit(preset)
+        ButtonShowIncompatible.Enabled = audit.Count > 0
+        If audit.Count > 0 Then
+            LabelInfo.Text = "Incompatibility found"
             LabelInfo.ForeColor = Drawing.Color.DarkGoldenrod
         Else
-            LabelInfo.Text = src
+            LabelInfo.Text = "No incompatibility"
             LabelInfo.ForeColor = SystemColors.ControlText
         End If
     End Sub
+
+    ''' <summary>Memoized compatibility audit for one preset. Computed lazily on selection (the record parsing
+    ''' + FLST walks are the same ones the race filter already does, so this is cheap and reuses
+    ''' <see cref="_flstCache"/>).</summary>
+    Private Function GetAudit(preset As LooksmenuLoader.LooksmenuPreset) As PresetCompatibilityReport.PresetAuditReport
+        Dim cached As PresetCompatibilityReport.PresetAuditReport = Nothing
+        If _auditCache.TryGetValue(preset, cached) Then Return cached
+        Dim ctx As New PresetCompatibilityReport.PresetAuditContext With {
+            .Preset = FileView(preset),
+            .IsSse = _isSse,
+            .PluginManager = _pluginManager,
+            .DataPath = _dataPath,
+            .RaceFormID = _raceFormID,
+            .Race = _race,
+            .RaceDisplayName = _raceDisplayName,
+            .IsFemale = (_gender = 1),
+            .RaceDefaults = _raceDefaults,
+            .FlstCache = _flstCache,
+            .NpcHasBodyTri = _npcHasBodyTri,
+            .KnownOverlayTemplateIds = _knownOverlayTemplateIds,
+            .KnownLmSkinTemplateIds = _knownLmSkinTemplateIds}
+        Dim built As PresetCompatibilityReport.PresetAuditReport
+        Try
+            built = PresetCompatibilityReport.Build(ctx)
+        Catch ex As Exception
+            ' A malformed preset must never break the browser: degrade to an empty audit and log.
+            Logger.LogLazy(Function() $"[LMLoad] compatibility audit failed for '{IO.Path.GetFileName(preset.SourcePath)}': {ex}")
+            built = New PresetCompatibilityReport.PresetAuditReport()
+        End Try
+        _auditCache(preset) = built
+        Return built
+    End Function
+
+    ''' <summary>"Show incompatible": the exhaustive breakdown, in the same read-only monospace modal the SSE
+    ''' morph reconstruction uses for its preview report — the content is a fixed-width table of findings, and
+    ''' a label/tooltip can't hold it.</summary>
+    Private Sub ButtonShowIncompatible_Click(sender As Object, e As EventArgs) Handles ButtonShowIncompatible.Click
+        Dim item = TryCast(ListBoxPresets.SelectedItem, PresetItem)
+        If item Is Nothing Then Return
+        Dim text = PresetCompatibilityReport.BuildText(GetAudit(item.Preset))
+
+        Using f As New Form With {
+            .Text = $"Incompatible / missing content — {IO.Path.GetFileNameWithoutExtension(item.Preset.SourcePath)}",
+            .StartPosition = FormStartPosition.CenterParent,
+            .Size = New Size(860, 620),
+            .MinimizeBox = False, .MaximizeBox = True, .ShowInTaskbar = False}
+            ' TabStop=False so the initial focus lands on the button instead of the TextBox — a focused
+            ' multiline TextBox auto-selects ALL its content, which shows the whole report highlighted.
+            Dim txt As New TextBox With {
+                .Multiline = True, .ReadOnly = True, .Dock = DockStyle.Fill,
+                .ScrollBars = ScrollBars.Both, .WordWrap = False, .TabStop = False,
+                .Font = New Font(FontFamily.GenericMonospace, 8.5F),
+                .Text = NormalizeEol(text)}
+            Dim bar As New Panel With {.Dock = DockStyle.Bottom, .Height = 40, .Padding = New Padding(6)}
+            Dim btnClose As New Button With {.Text = "Close", .DialogResult = DialogResult.Cancel,
+                                             .Dock = DockStyle.Right, .Width = 110}
+            Dim btnCopy As New Button With {.Text = "Copy", .Dock = DockStyle.Right, .Width = 110}
+            AddHandler btnCopy.Click, Sub()
+                                          Try
+                                              If txt.TextLength > 0 Then Clipboard.SetText(txt.Text)
+                                          Catch
+                                          End Try
+                                      End Sub
+            bar.Controls.Add(btnClose)
+            bar.Controls.Add(btnCopy)
+            f.Controls.Add(txt)
+            f.Controls.Add(bar)
+            txt.BringToFront()
+            f.AcceptButton = btnClose
+            f.CancelButton = btnClose
+            AddHandler f.Shown, Sub() txt.Select(0, 0)
+            f.ShowDialog(Me)
+        End Using
+    End Sub
+
+    ''' <summary>Normalize line endings to CRLF WITHOUT doubling them (a plain Replace(vbLf, vbCrLf) turns each
+    ''' existing CRLF into CR+CRLF and inserts blank lines in the TextBox).</summary>
+    Private Shared Function NormalizeEol(s As String) As String
+        If String.IsNullOrEmpty(s) Then Return ""
+        Return s.Replace(vbCrLf, vbLf).Replace(vbCr, vbLf).Replace(vbLf, vbCrLf)
+    End Function
 
     Private Sub ButtonOk_Click(sender As Object, e As EventArgs) Handles ButtonOk.Click
         Dim item = TryCast(ListBoxPresets.SelectedItem, PresetItem)

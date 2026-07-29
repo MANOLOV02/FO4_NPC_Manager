@@ -225,45 +225,45 @@ Partial Class SaveEsp_Form
         CheckBoxGenerateChargen.TabIndex = 0
         CheckBoxGenerateChargen.Text = "Bake CharGen (NIF + textures) → BA2 / Looses"
         CheckBoxGenerateChargen.UseVisualStyleBackColor = True
-        '
+        ' 
         ' CheckBoxRemoveChargenFlag
-        '
+        ' 
         CheckBoxRemoveChargenFlag.AutoSize = True
         CheckBoxRemoveChargenFlag.Checked = True
         CheckBoxRemoveChargenFlag.CheckState = CheckState.Checked
         CheckBoxRemoveChargenFlag.Location = New Point(32, 48)
         CheckBoxRemoveChargenFlag.Name = "CheckBoxRemoveChargenFlag"
-        CheckBoxRemoveChargenFlag.Size = New Size(330, 19)
+        CheckBoxRemoveChargenFlag.Size = New Size(322, 19)
         CheckBoxRemoveChargenFlag.TabIndex = 1
         CheckBoxRemoveChargenFlag.Text = "Remove 'Is CharGen Face Preset' flag from saved NPC(s)"
         CheckBoxRemoveChargenFlag.UseVisualStyleBackColor = True
-        '
+        ' 
         ' CheckBoxEmitBodyGen
-        '
+        ' 
         CheckBoxEmitBodyGen.AutoSize = True
         CheckBoxEmitBodyGen.Checked = True
         CheckBoxEmitBodyGen.CheckState = CheckState.Checked
         CheckBoxEmitBodyGen.Location = New Point(12, 76)
         CheckBoxEmitBodyGen.Name = "CheckBoxEmitBodyGen"
-        CheckBoxEmitBodyGen.Size = New Size(296, 19)
+        CheckBoxEmitBodyGen.Size = New Size(271, 19)
         CheckBoxEmitBodyGen.TabIndex = 2
         CheckBoxEmitBodyGen.Text = "Emit BodyGen .ini (body sliders on first spawn)"
         CheckBoxEmitBodyGen.UseVisualStyleBackColor = True
-        '
+        ' 
         ' CheckBoxEmitApplyScript
-        '
+        ' 
         CheckBoxEmitApplyScript.AutoSize = True
         CheckBoxEmitApplyScript.Checked = True
         CheckBoxEmitApplyScript.CheckState = CheckState.Checked
         CheckBoxEmitApplyScript.Location = New Point(12, 102)
         CheckBoxEmitApplyScript.Name = "CheckBoxEmitApplyScript"
-        CheckBoxEmitApplyScript.Size = New Size(340, 19)
+        CheckBoxEmitApplyScript.Size = New Size(356, 19)
         CheckBoxEmitApplyScript.TabIndex = 3
         CheckBoxEmitApplyScript.Text = "Emit apply-script (overlays / skin / node scales / body morphs)"
         CheckBoxEmitApplyScript.UseVisualStyleBackColor = True
-        '
+        ' 
         ' CheckBoxOverrideScriptVersion
-        '
+        ' 
         CheckBoxOverrideScriptVersion.AutoSize = True
         CheckBoxOverrideScriptVersion.Location = New Point(32, 126)
         CheckBoxOverrideScriptVersion.Name = "CheckBoxOverrideScriptVersion"
@@ -271,20 +271,20 @@ Partial Class SaveEsp_Form
         CheckBoxOverrideScriptVersion.TabIndex = 4
         CheckBoxOverrideScriptVersion.Text = "Override version"
         CheckBoxOverrideScriptVersion.UseVisualStyleBackColor = True
-        '
+        ' 
         ' NumericUpDownScriptVersion
-        '
+        ' 
         NumericUpDownScriptVersion.Enabled = False
         NumericUpDownScriptVersion.Location = New Point(150, 123)
         NumericUpDownScriptVersion.Maximum = New Decimal(New Integer() {999999, 0, 0, 0})
-        NumericUpDownScriptVersion.Minimum = New Decimal(New Integer() {0, 0, 0, 0})
         NumericUpDownScriptVersion.Name = "NumericUpDownScriptVersion"
-        NumericUpDownScriptVersion.Size = New Size(58, 23)
+        NumericUpDownScriptVersion.Size = New Size(78, 23)
         NumericUpDownScriptVersion.TabIndex = 5
+        NumericUpDownScriptVersion.TextAlign = HorizontalAlignment.Right
         NumericUpDownScriptVersion.Value = New Decimal(New Integer() {1, 0, 0, 0})
-        '
+        ' 
         ' CheckBoxSaveNewOutfits
-        '
+        ' 
         CheckBoxSaveNewOutfits.AutoSize = True
         CheckBoxSaveNewOutfits.Location = New Point(12, 152)
         CheckBoxSaveNewOutfits.Name = "CheckBoxSaveNewOutfits"
@@ -489,9 +489,9 @@ Partial Class SaveEsp_Form
         PanelScope.PerformLayout()
         GroupBoxTarget.ResumeLayout(False)
         GroupBoxTarget.PerformLayout()
-        CType(NumericUpDownScriptVersion, ComponentModel.ISupportInitialize).EndInit()
         GroupBoxSave.ResumeLayout(False)
         GroupBoxSave.PerformLayout()
+        CType(NumericUpDownScriptVersion, ComponentModel.ISupportInitialize).EndInit()
         GroupBoxEncoding.ResumeLayout(False)
         GroupBoxEncoding.PerformLayout()
         GroupBoxLvlList.ResumeLayout(False)

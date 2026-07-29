@@ -133,9 +133,13 @@ Public Class PresetCategoryPanel
         Dim bodyRows = VisibleRowCount(BodyLayout)
         Dim faceRows = VisibleRowCount(FaceLayout)
         Dim flagRows = VisibleRowCount(FlagsLayout)
-        Root.RowStyles(0).Height = bodyRows * RowHeight + GroupChrome
-        Root.RowStyles(1).Height = faceRows * RowHeight + GroupChrome
-        Root.RowStyles(2).Height = flagRows * RowHeight + GroupChrome
+        ' + Margin.Vertical: the GroupBox's margin is spent INSIDE its cell, so a row of exactly
+        ' rows*RowHeight + GroupChrome leaves the box that many pixels short of its own content. Left out, the
+        ' three groups were 6px short each — 18px the panel needs that no row declared, which is what made a
+        ' host that shrink-wrapped to these numbers clip its own buttons.
+        Root.RowStyles(0).Height = bodyRows * RowHeight + GroupChrome + GroupBoxBody.Margin.Vertical
+        Root.RowStyles(1).Height = faceRows * RowHeight + GroupChrome + GroupBoxFace.Margin.Vertical
+        Root.RowStyles(2).Height = flagRows * RowHeight + GroupChrome + GroupBoxFlags.Margin.Vertical
     End Sub
 
     ''' <summary>How many rows of one group survive the game gate.</summary>
@@ -148,10 +152,15 @@ Public Class PresetCategoryPanel
     End Function
 
     ''' <summary>Total height the panel wants for the current game — lets a host size itself around the
-    ''' panel instead of hard-coding a per-game number.</summary>
+    ''' panel instead of hard-coding a per-game number.
+    ''' <para>The action row is measured by <see cref="Control.PreferredSize"/>, NOT by its current
+    ''' <c>Height</c>: it is AutoSize inside the layout's last row, so its live height is whatever the host
+    ''' happens to be giving it. Asking for that would answer "as much as you already gave me" and a host that
+    ''' sized itself from the answer would keep its own dead space forever.</para></summary>
     Public ReadOnly Property PreferredPanelHeight As Integer
         Get
-            Return CInt(Root.RowStyles(0).Height + Root.RowStyles(1).Height + Root.RowStyles(2).Height) + QuickRow.Height + 12
+            Return CInt(Root.RowStyles(0).Height + Root.RowStyles(1).Height + Root.RowStyles(2).Height) +
+                   QuickRow.PreferredSize.Height
         End Get
     End Property
 

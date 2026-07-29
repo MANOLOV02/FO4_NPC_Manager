@@ -178,8 +178,23 @@ Friend NotInheritable Class NpcMaterialResolver
         ' in-game runtime the user actually sees.
         Dim hairColorFormID As UInteger = If(state IsNot Nothing, state.HairColorFormID, 0UI)
 
+        ' ⭐ SSE RaceMenu absolute hair tint (.jslot actor.hairColor, packed 0xRRGGBB) — resolved HERE, the one
+        ' place BOTH entry points share, instead of in ResolveHairTintColor (which only the NIF-load path calls
+        ' and which therefore left the live-preview refresh — NpcFaceTintResolver.RefreshFaceTintLivePreview,
+        ' which passes hairTintColorOverride:=Nothing — falling back to the CLFM and silently dropping the
+        ' preset colour on any TexturesOnly refresh). One resolution point = render, live refresh and BAKE agree.
+        ' GAME-GATED: FO4 presets carry no such value and a FO4 hair CLFM works by RemappingIndex, not RGB.
+        Dim presetHairRgb As Integer? = Nothing
+        If state IsNot Nothing AndAlso Config_App.Current IsNot Nothing AndAlso
+           Config_App.Current.Game = Config_App.Game_Enum.Skyrim Then
+            presetHairRgb = state.SseHairColorRgb
+        End If
+
         Dim didPalette As Boolean = False
-        If hairColorFormID <> 0UI Then
+        ' The preset colour is ABSOLUTE and outranks the palette branch (skee overwrites the material's tint
+        ' outright, PresetInterface.cpp:112-116). In practice SSE never takes the palette branch anyway — a
+        ' Skyrim CLFM carries an RGB, not a RemappingIndex — so this only makes the precedence explicit.
+        If hairColorFormID <> 0UI AndAlso Not presetHairRgb.HasValue Then
             Dim clfm = ResolveColorFormData(hairColorFormID)
             If clfm IsNot Nothing AndAlso clfm.HasRemappingIndex Then
                 ' PRESERVAR el opt-in de palette de la FUENTE (no forzarlo). Probado sobre el corpus
@@ -226,6 +241,14 @@ Friend NotInheritable Class NpcMaterialResolver
 
         If Not didPalette Then
             Dim effectiveHairColor = hairTintColorOverride
+            ' Preset RGB first: it is what skee paints on the live material, so it outranks both the HDPT.CNAM
+            ' solid tint and the NPC's CLFM. (⚠️ SIN MEDIR, as before: no vanilla case exercises preset-vs-CNAM,
+            ' since CNAM exists on exactly 5 HDPT in all of vanilla+DLC. Preset-first was the prior behaviour.)
+            If presetHairRgb.HasValue Then
+                effectiveHairColor = Color.FromArgb((presetHairRgb.Value >> 16) And &HFF,
+                                                    (presetHairRgb.Value >> 8) And &HFF,
+                                                    presetHairRgb.Value And &HFF)
+            End If
             ' ⭐ HDPT.CNAM (Head Part Color) GANA sobre NPC.HCLF, por head part. Se resuelve ACÁ —punto
             ' compartido render+bake— porque el camino del RENDER llama con hairTintColorOverride:=Nothing
             ' (NpcFaceTintResolver.vb:1184) y sin esto vería el HCLF mientras el bake ve el CNAM: RENDER ≠ BAKE.
@@ -1004,14 +1027,10 @@ Friend NotInheritable Class NpcMaterialResolver
         ' rationale: BCLF ignored at render/bake, preserved untouched in the ESP).
         Select Case candidate.HeadPartType
             Case HeadPartTypeHair, HeadPartTypeFacialHair, 6
-                ' SSE RaceMenu absolute hair tint (packed 0xRRGGBB from the applied .jslot) — precedence over the
-                ' CLFM, matching skee's ApplyMappedPreset which writes the preset's hairColor straight onto the hair
-                ' shader material. The ×2 SSE doubling is applied downstream in ApplyMaterialPaletteHairColor, exactly
-                ' as it is for the CLFM colour, so this stays a single hair-tint resolution point.
-                If state IsNot Nothing AndAlso state.SseHairColorRgb.HasValue Then
-                    Dim rgb = state.SseHairColorRgb.Value
-                    Return Color.FromArgb((rgb >> 16) And &HFF, (rgb >> 8) And &HFF, rgb And &HFF)
-                End If
+                ' ⛔ El RGB absoluto de RaceMenu (state.SseHairColorRgb) NO se resuelve acá: vive en
+                ' ApplyMaterialPaletteHairColor, que es el ÚNICO punto que comparten los DOS consumidores
+                ' (NIF-load con este override + refresh live con override=Nothing). Estaba acá y el refresh live
+                ' no lo veía ⇒ tocar cualquier cosa que disparara TexturesOnly devolvía el pelo al CLFM.
                 ' ⭐ HDPT.CNAM (Head Part Color) GANA sobre NPC.HCLF, por head part. Antes este Select salía
                 ' con el HCLF y el `headPartColor` de abajo quedaba INALCANZABLE para pelo/barba/cejas — o sea
                 ' justo para los únicos head parts donde el CNAM existe.
