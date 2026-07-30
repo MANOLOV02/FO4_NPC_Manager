@@ -629,26 +629,46 @@ Friend NotInheritable Class NpcMaterialResolver
         Dim material = relatedMaterial.material
         If material Is Nothing Then Return
 
-        ' MNAM-loaded rule (split by HDPT.UsesBodyTexture, verified empirically vs CK bake):
-        '   - UsesBodyTexture=True : D + N + S from the override (and NOTHING else — corregido
-        '     2026-07-19 por BAKETEST2 N_S/N_S2; antes decía "+ everything else", ver la nota en el
-        '     cuerpo). La evidencia Alice ChildHeadRear (MNAM=childfemalebody.bgsm) NO discriminaba:
-        '     ese BGSM declara SÓLO D/N/S, todos los demás slots vacíos.
-        '   - UsesBodyTexture=False: diffuse-only. The MNAM just supplies the surface tint
-        '     for this specific shape; Normal/SmoothSpec/Envmap/shaderType/EnvironmentMapping/
-        '     TwoSided all stay from the inline NIF shader. Verified vs Valentine
-        '     SynthGen2HeadRearValentine (TXST.MNAM=gen2skindirty.bgsm has type=Default
-        '     no-Envmap, but CK bake kept inline type=EnvironmentMap with the Envmap path
-        '     and the non-dirty SmoothSpec).
-        ' ⛔ DEROGADO 2026-07-19 (BAKETEST2FO4.esp): decía "los TX## del TXST se aplican por encima,
-        ' así que cualquier slot que el TXST setee gana igual". REFUTADO — ver la REGLA 2 al final de
-        ' esta Sub: cuando el MNAM carga, el material es la única fuente y los TX## no se aplican.
-        ' forceDiffuseOnly (RE 2026-07-16): la fuente FTST del camino Face FO4 se aplica como el
-        ' ATTACH del engine — GetTexturePath(slot 0) ÚNICAMENTE (game 0x1406EE0D7 / CK 0x140ED3830,
-        ' todas las llamadas con xor edx,edx). Ni MNAM ni el resto de slots: el attach no carga el
-        ' material del TXST (un FTST MNAM-only como SkinSupermutantHead da GetTexturePath(0)=vacío,
-        ' medido: el CK bakea NEGRO — experimento TestDftm v1).
+        ' forceDiffuseOnly (RE 2026-07-16): la fuente FTST del camino Face FO4 aplica SOLO el slot 0 — el
+        ' ATTACH del engine, GetTexturePath(slot 0) (game 0x1406EE0D7 / CK 0x140ED3830, todas las llamadas
+        ' con xor edx,edx). Eso NO CAMBIA.
+        ' ⭐⭐ LO QUE SI SE SEPARA: si el MNAM del FTST aporta el material BASE del compose. Son DOS
+        ' consumidores distintos y el `Return` de antes los tenia fusionados:
+        '   (a) QUE SLOTS TX## se aplican         -> solo el 0. RE-ado del attach. Intacto.
+        '   (b) De donde salen los paths D/N/S    -> del MNAM cuando el TXST trae uno. Es OTRA pregunta:
+        '       el attach de runtime resuelve una TEXTURA; el bake resuelve un MATERIAL para COMPONER.
+        ' Lo respalda la regla mejor validada del proyecto (arch_facegen_bake_rules 2, identidad contra
+        ' 10.197 shapes del CK): donde hay MNAM, aporta PATHS DE TEXTURA.
+        ' DONDE MUERDE: en los TXST MNAM-ONLY el slot 0 viene VACIO, asi que sin esta rama no se aplica
+        ' NADA y el compose se queda con el material inline de la malla — o sea D/N/S salen del lugar
+        ' equivocado. Poblacion medida sobre los 1.490 del corpus: 802 sin FTST propio (no cambia) · 681
+        ' con slots, ya honrado (no cambia) · 7 MNAM-only (DISPARAN) · 0 con MNAM Y slots. De los 7, solo 3
+        ' tienen MNAM distinto al default de su raza; los otros 4 son no-op por construccion.
+        ' ⛔ NO SE GATEA POR JUEGO: SSE tiene 0 de 755 TXST con MNAM, asi que el DATO lo gatea solo.
+        '
+        ' ⛔⛔ EVIDENCIA QUE **NO** HAY QUE CITAR PARA ESTO (se midio y es falsa): "el _s de Valentine".
+        ' Sonda sobre su bake real:
+        '     shape='SynthGen2Head1:0'  isFaceTxstSource=False  shaderIsFace=True  shaderType=FaceTint
+        ' isFaceTxstSource=False => forceDiffuseOnly=False => su cabeza NUNCA entra a este bloque; entra
+        ' por el camino normal de mas abajo, que YA carga el MNAM. Sus tres DDS salen con el md5 exacto de
+        ' antes del cambio (_d 9dfd070b, _msn 6f64ac52, _s 4f09b5d3). El caso que motivo la rama es un
+        ' NO-OP para ella. La rama se sostiene por (b) y por los 3 MNAM-only reales, no por Valentine.
+        ' Si reaparece la duda: lo PRIMERO a medir es isFaceTxstSource en el shape concreto.
         If forceDiffuseOnly Then
+            ' (b) primero: el MNAM define el material BASE, y el slot 0 del TXST gana POR ENCIMA (el attach
+            ' es mas especifico que el material). Al reves, cargar el MNAM pisaria el TX00 que el motor si aplica.
+            If textureSet.MaterialPath <> "" Then
+                Dim faceMat = MaterialResolver.TryLoadMaterialFromDictionary(textureSet.MaterialPath, material, shap, nif)
+                If faceMat IsNot Nothing Then
+                    ' SOLO PATHS DE TEXTURA, nunca el shader. Cada slot se copia SOLO si el material lo
+                    ' declara: un BGSM con el slot vacio no debe BORRAR lo que traia el shader inline del
+                    ' mesh fuente (modo de falla medido al copiar los 8 slots: borraba el cubemap).
+                    If Not String.IsNullOrEmpty(faceMat.Diffuse_or_Base_Texture) Then material.Diffuse_or_Base_Texture = faceMat.Diffuse_or_Base_Texture
+                    If Not String.IsNullOrEmpty(faceMat.NormalTexture) Then material.NormalTexture = faceMat.NormalTexture
+                    If Not String.IsNullOrEmpty(faceMat.SmoothSpecTexture) Then material.SmoothSpecTexture = faceMat.SmoothSpecTexture
+                End If
+            End If
+            ' (a) el slot 0 del TXST, exactamente como antes.
             If TxstSlotDecision(textureSet.FormID, "Diffuse", textureSet.DiffuseTexture, material.Diffuse_or_Base_Texture, gatedSlot:=False, diffuseOnly:=True) Then material.Diffuse_or_Base_Texture = textureSet.DiffuseTexture
             Return
         End If

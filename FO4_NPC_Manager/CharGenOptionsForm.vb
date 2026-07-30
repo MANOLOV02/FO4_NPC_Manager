@@ -30,6 +30,8 @@ Public Class CharGenOptionsForm
         CheckGenerateTga.Checked = c.Setting_FaceGenGenerateTga
         ' --- Tab "Fixes": NPC-only toggle, lives in NPC_Config (not Config_App). ---
         CheckBoxApplyGhoulHeadRearFix.Checked = NPC_Config.Current.ApplyGhoulHeadRearFix
+        CheckBoxUseHardwareBcDecode.Checked = NPC_Config.Current.UseHardwareBcDecode
+        CheckBoxAccumInComposite.Checked = ActiveConventionSettings(Config_App.Current).Diffuse.AccumInCompositeSpace
         ' Eyebrows fixed-color override: gate persistido en Config_App (lo lee la librería en
         ' BuildSyntheticEyebrowLut). Requiere ESTE toggle + el archivo SkipEyebrowsTone.ini. Default True.
         CheckBoxApplyEyebrowsFixedColor.Checked = c.Setting_ApplyEyebrowsFixedColor
@@ -43,6 +45,16 @@ Public Class CharGenOptionsForm
         ' en la app (ChargenMouthFix.IsActiveFor / IsGhoulHeadRearCase / BuildSyntheticEyebrowLut); esto
         ' es la señal visual coherente en la UI.
         Dim isFo4 = (c.Game = Config_App.Game_Enum.Fallout4)
+        ' El checkbox del acumulador SOLO tiene efecto donde el espejo CPU sabe acumular en CompositeSpace.
+        ' El camino de cara de SSE lo espeja SseFaceTintComposer, que declara OutputSpaceOnly: con esa
+        ' capacidad, AccumSpaceForChannel devuelve OutputSpace SIEMPRE y el flag queda INERTE por construccion,
+        ' aunque el config lo tenga prendido. Antes esto no se notaba porque el checkbox vivia dentro de
+        ' GroupConvNormal/GroupConvSwap, que ApplyGameAwareUi OCULTA en Skyrim; al moverlo a la solapa de
+        ' formatos quedaria editable y sin efecto — que es exactamente lo que el resto del form evita.
+        ' ⛔ NO se gatea por nombre de juego: se pregunta por la CAPACIDAD declarada, asi que si algun dia
+        ' SseFaceTintComposer implementa los cuatro espacios, el checkbox se habilita solo.
+        CheckBoxAccumInComposite.Enabled = isFo4 OrElse
+            (SseFaceTintComposer.AccumSpaceCapability = FaceTintConvention.FaceTintCpuMirrorCapability.FourSpaceAccumulator)
         CheckBoxApplyGhoulHeadRearFix.Enabled = isFo4
         CheckBoxApplyEyebrowsFixedColor.Enabled = isFo4
         CheckBoxApplyMouthVanillaFix.Enabled = isFo4
@@ -280,6 +292,10 @@ Public Class CharGenOptionsForm
         Dim npcDef As New NPC_Config()      ' defaults de NPC_Config tal como están declarados
         Dim isFo4 = (Config_App.Current.Game = Config_App.Game_Enum.Fallout4)
 
+        ' Vale para los dos juegos: el decode de las texturas fuente no es especifico de FO4.
+        CheckBoxUseHardwareBcDecode.Checked = npcDef.UseHardwareBcDecode
+        CheckBoxAccumInComposite.Checked = New FaceTintConvention.FaceTintBucketConvention().AccumInCompositeSpace
+
         If isFo4 Then
             CheckBoxApplyGhoulHeadRearFix.Checked = npcDef.ApplyGhoulHeadRearFix
             CheckBoxApplyEyebrowsFixedColor.Checked = cfgDef.Setting_ApplyEyebrowsFixedColor
@@ -322,6 +338,9 @@ Public Class CharGenOptionsForm
     End Function
 
     Private Sub LoadConvention(s As FaceTintConvention.FaceTintConventionSettings)
+        ' AccumInCompositeSpace NO tiene checkbox por bucket acá: es storage del canal (el bucket Swap ni
+        ' siquiera lo decide, ver AccumSpaceForChannel) y ademas es una opcion de COSTO, no de convencion de
+        ' color. Vive como UN solo checkbox en la solapa de formatos, junto al del decode.
         LoadBucket(s.Diffuse, ComboDWork, ComboDComp, ComboDSrc, ComboDOut, ComboDMask, ComboDFw, ComboDSoft)
         LoadBucket(s.NormalSpecular, ComboNWork, ComboNComp, ComboNSrc, ComboNOut, ComboNMask, ComboNFw, ComboNSoft)
         LoadBucket(s.Swap, ComboSWork, ComboSComp, ComboSSrc, ComboSOut, ComboSMask, ComboSFw, ComboSSoft)
@@ -353,9 +372,14 @@ Public Class CharGenOptionsForm
     End Sub
 
     ''' <summary>Vuelca un bucket concreto a sus 7 combos (índice del combo = valor del enum, 0-based).</summary>
+    ''' <param name="cbAccum">Checkbox de <c>AccumInCompositeSpace</c>. Nothing para el bucket de SWAPS: ese
+    ''' campo NO participa del storage del acumulador (lo resuelve el bucket del CANAL — ver
+    ''' FaceTintConvention.AccumSpaceForChannel), así que exponerlo ahí sería un control que no hace nada.</param>
     Private Sub LoadBucket(b As FaceTintConvention.FaceTintBucketConvention,
                            cbWork As ComboBox, cbComp As ComboBox, cbSrc As ComboBox, cbOut As ComboBox,
-                           cbMask As ComboBox, cbFw As ComboBox, cbSoft As ComboBox)
+                           cbMask As ComboBox, cbFw As ComboBox, cbSoft As ComboBox,
+                           Optional cbAccum As CheckBox = Nothing)
+        If cbAccum IsNot Nothing Then cbAccum.Checked = b.AccumInCompositeSpace
         cbWork.SelectedIndex = CInt(b.WorkingSpace)
         cbComp.SelectedIndex = CInt(b.CompositeSpace)
         cbSrc.SelectedIndex = CInt(b.SrcSpace)
@@ -368,7 +392,9 @@ Public Class CharGenOptionsForm
     ''' <summary>Escribe los 7 combos de vuelta a un bucket concreto (valor del enum = índice del combo).</summary>
     Private Sub SaveBucket(b As FaceTintConvention.FaceTintBucketConvention,
                            cbWork As ComboBox, cbComp As ComboBox, cbSrc As ComboBox, cbOut As ComboBox,
-                           cbMask As ComboBox, cbFw As ComboBox, cbSoft As ComboBox)
+                           cbMask As ComboBox, cbFw As ComboBox, cbSoft As ComboBox,
+                           Optional cbAccum As CheckBox = Nothing)
+        If cbAccum IsNot Nothing Then b.AccumInCompositeSpace = cbAccum.Checked
         b.WorkingSpace = CType(cbWork.SelectedIndex, FaceTintConvention.FaceTintWorkingSpace)
         b.CompositeSpace = CType(cbComp.SelectedIndex, FaceTintConvention.FaceTintWorkingSpace)
         b.SrcSpace = CType(cbSrc.SelectedIndex, FaceTintConvention.FaceTintWorkingSpace)
@@ -543,6 +569,15 @@ Public Class CharGenOptionsForm
         ' --- Tab "Fixes": toggle NPC-only → NPC_Config (no Config_App). Se flushea en el cierre de la app
         ' (MainForm_FormClosing → NPC_Config.SaveConfig()), igual que RenderGore. ---
         NPC_Config.Current.ApplyGhoulHeadRearFix = CheckBoxApplyGhoulHeadRearFix.Checked
+        NPC_Config.Current.UseHardwareBcDecode = CheckBoxUseHardwareBcDecode.Checked
+        NPC_Config.ApplyGlDecodeSetting()
+        ' Un solo control para los DOS buckets de canal: el acumulador es storage del canal y el bucket
+        ' Swap no lo decide (ver AccumSpaceForChannel), asi que separar Diffuse de Normal+Specular ofrecia
+        ' una combinacion sin sentido fisico. Vive en la solapa de formatos porque es una opcion de COSTO
+        ' (evita dos Math.Pow por canal por capa), no una convencion de color.
+        Dim convSave = ActiveConventionSettings(Config_App.Current)
+        convSave.Diffuse.AccumInCompositeSpace = CheckBoxAccumInComposite.Checked
+        convSave.NormalSpecular.AccumInCompositeSpace = CheckBoxAccumInComposite.Checked
         ' Ley del MOTOR → NPC_Config + re-aplicar el gate por juego INMEDIATAMENTE, porque el render
         ' del NPC actual se rehace al volver del OK y tiene que usar ya el modo elegido (RENDER == BAKE).
         NPC_Config.Current.ReplicateEngineSkinWeightNormalization = CheckBoxReplicateEngineSkinNorm.Checked
@@ -582,5 +617,6 @@ Public Class CharGenOptionsForm
         DialogResult = DialogResult.OK
         Close()
     End Sub
+
 
 End Class

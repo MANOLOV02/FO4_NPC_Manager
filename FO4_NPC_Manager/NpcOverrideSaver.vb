@@ -552,7 +552,13 @@ Public Module NpcOverrideSaver
                     ' por FNAM; en Skyrim siempre RGBA): si la interpretación fallara, la re-escritura le cambiaría
                     ' el color al record en vez de preservarlo. Copiando los 4 bytes el round-trip es exacto por
                     ' construcción, sea cual sea el juego y venga de donde venga el record.
+                    ' ⭐ El FULL (nombre visible) va por el MISMO criterio: los BYTES del payload tal cual,
+                    ' sin decodificar-y-re-encodear. Es un lstring cpTranslate, así que el round-trip por
+                    ' string lo re-escribiría con el Translatable global actual — lossy si el record se
+                    ' autoró bajo otro codepage, y con ExceptionFallback podría TIRAR a mitad del write sin
+                    ' que el pre-chequeo de Phase 2b lo cubra (ése sólo camina FULL/SHRT/ATTX de NPC_).
                     Dim clfmEdid As String = rec.EditorID
+                    Dim clfmFullRaw As Byte() = Nothing
                     Dim clfmRgb As Integer = 0
                     Dim clfmAlpha As Byte = 0
                     Dim clfmFlags As UInteger = 0UI
@@ -562,11 +568,14 @@ Public Module NpcOverrideSaver
                             clfmAlpha = sr.Data(3)
                         ElseIf sr.Signature = "FNAM" AndAlso sr.Data IsNot Nothing AndAlso sr.Data.Length >= 4 Then
                             clfmFlags = BitConverter.ToUInt32(sr.Data, 0)
+                        ElseIf sr.Signature = "FULL" AndAlso sr.Data IsNot Nothing AndAlso clfmFullRaw Is Nothing Then
+                            clfmFullRaw = CType(sr.Data.Clone(), Byte())
                         End If
                     Next
                     clfmEntries.Add(New SaveNpcEspWriter.ClfmRecordEntry With {
                         .FormID = ctx.PluginManager.ResolveReferencedFormID(rec.SourcePluginName, rec.Header.FormID),
                         .EditorID = clfmEdid,
+                        .FullNameRaw = clfmFullRaw,
                         .ColorRgb = clfmRgb,
                         .ColorAlpha = clfmAlpha,
                         .Flags = clfmFlags,
@@ -2011,10 +2020,17 @@ Public Module NpcOverrideSaver
                 ' No dependency-free match — mint our own, one per distinct colour in this save. EDID is
                 ' namespaced by ESP like every other record we author, so two plugins can't collide.
                 Dim finalEdid = MakeUniqueEditorId(ApplyEspNamespaceToEditorId($"npcm_HairColor_{rgb:X6}", espNameNoExt), usedEdids)
+                ' FULL: nombre legible para que el record se lea como algo y no como un EditorID crudo — en el
+                ' combo de Edit Face (que prefiere FullName), en xEdit y en el CK. ⛔ ASCII PURO y SIN el nombre
+                ' del ESP: el FULL se encodea con EncodeTranslatable (ExceptionFallback) y este record NO entra
+                ' en el chequeo de conflicto de encoding de Phase 2b, así que un carácter que el codepage
+                ' elegido no represente tiraría a mitad del guardado. El namespacing por ESP ya lo lleva el EDID.
+                Dim finalFull = $"NPC Manager custom hair color #{rgb:X6}"
                 fid = allocProvisional()
                 clfmEntries.Add(New SaveNpcEspWriter.ClfmRecordEntry With {
                     .FormID = fid,
                     .EditorID = finalEdid,
+                    .FullName = finalFull,
                     .ColorRgb = rgb,
                     .ColorAlpha = 0,          ' measured: 178/178 CLFM in Skyrim.esm carry alpha 0
                     .Flags = 1UI,             ' measured: the 15 vanilla hair colours carry FNAM=1 (Playable)

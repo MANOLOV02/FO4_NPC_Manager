@@ -75,6 +75,19 @@ Public Class NPC_Config
     ''' Persisted to npc_config.json (flushed on app close, same as RenderGore).</summary>
     Public Property ApplyGhoulHeadRearFix As Boolean = False
 
+    ''' <summary>True (DEFAULT) = las texturas fuente se suben a GL COMPRIMIDAS y las descomprime el hardware
+    ''' (ahorra VRAM y ancho de banda: una 1024^2 pasa de 4 MB a 0,7-1,4 MB). False = se descomprimen por
+    ''' software con DirectXTex, que es EXACTAMENTE el mismo decoder que usa el compositor CPU.
+    ''' <para>Por que importa: el decode de BCn por hardware NO es bit-identico al de software (el spec deja
+    ''' libertad en el redondeo de los interpolantes 1/3 y 2/3, y cada vendor elige). MEDIDO sobre 60 NPCs de
+    ''' FO4, con todo lo demas ya alineado: software en los dos lados da peor |delta| = 1 (y 0 comparando solo
+    ''' el seed); hardware da peor 8 sobre 6.797 px de 96,7 M. Como es lo UNICO que cambia entre las dos
+    ''' corridas, ese +-8 es del decoder y de nada mas, y vive en los LSB del bloque.</para>
+    ''' <para>Se deja en True porque el resto esta probado y esta es la opcion eficiente. Ponerlo en False es
+    ''' lo que hay que hacer para MEDIR paridad CPU/GPU: con hardware, el +-8 del decoder tapa cualquier otra
+    ''' divergencia. La variable de entorno FGBAKE_GL_DECODE_HW (0/1) tiene prioridad sobre esta opcion.</para></summary>
+    Public Property UseHardwareBcDecode As Boolean = True
+
     ''' <summary>⚠️ PROVISORIO (herramienta de diagnóstico, a ELIMINAR) — "SSE: render por el camino PLEGADO".
     ''' False (default) = el render SSE normal: slot 0 = complexion, slot 3 = detail, slot 6 = facetint compuesto, y el
     ''' shader hace <c>softlight(slot0, slot6) × amplify(slot3)</c> (= el engine).
@@ -224,6 +237,12 @@ Public Class NPC_Config
     Public Shared Sub ApplyEngineSkinWeightNormalizationGate(game As FO4_Base_Library.Config_App.Game_Enum)
         FO4_Base_Library.EngineSkinWeightNormalization.Enabled =
             Current.ReplicateEngineSkinWeightNormalization AndAlso game = FO4_Base_Library.Config_App.Game_Enum.Fallout4
+    End Sub
+
+    ''' <summary>Empuja UseHardwareBcDecode al compositor (que vive en la libreria y no puede ver este config).
+    ''' Mismo patron que el gate de arriba. Llamar tras cargar config y al cambiar el checkbox.</summary>
+    Public Shared Sub ApplyGlDecodeSetting()
+        FO4_Base_Library.FaceTintCompositor.SetGlDecodeUseCompress(Current.UseHardwareBcDecode)
     End Sub
 
     ''' <summary>Ruta del npc_config.json que <see cref="LoadConfig"/>/<see cref="SaveConfig"/> usan.

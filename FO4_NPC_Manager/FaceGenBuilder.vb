@@ -1,4 +1,5 @@
 ﻿Imports System.IO
+Imports System.Linq
 Imports FO4_Base_Library
 Imports MaterialLib
 Imports NiflySharp
@@ -122,6 +123,304 @@ Public Module FaceGenBuilder
     ''' El decode de los sources NO se gatea: ya esta amortizado entre NPCs por BatchDecodeCache y ademas es lo
     ''' que determina que slots existen.</summary>
     Public Property SkipDdsEncode As Boolean = False
+
+    ' =========================== INSTRUMENTACION DE FASES ==============================
+    ' ⭐ POR QUE EXISTE: el bake se venia optimizando midiendo SOLO el tiempo total, que dice SI mejoro pero
+    ' no DONDE se va el tiempo. Medido aparte: el proceso usa 7,66 de 12 hilos (63,8 %) ⇒ ~36 % del wall
+    ' corre en UN hilo, y sin este desglose no hay forma de saber cual fase es.
+    ' Costo: unos pocos Stopwatch.GetTimestamp por NPC (no por pixel) sobre ~1,6 s ⇒ <0,01 %. Los acumuladores
+    ' son Long con Interlocked ⇒ seguro si alguna vez se paraleliza el loop de NPCs.
+    Public Enum BakePhase
+        SourceNifParse = 0   ' GetBytes + Load_Manolo de las mallas fuente (se rehace POR NPC: loadedSources es local)
+        Textures = 1         ' BakeFaceTextures (FO4 D/N/S) + WriteSseFacetintDds (SSE facetint) = el compose de pixeles
+        NifWrite = 2         ' serializar + escribir el NIF de salida
+        Total = 3            ' todo BuildCharGen, para poder calcular el resto por diferencia
+        Count = 4
+    End Enum
+    Private ReadOnly _phaseTicks(CInt(BakePhase.Count) - 1) As Long
+    Private ReadOnly _phaseHits(CInt(BakePhase.Count) - 1) As Long
+
+    ''' <summary>Suma el tiempo transcurrido desde <paramref name="t0"/> (un Stopwatch.GetTimestamp) a la fase.</summary>
+    Public Sub PhaseAdd(p As BakePhase, t0 As Long)
+        Threading.Interlocked.Add(_phaseTicks(CInt(p)), Stopwatch.GetTimestamp() - t0)
+        Threading.Interlocked.Increment(_phaseHits(CInt(p)))
+    End Sub
+
+    Public Sub PhaseReset()
+        For i = 0 To CInt(BakePhase.Count) - 1
+            Threading.Interlocked.Exchange(_phaseTicks(i), 0L)
+            Threading.Interlocked.Exchange(_phaseHits(i), 0L)
+        Next
+    End Sub
+
+    ''' <summary>Desglose legible. "resto" = Total − (las fases medidas): records, morphs, skinning, clonado.</summary>
+    Public Function PhaseReport() As String
+        Dim f = CDbl(Stopwatch.Frequency)
+        Dim tot = _phaseTicks(CInt(BakePhase.Total)) / f
+        If tot <= 0 Then Return "Bake phases: no data."
+        Dim sb As New Text.StringBuilder()
+        sb.AppendLine("Bake phases (summed over ALL NPCs; the total is accumulated CPU, not wall clock):")
+        Dim medido As Double = 0
+        For Each p In {BakePhase.SourceNifParse, BakePhase.Textures, BakePhase.NifWrite}
+            Dim s = _phaseTicks(CInt(p)) / f
+            medido += s
+            sb.AppendLine($"   {p,-16} {s,10:F1} s  ({100.0 * s / tot,5:F1} % of total)  n={_phaseHits(CInt(p))}")
+        Next
+        sb.AppendLine($"   {"other",-16} {tot - medido,10:F1} s  ({100.0 * (tot - medido) / tot,5:F1} % of total)  (records/morphs/skin/cloning)")
+        sb.AppendLine($"   {"TOTAL",-16} {tot,10:F1} s  n={_phaseHits(CInt(BakePhase.Total))}")
+        Return sb.ToString()
+    End Function
+    ' ===================================================================================
+
+    ' ===================================================================================
+    ' PARIDAD CPU-vs-GPU del compose de texturas (ver RecordCpuGpuParity en BakeFaceTextures).
+    ' ===================================================================================
+    Private ReadOnly _parityLock As New Object()
+    Private _parSlots As Long = 0            ' slots comparados (D/N/S de cada NPC)
+    Private _parPixels As Long = 0           ' pixeles comparados (SUMA sobre slots) — el "n" del reporte
+    Private _parExact As Long = 0            ' pixeles con los 4 bytes identicos
+    Private _parSqErr As Double = 0.0        ' suma de (cpu-gpu)^2 sobre los 3 canales de color
+    Private _parMaxD As Integer = 0          ' peor |delta| de un solo canal en todo el corpus
+    Private _parWorst As String = ""         ' quien lo produjo
+    Private _parSizeMismatch As Long = 0     ' slots descartados por tamaño distinto (NO se promedian)
+    Private _parInvalid As Long = 0          ' NPCs cuya medicion NO vale (el GL no dejo la salida en OutputSpace)
+    Private _parInvalidWhy As String = ""
+    ''' <summary>Histograma del |delta| por pixel: indices 0..7 exactos, 8 = "8 o mas". Discrimina PRECISION
+    ''' (decaimiento suave desde 0) de ERROR DE IMPLEMENTACION (cumulo o poblacion con delta grande).</summary>
+    Private ReadOnly _parHist(8) As Long
+    Private _parTailWithSwaps As Long = 0
+    Private _parTailNoSwaps As Long = 0
+    Private _parPixWithSwaps As Long = 0
+    Private _parPixNoSwaps As Long = 0
+    Private _parAlphaMismatch As Long = 0    ' pixeles con color igual pero ALPHA distinto (regla aparte)
+    ''' <summary>Ocupacion 8x8 (UV normalizado) de los pixeles con |delta| >= 3, y su desglose por canal.
+    ''' Es el discriminador que sigue al histograma: si esos pixeles estan AGRUPADOS en pocas celdas, la
+    ''' causa es espacial (una mascara/capa que cada lado resamplea distinto); si estan REPARTIDOS parejo
+    ''' por toda la cara, es aritmetica. Sin esto "3028 pixeles" no dice cual de las dos es.</summary>
+    ''' <summary>Slots cuya cola (|delta|>=3) es > 0, y los peores con su conteo. DISCRIMINA lo unico que
+    ''' queda por saber: si la cola viene de POCOS slots (condicion de DATO puntual — una textura/capa
+    ''' concreta) o de TODOS (divergencia SISTEMICA de la ley). Sin esto "148 pixeles en _msn" no distingue
+    ''' entre las dos, que piden investigaciones opuestas.</summary>
+    Private _parSlotsWithTail As Long = 0
+    Private ReadOnly _parTailTop As New List(Of (Npc As UInteger, Slot As String, N As Long))
+    Private ReadOnly _parGrid(63) As Long
+    Private ReadOnly _parTailByChannel(2) As Long   ' 0=Diffuse(slot 0) 1=Normal(slot 1) 2=Specular(slot 7)
+
+    ''' <summary>Marca la corrida de paridad como NO VALIDA. La llama quien detecta que el GL no pudo dejar su
+    ''' salida en el espacio que el CPU asume; a partir de ahi comparar los dos buffers mide la conversion
+    ''' fallida, no el compositor. Se REPORTA — no se descarta en silencio ni se promedia con lo bueno.</summary>
+    Public Sub ParityInvalidate(reason As String)
+        SyncLock _parityLock
+            _parInvalid += 1
+            If _parInvalidWhy = "" Then _parInvalidWhy = reason
+        End SyncLock
+        Logger.LogLazy(Function() $"[FACEBAKE-PARITY] MEDICION INVALIDADA: {reason}")
+    End Sub
+
+    ''' <summary>Resetea los acumuladores de paridad CPU-vs-GPU. Lo llama el runner al empezar un barrido.</summary>
+    Public Sub ParityReset()
+        SyncLock _parityLock
+            _parSlots = 0 : _parPixels = 0 : _parExact = 0 : _parSqErr = 0.0
+            _parMaxD = 0 : _parWorst = "" : _parSizeMismatch = 0
+            _parInvalid = 0 : _parInvalidWhy = ""
+            _parTailWithSwaps = 0 : _parTailNoSwaps = 0 : _parPixWithSwaps = 0 : _parPixNoSwaps = 0
+        End SyncLock
+    End Sub
+
+    ''' <summary>Acumula la comparacion de UN slot entre el buffer CPU y el buffer GPU (los dos BGRA byte,
+    ''' mismo tamaño). Solo los 3 canales de COLOR entran en el RMS: el alpha lo decide `keepBaseAlpha` en el
+    ''' CPU y `uForceOpaqueAlpha` en el GL, que es una regla aparte y no una diferencia de compose.</summary>
+    Private Sub RecordCpuGpuParity(slot As Integer, suffix As String, cpu As Byte(), gpu As Byte(),
+                                   w As Integer, h As Integer, npcFormID As UInteger,
+                                   nSwaps As Integer, nLayers As Integer)
+        Dim n = w * h
+        ' ⛔ Un tamaño distinto NO se promedia con lo demas: se CUENTA aparte y se loguea. Comparar buffers de
+        ' distinto largo daria un numero sin significado (o un crash), que es peor que no medir.
+        If cpu.Length <> n * 4 OrElse gpu.Length <> n * 4 Then
+            SyncLock _parityLock : _parSizeMismatch += 1 : End SyncLock
+            Logger.LogLazy(Function() $"[FACEBAKE-PARITY] slot={slot}{suffix} npc=0x{npcFormID:X8}: BUFFERS DE DISTINTO LARGO (cpu={cpu.Length} gpu={gpu.Length} esperado={n * 4}) — NO comparado")
+            Return
+        End If
+        Dim exact As Long = 0, sq As Double = 0.0, maxD As Integer = 0, alphaMis As Long = 0
+        Dim worstX As Integer = -1, worstY As Integer = -1
+        ' ⭐ HISTOGRAMA DEL |delta| POR PIXEL. Es el discriminador barato entre las dos explicaciones posibles
+        ' de una divergencia CPU-vs-GPU:
+        '   · PRECISION acumulada (float32 del FBO vs float64 del CPU): decaimiento SUAVE desde 0, la cola
+        '     se extingue rapido y no hay estructura.
+        '   · ERROR DE IMPLEMENTACION (una rama de la ley que no coincide): cumulo en valores concretos, o
+        '     una POBLACION de pixeles con delta grande, o concentracion espacial.
+        ' Sin esto solo se ve "maxD=8", que no distingue "un pixel raro" de "media cara corrida".
+        Dim hist(8) As Long   ' 0,1,2,3,4,5,6,7, 8+
+        Dim grid(63) As Long  ' ocupacion 8x8 de los |delta| >= 3
+        For i = 0 To n - 1
+            Dim o = i * 4
+            Dim d0 = CInt(cpu(o)) - CInt(gpu(o))
+            Dim d1 = CInt(cpu(o + 1)) - CInt(gpu(o + 1))
+            Dim d2 = CInt(cpu(o + 2)) - CInt(gpu(o + 2))
+            sq += CDbl(d0 * d0 + d1 * d1 + d2 * d2)
+            Dim m = Math.Max(Math.Abs(d0), Math.Max(Math.Abs(d1), Math.Abs(d2)))
+            hist(Math.Min(m, 8)) += 1
+            If m >= 3 Then
+                ' Celda 8x8 en UV normalizado: independiente de la resolucion del canal, asi que las caras
+                ' de 512 y de 1024 se agregan en la MISMA grilla y la comparacion tiene sentido.
+                Dim gx = Math.Min(7, (i Mod w) * 8 \ w)
+                Dim gy = Math.Min(7, (i \ w) * 8 \ h)
+                grid(gy * 8 + gx) += 1
+            End If
+            If m > maxD Then
+                maxD = m
+                worstX = i Mod w : worstY = i \ w
+            End If
+            ' ⭐ `exact` es COLOR-ONLY, coherente con el RMS (que tambien excluye el alpha). Antes exigia
+            ' ademas que el alpha coincidiera, y entonces el reporte podia decir "RMS 0,0000" al lado de
+            ' "identicos 0 %" — dos numeros que se contradicen — justo en el caso que la doc declara fuera
+            ' de alcance (el alpha lo deciden `keepBaseAlpha` en el CPU y `uForceOpaqueAlpha` en el GL, que
+            ' son reglas distintas y NO una diferencia de compose). El alpha se cuenta aparte.
+            If m = 0 Then exact += 1
+            If cpu(o + 3) <> gpu(o + 3) Then alphaMis += 1
+        Next
+        SyncLock _parityLock
+            For k = 0 To 8 : _parHist(k) += hist(k) : Next
+            For k = 0 To 63 : _parGrid(k) += grid(k) : Next
+            Dim chIdx = If(slot = 1, 1, If(slot = 7, 2, 0))
+            Dim tail As Long = 0
+            For k = 3 To 8 : tail += hist(k) : Next
+            _parTailByChannel(chIdx) += tail
+            ' ⭐ LOCALIZACION POR FASE: los region swaps son un MODO APARTE del shader (uMode=1) con su
+            ' propio codigo, mientras el CPU los pasa por el MISMO ComposeOne que los tints. Si la cola
+            ' vive SOLO en NPCs con swaps, la divergencia esta en esa rama; si aparece igual sin swaps,
+            ' esta en el camino de tints. Es la medicion que separa las dos, en vez de proponer candidatos.
+            If nSwaps > 0 Then
+                _parTailWithSwaps += tail : _parPixWithSwaps += n
+            Else
+                _parTailNoSwaps += tail : _parPixNoSwaps += n
+            End If
+            _parAlphaMismatch += alphaMis
+            Dim slotTail As Long = 0
+            For k = 3 To 8 : slotTail += hist(k) : Next
+            If slotTail > 0 Then
+                _parSlotsWithTail += 1
+                _parTailTop.Add((npcFormID, $"{slot}{suffix}", slotTail))
+            End If
+        End SyncLock
+        Dim rms = Math.Sqrt(sq / (n * 3.0))
+        SyncLock _parityLock
+            _parSlots += 1 : _parPixels += n : _parExact += exact : _parSqErr += sq
+            If maxD > _parMaxD Then
+                _parMaxD = maxD
+                _parWorst = $"0x{npcFormID:X8} slot {slot}{suffix} ({w}x{h})"
+            End If
+        End SyncLock
+        Logger.LogLazy(Function() $"[FACEBAKE-PARITY] 0x{npcFormID:X8} slot={slot}{suffix} {w}x{h}: rmsCPUvsGPU={rms:F4}/255 maxD={maxD} exactos={exact}/{n} ({100.0 * exact / n:F2} %)")
+    End Sub
+
+    ''' <summary>Reporte agregado de paridad CPU-vs-GPU. SIEMPRE imprime el n (slots y pixeles comparados):
+    ''' "0 diferencias" sobre 0 comparables es un instrumento roto, no un resultado — y en este arnes ya paso
+    ''' dos veces. Devuelve el cartel de "no se midio" cuando no corrio el GL.</summary>
+    Public Function ParityReport() As String
+        SyncLock _parityLock
+            If _parSlots = 0 Then
+                ' ⛔ NO se afirma la causa. Antes esto decia "el compositor GL no corrio (needGl=False)" sin
+                ' haberlo comprobado, y hay otras rutas a cero slots (ResultId=0, GetTexImage que tira, el
+                ' buffer CPU ausente, o TODOS los slots descartados por tamaño). Afirmar una causa no medida es
+                ' justo lo que este instrumento existe para no hacer. Se listan los hechos que SI se saben.
+                Dim sb0 As New Text.StringBuilder()
+                sb0.AppendLine("CPU-vs-GPU parity: NOT MEASURED - 0 comparable slots.")
+                sb0.AppendLine($"   GPU compositor ran: {If(WriteGPUSandboxOutput, "yes (WriteGPUSandboxOutput=True)", "NO (WriteGPUSandboxOutput=False -> needGl=False)")}")
+                If _parSizeMismatch > 0 Then sb0.AppendLine($"   {_parSizeMismatch} slot(s) were dropped because CPU and GPU buffers had different sizes.")
+                If _parInvalid > 0 Then sb0.AppendLine($"   {_parInvalid} NPC(s) invalidated the measurement. First: {_parInvalidWhy}")
+                sb0.Append("   This run says NOTHING about the GPU path.")
+                Return sb0.ToString()
+            End If
+            Dim rms = Math.Sqrt(_parSqErr / (_parPixels * 3.0))
+            Dim sb As New Text.StringBuilder()
+            sb.AppendLine("CPU-vs-GPU parity of the compose (in memory, BEFORE the BCn encode):")
+            sb.AppendLine($"   slots compared   : {_parSlots}   pixels compared: {_parPixels:N0}")
+            sb.AppendLine($"   global RMS       : {rms:F4}/255 (3 colour channels; alpha follows a separate rule)")
+            sb.AppendLine($"   identical pixels : {_parExact:N0} ({100.0 * _parExact / _parPixels:F3} %)  [colour only, same basis as the RMS]")
+            sb.AppendLine($"   alpha mismatches : {_parAlphaMismatch:N0} ({100.0 * _parAlphaMismatch / _parPixels:F3} %)  [keepBaseAlpha vs uForceOpaqueAlpha - a different rule, not a compose diff]")
+            sb.AppendLine($"   worst |delta|    : {_parMaxD}" & If(_parMaxD > 0, $"  at {_parWorst}", ""))
+            ' ⭐ HISTOGRAMA: es lo que separa PRECISION de BUG. float32-vs-float64 da un decaimiento suave que
+            ' se extingue en 1-2; una poblacion con delta 3+ o un escalon significan que una rama de la ley NO
+            ' coincide entre los dos compositores. Sin esto solo se ve "worst=8", que no distingue un pixel
+            ' raro de media cara corrida.
+            sb.AppendLine("   |delta| histogram (per pixel, max over the 3 colour channels):")
+            For k = 0 To 8
+                Dim label = If(k = 8, "8+", k.ToString())
+                Dim pct = 100.0 * _parHist(k) / _parPixels
+                sb.AppendLine($"      {label,3} : {_parHist(k),14:N0}  {pct,7:F3} %")
+            Next
+            Dim tail As Long = 0
+            For k = 3 To 8 : tail += _parHist(k) : Next
+            If tail > 0 Then
+                sb.AppendLine($"   ⛔ {tail:N0} pixel(s) ({100.0 * tail / _parPixels:F4} %) differ by 3 or more.")
+                sb.AppendLine("      float32 (GPU FBO) vs float64 (CPU) explains +-1 and, at a stretch, 2.")
+                sb.AppendLine("      A population at 3+ needs a CAUSE - but do NOT read it as 'law divergence'")
+                sb.AppendLine("      by itself. MEASURED 2026-07-30, three candidate causes REFUTED with data:")
+        sb.AppendLine("        - layer/mask resampling: REFUTED (measured 0/320 resampled bindings in the")
+        sb.AppendLine("          channel carrying the tail). Counter removed once it had served its purpose.")
+                sb.AppendLine("        - the mask pow (MaskConv=G22Encode): forcing Raw made the tail WORSE")
+                sb.AppendLine("          (178 -> 353), so the pow is not the amplifier.")
+                sb.AppendLine("        - alpha rules: 0 alpha mismatches over 54.5 M px.")
+                sb.AppendLine("      What IS established: crossed BCn decode paths (CPU DirectXTex vs GPU hardware)")
+                sb.AppendLine("      accounted for 94% of it and is fixed. The residue is still unexplained -")
+                sb.AppendLine("      say so, do not attribute it.")
+                sb.AppendLine($"      by channel:  _d={_parTailByChannel(0):N0}  _msn={_parTailByChannel(1):N0}  _s={_parTailByChannel(2):N0}")
+                ' Correlacion con el RESAMPLEO: el bilineal del CPU (Double) y el del sampler GL (pesos en
+                ' punto fijo de 8 bits por spec) NO coinciden bit a bit. Si la cola vive en el canal que mas
+                ' resamplea, esa es la causa; si vive donde NO se resamplea, hay que buscar en otro lado.
+                Dim rw = If(_parPixWithSwaps > 0, 1000000.0 * _parTailWithSwaps / _parPixWithSwaps, 0.0)
+                Dim rn = If(_parPixNoSwaps > 0, 1000000.0 * _parTailNoSwaps / _parPixNoSwaps, 0.0)
+                sb.AppendLine($"      tail by phase:  NPCs WITH region swaps: {_parTailWithSwaps:N0} px over {_parPixWithSwaps:N0} ({rw:F2} ppm)")
+                sb.AppendLine($"                      NPCs WITHOUT swaps   : {_parTailNoSwaps:N0} px over {_parPixNoSwaps:N0} ({rn:F2} ppm)")
+                If _parPixWithSwaps > 0 AndAlso _parPixNoSwaps > 0 Then
+                    sb.AppendLine(If(rn < rw / 4.0, "      => the tail follows the REGION SWAP path (uMode=1).",
+                                     If(rw < rn / 4.0, "      => the tail follows the TINT path, not the swaps.",
+                                        "      => both phases carry it: the cause is shared, not swap-specific.")))
+                End If
+                sb.AppendLine($"      slots carrying tail: {_parSlotsWithTail} of {_parSlots}" &
+                              If(_parSlotsWithTail = _parSlots, "  => SYSTEMIC (every slot)", "  => LOCALISED (a data condition, not the law)"))
+                For Each t In _parTailTop.OrderByDescending(Function(x) x.N).Take(6)
+                    sb.AppendLine($"         0x{t.Npc:X8} slot {t.Slot}: {t.N:N0} px")
+                Next
+                ' Grilla 8x8 en UV: AGRUPADO => causa espacial (una mascara/capa que cada lado resamplea
+                ' distinto). REPARTIDO parejo => aritmetica. Es la pregunta que sigue al histograma.
+                sb.AppendLine("      8x8 UV occupancy of those pixels (rows = V top->bottom):")
+                Dim gmax As Long = 0
+                For k = 0 To 63 : If _parGrid(k) > gmax Then gmax = _parGrid(k)
+                Next
+                For gy = 0 To 7
+                    Dim row As New Text.StringBuilder("        ")
+                    For gx = 0 To 7
+                        row.Append($"{_parGrid(gy * 8 + gx),9:N0}")
+                    Next
+                    sb.AppendLine(row.ToString())
+                Next
+                Dim occupied = 0
+                For k = 0 To 63 : If _parGrid(k) > 0 Then occupied += 1
+                Next
+                sb.AppendLine($"      cells with any: {occupied}/64   busiest cell: {gmax:N0} ({100.0 * gmax / Math.Max(1L, tail):F1} % of the tail)")
+                If occupied <= 16 OrElse gmax > tail \ 4 Then
+                    sb.AppendLine("      => CLUSTERED: the tail is spatially concentrated. That points at a LAYER/MASK")
+                    sb.AppendLine("         that each side resamples differently (CPU SampleChannelAt vs GPU bilinear),")
+                    sb.AppendLine("         not at arithmetic. Same family as the specular size divergence.")
+                Else
+                    sb.AppendLine("      => SPREAD: the tail is spread across the face, which points at arithmetic")
+                    sb.AppendLine("         rather than at one mis-sampled layer.")
+                End If
+            Else
+                sb.AppendLine("   All deltas are <= 2, which is consistent with float32 (GPU FBO) vs float64 (CPU).")
+            End If
+            If _parSizeMismatch > 0 Then sb.AppendLine($"   ⚠ {_parSizeMismatch} slot(s) NOT compared (CPU and GPU buffer sizes differ)")
+            If _parInvalid > 0 Then
+                sb.AppendLine($"   ⛔ RUN NOT VALID: {_parInvalid} NPC(s) where GL did not leave the output in OutputSpace.")
+                sb.AppendLine($"      First: {_parInvalidWhy}")
+                sb.AppendLine("      The numbers above MEASURE THAT FAILURE, not the compositor. Do not use them.")
+            End If
+            Return sb.ToString()
+        End SyncLock
+    End Function
+    ' ===================================================================================
 
     Private _gpuSandboxOverride As Boolean? = Nothing
     Public Property WriteGPUSandboxOutput As Boolean
@@ -426,6 +725,14 @@ Public Module FaceGenBuilder
         ''' Antes esto era un `Else` VACÍO: el batch reportaba éxito con shapes neutras. Ahora se cuenta y
         ''' se loguea (FormID + shape) para que la caída no sea silenciosa.
         Dim shapesFbnsUnmatched As Integer = 0
+        ''' <summary>FO4, shape SIN `_faceBones`, morpheada por el fallback de chargen-morphs (la rama que antes
+        ''' estaba gateada con `isSSEBake`). Se cuenta para poder VER que el fix corre y sobre cuantas shapes —
+        ''' el radio esperado es chico (cabezas infantiles), asi que un numero grande seria una señal de alarma.</summary>
+        Dim shapesFo4NoFbnsMorphed As Integer = 0
+        ''' <summary>FO4, shape SIN `_faceBones` y SIN bakeState ⇒ escrita NEUTRA. Es la caida silenciosa que
+        ''' QUEDA despues del fix; se cuenta y se reporta en el Summary por el mismo motivo que
+        ''' <c>shapesFbnsUnmatched</c>: si solo vive en el log, un batch con logging apagado canta exito.</summary>
+        Dim shapesFo4NoFbnsNoMorph As Integer = 0
         ''' F4: el bake de texturas FaceCustomization (FO4) es PER-NPC, no per-shape — los 3 DDS se llaman
         ''' <formID>_d/_msn/_s y no llevan nada de la shape. Este flag lo corre una sola vez. Ver el call site.
         Dim fo4FaceTexturesBaked As Boolean = False
@@ -542,7 +849,9 @@ Public Module FaceGenBuilder
                 End If
                 srcNif = New Nifcontent_Class_Manolo()
                 Try
+                    Dim tParse = Stopwatch.GetTimestamp()
                     srcNif.Load_Manolo(srcBytes)
+                    PhaseAdd(BakePhase.SourceNifParse, tParse)   ' ver BakePhase: esto se REHACE por NPC (loadedSources es local)
                 Catch ex As Exception
                     hdptSourceLoadFail += 1
                     Dim skLogFail = sourceKey
@@ -837,11 +1146,17 @@ Public Module FaceGenBuilder
                                 ' ANTES de que el pass normal pueda mutar los slots (evita doble-pliegue). La captura
                                 ' y el forzado son 100% CPU (fold+neutral+normal), NO tocan GL ⇒ gate = DebugMode a
                                 ' secas (NO WriteGPUSandboxOutput: eso apagaba el _2c en el bake loose async).
-                                If DebugMode Then
+                                ' ⭐ Misma compuerta que el consumidor de mas abajo (~1771). Con solo `DebugMode`
+                                ' esta captura no ocurria en un barrido (Logger apagado), asi que sseForcedHead
+                                ' quedaba Nothing y el sandbox _2c/_2d —el UNICO que ejercita el camino GPU de
+                                ' SSE— no corria: medido reachability gate=0 sobre 451 NPCs horneados.
+                                If DebugMode OrElse WriteGPUSandboxOutput Then
                                     Dim sp = GetSseHeadSlotPaths(nif, cloned)
                                     sseForcedHead = cloned : sseForcedComplexion = sp.Slot0 : sseForcedNormal = sp.Slot1 : sseForcedDetail = sp.Slot3
                                 End If
+                                Dim tTexS = Stopwatch.GetTimestamp()
                                 WriteSseFacetintDds(nif, cloned, npcFormID, originPlugin, pluginManager, npcData, willBePacked, result, host:=host)
+                                PhaseAdd(BakePhase.Textures, tTexS)
                                 ' Bake RaceMenu FACE overlays into a per-NPC diffuse (slot 0). Gated + no-op for
                                 ' vanilla NPCs (no face overlays) ⇒ the facetint-only path above is unchanged.
                                 ' ⛔ SIN host: el fold es 100% CPU y no debe poder leer nada del render.
@@ -919,12 +1234,14 @@ Public Module FaceGenBuilder
                                     ' packer los toma del DISCO igual. Se borran ACÁ, justo antes de escribir los
                                     ' nuevos, por el mismo motivo que DeleteFoldedOnlyArtifacts en SSE.
                                     DeleteStaleFaceCustomizationArtifacts(npcFormID, originPlugin)
+                                    Dim tTexF = Stopwatch.GetTimestamp()
                                     BakeFaceTextures(nif, cloned, srcNif, srcShape,
                                                      hdpt, effectiveHeadPartType, applyMaterialOverrides,
                                                      npcFormID, originPlugin,
                                                      pluginManager, appliedPresets, host,
                                                      state, willBePacked, result,
                                                      lmSkinTemplateResolver)
+                                    PhaseAdd(BakePhase.Textures, tTexF)
                                 Else
                                     Dim dnLog = destName
                                     Logger.LogLazy(Function() $"[FACEBAKE] shape '{dnLog}': el bake de texturas FaceCustomization YA CORRIÓ para este NPC — no se recompone (los 3 DDS son per-NPC, no per-shape)")
@@ -1041,7 +1358,23 @@ Public Module FaceGenBuilder
                                     End If
                                 End If
                             End If
-                        ElseIf bakeState IsNot Nothing AndAlso isSSEBake Then
+                        ElseIf bakeState IsNot Nothing Then
+                            ' ⭐⭐ FO4 TAMBIEN ENTRA ACA (antes esta rama tenia `AndAlso isSSEBake`).
+                            ' ⛔ EL AGUJERO QUE CIERRA: una shape de FO4 SIN `_faceBones.nif` no entraba a NINGUNA
+                            ' rama ⇒ se escribia NEUTRA, en silencio, y el batch la contaba como exito. Las cabezas
+                            ' infantiles (ChildFemaleHead.nif / ChildMaleHead.nif) no tienen variante `_faceBones`
+                            ' (verificado contra el INDICE de archives, no contra una extraccion aplanada).
+                            ' El comentario de abajo ya describia este fallo para SSE; el fix se habia aplicado
+                            ' solo a SSE y FO4 quedo con el mismo agujero abierto.
+                            ' EVIDENCIA (handoff 2026-07-30): nuestra Bertha horneada == el CK de Meg (niña neutra,
+                            ' 0 sliders): maxD 0,0000 / RMS 0,0000 / 1339 de 1339 vertices exactos ⇒ es CERO morph,
+                            ' no morph parcial. Y reconstruyendo el morph del CK desde cero (.tri del record +
+                            ' sliders del NPC + gate por bloques de 4) da maxΔ 0,003755 / RMS 0,000465 (piso del
+                            ' half-float) sobre 137/137 vertices ⇒ destrabar la rama REPRODUCE al CK.
+                            ' RADIO: 2 NPCs del corpus (0x03005C83 DLC03SmallBertha, 0x060145DA DLC04_MS03_Lucy),
+                            ' los unicos 2 de 42 niños con sliders. La rama HOY NUNCA corre en FO4, asi que no
+                            ' puede regresionar a nadie mas.
+                            '
                             ' SSE has no `_faceBones` rig / FMRS / skin-rebind: the CK FaceGeom head is a PURE
                             ' per-vertex morph of the neutral mesh (measured: neutral-vs-CK RMS 0.275 collapses
                             ' to 0.046 once the NAM9/NAMA+race morph is applied). The FO4 BakeShape branch above
@@ -1059,9 +1392,23 @@ Public Module FaceGenBuilder
                             ' MaleDarkElfHair02.tri exists on disk; the CK leaves that hair un-weighted, so the guess
                             ' over-morphed it (+0.57 RMS vs CK). Dropping the guess makes both cases match CK: NAM0=1
                             ' parts get their SkinnyMorph, NAM0-less parts stay neutral. Verified vs vanilla SSE FaceGeom.
-                            Dim hdptMeshTri As String = hdpt.TriPath
+                            ' ⛔ El mesh-tri (SkinnyMorph = morph de PESO del actor, HDPT NAM0=1) es una ley de SSE
+                            ' y esta validada SOLO ahi. En FO4 el morph por peso corporal es OTRO mecanismo, ya
+                            ' implementado aparte (el CK hornea MWGT como escala en los huesos `*_skin`, ver
+                            ' reference_ck_bodyweight_skin_bone_scale_formula): pasarlo aca lo aplicaria DOS veces.
+                            ' Por eso el chargen-morph se destraba para los dos juegos y el mesh-tri NO.
+                            Dim hdptMeshTri As String = If(isSSEBake, hdpt.TriPath, Nothing)
                             FaceGenBuildPipeline.ApplyChargenMorphsInPlace(nif, cloned, hdpt.ChargenMorphTriPath, hdpt.RaceMorphTriPath, bakeState, hdptMeshTri)
                             shapesMorphed += 1
+                            If Not isSSEBake Then shapesFo4NoFbnsMorphed += 1
+                        ElseIf Not isSSEBake Then
+                            ' ⛔ CAIDA SILENCIOSA que queda: FO4, sin `_faceBones` Y sin bakeState ⇒ la shape se
+                            ' escribe NEUTRA y nadie se entera. Se cuenta y se loguea, igual que shapesFbnsUnmatched.
+                            shapesFo4NoFbnsNoMorph += 1
+                            If Logger.Enabled Then
+                                Dim shNameNM = sourceName
+                                Logger.LogLazy(Function() $"[FACEGEN-FBNS] FO4 sin _faceBones y sin bakeState — shape escrita SIN morphear. npc=0x{npcFormID:X8} shape='{shNameNM}'")
+                            End If
                         End If
                     End If
                 Catch ex As Exception
@@ -1099,9 +1446,20 @@ Public Module FaceGenBuilder
         ' payload del material completo: los 8 paths + emissive color/multiple, alpha, refraction strength,
         ' glossiness, specular color y specular strength. Las shader FLAGS (SSPF1/SSPF2), el nombre y el
         ' controller viven en el shader property y NO entran en la clave.
-        ' (El texture clamp mode también forma parte del material en el CK, pero NiflySharp no lo expone
-        ' públicamente en BSLightingShaderProperty — sólo el campo protegido `_textureClampMode`. Omitirlo es
-        ' seguro: la clave mínima validada 75/75 fue "paths + specularStrength", y ésta la contiene.)
+        ' ⭐⭐ EL TEXTURE CLAMP MODE YA ENTRA EN LA CLAVE (2026-07-30). Antes se omitia con esta nota:
+        ' "NiflySharp no lo expone publicamente en BSLightingShaderProperty, solo el campo protegido
+        ' _textureClampMode". Era cierto pero era una OMISION del partial escrito a mano, no un limite: sus
+        ' hermanos BSShaderLightingProperty y BSEffectShaderProperty lo exponen con un one-liner. Se agrego la
+        ' misma propiedad a BSLightingShaderProperty (cambio ADITIVO) y ahora la clave lo incluye.
+        ' ⛔ POR QUE IMPORTA: el CK indexa su cache de BSShaderTextureSet por el payload del MATERIAL, y el
+        ' clamp mode es parte de el. Sin leerlo MERGEABAMOS dos shapes que el CK dejo SEPARADAS cuando la unica
+        ' diferencia era ese campo. MEDIDO: 29 NPCs de FaceGen (caso canonico HairArgonianMale02 vs
+        ' BrowsMaleArgonian01: 9 slots bit-identicos y el CK emite DOS bloques). Es la categoria block-type SSE.
+        ' ⛔ POR QUE **NO** SE CLONA UN TEXTURE SET POR SHAPE (lo que proponia el handoff): el sharing es
+        ' DELIBERADO y derivado de datos. La clave actual reproduce el grafo del CK en 75/75; la de solo paths
+        ' daba 47/75. Clonar por shape cambiaria 29 divergencias por ~1036 (el 41 % de NPCs que este dedup
+        ' arreglo). Agregar el campo que faltaba SOLO puede SEPARAR lo que hoy se mergea, que es la direccion
+        ' necesaria; no puede mergear nada nuevo.
         ' DERIVADO DE DATOS (2026-07-18, 75 FaceGeom del CK extraídos del BSA vanilla, exigiendo reproducir el
         ' grafo de sharing exacto — mismos bloques y mismas shapes agrupadas):
         '     sólo los 8 paths (la clave vieja) ....... 47/75
@@ -1137,7 +1495,8 @@ Public Module FaceGenBuilder
                     $"{lsp.Glossiness:R}",
                     $"{lsp.SpecularColor.R:R},{lsp.SpecularColor.G:R},{lsp.SpecularColor.B:R}",
                     $"{lsp.SpecularStrength:R}",
-                    $"{lsp.HairTintColor.R:R},{lsp.HairTintColor.G:R},{lsp.HairTintColor.B:R}")
+                    $"{lsp.HairTintColor.R:R},{lsp.HairTintColor.G:R},{lsp.HairTintColor.B:R}",
+                    $"clamp={CInt(lsp.TextureClampMode)}")
                 Dim key = String.Join("|", ts.Textures.Select(Function(t) If(t?.Content, "").ToLowerInvariant())) & "||" & matKey
                 Dim canonIdx As Integer
                 If seenTexset.TryGetValue(key, canonIdx) Then
@@ -1230,6 +1589,7 @@ Public Module FaceGenBuilder
                 Next
 
                 Dim droppedOrphanBones As Integer = 0
+                Dim normalizedNoAnimSync As Integer = 0
                 For Each childIdx In faceGenRoot.Children.Indices.ToList()
                     Dim childBlk = nif.GetBlock(childIdx)
                     If TypeOf childBlk Is INiShape Then
@@ -1287,6 +1647,27 @@ Public Module FaceGenBuilder
                             If raceHeight <> 1.0F Then
                                 boneNode.Translation = boneNode.Translation * raceHeight
                             End If
+                            ' ⭐ NO ANIM SYNC (S) = bit 19 de NiAVObject.Flags. Se LIMPIA en los nodos de hueso
+                            ' del FaceGeom para igualar al CK.
+                            ' QUE ES: bits 16-19 = No Anim Sync X/Y/Z/S (NifSkope src/spells/flags.cpp), y la
+                            ' semantica esta RE-ada en este repo (SkeletonInstance.NoAnimSyncMask): en los ejes
+                            ' flagueados el motor conserva la traslacion/escala ESTRUCTURAL y aplica SOLO la
+                            ' rotacion del clip (pose-writer Fallout4.exe 0x1413995D0).
+                            ' POR QUE DIVERGIA: el arte fuente de Bethesda lo trae inconsistente — medido sobre
+                            ' 'NPC Head [Head]' en character assets de SSE: 39 mallas con 0x8000E y 165 con 0xE.
+                            ' Heredabamos el de la malla que aportara el nodo ⇒ 376 de 3214 NPCs con 0x8000E,
+                            ' mientras el CK escribe 0xE en 150/150 (normaliza SIEMPRE).
+                            ' POR QUE ES SEGURO: el FaceGeom NO es el esqueleto de animacion — el motor re-skinea
+                            ' con el del personaje, y este mismo app lee estos flags de los CHUNK NIF habiendo
+                            ' MEDIDO que el esqueleto base los trae en 0. Si el flag hiciera algo aca, el CK lo
+                            ' estaria destruyendo en TODAS las cabezas vanilla del juego.
+                            ' FO4: no-op MEDIDO (0 de 836 nodos en 60 NPCs traen el bit; nif.xml: "FO4 lacks the
+                            ' 0x80000 flag always").
+                            Const NoAnimSyncSBit As UInteger = &H80000UI
+                            If (boneNode.Flags_ui And NoAnimSyncSBit) <> 0UI Then
+                                boneNode.Flags_ui = boneNode.Flags_ui And (Not NoAnimSyncSBit)
+                                normalizedNoAnimSync += 1
+                            End If
                         End If
                     End If
                 Next
@@ -1295,7 +1676,7 @@ Public Module FaceGenBuilder
                 boneChildIdx.Add(skinnedIdx)
                 faceGenRoot.Children.SetIndices(boneChildIdx)
                 skinnedNode.Children.SetIndices(shapeChildIdx)
-                Logger.LogLazy(Function() $"[FACEBAKE] reparent OK: {shapeChildIdx.Count} shapes bajo BSFaceGenNiNodeSkinned, {boneChildIdx.Count - 1} huesos en root, {droppedOrphanBones} huesos huerfanos descartados")
+                Logger.LogLazy(Function() $"[FACEBAKE] reparent OK: {shapeChildIdx.Count} shapes bajo BSFaceGenNiNodeSkinned, {boneChildIdx.Count - 1} huesos en root, {droppedOrphanBones} huesos huerfanos descartados, {normalizedNoAnimSync} nodos con NoAnimSync(S) normalizado a 0")
             End If
         Catch ex As Exception
             Logger.LogLazy(Function() $"[FACEBAKE] reparent BSFaceGenNiNodeSkinned FAILED: {ex.GetType().Name}: {ex.Message}")
@@ -1371,7 +1752,9 @@ Public Module FaceGenBuilder
                                   originPlugin, nifFileName)
         Try
             Directory.CreateDirectory(Path.GetDirectoryName(outAbs))
+            Dim tWrite = Stopwatch.GetTimestamp()
             nif.Save_As_Manolo(outAbs, Overwrite:=True)
+            PhaseAdd(BakePhase.NifWrite, tWrite)
         Catch ex As Exception
             result.Summary = $"Failed to write {nifFileName}: {ex.Message}"
             Return result
@@ -1382,7 +1765,14 @@ Public Module FaceGenBuilder
         ' ORIGINALES (capturados antes del pass normal ⇒ sin doble-pliegue), y salvar un FaceGeom _2c.NIF paralelo.
         ' Nunca en release (gate DebugMode). 100% CPU ⇒ NO exige WriteGPUSandboxOutput (antes lo exigía y el _2c
         ' desaparecía en el bake loose async). No toca el _2/_2b.
-        If isSSEBake AndAlso DebugMode AndAlso sseForcedHead IsNot Nothing Then
+        ' ⭐ `OrElse WriteGPUSandboxOutput`: DebugMode ES Logger.Enabled, y el barrido corre con el Logger
+        ' APAGADO a proposito (con log encendido tarda ordenes de magnitud mas). Consecuencia medida: este
+        ' bloque —el UNICO que ejercita el camino GPU de SSE y por lo tanto el unico que puede medir su
+        ' paridad CPU/GPU— no se ejecutaba NUNCA en un barrido, y el instrumento reportaba "0 comparable
+        ' slots" no porque coincidiera sino porque no habia corrido nada. WriteGPUSandboxOutput es el flag
+        ' que enciende explicitamente el sandbox GPU (lo pone el runner con FGBAKE_GPU_PARITY=1), asi que es
+        ' la compuerta correcta; el chequeo interno de la linea ~1781 ya lo exigia igual.
+        If isSSEBake AndAlso (DebugMode OrElse WriteGPUSandboxOutput) AndAlso sseForcedHead IsNot Nothing Then
             Try
                 Logger.LogLazy(Function() $"[FACEBAKE][SSE] _2c ENTER: complexion='{sseForcedComplexion}' normal='{sseForcedNormal}'")
                 ' result:=Nothing — el _2c es un SANDBOX de debug: sus fallos no son fallos del bake real y no
@@ -1437,6 +1827,13 @@ Public Module FaceGenBuilder
         ' vive en el log, un batch con logging apagado reporta éxito con cabezas neutras.
         If shapesFbnsUnmatched > 0 Then
             result.Summary &= $" | WARNING: {shapesFbnsUnmatched} shape(s) sin match FBNS — escritas SIN morphear, ver [FACEGEN-FBNS] log"
+        End If
+        If shapesFo4NoFbnsNoMorph > 0 Then
+            result.Summary &= $" | WARNING: {shapesFo4NoFbnsNoMorph} shape(s) FO4 sin _faceBones y sin bakeState — escritas SIN morphear, ver [FACEGEN-FBNS] log"
+        End If
+        If shapesFo4NoFbnsMorphed > 0 AndAlso Logger.Enabled Then
+            Dim nMorphedNoFbns = shapesFo4NoFbnsMorphed
+            Logger.LogLazy(Function() $"[FACEGEN-FBNS] FO4 sin _faceBones: {nMorphedNoFbns} shape(s) morpheadas por el fallback de chargen-morphs (npc=0x{npcFormID:X8})")
         End If
         If shapesFailed > 0 Then
             result.Summary &= $" | WARNING: {shapesFailed} shape(s) DESCARTADAS por excepcion — ver [FACEBAKE] log"
@@ -2038,13 +2435,16 @@ Public Module FaceGenBuilder
             ' no le escribe el slot. Por eso en modo gateado se corre igual el compose (512x512) y se saltea
             ' SOLO el EncodeLinearRgbaToBc3 + el File.Write ⇒ misma condicion, mismo NIF.
             Dim dds As Byte() = Nothing
+            ' Acumulador del facetint, devuelto por BakeFaceTintDds para que el volcado TGA de abajo NO
+            ' vuelva a componer. Con "Generate TGA" tildado se componia DOS veces por NPC.
+            Dim facetintAcc As Single() = Nothing
             If SkipDdsEncode Then
                 If SseFaceGenBaker.ComposeFacetintAcc(pluginManager, npcRec, race, raceFid, npcData.IsFemale, fSz, fSz, tintOverride, npcData.SseTintTexOverride) Is Nothing Then
                     RecordTextureFailure(result, "facetint SSE: el compose de las capas de tint no produjo nada (ComposeFacetintAcc Nothing)")
                     Return
                 End If
             Else
-                dds = SseFaceGenBaker.BakeFaceTintDds(pluginManager, npcRec, race, raceFid, npcData.IsFemale, fSz, fSz, tintOverride, npcData.SseTintTexOverride, DiffuseDxgiFromSetting())
+                dds = SseFaceGenBaker.BakeFaceTintDds(pluginManager, npcRec, race, raceFid, npcData.IsFemale, fSz, fSz, tintOverride, npcData.SseTintTexOverride, DiffuseDxgiFromSetting(), facetintAcc)
                 If dds Is Nothing Then
                     RecordTextureFailure(result, $"facetint SSE: falló el compose/encode del _d ({fSz}x{fSz}, dxgi={DiffuseDxgiFromSetting()})")
                     Return
@@ -2063,7 +2463,12 @@ Public Module FaceGenBuilder
             ' TGA lossless del _2 (CPU) cuando "Generate TGA" está marcado (= FO4). Recompone el acc SOLO en ese
             ' caso (no re-decodea el BC3) para dumpear el buffer pre-encode, byte-igual al que se encodeó.
             If WriteTGASandboxOutput Then
-                Dim accT = SseFaceGenBaker.ComposeFacetintAcc(pluginManager, npcRec, race, raceFid, npcData.IsFemale, fSz, fSz, tintOverride, npcData.SseTintTexOverride)
+                ' Se REUSA el acumulador que ya compuso BakeFaceTintDds (facetintAcc). Antes se llamaba a
+                ' ComposeFacetintAcc otra vez: una composicion COMPLETA del facetint por NPC, tirada. El TGA
+                ' sale del MISMO buffer que se encodeo, asi que es byte-identico al de antes por construccion
+                ' (misma funcion pura, mismas entradas) — solo que ahora se ejecuta una vez en vez de dos.
+                ' Fallback: si venimos por la rama SkipDdsEncode no hay acc, y ahi si hay que componerlo.
+                Dim accT = If(facetintAcc, SseFaceGenBaker.ComposeFacetintAcc(pluginManager, npcRec, race, raceFid, npcData.IsFemale, fSz, fSz, tintOverride, npcData.SseTintTexOverride))
                 If accT IsNot Nothing Then MaybeWriteTgaBeside(outFile, fSz, fSz, SseFaceGenBaker.LinearRgbaToBgra(accT, fSz, fSz))
             End If
             ' Point the head shape's texture-set slot 6 (facetint) at the engine path (Data-relative).
@@ -2161,8 +2566,11 @@ Public Module FaceGenBuilder
         Next
         Dim baseTex = UploadBgraToGl(baseBgra, w, h)
         If baseTex = 0 Then Return Nothing
+        ' Espejo CPU de ESTE camino = SseFaceTintComposer (este _2d es la contraparte GPU del _2c, que es
+        ' 100 % CPU por ese modulo) ⇒ se declara SU capacidad, no la del compositor CPU de FO4.
         Dim pr = FaceTintCompositor.ApplyFaceTintPipeline(host.CompositorState, host.TintGpuCache,
                                                           baseTex, 0, 0, w, h, layers, New List(Of FaceRegionSwapInput)(),
+                                                          SseFaceTintComposer.AccumSpaceCapability,
                                                           baseDiffuseIsLinearOnGpu:=True)
         Dim resultId = If(pr IsNot Nothing AndAlso pr.Diffuse IsNot Nothing AndAlso pr.Diffuse.IsFresh, pr.Diffuse.TextureId, baseTex)
         Dim gbuf = ReadbackGlBgra(resultId, npix)
@@ -2190,7 +2598,7 @@ Public Module FaceGenBuilder
         Dim srcBytes = FilesDictionary_class.GetBytes(FO4UnifiedMaterial_Class.CorrectTexturePath(complexionPath))
         If srcBytes Is Nothing Then Return
         Dim dec = FaceTintCpuCompositor.DecodeDds(srcBytes)
-        If dec Is Nothing OrElse dec.Rgba Is Nothing OrElse dec.Width <= 0 OrElse dec.Height <= 0 Then Return
+        If dec Is Nothing OrElse dec.Rgba8 Is Nothing OrElse dec.Width <= 0 OrElse dec.Height <= 0 Then Return
         Dim w = dec.Width, h = dec.Height, npix = w * h
         Dim det As Single() = If(Not String.IsNullOrEmpty(detailPath), SseFaceTintComposer.DecodeTextureRgba(detailPath, w, h), Nothing)
 
@@ -2200,8 +2608,13 @@ Public Module FaceGenBuilder
         ' NO mezclar CPU aca: un sandbox mitad-CPU-mitad-GPU no mide NINGUN camino real -- por eso se elimino en
         ' su momento el _2b del diffuse, y por eso el unfold NO se hace con PreCompensateEngineChain aca.
         ' El _2d no lee MASKT del NIF (el _2c tampoco) => skeeRaw = Nothing, y sin skee no hace falta skinRgb.
-        Dim foldedId = SseFoldLayerStack.ComposeFoldedGpuResident(dec.Rgba, layers, det, Nothing, overlays,
-                                                                  Nothing, w, h, host, measureParity:=False)
+        Dim foldedId = SseFoldLayerStack.ComposeFoldedGpuResident(dec.ToUnitArray(), layers, det, Nothing, overlays,
+                                                                  Nothing, w, h, host,
+                                                                  measureParity:=True)
+        ' ⭐ measureParity:=True (antes hardcodeado en False). El _2d existe EXACTAMENTE para comparar el
+        ' CPU (_2c) contra el GPU, y con el flag en False el unico instrumento de paridad del camino SSE
+        ' quedaba apagado justo en el sandbox que lo motiva. Ahora emite `[SSE-FOLD] PARITY rmsCPUvsGPU=`.
+        ' Costo: un readback + una replica CPU, y este bloque ya esta gateado por DebugMode + GPU sandbox.
         If foldedId = 0 Then
             Logger.LogLazy(Function() "[FACEBAKE][SSE] _2d ABORT: la cadena GPU (fold + capas + unfold) fallo.")
             Return
@@ -2595,7 +3008,7 @@ Public Module FaceGenBuilder
                 Return
             End If
             Dim decoded = FaceTintCpuCompositor.DecodeDds(srcBytes)
-            If decoded Is Nothing OrElse decoded.Rgba Is Nothing OrElse decoded.Width <= 0 OrElse decoded.Height <= 0 Then
+            If decoded Is Nothing OrElse decoded.Rgba8 Is Nothing OrElse decoded.Width <= 0 OrElse decoded.Height <= 0 Then
                 If forced Then Logger.LogLazy(Function() $"[FACEBAKE][SSE] _2c ABORT: complexion decode failed for '{diffPath}'")
                 RecordTextureFailure(result, $"fold SSE: el complexion '{diffPath}' no se pudo decodificar")
                 Return
@@ -2603,7 +3016,7 @@ Public Module FaceGenBuilder
             Dim w = decoded.Width, h = decoded.Height
             Dim npix = w * h
             Dim acc(npix * 4 - 1) As Single
-            Array.Copy(decoded.Rgba, acc, acc.Length)
+            decoded.CopyUnitTo(acc)
 
             ' === PLIEGUE (orden fiel a RaceMenu) ===
             ' El overlay va DESPUÉS del skin tint. El engine hace albedo = softlight(diffuse, facetint_d) × amplify(detail).
@@ -2781,10 +3194,10 @@ Public Module FaceGenBuilder
                         Dim msnBytes = FilesDictionary_class.GetBytes(FO4UnifiedMaterial_Class.CorrectTexturePath(msnPath))
                         If msnBytes IsNot Nothing Then
                             Dim mDec = FaceTintCpuCompositor.DecodeDds(msnBytes)
-                            If mDec IsNot Nothing AndAlso mDec.Rgba IsNot Nothing AndAlso mDec.Width > 0 AndAlso mDec.Height > 0 Then
+                            If mDec IsNot Nothing AndAlso mDec.Rgba8 IsNot Nothing AndAlso mDec.Width > 0 AndAlso mDec.Height > 0 Then
                                 Dim mw = mDec.Width, mh = mDec.Height
                                 Dim macc(mw * mh * 4 - 1) As Single
-                                Array.Copy(mDec.Rgba, macc, macc.Length)
+                                mDec.CopyUnitTo(macc)
                                 ' El _msn vanilla es uncompressed 32bpp (4 canales) ⇒ esto NO corre en el caso normal
                                 ' y el resultado queda byte-idéntico. Sólo muerde con un _msn MODEADO de 2 canales,
                                 ' donde el pack de DecodeDds habría dado B=0 ⇒ z=−1 en TODA la cabeza. Ojo: para un
@@ -2881,6 +3294,63 @@ Public Module FaceGenBuilder
 
     Private Function ClampByte255(v As Double) As Byte
         Return CByte(Math.Max(0.0, Math.Min(255.0, Math.Round(v))))
+    End Function
+
+    ''' <summary>AUTO-TEST del contexto GL: sube un patron conocido, lo pasa por el MISMO pase del compositor
+    ''' que usa el bake (<see cref="FaceTintCompositor.ConvertTextureSpace"/>, uMode=2) y verifica que el
+    ''' readback lo devuelva. Devuelve Nothing si el GL sirve, o el motivo del fallo.
+    ''' <para>⛔ POR QUE EXISTE: un contexto GL puede crearse "bien" y despues no dibujar nada —ventana sin
+    ''' mostrar, driver que no da un framebuffer usable, contexto current en otro hilo—. El sintoma es un
+    ''' readback en CERO, y eso NO se distingue de "el compose dio negro": la corrida reportaria una paridad
+    ''' perfecta o una divergencia enorme, las dos inventadas. Mejor fallar acá, antes de medir 200 NPCs.</para>
+    ''' <para>Se testea con FBO (que es lo que usa el compositor), NO con el framebuffer por defecto de la
+    ''' ventana: es exactamente el camino que despues se va a ejercer.</para></summary>
+    ''' (Friend, no Public: <see cref="NpcRenderHost"/> es Friend y un Public lo expondria fuera del proyecto.)
+    Friend Function GlSelfTest(host As NpcRenderHost) As String
+        If host Is Nothing Then Return "no hay NpcRenderHost"
+        If host.CompositorState Is Nothing Then Return "el host no tiene CompositorState"
+        Const N As Integer = 8
+        ' Patron NO uniforme y NO simetrico entre canales: un buffer en cero, o con los canales cruzados, o
+        ' recortado, falla. (Un patron constante pasaria un readback de basura constante.)
+        Dim src(N * N * 4 - 1) As Byte
+        For i = 0 To N * N - 1
+            src(i * 4) = CByte((i * 3) Mod 256)          ' B
+            src(i * 4 + 1) = CByte((i * 7 + 11) Mod 256) ' G
+            src(i * 4 + 2) = CByte((i * 13 + 29) Mod 256)  ' R
+            src(i * 4 + 3) = 255
+        Next
+        Dim texId As Integer = 0, outId As Integer = 0
+        Try
+            texId = UploadBgraToGl(src, N, N)
+            If texId = 0 Then Return "GL.GenTexture/TexImage2D devolvio 0 (no se pudo subir la textura de prueba)"
+            ' Conversion IDENTIDAD (0->0): el shader cortocircuita la curva pero el quad SE DIBUJA igual, asi
+            ' que esto ejercita programa + VAO + FBO + readback, que es todo lo que puede fallar.
+            outId = FaceTintCompositor.ConvertTextureSpace(host.CompositorState, texId, N, N, 0, 0)
+            If outId = 0 Then Return "ConvertTextureSpace devolvio 0 (el compositor no pudo dibujar: FBO/programa/VAO)"
+            Dim got = ReadbackGlBgra(outId, N * N)
+            If got Is Nothing Then Return "el readback devolvio Nothing"
+            If got.Length <> src.Length Then Return $"el readback devolvio {got.Length} bytes, se esperaban {src.Length}"
+            ' (a) todo igual a un mismo byte = buffer sin dibujar (el caso clasico: todo 0).
+            Dim allSame As Boolean = True
+            For i = 1 To got.Length - 1
+                If got(i) <> got(0) Then allSame = False : Exit For
+            Next
+            If allSame Then Return $"el readback es CONSTANTE (todo 0x{got(0):X2}) — el GL no dibujo nada"
+            ' (b) tiene que reproducir el patron. Tolerancia 1: el FBO es Rgba32f y el redondeo de vuelta a
+            ' byte puede mover 1 en valores cerca de x.5. Mas de 1 no es redondeo, es otra cosa.
+            Dim worst As Integer = 0, worstAt As Integer = -1
+            For i = 0 To got.Length - 1
+                Dim d = Math.Abs(CInt(got(i)) - CInt(src(i)))
+                If d > worst Then worst = d : worstAt = i
+            Next
+            If worst > 1 Then Return $"el readback NO reproduce el patron (peor delta {worst} en el byte {worstAt}; tolerancia 1)"
+            Return Nothing
+        Catch ex As Exception
+            Return $"{ex.GetType().Name}: {ex.Message}"
+        Finally
+            If outId <> 0 Then Try : GL.DeleteTexture(outId) : Catch : End Try
+            If texId <> 0 Then Try : GL.DeleteTexture(texId) : Catch : End Try
+        End Try
     End Function
 
     ''' <summary>Lee el content de los slots 0 (diffuse/complexion) y 1 (normal/_msn) del texture-set del head
@@ -3094,6 +3564,13 @@ Public Module FaceGenBuilder
             hasTextureLighting:=state.HasTextureLighting,
             textureLightingColorArgb:=state.TextureLightingColor.ToArgb())
 
+        ' ⛔ SACADA (2026-07-30) la biseccion de diagnostico `FGBAKE_LAYER_CUTOFF` / `FGBAKE_SWAP_CUTOFF`,
+        ' que truncaba capas y swaps en LOS DOS compositores para aislar la fase que divergia. Cumplio su
+        ' proposito: localizo la divergencia CPU-vs-GPU en el region swap (seed solo = 0 px de cola; 1 swap
+        ' = 96) y de ahi salio la causa real (el GPU mezclaba MIPMAPS de las texturas FUENTE mientras el CPU
+        ' muestrea mip 0). La receta exacta para re-armarla, con todos los numeros, esta en memoria:
+        ' reference_cpu_gpu_parity_bc_decode. No se deja en el bake: truncar el compose es un foot-gun.
+
         ' --- 3. Upload face source D/N/S to GL temporaries (these are the inputs to the pipeline). ---
         Dim diffuseKey = FO4UnifiedMaterial_Class.CorrectTexturePath(diffusePath)
         Dim normalKey = FO4UnifiedMaterial_Class.CorrectTexturePath(normalPath)
@@ -3159,9 +3636,18 @@ Public Module FaceGenBuilder
             Try
                 ' srgb=False para TODAS: la base del bake se carga CRUDA (el seed hace srgbToLin, base raw =
                 ' baseDiffuseIsLinearOnGpu=False); el decode lo hace el compositor por convención, no el SRV.
+                ' ⭐⭐ useCompress SALE DE LA MISMA PROPIEDAD QUE LOS OTROS SITIOS DE CARGA, no de un True fijo.
+                ' Este es el CUARTO sitio que sube texturas a GL (los otros tres viven en FaceTintCompositor) y
+                ' era el unico que no consultaba la propiedad. Con True fijo el seed del acumulador GPU quedaba
+                ' descomprimido POR HARDWARE mientras el CPU decodifica el MISMO DDS por software (DirectXTex):
+                ' dos decoders distintos sobre los mismos bytes = paths CRUZADOS, justo lo que la paridad mide.
+                ' MEDIDO (muestra de 60 NPCs, comparando SOLO el seed, sin swaps ni capas): 5.265 px con
+                ' |delta|>=3 y peor 7, repartidos _msn=4.323 _s=912 _d=30 — y el mismo conteo exacto (214 px)
+                ' repetido en NPCs distintos que comparten el `_msn`, o sea una propiedad de la TEXTURA y no
+                ' del NPC, que es la firma de una diferencia de decode y no de aritmetica.
                 uploaded = DirectXDDSLoader.Load_And_GenerateOpenGLTextures_Memory(
                     uploadPaths.ToArray(), uploadBytes.ToArray(),
-                    useCompress:=True, forceOpenGL:=False, Srgb:=New Boolean(uploadPaths.Count - 1) {})
+                    useCompress:=FaceTintCompositor.GlDecodeUseCompress, forceOpenGL:=False, Srgb:=New Boolean(uploadPaths.Count - 1) {})
             Catch ex As Exception
                 Dim tU = ex.GetType().Name, mU = ex.Message
                 Logger.LogLazy(Function() $"[FACEBAKE] BAIL: GL upload threw {tU}: {mU} (npcFormID=0x{npcFormID:X8})")
@@ -3210,6 +3696,7 @@ Public Module FaceGenBuilder
                 If(specEntry?.Texture_ID, 0),
                 w, h,
                 built.Layers, built.RegionSwaps,
+                FaceTintCpuCompositor.AccumSpaceCapability,
                 OutputSettings)
         End If
 
@@ -3220,6 +3707,13 @@ Public Module FaceGenBuilder
             If pipelineResult.Diffuse.IsFresh Then freshIds.Add(pipelineResult.Diffuse.TextureId)
             If pipelineResult.Normal.IsFresh Then freshIds.Add(pipelineResult.Normal.TextureId)
             If pipelineResult.Specular.IsFresh Then freshIds.Add(pipelineResult.Specular.TextureId)
+            ' ⛔ El pase final AccumSpace->OutputSpace del GL fallo en algun canal ⇒ ese canal quedo en
+            ' AccumSpace y su gamma esta corrida. Se INVALIDA la medicion de paridad de este NPC en vez de
+            ' dejar que la divergencia se lea como defecto del compositor. (Es el consumidor de
+            ' FaceTintPipelineResult.SpaceConversionFailed: sin esto el flag existiria y no lo miraria nadie.)
+            If pipelineResult.SpaceConversionFailed Then
+                ParityInvalidate($"0x{npcFormID:X8}: el pase final AccumSpace->OutputSpace del GL fallo")
+            End If
         End If
 
         ' --- 5. Output dir + slot plan + texture-set for slot rewrites. ---
@@ -3357,6 +3851,17 @@ Public Module FaceGenBuilder
                     Logger.LogLazy(Function() $"[FACEBAKE-FAIL] GL.GetTexImage slot={slotL}{suffixL} ResultId={resultIdL} npcFormID=0x{npcFormID:X8}: {typeL}: {msgL}")
                     gpuBgra = Nothing
                 End Try
+            End If
+
+            ' ⭐⭐ INSTRUMENTO DE PARIDAD CPU-vs-GPU. Aca —y SOLO aca— los dos compositores tienen su resultado
+            ' del MISMO canal, del MISMO NPC, en el MISMO formato (BGRA byte) y al MISMO tamaño. Se compara en
+            ' memoria, ANTES del encode BCn, asi que el numero no lleva codec adentro.
+            ' ⛔ POR QUE EXISTE: el bake corre needGl=False (100 % CPU), asi que el compositor GL —el del RENDER—
+            ' no se ejecutaba ni una vez en el barrido. Toda la byte-parity del bake es CIEGA a el. Este es el
+            ' equivalente FO4 del `[SSE-FOLD] PARITY` que ya existia para SSE (SseFoldLayerStack).
+            ' Se alimenta con FGBAKE_GPU_PARITY=1 (BakeAllRunner levanta un contexto GL) o con la app en DebugMode.
+            If cbSlot IsNot Nothing AndAlso gpuBgra IsNot Nothing Then
+                RecordCpuGpuParity(entry.Slot, entry.Suffix, cbSlot, gpuBgra, ddW, ddH, npcFormID, If(built.RegionSwaps IsNot Nothing, built.RegionSwaps.Count, 0), If(built.Layers IsNot Nothing, built.Layers.Count, 0))
             End If
 
             ' OUTPUT principal (_d.dds release / _d_2.dds debug): SIEMPRE CPU (el path always-on, byte-exacto a

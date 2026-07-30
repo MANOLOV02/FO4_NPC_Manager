@@ -639,6 +639,17 @@ Friend NotInheritable Class NpcMorphPoseResolver
     ''' <summary>Cache of parsed FacialBoneRegions files per race/gender key (e.g. "HumanRace:female").</summary>
     Private Shared ReadOnly _facialBoneRegionsCache As New Dictionary(Of String, FacialBoneRegionsFile)(StringComparer.OrdinalIgnoreCase)
 
+    ''' <summary>Cuantas veces se pidio un <c>&lt;Race&gt;FacialBoneRegions&lt;G&gt;.txt</c> que NO existe en los
+    ''' archives (contado UNA vez por raza+genero: la cache actua de latch). Distinto de cero significa que hubo
+    ''' razas cuyo morph FMRS/FMRI se salteo y cuya cara pudo salir NEUTRA. Se expone para que un barrido pueda
+    ''' reportarlo en vez de que el dato viva solo en el log — un batch con `Logger.Enabled=False` no veria nada.</summary>
+    Friend Shared ReadOnly Property FacialBoneRegionsMisses As Integer
+        Get
+            Return Threading.Volatile.Read(_facialBoneRegionsMisses)
+        End Get
+    End Property
+    Private Shared _facialBoneRegionsMisses As Integer = 0
+
     ''' <summary>Load and parse the per-race HumanRaceFacialBoneRegions<Gender>.txt JSON file
     ''' for the NPC's OWN gender. Returns Nothing if the file doesn't exist or can't be parsed.
     ''' <para>This is the GENDER CATALOG: the set of regions the editor offers for a race+gender.
@@ -658,6 +669,17 @@ Friend NotInheritable Class NpcMorphPoseResolver
         Dim dataPath = $"meshes\actors\character\characterassets\{race.EditorID}FacialBoneRegions{genderKey}.txt".ToLowerInvariant()
         Dim loc As FilesDictionary_class.File_Location = Nothing
         If Not FilesDictionary_class.Dictionary.TryGetValue(dataPath, loc) Then
+            ' ⛔ FALLO SILENCIOSO — ya no. Antes esto cacheaba Nothing y volvia mudo: un NPC con entradas
+            ' FMRI/FMRS cuya raza no tiene <Race>FacialBoneRegions<G>.txt se come una CARA NEUTRA sin que
+            ' nadie se entere. Vanilla solo trae HumanRace / GhoulRace / PowerArmorRace; NO existe
+            ' HumanChildRaceFacialBoneRegions{Male,Female}.txt. Hoy es inerte —medido: los 42 NPCs
+            ' infantiles tienen FMRI entries = 0— pero un mod que le ponga FMRS a un niño cae justo aca.
+            ' Misma familia que el agujero del fallback de morphs de FaceGenBuilder; la diferencia es que
+            ' este todavia no muerde.
+            ' Se avisa UNA VEZ por (raza, genero): la propia cache actua de latch, asi que no spamea.
+            Threading.Interlocked.Increment(_facialBoneRegionsMisses)
+            Dim edidM = race.EditorID, gkM = genderKey, pathM = dataPath
+            Logger.LogLazy(Function() $"[FBR] MISSING facial-bone-regions file for race '{edidM}' ({gkM}): '{pathM}' is not in the archives. Any FMRS/FMRI morph for this race will be SKIPPED and the face will be written NEUTRAL.")
             _facialBoneRegionsCache(cacheKey) = Nothing
             Return Nothing
         End If

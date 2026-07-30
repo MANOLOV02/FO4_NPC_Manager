@@ -25,18 +25,20 @@ Partial Class CharGenOptionsForm
         TabPageSize = New TabPage()
         GroupBoxSize = New GroupBox()
         RadioAll = New RadioButton()
+        LabelFormat = New Label()
         RadioPerLayer = New RadioButton()
+        ComboFormat = New ComboBox()
         LabelDiffuse = New Label()
         ComboDiffuse = New ComboBox()
         LabelNormal = New Label()
         ComboNormal = New ComboBox()
         LabelSpecular = New Label()
         ComboSpecular = New ComboBox()
-        LabelFormat = New Label()
-        ComboFormat = New ComboBox()
         ComboFormatN = New ComboBox()
         ComboFormatS = New ComboBox()
         CheckGenerateTga = New CheckBox()
+        CheckBoxUseHardwareBcDecode = New CheckBox()
+        CheckBoxAccumInComposite = New CheckBox()
         ButtonResetSize = New Button()
         TabPageConv = New TabPage()
         GroupConvDiffuse = New GroupBox()
@@ -59,17 +61,6 @@ Partial Class CharGenOptionsForm
         LblDBlend = New Label()
         ComboDBlend = New ComboBox()
         CheckDSeedG22 = New CheckBox()
-        GroupConvDWsByOp = New GroupBox()
-        LblDWsReplace = New Label()
-        ComboDWsReplace = New ComboBox()
-        LblDWsMultiply = New Label()
-        ComboDWsMultiply = New ComboBox()
-        LblDWsOverlay = New Label()
-        ComboDWsOverlay = New ComboBox()
-        LblDWsSoftLight = New Label()
-        ComboDWsSoftLight = New ComboBox()
-        LblDWsHardLight = New Label()
-        ComboDWsHardLight = New ComboBox()
         GroupConvNormal = New GroupBox()
         LblNWork = New Label()
         ComboNWork = New ComboBox()
@@ -104,9 +95,18 @@ Partial Class CharGenOptionsForm
         ComboSSoft = New ComboBox()
         LblSBlend = New Label()
         ComboSBlend = New ComboBox()
+        GroupConvDWsByOp = New GroupBox()
+        LblDWsReplace = New Label()
+        ComboDWsReplace = New ComboBox()
+        LblDWsMultiply = New Label()
+        ComboDWsMultiply = New ComboBox()
+        LblDWsOverlay = New Label()
+        ComboDWsOverlay = New ComboBox()
+        LblDWsSoftLight = New Label()
+        ComboDWsSoftLight = New ComboBox()
+        LblDWsHardLight = New Label()
+        ComboDWsHardLight = New ComboBox()
         ButtonResetConv = New Button()
-        ButtonOK = New Button()
-        ButtonCancel = New Button()
         TabPageOrder = New TabPage()
         GroupTintOrder = New GroupBox()
         ListTintRules = New ListBox()
@@ -136,6 +136,8 @@ Partial Class CharGenOptionsForm
         CheckBoxReplicateEngineSkinNorm = New CheckBox()
         CheckBoxMatchSubsurfaceFlag = New CheckBox()
         BtnFixesRevert = New Button()
+        ButtonOK = New Button()
+        ButtonCancel = New Button()
         TabMain.SuspendLayout()
         TabPageSize.SuspendLayout()
         GroupBoxSize.SuspendLayout()
@@ -159,7 +161,7 @@ Partial Class CharGenOptionsForm
         TabMain.Location = New Point(12, 12)
         TabMain.Name = "TabMain"
         TabMain.SelectedIndex = 0
-        TabMain.Size = New Size(640, 458)
+        TabMain.Size = New Size(640, 488)
         TabMain.TabIndex = 0
         ' 
         ' TabPageSize
@@ -169,7 +171,7 @@ Partial Class CharGenOptionsForm
         TabPageSize.Location = New Point(4, 24)
         TabPageSize.Name = "TabPageSize"
         TabPageSize.Padding = New Padding(3)
-        TabPageSize.Size = New Size(632, 312)
+        TabPageSize.Size = New Size(632, 460)
         TabPageSize.TabIndex = 0
         TabPageSize.Text = "Texture Size"
         TabPageSize.UseVisualStyleBackColor = True
@@ -189,9 +191,11 @@ Partial Class CharGenOptionsForm
         GroupBoxSize.Controls.Add(ComboFormatN)
         GroupBoxSize.Controls.Add(ComboFormatS)
         GroupBoxSize.Controls.Add(CheckGenerateTga)
+        GroupBoxSize.Controls.Add(CheckBoxUseHardwareBcDecode)
+        GroupBoxSize.Controls.Add(CheckBoxAccumInComposite)
         GroupBoxSize.Location = New Point(6, 6)
         GroupBoxSize.Name = "GroupBoxSize"
-        GroupBoxSize.Size = New Size(606, 200)
+        GroupBoxSize.Size = New Size(606, 222)
         GroupBoxSize.TabIndex = 0
         GroupBoxSize.TabStop = False
         GroupBoxSize.Text = "Texture size (per channel)"
@@ -207,6 +211,15 @@ Partial Class CharGenOptionsForm
         RadioAll.Text = "All (uniform)"
         RadioAll.UseVisualStyleBackColor = True
         ' 
+        ' LabelFormat
+        ' 
+        LabelFormat.AutoSize = True
+        LabelFormat.Location = New Point(310, 58)
+        LabelFormat.Name = "LabelFormat"
+        LabelFormat.Size = New Size(45, 15)
+        LabelFormat.TabIndex = 1
+        LabelFormat.Text = "Format"
+        ' 
         ' RadioPerLayer
         ' 
         RadioPerLayer.AutoSize = True
@@ -216,6 +229,15 @@ Partial Class CharGenOptionsForm
         RadioPerLayer.TabIndex = 1
         RadioPerLayer.Text = "Per layer"
         RadioPerLayer.UseVisualStyleBackColor = True
+        ' 
+        ' ComboFormat
+        ' 
+        ComboFormat.DropDownStyle = ComboBoxStyle.DropDownList
+        ComboFormat.Items.AddRange(New Object() {"BC3 (default)", "BC7", "Uncompressed"})
+        ComboFormat.Location = New Point(410, 55)
+        ComboFormat.Name = "ComboFormat"
+        ComboFormat.Size = New Size(190, 23)
+        ComboFormat.TabIndex = 2
         ' 
         ' LabelDiffuse
         ' 
@@ -271,63 +293,63 @@ Partial Class CharGenOptionsForm
         ComboSpecular.Size = New Size(190, 23)
         ComboSpecular.TabIndex = 7
         ' 
-        ' LabelFormat
-        ' 
-        LabelFormat.AutoSize = True
-        LabelFormat.Location = New Point(310, 58)
-        LabelFormat.Name = "LabelFormat"
-        LabelFormat.Size = New Size(83, 15)
-        LabelFormat.TabIndex = 1
-        LabelFormat.Text = "Format"
-        ' 
-        ' ComboFormat
-        ' 
-        ComboFormat.DropDownStyle = ComboBoxStyle.DropDownList
-        ComboFormat.Items.AddRange(New Object() {"BC3 (default)", "BC7", "Uncompressed"})
-        ComboFormat.Location = New Point(410, 55)
-        ComboFormat.Name = "ComboFormat"
-        ComboFormat.Size = New Size(190, 23)
-        ComboFormat.TabIndex = 2
-        '
         ' ComboFormatN
-        '
+        ' 
         ComboFormatN.DropDownStyle = ComboBoxStyle.DropDownList
         ComboFormatN.Items.AddRange(New Object() {"BC5", "Uncompressed", "BC7", "BC3 (default)"})
         ComboFormatN.Location = New Point(410, 87)
         ComboFormatN.Name = "ComboFormatN"
         ComboFormatN.Size = New Size(190, 23)
         ComboFormatN.TabIndex = 4
-        '
+        ' 
         ' ComboFormatS
-        '
+        ' 
         ComboFormatS.DropDownStyle = ComboBoxStyle.DropDownList
-        ' Mismo dominio que ComboFormatN (enum FaceTintNormalSpecularCompression: BC5=0/Unc=1/BC7=2/BC3=3): los 4
-        ' ítems, en el MISMO orden. Con 2 ítems, cualquier índice >= 2 (p.ej. el derivado del diffuse) reventaba.
         ComboFormatS.Items.AddRange(New Object() {"BC5 (default)", "Uncompressed", "BC7", "BC3"})
         ComboFormatS.Location = New Point(410, 119)
         ComboFormatS.Name = "ComboFormatS"
         ComboFormatS.Size = New Size(190, 23)
         ComboFormatS.TabIndex = 6
-        '
+        ' 
         ' CheckGenerateTga
-        '
+        ' 
         CheckGenerateTga.AutoSize = True
         CheckGenerateTga.Location = New Point(12, 158)
         CheckGenerateTga.Name = "CheckGenerateTga"
-        CheckGenerateTga.Size = New Size(200, 19)
+        CheckGenerateTga.Size = New Size(187, 19)
         CheckGenerateTga.TabIndex = 8
         CheckGenerateTga.Text = "Generate TGA (uncompressed)"
         CheckGenerateTga.UseVisualStyleBackColor = True
-        '
+        ' 
+        ' CheckBoxUseHardwareBcDecode
+        ' 
+        CheckBoxUseHardwareBcDecode.AutoSize = True
+        CheckBoxUseHardwareBcDecode.Location = New Point(323, 177)
+        CheckBoxUseHardwareBcDecode.Name = "CheckBoxUseHardwareBcDecode"
+        CheckBoxUseHardwareBcDecode.Size = New Size(277, 19)
+        CheckBoxUseHardwareBcDecode.TabIndex = 9
+        CheckBoxUseHardwareBcDecode.Text = "Decode source textures on the GPU (less VRAM)"
+        CheckBoxUseHardwareBcDecode.UseVisualStyleBackColor = True
+        ' 
+        ' CheckBoxAccumInComposite
+        ' 
+        CheckBoxAccumInComposite.AutoSize = True
+        CheckBoxAccumInComposite.Location = New Point(12, 177)
+        CheckBoxAccumInComposite.Name = "CheckBoxAccumInComposite"
+        CheckBoxAccumInComposite.Size = New Size(270, 19)
+        CheckBoxAccumInComposite.TabIndex = 10
+        CheckBoxAccumInComposite.Text = "Keep accumulator in Composite Space (faster)"
+        CheckBoxAccumInComposite.UseVisualStyleBackColor = True
+        ' 
         ' ButtonResetSize
-        '
-        ButtonResetSize.Location = New Point(456, 278)
+        ' 
+        ButtonResetSize.Location = New Point(472, 428)
         ButtonResetSize.Name = "ButtonResetSize"
-        ButtonResetSize.Size = New Size(168, 26)
+        ButtonResetSize.Size = New Size(154, 26)
         ButtonResetSize.TabIndex = 1
         ButtonResetSize.Text = "Revert to default"
         ButtonResetSize.UseVisualStyleBackColor = True
-        '
+        ' 
         ' TabPageConv
         ' 
         TabPageConv.Controls.Add(GroupConvDiffuse)
@@ -338,7 +360,7 @@ Partial Class CharGenOptionsForm
         TabPageConv.Location = New Point(4, 24)
         TabPageConv.Name = "TabPageConv"
         TabPageConv.Padding = New Padding(3)
-        TabPageConv.Size = New Size(632, 430)
+        TabPageConv.Size = New Size(632, 460)
         TabPageConv.TabIndex = 1
         TabPageConv.Text = "FaceTint Conventions"
         TabPageConv.UseVisualStyleBackColor = True
@@ -366,7 +388,7 @@ Partial Class CharGenOptionsForm
         GroupConvDiffuse.Controls.Add(CheckDSeedG22)
         GroupConvDiffuse.Location = New Point(8, 8)
         GroupConvDiffuse.Name = "GroupConvDiffuse"
-        GroupConvDiffuse.Size = New Size(200, 322)
+        GroupConvDiffuse.Size = New Size(200, 315)
         GroupConvDiffuse.TabIndex = 0
         GroupConvDiffuse.TabStop = False
         GroupConvDiffuse.Text = "Diffuse"
@@ -376,7 +398,7 @@ Partial Class CharGenOptionsForm
         LblDWork.AutoSize = True
         LblDWork.Location = New Point(8, 24)
         LblDWork.Name = "LblDWork"
-        LblDWork.Size = New Size(52, 15)
+        LblDWork.Size = New Size(61, 15)
         LblDWork.TabIndex = 0
         LblDWork.Text = "Work (ext)"
         ' 
@@ -412,7 +434,7 @@ Partial Class CharGenOptionsForm
         LblDSrc.AutoSize = True
         LblDSrc.Location = New Point(8, 84)
         LblDSrc.Name = "LblDSrc"
-        LblDSrc.Size = New Size(23, 15)
+        LblDSrc.Size = New Size(59, 15)
         LblDSrc.TabIndex = 4
         LblDSrc.Text = "Src (solid)"
         ' 
@@ -424,25 +446,25 @@ Partial Class CharGenOptionsForm
         ComboDSrc.Name = "ComboDSrc"
         ComboDSrc.Size = New Size(108, 23)
         ComboDSrc.TabIndex = 5
-        '
+        ' 
         ' LblDTexSrc
-        '
+        ' 
         LblDTexSrc.AutoSize = True
         LblDTexSrc.Location = New Point(8, 114)
         LblDTexSrc.Name = "LblDTexSrc"
-        LblDTexSrc.Size = New Size(23, 15)
+        LblDTexSrc.Size = New Size(70, 15)
         LblDTexSrc.TabIndex = 6
         LblDTexSrc.Text = "Src (texture)"
-        '
+        ' 
         ' ComboDTexSrc
-        '
+        ' 
         ComboDTexSrc.DropDownStyle = ComboBoxStyle.DropDownList
         ComboDTexSrc.Items.AddRange(New Object() {"Linear", "Srgb", "G22", "G24"})
         ComboDTexSrc.Location = New Point(84, 111)
         ComboDTexSrc.Name = "ComboDTexSrc"
         ComboDTexSrc.Size = New Size(108, 23)
         ComboDTexSrc.TabIndex = 7
-        '
+        ' 
         ' LblDOut
         ' 
         LblDOut.AutoSize = True
@@ -564,7 +586,7 @@ Partial Class CharGenOptionsForm
         GroupConvNormal.Controls.Add(ComboNBlend)
         GroupConvNormal.Location = New Point(216, 8)
         GroupConvNormal.Name = "GroupConvNormal"
-        GroupConvNormal.Size = New Size(200, 262)
+        GroupConvNormal.Size = New Size(200, 313)
         GroupConvNormal.TabIndex = 1
         GroupConvNormal.TabStop = False
         GroupConvNormal.Text = "Normal + Specular"
@@ -734,7 +756,7 @@ Partial Class CharGenOptionsForm
         GroupConvSwap.Controls.Add(ComboSBlend)
         GroupConvSwap.Location = New Point(424, 8)
         GroupConvSwap.Name = "GroupConvSwap"
-        GroupConvSwap.Size = New Size(200, 262)
+        GroupConvSwap.Size = New Size(200, 313)
         GroupConvSwap.TabIndex = 2
         GroupConvSwap.TabStop = False
         GroupConvSwap.Text = "Swaps (Diffuse)"
@@ -884,36 +906,126 @@ Partial Class CharGenOptionsForm
         ComboSBlend.Size = New Size(108, 23)
         ComboSBlend.TabIndex = 15
         ' 
+        ' GroupConvDWsByOp
+        ' 
+        GroupConvDWsByOp.Controls.Add(LblDWsReplace)
+        GroupConvDWsByOp.Controls.Add(ComboDWsReplace)
+        GroupConvDWsByOp.Controls.Add(LblDWsMultiply)
+        GroupConvDWsByOp.Controls.Add(ComboDWsMultiply)
+        GroupConvDWsByOp.Controls.Add(LblDWsOverlay)
+        GroupConvDWsByOp.Controls.Add(ComboDWsOverlay)
+        GroupConvDWsByOp.Controls.Add(LblDWsSoftLight)
+        GroupConvDWsByOp.Controls.Add(ComboDWsSoftLight)
+        GroupConvDWsByOp.Controls.Add(LblDWsHardLight)
+        GroupConvDWsByOp.Controls.Add(ComboDWsHardLight)
+        GroupConvDWsByOp.Location = New Point(8, 329)
+        GroupConvDWsByOp.Name = "GroupConvDWsByOp"
+        GroupConvDWsByOp.Size = New Size(616, 84)
+        GroupConvDWsByOp.TabIndex = 4
+        GroupConvDWsByOp.TabStop = False
+        GroupConvDWsByOp.Text = "Diffuse - Working Space por BlendOp (engine-faithful: SoftLight=G22, resto=Linear)"
+        ' 
+        ' LblDWsReplace
+        ' 
+        LblDWsReplace.AutoSize = True
+        LblDWsReplace.Location = New Point(8, 22)
+        LblDWsReplace.Name = "LblDWsReplace"
+        LblDWsReplace.Size = New Size(48, 15)
+        LblDWsReplace.TabIndex = 0
+        LblDWsReplace.Text = "Replace"
+        ' 
+        ' ComboDWsReplace
+        ' 
+        ComboDWsReplace.DropDownStyle = ComboBoxStyle.DropDownList
+        ComboDWsReplace.Items.AddRange(New Object() {"Linear", "Srgb", "G22", "G24"})
+        ComboDWsReplace.Location = New Point(8, 42)
+        ComboDWsReplace.Name = "ComboDWsReplace"
+        ComboDWsReplace.Size = New Size(110, 23)
+        ComboDWsReplace.TabIndex = 1
+        ' 
+        ' LblDWsMultiply
+        ' 
+        LblDWsMultiply.AutoSize = True
+        LblDWsMultiply.Location = New Point(130, 22)
+        LblDWsMultiply.Name = "LblDWsMultiply"
+        LblDWsMultiply.Size = New Size(51, 15)
+        LblDWsMultiply.TabIndex = 2
+        LblDWsMultiply.Text = "Multiply"
+        ' 
+        ' ComboDWsMultiply
+        ' 
+        ComboDWsMultiply.DropDownStyle = ComboBoxStyle.DropDownList
+        ComboDWsMultiply.Items.AddRange(New Object() {"Linear", "Srgb", "G22", "G24"})
+        ComboDWsMultiply.Location = New Point(130, 42)
+        ComboDWsMultiply.Name = "ComboDWsMultiply"
+        ComboDWsMultiply.Size = New Size(110, 23)
+        ComboDWsMultiply.TabIndex = 3
+        ' 
+        ' LblDWsOverlay
+        ' 
+        LblDWsOverlay.AutoSize = True
+        LblDWsOverlay.Location = New Point(252, 22)
+        LblDWsOverlay.Name = "LblDWsOverlay"
+        LblDWsOverlay.Size = New Size(47, 15)
+        LblDWsOverlay.TabIndex = 4
+        LblDWsOverlay.Text = "Overlay"
+        ' 
+        ' ComboDWsOverlay
+        ' 
+        ComboDWsOverlay.DropDownStyle = ComboBoxStyle.DropDownList
+        ComboDWsOverlay.Items.AddRange(New Object() {"Linear", "Srgb", "G22", "G24"})
+        ComboDWsOverlay.Location = New Point(252, 42)
+        ComboDWsOverlay.Name = "ComboDWsOverlay"
+        ComboDWsOverlay.Size = New Size(110, 23)
+        ComboDWsOverlay.TabIndex = 5
+        ' 
+        ' LblDWsSoftLight
+        ' 
+        LblDWsSoftLight.AutoSize = True
+        LblDWsSoftLight.Location = New Point(374, 22)
+        LblDWsSoftLight.Name = "LblDWsSoftLight"
+        LblDWsSoftLight.Size = New Size(55, 15)
+        LblDWsSoftLight.TabIndex = 6
+        LblDWsSoftLight.Text = "SoftLight"
+        ' 
+        ' ComboDWsSoftLight
+        ' 
+        ComboDWsSoftLight.DropDownStyle = ComboBoxStyle.DropDownList
+        ComboDWsSoftLight.Items.AddRange(New Object() {"Linear", "Srgb", "G22", "G24"})
+        ComboDWsSoftLight.Location = New Point(374, 42)
+        ComboDWsSoftLight.Name = "ComboDWsSoftLight"
+        ComboDWsSoftLight.Size = New Size(110, 23)
+        ComboDWsSoftLight.TabIndex = 7
+        ' 
+        ' LblDWsHardLight
+        ' 
+        LblDWsHardLight.AutoSize = True
+        LblDWsHardLight.Location = New Point(496, 22)
+        LblDWsHardLight.Name = "LblDWsHardLight"
+        LblDWsHardLight.Size = New Size(60, 15)
+        LblDWsHardLight.TabIndex = 8
+        LblDWsHardLight.Text = "HardLight"
+        ' 
+        ' ComboDWsHardLight
+        ' 
+        ComboDWsHardLight.DropDownStyle = ComboBoxStyle.DropDownList
+        ComboDWsHardLight.Items.AddRange(New Object() {"Linear", "Srgb", "G22", "G24"})
+        ComboDWsHardLight.Location = New Point(496, 42)
+        ComboDWsHardLight.Name = "ComboDWsHardLight"
+        ComboDWsHardLight.Size = New Size(110, 23)
+        ComboDWsHardLight.TabIndex = 9
+        ' 
         ' ButtonResetConv
         ' 
-        ButtonResetConv.Location = New Point(456, 278)
+        ButtonResetConv.Location = New Point(472, 428)
         ButtonResetConv.Name = "ButtonResetConv"
-        ButtonResetConv.Size = New Size(168, 26)
+        ButtonResetConv.Size = New Size(154, 26)
         ButtonResetConv.TabIndex = 3
         ButtonResetConv.Text = "Revert to default"
         ButtonResetConv.UseVisualStyleBackColor = True
         ' 
-        ' ButtonOK
-        ' 
-        ButtonOK.Location = New Point(488, 480)
-        ButtonOK.Name = "ButtonOK"
-        ButtonOK.Size = New Size(78, 26)
-        ButtonOK.TabIndex = 1
-        ButtonOK.Text = "OK"
-        ButtonOK.UseVisualStyleBackColor = True
-        ' 
-        ' ButtonCancel
-        ' 
-        ButtonCancel.DialogResult = DialogResult.Cancel
-        ButtonCancel.Location = New Point(574, 480)
-        ButtonCancel.Name = "ButtonCancel"
-        ButtonCancel.Size = New Size(78, 26)
-        ButtonCancel.TabIndex = 2
-        ButtonCancel.Text = "Cancel"
-        ButtonCancel.UseVisualStyleBackColor = True
-        '
         ' TabPageOrder
-        '
+        ' 
         TabPageOrder.Controls.Add(GroupTintOrder)
         TabPageOrder.Controls.Add(GroupSwapOrder)
         TabPageOrder.Controls.Add(LblSkinPlacement)
@@ -922,13 +1034,13 @@ Partial Class CharGenOptionsForm
         TabPageOrder.Location = New Point(4, 24)
         TabPageOrder.Name = "TabPageOrder"
         TabPageOrder.Padding = New Padding(3)
-        TabPageOrder.Size = New Size(632, 312)
+        TabPageOrder.Size = New Size(632, 460)
         TabPageOrder.TabIndex = 2
         TabPageOrder.Text = "Tint Order"
         TabPageOrder.UseVisualStyleBackColor = True
-        '
+        ' 
         ' GroupTintOrder
-        '
+        ' 
         GroupTintOrder.Controls.Add(ListTintRules)
         GroupTintOrder.Controls.Add(ComboTintKey)
         GroupTintOrder.Controls.Add(ChkTintDesc)
@@ -939,74 +1051,75 @@ Partial Class CharGenOptionsForm
         GroupTintOrder.Location = New Point(8, 8)
         GroupTintOrder.Name = "GroupTintOrder"
         GroupTintOrder.Size = New Size(300, 250)
+        GroupTintOrder.TabIndex = 0
         GroupTintOrder.TabStop = False
         GroupTintOrder.Text = "Tint layer order (1st = bottom)"
-        '
+        ' 
         ' ListTintRules
-        '
+        ' 
         ListTintRules.FormattingEnabled = True
         ListTintRules.ItemHeight = 15
         ListTintRules.Location = New Point(8, 22)
         ListTintRules.Name = "ListTintRules"
         ListTintRules.Size = New Size(284, 139)
         ListTintRules.TabIndex = 0
-        '
+        ' 
         ' ComboTintKey
-        '
+        ' 
         ComboTintKey.DropDownStyle = ComboBoxStyle.DropDownList
         ComboTintKey.Location = New Point(8, 168)
         ComboTintKey.Name = "ComboTintKey"
         ComboTintKey.Size = New Size(180, 23)
         ComboTintKey.TabIndex = 1
-        '
+        ' 
         ' ChkTintDesc
-        '
+        ' 
         ChkTintDesc.AutoSize = True
         ChkTintDesc.Location = New Point(196, 170)
         ChkTintDesc.Name = "ChkTintDesc"
-        ChkTintDesc.Size = New Size(90, 19)
+        ChkTintDesc.Size = New Size(88, 19)
         ChkTintDesc.TabIndex = 2
         ChkTintDesc.Text = "Descending"
         ChkTintDesc.UseVisualStyleBackColor = True
-        '
+        ' 
         ' BtnTintAdd
-        '
+        ' 
         BtnTintAdd.Location = New Point(8, 196)
         BtnTintAdd.Name = "BtnTintAdd"
         BtnTintAdd.Size = New Size(66, 26)
         BtnTintAdd.TabIndex = 3
         BtnTintAdd.Text = "Add"
         BtnTintAdd.UseVisualStyleBackColor = True
-        '
+        ' 
         ' BtnTintRemove
-        '
+        ' 
         BtnTintRemove.Location = New Point(78, 196)
         BtnTintRemove.Name = "BtnTintRemove"
         BtnTintRemove.Size = New Size(66, 26)
         BtnTintRemove.TabIndex = 4
         BtnTintRemove.Text = "Remove"
         BtnTintRemove.UseVisualStyleBackColor = True
-        '
+        ' 
         ' BtnTintUp
-        '
+        ' 
         BtnTintUp.Location = New Point(148, 196)
         BtnTintUp.Name = "BtnTintUp"
         BtnTintUp.Size = New Size(66, 26)
         BtnTintUp.TabIndex = 5
         BtnTintUp.Text = "Up"
         BtnTintUp.UseVisualStyleBackColor = True
-        '
+        ' 
         ' BtnTintDown
-        '
+        ' 
         BtnTintDown.Location = New Point(218, 196)
         BtnTintDown.Name = "BtnTintDown"
         BtnTintDown.Size = New Size(66, 26)
         BtnTintDown.TabIndex = 6
         BtnTintDown.Text = "Down"
         BtnTintDown.UseVisualStyleBackColor = True
-        '
+        ' 
         ' GroupSwapOrder
-        '
+        ' 
         GroupSwapOrder.Controls.Add(ListSwapRules)
         GroupSwapOrder.Controls.Add(ComboSwapKey)
         GroupSwapOrder.Controls.Add(ChkSwapDesc)
@@ -1017,101 +1130,102 @@ Partial Class CharGenOptionsForm
         GroupSwapOrder.Location = New Point(316, 8)
         GroupSwapOrder.Name = "GroupSwapOrder"
         GroupSwapOrder.Size = New Size(300, 250)
+        GroupSwapOrder.TabIndex = 1
         GroupSwapOrder.TabStop = False
         GroupSwapOrder.Text = "Swap order (1st = first applied)"
-        '
+        ' 
         ' ListSwapRules
-        '
+        ' 
         ListSwapRules.FormattingEnabled = True
         ListSwapRules.ItemHeight = 15
         ListSwapRules.Location = New Point(8, 22)
         ListSwapRules.Name = "ListSwapRules"
         ListSwapRules.Size = New Size(284, 139)
         ListSwapRules.TabIndex = 0
-        '
+        ' 
         ' ComboSwapKey
-        '
+        ' 
         ComboSwapKey.DropDownStyle = ComboBoxStyle.DropDownList
         ComboSwapKey.Location = New Point(8, 168)
         ComboSwapKey.Name = "ComboSwapKey"
         ComboSwapKey.Size = New Size(180, 23)
         ComboSwapKey.TabIndex = 1
-        '
+        ' 
         ' ChkSwapDesc
-        '
+        ' 
         ChkSwapDesc.AutoSize = True
         ChkSwapDesc.Location = New Point(196, 170)
         ChkSwapDesc.Name = "ChkSwapDesc"
-        ChkSwapDesc.Size = New Size(90, 19)
+        ChkSwapDesc.Size = New Size(88, 19)
         ChkSwapDesc.TabIndex = 2
         ChkSwapDesc.Text = "Descending"
         ChkSwapDesc.UseVisualStyleBackColor = True
-        '
+        ' 
         ' BtnSwapAdd
-        '
+        ' 
         BtnSwapAdd.Location = New Point(8, 196)
         BtnSwapAdd.Name = "BtnSwapAdd"
         BtnSwapAdd.Size = New Size(66, 26)
         BtnSwapAdd.TabIndex = 3
         BtnSwapAdd.Text = "Add"
         BtnSwapAdd.UseVisualStyleBackColor = True
-        '
+        ' 
         ' BtnSwapRemove
-        '
+        ' 
         BtnSwapRemove.Location = New Point(78, 196)
         BtnSwapRemove.Name = "BtnSwapRemove"
         BtnSwapRemove.Size = New Size(66, 26)
         BtnSwapRemove.TabIndex = 4
         BtnSwapRemove.Text = "Remove"
         BtnSwapRemove.UseVisualStyleBackColor = True
-        '
+        ' 
         ' BtnSwapUp
-        '
+        ' 
         BtnSwapUp.Location = New Point(148, 196)
         BtnSwapUp.Name = "BtnSwapUp"
         BtnSwapUp.Size = New Size(66, 26)
         BtnSwapUp.TabIndex = 5
         BtnSwapUp.Text = "Up"
         BtnSwapUp.UseVisualStyleBackColor = True
-        '
+        ' 
         ' BtnSwapDown
-        '
+        ' 
         BtnSwapDown.Location = New Point(218, 196)
         BtnSwapDown.Name = "BtnSwapDown"
         BtnSwapDown.Size = New Size(66, 26)
         BtnSwapDown.TabIndex = 6
         BtnSwapDown.Text = "Down"
         BtnSwapDown.UseVisualStyleBackColor = True
-        '
+        ' 
         ' LblSkinPlacement
-        '
+        ' 
         LblSkinPlacement.AutoSize = True
         LblSkinPlacement.Location = New Point(8, 268)
         LblSkinPlacement.Name = "LblSkinPlacement"
-        LblSkinPlacement.Size = New Size(122, 15)
+        LblSkinPlacement.Size = New Size(117, 15)
         LblSkinPlacement.TabIndex = 1
         LblSkinPlacement.Text = "SkinTone placement:"
-        '
+        ' 
         ' ComboSkinPlacement
-        '
+        ' 
         ComboSkinPlacement.DropDownStyle = ComboBoxStyle.DropDownList
         ComboSkinPlacement.Items.AddRange(New Object() {"Positional", "FirstOfAll", "LastOfAll"})
         ComboSkinPlacement.Location = New Point(160, 265)
         ComboSkinPlacement.Name = "ComboSkinPlacement"
         ComboSkinPlacement.Size = New Size(180, 23)
         ComboSkinPlacement.TabIndex = 2
-        '
+        ' 
         ' BtnSortRevert
-        '
-        BtnSortRevert.Location = New Point(470, 264)
+        ' 
+        BtnSortRevert.Location = New Point(472, 428)
         BtnSortRevert.Name = "BtnSortRevert"
-        BtnSortRevert.Size = New Size(146, 26)
+        BtnSortRevert.Size = New Size(154, 26)
         BtnSortRevert.TabIndex = 3
         BtnSortRevert.Text = "Revert to default"
         BtnSortRevert.UseVisualStyleBackColor = True
-        '
+        ' 
         ' TabPageFixes
-        '
+        ' 
         TabPageFixes.Controls.Add(CheckBoxApplyGhoulHeadRearFix)
         TabPageFixes.Controls.Add(CheckBoxApplyEyebrowsFixedColor)
         TabPageFixes.Controls.Add(CheckBoxApplyMouthVanillaFix)
@@ -1123,206 +1237,116 @@ Partial Class CharGenOptionsForm
         TabPageFixes.Location = New Point(4, 24)
         TabPageFixes.Name = "TabPageFixes"
         TabPageFixes.Padding = New Padding(3)
-        TabPageFixes.Size = New Size(632, 312)
+        TabPageFixes.Size = New Size(632, 460)
         TabPageFixes.TabIndex = 3
         TabPageFixes.Text = "Fixes"
         TabPageFixes.UseVisualStyleBackColor = True
-        '
+        ' 
         ' CheckBoxApplyGhoulHeadRearFix
-        '
+        ' 
         CheckBoxApplyGhoulHeadRearFix.AutoSize = True
         CheckBoxApplyGhoulHeadRearFix.Location = New Point(12, 16)
         CheckBoxApplyGhoulHeadRearFix.Name = "CheckBoxApplyGhoulHeadRearFix"
-        CheckBoxApplyGhoulHeadRearFix.Size = New Size(200, 19)
+        CheckBoxApplyGhoulHeadRearFix.Size = New Size(169, 19)
         CheckBoxApplyGhoulHeadRearFix.TabIndex = 0
         CheckBoxApplyGhoulHeadRearFix.Text = "Apply fix to ghoul headrear"
         CheckBoxApplyGhoulHeadRearFix.UseVisualStyleBackColor = True
-        '
+        ' 
         ' CheckBoxApplyEyebrowsFixedColor
-        '
+        ' 
         CheckBoxApplyEyebrowsFixedColor.AutoSize = True
         CheckBoxApplyEyebrowsFixedColor.Location = New Point(12, 41)
         CheckBoxApplyEyebrowsFixedColor.Name = "CheckBoxApplyEyebrowsFixedColor"
-        CheckBoxApplyEyebrowsFixedColor.Size = New Size(280, 19)
+        CheckBoxApplyEyebrowsFixedColor.Size = New Size(307, 19)
         CheckBoxApplyEyebrowsFixedColor.TabIndex = 1
         CheckBoxApplyEyebrowsFixedColor.Text = "Apply fixed color to eyebrows (SkipEyebrowsTone.ini)"
         CheckBoxApplyEyebrowsFixedColor.UseVisualStyleBackColor = True
-        '
+        ' 
         ' CheckBoxApplyMouthVanillaFix
-        '
+        ' 
         CheckBoxApplyMouthVanillaFix.AutoSize = True
         CheckBoxApplyMouthVanillaFix.Location = New Point(12, 66)
         CheckBoxApplyMouthVanillaFix.Name = "CheckBoxApplyMouthVanillaFix"
-        CheckBoxApplyMouthVanillaFix.Size = New Size(280, 19)
+        CheckBoxApplyMouthVanillaFix.Size = New Size(304, 19)
         CheckBoxApplyMouthVanillaFix.TabIndex = 2
         CheckBoxApplyMouthVanillaFix.Text = "Fix mouth vanilla error (BaseFemaleHeadChargen.tri)"
         CheckBoxApplyMouthVanillaFix.UseVisualStyleBackColor = True
-        '
+        ' 
         ' CheckBoxBakeSseRaceMenuOverlays
-        '
+        ' 
         CheckBoxBakeSseRaceMenuOverlays.AutoSize = True
         CheckBoxBakeSseRaceMenuOverlays.Location = New Point(12, 96)
         CheckBoxBakeSseRaceMenuOverlays.Name = "CheckBoxBakeSseRaceMenuOverlays"
-        CheckBoxBakeSseRaceMenuOverlays.Size = New Size(320, 19)
+        CheckBoxBakeSseRaceMenuOverlays.Size = New Size(293, 19)
         CheckBoxBakeSseRaceMenuOverlays.TabIndex = 3
         CheckBoxBakeSseRaceMenuOverlays.Text = "Bake RaceMenu face overlays into the diffuse (SSE)"
         CheckBoxBakeSseRaceMenuOverlays.UseVisualStyleBackColor = True
-        '
+        ' 
         ' CheckBoxResolveHphHeadTri
-        '
+        ' 
         CheckBoxResolveHphHeadTri.AutoSize = True
         CheckBoxResolveHphHeadTri.Location = New Point(12, 126)
         CheckBoxResolveHphHeadTri.Name = "CheckBoxResolveHphHeadTri"
-        CheckBoxResolveHphHeadTri.Size = New Size(360, 19)
+        CheckBoxResolveHphHeadTri.Size = New Size(371, 19)
         CheckBoxResolveHphHeadTri.TabIndex = 4
         CheckBoxResolveHphHeadTri.Text = "Resolve missing/mismatched head .tri from High Poly Head (SSE)"
         CheckBoxResolveHphHeadTri.UseVisualStyleBackColor = True
-        '
+        ' 
         ' CheckBoxReplicateEngineSkinNorm
-        '
+        ' 
         CheckBoxReplicateEngineSkinNorm.AutoSize = True
         CheckBoxReplicateEngineSkinNorm.Location = New Point(12, 151)
         CheckBoxReplicateEngineSkinNorm.Name = "CheckBoxReplicateEngineSkinNorm"
-        CheckBoxReplicateEngineSkinNorm.Size = New Size(420, 19)
+        CheckBoxReplicateEngineSkinNorm.Size = New Size(392, 19)
         CheckBoxReplicateEngineSkinNorm.TabIndex = 5
         CheckBoxReplicateEngineSkinNorm.Text = "Replicate engine skin-weight normalization (non-renormalized) (FO4)"
         CheckBoxReplicateEngineSkinNorm.UseVisualStyleBackColor = True
-        '
+        ' 
         ' CheckBoxMatchSubsurfaceFlag
-        '
+        ' 
         CheckBoxMatchSubsurfaceFlag.AutoSize = True
         CheckBoxMatchSubsurfaceFlag.Location = New Point(12, 176)
         CheckBoxMatchSubsurfaceFlag.Name = "CheckBoxMatchSubsurfaceFlag"
-        CheckBoxMatchSubsurfaceFlag.Size = New Size(420, 19)
+        CheckBoxMatchSubsurfaceFlag.Size = New Size(260, 19)
         CheckBoxMatchSubsurfaceFlag.TabIndex = 6
         CheckBoxMatchSubsurfaceFlag.Text = "Match head subsurface lighting flag to body"
         CheckBoxMatchSubsurfaceFlag.UseVisualStyleBackColor = True
-        '
+        ' 
         ' BtnFixesRevert
-        '
-        BtnFixesRevert.Location = New Point(470, 264)
+        ' 
+        BtnFixesRevert.Location = New Point(472, 428)
         BtnFixesRevert.Name = "BtnFixesRevert"
-        BtnFixesRevert.Size = New Size(146, 26)
+        BtnFixesRevert.Size = New Size(154, 26)
         BtnFixesRevert.TabIndex = 6
         BtnFixesRevert.Text = "Revert to default"
         BtnFixesRevert.UseVisualStyleBackColor = True
-        '
-        ' GroupConvDWsByOp
-        '
-        GroupConvDWsByOp.Controls.Add(LblDWsReplace)
-        GroupConvDWsByOp.Controls.Add(ComboDWsReplace)
-        GroupConvDWsByOp.Controls.Add(LblDWsMultiply)
-        GroupConvDWsByOp.Controls.Add(ComboDWsMultiply)
-        GroupConvDWsByOp.Controls.Add(LblDWsOverlay)
-        GroupConvDWsByOp.Controls.Add(ComboDWsOverlay)
-        GroupConvDWsByOp.Controls.Add(LblDWsSoftLight)
-        GroupConvDWsByOp.Controls.Add(ComboDWsSoftLight)
-        GroupConvDWsByOp.Controls.Add(LblDWsHardLight)
-        GroupConvDWsByOp.Controls.Add(ComboDWsHardLight)
-        GroupConvDWsByOp.Location = New Point(8, 338)
-        GroupConvDWsByOp.Name = "GroupConvDWsByOp"
-        GroupConvDWsByOp.Size = New Size(616, 84)
-        GroupConvDWsByOp.TabIndex = 4
-        GroupConvDWsByOp.TabStop = False
-        GroupConvDWsByOp.Text = "Diffuse - Working Space por BlendOp (engine-faithful: SoftLight=G22, resto=Linear)"
-        '
-        ' LblDWsReplace
-        '
-        LblDWsReplace.AutoSize = True
-        LblDWsReplace.Location = New Point(8, 22)
-        LblDWsReplace.Name = "LblDWsReplace"
-        LblDWsReplace.Size = New Size(50, 15)
-        LblDWsReplace.TabIndex = 0
-        LblDWsReplace.Text = "Replace"
-        '
-        ' ComboDWsReplace
-        '
-        ComboDWsReplace.DropDownStyle = ComboBoxStyle.DropDownList
-        ComboDWsReplace.Items.AddRange(New Object() {"Linear", "Srgb", "G22", "G24"})
-        ComboDWsReplace.Location = New Point(8, 42)
-        ComboDWsReplace.Name = "ComboDWsReplace"
-        ComboDWsReplace.Size = New Size(110, 23)
-        ComboDWsReplace.TabIndex = 1
-        '
-        ' LblDWsMultiply
-        '
-        LblDWsMultiply.AutoSize = True
-        LblDWsMultiply.Location = New Point(130, 22)
-        LblDWsMultiply.Name = "LblDWsMultiply"
-        LblDWsMultiply.Size = New Size(53, 15)
-        LblDWsMultiply.TabIndex = 2
-        LblDWsMultiply.Text = "Multiply"
-        '
-        ' ComboDWsMultiply
-        '
-        ComboDWsMultiply.DropDownStyle = ComboBoxStyle.DropDownList
-        ComboDWsMultiply.Items.AddRange(New Object() {"Linear", "Srgb", "G22", "G24"})
-        ComboDWsMultiply.Location = New Point(130, 42)
-        ComboDWsMultiply.Name = "ComboDWsMultiply"
-        ComboDWsMultiply.Size = New Size(110, 23)
-        ComboDWsMultiply.TabIndex = 3
-        '
-        ' LblDWsOverlay
-        '
-        LblDWsOverlay.AutoSize = True
-        LblDWsOverlay.Location = New Point(252, 22)
-        LblDWsOverlay.Name = "LblDWsOverlay"
-        LblDWsOverlay.Size = New Size(49, 15)
-        LblDWsOverlay.TabIndex = 4
-        LblDWsOverlay.Text = "Overlay"
-        '
-        ' ComboDWsOverlay
-        '
-        ComboDWsOverlay.DropDownStyle = ComboBoxStyle.DropDownList
-        ComboDWsOverlay.Items.AddRange(New Object() {"Linear", "Srgb", "G22", "G24"})
-        ComboDWsOverlay.Location = New Point(252, 42)
-        ComboDWsOverlay.Name = "ComboDWsOverlay"
-        ComboDWsOverlay.Size = New Size(110, 23)
-        ComboDWsOverlay.TabIndex = 5
-        '
-        ' LblDWsSoftLight
-        '
-        LblDWsSoftLight.AutoSize = True
-        LblDWsSoftLight.Location = New Point(374, 22)
-        LblDWsSoftLight.Name = "LblDWsSoftLight"
-        LblDWsSoftLight.Size = New Size(55, 15)
-        LblDWsSoftLight.TabIndex = 6
-        LblDWsSoftLight.Text = "SoftLight"
-        '
-        ' ComboDWsSoftLight
-        '
-        ComboDWsSoftLight.DropDownStyle = ComboBoxStyle.DropDownList
-        ComboDWsSoftLight.Items.AddRange(New Object() {"Linear", "Srgb", "G22", "G24"})
-        ComboDWsSoftLight.Location = New Point(374, 42)
-        ComboDWsSoftLight.Name = "ComboDWsSoftLight"
-        ComboDWsSoftLight.Size = New Size(110, 23)
-        ComboDWsSoftLight.TabIndex = 7
-        '
-        ' LblDWsHardLight
-        '
-        LblDWsHardLight.AutoSize = True
-        LblDWsHardLight.Location = New Point(496, 22)
-        LblDWsHardLight.Name = "LblDWsHardLight"
-        LblDWsHardLight.Size = New Size(58, 15)
-        LblDWsHardLight.TabIndex = 8
-        LblDWsHardLight.Text = "HardLight"
-        '
-        ' ComboDWsHardLight
-        '
-        ComboDWsHardLight.DropDownStyle = ComboBoxStyle.DropDownList
-        ComboDWsHardLight.Items.AddRange(New Object() {"Linear", "Srgb", "G22", "G24"})
-        ComboDWsHardLight.Location = New Point(496, 42)
-        ComboDWsHardLight.Name = "ComboDWsHardLight"
-        ComboDWsHardLight.Size = New Size(110, 23)
-        ComboDWsHardLight.TabIndex = 9
-        '
+        ' 
+        ' ButtonOK
+        ' 
+        ButtonOK.Location = New Point(488, 510)
+        ButtonOK.Name = "ButtonOK"
+        ButtonOK.Size = New Size(78, 26)
+        ButtonOK.TabIndex = 1
+        ButtonOK.Text = "OK"
+        ButtonOK.UseVisualStyleBackColor = True
+        ' 
+        ' ButtonCancel
+        ' 
+        ButtonCancel.DialogResult = DialogResult.Cancel
+        ButtonCancel.Location = New Point(574, 510)
+        ButtonCancel.Name = "ButtonCancel"
+        ButtonCancel.Size = New Size(78, 26)
+        ButtonCancel.TabIndex = 2
+        ButtonCancel.Text = "Cancel"
+        ButtonCancel.UseVisualStyleBackColor = True
+        ' 
         ' CharGenOptionsForm
-        '
+        ' 
         AcceptButton = ButtonOK
         AutoScaleDimensions = New SizeF(7F, 15F)
         AutoScaleMode = AutoScaleMode.Font
         CancelButton = ButtonCancel
-        ClientSize = New Size(664, 518)
+        ClientSize = New Size(664, 548)
         Controls.Add(TabMain)
         Controls.Add(ButtonOK)
         Controls.Add(ButtonCancel)
@@ -1348,7 +1372,9 @@ Partial Class CharGenOptionsForm
         TabPageOrder.ResumeLayout(False)
         TabPageOrder.PerformLayout()
         GroupTintOrder.ResumeLayout(False)
+        GroupTintOrder.PerformLayout()
         GroupSwapOrder.ResumeLayout(False)
+        GroupSwapOrder.PerformLayout()
         TabPageFixes.ResumeLayout(False)
         TabPageFixes.PerformLayout()
         ResumeLayout(False)
@@ -1371,6 +1397,8 @@ Partial Class CharGenOptionsForm
     Friend WithEvents ComboFormatN As System.Windows.Forms.ComboBox
     Friend WithEvents ComboFormatS As System.Windows.Forms.ComboBox
     Friend WithEvents CheckGenerateTga As System.Windows.Forms.CheckBox
+    Friend WithEvents CheckBoxUseHardwareBcDecode As System.Windows.Forms.CheckBox
+    Friend WithEvents CheckBoxAccumInComposite As System.Windows.Forms.CheckBox
     Friend WithEvents ButtonResetSize As System.Windows.Forms.Button
     Friend WithEvents GroupConvDiffuse As System.Windows.Forms.GroupBox
     Friend WithEvents LblDWork As System.Windows.Forms.Label

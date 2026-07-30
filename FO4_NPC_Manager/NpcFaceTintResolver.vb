@@ -504,6 +504,7 @@ Friend NotInheritable Class NpcFaceTintResolver
                     host.CompositorState, host.TintGpuCache,
                     diffuseEntry.Texture_ID, normalSrcId, specSrcId,
                     w, h, layerInputs, regionSwaps,
+                    FaceTintCpuCompositor.AccumSpaceCapability,
                     FaceGenBuilder.OutputSettings,
                     baseDiffuseIsLinearOnGpu:=diffuseEntry.IsSRGB,
                     headDiffuseAlphaTest:=(host.CurrentBaseState IsNot Nothing AndAlso host.CurrentBaseState.HeadDiffuseAlphaTest))
@@ -624,13 +625,13 @@ Friend NotInheritable Class NpcFaceTintResolver
                 Return False
             End If
             Dim mImg = FaceTintCpuCompositor.DecodeDds(mBytes)
-            If mImg Is Nothing OrElse mImg.Rgba Is Nothing OrElse mImg.Width <= 0 OrElse mImg.Height <= 0 Then
+            If mImg Is Nothing OrElse mImg.Rgba8 Is Nothing OrElse mImg.Width <= 0 OrElse mImg.Height <= 0 Then
                 Logger.LogLazy(Function() $"[SSE-FOLD] normal ABORT: no decodifica el _msn '{mKey}'")
                 Return False
             End If
             Dim mw = mImg.Width, mh = mImg.Height, npix = mw * mh
             Dim acc(npix * 4 - 1) As Single
-            Array.Copy(mImg.Rgba, acc, acc.Length)
+            mImg.CopyUnitTo(acc)
             ' MISMA recuperación que el bake para un _msn modeado de 2 canales (ver FaceGenBuilder): sin esto el
             ' pack de DecodeDds deja B=0 ⇒ z=−1 en toda la cabeza. Inerte con el _msn vanilla (4 canales).
             If mImg.Channels < 3 Then
@@ -746,13 +747,13 @@ Friend NotInheritable Class NpcFaceTintResolver
             Return False
         End If
         Dim cImg = FaceTintCpuCompositor.DecodeDds(cBytes)   ' (no 'cDec': CDec es una función intrínseca de VB)
-        If cImg Is Nothing OrElse cImg.Rgba Is Nothing OrElse cImg.Width <= 0 OrElse cImg.Height <= 0 Then
+        If cImg Is Nothing OrElse cImg.Rgba8 Is Nothing OrElse cImg.Width <= 0 OrElse cImg.Height <= 0 Then
             Logger.LogLazy(Function() $"[SSE-FOLD] ABORT: no decodifica el complexion '{cKey}'")
             Return False
         End If
         Dim w = cImg.Width, h = cImg.Height, npix = w * h
         Dim acc(npix * 4 - 1) As Single
-        Array.Copy(cImg.Rgba, acc, acc.Length)
+        cImg.CopyUnitTo(acc)
 
         ' ⭐⭐ RESOLUCIÓN DE SALIDA = CharGen Options (Setting_FaceGenDiffuseResolution), IGUAL QUE EL BAKE.
         ' ⛔ El render la IGNORABA: componía y subía siempre a la resolución NATIVA del complexion mientras el
@@ -1108,6 +1109,7 @@ Friend NotInheritable Class NpcFaceTintResolver
             End If
             Dim pr = FaceTintCompositor.ApplyFaceTintPipeline(host.CompositorState, host.TintGpuCache,
                                                               seedTex, 0, 0, w, h, layers, New List(Of FaceRegionSwapInput)(),
+                                                              SseFaceTintComposer.AccumSpaceCapability,
                                                               baseDiffuseIsLinearOnGpu:=True)
             ' ⛔ Sin fallback silencioso: si HAY capas y el pipeline no devolvió una textura fresca, es un FALLO del GPU
             ' (no "usá el base"): devolver la seed daría un facetint neutro y el NPC saldría con el tono equivocado

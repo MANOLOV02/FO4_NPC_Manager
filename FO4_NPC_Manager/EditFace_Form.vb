@@ -2589,6 +2589,40 @@ Public Class EditFace_Form
             Dim targetFid = If(p.HairColorFormID <> 0UI,
                                p.HairColorFormID,
                                _mainForm.ResolveEffectiveHairColorFormID(_rootNpcFormID))
+
+            ' ⭐ El CLFM efectivo puede NO estar en la AHCM/AHCF de la raza. Dos casos reales: un CLFM de un
+            ' mod, y el `npcm_<ESP>_HairColor_<RRGGBB>` que sintetiza Save ESP cuando el usuario elige un color
+            ' custom de RaceMenu (NpcOverrideSaver.MaterializeSseHairColors) — ninguno de los dos entra en la
+            ' lista de la raza, que es a propósito la lista de PRESETS de chargen (ver BuildHairColorCache).
+            ' Sin esta entrada el lookup de abajo no encontraba nada y caía al índice 0 "(none / preserve)":
+            ' el color se veía en el render Y en el swatch (el Paint lo resuelve por LastRenderedState) pero el
+            ' combo decía que no había color, y tampoco aparecía como custom porque `SseHairColorRgb` está vacío
+            ' — el color vive en el record CLFM, no en el override. Peor: el seed del ColorDialog
+            ' (ResolveCurrentHairSwatchColor lee el item del combo, sin ese fallback) abría en NEGRO.
+            ' Se agrega la entrada efectiva marcada y justo después de "(none / preserve)", igual que Edit Body
+            ' hace con el WNAM que cae fuera del universo filtrado (MainForm.GetSkinArmoDisplayName).
+            ' Va como CLFM y no como RGB custom a propósito: así Save ESP REUSA el record existente en vez de
+            ' sintetizar un duplicado por el mismo color.
+            If targetFid <> 0UI AndAlso Not _allHairColors.Any(Function(c) c.FormID = targetFid) Then
+                Dim extraRec = _pluginManager.GetRecord(targetFid)
+                If extraRec IsNot Nothing AndAlso extraRec.Header.Signature = "CLFM" Then
+                    Dim extra = RecordParsers.ParseCLFM(extraRec, _pluginManager)
+                    If extra IsNot Nothing Then
+                        Dim extraName = If(Not String.IsNullOrEmpty(extra.FullName),
+                                           $"{extra.FullName}  ({extra.EditorID})",
+                                           If(String.IsNullOrEmpty(extra.EditorID), $"[{targetFid:X8}]", extra.EditorID))
+                        ComboBoxHairColor.Items.Insert(1, New HairColorItem With {
+                            .FormID = extra.FormID,
+                            .Display = $"{extraName}  — not in race list",
+                            .Color = extra.Color,
+                            .HasColor = extra.HasColor,
+                            .HasRemappingIndex = extra.HasRemappingIndex,
+                            .RemappingIndex = extra.RemappingIndex
+                        })
+                    End If
+                End If
+            End If
+
             For i = 0 To ComboBoxHairColor.Items.Count - 1
                 Dim it = TryCast(ComboBoxHairColor.Items(i), HairColorItem)
                 If it IsNot Nothing AndAlso it.FormID = targetFid Then

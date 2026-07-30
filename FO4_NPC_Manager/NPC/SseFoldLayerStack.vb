@@ -78,9 +78,16 @@ Friend Module SseFoldLayerStack
             If tintLayers Is Nothing OrElse tintLayers.Count = 0 Then
                 tintTex = seedTex : seedTex = 0                          ' ownership pasa a tintTex
             Else
+                ' ⭐ CAPACIDAD DEL ESPEJO CPU de TODO este stack (los 7 ApplyFaceTintPipeline de este archivo).
+                ' Este camino comparte el compositor GL con FO4, pero su contraparte CPU es SseFaceTintComposer,
+                ' que acumula SIEMPRE en OutputSpace (lerp uniforme del motor, sin ley de cuatro espacios). Al
+                ' declararlo, AccumInCompositeSpace queda inerte acá aunque el config lo prenda ⇒ el GPU no se
+                ' puede apartar del CPU. Si algun dia se implementa allá, se cambia SU constante y estos 7
+                ' call sites la siguen solos. NO es un If por nombre de juego: es quien espeja este camino.
                 Dim prT = FaceTintCompositor.ApplyFaceTintPipeline(host.CompositorState, host.TintGpuCache,
                                                                    seedTex, 0, 0, w, h, tintLayers,
                                                                    New List(Of FaceRegionSwapInput)(),
+                                                                   SseFaceTintComposer.AccumSpaceCapability,
                                                                    baseDiffuseIsLinearOnGpu:=True)
                 If prT Is Nothing OrElse prT.Diffuse Is Nothing OrElse Not prT.Diffuse.IsFresh Then Return 0
                 tintTex = prT.Diffuse.TextureId
@@ -122,6 +129,7 @@ Friend Module SseFoldLayerStack
             Dim prF = FaceTintCompositor.ApplyFaceTintPipeline(host.CompositorState, host.TintGpuCache,
                                                                complexTex, 0, 0, w, h, foldLayer,
                                                                New List(Of FaceRegionSwapInput)(),
+                                                               SseFaceTintComposer.AccumSpaceCapability,
                                                                baseDiffuseIsLinearOnGpu:=True)
             If prF Is Nothing OrElse prF.Diffuse Is Nothing OrElse Not prF.Diffuse.IsFresh Then Return 0
             foldedTex = prF.Diffuse.TextureId
@@ -157,16 +165,23 @@ Friend Module SseFoldLayerStack
                 End If
             End If
 
+            ' SANDBOX (opt-in): el UNICO readback del camino — aca se MIDE que las dos replicas dan lo mismo,
+            ' en vez de suponerlo.
+            ' ⭐⭐ FUERA DEL `If stackLayers.Count > 0`. Estaba ADENTRO, y un NPC vanilla de SSE no trae ni
+            ' overlays de RaceMenu ni skee ⇒ cero capas ⇒ la paridad no se medía JAMAS en el caso que es el
+            ' 100% del corpus vanilla (medido: 368 invocaciones del sandbox, 0 muestras comparadas). Lo que
+            ' hay que comparar ahi es el FOLD DE LA BASE, que es exactamente lo que el bake escribe.
+            ' `ComposeCpu` con cero capas es un no-op declarado (ver la nota de arriba), asi que sacarlo de la
+            ' compuerta no cambia el resultado del caso con capas.
+            If measureParity Then
+                accCpu = ReadbackRgba32f(foldedTex, npix)
+                If accCpu IsNot Nothing Then ComposeCpu(accCpu, skeeRaw, faceOvl, skinRgb, w, h)
+            End If
             If stackLayers.Count > 0 Then
-                If measureParity Then
-                    ' SANDBOX (SseMeasureFoldParity, Debug opt-in): el ÚNICO readback del camino — acá se
-                    ' MIDE que las dos réplicas dan lo mismo (RMS), en vez de suponerlo.
-                    accCpu = ReadbackRgba32f(foldedTex, npix)
-                    If accCpu IsNot Nothing Then ComposeCpu(accCpu, skeeRaw, faceOvl, skinRgb, w, h)
-                End If
                 Dim prL = FaceTintCompositor.ApplyFaceTintPipeline(host.CompositorState, host.TintGpuCache,
                                                                    foldedTex, 0, 0, w, h, stackLayers,
                                                                    New List(Of FaceRegionSwapInput)(),
+                                                                   SseFaceTintComposer.AccumSpaceCapability,
                                                                    baseDiffuseIsLinearOnGpu:=True)
                 If prL Is Nothing OrElse prL.Diffuse Is Nothing OrElse Not prL.Diffuse.IsFresh Then Return 0
                 srgbTex = prL.Diffuse.TextureId
@@ -190,10 +205,19 @@ Friend Module SseFoldLayerStack
                     .FgTintOffR = CSng(1.0 / 255.0), .FgTintOffG = 0F, .FgTintOffB = CSng(1.0 / 255.0),
                     .FgTintAmp = CSng(255.0 / 64.0),
                     .Opacity = 1.0F, .Slot = 0US, .IsTextureSet = True, .DebugName = "sse-unfold"}}
+            ' ⭐ CENSO PRE-UNFOLD: separa la inversa del resto. La inversa es mal condicionada cerca de
+            ' k = 1-2b = 0 (el limite es la identidad, la formula daria 0/0), asi que ahi float32 (GPU) y
+            ' float64 (CPU) pueden separarse MUCHO sin que las leyes difieran. Midiendo antes y despues se
+            ' sabe cuanto aporta cada tramo en vez de suponerlo.
+            If accCpu IsNot Nothing Then
+                Dim preGpu = ReadbackRgba32f(srgbTex, npix)
+                If preGpu IsNot Nothing Then NoteSseParityPre(accCpu, preGpu, npix)
+            End If
             Dim tintTexForParity = tintTex
             Dim prU = FaceTintCompositor.ApplyFaceTintPipeline(host.CompositorState, host.TintGpuCache,
                                                                srgbTex, 0, 0, w, h, unfoldLayer,
                                                                New List(Of FaceRegionSwapInput)(),
+                                                               SseFaceTintComposer.AccumSpaceCapability,
                                                                baseDiffuseIsLinearOnGpu:=True)
             If prU Is Nothing OrElse prU.Diffuse Is Nothing OrElse Not prU.Diffuse.IsFresh Then Return 0
             Try : GL.DeleteTexture(srgbTex) : Catch : End Try
@@ -207,6 +231,12 @@ Friend Module SseFoldLayerStack
                 If accGpu IsNot Nothing Then
                     Dim rms = RmsDiff255(accCpu, accGpu, npix)
                     Logger.LogLazy(Function() $"[SSE-FOLD] PARITY (sandbox): rmsCPUvsGPU={rms:F3}/255 (fold + capas + unfold)")
+                    ' ⛔ El RMS solo NO alcanza para afirmar "paridad +-1": un maximo de 8 en 200 pixeles se
+                    ' esconde detras de un RMS de 0,2. Ademas esto salia SOLO por Logger, que en el barrido esta
+                    ' APAGADO => el unico instrumento de paridad del camino SSE no reportaba nada (se veia como
+                    ' "0 comparable slots"). Se acumula un censo con el MISMO criterio que usa FO4 (maximo y cola
+                    ' >=3) y lo imprime el runner.
+                    NoteSseParity(accCpu, accGpu, npix)
                 End If
             End If
             For Each t In {tintTex, detTex}
@@ -301,6 +331,7 @@ Friend Module SseFoldLayerStack
                     .Opacity = 1.0F, .Slot = 0US, .IsTextureSet = True, .DebugName = "sse-fold"}}
             Dim pr = FaceTintCompositor.ApplyFaceTintPipeline(host.CompositorState, host.TintGpuCache,
                                                               baseTex, 0, 0, w, h, foldLayer, New List(Of FaceRegionSwapInput)(),
+                                                              SseFaceTintComposer.AccumSpaceCapability,
                                                               baseDiffuseIsLinearOnGpu:=True)
             resId = If(pr IsNot Nothing AndAlso pr.Diffuse IsNot Nothing AndAlso pr.Diffuse.IsFresh, pr.Diffuse.TextureId, 0)
             If resId = 0 Then Return Nothing
@@ -336,6 +367,7 @@ Friend Module SseFoldLayerStack
         Try
             Dim pr = FaceTintCompositor.ApplyFaceTintPipeline(host.CompositorState, host.TintGpuCache,
                                                               baseTex, 0, 0, w, h, tintLayers, New List(Of FaceRegionSwapInput)(),
+                                                              SseFaceTintComposer.AccumSpaceCapability,
                                                               baseDiffuseIsLinearOnGpu:=True)
             resId = If(pr IsNot Nothing AndAlso pr.Diffuse IsNot Nothing AndAlso pr.Diffuse.IsFresh, pr.Diffuse.TextureId, 0)
             If resId = 0 Then Return Nothing
@@ -405,6 +437,7 @@ Friend Module SseFoldLayerStack
             ' decode sRGB en el sampler). El acumulador vive en el MISMO espacio que el acc del CPU: sRGB.
             Dim pr = FaceTintCompositor.ApplyFaceTintPipeline(host.CompositorState, host.TintGpuCache,
                                                               baseTex, 0, 0, w, h, layers, New List(Of FaceRegionSwapInput)(),
+                                                              SseFaceTintComposer.AccumSpaceCapability,
                                                               baseDiffuseIsLinearOnGpu:=True)
             Dim resId = If(pr IsNot Nothing AndAlso pr.Diffuse IsNot Nothing AndAlso pr.Diffuse.IsFresh, pr.Diffuse.TextureId, 0)
             If resId = 0 Then Return Nothing
@@ -606,5 +639,88 @@ Friend Module SseFoldLayerStack
         GL.BindTexture(TextureTarget.Texture2D, 0)
         Return f   ' el readback ya es Single (Rgba32f); el acumulador del compositor vive en float32
     End Function
+
+
+    ' ===================================================================================================
+    ' CENSO de paridad CPU-vs-GPU del camino SSE (fold + capas + unfold). Mismo criterio que el de FO4:
+    ' lo que decide es el MAXIMO |delta| y la cola >=3, no el RMS.
+    ' ===================================================================================================
+    Private ReadOnly _sspLock As New Object()
+    Private _sspSamples As Long = 0
+    Private _sspImages As Long = 0
+    Private _sspMax As Integer = 0
+    Private _sspGe2 As Long = 0
+    Private _sspGe3 As Long = 0
+    Private _sspSumSq As Double = 0
+
+    Private ReadOnly _sspPreLock As New Object()
+    Private _sspPreSamples As Long = 0
+    Private _sspPreMax As Integer = 0
+    Private _sspPreGe3 As Long = 0
+
+    Private Sub NoteSseParityPre(cpu As Single(), gpu As Single(), npix As Integer)
+        Dim mx As Integer = 0, ge3 As Long = 0, n As Long = 0
+        For i As Integer = 0 To npix - 1
+            Dim b = i * 4
+            For c As Integer = 0 To 2
+                Dim a = CInt(Math.Round(Math.Max(0.0F, Math.Min(1.0F, cpu(b + c))) * 255.0F))
+                Dim g = CInt(Math.Round(Math.Max(0.0F, Math.Min(1.0F, gpu(b + c))) * 255.0F))
+                Dim d = Math.Abs(a - g)
+                If d > mx Then mx = d
+                If d >= 3 Then ge3 += 1
+                n += 1
+            Next
+        Next
+        SyncLock _sspPreLock
+            _sspPreSamples += n : _sspPreGe3 += ge3
+            If mx > _sspPreMax Then _sspPreMax = mx
+        End SyncLock
+    End Sub
+
+    Private Sub NoteSseParity(cpu As Single(), gpu As Single(), npix As Integer)
+        Dim mx As Integer = 0, ge2 As Long = 0, ge3 As Long = 0, ss As Double = 0, n As Long = 0
+        For i As Integer = 0 To npix - 1
+            Dim b = i * 4
+            For c As Integer = 0 To 2
+                Dim a = CInt(Math.Round(Math.Max(0.0F, Math.Min(1.0F, cpu(b + c))) * 255.0F))
+                Dim g = CInt(Math.Round(Math.Max(0.0F, Math.Min(1.0F, gpu(b + c))) * 255.0F))
+                Dim d = Math.Abs(a - g)
+                If d > mx Then mx = d
+                If d >= 2 Then ge2 += 1
+                If d >= 3 Then ge3 += 1
+                ss += CDbl(d) * d
+                n += 1
+            Next
+        Next
+        SyncLock _sspLock
+            _sspImages += 1 : _sspSamples += n : _sspGe2 += ge2 : _sspGe3 += ge3 : _sspSumSq += ss
+            If mx > _sspMax Then _sspMax = mx
+        End SyncLock
+    End Sub
+
+    Public Function SseParityReport() As String
+        SyncLock _sspLock
+            If _sspSamples = 0 Then
+                Return "SSE CPU-vs-GPU parity (fold+layers+unfold): NOT MEASURED - the GPU sandbox produced no comparable image." &
+                       vbLf & "   This run says NOTHING about the SSE GPU path."
+            End If
+            Dim rms = Math.Sqrt(_sspSumSq / _sspSamples)
+            Dim pre = "   PRE-UNFOLD (fold+layers only): worst " & _sspPreMax & ", |delta|>=3: " & _sspPreGe3.ToString("N0") &
+                      " of " & _sspPreSamples.ToString("N0") & vbLf
+            Dim verdict = If(_sspMax <= 1, "   => within +-1: consistent with float32 (GPU) vs float64 (CPU).",
+                             "   => " & _sspGe3 & " sample(s) differ by 3 or more: NOT explainable by precision.")
+            Return "SSE CPU-vs-GPU parity (fold+layers+unfold):" & vbLf &
+                   "   images compared : " & _sspImages & "   samples: " & _sspSamples.ToString("N0") & vbLf &
+                   "   worst |delta|   : " & _sspMax & "   RMS: " & rms.ToString("F4") & vbLf &
+                   "   |delta|>=2      : " & _sspGe2.ToString("N0") & "   |delta|>=3: " & _sspGe3.ToString("N0") & vbLf &
+                   pre & verdict
+        End SyncLock
+    End Function
+
+    Public Sub ResetSseParity()
+        SyncLock _sspLock
+            _sspSamples = 0 : _sspImages = 0 : _sspMax = 0 : _sspGe2 = 0 : _sspGe3 = 0 : _sspSumSq = 0
+        End SyncLock
+    End Sub
 
 End Module

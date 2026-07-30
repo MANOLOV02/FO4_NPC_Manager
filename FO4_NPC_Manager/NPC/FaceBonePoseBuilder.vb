@@ -230,14 +230,30 @@ Public Module FaceBonePoseBuilder
     Public ClampHits As Long = 0
     Public ReadOnly ClampSamples As New List(Of String)
 
+    ''' <summary>⭐ EL CLAMP SE QUITO (2026-07-29). El motor NO clampea — ya estaba verificado por RE
+    ''' (sin <c>minss</c>/<c>maxss</c> en <c>FUN_1403fd920</c> ni <c>FUN_140419CD0</c>) y el comentario
+    ''' original dejaba el clamp puesto BAJO LA CONDICION de que el contador diera 0 sobre el corpus
+    ''' ("si el contador da 0 ... la divergencia es demostrablemente inerte").
+    ''' <para><b>Da 2, no 0.</b> Barrido vanilla+DLC de 1509 NPCs: 2 hits, los DOS de
+    ''' <c>ClairHutchins 0x000226DC</c>, ambos <c>1,18 -> 1</c>. O sea que la condicion nunca se cumplio y
+    ''' el clamp SI mordia en vanilla.</para>
+    ''' <para><b>Es la causa del outlier de posiciones de ese NPC</b>, medido a nivel de vertice contra el
+    ''' FaceGeom del CK: desvio SOLO en Z (X exacto, ratio 0,0000±0,0000), confinado a los 666 vertices
+    ''' morpheados (0 excepciones), creciente con el morph y SATURADO en −0,067; los morphs con Z negativo
+    ''' salen exactos y los positivos ~11 % cortos (regresion nuestro = 0,891·CK, contra 1/1,18 = 0,847
+    ''' esperado si el canal clampeado fuera el unico aporte). Se REFUTO antes la hipotesis de que fuera
+    ''' la renormalizacion de pesos: correlacion 0,15 (vs 0,999 del caso documentado) y 610 vertices con
+    ''' epsilon=0 que igual driftean — el criterio de falsacion original daba 0 contraejemplos.</para>
+    ''' El contador se CONSERVA, ahora como "valores fuera de rango vistos" (ya no clampeados), porque
+    ''' sigue siendo el instrumento que dice cuando esta rama se ejerce.</summary>
     Public Function LerpFmrs(fmrsVal As Single, minVal As Single, maxVal As Single) As Single
-        Dim s = Math.Max(-1.0F, Math.Min(1.0F, fmrsVal))
-        If s <> fmrsVal AndAlso Not Single.IsNaN(fmrsVal) Then
+        If Not Single.IsNaN(fmrsVal) AndAlso (fmrsVal > 1.0F OrElse fmrsVal < -1.0F) Then
             Threading.Interlocked.Increment(ClampHits)
             SyncLock ClampSamples
-                If ClampSamples.Count < 40 Then ClampSamples.Add($"{fmrsVal:R}->{s:R}")
+                If ClampSamples.Count < 40 Then ClampSamples.Add($"{fmrsVal:R} (fuera de rango, SIN clampear)")
             End SyncLock
         End If
+        Dim s = fmrsVal
         If s >= 0 Then
             Return s * maxVal
         Else
