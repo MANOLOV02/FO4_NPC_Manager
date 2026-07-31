@@ -10,7 +10,10 @@ Chequea, por cada script NPCM_* encontrado en un plugin:
 """
 import struct, zlib, re, os, sys
 
-REPO = r"c:\Users\jvare\OneDrive\Documentos\Familia Varela\Mis Proyectos\Fallout 4 Related"
+# Raiz del repo: por defecto se deriva de la ubicacion de este script
+# (<repo>\FO4_NPC_Manager\Papyrus\tools\), y se puede pisar con la variable de entorno FO4_REPO.
+REPO = os.environ.get("FO4_REPO") or os.path.abspath(
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", ".."))
 TARGETS = [
     ("SSE", r"F:\SteamLibrary\steamapps\common\Skyrim Special Edition\Data\NPC_Manager.esp",
              os.path.join(REPO, r"FO4_NPC_Manager\Papyrus\src_sse\NPCM_Manolov_ApplySSE.psc")),

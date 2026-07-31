@@ -35,17 +35,6 @@ Imports FO4_Base_Library
 Public Module BssliderSidecar
 
     Public Const Extension As String = ".bssliders"
-    ''' <summary>Schema version. v2 added the SSE-only <c>bodyMorphsKeyed</c> field; v3 added the SSE-only
-    ''' <c>sseBodyOverlays</c> field (path-based RaceMenu tattoos); v4 added the SSE-only <c>sseNodeScales</c>
-    ''' field (RaceMenu body-scale node transforms); v5 added the SSE-only <c>sseSkinOverrides</c> field
-    ''' (RaceMenu NiOverride skin body-paint); v6 added the SSE-only <c>sseCustomMorphs</c> + <c>sseSculpt</c>
-    ''' fields (RaceMenu co-save face data); v7 added the SSE-only <c>sseTintTextures</c> field (RaceMenu per-layer
-    ''' custom tint mask paths); v9 added the per-overlay <c>alpha</c> field (skee64 kParam_ShaderAlpha, key 8 —
-    ''' the overlay's opacity, distinct from the tint colour); v10 replaced the scale-only <c>sseNodeScales</c> map
-    ''' with the full-TRS <c>sseNodeTransforms</c> array (scale + position + rotation + scaleMode), still reading the
-    ''' legacy map for back-compat; v11 added the SSE-only <c>sseHairColor</c> field (RaceMenu absolute hair tint,
-    ''' packed 0xRRGGBB). All additive — the loader tolerates their absence, so older files still load and older
-    ''' readers ignore the fields.</summary>
     ''' <summary>v12 agrego <c>payloadSalt</c>: la SAL del sufijo de generacion. Se persiste porque el
     ''' FomodExporter re-parchea el .pex desde el recurso EMBEBIDO usando la generacion del sidecar; sin la sal
     ''' sortearia otra y el .pex del paquete declararia nombres distintos a los del VMAD del ESP.</summary>

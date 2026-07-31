@@ -12,7 +12,7 @@ Imports OpenTK.Mathematics
 
 ''' <summary>Phase 2 of the MainForm split: NPC visual-state resolution (traits/inventory/model
 ''' template-chain walk, race fallbacks, skeleton key, leveled-NPC pick). Standalone class, DI via
-''' constructor. Pure data resolution — no UI, no GL. See project_mainform_split.</summary>
+''' constructor. Pure data resolution — no UI, no GL. See 61-perf-mainform-split.</summary>
 Friend NotInheritable Class NpcStateResolver
     Private ReadOnly _ctx As NpcRenderContext
     Private ReadOnly _materialResolver As NpcMaterialResolver

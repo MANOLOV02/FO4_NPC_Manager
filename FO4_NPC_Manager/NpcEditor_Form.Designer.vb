@@ -1,4 +1,4 @@
-' UI built in Designer per feedback_ui_in_designer.md (companion to ArmoEditor_Form). InitializeComponent
+﻿' UI built in Designer per 00-reglas-ui-y-vb.md (companion to ArmoEditor_Form). InitializeComponent
 ' is declarative ONLY (no For/If/lambda). The read-only DataGridView columns are added in code-behind
 ' (variable/repeated content), mirroring ObtsCombinationEditor_Form.BuildIncludesGridColumns.
 <Global.Microsoft.VisualBasic.CompilerServices.DesignerGenerated()>

@@ -11,7 +11,7 @@ Imports NiflySharp.Blocks
 Imports OpenTK.Mathematics
 
 ''' <summary>Pure stateless NPC template-flag helpers extracted from MainForm (no instance state,
-''' no UI). Real separate class (NOT a partial). See project_mainform_split.</summary>
+''' no UI). Real separate class (NOT a partial). See 61-perf-mainform-split.</summary>
 Friend NotInheritable Class NpcTemplateHelpers
     Private Sub New()
     End Sub

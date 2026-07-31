@@ -139,39 +139,24 @@ Public Class NpcMorphResolver
         Dim triHead As TriHeadFile = Nothing
         LoadTriForShape(shape, tri, triHead)
 
-        ' Apply semantics: final[i] = NIF.rest[i] + Σ morph.delta[i] — TriHead deltas are 1:1 with NIF
-        ' vertex indices (verified MorphEngine.vb:86 starts from NifLocalVertices, line 137 adds deltas
-        ' by index). No resolver-side vertex-count handling is needed: MorphEngine's bounds guard
-        ' (line 134: If i >= 0 AndAlso i < count) drops out-of-range indices, covering all three count
-        ' cases without corruption:
-        '   A) TriHead.NumVertices == NIF verts: exact match, all deltas apply.
-        '   B) TriHead.NumVertices <  NIF verts: NIF has appended extras (vanilla male _faceBones
-        '      = 1696 verts vs TRI chargen 1690; extras are inner-mouth/jaw rigging with no morph
-        '      target). First N deltas apply to [0, TRI.NumVertices); extras stay at NIF rest.
-        '      By-index alignment is the runtime truth, not by-position (confirmed 2026-04-19: female
-        '      count-MATCH has maxDiff 0.72 between TRI base and NIF rest yet morphs at noise floor).
-        '   C) TriHead.NumVertices >  NIF verts: NIF was DOWNSIZED; the bounds guard drops indices
-        '      ≥ NIF count — some deltas lost but nothing corrupts.
+        ' Semantica de aplicacion: final[i] = NIF.rest[i] + suma de morph.delta[i]. Los deltas del TriHead son
+        ' 1:1 con los INDICES de vertice del NIF y el guard de rango de MorphEngine descarta los fuera de rango,
+        ' asi que los tres casos de conteo quedan cubiertos sin corrupcion: si coinciden se aplican todos; si el
+        ' TRI tiene MENOS (el NIF trae extras de rigging sin morph target) se aplican los primeros N y los extras
+        ' quedan en reposo; si tiene MAS (NIF achicado) se pierden deltas pero nada se corrompe.
+        ' El alineamiento por INDICE es la verdad del runtime, no el alineamiento por posicion.
 
-        ' MWGT (NPC.MWGT Thin/Muscular/Fat) and MRSV (Body Morph Region Values) are NOT applied
-        ' here. They travel through the bone-scale pose pipeline in MainForm.BuildBodyWeightPose:
-        '   - MWGT  → Layer 1 (RACE.BSMS WeightScale, per-bone interpolation Thin·t + Musc·m + Fat·f).
-        '   - MRSV  → Layer 3 (RACE.BSMS RangeModifier Min/Max Y,Z), via ResolveMrsvRegion mapping
-        '             a bone to one of 5 regions (Head/UpperTorso/Arms/LowerTorso/Legs).
-        ' xEdit defs: wbDefinitionsFO4.pas:10793 (MRSV struct), wbDefinitionsFO4.pas:5929 (BSMS
-        ' RangeModifier), parser at RecordParsers.vb (RACE.BoneData) reads BSMS WeightScale 9 floats.
-        '
-        ' Previously AddBodyWeightMorphs ran here in parallel, looking up "WeightThin/Muscular/Fat"
-        ' morphs in the body's PIRT .tri (BodySlide/CBBE convention). That caused DOUBLE application
-        ' of MWGT whenever the user's body mod shipped those morphs — once via bones (always on with
-        ' weightLayersEnabled), once via vertex morph. Removed 2026-05-02 to keep MWGT consistent
-        ' with the canonical engine path (bone scaling).
+        ' MWGT (Thin/Muscular/Fat) y MRSV (Body Morph Region Values) NO se aplican aca: viajan por el pipeline de
+        ' escala osea (BuildBodyWeightPose), MWGT como capa 1 (RACE.BSMS WeightScale, interpolando por hueso) y
+        ' MRSV como capa 3 (BSMS RangeModifier Min/Max Y,Z, mapeando cada hueso a una de 5 regiones).
+        ' Antes corria ademas AddBodyWeightMorphs en paralelo, buscando los morphs WeightThin/Muscular/Fat en el
+        ' .tri PIRT del cuerpo: eso aplicaba MWGT DOS VECES cuando el body mod del usuario traia esos morphs.
 
         ' 2) Face morph presets - GAME-AWARE:
         '  • FO4  = MSDK/MSDV sliders via RACE MSID→MSM0/MSM1 + MPPI presets (RACE-defined name map).
         '  • SSE  = NAM9 (18 signed sliders) + NAMA (Nose/Eyes/Mouth type) via a FIXED engine name
         '           table (no RACE defs) — byte-verified from SkyrimSE.exe @0x1ff92a0. See
-        '           project_sse_nam9_morph_map. Same chargen .tri, same TriHead.GetMorph mechanism.
+        '           22-morphs-sse-nam9-map. Same chargen .tri, same TriHead.GetMorph mechanism.
         If triHead IsNot Nothing Then
             ' Single per-game builder — the SAME one the offline bake calls, so render and bake never diverge.
             ' Pass this shape's chargen tri (NAM0=2) so RaceMenu per-shape sculpt routes to it by Host.
@@ -212,40 +197,20 @@ Public Class NpcMorphResolver
     ' the user's installed body mod (CBBE/FG/etc) defined "WeightThin/Muscular/Fat" or
     ' "MorphRegion<i>" morphs.
 
-    ''' <summary>
-    ''' Build the face MorphPlan for an NPC against a chargen TriHead, applying:
-    '''   1) MSID slider morphs (RACE.MorphValues): MSDK/MSDV weight ≥0 picks MSM1/MaxName,
-    '''      &lt;0 picks MSM0/MinName with abs(weight).
-    '''   2) MPPI preset morphs (RACE.MorphPresets gendered): direct mapping to MPPM morph name.
-    '''   3) Channel dedup-by-name with SUMMED weights — same data the runtime resolver applies
-    '''      (vanilla RACE has multiple MPPI keys pointing to the same morph name, e.g.
-    '''      "DefaultFaceType0" across Nose+Cheek+Neck+Mouth groups; CK applies the SUM).
-    '''
-    ''' Public Shared so offline bakes (FaceGenBuilder) can build the same plan the runtime
-    ''' uses without spinning up an IMorphResolver / SkinnedGeometry. The instance method
-    ''' <see cref="ResolveMorphPlan"/> delegates here for the runtime path so the two never
-    ''' drift.
-    ''' </summary>
-    ''' <param name="npcData">NPC face morph data (MorphValues dict, FMIN, etc.).</param>
-    ''' <param name="morphValueDefs">RACE.MorphValues (MSID → MSM0/MSM1).</param>
-    ''' <param name="morphPresetDefs">RACE.MorphPresets gendered (MPPI → MPPM).</param>
-    ''' <param name="triHead">Chargen FRTRI003 file already parsed for the target shape.</param>
-    ''' <param name="logShapeName">Optional shape name for log lines; empty disables logging.</param>
-    ''' <summary>THE single per-GAME face morph plan builder. The live render (<see cref="ResolveMorphPlan"/>)
-    ''' and the offline FaceGen bake (FaceGenBuildPipeline.ApplyChargenMorphsInPlace) BOTH call this, so there
-    ''' is exactly ONE morph path per game with no divergence. Dispatches on <paramref name="npcData"/>.Game
-    ''' over the SAME merged race+chargen TriHead and assembles ALL face morphs:
-    '''   • FO4    → MSDK/MSDV sliders + MPPI presets (RACE defs). LooksMenu face edits are already folded into
-    '''              npcData.MorphValues by NpcRecordOverlay before this runs.
-    '''   • Skyrim → race base + NAM9 sliders + NAMA type presets + RaceMenu custom morphs + RaceMenu per-vertex
-    '''              sculpt (all inside <see cref="BuildFaceMorphPlanFromNam9"/>; the RaceMenu data is folded
-    '''              into npcData by NpcRecordOverlay before this runs).
-    ''' The SSE head/hair actor-WEIGHT morph is folded into this same plan (the "SkinnyMorph" channel in
-    ''' BuildFaceMorphPlanFromNam9, read from each shape's own mesh .tri at frac = 1 - NAM7/100) — one source,
-    ''' render + bake, per-part and race-aware; there is no separate weight resolver or delta table.
-    ''' <paramref name="applySculpt"/> / <paramref name="applyBodyWeight"/> are the SSE PREVIEW toggles for the
-    ''' two channels that live inside this plan (RaceMenu sculpt / SkinnyMorph). They default True so the offline
-    ''' bake — which must not depend on UI state — is unaffected.</summary>
+    ''' <summary>â›” SYNC: RENDER == BAKE. ESTE es el unico builder del plan de morphs de cara por juego, y el
+    ''' punto donde el contrato se cumple POR CONSTRUCCION: lo llaman los DOS caminos, el render vivo
+    ''' (<see cref="ResolveMorphPlan"/>) y el bake offline (<c>FaceGenBuildPipeline.ApplyChargenMorphsInPlace</c>).
+    ''' Si algun dia se agrega un segundo builder, preview y NIF horneado divergen sin que nada falle: todo canal
+    ''' de morph nuevo entra ACA, no en un caller.
+    ''' <para>Despacha por juego sobre el MISMO TriHead (raza + chargen mergeados): FO4 usa sliders MSDK/MSDV y
+    ''' presets MPPI; Skyrim usa base de raza + sliders NAM9 + presets NAMA + morphs custom y sculpt por vertice
+    ''' de RaceMenu. En los dos casos LooksMenu/RaceMenu ya vienen plegados en npcData por NpcRecordOverlay.</para>
+    ''' <para>El morph de PESO del actor en SSE (canal SkinnyMorph, leido del .tri de cada mesh a frac =
+    ''' 1 - NAM7/100) va dentro de este mismo plan: una sola fuente para render y bake, por parte y por raza, sin
+    ''' resolver aparte ni tabla de deltas.</para>
+    ''' <para><paramref name="applySculpt"/> y <paramref name="applyBodyWeight"/> son los toggles del PREVIEW de
+    ''' SSE para los dos canales que viven en este plan; van en True por defecto para que el bake offline, que no
+    ''' puede depender del estado de la UI, quede intacto.</para></summary>
     Public Shared Function BuildFaceMorphPlan(npcData As NPC_Data, triHead As TriHeadFile,
                                               raceEditorId As String,
                                               morphValueDefs As List(Of RACE_MorphValueDef),
@@ -366,7 +331,7 @@ Public Class NpcMorphResolver
     ''' @RVA 0x1ff92a0 (stride 0x18, record {flag,negName,posName}; accessor 0x1403B8360). Index =
     ''' NAM9 slider index (0..17); PosName applied when the signed slider value ≥ 0, NegName when &lt; 0,
     ''' both with weight = abs(value). Index 18 (VampireMorph) is unidirectional and handled separately.
-    ''' See project_sse_nam9_morph_map. The pos/neg split matters because the .tri stores SEPARATE
+    ''' See 22-morphs-sse-nam9-map. The pos/neg split matters because the .tri stores SEPARATE
     ''' morphs per direction (independent deltas — NOT the negation of each other).</summary>
     Private Shared ReadOnly _sseNam9Morphs As (Pos As String, Neg As String)() = {
         ("NoseLong", "NoseShort"),       ' 0  Nose Long/Short
@@ -393,7 +358,7 @@ Public Class NpcMorphResolver
     ''' sliders + VampireMorph) and NAMA (Nose/Eyes/Mouth type presets), applied against the chargen
     ''' TriHead by morph NAME. This is the SSE analogue of <see cref="BuildFaceMorphPlanFromTriHead"/>
     ''' — no RACE MorphValues/Presets are consulted because Skyrim's slider→morph map is a FIXED engine
-    ''' table (byte-verified, see <see cref="_sseNam9Morphs"/> / project_sse_nam9_morph_map), not
+    ''' table (byte-verified, see <see cref="_sseNam9Morphs"/> / 22-morphs-sse-nam9-map), not
     ''' RACE-authored. Mechanism mirrors the engine (= RaceMenu TRIFile::Apply): head += triMorph.deltas
     ''' * abs(sliderValue). Channels are deduped-by-name with summed weights, same as the FO4 path.</summary>
     Public Shared Function BuildFaceMorphPlanFromNam9(npcData As NPC_Data, triHead As TriHeadFile,
@@ -414,7 +379,7 @@ Public Class NpcMorphResolver
         ' one morph per race NAMED BY THE RACE EDITORID ("ImperialRace", "NordRace", ...). CK applies it at
         ' weight 1 BEFORE the chargen sliders — it establishes the racial skull/face shape the NPC's NAM9
         ' then adjusts. Byte/geometry-validated: adding it drops the CK FaceGeom residual from 0.168→0.075
-        ' RMS and makes every NAM9/NAMA channel's least-squares weight match its value (project_sse_nam9_morph_map).
+        ' RMS and makes every NAM9/NAMA channel's least-squares weight match its value (22-morphs-sse-nam9-map).
         ' The merged chargen TriHead already contains these race morphs (LoadTriForShape merges NAM0=0+NAM0=2).
         If applyChargenMorphs AndAlso Not String.IsNullOrEmpty(raceEditorId) Then
             AddNam9Channel(plan, triHead, raceEditorId, 1.0F)
@@ -446,23 +411,13 @@ Public Class NpcMorphResolver
             End If
         End If
 
-        ' ⭐ El fallback keyword→morph NO puede vivir dentro del guard de NAM9: un NPC SIN el subrecord NAM9
-        ' es semánticamente equivalente a NAM9[18] = FLT_MAX ("no está manejado por slider"), así que el morph
-        ' lo maneja la RACE igual. Estando adentro, el bloque entero se salteaba y el morph nunca se aplicaba.
-        ' MEDIDO (corpus SSE completo, 3104 NPCs con FaceGeom del CK — separador EXACTO, 0 FP / 0 FN):
-        '     vampiro=no · NAM9 ausente  → no falla (430 NPCs)
-        '     vampiro=no · NAM9 presente → no falla (2550)
-        '     vampiro=SÍ · NAM9 AUSENTE  → FALLA (8)   ← este caso
-        '     vampiro=sí · NAM9 presente → no falla (116; de esos 105 con [18]=FLT_MAX y 11 con 0.0, ambos
-        '                                  caen en el fallback y matchean el CK)
-        ' Los 8: SybilleStentor · Babette · EncVampire06DarkElfF · dunHaemarsShame_LvlVampireBoss ·
-        ' dunMovarthVampireBoss · DLC1FuraBloodmouth · DLC1_WESC02_VigilantVampireLeader · DLC1Modhna
-        ' (13 shapes, razas *RaceVampire de Breton/Nord/DarkElf + BretonRaceChildVampire — NO es cosa de Breton).
-        ' El residuo (CK − nuestro) proyecta sobre "VampireMorph" con peso 0,9999–1,0000 en los 13, y al
-        ' aplicarlo el máximo cae de 0,5297 a 0,00098. El conjunto de vértices movidos coincide con la
-        ' predicción de la regla de bloques (diferencia simétrica 0) ⇒ la selección ya estaba bien, faltaba
-        ' el CANAL. No es un problema de raza proxy: el NAM8 'Morph race' (xEdit wbDefinitionsTES5.pas:9850)
-        ' ya se resuelve bien en FaceGenBuildPipeline.vb:410-414.
+        ' El fallback keyword->morph NO puede vivir dentro del guard de NAM9: un NPC SIN el subrecord es
+        ' semanticamente equivalente a NAM9[18] = FLT_MAX ("no lo maneja un slider"), asi que el morph lo maneja
+        ' la RACE igual. Estando adentro, el bloque entero se salteaba y el morph nunca se aplicaba.
+        ' Medido sobre el corpus SSE completo (3104 NPCs con FaceGeom del CK): el separador es EXACTO, con 0
+        ' falsos positivos y 0 negativos, y los 8 casos que fallaban son vampiros SIN NAM9. El residuo proyecta
+        ' sobre "VampireMorph" con peso ~1,0 y al aplicarlo el maximo cae de 0,5297 a 0,00098; el conjunto de
+        ' vertices movidos coincide con la prediccion, asi que la seleccion ya estaba bien y faltaba el CANAL.
         If applyChargenMorphs AndAlso Not keywordMorphsApplied AndAlso raceKeywordEditorIds IsNot Nothing Then
             For Each kw In raceKeywordEditorIds
                 If Not String.IsNullOrEmpty(kw) Then AddNam9Channel(plan, triHead, kw & "Morph", 1.0F)
@@ -533,27 +488,17 @@ Public Class NpcMorphResolver
             plan.Channels.Add(New MorphChannel("RaceMenuSculpt", 1.0F, ds, engineApplied:=False))
         End If
 
-        ' 2d) HEAD WEIGHT morph (SSE) — engine-derived, replaces the former hardcoded SseHeadWeightDelta table.
-        ' SkyrimSE.exe applies the actor weight to the head as an ORDINARY morph channel: applier 0x1403B90D0
-        ' reads the weight at actor+0x1FC, computes frac = 1 - weight*0.01, then calls the standard int16-RLE
-        ' delta morph applier (0x140430FE0 → 0x140430190) for the morph named "SkinnyMorph", which lives in the
-        ' head MESH .tri (femalehead.tri / malehead.tri) — NOT in the HDPT race-morph (NAM0=0) or chargen (NAM0=2)
-        ' tris. frac = 1 at weight 0 (full thin/skinny) → 0 at weight 100 (neutral/full). Byte-verified: the
-        ' SkinnyMorph deltas reproduce the deleted baked table index-for-index (RMS 1.5e-3, 0 missing verts), which
-        ' also proves the tri's vertex order equals the head shape's. Reading it from the tri is AGNOSTIC (a modded
-        ' head ships its own SkinnyMorph) and unifies render+bake on this one plan — no table, no separate resolver.
-        ' The mesh .tri is merged into triHead by the callers (render: LoadTriForShape; bake: LoadMergedHeadTri).
-        ' ⛔ CORRECCIÓN 2026-07-18 — la afirmación previa aquí ("en un shape no-cara GetMorph(\"SkinnyMorph\") es
-        ' Nothing y AddNam9Channel no-opea: natural gating") es FALSA y estuvo induciendo el diagnóstico
-        ' equivocado de la diferencia de posiciones vs CK. MEDIDO: humanbeardshort02.tri tiene 43 morphs y
-        ' SkinnyMorph es el PRIMERO; hair09.tri tiene exactamente 1 morph, que es SkinnyMorph. O sea el canal SÍ
-        ' aplica a barbas y pelo — que es lo correcto, porque el CK hace exactamente eso: aplica el morph a TODOS
-        ' los hijos del BSFaceGenNiNode sin filtrar por tipo de head part (CK SSE 0x1418C32B0 computa
-        ' 1-weight*0.01 y 0x141D1D6B0 lo reparte a cada hijo; type 3 index 0 == "SkinnyMorph").
-        ' VERIFICADO contra el CK sobre el pelo: CK == neutral + (1-NAM7/100)·SkinnyMorph con residual
-        ' max 0,00247 / rms 0,0001, recuperando NAM7=75,00 exacto por mínimos cuadrados. Este canal está BIEN.
-        ' applyBodyWeight=False (checkbox "Body weight" OFF en el preview) ⇒ peso neutro: no se emite el
-        ' SkinnyMorph, igual que el resolver del cuerpo (_0/_1) no se engancha. Cabeza y cuerpo apagan juntos.
+        ' 2d) HEAD WEIGHT morph (SSE), derivado del motor: SkyrimSE.exe aplica el peso del actor a la cabeza como
+        ' un canal de morph ORDINARIO - lee el peso, computa frac = 1 - weight*0.01 y llama al applier estandar de
+        ' deltas para el morph llamado "SkinnyMorph", que vive en el .tri del MESH de la cabeza y no en los tris
+        ' de raza ni de chargen. frac = 1 con peso 0, 0 con peso 100. Byte-verificado: los deltas del SkinnyMorph
+        ' reproducen indice por indice la tabla horneada que reemplazaron, lo que ademas prueba que el orden de
+        ' vertices del tri es el de la shape. Leerlo del tri es AGNOSTICO (una cabeza modeada trae el suyo) y
+        ' unifica render y bake en este plan: sin tabla y sin resolver aparte.
+        ' â›” El canal SI aplica a barbas y pelo, no solo a la cara (humanbeardshort02.tri y hair09.tri traen
+        ' SkinnyMorph), que es lo correcto porque el CK lo reparte a TODOS los hijos del BSFaceGenNiNode sin
+        ' filtrar por tipo de head part. Verificado contra el CK sobre el pelo con residual max 0,00247.
+        ' Con el checkbox "Body weight" apagado no se emite el SkinnyMorph: cabeza y cuerpo apagan juntos.
         Dim nam7 = npcData.Nam7Raw
         Dim weightVal As Single = If(nam7 IsNot Nothing AndAlso nam7.Length >= 4, BitConverter.ToSingle(nam7, 0), 100.0F)
         Dim skinnyFrac As Single = 1.0F - Math.Max(0.0F, Math.Min(1.0F, weightVal / 100.0F))
@@ -572,8 +517,6 @@ Public Class NpcMorphResolver
         Return plan
     End Function
 
-    ''' <summary>Look up <paramref name="morphName"/> in the chargen TriHead and, if present with
-    ''' non-empty deltas, add a MorphChannel at <paramref name="weight"/>. No-op for missing morphs.</summary>
     ''' <summary>The RaceMenu EXTENDED face-slider catalog (per-race .slider config), built once by the app from
     ''' the loaded plugins and read by the shared render/bake morph path to resolve a custom-morph SLIDER NAME to
     ''' its actual TRI morph(s). Nothing until the app populates it (e.g. FO4 sessions never set it) → the custom
@@ -627,16 +570,6 @@ Public Class NpcMorphResolver
         AddNam9Channel(plan, triHead, morphName, 1.0F)
     End Sub
 
-    ''' <summary>⭐ LEY DEL MOTOR — el applier nativo valida el peso de CADA canal contra [-1,1] y, fuera de
-    ''' rango, <b>DESCARTA EL CANAL ENTERO; NO CLAMPEA</b> (el salto va al incremento del puntero del loop).
-    ''' Ver <see cref="MorphChannel.EngineApplied"/> para las direcciones verificadas por desensamblado en
-    ''' SkyrimSE.exe, Fallout4.exe y CreationKit.exe. La ley es IDÉNTICA en los dos juegos ⇒ acá NO se gatea
-    ''' por juego; el gate es por ORIGEN del canal (la propiedad EngineApplied).
-    ''' <para>⛔ Va POR CANAL INDIVIDUAL y ANTES de <see cref="DedupSumChannelsByName"/>: el motor evalúa cada
-    ''' canal ANTES de que exista suma alguna. Ponerlo DESPUÉS del dedup CREA un bug — dos presets legítimos
-    ''' de 1,0 sumarían 2,0 y se convertirían en un no-op falso.</para>
-    ''' <para>Inclusive en ±1 (el motor usa jb/ja: sólo salta estrictamente fuera). NaN se descarta, que es lo
-    ''' que hace comiss en unordered (CF=1 ⇒ jb tomado).</para></summary>
     ''' <summary>DIAGNOSTICO de alcance (no altera el resultado): cuantos canales descarto esta ley y con que
     ''' pesos. Es lo que permite MEDIR la regla sin una corrida A/B: la rama solo se toma con peso fuera de
     ''' [-1,1], asi que si el contador da 0 sobre el corpus, la regla es demostrablemente inerte ahi.</summary>
@@ -705,33 +638,15 @@ Public Class NpcMorphResolver
         Return result
     End Function
 
-    ''' <summary>
-    ''' Get the TRI file associated with a shape's NIF.
-    ''' Looks for BODYTRI extra data in the NIF (standard FO4 mechanism).
-    ''' Also tries the mesh dict key path with .tri extension as fallback.
-    ''' </summary>
-    ''' <summary>
-    ''' Load TRI data for a shape.
-    ''' Resolves up to TWO TRI files per shape:
-    '''   - Race/Expression TRI (animation morphs OR sparse PIRT body morphs)
-    '''   - Chargen Morph TRI (sculpting morphs — LipFeature*, NoseFeature*, etc.)
-    ''' Both are merged into a single TriHead so the morph application loop sees all morphs.
-    '''
-    ''' Path resolution — RECORD-DRIVEN, exactly like the bake (FaceGenBuildPipeline.LoadMergedHeadTri):
-    '''   1. HDPT NAM0/NAM1 (NAM0=0 Race Morph, NAM0=1 mesh/SkinnyMorph tri, NAM0=2 Chargen Morph)
-    '''   2. BODYTRI NiStringExtraData (BodySlide/CBBE bodies — only fills the race slot; no vanilla head part
-    '''      carries it: measured 0/792 SSE + 0/419 FO4).
-    ''' There is NO mesh-name convention fallback, because the ENGINE has none: SkyrimSE builds a .tri path in
-    ''' exactly one place (0x140435D00, the single ".tri" literal in the image) and all it does is NORMALIZE the
-    ''' path the record already declares (prefix "meshes\", force the extension). Nothing derives a .tri from the
-    ''' .nif name, and no "chargen" literal is ever used to build a path. The data agrees: of the vanilla HDPTs
-    ''' that DO declare a chargen tri, the guessed name differs from the declared one in 33% (SSE) / 55% (FO4)
-    ''' — e.g. EyeFemaleRight.nif → EyesFemaleRightCharGen.tri, SupermutantMouth.nif → MouthHumanChargen.tri.
-    ''' The old guess made the render apply morphs the CK/engine never apply: measured A/B vs the vanilla FaceGeom
-    ''' (13 NPCs / 80 shapes), it over-morphed 10 hair shapes (worst HairMaleDarkElf02 RMS 1.1476 / maxΔ 2.12)
-    ''' which are byte-exact (RMS 0.0000) with record-only resolution; 0 shapes improved. Same lesson already
-    ''' learned for the NAM0=1 slot (see FaceGenBuilder) — this closes the same hole on the race/chargen slots.
-    ''' </summary>
+    ''' <summary>Carga los datos de TRI de una shape, resolviendo hasta DOS archivos: el de raza/expresion
+    ''' (morphs de animacion o morphs PIRT de cuerpo) y el de chargen (sculpting). Los dos se mergean en un solo
+    ''' TriHead para que el loop de aplicacion vea todos los morphs.
+    ''' <para>â›” SYNC: RENDER == BAKE, lado RENDER de la resolucion de <c>.tri</c>. Su gemelo es
+    ''' <c>FaceGenBuildPipeline.LoadMergedHeadTri</c>: los dos resuelven RECORD-DRIVEN por HDPT NAM0/NAM1 (0 =
+    ''' race morph, 1 = mesh/SkinnyMorph, 2 = chargen) y, solo para el slot de raza, por BODYTRI.</para>
+    ''' <para>â›” NO agregar un fallback por convencion de nombre del mesh: el MOTOR no tiene ninguno, arma el path
+    ''' en un solo sitio y lo unico que hace es NORMALIZAR el que el record ya declara. Adivinarlo hacia que el
+    ''' render aplicara morphs que el CK nunca aplica. Ver 40-bake-reglas-comunes.</para></summary>
     Private Sub LoadTriForShape(shape As IRenderableShape, ByRef tri As TriFile, ByRef triHead As TriHeadFile)
         tri = Nothing
         triHead = Nothing
@@ -872,8 +787,8 @@ Public Class NpcMorphResolver
                 Dim head = TriHeadParser.ParseTriHeadFromBytes(bytes)
                 If head Is Nothing Then Return Nothing
 
-                ' Zero the 22 vanilla mouth deltas iff the toggle is on and this is the female chargen tri
-                ' (no-op otherwise). Done on the fresh parse before caching, so the merge downstream sees it.
+                ' ⛔ SYNC: RENDER == BAKE — gemelo en FaceGenBuildPipeline (parse del tri del bake). El fix
+                ' se aplica sobre el parse FRESCO y antes de cachear, para que los dos vean los mismos deltas.
                 ChargenMouthFix.MaybeApplyInPlace(normalizedPath, head)
                 Return head
             End Function)
@@ -907,20 +822,17 @@ Public Class NpcMorphResolver
         Return Nothing
     End Function
 
-    ''' <summary>Resolve the tri path to actually use for a head-part shape's <paramref name="slot"/>, HPH-aware.
-    ''' SHARED so the live render (<see cref="LoadTriForShape"/>) and the offline bake
-    ''' (FaceGenBuildPipeline.ApplyChargenMorphsInPlace) resolve IDENTICALLY — render == bake by construction.
-    ''' Returns <paramref name="recordPath"/> unchanged unless the opt-in SSE toggle is on AND the record DECLARES a
-    ''' path that is MISSING or WRONG-TOPOLOGY for a shape matching a known HPH head part. An EMPTY slot stays empty
-    ''' (we redirect, never fill — filling a slot the CK never baked over-morphs; see the guard below). Order:
-    '''   1) record path already loads with NumVertices == shapeVerts → keep it (record-driven fidelity preserved).
-    '''   2) the MEASURED HPH table entry for (shapeVerts, slot) → use it when it matches shapeVerts (redirects the
-    '''      classic vanilla-996-tri-on-a-3832-head bug; also covers a declared-but-wrong brow race/chargen path).
-    '''   3) same basename under HPH dirs (root / faceparts / beards) → covers HPH parts not in the table (beast
-    '''      heads, masks) whose record kept the HPH basename but a wrong dir.
-    ''' The candidate is accepted ONLY when its vertex count equals the shape's — the exact, per-shape guard. A
-    ''' non-HPH shape (no count/basename match) always falls through to recordPath. <paramref name="vertsOf"/> returns
-    ''' the vertex count of the tri at a raw path (≤0 if it can't load); each caller passes its own cache-backed loader.</summary>
+    ''' <summary>Resuelve el path de tri que se va a usar de verdad para el <paramref name="slot"/> de una shape
+    ''' de head part, con soporte de High Poly Head. COMPARTIDA para que el render en vivo y el bake offline
+    ''' resuelvan IDENTICO.
+    ''' <para>Devuelve <paramref name="recordPath"/> sin tocar salvo que el toggle opt-in de SSE este prendido Y
+    ''' el record DECLARE un path que falta o tiene topologia equivocada para una shape que matchea una head part
+    ''' HPH conocida. Un slot VACIO se queda vacio: se redirige, nunca se rellena, porque llenar un slot que el CK
+    ''' nunca horneo sobre-morphea.</para>
+    ''' <para>Orden: (1) si el path del record carga con la misma cantidad de vertices que la shape, se conserva;
+    ''' (2) la entrada MEDIDA de la tabla HPH para (verts, slot); (3) el mismo basename bajo los directorios de
+    ''' HPH, que cubre partes HPH fuera de la tabla. El candidato se acepta SOLO si su cantidad de vertices iguala
+    ''' la de la shape, que es el guard exacto por shape.</para></summary>
     Public Shared Function ResolveHphHeadPartTriPath(recordPath As String, shapeVerts As Integer, slot As HphTriSlot, vertsOf As Func(Of String, Integer)) As String
         If Not HphRedirectGateOn() OrElse shapeVerts <= 0 OrElse vertsOf Is Nothing Then Return recordPath
         ' A slot the record leaves EMPTY stays empty — we only REDIRECT a declared-but-broken path, never FILL one

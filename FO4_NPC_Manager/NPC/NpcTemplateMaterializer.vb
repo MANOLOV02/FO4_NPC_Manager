@@ -1,41 +1,24 @@
 ﻿Imports FO4_Base_Library
 
-''' <summary>Makes a template-inheriting NPC OWN a template-flag category, so an edit to a field in
-''' that category survives in-game instead of being overwritten by the engine's template resolution.
-'''
-''' WHY (RE, engine-verified — see memory project_re_template_flag_inheritance): at NPC resolution
-''' (load/init) the engine runs <c>CopyFromTemplate</c> (Fallout4.exe 0x140657D80): for each template
-''' data-category whose Use-X component is present (= the Use-X flag is set) it copies the TEMPLATE's
-''' fields OVER the NPC's own — verdict (c), template wins, per-category, no additive merge. Proof for
-''' Skin: <c>[dest+0x2A0] = [template+0x2A0]</c> at 0x140658073→0x14065807A; for the effective/skeleton
-''' race <c>[dest+0x1B8] = [template+0x1B8]</c> at 0x140657FD5→0x140657FDC. If the Use-X flag is CLEAR
-''' the copy is skipped and the NPC's own fields are used. So to make a category editable/authoritative:
-''' clear its Use-X bit AND write the resolved (template-chain) values into the NPC's own record — else
-''' clearing the flag would leave those fields empty/default and break the look.
-'''
-''' USAGE (the caller — e.g. the Object Template editor — orders it as: MATERIALIZE → CLEAR FLAG → APPLY
-''' EDIT): call <see cref="MakeCategoryOwn"/> to snapshot the resolved category into the NPC and drop the
-''' flag, THEN apply the user's edit on top. This helper is OPT-IN and does NOT touch the normal save
-''' path; NPCs that don't inherit the category (flag already clear) are returned untouched.
-'''
-''' COVERAGE: <see cref="NPC_TemplateCategory.Traits"/> materializes the appearance/identity set the CK
-''' groups under "Use Traits" AND the engine copies under idx 0 (Race, Skin, HairColor, FacialHairColor,
-''' Head Parts, FTST face TextureSet, QNAM texture lighting, Death Item, Far-Away-Model, Height, Weight,
-''' face morphs/tints/body-morphs, APPR attach-parent-slots, and the OBTS object-template combinations).
-'''
-''' ⛔ THE INVARIANT THAT KEEPS THIS HONEST: every field <see cref="MainForm.TraitsState"/> carries must be
-''' materialized here. That state IS the app's model of "what the Traits chain provides" — the render walks
-''' the chain to fill it — so a field present there and absent here is lost the instant the Use-Traits bit is
-''' cleared, silently, with the symptom surfacing at render/bake/save time instead. FTST, QNAM and APPR were
-''' exactly that gap until 2026-07-29 (measured: 52 SSE NPCs lost a real value, 0 in FO4 — latent, not absent).
-''' When you add a field to TraitsState, add it here in the same commit.
-'''
-''' Fields the app does not model at all (Voice VTCK, Disposition, Alignment, Weapon List) are NOT
-''' materialized — flagged in <see cref="UnmodeledTraitsFields"/>
-''' so a future pass can close them; they are preserved verbatim from the NPC (round-trip), which is
-''' correct when they were already the NPC's own and a conservative best-effort otherwise. Other categories
-''' (Stats/Factions/Inventory/Keywords/…) currently only clear the bit (their field materialization is a
-''' follow-up); the engine's per-category rule is identical, so the framework generalizes.</summary>
+''' <summary>Hace que un NPC que hereda por plantilla PASE A SER DUENIO de una categoria de template-flag, para
+''' que una edicion en esa categoria sobreviva in-game en vez de que la pise la resolucion de plantillas.
+''' <para>POR QUE (RE verificado sobre el motor, ver 40-bake-reglas-comunes): al resolver el NPC, el motor corre
+''' <c>CopyFromTemplate</c> y, por cada categoria cuyo flag Use-X esta puesto, copia los campos de la PLANTILLA
+''' POR ENCIMA de los propios del NPC: gana la plantilla, por categoria, sin merge aditivo. Con el flag en claro
+''' la copia se saltea y se usan los campos propios. Asi que para volver una categoria editable hay que hacer las
+''' DOS cosas: bajar su bit Use-X Y escribir los valores resueltos de la cadena en el record del NPC - si no,
+''' bajar el flag dejaria esos campos vacios y rompeia el aspecto.</para>
+''' <para>USO: el caller ordena MATERIALIZAR, BAJAR EL FLAG y despues APLICAR LA EDICION. Es OPT-IN y no toca el
+''' camino normal de guardado; un NPC que no hereda la categoria vuelve intacto.</para>
+''' <para>â›” LA INVARIANTE QUE MANTIENE ESTO HONESTO: todo campo que lleve <see cref="MainForm.TraitsState"/>
+''' tiene que materializarse aca. Ese state ES el modelo de la app de "lo que aporta la cadena de Traits", asi que
+''' un campo presente alla y ausente aca se pierde EN SILENCIO apenas se baja el bit, y el sintoma aparece recien
+''' al renderizar, hornear o guardar. FTST, QNAM y APPR fueron exactamente ese agujero (medido: 52 NPCs de SSE
+''' perdian un valor real, 0 en FO4 - latente, no ausente). Al agregar un campo a TraitsState, agregarlo aca en el
+''' MISMO commit.</para>
+''' <para>Los campos que la app no modela (Voice VTCK, Disposition, Alignment, Weapon List) NO se materializan:
+''' quedan marcados en <see cref="UnmodeledTraitsFields"/> y se preservan verbatim del NPC. Las demas categorias
+''' por ahora solo bajan el bit; la regla del motor es la misma por categoria, asi que el framework generaliza.</para></summary>
 Friend NotInheritable Class NpcTemplateMaterializer
 
     Private Sub New()

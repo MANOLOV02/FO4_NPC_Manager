@@ -1,4 +1,4 @@
-Imports FO4_Base_Library
+﻿Imports FO4_Base_Library
 
 ''' <summary>Single source of truth for the FULL RaceMenu <c>.jslot</c> ↔ <see cref="LooksmenuLoader.LooksmenuPreset"/>
 ''' mapping (SSE only). Unifies the two per-editor mappings that today live split across the Edit Face and Edit Body
@@ -166,11 +166,6 @@ Public Module RaceMenuPresetMapper
         Return j
     End Function
 
-    ''' <summary>Inverse of <see cref="ToJslot"/>: apply a <c>.jslot</c> onto an existing preset in place. Combines
-    ''' EditFace_Form.OnLoadJslot (FACE) and EditBody_Form.OnLoadJslot (BODY). Sets the relevant Has* authority flags
-    ''' so the resulting preset applies as an overlay.</summary>
-    ''' <param name="raceFid">The NPC's RACE FormID (+ <paramref name="isFemale"/>) — needed to translate the
-    ''' .jslot's POSITIONAL tint index to the record's TINI value (see JslotIndexToTini). 0 = identity fallback.</param>
     ''' <summary>Bloque de cabeza para <c>SseSculptHead</c>: el host del chargen de la cabeza base
     ''' ("...HeadCharGen" / "...HeadCustomizations") pero NO "...Brows...". Si ninguno matchea, cae al
     ''' bloque 0 (replica el comportamiento previo de Sculpt(0)). Nothing si no hay bloques.

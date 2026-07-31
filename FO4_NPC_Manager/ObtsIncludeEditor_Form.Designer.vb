@@ -1,4 +1,4 @@
-' UI built in Designer per feedback_ui_in_designer.md. InitializeComponent is declarative ONLY.
+﻿' UI built in Designer per 00-reglas-ui-y-vb.md. InitializeComponent is declarative ONLY.
 ' Modal editor for a SINGLE ARMO_CombinationInclude (OMOD include) of an OBTS combination — replaces the old
 ' inline-editable GridIncludes cells (AttachPointIndex text + Optional/DontUseAll checkboxes + the OMOD
 ' double-click re-pick), so the Includes grid can be pure read-only.

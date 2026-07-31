@@ -11,7 +11,7 @@ Imports NiflySharp.Blocks
 Imports OpenTK.Mathematics
 
 ''' <summary>String / mesh-key name utilities. Extracted from MainForm (pure stateless, no instance state, no UI). Real separate
-''' class (NOT a partial). See project_mainform_split.</summary>
+''' class (NOT a partial). See 61-perf-mainform-split.</summary>
 Friend NotInheritable Class NameUtils
     Private Sub New()
     End Sub

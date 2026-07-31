@@ -386,9 +386,9 @@ Friend Module BakeAllRunner
                 ' El Fid como ultimo criterio deja el orden TOTALMENTE determinista (dos corridas iguales).
                 targets = targets.OrderBy(Function(t) t.Race).ThenBy(Function(t) t.Female).ThenBy(Function(t) t.Fid).ToList()
                 Dim grupos = targets.Select(Function(t) (t.Race, t.Female)).Distinct().Count()
-                log($"Orden:       agrupado por (raza, sexo) — {grupos} grupos; se evicta el cache de decode en cada borde")
+                log($"Order:       grouped by (race, gender) — {grupos} group(s); the decode cache is evicted at every boundary")
             Else
-                log("Orden:       orden natural de records (historico)")
+                log("Order:       natural record order (historical)")
             End If
             If targets.Count = 0 Then
                 If espTarget <> "" Then
@@ -423,7 +423,6 @@ Friend Module BakeAllRunner
             If sampleLimit > 0 Then log($"SAMPLE: FGBAKE_LIMIT={sampleLimit} — only the first {sampleLimit} NPC(s) will be processed.")
             FaceGenBuilder.PhaseReset()
             FaceGenBuilder.ParityReset()
-            FaceTintInputBuilder.ResetSwapIntensityCensus()
             SseFoldLayerStack.ResetSseParity()
             Dim sw = Diagnostics.Stopwatch.StartNew()
             Dim cancelled As Boolean = False
@@ -474,8 +473,8 @@ Friend Module BakeAllRunner
                 ' readbacks vacios, que es exactamente la medicion fabricada que este instrumento existe para
                 ' evitar. El modo verificado es --windowless (hilo STA del Main).
                 log("FATAL: FGBAKE_GPU_PARITY=1 requires --windowless.")
-                log("       Sin --windowless el bake corre en un hilo del ThreadPool (la ventana de progreso lo")
-                log("       lanza con Task.Run) y el contexto GL no tiene garantia de afinidad ni de pump.")
+                log("       Without --windowless the bake runs on a ThreadPool thread (the progress window")
+                log("       launches it with Task.Run) and the GL context has no affinity or pump guarantee.")
                 Return ExitFatal
             End If
             If gpuParity Then
@@ -539,8 +538,8 @@ Friend Module BakeAllRunner
                     ' de "paridad" fabricada. Es la regla del arnes: una condicion anomala ABORTA, no se degrada.
                     Dim selfTest = FaceGenBuilder.GlSelfTest(glHost)
                     If selfTest IsNot Nothing Then
-                        log($"FATAL: el contexto GL se creo pero NO DIBUJA: {selfTest}")
-                        log("       Con un GL que no dibuja, la paridad CPU-vs-GPU seria un numero inventado.")
+                        log($"FATAL: the GL context was created but DOES NOT DRAW: {selfTest}")
+                        log("       With a GL that does not draw, CPU-vs-GPU parity would be a made-up number.")
                         Try : glHost.TintGpuCache?.Clear() : Catch : End Try
                         Try : glCtl.Dispose() : Catch : End Try
                         Try : glForm.Dispose() : Catch : End Try
@@ -561,9 +560,9 @@ Friend Module BakeAllRunner
                     ' ⛔ NO se degrada a CPU-only en silencio: la corrida se pidio para medir paridad y sin GL no
                     ' mide NADA. Abortar es la unica respuesta honesta (regla del arnes: una condicion anomala
                     ' aborta o se marca, jamas cae a un default).
-                    log($"FATAL: FGBAKE_GPU_PARITY=1 pero no se pudo crear el contexto GL: {ex.GetType().Name}: {ex.Message}")
+                    log($"FATAL: FGBAKE_GPU_PARITY=1 but the GL context could not be created: {ex.GetType().Name}: {ex.Message}")
                     log("       STACK: " & ex.ToString())
-                    log("       Sin contexto GL esta corrida mediria solo el CPU y reportaria paridad que nunca se probo.")
+                    log("       Without a GL context this run would measure only the CPU and report parity that was never tested.")
                     Try : glCtl?.Dispose() : Catch : End Try
                     Try : glForm?.Dispose() : Catch : End Try
                     Return ExitFatal
@@ -621,7 +620,7 @@ Friend Module BakeAllRunner
                                 texFailedNpcs += 1
                                 texFailedSlots += r.TextureSlotsFailed
                                 If texFailures.Count < 40 Then texFailures.Add($"0x{t.Fid:X8} {t.Name}: {r.TextureFailureDetail}")
-                                log($"{head} — baked: {r.ShapesKept} shape(s) ⚠ {r.TextureSlotsFailed} TEXTURA(S) FALLARON: {r.TextureFailureDetail}")
+                                log($"{head} — baked: {r.ShapesKept} shape(s) ⚠ {r.TextureSlotsFailed} TEXTURE(S) FAILED: {r.TextureFailureDetail}")
                             Else
                                 log($"{head} — baked: {r.ShapesKept} shape(s) → {r.OutputPath}")
                             End If
@@ -644,8 +643,8 @@ Friend Module BakeAllRunner
                 Next
             Finally
                 Dim cst = FaceTintCpuCompositor.BatchDecodeCacheStats()
-                log($"Decode cache: {cst.Bytes \ (1024L * 1024L)} MB retenidos al final, {cst.Rejected} entradas rechazadas por techo, " &
-                    $"{evictions} evicciones de borde ({evictedMb} MB liberados en total)")
+                log($"Decode cache: {cst.Bytes \ (1024L * 1024L)} MB retained at the end, {cst.Rejected} entries rejected by the cap, " &
+                    $"{evictions} boundary evictions ({evictedMb} MB freed in total)")
                 ' ⛔ El cache de mascaras de SseFaceTintComposer NO entra en este resumen: no obedece el techo
                 ' (es per-NPC, igual que los caches per-host de FO4 — ver el comentario en SseFaceTintComposer).
                 ' Su memoria la acota la VIDA, no el presupuesto, asi que no hay bytes "retenidos por techo" ni
@@ -680,10 +679,7 @@ Friend Module BakeAllRunner
             ' hubiera validado el compositor del render.
             log("")
             log(FaceGenBuilder.ParityReport())
-            ' Censo de intensidades de region swap: responde con el corpus entero si algun MSDV llega
-            ' negativo o >1 al clamp de [0,1] (que lo descartaria en silencio en LOS DOS compositores).
             log("")
-            log(FaceTintInputBuilder.SwapIntensityCensus())
             log(SseFoldLayerStack.SseParityReport())
             If texFailedNpcs > 0 Then
                 log("")

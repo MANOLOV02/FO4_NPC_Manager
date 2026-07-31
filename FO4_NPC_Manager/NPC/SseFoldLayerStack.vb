@@ -624,7 +624,6 @@ Friend Module SseFoldLayerStack
         Return id
     End Function
 
-    ''' <summary>Readback float del acumulador del compositor (Rgba32f) → Single RGBA, sin pasar por 8 bits.</summary>
     ''' <summary>Friend: lo usa tambien el sandbox _2d del bake (FaceGenBuilder.WriteSseFacetint2dGpu) para el
     ''' UNICO readback de su cadena, la que encodea el DDS. Todo el resto del _2d corre en GPU.</summary>
     Friend Function ReadbackRgba32f(texId As Integer, npix As Integer) As Single()

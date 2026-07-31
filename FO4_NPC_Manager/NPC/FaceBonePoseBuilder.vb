@@ -190,38 +190,6 @@ Public Module FaceBonePoseBuilder
         Return (1.0F + neckNnamX * fmin * block2, 1.0F + neckNnamY * fmin * block2)
     End Function
 
-    ''' <summary>⭐ THE FMRS INTERPOLATION LAW — single source of truth for render AND bake.
-    '''
-    ''' Per-axis DELTA from a FMRS-driven slider:
-    '''   fmrsVal = 0  → 0        (no morph applied)
-    '''   fmrsVal = +1 → maxVal
-    '''   fmrsVal = -1 → minVal
-    ''' Two independent slopes, one per side; minVal is NOT assumed to be −maxVal.
-    '''
-    ''' ⛔ THE REGION'S "Defaults" FIELD DOES NOT PARTICIPATE. Do not re-introduce a
-    ''' `− default` term, and do not compare Min/Max against Default anywhere (see
-    ''' <see cref="IsFmrsAxisLive"/>).
-    '''
-    ''' FUENTE — RE of both binaries, disassembled and byte-verified 2026-07-19:
-    '''   Fallout4.exe  (render) FUN_1403fd920  @ RVA 0x3FD920
-    '''   CreationKit.exe (bake) FUN_140419CD0  @ RVA 0x419CD0
-    ''' Both are structurally identical and contain ZERO subtract instructions
-    ''' (no subss/subps anywhere in either function body). Per axis they emit exactly:
-    '''     comiss s, 0 ; jbe .min
-    '''     .max:  s * [rcx+0x24+4i]        ' Maxima[i]
-    '''     .min:  (s * [rcx+0x00+4i]) XOR 0x80000000   ' = |s| * Minima[i]
-    '''     out[i] = result * xmm3          ' xmm3 = FMIN
-    ''' The bone struct passed in rcx is exactly 0x48 bytes = [Minima(9 floats) @0x00..0x20 |
-    ''' Maxima(9 floats) @0x24..0x44]. There is NO Defaults slot in it: the engine could not
-    ''' subtract a Default here even in principle. "Defaults" is parsed by the CK JSON loader
-    ''' @0xAF8817 into a DIFFERENT object — the region struct, at [region+0x00..0x20] — and is
-    ''' never routed into this computation.
-    ''' Rotation's deg→rad (×0.0174533) is applied by the engine only to indices 3-5, which is
-    ''' why callers pass rotation in JSON degrees and the caller-side Euler build expects them.
-    '''
-    ''' NOTE on the s = 0 boundary: the engine's `jbe` sends s = 0 down the MIN branch, yielding
-    ''' −(0 × min) = −0.0, where this function yields +0.0. Both are zero and are subsequently
-    ''' only multiplied and summed, so the distinction is not observable.</summary>
     ''' <summary>DIAGNOSTICO de alcance del clamp (no altera el resultado): cuantas veces el clamp
     ''' EFECTIVAMENTE cambio el valor. El motor NO clampea (no hay minss/maxss en FUN_1403fd920 ni en
     ''' FUN_140419CD0), asi que este clamp es una divergencia nuestra; si el contador da 0 sobre el corpus,

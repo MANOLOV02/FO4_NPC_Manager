@@ -1,4 +1,4 @@
-''' <summary>Canonical FO4 biped-object slot bitmasks (the BOD2/BODT flag bits), consolidated
+﻿''' <summary>Canonical FO4 biped-object slot bitmasks (the BOD2/BODT flag bits), consolidated
 ''' here so MainForm and every render/resolver site share ONE definition instead of each
 ''' re-declaring or inlining the same hex literal.
 '''
@@ -49,7 +49,7 @@ Public Module BipedSlots
     ' flags de xEdit (wbBipedObjectFlags), leídos de TES5Edit\Core\ verbatim:
     '   FO4 → wbDefinitionsFO4.pas:3745-3778   ·   Skyrim → wbDefinitionsTES5.pas:2590-2622
     ' Las tablas NO salen de las RACE (la RACE sólo REFERENCIA slots vía sus occlusion biped objects
-    ' Head/Hair/Body — reference_sse_engine_occlusion_re); los slots los define el formato del juego.
+    ' Head/Hair/Body — 23-armor-oclusion-sse-re); los slots los define el formato del juego.
     ' Cada slot cae en una REGIÓN según su nombre declarado: Hair/Head/Circlet/Ears→Headwear,
     ' Body/Feet/Calves→Body, Hands/Forearms→Hands, [U]→Under, [A]→Over, Ring/Shield→Accessory.
     ' (FO4 conserva 2 agrupaciones de la app documentadas: Ring→Hands "va en la mano", Scalp→Body overlay.

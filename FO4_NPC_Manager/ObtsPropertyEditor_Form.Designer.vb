@@ -1,4 +1,4 @@
-' UI built in Designer per feedback_ui_in_designer.md. InitializeComponent is declarative ONLY.
+﻿' UI built in Designer per 00-reglas-ui-y-vb.md. InitializeComponent is declarative ONLY.
 ' Modal editor for a SINGLE OMOD_Property row of an OBTS combination — replaces the old inline-editable
 ' GridProperties cells (ValueType combo + FunctionType/PropertyIndex/Value2/Step text cells + the
 ' out-of-band Value1 prompt) with dedicated controls, so the grid can be pure read-only.

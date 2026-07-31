@@ -9,7 +9,8 @@
 ''' Formato por canal (misma sincronía All/Per-layer que el tamaño): Diffuse BC3(default)/BC7/Uncompressed,
 ''' N/S BC5(default)/Uncompressed. En All, N/S siguen al Diffuse (Uncompressed si el Diffuse lo es, sino BC5).
 ''' Tilde "Generate TGA": escribe un TGA uncompressed al lado de cada .dds. Botón "Revert to default" del tab
-''' Size = All + Inherit + BC3/BC5 + no TGA. Toda la UI vive en el .Designer.vb.
+''' Size = All + Inherit + BC3/BC5 + no TGA + los 2 checkboxes de GroupBoxSize (decode por GPU / acumulador).
+''' Cada "Revert to default" revierte SÓLO —y TODO— lo que su propio tab muestra. Toda la UI vive en el .Designer.vb.
 ''' </summary>
 Public Class CharGenOptionsForm
 
@@ -148,8 +149,6 @@ Public Class CharGenOptionsForm
     Private _tintKeyValues As New List(Of Integer)
     Private _swapKeyValues As New List(Of Integer)
 
-    ''' <summary>Puebla los combos de claves (nombres de enum, índice = valor) y carga las reglas + el
-    ''' SkinTonePlacement guardados en una copia editable.</summary>
     ''' <summary>El tab "Tint Order" es GAME-AWARE: en SSE ordena las capas de tint del RACE (FaceTintSseTintSortKey)
     ''' y los overlays Face[Ovl] (FaceTintSseOverlaySortKey, en la lista "swap"), leyendo/guardando Setting_FaceTintSort_SSE;
     ''' en FO4 usa las claves y el set de FO4. Sets SEPARADOS ⇒ no se pisan. Default de cada juego via NewSortDefaults().</summary>
@@ -275,9 +274,6 @@ Public Class CharGenOptionsForm
         MoveRule(ListSwapRules, _swapRules, SortSwapEnumType(), 1)
     End Sub
 
-    ''' <summary>Vuelve el orden (tints/swaps/placement) a los defaults del CÓDIGO (constructor de
-    ''' FaceTintSortSettings). En memoria: el OK persiste, Cancel descarta. Independiente del Revert de
-    ''' Conventions (no toca nada del otro tab).</summary>
     ''' <summary>"Revert to default" del tab Fixes. Mismo contrato que <see cref="BtnSortRevert_Click"/>:
     ''' toca SOLO el estado de la UI (los valores se escriben al config recién en el OK) y es GAME-AWARE.
     ''' <para><b>Los defaults NO se hardcodean acá</b>: salen de instancias frescas de las clases de config, o
@@ -291,10 +287,6 @@ Public Class CharGenOptionsForm
         Dim cfgDef As New Config_App()      ' defaults de Config_App tal como están declarados
         Dim npcDef As New NPC_Config()      ' defaults de NPC_Config tal como están declarados
         Dim isFo4 = (Config_App.Current.Game = Config_App.Game_Enum.Fallout4)
-
-        ' Vale para los dos juegos: el decode de las texturas fuente no es especifico de FO4.
-        CheckBoxUseHardwareBcDecode.Checked = npcDef.UseHardwareBcDecode
-        CheckBoxAccumInComposite.Checked = New FaceTintConvention.FaceTintBucketConvention().AccumInCompositeSpace
 
         If isFo4 Then
             CheckBoxApplyGhoulHeadRearFix.Checked = npcDef.ApplyGhoulHeadRearFix
@@ -321,7 +313,6 @@ Public Class CharGenOptionsForm
         ComboSkinPlacement.SelectedIndex = p
     End Sub
 
-    ''' <summary>Carga los 3 buckets de una convención + el flag seed a los combos. Reusado por Load y Revert.</summary>
     ''' <summary>El set de convención del JUEGO ACTIVO: FO4 → Setting_FaceTintConvention; SSE →
     ''' Setting_FaceTintConvention_SSE (creado con DefaultsFor(Skyrim) si fuese Nothing). Dos configuraciones
     ''' separadas — el tab de convenciones edita la del juego activo sin tocar la otra. Espejo de
@@ -484,9 +475,11 @@ Public Class CharGenOptionsForm
 
     ''' <summary>Defaults del tab Size: All + Inherit (los 3) + Diffuse BC3 + Normal (FO4 BC5 / SSE Uncompressed) +
     ''' Specular BC5 + Generate TGA off (= los defaults del CÓDIGO/Config). En memoria; OK persiste, Cancel descarta.
-    ''' Independiente de los Revert de Conventions/Order (no toca esos tabs).</summary>
+    ''' Independiente de los Revert de Conventions/Order (no toca esos tabs). Defaults sin hardcodear, mismo
+    ''' contrato que <see cref="BtnFixesRevert_Click"/>.</summary>
     Private Sub ButtonResetSize_Click(sender As Object, e As EventArgs) Handles ButtonResetSize.Click
         Dim isSse = (Config_App.Current IsNot Nothing AndAlso Config_App.Current.Game = Config_App.Game_Enum.Skyrim)
+        Dim game = If(Config_App.Current IsNot Nothing, Config_App.Current.Game, Config_App.Game_Enum.Fallout4)
         _loading = True
         RadioAll.Checked = True
         ComboDiffuse.SelectedIndex = 0      ' Inherit
@@ -498,6 +491,10 @@ Public Class CharGenOptionsForm
         ComboFormatN.SelectedIndex = If(isSse, 1, 0)
         ComboFormatS.SelectedIndex = 0      ' BC5
         CheckGenerateTga.Checked = False
+        ' Los 2 checkboxes de GroupBoxSize viven en ESTE tab ⇒ los revierte este botón, no el de Fixes.
+        ' El acumulador sale del bucket Diffuse del juego activo = misma fuente que el Load, no pueden discrepar.
+        CheckBoxUseHardwareBcDecode.Checked = New NPC_Config().UseHardwareBcDecode
+        CheckBoxAccumInComposite.Checked = FaceTintConvention.FaceTintConventionSettings.DefaultsFor(game).Diffuse.AccumInCompositeSpace
         _loading = False
         UpdateEnabledState()
     End Sub

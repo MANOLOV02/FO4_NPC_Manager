@@ -188,7 +188,7 @@ Public Module FomodExporter
                 .SourceBytes = legacyBytes, .Required = True,
                 .Exists = (legacyBytes IsNot Nothing AndAlso legacyBytes.Length > 0),
                 .SizeBytes = If(legacyBytes IsNot Nothing, CLng(legacyBytes.Length), 0L),
-                .Note = "compatibilidad: resuelve el tipo en saves de la version anterior (inerte)"})
+                .Note = "compatibility: resolves the type in saves from the previous version (inert)"})
         End If
 
         ' 5. BodyGen inis, when Save ESP emitted them. Folder name uses the plugin file name WITH

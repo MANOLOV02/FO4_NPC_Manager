@@ -3,29 +3,17 @@ Imports NiflySharp
 Imports NiflySharp.Blocks
 Imports OpenTK.Mathematics
 
-''' <summary>
-''' Orchestrator for the FaceGen offline bake. Composes the same building blocks the runtime
-''' renderer uses (NpcRecordOverlay, FaceSkeletonResolver, FaceBonePoseBuilder, MorphEngine,
-''' SkinBakeMath, NpcMorphPoseResolver.GetFacialBoneRegionsForRace) without ever needing a GL context or
-''' an NpcRenderHost. Outputs per-shape "world vertices" (v_world) — the positions a vertex
-''' would occupy after the runtime render produced it from the _facebones source mesh.
-'''
-''' Bake math (per shape):
-'''   1) Load the _facebones mesh source (vertices in shape-local, skin partition referencing
-'''      face bones + body bones).
-'''   2) Apply the chargen TRI vertex morphs in NIF-local space (MorphEngine).
-'''   3) Load fresh body skel + face skel; build FMRS pose from NPC FaceMorphs + race regions
-'''      JSON; apply that pose to the face skel via SkeletonInstance.ApplyPose.
-'''   4) Skin every vertex with the pose-applied bones — this gives v_world equivalent to the
-'''      runtime render output.
-'''
-''' Once v_world is in hand, the caller (FaceGenBuilder) walks the face-bone hierarchy to
-''' redistribute weights to ORIG palette ancestors and computes v_baked = inv(Mtot_orig) ×
-''' v_world to write back into the .nif2 with body-only skin partition.
-'''
-''' App-specific orchestrator. The individual helpers it composes can be reused by other apps
-''' (none currently); this orchestrator is NPC_Manager-specific by definition.
-''' </summary>
+''' <summary>Orquestador del bake offline de FaceGen. Compone los MISMOS bloques que usa el render en runtime
+''' (NpcRecordOverlay, FaceSkeletonResolver, FaceBonePoseBuilder, MorphEngine, SkinBakeMath, las regiones
+''' faciales de la raza) sin necesitar contexto GL ni NpcRenderHost. Su salida son los "world vertices"
+''' (v_world) por shape: las posiciones que un vertice ocuparia si el render lo hubiera producido desde el mesh
+''' <c>_facebones</c>.
+''' <para>Matematica del bake por shape: cargar el mesh <c>_facebones</c>; aplicar los morphs de vertice del TRI
+''' de chargen en espacio NIF-local; cargar skeletons frescos de cuerpo y cara y armar la pose FMRS desde los
+''' FaceMorphs del NPC mas el JSON de regiones de la raza; skinnear cada vertice con los huesos ya posados.</para>
+''' <para>Con el v_world en mano, el caller (FaceGenBuilder) camina la jerarquia de huesos de cara para
+''' redistribuir pesos a los ancestros de la paleta ORIG y calcula <c>v_baked = inv(Mtot_orig) x v_world</c> para
+''' escribirlo al .nif con particion de skin solo de cuerpo.</para></summary>
 Public Module FaceGenBuildPipeline
 
     ''' <summary>Per-shape result of <see cref="ComputeWorldVerticesForShape"/>.</summary>
@@ -69,7 +57,7 @@ Public Module FaceGenBuildPipeline
         Dim bodySkel = LoadBodySkeleton(state)
 
         ' 2b) Body-weight (MWGT + MRSV) — el CK SÍ lo hornea, en las shapes que NO traen
-        ' CustomizationRemapNewBonesData. Ver reference_ck_bodyweight_skin_bone_scale_formula:
+        ' CustomizationRemapNewBonesData. Ver 40-bake-leyes-fo4:
         ' el exportador vuelve a llamar al constructor del array per-hueso del skin instance
         ' (CreationKit.exe 0x140A8CFD0) con los mapas en NULL para las shapes que sí la traen, y
         ' eso deja sus escalas en identidad. Medido sobre 16.438 shapes del corpus: los que pasan
@@ -158,20 +146,17 @@ Public Module FaceGenBuildPipeline
         Return False
     End Function
 
-    ''' <summary>Pose de escalas per-hueso del body-weight para el bake (MWGT capa 1 + MRSV capa 3).
-    ''' Reusa <see cref="PoseMath.BuildBodyWeightPose"/> — la misma implementación que el render, con
-    ''' la fórmula del motor (k del triángulo baricéntrico; RE de CreationKit.exe 0x140AA8C10 y de
-    ''' Fallout4.exe 0x664850). Diferencias deliberadas contra el render, ambas MEDIDAS:
+    ''' <summary>Pose de escalas por hueso del body-weight para el bake (MWGT capa 1 + MRSV capa 3). Reusa
+    ''' <see cref="PoseMath.BuildBodyWeightPose"/>, la misma implementacion que el render, con la formula del
+    ''' motor. Dos diferencias deliberadas contra el render, las dos MEDIDAS:
     ''' <list type="bullet">
-    ''' <item>Sin ARMA sculpt: el FaceGeom se hornea una vez por NPC y no puede depender del outfit.
-    ''' De 1.093 ARMA de vanilla sólo 5 tienen delta en un hueso con peso real en el pelo, y 4 de
-    ''' esos 5 sólo en Neck_Low_skin (23 de 5.250 vértices, peso medio 0,0001).</item>
-    ''' <item>Un slot MWGT centinela ("Default") ⇒ SIN body-weight, en vez de la sustitución que hace
-    ''' <c>NpcStateFactory.ResolveBodyWeights</c> para el render. Medido sobre los 12 NPCs de vanilla
-    ''' que tienen slots centinela: sustituir da 24 regresiones (POIDL030_Bethany 0,0000 → 0,0279) y
-    ''' tratarlos como 0 da 2 (0,0000 → 0,0474); ignorarlos deja 1 regresión de +0,0001.</item>
+    ''' <item>Sin ARMA sculpt: el FaceGeom se hornea una vez por NPC y no puede depender del outfit. De 1.093
+    ''' ARMA vanilla solo 5 tienen delta en un hueso con peso real en el pelo.</item>
+    ''' <item>Un slot MWGT centinela ("Default") implica SIN body-weight, en vez de la sustitucion que hace el
+    ''' render. Medido sobre los 12 NPCs vanilla con slots centinela: sustituir da 24 regresiones, tratarlos como
+    ''' 0 da 2, e ignorarlos deja 1 de +0,0001.</item>
     ''' </list>
-    ''' NNAM sigue fuera del bake (ver <c>BuildBakeState</c>).</summary>
+    ''' NNAM sigue fuera del bake.</summary>
     Private Function BuildBakeBodyWeightPose(state As BakeState, skeleton As SkeletonInstance) As Poses_class
         If state?.NpcData Is Nothing OrElse state.Race Is Nothing Then Return Nothing
 
@@ -484,21 +469,18 @@ Public Module FaceGenBuildPipeline
         End SyncLock
     End Function
 
-    ''' <summary>ETAPA 1 del diagnóstico de fidelidad del preview. Mide, por shape, cuánto se aparta lo
-    ''' que MUESTRA EL PREVIEW de lo que MUESTRA EL JUEGO, sin abrir la app:
+    ''' <summary>ETAPA 1 del diagnostico de fidelidad del preview: mide por shape cuanto se aparta lo que MUESTRA
+    ''' EL PREVIEW de lo que MUESTRA EL JUEGO, sin abrir la app.
     ''' <code>
     '''   preview = v_world                                                      (el forward del bake)
-    '''   juego   = Mtot_plano(bind∘bw_vivo) · inv(Mtot_plano(bind∘bw_ck)) · v_world
+    '''   juego   = Mtot_plano(bind.bw_vivo) * inv(Mtot_plano(bind.bw_ck)) * v_world
     ''' </code>
-    ''' El render produce, por construcción, el mismo <c>v_world</c> que el forward del bake, así que la
-    ''' diferencia se puede calcular entera offline.
-    ''' <para>Las dos paletas salen de <see cref="BuildBindResolver"/>, que ya toma el esqueleto de
-    ''' body-weight como parámetro: <c>bw_ck</c> = <c>wr.BwBindSkel</c> (lo que el bake efectivamente
-    ''' invirtió — <c>Nothing</c> en las shapes con <c>CustomizationRemapNewBonesData</c>) y
-    ''' <c>bw_vivo</c> = el mismo body-weight SIN ese gate, que es lo que el motor aplica al esqueleto
-    ''' del actor tenga o no la flag (la flag sólo decide si el CK lo HORNEA).</para>
-    ''' <para>⭐ AUTOCHEQUEO: en las shapes SIN esa flag las dos paletas son idénticas ⇒ tiene que dar 0
-    ''' EXACTO. Si alguna da distinto de 0, lo que está mal es la medición, no el bake.</para></summary>
+    ''' El render produce por construccion el mismo v_world que el forward del bake, asi que la diferencia se
+    ''' calcula entera offline. Las dos paletas salen de <see cref="BuildBindResolver"/>: bw_ck es lo que el bake
+    ''' efectivamente invirtio y bw_vivo el mismo body-weight sin ese gate, que es lo que el motor aplica al
+    ''' esqueleto tenga o no la flag (la flag solo decide si el CK lo HORNEA).
+    ''' <para>AUTOCHEQUEO: en las shapes sin esa flag las dos paletas son identicas, asi que tiene que dar 0
+    ''' EXACTO; si da distinto, lo que esta mal es la medicion, no el bake.</para></summary>
     Private Sub CollectHeadFidelity(state As BakeState, destNif As Nifcontent_Class_Manolo,
                                      wr As WorldVertResult, vWorld As Vector3d(),
                                      shapeBones As NiNode(), shapeLocalTs As Transform_Class(),
@@ -594,61 +576,26 @@ Public Module FaceGenBuildPipeline
         Return (mx, If(nUsed > 0, Math.Sqrt(ssq / nUsed), 0.0), worstIdx, worstOld, worstNew, nSingle, nMulti, nUsed)
     End Function
 
-    ''' <summary>
-    ''' invBind por hueso para el lado <b>DESTINO</b> del bake (el inverso), con la paleta que usa el
-    ''' <b>MOTOR</b>: la del <c>_faceBones</c> para los huesos que ese rig declara, la del NIF plano
-    ''' para los que no.
-    '''
-    ''' <para><b>Por qué el inverso de la app estaba MAL.</b> En <c>ApplyCustomizationRemap</c> la
-    ''' segunda pasada elige paleta en <c>0x142B6F8F5</c>:</para>
-    ''' <code>
-    '''   test r13,r13        ; ¿hay CustomizationRemapData?
-    '''   je   0x142B6F90A    ; NO -> FALLBACK: pesos propios del destino + paleta del DESTINO
-    '''   ...                 ; SI -> r8 = remap + i*12 ; r9 = rbx = paleta del _faceBones
-    ''' </code>
-    ''' <para>La app reconstruía el inverso desde el skin del propio shape destino con la paleta del
-    ''' destino ⇒ <b>es literalmente la rama <c>je</c>, el fallback</b>. Y <b>501 de 501</b> shapes
-    ''' <c>_faceBones</c> de vanilla traen <c>CustomizationRemapData</c> (re-medido 2026-07-22 sobre los
-    ''' 484 NIF del BA2; <b>0 de 501</b> planos la traen) ⇒ <b>el motor NUNCA toma esa rama</b> para
-    ''' ninguna head part del juego. ⛔ El buffer dinámico NO participa de esta decisión: decide dónde se
-    ''' ESCRIBE la salida, no con qué paleta se calcula.</para>
-    '''
-    ''' <para><b>Por qué alcanza con sustituir el invBind (sin parsear el remap).</b> Los pesos del
-    ''' remap son <b>bit-idénticos</b> a los del shape plano (8660/8660 vértices en 6 pares vanilla, ver
-    ''' <c>reference_ck_customization_remap_decoded</c>); lo único que cambia son los <b>índices</b>, que
-    ''' apuntan a la paleta del source. Toda la diferencia colapsa al invBind por hueso, y el apareo del
-    ''' motor es por nombre igual que acá.</para>
-    '''
-    ''' <para><b>FUENTE (RE, CreationKit.exe, leída instrucción por instrucción).</b>
-    ''' El contexto de huesos se arma UNA vez desde <c>rdx</c> (<c>0x142B6F7A4</c> → ctx
-    ''' <c>0x142B72EE0</c>, array en <c>[ctx+0x58]</c>, <c>0x142B73030</c>) y las DOS llamadas a
-    ''' <c>SkinBlend</c> lo reciben en <c>r9</c> (<c>0x142B6F8CA</c> y <c>0x142B6F905: mov r9,rbx</c>).
-    ''' El driver <c>0x140AA31B0</c> llama <c>ApplyCustomizationRemap(rcx=hijo del árbol A,
-    ''' rdx=hijo del árbol B, r8=remap)</c> y lee remap/NewBonesData de <c>rbx</c> = árbol B ⇒
-    ''' <b>árbol B = <c>_faceBones</c></b>. El array sale de <c>[skinInst+0x40]</c> de esa geometría, y el
-    ''' append de NewBones (<c>0x142B77420</c>) hace <c>r12d = [rdx+0x10] + [rcx+0x20]</c> (nuevas +
-    ''' viejas), aloja un BoneData nuevo, swapea <c>[skinInst+0x40]</c> y <b>copia las viejas</b> en el
-    ''' bucle de <c>0x142B77510</c> ⇒ <b>los huesos compartidos conservan el invBind del
-    ''' <c>_faceBones</c></b>; los que sólo tiene el plano entran por <c>NewBonesData</c>, cuyo
-    ''' <c>Matrix4x4</c> de <c>record+0x90</c> es bit-idéntico al <c>BSSkinBoneTrans</c> del plano.</para>
-    '''
-    ''' <para><b>Magnitud — no confundir con correctitud.</b> Mueve la salida <b>max 2,97e-4 · rms
-    ''' 2,20e-5</b> (607.376 vértices / 501 shapes). Es discriminable <b>sólo donde los binds difieren</b>:
-    ''' <c>FemaleHeadHuman</c> mejora contra el CK de rms 0,000307 a <b>0,000233 (−24%)</b>, y queda
-    ''' <b>idéntico</b> en NeckGore / Hair / HeadRear / Mouth. El delta entre las dos copias del invBind es
-    ''' ruido de autoría de <b>media cero</b> (1286/2060 entradas bit-idénticas; ratio |media|/rms ≈ 1/√n
-    ''' por hueso), <b>no</b> una diferencia semántica del motor. ⛔ Que la corrección sea chica no la hace
-    ''' opcional: la hace chica.</para>
-    '''
-    ''' <para>⛔ <b>Corolario para el RENDER</b>: al DIBUJAR hay que seguir usando el invBind del NIF
-    ''' PLANO. Medido sobre 301 FaceGeom del BA2: el <c>BoneData</c> que el CK escribe a disco es el del
-    ''' plano en <b>8.186</b> entradas contra <b>0</b> del <c>_faceBones</c>, y nunca trae un hueso que
-    ''' sólo exista en el rig <c>_faceBones</c>. Esta sustitución es <b>sólo</b> del inverso del bake.</para>
-    '''
-    ''' <para><b>Degrada, no rompe</b>: sin NIF <c>_faceBones</c>, sin shape, o si un hueso del rig plano
-    ''' no aparece en el <c>_faceBones</c> (el caso ANEXADO), esa entrada se queda con el invBind del
-    ''' plano — que es exactamente lo que el motor anexa.</para>
-    ''' </summary>
+    ''' <summary>invBind por hueso para el lado <b>DESTINO</b> del bake (el inverso), con la paleta que usa el
+    ''' <b>MOTOR</b>: la del <c>_faceBones</c> para los huesos que ese rig declara y la del NIF plano para los que
+    ''' no.
+    ''' <para>El inverso de la app estaba MAL: reconstruia desde el skin del propio shape destino con la paleta
+    ''' del destino, que es literalmente la rama de FALLBACK de <c>ApplyCustomizationRemap</c>. Y 501 de 501
+    ''' shapes <c>_faceBones</c> vanilla traen CustomizationRemapData (0 de 501 planos la traen), asi que el motor
+    ''' NUNCA toma esa rama para una head part del juego.</para>
+    ''' <para>Alcanza con sustituir el invBind, sin parsear el remap: los pesos del remap son bit-identicos a los
+    ''' del shape plano (8660/8660 vertices en 6 pares vanilla) y lo unico que cambia son los indices, que apuntan
+    ''' a la paleta del source. Toda la diferencia colapsa al invBind por hueso, y el apareo del motor es por
+    ''' nombre igual que aca. El RE completo esta en 40-bake-leyes-fo4.</para>
+    ''' <para>Magnitud, que no es lo mismo que correctitud: mueve la salida max 2,97e-4 / rms 2,20e-5 sobre
+    ''' 607.376 vertices, y solo es discriminable donde los binds difieren (FemaleHeadHuman mejora un 24 % contra
+    ''' el CK). â›” Que la correccion sea chica no la hace opcional.</para>
+    ''' <para>â›” Corolario para el RENDER: al DIBUJAR hay que seguir usando el invBind del NIF PLANO. Medido sobre
+    ''' 301 FaceGeom del BA2, el BoneData que el CK escribe a disco es el del plano en 8.186 entradas contra 0 del
+    ''' <c>_faceBones</c>. Esta sustitucion es SOLO del inverso del bake.</para>
+    ''' <para>Degrada, no rompe: sin NIF <c>_faceBones</c>, sin shape, o si un hueso del rig plano no aparece en
+    ''' el <c>_faceBones</c>, esa entrada se queda con el invBind del plano, que es exactamente lo que el motor
+    ''' anexa.</para></summary>
     Private Function BuildEngineInverseBinds(shapeBones As NiNode(),
                                               flatLocalTs As Transform_Class(),
                                               facebonesNif As Nifcontent_Class_Manolo,
@@ -747,13 +694,14 @@ Public Module FaceGenBuildPipeline
         Return ""
     End Function
 
-    ''' <summary>Apply the chargen (+ SSE race) TRI vertex morphs to <paramref name="shape"/>'s vertex array
-    ''' IN PLACE, using the SAME morph plan the live render builds (NpcMorphResolver: FO4 MSDK/MSDV+MPPI, SSE
-    ''' NAM9/NAMA over the merged race+chargen TriHead) + the SSE head-weight delta. Friend so the SSE bake
-    ''' path (which has no <c>_faceBones</c> rig, so it never enters <see cref="BakeShape"/>) can morph the
-    ''' cloned head shape directly — a pure per-vertex morph, no FMRS/skin-rebind. FO4 keeps using it via
-    ''' <see cref="ComputeWorldVerticesForShape"/> on the FBNS shape. No-op when the shape's HDPT declares no
-    ''' chargen tri or the plan has no matching morph channels.</summary>
+    ''' <summary>⛔ SYNC: RENDER == BAKE — lado BAKE. Aplica los morphs de vértice del `.tri` (chargen, y en
+    ''' SSE también el de raza) al array de vértices del shape IN PLACE, usando el MISMO plan que arma el
+    ''' render: <c>NpcMorphResolver.BuildFaceMorphPlan</c>. Ése es el único builder y no debe duplicarse acá;
+    ''' un segundo camino de morph rompe WYSIWYG en silencio. Ver 00-reglas-dos-juegos-y-render-bake.md §1.
+    ''' <para>Es <c>Friend</c> para que el bake de SSE —que no tiene rig <c>_faceBones</c> y por eso nunca
+    ''' entra a <see cref="BakeShape"/>— pueda morphear el shape clonado directo. FO4 llega por
+    ''' <see cref="ComputeWorldVerticesForShape"/>. No-op si el HDPT no declara tri de chargen o si el plan
+    ''' no tiene canales que apliquen.</para></summary>
     Friend Sub ApplyChargenMorphsInPlace(nif As Nifcontent_Class_Manolo,
                                            shape As INiShape,
                                            chargenTriPath As String,
@@ -762,18 +710,15 @@ Public Module FaceGenBuildPipeline
                                            Optional headMeshTriPath As String = Nothing)
         Dim isSse = state.NpcData IsNot Nothing AndAlso state.NpcData.Game = Config_App.Game_Enum.Skyrim
 
-        ' Build the TriHead the morph plan reads from. The RUNTIME resolver
-        ' (NpcMorphResolver.LoadTriForShape) merges the HDPT race-morph tri (NAM0=0, e.g.
-        ' FemaleHeadRaces.tri) WITH the chargen tri (NAM0=2) into ONE TriHead. The bake MUST do the
-        ' same for SSE or it silently drops the racial base face morph — BuildFaceMorphPlanFromNam9
-        ' applies it by RACE EditorID at weight 1, but that morph lives ONLY in the race tri, so a
-        ' chargen-only TriHead makes GetMorph(EditorID) return Nothing and the channel no-ops. That
-        ' is exactly why the live render (which merges) looked right while the baked NIF did not.
-        ' FO4 stays chargen-only (validated byte-exact vs CK; its plan requests MSM/MPPM sculpt names
-        ' that all live in the chargen tri, and the render's FO4 merge adds only unused expression
-        ' morphs) — merging the race tri for FO4 is intentionally skipped to protect that path.
-        ' Shape geometry up front so its vertex count can drive the SSE High Poly Head .tri redirect (below) and be
-        ' reused for the morph write. IShapeGeometry.VertexCount is cheap (no vertex copy).
+        ' â›” SYNC: RENDER == BAKE. El resolver de runtime mergea el tri de morphs de raza (HDPT NAM0=0) CON el de
+        ' chargen (NAM0=2) en UN solo TriHead, y el bake TIENE que hacer lo mismo en SSE o pierde en silencio el
+        ' morph facial de la raza: el plan lo aplica por EditorID de RACE a peso 1, pero ese morph vive SOLO en el
+        ' tri de raza, asi que con un TriHead de solo chargen el canal queda en no-op. Por eso el render en vivo
+        ' se veia bien y el NIF horneado no.
+        ' FO4 se queda solo con chargen (validado byte-exacto contra el CK): su plan pide nombres de sculpt que
+        ' viven todos en el tri de chargen, y el merge del render solo agrega morphs de expresion sin usar.
+        ' La geometria se toma al principio para que su cantidad de vertices maneje el redirect del .tri de High
+        ' Poly Head y se reuse al escribir el morph.
         Dim geom = ShapeGeometryFactory.[For](shape, nif)
         Dim shapeVerts = geom.VertexCount
 
@@ -859,8 +804,8 @@ Public Module FaceGenBuildPipeline
         If bytes Is Nothing OrElse bytes.Length = 0 Then Return Nothing
         Try
             Dim head = TriHeadParser.ParseTriHeadFromBytes(bytes)
-            ' Apply the vanilla mouth fix (22 mouth deltas zeroed) iff the toggle is on and this is the
-            ' female chargen tri — so a bake matches the live render WYSIWYG. No-op for every other file.
+            ' ⛔ SYNC: RENDER == BAKE — gemelo en NpcMorphResolver (parse del tri del render). El fix se
+            ' aplica sobre el parse FRESCO y antes de cachear, para que los dos caminos vean los mismos deltas.
             ChargenMouthFix.MaybeApplyInPlace(normalizedKey, head)
             Return head
         Catch ex As Exception
@@ -868,16 +813,15 @@ Public Module FaceGenBuildPipeline
         End Try
     End Function
 
-    ''' <summary>Load the race-morph tri (HDPT NAM0=0) merged with the chargen tri (NAM0=2) into a single
-    ''' TriHead, mirroring NpcMorphResolver.LoadTriForShape: race morphs first, chargen morphs added only
-    ''' when the race tri does not already carry that name (race wins name collisions). The merge is cached
-    ''' per-BakeState under a composite key so it (and its parses) happen once per race/chargen pair. The
-    ''' race side is parsed FRESH (not the shared per-path cache) so mutating it with the chargen morphs can
-    ''' never corrupt a TriHead reused elsewhere. Falls back to whichever side is present when one is missing.</summary>
-    ''' <remarks>Friend (no Private) para que SseMorphReverseEngineer construya la MISMA base mergeada
-    ''' que usa el bake. Duplicar estas 35 líneas allá crearía una segunda fuente de verdad que se
-    ''' desincroniza en silencio (precedencia race&gt;chargen&gt;mesh, parses frescos, extended tris de
-    ''' RaceMenu, comboKey de caché).</remarks>
+    ''' <summary>â›” SYNC: RENDER == BAKE, lado BAKE de la resolucion de <c>.tri</c>. Su gemelo es
+    ''' <c>NpcMorphResolver.LoadTriForShape</c> y tiene que resolver IGUAL: primero el tri de raza (HDPT NAM0=0) y
+    ''' despues el de chargen (NAM0=2), agregando solo los nombres que la raza no traiga (la raza gana las
+    ''' colisiones).
+    ''' <para>El merge se cachea por BakeState bajo una clave compuesta. El lado de raza se parsea FRESCO y no
+    ''' desde la cache por path: mutarlo con los morphs de chargen corromperia un TriHead que se reusa en otro
+    ''' lado. Si falta uno de los dos lados, cae al que este presente.</para></summary>
+    ''' <remarks>Friend y no Private para que SseMorphReverseEngineer construya la MISMA base mergeada que usa el
+    ''' bake: duplicarlo alla crearia una segunda fuente de verdad que se desincroniza en silencio.</remarks>
     Friend Function LoadMergedHeadTri(raceMorphTriPath As String, chargenTriPath As String, state As BakeState,
                                        Optional headMeshTriPath As String = Nothing) As TriHeadFile
         Dim raceKey = If(String.IsNullOrEmpty(raceMorphTriPath), "", MeshPathHelpers.NormalizeMeshKey(raceMorphTriPath))

@@ -5,23 +5,15 @@ Imports System.Threading.Tasks
 Imports System.Windows.Forms
 Imports FO4_Base_Library
 
-''' <summary>
-''' Orchestrator for the Save NPC override flow. Owns the multi-phase work that used to live
-''' inline in <see cref="MainForm.ButtonSavePlugin_Click"/>: build the override entries, write the
-''' plugin via <see cref="SaveNpcEspWriter"/>, optionally bake the CharGen NIF + textures and
-''' pack them into BA2.
-'''
-''' Batch-capable: <see cref="ExecuteAsync"/> takes a LIST of <see cref="NpcSaveInput"/> so the Save
-''' dialog can persist either the single selected NPC or every NPC the user changed this session.
-''' All NPCs in the batch are written into ONE target plugin in a single write; the CharGen bake
-''' runs once per NPC after the write.
-'''
-''' Reports progress through <see cref="IProgress(Of SaveProgress)"/> so the caller (the Save
-''' dialog) can render an embedded progress panel without a separate form. Cleanup tasks that
-''' depend on MainForm internals (auto-gen plugin cache, NPC tree refresh, post-save re-read,
-''' success MessageBox) are NOT performed here — the orchestrator returns the data those steps
-''' need and MainForm performs them after the dialog closes.
-''' </summary>
+''' <summary>Orquestador del flujo de Save NPC override: arma las entries, escribe el plugin por
+''' <see cref="SaveNpcEspWriter"/> y, opcionalmente, hornea el NIF de CharGen con sus texturas y las empaqueta
+''' al BA2.
+''' <para>Es batch: <see cref="ExecuteAsync"/> toma una LISTA de <see cref="NpcSaveInput"/>, todos los NPCs van
+''' a UN plugin en una sola escritura, y el bake corre una vez por NPC despues de escribir.</para>
+''' <para>Reporta por <see cref="IProgress(Of SaveProgress)"/> para que el dialogo muestre su panel sin un form
+''' aparte. Las tareas de limpieza que dependen de internals del MainForm (cache del plugin autogenerado,
+''' refresh del arbol, re-lectura post-save, MessageBox) NO se hacen aca: el orquestador devuelve los datos y
+''' el MainForm las hace al cerrar el dialogo.</para></summary>
 Public Module NpcOverrideSaver
 
     Public Class SaveProgress
@@ -188,18 +180,14 @@ Public Module NpcOverrideSaver
                                ExecuteWritePhases(target, inputs, ctx, progress, result)
                            End Sub)
 
-            ' Phase 4: CharGen bake + BA2 pack, split into two sub-phases:
-            '   4a) Per-NPC GL bake (UI thread) — writes the 4 loose files. Collects a BakedNpcBundle
-            '       for each successful bake into 'bundles' (the deferred pack list).
-            '   4b) Single PackBatch call (worker thread) with all collected bundles. ArchivePackager
-            '       still does CRC32 diff per entry so override semantics are preserved; the win is
-            '       O(N²)→O(K) BA2 rewrites where K = ceil(totalCompressedBytes / MEMORY_CAP_BYTES)
-            '       (typically K=1 for normal save sizes). When NPC_Config.Ba2Version_FO4=0
-            '       (loose-only sentinel), the PackBatch delegate skips the pack entirely and the
-            '       loose stay on disk.
-            ' Mark-to-delete: canonical FaceGen entry paths of every removed NPC, to STRIP from the target BA2
-            ' set (only the app's own archives are touched; a path not present is a no-op). Built regardless of
-            ' GenerateChargen so a delete-only save still cleans the BA2 (see the removal-only pack below).
+            ' Fase 4: bake de CharGen + pack BA2, en dos sub-fases. 4a) bake GL por NPC en el hilo de UI, que
+            ' escribe los sueltos y junta un BakedNpcBundle por bake exitoso; 4b) UNA sola llamada PackBatch en
+            ' un worker con todos los bundles. ArchivePackager sigue haciendo diff CRC32 por entrada, asi que la
+            ' semantica de override se preserva; la ganancia es pasar de O(N^2) reescrituras del BA2 a O(K). En
+            ' modo loose-only el delegate de pack no hace nada y los sueltos quedan en disco.
+            ' Mark-to-delete: paths canonicos de FaceGen de cada NPC removido, para SACARLOS del set de BA2 (solo
+            ' se tocan los archives propios; un path ausente es no-op). Se arma siempre, aun sin GenerateChargen,
+            ' para que un save que solo borra igual limpie el BA2.
             Dim faceGenExcludeEntries As New List(Of String)
             If ctx.RecordsToRemove IsNot Nothing Then
                 For Each remFid In ctx.RecordsToRemove
@@ -761,27 +749,19 @@ Public Module NpcOverrideSaver
             Next
         End If
 
-        ' Phases 2e/2f/2g: author-built ARMA/ARMO/MSWP drafts needed by this save. Emit the TRANSITIVE
-        ' CLOSURE of the armor dependency graph so a saved outfit/skin is self-contained and never writes a
-        ' dangling 0xFF provisional reference. The walk MIRRORS Phase 2d (Queue+HashSet, cycle-safe) but over
-        ' a three-record-type graph instead of LVLI→LVLI:
-        '
-        '   ARMO  --ArmorAddons[].ArmaFormID-->  ARMA  --{Male,Female}MaterialSwapFormID-->  MSWP
+        ' Fases 2e/2f/2g: drafts de ARMA/ARMO/MSWP que necesita este guardado. Se emite la CLAUSURA TRANSITIVA
+        ' del grafo de dependencias de armadura para que un outfit o una piel guardados sean autocontenidos y no
+        ' queden referencias provisionales colgadas. El recorrido espeja al de la fase 2d (Queue + HashSet,
+        ' a prueba de ciclos) pero sobre tres tipos de record:
+        '   ARMO --ArmorAddons[].ArmaFormID--> ARMA --{Male,Female}MaterialSwapFormID--> MSWP
         '     \--{Male,Female}MaterialSwapFormID--------------------------------------------/
-        '
-        ' Seed for neededArmo (the ROOTS) = every ARMO **draft** FormID referenced by an emitted OTFT's items
-        ' OR by an emitted leveled-list entry OR by a saved NPC's WNAM skin override (entry.Npc.SkinFormID,
-        ' which already carries the overlay's SkinFormIDOverride), PLUS every dirty standalone ARMO draft that
-        ' is ALSO referenced (mirror of Phase 2c's "skip clean AND not referenced" rule — a dirty-but-unreferenced
-        ' ARMO draft is NOT pulled in, matching the OTFT rule which only persists drafts that are dirty OR
-        ' referenced; here we additionally require referenced so an orphan ARMO never bloats the plugin). The
-        ' writer pre-assigns every draft (OTFT/LVLI/ARMO/ARMA/MSWP) its real self-index FormID, so cross-refs
-        ' resolve regardless of emit order.
-        '
-        ' EDID uniqueness: every emitted record kind (OTFT/LVLI here too) shares one used-EDID set per kind, but
-        ' ARMO/ARMA/MSWP are distinct namespaces in xEdit (keyed by signature), so each gets its own set. Each set
-        ' is SEEDED from the preserved-existing OVERRIDE entries of that kind (Phase 2a re-emits them) so a NEW
-        ' draft's namespaced EDID can't collide with a preserved record. Override drafts keep their EDID verbatim.
+        ' Las RAICES son los ARMO draft referenciados por un OTFT emitido, por una entrada de leveled list o por
+        ' el WNAM de un NPC guardado, mas los ARMO draft sucios que ademas esten referenciados: un draft sucio y
+        ' huerfano NO se arrastra, para que no infle el plugin. El writer pre-asigna a cada draft su FormID
+        ' self-index real, asi que las referencias cruzadas resuelven sin importar el orden de emision.
+        ' Unicidad de EDID: cada tipo de record tiene su propio set (en xEdit son namespaces distintos por
+        ' signature), sembrado con los OVERRIDE preservados de ese tipo para que un draft NUEVO no colisione con
+        ' un record preservado. Los drafts override conservan su EDID verbatim.
         If target.SaveNewOutfits Then
             ' Index every draft kind by FormID for O(1) closure lookups.
             Dim armoByFid As New Dictionary(Of UInteger, ArmoDraft)
@@ -1017,19 +997,15 @@ Public Module NpcOverrideSaver
             Dim iniExists As Boolean = If(isSseSave,
                                           SseBodyGenIniWriter.IniExists(ctx.DataPath, iniBaseName),
                                           BodyGenIniWriter.IniExists(ctx.DataPath, iniBaseName))
-            ' ⭐⭐⭐ EL .ini NO SE TOCA NUNCA POR LA RUTA DE ENTREGA. El script GANA por construcción, corra
-            ' antes o después que BodyGen, en los DOS juegos:
-            '   * script primero  -> el actor queda con morphs, y BodyGen se saltea (gate `!HasMorphs` /
-            '                        `!morphMap`: skee64 ActorUpdateManager.cpp:38-40, f4ee :49-54)
-            '   * BodyGen primero -> el .psc barre su key ANTES de aplicar la nuestra (SSE "RSMBodyGen",
-            '                        FO4 el keyword None) y deja sólo lo nuestro
-            ' ⇒ no hace falta borrar ni excluir NADA del .ini para que el resultado sea determinista.
-            '
-            ' ⛔ Y NO SE DEBE. El .ini es por PLUGIN y lista TODOS sus NPC. Un NPC que el usuario no re-grabó
-            ' conserva su VMAD viejo: el script le llega INERTE (sus properties no existen en el .pex nuevo) y
-            ' el .ini es su ÚNICA vía. Una versión anterior de esto borraba el par completo y le cortaba la
-            ' entrega a todos ellos. El .ini se queda, y además funciona como red: si el script no corre
-            ' (sin SKSE/F4SE, VMAD viejo), BodyGen sigue entregando.
+            ' â›” EL .ini NO SE TOCA NUNCA POR LA RUTA DE ENTREGA. El script GANA por construccion, corra antes o
+            ' despues que BodyGen, en los DOS juegos: si el script va primero, el actor queda con morphs y
+            ' BodyGen se saltea por su gate de "no tiene morphs"; si va primero BodyGen, el .psc barre su key
+            ' antes de aplicar la nuestra. No hace falta borrar ni excluir nada del .ini para que el resultado
+            ' sea determinista.
+            ' â›” Y NO SE DEBE: el .ini es por PLUGIN y lista TODOS sus NPC. Un NPC que el usuario no re-grabo
+            ' conserva su VMAD viejo, el script le llega INERTE (sus properties no existen en el .pex nuevo) y el
+            ' .ini es su UNICA via; una version anterior borraba el par completo y le cortaba la entrega a todos
+            ' ellos. Ademas funciona como red: sin SKSE/F4SE o con VMAD viejo, BodyGen sigue entregando.
             If target.EmitBodyGen OrElse (removedFromSidecar AndAlso iniExists) Then
                 ReportPhase(progress, "Writing BodyGen .ini…", IO.Path.GetFileName(target.TargetPath))
                 EmitBodyGenFromSidecar(target, mergedSidecar, ctx)
@@ -1294,9 +1270,6 @@ Public Module NpcOverrideSaver
         }
     End Function
 
-    ''' <summary>Translate a global FormID to the local FormID the target plugin's MAST list sees,
-    ''' so existing-record load can identify the records being replaced. Mirror of the engine FileID
-    ''' scheme (12-bit object for an ESL source, 24-bit for a full source).</summary>
     ''' <summary>Working EditorID prefix (type segment) for Leveled-NPC lists authored by the Save dialog's
     ''' "Add to LVL list" feature: <c>npcm_LVLN_&lt;name&gt;</c>. At save the destination plugin name is
     ''' injected via <see cref="ApplyEspNamespaceToEditorId"/> → final <c>npcm_&lt;ESPNAME&gt;_LVLN_&lt;name&gt;</c>.
@@ -1563,12 +1536,6 @@ Public Module NpcOverrideSaver
         Return True
     End Function
 
-    ''' <summary>Build an <see cref="SaveNpcEspWriter.ArmoRecordEntry"/> OVERRIDE entry from a record PRESERVED
-    ''' out of the target plugin (Phase 2a). Mirrors <see cref="BuildArmoEntry"/>'s field map exactly, but sources
-    ''' every owned field from the parsed <see cref="ARMO_Data"/> instead of an <see cref="ArmoDraft"/>, and resolves
-    ''' the header from <paramref name="rec"/> directly (no <see cref="ResolveArmorDraftHeader"/> — the source record
-    ''' is in hand, the EditorID is kept verbatim, and the FormID is the record's resolved GLOBAL value). The parser
-    ''' already resolves all referenced FormIDs to GLOBAL — exactly what the writer's override remapper expects.</summary>
     ''' <summary>Build a full OVERRIDE <see cref="SaveNpcEspWriter.LvliRecordEntry"/> for an LVLI draft whose target
     ''' record is NOT preserved in this plugin's Phase 2a sweep (a vanilla/master LVLI overridden for the first time).
     ''' The edited fields (LVLD/LVLM/LVLF + LVLO entries) come from the draft; the non-owned subrecords
@@ -1934,36 +1901,24 @@ Public Module NpcOverrideSaver
         merged.Npcs(identifier) = entry
     End Sub
 
-    ''' <summary>⭐ SKYRIM-ONLY. Materialize the RaceMenu absolute hair tint (<c>.jslot actor.hairColor</c>, a
-    ''' packed RGB carried on the overlay as <c>NPC_Data.SseHairColorRgb</c>) into a real <b>CLFM</b> record and
-    ''' point the NPC's <b>HCLF</b> at it. Runs after every other entry-building phase and before the writer.
-    '''
-    ''' <para><b>Why a record and not the apply-script.</b> skee only writes the preset's RGB onto the LIVE hair
-    ''' material (<c>PresetInterface.cpp:112-116</c>, ×2) — never to the record. The GAME, for its part, pushes
-    ''' the colour of <c>headData->hairColor</c> (the CLFM) onto EVERY <c>HairTint</c> material of the actor's 3D
-    ''' on each actor update; skee hooks that very function (<c>SKEEHooks.cpp:1057-1072</c>
-    ''' <c>UpdateModelHair_Hooked</c> → <c>UpdateModelColor_Recursive(..., kShaderType_HairTint)</c>), and derives
-    ''' the ×2 from the CLFM in <c>TintMaskInterface.cpp:932-935</c>. So a colour baked into the FaceGeom or set
-    ''' through a NiOverride node override is fighting the engine, while the CLFM is the value the engine itself
-    ''' reads. RaceMenu agrees: its own "apply a preset to an actor" API takes a <c>BGSColorForm</c>, stuffs the
-    ''' preset RGB into it and calls <c>npc->SetHairColor</c> (<c>PapyrusCharGen.cpp:295-301</c>).</para>
-    '''
-    ''' <para><b>Why Skyrim-only.</b> A Skyrim CLFM carries a real RGB (<c>CNAM</c> wbByteRGBA,
-    ''' wbDefinitionsTES5.pas:7946), so an arbitrary preset colour maps onto a native record 1:1. A FO4 hair CLFM
-    ''' carries a <c>RemappingIndex</c> (a LUT row) instead — a packed RGB has no meaning there, and FO4 presets
-    ''' never produce one. The gate is the game, and it is checked here, once.</para>
-    '''
-    ''' <para><b>Reuse policy (no new masters).</b> Referencing a record from another plugin makes that plugin a
-    ''' MASTER of the output ESP — the writer's master walk picks HCLF up automatically
-    ''' (SaveNpcEspWriter.vb:937). Reusing a colour-matched CLFM from an arbitrary mod would therefore add a hard
-    ''' dependency on that mod just to spell a colour, so reuse is restricted to sources that add NO dependency:
-    ''' <list type="number">
-    ''' <item>the CLFMs already emitted into THIS plugin (preserved from a prior save) — keeps the FormID stable
-    '''   across re-saves instead of minting a new record every time;</item>
-    ''' <item>the GAME MASTER (Skyrim.esm), which is a master of any NPC override anyway — this is the common
-    '''   case, since the 15 vanilla hair colours are what most presets carry.</item>
-    ''' </list>
-    ''' Anything else ⇒ emit our own CLFM, owned by this plugin.</para></summary>
+    ''' <summary>SKYRIM-ONLY. Materializa el tinte de pelo absoluto de RaceMenu (el RGB empaquetado que el
+    ''' overlay lleva en <c>SseHairColorRgb</c>) en un record <b>CLFM</b> real y apunta el <b>HCLF</b> del NPC a
+    ''' el. Corre despues de todas las fases de armado y antes del writer.
+    ''' <para><b>Por que un record y no el apply-script.</b> skee solo escribe el RGB del preset sobre el
+    ''' material de pelo VIVO, nunca al record; el JUEGO, en cambio, empuja el color del CLFM sobre TODO material
+    ''' HairTint del 3D del actor en cada update, y skee hookea justamente esa funcion. O sea que un color
+    ''' horneado en el FaceGeom o puesto por node override pelea contra el motor, mientras que el CLFM es el
+    ''' valor que el motor lee. RaceMenu opina igual: su API de aplicar preset toma un BGSColorForm y llama
+    ''' SetHairColor.</para>
+    ''' <para><b>Por que solo Skyrim.</b> Un CLFM de Skyrim lleva un RGB real, asi que un color arbitrario mapea
+    ''' 1:1 a un record nativo. Un CLFM de pelo de FO4 lleva un RemappingIndex (una fila de LUT): un RGB
+    ''' empaquetado no significa nada ahi.</para>
+    ''' <para><b>Politica de reuso (sin masters nuevos).</b> Referenciar un record de otro plugin lo convierte en
+    ''' MASTER del ESP de salida, asi que reusar un CLFM de un mod cualquiera agregaria una dependencia dura solo
+    ''' para escribir un color. El reuso se limita a fuentes que no agregan dependencia: los CLFM ya emitidos en
+    ''' ESTE plugin (mantiene estable el FormID entre re-saves) y el master del juego, que ya es master de
+    ''' cualquier override de NPC y cubre el caso comun de los 15 colores vanilla. Cualquier otro caso emite un
+    ''' CLFM propio.</para></summary>
     Private Sub MaterializeSseHairColors(game As Config_App.Game_Enum,
                                          entries As List(Of SaveNpcEspWriter.NpcOverrideEntry),
                                          clfmEntries As List(Of SaveNpcEspWriter.ClfmRecordEntry),
@@ -2100,21 +2055,16 @@ Public Module NpcOverrideSaver
         Dim prevSidecar = BssliderSidecar.Read(BssliderSidecar.BuildPath(target.TargetPath))
         Dim sidecarGen = If(prevSidecar Is Nothing, 0, prevSidecar.PayloadGeneration)
 
-        ' ⛔⛔ EL CONTADOR NUNCA PUEDE RETROCEDER — Y EL SIDECAR SOLO NO ALCANZA PARA GARANTIZARLO.
-        '
-        ' Reusar una generación ya publicada es la PEOR falla de este esquema: el savegame del jugador ya
-        ' tiene variables con esos nombres, así que las restaura RANCIAS y le ganan al VMAD. El actor aplica
-        ' fielmente el payload VIEJO, sin un solo error en ningún log.
-        '
-        ' MEDIDO 2026-07-28, y lo provoqué yo: restauré un backup del `.bssliders` para deshacer un
-        ' experimento, sin caer en que el sidecar es TAMBIÉN el hogar del contador. Volvió atrás, el guardado
-        ' siguiente reemitió la generación 4, y el NPC quedó con el payload de la corrida anterior — un
-        ' overlay en vez de dos — mientras el script se veía perfecto. Al usuario le pasa igual con un backup,
-        ' con un mod manager, o borrando el sidecar.
-        '
-        ' ⇒ El piso sale del MÁXIMO entre el sidecar y la generación que declara el `.pex` YA INSTALADO. Ese
-        ' `.pex` es testigo confiable porque se instala en el MISMO Save ESP que emitió el VMAD: si existe,
-        ' su número es una generación realmente publicada.
+        ' â›”â›” EL CONTADOR NUNCA PUEDE RETROCEDER, Y EL SIDECAR SOLO NO ALCANZA PARA GARANTIZARLO.
+        ' Reusar una generacion ya publicada es la PEOR falla de este esquema: el savegame del jugador ya tiene
+        ' variables con esos nombres, asi que las restaura RANCIAS y le ganan al VMAD. El actor aplica fielmente
+        ' el payload VIEJO, sin un solo error en ningun log.
+        ' Medido, y provocado restaurando un backup del .bssliders sin caer en que el sidecar es TAMBIEN el hogar
+        ' del contador: volvio atras, el guardado siguiente reemitio la misma generacion y el NPC quedo con el
+        ' payload de la corrida anterior mientras el script se veia perfecto. Al usuario le pasa igual con un
+        ' backup, con un mod manager, o borrando el sidecar.
+        ' Por eso el piso sale del MAXIMO entre el sidecar y la generacion que declara el .pex YA INSTALADO: ese
+        ' .pex es testigo confiable porque se instala en el MISMO Save ESP que emitio el VMAD.
         Dim installedGen = ReadInstalledPexGeneration(ctx.DataPath, Config_App.Current.Game, pluginFile)
         Dim floorGen = Math.Max(sidecarGen, installedGen)
 
@@ -2165,34 +2115,25 @@ Public Module NpcOverrideSaver
         End Try
     End Function
 
-    ''' <summary>⭐⭐⭐ RE-EMITE EL VMAD DE LOS NPC DEL PLUGIN QUE **NO** ENTRAN EN ESTE GUARDADO.
-    '''
-    ''' <para><b>El problema que resuelve, MEDIDO.</b> El <c>.pex</c> es UNO por plugin y declara UNA sola
-    ''' generación de properties (<c>_G&lt;n&gt;</c>), y esa generación sube en cada Save ESP. Pero hasta acá sólo se
-    ''' re-escribía el VMAD de los NPC incluidos en el guardado: los demás se preservaban con su VMAD viejo,
-    ''' nombrando properties que el <c>.pex</c> nuevo YA NO DECLARA. Resultado: no les llega ninguna property,
-    ''' sus arrays vienen en longitud 0, el guard de instancia huérfana corta, y el actor queda INERTE — sin
-    ''' overlays, sin skin, sin node transforms y sin body morphs. Verificado sobre <c>NPC_Manager2.esp</c>
-    ''' (2026-07-28): <c>Aeri</c> en <c>_G000011</c> y <c>EncBandit04MissileKhajiitM</c> con properties SIN
-    ''' sufijo, de una versión anterior al esquema. O sea: cada guardado dejaba atrás a todos los NPC que no
-    ''' tocaste.</para>
-    '''
-    ''' <para><b>Cómo.</b> Los NPC_ preservados NO se copian byte a byte: <c>SerializeExistingRecord</c> hace
-    ''' <c>ParseNPC</c> + <c>NpcSubrecordWriter</c> completo (SaveNpcEspWriter.vb:1254-1272). Así que acá se hace
-    ''' exactamente lo mismo un paso antes —parsear, refrescar el VMAD, y mandarlo por <c>entries</c>—, que
-    ''' termina en el MISMO <c>SerializeNpcRecord</c>. El payload se reconstruye desde el sidecar vía
-    ''' <see cref="BssliderSidecar.HydratePresets"/>, que es el único espejo entry→preset del proyecto.
-    ''' Sin cambios en FO4_Base_Library.</para>
-    '''
-    ''' <para>De yapa migra el nombre LEGADO al nombre por plugin: <c>ApplyToNpc</c> ya hace el upsert de dos
-    ''' pasadas (limpia el legado, escribe el nuestro).</para>
-    '''
-    ''' <para>⛔ <b>SIN SIDECAR NO SE TOCA EL RECORD.</b> Si un NPC lleva nuestro script pero no tiene entrada en
-    ''' el sidecar, no hay con qué reconstruir su payload — y <c>ApplyToNpc</c> con preset Nothing emitiría el
-    ''' spec de LIMPIEZA, que le BORRARÍA sus overlays al actor. Se lo deja como está (inerte, que es lo que ya
-    ''' era) y se LOGUEA. Perder la entrega es malo; borrarle datos al usuario es peor.</para></summary>
-    ''' <returns>FormIDs LOCALES de los records movidos a <paramref name="entries"/>, para que el caller los
-    ''' siga contando como guardados.</returns>
+    ''' <summary>â›” RE-EMITE EL VMAD DE LOS NPC DEL PLUGIN QUE **NO** ENTRAN EN ESTE GUARDADO.
+    ''' <para><b>El problema, medido.</b> El <c>.pex</c> es UNO por plugin y declara UNA sola generacion de
+    ''' properties (<c>_G&lt;n&gt;</c>), que sube en cada Save ESP. Pero solo se reescribia el VMAD de los NPC
+    ''' incluidos en el guardado: los demas quedaban con su VMAD viejo, nombrando properties que el .pex nuevo YA
+    ''' NO DECLARA. Resultado: no les llega ninguna property, sus arrays vienen en longitud 0, corta el guard de
+    ''' instancia huerfana y el actor queda INERTE - sin overlays, sin skin, sin transforms y sin body morphs. O
+    ''' sea, cada guardado dejaba atras a todos los NPC que no tocaste.</para>
+    ''' <para><b>Como.</b> Los NPC_ preservados no se copian byte a byte: el writer hace ParseNPC +
+    ''' NpcSubrecordWriter completo. Aca se hace exactamente lo mismo un paso antes -parsear, refrescar el VMAD y
+    ''' mandarlo por <c>entries</c>- y termina en el MISMO serializador. El payload se reconstruye desde el
+    ''' sidecar via <see cref="BssliderSidecar.HydratePresets"/>, el unico espejo entry-preset del proyecto.</para>
+    ''' <para>De paso migra el nombre LEGADO al nombre por plugin, porque <c>ApplyToNpc</c> ya hace el upsert en
+    ''' dos pasadas.</para>
+    ''' <para>â›” SIN SIDECAR NO SE TOCA EL RECORD: si un NPC lleva nuestro script pero no tiene entrada, no hay
+    ''' con que reconstruir su payload, y ApplyToNpc con preset Nothing emitiria el spec de LIMPIEZA, que le
+    ''' BORRARIA sus overlays. Se lo deja inerte (que es lo que ya era) y se LOGUEA: perder la entrega es malo,
+    ''' borrarle datos al usuario es peor.</para></summary>
+    ''' <returns>FormIDs LOCALES de los records movidos a <paramref name="entries"/>, para que el caller los siga
+    ''' contando como guardados.</returns>
     Private Function RefreshPreservedApplyScripts(existingRecords As List(Of PluginRecord),
                                                   entries As List(Of SaveNpcEspWriter.NpcOverrideEntry),
                                                   ctx As SaveContext,

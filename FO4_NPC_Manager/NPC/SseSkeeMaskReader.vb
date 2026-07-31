@@ -1,4 +1,4 @@
-Imports System.Linq
+﻿Imports System.Linq
 Imports FO4_Base_Library
 
 ''' <summary>
@@ -20,11 +20,6 @@ Imports FO4_Base_Library
 ''' </summary>
 Public Module SseSkeeMaskReader
 
-    ''' <summary>Read a shape's MASKT/MASKC/MASKA extra data into ordered skee mask layers and composite them
-    ''' into <paramref name="acc"/> (linear RGBA, in place), via <see cref="SseOverlayCompositor.ApplyOverlays"/>.
-    ''' Returns True iff at least one layer contributed. No-op (False) when the shape carries no MASKT — i.e.
-    ''' vanilla / non-dyeable heads are byte-unchanged. Textures are decoded through <paramref name="decode"/>
-    ''' (path → linear RGBA at w×h) so this stays render-agnostic.</summary>
     ''' <summary>Cheap gate: True iff this shape has skee mask layers que el compose VA A APLICAR — sin decodificar
     ''' ninguna textura.
     '''

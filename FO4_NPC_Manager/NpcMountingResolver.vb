@@ -1,4 +1,4 @@
-Imports System.Globalization
+﻿Imports System.Globalization
 Imports System.IO
 Imports System.Drawing
 Imports System.Linq
@@ -17,7 +17,7 @@ Imports OpenTK.Mathematics
 ''' RenderCurrentStateAsync stays in MainForm and CALLS these). DI: NpcRenderContext (PluginManager +
 ''' parse caches) + NpcStateResolver (ResolveSkeletonKey). Shared nested types (MeshCandidate,
 ''' PreviewResolutionResult, NPCVisualState, PublisherSocketInfo, MountDesiredWorldEntry) stay nested in
-''' MainForm and are referenced as MainForm.&lt;T&gt;. See project_mainform_split.</summary>
+''' MainForm and are referenced as MainForm.&lt;T&gt;. See 61-perf-mainform-split.</summary>
 Friend NotInheritable Class NpcMountingResolver
     Private ReadOnly _ctx As NpcRenderContext
     Private ReadOnly _stateResolver As NpcStateResolver
@@ -449,10 +449,6 @@ Friend NotInheritable Class NpcMountingResolver
         Return s
     End Function
 
-    ''' <summary>Aplicador canónico ÚNICO del plan de mount. Recorre el plan
-    ''' <c>renderData.MountDesiredWorlds</c> (orden topológico) y escribe <c>MountDeltaTransform</c>
-    ''' vía <see cref="OverrideActorBoneWorld"/>. Patrón: <c>ApplyPose → ApplyMountPlanForActor</c>.
-    ''' Per-instance scope vía TargetSkel.</summary>
     ''' <summary>[NO-ANIM-SYNC] Copia los flags NiAVObject No Anim Sync X/Y/Z/S (bits 16-19 de Flags_ui) de CADA
     ''' NiNode de los chunk NIFs (incluye connect-points) al hueso vivo homónimo (NoAnimSyncMask). Limpia primero
     ''' (stale de otro NPC en el mismo SkeletonInstance). Lo lee BuildPose para honrar la traslación estructural.</summary>

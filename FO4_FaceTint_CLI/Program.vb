@@ -232,28 +232,15 @@ Module Program
             Return
         End If
 
-        ' --- 1b. NPC_Config: el MISMO camino que la GUI (Program.vb:111-112) y BakeAllRunner (:98-99). ---
-        ' ⛔ BUG PREEXISTENTE (medido 2026-07-19): el CLI NUNCA llamaba a NPC_Config.LoadConfig(), asi que
-        ' corria SIEMPRE con los defaults COMPILADOS e ignoraba en silencio la config persistida del usuario.
-        ' Se escribio {"ReplicateEngineSkinWeightNormalization": false} en el directorio del exe y la corrida
-        ' igual dio cfg=True: prueba directa. Los numeros coincidian por CASUALIDAD (defaults == valores
-        ' persistidos); apagar el checkbox en la GUI habria dejado al CLI horneando con la ley encendida.
-        '
-        ' AUDITADO — de TODAS las propiedades de NPC_Config, solo DOS pueden mover los bytes del bake
-        ' (FaceGeom NIF + DDS de FaceCustomization/FaceTint); el resto es estado de UI/dialogo/ventana:
-        '   · ReplicateEngineSkinWeightNormalization -> ApplyEngineSkinWeightNormalizationGate ->
-        '     EngineSkinWeightNormalization.Enabled -> SkinBakeMath/FaceGenBuildPipeline = posiciones skinneadas.
-        '   · ApplyGhoulHeadRearFix -> NpcMaterialResolver.IsGhoulHeadRearCase (via el delegate
-        '     ApplyShapeMaterialOverrides que el propio CLI pasa a BuildCharGen) = D/N/S del shape.
-        ' (Ba2Version_FO4/Archive_SSE llegan a FaceGenBuilder solo por OutputStaysLoose, que cortocircuita en
-        '  willBePacked:=False —siempre en el CLI— y ademas solo gatea los dumps TGA/_2b.)
-        '
-        ' --defaults: NO leer la config del usuario. Un CLI de MEDICION que hereda estado mutable del usuario
-        ' es una fuente de irreproducibilidad: dos corridas del mismo commit pueden diferir porque alguien
-        ' toco un checkbox. Los dos roles conviven —herramienta de bake headless (honrar la config es lo
-        ' correcto) y harness de barrido (los defaults declarados son lo correcto)— y el flag los separa.
-        ' Pase lo que pase, el banner de abajo imprime el valor EFECTIVO y su PROCEDENCIA, asi que ninguna
-        ' corrida queda ambigua ni siquiera cuando se usan los defaults.
+        ' NPC_Config por el MISMO camino que la GUI y el runner del batch.
+        ' ⛔ De todas las propiedades de NPC_Config sólo DOS pueden mover los bytes del bake; el resto es
+        ' estado de UI. Son `ReplicateEngineSkinWeightNormalization` (posiciones skinneadas) y
+        ' `ApplyGhoulHeadRearFix` (D/N/S del shape). Si se agrega una tercera, hay que auditarla acá.
+        ' `--defaults` NO lee la config del usuario: un CLI de MEDICIÓN que hereda estado mutable es una
+        ' fuente de irreproducibilidad (dos corridas del mismo commit difieren porque alguien tocó un
+        ' checkbox). Los dos roles conviven —bake headless, donde honrar la config es lo correcto, y harness
+        ' de barrido, donde lo correcto son los defaults— y el flag los separa. El banner imprime siempre el
+        ' valor EFECTIVO y su procedencia, así que ninguna corrida queda ambigua.
         Dim npcCfgExists = IO.File.Exists(FO4_NPC_Manager.NPC_Config.ConfigFilePath)
         Dim npcCfgSource As String
         If opt.Defaults Then
@@ -332,17 +319,17 @@ Module Program
         ' Se imprime ACA, DESPUES de resolver --data y de reapuntar FO4ExePath: mas arriba mostraba el
         ' Data del config (p.ej. Fallout 4\Data) en una corrida de Skyrim, que es justo el dato que
         ' uno mira para detectar un barrido cruzado. Un banner que miente es peor que no tenerlo.
-        Console.WriteLine($"[cfg] data(lectura)={dataPath}")
-        Console.WriteLine($"[cfg] data(escritura del bake)={Config_App.Current.DataPath}")
+        Console.WriteLine($"[cfg] data(read)={dataPath}")
+        Console.WriteLine($"[cfg] data(bake write)={Config_App.Current.DataPath}")
         ' ⛔ Comparar por TEXTO crudo daba un falso positivo SIEMPRE: '--data F:/.../Data' (barra normal,
         ' como lo tipea el script) vs el DataPath del config (barra invertida) son LA MISMA ruta y el warn
         ' saltaba en todas las corridas. Un aviso que salta siempre deja de significar algo justo cuando el
         ' caso sea real. Se normaliza separador + barra final + mayusculas antes de comparar.
         If Not SamePath(dataPath, Config_App.Current.DataPath) Then
-            Console.Error.WriteLine("[warn] el Data de LECTURA y el de ESCRITURA del bake NO coinciden: los artefactos" &
-                                    " van a caer en un Data distinto del que se midio.")
-            Console.Error.WriteLine($"       lectura ='{dataPath}'")
-            Console.Error.WriteLine($"       escritura='{Config_App.Current.DataPath}'")
+            Console.Error.WriteLine("[warn] the READ Data and the bake's WRITE Data do NOT match: the artifacts" &
+                                    " will land in a different Data than the one that was measured.")
+            Console.Error.WriteLine($"       read  ='{dataPath}'")
+            Console.Error.WriteLine($"       write ='{Config_App.Current.DataPath}'")
         End If
         If String.IsNullOrEmpty(dataPath) OrElse Not Directory.Exists(dataPath) Then
             Console.Error.WriteLine($"Invalid Data path: '{dataPath}'. Use --data <path to Data\> or configure config.json.")
@@ -726,7 +713,7 @@ Module Program
                            If Not String.IsNullOrEmpty(hd2.EditorID) Then h11.Add(hd2.EditorID)
                        End Sub
                 For Each rt In roots : emit(rt) : Next
-                cand("11 POST-ORDEN (extras ANTES del padre)") = h11
+                cand("11 POST-ORDER (extras BEFORE the parent)") = h11
                 ' 12: post-orden pero con las raices ordenadas por PartType
                 Dim h12 As New List(Of String)
                 Dim visited2 As New HashSet(Of UInteger)
@@ -752,7 +739,7 @@ Module Program
                                                    Return Tuple.Create(pt2, rf)
                                                End Function).OrderBy(Function(z) z.Item1).Select(Function(z) z.Item2).ToList()
                 For Each rt In rootsByType : emit2(rt) : Next
-                cand("12 POST-ORDEN + raices por PartType") = h12
+                cand("12 POST-ORDER + roots by PartType") = h12
                 Dim rootsByTypeL = rootsByType
                 ' 13/14: POST-ORDEN con las extras en orden INVERSO al HNAM (comportamiento de PILA), que es
                 ' lo que muestra la data: MaleDremoraHair01 declara HNAM=[HairHorns,HairLine] y el CK emite
@@ -775,8 +762,8 @@ Module Program
                                    For Each rt In rootSeq : rec(rt) : Next
                                    Return outL
                                End Function
-                cand("13 POST-ORDEN + extras INVERTIDAS") = buildRev(roots.ToList())
-                cand("14 POST-ORD+extras INV, raices x tipo") = buildRev(rootsByType)
+                cand("13 POST-ORDER + extras REVERSED") = buildRev(roots.ToList())
+                cand("14 POST-ORD+extras INV, roots x type") = buildRev(rootsByType)
                 ' 15: ORDEN DE LA RACE. El CK recorre la lista de head parts de la RAZA en su orden, y en cada
                 ' posicion usa el override del NPC del MISMO PartType si existe. Los head parts del NPC que no
                 ' corresponden a ninguna posicion de la raza se agregan al final. Extras en post-orden.
@@ -807,7 +794,7 @@ Module Program
                     For Each rf In If(npc.HeadPartFormIDs, New List(Of UInteger)())
                         If used.Add(rf) Then ordered.Add(rf)
                     Next
-                    cand("15 orden de la RACE + override x tipo") = buildRev(ordered)
+                    cand("15 RACE order + override x type") = buildRev(ordered)
                 End If
                 ' ⭐ 16: defaults de la RAZA primero (en orden de la raza, salvo los que el NPC pisa por tipo),
                 ' y despues el PNAM del NPC en orden INVERSO. Extras en post-orden invertido.
@@ -843,15 +830,15 @@ Module Program
                 cand("17 MeshPath asc") = allN.OrderBy(Function(z) If(meshOf.ContainsKey(z), meshOf(z), "")).ToList()
                 cand("18 MeshPath desc") = allN.OrderByDescending(Function(z) If(meshOf.ContainsKey(z), meshOf(z), "")).ToList()
                 cand("19 PartType,MeshPath") = mineFid.OrderBy(Function(z) z.Item2).ThenBy(Function(z) If(meshOf.ContainsKey(z.Item3), meshOf(z.Item3), "")).Select(Function(z) z.Item3).ToList()
-                cand("20 nombre de malla (sin dir)") = allN.OrderBy(Function(z) IO.Path.GetFileName(If(meshOf.ContainsKey(z), meshOf(z), ""))).ToList()
+                cand("20 mesh name (no dir)") = allN.OrderBy(Function(z) IO.Path.GetFileName(If(meshOf.ContainsKey(z), meshOf(z), ""))).ToList()
                 ' ⭐ 21-24: HASH DEL PATH (idea del usuario). Un contenedor indexado por hash explica los TRES
                 ' sintomas: orden estable para el mismo conjunto (705/762), CERO monotonia en todo atributo
                 ' (<16%), y el fracaso de cualquier orden derivado de campos. Se usa el MISMO hash TES4 que
                 ' la BSA de Skyrim (Ba2_Bsa_Library.BSAWriter), no uno inventado.
-                cand("21 hash TES4 del mesh asc") = allN.OrderBy(Function(z) Tes4HashOf(If(meshOf.ContainsKey(z), meshOf(z), ""))).ToList()
-                cand("22 hash TES4 del mesh desc") = allN.OrderByDescending(Function(z) Tes4HashOf(If(meshOf.ContainsKey(z), meshOf(z), ""))).ToList()
+                cand("21 TES4 hash of the mesh asc") = allN.OrderBy(Function(z) Tes4HashOf(If(meshOf.ContainsKey(z), meshOf(z), ""))).ToList()
+                cand("22 TES4 hash of the mesh desc") = allN.OrderByDescending(Function(z) Tes4HashOf(If(meshOf.ContainsKey(z), meshOf(z), ""))).ToList()
                 cand("23 PartType,hash TES4") = mineFid.OrderBy(Function(z) z.Item2).ThenBy(Function(z) Tes4HashOf(If(meshOf.ContainsKey(z.Item3), meshOf(z.Item3), ""))).Select(Function(z) z.Item3).ToList()
-                cand("24 hash TES4 del EditorID") = allN.OrderBy(Function(z) Tes4HashOf(z)).ToList()
+                cand("24 TES4 hash of the EditorID") = allN.OrderBy(Function(z) Tes4HashOf(z)).ToList()
                 ' ⭐ 25+: BUCKET = hash mod capacidad. Si el CK recorre un hash map, el orden es por bucket,
                 ' no por el valor del hash. Se prueban capacidades tipicas; el desempate dentro de un bucket
                 ' es el orden de insercion (chaining), que aproximamos con el orden de la cadena.
@@ -947,31 +934,31 @@ Module Program
                     Dim ckTypes = ckFiltered.Select(Function(z) tOf(z)).ToList()
                     If ckTypes.SequenceEqual(ckTypes.OrderBy(Function(z) z)) Then
                         diffWithin += 1
-                        If ejemplos.Count < 6 Then ejemplos.Add($"[dentro-de-tipo] 0x{kv.Key:X8} {npc.EditorID}: CK={String.Join(",", ckFiltered)} | NUESTRO={String.Join(",", mineFiltered)}")
+                        If ejemplos.Count < 6 Then ejemplos.Add($"[within-type] 0x{kv.Key:X8} {npc.EditorID}: CK={String.Join(",", ckFiltered)} | OURS={String.Join(",", mineFiltered)}")
                     Else
                         diffType += 1
-                        If ejemplos.Count < 6 Then ejemplos.Add($"[TIPO] 0x{kv.Key:X8} {npc.EditorID}: CK={String.Join(",", ckFiltered)} tipos={String.Join(",", ckTypes)}")
+                        If ejemplos.Count < 6 Then ejemplos.Add($"[TYPE] 0x{kv.Key:X8} {npc.EditorID}: CK={String.Join(",", ckFiltered)} types={String.Join(",", ckTypes)}")
                     End If
                 End If
             Next
-            Console.WriteLine($"[shapeorder] NPCs comparables: {tot}")
-            Console.WriteLine($"[shapeorder]   orden IDENTICO al CK        : {same} ({100.0 * same / Math.Max(1, tot):F2}%)")
-            Console.WriteLine($"[shapeorder]   difiere DENTRO de un tipo   : {diffWithin}")
-            Console.WriteLine($"[shapeorder]   el CK NO ordena por PartType: {diffType}   <- si >0, el sort primario esta MAL")
-            Console.WriteLine($"[shapeorder] HIPOTESIS B (cadena PNAM + extras depth-first, SIN sort): {chainMatch} ({100.0 * chainMatch / Math.Max(1, tot):F2}%)")
-            Console.WriteLine("[shapeorder] === MONOTONIA sobre la secuencia REAL del CK ===")
+            Console.WriteLine($"[shapeorder] comparable NPCs: {tot}")
+            Console.WriteLine($"[shapeorder]   order IDENTICAL to the CK   : {same} ({100.0 * same / Math.Max(1, tot):F2}%)")
+            Console.WriteLine($"[shapeorder]   differs WITHIN a type       : {diffWithin}")
+            Console.WriteLine($"[shapeorder]   the CK does NOT sort by PartType: {diffType}   <- if >0, the primary sort is WRONG")
+            Console.WriteLine($"[shapeorder] HYPOTHESIS B (PNAM chain + extras depth-first, NO sort): {chainMatch} ({100.0 * chainMatch / Math.Max(1, tot):F2}%)")
+            Console.WriteLine("[shapeorder] === MONOTONICITY over the CK's REAL sequence ===")
             For Each k In New String() {"FormID", "PartType", "EditorID", "MeshPath", "Flags"}
                 Dim a = If(monoA.ContainsKey(k), monoA(k), 0)
                 Dim d = If(monoD.ContainsKey(k), monoD(k), 0)
                 Console.WriteLine($"   {k,-10} ascendente {a,6} ({100.0 * a / Math.Max(1, tot):F1}%)   descendente {d,6} ({100.0 * d / Math.Max(1, tot):F1}%)")
             Next
-            Console.WriteLine("[shapeorder] === BANCO DE HIPOTESIS (match exacto de la secuencia) ===")
+            Console.WriteLine("[shapeorder] === HYPOTHESIS BENCH (exact sequence match) ===")
             For Each h In hyp.OrderByDescending(Function(z) z.Value)
                 Console.WriteLine($"   {h.Key,-34} {h.Value,6}  ({100.0 * h.Value / Math.Max(1, tot):F2}%)")
             Next
-            Console.WriteLine($"[shapeorder] === GLOBAL vs POR-NPC ===")
-            Console.WriteLine($"   mismo conjunto de head parts -> MISMA secuencia: {sigAgree}   DISTINTA: {sigConflict}")
-            Console.WriteLine("   (conflictos>0 ⇒ el orden NO es funcion del conjunto: depende del NPC)")
+            Console.WriteLine($"[shapeorder] === GLOBAL vs PER-NPC ===")
+            Console.WriteLine($"   same head-part set -> SAME sequence: {sigAgree}   DIFFERENT: {sigConflict}")
+            Console.WriteLine("   (conflicts>0 ⇒ the order is NOT a function of the set: it depends on the NPC)")
             For Each e In ejemplos : Console.WriteLine("   " & e) : Next
             Return
         End If
@@ -987,7 +974,7 @@ Module Program
             Dim npc2 = RecordParsers.ParseNPC(rc2, rc2.SourcePluginName, pm)
             Dim race2 = RecordParsers.ParseRACE(pm.GetRecord(npc2.RaceFormID), pm)
             Dim acc = SseFaceGenBaker.ComposeFacetintAcc(pm, rc2, race2, npc2.RaceFormID, npc2.IsFemale, 512, 512)
-            If acc Is Nothing Then Console.Error.WriteLine("[dumpacc] compose devolvio Nothing") : Environment.ExitCode = 2 : Return
+            If acc Is Nothing Then Console.Error.WriteLine("[dumpacc] compose returned Nothing") : Environment.ExitCode = 2 : Return
             Using fs = IO.File.Create(pp(1).Trim())
                 Using bw As New IO.BinaryWriter(fs)
                     For Each d In acc : bw.Write(d) : Next
@@ -1060,7 +1047,7 @@ Module Program
                             '                          -> el CK PISO la textura entre hermanas (bug del CK)
                             '   - si el record lo gana un plugin POSTERIOR al que shippea el FaceGeom
                             '                          -> referencia OBSOLETA (se horneo antes del override)
-                            Dim culpa = "sin override"
+                            Dim culpa = "no override"
                             Dim hpRec = pm.AllRecords.Where(Function(z) z.Value IsNot Nothing AndAlso
                                                                         z.Value.Header.Signature = "HDPT").
                                                       Select(Function(z) z.Value).
@@ -1080,9 +1067,9 @@ Module Program
                                                 Return pl <> "" AndAlso Not String.Equals(pl, origin, StringComparison.OrdinalIgnoreCase)
                                             End Function
                                 If later(srcTxst) Then
-                                    culpa = $"TXST lo gana {srcTxst} (NPC de {origin})"
+                                    culpa = $"TXST wins it: {srcTxst} (NPC from {origin})"
                                 ElseIf later(srcHdpt) Then
-                                    culpa = $"HDPT lo gana {srcHdpt} (NPC de {origin})"
+                                    culpa = $"HDPT wins it: {srcHdpt} (NPC from {origin})"
                                 End If
                             End If
                             ' esperado segun el record de la shape
@@ -1106,8 +1093,8 @@ Module Program
                                                 String.Equals(x.Replace("/"c, "\"c), y.Replace("/"c, "\"c), StringComparison.OrdinalIgnoreCase)
                                      End Function
                             Dim clase As String
-                            If culpa <> "sin override" Then
-                                clase = "REFERENCIA OBSOLETA (override posterior)" : ovr += 1
+                            If culpa <> "no override" Then
+                                clase = "STALE REFERENCE (later override)" : ovr += 1
                             ElseIf eq(vb, esperado) AndAlso Not eq(va, esperado) Then
                                 ' nosotros fieles, el CK no. ¿el CK copio de una hermana de la misma malla?
                                 Dim hermana = False
@@ -1127,30 +1114,30 @@ Module Program
                                     Next
                                 End If
                                 If hermana Then
-                                    clase = "BUG DEL CK (piso con la textura de una hermana de la misma malla)" : ckBug += 1
+                                    clase = "CK BUG (overwritten with a sibling's texture from the same mesh)" : ckBug += 1
                                 Else
-                                    clase = "CK != record y NO es de una hermana" : ckOtro += 1
+                                    clase = "CK != record and NOT from a sibling" : ckOtro += 1
                                 End If
                             ElseIf eq(va, esperado) Then
-                                clase = "⛔ NUESTRO != record  -> DEFECTO NUESTRO" : nuestro += 1
+                                clase = "⛔ OURS != record  -> OUR DEFECT" : nuestro += 1
                             Else
-                                clase = "ninguno coincide con el record" : ninguno += 1
+                                clase = "none matches the record" : ninguno += 1
                             End If
                             culpa = clase
-                            If ejem.Count < 30 Then ejem.Add($"0x{kv.Key:X8} '{nm}' TX{q:D2}  CK='{IO.Path.GetFileName(va)}'  NUESTRO='{IO.Path.GetFileName(vb)}'   [{culpa}]")
+                            If ejem.Count < 30 Then ejem.Add($"0x{kv.Key:X8} '{nm}' TX{q:D2}  CK='{IO.Path.GetFileName(va)}'  OURS='{IO.Path.GetFileName(vb)}'   [{culpa}]")
                         End If
                     Next
                 Next
                 If any Then withDiff += 1
             Next
-            Console.WriteLine($"[texslotdiff] NPCs comparados: {npcs}   con alguna diferencia: {withDiff}   (slot,shape) distintos: {shapesDiff}")
-            Console.WriteLine("[texslotdiff] === CLASIFICACION de los (shape,slot) divergentes ===")
-            Console.WriteLine($"   REFERENCIA OBSOLETA (override posterior) : {ovr}")
-            Console.WriteLine($"   BUG DEL CK (piso con textura de hermana) : {ckBug}")
-            Console.WriteLine($"   CK != record, no es de hermana           : {ckOtro}")
-            Console.WriteLine($"   ⛔ DEFECTO NUESTRO                        : {nuestro}")
-            Console.WriteLine($"   ninguno coincide con el record           : {ninguno}")
-            Console.WriteLine($"[texslotdiff] por slot: {String.Join(" · ", porSlot.OrderBy(Function(z) z.Key).Select(Function(z) $"TX{z.Key:D2}={z.Value}"))}")
+            Console.WriteLine($"[texslotdiff] NPCs compared: {npcs}   with any difference: {withDiff}   (slot,shape) differing: {shapesDiff}")
+            Console.WriteLine("[texslotdiff] === CLASSIFICATION of the diverging (shape,slot) ===")
+            Console.WriteLine($"   STALE REFERENCE (later override)         : {ovr}")
+            Console.WriteLine($"   CK BUG (overwritten with sibling texture) : {ckBug}")
+            Console.WriteLine($"   CK != record, not from a sibling         : {ckOtro}")
+            Console.WriteLine($"   ⛔ OUR DEFECT                             : {nuestro}")
+            Console.WriteLine($"   none matches the record                  : {ninguno}")
+            Console.WriteLine($"[texslotdiff] by slot: {String.Join(" · ", porSlot.OrderBy(Function(z) z.Key).Select(Function(z) $"TX{z.Key:D2}={z.Value}"))}")
             For Each e In ejem : Console.WriteLine("   " & e) : Next
             Return
         End If
@@ -1200,13 +1187,13 @@ Module Program
                 Next
                 If hasCol Then
                     colNpc += 1
-                    If colNpc <= 8 Then Console.WriteLine($"   [afectado] 0x{kv.Key:X8} {npc.EditorID} origin={pm.GetOriginatingPluginName(kv.Key)}")
+                    If colNpc <= 8 Then Console.WriteLine($"   [affected] 0x{kv.Key:X8} {npc.EditorID} origin={pm.GetOriginatingPluginName(kv.Key)}")
                 End If
             Next
-            Console.WriteLine($"[meshcollide] NPCs con head parts: {tot}")
-            Console.WriteLine($"[meshcollide] NPCs con >=2 head parts sobre la MISMA malla y TNAM DISTINTO: {colNpc} ({100.0 * colNpc / Math.Max(1, tot):F2}%)")
-            Console.WriteLine($"[meshcollide] por PartType: {String.Join(" · ", byType.OrderByDescending(Function(z) z.Value).Select(Function(z) $"tipo {z.Key}: {z.Value}"))}")
-            Console.WriteLine("[meshcollide] combinaciones:")
+            Console.WriteLine($"[meshcollide] NPCs with head parts: {tot}")
+            Console.WriteLine($"[meshcollide] NPCs with >=2 head parts on the SAME mesh and a DIFFERENT TNAM: {colNpc} ({100.0 * colNpc / Math.Max(1, tot):F2}%)")
+            Console.WriteLine($"[meshcollide] by PartType: {String.Join(" · ", byType.OrderByDescending(Function(z) z.Value).Select(Function(z) $"type {z.Key}: {z.Value}"))}")
+            Console.WriteLine("[meshcollide] combinations:")
             For Each p In pairs.OrderByDescending(Function(z) z.Value).Take(15)
                 Console.WriteLine($"   x{p.Value,5}  {p.Key}")
             Next
@@ -1460,11 +1447,6 @@ Module Program
         If ok = 0 Then Environment.ExitCode = 1
     End Sub
 
-    ''' <summary>--buildfacegen: bake COMPLETO (NIF + 3 DDS `_2` sandbox) de UN NPC via la MISMA ruta que la
-    ''' app (FaceGenBuilder.BuildCharGen), pero headless: host=Nothing (sin GL; el toggle WriteGPUSandboxOutput
-    ''' ya se apagó), appliedPresets vacío, willBePacked=False (loose), delegate de materiales = el del render
-    ''' (NpcMaterialResolver.ApplyShapeMaterialOverrides). El estado del NPC lo arma el propio BuildCharGen
-    ''' desde el record. Devuelve True si Success.</summary>
     ''' <summary>--buildfacegen: bake COMPLETO (NIF + 3 DDS `_2` sandbox) de UN NPC headless via la MISMA
     ''' ruta que la app (FaceGenBuilder.BuildCharGen). Con --vanillaonly el entorno ya cargó SOLO plugins
     ''' oficiales (PluginManager.OfficialPluginsOnly), así que el record + las texturas son vanilla por
@@ -1501,17 +1483,10 @@ Module Program
     ''' y no aporta NADA a la validación del NIF. No afecta el bake (el NIF sale idéntico).</summary>
     Private SkipDdsCompare As Boolean = False
 
-    ''' <summary>Diff EXHAUSTIVO del artefacto REAL que escribió BuildCharGen (el NIF on-disk + el facetint _d)
-    ''' contra la referencia horneada por el CK (BSA/loose vía FilesDictionary). NO re-hornea geometría: lee
-    ''' <paramref name="bakedNifPath"/> tal cual quedó en disco. Compara TODA propiedad por shape (posiciones,
-    ''' triángulos/index, normals, tangents, bitangents, UVs, vertex colors, bone indices/weights, VertexDesc,
-    ''' bounds, texture-set slots) + estructura del NIF (bytes, bloques, root, extradata) + el DDS (pixel+formato).
-    ''' Clasifica cada diferencia como REAL (defecto del bake) o NO-OP (esperado: sufijo _2 sandbox, codec BC,
-    ''' framing) y las lista por separado.</summary>
     ''' <summary>⛔ REFERENCIA DEL CK PARA EL NIF — SIEMPRE del BSA/BA2, nunca de un suelto.
     ''' El NIF que horneamos queda LOOSE en el mismo Data, y <c>FilesDictionary</c> hace que el suelto GANE sobre
     ''' el archive. Con <c>GetBytes</c> la corrida siguiente se comparaba CONTRA SI MISMA y daba ~0 diferencias
-    ''' (el fallo silencioso de reference_harness_loose_files_shadow_ck_ref: termina con END BATCH y no midio nada).
+    ''' (el fallo silencioso de 10-stack-arnes-de-medicion: termina con END BATCH y no midio nada).
     ''' El camino del DDS ya lo hacia bien; el del NIF —el que sostiene TODAS las cifras de geometria— no.
     ''' <paramref name="fromArchive"/> sale False solo si NO hay entrada archivada: el caller lo reporta como
     ''' categoria REAL en vez de degradar a un PASS.</summary>
@@ -1531,8 +1506,8 @@ Module Program
             Console.Error.WriteLine("--comparefiles necesita '<ckNif>|<ourNif>'") : Environment.ExitCode = 2 : Return
         End If
         Dim ckPath = parts(0).Trim(), myPath = parts(1).Trim()
-        If Not File.Exists(ckPath) Then Console.Error.WriteLine($"CK nif no existe: {ckPath}") : Environment.ExitCode = 2 : Return
-        If Not File.Exists(myPath) Then Console.Error.WriteLine($"our nif no existe: {myPath}") : Environment.ExitCode = 2 : Return
+        If Not File.Exists(ckPath) Then Console.Error.WriteLine($"CK nif does not exist: {ckPath}") : Environment.ExitCode = 2 : Return
+        If Not File.Exists(myPath) Then Console.Error.WriteLine($"our nif does not exist: {myPath}") : Environment.ExitCode = 2 : Return
 
         Dim ckBytes = File.ReadAllBytes(ckPath), myBytes = File.ReadAllBytes(myPath)
         Dim ckNif As New Nifcontent_Class_Manolo() : ckNif.Load_Manolo(ckBytes)
@@ -1548,7 +1523,7 @@ Module Program
 
         ' ---- estructura NIF ----
         Console.WriteLine($"  [NIF/struct] bytes CK={ckBytes.Length} our={myBytes.Length}  blocks CK={ckNif.Blocks.Count} our={myNif.Blocks.Count}")
-        If ckBytes.Length <> myBytes.Length Then noop.Add($"NIF byte-size CK={ckBytes.Length} vs our={myBytes.Length} (framing/orden de tablas — puede ser NO-OP)")
+        If ckBytes.Length <> myBytes.Length Then noop.Add($"NIF byte-size CK={ckBytes.Length} vs our={myBytes.Length} (framing/table order — may be a NO-OP)")
         Dim ckTypes = String.Join(",", ckNif.Blocks.GroupBy(Function(b) b.GetType().Name).OrderBy(Function(g) g.Key).Select(Function(g) $"{g.Key}x{g.Count()}"))
         Dim myTypes = String.Join(",", myNif.Blocks.GroupBy(Function(b) b.GetType().Name).OrderBy(Function(g) g.Key).Select(Function(g) $"{g.Key}x{g.Count()}"))
         If ckTypes <> myTypes Then
@@ -1596,10 +1571,10 @@ Module Program
         Dim parts = spec.Split("|"c)
         If parts.Length < 2 Then Console.Error.WriteLine("--skincheck necesita '<ckNif>|<ourNif>'") : Environment.ExitCode = 2 : Return
         Dim ckPath = parts(0).Trim(), myPath = parts(1).Trim()
-        If Not File.Exists(ckPath) OrElse Not File.Exists(myPath) Then Console.Error.WriteLine("nif no existe") : Environment.ExitCode = 2 : Return
+        If Not File.Exists(ckPath) OrElse Not File.Exists(myPath) Then Console.Error.WriteLine("nif does not exist") : Environment.ExitCode = 2 : Return
         Dim ckNif As New Nifcontent_Class_Manolo() : ckNif.Load_Manolo(File.ReadAllBytes(ckPath))
         Dim myNif As New Nifcontent_Class_Manolo() : myNif.Load_Manolo(File.ReadAllBytes(myPath))
-        Console.WriteLine("======== SKINNING DATA CHECK (bind skinToBone + pesos; nodo IGNORADO) ========")
+        Console.WriteLine("======== SKINNING DATA CHECK (bind skinToBone + weights; node IGNORED) ========")
         Console.WriteLine($"  CK  = {ckPath}")
         Console.WriteLine($"  OUR = {myPath}")
         Dim ckMap = SkinBinds(ckNif)
@@ -1607,7 +1582,7 @@ Module Program
         Dim anyDiff = False
         For Each kv In ckMap
             Dim nm = kv.Key
-            If Not myMap.ContainsKey(nm) Then Console.WriteLine($"  shape '{nm}': sin par en OUR") : anyDiff = True : Continue For
+            If Not myMap.ContainsKey(nm) Then Console.WriteLine($"  shape '{nm}': no match in OUR") : anyDiff = True : Continue For
             Dim a = kv.Value, b = myMap(nm)
             Dim worstBone = "", worstT = 0.0, worstR = 0.0, worstS = 0.0
             Dim onlyCk = 0, onlyOu = 0
@@ -1778,7 +1753,7 @@ Module Program
     ''' `diff` de dos volcados exponga cualquier diferencia de campo (transform, shader, texslot, alpha) que el
     ''' comparador con umbral esconde. NO hornea ni monta plugins.</summary>
     Private Sub DumpNifFull(path As String)
-        If Not File.Exists(path) Then Console.Error.WriteLine($"nif no existe: {path}") : Environment.ExitCode = 2 : Return
+        If Not File.Exists(path) Then Console.Error.WriteLine($"nif does not exist: {path}") : Environment.ExitCode = 2 : Return
         Dim bytes = File.ReadAllBytes(path)
         Dim nif As New Nifcontent_Class_Manolo() : nif.Load_Manolo(bytes)
         Console.WriteLine($"# FILE {IO.Path.GetFileName(path)}  bytes={bytes.Length} blocks={nif.Blocks.Count}")
@@ -1894,7 +1869,7 @@ Module Program
         Dim ckNifFromArchive As Boolean
         Dim ckBytes = CkNifRefBytes(ckKey, ckNifFromArchive)
         If Not ckNifFromArchive AndAlso ckBytes IsNot Nothing AndAlso ckBytes.Length > 0 Then
-            real.Add($"NIF: ref del CK NO vino de un BA2/BSA (loose) — comparacion CIRCULAR contra un bake propio viejo")
+            real.Add($"NIF: the CK ref did NOT come from a BA2/BSA (loose) — CIRCULAR comparison against an old bake of our own")
         End If
         If ckBytes Is Nothing Then
             Console.WriteLine($"  [NIF] no CK ref ({ckKey}) — not comparing NIF")
@@ -1993,7 +1968,7 @@ Module Program
             Catch ex As Exception
                 ' Nunca degradar en silencio: si el skinning no se puede componer hay que saberlo.
                 Threading.Interlocked.Increment(SkinPosNoData)
-                Console.WriteLine($"  [SKIN] no se pudo comparar la posicion skinneada: {ex.GetType().Name}: {ex.Message}")
+                Console.WriteLine($"  [SKIN] could not compare the skinned position: {ex.GetType().Name}: {ex.Message}")
             End Try
         End If
 
@@ -2004,7 +1979,7 @@ Module Program
             ' facetint en memoria en vez de leer el archivo: el numero de SSE y el de FO4 no median lo mismo.
             CompareOnDiskDds(npcData, origin, fgL, npcFormID, isSse, real, noop)
         Else
-            Console.WriteLine("  [DDS] pixel compare SKIPPED (sin --ddscompare) — solo se valido el NIF")
+            Console.WriteLine("  [DDS] pixel compare SKIPPED (no --ddscompare) — only the NIF was validated")
         End If
 
         ' ================= RESUMEN: REAL vs NO-OP =================
@@ -2018,12 +1993,6 @@ Module Program
         Return (real, noop)
     End Function
 
-    ''' <summary>Umbral de RMS (0..255) sobre el que una diferencia de pixeles FO4 pasa a ser categoria REAL.
-    ''' Override por env var FGCMP_DDS_RMS. Default 2,0 = el MISMO que usa la rama SSE, para que las dos ramas
-    ''' sean comparables. ⚠️ En FO4 hay un PISO de codec irreducible: el CK almacena _d y _msn en BC1 (medido
-    ''' sobre los BA2 vanilla+DLC, 1492 entries) y nosotros por default encodeamos _d en BC3 y _msn en BC5, asi
-    ''' que byte-exact=100% NO es alcanzable ni deseable como criterio. El numero que importa es si el RMS se
-    ''' MUEVE entre commits, no su valor absoluto.</summary>
     ''' <summary>True si dos rutas apuntan al MISMO directorio. Normaliza separador ('/' vs '\'), barra
     ''' final y mayusculas via GetFullPath. Si alguna no se puede resolver (ruta invalida) cae a una
     ''' comparacion textual tolerante en vez de tirar: esto alimenta un WARN, no una decision.</summary>
@@ -2088,25 +2057,6 @@ Module Program
         Return Fo4DdsStats(suffix)
     End Function
 
-    ''' <summary>Rama FO4 de la comparacion de PIXELES (equivalente a la rama SSE de
-    ''' <see cref="CompareBakedVsCk"/>): diffea el artefacto REAL on-disk que escribio BakeFaceTextures contra
-    ''' la referencia horneada por el CK, canal por canal, con RMS + maxΔ por canal + conteo byte-exacto.
-    '''
-    ''' Diferencias reales vs SSE, respetadas aca:
-    '''   · FO4 hornea TRES canales (_d/_msn/_s), SSE uno solo (_d). Cada canal es su propia categoria del
-    '''     reporte, asi que un defecto en el normal no se diluye en el promedio del diffuse.
-    '''   · Los tamaños difieren ENTRE canales (_s es 512 y los otros 1024) ⇒ no se hardcodea 512x512 como en
-    '''     SSE; se toma el tamaño del decode y un desajuste es categoria REAL, no un NaN silencioso.
-    '''   · NO se re-compone nada: se LEE el .dds de disco. La rama SSE re-hornea con BakeFaceTintDds, lo que
-    '''     valida el compositor pero NO que el bake haya escrito ese resultado. Leer el archivo valida el
-    '''     artefacto de verdad y ademas es mas barato.
-    '''
-    ''' ⛔ La ref del CK se pide por <see cref="FilesDictionary_class.GetArchiveOriginalBytes"/>, NO por GetBytes:
-    ''' con --ddscompare el bake DEJA loose sus propios _d/_msn/_s en el Data del juego, y en la corrida
-    ''' SIGUIENTE esos loose ganarian el FilesDictionary ⇒ nos estariamos comparando contra NOSOTROS MISMOS y el
-    ''' barrido daria ~0 de diferencia (gotcha reference_facegen_ck_must_come_from_ba2). GetArchiveOriginalBytes
-    ''' resuelve al archivo con SourceOrder mas bajo = el BA2 vanilla, ignorando el loose. Si aun asi la ref
-    ''' saliera loose, se reporta como categoria REAL en vez de dar un falso PASS.</summary>
     ''' <summary>True si el canal alpha de la textura NO es plano-opaco (hay al menos un pixel &lt; 0,98).
     ''' Propiedad de la IMAGEN (no un diff), asi que sirve aunque dos texturas no compartan dimensiones.
     ''' El umbral 0,98 (≈250/255) absorbe el ruido de bloque del codec BCn sin tragarse alpha real: el
@@ -2176,7 +2126,7 @@ Module Program
                 End If
                 If Not ckFromArchive Then
                     DdsStat(statKey).LooseRef += 1
-                    real.Add($"DDS {chLabel}: ref del CK NO vino de un BA2/BSA (loose) — comparacion CIRCULAR contra un bake propio viejo")
+                    real.Add($"DDS {chLabel}: the CK ref did NOT come from a BA2/BSA (loose) — CIRCULAR comparison against an old bake of our own")
                 End If
 
                 Dim mineBytes = IO.File.ReadAllBytes(minePath)
@@ -2184,7 +2134,7 @@ Module Program
                 Dim ckd = FaceTintCpuCompositor.DecodeDds(ckBytes)
                 If mine Is Nothing OrElse mine.Rgba8 Is Nothing OrElse ckd Is Nothing OrElse ckd.Rgba8 Is Nothing Then
                     DdsStat(statKey).DecodeFail += 1
-                    Console.WriteLine($"  [DDS/{chLabel}] decode fallo (mine={mine IsNot Nothing}, ck={ckd IsNot Nothing})")
+                    Console.WriteLine($"  [DDS/{chLabel}] decode failed (mine={mine IsNot Nothing}, ck={ckd IsNot Nothing})")
                     Continue For
                 End If
                 ' ⭐ ALPHA plano-vs-variable ANTES del abort por dimensiones. Es una propiedad de la IMAGEN,
@@ -2195,7 +2145,7 @@ Module Program
                 ' y dejar el detector ciego para el caso que lo motivo no sirve de nada.
                 Dim ckVaria = AlphaVaria(ckd), mineVaria = AlphaVaria(mine)
                 If statKey = "_d" AndAlso ckVaria <> mineVaria Then
-                    real.Add($"DDS {chLabel} ALPHA plano/variable NO coincide (CK varia={ckVaria}, nuestro varia={mineVaria}) — alpha del base perdida o inventada")
+                    real.Add($"DDS {chLabel} ALPHA flat/varying does NOT match (CK varies={ckVaria}, ours varies={mineVaria}) — base alpha lost or invented")
                 End If
                 ' ⭐ Los contadores de alpha se acumulan ACA, del mismo lado del abort por dimensiones que el
                 ' chequeo que los produce. Si se acumularan abajo (junto al RMS) volveria el MISMO bug que motivo
@@ -2273,13 +2223,13 @@ Module Program
                 Console.WriteLine($"  [DDS/{chLabel}] {mine.Width}x{mine.Height}  RMS={rms:F2}/255" &
                                   $"  maxΔ R={mxR * 255:F0} G={mxG * 255:F0} B={mxB * 255:F0}" &
                                   $"  meanΔ R={sR / n * 255:+0.00;-0.00} G={sG / n * 255:+0.00;-0.00} B={sB / n * 255:+0.00;-0.00}" &
-                                  $"  ALPHA rms={rmsA:F2} maxΔ={mxA * 255:F0} (CK varia={ckVaria}, nuestro varia={mineVaria})" &
+                                  $"  ALPHA rms={rmsA:F2} maxΔ={mxA * 255:F0} (CK varies={ckVaria}, ours varies={mineVaria})" &
                                   $"  byte-exact px={byteExact}/{n} ({100.0 * byteExact / n:F1}%)" &
                                   $"  (mine={mineBytes.Length}b, CK={ckBytes.Length}b {If(ckFromArchive, "ARCHIVE", "LOOSE!")})")
 
                 If rms > thr Then real.Add($"DDS {chLabel} RMS={rms:F2}/255 (>{thr:F2}) — revisar compose")
                 If mineBytes.Length <> ckBytes.Length Then
-                    noop.Add($"DDS {chLabel} byte-size mine={mineBytes.Length} vs CK={ckBytes.Length} (codec nuestro vs el del CK — NO-OP)")
+                    noop.Add($"DDS {chLabel} byte-size mine={mineBytes.Length} vs CK={ckBytes.Length} (our codec vs the CK's — NO-OP)")
                 End If
             Catch ex As Exception
                 Console.WriteLine($"  [DDS/{chLabel}] compare failed: {ex.GetType().Name}: {ex.Message}")
@@ -2287,9 +2237,6 @@ Module Program
         Next
     End Sub
 
-    ''' <summary>BATCH: bakea + compara TODOS los NPC_ vanilla con FaceGeom horneado por el CK, y agrega TODAS
-    ''' las diferencias por CATEGORÍA (normalizando nombres de shape/valores) con conteo de NPCs afectados.
-    ''' Escribe un reporte agregado. Sirve para el barrido 100% de NIF vanilla SSE.</summary>
     ''' <summary>ETAPA 1 del diagnóstico de fidelidad del preview (<c>--headfidelity</c>). Agrega las filas
     ''' que <see cref="FO4_NPC_Manager.FaceGenBuildPipeline.CollectHeadFidelity"/> juntó durante el barrido.
     ''' <para>Lee así: la población SIN <c>CustomizationRemapNewBonesData</c> es el CONTROL — el bake mete el
@@ -2301,7 +2248,7 @@ Module Program
         Console.WriteLine()
         Console.WriteLine("======== HEAD FIDELITY (preview vs juego) ========")
         If rows.Count = 0 Then
-            Console.WriteLine("  (sin filas — ningun shape paso por el bake con la medicion encendida)")
+            Console.WriteLine("  (no rows — no shape went through the bake with measuring enabled)")
             Return
         End If
 
@@ -2312,18 +2259,18 @@ Module Program
                          Dim rmsAll = Math.Sqrt(subset.Sum(Function(r) r.Rms * r.Rms * r.VertexCount) /
                                                 Math.Max(1, subset.Sum(Function(r) CDbl(r.VertexCount))))
                          Console.WriteLine($"      max  = {maxAll:G6}")
-                         Console.WriteLine($"      rms  = {rmsAll:G6}   (ponderado por vertices)")
+                         Console.WriteLine($"      rms  = {rmsAll:G6}   (weighted by vertices)")
                          For Each th In {0.0, 0.005, 0.01, 0.02, 0.05, 0.1}
                              ' .Where(...).Count() y no .Count(pred): en VB `List.Count` es propiedad y gana
                              ' sobre la extensión de LINQ (BC32016).
-                             Console.WriteLine($"      shapes con max > {th:F3} : {subset.Where(Function(r) r.MaxD > th).Count()}")
+                             Console.WriteLine($"      shapes with max > {th:F3} : {subset.Where(Function(r) r.MaxD > th).Count()}")
                          Next
                          Dim sb = subset.Sum(Function(r) CDbl(r.SingleBoneVerts))
                          Dim mb = subset.Sum(Function(r) CDbl(r.MultiBoneVerts))
                          Dim tot = Math.Max(1, sb + mb)
-                         Console.WriteLine($"      vertices con UN solo hueso del rig plano : {sb:F0} ({100.0 * sb / tot:F2}%)")
-                         Console.WriteLine($"      vertices con VARIOS huesos              : {mb:F0} ({100.0 * mb / tot:F2}%)")
-                         Console.WriteLine("      peores 15 shapes:")
+                         Console.WriteLine($"      vertices with ONE bone of the flat rig  : {sb:F0} ({100.0 * sb / tot:F2}%)")
+                         Console.WriteLine($"      vertices with SEVERAL bones            : {mb:F0} ({100.0 * mb / tot:F2}%)")
+                         Console.WriteLine("      worst 15 shapes:")
                          For Each r In subset.OrderByDescending(Function(x) x.MaxD).Take(15)
                              Console.WriteLine($"        0x{r.NpcFormID:X8} '{r.ShapeName}' max={r.MaxD:G6} rms={r.Rms:G6} verts={r.VertexCount}")
                          Next
@@ -2331,17 +2278,17 @@ Module Program
 
         Dim ctrl = rows.Where(Function(r) Not r.HasRemapFlag).ToList()
         Dim flagged = rows.Where(Function(r) r.HasRemapFlag).ToList()
-        report("CONTROL - shapes SIN CustomizationRemapNewBonesData (max DEBE ser 0)", ctrl)
+        report("CONTROL - shapes WITHOUT CustomizationRemapNewBonesData (max MUST be 0)", ctrl)
         Console.WriteLine()
-        report("MEDICION - shapes CON CustomizationRemapNewBonesData", flagged)
+        report("MEASUREMENT - shapes WITH CustomizationRemapNewBonesData", flagged)
         Console.WriteLine()
         Dim ctrlMax = If(ctrl.Count > 0, ctrl.Max(Function(r) r.MaxD), 0.0)
         If ctrlMax > 0.0000001 Then
-            Console.WriteLine($"  !!!! CONTROL ROTO: el grupo sin flag da max={ctrlMax:G6}, tendria que dar 0.")
-            Console.WriteLine("       La medicion esta mal; NO leer el grupo con flag.")
+            Console.WriteLine($"  !!!! CONTROL BROKEN: the group without the flag gives max={ctrlMax:G6}, it should give 0.")
+            Console.WriteLine("       The measurement is wrong; do NOT read the group with the flag.")
             Environment.ExitCode = 4
         Else
-            Console.WriteLine("  control OK (max=0 en el grupo sin flag) => el numero del grupo con flag es valido.")
+            Console.WriteLine("  control OK (max=0 in the group without the flag) => the number for the group with the flag is valid.")
         End If
         Console.WriteLine("======== END HEAD FIDELITY ========")
     End Sub
@@ -2396,11 +2343,11 @@ Module Program
             Next
             Dim before = cands.Count
             cands = cands.Where(Function(x) want.Contains(x)).ToList()
-            Console.WriteLine($"[batch] !!!! FGCMP_ONLY activo: {cands.Count} de {before} candidatos " &
-                              $"({want.Count} FormIDs pedidos). CORRIDA DIAGNOSTICA, NO comparable contra baseline.")
+            Console.WriteLine($"[batch] !!!! FGCMP_ONLY active: {cands.Count} of {before} candidates " &
+                              $"({want.Count} FormIDs requested). DIAGNOSTIC RUN, NOT comparable against a baseline.")
             ' Un FormID pedido que no esta en el corpus es un error de la peticion, no un detalle: se lista.
             For Each v In want
-                If Not cands.Contains(v) Then Console.WriteLine($"[batch]      pedido 0x{v:X8} NO esta en el corpus (sin FaceGeom del CK / no oficial)")
+                If Not cands.Contains(v) Then Console.WriteLine($"[batch]      requested 0x{v:X8} is NOT in the corpus (no CK FaceGeom / not official)")
             Next
         End If
         Dim skipN As Integer = 0
@@ -2497,7 +2444,7 @@ Module Program
                                                 $"{PluginManager.ToFaceGenLocalFormID(fid):X8}.NIF")
                     If Not IO.File.Exists(bakedPath) Then
                         Console.SetOut(savedOut)
-                        recordFail(fid, "prebaked-missing", $"no existe '{bakedPath}'")
+                        recordFail(fid, "prebaked-missing", $"'{bakedPath}' does not exist")
                         Continue For
                     End If
                 Else
@@ -2512,7 +2459,7 @@ Module Program
                     If res Is Nothing OrElse Not res.Success OrElse String.IsNullOrEmpty(res.OutputPath) Then
                         Console.SetOut(savedOut)
                         ' El Summary del propio BuildCharGen dice POR QUE fallo — es el dato util, no el booleano.
-                        Dim why = If(res Is Nothing, "BuildCharGen devolvio Nothing",
+                        Dim why = If(res Is Nothing, "BuildCharGen returned Nothing",
                                      If(Not res.Success, $"Success=False summary='{res.Summary}'",
                                         $"OutputPath vacio (Success=True) summary='{res.Summary}'"))
                         recordFail(fid, "buildchargen", why)
@@ -2553,7 +2500,7 @@ Module Program
                 ' ⛔ NUNCA tragarse la excepcion: tipo + mensaje + la primera linea del stack (barato y suele
                 ' bastar para ubicar el sitio). Antes esto era `failCount += 1` a secas y la causa se perdia.
                 Dim stk = If(ex.StackTrace, "").Split({Environment.NewLine}, StringSplitOptions.RemoveEmptyEntries)
-                Dim at0 = If(stk.Length > 0, stk(0).Trim(), "<sin stack>")
+                Dim at0 = If(stk.Length > 0, stk(0).Trim(), "<no stack>")
                 recordFail(fid, "exception", $"{ex.GetType().Name}: {ex.Message} | {at0}")
             End Try
             If processed Mod 50 = 0 Then Console.WriteLine($"[batch] {processed}/{cands.Count}  ok={okCount} fail={failCount} excl={excluded.Count}")
@@ -2566,8 +2513,8 @@ Module Program
         ' Si no cierra, algun camino esta saliendo del loop sin contabilizar y el barrido es un verde falso:
         ' se marca fuerte y se cambia el ExitCode. Jamas se degrada a "habra sido un caso raro".
         If okCount + failCount + excluded.Count <> cands.Count Then
-            Console.WriteLine($"  !!!! CONTABILIDAD ROTA: ok({okCount}) + fail({failCount}) + excl({excluded.Count}) = " &
-                              $"{okCount + failCount + excluded.Count} != candidatos({cands.Count}). CORRIDA INVALIDA.")
+            Console.WriteLine($"  !!!! ACCOUNTING BROKEN: ok({okCount}) + fail({failCount}) + excl({excluded.Count}) = " &
+                              $"{okCount + failCount + excluded.Count} != candidates({cands.Count}). INVALID RUN.")
             Environment.ExitCode = 3
         End If
 
@@ -2575,7 +2522,7 @@ Module Program
         ' Su conteo SI es parte de la firma de la corrida: si cambia entre dos barridos, cambio el corpus
         ' efectivo y los conteos por categoria dejan de ser comparables igual que con failCount.
         If excluded.Count > 0 Then
-            Console.WriteLine($"  ---- {excluded.Count} EXCLUIDOS (raza sin FaceGen / sin head parts): no se bakean, no se comparan, NO son fallos ----")
+            Console.WriteLine($"  ---- {excluded.Count} EXCLUDED (race with no FaceGen / no head parts): not baked, not compared, NOT failures ----")
             For Each ln In excluded : Console.WriteLine($"      {ln}") : Next
         End If
 
@@ -2588,18 +2535,18 @@ Module Program
         If failCount > 0 Then
             ' ASCII puro en esta linea: la consola del CLI la degrada a '??' y es la linea que un script
             ' grepea para decidir si la corrida es valida.
-            Console.WriteLine($"  !!!! {failCount} FALLOS -- corpus efectivo {okCount}/{cands.Count} (excl {excluded.Count}). CORRIDA NO COMPARABLE CONTRA BASELINE.")
-            Console.WriteLine($"      Los conteos por categoria NO son comparables contra un baseline con otro failCount:")
-            Console.WriteLine($"      un NPC que pasa de 'diferente' a 'explota' BAJA su categoria y parece una mejora.")
-            Console.WriteLine($"  ---- fallos por ruta ----")
+            Console.WriteLine($"  !!!! {failCount} FAILURES -- effective corpus {okCount}/{cands.Count} (excl {excluded.Count}). RUN NOT COMPARABLE AGAINST A BASELINE.")
+            Console.WriteLine($"      The per-category counts are NOT comparable against a baseline with a different failCount:")
+            Console.WriteLine($"      an NPC going from 'different' to 'crashes' DROPS a category and looks like an improvement.")
+            Console.WriteLine($"  ---- failures by path ----")
             For Each kv In failByRoute.OrderByDescending(Function(x) x.Value)
                 Console.WriteLine($"      {kv.Value,5}  {kv.Key}")
             Next
-            Console.WriteLine($"  ---- fallos (lista completa: FormID + EditorID + plugin + causa) ----")
+            Console.WriteLine($"  ---- failures (full list: FormID + EditorID + plugin + cause) ----")
             For Each ln In failures : Console.WriteLine($"      {ln}") : Next
             Environment.ExitCode = 2
         Else
-            Console.WriteLine($"  fallos: 0 — corpus comparado {okCount}/{cands.Count} (excl {excluded.Count}), conteos comparables contra baseline con el MISMO conteo de excluidos.")
+            Console.WriteLine($"  failures: 0 — corpus compared {okCount}/{cands.Count} (excl {excluded.Count}), counts comparable against a baseline with the SAME excluded count.")
         End If
 
         Console.WriteLine($"  REAL difference categories (sorted by # affected NPCs):")
@@ -2623,7 +2570,7 @@ Module Program
             Dim isSseB = (Config_App.Current.Game = Config_App.Game_Enum.Skyrim)
             Dim scope = If(isSseB, "SSE FaceTint _d", "FO4 FaceCustomization _d/_msn/_s")
             Console.WriteLine($"  ---- PIXELES vs CK ({scope}, --ddscompare) ----")
-            Console.WriteLine("     canal  N     RMS medio  RMS max   (peor NPC)   byte-exact medio   maxD R/G/B   absent noCK dim loose decFail")
+            Console.WriteLine("     chan   N     RMS mean   RMS max   (worst NPC)  byte-exact mean    maxD R/G/B   absent noCK dim loose decFail")
             For Each suffix In Fo4DdsChannels
                 If Not Fo4DdsStats.ContainsKey(suffix) Then Continue For
                 Dim st = Fo4DdsStats(suffix)
@@ -2635,24 +2582,24 @@ Module Program
             Next
             ' ---- ALPHA: tabla propia. No entra al RMS (que es RGB-only por compatibilidad con todo baseline
             ' previo) y su desvio dice OTRA cosa: el alpha viaja verbatim desde el head diffuse, no se compone.
-            Console.WriteLine("     ---- ALPHA (fuera del RMS: viaja verbatim del head diffuse, no se compone) ----")
-            Console.WriteLine("     canal  ALPHA rms medio  ALPHA maxD   CK varia  nuestro varia  MISMATCH")
+            Console.WriteLine("     ---- ALPHA (outside the RMS: travels verbatim from the head diffuse, it is not composed) ----")
+            Console.WriteLine("     chan   ALPHA rms mean   ALPHA maxD   CK varies ours varies   MISMATCH")
             For Each suffix In Fo4DdsChannels
                 If Not Fo4DdsStats.ContainsKey(suffix) Then Continue For
                 Dim st = Fo4DdsStats(suffix)
                 Dim meanRmsA = If(st.N > 0, st.SumRmsA / st.N, 0.0)
                 Console.WriteLine($"     {suffix,-6} {meanRmsA,14:F3}  {st.MxA * 255,10:F0}   {st.CkVariaCount,8} {st.MineVariaCount,14}  {st.AlphaMismatch,8}")
             Next
-            Console.WriteLine("     MISMATCH>0 = alpha perdida o inventada respecto del CK (categoria REAL).")
-            Console.WriteLine("     'CK varia'=0 en TODO el corpus significa que el detector no fue ejercido:")
-            Console.WriteLine("     0 mismatches ahi NO es evidencia de que el alpha se preserve.")
-            Console.WriteLine($"     (umbral de categoria REAL: RMS > {Fo4DdsRmsThreshold():F2}/255 — env FGCMP_DDS_RMS)")
+            Console.WriteLine("     MISMATCH>0 = alpha lost or invented with respect to the CK (REAL category).")
+            Console.WriteLine("     'CK varies'=0 over the WHOLE corpus means the detector was never exercised:")
+            Console.WriteLine("     0 mismatches there is NOT evidence that the alpha is preserved.")
+            Console.WriteLine($"     (REAL category threshold: RMS > {Fo4DdsRmsThreshold():F2}/255 — env FGCMP_DDS_RMS)")
             If isSseB Then
-                Console.WriteLine("     PISO DE CODEC: el contenedor del facetint SSE es siempre DXT5/BC3 en los dos lados,")
-                Console.WriteLine("     asi que aca el piso es el re-encode, no un cambio de formato como en FO4.")
+                Console.WriteLine("     CODEC FLOOR: the SSE facetint container is always DXT5/BC3 on both sides,")
+                Console.WriteLine("     so here the floor is the re-encode, not a format change like in FO4.")
             Else
-                Console.WriteLine("     PISO DE CODEC: el CK guarda _d y _msn en BC1 y nosotros en BC3/BC5 por default,")
-                Console.WriteLine("     asi que byte-exact=100% es inalcanzable; lo que importa es si el RMS se MUEVE entre commits.")
+                Console.WriteLine("     CODEC FLOOR: the CK stores _d and _msn as BC1 and we use BC3/BC5 by default,")
+                Console.WriteLine("     so byte-exact=100% is unreachable; what matters is whether the RMS MOVES between commits.")
             End If
             ' ⛔ GAME-AWARE, y NO es un detalle: --rawdds cambia el codec del DDS que el bake ESCRIBE A DISCO.
             ' · FO4: el comparador LEE ese archivo ⇒ nuestro lado sale sin comprimir ⇒ el piso de codec pasa a
@@ -2664,17 +2611,17 @@ Module Program
             If RawDdsRequested Then
                 Console.WriteLine("     ##############################################################################")
                 If isSseB Then
-                    Console.WriteLine("     ## CORRIDA CON --rawdds: la rama SSE RE-HORNEA el facetint (no lee el DDS de")
-                    Console.WriteLine("     ## disco) pero ahora pasa el formato EXPLICITO desde el mismo setting que el")
-                    Console.WriteLine("     ## bake ⇒ nuestro lado sale SIN COMPRIMIR. El piso de codec es SOLO el del CK,")
-                    Console.WriteLine("     ## asi que estos RMS NO son comparables contra baselines BC3: son mas bajos")
-                    Console.WriteLine("     ## POR CONSTRUCCION. (Corolario aparte: la rama SSE valida el COMPOSITOR, no")
-                    Console.WriteLine("     ## que el bake haya escrito ese resultado a disco.)")
+                    Console.WriteLine("     ## RUN WITH --rawdds: the SSE branch RE-BAKES the facetint (it does not read the DDS")
+                    Console.WriteLine("     ## from disk) but it now passes the EXPLICIT format from the same setting the")
+                    Console.WriteLine("     ## bake uses ⇒ our side comes out UNCOMPRESSED. The codec floor is ONLY the CK's,")
+                    Console.WriteLine("     ## so these RMS are NOT comparable against BC3 baselines: they are lower")
+                    Console.WriteLine("     ## BY CONSTRUCTION. (Separate corollary: the SSE branch validates the COMPOSITOR, not")
+                    Console.WriteLine("     ## that the bake wrote that result to disk.)")
                 Else
-                    Console.WriteLine("     ## CORRIDA CON --rawdds: nuestros DDS salieron SIN COMPRIMIR (B8G8R8A8) y el")
-                    Console.WriteLine("     ## comparador los LEE de disco. El piso de codec de arriba es SOLO el del CK.")
-                    Console.WriteLine("     ## Estos RMS NO son comparables contra baselines hechos con BC3/BC5: son mas")
-                    Console.WriteLine("     ## bajos POR CONSTRUCCION. Miden el COMPOSITOR, no el codec.")
+                    Console.WriteLine("     ## RUN WITH --rawdds: our DDS came out UNCOMPRESSED (B8G8R8A8) and the")
+                    Console.WriteLine("     ## comparator READS them from disk. The codec floor above is ONLY the CK's.")
+                    Console.WriteLine("     ## These RMS are NOT comparable against baselines made with BC3/BC5: they are")
+                    Console.WriteLine("     ## lower BY CONSTRUCTION. They measure the COMPOSITOR, not the codec.")
                 End If
                 Console.WriteLine("     ##############################################################################")
             End If
@@ -2684,27 +2631,27 @@ Module Program
                     Dim csvPath = IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, $"dds_{If(isSseB, "SSE", "FO4")}.csv")
                     Dim header = "formID,origin,editorID,channel,rms255,byteExactPct,maxR,maxG,maxB,rmsAlpha,maxAlpha,ckAlphaVaria,mineAlphaVaria,width,height,meanDR,meanDG,meanDB,sex"
                     IO.File.WriteAllLines(csvPath, New String() {header}.Concat(DdsCsvRows))
-                    Console.WriteLine($"     [csv] detalle por NPC ({DdsCsvRows.Count} filas) -> {csvPath}")
+                    Console.WriteLine($"     [csv] per-NPC detail ({DdsCsvRows.Count} rows) -> {csvPath}")
                 Catch ex As Exception
                     ' No degradar en silencio: si el volcado falla hay que saberlo, no quedarse sin el detalle.
-                    Console.Error.WriteLine($"     [csv] FALLO el volcado por NPC: {ex.GetType().Name}: {ex.Message}")
+                    Console.Error.WriteLine($"     [csv] the per-NPC dump FAILED: {ex.GetType().Name}: {ex.Message}")
                 End Try
             End If
         End If
 
         Console.WriteLine("  " & EngineSkinWeightNormalization.StatsLine())
-        Console.WriteLine("  ---- REGLA _faceBones + huesos base (prediccion BAKETEST3) ----")
-        Console.WriteLine("    prediccion: la banda maxD 0,02-0,05 aparece SOLO en shapes cuyo rig tiene huesos base.")
+        Console.WriteLine("  ---- _faceBones + base bones RULE (BAKETEST3 prediction) ----")
+        Console.WriteLine("    prediction: the maxD 0.02-0.05 band appears ONLY in shapes whose rig has base bones.")
         Dim popBase = RigBaseDrift + RigBaseClean, popNoBase = RigEyeDrift + RigEyeClean
-        Console.WriteLine($"    poblacion  CON huesos base : {popBase} shapes  (drift>0={RigBaseDrift}  exactos={RigBaseClean})")
-        Console.WriteLine($"    poblacion  SIN huesos base : {popNoBase} shapes  (drift>0={RigEyeDrift}  exactos={RigEyeClean})")
-        Console.WriteLine($"    en la BANDA 0,02-0,05      : con base={BandBase}   SIN base={BandNoBase}")
+        Console.WriteLine($"    population  WITH base bones : {popBase} shapes  (drift>0={RigBaseDrift}  exact={RigBaseClean})")
+        Console.WriteLine($"    population  NO base bones   : {popNoBase} shapes  (drift>0={RigEyeDrift}  exact={RigEyeClean})")
+        Console.WriteLine($"    in the BAND 0.02-0.05       : with base={BandBase}   without base={BandNoBase}")
         ' Un veredicto solo vale si el instrumento PUDO dar el resultado contrario. Dos formas de no poder:
         ' (a) una clase vacia => el clasificador no separa nada; (b) la banda vacia => la prediccion no se
         ' ejerce ni una vez. En ambos casos esto es NO APLICABLE, no "refutada".
         If popBase = 0 OrElse popNoBase = 0 Then
-            Dim vacia = If(popBase = 0, "CON huesos base", "SIN huesos base")
-            Console.WriteLine($"    => NO APLICABLE: la clase '{vacia}' quedo VACIA; el clasificador no discrimina en este corpus.")
+            Dim vacia = If(popBase = 0, "WITH base bones", "WITHOUT base bones")
+            Console.WriteLine($"    => NOT APPLICABLE: the class '{vacia}' came out EMPTY; the classifier does not discriminate in this corpus.")
             ' MEDIDO 2026-07-20, y vale la pena dejarlo escrito porque invalida las DOS lecturas previas:
             ' el clasificador es degenerado en AMBOS motores, cada uno para el lado contrario.
             '   SSE : 0 shapes CON huesos base  (20977 SIN)  -> ademas 0 shapes en la banda
@@ -2712,79 +2659,79 @@ Module Program
             ' En FO4 eso hace que "la banda solo aparece con huesos base" sea VACUAMENTE cierta: no hay
             ' ningun shape que pudiera haberla falsado. Ni confirmacion ni refutacion: SIN MEDIR.
             If popNoBase = 0 Then
-                Console.WriteLine("       TODOS los shapes tienen huesos base => la prediccion es VACUAMENTE cierta aqui;")
-                Console.WriteLine("       ningun shape podria haberla falsado. NO cuenta como confirmacion.")
+                Console.WriteLine("       ALL shapes have base bones => the prediction is VACUOUSLY true here;")
+                Console.WriteLine("       no shape could have falsified it. It does NOT count as a confirmation.")
             Else
-                Console.WriteLine("       NINGUN shape tiene huesos base => la regla presupone un rig que este corpus no tiene.")
+                Console.WriteLine("       NO shape has base bones => the rule presupposes a rig this corpus does not have.")
             End If
         ElseIf BandBase + BandNoBase = 0 Then
-            Console.WriteLine("    => NO APLICABLE: NINGUN shape cayo en la banda 0,02-0,05; la prediccion no fue puesta a prueba.")
+            Console.WriteLine("    => NOT APPLICABLE: NO shape fell in the 0.02-0.05 band; the prediction was never put to the test.")
         ElseIf BandNoBase > 0 Then
-            Console.WriteLine($"    => REFUTADA en este corpus: {BandNoBase} shapes en la banda SIN huesos base.")
+            Console.WriteLine($"    => REFUTED in this corpus: {BandNoBase} shapes in the band WITHOUT base bones.")
             For Each sm In BandNoBaseSamples : Console.WriteLine($"      contraejemplo: {sm}") : Next
         Else
-            Console.WriteLine($"    => CONSISTENTE en este corpus: los {BandBase} shapes de la banda tienen TODOS huesos base.")
+            Console.WriteLine($"    => CONSISTENT in this corpus: ALL {BandBase} shapes in the band have base bones.")
         End If
-        Console.WriteLine("  ---- ALCANCE de reglas condicionales (0 = demostrablemente inerte en este corpus) ----")
-        Console.WriteLine($"    canales descartados por peso fuera de [-1,1] : {FO4_NPC_Manager.NpcMorphResolver.DroppedOutOfRangeChannels}")
-        For Each sm In FO4_NPC_Manager.NpcMorphResolver.DroppedWeightSamples : Console.WriteLine($"      peso: {sm}") : Next
-        Console.WriteLine($"    veces que el clamp de LerpFmrs cambio el valor : {FO4_NPC_Manager.FaceBonePoseBuilder.ClampHits}")
+        Console.WriteLine("  ---- SCOPE of conditional rules (0 = demonstrably inert in this corpus) ----")
+        Console.WriteLine($"    channels dropped by weight outside [-1,1]    : {FO4_NPC_Manager.NpcMorphResolver.DroppedOutOfRangeChannels}")
+        For Each sm In FO4_NPC_Manager.NpcMorphResolver.DroppedWeightSamples : Console.WriteLine($"      weight: {sm}") : Next
+        Console.WriteLine($"    times the LerpFmrs clamp changed the value    : {FO4_NPC_Manager.FaceBonePoseBuilder.ClampHits}")
         For Each sm In FO4_NPC_Manager.FaceBonePoseBuilder.ClampSamples : Console.WriteLine($"      clamp: {sm}") : Next
-        Console.WriteLine("  ---- PER-VERTEX (metrica que discrimina esta ley) ----")
+        Console.WriteLine("  ---- PER-VERTEX (the metric that discriminates this law) ----")
         Console.WriteLine($"    vertices compared={VertTotal}  EXACT={VertExact}  ({(If(VertTotal > 0, 100.0 * VertExact / VertTotal, 0.0)).ToString("F2", Globalization.CultureInfo.InvariantCulture)}%)")
         Dim ulpLbl = {"exact", "<=0.5ulp", "<=1ulp", "<=2ulp", "<=4ulp", ">4ulp"}
         For bi = 0 To 5
             Console.WriteLine($"    residuo {ulpLbl(bi),-9} : {UlpBins(bi)}")
         Next
-        Console.WriteLine("  ---- POSITION maxD HISTOGRAM (shapes over threshold; una corrida, todos los umbrales) ----")
+        Console.WriteLine("  ---- POSITION maxD HISTOGRAM (shapes over threshold; one run, all thresholds) ----")
         For hi = 0 To PosHistThresholds.Length - 1
             Console.WriteLine($"    shapes with maxD > {PosHistThresholds(hi).ToString("F3", Globalization.CultureInfo.InvariantCulture)} : {PosHistCounts(hi)}")
         Next
-        Console.WriteLine("  ---- POSITION EXACTNESS (independiente del umbral) ----")
+        Console.WriteLine("  ---- POSITION EXACTNESS (threshold-independent) ----")
         Console.WriteLine($"    shapes compared={ShapePosTotal}  BYTE-EXACT (maxΔ=0)={ShapePosExact}  ({(If(ShapePosTotal > 0, 100.0 * ShapePosExact / ShapePosTotal, 0.0)).ToString("F2", Globalization.CultureInfo.InvariantCulture)}%)")
         ' ==== CATEGORIAS NO-OP: clasificadas como esperadas, pero SE MUESTRAN ====
         ' No mostrarlas hacia que la tabla de REAL pareciera la lista completa de diferencias. Lo es de
         ' las diferencias que el comparador juzga defectos; NO de las diferencias que existen.
-        Console.WriteLine($"  NO-OP difference categories (clasificadas como esperadas — se listan igual): {noopNpcs.Count}")
+        Console.WriteLine($"  NO-OP difference categories (classified as expected — listed anyway): {noopNpcs.Count}")
         For Each kv In noopNpcs.OrderByDescending(Function(x) x.Value.Count)
             Console.WriteLine($"    [{kv.Value.Count} NPCs / {noopCount(kv.Key)} casos] {kv.Key}")
             Console.WriteLine($"        e.g.: {noopExample(kv.Key)}")
         Next
 
         ' ---- COBERTURA DEL BARRIDO REFLECTIVO (todo el NIF, campo por campo) ----
-        Console.WriteLine("  ---- COBERTURA del diff REFLECTIVO (bloques + sub-bloques + cada campo) ----")
-        Console.WriteLine($"    bloques comparados : {ReflectBlocksCompared}")
-        Console.WriteLine($"    campos comparados  : {ReflectFieldsCompared}")
+        Console.WriteLine("  ---- COVERAGE of the REFLECTIVE diff (blocks + sub-blocks + every field) ----")
+        Console.WriteLine($"    blocks compared : {ReflectBlocksCompared}")
+        Console.WriteLine($"    fields compared : {ReflectFieldsCompared}")
         If ReflectFieldsCompared = 0 Then
-            Console.WriteLine("    !!!! NO se comparo NI UN campo por reflexion: la red no fue ejercida, no leer como PASS.")
+            Console.WriteLine("    !!!! NOT A SINGLE field was compared by reflection: the net was never exercised, do not read as PASS.")
         End If
-        Console.WriteLine("    ---- EXCLUSIONES (explicitas, con motivo) ----")
+        Console.WriteLine("    ---- EXCLUSIONS (explicit, with a reason) ----")
         For Each kv In ReflectSkipReasons
             Dim hits = 0
             ReflectSkippedProps.TryGetValue(kv.Key, hits)
-            Console.WriteLine($"      {kv.Key} ({hits} veces): {kv.Value}")
+            Console.WriteLine($"      {kv.Key} ({hits} times): {kv.Value}")
         Next
         Dim volHits = 0
-        ReflectSkippedProps.TryGetValue("(coleccion >5000: solo cantidad)", volHits)
-        Console.WriteLine($"      colecciones >5000 elementos ({volHits} veces): solo se comparo la CANTIDAD;")
-        Console.WriteLine("        el contenido son los arrays de geometria, comparados aparte con tolerancia")
-        Console.WriteLine("        numerica (maxD / RMS / bins de ULP) en vez de por igualdad exacta de bits.")
-        Console.WriteLine("      indices de bloque (NiBlockRef.Index): NUNCA se comparan — el orden de emision del")
-        Console.WriteLine("        CK difiere del nuestro en el 97% de los NIF, asi que todo indice difiere por")
-        Console.WriteLine("        construccion. Se compara el DESTINO del ref (tipo + nombre), que es lo semantico.")
+        ReflectSkippedProps.TryGetValue("(collection >5000: count only)", volHits)
+        Console.WriteLine($"      collections >5000 elements ({volHits} times): only the COUNT was compared;")
+        Console.WriteLine("        the content is the geometry arrays, compared separately with a tolerance")
+        Console.WriteLine("        numeric (maxD / RMS / ULP bins) instead of exact bit equality.")
+        Console.WriteLine("      block indices (NiBlockRef.Index): NEVER compared — the CK's emission order")
+        Console.WriteLine("        differs from ours in 97% of the NIFs, so every index differs by")
+        Console.WriteLine("        construction. What is compared is the ref's TARGET (type + name), which is the semantic part.")
 
         ' ---- POSICION SKINNEADA: la que decide lo que se VE ----
-        Console.WriteLine("  ---- POSITION SKINNEADA (world = boneWorld o skinToBone, ponderada por pesos) ----")
+        Console.WriteLine("  ---- SKINNED POSITION (world = boneWorld or skinToBone, weighted by weights) ----")
         Console.WriteLine($"    shapes compared={SkinPosTotal}  EXACT (maxΔ=0)={SkinPosExact}  ({(If(SkinPosTotal > 0, 100.0 * SkinPosExact / SkinPosTotal, 0.0)).ToString("F2", Globalization.CultureInfo.InvariantCulture)}%)")
         For hi = 0 To PosHistThresholds.Length - 1
             Console.WriteLine($"    shapes with maxD > {PosHistThresholds(hi).ToString("F3", Globalization.CultureInfo.InvariantCulture)} : {SkinPosHistCounts(hi)}")
         Next
-        Console.WriteLine($"    peor: {SkinPosMax.ToString("G6", Globalization.CultureInfo.InvariantCulture)}  en {SkinPosWorst}")
-        Console.WriteLine($"    shapes sin dato de skinning comparable (sin par o distinto conteo): {SkinPosNoData}")
+        Console.WriteLine($"    worst: {SkinPosMax.ToString("G6", Globalization.CultureInfo.InvariantCulture)}  at {SkinPosWorst}")
+        Console.WriteLine($"    shapes with no comparable skinning data (no match or different count): {SkinPosNoData}")
         If SkinPosTotal = 0 Then
-            Console.WriteLine("    !!!! NINGUN shape se pudo comparar skinneado: la metrica NO fue ejercida, no leerla como PASS.")
+            Console.WriteLine("    !!!! NO shape could be compared skinned: the metric was NOT exercised, do not read it as PASS.")
         End If
-        Console.WriteLine($"    posThresh usado para la categoria positions = {PosReportThreshold.ToString("F4", Globalization.CultureInfo.InvariantCulture)}")
+        Console.WriteLine($"    posThresh used for the positions category = {PosReportThreshold.ToString("F4", Globalization.CultureInfo.InvariantCulture)}")
         Console.WriteLine($"======== END BATCH ({catNpcs.Count} distinct categories) ========")
     End Sub
 
@@ -2978,8 +2925,6 @@ persist:
         Console.WriteLine($"======== END VERTEX BATCH {gameTag} ========")
     End Sub
 
-    ''' <summary>Compara TODAS las props de un shape emparejado (posiciones, index, normals, tangents,
-    ''' bitangents, UVs, colors, bones, VertexDesc, bounds, texture-set) acumulando en real/noop.</summary>
     ''' <summary>Umbral de reporte de la categoria "positions" (--posthresh). Default = el historico 0,05.</summary>
     Private DdsCompareRequested As Boolean = False
     ' --rawdds efectivo en ESTA corrida. Se refleja aca para que el reporte agregado del DDS pueda marcar
@@ -3366,7 +3311,7 @@ persist:
         Dim cl = TryCast(ckNif.GetShader(cs), NiflySharp.Blocks.BSLightingShaderProperty)
         Dim ml = TryCast(myNif.GetShader(ms), NiflySharp.Blocks.BSLightingShaderProperty)
         If cl Is Nothing OrElse ml Is Nothing Then
-            If (cl Is Nothing) <> (ml Is Nothing) Then real.Add($"shape '{nm}': shader presencia CK={cl IsNot Nothing} baked={ml IsNot Nothing}")
+            If (cl Is Nothing) <> (ml Is Nothing) Then real.Add($"shape '{nm}': shader presence CK={cl IsNot Nothing} baked={ml IsNot Nothing}")
             Return
         End If
         ' shader TYPE: gobierna la ley de composición del bake (CK SSE 0x141d0ea00 dispatcha por este valor:
@@ -3416,7 +3361,7 @@ persist:
         If ((ckF1 And G2pMask) <> 0UI) OrElse ((myF1 And G2pMask) <> 0UI) Then
             DiffF(nm, "GrayscaleToPaletteScale", cl.GrayscaleToPaletteScale, ml.GrayscaleToPaletteScale, 0.002F, real)
         ElseIf Math.Abs(cl.GrayscaleToPaletteScale - ml.GrayscaleToPaletteScale) > 0.002F Then
-            noop.Add($"shape '{nm}' shader.GrayscaleToPaletteScale: CK={cl.GrayscaleToPaletteScale} baked={ml.GrayscaleToPaletteScale} (flag G2P OFF en ambos ⇒ INERTE — NO-OP)")
+            noop.Add($"shape '{nm}' shader.GrayscaleToPaletteScale: CK={cl.GrayscaleToPaletteScale} baked={ml.GrayscaleToPaletteScale} (G2P flag OFF on both ⇒ INERT — NO-OP)")
         End If
         DiffF(nm, "SkinTintAlpha", cl.SkinTintAlpha, ml.SkinTintAlpha, 0.002F, real)
         ' Rimlight/Softlight suelen ser FLT_MAX (no lit) — DiffF ignora NaN pero no Inf; comparar sólo si ambos finitos
@@ -3438,7 +3383,7 @@ persist:
         If cs.AlphaPropertyRef IsNot Nothing AndAlso cs.AlphaPropertyRef.Index >= 0 Then ca = TryCast(ckNif.Blocks(cs.AlphaPropertyRef.Index), NiflySharp.Blocks.NiAlphaProperty)
         If ms.AlphaPropertyRef IsNot Nothing AndAlso ms.AlphaPropertyRef.Index >= 0 Then ma = TryCast(myNif.Blocks(ms.AlphaPropertyRef.Index), NiflySharp.Blocks.NiAlphaProperty)
         If ca Is Nothing AndAlso ma Is Nothing Then Return
-        If (ca Is Nothing) <> (ma Is Nothing) Then real.Add($"shape '{nm}': alpha-prop presencia CK={ca IsNot Nothing} baked={ma IsNot Nothing}") : Return
+        If (ca Is Nothing) <> (ma Is Nothing) Then real.Add($"shape '{nm}': alpha-prop presence CK={ca IsNot Nothing} baked={ma IsNot Nothing}") : Return
         If ca.Flags.Value <> ma.Flags.Value Then real.Add($"shape '{nm}' alpha.flags CK=0x{ca.Flags.Value:X4} baked=0x{ma.Flags.Value:X4}")
         If ca.Threshold <> ma.Threshold Then real.Add($"shape '{nm}' alpha.threshold CK={ca.Threshold} baked={ma.Threshold}")
     End Sub
@@ -3462,25 +3407,25 @@ persist:
     ''' <summary>Propiedades EXCLUIDAS del diff reflectivo, con su motivo. Se listan en el reporte para que
     ''' la omision sea auditable y nunca silenciosa.</summary>
     Private ReadOnly ReflectSkipReasons As New Dictionary(Of String, String)(StringComparer.OrdinalIgnoreCase) From {
-        {"BlockSize", "tamaño serializado: depende del orden de emision y del string table, no del contenido"},
-        {"StreamVersion", "version del contenedor, no del dato"},
-        {"BlockName", "nombre del TIPO: ya cubierto por el histograma de tipos de bloque"},
-        {"References", "plomeria de NiflySharp: enumera INDICES crudos de bloque, que difieren por el orden de emision"},
+        {"BlockSize", "serialized size: depends on the emission order and the string table, not on the content"},
+        {"StreamVersion", "container version, not the data itself"},
+        {"BlockName", "TYPE name: already covered by the block-type histogram"},
+        {"References", "NiflySharp plumbing: enumerates raw block INDICES, which differ because of the emission order"},
         {"ReferenceArrays", "idem References"},
-        {"Pointers", "idem References (punteros por indice)"},
+        {"Pointers", "same as References (pointers by index)"},
         {"Indices", "idem References (indices crudos)"},
-        {"VertexData", "geometria: comparada aparte con tolerancia numerica (maxD/RMS/bins de ULP)"},
-        {"VertexPositions", "geometria: comparada aparte con tolerancia numerica"},
-        {"Triangles", "geometria: comparada aparte (conteo + indices que difieren)"},
-        {"Normals", "geometria: comparada aparte con umbral"},
-        {"Tangents", "geometria: comparada aparte con umbral"},
-        {"Bitangents", "geometria: comparada aparte con umbral"},
-        {"UVs", "geometria: comparada aparte con umbral"},
-        {"VertexColors", "geometria: comparada aparte con umbral"},
-        {"BoneWeights", "skinning: comparado aparte con umbral"},
-        {"BoneIndices", "skinning: comparado aparte (conteo de slots distintos)"},
-        {"VertexDesc", "ya se compara explicitamente, campo por campo, mas arriba"},
-        {"GrayscaleToPaletteScale", "ya se compara arriba CON su gate: el motor solo lo samplea con el flag G2P encendido; con el flag apagado el CK escribe basura no-inicializada"}
+        {"VertexData", "geometry: compared separately with a numeric tolerance (maxD/RMS/ULP bins)"},
+        {"VertexPositions", "geometry: compared separately with a numeric tolerance"},
+        {"Triangles", "geometry: compared separately (count + differing indices)"},
+        {"Normals", "geometry: compared separately with a threshold"},
+        {"Tangents", "geometry: compared separately with a threshold"},
+        {"Bitangents", "geometry: compared separately with a threshold"},
+        {"UVs", "geometry: compared separately with a threshold"},
+        {"VertexColors", "geometry: compared separately with a threshold"},
+        {"BoneWeights", "skinning: compared separately with a threshold"},
+        {"BoneIndices", "skinning: compared separately (count of differing slots)"},
+        {"VertexDesc", "already compared explicitly, field by field, above"},
+        {"GrayscaleToPaletteScale", "already compared above WITH its gate: the engine only samples it with the G2P flag on; with the flag off the CK writes uninitialized garbage"}
     }
 
     ''' <summary>Cuantos campos/bloques comparo de verdad el diff reflectivo. Sin este contador,
@@ -3514,12 +3459,12 @@ persist:
                                  ckNif As Nifcontent_Class_Manolo, myNif As Nifcontent_Class_Manolo,
                                  real As List(Of String), depth As Integer)
         If a Is Nothing OrElse b Is Nothing Then
-            If (a Is Nothing) <> (b Is Nothing) Then real.Add($"{path}: presencia CK={a IsNot Nothing} baked={b IsNot Nothing}")
+            If (a Is Nothing) <> (b Is Nothing) Then real.Add($"{path}: presence CK={a IsNot Nothing} baked={b IsNot Nothing}")
             Return
         End If
         If depth > 4 Then Return
         If a.GetType() IsNot b.GetType() Then
-            real.Add($"{path}: TIPO de bloque CK={a.GetType().Name} baked={b.GetType().Name}")
+            real.Add($"{path}: block TYPE CK={a.GetType().Name} baked={b.GetType().Name}")
             Return
         End If
         Threading.Interlocked.Increment(ReflectBlocksCompared)
@@ -3545,7 +3490,7 @@ persist:
                                  real As List(Of String), depth As Integer)
         If va Is Nothing AndAlso vb Is Nothing Then Return
         If va Is Nothing OrElse vb Is Nothing Then
-            real.Add($"{path}: presencia CK={va IsNot Nothing} baked={vb IsNot Nothing}")
+            real.Add($"{path}: presence CK={va IsNot Nothing} baked={vb IsNot Nothing}")
             Return
         End If
         Dim t = va.GetType()
@@ -3619,7 +3564,7 @@ persist:
                 Return
             End Try
             If la.Count <> lb.Count Then
-                real.Add($"{path}: CANTIDAD CK={la.Count} baked={lb.Count}")
+                real.Add($"{path}: COUNT CK={la.Count} baked={lb.Count}")
                 Return
             End If
             ' ⛔ GUARDA POR VOLUMEN, declarada. Arriba de 5000 elementos se compara SOLO la cantidad.
@@ -3628,7 +3573,7 @@ persist:
             ' aca por igualdad EXACTA de struct duplicaria el costo y ademas reportaria como "diferencia"
             ' cada ultimo bit de float, que es justo lo que las metricas numericas saben clasificar.
             If la.Count > 5000 Then
-                ReflectSkippedProps.AddOrUpdate("(coleccion >5000: solo cantidad)", 1, Function(k, v) v + 1)
+                ReflectSkippedProps.AddOrUpdate("(collection >5000: count only)", 1, Function(k, v) v + 1)
                 Return
             End If
             ' ⛔ NO usar x.Equals(y) a secas. Los elementos suelen ser CLASES de NiflySharp (NiString,
@@ -3684,7 +3629,7 @@ persist:
     ''' divergencia que depende de lo que el NPC lleva puesto es reproducible o es una tirada del CK.</summary>
     Private Sub OutfitScanRun(pm As PluginManager, listPath As String)
         If Not IO.File.Exists(listPath) Then
-            Console.Error.WriteLine($"[outfitscan] no existe la lista: {listPath}") : Environment.ExitCode = 2 : Return
+            Console.Error.WriteLine($"[outfitscan] the list does not exist: {listPath}") : Environment.ExitCode = 2 : Return
         End If
         Dim det = 0, lvl = 0, sinOutfit = 0, noRes = 0
         Console.WriteLine("[outfitscan] formID | EDID | DOFT | veredicto | contenido")
@@ -3695,12 +3640,12 @@ persist:
             If Not m.Success Then Continue For
             Dim fid = Convert.ToUInt32(m.Groups(1).Value, 16)
             Dim rec = pm.GetRecord(fid)
-            If rec Is Nothing Then Console.WriteLine($"  0x{fid:X8} | <sin record>") : noRes += 1 : Continue For
+            If rec Is Nothing Then Console.WriteLine($"  0x{fid:X8} | <no record>") : noRes += 1 : Continue For
             Dim npc = RecordParsers.ParseNPC(rec, rec.SourcePluginName, pm)
             If npc Is Nothing Then Console.WriteLine($"  0x{fid:X8} | <no parsea>") : noRes += 1 : Continue For
             Dim edid = If(rec.EditorID, "")
             If Not npc.HasDefaultOutfit OrElse npc.DefaultOutfitFormID = 0UI Then
-                Console.WriteLine($"  0x{fid:X8} | {edid} | (sin DOFT) | SIN OUTFIT |")
+                Console.WriteLine($"  0x{fid:X8} | {edid} | (no DOFT) | NO OUTFIT |")
                 sinOutfit += 1 : Continue For
             End If
             Dim oft = pm.GetRecord(npc.DefaultOutfitFormID)
@@ -3725,7 +3670,7 @@ persist:
             If anyLvl Then lvl += 1 Else det += 1
             Console.WriteLine($"  0x{fid:X8} | {edid} | 0x{npc.DefaultOutfitFormID:X8} | {If(anyLvl, "LEVELED", "DETERMINISTA")} | {String.Join(",", sigs)}")
         Next
-        Console.WriteLine($"[outfitscan] RESUMEN: LEVELED={lvl}  DETERMINISTA={det}  sin outfit={sinOutfit}  no resuelve={noRes}")
+        Console.WriteLine($"[outfitscan] SUMMARY: LEVELED={lvl}  DETERMINISTIC={det}  no outfit={sinOutfit}  unresolved={noRes}")
     End Sub
 
     Private Function ShaderFlagBitName(isFo4 As Boolean, isSecondWord As Boolean, bit As Integer) As String
@@ -3824,7 +3769,7 @@ persist:
             p = p.Trim()
             If p = "" Then Continue For
             Console.WriteLine($"======== {p}")
-            If Not IO.File.Exists(p) Then Console.WriteLine("   (no existe)") : Continue For
+            If Not IO.File.Exists(p) Then Console.WriteLine("   (does not exist)") : Continue For
             Dim nif As New Nifcontent_Class_Manolo() : nif.Load_Manolo(IO.File.ReadAllBytes(p))
             For Each shp In nif.GetShapes()
                 Dim shad = TryCast(nif.GetShader(shp), NiflySharp.Blocks.BSLightingShaderProperty)
@@ -3832,7 +3777,7 @@ persist:
                 Dim mn = If(shad Is Nothing, "", If(shad.Name?.String, ""))
                 Console.WriteLine($"  shape '{shp.Name?.String}'  shaderType={st}  shaderName='{mn}'")
                 Dim ts = GetTexSet(nif, shp)
-                If ts Is Nothing OrElse ts.Textures Is Nothing Then Console.WriteLine("     (sin texture set)") : Continue For
+                If ts Is Nothing OrElse ts.Textures Is Nothing Then Console.WriteLine("     (no texture set)") : Continue For
                 For si = 0 To ts.Textures.Count - 1
                     Console.WriteLine($"     TX{si:D2} = '{ts.Textures(si)?.Content}'")
                 Next
@@ -4331,8 +4276,8 @@ persist:
         If bytes Is Nothing OrElse bytes.Length = 0 Then
             bytes = FilesDictionary_class.GetBytes(key)
             If bytes IsNot Nothing AndAlso bytes.Length > 0 Then
-                Console.Error.WriteLine($"[dumpref] ⚠ '{key}' NO está en ningún BA2/BSA: lo que sale es el SUELTO," &
-                                        " que puede ser un bake NUESTRO. NO usarlo como referencia del CK.")
+                Console.Error.WriteLine($"[dumpref] ⚠ '{key}' is NOT in any BA2/BSA: what comes out is the LOOSE file," &
+                                        " which may be a bake of OURS. Do NOT use it as a CK reference.")
             End If
         End If
         If bytes Is Nothing OrElse bytes.Length = 0 Then
@@ -4476,33 +4421,6 @@ persist:
         Console.WriteLine($"  => {If(allVanilla, "ALL VANILLA: vanilla-vs-vanilla comparison VALID", "MOD OVERRIDE PRESENT: DO NOT BAKE (contaminated comparison)")}")
     End Sub
 
-    ''' <summary>DIAGNOSTICO (--ttedscan): recorre TODAS las RACE, junta el TTED Default de cada opcion de
-    ''' tint (male+female), reporta el conjunto de valores distintos (histograma) y cualquier NO-entero. Si
-    ''' TODOS son enteros (0,1,2,3...) => TTED es probablemente un INDICE (no una intensidad float). Test de
-    ''' la hipotesis del usuario: TTED-como-indice apunta a la opcion default y se aplica con su alpha.</summary>
-    ''' <summary>⭐ --alphagatescan — mide los DOS gates del alpha de la cabeza sobre TODO el load order,
-    ''' SIN hornear (sólo records + BGSM del FilesDictionary). Existe porque los dos gates que hoy viven en
-    ''' <c>NpcMaterialResolver</c> están sin dimensionar y uno de ellos se declara a sí mismo SIN FUENTE:
-    '''
-    ''' (1) <b>¿Uno o dos interruptores?</b> El bit F4SPF2 Alpha_Test está puesto en EXACTAMENTE 1 shape en
-    '''     todo FO4+DLC (Valentine, medido sobre 1489 NIFs del CK). La fabricación del NiAlphaProperty la
-    '''     gobierna <c>ACBS\Diffuse Alpha Test</c> (RE CK 0x140ED41F6). Si el flag ACBS está en 1 solo NPC,
-    '''     los dos hechos son el MISMO y basta un interruptor agnóstico en la lib. Si está en N&gt;1, NO son
-    '''     el mismo gate y unificarlos pondría el bit donde el CK no lo pone.
-    '''
-    ''' (2) <b>¿El gate <c>isFaceHeadPart</c> es inerte?</b> El motor NO distingue por parte del cuerpo
-    '''     (<c>ApplyMaterialToGeometry 0x142169BB0</c>) ⇒ el gate es heurístico. Se mide su población real:
-    '''     TXST con MNAM cuyo BGSM declara alpha, y TODO referente (HDPT.TNAM, NPC.FTST, RACE.DFTM/DFTF,
-    '''     ARMA NAM0/NAM1). Si ningún referente ajeno a un head part de cara declara alpha ⇒ sacarlo es
-    '''     INERTE sobre vanilla; si hay N ⇒ hoy los renderizamos mal y el número dice cuántos.
-    '''
-    ''' ⛔ Un conteo que da 0 NO valida el gate (vanilla es corpus sesgado): sólo dimensiona el riesgo de
-    ''' sacarlo. Un conteo &gt; 0 SÍ es un contraejemplo y decide.</summary>
-    ''' <summary>--tintcountscan — capas de tint EFECTIVAS por NPC (las autoradas en el NPC_ mergeadas con
-    ''' los defaults de la RACE, que es lo que consume el compositor). Existe como TEST DE FALSACION de la
-    ''' hipotesis "los outliers del facetint SSE son exactamente los NPC sin capas de tint": si el CSV muestra
-    ''' NPCs con 0 capas que caen en el BULTO (RMS &lt; 2, byte-exact ~98%), la hipotesis queda REFUTADA y el
-    ''' predictor es otro. Un conteo que confirma no prueba; uno que refuta, si.</summary>
     ''' <summary>--ddsprobe &lt;formID&gt; — VALORES DE PIXEL del facetint SSE, nuestro vs el del CK. Existe
     ''' porque RMS y maxD son agregados que NO distinguen dos cosas muy distintas: "las dos imagenes son
     ''' planas y difieren en una constante" vs "una de las dos tiene variacion espacial". En el defecto de
@@ -4511,37 +4429,37 @@ persist:
     ''' inferir nada.</summary>
     Private Sub DdsProbe(pm As PluginManager, npcFormID As UInteger)
         Dim rec = pm.GetRecord(npcFormID)
-        If rec Is Nothing Then Console.Error.WriteLine($"0x{npcFormID:X8}: no existe") : Environment.ExitCode = 2 : Return
+        If rec Is Nothing Then Console.Error.WriteLine($"0x{npcFormID:X8}: does not exist") : Environment.ExitCode = 2 : Return
         Dim npc = RecordParsers.ParseNPC(rec, rec.SourcePluginName, pm)
         Dim race = RecordParsers.ParseRACE(pm.GetRecord(npc.RaceFormID), pm)
         Dim origin = pm.GetOriginatingPluginName(npcFormID)
         Dim fgL = PluginManager.ToFaceGenLocalFormID(npcFormID)
         Console.WriteLine($"=== DDS PROBE 0x{npcFormID:X8} {npc.EditorID}  race=0x{npc.RaceFormID:X8} {If(npc.IsFemale, "F", "M")} ===")
         Dim rlay = SseFaceTintComposer.GetRaceLayersOrdered(pm, npc.RaceFormID, npc.IsFemale)
-        Console.WriteLine($"  capas de la RACE = {If(rlay Is Nothing, -1, rlay.Count)}   TINI del NPC = {If(npc.SseTintRaw Is Nothing, 0, npc.SseTintRaw.Where(Function(x) x.Sig = "TINI").Count())}")
+        Console.WriteLine($"  RACE layers = {If(rlay Is Nothing, -1, rlay.Count)}   NPC TINI = {If(npc.SseTintRaw Is Nothing, 0, npc.SseTintRaw.Where(Function(x) x.Sig = "TINI").Count())}")
 
         ' Capas de la RACE una por una: es donde vive el color de un NPC SIN tints autorados. Se imprime el
         ' TIND (CLFM del preset default) y si RESUELVE, porque ResolveClfmColor DEGRADA A BLANCO en silencio
         ' cuando el formID es 0, el record no existe, no es CLFM, o no trae CNAM — y N capas hacia blanco
         ' saturan el acumulador a 255.
         If rlay IsNot Nothing AndAlso rlay.Count > 0 Then
-            Console.WriteLine($"  --- capas de la RACE (TIND -> color) ---")
+            Console.WriteLine($"  --- RACE layers (TIND -> color) ---")
             Dim nBad = 0
             For Each L In rlay
                 Dim st = "?"
                 If L.DefaultClfm = 0UI Then
-                    st = "TIND=0 -> BLANCO"
+                    st = "TIND=0 -> WHITE"
                 Else
                     Dim cr = pm.GetRecord(L.DefaultClfm)
                     If cr Is Nothing Then
-                        st = "record AUSENTE -> BLANCO"
+                        st = "record MISSING -> WHITE"
                     ElseIf cr.Header.Signature <> "CLFM" Then
-                        st = $"sig={cr.Header.Signature} (no CLFM) -> BLANCO"
+                        st = $"sig={cr.Header.Signature} (no CLFM) -> WHITE"
                     Else
                         Dim cnl = cr.Subrecords.Where(Function(s) s.Signature = "CNAM").ToList()
                         Dim cn = If(cnl.Count > 0, cnl(0), Nothing)
                         If cnl.Count = 0 OrElse cn.Data Is Nothing OrElse cn.Data.Length < 3 Then
-                            st = "sin CNAM -> BLANCO"
+                            st = "no CNAM -> WHITE"
                         Else
                             st = $"CNAM=({cn.Data(0)},{cn.Data(1)},{cn.Data(2)})"
                         End If
@@ -4550,28 +4468,28 @@ persist:
                 ' Si no resuelve, probar el MISMO id local bajo el indice del plugin del propio RACE. Si ahi
                 ' SI aparece, el defecto no es "el record no existe" sino el REMAPEO del indice de master
                 ' (auto-referencia: local index == cantidad de masters ⇒ el plugin se apunta a si mismo).
-                If st.EndsWith("BLANCO") AndAlso L.DefaultClfm <> 0UI Then
+                If st.EndsWith("WHITE") AndAlso L.DefaultClfm <> 0UI Then
                     Dim selfIdx = npc.RaceFormID And &HFF000000UI
                     Dim alt = selfIdx Or (L.DefaultClfm And &HFFFFFFUI)
                     Dim ar = pm.GetRecord(alt)
                     If ar IsNot Nothing Then
                         Dim acn = ar.Subrecords.Where(Function(s) s.Signature = "CNAM").ToList()
                         Dim acs = If(acn.Count > 0 AndAlso acn(0).Data IsNot Nothing AndAlso acn(0).Data.Length >= 3,
-                                     $"CNAM=({acn(0).Data(0)},{acn(0).Data(1)},{acn(0).Data(2)})", "sin CNAM")
-                        st &= $"   [!] pero 0x{alt:X8} SI existe (sig={ar.Header.Signature} {acs}) => REMAPEO"
+                                     $"CNAM=({acn(0).Data(0)},{acn(0).Data(1)},{acn(0).Data(2)})", "no CNAM")
+                        st &= $"   [!] but 0x{alt:X8} DOES exist (sig={ar.Header.Signature} {acs}) => REMAP"
                     End If
                 End If
-                If st.EndsWith("BLANCO") Then nBad += 1
+                If st.EndsWith("WHITE") Then nBad += 1
                 Console.WriteLine($"    idx={L.Index,3} TIND=0x{L.DefaultClfm:X8} val={L.DefaultValue:F3} presets={If(L.Presets Is Nothing, 0, L.Presets.Count),2} mask='{If(L.Path, "")}' -> {st}")
             Next
-            Console.WriteLine($"  ==> capas que degradan a BLANCO: {nBad}/{rlay.Count}")
+            Console.WriteLine($"  ==> layers degrading to WHITE: {nBad}/{rlay.Count}")
         End If
 
         ' Tints AUTORADOS del NPC (SSE = SseTintRaw: TINI/TINC/TINV/TIAS). ⛔ `--tints` los muestra vacíos
         ' porque lee FaceTintLayers, que es el campo de FO4 — en un corpus de Skyrim da "(none)" SIEMPRE.
         ' Sin esto no se puede ver de dónde sale la variación del composite.
         If npc.SseTintRaw IsNot Nothing AndAlso npc.SseTintRaw.Count > 0 Then
-            Console.WriteLine("  --- tints AUTORADOS del NPC (idx -> color, cobertura) ---")
+            Console.WriteLine("  --- NPC AUTHORED tints (idx -> color, coverage) ---")
             Dim ti As Integer = -1, tr As Integer = 0, tg As Integer = 0, tb As Integer = 0
             Dim tv As Double = 0
             Dim raceIdx As New HashSet(Of Integer)(If(rlay Is Nothing, New List(Of SseFaceTintComposer.SseTintMask), rlay).Select(Function(z) z.Index))
@@ -4588,7 +4506,7 @@ persist:
                                 If L2.Index = ti Then maskP = IO.Path.GetFileName(If(L2.Path, "")) : Exit For
                             Next
                         End If
-                        Console.WriteLine($"    idx={ti,3} color=({tr},{tg},{tb}) cobertura={tv:F3}  {If(inRace, "mask=" & maskP, "⛔ INDICE NO EXISTE EN LA RAZA -> capa IGNORADA")}")
+                        Console.WriteLine($"    idx={ti,3} color=({tr},{tg},{tb}) coverage={tv:F3}  {If(inRace, "mask=" & maskP, "⛔ INDEX DOES NOT EXIST IN THE RACE -> layer IGNORED")}")
                         ti = -1 : tr = 0 : tg = 0 : tb = 0 : tv = 0
                 End Select
             Next
@@ -4599,10 +4517,10 @@ persist:
         Dim ckKey = ($"textures\actors\character\facegendata\facetint\{origin}\{fgL:X8}.dds").ToLowerInvariant()
         Dim ckDds = FilesDictionary_class.GetArchiveOriginalBytes(ckKey)
         If mineDds Is Nothing OrElse ckDds Is Nothing OrElse ckDds.Length = 0 Then
-            Console.Error.WriteLine($"  falta lado: mine={mineDds IsNot Nothing} ck={ckDds IsNot Nothing}") : Environment.ExitCode = 2 : Return
+            Console.Error.WriteLine($"  missing side: mine={mineDds IsNot Nothing} ck={ckDds IsNot Nothing}") : Environment.ExitCode = 2 : Return
         End If
         Dim mine = FaceTintCpuCompositor.DecodeDds(mineDds, 512, 512), ckd = FaceTintCpuCompositor.DecodeDds(ckDds, 512, 512)
-        For Each pair In {Tuple.Create("NUESTRO", mine), Tuple.Create("CK     ", ckd)}
+        For Each pair In {Tuple.Create("OURS   ", mine), Tuple.Create("CK     ", ckd)}
             Dim t = pair.Item2
             Dim hist As New Dictionary(Of String, Integer)
             For i = 0 To 512 * 512 - 1
@@ -4674,12 +4592,12 @@ persist:
             Next
             Dim rp = IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "racelayers.csv")
             IO.File.WriteAllLines(rp, rl)
-            Console.WriteLine($"[racelayers] {rl.Count - 1} combinaciones (raza,sexo) -> {rp}")
+            Console.WriteLine($"[racelayers] {rl.Count - 1} (race,gender) combinations -> {rp}")
         End If
 
         Dim outPath = IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "tintcount.csv")
         IO.File.WriteAllLines(outPath, csv)
-        Console.WriteLine($"[tintcount] {n} NPC_ · con 0 capas efectivas: {zero} ({100.0 * zero / n:F1}%) -> {outPath}")
+        Console.WriteLine($"[tintcount] {n} NPC_ · with 0 effective layers: {zero} ({100.0 * zero / n:F1}%) -> {outPath}")
     End Sub
 
     Private Sub AlphaGateScan(pm As PluginManager)
@@ -4701,10 +4619,10 @@ persist:
                 acbsNpcs.Add($"0x{kv.Key:X8} {npc.EditorID} (origin={pm.GetOriginatingPluginName(kv.Key)} ACBS=0x{npc.AcbsFlags:X8})")
             End If
         Next
-        Console.WriteLine($"[ACBS] NPC_ con 'Diffuse Alpha Test' (0x01000000): {acbsNpcs.Count} de {npcTotal}")
+        Console.WriteLine($"[ACBS] NPC_ with 'Diffuse Alpha Test' (0x01000000): {acbsNpcs.Count} of {npcTotal}")
         For Each s In acbsNpcs : Console.WriteLine($"  {s}") : Next
-        Console.WriteLine("[ACBS] VEREDICTO: 1 ⇒ un solo interruptor agnostico sirve para el bit SF2 y para la" &
-                          " fabricacion del NiAlphaProperty. >1 ⇒ son gates DISTINTOS (el bit SF2 esta en 1 sola shape).")
+        Console.WriteLine("[ACBS] VERDICT: 1 ⇒ a single agnostic switch serves both the SF2 bit and the" &
+                          " fabrication of the NiAlphaProperty. >1 ⇒ they are DIFFERENT gates (the SF2 bit is on a single shape).")
 
         ' ---------- (2) TXST con MNAM y su alpha ----------
         Dim txstTotal = 0, withMnam = 0, mnamLoadFail = 0
@@ -4720,7 +4638,7 @@ persist:
             If mat Is Nothing Then
                 ' ⛔ NO degradar a "sin alpha": un MNAM que no carga es un dato DESCONOCIDO, no un cero.
                 mnamLoadFail += 1
-                Console.WriteLine($"  [MNAM-FAIL] txst=0x{kv.Key:X8} {t.EditorID} mnam='{t.MaterialPath}' → NO CARGO (alpha DESCONOCIDO)")
+                Console.WriteLine($"  [MNAM-FAIL] txst=0x{kv.Key:X8} {t.EditorID} mnam='{t.MaterialPath}' → DID NOT LOAD (alpha UNKNOWN)")
                 Continue For
             End If
             ' El predicado es AlphaBlendEnabled (el booleano real), NO `AlphaBlendMode <> 0`: el enum tiene
@@ -4734,7 +4652,7 @@ persist:
         Console.WriteLine($"[TXST] total={txstTotal} conMNAM={withMnam} MNAM-no-carga={mnamLoadFail} conALPHA={alphaTxst.Count}")
         For Each s In alphaTxst.Values : Console.WriteLine($"  {s}") : Next
         If withMnam = 0 Then
-            Console.WriteLine("[TXST] 0 con MNAM ⇒ el bloque MNAM (y su gate de alpha) es INALCANZABLE en este juego.")
+            Console.WriteLine("[TXST] 0 with MNAM ⇒ the MNAM block (and its alpha gate) is UNREACHABLE in this game.")
         End If
 
         ' ---------- (3) Quien referencia esos TXST ----------
@@ -4749,7 +4667,7 @@ persist:
         Const PartTypeFace As Integer = FO4_NPC_Manager.FaceGenBuilder.PartTypeFace
         Dim faceRefs = 0, nonFaceRefs = 0
         If alphaTxst.Count > 0 Then
-            Console.WriteLine("[REF] referentes de los TXST con alpha:")
+            Console.WriteLine("[REF] referrers of the TXSTs with alpha:")
             For Each kv In pm.AllRecords
                 Dim r = kv.Value
                 If r Is Nothing Then Continue For
@@ -4764,14 +4682,14 @@ persist:
                         Dim n = RecordParsers.ParseNPC(r, r.SourcePluginName, pm)
                         If n Is Nothing OrElse n.HeadTextureFormID = 0UI OrElse Not alphaTxst.ContainsKey(n.HeadTextureFormID) Then Continue For
                         faceRefs += 1   ' NPC.FTST ES la cara por definicion
-                        Console.WriteLine($"  NPC.FTST   0x{kv.Key:X8} {n.EditorID} → txst=0x{n.HeadTextureFormID:X8}  [CARA]")
+                        Console.WriteLine($"  NPC.FTST   0x{kv.Key:X8} {n.EditorID} → txst=0x{n.HeadTextureFormID:X8}  [FACE]")
                     Case "RACE"
                         Dim rc = RecordParsers.ParseRACE(r, pm)
                         If rc Is Nothing Then Continue For
                         For Each fid In {rc.MaleDefaultFaceTextureFormID, rc.FemaleDefaultFaceTextureFormID}
                             If fid <> 0UI AndAlso alphaTxst.ContainsKey(fid) Then
                                 faceRefs += 1
-                                Console.WriteLine($"  RACE.DFT   0x{kv.Key:X8} {rc.EditorID} → txst=0x{fid:X8}  [CARA]")
+                                Console.WriteLine($"  RACE.DFT   0x{kv.Key:X8} {rc.EditorID} → txst=0x{fid:X8}  [FACE]")
                             End If
                         Next
                     Case "ARMA"
@@ -4780,17 +4698,17 @@ persist:
                         For Each fid In {a.MaleSkinTextureFormID, a.FemaleSkinTextureFormID}
                             If fid <> 0UI AndAlso alphaTxst.ContainsKey(fid) Then
                                 nonFaceRefs += 1
-                                Console.WriteLine($"  ARMA.NAM0/1 0x{kv.Key:X8} {a.EditorID} slots=0x{a.SlotMask:X8} → txst=0x{fid:X8}  [NO-CARA]")
+                                Console.WriteLine($"  ARMA.NAM0/1 0x{kv.Key:X8} {a.EditorID} slots=0x{a.SlotMask:X8} → txst=0x{fid:X8}  [NON-FACE]")
                             End If
                         Next
                 End Select
             Next
         End If
-        Console.WriteLine($"[REF] referentes CARA={faceRefs}  NO-CARA={nonFaceRefs}")
-        Console.WriteLine("[REF] VEREDICTO isFaceHeadPart: NO-CARA=0 ⇒ sacar el gate es INERTE sobre vanilla" &
-                          " (no lo valida: vanilla es corpus sesgado). NO-CARA>0 ⇒ contraejemplo: hoy esos shapes" &
-                          " pierden el alpha de su material.")
-        Console.WriteLine("===== FIN ALPHA GATE SCAN =====")
+        Console.WriteLine($"[REF] referrers FACE={faceRefs}  NON-FACE={nonFaceRefs}")
+        Console.WriteLine("[REF] VERDICT isFaceHeadPart: NON-FACE=0 ⇒ removing the gate is INERT over vanilla" &
+                          " (it does not validate it: vanilla is a biased corpus). NON-FACE>0 ⇒ counterexample: today those shapes" &
+                          " lose their material's alpha.")
+        Console.WriteLine("===== END ALPHA GATE SCAN =====")
     End Sub
 
     Private Sub TtedScan(pm As PluginManager)
@@ -4999,7 +4917,7 @@ persist:
         Next
     End Sub
 
-#Region "--facegengate: blast radius del cambio de gate de FaceGen"
+#Region "--facegengate: blast radius of the FaceGen gate change"
 
     ''' <summary>Fila por NPC de la clasificación de la parte A.</summary>
     Private Class FggRow
@@ -5028,27 +4946,19 @@ persist:
         End Property
     End Class
 
-    ''' <summary>⭐ MEDICIÓN del blast radius de mover el gate de FaceGen del render desde la heurística
-    ''' <c>HasFaceGenAssets</c> ("¿existe el FaceGeom horneado?") al canónico <c>RACE.DATA</c> bit 0x2.
-    ''' <para><b>Parte A (exhaustiva)</b>: clasifica TODOS los NPC_ del load order. El conjunto que CAMBIA
-    ''' de comportamiento es exactamente {raza con bit 0x2} ∖ {tiene FaceGeom}: ésos antes NO recolectaban
-    ''' el insumo <c>_faceBones</c> (⇒ sin head-bake, cabeza plana cruda) y ahora sí. Se subdivide por qué
-    ''' insumos del bake tienen (FMRS / morphs de chargen / MWGT), porque sin ninguno de los tres el bake
-    ''' es identidad y el cambio es no-op ESTRUCTURAL para ese NPC, no por medición.</para>
-    ''' <para><b>Parte B (A/B de geometría)</b>: sobre una muestra de los que SÍ tienen insumos, corre el
-    ''' MISMO cálculo que el render (<see cref="FO4_NPC_Manager.FaceGenBuildPipeline.ComputeBakedVertices"/>, vía la misma
-    ''' llamada que hace <c>HeadBakeService.Bake</c>) y mide |horneado − crudo| por vértice: rms y max en
-    ''' unidades del NIF. Eso es literalmente cuánto se mueve la cabeza dibujada.</para>
-    ''' <para><b>READ-ONLY</b>: no escribe ni un NIF ni un DDS (no pasa por FaceGenBuilder.BuildCharGen),
-    ''' así que no puede ensuciar el árbol del juego con sueltos que después sombreen el BA2.</para>
-    ''' <para>⚠ Sin overlays: corre sobre el record CRUDO (no hay presets LM aplicados en headless), así que
-    ''' un NPC con FMRS sólo en un .jslot cuenta como "sin FMRS". Sesga hacia SUBestimar el conjunto que
-    ''' se mueve.</para></summary>
+    ''' <summary>Mide el blast radius de gatear el FaceGen del render por <c>RACE.DATA</c> bit 0x2 en vez de
+    ''' por "¿existe el FaceGeom horneado?". Parte A clasifica TODOS los NPC_ del load order y aísla el
+    ''' conjunto que cambia; parte B corre sobre una muestra el MISMO cálculo que el render y mide
+    ''' |horneado − crudo| por vértice, que es literalmente cuánto se mueve la cabeza dibujada.
+    ''' <para>⛔ READ-ONLY a propósito: no pasa por el bake, así que no puede ensuciar el árbol del juego con
+    ''' sueltos que después sombreen el BA2 (ver 10-stack-arnes-de-medicion.md).</para>
+    ''' <para>⚠ Corre sobre el record CRUDO, sin overlays de LooksMenu: un NPC con FMRS sólo en un preset
+    ''' cuenta como "sin FMRS", así que SUBestima el conjunto que se mueve.</para></summary>
     Private _fggEdidFilter As String = ""
 
     Private Sub FaceGenGateBlastRun(pm As PluginManager, sampleN As Integer)
-        Console.WriteLine("=== --facegengate: blast radius del gate de FaceGen (heurística → RACE.DATA bit 0x2) ===")
-        Console.WriteLine("Conjunto que cambia = raza con bit 0x2 Y SIN FaceGeom horneado (antes: sin insumo _faceBones ⇒ sin head-bake).")
+        Console.WriteLine("=== --facegengate: blast radius of the FaceGen gate (heuristic → RACE.DATA bit 0x2) ===")
+        Console.WriteLine("Changing set = race with bit 0x2 AND WITHOUT a baked FaceGeom (before: no _faceBones input ⇒ no head-bake).")
         Console.WriteLine()
 
         ' ---------------------------------------------------------------- Parte A
@@ -5115,10 +5025,10 @@ persist:
         Dim newSet = rows.Where(Function(r) r.IsNew).ToList()
         Dim movers = newSet.Where(Function(r) Not r.Inert).ToList()
 
-        Console.WriteLine($"NPC_ en el load order : {rows.Count}  (ParseNPC falló en {parseFail}, excluidos)")
-        Console.WriteLine($"  raza SIN bit 0x2                 : {rows.Where(Function(r) Not r.RaceBit).Count(),6}   sin cambio (ya salían por el early-return de head parts)")
-        Console.WriteLine($"  bit 0x2 + CON FaceGeom horneado  : {rows.Where(Function(r) r.RaceBit AndAlso r.HasFaceGeom).Count(),6}   sin cambio (ya entraban al head-bake)")
-        Console.WriteLine($"  bit 0x2 + SIN FaceGeom  = NUEVOS : {newSet.Count,6}   ⬅ el blast radius")
+        Console.WriteLine($"NPC_ in the load order : {rows.Count}  (ParseNPC failed on {parseFail}, excluded)")
+        Console.WriteLine($"  race WITHOUT bit 0x2             : {rows.Where(Function(r) Not r.RaceBit).Count(),6}   unchanged (they already left through the head-parts early return)")
+        Console.WriteLine($"  bit 0x2 + WITH baked FaceGeom    : {rows.Where(Function(r) r.RaceBit AndAlso r.HasFaceGeom).Count(),6}   unchanged (they already entered the head-bake)")
+        Console.WriteLine($"  bit 0x2 + NO FaceGeom   = NEW    : {newSet.Count,6}   ⬅ the blast radius")
         Console.WriteLine()
         ' ⚠ CONJUNTO INVERSO: raza SIN bit 0x2 pero CON FaceGeom horneado. Bajo la regla VIEJA daban
         ' useFaceGen=True; bajo la nueva dan False. En el camino de HEAD PARTS da igual (el early-return por
@@ -5126,21 +5036,21 @@ persist:
         ' insumo `_faceBones` de la ARMA. Engine-faithful: sin el bit el motor no arma cabeza facegen, así
         ' que perderlo es correcto — pero hay que saber a cuántos toca.
         Dim losers = rows.Where(Function(r) Not r.RaceBit AndAlso r.HasFaceGeom).ToList()
-        Console.WriteLine($"  INVERSO — raza SIN bit 0x2 pero CON FaceGeom : {losers.Count,6}   (pierden el insumo _faceBones de la ARMA)")
+        Console.WriteLine($"  INVERSE — race WITHOUT bit 0x2 but WITH FaceGeom : {losers.Count,6}   (they lose the ARMA's _faceBones input)")
         If losers.Count > 0 Then
             For Each g In losers.GroupBy(Function(r) If(r.RaceEid, "?")).OrderByDescending(Function(g2) g2.Count()).Take(8)
                 Console.WriteLine($"        {g.Count(),6}  {g.Key}")
             Next
         End If
         Console.WriteLine()
-        Console.WriteLine($"  de los NUEVOS, no-op ESTRUCTURAL (sin FMRS, sin morphs, sin MWGT): {newSet.Where(Function(r) r.Inert).Count(),6}")
-        Console.WriteLine($"  de los NUEVOS, con algún insumo del bake  = SE MUEVEN            : {movers.Count,6}")
-        Console.WriteLine($"      con FMRS   : {newSet.Where(Function(r) r.HasFmrs).Count(),6}")
-        Console.WriteLine($"      con morphs : {newSet.Where(Function(r) r.HasChargen).Count(),6}")
-        Console.WriteLine($"      con MWGT   : {newSet.Where(Function(r) r.HasWeight).Count(),6}")
+        Console.WriteLine($"  of the NEW ones, STRUCTURAL no-op (no FMRS, no morphs, no MWGT): {newSet.Where(Function(r) r.Inert).Count(),6}")
+        Console.WriteLine($"  of the NEW ones, with some bake input     = THEY MOVE            : {movers.Count,6}")
+        Console.WriteLine($"      with FMRS  : {newSet.Where(Function(r) r.HasFmrs).Count(),6}")
+        Console.WriteLine($"      with morphs: {newSet.Where(Function(r) r.HasChargen).Count(),6}")
+        Console.WriteLine($"      with MWGT  : {newSet.Where(Function(r) r.HasWeight).Count(),6}")
         Console.WriteLine()
 
-        Console.WriteLine("NUEVOS por raza (top 15):")
+        Console.WriteLine("NEW by race (top 15):")
         For Each g In newSet.GroupBy(Function(r) If(r.RaceEid, "?")).OrderByDescending(Function(g2) g2.Count()).Take(15)
             Console.WriteLine($"   {g.Count(),6}  {g.Key}")
         Next
@@ -5148,7 +5058,7 @@ persist:
 
         ' ---------------------------------------------------------------- Parte B
         If sampleN <= 0 OrElse movers.Count = 0 Then
-            Console.WriteLine("(parte B omitida: --fggsample 0 o no hay NPCs que se muevan)")
+            Console.WriteLine("(part B skipped: --fggsample 0, or no NPCs move)")
             Return
         End If
 
@@ -5170,9 +5080,9 @@ persist:
             Next
         End If
 
-        Console.WriteLine($"--- Parte B: A/B de geometría sobre {sample.Count} de los {movers.Count} que se mueven ---")
-        Console.WriteLine("delta = |vértice horneado − vértice crudo| del NIF PLANO, en unidades del NIF. Es exactamente")
-        Console.WriteLine("lo que el preview pasa a mostrar de más para estos NPCs.")
+        Console.WriteLine($"--- Part B: geometry A/B over {sample.Count} of the {movers.Count} that move ---")
+        Console.WriteLine("delta = |baked vertex − raw vertex| of the FLAT NIF, in NIF units. It is exactly")
+        Console.WriteLine("what the preview starts showing extra for these NPCs.")
         Console.WriteLine()
         Console.WriteLine($"{"NPC",-10} {"shapes",6} {"rms",10} {"max",10} {"ms",8}  editorID")
 
@@ -5241,7 +5151,7 @@ persist:
                     Dim fbnsShape As NiflySharp.INiShape = Nothing
                     If Not fbnsByName.TryGetValue(nm, fbnsShape) Then
                         pairFails += 1
-                        If verbose Then Console.WriteLine($"         shape '{nm}': SIN par en el _faceBones")
+                        If verbose Then Console.WriteLine($"         shape '{nm}': NO match in the _faceBones")
                         Continue For
                     End If
 
@@ -5249,7 +5159,7 @@ persist:
                     If origVerts.Count = 0 Then Continue For
                     Dim fbnsCount = ShapeGeometryFactory.[For](fbnsShape, fbnsNif).GetVertexPositions().Count
                     If fbnsCount <> origVerts.Count Then
-                        If verbose Then Console.WriteLine($"         shape '{nm}': conteo distinto plano={origVerts.Count} fbns={fbnsCount}")
+                        If verbose Then Console.WriteLine($"         shape '{nm}': different count flat={origVerts.Count} fbns={fbnsCount}")
                         Continue For
                     End If
 
@@ -5260,9 +5170,9 @@ persist:
                             st, flatNif, flatShape, fbnsNif, fbnsShape,
                             hd.ChargenMorphTriPath, srcNif:=flatNif, srcShape:=flatShape,
                             raceMorphTriPath:=hd.RaceMorphTriPath)
-                        If verbose AndAlso baked Is Nothing Then Console.WriteLine($"         shape '{nm}': ComputeBakedVertices devolvio Nothing")
+                        If verbose AndAlso baked Is Nothing Then Console.WriteLine($"         shape '{nm}': ComputeBakedVertices returned Nothing")
                     Catch ex As Exception
-                        If verbose Then Console.WriteLine($"         shape '{nm}': EXCEPCION {ex.GetType().Name}: {ex.Message}")
+                        If verbose Then Console.WriteLine($"         shape '{nm}': EXCEPTION {ex.GetType().Name}: {ex.Message}")
                         baked = Nothing
                     End Try
                     swBake.Stop() : msAdded += swBake.Elapsed.TotalMilliseconds
@@ -5289,21 +5199,21 @@ persist:
 
         Console.WriteLine()
         If allRms.Count = 0 Then
-            Console.WriteLine($"Ninguna shape medida (sin `_faceBones` disponible en {noInput}, bakeState falló en {bakeFail}).")
+            Console.WriteLine($"No shape measured (no `_faceBones` available on {noInput}, bakeState failed on {bakeFail}).")
             Return
         End If
-        Console.WriteLine($"Medidos {allRms.Count} NPCs · sin insumo `_faceBones` {noInput} · bakeState falló {bakeFail}")
-        Console.WriteLine($"  rms:  media {allRms.Average():F4}   mediana {allRms.OrderBy(Function(x) x).ElementAt(allRms.Count \ 2):F4}   max {allRms.Max():F4}")
-        Console.WriteLine($"  max:  media {allMax.Average():F4}   peor {allMax.Max():F4}")
-        Console.WriteLine($"  NPCs con delta ~0 (rms < 1e-4): {allRms.Where(Function(x) x < 0.0001).Count(),4} de {allRms.Count}")
-        Console.WriteLine($"  NPCs con apareo PARCIAL (la app los saltearía por su guarda todas-o-ninguna): {partialPair,4} de {allRms.Count}")
+        Console.WriteLine($"Measured {allRms.Count} NPCs · no `_faceBones` input {noInput} · bakeState failed {bakeFail}")
+        Console.WriteLine($"  rms:  mean {allRms.Average():F4}   median {allRms.OrderBy(Function(x) x).ElementAt(allRms.Count \ 2):F4}   max {allRms.Max():F4}")
+        Console.WriteLine($"  max:  mean {allMax.Average():F4}   worst {allMax.Max():F4}")
+        Console.WriteLine($"  NPCs with delta ~0 (rms < 1e-4): {allRms.Where(Function(x) x < 0.0001).Count(),4} de {allRms.Count}")
+        Console.WriteLine($"  NPCs with a PARTIAL match (the app would skip them by its all-or-none guard): {partialPair,4} of {allRms.Count}")
         Dim msSorted = allMs.OrderBy(Function(x) x).ToList()
-        Console.WriteLine($"  COSTO del head-bake (carga de NIFs + horneada, offline, cache frío por NPC):")
-        Console.WriteLine($"     TOTAL del A/B (incluye cargar el NIF plano, que YA se paga hoy):")
-        Console.WriteLine($"        media {allMs.Average():F0} ms · mediana {msSorted(msSorted.Count \ 2):F0} ms · p90 {msSorted(CInt(msSorted.Count * 0.9)):F0} ms · peor {allMs.Max():F0} ms")
+        Console.WriteLine($"  COST of the head-bake (NIF load + bake, offline, cold cache per NPC):")
+        Console.WriteLine($"     A/B TOTAL (includes loading the flat NIF, which is ALREADY paid today):")
+        Console.WriteLine($"        mean {allMs.Average():F0} ms · median {msSorted(msSorted.Count \ 2):F0} ms · p90 {msSorted(CInt(msSorted.Count * 0.9)):F0} ms · worst {allMs.Max():F0} ms")
         Dim addSorted = allAdded.OrderBy(Function(x) x).ToList()
-        Console.WriteLine($"     ⭐ AGREGADO por el cambio (cargar el `_faceBones` + hornear, POR NPC):")
-        Console.WriteLine($"        media {allAdded.Average():F0} ms · mediana {addSorted(addSorted.Count \ 2):F0} ms · p90 {addSorted(CInt(addSorted.Count * 0.9)):F0} ms · peor {allAdded.Max():F0} ms")
+        Console.WriteLine($"     ⭐ ADDED by the change (load the `_faceBones` + bake, PER NPC):")
+        Console.WriteLine($"        mean {allAdded.Average():F0} ms · median {addSorted(addSorted.Count \ 2):F0} ms · p90 {addSorted(CInt(addSorted.Count * 0.9)):F0} ms · worst {allAdded.Max():F0} ms")
     End Sub
 
 #End Region
@@ -6041,17 +5951,6 @@ persist:
         Return acc
     End Function
 
-    ''' <summary>Métrica <c>estNN</c>: escala por hueso y eje por NEAREST-NEIGHBOR least-squares, SIN umbral de
-    ''' dominancia (funciona también en huesos blend). La malla del underarmor = body deformado por skinning con
-    ''' los <c>_skin</c> escalados por S_b (diagonal, en frame local del hueso, alrededor del ORIGEN). Los binds
-    ''' skin→bone del underarmor y del body son IDÉNTICOS.
-    ''' <para>Para cada vértice del underarmor influido por el hueso b (peso &gt; <paramref name="wEps"/>), su
-    ''' "rest" aproximado = el vértice del BODY más cercano en ESPACIO MODELO (posición cruda) entre los vértices
-    ''' del body también influidos por b (candidatos por NOMBRE de hueso, uniendo shapes). Ambos se llevan al
-    ''' frame local del hueso; se acumula, por eje, ponderando por el peso real <c>w</c>:
-    ''' <c>Sxx += w·lp²</c>, <c>Sxy += w·lu·lp</c>. La escala = <c>Sxy/Sxx</c> (pendiente por el origen).</para>
-    ''' <para>Guard: <c>Sxx &lt; 1e-6</c> → n/a para ese eje. NIF que no carga → Nothing. Hueso solo en un NIF
-    ''' (sin candidatos body) → skip.</para></summary>
     ''' <summary>Construcción COMPARTIDA de los pares nearest-neighbor por hueso (base de <c>estNN</c> y
     ''' <c>estFull</c>). Para cada vértice del underarmor influido por el hueso b (peso &gt; <paramref name="wEps"/>),
     ''' matchea el vértice del BODY más cercano en ESPACIO MODELO entre los candidatos por NOMBRE de hueso, y devuelve
@@ -8512,7 +8411,7 @@ persist:
                 End If
             Next
 
-            Console.WriteLine($"=== {race.EditorID} [0x{race.FormID:X8}] | identidad propia=[{String.Join(", ", ownId)}] ===")
+            Console.WriteLine($"=== {race.EditorID} [0x{race.FormID:X8}] | own identity=[{String.Join(", ", ownId)}] ===")
             Console.WriteLine($"    subgraphs={rb.Subgraphs.Count} | OLD-applies={nOld} | NEW-applies={nNew} | RECOVERED(state)={nRec} | OUTSIDE(foreign identity)={excluded.Count}")
             For Each kv In byAxis.OrderBy(Function(x) If(x.Key = "Normal", "", x.Key))
                 Dim saptSet = kv.Value.SelectMany(Function(s) s.AnimationPaths).Select(Function(p) LastTwoSeg(p)).Distinct().Take(6)
@@ -10449,10 +10348,10 @@ persist:
                         Case "fo4", "fallout4", "fallout", "f4"
                             a.Game = Config_App.Game_Enum.Fallout4
                         Case Else
-                            Console.Error.WriteLine($"--game: valor no reconocido '{v}'.")
+                            Console.Error.WriteLine($"--game: unrecognized value '{v}'.")
                             Console.Error.WriteLine("  Skyrim  : sse | sk | skyrim | skyrimse | skyrimspecialedition")
                             Console.Error.WriteLine("  Fallout4: fo4 | fallout4 | fallout | f4")
-                            Console.Error.WriteLine("  (antes esto caia a Fallout4 en SILENCIO y el barrido medía el juego equivocado)")
+                            Console.Error.WriteLine("  (before, this fell back to Fallout4 SILENTLY and the sweep measured the wrong game)")
                             Return Nothing
                     End Select
                     i += 2
@@ -10547,9 +10446,9 @@ persist:
         ' leerse sin el contexto.
         If a.RawDds AndAlso a.DdsCompare Then
             Console.Error.WriteLine("################################################################")
-            Console.Error.WriteLine("## --rawdds + --ddscompare: los DDS se hornean SIN COMPRIMIR.")
-            Console.Error.WriteLine("## El RMS de esta corrida NO es comparable contra baselines BC3/BC5:")
-            Console.Error.WriteLine("## queda solo el ruido del codec del CK, no el nuestro.")
+            Console.Error.WriteLine("## --rawdds + --ddscompare: the DDS are baked UNCOMPRESSED.")
+            Console.Error.WriteLine("## The RMS of this run is NOT comparable against BC3/BC5 baselines:")
+            Console.Error.WriteLine("## only the CK's codec noise remains, not ours.")
             Console.Error.WriteLine("################################################################")
         End If
         Return a

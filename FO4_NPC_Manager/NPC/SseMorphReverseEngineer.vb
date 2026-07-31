@@ -1,46 +1,31 @@
-Imports FO4_Base_Library
+﻿Imports FO4_Base_Library
 Imports NiflySharp
 Imports OpenTK.Mathematics
 
-''' <summary>
-''' DEBUG-ONLY. Reconstruye un preset de RaceMenu (NAM9 + sculpt per-shape) a partir de un FaceGen
-''' YA HORNEADO, para mods que shipean el .nif de facegeom pero no el .jslot (y, en el caso que
-''' motivó esto, con los NAM9 del NPC_ borrados).
-'''
-''' POR QUÉ ES INVERTIBLE (SSE únicamente — FO4 no aplica: su bake va por FMRS/FBNS, es un rig de
-''' huesos, no un morph per-vértice, y LooksMenu no tiene canal de sculpt donde escribir el residual):
-'''   · El bake SSE es un morph per-vértice PURO sobre la malla del HDPT (FaceGenBuildPipeline
-'''     .ApplyChargenMorphsInPlace) — sin skinning, sin remap. La correspondencia base↔horneado es
-'''     índice-a-índice (probado: los deltas de SkinnyMorph reproducen la tabla horneada index-for-index,
-'''     RMS 1,5e-3 / 0 vértices perdidos — ver NpcMorphResolver.vb:536-538).
-'''   · Todos los canales del plan son ADITIVOS y todos son CONOCIDOS salvo los NAM9: race base @1.0,
-'''     NAMA @1.0, keyword→morph @1.0 y SkinnyMorph @(1-NAM7/100). Así que:
-'''         V_horneado = Conocidos(base)  +  Σ w_j · Columna_j(NAM9)  +  Sculpt
-'''     con Columna_j ya gateada y w_j ∈ [0,1] las únicas incógnitas.
-'''   · El gate del CK (bloques de 4, umbral 0,01) se evalúa sobre el delta CRUDO, NO escalado por el
-'''     peso del canal ⇒ la máscara de cada columna es FIJA y se puede precomputar una sola vez, y
-'''     ApplyChannelsToVertexArray queda LINEAL en el peso. Verificado por RE de los binarios de SSE
-'''     (CK de SSE 0x141D18B10, SkyrimSE.exe 0x140430190, módulo bsfacegenmorph.cpp): el gate no es una
-'''     comparación en tiempo de aplicación sino un mapa RLE de bytes con signo PRECOMPUTADO en los datos
-'''     del morph, consumido ANTES de que el peso entre — estructuralmente el peso no puede participar.
-'''     (Ese RE levanta el caveat "sin probar para sliders fraccionarios" de MorphEngine.vb:120-122.)
-'''
-''' QUÉ ELIGE ESTE CÓDIGO (y por qué hay que enunciarlo): la descomposición NO es única — el sculpt es
-''' un campo libre por vértice y puede absorber cualquier cosa, así que infinitos pares (NAM9, sculpt)
-''' producen el MISMO horneado. Se elige el que MINIMIZA LA ENERGÍA DEL SCULPT, que es exactamente lo
-''' que da mínimos cuadrados. Los NAM9 devueltos NO son "los originales" (nadie puede recuperar eso);
-''' son unos que reproducen la geometría. La geometría cierra al vértice; la atribución es una elección.
-'''
-''' RESTRICCIÓN DE CAJA [0,1], NO CLAMP: el motor valida el peso contra [-1,1] ANTES de aplicar y, fuera
-''' de rango, la llamada entera es un NO-OP (salta al epílogo sin aplicar nada — SkyrimSE.exe 0x1404301DF
-''' / 0x1404301EC). O sea que un peso 1,3 no equivale a 1,0: equivale a 0. Por eso la cota va DENTRO del
-''' solver y no se clampea a posteriori.
-'''
-''' FUERA DE ALCANCE (no está horneado ⇒ no es recuperable por ninguna vía): texturas, warpaints custom,
-''' overlays y node transforms. El pelo y las hairlines no tienen chargen tri (medido: 211/211 records de
-''' pelo vanilla sin NAM0=2) ⇒ no admiten bloque de sculpt; no es una limitación de esto sino del formato,
-''' y no importa: su única deformación es SkinnyMorph, que es un canal CONOCIDO, así que su residual es ~0.
-''' </summary>
+''' <summary>DEBUG-ONLY. Reconstruye un preset de RaceMenu (NAM9 + sculpt per-shape) a partir de un FaceGen YA
+''' HORNEADO, para mods que shipean el .nif de facegeom pero no el .jslot.
+''' <para>POR QUE ES INVERTIBLE (solo SSE; en FO4 el bake va por FMRS, que es un rig de huesos y no un morph por
+''' vertice, y LooksMenu no tiene canal de sculpt donde escribir el residual): el bake de SSE es un morph por
+''' vertice PURO sobre la malla del HDPT, sin skinning ni remap, con correspondencia indice a indice entre base y
+''' horneado. Todos los canales del plan son ADITIVOS y todos son CONOCIDOS salvo los NAM9, asi que
+''' <c>V_horneado = Conocidos(base) + suma(w_j x Columna_j(NAM9)) + Sculpt</c>, con las columnas ya gateadas y los
+''' pesos como unicas incognitas.</para>
+''' <para>El gate del CK (bloques de 4, umbral 0,01) se evalua sobre el delta CRUDO y NO escalado por el peso, asi
+''' que la mascara de cada columna es FIJA, se precomputa una vez y la aplicacion queda LINEAL en el peso.
+''' Verificado por RE de los dos binarios de SSE: el gate no es una comparacion en tiempo de aplicacion sino un
+''' mapa RLE precomputado en los datos del morph, consumido ANTES de que el peso entre.</para>
+''' <para>âš ï¸ QUE ELIGE ESTE CODIGO: la descomposicion NO es unica -el sculpt es un campo libre por vertice y puede
+''' absorber cualquier cosa, asi que infinitos pares (NAM9, sculpt) dan el MISMO horneado-. Se elige el que
+''' MINIMIZA LA ENERGIA DEL SCULPT, que es lo que da minimos cuadrados. Los NAM9 devueltos NO son "los
+''' originales" (eso no lo puede recuperar nadie): son unos que reproducen la geometria. La geometria cierra al
+''' vertice; la atribucion es una eleccion.</para>
+''' <para>RESTRICCION DE CAJA [0,1], NO CLAMP: el motor valida el peso contra [-1,1] ANTES de aplicar y, fuera de
+''' rango, la llamada entera es NO-OP. O sea que un peso 1,3 no equivale a 1,0 sino a 0, y por eso la cota va
+''' DENTRO del solver y no se clampea despues.</para>
+''' <para>FUERA DE ALCANCE, porque no esta horneado y no lo recupera ninguna via: texturas, warpaints custom,
+''' overlays y node transforms. El pelo no tiene tri de chargen (211/211 records vanilla sin NAM0=2), asi que no
+''' admite bloque de sculpt - no es limitacion de esto sino del formato, y no importa: su unica deformacion es
+''' SkinnyMorph, que es un canal CONOCIDO, asi que su residual es ~0.</para></summary>
 Public Module SseMorphReverseEngineer
 
     ''' <summary>Umbral por defecto (unidades de modelo) bajo el cual un delta residual se considera
@@ -828,9 +813,9 @@ Public Module SseMorphReverseEngineer
 
     Private Function ShapeNameOf(s As INiShape) As String
         Try
-            Return If(s?.Name?.String, "(sin nombre)")
+            Return If(s?.Name?.String, "(no name)")
         Catch ex As Exception
-            Return "(sin nombre)"
+            Return "(no name)"
         End Try
     End Function
 

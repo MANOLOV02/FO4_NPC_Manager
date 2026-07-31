@@ -132,7 +132,7 @@ Public Module PexPatcher
         Dim header As List(Of Byte()) = Nothing, strings As List(Of Byte()) = Nothing
         Dim tailOffset As Integer = 0
         If Not TryParse(pex, header, strings, tailOffset) Then
-            Throw New IO.InvalidDataException("El .pex embebido no tiene un encabezado válido.")
+            Throw New IO.InvalidDataException("The embedded .pex has no valid header.")
         End If
 
         Dim subs As New List(Of (find As Byte(), repl As Byte()))
@@ -162,9 +162,9 @@ Public Module PexPatcher
 
         If subs.Count > 0 AndAlso hits = 0 Then
             Throw New IO.InvalidDataException(
-                $"El .pex embebido no contiene '{oldScriptName}' ni '{GenerationSuffix(oldGeneration, oldSalt)}'. La plantilla " &
-                "compilada no coincide con lo que el emisor espera: el .pex resultante no bindearía. " &
-                "Recompilar los .psc y rebuildear la app (ver Papyrus\README.md).")
+                $"The embedded .pex contains neither '{oldScriptName}' nor '{GenerationSuffix(oldGeneration, oldSalt)}'. The compiled " &
+                "template does not match what the emitter expects: the resulting .pex would not bind. " &
+                "Recompile the .psc files and rebuild the app (see Papyrus\README.md).")
         End If
 
         Dim big = IsBigEndian(pex)
@@ -174,6 +174,44 @@ Public Module PexPatcher
             WriteU16(ms, CUShort(newStrings.Count), big)
             For Each s In newStrings : WriteStr(ms, s, big) : Next
             ms.Write(pex, tailOffset, pex.Length - tailOffset)   ' todo lo demás, intacto
+            Return ms.ToArray()
+        End Using
+    End Function
+
+    ''' <summary>Identidad neutra que se estampa en el header del <c>.pex</c> publicado.</summary>
+    Public Const HeaderIdentity As String = "MANOLOV02"
+
+    ''' <summary>⛔ Neutraliza los TRES strings del header que estampa el compilador de Papyrus:
+    ''' <c>sourceFileName</c> (que sale como la RUTA ABSOLUTA del <c>.psc</c> en la máquina que compiló),
+    ''' <c>username</c> y <c>machineName</c>. Deja el nombre de archivo pelado y
+    ''' <see cref="HeaderIdentity"/> en los otros dos.
+    ''' <para><b>Por qué acá y no a mano sobre el artefacto:</b> el compilador los re-estampa en CADA
+    ''' recompilación de los <c>.psc</c>, así que sanear el archivo una vez no sirve — vuelve solo. Este es el
+    ''' único punto por el que pasa todo <c>.pex</c> que la app publica (<see cref="PatchScript"/>, el install
+    ''' suelto y el FOMOD), y el <c>.pex</c> se instala en <c>Data\Scripts</c> de cada mod: cualquiera que lo
+    ''' instale puede leer el usuario y el nombre de la máquina con un editor hex. Ver
+    ''' 00-reglas-sin-datos-personales.</para>
+    ''' <para>No puede romper nada: es la MISMA reescritura de header que ya hace <see cref="PatchScript"/> —
+    ''' los strings son length-prefixed y el formato es secuencial, sin offsets absolutos —, y el único
+    ''' consumidor del campo, <see cref="ReadSourceScriptName"/>, se queda con el basename sin extensión, que
+    ''' no cambia. Devuelve la entrada tal cual si no parsea.</para></summary>
+    Public Function SanitizeHeader(pex As Byte()) As Byte()
+        Dim header As List(Of Byte()) = Nothing, strings As List(Of Byte()) = Nothing
+        Dim tailOffset As Integer = 0
+        If pex Is Nothing OrElse Not TryParse(pex, header, strings, tailOffset) Then Return pex
+
+        Dim srcName = IO.Path.GetFileName(AsciiOf(header(0)))
+        header(0) = AsciiBytes(srcName)
+        header(1) = AsciiBytes(HeaderIdentity)
+        header(2) = AsciiBytes(HeaderIdentity)
+
+        Dim big = IsBigEndian(pex)
+        Using ms As New IO.MemoryStream()
+            ms.Write(pex, 0, 16)
+            For Each h In header : WriteStr(ms, h, big) : Next
+            WriteU16(ms, CUShort(strings.Count), big)
+            For Each s In strings : WriteStr(ms, s, big) : Next
+            ms.Write(pex, tailOffset, pex.Length - tailOffset)
             Return ms.ToArray()
         End Using
     End Function

@@ -12,8 +12,6 @@
 ''' </summary>
 Public Module MeshPathHelpers
 
-    ''' <summary>Normalize a raw mesh path for FilesDictionary lookup. Handles missing
-    ''' "Meshes\" prefix, slash direction, and case. Empty/whitespace input returns "".</summary>
     ''' <summary>Normalize a raw mesh path for FilesDictionary lookup. Delegates to the shared
     ''' game-relative normalizer (same one behind <c>CorrectMaterialPath</c>/<c>CorrectTexturePath</c>)
     ''' so meshes, materials and textures all strip absolute build-machine prefixes identically —

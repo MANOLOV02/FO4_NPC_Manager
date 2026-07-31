@@ -11,7 +11,7 @@ Imports NiflySharp.Blocks
 Imports OpenTK.Mathematics
 
 ''' <summary>Meatcap classification of NIF shapes / sub-segments. Extracted from MainForm (pure stateless, no instance state, no UI). Real separate
-''' class (NOT a partial). See project_mainform_split.</summary>
+''' class (NOT a partial). See 61-perf-mainform-split.</summary>
 Friend NotInheritable Class ShapeMeatcapClassifier
     Private Sub New()
     End Sub

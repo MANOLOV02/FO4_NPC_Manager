@@ -12,7 +12,7 @@ Imports OpenTK.Mathematics
 
 ''' <summary>Pure stateless pose / skeleton math extracted from MainForm (no instance state, no UI).
 ''' Real separate class (NOT a partial). Body-weight (MWGT x BSMS + MRSV + ARMA + NNAM neck), race
-''' height, and field-level pose merge. See project_mainform_split.</summary>
+''' height, and field-level pose merge. See 61-perf-mainform-split.</summary>
 Friend NotInheritable Class PoseMath
     Private Sub New()
     End Sub
@@ -31,25 +31,13 @@ Friend NotInheritable Class PoseMath
     ''' bones (e.g. ShoulderFat). The other models stay in the enum so this can be changed in the
     ''' future by editing this one line — no re-plumbing. (The diagnostic ComboBox that exposed all
     ''' four models was removed once ClampBoth was selected.)</summary>
-    ' 2026-06-17: ClampBoth → Off por RE de Fallout4.exe (project_morph_clamp_re). La cadena completa
+    ' 2026-06-17: ClampBoth → Off por RE de Fallout4.exe (22-morphs-re-clamps-y-regiones). La cadena completa
     ' del body-weight apply (0x6E0820→0x652100→0x6517A0→0x664850) NO tiene NI UN minss/maxss: el engine
     ' NO clampea el scale al RangeModifier. La "centralidad" la da el término K (Layer 1), no un clamp.
     Private Shared ReadOnly _bodyWeightClampModel As BodyWeightClampModel = BodyWeightClampModel.Off
 
-    ''' <summary>Walk the skeleton hierarchy from a bone upward to determine which MRSV body
-    ''' morph region (0..4) the bone belongs to. Returns -1 if no known region ancestor found.
-    ''' The mapping is based on matching ancestor bone names to the major skeleton "trunk" bones:
-    '''   HEAD → 0 (Head)
-    '''   Chest, SPINE2, Neck → 1 (Upper Torso)
-    '''   Arm (anywhere in ancestor chain) → 2 (Arms)
-    '''   SPINE1, Pelvis, Butt (anywhere in ancestor chain) → 3 (Lower Torso)
-    '''   Leg (anywhere in ancestor chain) → 4 (Legs)
-    ''' ⛔ COMENTARIO MUERTO — NO describe este código. Quedó de una heurística por substring del nombre
-    ''' que YA NO se implementa: la reemplazó la tabla EXACTA del motor declarada abajo. Esa heurística
-    ''' además asignaba MAL Pelvis*/ButtFat* (motor→Legs) y Neck1 (motor→Head). Se conserva sólo como
-    ''' registro de lo refutado; la ley vigente es la del &lt;summary&gt; siguiente.</summary>
     ''' <summary>Bone→MRSV-region map, EXACT from CreationKit.exe (fn 0xA95C70 builds this hardcoded
-    ''' table into a global map at RVA 0x3BA4330; see memory project_morph_clamp_re). The 48 body
+    ''' table into a global map at RVA 0x3BA4330; see memory 22-morphs-re-clamps-y-regiones). The 48 body
     ''' "_skin" bones each carry a hardcoded region index 0..4 (0=Head, 1=Upper Torso, 2=Arms,
     ''' 3=Lower Torso, 4=Legs), matching NPC_.MRSV[0..4]. Replaces the old name-substring heuristic,
     ''' which mis-assigned Pelvis*/ButtFat* (engine→Legs, heuristic→Lower Torso) and Neck1 (engine→
@@ -233,7 +221,7 @@ Friend NotInheritable Class PoseMath
         ' con mean_a = (thin_a+musc_a+fat_a)/3 y K = "centralidad" del punto de peso (wt,wm,wf) en el
         ' triángulo equilátero Thin/Musc/Fat. Constantes √3/2, 1/√3, 2/√3 verificadas en el binario.
         ' En (⅓,⅓,⅓) → K=1 ⇒ out=1.0 (identidad). Usa los MISMOS wt/wm/wf que la parte lineal de abajo.
-        ' Ver memoria project_morph_clamp_re. weightK se calcula 1× por NPC.
+        ' Ver memoria 22-morphs-re-clamps-y-regiones. weightK se calcula 1× por NPC.
         Dim wTriX As Single = wm * 0.5F + wf - 0.5F
         Dim wTriY As Single = (wt + wf) * 0.866025F - 0.577350F
         Dim weightK As Single = (0.866025F - CSng(Math.Sqrt(wTriX * wTriX + wTriY * wTriY))) * 1.154701F

@@ -15,7 +15,7 @@ Imports OpenTK.Mathematics
 ''' snapshots/rolls back pristine diffuse pixels, and the live face-tint refresh path. Standalone
 ''' class, DI. The skin-override live-preview fast-path (RefreshBodySkinLivePreview et al.) stays in
 ''' MainForm because it is coupled to CollectArmoCandidates (MeshCollection, not yet extracted) and
-''' calls back into ApplyFaceTintOverlay / RestoreCapturedDiffusesToPristine here. See project_mainform_split.</summary>
+''' calls back into ApplyFaceTintOverlay / RestoreCapturedDiffusesToPristine here. See 61-perf-mainform-split.</summary>
 Friend NotInheritable Class NpcFaceTintResolver
     Private ReadOnly _ctx As NpcRenderContext
     Private ReadOnly _materialResolver As NpcMaterialResolver
@@ -69,28 +69,13 @@ Friend NotInheritable Class NpcFaceTintResolver
     ''' fiel que mostrar, porque el bake también pliega.</summary>
     Friend Property LastSseFoldWasMandatory As Boolean
 
-    ''' <summary>BOTH ENGINES: copy the authoritative face material's subsurface-scattering response
-    ''' onto every body skin material whose response DIFFERS, so face and body skin light identically.
-    ''' The face material (BSLightingShaderType.FaceTint) "wins" (is prioritized): its SubsurfaceLighting
-    ''' (on/off) and SubsurfaceLightingRolloff are copied verbatim (including False) onto each body skin
-    ''' material (the SkinTint flag, excluding the face itself) ONLY when that body's current values do
-    ''' not already match the face's (no-op when they already agree). The render shader reads both
-    ''' fields per material every draw (Render.vb: bSoftlight + subsurfaceRolloff), so this
-    ''' mutation takes effect on the next frame with no texture work.
-    '''
-    ''' Sole precondition: a face material exists AND a body skin material exists — none of the
-    ''' SoftLight guards (HasTextureLighting / race SkinTone catalog / QNAM opacity) apply,
-    ''' because subsurface response is a material lighting property independent of skin TONE.
-    ''' Runs at the render-finalization chokepoint (ApplyFaceTintOverlay), by which point every
-    ''' shape's material is fully resolved (per-candidate ApplyShapeMaterialOverrides already
-    ''' ran) and is not re-resolved again before the draw.
-    '''
-    ''' Render-only / no persistence: each shape owns a fresh material instance deserialized per
-    ''' load (TryLoadMaterialFromDictionary: New + Deserialize — no shared cache), the FaceGen
-    ''' bake builds its own material wrappers (FaceGenBuilder), and Save ESP never serializes
-    ''' material fields. Values come from the loaded face material (its BGSM/inline shader), never
-    ''' hardcoded. BGSM-only: the SubsurfaceLighting getter throws on non-BGSM/BGEM and BGEM has
-    ''' no such field, so both source and targets are gated to BGSM-backed materials.</summary>
+    ''' <summary>Copia la respuesta de subsurface del material de la CARA sobre cada material de piel del
+    ''' cuerpo cuya respuesta difiera, para que cara y cuerpo se iluminen igual. Gana la cara y se copian los
+    ''' dos campos verbatim, incluido el False. No-op cuando ya coinciden.
+    ''' <para>âš ï¸ Es una HEURISTICA, no una ley del motor: va detras de un toggle, OFF por defecto. Ver
+    ''' 30-fo4-subsurface-match-heuristica.</para>
+    ''' <para>No aplica los guards del SoftLight (skin tone, QNAM): el subsurface es una propiedad de
+    ''' iluminacion del material, independiente del TONO de piel. Render-only y sin persistencia.</para></summary>
     Private Sub MatchBodySkinSubsurfaceToFace(host As NpcRenderHost)
         ' Gate persistente (CharGen Options → Fixes, OFF por defecto): cuando está OFF, cada material de
         ' piel usa su PROPIO subsurface autorado (flag + rolloff) = engine-faithful. Cuando está ON, se
@@ -374,23 +359,16 @@ Friend NotInheritable Class NpcFaceTintResolver
 #If DEBUG Then
                 forceFoldDebug = NPC_Config.Current.SseRenderFoldedPath
 #End If
-                ' ⚠️ PROVISORIO: el toggle sólo FUERZA el fold en NPCs que no lo necesitan (vanilla), para poder
-                ' comparar tono con/sin pliegue. Cuando mustFold ya es True, el fold va sí o sí (la UI lo deshabilita).
-                ' ⛔ RAZA EFECTIVA (state.RaceFormID), NO npcData.RaceFormID: npcData sale del parse crudo +
-                ' preset LM y NO lleva el override de raza del editor (NpcRecordOverride) — tras un cambio de
-                ' raza el compose de la CARA usaba el catálogo de tints de la raza VIEJA mientras el body usaba
-                ' la nueva ⇒ cara y cuerpo con tonos de razas distintas (medido: Argonian→Dremora, [SSE-QNAM]
-                ' raceFid viejo idx=38 en la cara vs nuevo idx=1 en el body).
-                ' ⭐⭐ DEDUP DEL FOLD (R2). Si dos meshes FaceTint del MISMO NPC resuelven al MISMO complexion, el
-                ' fold de las dos es IDÉNTICO por construcción (mismo npcData, mismo complexion, misma ley) y ambas
-                ' terminan usando la MISMA textura per-NPC. Plegar dos veces era trabajo tirado y, antes de que la
-                ' clave fuera per-NPC, además hacía que el resultado dependiera del orden de iteración de
-                ' `model.meshes`. Es el mismo `seenFaceMeshes` que la rama FO4 ya tenía (:399) y que a ésta nunca se
-                ' le aplicó.
-                ' ⛔ El dedup es SÓLO del compose. La segunda mesh SÍ recibe la clave del diffuse plegado y SÍ pasa
-                ' por `ApplySseFacetint` (que instala el facetint bajo su clave per-NPC y escribe
-                ' `materialBase.InnerLayerTexture` de ESE material): saltear cualquiera de las dos cosas dejaría al
-                ' segundo shape sin diffuse plegado o sin slot 6.
+                ' âš ï¸ PROVISORIO: el toggle solo FUERZA el fold en NPCs que no lo necesitan (vanilla), para poder
+                ' comparar tono con y sin pliegue. Con mustFold=True el fold va si o si y la UI lo deshabilita.
+                ' â›” RAZA EFECTIVA (state.RaceFormID) y NO npcData.RaceFormID: npcData sale del parse crudo mas
+                ' el preset LM y no lleva el override de raza del editor, asi que tras cambiar de raza la CARA
+                ' componia con el catalogo de tints de la raza VIEJA y el cuerpo con la nueva.
+                ' DEDUP DEL FOLD: si dos meshes FaceTint del MISMO NPC resuelven al MISMO complexion, el fold de
+                ' las dos es identico por construccion y ambas terminan usando la misma textura per-NPC.
+                ' â›” El dedup es SOLO del compose: la segunda mesh igual recibe la clave del diffuse plegado y
+                ' pasa por ApplySseFacetint (que instala el facetint bajo la clave per-NPC y escribe el
+                ' InnerLayerTexture de ESE material). Saltear cualquiera de las dos la deja sin diffuse o sin slot 6.
                 Dim complexionKey = FO4UnifiedMaterial_Class.CorrectTexturePath(materialBase.Diffuse_or_Base_Texture)
                 Dim alreadyFolded = Not String.IsNullOrEmpty(complexionKey) AndAlso seenFaceMeshes.Contains(complexionKey)
                 If alreadyFolded Then
@@ -408,18 +386,13 @@ Friend NotInheritable Class NpcFaceTintResolver
                         ' único que hace que DiffuseTexture_ID devuelva la textura per-NPC en vez de la del
                         ' complexion compartido. Es per-mesh, así que dos NPCs con el mismo complexion no se pisan.
                         mesh.MeshData.Material.SseFoldedDiffuseKey = foldedKeyOut
-                        ' ⛔ YA NO SE NEUTRALIZA NADA. El diffuse plegado viene PRE-COMPENSADO (la inversa de la
-                        ' cadena del engine), así que los slots 3 y 6 quedan con su contenido REAL y el shader los
-                        ' aplica normalmente: la cadena se cancela y sale este buffer. Idéntico al bake.
-                        ' (Acá se seteaba `SseFoldDetailNeutralized = False`. La propiedad se ELIMINÓ: sus dos únicas
-                        '  asignaciones la ponían en False, así que la rama del render que la consultaba era código
-                        '  muerto desde que el fold dejó de neutralizar el slot 3. Ver Render.vb, bHasDetailMask.)
-                        ' ⭐ IMPRESCINDIBLE: el slot 6 tiene que llevar el FACETINT REAL. El diffuse va
-                        ' pre-compensado (con el softlight ya invertido), así que el shader NECESITA re-aplicar
-                        ' softlight(slot0, facetint) para volver al buffer del fold. Sin esto el slot 6 queda sin
-                        ' textura, el shader cae al gris default y el NPC PIERDE el skin tint — que es exactamente
-                        ' lo que rompió al quitar la neutralización: antes el camino plegado instalaba él mismo un
-                        ' gris acá, así que nunca hacía falta el facetint real.
+                        ' â›” YA NO SE NEUTRALIZA NADA: el diffuse plegado viene PRE-COMPENSADO (la inversa de la
+                        ' cadena del motor), asi que los slots 3 y 6 quedan con su contenido REAL, el shader los
+                        ' aplica normalmente y la cadena se cancela. Identico al bake.
+                        ' El slot 6 tiene que llevar el FACETINT REAL: como el diffuse va pre-compensado, el
+                        ' shader NECESITA re-aplicar softlight(slot0, facetint) para volver al buffer del fold.
+                        ' Sin eso el slot 6 queda sin textura, el shader cae al gris default y el NPC PIERDE el
+                        ' skin tint.
                         ApplySseFacetint(materialBase, npcData, race, model, host, state.RaceFormID)
                         Continue For
                     End If
@@ -473,25 +446,16 @@ Friend NotInheritable Class NpcFaceTintResolver
             ' Normal/specular get pristine snapshots only when their entries are present in the
             ' dict (otherwise there's nothing to roll back from on those channels).
 
-            ' Run the shared compositor pipeline (region-swap → tint compose). Single source
-            ' of truth for both render and bake; this caller is responsible for the dict
-            ' swap below (the bake instead reads back + encodes the result IDs).
-            ' baseDiffuseIsLinearOnGpu: el base se reusa de la textura del render (diffuseEntry). Si el render
-            ' la cargó como SRV sRGB (IsSRGB=True), el sample YA es lineal ⇒ el seed encodea-only y NO la
-            ' vuelve a srgbToLin (evita el doble-decode que introdujo el cambio de loader sRGB). El bake/CLI
-            ' cargan el base crudo y pasan False (default).
-            ' COMPOSITE = ESPEJO DEL SKINNING (Setting_GPUSkinning): GPU-skinning → composite GL
-            ' (ApplyFaceTintPipeline); CPU-skinning → composite CPU (ComposeCpuPipeline, el MISMO que el bake, con
-            ' paridad probada) + upload. El modo GPU queda IDÉNTICO al comportamiento previo (sin regresión).
-            ' Marca por-malla que alimenta SkinToneBaked (= `esta malla tiene el tono horneado en su
-            ' diffuse`, ver Render.vb). Los dos caminos la ponen distinto y a proposito:
-            '  - GPU: True al llegar aca, y punto. Lo derivaba de pipelineResult.Diffuse.IsFresh, pero eso
-            '    NO medía lo que parecía: IsFresh significa `el compositor devolvio una textura NUEVA en
-            '    este canal`, y en el camino vivo el diffuse SIEMPRE sale nuevo -- antes de tocar ninguna
-            '    capa el pipeline le convierte el espacio de color (lineal -> G22, porque el acumulador
-            '    trabaja en G22) y esa conversion ya crea la textura. El predicado daba True siempre:
-            '    era ceremonia y se saco.
-            '  - CPU: el Boolean de ApplyCpuComposeToDict SI puede dar False, asi que ahi se conserva.
+            ' ⛔ SYNC: CPU/GPU compositor — el COMPOSITE ES ESPEJO DEL SKINNING: con GPU-skinning va el
+            ' compositor GL, con CPU-skinning el compositor CPU (el MISMO que usa el bake). Los dos tienen que
+            ' dar el mismo resultado; ver 50-facetint-leyes-y-compositor.md.
+            ' `baseDiffuseIsLinearOnGpu`: acá el base se REUSA de la textura del render. Si el render la cargó
+            ' como SRV sRGB, el sample ya es lineal y el seed sólo encodea — volver a aplicarle srgbToLin sería
+            ' un DOBLE DECODE. El bake y el CLI cargan la base cruda y pasan False.
+            ' `meshDiffuseBaked` alimenta SkinToneBaked ("esta malla tiene el tono horneado en su diffuse").
+            ' En GPU es True al llegar acá, sin más: derivarlo de IsFresh no medía lo que parecía, porque en el
+            ' camino vivo el diffuse SIEMPRE sale nuevo (el cambio de espacio ya crea la textura). En CPU sí
+            ' puede dar False, así que ahí se conserva el booleano real.
             Dim meshDiffuseBaked As Boolean = False
             If Config_App.Current.Setting_GPUSkinning Then
                 ' ⭐ FaceGenBuilder.OutputSettings = la MISMA resolución/compresión por canal que usa el bake
@@ -528,36 +492,20 @@ Friend NotInheritable Class NpcFaceTintResolver
                 End If
             End If
 
-            ' "Ya está": the slot-12 skin tone is now BAKED into this face mesh's diffuse (the
-            ' compositor processes it as the synthetic slot-12 layer). materialBase.SkinTint stays
-            ' ENABLED (structural NIF/BGSM flag, never mutated) — instead we flag THIS mesh so Render
-            ' makes the shader's own SkinTint soft-light a no-op for it. Without this the face gets the
-            ' tone twice (baked composite + runtime soft-light of materialBase.SkinTintColor). The FO4
-            ' body is untouched (SkinToneBaked stays False → engine-faithful runtime soft-light).
-            ' AHORA ES UNA ASIGNACION, NO UN LATCH: vale exactamente `el DIFFUSE de esta malla salio
-            ' compuesto en ESTA pasada`. Antes era `= True` incondicional y sin ningun camino que lo bajara.
-            ' OJO: las salidas por `Continue For` de mas arriba (diffusePath vacio, diffuse ya visto por
-            ' otra malla, textura no lista, w/h invalidos) NO llegan aca y por lo tanto NO reasignan el
-            ' flag. En esas mallas conserva el valor de la pasada anterior. Los caminos de edicion viva
-            ' restauran el diffuse a pristine antes de re-entrar, asi que el riesgo real es un True viejo
-            ' sobre un diffuse ya restaurado; las dos puertas tempranas de mas arriba cubren los casos en
-            ' que no hay NADA que componer, que es donde eso pasaba de verdad.
+            ' El tono de piel del slot 12 queda HORNEADO en el diffuse de esta malla (el compositor lo procesa
+            ' como capa sintetica). materialBase.SkinTint sigue habilitado -es flag estructural del NIF/BGSM y
+            ' no se muta-; en cambio se marca ESTA malla para que Render vuelva no-op su propio softlight de
+            ' SkinTint. Sin esto la cara recibe el tono dos veces. El cuerpo FO4 no se toca.
+            ' Es una ASIGNACION, no un latch: vale exactamente "el diffuse de esta malla salio compuesto en ESTA
+            ' pasada". â›” Las salidas por Continue For de mas arriba no llegan aca y por lo tanto NO reasignan el
+            ' flag: esas mallas conservan el valor de la pasada anterior. Los caminos de edicion viva restauran
+            ' el diffuse a pristine antes de re-entrar, y las dos puertas tempranas cubren los casos sin nada
+            ' que componer, que es donde eso pasaba de verdad.
             mesh.MeshData.Material.SkinToneBaked = meshDiffuseBaked
         Next
 
     End Sub
 
-    ''' <summary>Los overlays de CARA (nodos <c>Face [Ovl{n}]</c>) del preset aplicado al NPC — los MISMOS que el bake
-    ''' pliega (<c>WriteSseFaceDiffuseWithOverlays</c>). Vacío si el NPC no tiene preset u overlays de cara. Los del
-    ''' CUERPO (Body/Hands/Feet) NO van acá: el bake no los hornea y el engine los aplica en runtime, así que el render
-    ''' los sigue dibujando como decal (shape.OverlayLayers) — sólo la CARA pasa por el fold.</summary>
-    ''' <summary>Los overlays de CARA del NPC para el fold del RENDER. El test de nodo es el ÚNICO canónico
-    ''' (<see cref="SseOverlayCompositor.IsFaceOverlay"/>), el mismo que usan el bake CPU, el bake GPU y el emisor
-    ''' del script Papyrus — si divergen, un overlay se compone dos veces o ninguna.
-    ''' <para>Acá SÍ se exige <c>DiffusePath</c>, a diferencia del bake: el fold del render compone únicamente el
-    ''' DIFFUSE (ComposeCpu/ComposeGpu), no toca el normal de la cabeza. Un overlay solo-normal no tendría nada
-    ''' que aportar y sólo dispararía un pliegue vacío. El bake, que sí pliega el normal, usa
-    ''' <see cref="SseOverlayCompositor.HasAnyFoldableFaceOverlay"/>.</para></summary>
     ''' <summary>⭐ Clave PER-NPC del diffuse plegado en el diccionario de texturas del modelo. Espeja la ruta que el
     ''' bake escribe (<c>FaceGenData\FaceDiffuse\&lt;plugin&gt;\&lt;formID&gt;.dds</c>) por legibilidad en el log, pero NO
     ''' es un path que nadie lea de disco: ningún campo del material la referencia, así que el loader nunca la pide.
@@ -585,31 +533,21 @@ Friend NotInheritable Class NpcFaceTintResolver
             $"textures\actors\character\facegendata\facenormal\{origin}\{fg:X8}.dds")
     End Function
 
-    ''' <summary>SSE — pliegue del NORMAL de la cabeza en vivo: compone los normales de los overlays de cara sobre
-    ''' el <c>_msn</c> y lo instala bajo <paramref name="foldedNormalKey"/> (clave per-NPC que consume
-    ''' <c>MaterialData.SseFoldedNormalKey</c> → <c>NormalTexture_ID</c>). False ⇒ el caller deja la clave en "" y
-    ''' el bind se queda con el <c>_msn</c> real.
-    '''
-    ''' <para>⭐⭐ ES LA MISMA FUNCIÓN QUE EL BAKE, NO UNA RÉPLICA: el compose sale de
-    ''' <see cref="SseOverlayCompositor.ComposeFaceOverlayNormalsIntoMsn"/>, con los MISMOS dos decodes (el
-    ''' vectorial para el normal, el de color para la cobertura) y la MISMA textura por defecto del slot 0. Por eso
-    ''' acá no hay un par CPU/GPU que pueda desincronizarse: el pliegue del normal tiene UNA sola implementación,
-    ''' compartida por render y bake. (El flag <c>Setting_GPUSkinning</c> gobierna la cadena del DIFFUSE, que sí
-    ''' tiene dos réplicas; el normal no entra en esa cadena — es otra textura, sin blend-ops ni espacios de
-    ''' color.)</para>
-    '''
-    ''' <para>El <c>_msn</c> es MODEL-SPACE y sus 3 canales son ejes independientes, así que acá NO hay ninguna
-    ''' conversión de espacio de color (a diferencia del diffuse): entra crudo y sale crudo, <c>IsSRGB=False</c>.</para>
-    '''
-    ''' <para>⭐ EL ALPHA SE PRESERVA TAL CUAL, NO SE MEZCLA — y el upload NO fuerza opaco (el del diffuse sí).
-    ''' ⛔ NO es "porque lleva la máscara especular": en una malla MODEL-SPACE el mask especular sale del SLOT 7
-    ''' (<c>texSpecular</c> = t2 del engine), canal <c>.r</c>. El <c>normalMap.a</c> lo lee SÓLO la rama no-MSN
-    ''' (Shader_Class:2130-2155, medido sobre los 6864 PS de BSLightingShader: una malla no-MSN nunca samplea t2)
-    ''' y el envmask del cubemap (:2367), que la piel no usa. O sea: en la cabeza SSE ese alpha no lo lee NADIE, y
-    ''' mezclarlo sería inventar un canal. Corroborado en el propio source (<c>femalehead_msn_009.dds</c>: alpha
-    ''' constante 255). Y sería ACTIVAMENTE peligroso: un normal de overlay en BC5 no tiene alpha y el decode lo
-    ''' devuelve constante 1 ⇒ mezclarlo lo llevaría a blanco en toda el área cubierta, el mismo modo de falla que
-    ''' tenía la cobertura.</para></summary>
+    ''' <summary>SSE - pliegue del NORMAL de la cabeza en vivo: compone los normales de los overlays de cara
+    ''' sobre el <c>_msn</c> y lo instala bajo <paramref name="foldedNormalKey"/>. False implica que el caller
+    ''' deja la clave en "" y el bind se queda con el <c>_msn</c> real.
+    ''' <para>ES LA MISMA FUNCION QUE EL BAKE, NO UNA REPLICA: el compose sale de
+    ''' <see cref="SseOverlayCompositor.ComposeFaceOverlayNormalsIntoMsn"/>, con los mismos dos decodes y la
+    ''' misma textura por defecto del slot 0. El pliegue del normal tiene UNA sola implementacion, asi que aca
+    ''' no hay un par CPU/GPU que pueda desincronizarse (Setting_GPUSkinning gobierna la cadena del DIFFUSE, que
+    ''' si tiene dos replicas; el normal no entra en esa cadena).</para>
+    ''' <para>El <c>_msn</c> es MODEL-SPACE y sus 3 canales son ejes independientes: no hay ninguna conversion
+    ''' de espacio de color, entra crudo y sale crudo (IsSRGB=False).</para>
+    ''' <para>â›” EL ALPHA SE PRESERVA TAL CUAL, NO SE MEZCLA. No es "porque lleva la mascara especular": en una
+    ''' malla model-space el mask especular sale del SLOT 7. El alpha del normal lo lee solo la rama no-MSN y el
+    ''' envmask del cubemap, que la piel no usa - en la cabeza SSE no lo lee NADIE y mezclarlo seria inventar un
+    ''' canal. Ademas seria peligroso: un normal de overlay en BC5 no tiene alpha y el decode lo devuelve
+    ''' constante 1, asi que mezclarlo lo llevaria a blanco en toda el area cubierta.</para></summary>
     Private Function ApplySseFaceOverlayNormals(materialBase As FO4UnifiedMaterial_Class, model As PreviewModel,
                                                 faceOvl As IList(Of RaceMenuJslot.JslotOverlayNode),
                                                 foldedNormalKey As String) As Boolean
@@ -690,23 +628,19 @@ Friend NotInheritable Class NpcFaceTintResolver
         Return SseOverlayCompositor.FaceOverlaysOnly(preset.SseBodyOverlays)
     End Function
 
-    ''' <summary>SSE — camino PLEGADO del render: compone lo MISMO que el bake plegado, en vivo. Corre cuando el NPC
-    ''' tiene skee MASKT u overlays de cara (la MISMA condición que el bake), o cuando el toggle provisorio lo fuerza.
-    ''' Orden de compose = EL DEL BAKE (WriteSseFaceDiffuseWithOverlays), una sola ley:
+    ''' <summary>SSE - camino PLEGADO del render: compone en vivo lo MISMO que el bake plegado, con el MISMO
+    ''' orden (WriteSseFaceDiffuseWithOverlays), una sola ley:
     '''   1. base = complexion (slot 0)
-    '''   2. <see cref="SseFaceGenBaker.FoldFacetintIntoDiffuse"/> ⇒ softlight(complexion, facetint) × amplify(detail)
-    '''   3. skee MASKT encima (sobre el albedo YA tintado — por eso hay que plegar para poder mostrarlas)
-    '''   4. Face [Ovl] overlays encima
-    '''   5. <see cref="SseFaceGenBaker.PreCompensateEngineChain"/> = INVERSA de la cadena del motor. Los slots 3 y 6
-    '''      quedan con su contenido REAL y el shader los aplica normalmente ⇒ la cadena se cancela.
-    ''' ⇒ el shader hace <c>softlight(precompensado, facetint) × amp(detail) = folded</c> y muestra el plegado tal cual.
-    ''' ⛔ (El paso 5 decía "slot 3 = (63,64,63); slot 6 = gris 0.5 ⇒ softlight(folded, 0.5) × 1". Era la ley VIEJA:
-    '''  se cayó al MEDIR in-game que neutralizar el slot 6 apaga la cara aunque el albedo dé aritméticamente exacto.)
-    ''' ⭐ LOSSLESS (como FO4): no pasa por ningún encode/decode BCn — esa pérdida es del ARCHIVO, no del compose.
-    ''' Devuelve False si algo falta (el caller cae al camino normal).</summary>
-    ''' <param name="foldedDiffuseKey">SALIDA: la clave PER-NPC bajo la que quedó instalado el diffuse plegado. El
-    ''' caller la copia a <c>MaterialData.SseFoldedDiffuseKey</c> de la mesh, que es lo que hace que el bind del
-    ''' diffuse la use. Queda "" si la función devuelve False.</param>
+    '''   2. FoldFacetintIntoDiffuse: softlight(complexion, facetint) x amplify(detail)
+    '''   3. skee MASKT encima (sobre el albedo YA tintado: por eso hay que plegar para poder mostrarlas)
+    '''   4. overlays Face [Ovl] encima
+    '''   5. PreCompensateEngineChain = inversa de la cadena del motor; los slots 3 y 6 quedan con su contenido
+    '''      REAL y el shader los aplica normalmente, asi que la cadena se cancela y se ve el plegado tal cual.
+    ''' Corre cuando el NPC tiene skee MASKT u overlays de cara (la MISMA condicion que el bake) o cuando el
+    ''' toggle provisorio lo fuerza. LOSSLESS como en FO4: no pasa por ningun encode/decode BCn, esa perdida es
+    ''' del ARCHIVO. Devuelve False si falta algo y el caller cae al camino normal.</summary>
+    ''' <param name="foldedDiffuseKey">SALIDA: clave PER-NPC bajo la que quedo instalado el diffuse plegado; el
+    ''' caller la copia al MaterialData de la mesh, que es lo que hace que el bind la use. "" si devuelve False.</param>
     Private Function ApplySseFacetintFolded(materialBase As FO4UnifiedMaterial_Class, npcData As NPC_Data,
                                             race As RACE_Data, model As PreviewModel, host As NpcRenderHost,
                                             skeeRaw As IList(Of SseSkeeMaskReader.SkeeMaskLayerRaw),
@@ -866,23 +800,13 @@ Friend NotInheritable Class NpcFaceTintResolver
                                           $"skeeLayers={nSkeeL} faceOverlays={nOvlL} capas=CPU  (esperado ~0.35-0.45; ~1.0 = satura)")
             End If
 
-            ' --- LOSSLESS (como FO4): NO se pasa por ningún encode/decode BCn. Esa pérdida es del ARCHIVO, no del
-            ' COMPOSE. `acc` está en sRGB; el render espera LINEAL crudo ⇒ se convierte sRGB→LINEAL acá.
-            ' ⭐ Se sube Rgba32f (NO RGBA8) — MISMA convención que el camino GPU-residente, que deja la textura
-            ' float sin cuantizar. Bajar a byte acá metía un redondeo que el GPU no tiene, y encima EN ESPACIO
-            ' LINEAL, donde 8 bits aplastan las sombras (el sRGB de 8 bits es perceptualmente uniforme; el lineal
-            ' NO): la paridad quedaba limitada por el TRANSPORTE en vez de por el compose. ⛔ No volver a RGBA8.
-            ' La conversión es IN-PLACE sobre `acc` (local, no se lee después del upload) ⇒ sin allocation extra,
-            ' y en orden RGBA directo — el camino de bytes tenía que swapear a BGRA, acá ese swap desaparece.
-            ' Se CONSERVA el clamp a [0,1] que hacía ClampByte255: el fold puede pasarse de 1.0 (el amplify del
-            ' detail llega a ×4 si el slot 3 trae valores altos) y saturar es el comportamiento previo; sacarlo
-            ' sería un cambio de semántica aparte. ---
-            ' ⭐ RESAMPLE AL TARGET **ANTES** DEL sRGB→LINEAL, y en FLOAT.
-            '   · ANTES del cvt porque bilinear-en-sRGB ≠ bilinear-en-lineal, y el bake resamplea sobre los
-            '     valores sRGB (su BGRA) ⇒ hacerlo después divergiría del bake Y del camino GPU (donde el
-            '     ConvertTextureSpace final muestrea el sRGB y convierte en el mismo pase).
-            '   · EN FLOAT (ResampleRgbaFloat, mismo filtro que ResampleBgra) para no cuantizar a 8 bits en el
-            '     medio: la pérdida de bytes es del ARCHIVO, no del compose — misma regla que rige todo este path.
+            ' LOSSLESS: no se pasa por ningún encode/decode BCn — esa pérdida es del ARCHIVO, no del compose.
+            ' ⛔ Se sube Rgba32f, NO RGBA8: bajar a byte acá mete un redondeo que el GPU no tiene, y encima en
+            ' espacio LINEAL, donde 8 bits aplastan las sombras. Dejaría la paridad limitada por el TRANSPORTE
+            ' en vez de por el compose. No volver a RGBA8.
+            ' ⛔ SYNC: el RESAMPLE va ANTES del sRGB→lineal y en FLOAT: bilineal-en-sRGB ≠ bilineal-en-lineal,
+            ' y el bake resamplea sobre los valores sRGB — hacerlo después divergiría del bake y del camino GPU.
+            ' Se conserva el clamp a [0,1]: el fold puede pasarse de 1.0 y saturar es el comportamiento previo.
             Dim accOut = FaceTintCpuCompositor.ResampleRgbaFloat(acc, w, h, outW, outH)
             Dim outPix = outW * outH
             ' Paralelo por rangos (por-píxel puro, escrituras disjuntas ⇒ bit-idéntico): un Math.Pow por canal.
@@ -1003,18 +927,13 @@ Friend NotInheritable Class NpcFaceTintResolver
         Dim W As Integer = FaceTintConvention.ResolveResolutionSize(FaceGenBuilder.OutputSettings.Diffuse, 512)
         Dim H As Integer = W
 
-        ' ⭐ COMPOSITE = ESPEJO DEL FLAG DE LA CÁMARA (Setting_GPUSkinning), IGUAL QUE FO4. El flag es el ÚNICO
-        ' criterio: GPU si está activo (y hay contexto GL), CPU si no. Ya NO hay un gate por overlays — el facetint
-        ' es TINT-ONLY (los overlays y las skee-masks van sobre el DIFFUSE, en el fold), así que no hay nada que el
-        ' GPU no pueda componer.
-        ' ⛔ SIN FALLBACK: o todo GPU o todo CPU. Si el flag pide GPU y el GPU falla, se ABORTA con log — componer por
-        ' CPU a escondidas taparía el bug y mostraría algo que el flag no pidió.
-        ' ⭐ LOSSLESS EN AMBOS (como FO4): ninguno pasa por un encode/decode BCn. Antes el CPU comprimía a BC3 y lo
-        ' descomprimía (para que el preview mostrara el archivo bakeado) mientras el GPU no ⇒ CPU y GPU NUNCA podían
-        ' coincidir. La pérdida BCn es del ARCHIVO, no del COMPOSE: lo que tiene que ser agnóstico es el compose.
-        ' ⭐ Y POR LO MISMO, AMBOS TERMINAN EN Rgba32f: antes los dos bajaban a Rgba8, cuantizando DENTRO del
-        ' compose y en espacio LINEAL (un paso de byte lineal ≈ 13 pasos sRGB en sombras). El destino de 8 bits es
-        ' del ARCHIVO que hornea el bake, no del preview. ⛔ No volver a UploadRgba8Linear acá.
+        ' COMPOSITE = ESPEJO DEL FLAG DE LA CAMARA (Setting_GPUSkinning), igual que FO4: GPU si esta activo y
+        ' hay contexto GL, CPU si no. Ya no hay gate por overlays, porque el facetint es TINT-ONLY (overlays y
+        ' skee-masks van sobre el DIFFUSE, en el fold).
+        ' â›” SIN FALLBACK: o todo GPU o todo CPU. Si el flag pide GPU y el GPU falla se ABORTA con log; componer
+        ' por CPU a escondidas taparia el bug y mostraria algo que el flag no pidio.
+        ' LOSSLESS en ambos y ambos terminan en Rgba32f: la perdida BCn y la cuantizacion a 8 bits son del
+        ' ARCHIVO que hornea el bake, no del COMPOSE. â›” No volver a UploadRgba8Linear aca.
         Dim newId As Integer
         If Config_App.Current.Setting_GPUSkinning AndAlso host IsNot Nothing Then
             newId = ComposeSseFacetintTexGpu(npcRec, race, npcData, W, H, host, effRaceFid)
@@ -1078,26 +997,20 @@ Friend NotInheritable Class NpcFaceTintResolver
     End Function
 
 
-    ''' <summary>Rama GPU del render espejo del skinning: compone el facetint SSE (tint-only) PURO GPU — las MISMAS
-    ''' capas que el CPU (<see cref="SseFaceTintComposer.BuildLayerInputs"/>) sobre un base PLANO = seed(0.5) vía
-    ''' <see cref="FaceTintCompositor.ApplyFaceTintPipeline"/> (ley SSE all-linear). Es el MISMO compose que el
-    ''' <c>_2b</c> del bake. Base subido LINEAL (baseDiffuseIsLinearOnGpu) = seed 0.5-lin.
-    ''' Devuelve el TEXTURE-ID Rgba32f LINEAL, <b>propiedad del CALLER</b> (él lo instala y él lo libera; mismo
-    ''' contrato que <c>ApplyPipelineResultToDict</c> y que <c>SseFoldLayerStack.ComposeFoldedGpuResident</c>:
-    ''' <c>AllocateResultTextureAndFbo</c> genera una textura fresca por llamada — sólo el FBO se reusa, la
-    ''' textura NO sale del pool de ping-pong). 0 = FALLO del GPU ⇒ el caller ABORTA con log; NO compone por CPU
-    ''' (o todo GPU o todo CPU). GL-bound.
-    ''' ⭐ GPU-RESIDENTE, SIN READBACK: antes hacía <c>GetTexImage</c> a bytes y re-subía Rgba8. Eso (a) frenaba el
-    ''' pipeline con una transferencia bloqueante en el camino caliente — el mismo patrón que
-    ''' <c>ComposeFoldedGpuResident</c> ya había eliminado — y (b) cuantizaba a 8 bits EN MEDIO del compose,
-    ''' contra la doctrina "la pérdida BCn es del ARCHIVO, no del COMPOSE", y encima en espacio LINEAL.
-    ''' ⭐ SEED EXACTA 0.5 EN FLOAT, no el byte 128 (=0.50196): el CPU (<c>ComposeFacetintAcc</c>) siembra 0.5
-    ''' exacto, así que el byte metía una divergencia CPU/GPU de 0.00196 en el término del soft-light del albedo
-    ''' facegen (cota del error resultante: <c>2·a·(1−a)·0.00196 ≤ 0.00098</c>). Estaba TAPADA por la cuantización que se acaba de quitar
-    ''' (0.5×255 = 127.5 → redondeo bancario → 128 = justo el literal del GPU); al pasar a float quedaría
-    ''' EXPUESTA. ⛔ No volver a sembrar por bytes: el float y la seed exacta van juntos.
-    ''' Sin capas (raza sin tints) → la seed plana ES el facetint neutro correcto: se devuelve TAL CUAL,
-    ''' transfiriendo la propiedad (<c>seedTex = 0</c>) para que el <c>Finally</c> no libere lo que se instala.</summary>
+    ''' <summary>Rama GPU espejo del skinning: compone el facetint SSE (tint-only) puro GPU, con las MISMAS
+    ''' capas que el CPU sobre un base PLANO = seed(0.5) via <see cref="FaceTintCompositor.ApplyFaceTintPipeline"/>
+    ''' (ley SSE all-linear). Es el mismo compose que el <c>_2b</c> del bake.
+    ''' <para>Devuelve el texture-id Rgba32f LINEAL, <b>propiedad del CALLER</b> (el lo instala y el lo libera):
+    ''' AllocateResultTextureAndFbo genera una textura fresca por llamada, solo el FBO se reusa. 0 = fallo del
+    ''' GPU y el caller ABORTA con log, no compone por CPU. GL-bound.</para>
+    ''' <para>GPU-RESIDENTE, SIN READBACK: el GetTexImage + re-subida Rgba8 previo frenaba el pipeline con una
+    ''' transferencia bloqueante en el camino caliente y cuantizaba a 8 bits EN MEDIO del compose, en espacio
+    ''' lineal.</para>
+    ''' <para>â›” SEED EXACTA 0.5 EN FLOAT, no el byte 128 (=0,50196): el CPU siembra 0,5 exacto, asi que el byte
+    ''' metia una divergencia CPU/GPU en el termino del softlight. Estaba TAPADA por la cuantizacion que se
+    ''' acaba de quitar. No volver a sembrar por bytes: el float y la seed exacta van juntos.</para>
+    ''' <para>Sin capas (raza sin tints) la seed plana ES el facetint neutro correcto y se devuelve tal cual,
+    ''' transfiriendo la propiedad para que el Finally no libere lo que se instala.</para></summary>
     Private Function ComposeSseFacetintTexGpu(npcRec As PluginRecord, race As RACE_Data, npcData As NPC_Data, w As Integer, h As Integer, host As NpcRenderHost,
                                               Optional effRaceFid As UInteger = 0UI) As Integer
         If host Is Nothing Then Return 0
@@ -1234,10 +1147,6 @@ Friend NotInheritable Class NpcFaceTintResolver
         End If
     End Sub
 
-    ''' <summary>Apply one channel's pipeline result to the model's Textures_Dictionary: swap
-    ''' the fresh GL texture ID into the cache entry and delete the ID it replaced. No-op when
-    ''' the pipeline reported IsFresh=False (channel had no contribution; input ID stayed in
-    ''' place).</summary>
     ''' <summary>Composite CPU-skinning path (espejo del GL ApplyFaceTintPipeline): compone por CPU con los MISMOS
     ''' layers desde los bytes source (FilesDictionary), y sube cada canal a GL, swapeando el dict. El diffuse se
     ''' convierte g22→linear antes de subir (el render GL deja el output en linear; ver comentario del caller).
@@ -1487,22 +1396,16 @@ Friend NotInheritable Class NpcFaceTintResolver
         ' overlay-applied NPC_Data, so the freshly-edited preset is what gets baked.
         ApplyFaceTintOverlay(host.LastRenderedState, host.LastRenderData, host)
 
-        ' Stage 3: refresh material uniforms (SkinTintColor + GrayscaleToPalette / HairTintColor)
-        ' on every loaded shape. These were set at NIF-load time inside ApplyShapeMaterialOverrides
-        ' and are invisible to MarkDirty(Textures); we mutate them in place.
-        '
-        ' Iterate renderData.Shapes (not model.meshes) so each shape can be looked up against
-        ' renderData.ShapeCandidate — without candidate context the prior code path applied hair
-        ' color to ANY palette-enabled material, leaking it into robot armor / face / body shapes.
-        ' Shared helper ApplyMaterialPaletteHairColor enforces the engine rule (Hair/FacialHair/
-        ' Brow HDPTs only) and is the same code path NIF-load uses now — no parallel copy to
-        ' drift.
-        '
-        ' SkinTintColor refresh stays inline here using the simple SkinTone resolution (no
-        ' candidate-aware override). NIF-load uses the richer ResolveSkinTintColor which factors
-        ' in solidTintColor for face HeadParts — that asymmetry is a separate frontier (see
-        ' project_palette_routing_pending.md). Not touched here to avoid changing render behavior
-        ' for face shapes edited in live preview.
+        ' Stage 3: refresca los uniforms de material (SkinTintColor + GrayscaleToPalette / HairTintColor) de
+        ' cada shape cargada. Se setearon al cargar el NIF y son invisibles a MarkDirty(Textures), asi que se
+        ' mutan in place.
+        ' Se itera renderData.Shapes y no model.meshes para poder cruzar cada shape con su candidate: sin ese
+        ' contexto el codigo previo aplicaba color de pelo a CUALQUIER material con paleta habilitada y se
+        ' filtraba a armadura de robot, cara y cuerpo. El helper compartido ApplyMaterialPaletteHairColor impone
+        ' la regla del motor y es el mismo camino que usa la carga del NIF.
+        ' El refresh de SkinTintColor queda inline con la resolucion simple de SkinTone; la carga del NIF usa la
+        ' mas rica, que considera solidTintColor para head parts de cara. Esa asimetria es un frente aparte
+        ' (50-facetint-residuos-aceptados) y no se toca aca para no cambiar el render de la cara en vivo.
         Dim renderData = host.LastRenderData
         Dim skinTone = _materialResolver.ResolveNpcSkinToneColor(host.LastRenderedState)
         For Each shape In renderData.Shapes
@@ -1589,17 +1492,13 @@ Friend NotInheritable Class NpcFaceTintResolver
                     OpenTK.Graphics.OpenGL4.GL.TexParameter(OpenTK.Graphics.OpenGL4.TextureTarget.Texture2D, OpenTK.Graphics.OpenGL4.TextureParameterName.TextureWrapT, CInt(OpenTK.Graphics.OpenGL4.TextureWrapMode.ClampToEdge))
                     Dim handle = System.Runtime.InteropServices.GCHandle.Alloc(pristine.Pixels, System.Runtime.InteropServices.GCHandleType.Pinned)
                     Try
-                        ' DirectXTexWrapperCLI.Loader.ConvertForBitmap (the source of pristine.Pixels)
-                        ' produces GDI Format32bppArgb byte order, which is B,G,R,A in memory. Tell
-                        ' OpenGL that with PixelFormat.Bgra; the driver swaps to RGBA on upload so the
-                        ' internal representation is correct. Using PixelFormat.Rgba here gave a blue
-                        ' body (the body diffuse came back with R and B swapped on every live refresh).
-                        ' Re-upload in the SAME colour-space the original load used. pristine.Pixels are
-                        ' the sRGB-ENCODED (display) bytes ConvertForBitmap decoded from the DDS. If the
-                        ' original was an sRGB SRV (IsSRGB), restore it as Srgb8Alpha8 so the sample decodes
-                        ' to LINEAR on read (matching the live load); otherwise raw Rgba8. Restoring as plain
-                        ' Rgba8 while entry.IsSRGB stayed True desynced baseDiffuseIsLinearOnGpu → tone/gamma
-                        ' shift on the next composite (the "edit" regression).
+                        ' El loader produce orden GDI Format32bppArgb, que en memoria es B,G,R,A: hay que subir
+                        ' con PixelFormat.Bgra para que el driver haga el swap. Con Rgba el cuerpo salia azul.
+                        ' Y se re-sube en el MISMO espacio de color que uso la carga original: los pixeles
+                        ' pristine son los bytes sRGB que decodifico el loader, asi que si el original era un SRV
+                        ' sRGB hay que restaurarlo como Srgb8Alpha8 para que la muestra decodifique a lineal.
+                        ' Restaurar como Rgba8 plano con entry.IsSRGB=True desincronizaba
+                        ' baseDiffuseIsLinearOnGpu y corria el tono en el siguiente composite.
                         Dim internalFmt = If(pristine.IsSRGB,
                             OpenTK.Graphics.OpenGL4.PixelInternalFormat.Srgb8Alpha8,
                             OpenTK.Graphics.OpenGL4.PixelInternalFormat.Rgba8)

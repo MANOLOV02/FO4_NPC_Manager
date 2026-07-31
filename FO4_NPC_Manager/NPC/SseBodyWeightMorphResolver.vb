@@ -1,4 +1,4 @@
-Imports FO4_Base_Library
+﻿Imports FO4_Base_Library
 Imports NiflySharp
 Imports OpenTK.Mathematics
 Imports SysNumerics = System.Numerics
@@ -10,7 +10,7 @@ Imports SysNumerics = System.Numerics
 ' and <mesh>_1.nif (weight 100). The engine loads the ARMA-referenced model,
 ' derives the twin by flipping the 5th-from-last char of the path ('0'<->'1'),
 ' and blends v = v0*(1-t) + v1*t with t = clamp(NAM7/100, 0, 1) (System B,
-' reference_sse_engine_facegen_re, load-time CPU).
+' 31-sse-facegen-motor-re, load-time CPU).
 '
 ' Instead of a load-time bake we express the LERP as ONE morph channel:
 '   base = geom.NifLocalVertices (the addon model the app actually loaded)

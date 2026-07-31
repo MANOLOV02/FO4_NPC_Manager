@@ -1,4 +1,4 @@
-' UI built in Designer per feedback_ui_in_designer.md.
+﻿' UI built in Designer per 00-reglas-ui-y-vb.md.
 ' InitializeComponent is declarative ONLY (no For/If/lambda). The many repeated slot checkboxes are
 ' declared via their CONTAINER (FlowSlots) here and built in code-behind (OnLoad); the sculpt grid +
 ' MSWP grid columns are added in code-behind too (variable/repeated content).

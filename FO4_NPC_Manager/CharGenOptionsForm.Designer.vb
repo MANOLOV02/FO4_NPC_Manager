@@ -923,7 +923,7 @@ Partial Class CharGenOptionsForm
         GroupConvDWsByOp.Size = New Size(616, 84)
         GroupConvDWsByOp.TabIndex = 4
         GroupConvDWsByOp.TabStop = False
-        GroupConvDWsByOp.Text = "Diffuse - Working Space por BlendOp (engine-faithful: SoftLight=G22, resto=Linear)"
+        GroupConvDWsByOp.Text = "Diffuse - Working Space by BlendOp (engine-faithful: SoftLight=G22, rest=Linear)"
         ' 
         ' LblDWsReplace
         ' 

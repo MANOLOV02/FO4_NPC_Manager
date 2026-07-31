@@ -1,4 +1,4 @@
-Imports System.Windows.Forms
+﻿Imports System.Windows.Forms
 Imports FO4_Base_Library
 
 ''' <summary>Per-PreviewControl bag of render-pipeline state for an NPC preview. Holds the
@@ -164,7 +164,6 @@ Friend Class NpcRenderHost
     ''' is completely inert.</summary>
     Public Property PreviewGenderOverride As Boolean?
 
-    ''' <summary>Deferred face-tint polling timer. The texture cache is async (Render.vb
     ''' <summary>Current NPC visual state being previewed (without outfit — outfit applied
     ''' on-demand from combo). The Save / Copy snapshot reads from this; the render reads
     ''' from <see cref="LastRenderedState"/>. Sync between them is the responsibility of
@@ -219,7 +218,7 @@ Friend Class NpcRenderHost
         Dim renderHeadwear = Toggles.RenderHeadwear
         Dim renderGore = Toggles.RenderGore
         ' SSE occludes skin PER-PARTITION (BSDismemberSkinInstance), FO4 whole-shape (System-A displacement).
-        ' Byte-level RE both engines: reference_sse_engine_occlusion_re. Gates the skin-occlusion branches below.
+        ' Byte-level RE both engines: 23-armor-oclusion-sse-re. Gates the skin-occlusion branches below.
         Dim isSse As Boolean = (Config_App.Current.Game = Config_App.Game_Enum.Skyrim)
 
         ' --- Per-segment worn-slot occlusion, recomputed from the items CURRENTLY rendered ---

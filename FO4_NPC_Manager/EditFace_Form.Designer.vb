@@ -1,4 +1,4 @@
-﻿' UI built in Designer per feedback_ui_in_designer.md.
+﻿' UI built in Designer per 00-reglas-ui-y-vb.md.
 <Global.Microsoft.VisualBasic.CompilerServices.DesignerGenerated()>
 Partial Class EditFace_Form
     Inherits EditorFormBase

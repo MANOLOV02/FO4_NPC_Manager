@@ -79,13 +79,11 @@ Public Class NPC_Config
     ''' (ahorra VRAM y ancho de banda: una 1024^2 pasa de 4 MB a 0,7-1,4 MB). False = se descomprimen por
     ''' software con DirectXTex, que es EXACTAMENTE el mismo decoder que usa el compositor CPU.
     ''' <para>Por que importa: el decode de BCn por hardware NO es bit-identico al de software (el spec deja
-    ''' libertad en el redondeo de los interpolantes 1/3 y 2/3, y cada vendor elige). MEDIDO sobre 60 NPCs de
-    ''' FO4, con todo lo demas ya alineado: software en los dos lados da peor |delta| = 1 (y 0 comparando solo
-    ''' el seed); hardware da peor 8 sobre 6.797 px de 96,7 M. Como es lo UNICO que cambia entre las dos
-    ''' corridas, ese +-8 es del decoder y de nada mas, y vive en los LSB del bloque.</para>
-    ''' <para>Se deja en True porque el resto esta probado y esta es la opcion eficiente. Ponerlo en False es
-    ''' lo que hay que hacer para MEDIR paridad CPU/GPU: con hardware, el +-8 del decoder tapa cualquier otra
-    ''' divergencia. La variable de entorno FGBAKE_GL_DECODE_HW (0/1) tiene prioridad sobre esta opcion.</para></summary>
+    ''' libertad en el redondeo de los interpolantes 1/3 y 2/3, y cada vendor elige). Medido en FO4, ese
+    ''' desvio es de +-8 y vive en los LSB del bloque.</para>
+    ''' <para>Se deja en True: es la opcion eficiente. Ponerlo en False es lo que hay que hacer para MEDIR
+    ''' paridad CPU/GPU, porque con hardware el +-8 del decoder tapa cualquier otra divergencia. La variable
+    ''' de entorno FGBAKE_GL_DECODE_HW (0/1) tiene prioridad sobre esta opcion.</para></summary>
     Public Property UseHardwareBcDecode As Boolean = True
 
     ''' <summary>⚠️ PROVISORIO (herramienta de diagnóstico, a ELIMINAR) — "SSE: render por el camino PLEGADO".
@@ -96,9 +94,8 @@ Public Class NPC_Config
     ''' (gris 63/64/63 = amplify 1) y slot 6 (gris 0.5 = softlight identidad), de modo que el shader haga la
     ''' identidad y muestre el diffuse plegado.
     ''' Si el pliegue es correcto, AMBOS caminos deben dar el MISMO tono de piel. Sirve para verlo in-app sin bakear.
-    ''' NO se persiste (arranca siempre en False): es un toggle de sesión para diagnóstico.
-    ''' ⛔ &lt;JsonIgnore&gt; DE VERDAD: sin él SÍ se persistía (el comentario mentía — apareció en npc_config.json), y un
-    ''' toggle de diagnóstico que sobrevive al reinicio deja la app en un modo raro sin que nadie sepa por qué.</summary>
+    ''' ⛔ NO se persiste (&lt;JsonIgnore&gt;, arranca siempre en False): un toggle de diagnóstico que sobrevive al
+    ''' reinicio deja la app en un modo raro sin que nadie sepa por qué.</summary>
     <Serialization.JsonIgnore>
     Public Property SseRenderFoldedPath As Boolean = False
 
@@ -106,14 +103,13 @@ Public Class NPC_Config
     ''' <summary>SANDBOX de paridad del pliegue SSE: cuando el stack de capas (skee MASKT + overlays de cara) se compone
     ''' por GPU, correr TAMBIÉN el CPU y loguear el RMS entre los dos (<c>[SSE-FOLD] ... rmsCPUvsGPU=</c>). Es la MEDIDA
     ''' de la paridad — sin esto la paridad sería una afirmación, no un dato.
-    ''' ⚠️ OPT-IN (False por defecto, también en Debug): DUPLICA el compose, y el camino CPU pasa la cara entera por
-    ''' Double + decodifica las texturas de cada capa ⇒ MEDIDO +3,6 s por render a 1024² (log 2026-07-12). Se enciende
-    ''' a mano cuando se quiere re-medir (p.ej. al tocar el compositor o agregar un blend-op nuevo).
-    ''' ⛔ &lt;JsonIgnore&gt;: NO se persiste. Se persistía, y ese <c>true</c> guardado pisaba el default ⇒ el compose corría
-    ''' DUPLICADO en cada render para siempre (era la lentitud que reportó el usuario). Un flag de diagnóstico caro no
-    ''' puede sobrevivir al reinicio: se enciende a mano, para la corrida en la que se quiere medir.
-    ''' Mediciones vigentes (2026-07-12, 1024², bake de 0008774F): overlay de cara → rmsCPUvsGPU = 0,080/255;
-    ''' skee MASKT (rama PaletteMask, canal R) → 0,001/255. Ambas bajo el redondeo al byte = float32 vs double.</summary>
+    ''' ⚠️ OPT-IN (False por defecto, también en Debug): DUPLICA el compose y el camino CPU pasa la cara entera por
+    ''' Double ⇒ medido +3,6 s por render a 1024². Se enciende a mano para re-medir (p.ej. al tocar el compositor
+    ''' o agregar un blend-op nuevo).
+    ''' ⛔ &lt;JsonIgnore&gt;: un flag de diagnóstico caro no puede sobrevivir al reinicio — persistido, dejaba el
+    ''' compose DUPLICADO en cada render para siempre.
+    ''' Paridad vigente (1024²): overlay de cara rmsCPUvsGPU = 0,080/255; skee MASKT = 0,001/255. Las dos por
+    ''' debajo del redondeo al byte.</summary>
     <Serialization.JsonIgnore>
     Public Property SseMeasureFoldParity As Boolean = False
 

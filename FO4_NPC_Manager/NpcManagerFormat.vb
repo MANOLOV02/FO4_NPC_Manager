@@ -1,4 +1,4 @@
-Imports System.Globalization
+﻿Imports System.Globalization
 Imports System.IO
 Imports System.Drawing
 Imports System.Linq
@@ -12,7 +12,7 @@ Imports OpenTK.Mathematics
 
 ''' <summary>Pure stateless formatting / label helpers extracted from MainForm (no instance state,
 ''' no UI, no MainForm fields). Real separate class — NOT a partial of MainForm. Part of slimming
-''' MainForm.vb; see project_mainform_split. Call sites use the qualified <c>NpcManagerFormat.X</c>.</summary>
+''' MainForm.vb; see 61-perf-mainform-split. Call sites use the qualified <c>NpcManagerFormat.X</c>.</summary>
 Friend NotInheritable Class NpcManagerFormat
     Private Sub New()
     End Sub

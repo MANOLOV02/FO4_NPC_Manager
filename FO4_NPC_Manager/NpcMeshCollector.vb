@@ -10,18 +10,11 @@ Imports NiflySharp
 Imports NiflySharp.Blocks
 Imports OpenTK.Mathematics
 
-''' <summary>Phase 2 of the MainForm split (MeshCollection/Mounting — Increment 2): the CANDIDATE
-''' pipeline. ResolvePreviewVariant orchestrates collect (ARMO/OTFT/headparts/robot-chunk candidates) →
-''' slot-conflict selection + headwear occlusion → LoadNifShapes (load NIF→shapes, per-shape material
-''' overrides, populate PreviewResolutionResult). Pure data + NiflySharp parsing — NO WinForms controls,
-''' NO GL/host execution (runs on the render Task.Run; the orchestrator RenderCurrentStateAsync +
-''' PrepareSkeleton stay in MainForm and call this). DI: NpcRenderContext (PluginManager + parse caches),
-''' NpcMaterialResolver (ApplyShapeMaterialOverrides), NpcStateResolver (ResolveSkeletonKey),
-''' NpcMountingResolver (robot-chunk mount + sockets) + Func delegates for MainForm-resident helpers
-''' (ArmoIsPowerArmor, RaceIsPowerArmor — shared power-armor predicates kept in
-''' MainForm because the outfit/armo-universe also uses them). Shared nested types (MeshCandidate,
-''' PreviewResolutionResult, NPCVisualState, etc.) stay nested in MainForm and are referenced as
-''' MainForm.&lt;T&gt;. See project_mainform_split.</summary>
+''' <summary>Pipeline de CANDIDATOS del preview: recolecta (ARMO/OTFT/head parts/chunks de robot) →
+''' resuelve conflicto de slots y oclusión por headwear → carga los NIF y aplica los overrides de material
+''' por shape.
+''' <para>⛔ Datos y parsing puros: NADA de WinForms ni de GL acá, porque corre en el Task de render. La
+''' orquestación y el esqueleto se quedan en MainForm. Ver 61-perf-mainform-split.md.</para></summary>
 Friend NotInheritable Class NpcMeshCollector
     Private ReadOnly _ctx As NpcRenderContext
     Private ReadOnly _materialResolver As NpcMaterialResolver
@@ -53,25 +46,14 @@ Friend NotInheritable Class NpcMeshCollector
         _raceIsPowerArmor = raceIsPowerArmor
     End Sub
 
-    ''' <summary>⭐ EL discriminador de FaceGen, engine-faithful: <c>RACE.DATA</c> Flags bit 0x2
-    ''' "FaceGen Head". Con el bit CLARO ninguno de los dos motores construye cabeza:
-    ''' Fallout4.exe <c>0x1406E22B9</c> y CreationKit.exe <c>0x140AAE52B</c> hacen early-return
-    ''' (RE 2026-07-21, ver reference_facegenhead_flag_gates_both_engines); SSE <c>0x1403BCAB0</c>
-    ''' testea lo mismo.
-    ''' <para>⛔ NO confundir con "¿existe el FaceGeom horneado?". Aguas abajo de este gate el motor
-    ''' tiene DOS ramas — cargar el <c>FaceGeom\...\&lt;FormID&gt;.nif</c> (<c>0x1406ED9F0</c>) o armar
-    ''' la cabeza desde las head parts (<c>0x1406ED4D0</c>) — así que la ausencia del NIF horneado
-    ''' elige RAMA, no apaga el FaceGen. El predicado anterior (<c>MainForm.HasFaceGenAssets</c>:
-    ''' "existe el .nif en el FilesDictionary") era una heurística que confundía las dos cosas y dejaba
-    ''' el insumo <c>_faceBones</c> sin recolectar en todo NPC sin FaceGeom shipeado — con el head-bake
-    ''' activo eso deja la cabeza en la malla PLANA (rig de ~10 huesos), donde el pose FMRS
-    ''' (keys <c>skin_bone_*</c>) no aterriza: los sliders de Bone Regions del editor no hacían NADA.
-    ''' Caso testigo: MQ101PlayerSpouseFemale 0x000A7D35 (sin FaceGeom en el BA2 — su cara la arma el
-    ''' chargen), raza HumanRace con el bit puesto.</para>
-    ''' <para>Mismo discriminador que el botón Edit Face (<c>MainForm.UpdateEditFaceEnabled</c>) y que
-    ''' el bake (<c>FaceGenBuilder</c>), ambos vía <see cref="RaceUtil.RaceSupportsFaceGen"/> — misma
-    ''' regla, pero acá se pasa por el cache de razas del render (<c>ParseRaceCached</c>) para no
-    ''' re-parsear el RACE en el hot path de la selección de NPC.</para></summary>
+    ''' <summary>⭐ EL discriminador de FaceGen, engine-faithful: <c>RACE.DATA</c> bit 0x2 "FaceGen Head".
+    ''' Con el bit claro, ninguno de los dos motores construye cabeza. Ver 40-bake-leyes-fo4.md.
+    ''' <para>⛔ NO confundirlo con "¿existe el FaceGeom horneado?": aguas abajo del gate el motor elige
+    ''' entre cargar el NIF horneado o armar la cabeza desde head parts, así que la ausencia del NIF elige
+    ''' RAMA, no apaga el FaceGen. Usar esa heurística dejaba el insumo <c>_faceBones</c> sin recolectar y
+    ''' los sliders de Bone Regions del editor no hacían nada.</para>
+    ''' <para>Misma regla que el botón Edit Face y que el bake, pero acá vía el cache de razas del render
+    ''' para no re-parsear el RACE en el hot path de la selección de NPC.</para></summary>
     Private Function RaceBuildsFaceGenHead(state As MainForm.NPCVisualState) As Boolean
         If state Is Nothing OrElse state.RaceFormID = 0UI Then Return False
         Dim raceRec = _ctx.PluginManager.GetRecord(state.RaceFormID)
@@ -359,17 +341,11 @@ Friend NotInheritable Class NpcMeshCollector
             CollectHeadPartCandidates(mergedHeadParts, New HashSet(Of UInteger)(), candidates, order, warnings, state, useFaceGen)
         End If
 
-        ' Robot path (NPC_.ObjectTemplate). Replaces the legacy "iterate combo #0
-        ' OMODFormIDs flat list" branch. Engine rule (verified vs dump v2):
-        '   1. ObjectTemplateResolver.ResolveNpcCombinations picks ONE combination
-        '      (kw-match → first Default → first overall).
-        '   2. Walk the chosen combination's IncludedOmods: each OMOD.ModelPath != ""
-        '      is a chunk MainForm.MeshCandidate to mount via BSConnectPoint::Parents lookup
-        '      from the actor's skeleton NIF (helper BSConnectPointReader).
-        '   3. OMODs without ModelPath but with Properties feed OmodResolutionApplier
-        '      with formType="NPC_" (idx 5 MaterialSwap, idx 4 ColorRemap).
-        ' AttachPoint resolution: OMOD.AttachPointFormID → KYWD record → EditorID,
-        ' matched case-insens against ConnectPointInfo.Name.
+        ' Camino robot (NPC_.ObjectTemplate). Regla del motor: ObjectTemplateResolver elige UNA combinacion
+        ' (kw-match -> primer Default -> primera); cada IncludedOmod con ModelPath es un chunk a montar por
+        ' BSConnectPoint::Parents del skeleton del actor; los OMOD sin ModelPath pero con Properties alimentan
+        ' OmodResolutionApplier con formType="NPC_". El AttachPoint se resuelve OMOD.AttachPointFormID -> KYWD
+        ' -> EditorID, matcheado case-insensitive contra ConnectPointInfo.Name. Ver 24-robots-mounting.
         If Not onlyOutfitCollect AndAlso state.HasObjectTemplate AndAlso state.ObjectTemplateCombinations IsNot Nothing _
            AndAlso state.ObjectTemplateCombinations.Count > 0 Then
             CollectRobotChunkCandidates(state, candidates, order, warnings)
@@ -434,22 +410,14 @@ Friend NotInheritable Class NpcMeshCollector
         ' AdditionalRaces. The per-ARMA check (ArmorAddonMatchesRace) handles this correctly.
         ' Log the ARMO race only for visibility; don't reject based on it.
 
-        ' Multi-addon resolution: ARMOs con varios `Models` (ej. Combat Torso = Lite/Mid/Heavy)
-        ' eligen UN addon vía la cadena: LVLI.LLKC keywords → ARMO.OBTS combination keyword match
-        ' → OMOD Property AddonIndex (idx 7 wbArmorPropertyEnum). Fallback a BaseAddonIndex (FNAM)
-        ' o índice 0 si nada matchea.
-        ' Spec: wbDefinitionsFO4.pas:6187-6192 (Models), 5867 (OBTS), 5710 (AddonIndex property),
-        ' 1192-1245 (wbOBTEAddonIndexToStr — flujo del engine).
-        ' AddonIndex resolution. El INDX en el array Models de la ARMO no es índice único —
-        ' es etiqueta de "grupo de addons que se cargan juntos". El engine resuelve UN
-        ' AddonIndex efectivo (default 0; override via OMOD AddonIndex Property cuando OBTS
-        ' combination matchea contexto de keywords) y carga TODOS los Models cuyo INDX coincide.
-        '   - Sturgess (Abbot): efectiveIdx=0, dos Models con INDX=0 (clothes+gloves) → carga ambos.
-        '   - Gunner Combat Torso: keyword Heavy → OMOD AddonIndex=2 → carga el grupo INDX=2.
-        ' ctxKeywords lifted out of the addon-resolve block so the OBTS/OMOD resolver below can
-        ' use the same set. Source: LVLI.LLKC propagation (arch_outfit_resolution.md). Empty
-        ' for ARMOs reached without a leveled outfit (e.g. NPC.WNAM skin) — combinations with
-        ' Default=True still apply, keyword-only combinations don't.
+        ' Multi-addon: los ARMO con varios Models (ej. Combat Torso Lite/Mid/Heavy) eligen UN addon por la
+        ' cadena LVLI.LLKC -> keyword de combinacion OBTS -> OMOD Property AddonIndex, con fallback a
+        ' BaseAddonIndex (FNAM) o al indice 0. El INDX del array Models NO es indice unico: es etiqueta de
+        ' "grupo de addons que se cargan juntos", asi que el motor resuelve UN AddonIndex efectivo y carga
+        ' TODOS los Models con ese INDX (Sturgess: idx 0 = clothes + gloves, los dos).
+        ' ctxKeywords se saca del bloque de resolucion para que el resolver OBTS/OMOD de abajo use el MISMO
+        ' set. Vacio si al ARMO no se llego por un outfit leveled (p.ej. la piel del WNAM): ahi las
+        ' combinaciones Default=True siguen aplicando y las que dependen de keywords no.
         Dim ctxKeywords As List(Of UInteger) = Nothing
         state.LoadoutArmorContextKeywords?.TryGetValue(armoFormID, ctxKeywords)
 
@@ -670,27 +638,15 @@ Friend NotInheritable Class NpcMeshCollector
         Next
     End Sub
 
-    ''' <summary>NPC robot path: walks NPC_.OBTE via the canonical resolver, picks ONE
-    ''' combination, expands its IncludedOmods recursively, emits one MainForm.MeshCandidate per chunk
-    ''' OMOD (with mount transform from BSConnectPoint::Parents lookup), and shares the
-    ''' resolution across all emitted candidates so the applier runs Properties once at the
-    ''' actor level.
-    '''
-    ''' Engine semantics (verified vs dump v2):
-    '''   - Each chunk OMOD has ModelPath != "" and AttachPointFormID → KYWD whose EditorID
-    '''     matches a BSConnectPoint::Parents.Name in the actor skeleton NIF.
-    '''   - The chunk renders at the socket's local transform on top of the bone Parent.
-    '''   - OMODs without ModelPath but with Properties (or DirectProperties on the combination)
-    '''     contribute Materials/Color swaps applied via OmodResolutionApplier formType="NPC_".
-    '''
-    ''' AttachPoint logging: KYWD records were not loaded by the legacy plugin filter
-    ''' (SIGS_NPC_RENDERING did not include "KYWD" until 2026-05-10). With the fix in place
-    ''' AttachPoint EditorIDs resolve and chunks mount at the correct sockets.
-    '''
-    ''' Skeleton merge: handled by PrepareSkeleton via BodyPartSkeletonResolver (BPTD.MODL
-    ''' from RACE.GNAM). Replaces the legacy MergeRobotExtendedSkeletonsIfRobot filesystem
-    ''' heuristic. Chunks mount correctly via BSConnectPoint and standard
-    ''' SkeletonInstance.MergeAdditionalSkeleton pipeline.</summary>
+    ''' <summary>Camino robot del NPC: recorre NPC_.OBTE por el resolver canonico, elige UNA combinacion,
+    ''' expande sus IncludedOmods recursivamente y emite un candidate por chunk (con el transform de montaje
+    ''' del lookup BSConnectPoint::Parents), compartiendo la resolucion entre todos los candidates para que el
+    ''' applier corra las Properties una sola vez a nivel de actor.
+    ''' <para>Semantica del motor: cada chunk OMOD tiene ModelPath y un AttachPointFormID cuyo KYWD.EditorID
+    ''' matchea un BSConnectPoint::Parents.Name del skeleton; el chunk se dibuja en el transform local del
+    ''' socket sobre el bone padre. Los OMOD sin ModelPath aportan swaps de material/color.</para>
+    ''' <para>El merge de skeleton lo hace PrepareSkeleton via BPTD.MODL (RACE.GNAM), no una heuristica de
+    ''' filesystem. Ver 24-robots-mounting.</para></summary>
     Private Sub CollectRobotChunkCandidates(state As MainForm.NPCVisualState,
                                             candidates As List(Of MainForm.MeshCandidate),
                                             ByRef order As Integer,
@@ -817,18 +773,13 @@ Friend NotInheritable Class NpcMeshCollector
                         Logger.LogLazy(Function() $"[DIAG-CHAIN] EXCEPTION socket='{socketNm2}': {exMsg}")
                     End Try
                 Next
-                ' [HOST-SCOPED] Poblar publisherSockets[omodPre.FormID] con TODOS los sockets
-                ' que este chunk publica — sin merging con skeleton, sin FIRST-WINS. El
-                ' namespace del publisher es propio. Conflicts dentro del mismo publisher
-                ' (mismo nombre dos veces en el mismo chunk) son inconsistencia local —
-                ' loggear, mantener primero.
-                '
-                ' Por cada socket computamos HostSocketGlobalT EN EL ESPACIO DEL NIF DEL HOST:
-                '   - Si parent.NiNode existe en este NIF: parent.global.compose(socket.local).
-                '   - Si parent.NiNode NO existe (parent name no aparece en este NIF tree):
-                '     ParentFoundInHostNif=False; consumer fallback al path skeleton.
-                '   - Si parent name está vacío: tratamos como parent=root del host NIF
-                '     (identity), semántica engine para sockets sin parent explícito.
+                ' [HOST-SCOPED] publisherSockets[omod.FormID] lleva TODOS los sockets que publica este chunk,
+                ' sin merge con el skeleton y sin first-wins: el namespace del publisher es propio. Un nombre
+                ' repetido dentro del MISMO chunk es inconsistencia local: se loguea y gana el primero.
+                ' HostSocketGlobalT se computa EN EL ESPACIO DEL NIF DEL HOST: si el parent existe en este NIF,
+                ' parent.global compuesto con socket.local; si no existe, ParentFoundInHostNif=False y el
+                ' consumidor cae al camino del skeleton; si el parent name esta vacio, se trata como root del
+                ' NIF (identidad), que es la semantica del motor para sockets sin parent explicito.
                 Dim hostMap As Dictionary(Of String, MainForm.PublisherSocketInfo) = Nothing
                 If Not publisherSockets.TryGetValue(omodPre.FormID, hostMap) Then
                     hostMap = New Dictionary(Of String, MainForm.PublisherSocketInfo)(StringComparer.OrdinalIgnoreCase)
@@ -876,22 +827,16 @@ Friend NotInheritable Class NpcMeshCollector
             End Try
         Next
 
-        ' Walk IncludedOmods (indexed: parallel list IncludedOmodApIdx carries the apIdx per emit).
-        ' Each OMOD with ModelPath = chunk to mount; OMODs without ModelPath contribute Properties
-        ' only (resolved en bloque por el applier al final).
-        '
-        ' Socket lookup rule (verified empirically against Codsworth host parents in fo4lib.log):
-        '   1. The apEditorId is the OMOD.AttachPoint KYWD EditorID (e.g. 'ap_Bot_ArmsTypeA1').
-        '      Host sockets use 'P-X' / 'P-X|N' naming convention. Strip the 'ap_Bot_' or 'ap_'
-        '      prefix to get the base name (e.g. 'ArmsTypeA1') — host sockets are 'P-<base>'.
-        '   2. Try 'P-<base>|<apIdx>' first (multi-instance like P-ArmsTypeA1|1, P-ModSlotB|2).
-        '   3. Fall back to 'P-<base>' (single-instance — host has no |N suffix).
-        ' Both shapes coexist in vanilla: TorsoHandy → P-BotCore (no suffix), Arm_Right_Flamer
-        ' → P-ArmsTypeA1|1 (suffixed). The lookup tries indexed first and falls back.
-        ' [HOST-SCOPED ORDINAL] hostChainMap[ordinal] = hostOrdinal del padre inmediato.
-        ' Identidad por ordinal monotónico (expand-time, antes de cualquier dedup) garantiza
-        ' que el mismo OMOD asset reutilizado bajo hosts distintos NO colapsa identidades.
-        ' Ordinal 0 reservado para skeleton root sentinel.
+        ' Recorre IncludedOmods (lista paralela IncludedOmodApIdx con el apIdx por emision). Cada OMOD con
+        ' ModelPath es un chunk a montar; los que no tienen aportan solo Properties, resueltas en bloque por
+        ' el applier al final.
+        ' Lookup del socket: el apEditorId es el EditorID del KYWD de AttachPoint (ap_Bot_ArmsTypeA1) y los
+        ' sockets del host se llaman P-<base> o P-<base>|<n>. Se saca el prefijo ap_Bot_ / ap_ y se prueba
+        ' primero la forma indexada, luego la simple. Las dos conviven en vanilla (TorsoHandy -> P-BotCore,
+        ' Arm_Right_Flamer -> P-ArmsTypeA1|1).
+        ' [HOST-SCOPED ORDINAL] hostChainMap[ordinal] = ordinal del padre inmediato. La identidad por ordinal
+        ' monotonico (en expand-time, antes de cualquier dedup) garantiza que el mismo OMOD reutilizado bajo
+        ' hosts distintos no colapse identidades. El ordinal 0 queda reservado al root del skeleton.
         Dim hostChainMap As New Dictionary(Of Integer, Integer)
         For hi = 0 To resolution.IncludedOmods.Count - 1
             Dim omodHi = resolution.IncludedOmods(hi)
@@ -1058,26 +1003,11 @@ Friend NotInheritable Class NpcMeshCollector
         ' Shared rule = single source of truth with the bake's EnumerateHdptChain.
         Dim effectivePartType = HeadPartResolver.ResolveEffectivePartType(hdpt.PartType, parentPartType, hdptFormID, miscToParentEffective)
 
-        ' NO per-HDPT race gate here. The engine does NOT filter the head parts an actor WEARS by
-        ' HDPT.RNAM ("Valid Races"): RE of both binaries shows BGSHeadPart::IsValidRace (SSE 0x140389960,
-        ' FO4 0x14061C990 — `validRaces==null -> true; else BGSListForm::IndexOf(race) >= 0`) has exactly
-        ' three call sites each, and NONE is on the head-assembly path: one is a dead function (SSE
-        ' 0x1403B8B40 / FO4 0x140655490: zero callers, zero pointers) and the rest live in the CHARGEN MENU
-        ' (the enclosing functions reference the Scaleform callbacks ChangeHeadPart/ChangeSex/…). The
-        ' head-build closure (SSE 0x1403BDD00 -> 0x1403BBA20 -> 0x1403BD380, 415 funcs at depth<=4) never
-        ' calls it, nor any caller of BGSListForm::IndexOf. RNAM is a CATALOG filter for the chargen UI —
-        ' which is why HeadPartPicker_Form / the LooksMenu preset gate DO still apply it (they are catalogs).
-        ' Enforcing it at render made us stricter than the game: any custom-race NPC (COtR & co, whose races
-        ' are injected into the vanilla head-part FormLists at RUNTIME by RaceCompatibility's proxyRaces
-        ' script — nothing of that lives in the records) rendered bald, and it also diverged from our own
-        ' bake, which never applied the gate (HeadPartResolver.EnumerateHdptChain has no race check).
-        '
-        ' The engine's real gate is at RACE level and is already collected by the caller: RACE.DATA bit 0x2
-        ' "FaceGen Head". SSE 0x1403BCAB0 (build of the actor's facegen head) opens with
-        '   mov rax,[npc+0x158] ; mov r9d,[race+0x108] ; shr r9d,1 ; test r9b,1 ; je <epilogue>
-        ' i.e. a race without that flag gets NO facegen head at all. That is what keeps human head parts off
-        ' dogs/robots (the case the old RNAM heuristic was standing in for) — see CollectHeadPartCandidates.
-
+        ' ⛔ NO agregar acá un gate por HDPT.RNAM: el motor NO filtra por "Valid Races" las head parts que un
+        ' actor LLEVA — RNAM es filtro del CATÁLOGO del chargen (por eso los pickers sí lo aplican). Ponerlo
+        ' en el render nos hacía más estrictos que el juego: los NPC de razas custom, cuyas razas se inyectan
+        ' en las FormLists en RUNTIME por script, salían pelados. El gate real del motor es de RAZA
+        ' (RACE.DATA bit 0x2) y lo aplica el caller. Ver 40-bake-reglas-comunes.md.
 
         If hdpt.MeshPath <> "" Then
             ' El `_faceBones` (rig de los 68 huesos de cara: Jaw, LipUpper_L, Cheek_R…) es lo que permite
@@ -1154,32 +1084,14 @@ Friend NotInheritable Class NpcMeshCollector
         Next
     End Sub
 
-    ''' <summary>Particiones de head-part a ocultar por headwear en Skyrim (SkyrimSE.exe, base 0x140000000).
-    ''' DOS mecanismos, y cada uno lee una máscara DISTINTA — no confundirlos:
-    '''
-    '''  (a) Master 0x1403BB880 → ApplyOcclusionToGeometry 0x1403C56B0. Oculta la partición del slot de pelo
-    '''      (30+B, B = RACE +0x130) del head-part tipo 3 y sus extras. El flag `hide` sale del WORN MASK
-    '''      (GetWornMask 0x140225CB0), que es la OR de los BOD2 de los ARMO equipados (`[ARMO+0x1B8]`).
-    '''      ⇒ el bit del slot de pelo se decide con el BOD2 del ARMO.
-    '''
-    '''  (b) Attach de biped 0x140218200 fase 2 (@0x14021844a-0x1402184c2). Corre para el ítem cuyo ownerSlot
-    '''      es el slot de pelo, y oculta en el subárbol del nodo de cabeza (walker 0x140218640 →
-    '''      SetPartitionVisible(...,0)) toda partición cuyo slot plegado sea uno de los slots agrupados con él.
-    '''      Agrupa por `cmp [entry[edi]+0x18], [entry[owner]+0x18]`, y el writer (@0x1402134E0
-    '''      `mov [rsi], rbp`) guarda ahí SIEMPRE el ARMATURE (ARMA), recorriendo los bits del BOD2 del ARMA
-    '''      (`IsSlotOccupied(ARMA+0x30, slot)` @0x140213437). Un slot que declara SÓLO el ARMO deja `+0x18`
-    '''      sin escribir (@0x1402134FA-0x14021351E: escribe `+0x10` = ARMO, nunca `+0x18`) ⇒ NO agrupa.
-    '''      ⇒ las particiones que se ocultan salen del BOD2 del ARMA, no del ARMO ni de la unión de ARMAs.
-    '''
-    ''' Medido sobre el load order del usuario: 741/1075 head-gear ARMOs declaran bits que sólo tiene el ARMA
-    ''' (típicamente 41 LongHair y 43 Ears). Capucha FarmClothes03: ARMO=[31,42] pero su ARMA de slot 31 es
-    ''' [31,41,43] ⇒ oculta particiones 31, 41 y 43 ⇒ un pelo {31,41} desaparece entero y las orejas de
-    ''' femalehead (partición 43) también. El 42 (Circlet), declarado sólo por el ARMO, NO oculta nada.
-    '''
-    ''' <paramref name="wornMask"/> = OR de los BOD2 de los ARMO equipados (mecanismo a).
-    ''' <paramref name="armatureMasks"/> = BOD2 de cada ARMA adjunta (mecanismo b).
-    ''' NO incluye el bit A (face-cull es whole-node, no per-partición). Friend Shared: un único sitio con la
-    ''' regla, compartido por SelectWinningCandidates y NpcRenderHost (mismo assembly).</summary>
+    ''' <summary>Particiones de head-part que oculta el headwear en Skyrim. Son DOS mecanismos y cada uno lee
+    ''' una mascara DISTINTA: (a) oculta la particion del SLOT DE PELO, decidido con el BOD2 del <b>ARMO</b>
+    ''' equipado; (b) al adjuntar el item cuyo owner es el slot de pelo, oculta ademas toda particion cuyo slot
+    ''' este agrupado con el, y ese grupo sale del BOD2 del <b>ARMA</b>. Un slot declarado solo por el ARMO no
+    ''' agrupa nada: una capucha con ARMO [31,42] y ARMA de slot 31 [31,41,43] oculta 41 y 43, pero el 42 no
+    ''' oculta nada. Ver 23-armor-oclusion-sse-re.
+    ''' <para>No incluye el bit de face-cull, que es whole-node y no per-particion. Friend Shared para que la
+    ''' regla viva en UN sitio, compartido por el selector y el host de render.</para></summary>
     Friend Shared Function HeadPartHideMask(hairSlotMask As UInteger, wornMask As UInteger,
                                             armatureMasks As IEnumerable(Of UInteger)) As UInteger
         If hairSlotMask = 0UI Then Return 0UI
@@ -1215,24 +1127,14 @@ Friend NotInheritable Class NpcMeshCollector
         ' candidate.Hide flag survives through to ApplyShapeGeometry → ShapeMeatcap mapping.
         Dim visibleCandidates = candidates.ToList()
 
-        ' First pass: resolve slotted candidates.
-        ' Per FO4 biped slot spec (wbDefinitionsFO4.pas:3745-3778): slots [U] 36-40 (bits 6-10)
-        ' and [A] 41-45 (bits 11-15) are separate layers designed to coexist — the underarmor
-        ' declares bits the over-armor pieces partially overlap.
-        '
-        ' Regla "extended underarmor" (per usuario 2026-04-29): un candidate que declara BODY
-        ' (bit 3) o algún bit [U] (6-10) Y simultáneamente algún bit [A] (11-15) es un underarmor
-        ' "extendido" cuya mesh cubre los slots [A] declarados. Su geometría incluye piernas /
-        ' brazos / torso. NO se puede coexistir con un over-armor [A] puro que reclame los mismos
-        ' bits [A] — produciría dos geometrías superpuestas (clip visible). El extended underarmor
-        ' RESERVA sus bits [A]: cualquier candidate puro [A] que declare bits ya reservados
-        ' se descarta entero.
-        '
-        ' Caso DN061_LvlGunnerBoss (Gunner): AA_DCGuard_UnderArmor declara slot mask 0xC7F8 =
-        ' BODY+[U]LArm+[U]RArm+[A]LLeg+[A]RLeg. Reserva bits 14, 15. Las combat legs (slot 0x4000
-        ' / 0x8000) declaran bits 14/15 → se descartan. Las combat torso/arm (bits 11, 12) NO
-        ' tocan los reservados → entran normalmente.
-        ' (extended-underarmor BODY/[U]/[A] slot masks now live in SlotConflictResolver)
+        ' Primera pasada: candidates CON slot.
+        ' En FO4 las capas [U] (36-40) y [A] (41-45) están diseñadas para coexistir, así que el underarmor
+        ' declara bits que las piezas de over-armor solapan parcialmente.
+        ' ⛔ Regla "extended underarmor": un candidate que declara BODY o algún bit [U] Y ADEMÁS algún bit
+        ' [A] es un underarmor extendido cuya malla YA cubre esos slots [A] (incluye piernas o brazos). No
+        ' puede coexistir con un over-armor puro [A] que reclame los mismos bits: serían dos geometrías
+        ' superpuestas, con clip visible. Por eso RESERVA sus bits [A] y descarta entero al que los pida.
+        ' Las máscaras concretas viven en SlotConflictResolver.
 
         ' Skin candidates (NPC_.WNAM / RACE.WNAM via state.SkinFormID) representan la base body
         ' geometry del NPC — NO son piezas equipables que compitan por slots con outfits/armor.
@@ -1252,26 +1154,16 @@ Friend NotInheritable Class NpcMeshCollector
 
         Dim slottedCandidates = nonSkinCandidates.Where(Function(c) c.SlotMask <> 0UI).ToList()
 
-        ' Slot conflict resolution (pass 1a extended-underarmor + pass 1b atomic-mutex last-wins +
-        ' pipboy↔[A]LArm mutex) extracted to SlotConflictResolver so the render path and the Edit
-        ' Outfit "Create" tab share the SAME engine rules. Winners append to `selected` (skin was
-        ' already added above, outside the tournament); occupiedSlots feeds the head-part occlusion
-        ' (pass 2) + skin coverage (pass 3) below.
-        '
-        ' Resolve at the EQUIPPED-ARMO level, NOT per-ARMA. The engine mutexes on the equipped item's
-        ' BOD2 as a unit (the whole ARMO wins or loses); CollectArmoCandidates emits ONE candidate per
-        ' race-valid ARMA (each with its own effSlotMask + its own incrementing Order). Feeding those
-        ' straight to the resolver lets a PARTIALLY-conflicting ARMO keep the ARMAs whose own slots don't
-        ' overlap the winner — e.g. a "skin outfit" that loses BODY to an underwear still keeps its
-        ' hand ARMA (slots 34/35 have no competitor), so its gloves render (and then occlude the naked
-        ' hands' forearm seam). That diverges from BOTH the game and the Create tab, which resolves one
-        ' union-masked piece per ARMO (GetArmoItemCandidates → ComputeArmoEffectiveSlotMask). Fix: group
-        ' the ARMA candidates by owning ARMO (SourceFormID — all ARMAs of one ARMO share it, and different
-        ' equipped ARMOs get disjoint Order ranges since `order` is ByRef-continuous), resolve with the
-        ' group's UNION slot mask (== the ARMO's BOD2 footprint, same as the Create tab) and its EARLIEST
-        ' Order, then expand each winning group back to its ARMAs. A SourceFormID of 0 (no owning ARMO)
-        ' is its own singleton group → identical to the old per-item behaviour. Within-ARMO slot dedup
-        ' already ran in CollectArmoCandidates, so no ARMA ever conflicts with its own siblings here.
+        ' La resolución de conflicto de slots vive en SlotConflictResolver, para que el render y la pestaña
+        ' Create del editor de outfits usen las MISMAS reglas del motor.
+        ' ⛔ Se resuelve a nivel ARMO EQUIPADO, no por ARMA: el motor hace mutex sobre el BOD2 del item
+        ' equipado como unidad — el ARMO entero gana o pierde. Alimentar las ARMA sueltas al resolver dejaba
+        ' que un ARMO PARCIALMENTE perdedor conservara las ARMA cuyos slots no chocaban con el ganador (un
+        ' outfit que pierde el torso pero conserva sus guantes), lo que diverge del juego Y de la pestaña
+        ' Create. Por eso se agrupan por ARMO dueño, se resuelve con la UNIÓN de slots del grupo y su Order
+        ' más temprano, y recién después se expande el grupo ganador de vuelta a sus ARMA.
+        ' Un candidate sin ARMO dueño es su propio grupo unitario. El dedup de slots dentro de un ARMO ya
+        ' corrió antes, así que acá ninguna ARMA compite con sus hermanas.
         Dim armoGroups As New List(Of List(Of MainForm.MeshCandidate))
         Dim groupByArmo As New Dictionary(Of UInteger, List(Of MainForm.MeshCandidate))
         For Each c In slottedCandidates
@@ -1316,35 +1208,18 @@ Friend NotInheritable Class NpcMeshCollector
         ' item drops its slots from the occluding set. LoadNifShapes only records each shape's OWN slots +
         ' group id (ShapeOwnSlots / ShapeSlotGroup) — the inputs that recompute reads.
 
-        ' Third pass: add slotless (head parts), hiding based on occupied biped slots.
-        '
-        ' Engine-faithful, RACE-driven occlusion (verified vs Fallout4.exe + .esm — see
-        ' [[project_re_occlusion_engine]]). The engine does NOT use a fixed slot list; RACE.DATA declares three
-        ' "biped object" fields that map (value v -> biped slot 30+v) to the slot whose coverage hides each
-        ' head-part channel. The caller passed them in as slot-30-relative masks (0 = None):
-        '   faceCullMask  (A) : full-face cull — HumanRace A=2 -> slot 32. Covered ⇒ whole head hidden.
-        '   hairMask      (B) : hair channel — HumanRace B=0 -> slots {30,31} (uses 30+B AND 30+B+1).
-        '   facialHairMask(C) : beard slot — HumanRace C=18 -> slot 48 (v124+ races only).
-        ' These vary per race (A∈{-1,0,2}, B∈{-1,0,1}, C∈{-1,18}), so we never hardcode the human values.
-        '
-        ' Per head-part type (types 0/1 and "extra parts" never occlude — only the visual layers below apply):
-        '   3 Hair (main + hairlines) : RENDER, per-segment + UNIFORM (main == hairline; NO inverse). Each hair
-        '                     partition tagged biped# is hidden ⟺ its slot (30+bit) is covered AND lies within
-        '                     the hair channel (occupiedSlots ∩ hairMask). Vanilla hair main AND hairlines are
-        '                     tagged the SAME slots ({30} or {30,31}) → identical rule: hide the partition whose
-        '                     slot is covered, keep the complement. Whole piece hidden if the face-cull slot is
-        '                     covered (cascade) or every partition of the piece is covered. RENDER-ONLY; the
-        '                     bake (FaceGenBuilder) keeps its own CK-faithful rule.
-        '   4 FacialHair    : hidden iff worn covers the beard slot (facialHairMask) OR the face-cull slot.
-        '                     (Slot-49 "Mouth" is NOT an engine occlusion slot — dropped.)
-        '   6 Eyebrows      : hidden iff worn covers the face-cull slot.
-        '   9 HeadRear      : NUNCA se oculta. Es geometría base del cráneo (back of head) que el
-        '                     engine renderiza siempre.
-        ' Hair-channel coverage of THIS race. FO4: la intersección directa worn ∩ canal de pelo (30+B[,+1]);
-        ' hairMask lleva hasta dos bits y cada partición se testea contra esto. SSE: engine attach 0x140218200
-        ' fase 2 — NO es la unión de todos los equipados, es el BOD2 COMPLETO del ítem que ocupa el slot de
-        ' pelo (30+B); HeadPartHideMask lo devuelve (p.ej. capucha [31,41,42,43] → oculta particiones 31 y 41,
-        ' no sólo la 31). Rama por juego: FO4 byte-idéntico.
+        ' Tercera pasada: head parts (sin slot propio), ocultando segun los slots biped ocupados.
+        ' La oclusion la declara la RACE, no una lista fija de slots: RACE.DATA trae tres campos que mapean
+        ' (v -> slot 30+v) el slot cuya cobertura oculta cada canal (face-cull, pelo, barba). Varian por raza,
+        ' asi que NUNCA se hardcodean los valores humanos. Ver 23-armor-oclusion-fo4-re.
+        ' Por tipo (0/1 y los extra parts nunca ocluyen):
+        '   3 Hair       : per-segmento y uniforme; la pieza entera cae si se cubre el face-cull o todas sus
+        '                  particiones. RENDER-ONLY: el bake tiene su propia regla fiel al CK.
+        '   4 FacialHair : oculto si lo equipado cubre el slot de barba o el de face-cull.
+        '   6 Eyebrows   : oculto si lo equipado cubre el slot de face-cull.
+        '   9 HeadRear   : NUNCA, es geometria base del craneo.
+        ' Rama por juego: FO4 intersecta lo equipado con el canal de pelo; SSE usa el BOD2 completo del item
+        ' que ocupa el slot de pelo, no la union de lo equipado (ver HeadPartHideMask).
         Dim hairCovered As UInteger
         If Config_App.Current.Game = Config_App.Game_Enum.Skyrim Then
             hairCovered = HeadPartHideMask(hairMask, occupiedSlots, wornItemMasks)
@@ -1358,38 +1233,23 @@ Friend NotInheritable Class NpcMeshCollector
         Dim hairTopCovered As Boolean = (hairCovered And BipedSlots.SlotBitHairTop) <> 0UI
         Dim hairLongCovered As Boolean = (hairCovered And BipedSlots.SlotBitHairLong) <> 0UI
 
-        ' Pasada 2 — slotless NO-Skin: HeadParts y Attachments (chunks robot/pack via socket).
-        ' HeadParts ocluidos por headwear aceptado se MARCAN con flag IsOccludedByHeadwear pero
-        ' NO se descartan; ApplyRenderToggleVisibility decide hide en runtime para que "Render
-        ' headwear" OFF los destape.
-        '
-        ' Attachments (NPC_.OBTE chunks) entran acá con SlotMask=0 + Kind=Attachment +
-        ' ChunkOmodFormID>0. No participan en slot conflict resolution (mount via socket P-/C-,
-        ' no via armor slot). Cuando estaban marcados Kind=Skin (pre-2026-05-15) hacían pasada 0
-        ' Y caían acá → double-add (regresión 2026-05-10 Codsworth 12 chunks → winners=24); la
-        ' separación en Kind.Attachment elimina ese caso por construcción.
-        '
-        ' EXCLUSIÓN Kind=Skin sigue siendo necesaria: los Skin con SlotMask=0 ya se aceptaron en
-        ' la pasada 0 (skinCandidates) y no deben entrar de nuevo.
+        ' Pasada 2 - slotless NO-Skin: HeadParts y Attachments (chunks de robot/pack via socket).
+        ' Los head parts ocluidos por headwear se MARCAN con IsOccludedByHeadwear pero no se descartan:
+        ' ApplyRenderToggleVisibility decide en runtime, asi "Render headwear" OFF los destapa.
+        ' Los Attachments entran con SlotMask=0 + Kind=Attachment y no participan del conflicto de slots
+        ' (montan por socket, no por slot de armadura). Marcarlos Kind=Skin los hacia entrar en la pasada 0 Y
+        ' aca (double-add); el Kind propio elimina ese caso por construccion.
+        ' La exclusion de Kind=Skin sigue haciendo falta: los Skin con SlotMask=0 ya se aceptaron en la pasada 0.
         For Each slotlessCandidate In visibleCandidates.Where(Function(c) c.SlotMask = 0UI AndAlso c.Kind <> MainForm.MeshCandidateKind.Skin).OrderBy(Function(c) c.Order)
             If slotlessCandidate.Kind = MainForm.MeshCandidateKind.HeadPart Then
                 Dim occluded As Boolean = False
-                ' Skyrim head-part occlusion (RE-verificado, engine base 0x140000000). La RACE declara DOS
-                ' "biped objects" (no los tres A/B/C de FO4): A = Head (RACE +0x12C, DATA+0x44) y
-                ' B = Hair (RACE +0x130, DATA+0x48). NordRace/Imperial/Breton: A=0 → slot 30, B=1 → slot 31.
-                ' faceCullMask (A) y hairCovered (worn ∩ canal de pelo de esta raza) ya están arriba.
-                '   • A cubierto → whole-node cull de la cabeza (or [geom+0xF4],1). Cascadea a TODO
-                '     head-part (eyes, brows, scars, etc.), no sólo al pelo.
-                '   • si no, SÓLO el canal de pelo (B) pasa por el hider: per-partición
-                '     ApplyOcclusionToGeometry 0x1403C56B0 oculta SOLO la partición BSDismember cuyo slot
-                '     plegado (1xx/2xx → 30..61) es igual a un slot de pelo cubierto; las hermanas quedan
-                '     visibles. Ese zap per-partición lo hace el RENDER (CoveredSlotsMask →
-                '     ComputeHiddenTrianglesDismember, Render.vb), no acá.
-                '   • el fallback whole-node SetAppCulled aplica SÓLO a la geometría de pelo SIN
-                '     BSDismemberSkinInstance — NO a toda la cabeza. Medido (Tools/SseHairlineOcclusionProbe
-                '     sobre Skyrim.esm+DLC): eyes(161)/eyebrows(28)/scars(32)/misc(48) vanilla NO traen
-                '     dismember; si el fallback los tapara, cualquier casco [31,42] (502 ARMO) haría
-                '     desaparecer ojos y cejas — no pasa en el juego. Por eso los no-pelo sólo caen por A.
+                ' Oclusion de head parts en Skyrim: la RACE declara DOS biped objects, no los tres de FO4 -
+                ' A = cabeza, B = pelo. Si A esta cubierto hay cull de nodo completo de la cabeza y CASCADEA a
+                ' todo head part (ojos, cejas, cicatrices). Si no, solo el canal de pelo pasa por el hider, y
+                ' es PER-PARTICION: ese zap lo hace el RENDER, no este codigo.
+                ' El fallback de nodo completo aplica SOLO a geometria de pelo SIN dismember: ojos, cejas y
+                ' cicatrices vanilla no traen dismember, asi que si los tapara, cualquier casco los haria
+                ' desaparecer. Por eso los no-pelo solo caen por A.
                 If Config_App.Current.Game = Config_App.Game_Enum.Skyrim Then
                     ' 0 fuera de la rama de pelo: los no-pelo no leen el NIF (no lo necesitan).
                     Dim partitionMask As UInteger = 0UI
@@ -1431,24 +1291,16 @@ Friend NotInheritable Class NpcMeshCollector
                         Logger.LogLazy(Function() $"[SSE-HEADPART-OCCL] dict='{dkD}' effType={effTypeD} rawType={rawTypeD} isHnamExtra={hnamD} hasFaceGenHead={faceGenD} partitionMask=0x{partMaskD:X} occupiedSlots=0x{occSlotsD:X} faceCullMask=0x{faceMaskD:X} hairSlotMask=0x{hairSlotD:X} hairCovered=0x{hairCovD:X} occluded={occD}")
                     End If
                 Else
-                ' Addons (HNAM-extras del parent O Misc top-level raw=0) son siempre exentos de la
-                ' occlusion de headwear normal — sólo FaceGenHead (slot 32, casco full-face) los tapa.
-                ' Cubre los dos caminos por los que un addon llega al render:
-                '   a) HNAM-extra (parent>=0 en CollectHeadPartCandidate) — hairlines, mouth shadow,
-                '      AO/wet, etc., independientemente de su raw type. Casos 2026-05-17: Hodges +
-                '      gorra perdía hairline raw=Misc; otro hair cuya HNAM declara hairline raw=3
-                '      (no Misc) también caía bajo HairTop sin esta exención.
-                '   b) Misc top-level (raw=0, parent=-1) — addons standalone en NPC.PNAM/RACE que no
-                '      están en HNAM de ningún parent listado (mouth shadow sueltos, etc.).
-                ' OCLUSIÓN DE PELO — RENDER, per-segment, UNIFORME a main Y hairline, RACE-driven.
-                ' LÓGICA (engine-faithful): cada partición de pelo (biped 30/31) se oculta ⟺ su slot está
-                ' cubierto por el worn set Y cae dentro del canal de pelo de ESTA raza (hairMask = 30+B y
-                ' 30+B+1). Una pieza {30,31} con una sola partición cubierta deja asomar la otra → zap parcial,
-                ' no ocultar entera. La HAIRLINE (HNAM-extra) lleva el MISMO tag de slots que el main → MISMA
-                ' regla (no inverso). La pieza entera se oculta si el slot face-cull (A) está cubierto (cascada
-                ' full-head) o si TODAS sus particiones están cubiertas. hairSlotMask = bits {30→0x1, 31→0x2}
-                ' de la mesh; addons NO-pelo (mouth shadow / eyes, biped 32 → hairSlotMask=0) caen al else.
-                ' RENDER-ONLY: el bake (FaceGenBuilder) usa su propia regla CK-fiel.
+                ' Los addons (extras declarados por el padre, o Misc top-level) están exentos de la oclusión
+                ' de headwear normal: sólo los tapa un casco full-face. Cubre los dos caminos por los que un
+                ' addon llega al render — como extra de un padre (hairlines, mouth shadow, AO/wet) o suelto
+                ' en el record del NPC/RACE sin figurar como extra de nadie.
+                ' Oclusión de pelo: per-segmento, uniforme a main y hairline, y dirigida por la RACE. Cada
+                ' partición se oculta ⟺ su slot está cubierto Y cae en el canal de pelo de ESTA raza; una
+                ' pieza con una sola partición cubierta deja asomar la otra (zap parcial, no ocultar entera).
+                ' La hairline lleva el MISMO tag de slots que el main, así que sigue la misma regla, no la
+                ' inversa. La pieza entera cae si se cubre el face-cull o si se cubren TODAS sus particiones.
+                ' RENDER-ONLY: el bake usa su propia regla fiel al CK.
                 Dim hairSlotMask As UInteger = CandidateHairSlotMask(slotlessCandidate)
                 If hairSlotMask <> 0UI Then
                     ' MODELO POR PARTICIÓN — pelo under-helmet de FO4. Una pieza {30,31} tiene dos particiones:
@@ -1625,9 +1477,6 @@ Friend NotInheritable Class NpcMeshCollector
         Return result
     End Function
 
-    ''' <summary>Categoriza un MainForm.MeshCandidate per los toggles diagnósticos de visibilidad.
-    ''' Usa el slot mask del candidate (de BOD2/BODT) y su Kind. La categoría se mapea a
-    ''' RenderHide en ApplyRenderToggleVisibility según el estado de los CheckBoxes.</summary>
     ''' <summary>Friend (was Private) so the headless <c>--slot-diag</c> mode (Program.vb) can run the
     ''' REAL classification over Skyrim.esm ARMOs to confirm/verify the game-aware slot mapping without
     ''' rendering. Pure function of (SlotMask, Kind).</summary>
@@ -1693,29 +1542,14 @@ Friend NotInheritable Class NpcMeshCollector
         Return MainForm.ShapeRenderCategory.Other
     End Function
 
-    ''' <summary>Human-readable decode of a wbModelFlags byte (MO2F/MO3F/MO4F/MO5F): bit 0x01 =
-    ''' FaceBones, 0x02 = 1stPerson (TES5Edit wbDefinitionsFO4.pas:4622). Diagnostic only (used by the
-    ''' [ARMA-MODELFLAGS] log).</summary>
-    ''' <summary>Resuelve el AddonIndex selector para una ARMO multi-addon.
-    ''' Devuelve un Integer con el INDX a forzar (e.g. Gunner Heavy = 2), o `Nothing`
-    ''' (= "cargar TODOS los addons compatibles" — comportamiento default del engine).
-    '''
-    ''' El engine vanilla carga TODAS las ARMAs del array Models filtradas por raza/género.
-    ''' La única forma de seleccionar UNA específica es vía OMOD AddonIndex Property (idx 7
-    ''' de wbArmorPropertyEnum) disparada por una OBTS combination cuya Keywords matcheen
-    ''' el contexto (LVLI.LLKC). Si NO hay tal match → cargar todos. Esto distingue:
-    '''   - Caso Sturgess/Wastelander Heavy: ARMO empaqueta torso + gloves (multi-piece set)
-    '''     sin keywords contextuales → cargar todos los addons.
-    '''   - Caso Gunner Combat Torso: keyword `if_tmp_armor_Heavy` → OBTS combo "Pesado" →
-    '''     OMOD `mod_armor_Combat_Torso_Size_C` con AddonIndex Property = 2 → cargar SOLO INDX=2.
-    '''
-    ''' BaseAddonIndex (FNAM byte 2-3) NO se usa como filtro per se — es el "default address"
-    ''' al que apunta el ARMO si nadie lo modifica, pero el engine sigue cargando los demás
-    ''' addons salvo override. Por eso lo ignoramos como selector exclusivo.
-    '''
-    ''' Spec: wbDefinitionsFO4.pas:6187-6192 (Models = INDX+MODL solamente, sin flag de exclusión),
-    ''' :1192-1245 (wbOBTEAddonIndexToStr describe override). Memoria arch_arma_sculpt_rule.md
-    ''' confirma flujo Gunner como caso single-winner via OMOD chain.</summary>
+    ''' <summary>Resuelve el selector de AddonIndex de una ARMO multi-addon: devuelve el INDX a forzar, o
+    ''' Nothing = "cargar todos los addons compatibles", que es el default del motor.
+    ''' <para>El motor carga TODAS las ARMA del array Models filtradas por raza/genero; la unica forma de
+    ''' seleccionar una es la OMOD AddonIndex Property disparada por una combinacion OBTS cuyas keywords
+    ''' matcheen el contexto (LVLI.LLKC). Eso distingue el ARMO que empaqueta un set multi-pieza sin keywords
+    ''' (torso + guantes, se cargan los dos) del Combat Torso, donde la keyword Heavy fuerza INDX=2.</para>
+    ''' <para>BaseAddonIndex (FNAM) NO se usa como filtro: es el default al que apunta el ARMO si nadie lo
+    ''' modifica, pero el motor sigue cargando los demas addons salvo override. Ver 23-armor-arma-sculpt.</para></summary>
     Private Function ResolveEffectiveAddonIndex(armo As ARMO_Data, ctxKeywords As List(Of UInteger)) As Integer?
         ' OBTS combinations override sólo cuando hay keyword match con el contexto.
         If ctxKeywords Is Nothing OrElse ctxKeywords.Count = 0 OrElse armo.Combinations Is Nothing Then
@@ -1798,31 +1632,16 @@ Friend NotInheritable Class NpcMeshCollector
             Dim shapes = NifRenderableShape.FromNif(nif)
             Dim logEnabled = Logger.Enabled
 
-            ' ── SSE skin-ARMA BOD2-ownership de-dup (2026-07-09) ─────────────────────────────────────────────
-            ' RULE (record-faithful, NOT an engine replica): a naked-skin ARMA renders only the shapes whose
-            ' BSDismember partition falls within the slot(s) its OWN BOD2 declares. A shape whose partitions are
-            ' ALL outside this ARMA's BOD2 is redundant asset-reuse — it is provided by the dedicated ARMA for
-            ' that slot (or by the FaceGen head) — and is dropped.
-            '
-            ' WHY: a handful of vanilla SSE skin meshes are all-in-one bundles. childfeet.nif (ARMA
-            ' 'NakedFeetChild' 0x0006C5FA, BOD2=Feet(37)) carries 6 shapes on partitions {37,32,33,30,1,0}: the
-            ' real Feet PLUS body(32)/hands(33) — already owned by NakedTorsoChild→childbody.nif and
-            ' NakedHandsChild→childhands.nif — and head/eyes/mouth(0/1/30) owned by the FaceGen HDPT head. The
-            ' app's skin-TXST override (WNAM NAM0/1) then paints the feet-ARMA's UpperBodyFemale onto the
-            ' bundled ChildHead, z-fighting the FaceGen head. Honoring each ARMA's declared BOD2 leaves head←
-            ' FaceGen, body←childbody, hands←childhands, feet←childfeet — each part once, its own texture.
-            '
-            ' BLAST RADIUS — MEASURED (Tools/ChildSkinNifProbe DUMP 5/8, whole load order): of the 120 Kind=Skin
-            ' ARMAs (SkinNaked + every RACE.WNAM), exactly ONE drops a shape — childfeet. The other 78 with a
-            ' dismember mesh are clean; 41 creatures have no partitions. So this is a general rule that currently
-            ' fires ONLY on childfeet (5 child races). It is NOT a childfeet hardcode; a future all-in-one skin
-            ' mod is handled the same way, and every drop is logged.
-            '
-            ' WHY Kind=Skin GATE IS ESSENTIAL (also measured): 14 NON-skin ARMAs (boots with leg geometry on
-            ' part 32, farm clothes with shoes on part 37, armor mods with EnvironmentMap partitions ≠ BOD2)
-            ' WOULD wrongly drop shapes if the rule applied to them — "partition ∉ BOD2" is common and LEGIT for
-            ' outfits/armor. The gate keeps the rule off all of those. Also SSE-only + never drops on unreadable/
-            ' no-dismember (keep-on-doubt), so FO4 and every ambiguous case are untouched.
+            ' De-dup de skin en SSE por pertenencia BOD2 (regla record-faithful, NO réplica del motor): una
+            ' ARMA de piel desnuda renderiza sólo las shapes cuya partición cae dentro del slot que declara su
+            ' PROPIO BOD2. Una shape enteramente fuera de él es reutilización de asset — ya la aporta la ARMA
+            ' dedicada a ese slot, o la cabeza FaceGen — y se descarta.
+            ' Existe porque algunas mallas de piel vanilla son bundles all-in-one: la de pies de niño trae
+            ' además cuerpo, manos y cabeza, y el override de skin-TXST terminaba pintando la textura de los
+            ' pies sobre esa cabeza, haciendo z-fighting con la FaceGen.
+            ' ⛔ EL GATE Kind=Skin ES ESENCIAL: "partición fuera del BOD2" es común y LEGÍTIMO en ropa y
+            ' armadura (botas con geometría de pierna, etc.), así que aplicar la regla ahí descartaría shapes
+            ' válidas. Además es SSE-only y nunca descarta si el mesh no se puede leer (keep-on-doubt).
             Const EnableSseSkinPartitionDedup As Boolean = True
             If EnableSseSkinPartitionDedup AndAlso Config_App.Current IsNot Nothing _
                AndAlso Config_App.Current.Game = Config_App.Game_Enum.Skyrim _
@@ -1890,7 +1709,7 @@ Friend NotInheritable Class NpcMeshCollector
             ' están posicionados. La "mala posición" que se veía eran los bones PRIVADOS del chunk
             ' (lag bones, etc.), ahora colocados bien por InjectChunkBonesIntoLiveSkeleton (regla:
             ' A=actorWorld(huesoCompartido)×bind; privados en A×inv(bind) — ver memoria
-            ' arch_injected_bone_shared_bone_inference; brahmin validado sin regresión).
+            ' 24-robots-huesos-inyectados; brahmin validado sin regresión).
             ' Por eso NO se aplica el socket a los bind transforms de estos shapes: aplicarlo a shapes
             ' que cabalgan el actor DISTORSIONA (verificado 2026-05-13: ambos órdenes rompieron todo).
             ' NO re-habilitar. (Pendiente: validar visualmente Mr Handy/Codsworth multi-instancia.)
@@ -2057,18 +1876,16 @@ Friend NotInheritable Class NpcMeshCollector
                 result.ShapeCoveredByOutfit(shape) = candidate.IsCoveredByOutfit
                 result.ShapeOccludedByHeadwear(shape) = candidate.IsOccludedByHeadwear
                 result.ShapeZapHairParts(shape) = candidate.ZapParts
-                ' Per-segment worn-slot occlusion (Fase 2): record the inputs ApplyRenderToggleVisibility
-                ' uses to rebuild IRenderableShape.CoveredSlotsMask every render. Only worn items
-                ' (Kind=Outfit) contribute — their OWN biped-slot mask + a per-candidate group id; head
-                ' parts / skin store nothing (own slots = 0). The toggle recompute derives:
-                '   • head-part mask = (OR of rendered worn items' slots) AND result.HeadOcclusionMask
-                '     (the per-NPC, RACE-driven head-region slots from RaceUtil.RaceHeadOcclusionMask; slot 33
-                '     NECK is never in it so the head→body seam is never torn), gated by Render headwear.
-                '   • worn-item mask = OR of OTHER rendered groups' slots (ORDER / other-items rule, engine
-                '     owner-slot branch 0x14035E22B; group id excludes the item's own shapes — shared-slot
-                '     safe, so the Pipboy's slot 60 still hides the outfit's biped-60 forearm).
-                ' Recomputing from the rendered subset (not baking a static mask here) is what lets a render
-                ' toggle that hides an item (e.g. Pipboy under Render armor OFF) un-occlude its segments.
+                ' Oclusion por slot equipado, per-segmento: se guardan los inputs que ApplyRenderToggleVisibility
+                ' usa para reconstruir CoveredSlotsMask en cada render. Solo aportan los items vestidos
+                ' (Kind=Outfit), con su propia mascara de slots + un group id; head parts y piel no guardan nada.
+                ' El recompute deriva: mascara de head part = (OR de los slots de los items renderizados) AND
+                ' HeadOcclusionMask (los slots de la region de cabeza que declara la RACE; el slot 33 NECK nunca
+                ' esta, asi que la costura cabeza-cuerpo no se rompe), gateada por Render headwear; mascara de
+                ' item = OR de los slots de los OTROS grupos renderizados (el group id excluye las shapes
+                ' propias, asi el slot 60 del Pipboy sigue tapando el antebrazo del outfit).
+                ' Recomputar desde el subconjunto renderizado -y no hornear una mascara estatica aca- es lo que
+                ' permite que un toggle que esconde un item destape sus segmentos.
                 If candidate.Kind = MainForm.MeshCandidateKind.Outfit Then
                     result.ShapeOwnSlots(shape) = candidate.SlotMask
                     result.ShapeArmaOwnSlots(shape) = candidate.ArmaOwnSlotMask

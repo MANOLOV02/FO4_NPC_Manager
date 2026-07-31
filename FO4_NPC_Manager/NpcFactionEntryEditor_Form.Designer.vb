@@ -1,4 +1,4 @@
-' UI built in Designer per feedback_ui_in_designer.md. InitializeComponent is declarative ONLY.
+﻿' UI built in Designer per 00-reglas-ui-y-vb.md. InitializeComponent is declarative ONLY.
 ' Modal editor for a SINGLE NPC_FactionEntry (FACT FormID + s8 Rank) of an NPC's SNAM faction list —
 ' mirror of ArmoDamageResistEditor_Form so the "Factions" grid stays pure read-only.
 <Global.Microsoft.VisualBasic.CompilerServices.DesignerGenerated()>

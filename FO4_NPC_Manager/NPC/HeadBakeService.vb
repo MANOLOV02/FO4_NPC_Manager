@@ -25,7 +25,7 @@ Imports OpenTK.Mathematics
 ''' <para><b>Absoluto, nunca incremental.</b> Cada refresh parte de una copia PRISTINA propia (tanto de
 ''' la base del shape plano como de los vértices del <c>_faceBones</c>, que el bake muta in place al
 ''' aplicar los morphs de chargen). Nunca lee el valor actual de <c>NifLocalVertices</c> ni
-''' <c>geom.Vertices</c> ⇒ la realimentación que documenta <c>bug_morph_channel_feedback_loop</c> es
+''' <c>geom.Vertices</c> ⇒ la realimentación que documenta <c>22-morphs-realimentacion-de-canal</c> es
 ''' imposible por construcción, no por disciplina.</para>
 '''
 ''' <para><b>Gate.</b> Sólo FO4 (<see cref="NPC_Config.IsHeadBakeActive"/>). En SSE no existe el mecanismo

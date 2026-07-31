@@ -1,4 +1,4 @@
-﻿' UI built in Designer per feedback_ch_ui_winforms (all controls declarative in InitializeComponent).
+﻿' UI built in Designer per 00-reglas-ui-y-vb (all controls declarative in InitializeComponent).
 <Global.Microsoft.VisualBasic.CompilerServices.DesignerGenerated()>
 Partial Class PresetCategoryPanel
     Inherits System.Windows.Forms.UserControl

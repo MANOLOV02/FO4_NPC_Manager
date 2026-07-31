@@ -350,7 +350,7 @@ Module Program
             For Each rg In regions
                 Dim m = BipedSlots.RegionMask(rg)
                 If m = 0UI Then
-                    Console.WriteLine($"  (región {rg} no tiene slots en {game} — omitida)")
+                    Console.WriteLine($"  (region {rg} has no slots in {game} — skipped)")
                     Continue For
                 End If
                 ' Bit más bajo prendido de la máscara. Loop explícito a propósito: en VB el operador
@@ -393,19 +393,19 @@ Module Program
                     End If
                 Next
             Next
-            Console.WriteLine($"  combos de región = {combos} × {kinds.Length} kinds")
+            Console.WriteLine($"  region combos = {combos} × {kinds.Length} kinds")
         Next
         Config_App.Current.Game = savedGame
 
         Console.WriteLine("")
-        Console.WriteLine($"casos evaluados = {totalChecked} · alcanzables por el fast-path = {totalReachable} · divergencias = {mismatches}")
+        Console.WriteLine($"cases evaluated = {totalChecked} · reachable by the fast-path = {totalReachable} · divergences = {mismatches}")
         If mismatches = 0 Then
-            Console.WriteLine("OK — la heurística por categoría y ResolveSkinRegionForOutfit son EQUIVALENTES")
-            Console.WriteLine("     sobre todo el espacio alcanzable. El cambio en NpcSkinLivePreview es un")
-            Console.WriteLine("     no-op de comportamiento: elimina la ley duplicada, no arregla un defecto.")
+            Console.WriteLine("OK — the per-category heuristic and ResolveSkinRegionForOutfit are EQUIVALENT")
+            Console.WriteLine("     over the whole reachable space. The change in NpcSkinLivePreview is a")
+            Console.WriteLine("     behavioural no-op: it removes the duplicated law, it does not fix a defect.")
             Return 0
         End If
-        Console.WriteLine("DIVERGENCIA — la heurística por categoría NO reproduce la ley. Ver líneas MISMATCH.")
+        Console.WriteLine("DIVERGENCE — the per-category heuristic does NOT reproduce the law. See the MISMATCH lines.")
         Return 4
     End Function
 

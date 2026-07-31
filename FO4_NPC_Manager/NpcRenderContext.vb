@@ -1,4 +1,4 @@
-Imports System.Globalization
+﻿Imports System.Globalization
 Imports System.IO
 Imports System.Drawing
 Imports System.Linq
@@ -15,7 +15,7 @@ Imports OpenTK.Mathematics
 ''' many times per render) behind FormID-keyed ConcurrentDictionary caches (background renders run
 ''' on Task.Run, so reads/writes can overlap). Injected by constructor (DI) into MainForm and the
 ''' extracted render subsystems so none of them re-implement parsing or reach into MainForm.
-''' Real separate class, NOT a partial. See project_mainform_split.
+''' Real separate class, NOT a partial. See 61-perf-mainform-split.
 '''
 ''' Lifetime: the PluginManager is immutable for this context's life, so a parsed result is stable
 ''' and the caches naturally die with the load order. InvalidateParseCaches clears ALL of them
@@ -171,7 +171,7 @@ Friend NotInheritable Class NpcRenderContext
     ''' "Armor Race" redirect chain. Copy-races (e.g. the CC Enclave turret) reuse a base race's armatures;
     ''' the engine matches the ARMA against the Armor Race, not the actor's own race. Cycle-guarded via the
     ''' HashSet (Add returns False on a revisit). Cached per race; the returned set is SHARED — callers must
-    ''' not mutate it. Empty when raceFID = 0. See [[arch_armor_race_redirect]].</summary>
+    ''' not mutate it. Empty when raceFID = 0. See [[23-armor-race-redirect-rnam]].</summary>
     Public Function GetEffectiveArmorRaces(raceFID As UInteger) As HashSet(Of UInteger)
         If raceFID = 0UI Then Return New HashSet(Of UInteger)()
         Return _armorRaceCache.GetOrAdd(raceFID,

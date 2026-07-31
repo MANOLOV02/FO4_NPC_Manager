@@ -1,4 +1,4 @@
-' UI built in Designer per feedback_ui_in_designer.md.
+﻿' UI built in Designer per 00-reglas-ui-y-vb.md.
 ' InitializeComponent is declarative ONLY. The substitutions DataGridView's columns (one of which is a
 ' COMBO column populated at runtime from the gender mesh NIF's materials) are added in code-behind, since
 ' the combo item set depends on the mesh passed to the constructor.

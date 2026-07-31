@@ -332,7 +332,7 @@ Public Module NpcFaceGenPacker
                 Dim fidF = b.FormIdLow, opF = b.OriginPlugin
                 Dim firstF = Path.GetFileName(missingForThisBundle(0))
                 Dim nF = missingForThisBundle.Count
-                result.FailedBundles.Add($"{opF} 0x{fidF:X8}: faltan {nF} archivo(s) del bake, p.ej. '{firstF}'")
+                result.FailedBundles.Add($"{opF} 0x{fidF:X8}: {nF} bake file(s) missing, e.g. '{firstF}'")
                 Logger.LogLazy(Function() $"[PACK-BATCH] bundle DESCARTADO ENTERO {opF} 0x{fidF:X8}: {nF} archivo(s) requeridos ausentes (primero '{firstF}'). Sus sueltos NO se borran.")
                 Continue For
             End If

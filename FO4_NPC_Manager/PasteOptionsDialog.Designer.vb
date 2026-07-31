@@ -1,4 +1,4 @@
-' UI built in Designer per feedback_ch_ui_winforms. The category checkboxes themselves live in the shared
+﻿' UI built in Designer per 00-reglas-ui-y-vb. The category checkboxes themselves live in the shared
 ' PresetCategoryPanel (same control the LooksMenu/RaceMenu loader hosts) — this dialog is just its frame.
 <Global.Microsoft.VisualBasic.CompilerServices.DesignerGenerated()>
 Partial Class PasteOptionsDialog

@@ -20,7 +20,7 @@ Imports OpenTK.Mathematics
 ''' (PostTextureUploadAction / MarkDirty / InvalidateRender) goes through host.PreviewCtl. DI: ctx +
 ''' the three resolvers + host-provider + shared _appliedPresets + Func delegates for the MainForm-
 ''' resident LM-skin-template resolver and the live _previewRequestVersion token. Was kept in MainForm
-''' until MeshCollection was extracted (it depends on CollectArmoCandidates). See project_mainform_split.</summary>
+''' until MeshCollection was extracted (it depends on CollectArmoCandidates). See 61-perf-mainform-split.</summary>
 Friend NotInheritable Class NpcSkinLivePreview
     Private ReadOnly _ctx As NpcRenderContext
     Private ReadOnly _materialResolver As NpcMaterialResolver

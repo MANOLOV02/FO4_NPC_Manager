@@ -1,4 +1,4 @@
-Imports System.Windows.Forms
+﻿Imports System.Windows.Forms
 Imports System.Drawing
 Imports System.Linq
 Imports System.Diagnostics
@@ -52,11 +52,6 @@ Public Module BipedSlotCheckboxes
     ''' Modular) compact while staying aligned/symmetric.</summary>
     Private Const SlotColumns As Integer = 4
 
-    ''' <summary>Populate <paramref name="flow"/> with a categorized, symmetric slot grid: 6 labeled category
-    ''' GroupBoxes stacked top-down, each holding a <see cref="SlotColumns"/>-column (aligned) grid of xEdit-named
-    ''' slot checkboxes. Wires <paramref name="onChanged"/> to each checkbox. Returns a slot→CheckBox map for mask
-    ''' read/write. The <paramref name="flow"/> is configured TopDown / no-wrap / auto-scroll so the stack scrolls
-    ''' vertically.</summary>
     ''' <summary><paramref name="columns"/> sets the checkbox grid width (default <see cref="SlotColumns"/> = 4 for
     ''' the ARMA/ARMO editors). A caller in a narrow column (e.g. the Skin-Overrides tab) can pass 2 so the grid
     ''' fits without horizontal scroll.</summary>

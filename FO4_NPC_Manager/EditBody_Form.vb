@@ -649,14 +649,14 @@ Public Class EditBody_Form
     ''' three linked sliders converge here. Writes the overlay preset, syncs the editor host's
     ''' dual cache (LastRenderedState + CurrentBaseState — required because BuildBodyWeightPose
     ''' reads from state.WeightX, NOT from the overlay; the overlay→state sync only runs on
-    ''' full reload via ResolveNPCBaseState — see arch_npc_state_dual_cache.md), refreshes the
+    ''' full reload via ResolveNPCBaseState — see 20-app-npc-state-doble-cache.md), refreshes the
     ''' UI mirrors, and schedules a throttled refresh via the existing 500ms timer.</summary>
     Private Sub ApplyMwgt(t As Single, m As Single, f As Single)
         Dim p = Preset
         p.WeightThin = t
         p.WeightMuscular = m
         p.WeightFat = f
-        ' Dual-cache sync per arch_npc_state_dual_cache.md: BuildBodyWeightPose reads
+        ' Dual-cache sync per 20-app-npc-state-doble-cache.md: BuildBodyWeightPose reads
         ' state.WeightX (sentinel-substituted by ApplyRaceFallbacks) — not the overlay. During
         ' a live slider edit there is no full reload to re-run that sync, so we mutate both
         ' caches in place. Without this, the editor's preview would not reflect MWGT changes
@@ -2335,8 +2335,6 @@ Public Class EditBody_Form
         Await TriggerOverlayReload()
     End Function
 
-    ''' <summary>Move the selected overlay one row up/down AMONG THE SHOWN overlays: swap it with its shown
-    ''' neighbour inside the carrier, so the hidden face overlays keep their positions.</summary>
     ''' <summary>Reorder the overlay stack by SWAPPING the two overlays' <c>Ovl{n}</c> node indices — that index IS
     ''' RaceMenu's draw order (skee64 attaches Ovl0..N in order, higher index on top). Only reorders within the
     ''' same zone (Body/Hands/Feet stacks are independent). Moving list-Up = toward the top of the stack (higher

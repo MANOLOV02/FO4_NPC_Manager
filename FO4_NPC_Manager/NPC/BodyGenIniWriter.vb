@@ -1,4 +1,4 @@
-Imports System.IO
+﻿Imports System.IO
 Imports System.Text
 
 ''' <summary>Emits the F4SE/LooksMenu BodyGen .ini pair (<c>templates.ini</c> +
@@ -41,18 +41,6 @@ Public Module BodyGenIniWriter
         Public BodyMorphs As Dictionary(Of String, Single)
     End Class
 
-    ''' <summary>Emit <c>Data\F4SE\Plugins\F4EE\BodyGen\&lt;targetPluginBaseName&gt;\</c> with
-    ''' <c>templates.ini</c> + <c>morphs.ini</c>. <paramref name="targetPluginBaseName"/> is the
-    ''' override plugin filename WITHOUT extension (e.g. <c>"NPC_Manager"</c>,
-    ''' <c>"NPC_Manager_2"</c>).
-    '''
-    ''' <para>If the filtered entry list is empty BOTH .ini files are deleted (if present) and
-    ''' the BodyGen directory itself is left untouched only if it contains nothing else — this
-    ''' is the "no morphs left to persist" path. The directory is created when there is
-    ''' something to write.</para>
-    '''
-    ''' <para>Atomic writes via .tmp + rename; partial files are not left behind on
-    ''' exceptions.</para></summary>
     ''' <summary>True when a BodyGen .ini pair already exists on disk for <paramref name="targetPluginBaseName"/>
     ''' (templates.ini or morphs.ini under <c>Data\F4SE\Plugins\F4EE\BodyGen\&lt;base&gt;\</c>). Lets the
     ''' mark-to-delete flow re-emit (to DROP a removed NPC) only when there is an .ini to update — never

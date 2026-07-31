@@ -2,31 +2,14 @@
 Imports System.Globalization
 Imports FO4_Base_Library
 
-''' <summary>Editor for an NPC's face: HeadParts, HairColor, Tints, ACBS IsCharGenFacePreset
-''' flag, vanilla NPC.WNAM Skin override, vertex morphs (MSDK/MSDV chargen), bone region morphs
-''' (FMRI/FMRS), and Facial Morph Intensity (FMIN).
-'''
-''' Round-trip semantics — for each editable channel, the form mutates the LooksMenu preset
-''' overlay (_appliedPresets[npc]) on the host MainForm. The renderer reads the overlay-applied
-''' NPC_Data via ApplyPresetOverlayToNpcData (MainForm.vb:8429) and the resolvers downstream
-''' (NpcMorphResolver, BuildFaceBoneTransforms, FaceTintCompositor, MergeHeadPartsWithRaceDefaults)
-''' pick up the effective values. OnLocalFaceRefresh then issues the right MarkDirty pass on
-''' the editor's embedded host — granular for tints/morphs/pose, full reload for HeadParts/Skin
-''' (which change the rendered geometry).
-'''
-''' Cancel rolls back to a deep snapshot of the overlay taken at form construction. OK is a
-''' no-op (live edits are already applied).
-'''
-''' Pipeline reminder per channel:
-'''   HeadParts (NPC.PNAM)              → MergeHeadPartsWithRaceDefaults → mesh assembly. Full reload.
-'''   HairColor (NPC.QNAM)              → ResolveColorFormColor → tint shader. Textures dirty.
-'''   FaceTintLayers (TETI/TEND)        → FaceTintCompositor.ComposeOntoFaceTexture. Textures dirty.
-'''   IsCharGenFacePreset (ACBS bit 2)  → no live consumer; overlay only persists to ESP later.
-'''   SkinFormID (NPC.WNAM)             → CollectArmoCandidates → body/skin geometry. Full reload.
-'''   MorphValues (MSDK/MSDV)           → NpcMorphResolver via RACE.MorphValueDefs/MorphPresets. Morphs dirty.
-'''   FaceMorphs (FMRI/FMRS)            → MainForm.BuildFaceBoneTransforms → skeleton DeltaTransform. Pose dirty.
-'''   FacialMorphIntensity (FMIN)       → multiplier in BuildFaceBoneTransforms. Pose dirty.
-''' </summary>
+''' <summary>Editor de la cara de un NPC: HeadParts, HairColor, tints, flag ACBS IsCharGenFacePreset,
+''' override de piel (NPC.WNAM), morphs de vertice (MSDK/MSDV), morphs de region osea (FMRI/FMRS) y FMIN.
+''' <para>Round-trip: cada canal editable muta el overlay del preset LooksMenu en el MainForm; el render lee
+''' el NPC_Data con el overlay aplicado y los resolvers de aguas abajo toman los valores efectivos.
+''' OnLocalFaceRefresh emite el MarkDirty que corresponde sobre el host embebido - granular para
+''' tints/morphs/pose, reload completo para HeadParts y Skin, que cambian la geometria.</para>
+''' <para>Cancel vuelve a un snapshot profundo del overlay tomado al construir el form; OK es no-op porque
+''' las ediciones ya estan aplicadas en vivo.</para></summary>
 Public Class EditFace_Form
 
     ' HDPT type constants — match wbDefinitionsFO4.pas:7373 PNAM enum (also mirrored at MainForm.vb:88-91).
@@ -384,18 +367,6 @@ Public Class EditFace_Form
                             End Function)
     End Sub
 
-    ''' <summary>Enumerate the universe of vertex-morph slider rows we'll surface in the editor.
-    ''' Each entry corresponds to one MSDK index (= MSID/MPPI key in RACE) — we want the user to
-    ''' be able to dial in a value even if the NPC's record doesn't currently carry that key
-    ''' (which is how a vanilla NPC starts: record has only the few keys CK authored).
-    '''
-    ''' Two sources, both per-RACE/gender:
-    '''   - MorphValueDefs (MSID → MSM0/MSM1 names): bidirectional sliders. NPC value sign picks
-    '''     MSM0 (negative) vs MSM1 (positive); abs value is the weight.
-    '''   - MorphPresets (MPPI → MPPM): one-shot presets. NPC value is the weight directly.
-    '''
-    ''' Both lists can have overlapping indices in pathological RACE records; we keep the first
-    ''' occurrence and tag whether the slider should be bidirectional or unidirectional.</summary>
     ''' <summary>Build the per-MorphGroup sections from RACE for the active gender. Mirrors the
     ''' CK chargen layout: one section per group with presets+sliders, plus a synthetic "Other
     ''' Sliders" tail for any MorphValueDef key not referenced by any group's MPGS. The number
@@ -407,21 +378,13 @@ Public Class EditFace_Form
         _presetKeyToGroup.Clear()
         If _race Is Nothing Then Return
 
-        ' Filter sliders/presets to those whose morph names actually exist in the chargen TRI
-        ' loaded for the face shape — replicates engine in-game behavior of silently skipping
-        ' MSDV entries with names not present in the TRI. Vanilla data is inconsistent for some
-        ' races (HumanChildRace declares Brow/Chin sliders but its HDPT points at the adult
-        ' BaseFemaleHeadChargen.tri which lacks those names). Without this filter the editor
-        ' offers controls with zero visible effect.
-        '
-        ' Empty set means "TRI not yet loaded / unknown" — fall back to no-filter so we don't
-        ' block the user when the editor opens before the renderer published the morph names.
-        '
-        ' Source: MainForm._renderHost (NOT _editorHost). BuildMorphGroupSections runs in the
-        ' editor's CONSTRUCTOR, before the editor's Shown handler creates _editorHost and fires
-        ' its first render. MainForm's host always has the latest render state by the time
-        ' ButtonEditFace_Click runs (it's the host that just rendered the NPC the user is
-        ' editing). So we read the set from there.
+        ' Se filtran sliders y presets a los nombres de morph que EXISTEN en el TRI de chargen cargado para la
+        ' cara, replicando que el motor saltea en silencio las entradas MSDV cuyo nombre no esta en el TRI. La
+        ' data vanilla es inconsistente en algunas razas (HumanChildRace declara sliders de Brow/Chin pero su
+        ' HDPT apunta al TRI adulto, que no los tiene) y sin el filtro el editor ofrece controles sin efecto.
+        ' Set vacio = "TRI todavia no cargado": se cae a no filtrar para no bloquear al usuario.
+        ' La fuente es MainForm._renderHost y NO _editorHost: esto corre en el CONSTRUCTOR del editor, antes de
+        ' que el Shown cree el host propio y dispare su primer render.
         Dim availableMorphs As HashSet(Of String) = Nothing
         If _mainForm IsNot Nothing AndAlso _mainForm._renderHost IsNot Nothing _
            AndAlso _mainForm._renderHost.LastFaceTriMorphNames IsNot Nothing _
@@ -576,21 +539,15 @@ Public Class EditFace_Form
     ' Section 3 — initial seed: open the form with the NPC's current effective values
     ' =====================================================================
 
-    ''' <summary>Populate every UI control from the current overlay-merged-with-raw state. This is
-    ''' the round-trip "load" half: whatever the renderer is showing right now, the form opens
-    ''' with the same values so dragging immediately feels like an edit, not a reset to zero.
-    '''
-    ''' For NPCs without an overlay yet, we seed the overlay's editable channels with the raw
-    ''' NPC values (HeadParts, HairColor, Tints, Morphs, FaceMorphs, FMIN, AcbsFlag, SkinFormID)
-    ''' so subsequent edits ride on top of the displayed baseline. Nothing visible changes — the
-    ''' overlay just mirrors the raw record until the user modifies a slider.</summary>
+    ''' <summary>Puebla los controles con el estado actual (overlay mergeado con el record crudo): el form abre
+    ''' con lo que el render esta mostrando, asi que arrastrar un slider se siente como edicion y no como reset.
+    ''' Para NPCs sin overlay todavia se siembran sus canales editables con los valores crudos, de modo que las
+    ''' ediciones posteriores monten sobre la linea base visible; no cambia nada visible, el overlay solo espeja
+    ''' el record hasta que el usuario mueve algo.</summary>
     ' =====================================================================
     ' SSE (Skyrim) face morphs — NAM9 sliders + NAMA type combos (built in code, game-gated)
     ' =====================================================================
 
-    ''' <summary>SSE: fill the Designer's "Morphs (SSE)" tab panel — 18 NAM9 sliders + 4 NAMA type combos +
-    ''' Load/Save .jslot, seeded from the NPC's NAM9/NAMA. The tab itself lives in the Designer (shown/hidden
-    ''' by game); this only populates PanelSseMorphs.</summary>
     ''' <summary>View of the NPC's RaceMenu per-shape sculpt blocks (head + brows + eyes + mouth). Each block is
     ''' routed to its shape at render/bake by Host (the chargen tri). The app has no 3D sculpt brush, so the only
     ''' edit this tab offers is DELETING a block (see <see cref="OnDeleteSseSculpt"/>) — the rest is read-only
@@ -654,18 +611,15 @@ Public Class EditFace_Form
         UpdateDeleteSseSculptEnabled()
     End Sub
 
-    ''' <summary>Borra SÓLO el bloque de sculpt seleccionado del overlay y re-renderiza. Es la única edición
-    ''' que ofrece esta pestaña (no hay pincel de sculpt): quitar los deltas libres de RaceMenu de una shape
-    ''' —o de la cabeza legacy— y ver la cara volver a sus NAM9/NAMA.
-    ''' <para>⭐ La invariante <c>SseSculptHead == SelectHeadSculptBlock(SseSculptParts)</c> —la que establecen
-    ''' RaceMenuPresetMapper.ParseSculpt y SseMorphReverseEngineer.ApplyTo— hay que RE-ESTABLECERLA acá: el
-    ''' resolver (NpcMorphResolver:512-526) cae al head-only <c>SseSculptHead</c> cuando <c>SseSculptParts</c>
-    ''' queda vacío, así que borrar el último part sin limpiar el head-only haría REAPARECER el sculpt de la
-    ''' cabeza en el próximo render. Por eso Parts vacío ⇒ los DOS a Nothing.</para>
-    ''' <para>Se reasigna la lista (no se muta in-place) porque el preset comparte instancia con
-    ''' <c>_appliedPresets</c> y con las copias del sidecar/jslot; una lista nueva deja los snapshots de
-    ''' Cancel/Reset intactos. El shadow del overlay se re-arma en cada build del resolver
-    ''' (NpcMorphPoseResolver:56 → ResolveOverlaidNpcData), así que la reasignación SÍ llega al render.</para></summary>
+    ''' <summary>Borra SOLO el bloque de sculpt seleccionado del overlay y re-renderiza. Es la unica edicion de
+    ''' esta pestana (no hay pincel): quitar los deltas libres de RaceMenu de una shape y ver la cara volver a
+    ''' sus NAM9/NAMA.
+    ''' <para>Hay que RE-ESTABLECER la invariante <c>SseSculptHead == SelectHeadSculptBlock(SseSculptParts)</c>:
+    ''' el resolver cae al head-only cuando Parts queda vacio, asi que borrar el ultimo part sin limpiar el
+    ''' head-only haria REAPARECER el sculpt de la cabeza en el proximo render. Parts vacio implica los DOS a
+    ''' Nothing.</para>
+    ''' <para>Se reasigna la lista y no se muta in-place: el preset comparte instancia con _appliedPresets y con
+    ''' las copias del sidecar/jslot, y una lista nueva deja intactos los snapshots de Cancel/Reset.</para></summary>
     Private Sub OnDeleteSseSculpt(sender As Object, e As EventArgs)
         Dim p = Preset
         If p Is Nothing OrElse ListSseSculpt Is Nothing OrElse ListSseSculpt.SelectedItems.Count = 0 Then Return
@@ -1250,7 +1204,6 @@ Public Class EditFace_Form
         Return p
     End Function
 
-    ''' <summary>The Face-node overlays inside Preset.SseBodyOverlays (the whole .jslot overrides array).</summary>
     ''' <summary>Face overlays (Face [Ovl{n}] nodes) in DRAW ORDER — highest Ovl index first, since skee64 draws
     ''' higher indices on top, so top-of-list = on top and Up/Down are intuitive.</summary>
     Private Function FaceOverlaysList() As List(Of RaceMenuJslot.JslotOverlayNode)
@@ -2185,16 +2138,12 @@ Public Class EditFace_Form
             End If
 
             ' --- FMIN ---
-            ' If there's no prior overlay (NPC never touched by LM or by a prior Edit Face), seed
-            ' the slider from the raw NPC record so it reflects the actual current value (records
-            ' authored at 1.4 / 0.7 / etc. shouldn't snap to 1.0 just because the editor opened).
-            ' If an overlay DOES exist (LM preset load or prior edit), trust p.FacialMorphIntensity
-            ' verbatim — 1.0F is a valid explicit value per LM contract (omitted key parses to 1.0
-            ' identical to an explicit "Intensity":1.0), NOT a "default sentinel" we can overwrite.
-            ' Prior heuristic (Math.Abs(p.FMIN - 1.0F) < epsilon → fallback to raw) wrongly clobbered
-            ' LM presets that explicitly carried FMIN=1.0.
-            ' FMIN is a Fallout 4 subrecord with no Skyrim analogue and its host tab (Bone Regions) is removed
-            ' for SSE — don't seed the orphaned control or write the FO4-only channel into an SSE preset.
+            ' Sin overlay previo, el slider se siembra del record crudo para que refleje el valor real (un
+            ' record autorado en 1.4 no debe saltar a 1.0 solo porque se abrio el editor). Con overlay se cree
+            ' verbatim: 1.0F es un valor explicito valido del contrato de LM, no un centinela que se pueda
+            ' pisar. La heuristica previa (tratar 1.0 como "sin valor") rompia los presets que lo traian.
+            ' FMIN es un subrecord de FO4 sin analogo en Skyrim y su pestana se saca en SSE: no sembrar el
+            ' control huerfano ni escribir el canal FO4-only en un preset de SSE.
             If Not _isSSE Then
                 If Not _hadPriorOverlay AndAlso rawNpc IsNot Nothing Then
                     p.FacialMorphIntensity = If(rawNpc.FacialMorphIntensity > 0.0F, rawNpc.FacialMorphIntensity, 1.0F)
@@ -2279,19 +2228,14 @@ Public Class EditFace_Form
     ' ResolveNPCBaseState consumes preset.HeadPartFormIDs at MainForm:3841-3842.
     ' =====================================================================
 
-    ''' <summary>Tag payload for ListViewHeadParts rows. IsRaceDefault=True means the entry comes
-    ''' from RACE.{Male,Female}HeadParts (gender-specific) because the NPC override has no entry of
-    ''' that PartType. The render's MergeHeadPartsWithRaceDefaults (MainForm.vb:6582) does the same
-    ''' merge — the editor mirrors it so the user sees what the render will draw, not just the raw
-    ''' NPC override list. Race defaults are read-only here: removing them requires a different
-    ''' mechanism (explicit "no part" override) which the model doesn't currently support.
-    '''
-    ''' IsHnamExtra=True means the row is a sub-part derived from a parent HDPT's ExtraPartFormIDs
-    ''' (hairlines, eyelashes, AO/wet, mouth shadow). The render's CollectHeadPartCandidate walks
-    ''' the HNAM chain (MainForm.vb:7544) and pulls these automatically; they don't need to be
-    ''' stored in preset.HeadPartFormIDs. The editor displays them indented under their parent so
-    ''' the user can see what the render will draw without making them removable independently
-    ''' (removing the parent cascade-removes any duplicate Misc in preset that matches HNAM).</summary>
+    ''' <summary>Payload del Tag de las filas de ListViewHeadParts. IsRaceDefault=True: la entrada viene de
+    ''' RACE.{Male,Female}HeadParts porque el override del NPC no tiene una de ese PartType. El editor espeja el
+    ''' merge que hace el render para que el usuario vea lo que se va a dibujar y no solo la lista cruda del
+    ''' NPC; los defaults de raza son read-only aca (quitarlos exigiria un override explicito de "sin parte",
+    ''' que el modelo no soporta).
+    ''' <para>IsHnamExtra=True: la fila es un sub-part derivado de los ExtraPartFormIDs del HDPT padre
+    ''' (hairlines, pestanas, AO/wet, sombra de boca). El render camina la cadena HNAM y los trae solo, asi que
+    ''' no se guardan en el preset; se muestran indentados bajo el padre, sin ser removibles por separado.</para></summary>
     Private Class HeadPartRowTag
         Public FormID As UInteger
         Public IsRaceDefault As Boolean
@@ -2535,15 +2479,6 @@ Public Class EditFace_Form
         _refresh?.Invoke(FaceRefreshScope.FullReload)
     End Sub
 
-    ''' <summary>Cascade-remove the now-orphaned standalone Misc children of a parent head part that
-    ''' was just removed OR replaced. A standalone Misc entry that lived in
-    ''' <paramref name="removedParentFid"/>'s ExtraPartFormIDs (HNAM) becomes an orphan once its
-    ''' parent is gone: its effective type collapses to Misc(0), no hair/beard palette applies, and it
-    ''' renders with the BGSM-default colour while showing as a Misc root row. We drop those — EXCEPT
-    ''' any extra still claimed by another parent currently in <paramref name="headParts"/> (this
-    ''' includes the replacement parent on the Add path, so a hairline shared by the old and new hair
-    ''' survives as a live HNAM child). Non-Misc extras, and Misc the user added as independent addons
-    ''' (mouth shadow, AO/wet — not in the removed parent's HNAM), are left untouched.</summary>
     ''' <summary>Thin wrapper over the shared <see cref="HeadPartResolver.CascadeRemoveOrphanedHnamMisc"/>
     ''' (single source of truth, also used by NpcOverrideSaver's preset-load orphan suppression) resolving
     ''' HDPTs through this form's <c>_allHeadPartsByFid</c> cache. Behaviour is unchanged from the former
@@ -2590,19 +2525,14 @@ Public Class EditFace_Form
                                p.HairColorFormID,
                                _mainForm.ResolveEffectiveHairColorFormID(_rootNpcFormID))
 
-            ' ⭐ El CLFM efectivo puede NO estar en la AHCM/AHCF de la raza. Dos casos reales: un CLFM de un
-            ' mod, y el `npcm_<ESP>_HairColor_<RRGGBB>` que sintetiza Save ESP cuando el usuario elige un color
-            ' custom de RaceMenu (NpcOverrideSaver.MaterializeSseHairColors) — ninguno de los dos entra en la
-            ' lista de la raza, que es a propósito la lista de PRESETS de chargen (ver BuildHairColorCache).
-            ' Sin esta entrada el lookup de abajo no encontraba nada y caía al índice 0 "(none / preserve)":
-            ' el color se veía en el render Y en el swatch (el Paint lo resuelve por LastRenderedState) pero el
-            ' combo decía que no había color, y tampoco aparecía como custom porque `SseHairColorRgb` está vacío
-            ' — el color vive en el record CLFM, no en el override. Peor: el seed del ColorDialog
-            ' (ResolveCurrentHairSwatchColor lee el item del combo, sin ese fallback) abría en NEGRO.
-            ' Se agrega la entrada efectiva marcada y justo después de "(none / preserve)", igual que Edit Body
-            ' hace con el WNAM que cae fuera del universo filtrado (MainForm.GetSkinArmoDisplayName).
-            ' Va como CLFM y no como RGB custom a propósito: así Save ESP REUSA el record existente en vez de
-            ' sintetizar un duplicado por el mismo color.
+            ' El CLFM efectivo puede NO estar en la AHCM/AHCF de la raza: pasa con un CLFM de un mod y con el
+            ' npcm_<ESP>_HairColor_<RRGGBB> que sintetiza Save ESP para un color custom de RaceMenu. Ninguno
+            ' entra en la lista de la raza, que a proposito es la de PRESETS de chargen.
+            ' Sin esta entrada el lookup caia al indice 0 "(none / preserve)": el color se veia en el render y
+            ' en el swatch pero el combo decia que no habia color, y tampoco figuraba como custom porque vive en
+            ' el record CLFM y no en el override; peor, el seed del ColorDialog abria en NEGRO.
+            ' Va como CLFM y no como RGB custom a proposito: asi Save ESP REUSA el record existente en vez de
+            ' sintetizar un duplicado del mismo color.
             If targetFid <> 0UI AndAlso Not _allHairColors.Any(Function(c) c.FormID = targetFid) Then
                 Dim extraRec = _pluginManager.GetRecord(targetFid)
                 If extraRec IsNot Nothing AndAlso extraRec.Header.Signature = "CLFM" Then
@@ -2669,18 +2599,16 @@ Public Class EditFace_Form
     End Sub
 
     ' ---------------------------------------------------------------------
-    ' Hair Color — RaceMenu CUSTOM (arbitrary RGB). SSE-ONLY.
+    ' Hair Color - RaceMenu CUSTOM (RGB arbitrario). SOLO SSE.
     '
-    ' RaceMenu's hair colour is not restricted to the race's CLFM list: the .jslot stores an ABSOLUTE packed
-    ' RGB (`actor.hairColor`, skee64 PresetInterface.cpp:677) and skee applies it straight onto the hair
-    ' material (:112-116, ×2), so any colour is expressible. The combo above stays the PRESET list (the race's
-    ' AHCM/AHCF CLFMs, what the game setting sRSMHairColorPresets names); this pair of buttons is the custom
-    ' colour on top of it, and it WINS over the combo when set — which is why it also has to be visible: with
-    ' a preset RGB loaded, changing the combo alone had no visible effect and nothing said why.
+    ' El color de pelo de RaceMenu no esta restringido a la lista de CLFM de la raza: el .jslot guarda un RGB
+    ' absoluto y skee lo aplica directo sobre el material del pelo, asi que cualquier color es expresable. El
+    ' combo de arriba sigue siendo la lista de PRESETS (los CLFM AHCM/AHCF de la raza); estos botones son el
+    ' color custom encima, y GANA sobre el combo cuando esta seteado - por eso tambien tiene que ser visible.
     '
-    ' ⛔ NOT offered on FO4: a Fallout 4 hair CLFM carries a RemappingIndex (a ROW of the hair LUT), not an
-    ' RGB — an arbitrary colour has no field to live in and no engine path to apply it. Two games, two systems.
-    ' Save ESP materializes the chosen RGB into a real CLFM + HCLF (NpcOverrideSaver.MaterializeSseHairColors).
+    ' â›” No se ofrece en FO4: un CLFM de pelo de Fallout 4 lleva un RemappingIndex (una FILA de la LUT), no un
+    ' RGB, asi que un color arbitrario no tiene campo donde vivir ni camino en el motor. Dos juegos, dos
+    ' sistemas. Save ESP materializa el RGB elegido en un CLFM + HCLF reales.
     ' ---------------------------------------------------------------------
 
     Private Sub OnSseCustomHairColor(sender As Object, e As EventArgs)
@@ -3528,11 +3456,6 @@ Public Class EditFace_Form
     ' NpcMorphResolver picks MSM0/MSM1 by sign and looks up the chargen TRI delta.
     ' =====================================================================
 
-    ''' <summary>Build the per-MorphGroup UI from <see cref="_groupSections"/>. Each section is a
-    ''' GroupBox containing a left-side ListBox of presets (with "(none)" at top) + intensity
-    ''' slider, and a right-side stack of N MPGS bidirectional sliders. The synthetic "Other"
-    ''' section omits the preset column. Section count, preset count and slider count are all
-    ''' driven by the active RACE — no race-specific layout assumptions.</summary>
     ''' <summary>Build a TabControl with one sub-tab per MorphGroup (mirrors the CK chargen
     ''' layout the user is used to). Inside each tab: ListBox of presets at top + intensity
     ''' slider, then MPGS bidi sliders stacked vertically below (not side-by-side). The synthetic
@@ -3828,18 +3751,13 @@ Public Class EditFace_Form
     End Sub
 
     ' =====================================================================
-    ' Section 11 — Face Bone Regions (FMRI/FMRS, Pose dirty)
+    ' Seccion 11 - Face Bone Regions (FMRI/FMRS, Pose dirty)
     '
-    ' Round-trip: ListBox displays preset.FaceBoneRegions keys (resolved to RACE.{Male/Female}FaceMorphs
-    ' names). Right panel shows 7 sliders for the selected region (PosX/Y/Z, RotX/Y/Z, Scale)
-    ' editing a Single[] of length 7 stored in preset.FaceBoneRegions[Index].
-    ' BuildFaceBoneTransforms (MainForm:4960) consumes effective.FaceMorphs (filled from
-    ' preset.FaceBoneRegions in ApplyPresetOverlayToNpcData:8498-8510) and constructs the
-    ' skeleton DeltaTransform.
-    '
-    ' Slider semantics: every value is a [0..1] lerp anchor that the resolver later combines
-    ' with FacialBoneRegions JSON minima/maxima (per-bone). 0.5 ≈ default. 0 ≈ fully toward
-    ' minima, 1 ≈ fully toward maxima.
+    ' El ListBox muestra las regiones de preset.FaceBoneRegions y el panel derecho sus 7 sliders (PosX/Y/Z,
+    ' RotX/Y/Z, Scale), que editan un Single[] de 7 posiciones. BuildFaceBoneTransforms consume esos valores y
+    ' construye el DeltaTransform del skeleton.
+    ' Semantica: cada valor es un ancla de lerp [0..1] que el resolver combina con los minima/maxima del JSON
+    ' FacialBoneRegions por hueso. 0,5 aprox. default; 0 hacia minima, 1 hacia maxima.
     ' =====================================================================
 
     ''' <summary>Build the bone-regions editor as a TabControl. Tabs come from a data-derived
@@ -3967,21 +3885,16 @@ Public Class EditFace_Form
         Return String.Join(" ", out)
     End Function
 
-    ''' <summary>Which of the 7 FMRS components (PosX/Y/Z, RotX/Y/Z, Scale) can produce a non-zero
-    ''' bone delta.
-    '''
-    ''' Delegates the rule to <see cref="FaceBonePoseBuilder.IsFmrsAxisLive"/> so the editor and the
-    ''' render/bake path share ONE convention. An axis is live iff its Minima or Maxima is non-zero.
-    '''
-    ''' ⛔ This used to compare Minima/Maxima against the region's Defaults, which contradicts the
-    ''' engine: the FMRS lerp never reads Defaults (RE — Fallout4.exe FUN_1403fd920 @0x3FD920 and
-    ''' CreationKit.exe FUN_140419CD0 @0x419CD0 receive an 18-float [Minima|Maxima] bone struct with
-    ''' no Defaults slot, and contain zero subtract instructions). The two conventions agree only
-    ''' because every vanilla region ships Defaults = 0; a modded race with Defaults ≠ 0 would have
-    ''' made this editor disagree with what the renderer actually draws.
-    '''
-    ''' Component 6 (Scale) drives all three scale axes from the single FMRS scale value, so it is
-    ''' live if any scale axis has a non-zero endpoint.</summary>
+    ''' <summary>Cuales de los 7 componentes FMRS (PosX/Y/Z, RotX/Y/Z, Scale) pueden producir un delta de hueso
+    ''' no nulo. Delega la regla en <see cref="FaceBonePoseBuilder.IsFmrsAxisLive"/> para que el editor y el
+    ''' camino render/bake compartan UNA convencion: un eje esta vivo si su Minima o su Maxima no es cero.
+    ''' <para>â›” Antes se comparaba Minima/Maxima contra los Defaults de la region, lo que contradice al motor:
+    ''' el lerp FMRS nunca lee Defaults (RE de los dos binarios: reciben un struct de 18 floats [Minima|Maxima]
+    ''' sin slot de Defaults y no tienen ni una resta). Las dos convenciones coinciden solo porque toda region
+    ''' vanilla trae Defaults = 0; una raza modeada con Defaults != 0 habria hecho que el editor discrepara del
+    ''' render.</para>
+    ''' <para>El componente 6 (Scale) mueve los tres ejes desde un solo valor, asi que esta vivo si cualquiera
+    ''' de los tres tiene un extremo no nulo.</para></summary>
     Private Shared Function RegionLiveComponents(rd As FacialBoneRegion) As Boolean()
         Dim live(6) As Boolean
         For Each b In rd.Bones
@@ -4498,21 +4411,15 @@ Public Class EditFace_Form
                     intent.MorphResolver = _mainForm.BuildCompositeMorphResolver(_editorHost.LastRenderedState, _editorHost.LastRenderData, _editorHost)
                     intent.MarkDirty(RenderDirtyFlags.Morphs, _editorHost.LastRenderData.Shapes)
                 End If
-                ' FO4 ONLY. MPPI Morph Group presets like Murphy's "Arrugado" do TWO things: vertex
-                ' deformation (MSDV — handled by the resolver above) AND a per-region MPPT TXST
-                ' texture swap (Wrinkled skin texture inside the Forehead/Cheeks/Neck region
-                ' mask, applied by BuildFaceRegionSwaps → ApplyRegionSwapChannelOnto inside
-                ' TryApplyFaceTints). Re-running the resolver alone updates geometry but leaves
-                ' the textures stale — switching from Smooth to Wrinkled would deform the mesh
-                ' but show the previous texture. Refresh the tint pipeline too. No-op for NPCs
-                ' whose active presets carry no MPPT (BuildFaceRegionSwaps returns 0 swaps).
-                '
-                ' SKYRIM HAS NO SUCH MECHANISM: its face morphs (NAM9 / NAMA / RaceMenu custom / sculpt) are pure
-                ' vertex deformation and touch NO texture — the facetint depends only on the tint layers
-                ' (TINI/TINC/TINV), which a morph edit cannot change. So running the tint pipeline here was pure
-                ' waste, and MEASURED it is expensive: the SSE fold (complexion + facetint + detail) is per-pixel,
-                ' so a 1024² vanilla head costs ~0.4s but a 4096² modded head (COtR ships 4K faces) costs
-                ' 2.6–4.5s — i.e. every slider drag stalled the editor for seconds. Gated to FO4.
+                ' SOLO FO4. Los presets MPPI de grupo de morph hacen DOS cosas: deformacion de vertices (MSDV,
+                ' ya resuelta arriba) Y un swap de textura MPPT por region (piel arrugada dentro de la mascara
+                ' de frente/mejillas/cuello). Re-correr solo el resolver actualiza la geometria y deja las
+                ' texturas rancias, asi que hay que refrescar tambien el pipeline de tints. No-op para NPCs
+                ' cuyos presets activos no traen MPPT.
+                ' â›” SKYRIM NO TIENE ESE MECANISMO: sus morphs de cara son pura deformacion de vertices y no
+                ' tocan textura, asi que correr el pipeline de tints era desperdicio puro - y medido es caro (el
+                ' fold SSE es per-pixel: una cabeza 4096^2 cuesta 2,6-4,5 s, o sea cada arrastre de slider
+                ' congelaba el editor). Gateado a FO4.
                 If Config_App.Current.Game = Config_App.Game_Enum.Fallout4 Then
                     Try
                         _mainForm.RefreshFaceTintLivePreview(_editorHost)
@@ -4552,18 +4459,12 @@ Public Class EditFace_Form
     End Sub
 
     ' =====================================================================
-    ' Embedded preview lifecycle (Shown / FormClosing)
+    ' Ciclo de vida del preview embebido (Shown / FormClosing)
     '
-    ' Pattern adopted from Wardrobe_Manager Editor_Form.vb:1046 and
-    ' CreatefromNif_Form.vb:36 — the PreviewControl is created in Shown (NOT in
-    ' .ctor / Designer) so its OpenGL context is created when the form is actually
-    ' visible. FormClosing tears it down explicitly so the GL resources are released
-    ' before the form's own Dispose runs.
-    '
-    ' Multiple PreviewControl instances coexist with the MainForm's preview at runtime:
-    ' each control owns its own GL context and shaders (see Render.vb:677 OnLoad),
-    ' textures and buffers are not shared. WM ships this pattern in production with
-    ' Editor_Form + CreatefromNif_Form so it is a known-good baseline.
+    ' El PreviewControl se crea en Shown y NO en el .ctor/Designer, para que su contexto OpenGL nazca con el
+    ' form ya visible; FormClosing lo destruye explicitamente para liberar los recursos GL antes del Dispose.
+    ' Varios PreviewControl conviven con el preview del MainForm: cada control tiene su propio contexto y sus
+    ' shaders, y no comparte texturas ni buffers. Patron tomado de Wardrobe_Manager, que lo tiene en produccion.
     ' =====================================================================
     Private WithEvents EditPreviewControl As PreviewControl = Nothing
 

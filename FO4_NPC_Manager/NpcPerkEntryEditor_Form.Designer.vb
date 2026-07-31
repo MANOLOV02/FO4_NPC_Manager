@@ -1,4 +1,4 @@
-' UI built in Designer per feedback_ui_in_designer.md. InitializeComponent is declarative ONLY.
+﻿' UI built in Designer per 00-reglas-ui-y-vb.md. InitializeComponent is declarative ONLY.
 ' Modal editor for a SINGLE NPC_PerkEntry (PERK FormID + u8 Rank) — mirror of NpcFactionEntryEditor_Form.
 <Global.Microsoft.VisualBasic.CompilerServices.DesignerGenerated()>
 Partial Class NpcPerkEntryEditor_Form

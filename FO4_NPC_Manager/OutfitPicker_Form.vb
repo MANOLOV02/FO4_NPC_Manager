@@ -784,11 +784,6 @@ Public Class OutfitPicker_Form
     Private Const OutfitContextFormID As UInteger = &HFF0007FDUI
     Private _outfitContextRegistered As Boolean
 
-    ''' <summary>Register a STABLE OTFT holding the Create tab's currently-assembled winners (slot-conflict
-    ''' resolved + flattened, same set the Create preview draws), under a dedicated sentinel FormID so it
-    ''' survives the ARMO/ARMA editor modals (which register their own preview draft at the shared sentinel).
-    ''' Threaded to those editors as the "Full Outfit" preview context. Returns 0 when the Create tab has no
-    ''' pieces (⇒ the editors fall back to their single-item throwaway).</summary>
     ''' <summary>BOD2 CRUDO del ARMO de la pieza — la máscara con la que el engine decide el conflicto de
     ''' EQUIP en Skyrim (0x1403BD39E castea el ítem con AsBipedObjectForm y lo compara contra lo ya equipado
     ''' con SlotsOverlap 0x1401CCA90, any-bit). <see cref="PieceEntry.SlotMask"/> NO sirve: es la unión de los

@@ -1,4 +1,4 @@
-Imports System.Text
+﻿Imports System.Text
 Imports FO4_Base_Library
 
 ''' <summary>
@@ -81,19 +81,14 @@ Public Module HeadPartResolver
                 If npcClaimedTypes.Add(hdpt.PartType) Then
                     mergedByType(hdpt.PartType) = npcFID
                 ElseIf hdpt.PartType = 5 Then
-                    ' ⭐ La acumulación es SÓLO para PartType=5 (Scar). MEDIDO sobre los 3158 FaceGeom del CK,
-                    ' contando NPCs cuyo PNAM trae dos head parts del mismo tipo:
-                    '     tipo 5 (Scar) : el extra está presente en el NIF del CK en 63 casos (los 52 ausentes
-                    '                     son MarksMaleHumanoid00NoScar / …00NoGash, con MODL vacío ⇒ no emiten
-                    '                     shape en ninguno de los dos lados)
-                    '     tipo 3 (Hair) : el extra está presente en 0 casos, ausente en 1 (el nuestro)
-                    ' Y la distribución de shapes PartType=3 por NIF del CK es 1 en 3044 archivos y 0 en 114 —
-                    ' NUNCA 2. O sea el CK admite UN solo head part de pelo y descarta el resto.
-                    ' Caso que lo fija: WEAdventurerWarriorDualKhajiitM (0x00105551) lista HairKhajiit00
-                    ' (0x000EE85C, MODL VACÍO ⇒ no emite shape) y KhajiitMaleEarTufts (0x000D3371). El CK deja
-                    ' 3 shapes; sin este gate emitíamos 4, con 'KhajiitMaleEarTufts' de más — que no aparece en
-                    ' NINGUNO de los 3158 NIFs del CK. No es filtro por raza ni por sexo: el RNAM es la misma
-                    ' FLST que la del pelo aceptado y DATA=0x03 incluye Male en un NPC macho.
+                    ' La acumulacion es SOLO para PartType=5 (Scar). Medido sobre los 3158 FaceGeom del CK,
+                    ' contando NPCs cuyo PNAM trae dos head parts del mismo tipo: en tipo 5 el extra esta en el
+                    ' NIF del CK en 63 casos (los 52 ausentes tienen MODL vacio y no emiten shape en ninguno de
+                    ' los dos lados), y en tipo 3 (Hair) esta presente en 0 y ausente en 1. Ademas la
+                    ' distribucion de shapes PartType=3 por NIF del CK es 1 en 3044 archivos y 0 en 114, NUNCA 2:
+                    ' el CK admite UN solo head part de pelo y descarta el resto.
+                    ' No es filtro por raza ni por sexo: en el caso que lo fija, el RNAM es la misma FLST que la
+                    ' del pelo aceptado y el DATA incluye al genero del NPC.
                     extraNpcParts.Add(npcFID)
                 End If
             End If
@@ -112,27 +107,14 @@ Public Module HeadPartResolver
         Return finalList
     End Function
 
-    ''' <summary>Whether <paramref name="hdptFormID"/> is valid for an NPC of <paramref name="raceFormID"/>.
-    ''' Pass conditions:
-    '''   a) HDPT.RNAM = 0 (empty Valid Races) AND the target RACE declares head parts at all
-    '''      (i.e. is a humanoid race). Most vanilla hair/face HDPTs use RNAM=0 yet render
-    '''      correctly on HumanRace NPCs because HumanRace declares head parts.
-    '''   b) HDPT.RNAM points to a FLST whose ItemFormIDs contain raceFormID.
-    '''   c) The NPC's RACE record names this HDPT as a gender-default in
-    '''      Male/FemaleHeadPartFormIDs.
-    '''
-    ''' Why path (a) requires the RACE to have head parts: vanilla EncRaiderDog01
-    ''' (Fallout4.esm 0x000B2BF2) lists the human MaleMouthHumanoidDirtyTeethMissing in its
-    ''' NPC.PNAM (RNAM=0) but the engine doesn't render human teeth on raider dogs in-game.
-    ''' RaiderDogRace declares zero head parts — it's a non-humanoid race. So RNAM=0 is
-    ''' NOT a universal pass; it requires the RACE to be one that uses head parts at all.
-    '''
-    ''' <paramref name="raceHasAnyHeadParts"/> caller-supplied: True if the target RACE
-    ''' declares head parts in either Male or Female list. False = non-humanoid race
-    ''' (dog/robot/creature) where RNAM=0 HDPTs are silently dropped by the engine.
-    '''
-    ''' <paramref name="flstCache"/> is shared across calls so a batch of HDPTs against the
-    ''' same race only parses each FLST once. Pass an empty dict on first call and reuse it.</summary>
+    ''' <summary>Si <paramref name="hdptFormID"/> es valido para un NPC de <paramref name="raceFormID"/>. Pasa
+    ''' cuando: (a) HDPT.RNAM = 0 y la RACE destino declara head parts, o sea que es humanoide; (b) el RNAM
+    ''' apunta a una FLST que contiene la raza; o (c) la RACE nombra al HDPT como default de genero.
+    ''' <para>El camino (a) exige que la RACE tenga head parts porque RNAM=0 no es un pase universal: hay NPCs no
+    ''' humanoides (perros) cuyo PNAM lista head parts humanas con RNAM=0 que el motor no dibuja, justamente
+    ''' porque su raza declara cero head parts.</para>
+    ''' <para><paramref name="raceHasAnyHeadParts"/> lo provee el caller. <paramref name="flstCache"/> se
+    ''' comparte entre llamadas para que un lote contra la misma raza parsee cada FLST una sola vez.</para></summary>
     Public Function IsHdptValidForRace(hdptFormID As UInteger,
                                        raceFormID As UInteger,
                                        isFemale As Boolean,
@@ -177,28 +159,18 @@ Public Module HeadPartResolver
         Return False
     End Function
 
-    ''' <summary>Whether a LooksMenu preset is race-compatible with the target NPC's race.
-    ''' Compatibility is decided by HEAD PARTS ONLY: every preset.HeadPartFormIDs must pass
-    ''' <see cref="IsHdptValidForRace"/>. Empty-set head parts are vacuously OK.
-    '''
-    ''' FaceTint layers do NOT gate compatibility (user rule, 2026-07-09): a tint whose Index
-    ''' doesn't resolve against this race is NOT a reason to hide/drop the whole preset. Such a
-    ''' tint is preserved verbatim in the NPC's FaceTintLayers (round-trips on Save) but is inert:
-    ''' the compositor skips it (FaceTintInputBuilder: FindTintOption Nothing -> Continue) and the
-    ''' Face editor hides its row (EditFace_Form.RefreshTintsList). So it is neither applied nor
-    ''' editable, just carried. Head parts still gate because a wrong-race HDPT would visually
-    ''' swap a whole mesh (hair/eyes) — a partial-apply the user does want hidden.
-    '''
-    ''' Used by <see cref="LooksmenuLoad_Form"/> to optionally hide presets the engine would
-    ''' partially-apply against this NPC's race (LM itself doesn't enforce race).
-    '''
-    ''' <paramref name="ignoreFaceBaseHeadPart"/> (SSE path, user rule 2026-07-09): skip the base
-    ''' HEAD part (PNAM PartType=1, "Face") from the gate. RaceMenu .jslot presets carry the preset
-    ''' author's race-specific base head (e.g. FemaleHeadRedguard, whose Valid-Races FLST lists only
-    ''' Redguard+Vampire), which legitimately fails a Nord NPC. But skee applies the preset's sculpt
-    ''' over whatever race's own base head, so a mismatched base head must NOT drop the whole preset
-    ''' — otherwise ~all cross-race presets vanish from the SSE browser. Hair/eyes/brows still gate.
-    ''' FO4 leaves this False (unchanged behaviour).</summary>
+    ''' <summary>Si un preset de LooksMenu es compatible con la raza del NPC destino. La compatibilidad la
+    ''' deciden SOLO las head parts: todas tienen que pasar <see cref="IsHdptValidForRace"/> (conjunto vacio =
+    ''' compatible).
+    ''' <para>Las capas de FaceTint NO gatean: un tint cuyo Index no resuelve contra esta raza no es motivo para
+    ''' ocultar el preset entero. Se conserva verbatim en el NPC (round-trippea al guardar) pero queda inerte, el
+    ''' compositor lo saltea y el editor esconde su fila. Las head parts si gatean porque un HDPT de otra raza
+    ''' cambiaria una malla entera (pelo, ojos), que es el apply parcial que el usuario si quiere ocultar.</para>
+    ''' <para><paramref name="ignoreFaceBaseHeadPart"/> (camino SSE): saltea la head part base de cara. Los
+    ''' presets .jslot de RaceMenu traen la cabeza base especifica de la raza del autor, que legitimamente falla
+    ''' contra otra raza, pero skee aplica el sculpt sobre la cabeza base de la raza propia: si eso descartara el
+    ''' preset, casi todos los cross-race desaparecerian del browser. Pelo, ojos y cejas siguen gateando; FO4 lo
+    ''' deja en False.</para></summary>
     Public Function IsPresetCompatibleWithRace(preset As LooksmenuLoader.LooksmenuPreset,
                                                raceFormID As UInteger,
                                                isFemale As Boolean,
@@ -290,26 +262,19 @@ Public Module HeadPartResolver
         Return ownPartType
     End Function
 
-    ''' <summary>Cascade-remove the now-orphaned standalone Misc(0) children of a head part that was
-    ''' REMOVED or REPLACED. A standalone Misc that lived in <paramref name="removedParentFid"/>'s
-    ''' ExtraPartFormIDs (HNAM) becomes an orphan once its parent is gone: its effective type collapses
-    ''' to Misc(0), no hair/beard palette applies, and it renders with the BGSM-default colour as a Misc
-    ''' root. We drop those — EXCEPT any extra still claimed by another parent currently in
-    ''' <paramref name="headParts"/> (this includes a replacement parent that shares the extra, so a
-    ''' hairline declared by both the old and new hair survives as a live HNAM child). Non-Misc extras,
-    ''' and Misc that were never in the removed parent's HNAM (independent addons: mouth shadow, AO/wet),
-    ''' are left untouched.
-    '''
-    ''' Single source of truth shared by two callers, so a preset-load hair swap drops the old hairline
-    ''' EXACTLY the way the manual editor does:
-    '''   • <c>EditFace_Form.OnRemoveHeadPart</c> / <c>OnAddHeadPart</c> (manual remove / replace).
-    '''   • <c>NpcOverrideSaver</c> Phase 1c (a filtered preset that replaced a main-type parent).
-    ''' The saver caller MUST gate the call on "the parent's PartType was actually replaced by the
-    ''' preset" — passing an unchanged parent here would (correctly) do nothing, but the gate keeps a raw
-    ''' extra whose parent type is untouched (eyelashes on untouched eyes) from ever being considered.
-    '''
-    ''' <paramref name="resolveHdpt"/> maps a FormID to its parsed <see cref="HDPT_Data"/> (or Nothing);
-    ''' callers pass their own cache (EditFace's _allHeadPartsByFid, the saver's parse cache).</summary>
+    ''' <summary>Borra en cascada los hijos Misc(0) standalone que quedaron HUERFANOS al remover o reemplazar una
+    ''' head part. Un Misc que vivia en el HNAM del padre removido queda huerfano: su tipo efectivo colapsa a
+    ''' Misc(0), no le aplica paleta de pelo ni de barba, y se dibuja con el color por defecto del BGSM. Se
+    ''' descartan, EXCEPTO los que todavia reclame otro padre presente (incluido un padre de reemplazo que
+    ''' comparta el extra, asi que un hairline declarado por el pelo viejo y el nuevo sobrevive). Los extras que
+    ''' no son Misc, y los Misc que nunca estuvieron en el HNAM del padre removido (addons independientes como la
+    ''' sombra de boca o el AO/wet), no se tocan.
+    ''' <para>Fuente unica de dos callers, para que un cambio de pelo por preset descarte el hairline viejo
+    ''' EXACTAMENTE igual que el editor manual. El caller del saver DEBE gatear en "el preset realmente reemplazo
+    ''' al padre de ese PartType": pasar un padre sin cambios no haria nada, pero el gate evita siquiera
+    ''' considerar un extra cuyo padre quedo intacto.</para>
+    ''' <para><paramref name="resolveHdpt"/> mapea FormID a su <see cref="HDPT_Data"/> parseado; cada caller pasa
+    ''' su propia cache.</para></summary>
     Public Sub CascadeRemoveOrphanedHnamMisc(headParts As List(Of UInteger),
                                              removedParentFid As UInteger,
                                              resolveHdpt As Func(Of UInteger, HDPT_Data))
@@ -341,22 +306,18 @@ Public Module HeadPartResolver
         Next
     End Sub
 
-    ''' <summary>Given the raw NPC.PNAM head parts and a preset's head parts, return the raw standalone
-    ''' Misc FormIDs that become ORPHANS because the preset replaced their parent — i.e. the set an
-    ''' apply (Load LooksMenu/RaceMenu, Copy/Paste) must record in
-    ''' <see cref="LooksmenuLoader.LooksmenuPreset.SuppressedRawHeadPartFormIDs"/> so the save-time raw
-    ''' union drops them, dropping the old hairline exactly the way Edit Face does on a manual hair swap.
-    '''
-    ''' Merges raw ∪ preset the same way NpcOverrideSaver Phase 1c persists (one HDPT per main type,
-    ''' preset wins; Misc(0) accumulated), then for every main-type parent the preset REPLACED with a
-    ''' different HDPT (any type — hair, eyes, brows, …) collects that raw parent's orphaned Misc HNAM
-    ''' children via the shared <see cref="CascadeRemoveOrphanedHnamMisc"/> (diffed before/after). This
-    ''' makes Save agree with the render, which already rebuilds head parts as race-defaults + preset
-    ''' (raw wiped) so a replaced parent's old raw extras never show. NOT the Cait-class lash regression:
-    ''' that came from UNCONDITIONALLY filtering raw extras, whereas this only fires on an actual
-    ''' replacement (a parent the preset left untouched suppresses nothing), and the cascade keeps any
-    ''' extra still claimed by a surviving parent's HNAM (vanilla new eyes re-declare their lashes → kept).
-    ''' <paramref name="resolveHdpt"/> maps FormID → parsed HDPT (or Nothing).</summary>
+    ''' <summary>Dadas las head parts crudas del NPC.PNAM y las de un preset, devuelve los FormID de Misc
+    ''' standalone que quedan HUERFANOS porque el preset reemplazo a su padre: es el conjunto que un apply (Load
+    ''' LooksMenu/RaceMenu, Copy/Paste) tiene que registrar en
+    ''' <see cref="LooksmenuLoader.LooksmenuPreset.SuppressedRawHeadPartFormIDs"/> para que la union cruda del
+    ''' guardado los descarte, igual que hace Edit Face en un cambio manual de pelo.
+    ''' <para>Mergea crudo y preset igual que persiste el saver (un HDPT por tipo principal, gana el preset; los
+    ''' Misc se acumulan) y, por cada padre de tipo principal que el preset REEMPLAZO por otro HDPT, junta los
+    ''' hijos Misc huerfanos de ese padre crudo via <see cref="CascadeRemoveOrphanedHnamMisc"/>. Asi el guardado
+    ''' coincide con el render, que ya rearma las head parts como defaults de raza + preset.</para>
+    ''' <para>No es la regresion de las pestanas: aquella venia de filtrar los extras crudos SIN CONDICION,
+    ''' mientras que esto solo se dispara ante un reemplazo real y la cascada conserva todo extra que siga
+    ''' reclamando un padre vivo.</para></summary>
     Public Function ComputeReplacedParentOrphanMisc(rawParts As IEnumerable(Of UInteger),
                                                     presetParts As IEnumerable(Of UInteger),
                                                     resolveHdpt As Func(Of UInteger, HDPT_Data)) As HashSet(Of UInteger)
@@ -422,22 +383,15 @@ Public Module HeadPartResolver
         Public Property EffectivePartType As Integer
     End Class
 
-    ''' <summary>BFS expansion of an HDPT chain via <c>HDPT.ExtraPartFormIDs</c> (HNAM extras).
-    ''' Yields every reachable HDPT (as <see cref="HdptChainEntry"/> carrying the effective part
-    ''' type) starting from <paramref name="rootFormIDs"/>, including the roots themselves. Cycles
-    ''' are guarded via a visited-set; non-HDPT records and unparseable HDPTs are silently skipped.
-    '''
-    ''' Vanilla HDPTs use HNAM to attach technical sub-parts (Lashes/AO/Wet for eyes, Hairlines
-    ''' for hair, MouthShadow/Teeth for face). Anything that wants to "render the same set of
-    ''' shapes the engine renders" needs this expansion — the parent mesh alone is incomplete.
-    '''
-    ''' Effective-type rule (mirrors the render walk): a Misc(0) sub-part inherits the effective
-    ''' type of the parent that reached it through HNAM. A top-level Misc that is ALSO declared as
-    ''' another root's HNAM extra is promoted to that parent's type (precomputed below) so the
-    ''' result is order-independent — same as MainForm's miscToParentEffective.
-    '''
-    ''' Callers inside NPC_Manager: <see cref="FaceGenBuilder.BuildAllowedShapeMap"/> and
-    ''' <see cref="HeadPartPicker_Form"/>.</summary>
+    ''' <summary>Expansion BFS de una cadena de HDPT por <c>ExtraPartFormIDs</c> (extras HNAM). Devuelve cada
+    ''' HDPT alcanzable (con su tipo efectivo) desde <paramref name="rootFormIDs"/>, incluidos los propios roots.
+    ''' Los ciclos se cortan con un visited-set y los records que no son HDPT o no parsean se saltean.
+    ''' <para>Los HDPT vanilla usan HNAM para colgar sub-partes tecnicas (pestanas, AO/wet, hairlines, sombra de
+    ''' boca, dientes), asi que cualquier cosa que quiera "dibujar el mismo conjunto de shapes que el motor"
+    ''' necesita esta expansion: la malla del padre sola esta incompleta.</para>
+    ''' <para>Regla de tipo efectivo (espeja el recorrido del render): un sub-part Misc(0) hereda el tipo efectivo
+    ''' del padre que lo alcanzo por HNAM, y un Misc de primer nivel que ADEMAS es extra HNAM de otro root se
+    ''' promueve al tipo de ese padre, asi que el resultado no depende del orden.</para></summary>
     Public Iterator Function EnumerateHdptChain(rootFormIDs As IEnumerable(Of UInteger),
                                                 pluginManager As PluginManager,
                                                 Optional parseHdpt As Func(Of PluginRecord, HDPT_Data) = Nothing) As IEnumerable(Of HdptChainEntry)

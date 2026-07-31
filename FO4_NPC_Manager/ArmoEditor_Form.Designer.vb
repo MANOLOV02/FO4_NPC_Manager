@@ -1,4 +1,4 @@
-' UI built in Designer per feedback_ui_in_designer.md (companion to ArmaEditor_Form).
+﻿' UI built in Designer per 00-reglas-ui-y-vb.md (companion to ArmaEditor_Form).
 ' InitializeComponent is declarative ONLY (no For/If/lambda). The many repeated slot checkboxes are
 ' declared via their CONTAINER (FlowSlots) here and built in code-behind; the Addons DataGridView's
 ' columns are added in code-behind too (variable/repeated content).

@@ -293,7 +293,7 @@ Public Class MainForm
     ' The old fixed HeadwearOcclusionSlots const ({30,31,32,46,48,49} for every NPC) has been REMOVED.
     ' Head-part occlusion is now per-NPC and RACE-driven: ResolvePreviewVariant computes the slot mask from
     ' the NPC's RACE.DATA biped objects via RaceUtil.RaceHeadOcclusionMask (engine-faithful — verified vs
-    ' Fallout4.exe + .esm, see [[project_re_occlusion_engine]]) and carries it on
+    ' Fallout4.exe + .esm, see [[23-armor-oclusion-fo4-re]]) and carries it on
     ' PreviewResolutionResult.HeadOcclusionMask; NpcRenderHost.ApplyRenderToggleVisibility reads that instead.
 
     Private Enum PreviewMode
@@ -326,17 +326,13 @@ Public Class MainForm
         Attachment = 3
     End Enum
 
-    ''' <summary>Per-socket info published by a host chunk via BSConnectPoint::Parents.
-    ''' Cacheada por <c>publisherSockets</c> durante SRC3 indexing. Incluye el global del
-    ''' socket EN EL ESPACIO DEL NIF DEL HOST (no en actor) para que el consumer pueda
-    ''' componer correctamente sin mezclar coord systems:
-    '''
-    '''   M_mesh_consumer = host.ChunkToActor × <see cref="HostSocketGlobalT"/>
-    '''
-    ''' donde <c>host.ChunkToActor</c> mapea chunk-internal space del host a actor world.
-    ''' Para casos donde <see cref="ParentFoundInHostNif"/>=False (parent name no existe en
-    ''' el NIF del host), el consumer cae al path skeleton fallback (actor.parentBone ×
-    ''' socket.local) — apropiado para sockets que referencian bones del actor skel directo.</summary>
+    ''' <summary>Info por socket que publica un chunk host via BSConnectPoint::Parents, cacheada durante el
+    ''' indexado. Incluye el global del socket EN EL ESPACIO DEL NIF DEL HOST (no en el del actor) para que el
+    ''' consumidor componga <c>M_mesh_consumer = host.ChunkToActor x <see cref="HostSocketGlobalT"/></c> sin
+    ''' mezclar sistemas de coordenadas.
+    ''' <para>Con <see cref="ParentFoundInHostNif"/>=False (el parent no existe en el NIF del host) el consumidor
+    ''' cae al fallback por skeleton (actor.parentBone x socket.local), que es lo apropiado para sockets que
+    ''' referencian bones del skeleton del actor.</para></summary>
     Friend Class PublisherSocketInfo
         Public Socket As BSConnectPointReader.ConnectPointInfo
         ''' <summary>Transform global del socket dentro del NIF del host, computado como
@@ -399,24 +395,14 @@ Public Class MainForm
         ''' resolver falls back to the unindexed name.</summary>
         Public MountApIdx As Byte = 0
         Public MountSocket As BSConnectPointReader.ConnectPointInfo = Nothing
-        ''' <summary>Skeleton-scoped socket fallback para Path B (cuando Path A no aplica —
-        ''' chunks sin C-X NiNode interno). Resuelto desde el flat <c>skeletonSockets</c>
-        ''' (SRC1 RACE.ANAM + SRC2 BPTD.MODL) por nombre exacto en CollectRobotChunkCandidates.
-        '''
-        ''' Su <c>ParentBoneName</c> usa nomenclatura actor skel (con suffixes indexed como
-        ''' <c>Arm1|0</c>), distinto al publisher chunk socket que usa chunk-internal naming
-        ''' sin suffix. Path B usa ESTE para evitar mezclar chunk-internal-parent-naming con
-        ''' actor-skel-bone-lookup, que rompía multi-instance Mr Handy attachments donde el
-        ''' chunk dice <c>parent='Arm1'</c> pero actor.skel solo tiene <c>Arm1|0/1/2</c>.
-        '''
-        ''' Nothing cuando el skeleton no publica el socket name (raro — típicamente solo
-        ''' chunks root que son los primeros publishers de su AP). En ese caso Path B cae al
-        ''' MountSocket publisher como último recurso.
-        '''
-        ''' Separación estructural (per OpenAI Vuelta 17): el MountSocket original hacía 2
-        ''' trabajos distintos (publisher coord system para Path A, skeleton bone naming para
-        ''' Path B). Persistir dos representaciones distintas en el candidate cierra la
-        ''' sobrecarga conceptual.</summary>
+        ''' <summary>Socket con alcance de ESQUELETO, para el Path B (chunks sin nodo C-X interno). Se
+        ''' resuelve por nombre exacto contra los sockets que publica el esqueleto del actor.
+        ''' <para>⛔ Existe separado del MountSocket porque los dos usan NOMENCLATURAS DISTINTAS: éste habla
+        ''' en nombres del esqueleto del actor (con sufijo de instancia) y el publisher habla en nombres
+        ''' internos del chunk, sin sufijo. Mezclarlos rompía los attachments multi-instancia, donde el chunk
+        ''' dice un nombre de hueso que el actor sólo tiene indexado.</para>
+        ''' <para><c>Nothing</c> cuando el esqueleto no publica ese socket; ahí el Path B cae al publisher
+        ''' como último recurso.</para></summary>
         Public SkeletonFallbackSocket As BSConnectPointReader.ConnectPointInfo = Nothing
         ''' <summary>InstanceOrdinal único de ESTE candidate — identidad runtime real asignada
         ''' en expand-time por ObjectTemplateResolver (CollectOmodCandidate). Inmune a colisión
@@ -579,14 +565,9 @@ Public Class MainForm
     ''' si es geometría de "meatcap" — la cara interna del corte que sólo debe verse cuando la
     ''' parte del cuerpo fue severed. Vanilla FO4 oculta estas shapes hasta que el dismemberment
     ''' system las activa; en preview estático las ocultamos siempre, igual que HDPT type=7.
-    '''
-    ''' Sources del rango (auditadas, ver discusión de sesión 2026-05-03):
-    '''   - 101..113 / 201..213: enum oficial BSDismemberBodyPartType del NIF (BP_SECTIONCAP_*,
-    '''     BP_TORSOCAP_*). Documentado en niftools/nif.xml. Certeza estructural.
-    '''   - 100, 102, 103: NO documentados por Bethesda ni en el enum NIF. Aparecen sólo en el
-    '''     .xrc de BS-OS etiquetados "Gore". Confianza alta (BS-OS es la herramienta de
-    '''     autoría de Bethesda) pero NO certeza spec. Marcados como Tentative para que sea
-    '''     auditable y removible si aparece evidencia contraria.</summary>
+    ''' Rangos: 101..113 / 201..213 vienen del enum BSDismemberBodyPartType (nif.xml, certeza
+    ''' estructural); 100/102/103 solo aparecen etiquetados "Gore" en el .xrc de BS-OS, por eso van
+    ''' como Tentative y son removibles si aparece evidencia contraria.</summary>
     Public Enum MeatcapClassification
         ''' <summary>userSlotID = 0 (no slot) o cualquier valor fuera de los rangos de gore/cap.
         ''' Geometría visible normal del cuerpo/outfit/etc.</summary>
@@ -864,7 +845,7 @@ Public Class MainForm
         ''' el TXST del FTST, así que el FormID no coincidía) y daba falso-positivo si el RACE.DFTM apuntaba a un
         ''' material con alpha (DiMA: DFTM=SkinHeadValentine con alpha, PERO sin este flag ⇒ sólido, como el CK).
         ''' Gobierna render (HasAlphaTest), bake (WriteAlphaPropertyToShape) y el compositor del _d. Ver
-        ''' reference_acbs_diffuse_alpha_test_flag. SSE: bit 24 = "Unknown 24" (sin uso) ⇒ siempre False.</summary>
+        ''' 40-bake-leyes-fo4. SSE: bit 24 = "Unknown 24" (sin uso) ⇒ siempre False.</summary>
         Public HeadDiffuseAlphaTest As Boolean
         Public HairColorFormID As UInteger
         ''' <summary>SSE-ONLY RaceMenu absolute hair tint (packed 0xRRGGBB) from an applied .jslot's actor.hairColor.
@@ -938,13 +919,6 @@ Public Class MainForm
         RebuildAndApplyMergedPose()
     End Sub
 
-    ''' <summary>Toggle the chargen vertex morph resolver in-place without re-extracting
-    ''' geometry. WM-style granular: mutate Intent.MorphResolver, mark RenderDirtyFlags.Morphs,
-    ''' InvalidateRender. The pipeline's needsMorphUpdate path re-runs PipelineStep_Morphs
-    ''' which restarts from NifLocalVertices (raw pre-skinning) and applies the plan fresh.
-    '''
-    ''' Toggling OFF sets MorphResolver=Nothing: per the PipelineStep_Morphs / ApplyMorphPlan
-    ''' contract, a null resolver resets geom.Vertices to NifLocalVertices (no stale deltas).</summary>
     ''' <summary>Toggle face FRTRI003 vertex morphs only. Body PIRT morphs are toggled
     ''' independently by CheckBoxBodyTri. The composite is rebuilt every time so the granular
     ''' gates inside (face=this checkbox, body=CheckBoxBodyTri) reflect the latest state.</summary>
@@ -961,13 +935,6 @@ Public Class MainForm
         _previewControl.InvalidateRender()
     End Sub
 
-    ''' <summary>ARMA Sculpt Data (Bone Scale Delta, xEdit "Bone Scale Delta") application formula.
-    ''' ADITIVO en los 3 ejes desde 2026-06-19: s = race_s + arma_d (componente a componente, X incluido).
-    ''' Base RE del builder del engine FUN_140652230 (combina aditivamente weight_base + sculpt_delta);
-    ''' X se aplica (no se descarta) porque el render skin usa matrices de nodo (X-capaz) y la data de
-    ''' Fallout4.esm trae DeltaX deliberado en antebrazos (BoS X=+0.20; Raider X=-0.19). Antes era H3
-    ''' multiplicativo (s = race_s·(1+arma_d), hardcoded 2026-04-27). ⚠ El test diferencial CK que
-    ''' confirme aditivo-vs-multiplicativo a nivel byte sigue PENDIENTE (consumidor del +0x50 GPU/oculto).</summary>
     ''' <summary>Toggle body-weight pose (MWGT × BSMS + MRSV + ARMA sculpt aditivo). Triggers granular
     ''' MarkDirty(Pose) — no full reload.</summary>
     Private Sub CheckBoxApplyBodyWeight_CheckedChanged(sender As Object, e As EventArgs) Handles CheckBoxApplyBodyWeight.CheckedChanged
@@ -991,14 +958,6 @@ Public Class MainForm
         intent.MarkDirty(RenderDirtyFlags.Morphs, _renderHost.LastRenderData.Shapes)
         _previewControl.InvalidateRender()
     End Sub
-
-    ''' <summary>Range-Modifier clamp model for BuildBodyWeightPose. The RACE.BSMS Range Modifier
-    ''' (Min/Max Y/Z) bounds the bone-scale delta; this enum selects HOW it's applied. Only Y/Z
-    ''' (Range has no X). ARMA sculpt (Layer 4) is always applied AFTER the clamp.
-    '''   Off           = no clamp (legacy behavior).
-    '''   ClampWeightL1 = clamp the weight delta to [Min,Max] BEFORE MRSV.
-    '''   ClampFinal    = clamp the total weight+MRSV delta.
-    '''   ClampBoth     = clamp the weight delta AND the total — keeps the bone always inside the band.</summary>
 
     ''' <summary>Toggle BodySlide vertex morphs (BODYTRI .tri + slider dict). Same granular path
     ''' as CheckBoxApplyVertexMorphs: rebuild MorphResolver via BuildCompositeMorphResolver
@@ -1225,7 +1184,7 @@ Public Class MainForm
     End Sub
 
 #Region "Animation bar (combo + Select Animation + play/frames) — live preview on the main render"
-    ' El behavior es de la RAZA (ver [[arch_race_behavior_resolution]]); el clip se reproduce con
+    ' El behavior es de la RAZA (ver [[24-anim-behavior-por-raza]]); el clip se reproduce con
     ' HkxPoseImportSession (skeleton del rigName + clip + skeleton vivo del render) y se aplica a la
     ' capa Delta vía SkeletonInstance.ApplyPose. La capa pose/Delta está en IDENTIDAD en el render
     ' normal (los morphs viven en MorphDeltaTransform vía ApplyBoneMorphPose) → la animación tiene esa
@@ -1481,7 +1440,7 @@ Public Class MainForm
         _animSuppress = True
         ComboAnim.BeginUpdate()
         ComboAnim.Items.Clear()
-        ComboAnim.Items.Add("(enumerando animaciones...)")
+        ComboAnim.Items.Add("(enumerating animations...)")
         ComboAnim.SelectedIndex = 0
         ComboAnim.EndUpdate()
         ComboAnim.Enabled = False   ' no interaction while the background behavior walk runs (only on a genuine cache miss)
@@ -1995,7 +1954,7 @@ Public Class MainForm
         If Config_App.Current Is Nothing OrElse Config_App.Current.Game <> Config_App.Game_Enum.Skyrim Then Return
         Dim cb As New CheckBox With {
             .Name = "CheckBoxSseRenderFolded",
-            .Text = "SSE: render plegado (debug)",
+            .Text = "SSE: folded render (debug)",
             .AutoSize = True,
             .Checked = NPC_Config.Current.SseRenderFoldedPath,
             .Margin = New Padding(12, 8, 3, 3)
@@ -2023,7 +1982,7 @@ Public Class MainForm
         ' y, si el NPC pliega en modo GPU, loguea "[SSE-FOLD] PARITY (sandbox): rmsCPUvsGPU=..." en fo4lib.log.
         Dim cbParity As New CheckBox With {
             .Name = "CheckBoxSseMeasureFoldParity",
-            .Text = "SSE: medir paridad fold (debug)",
+            .Text = "SSE: measure fold parity (debug)",
             .AutoSize = True,
             .Checked = NPC_Config.Current.SseMeasureFoldParity,
             .Margin = New Padding(12, 8, 3, 3)
@@ -2059,11 +2018,11 @@ Public Class MainForm
             If foldIsMandatory Then
                 cb.Enabled = False
                 cb.Checked = True
-                cb.Text = "SSE: render plegado (forzado: el NPC tiene MASKT/overlays)"
+                cb.Text = "SSE: folded render (forced: this NPC has MASKT/overlays)"
             Else
                 cb.Enabled = True
                 cb.Checked = NPC_Config.Current.SseRenderFoldedPath
-                cb.Text = "SSE: render plegado (debug)"
+                cb.Text = "SSE: folded render (debug)"
             End If
         Finally
             _suppressFoldToggleEvent = False
@@ -2106,17 +2065,17 @@ Public Class MainForm
         HookSkinningToggleRefresh(_previewControl, _renderHost)
     End Sub
 
-    ''' <summary>Cablea el refresh del face-tint para el toggle GPU↔CPU skinning del menú de cámara de CUALQUIER
-    ''' preview (main + editores + pickers). PROBLEMA: la librería, al togglear, sólo re-corre la GEOMETRÍA
-    ''' (skin + morphs, estilo WM granular, vía su MarkDirty(Shapes|Force) interno) pero NO re-aplica el
-    ''' face-tint/fold ⇒ el diffuse plegado queda "pegado" en el diccionario de texturas mientras el MaterialData
-    ''' nuevo pierde su estado per-mesh (SkinToneBaked / FaceTintOverlay_ID) → cara oscura/incorrecta. (El ejemplo
-    ''' que citaba este comentario, `SseFoldDetailNeutralized`, ya no existe: eliminado por código muerto.) La librería
-    ''' levanta SkinningModeToggled justo para que la app re-corra SU pipeline; nadie lo escuchaba (FO4 y SSE).
-    ''' FIX: re-armamos el hook post-upload; cuando el re-render de geometría termina con las texturas ya listas,
-    ''' la librería lo dispara SYNC (Render.vb ~870) y ahí restauramos el pristine + RE-COMPONEMOS el face-tint/fold
-    ''' sobre el MaterialData nuevo — in-place, sin recargar el NIF. Si el refresh liviano no puede (sin pristine),
-    ''' cae a una recarga completa de ESE host. Un handler por (control, host): cada preview arrastra el suyo.</summary>
+    ''' <summary>Cablea el refresh del face-tint para el toggle GPU/CPU skinning del menu de camara de CUALQUIER
+    ''' preview (main, editores y pickers).
+    ''' <para>Problema: al togglear, la libreria solo re-corre la GEOMETRIA (skin + morphs, por su MarkDirty
+    ''' interno) y NO re-aplica el face-tint ni el fold, asi que el diffuse plegado queda pegado en el
+    ''' diccionario de texturas mientras el MaterialData nuevo pierde su estado per-mesh (SkinToneBaked,
+    ''' FaceTintOverlay_ID) y la cara sale oscura. La libreria levanta SkinningModeToggled justo para que la app
+    ''' re-corra SU pipeline, y no lo escuchaba nadie.</para>
+    ''' <para>Fix: se re-arma el hook post-upload; cuando el re-render de geometria termina con las texturas
+    ''' listas, la libreria lo dispara SYNC y ahi se restaura el pristine y se RE-COMPONE el face-tint sobre el
+    ''' MaterialData nuevo, in-place y sin recargar el NIF. Si el refresh liviano no puede (sin pristine), cae a
+    ''' una recarga completa de ESE host. Un handler por (control, host).</para></summary>
     Friend Sub HookSkinningToggleRefresh(ctl As PreviewControl, host As NpcRenderHost)
         If ctl Is Nothing OrElse host Is Nothing Then Return
         AddHandler ctl.SkinningModeToggled,
@@ -2471,7 +2430,7 @@ Public Class MainForm
     ''' <para>Filter is PER-ARMA, never by ARMO.RaceFormID: most vanilla clothing has RNAM=HumanRace,
     ''' so filtering by the ARMO would drop outfits valid for ghouls/other races (the closed
     ''' ghoul-outfit bug). Known deferred edge case: ghouls wearing human outfits whose ARMA doesn't
-    ''' list GhoulRace won't pass this filter (project_ghoul_armor_race_filter_deferred).</para>
+    ''' list GhoulRace won't pass this filter (23-armor-outfit-resolution).</para>
     ''' Cached per (race, gender) — the costly OTFT expansion + ARMA parse runs once per pair.</summary>
     Friend Function GetOutfitCandidates(npcRaceFID As UInteger, isFemale As Boolean) As List(Of (FormID As UInteger, DisplayName As String))
         Dim cacheKey = (npcRaceFID, isFemale)
@@ -2687,10 +2646,6 @@ Public Class MainForm
         Return New List(Of OutfitDraft)(_outfitDrafts)
     End Function
 
-    ''' <summary>FormIDs of the real OTFT records this app AUTHORED (EditorID starts with "npcm_") — outfits the
-    ''' user created/modified here and already SAVED (Save ESP promotes drafts to real records, so they leave
-    ''' <see cref="OutfitDrafts"/>). The Edit-Outfit "My outfit drafts" tab lists these alongside the still-unsaved
-    ''' drafts so ALL authored outfits are visible; double-clicking a saved one re-opens it as an override.</summary>
     ''' <summary>Real records of signature <paramref name="sig"/> this app AUTHORED — identified by their WINNING
     ''' version living in a plugin THIS app wrote (TES4.CNAM = NPC Manager marker, via
     ''' <see cref="PluginManager.IsNpcManagerPlugin"/>). Catches both NEW records (npcm_ EDID) and OVERRIDES
@@ -3248,22 +3203,18 @@ Public Class MainForm
                                                 _ctx.GetEffectiveArmorRaces(npcRaceFID))
     End Function
 
-    ''' <summary>Shared core of <see cref="ComputeArmoEffectiveSlotMask"/>. Delegate-parameterized so the
-    ''' bake's outfit headwear-slot resolution (FaceGenBuilder.ResolveOutfitHeadwearSlots, no ctx) computes
-    ''' the SAME race-valid footprint the render/Create tab compute (RENDER == BAKE). Body unchanged:
-    ''' UNIFIED game-aware slot source (2026-07-09, user directive). The slot FOOTPRINT is a record
-    ''' property (BOD2 of the ARMAs, or the ARMO's own BOD2) and must NEVER read as (none) just because
-    ''' the race/gender gate fails — that was the bug where the render saw slot 0x2802 (per-ARMA
-    ''' EffectiveArmaSlotMask) but the outfit editor showed NONE for the SAME item. We compute two things
-    ''' from ONE walk:
-    '''   • recordSlot = union of EVERY addon's EffectiveArmaSlotMask (+ the ARMO's headwear bits). The
-    '''     item's true slot footprint, independent of race/gender — this drives display and, when the
-    '''     race-valid set is empty, the conflict mask, so the item always occupies its real slots.
-    '''   • raceSlot   = the same union but only over addons that match this race AND carry a gender mesh
-    '''     (what the render actually collects). Preferred when non-empty so the resolver sees exactly the
-    '''     worn footprint. `valid` = whether any such addon exists (drives the editor's "shows on this NPC";
-    '''     occlusion callers must treat Valid=False as "contributes nothing" — the recordSlot/BOD2 fallback
-    '''     in Mask is for display/conflict marking, not for wearing).</summary>
+    ''' <summary>⛔ SYNC: RENDER == BAKE. Núcleo compartido de <see cref="ComputeArmoEffectiveSlotMask"/>;
+    ''' parametrizado por delegados para que el bake (FaceGenBuilder.ResolveOutfitHeadwearSlots, sin ctx)
+    ''' calcule EL MISMO footprint race-valid que el render y la pestaña Create. Si diverge, el bake ocluye
+    ''' pelo/barba que el render sí dibuja.
+    ''' Un solo recorrido, dos resultados:
+    '''   • recordSlot = unión de EffectiveArmaSlotMask de TODOS los addons (+ bits de headwear del ARMO).
+    '''     Footprint real del ítem, independiente de raza/género: display y máscara de conflicto. Nunca
+    '''     debe leerse (none) porque falle el gate de raza/género.
+    '''   • raceSlot   = misma unión pero solo sobre addons que matchean raza Y tienen mesh del género (lo
+    '''     que el render colecta). Se prefiere si no está vacío. Valid=False significa "no aporta nada":
+    '''     los callers de oclusión deben tratarlo así — el fallback a recordSlot es para display, no para
+    '''     vestir.</summary>
     Friend Shared Function ComputeArmoEffectiveSlotMaskCore(armo As ARMO_Data, npcRaceFID As UInteger, isFemale As Boolean,
                                                             getParsedArma As Func(Of UInteger, ARMA_Data),
                                                             effectiveArmorRaces As ICollection(Of UInteger)) As (Mask As UInteger, Valid As Boolean)
@@ -3332,20 +3283,13 @@ Public Class MainForm
         Return result
     End Function
 
-    ''' <summary>WYSIWYG outfit preview: render the NPC wearing <paramref name="overrideValue"/> into the
-    ''' Edit Outfit picker's own <see cref="NpcRenderHost"/> using the EXACT same pipeline as the main
-    ''' preview (<see cref="RenderInHostAsync"/> → CollectMeshCandidates → SelectWinningCandidates →
-    ''' skinning/morphs/pose/tints). There is NO separate "lightweight" outfit resolver anymore — the
-    ''' picker and the main viewer resolve outfits through one path, so what the picker shows is what the
-    ''' main render produces (OMOD addon-index resolution, ARMO WorldModel fallback, slot-conflict
-    ''' elimination, chunk mounting, body weight, all included).
-    '''
-    ''' Semantics of <paramref name="overrideValue"/> (mirrors <c>DefaultOutfitFormIDOverride</c>):
-    '''   Nothing → preserve the raw NPC.DOFT · Some(0) → no outfit (naked) · Some(fid) → OTFT / draft.
-    ''' The override is HOST-SCOPED (set on <paramref name="host"/>, applied in ResolveNPCBaseState): it
-    ''' does NOT touch the shared <see cref="_appliedPresets"/>, so browsing outfits in the picker never
-    ''' disturbs the main render's committed state. Cancel needs no restore; on OK the caller
-    ''' (<see cref="ButtonEditOutfit_Click"/>) commits the chosen value to the overlay and re-renders main.</summary>
+    ''' <summary>Preview WYSIWYG del outfit: renderiza el NPC vestido con <paramref name="overrideValue"/>
+    ''' en el host propio del picker usando EXACTAMENTE el pipeline del preview principal
+    ''' (<see cref="RenderInHostAsync"/>); no hay resolver "liviano" aparte, así que lo que muestra el
+    ''' picker es lo que produce el render.
+    ''' <paramref name="overrideValue"/>: Nothing → respeta el DOFT crudo · Some(0) → desnudo · Some(fid) → OTFT.
+    ''' El override es HOST-SCOPED: no toca <see cref="_appliedPresets"/>, así que navegar outfits no ensucia
+    ''' el estado commiteado y Cancel no necesita restaurar nada.</summary>
     Friend Async Function PreviewOutfitInHostAsync(host As NpcRenderHost, npcFormID As UInteger, overrideValue As UInteger?) As Task
         If host Is Nothing Then Return
         host.OutfitPreviewActive = True
@@ -4328,11 +4272,6 @@ Public Class MainForm
         Return NpcManagerFormat.DescribeRecord(sourceRec)
     End Function
 
-    ''' <summary>Per-preview render-pipeline state (last skeleton, ARMA clones, sculpt deltas,
-    ''' tint timer, pristine pixel cache, current base state, etc.). One instance per
-    ''' PreviewControl — MainForm holds the one for its main preview; editor forms will create
-    ''' their own in a later phase. Built in MainForm_Load right after _previewControl. See
-    ''' <see cref="NpcRenderHost"/> for the field-by-field documentation.</summary>
     ''' <summary>Friend so EditFace_Form / EditBody_Form can read the resolved render state
     ''' (e.g. <see cref="NpcRenderHost.LastFaceTriMorphNames"/>) directly when constructing the
     ''' editor UI from MainForm's last completed render — avoids the order-of-operations issue
@@ -4413,11 +4352,6 @@ Public Class MainForm
         End If
     End Sub
 
-    ''' <summary>Tree selection changed (mouse or keyboard). With manual multi-select this no longer
-    ''' renders directly — it updates the selection set (collapsing to a single NPC when no Ctrl/Shift
-    ''' modifier is held; Ctrl/Shift mutations happen in <see cref="TreeViewNPCs_NodeMouseClick"/>) and
-    ''' (re)starts the debounce timer. The render runs once the selection settles —
-    ''' see <see cref="SelectionDebounceTimer_Tick"/> / <see cref="RenderFromCurrentSelection"/>.</summary>
     ''' <summary>AfterSelect ONLY refreshes the record-details panel. Selection-SET management lives
     ''' in <see cref="TreeViewNPCs_NodeMouseClick"/> (mouse) and <see cref="TreeViewNPCs_KeyUp"/>
     ''' (keyboard), so it can never fight this event: touching _selectedNpcFormIDs here collapsed or
@@ -5530,17 +5464,15 @@ Public Class MainForm
         ' never leaks a previous NPC's tattoos (and each plan rebuilds fresh shape instances anyway).
         _morphPoseResolver.ResolveOverlayLayers(state, renderData)
 
-        ' Two independent checkboxes control bone pose (FMRS) and vertex morphs (chargen TRI).
-        ' Both are honored during the initial full render; individual toggles after that are
-        ' handled by the CheckedChanged handlers below using the granular Intent.MarkDirty flow
-        ' (WM pattern from WM_RenderExtensions.vb), NOT a full reload via RenderShapes(request).
-        ' Granular toggles inside BuildCompositeMorphResolver: face = CheckBoxApplyVertexMorphs,
-        ' body = CheckBoxBodyTri. No master-AND gate here — composite returns Nothing on its own
-        ' when both subsections are unchecked.
-        ' boneMorphsEnabled feeds ONLY the FMRS face-bone pose (faceMorphsEnabled arg of BuildMergedNpcPose);
-        ' body-weight bone-scaling is the separate bodyWeightEnabled toggle. Under "Show other gender" the
-        ' FMRS deltas are the source NPC's own-gender facial-bone morphs, which don't belong on a default
-        ' target-gender head, so suppress them (body weight stays on).
+        ' Dos checkboxes independientes controlan la pose osea (FMRS) y los morphs de vertice (TRI de chargen).
+        ' Los dos se honran en el render completo inicial; los toggles posteriores los manejan sus
+        ' CheckedChanged por el flujo granular de MarkDirty, no por un reload completo. El gating fino vive en
+        ' BuildCompositeMorphResolver (cara y cuerpo por separado) y no hace falta un AND maestro aca: el
+        ' composite devuelve Nothing solo cuando las dos subsecciones estan destildadas.
+        ' boneMorphsEnabled alimenta UNICAMENTE la pose FMRS de los huesos de la cara; el escalado por peso
+        ' corporal es el toggle aparte bodyWeightEnabled. Con "Show other gender" los deltas FMRS son los del
+        ' genero propio del NPC de origen y no corresponden sobre una cabeza del genero destino, asi que se
+        ' suprimen (el peso corporal sigue).
         Dim boneMorphsEnabled = host.Toggles.ApplyBoneMorphs AndAlso Not host.PreviewGenderOverride.HasValue
         ' Mismo checkbox, sin el AND del gender-override: bajo Skyrim ese canal gatea los node transforms de
         ' RaceMenu (escala/pos/rot por nodo del cuerpo), que no son gender-específicos como los FMRS.
@@ -5675,26 +5607,14 @@ Public Class MainForm
 
         Dim skelResolver As ISkeletonResolver = New MultiInstanceSkeletonResolver(shapeToSkel, inst)
 
-        ' Inyectar bones internos de chunks BSConnectPoint-mounted (chunks robot, weapon
-        ' mods, PA pieces) al SkeletonInstance del actor. Para cada shape con MountSocket
-        ' resuelto, los bones del chunk que NO existen en el actor se agregan al dict
-        ' anchored al socket.ParentBone con OriginalLocaLTransform = socketLocal × chunkRoot ×
-        ' bone_local. Esto hace que SkinningHelper (con GlobalTransform=identity para
-        ' skinned, paridad OS Anim.cpp:732) los encuentre via SkeletonDictionary y produzca
-        ' v_world = bone.world × shapeBoneT × v_local correcto en actor-space.
-        ' Mounting de chunks en ORDEN TOPOLÓGICO:
-        '   - Host NIF (skeleton del actor) materializa sus sockets PRIMERO — todos los chunks
-        '     pueden depender de C-X expuestos por el host (C-Head, C-HandLeft, C-PackBase).
-        '   - Por cada chunk procesado: primero INJECT (crea bones internos), después MATERIALIZE
-        '     (sus sockets pueden anclarse a esos bones internos recién creados, p.ej.
-        '     P-PackTop.parent='TopLagBone' del PackBase02).
-        '   - Topological order: A se procesa antes que B si B consume sub-socket C-X expuesto
-        '     por A. Si A y B son independientes, orden indiferente.
-        '
-        ' Construcción del grafo de dependencia:
-        '   - Cada shape NIF tiene Children (C-X names que consume) y Parents (P-X sub-sockets
-        '     que expone con su tail).
-        '   - A → B si tail de algún Children de B coincide con tail de algún Parent de A.
+        ' Inyecta al esqueleto del actor los huesos internos de los chunks montados por BSConnectPoint
+        ' (robot, weapon mods, piezas de power armor): los que no existen en el actor se agregan anclados al
+        ' hueso padre del socket, para que el skinning los encuentre por el diccionario y produzca el mundo
+        ' correcto en actor-space.
+        ' ⛔ ORDEN TOPOLÓGICO, no arbitrario: el host materializa sus sockets PRIMERO (los chunks pueden
+        ' depender de ellos), y por cada chunk va primero INJECT y después MATERIALIZE, porque sus sockets
+        ' pueden anclarse a los huesos internos recién creados. A va antes que B si B consume un sub-socket
+        ' que expone A; si son independientes, el orden da igual.
         Dim shapesWithSocket As New List(Of IRenderableShape)
         For Each sh In renderData.Shapes
             If sh.NifContent Is Nothing Then Continue For
@@ -6141,26 +6061,16 @@ Public Class MainForm
             totalInjected += n
             Dim postCount = targetSkel.SkeletonDictionary.Count
 
-            ' [FAKE-SKIN] Para shapes UNSKINNED dentro de un chunk BSConnectPoint, aplicar
-            ' synthetic skin tying todos los vertices al chunk anchor con weight 1.0. Sin esto,
-            ' SkinningHelper.vb:374 (path A unskinned) computa Mtot = GetGlobalTransform en chunk-
-            ' local frame y el shader lo aplica como si fuera actor-world → geometría cae al
-            ' origen (caso LightPlane en Protectron). Con fake-skin, la shape entra al path
-            ' skinned nativo y el anchor.posedWorld se aplica per frame (= pose follow gratis,
-            ' bounds/world cache también).
-            '
-            ' IMPORTANTE bind matrix: walkear backing → ... → parent_de_chunkRoot, NO componer
-            ' chunkRoot.local. Per BSConnectPointBoneInjector.vb:137-140 chunkRoot.R es scene-
-            ' viewer rotation del modelador, NO parte del attachment. anchor.world ya incluye
-            ' la rotación del parent bone del actor (= Chest.R, que matchea chunkRoot.R por
-            ' diseño del chunk). Si bind incluye chunkRoot.R y luego × anchor.world (que tiene
-            ' Chest.R), se mete un flip espurio (verificado: composición R_chunk × R_anchor da
-            ' rotación 180° Y para HeadProtectron → light termina detrás del actor).
-            ' [BIPED-FAKE-SKIN] Gate semántico (per OpenAI Vuelta 19): el synthetic anchor para
-            ' chunks unskinned attachment-style aplica a robot Y biped. Antes era robot-only
-            ' (isRobotMount) → bipeds con chunk unskinned (ej. PA_T45_Headlamp sobre Mining Helmet
-            ' en humano) caían al origen porque InjectChunkBonesIntoLiveSkeleton early-exit en shapes
-            ' sin bones y nunca recibían ancla. Criterio: unskinned + Attachment + MountSocket resuelto.
+            ' FAKE-SKIN: a una shape UNSKINNED dentro de un chunk BSConnectPoint se le aplica un skin
+            ' sintético que ata todos sus vértices al ancla del chunk con peso 1.0. Sin esto, el path
+            ' unskinned computa su transform en el frame LOCAL del chunk y el shader lo aplica como si fuera
+            ' actor-world ⇒ la geometría cae al origen. Con el ancla entra al path skinned nativo y sigue la
+            ' pose gratis.
+            ' ⛔ La bind matrix se camina hasta el PADRE del chunkRoot, sin componer chunkRoot.local: esa
+            ' rotación es del visor del modelador, no parte del attachment, y el mundo del ancla ya trae la
+            ' rotación del hueso padre del actor. Componer las dos mete un flip espurio de 180°.
+            ' Aplica a robot Y biped: gatearlo sólo por robot dejaba caer al origen los chunks unskinned de
+            ' bipeds. Criterio: unskinned + Attachment + MountSocket resuelto.
             Dim fakeSkinCand As MeshCandidate = Nothing
             renderData.ShapeCandidate.TryGetValue(shape, fakeSkinCand)
             Dim isAttachmentMount As Boolean = fakeSkinCand IsNot Nothing AndAlso fakeSkinCand.Kind = MeshCandidateKind.Attachment AndAlso fakeSkinCand.MountSocket IsNot Nothing
@@ -6248,26 +6158,14 @@ Public Class MainForm
                 End Try
             End If
 
-            ' [CHUNK-RESKIN-V2] Re-skinear shape.ShapeBoneTransforms usando la fórmula per-bone
-            ' OpenAI: cada bone B del chunk obtiene W_B = G_B × A, donde:
-            '   G_B    = global transform de B's NiNode en el árbol del chunk NIF (no derivado de inv(bind))
-            '   G_CX   = global transform del NiNode C-X (declarado en BSConnectPoint::Children del chunk)
-            '   P_world = parent_bone.world × socketLocal_chunk-source-if-override (M_mesh corregido)
-            '   A      = inv(G_CX) × P_world   (único transform de attachment chunk→actor)
-            '
-            ' Math: render quiere v_world = sum(w_B · v · bind(B) · W_B). Con render actual usando
-            ' actor.B.world del dict, modificamos bind tal que:
-            '   bind' = correction.Compose(bind), donde correction = inv(actor.B.world).Compose(W_B)
-            ' Resultado: v · bind' × actor.B.world = v · bind × W_B (engine-equivalente).
-            '
-            ' Para C-X bone, W_C-X = G_CX × A = G_CX × inv(G_CX) × P_world = P_world (= M_mesh corregido).
-            ' Para otros bones (Arm1..Arm7, etc.), W_B preserva la posición relativa del chunk-NIF tree
-            ' transportada por A — esto mantiene la articulación del chunk en vez de colapsar todos los
-            ' bones en el mismo punto (que era el bug del attempt previo).
-            ' Skip V2 reskin para shapes fake-skinned (HasSyntheticSkin=True). Su bind ya está
-            ' seteado por ApplySyntheticAnchorSkin como el Mtot chunk-local; el shader compone
-            ' con actor.anchor.posedWorld y produce vertex × Mtot × anchor.world correctamente.
-            ' V2 sobre estas shapes meterá un factor espurio inv(chunkRoot.R) que rompe el render.
+            ' Re-skin de los bone transforms del chunk. Cada hueso B recibe `W_B = G_B × A`, donde `G_B` es su
+            ' global en el árbol del NIF del chunk, y `A = inv(G_CX) × P_world` es el ÚNICO transform de
+            ' attachment chunk→actor. Como el render usa el mundo del hueso del actor, se corrige el bind:
+            '   bind' = inv(actor.B.world) × W_B × bind    ⇒   v · bind' × actor.B.world = v · bind × W_B
+            ' Para el hueso C-X eso colapsa a P_world; para los demás, `A` transporta su posición relativa y
+            ' así se conserva la ARTICULACIÓN del chunk en vez de colapsar todos los huesos en un punto.
+            ' ⛔ NO aplicarlo a shapes fake-skinned: su bind ya es el Mtot chunk-local y el shader lo compone
+            ' con el mundo del ancla; el re-skin les metería un factor espurio y rompe el render.
             Dim _syntheticOverride = TryCast(shape, IRuntimeSkinOverride)
             If _syntheticOverride IsNot Nothing AndAlso _syntheticOverride.HasSyntheticSkin Then
                 If isRobotMount AndAlso Logger.Enabled Then
@@ -6526,21 +6424,11 @@ Public Class MainForm
                 Logger.LogLazy(Function() $"[VERTEX-TRACE] EXCEPTION: {ex.GetType().Name}: {ex.Message}")
             End Try
 
-            ' [STRATEGY-SIMULATE] Para vertex 0 de cada chunk con socket: computar v_world predicto
-            ' bajo CUATRO hipótesis distintas de cómo derivar bone.world(actor). El render real NO
-            ' se toca; sólo loggeamos predicciones para comparar visualmente contra lo que se ve.
-            ' Math común: v_world = v_local · bind · bone.world (row-vec). bind = shape.ShapeBoneTransforms[k].
-            '
-            '   S1 = CURRENT     → bone.world = actor.SkeletonDictionary[bone].OriginalGlobalTransform
-            '                      (lo que el render usa hoy: BPTD para shared, inv(bind)·P-X.world para injected).
-            '   S2 = IDENTITY    → bone.world = inv(bind).  Equivale a chunkRoot.world(actor)=identity.
-            '                      Implica que el chunk se autoreó "en actor world".
-            '   S3 = SOCKET-ONLY → bone.world = socketLocal·inv(bind). NO compone parent_bone.world.
-            '                      Equivale a chunkRoot.world(actor)=socketLocal.
-            '   S4 = CX-ALIGN    → M = P-X.world·bind(C-X). bone.world = M·inv(bind).
-            '                      "Alinea bind-derived chunk-C-X position al P-X world del socket".
-            '                      Requiere que el chunk tenga un shapeBone cuyo nombre coincida con
-            '                      la "C-X" declarada en BSConnectPoint::Children.
+            ' DIAGNÓSTICO puro (sólo loguea, no toca el render): para el vértice 0 de cada chunk con socket
+            ' predice v_world bajo cuatro hipótesis de cómo derivar el mundo del hueso del actor — la actual,
+            ' identidad, sólo-socket, y alineando el C-X del chunk al P-X del socket — para poder comparar
+            ' contra lo que se ve. Se conserva porque discrimina en dos reads un problema de montaje que si
+            ' no se diagnostica a ciegas.
             Try
                 For Each sh In ordered
                     Dim sock As BSConnectPointReader.ConnectPointInfo = Nothing
@@ -6894,15 +6782,6 @@ Public Class MainForm
         Await LoadNPCOnDemandAsyncFromExisting(npc, requestVersion, targetHost)
     End Function
 
-    ''' <summary>Entry point invoked right after RenderShapes. Tries to bake tints immediately;
-    ''' if the face diffuse texture isn't in the cache yet (async upload pending), schedules a
-    ''' polling timer that retries until the texture appears.</summary>
-
-
-    ''' <summary>Diagnóstico: dumpea bounds per-mesh + scene AABB + tamaño del control + estado
-    ''' actual de la OrbitCamera. Usado en pre/post ResetCamera para detectar si el cálculo
-    ''' del frame es coherente con la geometría visible.</summary>
-
     ''' <summary>Clear the blanket RenderHide=True set during the load+tint window, then apply
     ''' the diagnostic toggles on top. Idempotent — safe to call repeatedly.</summary>
     Private Sub RevealAllShapes(Optional host As NpcRenderHost = Nothing)
@@ -6929,17 +6808,14 @@ Public Class MainForm
         Return _skinLivePreview.RefreshBodySkinLivePreview(host)
     End Function
 
-    ''' <summary>Re-resolve overlay layers on the host's EXISTING render data (re-bakes the new UV/tint into
-    ''' the layer materials) and repaint — WITHOUT a full BuildRenderPlan (no mesh re-collection / NIF reload).
-    ''' Used for overlay property-only edits (offset/scale/tint). Textures are unchanged (same template
-    ''' slot material) so a repaint binds them from the already-loaded set; the lib reads Shape.OverlayLayers
-    ''' live each frame (RenderAll pass 5). Returns False when the host has no render data yet (caller falls
-    ''' back to a full reload).
-    '''
-    ''' Safe for offset/scale/tint because the set of overlays and their template slot materials don't change
-    ''' — only UOffset/VOffset/UScale/VScale/BaseColor on the (re-loaded) layer material. Those textures are
-    ''' already in the GPU texture dict from the initial render, and the lib binds overlay textures by path at
-    ''' draw time, so an InvalidateRender repaint shows the new params without a texture reload or mesh rebuild.</summary>
+    ''' <summary>Re-resuelve las capas de overlay sobre el render data EXISTENTE del host (re-hornea el nuevo
+    ''' UV/tint en los materiales de capa) y repinta, SIN un BuildRenderPlan completo: sin re-colectar mallas ni
+    ''' recargar el NIF. Es para ediciones de propiedades de overlay (offset/escala/tint). False si el host
+    ''' todavia no tiene render data, y el caller cae al reload completo.
+    ''' <para>Es seguro para offset/escala/tint porque el conjunto de overlays y sus materiales de slot no
+    ''' cambian: solo cambian los parametros del material de capa. Esas texturas ya estan en el diccionario de
+    ''' la GPU desde el render inicial y la libreria bindea los overlays por path al dibujar, asi que un repaint
+    ''' muestra los parametros nuevos sin recargar texturas ni reconstruir mallas.</para></summary>
     Friend Function RefreshOverlayLayersLive(host As NpcRenderHost) As Boolean
         If host Is Nothing OrElse host.LastRenderedState Is Nothing OrElse host.LastRenderData Is Nothing Then Return False
         _morphPoseResolver.ResolveOverlayLayers(host.LastRenderedState, host.LastRenderData)
@@ -6947,17 +6823,6 @@ Public Class MainForm
         Return True
     End Function
 
-    ''' <summary>Build the list of region-mask TXST swaps for an NPC. For each Morph Group
-    ''' of the NPC's race, look up whether any preset in that group is currently active in
-    ''' the NPC's MorphValues AND the preset has an MPPT TXST. If so, resolve:
-    '''   - mask DDS: from the Morph Group's MPPK enum -> TintSlot 0..6 -> TintOption -> TTET[0]
-    '''   - swap DDS bytes: from the preset's MPPT TXST.TX00 / TX01 / TX07
-    ''' Returns one FaceRegionSwapInput per active preset (typically 0..3 for non-aged NPCs,
-    ''' 3 for Murphy who has Arrugado in Forehead/Cheeks/Neck).</summary>
-
-    ''' <summary>Build the layer list, find the face mesh diffuse cache entry, run the compositor
-    ''' and mutate the cache entry. Returns True if at least one face mesh was successfully tinted,
-    ''' False if the texture wasn't ready (caller should defer and retry).</summary>
 
 
 
@@ -7185,28 +7050,6 @@ Public Class MainForm
 
 
 
-    ''' <summary>Compose face + body morph resolvers. Vanilla face FRTRI003 morphs and BodySlide
-    ''' PIRT morphs travel through the same MorphPlan but never collide: each shape's resolver
-    ''' lookup is keyed on its own .tri (face on FRTRI003, body on PIRT). MultiMorphResolver
-    ''' merges channel lists; ApplyMorphPlan iterates them all per-shape uniformly.
-    '''
-    ''' Toggles are granular per-pipeline:
-    '''   • CheckBoxApplyVertexMorphs gates the face-SHAPE channels (FO4: resolver entero; SSE: los canales
-    '''     de forma vía applyChargenMorphs — el SkinnyMorph del weight sigue al checkbox Body weight).
-    '''   • CheckBoxBodyTri gates the body PIRT resolver only (inside BuildBodyMorphResolver).</summary>
-    ''' <summary>Arma el <see cref="HeadBakeService"/> del NPC actual, o <c>Nothing</c> si el gate está
-    ''' apagado / no hay shapes gateadas. Cada shape del NIF PLANO que el collector dejó sin redirigir trae
-    ''' en <c>renderData.ShapeFaceBonesKeys</c> el dictKey de su hermano <c>_faceBones</c>: se carga ese NIF
-    ''' (uno por key, cacheado) y se aparea la shape por nombre normalizado + VertexCount — la MISMA regla
-    ''' que usa el driver del motor (<c>0x140AA31B0</c>: compara el puntero del BSFixedString y
-    ''' <c>word[+0x164]</c>).
-    ''' <para><b>Guarda por candidato</b>: si alguna shape del NIF no aparea, NO se registra ninguna de ese
-    ''' NIF y todas quedan como hoy — degrada, no rompe. (Medido sobre los 482 pares de vanilla: 480 aptos,
-    ''' 2 sin shapes skineadas, <b>0 mixtos</b>, así que en vanilla esta guarda no dispara.)</para>
-    ''' <para><b>Los toggles se honran acá</b>, construyendo el <c>BakeState</c> con o sin FMRS: es lo que
-    ''' hace que el checkbox de bone-morphs siga vivo ahora que la deformación vive en las posiciones
-    ''' horneadas y no en los huesos. Los otros dos (vertex-morphs, body-weight) entran por la firma y por
-    ''' los <c>.tri</c> que se pasan.</para></summary>
     ''' <summary>Refresca los insumos del <see cref="HeadBakeService"/> vivo (si hay). Devuelve True si la
     ''' firma cambió, o sea si el próximo paso de morphs va a re-hornear.
     ''' <para>Hace falta en TODO camino que cambie FMRS / morphs de chargen / body-weight sin rearmar el
@@ -7263,6 +7106,16 @@ Public Class MainForm
         Return True
     End Function
 
+    ''' <summary>Arma el <see cref="HeadBakeService"/> del NPC actual, o <c>Nothing</c> si el gate está
+    ''' apagado o no hay shapes gateadas. Cada shape del NIF PLANO que el collector dejó sin redirigir trae
+    ''' en <c>renderData.ShapeFaceBonesKeys</c> el dictKey de su hermano <c>_faceBones</c>: se carga ese NIF
+    ''' (uno por key, cacheado) y se aparea la shape por nombre normalizado + VertexCount, que es la MISMA
+    ''' regla que usa el driver del motor.
+    ''' <para><b>Guarda por candidato</b>: si alguna shape del NIF no aparea, no se registra NINGUNA de ese
+    ''' NIF y todas quedan como estaban — degrada, no rompe.</para>
+    ''' <para><b>Los toggles se honran acá</b>, construyendo el <c>BakeState</c> con o sin FMRS: es lo que
+    ''' mantiene vivo el checkbox de bone-morphs ahora que la deformación vive en las posiciones horneadas
+    ''' y no en los huesos.</para></summary>
     Private Function BuildHeadBakeService(state As NPCVisualState, renderData As PreviewResolutionResult,
                                            host As NpcRenderHost) As HeadBakeService
         If Not NPC_Config.IsHeadBakeActive() Then Return Nothing
@@ -7338,6 +7191,13 @@ Public Class MainForm
         End Try
     End Function
 
+    ''' <summary>Compone los resolvers de morph de cara y de cuerpo. Los morphs de cara (FRTRI003) y los de
+    ''' BodySlide (PIRT) viajan por el mismo MorphPlan pero nunca chocan: el lookup de cada shape se hace
+    ''' contra su PROPIO <c>.tri</c>. MultiMorphResolver junta las listas de canales y ApplyMorphPlan las
+    ''' recorre todas por shape, de forma uniforme.
+    ''' <para>Los toggles son granulares por pipeline: uno gatea los canales de FORMA de la cara (en SSE, vía
+    ''' applyChargenMorphs; el SkinnyMorph del peso sigue al toggle de body-weight) y otro gatea únicamente
+    ''' el resolver PIRT del cuerpo.</para></summary>
     Friend Function BuildCompositeMorphResolver(state As NPCVisualState, renderData As PreviewResolutionResult, Optional host As NpcRenderHost = Nothing) As IMorphResolver
         If host Is Nothing Then host = _renderHost
         Dim face As IMorphResolver = Nothing
@@ -7424,63 +7284,12 @@ Public Class MainForm
     End Class
 
 
-    ''' <summary>Isolated bake-vs-app harness (CSV-only; zero library changes; zero global state mutation).
-    '''
-    ''' Loads fresh copies of the body + face skeleton NIFs from disk (same sources the app normally uses:
-    ''' Config_App.Current.SkeletonFilePath for body, FaceSkeletonResolver for face), builds a local
-    ''' per-bone bindT lookup by walking those fresh NIFs' NiNode hierarchies, then manually skins the
-    ''' bake NIF's vertices with matsPose = matsBind (no Deltas, no Pose B, no MWGT, no FMRS). Compares
-    ''' against the app's world-space render output and dumps a CSV alongside npc_preview.log.
-    '''
-    ''' Purpose: distinguish whether the ~0.16 RMS residual (Cait/Alijo vs CK FaceGen bake) comes from
-    ''' Pose B / pipeline machinery or from elsewhere. Interpretation:
-    '''   - RMS(V_raw, V_app) ≈ 0  → app matches bake via bindpose; Pose B is inocent (and unnecessary).
-    '''   - RMS(V_raw, V_app) ≈ 0.16 → Pose B is not the culprit; residual is upstream in the app pipeline.
-    '''   - Intermediate → datapoint; analyze bucketed by primary bone as the existing [FACEGEN-DIAG-WORLD].
-    '''
-    ''' Known contaminant: Alijo has MWGT.Fat > 0 and our app doesn't implement NNAM (neck-fat adjust).
-    ''' Part of Alijo's Neck_skin residual is expected until NNAM is implemented. See memory P2.</summary>
-
-
-
-
-
-
-
-
-
-    ''' <summary>Build the merged NPC pose: race-height + body-weight (MWGT×BSMS+MRSV+ARMA) + FMRS.
-    ''' Order: race → body-weight → FMRS (top-down by skeleton hierarchy). The sources write to
-    ''' disjoint field sets of PoseTransformData (race→Scale, BW→ScaleX/Y/Z, FMRS→T/R), so field-
-    ''' level merging preserves each source's contribution even if the same bone appears in two.
-    ''' See MergePoses for overlap detection (logs a [POSE-MERGE-OVERLAP] warning if sources collide
-    ''' on the same field — should never fire with current sources).
-    '''
-    ''' Caller contract: <paramref name="skeleton"/> must already be loaded + (optionally) face/robot
-    ''' merged BEFORE this is called, because BuildBodyWeightPose walks its hierarchy via
-    ''' ResolveMrsvRegion to map bones to MRSV regions. RenderCurrentStateAsync primes the
-    ''' SkeletonInstance via LoadFromKey + MergeRobotExtension + MergeAdditionalSkeleton(face) +
-    ''' PrepareForShapes (cloth-inject — corre al final para ver el skeleton completo).</summary>
-    ''' <summary>Builds a fresh per-NPC SkeletonInstance applying the three canonical sources
-    ''' the engine uses for a race's bone hierarchy. Caller is responsible for ApplyPose
-    ''' afterwards. Used to build the base skeleton and any per-ARMA clone (sculpt path).
-    '''
-    ''' Sources (en orden):
-    '''   1) RACE.ANAM  — base skeleton declarado por la raza (puede ser un stub minimal de
-    '''      pocos bones, como en robots; o el skeleton completo, como en humanos).
-    '''   2) BPTD.MODL  — skeleton "real" apuntado por el record BPTD que cuelga de RACE.GNAM.
-    '''      Para humanos coincide con RACE.ANAM (no-op). Para robots aporta el SkeletonRef.nif
-    '''      (incluso cross-folder, como DLC01HandyCreateABot → DLC01\Robot\skeletonRefHandyDLC01.nif).
-    '''      Esto reemplaza la heurística vieja MergeRobotExtendedSkeletonsIfRobot que enumeraba
-    '''      siblings filesystem; el engine usa el pointer del record, así nosotros también.
-    '''   3) Face bones convention (chargen-only) — sufijo `_[gender_]faceBones.nif` sibling del
-    '''      RACE.ANAM. NO viene de records; es convención de filesystem que solo aporta bones
-    '''      de cara (Jaw/LipUpper/etc) necesarios para chargen. No-op para razas sin face bones.
-    '''
-    ''' Orden importa: PrepareForShapes (cloth-bone injection) corre AL FINAL. Si lo llamáramos
-    ''' antes del merge BPTD/face, los bones de esos skeletons aparecerían como "missing" y el
-    ''' inject los buscaría en el cloth skeleton del NIF — no estarían ahí tampoco → fallo
-    ''' silencioso (Debugger.Break en SkeletonClothOverlayHelper:96, sin log en release).</summary>
+    ''' <summary>SkeletonInstance por NPC con las tres fuentes del engine, en orden:
+    ''' RACE.ANAM (base) → BPTD.MODL (skeleton real vía RACE.GNAM; aporta el SkeletonRef de robots)
+    ''' → face bones (convención de filesystem `_[gender_]faceBones.nif`, solo chargen).
+    ''' El inject de cloth bones (PrepareForShapes) va AL FINAL: antes del merge esos bones
+    ''' figuran como missing y el inject falla en silencio. Detalle: memoria
+    ''' 25-cloth-inyeccion-de-huesos / 24-robots-huesos-inyectados. El caller aplica ApplyPose después.</summary>
     Private Function PrepareSkeleton(state As NPCVisualState, renderData As PreviewResolutionResult) As SkeletonInstance
         Dim s As New SkeletonInstance()
         ' Source 1: RACE.ANAM
@@ -7643,20 +7452,13 @@ Public Class MainForm
 
 
 
-    ''' <summary>Strict per-ARMA race match: the ARMA's RaceFormID equals the NPC's race, or its
-    ''' AdditionalRaces (MODL) include it. Unified rule used by the render AND the skin/outfit/item
-    ''' pickers. The permissive "arma.RaceFormID = 0 → any race" clause was REMOVED per user
-    ''' 2026-05-24: a load-order sweep found 0 of 1084 ARMAs with RaceFormID=0 (all declare a race),
-    ''' so the clause was dead — strict is preferred and unifies render + pickers on one rule. The
-    ''' npcRaceFormID=0 guard stays: it keeps a degenerate NPC whose race didn't resolve from
-    ''' rendering naked.
-    '''
-    ''' <paramref name="effectiveArmorRaces"/> (from <see cref="NpcRenderContext.GetEffectiveArmorRaces"/>)
-    ''' adds the RACE.RNAM "Armor Race" redirect: copy-races (e.g. the CC Enclave turret, whose skin ARMA is
-    ''' authored for the base TurretTripodRace) reuse a base race's armatures, and the engine matches the ARMA
-    ''' against that Armor Race chain rather than the actor's own race. The match is ADDITIVE — it only ever
-    ''' accepts armatures the engine also accepts, never hides one — so it can't regress the slot mutex.
-    ''' Nothing/legacy callers keep the strict direct-race behavior. See [[arch_armor_race_redirect]].</summary>
+    ''' <summary>Match estricto de raza por ARMA: RaceFormID igual a la del NPC, o AdditionalRaces (MODL)
+    ''' la incluye. Regla única para el render y los pickers de skin/outfit/item. No existe cláusula
+    ''' permisiva para RaceFormID=0 (era código muerto). El guard npcRaceFormID=0 se queda: evita que un
+    ''' NPC cuya raza no resolvió se renderice desnudo.
+    ''' <paramref name="effectiveArmorRaces"/> agrega el redirect RACE.RNAM "Armor Race"; el match es
+    ''' ADITIVO, solo acepta armaduras que el motor también acepta, así que no puede romper el mutex de
+    ''' slots. Ver memoria 23-armor-race-redirect-rnam.</summary>
     Friend Shared Function ArmorAddonMatchesRace(arma As ARMA_Data, npcRaceFormID As UInteger,
                                                  Optional effectiveArmorRaces As ICollection(Of UInteger) = Nothing) As Boolean
         If npcRaceFormID = 0UI Then Return True
@@ -8631,21 +8433,13 @@ Public Class MainForm
         Dim priorOverlay As LooksmenuLoader.LooksmenuPreset = Nothing
         _appliedPresets.TryGetValue(npcFormID, priorOverlay)
 
-        ' Two mappings of the SAME .jslot, because the browser needs to answer two different questions and the
-        ' RaceMenu format can't answer both with one object:
-        '
-        '   • APPLY mapping (onto a CLONE of the pre-dialog overlay): what the NPC ENDS UP with. The clone is
-        '     mandatory — several .jslot fields can't express "absent" (NAM9 is a fixed 18-slot vector where 0
-        '     is a legitimate value), so the mapper seeds from the previous value and overwrites only what the
-        '     file declares. This is what feeds the live preview and what OK returns.
-        '   • DISPLAY mapping (onto an EMPTY preset): what the FILE itself carries. Feeds the category counts,
-        '     the race-compat filter and the "Show incompatible" report, so a number/finding is never the NPC's
-        '     own content misattributed to the preset (FO4 has this for free — it parses the file, period).
-        '
-        ' Both return Nothing on a bad/unreadable file (the browser skips it). SourcePath/Gender are stamped so
-        ' the list label and the report header identify the file.
-        ' ONE read + ONE parse, TWO mappings: the file is the expensive part (a .jslot carries the whole
-        ' per-vertex sculpt), while re-mapping an already-parsed jslot onto a second base is in-memory work.
+        ' UN read + UN parse del .jslot, DOS mapeos (el formato de RaceMenu no responde ambas con un objeto):
+        '   • APPLY, sobre un CLONE del overlay previo -> con qué queda el NPC. El clone es obligatorio: varios
+        '     campos no pueden expresar "ausente" (NAM9 es un vector fijo de 18 donde 0 es valor legítimo), así
+        '     que se siembra del valor anterior y solo se pisa lo que el archivo declara. Alimenta el preview y OK.
+        '   • DISPLAY, sobre un preset VACÍO -> qué trae el ARCHIVO. Alimenta conteos por categoría, filtro de
+        '     compatibilidad de raza y el reporte, para no atribuirle al preset contenido propio del NPC.
+        ' Nothing si el archivo no se puede leer (el browser lo saltea). SourcePath/Gender se estampan para el label.
         Dim mapper As Func(Of String, LooksmenuLoad_Form.SsePresetMapping) =
             Function(fp As String) As LooksmenuLoad_Form.SsePresetMapping
                 Try
@@ -8855,39 +8649,6 @@ Public Class MainForm
         Await RenderCurrentStateAsync(requestVersion, host)
     End Function
 
-    ''' <summary>If an overlay is registered for <paramref name="selectedNpcFormID"/>, return a
-    ''' shallow copy of <paramref name="raw"/> with the preset's morph/face-tint fields swapped
-    ''' in. The overlay is keyed by the NPC the user selected, NOT by the model template source —
-    ''' so a preset on Piper does not bleed into other NPCs that share Piper's template chain.
-    ''' Returns <paramref name="raw"/> unchanged when there's no overlay.
-    '''
-    ''' Per-field semantics replicate the engine's LoadPreset (CharGenInterface.cpp:259-628):
-    '''   • HeadParts (line 308-321 + 323-342): the engine WIPES the actor's HeadParts list and
-    '''     repopulates with the race chargen defaults FIRST, then iterates JSON HeadParts and
-    '''     applies each via ChangeHeadPart. We follow the same shape — start from race defaults,
-    '''     then merge preset entries in (the downstream MergeHeadPartsWithRaceDefaults handles
-    '''     the per-PartType "preset wins, race fills gaps" logic). For NPC_Manager preview the
-    '''     "race defaults" must come from the RACE record because the raw NPC_Data carries its
-    '''     own PNAM list which is exactly what the preset is replacing.
-    '''   • HairColor (line 344-359): if the JSON identifier doesn't resolve, GetFormFromIdentifier
-    '''     returns nullptr and the if(form) guard skips assignment → preserves the actor's value.
-    '''     We replicate: preset.HairColorFormID == 0 means "not in JSON, preserve raw".
-    '''   • Weight (line 466-475): the engine assigns root["Weight"][i].asFloat() unconditionally;
-    '''     a missing field becomes 0.0. Our parser leaves WeightX as Single?=Nothing when absent,
-    '''     and we preserve raw weights in that case (more useful for Paste between NPCs than
-    '''     reproducing the engine's "missing = zero" quirk that breaks body weight visually).
-    '''   • Morphs.Values / Presets / Regions (line 363-450): the engine only clears + repopulates
-    '''     when members.size() > 0. Empty/missing dicts/arrays preserve the actor's values.
-    '''   • Morphs.Intensity (line 452-464): the engine ALWAYS calls SetFacialBoneMorphIntensity,
-    '''     using 1.0 when missing. Our parser already defaults to 1.0F at parse time, so we
-    '''     always overwrite — semantically equivalent.
-    '''   • Tints (line 477-556): the engine ClearCharacterTints unconditionally when there's a
-    '''     non-empty Tints dict; if the JSON has Tints with 0 members it still allocates the
-    '''     array but doesn't push anything. We mirror: presence of preset means we replace the
-    '''     tint list (even with empty); absence means preserve raw. The parser doesn't currently
-    '''     distinguish "JSON had Tints:{}" from "no Tints key" but BuildPresetFromState only
-    '''     populates FaceTintLayers when there are layers to capture, so empty == absent here.
-    ''' </summary>
     ''' <summary>Thin instance wrapper over <see cref="NpcRecordOverlay.ApplyPresetOverlayToNpcData"/>;
     ''' threads <see cref="_pluginManager"/> + <see cref="_appliedPresets"/> through. Real impl
     ''' lives in the helper module so offline bake (FaceGenBuilder) can reuse without coupling
@@ -9480,23 +9241,13 @@ Public Class MainForm
         End If
     End Sub
 
-    ''' <summary>Build a LooksmenuPreset that captures what's currently being rendered for the
-    ''' selected NPC. Reads from the same effective NPC_Data the renderer consumes (template
-    ''' source + applied overlay if any), and replicates the LooksMenu Save schema on the way out
-    ''' so Paste can route through the exact same ApplyPresetOverlayToNpcData path that Load
-    ''' Looksmenu uses — no parallel codepath, no schema drift between Save and Load.
-    '''
-    ''' Schema fidelity to CharGenInterface.cpp SavePreset:
-    '''   - HeadParts: filters out IsExtraPart (flag 0x08), matching CharGenInterface.cpp:96.
-    '''     This is safe because NPC_Manager's CollectHeadPartCandidate (line ~6326) recursively
-    '''     expands each main HDPT's HNAM extras at render time — same as the engine does. So
-    '''     the extras (lashes/AO/wet/hairlines) come back automatically when Paste applies the
-    '''     main HDPTs from the preset. Verified empirically in npc_preview.log: TEOBAIO eye
-    '''     HDPT with extras=3 loaded all 3 extras after preset apply.
-    '''   - Tints: skips Value=0 entries (CharGenInterface.cpp:180-181 does the same).
-    '''   - Morphs.Intensity: written even when 1.0 (we don't asymmetrically skip on Save the way
-    '''     LooksMenu does, because preserving "explicit 1.0" matches what LoadPreset interprets).
-    ''' </summary>
+    ''' <summary>LooksmenuPreset con lo que se está renderizando: lee el mismo NPC_Data efectivo que
+    ''' consume el render y emite el esquema Save de LooksMenu, para que Paste use exactamente el
+    ''' camino ApplyPresetOverlayToNpcData de Load (sin codepath paralelo ni drift de esquema).
+    ''' Fidelidad a CharGenInterface.cpp SavePreset: HeadParts descarta IsExtraPart (0x08) — los
+    ''' extras vuelven solos porque CollectHeadPartCandidate expande el HNAM en render; Tints saltea
+    ''' Value=0. Divergencia deliberada: Morphs.Intensity se escribe aunque sea 1.0, porque es lo que
+    ''' LoadPreset interpreta.</summary>
     Private Function BuildPresetFromState(state As NPCVisualState) As LooksmenuLoader.LooksmenuPreset
         If state Is Nothing Then Return Nothing
         Dim modelFormID = NpcStateFactory.FaceAppearanceSourceFormID(state)
@@ -9589,10 +9340,8 @@ Public Class MainForm
         ' destino"). Asimetría silenciosa entre dos campos que el resto del sistema trata como uno solo.
         preset.SleepOutfitFormIDOverride = state.SleepOutfitFormID
 
-        ' NPC.ACBS bit 0x04 "Is CharGen Face Preset": misma semántica que skin. Capturamos el
-        ' valor EFECTIVO — overlay si existe, sino raw NPC.ACBS bit. BuildFilteredPaste lo
-        ' consume cuando options.IsCharGenPreset=True (línea ~12184). Sin esto Copy→Paste perdía
-        ' la flag aunque el dialog tuviera el checkbox activo.
+        ' NPC.ACBS bit 0x04 "Is CharGen Face Preset": se captura el valor EFECTIVO (overlay si existe,
+        ' si no el bit crudo); sin esto Copy->Paste perdía la flag aunque el checkbox estuviera activo.
         Const AcbsBitIsCharGenFacePreset As UInteger = &H4UI
         If overlay IsNot Nothing AndAlso overlay.IsCharGenFacePreset.HasValue Then
             preset.IsCharGenFacePreset = overlay.IsCharGenFacePreset.Value
@@ -9607,18 +9356,14 @@ Public Class MainForm
         ' the destination NPC writes after a paste.
         NpcRecordOverlay.MaterializeLmTemplateBundleToPreset(preset, state.IsFemale, AddressOf ResolveLmSkinTemplate)
 
-        ' Tints — skip Value=0 entries (CharGenInterface.cpp:180-181). Order matters: it determines
-        ' the layer composition order at render time (the ESP TETI/TEND order is the natural NPC
-        ' record order, but the engine in-game reorders tints to match the RACE's TintTemplateGroups
-        ' Options order — that's what gives non-conmutative blends like SoftLight a stable result
-        ' across LM Save / Load. Without this reorder the TintOrder array would be ESP-record-order
-        ' instead of RACE-Group-order; LM in-game writes RACE-Group-order, so to round-trip we need
-        ' to match.
-        '
-        ' Also resolve each layer's positional TemplateColorIndex (vanilla NPC TEND stores POSITION
-        ' in the RACE's TTEC array) into the absolute TemplateIndex of that color (what LooksMenu
-        ' canonically emits as ColorID). Without this conversion ColorID round-trips as 0 because
-        ' that's the position vanilla typically uses; LooksMenu in-game reports e.g. 1157/1824/1339.
+        ' Tints: se saltean las entradas Value=0. El ORDEN importa, porque determina el orden de composicion de
+        ' capas en render. El orden natural del record es el del ESP (TETI/TEND), pero el motor in-game reordena
+        ' los tints al de las Options de los TintTemplateGroups de la RACE, y eso es lo que hace que un blend no
+        ' conmutativo como SoftLight de un resultado estable entre Save y Load de LooksMenu. Como LM in-game
+        ' escribe en orden de grupo de RACE, para round-trippear hay que igualarlo.
+        ' Ademas se resuelve el TemplateColorIndex posicional de cada capa (el TEND vanilla guarda la POSICION en
+        ' el array TTEC de la RACE) al TemplateIndex absoluto de ese color, que es lo que emite LooksMenu: sin
+        ' esa conversion el ColorID round-trippea como 0, que es la posicion que suele usar vanilla.
         Dim raceRec = If(state.RaceFormID <> 0UI, _pluginManager.GetRecord(state.RaceFormID), Nothing)
         Dim race As RACE_Data = Nothing
         If raceRec IsNot Nothing AndAlso raceRec.Header.Signature = "RACE" Then
@@ -9714,24 +9459,13 @@ Public Class MainForm
                 preset.HasSseTints = True
             End If
 
-            ' --- Face TXST (FTST) del actor. Lo consumen NpcRecordOverlay:202 (bake + Save ESP) y
-            ' NpcStateResolver:175 (render), y el filtro de Paste ya lo transporta bajo la categoría
-            ' FaceParts (PresetCategoryFilter:188/197) — pero NADIE lo poblaba acá, así que Copy Look
-            ' se llevaba las head parts y dejaba atrás la textura de cara, y Save Looksmenu emitía
-            ' headTexture nulo (RaceMenuPresetMapper:57 lo serializa desde este campo).
-            '
-            ' SE CAPTURA `ExplicitHeadTextureFormID`, NO `HeadTextureFormID`: el primero vale 0 justamente
-            ' cuando el TXST salió del DFTM de la raza (ApplyRaceFallbacks lo fija ANTES de ese fallback).
-            ' Copiar el efectivo convertiría el default de la raza ORIGEN en un override explícito y, al
-            ' pegar sobre un NPC de otra raza, le clavaría la cara de la raza del origen. Con Explicit sólo
-            ' viaja lo que el ACTOR declara (FTST propio, .jslot del preset, o plantilla LM).
-            '
-            ' POR QUÉ VA EN LA RAMA SSE — por ORIGEN DEL DATO, no por reflejo: en FO4 la vía del override de
-            ' cara es la plantilla LM (bundle f4ee), y esta misma función YA la captura por su carrier propio
-            ' (preset.SkinTemplateId :9526 + MaterializeLmTemplateBundleToPreset :9560). Poblar además este
-            ' campo allá duplicaría el mismo dato en dos carriers y le daría precedencia al de menor rango
-            ' (NpcRecordOverlay:200-204: plantilla LM > .jslot > raw). En SSE no existen plantillas de piel
-            ' (RaceMenu no las tiene), así que este ES el único carrier y sin esta línea no hay ninguno.
+            ' ⛔ Se captura `ExplicitHeadTextureFormID`, NO el efectivo: el explícito vale 0 justamente cuando
+            ' el TXST salió del default de la RAZA. Copiar el efectivo convertiría ese default en un override
+            ' explícito y, al pegarlo sobre un NPC de otra raza, le clavaría la cara de la raza de origen.
+            ' ⛔ Va sólo en la rama SSE por ORIGEN DEL DATO, no por olvido: en FO4 el override de cara viaja
+            ' por la plantilla de LooksMenu, que esta misma función ya captura en su propio carrier; poblar
+            ' además éste duplicaría el dato y le daría precedencia al de menor rango. En SSE no existen esas
+            ' plantillas, así que éste es el ÚNICO carrier.
             preset.SseHeadTextureFormID = state.ExplicitHeadTextureFormID
 
             ' --- F4SE/RaceMenu-only carriers (no record source): overlay only, else leave empty. ---
@@ -9794,23 +9528,11 @@ Public Class MainForm
         Return preset
     End Function
 
-    ''' <summary>Resolve layer.TemplateColorIndex (the TEND ColorID) purely from the layer's
-    ''' colour. Delegates to FaceTintInputBuilder.ResolveTemplateColorIndex (single source of
-    ''' truth shared with the editor): a TTEC preset whose CLFM RGB matches tl.Color wins; among
-    ''' presets sharing that colour, the one whose Alpha is closest to the layer's opacity
-    ''' (Value/100); no colour match → -1 (custom RGB outside the palette — the TEND RGB is used
-    ''' directly, no CLFM link).
-    '''
-    ''' Per-user rule: the index tracks ONLY the colour; opacity is just the tiebreak among
-    ''' equal-colour presets, never the -1-vs-index decision. This replaced an earlier fallback
-    ''' that wrote pos=0's TemplateIndex for unmatched colours.
-    '''
-    ''' LooksMenu's SavePreset emits the same shape: ColorID = absolute TemplateIndex of the TTEC
-    ''' entry whose CLFM RGB matches the TEND RGB (verified vs PiperESPM.json: layer 528 TEND RGB
-    ''' (88,1,55) → TTEC pos=12 TemplateIndex=1333). LM's LoadPreset reads it back via
-    ''' GetColorDataByID(colorID) (CharGenInterface.cpp:511); an out-of-palette ID (e.g. -1) is
-    ''' coerced by LM to colors[0].colorID (CharGenInterface.cpp:514-517). The vanilla engine's
-    ''' handling of -1 at FaceGen bake is NOT verified against the binary.</summary>
+    ''' <summary>Resuelve layer.TemplateColorIndex (el ColorID del TEND) SOLO por color: gana el
+    ''' preset TTEC cuyo CLFM RGB coincide; entre los de igual color desempata el Alpha más cercano
+    ''' a la opacidad; sin coincidencia de color → -1 (RGB custom, se usa el TEND directo).
+    ''' Delegación a FaceTintInputBuilder.ResolveTemplateColorIndex, única fuente compartida con el
+    ''' editor. Formato y comportamiento de LooksMenu ante -1: memoria 60-feature-looksmenu-tints.</summary>
     Private Sub ResolveTemplateColorIdToAbsolute(layer As NPC_FaceTintLayerData, race As RACE_Data, isFemale As Boolean)
         If race Is Nothing OrElse layer Is Nothing OrElse layer.Discriminator <> 1US Then Return
         Dim opt = race.FindTintOption(layer.Index, isFemale)
@@ -9902,17 +9624,14 @@ Public Class MainForm
         End Using
     End Sub
 
-    ''' <summary>What the body editor can offer for this NPC, given the RACE record and the
-    ''' loaded body shapes. Each section is gated independently: a race like Ghoul or
-    ''' PowerArmorRace may declare no BSMS WeightScale / RangeModifier on any bone, in which
-    ''' case the corresponding section has no engine effect and is hidden.
-    '''
-    ''' • HasMwgt — at least one BSMS WeightScale entry on a gender-matched bone (HasWeightScale).
-    ''' • HasMrsv — at least one BSMS RangeModifier entry on a gender-matched bone
-    '''   (HasRangeModifier). Per wbDefinitionsFO4.pas:5929 RangeModifier is only Y/Z; absence
-    '''   means MRSV does nothing for that race.
-    ''' • BodySlideSliders — the union of PIRT .tri morph names across all body shapes, after
-    '''   excluding the WeightThin/Muscular/Fat reserved names. Empty = no body .tri loaded.</summary>
+    ''' <summary>Que puede ofrecer el editor de cuerpo para este NPC, segun el RACE y las shapes de cuerpo
+    ''' cargadas. Cada seccion gatea por separado: una raza como Ghoul o PowerArmorRace puede no declarar BSMS
+    ''' WeightScale ni RangeModifier en ningun hueso, y entonces esa seccion no tiene efecto en el motor y se
+    ''' oculta.
+    ''' <para>HasMwgt = hay al menos una entrada WeightScale en un hueso del genero. HasMrsv = idem
+    ''' RangeModifier, que es solo Y/Z, asi que su ausencia significa que el MRSV no hace nada para esa raza.
+    ''' BodySlideSliders = union de los nombres de morph de los .tri PIRT de todas las shapes de cuerpo, sin los
+    ''' nombres reservados de peso; vacio = no hay .tri de cuerpo cargado.</para></summary>
     Private Structure BodyEditAvailability
         Public HasMwgt As Boolean
         Public HasMrsv As Boolean
@@ -10133,21 +9852,9 @@ Public Class MainForm
     ' Edit Face — toolbar enable + dialog launch
     ' =====================================================================
 
-    ''' <summary>What the face editor can offer for this NPC, given the RACE record + its
-    ''' optional FacialBoneRegions JSON + the chargen TRI loaded for the face shape. Each
-    ''' section gates independently; the button enables iff at least ONE section has content.
-    ''' <para>
-    ''' • HasHeadParts   — race declares chargen head parts for the active gender (RACE
-    '''                    Female/MaleHeadPartFormIDs).<br/>
-    ''' • HasHairColors  — race declares hair color CLFMs for the active gender (Female/MaleHairColorFormIDs).<br/>
-    ''' • HasMorphPresets— at least one MorphGroup has at least one preset whose MorphName is
-    '''                    present in the loaded chargen TRI (mirrors the "no presets → no
-    '''                    sliders" rule used by EditFace_Form.BuildMorphGroupSections).<br/>
-    ''' • HasFaceTints   — race declares tint template groups for the active gender
-    '''                    (Female/MaleTintTemplateGroups).<br/>
-    ''' • HasFaceBoneRegions — the FacialBoneRegions JSON exists for race+gender (the FMRS region
-    '''                    sliders depend on it).
-    ''' </para></summary>
+    ''' <summary>Qué puede ofrecer el editor de cara para este NPC, según el RACE + su JSON de
+    ''' FacialBoneRegions + el TRI de chargen. Cada sección gatea por separado y el botón se habilita
+    ''' si hay AL MENOS una con contenido. Reglas de gating: memoria 22-morphs-gating-editor-de-cara.</summary>
     Private Structure FaceEditAvailability
         Public HasHeadParts As Boolean
         Public HasHairColors As Boolean
@@ -10211,25 +9918,13 @@ Public Class MainForm
     ''' del bake bloquea ediciones legítimas, y cualquiera MÁS laxo deja producir datos que el motor
     ''' ignora.</summary>
     Private Sub UpdateEditFaceEnabled()
-        ' UNA sola regla, SIN rama por juego: si la raza bakea, se puede editar. Es literalmente el mismo
-        ' gate que impide bakear (FaceGenBuilder.vb:356) y que impide renderizar head parts
-        ' (NpcMeshCollector.vb:987) — RACE.DATA bit 0x2, el discriminador de 0 excepciones.
-        '
-        ' La fuente del FormID también coincide: el bake lee npcData.RaceFormID de ResolveOverlaidNpcData,
-        ' que aplica NpcRecordOverlay.EffectiveRaceResolver (MainForm.vb:1828) y por tanto devuelve la raza
-        ' PISADA por Edit NPC — la misma que state.RaceFormID. No hay divergencia con RaceCompatibility/COtR.
-        '
-        ' ⛔ HISTÓRICO — dos gates distintos, los dos mal por motivos opuestos:
-        '   · SSE era `True` incondicional, justificado por una decisión de 2026-07-08 que hablaba de un
-        '     aviso "SseFeatureNotImplemented" que NO EXISTE en ningún handler (el identificador sólo
-        '     aparecía en ese comentario). El efecto real era abrir el editor sobre dragones, lobos y
-        '     draugr sin facegen, donde el render ya hace early-return por este mismo bit. Y como OnOk
-        '     marca dirty siempre, esos datos —que el motor ignora— podían acabar en el ESP.
-        '   · FO4 exigía ADEMÁS ComputeFaceEditAvailability (head parts / hair colors / morph presets /
-        '     tint groups / FacialBoneRegions autorados por la RACE). Era MÁS estricto que el bake: podía
-        '     deshabilitar el editor para una raza que sí bakea. Como el editor deja añadir head parts de
-        '     TODO el load order (no sólo los defaults de la raza), "la raza no tiene contenido autorado"
-        '     no implica "no hay nada que editar".
+        ' UNA sola regla, SIN rama por juego: si la raza bakea, se puede editar. Es el MISMO gate que usan el
+        ' bake y la recolección de head parts (RACE.DATA bit 0x2), y la fuente del FormID también coincide
+        ' porque las dos pasan por la raza EFECTIVA del editor.
+        ' ⛔ NO volver a los dos gates viejos: uno abría el editor sobre razas sin facegen (y como OnOk marca
+        ' dirty, esos datos que el motor ignora acababan en el ESP); el otro exigía además que la RACE
+        ' tuviera contenido autorado, y era MÁS estricto que el bake — el editor deja añadir head parts de
+        ' todo el load order, así que "la raza no autora nada" no implica "no hay nada que editar".
         Dim shouldEnable As Boolean = False
         If _renderHost.LastRenderedState IsNot Nothing AndAlso _renderHost.LastRenderData IsNot Nothing Then
             shouldEnable = RaceUtil.RaceSupportsFaceGen(_renderHost.LastRenderedState.RaceFormID, _pluginManager)
@@ -10301,13 +9996,6 @@ Public Class MainForm
         UpdatePasteLookEnabled()
     End Sub
 
-    ''' <summary>Build CharGen — bakes the FaceGen NIF for the currently rendered NPC by
-    ''' starting from the vanilla NIF in the BA2/loose pool and pruning shapes that do not
-    ''' correspond to a HeadPart the NPC currently references (HeadPartFormIDs ∪ recursive
-    ''' ExtraPartFormIDs). Output is written as .nif2 (not .nif) under
-    ''' &lt;exe dir&gt;\BakedFaceGen\Meshes\Actors\Character\FaceGenData\FaceGeom\&lt;plugin&gt;\&lt;FormID8hex&gt;.nif2
-    ''' so the engine never sees it; the file is meant for side-by-side diff with the BA2
-    ''' original. Each run also dumps the kept/dropped decision per shape to npc_preview.log.</summary>
     ''' <summary>Abre el diálogo CharGen Options (tamaño de textura por canal + formato del diffuse,
     ''' persistido en Config_App). El bake lee esos settings via FaceGenBuilder.OutputSettings.</summary>
     Private Sub ButtonCharGenOptions_Click(sender As Object, e As EventArgs) Handles ButtonCharGenOptions.Click
@@ -10945,17 +10633,18 @@ Public Class MainForm
         }
     End Function
 
-    ''' <summary>Strip the ESP-persisted fields from an NPC's overlay after a successful Save, keeping
-    ''' only the F4SE-only fields that have no record equivalent — the SAME set the .bssliders sidecar
-    ''' persists (BodyMorphs sliders + Skin template + LM body overlays/tattoos). The ESP fields are now
-    ''' in the saved override (re-read via MergeOverridePlugin), so dropping them avoids a redundant
-    ''' overlay re-applying the same values, while the kept fields preserve the user's BodyMorphs/Skin/
-    ''' overlay edits. Mirror of <see cref="HydrateAppliedPresetsFromSidecars"/>: the residual overlay
-    ''' must be structurally identical to a fresh sidecar hydration, otherwise the post-save re-render
-    ''' shows different state than reopening the app would (the reported "tattoos vanish after Save"
-    ''' bug: the sidecar on disk has the overlays via MergeOneNpcIntoSidecar, but the in-memory overlay
-    ''' was being rebuilt without them). If nothing non-ESP remains, the overlay is removed entirely.
-    ''' Returns True when a residual overlay remains — i.e. the sidecar on disk keeps a row for this NPC.</summary>
+    ''' <summary>Saca del overlay de un NPC los campos que ya persistio el ESP tras un Save exitoso, dejando
+    ''' solo los que son F4SE-only y no tienen equivalente en el record - el MISMO conjunto que persiste el
+    ''' sidecar .bssliders (sliders de BodyMorphs, template de piel y overlays/tatuajes de LM). Los campos del
+    ''' ESP ya estan en el override guardado, asi que soltarlos evita que un overlay redundante re-aplique los
+    ''' mismos valores.
+    ''' <para>Es el espejo de <see cref="HydrateAppliedPresetsFromSidecars"/>: el overlay residual tiene que ser
+    ''' estructuralmente identico al de una hidratacion fresca desde el sidecar, o el re-render post-save
+    ''' muestra un estado distinto del que se veria reabriendo la app (de ahi el bug de "los tatuajes
+    ''' desaparecen tras Save": el sidecar en disco los tenia y el overlay en memoria se rearmaba sin
+    ''' ellos).</para>
+    ''' <para>Si no queda nada no-ESP, el overlay se elimina entero. True si queda overlay residual, o sea si el
+    ''' sidecar en disco conserva una fila para este NPC.</para></summary>
     Private Function StripEspFieldsFromOverlay(npcFormID As UInteger) As Boolean
         Dim overlay As LooksmenuLoader.LooksmenuPreset = Nothing
         If Not _appliedPresets.TryGetValue(npcFormID, overlay) OrElse overlay Is Nothing Then Return False
@@ -11198,33 +10887,13 @@ Public Class MainForm
         BuildOutfitUniverse()
     End Sub
 
-    ''' <summary>Dump the current rendered scene to a multi-shape NIF with each visible shape
-    ''' transformed into world-pose vertices. Filter is shape.RenderHide = False — the same flag
-    ''' NpcRenderHost.ApplyRenderToggleVisibility sets from the render toggles (Body / Underarmor
-    ''' / Armor / Headwear / Gore), shape category, ShapeCoveredByOutfit, and ShapeOccludedByHeadwear.
-    ''' Whatever is visible in the preview is what gets exported.
-    '''
-    ''' Positioning uses geom.PerVertexSkinMatrix (per-vertex shape-local → world transform)
-    ''' directly — same matrix the renderer uses on the CPU skinning path and the GPU SSBO bone
-    ''' palette (Σw·matsPose for multi-bone skinned; bindT∘localT for single-bone skinned;
-    ''' shape.T/R/S × parent_chain for unskinned). v_world = v_local × PerVertexSkinMatrix(i).
-    ''' Equivalent for normals/tangents/bitangents via the normal matrix (transpose of inverse).
-    '''
-    ''' This bypasses SkinningHelper.BakeFromMemoryUsingOriginal, whose v_baked = v × MposeBlend ×
-    ''' inv(MbindBlend) produces "rebind" coordinates (verts that yield world-pose when re-skinned
-    ''' through MbindBlend) — useful for WM's build-shape flow that re-emits the shape with
-    ''' skinning intact, wrong for our strip-skin export which needs absolute world coords.
-    '''
-    ''' Per shape: clone into destNif via CloneShape_Original (preserves shader + UVs + triangles +
-    ''' skinning palette), inject world-pose verts/normals/tangents/bitangents through the clone's
-    ''' IShapeGeometry adapter, reset clone's local T/R/S to identity (CloneShape_Original's
-    ''' unskinned-path parent-baking would otherwise double-transform our already-absolute verts),
-    ''' strip skin (IsSkinned=False + SkinInstanceRef.Clear()) so viewers don't re-apply the bone
-    ''' palette.
-    '''
-    ''' Material handling: clone shader verbatim — BGSM/DDS paths in the destination point at
-    ''' the same files as the source. Self-contained material inlining (FaceGenBuilder-style)
-    ''' is out of scope for this MVP.</summary>
+    ''' <summary>Exporta la escena renderizada a un NIF multi-shape, cada shape visible ya con vértices en
+    ''' world-pose. Filtra por el mismo flag que los toggles del preview: lo que se ve es lo que se exporta.
+    ''' Usa <c>PerVertexSkinMatrix</c> directo (la matriz del render) y su traspuesta-inversa para normales.
+    ''' <para>⛔ NO usar el bake de <c>SkinningHelper</c>: produce coordenadas de rebind (dan world-pose al
+    ''' RE-skinearse), correcto para re-emitir con skinning intacto e INCORRECTO acá, que exporta sin skin.</para>
+    ''' <para>⛔ Tras clonar, resetear el T/R/S local a identidad y quitar el skin: si no, el parent-baking
+    ''' del camino unskinned vuelve a transformar vértices que ya son absolutos.</para></summary>
     Private Sub ButtonSaveSceneNif_Click(sender As Object, e As EventArgs) Handles ButtonSaveSceneNif.Click
         If _renderHost Is Nothing OrElse _renderHost.CurrentBaseState Is Nothing Then Return
         If _previewControl Is Nothing OrElse _previewControl.Model Is Nothing OrElse
@@ -11306,18 +10975,10 @@ Public Class MainForm
         Await Task.Yield()
         Dim bakeResult As FaceGenBuilder.BuildResult
         Try
-            ' ⭐⭐ F6 — `willBePacked` DEBE seguir a lo que de verdad va a pasar con los archivos.
-            ' Vale True cuando NpcFaceGenPacker va a repackear los sueltos `_2` al BA2 bajo nombres canónicos (⇒ el
-            ' NIF tiene que embeber los canónicos, que son los que van a existir DENTRO del archive).
-            ' ⛔ EN MODO LOOSE-ONLY NO HAY PACKER: RunChargenPackBatch retorna antes de llamarlo
-            ' (NPC_Config.IsLooseOnly). Nadie renombra nada, así que en disco quedan `<id>_2.NIF` y `<id>_d_2.dds`
-            ' mientras el NIF apuntaba a `<id>_d.dds` — un archivo que no existe. El comentario anterior decía que
-            ' "los canónicos son igual lo que el motor busca en runtime, el _2 es sólo el nombre en disco"; eso es
-            ' cierto para lo que el motor BUSCA, y justamente por eso el resultado no servía: el motor no encuentra
-            ' NI el NIF (que también se llama `_2.NIF`) ni sus texturas. Con willBePacked:=False el NIF embebe los
-            ' nombres reales del disco y el output loose es coherente consigo mismo.
-            ' (Sólo muerde en DebugMode — `DebugMode = Logger.Enabled` — porque en release Suffix == CanonSuffix
-            '  y el flag es inerte. Pero es exactamente la combinación que usa una sesión de diagnóstico.)
+            ' `willBePacked` sigue lo que de verdad va a pasar con los archivos: True solo si el packer va a
+            ' repackear los sueltos `_2` al BA2 con nombres canónicos (el NIF debe embeber esos canónicos).
+            ' ⛔ En LOOSE-ONLY no hay packer, nadie renombra: con True el NIF apuntaría a texturas que no existen.
+            ' Solo muerde en DebugMode, que es justo el modo de una sesión de diagnóstico. Ver 40-bake-reglas-comunes.
             Dim willPack As Boolean = Not NPC_Config.IsLooseOnly(Config_App.Current.Game)
             ' WriteGPUSandboxOutput corre el GL (para el _2b) -> sync en el hilo UI (contexto GL; ya estamos
             ' en él tras el Yield), INDEPENDIENTE de DebugMode. Sin ese flag (output CPU-only, sin GL) -> bake
@@ -11476,12 +11137,12 @@ Public Class MainForm
                     Dim shownFb = packResult.FailedBundles.Take(10).ToList()
                     summary &= vbCrLf & "      " & String.Join(vbCrLf & "      ", shownFb)
                     If packResult.FailedBundles.Count > shownFb.Count Then
-                        summary &= vbCrLf & $"      … y {packResult.FailedBundles.Count - shownFb.Count} más."
+                        summary &= vbCrLf & $"      … and {packResult.FailedBundles.Count - shownFb.Count} more."
                     End If
                 End If
                 ' Sus archivos sueltos NO se borraron (el bundle se descarta entero antes de empaquetar nada),
                 ' así que volver a guardar reintenta sin tener que re-hornear.
-                summary &= vbCrLf & "      (Los archivos sueltos de esos NPC se conservaron: se puede reintentar el guardado.)"
+                summary &= vbCrLf & "      (Those NPCs' loose files were kept, so the save can be retried.)"
             End If
             Return (summary, True)
         Catch ex As Exception

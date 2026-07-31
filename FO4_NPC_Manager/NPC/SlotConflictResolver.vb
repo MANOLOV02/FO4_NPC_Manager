@@ -1,12 +1,12 @@
-Imports System.Linq
+﻿Imports System.Linq
 
 ''' <summary>Reusable FO4 biped slot-conflict resolution — the engine rule that decides which
 ''' equipped pieces survive when their slot masks overlap. Extracted from MainForm.SelectWinningCandidates
 ''' so the SAME rules drive both the render path (resolving an NPC's loadout) and the Edit Outfit
 ''' "Create" tab (resolving the user-assembled piece list). App-internal (NPC_Manager only — two
-''' callers, one app) per feedback_always_correct_path_no_optional_debt.
+''' callers, one app) per 00-reglas-scope-y-libreria.
 '''
-''' Rules implemented (see arch_slot_conflict_resolution memory):
+''' Rules implemented (see 23-armor-conflicto-de-slots memory):
 '''   • Pass 1a — extended underarmor: a piece declaring an underlayer bit (BODY bit 3 or [U] bits
 '''     6-10) AND an [A] bit (11-15) reserves its [A] bits and shields its whole mask; later pure-[A]
 '''     pieces that touch those bits are discarded (Bridget/DCGuard rule). Processed ascending Order.
@@ -24,7 +24,7 @@ Public Module SlotConflictResolver
     ' table (BipedSlots.RegionMask, derived from xEdit wbBipedObjectFlags — NOT heuristic). Computed
     ' per-call in ResolveSlotWinners because the game can change at runtime. Skyrim has NO [U]/[A] layers
     ' (RegionMask(Under)/RegionMask(Over) = 0), so the extended-underarmor exception below is a no-op there;
-    ' the byte-level engine RE (reference_sse_engine_occlusion_re Q4) also confirmed Skyrim strips no bit.
+    ' the byte-level engine RE (23-armor-oclusion-sse-re Q4) also confirmed Skyrim strips no bit.
 
     ''' <summary>Outcome of a resolution: the kept pieces (Winners), the eliminated ones (Losers),
     ''' and the final occupied slot bitmask (so the render path can run head-part occlusion / skin
@@ -161,7 +161,7 @@ Public Module SlotConflictResolver
             '    (SlotsOverlap 0x1401CCA90, single caller 0x1403BD5A2) is render-side display de-dup, NOT an
             '    inventory rule. This is what makes cuirass(32,34,38)+boots(37,38)+gloves(33,34) coexist —
             '    they share calves(38)/forearms(34) but the engine drops none. (An earlier any-bit rule
-            '    eliminated the cuirass; claim-free-bits was a wrong guess — see reference_sse_engine_occlusion_re.)
+            '    eliminated the cuirass; claim-free-bits was a wrong guess — see 23-armor-oclusion-sse-re.)
             ' Sólo FO4 llega acá: la rama Skyrim (propiedad de slot por priority) retornó arriba.
             Dim conflictMask = If(stripPipboy, m And Not BipedSlots.SLOT_PIPBOY, m)
             Dim occupiedForCheck = If(stripPipboy, occupied And Not BipedSlots.SLOT_PIPBOY, occupied)

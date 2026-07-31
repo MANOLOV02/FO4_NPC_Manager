@@ -1,4 +1,4 @@
-' UI built in Designer per feedback_ui_in_designer.md (sub-editor for a single OBTS combination,
+﻿' UI built in Designer per 00-reglas-ui-y-vb.md (sub-editor for a single OBTS combination,
 ' mirror of MswpSubEditor_Form). InitializeComponent is declarative ONLY — the Keywords/Includes/
 ' Properties DataGridView columns (variable/typed content, one of them a ValueType combo) are added
 ' in code-behind, exactly like MswpSubEditor's substitutions grid and ArmoEditor's addons grid.

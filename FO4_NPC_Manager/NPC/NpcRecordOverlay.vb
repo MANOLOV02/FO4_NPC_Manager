@@ -52,23 +52,6 @@ Public Module NpcRecordOverlay
         Return result
     End Function
 
-    ''' <summary>If an overlay is registered for <paramref name="selectedNpcFormID"/> in
-    ''' <paramref name="appliedPresets"/>, return a shallow copy of <paramref name="raw"/>
-    ''' with the preset's morph/face-tint/HeadPart/etc. fields swapped in. Otherwise return
-    ''' <paramref name="raw"/> unchanged.
-    '''
-    ''' Per-field semantics replicate the engine's LoadPreset (CharGenInterface.cpp:259-628):
-    '''   • HeadParts: race chargen defaults FIRST (engine WIPES then repopulates),
-    '''     then preset entries appended; downstream MergeHeadPartsWithRaceDefaults dedupes
-    '''     per-PartType ("preset wins, race fills gaps").
-    '''   • HairColor: preset 0 means "not in JSON, preserve" (engine: nullptr form skips).
-    '''   • Weight: preserve raw when preset doesn't carry a value (Single?=Nothing = absent).
-    '''   • Morphs.Presets / Values / Regions: Has* presence flag drives wipe-vs-preserve
-    '''     (HasX=True ⇒ apply preset content even if empty; =False ⇒ preserve raw).
-    '''   • FacialMorphIntensity: always overwrite (engine always calls SetFacialBoneMorphIntensity,
-    '''     using 1.0 when missing — parser already defaults to 1.0F so this is equivalent).
-    '''   • Tints: Has*-driven, same shape as morphs.
-    ''' </summary>
     ''' <summary>Resolve an LM SkinTemplate id to its full bundle. Returns Nothing if the id
     ''' isn't loaded. Optional injection so the offline bake path (FaceGenBuilder) can opt out —
     ''' F4SE skin overrides are runtime only and don't apply to baked CharGen output.</summary>
@@ -98,6 +81,16 @@ Public Module NpcRecordOverlay
         ApplyLmHdptReplacement(headParts, newHdptFormID, pluginManager)
     End Sub
 
+    ''' <summary>Si hay un preset de LooksMenu aplicado a <paramref name="selectedNpcFormID"/>, devuelve una
+    ''' copia de <paramref name="raw"/> con los campos de morph y face-tint del preset pisados. Sin preset,
+    ''' devuelve <paramref name="raw"/> tal cual.
+    ''' <para>El overlay se indexa por el NPC que el usuario SELECCIONÓ, no por el origen de su plantilla:
+    ''' así un preset aplicado a un NPC no se filtra a otros que compartan su cadena de templates.</para>
+    ''' <para>Semántica por campo, replicando el <c>LoadPreset</c> del motor: los head parts arrancan de los
+    ''' defaults de la RACE y el preset se mergea encima; un campo que el JSON no trae se PRESERVA del record
+    ''' (identificador que no resuelve ⇒ el motor saltea la asignación); los diccionarios de morphs vacíos
+    ''' también preservan. Divergencia consciente: el peso ausente lo dejamos como está en vez de reproducir
+    ''' el "missing = 0" del motor, que rompe el body weight visualmente y no sirve para Paste entre NPCs.</para></summary>
     ''' <param name="parseRace">Optional cached RACE parser (NpcRenderContext.ParseRaceCached). When Nothing,
     ''' falls back to a direct <c>RecordParsers.ParseRACE</c> — keeps the offline bake path pure.</param>
     Public Function ApplyPresetOverlayToNpcData(raw As NPC_Data,
@@ -251,39 +244,18 @@ Public Module NpcRecordOverlay
             race = If(parseRace IsNot Nothing, parseRace(raceRec), RecordParsers.ParseRACE(raceRec, pluginManager))
         End If
 
-        ' ⛔⛔ EL WIPE SE GATEA POR PRESENCIA (HasHeadPartFormIDs), igual que morphs/tints/weight.
-        ' BUG QUE ESTO ARREGLA (medido, FO4 **y** SSE — esta función no tiene gate por juego):
-        ' `HydrateAppliedPresetsFromSidecars` (MainForm ~1777) siembra, AL ABRIR LA APP, un preset SINTÉTICO y VACÍO
-        ' por cada NPC con entrada en el .bssliders (BodyMorphs / SkinTemplate). Su propio comentario dice que los
-        ' Has* quedan en False "so vanilla fields (HeadParts, tints, ...) are preserved from the raw record" — pero
-        ' acá el wipe corría IGUAL: el shadow se sembraba con los DEFAULTS DE LA RAZA y NUNCA se copiaban los
-        ' head parts del NPC (raw.HeadPartFormIDs). Resultado: abrir la app + bakear (sin tocar nada) horneaba la
-        ' cara con el pelo/cejas/ojos de la RAZA en vez de los del NPC — MEDIDO en 0008774F: el NIF salía con
-        ' HairFemaleNord04 / FemaleBrowsHuman01 / FemaleEyesHumanHazelBrown (defaults Nord♀) mientras Edit Face
-        ' mostraba los reales (HairFemaleNord07 / FemaleBrowsHuman11 / FemaleEyesHumanLightBlue).
-        ' El wipe+race-defaults ES fiel al engine (LoadPreset), pero SÓLO cuando hay un preset que de verdad toma
-        ' posesión de los head parts — que es exactamente lo que marca HasHeadPartFormIDs (lo setean Edit Face,
-        ' Load LM, Paste y el loader del .json cuando el preset trae head parts). Sin esa bandera, el record manda.
-        ' ⭐⭐⭐ SEGUNDA MITAD DEL MISMO BUG (2026-07-26, MEDIDO en 0001360B 'Aeri', SSE). La bandera sola NO
-        ' alcanzaba: sembrar acá los DEFAULTS DE LA RAZA **delante** de los del preset invertía la precedencia
-        ' aguas abajo. MergeHeadPartsWithRaceDefaults trata su entrada como "el PNAM del NPC" y aplica
-        ' PRIMERO-GANA por PartType (HeadPartResolver:81) ⇒ como los defaults iban primeros, GANABAN ELLOS.
-        ' Doble merge con precedencia invertida: el prepend de acá no era redundante, era ACTIVAMENTE dañino.
-        ' MEDIDO (dos grabadas consecutivas del mismo NPC, ESP byte-idéntico y las 10 texturas byte-idénticas;
-        ' la ÚNICA diferencia estaba en el FaceGeom): tras editar la cara el NIF salía con HairFemaleNord04 /
-        ' FemaleBrowsHuman01 / FemaleEyesHumanHazelBrown (defaults Nord♀) mientras el PNAM del ESP y el render
-        ' llevaban los reales (HairFemaleNord15 / FemaleBrowsHuman09 / FemaleEyesHumanIceBlue) ⇒ CARA MARRÓN en
-        ' juego, porque el NIF horneado contradice al record. Sólo se disparaba DESPUÉS de editar: abrir Edit
-        ' Face es lo único que enciende HasHeadPartFormIDs (EditFace_Form:2119), y sin esa bandera los dos
-        ' caminos leían el record y coincidían.
-        ' Por qué los OTROS dos consumidores no se veían afectados — y por qué su regla es la correcta:
-        '   · el ESP clasifica con ÚLTIMO-GANA (NpcOverrideSaver:1089) ⇒ el preset pisaba al default;
-        '   · el render REEMPLAZA la lista y exige contenido (NpcStateResolver:127) ⇒ nunca mezcla.
-        ' REGLA ÚNICA (la del render): la posesión exige CONTENIDO, y el preset REEMPLAZA — acá no se prepende
-        ' NADA. El relleno por PartType lo hace el ÚNICO merge de aguas abajo, que ya siembra la raza en su
-        ' Step 1. VERIFICADO que los dos únicos consumidores del shadow pasan por ese merge
-        ' (FaceGenBuilder:1486 vía BuildAllowedShapeMap, SseMorphReverseEngineer:180), así que ningún camino
-        ' pierde los defaults de raza por sacar el prepend.
+        ' â›” EL WIPE SE GATEA POR PRESENCIA (HasHeadPartFormIDs), igual que morphs, tints y weight, Y NO SE
+        ' PREPENDE NADA. Las dos mitades importan y las dos vienen de bugs medidos, en FO4 y en SSE:
+        '   Â· Sin el gate: al abrir la app se siembra un preset SINTETICO y VACIO por cada NPC con entrada en el
+        '     sidecar, y el wipe corria igual, dejando el shadow con los DEFAULTS DE LA RAZA. Abrir y hornear sin
+        '     tocar nada horneaba la cara con el pelo, cejas y ojos de la RAZA en vez de los del NPC.
+        '   Â· Sin sacar el prepend: sembrar los defaults de raza DELANTE de los del preset invierte la
+        '     precedencia aguas abajo, porque MergeHeadPartsWithRaceDefaults trata su entrada como el PNAM del
+        '     NPC y aplica PRIMERO-GANA por PartType. El prepend no era redundante, era ACTIVAMENTE daniÃ±o: el
+        '     NIF horneado contradecia al PNAM del ESP y al render, y eso da CARA MARRON en juego.
+        ' REGLA UNICA (la del render): la posesion exige CONTENIDO y el preset REEMPLAZA. El relleno por PartType
+        ' lo hace el UNICO merge de aguas abajo, que ya siembra la raza en su primer paso, y los dos consumidores
+        ' del shadow pasan por ese merge, asi que nadie pierde los defaults por sacar el prepend.
         If preset.HasHeadPartFormIDs AndAlso preset.HeadPartFormIDs.Count > 0 Then
             shadow.HeadPartFormIDs.AddRange(preset.HeadPartFormIDs)
         Else
@@ -524,7 +496,7 @@ Public Module NpcRecordOverlay
         ' Asi el skin-tone HEREDADO (slot-12 que el NPC no autora) tambien resuelve -> el render (uniform
         ' albedo*=tintColor) y el save lo toman SIN tener que materializarlo en Face Edit. El heredado se
         ' comporta identico a uno autorado: MergeTintLayersWithRaceDefaults ya pone Color=CLFM y
-        ' Value=Alpha*100 del TemplateColor por el indice TTED. Ver [[arch_facetint_race_default_inheritance]].
+        ' Value=Alpha*100 del TemplateColor por el indice TTED. Ver [[50-facetint-leyes-y-compositor]].
         Dim safeNpc As IList(Of NPC_FaceTintLayerData) = If(npc.FaceTintLayers, CType(New List(Of NPC_FaceTintLayerData)(), IList(Of NPC_FaceTintLayerData)))
         Dim merged = FaceTintInputBuilder.MergeTintLayersWithRaceDefaults(safeNpc, race, isFemale, pluginManager)
 
@@ -544,12 +516,6 @@ Public Module NpcRecordOverlay
         Return Nothing
     End Function
 
-    ''' <summary>Replace the HDPT entry of <paramref name="targetPartType"/> in
-    ''' <paramref name="headParts"/> with <paramref name="newHdptFormID"/>. No-op if the new
-    ''' FormID is 0 or doesn't resolve to an HDPT record. Mirrors
-    ''' <c>TESNPC::ChangeHeadPart</c> (SkinInterface.cpp:289-297): the engine looks up the
-    ''' current HDPT of the same PartType and overwrites it. If no entry of that PartType
-    ''' exists yet, we append the new one (LM in-game also calls AddHeadPart in that branch).</summary>
     ''' <summary>Replace the entry in <paramref name="headParts"/> whose PartType matches the
     ''' new HDPT's PartType, with <paramref name="newHdptFormID"/>. PartType is READ from the new
     ''' HDPT itself — we do NOT assume "head=Face" or "headRear=HeadRear". This matches engine

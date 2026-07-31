@@ -1,4 +1,4 @@
-' UI built in Designer per feedback_ui_in_designer.md. InitializeComponent is declarative ONLY. The Original
+﻿' UI built in Designer per 00-reglas-ui-y-vb.md. InitializeComponent is declarative ONLY. The Original
 ' ComboBox items (mesh NIF materials) are added in code-behind since they depend on the ctor-supplied list.
 ' Modal editor for a SINGLE MSWP substitution (Original/Replacement/Color-Remap) — replaces the old
 ' inline-editable GridSubs (combo Original cell + text cells) so that grid can be pure read-only.

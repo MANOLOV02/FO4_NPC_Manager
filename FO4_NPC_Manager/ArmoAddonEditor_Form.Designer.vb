@@ -1,4 +1,4 @@
-' UI built in Designer per feedback_ui_in_designer.md. InitializeComponent is declarative ONLY.
+﻿' UI built in Designer per 00-reglas-ui-y-vb.md. InitializeComponent is declarative ONLY.
 ' Modal editor for a SINGLE ARMO_AddonEntry (INDX + ARMA reference) of an ARMO — replaces the old
 ' inline-editable INDX cell in GridAddons so the addons grid can be pure read-only.
 <Global.Microsoft.VisualBasic.CompilerServices.DesignerGenerated()>

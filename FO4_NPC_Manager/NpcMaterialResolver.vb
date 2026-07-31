@@ -13,7 +13,7 @@ Imports OpenTK.Mathematics
 ''' <summary>Phase 2 of the MainForm split: material / texture-set / hair-palette / color-form
 ''' resolution extracted from MainForm into a standalone class (DI via NpcRenderContext). Increment 1
 ''' = resolver/leaf core; ApplyShapeMaterialOverrides + skin-tone resolvers stay in MainForm for
-''' later increments. See project_mainform_split.</summary>
+''' later increments. See 61-perf-mainform-split.</summary>
 Friend NotInheritable Class NpcMaterialResolver
     Private ReadOnly _ctx As NpcRenderContext
     ''' <summary>Overlay resolver injected from MainForm (ApplyPresetOverlayToNpcData) so the
@@ -83,16 +83,11 @@ Friend NotInheritable Class NpcMaterialResolver
 
     Private Shared _txstFlagDumpDone As Boolean = False
 
-    ''' <summary>Load the body material at <paramref name="materialPath"/> from its VANILLA (BA2) bytes,
-    ''' bypassing any loose override. With CBBEHeadRearFix.esp installed the loose ghoulfemalebody.BGSM
-    ''' points its diffuse at the CBBE-shaped (CBBE-UV) body; the vanilla-UV nape mesh needs the VANILLA
-    ''' body texture instead, so we must read the material that ships in the BA2, not the loose winner.
-    '''
-    ''' GetOverriddenEntries(materialKey) holds the loser(s) shadowed behind a loose override — the first
-    ''' IsLosseFile=False entry is the BA2 material. Parse those bytes with the SAME parser the live
-    ''' material chain uses (FO4UnifiedMaterial_Class.Deserialize byte overload, exactly what the normal
-    ''' Diccionario overload calls). If there is NO overridden BA2 entry (no loose override present), the
-    ''' normal resolver result is already vanilla — fall back to TryLoadMaterialFromDictionary.</summary>
+    ''' <summary>Carga el material del cuerpo desde sus bytes VANILLA (BA2), saltando cualquier override
+    ''' suelto: la malla de nuca de UV vanilla necesita la textura vanilla, no la que apunte el BGSM suelto
+    ''' de un mod. GetOverriddenEntries devuelve los perdedores tapados por el suelto; el primero con
+    ''' IsLosseFile=False es el del BA2, y se parsea con el MISMO parser de la cadena viva. Sin entrada
+    ''' overrideada no hay suelto, así que el resolver normal ya devuelve vanilla.</summary>
     Friend Shared Function LoadVanillaBodyMaterial(materialPath As String, shape As IRenderableShape) As FO4UnifiedMaterial_Class
         ' Key the override-stack lookup the same way the material chain does: Materials\-prefixed,
         ' separators corrected, lowercased (dictionary is OrdinalIgnoreCase, so case is irrelevant).
@@ -133,34 +128,13 @@ Friend NotInheritable Class NpcMaterialResolver
         End Try
     End Function
 
-    ''' <summary>Engine-faithful palette/HairTintColor resolution for hair HeadParts. Single source
-    ''' of truth — used by BOTH the NIF-load pass (<see cref="ApplyShapeMaterialOverrides"/>) and
-    ''' the live face-tint preset refresh (<see cref="RefreshFaceTintLivePreview"/>). Previously
-    ''' duplicated in those two sites with subtly different guards; the looser guard at the live
-    ''' path leaked hair color into any palette-enabled material (robot armor, face shapes with
-    ''' palette opt-in, etc.). This helper enforces the engine rule once.
-    '''
-    ''' Engine rule: <c>CLFM.RemappingIndex</c> is consumed only by HDPTs that the engine equips
-    ''' with a NPC color form. That's Hair (3) / FacialHair (4) / Brow (6) via NPC.HNAM / NPC.QNAM.
-    ''' Other HeadParts (Face / Eyes / HeadRear / Meatcaps) carry palette in their BGSM but their
-    ''' engine-correct paint comes from TETI SkinTone or the FaceTintCompositor, not from this path.
-    ''' Misc (0) deferred — open question whether some Misc parts legitimately need hair color.
-    '''
-    ''' <para>Behavior per resolved <c>hairColorFormID</c>:
-    ''' <list type="number">
-    ''' <item>If CLFM has RemappingIndex AND a palette LUT path is resolvable (BGSM-first, RACE.HNAM
-    '''   fallback): set <c>GrayscaleToPaletteColor=True</c>, <c>GrayscaleToPaletteScale=clfm.RemappingIndex</c>,
-    '''   <c>GreyscaleTexture=palTex</c>.</item>
-    ''' <item>Else: fall back to <c>HairTintColor</c>. Caller can pre-resolve a richer tint (NIF-load
-    '''   passes ResolveHairTintColor with solidTintColor consideration) via
-    '''   <paramref name="hairTintColorOverride"/>; if Nothing the helper resolves via
-    '''   ResolveColorFormColor on the hair color form.</item>
-    ''' </list></para>
-    '''
-    ''' No-op for: material=Nothing, candidate not IsHairHeadPart, or material that's neither Hair
-    ''' shader nor palette opt-in. Silent (no warning logs) — those are expected for the vast
-    ''' majority of shapes; the diagnostic only fires when the helper actually mutates state.
-    ''' </summary>
+    ''' <summary>Resolución engine-faithful de paleta y HairTintColor para head parts de pelo. FUENTE ÚNICA:
+    ''' la usan la carga del NIF y el refresh live del preset (estuvo duplicada con guards distintos, y el laxo
+    ''' pintaba cualquier material con paleta habilitada).
+    ''' <para>Regla del motor: el <c>RemappingIndex</c> del CLFM lo consumen solo los head parts a los que el
+    ''' motor equipa un color form — pelo, barba y cejas. Con RemappingIndex y LUT resoluble se activa la
+    ''' paleta; si no, cae al HairTintColor. No-op silencioso fuera de ese caso.
+    ''' Ver 50-facetint-leyes-y-compositor §A.7.</para></summary>
     Friend Sub ApplyMaterialPaletteHairColor(material As FO4UnifiedMaterial_Class,
                                              candidate As MainForm.MeshCandidate,
                                              state As MainForm.NPCVisualState,
@@ -267,21 +241,12 @@ Friend NotInheritable Class NpcMaterialResolver
             If effectiveHairColor.HasValue Then
                 Dim oldHairCol = material.HairTintColor
                 Dim resolvedHair = effectiveHairColor.Value
-                ' ⭐ SSE hair-tint convention: el FaceGeom (y el engine) usan el color del CLFM DOBLADO
-                ' (clamp 255). Medido byte-exacto vs CK sobre el corpus vanilla: CK.HairTintColor == 2×CLFM.Color
-                ' (p.ej. Narri CLFM=(48,35,33) → CK=(96,70,66)). Sin el ×2 el render Y el bake muestran el pelo
-                ' a la mitad (más apagado). Es un ÚNICO punto de resolución que consumen render y bake, así que
-                ' arregla los dos a la vez. FO4 usa el path de grayscale-palette (rama HasRemappingIndex de
-                ' arriba), NO este HairTintColor, así que queda intacto (validado byte-exact).
-                '
-                ' ⚠️ El ×2 va por TintColorScale (dominio FLOAT), NO doblando los bytes. El storage del
-                ' material son 3 BYTES (0x00RRGGBB) ⇒ techo duro 255 = 1.0: con un CLFM de canal ≥128 el
-                ' doblado en bytes clampeaba y perdía el exceso. MEDIDO vs CK: CLFM=(130,130,130) →
-                ' CK=(1,020,1,020,1,020) = 2,0 × (130/255), nuestro doblado en bytes daba min(255,260)/255
-                ' = (1,000,1,000,1,000) — Δ=0,0196 en 9 NPCs / 25 shapes (p.ej. BrowsMaleSnowElf). El
-                ' factor se aplica al convertir a float en el bake (Save_To_Shader) y en el render
-                ' (mismo valor, RENDER == BAKE); el shader tolera tint > 1.
-                ' Se escribe SIEMPRE (1.0F fuera de SSE) para no arrastrar estado si el material se reutiliza.
+                ' ⛔ SYNC: RENDER == BAKE. Convención SSE de hair tint: el motor usa el color del CLFM DOBLADO
+                ' (CK.HairTintColor == 2 x CLFM.Color, medido byte-exacto). Punto único que consumen render y bake.
+                ' ⚠️ El x2 va por TintColorScale (dominio FLOAT), NO doblando los bytes: el storage del material
+                ' son 3 bytes ⇒ techo 255 = 1.0, y con un canal >=128 el doblado en bytes clampeaba. El shader
+                ' tolera tint > 1. Se escribe siempre (1.0F fuera de SSE) para no arrastrar estado al reutilizar
+                ' el material. FO4 no pasa por acá: usa la rama de grayscale-palette. Ver 31-sse-color-de-pelo-clfm.
                 Dim isSseHairDouble As Boolean = Config_App.Current IsNot Nothing AndAlso Config_App.Current.Game = Config_App.Game_Enum.Skyrim
                 material.TintColorScale = If(isSseHairDouble, 2.0F, 1.0F)
                 material.HairTintColor = resolvedHair
@@ -322,34 +287,13 @@ Friend NotInheritable Class NpcMaterialResolver
         Dim bodyMask As UInteger = BipedSlots.RegionMask(BipedSlots.BipedRegion.Body)
         Dim handMask As UInteger = BipedSlots.RegionMask(BipedSlots.BipedRegion.Hands)
 
-        ' ⭐ LA RAZA ES UNA *PREFERENCIA*, NO UN GATE (bake controlado BAKETEST2FO4.esp, 2026-07-19).
-        '
-        ' MEDIDO — el CK NO filtra por raza las ARMA del skin ARMO. Los NPC BAKETEST2_N_D1 (0x840,
-        ' brazo NPC.WNAM) y BAKETEST2_R_D1 (0x847, brazo RACE.WNAM) tienen un skin ARMO cuya ÚNICA
-        ' ARMA de slot body declara RNAM=SynthGen2Race (sin additional races): no matchea ni la raza
-        ' del actor (HumanRace / clon de HumanRace) ni la RNAM del ARMO. El CK igual le horneó al
-        ' head-rear las texturas de ESA ARMA (Actors\Character\Piper\PiperHead_d/_n/_s). Con el gate
-        ' estricto anterior el resolver devolvía Nothing y el shape se quedaba con las texturas
-        ' embebidas del NIF fuente (FemaleBody_*), que NO aparecen en ninguno de los 9 NIF horneados.
-        ' Controles positivos del experimento: N_P→Preston_*, R_P→Mayor_* (los dos PASARON, así que
-        ' los dos brazos WNAM miden). El ARMO viene del WNAM ⇒ es la piel del actor POR CONSTRUCCIÓN,
-        ' y por eso el CK no necesita re-validarle la raza.
-        '
-        ' PERO el gate NO se puede simplemente borrar: sobre el corpus vanilla hay 120 NPC FO4 + 3 SSE
-        ' cuyo skin ARMO lista VARIAS ARMA de slot body de razas distintas, y ahí la primera de la
-        ' lista es la equivocada — YaoGuai tomaría FEVHoundWholeAA, EyeBot tomaría BloatflyWholeAA,
-        ' Netch (SSE) tomaría DLC2NakedRieklingAA. El experimento no discrimina ese caso porque sus
-        ' ARMO tienen UNA sola ARMA de body.
-        '
-        ' FORMULACIÓN que satisface las dos evidencias (y la única mínima que lo hace): dos pasadas.
-        '   Pasada 1 = comportamiento anterior EXACTO (sólo ARMA race-válidas).
-        '   Pasada 2 = sólo si la pasada 1 no resolvió nada, se acepta cualquier ARMA de la región.
-        ' Es estrictamente ADITIVA: nunca cambia una elección que ya resolvía, sólo convierte
-        ' "Nothing" en "la ARMA que el CK sí usa". Por eso los 120+3 quedan bit-idénticos y los 212
-        ' NPC FO4 de ARMA única non-matching (la clase SkinSynthGen2/SynthGen2Body, que incluye al
-        ' DN092_IntercomFemale01 del RE original) pasan a resolver como el CK.
-        ' ⚠️ SUBDETERMINADO: el desempate cuando hay VARIAS ARMA non-matching de la región (la
-        ' pasada 2 toma la primera). El experimento no lo mide; no hay caso vanilla que lo separe.
+        ' ⭐ Para el skin ARMO la raza es una PREFERENCIA, no un gate: el CK no filtra por raza las ARMA del
+        ' ARMO de piel (medido con bake controlado). Tiene sentido, el ARMO viene del WNAM ⇒ ES la piel del
+        ' actor por construcción. ⛔ Pero el gate no se puede borrar: hay skin ARMO que listan varias ARMA de
+        ' body de razas distintas y la primera es la equivocada (un YaoGuai tomaría la de sabueso). De ahí las
+        ' DOS pasadas: la 1 exige race-match y la 2 —solo si la 1 no resolvió— acepta cualquiera de la región.
+        ' Es estrictamente ADITIVA. ⚠️ Subdeterminado con varias ARMA non-matching: toma la primera, sin caso
+        ' vanilla que lo discrimine.
         For pass As Integer = 0 To 1
             Dim requireRaceMatch As Boolean = (pass = 0)
             For Each entry In armo.ArmorAddons
@@ -438,59 +382,35 @@ Friend NotInheritable Class NpcMaterialResolver
     ' el flag ACBS "Diffuse Alpha Test" (0x01000000) — RE CreationKit 0x140ED41F6, gate [npc+0x9b]&1; schema
     ' wbDefinitionsFO4.pas:10655. Al reemplazarlo por HeadDiffuseAlphaTest quedó como parámetro que los dos
     ' call-sites calculaban y pasaban pero que el CUERPO NO LEÍA NUNCA. Ver
-    ' reference_acbs_diffuse_alpha_test_flag.
+    ' 40-bake-leyes-fo4.
 
     Friend Function ResolveHeadPartSolidTintColor(candidate As MainForm.MeshCandidate) As Nullable(Of Color)
         If candidate Is Nothing OrElse Not candidate.UseSolidTint Then Return Nothing
         Return ResolveColorFormColor(candidate.HeadPartColorFormID)
     End Function
 
-    ''' <param name="isFaceTextureSource">Solo FO4: True cuando el TXST retornado es el NPC.FTST del
-    ''' camino Face. El caller lo aplica DIFFUSE-ONLY (forceDiffuseOnly) — el attach del engine
-    ''' (Fallout4.exe 0x1406EE0B2 / CK 0x140ED3807) aplica de la cadena FTST>bodyTex>TNAM únicamente
-    ''' el slot 0. En SSE es SIEMPRE False (base=TNAM; la capa face va en
-    ''' <paramref name="sseFaceAuxTextureSet"/>). RE completo 4 binarios 2026-07-16, ver memoria
-    ''' arch_engine_face_texture_pipeline_re.</param>
-    ''' <param name="sseFaceAuxTextureSet">SOLO SSE + HeadPart raw=Face: el set RESUELTO
-    ''' FTST ?? DFT[sexo propio] ?? TNAM que aporta ÚNICAMENTE Normal(TX01) + _sk(TX03) +
-    ''' detail(TX04) POR ENCIMA de la base TNAM, gateado por material Face — modelo por capas del
-    ''' motor SSE medido 2026-07-16 con TRES evidencias: (1) RE RegenerateHead 0x14042BD90 (normal
-    ''' vía 0x14042C410→material+0x58; _sk/detail→material+0xB0/+0xA8; TX07 solo togglea flag
-    ''' specular, no path; el DIFFUSE jamás se toca — queda del TNAM del attach); (2) facegeom
-    ''' SHIPPED de Razhinda 0x0001B1D3 (FTST=SkinHeadMaleKhajiitOld): D y S del TNAM femenino,
-    ''' N/_sk/detail del FTST masculino — cada slot discrimina; (3) facegeom SHIPPED del Afflicted
-    ''' 0x00064A42: N=BretonMale_msn del DFT de la raza pisando el TNAM (prueba DFT>TNAM en la capa).
-    ''' Nothing en FO4 (allá el set resuelto reemplaza D/N/S completos como base del composite
-    ''' FaceCustomization — validado byte-exacto vs CK, Mitch) o si el aux coincide con el TNAM.</param>
-    ''' <param name="fo4FaceComposeInputsOnly">SOLO FO4 + HeadPart raw=Face. True para CUALQUIERA de las
-    ''' tres procedencias del set de cara — NPC.FTST, RACE.DFTM-fallback y el TNAM del propio head part —
-    ''' porque la ley no depende de qué record lo aportó sino de que ESTE es el texture set de la CARA.
-    ''' True ⇒ el caller aplica del TXST ÚNICAMENTE TX00/TX01/TX07 (D/N/S = las tres ENTRADAS del
-    ''' compose de FaceCustomization) y, si el TXST trae MNAM, toma de ese material D+N+S.
-    ''' Ver las reglas medidas en <see cref="ApplyTextureSetToMaterial"/> y en el bloque del MNAM de
-    ''' <see cref="ApplyTextureSetOverrides"/>.</param>
+    ''' <param name="isFaceTextureSource">Solo FO4: el TXST retornado es el NPC.FTST del camino Face y el
+    ''' caller lo aplica DIFFUSE-ONLY (el attach del motor aplica solo el slot 0 de la cadena FTST>body>TNAM).
+    ''' Siempre False en SSE. Ver 30-fo4-pipeline-textura-de-cara.</param>
+    ''' <param name="sseFaceAuxTextureSet">Solo SSE + head part de cara: el set resuelto (FTST ?? DFT ?? TNAM)
+    ''' que aporta unicamente Normal + <c>_sk</c> + detail POR ENCIMA de la base TNAM, gateado por material Face;
+    ''' el diffuse jamas se toca. Ley por capas: 50-facetint-leyes-y-compositor B.3.</param>
+    ''' <param name="fo4FaceComposeInputsOnly">Solo FO4 + head part de cara, para las TRES procedencias del set
+    ''' (FTST, RACE.DFT y el TNAM propio): la ley no depende de que record lo aporto. True => el caller aplica
+    ''' solo TX00/TX01/TX07, las entradas del compose. Ver 40-bake-leyes-fo4 seccion 9.</param>
     Friend Function ResolveTextureSet(candidate As MainForm.MeshCandidate, state As MainForm.NPCVisualState, ByRef isFaceTextureSource As Boolean, ByRef sseFaceAuxTextureSet As TXST_Data, ByRef fo4FaceComposeInputsOnly As Boolean) As TXST_Data
         isFaceTextureSource = False
         sseFaceAuxTextureSet = Nothing
         fo4FaceComposeInputsOnly = False
         Dim logEnabled = Logger.Enabled
-        ' Regla canónica HeadPart TXST resolution (per HDPT.DATA flags spec
-        ' wbDefinitionsFO4.pas:7365-7372):
-        '   A) sin TNAM, sin UsesBodyTexture → Nothing (deja lo embebido del NIF).
-        '   B) con TNAM, sin UsesBodyTexture → usa TNAM (lo que el HDPT trae).
-        '   C) UsesBodyTexture=True → body TXST del actor (state.SkinFormID → NakedTorso ARMA →
-        '      Male/FemaleTxst gender-correct). La cadena SkinFormID es race-specific, así un mismo
-        '      HDPT compartido entre razas (RNAM=FLST con Human+Ghoul, ej. FemaleHeadHumanRearTEMP)
-        '      renderiza con texturas distintas según la raza del NPC.
-        ' Caso particular Face: si un HDPT cuyo *raw* PartType=Face no tiene TNAM, fallback a
-        ' state.HeadTextureFormID (NPC.FTST). Esto cubre HDPTs Face vanilla que dependen del
-        ' FTST per-NPC (ej. NPCs con makeup pre-bakeado en el FTST). IMPORTANTE: usa
-        ' HeadPartTypeRaw (no HeadPartType=effective) — sub-parts Misc cuyo effective se
-        ' hereda como Face vía HNAM-parent (MouthShadowFemale, eye lashes/AO/wet) NO deben
-        ' tomar el FTST del head, lo que les pisaba el Diffuse del shader source con
-        ' basefemalehead_d.dds en vez de su propio path autoreado. CK al bakear respeta el
-        ' material original de esos sub-parts; verificado contra Alijo vanilla.
-        ' Esta regla aplica SÓLO a HeadPart. Skin/Outfit candidates conservan su propio flujo.
+        ' Regla canónica de TXST por head part (flags HDPT.DATA):
+        '   A) sin TNAM, sin UsesBodyTexture → Nothing (queda lo embebido del NIF).
+        '   B) con TNAM, sin UsesBodyTexture → TNAM.
+        '   C) UsesBodyTexture → body TXST del actor (SkinFormID → NakedTorso ARMA → TXST del género). La
+        '      cadena es race-specific: un HDPT compartido entre razas renderiza distinto según la del NPC.
+        ' Caso Face sin TNAM: fallback a NPC.FTST. Se gatea por HeadPartTypeRaw, NO por el efectivo: los
+        ' sub-parts Misc que heredan Face vía HNAM (MouthShadow, lashes/AO/wet) conservan su material propio.
+        ' Sólo aplica a HeadPart; skin y outfit tienen su propio flujo.
         If candidate IsNot Nothing AndAlso candidate.Kind = MainForm.MeshCandidateKind.HeadPart Then
             ' Caso C: UsesBodyTexture=True gana sobre TNAM.
             If candidate.UsesBodyTexture AndAlso state IsNot Nothing Then
@@ -513,40 +433,25 @@ Friend NotInheritable Class NpcMaterialResolver
         If candidate IsNot Nothing Then
             textureSetFormID = candidate.TextureSetFormID
             If textureSetFormID <> 0UI Then txstSource = "HDPT.TNAM"
-            ' Resolución Face por JUEGO (dos leyes distintas, ambas medidas — ver doc del parámetro
-            ' sseFaceAuxTextureSet):
-            '   FO4 — el set resuelto (FTST > TNAM > DFTM-si-no-hay-TNAM) reemplaza la BASE COMPLETA
-            '   (D/N/S) del composite FaceCustomization; ej. Mitch FTST=SkinHeadMayor pisa
-            '   MaleHeadHuman.TNAM=SkinHeadHeroMale — validado byte-exacto vs bakes reales del CK.
-            '   (El RE del resolver del CK 0x140ED4244 sugiere DFT>TNAM también con TNAM presente;
-            '   NO aplicado: cero casos vanilla para validar contra bake — pendiente experimento CK
-            '   con esp de prueba antes de cambiar la precedencia FO4.)
-            '   SSE — MODELO POR CAPAS: base = TNAM (D y S SIEMPRE del TNAM; el motor jamás pisa el
-            '   diffuse con FTST/DFT); capa aux = FTST ?? DFT[sexo propio] ?? TNAM que aporta SOLO
-            '   N/_sk/detail, aplicada gateada por material Face en el loop per-shape.
-            ' Guard raw=Face (HeadPartTypeRaw, NO effective) protege sub-parts Misc heredados como
-            ' Face (MouthShadow/AO/lashes/wet) que conservan su propio material (verificado Alijo).
+            ' Resolución Face por JUEGO, dos leyes medidas (ver doc del parámetro sseFaceAuxTextureSet):
+            '   FO4 — el set resuelto (FTST > TNAM > DFTM si no hay TNAM) reemplaza la BASE COMPLETA D/N/S del
+            '   composite FaceCustomization. ⚠️ SIN MEDIR: el RE del CK 0x140ED4244 sugiere DFT>TNAM también con
+            '   TNAM presente; no aplicado, cero casos vanilla para validarlo contra un bake.
+            '   SSE — modelo POR CAPAS: base = TNAM (D y S siempre del TNAM) y capa aux con solo N/_sk/detail.
+            ' El guard usa HeadPartTypeRaw, no el efectivo: protege los sub-parts Misc heredados como Face
+            ' (MouthShadow/AO/lashes/wet), que conservan su propio material.
             If candidate.Kind = MainForm.MeshCandidateKind.HeadPart AndAlso candidate.HeadPartTypeRaw = HeadPartTypeFace AndAlso state IsNot Nothing Then
                 Dim isSse As Boolean = (Config_App.Current IsNot Nothing AndAlso Config_App.Current.Game = Config_App.Game_Enum.Skyrim)
                 If isSse Then
-                    ' SSE — MODELO POR SLOTS validado byte contra 2770/2770 facegeom shipped vanilla+DLC
-                    ' (RE RegenerateHead 0x14042BD90):
-                    '   D(material+0x48)  = TNAM del head part (attach 0x14042BAA0, slot0 → SOLO diffuse)
-                    '   N(material+0x58)  = resolved.TX01  (regen 0x14042C410)
-                    '   _sk(material+0xb0)= resolved.TX03  (regen 0x14042C0DD)  [→ LightingTexture, remap SSE]
-                    '   detail            = resolved.TX04  (regen 0x14042C173)  [→ DisplacementTexture]
-                    '   S(TX07) y resto   = AUTORADO del NIF (NADIE lo escribe: attach solo D, regen solo
-                    '                       N/_sk/detail; TX07 del regen solo togglea un flag, no el path).
-                    ' resolved = FTST > DFT[sexo propio]. SIN fallback a TNAM: si no hay FTST ni DFT el
-                    ' resolved NO existe ⇒ la capa aux no corre ⇒ N/_sk/detail quedan AUTORADOS (caso
-                    ' Astrid: NordRaceAstrid sin FTST/DFTF → S=femalehead_s autorado, no AstridHead_s).
-                    ' Por eso la BASE TNAM va DIFFUSE-ONLY (isFaceTextureSource=True): pisa SOLO el D; N/_sk
-                    ' los pisa la capa aux cuando hay resolved, y S/detail quedan del material autorado.
-                    ' resolved = FTST > DFT[sexo] > TNAM (RE arch_engine_face_texture_pipeline_re). La capa aux
-                    ' aporta N/_sk/detail SOLO cuando el resolved DIFIERE del TNAM (hay FTST o DFT). Si NO hay
-                    ' FTST ni DFT, resolved = TNAM ⇒ el TNAM se aplica COMPLETO (incluye TX03=_sk), NO diffuse-only.
-                    ' Ej. DATA-DRIVEN: KhajiitRace.DFTM=0 (sin DFT) + EnhancedKhajiit override del TNAM
-                    ' SkinHeadMaleKhajiit con TX03=khajiitmalehead_sk → resolved=TNAM → _sk=khajiitmalehead_sk (=CK).
+                    ' ⭐ SSE — MODELO POR CAPAS, validado byte contra el corpus completo de facegeom vanilla:
+                    '   D    = TNAM del head part (FTST/DFT JAMÁS pisan el diffuse)
+                    '   N / _sk / detail = del RESUELTO
+                    '   S y el resto     = AUTORADO del NIF (nadie los escribe)
+                    ' resuelto = FTST > DFT[sexo propio] > TNAM. La capa aux aporta N/_sk/detail SÓLO cuando
+                    ' el resuelto DIFIERE del TNAM (o sea, cuando hay FTST o DFT); si no hay ninguno de los
+                    ' dos, resuelto == TNAM y entonces el TNAM se aplica COMPLETO (incluye TX03=_sk), no
+                    ' diffuse-only — por eso `isFaceTextureSource` va True sólo si existe la capa aux.
+                    ' Ley completa y evidencia: 50-facetint-leyes-y-compositor.md §B.3.
                     Dim auxFid As UInteger = 0UI
                     Dim auxSource As String = ""
                     If state.ExplicitHeadTextureFormID <> 0UI Then
@@ -575,15 +480,10 @@ Friend NotInheritable Class NpcMaterialResolver
                     ' FO4 — precedencia FTST > TNAM > DFTM(si TNAM=0). El SET RESUELTO se aplica, pero
                     ' cuando viene de la cadena FTST se aplica SOLO TX00/TX01/TX07 (ver la regla medida
                     ' en ApplyTextureSetToMaterial, parámetro fo4FaceComposeInputsOnly).
-                    ' ⛔ HISTORIA — por qué esto NO es la reversión de nuevo: en 2026-07-17 se revirtió el
-                    ' cambio "FTST diffuse-only + DFTM fuera" porque el efecto neto del FTST sobre el
-                    ' composite FaceCustomization NO estaba cerrado en el RE (874 NPCs vanilla en juego).
-                    ' Ese hueco lo CERRÓ el bake controlado BAKETESTFO4.esp (47 NIFs + 282 DDS del CK,
-                    ' 2026-07-18) y de paso REFUTÓ las dos hipótesis previas: "slot 0 únicamente" rompería
-                    ' el _msn y el _s de esos 874 (TX01 y TX07 SÍ alimentan el compose), y "los 8 slots"
-                    ' mete 5 slots de ruido en el NIF. La regla medida es la intermedia: TX00/TX01/TX07 al
-                    ' compose, TX02-TX06 INERTES. Por eso isFaceTextureSource (=forceDiffuseOnly, slot 0
-                    ' solo) sigue False acá: sería exactamente la hipótesis refutada.
+                    ' ⛔ isFaceTextureSource (= forceDiffuseOnly, "slot 0 únicamente") va False acá A
+                    ' PROPÓSITO: es una hipótesis REFUTADA por bake controlado — rompería el _msn y el _s
+                    ' de 874 NPCs, porque TX01 y TX07 SÍ alimentan el compose. La regla medida es la
+                    ' intermedia: TX00/TX01/TX07 al compose, TX02-TX06 inertes.
                     If state.ExplicitHeadTextureFormID <> 0UI Then
                         textureSetFormID = state.ExplicitHeadTextureFormID
                         txstSource = "NPC.FTST(Face-override)"
@@ -593,31 +493,14 @@ Friend NotInheritable Class NpcMaterialResolver
                         txstSource = "RACE.DFTM(Face-fallback)"
                         fo4FaceComposeInputsOnly = True
                     ElseIf textureSetFormID <> 0UI Then
-                        ' ⭐⭐ 2026-07-30 — EL TNAM DEL PROPIO HEAD PART DE CARA TAMBIEN ES "INPUT DEL COMPOSE".
-                        ' La ley no es de QUE RECORD salio el set, es que ESTE es el texture set de la CARA:
-                        ' sus D/N/S alimentan el compose de FaceCustomization (y en el NIF los pisa la ruta
-                        ' generada), y NINGUN otro slot del TXST participa.
-                        ' MEDIDO en el facegeom del CK (BA2 vanilla, sin loose ni mods), shape 'MaleHeadHuman'
-                        ' de 0x0024A022 / 0x00240C22 / 0x00247553, los tres identicos:
-                        '     [0][1][7] = las FaceCustomization generadas
-                        '     [4] = Shared/Cubemaps/mipblur_DefaultOutside1_dielectric.dds  <- del MATERIAL
-                        '     [5] = Actors/Character/BaseHumanMale/HeadWrinkles_n.dds       <- del MATERIAL
-                        '     resto vacio
-                        ' El TXST 0x0001FA47 SkinHeadHeroMale declara TX02='...HeadWrinkles_n.DDS' (backslash,
-                        ' .DDS) y TX04='...BlankDetailmap.dds': el CK NO escribio NI UNO de los dos. Nosotros
-                        ' aplicabamos el TX02 y por eso el slot 5 salia con el string del TXST en vez del
-                        ' string del material — la categoria de 451 NPCs.
-                        ' ⛔ NO es un problema de normalizacion de path (hipotesis descartada con el dato): los
-                        ' dos strings existen tal cual en fuentes distintas, y el material FEMENINO
-                        ' basehumanFemaleskinHead.bgsm declara 'BaseFemaleHeadWrinkles_n.DDS' — barra normal
-                        ' pero .DDS en MAYUSCULA. No hay forma canonica: el CK escribe lo que tipeo el autor
-                        ' del material. Normalizar romperia las cabezas femeninas, que hoy COINCIDEN.
-                        ' ALCANCE MEDIDO (censo de los 16 head parts de cara de FO4+DLC): 10 tienen TNAM y 9 de
-                        ' esos traen MNAM, o sea ni llegan a ApplyTextureSetToMaterial. El UNICO con TX## y sin
-                        ' MNAM es MaleHeadHuman ⇒ en vanilla esto solo puede tocar a esos 451 NPCs. Su TXST
-                        ' tiene el flag Facegen, asi que `diffuseOnly` seguia False igual: D/N/S no se mueven.
-                        ' textureSetFormID ya ES el TNAM del head part: no se reasigna nada, solo se
-                        ' MARCA que este set es el de la cara y por lo tanto va como input del compose.
+                        ' ⭐ El TNAM del propio head part de CARA también es "input del compose": la ley no
+                        ' depende de qué record aportó el set, sino de que ESTE sea el texture set de la
+                        ' cara. Sus D/N/S alimentan el compose de FaceCustomization y ningún otro slot del
+                        ' TXST participa (los slots 4 y 5 del facegeom del CK salen del MATERIAL, verbatim).
+                        ' ⛔ NO normalizar esos paths: el CK escribe el string tal cual lo tipeó el autor del
+                        ' material, y el femenino usa '.DDS' en mayúscula. Normalizar rompería las cabezas
+                        ' femeninas, que hoy coinciden.
+                        ' textureSetFormID ya ES el TNAM: no se reasigna nada, sólo se MARCA como input.
                         txstSource = "HDPT.TNAM(Face-compose)"
                         fo4FaceComposeInputsOnly = True
                     End If
@@ -664,29 +547,10 @@ Friend NotInheritable Class NpcMaterialResolver
         ' ATTACH del engine, GetTexturePath(slot 0) (game 0x1406EE0D7 / CK 0x140ED3830, todas las llamadas
         ' con xor edx,edx).
         '
-        ' ⛔⛔ 2026-07-30 — ACA VIVIA UNA RAMA QUE CARGABA EL MNAM ("FIX 2"). SE SACO POR INALCANZABLE.
-        ' Cadena de la prueba (estatica, cerrada, con fuente autoritativa):
-        '   1. forceDiffuseOnly es SIEMPRE el argumento isFaceTxstSource del unico call site
-        '      (ApplyShapeMaterialOverrides). Los otros dos callers pasan False:
-        '      HeadPartPicker_Form (default) y NpcSkinLivePreview (explicito).
-        '   2. isFaceTextureSource se asigna True en UN SOLO lugar: ResolveTextureSet, adentro de
-        '      `If isSse Then` (= sseFaceAuxTextureSet IsNot Nothing). La rama FO4 lo deja en False A
-        '      PROPOSITO y lo documenta: "slot 0 unicamente" es una hipotesis REFUTADA por BAKETESTFO4
-        '      (romperia el _msn y el _s de 874 NPCs).
-        '   3. ⇒ forceDiffuseOnly=True implica juego = Skyrim.
-        '   4. El TXST de Skyrim NO TIENE subrecord MNAM. Fuente: xEdit wbDefinitionsTES5.pas:5581-5600
-        '      (TX00..TX07 + DODT + DNAM y nada mas) contra wbDefinitionsFO4.pas:7355, que si declara
-        '      `wbString(MNAM, 'Material')`. Y RecordParsers.ParseTXST solo puebla MaterialPath desde MNAM.
-        '   5. ⇒ dentro de este If, textureSet.MaterialPath es SIEMPRE "". La rama no corria NUNCA,
-        '      en ningun juego.
-        ' El censo que la justificaba media el predicado equivocado: contaba TXST MNAM-only (medido de
-        ' nuevo: son 143 NPCs del corpus, no 7) sin verificar si la COMPUERTA se abre. En FO4 no se abre,
-        ' y esos 143 entran por el camino normal de mas abajo, que ya carga el MNAM.
-        ' ⛔ EVIDENCIA QUE **NO** HAY QUE CITAR SI REAPARECE LA IDEA: "el _s de Valentine". Sonda sobre su
-        ' bake real: shape='SynthGen2Head1:0' isFaceTxstSource=False ⇒ su cabeza nunca entro aca. Sus tres
-        ' DDS salieron con el md5 exacto de antes del cambio. Lo PRIMERO a medir es isFaceTxstSource en el
-        ' shape concreto. El _s de Valentine si era un defecto real, pero vivia en OTRO lado: el gate de
-        ' N/S del bloque del MNAM de mas abajo (ver el comentario largo ahi).
+        ' ⛔ NO agregar acá una rama que cargue el MNAM: sería código muerto. forceDiffuseOnly sólo se
+        ' enciende en la rama SSE, y el TXST de Skyrim no tiene subrecord MNAM (xEdit
+        ' wbDefinitionsTES5.pas:5581-5600 contra wbDefinitionsFO4.pas:7355) ⇒ acá MaterialPath es siempre "".
+        ' Los TXST MNAM-only de FO4 entran por el camino normal de más abajo, que ya carga el MNAM.
         If forceDiffuseOnly Then
             If TxstSlotDecision(textureSet.FormID, "Diffuse", textureSet.DiffuseTexture, material.Diffuse_or_Base_Texture, gatedSlot:=False, diffuseOnly:=True) Then material.Diffuse_or_Base_Texture = textureSet.DiffuseTexture
             Return
@@ -697,108 +561,31 @@ Friend NotInheritable Class NpcMaterialResolver
             Dim overrideMaterial = MaterialResolver.TryLoadMaterialFromDictionary(textureSet.MaterialPath, material, shap, nif)
             If overrideMaterial IsNot Nothing Then
                 mnamMaterialApplied = True
-                ' TEXTURES-ONLY + ALPHA (2026-06-15): el MNAM del TXST aporta SOLO sus paths de textura
-                ' MÁS el alpha (AlphaTest/AlphaBlend) verbatim. El resto del shader (ShaderType/
-                ' SubsurfaceRolloff/BackLight/Smoothness/Specular/flags) queda del clon del mesh FUENTE —
-                ' el .bgsm es el material runtime del engine, CK nunca lo hornea en el shader del FaceGen
-                ' NIF. Verificado por identidad contra los 10.197 shapes de CK: donde hay MNAM, o es
-                ' FaceGen=True (CK=shader del fuente) o FaceGen=False con source==material; ninguna shape
-                ' bakeada necesita el shader del material. Reemplaza el experimento full-replace y el
-                ' viejo gate usesBodyTexture.
-                ' El alpha SÍ se toma del material override (no era así en la versión 06-14 textures-only):
-                ' CK emite un NiAlphaProperty gobernado por el alpha del material de cabeza (p.ej.
-                ' Gen2SkinHeadValentine.BGSM AlphaTest=True/Ref=128/Blend=Standard) y sin esto el NIF
-                ' bakeado perdía el NiAlphaProperty y el flag SF2 Alpha_Test. Decisión de auditoría.
-                ' Ver reference_facegen_ck_must_come_from_ba2.
-                '
-                ' REGLA A — QUÉ SLOTS (restaura el contrato ya documentado arriba en :523-534, que el
-                ' cambio "textures-only" de 2026-06-15 había dejado sin implementar):
-                '   UsesBodyTexture=True  → full-replace de slots (el HDPT declara "esta parte lleva la
-                '                           piel del cuerpo": el BGSM del MNAM ES el material de piel).
-                '   UsesBodyTexture=False → SÓLO el diffuse. El MNAM aporta el tinte de superficie de
-                '                           esta shape; Normal/SmoothSpec/Envmap/resto quedan del shader
-                '                           INLINE del NIF fuente.
-                ' EVIDENCIA MEDIDA: NPC Fallout4.esm 0x00002F24 (Valentine), shape
-                ' SynthGen2HeadRearValentine, MNAM=gen2skindirty.bgsm. Copiar los 8+ slots pisaba el
-                ' Gen2Skin_s y BORRABA el cubemap mipblur_DefaultOutside1_dielectric.dds que traía el
-                ' shader inline; el CK sólo reemplazó el diffuse. Consecuencia medida: nuestro texset
-                ' quedaba byte-idéntico al de otra shape y el dedupe los colapsaba ⇒ CK 6
-                ' BSShaderTextureSet vs nuestros 5 (categoría block-histogram).
-                ' ⛔ DEROGADO 2026-07-19: la frase original decía que los TX## del propio TXST se
-                ' aplican por encima. La evidencia Valentine NO la sostenía (su TXST es MNAM-only,
-                ' sin ningún TX## poblado) y BAKETEST2 N_S/N_S2 la refuta directamente. Ver REGLA 2.
-                '
-                ' ⭐ CORRECCIÓN 2026-07-19 (bake controlado BAKETEST2FO4.esp) — el material del MNAM
-                ' aporta EXACTAMENTE {diffuse} + {normal, smoothSpec si UsesBodyTexture}. NADA MÁS.
-                ' MEDIDO: BAKETEST2_N_S (0x843, MNAM=actors\synths\Gen2Skin.BGSM, que declara envmap
-                ' Shared/Cubemaps/mipblur_DefaultOutside1_dielectric.dds) y BAKETEST2_N_S2 (0x844,
-                ' MNAM=actors\synths\Gen2Eyes.BGSM, que declara envmap mipblur_DefaultOutside1.dds Y
-                ' glow Actors/Synths/Gen2Eyes_g.DDS), los dos con UsesBodyTexture=True. El CK horneó
-                ' en el head-rear SÓLO Gen2Skin_d/_n/_s y Gen2Eyes_d/_n/_s → TX00/TX01/TX07, y dejó
-                ' TX04 (envmap) y TX02 vacíos: NI el cubemap NI el glow del material se escriben.
-                ' Copiar los 8 slots extra era además el modo de falla ya medido en Valentine (borraba
-                ' el cubemap inline copiando el vacío del material) — ahora las dos evidencias caen
-                ' bajo la MISMA regla en vez de contradecirse.
-                ' ⚠️ NO MEDIDO directamente: greyscale/wrinkles/specular/lighting/flow/innerLayer/
-                ' displacement — ningún material de piel vanilla los declara (verificado sobre
-                ' Gen2Skin, Gen2Eyes, Gen2SkinDirty, childfemalebody: sólo D/N/S no vacíos). Se
-                ' excluyen por coherencia con la regla medida (el material aporta sólo lo que el CK
-                ' escribe) y porque copiarlos vacíos es justamente lo que rompía Valentine.
+                ' TEXTURES-ONLY + ALPHA: el MNAM del TXST aporta SOLO sus paths de textura más el alpha. El
+                ' resto del shader (ShaderType/Rolloff/BackLight/Smoothness/Specular/flags) queda del clon del
+                ' mesh fuente: el .bgsm es el material runtime y el CK nunca lo hornea en el NIF de FaceGen.
+                ' ⭐ REGLA A — QUÉ SLOTS: exactamente {diffuse} + {normal, smoothSpec} cuando la shape lleva
+                ' piel del cuerpo o el TXST es input del compose de cara. Nada más, ni envmap ni glow aunque el
+                ' material los declare: copiar los 8 slots borra el cubemap del shader inline.
                 material.Diffuse_or_Base_Texture = overrideMaterial.Diffuse_or_Base_Texture
-                ' ⭐⭐ 2026-07-30 — SE AGREGA fo4FaceComposeInputsOnly AL GATE DE N/S.
-                ' El MNAM aporta N y S TAMBIEN cuando el TXST viene de la CADENA DE CARA de FO4
-                ' (NPC.FTST o RACE.DFT-fallback), que es donde D/N/S no son slots del NIF sino las
-                ' TRES ENTRADAS del compose de FaceCustomization.
-                ' Por que el gate viejo (solo usesBodyTexture) estaba incompleto: la regla BAKETEST2 se
-                ' midio con UsesBodyTexture=True en LOS DOS casos (N_S 0x843 y N_S2 0x844), asi que la
-                ' rama False nunca se contrasto contra el CK en el camino de la CARA.
-                ' MEDIDO EN PIXELES contra el CK (todo de BA2 vanilla, decode BC5, canales R/G):
-                '   RMS(CK 00002f24_s, Gen2SkinHeadValentine_s del MNAM) =  1,313   <- el CK copia el MNAM
-                '   RMS(CK 00002f24_s, Gen2SkinHead_s     del inline   ) = 57,920
-                '   RMS(NUESTRO   _s , Gen2SkinHead_s     del inline   ) =  0,512  maxD=1  <- copiabamos el inline
-                '   idem Suicider: CK vs SupermutantHeadSuicide_s (MNAM) = 0,865 ; vs inline = 79,898
-                ' PRUEBA DIFERENCIAL (el caso que separa la hipotesis de una coincidencia): el MNAM del
-                ' Suicider declara el MISMO _n que el inline (SupermutantHead_n) y distinto _s. Prediccion:
-                ' su _msn NO debe divergir y su _s SI. Medido: _msn rank 1302/1490 (percentil 11,7, debajo
-                ' de la mediana) y _s 65,21 (el peor del corpus). Valentine/DiMA, cuyo MNAM cambia LOS DOS,
-                ' dan _msn rank 6/1490 y _s 47,29.
-                ' POR QUE NO ALCANZA CON usesBodyTexture NI SE PUEDE SACAR EL GATE DEL TODO: para un head
-                ' part que NO es la cara el CK toma del MNAM SOLO el diffuse. Verificado con datos limpios
-                ' (Fallout4.esm + BA2, sin loose ni mods) en el head-rear de Valentine: HDPT 0x0004AB3F
-                ' TNAM=TXST 0x0010C3CF cuyo MNAM es gen2skindirty.bgsm = {Gen2SkinDirty_d, Gen2Skin_n,
-                ' Gen2SkinDirty_s}, y el facegeom horneado por el CK lleva Gen2SkinDirty_d PERO Gen2Skin_s
-                ' (el del material INLINE Gen2Skin.BGSM) y conserva el cubemap del inline.
-                ' ⇒ Son DOS leyes y fo4FaceComposeInputsOnly es exactamente el discriminante: True en los
-                ' tres shapes de cara afectados, False en el head-rear.
-                ' ALCANCE MEDIDO sobre los 1.490 del corpus: 1.326 TXST de cara son TX-only (ni entran a
-                ' esta rama), 143 son MNAM-only y 0 tienen MNAM y TX## a la vez. De los 143, solo 3 tienen
-                ' un material cuyo N/S difiere del inline (Valentine, DiMA, SuperMutantSuicider); los otros
-                ' 140 son los ghouls, cuyo MNAM apunta al MISMO BGSM que el mesh ya trae inline ⇒ no-op.
-                ' Por eso "MNAM-only" NO era el discriminante: 143 lo son y 140 estan sanos.
+                ' El gate incluye fo4FaceComposeInputsOnly porque en la cadena de cara de FO4 (NPC.FTST,
+                ' RACE.DFT o el TNAM del head part) D/N/S no son slots del NIF sino las TRES ENTRADAS del
+                ' compose de FaceCustomization, y ahí el CK copia el _s del MNAM (medido en píxeles:
+                ' RMS 1,3 contra el MNAM vs 57,9 contra el inline).
+                ' ⛔ NO alcanza con usesBodyTexture NI se puede sacar el gate del todo: para un head part
+                ' que NO es la cara el CK toma del MNAM SÓLO el diffuse (verificado en el head-rear de
+                ' Valentine, que lleva el _d del MNAM pero el _s del material inline). Son DOS leyes, y
+                ' fo4FaceComposeInputsOnly es exactamente el discriminante.
                 If usesBodyTexture OrElse fo4FaceComposeInputsOnly Then
                     material.NormalTexture = overrideMaterial.NormalTexture
                     material.SmoothSpecTexture = overrideMaterial.SmoothSpecTexture
                 End If
-                ' ⭐ REGLA B — QUÉ ALPHA. El alpha es PARTE DEL MATERIAL: sale del BGSM del MNAM, SIN
-                ' GATE. Resolver material = resolver material; no sabe ni tiene por qué saber si el
-                ' shape es cara, ojo, cuerpo o armadura.
-                ' FUENTE (motor): ApplyMaterialToGeometry 0x142169BB0 aplica el alpha del material sin
-                ' mirar de dónde vino el texture set ni qué parte del cuerpo es. No hay ni un gate por
-                ' anatomía en el runtime.
-                '
-                ' ⛔ SACADO 2026-07-21: el gate `isFaceHeadPart`. Se declaraba a sí mismo SIN FUENTE
-                ' (venía del commit 6709323 con un comentario que sólo afirmaba) y la medición lo
-                ' REFUTÓ con un contraejemplo vanilla (--alphagatescan, corpus oficial FO4):
-                '   HDPT 0x000E8D0E SynthGen1Eyes (partType=2 Eyes) → TXST 0x000E8D0D SynthEyesTextureSet
-                '   → MNAM 'actors\synths\Gen1Eyes.BGSM' con alphaTest=True ref=128.
-                ' Con el gate puesto, los ojos de los Synth Gen1 PERDÍAN el alpha-test de su propio
-                ' material sólo por no ser el head part de cara. (Referentes con alpha en vanilla:
-                ' CARA=2 — Valentine por NPC.FTST y DiMA por RACE.DFT, los dos al MISMO TXST
-                ' 0x0010C3CD — - NO-CARA=1, el de arriba.)
-                '
-                ' ⛔ NO volver a borrar ref ni blend: el commit 48b787d aplicó la ley del BAKE en este
-                ' Sub COMPARTIDO y dejó la cara de Valentine SÓLIDA en el preview. La ley del bake NO
-                ' vive acá.
+                ' ⭐ REGLA B — QUÉ ALPHA: el alpha es PARTE DEL MATERIAL, sale del BGSM del MNAM SIN GATE.
+                ' El motor (ApplyMaterialToGeometry 0x142169BB0) lo aplica sin mirar la anatomía del shape.
+                ' ⛔ NO re-introducir un gate por anatomía: refutado con contraejemplo vanilla (los ojos de los
+                ' Synth Gen1 perdían el alpha-test de su propio material por no ser el head part de cara).
+                ' ⛔ NO borrar ref ni blend acá: la ley del bake no vive en este Sub COMPARTIDO (aplicarla dejó
+                ' la cara de Valentine sólida en el preview).
                 material.AlphaTest = overrideMaterial.AlphaTest
                 material.AlphaTestRef = overrideMaterial.AlphaTestRef
                 material.AlphaBlendMode = overrideMaterial.AlphaBlendMode
@@ -816,20 +603,10 @@ Friend NotInheritable Class NpcMaterialResolver
             End If
         End If
 
-        ' ⭐ REGLA 2 (bake controlado BAKETEST2FO4.esp, 2026-07-19) — CUANDO EL MNAM CARGA, EL MATERIAL
-        ' ES LA ÚNICA FUENTE DE PATHS: los TX## del propio TXST NO se aplican por encima.
-        ' MEDIDO: BAKETEST2_N_S (0x843) y BAKETEST2_N_S2 (0x844) tienen los OCHO slots del TXST
-        ' poblados con rutas exóticas (TX00/01/07=BaseMaleHead_d/_n/_s, TX02=Preston_n, TX03=Mayor_d,
-        ' TX04=PiperHead_s, TX05=Chrome_e, TX06=EyeCubeMap) MÁS un MNAM. El CK no escribió NI UNA de
-        ' las ocho: horneó Gen2Skin_*/Gen2Eyes_* (del BGSM) en TX00/TX01/TX07 y dejó el resto vacío.
-        ' O sea el MNAM gana incluso en los slots donde el TXST tiene valor propio.
-        ' Esto DEROGA el comentario previo ("los TX## se aplican por encima"), que no era una medición:
-        ' el TXST que lo sostenía (SkinHeadValentine 0x0010C3CD) es MNAM-ONLY — cero TX## poblados —
-        ' así que la capa nunca se ejercitó. Verificado sobre el corpus: de 382 TXST en Fallout4.esm
-        ' (+129 en los DLC) hay EXACTAMENTE UNO con MNAM y TX## a la vez (0x0006AB32
-        ' WallPanelMetalRubble03S, arquitectura, nunca piel ni head part) ⇒ este cambio es INERTE
-        ' sobre el corpus vanilla FO4 y sólo puede afectar a mods. En SSE es estructuralmente
-        ' inaplicable: el TXST de Skyrim no tiene subrecord MNAM (0 de 572).
+        ' ⭐ REGLA 2 (bake controlado): CUANDO EL MNAM CARGA, EL MATERIAL ES LA ÚNICA FUENTE DE PATHS — los
+        ' TX## del propio TXST no se aplican por encima, ni siquiera en los slots donde el TXST trae valor.
+        ' Inerte sobre vanilla FO4 (un solo TXST con MNAM y TX## a la vez, y es arquitectura) y estructuralmente
+        ' inaplicable en SSE (el TXST de Skyrim no tiene MNAM). Ver 30-fo4-material-vs-nif.
         If Not mnamMaterialApplied Then
             ApplyTextureSetToMaterial(material, textureSet, isHeadPartTextureSet, fo4FaceComposeInputsOnly)
         ElseIf logEnabled Then
@@ -845,60 +622,29 @@ Friend NotInheritable Class NpcMaterialResolver
         If material Is Nothing OrElse textureSet Is Nothing Then Return
 
         Dim logEnabled = Logger.Enabled
-        ' Slot override gate — regla confirmada por dump de 997 TXST (2026-05-31, bug Alana/OldHumanFemale).
-        ' Por defecto el TXST pisa TODOS los slots que resuelven (D+N+W+Glow+Height+Env+Inner+SmoothSpec).
-        ' ÚNICA excepción (diffuse-only): el TextureSet de un HEAD PART SIN el flag DNAM 'Facegen Textures'
-        ' (0x0002, xEdit wbDefinitionsFO4.pas:7350). Ese es un swatch per-part (color de ojo/boca): el BGSM
-        ' del shape posee N/S/env (ej. ojo vanilla: EyeGloss_n + eyeenvironmentmask_m, que CK conserva).
-        '   - Con el flag (complexión/piel SkinHead*/SkinBody*, y mods que lo setean p.ej. TEOB eyes) → full D/N/S.
-        '   - Fuera de head-part (body/outfit/armadura) → full (no se aplica la excepción).
-        ' Confirmado en dump: TODOS los EyesMaleHuman* vanilla = facegen=False (diffuse-only); todas las
-        ' complexiones = facegen=True (full). Reemplaza el viejo gate por mnamEmpty (que descartaba el
-        ' Old_n/_s del Face = el bug) y el parche transitorio por match "Eyes".
+        ' Slot override gate (FO4): por defecto el TXST pisa TODOS los slots que resuelven. Única excepción
+        ' diffuse-only: TXST de HEAD PART sin el flag DNAM 'Facegen Textures' (0x0002) — es un swatch per-part
+        ' (color de ojo/boca) y el N/S/env los posee el BGSM del shape. Fuera de head part nunca aplica.
+        ' En SSE este heurístico NO manda: lo pisa la ley por shader type del bloque de abajo.
         Dim isFacegen = (textureSet.Flags And &H2US) <> 0US
         Dim diffuseOnly = isHeadPartTextureSet AndAlso Not isFacegen
 
-        ' ⭐⭐ REGLA FO4 — EL FTST ES *INPUT DEL COMPOSE*, NO UNA LISTA DE PATHS PARA EL NIF.
-        ' MEDIDA byte-exacto con el bake controlado BAKETESTFO4.esp (47 NIFs + 282 DDS producidos por el
-        ' CK, 2026-07-18):
-        '     TX00 → _d      TX01 → _msn      TX07 → _s
-        '     TX02, TX03, TX04, TX05, TX06 = INERTES (ni al compose ni al NIF)
-        ' y CERO slots del FTST se propagan al NIF horneado: en TX00/01/07 el CK escribe los archivos
-        ' GENERADOS FaceCustomization\<plugin>\<FormID>_{d,msn,s}.dds (eso ya lo hace FaceGenBuilder.
-        ' BakeFaceTextures, que reescribe los slots 0/1/7) y el resto de los slots del material quedan
-        ' como estaban (default de raza / head part).
-        ' EVIDENCIA (comparación CRUZADA, no correlación): T7 vs T1 comparten SÓLO TX00 ⇒ _d byte-idéntico;
-        ' T7 vs T3 comparten SÓLO TX01 y TX07 ⇒ _msn y _s byte-idénticos. Test diferencial del diffuse:
-        ' corr +0,9910 sobre 3,1M canales-píxel. Material: facegen_baseline\ck_experiment_fo4\CK_OUTPUT*.
-        ' El flag DNAM del TXST (Facegen 0x0002 / MSN 0x0004) es INERTE de punta a punta: 3 TXST con los
-        ' mismos 8 paths y sólo el DNAM distinto producen NIFs Y los 3 canales DDS byte-idénticos — por eso
-        ' `isFacegen` NO participa de esta decisión.
-        ' ⛔ Por qué esto NO repite la reversión de 2026-07-17: aquella revirtió "FTST diffuse-only" porque
-        ' el efecto neto sobre el composite no estaba cerrado en el RE (874 NPCs). La medición de arriba lo
-        ' cerró Y refutó las DOS hipótesis previas: "slot 0 únicamente" rompería _msn/_s (TX01 y TX07 SÍ
-        ' alimentan el compose) y "los 8 slots" mete 5 slots de ruido (medido: FemaleHeadHuman texslot[5]
-        ' quedaba con HeadWrinkles_n del FTST masculino donde el CK deja el BaseFemaleHeadWrinkles_n).
-        ' Sólo FO4 y sólo la cadena FTST del head part de cara: el camino Skyrim (ley por capas + shader
-        ' type, 0 defectos) no se toca.
+        ' ⭐⭐ REGLA FO4 — el FTST es INPUT DEL COMPOSE, no una lista de paths para el NIF:
+        '     TX00 → _d   ·   TX01 → _msn   ·   TX07 → _s   ·   TX02-TX06 = INERTES
+        ' Ningún slot del FTST se propaga al NIF horneado: en 0/1/7 el CK escribe los archivos GENERADOS de
+        ' FaceCustomization (eso lo hace BakeFaceTextures) y el resto queda como estaba.
+        ' ⛔ Las dos hipótesis vecinas están REFUTADAS con datos: "sólo el slot 0" rompe _msn y _s (TX01 y
+        ' TX07 SÍ alimentan el compose), y "los 8 slots" mete 5 slots de ruido en el NIF.
+        ' El flag DNAM del TXST (Facegen/MSN) es inerte de punta a punta, por eso no participa acá.
+        ' Sólo FO4 y sólo la cadena FTST de la cara; el camino de Skyrim va por la ley de capas.
         If fo4FaceComposeInputsOnly Then diffuseOnly = False   ' D/N/S sí; los 5 inertes se cortan abajo
 
-        ' ⭐⭐ SSE HEAD PART: el discriminante es el SHADER TYPE AUTORADO del shape, NO el flag DNAM del TXST.
-        ' Fuente: bake CK SkyrimSE `FUNC 0x141d0ea00`, switch por shader type @0x141d0ed89:
+        ' ⭐ SSE HEAD PART: el discriminante es el SHADER TYPE AUTORADO del shape, NO el flag DNAM del TXST.
+        ' Bake CK 0x141d0ea00, switch @0x141d0ed89:
         '     type 4 FaceTint : N(TX01) + _sk(TX03→LightingTexture) + detail(TX04→DisplacementTexture)
-        '     type 5 SkinTint : N(TX01) y NADA más
-        '     type 6 HairTint : 0 texturas
-        '     cualquier otro  : CERO escrituras
-        ' En ningún caso escribe SmoothSpec (el TX07 sólo alimenta un SetShaderFlag, no es slot).
-        ' ⛔ El gate viejo `diffuseOnly = isHeadPart AndAlso Not isFacegen` es un HEURÍSTICO derivado de FO4
-        ' (origen xEdit wbDefinitionsFO4.pas:7350). El bit facegen NO lo lee ningún applier de material en
-        ' ningún motor — sólo código de editor/preview (ver reference_txst_facegen_msn_not_engine_gate).
-        ' Coincidía en vanilla y mispredecía justo donde el TXST corrige al mesh.
-        ' MEDIDO vanilla limpio: los Marks* humanos (cicatrices) usan maskleftside.nif / maskrightside.nif,
-        ' shType=SkinTint(5) — NO son los *scar*.nif de las razas bestia, que sí son Default y a los que el CK
-        ' efectivamente no les escribe nada. Para 'MarksMaleHumanoid06LeftGash' (NPC 0x00013261) el CK horneó
-        ' Normal='Actors\Character\Male\FaceDetails\FaceLeftSideGash06_n.dds' (del TXST) y nosotros dejábamos el
-        ' inline 'FaceLeftSideGash05_n.dds' porque su TXST no lleva el flag DNAM 0x0002. El Diffuse coincide en
-        ' ambos, así que el slot 0 no se toca acá. 645 NPCs / 933 shapes afectados.
+        '     type 5 SkinTint : N(TX01) y nada más   ·   type 6 HairTint y cualquier otro: cero escrituras
+        ' Nunca escribe SmoothSpec (el TX07 sólo alimenta un SetShaderFlag). El bit facegen del DNAM no lo lee
+        ' ningún applier de material en ningún motor: ver 30-fo4-txst-facegen-msn-no-es-gate.
         Dim sseHeadPart As Boolean =
             isHeadPartTextureSet AndAlso
             Config_App.Current IsNot Nothing AndAlso Config_App.Current.Game = Config_App.Game_Enum.Skyrim
@@ -950,21 +696,11 @@ Friend NotInheritable Class NpcMaterialResolver
         If TxstSlotDecision(txstFid, "Height", textureSet.HeightTexture, material.DisplacementTexture, gatedSlot:=True, diffuseOnly:=If(sseHeadPart, Not allowDetail, If(fo4FaceComposeInputsOnly, True, diffuseOnly))) Then material.DisplacementTexture = textureSet.HeightTexture
         If TxstSlotDecision(txstFid, "Envmap", textureSet.EnvironmentTexture, material.EnvmapTexture, gatedSlot:=True, diffuseOnly:=If(sseHeadPart OrElse fo4FaceComposeInputsOnly, True, diffuseOnly)) Then material.EnvmapTexture = textureSet.EnvironmentTexture
         If TxstSlotDecision(txstFid, "InnerLayer", textureSet.MultilayerTexture, material.InnerLayerTexture, gatedSlot:=True, diffuseOnly:=If(sseHeadPart OrElse fo4FaceComposeInputsOnly, True, diffuseOnly)) Then material.InnerLayerTexture = textureSet.MultilayerTexture
-        ' ⭐⭐ SSE head part: el TX07 NO es un slot de textura para el motor — NADIE escribe el slot 7.
-        ' Fuente: bake CK `0x141d0ea00` (type 4 FaceTint escribe slot1/slot2/slot3/slot6; el `txst[7]` sólo
-        ' alimenta un SetShaderFlag, no un path) y runtime: el attach `0x14042BAA0` escribe SÓLO el slot 0 y
-        ' el regen `0x14042BD90` sólo N/_sk/detail. Es decir el specular que el motor USA es el que quedó en
-        ' el NIF = el INLINE del mesh. Al pisarlo con el TX07 del TXST cambiábamos el specular real, en el
-        ' render Y en el bake (por eso el fix va acá, en el resolver compartido, y no en el escritor del NIF).
-        ' MEDIDO vanilla limpio (CK del BSA, sin mods): 2461 shapes / 1792 NPCs, ej. MaleHeadDremora
-        ' texslot[7] nuestro='Actors\Character\Male\MaleHead_S.dds' (string del TXST) vs
-        ' CK='textures\actors\character\male\MaleHead_S.dds' (inline del mesh).
-        ' ⛔ REEMPLAZA la nota de FaceGenBuilder (2026-07-09) que lo declaró "no-op visual, misma textura con
-        ' otro path": NO es no-op — con cualquier TNAM que difiera del inline (mods) cambia la textura usada.
-        ' Ver reference_txst_facegen_msn_not_engine_gate. Sólo SSE y sólo head parts: en FO4 el slot 7 es el
-        ' _s de FaceCustomization que el CK sí escribe, y fuera de head parts (cuerpo/armadura) el TXST manda.
-        ' Mismo predicado que `sseHeadPart` de arriba (era una segunda copia idéntica de la expresión):
-        ' una sola definición, así no pueden divergir.
+        ' ⭐ SSE head part: el TX07 NO es un slot de textura — nadie escribe el slot 7 (bake CK 0x141d0ea00,
+        ' attach 0x14042BAA0, regen 0x14042BD90). El specular que usa el motor es el INLINE del mesh, así que
+        ' pisarlo con el TX07 cambiaba el specular real en render Y bake; por eso el gate vive en este resolver
+        ' compartido y no en el escritor del NIF. Sólo SSE y sólo head parts: en FO4 el slot 7 es el _s de
+        ' FaceCustomization que el CK sí escribe. Ver 40-bake-leyes-sse.
         If sseHeadPart Then
             If logEnabled Then
                 Dim fidL7 = txstFid, curL7 = If(material.SmoothSpecTexture, ""), txL7 = If(textureSet.SmoothSpecTexture, "")
@@ -1097,28 +833,13 @@ Friend NotInheritable Class NpcMaterialResolver
         ' rationale: BCLF ignored at render/bake, preserved untouched in the ESP).
         Select Case candidate.HeadPartType
             Case HeadPartTypeHair, HeadPartTypeFacialHair, 6
-                ' ⛔ El RGB absoluto de RaceMenu (state.SseHairColorRgb) NO se resuelve acá: vive en
-                ' ApplyMaterialPaletteHairColor, que es el ÚNICO punto que comparten los DOS consumidores
-                ' (NIF-load con este override + refresh live con override=Nothing). Estaba acá y el refresh live
-                ' no lo veía ⇒ tocar cualquier cosa que disparara TexturesOnly devolvía el pelo al CLFM.
-                ' ⭐ HDPT.CNAM (Head Part Color) GANA sobre NPC.HCLF, por head part. Antes este Select salía
-                ' con el HCLF y el `headPartColor` de abajo quedaba INALCANZABLE para pelo/barba/cejas — o sea
-                ' justo para los únicos head parts donde el CNAM existe.
-                ' MEDIDO sobre vanilla+DLC: hay EXACTAMENTE 5 HDPT con CNAM<>0 en todo el juego, las cinco de
-                ' Serana/Valerica y todas apuntando a 0x000A0434 HairColor11Black:
-                '   0x0200D95D DLC1HairFemaleSerana · 0x0200D95C DLC1HairLineFemaleSerana
-                '   0x020029A9 DLC1HairFemaleValerica · 0x020029AA DLC1HairLineFemaleValerica
-                '   0x0200E88C DLC1HairFemaleSeranaHuman (variante no equipada)
-                ' ⇒ 4 shapes horneadas en 2 NPCs, que es exactamente la categoría que quedaba abierta.
-                ' Verificado byte a byte contra el CK: pelo y hairline de ambas dan (52,56,56) = 2×(26,28,28) del
-                ' CNAM; nosotros dábamos el HCLF del NPC — (40,40,48) en Valerica, (32,36,36) en Serana. Sus
-                ' CEJAS coinciden en ambos lados porque NO tienen CNAM y caen al HCLF, lo que confirma la
-                ' precedencia y descarta que fuera un problema del ×2 (el factor es correcto en los dos lados).
-                ' ⛔ El gate es `CNAM <> 0`, NO el flag DATA 0x10 "Use Solid Tint": ninguna de las 5 lo tiene
-                ' seteado y el CK usó el CNAM igual.
-                ' ⚠️ SIN MEDIR: la precedencia relativa entre SseHairColorRgb (preset RaceMenu) y HDPT.CNAM —
-                ' no hay ningún caso en el corpus vanilla que la ejercite. Se deja el preset primero, que es el
-                ' comportamiento previo.
+                ' ⛔ El RGB absoluto de RaceMenu se resuelve en ApplyMaterialPaletteHairColor, no acá: es el
+                ' único punto que comparten los dos consumidores (carga del NIF y refresh live), y cuando
+                ' estaba acá cualquier refresh de texturas devolvía el pelo al color del CLFM.
+                ' ⭐ HDPT.CNAM gana sobre NPC.HCLF, por head part (verificado contra el CK sobre las únicas 5
+                ' head parts de vanilla+DLC que declaran CNAM). El gate es `CNAM <> 0`, NO el flag "Use Solid
+                ' Tint": ninguna de las 5 lo tiene y el CK usó el CNAM igual.
+                ' ⚠️ SIN MEDIR: la precedencia entre el preset de RaceMenu y el CNAM; se deja el preset primero.
                 If headPartColor.HasValue Then Return headPartColor
                 Dim hairColor = ResolveColorFormColor(state.HairColorFormID)
                 If hairColor.HasValue Then Return hairColor
@@ -1128,20 +849,11 @@ Friend NotInheritable Class NpcMaterialResolver
         Return Nothing
     End Function
 
-    ''' <summary>Resolve the effective hair palette texture path for a given host + state, using
-    ''' the BGSM-first / RACE-fallback rule the renderer applies. Single source of truth so the
-    ''' UI swatch, the NIF-load material override, and the live-tint refresh agree. Returns
-    ''' "" when no palette is available from any source.
-    ''' <para>Priority:</para>
-    ''' <list>
-    ''' <item>Walk the host's loaded HAIR shapes (mat.Hair only — NOT every g2p material, which
-    '''       would also match recolourable armor) and return the first non-empty
-    '''       <c>material.GreyscaleTexture</c>. Per-shape, authored by the stylist, matches what
-    '''       the engine binds at TXST slot 3.</item>
-    ''' <item>Otherwise fall back to <see cref="ResolveRaceHairLookupTexture"/> (RACE.HNAM/HLTX).
-    '''       Vanilla HumanRace declares HNAM and most hair BGSMs duplicate it, but
-    '''       HumanChildRace ships without HNAM/HLTX so we must rely on the BGSM there.</item>
-    ''' </list></summary>
+    ''' <summary>Path de paleta de pelo efectivo para host + state, con la regla del render: primero el
+    ''' <c>GreyscaleTexture</c> de las shapes de PELO cargadas (filtro <c>mat.Hair</c>, no cualquier material
+    ''' con paleta — eso matchea armadura recoloreable), si no RACE.HNAM/HLTX. "" si no hay ninguna.
+    ''' Fuente única para el swatch de la UI, el override al cargar el NIF y el refresh live del tint.
+    ''' El fallback por RACE no alcanza solo: HumanChildRace no declara HNAM/HLTX.</summary>
     Friend Shared Function ResolveHairPaletteTexture(host As NpcRenderHost, state As MainForm.NPCVisualState, pluginManager As PluginManager) As String
         If host IsNot Nothing AndAlso host.PreviewCtl IsNot Nothing _
            AndAlso host.PreviewCtl.Model IsNot Nothing AndAlso host.PreviewCtl.Model.meshes IsNot Nothing Then
@@ -1164,26 +876,14 @@ Friend NotInheritable Class NpcMaterialResolver
         Return ResolveRaceHairLookupTexture(state, pluginManager)
     End Function
 
-    ''' <summary>⭐ Paleta de pelo (LUT greyscale) del NPC, resuelta ÚNICAMENTE desde sus PROPIOS records.
-    ''' Misma prioridad que <see cref="ResolveHairPaletteTexture"/> — BGSM del pelo primero, RACE (HNAM/HLTX)
-    ''' después — pero SIN tocar el preview.
-    '''
-    ''' <para>⛔ POR QUÉ EXISTE: <see cref="ResolveHairPaletteTexture"/> recorre
-    ''' <c>host.PreviewCtl.Model.meshes</c>, que son las mallas del NPC EN PANTALLA. Para el render da igual
-    ''' (el NPC en pantalla ES el NPC), pero el BAKE hornea NPCs que no están renderizados: en un batch el
-    ''' preview queda fijo y TODOS los NPC del lote recibían el LUT de pelo del NPC seleccionado como paleta de
-    ''' CEJAS. Además divergía de <c>BakeAllRunner</c> y del CLI (que pasan <c>host:=Nothing</c>) ⇒ GUI y CLI
-    ''' horneaban cejas distintas para el MISMO NPC. El bake ahora llama SIEMPRE a esta función.</para>
-    '''
-    ''' <para>La fuente BGSM se obtiene del head part de PELO del propio NPC (<c>state.HeadPartFormIDs</c> →
-    ''' HDPT con <c>PartType=Hair</c> → su <c>MeshPath</c> → material del shape), que es exactamente lo que el
-    ''' preview tendría cargado si ESE NPC estuviera en pantalla — misma respuesta, origen per-NPC. Se filtra por
-    ''' <c>mat.Hair</c> (igual que la versión del render: <c>GrayscaleToPaletteColor</c> también matchea armadura
-    ''' recoloreable y devolvía la paleta de la armadura como LUT de cejas).</para>
-    '''
-    ''' <para>El decode se cachea por path de malla (<see cref="_hairLutByMeshPath"/>): en un batch el mismo
-    ''' peinado se repite mucho, así que el NIF se abre una vez por estilo, no una por NPC. Cache de proceso,
-    ''' consistente con los demás resolvers per-path del módulo.</para></summary>
+    ''' <summary>Paleta de pelo (LUT greyscale) resuelta ÚNICAMENTE desde los records del propio NPC: misma
+    ''' prioridad que <see cref="ResolveHairPaletteTexture"/> (BGSM del pelo → RACE HNAM/HLTX) pero sin tocar
+    ''' el preview.
+    ''' <para>⛔ El bake DEBE usar esta y no la del render: aquella recorre las mallas EN PANTALLA, así que en
+    ''' un batch todos los NPCs recibían el LUT del NPC seleccionado como paleta de CEJAS, y divergía del CLI
+    ''' (que pasa host:=Nothing).</para>
+    ''' <para>Filtra por <c>mat.Hair</c>: la condición laxa por paleta también matchea armadura recoloreable.
+    ''' El decode se cachea por path de malla — en un batch el mismo peinado se repite mucho.</para></summary>
     Friend Shared Function ResolveHairPaletteTextureForNpc(state As MainForm.NPCVisualState, pluginManager As PluginManager) As String
         If state Is Nothing OrElse pluginManager Is Nothing Then Return ""
 
@@ -1365,17 +1065,12 @@ Friend NotInheritable Class NpcMaterialResolver
     ' can hold them separately from the body's own (same-named) texture.
     Private Const HeadRearClonedTextureRoot As String = "Textures\ManoloCloned\NpcMgrHeadRear\"
 
-    ' Per-app-session memo for ResolveGhoulHeadRearClonedTextures. The cloned-texture result depends
-    ' ONLY on the actor body-skin source identity = (RaceFormID, SkinFormID); the vanilla BA2 material +
-    ' texture bytes don't change during a session. Without this, every render of a ghoul-female head-rear
-    ' (full render, fast-path skin refresh, and bake) re-reads the BA2 BGSM and re-reads the BA2 texture
-    ' bytes (length-compare for the idempotent write). Memoizing makes the read+clone happen ONCE per key.
-    ' A Nothing result is cached too (deterministic failure shouldn't be retried every render). Session-only
-    ' (Shared, no config), reset implicitly on app restart. Renders run on background threads (Task.Run),
-    ' so the check-and-compute is held under _ghoulHeadRearMemoLock — the lock spans the compute (a one-time
-    ' fast op per key) so concurrent renders for the SAME key don't duplicate the clone write / FilesDictionary
-    ' registration. No toggle invalidation needed: the clone result is identical regardless of
-    ' ApplyGhoulHeadRearFix (the toggle only gates whether the clone is APPLIED, upstream of this resolver).
+    ' Memo de sesión para ResolveGhoulHeadRearClonedTextures: el resultado depende SOLO de (RaceFormID,
+    ' SkinFormID) y los bytes vanilla del BA2 no cambian en la sesión. Sin esto cada render re-lee el BGSM y
+    ' los bytes de textura. Se cachea también el Nothing (fallo determinista). El lock cubre el compute porque
+    ' los renders corren en background: dos renders de la misma clave no deben duplicar el clon ni el registro
+    ' en el FilesDictionary. No necesita invalidarse por el toggle ApplyGhoulHeadRearFix: ese solo decide si el
+    ' clon SE APLICA, aguas arriba de este resolver.
     Private Shared ReadOnly _ghoulHeadRearMemoLock As New Object()
     Private Shared ReadOnly _ghoulHeadRearClonedTexturesMemo As New Dictionary(Of (RaceFormID As UInteger, SkinFormID As UInteger), (Diffuse As String, Normal As String, SmoothSpec As String)?)()
 
@@ -1393,22 +1088,14 @@ Friend NotInheritable Class NpcMaterialResolver
         Return GhoulFemaleHeadRearRaceBareIDs.Contains(state.RaceFormID And &HFFFFFFUI)
     End Function
 
-    ''' <summary>For the ghoul-female head-rear, resolve the actor body-skin D/N/S texture paths (the
-    ''' SAME paths the body shape uses — via the actor's body skin TXST + its MNAM BGSM), then for each
-    ''' produce a DISTINCT loose path under <see cref="HeadRearClonedTextureRoot"/> that contains the
-    ''' VANILLA (BA2) bytes of that texture, register it in the FilesDictionary, and return the cloned
-    ''' relative paths.
-    '''
-    ''' Why: the vanilla-UV nape mesh needs a vanilla-UV body texture. With CBBE installed the loose
-    ''' file at the body path (e.g. GhoulFemaleBody_d.dds) is CBBE's 4096 CBBE-UV body — UV-mismatched
-    ''' against the vanilla-UV nape. The render texture cache is keyed by path string and shared model-wide,
-    ''' so the body and the nape can't get different bytes under the same path key. Clone-to-disk gives
-    ''' the nape a distinct key holding the vanilla bytes (the body keeps its own path → unaffected).
-    '''
-    ''' Idempotent: a clone already present with the same byte length is reused (no rewrite).
-    ''' Returns Nothing when not applicable (non-ghoul-female, no body skin resolved, or no paths).
-    ''' <paramref name="shape"/> supplies the NIF shape/content needed to load the body-skin MNAM BGSM
-    ''' exactly the way the live material chain does (mirrors ApplyTextureSetOverrides + ApplyTextureSetToMaterial).</summary>
+    ''' <summary>Para el head-rear de gúl femenina: resuelve los paths D/N/S de la piel del cuerpo del actor y
+    ''' clona cada uno a un path suelto distinto bajo <see cref="HeadRearClonedTextureRoot"/> con los bytes
+    ''' VANILLA (BA2), registrándolo en el FilesDictionary.
+    ''' <para>Por qué: la nuca de UV vanilla necesita textura de UV vanilla, pero con CBBE instalado el suelto
+    ''' del path del cuerpo es la textura CBBE-UV. La cache de texturas del render se indexa por string de path
+    ''' y es model-wide, así que cuerpo y nuca no pueden tener bytes distintos bajo la misma clave; el clon le
+    ''' da a la nuca una clave propia.</para>
+    ''' <para>Idempotente (reusa un clon del mismo tamaño). Nothing si no aplica. Ver 30-fo4-materiales-engine-faithful.</para></summary>
     Private Function ResolveGhoulHeadRearClonedTextures(state As MainForm.NPCVisualState, shape As IRenderableShape) As (Diffuse As String, Normal As String, SmoothSpec As String)?
         ' Per-session memo: the result depends only on the actor body-skin identity (RaceFormID, SkinFormID).
         ' Hold the lock across the compute so concurrent renders for the same key clone+register only once.
@@ -1689,7 +1376,7 @@ Friend NotInheritable Class NpcMaterialResolver
                 Logger.LogLazy(Function() $"[SHAPEMAT-PRE-TEX] shape='{shapeNamePre}' shader={shP} isBGSM={isBgsmP} (inline NIF/BGSM source, pre-TXST) D='{dP}' N='{nP}' S='{sP}' spec='{specP}' W='{wP}' env='{envP}'")
             End If
 
-            ' ENGINE-FAITHFUL (Fallout4.exe, ver memoria project_arma_skin_txst_engine): la piel de un
+            ' ENGINE-FAITHFUL (Fallout4.exe, ver memoria 23-armor-arma-skin-txst): la piel de un
             ' shape SkinTint SIEMPRE sale del skin del ACTOR (WNAM del NPC ?? RACE → skin ARMO → ARMA
             ' NAM0 male/NAM1 female por sexo), NO del NAM0/1 del ARMA del propio outfit. Un outfit trae
             ' partes SkinTint que reemplazan el naked body — esas reciben la piel del actor abajo
@@ -1708,17 +1395,13 @@ Friend NotInheritable Class NpcMaterialResolver
                 ' unaffected: their HDPT.TNAM legitimately applies to the head part regardless of shader.
                 Dim isSkinCand As Boolean = (candidate IsNot Nothing AndAlso candidate.Kind = MainForm.MeshCandidateKind.Skin)
                 Dim shaderIsSkinTint As Boolean = (matPre IsNot Nothing AndAlso matPre.NifShaderType = NiflySharp.Enums.BSLightingShaderType.SkinTint)
-                ' ENGINE-FAITHFUL face gate (RE 2026-07-16, AMBOS binarios): el motor aplica el texture
-                ' set de cara (NPC.FTST / RACE.DFTM-DFTF) SOLO a shapes cuyo material es shader-type
-                ' Face(4) — SSE runtime RegenerateHead 0x14042BD90 (gate GetType()==4 en 0x14042BF0C) y
-                ' FO4 CK resolver de bake 0x140ED41F6 (gate sub esi,4/je en 0x140ED437D). Un HDPT Face
-                ' cuyo shape NO es material Face conserva sus texturas autoradas (caso vanilla SSE
-                ' ManakinRace: MaleHeadManekin → ManekinHead.nif shader=Default queda con su madera;
-                ' sin este gate se le pisaba el diffuse con FemaleHead.dds del DFTF). mat.Facegen es el
-                ' predicado game-aware (SSE: IsTypeFaceTint / FO4: flag Face, FO4UnifiedMaterial:3183).
-                ' HDPT.TNAM NO se gatea: el engine lo aplica al attachear el modelo del head part,
-                ' independiente del shader (ojos EnvMap, etc.). Este gate corre en render Y bake (el
-                ' bake usa este mismo Sub vía delegate — BakeAllRunner:336).
+                ' ⛔ SYNC: RENDER == BAKE (el bake entra por este mismo Sub vía delegate).
+                ' Gate engine-faithful de cara, RE en los dos binarios: el motor aplica el texture set de cara
+                ' (NPC.FTST / RACE.DFTM-DFTF) SOLO a shapes con material shader-type Face(4) — SSE 0x14042BF0C,
+                ' FO4 CK 0x140ED437D. Un HDPT Face cuyo shape NO es material Face conserva sus texturas
+                ' autoradas (ManakinRace: sin el gate se le pisaba la madera con FemaleHead.dds del DFTF).
+                ' mat.Facegen es el predicado game-aware. El HDPT.TNAM NO se gatea: el motor lo aplica al
+                ' attachear el modelo, independiente del shader.
                 Dim shaderIsFace As Boolean = (matPre IsNot Nothing AndAlso matPre.Facegen)
                 If isFaceTxstSource AndAlso textureSet IsNot Nothing AndAlso Not shaderIsFace Then
                     If logEnabled Then
@@ -1728,18 +1411,12 @@ Friend NotInheritable Class NpcMaterialResolver
                     End If
                 ElseIf (Not isSkinCand) OrElse shaderIsSkinTint Then
                     ' isFaceTxstSource (solo FO4, =FTST): diffuse-only per RE del attach (slot 0).
-                    ' ⭐ La decisión de ESCRITURA del alpha-test se compone ACÁ, no adentro del resolver:
-                    ' es una regla del BAKE (dominio NPC), no de la resolución del material.
-                    ' Regla medida del CK (0x140ED41F6): fabrica el NiAlphaProperty 0x02EC y pone el bit
-                    ' F4SPF2 Alpha_Test SII el NPC tiene ACBS\Diffuse Alpha Test (0x01000000), y lo aplica
-                    ' al shape de la CARA. Los dos factores son de dominio y viven acá:
-                    '   · state.HeadDiffuseAlphaTest = el flag del record (FO4-only; SSE bit 24 sin uso).
-                    '   · IsFaceHeadPartFor          = a QUÉ shape se lo aplica el CK.
-                    ' False explícito (no Nothing) para todo el resto: es un VETO de fabricación, que es
-                    ' justo lo que hace falta al sacar el gate de anatomía del resolver — si no, los ojos
-                    ' Gen1 (material con alphaTest=True) ESTRENARÍAN un NiAlphaProperty que el CK no pone.
-                    ' Medido: 1 NPC de 4471 tiene el flag (Valentine) = el mismo y único shape donde el CK
-                    ' pone el bit sobre 1489 NIFs horneados.
+                    ' La decisión de ESCRITURA del alpha-test se compone ACÁ, no dentro del resolver: es una
+                    ' regla del BAKE (dominio NPC). El CK fabrica el NiAlphaProperty y pone el bit Alpha_Test
+                    ' SII el NPC tiene ACBS\Diffuse Alpha Test (0x01000000), y solo en el shape de la CARA.
+                    ' El False es EXPLÍCITO, no Nothing: es un veto de fabricación, si no los ojos Gen1
+                    ' (material con alphaTest=True) estrenarían un NiAlphaProperty que el CK no pone.
+                    ' Ver 40-bake-leyes-fo4.
                     Dim bakeAlphaTestDecision As Boolean = state IsNot Nothing AndAlso
                                                            state.HeadDiffuseAlphaTest AndAlso
                                                            IsFaceHeadPartFor(candidate)
@@ -1754,16 +1431,13 @@ Friend NotInheritable Class NpcMaterialResolver
                     Logger.LogLazy(Function() $"[SKIN-SHADER-GATE] Skin candidate: shape='{shN}' shader={shTy} (not SkinTint) → body TXST NOT applied (keeps own material).")
                 End If
 
-                ' CAPA AUX SSE (modelo por capas, ver doc en ResolveTextureSet): sobre la base TNAM ya
-                ' aplicada, el set resuelto FTST??DFT??TNAM aporta SOLO Normal(TX01) + _sk(TX03→
-                ' LightingTexture, mismo remap SSE que el slot Glow en ApplyTextureSetToMaterial: en
-                ' un material Face/Facegen el TX03 es subsurface, no emisivo) + detail(TX04→
-                ' DisplacementTexture, el que consume el fold del facetint). NI diffuse NI SmoothSpec
-                ' (TX07 solo togglea el flag specular en el motor — path queda del TNAM; Razhinda
-                ' shipped: S=FemaleHead_s del TNAM). Gate por material Face(4) = mat.Facegen, igual
-                ' que RegenerateHead 0x14042BF0C. Slot vacío del aux ⇒ conserva el de la base (el
-                ' motor solo carga la textura si el path del slot resuelve — 0x14042C45C/0x14042C08E).
-                ' Corre en render Y bake (Sub compartido vía delegate).
+                ' ⛔ SYNC: RENDER == BAKE (Sub compartido vía delegate).
+                ' CAPA AUX SSE (modelo por capas, ver doc en ResolveTextureSet): sobre la base TNAM ya aplicada,
+                ' el set resuelto aporta SOLO Normal(TX01) + _sk(TX03→LightingTexture: en material Face el TX03
+                ' es subsurface, no emisivo) + detail(TX04→DisplacementTexture, el que consume el fold del
+                ' facetint). Ni diffuse ni SmoothSpec. Gate por mat.Facegen, igual que RegenerateHead
+                ' 0x14042BF0C. Slot vacío del aux ⇒ conserva el de la base: el motor solo carga la textura si
+                ' el path del slot resuelve.
                 If sseFaceAux IsNot Nothing AndAlso relatedMaterial.material IsNot Nothing Then
                     Dim mAux = relatedMaterial.material
                     Dim auxShaderIsFace As Boolean = (matPre IsNot Nothing AndAlso matPre.Facegen)

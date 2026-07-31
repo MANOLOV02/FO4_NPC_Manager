@@ -217,7 +217,7 @@ Public Module LooksmenuLoader
         ''' the in-memory overlay so the user can flip the flag in Edit Face and have it persisted
         ''' to ESP later (Save ESP/ESM is the consumer; out of scope for the LM JSON, which doesn't
         ''' carry this field). Nothing = preserve raw NPC.AcbsFlags; True/False = override the bit.
-        ''' NOT serialized to LooksMenu JSON — see project_facegen_ischargenpreset_flag.md memory.</summary>
+        ''' NOT serialized to LooksMenu JSON — see 40-bake-reglas-comunes.md memory.</summary>
         Public IsCharGenFacePreset As Boolean?
 
         ''' <summary>Editor-only override of NPC.WNAM (vanilla Skin → ARMO FormID). Distinct from

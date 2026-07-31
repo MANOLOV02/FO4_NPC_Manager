@@ -4,7 +4,7 @@ Imports FO4_Base_Library
 Imports NiflySharp
 
 ''' <summary>
-''' Compare a generated FaceGen .nif2 against the original FaceGen .nif from Bethesda's BA2.
+''' Compare a generated FaceGen .nif against the original FaceGen .nif from Bethesda's BA2.
 ''' Drives the iterative bake: every iteration of FaceGenBuilder replaces a "copy" step with a
 ''' "construct from records" step, and this comparator measures how far we are from CK's
 ''' bake. Goal: zero structural diff and RMS &lt;= round-trip noise across all 11 shapes.
@@ -85,7 +85,7 @@ Public Module FaceGenComparator
         ' Guard: el comparator entero es diag (33 sb.AppendLine + LINQ aggregates + per-shape
         ' bone/vertex/triangle RMS). Sólo tiene sentido cuando FaceGenBuilder.DebugMode = True.
         ' Caller único hoy (FaceGenBuilder.vb) ya gatea con DebugMode — esto es defensa en
-        ' profundidad contra futuros callers no gateados. Ver feedback_logging_loglazy_and_guards.
+        ' profundidad contra futuros callers no gateados. Ver 00-reglas-ui-y-vb.
         If Not FaceGenBuilder.DebugMode Then
             report.Summary = "Compare skipped (DebugMode=Off)"
             Return report
@@ -351,7 +351,7 @@ Public Module FaceGenComparator
             sb.AppendLine($"[BUILDCHARGEN-DIFF]   TC gen={shapeReport.GeneratedTriangleCount} bake={shapeReport.BakedTriangleCount} match={shapeReport.GeneratedTriangleCount = shapeReport.BakedTriangleCount}")
             sb.AppendLine($"[BUILDCHARGEN-DIFF]   material gen.path='{shapeReport.GeneratedMaterialPath}' bake.path='{shapeReport.BakedMaterialPath}'")
             ' Dump the actual texture slot paths the shader of EACH nif points at (gen = our
-            ' .nif2 inline shader, bake = CK BA2 inline shader). This is where each side reads its
+            ' .nif inline shader, bake = CK BA2 inline shader). This is where each side reads its
             ' textures from -- the pixel comparison below loads from THESE paths, not a convention.
             sb.AppendLine($"[BUILDCHARGEN-DIFF]   gen.tex  {FormatMaterialTextures(shapeReport.GeneratedMaterial)}")
             sb.AppendLine($"[BUILDCHARGEN-DIFF]   bake.tex {FormatMaterialTextures(shapeReport.BakedMaterial)}")
@@ -461,7 +461,7 @@ Public Module FaceGenComparator
     End Function
 
     ''' <summary>Per-slot pixel diff (D/N/S) loading each side's texture from the path its OWN
-    ''' shader references (gen = our .nif2 inline shader, bake = CK BA2 inline shader). Resolves
+    ''' shader references (gen = our .nif inline shader, bake = CK BA2 inline shader). Resolves
     ''' bytes via FilesDictionary, with a loose-disk fallback for freshly-written sandbox files
     ''' the dictionary hasn't indexed. Logs path + presence so a MISSING is unambiguously the
     ''' actual shader path, not a guessed convention name.</summary>

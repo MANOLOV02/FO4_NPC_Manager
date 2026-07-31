@@ -1,4 +1,4 @@
-Imports System.Drawing
+﻿Imports System.Drawing
 Imports System.Globalization
 Imports System.IO
 Imports System.Linq
@@ -1414,10 +1414,6 @@ Public Class ArmaEditor_Form
     ' WYSIWYG preview — wrap the ARMA draft in a throwaway ARMO → throwaway OTFT
     ' =====================================================================
 
-    ''' <summary>Cache key over EVERY render-relevant ARMA field, so a no-op re-render is skipped but ANY
-    ''' edit that changes the equipped result (mesh, slots, race, material swaps, skin TXST/FLST, priorities,
-    ''' model flags, no-underarmor-scaling) re-renders. Earlier the key only covered mesh+slots, so material-
-    ''' swap / skin / race edits silently left a stale preview.</summary>
     ''' <summary>Cache key: the effective preview OTFT + its single throwaway item + the threaded scope
     ''' context (parent ARMO / outfit context), so a scope-mode switch that changes WHAT gets rendered
     ''' re-renders. <paramref name="throwawayItemFid"/> is 0 in the Full-Outfit-with-context path.</summary>

@@ -4,7 +4,7 @@
 ''' loader. One enum, one options struct, one "what does this preset actually carry" describer — so the
 ''' two features can never drift apart in which categories exist, what they mean, or which game shows them.
 '''
-''' <para>A category = ONE independent appearance pipeline (feedback_ch_ui_winforms "toggles granulares
+''' <para>A category = ONE independent appearance pipeline (00-reglas-ui-y-vb "toggles granulares
 ''' por pipeline"). Checked = take this category from the SOURCE preset; unchecked = keep whatever the
 ''' TARGET NPC currently shows. The actual merge lives in <see cref="PresetCategoryFilter"/>.</para>
 '''

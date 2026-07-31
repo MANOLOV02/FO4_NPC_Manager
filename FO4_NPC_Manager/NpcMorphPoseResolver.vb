@@ -13,7 +13,7 @@ Imports OpenTK.Mathematics
 ''' <summary>Phase 2 of the MainForm split: morph + pose resolution (face/body morph resolvers,
 ''' FMRS face-bone transforms, body-weight data, race height, merged NPC pose, facial-bone regions).
 ''' Standalone class, DI. Skeleton LOADING (PrepareSkeleton) + its caches stay in MainForm.
-''' See project_mainform_split.</summary>
+''' See 61-perf-mainform-split.</summary>
 Friend NotInheritable Class NpcMorphPoseResolver
     Private ReadOnly _ctx As NpcRenderContext
     Private ReadOnly _overlay As Func(Of NPC_Data, UInteger, NPC_Data)
@@ -199,35 +199,22 @@ Friend NotInheritable Class NpcMorphPoseResolver
     ' by LoadTriForShape). Engine-derived (SkyrimSE.exe applier 0x1403B90D0 → 0x140430190), agnostic and race-aware
     ' (femalehead/argonian/khajiit/hairNN each ship their own SkinnyMorph), and shared by render + bake.
 
-    ''' <summary>Resolve the applied preset's LM body overlays ("tattoos") into per-shape
-    ''' <see cref="IRenderableShape.OverlayLayers"/> on the SKIN shapes of <paramref name="renderData"/>.
-    ''' This is the render integration for the overlays feature: it SETS the layers directly (unlike the
-    ''' morph resolvers, which return an IMorphResolver) because overlay layers are extra material passes,
-    ''' not vertex deltas.
-    '''
-    ''' <para><b>Engine model</b> (F4SEPlugins-master/f4ee/OverlayInterface.cpp): for a biped slot S the
-    ''' engine finds the SKIN shapes on that slot (the clones whose lighting material is kType_SkinTint,
-    ''' :104), and for each applied overlay (iterated by priority ASCENDING — a multimap, :436) it looks up
-    ''' <c>template->slotMaterial[S]</c> (ForEachOverlayBySlot :445-447); an overlay contributes a layer to
-    ''' that shape IFF its template defines a material for slot S. LoadMaterialData (:186-197) then adds the
-    ''' preset's offsetUV to the material's UV offset, multiplies scaleUV, and for a tintable BGEM sets the
-    ''' effect base color (:227). We replicate that here, pre-baking the transform/tint onto the loaded
-    ''' material per the OverlayMaterialLayer contract (the lib renders the supplied material as-is).</para>
-    '''
-    ''' <para><b>Skin shape + biped slot identification</b> (the riskiest inference): a shape is a SKIN
-    ''' shape when its owning candidate's Kind = Skin — i.e. it was collected from the skin ARMO
-    ''' (state.SkinFormID) at NpcMeshCollector.vb:276-278. That is the app's direct analogue of the engine
-    ''' "clone the skin shapes" step; the per-shape→candidate map is renderData.ShapeCandidate
-    ''' (NpcMeshCollector.vb:1862-1865). The candidate's biped slot(s) come from MeshCandidate.SlotMask,
-    ''' bit (N-30) = biped slot N (BipedSlots.vb:6-7) — body = bit 3 (slot 33), hands = bits 4/5 (34/35),
-    ''' head = bit 0 (slot 30). We additionally require the material to be skin-tinted
-    ''' (material.NifShaderType = SkinTint) to mirror the engine's kType_SkinTint gate (:104) — a skin ARMO
-    ''' NIF can carry non-skin shapes (eyes, etc.) and those must not receive body overlays.</para>
-    '''
-    ''' <para><b>Clearing</b>: when the NPC has no applied preset, or the preset has no overlays, EVERY
-    ''' shape's OverlayLayers is set to Nothing and the method returns — so switching/clearing an NPC never
-    ''' leaks a prior NPC's tattoos. (Each render plan rebuilds fresh shape instances, so a leak is already
-    ''' impossible, but the explicit clear matches the behavior contract and is cheap.)</para></summary>
+    ''' <summary>Resuelve los overlays de cuerpo ("tatuajes") del preset aplicado a
+    ''' <see cref="IRenderableShape.OverlayLayers"/> sobre las shapes de PIEL. Es la integracion de render de
+    ''' la feature: SETEA las capas directo (a diferencia de los resolvers de morph, que devuelven un
+    ''' IMorphResolver) porque una capa de overlay es un pase de material extra, no un delta de vertices.
+    ''' <para><b>Modelo del motor</b> (f4ee OverlayInterface): para un slot biped S el motor busca las shapes de
+    ''' PIEL de ese slot y, por cada overlay aplicado (en prioridad ASCENDENTE), consulta el material de slot de
+    ''' su template; el overlay aporta capa a esa shape solo si el template define material para S. Despues suma
+    ''' el offsetUV del preset al del material, multiplica el scaleUV y, en un BGEM tintable, setea el color
+    ''' base. Aca se replica eso pre-horneando transform y tinte sobre el material cargado.</para>
+    ''' <para><b>Identificacion de shape de piel y slot</b> (la inferencia mas riesgosa): una shape es de PIEL
+    ''' cuando su candidate tiene Kind=Skin, o sea que se colecto del ARMO de piel - el analogo directo del
+    ''' "clonar las shapes de piel" del motor. Los slots salen de MeshCandidate.SlotMask con bit (N-30) = slot
+    ''' biped N. Ademas se exige que el material sea skin-tinted, espejando el gate kType_SkinTint del motor: un
+    ''' NIF de ARMO de piel puede traer shapes que no son piel (ojos) y esas no deben recibir overlays.</para>
+    ''' <para><b>Limpieza</b>: sin preset aplicado o sin overlays, TODA shape queda con OverlayLayers en Nothing,
+    ''' asi que cambiar de NPC no puede filtrar los tatuajes del anterior.</para></summary>
     Friend Sub ResolveOverlayLayers(state As MainForm.NPCVisualState, renderData As MainForm.PreviewResolutionResult)
         If renderData Is Nothing OrElse renderData.Shapes Is Nothing Then Return
 
@@ -402,25 +389,17 @@ Friend NotInheritable Class NpcMorphPoseResolver
         Return result
     End Function
 
-    ''' <summary>Load an overlay template's slot material and pre-bake the LooksMenu per-instance transform
-    ''' (offsetUV/scaleUV) + tint onto it, then wrap it as an <see cref="OverlayMaterialLayer"/>.
-    '''
-    ''' <para>Material load mirrors the canonical chain (NifContent_Class.vb:216-228 / NpcMaterialResolver
-    ''' LoadVanillaBodyMaterial:73-74): normalize the path with CorrectMaterialPath, strip then re-add the
-    ''' Materials\ prefix in the Deserialize call, choosing GetType(BGEM) for .bgem (effect/tattoo) else
-    ''' GetType(BGSM). We pass the skin shape's own NifShape (INiShape) + NifContent so Deserialize can seed
-    ''' the alpha fields / resolve ShaderType from the NIF the same way the base shape's material was loaded
-    ''' (it uses them only for that seeding — safe to reuse the skin shape's pair).</para>
-    '''
-    ''' <para>Pre-bake matches LoadMaterialData (OverlayInterface.cpp:186-197):
-    ''' <c>oU += offsetUV.x; oV += offsetUV.y; sU *= scaleUV.x; sV *= scaleUV.y</c>. The renderer's overlay
-    ''' pass uploads BOTH uvOffset (UOffset/VOffset) AND uvScale (UScale/VScale) for the layer's material
-    ''' (Render.vb:3200-3201), so scaleUV is honored, not offset-only — we multiply UScale/VScale. Tint
-    ''' (entry.Tint, rgba 0..1) is set as the BGEM base color (effectMaterial->kBaseColor, :227) via
-    ''' BaseColor (System.Drawing.Color, BGEM-only; no-op on a BGSM, which matches the engine guarding the
-    ''' tint write behind the effect-material branch).</para>
-    '''
-    ''' <para>Returns Nothing on load failure (defensive — a bad overlay material must not break the render).</para></summary>
+    ''' <summary>Carga el material de slot de un template de overlay, le pre-hornea el transform por instancia
+    ''' de LooksMenu (offsetUV/scaleUV) y el tinte, y lo envuelve como <see cref="OverlayMaterialLayer"/>.
+    ''' <para>La carga espeja la cadena canonica: normalizar el path, sacar y volver a poner el prefijo
+    ''' Materials\ en el Deserialize, y elegir BGEM para .bgem (efecto/tatuaje) o BGSM si no. Se le pasa el
+    ''' NifShape + NifContent de la shape de piel para que Deserialize siembre los campos de alpha y resuelva el
+    ''' ShaderType igual que cuando se cargo el material base.</para>
+    ''' <para>El pre-horneado replica LoadMaterialData: <c>oU += offsetUV.x; oV += offsetUV.y; sU *= scaleUV.x;
+    ''' sV *= scaleUV.y</c>. El pase de overlay del render sube tanto uvOffset como uvScale, asi que el scaleUV
+    ''' se honra y no solo el offset. El tinte se setea como color base del BGEM, que es no-op en un BGSM - lo
+    ''' mismo que hace el motor guardando esa escritura tras la rama de material de efecto.</para>
+    ''' <para>Nothing si falla la carga: un material de overlay roto no puede romper el render.</para></summary>
     Private Shared Function BuildOverlayLayer(skinShape As IRenderableShape, slotMaterialPath As String,
                                               entry As LooksmenuLoader.OverlayEntry) As OverlayMaterialLayer
         Try
@@ -461,19 +440,15 @@ Friend NotInheritable Class NpcMorphPoseResolver
         End Try
     End Function
 
-    ''' <summary>SSE (Skyrim) analogue of <see cref="ResolveOverlayLayers"/>: source PATH-based RaceMenu
-    ''' overlays from the applied preset's <see cref="LooksmenuLoader.LooksmenuPreset.SseBodyOverlays"/>
-    ''' carrier and synthesize an <see cref="OverlayMaterialLayer"/> per matching skin-tinted shape.
-    '''
-    ''' <para>Shape membership reuses the same gate as the FO4 path (<see cref="ShapeIsSkinTinted"/> +
-    ''' <c>renderData.ShapeCandidate</c>), but the biped-slot match is SSE-specific: the overlay node name
-    ''' (<c>Body</c>/<c>Hands</c>/<c>Feet</c>) maps to the SSE biped slot bits it covers
-    ''' (<see cref="SseOverlayNodeSlotBits"/>, from the Skyrim table BipedSlots.vb) and the overlay lands on
-    ''' any skin-tinted shape whose SlotMask intersects those bits. Draw order = list order (skee applies
-    ''' Ovl0..N in node order; index 0 drawn first = bottom).</para>
-    '''
-    ''' <para>Blend is the SAME coplanar alpha-over decal as FO4 (Option B) — no per-mode Pegtop (the blend
-    ''' mode is not in the .jslot, §3.1/§3.2). Absent preset / empty carrier ⇒ every shape cleared.</para></summary>
+    ''' <summary>Analogo SSE de <see cref="ResolveOverlayLayers"/>: toma los overlays de RaceMenu (por PATH) del
+    ''' carrier <see cref="LooksmenuLoader.LooksmenuPreset.SseBodyOverlays"/> del preset aplicado y sintetiza un
+    ''' <see cref="OverlayMaterialLayer"/> por cada shape skin-tinted que matchee.
+    ''' <para>La pertenencia de shape usa el mismo gate que el camino FO4, pero el match de slot es
+    ''' SSE-especifico: el nombre del nodo de overlay (Body/Hands/Feet) mapea a los bits de slot biped que cubre
+    ''' y el overlay cae en cualquier shape skin-tinted cuyo SlotMask los intersecte. El orden de dibujo es el de
+    ''' la lista (skee aplica Ovl0..N en orden de nodo; el indice 0 va abajo).</para>
+    ''' <para>El blend es el MISMO decal coplanar alpha-over que en FO4: el modo de blend no esta en el .jslot.
+    ''' Sin preset o con carrier vacio, todas las shapes se limpian.</para></summary>
     Private Sub ResolveSseOverlayLayers(state As MainForm.NPCVisualState, renderData As MainForm.PreviewResolutionResult)
         ' Overlays (tattoos / body-hand-feet-face paint) become alpha-over decal layers here. Skin overrides do NOT:
         ' they are a per-slot texture-set REPLACEMENT on the skin material (skee NIOVTaskUpdateTexture), applied
@@ -708,49 +683,33 @@ Friend NotInheritable Class NpcMorphPoseResolver
     ''' <summary>Cache of the MERGED (both-gender) FacialBoneRegions table, keyed by race EditorID.</summary>
     Private Shared ReadOnly _facialBoneRegionsMergedCache As New Dictionary(Of String, FacialBoneRegionsFile)(StringComparer.OrdinalIgnoreCase)
 
-    ''' <summary>Table to resolve an NPC's FMRI (facial bone region ID) values against: the race's
-    ''' Female AND Male FacialBoneRegions tables merged into one ID → region map.
-    ''' <para><b>WHY BOTH TABLES — the ID identifies the table, not the NPC's gender.</b> The two
-    ''' per-gender JSONs of a race use <b>DISJOINT ID NAMESPACES</b>. Measured over the vanilla
-    ''' Fallout4.esm files (HumanRace and GhoulRace, 32 regions each, set intersection = EMPTY):</para>
-    ''' <list type="bullet">
-    '''   <item>FEMALE tables: IDs <c>0x3A</c>–<c>0x186BB</c> (the 100000+ block)</item>
-    '''   <item>MALE tables:   IDs <c>0x00</c>–<c>0x3F</c> and <c>0x36EF34xx</c></item>
-    ''' </list>
-    ''' <para><b>⛔ Those ranges are EVIDENCE, NOT A SPEC — and nothing below branches on them.</b>
-    ''' They are recorded here only to justify why merging is safe; there is no range constant, no
-    ''' numeric test, no "if id &gt;= 100000" anywhere in this code. Resolution is <b>PURELY
-    ''' FILE-DRIVEN</b>: we load both tables for the race and index whatever IDs each file actually
-    ''' declares, then answer "WHICH TABLE CONTAINS THIS ID?" by dictionary lookup. A mod shipping
-    ''' its own <c>&lt;Race&gt;FacialBoneRegions&lt;Gender&gt;.txt</c> with completely different IDs
-    ''' works unchanged. This is why it is data-driven and NOT a heuristic "if the lookup misses,
-    ''' try the other file" fallback — the ID itself designates the table, so nothing is guessed.</para>
-    ''' <para><b>Why it matters (measured, 10/10 hits and 0 false positives over 895 controls):</b>
-    ''' ten Fallout4.esm NPCs carry FMRI values from the OPPOSITE gender's namespace — e.g.
-    ''' <c>00217AA0</c> MQ302Minuteman02 (male) has 28/28 IDs in the female namespace, and
-    ''' <c>0008C408</c> DN088_JacquelineSpencer (female) has 14/14 IDs in the male namespace.
-    ''' Loading only the NPC's own-gender file made EVERY lookup miss, so NO face-bone deformation
-    ''' was applied at all and our head came out exactly neutral (deviation 0.0000–0.0001 vs the
-    ''' CK's 0.068–0.290). The CK resolves these NPCs fine. Impact: 83 of 377 shapes, including
-    ''' 28/28 of all eyes, 8/8 neckgore, 16/18 mouth. No FormID is hardcoded — the union of the
-    ''' shipped tables is what does the work.</para>
-    ''' <para>RENDER == BAKE: this is the single resolution entry point used by BOTH the live render
-    ''' (<see cref="BuildFaceBoneTransforms"/>, <see cref="ResolveNeckNnamScale"/>) and the offline
-    ''' FaceGen bake (FaceGenBuilder → FaceGenBuildPipeline.BuildBakeState).</para>
-    ''' <para>GAME-AWARE: FacialBoneRegions JSONs are a FALLOUT 4 mechanism only. SSE has no
-    ''' <c>CharacterAssets\*FacialBoneRegions*.txt</c> (its face morphs come from RACE NAM9 / .tri),
-    ''' so under SSE both loads miss and this returns Nothing exactly as before — no gate needed.</para>
-    ''' <para><b>Tie-break (explicit, data-derived).</b> Disjointness is a property of the FILES, not
-    ''' something we enforce. If a modded race ever ships a race whose two tables DO share an ID, the
-    ''' entry from the NPC's OWN gender file wins — the opposite-gender table is inserted first and
-    ''' the own-gender table is inserted second, overwriting. So in the worst case behaviour degrades
-    ''' exactly to the pre-fix own-gender-only result, never to something arbitrary.</para>
-    ''' <para><b>Missing / unparsable files degrade cleanly.</b> Each side is an independent load that
-    ''' returns Nothing when the file is absent or malformed (never throws), so: both present → union;
-    ''' only one present → that one alone (e.g. vanilla PowerArmorRace ships a Male table only, so
-    ''' both genders resolve against it); neither → Nothing, and every caller already treats Nothing
-    ''' as "no face-bone pose" exactly as before. Custom races with a single table, or with none, are
-    ''' therefore handled without a special case.</para></summary>
+    ''' <summary>Tabla contra la que se resuelven los FMRI (IDs de region osea facial) de un NPC: las tablas
+    ''' FacialBoneRegions Female Y Male de la raza, mergeadas en un solo mapa ID -> region.
+    ''' <para><b>Por que las dos: el ID identifica la TABLA, no el genero del NPC.</b> Los dos JSON por genero de
+    ''' una raza usan NAMESPACES DE ID DISJUNTOS (medido sobre HumanRace y GhoulRace de Fallout4.esm, 32 regiones
+    ''' cada una, interseccion VACIA).</para>
+    ''' <para>â›” Los rangos observados son EVIDENCIA, NO UNA SPEC, y nada de este codigo ramifica sobre ellos: no
+    ''' hay constante de rango ni test numerico. La resolucion es PURAMENTE FILE-DRIVEN - se cargan las dos
+    ''' tablas de la raza y se indexa lo que cada archivo declara, asi que un mod con sus propios IDs funciona sin
+    ''' cambios. Tampoco es una heuristica de "si falla, probar el otro archivo": el ID designa la tabla.</para>
+    ''' <para><b>Por que importa</b> (medido, 10/10 aciertos y 0 falsos positivos sobre 895 controles): diez NPCs
+    ''' de Fallout4.esm traen FMRI del namespace del genero OPUESTO. Cargando solo el archivo del genero propio
+    ''' fallaban TODOS los lookups, no se aplicaba ninguna deformacion osea y la cabeza salia exactamente neutra
+    ''' (desviacion 0,0000-0,0001 contra 0,068-0,290 del CK). Impacto: 83 de 377 shapes. Ningun FormID
+    ''' hardcodeado: el trabajo lo hace la union de las tablas shipeadas.</para>
+    ''' <para>â›” SYNC: RENDER == BAKE. Es el unico punto de resolucion, usado por el render en vivo
+    ''' (<see cref="BuildFaceBoneTransforms"/>, <see cref="ResolveNeckNnamScale"/>) y por el bake offline
+    ''' (FaceGenBuilder -> FaceGenBuildPipeline.BuildBakeState).</para>
+    ''' <para>GAME-AWARE: los JSON de FacialBoneRegions son un mecanismo de FALLOUT 4. En SSE no existen (sus
+    ''' morphs de cara vienen de RACE NAM9 / .tri), asi que las dos cargas fallan y esto devuelve Nothing sin
+    ''' necesidad de gate.</para>
+    ''' <para><b>Desempate explicito</b>: la disjuncion es propiedad de los ARCHIVOS, no algo que se imponga. Si
+    ''' una raza modeada compartiera un ID entre sus dos tablas, gana la del genero PROPIO del NPC (se inserta
+    ''' segunda y pisa), asi que el peor caso degrada exactamente al comportamiento previo al fix.</para>
+    ''' <para>Los archivos ausentes o ilegibles degradan limpio: cada lado es una carga independiente que
+    ''' devuelve Nothing sin tirar, asi que con las dos presentes hay union, con una sola esa (PowerArmorRace
+    ''' vanilla trae solo la Male) y sin ninguna, Nothing - que todos los callers ya tratan como "sin pose
+    ''' osea".</para></summary>
     Friend Shared Function GetFacialBoneRegionsForFmriResolution(race As RACE_Data, isFemale As Boolean) As FacialBoneRegionsFile
         If race Is Nothing OrElse String.IsNullOrEmpty(race.EditorID) Then Return Nothing
 
@@ -784,12 +743,6 @@ Friend NotInheritable Class NpcMorphPoseResolver
         Return merged
     End Function
 
-    ''' <summary>Build a pose of face bone deltas from the NPC's FMRI/FMRS subrecords.
-    ''' For each FMRI region, look up the region in the race's FacialBoneRegions JSON, then
-    ''' for each bone in the region compute a per-axis delta by signed-lerping FMRS sliders
-    ''' (clamped to [-1,+1]) across Minima/Default/Maxima, scaled by FMIN. Bone names are
-    ''' prefixed with "skin_" to match SkeletonDictionary. Returns Nothing if no regions
-    ''' file is found or no non-zero FMRS values contribute.</summary>
     ''' <summary>Thin instance wrapper over <see cref="FaceBonePoseBuilder.BuildFaceBoneTransforms"/>;
     ''' resolves the overlay-applied NPC + race + regions JSON from the state, then delegates the
     ''' FMRS math to the helper module. Real impl lives in the module so offline bake reuses it.</summary>
@@ -841,23 +794,19 @@ Friend NotInheritable Class NpcMorphPoseResolver
         Return FaceBonePoseBuilder.ComputeNeckNnamScale(npcData, regionsFile, neckNnamX, neckNnamY)
     End Function
 
-    ''' <summary>POST-PASE de la compensación NNAM anti-propagación. Llamar JUSTO DESPUÉS de
-    ''' <c>ApplyBoneMorphPose</c> sobre el MISMO skeleton (BuildBodyWeightPose ya metió el scale del
-    ''' NNAM en el hueso "Neck", Layer 2). Como <c>GetGlobalTransform</c> compone la cadena de padres,
-    ''' esa escala PROPAGARÍA a los hijos (Neck → HEAD_Offset → HEAD → cara) = el bug "cara adelante".
-    ''' Para cancelarla, a CADA hijo DIRECTO de "Neck" se le compone <c>comp = L_C⁻¹ ∘ S⁻¹ ∘ L_C</c>
-    ''' sobre su MorphDelta existente (el FMRS que ApplyBoneMorphPose ya aplicó):
-    ''' <c>MorphDelta_C' = comp ∘ FMRS_C</c>. Resultado: la escala queda SOLO en los verts pegados a
-    ''' "Neck"; cara/cuello y sus morphs FMRS intactos. <c>comp</c> puede tener SHEAR (hijos rotados,
-    ''' p.ej. skin_bone_*Neckmuscle*) → se asigna DIRECTO a <c>MorphDeltaTransform</c> (PoseTransformData
-    ''' no representa shear). Orden de composición verificado numéricamente (Tools/NifVtxCompare --verifycomp).
-    ''' <para>GATEO AUTOMÁTICO: la S se LEE de <c>neckBone.MorphDeltaTransform</c> (lo que el "Neck"
-    ''' realmente recibió), NO se re-resuelve. Si el "Neck" no escaló (body-weight OFF — el scale se emite
-    ''' solo dentro de la rama bodyWeightEnabled/hasSculpt de BuildMergedNpcPose —, NNAM inactivo, o
-    ''' suprimido) su MorphDeltaTransform es Nothing → NO-OP. Así la comp (S⁻¹) NUNCA se aplica sin la S
-    ''' correspondiente en el padre.</para>
-    ''' Idempotencia: re-correr tras cada ApplyBoneMorphPose (que resetea la capa morph) — NO llamar dos
-    ''' veces sin re-aplicar la pose (compondría la comp dos veces).</summary>
+    ''' <summary>POST-PASE de la compensacion NNAM anti-propagacion. Llamar JUSTO DESPUES de
+    ''' <c>ApplyBoneMorphPose</c> sobre el MISMO skeleton (BuildBodyWeightPose ya metio el scale del NNAM en el
+    ''' hueso "Neck"). Como <c>GetGlobalTransform</c> compone la cadena de padres, esa escala PROPAGARIA a los
+    ''' hijos (Neck -> HEAD_Offset -> HEAD -> cara), que es el bug de "cara adelante". Para cancelarla, a CADA
+    ''' hijo DIRECTO de "Neck" se le compone <c>comp = L_C^-1 . S^-1 . L_C</c> sobre su MorphDelta existente, asi
+    ''' que la escala queda SOLO en los verts pegados a "Neck" y los FMRS quedan intactos. <c>comp</c> puede
+    ''' tener SHEAR (hijos rotados), por eso se asigna DIRECTO a MorphDeltaTransform: PoseTransformData no
+    ''' representa shear.
+    ''' <para>GATEO AUTOMATICO: la S se LEE del MorphDeltaTransform del "Neck" (lo que realmente recibio), no se
+    ''' re-resuelve. Si el "Neck" no escalo (body-weight OFF, NNAM inactivo o suprimido) es Nothing y esto es
+    ''' NO-OP, asi que la compensacion nunca se aplica sin su S correspondiente en el padre.</para>
+    ''' <para>Idempotencia: re-correr tras cada ApplyBoneMorphPose, que resetea la capa de morph. No llamar dos
+    ''' veces sin re-aplicar la pose, o compone la compensacion dos veces.</para></summary>
     Friend Sub ApplyNeckNnamCompensation(skeleton As SkeletonInstance)
         If skeleton Is Nothing OrElse Not skeleton.HasSkeleton Then Return
         Dim neckBone As HierarchiBone_class = Nothing
@@ -952,11 +901,18 @@ Friend NotInheritable Class NpcMorphPoseResolver
         Return h
     End Function
 
-    ''' <param name="faceMorphsEnabled">FO4: checkbox "Bone morphs (FMRS)" (AND "no gender override").</param>
-    ''' <param name="nodeTransformsEnabled">SSE: el MISMO checkbox — que en Skyrim rotula "Node transforms
-    ''' (RaceMenu)" y gatea los NiOverride node transforms, el único canal de deformación por-nodo que tiene ese
-    ''' juego (no hay FMRS). Va aparte de faceMorphsEnabled porque ese trae AND'eado el gender-override, que no
-    ''' aplica a una escala de nodo del cuerpo. Default True = no gateado (callers no-UI).</param>
+    ''' <summary>Arma la pose mergeada del NPC: race-height + body-weight (MWGT x BSMS + MRSV + ARMA) + FMRS, en
+    ''' ese orden (top-down por la jerarquia del esqueleto).
+    ''' <para>Las tres fuentes escriben campos DISJUNTOS de <c>PoseTransformData</c> (race a Scale, body-weight a
+    ''' ScaleX/Y/Z, FMRS a T/R), asi que el merge por campo preserva el aporte de cada una aunque el mismo hueso
+    ''' aparezca en dos. <c>PoseMath.MergePoses</c> loguea si alguna vez colisionan: es un canario.</para>
+    ''' <para>â›” Contrato con el caller: el esqueleto tiene que estar YA cargado y mergeado (cara/robot) antes de
+    ''' llamar, porque el paso de body-weight camina su jerarquia para mapear huesos a regiones MRSV.</para></summary>
+    ''' <param name="faceMorphsEnabled">FO4: checkbox "Bone morphs (FMRS)" (y "sin gender override").</param>
+    ''' <param name="nodeTransformsEnabled">SSE: el MISMO checkbox, que alla rotula "Node transforms (RaceMenu)"
+    ''' y gatea los node transforms de NiOverride, el unico canal de deformacion por nodo de ese juego. Va aparte
+    ''' de faceMorphsEnabled porque ese trae AND-eado el gender-override, que no aplica a una escala de nodo del
+    ''' cuerpo. Default True = sin gatear, para callers no-UI.</param>
     Friend Function BuildMergedNpcPose(state As MainForm.NPCVisualState, renderData As MainForm.PreviewResolutionResult,
                                         faceMorphsEnabled As Boolean,
                                         bodyWeightEnabled As Boolean,

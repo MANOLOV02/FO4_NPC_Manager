@@ -1,4 +1,4 @@
-' UI built in Designer per feedback_ui_in_designer.md. InitializeComponent is declarative ONLY.
+﻿' UI built in Designer per 00-reglas-ui-y-vb.md. InitializeComponent is declarative ONLY.
 ' Modal editor for a SINGLE NPC_InventoryItem (Item FormID + s32 Count) of an NPC's CNTO inventory list —
 ' mirror of ArmoDamageResistEditor_Form so the "Inventory" grid stays pure read-only.
 <Global.Microsoft.VisualBasic.CompilerServices.DesignerGenerated()>

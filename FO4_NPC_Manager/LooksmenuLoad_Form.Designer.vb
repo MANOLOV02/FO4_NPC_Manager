@@ -1,4 +1,4 @@
-﻿' UI built in Designer per feedback_ch_ui_winforms. The right-hand category checkboxes live in the shared
+﻿' UI built in Designer per 00-reglas-ui-y-vb. The right-hand category checkboxes live in the shared
 ' PresetCategoryPanel — the same control Paste Look hosts — so both features offer the same categories.
 <Global.Microsoft.VisualBasic.CompilerServices.DesignerGenerated()>
 Partial Class LooksmenuLoad_Form
