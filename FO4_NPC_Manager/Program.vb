@@ -136,9 +136,12 @@ Module Program
         ' Logger live BEFORE encoding init / preflight so every startup-time LogLazy is captured
         ' (encoding override INI, TES4 SNAM parse, plugin scan). Was in MainForm_Load — moved
         ' here because MainForm_Load runs AFTER the preflight has already loaded plugins.
-        ' Logger habilitado SOLO en Debug builds. En Release: Logger.Enabled stays default (False)
-        ' y todos los Logger.Log/LogLazy retornan early sin allocar — sin overhead. Si necesitás
-        ' diagnóstico en Release, descomentar manualmente y rebuild.
+        ' Logger habilitado SOLO en Debug builds. En Release: Logger.Enabled queda en False y todos los
+        ' Logger.Log/LogLazy retornan early sin allocar — y, mas importante, TODOS los bloques
+        ' `If Logger.Enabled Then ...` de diagnostico (censos por malla, histogramas, dumps por vertice)
+        ' no corren. ⭐ DOBLE CANDADO: ademas de este `#If DEBUG`, el propio setter de Logger.Enabled
+        ' DESCARTA cualquier True en Release (ver Logger.vb), asi que aunque alguien agregue un
+        ' `Logger.Enabled = True` suelto en un camino de release, no prende nada.
 #If DEBUG Then
         Logger.Enabled = True
         Logger.Initialize(IO.Path.Combine(Application.StartupPath, "fo4lib.log"))

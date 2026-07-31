@@ -462,10 +462,13 @@ Friend NotInheritable Class NpcMaterialResolver
     ''' 0x00064A42: N=BretonMale_msn del DFT de la raza pisando el TNAM (prueba DFT>TNAM en la capa).
     ''' Nothing en FO4 (allá el set resuelto reemplaza D/N/S completos como base del composite
     ''' FaceCustomization — validado byte-exacto vs CK, Mitch) o si el aux coincide con el TNAM.</param>
-    ''' <param name="fo4FaceComposeInputsOnly">SOLO FO4 + HeadPart raw=Face, y SOLO cuando el set
-    ''' resuelto vino de la CADENA FTST (NPC.FTST o RACE.DFTM-fallback), no del TNAM del head part.
+    ''' <param name="fo4FaceComposeInputsOnly">SOLO FO4 + HeadPart raw=Face. True para CUALQUIERA de las
+    ''' tres procedencias del set de cara — NPC.FTST, RACE.DFTM-fallback y el TNAM del propio head part —
+    ''' porque la ley no depende de qué record lo aportó sino de que ESTE es el texture set de la CARA.
     ''' True ⇒ el caller aplica del TXST ÚNICAMENTE TX00/TX01/TX07 (D/N/S = las tres ENTRADAS del
-    ''' compose de FaceCustomization). Ver la regla medida en <see cref="ApplyTextureSetToMaterial"/>.</param>
+    ''' compose de FaceCustomization) y, si el TXST trae MNAM, toma de ese material D+N+S.
+    ''' Ver las reglas medidas en <see cref="ApplyTextureSetToMaterial"/> y en el bloque del MNAM de
+    ''' <see cref="ApplyTextureSetOverrides"/>.</param>
     Friend Function ResolveTextureSet(candidate As MainForm.MeshCandidate, state As MainForm.NPCVisualState, ByRef isFaceTextureSource As Boolean, ByRef sseFaceAuxTextureSet As TXST_Data, ByRef fo4FaceComposeInputsOnly As Boolean) As TXST_Data
         isFaceTextureSource = False
         sseFaceAuxTextureSet = Nothing
@@ -589,6 +592,34 @@ Friend NotInheritable Class NpcMaterialResolver
                         textureSetFormID = state.HeadTextureFormID
                         txstSource = "RACE.DFTM(Face-fallback)"
                         fo4FaceComposeInputsOnly = True
+                    ElseIf textureSetFormID <> 0UI Then
+                        ' ⭐⭐ 2026-07-30 — EL TNAM DEL PROPIO HEAD PART DE CARA TAMBIEN ES "INPUT DEL COMPOSE".
+                        ' La ley no es de QUE RECORD salio el set, es que ESTE es el texture set de la CARA:
+                        ' sus D/N/S alimentan el compose de FaceCustomization (y en el NIF los pisa la ruta
+                        ' generada), y NINGUN otro slot del TXST participa.
+                        ' MEDIDO en el facegeom del CK (BA2 vanilla, sin loose ni mods), shape 'MaleHeadHuman'
+                        ' de 0x0024A022 / 0x00240C22 / 0x00247553, los tres identicos:
+                        '     [0][1][7] = las FaceCustomization generadas
+                        '     [4] = Shared/Cubemaps/mipblur_DefaultOutside1_dielectric.dds  <- del MATERIAL
+                        '     [5] = Actors/Character/BaseHumanMale/HeadWrinkles_n.dds       <- del MATERIAL
+                        '     resto vacio
+                        ' El TXST 0x0001FA47 SkinHeadHeroMale declara TX02='...HeadWrinkles_n.DDS' (backslash,
+                        ' .DDS) y TX04='...BlankDetailmap.dds': el CK NO escribio NI UNO de los dos. Nosotros
+                        ' aplicabamos el TX02 y por eso el slot 5 salia con el string del TXST en vez del
+                        ' string del material — la categoria de 451 NPCs.
+                        ' ⛔ NO es un problema de normalizacion de path (hipotesis descartada con el dato): los
+                        ' dos strings existen tal cual en fuentes distintas, y el material FEMENINO
+                        ' basehumanFemaleskinHead.bgsm declara 'BaseFemaleHeadWrinkles_n.DDS' — barra normal
+                        ' pero .DDS en MAYUSCULA. No hay forma canonica: el CK escribe lo que tipeo el autor
+                        ' del material. Normalizar romperia las cabezas femeninas, que hoy COINCIDEN.
+                        ' ALCANCE MEDIDO (censo de los 16 head parts de cara de FO4+DLC): 10 tienen TNAM y 9 de
+                        ' esos traen MNAM, o sea ni llegan a ApplyTextureSetToMaterial. El UNICO con TX## y sin
+                        ' MNAM es MaleHeadHuman ⇒ en vanilla esto solo puede tocar a esos 451 NPCs. Su TXST
+                        ' tiene el flag Facegen, asi que `diffuseOnly` seguia False igual: D/N/S no se mueven.
+                        ' textureSetFormID ya ES el TNAM del head part: no se reasigna nada, solo se
+                        ' MARCA que este set es el de la cara y por lo tanto va como input del compose.
+                        txstSource = "HDPT.TNAM(Face-compose)"
+                        fo4FaceComposeInputsOnly = True
                     End If
                 End If
             End If
@@ -631,44 +662,32 @@ Friend NotInheritable Class NpcMaterialResolver
 
         ' forceDiffuseOnly (RE 2026-07-16): la fuente FTST del camino Face FO4 aplica SOLO el slot 0 — el
         ' ATTACH del engine, GetTexturePath(slot 0) (game 0x1406EE0D7 / CK 0x140ED3830, todas las llamadas
-        ' con xor edx,edx). Eso NO CAMBIA.
-        ' ⭐⭐ LO QUE SI SE SEPARA: si el MNAM del FTST aporta el material BASE del compose. Son DOS
-        ' consumidores distintos y el `Return` de antes los tenia fusionados:
-        '   (a) QUE SLOTS TX## se aplican         -> solo el 0. RE-ado del attach. Intacto.
-        '   (b) De donde salen los paths D/N/S    -> del MNAM cuando el TXST trae uno. Es OTRA pregunta:
-        '       el attach de runtime resuelve una TEXTURA; el bake resuelve un MATERIAL para COMPONER.
-        ' Lo respalda la regla mejor validada del proyecto (arch_facegen_bake_rules 2, identidad contra
-        ' 10.197 shapes del CK): donde hay MNAM, aporta PATHS DE TEXTURA.
-        ' DONDE MUERDE: en los TXST MNAM-ONLY el slot 0 viene VACIO, asi que sin esta rama no se aplica
-        ' NADA y el compose se queda con el material inline de la malla — o sea D/N/S salen del lugar
-        ' equivocado. Poblacion medida sobre los 1.490 del corpus: 802 sin FTST propio (no cambia) · 681
-        ' con slots, ya honrado (no cambia) · 7 MNAM-only (DISPARAN) · 0 con MNAM Y slots. De los 7, solo 3
-        ' tienen MNAM distinto al default de su raza; los otros 4 son no-op por construccion.
-        ' ⛔ NO SE GATEA POR JUEGO: SSE tiene 0 de 755 TXST con MNAM, asi que el DATO lo gatea solo.
+        ' con xor edx,edx).
         '
-        ' ⛔⛔ EVIDENCIA QUE **NO** HAY QUE CITAR PARA ESTO (se midio y es falsa): "el _s de Valentine".
-        ' Sonda sobre su bake real:
-        '     shape='SynthGen2Head1:0'  isFaceTxstSource=False  shaderIsFace=True  shaderType=FaceTint
-        ' isFaceTxstSource=False => forceDiffuseOnly=False => su cabeza NUNCA entra a este bloque; entra
-        ' por el camino normal de mas abajo, que YA carga el MNAM. Sus tres DDS salen con el md5 exacto de
-        ' antes del cambio (_d 9dfd070b, _msn 6f64ac52, _s 4f09b5d3). El caso que motivo la rama es un
-        ' NO-OP para ella. La rama se sostiene por (b) y por los 3 MNAM-only reales, no por Valentine.
-        ' Si reaparece la duda: lo PRIMERO a medir es isFaceTxstSource en el shape concreto.
+        ' ⛔⛔ 2026-07-30 — ACA VIVIA UNA RAMA QUE CARGABA EL MNAM ("FIX 2"). SE SACO POR INALCANZABLE.
+        ' Cadena de la prueba (estatica, cerrada, con fuente autoritativa):
+        '   1. forceDiffuseOnly es SIEMPRE el argumento isFaceTxstSource del unico call site
+        '      (ApplyShapeMaterialOverrides). Los otros dos callers pasan False:
+        '      HeadPartPicker_Form (default) y NpcSkinLivePreview (explicito).
+        '   2. isFaceTextureSource se asigna True en UN SOLO lugar: ResolveTextureSet, adentro de
+        '      `If isSse Then` (= sseFaceAuxTextureSet IsNot Nothing). La rama FO4 lo deja en False A
+        '      PROPOSITO y lo documenta: "slot 0 unicamente" es una hipotesis REFUTADA por BAKETESTFO4
+        '      (romperia el _msn y el _s de 874 NPCs).
+        '   3. ⇒ forceDiffuseOnly=True implica juego = Skyrim.
+        '   4. El TXST de Skyrim NO TIENE subrecord MNAM. Fuente: xEdit wbDefinitionsTES5.pas:5581-5600
+        '      (TX00..TX07 + DODT + DNAM y nada mas) contra wbDefinitionsFO4.pas:7355, que si declara
+        '      `wbString(MNAM, 'Material')`. Y RecordParsers.ParseTXST solo puebla MaterialPath desde MNAM.
+        '   5. ⇒ dentro de este If, textureSet.MaterialPath es SIEMPRE "". La rama no corria NUNCA,
+        '      en ningun juego.
+        ' El censo que la justificaba media el predicado equivocado: contaba TXST MNAM-only (medido de
+        ' nuevo: son 143 NPCs del corpus, no 7) sin verificar si la COMPUERTA se abre. En FO4 no se abre,
+        ' y esos 143 entran por el camino normal de mas abajo, que ya carga el MNAM.
+        ' ⛔ EVIDENCIA QUE **NO** HAY QUE CITAR SI REAPARECE LA IDEA: "el _s de Valentine". Sonda sobre su
+        ' bake real: shape='SynthGen2Head1:0' isFaceTxstSource=False ⇒ su cabeza nunca entro aca. Sus tres
+        ' DDS salieron con el md5 exacto de antes del cambio. Lo PRIMERO a medir es isFaceTxstSource en el
+        ' shape concreto. El _s de Valentine si era un defecto real, pero vivia en OTRO lado: el gate de
+        ' N/S del bloque del MNAM de mas abajo (ver el comentario largo ahi).
         If forceDiffuseOnly Then
-            ' (b) primero: el MNAM define el material BASE, y el slot 0 del TXST gana POR ENCIMA (el attach
-            ' es mas especifico que el material). Al reves, cargar el MNAM pisaria el TX00 que el motor si aplica.
-            If textureSet.MaterialPath <> "" Then
-                Dim faceMat = MaterialResolver.TryLoadMaterialFromDictionary(textureSet.MaterialPath, material, shap, nif)
-                If faceMat IsNot Nothing Then
-                    ' SOLO PATHS DE TEXTURA, nunca el shader. Cada slot se copia SOLO si el material lo
-                    ' declara: un BGSM con el slot vacio no debe BORRAR lo que traia el shader inline del
-                    ' mesh fuente (modo de falla medido al copiar los 8 slots: borraba el cubemap).
-                    If Not String.IsNullOrEmpty(faceMat.Diffuse_or_Base_Texture) Then material.Diffuse_or_Base_Texture = faceMat.Diffuse_or_Base_Texture
-                    If Not String.IsNullOrEmpty(faceMat.NormalTexture) Then material.NormalTexture = faceMat.NormalTexture
-                    If Not String.IsNullOrEmpty(faceMat.SmoothSpecTexture) Then material.SmoothSpecTexture = faceMat.SmoothSpecTexture
-                End If
-            End If
-            ' (a) el slot 0 del TXST, exactamente como antes.
             If TxstSlotDecision(textureSet.FormID, "Diffuse", textureSet.DiffuseTexture, material.Diffuse_or_Base_Texture, gatedSlot:=False, diffuseOnly:=True) Then material.Diffuse_or_Base_Texture = textureSet.DiffuseTexture
             Return
         End If
@@ -726,7 +745,37 @@ Friend NotInheritable Class NpcMaterialResolver
                 ' excluyen por coherencia con la regla medida (el material aporta sólo lo que el CK
                 ' escribe) y porque copiarlos vacíos es justamente lo que rompía Valentine.
                 material.Diffuse_or_Base_Texture = overrideMaterial.Diffuse_or_Base_Texture
-                If usesBodyTexture Then
+                ' ⭐⭐ 2026-07-30 — SE AGREGA fo4FaceComposeInputsOnly AL GATE DE N/S.
+                ' El MNAM aporta N y S TAMBIEN cuando el TXST viene de la CADENA DE CARA de FO4
+                ' (NPC.FTST o RACE.DFT-fallback), que es donde D/N/S no son slots del NIF sino las
+                ' TRES ENTRADAS del compose de FaceCustomization.
+                ' Por que el gate viejo (solo usesBodyTexture) estaba incompleto: la regla BAKETEST2 se
+                ' midio con UsesBodyTexture=True en LOS DOS casos (N_S 0x843 y N_S2 0x844), asi que la
+                ' rama False nunca se contrasto contra el CK en el camino de la CARA.
+                ' MEDIDO EN PIXELES contra el CK (todo de BA2 vanilla, decode BC5, canales R/G):
+                '   RMS(CK 00002f24_s, Gen2SkinHeadValentine_s del MNAM) =  1,313   <- el CK copia el MNAM
+                '   RMS(CK 00002f24_s, Gen2SkinHead_s     del inline   ) = 57,920
+                '   RMS(NUESTRO   _s , Gen2SkinHead_s     del inline   ) =  0,512  maxD=1  <- copiabamos el inline
+                '   idem Suicider: CK vs SupermutantHeadSuicide_s (MNAM) = 0,865 ; vs inline = 79,898
+                ' PRUEBA DIFERENCIAL (el caso que separa la hipotesis de una coincidencia): el MNAM del
+                ' Suicider declara el MISMO _n que el inline (SupermutantHead_n) y distinto _s. Prediccion:
+                ' su _msn NO debe divergir y su _s SI. Medido: _msn rank 1302/1490 (percentil 11,7, debajo
+                ' de la mediana) y _s 65,21 (el peor del corpus). Valentine/DiMA, cuyo MNAM cambia LOS DOS,
+                ' dan _msn rank 6/1490 y _s 47,29.
+                ' POR QUE NO ALCANZA CON usesBodyTexture NI SE PUEDE SACAR EL GATE DEL TODO: para un head
+                ' part que NO es la cara el CK toma del MNAM SOLO el diffuse. Verificado con datos limpios
+                ' (Fallout4.esm + BA2, sin loose ni mods) en el head-rear de Valentine: HDPT 0x0004AB3F
+                ' TNAM=TXST 0x0010C3CF cuyo MNAM es gen2skindirty.bgsm = {Gen2SkinDirty_d, Gen2Skin_n,
+                ' Gen2SkinDirty_s}, y el facegeom horneado por el CK lleva Gen2SkinDirty_d PERO Gen2Skin_s
+                ' (el del material INLINE Gen2Skin.BGSM) y conserva el cubemap del inline.
+                ' ⇒ Son DOS leyes y fo4FaceComposeInputsOnly es exactamente el discriminante: True en los
+                ' tres shapes de cara afectados, False en el head-rear.
+                ' ALCANCE MEDIDO sobre los 1.490 del corpus: 1.326 TXST de cara son TX-only (ni entran a
+                ' esta rama), 143 son MNAM-only y 0 tienen MNAM y TX## a la vez. De los 143, solo 3 tienen
+                ' un material cuyo N/S difiere del inline (Valentine, DiMA, SuperMutantSuicider); los otros
+                ' 140 son los ghouls, cuyo MNAM apunta al MISMO BGSM que el mesh ya trae inline ⇒ no-op.
+                ' Por eso "MNAM-only" NO era el discriminante: 143 lo son y 140 estan sanos.
+                If usesBodyTexture OrElse fo4FaceComposeInputsOnly Then
                     material.NormalTexture = overrideMaterial.NormalTexture
                     material.SmoothSpecTexture = overrideMaterial.SmoothSpecTexture
                 End If
@@ -789,7 +838,8 @@ Friend NotInheritable Class NpcMaterialResolver
         End If
     End Sub
 
-    ''' <param name="fo4FaceComposeInputsOnly">⭐ SOLO FO4, cadena FTST del head part de cara. Ver la
+    ''' <param name="fo4FaceComposeInputsOnly">⭐ SOLO FO4, texture set del head part de CARA — venga de
+    ''' NPC.FTST, de RACE.DFT o del TNAM del propio head part (los tres, medido 2026-07-30). Ver la
     ''' REGLA MEDIDA en el cuerpo (bake controlado BAKETESTFO4.esp).</param>
     Friend Shared Sub ApplyTextureSetToMaterial(material As FO4UnifiedMaterial_Class, textureSet As TXST_Data, Optional isHeadPartTextureSet As Boolean = False, Optional fo4FaceComposeInputsOnly As Boolean = False)
         If material Is Nothing OrElse textureSet Is Nothing Then Return

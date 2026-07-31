@@ -2744,6 +2744,20 @@ Public Module FaceGenBuilder
     ''' es lo que va relativo a <c>Data\Textures\</c>. Base común de <see cref="EmbeddedEngineTexPath"/> (que le
     ''' antepone <c>data\Textures\</c>) y <see cref="EmbeddedTexSetPath"/> (que lo devuelve pelado), para que las
     ''' dos sean IDEMPOTENTES y no dependan de cómo venga armado el path del call site.</summary>
+    ''' <summary>Como <see cref="StripTexRoot"/> pero saca SÓLO el prefijo <c>data\</c>: separadores a <c>\</c>, sin
+    ''' <c>\</c> inicial, y un <c>textures\</c> inicial se CONSERVA VERBATIM. Es lo que necesitan los slots 0/1/3 del
+    ''' head en SSE — ver <see cref="NormalizeSseHeadTexSetSlots"/> para las dos mediciones (el motor tolera
+    ''' <c>textures\</c>; el CK lo escribe en 202/202 de los <c>FemaleHeadNord</c> del corpus vanilla).
+    ''' <para>⛔ NO usar para el slot 6: ése se reconstruye entero con <see cref="EmbeddedEngineTexPath"/>, que SÍ
+    ''' necesita pelar los dos prefijos antes de anteponer <c>data\Textures\</c>.</para></summary>
+    Private Function StripDataRootOnly(p As String) As String
+        If String.IsNullOrEmpty(p) Then Return ""
+        If Config_App.Current Is Nothing OrElse Config_App.Current.Game <> Config_App.Game_Enum.Skyrim Then Return p
+        Dim s = p.Replace("/"c, "\"c).TrimStart("\"c)
+        If s.StartsWith("data\", StringComparison.OrdinalIgnoreCase) Then s = s.Substring(5).TrimStart("\"c)
+        Return s
+    End Function
+
     Private Function StripTexRoot(p As String) As String
         If String.IsNullOrEmpty(p) Then Return ""
         Dim s = p.Replace("/"c, "\"c).TrimStart("\"c)
@@ -2859,28 +2873,37 @@ Public Module FaceGenBuilder
         Next
     End Sub
 
-    ''' <summary>⭐⭐⭐ NORMALIZA LOS SLOTS 0/1/3 DEL HEAD A LA CONVENCIÓN DEL TEXTURE-SET. SIEMPRE, pliegue o no.
+    ''' <summary>⭐⭐⭐ SACA EL PREFIJO <c>data\</c> DE LOS SLOTS 0/1/3 DEL HEAD. SIEMPRE, pliegue o no.
     '''
     ''' <para>⛔ EL BUG QUE ESTO ARREGLA — <b>CARA MARRÓN EN EL CAMINO NO PLEGADO</b>, MEDIDO. Los paths de un
-    ''' <c>BSShaderTextureSet</c> son RELATIVOS a <c>Data\Textures\</c>. El bake transcribe al NIF lo que resolvió
-    ''' la cadena de material (<c>ApplyRenderResolvedMaterialToShape</c> → <c>Save_To_Shader</c>) TAL CUAL, y esa
-    ''' resolución a veces devuelve el valor ya normalizado por <c>CorrectTexturePath</c> — o sea en minúsculas y
-    ''' CON el prefijo <c>textures\</c>. Medido en un bake real (npc 0x0001360B):</para>
-    ''' <code>
-    '''   slot0 = 'textures\actors\character\female\FemaleHead.dds'
-    ''' </code>
-    ''' <para>El motor lo resuelve como <c>Data\Textures\<b>textures\</b>actors\…</c> ⇒ NO EXISTE ⇒ el slot queda
-    ''' NULL ⇒ cara marrón. Es EL MISMO modo de fallo que <see cref="EmbeddedTexSetPath"/> ya venía a corregir; lo
-    ''' que faltaba es que se aplicara también cuando NO se pliega.</para>
+    ''' <c>BSShaderTextureSet</c> son RELATIVOS a <c>Data\Textures\</c>, y el <c>data\Textures\</c> que
+    ''' <see cref="EmbeddedEngineTexPath"/> arma para el slot 6 se filtraba a estos: el motor los resolvía como
+    ''' <c>Data\Textures\<b>data\Textures\</b>X</c> ⇒ NO EXISTE ⇒ slot NULL ⇒ cara marrón.</para>
     '''
-    ''' <para>Hasta ahora el fold TAPABA el problema por casualidad: al escribir el diffuse plegado pisaba el
-    ''' slot 0 con un path ya normalizado. Por eso "la segunda grabada salía bien" — no porque la segunda
-    ''' estuviera bien, sino porque la primera no plegaba y dejaba el path crudo.</para>
+    ''' <para>⛔⛔ ANTES ESTA RUTINA SACABA TAMBIÉN EL PREFIJO <c>textures\</c> (vía <see cref="EmbeddedTexSetPath"/>
+    ''' → <see cref="StripTexRoot"/>). <b>ESO ERA UNA SOBRE-CORRECCIÓN Y SE REVIERTE</b>, por dos hechos MEDIDOS
+    ''' el 2026-07-30 que se contradicen con la nota vieja ("un path relativo a Data\Textures\ no puede llevar el
+    ''' prefijo textures\"):</para>
+    ''' <list type="number">
+    ''' <item><b>El MOTOR lo tolera.</b> <c>OnLoadTextureSet</c> antepone <c>textures\</c> SÓLO CUANDO FALTA — está
+    ''' escrito en el RE que documenta <see cref="EmbeddedTexSetPath"/>. Un <c>textures\</c> inicial es INERTE; el
+    ''' que rompe es <c>data\</c>, que no se detecta y queda duplicado.</item>
+    ''' <item><b>El CK lo ESCRIBE.</b> Barrido de los 2549 FaceGeom vanilla de Skyrim.esm (BSA pristine, corpus
+    ''' COMPLETO, no muestra): el shape de cabeza sale con slot 0 = <c>textures\actors\character\female\FemaleHead.dds</c>
+    ''' en <b>202/202</b> de los NPC cuyo head part es <c>FemaleHeadNord</c>, y NUNCA sin prefijo en esos mismos;
+    ''' los otros 2346 salen <c>Actors\Character\…</c>. El discriminante es el record, no el path: HDPT
+    ''' <c>FemaleHeadNord</c> (0x00051623) es el único head part sin <c>TNAM</c> (TNAM=0x00000000), así que el CK no
+    ''' tiene TXST con qué pisar el slot y deja VERBATIM el string del NIF fuente
+    ''' (<c>Actors\Character\Character Assets\FemaleHead.nif</c>, cuyo slot 0 es exactamente ése — verificado).</item>
+    ''' </list>
+    ''' <para>⇒ LEY DEL CK: <b>cada slot se escribe VERBATIM desde quien lo provee</b> — el TXST cuando hay uno, y
+    ''' si no el texture set del NIF fuente. El CK no normaliza NUNCA. El npc 0x0001360B que la nota vieja citaba
+    ''' como el caso medido de cara marrón <b>es uno de esos 202</b>: su FaceGeom vanilla trae el prefijo y el juego
+    ''' lo renderiza bien ⇒ el prefijo no era la causa de aquella cara marrón.</para>
     '''
-    ''' <para>Idempotente: <c>EmbeddedTexSetPath</c> → <c>StripTexRoot</c> deja igual un path que ya está bien
-    ''' (<c>Actors\Character\…</c>), y en FO4 es un no-op por el guard de juego. Se aplica a 0/1/3 — el slot 6 NO,
-    ''' porque ése lleva la convención OPUESTA (prefijo <c>data\Textures\</c>) y lo escribe
-    ''' <see cref="WriteSseFacetintDds"/> con <see cref="EmbeddedEngineTexPath"/>.</para></summary>
+    ''' <para>Idempotente y game-aware (no-op en FO4). Se aplica a 0/1/3 — el slot 6 NO, porque ése lleva la
+    ''' convención OPUESTA (prefijo <c>data\Textures\</c>) y lo escribe <see cref="WriteSseFacetintDds"/> con
+    ''' <see cref="EmbeddedEngineTexPath"/>.</para></summary>
     Private Sub NormalizeSseHeadTexSetSlots(nif As Nifcontent_Class_Manolo, cloned As INiShape, npcFormID As UInteger)
         Try
             Dim spr = cloned.ShaderPropertyRef
@@ -2893,11 +2916,11 @@ Public Module FaceGenBuilder
                 If ts.Textures.Count <= slot Then Continue For
                 Dim before = If(ts.Textures(slot).Content, "")
                 If String.IsNullOrEmpty(before) Then Continue For
-                Dim after = EmbeddedTexSetPath(before)
+                Dim after = StripDataRootOnly(before)
                 If Not String.Equals(before, after, StringComparison.Ordinal) Then
                     ts.Textures(slot).Content = after
                     Dim sL = slot, bL = before, aL = after
-                    Logger.LogLazy(Function() $"[FACEBAKE][SSE] slot {sL} NORMALIZADO: '{bL}' -> '{aL}' (un path relativo a Data\Textures\ no puede llevar el prefijo 'textures\' ni 'data\')")
+                    Logger.LogLazy(Function() $"[FACEBAKE][SSE] slot {sL} NORMALIZADO: '{bL}' -> '{aL}' (un path relativo a Data\Textures\ no puede llevar el prefijo 'data\'; el 'textures\' SI se conserva — el CK lo escribe y el motor lo tolera)")
                 End If
             Next
         Catch ex As Exception

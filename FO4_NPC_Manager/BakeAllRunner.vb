@@ -440,22 +440,13 @@ Friend Module BakeAllRunner
             '   env ausente -> 25 % de la memoria disponible, acotado a [512 MB, 4 GB]
             '   env = "0"   -> SIN techo (comportamiento historico; sirve de baseline para medir)
             '   env > 0     -> ese valor en MB (reproducible entre maquinas, para comparar corridas)
-            Dim cacheRaw = If(Environment.GetEnvironmentVariable("FGBAKE_DECODE_CACHE_MB"), "").Trim()
-            Dim cacheMb As Integer = -1
-            If cacheRaw <> "" AndAlso Not Integer.TryParse(cacheRaw, cacheMb) Then cacheMb = -1
-            If cacheRaw = "" Then
-                Dim avail = GC.GetGCMemoryInfo().TotalAvailableMemoryBytes
-                Dim b = CLng(avail * 0.25)
-                b = Math.Max(512L * 1024L * 1024L, Math.Min(4096L * 1024L * 1024L, b))
-                FaceTintCpuCompositor.BatchDecodeCacheBudgetBytes = b
-                log($"Decode cache: techo {b \ (1024L * 1024L)} MB = 25% de {avail \ (1024L * 1024L)} MB disponibles (respaldo; el mecanismo real es la agrupacion)")
-            ElseIf cacheMb > 0 Then
-                FaceTintCpuCompositor.BatchDecodeCacheBudgetBytes = CLng(cacheMb) * 1024L * 1024L
-                log($"Decode cache: {cacheMb} MB ceiling (set by FGBAKE_DECODE_CACHE_MB)")
-            Else
-                FaceTintCpuCompositor.BatchDecodeCacheBudgetBytes = 0
-                log("Decode cache: NO ceiling (FGBAKE_DECODE_CACHE_MB=0, historical behaviour)")
-            End If
+            ' ⭐ La derivacion se MUDO a FaceTintCpuCompositor.ResolveDecodeCacheBudgetFromEnvironment: el
+            ' mismo techo lo obedecen ahora tambien los caches de SseFaceTintComposer, y con la politica
+            ' duplicada en dos archivos los numeros se habrian separado en silencio. Mismos valores, mismo
+            ' contrato de la env, mismo texto de log — solo cambia DONDE vive.
+            Dim budget = FaceTintCpuCompositor.ResolveDecodeCacheBudgetFromEnvironment()
+            FaceTintCpuCompositor.BatchDecodeCacheBudgetBytes = budget.Bytes
+            log(budget.Reason)
 
             ' ---------------------------------------------------------------------------------
             ' CONTEXTO GL (opt-in, FGBAKE_GPU_PARITY=1) — para medir paridad CPU-vs-GPU en el batch.
@@ -655,6 +646,10 @@ Friend Module BakeAllRunner
                 Dim cst = FaceTintCpuCompositor.BatchDecodeCacheStats()
                 log($"Decode cache: {cst.Bytes \ (1024L * 1024L)} MB retenidos al final, {cst.Rejected} entradas rechazadas por techo, " &
                     $"{evictions} evicciones de borde ({evictedMb} MB liberados en total)")
+                ' ⛔ El cache de mascaras de SseFaceTintComposer NO entra en este resumen: no obedece el techo
+                ' (es per-NPC, igual que los caches per-host de FO4 — ver el comentario en SseFaceTintComposer).
+                ' Su memoria la acota la VIDA, no el presupuesto, asi que no hay bytes "retenidos por techo" ni
+                ' rechazos que reportar.
                 FaceTintCpuCompositor.EndBatchDecodeCache()
                 ' Teardown del contexto GL. Se libera el cache de texturas ANTES de destruir el contexto (si no,
                 ' se filtran los handles GL que el cache tiene vivos — contrato de FaceTintTextureCache).

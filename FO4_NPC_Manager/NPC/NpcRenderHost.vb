@@ -106,6 +106,22 @@ Friend Class NpcRenderHost
     ''' otherwise allocate-and-delete every call.</summary>
     Public Property TintGpuCache As New FaceTintTextureCache()
 
+    ''' <summary>⭐ ESPEJO CPU EXACTO de <see cref="TintGpuCache"/>: decodes de DDS (source D/N/S de la cara +
+    ''' cada capa de tint + cada mascara de region-swap) reusados entre composes, con la MISMA vida per-NPC
+    ''' que el cache GL (lo limpia <c>ClearFaceTintCaches</c> al cambiar de NPC raiz y este Dispose).
+    ''' <para><b>Por que existe.</b> Con el flag de camara en CPU el render compone la cara por
+    ''' <c>FaceTintCpuCompositor.ComposeCpuPipeline</c>, y ese camino armaba un diccionario de decode NUEVO en
+    ''' CADA llamada. O sea: cada refresh de edicion viva (cada slider, cada color del editor de cara) volvia a
+    ''' decodificar por DirectXTex el juego COMPLETO de DDS, mientras el camino GPU las tenia residentes en
+    ''' <c>TintGpuCache</c> desde el primer compose. Era la asimetria que hacia que el modo CPU se sintiera mas
+    ''' lento que el bake — el bake batch SI amortiza sus decodes (<c>BeginBatchDecodeCache</c>).</para>
+    ''' <para>No puede cambiar un byte de la salida: lo que guarda es funcion PURA de (bytes del DDS, tamaño
+    ''' destino) — es exactamente lo que devuelve <c>DecodeDds</c>. Sin cache se recalcula el MISMO valor.</para>
+    ''' ⛔ ConcurrentDictionary por el mismo motivo que <c>BatchDecodeCache</c>: durante un bake batch la bomba
+    ''' de mensajes sigue viva y un WM_PAINT puede entrar al render (hilo UI) mientras el bake corre en el
+    ''' ThreadPool. Son caches distintos, pero el patron de acceso concurrente es el mismo.</summary>
+    Public Property TintCpuDecodeCache As New System.Collections.Concurrent.ConcurrentDictionary(Of String, FaceTintCpuCompositor.DecodedTex)(StringComparer.OrdinalIgnoreCase)
+
     ''' <summary>Per-host FaceTintCompositor state (shader programs, fullscreen quad VAO/VBO,
     ''' uniform locations). GL handles are per-context; with multiple PreviewControls (MainForm
     ''' + each editor) each owns its own context, so each owns its own compositor state.
@@ -533,6 +549,10 @@ Friend Class NpcRenderHost
         Catch
             ' Defensive
         End Try
+
+        ' Espejo CPU del cache de arriba: son arrays managed (sin handles GL), pero pueden ser cientos de MB
+        ' a resoluciones altas, asi que se sueltan en el mismo punto del ciclo de vida.
+        If TintCpuDecodeCache IsNot Nothing Then TintCpuDecodeCache.Clear()
 
         ' Release compositor GL handles (program/VAO/VBO). Caller must already have the
         ' owning GL context current — this is the standard precondition the host's lifecycle

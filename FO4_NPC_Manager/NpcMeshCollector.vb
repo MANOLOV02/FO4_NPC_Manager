@@ -696,14 +696,19 @@ Friend NotInheritable Class NpcMeshCollector
                                             ByRef order As Integer,
                                             warnings As List(Of String))
         ' [DIAG] Entry log — confirma estado de entrada del robot path.
-        Dim stateFid = state.FormID
-        Dim stateRace = state.RaceFormID
-        Dim hasOT = state.HasObjectTemplate
-        Dim otCount = If(state.ObjectTemplateCombinations Is Nothing, 0, state.ObjectTemplateCombinations.Count)
-        Dim apSlotCount = If(state.AttachParentSlotFormIDs Is Nothing, 0, state.AttachParentSlotFormIDs.Count)
-        Dim apSlotStr = If(state.AttachParentSlotFormIDs Is Nothing OrElse state.AttachParentSlotFormIDs.Count = 0, "[]",
-                           "[" & String.Join(",", state.AttachParentSlotFormIDs.Select(Function(f) "0x" & f.ToString("X8") & "(" & ObjectTemplateResolver.KywdEditorIdSafe(f, _ctx.PluginManager) & ")")) & "]")
-        Logger.LogLazy(Function() $"[ROBOT-ENTRY] npc=0x{stateFid:X8} race=0x{stateRace:X8} hasOT={hasOT} combos={otCount} npcAPPR={apSlotCount}={apSlotStr}")
+        ' ⛔ GATEADO POR Logger.Enabled: `LogLazy` hace lazy el STRING, no el CALCULO, y `apSlotStr` resuelve
+        ' un KYWD (GetRecord + parse del EditorID) POR CADA attach-point del NPC. Eso se pagaba entero en
+        ' release, donde el log ni existe.
+        If Logger.Enabled Then
+            Dim stateFid = state.FormID
+            Dim stateRace = state.RaceFormID
+            Dim hasOT = state.HasObjectTemplate
+            Dim otCount = If(state.ObjectTemplateCombinations Is Nothing, 0, state.ObjectTemplateCombinations.Count)
+            Dim apSlotCount = If(state.AttachParentSlotFormIDs Is Nothing, 0, state.AttachParentSlotFormIDs.Count)
+            Dim apSlotStr = If(state.AttachParentSlotFormIDs Is Nothing OrElse state.AttachParentSlotFormIDs.Count = 0, "[]",
+                               "[" & String.Join(",", state.AttachParentSlotFormIDs.Select(Function(f) "0x" & f.ToString("X8") & "(" & ObjectTemplateResolver.KywdEditorIdSafe(f, _ctx.PluginManager) & ")")) & "]")
+            Logger.LogLazy(Function() $"[ROBOT-ENTRY] npc=0x{stateFid:X8} race=0x{stateRace:X8} hasOT={hasOT} combos={otCount} npcAPPR={apSlotCount}={apSlotStr}")
+        End If
 
         ' Build a stub NPC_Data carrying the OBTE so we can re-use ResolveNpcCombinations.
         Dim stubNpc As New NPC_Data With {
@@ -1857,7 +1862,7 @@ Friend NotInheritable Class NpcMeshCollector
                     Dim keep As Boolean = (parts.Count = 0) OrElse parts.Any(Function(pp) armaSlots.Contains(pp))
                     If keep Then
                         kept.Add(sh)
-                    Else
+                    ElseIf Logger.Enabled Then
                         Dim shN = sh.ShapeName
                         Dim pj = String.Join(",", parts)
                         Dim sj = String.Join(",", armaSlots)

@@ -298,11 +298,11 @@ Friend NotInheritable Class NpcFaceTintResolver
         ' mallas FaceTint del mismo NPC que resuelven al MISMO _msn producen un pliegue IDÉNTICO por construcción,
         ' y las dos terminan bindeando la misma textura per-NPC. Ver ApplySseFaceOverlayNormals.
         Dim seenFaceNormals As New HashSet(Of String)(StringComparer.OrdinalIgnoreCase)
-        ' Diagnostic: when the FaceTint shader filter rejects every mesh (typical Ghoul/Child
-        ' bug — the engine uses a different BSLightingShaderType for these races), enumerate
-        ' every mesh's shape name + shader type so we can see what we DO have vs what we look
-        ' for. Only emitted on the failure path below to keep the log compact.
-        Dim shaderInventoryForDiag As New List(Of String)
+        ' ⛔ SACADO: `shaderInventoryForDiag`. Era una List(Of String) que se poblaba con un string interpolado
+        ' POR CADA malla no-FaceTint, en cada compose (o sea en cada refresh de edicion viva), y que NO LA LEIA
+        ' NADIE — el "se emite en el camino de fallo" que prometia el comentario nunca se escribio. Trabajo y
+        ' allocations puros en release. Si alguna vez hace falta el inventario, va CONSTRUIDO DENTRO de un
+        ' `If Logger.Enabled Then`, no fuera.
         For Each mesh In model.meshes
             If mesh Is Nothing OrElse mesh.MeshData Is Nothing OrElse mesh.MeshData.Material Is Nothing Then Continue For
             Dim shape = mesh.MeshData.Shape
@@ -315,7 +315,6 @@ Friend NotInheritable Class NpcFaceTintResolver
             ' shapes (BaseFemaleHeadRear with body texture, mouth, lashes, eyes) use SkinTint or
             ' EnvMap. Filtering by shader type avoids touching the headrear / mouth diffuses.
             If materialBase.NifShaderType <> NiflySharp.Enums.BSLightingShaderType.FaceTint Then
-                shaderInventoryForDiag.Add($"shape='{shape.ShapeName}' shader={materialBase.NifShaderType}")
                 Continue For
             End If
 
@@ -523,7 +522,8 @@ Friend NotInheritable Class NpcFaceTintResolver
                 ' verificar IN-APP (no testeable headless); si hay gamma, es este convert.
                 If ApplyCpuComposeToDict(model, diffusePath, diffuseEntry, normalPath, normalEntry, specPath, specEntry,
                                          layerInputs, regionSwaps,
-                                         (host.CurrentBaseState IsNot Nothing AndAlso host.CurrentBaseState.HeadDiffuseAlphaTest)) Then
+                                         (host.CurrentBaseState IsNot Nothing AndAlso host.CurrentBaseState.HeadDiffuseAlphaTest),
+                                         host) Then
                     meshDiffuseBaked = True
                 End If
             End If
@@ -746,7 +746,11 @@ Friend NotInheritable Class NpcFaceTintResolver
             Logger.LogLazy(Function() $"[SSE-FOLD] ABORT: GetBytes Nothing para '{cKey}'")
             Return False
         End If
-        Dim cImg = FaceTintCpuCompositor.DecodeDds(cBytes)   ' (no 'cDec': CDec es una función intrínseca de VB)
+        ' ⭐ Cacheado contra el cache per-NPC del host (mismo que usa el compose CPU): el complexion es la
+        ' textura MAS GRANDE de la cara (4096² con COtR) y este decode corria ENTERO en cada fold, o sea en
+        ' cada refresh de edicion viva, en los DOS modos de camara. El valor es funcion pura de los bytes.
+        ' (no 'cDec': CDec es una función intrínseca de VB)
+        Dim cImg = FaceTintCpuCompositor.DecodeDdsCached(host?.TintCpuDecodeCache, cKey, cBytes)
         If cImg Is Nothing OrElse cImg.Rgba8 Is Nothing OrElse cImg.Width <= 0 OrElse cImg.Height <= 0 Then
             Logger.LogLazy(Function() $"[SSE-FOLD] ABORT: no decodifica el complexion '{cKey}'")
             Return False
@@ -1244,7 +1248,8 @@ Friend NotInheritable Class NpcFaceTintResolver
                                            specPath As String, specEntry As PreviewModel.Texture_Loaded_Class,
                                            layerInputs As IList(Of FaceTintLayerInput),
                                            regionSwaps As IList(Of FaceRegionSwapInput),
-                                           Optional headDiffuseAlphaTest As Boolean = False) As Boolean
+                                           Optional headDiffuseAlphaTest As Boolean = False,
+                                           Optional host As NpcRenderHost = Nothing) As Boolean
         Dim dB = FilesDictionary_class.GetBytes(diffusePath)
         If dB Is Nothing Then Return False
         Dim nB = If(Not String.IsNullOrEmpty(normalPath), FilesDictionary_class.GetBytes(normalPath), Nothing)
@@ -1255,7 +1260,12 @@ Friend NotInheritable Class NpcFaceTintResolver
             ' EXACTAMENTE esto a este MISMO ComposeCpuPipeline, así que pasarle Nothing hacía que el preview
             ' ignorara CharGen Options y mostrara más detalle del que el DDS horneado va a tener. Con Inherit el
             ' valor efectivo es el de antes ⇒ byte-inerte por default.
-            cpu = FaceTintCpuCompositor.ComposeCpuPipeline(dB, nB, sB, layerInputs, regionSwaps, FaceGenBuilder.OutputSettings, diffusePath, normalPath, specPath, headDiffuseAlphaTest)
+            ' ⭐ decodeCache = el espejo CPU del TintGpuCache per-host (ver NpcRenderHost.TintCpuDecodeCache).
+            ' Sin el, cada refresh de edicion viva re-decodificaba por DirectXTex TODAS las DDS (source D/N/S +
+            ' cada capa + cada mascara de swap) mientras el camino GPU las tenia residentes desde el primer
+            ' compose. Byte-inerte: el valor cacheado es funcion pura de (bytes, tamaño destino).
+            cpu = FaceTintCpuCompositor.ComposeCpuPipeline(dB, nB, sB, layerInputs, regionSwaps, FaceGenBuilder.OutputSettings, diffusePath, normalPath, specPath, headDiffuseAlphaTest,
+                                                           decodeCache:=host?.TintCpuDecodeCache)
         Catch ex As Exception
             Dim m = ex.Message
             Logger.LogLazy(Function() $"[FACETINT-CPU-RENDER] compose failed: {m}")
@@ -1312,8 +1322,19 @@ Friend NotInheritable Class NpcFaceTintResolver
     ''' BA2 read cannot leak into a new asset set.</summary>
     Friend Sub ClearFaceTintCaches()
         _tintBytesCache.Clear()
-        _hostProvider().TintGpuCache.Clear()
-        _hostProvider().PristineDiffusePixels.Clear()
+        Dim h = _hostProvider()
+        h.TintGpuCache.Clear()
+        ' Espejo CPU del cache GL: MISMA vida per-NPC (ver NpcRenderHost.TintCpuDecodeCache). Si se limpiara
+        ' uno y no el otro, el modo CPU se quedaria con decodes de la raza/TXST del NPC anterior.
+        h.TintCpuDecodeCache.Clear()
+        h.PristineDiffusePixels.Clear()
+        ' ⭐ SSE: MISMA vida que los de FO4 de arriba. Sus caches de TEXTURA (mascara resampleada + fuente
+        ' decodificada) son los unicos que pesan de verdad en este modulo, y sin esto sobrevivian toda la
+        ' sesion — en la app, que corre SIN techo de presupuesto, eso es memoria que solo crece navegando.
+        ' Se sueltan al cambiar de NPC raiz y se CONSERVAN entre recargas del mismo NPC, asi la edicion viva
+        ' no paga el re-decode. Los caches de RECORD (capas por raza, CLFM) NO se tocan acá: su vida es la del
+        ' load order (SseFaceTintComposer.ClearCaches, desde InvalidateParseCaches).
+        SseFaceTintComposer.ClearTextureCaches()
     End Sub
 
     ''' <summary>Decode-once snapshot: read the DDS bytes for <paramref name="diffusePath"/>,

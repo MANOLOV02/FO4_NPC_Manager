@@ -256,10 +256,15 @@ Public Class MainForm
         ' path that now resolves to different bytes is discarded and the parsed geometry (MBs each) is freed.
         NpcMorphResolver.ClearCaches()
         BodySlideTriResolver.ClearCaches()
-        ' Caches del compositor de facetint SSE (capas por raza, máscaras decodificadas 512² y fuentes por
-        ' (path, target), CLFM): su propio comentario dice "call on FilesDictionary rebuild" pero NADIE lo
-        ' llamaba — un reload del load order dejaba máscaras/capas stale de la sesión anterior. Mismo contrato
-        ' que los ClearCaches de arriba.
+        ' Caches del compositor de facetint SSE (capas por raza, máscaras decodificadas por (path, tamaño) y
+        ' fuentes por (path, target), CLFM): su propio comentario dice "call on FilesDictionary rebuild" pero
+        ' NADIE lo llamaba — un reload del load order dejaba máscaras/capas stale de la sesión anterior. Mismo
+        ' contrato que los ClearCaches de arriba.
+        ' ⭐ ACÁ se sueltan los CUATRO, incluidos los de RECORD (capas por raza, CLFM), porque un cambio de
+        ' load order puede cambiar los récords mismos. Los dos de TEXTURA además tienen una vida MÁS CORTA
+        ' encima de ésta: ClearFaceTintCaches los suelta en cada cambio de NPC raíz (ver
+        ' SseFaceTintComposer.ClearTextureCaches) para que la app no acumule memoria navegando. Las dos vidas
+        ' conviven: ésta es el techo, aquélla el piso.
         SseFaceTintComposer.ClearCaches()
     End Sub
 
@@ -7074,14 +7079,22 @@ Public Class MainForm
 
         Await loadTask
 
+        ' Drenar SIEMPRE (la cola de FilesDictionary crece un item por archivo escaneado si nadie la vacia);
+        ' el desglose es diagnostico y va gateado. ⛔ Antes esto contaba hits/misses y recorria el reporte con
+        ' un `For Each ... Next` de cuerpo VACIO, y despues no usaba ninguno de los dos: era el esqueleto de
+        ' un log que nunca se escribio. Ahora, o se loguea, o no se calcula.
         Dim scanReport = FilesDictionary_class.DrainScanReport()
-        If scanReport.Count > 0 Then
+        If Logger.Enabled AndAlso scanReport.Count > 0 Then
             Dim hits As Integer = 0
             For Each r In scanReport
                 If r.CacheHit Then hits += 1
             Next
-            Dim misses As Integer = scanReport.Count - hits
+            Dim total = scanReport.Count
+            Dim misses = total - hits
+            Logger.LogLazy(Function() $"[ASSET-SCAN] archives={total} indexCacheHits={hits} rescans={misses}")
             For Each r In scanReport
+                Dim nm = r.ArchiveName, hit = r.CacheHit
+                Logger.LogLazy(Function() $"[ASSET-SCAN]   '{nm}' {If(hit, "cache", "RESCAN")}")
             Next
         End If
 

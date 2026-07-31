@@ -182,6 +182,12 @@ Module Program
     End Function
 
     Sub Main(args As String())
+        ' ⛔ HERRAMIENTA, NO APP. `Logger.Enabled` esta forzado a False en builds Release (ver Logger.vb) para que
+        ' ninguna app de usuario pague los calculos de diagnostico. Este CLI es la excepcion DOCUMENTADA: usa
+        ' `Logger.Enabled` como interruptor SEMANTICO — `FaceGenBuilder.DebugMode` lo lee y de ahi sale el sufijo
+        ' `_2` del sandbox. Sin esta linea, un `--buildfacegen` compilado en Release escribiria los nombres
+        ' CANONICOS y pisaria el bake del CK, que es la referencia contra la que compara.
+        Logger.AllowInReleaseBuilds = True
         Try
             Run(args)
         Catch ex As Exception
