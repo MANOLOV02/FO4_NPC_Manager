@@ -37,6 +37,7 @@ Partial Class CharGenOptionsForm
         ComboFormatN = New ComboBox()
         ComboFormatS = New ComboBox()
         CheckGenerateTga = New CheckBox()
+        CheckDownsizeFromMip0 = New CheckBox()
         CheckBoxUseHardwareBcDecode = New CheckBox()
         CheckBoxAccumInComposite = New CheckBox()
         ButtonResetSize = New Button()
@@ -191,6 +192,7 @@ Partial Class CharGenOptionsForm
         GroupBoxSize.Controls.Add(ComboFormatN)
         GroupBoxSize.Controls.Add(ComboFormatS)
         GroupBoxSize.Controls.Add(CheckGenerateTga)
+        GroupBoxSize.Controls.Add(CheckDownsizeFromMip0)
         GroupBoxSize.Controls.Add(CheckBoxUseHardwareBcDecode)
         GroupBoxSize.Controls.Add(CheckBoxAccumInComposite)
         GroupBoxSize.Location = New Point(6, 6)
@@ -320,6 +322,16 @@ Partial Class CharGenOptionsForm
         CheckGenerateTga.TabIndex = 8
         CheckGenerateTga.Text = "Generate TGA (uncompressed)"
         CheckGenerateTga.UseVisualStyleBackColor = True
+        ' 
+        ' CheckDownsizeFromMip0
+        ' 
+        CheckDownsizeFromMip0.AutoSize = True
+        CheckDownsizeFromMip0.Location = New Point(323, 158)
+        CheckDownsizeFromMip0.Name = "CheckDownsizeFromMip0"
+        CheckDownsizeFromMip0.Size = New Size(230, 19)
+        CheckDownsizeFromMip0.TabIndex = 9
+        CheckDownsizeFromMip0.Text = "Downsize from mip 0 (slower)"
+        CheckDownsizeFromMip0.UseVisualStyleBackColor = True
         ' 
         ' CheckBoxUseHardwareBcDecode
         ' 
@@ -1397,6 +1409,7 @@ Partial Class CharGenOptionsForm
     Friend WithEvents ComboFormatN As System.Windows.Forms.ComboBox
     Friend WithEvents ComboFormatS As System.Windows.Forms.ComboBox
     Friend WithEvents CheckGenerateTga As System.Windows.Forms.CheckBox
+    Friend WithEvents CheckDownsizeFromMip0 As System.Windows.Forms.CheckBox
     Friend WithEvents CheckBoxUseHardwareBcDecode As System.Windows.Forms.CheckBox
     Friend WithEvents CheckBoxAccumInComposite As System.Windows.Forms.CheckBox
     Friend WithEvents ButtonResetSize As System.Windows.Forms.Button

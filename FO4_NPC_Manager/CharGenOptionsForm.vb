@@ -29,6 +29,7 @@ Public Class CharGenOptionsForm
         SetComboIndex(ComboFormatN, CInt(If(isSseL, c.Setting_FaceGenNormalCompression_SSE, c.Setting_FaceGenNormalCompression)))  ' Bc5=0/Unc=1/Bc7=2/Bc3=3
         SetComboIndex(ComboFormatS, CInt(c.Setting_FaceGenSpecularCompression))                                                    ' mismo enum que el N (4 valores)
         CheckGenerateTga.Checked = c.Setting_FaceGenGenerateTga
+        CheckDownsizeFromMip0.Checked = c.Setting_FaceGenDownsizeFromMip0
         ' --- Tab "Fixes": NPC-only toggle, lives in NPC_Config (not Config_App). ---
         CheckBoxApplyGhoulHeadRearFix.Checked = NPC_Config.Current.ApplyGhoulHeadRearFix
         CheckBoxUseHardwareBcDecode.Checked = NPC_Config.Current.UseHardwareBcDecode
@@ -491,6 +492,7 @@ Public Class CharGenOptionsForm
         ComboFormatN.SelectedIndex = If(isSse, 1, 0)
         ComboFormatS.SelectedIndex = 0      ' BC5
         CheckGenerateTga.Checked = False
+        CheckDownsizeFromMip0.Checked = False   ' default: mip stored del target
         ' Los 2 checkboxes de GroupBoxSize viven en ESTE tab ⇒ los revierte este botón, no el de Fixes.
         ' El acumulador sale del bucket Diffuse del juego activo = misma fuente que el Load, no pueden discrepar.
         CheckBoxUseHardwareBcDecode.Checked = New NPC_Config().UseHardwareBcDecode
@@ -562,6 +564,10 @@ Public Class CharGenOptionsForm
             If Not isSseSave Then c.Setting_FaceGenSpecularCompression = CType(Math.Max(0, ComboFormatS.SelectedIndex), FaceTintConvention.FaceTintNormalSpecularCompression)   ' specular FO4-only
         End If
         c.Setting_FaceGenGenerateTga = CheckGenerateTga.Checked
+        c.Setting_FaceGenDownsizeFromMip0 = CheckDownsizeFromMip0.Checked
+        ' Empuja el valor a la libreria en el ACTO: el compositor no ve este config, y si se aplicara recien
+        ' en el proximo arranque el preview quedaria componiendo con la ley vieja contra un bake con la nueva.
+        NPC_Config.ApplyDownsizeFromMip0Setting()
 
         ' --- Tab "Fixes": toggle NPC-only → NPC_Config (no Config_App). Se flushea en el cierre de la app
         ' (MainForm_FormClosing → NPC_Config.SaveConfig()), igual que RenderGore. ---

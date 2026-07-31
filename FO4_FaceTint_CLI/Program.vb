@@ -265,6 +265,7 @@ Module Program
         End If
         FO4_NPC_Manager.NPC_Config.ApplyEngineSkinWeightNormalizationGate(opt.Game)
         FO4_NPC_Manager.NPC_Config.ApplyGlDecodeSetting()
+        FO4_NPC_Manager.NPC_Config.ApplyDownsizeFromMip0Setting()
         PosReportThreshold = opt.PosThresh
         DdsCompareRequested = opt.DdsCompare
         RawDdsRequested = opt.RawDds

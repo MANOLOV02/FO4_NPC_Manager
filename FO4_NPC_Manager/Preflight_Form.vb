@@ -524,6 +524,7 @@ Public Class Preflight_Form
         ' selector dejaría la ley encendida en un motor donde NO está verificada por RE.
         NPC_Config.ApplyEngineSkinWeightNormalizationGate(Config_App.Current.Game)
         NPC_Config.ApplyGlDecodeSetting()
+        NPC_Config.ApplyDownsizeFromMip0Setting()
 
         ' Iterate _allRows (master, load-order-preserving) instead of ListViewPlugins.Items —
         ' the latter only contains rows matching the current filter, which would drop checked

@@ -241,6 +241,13 @@ Public Class NPC_Config
         FO4_Base_Library.FaceTintCompositor.SetGlDecodeUseCompress(Current.UseHardwareBcDecode)
     End Sub
 
+    ''' <summary>Empuja "Downsize from mip 0" a la libreria. Un SOLO valor alimenta a los dos compositores: el
+    ''' CPU lo lee en SelectLevelForTarget y el GL lo recibe por el uniform uDownsizeFromMip0. Llamar tras
+    ''' cargar el config y al aceptar CharGen Options; si no, el bake y el preview quedan con leyes distintas.</summary>
+    Public Shared Sub ApplyDownsizeFromMip0Setting()
+        FO4_Base_Library.FaceTintCpuCompositor.DownsizeFromMip0 = Config_App.Current.Setting_FaceGenDownsizeFromMip0
+    End Sub
+
     ''' <summary>Ruta del npc_config.json que <see cref="LoadConfig"/>/<see cref="SaveConfig"/> usan.
     ''' PUBLICA a proposito: el CLI headless imprime al arranque de DONDE salio cada opcion que afecta el
     ''' bake (config persistida vs defaults compilados). Sin exponer la ruta ese log seria una afirmacion

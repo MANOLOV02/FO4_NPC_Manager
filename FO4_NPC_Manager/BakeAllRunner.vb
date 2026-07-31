@@ -103,6 +103,7 @@ Friend Module BakeAllRunner
             ' UI, pero no se APLICABA en este camino). Se re-aplica mas abajo si --executable cambia el juego.
             NPC_Config.ApplyEngineSkinWeightNormalizationGate(Config_App.Current.Game)
             NPC_Config.ApplyGlDecodeSetting()
+            NPC_Config.ApplyDownsizeFromMip0Setting()
 
             ' --executable: point the whole run at another install. It rewrites Config_App.Current.FO4ExePath
             ' IN MEMORY ONLY (no SaveConfig), which moves FO4EDataPath with it, and re-derives the game from
@@ -139,6 +140,7 @@ Friend Module BakeAllRunner
             ' dejaria encendida una ley que en Skyrim no esta verificada.
             NPC_Config.ApplyEngineSkinWeightNormalizationGate(game)
             NPC_Config.ApplyGlDecodeSetting()
+            NPC_Config.ApplyDownsizeFromMip0Setting()
 
             ' NPC render/bake relies on per-segment occlusion (head-part hiding); the shared toggle
             ' defaults True for WM inspection, so force it off exactly like Program.Main does.
