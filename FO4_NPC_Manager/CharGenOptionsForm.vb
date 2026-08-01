@@ -300,11 +300,15 @@ Public Class CharGenOptionsForm
         Dim npcDef As New NPC_Config()      ' defaults de NPC_Config tal como están declarados
         Dim isFo4 = (Config_App.Current.Game = Config_App.Game_Enum.Fallout4)
 
+        ' ⭐ FUERA DEL If: este toggle es de LOS DOS JUEGOS (nunca se deshabilita en el Load y el OK lo guarda
+        ' incondicionalmente), así que reseteándolo sólo en la rama FO4 el botón MENTÍA en Skyrim — dejaba el
+        ' valor como estaba y decía "Revert to default". La regla del botón es: revierte SÓLO —y TODO— lo que
+        ' su tab muestra EDITABLE en el juego activo; un control editable en ambos se revierte en ambos.
+        CheckBoxMatchSubsurfaceFlag.Checked = cfgDef.Setting_MatchHeadSubsurfaceFlagToBody
         If isFo4 Then
             CheckBoxApplyGhoulHeadRearFix.Checked = npcDef.ApplyGhoulHeadRearFix
             CheckBoxApplyEyebrowsFixedColor.Checked = cfgDef.Setting_ApplyEyebrowsFixedColor
             CheckBoxApplyMouthVanillaFix.Checked = cfgDef.Setting_ApplyMouthVanillaFix
-            CheckBoxMatchSubsurfaceFlag.Checked = cfgDef.Setting_MatchHeadSubsurfaceFlagToBody
             ' Default True (FO4): replicar la normalización de pesos del motor. Ver EngineSkinWeightNormalization.
             CheckBoxReplicateEngineSkinNorm.Checked = npcDef.ReplicateEngineSkinWeightNormalization
         Else
@@ -422,7 +426,19 @@ Public Class CharGenOptionsForm
     ''' es game-aware. Recién al dar OK se persisten; Cancel los descarta.</summary>
     Private Sub ButtonResetConv_Click(sender As Object, e As EventArgs) Handles ButtonResetConv.Click
         Dim game = If(Config_App.Current IsNot Nothing, Config_App.Current.Game, Config_App.Game_Enum.Fallout4)
-        LoadConvention(FaceTintConvention.FaceTintConventionSettings.DefaultsFor(game))
+        Dim def = FaceTintConvention.FaceTintConventionSettings.DefaultsFor(game)
+        LoadConvention(def)
+        ' ⭐ AccumInCompositeSpace TAMBIÉN vuelve al default acá, aunque su checkbox se dibuje en el tab Size.
+        ' ⛔ POR QUÉ ROMPE LA REGLA "cada revert toca sólo su tab": el VALOR es storage de la CONVENCIÓN (vive
+        ' en FaceTintBucketConvention y lo lee ResolveConvention); lo que está en el otro tab es el CONTROL,
+        ' puesto ahí porque es una opción de COSTO. Con el revert atado a la ubicación del control, apretar
+        ' "Revert to default" en Conventions dejaba este campo intacto — y eso es exactamente lo que se midió:
+        ' el config de Release quedó con SSE.Diffuse.AccumInCompositeSpace=False después de un revert, mientras
+        ' el default del juego es True, y Debug y Release divergieron en la ley del compose sin que nadie lo
+        ' tocara a propósito. Un botón que dice "default" y deja un campo de la ley sin revertir, miente.
+        ' El revert del tab Size lo sigue reseteando también: es el mismo control y la MISMA fuente (DefaultsFor),
+        ' así que no pueden discrepar.
+        CheckBoxAccumInComposite.Checked = def.Diffuse.AccumInCompositeSpace
     End Sub
 
     ''' <summary>Enum de resolución -> índice del combo (Inherit=0 ; 512..8192 = 1..5).</summary>

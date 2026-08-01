@@ -172,11 +172,35 @@ Public Module FaceGenBuilder
     ''' stall de arranque (no deadlock: Parallel usa el hilo llamador como worker, así que progresa).
     ''' ⛔ NO sacar la llamada de <c>BuildCharGen</c>: ése es el gate del camino de la UI, que no pasa por el
     ''' runner. Llamarlo dos veces es gratis — el Lazy ya corrió.</para></summary>
+    ''' <remarks>⛔ EL MENSAJE NO PUEDE AFIRMAR EL EJE EQUIVOCADO. Decía SIEMPRE "el camino vectorial NO es
+    ''' bit-identico al escalar", pero esta lista mezcla CINCO ejes (ver <see cref="ParityAxis"/>) y el
+    ''' detalle que se adjunta trae el slug del test que falló. MEDIDO 2026-08-01: con
+    ''' <c>Fold.SoftLight</c> en un modelo no-default falla <c>fold-golden</c> —un GOLDEN ABSOLUTO, no una
+    ''' comparación vector-vs-escalar— y el bake abortaba culpando al SIMD. Diagnosticar eso cuesta una
+    ''' sesión. Ahora el mensaje nombra el eje real y sólo habla de la CPU cuando el eje es el vectorial.</remarks>
     Public Sub EnsureSimdParityGate()
         Dim r = _simdGate.Value
-        If r.Length > 0 Then Throw New InvalidOperationException(
-            "SIMD parity gate FAILED — el camino vectorial NO es bit-identico al escalar. " &
-            "Hornear ahora produciria bytes invalidos (y distintos segun la CPU). Detalle: " & r)
+        If r.Length = 0 Then Return
+        Dim slug = If(r.StartsWith("["), r.Substring(1, Math.Max(0, r.IndexOf("]"c) - 1)), "")
+        Dim axis = ParityAxis.LawConsistency
+        For Each t In _parityTests
+            If t.Slug = slug Then axis = t.Axis : Exit For
+        Next
+        Dim what As String
+        Select Case axis
+            Case ParityAxis.VectorVsScalar, ParityAxis.ScalarVsWidths
+                what = "el camino vectorial NO es bit-identico al escalar ⇒ los bytes saldrian distintos segun la CPU"
+            Case ParityAxis.GoldenAbsolute
+                what = "un GOLDEN ABSOLUTO se movio: la ley cambio de resultado. Si el cambio fue A PROPOSITO " &
+                       "(p.ej. moviste un bucket de la convencion) hay que RE-CONGELAR el golden con " &
+                       "`--paritygate --dump-golden`; si no, es una regresion"
+            Case ParityAxis.GlslLexical
+                what = "el fuente GLSL rompe una invariante lexica (ASCII puro)"
+            Case Else
+                what = "una ley del resolver es inconsistente entre etapas o canales"
+        End Select
+        Throw New InvalidOperationException(
+            $"Parity gate FAILED [{axis}] — {what}. Hornear ahora produciria bytes que no describen la ley. Detalle: " & r)
     End Sub
 
     ''' <summary>Eje de verificación al que pertenece cada self-test. El gate mezcla cosas que NO prueban lo
@@ -220,14 +244,21 @@ Public Module FaceGenBuilder
         ("seed-swap", ParityAxis.VectorVsScalar, AddressOf FaceTintCpuCompositor.SeedAndSwapVectorSelfTest),
         ("overlays", ParityAxis.VectorVsScalar, AddressOf SseOverlayCompositor.OverlayVectorSelfTest),
         ("baker", ParityAxis.VectorVsScalar, AddressOf SseFaceGenBaker.BakerVectorSelfTest),
+        ("fold-models", ParityAxis.VectorVsScalar, AddressOf SseFaceGenBaker.FoldSoftLightModelsVectorSelfTest),
         ("glsl-ascii", ParityAxis.GlslLexical, AddressOf FaceTintCompositor.ShaderSourceAsciiSelfTest),
         ("fold-golden", ParityAxis.GoldenAbsolute, AddressOf SseFaceGenBaker.FoldGoldenSelfTest),
         ("accum-space", ParityAxis.LawConsistency, AddressOf FaceTintConvention.AccumSpaceConsistencySelfTest),
         ("cache-keys", ParityAxis.LawConsistency, AddressOf FaceTintCpuCompositor.CacheKeyAxesSelfTest),
         ("bilinear", ParityAxis.LawConsistency, AddressOf FaceTintCpuCompositor.BilinearLawSelfTest),
         ("resample-hoist", ParityAxis.LawConsistency, AddressOf FaceTintCpuCompositor.ResampleHoistSelfTest),
-        ("qnam-face", ParityAxis.LawConsistency, AddressOf FaceTintCpuCompositor.QnamMatchesFaceSelfTest)
+        ("qnam-face", ParityAxis.LawConsistency, AddressOf FaceTintCpuCompositor.QnamMatchesFaceSelfTest),
+        ("softlight-inv", ParityAxis.GoldenAbsolute, AddressOf FaceTintCpuCompositor.SoftLightInverseSelfTest)
     }
+    ' `softlight-inv`: la inversa del soft-light es la que hace que el UNFOLD cancele el fold. Sin gate, una
+    ' inversa mal derivada NO se ve — sale una cara levemente distinta, no un fallo. Eje GoldenAbsolute porque
+    ' el criterio es un valor absoluto (1 byte de tolerancia), no una comparacion entre dos caminos.
+    ' ⛔ El comentario va ACA y no adentro del inicializador: VB no acepta una linea de comentario entre los
+    ' elementos de un `From { ... }` (BC30201) — cuesta un build entero descubrirlo.
 
     ''' <summary>Corre los self-tests en orden. Devuelve "" si todos pasan, o el primer fallo (con su slug,
     ''' que antes se perdía: el mensaje no decía cuál de los diez había fallado).</summary>
@@ -2396,12 +2427,18 @@ Public Module FaceGenBuilder
     Private Function ComposeSseFacetintBgraOnGpu(layers As IList(Of FaceTintLayerInput), w As Integer, h As Integer, host As NpcRenderHost) As Byte()
         If host Is Nothing OrElse layers Is Nothing OrElse layers.Count = 0 OrElse w <= 0 OrElse h <= 0 Then Return Nothing
         Dim npix = w * h
-        Const seedByte As Byte = 128   ' round(0.5*255) = seed constante SSE (ActiveSettings.SeedConstant)
-        Dim baseBgra(npix * 4 - 1) As Byte
-        For i = 0 To npix - 1
-            baseBgra(i * 4) = seedByte : baseBgra(i * 4 + 1) = seedByte : baseBgra(i * 4 + 2) = seedByte : baseBgra(i * 4 + 3) = 255
-        Next
-        Dim baseTex = UploadBgraToGl(baseBgra, w, h)
+        ' ⭐ SEED DE LA LEY Y EN FLOAT. Acá había un `Const seedByte As Byte = 128` cuyo propio comentario decía
+        ' "= ActiveSettings.SeedConstant" — pero era un LITERAL, y encima CUANTIZADO: 128/255 = 0,50196, no 0,5.
+        ' El _2b existe para medir la paridad CPU-vs-GPU del facetint CONTRA el _2, que siembra 0,5 EXACTO por
+        ' CPU ⇒ ese medio LSB era un sesgo del INSTRUMENTO, no del compositor, y el fgTint lo amplifica ×255/64
+        ' (2,00781 vs 2,01563). Se siembra por el MISMO helper float que usa el render (UploadRgba32fFlat), que
+        ' es justo lo que su doc pide ("⛔ No volver a sembrar por bytes").
+        Dim seedRgb = SseFaceTintComposer.TryGetFlatSeedRgb()
+        If seedRgb Is Nothing Then
+            Logger.LogLazy(Function() "[FACEBAKE][SSE] _2b ABORT: la ley pide seed desde textura base y el facetint es TINT-ONLY (no hay base).")
+            Return Nothing
+        End If
+        Dim baseTex = SseFoldLayerStack.UploadRgba32fFlat(seedRgb(0), seedRgb(1), seedRgb(2), 1.0F, w, h)
         If baseTex = 0 Then Return Nothing
         ' Espejo CPU de ESTE camino = SseFaceTintComposer (este _2d es la contraparte GPU del _2c, que es
         ' 100 % CPU por ese modulo) ⇒ se declara SU capacidad, no la del compositor CPU de FO4.

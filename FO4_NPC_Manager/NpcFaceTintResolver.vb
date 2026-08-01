@@ -1058,7 +1058,18 @@ Friend NotInheritable Class NpcFaceTintResolver
         If effRaceFid = 0UI Then effRaceFid = npcData.RaceFormID   ' raza efectiva del caller; cruda solo como fallback
         Dim seedTex As Integer = 0
         Try
-            seedTex = SseFoldLayerStack.UploadRgba32fFlat(0.5F, 0.5F, 0.5F, 1.0F, w, h)
+            ' ⭐ EL SEED SALE DE LA LEY (CharGen Options), NO DE UN LITERAL. Estaba cableado en 0.5F acá,
+            ' que es el camino del facetint NO plegado = el de la MAYORÍA de los NPC, y corre por GPU por
+            ' default ⇒ mover el seed no cambiaba el render. Fuente única: SseFaceTintComposer.TryGetFlatSeedRgb
+            ' (= BuildSeedSpec), la MISMA que usan el compose CPU y el QNAM del cuerpo.
+            Dim seedRgb = SseFaceTintComposer.TryGetFlatSeedRgb()
+            If seedRgb Is Nothing Then
+                ' Espejo EXACTO del camino CPU: sin seed constante no hay de dónde sembrar (el facetint es
+                ' TINT-ONLY) y ComposeLinearRgba devuelve Nothing. Se aborta con log, no se tapa con 0.5.
+                Logger.LogLazy(Function() "[SSE-FACETINT] ABORT: la ley pide seed desde textura base y el facetint es TINT-ONLY (no hay base). Igual que el camino CPU.")
+                Return 0
+            End If
+            seedTex = SseFoldLayerStack.UploadRgba32fFlat(seedRgb(0), seedRgb(1), seedRgb(2), 1.0F, w, h)
             If seedTex = 0 Then Return 0
             Dim layers = SseFaceTintComposer.BuildLayerInputs(_ctx.PluginManager, npcRec, race, effRaceFid, npcData.IsFemale, npcData.SseTintRaw, npcData.SseTintTexOverride)
             If layers Is Nothing OrElse layers.Count = 0 Then

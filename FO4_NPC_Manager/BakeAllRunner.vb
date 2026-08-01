@@ -744,7 +744,19 @@ Friend Module BakeAllRunner
                         End SyncLock
                     End Sub
 
-                Dim popt As New System.Threading.Tasks.ParallelOptions With {.MaxDegreeOfParallelism = hardCap}
+                ' ⛔⛔ CON PARIDAD GPU EL DOP REAL TIENE QUE SER 1 — y hasta acá NO LO ERA. El `fixedDop = 1`
+                ' de arriba alimentaba SOLO al controlador de permisos; este ParallelOptions seguía recibiendo
+                ' `hardCap`, así que Parallel.ForEach despachaba el cuerpo en hilos del ThreadPool mientras el
+                ' contexto GL vive atado al hilo STA que lo creó (ver "CONTEXTO GL", cuyo comentario todavía
+                ' decía "el loop de abajo es un For SINCRONICO" — dejó de serlo al paralelizar por NPC).
+                ' La PRIMERA llamada GL desde un hilo del pool tira AccessViolationException y MATA el proceso.
+                ' MEDIDO 2026-08-01: crash en `GL.GenTexture()` al NPC 7/40 con FGBAKE_GPU_PARITY=1.
+                ' El log ya imprimía "Parallelism: FORCED TO 1": decía la verdad del CONTROLADOR y una mentira
+                ' del DESPACHO. Con DOP=1 el cuerpo corre en el hilo LLAMADOR, que es el dueño del contexto.
+                ' ⭐ Esto es lo que dejaba MUERTO al único instrumento que ve el compositor GL: el barrido
+                ' normal corre con parity=0 (ciego al GLSL) y el modo que sí lo mira crasheaba.
+                Dim dop As Integer = If(gpuParity, 1, hardCap)
+                Dim popt As New System.Threading.Tasks.ParallelOptions With {.MaxDegreeOfParallelism = dop}
                 System.Threading.Tasks.Parallel.ForEach(targets, popt,
                  Sub(t, state)
                     ' Cancelacion ANTES de tomar el permiso: si sale por aca no hay nada que devolver.
