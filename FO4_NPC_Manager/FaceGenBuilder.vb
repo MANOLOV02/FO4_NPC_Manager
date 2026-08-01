@@ -139,6 +139,52 @@ Public Module FaceGenBuilder
     End Sub
 
     ''' <summary>Desglose legible. "resto" = Total − (las fases medidas): records, morphs, skinning, clonado.</summary>
+    ' ===================================================================================
+    ' GATE SIMD: los self-tests de paridad, UNA sola vez por proceso, antes del primer bake.
+    ' ===================================================================================
+    ''' <summary>Resultado del gate, calculado UNA sola vez y de forma realmente atómica.
+    ''' <para>⛔ NO usar un <c>Interlocked.CompareExchange</c> sobre un flag "ya corrió": ese patrón marca
+    ''' HECHO *antes* de correr los tests, así que un segundo hilo que entre durante ese ~1 s ve el flag en 1,
+    ''' el resultado todavía vacío, y <b>se va sin gate</b> — justo lo que el gate existe para impedir. Y si los
+    ''' tests LANZAN (la <c>AggregateException</c> de un <c>Parallel.ForEach</c>), el flag queda en 1 con el
+    ''' resultado vacío PARA SIEMPRE y todas las llamadas siguientes pasan en silencio.
+    ''' <c>ExecutionAndPublication</c> da las dos cosas: una sola ejecución, y publicación segura del valor
+    ''' (además de re-lanzar la misma excepción a todos los hilos si la hubo).</para></summary>
+    Private ReadOnly _simdGate As New Lazy(Of String)(AddressOf SimdParityFailure,
+                                                      Threading.LazyThreadSafetyMode.ExecutionAndPublication)
+
+    ''' <summary>Corre los self-tests de paridad vector-vs-escalar la PRIMERA vez que se hornea algo, y
+    ''' cachea el resultado. Idempotente y thread-safe.
+    ''' <para>⛔ Si alguno falla, LANZA. No es una advertencia: si el camino vectorial no es bit-idéntico al
+    ''' escalar, cada byte que se hornee a partir de ahí es basura silenciosa — y peor, distinta según la CPU.
+    ''' Fallar acá cuesta un mensaje; no fallar cuesta un corpus entero mal horneado.</para></summary>
+    Public Sub EnsureSimdParityGate()
+        Dim r = _simdGate.Value
+        If r.Length > 0 Then Throw New InvalidOperationException(
+            "SIMD parity gate FAILED — el camino vectorial NO es bit-identico al escalar. " &
+            "Hornear ahora produciria bytes invalidos (y distintos segun la CPU). Detalle: " & r)
+    End Sub
+
+    ''' <summary>Los NUEVE self-tests, en orden. Devuelve "" si todos pasan, o el primer fallo.
+    ''' <para>El de ANCHOS va primero: prueba que escalar == V128 == V256 == Vector(Of T) en todo FastPow, que
+    ''' es la base de la que dependen los demás. Si los anchos divergen, el MISMO binario hornea caras
+    ''' distintas según la CPU y un gate de bytes de UNA máquina no lo vería.</para></summary>
+    Public Function SimdParityFailure() As String
+        Dim r = FastPow.WidthParitySelfTest()
+        If r.Length = 0 Then r = FaceTintCpuCompositor.ComposeVectorSelfTest()
+        If r.Length = 0 Then r = FaceTintCpuCompositor.VectorPathsSelfTest()
+        If r.Length = 0 Then r = FaceTintCpuCompositor.PackRoundDoubleSelfTest()
+        If r.Length = 0 Then r = FaceTintCpuCompositor.PhaseAVectorSelfTest()
+        If r.Length = 0 Then r = FaceTintCpuCompositor.SeedAndSwapVectorSelfTest()
+        If r.Length = 0 Then r = SseFaceTintComposer.ComposeLayerSelfTest()
+        If r.Length = 0 Then r = SseOverlayCompositor.OverlayVectorSelfTest()
+        If r.Length = 0 Then r = SseFaceGenBaker.BakerVectorSelfTest()
+        ' El del GLSL no es paridad vector-vs-escalar: es el otro fallo MUDO del compositor (un no-ASCII deja
+        ' el shader sin compilar y el bake, que es CPU, sigue andando). No necesita GL para correr.
+        If r.Length = 0 Then r = FaceTintCompositor.ShaderSourceAsciiSelfTest()
+        Return r
+    End Function
+
     Public Function PhaseReport() As String
         Dim f = CDbl(Stopwatch.Frequency)
         Dim tot = _phaseTicks(CInt(BakePhase.Total)) / f
@@ -153,6 +199,22 @@ Public Module FaceGenBuilder
         Next
         sb.AppendLine($"   {"other",-16} {tot - medido,10:F1} s  ({100.0 * (tot - medido) / tot,5:F1} % of total)  (records/morphs/skin/cloning)")
         sb.AppendLine($"   {"TOTAL",-16} {tot,10:F1} s  n={_phaseHits(CInt(BakePhase.Total))}")
+        ' Ancho SIMD efectivo + paridad del espejo vectorial. Va en el reporte porque el tiempo de arriba no
+        ' se puede leer sin saber por que camino corrio: 4,05x con AVX2, 2,30x con SSE2, y los tres anchos dan
+        ' los MISMOS bytes. Un MISMATCH aca invalida la corrida entera — se marca, no se degrada en silencio.
+        ' El ancho REAL lo decide Vector(Of T), no la presencia de AVX2: con DOTNET_MaxVectorTBitWidth=128
+        ' sobre una CPU con AVX2, decir "Vector256 (8 lanes)" contradecia al `lanes=` de la misma linea.
+        Dim simd = If(FastPow.AcceleratedV, $"Vector(Of T) de {FastPow.LaneCount * 32} bits", "scalar (sin SIMD)")
+        ' Los NUEVE self-tests de paridad, no sólo el del compose: cada módulo vectorizado tiene el suyo y
+        ' un MISMATCH en cualquiera invalida la corrida. El de overlays importa especialmente porque el
+        ' corpus VANILLA no tiene overlays de RaceMenu ⇒ un barrido A/B no los ejercita nunca; y el del pack
+        ' en Double cubre el camino 4K de SSE, que redondea con OTRA ley que el byte-pack de FO4.
+        ' El gate ya corrio ANTES del primer NPC (EnsureSimdParityGate). Aca sólo se REPORTA: si hubiera
+        ' fallado, BuildCharGen habria lanzado y no habria bake que reportar.
+        Dim parity = _simdGate.Value          ' YA calculado por el gate; re-correrlo eran ~1,1 s por reporte
+        sb.AppendLine($"   compose SIMD path: {simd}   lanes={FastPow.LaneCount}   vector-vs-scalar parity: " &
+                      If(parity.Length = 0, "BIT-IDENTICAL (widths/compose/spaces/bytepack/pack-double/seed-swap/sse-layer/overlays/baker) + GLSL ASCII OK",
+                                            "*** MISMATCH *** " & parity))
         Return sb.ToString()
     End Function
     ' ===================================================================================
@@ -510,6 +572,15 @@ Public Module FaceGenBuilder
                                  applyMaterialOverrides As ApplyShapeMaterialOverridesDelegate,
                                  willBePacked As Boolean,
                                  Optional lmSkinTemplateResolver As NpcRecordOverlay.ResolveLmSkinTemplateDelegate = Nothing) As BuildResult
+
+        ' ⭐⭐ GATE SIMD, UNA VEZ POR PROCESO Y ANTES DE HORNEAR NADA.
+        ' ⛔ POR QUE ACA Y NO EN PhaseReport: los self-tests vivian SOLO adentro de PhaseReport(), y a
+        ' PhaseReport lo llama UNICAMENTE BakeAllRunner, DESPUES de terminar todo el barrido. O sea que
+        ' (a) un bake normal desde la UI no los corria NUNCA — cero gate en produccion — y (b) en un barrido
+        ' de corpus un MISMATCH aparecia despues de ~45 min, con los bytes YA escritos a disco.
+        ' Aca corre antes del primer pixel y falla RUIDOSO: si los caminos vectoriales no son bit-identicos
+        ' al escalar, hornear es producir bytes que no valen nada.
+        EnsureSimdParityGate()
 
         ' Toma el contexto GL para ESTE bake antes de cualquier operacion GL. El "contexto actual" de
         ' OpenTK es por HILO y a nivel proceso, y coexisten varios PreviewControl (MainForm, EditFace,
@@ -2659,19 +2730,13 @@ Public Module FaceGenBuilder
             ' puede plegar en una textura de diffuse.
             SseFaceGenBaker.PreCompensateEngineChain(acc, facetint, detailAcc, npix)
 
-            ' Paralelo por rangos: la conversión float→byte es puramente por píxel (sin estado compartido)
-            ' ⇒ bit-idéntica al serial. Pesa porque el fold corre a resolución NATIVA: 16,7 M iteraciones a 4096².
+            ' Paralelo por rangos + VECTORIZADO: la conversión float→byte es puramente por píxel (sin estado
+            ' compartido) ⇒ bit-idéntica al serial. Pesa porque el fold corre a resolución NATIVA: 16,7 M
+            ' iteraciones a 4096².
+            ' ⛔ La ley es la de ClampByte255 (redondeo en DOUBLE) y por eso NO usa el byte-pack de FO4, que
+            ' redondea en Single: cerca de los .5 dan bytes distintos. Ver el comentario del helper.
             Dim bgra(w * h * 4 - 1) As Byte
-            System.Threading.Tasks.Parallel.ForEach(
-                System.Collections.Concurrent.Partitioner.Create(0, w * h),
-                Sub(range)
-                    For i = range.Item1 To range.Item2 - 1
-                        bgra(i * 4) = ClampByte255(acc(i * 4 + 2) * 255.0)      ' B
-                        bgra(i * 4 + 1) = ClampByte255(acc(i * 4 + 1) * 255.0)  ' G
-                        bgra(i * 4 + 2) = ClampByte255(acc(i * 4) * 255.0)      ' R
-                        bgra(i * 4 + 3) = ClampByte255(acc(i * 4 + 3) * 255.0)  ' A
-                    Next
-                End Sub)
+            FaceTintCpuCompositor.PackUnitRgbaToBgraRoundDouble(acc, bgra, w * h)
             ' Resolución de salida = Setting_FaceGenDiffuseResolution (Inherit→nativo = no-op byte-inerte; 1024/2048/…
             ' resamplea con el MISMO filtro bilineal GL_LINEAR+clamp que el compositor FO4 → matchea el per-layer FO4).
             Dim dOutW = w, dOutH = h, dOutBgra = bgra
@@ -2770,20 +2835,12 @@ Public Module FaceGenBuilder
                                     AddressOf SseFaceTintComposer.DecodeTextureRgba,
                                     AddressOf SseFaceTintComposer.DecodeNormalRgba)
                                 If composedN OrElse forced Then
-                                    ' Paralelo por rangos, MISMA justificación que la conversión del diffuse de
-                                    ' arriba: por-píxel puro, escrituras disjuntas ⇒ bit-idéntico al serial. El
-                                    ' _msn se procesa a la resolución nativa del head normal (1024²-4096²).
+                                    ' Paralelo por rangos + vectorizado, MISMA justificación y MISMO helper que
+                                    ' la conversión del diffuse de arriba: por-píxel puro, escrituras disjuntas
+                                    ' ⇒ bit-idéntico al serial. El _msn se procesa a la resolución nativa del
+                                    ' head normal (1024²-4096²).
                                     Dim mbgra(mw * mh * 4 - 1) As Byte
-                                    System.Threading.Tasks.Parallel.ForEach(
-                                        System.Collections.Concurrent.Partitioner.Create(0, mw * mh),
-                                        Sub(range)
-                                            For i = range.Item1 To range.Item2 - 1
-                                                mbgra(i * 4) = ClampByte255(macc(i * 4 + 2) * 255.0)      ' B
-                                                mbgra(i * 4 + 1) = ClampByte255(macc(i * 4 + 1) * 255.0)  ' G
-                                                mbgra(i * 4 + 2) = ClampByte255(macc(i * 4) * 255.0)      ' R
-                                                mbgra(i * 4 + 3) = ClampByte255(macc(i * 4 + 3) * 255.0)  ' A
-                                            Next
-                                        End Sub)
+                                    FaceTintCpuCompositor.PackUnitRgbaToBgraRoundDouble(macc, mbgra, mw * mh)
                                     ' Resolución = Setting_FaceGenNormalResolution (Inherit→nativo no-op; resample filtro FO4).
                                     Dim nOutW = mw, nOutH = mh, nOutBgra = mbgra
                                     If OutputSettings.Normal <> FaceTintConvention.FaceTintChannelResolution.Inherit Then
