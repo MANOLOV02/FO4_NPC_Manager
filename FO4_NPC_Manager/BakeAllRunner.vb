@@ -426,6 +426,7 @@ Friend Module BakeAllRunner
             FaceGenBuilder.PhaseReset()
             FaceGenBuilder.ParityReset()
             SseFoldLayerStack.ResetSseParity()
+            FaceTintConvention.ResetConventionWarnings()   ' o el aviso latcheado sobrevive al barrido anterior
             Dim sw = Diagnostics.Stopwatch.StartNew()
             Dim cancelled As Boolean = False
 
@@ -647,6 +648,13 @@ Friend Module BakeAllRunner
                 Dim cst = FaceTintCpuCompositor.BatchDecodeCacheStats()
                 log($"Decode cache: {cst.Bytes \ (1024L * 1024L)} MB retained at the end, {cst.Rejected} entries rejected by the cap, " &
                     $"{evictions} boundary evictions ({evictedMb} MB freed in total)")
+                ' ⭐ El NIVEL 2 con su contador de RESAMPLES. No es cosmético: dice si esta corrida ejercitó o no
+                ' la ley del bilineal. Con `resampled=0` el corpus salió TODO por el atajo de identidad, y
+                ' entonces un A/B en 0 bytes NO dice nada sobre un cambio en esa ley — el gate de eso es el
+                ' self-test `bilinear`. Sin este número, eso es una suposición y no un dato.
+                Dim ust = FaceTintCpuCompositor.UnitCacheStats()
+                log($"Unit cache (level 2): {ust.Hits} hits / {ust.Misses} misses, {ust.Resampled} of the misses went through the BILINEAR " &
+                    $"(the rest hit the identity shortcut: source already at the accumulator size)")
                 ' ⛔ El cache de mascaras de SseFaceTintComposer NO entra en este resumen: no obedece el techo
                 ' (es per-NPC, igual que los caches per-host de FO4 — ver el comentario en SseFaceTintComposer).
                 ' Su memoria la acota la VIDA, no el presupuesto, asi que no hay bytes "retenidos por techo" ni
@@ -683,6 +691,22 @@ Friend Module BakeAllRunner
             log(FaceGenBuilder.ParityReport())
             log("")
             log(SseFoldLayerStack.SseParityReport())
+            ' El aviso de "el bucket Swap no gobierna el acumulador" se latchea en la libreria y hasta ahora
+            ' NADIE lo leia: la propiedad y su reset existian sin un solo consumidor, mientras tres comentarios
+            ' afirmaban que este runner los usaba. Se imprime por `log()` (sale tambien en release, que es el
+            ' punto: `Logger` esta apagado ahi) y solo cuando hubo caso.
+            Dim swapWarn = FaceTintConvention.SwapAccumWarning
+            If Not String.IsNullOrEmpty(swapWarn) Then
+                log("")
+                log("⚠ CONVENTION: " & swapWarn)
+            End If
+            ' Mismo criterio para la guarda de uniforms del compositor GL: escribir en una location -1 es un
+            ' no-op MUDO, así que si alguna falta hay que VERLO. Latcheado en la librería, impreso acá.
+            Dim uniWarn = FaceTintCompositor.UniformsMissingWarning
+            If Not String.IsNullOrEmpty(uniWarn) Then
+                log("")
+                log("⚠ SHADER: " & uniWarn)
+            End If
             If texFailedNpcs > 0 Then
                 log("")
                 log($"⚠ TEXTURES: {texFailedSlots} slot(s) failed on {texFailedNpcs} NPC(s) that were still counted as 'baked'.")

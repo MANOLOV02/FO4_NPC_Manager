@@ -117,15 +117,7 @@ Friend Module SseFoldLayerStack
                 detTex = UploadRgba32f(detailRaw, npix, w, h)
                 If detTex = 0 Then Return 0
             End If
-            Dim foldLayer As New List(Of FaceTintLayerInput) From {
-                New FaceTintLayerInput With {
-                    .Kind = FaceTintLayerKind.TextureSetDiffuse,
-                    .LayerTextureId = tintTex,
-                    .FoldDetailTextureId = detTex,
-                    .FgTintFold = True,
-                    .FgTintOffR = CSng(1.0 / 255.0), .FgTintOffG = 0F, .FgTintOffB = CSng(1.0 / 255.0),
-                    .FgTintAmp = CSng(255.0 / 64.0),
-                    .Opacity = 1.0F, .Slot = 0US, .IsTextureSet = True, .DebugName = "sse-fold"}}
+            Dim foldLayer = MakeFoldLayer(tintTex, detTex, unfold:=False)
             Dim prF = FaceTintCompositor.ApplyFaceTintPipeline(host.CompositorState, host.TintGpuCache,
                                                                complexTex, 0, 0, w, h, foldLayer,
                                                                New List(Of FaceRegionSwapInput)(),
@@ -196,15 +188,7 @@ Friend Module SseFoldLayerStack
             ' softlight(.,facetint) × amplify(detail) encima; esto lo cancela de antemano y el resultado dibujado
             ' vuelve a ser exactamente el buffer compuesto. MISMO facetint y MISMO detail que el fold.
             ' Espejo GPU de SseFaceGenBaker.PreCompensateEngineChain — si tocás una, tocá la otra. ---
-            Dim unfoldLayer As New List(Of FaceTintLayerInput) From {
-                New FaceTintLayerInput With {
-                    .Kind = FaceTintLayerKind.TextureSetDiffuse,
-                    .LayerTextureId = tintTex,
-                    .FoldDetailTextureId = detTex,
-                    .FgTintFold = True, .FgTintUnfold = True,
-                    .FgTintOffR = CSng(1.0 / 255.0), .FgTintOffG = 0F, .FgTintOffB = CSng(1.0 / 255.0),
-                    .FgTintAmp = CSng(255.0 / 64.0),
-                    .Opacity = 1.0F, .Slot = 0US, .IsTextureSet = True, .DebugName = "sse-unfold"}}
+            Dim unfoldLayer = MakeFoldLayer(tintTex, detTex, unfold:=True)
             ' ⭐ CENSO PRE-UNFOLD: separa la inversa del resto. La inversa es mal condicionada cerca de
             ' k = 1-2b = 0 (el limite es la identidad, la formula daria 0/0), asi que ahi float32 (GPU) y
             ' float64 (CPU) pueden separarse MUCHO sin que las leyes difieran. Midiendo antes y despues se
@@ -300,14 +284,14 @@ Friend Module SseFoldLayerStack
     ''' claros), que es la firma de cuantizar en lineal: cerca del negro, 1 nivel lineal vale ~13 niveles sRGB. Y el
     ''' facetint, además, lo amplifica el fgTint ×255/64. En float no hay dónde perder nada.
     '''
-    ''' ⭐ La LEY del pliegue es FIJA (engine, DXBC verificado) y vive en el shader (rama <c>uFgTintFold</c>), NO en
-    ''' <see cref="FaceTintConvention"/>: esa convención es la ley (configurable) del bake de FaceTint del CK, otra cosa.
-    ''' Si el fold la heredara, tocar una opción de la UI lo desviaría del engine.
-    ''' ⚠️ SUPUESTO (hoy cierto, conviene saberlo): el seed y la salida del pipeline SÍ pasan por la convención
-    ''' (<c>SeedDiffuseOutputSpace</c>). Con la ley SSE — que es ALL-LINEAR — esas dos conversiones son no-op y el
-    ''' complexion entra/sale sin que nadie le toque el espacio, que es lo que el fold necesita. Si alguna vez se
-    ''' cambian los espacios del bucket Diffuse de SSE a algo que no sea Linear, el pliegue GPU se desviaría del CPU
-    ''' (el sandbox _2c-vs-_2d lo detectaría: para eso está).</summary>
+    ''' ⭐ La ARITMÉTICA del pliegue (softlight × amplify) es FIJA —engine, DXBC verificado— y vive en el shader
+    ''' (rama <c>uFgTintFold</c>).
+    ''' ⛔ Pero decir "el fold NO pasa por <see cref="FaceTintConvention"/>" es FALSO y este mismo comentario lo
+    ''' desmentía dos líneas más abajo: el fold corre DENTRO de <c>ApplyFaceTintPipeline</c>, así que el seed y el
+    ''' pase final SÍ aplican la convención del bucket Diffuse. Lo que pasa es que la ley SSE es ALL-LINEAR y esas
+    ''' dos conversiones quedan en no-op, o sea que la independencia es una COINCIDENCIA de los defaults, no una
+    ''' propiedad del diseño. Si los espacios del bucket Diffuse de SSE dejaran de ser Linear, el pliegue GPU se
+    ''' desviaría del CPU — el sandbox _2c-vs-_2d es lo que lo detectaría.</summary>
     Friend Function FoldGpu(complexionSrgb As Single(), facetintLinear As Single(), detailRaw As Single(),
                             w As Integer, h As Integer, host As NpcRenderHost) As Single()
         If host Is Nothing OrElse complexionSrgb Is Nothing OrElse facetintLinear Is Nothing Then Return Nothing
@@ -320,15 +304,7 @@ Friend Module SseFoldLayerStack
             If tintTex = 0 Then Return Nothing
             If detailRaw IsNot Nothing Then detTex = UploadRgba32f(detailRaw, npix, w, h)   ' 0 ⇒ el shader usa b=0.2509803922 (0.251, default engine)
 
-            Dim foldLayer As New List(Of FaceTintLayerInput) From {
-                New FaceTintLayerInput With {
-                    .Kind = FaceTintLayerKind.TextureSetDiffuse,
-                    .LayerTextureId = tintTex,                          ' ⭐ textura float, NO un DDS de 8 bits
-                    .FoldDetailTextureId = detTex,
-                    .FgTintFold = True,
-                    .FgTintOffR = CSng(1.0 / 255.0), .FgTintOffG = 0F, .FgTintOffB = CSng(1.0 / 255.0),
-                    .FgTintAmp = CSng(255.0 / 64.0),
-                    .Opacity = 1.0F, .Slot = 0US, .IsTextureSet = True, .DebugName = "sse-fold"}}
+            Dim foldLayer = MakeFoldLayer(tintTex, detTex, unfold:=False)
             Dim pr = FaceTintCompositor.ApplyFaceTintPipeline(host.CompositorState, host.TintGpuCache,
                                                               baseTex, 0, 0, w, h, foldLayer, New List(Of FaceRegionSwapInput)(),
                                                               SseFaceTintComposer.AccumSpaceCapability,
@@ -624,6 +600,28 @@ Friend Module SseFoldLayerStack
         Return id
     End Function
 
+    ''' <summary>La capa del pliegue (o de su inversa). ⛔ Los TRES sitios que la armaban tenían el mismo
+    ''' cuerpo copiado, con las constantes de la ley RE-LITERALIZADAS: agregarle un campo obligaba a
+    ''' escribirlo tres veces y una omisión no la veía ningún gate de bytes del bake (el fold GPU sólo lo
+    ''' ejercita el sandbox _2c-vs-_2d).
+    ''' <para>Las constantes se leen de <see cref="SseFaceGenBaker"/>, que es donde ya vivían para el camino
+    ''' CPU. Eran los MISMOS valores (<c>1/255</c> y <c>255/64</c>, éste exacto en binario), así que el
+    ''' cambio es byte-idéntico — pero deja de haber dos fuentes que puedan separarse.</para></summary>
+    Private Function MakeFoldLayer(tintTexId As Integer, detailTexId As Integer, unfold As Boolean) As List(Of FaceTintLayerInput)
+        Return New List(Of FaceTintLayerInput) From {
+            New FaceTintLayerInput With {
+                .Kind = FaceTintLayerKind.TextureSetDiffuse,
+                .LayerTextureId = tintTexId,                      ' ⭐ textura float, NO un DDS de 8 bits
+                .FoldDetailTextureId = detailTexId,               ' 0 ⇒ el shader usa el default del engine
+                .FgTintFold = True, .FgTintUnfold = unfold,
+                .FgTintOffR = SseFaceGenBaker.FgTintOffR,
+                .FgTintOffG = SseFaceGenBaker.FgTintOffG,
+                .FgTintOffB = SseFaceGenBaker.FgTintOffB,
+                .FgTintAmp = SseFaceGenBaker.FgTintAmp,
+                .Opacity = 1.0F, .Slot = 0US, .IsTextureSet = True,
+                .DebugName = If(unfold, "sse-unfold", "sse-fold")}}
+    End Function
+
     ''' <summary>Friend: lo usa tambien el sandbox _2d del bake (FaceGenBuilder.WriteSseFacetint2dGpu) para el
     ''' UNICO readback de su cadena, la que encodea el DDS. Todo el resto del _2d corre en GPU.</summary>
     Friend Function ReadbackRgba32f(texId As Integer, npix As Integer) As Single()
@@ -716,9 +714,15 @@ Friend Module SseFoldLayerStack
         End SyncLock
     End Function
 
+    ''' <summary>⛔ Limpia TAMBIÉN los tres campos del censo PRE-UNFOLD. Antes sólo limpiaba los `_ssp*`, así
+    ''' que la línea PRE-UNFOLD acumulaba entre corridas: una segunda medición en el mismo proceso heredaba el
+    ''' peor delta de la primera y no había forma de notarlo desde el reporte.</summary>
     Public Sub ResetSseParity()
         SyncLock _sspLock
             _sspSamples = 0 : _sspImages = 0 : _sspMax = 0 : _sspGe2 = 0 : _sspGe3 = 0 : _sspSumSq = 0
+        End SyncLock
+        SyncLock _sspPreLock
+            _sspPreSamples = 0 : _sspPreMax = 0 : _sspPreGe3 = 0
         End SyncLock
     End Sub
 

@@ -139,6 +139,11 @@ Module Program
         ''' clasificación exhaustiva de TODOS los NPC_; parte B = A/B de geometría horneada vs cruda sobre
         ''' una muestra de los que entran nuevos. READ-ONLY: no escribe ni un NIF.</summary>
         Public FaceGenGate As Boolean = False
+        ''' <summary>Corre los self-tests del gate de paridad y sale. No hornea, no monta plugins.</summary>
+        Public ParityGate As Boolean = False
+        ''' <summary>Con --paritygate: además vuelca los golden del fold listos para pegar. Es un volcado,
+        ''' no un gate — se usa para re-congelarlos cuando un cambio de ley los mueve a propósito.</summary>
+        Public DumpGolden As Boolean = False
         ''' <summary>--fggsample N: cuántos NPCs del conjunto nuevo se hornean en la parte B (0 = ninguno).</summary>
         Public FaceGenGateSample As Integer = 40
         Public Provenance As Boolean = False      ' --provenance: SourcePluginName de NPC/RACE/CLFMs del dirt (chequeo vanilla-vs-vanilla)
@@ -211,6 +216,11 @@ Module Program
         '     File-only y despachado ANTES del bootstrap de plugins/FilesDictionary: es rápido y no depende
         '     del load order. ---
         If opt.Ba2Extract <> "" Then Ba2ExtractRun(opt.Ba2Extract) : Return
+
+        ' --- PARITYGATE: corre los self-tests del gate SIN hornear. Hasta ahora el gate sólo se podía
+        '     ejercitar desde un bake (EnsureSimdParityGate lo llama BuildCharGen), así que verificar un
+        '     cambio de ley costaba una corrida entera. No toca disco, no monta plugins, no necesita --data. ---
+        If opt.ParityGate Then ParityGateRun(opt.DumpGolden) : Return
 
         ' --- 1. Config (app config.json local) ---
         Config_App.LoadConfig()
@@ -339,25 +349,19 @@ Module Program
 
         ' --- 2. Config base: secciones FaceTint del config.json del APP (sin copiarlo a la bin) ---
         If opt.ConfigPath <> "" Then
-            Using doc = JsonDocument.Parse(File.ReadAllText(opt.ConfigPath))
-                Dim el As JsonElement
-                If doc.RootElement.TryGetProperty("Setting_FaceTintConvention", el) Then
-                    Config_App.Current.Setting_FaceTintConvention =
-                        JsonSerializer.Deserialize(Of FaceTintConvention.FaceTintConventionSettings)(el.GetRawText())
-                End If
-                If doc.RootElement.TryGetProperty("Setting_FaceTintSort", el) Then
-                    Config_App.Current.Setting_FaceTintSort =
-                        JsonSerializer.Deserialize(Of FaceTintSortSettings)(el.GetRawText())
-                End If
-            End Using
-            Console.WriteLine($"[cfg] FaceTint settings <- {opt.ConfigPath}")
+            ' Mismo cuerpo que el cargador del barrido: se delega en vez de repetirlo (eran dos copias del
+            ' mismo lector y sólo una se iba a arreglar).
+            ApplyConfigJson(opt.ConfigPath)
         End If
 
         ' --- 2b. Override granular de convencion / orden (opcional, pisa lo anterior) ---
         If opt.ConventionPath <> "" Then
-            Config_App.Current.Setting_FaceTintConvention =
-                JsonSerializer.Deserialize(Of FaceTintConvention.FaceTintConventionSettings)(File.ReadAllText(opt.ConventionPath))
-            Console.WriteLine($"[cfg] convention <- {opt.ConventionPath}")
+            ' El archivo de --convention es un FaceTintConventionSettings PELADO (sin la clave envolvente),
+            ' así que acá no hay clave que elegir: sólo el SLOT, que sí depende del juego. Éste es el sitio
+            ' por el que entra el barrido de convenciones de SSE.
+            Dim written = FaceTintConvention.SetActiveSettings(Config_App.Current,
+                JsonSerializer.Deserialize(Of FaceTintConvention.FaceTintConventionSettings)(File.ReadAllText(opt.ConventionPath)))
+            Console.WriteLine($"[cfg] convention <- {opt.ConventionPath}   -> slot '{written}'")
         End If
         If opt.SortPath <> "" Then
             Config_App.Current.Setting_FaceTintSort =
@@ -4009,13 +4013,23 @@ persist:
         Return ctx
     End Function
 
-    ''' <summary>Setea las secciones FaceTint de Config_App.Current desde un config json (convencion + orden).</summary>
+    ''' <summary>Setea las secciones FaceTint de Config_App.Current desde un config json (convencion + orden).
+    ''' <para>⛔ La convencion se lee de la CLAVE DEL JUEGO ACTIVO y se escribe en su SLOT. Un config.json trae
+    ''' las DOS leyes (FO4 y SSE); leer la de FO4 con SSE activo mide la ley equivocada, y escribirla en el slot
+    ''' de FO4 la deja INVISIBLE para ActiveSettings ⇒ un barrido de N convenciones medía N veces la misma sin
+    ''' fallar. Si la clave del juego activo no está, NO se degrada a la otra: se avisa y se deja intacta.</para></summary>
     Private Sub ApplyConfigJson(path As String)
+        Dim slot = FaceTintConvention.ActiveSettingsSlotName(Config_App.Current)
         Using doc = JsonDocument.Parse(File.ReadAllText(path))
             Dim el As JsonElement
-            If doc.RootElement.TryGetProperty("Setting_FaceTintConvention", el) Then
-                Config_App.Current.Setting_FaceTintConvention =
-                    JsonSerializer.Deserialize(Of FaceTintConvention.FaceTintConventionSettings)(el.GetRawText())
+            If doc.RootElement.TryGetProperty(slot, el) Then
+                Dim written = FaceTintConvention.SetActiveSettings(Config_App.Current,
+                    JsonSerializer.Deserialize(Of FaceTintConvention.FaceTintConventionSettings)(el.GetRawText()))
+                Console.WriteLine($"[cfg] convention <- {path}   key='{slot}' -> slot '{written}'")
+            Else
+                Console.Error.WriteLine($"[warn] '{path}' no tiene la clave '{slot}' del juego activo" &
+                                        $" ({Config_App.Current.Game}): la convención queda SIN TOCAR." &
+                                        " Un barrido en este estado mide siempre la misma ley.")
             End If
             If doc.RootElement.TryGetProperty("Setting_FaceTintSort", el) Then
                 Config_App.Current.Setting_FaceTintSort =
@@ -4027,6 +4041,33 @@ persist:
     Private Function AvgOr(l As List(Of Double)) As Double
         Return If(l.Count > 0, l.Average(), Double.NaN)
     End Function
+
+    ''' <summary>Corre los self-tests del gate de paridad y reporta la cobertura POR EJE. No hornea ni monta
+    ''' nada: es el instrumento que faltaba para poder verificar un cambio de ley en segundos en vez de en un
+    ''' bake. ExitCode 2 si algún test falla — un barrido tiene que poder distinguirlo del éxito.
+    ''' <para>⛔ El veredicto va por eje a propósito: sin SIMD acelerado los siete tests de espejo vectorial
+    ''' hacen early-return y un "todo OK" plano sería mentira.</para></summary>
+    Private Sub ParityGateRun(dumpGolden As Boolean)
+        Console.WriteLine($"[paritygate] SIMD: {If(FastPow.AcceleratedV, $"Vector(Of T) de {FastPow.LaneCount * 32} bits", "scalar (SIN SIMD acelerado)")}   lanes={FastPow.LaneCount}")
+        Dim fail = FO4_NPC_Manager.FaceGenBuilder.SimdParityFailure()
+        Console.WriteLine(FO4_NPC_Manager.FaceGenBuilder.ParityAxesReport(fail))
+        ' ⭐ MEDICIONES, no gates: no fallan, informan. Son las que el plan pide ANTES de colapsar dos formas
+        ' de la misma ley (decisión 4 del soft-light y la cuarta transcripción de la curva sRGB): sin el
+        ' número, unificarlas es apostar a que "son lo mismo" porque algebraicamente lo parecen.
+        Console.WriteLine("[medicion] " & FaceTintCpuCompositor.SoftLightShapeReport())
+        Console.WriteLine("[medicion] " & FaceTintCpuCompositor.SrgbCurveShapeReport())
+        If fail.Length > 0 Then
+            Console.Error.WriteLine("[paritygate] *** FAIL *** " & fail)
+            Environment.ExitCode = 2
+        Else
+            Console.WriteLine("[paritygate] PASS (ver la cobertura por eje arriba)")
+        End If
+        If dumpGolden Then
+            Console.WriteLine()
+            Console.WriteLine("--- FoldGoldenBits (pegar tal cual en SseFaceGenBaker) ---")
+            Console.Write(SseFaceGenBaker.FoldGoldenDump())
+        End If
+    End Sub
 
     ''' <summary>Barre cada config .json de sweepDir contra CK con UNA sola carga. Resuelve los NPCs +
     ''' carga refs CK una vez; el BatchDecodeCache + tintBytesCache persisten entre TODAS las convenciones
@@ -10410,6 +10451,8 @@ persist:
                 Case "--hkxbone" : a.HkxBone = v : i += 2
                 Case "--clipbase" : a.ClipBase = v : i += 2
                 Case "--blendhintscan" : a.BlendHintScan = v : i += 2
+                Case "--paritygate" : a.ParityGate = True : i += 1
+                Case "--dump-golden" : a.DumpGolden = True : i += 1
                 Case "--facegengate" : a.FaceGenGate = True : i += 1
                 Case "--fggsample"
                     Dim n As Integer : If Integer.TryParse(v, n) Then a.FaceGenGateSample = Math.Max(0, n)
@@ -10434,7 +10477,7 @@ persist:
                     Console.Error.WriteLine($"Unknown arg: {args(i)}") : PrintUsage() : Return Nothing
             End Select
         End While
-        If a.ListPath = "" AndAlso (a.Esp = "" OrElse a.Edid = "") AndAlso a.DdsProbe = "" AndAlso a.RecScan = "" AndAlso Not a.MeshCollide AndAlso a.DumpAcc = "" AndAlso Not a.TexSlotDiff AndAlso Not a.ShapeOrder AndAlso Not a.TintCountScan AndAlso Not a.AlphaGateScan AndAlso Not a.TtedScan AndAlso Not a.ScanDiff AndAlso Not a.RaceAnim AndAlso Not a.RaceCompat AndAlso Not a.MountValidate AndAlso a.FindHkx = "" AndAlso a.ChunkCompare = "" AndAlso a.DumpBehavior = "" AndAlso Not a.HkxCoverage AndAlso a.KwType = "" AndAlso Not a.StateMap AndAlso Not a.ClipResolve AndAlso a.HkxBone = "" AndAlso a.ClipBase = "" AndAlso a.FindFile = "" AndAlso a.NifDump = "" AndAlso a.NifSlots = "" AndAlso a.AnimSyncCheck = "" AndAlso a.BlendHintScan = "" AndAlso Not a.CatProfile AndAlso a.DumpRef = "" AndAlso a.EstimateSclp = "" AndAlso a.SclpDiag = "" AndAlso a.SclpBatch = "" AndAlso a.BindDiff = "" AndAlso a.Ba2Extract = "" AndAlso Not a.SseCompareBatch AndAlso Not a.VertexBatch AndAlso a.PosDump = "" AndAlso a.MeshShaders = "" AndAlso a.CompareFiles = "" AndAlso a.DumpNif = "" AndAlso a.SkinCheck = "" AndAlso a.OutfitScan = "" AndAlso Not a.FaceGenGate Then
+        If a.ListPath = "" AndAlso (a.Esp = "" OrElse a.Edid = "") AndAlso a.DdsProbe = "" AndAlso a.RecScan = "" AndAlso Not a.MeshCollide AndAlso a.DumpAcc = "" AndAlso Not a.TexSlotDiff AndAlso Not a.ShapeOrder AndAlso Not a.TintCountScan AndAlso Not a.AlphaGateScan AndAlso Not a.TtedScan AndAlso Not a.ScanDiff AndAlso Not a.RaceAnim AndAlso Not a.RaceCompat AndAlso Not a.MountValidate AndAlso a.FindHkx = "" AndAlso a.ChunkCompare = "" AndAlso a.DumpBehavior = "" AndAlso Not a.HkxCoverage AndAlso a.KwType = "" AndAlso Not a.StateMap AndAlso Not a.ClipResolve AndAlso a.HkxBone = "" AndAlso a.ClipBase = "" AndAlso a.FindFile = "" AndAlso a.NifDump = "" AndAlso a.NifSlots = "" AndAlso a.AnimSyncCheck = "" AndAlso a.BlendHintScan = "" AndAlso Not a.CatProfile AndAlso a.DumpRef = "" AndAlso a.EstimateSclp = "" AndAlso a.SclpDiag = "" AndAlso a.SclpBatch = "" AndAlso a.BindDiff = "" AndAlso a.Ba2Extract = "" AndAlso Not a.SseCompareBatch AndAlso Not a.VertexBatch AndAlso a.PosDump = "" AndAlso a.MeshShaders = "" AndAlso a.CompareFiles = "" AndAlso a.DumpNif = "" AndAlso a.SkinCheck = "" AndAlso a.OutfitScan = "" AndAlso Not a.FaceGenGate AndAlso Not a.ParityGate Then
             Console.Error.WriteLine("Missing --esp and --edid (or use --list).") : PrintUsage() : Return Nothing
         End If
         ' --rawdds + --ddscompare: COMBINACION DELIBERADA, marcada a los gritos (no abortada).

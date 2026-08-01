@@ -112,6 +112,17 @@ Public Class CharGenOptionsForm
         GroupConvSwap.Visible = Not isSse
         GroupConvDWsByOp.Visible = True
 
+        ' ⭐ FASE 9 — los tres grupos nuevos ocupan EXACTAMENTE el hueco que dejan los dos de arriba cuando se
+        ' ocultan: Fold en (216,8) y Overlays en (424,8) —las posiciones de Normal y Swap— y Seed en la banda
+        ' de abajo (216,262), 408x59. Sin pestañas anidadas y SIN tocar el tamaño del formulario.
+        ' ⛔ Son SSE-only por la misma razón que Normal/Swap son FO4-only: el pliegue del facetint en el
+        ' diffuse y los overlays de RaceMenu no existen en Fallout, y el seed constante es la ley de SSE
+        ' (en FO4 el seed es la textura base y no hay nada que elegir). Un control visible que no mueve nada
+        ' es un defecto — misma regla por la que Normal y Swap se ocultan acá.
+        GroupConvFold.Visible = isSse
+        GroupConvOverlay.Visible = isSse
+        GroupConvSeed.Visible = isSse
+
         GroupConvDiffuse.Text = If(isSse, "Diffuse (SSE facegen-tint)", "Diffuse")
 
         ' Tab "Texture Size": el default del formato NORMAL difiere por juego → tag "(default)" GAME-AWARE en ComboFormatN
@@ -314,19 +325,11 @@ Public Class CharGenOptionsForm
         ComboSkinPlacement.SelectedIndex = p
     End Sub
 
-    ''' <summary>El set de convención del JUEGO ACTIVO: FO4 → Setting_FaceTintConvention; SSE →
-    ''' Setting_FaceTintConvention_SSE (creado con DefaultsFor(Skyrim) si fuese Nothing). Dos configuraciones
-    ''' separadas — el tab de convenciones edita la del juego activo sin tocar la otra. Espejo de
-    ''' FaceTintConvention.ActiveSettings pero devuelve el objeto persistible (no la copia default).</summary>
+    ''' <summary>El set de convención del JUEGO ACTIVO, persistible (creado y GUARDADO si el slot fuese
+    ''' Nothing). El mapeo juego→slot vive en la librería, junto al lector activo: acá había una segunda
+    ''' copia de esa ley y sólo una se iba a mantener.</summary>
     Private Function ActiveConventionSettings(c As Config_App) As FaceTintConvention.FaceTintConventionSettings
-        If c.Game = Config_App.Game_Enum.Skyrim Then
-            If c.Setting_FaceTintConvention_SSE Is Nothing Then
-                c.Setting_FaceTintConvention_SSE = FaceTintConvention.FaceTintConventionSettings.DefaultsFor(Config_App.Game_Enum.Skyrim)
-            End If
-            Return c.Setting_FaceTintConvention_SSE
-        End If
-        If c.Setting_FaceTintConvention Is Nothing Then c.Setting_FaceTintConvention = New FaceTintConvention.FaceTintConventionSettings()
-        Return c.Setting_FaceTintConvention
+        Return FaceTintConvention.EnsureActiveSettings(c)
     End Function
 
     Private Sub LoadConvention(s As FaceTintConvention.FaceTintConventionSettings)
@@ -336,12 +339,29 @@ Public Class CharGenOptionsForm
         LoadBucket(s.Diffuse, ComboDWork, ComboDComp, ComboDSrc, ComboDOut, ComboDMask, ComboDFw, ComboDSoft)
         LoadBucket(s.NormalSpecular, ComboNWork, ComboNComp, ComboNSrc, ComboNOut, ComboNMask, ComboNFw, ComboNSoft)
         LoadBucket(s.Swap, ComboSWork, ComboSComp, ComboSSrc, ComboSOut, ComboSMask, ComboSFw, ComboSSoft)
+        ' Los DOS buckets que la fase 7b saco de "provisional": Fold y Overlay. Null-safe (config v1).
+        If s.Fold IsNot Nothing Then LoadBucket(s.Fold, ComboFoldWork, ComboFoldComp, ComboFoldSrc, ComboFoldOut, ComboFoldMask, ComboFoldFw, ComboFoldSoft)
+        If s.Overlay IsNot Nothing Then LoadBucket(s.Overlay, ComboOvlWork, ComboOvlComp, ComboOvlSrc, ComboOvlOut, ComboOvlMask, ComboOvlFw, ComboOvlSoft)
+        ' ⭐ EL SEED. Antes NO se cargaba ni se guardaba: existia en el config y en la ley, pero la UI no lo
+        ' tocaba, asi que "Revert to default" lo dejaba como estaba — o sea que el boton mentia. Ahora entra
+        ' y sale por aca, como cualquier otro campo del set.
+        ComboSeedMode.SelectedIndex = CInt(s.SeedMode)
+        Dim sk = If(s.SeedConstant IsNot Nothing AndAlso s.SeedConstant.Length >= 3,
+                    s.SeedConstant, New FaceTintConvention.FaceTintConventionSettings().SeedConstant)
+        NumSeedR.Value = ClampSeed(sk(0)) : NumSeedG.Value = ClampSeed(sk(1)) : NumSeedB.Value = ClampSeed(sk(2))
         LoadDWsByOp(s.DiffuseWorkingSpaceByBlend)
         CheckDSeedG22.Checked = s.SeedDiffuseG22
         ' Src de las TEXTURAS tint del diffuse (separado del Src del color sólido = ComboDSrc). Lo consume el
         ' resolver para isTextureSet (+ el base-seed). El Revert lo resetea (LoadConvention con un default fresco).
         ComboDTexSrc.SelectedIndex = CInt(s.DiffuseTextureSrcSpace)
     End Sub
+
+    ''' <summary>Un canal del seed acotado al rango del NumericUpDown ([0,1]). Un config con un valor fuera
+    ''' de rango tiraria ArgumentOutOfRange al asignarlo y se llevaria puesto el dialogo entero.</summary>
+    Private Function ClampSeed(v As Double) As Decimal
+        If Double.IsNaN(v) Then Return 0D
+        Return CDec(Math.Max(0.0, Math.Min(1.0, v)))
+    End Function
 
     ''' <summary>Carga los 5 working-space POR BLEND OP del diffuse (parametrizable, engine-faithful por
     ''' default: SoftLight=G22, resto=Linear). Null-safe (config viejo sin la sección -&gt; defaults).</summary>
@@ -604,6 +624,14 @@ Public Class CharGenOptionsForm
         SaveBucket(s.Diffuse, ComboDWork, ComboDComp, ComboDSrc, ComboDOut, ComboDMask, ComboDFw, ComboDSoft)
         SaveBucket(s.NormalSpecular, ComboNWork, ComboNComp, ComboNSrc, ComboNOut, ComboNMask, ComboNFw, ComboNSoft)
         SaveBucket(s.Swap, ComboSWork, ComboSComp, ComboSSrc, ComboSOut, ComboSMask, ComboSFw, ComboSSoft)
+        ' Los buckets de la fase 7b. Se materializan si el config venía de la v1 (donde no existían).
+        If s.Fold Is Nothing Then s.Fold = FaceTintConvention.FaceTintConventionSettings.DefaultsFor(c.Game).Fold
+        If s.Overlay Is Nothing Then s.Overlay = FaceTintConvention.FaceTintConventionSettings.DefaultsFor(c.Game).Overlay
+        SaveBucket(s.Fold, ComboFoldWork, ComboFoldComp, ComboFoldSrc, ComboFoldOut, ComboFoldMask, ComboFoldFw, ComboFoldSoft)
+        SaveBucket(s.Overlay, ComboOvlWork, ComboOvlComp, ComboOvlSrc, ComboOvlOut, ComboOvlMask, ComboOvlFw, ComboOvlSoft)
+        ' El SEED, el otro campo que la UI no tocaba (ver LoadConvention).
+        s.SeedMode = CType(ComboSeedMode.SelectedIndex, FaceTintConvention.FaceTintSeedMode)
+        s.SeedConstant = New Double() {CDbl(NumSeedR.Value), CDbl(NumSeedG.Value), CDbl(NumSeedB.Value)}
         If s.DiffuseWorkingSpaceByBlend Is Nothing Then s.DiffuseWorkingSpaceByBlend = New FaceTintConvention.FaceTintBlendWorkingSpaces()
         SaveDWsByOp(s.DiffuseWorkingSpaceByBlend)
         s.SeedDiffuseG22 = CheckDSeedG22.Checked

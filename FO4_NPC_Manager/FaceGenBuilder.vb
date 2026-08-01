@@ -115,12 +115,20 @@ Public Module FaceGenBuilder
     ' corre en UN hilo, y sin este desglose no hay forma de saber cual fase es.
     ' Costo: unos pocos Stopwatch.GetTimestamp por NPC (no por pixel) sobre ~1,6 s ⇒ <0,01 %. Los acumuladores
     ' son Long con Interlocked ⇒ seguro si alguna vez se paraleliza el loop de NPCs.
+    ' ⭐ EL "other" SE ABRIO (2026-08-01). Antes las fases medidas eran tres y todo lo demas caia en un renglon
+    ' "other (records/morphs/skin/cloning)": un bucket que se nombraba a si mismo pero no se podia atacar,
+    ' porque no decia cual de esas cuatro cosas pesaba. Ahora cada una tiene su fase y el "other" que queda es
+    ' de verdad el resto (parseo de materiales, oclusion, contadores, el shell del NIF).
     Public Enum BakePhase
         SourceNifParse = 0   ' GetBytes + Load_Manolo de las mallas fuente (se rehace POR NPC: loadedSources es local)
         Textures = 1         ' BakeFaceTextures (FO4 D/N/S) + WriteSseFacetintDds (SSE facetint) = el compose de pixeles
         NifWrite = 2         ' serializar + escribir el NIF de salida
-        Total = 3            ' todo BuildCharGen, para poder calcular el resto por diferencia
-        Count = 4
+        ' --- las tres que abren el "other" ---
+        RecordResolve = 3    ' overlay del NPC + mapa de HDPT permitidos + BakeState + huesos del esqueleto del actor
+        ShapeClone = 4       ' CloneShape_Original: copiar la shape del source al shell de salida
+        MorphSkin = 5        ' BakeShape (FO4 _faceBones: skin-rebind + FMRS) + ApplyChargenMorphsInPlace (morph por vertice)
+        Total = 6            ' todo BuildCharGen, para poder calcular el resto por diferencia
+        Count = 7
     End Enum
     Private ReadOnly _phaseTicks(CInt(BakePhase.Count) - 1) As Long
     Private ReadOnly _phaseHits(CInt(BakePhase.Count) - 1) As Long
@@ -165,24 +173,103 @@ Public Module FaceGenBuilder
             "Hornear ahora produciria bytes invalidos (y distintos segun la CPU). Detalle: " & r)
     End Sub
 
-    ''' <summary>Los NUEVE self-tests, en orden. Devuelve "" si todos pasan, o el primer fallo.
-    ''' <para>El de ANCHOS va primero: prueba que escalar == V128 == V256 == Vector(Of T) en todo FastPow, que
-    ''' es la base de la que dependen los demás. Si los anchos divergen, el MISMO binario hornea caras
-    ''' distintas según la CPU y un gate de bytes de UNA máquina no lo vería.</para></summary>
+    ''' <summary>Eje de verificación al que pertenece cada self-test. El gate mezcla cosas que NO prueban lo
+    ''' mismo, y reportarlas juntas fue el defecto: quien leía "BIT-IDENTICAL" se llevaba que el camino GPU
+    ''' estaba cubierto, cuando ningún test de esta lista toca el GPU.</summary>
+    Public Enum ParityAxis
+        ''' <summary>escalar == V128 == V256 == Vector(Of T). Corre SIEMPRE (no depende de que haya SIMD).</summary>
+        ScalarVsWidths
+        ''' <summary>espejo vectorial == escalar. ⛔ Sólo corre con SIMD acelerado: sin él, el espejo ni se usa
+        ''' y el test hace early-return devolviendo "" — que es indistinguible de "pasó".</summary>
+        VectorVsScalar
+        ''' <summary>Léxico sobre el fuente del shader. No necesita GL. Corre SIEMPRE.</summary>
+        GlslLexical
+        ''' <summary>Salida ABSOLUTA congelada (golden vectors). Corre SIEMPRE. Es el único eje que atrapa un
+        ''' cambio de ley que entre por igual en el escalar y en el vectorial: los demás son comparaciones
+        ''' entre dos copias del mismo número.</summary>
+        GoldenAbsolute
+        ''' <summary>Invariantes de la LEY, sin aritmética: cosas que tienen que ser ciertas del resolver
+        ''' mismo. Corre SIEMPRE (no usa SIMD ni GL).</summary>
+        LawConsistency
+    End Enum
+
+    ''' <summary>⭐ Los DIEZ self-tests del gate, en orden, con su eje. Es la ÚNICA lista: la consumen tanto
+    ''' <see cref="SimdParityFailure"/> (que aborta el bake) como <see cref="ParityAxesReport"/> (que declara
+    ''' qué se cubrió). Antes estaban la cadena y la enumeración del reporte escritas por separado, y el
+    ''' reporte se quedó en NUEVE nombres mientras la cadena corría diez.
+    ''' <para>El de ANCHOS va primero: es la base de la que dependen los demás. Si los anchos divergen, el
+    ''' MISMO binario hornea caras distintas según la CPU y un gate de bytes de UNA máquina no lo vería.</para>
+    ''' <para>⛔ SE FUE <c>sse-layer</c> (<c>SseFaceTintComposer.ComposeLayerSelfTest</c>) en la fase 5, y NO se
+    ''' perdió cobertura: contrastaba el espejo vectorial del loop de capas PROPIO de SSE, y ese loop se BORRÓ
+    ''' —SSE compone por <c>FaceTintCpuCompositor.ComposeChannelAccum</c>, igual que Fallout—. Sus ejes (ley
+    ''' SSE all-linear, los cuatro canales de máscara, largos que no son múltiplo del ancho, cobertura cero)
+    ''' los cubren <c>compose</c> y <c>bytepack</c>, que son los de la implementación que ahora corre. Un test
+    ''' que apunta a código borrado no es cobertura: es un nombre en la lista.</para></summary>
+    Private ReadOnly _parityTests As (Slug As String, Axis As ParityAxis, Run As Func(Of String))() = {
+        ("widths", ParityAxis.ScalarVsWidths, AddressOf FastPow.WidthParitySelfTest),
+        ("compose", ParityAxis.VectorVsScalar, AddressOf FaceTintCpuCompositor.ComposeVectorSelfTest),
+        ("spaces", ParityAxis.VectorVsScalar, AddressOf FaceTintCpuCompositor.VectorPathsSelfTest),
+        ("pack-double", ParityAxis.ScalarVsWidths, AddressOf FaceTintCpuCompositor.PackRoundDoubleSelfTest),
+        ("bytepack", ParityAxis.VectorVsScalar, AddressOf FaceTintCpuCompositor.PhaseAVectorSelfTest),
+        ("seed-swap", ParityAxis.VectorVsScalar, AddressOf FaceTintCpuCompositor.SeedAndSwapVectorSelfTest),
+        ("overlays", ParityAxis.VectorVsScalar, AddressOf SseOverlayCompositor.OverlayVectorSelfTest),
+        ("baker", ParityAxis.VectorVsScalar, AddressOf SseFaceGenBaker.BakerVectorSelfTest),
+        ("glsl-ascii", ParityAxis.GlslLexical, AddressOf FaceTintCompositor.ShaderSourceAsciiSelfTest),
+        ("fold-golden", ParityAxis.GoldenAbsolute, AddressOf SseFaceGenBaker.FoldGoldenSelfTest),
+        ("accum-space", ParityAxis.LawConsistency, AddressOf FaceTintConvention.AccumSpaceConsistencySelfTest),
+        ("cache-keys", ParityAxis.LawConsistency, AddressOf FaceTintCpuCompositor.CacheKeyAxesSelfTest),
+        ("bilinear", ParityAxis.LawConsistency, AddressOf FaceTintCpuCompositor.BilinearLawSelfTest),
+        ("qnam-face", ParityAxis.LawConsistency, AddressOf FaceTintCpuCompositor.QnamMatchesFaceSelfTest)
+    }
+
+    ''' <summary>Corre los self-tests en orden. Devuelve "" si todos pasan, o el primer fallo (con su slug,
+    ''' que antes se perdía: el mensaje no decía cuál de los diez había fallado).</summary>
     Public Function SimdParityFailure() As String
-        Dim r = FastPow.WidthParitySelfTest()
-        If r.Length = 0 Then r = FaceTintCpuCompositor.ComposeVectorSelfTest()
-        If r.Length = 0 Then r = FaceTintCpuCompositor.VectorPathsSelfTest()
-        If r.Length = 0 Then r = FaceTintCpuCompositor.PackRoundDoubleSelfTest()
-        If r.Length = 0 Then r = FaceTintCpuCompositor.PhaseAVectorSelfTest()
-        If r.Length = 0 Then r = FaceTintCpuCompositor.SeedAndSwapVectorSelfTest()
-        If r.Length = 0 Then r = SseFaceTintComposer.ComposeLayerSelfTest()
-        If r.Length = 0 Then r = SseOverlayCompositor.OverlayVectorSelfTest()
-        If r.Length = 0 Then r = SseFaceGenBaker.BakerVectorSelfTest()
-        ' El del GLSL no es paridad vector-vs-escalar: es el otro fallo MUDO del compositor (un no-ASCII deja
-        ' el shader sin compilar y el bake, que es CPU, sigue andando). No necesita GL para correr.
-        If r.Length = 0 Then r = FaceTintCompositor.ShaderSourceAsciiSelfTest()
-        Return r
+        For Each t In _parityTests
+            Dim r = t.Run()
+            If r.Length > 0 Then Return $"[{t.Slug}] {r}"
+        Next
+        Return ""
+    End Function
+
+    ''' <summary>Qué EJES cubrió realmente esta corrida. ⛔ Existe porque un "BIT-IDENTICAL" pelado mentía por
+    ''' partida doble: (a) sin SIMD acelerado los siete tests de espejo vectorial hacen early-return y el gate
+    ''' pasa VACÍO, y (b) ningún test de este gate mira el camino GPU, que se mide aparte y puede no haber
+    ''' corrido. Cada eje se declara por separado, y el que no corrió dice NOT RUN, no "OK".</summary>
+    ''' <param name="failure">Lo que devolvió <see cref="SimdParityFailure"/>. ⛔ Sin esto el reporte decía
+    ''' BIT-IDENTICAL en el eje que acababa de fallar, y los ejes posteriores —que por el corto-circuito del
+    ''' gate NI SIQUIERA CORRIERON— se anunciaban como verdes.</param>
+    Public Function ParityAxesReport(Optional failure As String = "") As String
+        Dim vectorRan = FastPow.AcceleratedV
+        ' El slug viaja al principio del mensaje de fallo; se resuelve contra la MISMA tabla, así no hay
+        ' una segunda lista de nombres que pueda quedar desfasada.
+        Dim failIdx = -1
+        If Not String.IsNullOrEmpty(failure) Then
+            For k = 0 To _parityTests.Length - 1
+                If failure.StartsWith("[" & _parityTests(k).Slug & "]", StringComparison.Ordinal) Then failIdx = k : Exit For
+            Next
+        End If
+        Dim sb As New Text.StringBuilder()
+        For Each ax In {ParityAxis.ScalarVsWidths, ParityAxis.VectorVsScalar, ParityAxis.GlslLexical, ParityAxis.GoldenAbsolute, ParityAxis.LawConsistency}
+            Dim idxs = Enumerable.Range(0, _parityTests.Length).Where(Function(k) _parityTests(k).Axis = ax).ToArray()
+            Dim slugs = String.Join("/", idxs.Select(Function(k) _parityTests(k).Slug))
+            Dim n = idxs.Length
+            Dim state As String
+            If failIdx >= 0 AndAlso idxs.Contains(failIdx) Then
+                state = $"*** FAILED *** en [{_parityTests(failIdx).Slug}]"
+            ElseIf failIdx >= 0 AndAlso idxs.All(Function(k) k > failIdx) Then
+                state = $"NOT RUN ({n} test(s)) — el gate cortó en [{_parityTests(failIdx).Slug}]"
+            ElseIf ax = ParityAxis.VectorVsScalar AndAlso Not vectorRan Then
+                state = $"NOT RUN ({n} test(s)) — sin SIMD acelerado el espejo vectorial no se usa y los tests salen vacíos"
+            Else
+                state = $"BIT-IDENTICAL ({n} test(s))"
+            End If
+            sb.AppendLine($"     {ax,-16} : {state}   [{slugs}]")
+        Next
+        ' El cuarto eje NO lo cubre este gate: se mide horneando con FGBAKE_GPU_PARITY=1 y sale por
+        ' ParityReport/SseParityReport. Se nombra igual para que su ausencia sea visible, no tácita.
+        sb.Append($"     {"CpuVsGpu",-16} : NOT COVERED BY THIS GATE — ver ParityReport / SseParityReport")
+        Return sb.ToString()
     End Function
 
     Public Function PhaseReport() As String
@@ -192,12 +279,15 @@ Public Module FaceGenBuilder
         Dim sb As New Text.StringBuilder()
         sb.AppendLine("Bake phases (summed over ALL NPCs; the total is accumulated CPU, not wall clock):")
         Dim medido As Double = 0
-        For Each p In {BakePhase.SourceNifParse, BakePhase.Textures, BakePhase.NifWrite}
+        For Each p In {BakePhase.RecordResolve, BakePhase.SourceNifParse, BakePhase.ShapeClone,
+                       BakePhase.MorphSkin, BakePhase.Textures, BakePhase.NifWrite}
             Dim s = _phaseTicks(CInt(p)) / f
             medido += s
             sb.AppendLine($"   {p,-16} {s,10:F1} s  ({100.0 * s / tot,5:F1} % of total)  n={_phaseHits(CInt(p))}")
         Next
-        sb.AppendLine($"   {"other",-16} {tot - medido,10:F1} s  ({100.0 * (tot - medido) / tot,5:F1} % of total)  (records/morphs/skin/cloning)")
+        ' Lo que queda DESPUES de abrir records/clone/morph-skin: parseo de materiales, oclusion de slots,
+        ' contadores y el armado del shell. Si este renglon vuelve a ser grande, hay otra fase que nombrar.
+        sb.AppendLine($"   {"other",-16} {tot - medido,10:F1} s  ({100.0 * (tot - medido) / tot,5:F1} % of total)  (materiales/oclusion/shell)")
         sb.AppendLine($"   {"TOTAL",-16} {tot,10:F1} s  n={_phaseHits(CInt(BakePhase.Total))}")
         ' Ancho SIMD efectivo + paridad del espejo vectorial. Va en el reporte porque el tiempo de arriba no
         ' se puede leer sin saber por que camino corrio: 4,05x con AVX2, 2,30x con SSE2, y los tres anchos dan
@@ -205,16 +295,19 @@ Public Module FaceGenBuilder
         ' El ancho REAL lo decide Vector(Of T), no la presencia de AVX2: con DOTNET_MaxVectorTBitWidth=128
         ' sobre una CPU con AVX2, decir "Vector256 (8 lanes)" contradecia al `lanes=` de la misma linea.
         Dim simd = If(FastPow.AcceleratedV, $"Vector(Of T) de {FastPow.LaneCount * 32} bits", "scalar (sin SIMD)")
-        ' Los NUEVE self-tests de paridad, no sólo el del compose: cada módulo vectorizado tiene el suyo y
+        ' Los DIEZ self-tests de paridad, no sólo el del compose: cada módulo vectorizado tiene el suyo y
         ' un MISMATCH en cualquiera invalida la corrida. El de overlays importa especialmente porque el
         ' corpus VANILLA no tiene overlays de RaceMenu ⇒ un barrido A/B no los ejercita nunca; y el del pack
         ' en Double cubre el camino 4K de SSE, que redondea con OTRA ley que el byte-pack de FO4.
         ' El gate ya corrio ANTES del primer NPC (EnsureSimdParityGate). Aca sólo se REPORTA: si hubiera
         ' fallado, BuildCharGen habria lanzado y no habria bake que reportar.
+        ' ⛔ El veredicto va POR EJE: un "BIT-IDENTICAL" plano decia que estaba todo cubierto incluso cuando
+        ' los siete tests de espejo vectorial no habian corrido, y sin nombrar nunca al eje CPU-vs-GPU.
         Dim parity = _simdGate.Value          ' YA calculado por el gate; re-correrlo eran ~1,1 s por reporte
-        sb.AppendLine($"   compose SIMD path: {simd}   lanes={FastPow.LaneCount}   vector-vs-scalar parity: " &
-                      If(parity.Length = 0, "BIT-IDENTICAL (widths/compose/spaces/bytepack/pack-double/seed-swap/sse-layer/overlays/baker) + GLSL ASCII OK",
-                                            "*** MISMATCH *** " & parity))
+        sb.AppendLine($"   compose SIMD path: {simd}   lanes={FastPow.LaneCount}")
+        If parity.Length > 0 Then sb.AppendLine("   parity gate: *** MISMATCH *** " & parity)
+        sb.AppendLine("   parity gate, by axis:")
+        sb.AppendLine(ParityAxesReport(parity))
         Return sb.ToString()
     End Function
     ' ===================================================================================
@@ -609,6 +702,8 @@ Public Module FaceGenBuilder
         ' FaceGen para un NPC que hereda "Use Traits" (medido en los dos juegos), asi que sembrar el state desde
         ' el traits-source fabricaria un artefacto que el CK no produce jamas. El flujo legitimo es el inverso y
         ' ya existe: NpcTemplateMaterializer.MakeCategoryOwn(Traits). Ver 40-bake-reglas-comunes.
+        ' Arranca RecordResolve: overlay del NPC, mapa de HDPT, BakeState y huesos del actor (ver BakePhase).
+        Dim tRec = Stopwatch.GetTimestamp()
         Dim npcData = NpcRecordOverlay.ResolveOverlaidNpcData(
             npcFormID, pluginManager, appliedPresets, lmSkinTemplateResolver)
         Dim state As MainForm.NPCVisualState = Nothing
@@ -776,6 +871,7 @@ Public Module FaceGenBuilder
         ' to drop source shapes whose skin references a bone outside this set
         ' (CK-equivalent filter — see the call site for the rationale).
         Dim actorBoneNames As HashSet(Of String) = FaceGenBuildPipeline.GetActorBoneNames(bakeState)
+        PhaseAdd(BakePhase.RecordResolve, tRec)   ' cierra el tramo abierto antes de ResolveOverlaidNpcData
         ' Desambiguación EN EL ORIGEN: GetActorBoneNames devuelve un set VACÍO si fallan las dos cargas
         ' de esqueleto (face y body). Con el set vacío el filtro de huesos desconocidos se auto-deshabilita
         ' aguas abajo, y hasta ahora lo hacía EN SILENCIO ⇒ "0 shapes dropeados" era ambiguo: no se podía
@@ -991,7 +1087,9 @@ Public Module FaceGenBuilder
                     Continue For
                 End If
                 Try
+                    Dim tClone = Stopwatch.GetTimestamp()
                     Dim cloned = nif.CloneShape_Original(srcShape, destName, srcNif)
+                    PhaseAdd(BakePhase.ShapeClone, tClone)
                     If cloned IsNot Nothing Then
                         clonedShapeNames.Add(destName)
                         shapesCloned += 1
@@ -1303,7 +1401,9 @@ Public Module FaceGenBuilder
                                         Dim shNameT3 = sourceName
                                         Logger.LogLazy(Function() $"[FACEGEN-FBNS] tier3 (single-shape fallback, NO tiene contraparte en el CK) npc=0x{npcFormID:X8} shape='{shNameT3}' fbns='{faceBonesKey}'")
                                     End If
+                                    Dim tMs = Stopwatch.GetTimestamp()
                                     Dim baked = FaceGenBuildPipeline.BakeShape(bakeState, nif, cloned, fbnsNif, fbnsShape, hdpt.ChargenMorphTriPath, srcNif:=srcNif, srcShape:=srcShape, raceMorphTriPath:=hdpt.RaceMorphTriPath)
+                                    PhaseAdd(BakePhase.MorphSkin, tMs)
                                     If baked Then
                                         shapesMorphed += 1
                                     End If
@@ -1333,7 +1433,9 @@ Public Module FaceGenBuilder
                             ' el peso corporal lo hornea otro mecanismo (MWGT como escala en los huesos *_skin) y
                             ' pasarlo aca lo aplicaria DOS veces.
                             Dim hdptMeshTri As String = If(isSSEBake, hdpt.TriPath, Nothing)
+                            Dim tMv = Stopwatch.GetTimestamp()
                             FaceGenBuildPipeline.ApplyChargenMorphsInPlace(nif, cloned, hdpt.ChargenMorphTriPath, hdpt.RaceMorphTriPath, bakeState, hdptMeshTri)
+                            PhaseAdd(BakePhase.MorphSkin, tMv)
                             shapesMorphed += 1
                             If Not isSSEBake Then shapesFo4NoFbnsMorphed += 1
                         ElseIf Not isSSEBake Then

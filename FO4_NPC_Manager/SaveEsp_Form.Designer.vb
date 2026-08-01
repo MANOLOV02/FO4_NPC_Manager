@@ -64,7 +64,7 @@ Partial Class SaveEsp_Form
         ' LabelHeader
         ' 
         LabelHeader.AutoSize = True
-        LabelHeader.Location = New Point(12, 14)
+        LabelHeader.Location = New Point(12, 16)
         LabelHeader.Name = "LabelHeader"
         LabelHeader.Size = New Size(42, 15)
         LabelHeader.TabIndex = 0
@@ -74,9 +74,9 @@ Partial Class SaveEsp_Form
         ' 
         PanelScope.Controls.Add(RadioScopeAllChanged)
         PanelScope.Controls.Add(RadioScopeSelected)
-        PanelScope.Location = New Point(64, 8)
+        PanelScope.Location = New Point(64, 10)
         PanelScope.Name = "PanelScope"
-        PanelScope.Size = New Size(484, 26)
+        PanelScope.Size = New Size(400, 26)
         PanelScope.TabIndex = 1
         ' 
         ' RadioScopeAllChanged
@@ -111,9 +111,9 @@ Partial Class SaveEsp_Form
         GroupBoxTarget.Controls.Add(LabelExtension)
         GroupBoxTarget.Controls.Add(CheckBoxLightMaster)
         GroupBoxTarget.Controls.Add(CheckBoxMarkAsMaster)
-        GroupBoxTarget.Location = New Point(12, 42)
+        GroupBoxTarget.Location = New Point(12, 44)
         GroupBoxTarget.Name = "GroupBoxTarget"
-        GroupBoxTarget.Size = New Size(536, 240)
+        GroupBoxTarget.Size = New Size(480, 248)
         GroupBoxTarget.TabIndex = 2
         GroupBoxTarget.TabStop = False
         GroupBoxTarget.Text = "Target plugin"
@@ -132,16 +132,16 @@ Partial Class SaveEsp_Form
         ' 
         ListBoxExisting.IntegralHeight = False
         ListBoxExisting.ItemHeight = 15
-        ListBoxExisting.Location = New Point(30, 46)
+        ListBoxExisting.Location = New Point(30, 47)
         ListBoxExisting.Name = "ListBoxExisting"
-        ListBoxExisting.Size = New Size(494, 96)
+        ListBoxExisting.Size = New Size(438, 100)
         ListBoxExisting.TabIndex = 1
         ' 
         ' RadioButtonNew
         ' 
         RadioButtonNew.AutoSize = True
         RadioButtonNew.Checked = True
-        RadioButtonNew.Location = New Point(12, 150)
+        RadioButtonNew.Location = New Point(12, 156)
         RadioButtonNew.Name = "RadioButtonNew"
         RadioButtonNew.Size = New Size(121, 19)
         RadioButtonNew.TabIndex = 2
@@ -152,7 +152,7 @@ Partial Class SaveEsp_Form
         ' LabelNewName
         ' 
         LabelNewName.AutoSize = True
-        LabelNewName.Location = New Point(30, 182)
+        LabelNewName.Location = New Point(30, 186)
         LabelNewName.Name = "LabelNewName"
         LabelNewName.Size = New Size(42, 15)
         LabelNewName.TabIndex = 3
@@ -160,9 +160,9 @@ Partial Class SaveEsp_Form
         ' 
         ' TextBoxNewName
         ' 
-        TextBoxNewName.Location = New Point(140, 179)
+        TextBoxNewName.Location = New Point(140, 183)
         TextBoxNewName.Name = "TextBoxNewName"
-        TextBoxNewName.Size = New Size(300, 23)
+        TextBoxNewName.Size = New Size(260, 23)
         TextBoxNewName.TabIndex = 4
         TextBoxNewName.Text = "NPC_Manager"
         ' 
@@ -170,7 +170,7 @@ Partial Class SaveEsp_Form
         ' 
         LabelExtension.AutoSize = True
         LabelExtension.ForeColor = SystemColors.GrayText
-        LabelExtension.Location = New Point(446, 182)
+        LabelExtension.Location = New Point(406, 186)
         LabelExtension.Name = "LabelExtension"
         LabelExtension.Size = New Size(28, 15)
         LabelExtension.TabIndex = 5
@@ -181,7 +181,7 @@ Partial Class SaveEsp_Form
         CheckBoxLightMaster.AutoSize = True
         CheckBoxLightMaster.Checked = True
         CheckBoxLightMaster.CheckState = CheckState.Checked
-        CheckBoxLightMaster.Location = New Point(30, 210)
+        CheckBoxLightMaster.Location = New Point(30, 216)
         CheckBoxLightMaster.Name = "CheckBoxLightMaster"
         CheckBoxLightMaster.Size = New Size(105, 19)
         CheckBoxLightMaster.TabIndex = 6
@@ -191,7 +191,7 @@ Partial Class SaveEsp_Form
         ' CheckBoxMarkAsMaster
         ' 
         CheckBoxMarkAsMaster.AutoSize = True
-        CheckBoxMarkAsMaster.Location = New Point(190, 210)
+        CheckBoxMarkAsMaster.Location = New Point(190, 216)
         CheckBoxMarkAsMaster.Name = "CheckBoxMarkAsMaster"
         CheckBoxMarkAsMaster.Size = New Size(163, 19)
         CheckBoxMarkAsMaster.TabIndex = 7
@@ -207,9 +207,9 @@ Partial Class SaveEsp_Form
         GroupBoxSave.Controls.Add(CheckBoxOverrideScriptVersion)
         GroupBoxSave.Controls.Add(NumericUpDownScriptVersion)
         GroupBoxSave.Controls.Add(CheckBoxSaveNewOutfits)
-        GroupBoxSave.Location = New Point(12, 290)
+        GroupBoxSave.Location = New Point(508, 44)
         GroupBoxSave.Name = "GroupBoxSave"
-        GroupBoxSave.Size = New Size(536, 182)
+        GroupBoxSave.Size = New Size(480, 182)
         GroupBoxSave.TabIndex = 3
         GroupBoxSave.TabStop = False
         GroupBoxSave.Text = "What to save"
@@ -300,9 +300,9 @@ Partial Class SaveEsp_Form
         GroupBoxEncoding.Controls.Add(LabelEncodingHint)
         GroupBoxEncoding.Controls.Add(LabelBa2Version)
         GroupBoxEncoding.Controls.Add(ComboBoxBa2Version)
-        GroupBoxEncoding.Location = New Point(12, 480)
+        GroupBoxEncoding.Location = New Point(12, 304)
         GroupBoxEncoding.Name = "GroupBoxEncoding"
-        GroupBoxEncoding.Size = New Size(536, 88)
+        GroupBoxEncoding.Size = New Size(480, 92)
         GroupBoxEncoding.TabIndex = 4
         GroupBoxEncoding.TabStop = False
         GroupBoxEncoding.Text = "Encoding && archive"
@@ -310,7 +310,7 @@ Partial Class SaveEsp_Form
         ' LabelEncoding
         ' 
         LabelEncoding.AutoSize = True
-        LabelEncoding.Location = New Point(12, 26)
+        LabelEncoding.Location = New Point(12, 30)
         LabelEncoding.Name = "LabelEncoding"
         LabelEncoding.Size = New Size(119, 15)
         LabelEncoding.TabIndex = 0
@@ -319,16 +319,16 @@ Partial Class SaveEsp_Form
         ' ComboBoxEncoding
         ' 
         ComboBoxEncoding.DropDownStyle = ComboBoxStyle.DropDownList
-        ComboBoxEncoding.Location = New Point(140, 23)
+        ComboBoxEncoding.Location = New Point(140, 27)
         ComboBoxEncoding.Name = "ComboBoxEncoding"
-        ComboBoxEncoding.Size = New Size(300, 23)
+        ComboBoxEncoding.Size = New Size(260, 23)
         ComboBoxEncoding.TabIndex = 1
         ' 
         ' LabelEncodingHint
         ' 
         LabelEncodingHint.AutoSize = True
         LabelEncodingHint.ForeColor = SystemColors.GrayText
-        LabelEncodingHint.Location = New Point(446, 26)
+        LabelEncodingHint.Location = New Point(386, 30)
         LabelEncodingHint.Name = "LabelEncodingHint"
         LabelEncodingHint.Size = New Size(0, 15)
         LabelEncodingHint.TabIndex = 2
@@ -336,7 +336,7 @@ Partial Class SaveEsp_Form
         ' LabelBa2Version
         ' 
         LabelBa2Version.AutoSize = True
-        LabelBa2Version.Location = New Point(12, 55)
+        LabelBa2Version.Location = New Point(12, 60)
         LabelBa2Version.Name = "LabelBa2Version"
         LabelBa2Version.Size = New Size(104, 15)
         LabelBa2Version.TabIndex = 3
@@ -345,9 +345,9 @@ Partial Class SaveEsp_Form
         ' ComboBoxBa2Version
         ' 
         ComboBoxBa2Version.DropDownStyle = ComboBoxStyle.DropDownList
-        ComboBoxBa2Version.Location = New Point(140, 52)
+        ComboBoxBa2Version.Location = New Point(140, 57)
         ComboBoxBa2Version.Name = "ComboBoxBa2Version"
-        ComboBoxBa2Version.Size = New Size(300, 23)
+        ComboBoxBa2Version.Size = New Size(260, 23)
         ComboBoxBa2Version.TabIndex = 4
         ' 
         ' GroupBoxLvlList
@@ -359,9 +359,9 @@ Partial Class SaveEsp_Form
         GroupBoxLvlList.Controls.Add(RadioLvlExisting)
         GroupBoxLvlList.Controls.Add(ComboBoxLvlExisting)
         GroupBoxLvlList.Controls.Add(CheckBoxLvlNoDup)
-        GroupBoxLvlList.Location = New Point(12, 576)
+        GroupBoxLvlList.Location = New Point(508, 238)
         GroupBoxLvlList.Name = "GroupBoxLvlList"
-        GroupBoxLvlList.Size = New Size(536, 124)
+        GroupBoxLvlList.Size = New Size(480, 158)
         GroupBoxLvlList.TabIndex = 5
         GroupBoxLvlList.TabStop = False
         GroupBoxLvlList.Text = "Leveled NPC list (LVLN)"
@@ -369,7 +369,7 @@ Partial Class SaveEsp_Form
         ' CheckBoxAddToLvlList
         ' 
         CheckBoxAddToLvlList.AutoSize = True
-        CheckBoxAddToLvlList.Location = New Point(10, 20)
+        CheckBoxAddToLvlList.Location = New Point(12, 22)
         CheckBoxAddToLvlList.Name = "CheckBoxAddToLvlList"
         CheckBoxAddToLvlList.Size = New Size(232, 19)
         CheckBoxAddToLvlList.TabIndex = 0
@@ -380,7 +380,7 @@ Partial Class SaveEsp_Form
         ' 
         RadioLvlNew.AutoSize = True
         RadioLvlNew.Checked = True
-        RadioLvlNew.Location = New Point(28, 44)
+        RadioLvlNew.Location = New Point(28, 48)
         RadioLvlNew.Name = "RadioLvlNew"
         RadioLvlNew.Size = New Size(52, 19)
         RadioLvlNew.TabIndex = 1
@@ -390,16 +390,16 @@ Partial Class SaveEsp_Form
         ' 
         ' TextBoxLvlNewName
         ' 
-        TextBoxLvlNewName.Location = New Point(160, 42)
+        TextBoxLvlNewName.Location = New Point(160, 45)
         TextBoxLvlNewName.Name = "TextBoxLvlNewName"
-        TextBoxLvlNewName.Size = New Size(165, 23)
+        TextBoxLvlNewName.Size = New Size(300, 23)
         TextBoxLvlNewName.TabIndex = 2
         ' 
         ' LabelLvlNewHint
         ' 
         LabelLvlNewHint.AutoSize = True
         LabelLvlNewHint.ForeColor = SystemColors.GrayText
-        LabelLvlNewHint.Location = New Point(331, 45)
+        LabelLvlNewHint.Location = New Point(160, 74)
         LabelLvlNewHint.Name = "LabelLvlNewHint"
         LabelLvlNewHint.Size = New Size(173, 15)
         LabelLvlNewHint.TabIndex = 3
@@ -408,7 +408,7 @@ Partial Class SaveEsp_Form
         ' RadioLvlExisting
         ' 
         RadioLvlExisting.AutoSize = True
-        RadioLvlExisting.Location = New Point(28, 69)
+        RadioLvlExisting.Location = New Point(28, 98)
         RadioLvlExisting.Name = "RadioLvlExisting"
         RadioLvlExisting.Size = New Size(124, 19)
         RadioLvlExisting.TabIndex = 4
@@ -418,15 +418,15 @@ Partial Class SaveEsp_Form
         ' ComboBoxLvlExisting
         ' 
         ComboBoxLvlExisting.DropDownStyle = ComboBoxStyle.DropDownList
-        ComboBoxLvlExisting.Location = New Point(160, 66)
+        ComboBoxLvlExisting.Location = New Point(160, 95)
         ComboBoxLvlExisting.Name = "ComboBoxLvlExisting"
-        ComboBoxLvlExisting.Size = New Size(364, 23)
+        ComboBoxLvlExisting.Size = New Size(300, 23)
         ComboBoxLvlExisting.TabIndex = 5
         ' 
         ' CheckBoxLvlNoDup
         ' 
         CheckBoxLvlNoDup.AutoSize = True
-        CheckBoxLvlNoDup.Location = New Point(10, 98)
+        CheckBoxLvlNoDup.Location = New Point(12, 126)
         CheckBoxLvlNoDup.Name = "CheckBoxLvlNoDup"
         CheckBoxLvlNoDup.Size = New Size(274, 19)
         CheckBoxLvlNoDup.TabIndex = 6
@@ -437,15 +437,15 @@ Partial Class SaveEsp_Form
         ' 
         LabelWarning.Anchor = AnchorStyles.Bottom Or AnchorStyles.Left Or AnchorStyles.Right
         LabelWarning.ForeColor = Color.DarkOrange
-        LabelWarning.Location = New Point(12, 706)
+        LabelWarning.Location = New Point(12, 361)
         LabelWarning.Name = "LabelWarning"
-        LabelWarning.Size = New Size(536, 34)
+        LabelWarning.Size = New Size(976, 34)
         LabelWarning.TabIndex = 6
         ' 
         ' ButtonOk
         ' 
         ButtonOk.Anchor = AnchorStyles.Bottom Or AnchorStyles.Right
-        ButtonOk.Location = New Point(392, 746)
+        ButtonOk.Location = New Point(832, 403)
         ButtonOk.Name = "ButtonOk"
         ButtonOk.Size = New Size(75, 27)
         ButtonOk.TabIndex = 7
@@ -456,7 +456,7 @@ Partial Class SaveEsp_Form
         ' 
         ButtonCancel.Anchor = AnchorStyles.Bottom Or AnchorStyles.Right
         ButtonCancel.DialogResult = DialogResult.Cancel
-        ButtonCancel.Location = New Point(473, 746)
+        ButtonCancel.Location = New Point(913, 403)
         ButtonCancel.Name = "ButtonCancel"
         ButtonCancel.Size = New Size(75, 27)
         ButtonCancel.TabIndex = 8
@@ -469,7 +469,7 @@ Partial Class SaveEsp_Form
         AutoScaleDimensions = New SizeF(7F, 15F)
         AutoScaleMode = AutoScaleMode.Font
         CancelButton = ButtonCancel
-        ClientSize = New Size(560, 785)
+        ClientSize = New Size(1000, 441)
         Controls.Add(LabelHeader)
         Controls.Add(PanelScope)
         Controls.Add(GroupBoxTarget)
