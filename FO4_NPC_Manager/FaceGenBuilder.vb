@@ -165,7 +165,13 @@ Public Module FaceGenBuilder
     ''' cachea el resultado. Idempotente y thread-safe.
     ''' <para>⛔ Si alguno falla, LANZA. No es una advertencia: si el camino vectorial no es bit-idéntico al
     ''' escalar, cada byte que se hornee a partir de ahí es basura silenciosa — y peor, distinta según la CPU.
-    ''' Fallar acá cuesta un mensaje; no fallar cuesta un corpus entero mal horneado.</para></summary>
+    ''' Fallar acá cuesta un mensaje; no fallar cuesta un corpus entero mal horneado.</para>
+    ''' <para>⛔⛔ EL BARRIDO LO LLAMA UNA VEZ, ANTES DEL LOOP (BakeAllRunner). No alcanza con que el Lazy sea
+    ''' thread-safe: CUATRO de los self-tests corren <c>Parallel.ForEach</c> por dentro, y con el loop de NPCs
+    ''' paralelo el primer hilo que entra se queda con la publicación del Lazy mientras los demás esperan ⇒
+    ''' stall de arranque (no deadlock: Parallel usa el hilo llamador como worker, así que progresa).
+    ''' ⛔ NO sacar la llamada de <c>BuildCharGen</c>: ése es el gate del camino de la UI, que no pasa por el
+    ''' runner. Llamarlo dos veces es gratis — el Lazy ya corrió.</para></summary>
     Public Sub EnsureSimdParityGate()
         Dim r = _simdGate.Value
         If r.Length > 0 Then Throw New InvalidOperationException(
@@ -219,6 +225,7 @@ Public Module FaceGenBuilder
         ("accum-space", ParityAxis.LawConsistency, AddressOf FaceTintConvention.AccumSpaceConsistencySelfTest),
         ("cache-keys", ParityAxis.LawConsistency, AddressOf FaceTintCpuCompositor.CacheKeyAxesSelfTest),
         ("bilinear", ParityAxis.LawConsistency, AddressOf FaceTintCpuCompositor.BilinearLawSelfTest),
+        ("resample-hoist", ParityAxis.LawConsistency, AddressOf FaceTintCpuCompositor.ResampleHoistSelfTest),
         ("qnam-face", ParityAxis.LawConsistency, AddressOf FaceTintCpuCompositor.QnamMatchesFaceSelfTest)
     }
 

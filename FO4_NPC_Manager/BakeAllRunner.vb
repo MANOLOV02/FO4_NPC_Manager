@@ -1,4 +1,4 @@
-﻿Imports System.IO
+Imports System.IO
 Imports System.Linq
 Imports FO4_Base_Library
 
@@ -372,26 +372,12 @@ Friend Module BakeAllRunner
                 End Try
             Next
 
-            ' ---------------------------------------------------------------------------------
-            ' AGRUPAR POR (RAZA, SEXO) — opt-in, FGBAKE_GROUP_BY_RACE=1
-            ' ---------------------------------------------------------------------------------
-            ' Las texturas fuente pesadas del bake (head diffuse/normal/specular, 1024²-2048²) son por
-            ' RAZA y por SEXO. Con el orden natural de records, los NPCs de una misma raza aparecen
-            ' salteados a lo largo de todo el corpus, asi que el cache de decode tiene que retener TODAS
-            ' las razas a la vez o pagar re-decodes constantes: por eso crecia sin techo (~9,5 GB medidos).
-            ' Agrupando, en cada momento solo hace falta el juego de texturas de UNA (raza,sexo) — y el
-            ' borde de grupo es un punto de evicción NATURAL y seguro, en vez de un LRU a ciegas.
-            ' ⛔ El orden NO puede cambiar la salida: cada NPC se hornea de forma independiente y el cache
-            ' es funcion pura de sus claves. Se valida igual con byte-diff del corpus completo.
-            Dim groupByRace = (If(Environment.GetEnvironmentVariable("FGBAKE_GROUP_BY_RACE"), "").Trim() = "1")
-            If groupByRace Then
-                ' El Fid como ultimo criterio deja el orden TOTALMENTE determinista (dos corridas iguales).
-                targets = targets.OrderBy(Function(t) t.Race).ThenBy(Function(t) t.Female).ThenBy(Function(t) t.Fid).ToList()
-                Dim grupos = targets.Select(Function(t) (t.Race, t.Female)).Distinct().Count()
-                log($"Order:       grouped by (race, gender) — {grupos} group(s); the decode cache is evicted at every boundary")
-            Else
-                log("Order:       natural record order (historical)")
-            End If
+            ' ⛔ FGBAKE_GROUP_BY_RACE SE ELIMINO (decision del usuario). Agrupaba por (raza,sexo) y evictaba el
+            ' cache en cada borde para acotar memoria. Es INCOMPATIBLE con el loop paralelo: la evicción hacía
+            ' `EndBatchDecodeCache`, que pone el diccionario en Nothing mientras otros hilos lo estan usando.
+            ' Lo que acota la memoria ahora es el TECHO (ResolveDecodeCacheBudgetFromEnvironment), que no
+            ' necesita ningun orden particular. Estaba OFF en todas las mediciones.
+            log("Order:       natural record order")
             If targets.Count = 0 Then
                 If espTarget <> "" Then
                     log($"FATAL: '{espTarget}' is loaded but wins no NPC_ record — nothing to bake.")
@@ -413,9 +399,11 @@ Friend Module BakeAllRunner
             '    decode cache and FaceGenBuilder's shared-neutral scratch both assume one bake at a
             '    time. BeginBatchDecodeCache makes every source DDS decode ONCE for the whole run.
             ' ---------------------------------------------------------------------------------
-            Dim evictions As Integer = 0, evictedMb As Long = 0
+            ' ⛔ CONTADORES COMPARTIDOS: el loop es PARALELO, asi que se tocan con Interlocked y las listas
+            ' bajo lock. Un `baked += 1` desde N hilos pierde incrementos en silencio.
             Dim baked As Integer = 0, skipped As Integer = 0, failed As Integer = 0
             Dim failures As New List(Of String)
+            Dim tally As New Object()
             ' Fallos de TEXTURA: no cuentan como NPC fallado (el NIF salio) pero tienen que verse. Ver el
             ' comentario en el ElseIf r.Success de abajo.
             Dim texFailures As New List(Of String)
@@ -433,19 +421,18 @@ Friend Module BakeAllRunner
             ' Techo del cache de decode. OPT-IN por env var y APAGADO por default: el cache no tenia limite
             ' y el barrido FO4 completo llego a ~9,5 GB de working set. No se cambia el default sin medir —
             ' un techo que fuerce re-decodes puede costar tiempo, y eso hay que verlo, no suponerlo.
-            ' El techo es un RESPALDO, no el mecanismo. El mecanismo real es agrupar por (raza,sexo) y
-            ' liberar en el borde (mas abajo): eso acota el conjunto vivo SIN forzar un solo re-decode.
-            ' El techo cubre los dos casos que la agrupacion NO cubre:
-            '   (a) el bake por lotes de la GUI, que usa este mismo cache y no pasa por aca;
-            '   (b) un grupo (raza,sexo) patologicamente grande.
+            ' Desde que se elimino la agrupacion por (raza,sexo), el techo es el UNICO mecanismo que acota el
+            ' conjunto vivo — y tiene que serlo, porque con el loop paralelo no hay ningun punto del barrido
+            ' en el que sea seguro tirar el cache entero.
             ' Por default se DERIVA DE LA RAM: un absoluto fijo es inofensivo en 32 GB y letal en 8.
             '   env ausente -> 25 % de la memoria disponible, acotado a [512 MB, 4 GB]
             '   env = "0"   -> SIN techo (comportamiento historico; sirve de baseline para medir)
             '   env > 0     -> ese valor en MB (reproducible entre maquinas, para comparar corridas)
-            ' ⭐ La derivacion se MUDO a FaceTintCpuCompositor.ResolveDecodeCacheBudgetFromEnvironment: el
-            ' mismo techo lo obedecen ahora tambien los caches de SseFaceTintComposer, y con la politica
-            ' duplicada en dos archivos los numeros se habrian separado en silencio. Mismos valores, mismo
-            ' contrato de la env, mismo texto de log — solo cambia DONDE vive.
+            ' ⭐ La derivacion vive en FaceTintCpuCompositor.ResolveDecodeCacheBudgetFromEnvironment, UNA sola
+            ' vez: duplicada en dos archivos los numeros se habrian separado en silencio.
+            ' El techo cubre los DOS niveles del cache —nivel 1 DecodedTex (bytes crudos) y nivel 2 Single()
+            ' ya resampleado, 4 B por elemento— y por eso alcanza tambien al camino de SSE, que desde el
+            ' colapso de `_texCache` pasa por el nivel 2 en vez de por un cache propio sin techo.
             Dim budget = FaceTintCpuCompositor.ResolveDecodeCacheBudgetFromEnvironment()
             FaceTintCpuCompositor.BatchDecodeCacheBudgetBytes = budget.Bytes
             log(budget.Reason)
@@ -572,47 +559,234 @@ Friend Module BakeAllRunner
                 End Try
             End If
 
+            ' ⭐⭐ GATE SIMD, UNA VEZ Y ACA — antes del loop, no adentro.
+            ' ⛔ Adentro NO alcanza con que el Lazy sea thread-safe: CUATRO de los self-tests corren
+            ' Parallel.ForEach por dentro, asi que el primer hilo se queda con la publicacion mientras los
+            ' demas esperan (stall de arranque). Corriendolo aca, cuando el loop arranca ya esta resuelto.
+            FaceGenBuilder.EnsureSimdParityGate()
+
+            ' ⭐ FGBAKE_LIMIT se aplica RECORTANDO la lista, no con un Exit For. Con el loop paralelo "los
+            ' primeros N procesados" deja de estar definido: N hilos terminan en orden arbitrario. Recortando,
+            ' la muestra vuelve a ser EXACTAMENTE los N primeros del orden determinista de `targets`.
+            If sampleLimit > 0 AndAlso sampleLimit < targets.Count Then
+                targets = targets.Take(sampleLimit).ToList()
+                log($"SAMPLE: FGBAKE_LIMIT={sampleLimit} — the target list was trimmed to the first {targets.Count} NPC(s).")
+            End If
+
+            ' ⭐⭐ CUANTOS NPCs A LA VEZ = LOS CORES DE LA MAQUINA. Derivado en runtime, sin constante propia:
+            ' la app se distribuye y cualquier numero calibrado a un equipo es basura en otro.
+            ' ⛔ ACA HUBO UN `\ 4` Y ESTABA MAL. El argumento era "el compose interno ya satura, un NPC por
+            ' core solo agrega contencion". Eso vale para FO4, donde el compose es el 91 % del wall — NO para
+            ' SSE, donde es el 18,9 % y la maquina queda ociosa. MEDIDO sobre el corpus SSE entero (4460 NPCs,
+            ' 12 cores): N=1 5:16 · N=3 (lo que daba el \4) 3:46 · N=8 3:27 · N=12 2:55 = x1,81. El `\ 4`
+            ' dejaba el 35 % de la ganancia sin tomar, y el usuario lo vio como "CPU al 40 %".
+            ' ⚠️ La curva ya esta APLANANDO y se sabe por que: `NifWrite` y `other` se inflan ~x7 con 8 hilos
+            ' mientras `Textures` (el compose, que si escala) apenas x1,6 ⇒ el techo no es CPU, es I/O y
+            ' contencion en esas dos fases. Subir N mas alla de los cores gastaria energia sin ganar wall:
+            ' lo que falta atacar son esas fases, no este numero.
+            ' ⛔ SIN CONSTANTES PROPIAS. Todo lo de abajo sale de la MAQUINA que corre o del RUNTIME; no hay un
+            ' solo numero calibrado sobre un equipo concreto. La app se distribuye como mod: el que la corre
+            ' puede tener 4 cores y 8 GB o 24 y 64, con vanilla o con 300 mods de texturas 4K, y ninguno de
+            ' esos casos se puede predecir desde acá.
+            Dim hardCap As Integer = Math.Max(1, Environment.ProcessorCount)
+            ' N FIJO sólo si alguien lo pide explícitamente. ⛔ El override APAGA el controlador: si no, dos
+            ' corridas nunca serían comparables y se pierde la capacidad de hacer un A/B (que es como se
+            ' probó que el paralelismo no mueve bytes).
+            Dim fixedDop As Integer = 0
+            Dim envThreads As Integer = 0
+            If Integer.TryParse(If(Environment.GetEnvironmentVariable("FGBAKE_NPC_THREADS"), "").Trim(), envThreads) AndAlso envThreads > 0 Then
+                fixedDop = Math.Max(1, Math.Min(32, envThreads))
+                If fixedDop <> envThreads Then
+                    log($"Parallelism: FGBAKE_NPC_THREADS={envThreads} clamped to {fixedDop} (allowed range 1..32)")
+                Else
+                    log($"Parallelism: FIXED at {fixedDop} NPC(s) (FGBAKE_NPC_THREADS) — adaptive controller OFF")
+                End If
+            End If
+            ' ⛔ CON PARIDAD GPU NO SE PARALELIZA, y se DICE. El contexto GL vive atado a UN hilo y
+            ' FaceGenBuilder hace EnsureContextCurrent por NPC: con N hilos el contexto deja de ser el current
+            ' del hilo que compone y la medicion de paridad seria basura. Degradar en silencio seria peor.
+            If gpuParity Then
+                fixedDop = 1
+                log("Parallelism: FORCED TO 1 because FGBAKE_GPU_PARITY=1 — the GL context is per-thread.")
+            End If
+
+            ' ⛔ DIAGNOSTICO: Logger.Enabled es False en Release, asi que gatear SOLO por el dejaba tambien
+            ' sin numeros al arnes de medicion, que corre Release. `FGBAKE_STATS=1` los reactiva —
+            ' misma convencion que FGBAKE_LIMIT / FGBAKE_GPU_PARITY / FGBAKE_DECODE_CACHE_MB.
+            Dim wantStats As Boolean = Logger.Enabled OrElse
+                                       If(Environment.GetEnvironmentVariable("FGBAKE_STATS"), "").Trim() = "1"
+            ' Declaradas ACA y no dentro del Try: las lee el resumen final, que esta fuera de ese bloque.
+            Dim traj As New List(Of String)
+            Dim peakPermits As Integer = If(fixedDop > 0, fixedDop, 1)
+
             FaceTintCpuCompositor.BeginBatchDecodeCache()
             Try
-                For i = 0 To targets.Count - 1
+                Dim done As Integer = 0
+
+                ' ⛔ `log` y `progress` los provee el CALLER (la consola, o el form de progreso de la GUI) y
+                ' NINGUNO declara ser thread-safe. Con N hilos se serializan: al lado de hornear un NPC cuestan
+                ' nada, y asi no dependemos de una garantia que el sink nunca dio.
+                Dim logSync = Sub(s As String)
+                                  SyncLock tally
+                                      log(s)
+                                  End SyncLock
+                              End Sub
+                ' ═══════════════════════════════════════════════════════════════════════════════════════
+                ' ⭐⭐ CONCURRENCIA ADAPTATIVA — el N lo DESCUBRE la corrida, no lo fija una constante.
+                ' ═══════════════════════════════════════════════════════════════════════════════════════
+                ' POR QUE no una formula: el cuello NO es CPU. Medido sobre el corpus SSE entero: al pasar de
+                ' 1 a 8 NPCs en vuelo, `Textures` (el compose) crece x1,6 pero `NifWrite` y `other` crecen
+                ' x7,4 — o sea que los hilos ESPERAN. El N optimo lo fijan el disco y la memoria del equipo,
+                ' que es justo lo que ProcessorCount no sabe. Y con mods de texturas 4K cada NPC pesa otra
+                ' cosa, asi que tampoco se puede tabular por juego.
+                '
+                ' ⛔ LICENCIA PARA VARIARLO EN CALIENTE: esta MEDIDO que el orden no mueve la salida — dos
+                ' corridas paralelas con N distinto (8 vs 12) dieron 0 bytes de diferencia sobre 8920
+                ' archivos y 6.235.526.000 bytes de pixel. Sin ese resultado esto no seria aceptable.
+                '
+                ' DE DONDE SALE CADA COTA (ninguna es mia):
+                '   arranque = 1                     el comportamiento serial de referencia
+                '   techo    = ProcessorCount        la maquina
+                '   memoria  = GC.GetGCMemoryInfo()  el UMBRAL LO CALCULA EL PROPIO GC para ese equipo
+                '   frenar   = el throughput dejo de mejorar, medido EN ESTA corrida
+                '   muestras = la concurrencia actual (lo que tarda en llenarse el pipeline)
+                '
+                ' POLITICA ASIMETRICA a proposito: sube de a UNO y solo si mejoro; baja EN EL ACTO ante
+                ' presion de memoria. Quedarse corto cuesta minutos; pasarse cuesta un OutOfMemory a la mitad
+                ' de un barrido de una hora, con NPCs a medio escribir.
+                ' El ajuste ocurre SOLO en el borde de NPC, nunca dentro de un compose.
+                ' ⛔ NO MEDIR THROUGHPUT. Se probó y dio 6:18 contra 3:58 del N fijo — 59 % PEOR, con
+                ' trayectoria `1 → 2 → 3 → 2(peak)`. El throughput por-NPC es una señal sucia: mezcla CPU,
+                ' esperas de I/O, warm-up (caché frío/JIT) y sobre todo la varianza entre NPCs (uno de 2
+                ' shapes contra uno de 8, y 2088 que se saltean). Con pocas muestras el ruido gana y el
+                ' hill-climbing toma el primer bajón por el óptimo. Promediarlo exigiria fijar CUANTAS
+                ' muestras = la constante arbitraria que se queria evitar.
+                '
+                ' ⭐ LA SEÑAL CORRECTA ES EL RECURSO: ¿el worker que agregué TRABAJA o ESPERA?
+                '     cpuBusy = Δ TotalProcessorTime / (Δ wall × ProcessorCount)   ∈ [0,1]
+                ' Es el cociente de dos ACUMULADORES, no un conteo de eventos: estable en ventana corta, sin
+                ' necesidad de promediar N muestras. Ahí desaparece la constante.
+                '
+                ' REGLA, sin un solo número inventado:
+                '   SUBIR   mientras quede AL MENOS UN CORE OCIOSO (cpuBusy < 1 − 1/cores) y la memoria esté
+                '           bajo el umbral del GC. "Un core" no es una constante elegida: es la unidad.
+                '   BAJAR   en el acto si la memoria cruza el umbral que el GC calcula para esta máquina.
+                '   TECHO   ProcessorCount.
+                ' Si el bake es I/O-bound, cpuBusy se queda bajo y trepa hasta el techo — que es justo el N
+                ' que midió mejor (3:58). Si la máquina satura CPU antes, frena antes. Si le falta RAM, baja.
+                ' Ninguno de esos tres casos se puede predecir desde acá: los descubre el equipo que corre.
+                Dim permits As Integer = If(fixedDop > 0, fixedDop, 1)
+                Dim sem As New Threading.SemaphoreSlim(permits, Math.Max(hardCap, permits))
+                Dim ctl As New Object()
+                Dim lvlDone As Integer = 0
+                Dim climbing As Boolean = (fixedDop = 0 AndAlso hardCap > 1)
+                Dim proc = Process.GetCurrentProcess()
+                Dim lastCpu As TimeSpan = proc.TotalProcessorTime
+                Dim lastWall As Long = Stopwatch.GetTimestamp()
+                traj.Add(permits.ToString())
+                peakPermits = permits
+
+                ' Devuelve el permiso y, si corresponde, ajusta el nivel. Llamarlo UNA vez por NPC terminado.
+                Dim releaseAndTune =
+                    Sub()
+                        SyncLock ctl
+                            If Not climbing Then
+                                sem.Release()
+                                Return
+                            End If
+                            lvlDone += 1
+                            ' PRESION DE MEMORIA — el umbral es el del GC, no uno inventado.
+                            Dim mi = GC.GetGCMemoryInfo()
+                            If mi.HighMemoryLoadThresholdBytes > 0 AndAlso
+                               mi.MemoryLoadBytes >= mi.HighMemoryLoadThresholdBytes AndAlso permits > 1 Then
+                                permits -= 1
+                                climbing = False
+                                traj.Add($"{permits}(mem)")
+                                Return                      ' NO se devuelve el permiso ⇒ baja la concurrencia
+                            End If
+                            ' Se re-evalua cuando el nivel actual ya tuvo tiempo de llenarse (un NPC por
+                            ' permiso). El disparador puede ser ruidoso: NO importa, porque lo que se mide
+                            ' abajo es un cociente de acumuladores, no una tasa de eventos.
+                            If lvlDone < permits Then
+                                sem.Release()
+                                Return
+                            End If
+                            lvlDone = 0
+                            Dim nowCpu = proc.TotalProcessorTime
+                            Dim nowWall = Stopwatch.GetTimestamp()
+                            Dim dWall = (nowWall - lastWall) / CDbl(Stopwatch.Frequency)
+                            Dim dCpu = (nowCpu - lastCpu).TotalSeconds
+                            lastCpu = nowCpu : lastWall = nowWall
+                            Dim cpuBusy = If(dWall > 0.0, dCpu / (dWall * hardCap), 1.0)
+                            ' ¿Queda al menos UN core ocioso? Esa es la condicion de "hay espacio".
+                            If cpuBusy < 1.0 - (1.0 / hardCap) AndAlso permits < hardCap Then
+                                permits += 1
+                                peakPermits = Math.Max(peakPermits, permits)
+                                traj.Add($"{permits}@{cpuBusy:P0}")
+                                sem.Release(2)              ' el suyo + uno mas ⇒ sube la concurrencia
+                            Else
+                                climbing = False            ' CPU saturada o techo de la maquina
+                                traj.Add($"{permits}(stop@{cpuBusy:P0})")
+                                sem.Release()
+                            End If
+                        End SyncLock
+                    End Sub
+
+                Dim popt As New System.Threading.Tasks.ParallelOptions With {.MaxDegreeOfParallelism = hardCap}
+                System.Threading.Tasks.Parallel.ForEach(targets, popt,
+                 Sub(t, state)
+                    ' Cancelacion ANTES de tomar el permiso: si sale por aca no hay nada que devolver.
                     If isCancelled() Then
                         cancelled = True
-                        Exit For
+                        state.Stop()
+                        Return
                     End If
-                    Dim t = targets(i)
-                    ' Evicción en el BORDE de (raza,sexo): a partir de aca ninguna textura del grupo
-                    ' anterior se vuelve a pedir, asi que soltarlas no cuesta un solo re-decode.
-                    If groupByRace AndAlso i > 0 Then
-                        Dim prev = targets(i - 1)
-                        If prev.Race <> t.Race OrElse prev.Female <> t.Female Then
-                            Dim cs0 = FaceTintCpuCompositor.BatchDecodeCacheStats()
-                            FaceTintCpuCompositor.EndBatchDecodeCache()
-                            FaceTintCpuCompositor.BeginBatchDecodeCache()
-                            evictions += 1
-                            evictedMb += cs0.Bytes \ (1024L * 1024L)
-                        End If
-                    End If
-                    Dim pct = CInt(Math.Floor((i + 1) * 100.0 / targets.Count))
-                    progress(i + 1, targets.Count, $"{i + 1}/{targets.Count} — {t.Name}")
-
-                    Dim head = $"[{i + 1,5}/{targets.Count} {pct,3}%] 0x{t.Fid:X8} {t.Name}"
+                    sem.Wait()          ' ⇦ la concurrencia real la gobierna el controlador, no MaxDegreeOfParallelism
+                    Try
+                    ' ⛔⛔ EL CONTADOR CUENTA NPCs TERMINADOS, NO ARRANCADOS. Estaba incrementandose ACA
+                    ' —antes de hornear— y eso daba dos defectos a la vez: con N NPCs en vuelo la barra
+                    ' saltaba a N sin que terminara ninguno, y el ORDEN en que los hilos reportaban no era el
+                    ' de sus numeros, asi que la barra RETROCEDIA (57 → 56). Windows usa ese valor para la
+                    ' barra de la taskbar, y ahi el retroceso se ve.
+                    ' Contando al TERMINAR, cada NPC suma exactamente +1 y el valor es monotonico POR
+                    ' CONSTRUCCION — no hace falta ninguna guarda ni depende del orden.
                     Dim tNpc = Stopwatch.GetTimestamp()
                     Try
                         ' host = Nothing en el bake normal (100 % CPU). Con FGBAKE_GPU_PARITY=1 se pasa el host
                         ' del contexto GL de arriba y BakeFaceTextures corre TAMBIEN el compositor GPU.
-                        Dim r = FaceGenBuilder.BuildCharGen(t.Fid, pm, appliedPresets,
+                        Dim r As FaceGenBuilder.BuildResult = Nothing
+                        Dim buildErr As Exception = Nothing
+                        Try
+                            r = FaceGenBuilder.BuildCharGen(t.Fid, pm, appliedPresets,
                                                             host:=glHost,
                                                             applyMaterialOverrides:=AddressOf materialResolver.ApplyShapeMaterialOverrides,
                                                             willBePacked:=False,
                                                             lmSkinTemplateResolver:=resolveLmSkin)
-                        If r Is Nothing Then
-                            failed += 1 : failures.Add($"0x{t.Fid:X8} {t.Name}: BuildCharGen returned nothing")
-                            log($"{head} — FAIL: BuildCharGen returned nothing")
+                        Catch bex As Exception
+                            buildErr = bex
+                        End Try
+                        ' Recien ACA se cuenta: el NPC termino (bien o mal).
+                        Dim i = Threading.Interlocked.Increment(done)
+                        Dim pct = CInt(Math.Floor(i * 100.0 / targets.Count))
+                        Dim head = $"[{i,5}/{targets.Count} {pct,3}%] 0x{t.Fid:X8} {t.Name}"
+                        SyncLock tally
+                            progress(i, targets.Count, $"{i}/{targets.Count} — {t.Name}")
+                        End SyncLock
+                        If buildErr IsNot Nothing Then
+                            SyncLock tally
+                                failed += 1 : failures.Add($"0x{t.Fid:X8} {t.Name}: {buildErr.GetType().Name}: {buildErr.Message}")
+                            End SyncLock
+                            logSync($"{head} — FAIL: {buildErr.GetType().Name}: {buildErr.Message}")
+                        ElseIf r Is Nothing Then
+                            SyncLock tally
+                                failed += 1 : failures.Add($"0x{t.Fid:X8} {t.Name}: BuildCharGen returned nothing")
+                            End SyncLock
+                            logSync($"{head} — FAIL: BuildCharGen returned nothing")
                         ElseIf r.Skipped Then
-                            skipped += 1
-                            log($"{head} — skip: {r.Summary}")
+                            Threading.Interlocked.Increment(skipped)
+                            logSync($"{head} — skip: {r.Summary}")
                         ElseIf r.Success Then
-                            baked += 1
+                            Threading.Interlocked.Increment(baked)
                             ' ⛔ AGUJERO DE OBSERVABILIDAD (medido): un NPC cuyo bake de TEXTURAS falla igual
                             ' devuelve Success=True (el NIF se escribio), asi que el batch lo contaba como
                             ' "baked" y NO decia una palabra. Concretamente: una corrida SSE reporto
@@ -620,45 +794,73 @@ Friend Module BakeAllRunner
                             ' r.TextureSlotsFailed, que solo miraba la GUI (MainForm). Un bake sin texturas es
                             ' un bake ROTO; que salga por consola.
                             If r.TextureSlotsFailed > 0 Then
-                                texFailedNpcs += 1
-                                texFailedSlots += r.TextureSlotsFailed
-                                If texFailures.Count < 40 Then texFailures.Add($"0x{t.Fid:X8} {t.Name}: {r.TextureFailureDetail}")
-                                log($"{head} — baked: {r.ShapesKept} shape(s) ⚠ {r.TextureSlotsFailed} TEXTURE(S) FAILED: {r.TextureFailureDetail}")
+                                SyncLock tally
+                                    texFailedNpcs += 1
+                                    texFailedSlots += r.TextureSlotsFailed
+                                    If texFailures.Count < 40 Then texFailures.Add($"0x{t.Fid:X8} {t.Name}: {r.TextureFailureDetail}")
+                                End SyncLock
+                                logSync($"{head} — baked: {r.ShapesKept} shape(s) ⚠ {r.TextureSlotsFailed} TEXTURE(S) FAILED: {r.TextureFailureDetail}")
                             Else
-                                log($"{head} — baked: {r.ShapesKept} shape(s) → {r.OutputPath}")
+                                logSync($"{head} — baked: {r.ShapesKept} shape(s) → {r.OutputPath}")
                             End If
                         Else
-                            failed += 1 : failures.Add($"0x{t.Fid:X8} {t.Name}: {r.Summary}")
-                            log($"{head} — FAIL: {r.Summary}")
+                            SyncLock tally
+                                failed += 1 : failures.Add($"0x{t.Fid:X8} {t.Name}: {r.Summary}")
+                            End SyncLock
+                            logSync($"{head} — FAIL: {r.Summary}")
                         End If
                     Catch ex As Exception
-                        failed += 1 : failures.Add($"0x{t.Fid:X8} {t.Name}: {ex.GetType().Name}: {ex.Message}")
-                        log($"{head} — FAIL: {ex.GetType().Name}: {ex.Message}")
+                        ' Red de seguridad: BuildCharGen ya tiene su propio Catch arriba, asi que aca solo
+                        ' caeria un fallo del REPORTE (log/progress). El NPC igual conto al terminar.
+                        SyncLock tally
+                            failed += 1 : failures.Add($"0x{t.Fid:X8} {t.Name}: {ex.GetType().Name}: {ex.Message}")
+                        End SyncLock
+                        logSync($"0x{t.Fid:X8} {t.Name} — FAIL (reporting): {ex.GetType().Name}: {ex.Message}")
                     End Try
+                    ' PhaseAdd es Interlocked por dentro (verificado) ⇒ seguro con N hilos. ⚠️ Pero ojo al
+                    ' LEERLO: con el loop paralelo el TOTAL acumulado deja de aproximar el wall clock, que es
+                    ' justamente lo que probaba que el loop era serial. Por eso el resumen imprime los dos.
                     FaceGenBuilder.PhaseAdd(FaceGenBuilder.BakePhase.Total, tNpc)
-                    ' ⭐ MUESTRA: FGBAKE_LIMIT=N corta despues de N NPCs PROCESADOS. Existe para poder medir el
-                    ' desglose de fases (PhaseReport) en ~5 min en vez de las 2 h del corpus entero. El orden de
-                    ' `targets` es determinista, asi que la muestra es reproducible.
-                    If sampleLimit > 0 AndAlso (i + 1) >= sampleLimit Then
-                        log($"SAMPLE: stopped at {i + 1} NPC(s) because of FGBAKE_LIMIT.")
-                        Exit For
-                    End If
-                Next
+                    Finally
+                        ' ⛔ EN Finally: si BuildCharGen tira, el permiso TIENE que volver igual o el barrido
+                        ' se queda sin concurrencia de a poco hasta trabarse del todo.
+                        releaseAndTune()
+                    End Try
+                 End Sub)
             Finally
+                ' ⛔ BLOQUE DE DIAGNOSTICO, GATEADO. A un usuario que hornea su load order no le sirve NADA de
+                ' esto: hits/misses de cache, bytes por nivel y contadores del izado son para MEDIR, no para
+                ' operar. Va todo bajo Logger.Enabled (= FaceGenBuilder.DebugMode), que es lo que prenden el
+                ' arnes y las corridas de medicion, y queda fuera de una corrida normal.
+                ' ⛔ Las llamadas a *Stats() tambien van adentro del If: son lecturas Interlocked baratas, pero
+                ' la regla del proyecto es gatear el CALCULO, no solo el log.
+                If wantStats Then
                 Dim cst = FaceTintCpuCompositor.BatchDecodeCacheStats()
-                log($"Decode cache: {cst.Bytes \ (1024L * 1024L)} MB retained at the end, {cst.Rejected} entries rejected by the cap, " &
-                    $"{evictions} boundary evictions ({evictedMb} MB freed in total)")
+                log($"Decode cache TOTAL (both levels, one shared cap): {cst.Bytes \ (1024L * 1024L)} MB retained at the end, " &
+                    $"{cst.Rejected} entries rejected by the cap")
+                ' ⭐ DESGLOSE POR NIVEL. Los dos niveles guardan cosas DISTINTAS (nivel 1 = textura decodificada,
+                ' 1 B por elemento; nivel 2 = buffer ya resampleado a w×h, 4 B por elemento) y comparten UN techo.
+                ' Sin hits/misses y bytes de los DOS no se puede contestar si el nivel 2 paga su 4x: el total solo
+                ' dice cuanto pesa el conjunto. Este es el dato que decide si conviene tocar el storage.
+                Dim dst = FaceTintCpuCompositor.DecodeCacheStats()
+                log($"  level 1 (decoded DDS, 1 B/elem): {dst.Hits} hits / {dst.Misses} misses, " &
+                    $"{dst.Bytes \ (1024L * 1024L)} MB, {dst.Rejected} rejected")
                 ' ⭐ El NIVEL 2 con su contador de RESAMPLES. No es cosmético: dice si esta corrida ejercitó o no
                 ' la ley del bilineal. Con `resampled=0` el corpus salió TODO por el atajo de identidad, y
                 ' entonces un A/B en 0 bytes NO dice nada sobre un cambio en esa ley — el gate de eso es el
                 ' self-test `bilinear`. Sin este número, eso es una suposición y no un dato.
+                ' ⭐ IZADO DEL RESAMPLE. Con 0 texturas izadas, esta corrida NO ejercito ese camino y un
+                ' A/B de bytes en 0 no dice nada sobre el — igual que el `resampled` del nivel 2.
+                Dim hst = FaceTintCpuCompositor.HoistStats()
+                log($"  resample HOIST: {hst.Textures} texture(s) materialized to SoA planes, {hst.Pixels} px" &
+                    If(hst.Textures = 0, "  ⚠ THIS RUN DID NOT EXERCISE THE HOISTED PATH", ""))
                 Dim ust = FaceTintCpuCompositor.UnitCacheStats()
-                log($"Unit cache (level 2): {ust.Hits} hits / {ust.Misses} misses, {ust.Resampled} of the misses went through the BILINEAR " &
-                    $"(the rest hit the identity shortcut: source already at the accumulator size)")
-                ' ⛔ El cache de mascaras de SseFaceTintComposer NO entra en este resumen: no obedece el techo
-                ' (es per-NPC, igual que los caches per-host de FO4 — ver el comentario en SseFaceTintComposer).
-                ' Su memoria la acota la VIDA, no el presupuesto, asi que no hay bytes "retenidos por techo" ni
-                ' rechazos que reportar.
+                log($"  level 2 (resampled to w×h, 4 B/elem): {ust.Hits} hits / {ust.Misses} misses, " &
+                    $"{ust.Bytes \ (1024L * 1024L)} MB, {ust.Rejected} rejected — {ust.Resampled} of the misses went " &
+                    $"through the BILINEAR (the rest hit the identity shortcut: source already at the accumulator size)")
+                ' ⛔ Los hits/misses/rechazos son ACUMULADOS de toda la corrida; los MB son los del cache vivo
+                ' al cerrar.
+                End If   ' wantStats — fin del bloque de diagnostico
                 FaceTintCpuCompositor.EndBatchDecodeCache()
                 ' Teardown del contexto GL. Se libera el cache de texturas ANTES de destruir el contexto (si no,
                 ' se filtran los handles GL que el cache tiene vivos — contrato de FaceTintTextureCache).
@@ -683,7 +885,18 @@ Friend Module BakeAllRunner
             If cancelled Then log($"CANCELLED — {targets.Count - processed} NPC(s) not processed.")
             log($"Done in {sw.Elapsed:hh\:mm\:ss} — {baked} baked / {skipped} skipped / {failed} failed (of {targets.Count}).")
             log("")
-            log(FaceGenBuilder.PhaseReport())
+            ' ⛔⛔ COMO LEER EL PhaseReport CON EL LOOP PARALELO. Su `TOTAL` es la suma del tiempo POR NPC, o
+            ' sea trabajo de CPU acumulado; con N hilos ya NO aproxima el wall clock. Antes coincidian, y esa
+            ' coincidencia era justamente la evidencia de que el loop era serial. El cociente TOTAL/wall son
+            ' los hilos EFECTIVOS. Todo esto es para MEDIR: el PhaseReport entero va gateado.
+            If wantStats Then
+                ' ⭐ La TRAYECTORIA, no solo el valor final: si un usuario reporta que el bake se le arrastro,
+                ' esto dice si el controlador se quedo en 1, si trepo y freno por memoria, o si toco el techo.
+                ' Sin la trayectoria ese reporte no es diagnosticable.
+                log($"Wall clock: {sw.Elapsed.TotalSeconds:F1} s · concurrency {If(fixedDop > 0, $"FIXED {fixedDop}", $"adaptive, peak {peakPermits} of {hardCap}: " & String.Join(" → ", traj))}")
+                log("Phase TOTAL below is ACCUMULATED CPU, not wall: TOTAL/wall = effective threads.")
+                log(FaceGenBuilder.PhaseReport())
+            End If
             ' Paridad CPU-vs-GPU. Se imprime SIEMPRE, tambien cuando no corrio el GL: en ese caso dice
             ' explicitamente "NO MEDIDA" en vez de callarse, para que nadie lea un barrido CPU-only como si
             ' hubiera validado el compositor del render.

@@ -611,8 +611,15 @@ Friend NotInheritable Class NpcMorphPoseResolver
         Return New HairTopZapResolver(zapParts)
     End Function
 
-    ''' <summary>Cache of parsed FacialBoneRegions files per race/gender key (e.g. "HumanRace:female").</summary>
-    Private Shared ReadOnly _facialBoneRegionsCache As New Dictionary(Of String, FacialBoneRegionsFile)(StringComparer.OrdinalIgnoreCase)
+    ''' <summary>Cache of parsed FacialBoneRegions files per race/gender key (e.g. "HumanRace:female").
+    ''' <para>⛔⛔ CONCURRENTDICTIONARY, NO Dictionary, y el motivo NO es cosmetico: el bake hornea VARIOS
+    ''' NPCs a la vez y esto se pide POR NPC (via BuildCharGen). Un Dictionary en escritura concurrente puede
+    ''' PERDER una entrada o colgarse re-hasheando, y perder una entrada aca significa saltear el morph
+    ''' FMRS/FMRI ⇒ <b>CARA NEUTRA</b>, distinta en cada corrida. Es el unico race del bake que puede mover
+    ''' BYTES de la salida.</para>
+    ''' <para>El valor es funcion PURA de (EditorID, genero) —el mismo archivo parseado— asi que dos hilos
+    ''' que pierdan la carrera escriben lo MISMO: last-write-wins es byte-neutro y no hace falta candado.</para></summary>
+    Private Shared ReadOnly _facialBoneRegionsCache As New Concurrent.ConcurrentDictionary(Of String, FacialBoneRegionsFile)(StringComparer.OrdinalIgnoreCase)
 
     ''' <summary>Cuantas veces se pidio un <c>&lt;Race&gt;FacialBoneRegions&lt;G&gt;.txt</c> que NO existe en los
     ''' archives (contado UNA vez por raza+genero: la cache actua de latch). Distinto de cero significa que hubo
@@ -680,8 +687,11 @@ Friend NotInheritable Class NpcMorphPoseResolver
         End Try
     End Function
 
-    ''' <summary>Cache of the MERGED (both-gender) FacialBoneRegions table, keyed by race EditorID.</summary>
-    Private Shared ReadOnly _facialBoneRegionsMergedCache As New Dictionary(Of String, FacialBoneRegionsFile)(StringComparer.OrdinalIgnoreCase)
+    ''' <summary>Cache of the MERGED (both-gender) FacialBoneRegions table, keyed by race EditorID.
+    ''' <para>⛔ ConcurrentDictionary por el MISMO motivo que <see cref="_facialBoneRegionsCache"/>: se pide por
+    ''' NPC y el bake corre varios NPCs en paralelo. Perder una entrada = FMRI sin resolver = cara neutra.
+    ''' El merge es funcion pura de (EditorID, genero) ⇒ last-write-wins es byte-neutro.</para></summary>
+    Private Shared ReadOnly _facialBoneRegionsMergedCache As New Concurrent.ConcurrentDictionary(Of String, FacialBoneRegionsFile)(StringComparer.OrdinalIgnoreCase)
 
     ''' <summary>Tabla contra la que se resuelven los FMRI (IDs de region osea facial) de un NPC: las tablas
     ''' FacialBoneRegions Female Y Male de la raza, mergeadas en un solo mapa ID -> region.

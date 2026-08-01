@@ -9,6 +9,8 @@ Imports MaterialLib
 Imports NiflySharp
 Imports NiflySharp.Blocks
 Imports OpenTK.Mathematics
+' Alias (no import plano): OpenGL4 trae PixelFormat/TextureUnit que chocan con System.Drawing.Imaging.
+Imports Gl4 = OpenTK.Graphics.OpenGL4
 
 ''' <summary>Phase 2 of the MainForm split: FaceTint compositor EXECUTION — runs the
 ''' face-tint compositor + the skin SoftLight / subsurface pre-passes onto the GL textures,
@@ -871,6 +873,7 @@ Friend NotInheritable Class NpcFaceTintResolver
     ''' upload Rgba32f. La primera instalación NO borra (prev es del loader): el default de OwnedByComposer es False.</summary>
     Private Shared Sub InstallTexture(model As PreviewModel, key As String, id As Integer, w As Integer, h As Integer, isSrgb As Boolean)
         If id = 0 Then Return
+        MatchLoaderSampling(id, w, h)
         Dim entry As PreviewModel.Texture_Loaded_Class = Nothing
         If model.Textures_Dictionary.TryGetValue(key, entry) AndAlso entry IsNot Nothing Then
             Dim prev = entry.Texture_ID
@@ -888,6 +891,35 @@ Friend NotInheritable Class NpcFaceTintResolver
                 .Path = key, .OwnedByComposer = True}
             Logger.LogLazy(Function() $"[SSE-FOLD]   install '{key}': NUEVO entry id={id} ({w}x{h}, sRGB={isSrgb})")
         End If
+    End Sub
+
+    ''' <summary>⭐ Le da a una textura COMPUESTA el MISMO sampleo que el loader le da al DDS que reemplaza:
+    ''' cadena de mips + <c>LinearMipmapLinear</c> + anisotropía máxima + wrap <c>Repeat</c> (DirectXDDSLoader).
+    ''' <para>⛔ POR QUÉ. El upload del pliegue (<c>SseFoldLayerStack.UploadRgba32fFromSingles</c>) deja
+    ''' <c>MinFilter=Linear</c> y UN SOLO nivel, así que la cara plegada era la ÚNICA textura del render SIN
+    ''' minificación: a 2048² sobre una cara de unos cientos de píxeles son ~3 niveles de mip salteados. El
+    ''' detalle fino (pelo, rayas, bigotes) sale a brillo pleno y titila al rotar, mientras el MISMO NPC sin
+    ''' plegar se ve filtrado ⇒ diferencia fold-vs-no-fold que NO viene de la aritmética del compose. Es el
+    ''' MISMO modo de falla que documenta FaceTintCompositor (pisar el LinearMipmapLinear del loader), pero acá
+    ''' la textura es NUEVA: no se pisaba nada, nunca se ponía.</para>
+    ''' <para>⛔ El wrap va <c>Repeat</c> (el del loader) y no el <c>ClampToEdge</c> del upload: lo que se
+    ''' reemplaza es el complexion, que el render sampleaba con Repeat. Sin mips los dos daban lo mismo dentro
+    ''' de [0,1]; con mips los niveles altos mezclan el otro borde y la diferencia se ve.</para>
+    ''' <para>Costo: +33 % de VRAM por textura. A 2048² Rgba32f, 64 MB → ~85 MB.</para></summary>
+    Private Shared Sub MatchLoaderSampling(id As Integer, w As Integer, h As Integer)
+        Gl4.GL.BindTexture(Gl4.TextureTarget.Texture2D, id)
+        ' El pliegue sube UN solo nivel (no viene de un DDS), así que la cadena se genera acá. Los niveles
+        ' que produce GenerateMipmap son los mismos que declara el DDS: hasta 1x1.
+        Gl4.GL.GenerateMipmap(Gl4.GenerateMipmapTarget.Texture2D)
+        Dim levels = 1
+        Dim d = Math.Max(w, h)
+        While d > 1
+            d \= 2
+            levels += 1
+        End While
+        ' ⛔ SYNC: la ley de sampleo es UNA y vive en el loader. Acá NO se re-escribe: se la llama.
+        DirectXDDSLoader.ApplySamplingState(Gl4.TextureTarget.Texture2D, levels, useNearest:=False, isCubemap:=False)
+        Gl4.GL.BindTexture(Gl4.TextureTarget.Texture2D, 0)
     End Sub
 
     ''' <summary>SSE: compose the per-NPC facetint (engine-exact, SseFaceTintComposer) and install it as the

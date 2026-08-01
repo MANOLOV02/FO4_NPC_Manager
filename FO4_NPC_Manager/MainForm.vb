@@ -10050,6 +10050,15 @@ Public Class MainForm
         If result.Skipped Then
             icon = MessageBoxIcon.Information
             message = result.Summary   ' "No FaceGen head parts for this NPC — skipped."
+        ElseIf result.Success AndAlso result.TextureSlotsFailed > 0 Then
+            ' ⛔ Success=True NO significa "salio bien": el NIF se escribio, pero un slot de TEXTURA pudo
+            ' fallar y eso viaja aparte, en TextureSlotsFailed. Decir "Generated OK" con texturas caidas es
+            ' el mismo agujero de observabilidad que ya documenta BakeAllRunner (un barrido reporto
+            ' "4460 baked / 0 failed" habiendo escrito CERO facetint). El camino de Save ya lo mira; este no.
+            icon = MessageBoxIcon.Warning
+            message = $"Generated, BUT {result.TextureSlotsFailed} face texture(s) FAILED:" & vbCrLf & vbCrLf &
+                      result.TextureFailureDetail & vbCrLf & vbCrLf &
+                      "The NIF was written; those texture slot(s) were NOT."
         ElseIf result.Success Then
             icon = MessageBoxIcon.Information
             message = "Generated OK"
@@ -10073,6 +10082,7 @@ Public Class MainForm
         Dim ok As Integer = 0
         Dim skipped As Integer = 0
         Dim failed As New List(Of String)
+        Dim texWarn As New List(Of String)   ' NIF escrito pero algun slot de TEXTURA fallo (Success sigue True)
 
         Using prog As New BuildProgress_Form()
             prog.Text = $"Build CharGen (loose) — {total} NPCs"
@@ -10113,6 +10123,12 @@ Public Class MainForm
                                     skipped += 1
                                 ElseIf r.Success Then
                                     ok += 1
+                                    ' ⛔ Success=True con texturas caidas NO es exito: el NIF salio, el slot de
+                                    ' textura no. Va a la lista de avisos (no a `failed`, que cuenta NPCs sin
+                                    ' NIF) para que el resumen no diga "Built N/N" tapando el fallo.
+                                    If r.TextureSlotsFailed > 0 Then
+                                        texWarn.Add($"{name}: {r.TextureSlotsFailed} texture(s) FAILED — {r.TextureFailureDetail}")
+                                    End If
                                 Else
                                     failed.Add($"{name}: {r.Summary}")
                                 End If
@@ -10138,8 +10154,13 @@ Public Class MainForm
             summary &= $"{vbCrLf}{vbCrLf}Failed ({failed.Count}):{vbCrLf}" & String.Join(vbCrLf, shown)
             If failed.Count > shown.Count Then summary &= $"{vbCrLf}… (+{failed.Count - shown.Count} more)"
         End If
+        If texWarn.Count > 0 Then
+            Dim shownT = texWarn.Take(15).ToList()
+            summary &= $"{vbCrLf}{vbCrLf}⚠ {texWarn.Count} NPC(s) got their NIF but FAILED a face texture:{vbCrLf}" & String.Join(vbCrLf, shownT)
+            If texWarn.Count > shownT.Count Then summary &= $"{vbCrLf}… (+{texWarn.Count - shownT.Count} more)"
+        End If
         MessageBox.Show(Me, summary, "Build CharGen", MessageBoxButtons.OK,
-                        If(failed.Count = 0, MessageBoxIcon.Information, MessageBoxIcon.Warning))
+                        If(failed.Count = 0 AndAlso texWarn.Count = 0, MessageBoxIcon.Information, MessageBoxIcon.Warning))
         Return Task.CompletedTask
     End Function
 
