@@ -162,7 +162,7 @@ Partial Class SaveEsp_Form
         ' 
         TextBoxNewName.Location = New Point(140, 183)
         TextBoxNewName.Name = "TextBoxNewName"
-        TextBoxNewName.Size = New Size(260, 23)
+        TextBoxNewName.Size = New Size(240, 23)
         TextBoxNewName.TabIndex = 4
         TextBoxNewName.Text = "NPC_Manager"
         ' 
@@ -170,7 +170,7 @@ Partial Class SaveEsp_Form
         ' 
         LabelExtension.AutoSize = True
         LabelExtension.ForeColor = SystemColors.GrayText
-        LabelExtension.Location = New Point(406, 186)
+        LabelExtension.Location = New Point(386, 186)
         LabelExtension.Name = "LabelExtension"
         LabelExtension.Size = New Size(28, 15)
         LabelExtension.TabIndex = 5
@@ -321,7 +321,7 @@ Partial Class SaveEsp_Form
         ComboBoxEncoding.DropDownStyle = ComboBoxStyle.DropDownList
         ComboBoxEncoding.Location = New Point(140, 27)
         ComboBoxEncoding.Name = "ComboBoxEncoding"
-        ComboBoxEncoding.Size = New Size(260, 23)
+        ComboBoxEncoding.Size = New Size(240, 23)
         ComboBoxEncoding.TabIndex = 1
         ' 
         ' LabelEncodingHint
@@ -347,7 +347,7 @@ Partial Class SaveEsp_Form
         ComboBoxBa2Version.DropDownStyle = ComboBoxStyle.DropDownList
         ComboBoxBa2Version.Location = New Point(140, 57)
         ComboBoxBa2Version.Name = "ComboBoxBa2Version"
-        ComboBoxBa2Version.Size = New Size(260, 23)
+        ComboBoxBa2Version.Size = New Size(240, 23)
         ComboBoxBa2Version.TabIndex = 4
         ' 
         ' GroupBoxLvlList

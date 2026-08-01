@@ -184,6 +184,7 @@ Module Program
         opt.Windowless = HasFlag(args, "--windowless")
         opt.ExecutablePath = GetFlagValue(args, "--executable")
         opt.EspTarget = GetFlagValue(args, "--esptarget")
+        opt.SkipCustomList = HasFlag(args, "--skipcustomlist")
 
         If Not opt.Windowless Then
             Application.SetHighDpiMode(HighDpiMode.DpiUnaware)

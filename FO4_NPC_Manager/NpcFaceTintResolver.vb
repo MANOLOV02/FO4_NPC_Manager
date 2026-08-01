@@ -822,8 +822,17 @@ Friend NotInheritable Class NpcFaceTintResolver
                         Next
                     Next
                 End Sub)
-            ' forceOpaque:=True = el alpha 255 que escribía el camino de bytes (misma ley que el GPU-residente).
-            foldedId = SseFoldLayerStack.UploadRgba32f(accOut, outPix, outW, outH, forceOpaque:=True)
+            ' ⛔⛔ forceOpaque:=False — EL ALPHA DEL COMPLEXION TIENE QUE SOBREVIVIR AL PLIEGUE.
+            ' Antes iba True ("el alpha 255 que escribía el camino de bytes"), dando por sentado que el alpha
+            ' del diffuse de una cara es inerte. NO LO ES cuando la malla de cabeza es ALPHA-TEST: el shader
+            ' hace `color.a *= texDiffuse.a` y después `if (fragColor.a < alphaThreshold) discard`, así que con
+            ' alpha 1 en todos los téxeles el test NO DESCARTA NADA y aparece geometría de la cabeza que el
+            ' alpha recortaba, con sus téxeles negros de borde. Caso medido: EnhancedMaleKhajiitHead, que
+            ' dibuja con AlphaTestRef=73 — al plegar salía un borde negro alrededor de los bigotes.
+            ' El alpha viaja intacto por toda la cadena (PreCompOne saltea el canal 3, el resample lo respeta):
+            ' el único punto que lo pisaba era este upload.
+            ' ⛔ SYNC: el camino GPU-residente hace lo MISMO en el upload del complexion (SseFoldLayerStack).
+            foldedId = SseFoldLayerStack.UploadRgba32f(accOut, outPix, outW, outH, forceOpaque:=False)
             If foldedId = 0 Then
                 Logger.LogLazy(Function() "[SSE-FOLD] ABORT: GL.GenTexture devolvió 0 (¿sin contexto GL?)")
                 Return False

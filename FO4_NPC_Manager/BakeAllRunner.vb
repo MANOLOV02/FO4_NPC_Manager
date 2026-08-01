@@ -60,6 +60,14 @@ Friend Module BakeAllRunner
         ''' means. Empty = every NPC in the load order. The whole load order is still PARSED (a follower's
         ''' race/head parts/armor usually live in the masters), only the bake list is narrowed.</summary>
         Public EspTarget As String = ""
+        ''' <summary>True = IGNORAR la seleccion de plugins guardada en Preflight (npc_config.json
+        ''' PreflightSelection_FO4/_SSE) y usar SOLO el load order activo.
+        ''' <para>Existe porque la seleccion guardada es una dependencia SILENCIOSA: alguien que la fijo hace
+        ''' meses hornea contra un set distinto del que tiene activo y nada se lo recuerda salvo una linea del
+        ''' log. Con esto una tarea automatizada puede decir "lo que este activo AHORA" sin tener que editar
+        ''' npc_config.json (que es estado de la UI) ni Plugins.txt (que es del juego).</para>
+        ''' <para>No modifica nada: es por corrida.</para></summary>
+        Public SkipCustomList As Boolean = False
     End Class
 
     ''' <summary>Infer the game from an executable's file name — the same signal the preflight uses to warn
@@ -215,6 +223,9 @@ Friend Module BakeAllRunner
             ' (actives in load order first, then the rest alphabetically), and fall back to the actives when
             ' nothing survives.
             Dim effectiveLoadList = loadList
+            If opt IsNot Nothing AndAlso opt.SkipCustomList Then
+                log("Selection:   --skipcustomlist — the saved Preflight selection is IGNORED; using the active load order")
+            Else
             Try
                 Dim presentFiles = FilesDictionary_class.
                     EnumerateFilesWithSymlinkSupport(dataPath, "*.esp;*.esm;*.esl", False).
@@ -247,6 +258,7 @@ Friend Module BakeAllRunner
                 log($"WARNING: could not apply the stored plugin selection ({ex.GetType().Name}: {ex.Message}) — using the active load order")
                 effectiveLoadList = loadList
             End Try
+            End If
             If effectiveLoadList Is Nothing OrElse effectiveLoadList.Count = 0 Then
                 log("FATAL: the effective plugin list is empty.")
                 Return ExitFatal

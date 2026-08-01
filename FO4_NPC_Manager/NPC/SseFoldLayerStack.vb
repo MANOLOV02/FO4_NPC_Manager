@@ -46,7 +46,11 @@ Friend Module SseFoldLayerStack
     ''' Qué queda en CPU (y por qué es legítimo, no impureza): el DECODE de los DDS fuente — es la ENTRADA
     ''' común a los dos caminos (leer el archivo no es compose) y garantiza inputs bit-idénticos: decodificar
     ''' BCn por hardware tiene tolerancias de spec ⇒ rompería el "dan lo mismo" EN EL ORIGEN.
-    ''' El alpha del complexion se fuerza OPACO en el upload (el CPU escribe alpha=255 al final: misma ley).
+    ''' ⛔ El alpha del complexion VIAJA INTACTO (antes se forzaba opaco acá y en el CPU): con una cabeza
+    ''' ALPHA-TEST, pisarlo con 1 apaga su recorte y aparece geometría que el alpha cortaba, con borde negro.
+    ''' Son DOS puntos: el upload (forceOpaque:=False) y el último pase del compositor
+    ''' (headDiffuseAlphaTest:=True ⇒ uForceOpaqueAlpha=0). El bake nunca tuvo el problema porque su pack
+    ''' escribe el alpha del acumulador; era un paso que sólo existía en el preview.
     '''
     ''' El trío viejo (<see cref="ComposeFacetintGpu"/>/<see cref="FoldGpu"/>/<see cref="ComposeGpu"/>, con
     ''' readback por etapa) queda SOLO para el sandbox <c>_2d</c> del bake (FaceGenBuilder), que necesita los
@@ -109,9 +113,13 @@ Friend Module SseFoldLayerStack
                                           $"⇒ amp(detail)≈{SseFaceGenBaker.FgTintChannel(dMeanR, 0):F3}")
             End If
 
-            ' --- 2. FOLD: base = complexion (sRGB, alpha forzado opaco), capa = rama uFgTintFold del shader
+            ' --- 2. FOLD: base = complexion (sRGB, CON SU ALPHA), capa = rama uFgTintFold del shader
             ' (softlight con el facetint × amplify del detail: la MISMA ley fija del engine que FoldFacetintIntoDiffuse en CPU). ---
-            complexTex = UploadRgba32f(complexionSrgb, npix, w, h, forceOpaque:=True)
+            ' ⛔⛔ forceOpaque:=False — espejo del camino CPU: el alpha del complexion NO se pisa. El pipeline
+            ' propaga el alpha del prev tal cual, así que entrando con el alpha real sale con el alpha real.
+            ' Con alpha 1 forzado, una cabeza ALPHA-TEST deja de descartar y aparece el recorte que el alpha
+            ' hacía (borde negro). Ver la nota larga en NpcFaceTintResolver (upload del diffuse plegado).
+            complexTex = UploadRgba32f(complexionSrgb, npix, w, h, forceOpaque:=False)
             If complexTex = 0 Then Return 0
             If detailRaw IsNot Nothing Then
                 detTex = UploadRgba32f(detailRaw, npix, w, h)
@@ -122,7 +130,8 @@ Friend Module SseFoldLayerStack
                                                                complexTex, 0, 0, w, h, foldLayer,
                                                                New List(Of FaceRegionSwapInput)(),
                                                                SseFaceTintComposer.AccumSpaceCapability,
-                                                               baseDiffuseIsLinearOnGpu:=True)
+                                                               baseDiffuseIsLinearOnGpu:=True,
+                                                               headDiffuseAlphaTest:=True)
             If prF Is Nothing OrElse prF.Diffuse Is Nothing OrElse Not prF.Diffuse.IsFresh Then Return 0
             foldedTex = prF.Diffuse.TextureId
             ' Sólo el complexion queda consumido acá. ⛔ tintTex/detTex SIGUEN VIVOS: los vuelve a necesitar el
@@ -202,7 +211,8 @@ Friend Module SseFoldLayerStack
                                                                srgbTex, 0, 0, w, h, unfoldLayer,
                                                                New List(Of FaceRegionSwapInput)(),
                                                                SseFaceTintComposer.AccumSpaceCapability,
-                                                               baseDiffuseIsLinearOnGpu:=True)
+                                                               baseDiffuseIsLinearOnGpu:=True,
+                                                               headDiffuseAlphaTest:=True)
             If prU Is Nothing OrElse prU.Diffuse Is Nothing OrElse Not prU.Diffuse.IsFresh Then Return 0
             Try : GL.DeleteTexture(srgbTex) : Catch : End Try
             srgbTex = prU.Diffuse.TextureId
@@ -555,8 +565,9 @@ Friend Module SseFoldLayerStack
                     f(i) = acc(i)
                 Next
             End Sub)
-        ' forceOpaque: el camino GPU-residente fuerza alpha=1 EN EL UPLOAD del complexion — el pipeline
-        ' propaga el alpha del prev tal cual, y el camino CPU escribe alpha=255 al final ⇒ misma ley.
+        ' forceOpaque: pisa el canal alpha con 1. ⛔ NINGÚN camino del pliegue del DIFFUSE lo usa ya: el alpha
+        ' del complexion es dato vivo para una cabeza alpha-test y pisarlo apaga su recorte. Queda para quien
+        ' suba un buffer que genuinamente no tenga alpha propio.
         If forceOpaque Then
             System.Threading.Tasks.Parallel.ForEach(
                 System.Collections.Concurrent.Partitioner.Create(0, npix),
