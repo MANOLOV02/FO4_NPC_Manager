@@ -172,6 +172,7 @@ Partial Class CharGenOptionsForm
         CheckBoxBakeSseRaceMenuOverlays = New CheckBox()
         CheckBoxResolveHphHeadTri = New CheckBox()
         CheckBoxReplicateEngineSkinNorm = New CheckBox()
+        CheckBoxRecalcTangentSpace = New CheckBox()
         CheckBoxMatchSubsurfaceFlag = New CheckBox()
         BtnFixesRevert = New Button()
         ButtonOK = New Button()
@@ -1654,6 +1655,7 @@ Partial Class CharGenOptionsForm
         TabPageFixes.Controls.Add(CheckBoxBakeSseRaceMenuOverlays)
         TabPageFixes.Controls.Add(CheckBoxResolveHphHeadTri)
         TabPageFixes.Controls.Add(CheckBoxReplicateEngineSkinNorm)
+        TabPageFixes.Controls.Add(CheckBoxRecalcTangentSpace)
         TabPageFixes.Controls.Add(CheckBoxMatchSubsurfaceFlag)
         TabPageFixes.Controls.Add(BtnFixesRevert)
         TabPageFixes.Location = New Point(4, 24)
@@ -1723,6 +1725,16 @@ Partial Class CharGenOptionsForm
         CheckBoxReplicateEngineSkinNorm.TabIndex = 5
         CheckBoxReplicateEngineSkinNorm.Text = "Replicate engine skin-weight normalization (non-renormalized) (FO4)"
         CheckBoxReplicateEngineSkinNorm.UseVisualStyleBackColor = True
+        ' 
+        ' CheckBoxRecalcTangentSpace
+        ' 
+        CheckBoxRecalcTangentSpace.AutoSize = True
+        CheckBoxRecalcTangentSpace.Location = New Point(12, 201)
+        CheckBoxRecalcTangentSpace.Name = "CheckBoxRecalcTangentSpace"
+        CheckBoxRecalcTangentSpace.Size = New Size(392, 19)
+        CheckBoxRecalcTangentSpace.TabIndex = 9
+        CheckBoxRecalcTangentSpace.Text = "Recalculate normals and tangent space in the preview (all shapes)"
+        CheckBoxRecalcTangentSpace.UseVisualStyleBackColor = True
         ' 
         ' CheckBoxMatchSubsurfaceFlag
         ' 
@@ -1955,6 +1967,7 @@ Partial Class CharGenOptionsForm
     Friend WithEvents CheckBoxBakeSseRaceMenuOverlays As System.Windows.Forms.CheckBox
     Friend WithEvents CheckBoxResolveHphHeadTri As System.Windows.Forms.CheckBox
     Friend WithEvents CheckBoxReplicateEngineSkinNorm As System.Windows.Forms.CheckBox
+    Friend WithEvents CheckBoxRecalcTangentSpace As System.Windows.Forms.CheckBox
     Friend WithEvents CheckBoxMatchSubsurfaceFlag As System.Windows.Forms.CheckBox
     Friend WithEvents BtnFixesRevert As System.Windows.Forms.Button
 End Class

@@ -75,6 +75,7 @@ Public Class CharGenOptionsForm
         ' Fuente/VAs del RE en FO4_Base_Library.EngineSkinWeightNormalization. Enabled solo en FO4 porque el mecanismo NO
         ' está verificado en los binarios de Skyrim (el valor persistido se round-trip-ea intacto en SSE).
         CheckBoxReplicateEngineSkinNorm.Checked = NPC_Config.Current.ReplicateEngineSkinWeightNormalization
+        CheckBoxRecalcTangentSpace.Checked = NPC_Config.Current.RecalculateTangentSpace
         CheckBoxReplicateEngineSkinNorm.Enabled = isFo4
         CheckBoxResolveHphHeadTri.Enabled = Not isFo4
         If c.Setting_FaceGenPerLayerResolution Then
@@ -305,6 +306,8 @@ Public Class CharGenOptionsForm
         ' valor como estaba y decía "Revert to default". La regla del botón es: revierte SÓLO —y TODO— lo que
         ' su tab muestra EDITABLE en el juego activo; un control editable en ambos se revierte en ambos.
         CheckBoxMatchSubsurfaceFlag.Checked = cfgDef.Setting_MatchHeadSubsurfaceFlagToBody
+        ' Idem: el recálculo de la base tangente del preview es editable en los dos juegos.
+        CheckBoxRecalcTangentSpace.Checked = npcDef.RecalculateTangentSpace
         If isFo4 Then
             CheckBoxApplyGhoulHeadRearFix.Checked = npcDef.ApplyGhoulHeadRearFix
             CheckBoxApplyEyebrowsFixedColor.Checked = cfgDef.Setting_ApplyEyebrowsFixedColor
@@ -619,6 +622,7 @@ Public Class CharGenOptionsForm
         convSave.NormalSpecular.AccumInCompositeSpace = CheckBoxAccumInComposite.Checked
         ' Ley del MOTOR → NPC_Config + re-aplicar el gate por juego INMEDIATAMENTE, porque el render
         ' del NPC actual se rehace al volver del OK y tiene que usar ya el modo elegido (RENDER == BAKE).
+        NPC_Config.Current.RecalculateTangentSpace = CheckBoxRecalcTangentSpace.Checked
         NPC_Config.Current.ReplicateEngineSkinWeightNormalization = CheckBoxReplicateEngineSkinNorm.Checked
         NPC_Config.ApplyEngineSkinWeightNormalizationGate(c.Game)
         ' Eyebrows fixed-color gate → Config_App (lo lee la librería). Se persiste en el SaveConfig de abajo.
