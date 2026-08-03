@@ -100,7 +100,13 @@ Public Class BodySlideMorphResolver
                 deltas.Add(New MorphData With {.index = off.Key, .PosDiff = off.Value})
             Next
 
-            plan.Channels.Add(New MorphChannel(sliderName, weight, deltas))
+            ' applyCkBlockGate:=False — estos deltas salen de un .tri PIRT de BodySlide (body morphs),
+            ' no de un .tri de FaceGen. El gate por bloques de 4 indices es la ley del applier de CABEZA
+            ' del CK; a los body morphs los aplican f4ee y skee64 recorriendo m_vertexDeltas y sumando
+            ' cada entrada SIN gate alguno (BodyMorphInterface.cpp, TriShapePacked/FullVertexData::
+            ' ApplyMorph). Con el gate prendido el preview ocultaba deltas que el juego si aplica.
+            plan.Channels.Add(New MorphChannel(sliderName, weight, deltas,
+                                               isZap:=False, engineApplied:=True, applyCkBlockGate:=False))
         Next
 
         If Logger.Enabled Then

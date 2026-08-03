@@ -410,6 +410,10 @@ Public Class SaveEsp_Form
         AddHandler CheckBoxEmitBodyGen.CheckedChanged, AddressOf OnEmitBodyGenChanged
         AddHandler CheckBoxEmitApplyScript.CheckedChanged, AddressOf OnEmitApplyScriptChanged
 
+        ' "Activate in load order": opt-out by default and remembered, same seed-before-wiring idiom as above.
+        CheckBoxActivateInLoadOrder.Checked = NPC_Config.Current.ActivateInLoadOrder
+        AddHandler CheckBoxActivateInLoadOrder.CheckedChanged, AddressOf OnActivateInLoadOrderChanged
+
         ' "Save new records": meaningful when the session has ANY unsaved (dirty) author-built draft — not
         ' only outfits, but also standalone armor (ARMO), armatures (ARMA), material swaps (MSWP) and leveled
         ' lists (LVLI). This ONE flag gates every draft-emission phase (ExecuteWritePhases 2c/2e/2f/2g), so if
@@ -527,6 +531,11 @@ Public Class SaveEsp_Form
     ''' <summary>"Emit apply-script" toggled — remember the choice.</summary>
     Private Sub OnEmitApplyScriptChanged(sender As Object, e As EventArgs)
         NPC_Config.Current.EmitApplyScript = CheckBoxEmitApplyScript.Checked
+    End Sub
+
+    ''' <summary>"Activate in load order" toggled — remember the choice.</summary>
+    Private Sub OnActivateInLoadOrderChanged(sender As Object, e As EventArgs)
+        NPC_Config.Current.ActivateInLoadOrder = CheckBoxActivateInLoadOrder.Checked
     End Sub
 
     ''' <summary>Scope radio toggle: recompute the CharGen forcing for the new scope and refresh the
@@ -984,6 +993,10 @@ Public Class SaveEsp_Form
         End Try
 
         If ExecutionResult IsNot Nothing AndAlso ExecutionResult.Success Then
+            ' Load-order activation is a POST-SAVE step on purpose: the plugin has to exist on disk (the
+            ' activator reads its masters + header flags from the file it is about to activate), and a failed
+            ' save must never leave a dead entry in Plugins.txt.
+            RunLoadOrderActivation(target)
             DialogResult = DialogResult.OK
             Close()
         Else
@@ -995,6 +1008,24 @@ Public Class SaveEsp_Form
             End If
             MessageBox.Show(Me, msg, "Save ESP/ESM", MessageBoxButtons.OK, MessageBoxIcon.Error)
         End If
+    End Sub
+
+    ''' <summary>Turn the just-written plugin on in the game's Plugins.txt when the user asked for it. Silent
+    ''' when it worked and there is nothing to warn about; a message box only when a guard stopped it, the write
+    ''' failed, or the position can't be fixed by reordering (see <see cref="LoadOrderActivator"/>). Never
+    ''' escalates: the save itself already succeeded, so nothing here can turn it into a failure.</summary>
+    Private Sub RunLoadOrderActivation(target As SaveTarget)
+        If Not CheckBoxActivateInLoadOrder.Checked Then Return
+        Dim res = LoadOrderActivator.Activate(target.TargetPath)
+        If Not res.NeedsAttention Then Return
+
+        Dim body = res.Summary
+        If res.Warning <> "" Then body &= vbCrLf & vbCrLf & res.Warning
+        Dim icon = If(res.Kind = LoadOrderActivator.OutcomeKind.Failed, MessageBoxIcon.Error, MessageBoxIcon.Warning)
+        MessageBox.Show(Me, body & vbCrLf & vbCrLf &
+                        "The plugin itself was saved correctly — only the load order is affected." & vbCrLf &
+                        "If you manage your load order with Mod Organizer or Vortex, activate it there.",
+                        "Activate in load order", MessageBoxButtons.OK, icon)
     End Sub
 
     ''' <summary>Build the Phase→step map for the current SaveTarget. Phases are matched by

@@ -921,13 +921,24 @@ Friend Module BakeAllRunner
                 log("Phase TOTAL below is ACCUMULATED CPU, not wall: TOTAL/wall = effective threads.")
                 log(FaceGenBuilder.PhaseReport())
             End If
-            ' Paridad CPU-vs-GPU. Se imprime SIEMPRE, tambien cuando no corrio el GL: en ese caso dice
-            ' explicitamente "NO MEDIDA" en vez de callarse, para que nadie lea un barrido CPU-only como si
-            ' hubiera validado el compositor del render.
-            log("")
-            log(FaceGenBuilder.ParityReport())
-            log("")
-            log(SseFoldLayerStack.SseParityReport())
+            ' Paridad CPU-vs-GPU: SOLO en corridas de MEDICION.
+            ' ⛔ Antes se imprimia SIEMPRE. El motivo declarado era bueno —que nadie leyera un barrido CPU-only
+            ' como si hubiera validado el compositor del render— pero la conclusion era la equivocada: en un
+            ' bake de PRODUCCION nadie pidio medir paridad, asi que escupir dos bloques de "NOT MEASURED — this
+            ' run says NOTHING about the GPU path" es ruido de diagnostico en la cara del usuario. Y encima
+            ' induce a error: sugiere que falto algo, cuando en realidad no se pidio nada.
+            ' El aviso hace falta donde el malentendido es POSIBLE: cuando alguien esta midiendo. Eso es
+            ' `gpuParity` (pidio el instrumento ⇒ se le reporta el resultado, medido o no) o `wantStats`
+            ' (FGBAKE_STATS=1 / Logger encendido ⇒ pidio diagnostico). Sin ninguno de los dos, silencio.
+            ' ⛔ NO alcanzaba con gatear por `Logger.Enabled`: el arnes corre en RELEASE, donde Logger esta duro
+            ' en False (Logger.Enabled = value AndAlso AllowInReleaseBuilds, y ninguna app lo prende) — por eso
+            ' existe `wantStats`, que es la valvula pensada justamente para eso.
+            If gpuParity OrElse wantStats Then
+                log("")
+                log(FaceGenBuilder.ParityReport())
+                log("")
+                log(SseFoldLayerStack.SseParityReport())
+            End If
             ' El aviso de "el bucket Swap no gobierna el acumulador" se latchea en la libreria y hasta ahora
             ' NADIE lo leia: la propiedad y su reset existian sin un solo consumidor, mientras tres comentarios
             ' afirmaban que este runner los usaba. Se imprime por `log()` (sale tambien en release, que es el

@@ -69,6 +69,13 @@ Public Class NPC_Config
     ''' work. Persisted per-app, same mechanism as <see cref="EmitBodyGenIni"/>.</para></summary>
     Public Property EmitApplyScript As Boolean = True
 
+    ''' <summary>"Activate in load order" option in the Save ESP dialog. When True, a SUCCESSFUL save turns the
+    ''' target plugin on in the game's Plugins.txt (<see cref="LoadOrderActivator"/>) and — only when the entry
+    ''' sits before one of its own masters — moves that one line. Default False = opt-in: Plugins.txt belongs to
+    ''' the user's mod manager (MO2 keeps a per-profile copy, Vortex rewrites it), so touching it is never the
+    ''' assumed intent. Persisted per-app, same mechanism as <see cref="EmitBodyGenIni"/>.</summary>
+    Public Property ActivateInLoadOrder As Boolean = False
+
     ''' <summary>"Apply fix to ghoul headrear" toggle (CharGen Options UI). When True, the ghoul-female
     ''' head-rear nape is given the vanilla-UV body texture via a disk clone (see MainForm IsGhoulHeadRearCase /
     ''' ApplyGhoulHeadRearClonedTextures). Default False = opt-in; the fix does nothing unless enabled.

@@ -51,6 +51,7 @@ Partial Class SaveEsp_Form
         ComboBoxLvlExisting = New ComboBox()
         CheckBoxLvlNoDup = New CheckBox()
         LabelWarning = New Label()
+        CheckBoxActivateInLoadOrder = New CheckBox()
         ButtonOk = New Button()
         ButtonCancel = New Button()
         PanelScope.SuspendLayout()
@@ -441,14 +442,25 @@ Partial Class SaveEsp_Form
         LabelWarning.Name = "LabelWarning"
         LabelWarning.Size = New Size(976, 34)
         LabelWarning.TabIndex = 6
-        ' 
+        '
+        ' CheckBoxActivateInLoadOrder
+        '
+        CheckBoxActivateInLoadOrder.Anchor = AnchorStyles.Bottom Or AnchorStyles.Left
+        CheckBoxActivateInLoadOrder.AutoSize = True
+        CheckBoxActivateInLoadOrder.Location = New Point(12, 407)
+        CheckBoxActivateInLoadOrder.Name = "CheckBoxActivateInLoadOrder"
+        CheckBoxActivateInLoadOrder.Size = New Size(300, 19)
+        CheckBoxActivateInLoadOrder.TabIndex = 7
+        CheckBoxActivateInLoadOrder.Text = "Activate in load order (Plugins.txt)"
+        CheckBoxActivateInLoadOrder.UseVisualStyleBackColor = True
+        '
         ' ButtonOk
-        ' 
+        '
         ButtonOk.Anchor = AnchorStyles.Bottom Or AnchorStyles.Right
         ButtonOk.Location = New Point(832, 403)
         ButtonOk.Name = "ButtonOk"
         ButtonOk.Size = New Size(75, 27)
-        ButtonOk.TabIndex = 7
+        ButtonOk.TabIndex = 8
         ButtonOk.Text = "Save"
         ButtonOk.UseVisualStyleBackColor = True
         ' 
@@ -459,7 +471,7 @@ Partial Class SaveEsp_Form
         ButtonCancel.Location = New Point(913, 403)
         ButtonCancel.Name = "ButtonCancel"
         ButtonCancel.Size = New Size(75, 27)
-        ButtonCancel.TabIndex = 8
+        ButtonCancel.TabIndex = 9
         ButtonCancel.Text = "Cancel"
         ButtonCancel.UseVisualStyleBackColor = True
         ' 
@@ -477,6 +489,7 @@ Partial Class SaveEsp_Form
         Controls.Add(GroupBoxEncoding)
         Controls.Add(GroupBoxLvlList)
         Controls.Add(LabelWarning)
+        Controls.Add(CheckBoxActivateInLoadOrder)
         Controls.Add(ButtonOk)
         Controls.Add(ButtonCancel)
         FormBorderStyle = FormBorderStyle.FixedDialog
@@ -536,6 +549,7 @@ Partial Class SaveEsp_Form
     Friend WithEvents ComboBoxLvlExisting As ComboBox
     Friend WithEvents CheckBoxLvlNoDup As CheckBox
     Friend WithEvents LabelWarning As Label
+    Friend WithEvents CheckBoxActivateInLoadOrder As CheckBox
     Friend WithEvents ButtonOk As Button
     Friend WithEvents ButtonCancel As Button
 
