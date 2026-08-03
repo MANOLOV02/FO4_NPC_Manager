@@ -2011,7 +2011,23 @@ Public Class EditFace_Form
             Dim rawNpc = TryGetRawNpc()
 
             ' --- HeadParts ---
-            If p.HeadPartFormIDs.Count = 0 AndAlso rawNpc IsNot Nothing AndAlso rawNpc.HeadPartFormIDs.Count > 0 Then
+            ' ⛔ EL GATE ES "¿la lista YA es un superset del PNAM crudo?" (HeadPartFormIDsIncludeRawExtras),
+            ' NO "¿está vacía?". Con el gate viejo (Count = 0) la bandera quedaba en False cada vez que Edit
+            ' Face abría sobre un overlay que YA traía head parts — Load LooksMenu/RaceMenu, Paste Look, o el
+            ' bundle del LM SkinTemplate que puebla la lista desde Edit Body (EditBody_Form.vb:366). Con la
+            ' bandera en False el saver toma la rama de preset FILTRADO y UNE el PNAM crudo
+            ' (NpcOverrideSaver.vb:1197-1207); un Misc crudo no tiene slot de PartType que lo pise, así que
+            ' SIEMPRE re-acumula ⇒ al cambiar el pelo acá, el hairline del pelo VIEJO —que
+            ' CascadeRemoveOrphanedHnamMisc ya había sacado del overlay— volvía en el PNAM guardado, y desde
+            ' la carga siguiente el NPC dibujaba DOS hairlines (render y bake).
+            ' SuppressedRawHeadPartFormIDs no podía taparlo: se computa en el APPLY anterior (MainForm.vb:8549
+            ' / PresetCategoryFilter.vb:57) y no sabe nada del pelo que el usuario elige DESPUÉS, acá adentro.
+            ' MEDIDO con Tools/HairlineDupProbe. El corpus NO exhibe el fenómeno al cargar (0 hairlines
+            ' huérfanos en los dos juegos), así que el gate es un SELF-TEST que replica el swap de pelo sobre
+            ' cada NPC: PNAM guardado con hairline stale en FO4 1687 de 1781 NPCs y SSE 18 de 2973 con el gate
+            ' viejo, 0 y 0 con éste. El camino "Edit Face fresco" (overlay vacío) sale idéntico byte a byte:
+            ' ownedParts queda vacío, el set de huérfanos queda vacío y la unión es la de siempre.
+            If Not p.HeadPartFormIDsIncludeRawExtras AndAlso rawNpc IsNot Nothing AndAlso rawNpc.HeadPartFormIDs.Count > 0 Then
                 ' Seed mirroring the render's MergeHeadPartsWithRaceDefaults rule
                 ' (MainForm.vb:6549-6580): per non-Misc PartType keep exactly one (NPC wins
                 ' over RACE-default), Misc accumulates without dedup-by-type. Without this we
@@ -2042,34 +2058,61 @@ Public Class EditFace_Form
                                            End If
                                        Next
                                    End Sub
-                seedFromList(raceDefaults)
-                seedFromList(rawNpc.HeadPartFormIDs)
+                ' Lo que el overlay YA traía (preset cargado, Paste, bundle del LM template). Se saca de la
+                ' lista para reconstruirla y se re-siembra DESPUÉS del crudo, así el overlay GANA por
+                ' PartType — la precedencia que el usuario ya está viendo en el render — mientras los extras
+                ' crudos que le faltaban (pestañas, AO/wet, hairlines) entran igual y vuelven la lista un
+                ' superset de verdad. Vacío en el camino fresco ⇒ este bloque no cambia nada ahí.
+                Dim ownedParts As New List(Of UInteger)(p.HeadPartFormIDs)
+                p.HeadPartFormIDs.Clear()
+
                 ' WYSIWYG: LM SkinTemplate head/headRear HDPTs win over race defaults + raw NPC
                 ' PNAM (mirrors NpcRecordOverlay.ApplyLmHdptReplacement order, which runs AFTER
                 ' race defaults + preset.HeadPartFormIDs are merged into the shadow). Without
                 ' this, opening Edit Face on an NPC with an active LM template hides the
                 ' template's headRear from the user, who would lose it the moment they touch
                 ' any HeadParts control (the editor takes ownership via HasHeadPartFormIDs=True).
+                ' Se resuelve ACÁ ARRIBA y no al final: el bundle también PISA parents crudos, así que
+                ' también huerfaniza Misc crudos y tiene que entrar en el cómputo de abajo.
+                Dim lmParts As New List(Of UInteger)
                 If Not String.IsNullOrEmpty(p.SkinTemplateId) Then
                     Dim tpl = _mainForm.GetLmSkinTemplateCandidates(_isFemale).
                         FirstOrDefault(Function(t) String.Equals(t.Id, p.SkinTemplateId, StringComparison.Ordinal))
                     If tpl IsNot Nothing Then
                         Dim genderIdx As Integer = If(_isFemale, 1, 0)
-                        Dim tplHdpts As New List(Of UInteger)
-                        If tpl.HeadHdptFormID(genderIdx) <> 0UI Then tplHdpts.Add(tpl.HeadHdptFormID(genderIdx))
-                        If tpl.HeadRearHdptFormID(genderIdx) <> 0UI Then tplHdpts.Add(tpl.HeadRearHdptFormID(genderIdx))
-                        seedFromList(tplHdpts)
+                        If tpl.HeadHdptFormID(genderIdx) <> 0UI Then lmParts.Add(tpl.HeadHdptFormID(genderIdx))
+                        If tpl.HeadRearHdptFormID(genderIdx) <> 0UI Then lmParts.Add(tpl.HeadRearHdptFormID(genderIdx))
                     End If
                 End If
+
+                ' Misc crudos que ya están HUÉRFANOS antes de empezar: su padre de tipo principal lo
+                ' reemplazó el overlay/template (el hairline del pelo que pisó el preset). Sin esto la unión
+                ' los volvería a meter en la lista — justo lo que este fix viene a evitar— y el render
+                ' pasaría a dibujar dos hairlines, que HOY no hace. Mismo helper compartido y mismos
+                ' argumentos que usa el apply (MainForm.vb:8549), así que la decisión es la misma en los dos
+                ' sitios. Set vacío cuando no hubo reemplazo, y la cascada conserva todo extra que un padre
+                ' vivo siga reclamando (nada de pérdida de pestañas clase-Cait).
+                Dim ownedForOrphanCheck As New List(Of UInteger)(ownedParts)
+                ownedForOrphanCheck.AddRange(lmParts)
+                Dim orphanedRawMisc = HeadPartResolver.ComputeReplacedParentOrphanMisc(
+                    rawNpc.HeadPartFormIDs, ownedForOrphanCheck, AddressOf ResolveHdptForCascade)
+
+                seedFromList(raceDefaults)
+                seedFromList(rawNpc.HeadPartFormIDs.Where(Function(f) Not orphanedRawMisc.Contains(f)))
+                seedFromList(ownedParts)
+                seedFromList(lmParts)
 
                 For Each t In mergedByType.Keys.OrderBy(Function(k) k)
                     p.HeadPartFormIDs.Add(mergedByType(t))
                 Next
                 p.HeadPartFormIDs.AddRange(freestandingMisc)
                 ' This list is a COMPLETE superset of the raw PNAM (extras included — see the
-                ' "We do NOT filter by IsExtra here" note above). Mark it so Save treats it as
-                ' authoritative and does NOT union the raw record back in — otherwise a freestanding
-                ' Misc the user later removes (an orphan hairline) gets resurrected from raw.
+                ' "We do NOT filter by IsExtra here" note above), menos los Misc que ya estaban huérfanos
+                ' antes de abrir el editor. Mark it so Save treats it as authoritative and does NOT union
+                ' the raw record back in — otherwise a freestanding Misc the user later removes (an orphan
+                ' hairline) gets resurrected from raw.
+                ' La bandera es además el GATE de este bloque: prendida acá, una segunda sesión de Edit Face
+                ' NO re-unifica el crudo y las borradas del usuario sobreviven.
                 p.HeadPartFormIDsIncludeRawExtras = True
             End If
             ' Editor takes ownership: from now on the user's edits (incl. removing all parts) are
@@ -2479,17 +2522,22 @@ Public Class EditFace_Form
         _refresh?.Invoke(FaceRefreshScope.FullReload)
     End Sub
 
+    ''' <summary>FormID → HDPT resolvido por el cache de este form (<c>_allHeadPartsByFid</c>, que trae TODOS
+    ''' los HDPT del load order). Es el resolver que piden los helpers compartidos de
+    ''' <see cref="HeadPartResolver"/>; vive en un solo sitio para que el seed y el swap decidan con el mismo
+    ''' cache. Nothing para un FormID que no resuelve a HDPT.</summary>
+    Private Function ResolveHdptForCascade(fid As UInteger) As HDPT_Data
+        Dim hd As HDPT_Data = Nothing
+        _allHeadPartsByFid.TryGetValue(fid, hd)
+        Return hd
+    End Function
+
     ''' <summary>Thin wrapper over the shared <see cref="HeadPartResolver.CascadeRemoveOrphanedHnamMisc"/>
     ''' (single source of truth, also used by NpcOverrideSaver's preset-load orphan suppression) resolving
     ''' HDPTs through this form's <c>_allHeadPartsByFid</c> cache. Behaviour is unchanged from the former
     ''' private implementation.</summary>
     Private Sub CascadeRemoveOrphanedHnamMisc(headParts As List(Of UInteger), removedParentFid As UInteger)
-        HeadPartResolver.CascadeRemoveOrphanedHnamMisc(headParts, removedParentFid,
-            Function(fid As UInteger) As HDPT_Data
-                Dim hd As HDPT_Data = Nothing
-                _allHeadPartsByFid.TryGetValue(fid, hd)
-                Return hd
-            End Function)
+        HeadPartResolver.CascadeRemoveOrphanedHnamMisc(headParts, removedParentFid, AddressOf ResolveHdptForCascade)
     End Sub
 
     ' =====================================================================

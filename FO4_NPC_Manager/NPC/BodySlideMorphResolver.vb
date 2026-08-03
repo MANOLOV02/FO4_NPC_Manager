@@ -1,4 +1,4 @@
-Imports FO4_Base_Library
+﻿Imports FO4_Base_Library
 
 ' ==========================================================================
 ' BodySlide vertex morph resolver for FO4_NPC_Manager.
@@ -90,10 +90,48 @@ Public Class BodySlideMorphResolver
             If Math.Abs(weight) < 0.001F Then Continue For
             If BodySlideTriResolver.IsExcludedSliderName(sliderName) Then Continue For
 
+            ' Un slider de BodySlide puede traer datos de POSICION, de UV, o de los dos: son dos
+            ' secciones distintas del PIRT con el mismo nombre de morph.
+            '
+            ' ⛔ EL BUG ORIGINAL: GetMorph no filtraba por tipo, asi que los deltas de UV se aplicaban
+            ' como POSICIONES y deformaban la malla en los DOS juegos. Eso es lo que arregla el
+            ' `TriMorphType.UV` de abajo, y vale para FO4 y para SSE por igual.
+            '
+            ' ⭐ NO se filtra por juego: DECIDE EL DATO. Si el .tri no trae seccion UV para este morph,
+            ' GetMorph devuelve Nothing y no se emite canal — que es lo que pasa hoy con todo el corpus
+            ' de FO4 (0 sliders uv de 232.265 medidos). Un gate `Game = Skyrim` no agregaba nada en ese
+            ' caso y en el otro DESCARTABA datos autorados a proposito. Ademas Wardrobe Manager aplica
+            ' el canal UV en los dos juegos: gatear solo aca hacia que las dos apps mostraran cosas
+            ' distintas con los mismos archivos. Ver [[00-reglas-motor-y-datos]]: cero hardcoding.
+            '
+            ' ⚠️ Lo que SI es cierto del motor, y queda anotado porque es la razon por la que el dato
+            ' normalmente no existe en FO4: f4ee NO aplica UV. `BodyMorphMap` es
+            ' `unordered_map<F4EEFixedString, TriShapeVertexDataPtr>` (f4ee/BodyMorphInterface.h:75),
+            ' UN solo puntero por nombre, y la unica firma de apply es
+            ' `ApplyMorph(UInt16, NiPoint3*, float)` (.h:52/59/68) — posiciones y nada mas; el cargador
+            ' lee UNA sola seccion y nunca vuelve al stream (cero ocurrencias de "uv" en el archivo).
+            ' skee64 en cambio guarda el PAR posicion/uv (skee64/BodyMorphInterface.h:194) y aplica los
+            ' dos con el MISMO factor (.cpp:440-473).
             Dim morph = pirt.GetMorph(resolvedTriShapeName, sliderName)
-            If morph Is Nothing OrElse morph.Offsets.Count = 0 Then
+            Dim morphUv = pirt.GetMorph(resolvedTriShapeName, sliderName, TriMorphType.UV)
+            Dim tienePos = morph IsNot Nothing AndAlso morph.Offsets.Count > 0
+            Dim tieneUv = morphUv IsNot Nothing AndAlso morphUv.Offsets.Count > 0
+            If Not tienePos AndAlso Not tieneUv Then
                 Continue For
             End If
+
+            If tieneUv Then
+                Dim deltasUv As New List(Of MorphData)(morphUv.Offsets.Count)
+                For Each off In morphUv.Offsets
+                    deltasUv.Add(New MorphData With {.index = off.Key, .PosDiff = off.Value})
+                Next
+                ' Mismo razonamiento que abajo para applyCkBlockGate: son body morphs, no cabeza.
+                plan.Channels.Add(New MorphChannel(sliderName, weight, deltasUv,
+                                                   isZap:=False, engineApplied:=True, applyCkBlockGate:=False,
+                                                   isClamp:=False, isUvMorph:=True))
+            End If
+
+            If Not tienePos Then Continue For
 
             Dim deltas As New List(Of MorphData)(morph.Offsets.Count)
             For Each off In morph.Offsets
