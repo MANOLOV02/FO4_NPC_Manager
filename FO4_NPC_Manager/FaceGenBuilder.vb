@@ -252,11 +252,15 @@ Public Module FaceGenBuilder
         ("bilinear", ParityAxis.LawConsistency, AddressOf FaceTintCpuCompositor.BilinearLawSelfTest),
         ("resample-hoist", ParityAxis.LawConsistency, AddressOf FaceTintCpuCompositor.ResampleHoistSelfTest),
         ("qnam-face", ParityAxis.LawConsistency, AddressOf FaceTintCpuCompositor.QnamMatchesFaceSelfTest),
-        ("softlight-inv", ParityAxis.GoldenAbsolute, AddressOf FaceTintCpuCompositor.SoftLightInverseSelfTest)
+        ("softlight-inv", ParityAxis.GoldenAbsolute, AddressOf FaceTintCpuCompositor.SoftLightInverseSelfTest),
+        ("skin-blend", ParityAxis.VectorVsScalar, AddressOf SkinningHelper.SkinningSimdSelfTest)
     }
     ' `softlight-inv`: la inversa del soft-light es la que hace que el UNFOLD cancele el fold. Sin gate, una
     ' inversa mal derivada NO se ve — sale una cara levemente distinta, no un fallo. Eje GoldenAbsolute porque
     ' el criterio es un valor absoluto (1 byte de tolerancia), no una comparacion entre dos caminos.
+    ' `skin-blend`: corre la funcion REAL SkinningHelper.BlendBoneMatrices por sus dos caminos (con paleta
+    ' plana ⇒ vectorial, sin paleta ⇒ escalar) y los compara bit a bit. El bake usa esa misma ley
+    ' (SkinBakeMath / FaceGenBuildPipeline), asi que una divergencia ahi saldria a los vertices horneados.
     ' ⛔ El comentario va ACA y no adentro del inicializador: VB no acepta una linea de comentario entre los
     ' elementos de un `From { ... }` (BC30201) — cuesta un build entero descubrirlo.
 
