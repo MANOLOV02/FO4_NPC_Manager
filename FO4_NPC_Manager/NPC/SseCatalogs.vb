@@ -137,24 +137,6 @@ Friend Module SseCatalogs
         End Try
     End Function
 
-    ''' <summary>Show the shared in-archive texture picker rooted at the overlay folder and return the chosen
-    ''' path in the form a <c>.jslot</c> stores it (relative to <c>Textures\</c>, no prefix). Nothing when the
-    ''' user cancels. <paramref name="currentJslotPath"/> preselects the current entry.
-    '''
-    ''' This replaces an <c>OpenFileDialog</c>: a file dialog cannot see textures inside a BSA, and it hands
-    ''' back an absolute disk path which is a dead path for the engine.</summary>
-    Friend Function PickOverlayTexture(owner As IWin32Window, currentJslotPath As String) As String
-        Dim keys = OverlayTextureKeys()
-        If keys.Count = 0 Then
-            MessageBox.Show(owner,
-                "No overlay textures are installed." & vbCrLf & vbCrLf &
-                "RaceMenu reads them from " & OverlayTextureRoot & " (loose files or inside a BSA). " &
-                "Install an overlay/tattoo mod and reload.",
-                "No overlay textures found", MessageBoxButtons.OK, MessageBoxIcon.Information)
-            Return Nothing
-        End If
-        Return PickTexture(owner, currentJslotPath, keys, OverlayTextureRoot)
-    End Function
 
     ''' <summary>Skin-override textures replace the actor's body/hand/feet diffuse, so they are ordinary
     ''' character textures and are picked from the whole <c>Textures\</c> tree rather than the overlay folder.</summary>

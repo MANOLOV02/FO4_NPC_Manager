@@ -3409,11 +3409,6 @@ Public Class MainForm
         End If
     End Sub
 
-    ''' <summary>True if the draft contains at least one LVLI item.</summary>
-    Friend Function DraftHasLeveled(draft As OutfitDraft) As Boolean
-        If draft Is Nothing Then Return False
-        Return draft.ItemFormIDs.Any(Function(f) IsLeveledItem(f))
-    End Function
 
     ''' <summary>Sample ONE realization of an LVLI for the Edit Outfit picker: the terminal ARMO FormIDs +
     ''' their UNION effective slot mask (for the piece's display/conflict, approach A — the LVLI behaves as

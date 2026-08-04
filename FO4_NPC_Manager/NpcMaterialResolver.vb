@@ -711,47 +711,6 @@ Friend NotInheritable Class NpcMaterialResolver
         End If
     End Sub
 
-    ''' <summary>DIAGNÓSTICO (2026-05-31): carga un NIF desde el FilesDictionary y loguea el material
-    ''' INLINE (shader + texturas, sin overrides TXST/FTST) de cada shape, con el tag
-    ''' <c>[NIF-INLINE-MAT]</c>. Sirve para comparar lo que trae el NIF ORIGINAL vs el que NOSOTROS
-    ''' redirigimos a <c>_faceBones</c> (CollectHeadPartCandidate), porque el _faceBones puede traer
-    ''' un shader/textura distintos al original (ej. HeadRear trae basehumanfemaleskin genérico).
-    ''' Todo gateado por <c>Logger.Enabled</c> — carga un NIF de más, solo con logging activo.</summary>
-    Friend Shared Sub LogNifInlineMaterials(rawDictKey As String, label As String)
-        If Not Logger.Enabled Then Return
-        Dim key = NameUtils.NormalizeDictionaryKeyWithMeshesPrefix(rawDictKey)
-        Dim loc As FilesDictionary_class.File_Location = Nothing
-        If String.IsNullOrEmpty(key) OrElse Not FilesDictionary_class.Dictionary.TryGetValue(key, loc) Then
-            Dim kL = key, lblL = label
-            Logger.LogLazy(Function() $"[NIF-INLINE-MAT] {lblL} dictKey='{kL}' → NOT-IN-DICT")
-            Return
-        End If
-        Try
-            Dim bytes = loc.GetBytes()
-            If bytes Is Nothing OrElse bytes.Length = 0 Then Return
-            Dim nif As New Nifcontent_Class_Manolo()
-            nif.Load_Manolo(bytes)
-            Dim shapes = NifRenderableShape.FromNif(nif)
-            If shapes Is Nothing Then Return
-            For Each shape In shapes
-                MaterialResolver.EnsureShapeMaterialResolved(shape)
-                Dim rm = shape.ShapeMaterial
-                Dim snL = shape.ShapeName, keyL = key, lblL = label
-                If rm Is Nothing OrElse rm.material Is Nothing Then
-                    Logger.LogLazy(Function() $"[NIF-INLINE-MAT] {lblL} dictKey='{keyL}' shape='{snL}' → no-material")
-                    Continue For
-                End If
-                Dim m = rm.material
-                Dim shdr = m.NifShaderType.ToString(), isBgsm = m.IsBGSM(), pathL = If(rm.path, "")
-                Dim d = If(m.Diffuse_or_Base_Texture, ""), n = If(m.NormalTexture, ""), s = If(m.SmoothSpecTexture, "")
-                Dim sp = If(m.SpecularTexture, ""), w = If(m.WrinklesTexture, ""), env = If(m.EnvmapTexture, "")
-                Logger.LogLazy(Function() $"[NIF-INLINE-MAT] {lblL} dictKey='{keyL}' shape='{snL}' shader={shdr} isBGSM={isBgsm} matPath='{pathL}' D='{d}' N='{n}' S='{s}' spec='{sp}' W='{w}' env='{env}'")
-            Next
-        Catch ex As Exception
-            Dim msgL = ex.Message, lblL = label, keyL = key
-            Logger.LogLazy(Function() $"[NIF-INLINE-MAT] {lblL} dictKey='{keyL}' → EX: {msgL}")
-        End Try
-    End Sub
 
     ''' <summary>DIAGNÓSTICO one-shot (2026-05-31): dumpea TODOS los TXST cargados (vanilla + mods) con
     ''' su flag DNAM (0x0001 NoSpecularMap, 0x0002 FacegenTextures, 0x0004 ModelSpaceNormal) y qué
