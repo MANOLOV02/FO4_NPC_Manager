@@ -1051,13 +1051,6 @@ Public Class MainForm
     End Sub
 
 
-    Private Sub TriggerFullRender()
-        If _renderHost.LastRenderedState Is Nothing Then Return
-        ' Reuse the existing flow used by other CheckedChanged handlers that need a full reload.
-        ' We piggyback on the outfit selection refresh path to force the render pipeline.
-        RenderCurrentStateAsyncWrapper()
-    End Sub
-
     Private Async Sub RenderCurrentStateAsyncWrapper()
         Try
             Await RenderCurrentStateAsync(System.Threading.Interlocked.Increment(_previewRequestVersion))
@@ -4029,19 +4022,6 @@ Public Class MainForm
         Return result
     End Function
 
-    Private Function GetNpcTemplateSummary(npc As NPC_Data) As String
-        If npc Is Nothing OrElse npc.TemplateFlags = 0US Then Return ""
-        Dim parts As New List(Of String)
-        For Each boxedCategory In [Enum].GetValues(GetType(NPC_TemplateCategory))
-            Dim category = CType(boxedCategory, NPC_TemplateCategory)
-            If NpcTemplateHelpers.HasTemplateFlag(npc.TemplateFlags, category) Then
-                parts.Add(NpcManagerFormat.GetTemplateCategoryLabel(category))
-            End If
-        Next
-        If parts.Count = 0 Then Return ""
-        Return "tmpl: " & String.Join(", ", parts)
-    End Function
-
     Private Function BuildTemplateDependencyMap(npcById As IReadOnlyDictionary(Of UInteger, NPC_Data)) As Dictionary(Of UInteger, List(Of TemplateDependencyEdge))
         Dim dependencyMap As New Dictionary(Of UInteger, List(Of TemplateDependencyEdge))
 
@@ -4252,14 +4232,6 @@ Public Class MainForm
         Return False
     End Function
 
-
-    Private Function GetTemplateSourceSortKey(sourceId As UInteger, npcById As IReadOnlyDictionary(Of UInteger, NPC_Data)) As String
-        If npcById.ContainsKey(sourceId) Then Return NpcDisplayHelpers.GetNpcNodeDisplayText(npcById(sourceId), Nothing)
-
-        Dim sourceRec = _pluginManager.GetRecord(sourceId)
-        If sourceRec Is Nothing Then Return sourceId.ToString("X8")
-        Return GetTemplateSourceDisplayText(sourceRec)
-    End Function
 
     Private Function GetTemplateSourceDisplayText(sourceRec As PluginRecord) As String
         If sourceRec Is Nothing Then Return "<missing template source>"

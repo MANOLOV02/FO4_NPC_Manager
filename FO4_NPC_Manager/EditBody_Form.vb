@@ -367,15 +367,6 @@ Public Class EditBody_Form
         Await TriggerSkinChangeReload()
     End Sub
 
-    ''' <summary>Append <paramref name="hdptFormID"/> to <paramref name="list"/> if non-zero and
-    ''' not already present. Kept around for any future caller; the LM template path now goes
-    ''' through <see cref="NpcRecordOverlay.MaterializeLmTemplateBundleToPreset"/>.</summary>
-    Private Shared Sub AddHdptIfMissing(list As List(Of UInteger), hdptFormID As UInteger)
-        If hdptFormID = 0UI Then Return
-        If list.Contains(hdptFormID) Then Return
-        list.Add(hdptFormID)
-    End Sub
-
     ''' <summary>Refresh the preview after an NPC.WNAM / LM SkinTemplate combo change. Tries
     ''' the fast-path first (RefreshBodySkinLivePreview): when the new skin ARMO points to the
     ''' same mesh path as the previously-loaded one, only TXST + MaterialSwap fields are
