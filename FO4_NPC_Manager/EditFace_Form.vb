@@ -43,6 +43,15 @@ Public Class EditFace_Form
     ' Preset.SseCustomMorphs; the render applies them by name via the chargen TriHead (NpcMorphResolver).
     ' RaceMenu tab controls, keyed by slider name (TinySliderTextBox for Slider / ComboBox for Preset).
     Private _sseRaceMenuControls As New Dictionary(Of String, Control)(StringComparer.OrdinalIgnoreCase)
+    ' Filter over the RaceMenu slider rows. Same idiom as the BodySlide tab (EditBody_Form.CreateBodySlideRows +
+    ' OnBodySlideFilterChanged): ONE row Control per slider inside a TopDown FlowLayoutPanel, so hiding a row
+    ' COLLAPSES it. ⛔ The rows can NOT stay in a TableLayoutPanel with Absolute RowStyles — there Visible=False
+    ' leaves the row's height behind and the filter would only blank out gaps. Category headers are rows too, and
+    ' hide when the whole group is filtered out. _sseRaceMenuRows/-Groups map name → row for the filter pass.
+    Private ReadOnly _sseRaceMenuRows As New Dictionary(Of String, Control)(StringComparer.OrdinalIgnoreCase)
+    Private ReadOnly _sseRaceMenuGroups As New List(Of (Header As Control, Names As List(Of String)))
+    Private _sseRaceMenuFlow As FlowLayoutPanel = Nothing
+    Private _sseRaceMenuFilter As TextBox = Nothing
     ''' <summary>Label showing the effective face TextureSet (NPC_.FTST) on the SSE Face Parts tab.</summary>
     Private _sseHeadTexLabel As Label = Nothing
     ' Face overlays (RaceMenu "Face [Ovl{n}]" face-paint) editor controls. The overlays live in Preset.SseBodyOverlays
@@ -880,6 +889,12 @@ Public Class EditFace_Form
     ''' Only added when the loaded RaceMenu config actually declares extended sliders for this race+gender.</summary>
     Private Sub BuildSseRaceMenuTab()
         _sseRaceMenuControls.Clear()
+        _sseRaceMenuRows.Clear()
+        _sseRaceMenuGroups.Clear()
+        ' Cleared too: the empty-catalog path below returns without building them, and the filter/resize handlers
+        ' must not find a panel from a previous build.
+        _sseRaceMenuFlow = Nothing
+        _sseRaceMenuFilter = Nothing
         Dim tab As New TabPage("RaceMenu · Sliders") With {.Name = "TabPageSseRaceMenu", .Padding = New Padding(6)}
         TabsFace.TabPages.Add(tab)   ' always present under SSE so the section is visible (empty ⇒ shows why)
 
@@ -928,31 +943,39 @@ Public Class EditFace_Form
             Return
         End If
 
-        Dim panel As New TableLayoutPanel With {.Dock = DockStyle.Fill, .AutoScroll = True, .ColumnCount = 2, .Padding = New Padding(4)}
-        panel.ColumnStyles.Add(New ColumnStyle(SizeType.Absolute, 200))
-        panel.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100))
+        ' Root = filter box on top of the scrolling row flow. The catalog runs to hundreds of sliders on a modded
+        ' race, so the filter is not cosmetic; it is the only way to reach one by name (same as the BodySlide tab).
+        Dim root As New TableLayoutPanel With {.Dock = DockStyle.Fill, .ColumnCount = 1, .RowCount = 2}
+        root.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100))
+        root.RowStyles.Add(New RowStyle(SizeType.AutoSize))
+        root.RowStyles.Add(New RowStyle(SizeType.Percent, 100))
+        _sseRaceMenuFilter = New TextBox With {.Dock = DockStyle.Top, .Margin = New Padding(3)}
+        _sseRaceMenuFilter.PlaceholderText = "Filter sliders…"
+        AddHandler _sseRaceMenuFilter.TextChanged, AddressOf OnSseRaceMenuFilterChanged
+        root.Controls.Add(_sseRaceMenuFilter, 0, 0)
+        _sseRaceMenuFlow = New FlowLayoutPanel With {
+            .Dock = DockStyle.Fill, .AutoScroll = True, .FlowDirection = FlowDirection.TopDown,
+            .WrapContents = False, .Padding = New Padding(4)}
+        AddHandler _sseRaceMenuFlow.Resize, AddressOf OnSseRaceMenuFlowResize
+        root.Controls.Add(_sseRaceMenuFlow, 0, 1)
+
         ' Category display order (skee64 bitflags): Face, Eyes, Brow, Mouth, Head, Hair, Body, Extra, Expressions.
         Dim catOrder = New Integer() {16, 32, 64, 128, 8, 256, 4, 512, 1024}
-        Dim row As Integer = 0
         For Each catVal In catOrder
             Dim inCat = sliders.Where(Function(s) s.Category = catVal AndAlso s.Type <> FO4_Base_Library.RaceMenuSliderCatalog.SliderType.HeadPart).ToList()
             If inCat.Count = 0 Then Continue For
-            panel.RowStyles.Add(New RowStyle(SizeType.Absolute, 28))
-            Dim hdr As New Label With {.Text = FO4_Base_Library.RaceMenuSliderCatalog.CategoryName(catVal), .Dock = DockStyle.Fill, .TextAlign = ContentAlignment.MiddleLeft,
-                                       .Font = New Font(Me.Font, FontStyle.Bold), .ForeColor = SystemColors.HotTrack, .Margin = New Padding(0, 8, 0, 0)}
-            panel.Controls.Add(hdr, 0, row) : panel.SetColumnSpan(hdr, 2) : row += 1
+            Dim hdr = AddSseRaceMenuHeader(FO4_Base_Library.RaceMenuSliderCatalog.CategoryName(catVal))
+            Dim groupNames As New List(Of String)
             For Each def0 In inCat
                 Dim def = def0
-                panel.RowStyles.Add(New RowStyle(SizeType.Absolute, 30))
-                panel.Controls.Add(New Label With {.Text = def.Name, .Anchor = AnchorStyles.Left, .AutoSize = True, .Margin = New Padding(14, 8, 3, 0)}, 0, row)
+                Dim ctl As Control
                 If def.Type = FO4_Base_Library.RaceMenuSliderCatalog.SliderType.Preset Then
                     Dim cb As New ComboBox With {.DropDownStyle = ComboBoxStyle.DropDownList, .Anchor = AnchorStyles.Left Or AnchorStyles.Right, .Margin = New Padding(3, 4, 8, 3)}
                     cb.Items.Add("Default")
                     For n = 1 To Math.Max(1, def.PresetCount) : cb.Items.Add(def.LowerBound & n.ToString()) : Next
                     cb.SelectedIndex = Math.Max(0, Math.Min(cb.Items.Count - 1, CInt(Math.Truncate(CDbl(GetSseCustomValue(def.Name))))))
                     AddHandler cb.SelectedIndexChanged, Sub(s, e) OnSseRaceMenuChanged(def.Name, CSng(cb.SelectedIndex))
-                    panel.Controls.Add(cb, 1, row)
-                    _sseRaceMenuControls(def.Name) = cb
+                    ctl = cb
                 Else
                     ' Slider: range from the bounds (skee64 LoadSliders:1318-1319): has lower ⇒ min −1, has upper ⇒ max +1.
                     Dim lo As Double = If(String.IsNullOrEmpty(def.LowerBound), 0.0R, -1.0R)
@@ -963,39 +986,117 @@ Public Class EditFace_Form
                         .Height = 26, .Dock = DockStyle.Fill, .Margin = New Padding(3, 3, 8, 3), .Value = Math.Max(lo, Math.Min(hi, CDbl(GetSseCustomValue(def.Name))))}
                     AddHandler tb.ValueChanged, Sub(s, e) OnSseRaceMenuChanged(def.Name, CSng(tb.Value))
                     AddHandler tb.DragEnded, AddressOf OnSliderDragEnded
-                    panel.Controls.Add(tb, 1, row)
-                    _sseRaceMenuControls(def.Name) = tb
+                    ctl = tb
                 End If
-                row += 1
+                AddSseRaceMenuRow(def.Name, ctl)
+                _sseRaceMenuControls(def.Name) = ctl
+                groupNames.Add(def.Name)
             Next
+            _sseRaceMenuGroups.Add((hdr, groupNames))
         Next
 
         ' Uncatalogued custom morphs carried by this NPC's preset (see the comment above). RaceMenu stores a
         ' custom morph as a plain name→value pair with no declared bounds, and skee64 applies negative values to
         ' the slider's lower morph and positive to the upper (ApplyMorphs), so −1..1 is the faithful range.
         If extras.Count > 0 Then
-            panel.RowStyles.Add(New RowStyle(SizeType.Absolute, 28))
-            Dim hdr As New Label With {.Text = If(sliders.Count = 0, "Custom morphs (from this NPC)", "Custom morphs (no slider definition installed)"),
-                                       .Dock = DockStyle.Fill, .TextAlign = ContentAlignment.MiddleLeft,
-                                       .Font = New Font(Me.Font, FontStyle.Bold), .ForeColor = SystemColors.HotTrack, .Margin = New Padding(0, 8, 0, 0)}
-            panel.Controls.Add(hdr, 0, row) : panel.SetColumnSpan(hdr, 2) : row += 1
+            Dim hdr = AddSseRaceMenuHeader(If(sliders.Count = 0, "Custom morphs (from this NPC)", "Custom morphs (no slider definition installed)"))
+            Dim groupNames As New List(Of String)
             For Each name0 In extras
                 Dim nm = name0
-                panel.RowStyles.Add(New RowStyle(SizeType.Absolute, 30))
-                panel.Controls.Add(New Label With {.Text = nm, .Anchor = AnchorStyles.Left, .AutoSize = True, .Margin = New Padding(14, 8, 3, 0)}, 0, row)
                 Dim tb As New FO4_Base_Library.TinySliderTextBox With {
                     .Minimum = -1.0R, .Maximum = 1.0R, .DisplayFormat = "0.00", .SmallChange = 0.01R, .LargeChange = 0.1R,
                     .Height = 26, .Dock = DockStyle.Fill, .Margin = New Padding(3, 3, 8, 3),
                     .Value = Math.Max(-1.0R, Math.Min(1.0R, CDbl(GetSseCustomValue(nm))))}
                 AddHandler tb.ValueChanged, Sub(s, e) OnSseRaceMenuChanged(nm, CSng(tb.Value))
                 AddHandler tb.DragEnded, AddressOf OnSliderDragEnded
-                panel.Controls.Add(tb, 1, row)
+                AddSseRaceMenuRow(nm, tb)
                 _sseRaceMenuControls(nm) = tb
-                row += 1
+                groupNames.Add(nm)
             Next
+            _sseRaceMenuGroups.Add((hdr, groupNames))
         End If
 
-        tab.Controls.Add(panel)   ' tab was already added to TabsFace above
+        tab.Controls.Add(root)   ' tab was already added to TabsFace above
+    End Sub
+
+    ''' <summary>Bold category header, added to the row flow as a row of its own so the filter can hide it with
+    ''' its whole group.</summary>
+    Private Function AddSseRaceMenuHeader(text As String) As Control
+        Dim hdr As New Label With {
+            .Text = text, .AutoSize = False, .Height = 26, .Width = SseRaceMenuRowWidth(),
+            .TextAlign = ContentAlignment.BottomLeft, .Font = New Font(Me.Font, FontStyle.Bold),
+            .ForeColor = SystemColors.HotTrack, .Margin = New Padding(0, 8, 0, 0)}
+        _sseRaceMenuFlow.Controls.Add(hdr)
+        Return hdr
+    End Function
+
+    ''' <summary>One filterable slider row: a fixed-height 2-column strip (name | control) in the flow, keyed by
+    ''' slider name in <see cref="_sseRaceMenuRows"/>. AutoSize stays OFF for the same reason as the BodySlide rows
+    ''' (EditBody_Form.CreateBodySlideRows): with it on, the layout engine shrinks the row back to its preferred
+    ''' width and silently discards the width assigned here and in <see cref="OnSseRaceMenuFlowResize"/>.</summary>
+    Private Sub AddSseRaceMenuRow(name As String, ctl As Control)
+        Dim row As New TableLayoutPanel With {
+            .ColumnCount = 2, .RowCount = 1, .AutoSize = False,
+            .Width = SseRaceMenuRowWidth(), .Height = 30, .Margin = New Padding(0, 0, 0, 2)}
+        row.ColumnStyles.Add(New ColumnStyle(SizeType.Absolute, 200))
+        row.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100.0F))
+        row.RowStyles.Add(New RowStyle(SizeType.Percent, 100.0F))
+        row.Controls.Add(New Label With {
+            .Text = name, .AutoSize = False, .Dock = DockStyle.Fill,
+            .TextAlign = ContentAlignment.MiddleLeft, .Margin = New Padding(11, 0, 3, 0)}, 0, 0)
+        row.Controls.Add(ctl, 1, 0)
+        _sseRaceMenuFlow.Controls.Add(row)
+        _sseRaceMenuRows(name) = row
+    End Sub
+
+    ''' <summary>Width for one row: the flow's client width minus a scrollbar reserve, so a row is never clipped
+    ''' once the scrollbar appears.</summary>
+    Private Function SseRaceMenuRowWidth() As Integer
+        If _sseRaceMenuFlow Is Nothing Then Return 460
+        Return Math.Max(240, _sseRaceMenuFlow.ClientSize.Width - SystemInformation.VerticalScrollBarWidth - 4)
+    End Function
+
+    ''' <summary>FlowLayoutPanel ignores Anchor on its children, so every row (and header) is resized by hand when
+    ''' the panel changes width. Mirrors EditBody_Form.BodySlidePanel_Resize.</summary>
+    Private Sub OnSseRaceMenuFlowResize(sender As Object, e As EventArgs)
+        If _sseRaceMenuFlow Is Nothing OrElse _sseRaceMenuFlow.Controls.Count = 0 Then Return
+        Dim w = SseRaceMenuRowWidth()
+        _sseRaceMenuFlow.SuspendLayout()
+        Try
+            For Each c As Control In _sseRaceMenuFlow.Controls
+                c.Width = w
+            Next
+        Finally
+            _sseRaceMenuFlow.ResumeLayout()
+        End Try
+    End Sub
+
+    ''' <summary>Narrow the RaceMenu rows by slider name (case-insensitive substring), like the BodySlide tab's
+    ''' filter. A category header hides when nothing under it survives the filter — otherwise the panel would show
+    ''' section titles with no rows.</summary>
+    Private Sub OnSseRaceMenuFilterChanged(sender As Object, e As EventArgs)
+        If _sseRaceMenuFlow Is Nothing Then Return
+        Dim filter = If(_sseRaceMenuFilter Is Nothing, "", _sseRaceMenuFilter.Text.Trim())
+        _sseRaceMenuFlow.SuspendLayout()
+        Try
+            For Each kv In _sseRaceMenuRows
+                kv.Value.Visible = (filter.Length = 0) OrElse
+                                   kv.Key.Contains(filter, StringComparison.OrdinalIgnoreCase)
+            Next
+            For Each g In _sseRaceMenuGroups
+                Dim anyVisible As Boolean = False
+                For Each nm In g.Names
+                    Dim r As Control = Nothing
+                    If _sseRaceMenuRows.TryGetValue(nm, r) AndAlso r.Visible Then
+                        anyVisible = True
+                        Exit For
+                    End If
+                Next
+                g.Header.Visible = anyVisible
+            Next
+        Finally
+            _sseRaceMenuFlow.ResumeLayout()
+        End Try
     End Sub
 
     ''' <summary>Current value of a RaceMenu custom morph (ValueSet entry) by slider name; 0 when absent.</summary>
@@ -4231,8 +4332,65 @@ Public Class EditFace_Form
             ResetSseTintsSection()
         ElseIf active Is TabPageSseSculpt Then
             ResetSseSculptSection()
+        ElseIf active IsNot Nothing AndAlso active.Name = "TabPageSseRaceMenu" Then
+            ResetSseRaceMenuSection()
+        ElseIf active IsNot Nothing AndAlso active.Name = "TabPageSseFaceOverlays" Then
+            ResetSseFaceOverlaysSection()
         End If
     End Sub
+
+    ''' <summary>SSE: revert the RaceMenu EXTENDED sliders (Preset.SseCustomMorphs, the NiOverride ValueSet keyed by
+    ''' slider name) to the construction snapshot. These tabs are code-built, so they are matched by NAME — they are
+    ''' not Designer fields like the ones above.
+    ''' <para>⛔ Sin esto el Reset de esta pestaña no hacía NADA: el dispatch no tenía rama y el botón quedaba mudo.
+    ''' El canal es SUYO — ResetSseMorphsSection (vanilla NAM9/NAMA) ya no lo toca.</para></summary>
+    Private Sub ResetSseRaceMenuSection()
+        Dim p = Preset
+        If p Is Nothing Then Return
+        Dim src = _seedPreset
+        ' Lista nueva (no mutación in-place): el preset comparte instancia con _appliedPresets y con el snapshot
+        ' del ctor, así que reasignar es lo que deja intactos los snapshots de Cancel/Reset.
+        p.SseCustomMorphs = CloneSseCustomMorphList(If(src Is Nothing, Nothing, src.SseCustomMorphs))
+        ' Las filas se construyeron desde el catálogo ∪ los morphs del preset AL ABRIR, y el editor no puede
+        ' inventar nombres nuevos (sólo mover valores), así que todo nombre del snapshot tiene su fila: alcanza con
+        ' re-sembrar los controles, sin reconstruir la pestaña.
+        RefreshSseRaceMenuControls()
+        ' Un click no tiene DragEnded que drene la cola del throttle ⇒ Schedule + Flush = re-render inmediato.
+        ScheduleRefresh(FaceRefreshScope.Morphs)
+        FlushRefresh()
+    End Sub
+
+    ''' <summary>SSE: revert the RaceMenu FACE PAINT overlays to the construction snapshot.
+    ''' <para>⛔ Sólo los nodos de zona Face: Body/Hands/Feet viven en el MISMO carrier
+    ''' (<c>Preset.SseBodyOverlays</c>) pero se editan en Edit Body, así que pisar el array entero acá resetearía
+    ''' una sección que este formulario no posee.</para></summary>
+    Private Sub ResetSseFaceOverlaysSection()
+        Dim p = Preset
+        If p Is Nothing Then Return
+        Dim src = _seedPreset
+        Dim rebuilt As New List(Of RaceMenuJslot.JslotOverlayNode)
+        If p.SseBodyOverlays IsNot Nothing Then
+            For Each ov In p.SseBodyOverlays
+                If ov IsNot Nothing AndAlso Not IsFaceZoneOverlayNode(ov.NodeName) Then rebuilt.Add(ov)
+            Next
+        End If
+        If src IsNot Nothing AndAlso src.SseBodyOverlays IsNot Nothing Then
+            For Each ov In src.SseBodyOverlays
+                ' Clone() y no copia campo a campo: así viaja también la preservación de claves no modeladas (RawValues).
+                If ov IsNot Nothing AndAlso IsFaceZoneOverlayNode(ov.NodeName) Then rebuilt.Add(ov.Clone())
+            Next
+        End If
+        p.SseBodyOverlays = If(rebuilt.Count = 0, Nothing, rebuilt)
+        RefreshFaceOvList(-1)
+        _refresh?.Invoke(FaceRefreshScope.FullReload)
+    End Sub
+
+    ''' <summary>True for a "Face [Ovl{n}]" overlay node — the same zone predicate <see cref="FaceOverlaysList"/>
+    ''' uses to pick this tab's rows out of the shared overlay carrier.</summary>
+    Private Shared Function IsFaceZoneOverlayNode(nodeName As String) As Boolean
+        Dim z = SseCatalogs.ZoneOfNode(nodeName)
+        Return z.HasValue AndAlso z.Value = SseCatalogs.OverlayZone.Face
+    End Function
 
     ''' <summary>SSE: revert los bloques de sculpt borrados con "Delete selected sculpt" al snapshot de
     ''' construcción. Sin esto el Reset de esta pestaña no hacía NADA — inofensivo mientras era read-only,
@@ -4249,17 +4407,20 @@ Public Class EditFace_Form
         FlushRefresh()
     End Sub
 
-    ''' <summary>SSE: revert NAM9/NAMA sliders + custom morphs to the construction snapshot (_seedPreset), else
-    ''' to the NPC's authored NAM9/NAMA. Mirrors ResetVertexMorphsSection but for the SSE morph channel.</summary>
+    ''' <summary>SSE: revert the VANILLA NAM9/NAMA sliders to the construction snapshot (_seedPreset), else to the
+    ''' NPC's authored NAM9/NAMA. Mirrors ResetVertexMorphsSection but for the SSE morph channel.
+    ''' <para>⛔ NO toca <c>SseCustomMorphs</c>: ese canal es de la pestaña "RaceMenu · Sliders"
+    ''' (<see cref="ResetSseRaceMenuSection"/>). Antes lo borraba, así que un Reset de ESTA sección se llevaba
+    ''' puestos los sliders extendidos de la OTRA —y encima dejaba sus controles mostrando el valor viejo, porque
+    ''' PopulateSseMorphTab sólo reconstruye las filas vanilla.</para></summary>
     Private Sub ResetSseMorphsSection()
         Dim p = Preset
         Dim src = _seedPreset
         ' Revert the preset's SSE morph overrides to the snapshot (deep-copied so later edits don't touch _seedPreset).
         p.SseNam9 = If(src IsNot Nothing AndAlso src.SseNam9 IsNot Nothing, DirectCast(src.SseNam9.Clone(), Single()), Nothing)
         p.SseNama = If(src IsNot Nothing AndAlso src.SseNama IsNot Nothing, DirectCast(src.SseNama.Clone(), UInteger()), Nothing)
-        p.SseCustomMorphs = CloneSseCustomMorphList(If(src Is Nothing, Nothing, src.SseCustomMorphs))
         p.HasSseMorphs = If(src IsNot Nothing, src.HasSseMorphs, False)
-        PopulateSseMorphTab()   ' rebuilds rows (custom count may change); LoadSseMorphValues seeds sliders from the base NPC
+        PopulateSseMorphTab()   ' rebuild the vanilla rows; LoadSseMorphValues seeds the sliders from the base NPC
         ' Re-assert the snapshot override on top of the base seeding (only when the snapshot actually held one).
         _suspendEvents = True
         Try

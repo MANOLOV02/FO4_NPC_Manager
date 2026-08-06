@@ -1291,6 +1291,11 @@ Public Class EditBody_Form
     ' reproduces the .jslot's 3×3 matrix exactly. FO4 has no node-transform system → SSE-only tab.
     Private _sseNodeList As ListBox
     Private ReadOnly _sseNodeItems As New List(Of (Label As String, Node As String))
+    ' Filter over the node list. With "show all rig bones" on this is every bone of the skeleton (hundreds), so the
+    ' box is the only way to reach one by name. _sseNodeShown is the parallel mapping shown-row → item (same idiom
+    ' as _ssePaintShown / _bodySlideRows): once the list is filtered, the ListBox index can NOT index _sseNodeItems.
+    Private _sseNodeFilter As TextBox
+    Private ReadOnly _sseNodeShown As New List(Of (Label As String, Node As String))
     Private _sseNodeDetailPanel As Control
     Private _sseNodeScaleBar As FO4_Base_Library.TinySliderTextBox
     Private _sseNodePosX As FO4_Base_Library.TinySliderTextBox
@@ -1404,10 +1409,11 @@ Public Class EditBody_Form
             .Text = "RaceMenu node transforms (NiOverride): per-bone scale, position and rotation. Pick a node, then edit its TRS. Loaded/saved with the .jslot + sidecar."}
         root.Controls.Add(header, 0, 0) : root.SetColumnSpan(header, 2)
 
-        ' Left column: "show all" toggle above the node list. The list itself is filled by RebuildSseNodeItems
-        ' (RaceMenu's registered body nodes ∪ the dynamic node catalog ∪ preset nodes; + weapons + all rig bones
-        ' when show-all is on).
-        Dim leftCol As New TableLayoutPanel With {.Dock = DockStyle.Fill, .ColumnCount = 1, .RowCount = 2}
+        ' Left column: "show all" toggle + name filter above the node list. The list itself is filled by
+        ' RebuildSseNodeItems (RaceMenu's registered body nodes ∪ the dynamic node catalog ∪ preset nodes; + weapons
+        ' + all rig bones when show-all is on).
+        Dim leftCol As New TableLayoutPanel With {.Dock = DockStyle.Fill, .ColumnCount = 1, .RowCount = 3}
+        leftCol.RowStyles.Add(New RowStyle(SizeType.AutoSize))
         leftCol.RowStyles.Add(New RowStyle(SizeType.AutoSize))
         leftCol.RowStyles.Add(New RowStyle(SizeType.Percent, 100))
         _sseShowAllCheck = New CheckBox With {.Text = "Show all rig bones (+ weapons)", .AutoSize = True,
@@ -1419,9 +1425,13 @@ Public Class EditBody_Form
                        "Off = that faithful set (present on this rig) plus any node the preset uses. On = also the " &
                        "weapon nodes and every other bone the skeleton has.")
         leftCol.Controls.Add(_sseShowAllCheck, 0, 0)
+        _sseNodeFilter = New TextBox With {.Dock = DockStyle.Fill, .Margin = New Padding(3)}
+        _sseNodeFilter.PlaceholderText = "Filter nodes…"
+        AddHandler _sseNodeFilter.TextChanged, AddressOf OnSseNodeFilterChanged
+        leftCol.Controls.Add(_sseNodeFilter, 0, 1)
         _sseNodeList = New ListBox With {.Dock = DockStyle.Fill, .IntegralHeight = False}
         AddHandler _sseNodeList.SelectedIndexChanged, AddressOf OnSseNodeSelChanged
-        leftCol.Controls.Add(_sseNodeList, 0, 1)
+        leftCol.Controls.Add(_sseNodeList, 0, 2)
         root.Controls.Add(leftCol, 0, 1)
         RebuildSseNodeItems()
 
@@ -1487,15 +1497,17 @@ Public Class EditBody_Form
         detail.Controls.Add(bar, 1, row)
     End Sub
 
-    ''' <summary>Fill the node ListBox from <see cref="_sseNodeItems"/>, marking nodes that carry a non-identity
-    ''' transform with a ●, then load the selected node's TRS into the detail sliders.</summary>
+    ''' <summary>Fill the node ListBox from <see cref="_sseNodeShown"/> (= <see cref="_sseNodeItems"/> narrowed by the
+    ''' filter box), marking nodes that carry a non-identity transform with a ●, then load the selected node's TRS
+    ''' into the detail sliders. <paramref name="selectIndex"/> is an index into the SHOWN rows.</summary>
     Private Sub PopulateSseNodeList(selectIndex As Integer)
         If _sseNodeList Is Nothing Then Return
+        RebuildSseNodeShown()
         _suspendEvents = True
         Try
             _sseNodeList.BeginUpdate()
             _sseNodeList.Items.Clear()
-            For Each it In _sseNodeItems
+            For Each it In _sseNodeShown
                 _sseNodeList.Items.Add(SseNodeRowLabel(it.Label, it.Node))
             Next
             _sseNodeList.EndUpdate()
@@ -1506,6 +1518,31 @@ Public Class EditBody_Form
         LoadSseNodeDetail()
     End Sub
 
+    ''' <summary>Project <see cref="_sseNodeItems"/> through the filter box into <see cref="_sseNodeShown"/>. Matches
+    ''' on the friendly label OR the raw node name (case-insensitive substring), since the label is what the user
+    ''' reads for RaceMenu's known nodes while the bone name is what a preset/skeleton carries.</summary>
+    Private Sub RebuildSseNodeShown()
+        Dim filter = If(_sseNodeFilter Is Nothing, "", _sseNodeFilter.Text.Trim())
+        _sseNodeShown.Clear()
+        For Each it In _sseNodeItems
+            If filter.Length = 0 OrElse
+               (it.Label IsNot Nothing AndAlso it.Label.Contains(filter, StringComparison.OrdinalIgnoreCase)) OrElse
+               (it.Node IsNot Nothing AndAlso it.Node.Contains(filter, StringComparison.OrdinalIgnoreCase)) Then
+                _sseNodeShown.Add(it)
+            End If
+        Next
+    End Sub
+
+    ''' <summary>Filter changed → re-project the rows, keeping the selected node selected when it survives the
+    ''' filter (otherwise the detail panel would silently jump to another node's TRS).</summary>
+    Private Sub OnSseNodeFilterChanged(sender As Object, e As EventArgs)
+        Dim keep = _sseNodeSelected
+        RebuildSseNodeShown()
+        Dim idx = If(String.IsNullOrEmpty(keep), -1,
+                     _sseNodeShown.FindIndex(Function(x) String.Equals(x.Node, keep, StringComparison.OrdinalIgnoreCase)))
+        PopulateSseNodeList(Math.Max(0, idx))
+    End Sub
+
     Private Function SseNodeRowLabel(label As String, node As String) As String
         Dim nt = FindSseNodeTransform(node)
         Return If(nt IsNot Nothing AndAlso Not nt.IsIdentity, label & "  ●", label)
@@ -1514,8 +1551,9 @@ Public Class EditBody_Form
     Private Function SelectedSseNode() As String
         If _sseNodeList Is Nothing Then Return Nothing
         Dim i = _sseNodeList.SelectedIndex
-        If i < 0 OrElse i >= _sseNodeItems.Count Then Return Nothing
-        Return _sseNodeItems(i).Node
+        ' _sseNodeShown, NOT _sseNodeItems: with a filter typed the row index no longer indexes the full item list.
+        If i < 0 OrElse i >= _sseNodeShown.Count Then Return Nothing
+        Return _sseNodeShown(i).Node
     End Function
 
     Private Function FindSseNodeTransform(node As String) As RaceMenuJslot.JslotNodeTransform
@@ -1637,8 +1675,8 @@ Public Class EditBody_Form
     Private Sub RefreshSseNodeMarker()
         If _sseNodeList Is Nothing Then Return
         Dim i = _sseNodeList.SelectedIndex
-        If i < 0 OrElse i >= _sseNodeItems.Count Then Return
-        Dim it = _sseNodeItems(i)
+        If i < 0 OrElse i >= _sseNodeShown.Count Then Return
+        Dim it = _sseNodeShown(i)
         Dim newText = SseNodeRowLabel(it.Label, it.Node)
         If String.Equals(CStr(_sseNodeList.Items(i)), newText) Then Return
         Dim keep = _suspendEvents
@@ -3025,7 +3063,10 @@ Public Class EditBody_Form
         Dim existing = TabsBody.TabPages.Cast(Of TabPage)().FirstOrDefault(Function(t) t.Name = "TabPageSseBodyScale")
         Dim wasSelected = existing IsNot Nothing AndAlso TabsBody.SelectedTab Is existing
         If existing IsNot Nothing Then TabsBody.TabPages.Remove(existing)
+        ' Both are recreated by BuildSseBodyScaleTab; nulled so nothing reads the removed tab's controls in between
+        ' (RebuildSseNodeShown consults the filter box).
         _sseNodeList = Nothing
+        _sseNodeFilter = Nothing
         BuildSseBodyScaleTab()
         If wasSelected Then
             Dim rebuilt = TabsBody.TabPages.Cast(Of TabPage)().FirstOrDefault(Function(t) t.Name = "TabPageSseBodyScale")
