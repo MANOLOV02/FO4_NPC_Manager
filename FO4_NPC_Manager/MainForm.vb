@@ -197,6 +197,12 @@ Public Class MainForm
     Private _pendingTreeFilter As String = ""
     Private WithEvents SearchDebounceTimer As New System.Windows.Forms.Timer()
 
+    ''' <summary>Advanced-filter facet resolver. Created the FIRST time a query actually carries a
+    ''' facet token and never before: a session that only ever uses the plain search box pays nothing
+    ''' for this feature — no memory, no record reads, no startup work. See NpcFilterIndex for the
+    ''' rest of the cost model.</summary>
+    Private _filterIndex As NpcFilterIndex = Nothing
+
     ''' <summary>Cache of NPC_Manager auto-generated plugins on disk (TES4.CNAM matches the
     ''' canonical author string). Populated lazily the first time the user opens the Save ESP
     ''' dialog, then invalidated/updated by the Save handler when a new plugin is written or
@@ -2221,6 +2227,10 @@ Public Class MainForm
             _npcSearchableCache(npc.FormID) = NpcDisplayHelpers.BuildNpcSearchableText(npc)
             _npcDisplayLabelCache(npc.FormID) = NpcDisplayHelpers.BuildNpcDisplayLabel(npc)
         Next
+        ' Load order changed: the advanced-filter caches are keyed by FormID (both the NPC results and
+        ' the referenced HDPT/ARMO/RACE labels), so they cannot survive a different plugin set. Not
+        ' rebuilt here — the index goes back to being lazy and re-fills only if a facet is used again.
+        _filterIndex?.InvalidateAll()
     End Sub
 
     ''' <summary>Filter the skin ARMO universe (built once at plugin load) by the race+gender of
@@ -3794,7 +3804,22 @@ Public Class MainForm
             RebuildTreeModelCache()
         End If
 
-        Dim normalizedFilter = If(filter, "").Trim()
+        ' ⛔ NO-OP PATH. NpcFilterQuery.Parse hands back the input VERBATIM as FreeText when the text
+        ' carries no `facet:value` token, so `normalizedFilter` here is byte-identical to the old
+        ' `If(filter, "").Trim()` and every downstream comparison is the one that always ran. Only a
+        ' query with facets builds `advIndex` — and only then does anything read a referenced record.
+        ' The gate on that claim is `--filter-selftest` (Program.vb); it must stay green.
+        Dim query = NpcFilterQuery.Parse(filter)
+        Dim normalizedFilter = query.FreeText.Trim()
+        Dim advTerms = query.Terms
+        Dim advIndex As NpcFilterIndex = If(advTerms.Length > 0, EnsureFilterIndex(), Nothing)
+        ' The `templates:` mode travels in the query string like everything else, so it is applied per
+        ' repopulate. The setter is a no-op when the value did not change; when it did, it drops the
+        ' per-NPC caches (the effective values are what the mode changes).
+        If advIndex IsNot Nothing Then advIndex.FollowTemplates = query.FollowTemplates
+        ' Anything that used to key off "there is text in the box" (auto-expand, LVLN leaf pruning)
+        ' has to key off "there is a filter" now, or an advanced-only query renders a collapsed tree.
+        Dim filterActive As Boolean = normalizedFilter.Length > 0 OrElse advTerms.Length > 0
         ' "Only changed" filter: when ticked, restrict the tree to NPCs in the dirty set (bold ones),
         ' combined with the text filter. Applies to both placed NPCs and LVLN leaf NPCs.
         Dim onlyChanged As Boolean = CheckBoxOnlyChanged IsNot Nothing AndAlso CheckBoxOnlyChanged.Checked
@@ -3823,7 +3848,8 @@ Public Class MainForm
             Dim pluginSectionNpcs = _allNPCs.
                 Where(Function(n) NpcMatchesCategoryFilter(n, showUnique, showGeneric, showTemplate, showUnused) AndAlso
                                    (Not onlyChanged OrElse _dirtyNpcs.Contains(n.FormID)) AndAlso
-                                   (normalizedFilter.Length = 0 OrElse MatchesNpcFilter(n, Nothing, normalizedFilter))).
+                                   (normalizedFilter.Length = 0 OrElse MatchesNpcFilter(n, Nothing, normalizedFilter)) AndAlso
+                                   (advIndex Is Nothing OrElse advIndex.MatchesAll(n, advTerms))).
                 GroupBy(Function(n) If(n.PluginName, "Unknown")).
                 OrderBy(Function(g) g.Key, StringComparer.OrdinalIgnoreCase)
 
@@ -3843,6 +3869,9 @@ Public Class MainForm
                     If Not _npcDisplayLabelCache.TryGetValue(npc.FormID, displayLabel) Then
                         displayLabel = NpcDisplayHelpers.BuildNpcDisplayLabel(npc)
                     End If
+                    ' ⛔ The node text is the NPC's label and NOTHING else. An earlier version appended
+                    ' the matched facet here ("— hair↑ Hair_Cait"); the filter must not rewrite what the
+                    ' NPC is called.
                     Dim npcNode = New TreeNode(displayLabel) With {
                         .Name = $"NPC_{npc.FormID:X8}",
                         .Tag = npc
@@ -3854,7 +3883,7 @@ Public Class MainForm
                 If pluginNode IsNot Nothing Then
                     pluginNode.Text = $"{pluginGroup.Key} ({matchCount})"
                     TreeViewNPCs.Nodes.Add(pluginNode)
-                    If normalizedFilter.Length > 0 OrElse onlyChanged Then pluginNode.Expand()
+                    If filterActive OrElse onlyChanged Then pluginNode.Expand()
                 End If
             Next
 
@@ -3877,7 +3906,7 @@ Public Class MainForm
                     If rec Is Nothing OrElse lvln Is Nothing Then Continue For
 
                     Dim visibleLeaves As List(Of NPC_Data) = Nothing
-                    If onlyChanged OrElse normalizedFilter.Length > 0 Then
+                    If onlyChanged OrElse filterActive Then
                         visibleLeaves = New List(Of NPC_Data)
                         Dim leaves As List(Of UInteger) = Nothing
                         If Not _lvlnLeavesCache.TryGetValue(fid, leaves) Then leaves = New List(Of UInteger)
@@ -3887,13 +3916,19 @@ Public Class MainForm
                             If Not _ctx.NpcCache.TryGetValue(leafFid, leafNpc) Then Continue For
                             If onlyChanged AndAlso Not _dirtyNpcs.Contains(leafFid) Then Continue For
                             If normalizedFilter.Length > 0 AndAlso Not MatchesNpcFilter(leafNpc, Nothing, normalizedFilter) Then Continue For
+                            If advIndex IsNot Nothing AndAlso Not advIndex.MatchesAll(leafNpc, advTerms) Then Continue For
                             visibleLeaves.Add(leafNpc)
                         Next
 
                         If onlyChanged Then
                             If visibleLeaves.Count = 0 Then Continue For
-                        ElseIf normalizedFilter.Length > 0 AndAlso visibleLeaves.Count = 0 AndAlso Not NpcDisplayHelpers.MatchesRecordFilter(rec, normalizedFilter) Then
-                            Continue For
+                        ElseIf filterActive AndAlso visibleLeaves.Count = 0 Then
+                            ' An LVLN record has no head parts / skin / outfit of its own, so it can
+                            ' NEVER satisfy a facet term: with the advanced filter on it survives only
+                            ' through a matching child. Free text alone keeps the old behaviour (the
+                            ' list itself can match by EditorID / FormID / plugin).
+                            If advTerms.Length > 0 Then Continue For
+                            If Not NpcDisplayHelpers.MatchesRecordFilter(rec, normalizedFilter) Then Continue For
                         End If
                     End If
 
@@ -3966,13 +4001,13 @@ Public Class MainForm
                         matchCount += 1
                         ' Auto-expand to reveal the surviving children when filtering by text or by
                         ' "Only changed" (so the dirty NPCs show without a manual expand).
-                        If childMatchCount > 0 AndAlso (normalizedFilter.Length > 0 OrElse onlyChanged) Then lvlnNode.Expand()
+                        If childMatchCount > 0 AndAlso (filterActive OrElse onlyChanged) Then lvlnNode.Expand()
                     Next
 
                     If pluginNode IsNot Nothing AndAlso pluginNode.Nodes.Count > 0 Then
                         pluginNode.Text = $"[LVLN] {pluginGroup.Key} ({matchCount})"
                         TreeViewNPCs.Nodes.Add(pluginNode)
-                        If normalizedFilter.Length > 0 OrElse onlyChanged Then pluginNode.Expand()
+                        If filterActive OrElse onlyChanged Then pluginNode.Expand()
                     End If
                 Next
             End If
@@ -7546,6 +7581,48 @@ Public Class MainForm
         PopulateNPCTree(_pendingTreeFilter)
     End Sub
 
+    ' ============================================================================================
+    ' Advanced filter (facet terms live IN the search box; a modal dialog edits them)
+    ' ============================================================================================
+
+    ''' <summary>The facet resolver, created on first actual use. Deliberately NOT built at load: a
+    ''' session that never types a facet token must not pay for it. Cleared by InvalidateAll on a
+    ''' load-order change and by InvalidateNpcState after an NPC save.</summary>
+    Private Function EnsureFilterIndex() As NpcFilterIndex
+        If _filterIndex Is Nothing Then
+            _filterIndex = New NpcFilterIndex(_pluginManager,
+                                              Function(fid As UInteger) As NPC_Data
+                                                  Dim npc As NPC_Data = Nothing
+                                                  If _ctx IsNot Nothing AndAlso _ctx.NpcCache IsNot Nothing AndAlso
+                                                     _ctx.NpcCache.TryGetValue(fid, npc) Then Return npc
+                                                  Return Nothing
+                                              End Function)
+        End If
+        Return _filterIndex
+    End Function
+
+    ''' <summary>Open the advanced editor on whatever is in the box, and write back what it composes.
+    ''' The dialog holds no state of its own: it parses the box on open and returns a query string, so
+    ''' the box stays the single, visible source of truth for the whole filter. Opening it reads
+    ''' NOTHING from the load order — it is pure text editing.</summary>
+    Private Sub ButtonAdvanced_Click(sender As Object, e As EventArgs) Handles ButtonAdvanced.Click
+        Using dlg As New NpcFilterAdvanced_Form()
+            dlg.QueryText = TextBoxSearch.Text
+            If dlg.ShowDialog(Me) <> DialogResult.OK Then Return
+            If Not String.Equals(dlg.QueryText, TextBoxSearch.Text, StringComparison.Ordinal) Then
+                TextBoxSearch.Text = dlg.QueryText   ' fires TextChanged -> debounce -> repopulate
+            End If
+        End Using
+    End Sub
+
+    ''' <summary>Drop every facet token and the `templates:` mode, KEEPING the free text: clearing the
+    ''' advanced part must never wipe what the user typed. A no-op when there is nothing advanced on,
+    ''' which is why the button can just stay enabled instead of appearing and disappearing.</summary>
+    Private Sub ButtonClearAdvanced_Click(sender As Object, e As EventArgs) Handles ButtonClearAdvanced.Click
+        Dim cleared = NpcFilterQuery.Parse(TextBoxSearch.Text).WithoutFacets()
+        If Not String.Equals(cleared, TextBoxSearch.Text, StringComparison.Ordinal) Then TextBoxSearch.Text = cleared
+    End Sub
+
     ''' <summary>"Only changed" tree filter toggle: rebuild the tree restricted to dirty NPCs (when
     ''' ticked) or back to the full set, in both cases honoring the current text filter.</summary>
     Private Sub CheckBoxOnlyChanged_CheckedChanged(sender As Object, e As EventArgs) Handles CheckBoxOnlyChanged.CheckedChanged
@@ -10734,6 +10811,11 @@ Public Class MainForm
                     End If
                 Next
                 _npcSearchableCache(fid) = NpcDisplayHelpers.BuildNpcSearchableText(freshNpc)
+                ' Same reason the searchable text is refreshed here: a save can change head parts /
+                ' skin / outfit, so every advanced-filter result computed from this record is stale.
+                ' Dropped WHOLESALE (not per FormID) because this NPC may be the template source of
+                ' any number of others, whose effective values just changed too.
+                _filterIndex?.InvalidateNpcState()
                 ' ⛔ The DISPLAY label has to be refreshed here too, not just the searchable text.
                 ' Both caches are filled together in RebuildTreeModelCache, but only the searchable one
                 ' was refreshed on this path — so after a save that changed FullName or EditorID the

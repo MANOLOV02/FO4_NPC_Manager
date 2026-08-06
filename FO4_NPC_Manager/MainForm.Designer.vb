@@ -26,8 +26,11 @@ Partial Class MainForm
         SplitContainerLeft = New SplitContainer()
         PanelNpcList = New Panel()
         SplitContainer2 = New SplitContainer()
+        PanelSearchRow = New TableLayoutPanel()
         TextBoxSearch = New TextBox()
         LabelSearch = New Label()
+        ButtonAdvanced = New Button()
+        ButtonClearAdvanced = New Button()
         PanelFilterRow = New TableLayoutPanel()
         CheckBoxOnlyChanged = New CheckBox()
         LabelShowCategories = New Label()
@@ -108,6 +111,7 @@ Partial Class MainForm
         PanelNpcList.SuspendLayout()
         CType(SplitContainer2, ComponentModel.ISupportInitialize).BeginInit()
         SplitContainer2.Panel1.SuspendLayout()
+        PanelSearchRow.SuspendLayout()
         PanelFilterRow.SuspendLayout()
         SplitContainer2.Panel2.SuspendLayout()
         SplitContainer2.SuspendLayout()
@@ -173,6 +177,12 @@ Partial Class MainForm
         '   ------------------------------------------------------------ 516, redondeado a 530 de colchón.
         ' Antes era 220: el splitter se podía arrastrar hasta dejar la mitad de los checkboxes fuera.
         ' ⚠️ Si se añade/renombra un filtro, recalcular esto (los anchos están en el bloque PanelFilterRow).
+        ' Revisado al agregar la fila de búsqueda: PanelFilterRow SIGUE siendo la fila que manda, así
+        ' que el mínimo no se movió:
+        '   PanelSearchRow = padding 8 + label 45 + box(min) 120 + "Advanced..." 85
+        '                    + "Clear advanced" 100 + Margin 6×4                        = 382 < 530
+        ' Los criterios avanzados NO viven acá: son un form modal (NpcFilterAdvanced_Form), justamente
+        ' para que la grilla de campos no imponga un ancho mínimo al panel izquierdo.
         SplitContainer1.Panel1MinSize = 530
         ' 
         ' SplitContainer1.Panel2
@@ -222,34 +232,81 @@ Partial Class MainForm
         ' 
         ' SplitContainer2.Panel1
         ' 
-        SplitContainer2.Panel1.Controls.Add(TextBoxSearch)
-        SplitContainer2.Panel1.Controls.Add(LabelSearch)
+        SplitContainer2.Panel1.Controls.Add(PanelSearchRow)
         SplitContainer2.Panel1.Controls.Add(PanelFilterRow)
-        ' 
+        '
         ' SplitContainer2.Panel2
-        ' 
+        '
         SplitContainer2.Panel2.Controls.Add(TreeViewNPCs)
         SplitContainer2.Size = New Size(700, 550)
         SplitContainer2.SplitterDistance = 78
         SplitContainer2.TabIndex = 3
-        ' 
+        '
+        ' PanelSearchRow
+        '
+        ' "Search:" + box + the two buttons, ALWAYS visible. The box used to be absolutely positioned
+        ' (Location 59,17 with a hardcoded 638 width) — with two buttons in the row that breaks the
+        ' first time the font or DPI changes, so the row is a TableLayoutPanel: AutoSize label,
+        ' elastic box, AutoSize buttons. Same fix already applied to PanelFilterRow.
+        ' NOTHING here shows or hides and the row never changes height: the advanced criteria live in
+        ' a MODAL dialog (NpcFilterAdvanced_Form) and, once accepted, in the query text itself.
+        PanelSearchRow.ColumnCount = 4
+        PanelSearchRow.ColumnStyles.Add(New ColumnStyle(SizeType.AutoSize))
+        PanelSearchRow.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100.0F))
+        PanelSearchRow.ColumnStyles.Add(New ColumnStyle(SizeType.AutoSize))
+        PanelSearchRow.ColumnStyles.Add(New ColumnStyle(SizeType.AutoSize))
+        PanelSearchRow.Controls.Add(LabelSearch, 0, 0)
+        PanelSearchRow.Controls.Add(TextBoxSearch, 1, 0)
+        PanelSearchRow.Controls.Add(ButtonAdvanced, 2, 0)
+        PanelSearchRow.Controls.Add(ButtonClearAdvanced, 3, 0)
+        PanelSearchRow.Dock = DockStyle.Top
+        PanelSearchRow.Location = New Point(0, 0)
+        PanelSearchRow.Name = "PanelSearchRow"
+        PanelSearchRow.Padding = New Padding(4, 10, 4, 0)
+        PanelSearchRow.RowCount = 1
+        PanelSearchRow.RowStyles.Add(New RowStyle(SizeType.AutoSize))
+        PanelSearchRow.Size = New Size(700, 39)
+        PanelSearchRow.TabIndex = 0
+        '
         ' TextBoxSearch
-        ' 
-        TextBoxSearch.Anchor = AnchorStyles.Top Or AnchorStyles.Left Or AnchorStyles.Right
-        TextBoxSearch.Location = New Point(59, 17)
+        '
+        TextBoxSearch.Dock = DockStyle.Fill
+        TextBoxSearch.MinimumSize = New Size(120, 0)
         TextBoxSearch.Name = "TextBoxSearch"
         TextBoxSearch.PlaceholderText = "Filter NPCs..."
-        TextBoxSearch.Size = New Size(638, 23)
+        TextBoxSearch.Size = New Size(430, 23)
         TextBoxSearch.TabIndex = 1
-        ' 
+        '
         ' LabelSearch
-        ' 
+        '
+        LabelSearch.Anchor = AnchorStyles.Left
         LabelSearch.AutoSize = True
-        LabelSearch.Location = New Point(7, 20)
         LabelSearch.Name = "LabelSearch"
         LabelSearch.Size = New Size(45, 15)
         LabelSearch.TabIndex = 2
         LabelSearch.Text = "Search:"
+        '
+        ' ButtonAdvanced
+        '
+        ButtonAdvanced.Anchor = AnchorStyles.Left
+        ButtonAdvanced.AutoSize = True
+        ButtonAdvanced.AutoSizeMode = AutoSizeMode.GrowAndShrink
+        ButtonAdvanced.Name = "ButtonAdvanced"
+        ButtonAdvanced.Size = New Size(85, 25)
+        ButtonAdvanced.TabIndex = 3
+        ButtonAdvanced.Text = "Advanced..."
+        ButtonAdvanced.UseVisualStyleBackColor = True
+        '
+        ' ButtonClearAdvanced
+        '
+        ButtonClearAdvanced.Anchor = AnchorStyles.Left
+        ButtonClearAdvanced.AutoSize = True
+        ButtonClearAdvanced.AutoSizeMode = AutoSizeMode.GrowAndShrink
+        ButtonClearAdvanced.Name = "ButtonClearAdvanced"
+        ButtonClearAdvanced.Size = New Size(100, 25)
+        ButtonClearAdvanced.TabIndex = 4
+        ButtonClearAdvanced.Text = "Clear advanced"
+        ButtonClearAdvanced.UseVisualStyleBackColor = True
         '
         ' PanelFilterRow
         '
@@ -1155,6 +1212,8 @@ Partial Class MainForm
         PanelNpcList.ResumeLayout(False)
         PanelFilterRow.ResumeLayout(False)
         PanelFilterRow.PerformLayout()
+        PanelSearchRow.ResumeLayout(False)
+        PanelSearchRow.PerformLayout()
         SplitContainer2.Panel1.ResumeLayout(False)
         SplitContainer2.Panel1.PerformLayout()
         SplitContainer2.Panel2.ResumeLayout(False)
@@ -1192,6 +1251,9 @@ Partial Class MainForm
     Friend WithEvents MenuItemMarkToDelete As System.Windows.Forms.ToolStripMenuItem
     Friend WithEvents TextBoxSearch As System.Windows.Forms.TextBox
     Friend WithEvents LabelSearch As System.Windows.Forms.Label
+    Friend WithEvents PanelSearchRow As System.Windows.Forms.TableLayoutPanel
+    Friend WithEvents ButtonAdvanced As System.Windows.Forms.Button
+    Friend WithEvents ButtonClearAdvanced As System.Windows.Forms.Button
     Friend WithEvents PanelFilterRow As System.Windows.Forms.TableLayoutPanel
     Friend WithEvents CheckBoxOnlyChanged As System.Windows.Forms.CheckBox
     Friend WithEvents LabelShowCategories As System.Windows.Forms.Label

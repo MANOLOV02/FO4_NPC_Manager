@@ -148,16 +148,18 @@ Public NotInheritable Class SceneNifExporter
                         nm4.M11 = nm.M11 : nm4.M12 = nm.M12 : nm4.M13 = nm.M13
                         nm4.M21 = nm.M21 : nm4.M22 = nm.M22 : nm4.M23 = nm.M23
                         nm4.M31 = nm.M31 : nm4.M32 = nm.M32 : nm4.M33 = nm.M33
+                        ' liveGeom.Normals/Tangents/Bitangents estan en Single; el transform sigue en
+                        ' Double (ADbl es exacta) y recien se redondea al armar el Vector3 de salida.
                         If hasN Then
-                            Dim nrm = Vector3d.Normalize(Vector3d.TransformNormal(liveGeom.Normals(i), nm4))
+                            Dim nrm = Vector3d.Normalize(Vector3d.TransformNormal(RecalcTBN.ADbl(liveGeom.Normals(i)), nm4))
                             worldN.Add(New System.Numerics.Vector3(CSng(nrm.X), CSng(nrm.Y), CSng(nrm.Z)))
                         End If
                         If hasT Then
-                            Dim tan = Vector3d.Normalize(Vector3d.TransformNormal(liveGeom.Tangents(i), nm4))
+                            Dim tan = Vector3d.Normalize(Vector3d.TransformNormal(RecalcTBN.ADbl(liveGeom.Tangents(i)), nm4))
                             worldT.Add(New System.Numerics.Vector3(CSng(tan.X), CSng(tan.Y), CSng(tan.Z)))
                         End If
                         If hasB Then
-                            Dim bit = Vector3d.Normalize(Vector3d.TransformNormal(liveGeom.Bitangents(i), nm4))
+                            Dim bit = Vector3d.Normalize(Vector3d.TransformNormal(RecalcTBN.ADbl(liveGeom.Bitangents(i)), nm4))
                             worldB.Add(New System.Numerics.Vector3(CSng(bit.X), CSng(bit.Y), CSng(bit.Z)))
                         End If
                     End If

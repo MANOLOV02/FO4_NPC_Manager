@@ -107,6 +107,17 @@ Module Program
             Return
         End If
 
+        ' --- GATE del filtro de NPCs (parser puro, no necesita load order) ---------------------------
+        ' NPC_Manager_FO4.exe --filter-selftest → prueba que una query SIN prefijos `facet:` sale
+        ' VERBATIM del parser, o sea que el buscador de siempre corre el mismo código y el mismo costo
+        ' que antes del filtro avanzado. Ningún corpus puede exhibir eso (es una identidad entre dos
+        ' caminos de código sobre texto arbitrario), por eso el gate es un self-test. Exit 0 / 4.
+        If args IsNot Nothing AndAlso args.Any(Function(a) String.Equals(a, "--filter-selftest", StringComparison.OrdinalIgnoreCase)) Then
+            EnsureConsole()
+            Environment.ExitCode = NpcFilterSelfTest.Run()
+            Return
+        End If
+
         ' HighDpiMode = DpiUnaware: Windows hace bitmap-scaling de la ventana
         ' al DPI del monitor. UI luce algo blurry a >100% pero el LAYOUT es
         ' idéntico a cualquier DPI — fonts/controles no se reescalan, así
@@ -264,6 +275,11 @@ Module Program
         Console.WriteLine("")
         Console.WriteLine("  --slot-diag")
         Console.WriteLine("      Print how each body slot classifies in both games. Diagnostic.")
+        Console.WriteLine("")
+        Console.WriteLine("  --filter-selftest")
+        Console.WriteLine("      Check the NPC search-box parser: a query with no 'facet:value' token must")
+        Console.WriteLine("      come out verbatim, so the plain filter behaves exactly as before.")
+        Console.WriteLine("      Exit: 0 = contract holds, 4 = divergence.")
         Console.WriteLine("")
         Console.WriteLine("  --skinregion-diag")
         Console.WriteLine("      Exhaustively check that the skin fast-path's category heuristic agrees with")

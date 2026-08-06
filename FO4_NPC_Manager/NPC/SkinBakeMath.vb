@@ -85,7 +85,14 @@ Public Module SkinBakeMath
             precomputed(k) = shapeGlobal * matsPerBone(k)
         Next
 
-        ' Per-vertex blend (same semantics as SkinningHelper.BlendBoneMatrices).
+        ' Per-vertex blend: ES SkinningHelper.BlendBoneMatrices, no "la misma semantica".
+        ' ⛔ Acá había una copia escrita a mano de esa ley. El comentario decía "same semantics as
+        ' SkinningHelper.BlendBoneMatrices" — y ese "same semantics" es justo el estado que la regla
+        ' del proyecto prohíbe: dos cuerpos que hay que mantener sincronizados a mano. Peor todavía,
+        ' el gate `skin-blend` de FaceGenBuilder afirma que el bake corre esta misma ley, y probaba
+        ' una función que el bake NO llamaba.
+        ' Al llamarla, el bake además pasa a usar el blend VECTORIAL (FastGeom entró por dentro de
+        ' BlendBoneMatrices, que es por lo que el SIMD nunca había tocado el bake).
         Dim geom = ShapeGeometryFactory.[For](shape, shapeContainerNif)
         Dim skin = geom.GetSkinning()
         Dim wpv = If(skin.WeightsPerVertex > 0, skin.WeightsPerVertex, 4)
@@ -95,43 +102,19 @@ Public Module SkinBakeMath
         Dim vCount = verts.Count
         Dim vWorld(vCount - 1) As Vector3d
 
-        ' Buffer reusable para la normalizacion de pesos del MOTOR (ver EngineSkinWeightNormalization). Gate apagado
-        ' TryComputeWeights hace early-return y este camino queda bit-idéntico al de siempre.
-        Dim ckW(EngineSkinWeightNormalization.Slots - 1) As Single
+        ' Paleta plana para el blend vectorial: UNA vez por shape (20-60 matrices), no por vértice.
+        Dim flatPal = FastGeom.BuildFlatPalette(precomputed)
+        ' El guard por FILA (`i < skin.VertexCount`) es de acá: BlendBoneMatrices no conoce el índice
+        ' de vértice. Sin fila de skin se le pasa Nothing, que es su camino de "sin skin" y devuelve
+        ' precomputed(0) — el mismo resultado que daba el fallback de Σw=0 de la copia que había acá.
+        Dim tieneFilas = flatIdx IsNot Nothing AndAlso flatWgt IsNot Nothing
 
         For i = 0 To vCount - 1
-            Dim Mtot As Matrix4d = Matrix4d.Zero
-            Dim sumW As Double = 0
-            Dim baseSlot = i * wpv
-            Dim hasSkinRow = flatIdx IsNot Nothing AndAlso flatWgt IsNot Nothing AndAlso i < skin.VertexCount
-
-            If hasSkinRow AndAlso EngineSkinWeightNormalization.TryComputeWeights(flatWgt, baseSlot, wpv, ckW) Then
-                ' Ley del MOTOR: w3 = 1−Σ, se descarta el slot con peso ≤ 0, y NO se renormaliza.
-                ' No hace falta fallback de sumW=0: si w0..w2 son 0, w3 sale 1 y el slot 3 entra.
-                For j = 0 To EngineSkinWeightNormalization.Slots - 1
-                    If ckW(j) > 0.0F Then
-                        Dim idx = CInt(flatIdx(baseSlot + j))
-                        If idx >= 0 AndAlso idx < nBones Then Mtot += precomputed(idx) * CDbl(ckW(j))
-                    End If
-                Next
+            Dim Mtot As Matrix4d
+            If tieneFilas AndAlso i < skin.VertexCount Then
+                Mtot = SkinningHelper.BlendBoneMatrices(flatWgt, flatIdx, i * wpv, wpv, precomputed, flatPal)
             Else
-                If hasSkinRow Then
-                    For j = 0 To wpv - 1
-                        Dim w = CDbl(CSng(flatWgt(baseSlot + j)))
-                        sumW += w
-                        Dim idx = CInt(flatIdx(baseSlot + j))
-                        If idx >= 0 AndAlso idx < nBones Then Mtot += precomputed(idx) * w
-                    Next
-                End If
-                If sumW = 0 Then
-                    If nBones > 0 Then
-                        Dim idx0 = If(flatIdx IsNot Nothing AndAlso flatIdx.Length > 0 AndAlso i < skin.VertexCount,
-                                      CInt(flatIdx(baseSlot)), 0)
-                        Mtot = precomputed(Math.Max(0, Math.Min(idx0, nBones - 1)))
-                    End If
-                Else
-                    Mtot = Mtot * (1.0 / sumW)
-                End If
+                Mtot = SkinningHelper.BlendBoneMatrices(Nothing, Nothing, 0, wpv, precomputed, flatPal)
             End If
 
             Dim vLocal As New Vector3d(verts(i).X, verts(i).Y, verts(i).Z)

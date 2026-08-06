@@ -416,9 +416,11 @@ Public Module FaceGenBuildPipeline
         ' la paleta del destino. El drift ε = s_src/s_dst − 1 sólo aparece si AMBOS lados (el forward
         ' de SkinBakeMath y este inverso) corren la misma ley. Gate apagado ⇒ bit-idéntico.
         Dim ckW(EngineSkinWeightNormalization.Slots - 1) As Single
+        ' Paleta plana para el blend vectorial: UNA vez por shape (20-60 matrices), no por vértice.
+        Dim flatPal = FastGeom.BuildFlatPalette(precomputedOrig)
 
         For i = 0 To vCount - 1
-            Dim Mtot As Matrix4d = BlendMtot(precomputedOrig, skin, i, wpv, nBones, ckW)
+            Dim Mtot As Matrix4d = BlendMtot(precomputedOrig, skin, i, wpv, nBones, ckW, flatPal)
 
             Dim vBaked As Vector3d
             Try
@@ -544,6 +546,9 @@ Public Module FaceGenBuildPipeline
                                                NSingle As Integer, NMulti As Integer, NUsed As Integer)
         Dim nBones = shapeBones.Length
         Dim ckW(EngineSkinWeightNormalization.Slots - 1) As Single
+        ' Una paleta plana por cada una de las dos paletas, armadas una sola vez.
+        Dim flatPalBind = FastGeom.BuildFlatPalette(precomputedBakeBind)
+        Dim flatPalLive = FastGeom.BuildFlatPalette(precomputedLive)
         Dim ssq As Double = 0, mx As Double = 0, worstIdx As Integer = -1
         Dim worstOld As Vector3d = Nothing, worstNew As Vector3d = Nothing
         Dim nSingle As Integer = 0, nMulti As Integer = 0, nUsed As Integer = 0
@@ -557,8 +562,8 @@ Public Module FaceGenBuildPipeline
             End If
             If nb <= 1 Then nSingle += 1 Else nMulti += 1
 
-            Dim mBind = BlendMtot(precomputedBakeBind, skin, i, wpv, nBones, ckW)
-            Dim mLive = BlendMtot(precomputedLive, skin, i, wpv, nBones, ckW)
+            Dim mBind = BlendMtot(precomputedBakeBind, skin, i, wpv, nBones, ckW, flatPalBind)
+            Dim mLive = BlendMtot(precomputedLive, skin, i, wpv, nBones, ckW, flatPalLive)
             Try
                 Dim inv = Matrix4d.Invert(EngineSkinWeightNormalization.ReanchorAffine(mBind))
                 Dim vLocal = Vector3d.TransformPosition(vWorld(i), inv)
@@ -631,43 +636,44 @@ Public Module FaceGenBuildPipeline
     ''' venía haciendo el inverso del bake inline. UNA sola implementación: la consumen el inverso de
     ''' <see cref="BakeShape"/> y el diagnóstico <see cref="CollectHeadFidelity"/>, así no pueden
     ''' divergir. <paramref name="ckW"/> es un buffer reusable del caller (evita alocar por vértice).</summary>
+    ''' <param name="flatPal">Paleta plana de <paramref name="precomputed"/>, armada UNA vez por shape
+    ''' con <c>FastGeom.BuildFlatPalette</c>. Es lo que habilita el camino vectorial; con
+    ''' <c>Nothing</c> el blend cae al escalar y da exactamente lo mismo (lo garantiza el gate
+    ''' <c>skin-blend</c>, que compara los dos caminos BIT A BIT sobre esta misma función).</param>
     Private Function BlendMtot(precomputed As Matrix4d(), skin As ShapeSkinningData,
                                 i As Integer, wpv As Integer, nBones As Integer,
-                                ckW As Single()) As Matrix4d
-        Dim Mtot As Matrix4d = Matrix4d.Zero
-        Dim sumW As Double = 0
-        Dim baseSlot = i * wpv
+                                ckW As Single(), Optional flatPal As Double() = Nothing) As Matrix4d
+        ' ⛔⛔ EL CUERPO SE FUE A SkinningHelper.BlendBoneMatrices. Acá había una TERCERA copia escrita
+        ' a mano de la misma ley (la 4ta estaba en SkinBakeMath), y el precio no era sólo la
+        ' duplicación: el gate `skin-blend` de FaceGenBuilder afirma que "el bake usa esa misma ley,
+        ' asi que una divergencia ahi saldria a los vertices horneados" — y era FALSO, porque el bake
+        ' no llamaba a la función que el gate prueba. Compartían la LEY, no el CÓDIGO, que es
+        ' exactamente lo que esta misma release corrigió en BuildPosePalette y en
+        ' FillPerVertexSkinMatrix (y ahí, factorizar destapó una SEGUNDA divergencia que no se veía
+        ' mirando los dos cuerpos por separado).
+        ' De paso el bake pasa a usar el blend VECTORIAL: el SIMD de FastGeom entró por dentro de
+        ' BlendBoneMatrices y por eso nunca lo había tocado.
+        '
+        ' `ckW` ya no se usa: la normalización del motor vive adentro de BlendBoneMatrices, con su
+        ' propio scratch por hilo. Se conserva en la firma para no tocar a los llamadores.
+        '
+        ' Las TRES diferencias textuales que tenía esta copia, revisadas una por una antes de borrarla:
+        '   1. no exigía `available >= Slots` antes de TryComputeWeights ⇒ INERTE: TryComputeWeights ya
+        '      rechaza solo con `wpv <> Slots` y con `baseSlot + Slots > flatWgt.Length`.
+        '   2. recorría `wpv` sin acotar contra el largo del array; BlendBoneMatrices acota con
+        '      `available` ⇒ sólo se separan con un array corto, donde ésta reventaba.
+        '   3. con `nBones = 0` dejaba `Matrix4d.Zero` (manda TODO vértice al origen);
+        '      BlendBoneMatrices devuelve Identity, que es lo defendible.
+        ' Ninguna de las tres ocurre con entrada sana ⇒ se predijo CERO bytes, y se midió.
         Dim flatIdx = skin.BoneIndices
         Dim flatWgt = skin.BoneWeights
-        Dim hasSkinRow = flatIdx IsNot Nothing AndAlso flatWgt IsNot Nothing AndAlso i < skin.VertexCount
-
-        If hasSkinRow AndAlso EngineSkinWeightNormalization.TryComputeWeights(flatWgt, baseSlot, wpv, ckW) Then
-            For j = 0 To EngineSkinWeightNormalization.Slots - 1
-                If ckW(j) > 0.0F Then
-                    Dim idx = CInt(flatIdx(baseSlot + j))
-                    If idx >= 0 AndAlso idx < nBones Then Mtot += precomputed(idx) * CDbl(ckW(j))
-                End If
-            Next
-        Else
-            If hasSkinRow Then
-                For j = 0 To wpv - 1
-                    Dim w = CDbl(CSng(flatWgt(baseSlot + j)))
-                    sumW += w
-                    Dim idx = CInt(flatIdx(baseSlot + j))
-                    If idx >= 0 AndAlso idx < nBones Then Mtot += precomputed(idx) * w
-                Next
-            End If
-            If sumW = 0 Then
-                If nBones > 0 Then
-                    Dim idx0 = If(flatIdx IsNot Nothing AndAlso flatIdx.Length > 0 AndAlso i < skin.VertexCount,
-                                  CInt(flatIdx(baseSlot)), 0)
-                    Mtot = precomputed(Math.Max(0, Math.Min(idx0, nBones - 1)))
-                End If
-            Else
-                Mtot = Mtot * (1.0 / sumW)
-            End If
+        ' El guard por FILA (`i < skin.VertexCount`) es de acá: BlendBoneMatrices no conoce el índice
+        ' de vértice. Sin fila de skin se pasa Nothing, que es su camino de "sin skin" y devuelve
+        ' precomputed(0) — el mismo resultado que daba el fallback de Σw=0 de esta copia.
+        If flatIdx Is Nothing OrElse flatWgt Is Nothing OrElse i >= skin.VertexCount Then
+            Return SkinningHelper.BlendBoneMatrices(Nothing, Nothing, 0, wpv, precomputed, flatPal)
         End If
-        Return Mtot
+        Return SkinningHelper.BlendBoneMatrices(flatWgt, flatIdx, i * wpv, wpv, precomputed, flatPal)
     End Function
 
     ''' <summary>Walk the face skeleton hierarchy from <paramref name="boneName"/> upward
