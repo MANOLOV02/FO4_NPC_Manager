@@ -451,7 +451,7 @@ Partial Class SaveEsp_Form
         CheckBoxActivateInLoadOrder.Name = "CheckBoxActivateInLoadOrder"
         CheckBoxActivateInLoadOrder.Size = New Size(300, 19)
         CheckBoxActivateInLoadOrder.TabIndex = 7
-        CheckBoxActivateInLoadOrder.Text = "Activate in load order (Plugins.txt)"
+        CheckBoxActivateInLoadOrder.Text = "Activate in load order (Plugins.txt) — can be overridden by mod managers"
         CheckBoxActivateInLoadOrder.UseVisualStyleBackColor = True
         '
         ' ButtonOk

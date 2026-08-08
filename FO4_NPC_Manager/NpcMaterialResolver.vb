@@ -536,12 +536,27 @@ Friend NotInheritable Class NpcMaterialResolver
     ''' Height / Env / Multilayer / Spec). Si el TXST trae un .bgsm/.bgem en MaterialPath,
     ''' carga ese material y reemplaza el del shape. <c>Friend Shared</c> para que
     ''' HeadPartPicker_Form pueda reutilizarlo en su preview de HDPT.</summary>
-    Friend Shared Sub ApplyTextureSetOverrides(textureSet As TXST_Data, relatedMaterial As Nifcontent_Class_Manolo.RelatedMaterial_Class, usesBodyTexture As Boolean, shap As NiflySharp.INiShape, nif As Nifcontent_Class_Manolo, Optional isHeadPartTextureSet As Boolean = False, Optional forceDiffuseOnly As Boolean = False, Optional fo4FaceComposeInputsOnly As Boolean = False, Optional alphaTestWriteDecision As Boolean? = Nothing)
+    Friend Shared Sub ApplyTextureSetOverrides(textureSet As TXST_Data, relatedMaterial As Nifcontent_Class_Manolo.RelatedMaterial_Class, usesBodyTexture As Boolean, shap As NiflySharp.INiShape, nif As Nifcontent_Class_Manolo, Optional isHeadPartTextureSet As Boolean = False, Optional forceDiffuseOnly As Boolean = False, Optional fo4FaceComposeInputsOnly As Boolean = False, Optional npcDiffuseAlphaTest As Boolean = False)
         If textureSet Is Nothing OrElse relatedMaterial Is Nothing Then Return
 
         Dim logEnabled = Logger.Enabled
         Dim material = relatedMaterial.material
         If material Is Nothing Then Return
+
+        ' ⛔ ACÁ ARRIBA Y SIN CONDICIÓN, A PROPÓSITO. Es un HECHO del record del NPC (flag ACBS Diffuse Alpha
+        ' Test), no una decisión sobre texturas, así que no puede depender de nada de lo que sigue.
+        ' Hasta 2026-08-08 se asignaba DENTRO de la rama del MNAM, ~60 líneas más abajo: si el TXST no traía
+        ' MaterialPath, el dato que el call-site había calculado bien NUNCA llegaba al material. Medido:
+        ' 1.757 NPC en FO4, y el 100% de SSE — el TXST de Skyrim no tiene subrecord MNAM, así que allá el
+        ' portador era estructuralmente inalcanzable. El único síntoma visible era nulo (ver la nota de
+        ' NpcDiffuseAlphaTest), pero el bake no podía confiar en su propio dato.
+        material.NpcDiffuseAlphaTest = npcDiffuseAlphaTest
+        ' El veto de fabricación es el COMPLEMENTO del hecho, tal como lo componía el tri-estado viejo
+        ' (True = fabricar + bit; False = vetar + sin bit). Se separan porque son dos cosas distintas, pero
+        ' el bake sigue componiéndolas del mismo dato.
+        ' ⚠️ CAMBIO DE ALCANCE: al asignarse acá arriba y no dentro de la rama del MNAM, el veto ahora LLEGA
+        ' a los NPC cuyo TXST no trae MNAM (1.757 en FO4) y a todo SSE, donde antes se perdía.
+        material.VetoAlphaPropertyCreation = Not npcDiffuseAlphaTest
 
         ' forceDiffuseOnly (RE 2026-07-16): la fuente FTST del camino Face FO4 aplica SOLO el slot 0 — el
         ' ATTACH del engine, GetTexturePath(slot 0) (game 0x1406EE0D7 / CK 0x140ED3830, todas las llamadas
@@ -590,11 +605,6 @@ Friend NotInheritable Class NpcMaterialResolver
                 material.AlphaTestRef = overrideMaterial.AlphaTestRef
                 material.AlphaBlendMode = overrideMaterial.AlphaBlendMode
 
-                ' Decisión de ESCRITURA del NIF (bake), que es OTRA cosa que la resolución del material y
-                ' por eso viaja en su propio portador. La compone el CALL SITE (que es quien conoce al
-                ' NPC y al candidate); acá sólo se transporta — este Sub no evalúa anatomía.
-                ' Ver FO4UnifiedMaterial_Class.AlphaTestWriteDecision para la semántica y la evidencia.
-                material.AlphaTestWriteDecision = alphaTestWriteDecision
                 relatedMaterial.path = FO4UnifiedMaterial_Class.CorrectMaterialPath(textureSet.MaterialPath)
                 If logEnabled Then
                     Dim mnamL = If(textureSet.MaterialPath, ""), ubt = usesBodyTexture
@@ -1376,14 +1386,17 @@ Friend NotInheritable Class NpcMaterialResolver
                     ' El False es EXPLÍCITO, no Nothing: es un veto de fabricación, si no los ojos Gen1
                     ' (material con alphaTest=True) estrenarían un NiAlphaProperty que el CK no pone.
                     ' Ver 40-bake-leyes-fo4.
-                    Dim bakeAlphaTestDecision As Boolean = state IsNot Nothing AndAlso
-                                                           state.HeadDiffuseAlphaTest AndAlso
-                                                           IsFaceHeadPartFor(candidate)
+                    ' HECHO del record + anatomía: el bit F4SPF2 Alpha_Test lo pone el CK sólo en la CARA
+                    ' de un NPC con el flag ACBS. Es lo único que este dato gobierna desde 2026-08-08 (antes
+                    ' también vetaba la creación del NiAlphaProperty; ese veto se borró, ver NpcDiffuseAlphaTest).
+                    Dim npcDiffuseAlphaTest As Boolean = state IsNot Nothing AndAlso
+                                                        state.HeadDiffuseAlphaTest AndAlso
+                                                        IsFaceHeadPartFor(candidate)
                     ApplyTextureSetOverrides(textureSet, relatedMaterial, candidate.UsesBodyTexture, shape.NifShape, shape.NifContent,
                                              isHeadPartTextureSet:=IsHeadPartTextureSetFor(candidate),
                                              forceDiffuseOnly:=isFaceTxstSource,
                                              fo4FaceComposeInputsOnly:=fo4FaceComposeOnly,
-                                             alphaTestWriteDecision:=bakeAlphaTestDecision)
+                                             npcDiffuseAlphaTest:=npcDiffuseAlphaTest)
                 ElseIf logEnabled Then
                     Dim shN = shape.ShapeName
                     Dim shTy = If(matPre IsNot Nothing, matPre.NifShaderType.ToString(), "?")

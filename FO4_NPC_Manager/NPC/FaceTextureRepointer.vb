@@ -56,20 +56,51 @@ Public NotInheritable Class FaceTextureRepointer
     ''' PartType=Face cuyo shape está autorado con shader type Default, y ahí el CK deja los slots
     ''' como están. Gatear por PartType nos desviaría del CK justo en esos.</para></summary>
     Public Shared Function Repoint(nif As Nifcontent_Class_Manolo, shape As INiShape,
-                                   plan As FaceTexturePlan, foldOverlays As Boolean) As RepointOutcome
+                                   plan As FaceTexturePlan, foldOverlays As Boolean,
+                                   Optional resolvedMaterial As FO4UnifiedMaterial_Class = Nothing) As RepointOutcome
         Dim outcome As New RepointOutcome With {.Repointed = False}
         If nif Is Nothing OrElse shape Is Nothing OrElse plan Is Nothing OrElse Not plan.IsUsable Then Return outcome
 
         Dim bsls = TryCast(nif.GetShader(shape), BSLightingShaderProperty)
         If bsls Is Nothing Then Return outcome
         If bsls.ShaderType_SK_FO4 <> NiflySharp.Enums.BSLightingShaderType.FaceTint Then Return outcome
-        If bsls.TextureSetRef Is Nothing OrElse bsls.TextureSetRef.Index < 0 Then Return outcome
-        Dim ts = TryCast(nif.Blocks(bsls.TextureSetRef.Index), BSShaderTextureSet)
-        If ts Is Nothing OrElse ts.Textures Is Nothing Then Return outcome
 
         Dim hex = plan.FaceGenLocalFormID.ToString("X8")
         Dim isSse As Boolean = (Config_App.Current IsNot Nothing AndAlso
                                 Config_App.Current.Game = Config_App.Game_Enum.Skyrim)
+
+        ' ⭐ FO4: CORTAR EL LINK AL BGSM, o el repunte de abajo NO SE LEE NUNCA. Verificado en Fallout4.exe:
+        ' con `prop+0x10` no vacío el motor carga el material y ApplyMaterialToGeometry (0x142169BB0)
+        ' reemplaza el TEXTURE SET ENTERO (prop+0x1d0 ← mat+0x78, 0x142163B70); con el nombre vacío los 3
+        ' call-sites de carga propia bailan en la guarda de largo (0x14167C300) y el shader inline manda.
+        ' Se llama al MISMO método que usa el bake — no una copia. Copiarlo se probó y se desincronizó al
+        ' toque (faltaba el centinela de Emissive y apagaba el Emissive en las 9 cabezas de FO4).
+        '
+        ' ⛔ SSE NO: allá el motor no carga materiales por nombre. MEDIDO sobre el 100% del corpus —
+        '    0 de 4.025 shapes de head part traen nombre de material, así que no hay nada que cortar y
+        '    transcribir sólo movería campos del shader a cambio de nada.
+        ' ⛔ SIN material resuelto NO se corta el nombre: dejaría al shape con el shader inline del NIF
+        '    fuente, que en las cabezas vanilla de FO4 es relleno (la autoridad es el BGSM). Sería cambiar
+        '    un bug por otro. Se sigue por el camino de hoy: repunte inerte, pero sin regresión.
+        If Not isSse Then
+            If resolvedMaterial Is Nothing Then
+                Dim shapeNameLog = If(shape.Name?.String, "")
+                Logger.LogLazy(Function() $"[REPOINT] '{shapeNameLog}': sin material resuelto -> NO se corta el link al BGSM; el repunte queda inerte (igual que antes del fix).")
+            Else
+                ' CLON: `resolvedMaterial` es el material VIVO del render — el mismo objeto que dibuja el
+                ' preview. La transcripción le escribe SkinTintAlpha, así que mutar el original le movería
+                ' el shader al modelo en pantalla. El clone preserva también VetoAlphaPropertyCreation, que
+                ' es lo que impide estrenarle un NiAlphaProperty a DiMA (paridad CK, ver 40-bake-leyes-fo4 §8).
+                Dim mat = resolvedMaterial.Clone()
+                FaceGenBuilder.TranscribeResolvedMaterialToShader(nif, shape, mat, mat.SkinTintAlpha)
+            End If
+        End If
+
+        ' ⛔ DESPUÉS de la transcripción: Save_To_Shader escribe los 8 slots y puede CREAR el texture set.
+        ' Resolverlo antes daría un bloque viejo, y repuntar antes lo pisaría con los paths vanilla.
+        If bsls.TextureSetRef Is Nothing OrElse bsls.TextureSetRef.Index < 0 Then Return outcome
+        Dim ts = TryCast(nif.Blocks(bsls.TextureSetRef.Index), BSShaderTextureSet)
+        If ts Is Nothing OrElse ts.Textures Is Nothing Then Return outcome
 
         If Not isSse Then
             ' ── FO4: los tres canales del bake, con prefijo Data\ ──

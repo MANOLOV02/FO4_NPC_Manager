@@ -604,9 +604,15 @@ Public NotInheritable Class SceneNifExporter
                 End If
 
                 ' Repunte de la cara. Va DESPUÉS de toda la escritura de geometría porque sólo toca el
-                ' BSShaderTextureSet; el gate por shader-type vive adentro (no todo head part califica).
+                ' shader + el BSShaderTextureSet; el gate por shader-type vive adentro (no todo head part
+                ' califica).
+                ' ⭐ Se le pasa el material que el RENDER ya resolvió para este shape (cadena TXST/FTST +
+                ' MNAM-BGSM + tints + palette). Sin él, el repunte de abajo es INERTE en FO4: el shape sigue
+                ' nombrando su .bgsm y al aplicarlo el motor reemplaza el texture set entero. No hay que
+                ' re-resolver nada — el preview ya lo hizo para dibujar este mismo shape.
                 If opts.RepointFaceTextures AndAlso facePlan IsNot Nothing Then
-                    FaceTextureRepointer.Repoint(destNif, clonedINiShape, facePlan, opts.FoldFaceOverlays)
+                    FaceTextureRepointer.Repoint(destNif, clonedINiShape, facePlan, opts.FoldFaceOverlays,
+                                                 srcRenderable.ShapeMaterial?.material)
                 End If
 
                 shapesWritten += 1

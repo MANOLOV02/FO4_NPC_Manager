@@ -2126,7 +2126,28 @@ Public Module FaceGenBuilder
         ' which fields the resolver chain (TXST.MNAM swap, MSWP swap, tint colour overrides, etc.)
         ' actually mutated. Should match what gets serialized to disk by Save_To_Shader below.
 
-        Dim shad = nif.GetShader(cloned)
+        ' La TRANSCRIPCIÓN vive en un método aparte porque tiene DOS consumidores: este bake y el export
+        ' a NIF (FaceTextureRepointer). Los dos producen la misma clase de artefacto — un shape SIN material
+        ' externo — así que les corresponde el MISMO gesto. Copiarlo en vez de compartirlo fue lo primero que
+        ' se intentó, y se desincronizó al toque: la versión a mano no tenía el centinela de Emissive de más
+        ' abajo y apagaba el Emissive en las 9 cabezas de FO4.
+        TranscribeResolvedMaterialToShader(nif, cloned, mat, skinTintAlpha)
+    End Sub
+
+    ''' <summary>Vuelca el material YA RESUELTO al shader INLINE del shape y corta el link al BGSM externo,
+    ''' que es lo que vuelve al NIF autocontenido.
+    ''' <para>⛔ El corte del nombre no es cosmético y no es opcional: verificado en Fallout4.exe, con
+    ''' <c>prop+0x10</c> NO vacío los 3 call-sites de carga propia SÍ cargan el BGSM y
+    ''' <c>ApplyMaterialToGeometry 0x142169BB0</c> reemplaza el <b>texture set ENTERO</b>
+    ''' (<c>prop+0x1d0 ← mat+0x78</c>, 0x142163B70). Con el nombre vacío bailan en la guarda de largo
+    ''' (<c>0x14167C300</c> → je al epílogo) y el shader inline pasa a ser la ley.</para>
+    ''' <para>Consumidores: el bake de FaceGen y el export a NIF. Ver 30-fo4-material-vs-nif.</para></summary>
+    Friend Sub TranscribeResolvedMaterialToShader(nif As Nifcontent_Class_Manolo,
+                                                  shape As INiShape,
+                                                  mat As FO4UnifiedMaterial_Class,
+                                                  skinTintAlpha As Single)
+        If nif Is Nothing OrElse shape Is Nothing OrElse mat Is Nothing Then Return
+        Dim shad = nif.GetShader(shape)
         If shad Is Nothing Then
             Return
         End If
@@ -2154,7 +2175,7 @@ Public Module FaceGenBuilder
                 ' value is NPC-level, not a BGSM field, so the app provides it (same split as the skin
                 ' tone COLOR which the resolver puts in HairTintColor and the library writes).
                 mat.SkinTintAlpha = skinTintAlpha
-                mat.Save_To_Shader(nif, cloned, bsls, mat.NifShaderType, slot5Path)
+                mat.Save_To_Shader(nif, shape, bsls, mat.NifShaderType, slot5Path)
                 ' CK al bakear el FaceGen deja shad.Name vacío en el shader inline (no
                 ' linkea al BGSM external). Replicamos eso para que el .nif sea standalone
                 ' (todos los datos del material viven embedded en el shader, sin depender
@@ -2225,7 +2246,7 @@ Public Module FaceGenBuilder
                 If bgem Is Nothing Then
                     Return
                 End If
-                mat.Save_To_Shader(nif, cloned, bes)
+                mat.Save_To_Shader(nif, shape, bes)
                 If bes.Name IsNot Nothing Then bes.Name.String = ""
                 ' Transform_Changed: el CK lo setea en TODO shape horneado, también los effect shaders, así
                 ' que esta rama necesita el mismo tratamiento que la de lighting.

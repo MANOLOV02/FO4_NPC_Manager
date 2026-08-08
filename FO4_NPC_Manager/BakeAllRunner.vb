@@ -423,6 +423,18 @@ Friend Module BakeAllRunner
             Dim sampleLimit As Integer = 0
             Integer.TryParse(If(Environment.GetEnvironmentVariable("FGBAKE_LIMIT"), "").Trim(), sampleLimit)
             If sampleLimit > 0 Then log($"SAMPLE: FGBAKE_LIMIT={sampleLimit} — only the first {sampleLimit} NPC(s) will be processed.")
+            ' FGBAKE_SKIP_DDS=1 — barrido de NIF sin el trabajo de IMAGEN (compose + BCn + mips + escritura),
+            ' que es el costo DOMINANTE: FO4 compone y encodea 3 canales a resolución nativa por NPC.
+            ' Misma convención que FGBAKE_LIMIT / _GPU_PARITY / _STATS, y los MISMOS dos interruptores que
+            ' el barrido de NIF del CLI ya usa (FO4_FaceTint_CLI: SkipDdsEncode + SkipPixelCompose), donde
+            ' está documentado que ninguno cambia lo que el bake escribe en el NIF — validado por byte-diff.
+            ' El slot del NIF se escribe igual porque su path es determinista, no depende del encode.
+            ' ⛔ Deja los DDS SIN escribir: sirve para comparar NIF contra NIF, NO para mirar píxeles.
+            If If(Environment.GetEnvironmentVariable("FGBAKE_SKIP_DDS"), "").Trim() = "1" Then
+                FaceGenBuilder.SkipDdsEncode = True
+                FaceTintCpuCompositor.SkipPixelCompose = True
+                log("SAMPLE: FGBAKE_SKIP_DDS=1 — image work skipped (NIF-only sweep); DDS are NOT written.")
+            End If
             FaceGenBuilder.PhaseReset()
             FaceGenBuilder.ParityReset()
             SseFoldLayerStack.ResetSseParity()
