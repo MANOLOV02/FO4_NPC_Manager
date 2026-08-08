@@ -3808,7 +3808,7 @@ Public Class MainForm
         ' carries no `facet:value` token, so `normalizedFilter` here is byte-identical to the old
         ' `If(filter, "").Trim()` and every downstream comparison is the one that always ran. Only a
         ' query with facets builds `advIndex` — and only then does anything read a referenced record.
-        ' The gate on that claim is `--filter-selftest` (Program.vb); it must stay green.
+        ' The gate on that claim is Tools/NpcFilterGate (it left this exe on 2026-08-08); it must stay green.
         Dim query = NpcFilterQuery.Parse(filter)
         Dim normalizedFilter = query.FreeText.Trim()
         Dim advTerms = query.Terms

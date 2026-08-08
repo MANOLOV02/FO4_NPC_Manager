@@ -107,7 +107,7 @@ End Class
 ''' facet token, <see cref="FreeText"/> is the input string VERBATIM (not trimmed, not rebuilt, not
 ''' normalized) and <see cref="Terms"/> is empty. The caller then runs exactly the code it ran before
 ''' this feature existed, so a plain search costs what it always cost and cannot change results. The
-''' `--filter-selftest` mode is the gate on that claim; do not "clean up" the verbatim return.</para>
+''' Tools/NpcFilterGate is the gate on that claim; do not "clean up" the verbatim return.</para>
 '''
 ''' <para>An unknown prefix (`foo:bar`) is NOT a facet — it stays literal, so searching for an EDID
 ''' that happens to contain a colon keeps working. A fully quoted token is always literal, which is
@@ -181,7 +181,7 @@ Friend NotInheritable Class NpcFilterQuery
 
         ' ⛔ Nothing recognised → hand back the ORIGINAL string. Rebuilding it from tokens would
         ' already be a behaviour change (it collapses runs of spaces, which the current filter matches
-        ' literally). This is the no-op contract; `--filter-selftest` is the gate on it.
+        ' literally). This is the no-op contract; Tools/NpcFilterGate is the gate on it.
         If terms.Count = 0 AndAlso Not sawMode Then
             Return New NpcFilterQuery(raw, raw, Array.Empty(Of NpcFilterTerm)(), literals.ToArray(), True)
         End If

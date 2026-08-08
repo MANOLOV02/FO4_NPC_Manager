@@ -182,53 +182,46 @@ Public Module FaceGenBuilder
         Dim r = _simdGate.Value
         If r.Length = 0 Then Return
         Dim slug = If(r.StartsWith("["), r.Substring(1, Math.Max(0, r.IndexOf("]"c) - 1)), "")
-        Dim axis = ParityAxis.LawConsistency
+        ' El default es VectorVsScalar: desde 2026-08-08 los DOS ejes que quedan acusan a la CPU, así que un
+        ' slug que no se resuelva (no debería pasar: sale de esta misma tabla) no puede nombrar un eje ajeno.
+        Dim axis = ParityAxis.VectorVsScalar
         For Each t In _parityTests
             If t.Slug = slug Then axis = t.Axis : Exit For
         Next
-        Dim what As String
-        Select Case axis
-            Case ParityAxis.VectorVsScalar, ParityAxis.ScalarVsWidths
-                what = "el camino vectorial NO es bit-identico al escalar ⇒ los bytes saldrian distintos segun la CPU"
-            Case ParityAxis.GoldenAbsolute
-                what = "un GOLDEN ABSOLUTO se movio: la ley cambio de resultado. Si el cambio fue A PROPOSITO " &
-                       "(p.ej. moviste un bucket de la convencion) hay que RE-CONGELAR el golden con " &
-                       "`--paritygate --dump-golden`; si no, es una regresion"
-            Case ParityAxis.GlslLexical
-                what = "el fuente GLSL rompe una invariante lexica (ASCII puro)"
-            Case Else
-                what = "una ley del resolver es inconsistente entre etapas o canales"
-        End Select
+        Dim what = "el camino vectorial NO es bit-identico al escalar ⇒ los bytes saldrian distintos segun la CPU"
         Throw New InvalidOperationException(
             $"Parity gate FAILED [{axis}] — {what}. Hornear ahora produciria bytes que no describen la ley. Detalle: " & r)
     End Sub
 
     ''' <summary>Eje de verificación al que pertenece cada self-test. El gate mezcla cosas que NO prueban lo
     ''' mismo, y reportarlas juntas fue el defecto: quien leía "BIT-IDENTICAL" se llevaba que el camino GPU
-    ''' estaba cubierto, cuando ningún test de esta lista toca el GPU.</summary>
+    ''' estaba cubierto, cuando ningún test de esta lista toca el GPU.
+    ''' <para>⛔⛔ QUEDAN DOS EJES, Y NO ES CASUALIDAD (2026-08-08). Los tres que faltan —GlslLexical,
+    ''' GoldenAbsolute y LawConsistency— se fueron a Tools/ParityGate. El criterio: <b>en el binario sólo
+    ''' viaja el test cuyo resultado DEPENDE DE LA MÁQUINA DEL USUARIO</b>, y lo único que depende del rig
+    ''' ajeno es el ancho que elija <c>Vector(Of T)</c>. Un test de ley o de léxico da lo mismo acá que allá:
+    ''' si falla del otro lado, fallaba también de éste, y lo único que probó es que no lo corrí antes de
+    ''' publicar. Ver memoria 00-reglas-self-tests-no-van-en-el-binario.</para></summary>
     Public Enum ParityAxis
         ''' <summary>escalar == V128 == V256 == Vector(Of T). Corre SIEMPRE (no depende de que haya SIMD).</summary>
         ScalarVsWidths
         ''' <summary>espejo vectorial == escalar. ⛔ Sólo corre con SIMD acelerado: sin él, el espejo ni se usa
         ''' y el test hace early-return devolviendo "" — que es indistinguible de "pasó".</summary>
         VectorVsScalar
-        ''' <summary>Léxico sobre el fuente del shader. No necesita GL. Corre SIEMPRE.</summary>
-        GlslLexical
-        ''' <summary>Salida ABSOLUTA congelada (golden vectors). Corre SIEMPRE. Es el único eje que atrapa un
-        ''' cambio de ley que entre por igual en el escalar y en el vectorial: los demás son comparaciones
-        ''' entre dos copias del mismo número.</summary>
-        GoldenAbsolute
-        ''' <summary>Invariantes de la LEY, sin aritmética: cosas que tienen que ser ciertas del resolver
-        ''' mismo. Corre SIEMPRE (no usa SIMD ni GL).</summary>
-        LawConsistency
     End Enum
 
-    ''' <summary>⭐ Los DIEZ self-tests del gate, en orden, con su eje. Es la ÚNICA lista: la consumen tanto
-    ''' <see cref="SimdParityFailure"/> (que aborta el bake) como <see cref="ParityAxesReport"/> (que declara
-    ''' qué se cubrió). Antes estaban la cadena y la enumeración del reporte escritas por separado, y el
-    ''' reporte se quedó en NUEVE nombres mientras la cadena corría diez.
+    ''' <summary>⭐ Los DIEZ self-tests que VIAJAN CON EL BINARIO, en orden, con su eje. Es la ÚNICA lista: la
+    ''' consumen tanto <see cref="SimdParityFailure"/> (que aborta el bake) como <see cref="ParityAxesReport"/>
+    ''' (que declara qué se cubrió).
     ''' <para>El de ANCHOS va primero: es la base de la que dependen los demás. Si los anchos divergen, el
-    ''' MISMO binario hornea caras distintas según la CPU y un gate de bytes de UNA máquina no lo vería.</para>
+    ''' MISMO binario hornea caras distintas según la CPU y un gate de bytes de UNA máquina no lo vería. Ese
+    ''' es, exactamente, el único motivo por el que esta lista existe dentro de una app que se distribuye.</para>
+    ''' <para>⛔⛔ SE FUERON OCHO EL 2026-08-08, a <c>Tools/ParityGate</c>: <c>glsl-ascii</c>,
+    ''' <c>fold-golden</c>, <c>accum-space</c>, <c>cache-keys</c>, <c>bilinear</c>, <c>resample-hoist</c>,
+    ''' <c>qnam-face</c> y <c>softlight-inv</c>. NO se perdió cobertura —siguen corriendo, como gate de
+    ''' BUILD— y NO pueden volver: su resultado no depende de la máquina del usuario, así que correrlos en su
+    ''' proceso no descubre nada y le cuesta ~1 s en el primer Bake. Dos de ellos además MUTABAN globales de
+    ''' producción en caliente. Ver memoria 00-reglas-self-tests-no-van-en-el-binario.</para>
     ''' <para>⛔ SE FUE <c>sse-layer</c> (<c>SseFaceTintComposer.ComposeLayerSelfTest</c>) en la fase 5, y NO se
     ''' perdió cobertura: contrastaba el espejo vectorial del loop de capas PROPIO de SSE, y ese loop se BORRÓ
     ''' —SSE compone por <c>FaceTintCpuCompositor.ComposeChannelAccum</c>, igual que Fallout—. Sus ejes (ley
@@ -245,19 +238,8 @@ Public Module FaceGenBuilder
         ("overlays", ParityAxis.VectorVsScalar, AddressOf SseOverlayCompositor.OverlayVectorSelfTest),
         ("baker", ParityAxis.VectorVsScalar, AddressOf SseFaceGenBaker.BakerVectorSelfTest),
         ("fold-models", ParityAxis.VectorVsScalar, AddressOf SseFaceGenBaker.FoldSoftLightModelsVectorSelfTest),
-        ("glsl-ascii", ParityAxis.GlslLexical, AddressOf FaceTintCompositor.ShaderSourceAsciiSelfTest),
-        ("fold-golden", ParityAxis.GoldenAbsolute, AddressOf SseFaceGenBaker.FoldGoldenSelfTest),
-        ("accum-space", ParityAxis.LawConsistency, AddressOf FaceTintConvention.AccumSpaceConsistencySelfTest),
-        ("cache-keys", ParityAxis.LawConsistency, AddressOf FaceTintCpuCompositor.CacheKeyAxesSelfTest),
-        ("bilinear", ParityAxis.LawConsistency, AddressOf FaceTintCpuCompositor.BilinearLawSelfTest),
-        ("resample-hoist", ParityAxis.LawConsistency, AddressOf FaceTintCpuCompositor.ResampleHoistSelfTest),
-        ("qnam-face", ParityAxis.LawConsistency, AddressOf FaceTintCpuCompositor.QnamMatchesFaceSelfTest),
-        ("softlight-inv", ParityAxis.GoldenAbsolute, AddressOf FaceTintCpuCompositor.SoftLightInverseSelfTest),
         ("skin-blend", ParityAxis.VectorVsScalar, AddressOf SkinningHelper.SkinningSimdSelfTest)
     }
-    ' `softlight-inv`: la inversa del soft-light es la que hace que el UNFOLD cancele el fold. Sin gate, una
-    ' inversa mal derivada NO se ve — sale una cara levemente distinta, no un fallo. Eje GoldenAbsolute porque
-    ' el criterio es un valor absoluto (1 byte de tolerancia), no una comparacion entre dos caminos.
     ' `skin-blend`: corre la funcion REAL SkinningHelper.BlendBoneMatrices por sus dos caminos (con paleta
     ' plana ⇒ vectorial, sin paleta ⇒ escalar) y los compara bit a bit. El bake usa esa misma ley
     ' (SkinBakeMath / FaceGenBuildPipeline), asi que una divergencia ahi saldria a los vertices horneados.
@@ -292,7 +274,7 @@ Public Module FaceGenBuilder
             Next
         End If
         Dim sb As New Text.StringBuilder()
-        For Each ax In {ParityAxis.ScalarVsWidths, ParityAxis.VectorVsScalar, ParityAxis.GlslLexical, ParityAxis.GoldenAbsolute, ParityAxis.LawConsistency}
+        For Each ax In {ParityAxis.ScalarVsWidths, ParityAxis.VectorVsScalar}
             Dim idxs = Enumerable.Range(0, _parityTests.Length).Where(Function(k) _parityTests(k).Axis = ax).ToArray()
             Dim slugs = String.Join("/", idxs.Select(Function(k) _parityTests(k).Slug))
             Dim n = idxs.Length
@@ -308,9 +290,12 @@ Public Module FaceGenBuilder
             End If
             sb.AppendLine($"     {ax,-16} : {state}   [{slugs}]")
         Next
-        ' El cuarto eje NO lo cubre este gate: se mide horneando con FGBAKE_GPU_PARITY=1 y sale por
-        ' ParityReport/SseParityReport. Se nombra igual para que su ausencia sea visible, no tácita.
-        sb.Append($"     {"CpuVsGpu",-16} : NOT COVERED BY THIS GATE — ver ParityReport / SseParityReport")
+        ' Los ejes que este gate NO cubre se nombran igual, para que su ausencia sea VISIBLE y no tácita.
+        ' CpuVsGpu se mide horneando con FGBAKE_GPU_PARITY=1 y sale por ParityReport/SseParityReport.
+        ' Los otros tres se fueron a Tools/ParityGate el 2026-08-08 (no dependen de la máquina del usuario);
+        ' se listan acá para que nadie lea este reporte y crea que las leyes quedaron sin gate.
+        sb.AppendLine($"     {"CpuVsGpu",-16} : NOT COVERED BY THIS GATE — ver ParityReport / SseParityReport")
+        sb.Append($"     {"Law/Glsl/Golden",-16} : NOT COVERED BY THIS GATE — son gate de BUILD: Tools/ParityGate")
         Return sb.ToString()
     End Function
 

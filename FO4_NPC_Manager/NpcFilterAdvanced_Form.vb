@@ -48,10 +48,15 @@ Public Class NpcFilterAdvanced_Form
         MinimumSize = New Size(MinimumSize.Width, chrome + needed)
     End Sub
 
-    ''' <summary>Headless layout probe for `--filter-selftest`. Runs the REAL Load sequence (fill the
+    ''' <summary>Headless layout probe for the build gate (Tools/NpcFilterGate). Runs the REAL Load sequence (fill the
     ''' fields, then FitToContent) on the REAL Designer layout and reports where the lowest control
     ''' ends up, so "the buttons are sliced in half" becomes something a build can catch instead of
-    ''' something the user has to notice. Never shows the window.</summary>
+    ''' something the user has to notice. Never shows the window.
+    ''' <para>⛔ SÍ, ES UN MÉTODO QUE SÓLO USA EL GATE, y se queda: lo que se mide es el layout del Designer
+    ''' REAL a la fuente/DPI/idioma de quien corre, y eso no se puede medir sin tocar este form. Es `Friend`
+    ''' (no `Public`), sólo LEE y no cambia ni un comportamiento del diálogo. La línea que no se cruza es la
+    ''' de <c>LoadOrderActivator._testGameDirOverride</c>: una RAMA de producción que se comporta distinto
+    ''' bajo el test. Ver 00-reglas-self-tests-no-van-en-el-binario.</para></summary>
     Friend Function ProbeLayout(query As String) As (ClientHeight As Integer, Needed As Integer, LowestBottom As Integer, LowestName As String)
         QueryText = If(query, "")
         CreateControl()
