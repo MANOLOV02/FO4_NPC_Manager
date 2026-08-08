@@ -30,6 +30,10 @@ Partial Class ExportModelOptions_Form
         PanelOverlays = New FlowLayoutPanel()
         RadioWithOverlays = New RadioButton()
         RadioWithoutOverlays = New RadioButton()
+        GroupSkinTone = New GroupBox()
+        SkinToneLayout = New TableLayoutPanel()
+        CheckWriteSkinTone = New CheckBox()
+        LabelSkinTone = New Label()
         ButtonRow = New FlowLayoutPanel()
         ButtonExport = New Button()
         ButtonCancel = New Button()
@@ -38,6 +42,8 @@ Partial Class ExportModelOptions_Form
         GroupFaceTextures.SuspendLayout()
         FaceLayout.SuspendLayout()
         PanelOverlays.SuspendLayout()
+        GroupSkinTone.SuspendLayout()
+        SkinToneLayout.SuspendLayout()
         ButtonRow.SuspendLayout()
         SuspendLayout()
         '
@@ -49,12 +55,14 @@ Partial Class ExportModelOptions_Form
         Root.ColumnStyles.Add(New ColumnStyle(SizeType.AutoSize))
         Root.Controls.Add(GroupGeometry, 0, 0)
         Root.Controls.Add(GroupFaceTextures, 0, 1)
-        Root.Controls.Add(ButtonRow, 0, 2)
+        Root.Controls.Add(GroupSkinTone, 0, 2)
+        Root.Controls.Add(ButtonRow, 0, 3)
         Root.Dock = DockStyle.Fill
         Root.Location = New Point(0, 0)
         Root.Name = "Root"
         Root.Padding = New Padding(12, 12, 12, 6)
-        Root.RowCount = 3
+        Root.RowCount = 4
+        Root.RowStyles.Add(New RowStyle(SizeType.AutoSize))
         Root.RowStyles.Add(New RowStyle(SizeType.AutoSize))
         Root.RowStyles.Add(New RowStyle(SizeType.AutoSize))
         Root.RowStyles.Add(New RowStyle(SizeType.AutoSize))
@@ -186,6 +194,61 @@ Partial Class ExportModelOptions_Form
         RadioWithoutOverlays.Text = "Without overlays (face tint slot, engine path)"
         RadioWithoutOverlays.UseVisualStyleBackColor = True
         '
+        ' GroupSkinTone
+        '
+        GroupSkinTone.AutoSize = True
+        GroupSkinTone.AutoSizeMode = AutoSizeMode.GrowAndShrink
+        GroupSkinTone.Controls.Add(SkinToneLayout)
+        GroupSkinTone.Margin = New Padding(3, 3, 3, 8)
+        GroupSkinTone.Name = "GroupSkinTone"
+        GroupSkinTone.Padding = New Padding(10, 6, 10, 10)
+        GroupSkinTone.Size = New Size(400, 90)
+        GroupSkinTone.TabIndex = 2
+        GroupSkinTone.TabStop = False
+        GroupSkinTone.Text = "Skin tone"
+        '
+        ' SkinToneLayout
+        '
+        ' Mismo criterio que FaceLayout: filas AutoSize, nunca posiciones fijas — el label envuelve en 2 o
+        ' 3 renglones según fuente/DPI, y encima su TEXTO CAMBIA por juego (Prepare), así que la altura no
+        ' se puede fijar acá.
+        SkinToneLayout.AutoSize = True
+        SkinToneLayout.AutoSizeMode = AutoSizeMode.GrowAndShrink
+        SkinToneLayout.ColumnCount = 1
+        SkinToneLayout.ColumnStyles.Add(New ColumnStyle(SizeType.AutoSize))
+        SkinToneLayout.Controls.Add(CheckWriteSkinTone, 0, 0)
+        SkinToneLayout.Controls.Add(LabelSkinTone, 0, 1)
+        SkinToneLayout.Dock = DockStyle.Fill
+        SkinToneLayout.Location = New Point(10, 22)
+        SkinToneLayout.Margin = New Padding(0)
+        SkinToneLayout.Name = "SkinToneLayout"
+        SkinToneLayout.RowCount = 2
+        SkinToneLayout.RowStyles.Add(New RowStyle(SizeType.AutoSize))
+        SkinToneLayout.RowStyles.Add(New RowStyle(SizeType.AutoSize))
+        SkinToneLayout.TabIndex = 0
+        '
+        ' CheckWriteSkinTone
+        '
+        CheckWriteSkinTone.AutoSize = True
+        CheckWriteSkinTone.Checked = True
+        CheckWriteSkinTone.CheckState = CheckState.Checked
+        CheckWriteSkinTone.Margin = New Padding(3, 3, 3, 2)
+        CheckWriteSkinTone.Name = "CheckWriteSkinTone"
+        CheckWriteSkinTone.TabIndex = 0
+        CheckWriteSkinTone.Text = "Write the NPC's skin tone into the skin shapes"
+        CheckWriteSkinTone.UseVisualStyleBackColor = True
+        '
+        ' LabelSkinTone
+        '
+        LabelSkinTone.AutoSize = True
+        LabelSkinTone.ForeColor = SystemColors.GrayText
+        LabelSkinTone.Margin = New Padding(20, 0, 3, 6)
+        LabelSkinTone.MaximumSize = New Size(360, 0)
+        LabelSkinTone.Name = "LabelSkinTone"
+        LabelSkinTone.TabIndex = 1
+        ' El texto lo pone Prepare: la implicación de FO4 (corte del link al material) no aplica en Skyrim.
+        LabelSkinTone.Text = ""
+        '
         ' ButtonRow
         '
         ButtonRow.AutoSize = True
@@ -199,7 +262,7 @@ Partial Class ExportModelOptions_Form
         ButtonRow.Name = "ButtonRow"
         ButtonRow.Padding = New Padding(0, 4, 0, 0)
         ButtonRow.Size = New Size(400, 33)
-        ButtonRow.TabIndex = 2
+        ButtonRow.TabIndex = 3
         '
         ' ButtonExport
         '
@@ -249,6 +312,10 @@ Partial Class ExportModelOptions_Form
         FaceLayout.PerformLayout()
         PanelOverlays.ResumeLayout(False)
         PanelOverlays.PerformLayout()
+        GroupSkinTone.ResumeLayout(False)
+        GroupSkinTone.PerformLayout()
+        SkinToneLayout.ResumeLayout(False)
+        SkinToneLayout.PerformLayout()
         ButtonRow.ResumeLayout(False)
         ResumeLayout(False)
         PerformLayout()
@@ -265,6 +332,10 @@ Partial Class ExportModelOptions_Form
     Friend WithEvents PanelOverlays As System.Windows.Forms.FlowLayoutPanel
     Friend WithEvents RadioWithOverlays As System.Windows.Forms.RadioButton
     Friend WithEvents RadioWithoutOverlays As System.Windows.Forms.RadioButton
+    Friend WithEvents GroupSkinTone As System.Windows.Forms.GroupBox
+    Friend WithEvents SkinToneLayout As System.Windows.Forms.TableLayoutPanel
+    Friend WithEvents CheckWriteSkinTone As System.Windows.Forms.CheckBox
+    Friend WithEvents LabelSkinTone As System.Windows.Forms.Label
     Friend WithEvents ButtonRow As System.Windows.Forms.FlowLayoutPanel
     Friend WithEvents ButtonExport As System.Windows.Forms.Button
     Friend WithEvents ButtonCancel As System.Windows.Forms.Button

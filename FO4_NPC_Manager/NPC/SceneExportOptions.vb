@@ -11,6 +11,12 @@ Public Class SceneExportOptions
     ''' fuente (vanilla, sin tint).</summary>
     Public Property RepointFaceTextures As Boolean = True
 
+    ''' <summary>True = escribir el skin tone del NPC en el shader de los shapes de piel (SkinTint), para
+    ''' que el modelo exportado salga con el tono del preview en vez del default del NIF fuente. En FO4
+    ''' implica ADEMÁS transcribir el material resuelto al shader inline y cortar el link al .bgsm — sin eso
+    ''' el motor reemplaza el material entero y el color no se lee nunca. Ver <see cref="SkinToneShaderWriter"/>.</summary>
+    Public Property WriteSkinTone As Boolean = True
+
     ''' <summary>SSE únicamente: True = paths del camino PLEGADO (FaceDiffuse/FaceNormal en slots 0/1,
     ''' slots 3 y 6 neutralizados), que es lo que el bake escribe cuando el NPC tiene overlays de cara
     ''' o máscaras skee. False = camino del motor (facetint en el slot 6, slots 0/3 intactos).

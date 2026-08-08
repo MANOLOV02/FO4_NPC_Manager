@@ -43,6 +43,14 @@ Public NotInheritable Class SceneNifExporter
         ''' <summary>Non-Nothing only when the final <c>Save_As_Manolo</c> threw; carries the
         ''' exception message so the UI can show the "Failed to write {path}" error box.</summary>
         Public SaveError As String
+        ''' <summary>Count of skin shapes whose shader got the NPC's skin tone written into it.</summary>
+        Public SkinToneWritten As Integer
+        ''' <summary>Count of skin shapes where the tone could NOT be written because the shape's shader
+        ''' type does not carry the field. No es un fallo del export — el shape se escribió igual — pero
+        ''' TAMPOCO es silencio: el usuario pidió que el modelo matcheara y en esos shapes no matchea.</summary>
+        Public SkinToneSkipped As Integer
+        ''' <summary>Una línea por shape salteado, para el cuadro de la UI.</summary>
+        Public SkinToneSkippedDetails As String
     End Structure
 
     ''' <summary>OpenTK.Mathematics.Vector3 → System.Numerics.Vector3 (mismo nombre, structs distintos).</summary>
@@ -155,6 +163,9 @@ Public NotInheritable Class SceneNifExporter
         Dim shapesWritten As Integer = 0
         Dim shapesFailed As Integer = 0
         Dim failureDetails As New System.Text.StringBuilder()
+        Dim skinToneWritten As Integer = 0
+        Dim skinToneSkipped As Integer = 0
+        Dim skinToneSkippedDetails As New System.Text.StringBuilder()
         Dim destIdx As Integer = 0
 
         For Each mesh In meshes
@@ -615,6 +626,29 @@ Public NotInheritable Class SceneNifExporter
                                                  srcRenderable.ShapeMaterial?.material)
                 End If
 
+                ' Skin tone de la PIEL al shader. Va DESPUÉS del repunte porque en FO4 los dos escriben el
+                ' MISMO shader inline y el repunte ya transcribe el de la cara; el writer descarta la cara
+                ' por su cuenta (gate Facegen), así que ningún shape pasa dos veces por la transcripción.
+                ' ⭐ Se lee la MaterialData de la mesh, no el ShapeMaterial pelado: es la que tiene el
+                ' "ya está" del tono horneado (SkinToneBaked), o sea exactamente lo que el render miró para
+                ' decidir si tintaba este shape.
+                ' ⚠️ Las capas de OVERLAY (tatuajes) NO pasan por acá y NO se exportan, en ninguno de los dos
+                ' juegos: no son geometría sino un pase de material extra sobre el MISMO VAO
+                ' (Render.RenderOverlayLayer), con una MaterialData transitoria que no vive en model.meshes.
+                ' Lo que se exporta es el shape BASE, y el tono que se le escribe es el de su piel — correcto.
+                If opts.WriteSkinTone Then
+                    Dim matData = mesh.MeshData.Material
+                    Select Case SkinToneShaderWriter.Apply(destNif, clonedINiShape,
+                                                           matData?.MaterialBase,
+                                                           matData IsNot Nothing AndAlso matData.SkinToneBaked)
+                        Case SkinToneShaderWriter.Outcome.Written
+                            skinToneWritten += 1
+                        Case SkinToneShaderWriter.Outcome.SkippedShaderType
+                            skinToneSkipped += 1
+                            skinToneSkippedDetails.AppendLine($"{shapeName}: skin material but the shape's shader type is not Skin Tint — the NIF has no field to carry the tone there, shader left as-is")
+                    End Select
+                End If
+
                 shapesWritten += 1
                 destIdx += 1
             Catch ex As Exception
@@ -628,7 +662,10 @@ Public NotInheritable Class SceneNifExporter
                 .ShapesWritten = 0,
                 .ShapesFailed = shapesFailed,
                 .FailureDetails = failureDetails.ToString(),
-                .SaveError = Nothing
+                .SaveError = Nothing,
+                .SkinToneWritten = skinToneWritten,
+                .SkinToneSkipped = skinToneSkipped,
+                .SkinToneSkippedDetails = skinToneSkippedDetails.ToString()
             }
         End If
 
@@ -647,7 +684,10 @@ Public NotInheritable Class SceneNifExporter
                 .ShapesWritten = shapesWritten,
                 .ShapesFailed = shapesFailed,
                 .FailureDetails = failureDetails.ToString(),
-                .SaveError = ex.Message
+                .SaveError = ex.Message,
+                .SkinToneWritten = skinToneWritten,
+                .SkinToneSkipped = skinToneSkipped,
+                .SkinToneSkippedDetails = skinToneSkippedDetails.ToString()
             }
         End Try
 
@@ -655,7 +695,10 @@ Public NotInheritable Class SceneNifExporter
             .ShapesWritten = shapesWritten,
             .ShapesFailed = shapesFailed,
             .FailureDetails = failureDetails.ToString(),
-            .SaveError = Nothing
+            .SaveError = Nothing,
+            .SkinToneWritten = skinToneWritten,
+            .SkinToneSkipped = skinToneSkipped,
+            .SkinToneSkippedDetails = skinToneSkippedDetails.ToString()
         }
     End Function
 

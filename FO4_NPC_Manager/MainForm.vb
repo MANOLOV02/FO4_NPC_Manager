@@ -11053,6 +11053,16 @@ Public Class MainForm
             Return
         End If
 
+        ' Residuo del skin tone: el export salió bien igual (los shapes se escribieron), pero en esos el
+        ' modelo NO va a matchear al preview, que es justo lo que la opción prometía. Silenciarlo sería
+        ' venderle un "Export OK" a un archivo que no cumple.
+        If result.SkinToneSkipped > 0 Then
+            MessageBox.Show($"Export OK, but the skin tone was not written on {result.SkinToneSkipped} shape{If(result.SkinToneSkipped = 1, "", "s")}:" &
+                            vbCrLf & result.SkinToneSkippedDetails,
+                            "NPC Model to NIF", MessageBoxButtons.OK, MessageBoxIcon.Warning)
+            Return
+        End If
+
         MessageBox.Show("Export OK", "NPC Model to NIF", MessageBoxButtons.OK, MessageBoxIcon.Information)
     End Sub
 

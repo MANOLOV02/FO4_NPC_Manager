@@ -34,6 +34,16 @@ Public Class ExportModelOptions_Form
         PanelOverlays.Visible = isSse
         RadioWithOverlays.Checked = _foldIsTheBakeDefault
         RadioWithoutOverlays.Checked = Not _foldIsTheBakeDefault
+
+        ' El skin tone se escribe en el shader de los shapes de piel. La IMPLICACIÓN es distinta por juego y
+        ' hay que decirla: en FO4 el motor reemplaza el material entero desde el .bgsm, así que para que el
+        ' color se lea hay que embeber el material y cortar ese link — el shape deja de seguir al archivo.
+        ' En SSE no hay carga de material por nombre, así que alcanza con el color y no se pierde nada.
+        LabelSkinTone.Text =
+            If(isSse,
+               "Skin shapes (body, hands, feet) get the NPC's tone in their shader, so the exported model matches the preview instead of showing the source NIF's default. The face is not affected — its tone travels in its own textures.",
+               "Skin shapes (body, hands, feet) get the NPC's tone in their shader. In Fallout 4 this also embeds the resolved material into the shape and clears its .bgsm link, so the shape stops following that material file. The face is not affected. In game, an actor's tone is recomputed from the record and overrides this.")
+
         UpdateFaceSubOptions()
     End Sub
 
@@ -56,6 +66,7 @@ Public Class ExportModelOptions_Form
         ' Fuera de SSE el pliegue no existe: el panel está oculto y la opción queda en False para que
         ' el exporter tome siempre la rama de FO4.
         Options.FoldFaceOverlays = PanelOverlays.Visible AndAlso RadioWithOverlays.Checked
+        Options.WriteSkinTone = CheckWriteSkinTone.Checked
     End Sub
 
 End Class
