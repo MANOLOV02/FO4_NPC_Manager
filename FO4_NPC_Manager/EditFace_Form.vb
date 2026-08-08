@@ -1529,13 +1529,24 @@ Public Class EditFace_Form
                     tv = BitConverter.ToUInt32(raw.NamaRaw, f * 4)
                 End If
                 _sseNama(f) = tv
-                Dim displayIdx As Integer = If(tv = SseNam9MorphMap.NamaUnset, 0, CInt(Math.Min(tv, 15UI)))
-                If _sseNamaCombos(f) IsNot Nothing Then _sseNamaCombos(f).SelectedIndex = Math.Max(0, Math.Min(_sseNamaCombos(f).Items.Count - 1, displayIdx))
+                If _sseNamaCombos(f) IsNot Nothing Then _sseNamaCombos(f).SelectedIndex = Math.Max(0, Math.Min(_sseNamaCombos(f).Items.Count - 1, NamaDisplayIndex(tv)))
             Next
         Finally
             _suspendEvents = False
         End Try
     End Sub
+
+    ''' <summary>Índice de combo para un valor NAMA. ⛔ El centinela 0xFFFFFFFF ("familia sin asignar") NO es
+    ''' un índice: se muestra como 0, y cualquier otro valor se acota a 15 <b>antes</b> de bajar a Integer.
+    ''' <c>CInt(0xFFFFFFFF)</c> tira <c>OverflowException</c> — el rango de UInteger no entra en Int32 — y eso
+    ''' es lo que rompía Reset Section al re-asertar el snapshot: la ruta de carga ya acotaba, la de reset
+    ''' convertía crudo. El caso NO es raro: BrowType no tiene morphs femeninos en vanilla, así que toda cara
+    ''' femenina normal llega con NAMA[1] = 0xFFFFFFFF.
+    ''' <para>El valor CRUDO se preserva en <c>_sseNama</c> a propósito (round-trip byte-exacto de una familia
+    ''' que el usuario nunca tocó); esto es SÓLO para el display del combo.</para></summary>
+    Private Shared Function NamaDisplayIndex(tv As UInteger) As Integer
+        Return If(tv = SseNam9MorphMap.NamaUnset, 0, CInt(Math.Min(tv, 15UI)))
+    End Function
 
     Private Sub OnSseSliderChanged(idx As Integer)
         If _suspendEvents Then Return
@@ -3060,7 +3071,7 @@ Public Class EditFace_Form
                            Return New With {.Merged = m, mergedIdx, .Rank = r, originalIdx}
                        End Function).
                 OrderBy(Function(x) x.Rank).
-                ThenBy(Function(x) x.MergedIdx).
+                ThenBy(Function(x) x.mergedIdx).
                 ToList()
             For Each entry In ordered
                 Dim tl = entry.Merged.Layer
@@ -3096,7 +3107,7 @@ Public Class EditFace_Form
                 row.SubItems.Add(DescribeTintColor(tl))
                 row.SubItems.Add(tl.Value.ToString(CultureInfo.InvariantCulture))
                 row.Tag = New TintRowTag With {
-                    .OriginalIdx = entry.OriginalIdx,
+                    .OriginalIdx = entry.originalIdx,
                     .IsRaceDefault = entry.Merged.IsRaceDefault,
                     .VirtualLayer = If(entry.Merged.IsRaceDefault, tl, Nothing)
                 }
@@ -3723,7 +3734,7 @@ Public Class EditFace_Form
         block.Controls.Add(list, 0, 0)
 
         Dim bar As New FO4_Base_Library.TinySliderTextBox() With {
-            .Minimum = 0R, .Maximum = 1R,
+            .Minimum = 0R, .Maximum = 1.0R,
             .DisplayFormat = "0.00%", .InputScale = 0.01R,
             .SmallChange = 0.01R, .LargeChange = 0.1R,
             .Dock = DockStyle.Top, .Height = 28, .Margin = New Padding(0, 4, 0, 0)}
@@ -3766,7 +3777,7 @@ Public Class EditFace_Form
         row.Controls.Add(lblMax, 1, 0)
 
         Dim bar As New FO4_Base_Library.TinySliderTextBox() With {
-            .Minimum = -1R, .Maximum = 1R,
+            .Minimum = -1.0R, .Maximum = 1.0R,
             .DisplayFormat = "0.00%", .InputScale = 0.01R,
             .SmallChange = 0.01R, .LargeChange = 0.1R,
             .FillMode = FO4_Base_Library.TinySliderFillMode.Center,
@@ -4151,7 +4162,7 @@ Public Class EditFace_Form
                     ' FMRS values are signed [-1..+1]; 0 = bind pose. LerpFmrs maps -1→min, +1→max.
                     ' No-op axes (min/max == Default) are still built but DISABLED, so every card keeps
                     ' the same layout/size instead of shrinking to its live axes.
-                    Dim bar As New FO4_Base_Library.TinySliderTextBox() With {.Minimum = -1R, .Maximum = 1R,
+                    Dim bar As New FO4_Base_Library.TinySliderTextBox() With {.Minimum = -1.0R, .Maximum = 1.0R,
                         .DisplayFormat = "0.00%", .InputScale = 0.01R,
                         .SmallChange = 0.01R, .LargeChange = 0.1R,
                         .FillMode = FO4_Base_Library.TinySliderFillMode.Center,
@@ -4436,7 +4447,7 @@ Public Class EditFace_Form
                 For f = 0 To SseNam9MorphMap.NamaFamilyCount - 1
                     If f < p.SseNama.Length Then
                         _sseNama(f) = p.SseNama(f)
-                        If _sseNamaCombos(f) IsNot Nothing Then _sseNamaCombos(f).SelectedIndex = Math.Max(0, Math.Min(_sseNamaCombos(f).Items.Count - 1, CInt(p.SseNama(f))))
+                        If _sseNamaCombos(f) IsNot Nothing Then _sseNamaCombos(f).SelectedIndex = Math.Max(0, Math.Min(_sseNamaCombos(f).Items.Count - 1, NamaDisplayIndex(p.SseNama(f))))
                     End If
                 Next
             End If

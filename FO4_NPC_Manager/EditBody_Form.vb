@@ -1237,12 +1237,13 @@ Public Class EditBody_Form
             .TextAlign = ContentAlignment.MiddleLeft, .Margin = New Padding(2, 6, 8, 2)
         }
         layout.Controls.Add(lbl, 0, 1)
-        ' Same TinySliderTextBox the BodySlide / MRSV rows use (0..100, integer display), replacing the raw
-        ' TrackBar so the SSE weight matches the app's slider style.
+        ' Same TinySliderTextBox the BodySlide / MRSV rows use, replacing the raw TrackBar so the SSE weight
+        ' matches the app's slider style. El valor YA viene 0..100, asi que el '%' va ESCAPADO ("0\%"): el
+        ' especificador "0%" de .NET MULTIPLICA por 100 y mostraria 10000%. Mismo par que la fila de tint.
         _sseWeightSlider = New FO4_Base_Library.TinySliderTextBox() With {
             .Minimum = 0R,
             .Maximum = 100.0R,
-            .DisplayFormat = "0",
+            .DisplayFormat = "0\%",
             .SmallChange = 1.0R,
             .LargeChange = 10.0R,
             .Height = 28,

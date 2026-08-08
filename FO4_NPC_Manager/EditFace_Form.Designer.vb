@@ -1035,6 +1035,7 @@ Partial Class EditFace_Form
         ' TrackBarFmin
         ' 
         TrackBarFmin.AccentColor = SystemColors.HotTrack
+        TrackBarFmin.AllowExtremeValues = True
         TrackBarFmin.BackColor = SystemColors.Control
         TrackBarFmin.DisplayFormat = "0.00%"
         TrackBarFmin.Dock = DockStyle.Fill
