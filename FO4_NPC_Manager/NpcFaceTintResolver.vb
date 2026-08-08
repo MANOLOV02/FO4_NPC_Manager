@@ -1,4 +1,4 @@
-﻿Imports System.Globalization
+Imports System.Globalization
 Imports System.IO
 Imports System.Drawing
 Imports System.Linq
@@ -50,6 +50,7 @@ Friend NotInheritable Class NpcFaceTintResolver
         If host Is Nothing Then host = _hostProvider()
         If state Is Nothing Then Return
         LastSseFoldWasMandatory = False   ' lo recalcula TryApplyFaceTints por shape (SSE)
+        LastSseBakeEmitsFoldedNormal = False
 
         ' Single skin-tone path: the slot-12 SkinTone (authored, or a QNAM stand-in synthesized
         ' in FaceTintLayerBuilder when the NPC authors none) is composed as a normal tint layer
@@ -70,6 +71,12 @@ Friend NotInheritable Class NpcFaceTintResolver
     ''' elección del toggle. La UI lo usa para deshabilitar el checkbox en esos NPCs: ahí no existe un "sin plegar"
     ''' fiel que mostrar, porque el bake también pliega.</summary>
     Friend Property LastSseFoldWasMandatory As Boolean
+
+    ''' <summary>¿El bake de este NPC va a emitir el _msn plegado? Es el MISMO predicado que usa el
+    ''' bake (HasFaceOverlayNormals), calculado acá por shape al componer la escena. Lo consume el
+    ''' repunte del export para decidir si pisa el slot 1: preguntarle al disco no sirve, porque el
+    ''' DDS puede estar dentro de un BA2 y se leería como ausente.</summary>
+    Friend Property LastSseBakeEmitsFoldedNormal As Boolean
 
     ''' <summary>Copia la respuesta de subsurface del material de la CARA sobre cada material de piel del
     ''' cuerpo cuya respuesta difiera, para que cara y cuerpo se iluminen igual. Gana la cara y se copian los
@@ -343,6 +350,7 @@ Friend NotInheritable Class NpcFaceTintResolver
                 ' al _msn real, en vez de seguir bindeando el plegado viejo. Mismo motivo que el reset del diffuse.
                 Dim foldedNormalKey As String = ""
                 If SseOverlayCompositor.HasFaceOverlayNormals(faceOvl) Then
+                    LastSseBakeEmitsFoldedNormal = True
                     Dim nKey = SseFoldedNormalKeyFor(npcData.FormID)
                     Dim msnKey = FO4UnifiedMaterial_Class.CorrectTexturePath(materialBase.NormalTexture)
                     If Not String.IsNullOrEmpty(msnKey) AndAlso seenFaceNormals.Contains(msnKey) Then

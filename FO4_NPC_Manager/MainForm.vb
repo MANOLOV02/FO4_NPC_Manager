@@ -10977,6 +10977,39 @@ Public Class MainForm
         Dim npc As NPC_Data = Nothing
         _ctx.NpcCache.TryGetValue(npcFormID, npc)
 
+        ' Opciones ANTES del SaveFileDialog: si el usuario cancela acá no tiene sentido haberle pedido
+        ' un nombre de archivo primero.
+        Dim isSse As Boolean = (Config_App.Current IsNot Nothing AndAlso
+                                Config_App.Current.Game = Config_App.Game_Enum.Skyrim)
+        Dim exportOptions As SceneExportOptions
+        Using dlgOpts As New ExportModelOptions_Form()
+            ' El dato de "este NPC pliega" lo tiene el resolver del render: lo calculó por shape al
+            ' componer los tints de la escena que está en pantalla. Recalcularlo acá sería una segunda
+            ' copia del predicado.
+            Dim npcFoldsOverlays As Boolean = (_faceTintResolver IsNot Nothing AndAlso
+                                               _faceTintResolver.LastSseFoldWasMandatory)
+            dlgOpts.Prepare(isSse, npcFoldsOverlays)
+            If dlgOpts.ShowDialog(Me) <> DialogResult.OK Then Return
+            exportOptions = dlgOpts.Options
+        End Using
+
+        ' Plan de paths de la cara. Sin plugin de origen no se puede armar ningún path del bake, así
+        ' que en ese caso el repunte se apaga solo en vez de escribir basura.
+        Dim facePlan As FaceTexturePlan = Nothing
+        If exportOptions.RepointFaceTextures Then
+            Dim originPlugin = _ctx.PluginManager?.GetOriginatingPluginName(npcFormID)
+            If Not String.IsNullOrEmpty(originPlugin) Then
+                ' Igual que el pliegue: el dato lo tiene el resolver del render, que ya corrió el
+                ' predicado del bake (HasFaceOverlayNormals) por shape sobre la escena en pantalla.
+                facePlan = New FaceTexturePlan With {
+                    .OriginPlugin = originPlugin,
+                    .FaceGenLocalFormID = PluginManager.ToFaceGenLocalFormID(npcFormID),
+                    .BakeEmitsFoldedNormal = (_faceTintResolver IsNot Nothing AndAlso
+                                              _faceTintResolver.LastSseBakeEmitsFoldedNormal)
+                }
+            End If
+        End If
+
         Dim defaultName = If(npc IsNot Nothing AndAlso Not String.IsNullOrEmpty(npc.EditorID),
                              npc.EditorID, $"NPC_{npcFormID:X8}") & ".nif"
         Dim defaultDir = _dataPath
@@ -10997,7 +11030,7 @@ Public Class MainForm
 
         ' Build/bake/serialize is pure export domain logic — see SceneNifExporter. The handler keeps
         ' only the SaveFileDialog + default-name plumbing (above) and the result MessageBoxes (below).
-        Dim result = SceneNifExporter.Export(_previewControl.Model.meshes, outPath)
+        Dim result = SceneNifExporter.Export(_previewControl.Model.meshes, outPath, exportOptions, facePlan)
 
         If result.ShapesWritten = 0 Then
             MessageBox.Show("No visible shapes were exported." & vbCrLf & result.FailureDetails,
@@ -11011,12 +11044,16 @@ Public Class MainForm
             Return
         End If
 
-        Dim summary = $"Wrote {result.ShapesWritten} shape{If(result.ShapesWritten = 1, "", "s")} to {outPath}."
+        ' Sólo se informa lo que el usuario tiene que resolver: shapes que no se pudieron escribir.
+        ' Un export limpio no da ninguna decisión, y un resumen largo para decir "no pasó nada"
+        ' enseña a cerrar el cuadro sin leerlo — incluido el que sí traía un error.
         If result.ShapesFailed > 0 Then
-            summary &= vbCrLf & $"{result.ShapesFailed} shape{If(result.ShapesFailed = 1, "", "s")} failed:" & vbCrLf & result.FailureDetails
+            MessageBox.Show($"{result.ShapesFailed} shape{If(result.ShapesFailed = 1, "", "s")} failed:" & vbCrLf & result.FailureDetails,
+                            "NPC Model to NIF", MessageBoxButtons.OK, MessageBoxIcon.Error)
+            Return
         End If
-        MessageBox.Show(summary, "NPC Model to NIF", MessageBoxButtons.OK,
-                        If(result.ShapesFailed = 0, MessageBoxIcon.Information, MessageBoxIcon.Warning))
+
+        MessageBox.Show("Export OK", "NPC Model to NIF", MessageBoxButtons.OK, MessageBoxIcon.Information)
     End Sub
 
     ''' <summary>Phase 4a delegate: bake one NPC's FaceGen NIF + FaceCustomization textures to

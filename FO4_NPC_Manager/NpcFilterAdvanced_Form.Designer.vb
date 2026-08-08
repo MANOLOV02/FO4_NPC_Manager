@@ -170,6 +170,7 @@ Partial Class NpcFilterAdvanced_Form
         LabelFacetEyes.Text = "Eyes:"
         TextBoxFacetEyes.Dock = DockStyle.Fill
         TextBoxFacetEyes.Name = "TextBoxFacetEyes"
+        TextBoxFacetEyes.PlaceholderText = "EDID / name / mesh / 0xFormID"
         TextBoxFacetEyes.Size = New Size(200, 23)
         TextBoxFacetEyes.TabIndex = 3
         LabelFacetFace.Anchor = AnchorStyles.Left
@@ -224,6 +225,7 @@ Partial Class NpcFilterAdvanced_Form
         LabelFacetRace.Text = "Race:"
         TextBoxFacetRace.Dock = DockStyle.Fill
         TextBoxFacetRace.Name = "TextBoxFacetRace"
+        TextBoxFacetRace.PlaceholderText = "RACE — EDID / name / 0xFormID"
         TextBoxFacetRace.Size = New Size(200, 23)
         TextBoxFacetRace.TabIndex = 13
         LabelFacetHairColor.Anchor = AnchorStyles.Left
