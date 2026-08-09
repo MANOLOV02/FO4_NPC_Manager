@@ -1439,7 +1439,7 @@ Module Program
             For Each w In work
                 Dim okOne As Boolean
                 If opt.BuildFaceGen Then
-                    okOne = BuildFaceGenNpc(pm, w.Esp, w.Edid, opt.CompareCk)
+                    okOne = BuildFaceGenNpc(pm, w.Esp, w.Edid, opt.CompareCk, dataPath)
                 Else
                     okOne = BakeNpc(pm, w.Esp, w.Edid, dataPath, opt.OutDir, tintBytesCache, opt.DumpDir)
                 End If
@@ -1456,7 +1456,7 @@ Module Program
     ''' ruta que la app (FaceGenBuilder.BuildCharGen). Con --vanillaonly el entorno ya cargó SOLO plugins
     ''' oficiales (PluginManager.OfficialPluginsOnly), así que el record + las texturas son vanilla por
     ''' construcción (sin override de mods). Devuelve True si Success.</summary>
-    Private Function BuildFaceGenNpc(pm As PluginManager, espName As String, edid As String, Optional compareCk As Boolean = False) As Boolean
+    Private Function BuildFaceGenNpc(pm As PluginManager, espName As String, edid As String, Optional compareCk As Boolean = False, Optional dataPath As String = Nothing) As Boolean
         Dim npcFormID = ResolveEdid(pm, espName, edid)
         If npcFormID = 0UI Then
             Console.Error.WriteLine($"[skip] EDID='{edid}' not provided by '{espName}'.") : Return False
@@ -1465,12 +1465,13 @@ Module Program
             Dim presets As New Dictionary(Of UInteger, FO4_NPC_Manager.LooksmenuLoader.LooksmenuPreset)
             ' Resolver de materiales por-shape = el MISMO que el render (texture-paths/BGSM/tints fieles a CK).
             ' NpcRenderContext solo necesita el PluginManager (sin GL). overlay = identidad (sin presets LM).
-            Dim ctx As New FO4_NPC_Manager.NpcRenderContext(pm)
+            Dim ctx As New FO4_NPC_Manager.NpcRenderContext(pm, dataPath)
             Dim mres As New FO4_NPC_Manager.NpcMaterialResolver(ctx, Function(raw As NPC_Data, fid As UInteger) raw)
             Dim res = FO4_NPC_Manager.FaceGenBuilder.BuildCharGen(
                 npcFormID, pm, presets, Nothing,
                 AddressOf mres.ApplyShapeMaterialOverrides,
-                willBePacked:=False)
+                willBePacked:=False,
+                lutDataPath:=dataPath)
             If res Is Nothing OrElse Not res.Success Then
                 Console.Error.WriteLine($"[fail] {edid} (0x{npcFormID:X8}): {If(res Is Nothing, "null result", res.Summary)}") : Return False
             End If
@@ -3827,13 +3828,16 @@ persist:
         Dim sBytes = FilesDictionary_class.GetBytes(sKey)
         If dBytes Is Nothing OrElse dBytes.Length = 0 Then Console.Error.WriteLine($"[skip] {edid}: empty diffuse bytes (key='{dKey}').") : Return False
 
-        Dim hairLut = ResolveHairLut(npcData, race, pm)
         ' Texture lighting (QNAM) leido del record, NO hardcodeado: el app inyecta la capa slot-12
         ' SkinTone sintetica desde el QNAM (FaceTintInputBuilder.InjectSyntheticSkinToneLayer) y el
         ' bake debe hacer lo mismo o la cara diverge (la capa SoftLight pisa D y R/G de N/S).
+        ' El LUT de la ceja ya no se pasa: lo resuelve el builder desde el RACE (ver
+        ' LmHairColorLutLoader.ResolveBrowPaletteTexture). dataPath va explicito porque el CLI honra --data
+        ' y no puebla el Config_App global.
         Dim built = FaceTintInputBuilder.Build(npcData, race, npcData.IsFemale, pm, tintBytesCache,
-                                               hairLut, npcData.HairColorFormID,
-                                               npcData.HasTextureLighting, npcData.TextureLightingColor.ToArgb())
+                                               npcData.HairColorFormID,
+                                               npcData.HasTextureLighting, npcData.TextureLightingColor.ToArgb(),
+                                               dataPath)
         Dim cpu = FaceTintCpuCompositor.ComposeCpuPipeline(dBytes, nBytes, sBytes, built.Layers, built.RegionSwaps,
                                                            resolution:=Nothing, diffuseKey:=dKey, normalKey:=nKey, specKey:=sKey,
                                                            headDiffuseAlphaTest:=(npcData.Game = Config_App.Game_Enum.Fallout4) AndAlso (npcData.AcbsFlags And &H1000000UI) <> 0UI)
@@ -3846,7 +3850,7 @@ persist:
         WriteChannel(outDir, localId, "msn", cpu.Normal)
         WriteChannel(outDir, localId, "s", cpu.Specular)
         If dumpDir <> "" Then DumpMasks(built, dKey, nKey, sKey, Path.Combine(dumpDir, $"{localId:X8}"))
-        Console.WriteLine($"[ok] {edid} 0x{npcFormID:X8} -> {localId:X8}_*_3.tga (layers={built.Layers.Count} swaps={built.RegionSwaps.Count} hairLut='{hairLut}')")
+        Console.WriteLine($"[ok] {edid} 0x{npcFormID:X8} -> {localId:X8}_*_3.tga (layers={built.Layers.Count} swaps={built.RegionSwaps.Count} browLut='{LmHairColorLutLoader.ResolveBrowPaletteTexture(race, npcData.HairColorFormID)}')")
         Return True
     End Function
 
@@ -3905,7 +3909,6 @@ persist:
         Public Race As RACE_Data
         Public IsFemale As Boolean
         Public HairColorFormID As UInteger
-        Public HairLut As String
         Public HasTextureLighting As Boolean
         Public TextureLightingArgb As Integer
         Public DKey As String, NKey As String, SKey As String
@@ -4000,7 +4003,7 @@ persist:
         Dim sk = FO4UnifiedMaterial_Class.CorrectTexturePath(sP)
         Dim ctx As New NpcSweepCtx With {
             .Edid = edid, .NpcData = npcData, .Race = race, .IsFemale = npcData.IsFemale,
-            .HairColorFormID = npcData.HairColorFormID, .HairLut = ResolveHairLut(npcData, race, pm),
+            .HairColorFormID = npcData.HairColorFormID,
             .HasTextureLighting = npcData.HasTextureLighting, .TextureLightingArgb = npcData.TextureLightingColor.ToArgb(),
             .DKey = dk, .NKey = nk, .SKey = sk,
             .DBytes = FilesDictionary_class.GetBytes(dk), .NBytes = FilesDictionary_class.GetBytes(nk), .SBytes = FilesDictionary_class.GetBytes(sk)}
@@ -4099,9 +4102,15 @@ persist:
                 Dim dd As New List(Of Double), nn As New List(Of Double), ss As New List(Of Double)
                 Dim dmx As Integer = 0, nmx As Integer = 0, smx As Integer = 0
                 For Each ctx In ctxs
+                    ' ⛔ dataPath EXPLICITO, igual que el camino de un solo NPC. Sin esto caia al
+                    ' Config_App global, que es el Data de ESCRITURA — y el CLI admite read<>write a
+                    ' proposito (ver el [warn] de arriba). Con --data apuntando a otro lado, el sweep leia
+                    ' el LUTs\ del Data equivocado; y como el registro latchea en la primera carga, el que
+                    ' corriera primero fijaba el de todo el proceso: render y bake dejaban de coincidir.
                     Dim built = FaceTintInputBuilder.Build(ctx.NpcData, ctx.Race, ctx.IsFemale, pm, tintCache,
-                                                           ctx.HairLut, ctx.HairColorFormID,
-                                                           ctx.HasTextureLighting, ctx.TextureLightingArgb)
+                                                           ctx.HairColorFormID,
+                                                           ctx.HasTextureLighting, ctx.TextureLightingArgb,
+                                                           dataPath)
                     Dim cpu = FaceTintCpuCompositor.ComposeCpuPipeline(ctx.DBytes, ctx.NBytes, ctx.SBytes, built.Layers, built.RegionSwaps,
                                                                        resolution:=Nothing, diffuseKey:=ctx.DKey, normalKey:=ctx.NKey, specKey:=ctx.SKey,
                                                                        headDiffuseAlphaTest:=(ctx.NpcData.Game = Config_App.Game_Enum.Fallout4) AndAlso (ctx.NpcData.AcbsFlags And &H1000000UI) <> 0UI)
@@ -10304,49 +10313,6 @@ persist:
         n = txst.NormalTexture
         s = txst.SmoothSpecTexture
     End Sub
-
-    ''' <summary>Hair-LUT AUTORITATIVO headless: GreyscaleTexture del material BGSM (flag Hair) del NIF del
-    ''' HeadPart de pelo del NPC. Carga el NIF desde bytes (Nifcontent_Class_Manolo.Load_Manolo, sin GL) y
-    ''' lee el material YA PARSEADO (BaseMaterials). Espeja MainForm.ResolveHairPaletteTexture (BGSM gana
-    ''' sobre RACE.HNAM) pero sin el modelo renderizado. Si ningun HeadPart resuelve un material Hair con
-    ''' GreyscaleTexture, cae al lookup de la RACE (record-puro).</summary>
-    Private Function ResolveHairLut(npcData As NPC_Data, race As RACE_Data, pm As PluginManager) As String
-        If npcData.HeadPartFormIDs IsNot Nothing Then
-            For Each hpId In npcData.HeadPartFormIDs
-                Dim rec = pm.GetRecord(hpId)
-                If rec Is Nothing OrElse rec.Header.Signature <> "HDPT" Then Continue For
-                Dim hdpt = RecordParsers.ParseHDPT(rec, pm)
-                If hdpt Is Nothing OrElse String.IsNullOrWhiteSpace(hdpt.MeshPath) Then Continue For
-                Dim mp = hdpt.MeshPath.Replace("/"c, "\"c).TrimStart("\"c)
-                If Not mp.StartsWith("meshes\", StringComparison.OrdinalIgnoreCase) Then mp = "Meshes\" & mp
-                Dim nifBytes = FilesDictionary_class.GetBytes(mp)
-                If nifBytes Is Nothing OrElse nifBytes.Length = 0 Then Continue For
-                Try
-                    Dim nif As New Nifcontent_Class_Manolo()
-                    nif.Load_Manolo(nifBytes)
-                    For Each kv In nif.BaseMaterials
-                        Dim rm = kv.Value
-                        If rm IsNot Nothing AndAlso rm.material IsNot Nothing AndAlso rm.material.Hair _
-                           AndAlso Not String.IsNullOrWhiteSpace(rm.material.GreyscaleTexture) Then
-                            Return rm.material.GreyscaleTexture
-                        End If
-                    Next
-                Catch ex As Exception
-                    ' NIF no soportado / sin material Hair -> seguir con el siguiente HeadPart / fallback RACE
-                End Try
-            Next
-        End If
-        Return ResolveHairLutRaceFallback(race)
-    End Function
-
-    ''' <summary>Fallback: hair-LUT = lookup de la RACE (HairColorLookupTexture / extended), record-puro.</summary>
-    Private Function ResolveHairLutRaceFallback(race As RACE_Data) As String
-        If race Is Nothing Then Return ""
-        For Each t In {race.HairColorLookupTexture, race.HairColorExtendedLookupTexture}
-            If Not String.IsNullOrWhiteSpace(t) Then Return t
-        Next
-        Return ""
-    End Function
 
     Private Sub WriteChannel(dir As String, localId As UInteger, suffix As String, ch As FaceTintCpuCompositor.CpuChannelResult)
         If ch Is Nothing OrElse ch.Bgra Is Nothing Then

@@ -338,6 +338,13 @@ Friend Module BakeAllRunner
             Dim lmTemplates = LmSkinTemplateLoader.BuildCache(dataPath, pm)
             log($"LM skins:    {lmTemplates.Count} skin template(s)")
 
+            ' ⛔ ACÁ, antes del Parallel.ForEach de más abajo. El registro de LUTs de pelo es perezoso, y si
+            ' lo despierta el fan-out lo despiertan N hilos a la vez: el primero hace el IO mientras los
+            ' demás bloquean, y el resultado del lote pasa a depender del scheduling. Cargarlo en serie acá
+            ' deja el camino perezoso como red y el bake determinista.
+            LmHairColorLutLoader.EnsureLoaded(pm, dataPath)
+            log($"LM hair LUTs: {LmHairColorLutLoader.RegisteredColorCount} colour(s) with a custom palette")
+
             ' ---------------------------------------------------------------------------------
             ' 6. Resolvers — the SAME objects the render/GUI bake wires up (NpcRenderContext +
             '    NpcMaterialResolver over the preset overlay), so per-shape materials, texture sets,

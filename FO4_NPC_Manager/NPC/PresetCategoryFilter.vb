@@ -205,6 +205,12 @@ Public Module PresetCategoryFilter
                     p.HairColorFormID = If(raw Is Nothing, 0UI, raw.HairColorFormID)
                 End If
                 p.SseHairColorRgb = If(baseline Is Nothing, Nothing, baseline.SseHairColorRgb)
+                ' El identificador sin resolver viaja con el color: acá el color se REEMPLAZA por el del
+                ' baseline/raw, así que el crudo del archivo dejaría de describirlo. Sin limpiarlo, un
+                ' HairColorFormID=0 legítimo (el baseline no tenía color) más un UnresolvedHairColor viejo
+                ' hacen que el auditor reporte "el mod no está instalado" para un color que se descartó a
+                ' propósito.
+                p.UnresolvedHairColor = ""
 
             Case PresetCategory.FaceTints
                 If isSse Then

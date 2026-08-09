@@ -37,6 +37,12 @@ Public Module LooksmenuLoader
         ''' FO4 path. Nothing populates this on FO4 (FO4 loads from f4ee JSON, not .jslot).</summary>
         Public SseUnresolvedHeadParts As New List(Of RaceMenuJslot.JslotHeadPart)
         Public HairColorFormID As UInteger
+        ''' <summary>El identificador crudo ("Plugin.esp|FORMID") del "HairColor" del preset cuando NO resolvió
+        ''' contra el load order — o sea, cuando el mod que trae el color no está instalado. Análogo a
+        ''' <see cref="UnresolvedHeadParts"/>. Sin esto, <see cref="HairColorFormID"/> queda en 0 y el caso se
+        ''' vuelve indistinguible de "el preset no trae color de pelo": el auditor de compatibilidad lo
+        ''' saltaba en silencio. "" = resolvió, o el preset no declara HairColor.</summary>
+        Public UnresolvedHairColor As String = ""
         ''' <summary>SSE-ONLY RaceMenu face texture set (FTST) override from a loaded .jslot's actor.headTexture
         ''' (skee64 sets npc->headData->headTexture, PresetInterface.cpp:158-160). 0 = none. The render uses it as
         ''' the explicit face TXST (NpcMaterialResolver reads state.ExplicitHeadTextureFormID). SSE-only; Nothing/0 on FO4.</summary>
@@ -343,7 +349,12 @@ Public Module LooksmenuLoader
             ' HairColor
             Dim hcEl As JsonElement
             If root.TryGetProperty("HairColor", hcEl) AndAlso hcEl.ValueKind = JsonValueKind.String Then
-                preset.HairColorFormID = ResolveFormIdentifier(hcEl.GetString(), pluginManager)
+                Dim hcRaw = hcEl.GetString()
+                preset.HairColorFormID = ResolveFormIdentifier(hcRaw, pluginManager)
+                ' Guardar el crudo si no resolvió: el 0 solo no distingue "no hay color" de "el mod no está".
+                If preset.HairColorFormID = 0UI AndAlso Not String.IsNullOrWhiteSpace(hcRaw) Then
+                    preset.UnresolvedHairColor = hcRaw
+                End If
             End If
 
             ' Weight: 3 floats [thin, muscular, large]
@@ -688,6 +699,7 @@ Public Module LooksmenuLoader
         ' load→(copy/snapshot)→save would drop the preserved parts that ToJslot re-emits.
         c.SseUnresolvedHeadParts.AddRange(p.SseUnresolvedHeadParts)
         c.HairColorFormID = p.HairColorFormID
+        c.UnresolvedHairColor = p.UnresolvedHairColor
         c.SseHeadTextureFormID = p.SseHeadTextureFormID
         c.SseHairColorRgb = p.SseHairColorRgb
         c.WeightThin = p.WeightThin
@@ -956,6 +968,19 @@ Public Module LooksmenuLoader
                 If preset.HairColorFormID <> 0UI Then
                     Dim hc = FormatFormIdentifier(preset.HairColorFormID, pluginManager)
                     If Not String.IsNullOrEmpty(hc) Then w.WriteString("HairColor", hc)
+                ElseIf Not String.IsNullOrWhiteSpace(preset.UnresolvedHairColor) Then
+                    ' ⛔ PRESERVACIÓN, no invención: se re-emite el identificador CRUDO, tal cual vino, para
+                    ' que un preset cuyo mod de color no está instalado no PIERDA el color al guardarse.
+                    ' Mismo criterio que SseUnresolvedHeadParts (:698-699).
+                    ' ⚠️ HOY ESTA RAMA NO SE ALCANZA: el único caller de SerializePreset es "Save Looksmenu"
+                    ' (MainForm), que arma el preset con BuildPresetFromState — o sea desde el ESTADO del NPC,
+                    ' nunca desde un preset leído de disco, así que UnresolvedHairColor viene vacío. Es una
+                    ' red para el día que alguien serialice un preset cargado o clonado (ClonePreset SÍ
+                    ' propaga el campo). No la saco: sin ella ese día se pierde el dato en silencio.
+                    ' Los caminos que reemplazan el color a propósito lo limpian antes
+                    ' (PresetCategoryFilter, EditFace_Form.OnHairColorChanged), así que no puede re-emitir un
+                    ' color descartado. Y no duplica la clave: es un ElseIf de la rama que resuelve.
+                    w.WriteString("HairColor", preset.UnresolvedHairColor)
                 End If
 
                 ' HeadParts (always, even if empty array)

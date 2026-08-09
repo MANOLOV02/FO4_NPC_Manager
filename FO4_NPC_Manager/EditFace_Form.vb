@@ -194,6 +194,12 @@ Public Class EditFace_Form
     ' back to a grey swatch instead of failing.
     Private _hairPaletteBitmap As Bitmap = Nothing
     Private _hairPaletteResolveAttempted As Boolean
+    ''' <summary>Key normalizada de la textura de la que salio <see cref="_hairPaletteBitmap"/>. El latcheo
+    ''' solo vale mientras la LUT efectiva no cambie, y desde el registro de LooksMenu SI puede cambiar.</summary>
+    Private _hairPaletteSourceKey As String = ""
+    ''' <summary>Color de pelo con el que se evaluo el gate de LUT custom para el bitmap cacheado. Es la otra
+    ''' mitad de la identidad del cache: la misma textura puede corresponder a colores distintos.</summary>
+    Private _hairPaletteGateFid As UInteger = UInteger.MaxValue
 
     ' TintTemplate option Index -> GroupName / render-order rank. Built once from RACE for the
     ' active gender. The tint ListView shows Group as a column and rows are ordered by Rank so
@@ -353,13 +359,23 @@ Public Class EditFace_Form
     ''' produces visual garbage. wbDefinitionsFO4.pas:11646 (AHCM Male) / 11664 (AHCF Female).
     ''' Sort by FullName then EditorID for stable presentation.</summary>
     Private Sub BuildHairColorCache()
+        Dim allowedSet As New HashSet(Of UInteger)()
         Dim allowed = If(_isFemale, _race?.FemaleHairColorFormIDs, _race?.MaleHairColorFormIDs)
-        If allowed Is Nothing OrElse allowed.Count = 0 Then
+        If allowed IsNot Nothing Then allowedSet.UnionWith(allowed)
+
+        ' ⭐ Colores de pelo INYECTADOS por LooksMenu. f4ee no los mete en el record RACE: los empuja en
+        ' runtime a race->chargenData[gender]->colors al leer LUTs\<plugin>\haircolors.json
+        ' (CharGenInterface.cpp:1308). El ESP que los trae normalmente NO toca la RACE — el de "512
+        ' Standalone Hair Colors" son 512 CLFM y nada más —, así que sin esto los colores existen, se
+        ' renderizan bien si el NPC ya los tiene, pero no hay forma de ELEGIRLOS desde la app.
+        LmHairColorLutLoader.EnsureLoaded(_pluginManager)
+        allowedSet.UnionWith(LmHairColorLutLoader.RegisteredColorsFor(If(_race?.EditorID, ""), _isFemale))
+
+        If allowedSet.Count = 0 Then
             ' Race didn't declare any hair colors for this gender. Leave the combo empty (the
             ' "(none / preserve)" entry is added by PopulateHairColorCombo regardless).
             Return
         End If
-        Dim allowedSet As New HashSet(Of UInteger)(allowed)
         For Each fid In allowedSet
             Dim rec = _pluginManager.GetRecord(fid)
             If rec Is Nothing OrElse rec.Header.Signature <> "CLFM" Then Continue For
@@ -2743,6 +2759,10 @@ Public Class EditFace_Form
         Dim it = TryCast(ComboBoxHairColor.SelectedItem, HairColorItem)
         If it Is Nothing Then Return
         Preset.HairColorFormID = it.FormID
+        ' El crudo sin resolver describía el color que traía el ARCHIVO; el usuario acaba de elegir otro (o
+        ' "(none / preserve)", que es 0). Dejarlo haría que el writer lo re-emitiera y que el auditor
+        ' reportara un mod faltante para un color que ya no está en juego.
+        Preset.UnresolvedHairColor = ""
         ' Diagnostic: dump what the CLFM resolver actually produced for the chosen entry so we
         ' can correlate "swatch shows black for pink" reports with the underlying parse result.
         ' Hair CLFMs in vanilla typically use a RemappingIndex (FNAM bit 1) and have NO RGB
@@ -2897,7 +2917,7 @@ Public Class EditFace_Form
         End If
 
         If it.HasRemappingIndex Then
-            EnsureHairPaletteLoaded()
+            EnsureHairPaletteLoaded(it.FormID)
             If _hairPaletteBitmap IsNot Nothing Then
                 ' RemappingIndex is the V coordinate into the palette LUT [0..1]. The LUT layout
                 ' is: each ROW = one hair tone with a left→right gradient (highlight → shadow).
@@ -2945,10 +2965,24 @@ Public Class EditFace_Form
     ''' shape has no BGSM palette path. This matches engine behaviour (verified against F4SE
     ''' CharGenInterface.cpp: the in-game shader binds the LUT from material TXST slot 3, not from
     ''' the RACE record). Vanilla HumanChildRace ships without HNAM/HLTX precisely because the
-    ''' BGSM carries it; without BGSM-first, the swatch shows no preview for child NPCs.</para></summary>
-    Private Sub EnsureHairPaletteLoaded()
-        If _hairPaletteResolveAttempted Then Return
-
+    ''' BGSM carries it; without BGSM-first, the swatch shows no preview for child NPCs.</para>
+    ''' <para>⛔ Y por eso el swatch DIVERGE a propósito del tinte de CEJAS, que sí sale del RACE
+    ''' (LmHairColorLutLoader.ResolveBrowPaletteTexture, verificado en el binario). Son dos leyes distintas
+    ''' del motor: la malla usa la paleta de su material (ProcessHairColor) y la cara la del RACE
+    ''' (ProcessEyebrowPath). Este swatch previsualiza la MALLA, así que sigue la de la malla.</para></summary>
+    Private Sub EnsureHairPaletteLoaded(Optional swatchColorFormID As UInteger = 0UI)
+        ' ⛔ EARLY-OUT BARATO, PRIMERO. Resolver la key cuesta: ResolveHairPaletteTexture recorre las mallas
+        ' del preview y, si ninguna trae paleta (NPC pelado, o cualquier Paint antes de que cargue el modelo),
+        ' cae a ResolveRaceHairLookupTexture -> RecordParsers.ParseRACE, que NO tiene cache y arma un
+        ' RACE_Data entero. Esto corre en un handler de Paint: sin este corte, un resize del panel disparaba
+        ' un ParseRACE por frame. La LUT efectiva solo depende de (color pedido, modelo cargado), asi que
+        ' mientras el color no cambie y ya haya bitmap, no hay nada que recalcular.
+        ' ⛔ NO exige que haya bitmap: si ya se intentó para ESTE color, el resultado —haya salido bitmap o
+        ' no— ya está decidido. Exigirlo dejaba el corte inservible justo tras un fallo TERMINAL (DDS ausente
+        ' o indecodificable, p. ej. el 'vhaircolor_lgrad_d.dds' que KSHairdos nunca empaquetó): sin bitmap,
+        ' cada Paint volvía a hacer el resolve caro para volver a fallar. El caso transitorio no se cuela acá
+        ' porque deja _hairPaletteResolveAttempted en False a propósito.
+        If _hairPaletteResolveAttempted AndAlso swatchColorFormID = _hairPaletteGateFid Then Return
         ' Single source of truth for the BGSM-first / RACE-fallback rule lives in MainForm so the
         ' renderer and the swatch never disagree. Resolve via the helper, then check the chosen
         ' path actually exists in FilesDictionary before attempting to decode.
@@ -2961,13 +2995,59 @@ Public Class EditFace_Form
         Dim raw As String = ""
         If _mainForm IsNot Nothing AndAlso host IsNot Nothing AndAlso host.LastRenderedState IsNot Nothing Then
             raw = NpcMaterialResolver.ResolveHairPaletteTexture(host, host.LastRenderedState, _pluginManager)
+            ' El swatch previsualiza el PELO, así que pasa por el mismo gate que la malla (ProcessHairColor).
+            ' ⛔ Y se evalúa con el color que el usuario ACABA DE ELEGIR (swatchColorFormID), NO con
+            ' host.LastRenderedState.HairColorFormID, que es el todavía APLICADO. La fila ya salía del item
+            ' seleccionado (OnPaintHairColorSwatch usa it.RemappingIndex): con el gate mirando el color viejo,
+            ' elegir un color de LooksMenu dibujaba su fila sobre la paleta VANILLA — o sea, el swatch seguía
+            ' mostrando exactamente el bug que este registro existe para arreglar (512 colores → 16 tonos).
+            LmHairColorLutLoader.EnsureLoaded(_pluginManager)
+            Dim gateFid = If(swatchColorFormID <> 0UI, swatchColorFormID, host.LastRenderedState.HairColorFormID)
+            raw = LmHairColorLutLoader.ApplyCustomLutMesh(raw, gateFid)
         End If
+
+        ' ⛔ La LUT efectiva AHORA DEPENDE del color de pelo. Antes no: había una sola paleta posible por NPC,
+        ' así que decodificar una vez y latchear para siempre era correcto. Con el registro de LooksMenu,
+        ' elegir otro color puede cambiar la TEXTURA y el bitmap cacheado pasa a ser de otra.
+        Dim resolvedKey = FO4UnifiedMaterial_Class.CorrectTexturePath(raw)
+        ' ⛔ EL gateFid SE ACTUALIZA ACÁ, ANTES de cualquier Return. Si se dejaba para más abajo, el camino
+        ' "cambió el color pero la textura es la misma" —que es EL caso normal: los 32 colores vanilla
+        ' comparten haircolor_lgrad_d.dds— salía por el early-out de abajo sin escribirlo, y el gateFid
+        ' quedaba clavado en el primer color PARA SIEMPRE. Efecto: el corte O(1) de arriba no volvía a
+        ' dispararse nunca y volvíamos a pagar un ParseRACE por Paint — la regresión que ese corte existe
+        ' para matar. Se captura antes el "cambió el color", que la rama del transitorio necesita.
+        Dim colourChanged = (swatchColorFormID <> _hairPaletteGateFid)
+        _hairPaletteGateFid = swatchColorFormID
+
+        ' ⛔ Un resolvedKey VACÍO es transitorio (host/estado a medio armar), no un cambio de paleta: si se
+        ' tratara como cambio, cada Paint durante un rebuild tiraría el bitmap y el swatch parpadearía en
+        ' blanco. Sólo se invalida el cache cuando hay una key nueva y REAL.
+        ' PERO si además cambió el COLOR pedido, el bitmap cacheado es de otro color y el Paint ya calculó la
+        ' fila del nuevo: dibujarlo sería mostrar la fila nueva sobre la paleta vieja. Ahí conviene quedarse
+        ' sin bitmap (swatch en blanco) y reintentar: se auto-cura en cuanto el host resuelva.
+        If resolvedKey = "" AndAlso colourChanged Then
+            _hairPaletteBitmap?.Dispose()
+            _hairPaletteBitmap = Nothing
+            _hairPaletteResolveAttempted = False
+            _hairPaletteSourceKey = ""
+            Return
+        End If
+        ' Misma textura que la cacheada y ya se intentó ⇒ no hay nada que rehacer.
+        If _hairPaletteResolveAttempted AndAlso
+           String.Equals(resolvedKey, _hairPaletteSourceKey, StringComparison.OrdinalIgnoreCase) Then Return
+        If resolvedKey <> "" AndAlso Not String.Equals(resolvedKey, _hairPaletteSourceKey, StringComparison.OrdinalIgnoreCase) Then
+            _hairPaletteBitmap?.Dispose()
+            _hairPaletteBitmap = Nothing
+            _hairPaletteResolveAttempted = False
+            _hairPaletteSourceKey = resolvedKey
+        End If
+        If _hairPaletteResolveAttempted Then Return
         ' TRANSIENT: ResolveHairPaletteTexture returns "" while the host/state (and the hair mesh
         ' material it samples) aren't loaded yet — a construction-time paint can hit this before the
         ' first render populates host.PreviewCtl.Model. Do NOT latch _hairPaletteResolveAttempted here;
         ' the palette may resolve on a later Paint once the host is ready.
         If String.IsNullOrEmpty(raw) Then Return
-        Dim chosen = FO4UnifiedMaterial_Class.CorrectTexturePath(raw)
+        Dim chosen = resolvedKey
         ' A resolved path that isn't in FilesDictionary: only latch as TERMINAL once the render model
         ' is loaded, so ResolveHairPaletteTexture has had its BGSM-first chance. Before the model is up,
         ' the RACE fallback returns a (possibly non-dictionary) lookup path that the per-mesh BGSM path

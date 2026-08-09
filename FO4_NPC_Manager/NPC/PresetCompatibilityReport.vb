@@ -393,6 +393,41 @@ Public Module PresetCompatibilityReport
     ' ---------------------------------------------------------------------------------------------
     Private Sub AuditHairColor(ctx As PresetAuditContext, r As PresetAuditReport)
         Dim p = ctx.Preset
+
+        ' ⭐ EL CASO FRECUENTE, y el que faltaba: el identificador NO resolvió porque el mod que trae el color
+        ' no está instalado. El loader deja HairColorFormID=0, y el `Return` de abajo lo hacía indistinguible
+        ' de "el preset no declara color de pelo" ⇒ cero hallazgos. La rama MissingRecord de más abajo sólo
+        ' cubre el caso raro (el plugin SÍ está pero el form no existe).
+        If p.HairColorFormID = 0UI AndAlso Not String.IsNullOrWhiteSpace(p.UnresolvedHairColor) Then
+            ' ⛔ NO asumir la causa. ResolveFormIdentifier devuelve 0 por TRES motivos distintos y cada uno
+            ' necesita otra acción del usuario: identificador mal formado (el mod lo escribió mal), parte hex
+            ' ilegible, o plugin ausente. Decir siempre "el plugin no está instalado" mandaba a buscar un mod
+            ' que en dos de los tres casos YA está — y con un identificador sin '|' el mensaje llegaba a
+            ' nombrar como plugin al identificador entero.
+            Dim ident = p.UnresolvedHairColor.Trim()
+            Dim bar = ident.IndexOf("|"c)
+            If bar <= 0 OrElse bar >= ident.Length - 1 Then
+                r.Issues.Add(New PresetIssue(PresetIssueKind.MissingRecord, "Hair colour",
+                                       $"Malformed hair colour identifier '{ident}'",
+                                       "LooksMenu writes ""Plugin.esp|FORMID""; this value doesn't have that shape, so no colour can be resolved from it — the NPC keeps its current hair colour. The preset file is at fault, not your load order."))
+                Return
+            End If
+            Dim plug = ident.Substring(0, bar).Trim()
+            Dim hexPart = ident.Substring(bar + 1).Trim()
+            Dim pluginLoaded = ctx.PluginManager IsNot Nothing AndAlso
+                               ctx.PluginManager.Plugins.Any(Function(pl) String.Equals(pl.FileName, plug, StringComparison.OrdinalIgnoreCase))
+            If Not pluginLoaded Then
+                r.Issues.Add(New PresetIssue(PresetIssueKind.MissingMaster, "Hair colour",
+                                       $"'{ident}' isn't installed",
+                                       $"The plugin '{plug}' isn't in the load order, so the colour can't be resolved — the NPC keeps its current hair colour. Install that mod, or pick a colour by hand after applying the preset."))
+            Else
+                r.Issues.Add(New PresetIssue(PresetIssueKind.MissingRecord, "Hair colour",
+                                       $"'{ident}' doesn't resolve",
+                                       $"'{plug}' IS loaded, but '{hexPart}' isn't a FormID it provides (or isn't valid hex) — the NPC keeps its current hair colour. Usually means the preset was made against a different version of that mod."))
+            End If
+            Return
+        End If
+
         If p.HairColorFormID = 0UI Then Return
         Dim rec = If(ctx.PluginManager Is Nothing, Nothing, ctx.PluginManager.GetRecord(p.HairColorFormID))
         If rec Is Nothing Then
@@ -408,6 +443,47 @@ Public Module PresetCompatibilityReport
         ' A CLFM outside the RACE's own AHCM/AHCF list is NOT reported: the engine applies the NPC's HCLF
         ' regardless of the race palette, so it is neither missing nor incompatible — and this report only
         ' carries findings the user has to act on.
+
+        ' El color resuelve, pero si es de PALETA (FNAM 0x2 RemappingIndex, sólo FO4) el resultado depende de
+        ' una TEXTURA: la LUT del RACE, o la que le ate un LUTs\<plugin>\haircolors.json de LooksMenu. Si esa
+        ' textura no está instalada, el color "aplica" y se ve mal — que es justo el tipo de hallazgo que este
+        ' reporte existe para dar. Caso real: los 4 materiales de KSHairdos que apuntan a
+        ' 'vhaircolor_lgrad_d.dds', que el mod nunca empaquetó.
+        If ctx.IsSse Then Return
+        Dim clfm = RecordParsers.ParseCLFM(rec, ctx.PluginManager)
+        If clfm Is Nothing OrElse Not clfm.HasRemappingIndex Then Return
+
+        LmHairColorLutLoader.EnsureLoaded(ctx.PluginManager, ctx.DataPath)
+        ' Las DOS cosas de la MISMA lectura del snapshot: pedirlas por separado deja una ventana en la que un
+        ' Invalidate() entre medio devuelve `lut` del registro viejo y la custom del nuevo.
+        ' ⛔ Es la LUT custom APLICADA, no la que el registro tenga para ese color. Con una raza cuyo HNAM no
+        ' es la gradient vanilla, ProcessEyebrowPath NO aplica la custom aunque el registro la tenga: leer
+        ' "la que tiene" hacía que el reporte afirmara que la ceja usa una paleta que no usa, y que el aviso
+        ' de textura faltante le atribuyera al haircolors.json el path del HNAM de la raza.
+        Dim appliedCustom As String = Nothing
+        Dim lut = LmHairColorLutLoader.ResolveBrowPaletteTexture(ctx.Race, p.HairColorFormID, appliedCustom)
+        ' ⛔ If(a, b) devuelve b sólo si a es Nothing, NO si es "". CLFM_Data.FullName arranca en "" y sólo se
+        ' asigna si hay subrecord FULL, así que un CLFM sin FULL —común en packs generados— imprimía comillas
+        ' vacías: "'' is a palette colour but…".
+        Dim colourName = If(String.IsNullOrEmpty(clfm.FullName),
+                            If(String.IsNullOrEmpty(clfm.EditorID), $"0x{p.HairColorFormID:X8}", clfm.EditorID),
+                            clfm.FullName)
+
+        If String.IsNullOrEmpty(lut) Then
+            r.Issues.Add(New PresetIssue(PresetIssueKind.Note, "Hair colour",
+                                   $"'{colourName}' is a palette colour but {ctx.RaceDisplayName} declares no hair LUT",
+                                   $"The colour selects row {clfm.RemappingIndex:F4} of a palette texture the RACE doesn't name (no HNAM), so the eyebrow tint has nothing to sample — the engine skips it too. The hair MESH still tints from its own material."))
+            Return
+        End If
+
+        Dim key = FO4UnifiedMaterial_Class.CorrectTexturePath(lut)
+        If key = "" OrElse Not FilesDictionary_class.Dictionary.ContainsKey(key) Then
+            r.Issues.Add(New PresetIssue(PresetIssueKind.MissingAsset, "Hair colour",
+                                   $"The palette texture for '{colourName}' isn't installed",
+                                   $"'{lut}' isn't in loose files or the archives{If(Not String.IsNullOrEmpty(appliedCustom), " (registered by a LooksMenu haircolors.json)", "")}, so the eyebrow tint can't sample it and falls back to the layer's authored colour."))
+        ElseIf Not String.IsNullOrEmpty(appliedCustom) Then
+            r.Resolved.Add($"Hair colour '{colourName}' uses the LooksMenu custom palette '{appliedCustom}'")
+        End If
     End Sub
 
     ' ---------------------------------------------------------------------------------------------

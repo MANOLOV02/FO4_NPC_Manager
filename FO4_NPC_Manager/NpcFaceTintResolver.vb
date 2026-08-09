@@ -185,23 +185,18 @@ Friend NotInheritable Class NpcFaceTintResolver
         If state Is Nothing Then Return emptyResult
 
         Dim modelFormID = NpcStateFactory.FaceAppearanceSourceFormID(state)
-        ' Resolve the hair LUT path so slot Brows palette layers can drive their per-pixel
-        ' grayscale-to-palette colour off the same LUT the hair/brow MESHES sample at render
-        ' time. BGSM-first / RACE.HNAM fallback lives in ResolveHairPaletteTexture (single
-        ' source of truth shared with the mesh-side ApplyMaterialPaletteHairColor).
-        Dim hairLutPath As String = NpcMaterialResolver.ResolveHairPaletteTexture(_hostProvider(), state, _ctx.PluginManager)
-        ' Diagnostic: dump what the brow tint will use (LUT path + HCLF RemappingIndex) alongside
-        ' what each loaded hair/grayscale MESH material uses (GreyscaleTexture + GrayscaleToPaletteScale),
-        ' so the two can be compared 1:1 against the [PALSCALE-WRITE] mesh log. Confirms palette
-        ' (LUT) + index (scale) parity between the brow face-tint and the brow MESH.
+        ' ⭐ El LUT de la ceja YA NO se resuelve acá: lo resuelve FaceTintInputBuilder desde el RACE, que es
+        ' de donde lo saca el motor (ver LmHairColorLutLoader.ResolveBrowPaletteTexture). Esta función
+        ' recorría las mallas EN PANTALLA — la ley del MESH aplicada a la cara — y era una de tres copias.
+        ' Diagnostic: el CLFM del pelo, para comparar 1:1 contra el log [PALSCALE-WRITE] del mesh. El path
+        ' efectivo lo loguea el builder en [BROW-TINT].
         If Logger.Enabled Then
             Dim browHcfid = state.HairColorFormID
             Dim browClfmDiag = _materialResolver.ResolveColorFormData(browHcfid)
             Dim browRow As Single = If(browClfmDiag IsNot Nothing, browClfmDiag.RemappingIndex, -1.0F)
             Dim browHasRemap As Boolean = (browClfmDiag IsNot Nothing AndAlso browClfmDiag.HasRemappingIndex)
             Dim browHasColor As Boolean = (browClfmDiag IsNot Nothing AndAlso browClfmDiag.HasColor)
-            Dim browLutKey = FO4UnifiedMaterial_Class.CorrectTexturePath(hairLutPath)
-            Logger.LogLazy(Function() $"[BROW-LUT-RESOLVE] hairFid=0x{browHcfid:X8} hasColor={browHasColor} hasRemap={browHasRemap} row={browRow:F4} lutPath='{hairLutPath}' lutKey='{browLutKey}'")
+            Logger.LogLazy(Function() $"[BROW-LUT-RESOLVE] hairFid=0x{browHcfid:X8} hasColor={browHasColor} hasRemap={browHasRemap} row={browRow:F4}")
             Dim model0 = _hostProvider()?.PreviewCtl?.Model
             If model0 IsNot Nothing AndAlso model0.meshes IsNot Nothing Then
                 For Each mDiag In model0.meshes
@@ -225,7 +220,6 @@ Friend NotInheritable Class NpcFaceTintResolver
             pluginManager:=_ctx.PluginManager,
             appliedPresets:=_appliedPresets,
             tintBytesCache:=_tintBytesCache,
-            hairLutPath:=hairLutPath,
             hairColorFormID:=state.HairColorFormID,
             hasTextureLighting:=state.HasTextureLighting,
             textureLightingColorArgb:=state.TextureLightingColor.ToArgb(),

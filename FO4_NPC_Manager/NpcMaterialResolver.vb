@@ -194,6 +194,14 @@ Friend NotInheritable Class NpcMaterialResolver
                     ' HumanChildRace ships without HNAM/HLTX precisely because the BGSM carries it.
                     palTex = If(material.GreyscaleTexture, "")
                     If palTex = "" Then palTex = ResolveRaceHairLookupTexture(state, _ctx.PluginManager)
+                    ' f4ee ProcessHairColor (CharGenInterface.cpp:1126-1172): si el color de pelo del NPC
+                    ' está registrado en un LUTs\<plugin>\haircolors.json Y la paleta actual es elegible
+                    ' (= la gradient vanilla, o ya una LUT registrada), el motor clona el TXST y pisa la
+                    ' RANURA 3 con la LUT del JSON. Sin esto, N colores que comparten fila se ven idénticos
+                    ' — el mod de 512 colores tiene sólo 16 filas distintas. La FILA no cambia: el
+                    ' GrayscaleToPaletteScale de arriba sigue siendo el RemappingIndex del CLFM.
+                    LmHairColorLutLoader.EnsureLoaded(_ctx.PluginManager, _ctx.DataPath)
+                    palTex = LmHairColorLutLoader.ApplyCustomLutMesh(palTex, hairColorFormID)
                     If palTex <> "" Then
                         material.GrayscaleToPaletteColor = True
                         material.GreyscaleTexture = palTex
@@ -843,78 +851,6 @@ Friend NotInheritable Class NpcMaterialResolver
             Next
         End If
         Return ResolveRaceHairLookupTexture(state, pluginManager)
-    End Function
-
-    ''' <summary>Paleta de pelo (LUT greyscale) resuelta ÚNICAMENTE desde los records del propio NPC: misma
-    ''' prioridad que <see cref="ResolveHairPaletteTexture"/> (BGSM del pelo → RACE HNAM/HLTX) pero sin tocar
-    ''' el preview.
-    ''' <para>⛔ El bake DEBE usar esta y no la del render: aquella recorre las mallas EN PANTALLA, así que en
-    ''' un batch todos los NPCs recibían el LUT del NPC seleccionado como paleta de CEJAS, y divergía del CLI
-    ''' (que pasa host:=Nothing).</para>
-    ''' <para>Filtra por <c>mat.Hair</c>: la condición laxa por paleta también matchea armadura recoloreable.
-    ''' El decode se cachea por path de malla — en un batch el mismo peinado se repite mucho.</para></summary>
-    Friend Shared Function ResolveHairPaletteTextureForNpc(state As MainForm.NPCVisualState, pluginManager As PluginManager) As String
-        If state Is Nothing OrElse pluginManager Is Nothing Then Return ""
-
-        If state.HeadPartFormIDs IsNot Nothing Then
-            For Each hpFid In state.HeadPartFormIDs
-                If hpFid = 0UI Then Continue For
-                Dim rec = pluginManager.GetRecord(hpFid)
-                If rec Is Nothing OrElse rec.Header.Signature <> "HDPT" Then Continue For
-                Dim hdpt As HDPT_Data = Nothing
-                Try
-                    hdpt = RecordParsers.ParseHDPT(rec, pluginManager)
-                Catch ex As Exception
-                    Continue For
-                End Try
-                If hdpt Is Nothing OrElse hdpt.PartType <> NpcRecordOverlay.HdptPartType_Hair Then Continue For
-                If String.IsNullOrEmpty(hdpt.MeshPath) Then Continue For
-
-                Dim lut = HairLutFromMesh(MeshPathHelpers.NormalizeMeshKey(hdpt.MeshPath))
-                If lut <> "" Then Return lut
-            Next
-        End If
-
-        Return ResolveRaceHairLookupTexture(state, pluginManager)
-    End Function
-
-    ''' <summary>Primer <c>GreyscaleTexture</c> no vacío de un shape con material <c>Hair</c> dentro de la malla
-    ''' <paramref name="meshKey"/> (key ya normalizada del FilesDictionary). "" si la malla no resuelve, no carga,
-    ''' o ningún shape es de pelo. Resultado cacheado por key — incluido el "" (una malla sin LUT no la vuelve a
-    ''' tener), para no re-abrir el mismo NIF por cada NPC del batch.</summary>
-    Private Shared ReadOnly _hairLutByMeshPath As New Concurrent.ConcurrentDictionary(Of String, String)(StringComparer.OrdinalIgnoreCase)
-
-    Private Shared Function HairLutFromMesh(meshKey As String) As String
-        If String.IsNullOrEmpty(meshKey) Then Return ""
-        Dim cached As String = Nothing
-        If _hairLutByMeshPath.TryGetValue(meshKey, cached) Then Return cached
-
-        Dim result As String = ""
-        Try
-            Dim bytes = FilesDictionary_class.GetBytes(meshKey)
-            If bytes IsNot Nothing AndAlso bytes.Length > 0 Then
-                Dim nif As New Nifcontent_Class_Manolo()
-                nif.Load_Manolo(bytes)
-                For Each shp In nif.GetShapes()
-                    If shp Is Nothing Then Continue For
-                    Dim rel = nif.GetRelatedMaterial(shp)
-                    Dim mat = If(rel Is Nothing, Nothing, rel.material)
-                    If mat Is Nothing OrElse Not mat.Hair Then Continue For
-                    Dim gtex = If(mat.GreyscaleTexture, "")
-                    If gtex <> "" Then
-                        result = gtex
-                        Exit For
-                    End If
-                Next
-            End If
-        Catch ex As Exception
-            Dim mkLog = meshKey, msgLog = ex.Message
-            Logger.LogLazy(Function() $"[HAIR-LUT] no se pudo leer la paleta de '{mkLog}': {msgLog}")
-            result = ""
-        End Try
-
-        _hairLutByMeshPath(meshKey) = result
-        Return result
     End Function
 
     Friend Shared Function ResolveRaceHairLookupTexture(state As MainForm.NPCVisualState, pluginManager As PluginManager) As String

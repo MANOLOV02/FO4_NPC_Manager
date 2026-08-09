@@ -1,4 +1,4 @@
-Imports FO4_Base_Library
+﻿Imports FO4_Base_Library
 
 ''' <summary>
 ''' App-side wrapper over the generic <see cref="FaceTintInputBuilder"/> (in FO4_Base_Library).
@@ -25,11 +25,11 @@ Public Module FaceTintLayerBuilder
                           pluginManager As PluginManager,
                           appliedPresets As Dictionary(Of UInteger, LooksmenuLoader.LooksmenuPreset),
                           tintBytesCache As Dictionary(Of String, Byte()),
-                          Optional hairLutPath As String = "",
                           Optional hairColorFormID As UInteger = 0UI,
                           Optional hasTextureLighting As Boolean = False,
                           Optional textureLightingColorArgb As Integer = 0,
-                          Optional parseRace As Func(Of PluginRecord, RACE_Data) = Nothing) As FaceTintInputBuilder.TintBuildResult
+                          Optional parseRace As Func(Of PluginRecord, RACE_Data) = Nothing,
+                          Optional dataPath As String = Nothing) As FaceTintInputBuilder.TintBuildResult
         If pluginManager Is Nothing Then Return New FaceTintInputBuilder.TintBuildResult()
 
         ' App-specific: NPC record + LooksMenu preset overlay -> concrete npcData.
@@ -55,11 +55,17 @@ Public Module FaceTintLayerBuilder
         ' race's tint groups so an NPC's applied tints against a mod-added template resolve + compose. This
         ' is the SINGLE seam both live render (NpcFaceTintResolver) and the offline bake (FaceGenBuilder)
         ' route through, so it also covers the bake. Idempotent + no-op when no custom tints exist.
-        LmCustomTintLoader.EnsureMerged(race, pluginManager)
+        ' Mismo criterio que el registro de LUTs: el Data\ efectivo del caller, no el global. Con dataPath
+        ' Nothing (camino de la app) la sobrecarga resuelve el Config_App y queda igual que antes.
+        LmCustomTintLoader.EnsureMerged(race, pluginManager, If(dataPath, Config_App.Current?.DataPath))
 
         ' Generic, record-driven composition lives in the library.
+        ' dataPath viaja hasta el builder: es de donde sale el registro de LUTs de pelo. Nothing = el
+        ' Config_App global (camino de la app). El CLI headless honra --data y NO puebla ese global, asi
+        ' que sin este paso su bake leia el LUTs\ del Data de ESCRITURA en vez del de lectura.
         Return FaceTintInputBuilder.Build(npcData, race, isFemale, pluginManager, tintBytesCache,
-                                          hairLutPath, hairColorFormID, hasTextureLighting, textureLightingColorArgb)
+                                          hairColorFormID, hasTextureLighting, textureLightingColorArgb,
+                                          dataPath)
     End Function
 
 End Module

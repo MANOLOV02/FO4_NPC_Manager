@@ -691,7 +691,8 @@ Public Module FaceGenBuilder
                                  host As NpcRenderHost,
                                  applyMaterialOverrides As ApplyShapeMaterialOverridesDelegate,
                                  willBePacked As Boolean,
-                                 Optional lmSkinTemplateResolver As NpcRecordOverlay.ResolveLmSkinTemplateDelegate = Nothing) As BuildResult
+                                 Optional lmSkinTemplateResolver As NpcRecordOverlay.ResolveLmSkinTemplateDelegate = Nothing,
+                                 Optional lutDataPath As String = Nothing) As BuildResult
 
         ' ⭐⭐ GATE SIMD, UNA VEZ POR PROCESO Y ANTES DE HORNEAR NADA.
         ' ⛔ POR QUE ACA Y NO EN PhaseReport: los self-tests vivian SOLO adentro de PhaseReport(), y a
@@ -1327,7 +1328,7 @@ Public Module FaceGenBuilder
                                                      npcFormID, originPlugin,
                                                      pluginManager, appliedPresets, host,
                                                      state, willBePacked, result,
-                                                     lmSkinTemplateResolver)
+                                                     lmSkinTemplateResolver, lutDataPath)
                                     PhaseAdd(BakePhase.Textures, tTexF)
                                 Else
                                     Dim dnLog = destName
@@ -3242,7 +3243,8 @@ Public Module FaceGenBuilder
                                  state As MainForm.NPCVisualState,
                                  willBePacked As Boolean,
                                  result As BuildResult,
-                                 Optional lmSkinTemplateResolver As NpcRecordOverlay.ResolveLmSkinTemplateDelegate = Nothing)
+                                 Optional lmSkinTemplateResolver As NpcRecordOverlay.ResolveLmSkinTemplateDelegate = Nothing,
+                                 Optional lutDataPath As String = Nothing)
         Logger.LogLazy(Function() $"[FACEBAKE] enter npcFormID=0x{npcFormID:X8} originPlugin='{originPlugin}' srcShape='{srcShape?.Name?.ToString()}'")
         ' El material fuente se resuelve por el MISMO camino que el render, no desde el NIF crudo: en NPCs
         ' con FaceTextureSet ese set pisa el diffuse de la cabeza, y el CK compone el FaceTint sobre la
@@ -3277,19 +3279,12 @@ Public Module FaceGenBuilder
             Return
         End If
 
-        ' Resolve the hair LUT path for slot Brows palette layers via the same BGSM-first /
-        ' RACE-fallback rule the live render and the EditFace swatch use. Single source of truth
-        ' (MainForm.ResolveHairPaletteTexture). Empty string when neither source resolves -- the
-        ' builder then skips the palette branch; RGB-CLFM (HasColor) still works.
-        ' ⛔ NUNCA DESDE EL RENDER. La variante con host (ResolveHairPaletteTexture) recorre
-        ' host.PreviewCtl.Model.meshes = las mallas del NPC EN PANTALLA, no las del que se hornea: en un batch el
-        ' preview queda fijo y todos los NPC del lote recibían SU LUT de pelo como paleta de CEJAS. Violaba el
-        ' contrato declarado en BuildCharGen ("the bake must NEVER read state from the host") y divergía del CLI
-        ' y de Bake All. ResolveHairPaletteTextureForNpc aplica la MISMA prioridad (BGSM del pelo → RACE
-        ' HNAM/HLTX) resolviendo el head part de pelo DEL PROPIO NPC ⇒ misma respuesta, origen per-NPC, y los
-        ' tres caminos de bake (GUI, batch, CLI) hornean idéntico.
-        Dim hairLutPathBake As String = NpcMaterialResolver.ResolveHairPaletteTextureForNpc(state, pluginManager)
-
+        ' ⭐ El LUT de la ceja lo resuelve FaceTintInputBuilder desde el RACE (ver
+        ' LmHairColorLutLoader.ResolveBrowPaletteTexture). Antes se resolvía acá recorriendo la malla de pelo
+        ' del NPC, y esa variante existía SÓLO para esquivar la del render, que recorría las mallas EN
+        ' PANTALLA y en un batch le daba a todo el lote el LUT del NPC seleccionado. Con el origen en el
+        ' RACE el peligro desaparece de raíz: no hay malla que recorrer ni host del que leer, y GUI, batch
+        ' y CLI comparten literalmente el mismo código.
         Dim built = FaceTintLayerBuilder.Build(
             modelFormID:=npcFormID,
             rootFormID:=npcFormID,
@@ -3298,10 +3293,10 @@ Public Module FaceGenBuilder
             pluginManager:=pluginManager,
             appliedPresets:=appliedPresets,
             tintBytesCache:=Nothing,
-            hairLutPath:=hairLutPathBake,
             hairColorFormID:=state.HairColorFormID,
             hasTextureLighting:=state.HasTextureLighting,
-            textureLightingColorArgb:=state.TextureLightingColor.ToArgb())
+            textureLightingColorArgb:=state.TextureLightingColor.ToArgb(),
+            dataPath:=lutDataPath)
 
         ' ⛔ SACADA (2026-07-30) la biseccion de diagnostico `FGBAKE_LAYER_CUTOFF` / `FGBAKE_SWAP_CUTOFF`,
         ' que truncaba capas y swaps en LOS DOS compositores para aislar la fase que divergia. Cumplio su

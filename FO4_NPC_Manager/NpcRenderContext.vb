@@ -45,8 +45,20 @@ Friend NotInheritable Class NpcRenderContext
     ''' applies in the live preview (a draft has no real record for the FormID overload to resolve).</summary>
     Public MswpDraftResolver As Func(Of UInteger, MSWP_Data) = Nothing
 
-    Public Sub New(pluginManager As PluginManager)
+    ''' <summary>El <c>Data\</c> EFECTIVO de este contexto. Existe para que los registros que se cargan de
+    ''' disco (tints custom de LooksMenu, LUTs de pelo) se lean del MISMO Data que el resto del contexto.
+    ''' <para>⛔ Sin esto, el CLI headless —que honra <c>--data</c> y NO puebla el <see cref="Config_App"/>
+    ''' global— mezclaba dos orígenes en el mismo proceso: los caminos que recibían <c>--data</c> leían de
+    ''' uno y los que caían al global, de otro. Y en <c>LmCustomTintLoader</c> eso no se puede arreglar
+    ''' recargando: el merge es append-only y <c>RACE_Data.CustomLmTintsMerged</c> es un latch por raza que
+    ''' no se deshace, así que releer con otro Data dejaría razas mezcladas de dos orígenes. La divergencia
+    ''' hay que matarla en el ORIGEN, que es esto.</para>
+    ''' <para>Vacío ⇒ el global, que es lo correcto para la app (donde son el mismo valor).</para></summary>
+    Public ReadOnly DataPath As String
+
+    Public Sub New(pluginManager As PluginManager, Optional dataPath As String = Nothing)
         Me.PluginManager = pluginManager
+        Me.DataPath = If(String.IsNullOrWhiteSpace(dataPath), If(Config_App.Current?.DataPath, ""), dataPath)
     End Sub
 
     ''' <summary>O(1) record lookup, delegated to the PluginManager. Thin convenience so subsystems
@@ -161,7 +173,7 @@ Friend NotInheritable Class NpcRenderContext
         Return _raceCache.GetOrAdd(rRec.Header.FormID,
             Function(fid)
                 Dim race = RecordParsers.ParseRACE(rRec, PluginManager)
-                LmCustomTintLoader.EnsureMerged(race, PluginManager)
+                LmCustomTintLoader.EnsureMerged(race, PluginManager, DataPath)
                 Return race
             End Function)
     End Function

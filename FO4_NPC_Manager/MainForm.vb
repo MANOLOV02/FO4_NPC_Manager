@@ -2223,6 +2223,12 @@ Public Class MainForm
         ' Drop the LM custom-tint disk scan so it re-reads F4SE\Plugins\F4EE\Tints\ against the new load
         ' order; RACE_Data instances were just invalidated too, so they re-merge lazily on next use.
         LmCustomTintLoader.Invalidate()
+        ' Mismo motivo para el registro de LUTs de pelo (LUTs\<plugin>\haircolors.json): se resuelve contra
+        ' el load order (FormID local -> global) y contra el catálogo de RACE, los dos recién invalidados.
+        ' Y se recarga EN SERIE acá mismo, no perezosamente: el bake lo consume desde un Parallel.ForEach
+        ' por NPC, y despertarlo desde el fan-out hace que el lote dependa del scheduling.
+        LmHairColorLutLoader.Invalidate()
+        LmHairColorLutLoader.EnsureLoaded(_pluginManager)
         For Each npc In _ctx.NpcCache.Values
             _npcSearchableCache(npc.FormID) = NpcDisplayHelpers.BuildNpcSearchableText(npc)
             _npcDisplayLabelCache(npc.FormID) = NpcDisplayHelpers.BuildNpcDisplayLabel(npc)
