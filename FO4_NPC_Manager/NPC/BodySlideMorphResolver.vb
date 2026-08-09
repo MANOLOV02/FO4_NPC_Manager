@@ -84,6 +84,29 @@ Public Class BodySlideMorphResolver
             Return plan
         End If
 
+        ' ⭐⭐ GATE DE COTA DE skee64 — es POR MORPH ENTERO, no por vertice, y SOLO en SSE.
+        '
+        ' Los dos motores difieren y hay que respetar cada uno:
+        '   • skee64 (SSE): `if (m_maxIndex < vertexCount) { aplica TODOS los deltas } else { _ERROR }`
+        '     — BodyMorphInterface.cpp:340 / :364 / :384 / :405 (posicion) y :425 / :447 (UV), las seis
+        '     variantes con la MISMA ley. Un morph que se pasa de rango NO aporta NADA: el motor lo
+        '     descarta completo y loguea. `vertexCount` es el de la shape (skinPartition->vertexCount, :553).
+        '   • f4ee (FO4): chequeo POR VERTICE, aplica los que entran y warnea una vez
+        '     (BodyMorphInterface.cpp:60-70 / :90-100). Esa es la ley que ya implementa MorphEngine.
+        '
+        ' ⛔ Por eso el gate vive ACA (el emisor) y NO en MorphEngine: el motor de morphs es COMPARTIDO
+        ' — lo usan FO4, los .tri de FaceGen y los .osd de WM — y su descarte por vertice es la ley
+        ' CORRECTA para todos ellos. Meterlo alla le impondria la ley de skee64 a FO4.
+        '
+        ' MEDIDO (2026-08-08, NPC con el outfit de AshThorn Irileth): ese NIF trae un BODYTRI viejo que
+        ' apunta a `armor\studded\female\body.tri`, de OTRA malla. Coinciden los NOMBRES de shape pero no
+        ' la topologia (Studded 2623 vs 2490 verts, StuddedShoulder 1218 vs 915). Sin gate se aplicaban
+        ' los deltas que entraban y se tiraban los que no ⇒ 47 de 89 morphs de Studded y 44 de 48 de
+        ' StuddedShoulder deformaban la malla. skee64 los rechaza ENTEROS: in-game no pasa nada.
+        Dim vertexCount As Integer = If(geom.NifLocalVertices Is Nothing, 0, geom.NifLocalVertices.Length)
+        Dim isSse As Boolean = (Config_App.Current IsNot Nothing AndAlso
+                                Config_App.Current.Game = Config_App.Game_Enum.Skyrim)
+
         For Each kv In _sliders
             Dim sliderName = kv.Key
             Dim weight = kv.Value
@@ -116,6 +139,29 @@ Public Class BodySlideMorphResolver
             Dim morphUv = pirt.GetMorph(resolvedTriShapeName, sliderName, TriMorphType.UV)
             Dim tienePos = morph IsNot Nothing AndAlso morph.Offsets.Count > 0
             Dim tieneUv = morphUv IsNot Nothing AndAlso morphUv.Offsets.Count > 0
+
+            ' Gate de cota de skee64 (ver el bloque grande arriba del loop). SOLO SSE: en FO4 manda
+            ' f4ee, que descarta POR VERTICE — y eso ya lo hace MorphEngine, asi que no se toca.
+            ' Los dos canales se gatean por separado y contra el MISMO vertexCount de la shape, igual
+            ' que el motor (skee64 pasa el mismo `vertexCount` al functor de posicion y al de UV,
+            ' BodyMorphInterface.cpp:557-571).
+            If isSse Then
+                If tienePos AndAlso morph.MaxVertexIndex >= vertexCount Then
+                    If Logger.Enabled Then
+                        Dim mi = morph.MaxVertexIndex
+                        Logger.LogLazy(Function() $"[BODYSLIDE] shape='{shapeName}' morph='{sliderName}' POS descartado por el gate de skee64: maxIndex={mi} >= verts={vertexCount} (.tri no corresponde a esta malla)")
+                    End If
+                    tienePos = False
+                End If
+                If tieneUv AndAlso morphUv.MaxVertexIndex >= vertexCount Then
+                    If Logger.Enabled Then
+                        Dim mi = morphUv.MaxVertexIndex
+                        Logger.LogLazy(Function() $"[BODYSLIDE] shape='{shapeName}' morph='{sliderName}' UV descartado por el gate de skee64: maxIndex={mi} >= verts={vertexCount}")
+                    End If
+                    tieneUv = False
+                End If
+            End If
+
             If Not tienePos AndAlso Not tieneUv Then
                 Continue For
             End If
