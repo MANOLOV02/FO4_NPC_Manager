@@ -141,7 +141,66 @@ Public Class EditBody_Form
         ''' <summary>SSE-only: the NPC's current effective body weight (NAM7 float, 0..100, default 100).
         ''' Seeds the SSE weight slider. Unused on FO4 (the SSE section is never built).</summary>
         Public SseWeight As Single = 100.0F
+        ''' <summary>NPC_.NAM6 — FO4 "Height Min", Skyrim "Height". Seeded by MainForm from the effective
+        ''' TRAITS source (so an inheriting NPC opens at the value the record tree shows), then from any
+        ''' already-authored NpcRecordOverride so reopening the editor shows the pending edit rather than
+        ''' the stale record value. 1.0 when the subrecord is absent.</summary>
+        Public HeightMin As Single = 1.0F
+        ''' <summary>NPC_.NAM4 "Height Max" — FO4 only; Skyrim has no NAM4 and leaves this at the default.</summary>
+        Public HeightMax As Single = 1.0F
+        ''' <summary>Whether the record actually CARRIES each subrecord. Without these, "absent" and "present
+        ''' with value 1.0" seed the identical slider state, and the min&lt;=max cross-clamp cannot tell them
+        ''' apart — it would push the sibling and mint a subrecord the user never authored.</summary>
+        Public HasHeightMin As Boolean = False
+        Public HasHeightMax As Boolean = False
     End Class
+
+    ' --- Height (NPC.NAM6 / NAM4) ---
+    ' Snapshot of what the sliders OPENED at, read back FROM the controls after seeding: a record value
+    ' outside the CK's [0.1, 10] range gets clamped on assignment, and snapshotting the clamped value keeps
+    ' that clamp from registering as a user edit and being written back over the record's real value.
+    Private _snapHeightMin As Double
+    Private _snapHeightMax As Double
+    ' Re-entrancy guard for the min<=max cross-clamp: assigning the sibling slider re-fires ValueChanged.
+    Private _heightSyncing As Boolean = False
+    ' Does the record actually CARRY each subrecord? An absent NAM4 and a NAM4 of 1.0 look identical on the
+    ' slider, so without this the cross-clamp would push the sibling and MINT a subrecord the user never
+    ' authored — creating bytes is the user's call, not ours.
+    Private _hadHeightMin As Boolean
+    Private _hadHeightMax As Boolean
+    ' hasMrsv arrives as a ctor parameter only, but ResetBodySection needs it too: without latching it, Reset
+    ' re-claims MRSV ownership for a race that has no MRSV channel and mints an all-zero subrecord.
+    Private ReadOnly _hasMrsv As Boolean
+    ' Did the USER drag/type this slider (as opposed to the cross-clamp moving it)? Only a user-moved or
+    ' already-present field is ever written back.
+    Private _heightMinUserMoved As Boolean = False
+    Private _heightMaxUserMoved As Boolean = False
+    ' Did the seeded record value fall OUTSIDE [0.1, 10] and get clamped on the way into the slider? Then the
+    ' number on screen is not the record's, so the cross-clamp must never write this field on the user's
+    ' behalf — only a direct edit of THIS slider may replace a value the user was never shown.
+    Private _heightMinSeedClamped As Boolean = False
+    Private _heightMaxSeedClamped As Boolean = False
+    ' Hard limits of the Creation Kit's height fields. The sliders' TRACK is narrower (20%..200%, spanning the vanilla
+    ' spread) and they run with AllowExtremeValues so anything in between is representable — these are the
+    ' outer bounds nothing may cross, enforced on seed, on user input and again on commit.
+    Private Const HeightHardMin As Double = 0.1
+    Private Const HeightHardMax As Double = 10.0
+    ' Nominal slider track — must match the Designer's Minimum/Maximum on both height sliders. A seed outside
+    ' this widens BOTH tracks to the hard limit (see InitHeightSection) so the thumb never sits pinned to a
+    ' rail, which is what makes a stray click destructive.
+    Private Const HeightTrackMin As Double = 0.2
+    Private Const HeightTrackMax As Double = 2.0
+
+    ' Spare last row of BodyTabLayout, deliberately left empty so BuildSseWeightSection has a deterministic
+    ' place to park the unused FO4 weight group when it takes over cell (0,0). ⛔ Named rather than derived
+    ' from RowCount: "the last row happens to be free" is exactly the implicit invariant that broke when the
+    ' Height row was inserted. Adding a row means updating this AND the Designer's RowCount/RowStyles.
+    Private Const BodyTabSpareRow As Integer = 4
+
+    ' Decimals kept when committing. The sliders report an unquantised drag position, so without this the
+    ' record would get 1.0240876 while the box reads 102.45%. FOUR, not two: the box shows two decimals of a
+    ' PERCENT, which is four decimals of the stored multiplier — stored and displayed must agree.
+    Private Const HeightDecimals As Integer = 4
 
     ' NPC race/gender + currently-effective WNAM (post-overlay), captured from MainForm at open
     ' time. Used to build the two skin combos in PopulateSkinCombos.
@@ -176,6 +235,7 @@ Public Class EditBody_Form
         _npcRaceFID = npcRaceFID
         _npcIsFemale = npcIsFemale
         _currentWnamFormID = currentWnamFormID
+        _hasMrsv = hasMrsv
         _initialSeed = initial
         _initialWnamFormID = currentWnamFormID
 
@@ -195,8 +255,17 @@ Public Class EditBody_Form
         ' Seed missing slots in the overlay from the NPC's current effective values, so the
         ' sliders open at the NPC's real state instead of all zeros. Only fills slots the
         ' overlay didn't already define (preserves any prior preset/edit).
-        SeedOverlayFromInitial(p, initial, seedMrsv:=Not _isSSE)
+        ' ⛔ seedMrsv also gates on hasMrsv. SeedOverlayFromInitial sets p.HasBodyMorphValues=True and fills 5
+        ' floats unconditionally, and that flag is authoritative at save (EmitMrsv writes whenever the list is
+        ' non-empty) — so seeding it for a race with NO MRSV channel MINTS an all-zero MRSV subrecord on a
+        ' record that never had one. Latent until now because the Edit Body button was unreachable for those
+        ' NPCs; making Height always available (BodyEditAvailability.HasHeight) exposes it.
+        SeedOverlayFromInitial(p, initial, seedMrsv:=(Not _isSSE) AndAlso hasMrsv)
 
+        ' Height rides the NpcRecordOverride, NOT the LooksMenu overlay: NAM6/NAM4 are plain record
+        ' subrecords the preset never carries, and the override is applied at Save AFTER the round-trip
+        ' copy so the edit wins. Seeded here, registered on OK only (Cancel writes nothing).
+        InitHeightSection(initial)
 
         ApplyAvailability(hasMwgt, hasMrsv, _availableSliders.Count > 0)
 
@@ -1104,14 +1173,18 @@ Public Class EditBody_Form
         Await TriggerOverlayReload()
     End Function
 
-    ''' <summary>Revert MWGT (Weight triangle + 3 sliders), MRSV (5 region bars), and Skin combos
-    ''' (NPC.WNAM + LM template) to the snapshot taken at form-open time. The combos go back to
+    ''' <summary>Revert MWGT (Weight triangle + 3 sliders), MRSV (5 region bars), Height (NAM6/NAM4) and
+    ''' Skin combos (NPC.WNAM + LM template) to the snapshot taken at form-open time. The combos go back to
     ''' whatever the prior overlay carried, falling back to "(use RACE default)" / "(none)" when
     ''' the user opened Edit Body on an NPC with no prior overlay.</summary>
     Private Async Function ResetBodySection() As Task
         Dim p = Preset
         _suspendEvents = True
         Try
+            ' Height lives on the NpcRecordOverride, not the overlay, so it has no live effect to undo — but
+            ' it MUST be reverted here or the group would visually reset with the rest while OnOk still
+            ' committed the edit the user just discarded.
+            ResetHeightSection()
             ' SSE weight — revert NAM7 to the value captured at open time. (MWGT/MRSV below are hidden
             ' under _isSSE but their reverts are harmless: WeightTriangle is hidden, _mrsvBars are Nothing.)
             If _isSSE Then
@@ -1132,7 +1205,12 @@ Public Class EditBody_Form
             ' MRSV — back to initial 5-region values. ApplyPresetOverlayToNpcData reads
             ' BodyMorphValues positionally, so we keep exactly 5 entries. Skipped under Skyrim, where the
             ' channel doesn't exist and must stay untouched (see SeedOverlayFromInitial's seedMrsv).
-            If Not _isSSE Then
+            ' ⛔ Also gated on _hasMrsv, exactly like the ctor seed: HasBodyMorphValues=True is an ownership
+            ' claim the writer honours, so re-claiming it for a race with NO MRSV channel mints an all-zero
+            ' 20-byte subrecord on a record that never had one. The ctor path was fixed first and this one is
+            ' the same bug one button later — reachable for creatures/robots now that Height always opens the
+            ' editor. The MRSV group is hidden in that case, so there is nothing on screen to revert either.
+            If Not _isSSE AndAlso _hasMrsv Then
                 p.BodyMorphValues.Clear()
                 For i = 0 To 4
                     Dim v As Single = If(_initialSeed IsNot Nothing AndAlso _initialSeed.Mrsv IsNot Nothing AndAlso i < _initialSeed.Mrsv.Length, _initialSeed.Mrsv(i), 0.0F)
@@ -1256,7 +1334,17 @@ Public Class EditBody_Form
         layout.Controls.Add(_sseWeightSlider, 1, 1)
 
         grp.Controls.Add(layout)
-        BodyTabLayout.Controls.Add(grp, 0, 0)   ' same cell as the hidden GroupBoxWeight
+        ' ⛔ Vacate cell (0,0) FIRST. This used to add into the cell the (hidden) FO4 GroupBoxWeight still
+        ' occupied, and TableLayoutPanel's behaviour for two controls in one explicit cell is not something to
+        ' rely on — it may overlap them or bump the newcomer to the next free cell, and which row is "next
+        ' free" moved when the Height row was added. Parking the unused FO4 group in the spare last row makes
+        ' the placement deterministic: the SSE weight group owns row 0, so Skyrim reads weight -> Height ->
+        ' Skin whatever the collision policy is.
+        ' Re-positioned rather than Removed on purpose: a control taken out of the tree is no longer disposed
+        ' with the form, and ResetBodySection still calls WeightTriangle.SetWeights / SyncMwgtSliders on this
+        ' group's children under SSE. Hidden, it contributes no height to its row.
+        BodyTabLayout.SetCellPosition(GroupBoxWeight, New TableLayoutPanelCellPosition(0, BodyTabSpareRow))
+        BodyTabLayout.Controls.Add(grp, 0, 0)
 
         ' Seed the slider from the overlay's SseWeight (already seeded in the ctor from the effective NAM7).
         Dim p = Preset
@@ -2203,7 +2291,12 @@ Public Class EditBody_Form
         RefreshSseAppliedList(ListBoxOverlayApplied.SelectedIndex)
     End Sub
 
-    Private Sub RefreshSseAppliedList(selectIndex As Integer)
+    ''' <summary>⛔ <paramref name="selectNode"/> GANA sobre <paramref name="selectIndex"/> cuando está en la lista.
+    ''' Un número de fila NO identifica un overlay acá: la lista se muestra ordenada por zona y por índice de nodo
+    ''' DESCENDENTE, no en el orden del carrier. Después de un Add la fila del recién agregado depende de su zona y
+    ''' del hueco que tomó, así que pasar una constante (era <c>0</c>) seleccionaba OTRO overlay — típicamente uno
+    ''' de Body cuando el agregado era de Hands/Feet — y el panel de detalle editaba el equivocado.</summary>
+    Private Sub RefreshSseAppliedList(selectIndex As Integer, Optional selectNode As RaceMenuJslot.JslotOverlayNode = Nothing)
         _suspendEvents = True
         Try
             ListBoxOverlayApplied.BeginUpdate()
@@ -2229,7 +2322,13 @@ Public Class EditBody_Form
                 ListBoxOverlayApplied.EndUpdate()
             End Try
             Dim n = ListBoxOverlayApplied.Items.Count
-            If n > 0 Then ListBoxOverlayApplied.SelectedIndex = Math.Max(0, Math.Min(selectIndex, n - 1))
+            Dim want = selectIndex
+            If selectNode IsNot Nothing Then
+                ' Referencia, no valor: JslotOverlayNode no redefine Equals, así que IndexOf busca ESTE objeto.
+                Dim byId = _sseShownOverlays.IndexOf(selectNode)
+                If byId >= 0 Then want = byId
+            End If
+            If n > 0 Then ListBoxOverlayApplied.SelectedIndex = Math.Max(0, Math.Min(want, n - 1))
         Finally
             _suspendEvents = False
         End Try
@@ -2297,9 +2396,10 @@ Public Class EditBody_Form
         ov.TintR = c.R / 255.0F : ov.TintG = c.G / 255.0F : ov.TintB = c.B / 255.0F
     End Sub
 
-    ''' <summary>Add an overlay to the next free <c>[Ovl n]</c> slot of the chosen zone. The slot count comes
-    ''' from <c>skee64.ini</c>: the engine only ever instantiates <c>iNumOverlays</c> nodes per zone, so an
-    ''' overlay authored past that bound would render here and do nothing in-game.</summary>
+    ''' <summary>Add an overlay to the next free <c>[Ovl n]</c> slot of the chosen zone. The slot count from
+    ''' <c>skee64.ini</c> is ADVISORY: past it skee64 creates no node, so the overlay is inert in-game (and
+    ''' becomes live if the count is raised later) — never an error. The Add proceeds and the user gets the
+    ''' notice once per session (<see cref="SseCatalogs.ClaimOverlayLimitWarning"/>).</summary>
     Private Async Function SseAddOverlay() As Task
         Dim p = Preset
         If p Is Nothing Then Return
@@ -2329,12 +2429,9 @@ Public Class EditBody_Form
 
         Dim n = 0
         While used.Contains(n) : n += 1 : End While
-        If n >= limit Then
-            MessageBox.Show(Me,
-                $"RaceMenu only creates {limit} {zone} overlay slot(s) ([Ovl0]…[Ovl{limit - 1}]), per iNumOverlays in skee64.ini." & vbCrLf & vbCrLf &
-                "Remove one, or raise iNumOverlays in skee64.ini and reopen the editor.",
-                "No free overlay slot", MessageBoxButtons.OK, MessageBoxIcon.Information)
-            Return
+        If n >= limit AndAlso SseCatalogs.ClaimOverlayLimitWarning() Then
+            MessageBox.Show(Me, SseCatalogs.OverlayLimitNotice(zone, n, limit),
+                            "Overlay past the RaceMenu slot count", MessageBoxButtons.OK, MessageBoxIcon.Information)
         End If
 
         ' An Ex registration carries the full texture set; slot 1 is the normal. Plain paints have diffuse only.
@@ -2343,12 +2440,13 @@ Public Class EditBody_Form
             Dim s1 = entry.Slots(1)
             If Not String.IsNullOrEmpty(s1) AndAlso Not s1.Equals("ignore", StringComparison.OrdinalIgnoreCase) Then nrm = s1
         End If
-        p.SseBodyOverlays.Insert(0, New RaceMenuJslot.JslotOverlayNode With {
+        Dim added As New RaceMenuJslot.JslotOverlayNode With {
             .NodeName = SseCatalogs.OverlayNodeName(zone, n), .DiffusePath = entry.Path, .NormalPath = nrm,
             .TintR = 1, .TintG = 1, .TintB = 1, .TintA = 1, .HasTint = False,
-            .Alpha = 1.0F, .HasAlpha = True})
+            .Alpha = 1.0F, .HasAlpha = True}
+        p.SseBodyOverlays.Insert(0, added)
         p.HasOverlays = True
-        RefreshSseAppliedList(0)
+        RefreshSseAppliedList(0, added)
         Await TriggerOverlayReload()
     End Function
 
@@ -2940,7 +3038,284 @@ Public Class EditBody_Form
         If Not RefreshTimer.Enabled Then RefreshTimer.Start()
     End Sub
 
+    ''' <summary>Seed the Height group from the record and gate it per GAME. Skyrim's NPC_ carries a single
+    ''' NAM6 "Height" and no NAM4 at all (measured: 0 of 5118 records in Skyrim.esm have one), so under SSE the
+    ''' Max row is hidden and never read — its TableLayoutPanel row is AutoSize, so hiding both controls
+    ''' collapses it instead of leaving a gap. FO4 shows Min + Max.
+    ''' No render hook on purpose: the height does not scale the preview (the viewport already frames the NPC),
+    ''' and there is no single "correct" preview height anyway — the engine draws one per actor REFERENCE.</summary>
+    Private Sub InitHeightSection(initial As InitialValues)
+        _hadHeightMin = initial IsNot Nothing AndAlso initial.HasHeightMin
+        _hadHeightMax = initial IsNot Nothing AndAlso initial.HasHeightMax
+        ' raw* = exactly what the record carries, kept for the read-only caption below; seed* is what the
+        ' sliders open at and may be substituted for a half-written pair.
+        Dim rawMin As Double = CDbl(If(initial IsNot Nothing, initial.HeightMin, 1.0F))
+        Dim rawMax As Double = CDbl(If(initial IsNot Nothing, initial.HeightMax, 1.0F))
+        Dim seedMin As Double = rawMin
+        Dim seedMax As Double = rawMax
+        ' Half-written pair (FO4): seed the missing side FROM the present one so the dialog never opens showing
+        ' an inverted pair. Both directions — an absent NAM6 with NAM4 = 0.8 would otherwise open at 100%/80%.
+        ' This only affects what is DISPLAYED; the absent side is labelled and is never written (see the
+        ' entitlement gate in RegisterHeightOverride).
+        If Not _isSSE Then
+            If _hadHeightMin AndAlso Not _hadHeightMax Then seedMax = seedMin
+            If _hadHeightMax AndAlso Not _hadHeightMin Then seedMin = seedMax
+        End If
+        ' The sliders carry AllowExtremeValues, so they will NOT clamp for us — a value between the 20%..200%
+        ' track and the CK's real [0.1, 10] limit (say 5.0) is shown and edited verbatim, which is the point.
+        ' ClampHeight is what enforces the CK limit; a value it actually moves is one the record holds but the
+        ' editor cannot represent, which flips the section read-only below.
+        Dim shownMin As Double = ClampHeight(seedMin)
+        Dim shownMax As Double = ClampHeight(seedMax)
+        ' NaN has to be tested explicitly: ClampHeight maps it to 1.0, and every comparison against NaN is
+        ' False, so the subtraction test alone would silently call a corrupt field "unchanged" and then let
+        ' the cross-clamp overwrite it.
+        _heightMinSeedClamped = Double.IsNaN(seedMin) OrElse Math.Abs(shownMin - seedMin) > 0.0000005
+        _heightMaxSeedClamped = Double.IsNaN(seedMax) OrElse Math.Abs(shownMax - seedMax) > 0.0000005
+
+        EnsureHeightTrackCovers(shownMin, shownMax)
+        Dim prevSync As Boolean = _heightSyncing
+        _heightSyncing = True
+        Try
+            SliderHeightMin.Value = shownMin
+            SliderHeightMax.Value = shownMax
+        Finally
+            _heightSyncing = prevSync
+        End Try
+        ' Snapshot AFTER assigning, so nothing the seeding itself did can register as a user edit.
+        _snapHeightMin = SliderHeightMin.Value
+        _snapHeightMax = SliderHeightMax.Value
+
+        If _isSSE Then
+            ' Captions stay short on purpose: a GroupBox caption neither wraps nor ellipsizes, and the tab is
+            ' only ~508 px. "100% = 1.0" is the unit bridge — the CK, xEdit and this app's record tree all show
+            ' height as a bare multiplier, so without it a user retypes "1" here and silently gets 0.01.
+            GroupBoxHeight.Text = "Height (NPC.NAM6 · 100% = 1.0)"
+            LabelHeightMin.Text = "Height:"
+            LabelHeightMax.Visible = False
+            SliderHeightMax.Visible = False
+        Else
+            GroupBoxHeight.Text = "Height (NAM6 Min / NAM4 Max · 100% = 1.0)"
+            ' Say which half the record does not actually carry, matching the record tree's "(absent)". The
+            ' slider still shows a seeded number so the pair reads sanely, but it is not a stored value.
+            If Not _hadHeightMin Then LabelHeightMin.Text = "Min (absent):"
+            If Not _hadHeightMax Then LabelHeightMax.Text = "Max (absent):"
+        End If
+
+        ' Only fires when the record is outside the CK's hard [0.1, 10] — a value merely outside the 20%..200%
+        ' TRACK (say 5.0) is shown and edited verbatim thanks to AllowExtremeValues. Past the hard limit the
+        ' number cannot be represented at all, and editing from a substituted value would write something the
+        ' user never saw, or leave Min > Max on disk while the screen says otherwise. Rather than guess, the
+        ' section goes read-only and says what the record really holds. Does not occur in vanilla (FO4 heights
+        ' span 0.30..2.00, Skyrim 0.60..2.00); this is for hand-edited mod records.
+        If _heightMinSeedClamped OrElse _heightMaxSeedClamped Then
+            SliderHeightMin.Enabled = False
+            SliderHeightMax.Enabled = False
+            ' Report the RECORD's values, not the seeds: the half-pair substitution above may have invented the
+            ' missing side, and this caption exists precisely to state what the file actually holds. Skyrim has
+            ' no NAM4, so it never gets a "max" clause.
+            ' Kept short: the numbers are the only part the user cannot read anywhere else (the sliders show
+            ' the CLAMPED values), so they must not be what gets clipped off a caption that cannot ellipsize.
+            ' Six decimals, not three: this caption is the ONLY place the real value is legible, so rounding
+            ' 0.0001 down to "0" here would recreate the very ambiguity the record tree's "(absent)" just fixed.
+            Dim txtMin As String = If(_hadHeightMin, rawMin.ToString("G6"), "absent")
+            If _isSSE Then
+                GroupBoxHeight.Text = $"Height — read-only: {txtMin} outside [0.1, 10]"
+            Else
+                Dim txtMax As String = If(_hadHeightMax, rawMax.ToString("G6"), "absent")
+                GroupBoxHeight.Text = $"Height — read-only: outside [0.1, 10] (min {txtMin} / max {txtMax})"
+            End If
+        End If
+
+        AddHandler SliderHeightMin.ValueChanged, AddressOf OnHeightMinChanged
+        AddHandler SliderHeightMax.ValueChanged, AddressOf OnHeightMaxChanged
+        ' Re-fit once the button comes up: EnsureHeightTrackCovers defers while a mouse button is held, so a
+        ' value pushed out of track mid-drag would otherwise keep its thumb pinned until the next edit.
+        ' NOT OnSliderDragEnded — that one kicks a render reload, and height changes nothing on screen.
+        AddHandler SliderHeightMin.DragEnded, AddressOf OnHeightDragEnded
+        AddHandler SliderHeightMax.DragEnded, AddressOf OnHeightDragEnded
+    End Sub
+
+    Private Sub OnHeightDragEnded(sender As Object, e As EventArgs)
+        EnsureHeightTrackCovers(SliderHeightMin.Value, SliderHeightMax.Value)
+    End Sub
+
+    ''' <summary>The Creation Kit's hard bound on a height field. Separate from the sliders' 20%..200% track:
+    ''' the track is the useful drag range, this is the limit no value may cross.</summary>
+    Private Shared Function ClampHeight(v As Double) As Double
+        If Double.IsNaN(v) Then Return 1.0
+        Return Math.Max(HeightHardMin, Math.Min(HeightHardMax, v))
+    End Function
+
+    ''' <summary>Widen BOTH height tracks to the hard limit as soon as either value falls outside the nominal
+    ''' 20%..200%. A value outside its track draws its thumb pinned to a rail, and TinySliderTextBox assigns
+    ''' XToValue(e.X) on mouse-DOWN — which can only return an in-track number — so a single click on that
+    ''' pinned thumb (even just to focus it) would collapse the value and drag the sibling with it. The value
+    ''' would survive the wheel and the arrow keys and die to one click.
+    ''' Called at seed time AND from both ValueChanged handlers: with AllowExtremeValues the textbox can put an
+    ''' out-of-track number in at any moment, so a one-shot check at seed time only covers half the problem.
+    ''' Both sliders move together so the Min/Max pair always shares one scale — otherwise the same number
+    ''' would sit at two different thumb positions and the cross-clamp would read as broken.
+    ''' ⛔ Safe to call from inside a handler and needs no _heightSyncing guard: with AllowExtremeValues the
+    ''' Minimum/Maximum setters skip their re-clamp (TinySliderTextBox.vb), so they never assign Value and
+    ''' never raise ValueChanged.
+    ''' MONOTONE, not self-fitting: it widens once and never narrows back. Re-narrowing mid-session would
+    ''' shift every thumb under the user and could re-pin, so "type 500% then retype 100%" correctly leaves
+    ''' the wide track in place for the rest of the dialog.</summary>
+    Private Sub EnsureHeightTrackCovers(vMin As Double, vMax As Double)
+        If vMin >= HeightTrackMin AndAlso vMin <= HeightTrackMax AndAlso
+           vMax >= HeightTrackMin AndAlso vMax <= HeightTrackMax Then Return
+        ' ⛔ Never re-scale while a mouse button is held. A drag keeps focus AND capture, so a wheel notch or
+        ' arrow key mid-drag can push the value out of track; widening right then moves the thumb out from
+        ' under the pointer, and the next mouse-move — which is what a drag IS — re-reads the pointer and
+        ' leaps the value (201% to 1000% in the reported trace). Deferring keeps the drag authoritative; the
+        ' DragEnded handler re-fits the moment the button comes up (it fires on every MouseUp that had a
+        ' MouseDown, so a plain click re-fits too).
+        ' ⛔ Test the sliders' own Capture, NOT Control.MouseButtons. TinySliderTextBox takes capture in
+        ' OnMouseDown BEFORE it assigns the clicked value, so this is exactly "a height slider is mid-drag".
+        ' A global "any button is down" looks equivalent and is not: the textbox commits through Validating,
+        ' and WinForms raises Validating synchronously from the WM_LBUTTONDOWN of the click on the NEXT
+        ' control — so the ordinary "type a value, then click away" flow runs with a button physically down.
+        ' That suppressed the widen, left the thumb pinned with no DragEnded to follow (the slider never
+        ' dragged), and the next click on it collapsed the value on button-DOWN, before the re-fit on
+        ' button-UP could help. Capture belongs to whatever the user clicked, so that flow widens normally.
+        If SliderHeightMin.Capture OrElse SliderHeightMax.Capture Then Return
+        SliderHeightMin.Minimum = HeightHardMin : SliderHeightMin.Maximum = HeightHardMax
+        SliderHeightMax.Minimum = HeightHardMin : SliderHeightMax.Maximum = HeightHardMax
+    End Sub
+
+    ''' <summary>Snap a slider back inside [0.1, 10] if a typed value escaped it (AllowExtremeValues means the
+    ''' control itself won't). Assigns under <see cref="_heightSyncing"/>, so the re-entrant ValueChanged is
+    ''' swallowed and the CALLER must carry on with the corrected value — bailing out here instead would skip
+    ''' the cross-clamp, since the re-entrant pass returns at its own guard.</summary>
+    Private Sub EnforceHeightHardLimit(slider As FO4_Base_Library.TinySliderTextBox)
+        Dim clamped As Double = ClampHeight(slider.Value)
+        If Math.Abs(clamped - slider.Value) <= 0.0000005 Then Return
+        Dim prevSync As Boolean = _heightSyncing
+        _heightSyncing = True
+        Try
+            slider.Value = clamped
+        Finally
+            _heightSyncing = prevSync
+        End Try
+    End Sub
+
+    ''' <summary>Cross-clamp so Min never exceeds Max. Not cosmetic: no vanilla record has Min &gt; Max
+    ''' (0 inverted across 8990 FO4 NPC_), so an inverted pair would be data this app invented.
+    ''' ⛔ The sibling is only pushed when it is ALREADY AUTHORED (present in the record, or moved by the user
+    ''' in this session). Pushing an absent sibling would either mint a subrecord nobody asked for, or — since
+    ''' the write gate refuses to author it — move the slider on screen while the file keeps the old value.
+    ''' No-op under SSE, where there is no NAM4 at all and the Max slider is hidden.</summary>
+    Private Sub OnHeightMinChanged(sender As Object, e As EventArgs)
+        If _heightSyncing Then Return
+        _heightMinUserMoved = True
+        ' AllowExtremeValues means the control accepts anything typed into its box, so the CK limit has to be
+        ' enforced here as well as on commit — otherwise the box would read 5000% while the plugin gets 1000%.
+        EnforceHeightHardLimit(SliderHeightMin)
+        ' Re-fit the tracks: a typed value can land outside them at any moment, not just at seed time.
+        EnsureHeightTrackCovers(SliderHeightMin.Value, SliderHeightMax.Value)
+        If _isSSE Then Return
+        If Not (_hadHeightMax OrElse _heightMaxUserMoved) Then Return
+        If SliderHeightMax.Value >= SliderHeightMin.Value Then Return
+        Dim prevSync As Boolean = _heightSyncing
+        _heightSyncing = True
+        Try
+            SliderHeightMax.Value = SliderHeightMin.Value
+        Finally
+            _heightSyncing = prevSync
+        End Try
+    End Sub
+
+    Private Sub OnHeightMaxChanged(sender As Object, e As EventArgs)
+        If _heightSyncing Then Return
+        _heightMaxUserMoved = True
+        EnforceHeightHardLimit(SliderHeightMax)
+        EnsureHeightTrackCovers(SliderHeightMin.Value, SliderHeightMax.Value)
+        If _isSSE Then Return
+        If Not (_hadHeightMin OrElse _heightMinUserMoved) Then Return
+        If SliderHeightMin.Value <= SliderHeightMax.Value Then Return
+        Dim prevSync As Boolean = _heightSyncing
+        _heightSyncing = True
+        Try
+            SliderHeightMin.Value = SliderHeightMax.Value
+        Finally
+            _heightSyncing = prevSync
+        End Try
+    End Sub
+
+    ''' <summary>Persist a Height edit as an <see cref="NpcRecordOverride"/> on the ROOT NPC, MERGING into any
+    ''' override a previous session (or the NPC Editor) already authored. Only the sliders that actually moved
+    ''' are written, so an untouched NAM6/NAM4 round-trips verbatim — bytes stay the user's call.
+    ''' ⛔ TraitsChanged is latched because Height lives in the TRAITS template category
+    ''' (NpcTemplateMaterializer.MaterializeTraits copies NAM6/NAM4 unconditionally): without it, a
+    ''' Traits-INHERITING NPC keeps its Use-Traits flag and the engine's CopyFromTemplate overwrites the
+    ''' edited height at runtime, so the save would look fine in xEdit and do nothing in game.</summary>
+    Private Sub RegisterHeightOverride()
+        If _mainForm Is Nothing Then Return
+        ' Quantise to what the box actually shows: the slider reports an unquantised drag position, so without
+        ' this a drag would store 1.0240876 while the user read 1.02.
+        ' ClampHeight again on the way out: the sliders run with AllowExtremeValues, so the typed path can put
+        ' any number in them and nothing else would stop a 5000% from reaching the plugin.
+        Dim mn As Double = Math.Round(ClampHeight(SliderHeightMin.Value), HeightDecimals)
+        Dim mx As Double = Math.Round(ClampHeight(SliderHeightMax.Value), HeightDecimals)
+        Dim snapMn As Double = Math.Round(_snapHeightMin, HeightDecimals)
+        Dim snapMx As Double = Math.Round(_snapHeightMax, HeightDecimals)
+
+        ' A field is only written when we are ENTITLED to author it:
+        '   - the user edited that slider directly, or
+        '   - the subrecord already existed AND its seed was not clamped.
+        ' The first clause is what stops the cross-clamp from MINTING a subrecord that was absent; the second
+        ' is what stops it from replacing a value the record held outside [0.1, 10] — ClampHeight had to move
+        ' that one to seed the slider, so the screen never showed it, and rewriting a number the user was
+        ' never shown is not ours to do.
+        ' ⛔ There is deliberately NO "complete the half-written pair" rule here. An earlier revision authored
+        ' both NAM6 and NAM4 whenever either moved on a half pair, justified by a claim that the engine lerps
+        ' against an uninitialised zero. That claim was NOT measured — TESNPC::GetHeight does read both fields
+        ' (+0x304 / +0x308) and lerp, but what the struct holds when the subrecord is ABSENT was never checked,
+        ' and the "zero" in that reasoning is this app's own parser default (NPC_Data.HeightMax has no
+        ' initialiser), not the engine's. It also minted bytes the user never asked for, and the case does not
+        ' occur: all 8990 NPC_ across the 69 plugins of the load order carry both subrecords.
+        ' ⚠️ The SeedClamped clauses are defensive: today InitHeightSection disables BOTH sliders when either
+        ' seed was clamped, so in any state where a slider can move both flags are already False. Keep them —
+        ' they are what stops BUG "inverted pair on disk" from reopening if that read-only gate is ever
+        ' narrowed. With them, `mayWrite*` reduces to the same condition the cross-clamp uses for the sibling,
+        ' which is why the clamp pushes a sibling if and only if that sibling is writable: "slider moved on
+        ' screen but the file kept the old value" is unreachable by construction.
+        Dim mayWriteMin As Boolean = _heightMinUserMoved OrElse (_hadHeightMin AndAlso Not _heightMinSeedClamped)
+        Dim mayWriteMax As Boolean = _heightMaxUserMoved OrElse (_hadHeightMax AndAlso Not _heightMaxSeedClamped)
+        Dim minChanged As Boolean = mayWriteMin AndAlso mn <> snapMn
+        ' NAM4 does not exist in Skyrim — the SSE path never authors it, whatever the hidden slider holds.
+        Dim maxChanged As Boolean = (Not _isSSE) AndAlso mayWriteMax AndAlso mx <> snapMx
+        If Not (minChanged OrElse maxChanged) Then Return
+
+        Dim ov = _mainForm.TryGetNpcRecordOverride(_rootNpcFormID)
+        If ov Is Nothing Then ov = New NpcRecordOverride()
+        If minChanged Then ov.HeightMin = CSng(mn)
+        If maxChanged Then ov.HeightMax = CSng(mx)
+        ov.TraitsChanged = True
+        _mainForm.SetNpcRecordOverride(_rootNpcFormID, ov)
+    End Sub
+
+    ''' <summary>Restore the Height sliders to their open-time state. Called from the Body tab's
+    ''' "Reset Section" — without it the group would visually reset with everything else while
+    ''' <see cref="RegisterHeightOverride"/> still committed the discarded edit on OK.</summary>
+    Private Sub ResetHeightSection()
+        Dim prevSync As Boolean = _heightSyncing
+        _heightSyncing = True
+        Try
+            SliderHeightMin.Value = _snapHeightMin
+            SliderHeightMax.Value = _snapHeightMax
+        Finally
+            _heightSyncing = prevSync
+        End Try
+        _heightMinUserMoved = False
+        _heightMaxUserMoved = False
+    End Sub
+
     Private Sub OnOk(sender As Object, e As EventArgs)
+        ' Height is the one field here that is NOT carried by the live LooksMenu overlay — commit it now,
+        ' before the dialog result is set, so a Cancel/X path (which only rolls back the overlay) writes nothing.
+        RegisterHeightOverride()
         ' Live edits already applied to the overlay; flag MainForm so it reloads its preview.
         HasUncommittedChanges = True
         DialogResult = DialogResult.OK

@@ -1372,15 +1372,26 @@ Public Class EditFace_Form
         Return $"{ov.NodeName} — {diff}{If(ov.HasTint, "  ●", "")}"
     End Function
 
-    Private Sub RefreshFaceOvList(selectIndex As Integer)
+    ''' <summary>⛔ <paramref name="selectNode"/> GANA sobre <paramref name="selectIndex"/> cuando está en la lista.
+    ''' La fila NO identifica un overlay: <see cref="FaceOverlaysList"/> ordena por índice de nodo DESCENDENTE, así
+    ''' que el recién agregado (que toma el primer hueco libre) cae donde caiga. Pasar el conteo previo — lo que se
+    ''' hacía — clampeaba a la ÚLTIMA fila, o sea el overlay más viejo, y el panel de detalle editaba ese.</summary>
+    Private Sub RefreshFaceOvList(selectIndex As Integer, Optional selectNode As RaceMenuJslot.JslotOverlayNode = Nothing)
         _suspendEvents = True
         Try
+            Dim shown = FaceOverlaysList()
             _sseFaceOvList.BeginUpdate()
             _sseFaceOvList.Items.Clear()
-            For Each ov In FaceOverlaysList() : _sseFaceOvList.Items.Add(FaceOvLabel(ov)) : Next
+            For Each ov In shown : _sseFaceOvList.Items.Add(FaceOvLabel(ov)) : Next
             _sseFaceOvList.EndUpdate()
             Dim n = _sseFaceOvList.Items.Count
-            If n > 0 Then _sseFaceOvList.SelectedIndex = Math.Max(0, Math.Min(selectIndex, n - 1))
+            Dim want = selectIndex
+            If selectNode IsNot Nothing Then
+                ' Referencia, no valor: JslotOverlayNode no redefine Equals.
+                Dim byId = shown.IndexOf(selectNode)
+                If byId >= 0 Then want = byId
+            End If
+            If n > 0 Then _sseFaceOvList.SelectedIndex = Math.Max(0, Math.Min(want, n - 1))
         Finally
             _suspendEvents = False
         End Try
@@ -1411,9 +1422,11 @@ Public Class EditFace_Form
         Return Math.Min(255, Math.Max(0, CInt(Math.Round(v * 255.0F))))
     End Function
 
-    ''' <summary>Add a face overlay in the next free <c>Face [Ovl n]</c> slot. Bounded by
-    ''' <c>[Overlays/Face] iNumOverlays</c> in skee64.ini: the engine instantiates exactly that many face
-    ''' overlay nodes, so anything beyond would render here and be ignored in-game.</summary>
+    ''' <summary>Add a face overlay in the next free <c>Face [Ovl n]</c> slot. <c>[Overlays/Face] iNumOverlays</c>
+    ''' is ADVISORY here, and for the face it is often not a bound at all: when the bake keeps the face overlays
+    ''' (<see cref="NpcApplyScriptEmitter.SkipFaceOverlays"/>) they are composited into the FaceGen diffuse and
+    ''' skee64 never sees a node, so the count is irrelevant and the notice is suppressed. Otherwise the Add still
+    ''' proceeds — an unmatched node is inert, never an error — with the notice once per session.</summary>
     Private Sub OnFaceOvAdd(sender As Object, e As EventArgs)
         Dim p = Preset
         If p Is Nothing Then Return
@@ -1437,24 +1450,29 @@ Public Class EditFace_Form
         Next
         Dim limit = SseCatalogs.OverlayCount(SseCatalogs.OverlayZone.Face)
         Dim k = 0 : While used.Contains(k) : k += 1 : End While
-        If k >= limit Then
-            MessageBox.Show(Me,
-                $"RaceMenu only creates {limit} face overlay slot(s) ([Ovl0]…[Ovl{limit - 1}]), per iNumOverlays in skee64.ini." & vbCrLf & vbCrLf &
-                "Remove one, or raise iNumOverlays in skee64.ini and reopen the editor.",
-                "No free overlay slot", MessageBoxButtons.OK, MessageBoxIcon.Information)
-            Return
+        ' El bake silencia el aviso: con el bake quedándose la cara, este overlay no viaja a skee, así que
+        ' hablarle del contador sería ruido.
+        ' ⛔ ESTO ES SEGURO SÓLO PORQUE EL BARRIDO LLEGA AL TOPE DEL MOTOR. Setting_BakeSseRaceMenuOverlays es un
+        ' toggle GLOBAL de guardado: el día que se apague, el emisor manda este mismo nodo y entra al co-save con
+        ' persist=true. Con un techo de barrido más bajo eso quedaba clavado en la partida del jugador y callarse
+        ' acá era un defecto; con el techo en el máximo de skee, borrarlo en la app lo borra de la partida.
+        If k >= limit AndAlso Not NpcApplyScriptEmitter.SkipFaceOverlays(Config_App.Game_Enum.Skyrim) AndAlso
+           SseCatalogs.ClaimOverlayLimitWarning() Then
+            MessageBox.Show(Me, SseCatalogs.OverlayLimitNotice(SseCatalogs.OverlayZone.Face, k, limit),
+                            "Overlay past the RaceMenu slot count", MessageBoxButtons.OK, MessageBoxIcon.Information)
         End If
         Dim nrm As String = ""
         If entry.Slots IsNot Nothing AndAlso entry.Slots.Length > 1 Then
             Dim s1 = entry.Slots(1)
             If Not String.IsNullOrEmpty(s1) AndAlso Not s1.Equals("ignore", StringComparison.OrdinalIgnoreCase) Then nrm = s1
         End If
-        p.SseBodyOverlays.Add(New RaceMenuJslot.JslotOverlayNode With {
+        Dim added As New RaceMenuJslot.JslotOverlayNode With {
             .NodeName = SseCatalogs.OverlayNodeName(SseCatalogs.OverlayZone.Face, k), .DiffusePath = entry.Path, .NormalPath = nrm,
             .TintR = 1, .TintG = 1, .TintB = 1, .TintA = 1, .HasTint = False,
-            .Alpha = 1.0F, .HasAlpha = True})
+            .Alpha = 1.0F, .HasAlpha = True}
+        p.SseBodyOverlays.Add(added)
         p.HasOverlays = True
-        RefreshFaceOvList(_sseFaceOvList.Items.Count)
+        RefreshFaceOvList(_sseFaceOvList.Items.Count, added)
         ScheduleRefresh(FaceRefreshScope.FullReload)
     End Sub
 

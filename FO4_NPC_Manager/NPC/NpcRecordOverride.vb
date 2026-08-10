@@ -46,6 +46,16 @@ Public Class NpcRecordOverride
     Public Property ClassFormID As UInteger? = Nothing      ' CNAM
     Public Property CombatStyleFormID As UInteger? = Nothing ' ZNAM
 
+    ''' <summary>NAM6 — FO4 "Height Min", Skyrim "Height" (the whole value; SSE has no range). CK slider
+    ''' range is [0.1, 10]. Nothing = not overridden.
+    ''' Height is a TRAITS-category field (NpcTemplateMaterializer.MaterializeTraits copies it), so an
+    ''' editor that sets this MUST also latch <see cref="TraitsChanged"/> — otherwise a Traits-inheriting
+    ''' NPC keeps its Use-Traits flag and the engine's CopyFromTemplate overwrites the edit at runtime.</summary>
+    Public Property HeightMin As Single? = Nothing          ' NAM6
+    ''' <summary>NAM4 "Height Max" — FO4 ONLY. Skyrim's NPC_ has no NAM4 (measured: 0 of 5118 records in
+    ''' Skyrim.esm carry one), so the SSE editor path leaves this Nothing and the writer emits nothing.</summary>
+    Public Property HeightMax As Single? = Nothing          ' NAM4
+
     ' --- Lists (Nothing = not overridden; a set list REPLACES the source list in full). ---
     Public Property Keywords As List(Of UInteger) = Nothing                        ' KWDA
     Public Property AttachParentSlots As List(Of UInteger) = Nothing               ' APPR (attach-point KYWD)
@@ -70,7 +80,8 @@ Public Class NpcRecordOverride
                    Not MagickaOffset.HasValue AndAlso Not StaminaOffset.HasValue AndAlso
                    Not SpeedMultiplier.HasValue AndAlso Not HealthOffset.HasValue AndAlso SsePlayerSkills Is Nothing AndAlso
                    Not RaceFormID.HasValue AndAlso Not VoiceFormID.HasValue AndAlso Not ClassFormID.HasValue AndAlso
-                   Not CombatStyleFormID.HasValue AndAlso Keywords Is Nothing AndAlso AttachParentSlots Is Nothing AndAlso
+                   Not CombatStyleFormID.HasValue AndAlso Not HeightMin.HasValue AndAlso Not HeightMax.HasValue AndAlso
+                   Keywords Is Nothing AndAlso AttachParentSlots Is Nothing AndAlso
                    Factions Is Nothing AndAlso Inventory Is Nothing AndAlso Perks Is Nothing AndAlso
                    ActorEffects Is Nothing AndAlso Properties Is Nothing AndAlso ObjectTemplateCombinations Is Nothing
         End Get

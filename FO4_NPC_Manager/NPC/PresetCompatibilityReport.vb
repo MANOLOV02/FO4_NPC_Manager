@@ -656,6 +656,13 @@ Public Module PresetCompatibilityReport
         ' SSE body overlays (RaceMenu, path-based).
         If p.SseBodyOverlays IsNot Nothing AndAlso p.SseBodyOverlays.Count > 0 Then
             Dim okOv As Integer = 0
+            ' Una sola lectura del ini para todo el reporte (OverlayCount statea el archivo en cada llamada).
+            Dim slotLimits = {SseCatalogs.OverlayCount(SseCatalogs.OverlayZone.Body), SseCatalogs.OverlayCount(SseCatalogs.OverlayZone.Hands),
+                              SseCatalogs.OverlayCount(SseCatalogs.OverlayZone.Feet), SseCatalogs.OverlayCount(SseCatalogs.OverlayZone.Face)}
+            ' ⛔ La fuente TAMBIÉN se saca una vez. Pedirla adentro del loop anulaba el hoist de arriba —vuelve a
+            ' statear por cada overlay— y encima abría una ventana por fila para que el número impreso y el
+            ' archivo nombrado dejen de corresponderse.
+            Dim countSource = SseCatalogs.OverlayCountSource()
             For Each ov In p.SseBodyOverlays
                 If ov Is Nothing Then Continue For
                 Dim zone = SseCatalogs.ZoneOfNode(ov.NodeName)
@@ -665,6 +672,25 @@ Public Module PresetCompatibilityReport
                     Continue For
                 End If
                 Dim bad As Boolean = False
+                ' ⛔ El nodo puede ser válido y aun así NO EXISTIR: skee sólo instancia iNumOverlays nodos por zona
+                ' y el editor deja autorar más (avisa una vez por sesión, que se pierde al cerrar). Este reporte es
+                ' la superficie que SOBREVIVE, así que el que abre un preset ajeno se entera acá. No es MissingAsset:
+                ' la textura está, el que falta es el nodo.
+                Dim slot = SseCatalogs.IndexOfNode(ov.NodeName)
+                Dim slotLimit = slotLimits(CInt(zone.Value))
+                If slot >= slotLimit Then
+                    ' ⛔ Con bEnableFaceOverlays=0 el contador de cara es 0 pase lo que pase con iNumOverlays:
+                    ' mandar a subir esa key sería mandarlo a una que su archivo ya tiene puesta.
+                    Dim byFlag = zone.Value = SseCatalogs.OverlayZone.Face AndAlso slotLimit = 0 AndAlso SseCatalogs.FaceOverlaysDisabledByIni()
+                    r.Issues.Add(New PresetIssue(PresetIssueKind.NotApplied, "Overlays",
+                                           $"Overlay '{ov.NodeName}' is past the {slotLimit} slot(s) skee creates for {zone.Value}",
+                                           If(byFlag,
+                                              $"[Features] bEnableFaceOverlays=0 turns face overlays off entirely ({countSource}), so this node is never built and " &
+                                              "paints nothing whatever iNumOverlays says. Set bEnableFaceOverlays=1, or drop the overlay.",
+                                              $"iNumOverlays gives {If(slotLimit > 0, $"[Ovl0]…[Ovl{slotLimit - 1}]", "no slot at all")} ({countSource}), " &
+                                              "so this node is never built and paints nothing. Raise iNumOverlays in skee64.ini, or move the overlay into a free slot.")))
+                    bad = True
+                End If
                 If Not String.IsNullOrWhiteSpace(ov.DiffusePath) AndAlso Not SseCatalogs.TextureResolves(ov.DiffusePath) Then
                     r.Issues.Add(New PresetIssue(PresetIssueKind.MissingAsset, "Overlays", $"Overlay '{ov.NodeName}': diffuse texture not installed", ov.DiffusePath))
                     bad = True

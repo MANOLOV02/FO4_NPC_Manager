@@ -73,7 +73,7 @@ Public Module NpcApplyScriptEmitter
     ''' <para>â›” Emitirlos EXIGE que el script barra los nodos <c>Face [Ovl]</c>, y los dos cambios van juntos:
     ''' todo entra con persist=true (co-save), asi que un overlay aplicado con el toggle OFF sobrevive en esa
     ''' partida y sin barrerlo quedaria aplicado DOS veces. Emitir sin barrer es PEOR que no emitir.</para></summary>
-    Private Function SkipFaceOverlays(game As Config_App.Game_Enum) As Boolean
+    Friend Function SkipFaceOverlays(game As Config_App.Game_Enum) As Boolean
         If game <> Config_App.Game_Enum.Skyrim Then Return False   ' FO4: el script es su única vía ⇒ se emiten siempre
         ' SSE: se saltean SÓLO si el bake se los va a quedar. Config sin resolver ⇒ se conserva el comportamiento
         ' conservador previo (saltear): no emitir nunca puede duplicar, emitir de más sí.
@@ -310,8 +310,20 @@ Public Module NpcApplyScriptEmitter
     ''' script por plugin + guard de instancia huerfana Â· 5 body morphs entregados por el script en los dos
     ''' juegos Â· 6 SSE barre tambien la key de BodyGen persistida en el co-save Â· 7 trazas gateadas por la
     ''' property Verbose Â· 8 poda TOTAL del actor antes de aplicar morphs, en vez del barrido por key Â·
-    ''' 9 paridad de instrumentacion entre los dos .psc.</para></summary>
-    Private Const ScriptLogicRevision As String = "9"
+    ''' 9 paridad de instrumentacion entre los dos .psc Â·
+    ''' 10 SSE: PurgeOverlayGroup barre los overlays de indice &gt;= iNumOverlays (hasta el tope del motor, 127),
+    ''' que el barrido viejo no alcanzaba y quedaban clavados en el co-save para siempre.</para>
+    ''' <para>â›”â›” OJO, LA JUSTIFICACION DE ARRIBA YA NO SE SOSTIENE CON ESTE CODIGO. Dice que el sello "se
+    ''' calculaba SOLO sobre el payload" y que un NPC sin cambios "ni siquiera re-aplica". Hoy es FALSO:
+    ''' <see cref="NpcVmadBuilder.StablePayloadHash"/> mezcla el NOMBRE de cada property (<c>mix(p.Name)</c>), y
+    ''' los nombres llevan el sufijo <c>_G&lt;generacion&gt;&lt;salt&gt;</c> con un salt ALEATORIO por Save ESP
+    ''' (<see cref="PexPatcher.NewSalt"/>). O sea que el hash cambia en CADA guardado aunque el NPC no se toque,
+    ''' y todos los actores re-aplican una vez por publicacion. Medido en Papyrus.0.log: el mismo NPC paso de
+    ''' <c>_G0000023620</c> a <c>_G00000349D6</c> con sellos distintos.</para>
+    ''' <para>Probablemente era cierto antes de la revision 3 ("payload con sufijo de generacion") y quedo sin
+    ''' actualizar. Se conserva el contador igual: es el registro de QUE cambio en cada version del .psc, y es la
+    ''' red si algun dia el salt deja de entrar al hash. Pero NO es lo que dispara el re-apply.</para></summary>
+    Private Const ScriptLogicRevision As String = "10"
 
     ''' <summary>Spec de LIMPIEZA: el NPC se quedo sin overlays/skin/transforms pero YA tenia script nuestro,
     ''' asi que hay que dejarle uno que corra <c>RemovePrevious()</c> y no aplique nada.

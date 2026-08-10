@@ -88,6 +88,29 @@ int Property KEY_TEXTURE = 9 AutoReadOnly   ; kParam_ShaderTexture — index 0 =
 int Property IDX_DIFFUSE = 0 AutoReadOnly
 int Property IDX_NORMAL  = 1 AutoReadOnly
 
+;-- Techo del barrido de overlays. Ver PurgeOverlayGroup ---------------------------------------
+; Hasta dónde se saca del store un overlay que skee NUNCA instancia (índice >= iNumOverlays).
+;
+; ⭐ ES EL TOPE DEL MOTOR, NO UN NÚMERO ELEGIDO. skee clampea TODOS los contadores de overlay a 0x7F
+; (main.cpp:810-828) y los crea con `for (i = 0; i < count; i++)` (OverlayInterface.cpp:659,664,675,
+; 681,689), así que el nodo más alto que puede existir en cualquier instalación es "Body [Ovl126]".
+; Este número es el tope EXCLUSIVO del while ⇒ 127 barre 0..126, ni un índice de más.
+; Barriéndolo entero, NADA de lo que la app pueda autorar queda irrecuperable, en ninguna PC, sin
+; depender del iNumOverlays del jugador (que es suyo y no lo podemos saber).
+; (Precisión: un .jslot IMPORTADO puede traer un "[Ovl127]" o más alto, y eso sí queda fuera del
+; barrido. No importa: por encima del clamp de skee ese nodo no se instancia con NINGÚN iNumOverlays,
+; así que es basura inerte en el co-save, nunca un overlay que aparezca.)
+;
+; ⛔ UN TECHO MÁS BAJO NO SE AHORRA UN PROBLEMA, SE LO CREA A LA UI. Con 16, un índice entre 16 y el
+; iNumOverlays del autor quedaba clavado en la partida del jugador, y la app tenía que sostener DOS
+; clases de aviso y una banda de índices "depende de la PC del otro" para explicarlo. Barrer hasta el
+; tope del motor borra esa categoría entera.
+;
+; Tiene gemelo en VB (SseCatalogs.OverlaySweepCeiling). Si se cambia acá hay que cambiarlo allá y
+; recompilar: son artefactos distintos y nadie los sincroniza en build. Lo chequea
+; Papyrus\tools\check_sweep_ceiling.py.
+int Property OVL_SWEEP_MAX = 127 AutoReadOnly
+
 bool Property IsFemale_G0000010000 = false Auto
 {Género para el que se autoraron los overrides. NiOverride guarda los sets male/female por separado.}
 
@@ -326,9 +349,18 @@ EndFunction
 ; ============================================================================================
 Function RemovePrevious()
     ; --- overlays: los nodos son enumerables.
-    ClearOverlayGroup("Body [Ovl", NiOverride.GetNumBodyOverlays())
-    ClearOverlayGroup("Hands [Ovl", NiOverride.GetNumHandOverlays())
-    ClearOverlayGroup("Feet [Ovl", NiOverride.GetNumFeetOverlays())
+    ; Dos rangos por zona: 0..iNumOverlays-1 = los nodos que skee CREA (apagar + sacar del store), y de
+    ; ahí hasta OVL_SWEEP_MAX = los que la app pudo autorar de más y skee nunca crea (sólo sacar del
+    ; store, que es lo único que existe de ellos). Ver la cabecera de PurgeOverlayGroup.
+    int nBody = NiOverride.GetNumBodyOverlays()
+    ClearOverlayGroup("Body [Ovl", nBody)
+    PurgeOverlayGroup("Body [Ovl", nBody, OVL_SWEEP_MAX)
+    int nHands = NiOverride.GetNumHandOverlays()
+    ClearOverlayGroup("Hands [Ovl", nHands)
+    PurgeOverlayGroup("Hands [Ovl", nHands, OVL_SWEEP_MAX)
+    int nFeet = NiOverride.GetNumFeetOverlays()
+    ClearOverlayGroup("Feet [Ovl", nFeet)
+    PurgeOverlayGroup("Feet [Ovl", nFeet, OVL_SWEEP_MAX)
     ; FACE: decia "NUNCA Face: la cara es del bake" y era cierto mientras el emisor jamas mandaba un
     ; nodo Face. Ya no: el bake de overlays de cara esta gateado por Setting_BakeSseRaceMenuOverlays y,
     ; con ese toggle APAGADO, el emisor SI manda los nodos Face (si no, no los aplicaba nadie y el
@@ -338,9 +370,16 @@ Function RemovePrevious()
     ; Barrer es incondicional a proposito: es idempotente (RemoveNodeOverride de una key que no existe
     ; es no-op) y NO puede depender del toggle, porque el toggle de HOY no dice que se aplico AYER.
     ; Las dos familias de skee: FACE_NODE "Face [Ovl{}]" y FACE_NODE_SPELL "Face [SOvl{}]"
-    ; (OverlayInterface.h:23-24), ambas contadas por GetNumFaceOverlays (main.cpp: g_numFaceOverlays).
+    ; (OverlayInterface.h:23-24).
+    ; ⛔ CORRECCION: decia "ambas contadas por GetNumFaceOverlays" y es FALSO. Los spell overlays tienen su
+    ; propia variable g_numSpellFaceOverlays, con su propia key iSpellOverlays (main.cpp:781), su propio clamp
+    ; (:825-826) y su propio cero (:834-835). Papyrus no expone un getter para ella, asi que el barrido de
+    ; [SOvl] usa el contador de [Ovl] y SE QUEDA CORTO cuando alguien pone iSpellOverlays > iNumOverlays.
+    ; Se deja asi a proposito: quedarse corto en [SOvl] solo significa MENOS colateral sobre otro mod --
+    ; nosotros no autoramos [SOvl] nunca -- y pasarse seria borrarle capas a un mod ajeno sin ganar nada.
     int nFace = NiOverride.GetNumFaceOverlays()
     ClearOverlayGroup("Face [Ovl", nFace)
+    PurgeOverlayGroup("Face [Ovl", nFace, OVL_SWEEP_MAX)
     ClearOverlayGroup("Face [SOvl", nFace)
     NiOverride.ApplyNodeOverrides(self)
 
@@ -518,6 +557,61 @@ Function ClearOverlayGroup(string prefix, int n)
         NiOverride.AddNodeOverrideFloat(self, IsFemale_G0000010000, node, KEY_ALPHA, -1, 0.0, false)
         NiOverride.AddNodeOverrideInt(self, IsFemale_G0000010000, node, KEY_TINT, -1, 0, false)
         ; 2) sacar del store lo que hubiera guardado
+        NiOverride.RemoveNodeOverride(self, IsFemale_G0000010000, node, KEY_TEXTURE, IDX_DIFFUSE)
+        NiOverride.RemoveNodeOverride(self, IsFemale_G0000010000, node, KEY_TEXTURE, IDX_NORMAL)
+        NiOverride.RemoveNodeOverride(self, IsFemale_G0000010000, node, KEY_TINT, -1)
+        NiOverride.RemoveNodeOverride(self, IsFemale_G0000010000, node, KEY_ALPHA, -1)
+        i += 1
+    endwhile
+EndFunction
+
+;-- ⛔⛔ EL BARRIDO DE ARRIBA NO ALCANZA LO QUE LA APP PUEDE AUTORAR ------------------------------
+;
+; ClearOverlayGroup enumera 0..iNumOverlays-1 porque ESOS son los nodos que skee CREA. Pero la app
+; deja autorar un overlay MÁS ALLÁ de ese número (avisa y lo agrega igual): el override entra al
+; store con persist=true — o sea al co-save — aunque el nodo no exista, porque Impl_AddNodeOverride
+; guarda SIN mirar si el nodo está (OverrideInterface.cpp:56-63). Sin este segundo barrido ese
+; override quedaba PARA SIEMPRE: borrarlo en la app no lo sacaba de la partida del jugador, y el día
+; que el jugador subiera iNumOverlays reaparecía — encima de lo que hoy está horneado, en el caso de
+; la cara. Es exactamente el agujero que el barrido de Face vino a cerrar, un rango más arriba.
+;
+; ⭐ POR QUÉ ES OTRA FUNCIÓN Y NO UN `n` MÁS GRANDE: en este rango el nodo NO EXISTE, así que
+;   1) apagarlo visualmente no tiene sentido, y
+;   2) AddNodeOverride* cuesta un GetObjectByName sobre el 3D del actor (OverrideInterface.cpp:750-763)
+;      — un recorrido del árbol entero por llamada, para no encontrar nada.
+;   Sólo se sacan las entradas del store, que son 4 lookups de mapa guardados (Impl_RemoveNodeOverride
+;   chequea actor, nodo y variante, y no inserta nada si falta cualquiera: :333-353). Barato y sin
+;   efectos sobre lo que se ve.
+;
+; ⚠️⚠️ EL COSTO ESTÁ EN EL RE-APPLY, NO EN EL PRIMER SPAWN — y es lo que se aceptó a sabiendas al elegir
+;   el techo del motor. Con el ini shipeado (6/3/3/3) el purge agrega ~1970 llamadas por actor, UNA VEZ
+;   (RemovePrevious corre detrás del gate appliedVersion == SchemaVersion). Las tres nativas que usa están
+;   registradas NoWait desde el C++ (PapyrusNiOverride.cpp:2417,2454,2531 —- OJO: acá NoWait NO es un
+;   keyword del .psc como en F4SE, lo setea el plugin con SetFunctionFlags; no "corregir" esto borrándolo).
+;
+;   ⛔ PERO NoWait NO ABARATA EL TRABAJO EN C++, sólo evita que la VM lata. Y ahí las dos pasadas cuestan
+;   MUY distinto:
+;     * PRIMER SPAWN: el actor no tiene entrada en el store ⇒ cada llamada muere en el primer find
+;       (OverrideInterface.cpp:337) sin internar nada. Gratis.
+;     * RE-APPLY (el actor ya trae overrides de una versión anterior): la llamada llega a
+;       g_stringTable.GetString(nodeName) con un nombre que NO está en la tabla ⇒ lo internea, el temporal
+;       muere, y DeleteStringEntry dispara RemoveString, que es un SCAN LINEAL de m_tableVector con un
+;       weak_ptr::lock() atómico por elemento, bajo el lock global (StringTable.cpp:29-62). N = todos los
+;       strings vivos del co-save DEL JUGADOR (nombres de nodo, rutas de textura, morphs de BodySlide):
+;       2000-5000 en un save modeado normal ⇒ del orden de 40-100 ms por NPC actualizado, en la primera
+;       carga después de publicar.
+;   Es el único costo de toda la feature que escala con el save del jugador y no con nuestro payload. Si
+;   algún día molesta, la salida NO es bajar el techo (reabre el agujero): es que el emisor mande el índice
+;   más alto que este mod haya autorado y barrer max(contador del jugador, ese+1).
+;
+; ⚠️ NO se extiende a "Face [SOvl" (spell overlays): la app NUNCA los autora, así que ampliarles el
+;   rango sólo borraría overlays de OTRO mod sin ganar nada. El colateral se paga donde hay beneficio.
+;
+; Recibe un String y dos Int — NO un array (regla 1 de la cabecera).
+Function PurgeOverlayGroup(string prefix, int from, int to)
+    int i = from
+    while i < to
+        string node = prefix + i + "]"
         NiOverride.RemoveNodeOverride(self, IsFemale_G0000010000, node, KEY_TEXTURE, IDX_DIFFUSE)
         NiOverride.RemoveNodeOverride(self, IsFemale_G0000010000, node, KEY_TEXTURE, IDX_NORMAL)
         NiOverride.RemoveNodeOverride(self, IsFemale_G0000010000, node, KEY_TINT, -1)

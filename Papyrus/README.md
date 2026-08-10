@@ -105,6 +105,38 @@ Lo único que se instala en el juego es:
 - SSE → `Data\Scripts\NPCM_Manolov_ApplySSE.pex`
 - FO4 → `Data\Scripts\NPCM_Manolov_ApplyFO4.pex`
 
+## ⛔ SSE: el techo de barrido de overlays (`OVL_SWEEP_MAX`) vive en TRES lados
+
+El editor deja autorar un overlay con índice **por encima de `iNumOverlays`** (avisa una vez por sesión y lo
+agrega igual). Ese override entra al store de skee con `persist=true` —o sea al co-save— **aunque el nodo no
+exista**: `Impl_AddNodeOverride` guarda sin mirar el 3D (`OverrideInterface.cpp:56-63`). Como
+`ClearOverlayGroup` sólo enumera `0..iNumOverlays-1`, sin un segundo barrido ese override **no se podía sacar
+nunca más** de la partida del jugador, y reaparecía el día que subiera `iNumOverlays` — encima de lo horneado,
+en el caso de la cara.
+
+`PurgeOverlayGroup(prefix, iNumOverlays, OVL_SWEEP_MAX)` cierra eso sacando **sólo del store** (en ese rango el
+nodo no existe: apagarlo visualmente no tiene sentido y costaría un `GetObjectByName` por llamada).
+
+El mismo número está en tres artefactos que **nadie sincroniza en build**:
+
+| Dónde | Qué es |
+|---|---|
+| `src_sse\NPCM_Manolov_ApplySSE.psc` → `int Property OVL_SWEEP_MAX` | el fuente |
+| `pex_sse\NPCM_Manolov_ApplySSE.pex` (embebido en la DLL) | ⭐ **lo que corre en el juego** |
+| `FO4_NPC_Manager\NPC\SseCatalogs.vb` → `OverlaySweepCeiling` | lo que la app usa para AVISAR |
+
+⇒ `python tools\check_sweep_ceiling.py` compara los tres (exit 0 / 4). **Correrlo después de tocar cualquiera
+de ellos**: si el `.pex` barre menos de lo que la app cree, la app le promete al usuario que un overlay se
+puede sacar y en la partida queda pegado.
+
+⭐ **128 no es un número elegido: es el tope del motor.** skee clampea todo contador de overlay a `0x7F`
+(`main.cpp:810-828`), así que `[Ovl127]` es el último nodo que puede existir en cualquier instalación.
+Barriendo hasta ahí, **nada de lo que la app pueda autorar queda irrecuperable** — y eso es lo que permite que
+haya UN solo aviso en la UI. Con un techo más bajo aparecía una banda de índices (entre el techo y el
+`iNumOverlays` del autor) que quedaba clavada en la partida del jugador y que la app tenía que explicar con un
+segundo aviso y un predicado aparte. El costo del techo alto es ~1970 nativas `NoWait` por actor con el ini
+shipeado (6/3/3/3), **una sola vez por actor** y sin tocar el 3D: `PurgeOverlayGroup` sólo saca del store.
+
 ## Recompilar
 
 ```powershell
@@ -120,7 +152,8 @@ Lo único que se instala en el juego es:
   -i="F:\SteamLibrary\steamapps\common\Fallout 4\Data\Scripts\Source\Base;src_fo4" `
   -o="pex_fo4" -all
 ```
-Después **borrar los `.pex` de los stubs** de las carpetas de salida (ver arriba).
+Después **borrar los `.pex` de los stubs** de las carpetas de salida (ver arriba), **rebuildear la app** (el
+`.pex` es un `EmbeddedResource`) y correr `python tools\check_sweep_ceiling.py`.
 
 ## Dependencia: blanda, no dura
 

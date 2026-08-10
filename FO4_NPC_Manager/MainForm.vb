@@ -7759,7 +7759,12 @@ Public Class MainForm
                 If sseWeight.HasValue Then AddNode(traitsNode, $"Weight: {sseWeight.Value:F2}")
             Else
                 If traitsNpc.HasHeightMin OrElse traitsNpc.HasHeightMax Then
-                    AddNode(traitsNode, $"Height: min={traitsNpc.HeightMin:F2}  max={traitsNpc.HeightMax:F2}")
+                    ' Each half is reported only when its subrecord is actually present: NPC_Data.HeightMax
+                    ' defaults to 0.0, so printing it unconditionally showed "max=0.00" for a record that
+                    ' simply has no NAM4 — indistinguishable from one that really stores zero.
+                    Dim hMin = If(traitsNpc.HasHeightMin, $"{traitsNpc.HeightMin:F2}", "(absent)")
+                    Dim hMax = If(traitsNpc.HasHeightMax, $"{traitsNpc.HeightMax:F2}", "(absent)")
+                    AddNode(traitsNode, $"Height: min={hMin}  max={hMax}")
                 End If
                 Dim fmtMwgt = Function(v As Single?) If(v.HasValue, v.Value.ToString("F2"), "Default")
                 AddNode(traitsNode, $"Weight: Thin={fmtMwgt(traitsNpc.WeightThin)}  Muscular={fmtMwgt(traitsNpc.WeightMuscular)}  Fat={fmtMwgt(traitsNpc.WeightFat)}")
@@ -9052,6 +9057,21 @@ Public Class MainForm
             npcSpec.CombatStyleFormID = ov.CombatStyleFormID.Value
             npcSpec.HasCombatStyle = ov.CombatStyleFormID.Value <> 0UI
         End If
+        ' NAM6 / NAM4 (Height). Written AFTER the Traits materialization above on purpose: height is a
+        ' Traits-category field (MaterializeTraits copies it unconditionally), so on a Traits-inheriting NPC
+        ' the materializer first fills the template's height and this then overwrites it with the user's.
+        ' The editor latches TraitsChanged when it sets these, which is what clears the Use-Traits flag —
+        ' without that the engine's CopyFromTemplate would overwrite the edit at runtime.
+        ' Has* is forced True because a value here means the user authored one; NAM4 is FO4-only and the
+        ' SSE editor path never sets it, so Skyrim records keep emitting no NAM4.
+        If ov.HeightMin.HasValue Then
+            npcSpec.HeightMin = ov.HeightMin.Value
+            npcSpec.HasHeightMin = True
+        End If
+        If ov.HeightMax.HasValue Then
+            npcSpec.HeightMax = ov.HeightMax.Value
+            npcSpec.HasHeightMax = True
+        End If
 
         ' --- ACBS struct (flags/xp/level/calc/disposition + the SSE-only offsets) on the isolated clone. ---
         If npcSpec.Acbs Is Nothing AndAlso (ov.AcbsFlags.HasValue OrElse ov.XpValueOffset.HasValue OrElse ov.Level.HasValue OrElse
@@ -9689,10 +9709,15 @@ Public Class MainForm
         ' the FO4 MWGT/MRSV BSMS channels are absent. Lets the Edit Body button enable so the SSE weight
         ' editor is reachable. Always False on FO4 (the FO4 gate is unchanged).
         Public HasSseWeight As Boolean
+        ' Height (NAM6 / NAM4) is a plain NPC_ subrecord every actor carries, in BOTH games — unlike the
+        ' MWGT/MRSV channels, which depend on the RACE declaring BSMS bones. So the Height section alone is
+        ' reason enough to open the editor: without this the field would be unreachable for creatures, robots
+        ' and any race without weight-scale bones. Same rationale as HasSseWeight above.
+        Public HasHeight As Boolean
         Public BodySlideSliders As List(Of String)
         Public ReadOnly Property AnythingAvailable As Boolean
             Get
-                Return HasMwgt OrElse HasMrsv OrElse HasSseWeight OrElse (BodySlideSliders IsNot Nothing AndAlso BodySlideSliders.Count > 0)
+                Return HasMwgt OrElse HasMrsv OrElse HasSseWeight OrElse HasHeight OrElse (BodySlideSliders IsNot Nothing AndAlso BodySlideSliders.Count > 0)
             End Get
         End Property
     End Structure
@@ -9735,6 +9760,9 @@ Public Class MainForm
             avail.HasSseWeight = True
         End If
 
+        ' NAM6/NAM4 exist on every NPC_ in both games — nothing to probe, the Height section is always live.
+        avail.HasHeight = True
+
         Return avail
     End Function
 
@@ -9747,8 +9775,10 @@ Public Class MainForm
 
         Dim avail = ComputeBodyEditAvailability(_renderHost.LastRenderedState, _renderHost.LastRenderData)
         If Not avail.AnythingAvailable Then
-            ' Should never happen if ButtonEditBody.Enabled gating is correct, but guard anyway.
-            MessageBox.Show("This race has no MWGT/MRSV/BodySlide channels available.",
+            ' Defensive only, and now unreachable in practice: HasHeight is unconditionally True, so every
+            ' NPC has at least the Height section. Kept so a future channel-gating change can't silently
+            ' open an editor with nothing in it.
+            MessageBox.Show("This NPC has no editable body channels available.",
                             "Edit Body", MessageBoxButtons.OK, MessageBoxIcon.Information)
             Return
         End If
@@ -9777,6 +9807,39 @@ Public Class MainForm
         If effectiveNpc IsNot Nothing AndAlso effectiveNpc.Nam7Raw IsNot Nothing AndAlso effectiveNpc.Nam7Raw.Length >= 4 Then
             initial.SseWeight = BitConverter.ToSingle(effectiveNpc.Nam7Raw, 0)
         End If
+        ' Height (NAM6 / NAM4). Seed from the effective TRAITS source — the same resolution the record
+        ' tree uses — so an inheriting NPC opens at the height it actually shows instead of its own empty
+        ' slot. Absent subrecord ⇒ 1.0 (engine default). Then let an already-authored override win, so
+        ' reopening the editor shows the pending edit instead of re-seeding the stale record value.
+        Dim rootFidForHeight = _renderHost.LastRenderedState.RootNpcFormID
+        Dim rootNpcForHeight = _ctx.GetParsedNpc(rootFidForHeight)
+        If rootNpcForHeight IsNot Nothing Then
+            Dim traitsSrc = ResolveSectionSource(rootNpcForHeight, NPC_TemplateCategory.Traits)
+            If traitsSrc IsNot Nothing Then
+                If traitsSrc.HasHeightMin Then
+                    initial.HeightMin = traitsSrc.HeightMin
+                    initial.HasHeightMin = True
+                End If
+                If traitsSrc.HasHeightMax Then
+                    initial.HeightMax = traitsSrc.HeightMax
+                    initial.HasHeightMax = True
+                End If
+            End If
+        End If
+        Dim ovForHeight = TryGetNpcRecordOverride(rootFidForHeight)
+        If ovForHeight IsNot Nothing Then
+            ' An authored override makes the subrecord present-to-be, so it counts as "carried" for the
+            ' editor's cross-clamp / write gating.
+            If ovForHeight.HeightMin.HasValue Then
+                initial.HeightMin = ovForHeight.HeightMin.Value
+                initial.HasHeightMin = True
+            End If
+            If ovForHeight.HeightMax.HasValue Then
+                initial.HeightMax = ovForHeight.HeightMax.Value
+                initial.HasHeightMax = True
+            End If
+        End If
+
         ' BodySlide sliders that the overlay (or a previously loaded preset) already carries —
         ' open at those values; otherwise zero. There is no record-level source for these.
         Dim existingPreset As LooksmenuLoader.LooksmenuPreset = Nothing

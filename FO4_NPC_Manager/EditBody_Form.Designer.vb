@@ -21,6 +21,12 @@ Partial Class EditBody_Form
         TabsBody = New TabControl()
         TabPageBody = New TabPage()
         BodyTabLayout = New TableLayoutPanel()
+        GroupBoxHeight = New GroupBox()
+        HeightLayout = New TableLayoutPanel()
+        LabelHeightMin = New Label()
+        SliderHeightMin = New TinySliderTextBox()
+        LabelHeightMax = New Label()
+        SliderHeightMax = New TinySliderTextBox()
         GroupBoxWeight = New GroupBox()
         WeightLayout = New TableLayoutPanel()
         WeightTriangle = New WeightTriangleControl()
@@ -102,6 +108,8 @@ Partial Class EditBody_Form
         TabsBody.SuspendLayout()
         TabPageBody.SuspendLayout()
         BodyTabLayout.SuspendLayout()
+        GroupBoxHeight.SuspendLayout()
+        HeightLayout.SuspendLayout()
         GroupBoxWeight.SuspendLayout()
         WeightLayout.SuspendLayout()
         WeightLegend.SuspendLayout()
@@ -191,22 +199,140 @@ Partial Class EditBody_Form
         ' 
         BodyTabLayout.ColumnCount = 1
         BodyTabLayout.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100F))
+        ' Order is Weight -> MRSV -> Height -> Skin in BOTH games. Under SSE the first two are hidden and
+        ' BuildSseWeightSection injects its group into cell (0,0), so Skyrim reads weight / Height / Skin and
+        ' Fallout reads weight / per-region weights / Height / Skin — same tail, same mental model.
         BodyTabLayout.Controls.Add(GroupBoxWeight, 0, 0)
-        BodyTabLayout.Controls.Add(GroupBoxSkin, 0, 1)
-        BodyTabLayout.Controls.Add(GroupBoxMrsv, 0, 2)
+        BodyTabLayout.Controls.Add(GroupBoxMrsv, 0, 1)
+        BodyTabLayout.Controls.Add(GroupBoxHeight, 0, 2)
+        BodyTabLayout.Controls.Add(GroupBoxSkin, 0, 3)
+        ' The MRSV group grows with however many regions the race exposes and the SSE weight group is injected
+        ' at runtime, so the stack height is variable. AutoScroll keeps the lower rows reachable instead of
+        ' clipping them off the bottom. ⛔ Every RowStyle is AutoSize on purpose: a Percent row would claim the
+        ' leftover height and fight AutoScroll's content measurement (the two working TLP+AutoScroll cases in
+        ' EditFace_Form use fixed rows only).
+        BodyTabLayout.AutoScroll = True
         BodyTabLayout.Dock = DockStyle.Fill
         BodyTabLayout.Location = New Point(6, 6)
         BodyTabLayout.Name = "BodyTabLayout"
-        BodyTabLayout.RowCount = 4
+        ' 5 rows: 0-3 hold the four group boxes above; row 4 is a SPARE kept empty on purpose — under SSE
+        ' BuildSseWeightSection parks the unused FO4 GroupBoxWeight there to free cell (0,0). Mirrored by the
+        ' BodyTabSpareRow constant in EditBody_Form.vb; changing RowCount means changing that too.
+        BodyTabLayout.RowCount = 5
         BodyTabLayout.RowStyles.Add(New RowStyle())
         BodyTabLayout.RowStyles.Add(New RowStyle())
         BodyTabLayout.RowStyles.Add(New RowStyle())
-        BodyTabLayout.RowStyles.Add(New RowStyle(SizeType.Percent, 100F))
+        BodyTabLayout.RowStyles.Add(New RowStyle())
+        BodyTabLayout.RowStyles.Add(New RowStyle())
         BodyTabLayout.Size = New Size(508, 520)
         BodyTabLayout.TabIndex = 0
-        ' 
+        '
+        ' GroupBoxHeight
+        '
+        GroupBoxHeight.AutoSize = True
+        GroupBoxHeight.AutoSizeMode = AutoSizeMode.GrowAndShrink
+        GroupBoxHeight.Controls.Add(HeightLayout)
+        GroupBoxHeight.Dock = DockStyle.Fill
+        GroupBoxHeight.Location = New Point(3, 349)
+        GroupBoxHeight.Name = "GroupBoxHeight"
+        GroupBoxHeight.Size = New Size(502, 76)
+        GroupBoxHeight.TabIndex = 2
+        GroupBoxHeight.TabStop = False
+        GroupBoxHeight.Text = "Height (NPC.NAM6 / NAM4)"
+        '
+        ' HeightLayout
+        '
+        HeightLayout.AutoSize = True
+        HeightLayout.AutoSizeMode = AutoSizeMode.GrowAndShrink
+        HeightLayout.ColumnCount = 2
+        HeightLayout.ColumnStyles.Add(New ColumnStyle())
+        HeightLayout.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100F))
+        HeightLayout.Controls.Add(LabelHeightMin, 0, 0)
+        HeightLayout.Controls.Add(SliderHeightMin, 1, 0)
+        HeightLayout.Controls.Add(LabelHeightMax, 0, 1)
+        HeightLayout.Controls.Add(SliderHeightMax, 1, 1)
+        HeightLayout.Dock = DockStyle.Fill
+        HeightLayout.Location = New Point(3, 19)
+        HeightLayout.Name = "HeightLayout"
+        HeightLayout.Padding = New Padding(4)
+        HeightLayout.RowCount = 2
+        HeightLayout.RowStyles.Add(New RowStyle())
+        HeightLayout.RowStyles.Add(New RowStyle())
+        HeightLayout.Size = New Size(496, 54)
+        HeightLayout.TabIndex = 0
+        '
+        ' LabelHeightMin
+        '
+        LabelHeightMin.Anchor = AnchorStyles.Left
+        LabelHeightMin.AutoSize = True
+        LabelHeightMin.Location = New Point(7, 9)
+        LabelHeightMin.MinimumSize = New Size(64, 0)
+        LabelHeightMin.Name = "LabelHeightMin"
+        LabelHeightMin.Size = New Size(64, 15)
+        LabelHeightMin.TabIndex = 0
+        LabelHeightMin.Text = "Min:"
+        LabelHeightMin.TextAlign = ContentAlignment.MiddleLeft
+        '
+        ' SliderHeightMin
+        '
+        SliderHeightMin.AccentColor = SystemColors.HotTrack
+        SliderHeightMin.Anchor = AnchorStyles.Left Or AnchorStyles.Right
+        SliderHeightMin.BackColor = SystemColors.Control
+        ' Track spans 20%..200% at usable drag resolution, instead of wasting most of the bar on heights
+        ' nothing uses. The floor sits BELOW the vanilla minimum on purpose — FO4 bottoms out at exactly 0.30
+        ' (DLC03FarHarborS03RedDeath), and starting the track there would pin that NPC's thumb against the
+        ' left edge with no room to go lower. AllowExtremeValues lets a record outside the track still be
+        ' shown and typed verbatim rather than snapped to an end; the CK's real limit [0.1, 10] is enforced
+        ' separately by ClampHeight on seed, on input and on commit.
+        SliderHeightMin.AllowExtremeValues = True
+        SliderHeightMin.DisplayFormat = "0.00%"
+        SliderHeightMin.InputScale = 0.01R
+        SliderHeightMin.LargeChange = 0.1R
+        SliderHeightMin.Location = New Point(75, 6)
+        SliderHeightMin.Margin = New Padding(2, 4, 2, 4)
+        SliderHeightMin.Maximum = 2R
+        SliderHeightMin.Minimum = 0.2R
+        SliderHeightMin.MinimumSize = New Size(140, 28)
+        SliderHeightMin.Name = "SliderHeightMin"
+        SliderHeightMin.Size = New Size(411, 28)
+        SliderHeightMin.SmallChange = 0.01R
+        SliderHeightMin.TabIndex = 1
+        SliderHeightMin.Value = 1R
+        '
+        ' LabelHeightMax
+        '
+        LabelHeightMax.Anchor = AnchorStyles.Left
+        LabelHeightMax.AutoSize = True
+        LabelHeightMax.Location = New Point(7, 45)
+        LabelHeightMax.MinimumSize = New Size(64, 0)
+        LabelHeightMax.Name = "LabelHeightMax"
+        LabelHeightMax.Size = New Size(64, 15)
+        LabelHeightMax.TabIndex = 2
+        LabelHeightMax.Text = "Max:"
+        LabelHeightMax.TextAlign = ContentAlignment.MiddleLeft
+        '
+        ' SliderHeightMax
+        '
+        SliderHeightMax.AccentColor = SystemColors.HotTrack
+        SliderHeightMax.Anchor = AnchorStyles.Left Or AnchorStyles.Right
+        SliderHeightMax.BackColor = SystemColors.Control
+        SliderHeightMax.AllowExtremeValues = True
+        SliderHeightMax.DisplayFormat = "0.00%"
+        SliderHeightMax.InputScale = 0.01R
+        SliderHeightMax.LargeChange = 0.1R
+        SliderHeightMax.Location = New Point(75, 42)
+        SliderHeightMax.Margin = New Padding(2, 4, 2, 4)
+        SliderHeightMax.Maximum = 2R
+        SliderHeightMax.Minimum = 0.2R
+        SliderHeightMax.MinimumSize = New Size(140, 28)
+        SliderHeightMax.Name = "SliderHeightMax"
+        SliderHeightMax.Size = New Size(411, 28)
+        SliderHeightMax.SmallChange = 0.01R
+        SliderHeightMax.TabIndex = 3
+        SliderHeightMax.Value = 1R
+        '
         ' GroupBoxWeight
-        ' 
+        '
         GroupBoxWeight.AutoSize = True
         GroupBoxWeight.AutoSizeMode = AutoSizeMode.GrowAndShrink
         GroupBoxWeight.Controls.Add(WeightLayout)
@@ -376,7 +502,7 @@ Partial Class EditBody_Form
         GroupBoxSkin.Location = New Point(3, 223)
         GroupBoxSkin.Name = "GroupBoxSkin"
         GroupBoxSkin.Size = New Size(502, 84)
-        GroupBoxSkin.TabIndex = 1
+        GroupBoxSkin.TabIndex = 3
         GroupBoxSkin.TabStop = False
         GroupBoxSkin.Text = "Skin"
         ' 
@@ -452,7 +578,7 @@ Partial Class EditBody_Form
         GroupBoxMrsv.Location = New Point(3, 313)
         GroupBoxMrsv.Name = "GroupBoxMrsv"
         GroupBoxMrsv.Size = New Size(502, 30)
-        GroupBoxMrsv.TabIndex = 2
+        GroupBoxMrsv.TabIndex = 1
         GroupBoxMrsv.TabStop = False
         GroupBoxMrsv.Text = "Body Morph Regions (NPC.MRSV — vanilla 5 regions, applied via bone scaling)"
         ' 
@@ -1210,6 +1336,10 @@ Partial Class EditBody_Form
         TabPageBody.ResumeLayout(False)
         BodyTabLayout.ResumeLayout(False)
         BodyTabLayout.PerformLayout()
+        GroupBoxHeight.ResumeLayout(False)
+        GroupBoxHeight.PerformLayout()
+        HeightLayout.ResumeLayout(False)
+        HeightLayout.PerformLayout()
         GroupBoxWeight.ResumeLayout(False)
         GroupBoxWeight.PerformLayout()
         WeightLayout.ResumeLayout(False)
@@ -1273,6 +1403,12 @@ Partial Class EditBody_Form
     Friend WithEvents BodyTabLayout As System.Windows.Forms.TableLayoutPanel
     Friend WithEvents BodySlideTabLayout As System.Windows.Forms.TableLayoutPanel
     Friend WithEvents LabelBodySlideEmpty As System.Windows.Forms.Label
+    Friend WithEvents GroupBoxHeight As System.Windows.Forms.GroupBox
+    Friend WithEvents HeightLayout As System.Windows.Forms.TableLayoutPanel
+    Friend WithEvents LabelHeightMin As System.Windows.Forms.Label
+    Friend WithEvents SliderHeightMin As FO4_Base_Library.TinySliderTextBox
+    Friend WithEvents LabelHeightMax As System.Windows.Forms.Label
+    Friend WithEvents SliderHeightMax As FO4_Base_Library.TinySliderTextBox
     Friend WithEvents GroupBoxWeight As System.Windows.Forms.GroupBox
     Friend WithEvents WeightLayout As System.Windows.Forms.TableLayoutPanel
     Friend WithEvents WeightTriangle As WeightTriangleControl
