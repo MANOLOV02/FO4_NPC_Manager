@@ -7024,7 +7024,7 @@ Public Class MainForm
             .SkeletonResolver = skelResolver,
             .MorphResolver = morphResolver,
             .BaseGeometryProvider = headBake,
-            .RecalculateNormals = NPC_Config.Current.RecalculateTangentSpace,
+            .RecalculateNormals = Config_App.Current.Setting_RecalculateNormals,
             .ResetCamera = True
         }
         Logger.LogLazy(Function() $"[PERF-BRP] ===== BuildRenderPlan TOTAL = {_swBrp.ElapsedMilliseconds}ms =====")

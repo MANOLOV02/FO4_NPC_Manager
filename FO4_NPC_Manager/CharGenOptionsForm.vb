@@ -75,7 +75,13 @@ Public Class CharGenOptionsForm
         ' Fuente/VAs del RE en FO4_Base_Library.EngineSkinWeightNormalization. Enabled solo en FO4 porque el mecanismo NO
         ' está verificado en los binarios de Skyrim (el valor persistido se round-trip-ea intacto en SSE).
         CheckBoxReplicateEngineSkinNorm.Checked = NPC_Config.Current.ReplicateEngineSkinWeightNormalization
-        CheckBoxRecalcTangentSpace.Checked = NPC_Config.Current.RecalculateTangentSpace
+        ' ⭐ UNA SOLA PROPIEDAD, DOS PUERTAS. Esta casilla y la de la pestana Rendering del dialogo
+        ' compartido (FO4_Base_Library.LightRigForm) editan el MISMO Config_App.Setting_RecalculateNormals,
+        ' igual que en Wardrobe Manager, donde el mismo valor se toca desde la barra principal y desde
+        ' Settings. Antes esta vivia en NPC_Config.RecalculateTangentSpace y gobernaba SOLO el recalculo de
+        ' despues de los morphs, mientras que el del dialogo gobernaba el de la carga: dos casillas que para
+        ' el usuario decian lo mismo y apagaban mitades distintas.
+        CheckBoxRecalcTangentSpace.Checked = Config_App.Current.Setting_RecalculateNormals
         CheckBoxReplicateEngineSkinNorm.Enabled = isFo4
         CheckBoxResolveHphHeadTri.Enabled = Not isFo4
         If c.Setting_FaceGenPerLayerResolution Then
@@ -307,7 +313,7 @@ Public Class CharGenOptionsForm
         ' su tab muestra EDITABLE en el juego activo; un control editable en ambos se revierte en ambos.
         CheckBoxMatchSubsurfaceFlag.Checked = cfgDef.Setting_MatchHeadSubsurfaceFlagToBody
         ' Idem: el recálculo de la base tangente del preview es editable en los dos juegos.
-        CheckBoxRecalcTangentSpace.Checked = npcDef.RecalculateTangentSpace
+        CheckBoxRecalcTangentSpace.Checked = cfgDef.Setting_RecalculateNormals
         If isFo4 Then
             CheckBoxApplyGhoulHeadRearFix.Checked = npcDef.ApplyGhoulHeadRearFix
             CheckBoxApplyEyebrowsFixedColor.Checked = cfgDef.Setting_ApplyEyebrowsFixedColor
@@ -620,9 +626,12 @@ Public Class CharGenOptionsForm
         Dim convSave = ActiveConventionSettings(Config_App.Current)
         convSave.Diffuse.AccumInCompositeSpace = CheckBoxAccumInComposite.Checked
         convSave.NormalSpecular.AccumInCompositeSpace = CheckBoxAccumInComposite.Checked
+        ' Recalculo de normales/base tangente → Config_App, el MISMO valor que edita la pestana Rendering
+        ' del dialogo compartido. Gobierna los DOS momentos en que hace falta: al extraer la geometria y
+        ' despues de aplicar los morphs. Al volver del OK, MainForm re-renderiza el NPC actual.
+        c.Setting_RecalculateNormals = CheckBoxRecalcTangentSpace.Checked
         ' Ley del MOTOR → NPC_Config + re-aplicar el gate por juego INMEDIATAMENTE, porque el render
         ' del NPC actual se rehace al volver del OK y tiene que usar ya el modo elegido (RENDER == BAKE).
-        NPC_Config.Current.RecalculateTangentSpace = CheckBoxRecalcTangentSpace.Checked
         NPC_Config.Current.ReplicateEngineSkinWeightNormalization = CheckBoxReplicateEngineSkinNorm.Checked
         NPC_Config.ApplyEngineSkinWeightNormalizationGate(c.Game)
         ' Eyebrows fixed-color gate → Config_App (lo lee la librería). Se persiste en el SaveConfig de abajo.

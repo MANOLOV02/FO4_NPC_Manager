@@ -218,14 +218,6 @@ Public Class NPC_Config
     ''' Persistido en npc_config.json.</summary>
     Public Property ReplicateEngineSkinWeightNormalization As Boolean = True
 
-    ''' <summary><b>Recalcular normales y base tangente en el preview.</b> Se aplica a TODOS los
-    ''' shapes del render. Estaba cableado a True sin forma de apagarlo.
-    ''' Default True: sin recalcular, una malla morpheada conserva la base tangente de la geometría
-    ''' SIN morphear, y el marco tangente es el sistema en el que el shader interpreta el normal map.
-    ''' ⚠️ Con materiales de normales en MODEL SPACE el marco tangente no interviene en el sombreado,
-    ''' así que ahí recalcular no cambia lo que se ve — es sólo costo.
-    ''' Persistido en npc_config.json.</summary>
-    Public Property RecalculateTangentSpace As Boolean = True
 
     ''' <summary><b>Gate del camino "FaceGeom en memoria" (head-bake).</b> El preview dibuja la malla PLANA
     ''' y usa el <c>_faceBones</c> sólo como INSUMO (<see cref="HeadBakeService"/> hornea las posiciones y las
