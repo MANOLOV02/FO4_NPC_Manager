@@ -96,6 +96,9 @@ Partial Class MainForm
         SliderAnimFrame = New TinySliderTextBox()
         LabelAnimMs = New Label()
         NumericAnimFrameMs = New NumericUpDown()
+        ButtonExportPose = New Button()
+        LabelPose = New Label()
+        ComboPose = New ComboBox()
         StatusStrip1 = New StatusStrip()
         ToolStripStatusLabel1 = New ToolStripStatusLabel()
         ToolStripProgressBar1 = New ToolStripProgressBar()
@@ -1076,6 +1079,9 @@ Partial Class MainForm
         PanelAnimBar.Controls.Add(SliderAnimFrame)
         PanelAnimBar.Controls.Add(LabelAnimMs)
         PanelAnimBar.Controls.Add(NumericAnimFrameMs)
+        PanelAnimBar.Controls.Add(ButtonExportPose)
+        PanelAnimBar.Controls.Add(LabelPose)
+        PanelAnimBar.Controls.Add(ComboPose)
         PanelAnimBar.Dock = DockStyle.Fill
         PanelAnimBar.Location = New Point(8, 980)
         PanelAnimBar.Margin = New Padding(0, 4, 0, 0)
@@ -1090,7 +1096,7 @@ Partial Class MainForm
         ComboAnim.Location = New Point(3, 4)
         ComboAnim.Margin = New Padding(3, 4, 3, 3)
         ComboAnim.Name = "ComboAnim"
-        ComboAnim.Size = New Size(260, 23)
+        ComboAnim.Size = New Size(240, 23)
         ComboAnim.TabIndex = 0
         ' 
         ' ButtonSelectAnim
@@ -1127,7 +1133,7 @@ Partial Class MainForm
         SliderAnimFrame.MinimumSize = New Size(100, 24)
         SliderAnimFrame.Name = "SliderAnimFrame"
         SliderAnimFrame.ShowTicks = True
-        SliderAnimFrame.Size = New Size(300, 26)
+        SliderAnimFrame.Size = New Size(280, 26)
         SliderAnimFrame.TabIndex = 3
         SliderAnimFrame.TextBoxTextAlign = HorizontalAlignment.Right
         SliderAnimFrame.ThumbColor = SystemColors.HotTrack
@@ -1158,9 +1164,41 @@ Partial Class MainForm
         NumericAnimFrameMs.TabIndex = 5
         NumericAnimFrameMs.TextAlign = HorizontalAlignment.Right
         NumericAnimFrameMs.Value = New Decimal(New Integer() {30, 0, 0, 0})
-        ' 
+        '
+        ' ButtonExportPose
+        '
+        ButtonExportPose.Enabled = False
+        ButtonExportPose.Location = New Point(828, 3)
+        ButtonExportPose.Margin = New Padding(12, 3, 12, 3)
+        ButtonExportPose.Name = "ButtonExportPose"
+        ButtonExportPose.Size = New Size(100, 25)
+        ButtonExportPose.TabIndex = 6
+        ButtonExportPose.Text = "Export pose…"
+        ButtonExportPose.UseVisualStyleBackColor = True
+        '
+        ' LabelPose
+        '
+        LabelPose.Anchor = AnchorStyles.None
+        LabelPose.AutoSize = True
+        LabelPose.Location = New Point(943, 9)
+        LabelPose.Margin = New Padding(3, 0, 3, 0)
+        LabelPose.Name = "LabelPose"
+        LabelPose.Size = New Size(35, 15)
+        LabelPose.TabIndex = 7
+        LabelPose.Text = "Pose:"
+        '
+        ' ComboPose
+        '
+        ComboPose.DropDownStyle = ComboBoxStyle.DropDownList
+        ComboPose.Enabled = False
+        ComboPose.Location = New Point(981, 4)
+        ComboPose.Margin = New Padding(3, 4, 3, 3)
+        ComboPose.Name = "ComboPose"
+        ComboPose.Size = New Size(195, 23)
+        ComboPose.TabIndex = 8
+        '
         ' StatusStrip1
-        ' 
+        '
         StatusStrip1.Items.AddRange(New ToolStripItem() {ToolStripStatusLabel1, ToolStripProgressBar1})
         StatusStrip1.Location = New Point(0, 1019)
         StatusStrip1.Name = "StatusStrip1"
@@ -1309,6 +1347,9 @@ Partial Class MainForm
     Friend WithEvents SliderAnimFrame As FO4_Base_Library.TinySliderTextBox
     Friend WithEvents NumericAnimFrameMs As System.Windows.Forms.NumericUpDown
     Friend WithEvents LabelAnimMs As System.Windows.Forms.Label
+    Friend WithEvents ButtonExportPose As System.Windows.Forms.Button
+    Friend WithEvents LabelPose As System.Windows.Forms.Label
+    Friend WithEvents ComboPose As System.Windows.Forms.ComboBox
     Friend WithEvents StatusStrip1 As System.Windows.Forms.StatusStrip
     Friend WithEvents ToolStripStatusLabel1 As System.Windows.Forms.ToolStripStatusLabel
     Friend WithEvents ToolStripProgressBar1 As System.Windows.Forms.ToolStripProgressBar

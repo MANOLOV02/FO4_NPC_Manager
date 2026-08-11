@@ -1311,6 +1311,13 @@ Public Class MainForm
         If ComboAnim.Items.Count > 0 Then ComboAnim.SelectedIndex = 0
         _animSuppress = False
         SliderAnimFrame.Enabled = False : NumericAnimFrameMs.Enabled = False : ButtonAnimPlay.Enabled = False
+        ' El render que viene reconstruye los SkeletonInstance ⇒ la pose estática aplicada a la capa
+        ' Delta se pierde. El combo vuelve a "None" para no MENTIR sobre lo que se está viendo (mismo
+        ' criterio que el combo de clips, que también vuelve a "(None - static)" en cada refresh).
+        EnsurePoseCatalog(False)
+        ResetPoseComboToNone()
+        UpdatePoseComboEnabled()
+        UpdateExportPoseEnabled()
     End Sub
 
     ' Resuelve las animaciones de la RAZA del NPC actual y puebla el combo. Cache por raza+gender:
@@ -1425,6 +1432,7 @@ Public Class MainForm
         ComboAnim.EndUpdate()
         ComboAnim.Enabled = True   ' re-enable after a background load finished (no-op on the instant cache-hit path)
         _animSuppress = False
+        UpdatePoseComboEnabled()   ' el combo quedó en "(None - static)" ⇒ la pose estática vuelve a mandar
         Dim cnt = _animComboClips.Count
         Logger.LogLazy(Function() $"[PERF-AC] ApplyAnimModelToCombo populate {cnt} items = {_swC.ElapsedMilliseconds}ms")
     End Sub
@@ -1539,7 +1547,13 @@ Public Class MainForm
             ResetAnimToTPose()
             Return
         End If
+        ' Hay clip ⇒ la capa Delta pasa a ser del player: la pose estática se apaga (combo a "None" +
+        ' deshabilitado, igual que WM). Se limpia ACÁ y no dentro de SelectAnimationClip para que un
+        ' clip que falla al cargar tampoco deje puesta una pose que el combo ya no está mostrando.
+        ClearStaticPoseForAnimation()
         SelectAnimationClip(_animComboClips(ComboAnim.SelectedIndex - 1))
+        UpdatePoseComboEnabled()
+        UpdateExportPoseEnabled()   ' cubre el clip cargado OK y también los aborts de SelectAnimationClip
     End Sub
 
     Private Sub SelectAnimationClip(clip As ResolvedAnimationClip)
@@ -1628,6 +1642,27 @@ Public Class MainForm
         Return _animPlayer IsNot Nothing AndAlso _animPlayer.IsPlaying
     End Function
 
+    ''' <summary>Aplica UNA pose a los tres juegos de esqueletos vivos del render: el del cuerpo, el de
+    ''' la cabeza (body-weight-free — si no, la cabeza FaceGen y los head parts quedan flotando) y los
+    ''' clones per-ARMA del sculpt. La pose es por NOMBRE de hueso, así que el mismo objeto sirve para
+    ''' los tres. <c>ApplyPose</c> toca SOLO la capa DeltaTransform ⇒ el morph (MorphDelta) y el mount
+    ''' sobreviven. Compartido por el frame de animación y por el combo de pose estática — que por eso
+    ''' mismo son EXCLUYENTES: escriben la misma capa.</summary>
+    Private Sub ApplyPoseToLiveSkeletons(pose As Poses_class)
+        If _renderHost Is Nothing OrElse _renderHost.LastSkeletonInstance Is Nothing Then Return
+        _renderHost.LastSkeletonInstance.ApplyPose(pose)
+        If _renderHost.LastHeadSkeletonInstance IsNot Nothing AndAlso Not ReferenceEquals(_renderHost.LastHeadSkeletonInstance, _renderHost.LastSkeletonInstance) Then
+            _renderHost.LastHeadSkeletonInstance.ApplyPose(pose)
+        End If
+        If _renderHost.LastSkelByArma IsNot Nothing Then
+            For Each kv In _renderHost.LastSkelByArma
+                If kv.Value IsNot Nothing Then
+                    kv.Value.ApplyPose(pose)
+                End If
+            Next
+        End If
+    End Sub
+
     Private Sub ApplyAnimFrame(frame As Integer)
         If _animPlayer Is Nothing OrElse _renderHost Is Nothing OrElse _renderHost.LastSkeletonInstance Is Nothing OrElse _renderHost.LastRenderData Is Nothing Then Return
         Try
@@ -1635,19 +1670,7 @@ Public Class MainForm
             ' → se aplica igual al skeleton base y a los clones per-ARMA (sculpt). ApplyPose toca SOLO
             ' la capa DeltaTransform → el morph (MorphDelta) y el mount sobreviven.
             Dim pose = _animPlayer.PoseForFrame(frame)
-            _renderHost.LastSkeletonInstance.ApplyPose(pose)
-            ' Head skeleton (body-weight-free) also gets the clip pose, so the FaceGen head + head parts
-            ' follow the animation instead of floating. Separate instance from the body skel.
-            If _renderHost.LastHeadSkeletonInstance IsNot Nothing AndAlso Not ReferenceEquals(_renderHost.LastHeadSkeletonInstance, _renderHost.LastSkeletonInstance) Then
-                _renderHost.LastHeadSkeletonInstance.ApplyPose(pose)
-            End If
-            If _renderHost.LastSkelByArma IsNot Nothing Then
-                For Each kv In _renderHost.LastSkelByArma
-                    If kv.Value IsNot Nothing Then
-                        kv.Value.ApplyPose(pose)
-                    End If
-                Next
-            End If
+            ApplyPoseToLiveSkeletons(pose)
             ' [ANIM-BONE-DIAG] Diagnóstico (no fix): para resolver chunks (cabeza/brazos Assaultron) dumpea
             ' por frame los bones de chunk — world final + mount (con rotación) + delta de la animación.
             ' Así se ve si el mount tiene rotación (eje de la anim mal) o cómo la pose mueve el chunk.
@@ -1716,6 +1739,265 @@ Public Class MainForm
         _renderHost.PreviewCtl.Intent.MarkDirty(RenderDirtyFlags.Pose, _renderHost.LastRenderData.Shapes)
         _renderHost.PreviewCtl.InvalidateRender()
         SetPlayingAnimation(False)
+        ' Sin clip la capa Delta vuelve a estar libre ⇒ el combo de pose estática se re-habilita.
+        UpdatePoseComboEnabled()
+        UpdateExportPoseEnabled()   ' sin sesión no hay frame que exportar
+    End Sub
+
+    ' ── Static pose combo ────────────────────────────────────────────────────────────────────────
+    ' Puerto de la lógica de Wardrobe Manager (ComboBoxPoses + SliderPresetCollection.LoadPoses*):
+    ' mismo catálogo (identidad + SAM JSON + BodySlide/WM XML), mismas etiquetas (Poses_class.ToString)
+    ' y misma resolución de rutas (ver PoseCatalog).
+    ' ⛔ La pose y la animación escriben la MISMA capa (DeltaTransform vía ApplyPose), así que son
+    ' excluyentes: el combo sólo vive mientras la barra está en "(None - static)". Al elegir un clip
+    ' vuelve a "None" y se deshabilita; al volver a estático se re-habilita.
+    Private _poseCatalog As PoseCatalog = Nothing
+    ' Clave de las RUTAS con las que se construyó el catálogo ("<juego>|<samDir>|<bsPoseDir>"): si el
+    ' usuario cambia el exe de BodySlide (Edit Body → BodySlide) o el juego, cambia la clave y se relee.
+    Private _poseCatalogKey As String = ""
+    Private _poseSuppress As Boolean = False
+    ' True cuando hay una pose NO identidad puesta en la capa Delta. Evita el render de más al limpiar
+    ' (elegir un clip con el combo ya en "None" no tiene nada que limpiar).
+    Private _staticPoseApplied As Boolean = False
+
+    ''' <summary>True cuando la capa Delta es del combo de poses: sin sesión de clip y con el combo de
+    ''' animación en el índice 0 ("(None - static)", o el item transitorio de "enumerando…", que también
+    ''' es estático). Hacen falta las dos: la sesión sola no alcanza porque un clip que falló al cargar
+    ''' deja el combo mostrando su nombre con la sesión en Nothing.</summary>
+    Private Function IsAnimStaticNow() As Boolean
+        Return _animSession Is Nothing AndAlso ComboAnim.SelectedIndex <= 0
+    End Function
+
+    ''' <summary>Habilita el combo de pose sólo en estático y con poses reales para elegir (con el
+    ''' catálogo vacío queda sólo "None", que no es una elección).</summary>
+    Private Sub UpdatePoseComboEnabled()
+        Dim usable = IsAnimStaticNow() AndAlso ComboPose.Items.Count > 1
+        ComboPose.Enabled = usable
+        LabelPose.Enabled = usable
+    End Sub
+
+    ''' <summary>(Re)lee el catálogo de poses si cambiaron las rutas (o si <paramref name="force"/>),
+    ''' y repuebla el combo conservando la selección. Barato: son unas pocas decenas de XML/JSON
+    ''' chicos, así que corre sincrónico (a diferencia del walk de behaviors de la animación).</summary>
+    Private Sub EnsurePoseCatalog(force As Boolean)
+        Dim isSse = Config_App.Current IsNot Nothing AndAlso Config_App.Current.Game = Config_App.Game_Enum.Skyrim
+        Dim samDir = PoseCatalog.ResolveSamPosesDir()
+        Dim bsDir = PoseCatalog.ResolveBsPosesDir(isSse)
+        Dim key = $"{If(isSse, "SSE", "FO4")}|{samDir}|{bsDir}"
+        If Not force AndAlso _poseCatalog IsNot Nothing AndAlso key = _poseCatalogKey Then Return
+        Try
+            Dim cat As New PoseCatalog()
+            cat.Load(samDir, bsDir)
+            _poseCatalog = cat
+            _poseCatalogKey = key
+            Logger.LogLazy(Function() $"[POSE-BAR] catalog loaded: {cat.Poses.Count - 1} poses (+None) sam='{samDir}' bs='{bsDir}'")
+        Catch ex As Exception
+            Logger.LogLazy(Function() $"[POSE-BAR] catalog load failed: {ex.GetType().Name}: {ex.Message}")
+            Return
+        End Try
+        ' Si la pose que estaba puesta desapareció del disco, el combo cae a "None": hay que limpiar
+        ' también la capa Delta, o el render seguiría mostrando una pose que el combo ya no nombra.
+        If Not PopulatePoseCombo() AndAlso _staticPoseApplied Then ApplyStaticPose(Nothing)
+    End Sub
+
+    ''' <summary>Puebla el combo: "None" primero y el resto alfabético. WM ordena TODO alfabéticamente
+    ''' (Relee_Poses) y la identidad cae donde caiga; acá va primera para que el índice 0 sea siempre
+    ''' "sin pose", igual que "(None - static)" en el combo de clips. Conserva la selección por clave;
+    ''' devuelve False si esa clave ya no existe (la selección quedó en "None").</summary>
+    Private Function PopulatePoseCombo() As Boolean
+        Dim wanted As New List(Of String) From {PoseCatalog.NoneKey}
+        If _poseCatalog IsNot Nothing Then
+            wanted.AddRange(_poseCatalog.Poses.Keys.Where(Function(k) k <> PoseCatalog.NoneKey))
+        End If
+        ' Sin cambios en las claves no se toca el combo: el relee del DropDown ocurre con la lista YA
+        ' desplegada, y un Clear/Add ahí adentro la parpadea sin necesidad.
+        If ComboPose.Items.Count = wanted.Count Then
+            Dim same = True
+            For i = 0 To wanted.Count - 1
+                If Not String.Equals(TryCast(ComboPose.Items(i), String), wanted(i), StringComparison.Ordinal) Then same = False : Exit For
+            Next
+            If same Then Return True
+        End If
+
+        Dim previous = TryCast(ComboPose.SelectedItem, String)
+        _poseSuppress = True
+        ComboPose.BeginUpdate()
+        ComboPose.Items.Clear()
+        ComboPose.Items.AddRange(wanted.Cast(Of Object).ToArray())
+        Dim idx = If(previous Is Nothing, 0, ComboPose.Items.IndexOf(previous))
+        ComboPose.SelectedIndex = If(idx >= 0, idx, 0)
+        ComboPose.EndUpdate()
+        _poseSuppress = False
+        Return idx >= 0
+    End Function
+
+    ''' <summary>Lleva el combo a "None" SIN tocar el render (el caller decide qué pasa con la capa
+    ''' Delta: un refresh de NPC la reconstruye, un clip la sobreescribe).</summary>
+    Private Sub ResetPoseComboToNone()
+        _poseSuppress = True
+        If ComboPose.Items.Count > 0 Then ComboPose.SelectedIndex = 0
+        _poseSuppress = False
+        _staticPoseApplied = False
+    End Sub
+
+    ''' <summary>Apaga la pose estática porque entra una animación: combo a "None" y, si había una
+    ''' pose realmente puesta, se limpia la capa Delta. Si el clip carga bien su frame 0 la pisa
+    ''' igual; la limpieza es para el caso en que NO cargue.</summary>
+    Private Sub ClearStaticPoseForAnimation()
+        Dim hadPose = _staticPoseApplied
+        ResetPoseComboToNone()
+        If hadPose Then ApplyStaticPose(Nothing)
+    End Sub
+
+    ''' <summary>Refresca el catálogo al abrir el combo, así una pose recién guardada por Wardrobe
+    ''' Manager (o un exe de BodySlide recién elegido en Edit Body) aparece sin reiniciar la app.
+    ''' Mismo gesto que <c>ComboAnim_DropDown</c>.</summary>
+    Private Sub ComboPose_DropDown(sender As Object, e As EventArgs) Handles ComboPose.DropDown
+        EnsurePoseCatalog(True)
+    End Sub
+
+    Private Sub ComboPose_SelectedIndexChanged(sender As Object, e As EventArgs) Handles ComboPose.SelectedIndexChanged
+        If _poseSuppress Then Return
+        ' Con un clip activo la capa Delta no es del combo. No debería poder pasar (el combo está
+        ' deshabilitado), pero un cambio por código sin suppress no puede pisar la animación.
+        If Not IsAnimStaticNow() Then Return
+        Dim pose As Poses_class = Nothing
+        Dim key = TryCast(ComboPose.SelectedItem, String)
+        If key IsNot Nothing AndAlso key <> PoseCatalog.NoneKey AndAlso _poseCatalog IsNot Nothing Then
+            _poseCatalog.Poses.TryGetValue(key, pose)
+        End If
+        ApplyStaticPose(pose)
+    End Sub
+
+    ' ── Export pose (frame de la animación → XML de poses de Wardrobe Manager) ────────────────────
+    ' Puerto del path de guardado de WM (HkxPoseImport_Form.OkClicked + Wardrobe_Manager_Form.
+    ' SaveImportedHkxPoseXml), SIN el export SAM. Reusa la MISMA sesión que ya está reproduciendo:
+    ' HkxPoseImportSession.BuildPose devuelve exactamente el Poses_class que WM guarda, así que el
+    ' archivo que sale es indistinguible del que escribe WM.
+    ' ⚠️ La pose es un DELTA contra el rig VIVO del NPC renderizado. Para un NPC humano ese rig es el
+    ' mismo que usa WM (nombres de hueso de FO4/SSE) ⇒ el archivo es intercambiable. Para un rig no
+    ' humano (SuperMutant, robot, Behemoth) los nombres son otros y la pose no significará nada en el
+    ' preview de WM: se exporta igual (es dato honesto del clip), pero queda dicho en el log.
+
+    ''' <summary>El botón vive con la animación PAUSADA: hace falta una sesión de clip cargada (hay
+    ''' frames que exportar) y que el player NO esté reproduciendo (el frame del slider es el que se
+    ''' va a exportar, y durante el play cambia solo).</summary>
+    Private Sub UpdateExportPoseEnabled()
+        ButtonExportPose.Enabled = _animSession IsNot Nothing AndAlso Not IsAnimPlayingNow() AndAlso
+                                   _renderHost IsNot Nothing AndAlso _renderHost.LastSkeletonInstance IsNot Nothing
+    End Sub
+
+    ''' <summary>Clip seleccionado en el combo (Nothing en "(None - static)"). Mismo cálculo que
+    ''' ButtonSelectAnim_Click.</summary>
+    Private Function CurrentAnimClip() As ResolvedAnimationClip
+        If _animComboClips Is Nothing OrElse ComboAnim.SelectedIndex <= 0 Then Return Nothing
+        Dim i = ComboAnim.SelectedIndex - 1
+        If i < 0 OrElse i >= _animComboClips.Count Then Return Nothing
+        Return _animComboClips(i)
+    End Function
+
+    ''' <summary>Nombre sugerido: el del clip (sin los adornos del combo: roles, "1st-person") más el
+    ''' frame, que es lo que distingue una exportación de otra del mismo clip.</summary>
+    Private Function SuggestedExportPoseName(frame As Integer) As String
+        Dim clip = CurrentAnimClip()
+        Dim nm = If(clip Is Nothing, "", If(String.IsNullOrWhiteSpace(clip.ClipName),
+                                            IO.Path.GetFileNameWithoutExtension(clip.AnimationFile), clip.ClipName))
+        If String.IsNullOrWhiteSpace(nm) Then nm = "Imported HKX Pose"
+        Return $"{nm}_f{frame}"
+    End Function
+
+    Private Sub ButtonExportPose_Click(sender As Object, e As EventArgs) Handles ButtonExportPose.Click
+        If _animSession Is Nothing OrElse IsAnimPlayingNow() Then Return
+
+        ' Destino: el MISMO archivo de WM, <BodySlide>\PoseData\WardrobeManagerPoses.xml.
+        Dim isSse = Config_App.Current IsNot Nothing AndAlso Config_App.Current.Game = Config_App.Game_Enum.Skyrim
+        Dim poseDir = PoseCatalog.ResolveBsPosesDir(isSse)
+        If String.IsNullOrEmpty(poseDir) Then
+            MsgBox("No BodySlide installation is configured for this game, so there is nowhere to write the pose." & Environment.NewLine &
+                   "Pick the BodySlide/OutfitStudio executable in Edit Body → BodySlide (""Set BS exe…"") and try again.",
+                   MsgBoxStyle.Exclamation, "Export pose")
+            Return
+        End If
+        Dim outPath = IO.Path.Combine(poseDir, PoseCatalog.WmPosesFileName)
+
+        Dim frame = Math.Max(0, CInt(Math.Round(SliderAnimFrame.Value)))
+        Dim poseName = InputBox("Pose name", "Export pose", SuggestedExportPoseName(frame))
+        If poseName Is Nothing Then Return
+        poseName = poseName.Trim()
+        If poseName = "" Then Return   ' Cancel, o nombre vacío = no exportar (WM rechaza el vacío igual)
+
+        Try
+            ' Mismo gesto que el OK del importador de WM: BuildPose del frame + los huesos del HKX que
+            ' el esqueleto vivo NO tiene (BuildUnboundBoneWmData), que sólo se agregan al GUARDAR.
+            Dim result = _animSession.BuildPose(frame, poseName, collectDiagnostics:=True)
+            If result Is Nothing OrElse result.Pose Is Nothing OrElse result.ImportedBoneCount = 0 Then
+                MsgBox("The animation frame did not match any bone of the rendered skeleton — nothing to export.",
+                       MsgBoxStyle.Critical, "Export pose")
+                Return
+            End If
+            Dim extra = _animSession.BuildUnboundBoneWmData(frame)
+            If extra IsNot Nothing Then
+                For Each kv In extra
+                    If Not result.Pose.Transforms.ContainsKey(kv.Key) Then result.Pose.Transforms.Add(kv.Key, kv.Value)
+                Next
+            End If
+
+            ' Conflicto de nombre contra el catálogo FRESCO (WM pudo haber escrito mientras tanto),
+            ' con las mismas dos reglas de WM: otro archivo ⇒ error; mismo archivo ⇒ confirmar pisada.
+            EnsurePoseCatalog(True)
+            If _poseCatalog IsNot Nothing Then
+                Dim existingKey As String = Nothing
+                Dim existing = _poseCatalog.FindByName(poseName, existingKey)
+                If existing IsNot Nothing Then
+                    If Not String.Equals(If(existing.Filename, ""), outPath, StringComparison.OrdinalIgnoreCase) Then
+                        MsgBox($"Pose {poseName} already exists in another file:" & Environment.NewLine & If(existing.Filename, "<unknown>"),
+                               MsgBoxStyle.Critical, "Export pose")
+                        Return
+                    End If
+                    If MsgBox($"Pose {poseName} already exists. Do you want to overwrite it?",
+                              MsgBoxStyle.YesNo, "Export pose") = MsgBoxResult.No Then Return
+                End If
+            End If
+
+            ' El catálogo puede seguir en Nothing si su lectura falló; escribir no depende de él (sólo
+            ' registra la pose recién escrita), así que un catálogo vacío sirve igual.
+            If _poseCatalog Is Nothing Then _poseCatalog = New PoseCatalog()
+            _poseCatalog.WriteWmPoseXml(outPath, result.Pose)
+            ' .Where(...).Count() y no .Count(lambda): Dictionary.Count es una PROPIEDAD que tapa la
+            ' extensión de LINQ y el compilador la lee como indexación.
+            Dim written = result.Pose.Transforms.Where(Function(t) Not t.Value.Isidentity).Count()
+            Dim clipFile = If(CurrentAnimClip()?.AnimationFile, "")
+            Logger.LogLazy(Function() $"[POSE-BAR] export pose='{poseName}' frame={frame} clip='{clipFile}' bones={written} (live={result.ImportedBoneCount}, unbound={If(extra Is Nothing, 0, extra.Count)}) skel='{result.SkeletonName}' -> '{outPath}'")
+
+            ' Recargar el catálogo del disco para que la pose recién escrita quede en el combo (que
+            ' está deshabilitado ahora — hay un clip activo — pero la va a mostrar al volver a estático).
+            EnsurePoseCatalog(True)
+            MsgBox($"Pose ""{poseName}"" exported ({written} bones, frame {frame})." & Environment.NewLine & outPath,
+                   MsgBoxStyle.Information, "Export pose")
+        Catch ex As Exception
+            Logger.LogLazy(Function() $"[POSE-BAR] export FAILED pose='{poseName}' frame={frame}: {ex}")
+            MsgBox("Error exporting the pose: " & ex.Message, MsgBoxStyle.Critical, "Export pose")
+        End Try
+    End Sub
+
+    ''' <summary>Aplica (o limpia, con <c>Nothing</c>) la pose estática y re-renderiza sólo la POSE.
+    ''' <c>PlayingAnimation</c> queda en False: esto es un cambio puntual, no un playback — el control
+    ''' re-encuadra como en cualquier otro cambio de pose (toggle de body weight, FMRS, etc.).</summary>
+    Private Sub ApplyStaticPose(pose As Poses_class)
+        If _renderHost Is Nothing OrElse _renderHost.LastSkeletonInstance Is Nothing OrElse
+           _renderHost.LastRenderData Is Nothing OrElse _renderHost.PreviewCtl Is Nothing Then
+            _staticPoseApplied = False
+            Return
+        End If
+        Try
+            ApplyPoseToLiveSkeletons(pose)
+            _renderHost.PreviewCtl.Intent.MarkDirty(RenderDirtyFlags.Pose, _renderHost.LastRenderData.Shapes)
+            _renderHost.PreviewCtl.InvalidateRender()
+            _staticPoseApplied = pose IsNot Nothing AndAlso pose.Transforms IsNot Nothing AndAlso pose.Transforms.Count > 0
+            Logger.LogLazy(Function() $"[POSE-BAR] apply pose='{If(pose Is Nothing, "(none)", pose.ToString())}' bones={If(pose?.Transforms Is Nothing, 0, pose.Transforms.Count)}")
+        Catch ex As Exception
+            Logger.LogLazy(Function() $"[POSE-BAR] ApplyStaticPose FAILED: {ex.GetType().Name}: {ex.Message}{Environment.NewLine}{ex.StackTrace}")
+        End Try
     End Sub
 
     ' El slider tiny (TinySliderTextBox) muestra el frame inline y es el único control de frame (scrub).
@@ -1738,6 +2020,7 @@ Public Class MainForm
             _animPlayer.Start(CInt(Math.Round(SliderAnimFrame.Value)))
             _animPlayer.BeginIdlePlayback(AddressOf OnAnimPlaybackFrame)
             ButtonAnimPlay.Text = "⏸"
+            UpdateExportPoseEnabled()   ' reproduciendo NO se exporta: el frame del slider cambia solo
         End If
     End Sub
 
@@ -1753,6 +2036,9 @@ Public Class MainForm
         If SliderAnimFrame IsNot Nothing Then SliderAnimFrame.Enabled = SliderAnimFrame.Maximum > 0
         If ButtonAnimPlay IsNot Nothing Then ButtonAnimPlay.Text = "▶"
         If _animOverBudget Then NumericAnimFrameMs.ForeColor = SystemColors.ControlText : _animOverBudget = False
+        ' Pausa con clip cargado = el estado en el que SÍ se exporta (los callers que además descartan
+        ' el clip lo vuelven a apagar después, vía ResetAnimToTPose / RefreshAnimBarForCurrentNpc).
+        UpdateExportPoseEnabled()
     End Sub
 
     ''' <summary>Callback del loop Application.Idle del player (hilo UI, igual que el viejo Tick).
@@ -5159,13 +5445,22 @@ Public Class MainForm
     End Sub
 
     Private Sub ButtonLightRig_Click(sender As Object, e As EventArgs) Handles ButtonLightRig.Click
-        Dim form As New LightRigForm
-        AddHandler form.LightsChanged, AddressOf OnLightRigChanged
-        Try
-            form.ShowDialog(Me)
-        Finally
-            RemoveHandler form.LightsChanged, AddressOf OnLightRigChanged
-        End Try
+        ' AllowHiddenSegments = False: el render de NPC Manager DEPENDE de la oclusion por segmento
+        ' (swap de Pip-Boy 60/160, ocultado de head parts) y por eso Program.vb fuerza
+        ' Setting_DrawHiddenSegments = False al arrancar. El dialogo compartido no puede dejar tocarlo:
+        ' con False la casilla no se muestra y el valor no se escribe. Es el UNICO ajuste app-aware.
+        ' ⛔ Using: ShowDialog NO dispone el form. Sin esto, cada apertura del dialogo compartido filtra
+        ' los handles de una pestana entera de NUD, sliders y swatches; el Finally solo saca handlers.
+        Using form As New LightRigForm With {.AllowHiddenSegments = False}
+            AddHandler form.LightsChanged, AddressOf OnLightRigChanged
+            AddHandler form.RenderSettingsChanged, AddressOf OnRenderSettingsChanged
+            Try
+                form.ShowDialog(Me)
+            Finally
+                RemoveHandler form.LightsChanged, AddressOf OnLightRigChanged
+                RemoveHandler form.RenderSettingsChanged, AddressOf OnRenderSettingsChanged
+            End Try
+        End Using
     End Sub
 
     Private Sub OnLightRigChanged()
@@ -5173,6 +5468,15 @@ Public Class MainForm
             _previewControl.UpdateRequired = True
             _previewControl.Update()
         End If
+    End Sub
+
+    ''' <summary>La pestana Rendering toca cosas que NO se arreglan repintando (recalculo de normales,
+    ''' welding, skinning): hay que re-correr el pipeline con la geometria marcada sucia.</summary>
+    Private Sub OnRenderSettingsChanged()
+        If _previewControl Is Nothing OrElse _previewControl.IsDisposed Then Return
+        ' Toda la logica vive en la libreria: los ajustes de render estan duplicados como estado del
+        ' PreviewModel y del Floor, y sin empujarlos la casilla no hace nada visible.
+        _previewControl.ApplyRenderSettingsFromConfig()
     End Sub
 
     Private Async Sub RenderOnDemandAsync(requestVersion As Integer)
