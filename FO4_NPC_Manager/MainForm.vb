@@ -11070,8 +11070,12 @@ Public Class MainForm
             ' Bbox del modelo ya horneado, para que el diálogo pueda ofrecer un default editable para el
             ' locator del menú de carga. Sale de la MISMA función que usaría el export, así el número que
             ' el usuario ve es el que se escribe.
-            Dim bakedBounds = SceneNifExporter.MeasureBakedBounds(_previewControl.Model.meshes)
-            dlgOpts.Prepare(isSse, npcFoldsOverlays, bakedBounds)
+            ' Se manda ADEMÁS cómo remedirlo: un shape que todavía no pasó por el cómputo de oclusión no
+            ' aporta vértices, y con el bbox vacío el diálogo se queda sin el slider de altura. Que lo
+            ' pida cuando lo necesita en vez de arrastrar una sola foto.
+            Dim measure As Func(Of SceneNifExporter.BakedBounds) =
+                Function() SceneNifExporter.MeasureBakedBounds(_previewControl.Model.meshes)
+            dlgOpts.Prepare(isSse, npcFoldsOverlays, measure(), measure)
             If dlgOpts.ShowDialog(Me) <> DialogResult.OK Then Return
             exportOptions = dlgOpts.Options
         End Using

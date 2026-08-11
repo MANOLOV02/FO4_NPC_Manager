@@ -892,18 +892,20 @@ Public NotInheritable Class SceneNifExporter
         End Try
 
         ' Locator del menú de carga. VA ACÁ: después del RemoveUnreferencedBlocks (índices finales) y
-        ' antes del Save. Se revalidan las dos precondiciones en vez de confiar en el diálogo —el
-        ' exporter también se llama sin él— y se pregunta por la versión que se va a ESCRIBIR, no por
-        ' el toggle de juego.
+        ' antes del Save. La precondición se revalida en vez de confiar en el diálogo —el exporter
+        ' también se llama sin él— y se pregunta por la versión que se va a ESCRIBIR, no por el toggle
+        ' de juego. El skin NO entra en la precondición: el nodo es un locator inerte y el destino
+        ' habitual (STAT) es sólo el caso vanilla, no una restricción del formato.
         Dim loadScreenNodeError As String = Nothing
         If opts.AddLoadScreenNode Then
-            If opts.Skinned Then
-                loadScreenNodeError = $"'{LoadScreenZoomTargetName}' not written: it only applies to an unskinned export."
-            ElseIf Not IsFallout4Target(destVersion) Then
+            If Not IsFallout4Target(destVersion) Then
                 loadScreenNodeError = $"'{LoadScreenZoomTargetName}' not written: the node only exists in Fallout 4, and the export target is {DescribeVersion(destVersion)}."
             Else
                 ' El diálogo manda lo que el usuario tuvo a la vista. Sin eso (caller headless) se arma
                 ' el default con la MISMA función con la que el diálogo arma el suyo.
+                ' ⚠️ En un export SKINNED ese bbox sigue siendo el del modelo POSADO (es lo que mide
+                ' MeasureBakedBounds), mientras que los vértices que se escriben quedan en su espacio de
+                ' bind. La posición default es entonces aproximada; el usuario la corrige en el diálogo.
                 Dim placement = opts.LoadScreenNodePlacement
                 If placement Is Nothing Then
                     Dim measured = MeasureBakedBounds(meshes)

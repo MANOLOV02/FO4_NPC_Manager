@@ -17,14 +17,17 @@ Public Class SceneExportOptions
     ''' el motor reemplaza el material entero y el color no se lee nunca. Ver <see cref="ShapeMaterialTranscriber"/>.</summary>
     Public Property WriteSkinTone As Boolean = True
 
-    ''' <summary>FO4 únicamente, y sólo con <see cref="Skinned"/> = False: agregar el locator
-    ''' <c>LoadingMenuZoomTarget</c> como hijo directo de la raíz. Es el pivote sobre el que la cámara
-    ''' del menú de carga orbita y hace zoom; sin él el motor pivota en el origen del modelo (los pies).
+    ''' <summary>FO4 únicamente: agregar el locator <c>LoadingMenuZoomTarget</c> como hijo directo de la
+    ''' raíz. Es el pivote sobre el que la cámara del menú de carga orbita y hace zoom; sin él el motor
+    ''' pivota en el origen del modelo (los pies).
     ''' <para>MEDIDO sobre los 173 <c>Meshes\LoadScreenArt\*.nif</c> vanilla: 63 lo traen, siempre como
     ''' NiNode vacío (sin hijos, sin extra data), hijo directo de la raíz, flags 14, rotación identidad y
     ''' escala 1. En SSE NO existe — 0 de 139 archivos; allá el encuadre viaja en el LSCR (SNAM/RNAM/XNAM).</para>
-    ''' <para>⛔ Exige unskinned no por el nodo —que es inerte— sino por el destino: el NIF se referencia
-    ''' desde un STAT, y un static no tiene esqueleto que deforme la malla. Los 173 vanilla son estáticos.</para></summary>
+    ''' <para>NO exige <see cref="Skinned"/> = False. El nodo es inerte y no depende del skin; lo único
+    ''' atado a unskinned es el caso VANILLA (los 173 loadscreens se referencian desde un STAT, que no
+    ''' tiene esqueleto que deforme la malla, y los 173 son estáticos). Con skin el nodo se escribe igual
+    ''' — sólo que el default de posición sale del modelo POSADO mientras la geometría queda en bind, así
+    ''' que ahí el valor es aproximado.</para></summary>
     Public Property AddLoadScreenNode As Boolean = False
 
     ''' <summary>Cómo se coloca el <c>LoadingMenuZoomTarget</c>. Lo llena el diálogo con los valores que el

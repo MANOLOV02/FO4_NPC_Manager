@@ -23,6 +23,13 @@
     <ProjectReference Include="..\..\FO4_Base_Library\FO4_Base_Library.vbproj" />
   </ItemGroup>
 
+  <!-- ⛔ LINKEADO, NO REFERENCIADO. CrashReport se compila DENTRO de este exe a proposito: tiene que poder
+       reportar que FO4_Base_Library.dll no cargo, y desde adentro de esa lib se caeria con ella. Misma
+       fuente que usa Wardrobe_Manager. Ver ..\..\FO4_Base_Library\Shared\CrashReport.vb y Program.Main. -->
+  <ItemGroup>
+    <Compile Include="..\..\FO4_Base_Library\Shared\CrashReport.vb" Link="CrashReport.vb" />
+  </ItemGroup>
+
   <!-- El CLI headless (FO4_FaceTint_CLI) llama FaceGenBuilder.BuildCharGen + NpcMaterialResolver
        (Friend) para bakear NIF+texturas sin GUI/GL. Sin cambiar la visibilidad del API interno. -->
   <ItemGroup>

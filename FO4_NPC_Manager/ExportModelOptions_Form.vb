@@ -25,6 +25,13 @@ Public Class ExportModelOptions_Form
     ''' Es lo que convierte el % del slider en unidades del NIF.</summary>
     Private _bounds As SceneNifExporter.BakedBounds
 
+    ''' <summary>Cómo volver a medir el bbox. El diálogo recibe una medición hecha al abrirlo, y esa
+    ''' medición puede salir VACÍA: <c>MeasureBakedBounds</c> descarta todo shape que todavía no pasó por
+    ''' el cómputo de oclusión del render. Sin alto no hay traducción % ↔ unidades, así que el slider —lo
+    ''' único que la necesita— quedaba muerto para el resto de la vida del diálogo. Con esto se remide en
+    ''' el momento en que el valor hace falta.</summary>
+    Private _measureBounds As Func(Of SceneNifExporter.BakedBounds)
+
     ''' <summary>Guarda contra la realimentación slider ↔ Z: cada uno escribe en el otro.</summary>
     Private _syncingPlacement As Boolean
 
@@ -43,7 +50,8 @@ Public Class ExportModelOptions_Form
     ''' <c>SceneNifExporter.MeasureBakedBounds</c>. Alimenta el default del locator del menú de carga y la
     ''' conversión %→unidades del slider. Si no es usable, esa sección se deshabilita y lo dice.</param>
     Public Sub Prepare(isSse As Boolean, npcFoldsOverlays As Boolean,
-                       bakedBounds As SceneNifExporter.BakedBounds)
+                       bakedBounds As SceneNifExporter.BakedBounds,
+                       Optional remeasureBounds As Func(Of SceneNifExporter.BakedBounds) = Nothing)
         Dim bakeOverlaysOn As Boolean = (Config_App.Current IsNot Nothing AndAlso
                                          Config_App.Current.Setting_BakeSseRaceMenuOverlays)
         _foldIsTheBakeDefault = isSse AndAlso npcFoldsOverlays AndAlso bakeOverlaysOn
@@ -65,6 +73,7 @@ Public Class ExportModelOptions_Form
         ' de los 139 de SSE, donde el encuadre viaja en el LSCR (SNAM/RNAM/XNAM) y no en el NIF.
         GroupLoadScreen.Visible = Not isSse
         _bounds = bakedBounds
+        _measureBounds = remeasureBounds
         ResetPlacementToDefault()
 
         UpdateFaceSubOptions()
@@ -124,25 +133,39 @@ Public Class ExportModelOptions_Form
     End Sub
 
     ''' <summary>
-    ''' El nodo del menú de carga sólo se ofrece con geometría UNSKINNED. No es que el nodo dependa del
-    ''' skin —es un locator inerte— sino el destino: el NIF se referencia desde un STAT, y un static no
-    ''' tiene esqueleto que deforme la malla. Los 173 loadscreens vanilla de FO4 son estáticos, 0 con skin.
-    ''' <para>Se DESMARCA al deshabilitar en vez de sólo agrisarse: un tilde encendido pero inerte le
-    ''' promete al usuario algo que el export no va a hacer.</para>
+    ''' El nodo del menú de carga se ofrece en FO4 con CUALQUIERA de las dos geometrías: es un locator
+    ''' inerte y no depende del skin. Lo atado a unskinned es el caso vanilla —los 173 loadscreens de FO4
+    ''' se referencian desde un STAT, que no tiene esqueleto que deforme la malla, y los 173 son
+    ''' estáticos—, no el nodo.
+    ''' <para>Con skin el default de posición se mide sobre el modelo POSADO mientras la geometría se
+    ''' escribe en bind, así que ahí el valor es aproximado y se dice en el texto.</para>
     ''' </summary>
     Private Sub UpdateLoadScreenGate()
-        Dim allowed As Boolean = RadioUnskinned.Checked
-        CheckAddLoadScreenNode.Enabled = allowed
-        If Not allowed Then CheckAddLoadScreenNode.Checked = False
+        Dim writing As Boolean = CheckAddLoadScreenNode.Checked
+        CheckAddLoadScreenNode.Enabled = True
         ' Los valores sólo se editan si el nodo se va a escribir. El slider además necesita un alto real
-        ' para traducir % a unidades; sin bbox se deja escribir a mano pero el slider no sirve.
-        LoadScreenValues.Enabled = allowed AndAlso CheckAddLoadScreenNode.Checked
-        SliderHeight.Enabled = LoadScreenValues.Enabled AndAlso _bounds.IsUsable
+        ' para traducir % a unidades; sin bbox se deja escribir a mano pero el slider no sirve, así que
+        ' antes de apagarlo se le da otra oportunidad a la medición.
+        If writing Then EnsureBounds()
+        LoadScreenValues.Enabled = writing
+        SliderHeight.Enabled = writing AndAlso _bounds.IsUsable
         NumHeightPct.Enabled = SliderHeight.Enabled
         LabelLoadScreen.Text =
-            If(allowed,
-               "Adds an empty 'LoadingMenuZoomTarget' node — the point the loading-screen camera orbits and zooms towards. It is placed at the model's horizontal centre, 85% up its height. That matches vanilla for an upright biped; for a non-upright NPC (dog, deathclaw, mirelurk) the highest point is not the head, so move the node afterwards.",
-               "Only available for an unskinned export: a loading screen references the NIF through a STAT record, and a static has no skeleton to deform the mesh.")
+            "Adds an empty 'LoadingMenuZoomTarget' node — the pivot the loading-screen camera orbits. Default: model centre, 85% up. Right for an upright biped; on a dog or deathclaw the top is not the head, so move it." &
+            If(RadioUnskinned.Checked,
+               "",
+               " Skinned export: the node is still written, but this position is measured on the posed model, not on the bind pose that gets written.")
+    End Sub
+
+    ''' <summary>Segunda (y última) oportunidad de medir el bbox. Sólo corre si la medición de apertura
+    ''' salió vacía; con bbox bueno no toca nada, así que no puede pisarle valores al usuario.</summary>
+    Private Sub EnsureBounds()
+        If _bounds.IsUsable OrElse _measureBounds Is Nothing Then Return
+        Dim fresh = _measureBounds()
+        If Not fresh.IsUsable Then Return
+        _bounds = fresh
+        ' Los campos estaban en el default de "sin bbox" (0,0,0): ahora hay un default de verdad.
+        ResetPlacementToDefault()
     End Sub
 
     Private Sub CheckUseFaceGenBake_CheckedChanged(sender As Object, e As EventArgs) Handles CheckUseFaceGenBake.CheckedChanged
@@ -202,10 +225,9 @@ Public Class ExportModelOptions_Form
         Options.FoldFaceOverlays = PanelOverlays.Visible AndAlso RadioWithOverlays.Checked
         Options.WriteSkinTone = CheckWriteSkinTone.Checked
         ' Igual que FoldFaceOverlays: se exige que el grupo esté VISIBLE (o sea, FO4) además del tilde,
-        ' así el juego equivocado no puede colar la opción por un estado viejo del control.
-        Options.AddLoadScreenNode = GroupLoadScreen.Visible AndAlso
-                                    CheckAddLoadScreenNode.Enabled AndAlso
-                                    CheckAddLoadScreenNode.Checked
+        ' así el juego equivocado no puede colar la opción por un estado viejo del control. La geometría
+        ' NO entra: el nodo se escribe con skin y sin skin.
+        Options.AddLoadScreenNode = GroupLoadScreen.Visible AndAlso CheckAddLoadScreenNode.Checked
         ' Se manda lo que el usuario TIENE A LA VISTA, no un recálculo: así lo que se escribe en el NIF y
         ' lo que mostró el diálogo no pueden divergir.
         If Options.AddLoadScreenNode Then

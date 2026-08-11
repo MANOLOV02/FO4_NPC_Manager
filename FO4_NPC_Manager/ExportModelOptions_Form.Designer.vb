@@ -626,8 +626,8 @@ Partial Class ExportModelOptions_Form
         '
         ' LabelLoadScreen
         '
-        ' El texto lo pone Prepare/UpdateLoadScreenGate: cambia según si la geometría elegida habilita
-        ' la opción, así que fijarlo acá sería mentir en uno de los dos estados.
+        ' El texto lo pone Prepare/UpdateLoadScreenGate: la geometría elegida le agrega (o no) la
+        ' salvedad del skin, así que fijarlo acá sería mentir en uno de los dos estados.
         LabelLoadScreen.AutoSize = True
         LabelLoadScreen.ForeColor = SystemColors.GrayText
         LabelLoadScreen.Margin = New Padding(20, 0, 3, 6)

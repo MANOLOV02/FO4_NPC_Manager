@@ -1,5 +1,6 @@
 ﻿Imports System.IO
 Imports System.Linq
+Imports System.Runtime.CompilerServices
 Imports System.Runtime.InteropServices
 Imports System.Windows.Forms
 Imports FO4_Base_Library
@@ -29,6 +30,9 @@ Module Program
     ''' AFTER attaching: the BCL caches Console.Out on first touch, and a WinExe's cached handle is a
     ''' null device, so writing without this re-open stays invisible even once attached.</summary>
     Private Sub EnsureConsole()
+        ' Con consola en mano el reporte de caída va por stderr: un MessageBox modal en un bake headless
+        ' colgaría la corrida hasta que alguien lo cierre. Ver CrashReport.
+        CrashReport.UseConsole()
         If Not AttachConsole(ATTACH_PARENT_PROCESS) Then AllocConsole()
         Try
             ' The log carries non-ASCII (…, →, —) and NPC names carry accents. A fresh Windows console
@@ -58,8 +62,30 @@ Module Program
         End Try
     End Sub
 
+    ''' <summary>⛔ ACÁ NO SE TOCA NADA DE <c>FO4_Base_Library</c> NI DE NINGÚN DLL PROPIO, Y EL ARRANQUE REAL
+    ''' VIVE EN <see cref="RealMain"/>. El JIT resuelve las referencias de TODO el cuerpo de un método antes de
+    ''' ejecutar su primera línea: con una llamada a la librería acá, un DLL faltante o en cuarentena mata el
+    ''' proceso ANTES de que el Try quede instalado — mudo, con <c>0xE0434352</c> y un Event ID 1000 sin stack.
+    ''' MEDIDO: sacando <c>FO4_Base_Library.dll</c> de la carpeta, la excepción sale con <c>at Program.Main</c>.
+    ''' <para><c>NoInlining</c> en <c>RealMain</c> es PARTE DEL CONTRATO: inlineado, sus referencias vuelven a
+    ''' resolverse en el JIT de Main y el agujero reaparece.</para></summary>
     <STAThread>
     Sub Main(args As String())
+        CrashReport.Install()
+        ' ThrowException y no Automatic: fija que una excepción no atrapada del hilo de UI SALGA de
+        ' Application.Run en vez de quedar a criterio del host. Así toda caída pasa por el reporte, y ninguna
+        ' deja la app viva en un estado roto. Debe ir antes de crear cualquier control.
+        Application.SetUnhandledExceptionMode(UnhandledExceptionMode.ThrowException)
+        Try
+            RealMain(args)
+        Catch ex As Exception
+            CrashReport.Report(ex, "main")
+            Environment.ExitCode = 1
+        End Try
+    End Sub
+
+    <MethodImpl(MethodImplOptions.NoInlining)>
+    Private Sub RealMain(args As String())
         ' --- HEADLESS bake-ALL mode ----------------------------------------------------------------
         ' NPC_Manager_FO4.exe --bake-all [--game fo4|sse] [--windowed]
         ' Bakes loose FaceGen (NIF + face textures) for EVERY NPC_ in the active load order — the exact
