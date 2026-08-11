@@ -1018,16 +1018,16 @@ Public Module NpcOverrideSaver
         ' (NiOverride/Overlays/BodyGen): a loose .pex shadows the BSA/BA2, so shipping our transcribed stub
         ' would replace RaceMenu's/LooksMenu's real implementation. See Papyrus\README.md.
         If ctx.WroteApplyScript Then
-            ReportPhase(progress, "Writing apply-script…", IO.Path.GetFileName(target.TargetPath))
+            ReportPhase(progress, "Writing helper script…", IO.Path.GetFileName(target.TargetPath))
             Dim installed = NpcApplyScriptEmitter.InstallPex(ctx.DataPath, Config_App.Current.Game,
                                                              ctx.ApplyScriptPluginFile, ctx.ApplyScriptGeneration, ctx.ApplyScriptSalt)
             If installed Is Nothing Then
                 ' The VMAD references a script whose .pex we could not ship — the engine would log a missing
                 ' script and apply nothing. Loud, because the plugin is otherwise silently half-broken.
                 Throw New IO.FileNotFoundException(
-                    "The NPC records reference our Papyrus apply-script, but its compiled .pex is not embedded " &
+                    "The NPC records reference our Papyrus helper script, but its compiled .pex is not embedded " &
                     "in this build. Re-run the Papyrus compile step so the .pex exists before building (see " &
-                    "Papyrus\README.md), or turn off ""Emit apply-script"" in the Save ESP dialog.")
+                    "Papyrus\README.md), or untick ""Attach the helper script"" in the Save dialog.")
             End If
         End If
 
@@ -2019,6 +2019,14 @@ Public Module NpcOverrideSaver
         If warnings Is Nothing OrElse warnings.Count = 0 Then Return
         For Each w In warnings
             ctx.PayloadWarnings.Add($"{label}: {w}")
+            ' ⛔ Y AL LOG, porque el MessageBox lista sólo los primeros 8 y remite el resto a "see fo4lib.log" —
+            ' donde NO estaban: ningún uso de PayloadWarnings escribía una sola línea. Mientras los avisos eran
+            ' raros (recortes por el tope de 128 elementos del VMAD) el faltante no se notaba; con el descarte de
+            ' magic overlays fuera de rango, un batch de presets importados llena los 8 cupos y manda el resto a
+            ' un archivo vacío. Un mensaje que promete un lugar tiene que dejar algo ahí.
+            Dim line = w
+            Dim who = label
+            Logger.LogLazy(Function() $"[PAYLOAD] {who}: {line}")
         Next
     End Sub
 

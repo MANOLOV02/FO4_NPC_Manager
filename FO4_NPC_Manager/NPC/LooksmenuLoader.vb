@@ -210,6 +210,12 @@ Public Module LooksmenuLoader
         ''' the skeleton under the game gate; FO4 never reads it.</summary>
         Public SseNodeTransforms As List(Of RaceMenuJslot.JslotNodeTransform) = Nothing
 
+        ''' <summary>Los elementos <c>transforms</c> con <c>firstPerson = true</c> del preset, como JSON crudo.
+        ''' <para>NO se modelan (son el 3D de primera persona: un NPC no lo tiene, y modelarlos daba DOS entradas del
+        ''' mismo nodo) pero tienen que VIAJAR: el "Save RaceMenu preset" construye un <c>RaceMenuJslot</c> nuevo desde
+        ''' el carrier, así que sin este campo se perderían al re-exportar. Misma razón que la key 40: no modelar algo
+        ''' no da derecho a borrarlo.</para></summary>
+        Public SseFirstPersonTransformsRaw As List(Of String) = Nothing
         ''' <summary>SSE RaceMenu NiOverride SKIN overrides (body-paint / skin texture-tint per biped slot).
         ''' Nothing on FO4 / SSE presets without skin overrides. Persistence: <c>.jslot</c> (skinOverrides) + the
         ''' <c>.bssliders</c> sidecar; also flows through Copy/Paste. FO4 never reads it.</summary>
@@ -758,6 +764,9 @@ Public Module LooksmenuLoader
         c.SseBodyOverlays = CloneSseBodyOverlays(p.SseBodyOverlays)
         ' SSE RaceMenu node transforms (body-scale) — deep-copy (SSE-only, nullable).
         c.SseNodeTransforms = CloneSseNodeTransforms(p.SseNodeTransforms)
+        ' Lista de strings: se copia la LISTA (los strings son inmutables, no hace falta clonar cada uno).
+        c.SseFirstPersonTransformsRaw = If(p.SseFirstPersonTransformsRaw Is Nothing, Nothing,
+                                           New List(Of String)(p.SseFirstPersonTransformsRaw))
         ' SSE RaceMenu skin overrides (body-paint) — deep-copy (SSE-only, nullable).
         c.SseSkinOverrides = CloneSseSkinOverrides(p.SseSkinOverrides)
 

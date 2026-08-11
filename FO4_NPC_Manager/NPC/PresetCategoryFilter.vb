@@ -128,6 +128,13 @@ Public Module PresetCategoryFilter
             Case PresetCategory.BodyScale
                 ' RaceMenu NiOverride node transforms (SSE-only) — overlay-only carrier.
                 p.SseNodeTransforms = If(baseline Is Nothing, Nothing, LooksmenuLoader.CloneSseNodeTransforms(baseline.SseNodeTransforms))
+                ' ⛔ FALTABA ESTO. Los elementos de primera persona son la OTRA MITAD del mismo array `transforms` del
+                ' .jslot, así que destildar esta categoría tiene que devolverlos al baseline igual que los otros. Sin la
+                ' línea, los del preset RECHAZADO se quedaban en el carrier, iban al sidecar y se re-emitían en el
+                ' próximo "Save RaceMenu preset" — y como todas las demás asignaciones están gateadas por Count > 0,
+                ' ningún camino los volvía a poner en Nothing: una vez que entraban, no salían nunca.
+                p.SseFirstPersonTransformsRaw = If(baseline Is Nothing OrElse baseline.SseFirstPersonTransformsRaw Is Nothing,
+                                                  Nothing, New List(Of String)(baseline.SseFirstPersonTransformsRaw))
 
             Case PresetCategory.Overlays
                 ' Body tattoos / paint. FO4: template-based Overlays list. SSE: path-based RaceMenu overlay

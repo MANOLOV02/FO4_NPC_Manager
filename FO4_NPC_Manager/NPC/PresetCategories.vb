@@ -68,7 +68,8 @@ Public Module PresetCategories
         Public BodyWeight As Boolean         ' FO4: WeightThin/Muscular/Fat (MWGT) — SSE: SseWeight (NAM7)
         Public BodyRegions As Boolean        ' BodyMorphValues (MRSV) — FO4-only
         Public BodySliders As Boolean        ' BodySlide vertex morphs (BodyMorphSliders / BodyMorphsKeyed)
-        Public BodyScale As Boolean          ' SseNodeTransforms (RaceMenu NiOverride node scale) — SSE-only
+        Public BodyScale As Boolean          ' SseNodeTransforms (RaceMenu NiOverride) — TRS COMPLETO por hueso
+        '                                     (escala + posición + rotación), no sólo escala. SSE-only.
         Public Overlays As Boolean           ' Body tattoos/paint (FO4 Overlays — SSE SseBodyOverlays + SseSkinOverrides)
         Public SkinOverride As Boolean       ' SkinFormIDOverride (NPC.WNAM record skin)
         Public LmSkinTemplate As Boolean     ' SkinTemplateId (F4SE LM SkinInterface) — FO4-only
@@ -189,7 +190,9 @@ Public Module PresetCategories
 
         ' --- Body scale (RaceMenu node transforms, SSE-only) ---
         If isSse AndAlso p.SseNodeTransforms IsNot Nothing AndAlso p.SseNodeTransforms.Count > 0 Then
-            Set0(d, PresetCategory.BodyScale, p.SseNodeTransforms.Count.ToString(), "NiOverride node transforms")
+            ' ⛔ DECÍA "NiOverride node transforms": el tooltip re-metía la jerga que se le sacó al rótulo de la tilde.
+            Set0(d, PresetCategory.BodyScale, p.SseNodeTransforms.Count.ToString(),
+                 $"{p.SseNodeTransforms.Count} bone(s) moved, rotated or resized")
         End If
 
         ' --- Overlays (+ SSE skin overrides, which ride along as the other body texture layer) ---

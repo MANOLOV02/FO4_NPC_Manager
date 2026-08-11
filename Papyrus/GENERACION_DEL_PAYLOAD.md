@@ -153,6 +153,124 @@ la piel y eso no existe desde Papyrus. Con alpha 0 el nodo no se ve, así que es
 ⚠️ **Barre TODOS los nodos de overlay**, sean nuestros o de otro mod. **Decisión de producto**: el NPC
 muestra exactamente lo que muestra la app. skee no guarda dueño (su store es actor+nodo+key+index).
 
+## Node transforms: quién es el dueño del hueso (SSE; en FO4 no existen)
+
+Un node transform de NiOverride está **keyeado por nombre**: un hueso puede tener varias capas, cada
+contribuyente escribe la suya, y el motor las **COMPONE** —
+`combinedTransform = combinedTransform * localTransform` sobre todas (`NiTransformInterface.cpp:675-681`). Es el
+mismo mecanismo keyed de los body morphs. Nuestra key es `XformKey()` = `NPCM_Manolov`.
+
+**La ley: escribimos UN aporte, el nuestro, con el valor EFECTIVO del hueso** — bajo `XformKey()`, que es el único
+nombre que `RemovePrevious` puede borrar después. **No se saca ninguna capa ajena.**
+
+Y es forzado, no una preferencia: los aportes de un preset **no llegan solos a un NPC** (el menú de RaceMenu
+aplica presets al jugador, y la única vía de Papyrus —`CharGen.LoadCharacterPresetEx`— la tiene que llamar un mod
+a propósito), así que si nuestro aporte no lleva el efectivo, el NPC no recibe la forma del preset.
+
+⛔ **Hubo una función `ClaimNode()` que borraba las capas ajenas del hueso antes de escribir, y se revirtió.**
+Confundía dos cosas distintas: las capas de un **preset** (el desglose por slider de un autor, que vive en un
+archivo) con las de un **actor** en runtime (de mods distintos). Sobre un NPC real las únicas ajenas son
+`internal` del motor —donde componer **es correcto**: el NPC con tacos tiene que levantarse— y los nodos de arma
+de XPMSE, que vuelven en el próximo cambio de arma. Y no se pueden distinguir: el motor no dice "soy derivado del
+equipo" ni "soy otro mod pisándote", así que cualquier política automática se equivoca en uno de los dos — y
+equivocarse **borrando** no tiene vuelta atrás.
+
+
+**La neutralización**: lo único que se toca, y es del propio preset
+
+Nuestro aporte lleva el **total** del hueso. Si los aportes que la app compuso están **además** en el co-save del
+jugador, el motor compone los suyos con nuestro total y el hueso sale **al doble**. Y están por una razón
+concreta: algún mod le aplicó **ese mismo preset** a **ese mismo NPC** con `CharGen.LoadCharacterPresetEx` — la
+única vía de Papyrus para aplicar un `.jslot` a un actor cualquiera.
+
+Solución: el payload lleva los **nombres** de las capas que la app colapsó, como pares planos `(nodo, nombre)`,
+y `NeutralizeCollapsedLayers()` les escribe **identidad completa** (escala 1, posición 0, rotación identidad)
+bajo su propio nombre. Escribir la misma `(nodo, nombre, key, index)` **reemplaza** —`Impl_AddNodeTransform` hace
+erase+insert y el set compara por `(key,index)`— así que el aporte queda inerte **sin borrar nada**.
+
+- **Identidad completa, no "sólo lo que el preset tenía"**: el preset dice qué tenía **él**, pero no sabemos qué
+  hay bajo ese nombre en el co-save **del jugador**.
+- **Los nombres se persisten en el sidecar** (campo `cl`). Sin eso se perdían al reabrir la app y el ESP dejaba
+  de neutralizar — el mismo defecto que ya había mordido con la matriz cruda de rotación.
+
+### ⭐⭐ Y LA REGLA QUE CIERRA TODO: absorber es un compromiso de DOS mitades
+
+> *"me quedo con tu número **Y** me hago cargo de apagar el tuyo"*
+
+Si no podemos cumplir la segunda mitad, **no tomamos la primera**. Un solo predicado
+—`RaceMenuJslot.IsNeutralizableLayerName`— gobierna **las tres** decisiones:
+
+| decisión | dónde vive |
+|---|---|
+| qué se **compone** al importar | el decode del `.jslot` (saltea la capa) |
+| qué se **saca** del `.jslot` al guardar | `StripForeignTrsLayers` (la deja pasar entera) |
+| a qué se le escribe **identidad** | `CollapsedLayerNames` → `NeutralizeCollapsedLayers()` |
+
+⛔ **Antes eran DOS predicados con respuestas distintas, y eso duplicaba el hueso in-game.** El decode componía
+TODAS las capas y el strip sacaba el TRS de todas las ajenas, pero la lista de neutralización excluye `internal`,
+`NodeDestination` y los sufijos de plugin. O sea: nuestro valor ya incluía su aporte, el archivo perdía la capa
+original, y el ESP no podía apagarla.
+
+Lo que **nunca** se absorbe ni se toca: `internal` (es del motor — el lift de los tacos: neutralizarla hunde al
+NPC), `NodeDestination` (**key 40**: no es un número, es una *mudanza* — de qué otro hueso cuelga el nodo; su
+"neutro" sería la cadena vacía, que para el motor es **otra orden**), la **key 33** (`scaleMode`: el motor nunca
+lee la de un nodo, así que es inerte ⇒ misma condición que la 40), los nombres terminados en `.esp`/`.esm`/`.esl`
+(skee los poda en cada carga del co-save), y la nuestra.
+
+⇒ Esas capas quedan **intactas en el archivo** y aportan por su cuenta. Es lo correcto para los tacos, y un
+conflicto de mods en el otro caso.
+
+**Y la neutralización es recuperable**: si el valor era el de un mod vivo, el jugador mueve el slider de ese mod y
+su valor pisa nuestra identidad, por el mismo `erase`+`insert`.
+
+**El residuo, dicho.** Si el actor tiene un aporte bajo un nombre que el preset **no** trajo, el motor lo compone
+con el nuestro y el juego muestra más que la app. El store de skee vive en el **co-save por actor**
+(`NiTransformInterface.h:25-33`, y la clave es el formID crudo) y **no** se destruye cuando se descarga el 3D, así
+que ese estado sobrevive. Instalar el ESP en una partida en curso,
+o un `disable`/`enable` en consola, le da nuestro payload a un actor que ya podía tener capas de otros mods.
+
+**Los dos casos reales, y piden lo opuesto** — que es exactamente por qué no se borra nada:
+- `internal` es **del motor**: skee la usa para el lift de los tacos altos (con un `HH_OFFSET` en el NIF equipado
+  sintetiza `[{"name":"NPC","pos":[0,0,offset]}]`, `NiTransformInterface.cpp:612-618`, o sea sobre el nodo `NPC` =
+  el slider **Height**, que la app sí autora) y para los transforms del `SDTA` de una armadura. Acá **componer es
+  correcto**: el NPC con tacos tiene que levantarse. Borrarla lo **hunde en el piso**. skee misma la excluye de sus
+  presets (`PresetInterface.cpp:534`) y la tira en cada carga del co-save (`NiTransformInterface.cpp:236` — ⚠️ un
+  `:236` suelto se leía como `PresetInterface.cpp:236`, que es un `AddOverlays`): es estado derivado del equipo.
+- Otro mod transformando el mismo hueso del mismo NPC: ahí componer hace que la app muestre menos que el juego.
+  Sería el caso donde borrar ayudaría.
+
+⇒ Misma forma, exigencias opuestas, y **el motor no da forma de distinguirlas**: un aporte es un nombre y unos
+números, no dice "soy derivado del equipo" ni "soy otro mod pisándote". Por eso no hay política automática correcta,
+y se elige la que no destruye.
+
+**Y `NodeDestination` (key 40) no se toca en ningún lado**: es un **re-parenteo** —de qué otro hueso cuelga el
+nodo— no un valor que se componga. No la modelamos, no tiene "identidad" posible (su neutro sería la cadena vacía,
+que para el motor **es otra orden**), y por eso el recorte del archivo es por **COMPONENTE** (30/31/32/33) y nunca
+por capa.
+- `NodeDestination` — es un **re-parenteo**, guardado bajo otro param que los cuatro `Remove*` no pueden tocar.
+  No autoramos destinos.
+
+**Residuos, dichos:**
+- Sobre los nodos de **arma** la garantía es transitoria: XPMSE re-aplica en cada cambio de arma.
+- Papyrus no puede dar de baja una key entera, sólo componentes, así que toda key barrida sobrevive como set
+  **vacío** en el co-save para siempre (`NiTransformInterface.cpp:353-380`) — la ajena y también la nuestra, la de
+  `RemovePrevious`. Con el default `iScaleMode=0` es identidad; con 1 o 2 el fantasma **cuenta**.
+- Si el record autorado es el del **Player**, se lleva las capas de sus propios sliders (medido en el corpus:
+  `RMX_Head`, `RMXPlugin`, `RMX_Leg_*`, `RMX_Spine*`, `RSMPlugin`). Es la misma decisión que `ClearMorphs` ya
+  toma para sus body morphs.
+- El **`.jslot`** exportado es *más* destructivo que el ESP, y no por nosotros: el cargador de presets de skee
+  llama `Impl_RemoveAllReferenceTransforms(actor)` antes de replayear (`PresetInterface.cpp:264` y `:1631`), que
+  borra la entrada entera del actor. Sobre los huesos autorados los dos caminos coinciden; sobre los que no,
+  el `.jslot` los borra y el ESP no.
+
+**En FO4 no existe el subsistema.** No es "no está expuesto": el `TransformInterface` de f4ee está detrás de
+`#ifdef _TRANSFORMS`, no se registra a Papyrus y no se serializa al co-save. La asimetría entre los dos juegos es
+del motor, no nuestra.
+
+**Gates:** `tools\check_sweep_ceiling.py` sección "lo que el .pex HACE" (que `ApplyNodeTransforms` llame a
+las nativas que escriben y deshacen, y que `RemovePrevious` use el contador REAL del pool magic) y
+`Tools\JslotTrsProbe` para la mitad que vive en el archivo.
+
 ## Verificación in-game (2026-07-28, `Papyrus.0.log` 12:55)
 
 ```
@@ -189,11 +307,20 @@ Payload (idéntico en los dos juegos): `MorphName[]` + `MorphValue[]` + el flag 
   garantizado** — sin el flag, el barrido borraría lo que BodyGen acaba de aplicar, o no, según quién
   corriera primero.
 - **`MorphsOwned = true`**: barre lo suyo, aplica, y repinta.
-  - SSE: `ClearBodyMorphKeys(ref, "NPCM_Manolov")` — **deshacer quirúrgico sin colateral**: recorre todos
-    los nombres y saca sólo NUESTRA key, así que `RSMBodyGen`/XPMSE conservan las suyas. Valor = la suma
+  - SSE: `NiOverride.ClearMorphs(self)` — **poda TOTAL del actor**, bajo cualquier key. Valor = la suma
     de las contribuciones keyed (skee las suma igual, y así el preview de la app rinde lo mismo).
-  - FO4: `RemoveMorphsByKeyword(a, isFemale, None)` — saca el slot 0 de cada nombre y respeta lo que otro
-    mod tenga bajo una keyword propia.
+    ⛔ **DECÍA ACÁ** `ClearBodyMorphKeys(ref, "NPCM_Manolov")` — "deshacer quirúrgico sin colateral, saca sólo
+    NUESTRA key, así que RSMBodyGen/XPMSE conservan las suyas". Eso se abandonó y el `.psc` lo retracta
+    explícitamente: `Impl_ClearBodyMorphKeys` borra la KEY y **deja el NOMBRE** del morph con el mapa vacío, y en
+    SSE nada poda un nombre vacío ⇒ se serializan al co-save para siempre y se acumulan en cada cambio de preset
+    (medido: "morphs tras barrido=39" con "keys=0" en todos). Se lleva los morphs que otro mod le haya puesto a
+    este actor, y eso es la decisión de producto: el NPC muestra exactamente lo que muestra la app.
+  - FO4: `BodyGen.RemoveAllMorphs(a, IsFemale)` — **poda total del actor para ese género**.
+    ⛔ **DECÍA ACÁ** `RemoveMorphsByKeyword(a, isFemale, None)` — "saca el slot 0 de cada nombre y respeta lo que
+    otro mod tenga bajo una keyword propia". El `.psc` de FO4 retracta eso explícitamente y dice que **se lleva
+    los morphs que otro mod le haya puesto a este actor, bajo cualquier keyword**. Es la misma decisión de
+    producto que en SSE, y por eso el flag `MorphsOwned` es lo único que evita el colateral cuando el dueño es
+    el `.ini`.
 - El repintado (`UpdateModelWeight` / `UpdateMorphs`) va **incondicional**, también con payload vacío:
   los dos motores **recomponen la malla desde cero** (skee restaura el backup `SHAPEDATA`,
   `BodyMorphInterface.cpp:522-535`; f4ee detacha y hace `Update3DModel`, `:517-556`), así que ese es el

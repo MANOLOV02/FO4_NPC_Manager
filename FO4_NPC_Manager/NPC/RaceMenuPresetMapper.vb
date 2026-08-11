@@ -57,9 +57,12 @@ Public Module RaceMenuPresetMapper
         If preset.SseHeadTextureFormID <> 0UI AndAlso pluginManager IsNot Nothing Then
             j.HeadTexture = LooksmenuLoader.FormatFormIdentifier(preset.SseHeadTextureFormID, pluginManager)
         End If
-        ' Hair colour (actor.hairColor). ⛔ j.Save ALWAYS emits the key, so leaving it unset writes hairColor:0
-        ' — which RaceMenu applies as literal BLACK hair (PresetInterface.cpp:112-116 runs unconditionally over
-        ' every HairTint material). skee's own exporter never emits 0 for a coloured NPC: it packs the RGB of the
+        ' Hair colour (actor.hairColor). ⛔ j.Save emits the key SÓLO con HadHairColor (antes lo emitía SIEMPRE, y
+        ' dejarlo sin setear escribía hairColor:0
+        ' — which RaceMenu applies as literal BLACK hair, PresetInterface.cpp:112-116 runs unconditionally over
+        ' every HairTint material; y al RECARGAR el preset nuestro propio decode veía la key y forzaba el negro).
+        ' Este bloque sigue siendo necesario igual: es lo que hace que un preset guardado DESDE UN NPC lleve su
+        ' color real en vez de nada. skee's own exporter never emits 0 for a coloured NPC: it packs the RGB of the
         ' actor's CLFM (`headData->hairColor->color`, PresetInterface.cpp:675-677). So:
         '   1) the preset's absolute RGB when it has one (round-trip of a loaded .jslot / a user edit), else
         '   2) the RGB of the effective CLFM — BuildPresetFromState seeds preset.HairColorFormID from
@@ -143,6 +146,7 @@ Public Module RaceMenuPresetMapper
 
         ' ---- BODY: actor.weight ← SseWeight (EditBody_Form.vb:1085).
         j.Weight = CDbl(If(preset.SseWeight.HasValue, preset.SseWeight.Value, 0.0F))
+        j.HadWeight = preset.SseWeight.HasValue   ' sin peso en el carrier, el .jslot sale SIN la key
 
         ' ---- BODY: bodyMorphs ← keyed (or flat fallback under a synthetic key), replicated from
         ' EditBody_Form.BuildJslotBodyMorphs (:1125-1144).
@@ -156,6 +160,11 @@ Public Module RaceMenuPresetMapper
         ' ---- BODY: transforms ← RaceMenu NiOverride node scales (body-scale sliders).
         If preset.SseNodeTransforms IsNot Nothing Then
             j.NodeTransforms.AddRange(LooksmenuLoader.CloneSseNodeTransforms(preset.SseNodeTransforms))
+        End If
+        If preset.SseFirstPersonTransformsRaw IsNot Nothing Then
+            For Each fpJson In preset.SseFirstPersonTransformsRaw
+                j.AddFirstPersonTransformJson(fpJson)
+            Next
         End If
 
         ' ---- SKIN: skinOverrides ← RaceMenu NiOverride skin texture-tint (body-paint per slot).
@@ -335,7 +344,8 @@ Public Module RaceMenuPresetMapper
         End If
 
         ' ---- BODY: actor.weight → SseWeight (clamp 0..100) (EditBody_Form.vb:1046-1047).
-        preset.SseWeight = CSng(Math.Max(0.0, Math.Min(100.0, j.Weight)))
+        ' ⛔ ERA INCONDICIONAL: un preset sin `weight` dejaba SseWeight = 0 y le borraba el peso al NPC.
+        If j.HadWeight Then preset.SseWeight = CSng(Math.Max(0.0, Math.Min(100.0, j.Weight)))
 
         ' ---- BODY: bodyMorphs → flat render dict + keyed sidecar (EditBody_Form.vb:1049-1050).
         preset.BodyMorphSliders = j.BodyMorphsToFlatSliderDict()
@@ -346,6 +356,8 @@ Public Module RaceMenuPresetMapper
 
         ' ---- BODY: transforms → SSE node transforms (body-scale).
         preset.SseNodeTransforms = LooksmenuLoader.CloneSseNodeTransforms(j.NodeTransforms)
+        ' Los de primera persona no se modelan pero viajan crudos, para no perder dato ajeno al re-exportar.
+        preset.SseFirstPersonTransformsRaw = New List(Of String)(j.FirstPersonTransformsJson)
 
         ' ---- SKIN: skinOverrides → SSE skin overrides (body-paint per slot).
         preset.SseSkinOverrides = LooksmenuLoader.CloneSseSkinOverrides(j.SkinOverrides)
@@ -431,6 +443,16 @@ Public Module RaceMenuPresetMapper
     ''' under one synthetic key. Copied verbatim from EditBody_Form.BuildJslotBodyMorphs (:1125-1144).</summary>
     Private Sub BuildJslotBodyMorphs(j As RaceMenuJslot, p As LooksmenuLoader.LooksmenuPreset)
         If p.BodyMorphsKeyed IsNot Nothing AndAlso p.BodyMorphsKeyed.Count > 0 Then
+            ' Las contribuciones ajenas pasan al MODELO tal cual (sirven para saber quién aportó qué) y el archivo
+            ' las emite tal cual: el ESCRITOR (RaceMenuJslot.Save) conserva el desglose por contribuyente.
+            ' ⛔⛔ ACÁ HABÍA SEIS LÍNEAS DESCRIBIENDO UN COLAPSO EN NUESTRA KEY QUE **YA NO EXISTE** — lo probé, lo
+            ' revertí en Save, y me olvidé de este comentario. No es ruido: un revisor lo leyó y reportó como defecto
+            ' de producto que la app borra la autoría de los body morphs de otros mods, que es exactamente lo
+            ' contrario de lo que el código hace. Un comentario que miente cuesta lo mismo que un bug.
+            ' El motivo por el que el archivo NO colapsa: el motor SUMA las keys de un morph
+            ' (Impl_GetBodyMorphs, BodyMorphInterface.cpp:220-240, con el default iBodyMorphMode=0), así que el
+            ' desglose y el total rinden lo MISMO — y el desglose además deja los sliders de BodySlide/RaceMenu
+            ' funcionando. El total bajo un nombre barrible lo necesita el ESP, no el archivo.
             For Each kv In p.BodyMorphsKeyed
                 Dim entry As New RaceMenuJslot.JslotBodyMorph With {.Name = kv.Key}
                 If kv.Value IsNot Nothing Then
@@ -444,7 +466,15 @@ Public Module RaceMenuPresetMapper
             For Each kv In p.BodyMorphSliders
                 If Math.Abs(kv.Value) < 0.0001F Then Continue For
                 Dim entry As New RaceMenuJslot.JslotBodyMorph With {.Name = kv.Key}
-                entry.Keys.Add(New RaceMenuJslot.JslotBodyMorphKey With {.Key = "NPCManager", .Value = kv.Value})
+                ' ⛔ ERA EL LITERAL "NPCManager", una CUARTA grafía de la misma cosa. Ahora la key sale de la
+                ' constante — y el colapso de las contribuciones lo hace el escritor, no acá (ver Save).
+                ' ⛔ LA JUSTIFICACIÓN QUE HABÍA ESCRITO ERA FALSA: decía "con dos nombres SUMABA, el morph quedaba al
+                ' doble", y no puede pasar en ese orden porque el cargador de skee hace ClearMorphs (poda total del
+                ' actor, PresetInterface.cpp:281) ANTES de replayear, igual que nuestro script. La razón verdadera es
+                ' la PROPIEDAD: bajo nuestra key el morph es nuestro — lo barre RemovePrevious y lo reemplaza un
+                ' re-apply (skee guarda por (morph, key), BodyMorphInterface.cpp:150-154). Bajo el nombre de otro mod,
+                ' no. Leer sigue andando igual: BodyMorphsToFlatSliderDict suma todas las keys sin mirar el nombre.
+                entry.Keys.Add(New RaceMenuJslot.JslotBodyMorphKey With {.Key = RaceMenuJslot.AppOverrideKey, .Value = kv.Value})
                 j.BodyMorphs.Add(entry)
             Next
         End If

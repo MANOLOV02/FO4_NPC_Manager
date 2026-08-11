@@ -39,8 +39,18 @@ def base_name(n):
 GROUPS = {
     "SSE": [("overlays", ["OvlNode","OvlDiffuse","OvlNormal","OvlHasTint","OvlTint","OvlHasAlpha","OvlAlpha"]),
             ("skin",     ["SkinSlot","SkinDiffuse","SkinNormal","SkinHasTint","SkinTint"]),
+            # ⛔ FALTABAN LOS NUEVE NodeRotM: el grupo declaraba NodeHasRot pero no las arrays que ese flag
+            # gatea, asi que un NodeRotM3 corto NO se reportaba como desparejo y el script leeria basura (o
+            # nada) para la rotacion de los ultimos nodos. Son el unico grupo del payload donde el indice i
+            # significa "nodo i" en 17 arrays a la vez.
             ("nodes",    ["NodeName","NodeHasScale","NodeScale","NodeHasPos","NodePosX","NodePosY","NodePosZ",
-                          "NodeHasRot","NodeScaleMode"]),
+                          "NodeHasRot","NodeScaleMode"] + [f"NodeRotM{k}" for k in range(9)]),
+            # ⛔ GRUPO PROPIO, **NO** parte de "nodes": estas dos son pares (nodo, nombre-de-capa) y su indice
+            # significa "el par i", no "el nodo i". Un hueso puede traer varios nombres, asi que su largo NO tiene
+            # por que coincidir con NodeName — meterlas en el grupo de arriba haria fallar el gate por diseño.
+            # Lo que si tiene que valer es que sean paralelas ENTRE SI: si una llega mas corta, el script leeria
+            # un nombre para el nodo equivocado y neutralizaria una capa que nadie le pidio.
+            ("neutralise", ["NodeNeutralNode","NodeNeutralName"]),
             ("morphs",   ["MorphName","MorphValue"])],
     "FO4": [("overlays", ["OvlTemplate","OvlPriority","OvlRed","OvlGreen","OvlBlue","OvlAlpha",
                           "OvlOffsetU","OvlOffsetV","OvlScaleU","OvlScaleV"]),
@@ -54,6 +64,19 @@ def psc_properties(path):
         m = re.match(r'\s*([A-Za-z_][\w\[\]:]*)\s+Property\s+(\w+)', line)
         if m:
             out[m.group(2)] = m.group(1).lower()
+    return out
+
+
+def psc_autoreadonly(path):
+    """Los nombres declarados `AutoReadOnly`, o sea SIN variable de respaldo: su valor sale del .pex y el
+    VMAD no los trae ni tiene por que. Se DERIVA del .psc en vez de mantener una lista de nombres a mano:
+    la lista hardcodeada que habia aca (KEY_*/IDX_*) ya se habia quedado corta -- OVL_SWEEP_MAX no estaba --
+    y el sintoma era ruido informativo sobre una constante que nunca va a estar en el VMAD."""
+    out = set()
+    for line in open(path, encoding="utf-8", errors="replace"):
+        m = re.match(r'\s*[A-Za-z_][\w\[\]:]*\s+Property\s+(\w+)\s*=.*\bAutoReadOnly\b', line, re.I)
+        if m:
+            out.add(m.group(1))
     return out
 
 class R:
@@ -116,7 +139,8 @@ for label, esp, psc in TARGETS:
     if not os.path.exists(psc):
         print(f"  [SKIP] no existe {psc}\n"); continue
     decl = psc_properties(psc)
-    print(f"  .psc declara {len(decl)} propiedades")
+    consts = psc_autoreadonly(psc)
+    print(f"  .psc declara {len(decl)} propiedades ({len(consts)} AutoReadOnly = constantes, no payload)")
 
     found_any = False
     for sig, fid, body in records(open(esp,"rb").read()):
@@ -137,17 +161,29 @@ for label, esp, psc in TARGETS:
                 found_any = True
                 print(f"\n  NPC_ {fid:08X}  script '{name}'  ({pc} props, VMAD ver={ver})")
                 errs = []
+                # ⛔⛔ ESTO COMPARABA CON EL SUFIJO DE GENERACION PUESTO, y el comentario de abajo lo defendia
+                # como "asi una desincronizacion sale como error duro". Era imposible que coincidiera: el .psc es
+                # una PLANTILLA con `_G0000010000` y el emisor acuña una generacion+sal NUEVA en cada Save ESP,
+                # asi que todo plugin real trae otro sufijo. Consecuencia: este gate venia pasando EN VACIO
+                # ("ningun script NPCM_ en el plugin") y la primera vez que vio datos de verdad tiro 72 errores.
+                # La invariante que SI hay que verificar es otra: que todas las properties de UNA instancia
+                # compartan la MISMA generacion. Eso es lo que se rompe si el emisor se desincroniza.
+                decl_base = {base_name(k): v for k, v in decl.items()}
+                gens = set()
                 for pn,(t,n) in props.items():
                     vt = VMAD_T.get(t, f"?{t}")
-                    if pn not in decl:
-                        errs.append(f"PROPIEDAD INEXISTENTE en el .psc: {pn}")
-                    elif decl[pn] != vt:
-                        errs.append(f"TIPO NO COINCIDE {pn}: VMAD={vt} vs .psc={decl[pn]}")
+                    b = base_name(pn)
+                    if pn != b:
+                        gens.add(pn[len(b):])
+                    if b not in decl_base:
+                        errs.append(f"PROPIEDAD INEXISTENTE en el .psc: {pn} (base '{b}')")
+                    elif decl_base[b] != vt:
+                        errs.append(f"TIPO NO COINCIDE {pn}: VMAD={vt} vs .psc={decl_base[b]}")
                     if n == 0:
                         errs.append(f"ARRAY VACIO (ilegal en Skyrim): {pn}")
+                if len(gens) > 1:
+                    errs.append(f"GENERACIONES MEZCLADAS en una misma instancia: {sorted(gens)}")
                 # Los grupos se declaran sin sufijo de generacion; el VMAD lo trae. Indexar por base.
-                # (El chequeo `pn not in decl` de arriba SI compara con sufijo, a proposito: asi una
-                # desincronizacion entre el .psc y PayloadGeneration del emisor sale como error duro.)
                 props_by_base = {base_name(k): v for k, v in props.items()}
                 for gname, members in GROUPS[label]:
                     lens = {m: props_by_base[m][1] for m in members if m in props_by_base}
@@ -155,17 +191,21 @@ for label, esp, psc in TARGETS:
                         errs.append(f"ARRAYS PARALELOS DESPAREJOS en '{gname}': {lens}")
                 # ⛔ Una ARRAY-property declarada y AUSENTE del VMAD queda en None, y en Skyrim
                 # `if X == None` sobre eso TIRA. Es un ERROR, no un aviso.
-                CONSTS = ("KEY_TINT","KEY_ALPHA","KEY_TEXTURE","IDX_DIFFUSE","IDX_NORMAL")
-                missing = [d for d in decl if d not in props and d not in CONSTS]
+                # Las constantes salen del propio .psc (AutoReadOnly = sin variable de respaldo), no de una
+                # lista de nombres a mano. Ver psc_autoreadonly.
+                # Idem por BASE: `d not in props` con sufijo daba TODAS por ausentes.
+                props_bases = set(props_by_base.keys())
+                consts_bases = {base_name(c) for c in consts}
+                missing = [d for d in decl_base if d not in props_bases and d not in consts_bases]
                 for d in missing:
-                    if decl[d].endswith("[]"):
-                        errs.append(f"ARRAY-PROPERTY AUSENTE del VMAD (quedaria en None): {d} ({decl[d]})")
+                    if decl_base[d].endswith("[]"):
+                        errs.append(f"ARRAY-PROPERTY AUSENTE del VMAD (quedaria en None): {d} ({decl_base[d]})")
                 if errs:
                     fails += len(errs)
                     for e in errs: print(f"      [X] {e}")
                 else:
                     print("      [OK] tipos OK - sin arrays vacíos - arrays paralelos parejos")
-                nonarr = [d for d in missing if not decl[d].endswith("[]")]
+                nonarr = [d for d in missing if not decl_base[d].endswith("[]")]
                 if nonarr:
                     print(f"      - escalares ausentes (OK): {', '.join(nonarr)}")
     if not found_any:

@@ -656,9 +656,18 @@ Public Module PresetCompatibilityReport
         ' SSE body overlays (RaceMenu, path-based).
         If p.SseBodyOverlays IsNot Nothing AndAlso p.SseBodyOverlays.Count > 0 Then
             Dim okOv As Integer = 0
+            Dim okMagic As Integer = 0
             ' Una sola lectura del ini para todo el reporte (OverlayCount statea el archivo en cada llamada).
             Dim slotLimits = {SseCatalogs.OverlayCount(SseCatalogs.OverlayZone.Body), SseCatalogs.OverlayCount(SseCatalogs.OverlayZone.Hands),
                               SseCatalogs.OverlayCount(SseCatalogs.OverlayZone.Feet), SseCatalogs.OverlayCount(SseCatalogs.OverlayZone.Face)}
+            ' ⛔⛔ Y LOS DEL POOL MAGIC, QUE SON OTRA KEY. `ZoneOfNode` ahora reclama también los nodos [SOvl{n}]
+            ' (son autorables), así que sin esto un `Body [SOvl2]` se validaba contra el iNumOverlays del pool
+            ' NORMAL: con 6/1 daba "resuelve OK" para un nodo que el motor no crea, y con 0/2 daba un issue falso
+            ' que mandaba a subir iNumOverlays — la key que NO gobierna ese nodo. Es exactamente el defecto que el
+            ' aviso de sesión documenta como el pecado original, reintroducido en el reporte que SOBREVIVE a la
+            ' sesión (o sea el único lugar donde el que abre un preset ajeno se enteraría).
+            Dim spellLimits = {SseCatalogs.SpellOverlayCount(SseCatalogs.OverlayZone.Body), SseCatalogs.SpellOverlayCount(SseCatalogs.OverlayZone.Hands),
+                               SseCatalogs.SpellOverlayCount(SseCatalogs.OverlayZone.Feet), SseCatalogs.SpellOverlayCount(SseCatalogs.OverlayZone.Face)}
             ' ⛔ La fuente TAMBIÉN se saca una vez. Pedirla adentro del loop anulaba el hoist de arriba —vuelve a
             ' statear por cada overlay— y encima abría una ventana por fila para que el número impreso y el
             ' archivo nombrado dejen de corresponderse.
@@ -677,18 +686,34 @@ Public Module PresetCompatibilityReport
                 ' la superficie que SOBREVIVE, así que el que abre un preset ajeno se entera acá. No es MissingAsset:
                 ' la textura está, el que falta es el nodo.
                 Dim slot = SseCatalogs.IndexOfNode(ov.NodeName)
-                Dim slotLimit = slotLimits(CInt(zone.Value))
+                ' El pool decide CUÁL contador y CUÁL key nombrar. Los dos son independientes en el motor.
+                Dim isSpell = SseCatalogs.IsSpellNode(ov.NodeName)
+                Dim slotLimit = If(isSpell, spellLimits(CInt(zone.Value)), slotLimits(CInt(zone.Value)))
+                Dim tag = If(isSpell, "SOvl", "Ovl")
+                Dim keyName = If(isSpell, "iSpellOverlays", "iNumOverlays")
+                ' ⛔ ACÁ HABÍA UNA RAMA PARA UN SEGUNDO TOPE DEL POOL MAGIC ("la app no escribe un magic con índice
+                ' ≥ 8"). Ese tope se fue entero: estaba apoyado en que Papyrus no exponía el contador del pool magic,
+                ' y SÍ lo expone (GetNumSpell*Overlays, PapyrusNiOverride.cpp:1844-1853). Hoy el pool magic tiene UN
+                ' solo límite —el del motor, igual que el normal— y es el que evalúa la rama de abajo.
                 If slot >= slotLimit Then
                     ' ⛔ Con bEnableFaceOverlays=0 el contador de cara es 0 pase lo que pase con iNumOverlays:
-                    ' mandar a subir esa key sería mandarlo a una que su archivo ya tiene puesta.
+                    ' mandar a subir esa key sería mandarlo a una que su archivo ya tiene puesta. Vale para los DOS
+                    ' pools de la cara: el flag apaga g_numFaceOverlays y g_numSpellFaceOverlays (main.cpp:833-836).
                     Dim byFlag = zone.Value = SseCatalogs.OverlayZone.Face AndAlso slotLimit = 0 AndAlso SseCatalogs.FaceOverlaysDisabledByIni()
+                    ' ⛔⛔ EL TÍTULO DECÍA SÓLO "is past the N slot(s)", y el reporte agrupa esto bajo "will NOT reach the
+                    ' NPC". Eso es IMPRECISO y hace dudar de la herramienta: el override SÍ se escribe (va al ESP y al
+                    ' co-save, y empieza a pintar el día que suban la key). Lo que NO pasa es que PINTE, porque el juego
+                    ' no construye ese nodo. Encontrado probando de verdad: "el compatibility me dice que no va a llegar
+                    ' pero sí llega". Las dos cosas eran ciertas y el texto no las distinguía.
                     r.Issues.Add(New PresetIssue(PresetIssueKind.NotApplied, "Overlays",
-                                           $"Overlay '{ov.NodeName}' is past the {slotLimit} slot(s) skee creates for {zone.Value}",
+                                           $"Overlay '{ov.NodeName}' IS written, but it will not paint: it is past the {slotLimit} {If(isSpell, "magic ", "")}slot(s) this install creates for {zone.Value}",
                                            If(byFlag,
-                                              $"[Features] bEnableFaceOverlays=0 turns face overlays off entirely ({countSource}), so this node is never built and " &
-                                              "paints nothing whatever iNumOverlays says. Set bEnableFaceOverlays=1, or drop the overlay.",
-                                              $"iNumOverlays gives {If(slotLimit > 0, $"[Ovl0]…[Ovl{slotLimit - 1}]", "no slot at all")} ({countSource}), " &
-                                              "so this node is never built and paints nothing. Raise iNumOverlays in skee64.ini, or move the overlay into a free slot.")))
+                                              $"[Features] bEnableFaceOverlays=0 turns face overlays off entirely — both pools — ({countSource}), so this node is never built and " &
+                                              $"paints nothing whatever {keyName} says. Set bEnableFaceOverlays=1, or drop the overlay.",
+                                              $"{keyName} gives {If(slotLimit > 0, $"[{tag}0]…[{tag}{slotLimit - 1}]", "no slot at all")} ({countSource}), " &
+                                              $"so this game never builds that node. The override is still saved and still travels to the NPC — it " &
+                                              $"simply has nothing to paint on, and it starts painting the day {keyName} is raised. " &
+                                              $"Raise {keyName} in skee64.ini, or move the overlay into a free slot.")))
                     bad = True
                 End If
                 If Not String.IsNullOrWhiteSpace(ov.DiffusePath) AndAlso Not SseCatalogs.TextureResolves(ov.DiffusePath) Then
@@ -699,9 +724,24 @@ Public Module PresetCompatibilityReport
                     r.Issues.Add(New PresetIssue(PresetIssueKind.MissingAsset, "Overlays", $"Overlay '{ov.NodeName}': normal map not installed", ov.NormalPath))
                     bad = True
                 End If
-                If Not bad Then okOv += 1
+                If Not bad Then
+                    okOv += 1
+                    If isSpell Then okMagic += 1
+                End If
             Next
             If okOv > 0 Then r.Resolved.Add($"{okOv} RaceMenu overlay(s) resolve (node + textures installed)")
+            ' ⭐ El pool MAGIC merece su propia línea: no es "un overlay más". Se entrega por otra vía (el
+            ' apply-script, nunca el bake) y su opacidad la ANIMA el motor, así que ni el preview ni el bake pueden
+            ' mostrar "cómo se va a ver" — y eso es justo lo que el usuario viene a preguntarle a este reporte.
+            If okMagic > 0 Then
+                ' ⛔ "nunca se hornean" NO es una propiedad del pool magic fuera de la CARA: ningún overlay de
+                ' cuerpo/manos/pies se hornea (el fold es sólo de la cara), así que decirlo así presentaba como
+                ' diferencia algo que comparte con el pool normal. Lo que sí es propio del magic en TODAS las zonas
+                ' es la alpha animada por el motor; lo del bake se aclara sólo para la cara.
+                r.Resolved.Add($"{okMagic} of them are MAGIC ([SOvl]) overlays: the engine animates their alpha " &
+                               "so they fade in and out instead of sitting still. A magic FACE overlay is also " &
+                               "never baked into the head texture — the helper script delivers it instead")
+            End If
         End If
 
         ' SSE skin overrides (body paint per biped slot) — same texture-presence rule.
@@ -739,8 +779,13 @@ Public Module PresetCompatibilityReport
     End Sub
 
     ' ---------------------------------------------------------------------------------------------
-    ' 10) SSE sculpt + node transforms — carried per-shape by "host" chargen .tri; a block whose host is
-    '     empty can't be routed to a shape.
+    ' 10) SSE sculpt + node transforms.
+    '     * sculpt: carried per-shape by "host" chargen .tri; a block whose host is empty can't be routed.
+    '     * node transforms: nothing here is "missing" — the note exists because the value the app shows is the
+    '       EFFECTIVE one (it composed every contributor's layer on import) and it travels to the game as ONE
+    '       contribution under our own label. The script neutralises (writes full identity to) exactly the layer
+    '       NAMES the preset itself carried, so its own contributions cannot be counted twice; anything under a
+    '       name we never saw — the engine's high-heel offset, another mod — is left alone and composes with ours.
     ' ---------------------------------------------------------------------------------------------
     Private Sub AuditSculptAndTransforms(ctx As PresetAuditContext, r As PresetAuditReport)
         If Not ctx.IsSse Then Return
@@ -753,6 +798,46 @@ Public Module PresetCompatibilityReport
                                            "Without a host chargen .tri the block can't be routed to a rendered shape, so it is skipped."))
                 End If
             Next
+        End If
+
+        ' --- node transforms. The predicate MUST agree with NpcApplyScriptEmitter's (name + at least one of
+        ' scale/position/rotation): a node the emitter skips is not authored, and claiming it would be a lie.
+        If p.SseNodeTransforms Is Nothing Then Return
+        Dim authored As New List(Of String)
+        Dim weapons As New List(Of String)
+        For Each nt In p.SseNodeTransforms
+            If nt Is Nothing OrElse String.IsNullOrEmpty(nt.NodeName) Then Continue For
+            If Not (nt.HasScale OrElse nt.HasPosition OrElse nt.HasRotation) Then Continue For
+            authored.Add(nt.NodeName)
+            If SseCatalogs.IsWeaponNode(nt.NodeName) Then weapons.Add(nt.NodeName)
+        Next
+        If authored.Count = 0 Then Return
+
+        r.Issues.Add(New PresetIssue(PresetIssueKind.Note, "Node transforms",
+            $"{authored.Count} bone(s) authored under this tool's own override label ({RaceMenuJslot.AppOverrideKey})",
+            "The value shown for these bones is the EFFECTIVE one: a preset that carried several " &
+            "contributors on one bone was composed into the single value the engine would produce, and that " &
+            "is what the app displays and what it writes — as one contribution, under its own label." &
+            ControlChars.Lf &
+            "So that its own contributions cannot be counted twice, the script also writes a neutral value to " &
+            "exactly the contributor names this preset carried — it matters when some other mod has already " &
+            "applied this same preset to this NPC. Anything under a name the preset did not carry is left " &
+            "alone: the engine's high-heel offset, or another mod that transforms this NPC, still composes with " &
+            "the value shown here, so in that case the game shows more than the app does. That is the correct " &
+            "outcome for the high heels and a mod conflict in the other." & ControlChars.Lf &
+            "And nothing of this reaches the game unless the NPC is saved with the helper script attached " &
+            "(the ""Attach the helper script"" box in the Save dialog, ticked by default)." &
+            ControlChars.Lf & "Bones: " & String.Join(", ", authored)))
+
+        If weapons.Count > 0 Then
+            r.Issues.Add(New PresetIssue(PresetIssueKind.Note, "Node transforms",
+                $"{weapons.Count} of them are weapon nodes — the value is NOT final there",
+                "XPMSE owns weapon placement and re-applies it on every weapon change, so its layer comes " &
+                "back after the script removed it. It also places weapons by RE-PARENTING the node, which " &
+                "this tool deliberately never removes — so on these bones treat the value as a starting " &
+                "position, not as authored state. (The appearance preview does not render equipped gear " &
+                "either, which is why the editor hides these behind 'show all'.)" &
+                ControlChars.Lf & "Bones: " & String.Join(", ", weapons)))
         End If
     End Sub
 

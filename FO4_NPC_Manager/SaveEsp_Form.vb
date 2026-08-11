@@ -348,6 +348,7 @@ Public Class SaveEsp_Form
                    Optional defaultToSelected As Boolean = False,
                    Optional anchorSourcePluginName As String = "")
         InitializeComponent()
+        _baseWarningHeight = LabelWarning.Height
         _dataPath = dataPath
         _existingPlugins = If(existingPlugins, New List(Of ExistingPlugin)())
         _selectedInputs = If(selectedInputs, New List(Of NpcOverrideSaver.NpcSaveInput)())
@@ -407,6 +408,7 @@ Public Class SaveEsp_Form
         AddHandler RadioButtonExisting.CheckedChanged, AddressOf OnScriptVersionTargetChanged
         RefreshScriptVersionDisplay()
         CheckBoxEmitApplyScript.Checked = NPC_Config.Current.EmitApplyScript
+        RefreshApplyScriptLabel()   ' ⭐ al ABRIR tambien: la opcion se recuerda entre sesiones (ver su doc)
         AddHandler CheckBoxEmitBodyGen.CheckedChanged, AddressOf OnEmitBodyGenChanged
         AddHandler CheckBoxEmitApplyScript.CheckedChanged, AddressOf OnEmitApplyScriptChanged
 
@@ -528,10 +530,52 @@ Public Class SaveEsp_Form
         NPC_Config.Current.EmitBodyGenIni = CheckBoxEmitBodyGen.Checked
     End Sub
 
-    ''' <summary>"Emit apply-script" toggled — remember the choice.</summary>
+    ''' <summary>La casilla del script ("Attach the helper script") cambió — se recuerda la elección.
+    ''' <para>⛔⛔ ANTES SÓLO PERSISTÍA LA OPCIÓN, EN SILENCIO. Y destildarla es la acción más
+    ''' destructiva del diálogo: el script es el ÚNICO transporte de todo lo que no se hornea — los overlays de cuerpo,
+    ''' manos y pies, los skin overrides, cada hueso de Body Transform, y sobre todo el <b>magic</b>, que por diseño
+    ''' nunca se hornea. Para el magic de cara es peor todavía: antes de esta tanda el pliegue lo metía en la textura,
+    ''' así que había un segundo camino; ahora el pliegue lo excluye a propósito y si el script no va, no va nadie.
+    ''' <para>El aviso es una sola vez por sesión y sólo al APAGARLA: no molesta a quien ya sabe lo que hace, y el que
+    ''' la destildó sin saber se enteraba recién en el juego, sin nada que lo relacione con esta casilla.</para></para></summary>
     Private Sub OnEmitApplyScriptChanged(sender As Object, e As EventArgs)
         NPC_Config.Current.EmitApplyScript = CheckBoxEmitApplyScript.Checked
+        RefreshApplyScriptLabel()
+        If Not CheckBoxEmitApplyScript.Checked AndAlso Not _applyScriptOffWarned Then
+            _applyScriptOffWarned = True
+            MessageBox.Show(Me,
+                "Without the helper script, anything that is not baked into the mesh or the texture stays in the app " &
+                "and never reaches the game:" & ControlChars.Lf & ControlChars.Lf &
+                "  •  tattoos on body, hands and feet, and the body paint layer" & ControlChars.Lf &
+                "  •  every bone edit from Body Transform" & ControlChars.Lf &
+                "  •  the body sliders — unless ""Emit BodyGen .ini"" is ticked, which delivers them too" & ControlChars.Lf &
+                "  •  and ALL magic (spell effect) overlays, including magic face paint — those are never baked, so " &
+                "the script is their only way in." & ControlChars.Lf & ControlChars.Lf &
+                "The NPC still saves, and its face, body shape and equipment are unaffected." & ControlChars.Lf &
+                "Tick the box again to keep them. If you do not want them, delete them in the editor instead — " &
+                "then the preview matches the game." & ControlChars.Lf &
+                "(Shown once per session.)",
+                "The helper script is off", MessageBoxButtons.OK, MessageBoxIcon.Warning)
+        End If
     End Sub
+
+    ''' <summary>El rótulo dice el ESTADO, no sólo el nombre de la opción.
+    ''' <para>⛔ EL AVISO SOLO SALTABA EN LA TRANSICIÓN, y la opción se RECUERDA entre sesiones: quien la destildó
+    ''' hace un mes abría el diálogo, no veía nada, y se enteraba de la pérdida en el juego. Un estado peligroso
+    ''' tiene que verse mientras DURA, no sólo cuando se entra en él. El patrón ya estaba resuelto tres bloques
+    ''' más arriba, en <c>CheckBoxSaveNewOutfits</c> ("Save new records  (none pending)").</para></summary>
+    Private Sub RefreshApplyScriptLabel()
+        CheckBoxEmitApplyScript.Text = If(CheckBoxEmitApplyScript.Checked,
+            "Attach the helper script (tattoos, body paint, bone edits, body sliders)",
+            "Attach the helper script — OFF: tattoos, bone edits and body paint will NOT reach the game")
+        CheckBoxEmitApplyScript.ForeColor = If(CheckBoxEmitApplyScript.Checked,
+                                              SystemColors.ControlText, Drawing.Color.DarkGoldenrod)
+    End Sub
+
+    ''' <summary>One-shot del aviso de arriba. ⛔ <b>Shared</b>, no de instancia: era un campo del diálogo, así
+    ''' que cerrar y reabrir el diálogo lo reponía y el aviso volvía, mientras el texto prometía "shown once per
+    ''' session". Es de proceso, igual que los one-shots del pool de overlays.</summary>
+    Private Shared _applyScriptOffWarned As Boolean
 
     ''' <summary>"Activate in load order" toggled — remember the choice.</summary>
     Private Sub OnActivateInLoadOrderChanged(sender As Object, e As EventArgs)
@@ -772,8 +816,48 @@ Public Class SaveEsp_Form
             warnings.Add("⚠ Changing ESM/ESL re-encodes this plugin's NEW outfit (OTFT) FormIDs — existing saves/mods referencing them would break. (NPC overrides are unaffected.)")
         End If
 
-        LabelWarning.Text = String.Join(vbCrLf, warnings)
+        Dim text = String.Join(vbCrLf, warnings)
+        LabelWarning.Text = text
+        ' El aviso vive arriba a la derecha, en la fila de scope, y el ancho ahí es fijo. El texto
+        ' completo tiene que quedar accesible aunque el label termine recortando.
+        ToolTipWarning.SetToolTip(LabelWarning, text)
+        GrowWarningBand()
     End Sub
+
+    ''' <summary>Ajusta el alto de la banda del aviso al texto que hay, bajando los grupos si crece.
+    ''' <para>⛔ MEDIDO, no estimado: el aviso del ESL flip ocupa DOS líneas al ancho de este label
+    ''' (834 px de texto contra 646 de caja), así que los tres avisos juntos son CUATRO líneas —
+    ''' 60 px de texto y 64 de caja para dibujarlas. Un label fijo de ese alto deja la cabecera
+    ''' flotando lejos de los grupos en el caso normal, que es de una o dos líneas; y uno fijo de
+    ''' dos líneas hacía desaparecer el aviso del ESL entero, que es justo el más grave.</para>
+    ''' <para>Los botones y el check de abajo están anclados <c>Bottom</c>, así que se acomodan solos
+    ''' al crecer el form; los cuatro GroupBox no tienen ancla y hay que bajarlos a mano.</para></summary>
+    Private Sub GrowWarningBand()
+        ' Un Label dibuja una línea de más de lo que mide TextRenderer: MEDIDO, 60 px de texto
+        ' necesitan 64 px de caja para que se vean las cuatro líneas.
+        Const boxPadding As Integer = 6
+        Dim needed = If(LabelWarning.Text.Length = 0, 0,
+                        TextRenderer.MeasureText(LabelWarning.Text, LabelWarning.Font,
+                                                 New Size(LabelWarning.Width, Integer.MaxValue),
+                                                 TextFormatFlags.WordBreak).Height + boxPadding)
+        Dim target = Math.Max(_baseWarningHeight, needed)
+        Dim shift = target - LabelWarning.Height
+        If shift = 0 Then Return
+
+        LabelWarning.Height = target
+        ' Centrado con los radios mientras entra en la banda de diseño; cuando creció, el bloque
+        ' arranca arriba y acompaña a la fila de scope en vez de descolgarse hacia abajo.
+        LabelWarning.TextAlign = If(target > _baseWarningHeight,
+                                    ContentAlignment.TopLeft, ContentAlignment.MiddleLeft)
+        For Each g As Control In {GroupBoxTarget, GroupBoxSave, GroupBoxEncoding, GroupBoxLvlList}
+            g.Top += shift
+        Next
+        Height += shift
+    End Sub
+
+    ''' <summary>Alto de diseño del label del aviso (dos líneas), piso de <see cref="GrowWarningBand"/>.
+    ''' Se lee del Designer para no duplicar la constante en dos lados.</summary>
+    Private ReadOnly _baseWarningHeight As Integer
 
     ''' <summary>True when the user is updating an existing plugin, has changed its ESM or ESL flag
     ''' from the on-disk value, AND that plugin originates new records (OTFTs). Only then does the
@@ -1060,7 +1144,7 @@ Public Class SaveEsp_Form
             n += 1 : map.Add(("Writing BodyGen", n))
         End If
         If target.EmitApplyScript Then
-            n += 1 : map.Add(("Writing apply-script", n))
+            n += 1 : map.Add(("Writing helper script", n))
         End If
         If target.GenerateChargen Then
             n += 1 : map.Add(("Baking CharGen", n))

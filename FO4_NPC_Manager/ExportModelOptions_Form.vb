@@ -15,6 +15,19 @@ Public Class ExportModelOptions_Form
     ''' default de la sub-opción de overlays; ver <see cref="Prepare"/>.</summary>
     Private _foldIsTheBakeDefault As Boolean
 
+    ''' <summary>Fracción del alto que usa el default del locator. Medida sobre los 63 loadscreens de FO4
+    ''' que traen el nodo: el cluster de bípedos erguidos cae en 0,78..0,95 y 0,85 los reproduce dentro
+    ''' de ±10 %. Ver <c>SceneNifExporter.LoadScreenZoomHeightFraction</c>, que es el mismo número para el
+    ''' camino headless.</summary>
+    Private Const DefaultHeightFraction As Integer = 85
+
+    ''' <summary>Bbox del modelo tal como quedaría horneado, medido por el MISMO código que usa el export.
+    ''' Es lo que convierte el % del slider en unidades del NIF.</summary>
+    Private _bounds As SceneNifExporter.BakedBounds
+
+    ''' <summary>Guarda contra la realimentación slider ↔ Z: cada uno escribe en el otro.</summary>
+    Private _syncingPlacement As Boolean
+
     ''' <summary>
     ''' Configura el diálogo para el NPC en pantalla.
     ''' <para><paramref name="npcFoldsOverlays"/> tiene que venir del RENDER
@@ -26,7 +39,11 @@ Public Class ExportModelOptions_Form
     ''' El RENDER, en cambio, pliega mirando sólo los overlays — así que con el toggle apagado el
     ''' preview pliega y el bake no. Seguir al render acá apuntaría a un DDS que nadie escribe.</para>
     ''' </summary>
-    Public Sub Prepare(isSse As Boolean, npcFoldsOverlays As Boolean)
+    ''' <param name="bakedBounds">Bbox que produciría el export unskinned de la escena en pantalla, de
+    ''' <c>SceneNifExporter.MeasureBakedBounds</c>. Alimenta el default del locator del menú de carga y la
+    ''' conversión %→unidades del slider. Si no es usable, esa sección se deshabilita y lo dice.</param>
+    Public Sub Prepare(isSse As Boolean, npcFoldsOverlays As Boolean,
+                       bakedBounds As SceneNifExporter.BakedBounds)
         Dim bakeOverlaysOn As Boolean = (Config_App.Current IsNot Nothing AndAlso
                                          Config_App.Current.Setting_BakeSseRaceMenuOverlays)
         _foldIsTheBakeDefault = isSse AndAlso npcFoldsOverlays AndAlso bakeOverlaysOn
@@ -44,11 +61,61 @@ Public Class ExportModelOptions_Form
                "Skin shapes (body, hands, feet) get the NPC's tone in their shader, so the exported model matches the preview instead of showing the source NIF's default. The face is not affected — its tone travels in its own textures.",
                "Skin shapes (body, hands, feet) get the NPC's tone in their shader. In Fallout 4 this also embeds the resolved material into the shape and clears its .bgsm link, so the shape stops following that material file. The face is not affected. In game, an actor's tone is recomputed from the record and overrides this.")
 
+        ' El locator del menú de carga es de FO4: 63 de los 173 loadscreens vanilla lo traen y NINGUNO
+        ' de los 139 de SSE, donde el encuadre viaja en el LSCR (SNAM/RNAM/XNAM) y no en el NIF.
+        GroupLoadScreen.Visible = Not isSse
+        _bounds = bakedBounds
+        ResetPlacementToDefault()
+
         UpdateFaceSubOptions()
+        UpdateLoadScreenGate()
+    End Sub
+
+    ''' <summary>Deja los seis campos + la escala en el default derivado del bbox: centrado en XY, a
+    ''' <see cref="DefaultHeightFraction"/> % del alto, sin rotación y escala 1 — que es exactamente lo que
+    ''' traen los 63 loadscreens vanilla salvo por la altura, que ellos ponen a mano.</summary>
+    Private Sub ResetPlacementToDefault()
+        _syncingPlacement = True
+        Try
+            SliderHeight.Value = DefaultHeightFraction
+            NumHeightPct.Value = DefaultHeightFraction
+            NumRotX.Value = 0D : NumRotY.Value = 0D : NumRotZ.Value = 0D
+            NumScale.Value = 1D
+            If _bounds.IsUsable Then
+                Dim p = _bounds.ZoomTargetAt(DefaultHeightFraction / 100.0F)
+                NumPosX.Value = ClampToRange(NumPosX, p.X)
+                NumPosY.Value = ClampToRange(NumPosY, p.Y)
+                NumPosZ.Value = ClampToRange(NumPosZ, p.Z)
+            Else
+                NumPosX.Value = 0D : NumPosY.Value = 0D : NumPosZ.Value = 0D
+            End If
+        Finally
+            _syncingPlacement = False
+        End Try
+        UpdateBoundsLabel()
+    End Sub
+
+    ''' <summary>Un NumericUpDown tira si le asignás fuera de rango. Un modelo absurdo (o un bbox
+    ''' degenerado) no debe voltear el diálogo.</summary>
+    Private Shared Function ClampToRange(box As NumericUpDown, v As Single) As Decimal
+        If Single.IsNaN(v) OrElse Single.IsInfinity(v) Then Return 0D
+        Dim d = CDec(v)
+        If d < box.Minimum Then Return box.Minimum
+        If d > box.Maximum Then Return box.Maximum
+        Return d
+    End Function
+
+    Private Sub UpdateBoundsLabel()
+        If Not _bounds.IsUsable Then
+            LabelBounds.Text = "The scene could not be measured, so there is no default to offer — type the position by hand or leave it at the origin."
+            Return
+        End If
+        LabelBounds.Text = $"Model bounds: Z {_bounds.Min.Z:F1} to {_bounds.Max.Z:F1} (height {_bounds.Height:F1}), measured on {_bounds.VertexCount:N0} baked vertices."
     End Sub
 
     Private Sub ExportModelOptions_Form_Load(sender As Object, e As EventArgs) Handles MyBase.Load
         UpdateFaceSubOptions()
+        UpdateLoadScreenGate()
     End Sub
 
     ''' <summary>Las sub-opciones sólo tienen sentido si se van a reescribir los paths.</summary>
@@ -56,8 +123,75 @@ Public Class ExportModelOptions_Form
         PanelOverlays.Enabled = CheckUseFaceGenBake.Checked
     End Sub
 
+    ''' <summary>
+    ''' El nodo del menú de carga sólo se ofrece con geometría UNSKINNED. No es que el nodo dependa del
+    ''' skin —es un locator inerte— sino el destino: el NIF se referencia desde un STAT, y un static no
+    ''' tiene esqueleto que deforme la malla. Los 173 loadscreens vanilla de FO4 son estáticos, 0 con skin.
+    ''' <para>Se DESMARCA al deshabilitar en vez de sólo agrisarse: un tilde encendido pero inerte le
+    ''' promete al usuario algo que el export no va a hacer.</para>
+    ''' </summary>
+    Private Sub UpdateLoadScreenGate()
+        Dim allowed As Boolean = RadioUnskinned.Checked
+        CheckAddLoadScreenNode.Enabled = allowed
+        If Not allowed Then CheckAddLoadScreenNode.Checked = False
+        ' Los valores sólo se editan si el nodo se va a escribir. El slider además necesita un alto real
+        ' para traducir % a unidades; sin bbox se deja escribir a mano pero el slider no sirve.
+        LoadScreenValues.Enabled = allowed AndAlso CheckAddLoadScreenNode.Checked
+        SliderHeight.Enabled = LoadScreenValues.Enabled AndAlso _bounds.IsUsable
+        NumHeightPct.Enabled = SliderHeight.Enabled
+        LabelLoadScreen.Text =
+            If(allowed,
+               "Adds an empty 'LoadingMenuZoomTarget' node — the point the loading-screen camera orbits and zooms towards. It is placed at the model's horizontal centre, 85% up its height. That matches vanilla for an upright biped; for a non-upright NPC (dog, deathclaw, mirelurk) the highest point is not the head, so move the node afterwards.",
+               "Only available for an unskinned export: a loading screen references the NIF through a STAT record, and a static has no skeleton to deform the mesh.")
+    End Sub
+
     Private Sub CheckUseFaceGenBake_CheckedChanged(sender As Object, e As EventArgs) Handles CheckUseFaceGenBake.CheckedChanged
         UpdateFaceSubOptions()
+    End Sub
+
+    Private Sub GeometryChoice_CheckedChanged(sender As Object, e As EventArgs) Handles RadioUnskinned.CheckedChanged, RadioSkinned.CheckedChanged
+        UpdateLoadScreenGate()
+    End Sub
+
+    Private Sub CheckAddLoadScreenNode_CheckedChanged(sender As Object, e As EventArgs) Handles CheckAddLoadScreenNode.CheckedChanged
+        UpdateLoadScreenGate()
+    End Sub
+
+    ''' <summary>Slider (o su caja de %) → Z en unidades del NIF. El % NO es un campo del NIF: el nodo sólo
+    ''' guarda traslación, rotación y escala. Es un atajo para posicionar la Z relativa al alto del modelo
+    ''' (0 = base del bounding box, 100 = tope), que es la forma en que uno piensa "ponelo en la cabeza".
+    ''' La guarda evita el ping-pong con <see cref="NumPosZ_ValueChanged"/>, que hace el camino inverso.</summary>
+    Private Sub HeightFraction_Changed(sender As Object, e As EventArgs) Handles SliderHeight.ValueChanged, NumHeightPct.ValueChanged
+        If _syncingPlacement OrElse Not _bounds.IsUsable Then Return
+        _syncingPlacement = True
+        Try
+            Dim pct As Integer = If(sender Is SliderHeight, SliderHeight.Value, CInt(NumHeightPct.Value))
+            SliderHeight.Value = pct
+            NumHeightPct.Value = pct
+            NumPosZ.Value = ClampToRange(NumPosZ, _bounds.Min.Z + _bounds.Height * (pct / 100.0F))
+        Finally
+            _syncingPlacement = False
+        End Try
+    End Sub
+
+    ''' <summary>Z escrita a mano → posición del slider, para que los dos digan lo mismo. Se redondea al
+    ''' entero más cercano porque el slider es entero; la Z fina NO se toca (la fuente de verdad es la
+    ''' caja, no el slider).</summary>
+    Private Sub NumPosZ_ValueChanged(sender As Object, e As EventArgs) Handles NumPosZ.ValueChanged
+        If _syncingPlacement OrElse Not _bounds.IsUsable OrElse _bounds.Height <= 0.0F Then Return
+        _syncingPlacement = True
+        Try
+            Dim frac = (CSng(NumPosZ.Value) - _bounds.Min.Z) / _bounds.Height * 100.0F
+            Dim pct = CInt(Math.Round(Math.Max(SliderHeight.Minimum, Math.Min(SliderHeight.Maximum, frac))))
+            SliderHeight.Value = pct
+            NumHeightPct.Value = pct
+        Finally
+            _syncingPlacement = False
+        End Try
+    End Sub
+
+    Private Sub ButtonResetPlacement_Click(sender As Object, e As EventArgs) Handles ButtonResetPlacement.Click
+        ResetPlacementToDefault()
     End Sub
 
     Private Sub ButtonExport_Click(sender As Object, e As EventArgs) Handles ButtonExport.Click
@@ -67,6 +201,20 @@ Public Class ExportModelOptions_Form
         ' el exporter tome siempre la rama de FO4.
         Options.FoldFaceOverlays = PanelOverlays.Visible AndAlso RadioWithOverlays.Checked
         Options.WriteSkinTone = CheckWriteSkinTone.Checked
+        ' Igual que FoldFaceOverlays: se exige que el grupo esté VISIBLE (o sea, FO4) además del tilde,
+        ' así el juego equivocado no puede colar la opción por un estado viejo del control.
+        Options.AddLoadScreenNode = GroupLoadScreen.Visible AndAlso
+                                    CheckAddLoadScreenNode.Enabled AndAlso
+                                    CheckAddLoadScreenNode.Checked
+        ' Se manda lo que el usuario TIENE A LA VISTA, no un recálculo: así lo que se escribe en el NIF y
+        ' lo que mostró el diálogo no pueden divergir.
+        If Options.AddLoadScreenNode Then
+            Options.LoadScreenNodePlacement = New LoadScreenNodePlacement With {
+                .Position = New System.Numerics.Vector3(CSng(NumPosX.Value), CSng(NumPosY.Value), CSng(NumPosZ.Value)),
+                .RotationDegrees = New System.Numerics.Vector3(CSng(NumRotX.Value), CSng(NumRotY.Value), CSng(NumRotZ.Value)),
+                .Scale = CSng(NumScale.Value)
+            }
+        End If
     End Sub
 
 End Class

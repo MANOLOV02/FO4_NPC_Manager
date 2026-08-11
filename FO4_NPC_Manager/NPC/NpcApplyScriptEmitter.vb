@@ -73,6 +73,8 @@ Public Module NpcApplyScriptEmitter
     ''' <para>â›” Emitirlos EXIGE que el script barra los nodos <c>Face [Ovl]</c>, y los dos cambios van juntos:
     ''' todo entra con persist=true (co-save), asi que un overlay aplicado con el toggle OFF sobrevive en esa
     ''' partida y sin barrerlo quedaria aplicado DOS veces. Emitir sin barrer es PEOR que no emitir.</para></summary>
+    ''' <remarks>⛔ SÓLO aplica al pool NORMAL de la cara. El pool MAGIC (<c>Face [SOvl{n}]</c>) queda FUERA de este
+    ''' gate: no se hornea en ningún caso, así que el script es su único dueño. Ver <see cref="IsSpellNode"/>.</remarks>
     Friend Function SkipFaceOverlays(game As Config_App.Game_Enum) As Boolean
         If game <> Config_App.Game_Enum.Skyrim Then Return False   ' FO4: el script es su única vía ⇒ se emiten siempre
         ' SSE: se saltean SÓLO si el bake se los va a quedar. Config sin resolver ⇒ se conserva el comportamiento
@@ -84,6 +86,14 @@ Public Module NpcApplyScriptEmitter
     ''' coinciden EXACTAMENTE en qué es "de cara", un overlay se compone dos veces o ninguna.</summary>
     Private Function IsFaceNode(nodeName As String) As Boolean
         Return SseOverlayCompositor.IsFaceOverlayNodeName(nodeName)
+    End Function
+
+    ''' <summary>Predicado ÚNICO del pool MAGIC, delegado a la librería. Para el emisor importa por una sola razón,
+    ''' pero es decisiva: un <c>Face [SOvl{n}]</c> NO LO HORNEA NADIE (el fold excluye el pool magic por diseño —
+    ''' <see cref="SseOverlayCompositor.IsFoldableFaceOverlay"/>), así que este script es su ÚNICO dueño y hay que
+    ''' emitirlo SIEMPRE, tenga el bake de overlays de cara prendido o apagado.</summary>
+    Private Function IsSpellNode(nodeName As String) As Boolean
+        Return SseOverlayCompositor.IsSpellOverlayNodeName(nodeName)
     End Function
 
     ''' <summary>â›”â›” UNA ARRAY-PROPERTY NUNCA VA VACIA **NI AUSENTE**. Cuando no hay datos se emite un array de
@@ -385,7 +395,18 @@ Public Module NpcApplyScriptEmitter
             For Each ov In preset.SseBodyOverlays
                 If ov Is Nothing OrElse String.IsNullOrEmpty(ov.NodeName) Then Continue For
                 ' La cara es del bake sólo cuando el bake la pliega; si no, va por acá. Ver SkipFaceOverlays.
-                If skipFace AndAlso IsFaceNode(ov.NodeName) Then Continue For
+                ' ⭐ EXCEPCIÓN QUE NO ES UNA EXCEPCIÓN: el pool MAGIC de la cara (Face [SOvl{n}]) no lo pliega el
+                ' bake NUNCA — no es una elección del toggle, es la ley del mecanismo (IsFoldableFaceOverlay).
+                ' Gatearlo por `skipFace` lo dejaba SIN DUEÑO con el toggle prendido (que es el default): no se
+                ' horneaba y tampoco se emitía ⇒ desaparecía. Ver IsSpellNode.
+                If skipFace AndAlso IsFaceNode(ov.NodeName) AndAlso Not IsSpellNode(ov.NodeName) Then Continue For
+                ' ⛔⛔ ACÁ SE DESCARTABAN LOS OVERLAYS MAGIC CON ÍNDICE ≥ 8, y era una PÉRDIDA SILENCIOSA de algo
+                ' que el usuario había autorado. Se fue junto con el techo, y la premisa que lo sostenía era falsa:
+                ' el `.psc` afirmaba —en tres lugares— que Papyrus no expone el contador del pool magic, y sí lo
+                ' expone (`NiOverride.GetNumSpell{Body,Hand,Feet,Face}Overlays`, PapyrusNiOverride.cpp:1844-1853,
+                ' además NoWait). El apply-script las llama, así que apaga exactamente los nodos que el juego del
+                ' jugador creó ⇒ todo lo que se ve se puede deshacer y no hay nada que descartar.
+                ' El límite del pool magic es ahora el mismo que el del normal: el contador del MOTOR.
                 ' Nothing to override on this node → don't emit an empty entry.
                 If String.IsNullOrEmpty(ov.DiffusePath) AndAlso String.IsNullOrEmpty(ov.NormalPath) AndAlso
                    Not ov.HasTint AndAlso Not ov.HasAlpha Then Continue For
@@ -440,10 +461,16 @@ Public Module NpcApplyScriptEmitter
         ' del grupo — la misma invariante que sostiene overlays, skin y morphs.
         ' ⛔ NO son ángulos de Euler: skee acepta 3 (euler) o 9 (matriz cruda), y con 9 los copia tal cual a
         ' la misma NiMatrix33 que después empaqueta al .jslot. Le devolvemos su propia secuencia de floats, y
-        ' la arma la MISMA función que escribe el .jslot, así que el script y el .jslot no pueden divergir.
+        ' ⛔ La arma `RaceMenuJslot.RotationRowMajor`, que es el ÚNICO dueño de la elección "matriz cruda vs
+        ' rearmar desde axis-angle" — y hasta 2026-08-10 no lo era: esta línea afirmaba la no-divergencia
+        ' mientras el ESP rearmaba siempre y el .jslot prefería el crudo, o sea que 180° y reflexiones se
+        ' perdían SÓLO por acá. Ver el doc de esa función.
         Dim ndRotM(8) As List(Of Single)
         For k = 0 To 8 : ndRotM(k) = New List(Of Single)() : Next
         Dim ndScaleMode As New List(Of Integer)
+        ' Pares planos (nodo, nombre) de las capas ajenas a neutralizar con identidad. Ver el bloque que las llena.
+        Dim ndNeutralNode As New List(Of String), ndNeutralName As New List(Of String)
+        Dim ndNeutralDropped = 0
 
         Dim ndDropped = 0
         If preset.SseNodeTransforms IsNot Nothing Then
@@ -473,7 +500,39 @@ Public Module NpcApplyScriptEmitter
                     ndRotM(k).Add(If(rot IsNot Nothing, rot(k), 0.0F))
                 Next
 
-                ndScaleMode.Add(If(nt.HasScaleMode, nt.ScaleMode, -1))
+                ' ⛔⛔ SIEMPRE -1 = "no tocar": el scaleMode por nodo es INERTE en skee. La composición lo busca con
+                ' un OverrideVariant default, o sea (33,-1) (NiTransformInterface.cpp:667-670), y TODOS los caminos lo
+                ' almacenan en (33,0) (:1047 y :1000/:1083/:1135) ⇒ el find nunca matchea y el motor usa
+                ' `g_scaleMode`, el `[General] iScaleMode` del jugador (main.cpp:144/797).
+                ' Mandarlo era una nativa por nodo que no cambia nada. La versión anterior de este comentario decía
+                ' que mandar 0 "fijaba la única lectura correcta": era falso, y encima se contradecía sola al mandar
+                ' -1 para los nodos sin escala.
+                ' ⚠️ El residuo (un jugador con iScaleMode≠0 compone distinto) NO tiene arreglo desde acá: la key que
+                ' serviría es justo la que el motor no lee. Queda dicho, no disimulado.
+                ndScaleMode.Add(-1)
+
+                ' ⭐⭐ LOS NOMBRES A NEUTRALIZAR, como pares PLANOS (nodo, nombre).
+                '
+                ' POR QUE HACE FALTA: nuestro aporte lleva el valor EFECTIVO del hueso (el decode compuso los
+                ' aportes del preset). Si esos mismos aportes están además en el co-save del jugador —pasa cuando un
+                ' mod le aplica ESTE preset a ESTE NPC con `CharGen.LoadCharacterPresetEx`— el motor compone los
+                ' suyos con nuestro total y el hueso sale al doble. Escribirles IDENTIDAD COMPLETA los vuelve
+                ' inertes sin borrar nada de nadie.
+                '
+                ' ⛔ POR QUE PLANOS Y NO UNA LISTA POR NODO: Papyrus no tiene arrays irregulares. Dos arrays
+                ' paralelos ENTRE SÍ (no con NodeName) es la única forma; el script las recorre de a pares.
+                ' ⛔ Y POR QUE POR NOMBRE Y NO BARRIENDO: así se toca exactamente lo que nuestro valor ya
+                ' representa. Un barrido a ciegas se llevaba `internal` —el lift de los tacos altos, donde componer
+                ' ES correcto— y el aporte de un mod que nunca vimos, y eso no tiene vuelta atrás. El filtro de qué
+                ' nombre es neutralizable vive en RaceMenuJslot.IsNeutralizableLayerName, no acá.
+                If nt.CollapsedLayerNames IsNot Nothing Then
+                    For Each layerName In nt.CollapsedLayerNames
+                        If String.IsNullOrWhiteSpace(layerName) Then Continue For
+                        If ndNeutralNode.Count >= MaxArrayElements Then ndNeutralDropped += 1 : Continue For
+                        ndNeutralNode.Add(nt.NodeName)
+                        ndNeutralName.Add(layerName)
+                    Next
+                End If
             Next
         End If
 
@@ -482,6 +541,7 @@ Public Module NpcApplyScriptEmitter
         NoteTrim(warnings, ovDropped, "overlay(s)")
         NoteTrim(warnings, skDropped, "skin override(s)")
         NoteTrim(warnings, ndDropped, "node transform(s)")
+        NoteTrim(warnings, ndNeutralDropped, "collapsed-layer name(s) to neutralise")
 
         Dim mNames As New List(Of String), mValues As New List(Of Single)
         If ownBodyMorphs Then BuildMorphArrays(preset, Config_App.Game_Enum.Skyrim, mNames, mValues, warnings)
@@ -528,6 +588,9 @@ Public Module NpcApplyScriptEmitter
             AddArray(P, GenProp("NodeRotM" & k.ToString(Globalization.CultureInfo.InvariantCulture), generation, salt), ndRotM(k))
         Next
         AddArray(P, GenProp("NodeScaleMode", generation, salt), ndScaleMode)
+        ' Paralelas ENTRE SÍ, no con NodeName: son pares (nodo, nombre). Ver NeutralizeCollapsedLayers en el .psc.
+        AddArray(P, GenProp("NodeNeutralNode", generation, salt), ndNeutralNode)
+        AddArray(P, GenProp("NodeNeutralName", generation, salt), ndNeutralName)
 
         P.Add(NpcVmadBuilder.VmadPropertySpec.FromBool(GenProp("MorphsOwned", generation, salt), ownBodyMorphs))
         AddArray(P, GenProp("MorphName", generation, salt), mNames)

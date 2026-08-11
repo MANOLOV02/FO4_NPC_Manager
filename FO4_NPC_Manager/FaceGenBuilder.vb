@@ -1649,6 +1649,32 @@ Public Module FaceGenBuilder
                                     If niSi IsNot Nothing Then
                                         niSi.SkeletonRoot = New NiflySharp.NiBlockPtr(Of NiflySharp.Blocks.NiNode)(skinnedIdx)
                                     End If
+                                    ' PF_EDITOR_VISIBLE (bit 0 de BSPartFlag): el CK lo ASSERTA, no lo preserva.
+                                    ' MEDIDO 2026-08-10 sobre el corpus SSE entero contra los 3215 FaceGeom del CK:
+                                    '   mallas FUENTE (482 head parts): bit0 apagado en 463/590 (78,5 %)
+                                    '   CK  : 22.787/22.787 con bit0  (11.697 en `1` + 11.090 en `257`)
+                                    '   app : 162/22.787   — preservábamos el de la fuente
+                                    ' ⭐ Es un OR del bit 0 y NADA MÁS: el bit 8 (PF_START_NET_BONESET) ya coincide
+                                    ' con el CK en el 100 % (11.697 sin él + 11.090 con él, exacto), así que forzar
+                                    ' el default 257 del esquema sería un ERROR — le pondría el bit 8 a 11.697
+                                    ' particiones donde el CK escribe 1.
+                                    ' ⛔ Por qué no hace falta gate por juego además del TryCast: BSDismemberSkinInstance
+                                    ' es de Skyrim; FO4 usa BSSkin::Instance, que NO tiene particiones (cero bloques de
+                                    ' este tipo en los 1508 FaceGeom de FO4). El gate real es el tipo. Se deja igual el
+                                    ' isSSEBake para que la intención quede escrita y nadie lo "generalice".
+                                    ' Es paridad, no un fix: nif.xml lo documenta como "Editor flags … Visible in Editor".
+                                    If isSSEBake Then
+                                        Dim dsi = TryCast(skBlk, NiflySharp.Blocks.BSDismemberSkinInstance)
+                                        If dsi IsNot Nothing AndAlso dsi.Partitions IsNot Nothing Then
+                                            For pi As Integer = 0 To dsi.Partitions.Count - 1
+                                                ' BodyPartList es una STRUCT dentro de un List: mutar la copia no
+                                                ' escribe nada, hay que reasignar por índice.
+                                                Dim bp = dsi.Partitions(pi)
+                                                bp.PartFlag = bp.PartFlag Or NiflySharp.Enums.BSPartFlag.PF_EDITOR_VISIBLE
+                                                dsi.Partitions(pi) = bp
+                                            Next
+                                        End If
+                                    End If
                                 End If
                             End If
                         End If
@@ -1829,7 +1855,8 @@ Public Module FaceGenBuilder
                             If appliedPresets IsNot Nothing Then appliedPresets.TryGetValue(npcFormID, preset2d)
                             ' ⛔ SOLO los overlays de CARA. Antes se pasaba `preset2d.SseBodyOverlays` ENTERO (cuerpo
                             ' incluido) y el layer-builder del GPU tampoco filtraba por nodo ⇒ los tatuajes de cuerpo
-                            ' terminaban compuestos DENTRO de la cara. Predicado único: SseOverlayCompositor.IsFaceOverlay.
+                            ' terminaban compuestos DENTRO de la cara. Predicado único: FaceOverlaysOnly, que hoy es
+                            ' `IsFoldableFaceOverlay` = cara MENOS el pool magic (un Face [SOvl] no se hornea nunca).
                             Dim overlays2d = SseOverlayCompositor.FaceOverlaysOnly(
                                 If(preset2d IsNot Nothing, preset2d.SseBodyOverlays, Nothing))
                             WriteSseFacetint2dGpu(glayers2d, cplx, sseForcedDetail, overlays2d, formIdLow, originPlugin, host)
@@ -2754,8 +2781,12 @@ Public Module FaceGenBuilder
             ' ⛔ El gate mira DIFFUSE **O** NORMAL (HasAnyFoldableFaceOverlay). Un overlay de cara SOLO-NORMAL
             ' (NormalPath sin DiffusePath) es válido — ComposeFaceOverlayNormalsIntoMsn lo pliega usando el alpha
             ' del propio normal como cobertura. Gatear sólo por diffuse hacía SALIR TEMPRANO y el normal no se
-            ' plegaba nunca; y como el script Papyrus saltea TODO nodo Face* (la cara es territorio del bake,
+            ' plegaba nunca; y como el script Papyrus salteaba TODO nodo Face* (la cara era territorio del bake,
             ' siempre), ese overlay no lo aplicaba nadie: desaparecía.
+            ' ⭐ HOY EL EMISOR NO SALTEA TODO Face*: saltea los del pool NORMAL y sólo con el toggle de bake
+            ' prendido; los `Face [SOvl]` (pool MAGIC) van SIEMPRE por el script, porque este gate —vía
+            ' HasAnyFoldableFaceOverlay ⇒ IsFoldableFaceOverlay— los EXCLUYE del pliegue por diseño. Sin esa
+            ' exclusión se hornearía permanentemente una capa que el motor prende y apaga en runtime.
             Dim hasOverlays = SseOverlayCompositor.HasAnyFoldableFaceOverlay(overlays)
             Dim hasSkee = SseSkeeMaskReader.HasMaskLayers(nif, cloned)
 

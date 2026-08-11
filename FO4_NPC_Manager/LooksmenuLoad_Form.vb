@@ -12,7 +12,7 @@ Imports FO4_Base_Library
 '''   - User selects an entry: the shared <see cref="PresetCategoryPanel"/> shows what that preset carries
 '''     per category (head parts, tints, morphs, BodySlide sliders, overlays, …) and greys out the
 '''     categories it carries nothing for; <see cref="LabelInfo"/> states whether anything of it is missing
-'''     or incompatible, and "Show incompatible" opens the per-item report.
+'''     or incompatible, and "What this preset does..." opens the per-item report.
 '''     Everything the user READS goes through <see cref="FileView"/> = the FILE's own content, in both
 '''     games. That matters under SSE: the preset the list holds is the .jslot mapped onto a clone of the
 '''     pre-dialog overlay (mandatory — see <see cref="SsePresetMapping"/>), so without this the amounts and
@@ -369,13 +369,24 @@ Public Class LooksmenuLoad_Form
 
         ' The file path was dropped from this line: the list already shows the preset name and the full path is
         ' in the report header, so all this line has to carry is the verdict — which the button then expands.
+        ' ⛔⛔ ESTO GATEABA EL CARTEL CON `audit.Count`, QUE INCLUYE LAS NOTE. `MissingCount`/`HasMissing` existen
+        ' justo para esta distinción y no se usaban acá. Con la nota nueva de huesos —que dispara en casi todo preset
+        ' SSE— un preset PERFECTAMENTE compatible mostraba un "Incompatibility found" ámbar, mientras el cuerpo del
+        ' reporte, a un clic, decía "0 findings that will NOT reach the NPC, 1 note". El usuario le cree al cartel y
+        ' se saltea un preset bueno. Tres estados, no dos.
         Dim audit = GetAudit(preset)
-        ButtonShowIncompatible.Enabled = audit.Count > 0
-        If audit.Count > 0 Then
-            LabelInfo.Text = "Incompatibility found"
+        ' ⛔ SE DESHABILITABA CUANDO NO HABÍA HALLAZGOS. Con el rótulo viejo ("Show incompatible") tenía sentido; con
+        ' "What this preset does..." un botón gris significa "no podés preguntar qué hace". Y el reporte ya sabe
+        ' manejar el caso vacío ("No missing or incompatible content found for this NPC.").
+        ButtonShowIncompatible.Enabled = True
+        If audit.HasMissing Then
+            LabelInfo.Text = If(audit.MissingCount = 1, "1 thing won't reach this NPC", $"{audit.MissingCount} things won't reach this NPC")
             LabelInfo.ForeColor = Drawing.Color.DarkGoldenrod
+        ElseIf audit.Count > 0 Then
+            LabelInfo.Text = If(audit.Count = 1, "Fully compatible — 1 thing worth reading", $"Fully compatible — {audit.Count} things worth reading")
+            LabelInfo.ForeColor = SystemColors.ControlText
         Else
-            LabelInfo.Text = "No incompatibility"
+            LabelInfo.Text = "Fully compatible"
             LabelInfo.ForeColor = SystemColors.ControlText
         End If
     End Sub
@@ -420,8 +431,11 @@ Public Class LooksmenuLoad_Form
         If item Is Nothing Then Return
         Dim text = PresetCompatibilityReport.BuildText(GetAudit(item.Preset))
 
+        ' ⛔ EL TÍTULO DECÍA "Incompatible / missing content" Y ESO DESHACÍA EL CARTEL: el usuario lee "Fully
+        ' compatible", abre el reporte, y la ventana lo recibe con un título que dice lo contrario. La falsa alarma no
+        ' se eliminaba, se movía un clic más adentro.
         Using f As New Form With {
-            .Text = $"Incompatible / missing content — {IO.Path.GetFileNameWithoutExtension(item.Preset.SourcePath)}",
+            .Text = $"What this preset does — {IO.Path.GetFileNameWithoutExtension(item.Preset.SourcePath)}",
             .StartPosition = FormStartPosition.CenterParent,
             .Size = New Size(860, 620),
             .MinimizeBox = False, .MaximizeBox = True, .ShowInTaskbar = False}
@@ -430,8 +444,13 @@ Public Class LooksmenuLoad_Form
             Dim txt As New TextBox With {
                 .Multiline = True, .ReadOnly = True, .Dock = DockStyle.Fill,
                 .ScrollBars = ScrollBars.Both, .WordWrap = False, .TabStop = False,
-                .Font = New Font(FontFamily.GenericMonospace, 8.5F),
-                .Text = NormalizeEol(text)}
+                .Font = New Font(FontFamily.GenericMonospace, 8.5F)}
+            ' ⛔ SIN ESTO EL REPORTE SE PUEDE CORTAR EN SILENCIO: el MaxLength por default de un TextBox son 32767
+            ' caracteres y se aplica también a la asignación POR CÓDIGO, sin ninguna señal de que cortó. Con dos notas
+            ' de varios párrafos más la lista de huesos, un reporte largo se acerca a ese techo.
+            ' ⛔ Y va ANTES de asignar el Text, no después: al revés el texto ya entró recortado.
+            txt.MaxLength = Integer.MaxValue
+            txt.Text = NormalizeEol(text)
             Dim bar As New Panel With {.Dock = DockStyle.Bottom, .Height = 40, .Padding = New Padding(6)}
             Dim btnClose As New Button With {.Text = "Close", .DialogResult = DialogResult.Cancel,
                                              .Dock = DockStyle.Right, .Width = 110}

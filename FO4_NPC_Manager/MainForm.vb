@@ -4719,7 +4719,7 @@ Public Class MainForm
                            prompt & vbCrLf & vbCrLf &
                            "Nothing on disk changes now. NPCs whose body edits were already saved stay marked " &
                            "as changed: the next Save removes them from the .bssliders sidecar, re-emits the " &
-                           "BodyGen .ini and writes a cleanup apply-script, so the game matches this preview.",
+                           "BodyGen .ini and writes a cleanup helper script, so the game matches this preview.",
                            "Reset NPC", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) <> DialogResult.Yes Then
             Return
         End If
@@ -5470,7 +5470,9 @@ Public Class MainForm
         ' shapes already did during ResolvePreviewVariant, so it's thread-safe in this context. The method
         ' clears OverlayLayers on every shape when the NPC has no overlays, so switching/clearing an NPC
         ' never leaks a previous NPC's tattoos (and each plan rebuilds fresh shape instances anyway).
-        _morphPoseResolver.ResolveOverlayLayers(state, renderData)
+        ' este mismo NPC se resuelve para el preview principal (no los dibuja) y para el del editor (sí). Pasar
+        ' `_hostProvider()` acá haría que el editor viera lo del principal.
+        _morphPoseResolver.ResolveOverlayLayers(state, renderData, host)
 
         ' Dos checkboxes independientes controlan la pose osea (FMRS) y los morphs de vertice (TRI de chargen).
         ' Los dos se honran en el render completo inicial; los toggles posteriores los manejan sus
@@ -6826,7 +6828,11 @@ Public Class MainForm
     ''' muestra los parametros nuevos sin recargar texturas ni reconstruir mallas.</para></summary>
     Friend Function RefreshOverlayLayersLive(host As NpcRenderHost) As Boolean
         If host Is Nothing OrElse host.LastRenderedState Is Nothing OrElse host.LastRenderData Is Nothing Then Return False
-        _morphPoseResolver.ResolveOverlayLayers(host.LastRenderedState, host.LastRenderData)
+        ' ⛔ EL HOST VA EXPLÍCITO, IGUAL QUE EN BuildRenderPlan. Omitirlo caía al `_hostProvider()` = el host
+        ' overlays del pool magic: se veían al abrir (reload completo, que sí pasa el host) y desaparecían al
+        ' primer arrastre del slider de Opacity, sin volver hasta el próximo reload completo. Es exactamente el
+        ' modo de falla contra el que existe el parámetro.
+        _morphPoseResolver.ResolveOverlayLayers(host.LastRenderedState, host.LastRenderData, host)
         If host.PreviewCtl IsNot Nothing Then host.PreviewCtl.InvalidateRender()
         Return True
     End Function
@@ -9553,6 +9559,10 @@ Public Class MainForm
                 End If
                 preset.SseBodyOverlays = LooksmenuLoader.CloneSseBodyOverlays(overlay.SseBodyOverlays)
                 preset.SseNodeTransforms = LooksmenuLoader.CloneSseNodeTransforms(overlay.SseNodeTransforms)
+                ' Los elementos de primera persona del .jslot: no se modelan ni se editan, pero sin esta línea el
+                ' "Save RaceMenu preset" de una sesión posterior los emitía perdidos.
+                preset.SseFirstPersonTransformsRaw = If(overlay.SseFirstPersonTransformsRaw Is Nothing, Nothing,
+                                                        New List(Of String)(overlay.SseFirstPersonTransformsRaw))
                 preset.SseHairColorRgb = overlay.SseHairColorRgb
                 preset.SseSkinOverrides = LooksmenuLoader.CloneSseSkinOverrides(overlay.SseSkinOverrides)
                 If overlay.SseSculptHead IsNot Nothing Then
@@ -11057,7 +11067,11 @@ Public Class MainForm
             ' copia del predicado.
             Dim npcFoldsOverlays As Boolean = (_faceTintResolver IsNot Nothing AndAlso
                                                _faceTintResolver.LastSseFoldWasMandatory)
-            dlgOpts.Prepare(isSse, npcFoldsOverlays)
+            ' Bbox del modelo ya horneado, para que el diálogo pueda ofrecer un default editable para el
+            ' locator del menú de carga. Sale de la MISMA función que usaría el export, así el número que
+            ' el usuario ve es el que se escribe.
+            Dim bakedBounds = SceneNifExporter.MeasureBakedBounds(_previewControl.Model.meshes)
+            dlgOpts.Prepare(isSse, npcFoldsOverlays, bakedBounds)
             If dlgOpts.ShowDialog(Me) <> DialogResult.OK Then Return
             exportOptions = dlgOpts.Options
         End Using
@@ -11128,6 +11142,14 @@ Public Class MainForm
         If result.SkinToneSkipped > 0 Then
             MessageBox.Show($"Export OK, but the skin tone was not written on {result.SkinToneSkipped} shape{If(result.SkinToneSkipped = 1, "", "s")}:" &
                             vbCrLf & result.SkinToneSkippedDetails,
+                            "NPC Model to NIF", MessageBoxButtons.OK, MessageBoxIcon.Warning)
+            Return
+        End If
+
+        ' Mismo criterio que el residuo del skin tone: el NIF se escribió, pero el usuario pidió el
+        ' locator del menú de carga y no está. Sin este cuadro se lo lleva creyendo que sí.
+        If result.LoadScreenNodeError IsNot Nothing Then
+            MessageBox.Show("Export OK, but " & result.LoadScreenNodeError,
                             "NPC Model to NIF", MessageBoxButtons.OK, MessageBoxIcon.Warning)
             Return
         End If

@@ -187,7 +187,9 @@ Partial Class LooksmenuLoad_Form
         ButtonShowIncompatible.Name = "ButtonShowIncompatible"
         ButtonShowIncompatible.Size = New Size(157, 23)
         ButtonShowIncompatible.TabIndex = 1
-        ButtonShowIncompatible.Text = "Show incompatible"
+        ' ⛔ DECÍA "Show incompatible" y es la ÚNICA puerta al reporte. Nadie hace clic ahí para leer sobre un preset
+        ' que le acaba de decir que está bien — y justo ahí vive la explicación de qué número muestran los huesos.
+        ButtonShowIncompatible.Text = "What this preset does..."
         ButtonShowIncompatible.UseVisualStyleBackColor = True
         '
         ' CategoriesGroup

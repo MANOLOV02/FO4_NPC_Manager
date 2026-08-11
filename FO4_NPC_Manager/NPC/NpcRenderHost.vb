@@ -37,6 +37,26 @@ Friend Class NpcRenderHost
     ''' reassigned. Disposed by the owning Form, not by this class.</summary>
     Public ReadOnly Property PreviewCtl As PreviewControl
 
+    ''' <summary>⭐ ¿Este preview dibuja los overlays del pool MAGIC (<c>… [SOvl{n}]</c>)?
+    ''' <para>Default <b>False</b>, y ese default es una decisión de producto sobre un hecho MEDIDO: la plantilla del
+    ''' pool magic (<c>*_magicoverlay.nif</c>) trae un <c>BSEffectShaderPropertyFloatController</c> con
+    ''' <c>typeOfControlledVariable=5</c> (=<b>Alpha</b>), apuntando al <c>BSLightingShaderProperty</c>, con flags
+    ''' <c>0x4A</c> = ACTIVE + CYCLE_REVERSE, frequency 8 y keys <c>(t=0,v=0)→(t=10,v=1)</c> lineales ⇒ <b>la opacidad
+    ''' la anima el motor, pulsando 0↔1</b>. O sea que NO EXISTE un cuadro que sea "cómo se ve": el preview principal
+    ''' es el retrato del NPC, y un efecto en curso no es parte de su identidad.
+    ''' <para>⛔ La versión anterior de esta nota decía "arranca apagado", que era una INFERENCIA sobre las keys
+    ''' presentada como medición — y encima nuestro propio apply-script escribe <c>KEY_ALPHA</c> con persist=true, así
+    ''' que "apagado" no era ni siquiera lo que dejamos escrito. El dato real es que ese valor lo pisa el controller
+    ''' mientras corre.</para></para>
+    ''' <para>Los hosts de los EDITORES la ponen en True: ahí el trabajo es autorar esa capa, así que hay que verla —
+    ''' en el PICO de su ciclo, que es el cuadro útil para el autor. El checkbox del editor conmuta esto y
+    ''' re-renderiza.</para>
+    ''' <para>⛔ Vive en el HOST y no en el Config global: dos previews del MISMO NPC tienen que poder discrepar (el
+    ''' principal no, el del editor sí) y eso es exactamente lo que un flag global no puede representar. Por eso el
+    ''' resolver recibe el host que está renderizando, no <c>_hostProvider()</c>.</para>
+    ''' <para>El bake NO consulta esto: no hay bake de spell overlays (nunca se pliegan; viajan por el
+    ''' apply-script), así que ningún host de bake necesita el flag.</para></summary>
+
     ''' <summary>State of the most recently rendered NPC variant. Used by the bone/vertex
     ''' morph checkbox handlers and editor live-edit refreshes to rebuild a single pipeline
     ''' stage without re-running the full preview resolution.</summary>

@@ -35,6 +35,12 @@ Public Class EditBody_Form
     ''' <summary>Which overlay zone a new overlay is added to (Body/Hands/Feet). skee64 keeps a separate node
     ''' set per zone; without this only Body overlays could be authored.</summary>
     Private _sseOverlayZone As ComboBox = Nothing
+    ''' <summary>"Magic" del overlay SELECCIONADO = ¿está en el pool <c>[SOvl{n}]</c> de skee en vez del
+    ''' <c>[Ovl{n}]</c>? Conmutarlo RENOMBRA el nodo (ver <see cref="OnSseOverlayMagicChanged"/>).</summary>
+    Private _sseOverlayMagic As CheckBox = Nothing
+    ''' <summary>Opción de VISTA de este editor: dibujar el pool magic en su preview. El preview principal nunca
+    ''' se los ve — de ahí el default ON.</summary>
+    Private ReadOnly _sseOverlayToolTip As New ToolTip()
     ' Parallel index→entry map for the LEFT paint catalog (ListBoxOverlayAvailable) in SSE mode; the ListBox
     ' index can't be used directly because the filter box removes rows.
     Private ReadOnly _ssePaintShown As New List(Of FO4_Base_Library.RaceMenuPaintCatalog.Entry)
@@ -1386,6 +1392,12 @@ Public Class EditBody_Form
     Private _sseNodeFilter As TextBox
     Private ReadOnly _sseNodeShown As New List(Of (Label As String, Node As String))
     Private _sseNodeDetailPanel As Control
+    ''' <summary>Aviso POR NODO, debajo de los sliders. Hoy sólo tiene un caso, y es EL caso: el hueso rotulado
+    ''' "Height" es el nodo <c>NPC</c>, que es exactamente donde skee compone el lift de los tacos altos. O sea que el
+    ''' único NPC que un jugador va a ver más alto en el juego que en el editor es el que él mismo subió de altura y
+    ''' calzó con botas. Estaba dicho —dentro de una nota de 13 líneas, a dos diálogos de distancia, sin nombrar el
+    ''' slider— y ahí no le sirve a nadie.</summary>
+    Private _sseNodeNote As Label
     Private _sseNodeScaleBar As FO4_Base_Library.TinySliderTextBox
     Private _sseNodePosX As FO4_Base_Library.TinySliderTextBox
     Private _sseNodePosY As FO4_Base_Library.TinySliderTextBox
@@ -1430,7 +1442,7 @@ Public Class EditBody_Form
             For Each node In cat.Nodes()
                 ' Weapon/equip nodes (from RaceMenuPlugin's Body Scales too) are gated behind "show all" — the
                 ' NPC-appearance preview does not render equipped gear, so scaling them shows nothing here.
-                If IsWeaponNode(node) AndAlso Not _sseShowAllNodes Then Continue For
+                If SseCatalogs.IsWeaponNode(node) AndAlso Not _sseShowAllNodes Then Continue For
                 If rigBones Is Nothing OrElse rigBones.Contains(node) Then AddSseNodeItem(FriendlyNodeLabel(node), node)
             Next
         End If
@@ -1451,17 +1463,6 @@ Public Class EditBody_Form
             End If
         End If
     End Sub
-
-    ''' <summary>A weapon/equip node (WEAPON/SHIELD/QUIVER/Weapon*) — RaceMenu scales these too, but they are gated
-    ''' behind "show all" here since the appearance preview does not render equipped gear.</summary>
-    Private Shared Function IsWeaponNode(node As String) As Boolean
-        If String.IsNullOrEmpty(node) Then Return False
-        If node.StartsWith("Weapon", StringComparison.OrdinalIgnoreCase) Then Return True
-        Select Case node.ToUpperInvariant()
-            Case "WEAPON", "SHIELD", "QUIVER" : Return True
-        End Select
-        Return False
-    End Function
 
     Private Sub AddSseNodeItem(label As String, node As String)
         If String.IsNullOrEmpty(node) Then Return
@@ -1492,11 +1493,12 @@ Public Class EditBody_Form
         Dim root As New TableLayoutPanel With {.Dock = DockStyle.Fill, .ColumnCount = 2, .RowCount = 2}
         root.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 42))
         root.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 58))
-        root.RowStyles.Add(New RowStyle(SizeType.Absolute, 40))
-        root.RowStyles.Add(New RowStyle(SizeType.Percent, 100))
-        Dim header As New Label With {.Dock = DockStyle.Fill, .AutoSize = False, .Padding = New Padding(3, 4, 3, 0),
-            .Text = "RaceMenu node transforms (NiOverride): per-bone scale, position and rotation. Pick a node, then edit its TRS. Loaded/saved with the .jslot + sidecar."}
-        root.Controls.Add(header, 0, 0) : root.SetColumnSpan(header, 2)
+        ' ⛔ NO HAY ENCABEZADO ARRIBA. Estuvo ahi en dos versiones y las dos molestaban: primero recortado en una
+        ' fila de 40 px (no se leia la mitad), y despues legible pero comiendose el alto de la pestana para repetir
+        ' algo que el usuario lee una vez. TODO el texto vive ahora en `_sseNodeNote`, abajo, en el espacio que de
+        ' todos modos quedaba vacio — y ahi se le suma la advertencia del nodo cuando corresponde.
+        root.RowStyles.Add(New RowStyle(SizeType.Percent, 100))   ' fila 0: listas + sliders
+        root.RowStyles.Add(New RowStyle(SizeType.AutoSize))        ' fila 1: TODO el texto, abajo
 
         ' Left column: "show all" toggle + name filter above the node list. The list itself is filled by
         ' RebuildSseNodeItems (RaceMenu's registered body nodes ∪ the dynamic node catalog ∪ preset nodes; + weapons
@@ -1521,7 +1523,7 @@ Public Class EditBody_Form
         _sseNodeList = New ListBox With {.Dock = DockStyle.Fill, .IntegralHeight = False}
         AddHandler _sseNodeList.SelectedIndexChanged, AddressOf OnSseNodeSelChanged
         leftCol.Controls.Add(_sseNodeList, 0, 2)
-        root.Controls.Add(leftCol, 0, 1)
+        root.Controls.Add(leftCol, 0, 0)
         RebuildSseNodeItems()
 
         ' Detail: labeled TinySlider rows — Scale (0..2), Position X/Y/Z (centred), Rotation X/Y/Z in degrees
@@ -1565,9 +1567,21 @@ Public Class EditBody_Form
         Dim btnRow As New FlowLayoutPanel With {.Dock = DockStyle.Top, .AutoSize = True,
                                                 .Padding = New Padding(118, 0, 0, 0), .Margin = New Padding(0)}
         btnRow.Controls.Add(btnReset)
+        ' ⛔⛔⛔ TRES INTENTOS FALLADOS ANTES DE ESTE, TODOS DE LAYOUT Y TODOS MIOS. Vale escribirlos porque la
+        ' causa era siempre la misma y no la vi: **un Label que ENVUELVE necesita algo que le limite el ANCHO**.
+        '   1) `MaximumSize = 430` con ~790 px disponibles ⇒ partia la frase en 4 lineas sin necesidad;
+        '   2) `Dock = Bottom` + AutoSize ⇒ la ALTURA se calcula para una linea ⇒ texto recortado por abajo;
+        '   3) `Dock = Top` dentro del panel `AutoScroll` y SIN tope ⇒ AutoSize pide una linea larguisima y el
+        '      panel la recorta a lo ANCHO (las dos lineas cortadas a la mitad de la oracion).
+        ' Lo que funciona, y es lo que el encabezado original hacia: vivir en una CELDA del TableLayoutPanel.
+        ' El TLP le fija el ancho de la columna, y con eso el wrap y el AutoSize de alto salen bien solos.
+        _sseNodeNote = New Label With {.Dock = DockStyle.Fill, .AutoSize = True,
+                                       .ForeColor = SystemColors.GrayText, .Padding = New Padding(6, 8, 6, 4),
+                                       .Text = ""}
         rightPanel.Controls.Add(btnRow)
         rightPanel.Controls.Add(detail)
-        root.Controls.Add(rightPanel, 1, 1)
+        root.Controls.Add(rightPanel, 1, 0)
+        root.Controls.Add(_sseNodeNote, 0, 1) : root.SetColumnSpan(_sseNodeNote, 2)
 
         tab.Controls.Add(root)
         TabsBody.TabPages.Add(tab)
@@ -1670,6 +1684,20 @@ Public Class EditBody_Form
             _sseNodePosZ.Value = If(nt IsNot Nothing AndAlso nt.HasPosition, CDbl(nt.PosZ), 0.0R)
             Dim deg = SseNodeRotDegrees(nt)
             _sseNodeRotX.Value = deg.X : _sseNodeRotY.Value = deg.Y : _sseNodeRotZ.Value = deg.Z
+            ' El aviso de los tacos, sólo en el nodo donde el motor los compone (ver el doc de _sseNodeNote).
+            ' El bloque de abajo es el UNICO texto de la pestana: la explicacion general (que antes era el
+            ' encabezado) mas la advertencia del nodo seleccionado, cuando ese nodo tiene una.
+            If _sseNodeNote IsNot Nothing Then
+                Dim t = "The value shown is FINAL: several preset sliders on one bone were added into this one " &
+                        "number. Only this app's value is written, with ""Attach the helper script"" ticked in " &
+                        "the Save dialog."
+                If has AndAlso String.Equals(_sseNodeSelected, SseCatalogs.HeightNodeName, StringComparison.OrdinalIgnoreCase) Then
+                    t &= ControlChars.Lf & ControlChars.Lf &
+                         "High-heeled boots add their own lift on top of this bone, so in game the NPC can stand " &
+                         "taller than it does here. That is correct — the app does not remove the boots' lift."
+                End If
+                _sseNodeNote.Text = t
+            End If
         Finally
             _suspendEvents = False
         End Try
@@ -1736,8 +1764,9 @@ Public Class EditBody_Form
         ' this axis-angle (untouched rotations stay byte-exact from Raw).
         Dim m = FO4_Base_Library.Transform_Class.EulerXYZToMatrix33(-_sseNodeRotX.Value, -_sseNodeRotY.Value, -_sseNodeRotZ.Value)
         Dim aa = FO4_Base_Library.Transform_Class.Matrix33ToBSRotation(m)
-        nt.RotX = aa.X : nt.RotY = aa.Y : nt.RotZ = aa.Z
-        nt.HasRotation = True : nt.RotationDirty = True
+        ' ⛔ UNA sola llamada, y a propósito: acá se seteaba RotX/Y/Z + HasRotation + RotationDirty a mano y se
+        ' OLVIDABA invalidar la matriz cruda, que el sidecar persiste. Ver SetRotationFromUi.
+        nt.SetRotationFromUi(aa.X, aa.Y, aa.Z)
         ApplySseNodeEdit()
     End Sub
 
@@ -1745,7 +1774,14 @@ Public Class EditBody_Form
         If String.IsNullOrEmpty(_sseNodeSelected) Then Return
         Dim p = Preset
         If p Is Nothing OrElse p.SseNodeTransforms Is Nothing Then Return
-        p.SseNodeTransforms.RemoveAll(Function(x) x IsNot Nothing AndAlso String.Equals(x.NodeName, _sseNodeSelected, StringComparison.OrdinalIgnoreCase))
+        ' ⛔ ANTES ERA UN RemoveAll, y eso se llevaba el elemento COMPLETO del .jslot: con él la key 40 —el
+        ' re-parenteo con el que XPMSE te cuelga la espada de la espalda— y cualquier value ajeno que no modelamos.
+        ' La ley del subsistema es por COMPONENTE: "reset" saca lo que se compone (30/31/32) y deja lo demás. El nodo
+        ' sólo desaparece de la lista si no quedaba nada más que conservar.
+        For Each nt In p.SseNodeTransforms.ToList()
+            If nt Is Nothing OrElse Not String.Equals(nt.NodeName, _sseNodeSelected, StringComparison.OrdinalIgnoreCase) Then Continue For
+            If Not nt.ResetComposingComponents() Then p.SseNodeTransforms.Remove(nt)
+        Next
         LoadSseNodeDetail()
         RefreshSseNodeMarker()
         _mainForm.RebuildAndApplyMergedPose(_editorHost)
@@ -2188,9 +2224,95 @@ Public Class EditBody_Form
         OverlayPropsLayout.Controls.Add(New Label With {.Text = "Normal:", .AutoSize = True, .Anchor = AnchorStyles.Left, .Margin = New Padding(3, 6, 3, 0)}, 0, r0 + 1)
         _sseTexNormal = New TextBox With {.Width = 300, .ReadOnly = True}
         OverlayPropsLayout.Controls.Add(SseTexFlow(_sseTexNormal), 1, r0 + 1)
+
+        ' ⭐ EL "MAGIC FLAG" DEL OVERLAY SELECCIONADO. skee64 tiene DOS pools por zona: el normal `[Ovl{n}]` y el
+        ' magic `[SOvl{n}]` (OverlayInterface.h:23-46), este último con su plantilla propia — la que trae el
+        ' controller que PULSA la alpha 0↔1 — su propio contador (iSpellOverlays) y su propia numeración.
+        ' UN control, UN significado: este checkbox describe el overlay SELECCIONADO y conmutarlo lo MUEVE de pool
+        ' (renombra el nodo al primer índice libre del destino). Add sigue creando en el pool normal, así que el
+        ' flujo es "agregar y, si va a ser mágico, tildarlo" — sin un segundo control que signifique otra cosa.
+        Dim r2 = OverlayPropsLayout.RowCount
+        OverlayPropsLayout.RowStyles.Add(New RowStyle(SizeType.AutoSize))
+        OverlayPropsLayout.RowCount = r2 + 1
+        ' ⭐ MISMO VOCABULARIO QUE EDIT FACE. Estaban con dos nombres cada cosa ("Magic (spell effect layer — not
+        ' drawn in the main preview)" acá vs "Magic" allá; "Preview magic" vs "Preview magic in this window"), y dos
+        ' nombres para lo mismo es una decisión más que el usuario tiene que tomar sin datos.
+        _sseOverlayMagic = New CheckBox With {
+            .Text = "Magic (spell effect)", .AutoSize = True,
+            .Anchor = AnchorStyles.Left, .Margin = New Padding(3, 6, 3, 0)}
+        AddHandler _sseOverlayMagic.CheckedChanged, AddressOf OnSseOverlayMagicChanged
+        OverlayPropsLayout.Controls.Add(_sseOverlayMagic, 1, r2)
+
+        ' ⭐ EL TOGGLE DEL PREVIEW, en la columna del medio (debajo de Add/Remove) porque es una opción de VISTA de
+        ' este editor, no una propiedad del overlay. Default ON: acá se autora, así que se ve.
+        ' ⭐ VA EN LA FILA DE "Render ...", al lado de Render gore — no en la pestaña de Overlays. Es una opción de
+        ' VISTA del preview, igual que las otras cuatro, y ahí es donde el usuario las busca. En la pestaña quedaba
+        ' mezclada con las propiedades del overlay, que son otra cosa.
+        ' ⭐ YA NO VA EN `OverlayCenterLayout`. Antes estaba ahi y lo mande un rato a la fila 2, donde se
+        ' SUPERPUSO con "← Remove" (el Designer declara 2 filas pero este metodo las remapea con SetRow, asi que la
+        ' 2 no estaba libre). Moverlo al panel de Render cierra las dos cosas: el conflicto de celda no existe y el
+        ' control esta donde corresponde.
+
+        ' ⭐ LA NOTA VISIBLE QUE EDIT FACE YA TENÍA Y ESTA PESTAÑA NO. Sin ella, "lo agregué, lo veo acá y no lo veo
+        ' en la ventana principal" se lee como un BUG de la app. El motivo no puede vivir sólo en un tooltip.
+        Dim magicNoteRow = OverlayPropsLayout.RowCount
+        OverlayPropsLayout.RowStyles.Add(New RowStyle(SizeType.AutoSize))
+        OverlayPropsLayout.RowCount = magicNoteRow + 1
+        ' El pool magic no se diferencia en el render: skee instala los dos pools IGUAL (SetupOverlay,
+        ' OverlayInterface.cpp:651-668) y la unica diferencia es la malla y de que contador sale el slot.
+        ' De ahi que ESTA APP los pinte igual. La tilde "Magic" es de AUTORADO (pool y slot), no de aspecto,
+        ' y lo unico que cambia de verdad es que un magic de CARA no se pliega en la textura.
+        ' ⛔ El texto NO afirma como se ven in-game: eso no esta medido. Solo lo que hace la app.
+        Dim magicNote As New Label With {
+            .Text = "Magic overlays come from a separate slot pool (iSpellOverlays in the skee64 ini). " &
+                    "This app paints them like any other overlay.",
+            .AutoSize = True, .ForeColor = SystemColors.GrayText,
+            .Margin = New Padding(3, 2, 3, 0)}
+        OverlayPropsLayout.Controls.Add(magicNote, 1, magicNoteRow)
+
         RefreshSseOverlayList()
         RefreshSsePaintCatalog()
     End Sub
+
+    ''' <summary>Conmuta el overlay seleccionado entre el pool normal y el MAGIC renombrando su nodo.
+    ''' <para>⛔ RENOMBRAR ES EL MECANISMO, no un efecto secundario: el nombre del nodo ES la identidad del override
+    ''' en skee, en el co-save y en el <c>.jslot</c> (por eso <see cref="RaceMenuJslot.JslotOverlayNode.IsSpell"/> se
+    ''' deriva del nombre y no es un campo aparte). El índice se recalcula con
+    ''' <see cref="SseCatalogs.NextFreeOverlayIndex"/> porque los dos pools numeran INDEPENDIENTE: el
+    ''' <c>[Ovl2]</c> que se convierte no puede quedar como <c>[SOvl2]</c> si ese slot magic ya está ocupado.</para>
+    ''' <para>Aviso una vez por sesión si el destino no tiene tantos slots (misma regla y mismo texto que el Add;
+    ''' el overlay se convierte igual — es legal e inerte hasta que suba la key).</para></summary>
+    Private Async Sub OnSseOverlayMagicChanged(sender As Object, e As EventArgs)
+        If _suspendEvents Then Return
+        Dim p = Preset
+        Dim ov = SelectedSseOverlay()
+        If p Is Nothing OrElse ov Is Nothing Then Return
+        Dim z = SseCatalogs.ZoneOfNode(ov.NodeName)
+        If Not z.HasValue Then Return
+        Dim toSpell = _sseOverlayMagic.Checked
+        If toSpell = ov.IsSpell Then Return   ' ya está en ese pool (re-seed de la UI) → nada que hacer
+        Dim n = SseCatalogs.NextFreeOverlayIndex(p.SseBodyOverlays, z.Value, toSpell)
+        ' ⛔⛔ ACÁ EL POOL MAGIC SE NEGABA, Y ERA INCOHERENTE CON LA DECISIÓN QUE YA ESTABA TOMADA PARA TODOS LOS
+        ' OVERLAYS: avisar y dejar autorar. La negativa se apoyaba en "en la partida de algunos jugadores NO SE PUEDE
+        ' SACAR", y eso dejó de ser cierto cuando el barrido pasó a recorrer los 127 slots que skee puede crear —
+        ' el techo del que dependía ese argumento ya no existe. Consecuencias medidas de la negativa:
+        '   · con el default del motor (iSpellOverlays=1) se podía autorar UN magic por zona y nada más;
+        '   · con [Features] bEnableFaceOverlays=0 NO se podía autorar NI UNO de cara, nunca;
+        '   · y como el Return salía primero, el aviso de abajo con isSpell:=True era INALCANZABLE desde producto —
+        '     o sea superficie que sólo usaba el gate y viajaba igual en el binario que se distribuye.
+        ' El pool normal, en la misma situación, avisa y sigue. Ahora los dos hacen lo mismo.
+        ' El aviso usa el contador DEL MOTOR y tiene su one-shot POR POOL.
+        Dim limit = SseCatalogs.OverlayCount(z.Value, toSpell)
+        If n >= limit AndAlso SseCatalogs.ClaimOverlayLimitWarning(toSpell) Then
+            MessageBox.Show(Me, SseCatalogs.OverlayLimitNotice(z.Value, n, limit, toSpell),
+                            "Overlay past the RaceMenu slot count", MessageBoxButtons.OK, MessageBoxIcon.Information)
+        End If
+        ov.NodeName = SseCatalogs.OverlayNodeName(z.Value, n, toSpell)
+        p.HasOverlays = True
+        RefreshSseAppliedList(0, ov)
+        Await TriggerOverlayReload()
+    End Sub
+
 
     ''' <summary>Keep the center column's top edge level with the filter box. The offset can't be a constant (the
     ''' GroupBox caption height is DPI/font dependent), so it is measured from the live control and applied as the
@@ -2306,13 +2428,16 @@ Public Class EditBody_Form
                 Dim p = Preset
                 If p IsNot Nothing AndAlso p.SseBodyOverlays IsNot Nothing Then
                     ' Show in DRAW ORDER so Up/Down are intuitive: group by zone (Body, Hands, Feet), and within a
-                    ' zone list the HIGHEST Ovl index first — skee64 draws higher indices on top, so top-of-list =
-                    ' on top. Face overlays are edited on the Face Paint tab and excluded here.
+                    ' zone list the topmost-drawn first. Face overlays are edited on the Face Paint tab, excluded here.
+                    ' ⭐ EL ORDEN DENTRO DE LA ZONA ES LA CLAVE DE COMPOSICIÓN, no el índice pelado: el pool magic va
+                    ' ENCIMA de TODO el pool normal (skee instala el pool primario y después el secundario), así que
+                    ' un [SOvl0] se dibuja sobre un [Ovl5]. Ordenar por índice mostraba la lista al revés de lo que
+                    ' se ve, y Up/Down "arreglaban" un orden que no era el que estaba mal.
                     Dim shown = p.SseBodyOverlays.
                         Where(Function(o) o IsNot Nothing AndAlso SseCatalogs.ZoneOfNode(o.NodeName).HasValue AndAlso
                                           SseCatalogs.ZoneOfNode(o.NodeName).Value <> SseCatalogs.OverlayZone.Face).
                         OrderBy(Function(o) CInt(SseCatalogs.ZoneOfNode(o.NodeName).Value)).
-                        ThenByDescending(Function(o) SseCatalogs.IndexOfNode(o.NodeName)).ToList()
+                        ThenByDescending(Function(o) SseOverlayCompositor.CompositeOrderKey(o.NodeName)).ToList()
                     For Each ov In shown
                         _sseShownOverlays.Add(ov)
                         ListBoxOverlayApplied.Items.Add(SseOverlayLabel(ov))
@@ -2349,7 +2474,9 @@ Public Class EditBody_Form
             If z.HasValue Then name = SseCatalogs.PaintNameForPath(z.Value, ov.DiffusePath)
             diff = If(Not String.IsNullOrEmpty(name), name, IO.Path.GetFileName(ov.DiffusePath))
         End If
-        Return $"{ov.NodeName} — {diff}{If(ov.HasTint, "  ●", "")}"
+        ' El nodo ya dice [SOvl] vs [Ovl], pero la etiqueta explícita es lo que hace la lista legible de un vistazo
+        ' (y el pool magic no se ve en el preview principal, así que conviene que salte).
+        Return $"{ov.NodeName} — {diff}{If(ov.IsSpell, "  [magic]", "")}{If(ov.HasTint, "  ●", "")}"
     End Function
 
     ''' <summary>Load the selected SSE overlay into the reused FO4 tint controls + the SSE texture fields.</summary>
@@ -2371,6 +2498,27 @@ Public Class EditBody_Form
             If _sseTexNormal IsNot Nothing Then
                 _sseTexNormal.Text = If(has, If(ov.NormalPath, ""), "") : _sseTexNormal.Enabled = has
             End If
+            If _sseOverlayMagic IsNot Nothing Then
+                ' Se siembra del NOMBRE del nodo (IsSpell es derivado) — no hay estado paralelo que sincronizar.
+                _sseOverlayMagic.Checked = has AndAlso ov.IsSpell
+                _sseOverlayMagic.Enabled = has
+            End If
+            ' ⭐ LA OPACIDAD DE UN MAGIC OVERLAY LA MANEJA EL MOTOR. Medido en la plantilla del pool: un controller
+            ' ACTIVE + CYCLE_REVERSE anima la Alpha 0↔1 (ver SseOverlayCompositor.IsSpellOverlayNodeName), así que el
+            ' valor autorado se guarda y viaja, pero in-game lo pisa la animación mientras corre. Dejar el slider
+            ' igual que en un overlay normal era prometer un control que el motor no respeta.
+            ' ⛔ ERA "Opacity ⚠:" con el motivo SÓLO en el tooltip del slider. Un ⚠ pelado es una alarma sobre la que el
+        ' usuario no puede actuar: no dice qué pasa ni qué hacer. El motivo va escrito, una vez, abajo.
+        LabelOverlayTintAlpha.Text = "Opacity:"
+            _sseOverlayToolTip.SetToolTip(SliderOverlayTintAlpha,
+                If(has AndAlso ov.IsSpell,
+                   "Saved and written to the NPC, but the engine ANIMATES a magic overlay's alpha (it pulses 0↔1)," & vbCrLf &
+                   "so this value is what the preview shows, not what the game holds steady.",
+                   "skee64 kParam_ShaderAlpha (key 8): the overlay's opacity, independent of the tint colour."))
+            ' Up/Down sólo tienen sentido entre vecinos del MISMO pool (los stacks son independientes y el magic va
+            ' entero encima). Se DESHABILITAN en vez de ignorar el click: un botón que no hace nada al apretarlo es
+            ' el mismo defecto que este editor ya arrastró con "Up/Down parecían no funcionar".
+            UpdateSseOverlayMoveEnabled()
             CheckBoxOverlayTint.Checked = has AndAlso ov.HasTint
             CheckBoxOverlayTint.Enabled = has
             ButtonOverlayTintColor.Enabled = has AndAlso ov.HasTint
@@ -2387,6 +2535,30 @@ Public Class EditBody_Form
             _suspendEvents = False
         End Try
     End Sub
+
+    ''' <summary>Habilita Up/Down sólo cuando el movimiento es POSIBLE: el vecino de la fila tiene que estar en la
+    ''' misma zona Y en el mismo pool.
+    ''' <para>⛔ Sin esto los botones quedaban vivos y el click era un <c>Return</c> mudo — y en el caso MÁS COMÚN
+    ''' (una zona con un solo overlay magic, que es el default <c>iSpellOverlays=1</c>) el magic y el normal más alto
+    ''' son vecinos de fila, así que Up/Down no hacían absolutamente nada sin explicar por qué.</para></summary>
+    Private Sub UpdateSseOverlayMoveEnabled()
+        If Not _isSSE Then Return
+        Dim row = ListBoxOverlayApplied.SelectedIndex
+        ButtonOverlayUp.Enabled = SseCanMoveOverlay(row, -1)
+        ButtonOverlayDown.Enabled = SseCanMoveOverlay(row, 1)
+    End Sub
+
+    ''' <summary>El MISMO predicado que aplica <see cref="SseMoveOverlay"/> — un solo lugar decide "se puede".</summary>
+    Private Function SseCanMoveOverlay(row As Integer, delta As Integer) As Boolean
+        If row < 0 OrElse row >= _sseShownOverlays.Count Then Return False
+        Dim target = row + delta
+        If target < 0 OrElse target >= _sseShownOverlays.Count Then Return False
+        Dim a = _sseShownOverlays(row), b = _sseShownOverlays(target)
+        If a Is Nothing OrElse b Is Nothing Then Return False
+        Dim zA = SseCatalogs.ZoneOfNode(a.NodeName), zB = SseCatalogs.ZoneOfNode(b.NodeName)
+        If Not zA.HasValue OrElse Not zB.HasValue OrElse zA.Value <> zB.Value Then Return False
+        Return SseCatalogs.IsSpellNode(a.NodeName) = SseCatalogs.IsSpellNode(b.NodeName)
+    End Function
 
     ''' <summary>Write the SSE overlay tint COLOUR from the reused FO4 swatch. skee64 unpacks the tint into an
     ''' NiColor (RGB only), so the colour carries no opacity; opacity is the separate key-8 alpha override
@@ -2416,19 +2588,10 @@ Public Class EditBody_Form
         Dim entry = _ssePaintShown(ai)
 
         Dim zone As SseCatalogs.OverlayZone = CType(Math.Max(0, _sseOverlayZone.SelectedIndex), SseCatalogs.OverlayZone)
+        ' Add crea en el pool NORMAL; el checkbox "Magic" del panel de detalle lo convierte después (un control, un
+        ' significado). El índice libre se busca DENTRO del pool: los dos numeran independiente.
         Dim limit = SseCatalogs.OverlayCount(zone)
-        Dim used As New HashSet(Of Integer)
-        For Each o In p.SseBodyOverlays
-            If o Is Nothing Then Continue For
-            Dim z = SseCatalogs.ZoneOfNode(o.NodeName)
-            If z.HasValue AndAlso z.Value = zone Then
-                Dim n0 = SseCatalogs.IndexOfNode(o.NodeName)
-                If n0 >= 0 Then used.Add(n0)
-            End If
-        Next
-
-        Dim n = 0
-        While used.Contains(n) : n += 1 : End While
+        Dim n = SseCatalogs.NextFreeOverlayIndex(p.SseBodyOverlays, zone, False)
         If n >= limit AndAlso SseCatalogs.ClaimOverlayLimitWarning() Then
             MessageBox.Show(Me, SseCatalogs.OverlayLimitNotice(zone, n, limit),
                             "Overlay past the RaceMenu slot count", MessageBoxButtons.OK, MessageBoxIcon.Information)
@@ -2478,11 +2641,16 @@ Public Class EditBody_Form
         Dim zA = SseCatalogs.ZoneOfNode(ov.NodeName)
         Dim zB = SseCatalogs.ZoneOfNode(neighbour.NodeName)
         If Not zA.HasValue OrElse Not zB.HasValue OrElse zA.Value <> zB.Value Then Return   ' different zone → no cross-stack move
+        ' ⛔ Y TAMPOCO ENTRE POOLS. Los stacks normal y magic son independientes (numeración propia, y el magic va
+        ' entero encima), así que "intercambiar los índices" entre un [Ovl] y un [SOvl] no reordena nada: MUEVE de
+        ' pool a los dos overlays, que es una conversión silenciosa — justo lo que el checkbox Magic hace explícito.
+        If SseCatalogs.IsSpellNode(ov.NodeName) <> SseCatalogs.IsSpellNode(neighbour.NodeName) Then Return
         Dim ni = SseCatalogs.IndexOfNode(ov.NodeName)
         Dim nj = SseCatalogs.IndexOfNode(neighbour.NodeName)
         If ni < 0 OrElse nj < 0 Then Return
-        ov.NodeName = SseCatalogs.OverlayNodeName(zA.Value, nj)
-        neighbour.NodeName = SseCatalogs.OverlayNodeName(zB.Value, ni)
+        Dim spell = SseCatalogs.IsSpellNode(ov.NodeName)
+        ov.NodeName = SseCatalogs.OverlayNodeName(zA.Value, nj, spell)
+        neighbour.NodeName = SseCatalogs.OverlayNodeName(zB.Value, ni, spell)
         RefreshSseAppliedList(targetRow)
         Await TriggerOverlayReload()
     End Function
@@ -3408,6 +3576,12 @@ Public Class EditBody_Form
         ' checkboxes own the truth post-seed; CheckedChanged handlers below mutate them and
         ' rebuild the same way. _mainGore is no longer special — the editor's gore checkbox
         ' replaces it as the visibility input.
+        ' principal no lo dibuja nunca. El checkbox "Preview magic" es la fuente de verdad (se LEE de él en vez de
+        ' asumir True, así que si algún día se persiste su estado, esto lo sigue solo).
+        ' ⛔ Y sin checkbox ⇒ FALSE, no True: el checkbox sólo se construye en SSE, así que bajo FO4 el `Is Nothing
+        ' OrElse` que había acá arrancaba el host de los editores en True — el default INVERTIDO del que
+        ' NpcRenderHost documenta lo contrario. Hoy sería inerte (el camino magic está gateado por juego), y por eso
+        ' mismo es la clase de default que nadie descubre hasta que otro lector consulta el flag.
         _editorHost = New NpcRenderHost(EditPreviewControl) With {
             .AppliedPresets = _appliedPresets,
             .Toggles = BuildTogglesFromEditorCheckboxes()

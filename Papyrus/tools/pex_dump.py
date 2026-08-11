@@ -4,6 +4,15 @@ variable de respaldo). Ground truth de lo que el script realmente declara.
 Sirve para los DOS juegos: Skyrim SE escribe el .pex en BIG-endian (magic FA57C0DE) y Fallout 4 en
 LITTLE-endian (los mismos 4 bytes al revés). El endianness se detecta del magic.
 
+⚠️ CON UNA EXCEPCIÓN MEDIDA: la sección FUNCIONES (destinos de llamada y literales) hoy sólo parsea
+Skyrim. `OPARGS` llega hasta el opcode 35 y Fallout 4 (formato v3.9) agrega los de struct — el `.pex` de
+FO4 de este repo muere en `KeyError: 37` (`struct_create`, que sale del `new Overlays:Entry` de su
+`.psc`). El LAYOUT de la sección sí es el mismo en los dos (para llegar al opcode ya leyó bien estados,
+nombres y la cabecera de la función); lo único que falta son las cantidades de argumentos de los opcodes
+36-46. ⛔ NO se completan a ojo: un OPARGS inventado no falla, DESALINEA el stream y devuelve llamadas
+que no existen — un verde falso, que es peor que el fallback ruidoso que hay ahora. Hasta tener esa tabla
+de una fuente, un gate de comportamiento equivalente para FO4 no se puede construir.
+
 ⭐ POR QUÉ IMPORTA LA COLUMNA "respaldo": una property `Auto` se compila a una VARIABLE de script
 (`::X_var`), y las variables SE SERIALIZAN AL SAVEGAME — por eso una referencia que ya existe en la
 partida conserva para siempre el valor que tenía al crearse, y re-guardar el ESP no la alcanza. Una
@@ -62,6 +71,58 @@ def read_function(r, S):
             for _ in range(variant(r, S)[1]): args.append(variant(r, S))
         ops.append((op, args))
     return rt, ops
+
+def calls_of(ops):
+    """Los DESTINOS DE LLAMADA de un cuerpo, en orden y sin repetir.
+
+    ⭐ POR QUE HACE FALTA: la presencia de un literal o de un nombre en la tabla de strings NO prueba que el
+    script lo USE — una vez que una funcion se declara, su nombre queda interno para siempre aunque nadie la
+    llame. El unico artefacto que distingue "declarada" de "llamada" es el stream de instrucciones.
+      * callmethod (23): args fijos (nombre, objetivo, destino)  -> el nombre es args[0]
+      * callstatic (25): args fijos (objeto, nombre, destino)    -> se emite "Objeto.nombre"
+      * callparent (24): args fijos (nombre, destino)
+    """
+    out = []
+    for op, args in ops:
+        t = None
+        if op == 23 and len(args) >= 1:
+            t = args[0][1]
+        elif op == 25 and len(args) >= 2:
+            t = f"{args[0][1]}.{args[1][1]}"
+        elif op == 24 and len(args) >= 1:
+            t = f"parent.{args[0][1]}"
+        if t and t not in out:
+            out.append(t)
+    return out
+
+
+def strings_of(ops):
+    """Los literales de STRING que aparecen en un cuerpo, sin repetir. Sirve para gatear una lista de
+    literales escrita a mano (p.ej. los cuatro prefijos `<zona> [SOvl` del barrido del pool magic): si alguien
+    borra uno, el literal desaparece del cuerpo aunque siga en la tabla de strings por otro uso."""
+    out = []
+    for _, args in ops:
+        for kind, val in args:
+            if kind == "string" and val not in out:
+                out.append(val)
+    return out
+
+
+def read_states(r, S):
+    """La seccion de estados de un objeto: [(nombreEstado, [(nombreFuncion, ops)])].
+
+    Layout: u16 nStates, y por estado u16 nombre + u16 nFunciones + (u16 nombre + Function) por funcion.
+    El estado vacio ('') es el default."""
+    states = []
+    for _ in range(r.u16()):
+        sname = S[r.u16()]
+        funcs = []
+        for _ in range(r.u16()):
+            fname = S[r.u16()]
+            funcs.append((fname, read_function(r, S)[1]))
+        states.append((sname, funcs))
+    return states
+
 
 def const_of(ops):
     """Si el cuerpo es un único `return <literal>`, devuelve ese literal (es el caso de una
@@ -160,10 +221,36 @@ def main(path):
         print(f"\n  auto (con variable de respaldo): {nauto}   sin respaldo (AutoReadOnly / full): {nconst}")
         print(f"  ARRAYS declarados: {len(arrays)} -> {', '.join(arrays)}")
 
-        # Los estados/funciones no interesan acá: saltamos al final del objeto, que el propio
-        # record declara. Si no cuadra, el parseo se desvió y es mejor gritarlo que mentir.
-        assert r.o <= end, f"parseo desbordado en '{name}': 0x{r.o:X} > 0x{end:X}"
-        r.o = end
+        # --- ESTADOS / FUNCIONES, con sus DESTINOS DE LLAMADA y sus literales.
+        #
+        # ⭐ Antes esta sección se salteaba entera (`r.o = end`) con el argumento de que "no interesa acá".
+        # Sí interesa: es el único lugar del artefacto donde se ve si una función se LLAMA, y sin eso un gate
+        # sobre el .pex no puede distinguir "el .pex trae la funcion" de "alguien la llama".
+        #
+        # ⚠️ El layout de la sección va DENTRO DE UN try: está ejercitado por el .pex de Skyrim, y el de
+        # Fallout 4 (formato 3.9) no tiene caso de prueba acá. Si se desvía, se avisa y se saltea al final del
+        # objeto — el dump sigue sirviendo para lo demás. NO se degrada en silencio: el gate que consume esto
+        # falla si no encuentra la función que busca, así que un fallback no puede volverse un verde falso.
+        save_o = r.o
+        try:
+            states = read_states(r, S)
+            if r.o != end:
+                raise ValueError(f"la sección cerró en 0x{r.o:X} y el objeto declara 0x{end:X}")
+            nf = sum(len(f) for _, f in states)
+            print(f"  --- FUNCIONES ({nf} en {len(states)} estado(s)) ---")
+            for sname, funcs in states:
+                for fname, ops in funcs:
+                    tag = f"[state '{sname}'] " if sname else ""
+                    print(f"      {tag}{fname}")
+                    cl = calls_of(ops)
+                    if cl: print(f"          calls: {', '.join(cl)}")
+                    st = strings_of(ops)
+                    if st: print(f"          strings: {', '.join(repr(x) for x in st)}")
+        except Exception as ex:
+            r.o = save_o
+            print(f"  --- FUNCIONES: NO PARSEADAS ({type(ex).__name__}: {ex}) ---")
+            assert r.o <= end, f"parseo desbordado en '{name}': 0x{r.o:X} > 0x{end:X}"
+            r.o = end
         print()
 
 if __name__ == "__main__":

@@ -132,8 +132,15 @@ Event OnLoad()
     ; Skyrim no). Si la linea "antes de tocar" sale y la siguiente NO, llego None y el .Length tiro: ahi
     ; el guard tiene que pasar a un escalar.
     if Verbose_G0000010000
-        Debug.Trace("[NPCM] payload ovl=" + OvlTemplate_G0000010000.Length + " skin='" + SkinTemplate_G0000010000 + "'")
-        Debug.Trace("[NPCM] BM payload morphs=" + MorphName_G0000010000.Length)
+        ; **CUENTA REAL, SIN EL CENTINELA** — gemelo del de SSE. `AddArray` en NpcApplyScriptEmitter es
+        ; COMPARTIDO por los dos juegos ("una sola ley"), asi que una array vacia tambien viaja aca con un
+        ; elemento vacio: sin el, `.Length` sobre una property sin valor revienta en Papyrus.
+        ; ⛔ Trazar `.Length` crudo hacia que un NPC SIN overlays dijera "payload ovl=1", y uno SIN morphs
+        ; "morphs=1". El comportamiento SIEMPRE estuvo bien —los loops de abajo saltean el vacio con
+        ; `if OvlTemplate[i] != ""` y `if mname != ""`— pero el LOG hacia perseguir un fantasma: reporte esa
+        ; linea como una falla silenciosa en SSE cuando era mi propio trace contando el centinela.
+        Debug.Trace("[NPCM] payload ovl=" + RealLen(OvlTemplate_G0000010000) + " skin='" + SkinTemplate_G0000010000 + "'")
+        Debug.Trace("[NPCM] BM payload morphs=" + RealLen(MorphName_G0000010000))
         ; Identidad del primer overlay, gemela de la de SSE: sin esto el log dice CUANTOS llegaron pero no
         ; CUALES, y un template id equivocado se ve igual que uno correcto. Una lectura por traza (quirk del
         ; codegen: indexar el mismo array dos veces en una expresion imprime N veces el ULTIMO elemento).
@@ -180,6 +187,15 @@ Event OnLoad()
         Debug.Trace("[NPCM] DONE ref=" + self.GetFormID())
     endif
 EndEvent
+
+; Cuantos elementos REALES tiene una array de strings del VMAD: 0 cuando lo unico que hay es el centinela.
+; Gemelo de RealLen en NPCM_Manolov_ApplySSE.psc — mismo emisor, misma ley, mismo helper.
+int Function RealLen(string[] a) global
+    if a.Length == 1 && a[0] == ""
+        return 0
+    endif
+    return a.Length
+EndFunction
 
 Function ApplyOverlays()
     Actor a = self as Actor
@@ -425,7 +441,11 @@ Function ApplyBodyMorphs()
     endwhile
 
     if Verbose_G0000010000
-        Debug.Trace("[NPCM] BM aplicados=" + applied + " de " + n)
+        ; ⛔ EL `n` DE ACA ES EL TOPE DEL LOOP (`.Length` crudo) Y TIENE QUE SEGUIR SIENDOLO: el loop recorre
+        ; todo y saltea el centinela con `!= ""`. Lo que estaba mal era TRAZARLO: arregle el trace del payload
+        ; para que dijera 0 y me deje este, asi que el MISMO log decia "morphs=0" y dos lineas despues
+        ; "aplicados=0 de 1". Dos traces que se contradicen es peor que uno solo mintiendo.
+        Debug.Trace("[NPCM] BM aplicados=" + applied + " de " + RealLen(MorphName_G0000010000))
         if n > 0
             string m0 = MorphName_G0000010000[0]
             if m0 != ""

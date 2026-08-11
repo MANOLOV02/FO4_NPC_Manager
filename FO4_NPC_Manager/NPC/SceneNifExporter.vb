@@ -1,4 +1,4 @@
-Imports FO4_Base_Library
+﻿Imports FO4_Base_Library
 Imports NiflySharp
 Imports OpenTK.Mathematics
 
@@ -51,6 +51,10 @@ Public NotInheritable Class SceneNifExporter
         Public SkinToneSkipped As Integer
         ''' <summary>Una línea por shape salteado, para el cuadro de la UI.</summary>
         Public SkinToneSkippedDetails As String
+        ''' <summary>Non-Nothing sólo si el usuario pidió el locator del menú de carga y NO se pudo
+        ''' escribir. El NIF se guarda igual (la geometría está bien), pero callarlo le vendería un
+        ''' "Export OK" a un archivo que no cumple lo que la opción prometía.</summary>
+        Public LoadScreenNodeError As String
     End Structure
 
     ''' <summary>OpenTK.Mathematics.Vector3 → System.Numerics.Vector3 (mismo nombre, structs distintos).</summary>
@@ -98,6 +102,219 @@ Public NotInheritable Class SceneNifExporter
     End Function
 
 
+
+    ''' <summary>
+    ''' Máscara de vértices que NO viajan al NIF, con los DOS mecanismos con que el render oculta
+    ''' geometría:
+    ''' <para>(1) VERTEX-ZAP: <c>ApplyZaps=True</c> + <c>VertexMask(i)=-1</c> (pelo). Se cae el vértice y
+    ''' todo triángulo que lo toque — el predicado exacto de Render.vb. AGNOSTICO a qué partición se
+    ''' zapeó (Top / Long / Both): keyea puro en <c>VertexMask(i)=-1</c>.</para>
+    ''' <para>(2) OCLUSION POR SEGMENTO/PARTICION: el cuerpo/armor tapado por otra prenda. NO toca
+    ''' <c>VertexMask</c> — el render la aplica FILTRANDO EL INDEX BUFFER en <c>EnsureZapIndexBuffer</c>
+    ''' (Render.vb:2689+). Un vértice se cae si ningún triángulo VIVO lo referencia.</para>
+    ''' <para>⭐ El set NO se recalcula acá: se LEE el que el render usó para dibujar
+    ''' (<c>mesh.HiddenTriangles</c>). Recalcularlo sería reproducir el criterio (toggle
+    ''' DrawHiddenSegments + rama FO4-por-segmento / SSE-por-partición + máscaras), y dos copias del
+    ''' criterio se desincronizan en cuanto alguien toque el render. Está indexado por índice de
+    ''' triángulo del shape = el MISMO orden que <c>liveGeom.Indices</c>.</para>
+    ''' <para>⛔ ESTÁ EXTRAÍDA A PROPÓSITO: la consumen el export (para compactar) Y
+    ''' <see cref="MeasureBakedBounds"/> (para que el diálogo muestre el bbox que el export va a
+    ''' producir). Con dos copias, el número que ve el usuario y el que se escribe divergen en cuanto
+    ''' alguien toque una sola.</para>
+    ''' </summary>
+    ''' <param name="hasOcclusion">Sale True si algún triángulo está oculto por segmento/partición.</param>
+    ''' <param name="allTrianglesHidden">Sale True si NO queda ningún triángulo vivo: el shape entero es
+    ''' invisible y no se exporta (no es un fallo — en pantalla tampoco hay nada).</param>
+    Private Shared Function ComputeVertexDropMask(mesh As PreviewModel.RenderableMesh,
+                                                  srcRenderable As IRenderableShape,
+                                                  liveGeom As SkinnedGeometry,
+                                                  n As Integer,
+                                                  ByRef hasOcclusion As Boolean,
+                                                  ByRef allTrianglesHidden As Boolean) As Boolean()
+        Dim vm = liveGeom.VertexMask
+        Dim hasZap As Boolean = srcRenderable.ApplyZaps AndAlso vm IsNot Nothing AndAlso vm.Length = n
+        Dim occl As Boolean() = mesh.HiddenTriangles
+        hasOcclusion = occl IsNot Nothing AndAlso Array.IndexOf(occl, True) >= 0
+        allTrianglesHidden = False
+
+        ' El segundo término sólo corre con hasOcclusion, así que el camino sin oclusión queda
+        ' idéntico byte a byte al de antes.
+        Dim vertexDropped(n - 1) As Boolean
+        For i = 0 To n - 1
+            vertexDropped(i) = hasZap AndAlso vm(i) = -1.0F
+        Next
+        If Not hasOcclusion Then Return vertexDropped
+
+        Dim idxAll = liveGeom.Indices
+        Dim referenced(n - 1) As Boolean
+        Dim liveTris As Integer = 0
+        If idxAll IsNot Nothing Then
+            Dim t2 = 0
+            While t2 + 2 < idxAll.Length
+                Dim ta = CInt(idxAll(t2)), tb = CInt(idxAll(t2 + 1)), tc = CInt(idxAll(t2 + 2))
+                Dim triIdx = t2 \ 3
+                Dim hidden = (triIdx < occl.Length AndAlso occl(triIdx))
+                If Not hidden AndAlso ta >= 0 AndAlso ta < n AndAlso tb >= 0 AndAlso tb < n AndAlso tc >= 0 AndAlso tc < n Then
+                    If Not vertexDropped(ta) AndAlso Not vertexDropped(tb) AndAlso Not vertexDropped(tc) Then
+                        referenced(ta) = True : referenced(tb) = True : referenced(tc) = True
+                        liveTris += 1
+                    End If
+                End If
+                t2 += 3
+            End While
+        End If
+        If liveTris = 0 Then
+            allTrianglesHidden = True
+            Return vertexDropped
+        End If
+        For i = 0 To n - 1
+            If Not referenced(i) Then vertexDropped(i) = True
+        Next
+        Return vertexDropped
+    End Function
+
+    ''' <summary>Bounding box del modelo tal como lo dejaría un export UNSKINNED, en las coordenadas que
+    ''' quedarían en el NIF destino, más el conteo de vértices que lo produjeron (0 = no hay nada que
+    ''' medir).</summary>
+    Public Structure BakedBounds
+        Public Min As System.Numerics.Vector3
+        Public Max As System.Numerics.Vector3
+        Public VertexCount As Integer
+        Public ReadOnly Property IsUsable As Boolean
+            Get
+                Return VertexCount > 0
+            End Get
+        End Property
+        Public ReadOnly Property Height As Single
+            Get
+                Return If(VertexCount > 0, Max.Z - Min.Z, 0.0F)
+            End Get
+        End Property
+        ''' <summary>Posición por defecto del locator del menú de carga: centrado en XY y a
+        ''' <paramref name="heightFraction"/> del alto desde la base.</summary>
+        Public Function ZoomTargetAt(heightFraction As Single) As System.Numerics.Vector3
+            If VertexCount = 0 Then Return New System.Numerics.Vector3(0, 0, 0)
+            Return New System.Numerics.Vector3((Min.X + Max.X) * 0.5F,
+                                               (Min.Y + Max.Y) * 0.5F,
+                                               Min.Z + (Max.Z - Min.Z) * heightFraction)
+        End Function
+    End Structure
+
+    ''' <summary>
+    ''' Mide el bbox que produciría un export unskinned de <paramref name="meshes"/>, SIN escribir nada.
+    ''' Existe para que el diálogo pueda ofrecer un valor por defecto editable para el locator del menú
+    ''' de carga y para que ese número sea EL MISMO que se escribiría.
+    ''' <para>Aplica los mismos descartes que el export: shapes sin datos, <c>RenderHide</c>, oclusión sin
+    ''' evaluar, shapes enteramente ocluidos, y por vértice la máscara de
+    ''' <see cref="ComputeVertexDropMask"/>. Las posiciones salen del MISMO transform world-pose
+    ''' (<c>PerVertexSkinMatrix</c>) que usa el bake.</para>
+    ''' <para>⚠️ Un shape que el export falle DESPUÉS de esto (clone fallido, partición irremapeable) sí
+    ''' cuenta acá y no allá. Es un residuo conocido y acotado: cuando pasa, el export ya le muestra al
+    ''' usuario el cuadro de shapes fallidos.</para>
+    ''' </summary>
+    Public Shared Function MeasureBakedBounds(meshes As IEnumerable(Of PreviewModel.RenderableMesh)) As BakedBounds
+        Dim result As New BakedBounds With {
+            .Min = New System.Numerics.Vector3(Single.MaxValue, Single.MaxValue, Single.MaxValue),
+            .Max = New System.Numerics.Vector3(Single.MinValue, Single.MinValue, Single.MinValue),
+            .VertexCount = 0
+        }
+        If meshes Is Nothing Then Return result
+
+        For Each mesh In meshes
+            If mesh Is Nothing OrElse mesh.MeshData Is Nothing OrElse mesh.MeshData.Shape Is Nothing Then Continue For
+            Dim srcRenderable = mesh.MeshData.Shape
+            If srcRenderable.RenderHide Then Continue For
+            If Not mesh.OcclusionEvaluated Then Continue For
+            Try
+                If mesh.MeshData.Meshgeometry.Vertices IsNot Nothing Then
+                    SkinningHelper.GetWorldVertices(mesh.MeshData.Meshgeometry)
+                End If
+                Dim liveGeom = mesh.MeshData.Meshgeometry
+                Dim localVerts = liveGeom.Vertices
+                Dim perVtxMat = liveGeom.PerVertexSkinMatrix
+                If localVerts Is Nothing OrElse perVtxMat Is Nothing OrElse localVerts.Length <> perVtxMat.Length Then Continue For
+                Dim n = localVerts.Length
+
+                Dim hasOccl As Boolean, allHidden As Boolean
+                Dim dropped = ComputeVertexDropMask(mesh, srcRenderable, liveGeom, n, hasOccl, allHidden)
+                If allHidden Then Continue For
+
+                For i = 0 To n - 1
+                    If dropped(i) Then Continue For
+                    Dim wv = Vector3d.TransformPosition(localVerts(i), perVtxMat(i))
+                    Dim p As New System.Numerics.Vector3(CSng(wv.X), CSng(wv.Y), CSng(wv.Z))
+                    result.Min = System.Numerics.Vector3.Min(result.Min, p)
+                    result.Max = System.Numerics.Vector3.Max(result.Max, p)
+                    result.VertexCount += 1
+                Next
+            Catch
+                ' Medir nunca puede voltear el diálogo: un shape degenerado simplemente no aporta.
+            End Try
+        Next
+        Return result
+    End Function
+
+    ''' <summary>Nombre EXACTO del locator que el menú de carga de FO4 busca. Medido: aparece con esta
+    ''' grafía en 63 de los 173 <c>Meshes\LoadScreenArt\*.nif</c> vanilla. No es configurable — lo lee el
+    ''' motor por nombre.</summary>
+    Private Const LoadScreenZoomTargetName As String = "LoadingMenuZoomTarget"
+
+    ''' <summary>Altura del pivote como fracción del alto del modelo, medida desde su base.
+    ''' <para>Vanilla NO usa ninguna fórmula: los 63 casos están puestos a mano y la fracción va de 0,218 a
+    ''' 0,994 (mediana 0,769), con 6 archivos que directamente lo dejaron en (0,0,0). Pero el cluster de
+    ''' bípedos erguidos —que es lo que este exporter produce— cae en 0,78..0,95, y 0,85 los reproduce
+    ''' dentro de ±10 % (raider −3,5 %, super mutante −1,2 %, synths +1,9 %, protectron +2,6 %).</para>
+    ''' <para>⚠️ En un NPC NO erguido (cuadrúpedo, mirelurk, stingwing) el punto más alto es el lomo o las
+    ''' alas y no la cabeza, y esta fracción se va hasta 51 % de error. No hay regla geométrica que lo
+    ''' resuelva: dónde está la cabeza no está en el bounding box. Ese caso se corrige a mano sobre el NIF.</para></summary>
+    Private Const LoadScreenZoomHeightFraction As Single = 0.85F
+
+    ''' <summary>¿El destino es FO4? El locator del menú de carga es exclusivo de ese motor (0 de 139
+    ''' loadscreens de SSE lo traen), así que se pregunta por la versión que REALMENTE se va a escribir y
+    ''' no por el toggle del diálogo.</summary>
+    Private Shared Function IsFallout4Target(v As NiVersion) As Boolean
+        Return v IsNot Nothing AndAlso v.UserVersion = 12 AndAlso v.StreamVersion = 130
+    End Function
+
+    ''' <summary>
+    ''' Cuelga el locator <c>LoadingMenuZoomTarget</c> de la raíz del NIF destino, en el centro XY del
+    ''' modelo y a <see cref="LoadScreenZoomHeightFraction"/> de su alto.
+    ''' <para>⛔ TIENE que ir DESPUÉS del <c>RemoveUnreferencedBlocks</c> del exporter, igual que el
+    ''' reparent de <c>FaceGenBuilder</c>: así el índice que devuelve <c>AddBlock</c> es el final.</para>
+    ''' <para>⛔ Y TIENE que quedar referenciado desde <c>root.Children</c>, no basta con
+    ''' <c>AddBlock</c>. <c>NifFile.Save</c> corre con los defaults de <c>NifFileSaveOptions</c>
+    ''' (<c>RemoveUnreferencedBlocks=True</c>, <c>SortBlocks=True</c>): un bloque suelto lo borra el
+    ''' primero, y para el segundo <c>GetParentNode</c> daría Nothing y lo trataría como un SEGUNDO nodo
+    ''' raíz. Con el ref puesto, <c>NiNode.Sync</c> recalcula <c>NumChildren</c> desde la lista y
+    ''' <c>UpdateHeaderStrings</c> mete el nombre en la tabla del header — nada más que tocar.</para>
+    ''' <para>La rotación se escribe identidad EXPLÍCITA: <c>Matrix33</c> arranca en ceros, y una matriz
+    ''' nula no es una rotación válida. <c>Scale</c> ya viene 1.0 por default pero se fija igual.</para>
+    ''' </summary>
+    Private Shared Function AddLoadScreenZoomTarget(nif As Nifcontent_Class_Manolo,
+                                                    placement As LoadScreenNodePlacement) As Boolean
+        Dim root = nif.GetRootNode()
+        If root Is Nothing OrElse root.Children Is Nothing Then Return False
+
+        ' ⛔ El cruce de ejes es REAL, no un descuido: Transform_Class.EulerXYZToMatrix33 toma
+        ' (yaw=Z, pitch=Y, roll=X) en ese orden, mientras que el placement guarda grados POR EJE porque
+        ' es como están etiquetados los campos del diálogo. Con rotación cero da la identidad exacta,
+        ' que es lo que traen los 63 loadscreens vanilla.
+        Dim rot = placement.RotationDegrees
+        Dim m As NiflySharp.Structs.Matrix33 =
+            If(rot.X = 0.0F AndAlso rot.Y = 0.0F AndAlso rot.Z = 0.0F,
+               New NiflySharp.Structs.Matrix33 With {.M11 = 1.0F, .M22 = 1.0F, .M33 = 1.0F},
+               Transform_Class.EulerXYZToMatrix33(rot.Z, rot.Y, rot.X))
+
+        Dim node As New NiflySharp.Blocks.NiNode() With {
+            .Name = New NiflySharp.NiStringRef(LoadScreenZoomTargetName),
+            .Flags_ui = &HEUI,
+            .Rotation = m,
+            .Scale = placement.Scale,
+            .Translation = placement.Position
+        }
+        root.Children.AddBlockRef(nif.AddBlock(node))
+        Return True
+    End Function
 
     ''' <summary>Versión del NIF destino según el juego activo, con el mismo criterio que el bake
     ''' de FaceGen (<c>FaceGenBuilder</c>: <c>Config_App.Current.Game = Skyrim</c> ⇒ SSE). Sin
@@ -238,8 +455,6 @@ Public NotInheritable Class SceneNifExporter
                 ' copias del criterio se desincronizan en cuanto alguien toque el render. Está
                 ' indexado por índice de triángulo del shape = el MISMO orden que liveGeom.Indices,
                 ' la alineación en la que ya se apoya el provenance de más abajo.
-                Dim vm = liveGeom.VertexMask
-                Dim hasZap As Boolean = srcRenderable.ApplyZaps AndAlso vm IsNot Nothing AndAlso vm.Length = n
                 If Not mesh.OcclusionEvaluated Then
                     ' El cómputo vive en Render(); si este shape visible nunca se dibujó, no sabemos
                     ' qué está ocluido. Se falla explícito antes que exportar geometría de más en
@@ -248,45 +463,17 @@ Public NotInheritable Class SceneNifExporter
                     failureDetails.AppendLine($"{shapeName}: occlusion state unknown (shape never went through a render pass) — skipped rather than exporting hidden geometry")
                     Continue For
                 End If
-                Dim occl As Boolean() = mesh.HiddenTriangles
-                Dim hasOccl As Boolean = occl IsNot Nothing AndAlso Array.IndexOf(occl, True) >= 0
 
-                ' Un vértice se cae si está zapeado o si, con la oclusión activa, ningún triángulo
-                ' VIVO lo referencia. El segundo término sólo corre con hasOccl, así que el camino
-                ' sin oclusión queda idéntico byte a byte al de antes.
-                Dim vertexDropped(n - 1) As Boolean
-                For i = 0 To n - 1
-                    vertexDropped(i) = hasZap AndAlso vm(i) = -1.0F
-                Next
-                If hasOccl Then
-                    Dim idxAll = liveGeom.Indices
-                    Dim referenced(n - 1) As Boolean
-                    Dim liveTris As Integer = 0
-                    If idxAll IsNot Nothing Then
-                        Dim t2 = 0
-                        While t2 + 2 < idxAll.Length
-                            Dim ta = CInt(idxAll(t2)), tb = CInt(idxAll(t2 + 1)), tc = CInt(idxAll(t2 + 2))
-                            Dim triIdx = t2 \ 3
-                            Dim hidden = (triIdx < occl.Length AndAlso occl(triIdx))
-                            If Not hidden AndAlso ta >= 0 AndAlso ta < n AndAlso tb >= 0 AndAlso tb < n AndAlso tc >= 0 AndAlso tc < n Then
-                                If Not vertexDropped(ta) AndAlso Not vertexDropped(tb) AndAlso Not vertexDropped(tc) Then
-                                    referenced(ta) = True : referenced(tb) = True : referenced(tc) = True
-                                    liveTris += 1
-                                End If
-                            End If
-                            t2 += 3
-                        End While
-                    End If
-                    ' Shape enteramente oculto (el caso típico del body tapado en SSE, donde la
-                    ' oclusión por partición es whole-mesh): no se exporta, igual que un RenderHide.
-                    ' No cuenta como fallo — en pantalla tampoco hay nada.
-                    If liveTris = 0 Then
-                        Logger.LogLazy(Function() $"[SCENE-EXPORT] '{shapeName}' SKIPPED: todos los triángulos ocluidos por segmento/partición")
-                        Continue For
-                    End If
-                    For i = 0 To n - 1
-                        If Not referenced(i) Then vertexDropped(i) = True
-                    Next
+                Dim hasOccl As Boolean
+                Dim allHidden As Boolean
+                Dim vertexDropped = ComputeVertexDropMask(mesh, srcRenderable, liveGeom, n, hasOccl, allHidden)
+                Dim occl As Boolean() = mesh.HiddenTriangles
+                ' Shape enteramente oculto (el caso típico del body tapado en SSE, donde la
+                ' oclusión por partición es whole-mesh): no se exporta, igual que un RenderHide.
+                ' No cuenta como fallo — en pantalla tampoco hay nada.
+                If allHidden Then
+                    Logger.LogLazy(Function() $"[SCENE-EXPORT] '{shapeName}' SKIPPED: todos los triángulos ocluidos por segmento/partición")
+                    Continue For
                 End If
 
                 ' oldToNew(i) mapea un vértice fuente sobreviviente a su índice compactado; -1 = removido.
@@ -614,6 +801,30 @@ Public NotInheritable Class SceneNifExporter
                     End If
                 End If
 
+                ' ── EL FLAG 'Skinned' DEL SHADER TIENE QUE COINCIDIR CON EL SKIN REAL DEL SHAPE ──
+                ' ⛔ El shader lleva su PROPIO bit Skinned (bit 1 de ShaderPropertyFlags1), INDEPENDIENTE
+                ' del atributo de vértice (IsSkinned) y del SkinInstanceRef. La rama unskinned de arriba
+                ' limpia esos dos y NO tocaba éste, así que el shape salía sin datos de skin pero con el
+                ' shader diciéndole al motor que los bindee. FO4 lo carga y CRASHEA AL ESCRITORIO.
+                ' MEDIDO: los 173 loadscreens vanilla tienen el bit en 0 y sus flags son idénticos a los
+                ' que emitíamos salvo por ese +2 exacto (vanilla 2151678465 / nuestro 2151678467,
+                ' vanilla 2151678593 / nuestro 2151678595, vanilla 2151679489 / nuestro 2151679491).
+                ' Un export SKINNED del mismo NPC no crasheaba justamente porque ahí el bit sí decía
+                ' la verdad.
+                ' El predicado es el estado REAL del clon, no la opción del diálogo: con Skinned=True un
+                ' shape que igual no tiene skin (un prop) debe quedar con el bit en 0. Va acá, después de
+                ' la rama de skin Y de la conversión BSDynamicTriShape→BSTriShape, para leer el estado
+                ' final. SetFlagSF1 despacha por juego según la versión del NIF (SK / FO4), y el valor
+                ' del flag se toma del enum de CADA juego en vez de asumir que comparten el bit.
+                Dim clonedShader = destNif.GetShader(clonedINiShape)
+                If clonedShader IsNot Nothing Then
+                    Dim skinnedFlag As UInteger =
+                        If(IsFallout4Target(destVersion),
+                           CUInt(NiflySharp.Enums.Fallout4ShaderPropertyFlags1.Skinned),
+                           CUInt(NiflySharp.Enums.SkyrimShaderPropertyFlags1.Skinned))
+                    NiflySharp.Helpers.ShaderHelper.SetFlagSF1(clonedShader, skinnedFlag, clonedINiShape.IsSkinned)
+                End If
+
                 ' Repunte de la cara. Va DESPUÉS de toda la escritura de geometría porque sólo toca el
                 ' shader + el BSShaderTextureSet; el gate por shader-type vive adentro (no todo head part
                 ' califica).
@@ -626,9 +837,12 @@ Public NotInheritable Class SceneNifExporter
                                                  srcRenderable.ShapeMaterial?.material)
                 End If
 
-                ' Skin tone de la PIEL al shader. Va DESPUÉS del repunte porque en FO4 los dos escriben el
+                ' Material resuelto al shader. Va DESPUÉS del repunte porque en FO4 los dos escriben el
                 ' MISMO shader inline y el repunte ya transcribe el de la cara; el writer descarta la cara
                 ' por su cuenta (gate Facegen), así que ningún shape pasa dos veces por la transcripción.
+                ' ⭐ En FO4 alcanza a TODA shape, no sólo a la piel: sin cortar el link al .bgsm el motor
+                ' reemplaza el material entero y el color del NPC no llega al juego (era el caso del PELO).
+                ' En SSE sigue siendo sólo el color de las shapes de piel. Ver ShapeMaterialTranscriber.
                 ' ⭐ Se lee la MaterialData de la mesh, no el ShapeMaterial pelado: es la que tiene el
                 ' "ya está" del tono horneado (SkinToneBaked), o sea exactamente lo que el render miró para
                 ' decidir si tintaba este shape.
@@ -638,12 +852,12 @@ Public NotInheritable Class SceneNifExporter
                 ' Lo que se exporta es el shape BASE, y el tono que se le escribe es el de su piel — correcto.
                 If opts.WriteSkinTone Then
                     Dim matData = mesh.MeshData.Material
-                    Select Case SkinToneShaderWriter.Apply(destNif, clonedINiShape,
+                    Select Case ShapeMaterialTranscriber.Apply(destNif, clonedINiShape,
                                                            matData?.MaterialBase,
                                                            matData IsNot Nothing AndAlso matData.SkinToneBaked)
-                        Case SkinToneShaderWriter.Outcome.Written
+                        Case ShapeMaterialTranscriber.Outcome.Written
                             skinToneWritten += 1
-                        Case SkinToneShaderWriter.Outcome.SkippedShaderType
+                        Case ShapeMaterialTranscriber.Outcome.SkippedShaderType
                             skinToneSkipped += 1
                             skinToneSkippedDetails.AppendLine($"{shapeName}: skin material but the shape's shader type is not Skin Tint — the NIF has no field to carry the tone there, shader left as-is")
                     End Select
@@ -677,6 +891,46 @@ Public NotInheritable Class SceneNifExporter
         Catch
         End Try
 
+        ' Locator del menú de carga. VA ACÁ: después del RemoveUnreferencedBlocks (índices finales) y
+        ' antes del Save. Se revalidan las dos precondiciones en vez de confiar en el diálogo —el
+        ' exporter también se llama sin él— y se pregunta por la versión que se va a ESCRIBIR, no por
+        ' el toggle de juego.
+        Dim loadScreenNodeError As String = Nothing
+        If opts.AddLoadScreenNode Then
+            If opts.Skinned Then
+                loadScreenNodeError = $"'{LoadScreenZoomTargetName}' not written: it only applies to an unskinned export."
+            ElseIf Not IsFallout4Target(destVersion) Then
+                loadScreenNodeError = $"'{LoadScreenZoomTargetName}' not written: the node only exists in Fallout 4, and the export target is {DescribeVersion(destVersion)}."
+            Else
+                ' El diálogo manda lo que el usuario tuvo a la vista. Sin eso (caller headless) se arma
+                ' el default con la MISMA función con la que el diálogo arma el suyo.
+                Dim placement = opts.LoadScreenNodePlacement
+                If placement Is Nothing Then
+                    Dim measured = MeasureBakedBounds(meshes)
+                    If Not measured.IsUsable Then
+                        loadScreenNodeError = $"'{LoadScreenZoomTargetName}' not written: no exported vertex to measure the model from."
+                    Else
+                        placement = New LoadScreenNodePlacement With {
+                            .Position = measured.ZoomTargetAt(LoadScreenZoomHeightFraction)
+                        }
+                    End If
+                End If
+
+                If loadScreenNodeError Is Nothing Then
+                    Try
+                        If AddLoadScreenZoomTarget(destNif, placement) Then
+                            Dim p = placement
+                            Logger.LogLazy(Function() $"[SCENE-EXPORT] {LoadScreenZoomTargetName} en ({p.Position.X:F2}, {p.Position.Y:F2}, {p.Position.Z:F2}) rot=({p.RotationDegrees.X:F1}, {p.RotationDegrees.Y:F1}, {p.RotationDegrees.Z:F1}) scale={p.Scale:F3}")
+                        Else
+                            loadScreenNodeError = $"'{LoadScreenZoomTargetName}' not written: the destination NIF has no root node to attach it to."
+                        End If
+                    Catch ex As Exception
+                        loadScreenNodeError = $"'{LoadScreenZoomTargetName}' not written: {ex.Message}"
+                    End Try
+                End If
+            End If
+        End If
+
         Try
             destNif.Save_As_Manolo(outPath, Overwrite:=True)
         Catch ex As Exception
@@ -698,7 +952,8 @@ Public NotInheritable Class SceneNifExporter
             .SaveError = Nothing,
             .SkinToneWritten = skinToneWritten,
             .SkinToneSkipped = skinToneSkipped,
-            .SkinToneSkippedDetails = skinToneSkippedDetails.ToString()
+            .SkinToneSkippedDetails = skinToneSkippedDetails.ToString(),
+            .LoadScreenNodeError = loadScreenNodeError
         }
     End Function
 

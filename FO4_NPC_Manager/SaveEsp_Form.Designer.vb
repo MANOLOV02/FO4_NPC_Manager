@@ -15,6 +15,8 @@ Partial Class SaveEsp_Form
     End Sub
 
     Private Sub InitializeComponent()
+        components = New ComponentModel.Container()
+        ToolTipWarning = New ToolTip(components)
         LabelHeader = New Label()
         PanelScope = New Panel()
         RadioScopeAllChanged = New RadioButton()
@@ -65,7 +67,7 @@ Partial Class SaveEsp_Form
         ' LabelHeader
         ' 
         LabelHeader.AutoSize = True
-        LabelHeader.Location = New Point(12, 16)
+        LabelHeader.Location = New Point(12, 18)
         LabelHeader.Name = "LabelHeader"
         LabelHeader.Size = New Size(42, 15)
         LabelHeader.TabIndex = 0
@@ -75,18 +77,20 @@ Partial Class SaveEsp_Form
         ' 
         PanelScope.Controls.Add(RadioScopeAllChanged)
         PanelScope.Controls.Add(RadioScopeSelected)
-        PanelScope.Location = New Point(64, 10)
+        ' Ancho MEDIDO con la fuente del diálogo y el peor rótulo posible ("All changed (9999)" =
+        ' 124 px, "Selected (9999)" = 106 px): los contadores llegan a 4 dígitos sin recortarse.
+        PanelScope.Location = New Point(64, 12)
         PanelScope.Name = "PanelScope"
-        PanelScope.Size = New Size(400, 26)
+        PanelScope.Size = New Size(266, 28)
         PanelScope.TabIndex = 1
         ' 
         ' RadioScopeAllChanged
         ' 
         RadioScopeAllChanged.AutoSize = True
         RadioScopeAllChanged.Checked = True
-        RadioScopeAllChanged.Location = New Point(6, 4)
+        RadioScopeAllChanged.Location = New Point(6, 3)
         RadioScopeAllChanged.Name = "RadioScopeAllChanged"
-        RadioScopeAllChanged.Size = New Size(88, 19)
+        RadioScopeAllChanged.Size = New Size(124, 22)
         RadioScopeAllChanged.TabIndex = 0
         RadioScopeAllChanged.TabStop = True
         RadioScopeAllChanged.Text = "All changed"
@@ -95,9 +99,9 @@ Partial Class SaveEsp_Form
         ' RadioScopeSelected
         ' 
         RadioScopeSelected.AutoSize = True
-        RadioScopeSelected.Location = New Point(160, 4)
+        RadioScopeSelected.Location = New Point(154, 3)
         RadioScopeSelected.Name = "RadioScopeSelected"
-        RadioScopeSelected.Size = New Size(95, 19)
+        RadioScopeSelected.Size = New Size(106, 22)
         RadioScopeSelected.TabIndex = 1
         RadioScopeSelected.Text = "Selected only"
         RadioScopeSelected.UseVisualStyleBackColor = True
@@ -112,7 +116,7 @@ Partial Class SaveEsp_Form
         GroupBoxTarget.Controls.Add(LabelExtension)
         GroupBoxTarget.Controls.Add(CheckBoxLightMaster)
         GroupBoxTarget.Controls.Add(CheckBoxMarkAsMaster)
-        GroupBoxTarget.Location = New Point(12, 44)
+        GroupBoxTarget.Location = New Point(12, 52)
         GroupBoxTarget.Name = "GroupBoxTarget"
         GroupBoxTarget.Size = New Size(480, 248)
         GroupBoxTarget.TabIndex = 2
@@ -208,7 +212,7 @@ Partial Class SaveEsp_Form
         GroupBoxSave.Controls.Add(CheckBoxOverrideScriptVersion)
         GroupBoxSave.Controls.Add(NumericUpDownScriptVersion)
         GroupBoxSave.Controls.Add(CheckBoxSaveNewOutfits)
-        GroupBoxSave.Location = New Point(508, 44)
+        GroupBoxSave.Location = New Point(508, 52)
         GroupBoxSave.Name = "GroupBoxSave"
         GroupBoxSave.Size = New Size(480, 182)
         GroupBoxSave.TabIndex = 3
@@ -260,7 +264,8 @@ Partial Class SaveEsp_Form
         CheckBoxEmitApplyScript.Name = "CheckBoxEmitApplyScript"
         CheckBoxEmitApplyScript.Size = New Size(356, 19)
         CheckBoxEmitApplyScript.TabIndex = 3
-        CheckBoxEmitApplyScript.Text = "Emit apply-script (overlays / skin / node scales / body morphs)"
+        ' ⛔ DECÍA "node scales" y desde el TRS completo eso es falso: se escribe escala + posición + rotación.
+        CheckBoxEmitApplyScript.Text = "Attach the helper script (tattoos, body paint, bone edits, body sliders)"
         CheckBoxEmitApplyScript.UseVisualStyleBackColor = True
         ' 
         ' CheckBoxOverrideScriptVersion
@@ -301,7 +306,7 @@ Partial Class SaveEsp_Form
         GroupBoxEncoding.Controls.Add(LabelEncodingHint)
         GroupBoxEncoding.Controls.Add(LabelBa2Version)
         GroupBoxEncoding.Controls.Add(ComboBoxBa2Version)
-        GroupBoxEncoding.Location = New Point(12, 304)
+        GroupBoxEncoding.Location = New Point(12, 312)
         GroupBoxEncoding.Name = "GroupBoxEncoding"
         GroupBoxEncoding.Size = New Size(480, 92)
         GroupBoxEncoding.TabIndex = 4
@@ -360,7 +365,7 @@ Partial Class SaveEsp_Form
         GroupBoxLvlList.Controls.Add(RadioLvlExisting)
         GroupBoxLvlList.Controls.Add(ComboBoxLvlExisting)
         GroupBoxLvlList.Controls.Add(CheckBoxLvlNoDup)
-        GroupBoxLvlList.Location = New Point(508, 238)
+        GroupBoxLvlList.Location = New Point(508, 246)
         GroupBoxLvlList.Name = "GroupBoxLvlList"
         GroupBoxLvlList.Size = New Size(480, 158)
         GroupBoxLvlList.TabIndex = 5
@@ -436,18 +441,25 @@ Partial Class SaveEsp_Form
         ' 
         ' LabelWarning
         ' 
-        LabelWarning.Anchor = AnchorStyles.Bottom Or AnchorStyles.Left Or AnchorStyles.Right
+        LabelWarning.Anchor = AnchorStyles.Top Or AnchorStyles.Left Or AnchorStyles.Right
+        LabelWarning.AutoEllipsis = True
         LabelWarning.ForeColor = Color.DarkOrange
-        LabelWarning.Location = New Point(12, 361)
+        LabelWarning.Location = New Point(342, 8)
         LabelWarning.Name = "LabelWarning"
-        LabelWarning.Size = New Size(976, 34)
+        ' Alto de DOS líneas: es el caso normal y define la banda de la cabecera. Los tres avisos
+        ' juntos son cuatro líneas (el del ESL flip ocupa dos a este ancho, MEDIDO) y no entran acá:
+        ' para eso GrowWarningBand agranda el label y baja los grupos. Ver UpdateWarning.
+        LabelWarning.Size = New Size(646, 36)
         LabelWarning.TabIndex = 6
+        ' Centrado vertical sobre el mismo eje que los radios de scope (ambos en y=26): con un solo
+        ' aviso el texto no queda pegado arriba dejando el hueco abajo.
+        LabelWarning.TextAlign = ContentAlignment.MiddleLeft
         '
         ' CheckBoxActivateInLoadOrder
         '
         CheckBoxActivateInLoadOrder.Anchor = AnchorStyles.Bottom Or AnchorStyles.Left
         CheckBoxActivateInLoadOrder.AutoSize = True
-        CheckBoxActivateInLoadOrder.Location = New Point(12, 407)
+        CheckBoxActivateInLoadOrder.Location = New Point(12, 415)
         CheckBoxActivateInLoadOrder.Name = "CheckBoxActivateInLoadOrder"
         CheckBoxActivateInLoadOrder.Size = New Size(300, 19)
         CheckBoxActivateInLoadOrder.TabIndex = 7
@@ -457,7 +469,7 @@ Partial Class SaveEsp_Form
         ' ButtonOk
         '
         ButtonOk.Anchor = AnchorStyles.Bottom Or AnchorStyles.Right
-        ButtonOk.Location = New Point(832, 403)
+        ButtonOk.Location = New Point(832, 411)
         ButtonOk.Name = "ButtonOk"
         ButtonOk.Size = New Size(75, 27)
         ButtonOk.TabIndex = 8
@@ -468,7 +480,7 @@ Partial Class SaveEsp_Form
         ' 
         ButtonCancel.Anchor = AnchorStyles.Bottom Or AnchorStyles.Right
         ButtonCancel.DialogResult = DialogResult.Cancel
-        ButtonCancel.Location = New Point(913, 403)
+        ButtonCancel.Location = New Point(913, 411)
         ButtonCancel.Name = "ButtonCancel"
         ButtonCancel.Size = New Size(75, 27)
         ButtonCancel.TabIndex = 9
@@ -481,14 +493,16 @@ Partial Class SaveEsp_Form
         AutoScaleDimensions = New SizeF(7F, 15F)
         AutoScaleMode = AutoScaleMode.Font
         CancelButton = ButtonCancel
-        ClientSize = New Size(1000, 441)
+        ClientSize = New Size(1000, 449)
         Controls.Add(LabelHeader)
         Controls.Add(PanelScope)
+        ' Antes iba DESPUÉS de los GroupBox y solapado con ellos: agregado último queda al fondo del
+        ' z-order, así que el aviso nunca se veía. Va acá, en la fila de scope y con el z-order arriba.
+        Controls.Add(LabelWarning)
         Controls.Add(GroupBoxTarget)
         Controls.Add(GroupBoxSave)
         Controls.Add(GroupBoxEncoding)
         Controls.Add(GroupBoxLvlList)
-        Controls.Add(LabelWarning)
         Controls.Add(CheckBoxActivateInLoadOrder)
         Controls.Add(ButtonOk)
         Controls.Add(ButtonCancel)
@@ -549,6 +563,7 @@ Partial Class SaveEsp_Form
     Friend WithEvents ComboBoxLvlExisting As ComboBox
     Friend WithEvents CheckBoxLvlNoDup As CheckBox
     Friend WithEvents LabelWarning As Label
+    Friend WithEvents ToolTipWarning As ToolTip
     Friend WithEvents CheckBoxActivateInLoadOrder As CheckBox
     Friend WithEvents ButtonOk As Button
     Friend WithEvents ButtonCancel As Button

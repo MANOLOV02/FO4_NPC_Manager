@@ -65,6 +65,13 @@ Public Class EditFace_Form
     Private _sseFaceOvTintEnable As CheckBox = Nothing
     Private _sseFaceOvTintColor As Button = Nothing
     Private _sseFaceOvTintAlpha As FO4_Base_Library.TinySliderTextBox = Nothing
+    ''' <summary>"Magic" del face overlay seleccionado: ¿pool <c>Face [SOvl{n}]</c> en vez de <c>Face [Ovl{n}]</c>?
+    ''' Conmutarlo renombra el nodo Y cambia quién lo entrega al juego (el magic no se hornea nunca).</summary>
+    Private _sseFaceOvMagic As CheckBox = Nothing
+    ''' <summary>Opción de vista: dibujar el pool magic en el preview de ESTE editor (el principal no lo hace).</summary>
+    ' Up/Down del stack de face paint: se deshabilitan cuando el vecino de fila está en el OTRO pool.
+    Private _sseFaceOvUp As Button = Nothing
+    Private _sseFaceOvDown As Button = Nothing
 
     ''' <summary>SSE face-morph CK categories (matches the Creation Kit Character Gen grouping the user referenced):
     ''' each groups the NAM9 slider indices + NAMA type-family indices for a facial feature. Covers all 18 sliders
@@ -1210,6 +1217,9 @@ Public Class EditFace_Form
         AddHandler bDown.Click, Sub(s, e) OnFaceOvMove(1)
         mid.Controls.Add(bAdd) : mid.Controls.Add(bRem) : mid.Controls.Add(bUp) : mid.Controls.Add(bDown)
         body.Controls.Add(mid, 1, 0)
+        ' Se guardan para poder DESHABILITARLOS cuando el movimiento es imposible (vecino de otro pool). Un botón
+        ' vivo cuyo click no hace nada es el mismo defecto que "Up/Down parecían no funcionar".
+        _sseFaceOvUp = bUp : _sseFaceOvDown = bDown
 
         ' Col 2: applied face overlays (top) + the selected overlay's tint/opacity detail (below).
         Dim rightBox As New GroupBox With {.Dock = DockStyle.Fill, .Text = "Applied face overlays"}
@@ -1222,9 +1232,10 @@ Public Class EditFace_Form
         rightLay.Controls.Add(_sseFaceOvList, 0, 0)
 
         ' Detail: texture is READ-ONLY display (chosen from the catalog at Add time); tint + opacity are editable.
-        Dim d As New TableLayoutPanel With {.Dock = DockStyle.Fill, .ColumnCount = 2, .RowCount = 5, .AutoScroll = True}
+        ' 6 filas de contenido + filler: Texture, Normal, Tint, Opacity, Magic, (nota del preview magic).
+        Dim d As New TableLayoutPanel With {.Dock = DockStyle.Fill, .ColumnCount = 2, .RowCount = 7, .AutoScroll = True}
         d.ColumnStyles.Add(New ColumnStyle(SizeType.Absolute, 62)) : d.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100))
-        For k = 0 To 3 : d.RowStyles.Add(New RowStyle(SizeType.AutoSize)) : Next
+        For k = 0 To 5 : d.RowStyles.Add(New RowStyle(SizeType.AutoSize)) : Next
         d.RowStyles.Add(New RowStyle(SizeType.Percent, 100))   ' filler
         Dim rr = 0
         d.Controls.Add(New Label With {.Text = "Texture:", .AutoSize = True, .Anchor = AnchorStyles.Left, .Margin = New Padding(3, 9, 3, 0)}, 0, rr)
@@ -1243,6 +1254,30 @@ Public Class EditFace_Form
         _sseFaceOvTintAlpha = New FO4_Base_Library.TinySliderTextBox With {.Minimum = 0.0R, .Maximum = 1.0R, .DisplayFormat = "0.00", .SmallChange = 0.01R, .LargeChange = 0.1R, .Height = 26, .Anchor = AnchorStyles.Left Or AnchorStyles.Right, .Margin = New Padding(3, 4, 8, 3), .Value = 1.0R}
         AddHandler _sseFaceOvTintAlpha.ValueChanged, AddressOf OnFaceOvTintAlpha
         d.Controls.Add(_sseFaceOvTintAlpha, 1, rr) : rr += 1
+        ' ⭐ EL "MAGIC FLAG" DE LA CARA. Mismo control y mismo significado que en Edit Body: conmuta el overlay
+        ' SELECCIONADO entre el pool normal (Face [Ovl{n}]) y el magic (Face [SOvl{n}]) renombrando el nodo.
+        ' ⛔ Y ACÁ TIENE UNA CONSECUENCIA EXTRA que no tiene en el cuerpo: el pool magic de la cara NO SE HORNEA
+        ' NUNCA (el fold lo excluye por diseño — SseOverlayCompositor.IsFoldableFaceOverlay), así que tildarlo mueve
+        ' este overlay del bake al apply-script. Eso es lo que dice la nota de abajo, y es información que el usuario
+        ' necesita: cambia qué archivo lo lleva al juego.
+        ' ⛔ LOS DOS CHECKBOXES VAN EN LA COLUMNA 1, NO EN LA 0. La columna 0 es `Absolute 62` (está dimensionada
+        ' para las etiquetas "Texture:"/"Normal:"), así que un CheckBox AutoSize con el texto "Magic" queda al límite
+        ' o recortado según DPI y fuente — el mismo modo de falla que este proyecto ya se comió con layouts
+        ' code-built que nadie abrió. Comparten fila dentro de un flow, que es lo que el ancho real permite.
+        _sseFaceOvMagic = New CheckBox With {.Text = "Magic (spell effect)", .AutoSize = True, .Margin = New Padding(0, 9, 12, 0)}
+        AddHandler _sseFaceOvMagic.CheckedChanged, AddressOf OnFaceOvMagicChanged
+        ' ⭐ Gemelo del de Edit Body: va en la fila de "Render ...", al lado de Render gore.
+        Dim magicRow As New FlowLayoutPanel With {.AutoSize = True, .FlowDirection = FlowDirection.LeftToRight,
+                                                  .WrapContents = False, .Margin = New Padding(0), .Anchor = AnchorStyles.Left}
+        magicRow.Controls.Add(_sseFaceOvMagic)
+        d.Controls.Add(magicRow, 1, rr) : rr += 1
+        Dim magicNote As New Label With {
+            .Text = "Magic face paint comes from a separate slot pool (iSpellOverlays in the skee64 ini). " &
+                    "This app paints it like any other face paint, but never bakes it into the head texture — " &
+                    "the helper script carries it.",
+            .AutoSize = True, .ForeColor = SystemColors.GrayText,
+            .Margin = New Padding(3, 2, 3, 0)}
+        d.Controls.Add(magicNote, 1, rr) : rr += 1
         rightLay.Controls.Add(d, 0, 1)
         rightBox.Controls.Add(rightLay)
         body.Controls.Add(rightBox, 2, 0)
@@ -1321,29 +1356,37 @@ Public Class EditFace_Form
         Return p
     End Function
 
-    ''' <summary>Face overlays (Face [Ovl{n}] nodes) in DRAW ORDER — highest Ovl index first, since skee64 draws
-    ''' higher indices on top, so top-of-list = on top and Up/Down are intuitive.</summary>
+    ''' <summary>Face overlays (nodos <c>Face [Ovl{n}]</c> y <c>Face [SOvl{n}]</c>) en ORDEN DE DIBUJO — el de arriba
+    ''' de la lista es el que se ve encima.
+    ''' <para>⭐ La clave es <see cref="SseOverlayCompositor.CompositeOrderKey"/>, no el índice pelado: el pool magic
+    ''' se dibuja ENCIMA de todo el pool normal (skee instala el primario y después el secundario), así que un
+    ''' <c>[SOvl0]</c> va sobre un <c>[Ovl5]</c>. Con el índice pelado la lista mostraba un orden que no era el que se
+    ''' ve, y Up/Down parecían no funcionar.</para></summary>
     Private Function FaceOverlaysList() As List(Of RaceMenuJslot.JslotOverlayNode)
         Dim p = Preset
         If p Is Nothing OrElse p.SseBodyOverlays Is Nothing Then Return New List(Of RaceMenuJslot.JslotOverlayNode)
         Return p.SseBodyOverlays.
             Where(Function(o) o IsNot Nothing AndAlso SseCatalogs.ZoneOfNode(o.NodeName).HasValue AndAlso
                               SseCatalogs.ZoneOfNode(o.NodeName).Value = SseCatalogs.OverlayZone.Face).
-            OrderByDescending(Function(o) SseCatalogs.IndexOfNode(o.NodeName)).ToList()
+            OrderByDescending(Function(o) SseOverlayCompositor.CompositeOrderKey(o.NodeName)).ToList()
     End Function
 
-    ''' <summary>Reorder face paint by swapping two overlays' Ovl{n} node indices (RaceMenu's draw order). All face
-    ''' overlays share the Face zone, so any list neighbour is a valid swap.</summary>
+    ''' <summary>Reorder face paint by swapping two overlays' <c>Ovl{n}</c> node indices (RaceMenu's draw order).
+    ''' <para>⛔ SÓLO DENTRO DEL MISMO POOL: normal y magic son stacks independientes (numeración propia, y el magic
+    ''' va entero encima), así que intercambiar índices entre pools no reordena — CONVIERTE los dos overlays de pool,
+    ''' que es justo lo que el checkbox "Magic" hace explícito.</para></summary>
     Private Sub OnFaceOvMove(delta As Integer)
         Dim l = FaceOverlaysList()
         Dim row = _sseFaceOvList.SelectedIndex
         Dim targetRow = row + delta
         If row < 0 OrElse row >= l.Count OrElse targetRow < 0 OrElse targetRow >= l.Count Then Return
         Dim ov = l(row), neighbour = l(targetRow)
+        If SseCatalogs.IsSpellNode(ov.NodeName) <> SseCatalogs.IsSpellNode(neighbour.NodeName) Then Return
         Dim ni = SseCatalogs.IndexOfNode(ov.NodeName), nj = SseCatalogs.IndexOfNode(neighbour.NodeName)
         If ni < 0 OrElse nj < 0 Then Return
-        ov.NodeName = SseCatalogs.OverlayNodeName(SseCatalogs.OverlayZone.Face, nj)
-        neighbour.NodeName = SseCatalogs.OverlayNodeName(SseCatalogs.OverlayZone.Face, ni)
+        Dim spell = SseCatalogs.IsSpellNode(ov.NodeName)
+        ov.NodeName = SseCatalogs.OverlayNodeName(SseCatalogs.OverlayZone.Face, nj, spell)
+        neighbour.NodeName = SseCatalogs.OverlayNodeName(SseCatalogs.OverlayZone.Face, ni, spell)
         p_HasOverlaysTrue()
         RefreshFaceOvList(targetRow)
         ScheduleRefresh(FaceRefreshScope.FullReload)
@@ -1369,7 +1412,7 @@ Public Class EditFace_Form
             If z.HasValue Then name = SseCatalogs.PaintNameForPath(z.Value, ov.DiffusePath)
             diff = If(Not String.IsNullOrEmpty(name), name, IO.Path.GetFileName(ov.DiffusePath))
         End If
-        Return $"{ov.NodeName} — {diff}{If(ov.HasTint, "  ●", "")}"
+        Return $"{ov.NodeName} — {diff}{If(ov.IsSpell, "  [magic]", "")}{If(ov.HasTint, "  ●", "")}"
     End Function
 
     ''' <summary>⛔ <paramref name="selectNode"/> GANA sobre <paramref name="selectIndex"/> cuando está en la lista.
@@ -1413,10 +1456,35 @@ Public Class EditFace_Form
             ' Opacity (key 8) is independent of the tint colour (key 7).
             _sseFaceOvTintAlpha.Enabled = has
             _sseFaceOvTintAlpha.Value = If(has, CDbl(Math.Max(0.0F, Math.Min(1.0F, If(ov.HasAlpha, ov.Alpha, 1.0F)))), 1.0R)
+            If _sseFaceOvMagic IsNot Nothing Then
+                ' Del NOMBRE del nodo (IsSpell es derivado): no hay estado paralelo que pueda desincronizarse.
+                _sseFaceOvMagic.Checked = has AndAlso ov.IsSpell
+                _sseFaceOvMagic.Enabled = has
+            End If
+            ' La opacidad de un magic overlay la ANIMA el motor (controller ACTIVE + CYCLE_REVERSE sobre la Alpha):
+            ' se guarda y viaja, pero no es un valor que el juego mantenga fijo. Ver SseOverlayCompositor.
+            _sseTintToolTip.SetToolTip(_sseFaceOvTintAlpha,
+                If(has AndAlso ov.IsSpell,
+                   "Saved and written to the NPC, but the engine ANIMATES a magic overlay's alpha (it pulses 0↔1)," & vbCrLf &
+                   "so this is what the preview shows, not what the game holds steady.",
+                   "skee64 kParam_ShaderAlpha (key 8): opacity, independent of the tint colour."))
+            ' Up/Down sólo entre vecinos del MISMO pool: se deshabilitan en vez de ignorar el click.
+            Dim row = _sseFaceOvList.SelectedIndex
+            If _sseFaceOvUp IsNot Nothing Then _sseFaceOvUp.Enabled = FaceCanMove(row, -1)
+            If _sseFaceOvDown IsNot Nothing Then _sseFaceOvDown.Enabled = FaceCanMove(row, 1)
         Finally
             _suspendEvents = False
         End Try
     End Sub
+
+    ''' <summary>EL MISMO predicado que aplica <see cref="OnFaceOvMove"/>: zona igual (siempre, en este tab) y POOL
+    ''' igual. Un solo lugar decide "se puede mover", y de ahí sale tanto el enable del botón como el guard.</summary>
+    Private Function FaceCanMove(row As Integer, delta As Integer) As Boolean
+        Dim l = FaceOverlaysList()
+        Dim target = row + delta
+        If row < 0 OrElse row >= l.Count OrElse target < 0 OrElse target >= l.Count Then Return False
+        Return SseCatalogs.IsSpellNode(l(row).NodeName) = SseCatalogs.IsSpellNode(l(target).NodeName)
+    End Function
 
     Private Shared Function FaceClampByte(v As Single) As Integer
         Return Math.Min(255, Math.Max(0, CInt(Math.Round(v * 255.0F))))
@@ -1439,17 +1507,10 @@ Public Class EditFace_Form
             Return
         End If
         Dim entry = _sseFacePaintShown(ai)
-        Dim used As New HashSet(Of Integer)
-        For Each o In p.SseBodyOverlays
-            If o Is Nothing Then Continue For
-            Dim z = SseCatalogs.ZoneOfNode(o.NodeName)
-            If z.HasValue AndAlso z.Value = SseCatalogs.OverlayZone.Face Then
-                Dim n0 = SseCatalogs.IndexOfNode(o.NodeName)
-                If n0 >= 0 Then used.Add(n0)
-            End If
-        Next
+        ' Add crea en el pool NORMAL (el checkbox "Magic" lo convierte después). El hueco libre se busca DENTRO del
+        ' pool: Face [Ovl] y Face [SOvl] numeran independiente.
         Dim limit = SseCatalogs.OverlayCount(SseCatalogs.OverlayZone.Face)
-        Dim k = 0 : While used.Contains(k) : k += 1 : End While
+        Dim k = SseCatalogs.NextFreeOverlayIndex(p.SseBodyOverlays, SseCatalogs.OverlayZone.Face, False)
         ' El bake silencia el aviso: con el bake quedándose la cara, este overlay no viaja a skee, así que
         ' hablarle del contador sería ruido.
         ' ⛔ ESTO ES SEGURO SÓLO PORQUE EL BARRIDO LLEGA AL TOPE DEL MOTOR. Setting_BakeSseRaceMenuOverlays es un
@@ -1485,6 +1546,39 @@ Public Class EditFace_Form
         RefreshFaceOvList(idx - 1)
         ScheduleRefresh(FaceRefreshScope.FullReload)
     End Sub
+
+    ''' <summary>Conmuta el face overlay seleccionado entre el pool normal y el MAGIC renombrando su nodo (el nombre
+    ''' ES la identidad del override; ver <see cref="RaceMenuJslot.JslotOverlayNode.IsSpell"/>).
+    ''' <para>⭐ ACÁ EL FLAG CAMBIA EL CAMINO DE ENTREGA, no sólo el nodo: un <c>Face [Ovl]</c> lo hornea el bake en el
+    ''' diffuse de la cabeza; un <c>Face [SOvl]</c> NO se hornea nunca y viaja por el apply-script
+    ''' (<see cref="SseOverlayCompositor.IsFoldableFaceOverlay"/>). De ahí que el aviso del contador NO se pueda
+    ''' silenciar para el magic — la excusa "el bake se la queda, el contador de skee es irrelevante" que vale en
+    ''' <see cref="OnFaceOvAdd"/> es exactamente falsa en este pool.</para></summary>
+    Private Sub OnFaceOvMagicChanged(sender As Object, e As EventArgs)
+        If _suspendEvents Then Return
+        Dim p = Preset
+        Dim ov = SelectedFaceOverlay()
+        If p Is Nothing OrElse ov Is Nothing Then Return
+        Dim toSpell = _sseFaceOvMagic.Checked
+        If toSpell = ov.IsSpell Then Return   ' re-seed de la UI, no una edición
+        Dim k = SseCatalogs.NextFreeOverlayIndex(p.SseBodyOverlays, SseCatalogs.OverlayZone.Face, toSpell)
+        ' ⛔⛔ ACÁ SE NEGABA. Ver el bloque gemelo de EditBody_Form (OnSseOverlayMagicChanged): el
+        ' argumento era un techo que ya no existe, con bEnableFaceOverlays=0 impedía autorar CUALQUIER magic de
+        ' cara, y dejaba inalcanzable el aviso de abajo. El pool normal avisa y sigue; ahora los dos igual.
+        Dim limit = SseCatalogs.OverlayCount(SseCatalogs.OverlayZone.Face, toSpell)
+        ' El silencio por bake vale SÓLO para el pool normal (ver el docstring). Para el magic, skee es el único
+        ' camino, así que su contador SÍ importa y el aviso va.
+        Dim suppress = Not toSpell AndAlso NpcApplyScriptEmitter.SkipFaceOverlays(Config_App.Game_Enum.Skyrim)
+        If k >= limit AndAlso Not suppress AndAlso SseCatalogs.ClaimOverlayLimitWarning(toSpell) Then
+            MessageBox.Show(Me, SseCatalogs.OverlayLimitNotice(SseCatalogs.OverlayZone.Face, k, limit, toSpell),
+                            "Overlay past the RaceMenu slot count", MessageBoxButtons.OK, MessageBoxIcon.Information)
+        End If
+        ov.NodeName = SseCatalogs.OverlayNodeName(SseCatalogs.OverlayZone.Face, k, toSpell)
+        p_HasOverlaysTrue()
+        RefreshFaceOvList(-1, ov)
+        ScheduleRefresh(FaceRefreshScope.FullReload)
+    End Sub
+
 
     Private Sub OnFaceOvTintToggled(sender As Object, e As EventArgs)
         If _suspendEvents Then Return
@@ -4494,8 +4588,10 @@ Public Class EditFace_Form
         _refresh?.Invoke(FaceRefreshScope.FullReload)
     End Sub
 
-    ''' <summary>True for a "Face [Ovl{n}]" overlay node — the same zone predicate <see cref="FaceOverlaysList"/>
-    ''' uses to pick this tab's rows out of the shared overlay carrier.</summary>
+    ''' <summary>True for a face-zone overlay node — <c>Face [Ovl{n}]</c> Y <c>Face [SOvl{n}]</c>, el mismo
+    ''' predicado de ZONA que usa <see cref="FaceOverlaysList"/> para sacar las filas de este tab del carrier
+    ''' compartido. Cubrir los dos pools es lo correcto acá: el reset de esta sección tiene que alcanzar también
+    ''' al face paint magic, que se edita en este mismo tab.</summary>
     Private Shared Function IsFaceZoneOverlayNode(nodeName As String) As Boolean
         Dim z = SseCatalogs.ZoneOfNode(nodeName)
         Return z.HasValue AndAlso z.Value = SseCatalogs.OverlayZone.Face

@@ -215,14 +215,21 @@ Friend NotInheritable Class NpcMorphPoseResolver
     ''' NIF de ARMO de piel puede traer shapes que no son piel (ojos) y esas no deben recibir overlays.</para>
     ''' <para><b>Limpieza</b>: sin preset aplicado o sin overlays, TODA shape queda con OverlayLayers en Nothing,
     ''' asi que cambiar de NPC no puede filtrar los tatuajes del anterior.</para></summary>
-    Friend Sub ResolveOverlayLayers(state As MainForm.NPCVisualState, renderData As MainForm.PreviewResolutionResult)
+    ''' <param name="host">El host QUE ESTÁ RENDERIZANDO (no <c>_hostProvider()</c>): de él sale
+    ''' editor puedan discrepar sobre el pool magic.
+    ''' <para>⛔ ES OBLIGATORIO. Era <c>Optional</c> "por compat de los call sites que no tienen host a mano", y esa
+    ''' compat no existía: los dos call sites lo tenían. El único que lo omitía (el camino live) caía al
+    ''' <c>_hostProvider()</c> = el host PRINCIPAL y borraba los overlays magic del preview del editor. Obligatorio,
+    ''' el compilador cierra esa trampa para el próximo call site en vez de dejarla esperando.</para></param>
+    Friend Sub ResolveOverlayLayers(state As MainForm.NPCVisualState, renderData As MainForm.PreviewResolutionResult,
+                                    host As NpcRenderHost)
         If renderData Is Nothing OrElse renderData.Shapes Is Nothing Then Return
 
         ' GAME-AWARE: SSE (Skyrim) body overlays are RaceMenu path-based (no f4ee template catalog), sourced
         ' from the preset's SSE carrier and synthesized into materials here — a separate code path from the
         ' FO4 template resolution below. The FO4 path stays byte-identical (behind this gate). §3.2/§3.3.
         If Config_App.Current IsNot Nothing AndAlso Config_App.Current.Game = Config_App.Game_Enum.Skyrim Then
-            ResolveSseOverlayLayers(state, renderData)
+            ResolveSseOverlayLayers(state, renderData, host)
             Return
         End If
 
@@ -446,10 +453,12 @@ Friend NotInheritable Class NpcMorphPoseResolver
     ''' <para>La pertenencia de shape usa el mismo gate que el camino FO4, pero el match de slot es
     ''' SSE-especifico: el nombre del nodo de overlay (Body/Hands/Feet) mapea a los bits de slot biped que cubre
     ''' y el overlay cae en cualquier shape skin-tinted cuyo SlotMask los intersecte. El orden de dibujo es el de
-    ''' la lista (skee aplica Ovl0..N en orden de nodo; el indice 0 va abajo).</para>
+    ''' <see cref="SseOverlayCompositor.CompositeOrderKey"/>: el pool normal ascendente y ENCIMA el pool magic
+    ''' ascendente (skee instala el primario y despues el secundario). NO es el orden de la lista ni el indice pelado.</para>
     ''' <para>El blend es el MISMO decal coplanar alpha-over que en FO4: el modo de blend no esta en el .jslot.
     ''' Sin preset o con carrier vacio, todas las shapes se limpian.</para></summary>
-    Private Sub ResolveSseOverlayLayers(state As MainForm.NPCVisualState, renderData As MainForm.PreviewResolutionResult)
+    Private Sub ResolveSseOverlayLayers(state As MainForm.NPCVisualState, renderData As MainForm.PreviewResolutionResult,
+                                        host As NpcRenderHost)
         ' Overlays (tattoos / body-hand-feet-face paint) become alpha-over decal layers here. Skin overrides do NOT:
         ' they are a per-slot texture-set REPLACEMENT on the skin material (skee NIOVTaskUpdateTexture), applied
         ' in place by NpcMaterialResolver.ApplyShapeMaterialOverrides — not a decal on top.
@@ -460,6 +469,7 @@ Friend NotInheritable Class NpcMorphPoseResolver
                 If preset.SseBodyOverlays IsNot Nothing AndAlso preset.SseBodyOverlays.Count > 0 Then overlays = preset.SseBodyOverlays
             End If
         End If
+        ' ¿Este preview dibuja el pool magic? Sin host, NO (default seguro = el retrato en reposo).
 
         ' No overlay decals → clear every shape's overlay layers and bail (skin overrides live on the material now).
         If overlays Is Nothing Then
@@ -484,20 +494,33 @@ Friend NotInheritable Class NpcMorphPoseResolver
             End If
 
             Dim layers As New List(Of OverlayMaterialLayer)
-            ' Overlays ON TOP, en ORDEN DE ÍNDICE DE NODO Ovl{n} ASCENDENTE (Ovl0 abajo → OvlN arriba) — el orden
-            ' de skee (OverlayInterface for i=0..N + AttachChild), NO la posición en la lista (el jslot puede venir
-            ' en cualquier orden). El lib dibuja layers en orden de lista (primero=abajo), así que agrego Ovl0
-            ' primero. IDÉNTICO al bake (SseOverlayCompositor.ComposeFaceOverlaysIntoDiffuse) ⇒ render==bake==skee.
+            ' Overlays ON TOP, en el ORDEN DE COMPOSICIÓN DE skee: primero TODO el pool normal por índice
+            ' ascendente ([Ovl0] abajo → [OvlN]) y ENCIMA todo el pool magic por índice ascendente
+            ' ([SOvl0]…[SOvlM]) — SetupOverlay corre el loop primario completo y después el secundario, y cada
+            ' InstallOverlay termina en AttachChild (OverlayInterface.cpp:659-668, :257). NO es la posición en la
+            ' lista (el jslot puede venir en cualquier orden) y NO es el índice pelado: ordenar por índice sin mirar
+            ' el pool empataba [SOvl0] con [Ovl0] y podía dejar el magic DEBAJO de [Ovl1]. La clave única está en
+            ' SseOverlayCompositor.CompositeOrderKey y la comparten render y bake.
+            ' El lib dibuja layers en orden de lista (primero=abajo), así que se agrega el de clave más baja primero.
             ' Body/Hands/Feet van en el shape de slot; Face en el head FaceTint.
             If overlays IsNot Nothing Then
-                For Each ov In overlays.OrderBy(Function(o) SseOverlayCompositor.ParseOvlIndex(If(o IsNot Nothing, o.NodeName, Nothing)))
+                For Each ov In overlays.OrderBy(Function(o) SseOverlayCompositor.CompositeOrderKey(If(o IsNot Nothing, o.NodeName, Nothing)))
                     ' Skip an overlay with no texture OR whose texture is not in the load order (loose+BSA): with no
                     ' resolvable diffuse there is nothing to composite, and rendering it would flat-fill the skin
                     ' with the "missing texture" placeholder. Same rule for face and body overlays.
                     If ov Is Nothing OrElse String.IsNullOrEmpty(ov.DiffusePath) OrElse Not SseTextureExists(ov.DiffusePath) Then Continue For
                     Dim applies As Boolean
                     If SseOverlayIsFaceNode(ov.NodeName) Then
-                        applies = isFace
+                        ' ⭐⭐ LA CARA TIENE DOS MECANISMOS Y NO SE SOLAPAN (ver SseOverlayCompositor.IsFoldableFaceOverlay):
+                        '   Face [Ovl{n}]  (no-magic) ⇒ lo PLIEGA NpcFaceTintResolver dentro del diffuse de la cabeza,
+                        '                               igual que el bake ⇒ acá NO va decal.
+                        '   Face [SOvl{n}] (magic)    ⇒ NO se pliega nunca ⇒ acá SÍ va decal vivo.
+                        ' ⛔ ESTO ARREGLA UN DOBLE APLICADO REAL Y PREEXISTENTE: los dos caminos leen el MISMO
+                        ' `preset.SseBodyOverlays` y los dos corrían sin gate, así que un face-paint normal se
+                        ' componía DOS veces en el preview (horneado en el diffuse plegado + decal encima) y salía
+                        ' más oscuro/saturado que lo que el bake escribe. El bake nunca tuvo el decal ⇒ era también
+                        ' una violación de RENDER == BAKE.
+                        applies = isFace AndAlso SseOverlayCompositor.IsSpellOverlay(ov)
                     Else
                         Dim nodeBits = SseOverlayNodeSlotBits(ov.NodeName)
                         applies = isBodySkin AndAlso nodeBits <> 0UI AndAlso (cand.SlotMask And nodeBits) <> 0UI
@@ -511,7 +534,12 @@ Friend NotInheritable Class NpcMorphPoseResolver
             If Logger.Enabled Then
                 Dim layerCount = layers.Count
                 Dim ovN = If(overlays IsNot Nothing, overlays.Count, 0)
-                Logger.LogLazy(Function() $"[OVERLAY-SSE] shape='{shape.ShapeName}' mask=0x{cand.SlotMask:X8} overlays={ovN} → layers={layerCount}")
+                ' `.Count(pred)` NO compila sobre List(Of T): VB resuelve `Count` a la PROPIEDAD antes que a la
+                ' extensión de LINQ. Where(...).Count() es la forma que sí toma el predicado.
+                Dim spellN = If(overlays Is Nothing, 0, overlays.Where(Function(o) SseOverlayCompositor.IsSpellOverlay(o)).Count())
+                ' El conteo de magic viaja CON el resultado: sin eso, "el overlay no aparece" no distingue entre
+                ' "no resolvió la textura" y "el slot no le corresponde a esta forma".
+                Logger.LogLazy(Function() $"[OVERLAY-SSE] shape='{shape.ShapeName}' mask=0x{cand.SlotMask:X8} overlays={ovN} (magic={spellN}) → layers={layerCount}")
             End If
         Next
     End Sub
@@ -986,7 +1014,14 @@ Friend NotInheritable Class NpcMorphPoseResolver
     ''' <summary>Build the SSE RaceMenu node-transform pose from the applied preset's SseNodeTransforms: one
     ''' PoseTransformData per named skeleton bone carrying the full TRS — uniform scale (key 30), translation
     ''' (key 31 → X/Y/Z) and rotation (key 32 → the axis-angle Yaw/Pitch/Roll the WardrobeManager pose source
-    ''' feeds straight into BSRotationToMatrix33, reproducing the .jslot's 3×3 matrix exactly). This matches
+    ''' feeds straight into BSRotationToMatrix33).
+    ''' <para>⚠️ DECÍA "reproducing the .jslot's 3×3 matrix exactly" y hay que acotarlo: el pose sólo puede llevar
+    ''' AXIS-ANGLE (<c>PoseTransformData</c> no tiene campo de matriz), mientras el <c>.jslot</c> y el ESP re-emiten
+    ''' la matriz CRUDA cuando la hay. Reproduce la matriz exactamente para toda rotación propia — incluida la de
+    ''' 180°, desde que <c>Matrix33ToBSRotation</c> saca bien ese eje. Lo que NO puede reproducir es una REFLEXIÓN
+    ''' (det = −1), que no es una rotación y no tiene axis-angle: ahí el preview muestra la rotación más cercana y
+    ''' el archivo/ESP llevan la reflexión. Ningún preset del corpus instalado trae rotación, así que el caso está
+    ''' razonado y no medido; el arreglo, si aparece, es un campo de matriz en <c>PoseTransformData</c>.</para> This matches
     ''' skee's Impl_UpdateNodeAllTransforms, which composes finalLocal = baseTransform · (pos·scale·rot) — the
     ''' render's MorphDeltaTransform layer is exactly that override transform. Nothing on FO4 / when no
     ''' non-identity transforms.</summary>

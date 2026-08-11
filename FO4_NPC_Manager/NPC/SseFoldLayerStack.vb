@@ -556,8 +556,11 @@ Friend Module SseFoldLayerStack
         ' `Not IsNullOrEmpty(o.DiffusePath)`, así que este camino (GPU) componía los overlays de CUERPO dentro
         ' del diffuse de la CARA — mientras el camino CPU (ComposeFaceOverlaysIntoDiffuse) sí filtraba por Face.
         ' Los dos caminos tienen que dar el MISMO resultado: mismo predicado, una sola ley.
+        ' ⛔ Y el predicado es IsFoldableFaceOverlay, o sea Face MENOS el pool magic: un `Face [SOvl{n}]` no se
+        ' pliega NUNCA (es capa de runtime de un magic effect; ver SseOverlayCompositor.IsFoldableFaceOverlay).
+        ' Va acá y no sólo en el caller por la misma razón que el filtro de Face: el CPU lo aplica adentro.
         Dim ordered = SseOverlayCompositor.SortFaceOverlays(
-            overlays.Where(Function(o) SseOverlayCompositor.IsFaceOverlay(o) AndAlso
+            overlays.Where(Function(o) SseOverlayCompositor.IsFoldableFaceOverlay(o) AndAlso
                                        Not String.IsNullOrEmpty(o.DiffusePath)).ToList())
         For Each ov In ordered
             Dim texBytes = FilesDictionary_class.GetBytes(FO4UnifiedMaterial_Class.CorrectTexturePath(ov.DiffusePath))

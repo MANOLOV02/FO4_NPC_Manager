@@ -1174,7 +1174,7 @@ Partial Class EditBody_Form
         LabelOverlayTintAlpha.Name = "LabelOverlayTintAlpha"
         LabelOverlayTintAlpha.Size = New Size(41, 15)
         LabelOverlayTintAlpha.TabIndex = 1
-        LabelOverlayTintAlpha.Text = "Alpha:"
+        LabelOverlayTintAlpha.Text = "Opacity:"
         LabelOverlayTintAlpha.TextAlign = ContentAlignment.MiddleLeft
         ' 
         ' SliderOverlayTintAlpha

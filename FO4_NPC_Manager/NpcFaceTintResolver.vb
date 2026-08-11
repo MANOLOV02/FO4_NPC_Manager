@@ -286,6 +286,10 @@ Friend NotInheritable Class NpcFaceTintResolver
         ' mallas FaceTint del mismo NPC que resuelven al MISMO _msn producen un pliegue IDÉNTICO por construcción,
         ' y las dos terminan bindeando la misma textura per-NPC. Ver ApplySseFaceOverlayNormals.
         Dim seenFaceNormals As New HashSet(Of String)(StringComparer.OrdinalIgnoreCase)
+        ' El aviso "hay nodos Face y ninguno plegable" es del NPC, no de la mesh: sin este flag salía una vez por
+        ' cada shape FaceTint (y re-escaneaba SseBodyOverlays cada vez). Diagnóstico duplicado es ruido que después
+        ' hace dudar de si pasó dos veces.
+        Dim noFoldReported = False
         ' ⛔ SACADO: `shaderInventoryForDiag`. Era una List(Of String) que se poblaba con un string interpolado
         ' POR CADA malla no-FaceTint, en cada compose (o sea en cada refresh de edicion viva), y que NO LA LEIA
         ' NADIE — el "se emite en el camino de fallo" que prometia el comentario nunca se escribio. Trabajo y
@@ -382,6 +386,38 @@ Friend NotInheritable Class NpcFaceTintResolver
                     ApplySseFacetint(materialBase, npcData, race, model, host, state.RaceFormID)
                     Continue For
                 End If
+                ' ⭐ DIAGNÓSTICO DEL CASO "EL FACE-PAINT NO SE VE Y NADIE DICE POR QUÉ". El pool NORMAL de la cara se
+                ' muestra SÓLO por el pliegue (el decal vivo es del pool magic; ver
+                ' SseOverlayCompositor.IsFoldableFaceOverlay), así que cuando el pliegue no ocurre la cara sale SIN
+                ' paint y hasta ahora ninguna línea decía QUÉ SE PERDIÓ.
+                ' ⛔⛔ LA PRIMERA VERSIÓN DE ESTO TENÍA EL GUARD AL REVÉS: preguntaba `Not mustFold` y decía cubrir el
+                ' caso del fold ABORTADO — pero si el fold aborta, `mustFold` es TRUE (por eso se entró a intentarlo),
+                ' así que la línea no corría nunca en el camino que documentaba. Y en la rama donde sí corría, el
+                ' texto era imposible: `faceOvl` ya viene filtrado por IsFoldableFaceOverlay, o sea SIN magic, así que
+                ' "¿todos del pool magic?" no podía ser cierto ahí. Son DOS casos distintos y necesitan dos avisos:
+                '   (a) hay cara plegable y el fold FALLÓ  → se reporta abajo, en la salida del intento.
+                '   (b) hay nodos de cara y NINGUNO es plegable → se reporta acá, y para saberlo hay que mirar la
+                '       lista SIN filtrar (la filtrada es justamente la que quedó vacía).
+                If Logger.Enabled AndAlso Not mustFold AndAlso Not noFoldReported Then
+                    Dim allFace = 0, magicFace = 0
+                    Dim pAll As LooksmenuLoader.LooksmenuPreset = Nothing
+                    If _appliedPresets IsNot Nothing AndAlso _appliedPresets.TryGetValue(npcData.FormID, pAll) AndAlso
+                       pAll IsNot Nothing AndAlso pAll.SseBodyOverlays IsNot Nothing Then
+                        For Each ov0 In pAll.SseBodyOverlays
+                            If Not SseOverlayCompositor.IsFaceOverlay(ov0) Then Continue For
+                            allFace += 1
+                            If SseOverlayCompositor.IsSpellOverlay(ov0) Then magicFace += 1
+                        Next
+                    End If
+                    If allFace > 0 Then
+                        noFoldReported = True
+                        Dim a = allFace, m = magicFace
+                        Logger.LogLazy(Function() $"[SSE-FOLD] el NPC declara {a} nodo(s) Face de overlay y NINGUNO es plegable " &
+                                                  $"({m} del pool MAGIC —ésos no se pliegan nunca, van como decal vivo y sólo en el " &
+                                                  $"preview de los editores— y {a - m} del pool normal sin diffuse o con opacidad 0). " &
+                                                  "El pliegue no corre, así que la cara se dibuja sin face paint.")
+                    End If
+                End If
                 If mustFold OrElse forceFoldDebug Then
                     Dim foldedKeyOut As String = ""
                     If ApplySseFacetintFolded(materialBase, npcData, race, model, host, skeeRaw, faceOvl, foldedKeyOut, state.RaceFormID) Then
@@ -399,6 +435,17 @@ Friend NotInheritable Class NpcFaceTintResolver
                         ' skin tint.
                         ApplySseFacetint(materialBase, npcData, race, model, host, state.RaceFormID)
                         Continue For
+                    End If
+                    ' ⭐ CASO (a): había cara PLEGABLE y el pliegue FALLÓ. Los aborts ya loguean su CAUSA
+                    ' ([SSE-FOLD] ABORT: …), pero ninguno decía la CONSECUENCIA — y es la que el usuario ve.
+                    ' El bake aborta por lo mismo (lee el complexion del mismo lugar), así que no dibujar el paint
+                    ' sigue siendo fiel a RENDER==BAKE: es un fallo visible, no una divergencia. Por eso se
+                    ' REPORTA en vez de taparlo con un decal, que sí divergiría.
+                    If Logger.Enabled AndAlso mustFold Then
+                        Dim shN2 = shape.ShapeName
+                        Logger.LogLazy(Function() $"[SSE-FOLD] shape='{shN2}': el pliegue era OBLIGATORIO y falló (ver el ABORT de " &
+                                                  "arriba) ⇒ esta cara se dibuja SIN su face paint / sin las máscaras skee. " &
+                                                  "El bake falla por lo mismo, así que el preview sigue coincidiendo con lo horneado.")
                     End If
                 End If
                 ' Camino NO plegado: el shader aplica el detail (real o default 0.251) UNA vez = engine.
@@ -622,7 +669,8 @@ Friend NotInheritable Class NpcFaceTintResolver
         Dim preset As LooksmenuLoader.LooksmenuPreset = Nothing
         If Not _appliedPresets.TryGetValue(npcData.FormID, preset) OrElse preset Is Nothing Then Return Nothing
         If preset.SseBodyOverlays Is Nothing Then Return Nothing
-        ' ⭐⭐ FILTRO POR NODO Y NADA MÁS — es el MISMO predicado que usa el bake (SseOverlayCompositor.FaceOverlaysOnly).
+        ' ⭐⭐ FILTRO POR NODO Y POR POOL, y NADA MÁS de textura — es el MISMO predicado que usa el bake
+        ' (SseOverlayCompositor.FaceOverlaysOnly = cara MENOS el pool magic: un Face [SOvl] no se pliega nunca).
         ' ⛔ Antes acá se exigía además `DiffusePath`, y eso DROPEABA los overlays de cara SOLO-NORMAL: para ese NPC
         ' el RENDER no plegaba y el BAKE sí (el bake gatea con HasAnyFoldableFaceOverlay = diffuse O normal), o sea
         ' que el preview mostraba una cara distinta de la que se horneaba. Es exactamente el bug que

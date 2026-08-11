@@ -38,7 +38,12 @@ Public Module BssliderSidecar
     ''' <summary>v12 agrego <c>payloadSalt</c>: la SAL del sufijo de generacion. Se persiste porque el
     ''' FomodExporter re-parchea el .pex desde el recurso EMBEBIDO usando la generacion del sidecar; sin la sal
     ''' sortearia otra y el .pex del paquete declararia nombres distintos a los del VMAD del ESP.</summary>
-    Public Const SchemaVersion As Integer = 12
+    ' v13: los node transforms guardan `raw` (el elemento crudo del .jslot, para que sobreviva lo que la app no
+    ' modela: key 40 = re-parenteo, key 33, y cualquier value nuevo) y la entrada guarda
+    ' `sseFirstPersonTransforms`. Se sube el número aunque la lectura sea tolerante en las dos direcciones
+    ' (ausente ⇒ comportamiento viejo): sin subirlo no había forma EN DISCO de distinguir un v12 con `raw` de
+    ' uno sin, y este archivo se distribuye a usuarios que ya tienen sidecars escritos.
+    Public Const SchemaVersion As Integer = 13
 
     Public Class SidecarFile
         Public Version As Integer = SchemaVersion
@@ -81,6 +86,15 @@ Public Module BssliderSidecar
         ''' Superseded the scale-only <c>sseNodeScales</c> map (schema v4) so an edited position/rotation survives a
         ''' reload, not just the scale; a legacy <c>sseNodeScales</c> object is still read and migrated on load.</summary>
         Public SseNodeTransforms As List(Of RaceMenuJslot.JslotNodeTransform) = Nothing
+        ''' <summary>SSE-ONLY: los elementos <c>transforms</c> del <c>.jslot</c> con <c>firstPerson: true</c>, tal
+        ''' como vinieron (JSON crudo, uno por string). No se modelan ni se editan — son los del brazo en primera
+        ''' persona del jugador, que un NPC no usa — pero el "Save RaceMenu preset" reconstruye un
+        ''' <c>RaceMenuJslot</c> nuevo desde el carrier, así que sin persistirlos el preset re-exportado sale SIN
+        ''' ellos. Nullable; serializado bajo <c>sseFirstPersonTransforms</c>.
+        ''' <para>⛔ Es la TERCERA vez en este subsistema que un dato que el modelo tiene y el disco no mata
+        ''' información al cerrar la app (antes: la matriz cruda de rotación y los nombres colapsados). En un preset
+        ''' real esto NO es un borde: casi todo nodo aparece dos veces en el archivo, una por vista.</para></summary>
+        Public SseFirstPersonTransformsRaw As List(Of String) = Nothing
         ''' <summary>SSE-ONLY RaceMenu absolute hair tint (packed 0xRRGGBB) from a loaded .jslot's actor.hairColor.
         ''' RaceMenu co-save data (not the NPC record) → persisted so the hair colour survives a reload. Nullable —
         ''' Nothing on FO4 / presets without hairColor; serialized under <c>sseHairColor</c> (schema v11).</summary>
@@ -236,14 +250,21 @@ Public Module BssliderSidecar
         If entry.SseBodyOverlays IsNot Nothing AndAlso entry.SseBodyOverlays.Count > 0 Then
             preset.SseBodyOverlays = LooksmenuLoader.CloneSseBodyOverlays(entry.SseBodyOverlays)
         End If
-        ' SSE node transforms (body-scale/position/rotation) — deep-copy the full per-node TRS onto the
-        ' carrier (Raw stays Nothing → a later .jslot export rebuilds each element from the modeled fields).
+        ' SSE node transforms (body-scale/position/rotation) — deep-copy the full per-node TRS onto the carrier.
+        ' ⭐ El Clone() se trae el `Raw`, que el sidecar ahora SÍ persiste. Antes el comentario de acá decía "Raw
+        ' stays Nothing → a later .jslot export rebuilds each element from the modeled fields", y esa reconstrucción
+        ' era justamente la pérdida: se iba la key 40 (re-parenteo), la 33 y todo value no modelado.
         If entry.SseNodeTransforms IsNot Nothing AndAlso entry.SseNodeTransforms.Count > 0 Then
             Dim nts As New List(Of RaceMenuJslot.JslotNodeTransform)(entry.SseNodeTransforms.Count)
             For Each nt In entry.SseNodeTransforms
                 If nt IsNot Nothing Then nts.Add(nt.Clone())
             Next
             preset.SseNodeTransforms = nts
+        End If
+        ' ⛔ SEGUNDO CAMINO DE HIDRATACIÓN: éste se me pasó cuando agregué el campo (el otro está en MainForm). Sin la
+        ' línea, un NPC que entra por acá exportaba el preset sin los elementos de primera persona.
+        If entry.SseFirstPersonTransformsRaw IsNot Nothing AndAlso entry.SseFirstPersonTransformsRaw.Count > 0 Then
+            preset.SseFirstPersonTransformsRaw = New List(Of String)(entry.SseFirstPersonTransformsRaw)
         End If
         ' SSE RaceMenu absolute hair tint (packed RGB) — rebuild onto the carrier from the sidecar.
         If entry.SseHairColorRgb.HasValue Then preset.SseHairColorRgb = entry.SseHairColorRgb
@@ -334,10 +355,20 @@ Public Module BssliderSidecar
         ' entry so an edited position/rotation survives a reload, not just the scale (SSE-only, nullable).
         If overlay.SseNodeTransforms IsNot Nothing AndAlso overlay.SseNodeTransforms.Count > 0 Then
             Dim list As New List(Of RaceMenuJslot.JslotNodeTransform)(overlay.SseNodeTransforms.Count)
+            ' ⛔⛔ EL GATE ERA `Not nt.IsIdentity` Y ESO PERDÍA DATOS. `IsIdentity` contesta "¿mueve el hueso?" —la
+            ' pregunta del render y del punto de la UI—, NO "¿hay algo que guardar?". Dos cosas se caían por acá: un
+            ' nodo cuyo único contenido es la key 40 (el re-parenteo de XPMSE) no prende ningún Has* ⇒ "era
+            ' identidad" ⇒ desaparecía del .jslot re-exportado; y una REFLEXIÓN se veía como identidad porque su
+            ' axis-angle es (0,0,0). Ver RaceMenuJslot.HasPersistableContent, que es el predicado correcto.
             For Each nt In overlay.SseNodeTransforms
-                If nt IsNot Nothing AndAlso Not String.IsNullOrEmpty(nt.NodeName) AndAlso Not nt.IsIdentity Then list.Add(nt.Clone())
+                If nt IsNot Nothing AndAlso Not String.IsNullOrEmpty(nt.NodeName) AndAlso nt.HasPersistableContent Then list.Add(nt.Clone())
             Next
             If list.Count > 0 Then entry.SseNodeTransforms = list
+        End If
+        ' Los elementos de primera persona del .jslot, verbatim. No se modelan ni se editan; se persisten porque el
+        ' "Save RaceMenu preset" arma un RaceMenuJslot nuevo desde el carrier y sin esto salían perdidos.
+        If overlay.SseFirstPersonTransformsRaw IsNot Nothing AndAlso overlay.SseFirstPersonTransformsRaw.Count > 0 Then
+            entry.SseFirstPersonTransformsRaw = New List(Of String)(overlay.SseFirstPersonTransformsRaw)
         End If
         ' SSE RaceMenu absolute hair tint (packed RGB) — co-save data, persist so it survives a reload.
         If overlay.SseHairColorRgb.HasValue Then entry.SseHairColorRgb = overlay.SseHairColorRgb
@@ -515,7 +546,9 @@ Public Module BssliderSidecar
             Next
             If list.Count > 0 Then entry.SseBodyOverlays = list
         End If
-        ' sseNodeTransforms — SSE-only, optional (schema v10). Array of { node, s?, sm?, p:[x,y,z]?, r:[ax,ay,az]? }
+        ' sseNodeTransforms — SSE-only, optional (schema v10). Array of { node, s?, sm?, p:[x,y,z]?, r:[ax,ay,az]?,
+        ' rm?[9], cl?[], raw? }. `sm` ya NO se escribe (se sigue leyendo por tolerancia); `raw` es el elemento crudo
+        ' del .jslot y es lo que hace que sobreviva lo que la app no modela.
         ' — the full per-node TRS (rotation as axis-angle radians, the model's canonical form). Raw stays Nothing so a
         ' later .jslot export rebuilds the element from these fields.
         If el.TryGetProperty("sseNodeTransforms", child) AndAlso child.ValueKind = JsonValueKind.Array Then
@@ -534,6 +567,52 @@ Public Module BssliderSidecar
                 If te.TryGetProperty("r", f) AndAlso f.ValueKind = JsonValueKind.Array AndAlso f.GetArrayLength() = 3 Then
                     nt.RotX = f(0).GetSingle() : nt.RotY = f(1).GetSingle() : nt.RotZ = f(2).GetSingle() : nt.HasRotation = True
                 End If
+                ' ⭐ `rm` = la matriz CRUDA de 9 floats. AUSENTE en todo sidecar de una versión anterior, y ahí está el
+                ' punto: NO hay default que aplicar (el centinela es el propio `Nothing`), así que un sidecar viejo
+                ' sigue rindiendo exactamente lo que rendía — el axis-angle de `r`. Cuando está, gana, porque es lo
+                ' único que sobrevive a 180° y a una reflexión (ver RaceMenuJslot.RotationRowMajor, que es quien
+                ' elige).
+                ' ⚠️ Sólo se toma si `r` estaba: sin HasRotation el modelo no tiene rotación y una matriz suelta no
+                ' debería inventarla.
+                If nt.HasRotation Then
+                    Dim rmEl As JsonElement
+                    If te.TryGetProperty("rm", rmEl) AndAlso rmEl.ValueKind = JsonValueKind.Array AndAlso rmEl.GetArrayLength() = 9 Then
+                        Dim m(8) As Single
+                        For mi = 0 To 8 : m(mi) = rmEl(mi).GetSingle() : Next
+                        nt.RotMatrixRaw = m
+                    End If
+                End If
+                ' ⭐ `cl` = los nombres de las capas colapsadas. AUSENTE en todo sidecar anterior, y ahí está el
+                ' punto: no hay default que aplicar (el centinela es el propio `Nothing`), así que un sidecar viejo
+                ' se comporta exactamente como antes — no neutraliza nada, que es lo que hacía.
+                ' ⛔ Se vuelve a filtrar con IsNeutralizableLayerName aunque la app ya lo hizo al leer el .jslot: un
+                ' sidecar es un archivo editable, y `internal` acá abajo hundiría al NPC en el piso.
+                Dim clEl As JsonElement
+                If te.TryGetProperty("cl", clEl) AndAlso clEl.ValueKind = JsonValueKind.Array Then
+                    Dim names As New List(Of String)
+                    For Each cnEl In clEl.EnumerateArray()
+                        If cnEl.ValueKind <> JsonValueKind.String Then Continue For
+                        Dim cn = cnEl.GetString()
+                        If String.IsNullOrWhiteSpace(cn) Then Continue For
+                        If Not RaceMenuJslot.IsNeutralizableLayerName(cn) Then Continue For
+                        If Not names.Contains(cn, StringComparer.OrdinalIgnoreCase) Then names.Add(cn)
+                    Next
+                    If names.Count > 0 Then nt.CollapsedLayerNames = names
+                End If
+                ' ⭐⭐ El elemento crudo del .jslot. Sin esto, `RaceMenuJslot.BuildTransformRaw` reconstruía el
+                ' elemento desde los campos modelados y se perdía todo lo que la app NO modela: la key 40
+                ' (re-parenteo), la key 33, y cualquier value nuevo. Ausente ⇒ `Raw = Nothing` ⇒ comportamiento
+                ' viejo, así que un sidecar anterior sigue funcionando igual.
+                ' ⛔ Se acepta sólo un objeto: un `raw` escalar o array sería un archivo corrupto o editado a mano, y
+                ' `Save` espera el elemento { node, firstPerson, keys:[...] }.
+                Dim rawEl As JsonElement
+                If te.TryGetProperty("raw", rawEl) AndAlso rawEl.ValueKind = JsonValueKind.Object Then
+                    Try
+                        nt.Raw = System.Text.Json.Nodes.JsonNode.Parse(rawEl.GetRawText())
+                    Catch
+                        nt.Raw = Nothing
+                    End Try
+                End If
                 list.Add(nt)
             Next
             If list.Count > 0 Then entry.SseNodeTransforms = list
@@ -546,6 +625,18 @@ Public Module BssliderSidecar
                 End If
             Next
             If list.Count > 0 Then entry.SseNodeTransforms = list
+        End If
+        ' sseFirstPersonTransforms — SSE-only, optional. Elementos `transforms` con firstPerson:true, JSON crudo.
+        ' Ausente ⇒ Nothing, que es lo que la app hacía antes de persistirlos.
+        Dim fpEl As JsonElement
+        If el.TryGetProperty("sseFirstPersonTransforms", fpEl) AndAlso fpEl.ValueKind = JsonValueKind.Array Then
+            Dim fpList As New List(Of String)
+            For Each fpItem In fpEl.EnumerateArray()
+                If fpItem.ValueKind <> JsonValueKind.String Then Continue For
+                Dim s = fpItem.GetString()
+                If Not String.IsNullOrWhiteSpace(s) Then fpList.Add(s)
+            Next
+            If fpList.Count > 0 Then entry.SseFirstPersonTransformsRaw = fpList
         End If
         ' sseHairColor — SSE-only, optional (schema v11). Packed 0xRRGGBB int (RaceMenu absolute hair tint).
         Dim hairEl As JsonElement
@@ -754,7 +845,9 @@ Public Module BssliderSidecar
                         w.WriteEndArray()
                     End If
                     ' sseBodyOverlays — SSE-only, emitted when non-empty. node + diffuse always; normal/tint
-                    ' only when present. Insertion order preserved (skee applies Ovl0..N in node order).
+                    ' only when present. Insertion order preserved — aunque el orden de DIBUJO no sale de la lista
+                    ' sino del nombre del nodo (SseOverlayCompositor.CompositeOrderKey: pool normal ascendente y
+                    ' encima el pool magic ascendente), así que preservarlo es fidelidad del archivo, no semántica.
                     If kv.Value.SseBodyOverlays IsNot Nothing AndAlso kv.Value.SseBodyOverlays.Count > 0 Then
                         w.WriteStartArray("sseBodyOverlays")
                         For Each ov In kv.Value.SseBodyOverlays
@@ -774,7 +867,7 @@ Public Module BssliderSidecar
                         Next
                         w.WriteEndArray()
                     End If
-                    ' sseNodeTransforms — SSE-only, emitted when non-empty. Array of { node, s?, sm?, p:[x,y,z]?,
+                    ' sseNodeTransforms — SSE-only, emitted when non-empty. Array of { node, s?, p:[x,y,z]?,
                     ' r:[ax,ay,az]? } — the full per-node TRS (rotation as axis-angle radians). Only the present
                     ' components are written, so a scale-only override stays compact.
                     If kv.Value.SseNodeTransforms IsNot Nothing AndAlso kv.Value.SseNodeTransforms.Count > 0 Then
@@ -784,7 +877,9 @@ Public Module BssliderSidecar
                             w.WriteStartObject()
                             w.WriteString("node", nt.NodeName)
                             If nt.HasScale Then w.WriteNumber("s", nt.Scale)
-                            If nt.HasScaleMode Then w.WriteNumber("sm", nt.ScaleMode)
+                            ' ⛔ `sm` YA NO SE ESCRIBE: el scaleMode por nodo es inerte en skee (busca (33,-1) y se
+                            ' almacena en (33,0) — ver RaceMenuJslot, decode de transforms) ⇒ nadie lo lee, ni el
+                            ' motor ni nosotros. Se sigue LEYENDO por tolerancia con sidecars viejos.
                             If nt.HasPosition Then
                                 w.WriteStartArray("p")
                                 w.WriteNumberValue(nt.PosX) : w.WriteNumberValue(nt.PosY) : w.WriteNumberValue(nt.PosZ)
@@ -794,8 +889,57 @@ Public Module BssliderSidecar
                                 w.WriteStartArray("r")
                                 w.WriteNumberValue(nt.RotX) : w.WriteNumberValue(nt.RotY) : w.WriteNumberValue(nt.RotZ)
                                 w.WriteEndArray()
+                                ' ⭐⭐ Y LA MATRIZ CRUDA, QUE ES LA QUE MANDA CUANDO ESTÁ. Sin esto el arreglo de la
+                                ' rotación moría en el disco: el `r` de arriba es AXIS-ANGLE, y la vuelta
+                                ' matriz→axis-angle→matriz destruye 180° y las reflexiones (a 180° la matriz es
+                                ' simétrica, los términos del eje se anulan y el fallback elige el eje X). Así que un
+                                ' preset importado con una rotación degenerada se veía bien hasta que el usuario
+                                ' guardaba el NPC y reabría la app.
+                                ' Se escribe ADEMÁS de `r`, no en su lugar: un sidecar nuevo leído por una versión
+                                ' vieja de la app ignora `rm` y sigue teniendo el axis-angle.
+                                If nt.RotMatrixRaw IsNot Nothing AndAlso nt.RotMatrixRaw.Length = 9 Then
+                                    w.WriteStartArray("rm")
+                                    For mi = 0 To 8 : w.WriteNumberValue(nt.RotMatrixRaw(mi)) : Next
+                                    w.WriteEndArray()
+                                End If
+                            End If
+                            ' ⭐⭐ LOS NOMBRES DE LAS CAPAS QUE LA APP COLAPSO. Sin esto se pierden al cerrar y reabrir,
+                            ' y el ESP dejaría de neutralizarlas ⇒ nuestro total volvería a sumarse al aporte que el
+                            ' mismo preset pudo haber dejado en el co-save del jugador. Es EXACTAMENTE el defecto que
+                            ' ya mordió con `rm`: un dato derivado que no sobrevive al disco es un dato perdido.
+                            ' Ver RaceMenuJslot.CollapsedLayerNames y NeutralizeCollapsedLayers en el .psc.
+                            If nt.CollapsedLayerNames IsNot Nothing AndAlso nt.CollapsedLayerNames.Count > 0 Then
+                                w.WriteStartArray("cl")
+                                For Each cn In nt.CollapsedLayerNames
+                                    If Not String.IsNullOrWhiteSpace(cn) Then w.WriteStringValue(cn)
+                                Next
+                                w.WriteEndArray()
+                            End If
+                            ' ⭐⭐ EL ELEMENTO CRUDO DEL .jslot, VERBATIM. Es el arreglo de RAÍZ de una familia entera de
+                            ' pérdidas: el modelo NO modela todo lo que el archivo lleva (la key 40 = re-parenteo, la
+                            ' key 33, cualquier value que RaceMenu agregue mañana), y esas cosas viajan justamente
+                            ' PORQUE viajan en `Raw`. Sin persistirlo, `BuildTransformRaw` reconstruía el elemento
+                            ' desde los campos modelados en cuanto `Raw` era Nothing —o sea después de CUALQUIER
+                            ' cerrar-y-reabrir— y todo lo no modelado desaparecía del .jslot re-exportado.
+                            ' Es seguro guardarlo aunque el usuario edite el TRS: `RaceMenuJslot.Save` PARCHEA los
+                            ' values 30/31/32 del Raw desde el modelo antes de emitirlo, así que el TRS nunca sale
+                            ' viejo. Y es tolerante para atrás: un sidecar sin `raw` deja `Raw = Nothing` y el
+                            ' comportamiento es el de antes.
+                            If nt.Raw IsNot Nothing Then
+                                w.WritePropertyName("raw")
+                                nt.Raw.WriteTo(w)
                             End If
                             w.WriteEndObject()
+                        Next
+                        w.WriteEndArray()
+                    End If
+                    ' sseFirstPersonTransforms — SSE-only, emitted when non-empty. Los elementos `transforms` con
+                    ' firstPerson:true, cada uno como el JSON crudo que vino. No se modelan; se guardan para que el
+                    ' "Save RaceMenu preset" de una sesión POSTERIOR los pueda re-emitir.
+                    If kv.Value.SseFirstPersonTransformsRaw IsNot Nothing AndAlso kv.Value.SseFirstPersonTransformsRaw.Count > 0 Then
+                        w.WriteStartArray("sseFirstPersonTransforms")
+                        For Each fp In kv.Value.SseFirstPersonTransformsRaw
+                            If Not String.IsNullOrWhiteSpace(fp) Then w.WriteStringValue(fp)
                         Next
                         w.WriteEndArray()
                     End If

@@ -8,11 +8,22 @@ Scriptname NPCM_Manolov_ApplySSE extends Actor
   it receives per-instance events — that is why OnLoad() fires per spawned actor.
 
   WHAT THIS SCRIPT DOES *NOT* DO — on purpose, to avoid applying anything twice:
-    * ANYTHING on the FACE — face overlays, morphs, sculpt, tints: all BAKED into the FaceGen NIF and
-                           textures. The emitter never sends a Face node. No exceptions.
+    * LA CARA, casi entera — morphs, sculpt, tints y los face overlays del pool NORMAL: todo eso se
+                           HORNEA en el NIF/las texturas del FaceGen. DOS salvedades, las dos reales:
+                           (a) los Face [Ovl] sí se emiten cuando el usuario apaga el bake de overlays
+                               de cara (Setting_BakeSseRaceMenuOverlays), porque entonces nadie más los
+                               aplicaría;
+                           (b) los Face [SOvl] (pool MAGIC) se emiten SIEMPRE: el fold no los pliega en
+                               ningún caso — son la capa que un magic effect prende en runtime — así que
+                               este script es su único dueño.
 
-  BODY MORPHS (BodySlide) ARE DELIVERED HERE NOW — and the BodyGen .ini is then NOT emitted for the
-  same plugin. The two CANNOT coexist: skee SUMS the per-key values of a morph by default
+  BODY MORPHS (BodySlide) ARE DELIVERED HERE NOW, ALONGSIDE the BodyGen .ini for the same plugin.
+  ⛔ DECIA "and the BodyGen .ini is then NOT emitted for the same plugin": ES FALSO, y el saver dice lo
+  contrario en mayusculas (NpcOverrideSaver.vb:1000-1012). El .ini se emite igual y NO se borra nunca,
+  porque es por PLUGIN y lista TODOS sus NPC: borrarlo le corta la entrega a todos los que el usuario no
+  re-grabo (su VMAD viejo les llega INERTE). Ya paso una vez.
+  Lo que SI es cierto es el peligro que sigue, y lo resuelve el BARRIDO (ClearMorphs, poda total del
+  actor), no dejar de emitir el .ini: las dos entregas SIN barrido no podrian coexistir: skee SUMS the per-key values of a morph by default
   (Impl_GetBodyMorphs, BodyMorphInterface.cpp:220-240, g_bodyMorphMode = 0 in main.cpp:145), so a
   BodyGen row plus ours would apply the slider TWICE. See ApplyBodyMorphs() below.
 }
@@ -111,6 +122,31 @@ int Property IDX_NORMAL  = 1 AutoReadOnly
 ; Papyrus\tools\check_sweep_ceiling.py.
 int Property OVL_SWEEP_MAX = 127 AutoReadOnly
 
+;-- Techo del APAGADO VISUAL del pool MAGIC ([SOvl{n}]). Ver ClearOverlayGroup / RemovePrevious ----
+;
+; ⭐ POR QUE ES UN NUMERO Y NO UN GETTER: el pool magic tiene su propio contador en skee
+; (g_numSpell*Overlays, key iSpellOverlays por zona, main.cpp:775-781, default 1), con su propio clamp
+; (:812-828) y su propio cero por bEnableFaceOverlays (:833-836) -- pero **Papyrus no expone getter**
+; para el. NiOverride.psc tiene GetNumBodyOverlays / GetNumFaceOverlays / etc. y ninguno del spell.
+;
+; ⭐ POR QUE NO ES 127 COMO EL OTRO: apagar un slot cuesta AddNodeOverride*, que es un GetObjectByName
+; sobre el 3D del actor -- un recorrido del arbol POR LLAMADA (OverrideInterface.cpp:750-763). A 127 x
+; 4 pools eso es caro y no compra nada, porque la app no puede autorar tan alto (ver abajo). El
+; barrido del STORE si va hasta OVL_SWEEP_MAX: es la llamada barata y un .jslot importado puede traer
+; un [SOvl40].
+;
+; ⛔ Y HAY QUE APAGARLOS, no alcanza con sacarlos del store: RevertOverlay llega a Papyrus con
+; resetDiffuse=false, asi que el nodo se queda mostrando la ultima textura (ver el bloque de
+; ClearOverlayGroup mas abajo).
+;
+; ⛔⛔ ACA VIVIA `OVL_SPELL_CLEAR_MAX = 8` Y NO TENIA QUE EXISTIR. Su justificacion era que "Papyrus no
+; expone getter del contador del pool magic", y es FALSO: NiOverride.GetNumSpell{Body,Hand,Feet,Face}Overlays
+; estan registradas (PapyrusNiOverride.cpp:1844-1853) y son NoWait (:2422-2425). Ver RemovePrevious.
+; Con el contador real, la promesa "lo que se escribe se puede deshacer" se cumple SIN ningun techo: el
+; apagado visual cubre exactamente los nodos que existen, y el barrido del store llega a OVL_SWEEP_MAX.
+; Se fueron con ella: el descarte de overlays magic en el emisor (que perdia dato del usuario), el gemelo
+; en VB y su entrada en check_sweep_ceiling.py.
+
 bool Property IsFemale_G0000010000 = false Auto
 {Género para el que se autoraron los overrides. NiOverride guarda los sets male/female por separado.}
 
@@ -140,7 +176,10 @@ bool Property Verbose_G0000010000 = false Auto
 int Property SchemaVersion_G0000010000 = 1 Auto
 {Hash del payload de ESTE NPC. Cambia sólo si cambian sus valores ⇒ sólo ESE actor re-aplica.}
 
-;-- overlays: Body/Hands/Feet. JAMÁS Face (la cara es del bake) ---------------------------------
+;-- overlays: Body/Hands/Feet, y Face sólo cuando el bake NO se la queda -------------------------
+; ⭐ El pool MAGIC (Face/Body/Hands/Feet [SOvl{n}]) viaja SIEMPRE por acá: el fold no lo pliega nunca
+;   (es la capa que un magic effect prende en runtime), así que este script es su único dueño.
+;   Los nodos van en OvlNode tal cual, con su nombre — el nombre ES el pool, no hay array aparte.
 string[] Property OvlNode_G0000010000 Auto
 string[] Property OvlDiffuse_G0000010000 Auto
 string[] Property OvlNormal_G0000010000 Auto
@@ -190,13 +229,45 @@ float[]  Property NodeRotM8_G0000010000 Auto
 int[]    Property NodeScaleMode_G0000010000 Auto
 {-1 = no tocar. 0 mult / 1 avg / 2 add / 3 max (NiTransformInterface.cpp:682-707).}
 
+string[] Property NodeNeutralNode_G0000010000 Auto
+string[] Property NodeNeutralName_G0000010000 Auto
+{⭐⭐ PARES PLANOS (nodo, nombre-de-capa) que hay que NEUTRALIZAR con identidad completa.
+
+ ⛔ SON PARALELAS ENTRE SI, **NO** con NodeName: el indice i es "el par i", no "el nodo i". Papyrus no tiene
+ arrays irregulares y un hueso puede traer varios nombres, asi que la unica forma es una lista de pares.
+
+ QUE PROBLEMA RESUELVEN. Nuestro aporte lleva el valor EFECTIVO del hueso: la app compuso los aportes que el
+ preset traia (cada slider de RaceMenu/XPMSE escribe su propia key) en un solo numero. Si esos mismos aportes
+ estan ADEMAS en el co-save del jugador, el motor compone los suyos con nuestro total y el hueso sale al doble.
+ Y si estan es por una razon concreta: algun mod le aplico ESE preset a ESE NPC con
+ `CharGen.LoadCharacterPresetEx` — la unica via de Papyrus para aplicar un .jslot a un actor cualquiera.
+
+ COMO SE RESUELVE. Se les escribe IDENTIDAD COMPLETA bajo su propio nombre: escala 1, posicion (0,0,0) y
+ rotacion identidad. Escribir la misma (nodo, nombre, key, index) REEMPLAZA — `Impl_AddNodeTransform` hace
+ erase+insert y el set compara por (key,index) (OverrideVariant.h:19) — asi que el aporte queda inerte.
+
+ ⛔ POR QUE IDENTIDAD **COMPLETA** y no "solo lo que el preset tenia": el preset dice que tenia EL, pero no
+ sabemos que hay bajo ese nombre en el co-save DEL JUGADOR. Otra cosa pudo haber escrito una posicion ahi.
+ La identidad completa neutraliza el nombre entero, sin suponer.
+
+ ⛔ POR QUE NEUTRALIZAR Y NO BORRAR. Se toca EXACTAMENTE lo que nuestro valor ya representa. Hubo una version
+ (`ClaimNode`) que enumeraba las keys del nodo y borraba TODA la ajena: se llevaba `internal` —el lift de los
+ tacos altos, donde componer ES correcto— y el aporte de un mod que nunca vimos, sin vuelta atras. Los nombres
+ que llegan aca los filtro la app (RaceMenuJslot.IsNeutralizableLayerName): nunca `internal`, nunca
+ `NodeDestination`, y nunca uno terminado en .esp/.esm/.esl (skee los poda en cada carga del co-save).
+
+ ⛔ NO SE ESCRIBE key 33 (el motor no lee el scaleMode por nodo: busca (33,-1) y todo se guarda en (33,0)) ni
+ key 40 (NodeDestination no es un valor que se componga, es un re-parenteo, y su "neutro" seria otra orden).}
+
 ;-- body morphs (BodySlide) ---------------------------------------------------------------------
 bool Property MorphsOwned_G0000010000 = false Auto
 {⛔ QUIEN ES EL DUEÑO DE LOS BODY MORPHS DE ESTE NPC. false = los entrega el par BodyGen .ini y este
  script NO TOCA NADA de morphs (ni siquiera barre, ni repinta); true = los entrega este script.
 
- En SSE nuestro barrido es por key propia, asi que borrar de mas no puede pasar — pero el flag existe
- igual, por dos motivos: (a) el repintado (UpdateModelWeight) tampoco tiene por que dispararse si no
+ ⛔ DECIA ACA "en SSE nuestro barrido es por key propia, asi que borrar de mas no puede pasar". ES
+ FALSO y lo contradecia el doc de MorphValue 20 lineas mas abajo: el barrido de morphs es ClearMorphs,
+ PODA TOTAL del actor bajo cualquier key. Por eso el flag es lo unico que impide el colateral cuando el
+ dueño es el .ini, y ademas: (a) el repintado (UpdateModelWeight) tampoco tiene por que dispararse si no
  somos el dueño, y (b) una sola ley en los dos juegos, que en FO4 SI es obligatoria (alla el slot es el
  mismo que usa BodyGen).
 
@@ -243,8 +314,14 @@ Event OnLoad()
     ; Una lectura por traza: indexar el mismo array dos veces en una expresion imprime N veces el
     ; ULTIMO elemento (quirk del codegen de Papyrus).
     if Verbose_G0000010000
-        Debug.Trace("[NPCM] payload ovl=" + OvlNode_G0000010000.Length + " skin=" + SkinSlot_G0000010000.Length + " nodes=" + NodeName_G0000010000.Length)
-        Debug.Trace("[NPCM] BM payload morphs=" + MorphName_G0000010000.Length)
+        ; **CUENTA REAL, SIN EL CENTINELA.** Un array vacio del VMAD viaja con UN elemento de string vacio
+        ; (ver AddArray en el emisor: sin el, `Length` revienta en Papyrus). Trazar `.Length` crudo hacia que
+        ; un preset SIN overlays dijera "payload ovl=1", y un preset SIN morphs dijera "morphs=1" seguido de
+        ; "BM aplicados=0 de 1" — que se lee como una falla silenciosa y NO lo es.
+        ; ⛔ Me lo cobre yo mismo: reporte esa linea como una anomalia a investigar cuando era mi propio trace
+        ; contando el centinela. Un trace que miente cuesta lo mismo que un comentario que miente.
+        Debug.Trace("[NPCM] payload ovl=" + RealLen(OvlNode_G0000010000) + " skin=" + RealLenInt(SkinSlot_G0000010000) + " nodes=" + RealLen(NodeName_G0000010000))
+        Debug.Trace("[NPCM] BM payload morphs=" + RealLen(MorphName_G0000010000))
     endif
 
     ; ⛔ INSTANCIA HUERFANA: no soy la version activa de este actor, no toco NADA.
@@ -320,9 +397,15 @@ Event OnLoad()
     endif
 EndEvent
 
-; La "name" del transform es la KEY del override: namespacea NUESTRA capa, así RaceMenu, XPMSE y
-; nosotros podemos tener un valor sobre el MISMO hueso sin pisarnos — y RemoveNodeTransform* saca
-; SÓLO la nuestra. (No puede ser una variable llamada `key`: `Key` es un tipo real de Skyrim — `Key
+; La "name" del transform es la KEY del override: namespacea NUESTRA capa, y RemoveNodeTransform* saca
+; sólo la que se le nombra.
+; Y eso vale para TODOS los huesos: RaceMenu, XPMSE y nosotros podemos tener un valor sobre el mismo hueso
+; sin pisarnos. Llegué a romperlo con una función que borraba las capas ajenas de los huesos autorados; se
+; revirtió, y el porqué está en ApplyNodeTransforms.
+; ⚠️ El residuo que eso deja, dicho: nuestro valor es el TOTAL del hueso, así que si el actor tiene otro
+; aporte ahí, el motor los compone y el juego muestra más de lo que muestra la app. Con `internal` (tacos
+; altos) eso es CORRECTO. Con otro mod, es un conflicto de mods.
+; (No puede ser una variable llamada `key`: `Key` es un tipo real de Skyrim — `Key
 ; extends MiscObject` — y Papyrus rechaza una variable con nombre de tipo conocido.)
 string Function XformKey()
     return "NPCM_Manolov"
@@ -340,7 +423,8 @@ EndFunction
 ; aplica, pero el override VIEJO sigue ahí y nadie lo saca: queda pegado al actor para siempre.
 ;
 ; Se borra POR KEY EXACTA, nunca con RemoveAll* (que se llevarían puestas las capas de XPMSE o de
-; cualquier otro mod). Overlays y skin se barren por ENUMERACIÓN — los nodos de overlay son un
+; cualquier otro mod sobre CUALQUIER hueso, incluidos los que este NPC no autora).
+; Overlays y skin se barren por ENUMERACIÓN — los nodos de overlay son un
 ; conjunto conocido y contable ("Body [Ovl{n}]"…, skee OverlayInterface.h:33,38,43) y los slots de
 ; skin son 32 — así que no hace falta recordar nada.
 ;
@@ -355,12 +439,21 @@ Function RemovePrevious()
     int nBody = NiOverride.GetNumBodyOverlays()
     ClearOverlayGroup("Body [Ovl", nBody)
     PurgeOverlayGroup("Body [Ovl", nBody, OVL_SWEEP_MAX)
+    int nBodySp = NiOverride.GetNumSpellBodyOverlays()
+    ClearOverlayGroup("Body [SOvl", nBodySp)
+    PurgeOverlayGroup("Body [SOvl", nBodySp, OVL_SWEEP_MAX)
     int nHands = NiOverride.GetNumHandOverlays()
     ClearOverlayGroup("Hands [Ovl", nHands)
     PurgeOverlayGroup("Hands [Ovl", nHands, OVL_SWEEP_MAX)
+    int nHandsSp = NiOverride.GetNumSpellHandOverlays()
+    ClearOverlayGroup("Hands [SOvl", nHandsSp)
+    PurgeOverlayGroup("Hands [SOvl", nHandsSp, OVL_SWEEP_MAX)
     int nFeet = NiOverride.GetNumFeetOverlays()
     ClearOverlayGroup("Feet [Ovl", nFeet)
     PurgeOverlayGroup("Feet [Ovl", nFeet, OVL_SWEEP_MAX)
+    int nFeetSp = NiOverride.GetNumSpellFeetOverlays()
+    ClearOverlayGroup("Feet [SOvl", nFeetSp)
+    PurgeOverlayGroup("Feet [SOvl", nFeetSp, OVL_SWEEP_MAX)
     ; FACE: decia "NUNCA Face: la cara es del bake" y era cierto mientras el emisor jamas mandaba un
     ; nodo Face. Ya no: el bake de overlays de cara esta gateado por Setting_BakeSseRaceMenuOverlays y,
     ; con ese toggle APAGADO, el emisor SI manda los nodos Face (si no, no los aplicaba nadie y el
@@ -371,16 +464,40 @@ Function RemovePrevious()
     ; es no-op) y NO puede depender del toggle, porque el toggle de HOY no dice que se aplico AYER.
     ; Las dos familias de skee: FACE_NODE "Face [Ovl{}]" y FACE_NODE_SPELL "Face [SOvl{}]"
     ; (OverlayInterface.h:23-24).
-    ; ⛔ CORRECCION: decia "ambas contadas por GetNumFaceOverlays" y es FALSO. Los spell overlays tienen su
-    ; propia variable g_numSpellFaceOverlays, con su propia key iSpellOverlays (main.cpp:781), su propio clamp
-    ; (:825-826) y su propio cero (:834-835). Papyrus no expone un getter para ella, asi que el barrido de
-    ; [SOvl] usa el contador de [Ovl] y SE QUEDA CORTO cuando alguien pone iSpellOverlays > iNumOverlays.
-    ; Se deja asi a proposito: quedarse corto en [SOvl] solo significa MENOS colateral sobre otro mod --
-    ; nosotros no autoramos [SOvl] nunca -- y pasarse seria borrarle capas a un mod ajeno sin ganar nada.
+    ; ⛔ CORRECCION 2: la version anterior barria "Face [SOvl" con el contador de [Ovl] y lo justificaba con
+    ; "nosotros no autoramos [SOvl] nunca". ESO YA NO ES CIERTO: el pool magic es autorable desde los editores
+    ; (es el unico dueño de un face-paint magico, que el bake NO pliega por diseño), asi que el barrido tiene
+    ; que cubrirlo de verdad y en las CUATRO zonas.
+    ; ⛔⛔ CORRECCION 3, Y ERA UN ERROR MIO DE HECHO: este bloque decia "EL CONTADOR DEL POOL MAGIC NO SE
+    ; PUEDE PREGUNTAR ... Papyrus no expone getter", y lo repetia en otros dos lugares del archivo. ES FALSO.
+    ; NiOverride.GetNumSpellBodyOverlays / GetNumSpellHandOverlays / GetNumSpellFeetOverlays /
+    ; GetNumSpellFaceOverlays ESTAN registradas (PapyrusNiOverride.cpp:1844-1853) y ademas flaggeadas NoWait
+    ; (:2422-2425), o sea baratas. El pool normal ya las usaba dos lineas mas arriba; el magic usaba una
+    ; constante inventada (OVL_SPELL_CLEAR_MAX = 8) apoyada en esa afirmacion falsa.
+    ;
+    ; ⇒ CONSECUENCIAS DE ARREGLARLO, las tres:
+    ;   1) el barrido cubre EXACTAMENTE los nodos que el juego del jugador realmente creo, ni uno mas.
+;      OJO CON LA PALABRA "apagado": lo que queda garantizado es el STORE (el override se va y no vuelve al
+;      recargar el 3D). El apagado VISUAL inmediato NO esta medido y probablemente no ocurra: la plantilla magic
+;      trae un BSEffectShaderPropertyFloatController sobre la Alpha (flags 0x4A = ACTIVE + CYCLE_REVERSE), asi que
+;      dentro de una partida en curso la animacion del efecto pisa el KEY_ALPHA=0 con el que se apaga. Decir
+;      "apagado visual exacto" era afirmar mas de lo que se midio.
+    ;      Antes hacia 8 por zona, de los cuales ~7 caian sobre nodos inexistentes (cada uno un recorrido del
+    ;      arbol del NIF por AddNodeOverride*).
+    ;   2) el emisor DEJA DE DESCARTAR overlays magic. Descartaba todo indice >= 8 para que no quedara un
+    ;      override que este barrido no pudiera apagar. Con el contador real, todo lo que el jugador puede ver
+    ;      se puede apagar, asi que no hay nada que descartar: la app deja de perder en silencio un overlay
+    ;      que el usuario autoro.
+    ;   3) se va la constante gemela en tres artefactos (.psc/.pex/VB) y su gate, que protegia un numero que
+    ;      no tenia que existir.
+    ; El barrido del STORE sigue llegando al tope del motor (OVL_SWEEP_MAX): un .jslot importado puede traer un
+    ; [SOvl40] que igual hay que poder sacar del co-save, exista o no el nodo.
     int nFace = NiOverride.GetNumFaceOverlays()
     ClearOverlayGroup("Face [Ovl", nFace)
     PurgeOverlayGroup("Face [Ovl", nFace, OVL_SWEEP_MAX)
-    ClearOverlayGroup("Face [SOvl", nFace)
+    int nFaceSp = NiOverride.GetNumSpellFaceOverlays()
+    ClearOverlayGroup("Face [SOvl", nFaceSp)
+    PurgeOverlayGroup("Face [SOvl", nFaceSp, OVL_SWEEP_MAX)
     NiOverride.ApplyNodeOverrides(self)
 
     ; --- skin: los 32 slots biped. mask arranca en 1 y se duplica; en el bit 31 "desborda" a
@@ -407,11 +524,21 @@ Function RemovePrevious()
     ; El "Cannot cast from None to String[]" que se le atribuyo venia de una PROPERTY que llegaba None
     ; (regla 2 de la cabecera), no del retorno de esta native.
     ;
-    ; ⚠️ SIN COLATERAL, a diferencia del barrido de overlays: se sacan SOLO las keys NUESTRAS de cada
-    ; nodo, asi que XPMSE, RaceMenu o cualquier otro conservan las suyas. Quitar una key que no existe
-    ; es no-op, asi que enumerar todos los nodos es seguro.
+    ; ⚠️ ESTE barrido no tiene colateral: se saca SOLO la key NUESTRA de cada nodo, asi que en un nodo
+    ; que NO autoramos, XPMSE / RaceMenu / cualquier otro conservan las suyas. Quitar una key que no
+    ; existe es no-op, asi que enumerar todos los nodos es seguro.
     ;
-    ; ⭐ Y ACA SI HAY "DESHACER" DE VERDAD: Impl_UpdateNodeTransforms (NiTransformInterface.cpp:454-476)
+    ; ⭐⭐ skee COMPONE EN DOS ORDENES DISTINTOS, y esto no estaba escrito en ningun lado:
+    ;   * SetTransforms (el de la CARGA del actor, :680):        combined = combined * local
+    ;   * Impl_UpdateNodeTransforms (el que dispara ESTE script): transformResult = local * transformResult  (:466)
+    ;   `NiTransform::operator*` NO conmuta, asi que para un nodo con VARIAS capas los dos caminos dan
+    ;   resultados distintos — skee es inconsistente consigo misma. Y el de :466 ademas NO MIRA el scaleMode:
+    ;   usa el producto crudo de las escalas, mientras el de :680 aplica el iScaleMode del jugador.
+    ;   ⇒ Con UNA sola capa los dos coinciden (local * identidad == identidad * local), asi que el desacuerdo
+    ;   solo aparece en un nodo con VARIAS capas — el caso que justamente NO forzamos. Pero no se puede decir
+    ;   "el motor compone asi" sin decir cual de los dos caminos.
+    ;
+    ; ⭐ Y ACA SI HAY "DESHACER" DE VERDAD: Impl_UpdateNodeTransforms (NiTransformInterface.cpp:454-497)
     ; RECOMPONE el transform desde cero — arranca de la transform base del nodo e itera las keys que
     ; QUEDAN. Si no queda ninguna, el nodo vuelve a su base. Es lo contrario de los overlays, donde
     ; ApplyNodeOverrides solo empuja lo que quedo y nunca resetea.
@@ -584,8 +711,21 @@ EndFunction
 ;   efectos sobre lo que se ve.
 ;
 ; ⚠️⚠️ EL COSTO ESTÁ EN EL RE-APPLY, NO EN EL PRIMER SPAWN — y es lo que se aceptó a sabiendas al elegir
-;   el techo del motor. Con el ini shipeado (6/3/3/3) el purge agrega ~1970 llamadas por actor, UNA VEZ
-;   (RemovePrevious corre detrás del gate appliedVersion == SchemaVersion). Las tres nativas que usa están
+;   el techo del motor. CIFRA ACTUALIZADA (el pool magic la DUPLICÓ; la vieja decía ~1970 y quedó a la mitad
+;   de la realidad). Con el ini shipeado (6/3/3/3) y por actor, UNA VEZ (RemovePrevious corre detrás del
+;   gate appliedVersion == SchemaVersion):
+;     * purge pool NORMAL:  (127-6) + 3x(127-3) = 493 iteraciones x 4 removes = 1972
+;     * purge pool MAGIC:   4 zonas x (127-8)   = 476 iteraciones x 4 removes = 1904
+;     ⇒ ~3876 nativas de store (las BARATAS: RemoveNodeOverride muere en el primer find si no existe).
+;   Y ClearOverlayGroup, que por índice hace 2 AddNodeOverride* (las CARAS: GetObjectByName) + 4 removes:
+;     * caras:   normal 2x(6+3+3+3) = 30  +  magic 2x(8+8+8+8) = 64   ⇒ 94 recorridos de árbol
+;     * removes: (15 + 32) x 4 = 188 nativas de store más
+;   ⇒ TOTAL ~4158 por actor. (Este desglose omitía los 188 mientras el README daba el total completo: dos
+;    cuentas del mismo número que no coincidían.)
+;   ⭐ CIFRA CORREGIDA: el magic ya NO hace 8 por zona. Usa GetNumSpell*Overlays(), así que con el default
+;   del motor (iSpellOverlays=1) son 2x(1+1+1+1) = 8 recorridos de árbol en vez de 64. Los 56 que caían sobre
+;   nodos inexistentes eran el precio de una afirmación falsa ("Papyrus no expone getter"), no del diseño.
+;   Las tres nativas que usa están
 ;   registradas NoWait desde el C++ (PapyrusNiOverride.cpp:2417,2454,2531 —- OJO: acá NoWait NO es un
 ;   keyword del .psc como en F4SE, lo setea el plugin con SetFunctionFlags; no "corregir" esto borrándolo).
 ;
@@ -604,8 +744,12 @@ EndFunction
 ;   algún día molesta, la salida NO es bajar el techo (reabre el agujero): es que el emisor mande el índice
 ;   más alto que este mod haya autorado y barrer max(contador del jugador, ese+1).
 ;
-; ⚠️ NO se extiende a "Face [SOvl" (spell overlays): la app NUNCA los autora, así que ampliarles el
-;   rango sólo borraría overlays de OTRO mod sin ganar nada. El colateral se paga donde hay beneficio.
+; ⚠️ SÍ se extiende al pool MAGIC ("<zona> [SOvl") en las cuatro zonas. Decía que NO, con el argumento
+;   "la app nunca los autora": eso caducó — el pool magic es autorable y este script es su único dueño
+;   (el fold no lo pliega). Y el argumento del colateral no aplica al caso: acá se está autorando ESTE
+;   NPC, así que sus capas magic son nuestras; dejarlas pegadas sería el bug, no el respeto.
+;   El apagado visual del pool magic va hasta GetNumSpell*Overlays() — el contador REAL del juego del
+;   jugador, igual que el pool normal — y el barrido del store hasta el mismo tope del motor.
 ;
 ; Recibe un String y dos Int — NO un array (regla 1 de la cabecera).
 Function PurgeOverlayGroup(string prefix, int from, int to)
@@ -709,7 +853,78 @@ Function ApplySkin()
     NiOverride.ApplySkinOverrides(self)
 EndFunction
 
+; ============================================================================================
+; NEUTRALIZAR LAS CAPAS QUE LA APP YA COLAPSO — ver el doc de NodeNeutralName_G<n>.
+;
+; Corre ANTES de escribir lo nuestro, aunque el orden con el store da igual (son keys distintas). Lo que si
+; importa es el UpdateNodeTransform: recompone el nodo desde su base con las keys que quedan, asi que tiene que
+; correr DESPUES de escribir. Se llama aca por nodo (idempotente: la llamada del loop de abajo no molesta) para
+; cubrir el caso de un nodo que tiene nombres a neutralizar y ningun TRS nuestro.
+; ============================================================================================
+; Cuantos elementos REALES tiene una array de strings del VMAD: 0 cuando lo unico que hay es el centinela
+; (un solo elemento vacio). Ver AddArray en NpcApplyScriptEmitter: una array vacia NO se puede emitir vacia
+; porque `.Length` sobre una property sin valor revienta, asi que viaja con un elemento vacio.
+; Igual, para las arrays de ENTEROS: ahi el centinela es 0, no "" (ver AddArray, sobrecarga de Integer).
+; Que el 0 sea el centinela y no un dato lo confirma el propio loop de skin overrides: `if slot != 0`.
+int Function RealLenInt(int[] a) global
+    if a.Length == 1 && a[0] == 0
+        return 0
+    endif
+    return a.Length
+EndFunction
+
+int Function RealLen(string[] a) global
+    if a.Length == 1 && a[0] == ""
+        return 0
+    endif
+    return a.Length
+EndFunction
+
+Function NeutralizeCollapsedLayers()
+    int m = NodeNeutralNode_G0000010000.Length
+    if m == 0
+        return
+    endif
+    ; Guard de arrays desparejas: si el payload llega recortado, se hace lo que se pueda en vez de reventar.
+    if NodeNeutralName_G0000010000.Length < m
+        m = NodeNeutralName_G0000010000.Length
+    endif
+
+    float[] zero = new float[3]
+    float[] ident = new float[9]
+    ident[0] = 1.0
+    ident[4] = 1.0
+    ident[8] = 1.0
+
+    int i = 0
+    while i < m
+        string node = NodeNeutralNode_G0000010000[i]
+        string other = NodeNeutralName_G0000010000[i]
+        if node != "" && other != "" && other != XformKey()
+            NiOverride.AddNodeTransformScale(self, false, IsFemale_G0000010000, node, other, 1.0)
+            NiOverride.AddNodeTransformPosition(self, false, IsFemale_G0000010000, node, other, zero)
+            NiOverride.AddNodeTransformRotation(self, false, IsFemale_G0000010000, node, other, ident)
+            NiOverride.UpdateNodeTransform(self, false, IsFemale_G0000010000, node)
+            if Verbose_G0000010000
+                ; **SE LEE DE VUELTA**, no se afirma. Escribir y trazar "lo escribi" no prueba nada: prueba que se
+                ; llamo a la funcion. `GetNodeTransformScale` esta expuesto a Papyrus y es NoWait
+                ; (PapyrusNiOverride.cpp:1110 / :2312), asi que se puede preguntar QUE QUEDO bajo ese nombre.
+                ; Nacio de una limitacion real del test: el usuario no tenia forma de saber si el hueso habia
+                ; quedado en 1.32 o en 1.74 mirando el NPC. Un numero en el log lo contesta; un pecho no.
+                float back = NiOverride.GetNodeTransformScale(self, false, IsFemale_G0000010000, node, other)
+                Debug.Trace("[NPCM] xform NEUTRAL " + node + ": '" + other + "' -> leido de vuelta scale=" + back +                             " (tiene que ser 1.0; su aporte ya esta en el nuestro)")
+            endif
+        endif
+        i += 1
+    endwhile
+EndFunction
+
 Function ApplyNodeTransforms()
+    ; ⭐ PRIMERO se neutralizan los nombres que la app colapso. Va aca y no en RemovePrevious porque no es un
+    ; barrido de lo anterior: es parte de ESCRIBIR este payload — sin esto, nuestro total se sumaria al aporte
+    ; que el mismo preset pudo haber dejado en el co-save del jugador.
+    NeutralizeCollapsedLayers()
+
     int n = NodeName_G0000010000.Length
     if n == 0
         return
@@ -720,6 +935,20 @@ Function ApplyNodeTransforms()
     while i < n
         string node = NodeName_G0000010000[i]
         if node != ""
+
+            ; ⛔⛔ ACA SE LLAMABA A ClaimNode(), QUE BORRABA LAS CAPAS AJENAS DE ESTE HUESO. Se fue, y la razon
+            ; de fondo es que confundi dos cosas distintas:
+            ;   * las capas que trae un PRESET son el desglose por slider de UN autor (RaceMenu/XPMSE escriben
+            ;     una key por slider), y viven en un ARCHIVO;
+            ;   * las capas que tiene un ACTOR en runtime son de mods distintos.
+            ; Yo use el argumento de las segundas para justificar borrar las primeras. Y sobre un NPC real las
+            ; unicas capas ajenas que hay son `internal` del motor —donde COMPONER ES CORRECTO: el NPC con tacos
+            ; tiene que levantarse— y los nodos de arma de XPMSE, que vuelven en el proximo cambio de arma.
+            ; ⛔ Y no se podian distinguir: el motor no dice "soy derivado del equipo" ni "soy otro mod pisandote".
+            ; Cualquier politica automatica se equivoca en uno de los dos, y equivocarse BORRANDO no tiene vuelta
+            ; atras mientras equivocarse mostrando otro numero si.
+            ; ⇒ Se escribe lo nuestro y no se toca nada ajeno. Lo que SI queda pendiente es neutralizar los
+            ; nombres que el preset traia (identidad declarada en el payload), que es preciso en vez de a ciegas.
 
             ; --- escala
             if i < NodeHasScale_G0000010000.Length
@@ -769,11 +998,31 @@ Function ApplyNodeTransforms()
                 endif
             endif
 
+            ; ⛔⛔ ESTA LLAMADA NO HACE NADA, EN SILENCIO, SI IsFemale NO COINCIDE CON EL SEXO DEL ACTOR BASE:
+            ; UpdateNodeTransform compara `isFemale` contra `actorBase->GetSex()` y hace `return` sin tocar nada
+            ; ni loguear (PapyrusNiOverride.cpp:1286-1293). Y es la unica cosa que recompone el nodo, asi que un
+            ; IsFemale_G<n> equivocado deja los Add* en el store y NADA visible en el 3D — el sintoma seria "el
+            ; NPC no cambia" sin ningun error. El mismo gate corre en el UpdateNodeTransform de RemovePrevious,
+            ; o sea que tampoco se veria el deshacer. Es diagnostico futuro, no una guarda que agregar aca: el
+            ; sexo sale del record en el emisor.
             NiOverride.UpdateNodeTransform(self, false, IsFemale_G0000010000, node)
+
+            ; **EL VALOR NUESTRO, LEIDO DE VUELTA.** Es el numero que decide si el hueso quedo como la app dice o
+            ; al doble, y mirando el NPC no se puede saber. Ojo con lo que este numero ES y lo que NO es:
+            ;   ES  -> lo que quedo guardado bajo NUESTRA key. Si no coincide con lo que muestra el editor, el
+            ;          problema esta en el emisor o en el payload.
+            ;   NO ES -> el total COMPUESTO que el motor va a usar. skee no expone un getter del compuesto: los
+            ;          getters son por (nodo, nombre). Para saber si hay doble conteo hay que mirar tambien lo que
+            ;          traza la neutralizacion: si un nombre ajeno vuelve con algo != 1.0, ahi esta el doble.
+            if Verbose_G0000010000
+                float mine = NiOverride.GetNodeTransformScale(self, false, IsFemale_G0000010000, node, XformKey())
+                Debug.Trace("[NPCM] xform " + node + ": nuestra key quedo scale=" + mine)
+            endif
         endif
         i += 1
     endwhile
 EndFunction
+
 
 ; ============================================================================================
 ; BODY MORPHS DE BODYSLIDE (los que antes entregaba el par BodyGen morphs.ini/templates.ini).
@@ -783,7 +1032,13 @@ EndFunction
 ; jugador no lo recibe NUNCA. El apply-script con el sufijo _G<n> si le llega, porque una property con
 ; nombre nuevo se inicializa del VMAD en vez de restaurarse rancia del savegame. Esa es toda la ganancia.
 ;
-; ⛔ POR ESO EL .ini NO SE EMITE MAS PARA ESTE PLUGIN, Y SI HABIA UNO SE BORRA. No es preferencia:
+; ⛔⛔ DECIA ACA "POR ESO EL .ini NO SE EMITE MAS PARA ESTE PLUGIN, Y SI HABIA UNO SE BORRA". ES FALSO EN
+;   LAS DOS MITADES y el saver dice lo contrario en mayusculas (NpcOverrideSaver.vb:1000-1012): el .ini se
+;   emite cuando el usuario lo pide, INDEPENDIENTE de quien entregue los morphs, y no se borra nunca.
+;   ⛔ Y NO SE DEBE: el .ini es por PLUGIN y lista TODOS sus NPC, asi que borrarlo le corta la entrega a
+;   todos los que el usuario no re-grabo (su VMAD viejo les llega INERTE). Ya paso una vez.
+;   La coexistencia es SEGURA por construccion, y la razon esta escrita justo abajo: si corremos primero,
+;   BodyGen se saltea por su gate `!HasMorphs`; si corre primero BodyGen, ClearMorphs se lleva su key. No es preferencia:
 ; skee SUMA las contribuciones keyed de un mismo morph (Impl_GetBodyMorphs, BodyMorphInterface.cpp:220-240,
 ; default iBodyMorphMode=0), asi que un row de BodyGen mas el nuestro aplicaria el slider DOS VECES.
 ; (En FO4 el mismo choque da MAX en vez de suma — ver el .psc de alla. Son motores distintos.)
@@ -826,7 +1081,11 @@ Function ApplyBodyMorphs()
     ; TRAZA DE VERIFICACION. Una lectura por linea: indexar el mismo array dos veces en UNA expresion
     ; imprime N veces el ULTIMO elemento (quirk del codegen de Papyrus, ya mordio antes).
     if Verbose_G0000010000
-        Debug.Trace("[NPCM] BM aplicados=" + applied + " de " + n + " key=" + ovrKey)
+        ; ⛔ EL `n` DE ACA ES EL TOPE DEL LOOP (`.Length` crudo) Y TIENE QUE SEGUIR SIENDOLO: el loop recorre
+        ; todo y saltea el centinela con `!= ""`. Lo que estaba mal era TRAZARLO: arregle el trace del payload
+        ; para que dijera 0 y me deje este, asi que el MISMO log decia "morphs=0" y dos lineas despues
+        ; "aplicados=0 de 1". Dos traces que se contradicen es peor que uno solo mintiendo.
+        Debug.Trace("[NPCM] BM aplicados=" + applied + " de " + RealLen(MorphName_G0000010000) + " key=" + ovrKey)
         if n > 0
             string m0 = MorphName_G0000010000[0]
             if m0 != ""

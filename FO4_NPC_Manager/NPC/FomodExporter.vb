@@ -169,7 +169,7 @@ Public Module FomodExporter
             .SourceBytes = pexBytes, .Required = True,
             .Exists = (pexBytes IsNot Nothing AndAlso pexBytes.Length > 0),
             .SizeBytes = If(pexBytes IsNot Nothing, CLng(pexBytes.Length), 0L),
-            .Note = "embedded apply-script (" & If(game = Config_App.Game_Enum.Skyrim, "RaceMenu", "LooksMenu") & ")"})
+            .Note = "embedded helper script (" & If(game = Config_App.Game_Enum.Skyrim, "RaceMenu", "LooksMenu") & ")"})
 
         ' El .pex del nombre LEGADO va TAMBIEN, sin parchear. Si falta, los saves del jugador que ya tenian
         ' la version publicada anterior quedan con instancias de un tipo que no resuelve, y ese actor pierde la
@@ -256,7 +256,7 @@ Public Module FomodExporter
                 Case ItemKind.Archive
                     errors.Add($"Missing archive '{item.DataRelativePath}' — re-save the plugin with archive packing enabled (CharGen Options).")
                 Case ItemKind.ApplyScript
-                    errors.Add("The embedded apply-script (.pex) is missing from this build — see Papyrus\README.md.")
+                    errors.Add("The embedded helper script (.pex) is missing from this build — see Papyrus\README.md.")
                 Case ItemKind.ExtraAsset
                     If item.Note.StartsWith("invalid path", StringComparison.OrdinalIgnoreCase) Then
                         errors.Add($"Extra asset '{item.DataRelativePath}' escapes the Data folder — remove it from the list.")
@@ -443,7 +443,7 @@ Public Module FomodExporter
         Dim script = byKind(ItemKind.ApplyScript)
         If script.Count > 0 Then
             result.Add(New WizardComponent With {
-                .Title = $"{scriptHost} apply script",
+                .Title = $"{scriptHost} helper script",
                 .Description = $"Papyrus script referenced by the NPCs' records: on each actor's first spawn it applies the {scriptHost} options that have no plugin equivalent (overlays, skin overrides{If(sse, ", node transforms", "")})." & vbCrLf &
                                $"Soft dependency: without {scriptLoader} + {scriptHost} it simply does nothing.",
                 .Files = script})
