@@ -677,9 +677,27 @@ EndFunction
 ;
 ; Recibe un String y un Int — NO un array (regla 1 de la cabecera).
 Function ClearOverlayGroup(string prefix, int n)
+    ; **SE CUENTA Y SE TRAZA LO QUE HABIA.** Era la UNICA parte de RemovePrevious sin traza, y por eso el log no
+    ; podia contestar "borro los overlays o no?" -- justo la pregunta que hubo que hacerle al juego (2026-08-10).
+    ; Se pregunta ANTES de borrar, con GetNodeOverrideString: si hay diffuse, ese slot tenia algo nuestro.
+    ; ⛔ Y NO alcanza con contar: el antecedente de este mismo archivo (ver el bloque de AddOverlays) es que los
+    ; Remove* se PERDIAN SIN ERROR contra un actor no registrado en skee. Asi que tambien se RE-PREGUNTA despues,
+    ; y si algo sobrevive se traza como fallo -- un barrido que dice "limpie 3" sin verificar no prueba nada.
     int i = 0
+    int had = 0
+    int left = 0
     while i < n
         string node = prefix + i + "]"
+        ; ⛔ GATEADO POR Verbose. Estas dos consultas son SOLO diagnostico, y sin el gate corrian en el camino de
+        ; TODOS los usuarios: dos nativas por slot x 127 slots x 4 zonas x 2 pools en CADA carga de NPC. El barrido
+        ; ya es lo mas caro del script; no se le suma el costo de medirlo cuando nadie va a leer el log.
+        bool wasThere = false
+        if Verbose_G0000010000
+            wasThere = NiOverride.GetNodeOverrideString(self, IsFemale_G0000010000, node, KEY_TEXTURE, IDX_DIFFUSE) != ""
+            if wasThere
+                had += 1
+            endif
+        endif
         ; 1) apagar el nodo (visual, sin persistir)
         NiOverride.AddNodeOverrideFloat(self, IsFemale_G0000010000, node, KEY_ALPHA, -1, 0.0, false)
         NiOverride.AddNodeOverrideInt(self, IsFemale_G0000010000, node, KEY_TINT, -1, 0, false)
@@ -688,8 +706,20 @@ Function ClearOverlayGroup(string prefix, int n)
         NiOverride.RemoveNodeOverride(self, IsFemale_G0000010000, node, KEY_TEXTURE, IDX_NORMAL)
         NiOverride.RemoveNodeOverride(self, IsFemale_G0000010000, node, KEY_TINT, -1)
         NiOverride.RemoveNodeOverride(self, IsFemale_G0000010000, node, KEY_ALPHA, -1)
+        if Verbose_G0000010000 && wasThere
+            if NiOverride.GetNodeOverrideString(self, IsFemale_G0000010000, node, KEY_TEXTURE, IDX_DIFFUSE) != ""
+                left += 1
+            endif
+        endif
         i += 1
     endwhile
+    if Verbose_G0000010000 && (had > 0 || left > 0)
+        if left > 0
+            Debug.Trace("[NPCM] ovl BARRIDO '" + prefix + "' de " + n + ": habia " + had + " y QUEDARON " + left + " SIN BORRAR")
+        else
+            Debug.Trace("[NPCM] ovl BARRIDO '" + prefix + "' de " + n + ": habia " + had + ", borrados todos")
+        endif
+    endif
 EndFunction
 
 ;-- ⛔⛔ EL BARRIDO DE ARRIBA NO ALCANZA LO QUE LA APP PUEDE AUTORAR ------------------------------
@@ -950,6 +980,27 @@ Function ApplyNodeTransforms()
             ; ⇒ Se escribe lo nuestro y no se toca nada ajeno. Lo que SI queda pendiente es neutralizar los
             ; nombres que el preset traia (identidad declarada en el payload), que es preciso en vez de a ciegas.
 
+            ; **QUE TRAJO EL PAYLOAD PARA ESTE NODO**, antes de escribir nada.
+            ; ⛔ Sin esta linea el log no distingue "el valor no llego" de "no habia valor que mandar", y yo di por
+            ; MEDIDO un defecto que no existia: lei "nuestra key quedo 1.0" y afirme que la escala se habia perdido,
+            ; cuando el usuario habia revertido la edicion y 1.0 era el resultado correcto. Trazar el resultado sin
+            ; trazar la ENTRADA deja el diagnostico a medias, y la mitad que falta la completa uno adivinando.
+            if Verbose_G0000010000
+                string hs = "-"
+                if i < NodeHasScale_G0000010000.Length && NodeHasScale_G0000010000[i] && i < NodeScale_G0000010000.Length
+                    hs = "" + NodeScale_G0000010000[i]
+                endif
+                string hp = "no"
+                if i < NodeHasPos_G0000010000.Length && NodeHasPos_G0000010000[i]
+                    hp = "si"
+                endif
+                string hr = "no"
+                if i < NodeHasRot_G0000010000.Length && NodeHasRot_G0000010000[i]
+                    hr = "si"
+                endif
+                Debug.Trace("[NPCM] xform PAYLOAD " + node + ": scale=" + hs + " pos=" + hp + " rot=" + hr)
+            endif
+
             ; --- escala
             if i < NodeHasScale_G0000010000.Length
                 if NodeHasScale_G0000010000[i]
@@ -1014,9 +1065,31 @@ Function ApplyNodeTransforms()
             ;   NO ES -> el total COMPUESTO que el motor va a usar. skee no expone un getter del compuesto: los
             ;          getters son por (nodo, nombre). Para saber si hay doble conteo hay que mirar tambien lo que
             ;          traza la neutralizacion: si un nombre ajeno vuelve con algo != 1.0, ahi esta el doble.
+            ; ⛔⛔ LEER LA ESCALA NO ALCANZA, Y CASI REPORTO UN BUG QUE NO EXISTE POR ESTO.
+            ; `GetNodeTransformScale` -> `Impl_GetOverrideNodeTransform` -> `Impl_VisitNodeTransforms`, y ESE
+            ; exige que el hueso EXISTA en el 3D (`root->GetObjectByName`; si no lo encuentra no entra al if,
+            ; NiTransformInterface.cpp:414-415). El getter arranca con un `NiTransform` por default, cuya
+            ; scale es 1.0 ⇒ **un hueso ausente del esqueleto devuelve 1.0 pase lo que pase**.
+            ; MEDIDO: con `NPC L Butt` (hueso de XPMSE/CBBE, NO vanilla) el payload traia 1.2, la escritura
+            ; entro al store, y el read-back dio 1.0. Lo lei como "el valor no llego" y era el hueso ausente.
+            ; ⇒ `GetNodeTransformKeys` usa `Impl_VisitNodes`, que recorre el MAPA del store y NO mira el 3D
+            ; (PapyrusNiOverride.cpp:1402). Con las dos juntas el log distingue los tres casos.
             if Verbose_G0000010000
-                float mine = NiOverride.GetNodeTransformScale(self, false, IsFemale_G0000010000, node, XformKey())
-                Debug.Trace("[NPCM] xform " + node + ": nuestra key quedo scale=" + mine)
+                float mine = NiOverride.GetNodeTransformScale(self, false, IsFemale_G0000010000, node, ovrKey)
+                string[] stored = NiOverride.GetNodeTransformKeys(self, false, IsFemale_G0000010000, node)
+                bool inStore = false
+                int k = 0
+                while k < stored.Length
+                    if stored[k] == ovrKey
+                        inStore = true
+                    endif
+                    k += 1
+                endwhile
+                if inStore
+                    Debug.Trace("[NPCM] xform " + node + ": nuestra key EN EL STORE, scale leida=" + mine +                                 " (si dice 1.0 con payload != 1.0, el hueso NO esta en el esqueleto de este actor)")
+                else
+                    Debug.Trace("[NPCM] xform " + node + ": ⛔ nuestra key NO quedo en el store (" + stored.Length + " keys) — ESE si es un fallo de escritura")
+                endif
             endif
         endif
         i += 1
