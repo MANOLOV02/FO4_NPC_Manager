@@ -496,7 +496,7 @@ Public NotInheritable Class SceneNifExporter
 
                 ' Compute world-pose attributes per SURVIVING vertex (packed in oldToNew order). Position
                 ' via TransformPosition; normals/tangents/bitangents via per-vertex normal matrix
-                ' (transpose of inverse of upper-left 3x3 of the skin matrix). Same formula the renderer uses.
+                ' (transpose of inverse of upper-left 3x3 of the skin matrix). Same law the renderer uses (SkinningHelper.BakearVertice / FastSkin).
                 Dim worldPos As New List(Of System.Numerics.Vector3)(nSurv)
                 Dim hasN = liveGeom.Normals IsNot Nothing AndAlso liveGeom.Normals.Length = n
                 Dim hasT = liveGeom.Tangents IsNot Nothing AndAlso liveGeom.Tangents.Length = n
@@ -534,15 +534,20 @@ Public NotInheritable Class SceneNifExporter
                         ' liveGeom.Normals/Tangents/Bitangents estan en Single; el transform sigue en
                         ' Double (ADbl es exacta) y recien se redondea al armar el Vector3 de salida.
                         If hasN Then
-                            Dim nrm = Vector3d.Normalize(Vector3d.TransformNormal(RecalcTBN.ADbl(liveGeom.Normals(i)), nm4))
+                            ' ⛔ `nm4` YA es la matriz de normales (Create_Normal_Matrix). TransformNormal la
+                            ' invertia otra vez por dentro y la normal terminaba transformada por la matriz
+                            ' CRUDA. Ver SkinningHelper.PorMatriz3x3 para la medicion (36,44 grados con shear).
+                            Dim nrm = Vector3d.Normalize(SkinningHelper.PorMatriz3x3(RecalcTBN.ADbl(liveGeom.Normals(i)), nm4))
                             worldN.Add(New System.Numerics.Vector3(CSng(nrm.X), CSng(nrm.Y), CSng(nrm.Z)))
                         End If
                         If hasT Then
-                            Dim tan = Vector3d.Normalize(Vector3d.TransformNormal(RecalcTBN.ADbl(liveGeom.Tangents(i)), nm4))
+                            ' T y B son direcciones SOBRE la superficie: van con la matriz cruda, no con la
+                            ' de normales. `m4` es la matriz de skin de este vertice.
+                            Dim tan = Vector3d.Normalize(SkinningHelper.PorMatriz3x3(RecalcTBN.ADbl(liveGeom.Tangents(i)), m4))
                             worldT.Add(New System.Numerics.Vector3(CSng(tan.X), CSng(tan.Y), CSng(tan.Z)))
                         End If
                         If hasB Then
-                            Dim bit = Vector3d.Normalize(Vector3d.TransformNormal(RecalcTBN.ADbl(liveGeom.Bitangents(i)), nm4))
+                            Dim bit = Vector3d.Normalize(SkinningHelper.PorMatriz3x3(RecalcTBN.ADbl(liveGeom.Bitangents(i)), m4))
                             worldB.Add(New System.Numerics.Vector3(CSng(bit.X), CSng(bit.Y), CSng(bit.Z)))
                         End If
                     End If

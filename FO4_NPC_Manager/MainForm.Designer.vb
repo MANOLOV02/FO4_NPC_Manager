@@ -89,7 +89,8 @@ Partial Class MainForm
         ButtonExportFomod = New Button()
         PanelPreviewHost = New Panel()
         LabelStatus = New Label()
-        PanelAnimBar = New FlowLayoutPanel()
+        PanelAnimBar = New TableLayoutPanel()
+        LabelAnimTitle = New Label()
         ComboAnim = New ComboBox()
         ButtonSelectAnim = New Button()
         ButtonAnimPlay = New Button()
@@ -1073,40 +1074,77 @@ Partial Class MainForm
         ' PanelAnimBar
         ' 
         PanelAnimBar.AutoSize = True
-        PanelAnimBar.Controls.Add(ComboAnim)
-        PanelAnimBar.Controls.Add(ButtonSelectAnim)
-        PanelAnimBar.Controls.Add(ButtonAnimPlay)
-        PanelAnimBar.Controls.Add(SliderAnimFrame)
-        PanelAnimBar.Controls.Add(LabelAnimMs)
-        PanelAnimBar.Controls.Add(NumericAnimFrameMs)
-        PanelAnimBar.Controls.Add(ButtonExportPose)
-        PanelAnimBar.Controls.Add(LabelPose)
-        PanelAnimBar.Controls.Add(ComboPose)
-        PanelAnimBar.Dock = DockStyle.Fill
-        PanelAnimBar.Location = New Point(8, 980)
+        PanelAnimBar.AutoSizeMode = AutoSizeMode.GrowAndShrink
+        PanelAnimBar.ColumnCount = 7
+        ' Col 0/2/3/5/6 = AutoSize (etiquetas, botones, numeric): ocupan lo suyo y no se recortan.
+        ' Col 1 y 4 = Percent: los dos combos y el slider se reparten TODO el ancho sobrante, así la
+        ' barra se adapta al tamaño de la ventana en vez de quedar cortada (el FlowLayoutPanel con
+        ' WrapContents=False que había antes recortaba el último control al angostar el preview).
+        PanelAnimBar.ColumnStyles.Add(New ColumnStyle())
+        PanelAnimBar.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 38F))
+        PanelAnimBar.ColumnStyles.Add(New ColumnStyle())
+        PanelAnimBar.ColumnStyles.Add(New ColumnStyle())
+        PanelAnimBar.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 62F))
+        PanelAnimBar.ColumnStyles.Add(New ColumnStyle())
+        PanelAnimBar.ColumnStyles.Add(New ColumnStyle())
+        ' Fila 0 = animación (combo · Select · play · slider · FPS). Fila 1 = pose, en las MISMAS
+        ' columnas: combo bajo combo, botón bajo botón.
+        PanelAnimBar.Controls.Add(LabelAnimTitle, 0, 0)
+        PanelAnimBar.Controls.Add(ComboAnim, 1, 0)
+        PanelAnimBar.Controls.Add(ButtonSelectAnim, 2, 0)
+        PanelAnimBar.Controls.Add(ButtonAnimPlay, 3, 0)
+        PanelAnimBar.Controls.Add(SliderAnimFrame, 4, 0)
+        PanelAnimBar.Controls.Add(LabelAnimMs, 5, 0)
+        PanelAnimBar.Controls.Add(NumericAnimFrameMs, 6, 0)
+        PanelAnimBar.Controls.Add(LabelPose, 0, 1)
+        PanelAnimBar.Controls.Add(ComboPose, 1, 1)
+        PanelAnimBar.Controls.Add(ButtonExportPose, 2, 1)
+        ' Dock=Top + AutoSize(GrowAndShrink) en una fila AutoSize: el mismo patrón que PanelPreviewToolbar
+        ' acá al lado — la fila se ajusta a los dos renglones y el ancho lo da el contenedor.
+        PanelAnimBar.Dock = DockStyle.Top
+        PanelAnimBar.Location = New Point(8, 948)
         PanelAnimBar.Margin = New Padding(0, 4, 0, 0)
         PanelAnimBar.Name = "PanelAnimBar"
-        PanelAnimBar.Size = New Size(1184, 33)
+        PanelAnimBar.RowCount = 2
+        PanelAnimBar.RowStyles.Add(New RowStyle())
+        PanelAnimBar.RowStyles.Add(New RowStyle())
+        PanelAnimBar.Size = New Size(1184, 65)
         PanelAnimBar.TabIndex = 2
-        PanelAnimBar.WrapContents = False
+        '
+        ' LabelAnimTitle
+        '
+        ' Dock=Fill + MiddleLeft y NO Anchor=None: con AutoSize la columna mide lo del rótulo más largo
+        ' ("Animation:") y el corto ("Pose:") quedaba CENTRADO, o sea indentado. Con los dos al mismo
+        ' ancho explícito y el texto pegado a la izquierda, los dos arrancan en la misma x.
+        LabelAnimTitle.AutoSize = False
+        LabelAnimTitle.Dock = DockStyle.Fill
+        LabelAnimTitle.Location = New Point(3, 0)
+        LabelAnimTitle.Margin = New Padding(3, 0, 6, 0)
+        LabelAnimTitle.Name = "LabelAnimTitle"
+        LabelAnimTitle.Size = New Size(68, 30)
+        LabelAnimTitle.TabIndex = 0
+        LabelAnimTitle.Text = "Animation:"
+        LabelAnimTitle.TextAlign = ContentAlignment.MiddleLeft
         ' 
         ' ComboAnim
         ' 
+        ComboAnim.Anchor = AnchorStyles.Left Or AnchorStyles.Right
         ComboAnim.DropDownStyle = ComboBoxStyle.DropDownList
-        ComboAnim.Location = New Point(3, 4)
+        ComboAnim.Location = New Point(73, 4)
         ComboAnim.Margin = New Padding(3, 4, 3, 3)
+        ComboAnim.MinimumSize = New Size(120, 0)
         ComboAnim.Name = "ComboAnim"
         ComboAnim.Size = New Size(240, 23)
-        ComboAnim.TabIndex = 0
-        ' 
+        ComboAnim.TabIndex = 1
+        '
         ' ButtonSelectAnim
-        ' 
-        ButtonSelectAnim.AutoSize = True
-        ButtonSelectAnim.Location = New Point(269, 3)
+        '
+        ButtonSelectAnim.Anchor = AnchorStyles.Left Or AnchorStyles.Right
+        ButtonSelectAnim.Location = New Point(319, 3)
         ButtonSelectAnim.Margin = New Padding(3, 3, 12, 3)
         ButtonSelectAnim.Name = "ButtonSelectAnim"
-        ButtonSelectAnim.Size = New Size(116, 25)
-        ButtonSelectAnim.TabIndex = 1
+        ButtonSelectAnim.Size = New Size(130, 25)
+        ButtonSelectAnim.TabIndex = 2
         ButtonSelectAnim.Text = "Select Animation…"
         ButtonSelectAnim.UseVisualStyleBackColor = True
         ' 
@@ -1127,7 +1165,8 @@ Partial Class MainForm
         SliderAnimFrame.BackColor = SystemColors.Control
         SliderAnimFrame.DisplayFormat = "0"
         SliderAnimFrame.Enabled = False
-        SliderAnimFrame.Location = New Point(451, 4)
+        SliderAnimFrame.Anchor = AnchorStyles.Left Or AnchorStyles.Right
+        SliderAnimFrame.Location = New Point(504, 4)
         SliderAnimFrame.Margin = New Padding(3, 4, 3, 3)
         SliderAnimFrame.Maximum = 0R
         SliderAnimFrame.MinimumSize = New Size(100, 24)
@@ -1167,34 +1206,38 @@ Partial Class MainForm
         '
         ' ButtonExportPose
         '
+        ButtonExportPose.Anchor = AnchorStyles.Left Or AnchorStyles.Right
         ButtonExportPose.Enabled = False
-        ButtonExportPose.Location = New Point(828, 3)
-        ButtonExportPose.Margin = New Padding(12, 3, 12, 3)
+        ButtonExportPose.Location = New Point(319, 34)
+        ButtonExportPose.Margin = New Padding(3, 3, 12, 3)
         ButtonExportPose.Name = "ButtonExportPose"
-        ButtonExportPose.Size = New Size(100, 25)
-        ButtonExportPose.TabIndex = 6
+        ButtonExportPose.Size = New Size(130, 25)
+        ButtonExportPose.TabIndex = 9
         ButtonExportPose.Text = "Export pose…"
         ButtonExportPose.UseVisualStyleBackColor = True
         '
         ' LabelPose
         '
-        LabelPose.Anchor = AnchorStyles.None
-        LabelPose.AutoSize = True
-        LabelPose.Location = New Point(943, 9)
-        LabelPose.Margin = New Padding(3, 0, 3, 0)
+        LabelPose.AutoSize = False
+        LabelPose.Dock = DockStyle.Fill
+        LabelPose.Location = New Point(3, 30)
+        LabelPose.Margin = New Padding(3, 0, 6, 0)
         LabelPose.Name = "LabelPose"
-        LabelPose.Size = New Size(35, 15)
+        LabelPose.Size = New Size(68, 30)
         LabelPose.TabIndex = 7
         LabelPose.Text = "Pose:"
+        LabelPose.TextAlign = ContentAlignment.MiddleLeft
         '
         ' ComboPose
         '
+        ComboPose.Anchor = AnchorStyles.Left Or AnchorStyles.Right
         ComboPose.DropDownStyle = ComboBoxStyle.DropDownList
         ComboPose.Enabled = False
-        ComboPose.Location = New Point(981, 4)
+        ComboPose.Location = New Point(73, 35)
         ComboPose.Margin = New Padding(3, 4, 3, 3)
+        ComboPose.MinimumSize = New Size(120, 0)
         ComboPose.Name = "ComboPose"
-        ComboPose.Size = New Size(195, 23)
+        ComboPose.Size = New Size(240, 23)
         ComboPose.TabIndex = 8
         '
         ' StatusStrip1
@@ -1340,7 +1383,8 @@ Partial Class MainForm
     Friend WithEvents CheckBoxRenderBody As System.Windows.Forms.CheckBox
     Friend WithEvents CheckBoxRenderHeadwear As System.Windows.Forms.CheckBox
     Friend WithEvents LabelStatus As System.Windows.Forms.Label
-    Friend WithEvents PanelAnimBar As System.Windows.Forms.FlowLayoutPanel
+    Friend WithEvents PanelAnimBar As System.Windows.Forms.TableLayoutPanel
+    Friend WithEvents LabelAnimTitle As System.Windows.Forms.Label
     Friend WithEvents ComboAnim As System.Windows.Forms.ComboBox
     Friend WithEvents ButtonSelectAnim As System.Windows.Forms.Button
     Friend WithEvents ButtonAnimPlay As System.Windows.Forms.Button
