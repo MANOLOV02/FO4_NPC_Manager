@@ -242,7 +242,8 @@ Public NotInheritable Class SceneNifExporter
                 For i = 0 To n - 1
                     If dropped(i) Then Continue For
                     ' PerVertexSkinMatrix se guarda en Single; el exportador sigue haciendo su cuenta en Double.
-                    Dim wv = Vector3d.TransformPosition(localVerts(i), SkinningHelper.AMatrix4d(perVtxMat(i)))
+                    ' Sin reconstruir la Matrix4 y ensancharla: ver SkinMatricesSoA.TransformarPosicion.
+                    Dim wv = perVtxMat.TransformarPosicion(i, localVerts(i))
                     Dim p As New System.Numerics.Vector3(CSng(wv.X), CSng(wv.Y), CSng(wv.Z))
                     result.Min = System.Numerics.Vector3.Min(result.Min, p)
                     result.Max = System.Numerics.Vector3.Max(result.Max, p)
@@ -521,7 +522,8 @@ Public NotInheritable Class SceneNifExporter
                     End If
 
                     ' PerVertexSkinMatrix se guarda en Single; aca se ensancha y la cuenta sigue en Double.
-                    Dim m4 = SkinningHelper.AMatrix4d(perVtxMat(i))
+                    ' Directo desde las secciones, sin la Matrix4 intermedia del indexador.
+                    Dim m4 = perVtxMat.ComoMatrix4d(i)
                     Dim wv = Vector3d.TransformPosition(localVerts(i), m4)
                     worldPos.Add(New System.Numerics.Vector3(CSng(wv.X), CSng(wv.Y), CSng(wv.Z)))
 

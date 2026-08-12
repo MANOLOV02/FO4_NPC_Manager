@@ -417,7 +417,7 @@ Public Module FaceGenBuildPipeline
         ' de SkinBakeMath y este inverso) corren la misma ley. Gate apagado ⇒ bit-idéntico.
         Dim ckW(EngineSkinWeightNormalization.Slots - 1) As Single
         ' Paleta plana para el blend vectorial: UNA vez por shape (20-60 matrices), no por vértice.
-        Dim flatPal = FastGeom.BuildFlatPalette(precomputedOrig)
+        Dim flatPal = FastGeom.BuildFlatPaletteS(precomputedOrig)
 
         For i = 0 To vCount - 1
             Dim Mtot As Matrix4d = BlendMtot(precomputedOrig, skin, i, wpv, nBones, ckW, flatPal)
@@ -547,8 +547,8 @@ Public Module FaceGenBuildPipeline
         Dim nBones = shapeBones.Length
         Dim ckW(EngineSkinWeightNormalization.Slots - 1) As Single
         ' Una paleta plana por cada una de las dos paletas, armadas una sola vez.
-        Dim flatPalBind = FastGeom.BuildFlatPalette(precomputedBakeBind)
-        Dim flatPalLive = FastGeom.BuildFlatPalette(precomputedLive)
+        Dim flatPalBind = FastGeom.BuildFlatPaletteS(precomputedBakeBind)
+        Dim flatPalLive = FastGeom.BuildFlatPaletteS(precomputedLive)
         Dim ssq As Double = 0, mx As Double = 0, worstIdx As Integer = -1
         Dim worstOld As Vector3d = Nothing, worstNew As Vector3d = Nothing
         Dim nSingle As Integer = 0, nMulti As Integer = 0, nUsed As Integer = 0
@@ -642,7 +642,7 @@ Public Module FaceGenBuildPipeline
     ''' <c>skin-blend</c>, que compara los dos caminos BIT A BIT sobre esta misma función).</param>
     Private Function BlendMtot(precomputed As Matrix4d(), skin As ShapeSkinningData,
                                 i As Integer, wpv As Integer, nBones As Integer,
-                                ckW As Single(), Optional flatPal As Double() = Nothing) As Matrix4d
+                                ckW As Single(), Optional flatPal As Single() = Nothing) As Matrix4d
         ' ⛔⛔ EL CUERPO SE FUE A SkinningHelper.BlendBoneMatrices. Acá había una TERCERA copia escrita
         ' a mano de la misma ley (la 4ta estaba en SkinBakeMath), y el precio no era sólo la
         ' duplicación: el gate `skin-blend` de FaceGenBuilder afirma que "el bake usa esa misma ley,

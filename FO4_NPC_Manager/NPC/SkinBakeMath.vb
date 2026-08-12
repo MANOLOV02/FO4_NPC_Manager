@@ -103,7 +103,7 @@ Public Module SkinBakeMath
         Dim vWorld(vCount - 1) As Vector3d
 
         ' Paleta plana para el blend vectorial: UNA vez por shape (20-60 matrices), no por vértice.
-        Dim flatPal = FastGeom.BuildFlatPalette(precomputed)
+        Dim flatPal = FastGeom.BuildFlatPaletteS(precomputed)
         ' El guard por FILA (`i < skin.VertexCount`) es de acá: BlendBoneMatrices no conoce el índice
         ' de vértice. Sin fila de skin se le pasa Nothing, que es su camino de "sin skin" y devuelve
         ' precomputed(0) — el mismo resultado que daba el fallback de Σw=0 de la copia que había acá.
