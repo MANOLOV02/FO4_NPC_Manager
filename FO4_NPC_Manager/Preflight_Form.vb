@@ -715,8 +715,12 @@ Public Class Preflight_Form
                 Any(Function(a) String.Equals(a, "--diagnoseLoad", StringComparison.OrdinalIgnoreCase)) Then Return
 
         Try
+            ' Fecha en cultura INVARIANTE, por el mismo motivo que en CrashReport: con un calendario no
+            ' gregoriano (ar-SA / th-TH) la marca de tiempo de un log de diagnostico sale con un anio que
+            ' no cruza con ninguna otra evidencia.
             IO.File.WriteAllText(IO.Path.Combine(Application.StartupPath, "preflight.log"),
-                                 $"{Date.Now:yyyy-MM-dd HH:mm:ss} [{Config_App.Current.Game}] {summary}" & Environment.NewLine)
+                                 Date.Now.ToString("yyyy-MM-dd HH:mm:ss", Globalization.CultureInfo.InvariantCulture) &
+                                 $" [{Config_App.Current.Game}] {summary}" & Environment.NewLine)
         Catch
             ' Read-only install dir, locked file, whatever — diagnostics never break the load they diagnose.
         End Try

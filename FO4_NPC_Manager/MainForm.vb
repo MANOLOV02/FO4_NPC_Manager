@@ -1556,9 +1556,39 @@ Public Class MainForm
         UpdateExportPoseEnabled()   ' cubre el clip cargado OK y también los aborts de SelectAnimationClip
     End Sub
 
+    ''' <summary>⛔⛔ TODO ABORTO DE ESTE METODO TIENE QUE PASAR POR ACA. Si un aborto deja
+    ''' <c>_animSession</c> con la sesion del clip ANTERIOR, el resultado no es "no pasa nada": es que
+    ''' "Export pose…" queda HABILITADO —su gate mira <c>_animSession IsNot Nothing</c>— y exporta los
+    ''' huesos del clip viejo con el NOMBRE del clip nuevo, porque <c>SuggestedExportPoseName</c> y el log
+    ''' salen de <c>ComboAnim.SelectedIndex</c>, no de la sesion. Eso escribe una pose mal etiquetada en el
+    ''' XML COMPARTIDO con Wardrobe Manager, y el preview sigue mostrando la animacion vieja con el combo
+    ''' diciendo otra cosa.
+    ''' <para>Pasa de verdad: un clip que el behavior graph declara pero cuyo .hkx no esta instalado
+    ''' (DLC o mod ausente) hace que <c>LoadAnimHkxBytes</c> devuelva Nothing.</para>
+    ''' <para>El <c>Catch</c> ya limpiaba <c>_animSession</c> —pero no <c>_animPlayer</c>— y los dos
+    ''' early-returns no limpiaban nada. Ahora los tres caminos hacen lo mismo.</para></summary>
+    Private Sub AbortarSeleccionDeClip(motivo As String)
+        _animSession = Nothing
+        _animPlayer = Nothing
+        ' ⛔⛔ Y HAY QUE APAGAR LA BARRA DE TRANSPORTE. Limpiar sólo los dos campos dejaba el slider de
+        ' frame, el numeric de FPS y el botón ▶ HABILITADOS y con el rango del clip ANTERIOR: el camino
+        ' de éxito es el único que los toca (los prende junto con el Maximum nuevo), y `StopAnimPlayback`
+        ' —que corre antes desde `ComboAnim_SelectedIndexChanged`— re-habilita el slider según ese
+        ' Maximum viejo y delega el apagado en quien descarta el clip. O sea que tras un aborto quedaban
+        ' tres controles vivos que no hacen nada: arrastrar el slider entra en `ApplyAnimFrame` y sale
+        ' en seco por `_animPlayer Is Nothing`, y ▶ no encuentra su rama. Con `ComboPose` además
+        ' deshabilitado (el combo de anim no está en "(None)"), la barra entera quedaba muerta y la única
+        ' salida era que el usuario dedujera que tenía que volver a "(None - static)".
+        ' Es lo mismo que hace `ResetAnimToTPose`; acá no se puede llamar entera porque esa además
+        ' resetea la pose del esqueleto y re-renderiza, y un clip que no cargó no tiene por qué tirar
+        ' abajo lo que se está viendo.
+        SliderAnimFrame.Enabled = False : NumericAnimFrameMs.Enabled = False : ButtonAnimPlay.Enabled = False
+        Logger.LogLazy(Function() $"[ANIM-BAR] SelectAnimationClip abort: {motivo}")
+    End Sub
+
     Private Sub SelectAnimationClip(clip As ResolvedAnimationClip)
         If clip Is Nothing OrElse _renderHost Is Nothing OrElse _renderHost.LastSkeletonInstance Is Nothing Then
-            Logger.LogLazy(Function() $"[ANIM-BAR] SelectAnimationClip abort: clip={(clip IsNot Nothing)} host={(_renderHost IsNot Nothing)} liveSkel={(_renderHost?.LastSkeletonInstance IsNot Nothing)}")
+            AbortarSeleccionDeClip($"clip={(clip IsNot Nothing)} host={(_renderHost IsNot Nothing)} liveSkel={(_renderHost?.LastSkeletonInstance IsNot Nothing)}")
             Return
         End If
         Dim liveBones = _renderHost.LastSkeletonInstance.SkeletonDictionary.Count
@@ -1570,7 +1600,8 @@ Public Class MainForm
         Logger.LogLazy(Function() $"[ANIM-BAR] select clip='{clip.ClipName}' file='{clip.AnimationFile}' srcSkel='{clip.SourceSkeletonPath}'({If(clipSkelBytes Is Nothing, 0, clipSkelBytes.Length)}b) roles=[{String.Join(",", clip.Roles)}] race={_animCacheKey} liveBones={liveBones}")
         Dim clipBytes = LoadAnimHkxBytes(clip.AnimationFile)
         If clipBytes Is Nothing Then
-            Logger.LogLazy(Function() $"Clip not found: {clip.AnimationFile}")
+            ' ⛔ El caso real: el behavior graph declara el clip pero el .hkx no esta instalado.
+            AbortarSeleccionDeClip($"clip not found: {clip.AnimationFile}")
             Return
         End If
         Try
@@ -1578,8 +1609,7 @@ Public Class MainForm
             _animPlayer = New HkxAnimationPlayer(_animSession) With {.PoseName = "Animation"}
             Logger.LogLazy(Function() $"[ANIM-BAR] session OK frames={_animSession.FrameCount} tracks={_animSession.TrackCount} frameDur={_animSession.FrameDuration:0.####} skelSrc={_animSession.SkeletonSource}")
         Catch ex As Exception
-            _animSession = Nothing
-            Logger.LogLazy(Function() $"[ANIM-BAR] session create FAILED clip='{clip.AnimationFile}': {ex.GetType().Name}: {ex.Message}")
+            AbortarSeleccionDeClip($"session create FAILED clip='{clip.AnimationFile}': {ex.GetType().Name}: {ex.Message}")
             Return
         End Try
         ' Clip seleccionado = PAUSADO en frame 0 (no es "playing"). PlayingAnimation sigue la lógica
@@ -1779,8 +1809,22 @@ Public Class MainForm
     ''' <summary>(Re)lee el catálogo de poses si cambiaron las rutas (o si <paramref name="force"/>),
     ''' y repuebla el combo conservando la selección. Barato: son unas pocas decenas de XML/JSON
     ''' chicos, así que corre sincrónico (a diferencia del walk de behaviors de la animación).</summary>
+    ''' <summary>⛔⛔ LA CLAVE INCLUYE LOS DIRECTORIOS RESUELTOS, Y TIENE QUE SEGUIR INCLUYÉNDOLOS.
+    ''' <para>Llegué a cortar por JUEGO antes de resolverlos, para ahorrar el I/O de
+    ''' <c>ResolveBsExeFromSiblingWm</c> en cada render. Estaba MAL y el modo de falla era grave: en una
+    ''' instalación sin BodySlide configurado, la primera lectura deja el catálogo con sólo "None", eso
+    ''' deja <c>ComboPose</c> DESHABILITADO (<c>UpdatePoseComboEnabled</c> exige más de un ítem), y un
+    ''' combo deshabilitado no dispara <c>DropDown</c> — que es el único call site con
+    ''' <c>force:=True</c> fuera del botón de export. O sea que después de configurar BodySlide en Edit
+    ''' Body las poses no aparecían NUNCA hasta reiniciar la app.</para>
+    ''' <para>⛔ Y el comentario que escribí ahí afirmaba que había call sites de "cambiar la config" con
+    ''' force:=True. NO EXISTEN: los cuatro son el render (False), el DropDown y dos del botón de export.
+    ''' Verificar los call sites antes de apoyar una decisión en ellos.</para>
+    ''' <para>El costo se ataca donde está —el escaneo de carpetas hermanas— memoizándolo en
+    ''' <c>PoseCatalog</c>, no dejando de mirar si las rutas cambiaron.</para></summary>
     Private Sub EnsurePoseCatalog(force As Boolean)
         Dim isSse = Config_App.Current IsNot Nothing AndAlso Config_App.Current.Game = Config_App.Game_Enum.Skyrim
+        If force Then PoseCatalog.OlvidarEscaneoDeHermanos()
         Dim samDir = PoseCatalog.ResolveSamPosesDir()
         Dim bsDir = PoseCatalog.ResolveBsPosesDir(isSse)
         Dim key = $"{If(isSse, "SSE", "FO4")}|{samDir}|{bsDir}"
