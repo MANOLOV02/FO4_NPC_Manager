@@ -1331,10 +1331,51 @@ Friend NotInheritable Class NpcFaceTintResolver
     ''' <summary>Drop every cached face-tint byte buffer and decoded GL texture. Call this
     ''' when the FilesDictionary is rebuilt (BA2 mount/unmount, plugin reload) so a stale
     ''' BA2 read cannot leak into a new asset set.</summary>
-    Friend Sub ClearFaceTintCaches()
+    ''' <summary>Suelta los caches per-NPC del host indicado.
+    ''' <para>⛔⛔ EL HOST VA EXPLÍCITO. Antes ignoraba el que recibía el llamador y usaba
+    ''' <c>_hostProvider()</c>, que es SIEMPRE el <c>_renderHost</c> del MainForm — y el único llamador
+    ''' (<c>LoadNPCOnDemandAsyncFromExisting</c>) DECIDE con su parámetro <c>host</c> dos líneas antes.
+    ''' Decidía con uno y actuaba sobre el otro. Es la misma trampa contra la que este repo ya advierte por
+    ''' escrito en MainForm ("⛔ EL HOST VA EXPLÍCITO… Omitirlo caía al `_hostProvider()`").</para>
+    ''' <para>⛔⛔ Y ADEMÁS HACE CURRENT EL CONTEXTO ANTES DE BORRAR. <c>TintGpuCache.Clear</c> llama a
+    ''' <c>GL.DeleteTexture</c> directo y su contrato dice "MUST be called on the GL thread". Los nombres GL
+    ''' son POR CONTEXTO: al cambiar de NPC raíz desde el editor de cara, borrar sin hacer current el
+    ''' contexto correcto libera ids que en OTRO preview son texturas vivas — el mismo modo de falla que
+    ''' <c>NpcRenderHost.Dispose</c> ya arregló. La guarda se había puesto en el teardown y no acá.</para>
+    ''' <para>Si el contexto no se puede hacer current NO se borra nada: los handles se van con el contexto,
+    ''' y borrar a ciegas es lo único que sí puede dañar a otro.</para></summary>
+    Friend Sub ClearFaceTintCaches(host As NpcRenderHost)
         _tintBytesCache.Clear()
-        Dim h = _hostProvider()
-        h.TintGpuCache.Clear()
+        Dim h = If(host, _hostProvider())
+        If h Is Nothing Then Return
+        Dim contextoListo As Boolean = False
+        Try
+            If h.PreviewCtl IsNot Nothing AndAlso Not h.PreviewCtl.IsDisposed Then
+                h.PreviewCtl.EnsureContextCurrent()
+                contextoListo = True
+            End If
+        Catch ex As Exception
+            Dim m = ex.Message
+            Logger.LogLazy(Function() $"[AUDIT-TINTCLEAR] no se pudo hacer current el contexto del host: {m} => NO se borra ningun handle GL")
+        End Try
+        If Logger.Enabled Then
+            Dim aCtx = contextoListo, aPropio = (h Is _hostProvider())
+            Dim aTint = If(h.TintGpuCache Is Nothing, -1, h.TintGpuCache.Count)
+            Logger.LogLazy(Function() $"[AUDIT-TINTCLEAR] contextoCurrent={aCtx} esElHostDelMainForm={aPropio} texturas={aTint}")
+        End If
+        ' ⛔ LOS DOS CACHES TIENEN QUE QUEDAR EN EL MISMO ESTADO. Acá antes se salteaba el GL cuando no había
+        ' contexto y se limpiaba igual el espejo de CPU: eso deja exactamente la asimetría contra la que
+        ' advierte el comentario de abajo, pero al revés — el caché GL sirviendo texturas del NPC ANTERIOR,
+        ' sin revalidar, para toda la vida del host. Sin contexto no se BORRAN handles (los nombres de GL son
+        ' por contexto), pero sí se OLVIDAN las claves, que es lo que restablece la simetría.
+        If contextoListo Then
+            h.TintGpuCache.Clear()
+        Else
+            Dim olvidadas = h.TintGpuCache.OlvidarSinBorrar()
+            If olvidadas > 0 Then
+                Logger.LogLazy(Function() $"[AUDIT-TINTCLEAR] sin contexto: {olvidadas} entrada(s) OLVIDADAS sin liberar su handle GL")
+            End If
+        End If
         ' Espejo CPU del cache GL: MISMA vida per-NPC (ver NpcRenderHost.TintCpuDecodeCache). Si se limpiara
         ' uno y no el otro, el modo CPU se quedaria con decodes de la raza/TXST del NPC anterior.
         h.TintCpuDecodeCache.Clear()
@@ -1345,6 +1386,8 @@ Friend NotInheritable Class NpcFaceTintResolver
         ' Se sueltan al cambiar de NPC raiz y se CONSERVAN entre recargas del mismo NPC, asi la edicion viva
         ' no paga el re-decode. Los caches de RECORD (capas por raza, CLFM) NO se tocan acá: su vida es la del
         ' load order (SseFaceTintComposer.ClearCaches, desde InvalidateParseCaches).
+        ' ⚠️ NO va bajo la guarda de contexto: termina en FaceTintCpuCompositor.ClearSessionUnitCache, que
+        ' es puramente administrado. Sólo TintGpuCache libera handles GL en esta función.
         SseFaceTintComposer.ClearTextureCaches()
     End Sub
 

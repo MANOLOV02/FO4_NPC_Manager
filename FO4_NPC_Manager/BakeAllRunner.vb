@@ -1,4 +1,4 @@
-Imports System.IO
+﻿Imports System.IO
 Imports System.Linq
 Imports FO4_Base_Library
 
@@ -325,6 +325,16 @@ Friend Module BakeAllRunner
                                                        loadedPlugins:=effectiveLoadList).GetAwaiter().GetResult()
             log("  → archives mounted")
 
+            ' ⛔⛔ LOS CATÁLOGOS DE SESIÓN, QUE ANTES SÓLO POBLABA LA GUI. `RaceCompatCatalog` y
+            ' `SliderCatalog` se construían dentro de `MainForm.EnsureAssetDictionaryAsync`, y este runner
+            ' nunca ejecuta MainForm: en Skyrim el barrido corría con `RaceCompatCatalog = Nothing` ⇒
+            ' `IsHeadPartValidForRace` daba False para todo el pelo vanilla en razas COtR y el bake
+            ' headless producía head-parts DISTINTOS de los de la GUI para el mismo NPC. Va DESPUÉS de
+            ' montar el diccionario: el catálogo de sliders lee su config a través de FilesDictionary.
+            NpcSessionCatalogs.EnsureLoaded(pm)
+            log($"Catalogs:    raceCompat={If(HeadPartResolver.RaceCompatCatalog IsNot Nothing, "loaded", "none")}, " &
+                $"raceMenuSliders={If(NpcMorphResolver.SliderCatalog IsNot Nothing, "loaded", "none")}")
+
             ' ---------------------------------------------------------------------------------
             ' 5. Overlay state — identical to what MainForm starts with: the .bssliders sidecars of
             '    the load order, hydrated into the applied-presets dict (BodyMorphs, LM skin template,
@@ -437,11 +447,12 @@ Friend Module BakeAllRunner
             ' está documentado que ninguno cambia lo que el bake escribe en el NIF — validado por byte-diff.
             ' El slot del NIF se escribe igual porque su path es determinista, no depende del encode.
             ' ⛔ Deja los DDS SIN escribir: sirve para comparar NIF contra NIF, NO para mirar píxeles.
-            If If(Environment.GetEnvironmentVariable("FGBAKE_SKIP_DDS"), "").Trim() = "1" Then
-                FaceGenBuilder.SkipDdsEncode = True
-                FaceTintCpuCompositor.SkipPixelCompose = True
-                log("SAMPLE: FGBAKE_SKIP_DDS=1 — image work skipped (NIF-only sweep); DDS are NOT written.")
-            End If
+            ' ⛔ SE GUARDAN PARA DEVOLVERLOS EN EL Finally. Son `Shared` de la librería y se prendían sin
+            ' restaurar nunca. `Run` no es sólo consola: `BakeAllProgress_Form` lo corre con `Await
+            ' Task.Run(...)` desde la GUI, así que con la env var puesta un "Bake All" dejaba los dos flags
+            ' en True EL RESTO DE LA SESIÓN — y `SkipPixelCompose` hace que el compose devuelva un buffer
+            ' NEGRO. Doce líneas más abajo este mismo bloque resetea PhaseReset/ParityReset/etc.: el estado
+            ' latcheado ya se sabía que había que devolverlo, a estos dos se les escapó.
             FaceGenBuilder.PhaseReset()
             FaceGenBuilder.ParityReset()
             SseFoldLayerStack.ResetSseParity()
@@ -455,18 +466,20 @@ Friend Module BakeAllRunner
             ' Desde que se elimino la agrupacion por (raza,sexo), el techo es el UNICO mecanismo que acota el
             ' conjunto vivo — y tiene que serlo, porque con el loop paralelo no hay ningun punto del barrido
             ' en el que sea seguro tirar el cache entero.
-            ' Por default se DERIVA DE LA RAM: un absoluto fijo es inofensivo en 32 GB y letal en 8.
-            '   env ausente -> 25 % de la memoria disponible, acotado a [512 MB, 4 GB]
-            '   env = "0"   -> SIN techo (comportamiento historico; sirve de baseline para medir)
+            ' ⛔ CORREGIDO: este comentario decia que el default "se DERIVA DE LA RAM (25 % acotado a
+            ' [512 MB, 4 GB])". Eso YA NO ES ASI y hace rato: la derivacion se saco a proposito y el
+            ' argumento esta escrito en ResolveDecodeCacheBudgetFromEnvironment (un techo inventado que
+            ' fuerza re-decodes cuesta tiempo invisible). El default HOY es SIN TECHO, opt-in por env var.
+            '   env ausente -> SIN techo
+            '   env = "0"   -> SIN techo (explicito; sirve de baseline para medir)
             '   env > 0     -> ese valor en MB (reproducible entre maquinas, para comparar corridas)
             ' ⭐ La derivacion vive en FaceTintCpuCompositor.ResolveDecodeCacheBudgetFromEnvironment, UNA sola
             ' vez: duplicada en dos archivos los numeros se habrian separado en silencio.
             ' El techo cubre los DOS niveles del cache —nivel 1 DecodedTex (bytes crudos) y nivel 2 Single()
             ' ya resampleado, 4 B por elemento— y por eso alcanza tambien al camino de SSE, que desde el
             ' colapso de `_texCache` pasa por el nivel 2 en vez de por un cache propio sin techo.
-            Dim budget = FaceTintCpuCompositor.ResolveDecodeCacheBudgetFromEnvironment()
-            FaceTintCpuCompositor.BatchDecodeCacheBudgetBytes = budget.Bytes
-            log(budget.Reason)
+            ' El techo lo resuelve el punto de APERTURA del lote, no cada llamador: ver
+            ' BeginBatchDecodeCacheConMotivo. Aca solo se loguea el motivo, sin re-derivar nada.
 
             ' ---------------------------------------------------------------------------------
             ' CONTEXTO GL (opt-in, FGBAKE_GPU_PARITY=1) — para medir paridad CPU-vs-GPU en el batch.
@@ -630,7 +643,11 @@ Friend Module BakeAllRunner
                 If fixedDop <> envThreads Then
                     log($"Parallelism: FGBAKE_NPC_THREADS={envThreads} clamped to {fixedDop} (allowed range 1..32)")
                 Else
-                    log($"Parallelism: FIXED at {fixedDop} NPC(s) (FGBAKE_NPC_THREADS) — adaptive controller OFF")
+                    ' ⛔ NO dice "adaptive controller OFF" a secas: lo que esta apagado es el TREPE. La guarda
+                    ' de memoria corre igual y puede bajar por debajo de este numero (y despues volver). Si el
+                    ' log promete un N fijo y el barrido corre con otro, un A/B contra este arnes compara dos
+                    ' cosas distintas creyendo que compara una — ver 63-arnes-de-medicion-wm.
+                    log($"Parallelism: FIXED at {fixedDop} NPC(s) (FGBAKE_NPC_THREADS) — no climb; the memory guard can still lower and restore it")
                 End If
             End If
             ' ⛔ CON PARIDAD GPU NO SE PARALELIZA, y se DICE. El contexto GL vive atado a UN hilo y
@@ -650,8 +667,39 @@ Friend Module BakeAllRunner
             Dim traj As New List(Of String)
             Dim peakPermits As Integer = If(fixedDop > 0, fixedDop, 1)
 
-            FaceTintCpuCompositor.BeginBatchDecodeCache()
+
+            ' ⛔ LOS DOS INTERRUPTORES SE PRENDEN PEGADO AL Try QUE LOS DEVUELVE. Estaban ~215 líneas más
+            ' arriba, y entre medio se crea el CONTEXTO GL (con FGBAKE_GPU_PARITY=1), se enumeran los targets
+            ' y se hidratan los overlays: cualquier excepción ahí salía sin restaurar y dejaba
+            ' `SkipPixelCompose = True` para el resto de la sesión de la GUI ⇒ todo compose posterior devuelve
+            ' un buffer NEGRO. Es el mismo modo de falla que el comentario de abajo describe, movido al camino
+            ' de error — y muerde justo con la env var del arnés puesta, o sea envenenando el instrumento.
+            ' Nada entre el punto viejo y éste LEE los flags: se consumen dentro del loop, en compose/encode.
+            Dim prevSkipDds = FaceGenBuilder.SkipDdsEncode
+            Dim prevSkipCompose = FaceTintCpuCompositor.SkipPixelCompose
+
+            ' ⛔ EL SETEO VA ADENTRO DEL Try. Quedó AFUERA cinco líneas, y su `log("SAMPLE: ...")`
+            ' corría con los dos flags YA PRENDIDOS: si ese log tiraba —o si tiraba
+            ' `BeginBatchDecodeCacheConMotivo`— el Finally no corría y `SkipPixelCompose` quedaba en True
+            ' para el resto de la sesión de la GUI ⇒ todo compose posterior devuelve un buffer NEGRO.
+            ' Es el mismo modo de falla que este arreglo dice cerrar, desplazado. Las CAPTURAS sí quedan
+            ' afuera: se leen antes de tocar nada y el Finally las necesita.
             Try
+                If If(Environment.GetEnvironmentVariable("FGBAKE_SKIP_DDS"), "").Trim() = "1" Then
+                    FaceGenBuilder.SkipDdsEncode = True
+                    FaceTintCpuCompositor.SkipPixelCompose = True
+                    log("SAMPLE: FGBAKE_SKIP_DDS=1 — image work skipped (NIF-only sweep); DDS are NOT written.")
+                End If
+
+                ' ⛔ EL Begin VA PEGADO AL Try QUE LO CIERRA. Al mover el bloque de FGBAKE_SKIP_DDS quedo
+                ' EN EL MEDIO, con dos `log()` entre la apertura del lote y el Try: `log` lo provee el
+                ' llamador (la consola o el form de progreso) y ninguno declara ser thread-safe ni
+                ' resistente a un form cerrandose. Si uno tiraba, `EndBatchDecodeCache` no corria y el lote
+                ' quedaba abierto con sus texturas 4K por el resto de la sesion de la GUI — el mismo patron
+                ' que este arreglo perseguia, reintroducido por el arreglo.
+                Dim budgetReason = FaceTintCpuCompositor.BeginBatchDecodeCacheConMotivo()
+                log(budgetReason)
+                log(budgetReason)   ' ⛔ DENTRO del Try: `log` es del llamador y puede tirar.
                 Dim done As Integer = 0
 
                 ' ⛔ `log` y `progress` los provee el CALLER (la consola, o el form de progreso de la GUI) y
@@ -711,6 +759,14 @@ Friend Module BakeAllRunner
                 Dim ctl As New Object()
                 Dim lvlDone As Integer = 0
                 Dim climbing As Boolean = (fixedDop = 0 AndAlso hardCap > 1)
+                ' ⛔ EL NIVEL AL QUE HAY QUE VOLVER cuando la presion de memoria se va. Sin esto la guarda de
+                ' abajo es un TRINQUETE: resta un permiso por cada NPC terminado bajo presion y no devuelve
+                ' ninguno nunca. `MemoryLoadBytes` es una señal DE MAQUINA, no del proceso (el umbral del GC
+                ' ronda el 90 % de la RAM fisica), asi que alcanza con que el usuario abra el navegador o
+                ' tenga el juego cargado para que doce NPCs seguidos dejen el barrido en serie por el resto
+                ' de la corrida — y no se entera nadie, porque queda solo en `traj`.
+                Dim nivelObjetivo As Integer = permits
+                Dim limpiosSeguidos As Integer = 0
                 Dim proc = Process.GetCurrentProcess()
                 Dim lastCpu As TimeSpan = proc.TotalProcessorTime
                 Dim lastWall As Long = Stopwatch.GetTimestamp()
@@ -721,20 +777,76 @@ Friend Module BakeAllRunner
                 Dim releaseAndTune =
                     Sub()
                         SyncLock ctl
+                            ' ⛔⛔ LA GUARDA DE MEMORIA VA PRIMERO Y CORRE SIEMPRE.
+                            ' Estaba DESPUES del `If Not climbing Then Return`, y ella misma ponia
+                            ' `climbing = False` al bajar. O sea: bajaba de N a N-1 UNA sola vez y a partir
+                            ' de ahi toda llamada salia por el early-return y no volvia a mirar la memoria
+                            ' nunca mas. Si la presion seguia subiendo —y sube, porque el cache de decode no
+                            ' tiene techo por default— el controlador ya no podia hacer nada.
+                            ' Peor: `climbing` arranca en False cuando el usuario fija FGBAKE_NPC_THREADS,
+                            ' asi que con DOP fijo la guarda no corria NI UNA VEZ.
+                            ' El comentario de arriba promete "Si le falta RAM, baja" — recien ahora puede.
+                            ' `climbing = False` se conserva: bajar por memoria SI tiene que cortar el TREPE,
+                            ' porque volver a subir es volver contra la misma pared. Lo que NO corta es el
+                            ' REGRESO a `nivelObjetivo`, que es otra cosa: recuperar lo que la presion se
+                            ' llevo no es explorar hacia arriba.
+                            Dim mi = GC.GetGCMemoryInfo()
+                            Dim presion = mi.HighMemoryLoadThresholdBytes > 0 AndAlso
+                                          mi.MemoryLoadBytes >= mi.HighMemoryLoadThresholdBytes
+                            If presion Then
+                                ' ⛔ SE DESCUENTA UNO, NO SE PONE EN CERO. Ponerlo en cero hacia que en una
+                                ' maquina donde la presion es casi PERMANENTE —los 8 GB que son el caso de uso
+                                ' declarado, con el umbral del GC rondando el 90 % de la RAM fisica— el
+                                ' contador no llegara nunca al techo y el barrido se quedara en serie para
+                                ' siempre: exactamente lo que esta guarda dice haber arreglado.
+                                If limpiosSeguidos > 0 Then limpiosSeguidos -= 1
+                                If permits > 1 Then
+                                    permits -= 1
+                                    climbing = False
+                                    traj.Add($"{permits}(mem)")
+                                    Return                  ' NO se devuelve el permiso ⇒ baja la concurrencia
+                                End If
+                                ' ⛔⛔ CON permits = 1 NO SE PUEDE BAJAR, PERO TAMPOCO SE TREPA.
+                                ' Antes esto caia al camino normal y, si `climbing` seguia en True (DOP
+                                ' adaptativo que nunca llego a bajar porque nunca pudo), terminaba en
+                                ' `permits += 1` + `sem.Release(2)`: SUBIENDO la concurrencia con la maquina
+                                ' por encima del umbral del GC. Es exactamente el caso de los 8 GB, donde la
+                                ' presion es casi permanente y `permits` vive en 1 — o sea que el comentario
+                                ' de arriba ("la guarda va primero y corre siempre") prometia lo contrario de
+                                ' lo que hacia justo donde mas importa.
+                                sem.Release()
+                                Return
+                            ElseIf permits < nivelObjetivo Then
+                                ' ⛔ EL UMBRAL ES EL NIVEL ACTUAL, NO EL OBJETIVO. Con `nivelObjetivo` volver
+                                ' de 1 a N costaba N·(N−1) NPC limpios SEGUIDOS —240 con hardCap 16— porque el
+                                ' contador se reinicia despues de cada +1. Con el nivel actual el costo total
+                                ' es N·(N+1)/2 y, sobre todo, el PRIMER escalon cuesta 1: se sale de la serie
+                                ' apenas la presion afloja, que es cuando importa.
+                                ' ⚠️ NO ESTA MEDIDO. Es aritmetica sobre el peor caso, no un barrido: la
+                                ' recuperacion necesita una maquina que entre y salga de presion, y este equipo
+                                ' no la reproduce. Ver 10-stack-arnes-de-medicion antes de tocar el ritmo.
+                                limpiosSeguidos += 1
+                                If limpiosSeguidos >= permits Then
+                                    permits += 1
+                                    limpiosSeguidos = 0
+                                    traj.Add($"{permits}(mem+)")
+                                    ' ⛔ INVARIANTE, hoy se cumple por accidente: acá se hace UN Release y
+                                    ' abajo el camino `Not climbing` hace el otro ⇒ 2 en total, que es lo
+                                    ' que corresponde a `permits + 1`. Eso vale SÓLO porque `climbing`
+                                    ' está garantizado en False (el único decremento de `permits` siempre
+                                    ' lo apaga). Si alguien vuelve a encender `climbing` después de una
+                                    ' baja por memoria, esto pasa a 3 Releases y el `sem.Release(2)` del
+                                    ' trepe tira SemaphoreFullException. No romper esa relación.
+                                    sem.Release()           ' el permiso RETENIDO vuelve al pozo
+                                    ' y abajo se devuelve ademas el propio ⇒ +1 de concurrencia real
+                                End If
+                            End If
+
                             If Not climbing Then
                                 sem.Release()
                                 Return
                             End If
                             lvlDone += 1
-                            ' PRESION DE MEMORIA — el umbral es el del GC, no uno inventado.
-                            Dim mi = GC.GetGCMemoryInfo()
-                            If mi.HighMemoryLoadThresholdBytes > 0 AndAlso
-                               mi.MemoryLoadBytes >= mi.HighMemoryLoadThresholdBytes AndAlso permits > 1 Then
-                                permits -= 1
-                                climbing = False
-                                traj.Add($"{permits}(mem)")
-                                Return                      ' NO se devuelve el permiso ⇒ baja la concurrencia
-                            End If
                             ' Se re-evalua cuando el nivel actual ya tuvo tiempo de llenarse (un NPC por
                             ' permiso). El disparador puede ser ruidoso: NO importa, porque lo que se mide
                             ' abajo es un cociente de acumuladores, no una tasa de eventos.
@@ -752,6 +864,9 @@ Friend Module BakeAllRunner
                             ' ¿Queda al menos UN core ocioso? Esa es la condicion de "hay espacio".
                             If cpuBusy < 1.0 - (1.0 / hardCap) AndAlso permits < hardCap Then
                                 permits += 1
+                                ' El trepe MUEVE el piso al que vuelve la guarda de memoria: lo que se gano
+                                ' midiendo cores ociosos no se pierde por una presion pasajera.
+                                nivelObjetivo = Math.Max(nivelObjetivo, permits)
                                 peakPermits = Math.Max(peakPermits, permits)
                                 traj.Add($"{permits}@{cpuBusy:P0}")
                                 sem.Release(2)              ' el suyo + uno mas ⇒ sube la concurrencia
@@ -905,6 +1020,10 @@ Friend Module BakeAllRunner
                 ' al cerrar.
                 End If   ' wantStats — fin del bloque de diagnostico
                 FaceTintCpuCompositor.EndBatchDecodeCache()
+                ' Los dos interruptores de FGBAKE_SKIP_DDS vuelven a como estaban (ver arriba): si no, un
+                ' "Bake All" desde la GUI con esa env var deja todo compose posterior en negro.
+                FaceGenBuilder.SkipDdsEncode = prevSkipDds
+                FaceTintCpuCompositor.SkipPixelCompose = prevSkipCompose
                 ' Teardown del contexto GL. Se libera el cache de texturas ANTES de destruir el contexto (si no,
                 ' se filtran los handles GL que el cache tiene vivos — contrato de FaceTintTextureCache).
                 ' ⛔ Ademas: este exe con --windowless a veces NO SALE al terminar. Un Form vivo empeora eso, asi

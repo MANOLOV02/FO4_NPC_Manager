@@ -406,6 +406,15 @@ Module Program
         Dim noProg As New Progress(Of (Stepn As String, Value As Integer, Max As Integer))()
         FilesDictionary_class.Fill_DictionaryAsync(dataPath, noProg).GetAwaiter().GetResult()
 
+        ' ⛔⛔ LOS CATÁLOGOS DE SESIÓN, QUE ANTES SÓLO POBLABA LA GUI. `RaceCompatCatalog` y `SliderCatalog`
+        ' se construían dentro de `MainForm.EnsureAssetDictionaryAsync`, y este CLI nunca ejecuta MainForm:
+        ' en Skyrim horneaba con `RaceCompatCatalog = Nothing` ⇒ `IsHeadPartValidForRace` daba False para
+        ' todo el pelo vanilla en razas COtR y salían head-parts DISTINTOS de los de la GUI para el mismo
+        ' NPC. Este archivo ya sabía que el problema existía —guarda y restaura RaceCompatCatalog alrededor
+        ' de un diagnóstico puntual más abajo— pero el camino principal no lo poblaba.
+        ' Va DESPUÉS de montar el diccionario: el catálogo de sliders lee su config a través de él.
+        FO4_NPC_Manager.NpcSessionCatalogs.EnsureLoaded(pm)
+
         ' --- OUTFITSCAN: por cada NPC de la lista, su DOFT y si el outfit es DETERMINISTA o LEVELED ---
         ' Existe para poner a prueba una hipotesis concreta sobre el bit Hidden: el CK oculta head parts
         ' tapadas por el casco/sombrero del outfit con el que hornea. Si el outfit sale de una lista
@@ -1424,7 +1433,7 @@ Module Program
 
         ' --- 6. Batch: cache de decode persistente entre NPCs + cache de bytes crudos de layers/swaps.
         '        Cada DDS se decodifica/lee UNA vez en todo el batch (caras de la misma raza comparten). ---
-        FaceTintCpuCompositor.BeginBatchDecodeCache()
+        FaceTintCpuCompositor.BeginBatchDecodeCacheConMotivo()
         Dim tintBytesCache As New Dictionary(Of String, Byte())(StringComparer.OrdinalIgnoreCase)
         Dim ok As Integer = 0, fail As Integer = 0
         ' --buildfacegen: bake COMPLETO (NIF + 3 DDS) via FaceGenBuilder, headless. DebugMode=Logger.Enabled
@@ -4093,7 +4102,7 @@ persist:
         If configs.Count = 0 Then Console.Error.WriteLine($"No *.json in {sweepDir}") : Environment.ExitCode = 1 : Return
         Console.WriteLine($"[sweep] {ctxs.Count} NPCs x {configs.Count} conventions (decode cached across all)")
 
-        FaceTintCpuCompositor.BeginBatchDecodeCache()
+        FaceTintCpuCompositor.BeginBatchDecodeCacheConMotivo()
         Dim tintCache As New Dictionary(Of String, Byte())(StringComparer.OrdinalIgnoreCase)
         Dim rows As New List(Of (Name As String, Dn As Double, Dx As Integer, Nn As Double, Nx As Integer, Sn As Double, Sx As Integer))
         Try

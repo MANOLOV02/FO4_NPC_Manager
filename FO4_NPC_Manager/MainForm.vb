@@ -7326,79 +7326,11 @@ Public Class MainForm
         End If
 
 
-        ' RaceMenu EXTENDED face-slider catalog — SKYRIM ONLY (RaceMenu is a Skyrim mod; FO4 has no analogue, so
-        ' this stays Nothing on FO4 and the custom-morph path falls back to direct-name application). Built ONCE
-        ' here, after the asset dictionary is ready (it reads the .slider config through FilesDictionary), from the
-        ' loaded plugin filenames (skee64 scans Meshes\actors\character\FaceGenMorphs\<pluginName>\races.ini per mod
-        ' — LoadMods→ForEachMod). Feeds the shared render/bake morph path via NpcMorphResolver.SliderCatalog.
-        If Config_App.Current.Game = Config_App.Game_Enum.Skyrim AndAlso NpcMorphResolver.SliderCatalog Is Nothing Then
-            Try
-                ' Folder list = the plugins THIS SESSION LOADED, in load order — the same set Preflight fed to
-                ' FilesDictionary (loadedPlugins:=SelectedPlugins), so the config we scan and the archives we can
-                ' read it from always agree. That mirrors the engine, which iterates the mods it loaded
-                ' (FaceMorphInterface::LoadMods → ForEachMod, FaceMorphInterface.cpp:517); the Preflight list is
-                ' pre-checked with the active load order, so a default run IS the engine's list.
-                ' Scanning a set WIDER than the dictionary would be the worst option: it would list sliders whose
-                ' extended .tri lives in an archive we never indexed — visible in the UI, no-op in render and bake.
-                Dim modNames = _pluginManager.Plugins.Select(Function(pl) pl.FileName).Where(Function(n) Not String.IsNullOrEmpty(n)).ToList()
-                Dim cat As New FO4_Base_Library.RaceMenuSliderCatalog()
-                cat.Load(modNames)
-                NpcMorphResolver.SliderCatalog = cat
-                Logger.LogLazy(Function() $"[RACEMENU-CATALOG] scanned {modNames.Count} loaded mod folders " &
-                                          $"for FaceGenMorphs\...\races.ini; races={cat.RaceCount()} hasAny={cat.HasAny()} " &
-                                          $"configs={String.Join(", ", cat.LoadedConfigMods())}")
-            Catch ex As Exception
-                Logger.LogLazy(Function() $"[RACEMENU-CATALOG] load failed: {ex.Message}")
-            End Try
-        End If
-
-        ' RaceMenu PAINT lists — SKYRIM ONLY. Warpaints (face tint masks) and body/hand/feet/face paints
-        ' (overlays) are named (name;;path) lists RaceMenu accumulates from every mod's On*PaintRequest Papyrus
-        ' handler; there is no static catalog and no file browser. Reconstruct the same union by reading the
-        ' shipped scripts (scripts\*.pex, loose + BSA) — the compiled artifact the game actually loads. Feeds the
-        ' SSE editors' texture pickers (SseCatalogs) so they present RaceMenu's lists, not a raw file browser.
-        If Config_App.Current.Game = Config_App.Game_Enum.Skyrim AndAlso FO4_Base_Library.RaceMenuPaintCatalog.Current Is Nothing Then
-            Try
-                Dim paintCat As New FO4_Base_Library.RaceMenuPaintCatalog()
-                paintCat.Load()
-                FO4_Base_Library.RaceMenuPaintCatalog.Current = paintCat
-            Catch ex As Exception
-                Logger.LogLazy(Function() $"[PAINT-CATALOG] load failed: {ex.Message}")
-            End Try
-        End If
-        ' Same idea for the RaceMenu node-transform (body-scale) slider list: RaceMenu has no skeleton scan — its
-        ' node list is the union of what RaceMenuPlugin/XPMSE/… register via NiOverride.AddNodeTransform*. Rebuild
-        ' it from the shipped scripts so the Body Scale tab offers RaceMenu's real set, not a raw bone dump.
-        If Config_App.Current.Game = Config_App.Game_Enum.Skyrim AndAlso FO4_Base_Library.RaceMenuNodeCatalog.Current Is Nothing Then
-            Try
-                Dim nodeCat As New FO4_Base_Library.RaceMenuNodeCatalog()
-                nodeCat.Load()
-                FO4_Base_Library.RaceMenuNodeCatalog.Current = nodeCat
-            Catch ex As Exception
-                Logger.LogLazy(Function() $"[NODE-CATALOG] load failed: {ex.Message}")
-            End Try
-        End If
-
-        ' RaceCompatibility proxyRaces — SKYRIM ONLY. A custom-race mod (COtR & co) declares its races through
-        ' RaceCompatibility's GenericRaceController, whose OnInit INSERTS them into the vanilla head-part FormLists
-        ' at runtime. That mutation never reaches a plugin, so by records alone every vanilla hair looks "invalid"
-        ' for those races and the pickers would offer nothing but the mod's own parts. Reconstruct the insertion
-        ' (QUST VMAD + the mod's compiled script) and feed it to the catalog filter. Detected BY SHAPE (any QUST
-        ' carrying a GenericRaceController script), never by mod name. Rebuilt on every load so a mod
-        ' added/updated/removed is reflected without any persisted state.
-        If Config_App.Current.Game = Config_App.Game_Enum.Skyrim AndAlso HeadPartResolver.RaceCompatCatalog Is Nothing Then
-            Try
-                HeadPartResolver.RaceCompatCatalog = FO4_Base_Library.RaceCompatibilityCatalog.Load(_pluginManager, Config_App.Current.Game)
-            Catch ex As Exception
-                Logger.LogLazy(Function() $"[RACECOMPAT] load failed: {ex.Message}")
-            End Try
-        End If
-        ' QUST is loaded ONLY to feed the catalog above (the VMAD of the quests carrying GenericRaceController) and
-        ' nothing else in the app resolves a quest. Quests are heavy records, so drop them once consumed instead of
-        ' keeping thousands resident for a one-shot read. FO4 never even builds the catalog, so this frees them there
-        ' too. ⚠ A future feature that needs QUST at runtime (stages, aliases, script properties on quests) should
-        ' delete THIS call, not add a second load pass — the records are already parsed at load.
-        _pluginManager.DropRecordsOfType("QUST")
+        ' ⛔ LOS CATÁLOGOS SE POBLAN EN UN SITIO COMPARTIDO. Estaban acá adentro, o sea que sólo
+        ' existían si el usuario abría la GUI: BakeAllRunner y FO4_FaceTint_CLI nunca ejecutan MainForm,
+        ' así que el bake headless de Skyrim corría con RaceCompatCatalog = Nothing y horneaba
+        ' head-parts DISTINTOS de los que hornea la GUI para el mismo NPC. Ver NpcSessionCatalogs.
+        NpcSessionCatalogs.EnsureLoaded(_pluginManager)
 
         ' Asset dictionary ready; hide the progress bar. (Debug-only TRI / mouth-NIF enumeration
         ' scaffolding — whose results were discarded — was removed 2026-06-24.)
@@ -9024,7 +8956,10 @@ Public Class MainForm
         ' (overlay edits, paste look) so live tint refreshes stay fast on the second click.
         If host.CurrentBaseState IsNot Nothing AndAlso baseState IsNot Nothing _
            AndAlso host.CurrentBaseState.RootNpcFormID <> baseState.RootNpcFormID Then
-            _faceTintResolver.ClearFaceTintCaches()
+            ' ⛔ EL HOST VA EXPLÍCITO — el mismo con el que se decidió dos líneas arriba. Sin pasarlo,
+            ' ClearFaceTintCaches caía al `_hostProvider()` (siempre el del MainForm) y limpiaba el host
+            ' equivocado cuando esto se llama desde un formulario editor.
+            _faceTintResolver.ClearFaceTintCaches(host)
         ElseIf host.CurrentBaseState Is Nothing Then
             ' Defensive: very first load of any NPC after process start — nothing to clear.
         End If
@@ -10568,7 +10503,19 @@ Public Class MainForm
                     ' Cache de decode a nivel BATCH: las texturas source (face d/_n/_s) + tint + swap se
                     ' repiten entre clones -> decode UNA vez por DDS en todo el batch (no por clon). Se limpia
                     ' en el Finally (incluso si se cancela). Equivalente CPU del TintGpuCache persistente del GL.
-                    FaceTintCpuCompositor.BeginBatchDecodeCache()
+                    ' Techo del cache de decode: se resuelve al ABRIR el lote (ver
+                    ' FaceTintCpuCompositor.BeginBatchDecodeCacheConMotivo). Antes este camino —el batch
+                    ' de la GUI, por donde pasa casi todo el mundo— abria el lote sin leer
+                    ' FGBAKE_DECODE_CACHE_MB, asi que la variable con la que un usuario acota la memoria
+                    ' no la miraba nadie.
+                    ' ⛔ Y SE DICE CUAL APLICO. Descartar el motivo dejaba al usuario de la GUI —que es por
+                    ' donde pasa casi todo el mundo— sin forma de saber si su FGBAKE_DECODE_CACHE_MB se leyó
+                    ' o si corrió sin techo. Un techo que no se ve no se puede diagnosticar.
+                    ' ⛔⛔ LA LLAMADA VA AFUERA DEL LogLazy. `LogLazy` NO evalúa el lambda si el logger está
+                    ' apagado ⇒ meterla adentro dejaba el lote SIN ABRIR en el caso normal. Nunca poner un
+                    ' efecto adentro de un log perezoso.
+                    Dim motivoCache = FaceTintCpuCompositor.BeginBatchDecodeCacheConMotivo()
+                    Logger.LogLazy(Function() $"[CHARGEN] decode cache: {motivoCache}")
                     Try
                         For i = 0 To total - 1
                             If p.Cancelled Then Exit For

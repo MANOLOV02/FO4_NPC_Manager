@@ -49,7 +49,7 @@ Public Module FaceGenBuilder
         Dim originPlugin = pluginManager.GetOriginatingPluginName(npcFormID)
         If String.IsNullOrEmpty(originPlugin) Then Return ""
         Dim formIdLow = PluginManager.ToFaceGenLocalFormID(npcFormID)
-        Return $"Meshes\Actors\Character\FaceGenData\FaceGeom\{originPlugin}\{formIdLow:X8}.nif"
+        Return FaceGenPaths.GeomNif(originPlugin, formIdLow)
     End Function
 
     ''' <summary>Result of a BuildCharGen run.</summary>
@@ -1152,6 +1152,13 @@ Public Module FaceGenBuilder
                                     cloned.Flags_ui = cloned.Flags_ui Or &H1UI
                                 End If
                             Catch ex As Exception
+                                ' ⛔ La regla de oclusión se documenta arriba como "determinista, 0
+                                ' excepciones sobre 958 piezas". Si igual tira, la shape se hornea VISIBLE
+                                ' y el pelo atraviesa el casco — con un NIF byte-indistinguible del caso
+                                ' legítimo, o sea imposible de detectar después. Se deja seguir (una pieza
+                                ' mal ocluida no justifica perder el NPC entero) pero NO en silencio.
+                                Dim mo = ex.GetType().Name & ": " & ex.Message
+                                Logger.LogLazy(Function() $"[BAKE-OCCL] la regla de oclusión de headwear falló, la shape queda VISIBLE: {mo}")
                             End Try
                         End If
 
@@ -1797,10 +1804,8 @@ Public Module FaceGenBuilder
         End If
         ' Extension uppercase ".NIF" to match CK vanilla exactly (CK writes <FormID>.NIF). Cosmetic
         ' on Windows (case-insensitive FS) but removes it as a variable while we chase the loose bug.
-        Dim nifFileName = If(DebugMode, $"{formIdLow:X8}_2.NIF", $"{formIdLow:X8}.NIF")
-        Dim outAbs = Path.Combine(dataPathForNif,
-                                  "Meshes", "Actors", "Character", "FaceGenData", "FaceGeom",
-                                  originPlugin, nifFileName)
+        Dim nifFileName = FaceGenPaths.GeomNifFileName(formIdLow, If(DebugMode, "_2", ""))
+        Dim outAbs = Path.Combine(dataPathForNif, FaceGenPaths.GeomDir(originPlugin), nifFileName)
         Try
             Directory.CreateDirectory(Path.GetDirectoryName(outAbs))
             Dim tWrite = Stopwatch.GetTimestamp()
@@ -1828,8 +1833,8 @@ Public Module FaceGenBuilder
                                                 appliedPresets, willBePacked:=False, result:=Nothing, forcedSuffix:="_2c",
                                                 complexionPathOverride:=sseForcedComplexion, normalPathOverride:=sseForcedNormal,
                                                 detailPathOverride:=sseForcedDetail)
-                Dim nif2c = Path.Combine(dataPathForNif, "Meshes", "Actors", "Character", "FaceGenData", "FaceGeom",
-                                         originPlugin, $"{formIdLow:X8}_2c.NIF")
+                Dim nif2c = Path.Combine(dataPathForNif, FaceGenPaths.GeomDir(originPlugin),
+                                         FaceGenPaths.GeomNifFileName(formIdLow, "_2c"))
                 nif.Save_As_Manolo(nif2c, Overwrite:=True)
                 Logger.LogLazy(Function() $"[FACEBAKE][SSE] forced replacer sandbox -> {formIdLow:X8}_2c.NIF (+ _2c textures)")
 
@@ -2288,6 +2293,14 @@ Public Module FaceGenBuilder
                 End If
             End If
         Catch ex As Exception
+            ' ⛔⛔ NO SE PUEDE TRAGAR. Cuando esto corre, el llamador YA blanqueó el link al BGSM externo
+            ' (`shad.Name.String = ""`), o sea que el shader inline pasó a ser LA LEY del material. Si algo
+            ' revienta acá, el NIF sale sin link externo y con el shader inline a medio escribir — puede
+            ' quedar el bit `Skinned` en desacuerdo con el skin del shape, y eso es CTD en el juego, no un
+            ' defecto visual. Un `Catch` vacío convertía un fallo detectable en un archivo shipeado.
+            Dim m = ex.GetType().Name & ": " & ex.Message
+            Logger.LogLazy(Function() $"[BAKE-MAT] TranscribeResolvedMaterialToShader falló: {m}")
+            Throw
         End Try
     End Sub
 
@@ -2357,7 +2370,7 @@ Public Module FaceGenBuilder
                 End If
             End If
             Dim fgLocal = PluginManager.ToFaceGenLocalFormID(npcFormID)
-            Dim tintDir = $"Textures\Actors\Character\FaceGenData\FaceTint\{originPlugin}\"
+            Dim tintDir = FaceGenPaths.TexturaDir(FaceGenPaths.CanalTint, originPlugin)
             Dim suffix = If(DebugMode, "_2.dds", ".dds")          ' on-disk name (sandbox in DebugMode)
             Dim embeddedSuffix = If(willBePacked, ".dds", suffix) ' the packer renames _2 → canonical
             Dim rel = tintDir & $"{fgLocal:X8}{suffix}"
@@ -2450,7 +2463,7 @@ Public Module FaceGenBuilder
         ' la diferencia de FORMATO en vez de la paridad CPU-vs-GPU que se quiere medir.
         Dim dds = DirectXTextureConversionHelper.Bgra32BytesToDdsBytes(w, h, gbra, DiffuseDxgiFromSetting(), generateMipMaps:=True, generatedMipLevels:=mips)
         If dds Is Nothing Then Return
-        Dim rel = $"Textures\Actors\Character\FaceGenData\FaceTint\{originPlugin}\{fgLocal:X8}_2b.dds"
+        Dim rel = FaceGenPaths.TexturaDds(FaceGenPaths.CanalTint, originPlugin, fgLocal, "_2b")
         Dim outFile = IO.Path.Combine(Config_App.Current.DataPath, rel)
         IO.Directory.CreateDirectory(IO.Path.GetDirectoryName(outFile))
         IO.File.WriteAllBytes(outFile, dds)
@@ -2572,7 +2585,7 @@ Public Module FaceGenBuilder
         Dim mips = CInt(Math.Floor(Math.Log(Math.Min(gpW, gpH), 2))) + 1
         Dim dds = DirectXTextureConversionHelper.Bgra32BytesToDdsBytes(gpW, gpH, gpBuf, DiffuseDxgiFromSetting(), generateMipMaps:=True, generatedMipLevels:=mips)
         If dds Is Nothing Then Return
-        Dim rel = $"Textures\Actors\Character\FaceGenData\FaceDiffuse\{originPlugin}\{fgLocal:X8}_2d.dds"
+        Dim rel = FaceGenPaths.TexturaDds(FaceGenPaths.CanalDiffuse, originPlugin, fgLocal, "_2d")
         Dim outFile = IO.Path.Combine(Config_App.Current.DataPath, rel)
         IO.Directory.CreateDirectory(IO.Path.GetDirectoryName(outFile))
         IO.File.WriteAllBytes(outFile, dds)
@@ -2669,7 +2682,7 @@ Public Module FaceGenBuilder
         Dim hex = PluginManager.ToFaceGenLocalFormID(npcFormID).ToString("X8")
         For Each subDir In {"FaceDiffuse", "FaceNormal"}   ' 'dir' es palabra reservada en VB (función Dir)
             For Each suffix In {".dds", "_2.dds"}
-                Dim rel = IO.Path.Combine("Textures\Actors\Character\FaceGenData", subDir, originPlugin, hex & suffix)
+                Dim rel = FaceGenPaths.TexturaDir(subDir, originPlugin) & hex & suffix
                 Dim full = IO.Path.Combine(dataPath, rel)
                 Try
                     If IO.File.Exists(full) Then
@@ -2950,7 +2963,7 @@ Public Module FaceGenBuilder
             End If
 
             Dim fgLocal = PluginManager.ToFaceGenLocalFormID(npcFormID)
-            Dim dir = $"Textures\Actors\Character\FaceGenData\FaceDiffuse\{originPlugin}\"
+            Dim dir = FaceGenPaths.TexturaDir(FaceGenPaths.CanalDiffuse, originPlugin)
             ' Naming: forzado (_2c) usa ESE sufijo en disco Y embebido (nunca packea); normal = _2/canónico.
             Dim suffix = If(forced, forcedSuffix & ".dds", If(DebugMode, "_2.dds", ".dds"))
             Dim embeddedSuffix = If(forced, suffix, If(willBePacked, ".dds", suffix))
@@ -3042,7 +3055,7 @@ Public Module FaceGenBuilder
                                         outputDxgiFormat:=NormalDxgiFromSetting(),
                                         generateMipMaps:=True, generatedMipLevels:=mmips)
                                     If mDds IsNot Nothing Then
-                                        Dim ndir = $"Textures\Actors\Character\FaceGenData\FaceNormal\{originPlugin}\"
+                                        Dim ndir = FaceGenPaths.TexturaDir(FaceGenPaths.CanalNormal, originPlugin)
                                         Dim nRel = ndir & $"{fgLocal:X8}{suffix}"
                                         Dim nFile = IO.Path.Combine(Config_App.Current.DataPath, nRel)
                                         IO.Directory.CreateDirectory(IO.Path.GetDirectoryName(nFile))

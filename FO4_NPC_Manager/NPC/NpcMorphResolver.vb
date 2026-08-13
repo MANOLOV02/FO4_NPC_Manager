@@ -236,12 +236,32 @@ Public Class NpcMorphResolver
     ''' single merge used by both the render (<see cref="LoadTriForShape"/>) and the bake (FaceGenBuildPipeline)
     ''' so the head TriHead they feed <see cref="BuildFaceMorphPlan"/> is assembled identically. When
     ''' <paramref name="triHead"/> is Nothing it becomes the chargen head; when chargen is Nothing it is a no-op.</summary>
+    ''' <remarks>⛔⛔ NUNCA MUTA LA INSTANCIA QUE RECIBE. `triHead` y `chargenHead` vienen de
+    ''' <c>TryLoadTriHead</c>, o sea de <c>_triHeadCache</c>, que es `Shared` y devuelve SIEMPRE LA MISMA
+    ''' instancia para la misma ruta. Esta función hacía `triHead.Morphs.Add(...)` sobre ella y eso rompía
+    ''' de dos maneras:
+    ''' <para>1. CARRERA: `ResolveMorphPlan` corre bajo `Parallel.ForEach`. Un hilo mergeando (Add) contra
+    ''' otro adentro de `GetMorph` (que hace `List.Find`, o sea ENUMERA) ⇒ `InvalidOperationException`
+    ''' intermitente. Es el fallo que aparece una vez y a la siguiente corrida no.</para>
+    ''' <para>2. CONTAMINACIÓN entre NPCs, que no tira y por eso es peor: el .tri de RAZA cacheado quedaba
+    ''' con los morphs de chargen y con los EXTENDIDOS de RaceMenu del primer NPC que pasara, y todos los
+    ''' demás NPC de esa raza los heredaban. Y el `triHead = chargenHead` de abajo ALIASEABA la entrada de
+    ''' chargen del caché, así que el merge siguiente la contaminaba también.</para>
+    ''' <para>Se clona antes de tocar nada (copia superficial: sólo se duplica la LISTA, que es lo único
+    ''' que se muta). `ByRef` ya estaba, así que el llamador recibe la copia sin cambios de firma.</para></remarks>
     Public Shared Sub MergeChargenIntoRaceTriHead(ByRef triHead As TriHeadFile, chargenHead As TriHeadFile)
         If chargenHead Is Nothing Then Return
-        If triHead Is Nothing Then triHead = chargenHead : Return
+        If triHead Is Nothing Then triHead = chargenHead.ClonarParaMerge() : Return
+        Dim copia = triHead.ClonarParaMerge()
         For Each morph In chargenHead.Morphs
-            If triHead.GetMorph(morph.Name) Is Nothing Then triHead.Morphs.Add(morph)
+            If copia.GetMorph(morph.Name) Is Nothing Then copia.Morphs.Add(morph)
         Next
+        ' ⛔ `NumMorphs` SE SINCRONIZA. Es el conteo del header del .tri y el merge lo dejaba desfasado de
+        ' `Morphs.Count`. Hoy nadie lo lee (grep: declaracion, clon y escritura del parser), asi que es
+        ' inerte — pero es un campo que MIENTE, y el dia que alguien escriba un .tri desde un TriHeadFile
+        ' eso es corrupcion de bytes con la causa a mil lineas de distancia.
+        copia.NumMorphs = CUInt(copia.Morphs.Count)
+        triHead = copia
     End Sub
 
     Public Shared Function BuildFaceMorphPlanFromTriHead(npcData As NPC_Data,

@@ -113,14 +113,14 @@ Public NotInheritable Class FaceTextureRepointer
         End If
 
         ' ── SSE: el facetint del slot 6 va SIEMPRE (existe en los dos caminos del bake) ──
-        Dim tintRel = $"Textures\Actors\Character\FaceGenData\FaceTint\{plan.OriginPlugin}\{hex}.dds"
+        Dim tintRel = FaceGenPaths.TexturaDir(FaceGenPaths.CanalTint, plan.OriginPlugin) & hex & ".dds"
         WriteSlot(ts, SseSlotFaceTint, "data\" & tintRel)
         outcome.Repointed = True
 
         If Not foldOverlays Then Return outcome
 
         ' ── SSE plegado: el diffuse compuesto reemplaza al complexion, SIN prefijo ──
-        Dim diffuseRel = $"Textures\Actors\Character\FaceGenData\FaceDiffuse\{plan.OriginPlugin}\{hex}.dds"
+        Dim diffuseRel = FaceGenPaths.TexturaDir(FaceGenPaths.CanalDiffuse, plan.OriginPlugin) & hex & ".dds"
         WriteSlot(ts, SseSlotDiffuse, diffuseRel)
 
         ' El normal plegado es CONDICIONAL en el propio bake: sólo lo escribe si algún overlay aporta
@@ -130,7 +130,7 @@ Public NotInheritable Class FaceTextureRepointer
         ' ⛔ El gate NO es la existencia del DDS en disco: eso mira sólo loose y un _msn empaquetado en
         ' un BA2 se leería como ausente. Es el MISMO predicado que el bake (HasFaceOverlayNormals),
         ' calculado por el resolver del render y traído en el plan.
-        Dim normalRel = $"Textures\Actors\Character\FaceGenData\FaceNormal\{plan.OriginPlugin}\{hex}.dds"
+        Dim normalRel = FaceGenPaths.TexturaDir(FaceGenPaths.CanalNormal, plan.OriginPlugin) & hex & ".dds"
         If plan.BakeEmitsFoldedNormal Then
             WriteSlot(ts, SseSlotNormal, normalRel)
         End If

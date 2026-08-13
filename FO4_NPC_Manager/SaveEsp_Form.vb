@@ -1024,8 +1024,13 @@ Public Class SaveEsp_Form
         ' reads PluginEncodingSettings.Translatable inside EmitLString — once the write starts
         ' it's too late to change. Empty value means "Auto" (leave whatever MainForm_Load set
         ' from Fallout4.ini sLanguage in place). Mirror of xEdit -cp-trans command-line param.
+        ' ⛔ ACOTADO AL GUARDADO. Antes era `SetTranslatableOverride`, que NO se restaura nunca: la
+        ' elección del combo —una decisión transitoria de ESCRITURA— quedaba de global para el resto de la
+        ' sesión. Guardar el NPC A en cp1251 hacía que el "Auto" del NPC B heredara cp1251, el sniff de
+        ' SNAM/CNAM auto-detectara mal y EmitLString escribiera cp1251 dentro de un plugin UTF-8: el
+        ' resultado del segundo guardado dependía del primero. El scope se cierra en el Finally de abajo,
+        ' que es después de que ShowDialog volvió — o sea, con la escritura ya terminada.
         Dim encOverride = GetSelectedEncodingOverride()
-        If encOverride <> "" Then PluginEncodingSettings.SetTranslatableOverride(encOverride)
         ' NOTE: encoding-conflict pre-check (FULL/SHRT/ATTX vs selected encoding, for the edited
         ' NPC + all pre-existing NPCs when updating) runs inside NpcOverrideSaver.ExecuteWritePhases
         ' right after the existing plugin is loaded — reusing that single PluginReader.Load instead
@@ -1040,6 +1045,14 @@ Public Class SaveEsp_Form
         ' the modal loop returns, every queued progress callback that touches it has been pumped, so
         ' disposing it afterwards can't race a late report.
         Dim cts As New System.Threading.CancellationTokenSource()
+        ' ⛔ EL SCOPE SE ABRE PEGADO AL Try QUE LO CIERRA. Estaba 15 líneas más arriba, y entre medio corrían
+        ' `CurrentInputs()`, `BuildStepPlan(...)` y el ctor del CTS: si cualquiera de esas tiraba, la excepción
+        ' salía del handler del botón SIN pasar por el Finally y `_translatable` quedaba pisado con la elección
+        ' del combo para el resto de la sesión — o sea, el defecto que este cambio arregla, reintroducido por
+        ' el camino de error (WinForms deja la app viva tras el diálogo de excepción no manejada).
+        ' Bajarlo hasta acá es seguro: el override lo lee `EmitLString` durante la ESCRITURA, y nada de lo de
+        ' arriba escribe strings traducibles.
+        Dim encScope = PluginEncodingSettings.PushTranslatableOverride(encOverride)
         Try
             Using prog As New BuildProgress_Form()
                 prog.Text = If(inputs.Count > 1, $"Saving {inputs.Count} NPC overrides…", "Saving NPC override…")
@@ -1074,6 +1087,10 @@ Public Class SaveEsp_Form
             End Using
         Finally
             cts.Dispose()
+            ' La encoding vuelve a lo que había ANTES de abrir este diálogo. Va acá y no más abajo porque
+            ' la escritura ya terminó (ShowDialog es bloqueante) y lo que sigue —la activación en el load
+            ' order— lee masters y flags de cabecera, no strings traducibles.
+            encScope.Dispose()
         End Try
 
         If ExecutionResult IsNot Nothing AndAlso ExecutionResult.Success Then

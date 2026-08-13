@@ -563,8 +563,53 @@ Friend Class NpcRenderHost
         If LastSculptByArma IsNot Nothing Then LastSculptByArma.Clear()
         If PristineDiffusePixels IsNot Nothing Then PristineDiffusePixels.Clear()
 
+        ' ⛔⛔ HACER CURRENT EL CONTEXTO PROPIO ANTES DE BORRAR UN SOLO HANDLE GL.
+        '
+        ' Abajo decía que "el llamador ya tiene current el contexto dueño" y lo trataba como precondición
+        ' del ciclo de vida. NINGÚN llamador lo garantiza: `EditFace_Form` invoca `_editorHost.Dispose()`
+        ' justo después de `BeginTeardown()`, que no toca el contexto.
+        '
+        ' Los nombres GL son POR CONTEXTO, y `GenTexture` devuelve el menor libre. Con el editor de cara
+        ' abierto sobre el MainForm, el latido de seguridad del MainForm hace current SU contexto cada ~1 s.
+        ' Si el usuario cierra el editor justo después, estos `DeleteTexture`/`DeleteProgram` se disparan
+        ' contra el contexto del MainForm y borran ids que allá pertenecen a texturas VIVAS: el preview
+        ' principal pierde texturas sin ningún error, y el editor filtra las suyas de verdad.
+        ' ⛔ El comentario de EditFace_Form habla de "the shared GL context", pero `PreviewControl.New`
+        ' construye el `GLControlSettings` SIN `SharedContext`: los contextos son independientes. La
+        ' premisa de la que colgaba la precondición es falsa.
+        '
+        ' `EnsureContextCurrent` no hace `MakeCurrent` si ya lo está, así que en el camino sano no cuesta.
+        Dim contextoListo As Boolean = False
         Try
-            If TintGpuCache IsNot Nothing Then TintGpuCache.Clear()
+            If PreviewCtl IsNot Nothing AndAlso Not PreviewCtl.IsDisposed Then
+                PreviewCtl.EnsureContextCurrent()
+                contextoListo = True
+            End If
+        Catch ex As Exception
+            ' Si el contexto ya murió (control disposed, driver caído) NO se borra nada: los handles se
+            ' van con el contexto igual. Borrar a ciegas es lo único que sí puede dañar a otro contexto.
+            Dim m = ex.Message
+            Logger.LogLazy(Function() $"[AUDIT-TEARDOWN] no se pudo hacer current el contexto propio: {m} => NO se borra ningun handle")
+        End Try
+        ' [AUDIT-TEARDOWN] valida el arreglo del borrado en el contexto equivocado.
+        If Logger.Enabled Then
+            Dim aCtx = contextoListo
+            Dim aTint = If(TintGpuCache Is Nothing, -1, TintGpuCache.Count)
+            Dim aComp = (CompositorState IsNot Nothing)
+            Logger.LogLazy(Function() $"[AUDIT-TEARDOWN] contextoPropioCurrent={aCtx} texturasEnTintGpuCache={aTint} compositorVivo={aComp}")
+        End If
+
+        Try
+            If TintGpuCache IsNot Nothing Then
+                If contextoListo Then
+                    TintGpuCache.Clear()
+                Else
+                    ' Sin contexto no se BORRAN handles (los nombres de GL son por contexto), pero las
+                    ' entradas se SUELTAN igual: cada una retiene un Texture_Loaded_Class, y dejarlas
+                    ' vivas ata el diccionario entero a un host que se está muriendo.
+                    TintGpuCache.OlvidarSinBorrar()
+                End If
+            End If
         Catch
             ' Defensive
         End Try
@@ -573,12 +618,16 @@ Friend Class NpcRenderHost
         ' a resoluciones altas, asi que se sueltan en el mismo punto del ciclo de vida.
         If TintCpuDecodeCache IsNot Nothing Then TintCpuDecodeCache.Clear()
 
-        ' Release compositor GL handles (program/VAO/VBO). Caller must already have the
-        ' owning GL context current — this is the standard precondition the host's lifecycle
-        ' contract gives Dispose: invoked from FormClosing on the UI thread, before the
-        ' PreviewControl is disposed and its context torn down.
+        ' Libera los handles GL del compositor (program/VAO/VBO/FBO/texturas). El contexto propio ya se
+        ' hizo current arriba; si no se pudo, no se borra nada (ver el bloque de arriba).
+        ' ⛔ Y SE SUELTA LA REFERENCIA PASE LO QUE PASE. Gatear TODO por `contextoListo` dejaba el
+        ' `CompositorState` entero colgando del host cuando el contexto ya no estaba: sus handles GL se van
+        ' con el contexto igual, pero lo ADMINISTRADO que tenga adentro no lo suelta nadie.
         Try
-            If CompositorState IsNot Nothing Then CompositorState.Dispose()
+            If CompositorState IsNot Nothing Then
+                If contextoListo Then CompositorState.Dispose()
+                CompositorState = Nothing
+            End If
         Catch
             ' Defensive
         End Try

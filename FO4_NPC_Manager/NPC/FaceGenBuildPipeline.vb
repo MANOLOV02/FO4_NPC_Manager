@@ -844,6 +844,11 @@ Public Module FaceGenBuildPipeline
         ' render picks up in LoadTriForShape. CRUCIAL for HAIR/hairline/beard parts: they have NO race/chargen tri
         ' at all, only their own mesh tri (hairNN.tri = a single SkinnyMorph), so the base ends up BEING that fresh
         ' mesh TriHead and the weight morph still applies. The comboKey includes meshKey so distinct meshes don't alias.
+        ' ⚠️ Los tres lados se parsean FRESCOS. El motivo escrito era que `MergeChargenIntoRaceTriHead`
+        ' mutaba su primer argumento — ya NO lo hace (pasó a copy-on-write con `ClonarParaMerge`), asi
+        ' que este re-parseo por cada miss de `comboKey` es coste sin causa. Se CONSERVA igual: cambiarlo
+        ' a un parse cacheado es una optimizacion que toca el camino del bake y hay que MEDIRLA, no
+        ' deducirla. Lo que se arregla ahora es el comentario, que justificaba algo que ya no pasa.
         Dim raceHead As TriHeadFile = If(raceKey = "", Nothing, ParseHeadTri(raceKey))
         Dim chargenHead As TriHeadFile = If(chargenKey = "", Nothing, ParseHeadTri(chargenKey))
         Dim meshHead As TriHeadFile = If(meshKey = "", Nothing, ParseHeadTri(meshKey))

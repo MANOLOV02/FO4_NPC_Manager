@@ -1,8 +1,9 @@
-Option Strict On
+﻿Option Strict On
 Imports System.IO
 Imports System.Threading
 Imports BSA_BA2_Library_DLL.BethesdaArchive.Core
 Imports FO4_Base_Library
+Imports FO4_Base_Library.Archives
 
 ''' <summary>
 ''' Batches the FaceGen loose files produced by <c>FaceGenBuilder.BuildCharGen</c> (FO4: 1 NIF + 3
@@ -82,14 +83,14 @@ Public Module NpcFaceGenPacker
         If String.IsNullOrEmpty(originPlugin) Then Return specs
         Dim hex = formIdLow.ToString("X8")
 
-        Dim geomDir = "Meshes\Actors\Character\FaceGenData\FaceGeom\" & originPlugin & "\"
+        Dim geomDir = FaceGenPaths.GeomDir(originPlugin)
         specs.Add(New FaceGenFileSpec With {
             .Source = geomDir & hex & If(debugSandbox, "_2.nif", ".nif"),
             .Entry = geomDir & hex & ".nif",
             .IsTexture = False})
 
         If game = Config_App.Game_Enum.Skyrim Then
-            Dim tintDir = "Textures\Actors\Character\FaceGenData\FaceTint\" & originPlugin & "\"
+            Dim tintDir = FaceGenPaths.TexturaDir(FaceGenPaths.CanalTint, originPlugin)
             ' Facetint: SIEMPRE per-NPC <id>.dds canónico. El engine ARMA `FaceTint\<plugin>\<id>.dds` él mismo
             ' (BuildFaceTintPath, RE SkyrimSE.exe) e IGNORA el slot 6 del NIF ⇒ NO se puede compartir ni omitir; si
             ' falta, el tint del material queda NULL → cara brown. Para NPCs plegados es un gris neutral (fgTint≈1).
@@ -102,14 +103,14 @@ Public Module NpcFaceGenPacker
             '  SseFaceGenBaker.PreCompensateDetailAmplify. Era el único artefacto compartido entre NPCs/ESPs.)
             ' OPTIONAL per-NPC head diffuse — emitted only when the NPC has RaceMenu face overlays/skee masks baked
             ' in (FaceGenBuilder.WriteSseFaceDiffuseWithOverlays). Absent for vanilla NPCs → silently skipped.
-            Dim diffDir = "Textures\Actors\Character\FaceGenData\FaceDiffuse\" & originPlugin & "\"
+            Dim diffDir = FaceGenPaths.TexturaDir(FaceGenPaths.CanalDiffuse, originPlugin)
             specs.Add(New FaceGenFileSpec With {
                 .Source = diffDir & hex & If(debugSandbox, "_2.dds", ".dds"),
                 .Entry = diffDir & hex & ".dds",
                 .IsTexture = True,
                 .IsOptional = True})
             ' OPTIONAL per-NPC head normal (_msn) — emitted only when a face overlay carries a normal map.
-            Dim normDir = "Textures\Actors\Character\FaceGenData\FaceNormal\" & originPlugin & "\"
+            Dim normDir = FaceGenPaths.TexturaDir(FaceGenPaths.CanalNormal, originPlugin)
             specs.Add(New FaceGenFileSpec With {
                 .Source = normDir & hex & If(debugSandbox, "_2.dds", ".dds"),
                 .Entry = normDir & hex & ".dds",
@@ -207,7 +208,8 @@ Public Module NpcFaceGenPacker
     ' FO4 BA2 hard cap inside the packager. Engine is unstable past 4 GB; 3 GB leaves headroom.
     ' This bounds a SINGLE archive (existing + new bundle), independent of MEMORY_CAP_BYTES which
     ' bounds the per-flush working set.
-    Private Const MAX_ARCHIVE_BYTES As Long = 3L << 30
+    ' El tope es del FORMATO, no de esta app: vive en PackagerRequest.MaxArchiveBytesDefault.
+    Private ReadOnly MAX_ARCHIVE_BYTES As Long = BSA_BA2_Library_DLL.BethesdaArchive.Core.PackagerRequest.MaxArchiveBytesDefault
 
     ''' <summary>One loose file in the bundle, with its canonical BA2 entry name. SourcePath is
     ''' the actual on-disk file (carries _2 suffix when bake ran in DebugMode); EntryPath is the
@@ -634,7 +636,18 @@ Public Module NpcFaceGenPacker
                             End Sub
         }
 
+        ' [AUDIT-BA2] valida que el writer suelta cada payload comprimido al escribirlo. Se mide el
+        ' pico de heap ADMINISTRADO del pack: antes los N payloads vivian a la vez hasta terminar el
+        ' archivo, ahora sólo hasta que cada uno se escribe.
+        Dim heapAntes As Long = 0
+        If Logger.Enabled Then heapAntes = GC.GetTotalMemory(False)
         Dim chunkResult = ArchivePackager.Pack(req)
+        If Logger.Enabled Then
+            Dim hA = heapAntes, hD = GC.GetTotalMemory(False)
+            Dim mi = GC.GetGCMemoryInfo()
+            Dim entradas = req.Entries.Count
+            Logger.LogLazy(Function() $"[AUDIT-BA2] pack de {entradas} entradas: heap {hA \ (1024 * 1024)} MB -> {hD \ (1024 * 1024)} MB, heapTotalDelGC={mi.HeapSizeBytes \ (1024 * 1024)} MB")
+        End If
 
         result.WrittenArchives.AddRange(chunkResult.Archives)
         result.SkippedArchives.AddRange(chunkResult.Skipped)
@@ -686,88 +699,9 @@ Public Module NpcFaceGenPacker
     ' compatible regardless of whether the bake ran in debug mode.
     ' ============================================================================
 
-    Private Function MakeMaterialEntry(dataDir As String, sourcePath As String, entryPath As String, game As Config_App.Game_Enum) As VirtualEntry
-        Dim relUnderData = Path.GetRelativePath(dataDir, entryPath).Correct_Path_Separator
-        Dim bytes = File.ReadAllBytes(sourcePath)
-        Dim relDir As String = "", relFile As String = ""
-        PathUtil.SplitDirFile(relUnderData, relDir, relFile)
-        Dim crc = Ba2WriterCommon.Crc32Bytes(bytes)
 
-        Dim ve As New VirtualEntry With {
-            .Directory = relDir,
-            .FileName = relFile,
-            .Crc32 = crc
-        }
 
-        If game = Config_App.Game_Enum.Skyrim Then
-            Dim cp = PayloadCompressor.CompressForBsa(bytes, wantCompressed:=True)
-            ve.PreCompressed = True
-            ve.PreCompressedBytes = cp.Bytes
-            ve.PreCompressedCompSize = cp.CompSize
-            ve.PreCompressedDecompSize = cp.DecompSize
-        Else
-            Dim cp = PayloadCompressor.CompressForBa2Gnrl(bytes,
-                version:=8UI,
-                compressionFormat:=Ba2WriterCommon.CompressionFormat.Zip,
-                preset:=Ba2WriterCommon.ZlibPreset.Default)
-            ve.PreCompressed = True
-            ve.PreCompressedBytes = cp.Bytes
-            ve.PreCompressedCompSize = cp.CompSize
-            ve.PreCompressedDecompSize = cp.DecompSize
-        End If
 
-        Return ve
-    End Function
-
-    Private Function MakeTextureEntry(dataDir As String, sourcePath As String, entryPath As String, game As Config_App.Game_Enum) As VirtualEntry
-        Dim relUnderData = Path.GetRelativePath(dataDir, entryPath).Correct_Path_Separator
-        Dim bytes = File.ReadAllBytes(sourcePath)
-
-        If game = Config_App.Game_Enum.Skyrim Then
-            Dim relDir As String = "", relFile As String = ""
-            PathUtil.SplitDirFile(relUnderData, relDir, relFile)
-            Dim cp = PayloadCompressor.CompressForBsa(bytes, wantCompressed:=True)
-            Return New VirtualEntry With {
-                .Directory = relDir,
-                .FileName = relFile,
-                .Crc32 = Ba2WriterCommon.Crc32Bytes(bytes),
-                .PreCompressed = True,
-                .PreCompressedBytes = cp.Bytes,
-                .PreCompressedCompSize = cp.CompSize,
-                .PreCompressedDecompSize = cp.DecompSize
-            }
-        End If
-
-        Dim ve = Dx10Importer.FromDdsBytes(bytes, relUnderData)
-        Dim payload = If(ve.Data, Array.Empty(Of Byte)())
-        ve.Crc32 = Ba2WriterCommon.Crc32Bytes(payload)
-        Dim cpDx10 = PayloadCompressor.CompressForBa2Dx10(payload,
-            version:=8UI,
-            compressionFormat:=Ba2WriterCommon.CompressionFormat.Zip,
-            preset:=Ba2WriterCommon.ZlibPreset.Default)
-        ve.Data = Nothing
-        ve.PreCompressed = True
-        ve.PreCompressedBytes = cpDx10.Bytes
-        ve.PreCompressedCompSize = cpDx10.CompSize
-        ve.PreCompressedDecompSize = cpDx10.DecompSize
-        Return ve
-    End Function
-
-    Private Function MapGame(g As Config_App.Game_Enum) As GameKind
-        Select Case g
-            Case Config_App.Game_Enum.Fallout4 : Return GameKind.FO4_BA2
-            Case Config_App.Game_Enum.Skyrim : Return GameKind.SSE_BSA
-            Case Else : Throw New ArgumentOutOfRangeException(NameOf(g))
-        End Select
-    End Function
-
-    Private Function MapGameBack(g As GameKind) As Config_App.Game_Enum
-        Select Case g
-            Case GameKind.FO4_BA2 : Return Config_App.Game_Enum.Fallout4
-            Case GameKind.SSE_BSA : Return Config_App.Game_Enum.Skyrim
-            Case Else : Throw New ArgumentOutOfRangeException(NameOf(g))
-        End Select
-    End Function
 
     Private Sub Report(progress As Action(Of PackProgress),
                        phase As PackPhase, detail As String,
