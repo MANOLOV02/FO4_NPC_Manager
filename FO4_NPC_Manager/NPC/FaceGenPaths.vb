@@ -18,6 +18,10 @@ Friend Module FaceGenPaths
     Friend Const CanalDiffuse As String = "FaceDiffuse"
     Friend Const CanalNormal As String = "FaceNormal"
     Friend Const CanalGeom As String = "FaceGeom"
+    ''' <summary>⛔ FO4 escribe las texturas de cara (_d/_msn/_s) bajo
+    ''' <c>Textures\Actors\Character\FaceCustomization\</c>, que NO cuelga de FaceGenData — ese es el
+    ''' árbol de SSE. Son dos raíces distintas, y por eso este canal necesita su propia función.</summary>
+    Friend Const CanalCustomization As String = "FaceCustomization"
 
     Private Const RaizMallas As String = "Meshes\Actors\Character\FaceGenData\"
     Private Const RaizTexturas As String = "Textures\Actors\Character\FaceGenData\"
@@ -44,6 +48,15 @@ Friend Module FaceGenPaths
     ''' <c>Textures\Actors\Character\FaceGenData\&lt;canal&gt;\&lt;plugin&gt;\</c></summary>
     Friend Function TexturaDir(canal As String, originPlugin As String) As String
         Return RaizTexturas & canal & "\" & originPlugin & "\"
+    End Function
+
+    ''' <summary>Carpeta relativa de las texturas de cara de FO4, con la barra final.
+    ''' <c>Textures\Actors\Character\FaceCustomization\&lt;plugin&gt;\</c>
+    ''' <para>⛔ Raíz DISTINTA a <see cref="TexturaDir"/>: FaceCustomization no cuelga de FaceGenData. Eso
+    ''' fue lo que me hizo buscar las texturas horneadas en la carpeta equivocada y concluir que el bake no
+    ''' escribía ninguna.</para></summary>
+    Friend Function CustomizacionDir(originPlugin As String) As String
+        Return "Textures\Actors\Character\" & CanalCustomization & "\" & originPlugin & "\"
     End Function
 
     ''' <summary>Ruta relativa de un DDS de un canal. <paramref name="sufijo"/> va ANTES de la extensión

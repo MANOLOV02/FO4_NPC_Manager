@@ -2089,7 +2089,10 @@ Friend NotInheritable Class NpcMeshCollector
             ' en el medio deja el candidato con CERO shapes, que es indistinguible de "esta pieza no tiene
             ' malla" — el NPC se hornea sin la pieza y nadie se entera. Este mismo archivo ya loguea esta
             ' clase de fallo en otros dos sitios; acá faltaba.
-            Dim nm = If(candidate Is Nothing, "<nothing>", candidate.ToString())
+            ' ⛔ El ToString va con su propia red: esto corre DENTRO de un Catch de un metodo cuyo diseño
+            ' entero es tragar y seguir. Una excepcion acá escaparia de ese contrato.
+            Dim nm As String
+            Try : nm = If(candidate Is Nothing, "<nothing>", candidate.ToString()) : Catch : nm = "<?>" : End Try
             Dim m = ex.GetType().Name & ": " & ex.Message
             Logger.LogLazy(Function() $"[MESH-COLLECT] el candidato '{nm}' quedó SIN shapes por una excepción: {m}")
         End Try

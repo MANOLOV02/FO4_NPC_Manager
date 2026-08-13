@@ -581,10 +581,10 @@ Friend Class NpcRenderHost
         ' `EnsureContextCurrent` no hace `MakeCurrent` si ya lo está, así que en el camino sano no cuesta.
         Dim contextoListo As Boolean = False
         Try
-            If PreviewCtl IsNot Nothing AndAlso Not PreviewCtl.IsDisposed Then
-                PreviewCtl.EnsureContextCurrent()
-                contextoListo = True
-            End If
+            ' ⛔ SE USA EL RETORNO, no se asume. Antes esto ponia `contextoListo = True` por el solo hecho
+            ' de llamar: si `MakeCurrent` fallaba (control dispuesto entre el chequeo y la llamada, driver
+            ' caido) se borraban handles creyendo que el contexto era el propio.
+            If PreviewCtl IsNot Nothing Then contextoListo = PreviewCtl.EnsureContextCurrent()
         Catch ex As Exception
             ' Si el contexto ya murió (control disposed, driver caído) NO se borra nada: los handles se
             ' van con el contexto igual. Borrar a ciegas es lo único que sí puede dañar a otro contexto.

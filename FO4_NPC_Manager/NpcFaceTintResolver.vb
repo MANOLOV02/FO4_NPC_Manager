@@ -1,4 +1,4 @@
-Imports System.Globalization
+﻿Imports System.Globalization
 Imports System.IO
 Imports System.Drawing
 Imports System.Linq
@@ -1350,10 +1350,8 @@ Friend NotInheritable Class NpcFaceTintResolver
         If h Is Nothing Then Return
         Dim contextoListo As Boolean = False
         Try
-            If h.PreviewCtl IsNot Nothing AndAlso Not h.PreviewCtl.IsDisposed Then
-                h.PreviewCtl.EnsureContextCurrent()
-                contextoListo = True
-            End If
+            ' ⛔ SE USA EL RETORNO, no se asume (ver NpcRenderHost.Dispose).
+            If h.PreviewCtl IsNot Nothing Then contextoListo = h.PreviewCtl.EnsureContextCurrent()
         Catch ex As Exception
             Dim m = ex.Message
             Logger.LogLazy(Function() $"[AUDIT-TINTCLEAR] no se pudo hacer current el contexto del host: {m} => NO se borra ningun handle GL")

@@ -1223,7 +1223,32 @@ Public Module FaceGenBuilder
                         ' BaseColor, NonOccluder). AlphaBlendMode left as the source has it
                         ' (Unknown) per user instruction — CK's normalization to None is purely
                         ' cosmetic at this point.
-                        ApplyRenderResolvedMaterialToShape(nif, cloned, srcNif, srcShape, hdpt, effectiveHeadPartType, state, pluginManager, applyMaterialOverrides, skinTintAlpha)
+                        Try
+                            ApplyRenderResolvedMaterialToShape(nif, cloned, srcNif, srcShape, hdpt, effectiveHeadPartType, state, pluginManager, applyMaterialOverrides, skinTintAlpha)
+                        Catch exMat As Exception
+                            ' ⛔⛔ El link al BGSM externo YA se corto en :1210, asi que el shader inline es
+                            ' LA LEY y quedo INDETERMINADO (`Save_To_Shader` escribe ~25 flags y 8 slots en
+                            ' secuencia; la derivacion de ShaderType es la ULTIMA linea del branch). Y sin
+                            ' ShaderType derivado, `redirectSlotsToFaceCustomization` da False: los 3 DDS se
+                            ' escriben, el NIF sigue apuntando a las texturas vanilla y el log afirma
+                            ' "= comportamiento del CK". Por eso la shape SALE del NIF.
+                            ' ⛔⛔ Y EL ROLLBACK VA COMPLETO. `clonedShapeNames`/`shapesCloned` se
+                            ' incrementaron en :1122-1123, ANTES de esto. Sacar la shape sin revertirlos deja
+                            ' el guard F7 de mas abajo (`If shapesCloned = 0 Then Success = False`) sin
+                            ' disparar y se escribe un FaceGeom VACIO con Success = True: cabeza INVISIBLE
+                            ' in-game reportada como exito. Y `clonedShapeNames` sin revertir hace que otro
+                            ' HDPT con el mismo destName se saltee como "duplicado" de algo que ya no existe.
+                            ' `shapesFailed` es el canal que SI llega al usuario sin depender del Logger
+                            ' (Summary: "N shape(s) DROPPED by an exception").
+                            Dim mt = exMat.GetType().Name & ": " & exMat.Message
+                            Dim dnMat = destName
+                            Logger.LogLazy(Function() $"[BAKE-MAT] shape '{dnMat}' SACADA del NIF (shader inline indeterminado, link externo ya cortado): {mt}")
+                            Try : nif.RemoveBlock(cloned) : Catch : End Try
+                            clonedShapeNames.Remove(destName)
+                            shapesCloned -= 1
+                            shapesFailed += 1
+                            Continue For
+                        End Try
 
                         ' Bake de las texturas de cara, sólo para la shape Face: compone D/N/S, las encodea
                         ' con el formato DXGI del NIF fuente (BC3/BC5/BC5 + mips) bajo
@@ -2293,11 +2318,16 @@ Public Module FaceGenBuilder
                 End If
             End If
         Catch ex As Exception
-            ' ⛔⛔ NO SE PUEDE TRAGAR. Cuando esto corre, el llamador YA blanqueó el link al BGSM externo
-            ' (`shad.Name.String = ""`), o sea que el shader inline pasó a ser LA LEY del material. Si algo
-            ' revienta acá, el NIF sale sin link externo y con el shader inline a medio escribir — puede
-            ' quedar el bit `Skinned` en desacuerdo con el skin del shape, y eso es CTD en el juego, no un
-            ' defecto visual. Un `Catch` vacío convertía un fallo detectable en un archivo shipeado.
+            ' ⛔⛔ ESTE METODO VUELVE A FALLAR FUERTE, Y LA DECISION DE TRAGAR VIVE EN EL LLAMADOR.
+            ' Lo tragué acá razonando sobre UN llamador —el loop de shapes del bake— y tiene TRES:
+            ' `FaceTextureRepointer` y `ShapeMaterialTranscriber` (export a NIF). Para esos dos, tragar es
+            ' PEOR que fallar: siguen y reportan exito (`Outcome.Written`, `shapesWritten += 1`) sobre una
+            ' shape cuyo link al BGSM externo NO se corto —el corte esta DESPUES del Save_To_Shader— asi que
+            ' el motor reemplaza el texture set entero y descarta todo lo que el export escribio.
+            ' ⚠️ Y no digo "queda con material default", que es lo que afirmaba el comentario anterior:
+            ' `Save_To_Shader` escribe ~25 flags y 8 slots en secuencia, asi que un fallo a mitad deja el
+            ' shader INDETERMINADO. (Tambien saco la mencion al bit `Skinned`: `Skinned` no aparece ni una
+            ' vez en FO4UnifiedMaterial_Class, o sea que esa justificacion no se sostenia.)
             Dim m = ex.GetType().Name & ": " & ex.Message
             Logger.LogLazy(Function() $"[BAKE-MAT] TranscribeResolvedMaterialToShader falló: {m}")
             Throw
@@ -2713,7 +2743,7 @@ Public Module FaceGenBuilder
         Dim hex = PluginManager.ToFaceGenLocalFormID(npcFormID).ToString("X8")
         For Each chan In {"_d", "_msn", "_s"}
             For Each suffix In {".dds", "_2.dds"}
-                Dim rel = IO.Path.Combine("Textures\Actors\Character\FaceCustomization", originPlugin, hex & chan & suffix)
+                Dim rel = FaceGenPaths.CustomizacionDir(originPlugin) & hex & chan & suffix
                 Dim full = IO.Path.Combine(dataPath, rel)
                 Try
                     If IO.File.Exists(full) Then
@@ -3505,7 +3535,7 @@ Public Module FaceGenBuilder
             DeleteGlTextures(tempIds) : DeleteGlTextures(freshIds)
             Return
         End If
-        Dim outDir = Path.Combine(dataPath, "Textures", "Actors", "Character", "FaceCustomization", originPlugin)
+        Dim outDir = Path.Combine(dataPath, FaceGenPaths.CustomizacionDir(originPlugin))
         Try : Directory.CreateDirectory(outDir) : Catch : End Try
 
         Dim suffixD = If(DebugMode, "_d_2.dds", "_d.dds")

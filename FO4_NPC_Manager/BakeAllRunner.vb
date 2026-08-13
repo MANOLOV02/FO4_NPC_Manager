@@ -698,7 +698,6 @@ Friend Module BakeAllRunner
                 ' quedaba abierto con sus texturas 4K por el resto de la sesion de la GUI — el mismo patron
                 ' que este arreglo perseguia, reintroducido por el arreglo.
                 Dim budgetReason = FaceTintCpuCompositor.BeginBatchDecodeCacheConMotivo()
-                log(budgetReason)
                 log(budgetReason)   ' ⛔ DENTRO del Try: `log` es del llamador y puede tirar.
                 Dim done As Integer = 0
 
@@ -986,12 +985,25 @@ Friend Module BakeAllRunner
                     End Try
                  End Sub)
             Finally
+                ' ⛔ LOS FLAGS PRIMERO. Son dos asignaciones que no pueden tirar, asi que si algo de abajo
+                ' revienta igual quedan restaurados. `SkipPixelCompose = True` colgado deja todo compose
+                ' posterior de la sesion de la GUI devolviendo un buffer NEGRO. Nada de lo que sigue en este
+                ' Finally los lee.
+                FaceGenBuilder.SkipDdsEncode = prevSkipDds
+                FaceTintCpuCompositor.SkipPixelCompose = prevSkipCompose
                 ' ⛔ BLOQUE DE DIAGNOSTICO, GATEADO. A un usuario que hornea su load order no le sirve NADA de
                 ' esto: hits/misses de cache, bytes por nivel y contadores del izado son para MEDIR, no para
                 ' operar. Va todo bajo Logger.Enabled (= FaceGenBuilder.DebugMode), que es lo que prenden el
                 ' arnes y las corridas de medicion, y queda fuera de una corrida normal.
                 ' ⛔ Las llamadas a *Stats() tambien van adentro del If: son lecturas Interlocked baratas, pero
                 ' la regla del proyecto es gatear el CALCULO, no solo el log.
+                ' ⛔⛔ EL DIAGNOSTICO VA EN SU PROPIO Try. Son SEIS `log(...)` y corren ANTES de
+                ' `EndBatchDecodeCache` y del restore de los flags, con el mismo sink del llamador que este
+                ' archivo declara no confiable: si uno tira, el Finally se corta ahi, los flags NO se
+                ' restauran —`SkipPixelCompose = True` deja todo compose posterior en NEGRO toda la sesion—
+                ' y la excepcion ademas REEMPLAZA a la original. Y `wantStats` es Logger.Enabled o
+                ' FGBAKE_STATS=1, o sea que el fallo apunta justo al arnes de medicion.
+                Try
                 If wantStats Then
                 Dim cst = FaceTintCpuCompositor.BatchDecodeCacheStats()
                 log($"Decode cache TOTAL (both levels, one shared cap): {cst.Bytes \ (1024L * 1024L)} MB retained at the end, " &
@@ -1019,11 +1031,23 @@ Friend Module BakeAllRunner
                 ' ⛔ Los hits/misses/rechazos son ACUMULADOS de toda la corrida; los MB son los del cache vivo
                 ' al cerrar.
                 End If   ' wantStats — fin del bloque de diagnostico
-                FaceTintCpuCompositor.EndBatchDecodeCache()
-                ' Los dos interruptores de FGBAKE_SKIP_DDS vuelven a como estaban (ver arriba): si no, un
-                ' "Bake All" desde la GUI con esa env var deja todo compose posterior en negro.
-                FaceGenBuilder.SkipDdsEncode = prevSkipDds
-                FaceTintCpuCompositor.SkipPixelCompose = prevSkipCompose
+                Catch exStats As Exception
+                    ' Perder el diagnostico es barato; perder el restore de los flags no.
+                    Dim ms = exStats.Message
+                    Logger.LogLazy(Function() $"[BAKE] el bloque de estadisticas fallo: {ms}")
+                End Try
+                ' ⛔ `End` CON SU PROPIO Try, no el de estadisticas: su Catch dice "el bloque de estadisticas
+                ' fallo", que seria mentira. Y si tira sin red se saltea el teardown GL de abajo, que este
+                ' mismo archivo justifica con "este exe con --windowless a veces NO SALE al terminar".
+                ' ⛔ El ORDEN es obligatorio: `EndBatchDecodeCache` pone los dos caches en Nothing y los
+                ' vacia, y las estadisticas de arriba reportan los MB del cache VIVO — despues del End
+                ' darian todas cero.
+                Try
+                    FaceTintCpuCompositor.EndBatchDecodeCache()
+                Catch exEnd As Exception
+                    Dim me2 = exEnd.Message
+                    Logger.LogLazy(Function() $"[BAKE] EndBatchDecodeCache falló: {me2}")
+                End Try
                 ' Teardown del contexto GL. Se libera el cache de texturas ANTES de destruir el contexto (si no,
                 ' se filtran los handles GL que el cache tiene vivos — contrato de FaceTintTextureCache).
                 ' ⛔ Ademas: este exe con --windowless a veces NO SALE al terminar. Un Form vivo empeora eso, asi

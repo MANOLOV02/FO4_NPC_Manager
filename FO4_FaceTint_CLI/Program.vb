@@ -1433,7 +1433,10 @@ Module Program
 
         ' --- 6. Batch: cache de decode persistente entre NPCs + cache de bytes crudos de layers/swaps.
         '        Cada DDS se decodifica/lee UNA vez en todo el batch (caras de la misma raza comparten). ---
-        FaceTintCpuCompositor.BeginBatchDecodeCacheConMotivo()
+        ' ⛔ EL MOTIVO SE DICE. Descartarlo dejaba al usuario del CLI sin saber si su
+        ' FGBAKE_DECODE_CACHE_MB se leyó o si corrió sin techo — un techo que no se ve no se
+        ' puede diagnosticar. Es el mismo argumento que MainForm ya aplica.
+        Console.WriteLine("[decode-cache] " & FaceTintCpuCompositor.BeginBatchDecodeCacheConMotivo())
         Dim tintBytesCache As New Dictionary(Of String, Byte())(StringComparer.OrdinalIgnoreCase)
         Dim ok As Integer = 0, fail As Integer = 0
         ' --buildfacegen: bake COMPLETO (NIF + 3 DDS) via FaceGenBuilder, headless. DebugMode=Logger.Enabled
@@ -4102,7 +4105,10 @@ persist:
         If configs.Count = 0 Then Console.Error.WriteLine($"No *.json in {sweepDir}") : Environment.ExitCode = 1 : Return
         Console.WriteLine($"[sweep] {ctxs.Count} NPCs x {configs.Count} conventions (decode cached across all)")
 
-        FaceTintCpuCompositor.BeginBatchDecodeCacheConMotivo()
+        ' ⛔ EL MOTIVO SE DICE. Descartarlo dejaba al usuario del CLI sin saber si su
+        ' FGBAKE_DECODE_CACHE_MB se leyó o si corrió sin techo — un techo que no se ve no se
+        ' puede diagnosticar. Es el mismo argumento que MainForm ya aplica.
+        Console.WriteLine("[decode-cache] " & FaceTintCpuCompositor.BeginBatchDecodeCacheConMotivo())
         Dim tintCache As New Dictionary(Of String, Byte())(StringComparer.OrdinalIgnoreCase)
         Dim rows As New List(Of (Name As String, Dn As Double, Dx As Integer, Nn As Double, Nx As Integer, Sn As Double, Sx As Integer))
         Try

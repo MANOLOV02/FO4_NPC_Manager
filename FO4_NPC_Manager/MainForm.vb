@@ -10514,9 +10514,13 @@ Public Class MainForm
                     ' ⛔⛔ LA LLAMADA VA AFUERA DEL LogLazy. `LogLazy` NO evalúa el lambda si el logger está
                     ' apagado ⇒ meterla adentro dejaba el lote SIN ABRIR en el caso normal. Nunca poner un
                     ' efecto adentro de un log perezoso.
+                    ' ⛔ EL Begin VA PEGADO AL Try. Dejar el LogLazy en el medio es el mismo defecto que
+                    ' BakeAllRunner documenta y arregla: si el log tira, el Finally con EndBatchDecodeCache
+                    ' no corre y los DOS niveles del cache (DecodedTex + Single() de 4K) quedan retenidos
+                    ' toda la sesion de la GUI.
                     Dim motivoCache = FaceTintCpuCompositor.BeginBatchDecodeCacheConMotivo()
-                    Logger.LogLazy(Function() $"[CHARGEN] decode cache: {motivoCache}")
                     Try
+                        Logger.LogLazy(Function() $"[CHARGEN] decode cache: {motivoCache}")
                         For i = 0 To total - 1
                             If p.Cancelled Then Exit For
                             Dim fid = formIDs(i)
