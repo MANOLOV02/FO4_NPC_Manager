@@ -997,12 +997,12 @@ Friend Module BakeAllRunner
                 ' arnes y las corridas de medicion, y queda fuera de una corrida normal.
                 ' ⛔ Las llamadas a *Stats() tambien van adentro del If: son lecturas Interlocked baratas, pero
                 ' la regla del proyecto es gatear el CALCULO, no solo el log.
-                ' ⛔⛔ EL DIAGNOSTICO VA EN SU PROPIO Try. Son SEIS `log(...)` y corren ANTES de
-                ' `EndBatchDecodeCache` y del restore de los flags, con el mismo sink del llamador que este
-                ' archivo declara no confiable: si uno tira, el Finally se corta ahi, los flags NO se
-                ' restauran —`SkipPixelCompose = True` deja todo compose posterior en NEGRO toda la sesion—
-                ' y la excepcion ademas REEMPLAZA a la original. Y `wantStats` es Logger.Enabled o
-                ' FGBAKE_STATS=1, o sea que el fallo apunta justo al arnes de medicion.
+                ' ⛔⛔ EL DIAGNOSTICO VA EN SU PROPIO Try. Son CUATRO `log(...)` con el sink del llamador,
+                ' que este archivo declara no confiable: si uno tira, el Finally se corta ahi, se saltea
+                ' `EndBatchDecodeCache` y el teardown GL de abajo, y la excepcion ademas REEMPLAZA a la
+                ' original. Los flags ya quedaron restaurados arriba, al tope del Finally, justamente para
+                ' que esto no pueda dejarlos colgados. Y `wantStats` es Logger.Enabled o FGBAKE_STATS=1, o
+                ' sea que el fallo apuntaria justo al arnes de medicion.
                 Try
                 If wantStats Then
                 Dim cst = FaceTintCpuCompositor.BatchDecodeCacheStats()
