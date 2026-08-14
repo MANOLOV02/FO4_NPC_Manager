@@ -361,7 +361,12 @@ Public Module NpcFaceGenPacker
             Return result
         End If
 
-        ' --- Step 2: unregister current archives once (frees pooled FileStreams) -------------
+        ' --- Step 2: unregister current archives once ----------------------------------------
+        ' ⛔ NO "frees pooled FileStreams" en el sentido que hacía falta: un reader ALQUILADO ya salió del
+        ' pool y su FileStream vive todo el ExtractToMemory, así que esto vuelve con ese handle abierto.
+        ' Lo que permite que el packager renombre/borre el .ba2 con lectores en vuelo es el FileShare.Delete
+        ' de FilesDictionary_class.AbrirArchiveParaLectura. Este loop sigue siendo necesario por la otra
+        ' razón: dejar de SERVIR entradas cuyos índices dejan de valer apenas se reescribe el archive.
         Dim modBaseName = Path.GetFileNameWithoutExtension(anchorPluginPath)
         Dim preSet = ArchivePackager.DiscoverArchiveSet(dataDir, modBaseName)
         For Each archivePath In preSet.Archives

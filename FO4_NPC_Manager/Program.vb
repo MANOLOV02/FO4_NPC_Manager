@@ -218,6 +218,10 @@ Module Program
         opt.EspTarget = GetFlagValue(args, "--esptarget")
         opt.SkipCustomList = HasFlag(args, "--skipcustomlist")
 
+        ' El bake escribe DDS en disco. Con el componente nativo desajustado los escribe MAL y en silencio
+        ' (un wrapper de otra plataforma hace que cada textura DX10 de un BA2 se lea como 0 bytes).
+        If Not WrapperNativoOk(porConsola:=opt.Windowless) Then Return
+
         If Not opt.Windowless Then
             Application.SetHighDpiMode(HighDpiMode.DpiUnaware)
             Application.EnableVisualStyles()
@@ -255,6 +259,30 @@ Module Program
             progress:=Nothing,       ' console shows progress inline in the per-NPC lines
             isCancelled:=Function() Threading.Volatile.Read(cancelRequested) <> 0)
     End Sub
+
+    ''' <summary>Chequea el componente nativo de texturas y ABORTA el modo si no coincide. True = seguir.
+    ''' <para>⛔ SOLO LOS MODOS QUE ESCRIBEN ARCHIVOS. La GUI NO pasa por acá a proposito: con el wrapper
+    ''' roto la app sigue sirviendo para navegar el arbol y editar ESP, y el preview muestra el problema a
+    ''' la vista — abortar ahi convierte una instalacion degradada en una app muerta. Un bake, en cambio,
+    ''' deja DDS equivocados en disco sin que nadie los mire, y eso es peor que fallar.</para>
+    ''' <para>⛔ NO usa <c>CrashReport.Report</c>: su guard <c>_reported</c> es de por vida y gastarlo acá
+    ''' dejaria muda cualquier caida posterior de la sesion. Esto no es una caida, es un chequeo.</para>
+    ''' <para><paramref name="porConsola"/> False = el modo tiene ventana (<c>--bake-all</c> sin
+    ''' <c>--windowless</c>): ahi un <c>Console.Error</c> no lo ve nadie, y al reves un MessageBox modal en
+    ''' una corrida automatizada la cuelga hasta que alguien lo cierre.</para></summary>
+    Private Function WrapperNativoOk(porConsola As Boolean) As Boolean
+        Dim fallo = DirectXTexWrapperGate.Verificar()
+        If fallo = "" Then Return True
+        If porConsola Then
+            EnsureConsole()
+            Console.Error.WriteLine(fallo)
+        Else
+            MessageBox.Show(fallo, "NPC Manager — componente nativo incompatible",
+                            MessageBoxButtons.OK, MessageBoxIcon.Error)
+        End If
+        Environment.ExitCode = 1
+        Return False
+    End Function
 
     ''' <summary>True if <paramref name="name"/> appears in <paramref name="args"/> (case-insensitive).</summary>
     Private Function HasFlag(args As String(), name As String) As Boolean
@@ -459,6 +487,10 @@ Module Program
         ' which needs a live OpenGL context we don't have headless. Do NOT enable it here.
         Try
             EnsureConsole()
+
+            ' Escribe un NIF en disco a partir de datos que salen del resolver de archivos; mismo criterio
+            ' que --bake-all (ver WrapperNativoOk).
+            If Not WrapperNativoOk(porConsola:=True) Then Return
 
             ' --- 0. Parse args: positional <espName> <edidOrFormId> after --bake-geom, plus --data / --out.
             Dim espName As String = ""

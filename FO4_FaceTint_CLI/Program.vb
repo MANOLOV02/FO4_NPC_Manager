@@ -194,6 +194,16 @@ Module Program
         ' CANONICOS y pisaria el bake del CK, que es la referencia contra la que compara.
         Logger.AllowInReleaseBuilds = True
         Try
+            ' ⛔ El componente nativo de texturas se chequea ANTES de trabajar. Este CLI no tiene a nadie
+            ' mirando: con un DirectXTexWrapper.dll de otra plataforma cada textura DX10 de un BA2 se lee
+            ' como 0 bytes —esta medido, ver el comentario del .vbproj— y el barrido termina en verde
+            ' habiendo escrito basura. Ver DirectXTexWrapperGate.
+            Dim fallaWrapper = DirectXTexWrapperGate.Verificar()
+            If fallaWrapper <> "" Then
+                Console.Error.WriteLine(fallaWrapper)
+                Environment.ExitCode = 1
+                Return
+            End If
             Run(args)
         Catch ex As Exception
             Console.Error.WriteLine("FATAL: " & ex.ToString())

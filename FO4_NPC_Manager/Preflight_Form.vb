@@ -89,6 +89,7 @@ Public Class Preflight_Form
         ComboBoxGame.SelectedIndex = CInt(Config_App.Current.Game)
         AutoDetectGameFromExe(Config_App.Current.FO4ExePath)
         TextBoxExePath.Text = Config_App.Current.FO4ExePath
+        RefreshPathRows()
         RefreshPluginList()
     End Sub
 
@@ -99,8 +100,104 @@ Public Class Preflight_Form
         TextBoxExePath.Text = chosen
         ' Sync the game combo to the exe the user just picked (a Skyrim exe flips the selector to SSE).
         AutoDetectGameFromExe(chosen)
+        ' El exe es de donde sale la variante (plana / VR) y por lo tanto los candidatos de carpeta, así que
+        ' las dos filas de abajo se recalculan. Un override que el usuario haya fijado NO se toca: lo fijó
+        ' porque el automático no le servía, y borrárselo al re-elegir el exe sería pisarle la config.
+        RefreshPathRows()
         RefreshPluginList()
     End Sub
+
+    ' ==============================================================================================
+    ' Plugins.txt / carpeta de INIs — automático con opción de fijarlo a mano, persistido POR JUEGO
+    ' ==============================================================================================
+
+    ''' <summary>Vuelca en las dos filas lo que resolvió <see cref="GamePathsResolver"/> y deja dicho de
+    ''' dónde salió cada valor. Es barato: la resolución está memoizada por (exe, juego, overrides), así que
+    ''' llamar a esto en cada cambio de la UI no vuelve a tocar el disco.</summary>
+    Private Sub RefreshPathRows()
+        Dim r = GamePathsResolver.Resolve()
+
+        FillPathRow(TextBoxPluginsTxt, ButtonAutoPluginsTxt, r.PluginsTxtPath, r.PluginsTxtOrigin)
+        FillPathRow(TextBoxIniDir, ButtonAutoIniDir, r.IniDir, r.IniDirOrigin)
+
+        LabelPathsStatus.Text = r.StatusLine
+        LabelPathsStatus.ForeColor = If(r.Problem <> "", Color.Firebrick, SystemColors.GrayText)
+    End Sub
+
+    ''' <summary>Una fila. El COLOR es el que dice si el valor es del usuario o derivado: gris = lo dedujo la
+    ''' app, negro = lo fijaste vos. "Auto" sólo se habilita cuando hay algo que devolver a automático, así
+    ''' que un usuario sin override no puede tocar un botón que no haría nada.</summary>
+    Private Shared Sub FillPathRow(box As TextBox, autoButton As Button, value As String,
+                                   origin As GamePathsResolver.PathOrigin)
+        Select Case origin
+            Case GamePathsResolver.PathOrigin.UserOverride
+                box.Text = value
+                box.ForeColor = SystemColors.WindowText
+                autoButton.Enabled = True
+            Case GamePathsResolver.PathOrigin.AutoTable
+                box.Text = value
+                box.ForeColor = SystemColors.GrayText
+                autoButton.Enabled = False
+            Case Else
+                box.Text = ""
+                box.PlaceholderText = "Not found — click Browse..."
+                box.ForeColor = SystemColors.GrayText
+                autoButton.Enabled = False
+        End Select
+    End Sub
+
+    Private Sub ButtonBrowsePluginsTxt_Click(sender As Object, e As EventArgs) Handles ButtonBrowsePluginsTxt.Click
+        Using dlg As New OpenFileDialog()
+            dlg.Title = "Select the game's Plugins.txt"
+            dlg.Filter = "Plugins.txt|Plugins.txt|Text files (*.txt)|*.txt|All files (*.*)|*.*"
+            dlg.CheckFileExists = True
+            dlg.CheckPathExists = True
+            dlg.Multiselect = False
+            Dim start = InitialDirFor(TextBoxPluginsTxt.Text)
+            If start <> "" Then dlg.InitialDirectory = start
+            If dlg.ShowDialog() <> DialogResult.OK Then Return
+            Config_App.Current.SetActivePluginsTxtOverride(dlg.FileName)
+        End Using
+        RefreshPathRows()
+        ' El load order acaba de cambiar ⇒ la clasificación activo/inactivo de la lista ya no vale.
+        RefreshPluginList()
+    End Sub
+
+    Private Sub ButtonAutoPluginsTxt_Click(sender As Object, e As EventArgs) Handles ButtonAutoPluginsTxt.Click
+        Config_App.Current.SetActivePluginsTxtOverride("")
+        RefreshPathRows()
+        RefreshPluginList()
+    End Sub
+
+    Private Sub ButtonBrowseIniDir_Click(sender As Object, e As EventArgs) Handles ButtonBrowseIniDir.Click
+        Using dlg As New FolderBrowserDialog()
+            dlg.Description = $"Select the folder holding {GamePathsResolver.IniBaseName(Config_App.Current.Game)}.ini"
+            dlg.UseDescriptionForTitle = True
+            Dim start = If(TextBoxIniDir.Text <> "" AndAlso Directory.Exists(TextBoxIniDir.Text), TextBoxIniDir.Text, "")
+            If start <> "" Then dlg.SelectedPath = start
+            If dlg.ShowDialog() <> DialogResult.OK Then Return
+            Config_App.Current.SetActiveGameIniDirOverride(dlg.SelectedPath)
+        End Using
+        RefreshPathRows()
+    End Sub
+
+    Private Sub ButtonAutoIniDir_Click(sender As Object, e As EventArgs) Handles ButtonAutoIniDir.Click
+        Config_App.Current.SetActiveGameIniDirOverride("")
+        RefreshPathRows()
+    End Sub
+
+    ''' <summary>Carpeta desde la que abrir el diálogo, o "" si no hay ninguna usable. El valor de la caja
+    ''' puede ser una ruta que NO existe (el automático la compone igual para poder mostrarla), así que se
+    ''' comprueba antes de pasársela al diálogo.</summary>
+    Private Shared Function InitialDirFor(currentPath As String) As String
+        If String.IsNullOrEmpty(currentPath) Then Return ""
+        Try
+            Dim dir = IO.Path.GetDirectoryName(currentPath)
+            If Not String.IsNullOrEmpty(dir) AndAlso Directory.Exists(dir) Then Return dir
+        Catch
+        End Try
+        Return ""
+    End Function
 
     ''' <summary>Game selector changed: persist the choice into Config_App.Current.Game. The plugin list
     ''' depends on the Data folder (derived from the exe path), not the game, so it is NOT re-enumerated
@@ -109,6 +206,9 @@ Public Class Preflight_Form
     Private Sub ComboBoxGame_SelectedIndexChanged(sender As Object, e As EventArgs) Handles ComboBoxGame.SelectedIndexChanged
         If ComboBoxGame.SelectedIndex < 0 Then Return
         Config_App.Current.Game = CType(ComboBoxGame.SelectedIndex, Config_App.Game_Enum)
+        ' Plugins.txt y los .ini SÍ dependen del juego, y los overrides son por juego: cambiar de juego
+        ' cambia de slot, así que las dos filas se repintan con lo que corresponda al juego nuevo.
+        RefreshPathRows()
     End Sub
 
     ''' <summary>Set the game combo from an exe filename: contains "fallout4" → FO4, "skyrim"/"sse" →
@@ -498,6 +598,22 @@ Public Class Preflight_Form
         If Not Config_App.Check_FOFolder() Then
             MessageBox.Show("Pick a valid game .exe before continuing.", "Setup",
                             MessageBoxButtons.OK, MessageBoxIcon.Warning)
+            Return
+        End If
+
+        ' ⛔ Sin Plugins.txt no se sigue. Este es el modo de falla que motivó todo el rediseño de rutas y es
+        ' MUDO: ReadActiveLoadOrder devuelve los masters implícitos y nada más, o sea una lista válida que
+        ' describe un juego sin un solo mod. Además arrastra el mount de archives (FilesDictionary usa el
+        ' mismo load order para la prioridad de BA2/BSA), así que cada mod se vería como vanilla. Cargar así
+        ' produce un resultado convincente y equivocado; cortar acá y pedir la ruta es lo honesto.
+        Dim loadOrderProblem = PluginManager.LoadOrderSourceProblem()
+        If loadOrderProblem <> "" Then
+            MessageBox.Show(
+                loadOrderProblem & vbCrLf & vbCrLf &
+                "Without it the app cannot tell which plugins the game loads, nor which mod wins a file " &
+                "conflict — every modded mesh and texture would silently fall back to vanilla." & vbCrLf & vbCrLf &
+                "Set ""Plugins.txt"" above (Browse...) and try again. The choice is remembered for this game.",
+                "Load order not found", MessageBoxButtons.OK, MessageBoxIcon.Warning)
             Return
         End If
 

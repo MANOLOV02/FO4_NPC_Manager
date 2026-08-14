@@ -1,4 +1,4 @@
-<Project Sdk="Microsoft.NET.Sdk">
+﻿<Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <OutputType>Exe</OutputType>
     <TargetFramework>net8.0-windows</TargetFramework>
@@ -26,18 +26,16 @@
     <ProjectReference Include="..\FO4_NPC_Manager\NPC_Manager_FO4.vbproj" />
   </ItemGroup>
 
-  <!-- The native DirectXTexWrapper is a C++ .vcxproj referenced transitively by the libraries.
-       When THIS exe is built directly via `MSBuild FO4_FaceTint_CLI.vbproj` (no .sln config map),
-       MSBuild builds the vcxproj at its default C++ platform = Win32 (x86) and copies that x86 DLL
-       into our x64 output. The BA2 DX10 texture extractor (Loader.EncodeDDSHeader) then throws
-       BadImageFormatException in this x64 process and every DX10 texture read returns 0 bytes.
-       Overwrite the output with the matching x64 build so face/base textures decode. -->
-  <Target Name="CopyX64DirectXTexWrapper" AfterTargets="Build;Publish" Condition="'$(PlatformTarget)'=='x64'">
-    <Copy SourceFiles="..\..\..\DirectXTextWrapper\build\x64\$(Configuration)\DirectXTexWrapper.dll"
-          DestinationFolder="$(OutDir)"
-          OverwriteReadOnlyFiles="true"
-          SkipUnchangedFiles="false"
-          Condition="Exists('..\..\..\DirectXTextWrapper\build\x64\$(Configuration)\DirectXTexWrapper.dll')" />
-  </Target>
+  <!-- ⛔ ACA VIVIA `CopyX64DirectXTexWrapper`, que parcheaba la salida copiando el wrapper x64 ENCIMA del
+       x86 que MSBuild acababa de dejar. Describia bien el problema (el .vcxproj se construye Win32 por
+       default y en un proceso x64 cada textura DX10 devuelve 0 bytes) pero lo tapaba, y con TRES agujeros:
+       el `Condition="Exists(...)"` hacia que, si el x64 no estaba compilado, NO copiara y NO avisara; el
+       destino era `$(OutDir)` y no `$(PublishDir)`, asi que en un `publish` no aterrizaba; y solo cubria
+       la direccion x64, nunca la x86. Ahora la plataforma se FIJA en el ProjectReference, abajo.
+       MEDIDO antes de este cambio: `msbuild NPC_Manager_FO4.vbproj -restore -t:Publish` publicaba el exe
+       x64 con el DirectXTexWrapper.dll x86 al lado, en verde. -->
 
+  <!-- Fija la plataforma del wrapper NATIVO. Va en LOS SEIS proyectos, no solo en los dos que lo
+       referencian de verdad: el SDK inyecta el ProjectReference transitivo sin la metadata. Ver el .targets. -->
+  <Import Project="..\..\..\DirectXTextWrapper\DirectXTexWrapper.targets" />
 </Project>
