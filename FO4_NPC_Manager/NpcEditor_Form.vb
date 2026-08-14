@@ -43,7 +43,7 @@ Public Class NpcEditor_Form
     ' preserve bits NOT surfaced as a checkbox when re-composing the flags word.
     Private ReadOnly _flagChecks As New List(Of (Chk As CheckBox, Mask As UInteger))
     Private _managedFlagMask As UInteger
-
+    Private _loadedFlagsWord As UInteger
     ''' <summary>True when editing a Skyrim NPC — gates the Stats tab (DNAM Player Skills) and the SSE-only
     ''' ACBS offsets, both of which have no slot in the Fallout 4 record.</summary>
     Private ReadOnly _isSkyrim As Boolean = (Config_App.Current IsNot Nothing AndAlso
@@ -320,58 +320,78 @@ Public Class NpcEditor_Form
     Private Sub LoadNpcIntoPanels(fallbackRaceFormID As UInteger)
         _loading = True
         Try
+            Dim lvlnPick As Func(Of UInteger, UInteger) = AddressOf _mainForm.ResolveLvlnPick_Friend
+            Dim baseNpc = NpcTemplateMaterializer.ResolveEffectiveSourceForEditor(_npc, NPC_TemplateCategory.BaseData, _getParsedNpc, lvlnPick)
+            Dim traitsNpc = NpcTemplateMaterializer.ResolveEffectiveSourceForEditor(_npc, NPC_TemplateCategory.Traits, _getParsedNpc, lvlnPick)
+            Dim statsNpc = NpcTemplateMaterializer.ResolveEffectiveSourceForEditor(_npc, NPC_TemplateCategory.Stats, _getParsedNpc, lvlnPick)
+            Dim keywordsNpc = NpcTemplateMaterializer.ResolveEffectiveSourceForEditor(_npc, NPC_TemplateCategory.Keywords, _getParsedNpc, lvlnPick)
+            Dim factionsNpc = NpcTemplateMaterializer.ResolveEffectiveSourceForEditor(_npc, NPC_TemplateCategory.Factions, _getParsedNpc, lvlnPick)
+            Dim inventoryNpc = NpcTemplateMaterializer.ResolveEffectiveSourceForEditor(_npc, NPC_TemplateCategory.Inventory, _getParsedNpc, lvlnPick)
+            Dim spellsNpc = NpcTemplateMaterializer.ResolveEffectiveSourceForEditor(_npc, NPC_TemplateCategory.SpellList, _getParsedNpc, lvlnPick)
             ' General.
-            TextBoxFull.Text = If(_npc.FullName, "")
-            TextBoxShort.Text = If(_npc.ShortName, "")
-            Dim raceFid = If(_npc.RaceFormID <> 0UI, _npc.RaceFormID, fallbackRaceFormID)
+            TextBoxFull.Text = If(baseNpc.FullName, "")
+            TextBoxShort.Text = If(baseNpc.ShortName, "")
+            Dim raceFid = If(traitsNpc.RaceFormID <> 0UI, traitsNpc.RaceFormID, fallbackRaceFormID)
             SetFidText(TextBoxRace, raceFid)
-            SetFidText(TextBoxVoice, _npc.VoiceFormID)
-            SetFidText(TextBoxClass, _npc.ClassFormID)
-            SetFidText(TextBoxZnam, _npc.CombatStyleFormID)
+            SetFidText(TextBoxVoice, traitsNpc.VoiceFormID)
+            SetFidText(TextBoxClass, traitsNpc.ClassFormID)
+            SetFidText(TextBoxZnam, traitsNpc.CombatStyleFormID)
 
-            Dim acbs = _npc.Acbs
-            Dim flagsWord As UInteger = If(acbs IsNot Nothing, acbs.Flags, _npc.AcbsFlags)
+            Dim traitsFlags As UInteger = If(traitsNpc.Acbs IsNot Nothing, traitsNpc.Acbs.Flags, traitsNpc.AcbsFlags)
+            Dim statsFlags As UInteger = If(statsNpc.Acbs IsNot Nothing, statsNpc.Acbs.Flags, statsNpc.AcbsFlags)
+            Dim baseFlags As UInteger = If(baseNpc.Acbs IsNot Nothing, baseNpc.Acbs.Flags, baseNpc.AcbsFlags)
+            Dim ownFlags As UInteger = If(_npc.Acbs IsNot Nothing, _npc.Acbs.Flags, _npc.AcbsFlags)
+            Dim governedMask As UInteger = NpcTemplateHelpers.ClassifiedAcbsFlagsMask
+            Dim flagsWord As UInteger = (ownFlags And Not governedMask) Or
+                                        (traitsFlags And NpcTemplateHelpers.TraitsAcbsFlagsMask) Or
+                                        (baseFlags And NpcTemplateHelpers.BaseDataAcbsFlagsMask) Or
+                                        (statsFlags And NpcTemplateHelpers.StatsAcbsFlagsMask)
+            _loadedFlagsWord = flagsWord
             SetFlagChecks(flagsWord)   ' fires ChkPCLevelMult.CheckedChanged, guarded by _loading (no-op here)
             ' Level union — mode from the PC Level Mult flag (0x80), value from the raw u16.
+            Dim acbs = statsNpc.Acbs
             ConfigureLevelControl((flagsWord And &H80UI) <> 0UI, If(acbs IsNot Nothing, acbs.LevelOrLevelMult, 0US))
             NumXp.Value = ClampDec(CDec(If(acbs IsNot Nothing, acbs.XpValueOffset, 0S)), NumXp)
             NumCalcMin.Value = ClampDec(CDec(If(acbs IsNot Nothing, acbs.CalcMinLevel, 0US)), NumCalcMin)
             NumCalcMax.Value = ClampDec(CDec(If(acbs IsNot Nothing, acbs.CalcMaxLevel, 0US)), NumCalcMax)
-            NumDisp.Value = ClampDec(CDec(If(acbs IsNot Nothing, acbs.DispositionBase, 0S)), NumDisp)
+            Dim traitsAcbs = traitsNpc.Acbs
+            NumDisp.Value = ClampDec(CDec(If(traitsAcbs IsNot Nothing, traitsAcbs.DispositionBase, 0S)), NumDisp)
             ' SSE-only ACBS offsets (hidden on FO4, whose 20-byte struct has no slot for them).
-            NumMagickaOff.Value = ClampDec(CDec(If(acbs IsNot Nothing, acbs.MagickaOffset, 0S)), NumMagickaOff)
-            NumStaminaOff.Value = ClampDec(CDec(If(acbs IsNot Nothing, acbs.StaminaOffset, 0S)), NumStaminaOff)
-            NumHealthOff.Value = ClampDec(CDec(If(acbs IsNot Nothing, acbs.HealthOffset, 0S)), NumHealthOff)
-            NumSpeedMult.Value = ClampDec(CDec(If(acbs IsNot Nothing, acbs.SpeedMultiplier, 0US)), NumSpeedMult)
+            Dim statsAcbs = statsNpc.Acbs
+            NumMagickaOff.Value = ClampDec(CDec(If(statsAcbs IsNot Nothing, statsAcbs.MagickaOffset, 0S)), NumMagickaOff)
+            NumStaminaOff.Value = ClampDec(CDec(If(statsAcbs IsNot Nothing, statsAcbs.StaminaOffset, 0S)), NumStaminaOff)
+            NumHealthOff.Value = ClampDec(CDec(If(statsAcbs IsNot Nothing, statsAcbs.HealthOffset, 0S)), NumHealthOff)
+            NumSpeedMult.Value = ClampDec(CDec(If(statsAcbs IsNot Nothing, statsAcbs.SpeedMultiplier, 0US)), NumSpeedMult)
 
             ' Stats — DNAM Player Skills (SSE). The tab is removed on FO4, so this is a no-op there.
-            LoadPlayerSkills()
+            LoadPlayerSkills(statsNpc)
 
             ' Object Template — deep-copy the wrapper list into the working buffer (never alias the parse).
             _combos.Clear()
-            _combos.AddRange(CloneCombos(_npc.ObjectTemplateCombinations))
+            _combos.AddRange(CloneCombos(traitsNpc.ObjectTemplateCombinations))
             RefreshCombosGrid()
 
             ' Keywords.
             _keywords.Clear()
-            _keywords.AddRange(_npc.KeywordFormIDs)
+            _keywords.AddRange(keywordsNpc.KeywordFormIDs)
             RefreshKeywordsList()
 
             ' Attach Parent Slots (APPR).
             _appr.Clear()
-            _appr.AddRange(_npc.AttachParentSlotFormIDs)
+            _appr.AddRange(traitsNpc.AttachParentSlotFormIDs)
             RefreshApprList()
 
             ' Factions (deep-copy).
             _factions.Clear()
-            For Each f In _npc.Factions
-                _factions.Add(New NPC_FactionEntry With {.FactionFormID = f.FactionFormID, .Rank = f.Rank})
+            For Each f In factionsNpc.Factions
+                _factions.Add(New NPC_FactionEntry With {.FactionFormID = f.FactionFormID, .Rank = f.Rank,
+                    .SseUnused = If(f.SseUnused Is Nothing, Nothing, CType(f.SseUnused.Clone(), Byte()))})
             Next
             RefreshFactionsGrid()
 
             ' Inventory (deep-copy — carries the COED block).
             _inventory.Clear()
-            For Each it In _npc.Inventory
+            For Each it In inventoryNpc.Inventory
                 _inventory.Add(CloneInventoryItem(it))
             Next
             RefreshInventoryGrid()
@@ -389,13 +409,13 @@ Public Class NpcEditor_Form
             ' Perks (deep-copy).
             _perks.Clear()
             For Each p In _npc.Perks
-                _perks.Add(New NPC_PerkEntry With {.PerkFormID = p.PerkFormID, .Rank = p.Rank})
+                _perks.Add(ClonePerk(p))
             Next
             RefreshPerksGrid()
 
             ' Actor Effects (SPLO).
             _actorEffects.Clear()
-            _actorEffects.AddRange(_npc.ActorEffectFormIDs)
+            _actorEffects.AddRange(spellsNpc.ActorEffectFormIDs)
             RefreshSpellList()
 
             ' Properties (PRPS) (deep-copy).
@@ -466,9 +486,9 @@ Public Class NpcEditor_Form
     ''' touch — including the two verbatim wbUnused runs and any trailing bytes — is carried through unchanged
     ''' and the record re-emits byte-identical. A Skyrim NPC whose DNAM was too short to model (no struct) gets a
     ''' zeroed baseline; nothing is written back unless the user actually edits a value.</summary>
-    Private Sub LoadPlayerSkills()
+    Private Sub LoadPlayerSkills(sourceNpc As NPC_Data)
         If Not _isSkyrim Then Return
-        Dim ps = If(_npc.SsePlayerSkills, New NPC_SsePlayerSkills())
+        Dim ps = If(sourceNpc.SsePlayerSkills, New NPC_SsePlayerSkills())
         _snapSkills = MainForm.ClonePlayerSkills(ps)
 
         For i = 0 To NPC_SsePlayerSkills.SkillCount - 1
@@ -555,11 +575,11 @@ Public Class NpcEditor_Form
         ' _snapSkills / _snapFarModelDec are taken in LoadPlayerSkills (it clones the struct before seeding).
         _snapKeywords = New List(Of UInteger)(_keywords)
         _snapAppr = New List(Of UInteger)(_appr)
-        _snapFactions = _factions.Select(Function(f) New NPC_FactionEntry With {.FactionFormID = f.FactionFormID, .Rank = f.Rank}).ToList()
+        _snapFactions = CloneFactions(_factions)
         _snapInventory = _inventory.Select(AddressOf CloneInventoryItem).ToList()
         _snapDefaultOutfit = GetFid(TextBoxDefaultOutfit)
         _snapSleepOutfit = GetFid(TextBoxSleepOutfit)
-        _snapPerks = _perks.Select(Function(p) New NPC_PerkEntry With {.PerkFormID = p.PerkFormID, .Rank = p.Rank}).ToList()
+        _snapPerks = ClonePerks(_perks)
         _snapActorEffects = New List(Of UInteger)(_actorEffects)
         _snapProperties = _properties.Select(Function(p) New NPC_PropertyEntry With {.ActorValueFormID = p.ActorValueFormID, .Value = p.Value}).ToList()
         _snapCombosSig = CombosSignature(_combos)
@@ -568,8 +588,7 @@ Public Class NpcEditor_Form
     ''' <summary>The flags word as it stands in the checkboxes right after load — the snapshot baseline. Read
     ''' from the raw NPC word (not <see cref="ComposeFlags"/>, which itself depends on _snapFlags).</summary>
     Private Function ReadCurrentFlagsForSnapshot() As UInteger
-        Dim word As UInteger = If(_npc.Acbs IsNot Nothing, _npc.Acbs.Flags, _npc.AcbsFlags)
-        Return word
+        Return _loadedFlagsWord
     End Function
 
     ' =====================================================================
@@ -1009,22 +1028,36 @@ Public Class NpcEditor_Form
     Private Sub OnOk(sender As Object, e As EventArgs)
         ' Detect which template categories were edited (drives the materialize → clear-flag → apply order).
         Dim newFlags = ComposeFlags()
-        Dim baseDataChanged = (newFlags <> _snapFlags) OrElse
+        Dim changedFlagBits = newFlags Xor _snapFlags
+        Dim flagsChanged = changedFlagBits <> 0UI
+        Dim unsupportedChangedFlagBits = changedFlagBits And
+                                         (_managedFlagMask And Not NpcTemplateHelpers.ClassifiedAcbsFlagsMask)
+        If unsupportedChangedFlagBits <> 0UI AndAlso _npc.TemplateFlags <> 0US Then
+            Dim flagNames = String.Join(", ", _flagChecks.
+                                        Where(Function(fc) (unsupportedChangedFlagBits And fc.Mask) <> 0UI).
+                                        Select(Function(fc) fc.Chk.Text))
+            MessageBox.Show(Me,
+                            $"Cannot safely change {flagNames} (0x{unsupportedChangedFlagBits:X8}) while this NPC inherits template categories." &
+                            Environment.NewLine & "Revert those checkboxes to continue. Their engine template category has not been measured, so saving them could silently discard the edit.",
+                            "Unsupported templated flag edit", MessageBoxButtons.OK, MessageBoxIcon.Warning)
+            Return
+        End If
+        Dim baseDataChanged = (changedFlagBits And NpcTemplateHelpers.BaseDataAcbsFlagsMask) <> 0UI OrElse
                               Not String.Equals(TextBoxFull.Text.Trim(), _snapFull, StringComparison.Ordinal) OrElse
-                              Not String.Equals(TextBoxShort.Text.Trim(), _snapShort, StringComparison.Ordinal) OrElse
-                              CurrentLevelRaw() <> _snapLevel OrElse CShort(NumXp.Value) <> _snapXp OrElse
-                              CUShort(NumCalcMin.Value) <> _snapCalcMin OrElse
-                              CUShort(NumCalcMax.Value) <> _snapCalcMax OrElse CShort(NumDisp.Value) <> _snapDisp
+                              Not String.Equals(TextBoxShort.Text.Trim(), _snapShort, StringComparison.Ordinal)
         Dim combosChanged = Not String.Equals(CombosSignature(_combos), _snapCombosSig, StringComparison.Ordinal)
-        Dim traitsChanged = (GetFid(TextBoxRace) <> _snapRace) OrElse (GetFid(TextBoxVoice) <> _snapVoice) OrElse combosChanged
-        ' Skills (DNAM) and the SSE-only ACBS offsets are the "Use Stats" category the engine copies from the
-        ' template (CK groups Class/Combat Style/skills/health-magicka-stamina under it), so they ride the same
-        ' statsChanged hook that already materializes → clears the Use-Stats bit. Both are False on FO4.
-        Dim skillsChanged = PlayerSkillsChanged()
-        Dim statsChanged = (GetFid(TextBoxClass) <> _snapClass) OrElse (GetFid(TextBoxZnam) <> _snapZnam) OrElse
-                           skillsChanged OrElse SseAcbsOffsetsChanged()
-        Dim keywordsChanged = Not SequenceEqualU(_keywords, _snapKeywords)
         Dim apprChanged = Not SequenceEqualU(_appr, _snapAppr)
+        Dim traitsChanged = (changedFlagBits And NpcTemplateHelpers.TraitsAcbsFlagsMask) <> 0UI OrElse
+                            (GetFid(TextBoxRace) <> _snapRace) OrElse (GetFid(TextBoxVoice) <> _snapVoice) OrElse
+                            (GetFid(TextBoxClass) <> _snapClass) OrElse (GetFid(TextBoxZnam) <> _snapZnam) OrElse
+                            CShort(NumDisp.Value) <> _snapDisp OrElse combosChanged OrElse apprChanged
+        ' DNAM, level and the SSE-only ACBS offsets ride Use-Stats. Class and Combat Style are Traits per
+        ' xEdit's historical actor-template field callbacks; do not move them here without runtime evidence.
+        Dim skillsChanged = PlayerSkillsChanged()
+        Dim statsChanged = (changedFlagBits And NpcTemplateHelpers.StatsAcbsFlagsMask) <> 0UI OrElse CurrentLevelRaw() <> _snapLevel OrElse
+                           CShort(NumXp.Value) <> _snapXp OrElse CUShort(NumCalcMin.Value) <> _snapCalcMin OrElse
+                           CUShort(NumCalcMax.Value) <> _snapCalcMax OrElse skillsChanged OrElse SseAcbsOffsetsChanged()
+        Dim keywordsChanged = Not SequenceEqualU(_keywords, _snapKeywords)
         Dim factionsChanged = Not FactionsEqual(_factions, _snapFactions)
         Dim inventoryChanged = Not InventoryEqual(_inventory, _snapInventory)
         Dim perksChanged = Not PerksEqual(_perks, _snapPerks)
@@ -1033,13 +1066,31 @@ Public Class NpcEditor_Form
         Dim defaultOutfitChanged = GetFid(TextBoxDefaultOutfit) <> _snapDefaultOutfit
         Dim sleepOutfitChanged = GetFid(TextBoxSleepOutfit) <> _snapSleepOutfit
 
-        ' Persistence: record the edit as a MERGED NpcRecordOverride. MainForm's ApplyNpcRecordOverride delegate
-        ' applies it at Save time AFTER CopyRoundTripOnlyFieldsFromRaw, so the edit wins over the fresh re-parse.
-        RegisterRecordOverride(newFlags, baseDataChanged, traitsChanged, statsChanged,
-                               keywordsChanged, apprChanged, factionsChanged, inventoryChanged, combosChanged,
-                               perksChanged, actorEffectsChanged, propertiesChanged)
+        Dim lvlnPick As Func(Of UInteger, UInteger) = AddressOf _mainForm.ResolveLvlnPick_Friend
+        Dim categoriesToOwn As New List(Of NPC_TemplateCategory)
+        If traitsChanged Then categoriesToOwn.Add(NPC_TemplateCategory.Traits)
+        If baseDataChanged Then categoriesToOwn.Add(NPC_TemplateCategory.BaseData)
+        If statsChanged Then categoriesToOwn.Add(NPC_TemplateCategory.Stats)
+        If keywordsChanged Then categoriesToOwn.Add(NPC_TemplateCategory.Keywords)
+        If factionsChanged Then categoriesToOwn.Add(NPC_TemplateCategory.Factions)
+        If inventoryChanged Then categoriesToOwn.Add(NPC_TemplateCategory.Inventory)
+        If actorEffectsChanged Then categoriesToOwn.Add(NPC_TemplateCategory.SpellList)
 
-        ' Also mutate the LIVE in-memory NPC_Data (render cache) so the preview reflects the edit immediately.
+        ' Validate every changed bucket before mutating any of them or registering an override. A broken chain
+        ' must fail closed; otherwise Use-X remains active and the engine silently overwrites the edit.
+        For Each category In categoriesToOwn
+            Dim probe = NpcTemplateMaterializer.ProbeCategoryOwn(_npc, category, _getParsedNpc, lvlnPick)
+            If probe.Outcome = NpcTemplateMaterializer.MaterializeOutcome.Unresolvable OrElse
+               probe.Outcome = NpcTemplateMaterializer.MaterializeOutcome.UnsupportedCategory Then
+                MessageBox.Show(Me,
+                                $"Cannot make {NpcManagerFormat.GetTemplateCategoryLabel(category)} editable because its template chain could not be resolved." &
+                                Environment.NewLine & $"Nothing was changed. Details: {probe.LogReason}",
+                                "Template chain cannot be materialized", MessageBoxButtons.OK, MessageBoxIcon.Warning)
+                Return
+            End If
+        Next
+
+        ' Mutate the LIVE in-memory NPC_Data (render cache) so the preview reflects the edit immediately.
         ' Materialize → clear Use-X flag for each edited category BEFORE applying (engine CopyFromTemplate rule).
         ' Traits uses the SAME skip-overlay-owned rule as the save apply so the preview matches the written record
         ' (overlay-owned appearance fields come from the LM overlay at render, not the template).
@@ -1052,14 +1103,21 @@ Public Class NpcEditor_Form
                                                     skipOverlayOwned:=_mainForm.NpcHasOverlay(_npcFormID),
                                                     resolveLvlnPick:=AddressOf _mainForm.ResolveLvlnPick_Friend)
         End If
-        If baseDataChanged Then NpcTemplateMaterializer.MakeCategoryOwn(_npc, NPC_TemplateCategory.BaseData, _getParsedNpc)
-        If statsChanged Then NpcTemplateMaterializer.MakeCategoryOwn(_npc, NPC_TemplateCategory.Stats, _getParsedNpc)
-        If keywordsChanged Then NpcTemplateMaterializer.MakeCategoryOwn(_npc, NPC_TemplateCategory.Keywords, _getParsedNpc)
-        If factionsChanged Then NpcTemplateMaterializer.MakeCategoryOwn(_npc, NPC_TemplateCategory.Factions, _getParsedNpc)
-        If inventoryChanged Then NpcTemplateMaterializer.MakeCategoryOwn(_npc, NPC_TemplateCategory.Inventory, _getParsedNpc)
-        If actorEffectsChanged Then NpcTemplateMaterializer.MakeCategoryOwn(_npc, NPC_TemplateCategory.SpellList, _getParsedNpc)
+        If baseDataChanged Then NpcTemplateMaterializer.MakeCategoryOwn(_npc, NPC_TemplateCategory.BaseData, _getParsedNpc, resolveLvlnPick:=lvlnPick)
+        If statsChanged Then NpcTemplateMaterializer.MakeCategoryOwn(_npc, NPC_TemplateCategory.Stats, _getParsedNpc, resolveLvlnPick:=lvlnPick)
+        If keywordsChanged Then NpcTemplateMaterializer.MakeCategoryOwn(_npc, NPC_TemplateCategory.Keywords, _getParsedNpc, resolveLvlnPick:=lvlnPick)
+        If factionsChanged Then NpcTemplateMaterializer.MakeCategoryOwn(_npc, NPC_TemplateCategory.Factions, _getParsedNpc, resolveLvlnPick:=lvlnPick)
+        If inventoryChanged Then NpcTemplateMaterializer.MakeCategoryOwn(_npc, NPC_TemplateCategory.Inventory, _getParsedNpc, resolveLvlnPick:=lvlnPick)
+        If actorEffectsChanged Then NpcTemplateMaterializer.MakeCategoryOwn(_npc, NPC_TemplateCategory.SpellList, _getParsedNpc, resolveLvlnPick:=lvlnPick)
 
-        ApplyToNpc(newFlags)
+        ' Persist only after every preflight passed and each required bucket was made own.
+        RegisterRecordOverride(newFlags, flagsChanged, baseDataChanged, traitsChanged, statsChanged,
+                               keywordsChanged, apprChanged, factionsChanged, inventoryChanged, combosChanged,
+                               perksChanged, actorEffectsChanged, propertiesChanged)
+
+        ApplyToNpc(newFlags, changedFlagBits, baseDataChanged, traitsChanged, statsChanged, skillsChanged,
+                   keywordsChanged, factionsChanged, inventoryChanged, perksChanged,
+                   actorEffectsChanged, propertiesChanged)
 
         ' Outfits (DOFT/SOFT) are committed to the LooksMenu overlay — the SAME path the Edit Outfit picker uses —
         ' so the preview, the outfit combo (rebuilt by the caller's re-render) and Save all resolve them once.
@@ -1075,7 +1133,7 @@ Public Class NpcEditor_Form
             _mainForm.SetNpcSleepOutfitOverrideFromEditor(_npcFormID, If(v = _rawSleepOutfit, CType(Nothing, UInteger?), v))
         End If
 
-        _hasChanges = baseDataChanged OrElse traitsChanged OrElse statsChanged OrElse
+        _hasChanges = flagsChanged OrElse baseDataChanged OrElse traitsChanged OrElse statsChanged OrElse
                       keywordsChanged OrElse apprChanged OrElse factionsChanged OrElse inventoryChanged OrElse
                       perksChanged OrElse actorEffectsChanged OrElse propertiesChanged OrElse
                       defaultOutfitChanged OrElse sleepOutfitChanged
@@ -1088,11 +1146,11 @@ Public Class NpcEditor_Form
     ''' only the fields that actually changed vs the open-time snapshot. Merging into any existing override lets
     ''' successive edit sessions accumulate; <see cref="NpcRecordOverride.TraitsChanged"/> latches once set so a
     ''' later session (whose snapshot already reflects the earlier edit) doesn't drop the template-flag hook.</summary>
-    Private Sub RegisterRecordOverride(newFlags As UInteger, baseDataChanged As Boolean, traitsChanged As Boolean,
+    Private Sub RegisterRecordOverride(newFlags As UInteger, flagsChanged As Boolean, baseDataChanged As Boolean, traitsChanged As Boolean,
                                        statsChanged As Boolean, keywordsChanged As Boolean, apprChanged As Boolean,
                                        factionsChanged As Boolean, inventoryChanged As Boolean, combosChanged As Boolean,
                                        perksChanged As Boolean, actorEffectsChanged As Boolean, propertiesChanged As Boolean)
-        If Not (baseDataChanged OrElse traitsChanged OrElse statsChanged OrElse keywordsChanged OrElse
+        If Not (flagsChanged OrElse baseDataChanged OrElse traitsChanged OrElse statsChanged OrElse keywordsChanged OrElse
                 apprChanged OrElse factionsChanged OrElse inventoryChanged OrElse perksChanged OrElse
                 actorEffectsChanged OrElse propertiesChanged) Then Return
         Dim ov = _mainForm.TryGetNpcRecordOverride(_npcFormID)
@@ -1120,91 +1178,119 @@ Public Class NpcEditor_Form
         If GetFid(TextBoxZnam) <> _snapZnam Then ov.CombatStyleFormID = GetFid(TextBoxZnam)
         If keywordsChanged Then ov.Keywords = New List(Of UInteger)(_keywords)
         If apprChanged Then ov.AttachParentSlots = New List(Of UInteger)(_appr)
-        If factionsChanged Then ov.Factions = _factions.Select(Function(f) New NPC_FactionEntry With {.FactionFormID = f.FactionFormID, .Rank = f.Rank}).ToList()
+        If factionsChanged Then ov.Factions = _factions.Select(Function(f) New NPC_FactionEntry With {
+            .FactionFormID = f.FactionFormID, .Rank = f.Rank,
+            .SseUnused = If(f.SseUnused Is Nothing, Nothing, CType(f.SseUnused.Clone(), Byte()))}).ToList()
         If inventoryChanged Then ov.Inventory = _inventory.Select(AddressOf CloneInventoryItem).ToList()
-        If perksChanged Then ov.Perks = _perks.Select(Function(p) New NPC_PerkEntry With {.PerkFormID = p.PerkFormID, .Rank = p.Rank}).ToList()
+        If perksChanged Then ov.Perks = ClonePerks(_perks)
         If actorEffectsChanged Then ov.ActorEffects = New List(Of UInteger)(_actorEffects)
         If propertiesChanged Then ov.Properties = _properties.Select(Function(p) New NPC_PropertyEntry With {.ActorValueFormID = p.ActorValueFormID, .Value = p.Value}).ToList()
         If combosChanged Then ov.ObjectTemplateCombinations = CloneCombos(_combos)
         ov.TraitsChanged = ov.TraitsChanged OrElse traitsChanged
+        ov.BaseDataChanged = ov.BaseDataChanged OrElse baseDataChanged
+        ov.StatsChanged = ov.StatsChanged OrElse statsChanged
 
         _mainForm.SetNpcRecordOverride(_npcFormID, ov)
     End Sub
 
     ''' <summary>Write the panel state into <see cref="_npc"/> (in place — the caller's live cache instance).</summary>
-    Private Sub ApplyToNpc(newFlags As UInteger)
+    Private Sub ApplyToNpc(newFlags As UInteger, changedFlagBits As UInteger,
+                           baseDataChanged As Boolean, traitsChanged As Boolean, statsChanged As Boolean, skillsChanged As Boolean,
+                           keywordsChanged As Boolean, factionsChanged As Boolean, inventoryChanged As Boolean,
+                           perksChanged As Boolean, actorEffectsChanged As Boolean, propertiesChanged As Boolean)
         ' General identity.
-        Dim full = TextBoxFull.Text.Trim()
-        _npc.FullName = full
-        _npc.HasFull = _npc.HasFull OrElse full.Length > 0
-        Dim shortN = TextBoxShort.Text.Trim()
-        _npc.ShortName = shortN
-        _npc.HasShortName = _npc.HasShortName OrElse shortN.Length > 0
+        If baseDataChanged Then
+            Dim full = TextBoxFull.Text.Trim()
+            _npc.FullName = full
+            _npc.HasFull = _npc.HasFull OrElse full.Length > 0
+            Dim shortN = TextBoxShort.Text.Trim()
+            _npc.ShortName = shortN
+            _npc.HasShortName = _npc.HasShortName OrElse shortN.Length > 0
+        End If
 
-        Dim raceFid = GetFid(TextBoxRace)
-        _npc.RaceFormID = raceFid
-        _npc.HasRace = raceFid <> 0UI
-        Dim voiceFid = GetFid(TextBoxVoice)
-        _npc.VoiceFormID = voiceFid
-        _npc.HasVoice = voiceFid <> 0UI
-        Dim classFid = GetFid(TextBoxClass)
-        _npc.ClassFormID = classFid
-        _npc.HasClass = classFid <> 0UI
-        Dim znamFid = GetFid(TextBoxZnam)
-        _npc.CombatStyleFormID = znamFid
-        _npc.HasCombatStyle = znamFid <> 0UI
+        If traitsChanged Then
+            Dim raceFid = GetFid(TextBoxRace)
+            _npc.RaceFormID = raceFid
+            _npc.HasRace = raceFid <> 0UI
+            Dim voiceFid = GetFid(TextBoxVoice)
+            _npc.VoiceFormID = voiceFid
+            _npc.HasVoice = voiceFid <> 0UI
+            Dim classFid = GetFid(TextBoxClass)
+            _npc.ClassFormID = classFid
+            _npc.HasClass = classFid <> 0UI
+            Dim znamFid = GetFid(TextBoxZnam)
+            _npc.CombatStyleFormID = znamFid
+            _npc.HasCombatStyle = znamFid <> 0UI
+        End If
 
         ' ACBS struct (create if missing — required subrecord).
-        If _npc.Acbs Is Nothing Then _npc.Acbs = New NPC_AcbsData()
-        _npc.Acbs.Flags = newFlags
-        _npc.AcbsFlags = newFlags
-        _npc.IsFemale = (newFlags And &H1UI) <> 0UI
-        _npc.Acbs.LevelOrLevelMult = CurrentLevelRaw()
-        _npc.Acbs.XpValueOffset = CShort(NumXp.Value)
-        _npc.Acbs.CalcMinLevel = CUShort(NumCalcMin.Value)
-        _npc.Acbs.CalcMaxLevel = CUShort(NumCalcMax.Value)
-        _npc.Acbs.DispositionBase = CShort(NumDisp.Value)
+        If _npc.Acbs Is Nothing AndAlso (traitsChanged OrElse statsChanged OrElse changedFlagBits <> 0UI) Then
+            _npc.Acbs = New NPC_AcbsData()
+        End If
+        If traitsChanged Then _npc.Acbs.DispositionBase = CShort(NumDisp.Value)
+        If changedFlagBits <> 0UI Then
+            Dim mergedFlags = (_npc.Acbs.Flags And Not changedFlagBits) Or (newFlags And changedFlagBits)
+            _npc.Acbs.Flags = mergedFlags
+            _npc.AcbsFlags = mergedFlags
+            _npc.IsFemale = (mergedFlags And &H1UI) <> 0UI
+        End If
+        If statsChanged Then
+            _npc.Acbs.LevelOrLevelMult = CurrentLevelRaw()
+            _npc.Acbs.XpValueOffset = CShort(NumXp.Value)
+            _npc.Acbs.CalcMinLevel = CUShort(NumCalcMin.Value)
+            _npc.Acbs.CalcMaxLevel = CUShort(NumCalcMax.Value)
         ' SSE-only ACBS offsets. Written only under Skyrim: on FO4 the spinners are hidden (never seeded from the
         ' record, so they read 0) and writing them would zero fields the FO4 writer ignores but a later game
         ' switch would not — keep the parse untouched instead.
-        If _isSkyrim Then
-            _npc.Acbs.MagickaOffset = CShort(NumMagickaOff.Value)
-            _npc.Acbs.StaminaOffset = CShort(NumStaminaOff.Value)
-            _npc.Acbs.HealthOffset = CShort(NumHealthOff.Value)
-            _npc.Acbs.SpeedMultiplier = CUShort(NumSpeedMult.Value)
+            If _isSkyrim Then
+                _npc.Acbs.MagickaOffset = CShort(NumMagickaOff.Value)
+                _npc.Acbs.StaminaOffset = CShort(NumStaminaOff.Value)
+                _npc.Acbs.HealthOffset = CShort(NumHealthOff.Value)
+                _npc.Acbs.SpeedMultiplier = CUShort(NumSpeedMult.Value)
             ' DNAM Player Skills — only on a real edit, so an NPC whose DNAM was too short to model keeps its
             ' verbatim raw block instead of being silently replaced by a well-formed zeroed one.
-            If PlayerSkillsChanged() Then _npc.SsePlayerSkills = ComposePlayerSkills()
+                If skillsChanged Then _npc.SsePlayerSkills = ComposePlayerSkills()
+            End If
         End If
 
         ' Keywords.
-        _npc.KeywordFormIDs = New List(Of UInteger)(_keywords)
-        _npc.HasKsizCounter = _npc.HasKsizCounter OrElse _keywords.Count > 0
+        If keywordsChanged Then
+            _npc.KeywordFormIDs = New List(Of UInteger)(_keywords)
+            _npc.HasKsizCounter = _npc.HasKsizCounter OrElse _keywords.Count > 0
+        End If
 
         ' Attach Parent Slots (APPR).
-        _npc.AttachParentSlotFormIDs = New List(Of UInteger)(_appr)
+        If traitsChanged Then _npc.AttachParentSlotFormIDs = New List(Of UInteger)(_appr)
 
         ' Factions (deep-copy out).
-        _npc.Factions = _factions.Select(Function(f) New NPC_FactionEntry With {.FactionFormID = f.FactionFormID, .Rank = f.Rank}).ToList()
+        If factionsChanged Then _npc.Factions = CloneFactions(_factions)
 
         ' Inventory (deep-copy out — carries COED).
-        _npc.Inventory = _inventory.Select(AddressOf CloneInventoryItem).ToList()
-        _npc.HasCoctCounter = _npc.HasCoctCounter OrElse _inventory.Count > 0
+        If inventoryChanged Then
+            _npc.Inventory = _inventory.Select(AddressOf CloneInventoryItem).ToList()
+            _npc.HasCoctCounter = _npc.HasCoctCounter OrElse _inventory.Count > 0
+        End If
 
         ' Perks (deep-copy out).
-        _npc.Perks = _perks.Select(Function(p) New NPC_PerkEntry With {.PerkFormID = p.PerkFormID, .Rank = p.Rank}).ToList()
-        _npc.HasPrkzCounter = _npc.HasPrkzCounter OrElse _perks.Count > 0
+        If perksChanged Then
+            _npc.Perks = ClonePerks(_perks)
+            _npc.HasPrkzCounter = _npc.HasPrkzCounter OrElse _perks.Count > 0
+        End If
 
         ' Actor Effects (SPLO).
-        _npc.ActorEffectFormIDs = New List(Of UInteger)(_actorEffects)
-        _npc.HasSpctCounter = _npc.HasSpctCounter OrElse _actorEffects.Count > 0
+        If actorEffectsChanged Then
+            _npc.ActorEffectFormIDs = New List(Of UInteger)(_actorEffects)
+            _npc.HasSpctCounter = _npc.HasSpctCounter OrElse _actorEffects.Count > 0
+        End If
 
         ' Properties (PRPS) (deep-copy out).
-        _npc.Properties = _properties.Select(Function(p) New NPC_PropertyEntry With {.ActorValueFormID = p.ActorValueFormID, .Value = p.Value}).ToList()
+        If propertiesChanged Then _npc.Properties = _properties.Select(Function(p) New NPC_PropertyEntry With {.ActorValueFormID = p.ActorValueFormID, .Value = p.Value}).ToList()
 
         ' Object Template (deep-copy out).
-        _npc.ObjectTemplateCombinations = CloneCombos(_combos)
-        _npc.HasObjectTemplate = _npc.HasObjectTemplate OrElse _combos.Count > 0
+        If traitsChanged Then
+            _npc.ObjectTemplateCombinations = CloneCombos(_combos)
+            _npc.HasObjectTemplate = _npc.HasObjectTemplate OrElse _combos.Count > 0
+        End If
     End Sub
 
     ' =====================================================================
@@ -1253,6 +1339,21 @@ Public Class NpcEditor_Form
             .ItemFormID = it.ItemFormID, .Count = it.Count, .HasCoed = it.HasCoed,
             .CoedOwnerFormID = it.CoedOwnerFormID, .CoedOwnerExtra = it.CoedOwnerExtra,
             .CoedExtraIsFormID = it.CoedExtraIsFormID, .CoedItemCondition = it.CoedItemCondition}
+    End Function
+
+    Private Shared Function CloneFactions(src As IEnumerable(Of NPC_FactionEntry)) As List(Of NPC_FactionEntry)
+        Return src.Select(Function(f) New NPC_FactionEntry With {
+            .FactionFormID = f.FactionFormID, .Rank = f.Rank,
+            .SseUnused = If(f.SseUnused Is Nothing, Nothing, CType(f.SseUnused.Clone(), Byte()))}).ToList()
+    End Function
+
+    Private Shared Function ClonePerk(p As NPC_PerkEntry) As NPC_PerkEntry
+        Return New NPC_PerkEntry With {.PerkFormID = p.PerkFormID, .Rank = p.Rank,
+            .SseUnused = If(p.SseUnused Is Nothing, Nothing, CType(p.SseUnused.Clone(), Byte()))}
+    End Function
+
+    Private Shared Function ClonePerks(src As IEnumerable(Of NPC_PerkEntry)) As List(Of NPC_PerkEntry)
+        Return src.Select(AddressOf ClonePerk).ToList()
     End Function
 
     Private Shared Function CloneCombo(w As NPC_ObjectTemplateCombination) As NPC_ObjectTemplateCombination

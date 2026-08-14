@@ -70,6 +70,8 @@ Public Class NpcRecordOverride
     ''' template-flag hook (MakeCategoryOwn / clear Use-Traits) at apply time so the edit isn't overwritten by
     ''' the engine's CopyFromTemplate. Latched (OR-ed) across successive edits.</summary>
     Public Property TraitsChanged As Boolean = False
+    Public Property BaseDataChanged As Boolean = False
+    Public Property StatsChanged As Boolean = False
 
     ''' <summary>True when this override carries at least one edited field — used to decide whether to store it.</summary>
     Public ReadOnly Property IsEmpty As Boolean
@@ -83,7 +85,8 @@ Public Class NpcRecordOverride
                    Not CombatStyleFormID.HasValue AndAlso Not HeightMin.HasValue AndAlso Not HeightMax.HasValue AndAlso
                    Keywords Is Nothing AndAlso AttachParentSlots Is Nothing AndAlso
                    Factions Is Nothing AndAlso Inventory Is Nothing AndAlso Perks Is Nothing AndAlso
-                   ActorEffects Is Nothing AndAlso Properties Is Nothing AndAlso ObjectTemplateCombinations Is Nothing
+                   ActorEffects Is Nothing AndAlso Properties Is Nothing AndAlso ObjectTemplateCombinations Is Nothing AndAlso
+                   Not TraitsChanged AndAlso Not BaseDataChanged AndAlso Not StatsChanged
         End Get
     End Property
 

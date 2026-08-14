@@ -16,6 +16,14 @@ Friend NotInheritable Class NpcTemplateHelpers
     Private Sub New()
     End Sub
 
+    ' Conservative ACBS flag/category mappings documented by xEdit's FNV actor-template field callbacks
+    ' (wbDefinitionsFNV.pas:6959-6966). The matching fields keep the same meaning in FO4/SSE, but this is not
+    ' a claim that every other surfaced ACBS bit is non-inherited: those bits remain unclassified until measured.
+    Friend Const TraitsAcbsFlagsMask As UInteger = &H1UI
+    Friend Const BaseDataAcbsFlagsMask As UInteger = &HAUI
+    Friend Const StatsAcbsFlagsMask As UInteger = &H90UI
+    Friend Const ClassifiedAcbsFlagsMask As UInteger = TraitsAcbsFlagsMask Or BaseDataAcbsFlagsMask Or StatsAcbsFlagsMask
+
     Public Shared Function HasTemplateFlag(flags As UShort, category As NPC_TemplateCategory) As Boolean
         Dim mask = CUShort(1 << CInt(category))
         Return (flags And mask) <> 0US
@@ -33,9 +41,9 @@ Friend NotInheritable Class NpcTemplateHelpers
     ''' <summary>The DISTINCT leaf NPC_ FormIDs an LVLN can yield, recursing into nested LVLNs. Weights,
     ''' Count and ChanceNone are deliberately ignored: the only question here is "how many DIFFERENT actors
     ''' could come out of this list", which is what decides whether collapsing it is deterministic.
-    ''' <para>Feeds <see cref="NpcTemplateMaterializer.MakeCategoryOwn"/>, which materializes a one-leaf LVLN
-    ''' and REFUSES a multi-leaf one — see that method for why a random pick must never be frozen into a
-    ''' saved record. Returns an empty list for a missing record or a non-LVLN signature, which the caller
+    ''' <para>Feeds <see cref="NpcTemplateMaterializer.MakeCategoryOwn"/>. The caller pins the leaf currently
+    ''' selected for preview, including a multi-leaf LVLN, when making a generic actor concrete. Returns an
+    ''' empty list for a missing record or a non-LVLN signature, which the caller
     ''' treats as "unresolvable" (the conservative branch).</para></summary>
     Public Shared Function CollectLvlnLeafNpcFormIDs(lvlnFormID As UInteger, pluginManager As PluginManager) As List(Of UInteger)
         Dim leaves As New List(Of UInteger)

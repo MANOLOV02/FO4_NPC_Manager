@@ -16,9 +16,8 @@
 ''' al renderizar, hornear o guardar. FTST, QNAM y APPR fueron exactamente ese agujero (medido: 52 NPCs de SSE
 ''' perdian un valor real, 0 en FO4 - latente, no ausente). Al agregar un campo a TraitsState, agregarlo aca en el
 ''' MISMO commit.</para>
-''' <para>Los campos que la app no modela (Voice VTCK, Disposition, Alignment, Weapon List) NO se materializan:
-''' quedan marcados en <see cref="UnmodeledTraitsFields"/> y se preservan verbatim del NPC. Las demas categorias
-''' por ahora solo bajan el bit; la regla del motor es la misma por categoria, asi que el framework generaliza.</para></summary>
+''' <para>Alignment y Weapon List siguen fuera del modelo. Las categorias soportadas se materializan completas;
+''' una categoria no soportada falla cerrada y conserva su flag de herencia.</para></summary>
 Friend NotInheritable Class NpcTemplateMaterializer
 
     Private Sub New()
@@ -26,13 +25,11 @@ Friend NotInheritable Class NpcTemplateMaterializer
 
     ''' <summary>Traits sub-fields the app does not model yet, so they are not materialized here. Kept as a
     ''' visible TODO surface (and for a caller that wants to warn the user).</summary>
-    Friend Shared ReadOnly UnmodeledTraitsFields As String() =
-        {"Voice (VTCK)", "Disposition (ACBS)", "Alignment", "Weapon List"}
+    Friend Shared ReadOnly UnmodeledTraitsFields As String() = {"Alignment", "Weapon List"}
 
     ''' <summary>Guard against a cyclic template chain (a resolves to b resolves to a). The engine's walk
     ''' has a cycle check; ours bounds the depth.</summary>
     Private Const MaxChainDepth As Integer = 32
-
     ''' <summary>Make <paramref name="npc"/> own <paramref name="category"/>: materialize the resolved
     ''' template-chain values for that category into the NPC's own fields, then clear the Use-X flag bit.
     ''' No-op (returns False) when the NPC does not inherit the category (flag already clear) — its own
@@ -63,29 +60,35 @@ Friend NotInheritable Class NpcTemplateMaterializer
                                            getParsedNpc As Func(Of UInteger, NPC_Data),
                                            Optional skipOverlayOwned As Boolean = False,
                                            Optional resolveLvlnPick As Func(Of UInteger, UInteger) = Nothing) As MaterializeOutcome
-        If npc Is Nothing Then Return MaterializeOutcome.NotInheriting
-        If Not NpcTemplateHelpers.HasTemplateFlag(npc.TemplateFlags, category) Then Return MaterializeOutcome.NotInheriting
-
-        ' Only the appearance set (Traits) is field-materialized today; other categories clear-only.
-        ' ⚠️ Traits-ONLY on purpose: the clear-only categories never materialize anything even when the chain
-        ' DOES resolve, so changing their path here would alter a case that is already "clear-only by design"
-        ' (see the class summary — their materialization is a follow-up).
-        If category <> NPC_TemplateCategory.Traits Then
-            ClearFlagBit(npc, category)
-            Return MaterializeOutcome.Materialized
-        End If
-
-        Dim resolution = ResolveTraitsSource(npc, getParsedNpc, resolveLvlnPick)
+        Dim resolution = ProbeCategoryOwn(npc, category, getParsedNpc, resolveLvlnPick)
 
         Select Case resolution.Outcome
             Case MaterializeOutcome.Materialized, MaterializeOutcome.MaterializedFromLeveledPick
-                MaterializeTraits(npc, resolution.Source, skipOverlayOwned)
+                Select Case category
+                    Case NPC_TemplateCategory.Traits
+                        MaterializeTraits(npc, resolution.Source, skipOverlayOwned)
+                    Case NPC_TemplateCategory.BaseData
+                        MaterializeBaseData(npc, resolution.Source)
+                    Case NPC_TemplateCategory.Stats
+                        MaterializeStats(npc, resolution.Source)
+                    Case NPC_TemplateCategory.Keywords
+                        npc.KeywordFormIDs = New List(Of UInteger)(resolution.Source.KeywordFormIDs)
+                        npc.HasKsizCounter = resolution.Source.HasKsizCounter
+                    Case NPC_TemplateCategory.Factions
+                        npc.Factions = CloneFactions(resolution.Source.Factions)
+                    Case NPC_TemplateCategory.Inventory
+                        npc.Inventory = CloneInventory(resolution.Source.Inventory)
+                        npc.HasCoctCounter = resolution.Source.HasCoctCounter
+                    Case NPC_TemplateCategory.SpellList
+                        npc.ActorEffectFormIDs = New List(Of UInteger)(resolution.Source.ActorEffectFormIDs)
+                        npc.HasSpctCounter = resolution.Source.HasSpctCounter
+                End Select
                 ClearFlagBit(npc, category)
                 If resolution.Outcome = MaterializeOutcome.MaterializedFromLeveledPick Then
                     ' Worth a line in the log: the actor's look is now PINNED to one leaf of a list the game
                     ' used to re-roll, so "why does this NPC always look like X now" has a traceable answer.
                     Logger.LogLazy(Function() $"[TPLT-MATERIALIZE] NPC 0x{resolution.LogFormID:X8} '{resolution.LogEditorId}': " &
-                                              $"Use-Traits came from a leveled list — pinned to leaf {resolution.LogReason}. " &
+                                              $"Use-{category} came from a leveled list — pinned to leaf {resolution.LogReason}. " &
                                               "The actor no longer re-rolls its template at spawn.")
                 End If
 
@@ -104,11 +107,32 @@ Friend NotInheritable Class NpcTemplateMaterializer
                 ' collapse looks like. Keeping the bit preserves current in-game behaviour exactly.
                 ' MEASURED occurrences of THIS branch in both vanilla load orders: 0.
                 Logger.LogLazy(Function() $"[TPLT-MATERIALIZE] NPC 0x{resolution.LogFormID:X8} '{resolution.LogEditorId}': " &
-                                          $"Use-Traits could not be resolved ({resolution.LogReason}) => flag LEFT SET, " &
-                                          "inheritance and face preserved.")
+                                          $"Use-{category} could not be resolved ({resolution.LogReason}) => flag LEFT SET; " &
+                                          "inheritance preserved.")
         End Select
 
         Return resolution.Outcome
+    End Function
+
+    ''' <summary>Resolve and validate a category without copying fields or clearing its template bit.</summary>
+    Friend Shared Function ProbeCategoryOwn(npc As NPC_Data,
+                                            category As NPC_TemplateCategory,
+                                            getParsedNpc As Func(Of UInteger, NPC_Data),
+                                            Optional resolveLvlnPick As Func(Of UInteger, UInteger) = Nothing) As TraitsResolution
+        If npc Is Nothing OrElse Not NpcTemplateHelpers.HasTemplateFlag(npc.TemplateFlags, category) Then
+            Return New TraitsResolution With {.Outcome = MaterializeOutcome.NotInheriting}
+        End If
+
+        Select Case category
+            Case NPC_TemplateCategory.Traits, NPC_TemplateCategory.BaseData, NPC_TemplateCategory.Stats,
+                 NPC_TemplateCategory.Keywords, NPC_TemplateCategory.Factions, NPC_TemplateCategory.Inventory,
+                 NPC_TemplateCategory.SpellList
+                Return ResolveCategorySource(npc, category, getParsedNpc, resolveLvlnPick)
+            Case Else
+                Return New TraitsResolution With {.Outcome = MaterializeOutcome.UnsupportedCategory,
+                                                  .LogFormID = npc.FormID, .LogEditorId = npc.EditorID,
+                                                  .LogReason = "category has no complete materializer"}
+        End Select
     End Function
 
     ''' <summary>What <see cref="MakeCategoryOwn"/> did. Not a success/failure flag — most are normal.</summary>
@@ -126,9 +150,11 @@ Friend NotInheritable Class NpcTemplateMaterializer
         ''' <summary>Nothing to copy at all (unreadable source, cycle, or a list with no NPC_ leaves). The bit
         ''' was LEFT SET — the NPC keeps inheriting and its appearance is preserved.</summary>
         Unresolvable
+        ''' <summary>The category has no complete materializer. The record and its flag are untouched.</summary>
+        UnsupportedCategory
     End Enum
 
-    Private Structure TraitsResolution
+    Friend Structure TraitsResolution
         Public Outcome As MaterializeOutcome
         Public Source As NPC_Data
         Public LogFormID As UInteger
@@ -155,16 +181,17 @@ Friend NotInheritable Class NpcTemplateMaterializer
     '''
     ''' <para>Refusal is reserved for the case where there is nothing to pick FROM (unreadable record, cycle,
     ''' list with no NPC_ leaves) — measured 0 times in either vanilla load order.</para></summary>
-    Private Shared Function ResolveTraitsSource(npc As NPC_Data,
-                                                getParsedNpc As Func(Of UInteger, NPC_Data),
-                                                resolveLvlnPick As Func(Of UInteger, UInteger)) As TraitsResolution
+    Private Shared Function ResolveCategorySource(npc As NPC_Data,
+                                                  category As NPC_TemplateCategory,
+                                                  getParsedNpc As Func(Of UInteger, NPC_Data),
+                                                  resolveLvlnPick As Func(Of UInteger, UInteger)) As TraitsResolution
         Dim res As New TraitsResolution With {.LogFormID = npc.FormID, .LogEditorId = npc.EditorID}
         Dim current = npc
         Dim seen As New HashSet(Of UInteger)
         Dim wentThroughLeveledList = False
 
         For depth = 0 To MaxChainDepth - 1
-            If Not NpcTemplateHelpers.HasTemplateFlag(current.TemplateFlags, NPC_TemplateCategory.Traits) Then
+            If Not NpcTemplateHelpers.HasTemplateFlag(current.TemplateFlags, category) Then
                 ' current owns the category → it is the source (unless it IS the original npc, which by
                 ' contract inherits, so we only get here after ≥1 hop).
                 If ReferenceEquals(current, npc) Then
@@ -178,7 +205,7 @@ Friend NotInheritable Class NpcTemplateMaterializer
                 Return res
             End If
 
-            Dim srcFid = NpcTemplateHelpers.ResolveTemplateSourceFormID(current, NPC_TemplateCategory.Traits)
+            Dim srcFid = NpcTemplateHelpers.ResolveTemplateSourceFormID(current, category)
             If srcFid = 0UI Then
                 ' Flag set with no TPLT/TPTA behind it: the engine has nothing to copy either.
                 res.Outcome = MaterializeOutcome.NoSourceToLose
@@ -226,6 +253,19 @@ Friend NotInheritable Class NpcTemplateMaterializer
         Return res
     End Function
 
+    ''' <summary>Returns the terminal effective owner used to seed an editor panel. If the chain cannot be
+    ''' resolved, returns the original NPC so the UI never fabricates data or diverges from MakeCategoryOwn.</summary>
+    Friend Shared Function ResolveEffectiveSourceForEditor(npc As NPC_Data,
+                                                            category As NPC_TemplateCategory,
+                                                            getParsedNpc As Func(Of UInteger, NPC_Data),
+                                                            Optional resolveLvlnPick As Func(Of UInteger, UInteger) = Nothing) As NPC_Data
+        If npc Is Nothing OrElse Not NpcTemplateHelpers.HasTemplateFlag(npc.TemplateFlags, category) Then Return npc
+        Dim resolution = ResolveCategorySource(npc, category, getParsedNpc, resolveLvlnPick)
+        If resolution.Outcome = MaterializeOutcome.Materialized OrElse
+           resolution.Outcome = MaterializeOutcome.MaterializedFromLeveledPick Then Return resolution.Source
+        Return npc
+    End Function
+
     ''' <summary>Copy the Traits appearance/identity set from the resolved source into <paramref name="npc"/>.
     ''' Unconditional per-field overwrite (verdict c): the source is exactly what the engine would have
     ''' copied, so the NPC ends up identical to its in-template look. The caller re-applies the user's edit
@@ -233,11 +273,24 @@ Friend NotInheritable Class NpcTemplateMaterializer
     Private Shared Sub MaterializeTraits(npc As NPC_Data, src As NPC_Data, Optional skipOverlayOwned As Boolean = False)
         ' Scalar identity FormIDs the overlay never owns — always materialize (with Has* emit-gate).
         npc.RaceFormID = src.RaceFormID
+        npc.HasRace = src.HasRace
+        npc.VoiceFormID = src.VoiceFormID
+        npc.HasVoice = src.HasVoice
         npc.DeathItemFormID = src.DeathItemFormID
         npc.HasDeathItem = src.HasDeathItem
         npc.FarAwayModelFormID = src.FarAwayModelFormID
         npc.HasFarAwayModel = src.HasFarAwayModel
         npc.IsFemale = src.IsFemale
+        EnsureAcbs(npc)
+        npc.Acbs.Flags = MergeMaskedFlags(CurrentAcbsFlags(npc), CurrentAcbsFlags(src), NpcTemplateHelpers.TraitsAcbsFlagsMask)
+        npc.AcbsFlags = npc.Acbs.Flags
+        If src.Acbs IsNot Nothing Then
+            npc.Acbs.DispositionBase = src.Acbs.DispositionBase
+        End If
+        npc.ClassFormID = src.ClassFormID
+        npc.HasClass = src.HasClass
+        npc.CombatStyleFormID = src.CombatStyleFormID
+        npc.HasCombatStyle = src.HasCombatStyle
 
         ' Height — not overlay-owned.
         npc.HeightMin = src.HeightMin
@@ -303,6 +356,46 @@ Friend NotInheritable Class NpcTemplateMaterializer
         npc.AttachParentSlotFormIDs = New List(Of UInteger)(If(src.AttachParentSlotFormIDs, New List(Of UInteger)))
     End Sub
 
+    Private Shared Sub MaterializeBaseData(npc As NPC_Data, src As NPC_Data)
+        npc.FullName = src.FullName
+        npc.HasFull = src.HasFull
+        npc.ShortName = src.ShortName
+        npc.HasShortName = src.HasShortName
+        EnsureAcbs(npc)
+        npc.Acbs.Flags = MergeMaskedFlags(CurrentAcbsFlags(npc), CurrentAcbsFlags(src), NpcTemplateHelpers.BaseDataAcbsFlagsMask)
+        npc.AcbsFlags = npc.Acbs.Flags
+    End Sub
+
+    Private Shared Sub MaterializeStats(npc As NPC_Data, src As NPC_Data)
+        npc.CalculatedStats = CloneCalculatedStats(src.CalculatedStats)
+        npc.SsePlayerSkills = ClonePlayerSkills(src.SsePlayerSkills)
+        EnsureAcbs(npc)
+        npc.Acbs.Flags = MergeMaskedFlags(CurrentAcbsFlags(npc), CurrentAcbsFlags(src), NpcTemplateHelpers.StatsAcbsFlagsMask)
+        npc.AcbsFlags = npc.Acbs.Flags
+        If src.Acbs Is Nothing Then Return
+        npc.Acbs.XpValueOffset = src.Acbs.XpValueOffset
+        npc.Acbs.LevelOrLevelMult = src.Acbs.LevelOrLevelMult
+        npc.Acbs.CalcMinLevel = src.Acbs.CalcMinLevel
+        npc.Acbs.CalcMaxLevel = src.Acbs.CalcMaxLevel
+        npc.Acbs.MagickaOffset = src.Acbs.MagickaOffset
+        npc.Acbs.StaminaOffset = src.Acbs.StaminaOffset
+        npc.Acbs.SpeedMultiplier = src.Acbs.SpeedMultiplier
+        npc.Acbs.HealthOffset = src.Acbs.HealthOffset
+    End Sub
+
+    Private Shared Sub EnsureAcbs(npc As NPC_Data)
+        If npc.Acbs Is Nothing Then npc.Acbs = New NPC_AcbsData()
+    End Sub
+
+    Private Shared Function MergeMaskedFlags(current As UInteger, source As UInteger, mask As UInteger) As UInteger
+        Return (current And Not mask) Or (source And mask)
+    End Function
+
+    Private Shared Function CurrentAcbsFlags(npc As NPC_Data) As UInteger
+        If npc Is Nothing Then Return 0UI
+        Return If(npc.Acbs IsNot Nothing, npc.Acbs.Flags, npc.AcbsFlags)
+    End Function
+
     ''' <summary>Drop <paramref name="category"/>'s bit from both TemplateFlags mirrors (NPC_Data + ACBS
     ''' struct) so the writer emits the cleared value and the engine skips the category's template copy.</summary>
     Private Shared Sub ClearFlagBit(npc As NPC_Data, category As NPC_TemplateCategory)
@@ -312,6 +405,39 @@ Friend NotInheritable Class NpcTemplateMaterializer
     End Sub
 
     ' ---- deep-copy helpers (avoid aliasing the source NPC's parsed sub-objects) ----
+
+    Private Shared Function CloneFactions(src As List(Of NPC_FactionEntry)) As List(Of NPC_FactionEntry)
+        Dim dst As New List(Of NPC_FactionEntry)
+        If src Is Nothing Then Return dst
+        For Each f In src
+            dst.Add(New NPC_FactionEntry With {.FactionFormID = f.FactionFormID, .Rank = f.Rank,
+                    .SseUnused = If(f.SseUnused Is Nothing, Nothing, CType(f.SseUnused.Clone(), Byte()))})
+        Next
+        Return dst
+    End Function
+
+    Private Shared Function CloneInventory(src As List(Of NPC_InventoryItem)) As List(Of NPC_InventoryItem)
+        Dim dst As New List(Of NPC_InventoryItem)
+        If src Is Nothing Then Return dst
+        For Each i In src
+            dst.Add(New NPC_InventoryItem With {.ItemFormID = i.ItemFormID, .Count = i.Count, .HasCoed = i.HasCoed,
+                    .CoedOwnerFormID = i.CoedOwnerFormID, .CoedOwnerExtra = i.CoedOwnerExtra,
+                    .CoedExtraIsFormID = i.CoedExtraIsFormID, .CoedItemCondition = i.CoedItemCondition})
+        Next
+        Return dst
+    End Function
+
+    Private Shared Function CloneCalculatedStats(src As NPC_CalculatedStats) As NPC_CalculatedStats
+        If src Is Nothing Then Return Nothing
+        Return New NPC_CalculatedStats With {.CalculatedHealth = src.CalculatedHealth,
+                .CalculatedActionPoints = src.CalculatedActionPoints, .FarAwayModelDistance = src.FarAwayModelDistance,
+                .GearedUpWeapons = src.GearedUpWeapons, .Unused7 = src.Unused7}
+    End Function
+
+    Private Shared Function ClonePlayerSkills(src As NPC_SsePlayerSkills) As NPC_SsePlayerSkills
+        If src Is Nothing Then Return Nothing
+        Return MainForm.ClonePlayerSkills(src)
+    End Function
 
     Private Shared Function CloneTintLayers(src As List(Of NPC_FaceTintLayerData)) As List(Of NPC_FaceTintLayerData)
         Dim dst As New List(Of NPC_FaceTintLayerData)

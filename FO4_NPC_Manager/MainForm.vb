@@ -9028,9 +9028,9 @@ Public Class MainForm
     ''' <para>⭐ WYSIWYG: the leaf currently ON SCREEN wins. The preview already rolled this LVLN
     ''' (ResolveNPCBaseState → ResolveTraitsStateFromNPC, recorded in state.TraitsSourceFormID); rolling AGAIN
     ''' here would pin the actor to a DIFFERENT leaf than the one the user was looking at when they hit Edit —
-    ''' they would edit face A and get face B. Only when there is no live pick to honour (the rendered NPC is
-    ''' someone else, or the previewed leaf doesn't belong to this list) do we roll, using the SAME weighted
-    ''' walk the render uses so the distribution matches the engine's.</para></summary>
+    ''' they would edit face A and get face B. When there is no live pick to honour, the first stable leaf is
+    ''' used. This delegate can be called independently for several template categories and again at save time;
+    ''' a fresh random roll on each call would combine unrelated leaves in one NPC.</para></summary>
     Friend Function ResolveLvlnPick_Friend(lvlnFormID As UInteger) As UInteger
         If lvlnFormID = 0UI Then Return 0UI
 
@@ -9043,8 +9043,7 @@ Public Class MainForm
             Return shown.TraitsSourceFormID
         End If
 
-        Dim picked = _stateResolver.PickWeightedRandomFromLVLN(lvlnFormID, New HashSet(Of UInteger)())
-        Return If(picked <> 0UI, picked, leaves(0))
+        Return leaves(0)
     End Function
 
     ''' <summary>Per-layer clone — delegates to the canonical helper.</summary>
@@ -9286,11 +9285,9 @@ Public Class MainForm
     ''' template-inheriting category the Use-X flag is cleared FIRST (so the engine's CopyFromTemplate does not
     ''' overwrite the edit), then the override values are written. Only fields the user changed are applied; the
     ''' rest round-trip verbatim from the source record. No-op when the NPC has no authored override.</summary>
-    ''' <remarks>Traits caveat: for a Traits-INHERITING NPC that ALSO carries a LooksMenu overlay (face/skin),
-    ''' we only CLEAR the Use-Traits flag (not full <see cref="NpcTemplateMaterializer.MakeCategoryOwn"/>
-    ''' materialization) so the overlay's already-applied face/skin/morphs are preserved; the edited
-    ''' Race/Voice/OBTS are written below. For a Traits-inheriting NPC with NO overlay we run the full
-    ''' materializer (materialize template traits → clear flag) so the record is self-consistent.</remarks>
+    ''' <remarks>Traits caveat: with a LooksMenu overlay, the materializer copies only non-overlay-owned Traits
+    ''' before clearing Use-Traits; face/skin/morph values already applied to the shadow remain authoritative.
+    ''' Without an overlay it materializes the complete modeled Traits bucket.</remarks>
     Private Sub ApplyNpcRecordOverrideToSpec(npcSpec As NPC_Data, npcFormID As UInteger)
         Dim ov As NpcRecordOverride = Nothing
         If Not _npcRecordOverrides.TryGetValue(npcFormID, ov) OrElse ov Is Nothing Then Return
@@ -9300,13 +9297,15 @@ Public Class MainForm
         If npcSpec.Acbs IsNot Nothing Then npcSpec.Acbs = CloneAcbsStruct(npcSpec.Acbs)
 
         ' --- Template-flag hook (materialize → clear Use-X) for each edited category the NPC still inherits. ---
-        ' Non-Traits categories: MakeCategoryOwn is clear-only (safe — no overlay collision).
-        If ov.Keywords IsNot Nothing Then NpcTemplateMaterializer.MakeCategoryOwn(npcSpec, NPC_TemplateCategory.Keywords, resolver)
-        If ov.Factions IsNot Nothing Then NpcTemplateMaterializer.MakeCategoryOwn(npcSpec, NPC_TemplateCategory.Factions, resolver)
-        If ov.Inventory IsNot Nothing Then NpcTemplateMaterializer.MakeCategoryOwn(npcSpec, NPC_TemplateCategory.Inventory, resolver)
+        ' Every supported category is fully materialized before its Use-X bit is cleared.
+        If ov.BaseDataChanged Then MakeCategoryOwnForSave(npcSpec, NPC_TemplateCategory.BaseData, resolver)
+        If ov.StatsChanged Then MakeCategoryOwnForSave(npcSpec, NPC_TemplateCategory.Stats, resolver)
+        If ov.Keywords IsNot Nothing Then MakeCategoryOwnForSave(npcSpec, NPC_TemplateCategory.Keywords, resolver)
+        If ov.Factions IsNot Nothing Then MakeCategoryOwnForSave(npcSpec, NPC_TemplateCategory.Factions, resolver)
+        If ov.Inventory IsNot Nothing Then MakeCategoryOwnForSave(npcSpec, NPC_TemplateCategory.Inventory, resolver)
         ' Actor Effects (SPLO) belong to the SpellList category; Perks (PRKR) and Properties (PRPS) have no
         ' template category (engine copies them under other buckets), so they are just replaced below.
-        If ov.ActorEffects IsNot Nothing Then NpcTemplateMaterializer.MakeCategoryOwn(npcSpec, NPC_TemplateCategory.SpellList, resolver)
+        If ov.ActorEffects IsNot Nothing Then MakeCategoryOwnForSave(npcSpec, NPC_TemplateCategory.SpellList, resolver)
         ' Traits (Race/Voice/OBTS): materialize the template Traits set + clear Use-Traits. When a LooksMenu
         ' overlay is applied for this NPC, skip the overlay-OWNED appearance fields (skin/hair/headparts/morphs/
         ' tints/weight) so the overlay's already-applied values win — the template still fills the non-overlaid,
@@ -9315,10 +9314,8 @@ Public Class MainForm
         If ov.TraitsChanged AndAlso NpcTemplateHelpers.HasTemplateFlag(npcSpec.TemplateFlags, NPC_TemplateCategory.Traits) Then
             Dim hasOverlay = _appliedPresets.ContainsKey(npcFormID)
             ' resolveLvlnPick: sin esto la cadena que termina en un LVLN era irresoluble y el bit se bajaba
-            ' igual, dejando al NPC sin cara. Ver NpcTemplateMaterializer.ResolveTraitsSource.
-            NpcTemplateMaterializer.MakeCategoryOwn(npcSpec, NPC_TemplateCategory.Traits, resolver,
-                                                    skipOverlayOwned:=hasOverlay,
-                                                    resolveLvlnPick:=AddressOf ResolveLvlnPick_Friend)
+            ' igual, dejando al NPC sin cara. Ver NpcTemplateMaterializer.ResolveCategorySource.
+            MakeCategoryOwnForSave(npcSpec, NPC_TemplateCategory.Traits, resolver, skipOverlayOwned:=hasOverlay)
         End If
 
         ' --- Scalars. ---
@@ -9406,7 +9403,9 @@ Public Class MainForm
             npcSpec.AttachParentSlotFormIDs = New List(Of UInteger)(ov.AttachParentSlots)
         End If
         If ov.Factions IsNot Nothing Then
-            npcSpec.Factions = ov.Factions.Select(Function(f) New NPC_FactionEntry With {.FactionFormID = f.FactionFormID, .Rank = f.Rank}).ToList()
+            npcSpec.Factions = ov.Factions.Select(Function(f) New NPC_FactionEntry With {
+                .FactionFormID = f.FactionFormID, .Rank = f.Rank,
+                .SseUnused = If(f.SseUnused Is Nothing, Nothing, CType(f.SseUnused.Clone(), Byte()))}).ToList()
         End If
         If ov.Inventory IsNot Nothing Then
             npcSpec.Inventory = ov.Inventory.Select(Function(it) New NPC_InventoryItem With {
@@ -9416,7 +9415,9 @@ Public Class MainForm
             npcSpec.HasCoctCounter = npcSpec.HasCoctCounter OrElse ov.Inventory.Count > 0
         End If
         If ov.Perks IsNot Nothing Then
-            npcSpec.Perks = ov.Perks.Select(Function(p) New NPC_PerkEntry With {.PerkFormID = p.PerkFormID, .Rank = p.Rank}).ToList()
+            npcSpec.Perks = ov.Perks.Select(Function(p) New NPC_PerkEntry With {
+                .PerkFormID = p.PerkFormID, .Rank = p.Rank,
+                .SseUnused = If(p.SseUnused Is Nothing, Nothing, CType(p.SseUnused.Clone(), Byte()))}).ToList()
             npcSpec.HasPrkzCounter = npcSpec.HasPrkzCounter OrElse ov.Perks.Count > 0
         End If
         If ov.ActorEffects IsNot Nothing Then
@@ -9429,6 +9430,20 @@ Public Class MainForm
         If ov.ObjectTemplateCombinations IsNot Nothing Then
             npcSpec.ObjectTemplateCombinations = CloneNpcObjectTemplateCombinations(ov.ObjectTemplateCombinations)
             npcSpec.HasObjectTemplate = npcSpec.HasObjectTemplate OrElse ov.ObjectTemplateCombinations.Count > 0
+        End If
+    End Sub
+
+    Private Sub MakeCategoryOwnForSave(npcSpec As NPC_Data,
+                                       category As NPC_TemplateCategory,
+                                       resolver As Func(Of UInteger, NPC_Data),
+                                       Optional skipOverlayOwned As Boolean = False)
+        Dim outcome = NpcTemplateMaterializer.MakeCategoryOwn(npcSpec, category, resolver,
+                                                               skipOverlayOwned:=skipOverlayOwned,
+                                                               resolveLvlnPick:=AddressOf ResolveLvlnPick_Friend)
+        If outcome = NpcTemplateMaterializer.MaterializeOutcome.Unresolvable OrElse
+           outcome = NpcTemplateMaterializer.MaterializeOutcome.UnsupportedCategory Then
+            Throw New InvalidOperationException(
+                $"NPC 0x{npcSpec.FormID:X8}: cannot materialize {NpcManagerFormat.GetTemplateCategoryLabel(category)}; save aborted so the template cannot overwrite the edit.")
         End If
     End Sub
 
