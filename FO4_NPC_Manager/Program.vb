@@ -488,10 +488,6 @@ Module Program
         Try
             EnsureConsole()
 
-            ' Escribe un NIF en disco a partir de datos que salen del resolver de archivos; mismo criterio
-            ' que --bake-all (ver WrapperNativoOk).
-            If Not WrapperNativoOk(porConsola:=True) Then Return
-
             ' --- 0. Parse args: positional <espName> <edidOrFormId> after --bake-geom, plus --data / --out.
             Dim espName As String = ""
             Dim edidOrId As String = ""

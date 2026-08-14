@@ -841,6 +841,22 @@ Public Module FaceGenBuilder
             Return result
         End If
 
+        ' ⛔⛔ GATE DEL WRAPPER NATIVO, EN EL CHOKEPOINT DEL BAKE. Por acá pasan TODAS las escrituras de
+        ' DDS de la app (GUI 1 NPC, GUI multiselección, Save ESP, --bake-all con y sin ventana, --bake-geom
+        ' y el CLI) y todas las lecturas de texturas DX10 desde BA2. Con el wrapper desajustado cada source
+        ' DX10 se lee como 0 bytes y el bake escribe caras equivocadas EN SILENCIO.
+        ' ⛔ VA ACÁ y no antes: un NPC que sale por `Skipped` (raza sin FaceGen, sin head parts) DESCARTA
+        ' `TextureSlotsFailed` río abajo, así que reportarlo antes de este punto no se ve.
+        ' ⛔ NO va por `Logger`: está forzado a False en Release y ninguna de las dos GUI lo prende. El canal
+        ' que SÍ se ve en los tres consumidores es `RecordTextureFailure` → `BuildResult`.
+        ' ⛔ NO reemplaza al gate de arranque de los modos headless: aquel ABORTA en 200 ms; éste reporta por
+        ' NPC y dejaría correr un barrido entero escribiendo NIF sin texturas. Son dos cosas distintas.
+        Dim fallaWrapper = DirectXTexWrapperGate.Verificar()
+        If fallaWrapper <> "" Then
+            RecordTextureFailure(result, "componente nativo de texturas incompatible: " &
+                                         fallaWrapper.Replace(vbCrLf, " ").Trim())
+        End If
+
         ' Ensamblado de shapes desde las mallas fuente, un HDPT por vez: se carga HDPT.MeshPath del pool
         ' y se clonan TODAS sus shapes al shell. No hay name-matching contra el FaceGeom del CK — las
         ' mallas fuente deciden qué shapes existen. Un mismo NIF puede estar referenciado por varios HDPT
