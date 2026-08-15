@@ -2689,8 +2689,11 @@ Public Class MainForm
     '''
     ''' <para>Slot BODY **estricto** vía <see cref="BipedSlots.BodySlotBit"/> (SSE 32 / FO4 33), NO
     ''' <c>RegionMask(Body)</c>: esa unión agrupa Feet/Calves/Tail y Scalp, y MEDIDO deja entrar
-    ''' <c>DremoraBoots</c> y <c>cc_Armor_Power_X01_Helm</c>. Volumen medido con el estricto: 1169/3715 en
-    ''' SSE, 498/1045 en FO4.</para>
+    ''' <c>DremoraBoots</c> y <c>cc_Armor_Power_X01_Helm</c>.
+    ''' <para>Volumen: <b>1169 de 3715 ARMO en SSE, 498 de 1045 en FO4</b> — medido con un probe .NET
+    ''' contra la lib compilada y el load order REAL del usuario (Plugins.txt, post-merge de overrides), que
+    ''' es lo que el picker efectivamente lista. ⚠️ No confundir con los conteos del parser Python del
+    ''' scratchpad (4372/1025), que son PRE-merge y por eso difieren en SSE.</para>
     '''
     ''' <para>⛔ SIN MEMO, por MEDICIÓN: el gate en frío cuesta 17,5 ms (FO4) / 29,4 ms (SSE) una vez por
     ''' carga, y con los parses calientes 0,4/1,8 ms — un memo ahorraba 0 ms en FO4 y obligaba a dos reglas

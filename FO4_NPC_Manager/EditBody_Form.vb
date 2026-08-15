@@ -452,17 +452,34 @@ Public Class EditBody_Form
             Select(Function(d) New FormIdPickerEntry With {
                 .FormID = d.FormID, .EditorID = d.EditorID, .DisplayName = d.EditorID, .Signature = "ARMO"}).ToList()
 
+        ' ⛔⛔ EL VALOR ACTUAL PASA SIEMPRE EL FILTRO, aunque no ocupe el slot body.
+        ' Sin esto, cuando el skin actual NO pasa el predicado, el picker no tiene esa fila y
+        ' `PreselectCurrent` cae a la fila "(none / NULL)" ⇒ la lista arranca mostrando "none" como si
+        ' FUERA el estado del NPC, y un OK a secas devuelve 0 = `SkinFormIDOverride = Some(0)`, que es la
+        ' codificación EXPLÍCITA de "sin WNAM" ⇒ al guardar, el NPC PIERDE su piel. El usuario no eligió
+        ' nada: se la comió la UI. Golpea justo a los NPC de CRIATURA, que son el conjunto que este filtro
+        ' deja afuera a propósito (SkinBrahmin, SkinWisp, SkinBearCave…, sin slot body humanoide).
+        ' Nota: éste es el ÚNICO de los 14 call sites del picker que combina `formIdFilter` con
+        ' `allowNull:=True`; en los demás filtrados el `allowNull:=False` ES la barrera contra esto.
         Dim picked As UInteger
         Using dlg As New FormIdPicker_Form(_mainForm.PluginManagerForEditor, {"ARMO"},
                                            "Select Skin Armor (ARMO) — everything that occupies the body slot",
                                            currentFid, allowNull:=True,
                                            extraDraftEntries:=draftEntries,
-                                           formIdFilter:=AddressOf _mainForm.ArmoHasBodyArmature)
+                                           formIdFilter:=Function(fid) fid = currentFid OrElse _mainForm.ArmoHasBodyArmature(fid))
             If dlg.ShowDialog(Me) <> DialogResult.OK Then Return
             picked = dlg.SelectedFormID
         End Using
 
-        p.SkinFormIDOverride = picked
+        ' ⛔ UN OK SIN CAMBIAR NADA NO DEBE FABRICAR UN OVERRIDE. `currentFid` sale de
+        ' `_currentWnamFormID` = `LastRenderedState.SkinFormID`, o sea la piel YA RESUELTA (con el fallback
+        ' de la RACE), no el WNAM propio del record. Escribirla de vuelta convertiría un WNAM HEREDADO en
+        ' uno EXPLÍCITO: el Save ESP emitiría un WNAM que el record nunca tuvo y que deja de seguir a la
+        ' raza/plantilla. Por el combo esto no puede pasar — WinForms no dispara al re-seleccionar el
+        ' índice ya seleccionado — así que el botón no debe ser más destructivo que el combo.
+        If p.SkinFormIDOverride.HasValue OrElse picked <> _currentWnamFormID Then
+            p.SkinFormIDOverride = picked
+        End If
         PopulateSkinCombos()
         Await TriggerSkinChangeReload()
     End Sub

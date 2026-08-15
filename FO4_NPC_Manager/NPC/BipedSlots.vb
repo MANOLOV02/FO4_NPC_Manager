@@ -150,7 +150,13 @@ Public Module BipedSlots
     ''' piel por región y agrupa Feet/Calves/Tail en SSE y Scalp en FO4. Para la pregunta "¿esto es una
     ''' prenda/cuerpo de TORSO?" esa unión miente: MEDIDO sobre el load order real, con ella entran
     ''' <c>DremoraBoots</c> (por Feet) y <c>cc_Armor_Power_X01_Helm</c> (por Scalp).</para>
-    ''' <para>0 si la tabla del juego no declara ninguna región Body (no debería pasar).</para></summary>
+    ''' <para>0 si la tabla del juego no declara ninguna región Body (no debería pasar).</para>
+    ''' <para>⛔ DEPENDE DE LAS TABLAS DE ABAJO Y NO HAY GATE QUE LO PROTEJA. Hoy es correcto porque el
+    ''' slot canónico de cuerpo es el miembro MÁS BAJO de la región en los dos juegos (SSE `r(2)`=32 contra
+    ''' 37/38/40; FO4 `r(3)`=33 contra 52). Si alguien clasifica como <c>Body</c> un slot más bajo —FO4 32
+    ''' FaceGenHead, SSE 30/31—, esta función devuelve otro bit, el picker lista otro universo y **nada
+    ''' falla ruidosamente**. Si tocás <see cref="BuildSseRegions"/> o <see cref="BuildFo4Regions"/>,
+    ''' revisá esto.</para></summary>
     Public Function BodySlotBit() As UInteger
         Dim regions = RegionsForGame()
         For b = 0 To 31
