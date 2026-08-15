@@ -54,8 +54,15 @@ Public Module RaceMenuPresetMapper
                 j.HeadParts.Add(New RaceMenuJslot.JslotHeadPart With {.FormId = h.FormId, .FormIdentifier = h.FormIdentifier, .Type = h.Type})
             Next
         End If
-        If preset.SseHeadTextureFormID <> 0UI AndAlso pluginManager IsNot Nothing Then
-            j.HeadTexture = LooksmenuLoader.FormatFormIdentifier(preset.SseHeadTextureFormID, pluginManager)
+        ' Sólo el override CON VALOR se emite. Los otros dos estados no tienen representación en el formato:
+        ' `Nothing` (sin override) es la ausencia de la key, y el CLEAR EXPLÍCITO (Some(0)) es INEXPRESABLE —
+        ' skee64 sólo aplica headTexture dentro de `if (presetData->headTexture)` (PresetInterface.cpp:147), así
+        ' que nada que escribamos acá haría que RaceMenu limpie el FTST. El clear degrada a "preservar" en el
+        ' round-trip por .jslot; está documentado en el campo. ⛔ NO inventar `"headTexture": ""` para significar
+        ' clear: sería inerte in-game y además key churn contra el archivo del usuario (ver j.Save).
+        If preset.SseHeadTextureFormIDOverride.HasValue AndAlso preset.SseHeadTextureFormIDOverride.Value <> 0UI _
+           AndAlso pluginManager IsNot Nothing Then
+            j.HeadTexture = LooksmenuLoader.FormatFormIdentifier(preset.SseHeadTextureFormIDOverride.Value, pluginManager)
         End If
         ' Hair colour (actor.hairColor). ⛔ j.Save emits the key SÓLO con HadHairColor (antes lo emitía SIEMPRE, y
         ' dejarlo sin setear escribía hairColor:0
@@ -250,9 +257,15 @@ Public Module RaceMenuPresetMapper
         ' CLFM. We carry the packed RGB on the preset (→ state.SseHairColorRgb → ResolveHairTintColor); Nothing when
         ' the preset had no hairColor so the render falls back to the CLFM.
         preset.SseHairColorRgb = If(j.HadHairColor, CType(j.HairColor, Integer?), Nothing)
-        ' ---- FACE IDENTITY: headTexture (face FTST FormID) — see SseHeadTextureFormID handling below (render override).
+        ' ---- FACE IDENTITY: headTexture (face FTST FormID) — see SseHeadTextureFormIDOverride below (render override).
+        ' ⛔ Se asigna SÓLO si el identificador RESOLVIÓ. `ResolveFormIdentifier` devuelve 0 cuando el plugin dueño
+        ' del TXST no está en el load order, y con el carrier tri-estado ese 0 significaría CLEAR EXPLÍCITO: un
+        ' preset que referencia un TXST de un mod ausente le BORRARÍA el FTST al NPC en vez de preservarlo. Además
+        ' contradiría al motor, que ante un headTexture irresoluble simplemente no aplica nada
+        ' (skee64 PresetInterface.cpp:147 + GetFormFromIdentifier fallido → nullptr). No-resuelto ⇒ Nothing.
         If pluginManager IsNot Nothing AndAlso Not String.IsNullOrEmpty(j.HeadTexture) Then
-            preset.SseHeadTextureFormID = LooksmenuLoader.ResolveFormIdentifier(j.HeadTexture, pluginManager)
+            Dim ftstFid = LooksmenuLoader.ResolveFormIdentifier(j.HeadTexture, pluginManager)
+            If ftstFid <> 0UI Then preset.SseHeadTextureFormIDOverride = ftstFid
         End If
 
         ' ---- FACE: sliders → NAM9, capped at Nam9SliderCount (the [18] VampireMorph sentinel is ignored), then

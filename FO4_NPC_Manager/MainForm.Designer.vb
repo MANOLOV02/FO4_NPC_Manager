@@ -85,6 +85,7 @@ Partial Class MainForm
         Label2 = New Label()
         Label3 = New Label()
         ButtonSaveSceneNif = New Button()
+        ButtonScreenshot = New Button()
         ButtonCharGenOptions = New Button()
         ButtonExportFomod = New Button()
         PanelPreviewHost = New Panel()
@@ -98,6 +99,7 @@ Partial Class MainForm
         LabelAnimMs = New Label()
         NumericAnimFrameMs = New NumericUpDown()
         ButtonExportPose = New Button()
+        ButtonDeletePose = New Button()
         LabelPose = New Label()
         ComboPose = New ComboBox()
         StatusStrip1 = New StatusStrip()
@@ -778,6 +780,7 @@ Partial Class MainForm
         PanelActionsToolbar.Controls.Add(Label3)
         PanelActionsToolbar.Controls.Add(ButtonCharGenOptions)
         PanelActionsToolbar.Controls.Add(ButtonSaveSceneNif)
+        PanelActionsToolbar.Controls.Add(ButtonScreenshot)
         PanelActionsToolbar.Dock = DockStyle.Top
         PanelActionsToolbar.Location = New Point(11, 126)
         PanelActionsToolbar.Name = "PanelActionsToolbar"
@@ -1023,6 +1026,18 @@ Partial Class MainForm
         ButtonSaveSceneNif.TabIndex = 14
         ButtonSaveSceneNif.Text = "NPC Model to NIF"
         ButtonSaveSceneNif.UseVisualStyleBackColor = True
+        '
+        ' ButtonScreenshot
+        '
+        ButtonScreenshot.AutoSize = True
+        ButtonScreenshot.Location = New Point(576, 34)
+        ButtonScreenshot.Margin = New Padding(2)
+        ButtonScreenshot.MinimumSize = New Size(90, 28)
+        ButtonScreenshot.Name = "ButtonScreenshot"
+        ButtonScreenshot.Size = New Size(90, 28)
+        ButtonScreenshot.TabIndex = 19
+        ButtonScreenshot.Text = "Screenshot"
+        ButtonScreenshot.UseVisualStyleBackColor = True
         ' 
         ' ButtonCharGenOptions
         ' 
@@ -1099,6 +1114,7 @@ Partial Class MainForm
         PanelAnimBar.Controls.Add(LabelPose, 0, 1)
         PanelAnimBar.Controls.Add(ComboPose, 1, 1)
         PanelAnimBar.Controls.Add(ButtonExportPose, 2, 1)
+        PanelAnimBar.Controls.Add(ButtonDeletePose, 3, 1)
         ' Dock=Top + AutoSize(GrowAndShrink) en una fila AutoSize: el mismo patrón que PanelPreviewToolbar
         ' acá al lado — la fila se ajusta a los dos renglones y el ancho lo da el contenedor.
         PanelAnimBar.Dock = DockStyle.Top
@@ -1215,6 +1231,18 @@ Partial Class MainForm
         ButtonExportPose.TabIndex = 9
         ButtonExportPose.Text = "Export pose…"
         ButtonExportPose.UseVisualStyleBackColor = True
+        '
+        ' ButtonDeletePose
+        '
+        ButtonDeletePose.Anchor = AnchorStyles.Left Or AnchorStyles.Right
+        ButtonDeletePose.Enabled = False
+        ButtonDeletePose.Location = New Point(464, 34)
+        ButtonDeletePose.Margin = New Padding(3)
+        ButtonDeletePose.Name = "ButtonDeletePose"
+        ButtonDeletePose.Size = New Size(90, 25)
+        ButtonDeletePose.TabIndex = 10
+        ButtonDeletePose.Text = "Delete pose"
+        ButtonDeletePose.UseVisualStyleBackColor = True
         '
         ' LabelPose
         '
@@ -1361,6 +1389,7 @@ Partial Class MainForm
     Friend WithEvents ButtonCharGenOptions As System.Windows.Forms.Button
     Friend WithEvents ButtonExportFomod As System.Windows.Forms.Button
     Friend WithEvents ButtonSaveSceneNif As System.Windows.Forms.Button
+    Friend WithEvents ButtonScreenshot As System.Windows.Forms.Button
     Friend WithEvents ButtonEditBody As System.Windows.Forms.Button
     Friend WithEvents ButtonEditOutfit As System.Windows.Forms.Button
     Friend WithEvents ButtonEditNpc As System.Windows.Forms.Button
@@ -1392,6 +1421,7 @@ Partial Class MainForm
     Friend WithEvents NumericAnimFrameMs As System.Windows.Forms.NumericUpDown
     Friend WithEvents LabelAnimMs As System.Windows.Forms.Label
     Friend WithEvents ButtonExportPose As System.Windows.Forms.Button
+    Friend WithEvents ButtonDeletePose As System.Windows.Forms.Button
     Friend WithEvents LabelPose As System.Windows.Forms.Label
     Friend WithEvents ComboPose As System.Windows.Forms.ComboBox
     Friend WithEvents StatusStrip1 As System.Windows.Forms.StatusStrip

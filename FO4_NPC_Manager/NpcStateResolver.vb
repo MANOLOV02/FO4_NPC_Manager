@@ -167,16 +167,58 @@ Friend NotInheritable Class NpcStateResolver
             ' LM de abajo lo pisa ⇒ LM SkinTemplate > preset .jslot headTexture > raw NPC.FTST.
             '
             ' GAME-AWARENESS: el reparto es por ORIGEN DEL DATO, no por un If de juego.
-            '   • FO4 → la vía es la plantilla LM (bundle f4ee) = el bloque de abajo. `SseHeadTextureFormID`
-            '     vale 0 (LooksmenuLoader:43 lo puebla sólo desde `.jslot`), así que esta rama no corre.
+            '   • FO4 → la vía es la plantilla LM (bundle f4ee) = el bloque de abajo. `SseHeadTextureFormIDOverride`
+            '     queda en Nothing (LooksmenuLoader lo puebla sólo desde `.jslot`), así que esta rama no corre.
             '   • SSE → RaceMenu no tiene plantillas de piel; la vía es ésta.
             ' ⛔ NO se agrega un gate `If isSse` a propósito: el shadow del BAKE tampoco lo tiene, y gatear un
             ' solo lado volvería a abrir la divergencia render/bake que este mismo fix cierra.
-            If overlayPreset.SseHeadTextureFormID <> 0UI Then
-                state.HeadTextureFormID = overlayPreset.SseHeadTextureFormID
+            '
+            ' TRI-ESTADO (espejo exacto de NpcRecordOverlay :192-205, que es el camino del BAKE):
+            '   Nothing → no participa, se conserva lo que dejó ApplyRaceFallbacks.
+            '   <> 0    → override explícito.
+            '   = 0     → clear explícito (ver el bloque de abajo, que NO es simétrico y por eso está comentado).
+            ' ⛔ El gate es `.HasValue`, NO `<> 0UI`: sobre un nullable esa comparación da Boolean? y colapsa
+            ' Nothing con 0 — o sea, deja el clear indistinguible de "sin override", que es el bug original.
+            If overlayPreset.SseHeadTextureFormIDOverride.HasValue Then
+                Dim ovFtst As UInteger = overlayPreset.SseHeadTextureFormIDOverride.Value
+                state.HeadTextureFormID = ovFtst
                 ' Explicit VIAJA CON el valor: declara "este face TXST es del ACTOR", que es lo que le gana al
                 ' HDPT.TNAM en ResolveTextureSet. Ver el invariante documentado en CloneVisualState.
-                state.ExplicitHeadTextureFormID = overlayPreset.SseHeadTextureFormID
+                state.ExplicitHeadTextureFormID = ovFtst
+                If ovFtst = 0UI Then
+                    ' CLEAR EXPLÍCITO — y acá NO alcanza con dejar los dos campos en 0.
+                    ' ApplyRaceFallbacks corrió ANTES que este bloque (:114 vs :126) y, cuando el FTST crudo era 0,
+                    ' ya sustituyó el DefaultFaceTexture de la raza sobre HeadTextureFormID (:382-392, las DOS
+                    ' ramas: la de `HeadPartFormIDs.Count = 0` y el `ElseIf`, que es la que corre en el caso
+                    ' común de un NPC CON head parts y la que este bloque re-implementa). El clear
+                    ' llega DESPUÉS, así que hay que RE-DISPARAR ese mismo fallback: sin esto HeadTextureFormID
+                    ' queda en 0 mientras el BAKE —que resuelve el shadow primero y corre ApplyRaceFallbacks
+                    ' después (FaceGenBuilder :752 → :766)— sí obtiene el DFT ⇒ RENDER ≠ BAKE.
+                    ' Es EXACTAMENTE el mismo movimiento, por la misma causa de orden, que el clear de skin de
+                    ' :152-160 (Some(0) → re-sustituir RACE.WNAM).
+                    '
+                    ' ⛔ Se resuelve CONTRA LA RAZA, no con un 0 hardcodeado, y el CLEAR SÓLO SACA EL PRIMER ESCALÓN.
+                    ' La precedencia que aplica acá es la de SSE — `FTST > DFT[sexo propio] > HDPT.TNAM`,
+                    ' NpcMaterialResolver :458. ⚠️ NO decir "RE de ambos binarios": bajo FO4 lo IMPLEMENTADO es
+                    ' `FTST > TNAM > DFTM (si TNAM=0)` (:488), y la lectura DFT>TNAM que sugiere el RE del CK está
+                    ' marcada ahí mismo como SIN MEDIR y no aplicada. Lo único RE-verificado en ambos binarios es
+                    ' que el DFT no cruza de género (ver el bloque de ApplyRaceFallbacks), que es otra cosa.
+                    ' Qué ve el usuario, entonces, depende de la raza:
+                    '   • RACE con DFTM/DFTF → la cara cae al DefaultFaceTexture de la raza, y ResolveTextureSet
+                    '     SÍ arma capa aux (:468, rama `RACE.DFTM(Face-aux)`, que existe también en SSE).
+                    '   • RACE sin DFT (el caso de las razas custom tipo UBE) → queda 0, no hay capa aux,
+                    '     isFaceTextureSource=False y el HDPT.TNAM se aplica COMPLETO, incluido TX03=_sk.
+                    ' ⚠️ NO decir "en SSE los RACE no traen DFT": `RecordParsers.ParseRACE` parsea DFTM/DFTF SIN
+                    ' gate de juego (Case "DFTM"/"DFTF"), y hay casos SSE medidos que los traen (ver el ManakinRace
+                    ' de NpcMaterialResolver). El comportamiento correcto sale de respetar la ley, no de suponer 0.
+                    Dim raceRecFtst = _ctx.PluginManager.GetRecord(state.RaceFormID)
+                    If raceRecFtst IsNot Nothing AndAlso raceRecFtst.Header.Signature = "RACE" Then
+                        Dim raceFtst = _ctx.ParseRaceCached(raceRecFtst)
+                        state.HeadTextureFormID = If(state.IsFemale,
+                                                     raceFtst.FemaleDefaultFaceTextureFormID,
+                                                     raceFtst.MaleDefaultFaceTextureFormID)
+                    End If
+                End If
             End If
 
             If Not String.IsNullOrEmpty(overlayPreset.SkinTemplateId) Then

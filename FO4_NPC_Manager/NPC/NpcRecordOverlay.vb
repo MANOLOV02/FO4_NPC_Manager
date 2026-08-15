@@ -173,8 +173,8 @@ Public Module NpcRecordOverlay
         End If
         ' ⛔ UNA SOLA ASIGNACIÓN de HeadTextureFormID en toda esta función. Antes había DOS
         ' (acá y otra ~100 líneas abajo, en el bloque del preset .jslot headTexture); la segunda
-        ' reasignaba incondicionalmente y, con SseHeadTextureFormID = 0 (el caso normal en FO4 y
-        ' en SSE sin `headTexture` en el .jslot), REVERTÍA el TXST de la plantilla LM a raw —
+        ' reasignaba incondicionalmente y, con SseHeadTextureFormIDOverride vacío (el caso normal en FO4
+        ' y en SSE sin `headTexture` en el .jslot), REVERTÍA el TXST de la plantilla LM a raw —
         ' exactamente lo que el comentario de este bloque prometía evitar.
         '
         ' PRECEDENCIA (de mayor a menor): LM SkinTemplate > preset .jslot headTexture > raw NPC.FTST
@@ -185,24 +185,44 @@ Public Module NpcRecordOverlay
         '      override so the bundle sits on top of preset overrides"). Y sobre todo: es la del camino de
         '      RENDER en NpcStateResolver.vb:160-172, donde el template se aplica DESPUÉS del preset
         '      y gana. Alinear el plugin con el render es lo que mantiene el WYSIWYG.
-        '   2) Preset .jslot actor.headTexture (RaceMenu, skee64 PresetInterface.cpp:158-160).
-        '      0 = no viene en el JSON → no participa.
+        '   2) Preset SseHeadTextureFormIDOverride — TRES estados (idénticos a los de DOFT/SOFT arriba):
+        '      Nothing = el .jslot no trae `headTexture` y el editor no lo tocó → no participa;
+        '      <> 0 = override explícito (RaceMenu skee64 PresetInterface.cpp:158-160, o el picker de Edit Face);
+        '      = 0 = CLEAR EXPLÍCITO → no se emite FTST y la cara cae al DefaultFaceTexture de la RAZA / HDPT.TNAM.
+        '      ⛔ El clear tiene que poder GANARLE al raw: por eso el carrier es `UInteger?` y no un `UInteger`
+        '      donde 0 significaba a la vez "sin override" y "ninguno" — con el tipo plano, elegir "(none)" en el
+        '      picker era indistinguible de no tocar nada y el FTST crudo volvía siempre.
         '   3) raw NPC.FTST.
         ' Feeds state.HeadTextureFormID → NpcMaterialResolver's face material (:344).
-        Dim headTxstOverride As UInteger = 0UI
+        Dim headTxstOverride As UInteger? = Nothing
         If lmFaceTxst <> 0UI Then
             headTxstOverride = lmFaceTxst
-        ElseIf preset.SseHeadTextureFormID <> 0UI Then
-            headTxstOverride = preset.SseHeadTextureFormID
+        ElseIf preset.SseHeadTextureFormIDOverride.HasValue Then
+            headTxstOverride = preset.SseHeadTextureFormIDOverride
         End If
-        shadow.HeadTextureFormID = If(headTxstOverride <> 0UI, headTxstOverride, raw.HeadTextureFormID)
-        ' HasHeadTexture es el gate "emitir subrecord FTST" del writer (NpcSubrecordWriter.vb:97, que
-        ' mira SÓLO la bandera; el sink de FormIDs de SaveNpcEspWriter.vb:951 además exige <> 0) y se
+        ' ⛔ `If(nullable, fallback)` binario (desenvuelve a UInteger), NO el ternario `If(x <> 0UI, x, fallback)`:
+        ' sobre un nullable esa condición da Boolean? y colapsa Nothing con 0, que es justo el bug que esto cierra.
+        ' Misma forma que shadow.SleepOutfitFormID arriba.
+        shadow.HeadTextureFormID = If(headTxstOverride, raw.HeadTextureFormID)
+        ' HasHeadTexture es el gate "emitir subrecord FTST" del writer (NpcSubrecordWriter.vb:138, que
+        ' mira SÓLO la bandera; el sink de FormIDs de SaveNpcEspWriter.vb:975 además exige <> 0) y se
         ' deriva DEL MISMO resultado de arriba — no se calcula aparte, así no pueden discrepar por
-        ' construcción. Con override activo: Has = (valor <> 0), que además hace IMPOSIBLE el par
-        ' (HasHeadTexture=True, HeadTextureFormID=0). Sin override: se preserva el par de raw verbatim
-        ' (round-trip). Mismo patrón que HasDefaultOutfit / HasSleepOutfit arriba.
-        shadow.HasHeadTexture = If(headTxstOverride <> 0UI, True, raw.HasHeadTexture)
+        ' construcción. Los tres estados:
+        '   Nothing → se preserva el par de raw verbatim (round-trip, sin cambios).
+        '   <> 0    → (True, valor).
+        '   = 0     → (False, 0): clear explícito, no se emite el subrecord.
+        ' ⚠️ ALCANCE EXACTO del invariante (el comentario viejo estaba bien acotado y NO hay que generalizarlo):
+        ' el par (HasHeadTexture=True, HeadTextureFormID=0) es imposible SÓLO en las dos ramas con override —
+        ' ambas prenden la bandera únicamente con valor <> 0. La rama `Nothing` preserva el par de raw TAL CUAL,
+        ' y ahí (True, 0) SÍ es alcanzable: RecordParsers :2910-2912 prende HasHeadTexture incondicionalmente
+        ' después de resolver el FTST, así que un FTST cuyo master no está cargado resuelve a 0 con la bandera
+        ' en True. Ese caso es round-trip legítimo y es lo que el probe [FTST-INVARIANT] reporta — si aparece en
+        ' el log, buscá una referencia sin resolver, NO una segunda escritura al campo.
+        ' El clear (Some(0)) NO lo dispara: produce (False, 0) y el probe exige Has=True. Lo que cambia con el
+        ' tri-estado es que (False, 0) deja de ser exclusivo de "el raw no traía FTST": ahora también significa
+        ' "el usuario lo borró". Al writer esa distinción no le importa — los dos emiten lo mismo: nada.
+        ' Mismo patrón que HasDefaultOutfit / HasSleepOutfit arriba.
+        shadow.HasHeadTexture = If(headTxstOverride.HasValue, headTxstOverride.Value <> 0UI, raw.HasHeadTexture)
         shadow.FacialHairColorFormID = raw.FacialHairColorFormID
         ' QNAM (TextureLighting): seeded from raw here. Post-FaceTintLayers copy below we
         ' re-derive from the preset's slot-12 SkinTone tint via DeriveSkinToneQnam so the
@@ -308,7 +328,8 @@ Public Module NpcRecordOverlay
         ' lo materializa en un CLFM real (NpcOverrideSaver.MaterializeSseHairColors). Nothing en FO4.
         shadow.SseHairColorRgb = preset.SseHairColorRgb
 
-        ' Face texture set (FTST): preset.SseHeadTextureFormID (.jslot actor.headTexture) se resuelve
+        ' Face texture set (FTST): preset.SseHeadTextureFormIDOverride (.jslot actor.headTexture, o el picker
+        ' de Edit Face; tri-estado Nothing/valor/clear) se resuelve
         ' ARRIBA, junto con el face TXST de la plantilla LM y el raw, en la ÚNICA asignación de
         ' shadow.HeadTextureFormID / shadow.HasHeadTexture de esta función. Acá había una segunda
         ' escritura al mismo campo que pisaba la plantilla LM — no reintroducirla.

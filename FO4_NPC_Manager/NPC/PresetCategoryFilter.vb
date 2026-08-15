@@ -192,7 +192,12 @@ Public Module PresetCategoryFilter
                 p.UnresolvedHeadParts.Clear()
                 p.SseUnresolvedHeadParts.Clear()
                 p.HeadPartFormIDsIncludeRawExtras = False
-                p.SseHeadTextureFormID = 0UI
+                ' ⛔ `Nothing` (= "sin override, preservar el FTST del target"), NUNCA `0UI`: con el carrier
+                ' tri-estado, 0 significa CLEAR EXPLÍCITO. Poner 0 acá —el camino de "categoría NO tickeada",
+                ' o sea preservar— le BORRARÍA el FTST al target en el Paste más común del diálogo, y en AMBOS
+                ' juegos: este Case no está gateado por juego y NpcRecordOverlay tampoco. Es la única línea de
+                ' todo el tri-estado con potencial de cambiar bytes en FO4.
+                p.SseHeadTextureFormIDOverride = Nothing
                 If baseline IsNot Nothing AndAlso baseline.HasHeadPartFormIDs Then
                     p.HeadPartFormIDs.AddRange(baseline.HeadPartFormIDs)
                     p.UnresolvedHeadParts.AddRange(baseline.UnresolvedHeadParts)
@@ -201,7 +206,7 @@ Public Module PresetCategoryFilter
                 ElseIf raw IsNot Nothing Then
                     p.HeadPartFormIDs.AddRange(raw.HeadPartFormIDs)
                 End If
-                If baseline IsNot Nothing Then p.SseHeadTextureFormID = baseline.SseHeadTextureFormID
+                If baseline IsNot Nothing Then p.SseHeadTextureFormIDOverride = baseline.SseHeadTextureFormIDOverride
                 p.HasHeadPartFormIDs = True
 
             Case PresetCategory.HairColor

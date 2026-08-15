@@ -241,10 +241,36 @@ Public Class PoseCatalog
         Poses(pose.ToString()) = pose
     End Sub
 
+    ''' <summary>Deletes one catalog pose using Wardrobe Manager's canonical storage rules:
+    ''' SAM poses own their JSON file; BodySlide/WM poses own one named element in a shared XML.</summary>
+    Public Sub DeletePose(pose As Poses_class)
+        If pose Is Nothing OrElse pose.Source = Poses_class.Pose_Source_Enum.None Then Return
+        Dim path = If(pose.Filename, "")
+        If String.IsNullOrWhiteSpace(path) Then Throw New InvalidDataException("Pose has no source file.")
+
+        If pose.Source = Poses_class.Pose_Source_Enum.ScreenArcher Then
+            If File.Exists(path) Then File.Delete(path)
+            Return
+        End If
+
+        If Not File.Exists(path) Then Throw New FileNotFoundException("Pose source file was not found.", path)
+        Dim doc = XDocument.Load(path)
+        If doc.Root Is Nothing Then Throw New InvalidDataException("Pose XML has no root element.")
+        Dim selected = doc.Root.Elements("Pose").
+            FirstOrDefault(Function(el) String.Equals(el.Attribute("name")?.Value, pose.Name,
+                                                       StringComparison.OrdinalIgnoreCase))
+        If selected Is Nothing Then Throw New InvalidDataException($"Pose '{pose.Name}' was not found in its source XML.")
+        selected.Remove()
+        If doc.Root.Elements("Pose").Any() Then
+            doc.Save(path)
+        Else
+            File.Delete(path)
+        End If
+    End Sub
+
     ' ── Root resolution (mirrors WM's Wardrobe_Manager_Form.Directorios) ──
 
-    ''' <summary>&lt;Data&gt;\F4SE\Plugins\SAF\Poses\Exports — WM's Directorios.PosesSAMRoot
-    ''' (Wardrobe_Manager_Form.vb:68), verbatim.</summary>
+    ''' <summary>Returns the SAM pose export directory under the active game's Data folder.</summary>
     Public Shared Function ResolveSamPosesDir() As String
         Dim data = If(Config_App.Current Is Nothing, "", Config_App.Current.FO4EDataPath)
         If String.IsNullOrEmpty(data) Then Return ""

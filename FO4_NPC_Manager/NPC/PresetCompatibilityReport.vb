@@ -491,8 +491,11 @@ Public Module PresetCompatibilityReport
     ' ---------------------------------------------------------------------------------------------
     Private Sub AuditFormIdFields(ctx As PresetAuditContext, r As PresetAuditReport)
         Dim p = ctx.Preset
-        If ctx.IsSse AndAlso p.SseHeadTextureFormID <> 0UI Then
-            CheckFormId(ctx, r, "Head texture", p.SseHeadTextureFormID, "TXST",
+        ' `.Value` explícito: el guard garantiza HasValue, pero pasar el nullable pelado a un parámetro UInteger
+        ' compila por Option Strict Off y tiraría InvalidOperationException si alguien afloja el guard.
+        ' El estado clear (Some(0)) no se audita acá: no referencia ningún FormID que pueda faltar.
+        If ctx.IsSse AndAlso p.SseHeadTextureFormIDOverride.HasValue AndAlso p.SseHeadTextureFormIDOverride.Value <> 0UI Then
+            CheckFormId(ctx, r, "Head texture", p.SseHeadTextureFormIDOverride.Value, "TXST",
                         "the NPC's face TextureSet override (FTST) — the head falls back to the RACE/skin texture.")
         End If
         If p.SkinFormIDOverride.HasValue AndAlso p.SkinFormIDOverride.Value <> 0UI Then

@@ -222,14 +222,31 @@ Public Module PresetCategories
                  $"DOFT {FmtFid(p.DefaultOutfitFormIDOverride)} / SOFT {FmtFid(p.SleepOutfitFormIDOverride)}")
         End If
 
-        ' --- Face parts (head parts; unresolved ones are reported in the tooltip) ---
-        If p.HasHeadPartFormIDs OrElse p.HeadPartFormIDs.Count > 0 Then
+        ' --- Face parts (head parts + el head TXST de SSE; los irresolubles van al tooltip) ---
+        ' ⛔ El gate incluye el head TXST y NO sólo los head parts: el override viaja en la MISMA categoría
+        ' (PresetCategoryFilter, Case FaceParts), así que un preset que trae headTexture pero ningún head part
+        ' —.jslot sin array `headParts`, o con todos irresolubles— no emitía fila, la categoría no aparecía en
+        ' el diálogo, el usuario no podía tildarla y el Revert descartaba el headTexture sin decir nada.
+        Dim hasFtstOv As Boolean = isSse AndAlso p.SseHeadTextureFormIDOverride.HasValue
+        If p.HasHeadPartFormIDs OrElse p.HeadPartFormIDs.Count > 0 OrElse hasFtstOv Then
             Dim det = ""
             If p.UnresolvedHeadParts.Count > 0 Then det = $"{p.UnresolvedHeadParts.Count} unresolved (owning plugin not loaded)"
-            If isSse AndAlso p.SseHeadTextureFormID <> 0UI Then
-                det = If(det.Length > 0, det & "  •  ", "") & $"head FTST 0x{p.SseHeadTextureFormID:X8}"
+            ' El marcador del FTST va al TEXTO CORTO, no sólo al tooltip: el clear es destructivo sobre el target
+            ' y el conteo de head parts NO cambia al agregarlo ⇒ sin hover era invisible.
+            ' ⛔ Tiene que ser CORTO: la celda del contador es una columna ABSOLUTA de 74px con un Label de ~68px
+            ' sin AutoSize ni AutoEllipsis (PresetCategoryPanel.Designer :350), o sea ~9 caracteres. Un texto tipo
+            ' "12 + FTST cleared" se recorta y el fix no sirve de nada. El detalle largo va al tooltip.
+            Dim txt As String = p.HeadPartFormIDs.Count.ToString()
+            If hasFtstOv Then
+                If p.SseHeadTextureFormIDOverride.Value = 0UI Then
+                    txt &= " ✕FTST"
+                    det = If(det.Length > 0, det & "  •  ", "") & "head FTST: cleared (no FTST subrecord emitted)"
+                Else
+                    txt &= " +FTST"
+                    det = If(det.Length > 0, det & "  •  ", "") & $"head FTST 0x{p.SseHeadTextureFormIDOverride.Value:X8}"
+                End If
             End If
-            Set0(d, PresetCategory.FaceParts, p.HeadPartFormIDs.Count.ToString(), det)
+            Set0(d, PresetCategory.FaceParts, txt, det)
         End If
 
         ' --- Hair color ---

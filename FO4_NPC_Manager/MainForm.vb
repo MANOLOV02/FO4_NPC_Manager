@@ -1804,6 +1804,16 @@ Public Class MainForm
         Dim usable = IsAnimStaticNow() AndAlso ComboPose.Items.Count > 1
         ComboPose.Enabled = usable
         LabelPose.Enabled = usable
+        UpdateDeletePoseEnabled()
+    End Sub
+
+    Private Sub UpdateDeletePoseEnabled()
+        Dim pose As Poses_class = Nothing
+        Dim key = TryCast(ComboPose.SelectedItem, String)
+        ButtonDeletePose.Enabled = IsAnimStaticNow() AndAlso key IsNot Nothing AndAlso
+                                   key <> PoseCatalog.NoneKey AndAlso _poseCatalog IsNot Nothing AndAlso
+                                   _poseCatalog.Poses.TryGetValue(key, pose) AndAlso
+                                   pose.Source <> Poses_class.Pose_Source_Enum.None
     End Sub
 
     ''' <summary>(Re)lee el catálogo de poses si cambiaron las rutas (o si <paramref name="force"/>),
@@ -1842,6 +1852,7 @@ Public Class MainForm
         ' Si la pose que estaba puesta desapareció del disco, el combo cae a "None": hay que limpiar
         ' también la capa Delta, o el render seguiría mostrando una pose que el combo ya no nombra.
         If Not PopulatePoseCombo() AndAlso _staticPoseApplied Then ApplyStaticPose(Nothing)
+        UpdateDeletePoseEnabled()
     End Sub
 
     ''' <summary>Puebla el combo: "None" primero y el resto alfabético. WM ordena TODO alfabéticamente
@@ -1901,6 +1912,7 @@ Public Class MainForm
     End Sub
 
     Private Sub ComboPose_SelectedIndexChanged(sender As Object, e As EventArgs) Handles ComboPose.SelectedIndexChanged
+        UpdateDeletePoseEnabled()
         If _poseSuppress Then Return
         ' Con un clip activo la capa Delta no es del combo. No debería poder pasar (el combo está
         ' deshabilitado), pero un cambio por código sin suppress no puede pisar la animación.
@@ -1911,6 +1923,27 @@ Public Class MainForm
             _poseCatalog.Poses.TryGetValue(key, pose)
         End If
         ApplyStaticPose(pose)
+    End Sub
+
+    Private Sub ButtonDeletePose_Click(sender As Object, e As EventArgs) Handles ButtonDeletePose.Click
+        Dim key = TryCast(ComboPose.SelectedItem, String)
+        Dim pose As Poses_class = Nothing
+        If key Is Nothing OrElse key = PoseCatalog.NoneKey OrElse _poseCatalog Is Nothing OrElse
+           Not _poseCatalog.Poses.TryGetValue(key, pose) OrElse pose Is Nothing Then Return
+
+        If MessageBox.Show(Me, $"Are you sure you want to delete pose {pose.Name}?", "Delete pose",
+                           MessageBoxButtons.YesNo, MessageBoxIcon.Warning,
+                           MessageBoxDefaultButton.Button2) <> DialogResult.Yes Then Return
+        Try
+            _poseCatalog.DeletePose(pose)
+            EnsurePoseCatalog(True)
+            UpdatePoseComboEnabled()
+            Logger.LogLazy(Function() $"[POSE-BAR] deleted pose='{pose.Name}' source={pose.Source} file='{pose.Filename}'")
+        Catch ex As Exception
+            Logger.LogLazy(Function() $"[POSE-BAR] delete FAILED pose='{pose.Name}': {ex}")
+            MessageBox.Show(Me, "Error deleting the pose: " & ex.Message, "Delete pose",
+                            MessageBoxButtons.OK, MessageBoxIcon.Error)
+        End Try
     End Sub
 
     ' ── Export pose (frame de la animación → XML de poses de Wardrobe Manager) ────────────────────
@@ -9840,7 +9873,26 @@ Public Class MainForm
             ' por la plantilla de LooksMenu, que esta misma función ya captura en su propio carrier; poblar
             ' además éste duplicaría el dato y le daría precedencia al de menor rango. En SSE no existen esas
             ' plantillas, así que éste es el ÚNICO carrier.
-            preset.SseHeadTextureFormID = state.ExplicitHeadTextureFormID
+            ' ⛔ La traducción al carrier tri-estado es EXPLÍCITA, no una asignación directa: `UInteger` ensancha a
+            ' `UInteger?` en silencio (Option Strict está Off) y un Explicit=0 —que es "este NPC no tiene FTST
+            ' propio", el caso de arriba— se volvería Some(0) = CLEAR EXPLÍCITO. Copiar la cara de un NPC sin FTST
+            ' le borraría el FTST al target al pegarla. 0 ⇒ Nothing preserva la semántica que este bloque ya tenía.
+            ' ⛔ El OVERLAY manda cuando existe, y NO se puede derivar esto del `state`: el state colapsa dos
+            ' casos distintos en Explicit=0 — "el NPC no tiene FTST propio" y "el usuario apretó Clear (no FTST)".
+            ' Leyendo sólo el state, un Copy Look de una cara con el FTST borrado viajaba como Nothing
+            ' (= "preservar") y al pegarla el target se quedaba con SU PROPIO FTST: la cara pegada no se parecía
+            ' a la copiada, en silencio. El overlay sí distingue los tres estados, así que se prefiere.
+            ' Mismo criterio que los demás carriers SSE de este bloque (SseWeight, SseNam9, SseTintRawOverride).
+            If overlay IsNot Nothing AndAlso overlay.SseHeadTextureFormIDOverride.HasValue Then
+                preset.SseHeadTextureFormIDOverride = overlay.SseHeadTextureFormIDOverride
+            ElseIf state.ExplicitHeadTextureFormID <> 0UI Then
+                ' ⛔ If/Then, NO el ternario `If(cond, valor, Nothing)`: con un nullable ese ternario resuelve el
+                ' tipo dominante a UInteger y convierte el `Nothing` en 0 ⇒ HasValue=True con valor 0 = CLEAR,
+                ' justo lo contrario de lo que se quiere. Es la trampa de VB que este proyecto ya se comió antes.
+                preset.SseHeadTextureFormIDOverride = state.ExplicitHeadTextureFormID
+            Else
+                preset.SseHeadTextureFormIDOverride = Nothing
+            End If
 
             ' --- F4SE/RaceMenu-only carriers (no record source): overlay only, else leave empty. ---
             If overlay IsNot Nothing Then
@@ -11348,6 +11400,51 @@ Public Class MainForm
         ' then BuildOutfitUniverse.
         BuildSkinArmoUniverse()
         BuildOutfitUniverse()
+    End Sub
+
+    ''' <summary>Guarda como PNG el frame actual del mismo PreviewControl que usa el render principal.</summary>
+    Private Sub ButtonScreenshot_Click(sender As Object, e As EventArgs) Handles ButtonScreenshot.Click
+        Dim preview = _renderHost?.PreviewCtl
+        If preview Is Nothing OrElse preview.IsDisposed Then
+            MessageBox.Show("The render preview is not available.", "Screenshot",
+                            MessageBoxButtons.OK, MessageBoxIcon.Warning)
+            Return
+        End If
+
+        Dim state = If(_renderHost.LastRenderedState, _renderHost.CurrentBaseState)
+        Dim npcFormID As UInteger = If(state IsNot Nothing, state.RootNpcFormID, 0UI)
+        Dim npc As NPC_Data = Nothing
+        If npcFormID <> 0UI Then _ctx.NpcCache.TryGetValue(npcFormID, npc)
+        Dim baseName = If(npc IsNot Nothing AndAlso Not String.IsNullOrWhiteSpace(npc.EditorID),
+                          npc.EditorID, If(npcFormID <> 0UI, $"NPC_{npcFormID:X8}", "render"))
+        For Each ch In IO.Path.GetInvalidFileNameChars()
+            baseName = baseName.Replace(ch, "_"c)
+        Next
+
+        Using dlg As New SaveFileDialog With {
+            .Title = "Save render screenshot",
+            .Filter = "PNG image (*.png)|*.png",
+            .InitialDirectory = If(String.IsNullOrEmpty(_dataPath), IO.Directory.GetCurrentDirectory(), _dataPath),
+            .FileName = baseName & "_" & Date.Now.ToString("yyyyMMdd_HHmmss") & ".png",
+            .OverwritePrompt = True,
+            .AddExtension = True,
+            .DefaultExt = "png"
+        }
+            If dlg.ShowDialog(Me) <> DialogResult.OK Then Return
+            Try
+                Using bmp = preview.CaptureBitmap()
+                    If bmp Is Nothing Then
+                        MessageBox.Show("Could not capture render preview.", "Screenshot",
+                                        MessageBoxButtons.OK, MessageBoxIcon.Error)
+                        Return
+                    End If
+                    bmp.Save(dlg.FileName, System.Drawing.Imaging.ImageFormat.Png)
+                End Using
+            Catch ex As Exception
+                MessageBox.Show("Error saving render screenshot: " & ex.Message, "Screenshot",
+                                MessageBoxButtons.OK, MessageBoxIcon.Error)
+            End Try
+        End Using
     End Sub
 
     ''' <summary>Exporta la escena renderizada a un NIF multi-shape, cada shape visible ya con vértices en

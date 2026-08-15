@@ -52,8 +52,13 @@ Public Class EditFace_Form
     Private ReadOnly _sseRaceMenuGroups As New List(Of (Header As Control, Names As List(Of String)))
     Private _sseRaceMenuFlow As FlowLayoutPanel = Nothing
     Private _sseRaceMenuFilter As TextBox = Nothing
-    ''' <summary>Label showing the effective face TextureSet (NPC_.FTST) on the SSE Face Parts tab.</summary>
+    ''' <summary>Label showing the face TextureSet (NPC_.FTST) state on the SSE Face Parts tab.</summary>
     Private _sseHeadTexLabel As Label = Nothing
+    ''' <summary>"Use record default" / "Clear (no FTST)" — cada uno se deshabilita cuando YA es el estado actual.
+    ''' Es señal REDUNDANTE, no la única: el label ya emite un texto distinto por estado (ver
+    ''' UpdateSseHeadTextureLabel). El disable agrega la pista de "en cuál estoy" sin tener que leer.</summary>
+    Private _sseHeadTexBtnDefault As Button = Nothing
+    Private _sseHeadTexBtnClear As Button = Nothing
     ' Face overlays (RaceMenu "Face [Ovl{n}]" face-paint) editor controls. The overlays live in Preset.SseBodyOverlays
     ' (the whole .jslot "overrides" array); this tab filters to the Face nodes. Body/Hands/Feet ones stay in Edit Body.
     Private _sseFaceOvList As ListBox = Nothing
@@ -120,6 +125,8 @@ Public Class EditFace_Form
     Private _sseTintMaskPick As Button = Nothing
     Private _sseTintMaskClear As Button = Nothing
     Private _sseTintResetBtn As Button = Nothing
+    ''' <summary>Reset MASIVO de tints. Vive en la 2ª fila del mismo TableLayoutPanel que los tres por-capa.</summary>
+    Private _sseTintResetAllBtn As Button = Nothing
     Private _sseTintDetailHost As Panel = Nothing
     ' Combo item for the preset dropdown: Tirs = -1 → "(custom RGB)", else a RACE preset (colour resolved for the label).
     Private NotInheritable Class SseTintPresetItem
@@ -849,7 +856,11 @@ Public Class EditFace_Form
     ''' <c>NPC_.FTST</c>. It is vanilla record data — but it had no UI, so until now it could only be set by
     ''' importing a preset. RaceMenu writes the same field when a preset is applied
     ''' (<c>npc-&gt;headData-&gt;headTexture = presetData-&gt;headTexture</c>, PresetInterface.cpp:160).
-    ''' Empty (FormID 0) = the head keeps the texture set its race/head-part declares.</summary>
+    ''' <para>TRES acciones, una por estado de <c>Preset.SseHeadTextureFormIDOverride</c>. Antes había DOS caminos
+    ''' —el botón "Use record default" y la fila NULL del picker— que terminaban en LA MISMA llamada
+    ''' (<c>SetSseHeadTexture(0UI)</c>): con el carrier plano, 0 significaba a la vez "sin override" y "ninguno",
+    ''' así que elegir "ninguno" sólo borraba el override y el FTST crudo volvía. Por eso el picker ya NO ofrece
+    ''' fila NULL — el "ninguno" es su propio botón.</para></summary>
     Private Sub BuildSseHeadTextureSection()
         Dim grp As New GroupBox With {.Text = "Head texture (FTST)", .Dock = DockStyle.Fill, .AutoSize = True,
                                       .AutoSizeMode = AutoSizeMode.GrowAndShrink, .Margin = New Padding(3, 3, 3, 3)}
@@ -857,10 +868,13 @@ Public Class EditFace_Form
                                               .WrapContents = False, .Padding = New Padding(4)}
         _sseHeadTexLabel = New Label With {.AutoSize = True, .Margin = New Padding(3, 9, 12, 3)}
         Dim btnPick As New Button With {.Text = "Change…", .AutoSize = True}
-        Dim btnClear As New Button With {.Text = "Use record default", .AutoSize = True}
+        _sseHeadTexBtnDefault = New Button With {.Text = "Use record default", .AutoSize = True}
+        _sseHeadTexBtnClear = New Button With {.Text = "Clear (no FTST)", .AutoSize = True}
         AddHandler btnPick.Click, AddressOf OnPickSseHeadTexture
-        AddHandler btnClear.Click, Sub(s, e) SetSseHeadTexture(0UI)
-        flow.Controls.Add(_sseHeadTexLabel) : flow.Controls.Add(btnPick) : flow.Controls.Add(btnClear)
+        AddHandler _sseHeadTexBtnDefault.Click, Sub(s, e) SetSseHeadTexture(Nothing)
+        AddHandler _sseHeadTexBtnClear.Click, Sub(s, e) SetSseHeadTexture(CType(0UI, UInteger?))
+        flow.Controls.Add(_sseHeadTexLabel) : flow.Controls.Add(btnPick)
+        flow.Controls.Add(_sseHeadTexBtnDefault) : flow.Controls.Add(_sseHeadTexBtnClear)
         grp.Controls.Add(flow)
 
         FacePartsLayout.RowCount += 1
@@ -869,38 +883,76 @@ Public Class EditFace_Form
         UpdateSseHeadTextureLabel()
     End Sub
 
-    ''' <summary>Effective face TextureSet: the overlay's override when set, else the NPC record's own FTST.</summary>
-    Private Function EffectiveSseHeadTextureFormID() As UInteger
-        Dim p = Preset
-        If p IsNot Nothing AndAlso p.SseHeadTextureFormID <> 0UI Then Return p.SseHeadTextureFormID
+    ''' <summary>The NPC record's own FTST (0 = the record carries none). This is the FLOOR the "Use record
+    ''' default" state falls back to — and the reason the old UI looked like it worked on some NPCs: when the
+    ''' record had no FTST the floor was already 0, so "clearing" appeared to stick.</summary>
+    Private Function RawSseHeadTextureFormID() As UInteger
         Dim raw = TryGetRawNpc()
         Return If(raw IsNot Nothing, raw.HeadTextureFormID, 0UI)
     End Function
 
-    Private Sub UpdateSseHeadTextureLabel()
-        If _sseHeadTexLabel Is Nothing Then Return
-        Dim fid = EffectiveSseHeadTextureFormID()
-        If fid = 0UI Then
-            _sseHeadTexLabel.Text = "(none — race / head part default)"
-            Return
-        End If
+    ''' <summary>Seed for the TXST picker: the override's value when there is one, else the record's FTST.
+    ''' On the CLEAR state it returns 0 so the picker opens with nothing selected.</summary>
+    Private Function EffectiveSseHeadTextureFormID() As UInteger
+        Dim p = Preset
+        If p IsNot Nothing AndAlso p.SseHeadTextureFormIDOverride.HasValue Then Return p.SseHeadTextureFormIDOverride.Value
+        Return RawSseHeadTextureFormID()
+    End Function
+
+    Private Function DescribeTxst(fid As UInteger) As String
         Dim rec = _pluginManager.GetRecord(fid)
         Dim edid = If(rec IsNot Nothing AndAlso Not String.IsNullOrEmpty(rec.EditorID), rec.EditorID, "?")
-        _sseHeadTexLabel.Text = $"{edid}  [{fid:X8}]"
+        Return $"{edid}  [{fid:X8}]"
+    End Function
+
+    ''' <summary>Renders the THREE states unambiguously. The old label had two branches keyed off the EFFECTIVE
+    ''' FormID, so "no override on a record without FTST" and "explicit clear" printed the same text — the user
+    ''' could not tell whether the clear had taken. Each state also says what it is DISCARDING, which is the whole
+    ''' point of the clear when the record does carry an FTST.</summary>
+    Private Sub UpdateSseHeadTextureLabel()
+        If _sseHeadTexLabel Is Nothing Then Return
+        Dim p = Preset
+        Dim ov As UInteger? = If(p Is Nothing, Nothing, p.SseHeadTextureFormIDOverride)
+        Dim rawFid = RawSseHeadTextureFormID()
+
+        If Not ov.HasValue Then
+            _sseHeadTexLabel.Text = If(rawFid = 0UI,
+                                       "Record default: (none — race / head part texture)",
+                                       $"Record default: {DescribeTxst(rawFid)}")
+        ElseIf ov.Value <> 0UI Then
+            _sseHeadTexLabel.Text = $"Override: {DescribeTxst(ov.Value)}"
+        Else
+            _sseHeadTexLabel.Text = If(rawFid = 0UI,
+                                       "Cleared (no FTST) — same as the record",
+                                       $"Cleared (no FTST) — record had {DescribeTxst(rawFid)}")
+        End If
+
+        ' Deshabilitar el botón del estado ACTUAL: con un record sin FTST los textos de "record default" y de
+        ' "cleared" describen el mismo resultado visual, y esto es lo que deja ver cuál de los dos está activo.
+        If _sseHeadTexBtnDefault IsNot Nothing Then _sseHeadTexBtnDefault.Enabled = ov.HasValue
+        If _sseHeadTexBtnClear IsNot Nothing Then _sseHeadTexBtnClear.Enabled = Not (ov.HasValue AndAlso ov.Value = 0UI)
     End Sub
 
     Private Sub OnPickSseHeadTexture(sender As Object, e As EventArgs)
+        ' allowNull:=False — elegir un TXST es SÓLO el estado "override". El "ninguno" tiene su propio botón; dejar
+        ' la fila NULL acá reintroduciría la ambigüedad de origen (el picker devuelve 0 para NULL, que ahora
+        ' significa CLEAR, y el usuario no tendría cómo distinguirlo de "volver al valor del record").
         Using dlg As New FormIdPicker_Form(_pluginManager, {"TXST"}, "Head texture (TXST)",
-                                           EffectiveSseHeadTextureFormID(), allowNull:=True)
+                                           EffectiveSseHeadTextureFormID(), allowNull:=False)
             If dlg.ShowDialog(Me) <> DialogResult.OK Then Return
-            SetSseHeadTexture(dlg.SelectedFormID)
+            ' Con allowNull:=False el picker no puede devolver 0 (la fila NULL no se construye y OK vetea el
+            ' cierre sin selección), así que este guard es defensa redundante, no la barrera que sostiene el
+            ' invariante — la barrera es el allowNull. Se deja por si alguien reactiva la fila NULL.
+            If dlg.SelectedFormID = 0UI Then Return
+            SetSseHeadTexture(CType(dlg.SelectedFormID, UInteger?))
         End Using
     End Sub
 
-    Private Sub SetSseHeadTexture(fid As UInteger)
+    ''' <param name="fid">Nothing = sin override (preservar el FTST del record) · 0 = clear explícito · &lt;&gt;0 = override.</param>
+    Private Sub SetSseHeadTexture(fid As UInteger?)
         Dim p = Preset
         If p Is Nothing Then Return
-        p.SseHeadTextureFormID = fid
+        p.SseHeadTextureFormIDOverride = fid
         UpdateSseHeadTextureLabel()
         ScheduleRefresh(FaceRefreshScope.FullReload)
     End Sub
@@ -1917,7 +1969,11 @@ Public Class EditFace_Form
         Dim lay As New TableLayoutPanel With {.Dock = DockStyle.Top, .AutoSize = True, .AutoSizeMode = AutoSizeMode.GrowAndShrink, .ColumnCount = 2, .RowCount = 5}
         lay.ColumnStyles.Add(New ColumnStyle(SizeType.Absolute, LabelCol))
         lay.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100))
-        For r = 0 To 4 : lay.RowStyles.Add(New RowStyle(SizeType.Absolute, 34)) : Next
+        ' Filas 0-3: 34px. Fila 4: DOBLE (68px) porque aloja las DOS filas de botones — la de acciones por capa
+        ' (Choose… / Clear / Reset to RACE default) y, debajo, la de "Reset ALL tints". Sin el alto doble el
+        ' TableLayoutPanel interno queda recortado y la segunda fila no se ve.
+        For r = 0 To 3 : lay.RowStyles.Add(New RowStyle(SizeType.Absolute, 34)) : Next
+        lay.RowStyles.Add(New RowStyle(SizeType.Absolute, 68))
 
         ' Row 0: preset dropdown (TIAS)
         lay.Controls.Add(SseTintDetailLabel("Color source:"), 0, 0)
@@ -1956,11 +2012,13 @@ Public Class EditFace_Form
 
         ' Row 4: mask buttons UNDER the filename, LEFT-aligned so Choose… starts exactly where the .dds name starts,
         ' with Reset to RACE default immediately to their right.
-        Dim maskBtns As New TableLayoutPanel With {.Dock = DockStyle.Fill, .ColumnCount = 4, .RowCount = 1, .Margin = New Padding(0)}
+        Dim maskBtns As New TableLayoutPanel With {.Dock = DockStyle.Fill, .ColumnCount = 4, .RowCount = 2, .Margin = New Padding(0)}
         maskBtns.ColumnStyles.Add(New ColumnStyle(SizeType.Absolute, BtnCol))
         maskBtns.ColumnStyles.Add(New ColumnStyle(SizeType.Absolute, BtnCol))
         maskBtns.ColumnStyles.Add(New ColumnStyle(SizeType.AutoSize))
         maskBtns.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100))   ' trailing filler
+        maskBtns.RowStyles.Add(New RowStyle(SizeType.Absolute, 34))
+        maskBtns.RowStyles.Add(New RowStyle(SizeType.Absolute, 34))
         _sseTintMaskPick = New Button With {.Text = "Choose…", .Anchor = AnchorStyles.Left Or AnchorStyles.Right, .Height = RowCtlH, .Margin = New Padding(3, 2, 3, 3)}
         AddHandler _sseTintMaskPick.Click, Sub(s, e) OnSseTintTextureClick(_sseTintSelIndex)
         _sseTintToolTip.SetToolTip(_sseTintMaskPick, "Warpaint (RaceMenu): pick a tint mask registered by a mod. Empty = uses the RACE's own mask.")
@@ -1971,6 +2029,22 @@ Public Class EditFace_Form
         _sseTintResetBtn = New Button With {.Text = "Reset to RACE default", .AutoSize = True, .Height = RowCtlH, .Anchor = AnchorStyles.Left, .Margin = New Padding(9, 2, 3, 3)}
         AddHandler _sseTintResetBtn.Click, AddressOf OnSseTintResetLayer
         maskBtns.Controls.Add(_sseTintResetBtn, 2, 0)
+
+        ' Fila 5 (2ª de maskBtns): el reset MASIVO, debajo de los tres por-capa y alineado con ellos.
+        ' ⛔ Va DENTRO de este mismo TableLayoutPanel con ColumnSpan = 3, NO en un panel hermano: así el ancho
+        ' sale de las MISMAS ColumnStyles que los tres de arriba (BtnCol + BtnCol + AutoSize) y la simetría queda
+        ' garantizada POR CONSTRUCCIÓN. Un panel aparte tendría que replicar el AutoSize de la col. 2 —que lo
+        ' dimensiona el texto de "Reset to RACE default"— y se desalinearía con cualquier cambio de fuente,
+        ' de DPI o de traducción. No abarca la col. 3 (el filler) a propósito: si no, se estiraría hasta el borde.
+        _sseTintResetAllBtn = New Button With {.Text = "Reset all tints to RACE default", .Dock = DockStyle.Fill,
+                                               .Height = RowCtlH, .Margin = New Padding(3, 2, 3, 3)}
+        AddHandler _sseTintResetAllBtn.Click, AddressOf OnSseTintResetAllLayers
+        _sseTintToolTip.SetToolTip(_sseTintResetAllBtn,
+            "Reset EVERY tint layer to its RACE default (colour, intensity and warpaint mask) — the same as pressing " &
+            "'Reset to RACE default' on each layer one by one. Asks for confirmation; 'Reset section' and Cancel still undo it.")
+        maskBtns.Controls.Add(_sseTintResetAllBtn, 0, 1)
+        maskBtns.SetColumnSpan(_sseTintResetAllBtn, 3)
+
         lay.Controls.Add(maskBtns, 1, 4)
 
         _sseTintDetailHost.Controls.Add(lay)
@@ -2138,9 +2212,11 @@ Public Class EditFace_Form
 
     ''' <summary>Revert the selected layer to the RACE default: unauthored (dropped from the emitted record), colour
     ''' + coverage back to the RACE default preset, and the warpaint mask override cleared.</summary>
-    Private Sub OnSseTintResetLayer(sender As Object, e As EventArgs)
-        Dim i = _sseTintSelIndex
-        If i < 0 OrElse i >= _sseTintLayers.Count Then Return
+    ''' <summary>Devuelve UNA capa a su default de RACE, en memoria. ÚNICA definición de "default de raza" para el
+    ''' reset: el botón por capa y el masivo la comparten, así no pueden divergir si mañana se agrega un campo a
+    ''' <see cref="SseTintEdit"/>. No refresca ni aplica overlay — de eso se ocupa el llamador (el masivo lo hace
+    ''' UNA sola vez para no disparar N recomposiciones de textura).</summary>
+    Private Sub ResetSseTintLayerInPlace(i As Integer)
         Dim t = _sseTintLayers(i)
         Dim rgb = ResolveClfmRgb(t.DefaultClfm)
         t.R = rgb.R : t.G = rgb.G : t.B = rgb.B
@@ -2149,9 +2225,50 @@ Public Class EditFace_Form
         t.Authored = False
         t.MaskPathOverride = Nothing
         _sseTintLayers(i) = t
+    End Sub
+
+    Private Sub OnSseTintResetLayer(sender As Object, e As EventArgs)
+        Dim i = _sseTintSelIndex
+        If i < 0 OrElse i >= _sseTintLayers.Count Then Return
+        ResetSseTintLayerInPlace(i)
         ApplySseTintOverlay()
         SelectSseTintLayer(i)
         RefreshSseTintRow(i)
+        ScheduleRefresh(FaceRefreshScope.TexturesOnly)
+    End Sub
+
+    ''' <summary>Reset MASIVO: todas las capas de tint a su default de RACE de una sola vez, en vez de capa por capa.
+    ''' <para>Sólo toca las AUTHORED: las que ya están en el default no se re-escriben, así el conteo del diálogo es
+    ''' el trabajo REAL y no el total de capas de la raza. Si no hay ninguna, avisa y no hace nada — un botón
+    ''' destructivo que "funciona" sin cambiar nada es peor que uno que dice que no había nada que hacer.</para>
+    ''' <para>⛔ `ApplySseTintOverlay` + `ScheduleRefresh` corren UNA vez al final, no por capa: la recomposición de
+    ''' la textura de cara es cara y hacerla N veces congelaría la UI en razas con muchas capas.</para></summary>
+    Private Sub OnSseTintResetAllLayers(sender As Object, e As EventArgs)
+        If _sseTintLayers.Count = 0 Then Return
+        ' Conteo con bucle y no `.Count(predicado)`: en `List(Of T)` el `Count` es una PROPIEDAD, así que VB
+        ' resuelve ahí y no en el operador LINQ ⇒ BC32016 ("no tiene parámetros y no se puede indizar").
+        Dim authored As Integer = 0
+        For Each t In _sseTintLayers
+            If t.Authored Then authored += 1
+        Next
+        If authored = 0 Then
+            MessageBox.Show(Me, "Every tint layer is already at its RACE default — nothing to reset.",
+                            "Reset all tints", MessageBoxButtons.OK, MessageBoxIcon.Information)
+            Return
+        End If
+        If MessageBox.Show(Me,
+                $"Reset {authored} authored tint layer{If(authored = 1, "", "s")} to the RACE default?" & Environment.NewLine & Environment.NewLine &
+                "This clears the colour, the intensity and any warpaint mask on those layers." & Environment.NewLine &
+                "'Reset section' and Cancel still undo it.",
+                "Reset all tints", MessageBoxButtons.YesNo, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2) <> DialogResult.Yes Then Return
+
+        For i = 0 To _sseTintLayers.Count - 1
+            If _sseTintLayers(i).Authored Then ResetSseTintLayerInPlace(i)
+        Next
+        ApplySseTintOverlay()
+        For i = 0 To _sseTintLayers.Count - 1 : RefreshSseTintRow(i) : Next
+        ' Re-seleccionar DESPUÉS de refrescar las filas: el detalle tiene que leer la capa ya reseteada.
+        If _sseTintSelIndex >= 0 AndAlso _sseTintSelIndex < _sseTintLayers.Count Then SelectSseTintLayer(_sseTintSelIndex)
         ScheduleRefresh(FaceRefreshScope.TexturesOnly)
     End Sub
 
@@ -4681,7 +4798,7 @@ Public Class EditFace_Form
         Return c
     End Function
 
-    ''' <summary>Revert HeadParts + HairColor + IsCharGenFacePreset to the construction snapshot.</summary>
+    ''' <summary>Revert HeadParts + HairColor + head TXST (SSE) + IsCharGenFacePreset to the construction snapshot.</summary>
     Private Sub ResetFacePartsSection()
         Dim p = Preset
         Dim src = _seedPreset
@@ -4690,6 +4807,13 @@ Public Class EditFace_Form
             p.HeadPartFormIDs.Clear()
             If src IsNot Nothing Then p.HeadPartFormIDs.AddRange(src.HeadPartFormIDs)
             p.HairColorFormID = If(src IsNot Nothing, src.HairColorFormID, 0UI)
+            ' El "Head texture (FTST)" de SSE vive en ESTA sección (BuildSseHeadTextureSection le agrega su fila
+            ' a FacePartsLayout), así que el Reset lo tiene que revertir con ella. ⛔ Esta línea NO es opcional
+            ' desde que la sección tiene "Clear (no FTST)": es una acción DESTRUCTIVA, y sin revert por sección el
+            ' único escape sería Cancel (que tira todo el tab). Mismo agujero que ya se tapó dos veces en este
+            ' archivo con ResetSseRaceMenuSection y ResetSseSculptSection — las secciones construidas POR CÓDIGO
+            ' se le escapan al Reset porque el dispatch sólo conoce los GroupBox del Designer.
+            p.SseHeadTextureFormIDOverride = If(src Is Nothing, Nothing, src.SseHeadTextureFormIDOverride)
             ' El RGB custom de RaceMenu vive en la MISMA sección (Hair Color), así que el Reset lo revierte
             ' con ella. Sin esto el color custom sobrevivía a un Reset que ya había revertido el CLFM.
             p.SseHairColorRgb = If(src Is Nothing, Nothing, src.SseHairColorRgb)
@@ -4698,6 +4822,7 @@ Public Class EditFace_Form
             PopulateHairColorCombo()
             RefreshSseCustomHairUi()
             UpdateHairColorSwatch()
+            UpdateSseHeadTextureLabel()   ' no-op en FO4 (_sseHeadTexLabel queda Nothing y la función retorna)
             CheckBoxIsCharGenFacePreset.Checked = p.IsCharGenFacePreset.GetValueOrDefault(
                 (_priorAcbsFlagsRaw And AcbsBitIsCharGenFacePreset) <> 0UI)
         Finally

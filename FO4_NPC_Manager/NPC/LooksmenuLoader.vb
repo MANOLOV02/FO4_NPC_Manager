@@ -43,10 +43,23 @@ Public Module LooksmenuLoader
         ''' vuelve indistinguible de "el preset no trae color de pelo": el auditor de compatibilidad lo
         ''' saltaba en silencio. "" = resolvió, o el preset no declara HairColor.</summary>
         Public UnresolvedHairColor As String = ""
-        ''' <summary>SSE-ONLY RaceMenu face texture set (FTST) override from a loaded .jslot's actor.headTexture
-        ''' (skee64 sets npc->headData->headTexture, PresetInterface.cpp:158-160). 0 = none. The render uses it as
-        ''' the explicit face TXST (NpcMaterialResolver reads state.ExplicitHeadTextureFormID). SSE-only; Nothing/0 on FO4.</summary>
-        Public SseHeadTextureFormID As UInteger
+        ''' <summary>SSE-ONLY face texture set (NPC_.FTST) override. THREE states, same shape as
+        ''' <see cref="SkinFormIDOverride"/> / <see cref="DefaultOutfitFormIDOverride"/> / <see cref="SleepOutfitFormIDOverride"/>:
+        ''' <list type="bullet">
+        ''' <item>Nothing    → no override: preserve the raw NPC.FTST verbatim (Edit Face's "Use record default").</item>
+        ''' <item>value &lt;&gt; 0 → explicit face TXST: a loaded .jslot's actor.headTexture (skee64 sets
+        '''       npc-&gt;headData-&gt;headTexture, PresetInterface.cpp:158-160) or Edit Face's "Change…" picker.</item>
+        ''' <item>value = 0  → EXPLICIT CLEAR: emit NO FTST subrecord, so the head falls back to the RACE
+        '''       DefaultFaceTexture[gender] and, failing that, to the head part's own HDPT.TNAM.</item>
+        ''' </list>
+        ''' The render consumes it as state.ExplicitHeadTextureFormID (NpcMaterialResolver.ResolveTextureSet).
+        ''' SSE-only; Nothing on FO4, where the face override travels through the LooksMenu skin template instead.
+        ''' <para>⚠️ El estado "clear explícito" NO sobrevive un round-trip por `.jslot`: el formato de RaceMenu no
+        ''' distingue "sin clave" de "clave nula" (RaceMenuJslot colapsa null/"" en ""), y su motor NUNCA limpia el
+        ''' FTST — skee64 PresetInterface.cpp:147 sólo asigna dentro de `if (presetData-&gt;headTexture)`. Guardar
+        ''' como preset RaceMenu y recargarlo degrada `0` → `Nothing` (= preservar). Es inherente al formato ajeno y
+        ''' NO se workaroundea: la casa del clear es el ESP, no el .jslot.</para></summary>
+        Public SseHeadTextureFormIDOverride As UInteger?
         ''' <summary>SSE-ONLY RaceMenu absolute hair tint from a loaded .jslot's actor.hairColor (packed 0xRRGGBB).
         ''' skee writes it straight onto the hair shape's BSLightingShaderMaterialHairTint.tintColor (unpacked /255,
         ''' ×2, PresetInterface.cpp:112-116), taking precedence over the NPC's CLFM/HCLF colour. Nothing = the preset
@@ -706,7 +719,7 @@ Public Module LooksmenuLoader
         c.SseUnresolvedHeadParts.AddRange(p.SseUnresolvedHeadParts)
         c.HairColorFormID = p.HairColorFormID
         c.UnresolvedHairColor = p.UnresolvedHairColor
-        c.SseHeadTextureFormID = p.SseHeadTextureFormID
+        c.SseHeadTextureFormIDOverride = p.SseHeadTextureFormIDOverride
         c.SseHairColorRgb = p.SseHairColorRgb
         c.WeightThin = p.WeightThin
         c.WeightMuscular = p.WeightMuscular
